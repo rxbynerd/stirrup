@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -109,6 +111,9 @@ func fireResponseWhenEmitted(
 ) {
 	t.Helper()
 	requestID := waitForRequestID(t, tr, toolUseID, 2*time.Second)
+	if requestID == "" {
+		return
+	}
 	time.Sleep(delay)
 	tr.FireControl(types.ControlEvent{
 		Type:      "tool_result_response",
@@ -131,7 +136,9 @@ func waitForRequestID(t *testing.T, tr *asyncTestTransport, toolUseID string, ti
 		}
 		time.Sleep(time.Millisecond)
 	}
-	t.Fatalf("no tool_result_request emitted for tool_use_id=%q within %s", toolUseID, timeout)
+	// Called from goroutines as well as the test body, so it reports with assert
+	// and returns an empty ID instead of calling FailNow.
+	assert.Failf(t, "no tool_result_request emitted", "tool_use_id=%q within %s", toolUseID, timeout)
 	return ""
 }
 
@@ -165,25 +172,13 @@ func TestParallelDispatch_FiveConcurrent_CompleteInMaxNotSum(t *testing.T) {
 	results, _, outcome := loop.planAndDispatch(context.Background(), config, calls, &stallDetector{}, "", "")
 	elapsed := time.Since(start)
 
-	if outcome != "" {
-		t.Fatalf("unexpected stall outcome: %q", outcome)
-	}
-	if len(results) != n {
-		t.Fatalf("expected %d results, got %d", n, len(results))
-	}
-	if elapsed >= 500*time.Millisecond {
-		t.Fatalf("expected concurrent dispatch under 500ms, took %s (sequential path would be ~1s)", elapsed)
-	}
+	require.Empty(t, outcome, "unexpected stall outcome")
+	require.Len(t, results, n)
+	require.Less(t, elapsed, 500*time.Millisecond, "concurrent dispatch should finish well under the ~1s sequential sum")
 	for i, r := range results {
-		if r.IsError {
-			t.Fatalf("result %d unexpectedly errored: %q", i, r.Content)
-		}
-		if r.ToolUseID != calls[i].ID {
-			t.Errorf("result %d: ToolUseID=%q want %q", i, r.ToolUseID, calls[i].ID)
-		}
-		if r.Content != fmt.Sprintf("result-%d", i) {
-			t.Errorf("result %d: content=%q want %q", i, r.Content, fmt.Sprintf("result-%d", i))
-		}
+		require.False(t, r.IsError, "result %d errored: %q", i, r.Content)
+		require.Equal(t, calls[i].ID, r.ToolUseID, "result %d ToolUseID", i)
+		require.Equal(t, fmt.Sprintf("result-%d", i), r.Content, "result %d content", i)
 	}
 }
 
@@ -207,24 +202,12 @@ func TestParallelDispatch_OutOfOrderResolution_PreservesCallOrder(t *testing.T) 
 	go fireResponseWhenEmitted(t, tr, calls[0].ID, 50*time.Millisecond, "payload-for-first")
 
 	results, _, outcome := loop.planAndDispatch(context.Background(), config, calls, &stallDetector{}, "", "")
-	if outcome != "" {
-		t.Fatalf("unexpected stall outcome: %q", outcome)
-	}
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(results))
-	}
-	if results[0].ToolUseID != calls[0].ID {
-		t.Errorf("result[0].ToolUseID = %q, want %q", results[0].ToolUseID, calls[0].ID)
-	}
-	if results[1].ToolUseID != calls[1].ID {
-		t.Errorf("result[1].ToolUseID = %q, want %q", results[1].ToolUseID, calls[1].ID)
-	}
-	if results[0].Content != "payload-for-first" {
-		t.Errorf("result[0].Content = %q, want %q", results[0].Content, "payload-for-first")
-	}
-	if results[1].Content != "payload-for-second" {
-		t.Errorf("result[1].Content = %q, want %q", results[1].Content, "payload-for-second")
-	}
+	require.Empty(t, outcome, "unexpected stall outcome")
+	require.Len(t, results, 2)
+	require.Equal(t, calls[0].ID, results[0].ToolUseID)
+	require.Equal(t, calls[1].ID, results[1].ToolUseID)
+	require.Equal(t, "payload-for-first", results[0].Content)
+	require.Equal(t, "payload-for-second", results[1].Content)
 }
 
 // TestParallelDispatch_MaxParallelOne_Serialises confirms the semaphore
@@ -284,23 +267,16 @@ func TestParallelDispatch_MaxParallelOne_Serialises(t *testing.T) {
 	}
 
 	results, _, outcome := loop.planAndDispatch(context.Background(), config, calls, &stallDetector{}, "", "")
-	if outcome != "" {
-		t.Fatalf("unexpected stall outcome: %q", outcome)
-	}
-	if len(results) != n {
-		t.Fatalf("expected %d results, got %d", n, len(results))
-	}
+	require.Empty(t, outcome, "unexpected stall outcome")
+	require.Len(t, results, n)
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(spans) != n {
-		t.Fatalf("expected %d recorded handler entries, got %d", n, len(spans))
-	}
+	require.Len(t, spans, n, "recorded handler entries")
 	for i := 1; i < n; i++ {
-		if !spans[i].enter.After(spans[i-1].exit) {
-			t.Errorf("handler %d entered at %s before handler %d exited at %s; semaphore did not serialise",
-				i, spans[i].enter, i-1, spans[i-1].exit)
-		}
+		require.True(t, spans[i].enter.After(spans[i-1].exit),
+			"handler %d entered at %s before handler %d exited at %s; semaphore did not serialise",
+			i, spans[i].enter, i-1, spans[i-1].exit)
 	}
 }
 
@@ -349,22 +325,12 @@ func TestParallelDispatch_CtxCancellation_DrainsInFlight(t *testing.T) {
 	results, _, outcome := loop.planAndDispatch(ctx, config, calls, &stallDetector{}, "", "")
 	elapsed := time.Since(start)
 
-	if outcome != "" {
-		t.Fatalf("unexpected stall outcome: %q", outcome)
-	}
-	if elapsed > 500*time.Millisecond {
-		t.Fatalf("ctx cancel should drain in-flight quickly, took %s", elapsed)
-	}
-	if len(results) != n {
-		t.Fatalf("expected %d results, got %d", n, len(results))
-	}
+	require.Empty(t, outcome, "unexpected stall outcome")
+	require.LessOrEqual(t, elapsed, 500*time.Millisecond, "ctx cancel should drain in-flight quickly")
+	require.Len(t, results, n)
 	for i, r := range results {
-		if !r.IsError {
-			t.Errorf("result %d: expected IsError=true under cancel, got false; content=%q", i, r.Content)
-		}
-		if !strings.Contains(r.Content, "cancelled") {
-			t.Errorf("result %d: expected content to mention 'cancelled', got %q", i, r.Content)
-		}
+		require.True(t, r.IsError, "result %d should be an error under cancel; content=%q", i, r.Content)
+		require.Contains(t, r.Content, "cancelled", "result %d content", i)
 	}
 	// Every call must have emitted a tool_result_request before the cancel
 	// landed — i.e. the dispatch did not skip any goroutines.
@@ -374,9 +340,7 @@ func TestParallelDispatch_CtxCancellation_DrainsInFlight(t *testing.T) {
 			reqCount++
 		}
 	}
-	if reqCount != n {
-		t.Errorf("expected %d tool_result_request emissions, got %d", n, reqCount)
-	}
+	require.Equal(t, n, reqCount, "tool_result_request emissions")
 }
 
 // TestParallelDispatch_MixedSyncAndAsync_DispatchesSyncInline verifies the
@@ -435,31 +399,19 @@ func TestParallelDispatch_MixedSyncAndAsync_DispatchesSyncInline(t *testing.T) {
 	go fireResponseWhenEmitted(t, tr, calls[3].ID, 0, "async-result-1")
 
 	results, _, outcome := loop.planAndDispatch(context.Background(), config, calls, &stallDetector{}, "", "")
-	if outcome != "" {
-		t.Fatalf("unexpected stall outcome: %q", outcome)
-	}
-	if len(results) != len(calls) {
-		t.Fatalf("expected %d results, got %d", len(calls), len(results))
-	}
+	require.Empty(t, outcome, "unexpected stall outcome")
+	require.Len(t, results, len(calls))
 
 	expectedContents := []string{"sync-ok", "async-result-0", "sync-ok", "async-result-1"}
 	for i, r := range results {
-		if r.IsError {
-			t.Errorf("result %d unexpectedly errored: %q", i, r.Content)
-		}
-		if r.ToolUseID != calls[i].ID {
-			t.Errorf("result %d: ToolUseID=%q want %q", i, r.ToolUseID, calls[i].ID)
-		}
-		if r.Content != expectedContents[i] {
-			t.Errorf("result %d: content=%q want %q", i, r.Content, expectedContents[i])
-		}
+		require.False(t, r.IsError, "result %d errored: %q", i, r.Content)
+		require.Equal(t, calls[i].ID, r.ToolUseID, "result %d ToolUseID", i)
+		require.Equal(t, expectedContents[i], r.Content, "result %d content", i)
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(events) != 4 {
-		t.Fatalf("expected 4 recorded handler entries, got %d", len(events))
-	}
+	require.Len(t, events, 4, "recorded handler entries")
 	// First two entries must be the two sync handlers (in call order), and
 	// every sync timestamp must precede every async timestamp.
 	var lastSync, firstAsync time.Time
@@ -475,13 +427,10 @@ func TestParallelDispatch_MixedSyncAndAsync_DispatchesSyncInline(t *testing.T) {
 			}
 		}
 	}
-	if syncCount != 2 {
-		t.Fatalf("expected 2 sync handler entries, got %d", syncCount)
-	}
-	if firstAsync.Before(lastSync) {
-		t.Errorf("first async handler entered at %s, before last sync handler at %s; sync must run inline first",
-			firstAsync, lastSync)
-	}
+	require.Equal(t, 2, syncCount, "sync handler entries")
+	require.False(t, firstAsync.Before(lastSync),
+		"first async handler entered at %s, before last sync handler at %s; sync must run inline first",
+		firstAsync, lastSync)
 }
 
 // TestParallelDispatch_PanicInOneHandler_DoesNotStopOthers verifies the
@@ -513,34 +462,18 @@ func TestParallelDispatch_PanicInOneHandler_DoesNotStopOthers(t *testing.T) {
 	go fireResponseWhenEmitted(t, tr, calls[1].ID, 20*time.Millisecond, "good-result")
 
 	results, _, outcome := loop.planAndDispatch(context.Background(), config, calls, &stallDetector{}, "", "")
-	if outcome != "" {
-		t.Fatalf("unexpected stall outcome: %q", outcome)
-	}
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(results))
-	}
+	require.Empty(t, outcome, "unexpected stall outcome")
+	require.Len(t, results, 2)
 
 	// Index 0: panic. Must be marked as error and carry "panic" in content.
-	if !results[0].IsError {
-		t.Errorf("results[0].IsError = false, expected true on panic; content=%q", results[0].Content)
-	}
-	if !strings.Contains(results[0].Content, "panic") {
-		t.Errorf("results[0].Content = %q, expected substring 'panic'", results[0].Content)
-	}
-	if results[0].ToolUseID != calls[0].ID {
-		t.Errorf("results[0].ToolUseID = %q, want %q", results[0].ToolUseID, calls[0].ID)
-	}
+	require.True(t, results[0].IsError, "results[0] should be an error on panic; content=%q", results[0].Content)
+	require.Contains(t, results[0].Content, "panic")
+	require.Equal(t, calls[0].ID, results[0].ToolUseID)
 
 	// Index 1: successful resolution must be unaffected.
-	if results[1].IsError {
-		t.Errorf("results[1].IsError = true; sibling should be unaffected. content=%q", results[1].Content)
-	}
-	if results[1].Content != "good-result" {
-		t.Errorf("results[1].Content = %q, want %q", results[1].Content, "good-result")
-	}
-	if results[1].ToolUseID != calls[1].ID {
-		t.Errorf("results[1].ToolUseID = %q, want %q", results[1].ToolUseID, calls[1].ID)
-	}
+	require.False(t, results[1].IsError, "results[1] sibling should be unaffected; content=%q", results[1].Content)
+	require.Equal(t, "good-result", results[1].Content)
+	require.Equal(t, calls[1].ID, results[1].ToolUseID)
 }
 
 // TestParallelDispatch_StallDetector_ObservesCallOrder verifies the stall
@@ -576,21 +509,14 @@ func TestParallelDispatch_StallDetector_ObservesCallOrder(t *testing.T) {
 
 	stall := &stallDetector{}
 	results, _, outcome := loop.planAndDispatch(context.Background(), config, calls, stall, "", "")
-	if outcome != "" {
-		t.Fatalf("unexpected stall outcome %q: two identical calls + one different should not trip threshold=3", outcome)
-	}
-	if len(results) != 3 {
-		t.Fatalf("expected 3 results, got %d", len(results))
-	}
+	require.Empty(t, outcome, "two identical calls plus one different should not trip threshold=3")
+	require.Len(t, results, 3)
 
-	if len(stall.window) != len(calls) {
-		t.Fatalf("stall window holds %d signatures, want %d", len(stall.window), len(calls))
-	}
+	require.Len(t, stall.window, len(calls), "stall window signatures")
 	for i, call := range calls {
 		want := stallSignatureOf(call.Name, call.Input, results[i].Content, !results[i].IsError)
-		if stall.window[i] != want {
-			t.Errorf("stall window[%d] does not match call %s (records must run in call order, not resolution order)", i, call.ID)
-		}
+		require.Equal(t, want, stall.window[i],
+			"stall window[%d] for call %s; records must run in call order, not resolution order", i, call.ID)
 	}
 }
 
@@ -627,12 +553,8 @@ func TestParallelDispatch_OTelSpans_AreSiblingsUnderAgent(t *testing.T) {
 
 	results, _, outcome := loop.planAndDispatch(agentCtx, config, calls, &stallDetector{}, "", "")
 	agentSpan.End()
-	if outcome != "" {
-		t.Fatalf("unexpected stall outcome: %q", outcome)
-	}
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(results))
-	}
+	require.Empty(t, outcome, "unexpected stall outcome")
+	require.Len(t, results, 2)
 
 	spans := exporter.GetSpans()
 	var toolSpans []tracetest.SpanStub
@@ -645,24 +567,18 @@ func TestParallelDispatch_OTelSpans_AreSiblingsUnderAgent(t *testing.T) {
 			agentStub = s
 		}
 	}
-	if len(toolSpans) != 2 {
-		t.Fatalf("expected 2 execute_tool async_echo spans, got %d (spans=%v)", len(toolSpans), spanNames(spans))
-	}
-	if agentStub.Name == "" {
-		t.Fatal("invoke_agent test span not found in exporter")
-	}
+	require.Len(t, toolSpans, 2, "execute_tool async_echo spans (spans=%v)", spanNames(spans))
+	require.NotEmpty(t, agentStub.Name, "invoke_agent test span not found in exporter")
 	agentSpanID := agentStub.SpanContext.SpanID()
 	for i, s := range toolSpans {
-		if s.Parent.SpanID() != agentSpanID {
-			t.Errorf("tool span %d parent=%s, want agent span %s (siblings under the agent span, not nested)",
-				i, s.Parent.SpanID(), agentSpanID)
-		}
+		require.Equal(t, agentSpanID, s.Parent.SpanID(),
+			"tool span %d should be a sibling under the agent span, not nested", i)
 	}
 	// Cross-check: the two tool spans must not be parented under each other.
-	if toolSpans[0].Parent.SpanID() == toolSpans[1].SpanContext.SpanID() ||
-		toolSpans[1].Parent.SpanID() == toolSpans[0].SpanContext.SpanID() {
-		t.Error("tool spans are nested under each other; expected siblings")
-	}
+	require.NotEqual(t, toolSpans[1].SpanContext.SpanID(), toolSpans[0].Parent.SpanID(),
+		"tool spans are nested under each other; expected siblings")
+	require.NotEqual(t, toolSpans[0].SpanContext.SpanID(), toolSpans[1].Parent.SpanID(),
+		"tool spans are nested under each other; expected siblings")
 }
 
 // TestParallelDispatch_UnknownTool_SpanNameSentinel pins the span-name
@@ -671,7 +587,7 @@ func TestParallelDispatch_OTelSpans_AreSiblingsUnderAgent(t *testing.T) {
 // name>", so a hostile or buggy provider response cannot pollute trace
 // storage with arbitrary span names. The model-supplied name is still
 // preserved verbatim in the gen_ai.tool.name attribute for debuggability.
-func TestParallelDispatch_UnknownTool_SpanNameSentinel(t *testing.T) {
+func TestParallelDispatch_UnknownTool_UsesGenericSpanName(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
@@ -690,9 +606,7 @@ func TestParallelDispatch_UnknownTool_SpanNameSentinel(t *testing.T) {
 	// An unknown tool fails fast inline (no transport round-trip), so no
 	// FireControl is needed; planAndDispatch returns synchronously.
 	results, _, _ := loop.planAndDispatch(context.Background(), config, calls, &stallDetector{}, "", "")
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
+	require.Len(t, results, 1)
 
 	spans := exporter.GetSpans()
 	var toolSpan *tracetest.SpanStub
@@ -702,26 +616,19 @@ func TestParallelDispatch_UnknownTool_SpanNameSentinel(t *testing.T) {
 			break
 		}
 	}
-	if toolSpan == nil {
-		t.Fatalf("no execute_tool span found (spans=%v)", spanNames(spans))
-	}
-	if toolSpan.Name != "execute_tool" {
-		t.Errorf("unknown-tool span name = %q, want %q (model-controlled name must stay out of the span name)",
-			toolSpan.Name, "execute_tool")
-	}
+	require.NotNil(t, toolSpan, "no execute_tool span found (spans=%v)", spanNames(spans))
+	require.Equal(t, "execute_tool", toolSpan.Name, "model-controlled name must stay out of the span name")
+
 	// The raw model-supplied name must still be recorded on the attribute.
-	var sawName bool
+	var toolNameAttrs []string
 	for _, attr := range toolSpan.Attributes {
 		if string(attr.Key) == "gen_ai.tool.name" {
-			sawName = true
-			if attr.Value.AsString() != hostileName {
-				t.Errorf("gen_ai.tool.name attribute = %q, want raw model name %q",
-					attr.Value.AsString(), hostileName)
-			}
+			toolNameAttrs = append(toolNameAttrs, attr.Value.AsString())
 		}
 	}
-	if !sawName {
-		t.Error("gen_ai.tool.name attribute missing from unknown-tool span")
+	require.NotEmpty(t, toolNameAttrs, "gen_ai.tool.name attribute on the unknown-tool span")
+	for _, name := range toolNameAttrs {
+		require.Equal(t, hostileName, name, "gen_ai.tool.name attribute")
 	}
 }
 
@@ -733,13 +640,10 @@ func spanNames(spans []tracetest.SpanStub) []string {
 	return names
 }
 
-// TestParallelDispatch_StallTrips_ClosesRemainingSpans pins the Phase-3
-// stall-tail span-close loop in planAndDispatch: when stall trips at
-// index i mid-iteration, every plan[j].span for j > i must have End()
-// called so OTel spans for already-dispatched async calls beyond the
-// stall point do not leak. With the nudge already spent, four identical
-// calls with MaxParallel=4 trip the stall (threshold 3) at index 2,
-// leaving index 3's span for the cleanup loop to close.
+// TestParallelDispatch_StallTrips_ClosesRemainingSpans pins that when a stall
+// truncates planAndDispatch at index i, the span of every dispatched call past
+// that index is still ended. With the nudge already spent, four identical
+// calls trip the stall at index 2, leaving index 3's span to the cleanup loop.
 func TestParallelDispatch_StallTrips_ClosesRemainingSpans(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
@@ -766,14 +670,10 @@ func TestParallelDispatch_StallTrips_ClosesRemainingSpans(t *testing.T) {
 	}
 
 	results, _, outcome := loop.planAndDispatch(context.Background(), config, calls, &stallDetector{nudged: true}, "", "")
-	if outcome != "stalled" {
-		t.Fatalf("expected outcome 'stalled', got %q", outcome)
-	}
+	require.Equal(t, "stalled", outcome)
 	// Phase 3 returns toolResults[:i+1] on stall; only the first three
 	// indices were observed by the trace/transport/stall pipeline.
-	if len(results) != 3 {
-		t.Fatalf("expected 3 truncated results, got %d", len(results))
-	}
+	require.Len(t, results, 3)
 
 	spans := exporter.GetSpans()
 	var toolSpans []tracetest.SpanStub
@@ -782,18 +682,9 @@ func TestParallelDispatch_StallTrips_ClosesRemainingSpans(t *testing.T) {
 			toolSpans = append(toolSpans, s)
 		}
 	}
-	if len(toolSpans) != n {
-		t.Fatalf("expected %d execute_tool async_echo spans (one per dispatched call), got %d (names=%v)",
-			n, len(toolSpans), spanNames(spans))
-	}
-	// Every span must be closed: tracetest.SpanStub only appears in
-	// GetSpans() after End() has fired, but defensively assert
-	// EndTime is set to catch any future regression where exporter
-	// semantics shift.
+	require.Len(t, toolSpans, n, "execute_tool async_echo spans, one per dispatched call (names=%v)", spanNames(spans))
 	for i, s := range toolSpans {
-		if s.EndTime.IsZero() {
-			t.Errorf("tool span %d has zero EndTime — stall-tail cleanup did not close it", i)
-		}
+		require.NotZero(t, s.EndTime, "tool span %d was not closed by the stall-tail cleanup", i)
 	}
 }
 
@@ -816,30 +707,22 @@ func TestParallelDispatch_StallTrips_RemainingSpansKeepTheirOutcome(t *testing.T
 	}
 
 	_, _, outcome := loop.planAndDispatch(context.Background(), configWithMaxParallel(1), calls, stall, "", "")
-	if outcome != "stalled" {
-		t.Fatalf("expected outcome 'stalled', got %q", outcome)
-	}
+	require.Equal(t, "stalled", outcome)
 	var after []tracetest.SpanStub
 	for _, s := range exporter.GetSpans() {
 		if s.Name == "execute_tool" {
 			after = append(after, s)
 		}
 	}
-	if len(after) != 1 {
-		t.Fatalf("found %d spans for the call past the stall point, want 1", len(after))
-	}
-	if after[0].Status.Code != codes.Error {
-		t.Errorf("status = %v, want Error", after[0].Status.Code)
-	}
+	require.Len(t, after, 1, "spans for the call past the stall point")
+	require.Equal(t, codes.Error, after[0].Status.Code)
 	var errorType string
 	for _, kv := range after[0].Attributes {
 		if kv.Key == "error.type" {
 			errorType = kv.Value.AsString()
 		}
 	}
-	if errorType != observability.ToolFailureUnknownTool.String() {
-		t.Errorf("error.type = %q, want %q", errorType, observability.ToolFailureUnknownTool)
-	}
+	require.Equal(t, observability.ToolFailureUnknownTool.String(), errorType, "error.type")
 }
 
 // TestParallelDispatch_StallNudge_KeepsWholeBatch pins that a first
@@ -861,16 +744,12 @@ func TestParallelDispatch_StallNudge_KeepsWholeBatch(t *testing.T) {
 
 	stall := &stallDetector{}
 	results, records, outcome := loop.planAndDispatch(context.Background(), config, calls, stall, "", "")
-	if outcome != "" {
-		t.Fatalf("outcome = %q, want none: the first repetition nudges instead of ending the run", outcome)
-	}
-	if len(results) != n || len(records) != n {
-		t.Fatalf("got %d results and %d records, want %d of each", len(results), len(records), n)
-	}
+	require.Empty(t, outcome, "the first repetition nudges instead of ending the run")
+	require.Len(t, results, n)
+	require.Len(t, records, n)
 	for i, call := range calls {
-		if results[i].ToolUseID != call.ID || records[i].ID != call.ID {
-			t.Errorf("index %d: result %q, record %q; want both paired with %q", i, results[i].ToolUseID, records[i].ID, call.ID)
-		}
+		require.Equal(t, call.ID, results[i].ToolUseID, "result paired with call %d", i)
+		require.Equal(t, call.ID, records[i].ID, "record paired with call %d", i)
 	}
 	var toolResultEvents int
 	for _, ev := range tr.Events() {
@@ -878,12 +757,9 @@ func TestParallelDispatch_StallNudge_KeepsWholeBatch(t *testing.T) {
 			toolResultEvents++
 		}
 	}
-	if toolResultEvents != n {
-		t.Errorf("tool_result events = %d, want %d", toolResultEvents, n)
-	}
-	if _, ok := stall.takeNudge(); !ok {
-		t.Error("no pending nudge after the batch")
-	}
+	require.Equal(t, n, toolResultEvents, "tool_result events")
+	_, nudged := stall.takeNudge()
+	require.True(t, nudged, "no pending nudge after the batch")
 }
 
 // TestParallelDispatch_GuardDenyReason_ScrubbedBeforeTrace pins the
@@ -911,38 +787,22 @@ func TestParallelDispatch_GuardDenyReason_ScrubbedBeforeTrace(t *testing.T) {
 
 	results, _, outcome := loop.planAndDispatch(context.Background(),
 		configWithMaxParallel(1), calls, &stallDetector{}, "", "")
-	if outcome != "" {
-		t.Fatalf("unexpected stall outcome: %q", outcome)
-	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	if !results[0].IsError {
-		t.Errorf("expected guard-deny to produce IsError, got success; content=%q", results[0].Content)
-	}
+	require.Empty(t, outcome, "unexpected stall outcome")
+	require.Len(t, results, 1)
+	require.True(t, results[0].IsError, "guard deny should produce an error result; content=%q", results[0].Content)
 
 	_, recordedCalls := rec.snapshot()
-	if len(recordedCalls) != 1 {
-		t.Fatalf("expected 1 recorded tool call, got %d", len(recordedCalls))
-	}
-	if recordedCalls[0].ErrorReason == "" {
-		t.Fatal("expected ErrorReason to be populated on guard deny")
-	}
-	if strings.Contains(recordedCalls[0].ErrorReason, "FAKE_SECRET_SENTINEL") {
-		t.Errorf("ErrorReason leaked secret-shaped fragment: %q", recordedCalls[0].ErrorReason)
-	}
-	if !strings.Contains(recordedCalls[0].ErrorReason, "[REDACTED]") {
-		t.Errorf("ErrorReason did not show evidence of scrubbing (expected [REDACTED]): %q", recordedCalls[0].ErrorReason)
-	}
+	require.Len(t, recordedCalls, 1)
+	reason := recordedCalls[0].ErrorReason
+	require.NotEmpty(t, reason, "ErrorReason on guard deny")
+	require.NotContains(t, reason, "FAKE_SECRET_SENTINEL", "ErrorReason leaked a secret-shaped fragment")
+	require.Contains(t, reason, "[REDACTED]", "ErrorReason should show the scrub ran")
 }
 
-// TestParallelDispatch_ToolCallEventsPrecedeAsyncToolResults drives a full
-// AgenticLoop.Run() with three calls against an AsyncHandler-backed tool,
-// so Phase 2's goroutine fan-out genuinely runs (dispatch.go's
-// asyncIndices path) — unlike TestLoop_ToolCallEventsPrecedeMatchingToolResults
-// in loop_test.go, whose synchronous test_tool never leaves Phase 1. This
-// is the regression test for issue #593's ordering guarantee under real
-// concurrent dispatch, not just the inline path.
+// TestParallelDispatch_ToolCallEventsPrecedeAsyncToolResults runs a full
+// AgenticLoop.Run() with three calls against an AsyncHandler-backed tool, so
+// Phase 2's goroutine fan-out (dispatch.go's asyncIndices path) runs. Each
+// tool_call event must precede its tool_result under that concurrent dispatch.
 func TestParallelDispatch_ToolCallEventsPrecedeAsyncToolResults(t *testing.T) {
 	tr := newAsyncTestTransport()
 	loop := buildParallelDispatchLoop(t, tr, asyncEchoTool())
@@ -966,13 +826,11 @@ func TestParallelDispatch_ToolCallEventsPrecedeAsyncToolResults(t *testing.T) {
 
 	ids := []string{"tc_1", "tc_2", "tc_3"}
 	for _, id := range ids {
-		id := id
 		go fireResponseWhenEmitted(t, tr, id, 20*time.Millisecond, "result-for-"+id)
 	}
 
-	if _, err := loop.Run(context.Background(), config); err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
+	_, err := loop.Run(context.Background(), config)
+	require.NoError(t, err, "Run()")
 
 	events := tr.Events()
 
@@ -995,20 +853,10 @@ func TestParallelDispatch_ToolCallEventsPrecedeAsyncToolResults(t *testing.T) {
 		// path (dispatchAsyncToolCall), so its presence is the proof this
 		// test exercised Phase 2's fan-out rather than Phase 1's inline
 		// dispatch.
-		if _, ok := requestIdx[id]; !ok {
-			t.Fatalf("missing tool_result_request for %q; async fan-out did not run", id)
-		}
-		callIdx, ok := toolCallIdx[id]
-		if !ok {
-			t.Fatalf("missing tool_call event for %q", id)
-		}
-		resultIdx, ok := toolResultIdx[id]
-		if !ok {
-			t.Fatalf("missing tool_result event for %q", id)
-		}
-		if callIdx >= resultIdx {
-			t.Errorf("tool_call for %q at index %d did not precede its tool_result at index %d", id, callIdx, resultIdx)
-		}
+		require.Contains(t, requestIdx, id, "tool_result_request for %q; async fan-out did not run", id)
+		require.Contains(t, toolCallIdx, id, "tool_call event for %q", id)
+		require.Contains(t, toolResultIdx, id, "tool_result event for %q", id)
+		require.Less(t, toolCallIdx[id], toolResultIdx[id], "tool_call for %q must precede its tool_result", id)
 	}
 }
 
@@ -1063,9 +911,7 @@ func spanIDFromTraceparent(t *testing.T, traceparent string) oteltrace.SpanConte
 	t.Helper()
 	ctx := propagation.TraceContext{}.Extract(context.Background(), propagation.MapCarrier{"traceparent": traceparent})
 	sc := oteltrace.SpanContextFromContext(ctx)
-	if !sc.IsValid() {
-		t.Fatalf("traceparent %q does not decode to a valid span context", traceparent)
-	}
+	require.True(t, sc.IsValid(), "traceparent %q does not decode to a valid span context", traceparent)
 	return sc
 }
 
@@ -1080,9 +926,8 @@ func TestDispatch_MCPCallsCarryTheirOwnToolSpan(t *testing.T) {
 	srv, seen := mcpTraceServer(t)
 	client := mcp.NewClient(loop.Tools.(*tool.Registry), srv.Client())
 	t.Cleanup(func() { _ = client.Close() })
-	if err := client.Connect(context.Background(), types.MCPServerConfig{Name: "srv", URI: srv.URL}, nil); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	err := client.Connect(context.Background(), types.MCPServerConfig{Name: "srv", URI: srv.URL}, nil)
+	require.NoError(t, err, "connect MCP server")
 
 	loop.Provider = &scriptedProvider{turns: [][]types.StreamEvent{
 		{
@@ -1095,9 +940,8 @@ func TestDispatch_MCPCallsCarryTheirOwnToolSpan(t *testing.T) {
 			{Type: "message_complete", StopReason: "end_turn"},
 		},
 	}}
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err = loop.Run(context.Background(), buildTestConfig())
+	require.NoError(t, err, "Run()")
 
 	spans := exporter.GetSpans()
 	root := spansNamed(spans, "invoke_agent stirrup")[0]
@@ -1106,31 +950,20 @@ func TestDispatch_MCPCallsCarryTheirOwnToolSpan(t *testing.T) {
 		id, _ := spanAttr(s, "gen_ai.tool.call.id")
 		toolSpanByCall[id] = s.SpanContext
 	}
-	if len(toolSpanByCall) != 2 {
-		t.Fatalf("found execute_tool spans for calls %v, want tc_a and tc_b", toolSpanByCall)
-	}
+	require.Len(t, toolSpanByCall, 2, "execute_tool spans for calls tc_a and tc_b")
 
 	got := seen()
 	for arg, callID := range map[string]string{"a": "tc_a", "b": "tc_b"} {
-		want, ok := toolSpanByCall[callID]
-		if !ok {
-			t.Fatalf("no execute_tool span for %s", callID)
-		}
-		carried, ok := got[arg]
-		if !ok {
-			t.Fatalf("server saw no tools/call for %q", arg)
-		}
+		require.Contains(t, toolSpanByCall, callID, "execute_tool span for call")
+		want := toolSpanByCall[callID]
+		require.Contains(t, got, arg, "tools/call seen by the MCP server")
+		carried := got[arg]
 		for i, where := range []string{"traceparent header", "_meta.traceparent"} {
 			sc := spanIDFromTraceparent(t, carried[i])
-			if sc.SpanID() != want.SpanID() {
-				t.Errorf("call %s %s span = %s, want its execute_tool span %s", callID, where, sc.SpanID(), want.SpanID())
-			}
-			if sc.TraceID() != root.SpanContext.TraceID() {
-				t.Errorf("call %s %s trace = %s, want the run trace %s", callID, where, sc.TraceID(), root.SpanContext.TraceID())
-			}
+			require.Equal(t, want.SpanID(), sc.SpanID(), "call %s %s span, want its execute_tool span", callID, where)
+			require.Equal(t, root.SpanContext.TraceID(), sc.TraceID(), "call %s %s trace, want the run trace", callID, where)
 		}
 	}
-	if toolSpanByCall["tc_a"].SpanID() == toolSpanByCall["tc_b"].SpanID() {
-		t.Fatal("both MCP calls ran under the same execute_tool span")
-	}
+	require.NotEqual(t, toolSpanByCall["tc_b"].SpanID(), toolSpanByCall["tc_a"].SpanID(),
+		"both MCP calls ran under the same execute_tool span")
 }

@@ -8,6 +8,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
@@ -133,7 +136,7 @@ func stopWith(reason string) types.StreamEvent {
 	return types.StreamEvent{Type: "message_complete", StopReason: reason}
 }
 
-// assertToolUsePaired fails when an assistant tool_use block is not
+// assertToolUsePaired reports every assistant tool_use block that is not
 // answered by a tool_result in the message that follows it.
 func assertToolUsePaired(t *testing.T, label string, msgs []types.Message) {
 	t.Helper()
@@ -150,8 +153,8 @@ func assertToolUsePaired(t *testing.T, label string, msgs []types.Message) {
 			}
 		}
 		for _, b := range m.Content {
-			if b.Type == "tool_use" && !answered[b.ID] {
-				t.Errorf("%s: message %d holds tool_use %q (%s) with no paired tool_result", label, i, b.ID, b.Name)
+			if b.Type == "tool_use" {
+				assert.True(t, answered[b.ID], "%s: message %d holds tool_use %q (%s) with no paired tool_result", label, i, b.ID, b.Name)
 			}
 		}
 	}
@@ -171,42 +174,27 @@ func TestLoop_OutputLimitRecovery_ContinuesTruncatedText(t *testing.T) {
 	)
 
 	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("Outcome = %q, want success", runTrace.Outcome)
-	}
-	if runTrace.Turns != 2 {
-		t.Errorf("Turns = %d, want 2", runTrace.Turns)
-	}
-	if runTrace.FinalAssistantText != "Partial answerrest of the answer" {
-		t.Errorf("FinalAssistantText = %q, want the cut-off text joined with its continuation", runTrace.FinalAssistantText)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "success", runTrace.Outcome)
+	require.Equal(t, 2, runTrace.Turns)
+	require.Equal(t, "Partial answerrest of the answer", runTrace.FinalAssistantText)
 
 	calls := h.provider.params()
-	if len(calls) != 2 {
-		t.Fatalf("provider calls = %d, want 2", len(calls))
-	}
+	require.Len(t, calls, 2)
 	msgs := calls[1].Messages
-	if len(msgs) != 3 {
-		t.Fatalf("second request has %d messages, want prompt, truncated turn, instruction", len(msgs))
-	}
-	if msgs[1].Role != "assistant" || strings.Join(textBlocks(msgs[1]), "") != "Partial answer" {
-		t.Errorf("truncated assistant turn = %+v, want its text kept", msgs[1])
-	}
-	if msgs[2].Role != "user" || !msgs[2].Synthetic || strings.Join(textBlocks(msgs[2]), "") != outputLimitContinueText {
-		t.Errorf("instruction = %+v, want a synthetic user message with the continue text", msgs[2])
-	}
+	require.Len(t, msgs, 3, "second request: prompt, truncated turn, instruction")
+	require.Equal(t, "assistant", msgs[1].Role)
+	require.Equal(t, "Partial answer", strings.Join(textBlocks(msgs[1]), ""))
+	require.Equal(t, "user", msgs[2].Role)
+	require.True(t, msgs[2].Synthetic)
+	require.Equal(t, outputLimitContinueText, strings.Join(textBlocks(msgs[2]), ""))
 
 	turns, records := h.emitter.recoveryFlags()
-	if fmt.Sprint(turns) != "[true false]" || fmt.Sprint(records) != "[true false]" {
-		t.Errorf("recovery flags: turns %v, records %v; want [true false] for both", turns, records)
-	}
+	require.Equal(t, []bool{true, false}, turns)
+	require.Equal(t, []bool{true, false}, records)
 	warnings := h.warnings()
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "recovery 1 of 2") {
-		t.Errorf("warnings = %q, want one naming recovery 1 of 2", warnings)
-	}
+	require.Len(t, warnings, 1)
+	require.Contains(t, warnings[0], "recovery 1 of 2")
 }
 
 func TestLoop_OutputLimitRecovery_JoinsEveryContinuationOfTheAnswer(t *testing.T) {
@@ -217,15 +205,9 @@ func TestLoop_OutputLimitRecovery_JoinsEveryContinuationOfTheAnswer(t *testing.T
 	)
 
 	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("Outcome = %q, want success", runTrace.Outcome)
-	}
-	if runTrace.FinalAssistantText != "one two three" {
-		t.Errorf("FinalAssistantText = %q, want %q", runTrace.FinalAssistantText, "one two three")
-	}
+	require.NoError(t, err)
+	require.Equal(t, "success", runTrace.Outcome)
+	require.Equal(t, "one two three", runTrace.FinalAssistantText)
 }
 
 // postTurnDenyGuard allows every phase but PhasePostTurn and records the
@@ -255,18 +237,10 @@ func TestLoop_OutputLimitRecovery_PostTurnGuardChecksTheJoinedAnswer(t *testing.
 	h.loop.GuardRail = g
 
 	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.Outcome != "guardrail_blocked" {
-		t.Fatalf("Outcome = %q, want guardrail_blocked", runTrace.Outcome)
-	}
-	if fmt.Sprint(g.denied) != "[first half second half]" {
-		t.Errorf("post-turn guard saw %q, want the joined answer", g.denied)
-	}
-	if runTrace.FinalAssistantText != "Checking first." {
-		t.Errorf("FinalAssistantText = %q, want the text from before the denied answer began", runTrace.FinalAssistantText)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "guardrail_blocked", runTrace.Outcome)
+	require.Equal(t, []string{"first half second half"}, g.denied)
+	require.Equal(t, "Checking first.", runTrace.FinalAssistantText)
 }
 
 func TestLoop_OutputLimitRecovery_ToolCallPreambleIsNotJoined(t *testing.T) {
@@ -276,12 +250,8 @@ func TestLoop_OutputLimitRecovery_ToolCallPreambleIsNotJoined(t *testing.T) {
 	)
 
 	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.FinalAssistantText != "Done." {
-		t.Errorf("FinalAssistantText = %q, want only the final turn's text", runTrace.FinalAssistantText)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "Done.", runTrace.FinalAssistantText)
 }
 
 func TestLoop_OutputLimitRecovery_DropsTruncatedToolCalls(t *testing.T) {
@@ -297,37 +267,22 @@ func TestLoop_OutputLimitRecovery_DropsTruncatedToolCalls(t *testing.T) {
 	)
 
 	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("Outcome = %q, want success", runTrace.Outcome)
-	}
-	if got := strings.Join(h.writtenPaths(), ","); got != "part1.txt,part2.txt" {
-		t.Errorf("write_file ran for %q, want only the follow-up calls part1.txt,part2.txt", got)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "success", runTrace.Outcome)
+	require.Equal(t, []string{"part1.txt", "part2.txt"}, h.writtenPaths())
 
 	calls := h.provider.params()
-	if len(calls) != 3 {
-		t.Fatalf("provider calls = %d, want 3", len(calls))
-	}
+	require.Len(t, calls, 3)
 	msgs := calls[1].Messages
-	if len(msgs) != 3 {
-		t.Fatalf("second request has %d messages, want prompt, truncated turn, instruction", len(msgs))
-	}
-	if got := strings.Join(blockTypes(msgs[1]), ","); got != "text" {
-		t.Errorf("truncated assistant turn blocks = %s, want its text only", got)
-	}
-	want := fmt.Sprintf(outputLimitToolCallText, "write_file")
-	if !msgs[2].Synthetic || strings.Join(textBlocks(msgs[2]), "") != want {
-		t.Errorf("instruction = %+v, want synthetic %q", msgs[2], want)
-	}
+	require.Len(t, msgs, 3, "second request: prompt, truncated turn, instruction")
+	require.Equal(t, []string{"text"}, blockTypes(msgs[1]))
+	require.True(t, msgs[2].Synthetic)
+	require.Equal(t, fmt.Sprintf(outputLimitToolCallText, "write_file"), strings.Join(textBlocks(msgs[2]), ""))
 	assertAllRequestsPaired(t, calls)
 
 	warnings := h.warnings()
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "dropped 2 unrun tool call(s)") {
-		t.Errorf("warnings = %q, want one naming the two dropped calls", warnings)
-	}
+	require.Len(t, warnings, 1)
+	require.Contains(t, warnings[0], "dropped 2 unrun tool call(s)")
 }
 
 // A truncated turn with no text leaves no assistant message, so the
@@ -340,31 +295,18 @@ func TestLoop_OutputLimitRecovery_ToolOnlyTurnJoinsTrailingUserMessage(t *testin
 	)
 
 	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("Outcome = %q, want success", runTrace.Outcome)
-	}
-	if paths := h.writtenPaths(); len(paths) != 0 {
-		t.Errorf("write_file ran for %v, want no dispatch of the truncated call", paths)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "success", runTrace.Outcome)
+	require.Empty(t, h.writtenPaths(), "the truncated call must not be dispatched")
 
 	calls := h.provider.params()
-	if len(calls) != 3 {
-		t.Fatalf("provider calls = %d, want 3", len(calls))
-	}
+	require.Len(t, calls, 3)
 	msgs := calls[2].Messages
-	if len(msgs) != 3 {
-		t.Fatalf("third request has %d messages, want prompt, first tool turn, results", len(msgs))
-	}
+	require.Len(t, msgs, 3, "third request: prompt, first tool turn, results")
 	last := msgs[2]
-	if last.Synthetic || strings.Join(blockTypes(last), ",") != "tool_result,text" {
-		t.Errorf("trailing user message = %+v, want unmarked tool_result then text", last)
-	}
-	if want := fmt.Sprintf(outputLimitToolCallText, "write_file"); strings.Join(textBlocks(last), "") != want {
-		t.Errorf("instruction text = %q, want %q", textBlocks(last), want)
-	}
+	require.False(t, last.Synthetic)
+	require.Equal(t, []string{"tool_result", "text"}, blockTypes(last))
+	require.Equal(t, fmt.Sprintf(outputLimitToolCallText, "write_file"), strings.Join(textBlocks(last), ""))
 	assertAllRequestsPaired(t, calls)
 }
 
@@ -377,24 +319,15 @@ func TestLoop_OutputLimitRecovery_ThinkingOnlyTurnIsNotReplayed(t *testing.T) {
 	)
 
 	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("Outcome = %q, want success", runTrace.Outcome)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "success", runTrace.Outcome)
+
 	calls := h.provider.params()
-	if len(calls) != 2 {
-		t.Fatalf("provider calls = %d, want 2", len(calls))
-	}
+	require.Len(t, calls, 2)
 	msgs := calls[1].Messages
-	if len(msgs) != 1 {
-		t.Fatalf("second request has %d messages, want the prompt alone", len(msgs))
-	}
+	require.Len(t, msgs, 1, "second request: the prompt alone")
 	want := buildTestConfig().Prompt + "\n\n" + outputLimitNoTextText
-	if got := strings.Join(textBlocks(msgs[0]), ""); got != want {
-		t.Errorf("prompt message text = %q, want %q", got, want)
-	}
+	require.Equal(t, want, strings.Join(textBlocks(msgs[0]), ""))
 }
 
 func TestLoop_OutputLimitRecovery_BoundEndsRunWithMaxTokens(t *testing.T) {
@@ -403,25 +336,14 @@ func TestLoop_OutputLimitRecovery_BoundEndsRunWithMaxTokens(t *testing.T) {
 	)
 
 	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.Outcome != "max_tokens" {
-		t.Errorf("Outcome = %q, want max_tokens", runTrace.Outcome)
-	}
-	if runTrace.Turns != maxOutputLimitRecoveries+1 {
-		t.Errorf("Turns = %d, want %d", runTrace.Turns, maxOutputLimitRecoveries+1)
-	}
-	if paths := h.writtenPaths(); len(paths) != 0 {
-		t.Errorf("write_file ran for %v, want no truncated call dispatched", paths)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "max_tokens", runTrace.Outcome)
+	require.Equal(t, maxOutputLimitRecoveries+1, runTrace.Turns)
+	require.Empty(t, h.writtenPaths(), "the truncated call must not be dispatched")
+
 	turns, _ := h.emitter.recoveryFlags()
-	if fmt.Sprint(turns) != "[true true false]" {
-		t.Errorf("turn recovery flags = %v, want [true true false]", turns)
-	}
-	if n := len(h.warnings()); n != maxOutputLimitRecoveries {
-		t.Errorf("recovery warnings = %d, want %d", n, maxOutputLimitRecoveries)
-	}
+	require.Equal(t, []bool{true, true, false}, turns)
+	require.Len(t, h.warnings(), maxOutputLimitRecoveries)
 	assertAllRequestsPaired(t, h.provider.params())
 }
 
@@ -433,21 +355,13 @@ func TestLoop_OutputLimitRecovery_LastTurnStopIsTerminal(t *testing.T) {
 	config.MaxTurns = 1
 
 	runTrace, err := h.loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.Outcome != "max_tokens" {
-		t.Errorf("Outcome = %q, want max_tokens", runTrace.Outcome)
-	}
-	if n := len(h.provider.params()); n != 1 {
-		t.Errorf("provider calls = %d, want 1", n)
-	}
-	if turns, _ := h.emitter.recoveryFlags(); fmt.Sprint(turns) != "[false]" {
-		t.Errorf("turn recovery flags = %v, want [false]", turns)
-	}
-	if w := h.warnings(); len(w) != 0 {
-		t.Errorf("warnings = %q, want none", w)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "max_tokens", runTrace.Outcome)
+	require.Len(t, h.provider.params(), 1)
+
+	turns, _ := h.emitter.recoveryFlags()
+	require.Equal(t, []bool{false}, turns)
+	require.Empty(t, h.warnings())
 }
 
 func TestLoop_OutputLimitRecovery_BoundResetsPerRun(t *testing.T) {
@@ -455,15 +369,13 @@ func TestLoop_OutputLimitRecovery_BoundResetsPerRun(t *testing.T) {
 	h := newOutputLimitHarness(truncated, truncated, scriptEndTurn, truncated, truncated, scriptEndTurn)
 
 	for run := 1; run <= 2; run++ {
-		config := buildTestConfig()
-		config.RunID = fmt.Sprintf("test-run-%d", run)
-		runTrace, err := h.loop.Run(context.Background(), config)
-		if err != nil {
-			t.Fatalf("run %d: Run: %v", run, err)
-		}
-		if runTrace.Outcome != "success" {
-			t.Errorf("run %d: Outcome = %q, want success after %d recoveries", run, runTrace.Outcome, maxOutputLimitRecoveries)
-		}
+		t.Run(fmt.Sprintf("run %d", run), func(t *testing.T) {
+			config := buildTestConfig()
+			config.RunID = fmt.Sprintf("test-run-%d", run)
+			runTrace, err := h.loop.Run(context.Background(), config)
+			require.NoError(t, err)
+			require.Equal(t, "success", runTrace.Outcome, "after %d recoveries", maxOutputLimitRecoveries)
+		})
 	}
 }
 
@@ -473,16 +385,8 @@ func TestLoop_OutputLimitRecovery_VerificationRetriesShareTheBound(t *testing.T)
 	h.loop.Verifier = &scriptedVerifier{passes: []bool{false, true}}
 
 	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.Outcome != "max_tokens" {
-		t.Errorf("Outcome = %q, want max_tokens on the second truncation after the verifier feedback", runTrace.Outcome)
-	}
-	if n := len(h.provider.params()); n != 4 {
-		t.Errorf("provider calls = %d, want 4", n)
-	}
-	if n := len(h.warnings()); n != maxOutputLimitRecoveries {
-		t.Errorf("recovery warnings = %d, want %d across the whole run", n, maxOutputLimitRecoveries)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "max_tokens", runTrace.Outcome)
+	require.Len(t, h.provider.params(), 4)
+	require.Len(t, h.warnings(), maxOutputLimitRecoveries, "recovery warnings across the whole run")
 }

@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/observability/otlp"
 	"github.com/rxbynerd/stirrup/harness/internal/observability/platform"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
@@ -80,39 +82,30 @@ func TestPreflight_AllOK_NoCompletionRequest(t *testing.T) {
 	defer srv.Close()
 
 	report, err := Preflight(context.Background(), preflightTestConfig(t, srv.URL+"/v1"), PreflightOptions{})
-	if err != nil {
-		t.Fatalf("Preflight: %v", err)
-	}
-	if !report.OK {
-		t.Fatalf("expected report.OK; steps: %+v", report.Steps)
-	}
-	if got := completionHits.Load(); got != 0 {
-		t.Errorf("completion endpoint hit %d times; a dry-run must never call it", got)
-	}
-	if st, ok := stepStatus(report, "provider-probe:openai-compatible"); !ok || st != PreflightOK {
-		t.Errorf("provider probe step status = %v (ok=%v), want ok", st, ok)
-	}
-	if st, _ := stepStatus(report, "credentials"); st != PreflightOK {
-		t.Errorf("credentials step = %v, want ok", st)
-	}
+	require.NoError(t, err)
+	require.True(t, report.OK, "steps: %+v", report.Steps)
+	require.Zero(t, completionHits.Load(), "a dry run must never call the completion endpoint")
+
+	st, ok := stepStatus(report, "provider-probe:openai-compatible")
+	require.True(t, ok, "no provider probe step")
+	require.Equal(t, PreflightOK, st)
+
+	st, _ = stepStatus(report, "credentials")
+	require.Equal(t, PreflightOK, st)
 }
 
 func TestPreflight_BadCredentialFails(t *testing.T) {
-	// No env var set -> credential resolution fails during provider build.
+	// The key env var is unset, so credential resolution fails during provider build.
 	srv, _ := metadataOnlyServer(t)
 	defer srv.Close()
 
 	report, err := Preflight(context.Background(), preflightTestConfig(t, srv.URL+"/v1"), PreflightOptions{})
-	if err != nil {
-		t.Fatalf("Preflight: %v", err)
-	}
-	if report.OK {
-		t.Fatal("expected report.OK == false for missing credential")
-	}
+	require.NoError(t, err)
+	require.False(t, report.OK, "a missing credential must fail the dry run")
+
 	st, ok := stepStatus(report, "credentials")
-	if !ok || st != PreflightFail {
-		t.Errorf("credentials step status = %v (found=%v), want fail", st, ok)
-	}
+	require.True(t, ok, "no credentials step")
+	require.Equal(t, PreflightFail, st)
 }
 
 // TestPreflight_PlatformOptionErrorFails pins that a dry run reports a
@@ -123,32 +116,25 @@ func TestPreflight_PlatformOptionErrorFails(t *testing.T) {
 	srv, _ := metadataOnlyServer(t)
 	defer srv.Close()
 
-	for _, platform := range types.ValidTraceEmitterPlatformValues() {
-		t.Run(platform, func(t *testing.T) {
+	for _, name := range types.ValidTraceEmitterPlatformValues() {
+		t.Run(name, func(t *testing.T) {
 			config := preflightTestConfig(t, srv.URL+"/v1")
 			config.TraceEmitter = types.TraceEmitterConfig{
 				Type:            "otel",
 				Protocol:        "http/protobuf",
-				Platform:        platform,
+				Platform:        name,
 				PlatformOptions: map[string]string{"notAnOption": "x"},
 			}
 			report, err := Preflight(context.Background(), config, PreflightOptions{})
-			if err != nil {
-				t.Fatalf("Preflight: %v", err)
-			}
-			if report.OK {
-				t.Fatal("expected report.OK == false for an unknown platform option")
-			}
-			for _, step := range report.Steps {
-				if step.Name != "trace-emitter" {
-					continue
-				}
-				if step.Status != PreflightFail || !strings.Contains(step.Detail, `does not accept option "notAnOption"`) {
-					t.Errorf("trace-emitter step = %+v, want a failure naming the option", step)
-				}
-				return
-			}
-			t.Errorf("no trace-emitter step in %+v", report.Steps)
+			require.NoError(t, err)
+			require.False(t, report.OK, "an unknown platform option must fail the dry run")
+
+			st, ok := stepStatus(report, "trace-emitter")
+			require.True(t, ok, "no trace-emitter step in %+v", report.Steps)
+			require.Equal(t, PreflightFail, st)
+
+			detail, _ := stepDetail(report, "trace-emitter")
+			require.Contains(t, detail, `does not accept option "notAnOption"`)
 		})
 	}
 }
@@ -172,23 +158,18 @@ func TestPreflight_PlatformMissingRequiredOptionFails(t *testing.T) {
 			config := preflightTestConfig(t, srv.URL+"/v1")
 			config.TraceEmitter = types.TraceEmitterConfig{Type: "otel", Protocol: "http/protobuf", Platform: name}
 			report, err := Preflight(context.Background(), config, PreflightOptions{})
-			if err != nil {
-				t.Fatalf("Preflight: %v", err)
-			}
-			for _, step := range report.Steps {
-				if step.Name == "trace-emitter" {
-					if report.OK || step.Status != PreflightFail || !strings.Contains(step.Detail, resolveErr.Error()) {
-						t.Errorf("trace-emitter step = %+v, want a failure carrying %q", step, resolveErr)
-					}
-					return
-				}
-			}
-			t.Errorf("no trace-emitter step in %+v", report.Steps)
+			require.NoError(t, err)
+			require.False(t, report.OK, "a missing required platform option must fail the dry run")
+
+			st, ok := stepStatus(report, "trace-emitter")
+			require.True(t, ok, "no trace-emitter step in %+v", report.Steps)
+			require.Equal(t, PreflightFail, st)
+
+			detail, _ := stepDetail(report, "trace-emitter")
+			require.Contains(t, detail, resolveErr.Error())
 		})
 	}
-	if checked == 0 {
-		t.Fatal("no registered platform has a required option to exercise")
-	}
+	require.NotZero(t, checked, "no registered platform has a required option to exercise")
 }
 
 // TestPreflight_PlatformWithoutTraceEndpointFails pins that a dry run
@@ -210,23 +191,18 @@ func TestPreflight_PlatformWithoutTraceEndpointFails(t *testing.T) {
 			config := preflightTestConfig(t, srv.URL+"/v1")
 			config.TraceEmitter = types.TraceEmitterConfig{Type: "otel", Platform: name}
 			report, err := Preflight(context.Background(), config, PreflightOptions{})
-			if err != nil {
-				t.Fatalf("Preflight: %v", err)
-			}
-			for _, step := range report.Steps {
-				if step.Name == "trace-emitter" {
-					if report.OK || step.Status != PreflightFail || !strings.Contains(step.Detail, "has no trace endpoint") {
-						t.Errorf("trace-emitter step = %+v, want a missing-endpoint failure", step)
-					}
-					return
-				}
-			}
-			t.Errorf("no trace-emitter step in %+v", report.Steps)
+			require.NoError(t, err)
+			require.False(t, report.OK, "a platform without a trace endpoint must fail the dry run")
+
+			st, ok := stepStatus(report, "trace-emitter")
+			require.True(t, ok, "no trace-emitter step in %+v", report.Steps)
+			require.Equal(t, PreflightFail, st)
+
+			detail, _ := stepDetail(report, "trace-emitter")
+			require.Contains(t, detail, "has no trace endpoint")
 		})
 	}
-	if checked == 0 {
-		t.Fatal("no registered platform requires OTLP/HTTP without its own trace endpoint")
-	}
+	require.NotZero(t, checked, "no registered platform requires OTLP/HTTP without its own trace endpoint")
 }
 
 func TestPreflight_CredentialHintNamesAPIKeyRefOnProviderMismatch(t *testing.T) {
@@ -236,15 +212,13 @@ func TestPreflight_CredentialHintNamesAPIKeyRefOnProviderMismatch(t *testing.T) 
 	hintFor := func(cfg *types.RunConfig) string {
 		t.Helper()
 		report, err := Preflight(context.Background(), cfg, PreflightOptions{})
-		if err != nil {
-			t.Fatalf("Preflight: %v", err)
-		}
+		require.NoError(t, err)
 		for _, s := range report.Steps {
 			if s.Name == "credentials" {
 				return s.Hint
 			}
 		}
-		t.Fatal("no credentials step in report")
+		require.FailNow(t, "no credentials step in report")
 		return ""
 	}
 
@@ -253,37 +227,29 @@ func TestPreflight_CredentialHintNamesAPIKeyRefOnProviderMismatch(t *testing.T) 
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	hint := hintFor(cfg)
 	for _, want := range []string{"--api-key-ref", "openai-compatible", "secret://ANTHROPIC_API_KEY"} {
-		if !strings.Contains(hint, want) {
-			t.Errorf("hint %q should contain %q", hint, want)
-		}
+		require.Contains(t, hint, want)
 	}
 
 	cfg = preflightTestConfig(t, srv.URL+"/v1")
 	cfg.Provider.APIKeyRef = "secret://TEST_PREFLIGHT_UNSET"
-	if hint := hintFor(cfg); strings.Contains(hint, "--api-key-ref") {
-		t.Errorf("hint %q should stay generic for a non-Anthropic key reference", hint)
-	}
+	require.NotContains(t, hintFor(cfg), "--api-key-ref", "a non-Anthropic key reference should keep the generic hint")
 }
 
-func TestPreflight_SkipProvider(t *testing.T) {
+func TestPreflight_SkipProvider_ReportsSkippedProbe(t *testing.T) {
 	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
 	srv, _ := metadataOnlyServer(t)
 	defer srv.Close()
 
 	report, err := Preflight(context.Background(), preflightTestConfig(t, srv.URL+"/v1"), PreflightOptions{SkipProvider: true})
-	if err != nil {
-		t.Fatalf("Preflight: %v", err)
-	}
+	require.NoError(t, err)
+
 	st, ok := stepStatus(report, "provider-probe:openai-compatible")
-	if !ok || st != PreflightSkip {
-		t.Errorf("provider probe step = %v (found=%v), want skip", st, ok)
-	}
-	if !report.OK {
-		t.Errorf("a skipped probe must not fail the report; steps: %+v", report.Steps)
-	}
+	require.True(t, ok, "no provider probe step")
+	require.Equal(t, PreflightSkip, st)
+	require.True(t, report.OK, "a skipped probe must not fail the report; steps: %+v", report.Steps)
 }
 
-func TestPreflight_ProviderProbeFailure(t *testing.T) {
+func TestPreflight_ProviderProbeFailure_FailsReport(t *testing.T) {
 	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -292,16 +258,11 @@ func TestPreflight_ProviderProbeFailure(t *testing.T) {
 	defer srv.Close()
 
 	report, err := Preflight(context.Background(), preflightTestConfig(t, srv.URL+"/v1"), PreflightOptions{})
-	if err != nil {
-		t.Fatalf("Preflight: %v", err)
-	}
-	if report.OK {
-		t.Fatal("expected report.OK == false for a 401 provider probe")
-	}
+	require.NoError(t, err)
+	require.False(t, report.OK, "a 401 from the provider probe must fail the report")
+
 	st, _ := stepStatus(report, "provider-probe:openai-compatible")
-	if st != PreflightFail {
-		t.Errorf("provider probe step = %v, want fail", st)
-	}
+	require.Equal(t, PreflightFail, st)
 }
 
 func TestPreflight_ValidationFailureStopsEarly(t *testing.T) {
@@ -309,19 +270,15 @@ func TestPreflight_ValidationFailureStopsEarly(t *testing.T) {
 	cfg.MaxTurns = 0 // invalid
 
 	report, err := Preflight(context.Background(), cfg, PreflightOptions{})
-	if err != nil {
-		t.Fatalf("Preflight: %v", err)
-	}
-	if report.OK {
-		t.Fatal("expected report.OK == false for invalid config")
-	}
-	if st, _ := stepStatus(report, "config-validation"); st != PreflightFail {
-		t.Errorf("config-validation step = %v, want fail", st)
-	}
+	require.NoError(t, err)
+	require.False(t, report.OK, "an invalid config must fail the report")
+
+	st, _ := stepStatus(report, "config-validation")
+	require.Equal(t, PreflightFail, st)
+
 	// Validation failure short-circuits, so no later steps run.
-	if _, ok := stepStatus(report, "credentials"); ok {
-		t.Error("credentials step should not run after a validation failure")
-	}
+	_, ok := stepStatus(report, "credentials")
+	require.False(t, ok, "credentials step should not run after a validation failure")
 }
 
 // mcpProbeServer answers MCP tools/list with an empty list (ok) or a 500
@@ -339,7 +296,7 @@ func mcpProbeServer(t *testing.T, fail bool) *httptest.Server {
 	}))
 }
 
-func TestPreflight_MCP_Skip(t *testing.T) {
+func TestPreflight_MCP_SkipMCPReportsSkippedProbe(t *testing.T) {
 	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
 	srv, _ := metadataOnlyServer(t)
 	defer srv.Close()
@@ -350,16 +307,14 @@ func TestPreflight_MCP_Skip(t *testing.T) {
 	cfg.Tools.MCPServers = []types.MCPServerConfig{{Name: "docs", URI: mcpSrv.URL}}
 
 	report, err := Preflight(context.Background(), cfg, PreflightOptions{SkipMCP: true})
-	if err != nil {
-		t.Fatalf("Preflight: %v", err)
-	}
+	require.NoError(t, err)
+
 	st, ok := stepStatus(report, "mcp:docs")
-	if !ok || st != PreflightSkip {
-		t.Errorf("mcp step = %v (found=%v), want skip", st, ok)
-	}
+	require.True(t, ok, "no mcp:docs step")
+	require.Equal(t, PreflightSkip, st)
 }
 
-func TestPreflight_MCP_OK(t *testing.T) {
+func TestPreflight_MCP_ReachableServerPasses(t *testing.T) {
 	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
 	srv, _ := metadataOnlyServer(t)
 	defer srv.Close()
@@ -370,16 +325,14 @@ func TestPreflight_MCP_OK(t *testing.T) {
 	cfg.Tools.MCPServers = []types.MCPServerConfig{{Name: "docs", URI: mcpSrv.URL}}
 
 	report, err := Preflight(context.Background(), cfg, PreflightOptions{})
-	if err != nil {
-		t.Fatalf("Preflight: %v", err)
-	}
+	require.NoError(t, err)
+
 	st, ok := stepStatus(report, "mcp:docs")
-	if !ok || st != PreflightOK {
-		t.Errorf("mcp step = %v (found=%v), want ok; steps: %+v", st, ok, report.Steps)
-	}
+	require.True(t, ok, "no mcp:docs step; steps: %+v", report.Steps)
+	require.Equal(t, PreflightOK, st, "steps: %+v", report.Steps)
 }
 
-func TestPreflight_MCP_Fail(t *testing.T) {
+func TestPreflight_MCP_FailingServerFailsReport(t *testing.T) {
 	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
 	srv, _ := metadataOnlyServer(t)
 	defer srv.Close()
@@ -390,16 +343,11 @@ func TestPreflight_MCP_Fail(t *testing.T) {
 	cfg.Tools.MCPServers = []types.MCPServerConfig{{Name: "docs", URI: mcpSrv.URL}}
 
 	report, err := Preflight(context.Background(), cfg, PreflightOptions{})
-	if err != nil {
-		t.Fatalf("Preflight: %v", err)
-	}
-	if report.OK {
-		t.Fatal("a failing MCP probe must fail the report")
-	}
+	require.NoError(t, err)
+	require.False(t, report.OK, "a failing MCP probe must fail the report")
+
 	st, _ := stepStatus(report, "mcp:docs")
-	if st != PreflightFail {
-		t.Errorf("mcp step = %v, want fail", st)
-	}
+	require.Equal(t, PreflightFail, st)
 }
 
 func TestPreflight_MCP_DetailIsScrubbedAndBounded(t *testing.T) {
@@ -409,29 +357,26 @@ func TestPreflight_MCP_DetailIsScrubbedAndBounded(t *testing.T) {
 	defer srv.Close()
 	mcpSrv := leakyMCPServer(t, secret)
 
-	for _, optional := range []bool{false, true} {
-		cfg := preflightTestConfig(t, srv.URL+"/v1")
-		cfg.Tools.MCPServers = []types.MCPServerConfig{{Name: "docs", URI: mcpSrv.URL, Optional: optional}}
+	for _, tc := range []struct {
+		name     string
+		optional bool
+	}{
+		{"required", false},
+		{"optional", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := preflightTestConfig(t, srv.URL+"/v1")
+			cfg.Tools.MCPServers = []types.MCPServerConfig{{Name: "docs", URI: mcpSrv.URL, Optional: tc.optional}}
 
-		report, err := Preflight(context.Background(), cfg, PreflightOptions{})
-		if err != nil {
-			t.Fatalf("Preflight: %v", err)
-		}
-		var detail string
-		for _, st := range report.Steps {
-			if st.Name == "mcp:docs" {
-				detail = st.Detail
-			}
-		}
-		if detail == "" {
-			t.Fatalf("optional=%v: no detail on the mcp:docs step; steps: %+v", optional, report.Steps)
-		}
-		if strings.Contains(detail, secret) {
-			t.Errorf("optional=%v: detail leaked a secret: %q", optional, detail)
-		}
-		if len(detail) > maxDegradedErrorBytes+len("... [truncated by harness]") {
-			t.Errorf("optional=%v: detail is %d bytes, want it bounded near %d", optional, len(detail), maxDegradedErrorBytes)
-		}
+			report, err := Preflight(context.Background(), cfg, PreflightOptions{})
+			require.NoError(t, err)
+
+			detail, _ := stepDetail(report, "mcp:docs")
+			require.NotEmpty(t, detail, "no detail on the mcp:docs step; steps: %+v", report.Steps)
+			require.NotContains(t, detail, secret, "detail leaked a secret")
+			require.LessOrEqual(t, len(detail), maxDegradedErrorBytes+len("... [truncated by harness]"),
+				"detail should be bounded near %d bytes", maxDegradedErrorBytes)
+		})
 	}
 }
 
@@ -446,15 +391,11 @@ func TestPreflight_MCP_OptionalUnreachableWarns(t *testing.T) {
 	cfg.Tools.MCPServers = []types.MCPServerConfig{{Name: "docs", URI: mcpSrv.URL, Optional: true}}
 
 	report, err := Preflight(context.Background(), cfg, PreflightOptions{})
-	if err != nil {
-		t.Fatalf("Preflight: %v", err)
-	}
-	if !report.OK {
-		t.Fatalf("an unreachable optional MCP server must not fail the report; steps: %+v", report.Steps)
-	}
-	if st, _ := stepStatus(report, "mcp:docs"); st != PreflightWarn {
-		t.Errorf("mcp step = %v, want warn", st)
-	}
+	require.NoError(t, err)
+	require.True(t, report.OK, "an unreachable optional MCP server must not fail the report; steps: %+v", report.Steps)
+
+	st, _ := stepStatus(report, "mcp:docs")
+	require.Equal(t, PreflightWarn, st)
 }
 
 func TestPreflight_MCP_MissingAllowedTool(t *testing.T) {
@@ -482,26 +423,19 @@ func TestPreflight_MCP_MissingAllowedTool(t *testing.T) {
 			}}
 
 			report, err := Preflight(context.Background(), cfg, PreflightOptions{})
-			if err != nil {
-				t.Fatalf("Preflight: %v", err)
-			}
-			if report.OK != tc.wantOK {
-				t.Errorf("report.OK = %v, want %v", report.OK, tc.wantOK)
-			}
+			require.NoError(t, err)
+			require.Equal(t, tc.wantOK, report.OK)
+
 			st, _ := stepStatus(report, "mcp:docs")
-			if st != tc.want {
-				t.Errorf("mcp step = %v, want %v", st, tc.want)
-			}
-			for _, step := range report.Steps {
-				if step.Name == "mcp:docs" && !strings.Contains(step.Detail, "fetch") {
-					t.Errorf("step detail should name the missing tool, got %q", step.Detail)
-				}
-			}
+			require.Equal(t, tc.want, st)
+
+			detail, _ := stepDetail(report, "mcp:docs")
+			require.Contains(t, detail, "fetch", "step detail should name the missing tool")
 		})
 	}
 }
 
-func TestPreflight_Egress_Skip(t *testing.T) {
+func TestPreflight_Egress_SkipEgressReportsSkippedStep(t *testing.T) {
 	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
 	srv, _ := metadataOnlyServer(t)
 	defer srv.Close()
@@ -514,13 +448,11 @@ func TestPreflight_Egress_Skip(t *testing.T) {
 	}
 
 	report, err := Preflight(context.Background(), cfg, PreflightOptions{SkipEgress: true})
-	if err != nil {
-		t.Fatalf("Preflight: %v", err)
-	}
+	require.NoError(t, err)
+
 	st, ok := stepStatus(report, "egress")
-	if !ok || st != PreflightSkip {
-		t.Errorf("egress step = %v (found=%v), want skip", st, ok)
-	}
+	require.True(t, ok, "no egress step")
+	require.Equal(t, PreflightSkip, st)
 }
 
 // stepDetail returns the Detail of a named step.
@@ -537,7 +469,7 @@ func stepDetail(report *PreflightReport, name string) (string, bool) {
 // SkipExecutor records the executor-probe step as a skip (no engine
 // contacted); the container engine is never reachable in CI, so without
 // the gate this step would fail.
-func TestPreflight_Executor_Skip(t *testing.T) {
+func TestPreflight_Executor_SkipExecutorReportsSkippedProbe(t *testing.T) {
 	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
 	srv, _ := metadataOnlyServer(t)
 	defer srv.Close()
@@ -546,36 +478,32 @@ func TestPreflight_Executor_Skip(t *testing.T) {
 	cfg.Executor = types.ExecutorConfig{Type: "container", Image: "ubuntu:26.04"}
 
 	report, err := Preflight(context.Background(), cfg, PreflightOptions{SkipExecutor: true})
-	if err != nil {
-		t.Fatalf("Preflight: %v", err)
-	}
+	require.NoError(t, err)
+
 	st, ok := stepStatus(report, "executor-probe")
-	if !ok || st != PreflightSkip {
-		t.Errorf("executor-probe step = %v (found=%v), want skip", st, ok)
-	}
-	if detail, _ := stepDetail(report, "executor-probe"); !strings.Contains(detail, "--no-probe-executor") {
-		t.Errorf("executor-probe skip detail = %q, want it to name --no-probe-executor", detail)
-	}
-	if !report.OK {
-		t.Errorf("a skipped executor probe must not fail the report; steps: %+v", report.Steps)
-	}
+	require.True(t, ok, "no executor-probe step")
+	require.Equal(t, PreflightSkip, st)
+
+	detail, _ := stepDetail(report, "executor-probe")
+	require.Contains(t, detail, "--no-probe-executor")
+	require.True(t, report.OK, "a skipped executor probe must not fail the report; steps: %+v", report.Steps)
 }
 
-func TestPreflight_GitStrategy_NoneSkips(t *testing.T) {
+func TestPreflight_GitStrategy_NoneSkipsGitProbe(t *testing.T) {
 	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
 	srv, _ := metadataOnlyServer(t)
 	defer srv.Close()
 
 	report, err := Preflight(context.Background(), preflightTestConfig(t, srv.URL+"/v1"), PreflightOptions{})
-	if err != nil {
-		t.Fatalf("Preflight: %v", err)
-	}
-	if st, ok := stepStatus(report, "git-strategy"); !ok || st != PreflightOK {
-		t.Errorf("git-strategy step = %v (found=%v), want ok", st, ok)
-	}
-	if st, ok := stepStatus(report, "git-strategy-probe"); !ok || st != PreflightSkip {
-		t.Errorf("git-strategy-probe step = %v (found=%v), want skip for the none strategy", st, ok)
-	}
+	require.NoError(t, err)
+
+	st, ok := stepStatus(report, "git-strategy")
+	require.True(t, ok, "no git-strategy step")
+	require.Equal(t, PreflightOK, st)
+
+	st, ok = stepStatus(report, "git-strategy-probe")
+	require.True(t, ok, "no git-strategy-probe step")
+	require.Equal(t, PreflightSkip, st, "the none strategy should skip the git probe")
 }
 
 func TestPreflight_GitStrategy_DeterministicProbesGitInExecutor(t *testing.T) {
@@ -586,15 +514,14 @@ func TestPreflight_GitStrategy_DeterministicProbesGitInExecutor(t *testing.T) {
 	cfg := preflightTestConfig(t, srv.URL+"/v1")
 	cfg.GitStrategy = types.GitStrategyConfig{Type: "deterministic"}
 	report, err := Preflight(context.Background(), cfg, PreflightOptions{})
-	if err != nil {
-		t.Fatalf("Preflight: %v", err)
-	}
-	if st, ok := stepStatus(report, "git-strategy-probe"); !ok || st != PreflightOK {
-		t.Fatalf("git-strategy-probe step = %v (found=%v), want ok; steps: %+v", st, ok, report.Steps)
-	}
-	if detail, _ := stepDetail(report, "git-strategy-probe"); !strings.Contains(detail, "inside the executor") {
-		t.Errorf("git-strategy-probe detail = %q", detail)
-	}
+	require.NoError(t, err)
+
+	st, ok := stepStatus(report, "git-strategy-probe")
+	require.True(t, ok, "no git-strategy-probe step; steps: %+v", report.Steps)
+	require.Equal(t, PreflightOK, st, "steps: %+v", report.Steps)
+
+	detail, _ := stepDetail(report, "git-strategy-probe")
+	require.Contains(t, detail, "inside the executor")
 }
 
 // TestPreflight_GitStrategy_MissingGitFails leaves the executor's PATH with
@@ -610,26 +537,21 @@ func TestPreflight_GitStrategy_MissingGitFails(t *testing.T) {
 		t.Skipf("sh not found: %v", err)
 	}
 	bin := t.TempDir()
-	if err := os.Symlink(sh, filepath.Join(bin, "sh")); err != nil {
-		t.Fatalf("symlink sh: %v", err)
-	}
+	require.NoError(t, os.Symlink(sh, filepath.Join(bin, "sh")), "symlink sh")
 	t.Setenv("PATH", bin)
 
 	cfg := preflightTestConfig(t, srv.URL+"/v1")
 	cfg.GitStrategy = types.GitStrategyConfig{Type: "deterministic"}
 	report, err := Preflight(context.Background(), cfg, PreflightOptions{})
-	if err != nil {
-		t.Fatalf("Preflight: %v", err)
-	}
-	if st, ok := stepStatus(report, "git-strategy-probe"); !ok || st != PreflightFail {
-		t.Fatalf("git-strategy-probe step = %v (found=%v), want fail; steps: %+v", st, ok, report.Steps)
-	}
-	if detail, _ := stepDetail(report, "git-strategy-probe"); !strings.Contains(detail, "git is not available in the sandbox") {
-		t.Errorf("git-strategy-probe detail = %q, want the missing-git message", detail)
-	}
-	if report.OK {
-		t.Error("a missing git binary must fail the dry-run")
-	}
+	require.NoError(t, err)
+
+	st, ok := stepStatus(report, "git-strategy-probe")
+	require.True(t, ok, "no git-strategy-probe step; steps: %+v", report.Steps)
+	require.Equal(t, PreflightFail, st)
+
+	detail, _ := stepDetail(report, "git-strategy-probe")
+	require.Contains(t, detail, "git is not available in the sandbox")
+	require.False(t, report.OK, "a missing git binary must fail the dry-run")
 }
 
 func TestPreflight_GitStrategy_ContainerNotProbed(t *testing.T) {
@@ -641,18 +563,15 @@ func TestPreflight_GitStrategy_ContainerNotProbed(t *testing.T) {
 	cfg.Executor = types.ExecutorConfig{Type: "container", Image: "ubuntu:26.04"}
 	cfg.GitStrategy = types.GitStrategyConfig{Type: "deterministic"}
 	report, err := Preflight(context.Background(), cfg, PreflightOptions{SkipExecutor: true})
-	if err != nil {
-		t.Fatalf("Preflight: %v", err)
-	}
-	if st, ok := stepStatus(report, "git-strategy-probe"); !ok || st != PreflightSkip {
-		t.Errorf("git-strategy-probe step = %v (found=%v), want skip", st, ok)
-	}
-	if detail, _ := stepDetail(report, "git-strategy-probe"); !strings.Contains(detail, "sandbox image") {
-		t.Errorf("git-strategy-probe detail = %q, want it to say the sandbox image is not probed", detail)
-	}
-	if !report.OK {
-		t.Errorf("an unprobed container git must not fail the report; steps: %+v", report.Steps)
-	}
+	require.NoError(t, err)
+
+	st, ok := stepStatus(report, "git-strategy-probe")
+	require.True(t, ok, "no git-strategy-probe step")
+	require.Equal(t, PreflightSkip, st)
+
+	detail, _ := stepDetail(report, "git-strategy-probe")
+	require.Contains(t, detail, "sandbox image", "the sandbox image should be reported as not probed")
+	require.True(t, report.OK, "an unprobed container git must not fail the report; steps: %+v", report.Steps)
 }
 
 // TestPreflight_Executor_LocalUnaffectedBySkip pins that SkipExecutor is
@@ -666,24 +585,22 @@ func TestPreflight_Executor_LocalUnaffectedBySkip(t *testing.T) {
 
 	cfg := preflightTestConfig(t, srv.URL+"/v1") // local executor
 	report, err := Preflight(context.Background(), cfg, PreflightOptions{SkipExecutor: true})
-	if err != nil {
-		t.Fatalf("Preflight: %v", err)
-	}
+	require.NoError(t, err)
+
 	st, ok := stepStatus(report, "executor-probe")
-	if !ok || st != PreflightSkip {
-		t.Errorf("executor-probe step = %v (found=%v), want skip", st, ok)
-	}
-	if detail, _ := stepDetail(report, "executor-probe"); strings.Contains(detail, "--no-probe-executor") {
-		t.Errorf("local executor-probe must not report the container gate reason; detail = %q", detail)
-	}
+	require.True(t, ok, "no executor-probe step")
+	require.Equal(t, PreflightSkip, st)
+
+	detail, _ := stepDetail(report, "executor-probe")
+	require.NotContains(t, detail, "--no-probe-executor", "a local executor must not report the container gate reason")
 }
 
-// TestPreflight_Executor_None pins that the none executor needs no
-// special-case arm in preflight.go: it flows through the same
-// construct-then-probe path as local/api, so "executor" reports a
+// TestPreflight_Executor_NoneConstructsAndSkipsProbe pins that the none
+// executor needs no special-case arm in preflight.go: it flows through the
+// same construct-then-probe path as local/api, so "executor" reports a
 // successful construction and "executor-probe" records a skip (NoneExecutor
 // implements no Probe).
-func TestPreflight_Executor_None(t *testing.T) {
+func TestPreflight_Executor_NoneConstructsAndSkipsProbe(t *testing.T) {
 	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
 	srv, _ := metadataOnlyServer(t)
 	defer srv.Close()
@@ -692,23 +609,21 @@ func TestPreflight_Executor_None(t *testing.T) {
 	cfg.Executor = types.ExecutorConfig{Type: "none"}
 
 	report, err := Preflight(context.Background(), cfg, PreflightOptions{})
-	if err != nil {
-		t.Fatalf("Preflight: %v", err)
-	}
+	require.NoError(t, err)
+
 	st, ok := stepStatus(report, "executor")
-	if !ok || st != PreflightOK {
-		t.Errorf("executor step = %v (found=%v), want ok", st, ok)
-	}
-	if detail, _ := stepDetail(report, "executor"); !strings.Contains(detail, "none executor constructed") {
-		t.Errorf("executor step detail = %q, want it to report the none executor", detail)
-	}
+	require.True(t, ok, "executor step missing")
+	require.Equal(t, PreflightOK, st)
+
+	detail, _ := stepDetail(report, "executor")
+	require.Contains(t, detail, "none executor constructed")
+
 	probeSt, ok := stepStatus(report, "executor-probe")
-	if !ok || probeSt != PreflightSkip {
-		t.Errorf("executor-probe step = %v (found=%v), want skip (NoneExecutor has no Probe)", probeSt, ok)
-	}
+	require.True(t, ok, "executor-probe step missing")
+	require.Equal(t, PreflightSkip, probeSt, "NoneExecutor has no Probe")
 }
 
-func TestPreflight_Egress_Fail_MalformedAllowlist(t *testing.T) {
+func TestPreflight_Egress_MalformedAllowlistFails(t *testing.T) {
 	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
 	srv, _ := metadataOnlyServer(t)
 	defer srv.Close()
@@ -723,35 +638,30 @@ func TestPreflight_Egress_Fail_MalformedAllowlist(t *testing.T) {
 	}
 
 	report, err := Preflight(context.Background(), cfg, PreflightOptions{})
-	if err != nil {
-		t.Fatalf("Preflight: %v", err)
-	}
+	require.NoError(t, err)
+
 	st, ok := stepStatus(report, "egress")
-	if !ok || st != PreflightFail {
-		t.Errorf("egress step = %v (found=%v), want fail", st, ok)
-	}
+	require.True(t, ok, "egress step missing")
+	require.Equal(t, PreflightFail, st)
 }
 
-func TestPreflight_WorkspaceExport_Skip(t *testing.T) {
+func TestPreflight_WorkspaceExport_SkipsWithoutExportTarget(t *testing.T) {
 	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
 	srv, _ := metadataOnlyServer(t)
 	defer srv.Close()
 
 	cfg := preflightTestConfig(t, srv.URL+"/v1") // no WorkspaceExportTo
 	report, err := Preflight(context.Background(), cfg, PreflightOptions{})
-	if err != nil {
-		t.Fatalf("Preflight: %v", err)
-	}
+	require.NoError(t, err)
+
 	st, ok := stepStatus(report, "workspace-export")
-	if !ok || st != PreflightSkip {
-		t.Errorf("workspace-export step = %v (found=%v), want skip", st, ok)
-	}
+	require.True(t, ok, "workspace-export step missing")
+	require.Equal(t, PreflightSkip, st)
 }
 
-func TestPreflight_NilConfig(t *testing.T) {
-	if _, err := Preflight(context.Background(), nil, PreflightOptions{}); err == nil {
-		t.Fatal("Preflight(nil) should error")
-	}
+func TestPreflight_NilConfigErrors(t *testing.T) {
+	_, err := Preflight(context.Background(), nil, PreflightOptions{})
+	require.Error(t, err)
 }
 
 func TestPreflight_ShortTimeoutSurfacesAsFail(t *testing.T) {
@@ -766,15 +676,11 @@ func TestPreflight_ShortTimeoutSurfacesAsFail(t *testing.T) {
 	defer srv.Close()
 
 	report, err := Preflight(context.Background(), preflightTestConfig(t, srv.URL+"/v1"), PreflightOptions{Timeout: time.Nanosecond})
-	if err != nil {
-		t.Fatalf("Preflight: %v", err)
-	}
-	if report.OK {
-		t.Fatal("a deadline-exceeded probe must not report OK")
-	}
+	require.NoError(t, err)
+	require.False(t, report.OK, "a deadline-exceeded probe must not report OK")
 }
 
-func TestPreflight_TimeoutDefaulted(t *testing.T) {
+func TestPreflight_ZeroTimeoutUsesDefault(t *testing.T) {
 	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
 	srv, _ := metadataOnlyServer(t)
 	defer srv.Close()
@@ -783,15 +689,9 @@ func TestPreflight_TimeoutDefaulted(t *testing.T) {
 	// producing an already-expired context.
 	start := time.Now()
 	report, err := Preflight(context.Background(), preflightTestConfig(t, srv.URL+"/v1"), PreflightOptions{Timeout: 0})
-	if err != nil {
-		t.Fatalf("Preflight: %v", err)
-	}
-	if !report.OK {
-		t.Fatalf("expected OK with defaulted timeout; steps: %+v", report.Steps)
-	}
-	if time.Since(start) > DefaultPreflightTimeout {
-		t.Errorf("preflight exceeded the default timeout budget")
-	}
+	require.NoError(t, err)
+	require.True(t, report.OK, "expected OK with defaulted timeout; steps: %+v", report.Steps)
+	require.LessOrEqual(t, time.Since(start), DefaultPreflightTimeout, "preflight exceeded the default timeout budget")
 }
 
 // TestPreflight_LintWarningsReachTheDryRunReport pins the reason
@@ -809,36 +709,21 @@ func TestPreflight_LintWarningsReachTheDryRunReport(t *testing.T) {
 	policy := `@stirrupLintIgnore("wildcard-host-pattern")
 permit (principal, action == Action::"tool:web_fetch", resource == Tool::"web_fetch")
     when { context.input.url like "https://*.github.com/*" };`
-	if err := os.WriteFile(policyFile, []byte(policy), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(policyFile, []byte(policy), 0o600))
 
 	cfg := preflightTestConfig(t, srv.URL+"/v1")
 	cfg.PermissionPolicy = types.PermissionPolicyConfig{Type: "policy-engine", PolicyFile: policyFile}
 
 	report, err := Preflight(context.Background(), cfg, PreflightOptions{})
-	if err != nil {
-		t.Fatalf("Preflight: %v", err)
-	}
-	if !report.OK {
-		t.Fatalf("an accepted finding must not fail the dry run; steps: %+v", report.Steps)
-	}
+	require.NoError(t, err)
+	require.True(t, report.OK, "an accepted finding must not fail the dry run; steps: %+v", report.Steps)
 
-	var detail string
-	for _, s := range report.Steps {
-		if s.Name == "permission-policy" {
-			detail = s.Detail
-		}
-	}
-	if !strings.Contains(detail, permission.LintRuleWildcardHostPattern) {
-		t.Errorf("permission-policy step detail = %q, want it to name the accepted rule", detail)
-	}
-	if !strings.Contains(detail, "warning") {
-		t.Errorf("permission-policy step detail = %q, want it to mark the finding as a warning", detail)
-	}
+	detail, _ := stepDetail(report, "permission-policy")
+	require.Contains(t, detail, permission.LintRuleWildcardHostPattern)
+	require.Contains(t, detail, "warning")
 }
 
-func TestCredentialsHint(t *testing.T) {
+func TestCredentialsHint_MentionsFlagOnlyOnProviderMismatch(t *testing.T) {
 	const anthropicRef = "secret://ANTHROPIC_API_KEY"
 	tests := []struct {
 		name         string
@@ -855,9 +740,7 @@ func TestCredentialsHint(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &types.RunConfig{Provider: types.ProviderConfig{Type: tc.providerType, APIKeyRef: tc.apiKeyRef}}
 			hint := credentialsHint(cfg)
-			if got := strings.Contains(hint, "--api-key-ref"); got != tc.wantMismatch {
-				t.Errorf("credentialsHint = %q; mentions --api-key-ref = %v, want %v", hint, got, tc.wantMismatch)
-			}
+			require.Equal(t, tc.wantMismatch, strings.Contains(hint, "--api-key-ref"), "credentialsHint = %q", hint)
 		})
 	}
 }

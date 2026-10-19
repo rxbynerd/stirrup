@@ -5,9 +5,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 )
@@ -24,26 +25,19 @@ func TestLocalExecutor_FileSizeLimitExceeded_EmitsSecurityEvent(t *testing.T) {
 	// that os.Stat reports at the requested size.
 	path := filepath.Join(dir, "big.bin")
 	f, err := os.Create(path)
-	if err != nil {
-		t.Fatalf("create big file: %v", err)
-	}
-	if err := f.Truncate(maxFileSize + 1); err != nil {
-		_ = f.Close()
-		t.Fatalf("truncate big file: %v", err)
-	}
+	require.NoError(t, err, "create big file")
+	err = f.Truncate(maxFileSize + 1)
 	_ = f.Close()
+	require.NoError(t, err, "truncate big file")
 
 	var secBuf bytes.Buffer
 	exec.Security = security.NewSecurityLogger(&secBuf, "exec-test-1")
 
-	if _, readErr := exec.ReadFile(context.Background(), "big.bin"); readErr == nil {
-		t.Fatal("expected ReadFile to fail for oversize file")
-	}
+	_, readErr := exec.ReadFile(context.Background(), "big.bin")
+	require.Error(t, readErr, "expected ReadFile to fail for oversize file")
 
-	got := secBuf.String()
-	if !strings.Contains(got, `"event":"file_size_limit_exceeded"`) {
-		t.Errorf("expected file_size_limit_exceeded event in security log, got: %s", got)
-	}
+	require.Contains(t, secBuf.String(), `"event":"file_size_limit_exceeded"`,
+		"expected file_size_limit_exceeded event in security log")
 }
 
 // TestLocalExecutor_OutputTruncated_EmitsSecurityEvent runs a command that
@@ -59,15 +53,9 @@ func TestLocalExecutor_OutputTruncated_EmitsSecurityEvent(t *testing.T) {
 	// /dev/zero is fast and portable across BSD/GNU.
 	const cmd = "head -c 1100000 /dev/zero"
 	result, err := exec.Exec(context.Background(), cmd, 30*time.Second)
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if result == nil {
-		t.Fatal("expected non-nil ExecResult")
-	}
+	require.NoError(t, err)
+	require.NotNil(t, result, "expected non-nil ExecResult")
 
-	got := secBuf.String()
-	if !strings.Contains(got, `"event":"output_truncated"`) {
-		t.Errorf("expected output_truncated event in security log, got: %s", got)
-	}
+	require.Contains(t, secBuf.String(), `"event":"output_truncated"`,
+		"expected output_truncated event in security log")
 }

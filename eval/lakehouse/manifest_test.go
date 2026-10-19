@@ -3,12 +3,16 @@ package lakehouse
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -20,35 +24,21 @@ import (
 func TestManifest_PopulatedOnStore(t *testing.T) {
 	dir := t.TempDir()
 	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	require.NoError(t, err, "NewFileStore")
 	defer func() { _ = fs.Close() }()
 
 	ctx := context.Background()
-	if err := fs.StoreTrace(ctx, types.RunTrace{ID: "t1", Outcome: "success"}); err != nil {
-		t.Fatalf("StoreTrace: %v", err)
-	}
-	if err := fs.StoreRecording(ctx, types.RunRecording{
+	require.NoError(t, fs.StoreTrace(ctx, types.RunTrace{ID: "t1", Outcome: "success"}), "StoreTrace")
+	require.NoError(t, fs.StoreRecording(ctx, types.RunRecording{
 		RunID:        "r1",
 		FinalOutcome: types.RunTrace{ID: "r1", Outcome: "error"},
-	}); err != nil {
-		t.Fatalf("StoreRecording: %v", err)
-	}
+	}), "StoreRecording")
 
 	traces, recordings, ok := fs.loadManifestIndex()
-	if !ok {
-		t.Fatal("loadManifestIndex returned ok=false")
-	}
-	if _, has := traces["t1"]; !has {
-		t.Errorf("manifest missing trace t1; got %v", traces)
-	}
-	if _, has := recordings["r1"]; !has {
-		t.Errorf("manifest missing recording r1; got %v", recordings)
-	}
-	if traces["t1"].Outcome != "success" {
-		t.Errorf("manifest entry for t1: outcome = %q, want success", traces["t1"].Outcome)
-	}
+	require.True(t, ok, "loadManifestIndex returned ok=false")
+	require.Contains(t, traces, "t1", "manifest missing trace t1")
+	require.Contains(t, recordings, "r1", "manifest missing recording r1")
+	require.Equal(t, "success", traces["t1"].Outcome, "manifest entry for t1")
 }
 
 // TestManifest_FilterShortCircuitsLoad pins that a filter rejecting
@@ -59,33 +49,24 @@ func TestManifest_PopulatedOnStore(t *testing.T) {
 func TestManifest_FilterShortCircuitsLoad(t *testing.T) {
 	dir := t.TempDir()
 	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	require.NoError(t, err, "NewFileStore")
 	defer func() { _ = fs.Close() }()
 
 	ctx := context.Background()
-	if err := fs.StoreTrace(ctx, types.RunTrace{ID: "good-passing", Outcome: "success"}); err != nil {
-		t.Fatalf("StoreTrace good: %v", err)
-	}
-	if err := fs.StoreTrace(ctx, types.RunTrace{ID: "good-failing", Outcome: "error"}); err != nil {
-		t.Fatalf("StoreTrace failing: %v", err)
-	}
+	require.NoError(t, fs.StoreTrace(ctx, types.RunTrace{ID: "good-passing", Outcome: "success"}), "StoreTrace good")
+	require.NoError(t, fs.StoreTrace(ctx, types.RunTrace{ID: "good-failing", Outcome: "error"}), "StoreTrace failing")
 
 	// Corrupt the passing trace's JSON file. The manifest still
 	// claims it's outcome=success, so a filter for outcome=error
 	// must short-circuit and never try to load it.
-	if err := os.WriteFile(filepath.Join(dir, "traces", "good-passing.json"), []byte("{not json"), 0o644); err != nil {
-		t.Fatalf("corrupt: %v", err)
-	}
+	require.NoError(t,
+		os.WriteFile(filepath.Join(dir, "traces", "good-passing.json"), []byte("{not json"), 0o644),
+		"corrupt trace file")
 
 	got, err := fs.QueryTraces(ctx, types.TraceFilter{Outcome: "error"})
-	if err != nil {
-		t.Fatalf("QueryTraces with manifest short-circuit: %v", err)
-	}
-	if len(got) != 1 || got[0].ID != "good-failing" {
-		t.Errorf("got %v, want one trace ID=good-failing", got)
-	}
+	require.NoError(t, err, "QueryTraces with manifest short-circuit")
+	require.Len(t, got, 1)
+	require.Equal(t, "good-failing", got[0].ID)
 }
 
 // TestManifest_RebuildOnMissing pins the missing-manifest recovery
@@ -95,38 +76,27 @@ func TestManifest_FilterShortCircuitsLoad(t *testing.T) {
 func TestManifest_RebuildOnMissing(t *testing.T) {
 	dir := t.TempDir()
 	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	require.NoError(t, err, "NewFileStore")
 	defer func() { _ = fs.Close() }()
 
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
-		if err := fs.StoreTrace(ctx, types.RunTrace{
-			ID:      "t" + string(rune('1'+i)),
+		require.NoError(t, fs.StoreTrace(ctx, types.RunTrace{
+			ID:      fmt.Sprintf("t%d", i+1),
 			Outcome: "success",
-		}); err != nil {
-			t.Fatalf("StoreTrace t%d: %v", i, err)
-		}
+		}), "StoreTrace t%d", i+1)
 	}
 
 	// Operator forces a rebuild by removing the manifest.
-	if err := os.Remove(fs.manifestPath()); err != nil {
-		t.Fatalf("remove manifest: %v", err)
-	}
+	require.NoError(t, os.Remove(fs.manifestPath()), "remove manifest")
 
 	got, err := fs.QueryTraces(ctx, types.TraceFilter{})
-	if err != nil {
-		t.Fatalf("QueryTraces after manifest removal: %v", err)
-	}
-	if len(got) != 3 {
-		t.Errorf("got %d traces, want 3 (rebuild must surface all)", len(got))
-	}
+	require.NoError(t, err, "QueryTraces after manifest removal")
+	require.Len(t, got, 3, "rebuild must surface all traces")
 
 	// And the manifest is back.
-	if _, err := os.Stat(fs.manifestPath()); err != nil {
-		t.Errorf("manifest not rebuilt: %v", err)
-	}
+	_, err = os.Stat(fs.manifestPath())
+	require.NoError(t, err, "manifest not rebuilt")
 }
 
 // TestManifest_RebuildOnCorrupt pins recovery from a malformed
@@ -136,37 +106,26 @@ func TestManifest_RebuildOnMissing(t *testing.T) {
 func TestManifest_RebuildOnCorrupt(t *testing.T) {
 	dir := t.TempDir()
 	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	require.NoError(t, err, "NewFileStore")
 	defer func() { _ = fs.Close() }()
 
 	ctx := context.Background()
-	if err := fs.StoreTrace(ctx, types.RunTrace{ID: "ok-1", Outcome: "success"}); err != nil {
-		t.Fatalf("StoreTrace: %v", err)
-	}
+	require.NoError(t, fs.StoreTrace(ctx, types.RunTrace{ID: "ok-1", Outcome: "success"}), "StoreTrace")
 
 	// Append garbage to the manifest.
-	if err := os.WriteFile(fs.manifestPath(), []byte("not-json-at-all\n"), 0o644); err != nil {
-		t.Fatalf("corrupt manifest: %v", err)
-	}
+	require.NoError(t,
+		os.WriteFile(fs.manifestPath(), []byte("not-json-at-all\n"), 0o644),
+		"corrupt manifest")
 
 	got, err := fs.QueryTraces(ctx, types.TraceFilter{})
-	if err != nil {
-		t.Fatalf("QueryTraces after corruption: %v", err)
-	}
-	if len(got) != 1 || got[0].ID != "ok-1" {
-		t.Errorf("got %v, want one trace ID=ok-1", got)
-	}
+	require.NoError(t, err, "QueryTraces after corruption")
+	require.Len(t, got, 1)
+	require.Equal(t, "ok-1", got[0].ID)
 
 	// Manifest should now parse again.
 	traces, _, ok := fs.loadManifestIndex()
-	if !ok {
-		t.Fatal("manifest still corrupt after rebuild")
-	}
-	if _, has := traces["ok-1"]; !has {
-		t.Errorf("rebuilt manifest missing ok-1: %v", traces)
-	}
+	require.True(t, ok, "manifest still corrupt after rebuild")
+	require.Contains(t, traces, "ok-1", "rebuilt manifest missing ok-1")
 }
 
 // TestManifest_LastWriteWins pins that re-storing a trace with the
@@ -176,26 +135,16 @@ func TestManifest_RebuildOnCorrupt(t *testing.T) {
 func TestManifest_LastWriteWins(t *testing.T) {
 	dir := t.TempDir()
 	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	require.NoError(t, err, "NewFileStore")
 	defer func() { _ = fs.Close() }()
 
 	ctx := context.Background()
-	if err := fs.StoreTrace(ctx, types.RunTrace{ID: "same", Outcome: "success"}); err != nil {
-		t.Fatalf("StoreTrace v1: %v", err)
-	}
-	if err := fs.StoreTrace(ctx, types.RunTrace{ID: "same", Outcome: "error"}); err != nil {
-		t.Fatalf("StoreTrace v2: %v", err)
-	}
+	require.NoError(t, fs.StoreTrace(ctx, types.RunTrace{ID: "same", Outcome: "success"}), "StoreTrace v1")
+	require.NoError(t, fs.StoreTrace(ctx, types.RunTrace{ID: "same", Outcome: "error"}), "StoreTrace v2")
 
 	traces, _, ok := fs.loadManifestIndex()
-	if !ok {
-		t.Fatal("loadManifestIndex returned ok=false")
-	}
-	if traces["same"].Outcome != "error" {
-		t.Errorf("manifest entry outcome = %q, want error (last-write-wins)", traces["same"].Outcome)
-	}
+	require.True(t, ok, "loadManifestIndex returned ok=false")
+	require.Equal(t, "error", traces["same"].Outcome, "last-write-wins")
 }
 
 // TestManifest_ConcurrentAppendSafe smoke-tests the O_APPEND
@@ -205,9 +154,7 @@ func TestManifest_LastWriteWins(t *testing.T) {
 func TestManifest_ConcurrentAppendSafe(t *testing.T) {
 	dir := t.TempDir()
 	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	require.NoError(t, err, "NewFileStore")
 	defer func() { _ = fs.Close() }()
 
 	const goroutines = 8
@@ -220,7 +167,7 @@ func TestManifest_ConcurrentAppendSafe(t *testing.T) {
 			defer wg.Done()
 			ctx := context.Background()
 			for i := 0; i < each; i++ {
-				id := "g" + string(rune('0'+g)) + "-" + string(rune('0'+i%10))
+				id := fmt.Sprintf("g%d-%d", g, i%10)
 				_ = fs.StoreTrace(ctx, types.RunTrace{
 					ID:        id,
 					Outcome:   "success",
@@ -231,22 +178,17 @@ func TestManifest_ConcurrentAppendSafe(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Manifest should parse cleanly.
+	// Manifest should parse cleanly. Every line is checked, so one
+	// report lists all corrupt lines rather than only the first.
 	data, err := os.ReadFile(fs.manifestPath())
-	if err != nil {
-		t.Fatalf("read manifest: %v", err)
-	}
+	require.NoError(t, err, "read manifest")
 	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-	if len(lines) == 0 {
-		t.Fatal("manifest empty after concurrent writes")
-	}
+	require.NotEmpty(t, lines, "manifest empty after concurrent writes")
 	for i, line := range lines {
 		if line == "" {
 			continue
 		}
 		var e manifestEntry
-		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			t.Errorf("line %d corrupt under concurrency: %v\n%s", i, err, line)
-		}
+		assert.NoError(t, json.Unmarshal([]byte(line), &e), "line %d corrupt under concurrency: %s", i, line)
 	}
 }

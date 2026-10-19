@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
@@ -48,14 +50,10 @@ func (g *inputRecordingGuard) arrivedInputs() []guard.Input {
 
 func assertGuardSawNoSecret(t *testing.T, inputs []guard.Input, secrets ...string) {
 	t.Helper()
-	if len(inputs) == 0 {
-		t.Fatal("the guard screened no arrived tool result")
-	}
+	require.NotEmpty(t, inputs, "the guard screened no arrived tool result")
 	for _, in := range inputs {
 		for _, s := range secrets {
-			if strings.Contains(in.Content, s) {
-				t.Errorf("guard input carried %q: %q", s, in.Content)
-			}
+			require.NotContains(t, in.Content, s)
 		}
 	}
 }
@@ -68,19 +66,16 @@ func TestScreenArrivedContent_GuardReceivesRedactedToolResults(t *testing.T) {
 	g := &inputRecordingGuard{}
 	loop.GuardRail = g
 
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), buildTestConfig())
+	require.NoError(t, err)
 
 	assertGuardSawNoSecret(t, g.arrivedInputs(), fakeLuhnCard, fakeAnthropicKey)
 	calls := prov.params()
-	if len(calls) != 2 {
-		t.Fatalf("provider calls = %d, want 2", len(calls))
-	}
+	require.Len(t, calls, 2, "provider calls")
 	results := toolResultContents(calls[1].Messages)
-	if len(results) != 1 || strings.Contains(results[0], fakeLuhnCard) || !strings.Contains(results[0], ruleoftwo.RedactionPlaceholder) {
-		t.Errorf("tool result sent to the model = %q, want the card redacted", results)
-	}
+	require.Len(t, results, 1)
+	require.NotContains(t, results[0], fakeLuhnCard, "the card should be redacted before the model sees it")
+	require.Contains(t, results[0], ruleoftwo.RedactionPlaceholder)
 }
 
 // TestScreenArrivedContent_GuardReceivesScrubbedToolResults pins that the
@@ -93,15 +88,13 @@ func TestScreenArrivedContent_GuardReceivesScrubbedToolResults(t *testing.T) {
 	g := &inputRecordingGuard{}
 	loop.GuardRail = g
 
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), buildTestConfig())
+	require.NoError(t, err)
 
 	assertGuardSawNoSecret(t, g.arrivedInputs(), fakeAnthropicKey)
 	results := toolResultContents(prov.params()[1].Messages)
-	if want := "key " + guard.ApplySpotlight(fakeAnthropicKey); len(results) != 1 || results[0] != want {
-		t.Errorf("tool result sent to the model = %q, want the unscrubbed key fenced", results)
-	}
+	require.Equal(t, []string{"key " + guard.ApplySpotlight(fakeAnthropicKey)}, results,
+		"the unscrubbed key should be fenced in the tool result")
 }
 
 func TestScreenArrivedContent_GuardReceivesScrubbedStructuredPayload(t *testing.T) {
@@ -119,13 +112,12 @@ func TestScreenArrivedContent_GuardReceivesScrubbedStructuredPayload(t *testing.
 		}}},
 	}
 
-	if outcome := loop.screenArrivedContent(context.Background(), buildTestConfig(), 1, messages); outcome != "" {
-		t.Fatalf("outcome = %q, want none", outcome)
-	}
+	outcome := loop.screenArrivedContent(context.Background(), buildTestConfig(), 1, messages)
+	require.Empty(t, outcome)
 	assertGuardSawNoSecret(t, g.arrivedInputs(), fakeAnthropicKey)
-	if b := messages[2].Content[0]; b.Content != "ok" || b.Structured != nil {
-		t.Errorf("tool result in history = %+v, want its text kept and the structured payload dropped", b)
-	}
+	b := messages[2].Content[0]
+	require.Equal(t, "ok", b.Content, "the tool result text should be kept")
+	require.Nil(t, b.Structured, "the structured payload should be dropped")
 }
 
 // TestRunFollowUpLoop_ContinueGuardReceivesRedactedCarriedTail pins the
@@ -143,9 +135,7 @@ func TestRunFollowUpLoop_ContinueGuardReceivesRedactedCarriedTail(t *testing.T) 
 	config.FollowUpHistory = types.FollowUpHistoryContinue
 
 	traces := followUpSession(t, loop, tr, config, "carry on")
-	if traces[0].Outcome != "max_turns" {
-		t.Fatalf("primary outcome = %q, want max_turns", traces[0].Outcome)
-	}
+	require.Equal(t, "max_turns", traces[0].Outcome, "primary outcome")
 	assertGuardSawNoSecret(t, g.arrivedInputs(), fakeLuhnCard, fakeAnthropicKey)
 }
 
@@ -202,22 +192,14 @@ func TestScreenArrivedContent_FencesScrubbedToolResults(t *testing.T) {
 			loop.GuardRail = g
 			messages := arrivedToolResult(tc.output)
 
-			if outcome := loop.screenArrivedContent(context.Background(), buildTestConfig(), 1, messages); outcome != "" {
-				t.Fatalf("outcome = %q, want none", outcome)
-			}
-			if got := messages[2].Content[0].Content; got != tc.want {
-				t.Errorf("tool result in history = %q, want %q", got, tc.want)
-			}
-			if len(g.inputs) != 1 {
-				t.Fatalf("guard calls = %d, want 1", len(g.inputs))
-			}
+			outcome := loop.screenArrivedContent(context.Background(), buildTestConfig(), 1, messages)
+			require.Empty(t, outcome)
+			require.Equal(t, tc.want, messages[2].Content[0].Content, "tool result in history")
+			require.Len(t, g.inputs, 1, "guard calls")
 			in := g.inputs[0]
-			if strings.Contains(in.Content, fakeAnthropicKey) || strings.Contains(in.Content, fakeTokenInstruction) {
-				t.Errorf("guard input carried a scrubbed span: %q", in.Content)
-			}
-			if in.Metadata[guard.MetadataRedactedSpans] != tc.spans {
-				t.Errorf("guard metadata = %v, want %s=%q", in.Metadata, guard.MetadataRedactedSpans, tc.spans)
-			}
+			require.NotContains(t, in.Content, fakeAnthropicKey, "guard input should not carry a scrubbed span")
+			require.NotContains(t, in.Content, fakeTokenInstruction, "guard input should not carry a scrubbed span")
+			require.Equal(t, tc.spans, in.Metadata[guard.MetadataRedactedSpans], "guard metadata key %s", guard.MetadataRedactedSpans)
 		})
 	}
 }
@@ -236,12 +218,9 @@ func TestScreenArrivedContent_NoFenceWithoutAPreTurnGuard(t *testing.T) {
 			output := "README says: " + fakeTokenInstruction
 			messages := arrivedToolResult(output)
 
-			if outcome := loop.screenArrivedContent(context.Background(), buildTestConfig(), 1, messages); outcome != "" {
-				t.Fatalf("outcome = %q, want none", outcome)
-			}
-			if got := messages[2].Content[0].Content; got != output {
-				t.Errorf("tool result in history = %q, want it unchanged", got)
-			}
+			outcome := loop.screenArrivedContent(context.Background(), buildTestConfig(), 1, messages)
+			require.Empty(t, outcome)
+			require.Equal(t, output, messages[2].Content[0].Content, "tool result in history should be unchanged")
 		})
 	}
 }
@@ -256,18 +235,12 @@ func TestScreenArrivedContent_VerifierFeedbackIsScrubbedNotFenced(t *testing.T) 
 	loop.GuardRail = g
 	messages := historyEndingWith(feedbackMessage("tests fail: " + fakeTokenInstruction))
 
-	if outcome := loop.screenArrivedContent(context.Background(), buildTestConfig(), 1, messages); outcome != "" {
-		t.Fatalf("outcome = %q, want none", outcome)
-	}
-	if got, want := messages[len(messages)-1].Content[0].Text, "tests fail: [REDACTED]"; got != want {
-		t.Errorf("feedback in history = %q, want %q", got, want)
-	}
-	if len(g.inputs) != 1 || g.inputs[0].Content != "--- chunk 0 ---\ntests fail: [REDACTED]" {
-		t.Fatalf("guard inputs = %+v, want the scrubbed feedback once", g.inputs)
-	}
-	if got := g.inputs[0].Metadata[guard.MetadataRedactedSpans]; got != "1" {
-		t.Errorf("guard metadata = %v, want %s=1", g.inputs[0].Metadata, guard.MetadataRedactedSpans)
-	}
+	outcome := loop.screenArrivedContent(context.Background(), buildTestConfig(), 1, messages)
+	require.Empty(t, outcome)
+	require.Equal(t, "tests fail: [REDACTED]", messages[len(messages)-1].Content[0].Text, "feedback in history")
+	require.Len(t, g.inputs, 1, "guard calls")
+	require.Equal(t, "--- chunk 0 ---\ntests fail: [REDACTED]", g.inputs[0].Content, "guard input")
+	require.Equal(t, "1", g.inputs[0].Metadata[guard.MetadataRedactedSpans], "guard metadata key %s", guard.MetadataRedactedSpans)
 }
 
 func arrivedToolResult(output string) []types.Message {
@@ -315,20 +288,13 @@ func TestScreenArrivedContent_DenyAndSpotlightDropStructuredPayload(t *testing.T
 				}}},
 			}
 
-			if outcome := loop.screenArrivedContent(context.Background(), buildTestConfig(), 1, messages); outcome != "" {
-				t.Fatalf("outcome = %q, want none", outcome)
-			}
-			if envelope := types.ToolResultWireEnvelope(messages[2].Content[0]); envelope != nil {
-				t.Errorf("wire envelope after %s = %s, want none", verdict, envelope)
-			}
+			outcome := loop.screenArrivedContent(context.Background(), buildTestConfig(), 1, messages)
+			require.Empty(t, outcome)
+			require.Nil(t, types.ToolResultWireEnvelope(messages[2].Content[0]), "wire envelope should be absent")
 			const model = "gemini-3.8-flash"
 			body, _, err := provider.BuildGenerateContentRequest(types.StreamParams{Model: model, Messages: messages}, nil, quirks.DefaultRegistry().Resolve("gemini", model))
-			if err != nil {
-				t.Fatalf("build gemini request: %v", err)
-			}
-			if strings.Contains(string(body), injection) {
-				t.Errorf("gemini request after %s carries the structured payload: %s", verdict, body)
-			}
+			require.NoError(t, err, "build gemini request")
+			require.NotContains(t, string(body), injection, "gemini request should not carry the structured payload")
 		})
 	}
 }
@@ -352,32 +318,21 @@ func TestLoop_TurnZeroGuardReceivesRedactedScrubbedContext(t *testing.T) {
 		"issue": {Value: "card " + fakeLuhnCard + " and token " + fakeTokenInstruction},
 	}
 
-	if _, err := loop.Run(context.Background(), config); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), config)
+	require.NoError(t, err)
 	g.mu.Lock()
 	inputs := append([]guard.Input(nil), g.inputs...)
 	g.mu.Unlock()
-	if len(inputs) == 0 {
-		t.Fatal("the turn-0 guard screened nothing")
-	}
+	require.NotEmpty(t, inputs, "the turn-0 guard screened nothing")
 	in := inputs[0]
 	for _, s := range []string{fakeLuhnCard, fakeAnthropicKey, fakeTokenInstruction} {
-		if strings.Contains(in.Content, s) {
-			t.Errorf("turn-0 guard input carried %q: %q", s, in.Content)
-		}
+		require.NotContains(t, in.Content, s, "turn-0 guard input")
 	}
-	if !strings.Contains(in.Content, ruleoftwo.RedactionPlaceholder) {
-		t.Errorf("turn-0 guard input = %q, want the Rule-of-Two redaction the model sees", in.Content)
-	}
+	require.Contains(t, in.Content, ruleoftwo.RedactionPlaceholder, "the turn-0 guard should read the Rule-of-Two redaction")
 	// The redact action has already replaced the context's token, so the
 	// scrubber replaces only the prompt's key.
-	if got := in.Metadata[guard.MetadataRedactedSpans]; got != "1" {
-		t.Errorf("turn-0 guard metadata = %v, want %s=1", in.Metadata, guard.MetadataRedactedSpans)
-	}
-	if strings.Contains(prov.lastParams.System, fakeLuhnCard) {
-		t.Error("the model's system prompt carried the card the redact action removes")
-	}
+	require.Equal(t, "1", in.Metadata[guard.MetadataRedactedSpans], "turn-0 guard metadata key %s", guard.MetadataRedactedSpans)
+	require.NotContains(t, prov.lastParams.System, fakeLuhnCard, "the model's system prompt should not carry the card the redact action removes")
 }
 
 // TestScreenArrivedContent_PersistedTraceHoldsNoFencedSecret pins that the
@@ -391,19 +346,14 @@ func TestScreenArrivedContent_PersistedTraceHoldsNoFencedSecret(t *testing.T) {
 	var buf bytes.Buffer
 	loop.Trace = trace.NewJSONLTraceEmitter(&buf, false)
 
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if results := toolResultContents(prov.params()[1].Messages); len(results) != 1 || !strings.Contains(results[0], guard.SpotlightOpenTag) {
-		t.Fatalf("tool result sent to the model = %q, want the key fenced", results)
-	}
+	_, err := loop.Run(context.Background(), buildTestConfig())
+	require.NoError(t, err)
+	results := toolResultContents(prov.params()[1].Messages)
+	require.Len(t, results, 1)
+	require.Contains(t, results[0], guard.SpotlightOpenTag, "the key should be fenced for the model")
 	persisted := buf.String()
-	if !strings.Contains(persisted, "untrusted_content_b64") {
-		t.Fatal("the trace holds no fence, so the check below proves nothing")
-	}
+	require.Contains(t, persisted, "untrusted_content_b64", "the trace holds no fence, so the check below proves nothing")
 	for _, leak := range []string{fakeAnthropicKey, base64.StdEncoding.EncodeToString([]byte(fakeAnthropicKey))} {
-		if strings.Contains(persisted, leak) {
-			t.Errorf("JSONL trace carries %q", leak)
-		}
+		require.NotContains(t, persisted, leak, "JSONL trace should not carry the secret")
 	}
 }

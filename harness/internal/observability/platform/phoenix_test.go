@@ -2,9 +2,10 @@ package platform
 
 import (
 	"context"
-	"slices"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -13,37 +14,25 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-func TestRegistryMatchesTypesClosedSet(t *testing.T) {
+func TestRegistry_MatchesTypesClosedSet(t *testing.T) {
 	got := sortedKeys(registry)
 	want := types.ValidTraceEmitterPlatformValues()
-	if !slices.Equal(got, want) {
-		t.Errorf("registry platforms = %v, types closed set = %v; they must name the same platforms", got, want)
-	}
+	require.Equal(t, want, got, "registry and types closed set must name the same platforms")
 }
 
-func TestPhoenix_Profile(t *testing.T) {
+func TestPhoenix_Profile_ResolvesProjectOption(t *testing.T) {
 	p, err := Resolve(context.Background(), "phoenix", map[string]string{"project": "agents"}, Deps{})
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if p.RequiredProtocol != "" || p.WrapTransport != nil || len(p.Signals) != 0 {
-		t.Errorf("phoenix needs no protocol, transport or endpoint defaults, got %+v", p)
-	}
+	require.NoError(t, err, "Resolve")
+	require.Empty(t, p.RequiredProtocol, "phoenix needs no protocol default")
+	require.Nil(t, p.WrapTransport, "phoenix needs no transport wrapper")
+	require.Empty(t, p.Signals, "phoenix needs no endpoint defaults")
 	want := []attribute.KeyValue{attribute.String("openinference.project.name", "agents")}
-	if !slices.Equal(p.ResourceAttrs, want) {
-		t.Errorf("resource attributes = %v, want %v", p.ResourceAttrs, want)
-	}
-	if p.WrapSpanExporter == nil {
-		t.Fatal("phoenix must decorate spans")
-	}
+	require.Equal(t, want, p.ResourceAttrs)
+	require.NotNil(t, p.WrapSpanExporter, "phoenix must decorate spans")
 
 	noProject, err := Resolve(context.Background(), "phoenix", nil, Deps{})
-	if err != nil {
-		t.Fatalf("Resolve without options: %v", err)
-	}
-	if noProject.ResourceAttrs != nil {
-		t.Errorf("no project must add no resource attribute, got %v", noProject.ResourceAttrs)
-	}
+	require.NoError(t, err, "Resolve without options")
+	require.Nil(t, noProject.ResourceAttrs, "no project must add no resource attribute")
 }
 
 // exportThroughPhoenix records the spans built by fn through the phoenix
@@ -51,24 +40,20 @@ func TestPhoenix_Profile(t *testing.T) {
 func exportThroughPhoenix(t *testing.T, fn func(tracer oteltrace.Tracer)) map[string]map[attribute.Key]attribute.Value {
 	t.Helper()
 	p, err := Resolve(context.Background(), "phoenix", nil, Deps{})
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
+	require.NoError(t, err, "Resolve")
 	sink := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(p.WrapSpanExporter(sink)))
 	fn(tp.Tracer("test"))
 	// The in-memory exporter discards its spans on shutdown, so read first.
 	exported := sink.GetSpans()
-	if err := tp.Shutdown(context.Background()); err != nil {
-		t.Fatalf("shutdown: %v", err)
-	}
+	require.NoError(t, tp.Shutdown(context.Background()), "shutdown")
+
 	out := map[string]map[attribute.Key]attribute.Value{}
 	for _, s := range exported {
 		attrs := map[attribute.Key]attribute.Value{}
 		for _, kv := range s.Attributes {
-			if _, dup := attrs[kv.Key]; dup {
-				t.Errorf("span %q carries %s twice", s.Name, kv.Key)
-			}
+			_, dup := attrs[kv.Key]
+			assert.False(t, dup, "span %q carries %s twice", s.Name, kv.Key)
 			attrs[kv.Key] = kv.Value
 		}
 		out[s.Name] = attrs
@@ -107,9 +92,10 @@ func TestPhoenix_SpanKinds(t *testing.T) {
 		"preset":                        "RETRIEVER",
 	}
 	for name, kind := range want {
-		if got := spans[name]["openinference.span.kind"].AsString(); got != kind {
-			t.Errorf("%s kind = %q, want %q", name, got, kind)
-		}
+		t.Run(name, func(t *testing.T) {
+			got := spans[name]["openinference.span.kind"].AsString()
+			require.Equal(t, kind, got)
+		})
 	}
 }
 
@@ -135,22 +121,13 @@ func TestPhoenix_RootInputOutput(t *testing.T) {
 		root.End()
 	})
 	root := spans["invoke_agent stirrup"]
-	if got := root["input.value"].AsString(); got != "List the files" {
-		t.Errorf("input.value = %q", got)
-	}
-	if got := root["output.value"].AsString(); got != "Two files.\nDone." {
-		t.Errorf("output.value = %q", got)
-	}
-	if got := root["metadata"].AsString(); got != `{"run_id":"run-1","run_mode":"planning"}` {
-		t.Errorf("metadata = %q", got)
-	}
-	if got := root["gen_ai.input.messages"].AsString(); got != input {
-		t.Error("the original attributes must reach the exporter unchanged")
-	}
+	require.Equal(t, "List the files", root["input.value"].AsString(), "root input.value")
+	require.Equal(t, "Two files.\nDone.", root["output.value"].AsString(), "root output.value")
+	require.JSONEq(t, `{"run_id":"run-1","run_mode":"planning"}`, root["metadata"].AsString(), "root metadata")
+	require.Equal(t, input, root["gen_ai.input.messages"].AsString(), "the original attributes must reach the exporter unchanged")
+
 	sub := spans["invoke_agent stirrup.subagent"]
-	if _, ok := sub["input.value"]; ok {
-		t.Error("only the root span gets input.value")
-	}
+	require.NotContains(t, sub, attribute.Key("input.value"), "only the root span gets input.value")
 }
 
 func TestPhoenix_RootWithoutCapturedContent(t *testing.T) {
@@ -163,9 +140,9 @@ func TestPhoenix_RootWithoutCapturedContent(t *testing.T) {
 	})
 	root := spans["invoke_agent stirrup"]
 	for _, key := range []attribute.Key{"input.value", "output.value", "metadata"} {
-		if _, ok := root[key]; ok {
-			t.Errorf("%s must be absent without content or run identity", key)
-		}
+		t.Run(string(key), func(t *testing.T) {
+			require.NotContains(t, root, key, "must be absent without content or run identity")
+		})
 	}
 }
 
@@ -184,18 +161,14 @@ func TestPhoenix_DecorationCopiesTheAttributeSlice(t *testing.T) {
 
 	decorated := withOpenInference(span).Attributes()
 
-	if len(decorated) != 2 || decorated[1].Key != openInferenceSpanKindKey {
-		t.Fatalf("decorated attributes = %v, want the original plus the span kind", decorated)
-	}
-	if &decorated[0] == &backing[0] {
-		t.Error("the decorated slice must not share the span's backing array")
-	}
+	require.Len(t, decorated, 2, "decorated attributes must be the original plus the span kind")
+	require.Equal(t, attribute.Key(openInferenceSpanKindKey), decorated[1].Key)
+	require.NotSame(t, &backing[0], &decorated[0], "the decorated slice must not share the span's backing array")
 	for i, kv := range spare[1:] {
-		if kv != sentinel {
-			t.Errorf("spare slot %d of the span's attributes = %v, want it untouched", i+1, kv)
-		}
+		assert.Equal(t, sentinel, kv, "spare slot %d of the span's attributes must stay untouched", i+1)
 	}
-	if got := span.Attributes(); len(got) != 1 || got[0] != backing[0] {
-		t.Errorf("the span's own attributes = %v, want them unchanged", got)
-	}
+
+	got := span.Attributes()
+	require.Len(t, got, 1, "the span's own attributes must keep their length")
+	require.Equal(t, backing[0], got[0], "the span's own attributes must stay unchanged")
 }

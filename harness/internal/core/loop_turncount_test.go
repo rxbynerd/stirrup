@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/git"
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
@@ -148,12 +150,7 @@ func buildRepairTestLoop(prov *attemptProvider) (*AgenticLoop, *[]int) {
 
 func assertStrictlyIncreasing(t *testing.T, label string, got []int) {
 	t.Helper()
-	for i := 1; i < len(got); i++ {
-		if got[i] <= got[i-1] {
-			t.Errorf("%s not strictly increasing: %v", label, got)
-			return
-		}
-	}
+	require.IsIncreasingf(t, got, "%s not strictly increasing", label)
 }
 
 func TestLoop_VerificationRepairsShareMaxTurns(t *testing.T) {
@@ -178,18 +175,10 @@ func TestLoop_VerificationRepairsShareMaxTurns(t *testing.T) {
 			config.MaxTurns = tc.maxTurns
 
 			runTrace, err := loop.Run(context.Background(), config)
-			if err != nil {
-				t.Fatalf("Run() error: %v", err)
-			}
-			if got := prov.callCount(); got != tc.wantCalls {
-				t.Errorf("provider calls = %d, want %d", got, tc.wantCalls)
-			}
-			if runTrace.Outcome != tc.wantOutcome {
-				t.Errorf("outcome = %q, want %q", runTrace.Outcome, tc.wantOutcome)
-			}
-			if runTrace.Turns != tc.wantCalls {
-				t.Errorf("RunTrace.Turns = %d, want %d", runTrace.Turns, tc.wantCalls)
-			}
+			require.NoError(t, err)
+			require.Equal(t, tc.wantCalls, prov.callCount(), "provider calls")
+			require.Equal(t, tc.wantOutcome, runTrace.Outcome)
+			require.Equal(t, tc.wantCalls, runTrace.Turns, "RunTrace.Turns")
 		})
 	}
 }
@@ -202,15 +191,14 @@ func TestLoop_VerificationRepairPassesWithinMaxTurns(t *testing.T) {
 	config.MaxTurns = 4
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Errorf("outcome = %q, want success", runTrace.Outcome)
-	}
-	if got := prov.callCount(); got != 4 {
-		t.Errorf("provider calls = %d, want 4", got)
-	}
+	require.NoError(t, err)
+
+	t.Run("outcome", func(t *testing.T) {
+		require.Equal(t, "success", runTrace.Outcome)
+	})
+	t.Run("provider calls", func(t *testing.T) {
+		require.Equal(t, 4, prov.callCount())
+	})
 }
 
 func TestLoop_TurnNumbersIncreaseAcrossVerificationRepairs(t *testing.T) {
@@ -224,9 +212,8 @@ func TestLoop_TurnNumbersIncreaseAcrossVerificationRepairs(t *testing.T) {
 	config := buildTestConfig()
 	config.MaxTurns = 6
 
-	if _, err := loop.Run(context.Background(), config); err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
+	_, err := loop.Run(context.Background(), config)
+	require.NoError(t, err)
 
 	rec.mu.Lock()
 	var traceTurns, recordTurns []int
@@ -239,30 +226,26 @@ func TestLoop_TurnNumbersIncreaseAcrossVerificationRepairs(t *testing.T) {
 	rec.mu.Unlock()
 
 	wantTurns := []int{0, 1, 2, 3, 4, 5}
-	if fmt.Sprint(traceTurns) != fmt.Sprint(wantTurns) {
-		t.Errorf("TurnTrace turns = %v, want %v", traceTurns, wantTurns)
-	}
-	if fmt.Sprint(recordTurns) != fmt.Sprint(wantTurns) {
-		t.Errorf("TurnRecord turns = %v, want %v", recordTurns, wantTurns)
-	}
-
+	t.Run("turn trace", func(t *testing.T) {
+		require.Equal(t, wantTurns, traceTurns)
+		assertStrictlyIncreasing(t, "turn trace", traceTurns)
+	})
+	t.Run("turn record", func(t *testing.T) {
+		require.Equal(t, wantTurns, recordTurns)
+		assertStrictlyIncreasing(t, "turn record", recordTurns)
+	})
 	// Tool turns are 0, 2 and 4; CallContext.Turn is one-based.
-	if fmt.Sprint(*callTurns) != fmt.Sprint([]int{1, 3, 5}) {
-		t.Errorf("CallContext turns = %v, want [1 3 5]", *callTurns)
-	}
-
-	wantCheckpoints := []string{
-		"Turn 0: 1 tool calls",
-		"Turn 2: 1 tool calls",
-		"Turn 4: 1 tool calls",
-	}
-	if fmt.Sprint(gitRec.messages) != fmt.Sprint(wantCheckpoints) {
-		t.Errorf("checkpoint messages = %q, want %q", gitRec.messages, wantCheckpoints)
-	}
-
-	assertStrictlyIncreasing(t, "TurnTrace turns", traceTurns)
-	assertStrictlyIncreasing(t, "TurnRecord turns", recordTurns)
-	assertStrictlyIncreasing(t, "CallContext turns", *callTurns)
+	t.Run("call context", func(t *testing.T) {
+		require.Equal(t, []int{1, 3, 5}, *callTurns)
+		assertStrictlyIncreasing(t, "call context", *callTurns)
+	})
+	t.Run("checkpoints", func(t *testing.T) {
+		require.Equal(t, []string{
+			"Turn 0: 1 tool calls",
+			"Turn 2: 1 tool calls",
+			"Turn 4: 1 tool calls",
+		}, gitRec.messages)
+	})
 }
 
 func TestLoop_PreTurnPromptScanRunsOncePerRunAcrossRepairs(t *testing.T) {
@@ -277,24 +260,21 @@ func TestLoop_PreTurnPromptScanRunsOncePerRunAcrossRepairs(t *testing.T) {
 	loop.GuardRail = g
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "verification_failed" {
-		t.Fatalf("outcome = %q, want verification_failed", runTrace.Outcome)
-	}
-	if got := prov.callCount(); got != 1+maxVerificationRetries {
-		t.Fatalf("provider calls = %d, want %d", got, 1+maxVerificationRetries)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "verification_failed", runTrace.Outcome)
+	require.Equal(t, 1+maxVerificationRetries, prov.callCount(), "provider calls")
 
 	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.promptScans != 1 {
-		t.Errorf("prompt scanned %d times, want 1 (pre-turn sources %v)", g.promptScans, g.preTurnSources)
-	}
-	if g.dynamicScans != 1 {
-		t.Errorf("dynamic context scanned %d times, want 1", g.dynamicScans)
-	}
+	promptScans, dynamicScans := g.promptScans, g.dynamicScans
+	preTurnSources := g.preTurnSources
+	g.mu.Unlock()
+
+	t.Run("prompt scanned once", func(t *testing.T) {
+		require.Equal(t, 1, promptScans, "pre-turn sources %v", preTurnSources)
+	})
+	t.Run("dynamic context scanned once", func(t *testing.T) {
+		require.Equal(t, 1, dynamicScans)
+	})
 }
 
 func TestLoop_RouterTurnsNonDecreasingAcrossRepairs(t *testing.T) {
@@ -309,27 +289,24 @@ func TestLoop_RouterTurnsNonDecreasingAcrossRepairs(t *testing.T) {
 	loop.Router = rr
 	config := buildTestConfig()
 
-	if _, err := loop.Run(context.Background(), config); err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
+	_, err := loop.Run(context.Background(), config)
+	require.NoError(t, err)
 
 	rr.mu.Lock()
 	turns := append([]int(nil), rr.turns...)
 	rr.mu.Unlock()
-	for i := 1; i < len(turns); i++ {
-		if turns[i] < turns[i-1] {
-			t.Fatalf("router turns decreased: %v", turns)
-		}
-	}
-	if fmt.Sprint(turns) != fmt.Sprint([]int{0, 1, 2, 3}) {
-		t.Errorf("router turns = %v, want [0 1 2 3]", turns)
-	}
 
 	prov.mu.Lock()
 	models := append([]string(nil), prov.models...)
 	prov.mu.Unlock()
-	want := []string{"default-model", "default-model", "expensive-model", "expensive-model"}
-	if fmt.Sprint(models) != fmt.Sprint(want) {
-		t.Errorf("models per call = %v, want %v", models, want)
-	}
+
+	t.Run("turns non-decreasing", func(t *testing.T) {
+		require.IsNonDecreasing(t, turns)
+	})
+	t.Run("turn numbers", func(t *testing.T) {
+		require.Equal(t, []int{0, 1, 2, 3}, turns)
+	})
+	t.Run("models per call", func(t *testing.T) {
+		require.Equal(t, []string{"default-model", "default-model", "expensive-model", "expensive-model"}, models)
+	})
 }

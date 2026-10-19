@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
@@ -53,9 +55,7 @@ func TestBuildLoop_MCPUnavailableWarningIsScrubbed(t *testing.T) {
 
 	origStderr := os.Stderr
 	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("os.Pipe: %v", err)
-	}
+	require.NoError(t, err, "os.Pipe")
 	captured := make(chan []byte, 1)
 	go func() {
 		b, _ := io.ReadAll(r)
@@ -73,16 +73,8 @@ func TestBuildLoop_MCPUnavailableWarningIsScrubbed(t *testing.T) {
 	_ = w.Close()
 	stderr := string(<-captured)
 
-	if buildErr != nil {
-		t.Fatalf("BuildLoopWithTransport: %v", buildErr)
-	}
-	if !strings.Contains(stderr, "optional MCP server degraded") {
-		t.Fatalf("expected the MCP unavailable warning on stderr, got: %s", stderr)
-	}
-	if strings.Contains(stderr, echoedKey) {
-		t.Errorf("credential echoed by the MCP server leaked to stderr: %s", stderr)
-	}
-	if !strings.Contains(stderr, "[REDACTED]") {
-		t.Errorf("expected [REDACTED] in the MCP unavailable warning: %s", stderr)
-	}
+	require.NoError(t, buildErr, "BuildLoopWithTransport")
+	require.Contains(t, stderr, "optional MCP server degraded", "expected the MCP unavailable warning on stderr")
+	assert.NotContains(t, stderr, echoedKey, "credential echoed by the MCP server must not reach stderr")
+	assert.Contains(t, stderr, "[REDACTED]", "expected the MCP unavailable warning to be redacted")
 }

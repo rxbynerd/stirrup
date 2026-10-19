@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/trace/noop"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
@@ -131,7 +133,7 @@ func asyncEchoTool() *tool.Tool {
 	}
 }
 
-func TestAsyncDispatch_HappyPath(t *testing.T) {
+func TestAsyncDispatch_ReturnsControlPlaneOutput(t *testing.T) {
 	tr := newAsyncTestTransport()
 	loop := buildAsyncTestLoop(t, tr, asyncEchoTool())
 
@@ -158,42 +160,25 @@ func TestAsyncDispatch_HappyPath(t *testing.T) {
 			}
 			time.Sleep(time.Millisecond)
 		}
-		t.Errorf("tool_result_request was never emitted")
+		assert.Fail(t, "tool_result_request was never emitted")
 	}()
 
 	output, success := loop.dispatchToolCall(context.Background(), call)
-	if !success {
-		t.Fatalf("expected success=true, got false; output=%q", output)
-	}
-	if output != "async output ok" {
-		t.Fatalf("expected output 'async output ok', got %q", output)
-	}
+	require.True(t, success, "output %q", output)
+	require.Equal(t, "async output ok", output)
 
 	events := tr.Events()
-	if len(events) != 1 {
-		t.Fatalf("expected 1 emitted event, got %d", len(events))
-	}
+	require.Len(t, events, 1)
 	req := events[0]
-	if req.Type != "tool_result_request" {
-		t.Fatalf("expected tool_result_request, got %q", req.Type)
-	}
-	if req.ToolUseID != "tc_async_1" {
-		t.Fatalf("expected ToolUseID tc_async_1, got %q", req.ToolUseID)
-	}
-	if req.ToolName != "async_echo" {
-		t.Fatalf("expected ToolName async_echo, got %q", req.ToolName)
-	}
-	if req.RequestID == "" {
-		t.Fatalf("expected non-empty RequestID")
-	}
+	require.Equal(t, "tool_result_request", req.Type)
+	require.Equal(t, "tc_async_1", req.ToolUseID)
+	require.Equal(t, "async_echo", req.ToolName)
+	require.NotEmpty(t, req.RequestID)
 
-	// Pending entry must be cleaned up after resolution.
-	if loop.asyncCorrelatorForTest().PendingCount() != 0 {
-		t.Fatalf("expected 0 pending awaits, got %d", loop.asyncCorrelatorForTest().PendingCount())
-	}
+	require.Zero(t, loop.asyncCorrelatorForTest().PendingCount())
 }
 
-func TestAsyncDispatch_UpstreamError(t *testing.T) {
+func TestAsyncDispatch_UpstreamErrorIsPrefixed(t *testing.T) {
 	tr := newAsyncTestTransport()
 	loop := buildAsyncTestLoop(t, tr, asyncEchoTool())
 
@@ -221,21 +206,13 @@ func TestAsyncDispatch_UpstreamError(t *testing.T) {
 	}()
 
 	output, success := loop.dispatchToolCall(context.Background(), call)
-	if success {
-		t.Fatalf("expected success=false on is_error response")
-	}
+	require.False(t, success, "output %q", output)
 	// The is_error path must wrap control-plane content with a structured
 	// prefix so the model can disambiguate upstream failures from
 	// harness-side failures (transport_disconnect, timeout, internal error).
-	if !strings.Contains(output, "upstream_error:") {
-		t.Fatalf("expected output to contain 'upstream_error:' prefix, got %q", output)
-	}
-	if !strings.Contains(output, "async_echo") {
-		t.Fatalf("expected output to mention tool name, got %q", output)
-	}
-	if !strings.Contains(output, "upstream said no") {
-		t.Fatalf("expected upstream content preserved after the prefix, got %q", output)
-	}
+	require.Contains(t, output, "upstream_error:")
+	require.Contains(t, output, "async_echo")
+	require.Contains(t, output, "upstream said no")
 }
 
 func TestAsyncDispatch_UpstreamError_ScrubsSecrets(t *testing.T) {
@@ -272,21 +249,13 @@ func TestAsyncDispatch_UpstreamError_ScrubsSecrets(t *testing.T) {
 	}()
 
 	output, success := loop.dispatchToolCall(context.Background(), call)
-	if success {
-		t.Fatalf("expected success=false on is_error response")
-	}
-	if strings.Contains(output, rawSecret) {
-		t.Fatalf("raw secret leaked into tool output: %q", output)
-	}
-	if !strings.Contains(output, "[REDACTED]") {
-		t.Fatalf("expected [REDACTED] marker in scrubbed output, got %q", output)
-	}
-	if !strings.Contains(output, "upstream_error:") {
-		t.Fatalf("expected upstream_error: prefix on scrubbed output, got %q", output)
-	}
+	require.False(t, success, "output %q", output)
+	require.NotContains(t, output, rawSecret)
+	require.Contains(t, output, "[REDACTED]")
+	require.Contains(t, output, "upstream_error:")
 }
 
-func TestAsyncDispatch_ContentTruncation(t *testing.T) {
+func TestAsyncDispatch_TruncatesOversizeContent(t *testing.T) {
 	// The control plane supplies tool result content as an unbounded
 	// string; the harness must cap it before the value flows into tool
 	// output, message history, or the wire — same discipline as the
@@ -294,8 +263,8 @@ func TestAsyncDispatch_ContentTruncation(t *testing.T) {
 	tr := newAsyncTestTransport()
 	loop := buildAsyncTestLoop(t, tr, asyncEchoTool())
 
-	const cap = 1 << 20 // matches maxAsyncToolResultBytes
-	oversize := strings.Repeat("a", cap+512)
+	const maxResultBytes = 1 << 20 // matches maxAsyncToolResultBytes
+	oversize := strings.Repeat("a", maxResultBytes+512)
 
 	call := types.ToolCall{
 		ID:    "tc_async_oversize",
@@ -319,23 +288,18 @@ func TestAsyncDispatch_ContentTruncation(t *testing.T) {
 	}()
 
 	output, success := loop.dispatchToolCall(context.Background(), call)
-	if !success {
-		t.Fatalf("expected success on truncated success-path content; got %q", output)
-	}
+	require.True(t, success, "output length %d", len(output))
+
 	const suffix = "... [truncated by harness]"
-	if !strings.HasSuffix(output, suffix) {
-		tail := output
-		if len(tail) > len(suffix)+16 {
-			tail = tail[len(tail)-len(suffix)-16:]
-		}
-		t.Fatalf("expected output to end with %q, got tail %q", suffix, tail)
+	tail := output
+	if len(tail) > len(suffix)+16 {
+		tail = tail[len(tail)-len(suffix)-16:]
 	}
-	if len(output) != cap+len(suffix) {
-		t.Fatalf("expected output length %d (cap+suffix), got %d", cap+len(suffix), len(output))
-	}
+	require.True(t, strings.HasSuffix(output, suffix), "output tail %q", tail)
+	require.Len(t, output, maxResultBytes+len(suffix))
 }
 
-func TestAsyncDispatch_Timeout(t *testing.T) {
+func TestAsyncDispatch_TimeoutReturnsErrorAndClearsPending(t *testing.T) {
 	tr := newAsyncTestTransport()
 	tl := asyncEchoTool()
 	tl.AsyncHandler = func(_ context.Context, _ json.RawMessage) (tool.AsyncDispatch, error) {
@@ -352,28 +316,15 @@ func TestAsyncDispatch_Timeout(t *testing.T) {
 	start := time.Now()
 	output, success := loop.dispatchToolCall(context.Background(), call)
 	elapsed := time.Since(start)
-	if success {
-		t.Fatalf("expected success=false on timeout, got true; output=%q", output)
-	}
-	if !strings.Contains(output, "timeout") {
-		t.Fatalf("expected output to mention 'timeout', got %q", output)
-	}
-	if !strings.Contains(output, "async_echo") {
-		t.Fatalf("expected output to mention tool name, got %q", output)
-	}
-	if elapsed < 20*time.Millisecond {
-		t.Fatalf("returned too quickly (%s); timeout did not fire", elapsed)
-	}
-	if elapsed > 2*time.Second {
-		t.Fatalf("returned too slowly (%s); per-call timeout override was ignored", elapsed)
-	}
-	// Cleanup: pending entry must be removed.
-	if loop.asyncCorrelatorForTest().PendingCount() != 0 {
-		t.Fatalf("expected 0 pending awaits after timeout, got %d", loop.asyncCorrelatorForTest().PendingCount())
-	}
+	require.False(t, success, "output %q", output)
+	require.Contains(t, output, "timeout")
+	require.Contains(t, output, "async_echo")
+	require.GreaterOrEqual(t, elapsed, 20*time.Millisecond, "timeout did not fire")
+	require.LessOrEqual(t, elapsed, 2*time.Second, "per-call timeout override was ignored")
+	require.Zero(t, loop.asyncCorrelatorForTest().PendingCount())
 }
 
-func TestAsyncDispatch_CtxCancellation(t *testing.T) {
+func TestAsyncDispatch_ContextCancelReportsCancelled(t *testing.T) {
 	tr := newAsyncTestTransport()
 	loop := buildAsyncTestLoop(t, tr, asyncEchoTool())
 
@@ -399,18 +350,12 @@ func TestAsyncDispatch_CtxCancellation(t *testing.T) {
 	}()
 
 	output, success := loop.dispatchToolCall(ctx, call)
-	if success {
-		t.Fatalf("expected success=false on ctx cancel")
-	}
-	if !strings.Contains(output, "cancelled") {
-		t.Fatalf("expected output to mention 'cancelled', got %q", output)
-	}
-	if loop.asyncCorrelatorForTest().PendingCount() != 0 {
-		t.Fatalf("expected 0 pending awaits after ctx cancel, got %d", loop.asyncCorrelatorForTest().PendingCount())
-	}
+	require.False(t, success, "output %q", output)
+	require.Contains(t, output, "cancelled")
+	require.Zero(t, loop.asyncCorrelatorForTest().PendingCount())
 }
 
-func TestAsyncDispatch_TransportEmitFailure(t *testing.T) {
+func TestAsyncDispatch_EmitFailureReportsTransportDisconnect(t *testing.T) {
 	tr := newAsyncTestTransport()
 	tr.emitErr = errors.New("simulated transport disconnect")
 	loop := buildAsyncTestLoop(t, tr, asyncEchoTool())
@@ -422,16 +367,10 @@ func TestAsyncDispatch_TransportEmitFailure(t *testing.T) {
 	}
 
 	output, success := loop.dispatchToolCall(context.Background(), call)
-	if success {
-		t.Fatalf("expected success=false on emit failure")
-	}
-	if !strings.Contains(output, "transport_disconnect") {
-		t.Fatalf("expected output to contain 'transport_disconnect', got %q", output)
-	}
-	// Correlator must clean up the pending entry on emit failure.
-	if loop.asyncCorrelatorForTest().PendingCount() != 0 {
-		t.Fatalf("expected 0 pending awaits after emit failure, got %d", loop.asyncCorrelatorForTest().PendingCount())
-	}
+	require.False(t, success, "output %q", output)
+	require.Contains(t, output, "transport_disconnect")
+	// The correlator must drop the pending entry when the emit fails.
+	require.Zero(t, loop.asyncCorrelatorForTest().PendingCount())
 }
 
 func TestAsyncDispatch_OutOfOrderResolution(t *testing.T) {
@@ -468,26 +407,19 @@ func TestAsyncDispatch_OutOfOrderResolution(t *testing.T) {
 	// both pending awaits being registered: reading loop.asyncCorrelator
 	// directly here would race with the dispatch goroutines writing it
 	// under sync.Once.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	require.Eventually(t, func() bool {
 		count := 0
 		for _, e := range tr.Events() {
 			if e.Type == "tool_result_request" {
 				count++
 			}
 		}
-		if count == 2 {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
+		return count == 2
+	}, 2*time.Second, time.Millisecond)
+
 	correlator := loop.ensureAsyncCorrelator()
-	if correlator == nil {
-		t.Fatalf("expected async correlator to be constructed by now")
-	}
-	if got := correlator.PendingCount(); got != 2 {
-		t.Fatalf("expected 2 pending awaits, got %d", got)
-	}
+	require.NotNil(t, correlator, "async correlator should be constructed by now")
+	require.Equal(t, 2, correlator.PendingCount())
 
 	events := tr.Events()
 	idByToolUseID := map[string]string{}
@@ -497,9 +429,9 @@ func TestAsyncDispatch_OutOfOrderResolution(t *testing.T) {
 		}
 	}
 	id1, id2 := idByToolUseID["tc1"], idByToolUseID["tc2"]
-	if id1 == "" || id2 == "" || id1 == id2 {
-		t.Fatalf("expected two distinct request IDs, got %q and %q", id1, id2)
-	}
+	require.NotEmpty(t, id1)
+	require.NotEmpty(t, id2)
+	require.NotEqual(t, id1, id2)
 
 	// Resolve in reverse order: tc2 first, then tc1.
 	tr.FireControl(types.ControlEvent{
@@ -515,16 +447,11 @@ func TestAsyncDispatch_OutOfOrderResolution(t *testing.T) {
 
 	res1 := <-r1
 	res2 := <-r2
-	if !res1.success || res1.output != "result-for-tc1" {
-		t.Fatalf("call1 wrong: success=%v output=%q", res1.success, res1.output)
-	}
-	if !res2.success || res2.output != "result-for-tc2" {
-		t.Fatalf("call2 wrong: success=%v output=%q", res2.success, res2.output)
-	}
-	if loop.asyncCorrelatorForTest().PendingCount() != 0 {
-		t.Fatalf("expected 0 pending awaits after both resolutions, got %d",
-			loop.asyncCorrelatorForTest().PendingCount())
-	}
+	require.True(t, res1.success, "call1 output %q", res1.output)
+	require.Equal(t, "result-for-tc1", res1.output)
+	require.True(t, res2.success, "call2 output %q", res2.output)
+	require.Equal(t, "result-for-tc2", res2.output)
+	require.Zero(t, loop.asyncCorrelatorForTest().PendingCount())
 }
 
 func TestAsyncDispatch_NullTransportFailsFast(t *testing.T) {
@@ -542,21 +469,13 @@ func TestAsyncDispatch_NullTransportFailsFast(t *testing.T) {
 	start := time.Now()
 	output, success := loop.dispatchToolCall(context.Background(), call)
 	elapsed := time.Since(start)
-	if success {
-		t.Fatalf("expected success=false on NullTransport, got true; output=%q", output)
-	}
-	if !strings.Contains(output, "unavailable") {
-		t.Fatalf("expected output to mention 'unavailable', got %q", output)
-	}
-	if elapsed > 200*time.Millisecond {
-		t.Fatalf("dispatch should fail fast, but took %s", elapsed)
-	}
-	if loop.asyncCorrelatorForTest() != nil {
-		t.Fatalf("async correlator should not have been constructed for a NullTransport")
-	}
+	require.False(t, success, "output %q", output)
+	require.Contains(t, output, "unavailable")
+	require.LessOrEqual(t, elapsed, 200*time.Millisecond, "dispatch should fail fast")
+	require.Nil(t, loop.asyncCorrelatorForTest(), "no correlator should be constructed for a NullTransport")
 }
 
-func TestAsyncDispatch_AsyncHandlerInternalError(t *testing.T) {
+func TestAsyncDispatch_PreflightErrorEmitsNothing(t *testing.T) {
 	tr := newAsyncTestTransport()
 	tl := asyncEchoTool()
 	tl.AsyncHandler = func(_ context.Context, _ json.RawMessage) (tool.AsyncDispatch, error) {
@@ -570,22 +489,15 @@ func TestAsyncDispatch_AsyncHandlerInternalError(t *testing.T) {
 		Input: json.RawMessage(`{}`),
 	}
 	output, success := loop.dispatchToolCall(context.Background(), call)
-	if success {
-		t.Fatalf("expected success=false on AsyncHandler error")
-	}
-	if !strings.Contains(output, "internal error") {
-		t.Fatalf("expected 'internal error' in output, got %q", output)
-	}
-	// No event should have been emitted, and no pending entry registered.
-	if len(tr.Events()) != 0 {
-		t.Fatalf("expected no events emitted on preflight error, got %d", len(tr.Events()))
-	}
-	if loop.asyncCorrelatorForTest() != nil && loop.asyncCorrelatorForTest().PendingCount() != 0 {
-		t.Fatalf("expected 0 pending awaits, got %d", loop.asyncCorrelatorForTest().PendingCount())
+	require.False(t, success, "output %q", output)
+	require.Contains(t, output, "internal error")
+	require.Empty(t, tr.Events())
+	if correlator := loop.asyncCorrelatorForTest(); correlator != nil {
+		require.Zero(t, correlator.PendingCount())
 	}
 }
 
-func TestSyncToolPath_Unchanged(t *testing.T) {
+func TestSyncToolDispatch_SkipsControlPlane(t *testing.T) {
 	// A purely synchronous tool (no AsyncHandler) must still work. This
 	// guards the "async-handler-nil = sync" contract.
 	tr := newAsyncTestTransport()
@@ -605,22 +517,15 @@ func TestSyncToolPath_Unchanged(t *testing.T) {
 		Input: json.RawMessage(`{}`),
 	}
 	output, success := loop.dispatchToolCall(context.Background(), call)
-	if !success || output != "sync result" {
-		t.Fatalf("sync tool: success=%v output=%q", success, output)
-	}
-	// No tool_result_request event should have been emitted.
+	require.True(t, success, "output %q", output)
+	require.Equal(t, "sync result", output)
 	for _, e := range tr.Events() {
-		if e.Type == "tool_result_request" {
-			t.Fatalf("sync tool should not emit tool_result_request, got %+v", e)
-		}
+		require.NotEqual(t, "tool_result_request", e.Type, "sync tool emitted %+v", e)
 	}
-	// Async correlator must not be constructed for a sync-only call.
-	if loop.asyncCorrelatorForTest() != nil {
-		t.Fatalf("async correlator should not have been constructed for a sync tool")
-	}
+	require.Nil(t, loop.asyncCorrelatorForTest(), "no correlator should be constructed for a sync tool")
 }
 
-func TestAsyncDispatch_StallDetectionStillFires(t *testing.T) {
+func TestAsyncDispatch_RepeatedResolutionsTriggerStallNudge(t *testing.T) {
 	// Three identical async resolutions should still trigger the
 	// stallDetector nudge — the dispatch path is still synchronous from
 	// the stall detector's point of view (one record per call).
@@ -663,15 +568,10 @@ func TestAsyncDispatch_StallDetectionStillFires(t *testing.T) {
 			Input: input,
 		})
 		<-done
-		if !success {
-			t.Fatalf("turn %d: dispatch failed: %s", i, output)
-		}
-		if outcome := stall.recordToolCall("async_echo", input, output, success); outcome != "" {
-			t.Fatalf("turn %d: unexpected stall outcome %q", i, outcome)
-		}
+		require.True(t, success, "turn %d: dispatch failed: %s", i, output)
+		outcome := stall.recordToolCall("async_echo", input, output, success)
+		require.Empty(t, outcome, "turn %d: unexpected stall outcome", i)
 		_, nudged := stall.takeNudge()
-		if nudged != (i == 2) {
-			t.Fatalf("turn %d: nudged = %v, want a nudge on the third identical call only", i, nudged)
-		}
+		require.Equal(t, i == 2, nudged, "turn %d: nudge expected only on the third identical call", i)
 	}
 }

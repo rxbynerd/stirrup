@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/eval/lakehouse"
 	"github.com/rxbynerd/stirrup/types"
 	tracereader "github.com/rxbynerd/stirrup/types/trace"
@@ -25,18 +27,14 @@ func writeTraceFile(t *testing.T, dir, name string, lines []string) string {
 	for _, line := range lines {
 		content += line + "\n"
 	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("write %s: %v", path, err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644), "write %s", path)
 	return path
 }
 
 func mustMarshal(t *testing.T, v any) string {
 	t.Helper()
 	b, err := json.Marshal(v)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err)
 	return string(b)
 }
 
@@ -66,33 +64,23 @@ func TestIngestFile_StreamingFullRun(t *testing.T) {
 
 	storeDir := t.TempDir()
 	store, err := lakehouse.NewFileStore(storeDir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	require.NoError(t, err)
 	defer func() { _ = store.Close() }()
 
 	traces, recordings, skipped, err := ingestFile(context.Background(), store, tracePath, false)
-	if err != nil {
-		t.Fatalf("ingestFile: %v", err)
-	}
-	if traces != 1 || recordings != 1 || skipped != 0 {
-		t.Errorf("counts: traces=%d recordings=%d skipped=%d; want 1/1/0", traces, recordings, skipped)
-	}
+	require.NoError(t, err)
+	require.Equal(t, 1, traces, "trace count")
+	require.Equal(t, 1, recordings, "recording count")
+	require.Equal(t, 0, skipped, "skipped count")
 
-	if _, err := os.Stat(filepath.Join(storeDir, "traces", "run-1.json")); err != nil {
-		t.Errorf("traces/run-1.json missing: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(storeDir, "recordings", "run-1.json")); err != nil {
-		t.Errorf("recordings/run-1.json missing: %v", err)
-	}
+	require.FileExists(t, filepath.Join(storeDir, "traces", "run-1.json"))
+	require.FileExists(t, filepath.Join(storeDir, "recordings", "run-1.json"))
 
 	gotTraces, err := store.QueryTraces(context.Background(), types.TraceFilter{})
-	if err != nil {
-		t.Fatalf("QueryTraces: %v", err)
-	}
-	if len(gotTraces) != 1 || gotTraces[0].ID != "run-1" || gotTraces[0].Outcome != "success" {
-		t.Errorf("trace = %+v, want one with ID=run-1 Outcome=success", gotTraces)
-	}
+	require.NoError(t, err)
+	require.Len(t, gotTraces, 1)
+	require.Equal(t, "run-1", gotTraces[0].ID)
+	require.Equal(t, "success", gotTraces[0].Outcome)
 }
 
 // TestIngestFile_LegacySingleBlob pins that a legacy JSONL trace file (one
@@ -105,28 +93,19 @@ func TestIngestFile_LegacySingleBlob(t *testing.T) {
 		mustMarshal(t, types.RunTrace{ID: "old-2", Outcome: "error", Turns: 1}),
 	})
 
-	storeDir := t.TempDir()
-	store, err := lakehouse.NewFileStore(storeDir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	store, err := lakehouse.NewFileStore(t.TempDir())
+	require.NoError(t, err)
 	defer func() { _ = store.Close() }()
 
 	traces, recordings, skipped, err := ingestFile(context.Background(), store, tracePath, false)
-	if err != nil {
-		t.Fatalf("ingestFile: %v", err)
-	}
-	if traces != 2 || recordings != 0 || skipped != 0 {
-		t.Errorf("counts: traces=%d recordings=%d skipped=%d; want 2/0/0", traces, recordings, skipped)
-	}
+	require.NoError(t, err)
+	require.Equal(t, 2, traces, "trace count")
+	require.Equal(t, 0, recordings, "recording count")
+	require.Equal(t, 0, skipped, "skipped count")
 
 	gotTraces, err := store.QueryTraces(context.Background(), types.TraceFilter{})
-	if err != nil {
-		t.Fatalf("QueryTraces: %v", err)
-	}
-	if len(gotTraces) != 2 {
-		t.Fatalf("got %d traces, want 2", len(gotTraces))
-	}
+	require.NoError(t, err)
+	require.Len(t, gotTraces, 2)
 }
 
 // TestIngestFile_PartialStream pins that a streaming trace missing its
@@ -149,42 +128,34 @@ func TestIngestFile_PartialStream(t *testing.T) {
 		}),
 	})
 
-	storeDir := t.TempDir()
-	store, err := lakehouse.NewFileStore(storeDir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
-	defer func() { _ = store.Close() }()
+	t.Run("default keeps the run as interrupted", func(t *testing.T) {
+		store, err := lakehouse.NewFileStore(t.TempDir())
+		require.NoError(t, err)
+		defer func() { _ = store.Close() }()
 
-	traces, recordings, skipped, err := ingestFile(context.Background(), store, tracePath, false)
-	if err != nil {
-		t.Fatalf("ingestFile (default): %v", err)
-	}
-	if traces != 1 || recordings != 1 || skipped != 0 {
-		t.Errorf("default counts: traces=%d recordings=%d skipped=%d; want 1/1/0", traces, recordings, skipped)
-	}
+		traces, recordings, skipped, err := ingestFile(context.Background(), store, tracePath, false)
+		require.NoError(t, err)
+		require.Equal(t, 1, traces, "trace count")
+		require.Equal(t, 1, recordings, "recording count")
+		require.Equal(t, 0, skipped, "skipped count")
 
-	gotTraces, err := store.QueryTraces(context.Background(), types.TraceFilter{})
-	if err != nil {
-		t.Fatalf("QueryTraces: %v", err)
-	}
-	if len(gotTraces) != 1 || gotTraces[0].Outcome != "interrupted" {
-		t.Errorf("trace = %+v, want one with Outcome=interrupted", gotTraces)
-	}
+		gotTraces, err := store.QueryTraces(context.Background(), types.TraceFilter{})
+		require.NoError(t, err)
+		require.Len(t, gotTraces, 1)
+		require.Equal(t, "interrupted", gotTraces[0].Outcome)
+	})
 
-	storeDir2 := t.TempDir()
-	store2, err := lakehouse.NewFileStore(storeDir2)
-	if err != nil {
-		t.Fatalf("NewFileStore 2: %v", err)
-	}
-	defer func() { _ = store2.Close() }()
-	traces2, recordings2, skipped2, err := ingestFile(context.Background(), store2, tracePath, true)
-	if err != nil {
-		t.Fatalf("ingestFile (skip-partial): %v", err)
-	}
-	if traces2 != 0 || recordings2 != 0 || skipped2 != 1 {
-		t.Errorf("skip-partial counts: traces=%d recordings=%d skipped=%d; want 0/0/1", traces2, recordings2, skipped2)
-	}
+	t.Run("skip-partial drops the run", func(t *testing.T) {
+		store, err := lakehouse.NewFileStore(t.TempDir())
+		require.NoError(t, err)
+		defer func() { _ = store.Close() }()
+
+		traces, recordings, skipped, err := ingestFile(context.Background(), store, tracePath, true)
+		require.NoError(t, err)
+		require.Equal(t, 0, traces, "trace count")
+		require.Equal(t, 0, recordings, "recording count")
+		require.Equal(t, 1, skipped, "skipped count")
+	})
 }
 
 // TestIngestFile_Idempotent pins that re-ingesting the same file is a no-op
@@ -205,31 +176,25 @@ func TestIngestFile_Idempotent(t *testing.T) {
 		}),
 	})
 
-	storeDir := t.TempDir()
-	store, err := lakehouse.NewFileStore(storeDir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	store, err := lakehouse.NewFileStore(t.TempDir())
+	require.NoError(t, err)
 	defer func() { _ = store.Close() }()
 
-	for i := 0; i < 3; i++ {
-		if _, _, _, err := ingestFile(context.Background(), store, tracePath, false); err != nil {
-			t.Fatalf("ingestFile iter %d: %v", i, err)
-		}
+	for i := range 3 {
+		_, _, _, err := ingestFile(context.Background(), store, tracePath, false)
+		require.NoError(t, err, "ingest iteration %d", i)
 	}
+
 	gotTraces, err := store.QueryTraces(context.Background(), types.TraceFilter{})
-	if err != nil {
-		t.Fatalf("QueryTraces: %v", err)
-	}
-	if len(gotTraces) != 1 || gotTraces[0].ID != "run-i" {
-		t.Errorf("after 3 ingests: got %d traces, want 1 (last-write-wins)", len(gotTraces))
-	}
+	require.NoError(t, err)
+	require.Len(t, gotTraces, 1, "re-ingest should leave one trace (last write wins)")
+	require.Equal(t, "run-i", gotTraces[0].ID)
 }
 
-// TestDetectFormat covers the three cases the format peeker distinguishes:
-// streaming events (line carries a kind key), legacy single-blob (line
-// lacks kind), and empty file.
-func TestDetectFormat(t *testing.T) {
+// TestDetectFormat_ClassifiesStreamingLegacyAndEmpty covers the three cases
+// the format peeker distinguishes: streaming events (line carries a kind
+// key), legacy single-blob (line lacks kind), and empty file.
+func TestDetectFormat_ClassifiesStreamingLegacyAndEmpty(t *testing.T) {
 	dir := t.TempDir()
 
 	streaming := writeTraceFile(t, dir, "stream.jsonl", []string{
@@ -241,22 +206,20 @@ func TestDetectFormat(t *testing.T) {
 	empty := writeTraceFile(t, dir, "empty.jsonl", nil)
 
 	cases := []struct {
+		name string
 		path string
 		want traceFormat
 	}{
-		{streaming, formatStreaming},
-		{legacy, formatLegacy},
-		{empty, formatEmpty},
+		{"streaming events", streaming, formatStreaming},
+		{"legacy single blob", legacy, formatLegacy},
+		{"empty file", empty, formatEmpty},
 	}
 	for _, tc := range cases {
-		_, got, err := detectFormat(tc.path)
-		if err != nil {
-			t.Errorf("detectFormat(%s): err=%v", filepath.Base(tc.path), err)
-			continue
-		}
-		if got != tc.want {
-			t.Errorf("detectFormat(%s) = %v, want %v", filepath.Base(tc.path), got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			_, got, err := detectFormat(tc.path)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
+		})
 	}
 }
 
@@ -282,15 +245,11 @@ func TestIngestFile_ReportsSkippedLines(t *testing.T) {
 	})
 
 	store, err := lakehouse.NewFileStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	require.NoError(t, err)
 	defer func() { _ = store.Close() }()
 
 	pr, pw, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("Pipe: %v", err)
-	}
+	require.NoError(t, err)
 	origStderr := os.Stderr
 	os.Stderr = pw
 	traces, recordings, _, ingestErr := ingestFile(context.Background(), store, tracePath, false)
@@ -299,13 +258,8 @@ func TestIngestFile_ReportsSkippedLines(t *testing.T) {
 	stderr, _ := io.ReadAll(pr)
 	_ = pr.Close()
 
-	if ingestErr != nil {
-		t.Fatalf("ingestFile: %v", ingestErr)
-	}
-	if traces != 1 || recordings != 1 {
-		t.Errorf("counts: traces=%d recordings=%d; want 1/1", traces, recordings)
-	}
-	if !strings.Contains(string(stderr), "big-run is a partial recording: skipped 1 line(s)") {
-		t.Errorf("stderr = %q, want a partial-recording report naming the run and count", stderr)
-	}
+	require.NoError(t, ingestErr)
+	require.Equal(t, 1, traces, "trace count")
+	require.Equal(t, 1, recordings, "recording count")
+	require.Contains(t, string(stderr), "big-run is a partial recording: skipped 1 line(s)")
 }

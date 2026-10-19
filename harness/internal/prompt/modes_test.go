@@ -3,6 +3,8 @@ package prompt
 import (
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestModePrompts_AllModesPresent(t *testing.T) {
@@ -10,19 +12,13 @@ func TestModePrompts_AllModesPresent(t *testing.T) {
 
 	expectedModes := []string{"execution", "planning", "review", "research", "toil"}
 	for _, mode := range expectedModes {
-		text, ok := prompts[mode]
-		if !ok {
-			t.Errorf("ModePrompts() missing mode %q", mode)
-			continue
-		}
-		if text == "" {
-			t.Errorf("ModePrompts()[%q] is empty", mode)
-		}
+		t.Run(mode, func(t *testing.T) {
+			require.Contains(t, prompts, mode)
+			require.NotEmpty(t, prompts[mode])
+		})
 	}
 
-	if len(prompts) != len(expectedModes) {
-		t.Errorf("ModePrompts() has %d entries, want %d", len(prompts), len(expectedModes))
-	}
+	require.Len(t, prompts, len(expectedModes))
 }
 
 func TestModePrompts_ExpectedPhrases(t *testing.T) {
@@ -43,9 +39,7 @@ func TestModePrompts_ExpectedPhrases(t *testing.T) {
 		t.Run(tc.mode, func(t *testing.T) {
 			text := prompts[tc.mode]
 			for _, phrase := range tc.phrases {
-				if !strings.Contains(text, phrase) {
-					t.Errorf("ModePrompts()[%q] does not contain %q", tc.mode, phrase)
-				}
+				require.Contains(t, text, phrase)
 			}
 		})
 	}
@@ -53,21 +47,19 @@ func TestModePrompts_ExpectedPhrases(t *testing.T) {
 
 func TestModePrompts_NoLeadingTrailingWhitespace(t *testing.T) {
 	for mode, text := range ModePrompts() {
-		if text != strings.TrimSpace(text) {
-			t.Errorf("ModePrompts()[%q] has leading/trailing whitespace", mode)
-		}
+		t.Run(mode, func(t *testing.T) {
+			require.Equal(t, strings.TrimSpace(text), text)
+		})
 	}
 }
 
 func TestModePrompts_Idempotent(t *testing.T) {
 	a := ModePrompts()
 	b := ModePrompts()
-	if len(a) != len(b) {
-		t.Fatal("ModePrompts() returned different lengths on successive calls")
-	}
+	require.Len(t, b, len(a), "ModePrompts() returned different lengths on successive calls")
 	for k, v := range a {
-		if b[k] != v {
-			t.Errorf("ModePrompts()[%q] differs between calls", k)
-		}
+		t.Run(k, func(t *testing.T) {
+			require.Equal(t, v, b[k])
+		})
 	}
 }

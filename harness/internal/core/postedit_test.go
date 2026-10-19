@@ -7,8 +7,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
@@ -34,74 +36,55 @@ func TestAttachPostEditChecks_EveryEditToolRunsChecks(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			workspace := t.TempDir()
-			if err := os.WriteFile(filepath.Join(workspace, "f.go"), []byte("package p\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.WriteFile(filepath.Join(workspace, "f.go"), []byte("package p\n"), 0o644))
 			exec, err := executor.NewLocalExecutor(workspace)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			registry := buildToolRegistry(exec, tc.strategy, types.ToolsConfig{}, nil)
 			checker := attachPostEditChecks(registry, tc.strategy.ToolDefinition().Name, exec, []types.PostEditCheckConfig{
 				{Glob: "*.go", Command: "echo checked {path} >> checks.log; echo diagnostic-line; exit 3"},
 			}, slog.New(slog.DiscardHandler))
-			if checker == nil {
-				t.Fatal("attachPostEditChecks returned nil")
-			}
+			require.NotNil(t, checker, "attachPostEditChecks should return a checker")
+
 			editTool := registry.Resolve(tc.name)
-			if editTool == nil {
-				t.Fatalf("%s is not registered", tc.name)
-			}
+			require.NotNil(t, editTool, "edit tool should be registered")
 
 			out, err := editTool.Handler(context.Background(), json.RawMessage(tc.input))
-			if err != nil {
-				t.Fatalf("edit failed: %v", err)
-			}
-			if !strings.Contains(out, "exited with code 3") || !strings.Contains(out, "diagnostic-line") {
-				t.Fatalf("tool result lacks check diagnostics:\n%s", out)
-			}
+			require.NoError(t, err)
+			require.Contains(t, out, "exited with code 3", "tool result lacks check diagnostics:\n%s", out)
+			require.Contains(t, out, "diagnostic-line", "tool result lacks check diagnostics:\n%s", out)
 
-			if _, err := editTool.Handler(context.Background(), json.RawMessage(tc.bad)); err == nil {
-				t.Fatal("failing edit input unexpectedly succeeded")
-			}
+			_, err = editTool.Handler(context.Background(), json.RawMessage(tc.bad))
+			require.Error(t, err)
+
 			log, err := os.ReadFile(filepath.Join(workspace, "checks.log"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(log) != "checked f.go\n" {
-				t.Errorf("checks.log = %q, want exactly one run for the successful edit", log)
-			}
+			require.NoError(t, err)
+			require.Equal(t, "checked f.go\n", string(log), "checks should run once, for the successful edit only")
 		})
 	}
 }
 
 func TestAttachPostEditChecks_NoChecksLeavesHandlerUntouched(t *testing.T) {
 	exec, err := executor.NewLocalExecutor(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	es := edit.NewWholeFileStrategy()
 	registry := buildToolRegistry(exec, es, types.ToolsConfig{}, nil)
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
-	if checker := attachPostEditChecks(registry, es.ToolDefinition().Name, exec, nil, logger); checker != nil {
-		t.Fatal("expected nil checker without checks")
-	}
+
+	checker := attachPostEditChecks(registry, es.ToolDefinition().Name, exec, nil, logger)
+	require.Nil(t, checker, "no checker should be attached without checks")
+
 	out, err := registry.Resolve("write_file").Handler(context.Background(), json.RawMessage(`{"path":"a.go","content":"x"}`))
-	if err != nil || out != "Successfully edited a.go" {
-		t.Fatalf("handler = %q, %v", out, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "Successfully edited a.go", out)
 
 	noEdit := buildToolRegistry(exec, es, types.ToolsConfig{BuiltIn: []string{"read_file"}}, nil)
-	if logs.Len() != 0 {
-		t.Errorf("unconfigured checks logged: %s", logs.String())
-	}
-	if checker := attachPostEditChecks(noEdit, es.ToolDefinition().Name, exec, []types.PostEditCheckConfig{{Glob: "*", Command: "true"}}, logger); checker != nil {
-		t.Fatal("expected nil checker when no edit tool is registered")
-	}
-	if !strings.Contains(logs.String(), "no edit tool is registered") {
-		t.Errorf("missing warning for inert tools.postEdit; logs: %s", logs.String())
-	}
+	assert.Empty(t, logs.String(), "unconfigured checks should not log")
+
+	checker = attachPostEditChecks(noEdit, es.ToolDefinition().Name, exec, []types.PostEditCheckConfig{{Glob: "*", Command: "true"}}, logger)
+	require.Nil(t, checker, "no checker should be attached when no edit tool is registered")
+	require.Contains(t, logs.String(), "no edit tool is registered", "missing warning for inert tools.postEdit; logs: %s", logs.String())
 }
 
 // TestBuildLoop_PostEditDiagnosticsReachModelAndTrace drives a full run:
@@ -131,39 +114,34 @@ func TestBuildLoop_PostEditDiagnosticsReachModelAndTrace(t *testing.T) {
 
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 	loop, err := BuildLoopWithTransport(context.Background(), config, transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}))
-	if err != nil {
-		t.Fatalf("BuildLoopWithTransport() error: %v", err)
-	}
+	require.NoError(t, err)
 	defer func() { _ = loop.Close() }()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("outcome = %q, want success", runTrace.Outcome)
-	}
-	if _, err := os.Stat(filepath.Join(workspace, "main.go")); err != nil {
-		t.Fatalf("edit was not applied: %v", err)
-	}
-	if len(requestBodies) != 2 {
-		t.Fatalf("provider requests = %d, want 2", len(requestBodies))
-	}
-	second := requestBodies[1]
-	for _, want := range []string{"undefined: frobnicate in main.go", "POST_EDIT_DIAGNOSTICS_", "exited with code 1"} {
-		if !strings.Contains(second, want) {
-			t.Errorf("follow-up request lacks %q:\n%s", want, second)
-		}
-	}
-	if strings.Contains(second, "AKIAABCDEFGHIJKLMNOP") {
-		t.Error("unscrubbed secret reached the model")
-	}
+	require.NoError(t, err)
+	require.Equal(t, "success", runTrace.Outcome)
+	require.FileExists(t, filepath.Join(workspace, "main.go"), "edit should be applied")
 
-	if len(runTrace.PostEditChecks) != 1 {
-		t.Fatalf("PostEditChecks = %+v", runTrace.PostEditChecks)
+	require.Len(t, requestBodies, 2)
+	followUp := requestBodies[1]
+	for _, tc := range []struct {
+		name string
+		want string
+	}{
+		{"includes check output", "undefined: frobnicate in main.go"},
+		{"fences check output as diagnostics", "POST_EDIT_DIAGNOSTICS_"},
+		{"includes check exit code", "exited with code 1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Contains(t, followUp, tc.want)
+		})
 	}
+	require.NotContains(t, followUp, "AKIAABCDEFGHIJKLMNOP", "unscrubbed secret reached the model")
+
+	require.Len(t, runTrace.PostEditChecks, 1)
 	rec := runTrace.PostEditChecks[0]
-	if rec.Tool != "write_file" || rec.Path != "main.go" || rec.ExitCode != 1 || rec.ToolUseID != "call_1" {
-		t.Errorf("record = %+v", rec)
-	}
+	require.Equal(t, "write_file", rec.Tool)
+	require.Equal(t, "main.go", rec.Path)
+	require.Equal(t, 1, rec.ExitCode)
+	require.Equal(t, "call_1", rec.ToolUseID)
 }

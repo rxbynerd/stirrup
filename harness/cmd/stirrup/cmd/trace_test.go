@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/types"
@@ -19,21 +20,22 @@ import (
 
 func writeTraceFile(t *testing.T, traces []types.RunTrace) string {
 	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "trace.jsonl")
+	path := filepath.Join(t.TempDir(), "trace.jsonl")
+	require.NoError(t, os.WriteFile(path, traceJSONL(t, traces), 0o644))
+	return path
+}
+
+// traceJSONL encodes each trace as one line of JSON.
+func traceJSONL(t *testing.T, traces []types.RunTrace) []byte {
+	t.Helper()
 	var buf bytes.Buffer
 	for _, tr := range traces {
 		data, err := json.Marshal(tr)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		buf.Write(data)
 		buf.WriteByte('\n')
 	}
-	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return path
+	return buf.Bytes()
 }
 
 func sampleTraces() []types.RunTrace {
@@ -67,13 +69,10 @@ func writeEmitterTrace(t *testing.T, outcome string, results []types.Verificatio
 	for _, r := range results {
 		emitter.RecordVerification(r)
 	}
-	if _, err := emitter.Finish(context.Background(), outcome); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
+	_, err := emitter.Finish(context.Background(), outcome)
+	require.NoError(t, err)
 	path := filepath.Join(t.TempDir(), "trace.jsonl")
-	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o644))
 	return path
 }
 
@@ -88,18 +87,19 @@ func TestTraceShow_RendersEmitterVerificationAttempts(t *testing.T) {
 	path := writeEmitterTrace(t, "verification_error", emitterVerificationAttempts())
 
 	var out bytes.Buffer
-	if err := runTraceShowWith(path, &out, colorNever); err != nil {
-		t.Fatalf("show: %v", err)
-	}
-	s := out.String()
-	for _, w := range []string{
-		"verification:",
-		"  1. FAIL  Test command \"go test ./...\" failed (exit code 1):\n          --- FAIL: TestAdd",
-		"  2. FAIL  err=test-runner verifier: exec failed: connection refused",
+	require.NoError(t, runTraceShowWith(path, &out, colorNever))
+
+	for _, tc := range []struct {
+		name string
+		want string
+	}{
+		{"verification header", "verification:"},
+		{"failed attempt with feedback", "  1. FAIL  Test command \"go test ./...\" failed (exit code 1):\n          --- FAIL: TestAdd"},
+		{"attempt with verifier error", "  2. FAIL  err=test-runner verifier: exec failed: connection refused"},
 	} {
-		if !strings.Contains(s, w) {
-			t.Errorf("show output missing %q\n--- output ---\n%s", w, s)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			require.Contains(t, out.String(), tc.want)
+		})
 	}
 }
 
@@ -107,63 +107,44 @@ func TestTraceStats_CountsEmitterVerificationAttempts(t *testing.T) {
 	path := writeEmitterTrace(t, "verification_error", emitterVerificationAttempts())
 
 	var text bytes.Buffer
-	if err := runTraceStatsWith(path, &text, "text", 10); err != nil {
-		t.Fatalf("stats: %v", err)
-	}
-	if want := "verifications:    2 run (passed: 0, failed: 2, verifier errors: 1)"; !strings.Contains(text.String(), want) {
-		t.Errorf("stats text missing %q\n--- output ---\n%s", want, text.String())
-	}
+	require.NoError(t, runTraceStatsWith(path, &text, "text", 10))
+	require.Contains(t, text.String(), "verifications:    2 run (passed: 0, failed: 2, verifier errors: 1)")
 
 	var js bytes.Buffer
-	if err := runTraceStatsWith(path, &js, "json", 10); err != nil {
-		t.Fatalf("stats json: %v", err)
-	}
+	require.NoError(t, runTraceStatsWith(path, &js, "json", 10))
 	var stats TraceStats
-	if err := json.Unmarshal(js.Bytes(), &stats); err != nil {
-		t.Fatalf("unmarshal stats: %v", err)
-	}
-	if stats.VerificationsRun != 2 || stats.VerificationsFailed != 2 || stats.VerificationErrors != 1 {
-		t.Errorf("stats = run %d failed %d errors %d, want 2/2/1", stats.VerificationsRun, stats.VerificationsFailed, stats.VerificationErrors)
-	}
+	require.NoError(t, json.Unmarshal(js.Bytes(), &stats))
+	require.Equal(t, 2, stats.VerificationsRun)
+	require.Equal(t, 2, stats.VerificationsFailed)
+	require.Equal(t, 1, stats.VerificationErrors)
 }
 
 func TestTraceShow_PrintsRecords(t *testing.T) {
 	path := writeTraceFile(t, sampleTraces())
 
 	var out bytes.Buffer
-	if err := runTraceShowWith(path, &out, colorNever); err != nil {
-		t.Fatalf("show: %v", err)
+	require.NoError(t, runTraceShowWith(path, &out, colorNever))
+	for _, want := range []string{"run-1", "edit_file", "run_command", "success", "tokens", "3", "ok", "fail"} {
+		require.Contains(t, out.String(), want)
 	}
-	s := out.String()
-	wants := []string{"run-1", "edit_file", "run_command", "success", "tokens", "3", "ok", "fail"}
-	for _, w := range wants {
-		if !strings.Contains(s, w) {
-			t.Errorf("show output missing %q\n--- output ---\n%s", w, s)
-		}
-	}
-	if strings.Contains(s, "\x1b[") {
-		t.Error("colorNever output must not contain ANSI escapes")
-	}
+	require.NotContains(t, out.String(), "\x1b[", "colorNever output must not contain ANSI escapes")
 }
 
 func TestTraceShow_TokenBreakdown(t *testing.T) {
 	traces := sampleTraces()
-	var out bytes.Buffer
-	if err := renderRunTrace(&out, &traces[0], false); err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	if !strings.Contains(out.String(), "tokens:   in=100 out=200\n") {
-		t.Errorf("a run without breakdown must print bare counts:\n%s", out.String())
-	}
 
-	traces[0].TokenUsage = types.TokenUsage{Input: 1234, Output: 56, CacheRead: 1000, Reasoning: 12}
-	out.Reset()
-	if err := renderRunTrace(&out, &traces[0], false); err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	if want := "tokens:   in=1234 (cache read 1000) out=56 (reasoning 12)\n"; !strings.Contains(out.String(), want) {
-		t.Errorf("show output missing %q:\n%s", want, out.String())
-	}
+	t.Run("bare counts without breakdown", func(t *testing.T) {
+		var out bytes.Buffer
+		require.NoError(t, renderRunTrace(&out, &traces[0], false))
+		require.Contains(t, out.String(), "tokens:   in=100 out=200\n")
+	})
+
+	t.Run("breakdown with cache and reasoning", func(t *testing.T) {
+		traces[0].TokenUsage = types.TokenUsage{Input: 1234, Output: 56, CacheRead: 1000, Reasoning: 12}
+		var out bytes.Buffer
+		require.NoError(t, renderRunTrace(&out, &traces[0], false))
+		require.Contains(t, out.String(), "tokens:   in=1234 (cache read 1000) out=56 (reasoning 12)\n")
+	})
 }
 
 // TestToolStatus_RendersErrorCategory pins that a failed tool call
@@ -182,10 +163,7 @@ func TestToolStatus_RendersErrorCategory(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := toolStatus(tc.tc, false)
-			if got != tc.want {
-				t.Errorf("toolStatus = %q, want %q", got, tc.want)
-			}
+			require.Equal(t, tc.want, toolStatus(tc.tc, false))
 		})
 	}
 }
@@ -200,99 +178,54 @@ func TestTraceShow_RendersErrorCategoryEndToEnd(t *testing.T) {
 	path := writeTraceFile(t, traces)
 
 	var out bytes.Buffer
-	if err := runTraceShowWith(path, &out, colorNever); err != nil {
-		t.Fatalf("show: %v", err)
-	}
-	if !strings.Contains(out.String(), "fail (permission_denied)") {
-		t.Errorf("trace show output missing rendered error category\n--- output ---\n%s", out.String())
-	}
+	require.NoError(t, runTraceShowWith(path, &out, colorNever))
+	require.Contains(t, out.String(), "fail (permission_denied)")
 }
 
 func TestTraceShow_AlwaysEmitsAnsi(t *testing.T) {
 	path := writeTraceFile(t, sampleTraces())
 	var out bytes.Buffer
-	if err := runTraceShowWith(path, &out, colorAlways); err != nil {
-		t.Fatalf("show: %v", err)
-	}
-	if !strings.Contains(out.String(), "\x1b[") {
-		t.Error("colorAlways output must contain ANSI escapes")
-	}
+	require.NoError(t, runTraceShowWith(path, &out, colorAlways))
+	require.Contains(t, out.String(), "\x1b[", "colorAlways output must contain ANSI escapes")
 }
 
-func TestTraceShow_EmptyFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "empty.jsonl")
-	if err := os.WriteFile(path, nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
+func TestTraceShow_EmptyFileReturnsError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "empty.jsonl")
+	require.NoError(t, os.WriteFile(path, nil, 0o644))
 	var out bytes.Buffer
-	err := runTraceShowWith(path, &out, colorNever)
-	if err == nil {
-		t.Fatal("show on empty file: expected error")
-	}
+	require.Error(t, runTraceShowWith(path, &out, colorNever))
 }
 
 func TestTraceStats_JSONOutput(t *testing.T) {
 	path := writeTraceFile(t, sampleTraces())
 	var out bytes.Buffer
-	if err := runTraceStatsWith(path, &out, "json", 5); err != nil {
-		t.Fatalf("stats: %v", err)
-	}
+	require.NoError(t, runTraceStatsWith(path, &out, "json", 5))
 
 	var stats TraceStats
-	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &stats); err != nil {
-		t.Fatalf("decode stats: %v", err)
-	}
-	if !strings.Contains(out.String(), `"permissionDenials":2`) {
-		t.Fatalf("stats JSON missing permissionDenials field: %s", out.String())
-	}
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(out.Bytes()), &stats))
+	require.Contains(t, out.String(), `"permissionDenials":2`)
 
-	if stats.TotalTurns != 3 {
-		t.Errorf("TotalTurns = %d, want 3", stats.TotalTurns)
-	}
-	if stats.TokensInput != 100 || stats.TokensOutput != 200 {
-		t.Errorf("tokens = %d/%d, want 100/200", stats.TokensInput, stats.TokensOutput)
-	}
-	if stats.ToolCalls != 3 || stats.ToolErrors != 1 {
-		t.Errorf("ToolCalls/Errors = %d/%d, want 3/1", stats.ToolCalls, stats.ToolErrors)
-	}
-	if stats.PermissionDenials != 2 {
-		t.Errorf("PermissionDenials = %d, want 2", stats.PermissionDenials)
-	}
-	if stats.LongestToolCallMs != 500 {
-		t.Errorf("LongestToolCallMs = %d, want 500", stats.LongestToolCallMs)
-	}
-	if stats.TotalWallClockMs != 5000 {
-		t.Errorf("TotalWallClockMs = %d, want 5000", stats.TotalWallClockMs)
-	}
-	if stats.ToolCallsByName["edit_file"] != 2 {
-		t.Errorf("edit_file count = %d, want 2", stats.ToolCallsByName["edit_file"])
-	}
-	if stats.Outcomes["success"] != 1 {
-		t.Errorf("success count = %d, want 1", stats.Outcomes["success"])
-	}
-	if stats.RunID != "run-1" {
-		t.Errorf("RunID = %q, want run-1", stats.RunID)
-	}
-	if len(stats.SlowestToolCalls) != 3 {
-		t.Fatalf("SlowestToolCalls len = %d, want 3", len(stats.SlowestToolCalls))
-	}
-	if stats.SlowestToolCalls[0].DurationMs != 500 {
-		t.Errorf("slowest top = %dms, want 500ms", stats.SlowestToolCalls[0].DurationMs)
-	}
+	require.Equal(t, 3, stats.TotalTurns)
+	require.Equal(t, 100, stats.TokensInput)
+	require.Equal(t, 200, stats.TokensOutput)
+	require.Equal(t, 3, stats.ToolCalls)
+	require.Equal(t, 1, stats.ToolErrors)
+	require.Equal(t, 2, stats.PermissionDenials)
+	require.Equal(t, int64(500), stats.LongestToolCallMs)
+	require.Equal(t, int64(5000), stats.TotalWallClockMs)
+	require.Equal(t, 2, stats.ToolCallsByName["edit_file"])
+	require.Equal(t, 1, stats.Outcomes["success"])
+	require.Equal(t, "run-1", stats.RunID)
+	require.Len(t, stats.SlowestToolCalls, 3)
+	require.Equal(t, int64(500), stats.SlowestToolCalls[0].DurationMs)
 }
 
 func TestTraceStats_TextOutput(t *testing.T) {
 	path := writeTraceFile(t, sampleTraces())
 	var out bytes.Buffer
-	if err := runTraceStatsWith(path, &out, "text", 5); err != nil {
-		t.Fatalf("stats text: %v", err)
-	}
-	s := out.String()
+	require.NoError(t, runTraceStatsWith(path, &out, "text", 5))
 	for _, want := range []string{"trace stats", "run-1", "total turns:", "tokens in / out:", "permission denials:", "2", "edit_file", "outcomes:", "success"} {
-		if !strings.Contains(s, want) {
-			t.Errorf("text stats missing %q\n%s", want, s)
-		}
+		require.Contains(t, out.String(), want)
 	}
 }
 
@@ -302,133 +235,92 @@ func TestTraceStats_TokenBreakdown(t *testing.T) {
 	path := writeTraceFile(t, traces)
 
 	var jsonOut bytes.Buffer
-	if err := runTraceStatsWith(path, &jsonOut, "json", 5); err != nil {
-		t.Fatalf("stats json: %v", err)
-	}
+	require.NoError(t, runTraceStatsWith(path, &jsonOut, "json", 5))
 	var stats TraceStats
-	if err := json.Unmarshal(bytes.TrimSpace(jsonOut.Bytes()), &stats); err != nil {
-		t.Fatalf("decode stats: %v", err)
-	}
-	if stats.TokensCacheRead != 1000 || stats.TokensCacheWrite != 20 || stats.TokensReasoning != 12 {
-		t.Errorf("breakdown = %d/%d/%d, want 1000/20/12", stats.TokensCacheRead, stats.TokensCacheWrite, stats.TokensReasoning)
-	}
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(jsonOut.Bytes()), &stats))
+	require.Equal(t, 1000, stats.TokensCacheRead)
+	require.Equal(t, 20, stats.TokensCacheWrite)
+	require.Equal(t, 12, stats.TokensReasoning)
 
 	var textOut bytes.Buffer
-	if err := runTraceStatsWith(path, &textOut, "text", 5); err != nil {
-		t.Fatalf("stats text: %v", err)
-	}
-	if want := "tokens in / out:  1234 (cache read 1000, cache write 20) / 56 (reasoning 12)\n"; !strings.Contains(textOut.String(), want) {
-		t.Errorf("text stats missing %q:\n%s", want, textOut.String())
-	}
+	require.NoError(t, runTraceStatsWith(path, &textOut, "text", 5))
+	require.Contains(t, textOut.String(), "tokens in / out:  1234 (cache read 1000, cache write 20) / 56 (reasoning 12)\n")
 }
 
 func TestTraceStats_OmitsZeroTokenBreakdown(t *testing.T) {
 	path := writeTraceFile(t, sampleTraces())
 	var jsonOut bytes.Buffer
-	if err := runTraceStatsWith(path, &jsonOut, "json", 5); err != nil {
-		t.Fatalf("stats json: %v", err)
-	}
+	require.NoError(t, runTraceStatsWith(path, &jsonOut, "json", 5))
 	for _, key := range []string{"tokensCacheRead", "tokensCacheWrite", "tokensReasoning"} {
-		if strings.Contains(jsonOut.String(), key) {
-			t.Errorf("stats JSON carries %s for a run without breakdown: %s", key, jsonOut.String())
-		}
+		require.NotContains(t, jsonOut.String(), key, "a run without breakdown must omit %s", key)
 	}
+
 	var textOut bytes.Buffer
-	if err := runTraceStatsWith(path, &textOut, "text", 5); err != nil {
-		t.Fatalf("stats text: %v", err)
-	}
-	if !strings.Contains(textOut.String(), "tokens in / out:  100 / 200\n") {
-		t.Errorf("text stats must print bare counts without breakdown:\n%s", textOut.String())
-	}
+	require.NoError(t, runTraceStatsWith(path, &textOut, "text", 5))
+	require.Contains(t, textOut.String(), "tokens in / out:  100 / 200\n")
 }
 
-func TestTraceStats_InvalidFormat(t *testing.T) {
+func TestTraceStats_RejectsUnknownFormat(t *testing.T) {
 	path := writeTraceFile(t, sampleTraces())
 	var out bytes.Buffer
-	err := runTraceStatsWith(path, &out, "yaml", 5)
-	if err == nil {
-		t.Fatal("expected error for invalid format")
-	}
+	require.Error(t, runTraceStatsWith(path, &out, "yaml", 5))
 }
 
 func TestTraceGrep_SubstringMatch(t *testing.T) {
 	path := writeTraceFile(t, sampleTraces())
+	pred, err := compileJQ("")
+	require.NoError(t, err)
+
 	var out bytes.Buffer
-	pred, _ := compileJQ("")
-	if err := runTraceGrepWith(context.Background(), path, &out, "edit_file", pred, false); err != nil {
-		t.Fatalf("grep: %v", err)
-	}
-	if !strings.Contains(out.String(), "edit_file") {
-		t.Errorf("grep output missing match: %q", out.String())
-	}
+	require.NoError(t, runTraceGrepWith(context.Background(), path, &out, "edit_file", pred, false))
+	require.Contains(t, out.String(), "edit_file")
 
 	out.Reset()
-	if err := runTraceGrepWith(context.Background(), path, &out, "no_such_string", pred, false); err != nil {
-		t.Fatalf("grep: %v", err)
-	}
-	if out.Len() != 0 {
-		t.Errorf("grep miss should be empty, got %q", out.String())
-	}
+	require.NoError(t, runTraceGrepWith(context.Background(), path, &out, "no_such_string", pred, false))
+	require.Empty(t, out.String(), "a substring miss must produce no output")
 }
 
 func TestTraceGrep_JQEqual(t *testing.T) {
 	path := writeTraceFile(t, sampleTraces())
-	pred, err := compileJQ(`.outcome == "success"`)
-	if err != nil {
-		t.Fatalf("compileJQ: %v", err)
-	}
-	var out bytes.Buffer
-	if err := runTraceGrepWith(context.Background(), path, &out, "", pred, false); err != nil {
-		t.Fatalf("grep: %v", err)
-	}
-	if !strings.Contains(out.String(), `"id":"run-1"`) {
-		t.Errorf("grep output missing record: %q", out.String())
-	}
 
-	pred2, err := compileJQ(`.outcome == "max_turns"`)
-	if err != nil {
-		t.Fatalf("compileJQ: %v", err)
-	}
-	out.Reset()
-	if err := runTraceGrepWith(context.Background(), path, &out, "", pred2, false); err != nil {
-		t.Fatalf("grep: %v", err)
-	}
-	if out.Len() != 0 {
-		t.Errorf("non-matching predicate should produce no output, got %q", out.String())
-	}
+	t.Run("matching predicate keeps record", func(t *testing.T) {
+		pred, err := compileJQ(`.outcome == "success"`)
+		require.NoError(t, err)
+		var out bytes.Buffer
+		require.NoError(t, runTraceGrepWith(context.Background(), path, &out, "", pred, false))
+		require.Contains(t, out.String(), `"id":"run-1"`)
+	})
+
+	t.Run("non-matching predicate drops record", func(t *testing.T) {
+		pred, err := compileJQ(`.outcome == "max_turns"`)
+		require.NoError(t, err)
+		var out bytes.Buffer
+		require.NoError(t, runTraceGrepWith(context.Background(), path, &out, "", pred, false))
+		require.Empty(t, out.String())
+	})
 }
 
 func TestTraceGrep_JQContains(t *testing.T) {
 	path := writeTraceFile(t, sampleTraces())
 	pred, err := compileJQ(`.outcome contains "uc"`)
-	if err != nil {
-		t.Fatalf("compileJQ: %v", err)
-	}
+	require.NoError(t, err)
+
 	var out bytes.Buffer
-	if err := runTraceGrepWith(context.Background(), path, &out, "", pred, false); err != nil {
-		t.Fatalf("grep: %v", err)
-	}
-	if !strings.Contains(out.String(), `"outcome":"success"`) {
-		t.Errorf("contains should match: %q", out.String())
-	}
+	require.NoError(t, runTraceGrepWith(context.Background(), path, &out, "", pred, false))
+	require.Contains(t, out.String(), `"outcome":"success"`)
 }
 
 func TestTraceGrep_JQPathIntoArray(t *testing.T) {
 	path := writeTraceFile(t, sampleTraces())
 	pred, err := compileJQ(`.toolCalls.0.name == "edit_file"`)
-	if err != nil {
-		t.Fatalf("compileJQ: %v", err)
-	}
+	require.NoError(t, err)
+
 	var out bytes.Buffer
-	if err := runTraceGrepWith(context.Background(), path, &out, "", pred, false); err != nil {
-		t.Fatalf("grep: %v", err)
-	}
-	if !strings.Contains(out.String(), `"id":"run-1"`) {
-		t.Errorf("array path should match: %q", out.String())
-	}
+	require.NoError(t, runTraceGrepWith(context.Background(), path, &out, "", pred, false))
+	require.Contains(t, out.String(), `"id":"run-1"`)
 }
 
-func TestRunTraceGrepWith_JQNotEqual(t *testing.T) {
+func TestTraceGrep_JQNotEqual(t *testing.T) {
 	traces := []types.RunTrace{
 		{ID: "run-1", Outcome: "success"},
 		{ID: "run-2", Outcome: "error"},
@@ -437,48 +329,34 @@ func TestRunTraceGrepWith_JQNotEqual(t *testing.T) {
 	path := writeTraceFile(t, traces)
 
 	pred, err := compileJQ(`.outcome != "success"`)
-	if err != nil {
-		t.Fatalf("compileJQ: %v", err)
-	}
+	require.NoError(t, err)
 	var out bytes.Buffer
-	if err := runTraceGrepWith(context.Background(), path, &out, "", pred, false); err != nil {
-		t.Fatalf("grep: %v", err)
-	}
+	require.NoError(t, runTraceGrepWith(context.Background(), path, &out, "", pred, false))
 	got := out.String()
-	if strings.Contains(got, `"id":"run-1"`) {
-		t.Errorf("!= predicate must drop success record: %q", got)
-	}
-	if !strings.Contains(got, `"id":"run-2"`) || !strings.Contains(got, `"id":"run-3"`) {
-		t.Errorf("!= predicate must keep non-success records: %q", got)
-	}
+	require.NotContains(t, got, `"id":"run-1"`, "!= predicate must drop success record")
+	require.Contains(t, got, `"id":"run-2"`, "!= predicate must keep non-success records")
+	require.Contains(t, got, `"id":"run-3"`, "!= predicate must keep non-success records")
 }
 
 func TestTraceGrep_Invert(t *testing.T) {
 	path := writeTraceFile(t, sampleTraces())
 	pred, err := compileJQ(`.outcome == "success"`)
-	if err != nil {
-		t.Fatalf("compileJQ: %v", err)
-	}
+	require.NoError(t, err)
+
 	var out bytes.Buffer
-	if err := runTraceGrepWith(context.Background(), path, &out, "", pred, true); err != nil {
-		t.Fatalf("grep: %v", err)
-	}
-	if out.Len() != 0 {
-		t.Errorf("inverted match of the only record should be empty, got %q", out.String())
-	}
+	require.NoError(t, runTraceGrepWith(context.Background(), path, &out, "", pred, true))
+	require.Empty(t, out.String(), "inverted match of the only record must be empty")
 }
 
-func TestCompileJQ_Errors(t *testing.T) {
-	cases := []string{
+func TestCompileJQ_RejectsMalformedExpressions(t *testing.T) {
+	for _, expr := range []string{
 		"no_dot == 1",
 		`. notanop "x"`,
 		`. == `,
 		`. == unclosed"`,
-	}
-	for _, c := range cases {
-		if _, err := compileJQ(c); err == nil {
-			t.Errorf("expected error for %q", c)
-		}
+	} {
+		_, err := compileJQ(expr)
+		require.Error(t, err, "expression %q", expr)
 	}
 }
 
@@ -488,24 +366,10 @@ func TestCompileJQ_Errors(t *testing.T) {
 // which reads from os.Stdin directly.
 func withStdinFromTraces(t *testing.T, traces []types.RunTrace) {
 	t.Helper()
-	dir := t.TempDir()
-	tmp := filepath.Join(dir, "stdin.jsonl")
-	var buf bytes.Buffer
-	for _, tr := range traces {
-		data, err := json.Marshal(tr)
-		if err != nil {
-			t.Fatal(err)
-		}
-		buf.Write(data)
-		buf.WriteByte('\n')
-	}
-	if err := os.WriteFile(tmp, buf.Bytes(), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	tmp := filepath.Join(t.TempDir(), "stdin.jsonl")
+	require.NoError(t, os.WriteFile(tmp, traceJSONL(t, traces), 0o644))
 	f, err := os.Open(tmp)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	origStdin := os.Stdin
 	os.Stdin = f
 	t.Cleanup(func() {
@@ -517,132 +381,98 @@ func withStdinFromTraces(t *testing.T, traces []types.RunTrace) {
 func TestTraceGrep_StdinPath(t *testing.T) {
 	withStdinFromTraces(t, sampleTraces())
 
-	pred, _ := compileJQ(`.id == "run-1"`)
+	pred, err := compileJQ(`.id == "run-1"`)
+	require.NoError(t, err)
 	var out bytes.Buffer
-	if err := runTraceGrepWith(context.Background(), "-", &out, "", pred, false); err != nil {
-		t.Fatalf("grep -: %v", err)
-	}
-	if !strings.Contains(out.String(), `"id":"run-1"`) {
-		t.Errorf("stdin grep missing match: %q", out.String())
-	}
+	require.NoError(t, runTraceGrepWith(context.Background(), "-", &out, "", pred, false))
+	require.Contains(t, out.String(), `"id":"run-1"`)
 }
 
-func TestRunTraceShowWith_StdinPath(t *testing.T) {
+func TestTraceShow_ReadsStdinPath(t *testing.T) {
 	withStdinFromTraces(t, sampleTraces())
 
 	var out bytes.Buffer
-	if err := runTraceShowWith("-", &out, colorNever); err != nil {
-		t.Fatalf("show -: %v", err)
-	}
-	if !strings.Contains(out.String(), "run-1") {
-		t.Errorf("stdin show missing record: %q", out.String())
-	}
+	require.NoError(t, runTraceShowWith("-", &out, colorNever))
+	require.Contains(t, out.String(), "run-1")
 }
 
-func TestRunTraceStatsWith_StdinPath(t *testing.T) {
+func TestTraceStats_ReadsStdinPath(t *testing.T) {
 	withStdinFromTraces(t, sampleTraces())
 
 	var out bytes.Buffer
-	if err := runTraceStatsWith("-", &out, "json", 5); err != nil {
-		t.Fatalf("stats -: %v", err)
-	}
+	require.NoError(t, runTraceStatsWith("-", &out, "json", 5))
 	var stats TraceStats
-	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &stats); err != nil {
-		t.Fatalf("decode stats: %v", err)
-	}
-	if stats.RunID != "run-1" {
-		t.Errorf("stdin stats RunID = %q, want run-1", stats.RunID)
-	}
-	if stats.TotalTurns != 3 {
-		t.Errorf("stdin stats TotalTurns = %d, want 3", stats.TotalTurns)
-	}
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(out.Bytes()), &stats))
+	require.Equal(t, "run-1", stats.RunID)
+	require.Equal(t, 3, stats.TotalTurns)
 }
 
-func TestRunTraceTailWith_StdinPath(t *testing.T) {
+func TestTraceTail_ReadsStdinPath(t *testing.T) {
 	withStdinFromTraces(t, sampleTraces())
 
 	var out bytes.Buffer
-	if err := runTraceTailWith(context.Background(), "-", &out, colorNever, false, 10*time.Millisecond); err != nil {
-		t.Fatalf("tail -: %v", err)
-	}
-	if !strings.Contains(out.String(), "run-1") {
-		t.Errorf("stdin tail missing record: %q", out.String())
-	}
+	require.NoError(t, runTraceTailWith(context.Background(), "-", &out, colorNever, false, 10*time.Millisecond))
+	require.Contains(t, out.String(), "run-1")
 }
 
-func TestParseColorMode(t *testing.T) {
+func TestParseColorMode_AcceptsAliasesAndRejectsUnknown(t *testing.T) {
 	cases := []struct {
+		name      string
 		in        string
 		wantMode  colorMode
 		wantError bool
 	}{
-		{"", colorAuto, false},
-		{"auto", colorAuto, false},
-		{"AUTO", colorAuto, false},
-		{"always", colorAlways, false},
-		{"force", colorAlways, false},
-		{"yes", colorAlways, false},
-		{"never", colorNever, false},
-		{"no", colorNever, false},
-		{"off", colorNever, false},
-		{"rainbow", colorAuto, true},
-		{"  ", colorAuto, true},
+		{"empty input defaults to auto", "", colorAuto, false},
+		{"auto", "auto", colorAuto, false},
+		{"auto in upper case", "AUTO", colorAuto, false},
+		{"always", "always", colorAlways, false},
+		{"force is an always alias", "force", colorAlways, false},
+		{"yes is an always alias", "yes", colorAlways, false},
+		{"never", "never", colorNever, false},
+		{"no is a never alias", "no", colorNever, false},
+		{"off is a never alias", "off", colorNever, false},
+		{"unknown word", "rainbow", colorAuto, true},
+		{"whitespace only", "  ", colorAuto, true},
 	}
-	for _, c := range cases {
-		got, err := parseColorMode(c.in)
-		if c.wantError {
-			if err == nil {
-				t.Errorf("parseColorMode(%q): expected error, got nil", c.in)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseColorMode(tc.in)
+			if tc.wantError {
+				require.Error(t, err)
+				return
 			}
-			continue
-		}
-		if err != nil {
-			t.Errorf("parseColorMode(%q): unexpected error %v", c.in, err)
-		}
-		if got != c.wantMode {
-			t.Errorf("parseColorMode(%q) = %v, want %v", c.in, got, c.wantMode)
-		}
+			require.NoError(t, err)
+			require.Equal(t, tc.wantMode, got)
+		})
 	}
 }
 
+// NO_COLOR suppresses ANSI output in auto mode (https://no-color.org/),
+// but an explicit colorAlways still produces it.
 func TestShouldColor_NoColorEnvVar(t *testing.T) {
-	// Per https://no-color.org/, any non-empty NO_COLOR must suppress
-	// ANSI output under auto-mode. Use a pipe (one end is an *os.File
-	// that IsTerminal returns true for is impossible to fabricate in
-	// a test without a real TTY) — but the NO_COLOR check sits before
-	// the TTY check, so even an actual TTY-looking file goes false.
 	t.Setenv("NO_COLOR", "1")
 	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() {
 		_ = r.Close()
 		_ = w.Close()
 	})
-	if shouldColor(colorAuto, w) {
-		t.Error("shouldColor(colorAuto) with NO_COLOR=1 must be false")
-	}
-	// colorAlways must still win over NO_COLOR — an explicit opt-in
-	// from the operator is not overridden by ambient env.
-	if !shouldColor(colorAlways, w) {
-		t.Error("shouldColor(colorAlways) must remain true even with NO_COLOR set")
-	}
+	require.False(t, shouldColor(colorAuto, w), "shouldColor(colorAuto) with NO_COLOR=1 must be false")
+	require.True(t, shouldColor(colorAlways, w), "shouldColor(colorAlways) must remain true even with NO_COLOR set")
 }
 
-func TestRunTraceGrepWith_OversizedLineSkipped(t *testing.T) {
+func TestTraceGrep_SkipsOversizedLine(t *testing.T) {
 	// Write a valid record, then a line larger than MaxLineBytes, then
 	// a second valid record. The oversized line must be silently
 	// skipped and BOTH valid records must appear in the output.
-	traces := sampleTraces()
-	first, _ := json.Marshal(traces[0])
-	second := types.RunTrace{ID: "run-2", Outcome: "success"}
-	secondBytes, _ := json.Marshal(second)
+	first, err := json.Marshal(sampleTraces()[0])
+	require.NoError(t, err)
+	secondBytes, err := json.Marshal(types.RunTrace{ID: "run-2", Outcome: "success"})
+	require.NoError(t, err)
 
 	oversized := bytes.Repeat([]byte("x"), tracereader.MaxLineBytes+128)
 
-	dir := t.TempDir()
-	path := filepath.Join(dir, "oversized.jsonl")
+	path := filepath.Join(t.TempDir(), "oversized.jsonl")
 	var buf bytes.Buffer
 	buf.Write(first)
 	buf.WriteByte('\n')
@@ -650,33 +480,21 @@ func TestRunTraceGrepWith_OversizedLineSkipped(t *testing.T) {
 	buf.WriteByte('\n')
 	buf.Write(secondBytes)
 	buf.WriteByte('\n')
-	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o644))
 
-	pred, _ := compileJQ("")
+	pred, err := compileJQ("")
+	require.NoError(t, err)
 	var out bytes.Buffer
-	if err := runTraceGrepWith(context.Background(), path, &out, "", pred, false); err != nil {
-		t.Fatalf("grep oversized: %v", err)
-	}
-	got := out.String()
-	if !strings.Contains(got, `"id":"run-1"`) {
-		t.Errorf("first record missing from output: %q", got)
-	}
-	if !strings.Contains(got, `"id":"run-2"`) {
-		t.Errorf("second record (after oversized line) missing — grep dropped records after the cap: %q", got)
-	}
+	require.NoError(t, runTraceGrepWith(context.Background(), path, &out, "", pred, false))
+	require.Contains(t, out.String(), `"id":"run-1"`, "first record must precede the oversized line")
+	require.Contains(t, out.String(), `"id":"run-2"`, "record after the oversized line must still be emitted")
 }
 
 func TestTraceTail_OneShot(t *testing.T) {
 	path := writeTraceFile(t, sampleTraces())
 	var out bytes.Buffer
-	if err := runTraceTailWith(context.Background(), path, &out, colorNever, false, 10*time.Millisecond); err != nil {
-		t.Fatalf("tail: %v", err)
-	}
-	if !strings.Contains(out.String(), "run-1") {
-		t.Errorf("tail output missing record: %q", out.String())
-	}
+	require.NoError(t, runTraceTailWith(context.Background(), path, &out, colorNever, false, 10*time.Millisecond))
+	require.Contains(t, out.String(), "run-1")
 }
 
 // safeBuf is a tiny synchronised buffer so the tail goroutine can write
@@ -698,71 +516,67 @@ func (b *safeBuf) String() string {
 	return b.buf.String()
 }
 
-func TestOutcomeColor(t *testing.T) {
+func TestOutcomeColor_MapsOutcomeToColor(t *testing.T) {
 	cases := []struct {
+		name    string
 		outcome string
 		want    string
 	}{
-		{"success", ansiGreen},
-		{"error", ansiRed},
-		{"verification_failed", ansiRed},
-		{"verification_error", ansiRed},
-		{"tool_failures", ansiRed},
-		{"max_turns", ansiYellow},
-		{"max_tokens", ansiYellow},
-		{"budget_exceeded", ansiYellow},
-		{"stalled", ansiYellow},
-		{"timeout", ansiYellow},
-		{"context_exhausted", ansiYellow},
-		{"cancelled", ansiGrey},
-		{"", ansiBlue},
-		{"some_unknown_outcome", ansiBlue},
+		{"success", "success", ansiGreen},
+		{"error", "error", ansiRed},
+		{"verification failed", "verification_failed", ansiRed},
+		{"verification error", "verification_error", ansiRed},
+		{"tool failures", "tool_failures", ansiRed},
+		{"max turns", "max_turns", ansiYellow},
+		{"max tokens", "max_tokens", ansiYellow},
+		{"budget exceeded", "budget_exceeded", ansiYellow},
+		{"stalled", "stalled", ansiYellow},
+		{"timeout", "timeout", ansiYellow},
+		{"context exhausted", "context_exhausted", ansiYellow},
+		{"cancelled", "cancelled", ansiGrey},
+		{"empty outcome", "", ansiBlue},
+		{"unknown outcome", "some_unknown_outcome", ansiBlue},
 	}
 	for _, c := range cases {
-		got := outcomeColor(c.outcome)
-		if got != c.want {
-			t.Errorf("outcomeColor(%q) = %q, want %q", c.outcome, got, c.want)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			require.Equal(t, c.want, outcomeColor(c.outcome))
+		})
 	}
 }
 
-func TestParseJQValue(t *testing.T) {
+func TestParseJQValue_ParsesLiteralsAndRejectsInvalid(t *testing.T) {
 	cases := []struct {
+		name      string
 		in        string
 		want      any
 		wantError bool
 	}{
-		{`"hello"`, "hello", false},
-		{`"with \"quotes\""`, `with "quotes"`, false},
-		{"true", true, false},
-		{"false", false, false},
-		{"null", nil, false},
-		{"42", float64(42), false},
-		{"3.14", float64(3.14), false},
-		{"-7", float64(-7), false},
-		{"", nil, true},
-		{`"unclosed`, nil, true},
-		{"not_a_value", nil, true},
+		{"double-quoted string", `"hello"`, "hello", false},
+		{"escaped quotes", `"with \"quotes\""`, `with "quotes"`, false},
+		{"true", "true", true, false},
+		{"false", "false", false, false},
+		{"null", "null", nil, false},
+		{"integer", "42", float64(42), false},
+		{"decimal", "3.14", float64(3.14), false},
+		{"negative integer", "-7", float64(-7), false},
+		{"empty input", "", nil, true},
+		{"unclosed string", `"unclosed`, nil, true},
+		{"bare word", "not_a_value", nil, true},
 	}
 	for _, c := range cases {
-		got, err := parseJQValue(c.in)
-		if c.wantError {
-			if err == nil {
-				t.Errorf("parseJQValue(%q): expected error, got %v", c.in, got)
+		t.Run(c.name, func(t *testing.T) {
+			got, err := parseJQValue(c.in)
+			if c.wantError {
+				require.Error(t, err)
+				return
 			}
-			continue
-		}
-		if err != nil {
-			t.Errorf("parseJQValue(%q): unexpected error %v", c.in, err)
-			continue
-		}
-		if got != c.want {
-			t.Errorf("parseJQValue(%q) = %v, want %v", c.in, got, c.want)
-		}
+			require.NoError(t, err)
+			require.Equal(t, c.want, got)
+		})
 	}
 }
 
-func TestWalkPath(t *testing.T) {
+func TestWalkPath_ResolvesObjectAndArrayPaths(t *testing.T) {
 	doc := map[string]any{
 		"name": "stirrup",
 		"toolCalls": []any{
@@ -799,7 +613,7 @@ func TestWalkPath(t *testing.T) {
 			ok:   false,
 		},
 		{
-			name: "scalar default arm",
+			name: "path into scalar",
 			path: []pathSeg{{key: "name"}, {key: "any"}},
 			ok:   false,
 		},
@@ -810,68 +624,46 @@ func TestWalkPath(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		got, ok := walkPath(doc, c.path)
-		if ok != c.ok {
-			t.Errorf("%s: ok = %v, want %v", c.name, ok, c.ok)
-			continue
-		}
-		if !ok {
-			continue
-		}
-		if got != c.want {
-			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := walkPath(doc, c.path)
+			require.Equal(t, c.ok, ok)
+			if !c.ok {
+				return
+			}
+			require.Equal(t, c.want, got)
+		})
 	}
 }
 
 func TestRunTraceGrepWith_JQNumericAndBool(t *testing.T) {
-	// Exercise jsonEqual's float64 and bool arms via the predicate
-	// path, plus jq paths that resolve to those JSON types.
+	// Numeric and boolean jq comparisons match the JSON values of the same type.
 	traces := []types.RunTrace{
 		{ID: "run-1", Turns: 3, Outcome: "success", ToolCalls: []types.ToolCallSummary{{Name: "edit_file", Success: true}}},
 		{ID: "run-2", Turns: 0, Outcome: "max_turns", ToolCalls: []types.ToolCallSummary{{Name: "run_command", Success: false}}},
 	}
 	path := writeTraceFile(t, traces)
 
-	// .turns == 3 reaches the float64 equality arm.
-	pred, err := compileJQ(".turns == 3")
-	if err != nil {
-		t.Fatalf("compileJQ: %v", err)
-	}
-	var out bytes.Buffer
-	if err := runTraceGrepWith(context.Background(), path, &out, "", pred, false); err != nil {
-		t.Fatalf("grep: %v", err)
-	}
-	got := out.String()
-	if !strings.Contains(got, `"id":"run-1"`) {
-		t.Errorf(".turns == 3 should match run-1: %q", got)
-	}
-	if strings.Contains(got, `"id":"run-2"`) {
-		t.Errorf(".turns == 3 must not match run-2 (turns=0): %q", got)
-	}
+	t.Run("numeric equality", func(t *testing.T) {
+		pred, err := compileJQ(".turns == 3")
+		require.NoError(t, err)
+		var out bytes.Buffer
+		require.NoError(t, runTraceGrepWith(context.Background(), path, &out, "", pred, false))
+		require.Contains(t, out.String(), `"id":"run-1"`)
+		require.NotContains(t, out.String(), `"id":"run-2"`)
+	})
 
-	// .toolCalls.0.success == true reaches the bool equality arm.
-	pred2, err := compileJQ(".toolCalls.0.success == true")
-	if err != nil {
-		t.Fatalf("compileJQ bool: %v", err)
-	}
-	out.Reset()
-	if err := runTraceGrepWith(context.Background(), path, &out, "", pred2, false); err != nil {
-		t.Fatalf("grep bool: %v", err)
-	}
-	got = out.String()
-	if !strings.Contains(got, `"id":"run-1"`) {
-		t.Errorf("bool predicate should match run-1: %q", got)
-	}
-	if strings.Contains(got, `"id":"run-2"`) {
-		t.Errorf("bool predicate must not match run-2 (success=false): %q", got)
-	}
+	t.Run("boolean equality", func(t *testing.T) {
+		pred, err := compileJQ(".toolCalls.0.success == true")
+		require.NoError(t, err)
+		var out bytes.Buffer
+		require.NoError(t, runTraceGrepWith(context.Background(), path, &out, "", pred, false))
+		require.Contains(t, out.String(), `"id":"run-1"`)
+		require.NotContains(t, out.String(), `"id":"run-2"`)
+	})
 }
 
 func TestRunTraceStatsWith_PrefersConfigRunID(t *testing.T) {
-	// When RunConfig.RunID is set, stats must surface it rather than
-	// RunTrace.ID. Two records with the same event ID but distinct
-	// config IDs would otherwise lose the operator-supplied label.
+	// The stats run ID comes from RunConfig.RunID when it is set, not from RunTrace.ID.
 	traces := []types.RunTrace{{
 		ID:        "event-1",
 		Config:    types.RunConfig{RunID: "operator-supplied-id"},
@@ -880,16 +672,11 @@ func TestRunTraceStatsWith_PrefersConfigRunID(t *testing.T) {
 	}}
 	path := writeTraceFile(t, traces)
 	var out bytes.Buffer
-	if err := runTraceStatsWith(path, &out, "json", 5); err != nil {
-		t.Fatalf("stats: %v", err)
-	}
+	require.NoError(t, runTraceStatsWith(path, &out, "json", 5))
+
 	var stats TraceStats
-	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &stats); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if stats.RunID != "operator-supplied-id" {
-		t.Errorf("RunID = %q, want operator-supplied-id (RunConfig.RunID takes precedence over RunTrace.ID)", stats.RunID)
-	}
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(out.Bytes()), &stats))
+	require.Equal(t, "operator-supplied-id", stats.RunID)
 }
 
 func TestTraceTail_FollowReadsAppended(t *testing.T) {
@@ -897,9 +684,7 @@ func TestTraceTail_FollowReadsAppended(t *testing.T) {
 	path := filepath.Join(dir, "live.jsonl")
 	initial := sampleTraces()
 	data, _ := json.Marshal(initial[0])
-	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, append(data, '\n'), 0o644))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -910,47 +695,30 @@ func TestTraceTail_FollowReadsAppended(t *testing.T) {
 		doneCh <- runTraceTailWith(ctx, path, out, colorNever, true, 10*time.Millisecond)
 	}()
 
-	waitFor := func(needle string, deadline time.Duration) bool {
-		t.Helper()
-		end := time.Now().Add(deadline)
-		for time.Now().Before(end) {
-			if strings.Contains(out.String(), needle) {
-				return true
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
-		return false
-	}
-
-	if !waitFor("run-1", 2*time.Second) {
-		cancel()
-		t.Fatalf("tail did not surface initial record; got %q", out.String())
-	}
+	require.Eventually(t, func() bool {
+		return strings.Contains(out.String(), "run-1")
+	}, 2*time.Second, 20*time.Millisecond, "tail did not surface the initial record")
 
 	// Append a second record while tail is following.
 	second := types.RunTrace{ID: "run-2", Turns: 1}
 	data2, _ := json.Marshal(second)
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.Write(append(data2, '\n')); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	_, err = f.Write(append(data2, '\n'))
+	require.NoError(t, err)
 	_ = f.Close()
 
-	if !waitFor("run-2", 2*time.Second) {
-		cancel()
-		t.Fatalf("tail did not surface appended record; got %q", out.String())
-	}
+	require.Eventually(t, func() bool {
+		return strings.Contains(out.String(), "run-2")
+	}, 2*time.Second, 20*time.Millisecond, "tail did not surface the appended record")
 
 	cancel()
 	select {
 	case err := <-doneCh:
-		if err != nil && !errors.Is(err, context.Canceled) {
-			t.Fatalf("tail returned error: %v", err)
+		if err != nil {
+			require.ErrorIs(t, err, context.Canceled)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("tail did not exit after cancel")
+		require.FailNow(t, "tail did not exit after cancel")
 	}
 }

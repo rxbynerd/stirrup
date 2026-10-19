@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/eval"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -25,16 +28,13 @@ func TestComposite_ShadowFailDoesNotFailAll(t *testing.T) {
 
 	v := evaluateOK(t, j, JudgeContext{WorkspaceDir: dir})
 
-	if v.Status != types.JudgeStatusPass {
-		t.Fatalf("verdict = %+v, want pass: a shadow fail must not decide", v)
-	}
+	require.Equal(t, types.JudgeStatusPass, v.Status, "verdict = %+v: a shadow fail must not decide", v)
 	assertStatuses(t, v, types.JudgeStatusPass, eval.JudgeStatusShadow, types.JudgeStatusPass)
-	if d := v.Details[1]; d.ShadowVerdict != types.JudgeStatusFail || d.Passed || d.Reason != "missing paths: missing.txt" {
-		t.Errorf("shadow detail = %+v, want verdict fail recorded with its reason", d)
-	}
-	if want := "all 2 sub-judges passed; 1 shadow recorded"; v.Reason != want {
-		t.Errorf("Reason = %q, want %q", v.Reason, want)
-	}
+	d := v.Details[1]
+	assert.Equal(t, types.JudgeStatusFail, d.ShadowVerdict, "shadow detail = %+v", d)
+	assert.False(t, d.Passed)
+	assert.Equal(t, "missing paths: missing.txt", d.Reason)
+	assert.Equal(t, "all 2 sub-judges passed; 1 shadow recorded", v.Reason)
 }
 
 func TestComposite_ShadowPassDoesNotSatisfyAny(t *testing.T) {
@@ -44,38 +44,30 @@ func TestComposite_ShadowPassDoesNotSatisfyAny(t *testing.T) {
 
 	v := evaluateOK(t, j, JudgeContext{WorkspaceDir: dir})
 
-	if v.Status != types.JudgeStatusFail || v.Passed {
-		t.Fatalf("verdict = %+v, want fail: a shadow pass must not decide", v)
-	}
+	require.Equal(t, types.JudgeStatusFail, v.Status, "verdict = %+v: a shadow pass must not decide", v)
+	require.False(t, v.Passed)
 	assertStatuses(t, v, eval.JudgeStatusShadow, types.JudgeStatusFail)
-	if v.Details[0].ShadowVerdict != types.JudgeStatusPass {
-		t.Errorf("shadow verdict = %q, want pass", v.Details[0].ShadowVerdict)
-	}
-	if want := "0 of 1 sub-judge passed (require any); 1 shadow recorded"; v.Reason != want {
-		t.Errorf("Reason = %q, want %q", v.Reason, want)
-	}
+	assert.Equal(t, types.JudgeStatusPass, v.Details[0].ShadowVerdict)
+	assert.Equal(t, "0 of 1 sub-judge passed (require any); 1 shadow recorded", v.Reason)
 }
 
 func TestComposite_ShadowErrorKeepsRecordAndNeverErrorsComposite(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "k")
-	for _, require := range []string{"all", "any"} {
-		t.Run(require, func(t *testing.T) {
+	for _, mode := range []string{"all", "any"} {
+		t.Run(mode, func(t *testing.T) {
 			fake := &fakeClient{err: errors.New("endpoint unreachable")}
 			jctx := changedJudgeContext(t, Options{ClientFactory: fake.factory(nil, nil)})
-			j := composite(require, shadow(diffReviewJudge()), markerJudge("a", 0))
+			j := composite(mode, shadow(diffReviewJudge()), markerJudge("a", 0))
 
 			v := evaluateOK(t, j, jctx)
 
-			if v.Status != types.JudgeStatusPass {
-				t.Fatalf("verdict = %+v, want pass: a shadow error must not decide", v)
-			}
+			require.Equal(t, types.JudgeStatusPass, v.Status, "verdict = %+v: a shadow error must not decide", v)
 			d := v.Details[0]
-			if d.Status != eval.JudgeStatusShadow || d.ShadowVerdict != types.JudgeStatusError {
-				t.Fatalf("shadow detail = %+v, want status shadow with verdict error", d)
-			}
-			if d.Record == nil || d.Record.Kind != types.JudgeKindDiffReview || !strings.Contains(d.Reason, "endpoint unreachable") {
-				t.Errorf("shadow detail = %+v, want the diff-review record and error reason", d)
-			}
+			require.Equal(t, eval.JudgeStatusShadow, d.Status, "shadow detail = %+v", d)
+			require.Equal(t, types.JudgeStatusError, d.ShadowVerdict)
+			require.NotNil(t, d.Record, "shadow detail = %+v", d)
+			require.Equal(t, types.JudgeKindDiffReview, d.Record.Kind)
+			require.Contains(t, d.Reason, "endpoint unreachable")
 		})
 	}
 }
@@ -86,19 +78,13 @@ func TestComposite_ShadowRunsAfterTheOutcomeIsDecided(t *testing.T) {
 
 	v := evaluateOK(t, j, JudgeContext{WorkspaceDir: dir})
 
-	if v.Status != types.JudgeStatusFail {
-		t.Fatalf("verdict = %+v, want fail", v)
-	}
-	if ranMarker(t, dir, "b") {
-		t.Error("a deciding sub-judge ran after the outcome was decided")
-	}
+	require.Equal(t, types.JudgeStatusFail, v.Status, "verdict = %+v", v)
+	assert.False(t, ranMarker(t, dir, "b"), "a deciding sub-judge ran after the outcome was decided")
 	assertStatuses(t, v, types.JudgeStatusFail, eval.JudgeStatusSkipped, eval.JudgeStatusShadow)
-	if d := v.Details[2]; d.ShadowVerdict != types.JudgeStatusPass || d.Reason != "all paths exist" {
-		t.Errorf("shadow detail = %+v, want it evaluated after the outcome was decided", d)
-	}
-	if want := "sub-judge 1 of 3 (test-command) failed (require all); 1 skipped; 1 shadow recorded"; v.Reason != want {
-		t.Errorf("Reason = %q, want %q", v.Reason, want)
-	}
+	d := v.Details[2]
+	assert.Equal(t, types.JudgeStatusPass, d.ShadowVerdict, "shadow detail = %+v, want it evaluated after the outcome was decided", d)
+	assert.Equal(t, "all paths exist", d.Reason)
+	assert.Equal(t, "sub-judge 1 of 3 (test-command) failed (require all); 1 skipped; 1 shadow recorded", v.Reason)
 }
 
 func TestComposite_ShadowLLMVerdictIsRecordedBesideDecidingJudge(t *testing.T) {
@@ -109,13 +95,12 @@ func TestComposite_ShadowLLMVerdictIsRecordedBesideDecidingJudge(t *testing.T) {
 
 	v := evaluateOK(t, j, jctx)
 
-	if v.Status != types.JudgeStatusPass || fake.calls != 1 {
-		t.Fatalf("verdict = %+v after %d model calls, want pass with the shadow called once", v, fake.calls)
-	}
+	require.Equal(t, types.JudgeStatusPass, v.Status, "verdict = %+v", v)
+	require.Equal(t, 1, fake.calls, "model calls")
 	d := v.Details[1]
-	if d.ShadowVerdict != types.JudgeStatusFail || d.Record == nil || d.Record.ParseStatus != types.JudgeParseOK {
-		t.Errorf("shadow detail = %+v, want a parsed fail verdict with its record", d)
-	}
+	require.Equal(t, types.JudgeStatusFail, d.ShadowVerdict, "shadow detail = %+v", d)
+	require.NotNil(t, d.Record, "shadow detail = %+v", d)
+	require.Equal(t, types.JudgeParseOK, d.Record.ParseStatus)
 }
 
 func TestComposite_CancelledShadowAfterDecisionKeepsTheDecision(t *testing.T) {
@@ -127,16 +112,12 @@ func TestComposite_CancelledShadowAfterDecisionKeepsTheDecision(t *testing.T) {
 	j := composite("all", diffReviewJudge(), shadow(fileExistsJudge("a.txt")))
 
 	v, err := Evaluate(ctx, j, jctx)
-	if err != nil {
-		t.Fatalf("Evaluate returned an error: %v", err)
-	}
+	require.NoError(t, err)
 
-	if v.Status != types.JudgeStatusFail {
-		t.Fatalf("verdict = %+v, want the fail decided before cancellation", v)
-	}
-	if d := v.Details[1]; d.Status != eval.JudgeStatusSkipped || d.Reason != "not evaluated: cancelled" {
-		t.Errorf("shadow detail = %+v, want skipped because of cancellation", d)
-	}
+	require.Equal(t, types.JudgeStatusFail, v.Status, "verdict = %+v: want the fail decided before cancellation", v)
+	d := v.Details[1]
+	require.Equal(t, eval.JudgeStatusSkipped, d.Status, "shadow detail = %+v", d)
+	require.Equal(t, "not evaluated: cancelled", d.Reason)
 }
 
 func TestComposite_NestedShadowCompositeKeepsItsDetails(t *testing.T) {
@@ -146,13 +127,11 @@ func TestComposite_NestedShadowCompositeKeepsItsDetails(t *testing.T) {
 
 	v := evaluateOK(t, j, JudgeContext{WorkspaceDir: dir})
 
-	if v.Status != types.JudgeStatusPass {
-		t.Fatalf("verdict = %+v, want pass", v)
-	}
+	require.Equal(t, types.JudgeStatusPass, v.Status, "verdict = %+v", v)
 	d := v.Details[1]
-	if d.Status != eval.JudgeStatusShadow || d.ShadowVerdict != types.JudgeStatusFail || len(d.Details) != 1 {
-		t.Errorf("nested shadow detail = %+v, want a failed shadow composite with its own details", d)
-	}
+	require.Equal(t, eval.JudgeStatusShadow, d.Status, "nested shadow detail = %+v", d)
+	require.Equal(t, types.JudgeStatusFail, d.ShadowVerdict)
+	require.Len(t, d.Details, 1)
 }
 
 func TestValidateTree_ShadowRules(t *testing.T) {
@@ -173,12 +152,11 @@ func TestValidateTree_ShadowRules(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := ValidateTree(tc.judge)
-			switch {
-			case tc.wantErr == "" && err != nil:
-				t.Fatalf("ValidateTree: %v", err)
-			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
-				t.Fatalf("ValidateTree error = %v, want it to contain %q", err, tc.wantErr)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
 			}
+			require.ErrorContains(t, err, tc.wantErr)
 		})
 	}
 }
@@ -187,12 +165,9 @@ func TestComposite_RejectsAllShadowTreeBeforeRunningAnything(t *testing.T) {
 	dir := t.TempDir()
 	j := composite("all", markerJudge("a", 0), composite("any", shadow(fileExistsJudge("b"))))
 
-	if _, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir}); err == nil {
-		t.Fatal("a composite with no deciding sub-judge was evaluated")
-	}
-	if ranMarker(t, dir, "a") {
-		t.Error("a sub-judge ran in a rejected tree")
-	}
+	_, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
+	require.Error(t, err, "a composite with no deciding sub-judge was evaluated")
+	require.False(t, ranMarker(t, dir, "a"), "a sub-judge ran in a rejected tree")
 }
 
 func TestComposite_CancelledShadowDoesNotTurnAnUndecidedOutcomeIntoError(t *testing.T) {
@@ -201,26 +176,22 @@ func TestComposite_CancelledShadowDoesNotTurnAnUndecidedOutcomeIntoError(t *test
 		"all": {verdictPass, types.JudgeStatusPass, "all 1 sub-judge passed"},
 		"any": {verdictFail, types.JudgeStatusFail, "0 of 1 sub-judge passed (require any)"},
 	}
-	for require, tc := range cases {
-		t.Run(require, func(t *testing.T) {
+	for mode, tc := range cases {
+		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			client := cancellingClient{fakeClient: &fakeClient{resp: okResponse(tc.reply)}, cancel: cancel}
 			jctx := changedJudgeContext(t, Options{ClientFactory: func(types.JudgeLLMConfig, string) (JudgeClient, error) { return client, nil }})
-			j := composite(require, diffReviewJudge(), shadow(fileExistsJudge("a.txt")))
+			j := composite(mode, diffReviewJudge(), shadow(fileExistsJudge("a.txt")))
 
 			v, err := Evaluate(ctx, j, jctx)
-			if err != nil {
-				t.Fatalf("Evaluate returned an error: %v", err)
-			}
+			require.NoError(t, err)
 
-			if v.Status != tc.want || v.Reason != tc.reason {
-				t.Fatalf("verdict = %+v, want %s with reason %q: a skipped shadow must not decide", v, tc.want, tc.reason)
-			}
+			require.Equal(t, tc.want, v.Status, "verdict = %+v: a skipped shadow must not decide", v)
+			require.Equal(t, tc.reason, v.Reason)
 			assertStatuses(t, v, tc.want, eval.JudgeStatusSkipped)
-			if d := v.Details[1]; d.Reason != "not evaluated: cancelled" {
-				t.Errorf("shadow detail = %+v, want skipped because of cancellation", d)
-			}
+			d := v.Details[1]
+			require.Equal(t, "not evaluated: cancelled", d.Reason, "shadow detail = %+v", d)
 		})
 	}
 }
@@ -234,13 +205,10 @@ func TestComposite_CancelledBeforeADecidingJudgeAfterAShadowIsError(t *testing.T
 	j := composite("all", shadow(diffReviewJudge()), fileExistsJudge("a.txt"))
 
 	v, err := Evaluate(ctx, j, jctx)
-	if err != nil {
-		t.Fatalf("Evaluate returned an error: %v", err)
-	}
+	require.NoError(t, err)
 
-	if v.Status != types.JudgeStatusError || v.Reason != "cancelled" {
-		t.Fatalf("verdict = %+v, want error: the deciding judge never ran", v)
-	}
+	require.Equal(t, types.JudgeStatusError, v.Status, "verdict = %+v: the deciding judge never ran", v)
+	require.Equal(t, "cancelled", v.Reason)
 	assertStatuses(t, v, eval.JudgeStatusShadow, eval.JudgeStatusSkipped)
 }
 
@@ -251,12 +219,10 @@ func TestComposite_ShadowNotesCountEveryShadow(t *testing.T) {
 
 	v := evaluateOK(t, j, JudgeContext{WorkspaceDir: dir})
 
-	if want := "all 1 sub-judge passed; 2 shadows recorded"; v.Status != types.JudgeStatusPass || v.Reason != want {
-		t.Fatalf("verdict = %+v, want pass with reason %q", v, want)
-	}
-	if v.Details[1].ShadowVerdict != types.JudgeStatusPass || v.Details[2].ShadowVerdict != types.JudgeStatusFail {
-		t.Errorf("shadow verdicts = %q, %q; want pass, fail", v.Details[1].ShadowVerdict, v.Details[2].ShadowVerdict)
-	}
+	require.Equal(t, types.JudgeStatusPass, v.Status, "verdict = %+v", v)
+	require.Equal(t, "all 1 sub-judge passed; 2 shadows recorded", v.Reason)
+	assert.Equal(t, types.JudgeStatusPass, v.Details[1].ShadowVerdict)
+	assert.Equal(t, types.JudgeStatusFail, v.Details[2].ShadowVerdict)
 }
 
 func TestComposite_DecidingErrorBesideAPassingShadowIsError(t *testing.T) {
@@ -267,16 +233,15 @@ func TestComposite_DecidingErrorBesideAPassingShadowIsError(t *testing.T) {
 		"all": "sub-judge 1 of 2 (file-contains) errored (require all); 1 shadow recorded: ",
 		"any": "0 of 1 sub-judge passed (require any); 1 shadow recorded; 1 errored, first: sub-judge 1 of 2 (file-contains): ",
 	}
-	for require, prefix := range cases {
-		t.Run(require, func(t *testing.T) {
-			v := evaluateOK(t, composite(require, unreadable, shadow(fileExistsJudge("a.txt"))), JudgeContext{WorkspaceDir: dir})
+	for mode, prefix := range cases {
+		t.Run(mode, func(t *testing.T) {
+			v := evaluateOK(t, composite(mode, unreadable, shadow(fileExistsJudge("a.txt"))), JudgeContext{WorkspaceDir: dir})
 
-			if v.Status != types.JudgeStatusError || !strings.HasPrefix(v.Reason, prefix) {
-				t.Fatalf("verdict = %+v, want error with reason starting %q", v, prefix)
-			}
-			if d := v.Details[1]; d.Status != eval.JudgeStatusShadow || d.ShadowVerdict != types.JudgeStatusPass {
-				t.Errorf("shadow detail = %+v, want a recorded pass that does not count", d)
-			}
+			require.Equal(t, types.JudgeStatusError, v.Status, "verdict = %+v", v)
+			require.True(t, strings.HasPrefix(v.Reason, prefix), "reason = %q, want prefix %q", v.Reason, prefix)
+			d := v.Details[1]
+			require.Equal(t, eval.JudgeStatusShadow, d.Status, "shadow detail = %+v", d)
+			require.Equal(t, types.JudgeStatusPass, d.ShadowVerdict, "shadow detail = %+v, want a recorded pass that does not count", d)
 		})
 	}
 }
@@ -285,10 +250,8 @@ func TestComposite_RejectsAShadowTestCommandBeforeRunningAnything(t *testing.T) 
 	dir := t.TempDir()
 	j := composite("all", markerJudge("a", 0), shadow(markerJudge("s", 0)))
 
-	if _, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir}); err == nil || !strings.Contains(err.Error(), "cannot be a shadow") {
-		t.Fatalf("Evaluate error = %v, want the shadow test-command refused", err)
-	}
-	if ranMarker(t, dir, "a") || ranMarker(t, dir, "s") {
-		t.Error("a sub-judge ran in a rejected tree")
-	}
+	_, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
+	require.ErrorContains(t, err, "cannot be a shadow")
+	require.False(t, ranMarker(t, dir, "a"), "a sub-judge ran in a rejected tree")
+	require.False(t, ranMarker(t, dir, "s"), "a shadow test-command ran in a rejected tree")
 }

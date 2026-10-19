@@ -11,38 +11,31 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/eval"
 	"github.com/rxbynerd/stirrup/eval/judge"
 	"github.com/rxbynerd/stirrup/types"
 )
 
-func TestRunSuite_EmptySuite(t *testing.T) {
+func TestRunSuite_RejectsSuiteWithoutTasks(t *testing.T) {
 	_, err := RunSuite(context.Background(), types.EvalSuite{ID: "s1"}, RunConfig{})
-	if err == nil {
-		t.Fatal("expected error for empty suite")
-	}
-	if err.Error() != "suite must contain at least one task" {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.EqualError(t, err, "suite must contain at least one task")
 }
 
-func TestRunSuite_EmptyID(t *testing.T) {
+func TestRunSuite_RejectsMissingSuiteID(t *testing.T) {
 	suite := types.EvalSuite{
 		Tasks: []types.EvalTask{{ID: "t1", Prompt: "hi"}},
 	}
 	_, err := RunSuite(context.Background(), suite, RunConfig{})
-	if err == nil {
-		t.Fatal("expected error for empty suite ID")
-	}
-	if err.Error() != "suite ID is required" {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.EqualError(t, err, "suite ID is required")
 }
 
 // validJudge satisfies suite validation for tests that never run the judge.
 var validJudge = types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}
 
-func TestRunSuite_DryRun(t *testing.T) {
+func TestRunSuite_DryRunPassesEveryTask(t *testing.T) {
 	suite := types.EvalSuite{
 		ID: "test-suite",
 		Tasks: []types.EvalTask{
@@ -52,30 +45,21 @@ func TestRunSuite_DryRun(t *testing.T) {
 	}
 
 	result, err := RunSuite(context.Background(), suite, RunConfig{DryRun: true})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
-	if result.SuiteID != "test-suite" {
-		t.Errorf("SuiteID = %q, want %q", result.SuiteID, "test-suite")
-	}
-	if len(result.Tasks) != 2 {
-		t.Fatalf("got %d tasks, want 2", len(result.Tasks))
-	}
+	require.Equal(t, "test-suite", result.SuiteID)
+	require.Len(t, result.Tasks, 2)
 	for _, tr := range result.Tasks {
-		if tr.Outcome != "pass" {
-			t.Errorf("task %s: outcome = %q, want %q", tr.TaskID, tr.Outcome, "pass")
-		}
-		if !tr.JudgeVerdict.Passed || tr.JudgeVerdict.Status != types.JudgeStatusPass {
-			t.Errorf("task %s: verdict %+v, want a passed verdict with status pass in dry run", tr.TaskID, tr.JudgeVerdict)
-		}
+		t.Run(tr.TaskID, func(t *testing.T) {
+			require.Equal(t, "pass", tr.Outcome)
+			require.True(t, tr.JudgeVerdict.Passed, "verdict %+v", tr.JudgeVerdict)
+			require.Equal(t, types.JudgeStatusPass, tr.JudgeVerdict.Status)
+		})
 	}
-	if result.PassRate != 1.0 {
-		t.Errorf("PassRate = %f, want 1.0", result.PassRate)
-	}
+	require.InDelta(t, 1.0, result.PassRate, 1e-9)
 }
 
-func TestRunSuite_WithFakeHarness(t *testing.T) {
+func TestRunSuite_RunsTaskThroughFakeHarness(t *testing.T) {
 	harnessDir := t.TempDir()
 	harnessPath := filepath.Join(harnessDir, "fake-harness")
 
@@ -94,15 +78,11 @@ if [ -n "$TRACE" ]; then
   echo '{"id":"run-1","turns":3,"cost":0.05,"outcome":"success"}' > "$TRACE"
 fi
 `
-	if err := os.WriteFile(harnessPath, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(harnessPath, []byte(script), 0o755))
 
 	workspaceContent := t.TempDir()
 	targetFile := filepath.Join(workspaceContent, "output.txt")
-	if err := os.WriteFile(targetFile, []byte("hello world"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(targetFile, []byte("hello world"), 0o644))
 
 	suite := types.EvalSuite{
 		ID: "harness-suite",
@@ -123,13 +103,9 @@ fi
 		HarnessPath: harnessPath,
 		OutputDir:   outputDir,
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
-	if len(result.Tasks) != 1 {
-		t.Fatalf("got %d tasks, want 1", len(result.Tasks))
-	}
+	require.Len(t, result.Tasks, 1)
 	t.Logf("task outcome: %s, verdict: %s", result.Tasks[0].Outcome, result.Tasks[0].JudgeVerdict.Reason)
 }
 
@@ -153,9 +129,7 @@ if [ -n "$TRACE" ]; then
   echo '{"id":"run-1","turns":1,"cost":0.0,"outcome":"success"}' > "$TRACE"
 fi
 `
-	if err := os.WriteFile(filepath.Join(dir, "fake-harness"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "fake-harness"), []byte(script), 0o755))
 
 	// CWD = dir so "./fake-harness" resolves the way "./stirrup" does
 	// relative to GITHUB_WORKSPACE in CI.
@@ -178,19 +152,12 @@ fi
 	result, err := RunSuite(context.Background(), suite, RunConfig{
 		HarnessPath: "./fake-harness",
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(result.Tasks) != 1 {
-		t.Fatalf("got %d tasks, want 1", len(result.Tasks))
-	}
+	require.NoError(t, err)
+	require.Len(t, result.Tasks, 1)
 	got := result.Tasks[0]
-	if got.Outcome == "error" {
-		t.Fatalf("task errored (relative harness path not resolved to absolute?): %s", got.Error)
-	}
-	if got.Outcome != "pass" {
-		t.Errorf("outcome = %q, want %q (reason: %s)", got.Outcome, "pass", got.JudgeVerdict.Reason)
-	}
+	require.NotEqual(t, "error", got.Outcome,
+		"task errored (relative harness path not resolved to absolute?): %s", got.Error)
+	require.Equal(t, "pass", got.Outcome, "reason: %s", got.JudgeVerdict.Reason)
 }
 
 // TestRunSuite_SeedsFilesAndHidesTrace pins two coupled behaviours: (1)
@@ -214,9 +181,7 @@ if [ -n "$TRACE" ]; then
   echo '{"id":"run-1","turns":1,"cost":0.0,"outcome":"success"}' > "$TRACE"
 fi
 `
-	if err := os.WriteFile(harnessPath, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(harnessPath, []byte(script), 0o755))
 
 	outputDir := t.TempDir()
 	suite := types.EvalSuite{
@@ -238,31 +203,19 @@ fi
 		HarnessPath: harnessPath,
 		OutputDir:   outputDir,
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got := result.Tasks[0].Outcome; got != "pass" {
-		t.Fatalf("outcome = %q, want pass (seed file should exist for the judge)", got)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "pass", result.Tasks[0].Outcome, "seed file should exist for the judge")
 
 	stdout, err := os.ReadFile(filepath.Join(outputDir, "seed-suite", "seed-task", "harness.stdout.txt"))
-	if err != nil {
-		t.Fatalf("reading retained stdout: %v", err)
-	}
+	require.NoError(t, err, "reading retained stdout")
 	listing := string(stdout)
-	if !strings.Contains(listing, "README.md") {
-		t.Errorf("workspace listing %q does not contain seeded README.md", listing)
-	}
-	if strings.Contains(listing, "trace.jsonl") {
-		t.Errorf("trace.jsonl leaked into the workspace; listing = %q", listing)
-	}
+	require.Contains(t, listing, "README.md")
+	require.NotContains(t, listing, "trace.jsonl", "trace must stay out of the workspace")
 }
 
-func TestReplayRecording_Passing(t *testing.T) {
+func TestReplayRecording_PassesWhenJudgePasses(t *testing.T) {
 	workspace := t.TempDir()
-	if err := os.WriteFile(filepath.Join(workspace, "result.txt"), []byte("ok"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(workspace, "result.txt"), []byte("ok"), 0o644))
 
 	recording := types.RunRecording{
 		RunID: "replay-1",
@@ -281,22 +234,14 @@ func TestReplayRecording_Passing(t *testing.T) {
 	}
 
 	result, err := ReplayRecording(context.Background(), recording, task, workspace, judge.Options{}, "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
-	if result.Outcome != "pass" {
-		t.Errorf("outcome = %q, want %q", result.Outcome, "pass")
-	}
-	if !result.JudgeVerdict.Passed {
-		t.Error("expected verdict to pass")
-	}
-	if result.Trace == nil {
-		t.Fatal("expected trace to be set")
-	}
+	require.Equal(t, "pass", result.Outcome)
+	require.True(t, result.JudgeVerdict.Passed)
+	require.NotNil(t, result.Trace)
 }
 
-func TestReplayRecording_Failing(t *testing.T) {
+func TestReplayRecording_FailsWhenJudgeFails(t *testing.T) {
 	workspace := t.TempDir()
 
 	recording := types.RunRecording{
@@ -316,58 +261,43 @@ func TestReplayRecording_Failing(t *testing.T) {
 	}
 
 	result, err := ReplayRecording(context.Background(), recording, task, workspace, judge.Options{}, "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
-	if result.Outcome != "fail" {
-		t.Errorf("outcome = %q, want %q", result.Outcome, "fail")
-	}
-	if result.JudgeVerdict.Passed {
-		t.Error("expected verdict to fail")
-	}
+	require.Equal(t, "fail", result.Outcome)
+	require.False(t, result.JudgeVerdict.Passed)
 }
 
-func TestParseTraceFile(t *testing.T) {
+func TestParseTraceFile_ReturnsLastRecord(t *testing.T) {
 	dir := t.TempDir()
 
 	t.Run("valid trace", func(t *testing.T) {
 		trace := types.RunTrace{ID: "t1", Turns: 5}
-		data, _ := json.Marshal(trace)
+		data, err := json.Marshal(trace)
+		require.NoError(t, err)
 		path := filepath.Join(dir, "valid.jsonl")
-		_ = os.WriteFile(path, append([]byte("ignored first line\n"), append(data, '\n')...), 0o644)
+		require.NoError(t, os.WriteFile(path, append([]byte("ignored first line\n"), append(data, '\n')...), 0o644))
 
 		got, err := parseTraceFile(path)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if got.ID != "t1" {
-			t.Errorf("ID = %q, want %q", got.ID, "t1")
-		}
-		if got.Turns != 5 {
-			t.Errorf("Turns = %d, want 5", got.Turns)
-		}
+		require.NoError(t, err)
+		require.Equal(t, "t1", got.ID)
+		require.Equal(t, 5, got.Turns)
 	})
 
 	t.Run("empty file", func(t *testing.T) {
 		path := filepath.Join(dir, "empty.jsonl")
-		_ = os.WriteFile(path, []byte(""), 0o644)
+		require.NoError(t, os.WriteFile(path, []byte(""), 0o644))
 
 		_, err := parseTraceFile(path)
-		if err == nil {
-			t.Fatal("expected error for empty trace file")
-		}
+		require.Error(t, err)
 	})
 
 	t.Run("missing file", func(t *testing.T) {
 		_, err := parseTraceFile(filepath.Join(dir, "nonexistent.jsonl"))
-		if err == nil {
-			t.Fatal("expected error for missing file")
-		}
+		require.Error(t, err)
 	})
 }
 
-func TestValidateSuite(t *testing.T) {
+func TestValidateSuite_ChecksIDsTasksAndJudges(t *testing.T) {
 	tests := []struct {
 		name    string
 		suite   types.EvalSuite
@@ -446,17 +376,10 @@ func TestValidateSuite(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			err := validateSuite(tt.suite)
 			if tt.wantErr == "" {
-				if err != nil {
-					t.Fatalf("unexpected error: %v", err)
-				}
+				require.NoError(t, err)
 				return
 			}
-			if err == nil {
-				t.Fatalf("expected error %q, got nil", tt.wantErr)
-			}
-			if err.Error() != tt.wantErr {
-				t.Fatalf("error = %q, want %q", err.Error(), tt.wantErr)
-			}
+			require.EqualError(t, err, tt.wantErr)
 		})
 	}
 }
@@ -471,9 +394,7 @@ func writeFakeHarness(t *testing.T, body string) string {
 	}
 	harnessDir := t.TempDir()
 	path := filepath.Join(harnessDir, "fake-harness")
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o755))
 	return path
 }
 
@@ -524,38 +445,24 @@ echo "$TASK_ID" >> %q
 		OutputDir:   out,
 		Concurrency: 4,
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
-	if len(result.Tasks) != len(tasks) {
-		t.Fatalf("got %d task results, want %d", len(result.Tasks), len(tasks))
-	}
+	require.Len(t, result.Tasks, len(tasks))
 	for i, want := range tasks {
-		if result.Tasks[i].TaskID != want.ID {
-			t.Errorf("Tasks[%d].TaskID = %q, want %q (suite order not preserved)", i, result.Tasks[i].TaskID, want.ID)
-		}
+		assert.Equal(t, want.ID, result.Tasks[i].TaskID, "Tasks[%d]: suite order not preserved", i)
 	}
 
 	logBytes, err := os.ReadFile(completionLog)
-	if err != nil {
-		t.Fatalf("reading completion log: %v", err)
-	}
+	require.NoError(t, err, "reading completion log")
 	completionOrder := strings.Fields(string(logBytes))
-	if len(completionOrder) != len(tasks) {
-		t.Fatalf("completion log has %d entries, want %d: %q", len(completionOrder), len(tasks), completionOrder)
-	}
-	if completionOrder[0] == "t1" {
-		t.Errorf("first task to finish was t1 (longest sleep): suggests sequential execution. log=%v", completionOrder)
-	}
+	require.Len(t, completionOrder, len(tasks), "completion log: %q", completionOrder)
+	assert.NotEqual(t, "t1", completionOrder[0],
+		"t1 has the longest sleep, so finishing first suggests sequential execution; log=%v", completionOrder)
 	// t1 (300ms sleep) must finish last under concurrency=4; a non-last t1
 	// would mean a faster task got dispatched after it yet finished later,
 	// which is impossible without contention this test doesn't introduce.
-	last := completionOrder[len(completionOrder)-1]
-	if last != "t1" {
-		t.Errorf("expected t1 (300ms sleep) to finish last under concurrency=4; got %q; full order: %v",
-			last, completionOrder)
-	}
+	assert.Equal(t, "t1", completionOrder[len(completionOrder)-1],
+		"t1 (300ms sleep) must finish last under concurrency=4; full order: %v", completionOrder)
 }
 
 // TestRunSuite_ConcurrencyZeroDefaultsToOne pins that Concurrency<=0
@@ -583,20 +490,18 @@ done
 
 	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		_, err := RunSuite(context.Background(), suite, RunConfig{
 			HarnessPath: harness,
 			Concurrency: 0,
 		})
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
-		close(done)
+		assert.NoError(t, err)
 	}()
 
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
-		t.Fatal("RunSuite with Concurrency=0 deadlocked")
+		require.FailNow(t, "RunSuite with Concurrency=0 deadlocked")
 	}
 }
 
@@ -636,26 +541,17 @@ fi
 		HarnessPath: harness,
 		Concurrency: 2,
 	})
-	if err != nil {
-		t.Fatalf("unexpected suite error: %v", err)
-	}
+	require.NoError(t, err)
 
-	if len(result.Tasks) != 3 {
-		t.Fatalf("got %d task results, want 3 (sibling failures must not abort)", len(result.Tasks))
-	}
-	if result.Tasks[0].TaskID != "ok-1" || result.Tasks[1].TaskID != "broken" || result.Tasks[2].TaskID != "ok-2" {
-		t.Errorf("Tasks ordering = [%s, %s, %s], want [ok-1, broken, ok-2]",
-			result.Tasks[0].TaskID, result.Tasks[1].TaskID, result.Tasks[2].TaskID)
-	}
-	if result.Tasks[1].Outcome != "error" {
-		t.Errorf("broken task Outcome = %q, want %q", result.Tasks[1].Outcome, "error")
-	}
+	require.Len(t, result.Tasks, 3, "sibling failures must not abort the suite")
+	assert.Equal(t, "ok-1", result.Tasks[0].TaskID)
+	assert.Equal(t, "broken", result.Tasks[1].TaskID)
+	assert.Equal(t, "ok-2", result.Tasks[2].TaskID)
+	assert.Equal(t, "error", result.Tasks[1].Outcome, "broken task outcome")
 	// Siblings must each get a verdict, even if it's a fail (the placeholder
 	// file does not exist in the temp workspace).
 	for _, idx := range []int{0, 2} {
-		if result.Tasks[idx].Outcome == "" {
-			t.Errorf("sibling task %s has empty outcome", result.Tasks[idx].TaskID)
-		}
+		assert.NotEmpty(t, result.Tasks[idx].Outcome, "sibling task %s outcome", result.Tasks[idx].TaskID)
 	}
 }
 
@@ -693,36 +589,27 @@ echo "stderr chatter" >&2
 		OutputDir:   out,
 		Concurrency: 2,
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
 	for _, taskID := range []string{"alpha", "beta"} {
-		base := filepath.Join(out, "artifact-suite", taskID)
-		for _, name := range []string{"trace.jsonl", "harness.stdout.txt", "harness.stderr.txt"} {
-			p := filepath.Join(base, name)
-			info, err := os.Stat(p)
-			if err != nil {
-				t.Errorf("missing artifact %s: %v", p, err)
-				continue
+		t.Run(taskID, func(t *testing.T) {
+			base := filepath.Join(out, "artifact-suite", taskID)
+			for _, name := range []string{"trace.jsonl", "harness.stdout.txt", "harness.stderr.txt"} {
+				p := filepath.Join(base, name)
+				info, err := os.Stat(p)
+				require.NoError(t, err, "missing artifact %s", p)
+				require.False(t, info.IsDir(), "artifact %s is a directory, want regular file", p)
 			}
-			if info.IsDir() {
-				t.Errorf("artifact %s is a directory, want regular file", p)
-			}
-		}
 
-		traceData, err := os.ReadFile(filepath.Join(base, "trace.jsonl"))
-		if err == nil && !strings.Contains(string(traceData), `"id":"trace-1"`) {
-			t.Errorf("trace.jsonl for %s did not contain expected payload: %q", taskID, string(traceData))
-		}
-		stdout, _ := os.ReadFile(filepath.Join(base, "harness.stdout.txt"))
-		if !strings.Contains(string(stdout), "stdout chatter") {
-			t.Errorf("harness.stdout.txt for %s = %q, want to contain %q", taskID, string(stdout), "stdout chatter")
-		}
-		stderr, _ := os.ReadFile(filepath.Join(base, "harness.stderr.txt"))
-		if !strings.Contains(string(stderr), "stderr chatter") {
-			t.Errorf("harness.stderr.txt for %s = %q, want to contain %q", taskID, string(stderr), "stderr chatter")
-		}
+			traceData, err := os.ReadFile(filepath.Join(base, "trace.jsonl"))
+			if err == nil {
+				require.Contains(t, string(traceData), `"id":"trace-1"`)
+			}
+			stdout, _ := os.ReadFile(filepath.Join(base, "harness.stdout.txt"))
+			require.Contains(t, string(stdout), "stdout chatter")
+			stderr, _ := os.ReadFile(filepath.Join(base, "harness.stderr.txt"))
+			require.Contains(t, string(stderr), "stderr chatter")
+		})
 	}
 }
 
@@ -755,26 +642,20 @@ func TestRunSuite_RejectsTraversalIDs(t *testing.T) {
 				Tasks: []types.EvalTask{{ID: tc.taskID, Prompt: "p"}},
 			}
 			_, err := RunSuite(context.Background(), suite, RunConfig{OutputDir: t.TempDir()})
-			if err == nil {
-				t.Fatal("expected validation error for traversal ID")
-			}
-			if !strings.Contains(err.Error(), tc.wantSub) {
-				t.Errorf("error = %q, want it to mention %q", err.Error(), tc.wantSub)
-			}
+			require.Error(t, err)
+			require.ErrorContains(t, err, tc.wantSub)
 			// The error payload must not leak a path that escaped the sandbox.
-			if strings.Contains(err.Error(), fmt.Sprintf("%c..%c", os.PathSeparator, os.PathSeparator)) {
-				t.Errorf("error contains escaped path traversal: %q", err.Error())
-			}
+			require.NotContains(t, err.Error(), fmt.Sprintf("%c..%c", os.PathSeparator, os.PathSeparator))
 		})
 	}
 }
 
-// TestRunSuite_ContextCancellation pins the dispatcher's ctx.Done() drain
-// branch: when the context is cancelled mid-suite, the runner returns
-// promptly, every result slot is populated (no zero-value TaskResults),
+// TestRunSuite_ContextCancel_DrainsUndispatchedTasks pins the dispatcher's
+// ctx.Done() drain branch: when the context is cancelled mid-suite, the runner
+// returns promptly, every result slot is populated (no zero-value TaskResults),
 // and un-dispatched tasks are recorded as outcome="error" carrying the
 // ctx.Err() message.
-func TestRunSuite_ContextCancellation(t *testing.T) {
+func TestRunSuite_ContextCancel_DrainsUndispatchedTasks(t *testing.T) {
 	// Sleeps 500ms so the dispatcher is guaranteed to be blocked on
 	// `jobs <-` for the un-dispatched tail when cancellation fires.
 	script := `#!/bin/sh
@@ -822,30 +703,23 @@ sleep 0.5
 	select {
 	case outcome = <-done:
 	case <-time.After(10 * time.Second):
-		t.Fatal("RunSuite did not return after context cancellation (deadlock?)")
+		require.FailNow(t, "RunSuite did not return after context cancellation (deadlock?)")
 	}
 
-	if outcome.err != nil {
-		t.Fatalf("RunSuite returned suite-level error after cancel: %v", outcome.err)
-	}
+	require.NoError(t, outcome.err, "RunSuite returned suite-level error after cancel")
+	require.Len(t, outcome.result, len(tasks), "drain must populate every slot")
 
-	if len(outcome.result) != len(tasks) {
-		t.Fatalf("got %d task results, want %d (drain must populate every slot)",
-			len(outcome.result), len(tasks))
-	}
 	for i, tr := range outcome.result {
-		// Zero-value TaskResult would have empty TaskID and empty Outcome.
-		// Either branch (worker or drain) must produce a non-zero result.
-		if tr.TaskID == "" {
-			t.Errorf("Tasks[%d] has empty TaskID — drain left a zero-value slot", i)
-		}
-		if tr.Outcome == "" {
-			t.Errorf("Tasks[%d] (%s) has empty Outcome — slot was never written", i, tr.TaskID)
-		}
-		if tr.TaskID != tasks[i].ID {
-			t.Errorf("Tasks[%d].TaskID = %q, want %q (input order not preserved)",
-				i, tr.TaskID, tasks[i].ID)
-		}
+		t.Run(tasks[i].ID, func(t *testing.T) {
+			// Zero-value TaskResult would have empty TaskID and empty Outcome.
+			// Either branch (worker or drain) must produce a non-zero result.
+			require.NotEmpty(t, tr.TaskID, "drain left a zero-value slot")
+			require.NotEmpty(t, tr.Outcome, "slot was never written")
+			require.Equal(t, tasks[i].ID, tr.TaskID, "input order not preserved")
+			if tr.Outcome == "error" {
+				require.Equal(t, types.JudgeStatusError, tr.JudgeVerdict.Status, "error outcome verdict status")
+			}
+		})
 	}
 
 	// The drain path must have flagged at least one task as outcome="error"
@@ -858,14 +732,10 @@ sleep 0.5
 		if tr.Outcome == "error" && strings.Contains(tr.Error, "context canceled") {
 			errCount++
 		}
-		if tr.Outcome == "error" && tr.JudgeVerdict.Status != types.JudgeStatusError {
-			t.Errorf("%s: error outcome with verdict status %q, want %q", tr.TaskID, tr.JudgeVerdict.Status, types.JudgeStatusError)
-		}
 	}
-	if errCount == 0 {
-		t.Errorf("expected at least one task to record context-canceled error; got outcomes: %v",
-			collectOutcomes(outcome.result))
-	}
+	require.Positive(t, errCount,
+		"expected at least one task to record context-canceled error; got outcomes: %v",
+		collectOutcomes(outcome.result))
 }
 
 func collectOutcomes(results []eval.TaskResult) []string {
@@ -876,10 +746,51 @@ func collectOutcomes(results []eval.TaskResult) []string {
 	return out
 }
 
-// TestAppendAnthropicWIFArgs pins the on-the-wire flag spellings the runner
-// forwards to `stirrup harness`; these must match the harness side
-// (harness/cmd/stirrup/cmd/runconfigflags.go).
-func TestAppendAnthropicWIFArgs(t *testing.T) {
+// writeArgvRecordingHarness writes a fake harness that records its argv, one
+// argument per line, to argvPath and writes a minimal success trace so the
+// runner reaches artifact retention.
+func writeArgvRecordingHarness(t *testing.T) (harnessPath, argvPath string) {
+	t.Helper()
+	dir := t.TempDir()
+	harnessPath = filepath.Join(dir, "fake-harness")
+	argvPath = filepath.Join(dir, "argv.txt")
+	script := fmt.Sprintf(`#!/bin/sh
+for a in "$@"; do printf '%%s\n' "$a"; done > %q
+TRACE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --trace) TRACE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -n "$TRACE" ]; then
+  echo '{"id":"run-1","turns":1,"cost":0.01,"outcome":"success"}' > "$TRACE"
+fi
+`, argvPath)
+	require.NoError(t, os.WriteFile(harnessPath, []byte(script), 0o755))
+	return harnessPath, argvPath
+}
+
+// readArgvFile returns the argv recorded by a harness from writeArgvRecordingHarness.
+func readArgvFile(t *testing.T, argvPath string) string {
+	t.Helper()
+	data, err := os.ReadFile(argvPath)
+	require.NoError(t, err, "reading captured argv")
+	return string(data)
+}
+
+// requireArgvHas asserts that each arg appears as a complete line of the captured argv.
+func requireArgvHas(t *testing.T, captured string, args ...string) {
+	t.Helper()
+	for _, arg := range args {
+		require.Contains(t, captured, arg+"\n", "captured argv missing %q", arg)
+	}
+}
+
+// TestAppendAnthropicWIFArgs_EmitsOnlySetFields pins the on-the-wire flag
+// spellings the runner forwards to `stirrup harness`; these must match the
+// harness side (harness/cmd/stirrup/cmd/runconfigflags.go).
+func TestAppendAnthropicWIFArgs_EmitsOnlySetFields(t *testing.T) {
 	tests := []struct {
 		name string
 		wif  AnthropicWIFConfig
@@ -906,14 +817,14 @@ func TestAppendAnthropicWIFArgs(t *testing.T) {
 			},
 		},
 		{
-			name: "boolean-only toggle — no identifiers set, only the flag forwarded",
+			name: "boolean toggle with no identifiers forwards only its flag",
 			wif: AnthropicWIFConfig{
 				FromGitHubActions: true,
 			},
 			want: []string{"--anthropic-from-github-actions"},
 		},
 		{
-			name: "partial config forwards what is set (harness produces the error)",
+			name: "partial config forwards what is set and leaves validation to the harness",
 			wif: AnthropicWIFConfig{
 				FederationRuleID: "fdrl_only",
 			},
@@ -923,14 +834,7 @@ func TestAppendAnthropicWIFArgs(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got := appendAnthropicWIFArgs(nil, tc.wif)
-			if len(got) != len(tc.want) {
-				t.Fatalf("len = %d, want %d (got %v)", len(got), len(tc.want), got)
-			}
-			for i := range got {
-				if got[i] != tc.want[i] {
-					t.Errorf("arg[%d] = %q, want %q", i, got[i], tc.want[i])
-				}
-			}
+			require.Equal(t, tc.want, got)
 		})
 	}
 }
@@ -943,28 +847,7 @@ func TestRunSuite_ForwardsAnthropicWIFFlags(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fake harness assumes POSIX sh")
 	}
-	harnessDir := t.TempDir()
-	harnessPath := filepath.Join(harnessDir, "fake-harness")
-	argvCapture := filepath.Join(harnessDir, "argv.txt")
-
-	// Records argv (one arg per line) to a predetermined path and writes a
-	// minimal success trace so the runner reaches artifact-retention.
-	script := fmt.Sprintf(`#!/bin/sh
-for a in "$@"; do printf '%%s\n' "$a"; done > %q
-TRACE=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --trace) TRACE="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-if [ -n "$TRACE" ]; then
-  echo '{"id":"run-1","turns":1,"cost":0.01,"outcome":"success"}' > "$TRACE"
-fi
-`, argvCapture)
-	if err := os.WriteFile(harnessPath, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	harnessPath, argvPath := writeArgvRecordingHarness(t)
 
 	// The judge type is irrelevant: the harness captures argv before the
 	// runner invokes a judge; only the captured argv is asserted on.
@@ -991,16 +874,9 @@ fi
 			FromGitHubActions: true,
 		},
 	})
-	if err != nil {
-		t.Fatalf("RunSuite returned error: %v", err)
-	}
+	require.NoError(t, err)
 
-	data, err := os.ReadFile(argvCapture)
-	if err != nil {
-		t.Fatalf("reading captured argv: %v", err)
-	}
-	captured := string(data)
-	wantFragments := []string{
+	requireArgvHas(t, readArgvFile(t, argvPath),
 		"--anthropic-federation-rule-id",
 		"fdrl_01TEST",
 		"--anthropic-organization-id",
@@ -1008,12 +884,7 @@ fi
 		"--anthropic-service-account-id",
 		"svac_01TEST",
 		"--anthropic-from-github-actions",
-	}
-	for _, frag := range wantFragments {
-		if !strings.Contains(captured, frag+"\n") {
-			t.Errorf("captured argv missing %q\nfull capture:\n%s", frag, captured)
-		}
-	}
+	)
 }
 
 // TestRunSuite_ForwardsModelFlag pins that RunConfig.Model reaches the
@@ -1022,26 +893,7 @@ func TestRunSuite_ForwardsModelFlag(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fake harness assumes POSIX sh")
 	}
-	harnessDir := t.TempDir()
-	harnessPath := filepath.Join(harnessDir, "fake-harness")
-	argvCapture := filepath.Join(harnessDir, "argv.txt")
-
-	script := fmt.Sprintf(`#!/bin/sh
-for a in "$@"; do printf '%%s\n' "$a"; done > %q
-TRACE=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --trace) TRACE="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-if [ -n "$TRACE" ]; then
-  echo '{"id":"run-1","turns":1,"cost":0.01,"outcome":"success"}' > "$TRACE"
-fi
-`, argvCapture)
-	if err := os.WriteFile(harnessPath, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	harnessPath, argvPath := writeArgvRecordingHarness(t)
 
 	suite := types.EvalSuite{
 		ID: "model-suite",
@@ -1061,20 +913,9 @@ fi
 		HarnessPath: harnessPath,
 		Model:       "claude-haiku-5-5",
 	})
-	if err != nil {
-		t.Fatalf("RunSuite returned error: %v", err)
-	}
+	require.NoError(t, err)
 
-	data, err := os.ReadFile(argvCapture)
-	if err != nil {
-		t.Fatalf("reading captured argv: %v", err)
-	}
-	captured := string(data)
-	for _, frag := range []string{"--model", "claude-haiku-5-5"} {
-		if !strings.Contains(captured, frag+"\n") {
-			t.Errorf("captured argv missing %q\nfull capture:\n%s", frag, captured)
-		}
-	}
+	requireArgvHas(t, readArgvFile(t, argvPath), "--model", "claude-haiku-5-5")
 }
 
 // TestRunSuite_NoModelFlagWhenUnset pins that an empty RunConfig.Model does
@@ -1083,26 +924,7 @@ func TestRunSuite_NoModelFlagWhenUnset(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fake harness assumes POSIX sh")
 	}
-	harnessDir := t.TempDir()
-	harnessPath := filepath.Join(harnessDir, "fake-harness")
-	argvCapture := filepath.Join(harnessDir, "argv.txt")
-
-	script := fmt.Sprintf(`#!/bin/sh
-for a in "$@"; do printf '%%s\n' "$a"; done > %q
-TRACE=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --trace) TRACE="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-if [ -n "$TRACE" ]; then
-  echo '{"id":"run-1","turns":1,"cost":0.01,"outcome":"success"}' > "$TRACE"
-fi
-`, argvCapture)
-	if err := os.WriteFile(harnessPath, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	harnessPath, argvPath := writeArgvRecordingHarness(t)
 
 	suite := types.EvalSuite{
 		ID: "no-model-suite",
@@ -1121,17 +943,9 @@ fi
 	_, err := RunSuite(context.Background(), suite, RunConfig{
 		HarnessPath: harnessPath,
 	})
-	if err != nil {
-		t.Fatalf("RunSuite returned error: %v", err)
-	}
+	require.NoError(t, err)
 
-	data, err := os.ReadFile(argvCapture)
-	if err != nil {
-		t.Fatalf("reading captured argv: %v", err)
-	}
-	if strings.Contains(string(data), "--model\n") {
-		t.Errorf("captured argv unexpectedly contains --model:\n%s", string(data))
-	}
+	require.NotContains(t, readArgvFile(t, argvPath), "--model\n")
 }
 
 // TestRunSuite_ForwardsPromptModelFlag pins that RunConfig.PromptModel
@@ -1140,26 +954,7 @@ func TestRunSuite_ForwardsPromptModelFlag(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fake harness assumes POSIX sh")
 	}
-	harnessDir := t.TempDir()
-	harnessPath := filepath.Join(harnessDir, "fake-harness")
-	argvCapture := filepath.Join(harnessDir, "argv.txt")
-
-	script := fmt.Sprintf(`#!/bin/sh
-for a in "$@"; do printf '%%s\n' "$a"; done > %q
-TRACE=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --trace) TRACE="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-if [ -n "$TRACE" ]; then
-  echo '{"id":"run-1","turns":1,"cost":0.01,"outcome":"success"}' > "$TRACE"
-fi
-`, argvCapture)
-	if err := os.WriteFile(harnessPath, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	harnessPath, argvPath := writeArgvRecordingHarness(t)
 
 	suite := types.EvalSuite{
 		ID: "prompt-model-suite",
@@ -1180,20 +975,12 @@ fi
 		Model:       "claude-fable-6",
 		PromptModel: "claude-fable-5",
 	})
-	if err != nil {
-		t.Fatalf("RunSuite returned error: %v", err)
-	}
+	require.NoError(t, err)
 
-	data, err := os.ReadFile(argvCapture)
-	if err != nil {
-		t.Fatalf("reading captured argv: %v", err)
-	}
-	captured := string(data)
-	for _, frag := range []string{"--model", "claude-fable-6", "--prompt-model", "claude-fable-5"} {
-		if !strings.Contains(captured, frag+"\n") {
-			t.Errorf("captured argv missing %q\nfull capture:\n%s", frag, captured)
-		}
-	}
+	requireArgvHas(t, readArgvFile(t, argvPath),
+		"--model", "claude-fable-6",
+		"--prompt-model", "claude-fable-5",
+	)
 }
 
 // An empty RunConfig.PromptModel must not emit --prompt-model at all,
@@ -1202,26 +989,7 @@ func TestRunSuite_NoPromptModelFlagWhenUnset(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fake harness assumes POSIX sh")
 	}
-	harnessDir := t.TempDir()
-	harnessPath := filepath.Join(harnessDir, "fake-harness")
-	argvCapture := filepath.Join(harnessDir, "argv.txt")
-
-	script := fmt.Sprintf(`#!/bin/sh
-for a in "$@"; do printf '%%s\n' "$a"; done > %q
-TRACE=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --trace) TRACE="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-if [ -n "$TRACE" ]; then
-  echo '{"id":"run-1","turns":1,"cost":0.01,"outcome":"success"}' > "$TRACE"
-fi
-`, argvCapture)
-	if err := os.WriteFile(harnessPath, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	harnessPath, argvPath := writeArgvRecordingHarness(t)
 
 	suite := types.EvalSuite{
 		ID: "no-prompt-model-suite",
@@ -1240,17 +1008,9 @@ fi
 	_, err := RunSuite(context.Background(), suite, RunConfig{
 		HarnessPath: harnessPath,
 	})
-	if err != nil {
-		t.Fatalf("RunSuite returned error: %v", err)
-	}
+	require.NoError(t, err)
 
-	data, err := os.ReadFile(argvCapture)
-	if err != nil {
-		t.Fatalf("reading captured argv: %v", err)
-	}
-	if strings.Contains(string(data), "--prompt-model\n") {
-		t.Errorf("captured argv unexpectedly contains --prompt-model:\n%s", string(data))
-	}
+	require.NotContains(t, readArgvFile(t, argvPath), "--prompt-model\n")
 }
 
 // TestRunSuite_ForwardsProviderFlags pins that RunConfig.Provider,
@@ -1263,26 +1023,7 @@ func TestRunSuite_ForwardsProviderFlags(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fake harness assumes POSIX sh")
 	}
-	harnessDir := t.TempDir()
-	harnessPath := filepath.Join(harnessDir, "fake-harness")
-	argvCapture := filepath.Join(harnessDir, "argv.txt")
-
-	script := fmt.Sprintf(`#!/bin/sh
-for a in "$@"; do printf '%%s\n' "$a"; done > %q
-TRACE=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --trace) TRACE="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-if [ -n "$TRACE" ]; then
-  echo '{"id":"run-1","turns":1,"cost":0.01,"outcome":"success"}' > "$TRACE"
-fi
-`, argvCapture)
-	if err := os.WriteFile(harnessPath, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	harnessPath, argvPath := writeArgvRecordingHarness(t)
 
 	suite := types.EvalSuite{
 		ID: "provider-suite",
@@ -1304,24 +1045,13 @@ fi
 		BaseURL:     "https://openrouter.ai/api/v1",
 		APIKeyRef:   "secret://OPENROUTER_API_KEY",
 	})
-	if err != nil {
-		t.Fatalf("RunSuite returned error: %v", err)
-	}
+	require.NoError(t, err)
 
-	data, err := os.ReadFile(argvCapture)
-	if err != nil {
-		t.Fatalf("reading captured argv: %v", err)
-	}
-	captured := string(data)
-	for _, frag := range []string{
+	requireArgvHas(t, readArgvFile(t, argvPath),
 		"--provider", "openai-compatible",
 		"--base-url", "https://openrouter.ai/api/v1",
 		"--api-key-ref", "secret://OPENROUTER_API_KEY",
-	} {
-		if !strings.Contains(captured, frag+"\n") {
-			t.Errorf("captured argv missing %q\nfull capture:\n%s", frag, captured)
-		}
-	}
+	)
 }
 
 // Each provider flag is emitted independently, so an unset field must
@@ -1349,9 +1079,7 @@ if [ -n "$TRACE" ]; then
   echo '{"id":"run-1","turns":1,"cost":0.01,"outcome":"success"}' > "$TRACE"
 fi
 `, argvCapture)
-	if err := os.WriteFile(harnessPath, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(harnessPath, []byte(script), 0o755))
 
 	suite := types.EvalSuite{
 		ID: "no-provider-suite",
@@ -1371,21 +1099,23 @@ fi
 		HarnessPath: harnessPath,
 		BaseURL:     "https://openrouter.ai/api/v1",
 	})
-	if err != nil {
-		t.Fatalf("RunSuite returned error: %v", err)
-	}
+	require.NoError(t, err)
 
 	data, err := os.ReadFile(argvCapture)
-	if err != nil {
-		t.Fatalf("reading captured argv: %v", err)
-	}
+	require.NoError(t, err, "reading captured argv")
 	captured := string(data)
-	if !strings.Contains(captured, "--base-url\n") {
-		t.Errorf("captured argv missing --base-url:\n%s", captured)
+	require.Contains(t, captured, "--base-url\n")
+
+	tests := []struct {
+		name string
+		flag string
+	}{
+		{name: "omits provider flag", flag: "--provider"},
+		{name: "omits api key ref flag", flag: "--api-key-ref"},
 	}
-	for _, frag := range []string{"--provider\n", "--api-key-ref\n"} {
-		if strings.Contains(captured, frag) {
-			t.Errorf("captured argv unexpectedly contains %q:\n%s", frag, captured)
-		}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			require.NotContains(t, captured, tc.flag+"\n")
+		})
 	}
 }

@@ -11,10 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// TestComposeEnv_GitCredentialHelper_StubHaybale drives a REAL git binary
+// TestComposeEnv_GitCredentialHelper_PresentsTokenFileContent drives a REAL git binary
 // against a stub HTTP server standing in for haybale, using ONLY the env
 // ComposeEnv produces plus the token file it points at, and asserts the
 // Basic-auth password git presents equals the token in that file — the
@@ -32,7 +34,7 @@ import (
 // Both the "https://" form and the "git@host:"/"ssh://" insteadOf
 // rewriting must route through the proxy; the "ssh scp-form" subtest pins
 // the latter through a real git binary rather than by string match alone.
-func TestComposeEnv_GitCredentialHelper_StubHaybale(t *testing.T) {
+func TestComposeEnv_GitCredentialHelper_PresentsTokenFileContent(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git binary not found in PATH")
 	}
@@ -97,18 +99,13 @@ func TestComposeEnv_GitCredentialHelper_StubHaybale(t *testing.T) {
 			// tokenPathPattern accepts; the file stands in for the
 			// executor-delivered SandboxIdentityTokenPath.
 			tokenPath := filepath.Join(t.TempDir(), "token")
-			if err := os.WriteFile(tokenPath, []byte(wantToken), 0o600); err != nil {
-				t.Fatalf("write token file: %v", err)
-			}
+			require.NoError(t, os.WriteFile(tokenPath, []byte(wantToken), 0o600), "write token file")
+
 			env, err := ComposeEnv("HAYBALE_TOKEN", composedToken, tokenPath, gp)
-			if err != nil {
-				t.Fatalf("ComposeEnv() error: %v", err)
-			}
+			require.NoError(t, err, "ComposeEnv()")
 
 			path, ok := os.LookupEnv("PATH")
-			if !ok {
-				t.Fatal("PATH is not set in the test process environment")
-			}
+			require.True(t, ok, "PATH is not set in the test process environment")
 			envStrings := []string{
 				"PATH=" + path,
 				"HOME=" + t.TempDir(),
@@ -140,21 +137,11 @@ func TestComposeEnv_GitCredentialHelper_StubHaybale(t *testing.T) {
 			mu.Lock()
 			defer mu.Unlock()
 
-			if !sawNoAuth {
-				t.Error("expected an initial unauthenticated request (git should probe before invoking the credential helper)")
-			}
-			if !sawAuth {
-				t.Fatal("expected a follow-up request carrying Basic auth from the composed credential helper")
-			}
-			if capturedUser != "x-access-token" {
-				t.Errorf("Basic-auth username = %q, want %q", capturedUser, "x-access-token")
-			}
-			if capturedPass != wantToken {
-				t.Errorf("Basic-auth password = %q, want the token file's content %q", capturedPass, wantToken)
-			}
-			if capturedPass == composedToken {
-				t.Error("git presented the env var's token rather than reading the token file")
-			}
+			require.True(t, sawNoAuth, "expected an initial unauthenticated request (git should probe before invoking the credential helper)")
+			require.True(t, sawAuth, "expected a follow-up request carrying Basic auth from the composed credential helper")
+			require.Equal(t, "x-access-token", capturedUser)
+			require.Equal(t, wantToken, capturedPass, "Basic-auth password should be the token file's content")
+			require.NotEqual(t, composedToken, capturedPass, "git presented the env var's token rather than reading the token file")
 		})
 	}
 }

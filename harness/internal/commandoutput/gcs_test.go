@@ -8,75 +8,60 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestGCSUploaderStreamsArchiveBesideTracePrefix(t *testing.T) {
+func TestGCSUploader_StreamsArchiveBesideTracePrefix(t *testing.T) {
 	var got []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer token" {
-			t.Errorf("authorization=%q", r.Header.Get("Authorization"))
-		}
-		if r.URL.Query().Get("name") != "traces/run-1.command-output.tar.gz" {
-			t.Errorf("name=%q", r.URL.Query().Get("name"))
-		}
-		var err error
-		got, err = io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("read body: %v", err)
-		}
+		// The handler runs on the server goroutine, so it uses assert rather than require.
+		assert.Equal(t, "Bearer token", r.Header.Get("Authorization"))
+		assert.Equal(t, "traces/run-1.command-output.tar.gz", r.URL.Query().Get("name"))
+		body, err := io.ReadAll(r.Body)
+		assert.NoError(t, err)
+		got = body
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
+
 	path := filepath.Join(t.TempDir(), "archive.tar.gz")
 	want := []byte("compressed archive bytes")
-	if err := os.WriteFile(path, want, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, want, 0o600))
+
 	uploader, err := NewGCSUploader(GCSUploaderOptions{
 		Bucket: "bucket-name", ObjectPrefix: "traces/", EndpointBaseURL: server.URL,
 		Bearer: func(context.Context) (string, error) { return "token", nil },
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	uri, err := uploader.UploadCommandOutputArchive(context.Background(), path, "run-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if uri != "gs://bucket-name/traces/run-1.command-output.tar.gz" {
-		t.Fatalf("uri=%q", uri)
-	}
-	if string(got) != string(want) {
-		t.Fatalf("body=%q", got)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "gs://bucket-name/traces/run-1.command-output.tar.gz", uri)
+	require.Equal(t, string(want), string(got))
 }
 
-func TestGCSUploaderNormalisesUnslashedPrefix(t *testing.T) {
+func TestGCSUploader_NormalisesUnslashedPrefix(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("name") != "traces/run-1.command-output.tar.gz" {
-			t.Errorf("name=%q", r.URL.Query().Get("name"))
-		}
+		// The handler runs on the server goroutine, so it uses assert rather than require.
+		assert.Equal(t, "traces/run-1.command-output.tar.gz", r.URL.Query().Get("name"))
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
+
 	path := filepath.Join(t.TempDir(), "archive.tar.gz")
-	if err := os.WriteFile(path, []byte("bytes"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte("bytes"), 0o600))
+
 	// ValidateRunConfig deliberately does not rewrite the configured
 	// prefix; the uploader owns slash normalisation.
 	uploader, err := NewGCSUploader(GCSUploaderOptions{
 		Bucket: "bucket-name", ObjectPrefix: "traces", EndpointBaseURL: server.URL,
 		Bearer: func(context.Context) (string, error) { return "token", nil },
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	uri, err := uploader.UploadCommandOutputArchive(context.Background(), path, "run-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if uri != "gs://bucket-name/traces/run-1.command-output.tar.gz" {
-		t.Fatalf("uri=%q", uri)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "gs://bucket-name/traces/run-1.command-output.tar.gz", uri)
 }

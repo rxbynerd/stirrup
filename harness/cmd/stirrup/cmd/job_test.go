@@ -6,12 +6,12 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 
 	pb "github.com/rxbynerd/stirrup/gen/harness/v1"
@@ -44,16 +44,8 @@ func TestRunJob_MissingControlPlaneAddrIsPlain(t *testing.T) {
 	t.Setenv("CONTROL_PLANE_ADDR", "")
 
 	err := runJob(jobCmd, nil)
-	if err == nil {
-		t.Fatal("runJob returned nil, want an error when CONTROL_PLANE_ADDR is unset")
-	}
-	msg := err.Error()
-	if !strings.Contains(msg, "CONTROL_PLANE_ADDR environment variable is required") {
-		t.Errorf("error = %q, want the CONTROL_PLANE_ADDR-required message", msg)
-	}
-	if strings.Contains(msg, "\x1b[") {
-		t.Errorf("job error must not contain ANSI escapes (log aggregators ingest it verbatim): %q", msg)
-	}
+	require.ErrorContains(t, err, "CONTROL_PLANE_ADDR environment variable is required")
+	require.NotContains(t, err.Error(), "\x1b[", "job error must not contain ANSI escapes (log aggregators ingest it verbatim)")
 }
 
 // fakeControlPlane implements just enough of HarnessServiceServer to drive
@@ -118,9 +110,7 @@ func startControlPlane(t *testing.T, srv pb.HarnessServiceServer) {
 	t.Helper()
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("net.Listen: %v", err)
-	}
+	require.NoError(t, err)
 	grpcServer := grpc.NewServer()
 	pb.RegisterHarnessServiceServer(grpcServer, srv)
 	go func() { _ = grpcServer.Serve(lis) }()
@@ -164,20 +154,9 @@ const (
 // run concurrently with no happens-before edge between them.
 func waitForProbe(t *testing.T, path string, wantPresent bool) {
 	t.Helper()
-	deadline := time.Now().Add(probeWaitBudget)
-	for {
-		err := health.CheckProbe(path)
-		if wantPresent && err == nil {
-			return
-		}
-		if !wantPresent && err != nil {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("marker %s present=%v after deadline, want present=%v", path, err == nil, wantPresent)
-		}
-		time.Sleep(time.Millisecond)
-	}
+	require.Eventually(t, func() bool {
+		return (health.CheckProbe(path) == nil) == wantPresent
+	}, probeWaitBudget, time.Millisecond, "marker %s did not reach present=%v", path, wantPresent)
 }
 
 // TestRunJob_ReadinessMarkerScopedToAssignmentWait drives runJob against a
@@ -203,7 +182,7 @@ func TestRunJob_ReadinessMarkerScopedToAssignmentWait(t *testing.T) {
 	select {
 	case <-srv.readyRecv:
 	case <-time.After(eventWaitBudget):
-		t.Fatal("fake control plane never received the ready event")
+		require.FailNow(t, "fake control plane never received the ready event")
 	}
 
 	// The harness is now blocked waiting for task_assignment: both
@@ -217,11 +196,9 @@ func TestRunJob_ReadinessMarkerScopedToAssignmentWait(t *testing.T) {
 
 	select {
 	case err := <-errCh:
-		if err == nil || !strings.Contains(err.Error(), "building harness") {
-			t.Fatalf("runJob() error = %v, want a building-harness failure from the invalid RunConfig", err)
-		}
+		require.ErrorContains(t, err, "building harness")
 	case <-time.After(eventWaitBudget):
-		t.Fatal("runJob did not return after the invalid task_assignment")
+		require.FailNow(t, "runJob did not return after the invalid task_assignment")
 	}
 
 	// runJob returned, so its deferred cleanup (mirroring process exit in
@@ -284,13 +261,13 @@ func TestRunJob_LivenessOutlivesReadinessDuringExecution(t *testing.T) {
 	select {
 	case <-srv.readyRecv:
 	case <-time.After(eventWaitBudget):
-		t.Fatal("fake control plane never received the ready event")
+		require.FailNow(t, "fake control plane never received the ready event")
 	}
 
 	select {
 	case <-requestReceived:
 	case <-time.After(eventWaitBudget):
-		t.Fatal("provider never received a request; the loop did not reach execution")
+		require.FailNow(t, "provider never received a request; the loop did not reach execution")
 	}
 
 	// A turn is now actually in flight against the (blocked) provider:
@@ -303,11 +280,9 @@ func TestRunJob_LivenessOutlivesReadinessDuringExecution(t *testing.T) {
 
 	select {
 	case err := <-errCh:
-		if err != nil {
-			t.Fatalf("runJob() error = %v, want a successful single-turn run", err)
-		}
+		require.NoError(t, err, "single-turn run should succeed")
 	case <-time.After(eventWaitBudget):
-		t.Fatal("runJob did not return after the provider responded")
+		require.FailNow(t, "runJob did not return after the provider responded")
 	}
 
 	waitForProbe(t, readinessMarkerPath, false)
@@ -323,21 +298,11 @@ func TestEmitTerminalFailure_EmitsErrorThenDone(t *testing.T) {
 
 	emitTerminalFailure(tp, errors.New("building harness: config validation: bad"), "error")
 
-	if len(tp.events) != 2 {
-		t.Fatalf("emitted %d events (%v), want exactly error then done", len(tp.events), tp.events)
-	}
-	if tp.events[0].Type != "error" {
-		t.Errorf("first event type = %q, want %q", tp.events[0].Type, "error")
-	}
-	if !strings.Contains(tp.events[0].Message, "config validation: bad") {
-		t.Errorf("error event message = %q, want it to carry the cause", tp.events[0].Message)
-	}
-	if tp.events[1].Type != "done" {
-		t.Errorf("second event type = %q, want %q", tp.events[1].Type, "done")
-	}
-	if tp.events[1].StopReason != "error" {
-		t.Errorf("done stop_reason = %q, want %q", tp.events[1].StopReason, "error")
-	}
+	require.Len(t, tp.events, 2, "want exactly error then done, got %v", tp.events)
+	assert.Equal(t, "error", tp.events[0].Type)
+	assert.Contains(t, tp.events[0].Message, "config validation: bad", "error event should carry the cause")
+	assert.Equal(t, "done", tp.events[1].Type)
+	assert.Equal(t, "error", tp.events[1].StopReason)
 }
 
 // TestEmitTerminalFailure_EmitFailureStillAttemptsDone checks that a
@@ -349,17 +314,13 @@ func TestEmitTerminalFailure_EmitFailureStillAttemptsDone(t *testing.T) {
 
 	emitTerminalFailure(tp, errors.New("building harness: boom"), "error")
 
-	if len(tp.events) != 2 {
-		t.Fatalf("emitted %d events (%v), want both attempted despite emit failure", len(tp.events), tp.events)
-	}
-	if tp.events[1].Type != "done" {
-		t.Errorf("second event type = %q, want %q", tp.events[1].Type, "done")
-	}
+	require.Len(t, tp.events, 2, "want both events attempted despite the emit failure, got %v", tp.events)
+	require.Equal(t, "done", tp.events[1].Type)
 }
 
-// TestEmitTerminalFailure_NilTransport confirms the helper is safe when
-// no transport was established, so the caller never has to guard it.
-func TestEmitTerminalFailure_NilTransport(t *testing.T) {
+// emitTerminalFailure is safe when no transport was established, so the
+// caller never has to guard it.
+func TestEmitTerminalFailure_NilTransportDoesNotPanic(t *testing.T) {
 	emitTerminalFailure(nil, errors.New("boom"), "error")
 }
 
@@ -441,27 +402,21 @@ func TestRunJob_ReadyAdvertisesCapabilities(t *testing.T) {
 	select {
 	case <-srv.doneCh:
 	case <-time.After(terminalWaitBudget):
-		t.Fatal("control plane never received a done event")
+		require.FailNow(t, "control plane never received a done event")
 	}
 	select {
 	case runErr := <-errCh:
-		if runErr == nil {
-			t.Error("runJob returned nil for a rejected config")
-		}
+		require.Error(t, runErr, "runJob should fail for a rejected config")
 	case <-time.After(terminalWaitBudget):
-		t.Fatal("runJob did not return")
+		require.FailNow(t, "runJob did not return")
 	}
 
 	srv.mu.Lock()
 	ready := srv.ready
 	srv.mu.Unlock()
-	if ready.GetType() != "ready" {
-		t.Fatalf("first event = %q, want ready", ready.GetType())
-	}
+	require.Equal(t, "ready", ready.GetType(), "first event sent to the control plane")
 	want := []string{"live_transcript", "reasoning_summary", "follow_up_history", "turn_abandoned"}
-	if got := ready.GetCapabilities(); !reflect.DeepEqual(got, want) {
-		t.Errorf("ready capabilities = %v, want %v", got, want)
-	}
+	require.Equal(t, want, ready.GetCapabilities())
 }
 
 // TestRunJob_InvalidAssignedConfigSignalsControlPlane drives `stirrup
@@ -484,32 +439,25 @@ func TestRunJob_InvalidAssignedConfigSignalsControlPlane(t *testing.T) {
 	select {
 	case <-srv.doneCh:
 	case <-time.After(terminalWaitBudget):
-		t.Fatal("control plane never received a done event for the rejected config")
+		require.FailNow(t, "control plane never received a done event for the rejected config")
 	}
 
 	select {
 	case runErr := <-errCh:
-		if runErr == nil {
-			t.Error("runJob returned nil, want the build failure to fail the process")
-		} else if !strings.Contains(runErr.Error(), "building harness") {
-			t.Errorf("runJob error = %v, want it to report the build failure", runErr)
-		}
+		require.ErrorContains(t, runErr, "building harness")
 	case <-time.After(terminalWaitBudget):
-		t.Fatal("runJob did not return after signalling the control plane")
+		require.FailNow(t, "runJob did not return after signalling the control plane")
 	}
 
-	var sawError bool
+	var errMessages []string
 	for _, ev := range srv.events() {
-		if ev.Type != "error" {
-			continue
-		}
-		sawError = true
-		if !strings.Contains(ev.Message, "config validation") {
-			t.Errorf("error event message = %q, want the validation failure", ev.Message)
+		if ev.Type == "error" {
+			errMessages = append(errMessages, ev.Message)
 		}
 	}
-	if !sawError {
-		t.Errorf("no error event received; got %v", srv.events())
+	require.NotEmpty(t, errMessages, "no error event received; got %v", srv.events())
+	for _, msg := range errMessages {
+		assert.Contains(t, msg, "config validation", "error event should carry the validation failure")
 	}
 }
 
@@ -568,91 +516,74 @@ func TestRunJob_FatalPreRunHookSignalsControlPlaneAndSink(t *testing.T) {
 	select {
 	case <-srv.doneCh:
 	case <-time.After(terminalWaitBudget):
-		t.Fatalf("control plane never received a done event; got %v", srv.events())
+		require.FailNow(t, "control plane never received a done event", "got %v", srv.events())
 	}
 
 	select {
 	case runErr := <-errCh:
-		if runErr == nil {
-			t.Error("runJob returned nil, want the setup failure to fail the process")
-		} else if !strings.Contains(runErr.Error(), "running harness") {
-			t.Errorf("runJob error = %v, want it to report the run failure", runErr)
-		}
+		require.ErrorContains(t, runErr, "running harness")
 	case <-time.After(terminalWaitBudget):
-		t.Fatal("runJob did not return after signalling the control plane")
+		require.FailNow(t, "runJob did not return after signalling the control plane")
 	}
 
 	done := srv.findEvent("done")
-	if done == nil {
-		t.Fatalf("no done event received; got %v", srv.events())
-	}
-	if done.StopReason != "setup_failed" {
-		t.Errorf("done stop_reason = %q, want setup_failed", done.StopReason)
-	}
+	require.NotNil(t, done, "no done event received; got %v", srv.events())
+	assert.Equal(t, "setup_failed", done.StopReason)
 	// "done" follows trace finalisation, so it carries the run summary
 	// with the failure reason.
-	if done.Trace == nil {
-		t.Fatal("done.trace is unset, want the run summary")
-	}
-	if done.Trace.Outcome != "setup_failed" || done.Trace.RunId != "job-hooks-fatal-test" {
-		t.Errorf("done.trace outcome/run_id = %q/%q, want setup_failed/job-hooks-fatal-test", done.Trace.Outcome, done.Trace.RunId)
-	}
-	if !strings.HasPrefix(done.Trace.Error, "pre-run hooks: ") {
-		t.Errorf("done.trace.error = %q, want the pre-run hook failure", done.Trace.Error)
-	}
+	require.NotNil(t, done.Trace, "done.trace should carry the run summary")
+	assert.Equal(t, "setup_failed", done.Trace.Outcome)
+	assert.Equal(t, "job-hooks-fatal-test", done.Trace.RunId)
+	assert.Regexp(t, "^pre-run hooks: ", done.Trace.Error)
 
 	// A run that started emits its RunResult even though loop.Run
 	// returned a fatal error; a control plane reading only the sink
 	// must still learn the outcome.
-	if len(sink.calls) != 1 {
-		t.Fatalf("resultSink received %d results, want exactly 1", len(sink.calls))
-	}
+	require.Len(t, sink.calls, 1, "resultSink should receive exactly one result")
 	result := sink.calls[0]
-	if result.Outcome != "setup_failed" {
-		t.Errorf("RunResult.Outcome = %q, want setup_failed", result.Outcome)
-	}
-	if result.RunID != "job-hooks-fatal-test" {
-		t.Errorf("RunResult.RunID = %q, want it to mirror RunConfig.runId", result.RunID)
-	}
-	if result.HookFailures == 0 {
-		t.Error("RunResult.HookFailures = 0, want the failed preRun hook counted")
-	}
-	if result.Turns != 0 {
-		t.Errorf("RunResult.Turns = %d, want 0: setup failed before the first turn", result.Turns)
-	}
+	assert.Equal(t, "setup_failed", result.Outcome)
+	assert.Equal(t, "job-hooks-fatal-test", result.RunID, "RunResult should mirror RunConfig.runId")
+	assert.NotZero(t, result.HookFailures, "the failed preRun hook should be counted")
+	assert.Zero(t, result.Turns, "setup fails before the first turn")
 }
 
-func TestJobSessionBudget(t *testing.T) {
+func TestJobSessionBudget_FollowUpWindowAndSessionDeadline(t *testing.T) {
 	run := 30 * time.Second
 
 	t.Run("run alone without a follow-up window", func(t *testing.T) {
 		t.Setenv("STIRRUP_SESSION_DEADLINE", "")
-		if got := jobSessionBudget(run, 0); got != run {
-			t.Errorf("budget = %v, want %v", got, run)
-		}
+		require.Equal(t, run, jobSessionBudget(run, 0))
 	})
 
 	t.Run("follow-up allowance when a window is configured", func(t *testing.T) {
 		t.Setenv("STIRRUP_SESSION_DEADLINE", "")
 		want := run + cliSessionBudget(run, 60)
-		if got := jobSessionBudget(run, 60); got != want {
-			t.Errorf("budget = %v, want %v", got, want)
-		}
+		require.Equal(t, want, jobSessionBudget(run, 60))
 	})
 
 	t.Run("session deadline overrides the estimate", func(t *testing.T) {
 		t.Setenv("STIRRUP_SESSION_DEADLINE", "7200")
-		if got := jobSessionBudget(run, 60); got != 2*time.Hour {
-			t.Errorf("budget = %v, want 2h", got)
-		}
+		require.Equal(t, 2*time.Hour, jobSessionBudget(run, 60))
 	})
 
 	t.Run("invalid session deadline is ignored", func(t *testing.T) {
 		t.Setenv("STIRRUP_SESSION_DEADLINE", "soon")
-		if got := jobSessionBudget(run, 0); got != run {
-			t.Errorf("budget = %v, want %v", got, run)
-		}
+		require.Equal(t, run, jobSessionBudget(run, 0))
 	})
+}
+
+// findErrorAndDone returns the last "error" and "done" events in events, or
+// nil for whichever is absent.
+func findErrorAndDone(events []*pb.HarnessEvent) (errEvent, doneEvent *pb.HarnessEvent) {
+	for _, ev := range events {
+		switch ev.Type {
+		case "error":
+			errEvent = ev
+		case "done":
+			doneEvent = ev
+		}
+	}
+	return errEvent, doneEvent
 }
 
 // TestRunJob_RequiredMCPServerUnreachableSendsErrorThenDone drives the job
@@ -699,37 +630,20 @@ func TestRunJob_RequiredMCPServerUnreachableSendsErrorThenDone(t *testing.T) {
 
 	select {
 	case err := <-errCh:
-		if err == nil || !strings.Contains(err.Error(), `required MCP server "docs"`) {
-			t.Fatalf("runJob() error = %v, want a required-MCP-server failure naming docs", err)
-		}
+		require.ErrorContains(t, err, `required MCP server "docs"`)
 	case <-time.After(terminalWaitBudget):
-		t.Fatal("runJob did not return after the unreachable required MCP server")
+		require.FailNow(t, "runJob did not return after the unreachable required MCP server")
 	}
 
-	deadline := time.Now().Add(eventWaitBudget)
-	for {
-		var errMsg, doneReason string
-		var sawError, sawDone bool
-		for _, ev := range srv.receivedEvents() {
-			switch ev.Type {
-			case "error":
-				sawError, errMsg = true, ev.Message
-			case "done":
-				sawDone, doneReason = true, ev.StopReason
-			}
-		}
-		if sawError && sawDone {
-			if !strings.Contains(errMsg, `required MCP server "docs"`) {
-				t.Errorf("error event message = %q, want the server named", errMsg)
-			}
-			if doneReason != "error" {
-				t.Errorf("done stop_reason = %q, want error", doneReason)
-			}
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("control plane did not receive error and done; got %v", srv.receivedEvents())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		errEvent, doneEvent := findErrorAndDone(srv.receivedEvents())
+		assert.True(c, errEvent != nil && doneEvent != nil,
+			"control plane did not receive error and done; got %v", srv.receivedEvents())
+	}, eventWaitBudget, 10*time.Millisecond)
+
+	errEvent, doneEvent := findErrorAndDone(srv.receivedEvents())
+	require.NotNil(t, errEvent)
+	require.NotNil(t, doneEvent)
+	assert.Contains(t, errEvent.Message, `required MCP server "docs"`)
+	assert.Equal(t, "error", doneEvent.StopReason)
 }

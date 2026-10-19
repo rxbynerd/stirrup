@@ -3,7 +3,11 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // fixedTool builds a no-op tool for presenter tests.
@@ -26,22 +30,38 @@ func newRegistryWith(tools ...*Tool) *Registry {
 	return r
 }
 
-func TestProfileFor(t *testing.T) {
-	for _, name := range []string{"", "default"} {
-		p, ok := ProfileFor(name)
-		if !ok {
-			t.Fatalf("ProfileFor(%q) ok=false, want true", name)
-		}
-		if p != defaultProfile {
-			t.Errorf("ProfileFor(%q) did not return the default profile", name)
-		}
+// presentedNames returns the names the presenter advertises, in List order.
+func presentedNames(p *Presenter) []string {
+	defs := p.List()
+	names := make([]string, 0, len(defs))
+	for _, d := range defs {
+		names = append(names, d.Name)
 	}
-	if p, ok := ProfileFor("coding-classic"); !ok || p.Name != "coding-classic" {
-		t.Fatalf("ProfileFor(coding-classic) = %v, %v", p, ok)
+	return names
+}
+
+func TestProfileFor_ResolvesDefaultAndNamedProfiles(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{name: "empty name", input: ""},
+		{name: "default name", input: "default"},
 	}
-	if _, ok := ProfileFor("does-not-exist"); ok {
-		t.Error("ProfileFor(unknown) ok=true, want false")
+	for _, tc := range cases {
+		t.Run(tc.name+" resolves to the default profile", func(t *testing.T) {
+			p, ok := ProfileFor(tc.input)
+			require.True(t, ok)
+			require.Same(t, defaultProfile, p)
+		})
 	}
+
+	p, ok := ProfileFor("coding-classic")
+	require.True(t, ok)
+	require.Equal(t, "coding-classic", p.Name)
+
+	_, ok = ProfileFor("does-not-exist")
+	require.False(t, ok)
 }
 
 // Default profile presents tools under their internal names and resolves
@@ -53,17 +73,16 @@ func TestPresenter_DefaultProfileIsIdentity(t *testing.T) {
 		fixedTool("edit_file", "edit"),
 	)
 	p, err := NewPresenter(reg, defaultProfile)
-	if err != nil {
-		t.Fatalf("NewPresenter: %v", err)
-	}
-	defs := p.List()
-	if len(defs) != 2 || defs[0].Name != "grep_files" || defs[1].Name != "edit_file" {
-		t.Fatalf("default profile changed presented names: %+v", defs)
-	}
+	require.NoError(t, err)
+
+	require.Equal(t, []string{"grep_files", "edit_file"}, presentedNames(p),
+		"default profile changed presented names")
 	for _, name := range []string{"grep_files", "edit_file"} {
-		if got := p.Resolve(name); got == nil || got.Name != name {
-			t.Errorf("Resolve(%q) = %v, want tool with that internal name", name, got)
-		}
+		t.Run(name+" resolves unchanged", func(t *testing.T) {
+			got := p.Resolve(name)
+			require.NotNil(t, got)
+			require.Equal(t, name, got.Name)
+		})
 	}
 }
 
@@ -77,9 +96,7 @@ func TestPresenter_AliasPresentationAndResolution(t *testing.T) {
 		fixedTool("read_file", "read"),
 	)
 	p, err := NewPresenter(reg, codingClassicProfile)
-	if err != nil {
-		t.Fatalf("NewPresenter: %v", err)
-	}
+	require.NoError(t, err)
 
 	wantPresented := map[string]string{
 		"grep_files":  "grep",
@@ -87,54 +104,39 @@ func TestPresenter_AliasPresentationAndResolution(t *testing.T) {
 		"run_command": "bash",
 		"read_file":   "read_file", // unaliased: presented unchanged
 	}
-	defs := p.List()
-	gotPresented := map[string]bool{}
-	for _, d := range defs {
-		gotPresented[d.Name] = true
-	}
+	presented := presentedNames(p)
 	for internal, alias := range wantPresented {
-		if !gotPresented[alias] {
-			t.Errorf("List did not present %q as %q; defs=%+v", internal, alias, defs)
-		}
-	}
+		t.Run(internal+" presented as "+alias, func(t *testing.T) {
+			require.Contains(t, presented, alias)
 
-	// Resolve by alias returns the internal tool unchanged.
-	for internal, alias := range wantPresented {
-		got := p.Resolve(alias)
-		if got == nil {
-			t.Fatalf("Resolve(alias %q) = nil", alias)
-		}
-		if got.Name != internal {
-			t.Errorf("Resolve(alias %q).Name = %q, want internal %q", alias, got.Name, internal)
-		}
-		// Internal name still resolves (config compatibility).
-		if byInternal := p.Resolve(internal); byInternal == nil || byInternal.Name != internal {
-			t.Errorf("Resolve(internal %q) = %v, want the tool", internal, byInternal)
-		}
-		if p.InternalName(alias) != internal {
-			t.Errorf("InternalName(%q) = %q, want %q", alias, p.InternalName(alias), internal)
-		}
+			got := p.Resolve(alias)
+			require.NotNil(t, got)
+			require.Equal(t, internal, got.Name)
+
+			// The internal name keeps resolving for config compatibility.
+			byInternal := p.Resolve(internal)
+			require.NotNil(t, byInternal)
+			require.Equal(t, internal, byInternal.Name)
+
+			require.Equal(t, internal, p.InternalName(alias))
+		})
 	}
 }
 
 // A profile may re-describe a tool without renaming it.
-func TestPresenter_DescriptionOverride(t *testing.T) {
+func TestPresenter_DescriptionOverrideKeepsName(t *testing.T) {
 	reg := newRegistryWith(fixedTool("read_file", "original"))
 	profile := &Profile{
 		Name:         "describe-test",
 		descriptions: map[string]string{"read_file": "rewritten for this provider"},
 	}
 	p, err := NewPresenter(reg, profile)
-	if err != nil {
-		t.Fatalf("NewPresenter: %v", err)
-	}
+	require.NoError(t, err)
+
 	defs := p.List()
-	if defs[0].Name != "read_file" {
-		t.Errorf("description override should not rename: got %q", defs[0].Name)
-	}
-	if defs[0].Description != "rewritten for this provider" {
-		t.Errorf("description not overridden: got %q", defs[0].Description)
-	}
+	require.Len(t, defs, 1)
+	assert.Equal(t, "read_file", defs[0].Name, "description override should not rename")
+	assert.Equal(t, "rewritten for this provider", defs[0].Description, "description not overridden")
 }
 
 // A deliberate alias collision (two internal tools aliasing to the same
@@ -155,52 +157,33 @@ func TestPresenter_AliasCollisionResolvedByToolname(t *testing.T) {
 		},
 	}
 	p, err := NewPresenter(reg, collide)
-	if err != nil {
-		t.Fatalf("NewPresenter on collision: %v", err)
-	}
+	require.NoError(t, err)
 
-	defs := p.List()
-	presented := make([]string, len(defs))
-	for i, d := range defs {
-		presented[i] = d.Name
-	}
-	if presented[0] == presented[1] {
-		t.Fatalf("collision not disambiguated: both presented as %q", presented[0])
-	}
+	presented := presentedNames(p)
+	require.Len(t, presented, 2)
+	require.NotEqual(t, presented[0], presented[1], "collision not disambiguated")
 
 	// Exactly one presented name keeps the bare "search" target; the other
 	// carries toolname's deterministic "_<6 hex>" disambiguation suffix.
-	var bare, suffixed string
+	require.Contains(t, presented, "search")
+	var suffixed string
 	for _, name := range presented {
-		if name == "search" {
-			bare = name
-		} else {
+		if name != "search" {
 			suffixed = name
 		}
 	}
-	if bare == "" || suffixed == "" {
-		t.Fatalf("expected one bare and one suffixed name, got %v", presented)
-	}
-	if len(suffixed) != len("search")+7 || suffixed[:len("search")+1] != "search_" {
-		t.Errorf("suffixed name %q is not toolname's search_<6hex> form", suffixed)
-	}
+	require.Len(t, suffixed, len("search")+7, "suffixed name is not toolname's search_<6hex> form")
+	require.True(t, strings.HasPrefix(suffixed, "search_"),
+		"suffixed name %q is not toolname's search_<6hex> form", suffixed)
 
-	// Each presented name resolves back to its own internal tool.
-	for _, d := range defs {
-		got := p.Resolve(d.Name)
-		if got == nil {
-			t.Fatalf("Resolve(presented %q) = nil", d.Name)
-		}
-		if got.Name != "grep_files" && got.Name != "find_files" {
-			t.Errorf("Resolve(presented %q) = %q, not an internal tool", d.Name, got.Name)
-		}
+	resolved := make([]string, 0, len(presented))
+	for _, name := range presented {
+		got := p.Resolve(name)
+		require.NotNil(t, got, "Resolve(presented %q)", name)
+		resolved = append(resolved, got.Name)
 	}
-	// The two presented names map to two distinct internal tools.
-	a := p.Resolve(presented[0]).Name
-	b := p.Resolve(presented[1]).Name
-	if a == b {
-		t.Errorf("both presented names resolved to the same internal tool %q", a)
-	}
+	require.ElementsMatch(t, []string{"grep_files", "find_files"}, resolved,
+		"each presented name must resolve to its own internal tool")
 }
 
 // Collision resolution must be independent of registration order: the same
@@ -221,9 +204,7 @@ func TestPresenter_CollisionOrderIndependent(t *testing.T) {
 			fixedTool(second, "s"),
 		)
 		p, err := NewPresenter(reg, collide)
-		if err != nil {
-			t.Fatalf("NewPresenter(%s,%s): %v", first, second, err)
-		}
+		require.NoError(t, err, "NewPresenter(%s,%s)", first, second)
 		// Map internal ID → presented name, independent of List order.
 		m := map[string]string{}
 		for _, d := range p.List() {
@@ -236,26 +217,20 @@ func TestPresenter_CollisionOrderIndependent(t *testing.T) {
 	reverse := presentedFor("find_files", "grep_files")
 
 	for _, internal := range []string{"grep_files", "find_files"} {
-		if forward[internal] != reverse[internal] {
-			t.Errorf("presented name for %q depends on registration order: %q vs %q",
-				internal, forward[internal], reverse[internal])
-		}
+		t.Run(internal+" keeps its presented name", func(t *testing.T) {
+			require.Equal(t, forward[internal], reverse[internal],
+				"presented name for %q depends on registration order", internal)
+		})
 	}
 }
 
 func TestPresenter_ResolveUnknownReturnsNil(t *testing.T) {
 	reg := newRegistryWith(fixedTool("read_file", "read"))
 	p, err := NewPresenter(reg, codingClassicProfile)
-	if err != nil {
-		t.Fatalf("NewPresenter: %v", err)
-	}
-	if got := p.Resolve("not_a_tool"); got != nil {
-		t.Errorf("Resolve(unknown) = %v, want nil", got)
-	}
-	// InternalName falls through for an unknown name.
-	if p.InternalName("not_a_tool") != "not_a_tool" {
-		t.Errorf("InternalName(unknown) should round-trip")
-	}
+	require.NoError(t, err)
+
+	assert.Nil(t, p.Resolve("not_a_tool"))
+	assert.Equal(t, "not_a_tool", p.InternalName("not_a_tool"), "unknown names should pass through")
 }
 
 // The presenter only aliases tools that are actually registered. A
@@ -270,32 +245,19 @@ func TestPresenter_AliasCannotSurfaceUnregisteredTool(t *testing.T) {
 		fixedTool("find_files", "glob"),
 	)
 	p, err := NewPresenter(reg, codingClassicProfile)
-	if err != nil {
-		t.Fatalf("NewPresenter: %v", err)
-	}
+	require.NoError(t, err)
 
 	// "bash" is run_command's alias, but run_command was never registered,
 	// so no presented name should be "bash" and Resolve("bash") is nil.
-	for _, d := range p.List() {
-		if d.Name == "bash" {
-			t.Fatalf("alias 'bash' present for an unregistered tool: %+v", d)
-		}
-	}
-	if got := p.Resolve("bash"); got != nil {
-		t.Errorf("Resolve('bash') = %v, want nil — alias must not surface an unregistered tool", got)
-	}
-	if got := p.Resolve("run_command"); got != nil {
-		t.Errorf("Resolve('run_command') = %v, want nil — tool was never registered", got)
-	}
+	require.NotContains(t, presentedNames(p), "bash", "alias must not surface an unregistered tool")
+	assert.Nil(t, p.Resolve("bash"), "alias must not surface an unregistered tool")
+	assert.Nil(t, p.Resolve("run_command"), "tool was never registered")
 }
 
-func TestPresenter_Unwrap(t *testing.T) {
+func TestPresenter_Unwrap_ReturnsWrappedRegistry(t *testing.T) {
 	reg := newRegistryWith(fixedTool("read_file", "read"))
 	p, err := NewPresenter(reg, defaultProfile)
-	if err != nil {
-		t.Fatalf("NewPresenter: %v", err)
-	}
-	if p.Unwrap() != reg {
-		t.Error("Unwrap did not return the wrapped registry")
-	}
+	require.NoError(t, err)
+
+	require.Same(t, reg, p.Unwrap())
 }

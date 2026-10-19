@@ -14,11 +14,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -32,15 +34,13 @@ func mockEngineServer(t *testing.T, handlers map[string]http.HandlerFunc) (socke
 	// Use a short path to avoid macOS 108-char Unix socket limit.
 	// t.TempDir() paths are too long on macOS.
 	dir, err := os.MkdirTemp("/tmp", "de-")
-	if err != nil {
-		t.Fatalf("create temp dir: %v", err)
-	}
+	require.NoError(t, err, "create temp dir")
 	sock := filepath.Join(dir, "s.sock")
 
 	listener, err := net.Listen("unix", sock)
 	if err != nil {
 		_ = os.RemoveAll(dir)
-		t.Fatalf("listen on unix socket: %v", err)
+		require.NoError(t, err, "listen on unix socket")
 	}
 
 	mux := http.NewServeMux()
@@ -93,14 +93,12 @@ func matchPath(actual, pattern string) bool {
 
 // --- API client tests ---
 
-func TestContainerAPIClient_CreateContainer(t *testing.T) {
+func TestContainerAPIClient_CreateContainer_SendsRequestBody(t *testing.T) {
 	var receivedBody containerCreateRequest
 
 	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
 		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
-			if ct := r.Header.Get("Content-Type"); ct != "application/json" {
-				t.Errorf("expected Content-Type application/json, got %q", ct)
-			}
+			assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 			_ = json.NewDecoder(r.Body).Decode(&receivedBody)
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(containerCreateResponse{ID: "abc123"})
@@ -122,29 +120,17 @@ func TestContainerAPIClient_CreateContainer(t *testing.T) {
 			SecurityOpt: []string{"no-new-privileges"},
 		},
 	})
-	if err != nil {
-		t.Fatalf("createContainer: %v", err)
-	}
-	if id != "abc123" {
-		t.Errorf("got id %q, want %q", id, "abc123")
-	}
+	require.NoError(t, err, "createContainer")
+	require.Equal(t, "abc123", id)
 
 	// Verify the body was sent correctly.
-	if receivedBody.Image != "ubuntu:26.04" {
-		t.Errorf("image: got %q, want %q", receivedBody.Image, "ubuntu:26.04")
-	}
-	if receivedBody.HostConfig.NetworkMode != "none" {
-		t.Errorf("network mode: got %q, want %q", receivedBody.HostConfig.NetworkMode, "none")
-	}
-	if receivedBody.HostConfig.NanoCPUs != 2000000000 {
-		t.Errorf("NanoCPUs: got %d, want %d", receivedBody.HostConfig.NanoCPUs, 2000000000)
-	}
-	if len(receivedBody.HostConfig.CapDrop) != 1 || receivedBody.HostConfig.CapDrop[0] != "ALL" {
-		t.Errorf("CapDrop: got %v, want [ALL]", receivedBody.HostConfig.CapDrop)
-	}
+	require.Equal(t, "ubuntu:26.04", receivedBody.Image)
+	require.Equal(t, "none", receivedBody.HostConfig.NetworkMode)
+	require.Equal(t, int64(2000000000), receivedBody.HostConfig.NanoCPUs)
+	require.Equal(t, []string{"ALL"}, receivedBody.HostConfig.CapDrop)
 }
 
-func TestContainerAPIClient_APIError(t *testing.T) {
+func TestContainerAPIClient_APIErrorSurfacesMessage(t *testing.T) {
 	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
 		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusConflict)
@@ -155,22 +141,16 @@ func TestContainerAPIClient_APIError(t *testing.T) {
 
 	client := newContainerAPIClient(sock)
 	_, err := client.createContainer(context.Background(), containerCreateRequest{Image: "bad:image"})
-	if err == nil {
-		t.Fatal("expected error for API error response")
-	}
-	if !strings.Contains(err.Error(), "image not found") {
-		t.Errorf("error should contain API message, got: %v", err)
-	}
+	require.ErrorContains(t, err, "image not found")
 }
 
-func TestContainerAPIClient_ExecFlow(t *testing.T) {
+func TestContainerAPIClient_ExecCreateStartInspect(t *testing.T) {
 	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
 		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
 			var req execCreateRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
-			if !req.AttachStdout || !req.AttachStderr {
-				t.Error("exec should attach stdout and stderr")
-			}
+			assert.True(t, req.AttachStdout, "exec should attach stdout")
+			assert.True(t, req.AttachStderr, "exec should attach stderr")
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(execCreateResponse{ID: "exec123"})
 		},
@@ -190,37 +170,21 @@ func TestContainerAPIClient_ExecFlow(t *testing.T) {
 	client := newContainerAPIClient(sock)
 
 	execID, err := client.createExec(context.Background(), "container1", []string{"echo", "hello"}, "/workspace")
-	if err != nil {
-		t.Fatalf("createExec: %v", err)
-	}
-	if execID != "exec123" {
-		t.Errorf("exec id: got %q, want %q", execID, "exec123")
-	}
+	require.NoError(t, err, "createExec")
+	require.Equal(t, "exec123", execID)
 
 	stream, err := client.startExec(context.Background(), execID)
-	if err != nil {
-		t.Fatalf("startExec: %v", err)
-	}
+	require.NoError(t, err, "startExec")
 	defer func() { _ = stream.Close() }()
 
 	stdout, stderr, err := demuxDockerStream(stream)
-	if err != nil {
-		t.Fatalf("demuxDockerStream: %v", err)
-	}
-	if stdout != "hello\n" {
-		t.Errorf("stdout: got %q, want %q", stdout, "hello\n")
-	}
-	if stderr != "warning\n" {
-		t.Errorf("stderr: got %q, want %q", stderr, "warning\n")
-	}
+	require.NoError(t, err, "demuxDockerStream")
+	require.Equal(t, "hello\n", stdout)
+	require.Equal(t, "warning\n", stderr)
 
 	exitCode, err := client.inspectExec(context.Background(), execID)
-	if err != nil {
-		t.Fatalf("inspectExec: %v", err)
-	}
-	if exitCode != 0 {
-		t.Errorf("exit code: got %d, want 0", exitCode)
-	}
+	require.NoError(t, err, "inspectExec")
+	require.Zero(t, exitCode)
 }
 
 // writeDockerFrame writes a single frame in Docker's multiplexed stream format.
@@ -278,48 +242,40 @@ func TestContainerExecutor_ResolvePath(t *testing.T) {
 	exec := &ContainerExecutor{workspace: containerWorkspace}
 
 	tests := []struct {
+		name    string
 		input   string
 		want    string
 		wantErr bool
 	}{
-		{"foo.txt", "/workspace/foo.txt", false},
-		{"sub/dir/file.go", "/workspace/sub/dir/file.go", false},
-		{"/workspace/inside.txt", "/workspace/inside.txt", false},
-		{"../etc/passwd", "", true},
-		{"foo/../../etc/passwd", "", true},
-		{"/etc/passwd", "", true},
-		{"/workspacefoo", "", true}, // must not match prefix without separator
+		{name: "relative file", input: "foo.txt", want: "/workspace/foo.txt"},
+		{name: "nested relative path", input: "sub/dir/file.go", want: "/workspace/sub/dir/file.go"},
+		{name: "absolute path inside workspace", input: "/workspace/inside.txt", want: "/workspace/inside.txt"},
+		{name: "parent traversal rejected", input: "../etc/passwd", wantErr: true},
+		{name: "traversal after descent rejected", input: "foo/../../etc/passwd", wantErr: true},
+		{name: "absolute path outside workspace rejected", input: "/etc/passwd", wantErr: true},
+		{name: "prefix sibling rejected", input: "/workspacefoo", wantErr: true}, // must not match prefix without separator
 	}
 
 	for _, tt := range tests {
-		got, err := exec.ResolvePath(tt.input)
-		if tt.wantErr {
-			if err == nil {
-				t.Errorf("ResolvePath(%q): expected error", tt.input)
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := exec.ResolvePath(tt.input)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
 			}
-			continue
-		}
-		if err != nil {
-			t.Errorf("ResolvePath(%q): unexpected error: %v", tt.input, err)
-			continue
-		}
-		if got != tt.want {
-			t.Errorf("ResolvePath(%q): got %q, want %q", tt.input, got, tt.want)
-		}
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+		})
 	}
 }
 
-func TestContainerExecutor_ResolvePath_SecurityEmitter(t *testing.T) {
+func TestContainerExecutor_ResolvePath_EmitsPathTraversalBlocked(t *testing.T) {
 	emitter := &mockSecurityEmitter{}
 	exec := &ContainerExecutor{workspace: containerWorkspace, Security: emitter}
 
 	_, err := exec.ResolvePath("../escape")
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if emitter.pathTraversalCount != 1 {
-		t.Errorf("expected PathTraversalBlocked to be called once, got %d", emitter.pathTraversalCount)
-	}
+	require.Error(t, err)
+	require.Equal(t, 1, emitter.pathTraversalCount, "PathTraversalBlocked calls")
 }
 
 func TestContainerExecutor_ReadFile(t *testing.T) {
@@ -330,15 +286,12 @@ func TestContainerExecutor_ReadFile(t *testing.T) {
 	defer cleanup()
 
 	got, err := exec.ReadFile(context.Background(), "test.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if got != fileContent {
-		t.Errorf("got %q, want %q", got, fileContent)
-	}
-	if argv := capture.last(); len(argv) != 6 || argv[5] != "/workspace/test.txt" {
-		t.Errorf("read argv = %q, want the guarded read command for /workspace/test.txt", argv)
-	}
+	require.NoError(t, err, "ReadFile")
+	require.Equal(t, fileContent, got)
+
+	argv := capture.last()
+	require.Len(t, argv, 6, "guarded read command, got %q", argv)
+	require.Equal(t, "/workspace/test.txt", argv[5], "guarded read target")
 }
 
 func TestContainerExecutor_ReadFile_TooLarge(t *testing.T) {
@@ -353,12 +306,7 @@ func TestContainerExecutor_ReadFile_TooLarge(t *testing.T) {
 	defer cleanup()
 
 	_, err := exec.ReadFile(context.Background(), "big.bin")
-	if err == nil {
-		t.Fatal("expected error for oversized file")
-	}
-	if !strings.Contains(err.Error(), "too large") {
-		t.Errorf("unexpected error: %v", err)
-	}
+	require.ErrorContains(t, err, "too large")
 }
 
 func TestContainerExecutor_ReadFile_Directory(t *testing.T) {
@@ -371,12 +319,7 @@ func TestContainerExecutor_ReadFile_Directory(t *testing.T) {
 	defer cleanup()
 
 	_, err := exec.ReadFile(context.Background(), "subdir")
-	if err == nil {
-		t.Fatal("expected error reading directory as file")
-	}
-	if !strings.Contains(err.Error(), "directory") {
-		t.Errorf("error should mention directory, got: %v", err)
-	}
+	require.ErrorContains(t, err, "directory")
 }
 
 func TestContainerExecutor_ReadFile_Missing(t *testing.T) {
@@ -384,9 +327,7 @@ func TestContainerExecutor_ReadFile_Missing(t *testing.T) {
 	defer cleanup()
 
 	_, err := exec.ReadFile(context.Background(), "missing.txt")
-	if !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("ReadFile(missing) = %v, want fs.ErrNotExist", err)
-	}
+	require.ErrorIs(t, err, fs.ErrNotExist)
 }
 
 func TestContainerExecutor_ReadFile_PathTraversal(t *testing.T) {
@@ -394,12 +335,7 @@ func TestContainerExecutor_ReadFile_PathTraversal(t *testing.T) {
 	defer cleanup()
 
 	_, err := exec.ReadFile(context.Background(), "../etc/passwd")
-	if err == nil {
-		t.Fatal("expected error for path traversal")
-	}
-	if !strings.Contains(err.Error(), "escapes workspace") {
-		t.Errorf("error should mention workspace escape, got: %v", err)
-	}
+	require.ErrorContains(t, err, "escapes workspace")
 }
 
 func TestContainerExecutor_WriteFile(t *testing.T) {
@@ -433,15 +369,9 @@ func TestContainerExecutor_WriteFile(t *testing.T) {
 	defer cleanup()
 
 	err := exec.WriteFile(context.Background(), "sub/dir/test.txt", "file content")
-	if err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	if uploadedContent != "file content" {
-		t.Errorf("uploaded content: got %q, want %q", uploadedContent, "file content")
-	}
-	if uploadDest != "/workspace/sub/dir" {
-		t.Errorf("upload dest: got %q, want %q", uploadDest, "/workspace/sub/dir")
-	}
+	require.NoError(t, err, "WriteFile")
+	require.Equal(t, "file content", uploadedContent)
+	require.Equal(t, "/workspace/sub/dir", uploadDest)
 }
 
 func TestContainerExecutor_WriteFile_TooLarge(t *testing.T) {
@@ -450,12 +380,7 @@ func TestContainerExecutor_WriteFile_TooLarge(t *testing.T) {
 
 	bigContent := strings.Repeat("x", maxFileSize+1)
 	err := exec.WriteFile(context.Background(), "big.txt", bigContent)
-	if err == nil {
-		t.Fatal("expected error for oversized content")
-	}
-	if !strings.Contains(err.Error(), "too large") {
-		t.Errorf("unexpected error: %v", err)
-	}
+	require.ErrorContains(t, err, "too large")
 }
 
 func TestContainerExecutor_WriteFile_PathTraversal(t *testing.T) {
@@ -463,20 +388,19 @@ func TestContainerExecutor_WriteFile_PathTraversal(t *testing.T) {
 	defer cleanup()
 
 	err := exec.WriteFile(context.Background(), "../escape.txt", "bad")
-	if err == nil {
-		t.Fatal("expected error for path traversal write")
-	}
+	require.Error(t, err, "expected error for path traversal write")
 }
 
-func TestContainerExecutor_Exec(t *testing.T) {
+func TestContainerExecutor_Exec_WrapsCommandAndReportsExitCode(t *testing.T) {
 	exec, cleanup := newMockContainerExecutor(t, map[string]http.HandlerFunc{
 		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
 			var req execCreateRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			// The command runs through the process-group wrapper, which
 			// passes the original command as its last argument.
-			if len(req.Cmd) != 7 || req.Cmd[0] != "sh" || req.Cmd[1] != "-c" || req.Cmd[6] != "echo output" {
-				t.Errorf("exec cmd should be the sh -c group wrapper around the command, got %v", req.Cmd)
+			if assert.Len(t, req.Cmd, 7, "exec cmd should be the sh -c group wrapper around the command") {
+				assert.Equal(t, []string{"sh", "-c"}, req.Cmd[:2])
+				assert.Equal(t, "echo output", req.Cmd[6])
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(execCreateResponse{ID: "exec-run"})
@@ -493,15 +417,9 @@ func TestContainerExecutor_Exec(t *testing.T) {
 	defer cleanup()
 
 	result, err := exec.Exec(context.Background(), "echo output", 0)
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if result.ExitCode != 42 {
-		t.Errorf("exit code: got %d, want 42", result.ExitCode)
-	}
-	if strings.TrimSpace(result.Stdout) != "output" {
-		t.Errorf("stdout: got %q, want %q", result.Stdout, "output\n")
-	}
+	require.NoError(t, err, "Exec")
+	require.Equal(t, 42, result.ExitCode)
+	require.Equal(t, "output", strings.TrimSpace(result.Stdout))
 }
 
 func TestContainerExecutor_Exec_OutputTruncation(t *testing.T) {
@@ -525,15 +443,9 @@ func TestContainerExecutor_Exec_OutputTruncation(t *testing.T) {
 	defer cleanup()
 
 	result, err := exec.Exec(context.Background(), "cat bigfile", 10*time.Second)
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if !strings.HasSuffix(result.Stdout, truncatedSuffix) {
-		t.Error("expected truncation suffix on large output")
-	}
-	if !result.OutputTruncated {
-		t.Error("expected ExecResult.OutputTruncated true on capped output")
-	}
+	require.NoError(t, err, "Exec")
+	require.True(t, strings.HasSuffix(result.Stdout, truncatedSuffix), "expected truncation suffix on large output")
+	require.True(t, result.OutputTruncated, "expected ExecResult.OutputTruncated true on capped output")
 }
 
 // hangingExecStartHandler returns a "POST /exec/*/start" handler that
@@ -571,18 +483,10 @@ func TestContainerExecutor_Exec_Timeout(t *testing.T) {
 	result, err := exec.Exec(context.Background(), "sleep 30", 200*time.Millisecond)
 	elapsed := time.Since(start)
 
-	if err == nil {
-		t.Fatal("expected a timeout error")
-	}
-	if !errors.Is(err, ErrTimeout) {
-		t.Errorf("err = %v, want errors.Is(err, ErrTimeout)", err)
-	}
-	if elapsed > 5*time.Second {
-		t.Errorf("Exec took %v after the 200ms deadline, want well under 5s", elapsed)
-	}
-	if result == nil || !strings.Contains(result.Stdout, "partial output") {
-		t.Errorf("result = %+v, want Stdout to preserve output captured before the timeout (#473)", result)
-	}
+	require.ErrorIs(t, err, ErrTimeout)
+	require.LessOrEqual(t, elapsed, 5*time.Second, "Exec should return well under 5s after the 200ms deadline")
+	require.NotNil(t, result, "a timed-out exec should still return its result")
+	require.Contains(t, result.Stdout, "partial output", "Stdout should keep output captured before the timeout")
 }
 
 // TestContainerExecutor_Exec_CancelledContext_NotErrTimeout verifies that a
@@ -607,18 +511,11 @@ func TestContainerExecutor_Exec_CancelledContext_NotErrTimeout(t *testing.T) {
 	}()
 
 	result, err := exec.Exec(ctx, "sleep 30", 60*time.Second)
-	if err == nil {
-		t.Fatal("expected an error from the cancelled command")
-	}
-	if errors.Is(err, ErrTimeout) {
-		t.Errorf("err = %v, must not satisfy errors.Is(err, ErrTimeout): cancelled after 150ms, configured timeout was 60s", err)
-	}
-	if strings.Contains(err.Error(), "timed out") {
-		t.Errorf("err = %v, must not claim the command timed out", err)
-	}
-	if result == nil || !strings.Contains(result.Stdout, "partial output") {
-		t.Errorf("result = %+v, want Stdout to preserve output captured before the cancel (#473)", result)
-	}
+	require.Error(t, err, "expected an error from the cancelled command")
+	require.NotErrorIs(t, err, ErrTimeout, "cancelled after 150ms, configured timeout was 60s")
+	require.NotContains(t, err.Error(), "timed out", "a cancelled command must not claim it timed out")
+	require.NotNil(t, result, "a cancelled exec should still return its result")
+	require.Contains(t, result.Stdout, "partial output", "Stdout should keep output captured before the cancel")
 }
 
 // Docker API client / file-I/O timeout tests: a wedged daemon must not
@@ -664,15 +561,8 @@ func TestContainerAPIClient_ControlPlaneCall_BoundedWithoutCallerDeadline(t *tes
 	err := client.ping(context.Background())
 	elapsed := time.Since(start)
 
-	if err == nil {
-		t.Fatal("expected an error from a daemon that never responds")
-	}
-	if !errors.Is(err, ErrTimeout) {
-		t.Errorf("err = %v, want errors.Is(err, ErrTimeout)", err)
-	}
-	if elapsed > 5*time.Second {
-		t.Errorf("ping took %v with no caller-supplied deadline, want bounded by containerControlPlaneTimeout (~150ms)", elapsed)
-	}
+	require.ErrorIs(t, err, ErrTimeout)
+	require.LessOrEqual(t, elapsed, 5*time.Second, "ping with no caller deadline should be bounded by containerControlPlaneTimeout (~150ms)")
 }
 
 // TestContainerAPIClient_ConnectionLevelHang_BoundedByResponseHeaderTimeout
@@ -700,12 +590,8 @@ func TestContainerAPIClient_ConnectionLevelHang_BoundedByResponseHeaderTimeout(t
 	err := client.ping(context.Background())
 	elapsed := time.Since(start)
 
-	if err == nil {
-		t.Fatal("expected an error from a daemon that never responds")
-	}
-	if elapsed > 5*time.Second {
-		t.Errorf("ping took %v, want bounded by containerResponseHeaderTimeout (~150ms) despite a 10s control-plane ctx budget", elapsed)
-	}
+	require.Error(t, err, "expected an error from a daemon that never responds")
+	require.LessOrEqual(t, elapsed, 5*time.Second, "ping should be bounded by containerResponseHeaderTimeout (~150ms) despite a 10s control-plane ctx budget")
 }
 
 // TestContainerExecutor_WriteFile_MkdirTimeout verifies that WriteFile's
@@ -733,15 +619,9 @@ func TestContainerExecutor_WriteFile_MkdirTimeout(t *testing.T) {
 	err := exec.WriteFile(context.Background(), "sub/dir/test.txt", "file content")
 	elapsed := time.Since(start)
 
-	if err == nil {
-		t.Fatal("expected an error from a daemon wedged mid-mkdir")
-	}
-	if !errors.Is(err, ErrTimeout) {
-		t.Errorf("err = %v, want errors.Is(err, ErrTimeout)", err)
-	}
-	if elapsed > 5*time.Second {
-		t.Errorf("WriteFile took %v with no caller-supplied deadline, want bounded by containerMkdirTimeout (~150ms)", elapsed)
-	}
+	require.Error(t, err, "expected an error from a daemon wedged mid-mkdir")
+	require.ErrorIs(t, err, ErrTimeout)
+	require.LessOrEqual(t, elapsed, 5*time.Second, "WriteFile with no caller-supplied deadline should be bounded by containerMkdirTimeout (~150ms)")
 }
 
 // TestContainerExecutor_Exec_SlowStreamNotKilledByControlPlaneTimeout
@@ -778,15 +658,12 @@ func TestContainerExecutor_Exec_SlowStreamNotKilledByControlPlaneTimeout(t *test
 	defer cleanup()
 
 	result, err := exec.Exec(context.Background(), "slow but legitimate command", 2*time.Second)
-	if err != nil {
-		t.Fatalf("Exec: %v, want the slow-but-legitimate stream to complete without error", err)
-	}
-	if !strings.Contains(result.Stdout, "part1") || !strings.Contains(result.Stdout, "part2") {
-		t.Errorf("stdout = %q, want both part1 and part2 (stream must survive the control-plane window elapsing mid-read)", result.Stdout)
-	}
+	require.NoError(t, err, "a slow but legitimate stream should complete")
+	require.Contains(t, result.Stdout, "part1")
+	require.Contains(t, result.Stdout, "part2", "stream must survive the control-plane window elapsing mid-read")
 }
 
-func TestContainerExecutor_ListDirectory(t *testing.T) {
+func TestContainerExecutor_ListDirectory_MarksSubdirectories(t *testing.T) {
 	var gotCmd []string
 	exec, cleanup := newMockContainerExecutor(t, map[string]http.HandlerFunc{
 		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
@@ -808,49 +685,36 @@ func TestContainerExecutor_ListDirectory(t *testing.T) {
 	defer cleanup()
 
 	entries, err := exec.ListDirectory(context.Background(), ".")
-	if err != nil {
-		t.Fatalf("ListDirectory: %v", err)
-	}
+	require.NoError(t, err)
 
-	found := map[string]bool{}
-	for _, e := range entries {
-		found[e] = true
-	}
-	if !found["file.txt"] {
-		t.Error("missing file.txt")
-	}
-	if !found["subdir/"] {
-		t.Errorf("expected subdir/ marked as a directory, got %v", entries)
-	}
-	if want := []string{"ls", "-1Ap", "--", "/workspace"}; !slices.Equal(gotCmd, want) {
-		t.Errorf("exec Cmd = %q, want %q", gotCmd, want)
-	}
+	require.Contains(t, entries, "file.txt")
+	require.Contains(t, entries, "subdir/", "directories should carry a trailing slash")
+	require.Equal(t, []string{"ls", "-1Ap", "--", "/workspace"}, gotCmd)
 }
 
-func TestContainerExecutor_Capabilities(t *testing.T) {
+func TestContainerExecutor_Capabilities_ByNetworkMode(t *testing.T) {
 	tests := []struct {
+		name        string
 		networkMode string
 		wantNetwork bool
 	}{
-		{"none", false},
-		{"bridge", true},
+		{"none mode has no network", "none", false},
+		{"bridge mode has network", "bridge", true},
 	}
 
 	for _, tt := range tests {
-		exec := &ContainerExecutor{
-			workspace:   containerWorkspace,
-			networkMode: tt.networkMode,
-		}
-		caps := exec.Capabilities()
-		if !caps.CanRead || !caps.CanWrite || !caps.CanExec {
-			t.Errorf("networkMode=%q: expected CanRead/CanWrite/CanExec to be true", tt.networkMode)
-		}
-		if caps.CanNetwork != tt.wantNetwork {
-			t.Errorf("networkMode=%q: CanNetwork got %v, want %v", tt.networkMode, caps.CanNetwork, tt.wantNetwork)
-		}
-		if caps.MaxTimeout != maxTimeout {
-			t.Errorf("MaxTimeout: got %v, want %v", caps.MaxTimeout, maxTimeout)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			exec := &ContainerExecutor{
+				workspace:   containerWorkspace,
+				networkMode: tt.networkMode,
+			}
+			caps := exec.Capabilities()
+			require.True(t, caps.CanRead, "CanRead")
+			require.True(t, caps.CanWrite, "CanWrite")
+			require.True(t, caps.CanExec, "CanExec")
+			require.Equal(t, tt.wantNetwork, caps.CanNetwork)
+			require.Equal(t, maxTimeout, caps.MaxTimeout)
+		})
 	}
 }
 
@@ -875,20 +739,13 @@ func TestContainerExecutor_CreateRequestCarriesLifecycle(t *testing.T) {
 		SocketPath: sock,
 		Lifecycle:  Lifecycle{RunID: "run-42", MaxLifetime: 90*time.Minute + 500*time.Millisecond},
 	})
-	if err != nil {
-		t.Fatalf("NewContainerExecutor: %v", err)
-	}
+	require.NoError(t, err)
 	defer func() { _ = exec.Close() }()
 
-	if want := []string{"sleep", "5401"}; !slices.Equal(got.Cmd, want) {
-		t.Errorf("Cmd = %v, want %v (lifetime rounded up to whole seconds)", got.Cmd, want)
-	}
-	if !got.HostConfig.AutoRemove {
-		t.Error("HostConfig.AutoRemove = false, want true")
-	}
-	if got.Labels["stirrup.sandbox"] != "true" || got.Labels["stirrup.run-id"] != "run-42" {
-		t.Errorf("Labels = %v, want stirrup.sandbox=true and stirrup.run-id=run-42", got.Labels)
-	}
+	require.Equal(t, []string{"sleep", "5401"}, got.Cmd, "lifetime should round up to whole seconds")
+	require.True(t, got.HostConfig.AutoRemove, "container should be auto-removed")
+	require.Equal(t, "true", got.Labels["stirrup.sandbox"])
+	require.Equal(t, "run-42", got.Labels["stirrup.run-id"])
 }
 
 func TestContainerExecutor_CreateRequestWithoutLifetimeKeepsAlive(t *testing.T) {
@@ -911,17 +768,11 @@ func TestContainerExecutor_CreateRequestWithoutLifetimeKeepsAlive(t *testing.T) 
 		HostDir:    "/tmp/workspace",
 		SocketPath: sock,
 	})
-	if err != nil {
-		t.Fatalf("NewContainerExecutor: %v", err)
-	}
+	require.NoError(t, err)
 	defer func() { _ = exec.Close() }()
 
-	if want := []string{"sleep", "infinity"}; !slices.Equal(got.Cmd, want) {
-		t.Errorf("Cmd = %v, want %v", got.Cmd, want)
-	}
-	if _, ok := got.Labels["stirrup.run-id"]; ok {
-		t.Errorf("Labels = %v, want no run-id label for an empty run ID", got.Labels)
-	}
+	require.Equal(t, []string{"sleep", "infinity"}, got.Cmd)
+	require.NotContains(t, got.Labels, "stirrup.run-id", "an empty run ID should not set a run-id label")
 }
 
 // TestContainerExecutor_CloseToleratesAutoRemovedContainer covers the engine
@@ -953,17 +804,16 @@ func TestContainerExecutor_CloseToleratesAutoRemovedContainer(t *testing.T) {
 			defer cleanup()
 
 			err := exec.Close()
-			if tt.wantErr && err == nil {
-				t.Fatal("Close succeeded, want an error")
-			}
-			if !tt.wantErr && err != nil {
-				t.Fatalf("Close: %v", err)
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
 			}
 		})
 	}
 }
 
-func TestContainerExecutor_Close(t *testing.T) {
+func TestContainerExecutor_Close_StopsAndRemovesContainer(t *testing.T) {
 	stopCalled := false
 	removeCalled := false
 
@@ -974,26 +824,19 @@ func TestContainerExecutor_Close(t *testing.T) {
 		},
 		"DELETE /containers/*": func(w http.ResponseWriter, r *http.Request) {
 			removeCalled = true
-			if !strings.Contains(r.URL.RawQuery, "force=true") {
-				t.Error("remove should be called with force=true")
-			}
+			// Runs on the server goroutine, so assert rather than require.
+			assert.Contains(t, r.URL.RawQuery, "force=true", "remove should be called with force=true")
 			w.WriteHeader(http.StatusNoContent)
 		},
 	})
 	defer cleanup()
 
-	if err := exec.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	if !stopCalled {
-		t.Error("stop was not called")
-	}
-	if !removeCalled {
-		t.Error("remove was not called")
-	}
+	require.NoError(t, exec.Close())
+	require.True(t, stopCalled, "stop should be called")
+	require.True(t, removeCalled, "remove should be called")
 }
 
-func TestContainerExecutor_CreateFailure(t *testing.T) {
+func TestContainerExecutor_CreateFailure_SurfacesAPIMessage(t *testing.T) {
 	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
 		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -1007,15 +850,10 @@ func TestContainerExecutor_CreateFailure(t *testing.T) {
 		HostDir:    "/tmp/workspace",
 		SocketPath: sock,
 	})
-	if err == nil {
-		t.Fatal("expected error for container creation failure")
-	}
-	if !strings.Contains(err.Error(), "image not found") {
-		t.Errorf("error should mention API message, got: %v", err)
-	}
+	require.ErrorContains(t, err, "image not found")
 }
 
-func TestContainerExecutor_StartFailureCleanup(t *testing.T) {
+func TestContainerExecutor_StartFailure_RemovesContainer(t *testing.T) {
 	removeCalled := false
 
 	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
@@ -1039,15 +877,11 @@ func TestContainerExecutor_StartFailureCleanup(t *testing.T) {
 		HostDir:    "/tmp/workspace",
 		SocketPath: sock,
 	})
-	if err == nil {
-		t.Fatal("expected error for start failure")
-	}
-	if !removeCalled {
-		t.Error("container should be removed on start failure")
-	}
+	require.Error(t, err, "expected error for start failure")
+	require.True(t, removeCalled, "container should be removed on start failure")
 }
 
-func TestContainerExecutor_ResourceLimits(t *testing.T) {
+func TestContainerExecutor_ResourceLimits_MapToHostConfig(t *testing.T) {
 	var receivedBody containerCreateRequest
 
 	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
@@ -1078,23 +912,16 @@ func TestContainerExecutor_ResourceLimits(t *testing.T) {
 			PIDs:     256,
 		},
 	})
-	if err != nil {
-		t.Fatalf("NewContainerExecutor: %v", err)
-	}
+	require.NoError(t, err)
 	defer func() { _ = exec.Close() }()
 
-	if receivedBody.HostConfig.NanoCPUs != 2000000000 {
-		t.Errorf("NanoCPUs: got %d, want 2000000000", receivedBody.HostConfig.NanoCPUs)
-	}
-	if receivedBody.HostConfig.Memory != 512*1024*1024 {
-		t.Errorf("Memory: got %d, want %d", receivedBody.HostConfig.Memory, 512*1024*1024)
-	}
-	if receivedBody.HostConfig.PidsLimit == nil || *receivedBody.HostConfig.PidsLimit != 256 {
-		t.Errorf("PidsLimit: got %v, want 256", receivedBody.HostConfig.PidsLimit)
-	}
+	assert.Equal(t, int64(2000000000), receivedBody.HostConfig.NanoCPUs, "NanoCPUs")
+	assert.Equal(t, int64(512*1024*1024), receivedBody.HostConfig.Memory, "Memory")
+	require.NotNil(t, receivedBody.HostConfig.PidsLimit, "PidsLimit")
+	assert.Equal(t, int64(256), *receivedBody.HostConfig.PidsLimit, "PidsLimit")
 }
 
-func TestContainerExecutor_NetworkModes(t *testing.T) {
+func TestContainerExecutor_NetworkMode_SelectsNoneOrBridge(t *testing.T) {
 	var receivedBody containerCreateRequest
 
 	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
@@ -1115,39 +942,31 @@ func TestContainerExecutor_NetworkModes(t *testing.T) {
 	})
 	defer cleanup()
 
-	// Default: none
-	exec, err := NewContainerExecutor(ContainerExecutorConfig{
-		Image:      "ubuntu:26.04",
-		HostDir:    "/tmp/workspace",
-		SocketPath: sock,
-	})
-	if err != nil {
-		t.Fatalf("NewContainerExecutor: %v", err)
+	tests := []struct {
+		name     string
+		network  *types.NetworkConfig
+		wantMode string
+	}{
+		{"default network is none", nil, "none"},
+		{"allowlist network is bridge", &types.NetworkConfig{Mode: "allowlist", Allowlist: []string{"example.com"}}, "bridge"},
 	}
-	_ = exec.Close()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exec, err := NewContainerExecutor(ContainerExecutorConfig{
+				Image:      "ubuntu:26.04",
+				HostDir:    "/tmp/workspace",
+				SocketPath: sock,
+				Network:    tt.network,
+			})
+			require.NoError(t, err)
+			_ = exec.Close()
 
-	if receivedBody.HostConfig.NetworkMode != "none" {
-		t.Errorf("default network mode: got %q, want %q", receivedBody.HostConfig.NetworkMode, "none")
-	}
-
-	// Allowlist: bridge
-	exec, err = NewContainerExecutor(ContainerExecutorConfig{
-		Image:      "ubuntu:26.04",
-		HostDir:    "/tmp/workspace",
-		SocketPath: sock,
-		Network:    &types.NetworkConfig{Mode: "allowlist", Allowlist: []string{"example.com"}},
-	})
-	if err != nil {
-		t.Fatalf("NewContainerExecutor: %v", err)
-	}
-	_ = exec.Close()
-
-	if receivedBody.HostConfig.NetworkMode != "bridge" {
-		t.Errorf("allowlist network mode: got %q, want %q", receivedBody.HostConfig.NetworkMode, "bridge")
+			require.Equal(t, tt.wantMode, receivedBody.HostConfig.NetworkMode)
+		})
 	}
 }
 
-func TestContainerExecutor_Runtime(t *testing.T) {
+func TestContainerExecutor_Runtime_SetAndOmittedWhenEmpty(t *testing.T) {
 	// Capture the raw POST body so we can assert exactly what bytes go on
 	// the wire. The Engine API treats a missing Runtime field as "use the
 	// daemon default", so it matters that we (a) include "Runtime":"runsc"
@@ -1180,29 +999,17 @@ func TestContainerExecutor_Runtime(t *testing.T) {
 		SocketPath: sock,
 		Runtime:    "runsc",
 	})
-	if err != nil {
-		t.Fatalf("NewContainerExecutor: %v", err)
-	}
+	require.NoError(t, err)
 	_ = exec.Close()
 
-	if !strings.Contains(string(rawBody), `"Runtime":"runsc"`) {
-		t.Errorf("create body missing Runtime=runsc; got: %s", string(rawBody))
-	}
+	require.Contains(t, string(rawBody), `"Runtime":"runsc"`, "create body should carry the configured runtime")
 
 	// Hardening defaults must still be present alongside the runtime.
 	var parsed containerCreateRequest
-	if err := json.Unmarshal(rawBody, &parsed); err != nil {
-		t.Fatalf("unmarshal create body: %v", err)
-	}
-	if parsed.HostConfig.Runtime != "runsc" {
-		t.Errorf("HostConfig.Runtime: got %q, want %q", parsed.HostConfig.Runtime, "runsc")
-	}
-	if parsed.HostConfig.NetworkMode != "none" {
-		t.Errorf("HostConfig.NetworkMode: got %q, want %q", parsed.HostConfig.NetworkMode, "none")
-	}
-	if len(parsed.HostConfig.CapDrop) != 1 || parsed.HostConfig.CapDrop[0] != "ALL" {
-		t.Errorf("HostConfig.CapDrop: got %v, want [ALL]", parsed.HostConfig.CapDrop)
-	}
+	require.NoError(t, json.Unmarshal(rawBody, &parsed), "unmarshal create body")
+	assert.Equal(t, "runsc", parsed.HostConfig.Runtime)
+	assert.Equal(t, "none", parsed.HostConfig.NetworkMode)
+	assert.Equal(t, []string{"ALL"}, parsed.HostConfig.CapDrop)
 
 	// Empty runtime must be omitted entirely (engine picks its default).
 	rawBody = nil
@@ -1211,14 +1018,10 @@ func TestContainerExecutor_Runtime(t *testing.T) {
 		HostDir:    "/tmp/workspace",
 		SocketPath: sock,
 	})
-	if err != nil {
-		t.Fatalf("NewContainerExecutor: %v", err)
-	}
+	require.NoError(t, err)
 	_ = exec.Close()
 
-	if strings.Contains(string(rawBody), `"Runtime"`) {
-		t.Errorf("create body should omit Runtime when unset; got: %s", string(rawBody))
-	}
+	require.NotContains(t, string(rawBody), `"Runtime"`, "create body should omit Runtime when unset")
 }
 
 // TestContainerExecutor_AllowlistMode_WiringConfig verifies that selecting
@@ -1262,19 +1065,11 @@ func TestContainerExecutor_AllowlistMode_WiringConfig(t *testing.T) {
 			Allowlist: []string{"api.github.com"},
 		},
 	})
-	if err != nil {
-		t.Fatalf("NewContainerExecutor: %v", err)
-	}
+	require.NoError(t, err)
 	defer func() { _ = exec.Close() }()
 
-	if receivedBody.HostConfig.NetworkMode != "bridge" {
-		t.Errorf("NetworkMode: got %q, want %q", receivedBody.HostConfig.NetworkMode, "bridge")
-	}
-
-	wantHost := "host.docker.internal:host-gateway"
-	if len(receivedBody.HostConfig.ExtraHosts) != 1 || receivedBody.HostConfig.ExtraHosts[0] != wantHost {
-		t.Errorf("ExtraHosts: got %v, want [%q]", receivedBody.HostConfig.ExtraHosts, wantHost)
-	}
+	assert.Equal(t, "bridge", receivedBody.HostConfig.NetworkMode)
+	assert.Equal(t, []string{"host.docker.internal:host-gateway"}, receivedBody.HostConfig.ExtraHosts)
 
 	envSeen := map[string]string{}
 	for _, kv := range receivedBody.Env {
@@ -1290,28 +1085,18 @@ func TestContainerExecutor_AllowlistMode_WiringConfig(t *testing.T) {
 		"HTTPS_PROXY", "https_proxy",
 		"NO_PROXY", "no_proxy",
 	} {
-		if _, ok := envSeen[k]; !ok {
-			t.Errorf("missing env var %s; got Env=%v", k, receivedBody.Env)
-		}
+		assert.Contains(t, envSeen, k, "Env=%v", receivedBody.Env)
 	}
 	for _, k := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"} {
-		if !strings.HasPrefix(envSeen[k], "http://host.docker.internal:") {
-			t.Errorf("%s: got %q, want prefix http://host.docker.internal:<port>", k, envSeen[k])
-		}
-		if envSeen[k] != envSeen["HTTP_PROXY"] {
-			t.Errorf("%s should match HTTP_PROXY; got %q vs %q", k, envSeen[k], envSeen["HTTP_PROXY"])
-		}
+		assert.Truef(t, strings.HasPrefix(envSeen[k], "http://host.docker.internal:"), "%s: got %q, want prefix http://host.docker.internal:<port>", k, envSeen[k])
+		assert.Equal(t, envSeen["HTTP_PROXY"], envSeen[k], "%s should match HTTP_PROXY", k)
 	}
 	for _, k := range []string{"NO_PROXY", "no_proxy"} {
-		if !strings.Contains(envSeen[k], "127.0.0.1") {
-			t.Errorf("%s should at least cover 127.0.0.1; got %q", k, envSeen[k])
-		}
+		assert.Contains(t, envSeen[k], "127.0.0.1", "%s should at least cover 127.0.0.1", k)
 	}
 
 	// Hardening defaults should still be present alongside the egress wiring.
-	if len(receivedBody.HostConfig.CapDrop) != 1 || receivedBody.HostConfig.CapDrop[0] != "ALL" {
-		t.Errorf("CapDrop: got %v, want [ALL]", receivedBody.HostConfig.CapDrop)
-	}
+	assert.Equal(t, []string{"ALL"}, receivedBody.HostConfig.CapDrop)
 }
 
 // TestContainerExecutor_NoneMode_NoProxyWiring confirms that the proxy
@@ -1345,20 +1130,12 @@ func TestContainerExecutor_NoneMode_NoProxyWiring(t *testing.T) {
 		SocketPath: sock,
 		Network:    &types.NetworkConfig{Mode: "none"},
 	})
-	if err != nil {
-		t.Fatalf("NewContainerExecutor: %v", err)
-	}
+	require.NoError(t, err)
 	defer func() { _ = exec.Close() }()
 
-	if receivedBody.HostConfig.NetworkMode != "none" {
-		t.Errorf("NetworkMode: got %q, want %q", receivedBody.HostConfig.NetworkMode, "none")
-	}
-	if len(receivedBody.HostConfig.ExtraHosts) != 0 {
-		t.Errorf("ExtraHosts should be empty for none mode, got %v", receivedBody.HostConfig.ExtraHosts)
-	}
-	if len(receivedBody.Env) != 0 {
-		t.Errorf("Env should be empty for none mode, got %v", receivedBody.Env)
-	}
+	assert.Equal(t, "none", receivedBody.HostConfig.NetworkMode)
+	assert.Empty(t, receivedBody.HostConfig.ExtraHosts, "ExtraHosts should be empty for none mode")
+	assert.Empty(t, receivedBody.Env, "Env should be empty for none mode")
 }
 
 // TestContainerExecutor_AllowlistMode_BadAllowlistFailsFast verifies that a
@@ -1384,21 +1161,17 @@ func TestContainerExecutor_AllowlistMode_BadAllowlistFailsFast(t *testing.T) {
 			Allowlist: []string{"example.com:not-a-port"},
 		},
 	})
-	if err == nil {
-		t.Fatal("expected error for malformed allowlist")
-	}
-	if createCalled {
-		t.Error("container should not be created when the allowlist is invalid")
-	}
+	require.Error(t, err, "malformed allowlist should be rejected")
+	require.False(t, createCalled, "container should not be created when the allowlist is invalid")
 }
 
-// TestContainerExecutor_HardeningProfile asserts that the create-container
-// request carries the full sandbox-hardening profile: a read-only rootfs, a
+// TestContainerExecutor_CreateRequest_CarriesHardeningProfile asserts that the
+// create-container request carries the full sandbox-hardening profile: a read-only rootfs, a
 // sized /tmp tmpfs and /dev/shm, the nobody uid:gid, nosuid/nodev/noexec on
 // the tmpfs scratch mounts, and the retained PidsLimit. The mock engine only
 // captures the request, so this proves what stirrup puts on the wire — not
 // that a live daemon honours every flag.
-func TestContainerExecutor_HardeningProfile(t *testing.T) {
+func TestContainerExecutor_CreateRequest_CarriesHardeningProfile(t *testing.T) {
 	var receivedBody containerCreateRequest
 	var rawBody []byte
 
@@ -1427,60 +1200,35 @@ func TestContainerExecutor_HardeningProfile(t *testing.T) {
 		SocketPath: sock,
 		Resources:  &types.ResourceLimits{PIDs: 256},
 	})
-	if err != nil {
-		t.Fatalf("NewContainerExecutorWithContext: %v", err)
-	}
+	require.NoError(t, err, "NewContainerExecutorWithContext")
 	defer func() { _ = exec.Close() }()
 
 	hc := receivedBody.HostConfig
-	if !hc.ReadonlyRootfs {
-		t.Error("ReadonlyRootfs: got false, want true")
-	}
-	// ReadonlyRootfs must appear literally on the wire — a bool with
-	// omitempty would drop false silently, so the field is emitted
-	// unconditionally to keep this security control fail-loud.
-	if !strings.Contains(string(rawBody), `"ReadonlyRootfs":true`) {
-		t.Errorf("create body missing literal ReadonlyRootfs:true; got: %s", string(rawBody))
-	}
-	if strings.Contains(string(rawBody), `"ShmSize"`) {
-		t.Errorf("create body should not carry a separate ShmSize field; got: %s", string(rawBody))
-	}
-	if receivedBody.User != "65534:65534" {
-		t.Errorf("User: got %q, want %q", receivedBody.User, "65534:65534")
-	}
-	if hc.PidsLimit == nil || *hc.PidsLimit != 256 {
-		t.Errorf("PidsLimit: got %v, want 256", hc.PidsLimit)
-	}
+	assert.True(t, hc.ReadonlyRootfs, "ReadonlyRootfs")
+	// ReadonlyRootfs must appear literally on the wire: a bool with omitempty
+	// would drop false silently, so the field is emitted unconditionally.
+	assert.Contains(t, string(rawBody), `"ReadonlyRootfs":true`, "create body should carry the literal field")
+	assert.NotContains(t, string(rawBody), `"ShmSize"`, "create body should not carry a separate ShmSize field")
+	assert.Equal(t, "65534:65534", receivedBody.User, "User")
+	require.NotNil(t, hc.PidsLimit, "PidsLimit")
+	assert.Equal(t, int64(256), *hc.PidsLimit, "PidsLimit")
 
-	tmpOpts, ok := hc.Tmpfs["/tmp"]
-	if !ok {
-		t.Fatalf("Tmpfs missing /tmp entry; got %v", hc.Tmpfs)
-	}
-	for _, want := range []string{"nosuid", "nodev", "noexec", "size=268435456"} {
-		if !strings.Contains(tmpOpts, want) {
-			t.Errorf("/tmp tmpfs opts %q missing %q", tmpOpts, want)
-		}
-	}
-	shmOpts, ok := hc.Tmpfs["/dev/shm"]
-	if !ok {
-		t.Fatalf("Tmpfs missing /dev/shm entry; got %v", hc.Tmpfs)
-	}
-	for _, want := range []string{"nosuid", "nodev", "noexec", "size=67108864"} {
-		if !strings.Contains(shmOpts, want) {
-			t.Errorf("/dev/shm tmpfs opts %q missing %q", shmOpts, want)
-		}
-	}
+	require.Contains(t, hc.Tmpfs, "/tmp", "Tmpfs should mount /tmp")
+	assert.Contains(t, hc.Tmpfs["/tmp"], "nosuid")
+	assert.Contains(t, hc.Tmpfs["/tmp"], "nodev")
+	assert.Contains(t, hc.Tmpfs["/tmp"], "noexec")
+	assert.Contains(t, hc.Tmpfs["/tmp"], "size=268435456")
+
+	require.Contains(t, hc.Tmpfs, "/dev/shm", "Tmpfs should mount /dev/shm")
+	assert.Contains(t, hc.Tmpfs["/dev/shm"], "nosuid")
+	assert.Contains(t, hc.Tmpfs["/dev/shm"], "nodev")
+	assert.Contains(t, hc.Tmpfs["/dev/shm"], "noexec")
+	assert.Contains(t, hc.Tmpfs["/dev/shm"], "size=67108864")
 
 	// The hardening profile must not displace the existing baseline.
-	if hc.NetworkMode != "none" {
-		t.Errorf("NetworkMode: got %q, want %q", hc.NetworkMode, "none")
-	}
-	if len(hc.CapDrop) != 1 || hc.CapDrop[0] != "ALL" {
-		t.Errorf("CapDrop: got %v, want [ALL]", hc.CapDrop)
-	}
-	if len(hc.SecurityOpt) != 1 || hc.SecurityOpt[0] != "no-new-privileges" {
-		t.Errorf("SecurityOpt: got %v, want [no-new-privileges]", hc.SecurityOpt)
-	}
+	assert.Equal(t, "none", hc.NetworkMode, "NetworkMode")
+	assert.Equal(t, []string{"ALL"}, hc.CapDrop, "CapDrop")
+	assert.Equal(t, []string{"no-new-privileges"}, hc.SecurityOpt, "SecurityOpt")
 }
 
 // TestContainerExecutor_RegistryAllowlist_Default verifies the built-in
@@ -1507,52 +1255,53 @@ func TestContainerExecutor_RegistryAllowlist_Default(t *testing.T) {
 	})
 	defer cleanup()
 
-	allowed := []string{
-		"ubuntu:26.04",
-		"docker.io/library/alpine",
-		"ghcr.io/rxbynerd/base:latest",
+	allowed := []struct {
+		name, image string
+	}{
+		{"ubuntu tag", "ubuntu:26.04"},
+		{"explicit docker hub library path", "docker.io/library/alpine"},
+		{"ghcr base image", "ghcr.io/rxbynerd/base:latest"},
 		// The documented quick-start sandbox image (docs/executors/k8s.md,
 		// README.md) must construct under the default allowlist.
-		"ghcr.io/rxbynerd/stirrup-sandbox:latest",
+		{"quick-start sandbox image", "ghcr.io/rxbynerd/stirrup-sandbox:latest"},
 		// The Docker Hub pull aliases must fold to docker.io and match the
 		// default docker.io/library/* pattern, or operators hit a false deny.
-		"index.docker.io/library/ubuntu",
-		"registry-1.docker.io/library/ubuntu:26.04",
+		{"index.docker.io alias", "index.docker.io/library/ubuntu"},
+		{"registry-1.docker.io alias", "registry-1.docker.io/library/ubuntu:26.04"},
 	}
-	for _, img := range allowed {
-		exec, err := NewContainerExecutorWithContext(context.Background(), ContainerExecutorConfig{
-			Image:      img,
-			HostDir:    "/tmp/workspace",
-			SocketPath: sock,
+	for _, tt := range allowed {
+		t.Run("allows "+tt.name, func(t *testing.T) {
+			exec, err := NewContainerExecutorWithContext(context.Background(), ContainerExecutorConfig{
+				Image:      tt.image,
+				HostDir:    "/tmp/workspace",
+				SocketPath: sock,
+			})
+			require.NoError(t, err, "image should be allowed by default")
+			_ = exec.Close()
 		})
-		if err != nil {
-			t.Errorf("image %q should be allowed by default, got: %v", img, err)
-			continue
-		}
-		_ = exec.Close()
 	}
 
 	createCalled = false
-	denied := []string{
-		"evil.example.com/malware:latest",
-		"docker.io/someuser/app",
-		"ghcr.io/attacker/img",
+	denied := []struct {
+		name, image string
+	}{
+		{"untrusted registry", "evil.example.com/malware:latest"},
+		{"unknown docker hub namespace", "docker.io/someuser/app"},
+		{"unknown ghcr namespace", "ghcr.io/attacker/img"},
 		// ghcr.io/stirrup is not a namespace the project publishes under;
 		// confirms the default was not left admitting a dead org.
-		"ghcr.io/stirrup/base",
+		{"unpublished ghcr org", "ghcr.io/stirrup/base"},
 	}
-	for _, img := range denied {
-		_, err := NewContainerExecutorWithContext(context.Background(), ContainerExecutorConfig{
-			Image:      img,
-			HostDir:    "/tmp/workspace",
-			SocketPath: sock,
+	for _, tt := range denied {
+		t.Run("rejects "+tt.name, func(t *testing.T) {
+			_, err := NewContainerExecutorWithContext(context.Background(), ContainerExecutorConfig{
+				Image:      tt.image,
+				HostDir:    "/tmp/workspace",
+				SocketPath: sock,
+			})
+			require.Error(t, err, "image should be rejected by the default allowlist")
+			require.False(t, createCalled, "container must not be created when the image is disallowed")
 		})
-		if err == nil {
-			t.Errorf("image %q should be rejected by the default allowlist", img)
-		}
-		if createCalled {
-			t.Errorf("image %q: container must not be created when the image is disallowed", img)
-		}
 	}
 }
 
@@ -1584,9 +1333,7 @@ func TestContainerExecutor_RegistryAllowlist_Override(t *testing.T) {
 		SocketPath:        sock,
 		RegistryAllowlist: []string{"registry.internal:5000/team/*"},
 	})
-	if err != nil {
-		t.Fatalf("custom-registry image should be allowed by override: %v", err)
-	}
+	require.NoError(t, err, "custom-registry image should be allowed by override")
 	_ = exec.Close()
 
 	// The override replaces the default, so a previously-default image is now
@@ -1597,33 +1344,30 @@ func TestContainerExecutor_RegistryAllowlist_Override(t *testing.T) {
 		SocketPath:        sock,
 		RegistryAllowlist: []string{"registry.internal:5000/team/*"},
 	})
-	if err == nil {
-		t.Error("ubuntu:26.04 should be rejected when the override does not include docker.io/library/*")
-	}
+	require.Error(t, err, "ubuntu:26.04 should be rejected when the override does not include docker.io/library/*")
 }
 
-func TestNormaliseImageRef(t *testing.T) {
+func TestNormaliseImageRef_ReturnsCanonicalForm(t *testing.T) {
 	tests := []struct {
-		in, want string
+		name, in, want string
 	}{
-		{"ubuntu", "docker.io/library/ubuntu"},
-		{"ubuntu:26.04", "docker.io/library/ubuntu"},
-		{"myorg/app:tag", "docker.io/myorg/app"},
-		{"ghcr.io/stirrup/base", "ghcr.io/stirrup/base"},
-		{"ghcr.io/stirrup/base:latest", "ghcr.io/stirrup/base"},
-		{"registry:5000/team/img@sha256:" + strings.Repeat("b", 64), "registry:5000/team/img"},
-		{"localhost/dev", "localhost/dev"},
-		{"localhost:5000/dev:tag", "localhost:5000/dev"},
-		{"docker.io/library/alpine", "docker.io/library/alpine"},
-		// Docker Hub pull aliases fold to docker.io.
-		{"index.docker.io/library/ubuntu", "docker.io/library/ubuntu"},
-		{"registry-1.docker.io/library/ubuntu:26.04", "docker.io/library/ubuntu"},
-		{"index.docker.io/myorg/app", "docker.io/myorg/app"},
+		{"bare name defaults to docker hub library", "ubuntu", "docker.io/library/ubuntu"},
+		{"tag is dropped", "ubuntu:26.04", "docker.io/library/ubuntu"},
+		{"namespaced name defaults to docker hub", "myorg/app:tag", "docker.io/myorg/app"},
+		{"explicit registry is kept", "ghcr.io/stirrup/base", "ghcr.io/stirrup/base"},
+		{"explicit registry drops tag", "ghcr.io/stirrup/base:latest", "ghcr.io/stirrup/base"},
+		{"digest is dropped", "registry:5000/team/img@sha256:" + strings.Repeat("b", 64), "registry:5000/team/img"},
+		{"localhost without port is kept", "localhost/dev", "localhost/dev"},
+		{"localhost with port drops tag", "localhost:5000/dev:tag", "localhost:5000/dev"},
+		{"docker hub library path is unchanged", "docker.io/library/alpine", "docker.io/library/alpine"},
+		{"index.docker.io folds to docker.io", "index.docker.io/library/ubuntu", "docker.io/library/ubuntu"},
+		{"registry-1.docker.io folds to docker.io", "registry-1.docker.io/library/ubuntu:26.04", "docker.io/library/ubuntu"},
+		{"index.docker.io namespace folds to docker.io", "index.docker.io/myorg/app", "docker.io/myorg/app"},
 	}
 	for _, tt := range tests {
-		if got := normaliseImageRef(tt.in); got != tt.want {
-			t.Errorf("normaliseImageRef(%q): got %q, want %q", tt.in, got, tt.want)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, normaliseImageRef(tt.in))
+		})
 	}
 }
 
@@ -1632,15 +1376,18 @@ func TestNormaliseImageRef(t *testing.T) {
 // a clear error rather than slipping through because the "*" glob matches the
 // empty string.
 func TestCheckImageAllowed_RejectsEmptyRepo(t *testing.T) {
-	for _, img := range []string{"ghcr.io/stirrup/", "docker.io/library/"} {
-		err := checkImageAllowed(img, nil)
-		if err == nil {
-			t.Errorf("image %q with empty repository should be rejected", img)
-			continue
-		}
-		if !strings.Contains(err.Error(), "empty repository") {
-			t.Errorf("image %q: error should mention empty repository, got: %v", img, err)
-		}
+	tests := []struct {
+		name, image string
+	}{
+		{"ghcr namespace with no repository", "ghcr.io/stirrup/"},
+		{"docker hub library with no repository", "docker.io/library/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkImageAllowed(tt.image, nil)
+			require.Error(t, err, "image with empty repository should be rejected")
+			require.ErrorContains(t, err, "empty repository")
+		})
 	}
 }
 
@@ -1648,21 +1395,17 @@ func TestNewContainerExecutor_MissingImage(t *testing.T) {
 	_, err := NewContainerExecutor(ContainerExecutorConfig{
 		HostDir: "/tmp/workspace",
 	})
-	if err == nil {
-		t.Fatal("expected error for missing image")
-	}
+	require.Error(t, err, "missing image should be rejected")
 }
 
 func TestNewContainerExecutor_MissingHostDir(t *testing.T) {
 	_, err := NewContainerExecutor(ContainerExecutorConfig{
 		Image: "ubuntu:26.04",
 	})
-	if err == nil {
-		t.Fatal("expected error for missing host dir")
-	}
+	require.Error(t, err, "missing host dir should be rejected")
 }
 
-func TestDetectSocket(t *testing.T) {
+func TestDetectSocket_HonoursDockerHost(t *testing.T) {
 	// Create a temp file to simulate a socket.
 	dir := t.TempDir()
 	fakeSock := filepath.Join(dir, "docker.sock")
@@ -1672,50 +1415,35 @@ func TestDetectSocket(t *testing.T) {
 	t.Setenv("DOCKER_HOST", "unix://"+fakeSock)
 
 	path, err := detectSocket()
-	if err != nil {
-		t.Fatalf("detectSocket: %v", err)
-	}
-	if path != fakeSock {
-		t.Errorf("got %q, want %q", path, fakeSock)
-	}
+	require.NoError(t, err, "detectSocket")
+	require.Equal(t, fakeSock, path)
 }
 
 func TestDetectSocket_DockerHostNotFound(t *testing.T) {
 	t.Setenv("DOCKER_HOST", "unix:///nonexistent/docker.sock")
 
 	_, err := detectSocket()
-	if err == nil {
-		t.Fatal("expected error for nonexistent DOCKER_HOST socket")
-	}
+	require.Error(t, err, "nonexistent DOCKER_HOST socket should be an error")
 }
 
-func TestDemuxDockerStream(t *testing.T) {
+func TestDemuxDockerStream_SplitsStdoutAndStderr(t *testing.T) {
 	var buf bytes.Buffer
 	writeDockerFrame(&buf, 1, []byte("out1"))
 	writeDockerFrame(&buf, 2, []byte("err1"))
 	writeDockerFrame(&buf, 1, []byte("out2"))
 
 	stdout, stderr, err := demuxDockerStream(&buf)
-	if err != nil {
-		t.Fatalf("demuxDockerStream: %v", err)
-	}
-	if stdout != "out1out2" {
-		t.Errorf("stdout: got %q, want %q", stdout, "out1out2")
-	}
-	if stderr != "err1" {
-		t.Errorf("stderr: got %q, want %q", stderr, "err1")
-	}
+	require.NoError(t, err, "demuxDockerStream")
+	require.Equal(t, "out1out2", stdout, "stdout")
+	require.Equal(t, "err1", stderr, "stderr")
 }
 
 func TestDemuxDockerStream_Empty(t *testing.T) {
 	var buf bytes.Buffer
 	stdout, stderr, err := demuxDockerStream(&buf)
-	if err != nil {
-		t.Fatalf("demuxDockerStream: %v", err)
-	}
-	if stdout != "" || stderr != "" {
-		t.Errorf("expected empty output, got stdout=%q stderr=%q", stdout, stderr)
-	}
+	require.NoError(t, err, "demuxDockerStream")
+	require.Empty(t, stdout, "stdout")
+	require.Empty(t, stderr, "stderr")
 }
 
 func TestContainerAPIClient_ArchivePathEncoding(t *testing.T) {
@@ -1737,12 +1465,8 @@ func TestContainerAPIClient_ArchivePathEncoding(t *testing.T) {
 
 	// putArchive: verify the path query parameter is decoded correctly by the server.
 	err := client.putArchive(ctx, "ctr1", specialPath, strings.NewReader(""))
-	if err != nil {
-		t.Fatalf("putArchive: %v", err)
-	}
-	if putPath != specialPath {
-		t.Errorf("putArchive path: got %q, want %q", putPath, specialPath)
-	}
+	require.NoError(t, err, "putArchive")
+	require.Equal(t, specialPath, putPath, "putArchive path")
 }
 
 // TestContainerAPIClient_InspectExec_WaitsForExit pins that an exit code
@@ -1766,12 +1490,9 @@ func TestContainerAPIClient_InspectExec_WaitsForExit(t *testing.T) {
 	client := newContainerAPIClient(sock)
 
 	code, err := client.inspectExec(context.Background(), "exec-settling")
-	if err != nil || code != 0 {
-		t.Fatalf("inspectExec while settling = (%d, %v), want (0, nil) after Running clears", code, err)
-	}
-	if inspects != 3 {
-		t.Errorf("inspected %d times, want 3 (two Running, one finished)", inspects)
-	}
+	require.NoError(t, err, "inspectExec should return once Running clears")
+	require.Equal(t, 0, code, "exit code")
+	require.Equal(t, 3, inspects, "inspected count: two Running responses, then one finished")
 
 	inspects = 0
 	sockStuck, cleanupStuck := mockEngineServer(t, map[string]http.HandlerFunc{
@@ -1784,9 +1505,8 @@ func TestContainerAPIClient_InspectExec_WaitsForExit(t *testing.T) {
 	defer cleanupStuck()
 	stuck := newContainerAPIClient(sockStuck)
 
-	if _, err := stuck.inspectExec(context.Background(), "exec-stuck"); err == nil {
-		t.Fatal("an instance that never stops running must not yield a trusted exit code")
-	}
+	_, err = stuck.inspectExec(context.Background(), "exec-stuck")
+	require.Error(t, err, "an instance that never stops running must not yield a trusted exit code")
 }
 
 // --- Helpers ---
@@ -1811,10 +1531,10 @@ func (m *mockSecurityEmitter) OutputTruncated(_ string, _, _ int) {
 
 var _ SecurityEventEmitter = (*mockSecurityEmitter)(nil)
 
-// TestContainerExecutor_ExecStream verifies the streaming path demuxes
-// stdout and stderr frames into the caller's writers without the inline
-// 1 MiB cap, and carries the inspected exit code.
-func TestContainerExecutor_ExecStream(t *testing.T) {
+// TestContainerExecutor_ExecStream_DemuxesUncappedOutput verifies the
+// streaming path demuxes stdout and stderr frames into the caller's writers
+// without the inline 1 MiB cap, and carries the inspected exit code.
+func TestContainerExecutor_ExecStream_DemuxesUncappedOutput(t *testing.T) {
 	big := strings.Repeat("B", maxOutputSize+1000)
 	exec, cleanup := newMockContainerExecutor(t, map[string]http.HandlerFunc{
 		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
@@ -1835,18 +1555,10 @@ func TestContainerExecutor_ExecStream(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	result, err := exec.ExecStream(context.Background(), "make noise", 10*time.Second, &stdout, &stderr)
-	if err != nil {
-		t.Fatalf("ExecStream: %v", err)
-	}
-	if result.ExitCode != 3 {
-		t.Errorf("exit code: got %d, want 3", result.ExitCode)
-	}
-	if stdout.Len() != len(big) {
-		t.Errorf("stdout bytes: got %d, want %d (stream path must not cap)", stdout.Len(), len(big))
-	}
-	if stderr.String() != "warning\n" {
-		t.Errorf("stderr: got %q", stderr.String())
-	}
+	require.NoError(t, err, "ExecStream")
+	require.Equal(t, 3, result.ExitCode, "exit code")
+	require.Equal(t, len(big), stdout.Len(), "stream path must not cap stdout")
+	require.Equal(t, "warning\n", stderr.String(), "stderr")
 }
 
 // failAfterWriter accepts n bytes then fails every subsequent write,
@@ -1888,9 +1600,7 @@ func TestContainerExecutor_ExecStream_WriterErrorAborts(t *testing.T) {
 	limitErr := errors.New("capture limit exceeded")
 	var stderr bytes.Buffer
 	_, err := exec.ExecStream(context.Background(), "make noise", 10*time.Second, &failAfterWriter{remaining: 4096, err: limitErr}, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "capture limit exceeded") {
-		t.Fatalf("expected writer failure to surface, got %v", err)
-	}
+	require.ErrorContains(t, err, "capture limit exceeded", "writer failure should surface")
 }
 
 // recordedExecs collects the Cmd of every exec the mock engine is asked to
@@ -1940,19 +1650,15 @@ func killTrackingHandlers(execs *recordedExecs) map[string]http.HandlerFunc {
 
 func assertKillExecFollowsRun(t *testing.T, cmds [][]string) {
 	t.Helper()
-	if len(cmds) != 2 {
-		t.Fatalf("execs = %d, want the command plus one kill exec: %v", len(cmds), cmds)
-	}
+	require.Len(t, cmds, 2, "want the command plus one kill exec: %v", cmds)
 	run, kill := cmds[0], cmds[1]
-	if len(run) != 7 || run[6] != "sleep 600" {
-		t.Fatalf("run exec = %v, want the group wrapper around %q", run, "sleep 600")
-	}
-	if len(kill) != 5 || kill[0] != "sh" || kill[1] != "-c" || kill[2] != groupKillScript {
-		t.Fatalf("kill exec = %v, want the group kill script", kill)
-	}
-	if kill[4] != run[5] || !strings.HasPrefix(kill[4], groupPidFileDir+"/.stirrup-exec-") {
-		t.Errorf("kill pid file %q must match the run pid file %q under %s", kill[4], run[5], groupPidFileDir)
-	}
+	require.Len(t, run, 7, "run exec should be the group wrapper: %v", run)
+	require.Equal(t, "sleep 600", run[6], "run exec should wrap the command")
+	require.Len(t, kill, 5, "kill exec should be the group kill script: %v", kill)
+	require.Equal(t, []string{"sh", "-c", groupKillScript}, kill[:3], "kill exec should run the group kill script")
+	require.Equal(t, run[5], kill[4], "kill pid file must match the run pid file")
+	require.True(t, strings.HasPrefix(kill[4], groupPidFileDir+"/.stirrup-exec-"),
+		"kill pid file %q should sit under %s", kill[4], groupPidFileDir)
 }
 
 func TestContainerExecutor_Exec_TimeoutKillsProcessGroup(t *testing.T) {
@@ -1961,9 +1667,7 @@ func TestContainerExecutor_Exec_TimeoutKillsProcessGroup(t *testing.T) {
 	defer cleanup()
 
 	_, err := exec.Exec(context.Background(), "sleep 600", 200*time.Millisecond)
-	if !errors.Is(err, ErrTimeout) {
-		t.Fatalf("err = %v, want ErrTimeout", err)
-	}
+	require.ErrorIs(t, err, ErrTimeout)
 	assertKillExecFollowsRun(t, execs.all())
 }
 
@@ -1978,9 +1682,8 @@ func TestContainerExecutor_Exec_CancelKillsProcessGroup(t *testing.T) {
 		cancel()
 	}()
 	_, err := exec.Exec(ctx, "sleep 600", 60*time.Second)
-	if err == nil || errors.Is(err, ErrTimeout) {
-		t.Fatalf("err = %v, want a plain cancellation", err)
-	}
+	require.Error(t, err, "cancelled exec should return an error")
+	require.NotErrorIs(t, err, ErrTimeout, "cancellation should not be reported as a timeout")
 	assertKillExecFollowsRun(t, execs.all())
 }
 
@@ -1991,9 +1694,7 @@ func TestContainerExecutor_ExecStream_TimeoutKillsProcessGroup(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	_, err := exec.ExecStream(context.Background(), "sleep 600", 200*time.Millisecond, &stdout, &stderr)
-	if !errors.Is(err, ErrTimeout) {
-		t.Fatalf("err = %v, want ErrTimeout", err)
-	}
+	require.ErrorIs(t, err, ErrTimeout)
 	assertKillExecFollowsRun(t, execs.all())
 }
 
@@ -2008,13 +1709,8 @@ func TestContainerExecutor_Exec_CompletedCommandIssuesNoKill(t *testing.T) {
 	defer cleanup()
 
 	result, err := exec.Exec(context.Background(), "echo done", 10*time.Second)
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if result.ExitCode != 0 || result.Stdout != "done\n" {
-		t.Errorf("result = %+v", result)
-	}
-	if n := len(execs.all()); n != 1 {
-		t.Errorf("execs = %d, want only the command itself", n)
-	}
+	require.NoError(t, err, "Exec")
+	require.Zero(t, result.ExitCode, "exit code")
+	require.Equal(t, "done\n", result.Stdout, "stdout")
+	require.Len(t, execs.all(), 1, "only the command itself should be executed")
 }

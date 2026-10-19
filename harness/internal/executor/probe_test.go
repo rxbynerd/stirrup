@@ -3,9 +3,11 @@ package executor
 import (
 	"context"
 	"net/http"
-	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestContainerExecutor_Probe_OK(t *testing.T) {
@@ -22,9 +24,7 @@ func TestContainerExecutor_Probe_OK(t *testing.T) {
 	defer cleanup()
 
 	exec := &ContainerExecutor{api: newContainerAPIClient(sock), image: "ubuntu:26.04"}
-	if err := exec.Probe(context.Background()); err != nil {
-		t.Fatalf("Probe: unexpected error: %v", err)
-	}
+	require.NoError(t, exec.Probe(context.Background()))
 }
 
 func TestContainerExecutor_Probe_ImageAbsent(t *testing.T) {
@@ -41,12 +41,9 @@ func TestContainerExecutor_Probe_ImageAbsent(t *testing.T) {
 
 	exec := &ContainerExecutor{api: newContainerAPIClient(sock), image: "missing:latest"}
 	err := exec.Probe(context.Background())
-	if err == nil {
-		t.Fatal("Probe: expected error for absent image, got nil")
-	}
-	if !strings.Contains(err.Error(), "not present locally") || !strings.Contains(err.Error(), "missing:latest") {
-		t.Errorf("error should name the missing image with a pull hint, got: %v", err)
-	}
+	require.Error(t, err)
+	require.ErrorContains(t, err, "not present locally", "error should include a pull hint")
+	require.ErrorContains(t, err, "missing:latest", "error should name the missing image")
 }
 
 // TestProbeContainerEngine_NoContainerCreated asserts a container dry-run
@@ -80,15 +77,9 @@ func TestProbeContainerEngine_NoContainerCreated(t *testing.T) {
 		Image:      "ubuntu:26.04",
 		SocketPath: sock,
 	})
-	if err != nil {
-		t.Fatalf("ProbeContainerEngine: unexpected error: %v", err)
-	}
-	if got := createHits.Load(); got != 0 {
-		t.Errorf("container create hit %d times; a dry-run must not create a container", got)
-	}
-	if got := startHits.Load(); got != 0 {
-		t.Errorf("container start hit %d times; a dry-run must not start a container", got)
-	}
+	require.NoError(t, err)
+	assert.Zero(t, createHits.Load(), "a dry-run must not create a container")
+	assert.Zero(t, startHits.Load(), "a dry-run must not start a container")
 }
 
 func TestProbeContainerEngine_ImageAbsent(t *testing.T) {
@@ -107,12 +98,8 @@ func TestProbeContainerEngine_ImageAbsent(t *testing.T) {
 		Image:      "missing:latest",
 		SocketPath: sock,
 	})
-	if err == nil {
-		t.Fatal("ProbeContainerEngine: expected error for absent image")
-	}
-	if !strings.Contains(err.Error(), "not present locally") {
-		t.Errorf("error should report the absent image, got: %v", err)
-	}
+	require.Error(t, err)
+	require.ErrorContains(t, err, "not present locally")
 }
 
 // TestProbeContainerEngine_DisallowedImage asserts the dry-run preflight
@@ -137,15 +124,9 @@ func TestProbeContainerEngine_DisallowedImage(t *testing.T) {
 		Image:      "evil.example.com/malware:latest",
 		SocketPath: sock,
 	})
-	if err == nil {
-		t.Fatal("ProbeContainerEngine: expected error for disallowed image")
-	}
-	if !strings.Contains(err.Error(), "registry allowlist") {
-		t.Errorf("error should mention the registry allowlist, got: %v", err)
-	}
-	if got := pingHits.Load(); got != 0 {
-		t.Errorf("engine pinged %d times; a disallowed image must be rejected before any engine call", got)
-	}
+	require.Error(t, err)
+	require.ErrorContains(t, err, "registry allowlist")
+	require.Zero(t, pingHits.Load(), "a disallowed image must be rejected before any engine call")
 }
 
 func TestContainerExecutor_Probe_EngineUnreachable(t *testing.T) {
@@ -159,10 +140,6 @@ func TestContainerExecutor_Probe_EngineUnreachable(t *testing.T) {
 
 	exec := &ContainerExecutor{api: newContainerAPIClient(sock), image: "ubuntu:26.04"}
 	err := exec.Probe(context.Background())
-	if err == nil {
-		t.Fatal("Probe: expected error for unreachable engine, got nil")
-	}
-	if !strings.Contains(err.Error(), "unreachable") {
-		t.Errorf("error should mention engine unreachable, got: %v", err)
-	}
+	require.Error(t, err)
+	require.ErrorContains(t, err, "unreachable")
 }

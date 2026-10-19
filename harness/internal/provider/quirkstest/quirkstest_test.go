@@ -7,13 +7,16 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirkstest"
 )
 
-// TestScrubFixture pins the substitution behaviour of each scrubber rule.
-// Adding a scrubber to the package's `scrubbers` list requires a
-// corresponding row here.
-func TestScrubFixture(t *testing.T) {
+// TestScrubFixture_RedactsSecretsAndProjectIDs pins the substitution behaviour
+// of each scrubber rule. Adding a scrubber to the package's `scrubbers` list
+// requires a corresponding row here.
+func TestScrubFixture_RedactsSecretsAndProjectIDs(t *testing.T) {
 	cases := []struct {
 		name string
 		in   string
@@ -48,9 +51,7 @@ func TestScrubFixture(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := string(quirkstest.ScrubFixture([]byte(tc.in)))
-			if !strings.Contains(got, tc.want) {
-				t.Errorf("ScrubFixture(%q) = %q, want substring %q", tc.in, got, tc.want)
-			}
+			require.Contains(t, got, tc.want)
 		})
 	}
 }
@@ -79,20 +80,18 @@ func TestFixturesScrubbed(t *testing.T) {
 		scrubbed := quirkstest.ScrubFixture(raw)
 		if !bytes.Equal(raw, scrubbed) {
 			diff := firstDiff(raw, scrubbed)
-			t.Errorf("fixture %s contains a substring the scrubber would rewrite (first divergence at offset %d): "+
-				"raw=%q scrubbed=%q. Commit the scrubbed form instead, or extend the scrubber list if the substring is benign.",
+			// Every rewritten fixture is reported, so failures are collected rather than fatal.
+			assert.Failf(t, "fixture contains a substring the scrubber would rewrite",
+				"%s: first divergence at offset %d: raw=%q scrubbed=%q. "+
+					"Commit the scrubbed form instead, or extend the scrubber list if the substring is benign.",
 				path, diff.offset, diff.rawSnippet, diff.scrubbedSnippet)
 		}
 		checked++
 		return nil
 	})
-	if err != nil {
-		t.Fatalf("walk fixtures: %v", err)
-	}
-	if checked == 0 {
-
-		t.Fatalf("walked %s and found zero fixtures; the gate is no longer enforcing anything", fixtureRoot)
-	}
+	require.NoError(t, err, "walk fixtures")
+	require.Positive(t, checked,
+		"walked %s and found zero fixtures; the gate is no longer enforcing anything", fixtureRoot)
 }
 
 // diff surfaces the first byte at which raw and scrubbed diverge.

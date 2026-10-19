@@ -4,25 +4,21 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestProbeAllowlist_EmptyIsNoop(t *testing.T) {
-	if err := ProbeAllowlist(context.Background(), nil, net.DefaultResolver); err != nil {
-		t.Fatalf("empty allowlist should be a no-op, got: %v", err)
-	}
+	err := ProbeAllowlist(context.Background(), nil, net.DefaultResolver)
+	require.NoError(t, err, "empty allowlist should be a no-op")
 }
 
 func TestProbeAllowlist_MalformedEntry(t *testing.T) {
 	err := ProbeAllowlist(context.Background(), []string{"bad host with spaces"}, net.DefaultResolver)
-	if err == nil {
-		t.Fatal("expected parse error for malformed allowlist entry")
-	}
-	if !strings.Contains(err.Error(), "parse") {
-		t.Errorf("error should mention parse failure, got: %v", err)
-	}
+	require.Error(t, err, "expected parse error for malformed allowlist entry")
+	require.ErrorContains(t, err, "parse")
 }
 
 func TestProbeAllowlist_Unresolvable(t *testing.T) {
@@ -39,27 +35,25 @@ func TestProbeAllowlist_Unresolvable(t *testing.T) {
 	defer cancel()
 
 	err := ProbeAllowlist(ctx, []string{"example.com", "*.api.example.com:8443"}, failing)
-	if err == nil {
-		t.Fatal("expected error when destinations do not resolve")
-	}
-	if !strings.Contains(err.Error(), "unresolvable") {
-		t.Errorf("error should report unresolvable destinations, got: %v", err)
-	}
+	require.Error(t, err, "expected error when destinations do not resolve")
+	require.ErrorContains(t, err, "unresolvable")
 	// Both the exact host and the wildcard base zone should be reported.
-	if !strings.Contains(err.Error(), "example.com") {
-		t.Errorf("error should name the failing destinations, got: %v", err)
-	}
+	require.ErrorContains(t, err, "example.com")
 }
 
-func TestProbeHost(t *testing.T) {
-	cases := map[string]string{
-		"example.com:443":        "example.com",
-		"*.api.example.com:8443": "api.example.com",
-		"host:80":                "host",
+func TestProbeHost_ExtractsHostname(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "exact host with port", in: "example.com:443", want: "example.com"},
+		{name: "wildcard host with port", in: "*.api.example.com:8443", want: "api.example.com"},
+		{name: "single label host", in: "host:80", want: "host"},
 	}
-	for in, want := range cases {
-		if got := probeHost(in); got != want {
-			t.Errorf("probeHost(%q) = %q, want %q", in, got, want)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, probeHost(tt.in), "probeHost(%q)", tt.in)
+		})
 	}
 }

@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -51,9 +54,7 @@ func minimalRunConfigJSON(t *testing.T) string {
 	t300 := 300
 	cfg.Timeout = &t300
 	b, err := json.Marshal(cfg)
-	if err != nil {
-		t.Fatalf("marshal minimal RunConfig: %v", err)
-	}
+	require.NoError(t, err, "marshal minimal RunConfig")
 	return string(b)
 }
 
@@ -62,42 +63,26 @@ func minimalRunConfigJSON(t *testing.T) string {
 // for the no-base case.
 func TestBuildRunConfig_FlagOnlyMatchesBuildHarnessRunConfig(t *testing.T) {
 	cmd := newTestHarnessCommand()
-	if err := cmd.ParseFlags([]string{
+	require.NoError(t, cmd.ParseFlags([]string{
 		"--mode", "execution",
 		"--model", "claude-opus-4-7",
 		"--max-turns", "42",
 		"--prompt", "do the thing",
-	}); err != nil {
-		t.Fatalf("ParseFlags: %v", err)
-	}
+	}))
 
 	cfg, err := BuildRunConfig(RunConfigSources{
 		Stdin:   nil,
 		Cmd:     cmd,
 		Resolve: ResolveAll,
 	})
-	if err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
+	require.NoError(t, err)
 
-	if cfg.Mode != "execution" {
-		t.Errorf("Mode = %q, want execution", cfg.Mode)
-	}
-	if cfg.ModelRouter.Model != "claude-opus-4-7" {
-		t.Errorf("Model = %q, want claude-opus-4-7", cfg.ModelRouter.Model)
-	}
-	if cfg.MaxTurns != 42 {
-		t.Errorf("MaxTurns = %d, want 42", cfg.MaxTurns)
-	}
-	if cfg.Prompt != "do the thing" {
-		t.Errorf("Prompt = %q, want %q", cfg.Prompt, "do the thing")
-	}
-	if cfg.RunID == "" {
-		t.Errorf("ResolveAll should generate a RunID, got empty")
-	}
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Errorf("ResolveAll output should validate, got: %v", err)
-	}
+	assert.Equal(t, "execution", cfg.Mode)
+	assert.Equal(t, "claude-opus-4-7", cfg.ModelRouter.Model)
+	assert.Equal(t, 42, cfg.MaxTurns)
+	assert.Equal(t, "do the thing", cfg.Prompt)
+	assert.NotEmpty(t, cfg.RunID, "ResolveAll should generate a RunID")
+	assert.NoError(t, types.ValidateRunConfig(cfg), "ResolveAll output should validate")
 }
 
 // TestBuildRunConfig_ToolsProfileFlag pins that --tools-profile threads
@@ -105,37 +90,23 @@ func TestBuildRunConfig_FlagOnlyMatchesBuildHarnessRunConfig(t *testing.T) {
 // it leaves the default (empty) identity profile.
 func TestBuildRunConfig_ToolsProfileFlag(t *testing.T) {
 	cmd := newTestHarnessCommand()
-	if err := cmd.ParseFlags([]string{
+	require.NoError(t, cmd.ParseFlags([]string{
 		"--mode", "execution",
 		"--prompt", "x",
 		"--tools-profile", "coding-classic",
-	}); err != nil {
-		t.Fatalf("ParseFlags: %v", err)
-	}
+	}))
 	cfg, err := BuildRunConfig(RunConfigSources{Cmd: cmd, Resolve: ResolveAll})
-	if err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
-	if cfg.Tools.Profile != "coding-classic" {
-		t.Errorf("Tools.Profile = %q, want coding-classic", cfg.Tools.Profile)
-	}
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Errorf("config with tools-profile should validate, got: %v", err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "coding-classic", cfg.Tools.Profile)
+	require.NoError(t, types.ValidateRunConfig(cfg), "config with tools-profile should validate")
 
 	// Without the flag, the profile stays empty (the default identity
 	// presentation).
 	bare := newTestHarnessCommand()
-	if err := bare.ParseFlags([]string{"--mode", "execution", "--prompt", "x"}); err != nil {
-		t.Fatalf("ParseFlags(bare): %v", err)
-	}
+	require.NoError(t, bare.ParseFlags([]string{"--mode", "execution", "--prompt", "x"}))
 	bareCfg, err := BuildRunConfig(RunConfigSources{Cmd: bare, Resolve: ResolveAll})
-	if err != nil {
-		t.Fatalf("BuildRunConfig(bare): %v", err)
-	}
-	if bareCfg.Tools.Profile != "" {
-		t.Errorf("bare Tools.Profile = %q, want empty (default)", bareCfg.Tools.Profile)
-	}
+	require.NoError(t, err)
+	require.Empty(t, bareCfg.Tools.Profile, "profile should default to empty without --tools-profile")
 }
 
 // TestBuildRunConfig_ToolsProfileOverridesBase pins that --tools-profile
@@ -143,44 +114,30 @@ func TestBuildRunConfig_ToolsProfileFlag(t *testing.T) {
 // preserves the base value (the applyOverrides Changed() guard).
 func TestBuildRunConfig_ToolsProfileOverridesBase(t *testing.T) {
 	var base types.RunConfig
-	if err := json.Unmarshal([]byte(minimalRunConfigJSON(t)), &base); err != nil {
-		t.Fatalf("unmarshal base: %v", err)
-	}
+	require.NoError(t, json.Unmarshal([]byte(minimalRunConfigJSON(t)), &base))
 	base.Tools.Profile = "coding-classic"
 	baseJSON, err := json.Marshal(base)
-	if err != nil {
-		t.Fatalf("marshal base: %v", err)
-	}
+	require.NoError(t, err)
 
-	// No flag: base profile preserved.
-	cmd := newTestHarnessCommand()
-	if err := cmd.ParseFlags([]string{"--max-turns", "5"}); err != nil {
-		t.Fatalf("ParseFlags: %v", err)
-	}
-	cfg, err := BuildRunConfig(RunConfigSources{
-		Stdin: strings.NewReader(string(baseJSON)), Cmd: cmd, Resolve: ResolveBase,
+	t.Run("base profile preserved without flag", func(t *testing.T) {
+		cmd := newTestHarnessCommand()
+		require.NoError(t, cmd.ParseFlags([]string{"--max-turns", "5"}))
+		cfg, err := BuildRunConfig(RunConfigSources{
+			Stdin: strings.NewReader(string(baseJSON)), Cmd: cmd, Resolve: ResolveBase,
+		})
+		require.NoError(t, err)
+		require.Equal(t, "coding-classic", cfg.Tools.Profile)
 	})
-	if err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
-	if cfg.Tools.Profile != "coding-classic" {
-		t.Errorf("base profile not preserved: got %q", cfg.Tools.Profile)
-	}
 
-	// Explicit flag wins over the base.
-	cmd2 := newTestHarnessCommand()
-	if err := cmd2.ParseFlags([]string{"--tools-profile", "default"}); err != nil {
-		t.Fatalf("ParseFlags: %v", err)
-	}
-	cfg2, err := BuildRunConfig(RunConfigSources{
-		Stdin: strings.NewReader(string(baseJSON)), Cmd: cmd2, Resolve: ResolveBase,
+	t.Run("flag overrides base profile", func(t *testing.T) {
+		cmd := newTestHarnessCommand()
+		require.NoError(t, cmd.ParseFlags([]string{"--tools-profile", "default"}))
+		cfg, err := BuildRunConfig(RunConfigSources{
+			Stdin: strings.NewReader(string(baseJSON)), Cmd: cmd, Resolve: ResolveBase,
+		})
+		require.NoError(t, err)
+		require.Equal(t, "default", cfg.Tools.Profile)
 	})
-	if err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
-	if cfg2.Tools.Profile != "default" {
-		t.Errorf("flag did not override base profile: got %q", cfg2.Tools.Profile)
-	}
 }
 
 // TestBuildRunConfig_StdinBaseWithFlagOverride exercises the canonical
@@ -190,33 +147,21 @@ func TestBuildRunConfig_ToolsProfileOverridesBase(t *testing.T) {
 func TestBuildRunConfig_StdinBaseWithFlagOverride(t *testing.T) {
 	base := minimalRunConfigJSON(t)
 	cmd := newTestHarnessCommand()
-	if err := cmd.ParseFlags([]string{
+	require.NoError(t, cmd.ParseFlags([]string{
 		"--max-turns", "99",
-	}); err != nil {
-		t.Fatalf("ParseFlags: %v", err)
-	}
+	}))
 
 	cfg, err := BuildRunConfig(RunConfigSources{
 		Stdin:   strings.NewReader(base),
 		Cmd:     cmd,
 		Resolve: ResolveBase,
 	})
-	if err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
+	require.NoError(t, err)
 
-	if cfg.MaxTurns != 99 {
-		t.Errorf("MaxTurns = %d, want 99 (flag override)", cfg.MaxTurns)
-	}
-	if cfg.Provider.APIKeyRef != "secret://FILE_KEY" {
-		t.Errorf("APIKeyRef = %q, want secret://FILE_KEY (base preserved)", cfg.Provider.APIKeyRef)
-	}
-	if cfg.Prompt != "prompt from file" {
-		t.Errorf("Prompt = %q, want %q (base preserved)", cfg.Prompt, "prompt from file")
-	}
-	if cfg.RunID != "from-file" {
-		t.Errorf("RunID = %q, want from-file (ResolveBase must not mint a new ID)", cfg.RunID)
-	}
+	assert.Equal(t, 99, cfg.MaxTurns, "flag override")
+	assert.Equal(t, "secret://FILE_KEY", cfg.Provider.APIKeyRef, "base preserved")
+	assert.Equal(t, "prompt from file", cfg.Prompt, "base preserved")
+	assert.Equal(t, "from-file", cfg.RunID, "ResolveBase must not mint a new ID")
 }
 
 // TestBuildRunConfig_EscalationMaxRetriesBasePreserved pins the
@@ -225,46 +170,31 @@ func TestBuildRunConfig_StdinBaseWithFlagOverride(t *testing.T) {
 // passes no --escalate-tool-choice-max-retries flag.
 func TestBuildRunConfig_EscalationMaxRetriesBasePreserved(t *testing.T) {
 	var base types.RunConfig
-	if err := json.Unmarshal([]byte(minimalRunConfigJSON(t)), &base); err != nil {
-		t.Fatalf("unmarshal base: %v", err)
-	}
+	require.NoError(t, json.Unmarshal([]byte(minimalRunConfigJSON(t)), &base))
 	base.ToolChoiceEscalation = &types.ToolChoiceEscalationConfig{Enabled: true, MaxRetries: 3}
 	raw, err := json.Marshal(base)
-	if err != nil {
-		t.Fatalf("marshal base: %v", err)
-	}
+	require.NoError(t, err)
 
 	cmd := newTestHarnessCommand()
-	if err := cmd.ParseFlags([]string{"--max-turns", "5"}); err != nil {
-		t.Fatalf("ParseFlags: %v", err)
-	}
+	require.NoError(t, cmd.ParseFlags([]string{"--max-turns", "5"}))
 
 	cfg, err := BuildRunConfig(RunConfigSources{
 		Stdin:   strings.NewReader(string(raw)),
 		Cmd:     cmd,
 		Resolve: ResolveBase,
 	})
-	if err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
-	if cfg.ToolChoiceEscalation == nil {
-		t.Fatal("base ToolChoiceEscalation must survive, got nil")
-	}
-	if !cfg.ToolChoiceEscalation.Enabled {
-		t.Error("base Enabled=true must survive")
-	}
-	if cfg.ToolChoiceEscalation.MaxRetries != 3 {
-		t.Errorf("MaxRetries = %d, want 3 (base preserved, no flag passed)", cfg.ToolChoiceEscalation.MaxRetries)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, cfg.ToolChoiceEscalation, "base ToolChoiceEscalation must survive")
+	require.True(t, cfg.ToolChoiceEscalation.Enabled, "base Enabled=true must survive")
+	require.Equal(t, 3, cfg.ToolChoiceEscalation.MaxRetries, "base preserved, no flag passed")
 }
 
-// TestBuildRunConfig_FilePath verifies the file-loading branch.
-func TestBuildRunConfig_FilePath(t *testing.T) {
+// TestBuildRunConfig_ConfigPathLoadsBase pins that --config <path> loads
+// the base RunConfig from that file.
+func TestBuildRunConfig_ConfigPathLoadsBase(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cfg.json")
-	if err := os.WriteFile(path, []byte(minimalRunConfigJSON(t)), 0o600); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(minimalRunConfigJSON(t)), 0o600))
 
 	cmd := newTestHarnessCommand()
 	cfg, err := BuildRunConfig(RunConfigSources{
@@ -272,12 +202,8 @@ func TestBuildRunConfig_FilePath(t *testing.T) {
 		Cmd:        cmd,
 		Resolve:    ResolveBase,
 	})
-	if err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
-	if cfg.RunID != "from-file" {
-		t.Errorf("RunID = %q, want from-file", cfg.RunID)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "from-file", cfg.RunID)
 }
 
 // TestBuildRunConfig_StdinPlusConfigFileAreAmbiguous pins that
@@ -286,9 +212,7 @@ func TestBuildRunConfig_FilePath(t *testing.T) {
 func TestBuildRunConfig_StdinPlusConfigFileAreAmbiguous(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cfg.json")
-	if err := os.WriteFile(path, []byte(minimalRunConfigJSON(t)), 0o600); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(minimalRunConfigJSON(t)), 0o600))
 
 	cmd := newTestHarnessCommand()
 	_, err := BuildRunConfig(RunConfigSources{
@@ -297,18 +221,9 @@ func TestBuildRunConfig_StdinPlusConfigFileAreAmbiguous(t *testing.T) {
 		Cmd:        cmd,
 		Resolve:    ResolveBase,
 	})
-	if err == nil {
-		t.Fatal("expected error for --config + piped stdin combination")
-	}
-	if !strings.Contains(err.Error(), "ambiguous") {
-		t.Errorf("error should describe ambiguity, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), path) {
-		t.Errorf("error should mention config path, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "stdin") {
-		t.Errorf("error should mention stdin, got: %v", err)
-	}
+	require.ErrorContains(t, err, "ambiguous")
+	require.ErrorContains(t, err, path)
+	require.ErrorContains(t, err, "stdin")
 }
 
 // TestBuildRunConfig_ExplicitDashRequiresStdin pins that `--config -`
@@ -322,12 +237,7 @@ func TestBuildRunConfig_ExplicitDashRequiresStdin(t *testing.T) {
 		Cmd:        cmd,
 		Resolve:    ResolveBase,
 	})
-	if err == nil {
-		t.Fatal("expected error for --config - with no piped stdin")
-	}
-	if !strings.Contains(err.Error(), "--config -") {
-		t.Errorf("error should cite --config -, got: %v", err)
-	}
+	require.ErrorContains(t, err, "--config -")
 }
 
 // TestBuildRunConfig_ResolveBaseSkipsModeDefaults pins that
@@ -336,40 +246,30 @@ func TestBuildRunConfig_ExplicitDashRequiresStdin(t *testing.T) {
 // execution; ResolveAll populates them.
 func TestBuildRunConfig_ResolveBaseSkipsModeDefaults(t *testing.T) {
 	cmd := newTestHarnessCommand()
-	if err := cmd.ParseFlags([]string{
+	require.NoError(t, cmd.ParseFlags([]string{
 		"--mode", "planning",
 		"--prompt", "x",
-	}); err != nil {
-		t.Fatalf("ParseFlags: %v", err)
-	}
+	}))
 
-	base, err := BuildRunConfig(RunConfigSources{
-		Cmd:     cmd,
-		Resolve: ResolveBase,
+	t.Run("resolve base leaves mode defaults unset", func(t *testing.T) {
+		base, err := BuildRunConfig(RunConfigSources{
+			Cmd:     cmd,
+			Resolve: ResolveBase,
+		})
+		require.NoError(t, err)
+		require.Empty(t, base.PermissionPolicy.Type, "ResolveBase should leave PermissionPolicy unset on planning")
+		require.Empty(t, base.Tools.BuiltIn, "ResolveBase should leave Tools.BuiltIn empty on planning")
 	})
-	if err != nil {
-		t.Fatalf("BuildRunConfig(ResolveBase): %v", err)
-	}
-	if base.PermissionPolicy.Type != "" {
-		t.Errorf("ResolveBase should leave PermissionPolicy unset on planning, got %q", base.PermissionPolicy.Type)
-	}
-	if len(base.Tools.BuiltIn) != 0 {
-		t.Errorf("ResolveBase should leave Tools.BuiltIn empty on planning, got %v", base.Tools.BuiltIn)
-	}
 
-	all, err := BuildRunConfig(RunConfigSources{
-		Cmd:     cmd,
-		Resolve: ResolveAll,
+	t.Run("resolve all populates mode defaults", func(t *testing.T) {
+		all, err := BuildRunConfig(RunConfigSources{
+			Cmd:     cmd,
+			Resolve: ResolveAll,
+		})
+		require.NoError(t, err)
+		require.Equal(t, "deny-side-effects", all.PermissionPolicy.Type)
+		require.NotEmpty(t, all.Tools.BuiltIn, "ResolveAll planning should populate Tools.BuiltIn")
 	})
-	if err != nil {
-		t.Fatalf("BuildRunConfig(ResolveAll): %v", err)
-	}
-	if all.PermissionPolicy.Type != "deny-side-effects" {
-		t.Errorf("ResolveAll planning should default to deny-side-effects, got %q", all.PermissionPolicy.Type)
-	}
-	if len(all.Tools.BuiltIn) == 0 {
-		t.Error("ResolveAll planning should populate Tools.BuiltIn")
-	}
 }
 
 // TestBuildRunConfig_ResolveAllRequiresPrompt pins that the harness
@@ -383,21 +283,14 @@ func TestBuildRunConfig_ResolveAllRequiresPrompt(t *testing.T) {
 	defer func() { stderrIsInteractive = orig }()
 
 	cmd := newTestHarnessCommand()
-	if err := cmd.ParseFlags([]string{"--mode", "execution"}); err != nil {
-		t.Fatalf("ParseFlags: %v", err)
-	}
+	require.NoError(t, cmd.ParseFlags([]string{"--mode", "execution"}))
 	t.Setenv("STIRRUP_PROMPT", "")
 
 	_, err := BuildRunConfig(RunConfigSources{
 		Cmd:     cmd,
 		Resolve: ResolveAll,
 	})
-	if err == nil {
-		t.Fatal("ResolveAll with no prompt should fail")
-	}
-	if !strings.Contains(err.Error(), "prompt is required") {
-		t.Errorf("error should be the documented prompt-required message, got: %v", err)
-	}
+	require.ErrorContains(t, err, "prompt is required")
 }
 
 // TestBuildRunConfig_ResolveBaseAllowsEmptyPrompt pins that a chained
@@ -405,21 +298,15 @@ func TestBuildRunConfig_ResolveAllRequiresPrompt(t *testing.T) {
 // final `harness` stage supplies one.
 func TestBuildRunConfig_ResolveBaseAllowsEmptyPrompt(t *testing.T) {
 	cmd := newTestHarnessCommand()
-	if err := cmd.ParseFlags([]string{"--mode", "execution"}); err != nil {
-		t.Fatalf("ParseFlags: %v", err)
-	}
+	require.NoError(t, cmd.ParseFlags([]string{"--mode", "execution"}))
 	t.Setenv("STIRRUP_PROMPT", "")
 
 	cfg, err := BuildRunConfig(RunConfigSources{
 		Cmd:     cmd,
 		Resolve: ResolveBase,
 	})
-	if err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
-	if cfg.Prompt != "" {
-		t.Errorf("ResolveBase should leave empty prompt as empty, got %q", cfg.Prompt)
-	}
+	require.NoError(t, err)
+	require.Empty(t, cfg.Prompt, "ResolveBase should leave an empty prompt empty")
 }
 
 // TestBuildRunConfig_RejectsUnknownStdinFields exercises the
@@ -432,12 +319,7 @@ func TestBuildRunConfig_RejectsUnknownStdinFields(t *testing.T) {
 		Cmd:     cmd,
 		Resolve: ResolveBase,
 	})
-	if err == nil {
-		t.Fatal("expected DisallowUnknownFields rejection")
-	}
-	if !strings.Contains(err.Error(), "not_a_field") {
-		t.Errorf("error should name the unknown field, got: %v", err)
-	}
+	require.ErrorContains(t, err, "not_a_field")
 }
 
 // TestBuildRunConfig_StdinSizeCap pins that the 1 MiB cap on
@@ -456,12 +338,7 @@ func TestBuildRunConfig_StdinSizeCap(t *testing.T) {
 		Cmd:     cmd,
 		Resolve: ResolveBase,
 	})
-	if err == nil {
-		t.Fatal("expected size-cap rejection")
-	}
-	if !strings.Contains(err.Error(), "exceeds") {
-		t.Errorf("error should mention the size cap, got: %v", err)
-	}
+	require.ErrorContains(t, err, "exceeds")
 }
 
 // TestBuildRunConfig_EmptyStdinErrors pins that explicit --config -
@@ -475,12 +352,7 @@ func TestBuildRunConfig_EmptyStdinErrors(t *testing.T) {
 		Cmd:        cmd,
 		Resolve:    ResolveBase,
 	})
-	if err == nil {
-		t.Fatal("expected empty-stdin rejection")
-	}
-	if !strings.Contains(err.Error(), "empty") {
-		t.Errorf("error should mention empty input, got: %v", err)
-	}
+	require.ErrorContains(t, err, "empty")
 }
 
 // TestBuildRunConfig_FlagOverridesBaseWIFInference pins that
@@ -490,32 +362,22 @@ func TestBuildRunConfig_EmptyStdinErrors(t *testing.T) {
 func TestBuildRunConfig_FlagOverridesBaseWIFInference(t *testing.T) {
 	base := minimalRunConfigJSON(t)
 	cmd := newTestHarnessCommand()
-	if err := cmd.ParseFlags([]string{
+	require.NoError(t, cmd.ParseFlags([]string{
 		"--provider", "openai-responses",
 		"--azure-tenant-id", "11111111-1111-1111-1111-111111111111",
 		"--azure-client-id", "22222222-2222-2222-2222-222222222222",
 		"--base-url", "https://example.openai.azure.com/openai/v1",
-	}); err != nil {
-		t.Fatalf("ParseFlags: %v", err)
-	}
+	}))
 
 	cfg, err := BuildRunConfig(RunConfigSources{
 		Stdin:   strings.NewReader(base),
 		Cmd:     cmd,
 		Resolve: ResolveBase,
 	})
-	if err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
-	if cfg.Provider.Credential == nil {
-		t.Fatal("--azure-tenant-id should imply a Credential block")
-	}
-	if cfg.Provider.Credential.Type != "azure-workload-identity" {
-		t.Errorf("Credential.Type = %q, want azure-workload-identity", cfg.Provider.Credential.Type)
-	}
-	if cfg.Provider.Credential.AzureTenantID == "" {
-		t.Error("Credential.AzureTenantID should be populated")
-	}
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Provider.Credential, "--azure-tenant-id should imply a Credential block")
+	require.Equal(t, "azure-workload-identity", cfg.Provider.Credential.Type)
+	require.NotEmpty(t, cfg.Provider.Credential.AzureTenantID, "Credential.AzureTenantID should be populated")
 }
 
 // TestBuildRunConfig_PositionalPromptOverlay confirms the positional
@@ -523,20 +385,14 @@ func TestBuildRunConfig_FlagOverridesBaseWIFInference(t *testing.T) {
 // it arrives via Sources.Args (no --prompt flag, no stdin prompt).
 func TestBuildRunConfig_PositionalPromptOverlay(t *testing.T) {
 	cmd := newTestHarnessCommand()
-	if err := cmd.ParseFlags([]string{"--mode", "execution"}); err != nil {
-		t.Fatalf("ParseFlags: %v", err)
-	}
+	require.NoError(t, cmd.ParseFlags([]string{"--mode", "execution"}))
 	cfg, err := BuildRunConfig(RunConfigSources{
 		Cmd:     cmd,
 		Args:    []string{"positional prompt"},
 		Resolve: ResolveAll,
 	})
-	if err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
-	if cfg.Prompt != "positional prompt" {
-		t.Errorf("Prompt = %q, want %q", cfg.Prompt, "positional prompt")
-	}
+	require.NoError(t, err)
+	require.Equal(t, "positional prompt", cfg.Prompt)
 }
 
 // TestWriteRunConfigJSON_RoundTrip pins that the writer emits a
@@ -554,35 +410,18 @@ func TestWriteRunConfigJSON_RoundTrip(t *testing.T) {
 		MaxTurns:     20,
 	}
 	var buf bytes.Buffer
-	if err := writeRunConfigJSON(&buf, cfg, false); err != nil {
-		t.Fatalf("writeRunConfigJSON: %v", err)
-	}
-	out := buf.String()
-	if !strings.HasSuffix(out, "\n") {
-		t.Errorf("output should end with a trailing newline")
-	}
+	require.NoError(t, writeRunConfigJSON(&buf, cfg, false))
+	require.True(t, strings.HasSuffix(buf.String(), "\n"), "output should end with a trailing newline")
 
-	// Re-read it.
 	var rc types.RunConfig
-	if err := json.Unmarshal(buf.Bytes(), &rc); err != nil {
-		t.Fatalf("round-trip unmarshal: %v", err)
-	}
-	if rc.RunID != cfg.RunID {
-		t.Errorf("RunID lost in round-trip: got %q want %q", rc.RunID, cfg.RunID)
-	}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &rc), "round-trip unmarshal")
+	require.Equal(t, cfg.RunID, rc.RunID, "RunID lost in round-trip")
 
-	// Compact variant: must NOT contain the indent string, but must
-	// still parse and still end with a newline.
+	// Compact output must not be indented but must still end with a newline.
 	buf.Reset()
-	if err := writeRunConfigJSON(&buf, cfg, true); err != nil {
-		t.Fatalf("writeRunConfigJSON(compact): %v", err)
-	}
-	if strings.Contains(buf.String(), "\n  ") {
-		t.Errorf("compact output should not be indented, got %q", buf.String())
-	}
-	if !strings.HasSuffix(buf.String(), "\n") {
-		t.Errorf("compact output should still end with a trailing newline")
-	}
+	require.NoError(t, writeRunConfigJSON(&buf, cfg, true))
+	require.NotContains(t, buf.String(), "\n  ", "compact output should not be indented")
+	require.True(t, strings.HasSuffix(buf.String(), "\n"), "compact output should still end with a trailing newline")
 }
 
 // TestBuildRunConfig_AnthropicWIFWarnFiresOnce pins that BuildRunConfig
@@ -629,28 +468,20 @@ func TestBuildRunConfig_AnthropicWIFWarnFiresOnce(t *testing.T) {
 	t300 := 300
 	base.Timeout = &t300
 	body, err := json.Marshal(base)
-	if err != nil {
-		t.Fatalf("marshal base: %v", err)
-	}
+	require.NoError(t, err)
 
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("anthropic-from-github-actions", "true"); err != nil {
-		t.Fatalf("set: %v", err)
-	}
+	require.NoError(t, cmd.Flags().Set("anthropic-from-github-actions", "true"))
 
 	_, err = BuildRunConfig(RunConfigSources{
 		Stdin:   bytes.NewReader(body),
 		Cmd:     cmd,
 		Resolve: ResolveBase,
 	})
-	if err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
+	require.NoError(t, err)
 
 	count := strings.Count(logBuf.String(), "--anthropic-from-github-actions ignored")
-	if count != 1 {
-		t.Errorf("WIF warn should fire exactly once, got %d:\n%s", count, logBuf.String())
-	}
+	require.Equal(t, 1, count, "WIF warn should fire exactly once, logs:\n%s", logBuf.String())
 }
 
 // failWriter returns an error on the Nth write (1-based). Used to
@@ -687,31 +518,19 @@ func TestWriteRunConfigJSON_WriteError(t *testing.T) {
 	t.Run("first write (payload) fails", func(t *testing.T) {
 		w := &failWriter{failOn: 1, failWith: io.ErrClosedPipe}
 		err := writeRunConfigJSON(w, cfg, false)
-		if err == nil {
-			t.Fatal("expected write error to propagate")
-		}
-		if !strings.Contains(err.Error(), "write RunConfig") {
-			t.Errorf("error should describe the write failure, got: %v", err)
-		}
+		require.Error(t, err, "payload write error should propagate")
+		require.ErrorContains(t, err, "write RunConfig")
 		// A write failure is an I/O error (exit 3): the marshal succeeded
 		// but the bytes did not reach the sink.
-		if got := classifyExitCode(err); got != exitIO {
-			t.Errorf("classifyExitCode = %d, want %d (I/O); err=%v", got, exitIO, err)
-		}
+		require.Equal(t, exitIO, classifyExitCode(err), "write failure should map to the I/O exit code; err=%v", err)
 	})
 
 	t.Run("second write (newline) fails", func(t *testing.T) {
 		w := &failWriter{failOn: 2, failWith: io.ErrClosedPipe}
 		err := writeRunConfigJSON(w, cfg, false)
-		if err == nil {
-			t.Fatal("expected newline write error to propagate")
-		}
-		if !strings.Contains(err.Error(), "write RunConfig") {
-			t.Errorf("error should describe the newline write failure, got: %v", err)
-		}
-		if got := classifyExitCode(err); got != exitIO {
-			t.Errorf("classifyExitCode = %d, want %d (I/O); err=%v", got, exitIO, err)
-		}
+		require.Error(t, err, "newline write error should propagate")
+		require.ErrorContains(t, err, "write RunConfig")
+		require.Equal(t, exitIO, classifyExitCode(err), "write failure should map to the I/O exit code; err=%v", err)
 	})
 }
 
@@ -719,29 +538,21 @@ func TestWriteRunConfigJSON_WriteError(t *testing.T) {
 // whose Stat() reports os.ModeNamedPipe, is treated as piped.
 func TestIsStdinPiped_NamedPipeReturnsTrue(t *testing.T) {
 	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
+	require.NoError(t, err, "create pipe")
 	t.Cleanup(func() {
 		_ = r.Close()
 		_ = w.Close()
 	})
-	if !isStdinPiped(r) {
-		t.Error("named pipe should be detected as piped")
-	}
+	require.True(t, isStdinPiped(r), "named pipe should be detected as piped")
 }
 
 // TestIsStdinPiped_RegularFileReturnsTrue pins that a redirected
 // regular file (`< config.json`) is treated as piped.
 func TestIsStdinPiped_RegularFileReturnsTrue(t *testing.T) {
 	f, err := os.CreateTemp(t.TempDir(), "in-*.json")
-	if err != nil {
-		t.Fatalf("CreateTemp: %v", err)
-	}
+	require.NoError(t, err, "create temp file")
 	t.Cleanup(func() { _ = f.Close() })
-	if !isStdinPiped(f) {
-		t.Error("regular file should be detected as piped")
-	}
+	require.True(t, isStdinPiped(f), "regular file should be detected as piped")
 }
 
 // TestIsStdinPiped_StatErrorReturnsFalse pins that a closed file fd
@@ -749,15 +560,9 @@ func TestIsStdinPiped_RegularFileReturnsTrue(t *testing.T) {
 // default: fall through to flag-only rather than read an unusable fd.
 func TestIsStdinPiped_StatErrorReturnsFalse(t *testing.T) {
 	f, err := os.CreateTemp(t.TempDir(), "stat-err-*")
-	if err != nil {
-		t.Fatalf("CreateTemp: %v", err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-	if isStdinPiped(f) {
-		t.Error("closed file (Stat errors) should not be treated as piped")
-	}
+	require.NoError(t, err, "create temp file")
+	require.NoError(t, f.Close(), "close temp file")
+	require.False(t, isStdinPiped(f), "closed file (Stat errors) should not be treated as piped")
 }
 
 // TestIsStdinPiped_CharDeviceReturnsFalse pins that a character device
@@ -765,13 +570,9 @@ func TestIsStdinPiped_StatErrorReturnsFalse(t *testing.T) {
 // piped — otherwise every harness_test.go fixture false-positives.
 func TestIsStdinPiped_CharDeviceReturnsFalse(t *testing.T) {
 	f, err := os.Open(os.DevNull)
-	if err != nil {
-		t.Fatalf("open /dev/null: %v", err)
-	}
+	require.NoError(t, err, "open /dev/null")
 	t.Cleanup(func() { _ = f.Close() })
-	if isStdinPiped(f) {
-		t.Error("character device (/dev/null) should not be treated as piped")
-	}
+	require.False(t, isStdinPiped(f), "character device (/dev/null) should not be treated as piped")
 }
 
 // TestBuildRunConfig_ApplyOverridesError pins that a malformed
@@ -779,19 +580,12 @@ func TestIsStdinPiped_CharDeviceReturnsFalse(t *testing.T) {
 // error.
 func TestBuildRunConfig_ApplyOverridesError(t *testing.T) {
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("query-param", "no-equals-sign"); err != nil {
-		t.Fatalf("set query-param: %v", err)
-	}
+	require.NoError(t, cmd.Flags().Set("query-param", "no-equals-sign"), "set query-param")
 	_, err := BuildRunConfig(RunConfigSources{
 		Cmd:     cmd,
 		Resolve: ResolveBase,
 	})
-	if err == nil {
-		t.Fatal("expected malformed --query-param to surface as error")
-	}
-	if !strings.Contains(err.Error(), "query-param") {
-		t.Errorf("error should mention query-param, got: %v", err)
-	}
+	require.ErrorContains(t, err, "query-param")
 }
 
 // TestBuildRunConfig_WIFOverridesError pins that a WIF flag set
@@ -811,9 +605,7 @@ func TestBuildRunConfig_WIFOverridesError(t *testing.T) {
 
 	cmd := newTestHarnessCommand()
 	mustSet := func(name, val string) {
-		if err := cmd.Flags().Set(name, val); err != nil {
-			t.Fatalf("set %s: %v", name, err)
-		}
+		require.NoError(t, cmd.Flags().Set(name, val), "set %s", name)
 	}
 	mustSet("anthropic-federation-rule-id", "fdrl_rule")
 	mustSet("anthropic-organization-id", "11111111-1111-1111-1111-111111111111")
@@ -824,12 +616,7 @@ func TestBuildRunConfig_WIFOverridesError(t *testing.T) {
 		Cmd:     cmd,
 		Resolve: ResolveBase,
 	})
-	if err == nil {
-		t.Fatal("expected WIF + explicit api-key-ref to surface as error")
-	}
-	if !strings.Contains(err.Error(), "api-key-ref") {
-		t.Errorf("error should mention api-key-ref, got: %v", err)
-	}
+	require.ErrorContains(t, err, "api-key-ref")
 }
 
 // TestBuildRunConfig_EnvVarSuppliesBasePath pins that when --config is
@@ -838,9 +625,7 @@ func TestBuildRunConfig_WIFOverridesError(t *testing.T) {
 func TestBuildRunConfig_EnvVarSuppliesBasePath(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cfg.json")
-	if err := os.WriteFile(path, []byte(minimalRunConfigJSON(t)), 0o600); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(minimalRunConfigJSON(t)), 0o600), "write config file")
 	t.Setenv("STIRRUP_CONFIG", path)
 
 	cmd := newTestHarnessCommand()
@@ -848,12 +633,8 @@ func TestBuildRunConfig_EnvVarSuppliesBasePath(t *testing.T) {
 		Cmd:     cmd,
 		Resolve: ResolveBase,
 	})
-	if err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
-	if cfg.RunID != "from-file" {
-		t.Errorf("RunID = %q, want from-file (env-var base should load)", cfg.RunID)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "from-file", cfg.RunID, "env-var base should load")
 }
 
 // TestBuildRunConfig_ExplicitConfigBeatsEnvVar pins that when both
@@ -885,15 +666,9 @@ func TestBuildRunConfig_ExplicitConfigBeatsEnvVar(t *testing.T) {
 		LogLevel: "info",
 	}
 	envBytes, err := json.Marshal(envCfg)
-	if err != nil {
-		t.Fatalf("marshal env cfg: %v", err)
-	}
-	if err := os.WriteFile(envPath, envBytes, 0o600); err != nil {
-		t.Fatalf("write env file: %v", err)
-	}
-	if err := os.WriteFile(flagPath, []byte(minimalRunConfigJSON(t)), 0o600); err != nil {
-		t.Fatalf("write flag file: %v", err)
-	}
+	require.NoError(t, err, "marshal env config")
+	require.NoError(t, os.WriteFile(envPath, envBytes, 0o600), "write env config")
+	require.NoError(t, os.WriteFile(flagPath, []byte(minimalRunConfigJSON(t)), 0o600), "write flag config")
 	t.Setenv("STIRRUP_CONFIG", envPath)
 
 	cmd := newTestHarnessCommand()
@@ -902,12 +677,8 @@ func TestBuildRunConfig_ExplicitConfigBeatsEnvVar(t *testing.T) {
 		Cmd:        cmd,
 		Resolve:    ResolveBase,
 	})
-	if err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
-	if cfg.RunID != "from-file" {
-		t.Errorf("RunID = %q, want from-file (explicit --config must beat STIRRUP_CONFIG)", cfg.RunID)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "from-file", cfg.RunID, "explicit --config must beat STIRRUP_CONFIG")
 }
 
 // TestBuildRunConfig_EnvVarDashOptsIntoStdin pins that
@@ -923,12 +694,8 @@ func TestBuildRunConfig_EnvVarDashOptsIntoStdin(t *testing.T) {
 		Cmd:     cmd,
 		Resolve: ResolveBase,
 	})
-	if err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
-	if cfg.RunID != "from-file" {
-		t.Errorf("RunID = %q, want from-file (stdin should load via STIRRUP_CONFIG=-)", cfg.RunID)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "from-file", cfg.RunID, "stdin should load via STIRRUP_CONFIG=-")
 }
 
 // TestBuildRunConfig_EnvVarPathPlusStdinIsAmbiguous pins that
@@ -939,9 +706,7 @@ func TestBuildRunConfig_EnvVarDashOptsIntoStdin(t *testing.T) {
 func TestBuildRunConfig_EnvVarPathPlusStdinIsAmbiguous(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cfg.json")
-	if err := os.WriteFile(path, []byte(minimalRunConfigJSON(t)), 0o600); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(minimalRunConfigJSON(t)), 0o600), "write config file")
 	t.Setenv("STIRRUP_CONFIG", path)
 
 	prevDefault := slog.Default()
@@ -955,21 +720,10 @@ func TestBuildRunConfig_EnvVarPathPlusStdinIsAmbiguous(t *testing.T) {
 		Cmd:     cmd,
 		Resolve: ResolveBase,
 	})
-	if err == nil {
-		t.Fatal("expected STIRRUP_CONFIG=<path> + piped stdin to be rejected")
-	}
-	if !strings.Contains(err.Error(), "STIRRUP_CONFIG") {
-		t.Errorf("error should name STIRRUP_CONFIG, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "stdin") {
-		t.Errorf("error should cite stdin, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), path) {
-		t.Errorf("error should cite the env-var path, got: %v", err)
-	}
-	if strings.Contains(logBuf.String(), "STIRRUP_CONFIG") {
-		t.Errorf("ambiguity path must not emit a chosen-source debug trace, got:\n%s", logBuf.String())
-	}
+	require.ErrorContains(t, err, "STIRRUP_CONFIG")
+	require.ErrorContains(t, err, "stdin")
+	require.ErrorContains(t, err, path)
+	require.NotContains(t, logBuf.String(), "STIRRUP_CONFIG", "ambiguity path must not emit a chosen-source debug trace")
 }
 
 // TestBuildRunConfig_EnvVarDashRequiresStdin pins that
@@ -986,18 +740,9 @@ func TestBuildRunConfig_EnvVarDashRequiresStdin(t *testing.T) {
 		Cmd:     cmd,
 		Resolve: ResolveBase,
 	})
-	if err == nil {
-		t.Fatal("expected STIRRUP_CONFIG=- with no piped stdin to be rejected")
-	}
-	if !strings.Contains(err.Error(), "STIRRUP_CONFIG=-") {
-		t.Errorf("error should cite STIRRUP_CONFIG=-, got: %v", err)
-	}
-	if strings.Contains(err.Error(), "terminal") {
-		t.Errorf("nil Stdin must not be diagnosed as a terminal, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "no stdin reader") {
-		t.Errorf("error should describe the missing reader, got: %v", err)
-	}
+	require.ErrorContains(t, err, "STIRRUP_CONFIG=-")
+	require.NotContains(t, err.Error(), "terminal", "nil Stdin must not be diagnosed as a terminal")
+	require.ErrorContains(t, err, "no stdin reader")
 }
 
 // TestBuildRunConfig_EnvVarEmptyIgnored pins that an empty
@@ -1007,22 +752,16 @@ func TestBuildRunConfig_EnvVarEmptyIgnored(t *testing.T) {
 	t.Setenv("STIRRUP_CONFIG", "")
 
 	cmd := newTestHarnessCommand()
-	if err := cmd.ParseFlags([]string{
+	require.NoError(t, cmd.ParseFlags([]string{
 		"--mode", "execution",
 		"--prompt", "x",
-	}); err != nil {
-		t.Fatalf("ParseFlags: %v", err)
-	}
+	}))
 	cfg, err := BuildRunConfig(RunConfigSources{
 		Cmd:     cmd,
 		Resolve: ResolveAll,
 	})
-	if err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
-	if cfg.Mode != "execution" {
-		t.Errorf("Mode = %q, want execution (empty env var should be ignored)", cfg.Mode)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "execution", cfg.Mode, "empty env var should be ignored")
 }
 
 // TestBuildRunConfig_EnvVarDebugLogged pins that when the env var is
@@ -1031,9 +770,7 @@ func TestBuildRunConfig_EnvVarEmptyIgnored(t *testing.T) {
 func TestBuildRunConfig_EnvVarDebugLogged(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cfg.json")
-	if err := os.WriteFile(path, []byte(minimalRunConfigJSON(t)), 0o600); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(minimalRunConfigJSON(t)), 0o600), "write config file")
 	t.Setenv("STIRRUP_CONFIG", path)
 
 	prevDefault := slog.Default()
@@ -1042,20 +779,15 @@ func TestBuildRunConfig_EnvVarDebugLogged(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 
 	cmd := newTestHarnessCommand()
-	if _, err := BuildRunConfig(RunConfigSources{
+	_, err := BuildRunConfig(RunConfigSources{
 		Cmd:     cmd,
 		Resolve: ResolveBase,
-	}); err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
+	})
+	require.NoError(t, err)
 
 	out := logBuf.String()
-	if !strings.Contains(out, "STIRRUP_CONFIG") {
-		t.Errorf("debug log should mention STIRRUP_CONFIG, got:\n%s", out)
-	}
-	if !strings.Contains(out, "path=") {
-		t.Errorf("debug log should carry structured path field, got:\n%s", out)
-	}
+	require.Contains(t, out, "STIRRUP_CONFIG")
+	require.Contains(t, out, "path=", "debug log should carry a structured path field")
 }
 
 // TestBuildRunConfig_EnvVarDashDebugLogged mirrors
@@ -1070,21 +802,16 @@ func TestBuildRunConfig_EnvVarDashDebugLogged(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 
 	cmd := newTestHarnessCommand()
-	if _, err := BuildRunConfig(RunConfigSources{
+	_, err := BuildRunConfig(RunConfigSources{
 		Stdin:   strings.NewReader(minimalRunConfigJSON(t)),
 		Cmd:     cmd,
 		Resolve: ResolveBase,
-	}); err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
+	})
+	require.NoError(t, err)
 
 	out := logBuf.String()
-	if !strings.Contains(out, "STIRRUP_CONFIG") {
-		t.Errorf("debug log should mention STIRRUP_CONFIG, got:\n%s", out)
-	}
-	if !strings.Contains(out, "path=-") {
-		t.Errorf("debug log should carry path=- structured field, got:\n%s", out)
-	}
+	require.Contains(t, out, "STIRRUP_CONFIG")
+	require.Contains(t, out, "path=-", "debug log should carry a path=- structured field")
 }
 
 // TestBuildRunConfig_EnvVarPathNotFound pins that when STIRRUP_CONFIG
@@ -1098,12 +825,7 @@ func TestBuildRunConfig_EnvVarPathNotFound(t *testing.T) {
 		Cmd:     cmd,
 		Resolve: ResolveBase,
 	})
-	if err == nil {
-		t.Fatal("expected STIRRUP_CONFIG with non-existent path to fail")
-	}
-	if !strings.Contains(err.Error(), "STIRRUP_CONFIG") {
-		t.Errorf("error should name STIRRUP_CONFIG so operator knows the source, got: %v", err)
-	}
+	require.ErrorContains(t, err, "STIRRUP_CONFIG")
 }
 
 // TestBuildRunConfig_EnvVarLeadingWhitespaceTrimmed pins that a
@@ -1113,9 +835,7 @@ func TestBuildRunConfig_EnvVarPathNotFound(t *testing.T) {
 func TestBuildRunConfig_EnvVarLeadingWhitespaceTrimmed(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cfg.json")
-	if err := os.WriteFile(path, []byte(minimalRunConfigJSON(t)), 0o600); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(minimalRunConfigJSON(t)), 0o600), "write config file")
 	t.Setenv("STIRRUP_CONFIG", "  "+path+"\n")
 
 	cmd := newTestHarnessCommand()
@@ -1123,12 +843,8 @@ func TestBuildRunConfig_EnvVarLeadingWhitespaceTrimmed(t *testing.T) {
 		Cmd:     cmd,
 		Resolve: ResolveBase,
 	})
-	if err != nil {
-		t.Fatalf("BuildRunConfig should trim whitespace and load file, got: %v", err)
-	}
-	if cfg.RunID != "from-file" {
-		t.Errorf("RunID = %q, want from-file (trimmed env path should resolve)", cfg.RunID)
-	}
+	require.NoError(t, err, "BuildRunConfig should trim whitespace and load the file")
+	require.Equal(t, "from-file", cfg.RunID, "trimmed env path should resolve")
 }
 
 // TestBuildRunConfig_EmptyEditStrategyResolvesToMulti pins the
@@ -1138,23 +854,17 @@ func TestBuildRunConfig_EnvVarLeadingWhitespaceTrimmed(t *testing.T) {
 // TestRunRunConfig_EmptyEditStrategyDefaultsToMulti.
 func TestBuildRunConfig_EmptyEditStrategyResolvesToMulti(t *testing.T) {
 	cmd := newTestHarnessCommand()
-	if err := cmd.ParseFlags([]string{
+	require.NoError(t, cmd.ParseFlags([]string{
 		"--mode", "execution",
 		"--prompt", "test",
-	}); err != nil {
-		t.Fatalf("ParseFlags: %v", err)
-	}
+	}))
 
 	cfg, err := BuildRunConfig(RunConfigSources{
 		Cmd:     cmd,
 		Resolve: ResolveAll,
 	})
-	if err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
-	if cfg.EditStrategy.Type != "multi" {
-		t.Errorf("EditStrategy.Type = %q, want multi (CLI default must match validation default)", cfg.EditStrategy.Type)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "multi", cfg.EditStrategy.Type, "CLI default must match the validation default")
 }
 
 // TestBuildRunConfig_ExplicitEditStrategyPreserved confirms the
@@ -1163,22 +873,16 @@ func TestBuildRunConfig_EmptyEditStrategyResolvesToMulti(t *testing.T) {
 // the validation default.
 func TestBuildRunConfig_ExplicitEditStrategyPreserved(t *testing.T) {
 	cmd := newTestHarnessCommand()
-	if err := cmd.ParseFlags([]string{
+	require.NoError(t, cmd.ParseFlags([]string{
 		"--mode", "execution",
 		"--prompt", "test",
 		"--edit-strategy", "whole-file",
-	}); err != nil {
-		t.Fatalf("ParseFlags: %v", err)
-	}
+	}))
 
 	cfg, err := BuildRunConfig(RunConfigSources{
 		Cmd:     cmd,
 		Resolve: ResolveAll,
 	})
-	if err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
-	if cfg.EditStrategy.Type != "whole-file" {
-		t.Errorf("EditStrategy.Type = %q, want whole-file (explicit selection must survive defaulting)", cfg.EditStrategy.Type)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "whole-file", cfg.EditStrategy.Type, "explicit selection must survive defaulting")
 }

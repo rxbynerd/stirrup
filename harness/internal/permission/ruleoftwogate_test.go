@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -55,15 +57,9 @@ func TestRuleOfTwoGate_DelegatesUntilTripped(t *testing.T) {
 	gate := NewRuleOfTwoGate(inner, state, externalSet(), nil, nil)
 
 	result, err := gate.Check(context.Background(), types.ToolDefinition{Name: "run_command"}, nil)
-	if err != nil {
-		t.Fatalf("Check: %v", err)
-	}
-	if !result.Allowed {
-		t.Error("untripped gate must delegate to inner (allow-all)")
-	}
-	if inner.callCount() != 1 {
-		t.Errorf("inner.Check calls = %d, want 1 (delegation)", inner.callCount())
-	}
+	require.NoError(t, err)
+	require.True(t, result.Allowed, "untripped gate must delegate to inner (allow-all)")
+	require.Equal(t, 1, inner.callCount(), "inner must be consulted once (delegation)")
 }
 
 func TestRuleOfTwoGate_NotEnforcingDelegatesEvenWhenTripped(t *testing.T) {
@@ -72,15 +68,9 @@ func TestRuleOfTwoGate_NotEnforcingDelegatesEvenWhenTripped(t *testing.T) {
 	gate := NewRuleOfTwoGate(inner, state, externalSet(), nil, nil)
 
 	result, err := gate.Check(context.Background(), types.ToolDefinition{Name: "run_command"}, nil)
-	if err != nil {
-		t.Fatalf("Check: %v", err)
-	}
-	if !result.Allowed {
-		t.Error("observe-only gate must never deny")
-	}
-	if inner.callCount() != 1 {
-		t.Errorf("inner.Check calls = %d, want 1", inner.callCount())
-	}
+	require.NoError(t, err)
+	require.True(t, result.Allowed, "observe-only gate must never deny")
+	require.Equal(t, 1, inner.callCount())
 }
 
 func TestRuleOfTwoGate_BlockExternalDeniesExternalTools(t *testing.T) {
@@ -89,20 +79,14 @@ func TestRuleOfTwoGate_BlockExternalDeniesExternalTools(t *testing.T) {
 	gate := NewRuleOfTwoGate(inner, state, externalSet(), nil, nil)
 
 	for _, name := range []string{"run_command", "web_fetch"} {
-		result, err := gate.Check(context.Background(), types.ToolDefinition{Name: name}, nil)
-		if err != nil {
-			t.Fatalf("Check(%s): %v", name, err)
-		}
-		if result.Allowed {
-			t.Errorf("%s must be denied after the latch trips", name)
-		}
-		if result.Reason != RuleOfTwoDeniedReason {
-			t.Errorf("%s reason = %q, want RuleOfTwoDeniedReason", name, result.Reason)
-		}
+		t.Run(name, func(t *testing.T) {
+			result, err := gate.Check(context.Background(), types.ToolDefinition{Name: name}, nil)
+			require.NoError(t, err)
+			require.False(t, result.Allowed, "external tool must be denied after the latch trips")
+			require.Equal(t, RuleOfTwoDeniedReason, result.Reason)
+		})
 	}
-	if inner.callCount() != 0 {
-		t.Errorf("inner.Check calls = %d, want 0 (block-external never consults inner)", inner.callCount())
-	}
+	require.Equal(t, 0, inner.callCount(), "block-external never consults inner")
 }
 
 func TestRuleOfTwoGate_NonExternalToolsDelegateWhileTripped(t *testing.T) {
@@ -111,17 +95,13 @@ func TestRuleOfTwoGate_NonExternalToolsDelegateWhileTripped(t *testing.T) {
 	gate := NewRuleOfTwoGate(inner, state, externalSet(), nil, nil)
 
 	for _, name := range []string{"read_file", "write_file", "edit_file", "grep_files"} {
-		result, err := gate.Check(context.Background(), types.ToolDefinition{Name: name}, nil)
-		if err != nil {
-			t.Fatalf("Check(%s): %v", name, err)
-		}
-		if !result.Allowed {
-			t.Errorf("%s is not external-comm and must delegate to inner (allow)", name)
-		}
+		t.Run(name, func(t *testing.T) {
+			result, err := gate.Check(context.Background(), types.ToolDefinition{Name: name}, nil)
+			require.NoError(t, err)
+			require.True(t, result.Allowed, "not external-comm, must delegate to inner (allow)")
+		})
 	}
-	if inner.callCount() != 4 {
-		t.Errorf("inner.Check calls = %d, want 4", inner.callCount())
-	}
+	require.Equal(t, 4, inner.callCount())
 }
 
 func TestRuleOfTwoGate_MCPPrefixDeniedEvenWhenAbsentFromSet(t *testing.T) {
@@ -132,15 +112,9 @@ func TestRuleOfTwoGate_MCPPrefixDeniedEvenWhenAbsentFromSet(t *testing.T) {
 	gate := NewRuleOfTwoGate(inner, state, externalSet(), nil, nil)
 
 	result, err := gate.Check(context.Background(), types.ToolDefinition{Name: "mcp_github_create_issue"}, nil)
-	if err != nil {
-		t.Fatalf("Check: %v", err)
-	}
-	if result.Allowed {
-		t.Error("mcp_-prefixed tool must be denied via the prefix check")
-	}
-	if result.Reason != RuleOfTwoDeniedReason {
-		t.Errorf("reason = %q, want RuleOfTwoDeniedReason", result.Reason)
-	}
+	require.NoError(t, err)
+	require.False(t, result.Allowed, "mcp_-prefixed tool must be denied via the prefix check")
+	require.Equal(t, RuleOfTwoDeniedReason, result.Reason)
 }
 
 func TestRuleOfTwoGate_AskUpstreamConsultsInnerFirst(t *testing.T) {
@@ -153,18 +127,10 @@ func TestRuleOfTwoGate_AskUpstreamConsultsInnerFirst(t *testing.T) {
 	gate := NewRuleOfTwoGate(inner, state, externalSet(), ask, nil)
 
 	result, err := gate.Check(context.Background(), types.ToolDefinition{Name: "run_command"}, nil)
-	if err != nil {
-		t.Fatalf("Check: %v", err)
-	}
-	if result.Allowed {
-		t.Error("inner deny must short-circuit the upstream ask")
-	}
-	if result.Reason != "cedar forbid" {
-		t.Errorf("reason = %q, want the inner policy's reason", result.Reason)
-	}
-	if mt.lastEmitted() != nil {
-		t.Error("no permission_request may be emitted when the inner policy already denied")
-	}
+	require.NoError(t, err)
+	require.False(t, result.Allowed, "inner deny must short-circuit the upstream ask")
+	require.Equal(t, "cedar forbid", result.Reason, "reason must be the inner policy's")
+	require.Nil(t, mt.lastEmitted(), "no permission_request may be emitted when the inner policy already denied")
 }
 
 func TestRuleOfTwoGate_AskUpstreamRoutesAfterInnerAllow(t *testing.T) {
@@ -174,7 +140,7 @@ func TestRuleOfTwoGate_AskUpstreamRoutesAfterInnerAllow(t *testing.T) {
 	ask := NewAskUpstreamPolicy(mt, externalSet(), 0)
 	gate := NewRuleOfTwoGate(inner, state, externalSet(), ask, nil)
 
-	// Operator approves asynchronously, mirroring askupstream_test.go.
+	// The operator approves asynchronously.
 	go func() {
 		for {
 			time.Sleep(5 * time.Millisecond)
@@ -192,22 +158,14 @@ func TestRuleOfTwoGate_AskUpstreamRoutesAfterInnerAllow(t *testing.T) {
 	}()
 
 	result, err := gate.Check(context.Background(), types.ToolDefinition{Name: "run_command"}, nil)
-	if err != nil {
-		t.Fatalf("Check: %v", err)
-	}
-	if !result.Allowed {
-		t.Error("operator approval must allow the call")
-	}
-	if inner.callCount() != 1 {
-		t.Errorf("inner.Check calls = %d, want 1 (consulted before the ask)", inner.callCount())
-	}
+	require.NoError(t, err)
+	require.True(t, result.Allowed, "operator approval must allow the call")
+	require.Equal(t, 1, inner.callCount(), "inner must be consulted before the ask")
+
 	e := mt.lastEmitted()
-	if e == nil || e.Type != "permission_request" {
-		t.Fatalf("expected a permission_request on the transport, got %+v", e)
-	}
-	if e.ToolName != "run_command" {
-		t.Errorf("permission_request tool = %q, want run_command", e.ToolName)
-	}
+	require.NotNil(t, e, "expected a permission_request on the transport")
+	require.Equal(t, "permission_request", e.Type)
+	require.Equal(t, "run_command", e.ToolName)
 }
 
 func TestRuleOfTwoGate_AskUpstreamDenialPropagates(t *testing.T) {
@@ -217,6 +175,7 @@ func TestRuleOfTwoGate_AskUpstreamDenialPropagates(t *testing.T) {
 	ask := NewAskUpstreamPolicy(mt, externalSet(), 0)
 	gate := NewRuleOfTwoGate(inner, state, externalSet(), ask, nil)
 
+	// The operator denies asynchronously.
 	go func() {
 		for {
 			time.Sleep(5 * time.Millisecond)
@@ -235,15 +194,9 @@ func TestRuleOfTwoGate_AskUpstreamDenialPropagates(t *testing.T) {
 	}()
 
 	result, err := gate.Check(context.Background(), types.ToolDefinition{Name: "web_fetch"}, nil)
-	if err != nil {
-		t.Fatalf("Check: %v", err)
-	}
-	if result.Allowed {
-		t.Error("operator denial must deny the call")
-	}
-	if result.Reason != "operator said no" {
-		t.Errorf("reason = %q, want the operator's reason", result.Reason)
-	}
+	require.NoError(t, err)
+	require.False(t, result.Allowed, "operator denial must deny the call")
+	require.Equal(t, "operator said no", result.Reason, "reason must be the operator's")
 }
 
 func TestRuleOfTwoGate_AskUpstreamNilFailsClosed(t *testing.T) {
@@ -252,28 +205,17 @@ func TestRuleOfTwoGate_AskUpstreamNilFailsClosed(t *testing.T) {
 	gate := NewRuleOfTwoGate(inner, state, externalSet(), nil, nil)
 
 	result, err := gate.Check(context.Background(), types.ToolDefinition{Name: "run_command"}, nil)
-	if err != nil {
-		t.Fatalf("Check: %v", err)
-	}
-	if result.Allowed {
-		t.Error("a gate with no ask policy must fail closed, not allow")
-	}
-	if result.Reason != RuleOfTwoDeniedReason {
-		t.Errorf("reason = %q, want RuleOfTwoDeniedReason", result.Reason)
-	}
+	require.NoError(t, err)
+	require.False(t, result.Allowed, "a gate with no ask policy must fail closed, not allow")
+	require.Equal(t, RuleOfTwoDeniedReason, result.Reason)
 }
 
-func TestRuleOfTwoGate_UnwrapChainThroughGateAndMetrics(t *testing.T) {
+func TestRuleOfTwoGate_UnwrapReachesInnerPolicy(t *testing.T) {
 	core := NewAllowAll()
 	state := &fakeRuleOfTwoState{}
 	gate := NewRuleOfTwoGate(core, state, externalSet(), nil, nil)
-	// The metric recorder needs a non-nil metrics handle to wrap; the
-	// chain shape is what matters here, so reuse the gate-only chain
-	// for the single-wrapper case and assert Unwrap reaches the core
-	// through the gate.
-	if got := Unwrap(gate); got != core {
-		t.Errorf("Unwrap(gate) = %T, want the inner *AllowAll", got)
-	}
+
+	require.Same(t, core, Unwrap(gate), "Unwrap must walk through the gate to the inner policy")
 }
 
 func TestRewrapChain_RebuildsGateAroundNewInner(t *testing.T) {
@@ -283,44 +225,31 @@ func TestRewrapChain_RebuildsGateAroundNewInner(t *testing.T) {
 	gate := NewRuleOfTwoGate(oldInner, state, externalSet(), nil, nil)
 
 	rewrapped, ok := RewrapChain(gate, newInner)
-	if !ok {
-		t.Fatal("RewrapChain must succeed for a gate-only chain")
-	}
-	if Unwrap(rewrapped) != PermissionPolicy(newInner) {
-		t.Fatalf("Unwrap(rewrapped) = %T, want the new inner", Unwrap(rewrapped))
-	}
+	require.True(t, ok, "RewrapChain must succeed for a gate-only chain")
+	require.Same(t, newInner, Unwrap(rewrapped), "rewrapped chain must wrap the new inner")
+
 	// The rebuilt gate shares the tripped state: external tools still
 	// denied with the rule-of-two reason, non-external delegate to the
 	// NEW inner.
 	result, err := rewrapped.Check(context.Background(), types.ToolDefinition{Name: "run_command"}, nil)
-	if err != nil {
-		t.Fatalf("Check: %v", err)
-	}
-	if result.Allowed || result.Reason != RuleOfTwoDeniedReason {
-		t.Errorf("rebuilt gate must keep denying external tools, got %+v", result)
-	}
+	require.NoError(t, err)
+	require.False(t, result.Allowed, "rebuilt gate must keep denying external tools")
+	require.Equal(t, RuleOfTwoDeniedReason, result.Reason)
+
 	result, err = rewrapped.Check(context.Background(), types.ToolDefinition{Name: "read_file"}, nil)
-	if err != nil {
-		t.Fatalf("Check: %v", err)
-	}
-	if result.Allowed || result.Reason != "new inner" {
-		t.Errorf("non-external check must reach the new inner, got %+v", result)
-	}
-	if oldInner.callCount() != 0 {
-		t.Errorf("old inner received %d calls after rewrap, want 0", oldInner.callCount())
-	}
+	require.NoError(t, err)
+	require.False(t, result.Allowed, "non-external check must reach the new inner")
+	require.Equal(t, "new inner", result.Reason)
+
+	require.Equal(t, 0, oldInner.callCount(), "old inner must receive no calls after rewrap")
 }
 
-func TestRewrapChain_UnrewrappableWrapperRefuses(t *testing.T) {
+func TestRewrapChain_RefusesNonRewrapperWrapper(t *testing.T) {
 	inner := NewAllowAll()
 	wrapped := &unwrapOnlyWrapper{inner: inner}
 	out, ok := RewrapChain(wrapped, NewAllowAll())
-	if ok {
-		t.Fatal("RewrapChain must refuse a chain containing a non-Rewrapper wrapper")
-	}
-	if out != PermissionPolicy(wrapped) {
-		t.Errorf("on refusal RewrapChain must return the original chain, got %T", out)
-	}
+	require.False(t, ok, "RewrapChain must refuse a chain containing a non-Rewrapper wrapper")
+	require.Same(t, wrapped, out, "on refusal RewrapChain must return the original chain")
 }
 
 // unwrapOnlyWrapper implements Unwrap but not Rewrap, standing in for a
@@ -335,8 +264,7 @@ func (w *unwrapOnlyWrapper) Check(ctx context.Context, tool types.ToolDefinition
 
 func (w *unwrapOnlyWrapper) Unwrap() PermissionPolicy { return w.inner }
 
-func TestRuleOfTwoGate_DeniedReasonNamesRuleOfTwo(t *testing.T) {
-	if !strings.HasPrefix(RuleOfTwoDeniedReason, "rule_of_two:") {
-		t.Errorf("RuleOfTwoDeniedReason must keep the stable rule_of_two: grep prefix, got %q", RuleOfTwoDeniedReason)
-	}
+func TestRuleOfTwoGate_DeniedReasonKeepsGrepPrefix(t *testing.T) {
+	require.True(t, strings.HasPrefix(RuleOfTwoDeniedReason, "rule_of_two:"),
+		"RuleOfTwoDeniedReason must keep the stable rule_of_two: grep prefix, got %q", RuleOfTwoDeniedReason)
 }

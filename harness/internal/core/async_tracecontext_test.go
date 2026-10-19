@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -16,6 +18,7 @@ import (
 
 // respondWhenAllRequested answers every tool_result_request only once n of
 // them are on the wire, so the calls are provably in flight together.
+// Callers run it on a goroutine, so it reports with assert rather than require.
 func respondWhenAllRequested(t *testing.T, tr *asyncTestTransport, n int) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -34,14 +37,12 @@ func respondWhenAllRequested(t *testing.T, tr *asyncTestTransport, n int) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	t.Errorf("fewer than %d tool_result_request events emitted", n)
+	assert.Fail(t, "fewer tool_result_request events than expected", "want %d", n)
 }
 
 func decodeTraceContext(t *testing.T, c *types.TraceContext) oteltrace.SpanContext {
 	t.Helper()
-	if c == nil {
-		t.Fatal("tool_result_request carries no trace context")
-	}
+	require.NotNil(t, c, "tool_result_request carries no trace context")
 	carrier := propagation.MapCarrier{"traceparent": c.Traceparent, "tracestate": c.Tracestate}
 	return oteltrace.SpanContextFromContext(propagation.TraceContext{}.Extract(context.Background(), carrier))
 }
@@ -68,15 +69,12 @@ func TestAsyncToolResultRequest_CarriesItsExecuteToolSpan(t *testing.T) {
 	loop.Transport = tr
 
 	go respondWhenAllRequested(t, tr, 2)
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), buildTestConfig())
+	require.NoError(t, err, "Run")
 
 	spans := exporter.GetSpans()
 	root := spansNamed(spans, "invoke_agent stirrup")
-	if len(root) != 1 {
-		t.Fatalf("found %d root spans, want 1", len(root))
-	}
+	require.Len(t, root, 1, "root spans")
 	spanByCallID := map[string]tracetest.SpanStub{}
 	for _, s := range spansNamed(spans, "execute_tool async_echo") {
 		id, _ := spanAttr(s, "gen_ai.tool.call.id")
@@ -88,42 +86,32 @@ func TestAsyncToolResultRequest_CarriesItsExecuteToolSpan(t *testing.T) {
 		if e.Type != "tool_result_request" {
 			continue
 		}
-		sc := decodeTraceContext(t, e.TraceContext)
-		want, ok := spanByCallID[e.ToolUseID]
-		if !ok {
-			t.Fatalf("no execute_tool span recorded for %s", e.ToolUseID)
-		}
-		if sc.TraceID() != root[0].SpanContext.TraceID() {
-			t.Errorf("%s: trace ID = %s, want the run's %s", e.ToolUseID, sc.TraceID(), root[0].SpanContext.TraceID())
-		}
-		if sc.SpanID() != want.SpanContext.SpanID() {
-			t.Errorf("%s: span ID = %s, want its execute_tool span %s", e.ToolUseID, sc.SpanID(), want.SpanContext.SpanID())
-		}
-		if !sc.IsSampled() {
-			t.Errorf("%s: carrier is unsampled, want the recorded span's sampled flag", e.ToolUseID)
-		}
-		if other, dup := seen[sc.SpanID()]; dup {
-			t.Errorf("%s and %s carry the same span ID %s", other, e.ToolUseID, sc.SpanID())
-		}
-		seen[sc.SpanID()] = e.ToolUseID
+		t.Run(e.ToolUseID, func(t *testing.T) {
+			sc := decodeTraceContext(t, e.TraceContext)
+			require.Contains(t, spanByCallID, e.ToolUseID, "no execute_tool span recorded")
+			want := spanByCallID[e.ToolUseID]
+			require.Equal(t, root[0].SpanContext.TraceID(), sc.TraceID(), "trace ID should be the run's")
+			require.Equal(t, want.SpanContext.SpanID(), sc.SpanID(), "span ID should be its execute_tool span")
+			require.True(t, sc.IsSampled(), "carrier should have the recorded span's sampled flag")
+			other, dup := seen[sc.SpanID()]
+			require.False(t, dup, "span ID is also carried by %s", other)
+			seen[sc.SpanID()] = e.ToolUseID
+		})
 	}
-	if len(seen) != 2 {
-		t.Fatalf("got %d tool_result_request carriers, want 2", len(seen))
-	}
+	require.Len(t, seen, 2, "tool_result_request carriers")
 }
 
-func TestAsyncToolResultRequest_NoCarrierWithoutSpan(t *testing.T) {
+func TestAsyncToolResultRequest_NoTraceContextWithoutSpan(t *testing.T) {
 	tr := newAsyncTestTransport()
 	loop := buildAsyncTestLoop(t, tr, asyncEchoTool())
 	call := types.ToolCall{ID: "tc_plain", Name: "async_echo", Input: json.RawMessage(`{}`)}
 
 	go respondWhenAllRequested(t, tr, 1)
-	if output, ok := loop.dispatchToolCall(context.Background(), call); !ok {
-		t.Fatalf("dispatch failed: %q", output)
-	}
+	output, ok := loop.dispatchToolCall(context.Background(), call)
+	require.True(t, ok, "dispatch failed: %q", output)
 	for _, e := range tr.Events() {
-		if e.Type == "tool_result_request" && e.TraceContext != nil {
-			t.Errorf("noop-traced call carries trace context %+v, want none", e.TraceContext)
+		if e.Type == "tool_result_request" {
+			require.Nil(t, e.TraceContext, "noop-traced call should carry no trace context")
 		}
 	}
 }

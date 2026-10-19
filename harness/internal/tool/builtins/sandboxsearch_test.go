@@ -3,13 +3,15 @@ package builtins
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 )
@@ -81,24 +83,13 @@ func TestGrepFilesTool_SandboxExecRoutesThroughExec(t *testing.T) {
 	grep := GrepFilesTool(fe)
 	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
 	out, err := invokeText(context.Background(), grep, input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(out, "a.go:3:needle") {
-		t.Errorf("expected parsed rg match, got %q", out)
-	}
-	if strings.Contains(out, "HOSTFS_CANARY") || strings.Contains(out, "host_canary") {
-		t.Fatalf("host filesystem content leaked into results: %q", out)
-	}
-	if len(fe.commands) != 2 {
-		t.Fatalf("expected an rg --version probe then an rg search, got %d commands: %v", len(fe.commands), fe.commands)
-	}
-	if !strings.HasPrefix(fe.commands[0], "rg --version") {
-		t.Errorf("expected the rg --version probe first, got %q", fe.commands[0])
-	}
-	if !strings.HasPrefix(fe.commands[1], "rg ") {
-		t.Errorf("expected the rg search second, got %q", fe.commands[1])
-	}
+	require.NoError(t, err)
+	assert.Contains(t, out, "a.go:3:needle")
+	require.NotContains(t, out, "HOSTFS_CANARY", "host filesystem content leaked into results")
+	require.NotContains(t, out, "host_canary", "host filesystem content leaked into results")
+	require.Len(t, fe.commands, 2, "expected an rg --version probe then an rg search, got: %v", fe.commands)
+	assert.True(t, strings.HasPrefix(fe.commands[0], "rg --version"), "expected the rg --version probe first, got %q", fe.commands[0])
+	assert.True(t, strings.HasPrefix(fe.commands[1], "rg "), "expected the rg search second, got %q", fe.commands[1])
 }
 
 // TestGrepFilesTool_SandboxExecFallsBackToGrepWhenRipgrepMissing covers the
@@ -128,27 +119,15 @@ func TestGrepFilesTool_SandboxExecFallsBackToGrepWhenRipgrepMissing(t *testing.T
 	grep := GrepFilesTool(fe)
 	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
 	out, err := invokeText(context.Background(), grep, input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if out != "a.go:5:needle here" {
-		t.Errorf("expected relativized grep match, got %q", out)
-	}
-	if strings.Contains(out, "HOSTFS_CANARY") || strings.Contains(out, "host_canary") {
-		t.Fatalf("host filesystem content leaked into results: %q", out)
-	}
-	if len(fe.commands) != 2 {
-		t.Fatalf("expected an rg probe then a grep fallback, got %d commands: %v", len(fe.commands), fe.commands)
-	}
-	if !strings.HasPrefix(fe.commands[1], "grep ") {
-		t.Errorf("expected grep fallback command, got %q", fe.commands[1])
-	}
-	if strings.Contains(fe.commands[1], "--include") || strings.Contains(fe.commands[1], "--exclude") {
-		t.Errorf("grep fallback must not use GNU-only include/exclude flags, got %q", fe.commands[1])
-	}
-	if !strings.Contains(fe.commands[1], " -I ") {
-		t.Errorf("grep fallback must pass -I to honour the binary-files-skipped contract, got %q", fe.commands[1])
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "a.go:5:needle here", out)
+	require.NotContains(t, out, "HOSTFS_CANARY", "host filesystem content leaked into results")
+	require.NotContains(t, out, "host_canary", "host filesystem content leaked into results")
+	require.Len(t, fe.commands, 2, "expected an rg probe then a grep fallback, got: %v", fe.commands)
+	assert.True(t, strings.HasPrefix(fe.commands[1], "grep "), "expected grep fallback command, got %q", fe.commands[1])
+	assert.NotContains(t, fe.commands[1], "--include", "grep fallback must not use GNU-only include/exclude flags")
+	assert.NotContains(t, fe.commands[1], "--exclude", "grep fallback must not use GNU-only include/exclude flags")
+	assert.Contains(t, fe.commands[1], " -I ", "grep fallback must pass -I to honour the binary-files-skipped contract")
 }
 
 // TestGrepFilesTool_SandboxExecGrepHardErrorSurfaces pins the exit-code
@@ -174,12 +153,8 @@ func TestGrepFilesTool_SandboxExecGrepHardErrorSurfaces(t *testing.T) {
 	grep := GrepFilesTool(fe)
 	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
 	_, err := invokeText(context.Background(), grep, input)
-	if err == nil {
-		t.Fatal("expected a hard grep error to surface")
-	}
-	if !strings.Contains(err.Error(), "grep failed") {
-		t.Errorf("expected error to name the grep failure, got: %v", err)
-	}
+	require.Error(t, err, "expected a hard grep error to surface")
+	require.ErrorContains(t, err, "grep failed")
 }
 
 // TestGrepFilesTool_SandboxExecGrepPartialResultsOnMidWalkError pins the
@@ -210,12 +185,9 @@ func TestGrepFilesTool_SandboxExecGrepPartialResultsOnMidWalkError(t *testing.T)
 	grep := GrepFilesTool(fe)
 	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
 	sr := decodeSearchResult(t, grep, input)
-	if len(sr.Matches) != 1 || sr.Matches[0].Path != "a.go" {
-		t.Fatalf("expected the one match grep did find, got %+v", sr.Matches)
-	}
-	if !sr.Truncated {
-		t.Error("a mid-walk grep error must be reported as an incomplete/truncated scan")
-	}
+	require.Len(t, sr.Matches, 1, "expected the one match grep did find, got %+v", sr.Matches)
+	require.Equal(t, "a.go", sr.Matches[0].Path)
+	require.True(t, sr.Truncated, "a mid-walk grep error must be reported as an incomplete scan")
 }
 
 // TestGrepFilesTool_SandboxExecGrepFallback_ColonInPathParsedCorrectly pins
@@ -244,23 +216,19 @@ func TestGrepFilesTool_SandboxExecGrepFallback_ColonInPathParsedCorrectly(t *tes
 	grep := GrepFilesTool(fe)
 	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
 	sr := decodeSearchResult(t, grep, input)
-	if sr.Truncated {
-		t.Error("a cleanly parsed colon-containing path must not be reported incomplete")
-	}
-	if len(sr.Matches) != 1 {
-		t.Fatalf("match in a colon-containing path was dropped, got %+v", sr.Matches)
-	}
-	if got := sr.Matches[0]; got.Path != "notes:draft.txt" || got.Line != 5 || got.Text != "needle here" {
-		t.Errorf("got %+v, want Path=%q Line=5 Text=%q", got, "notes:draft.txt", "needle here")
-	}
+	assert.False(t, sr.Truncated, "a cleanly parsed colon-containing path must not be reported incomplete")
+	require.Len(t, sr.Matches, 1, "match in a colon-containing path was dropped, got %+v", sr.Matches)
+	got := sr.Matches[0]
+	assert.Equal(t, "notes:draft.txt", got.Path)
+	assert.Equal(t, 5, got.Line)
+	assert.Equal(t, "needle here", got.Text)
 }
 
 // TestGrepFilesTool_SandboxExecGrepFallback_NULByteMatchSkipped pins the
-// client-side backstop for the binary-files-skipped contract: -I is a
-// documented no-op on busybox grep (verified live against
-// golang:1.27.0-alpine's busybox grep 1.37.0, which still matched inside a
-// NUL-containing file despite -I), so a matched line whose text contains a
-// NUL byte must still be dropped rather than surfaced to the model.
+// client-side backstop for the binary-files-skipped contract. busybox grep
+// ignores -I and still matches inside NUL-containing files, so a matched line
+// whose text contains a NUL byte must be dropped rather than surfaced to the
+// model.
 func TestGrepFilesTool_SandboxExecGrepFallback_NULByteMatchSkipped(t *testing.T) {
 	fe := &sandboxExecExecutor{
 		resolvedDir: "/workspace",
@@ -282,19 +250,15 @@ func TestGrepFilesTool_SandboxExecGrepFallback_NULByteMatchSkipped(t *testing.T)
 	grep := GrepFilesTool(fe)
 	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
 	sr := decodeSearchResult(t, grep, input)
-	if sr.Truncated {
-		t.Error("a NUL-byte skip is an intentional binary filter, not an incomplete scan")
-	}
-	if len(sr.Matches) != 1 || sr.Matches[0].Path != "text.txt" {
-		t.Fatalf("expected only the non-binary match, got %+v", sr.Matches)
-	}
+	assert.False(t, sr.Truncated, "a NUL-byte skip is an intentional binary filter, not an incomplete scan")
+	require.Len(t, sr.Matches, 1, "expected only the non-binary match, got %+v", sr.Matches)
+	require.Equal(t, "text.txt", sr.Matches[0].Path)
 }
 
 // TestGrepFilesTool_SandboxExecGrepFallback_UnparseableLineMarksIncomplete
-// covers the inverse of the colon fix: a line that genuinely cannot be
-// parsed into path/line/text (no colon-delimited integer field at all) must
-// still surface the matches that did parse, but flag the scan incomplete
-// rather than silently reporting it as exhaustive.
+// covers a line with no colon-delimited line number. The matches that did
+// parse are still returned, but the scan is flagged incomplete rather than
+// reported as exhaustive.
 func TestGrepFilesTool_SandboxExecGrepFallback_UnparseableLineMarksIncomplete(t *testing.T) {
 	fe := &sandboxExecExecutor{
 		resolvedDir: "/workspace",
@@ -316,12 +280,9 @@ func TestGrepFilesTool_SandboxExecGrepFallback_UnparseableLineMarksIncomplete(t 
 	grep := GrepFilesTool(fe)
 	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
 	sr := decodeSearchResult(t, grep, input)
-	if len(sr.Matches) != 1 || sr.Matches[0].Path != "a.go" {
-		t.Fatalf("expected the one parseable match, got %+v", sr.Matches)
-	}
-	if !sr.Truncated {
-		t.Error("an unparseable line must mark the scan incomplete rather than vanish silently")
-	}
+	require.Len(t, sr.Matches, 1, "expected the one parseable match, got %+v", sr.Matches)
+	require.Equal(t, "a.go", sr.Matches[0].Path)
+	require.True(t, sr.Truncated, "an unparseable line must mark the scan incomplete rather than vanish silently")
 }
 
 // TestFindFilesTool_SandboxExecRoutesThroughExec pins find_files' CanExec
@@ -346,19 +307,12 @@ func TestFindFilesTool_SandboxExecRoutesThroughExec(t *testing.T) {
 	find := FindFilesTool(fe)
 	input, _ := json.Marshal(map[string]any{"name": "*.go"})
 	out, err := invokeText(context.Background(), find, input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	want := "a.go\nsub/b.go"
-	if out != want {
-		t.Errorf("got %q, want %q", out, want)
-	}
-	if strings.Contains(out, "HOSTFS_CANARY") || strings.Contains(out, "host_canary") {
-		t.Fatalf("host filesystem content leaked into results: %q", out)
-	}
-	if len(fe.commands) != 1 || !strings.HasPrefix(fe.commands[0], "find ") {
-		t.Fatalf("expected a single find command, got %v", fe.commands)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "a.go\nsub/b.go", out)
+	require.NotContains(t, out, "HOSTFS_CANARY", "host filesystem content leaked into results")
+	require.NotContains(t, out, "host_canary", "host filesystem content leaked into results")
+	require.Len(t, fe.commands, 1, "expected a single find command, got %v", fe.commands)
+	require.True(t, strings.HasPrefix(fe.commands[0], "find "), "expected a find command, got %q", fe.commands[0])
 }
 
 // TestFindFilesTool_SandboxExecHardErrorSurfaces pins fail-closed behaviour
@@ -374,12 +328,8 @@ func TestFindFilesTool_SandboxExecHardErrorSurfaces(t *testing.T) {
 	find := FindFilesTool(fe)
 	input, _ := json.Marshal(map[string]any{"name": "*.go"})
 	_, err := invokeText(context.Background(), find, input)
-	if err == nil {
-		t.Fatal("expected a hard find error to surface")
-	}
-	if !strings.Contains(err.Error(), "find failed") {
-		t.Errorf("expected error to name the find failure, got: %v", err)
-	}
+	require.Error(t, err, "expected a hard find error to surface")
+	require.ErrorContains(t, err, "find failed")
 }
 
 // TestFindFilesTool_SandboxExecPartialResultsOnMidWalkError mirrors the
@@ -402,12 +352,9 @@ func TestFindFilesTool_SandboxExecPartialResultsOnMidWalkError(t *testing.T) {
 	find := FindFilesTool(fe)
 	input, _ := json.Marshal(map[string]any{"name": "*.go"})
 	fr := decodeFindResult(t, find, input)
-	if len(fr.Paths) != 1 || fr.Paths[0] != "a.go" {
-		t.Fatalf("expected the one path find did find, got %v", fr.Paths)
-	}
-	if !fr.Truncated {
-		t.Error("a mid-walk find error must be reported as an incomplete/truncated scan")
-	}
+	require.Len(t, fr.Paths, 1, "expected the one path find did find, got %v", fr.Paths)
+	require.Equal(t, "a.go", fr.Paths[0])
+	require.True(t, fr.Truncated, "a mid-walk find error must be reported as an incomplete scan")
 }
 
 // TestGrepFilesTool_SandboxExecRipgrepOutputCapMarksIncomplete pins the
@@ -437,17 +384,13 @@ func TestGrepFilesTool_SandboxExecRipgrepOutputCapMarksIncomplete(t *testing.T) 
 	grep := GrepFilesTool(fe)
 	input, _ := json.Marshal(map[string]any{"pattern": "hit"})
 	sr := decodeSearchResult(t, grep, input)
-	if len(sr.Matches) != 1 {
-		t.Fatalf("expected the one parsed match, got %+v", sr.Matches)
-	}
-	if !sr.Truncated {
-		t.Error("an executor-level output cap must mark the scan incomplete")
-	}
+	require.Len(t, sr.Matches, 1, "expected the one parsed match, got %+v", sr.Matches)
+	require.True(t, sr.Truncated, "an executor-level output cap must mark the scan incomplete")
 }
 
-// TestGrepFilesTool_SandboxExecGrepFallbackOutputCapMarksIncomplete is the
-// grep-fallback analogue of the rg output-cap test above.
-func TestGrepFilesTool_SandboxExecGrepFallbackOutputCapMarksIncomplete(t *testing.T) {
+// TestGrepFilesTool_SandboxExecGrepFallback_OutputCapMarksIncomplete covers
+// the executor output-cap contract on the grep fallback, as the rg path does.
+func TestGrepFilesTool_SandboxExecGrepFallback_OutputCapMarksIncomplete(t *testing.T) {
 	fe := &sandboxExecExecutor{
 		resolvedDir: "/workspace",
 		execFn: func(_ context.Context, command string, _ time.Duration) (*executor.ExecResult, error) {
@@ -469,12 +412,8 @@ func TestGrepFilesTool_SandboxExecGrepFallbackOutputCapMarksIncomplete(t *testin
 	grep := GrepFilesTool(fe)
 	input, _ := json.Marshal(map[string]any{"pattern": "hit"})
 	sr := decodeSearchResult(t, grep, input)
-	if len(sr.Matches) != 1 {
-		t.Fatalf("expected the one parsed match, got %+v", sr.Matches)
-	}
-	if !sr.Truncated {
-		t.Error("an executor-level output cap must mark the scan incomplete")
-	}
+	require.Len(t, sr.Matches, 1, "expected the one parsed match, got %+v", sr.Matches)
+	require.True(t, sr.Truncated, "an executor-level output cap must mark the scan incomplete")
 }
 
 // TestFindFilesTool_SandboxExecOutputCapMarksIncomplete is find_files'
@@ -495,12 +434,9 @@ func TestFindFilesTool_SandboxExecOutputCapMarksIncomplete(t *testing.T) {
 	find := FindFilesTool(fe)
 	input, _ := json.Marshal(map[string]any{"name": "*.go"})
 	fr := decodeFindResult(t, find, input)
-	if len(fr.Paths) != 1 || fr.Paths[0] != "a.go" {
-		t.Fatalf("expected the one listed path, got %v", fr.Paths)
-	}
-	if !fr.Truncated {
-		t.Error("an executor-level output cap must mark the listing incomplete")
-	}
+	require.Len(t, fr.Paths, 1, "expected the one listed path, got %v", fr.Paths)
+	require.Equal(t, "a.go", fr.Paths[0])
+	require.True(t, fr.Truncated, "an executor-level output cap must mark the listing incomplete")
 }
 
 // TestSandboxRipgrepProbe_TransportErrorNotCached pins the retry-on-flake
@@ -520,15 +456,9 @@ func TestSandboxRipgrepProbe_TransportErrorNotCached(t *testing.T) {
 		},
 	}
 	probe := &sandboxRipgrepProbe{}
-	if got := probe.detect(context.Background(), fe); got {
-		t.Error("first (transport-failing) probe must report absent")
-	}
-	if got := probe.detect(context.Background(), fe); !got {
-		t.Error("second probe must retry and report present, not stay cached on the transport failure")
-	}
-	if callCount != 2 {
-		t.Errorf("expected the probe to run exactly twice (retry after transport error), got %d", callCount)
-	}
+	assert.False(t, probe.detect(context.Background(), fe), "first (transport-failing) probe must report absent")
+	assert.True(t, probe.detect(context.Background(), fe), "second probe must retry and report present, not stay cached on the transport failure")
+	assert.Equal(t, 2, callCount, "expected the probe to run exactly twice (retry after transport error)")
 }
 
 // TestSandboxRipgrepProbe_DefinitiveAbsentIsCached is the inverse: once the
@@ -547,18 +477,15 @@ func TestSandboxRipgrepProbe_DefinitiveAbsentIsCached(t *testing.T) {
 	probe.detect(context.Background(), fe)
 	probe.detect(context.Background(), fe)
 	probe.detect(context.Background(), fe)
-	if callCount != 1 {
-		t.Errorf("expected a definitive absent result to be cached after one probe, got %d calls", callCount)
-	}
+	require.Equal(t, 1, callCount, "expected a definitive absent result to be cached after one probe")
 }
 
 // --- Sandbox-branch rg transport-error / cancellation mirrors ---
 
-// TestGrepFilesTool_SandboxExecRipgrepTransportErrorFallsBackToGrep mirrors
-// TestGrepViaRipgrep_TransportErrorFallsBackToNative for the sandbox
-// branch: the rg probe reports present, but the rg invocation itself fails
-// at the transport level (not a bad exit code) — this must fall back to
-// the grep fallback rather than hard-erroring.
+// TestGrepFilesTool_SandboxExecRipgrepTransportErrorFallsBackToGrep covers
+// the sandbox branch: the rg probe reports present, but the rg invocation
+// fails at the transport level (not with a bad exit code). That must fall
+// back to grep rather than hard-error.
 func TestGrepFilesTool_SandboxExecRipgrepTransportErrorFallsBackToGrep(t *testing.T) {
 	fe := &sandboxExecExecutor{
 		resolvedDir: "/workspace",
@@ -578,18 +505,13 @@ func TestGrepFilesTool_SandboxExecRipgrepTransportErrorFallsBackToGrep(t *testin
 	grep := GrepFilesTool(fe)
 	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
 	out, err := invokeText(context.Background(), grep, input)
-	if err != nil {
-		t.Fatalf("transport error must not surface; expected grep fallback, got: %v", err)
-	}
-	if out != "a.go:1:needle" {
-		t.Errorf("expected grep fallback match, got %q", out)
-	}
+	require.NoError(t, err, "transport error must not surface; expected grep fallback")
+	require.Equal(t, "a.go:1:needle", out)
 }
 
-// TestGrepFilesTool_SandboxExecRipgrepContextCancelPropagates mirrors
-// TestGrepViaRipgrep_ContextCancelPropagates for the sandbox branch: a
-// context.Canceled from the rg invocation must propagate, not trigger a
-// silent grep fallback.
+// TestGrepFilesTool_SandboxExecRipgrepContextCancelPropagates covers the
+// sandbox branch: a context.Canceled from the rg invocation must propagate,
+// not trigger a silent grep fallback.
 func TestGrepFilesTool_SandboxExecRipgrepContextCancelPropagates(t *testing.T) {
 	fe := &sandboxExecExecutor{
 		resolvedDir: "/workspace",
@@ -607,12 +529,7 @@ func TestGrepFilesTool_SandboxExecRipgrepContextCancelPropagates(t *testing.T) {
 	grep := GrepFilesTool(fe)
 	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
 	_, err := invokeText(context.Background(), grep, input)
-	if err == nil {
-		t.Fatal("expected context.Canceled to propagate")
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("expected context.Canceled, got %v", err)
-	}
+	require.ErrorIs(t, err, context.Canceled)
 }
 
 // --- Sandbox-branch include/exclude and max_results end-to-end ---
@@ -648,16 +565,12 @@ func TestGrepFilesTool_SandboxExecAppliesIncludeExclude(t *testing.T) {
 		"exclude": []string{"skip.go"},
 	})
 	out, err := invokeText(context.Background(), grep, input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if out != "a.go:1:needle" {
-		t.Errorf("got %q, want only a.go:1:needle", out)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "a.go:1:needle", out)
 }
 
-// TestFindFilesTool_SandboxExecAppliesIncludeExclude is the find-side
-// analogue.
+// TestFindFilesTool_SandboxExecAppliesIncludeExclude checks the same
+// include/exclude wiring for find_files.
 func TestFindFilesTool_SandboxExecAppliesIncludeExclude(t *testing.T) {
 	fe := &sandboxExecExecutor{
 		resolvedDir: "/workspace",
@@ -674,12 +587,8 @@ func TestFindFilesTool_SandboxExecAppliesIncludeExclude(t *testing.T) {
 		"exclude": []string{"skip.go"},
 	})
 	out, err := invokeText(context.Background(), find, input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if out != "a.go" {
-		t.Errorf("got %q, want only a.go", out)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "a.go", out)
 }
 
 // TestGrepFilesTool_SandboxExecTruncatedBoundary exercises the look-ahead
@@ -721,12 +630,8 @@ func TestGrepFilesTool_SandboxExecTruncatedBoundary(t *testing.T) {
 			grep := GrepFilesTool(fe)
 			input, _ := json.Marshal(map[string]any{"pattern": "hit", "max_results": maxResults})
 			sr := decodeSearchResult(t, grep, input)
-			if sr.Truncated != tc.wantTruncated {
-				t.Errorf("Truncated = %v, want %v", sr.Truncated, tc.wantTruncated)
-			}
-			if len(sr.Matches) != tc.wantMatches {
-				t.Errorf("len(Matches) = %d, want %d", len(sr.Matches), tc.wantMatches)
-			}
+			require.Equal(t, tc.wantTruncated, sr.Truncated)
+			require.Len(t, sr.Matches, tc.wantMatches)
 		})
 	}
 }
@@ -759,12 +664,8 @@ func TestFindFilesTool_SandboxExecTruncatedBoundary(t *testing.T) {
 			find := FindFilesTool(fe)
 			input, _ := json.Marshal(map[string]any{"name": "*.go", "max_results": maxResults})
 			fr := decodeFindResult(t, find, input)
-			if fr.Truncated != tc.wantTruncated {
-				t.Errorf("Truncated = %v, want %v", fr.Truncated, tc.wantTruncated)
-			}
-			if len(fr.Paths) != tc.wantPaths {
-				t.Errorf("len(Paths) = %d, want %d", len(fr.Paths), tc.wantPaths)
-			}
+			require.Equal(t, tc.wantTruncated, fr.Truncated)
+			require.Len(t, fr.Paths, tc.wantPaths)
 		})
 	}
 }
@@ -813,34 +714,22 @@ func (e *hostAndExecExecutor) HostWorkspaceRoot() string { return e.root }
 func TestGrepFilesTool_HostPathWorkspaceWinsOverCanExec(t *testing.T) {
 	withRipgrepProbe(t, false)
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("needle\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.go"), []byte("needle\n"), 0o644))
 	grep := GrepFilesTool(&hostAndExecExecutor{root: dir})
 	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
 	out, err := invokeText(context.Background(), grep, input)
-	if err != nil {
-		t.Fatalf("unexpected error (Exec must not have been reached): %v", err)
-	}
-	if !strings.Contains(out, "a.go") {
-		t.Errorf("expected native walker match, got %q", out)
-	}
+	require.NoError(t, err, "Exec must not have been reached")
+	require.Contains(t, out, "a.go", "expected native walker match")
 }
 
 func TestFindFilesTool_HostPathWorkspaceWinsOverCanExec(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("x"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.go"), []byte("x"), 0o644))
 	find := FindFilesTool(&hostAndExecExecutor{root: dir})
 	input, _ := json.Marshal(map[string]any{"name": "*.go"})
 	out, err := invokeText(context.Background(), find, input)
-	if err != nil {
-		t.Fatalf("unexpected error (Exec must not have been reached): %v", err)
-	}
-	if !strings.Contains(out, "a.go") {
-		t.Errorf("expected native walker match, got %q", out)
-	}
+	require.NoError(t, err, "Exec must not have been reached")
+	require.Contains(t, out, "a.go", "expected native walker match")
 }
 
 // execAndTreeListerExecutor implements both CanExec and TreeLister at once,
@@ -876,12 +765,8 @@ func TestGrepFilesTool_CanExecWinsOverTreeLister(t *testing.T) {
 	grep := GrepFilesTool(fe)
 	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
 	out, err := invokeText(context.Background(), grep, input)
-	if err != nil {
-		t.Fatalf("unexpected error (ListTree must not have been reached): %v", err)
-	}
-	if !strings.Contains(out, "a.go") {
-		t.Errorf("expected exec-backed match, got %q", out)
-	}
+	require.NoError(t, err, "ListTree must not have been reached")
+	require.Contains(t, out, "a.go", "expected exec-backed match")
 }
 
 func TestFindFilesTool_CanExecWinsOverTreeLister(t *testing.T) {
@@ -897,12 +782,8 @@ func TestFindFilesTool_CanExecWinsOverTreeLister(t *testing.T) {
 	find := FindFilesTool(fe)
 	input, _ := json.Marshal(map[string]any{"name": "*.go"})
 	out, err := invokeText(context.Background(), find, input)
-	if err != nil {
-		t.Fatalf("unexpected error (ListTree must not have been reached): %v", err)
-	}
-	if !strings.Contains(out, "a.go") {
-		t.Errorf("expected exec-backed match, got %q", out)
-	}
+	require.NoError(t, err, "ListTree must not have been reached")
+	require.Contains(t, out, "a.go", "expected exec-backed match")
 }
 
 // TestGrepFilesTool_SandboxRipgrepPopulatesColumn confirms the sandboxed rg
@@ -928,9 +809,8 @@ func TestGrepFilesTool_SandboxRipgrepPopulatesColumn(t *testing.T) {
 	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
 	got := decodeSearchResult(t, GrepFilesTool(withRG), input)
 	want := searchMatch{Path: "/workspace/sub/a.go", Line: 3, Column: 8, Text: "héllo needle here"}
-	if len(got.Matches) != 1 || got.Matches[0] != want {
-		t.Fatalf("sandboxed rg match wrong\n got: %+v\nwant: %+v", got.Matches, want)
-	}
+	require.Len(t, got.Matches, 1)
+	require.Equal(t, want, got.Matches[0], "sandboxed rg match")
 
 	withGrep := &sandboxExecExecutor{
 		resolvedDir: "/workspace/sub",
@@ -946,8 +826,6 @@ func TestGrepFilesTool_SandboxRipgrepPopulatesColumn(t *testing.T) {
 		},
 	}
 	fallback, err := GrepFilesTool(withGrep).StructuredHandler(context.Background(), input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 	assertNoColumnKey(t, fallback.Structured)
 }

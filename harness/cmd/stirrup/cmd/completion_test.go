@@ -3,11 +3,10 @@ package cmd
 import (
 	"bytes"
 	"os/exec"
-	"sort"
-	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -28,9 +27,7 @@ func TestCompletionCmd_GeneratesValidShellScripts(t *testing.T) {
 	} {
 		t.Run(tc.shell, func(t *testing.T) {
 			buf := runCompletion(t, tc.shell)
-			if buf.Len() == 0 {
-				t.Fatalf("completion %s emitted empty script", tc.shell)
-			}
+			require.NotEmpty(t, buf.String(), "completion %s emitted empty script", tc.shell)
 			if len(tc.checker) == 0 {
 				return
 			}
@@ -40,9 +37,7 @@ func TestCompletionCmd_GeneratesValidShellScripts(t *testing.T) {
 			cmd := exec.Command(tc.checker[0], tc.checker[1:]...) //nolint:gosec // hard-coded checker list, no user input
 			cmd.Stdin = buf
 			out, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("%s syntax check failed: %v\noutput:\n%s", tc.shell, err, out)
-			}
+			require.NoError(t, err, "%s syntax check failed; output:\n%s", tc.shell, out)
 		})
 	}
 }
@@ -71,9 +66,7 @@ func executeRootCmd(t *testing.T, args []string) (*bytes.Buffer, error) {
 func runCompletion(t *testing.T, shell string) *bytes.Buffer {
 	t.Helper()
 	buf, err := executeRootCmd(t, []string{"completion", shell})
-	if err != nil {
-		t.Fatalf("completion %s: %v", shell, err)
-	}
+	require.NoError(t, err, "completion %s", shell)
 	return buf
 }
 
@@ -82,17 +75,12 @@ func runCompletion(t *testing.T, shell string) *bytes.Buffer {
 // error rather than an empty stdout and a zero exit code.
 func TestCompletionCmd_RejectsUnknownShell(t *testing.T) {
 	_, err := executeRootCmd(t, []string{"completion", "ksh"})
-	if err == nil {
-		t.Fatal("expected error for unknown shell, got nil")
-	}
-	if !strings.Contains(err.Error(), "ksh") {
-		t.Errorf("error %q does not mention the rejected shell", err)
-	}
+	require.ErrorContains(t, err, "ksh")
 }
 
 // TestFlagCompletion_EnumValues pins the closed-set value completion for
 // every flag registered via addRunConfigFlagCompletions: each row
-// asserts the completion function returns the same sorted slice as
+// asserts the completion function returns the same values as
 // types.Valid*Values(), plus NoFileComp. log-level and api-key-header
 // carry literal lists since neither is backed by a validator-closed set.
 func TestFlagCompletion_EnumValues(t *testing.T) {
@@ -121,10 +109,8 @@ func TestFlagCompletion_EnumValues(t *testing.T) {
 	} {
 		t.Run(tc.flag, func(t *testing.T) {
 			got, directive := runFlagCompletion(t, harnessCmd, tc.flag)
-			if directive != cobra.ShellCompDirectiveNoFileComp {
-				t.Errorf("directive = %v, want NoFileComp", directive)
-			}
-			assertStringsEqual(t, got, tc.want)
+			require.Equal(t, cobra.ShellCompDirectiveNoFileComp, directive)
+			require.ElementsMatch(t, tc.want, got)
 
 			if tc.harnessCmdOnly {
 				return
@@ -133,20 +119,18 @@ func TestFlagCompletion_EnumValues(t *testing.T) {
 			// run-config re-registers the same flags via addRunConfigFlags,
 			// so it must return the identical completion surface.
 			gotRC, directiveRC := runFlagCompletion(t, runConfigCmd, tc.flag)
-			if directiveRC != cobra.ShellCompDirectiveNoFileComp {
-				t.Errorf("run-config directive = %v, want NoFileComp", directiveRC)
-			}
-			assertStringsEqual(t, gotRC, tc.want)
+			require.Equal(t, cobra.ShellCompDirectiveNoFileComp, directiveRC, "run-config directive")
+			require.ElementsMatch(t, tc.want, gotRC)
 		})
 	}
 }
 
-// TestFlagCompletion_FileFlags pins the MarkFlagFilename / MarkFlagDirname
+// TestFlagCompletion_FileAnnotations pins the MarkFlagFilename / MarkFlagDirname
 // wiring: each row asserts the matching cobra annotation
 // (BashCompFilenameExt / BashCompSubdirsInDir) is present. The wantNone
 // row for --export-workspace-to is deliberate: that flag takes a gs://
 // URI, not a local path, so file/dir completion would be wrong.
-func TestFlagCompletion_FileFlags(t *testing.T) {
+func TestFlagCompletion_FileAnnotations(t *testing.T) {
 	for _, tc := range []struct {
 		flag       string
 		wantExt    []string // empty = any-file completion (annotation present with empty list)
@@ -169,29 +153,22 @@ func TestFlagCompletion_FileFlags(t *testing.T) {
 		t.Run(tc.flag, func(t *testing.T) {
 			for _, cmd := range tc.onCommands {
 				fl := cmd.Flags().Lookup(tc.flag)
-				if fl == nil {
-					t.Fatalf("flag %s missing on %s", tc.flag, cmd.Use)
-				}
+				require.NotNil(t, fl, "flag %s missing on %s", tc.flag, cmd.Use)
 				if tc.wantNone {
-					if _, ok := fl.Annotations[cobra.BashCompFilenameExt]; ok {
-						t.Errorf("flag %s on %s: unexpected BashCompFilenameExt annotation — flag takes a gs:// URI, not a local path", tc.flag, cmd.Use)
-					}
-					if _, ok := fl.Annotations[cobra.BashCompSubdirsInDir]; ok {
-						t.Errorf("flag %s on %s: unexpected BashCompSubdirsInDir annotation — flag takes a gs:// URI, not a local path", tc.flag, cmd.Use)
-					}
+					require.NotContains(t, fl.Annotations, cobra.BashCompFilenameExt,
+						"flag %s on %s takes a gs:// URI, not a local path", tc.flag, cmd.Use)
+					require.NotContains(t, fl.Annotations, cobra.BashCompSubdirsInDir,
+						"flag %s on %s takes a gs:// URI, not a local path", tc.flag, cmd.Use)
 					continue
 				}
 				if tc.wantDir {
-					if _, ok := fl.Annotations[cobra.BashCompSubdirsInDir]; !ok {
-						t.Errorf("flag %s on %s: missing BashCompSubdirsInDir annotation", tc.flag, cmd.Use)
-					}
+					require.Contains(t, fl.Annotations, cobra.BashCompSubdirsInDir,
+						"flag %s on %s", tc.flag, cmd.Use)
 					return
 				}
-				exts, ok := fl.Annotations[cobra.BashCompFilenameExt]
-				if !ok {
-					t.Fatalf("flag %s on %s: missing BashCompFilenameExt annotation", tc.flag, cmd.Use)
-				}
-				assertStringsEqual(t, exts, tc.wantExt)
+				require.Contains(t, fl.Annotations, cobra.BashCompFilenameExt,
+					"flag %s on %s", tc.flag, cmd.Use)
+				require.ElementsMatch(t, tc.wantExt, fl.Annotations[cobra.BashCompFilenameExt])
 			}
 		})
 	}
@@ -202,9 +179,7 @@ func TestFlagCompletion_FileFlags(t *testing.T) {
 func runFlagCompletion(t *testing.T, cmd *cobra.Command, flagName string) ([]string, cobra.ShellCompDirective) {
 	t.Helper()
 	fn, exists := flagCompletionFunc(cmd, flagName)
-	if !exists {
-		t.Fatalf("no completion function registered for --%s on %s", flagName, cmd.Use)
-	}
+	require.True(t, exists, "no completion function registered for --%s on %s", flagName, cmd.Use)
 	values, directive := fn(cmd, nil, "")
 	return values, directive
 }
@@ -215,33 +190,11 @@ func flagCompletionFunc(cmd *cobra.Command, name string) (func(*cobra.Command, [
 	return cmd.GetFlagCompletionFunc(name)
 }
 
-// assertStringsEqual checks two string slices for equality after sorting.
-func assertStringsEqual(t *testing.T, got, want []string) {
-	t.Helper()
-	if len(got) != len(want) {
-		t.Fatalf("len mismatch: got %d (%v), want %d (%v)", len(got), got, len(want), want)
-	}
-	g := append([]string(nil), got...)
-	w := append([]string(nil), want...)
-	sort.Strings(g)
-	sort.Strings(w)
-	for i := range g {
-		if g[i] != w[i] {
-			t.Errorf("index %d: got %q, want %q", i, g[i], w[i])
-		}
-	}
-}
-
-// TestCompletionCmd_MissingShell pins the cobra ExactArgs guard so
+// TestCompletionCmd_RequiresShellArg pins the cobra ExactArgs guard so
 // `stirrup completion` (no shell argument) fails with a clear
 // "accepts 1 arg(s)" message rather than silently writing nothing.
-func TestCompletionCmd_MissingShell(t *testing.T) {
+func TestCompletionCmd_RequiresShellArg(t *testing.T) {
 	_, err := executeRootCmd(t, []string{"completion"})
-	if err == nil {
-		t.Fatal("expected error for missing shell arg, got nil")
-	}
 	// cobra phrases the error as "accepts 1 arg(s), received 0".
-	if !strings.Contains(err.Error(), "arg") {
-		t.Errorf("error %q does not mention argument count", err)
-	}
+	require.ErrorContains(t, err, "arg")
 }

@@ -2,8 +2,9 @@ package trace
 
 import (
 	"context"
-	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -23,28 +24,18 @@ func TestEmitters_RecordRepositoryGuidanceReachesRunTrace(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			e := build(t)
 			recorder, ok := e.(RepositoryGuidanceRecorder)
-			if !ok {
-				t.Fatalf("%s emitter does not implement RepositoryGuidanceRecorder", name)
-			}
+			require.True(t, ok, "emitter does not implement RepositoryGuidanceRecorder")
 
 			e.Start("run-1", &types.RunConfig{RunID: "run-1"})
 			recorder.RecordRepositoryGuidance(testGuidanceRecords())
 			got, err := e.Finish(context.Background(), "success")
-			if err != nil {
-				t.Fatalf("Finish: %v", err)
-			}
-			if !reflect.DeepEqual(got.RepositoryGuidance, testGuidanceRecords()) {
-				t.Errorf("RepositoryGuidance = %+v, want %+v", got.RepositoryGuidance, testGuidanceRecords())
-			}
+			require.NoError(t, err)
+			require.Equal(t, testGuidanceRecords(), got.RepositoryGuidance)
 
 			e.Start("run-2", &types.RunConfig{RunID: "run-2"})
 			got, err = e.Finish(context.Background(), "success")
-			if err != nil {
-				t.Fatalf("Finish: %v", err)
-			}
-			if got.RepositoryGuidance != nil {
-				t.Errorf("RepositoryGuidance after restart = %+v, want nil", got.RepositoryGuidance)
-			}
+			require.NoError(t, err)
+			require.Nil(t, got.RepositoryGuidance, "guidance after restart")
 		})
 	}
 }
@@ -55,10 +46,10 @@ func TestOTelTraceEmitter_RecordRepositoryGuidanceSetsRootAttributes(t *testing.
 	emitter, exporter := newTestOTelEmitter()
 	emitter.Start("run-guidance", nil)
 	emitter.RecordRepositoryGuidance(testGuidanceRecords())
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
+	_, err := emitter.Finish(context.Background(), "success")
+	require.NoError(t, err)
 	root := findSpanByName(t, exporter.GetSpans(), "invoke_agent stirrup")
+	attrs := spanAttrs(root)
 
 	want := map[string]any{
 		repositoryGuidancePathsKey:         []string{"AGENTS.md", "CLAUDE.md"},
@@ -70,22 +61,17 @@ func TestOTelTraceEmitter_RecordRepositoryGuidanceSetsRootAttributes(t *testing.
 		repositoryGuidanceRenderedBytesKey: []int64{120, 0},
 	}
 	for key, wantVal := range want {
-		found := false
-		for _, attr := range root.Attributes {
-			if string(attr.Key) == key {
-				found = true
-				if got := attr.Value.AsInterface(); !reflect.DeepEqual(got, wantVal) {
-					t.Errorf("attribute %q = %#v, want %#v", key, got, wantVal)
-				}
-			}
-		}
-		if !found {
-			t.Errorf("attribute %q not found on root span", key)
-		}
+		t.Run(key, func(t *testing.T) {
+			got, ok := attrs[key]
+			require.True(t, ok, "attribute not found on root span")
+			require.Equal(t, wantVal, got)
+		})
 	}
 }
 
 func TestOTelTraceEmitter_RecordRepositoryGuidanceBeforeStart(t *testing.T) {
 	emitter, _ := newTestOTelEmitter()
-	emitter.RecordRepositoryGuidance(testGuidanceRecords())
+	require.NotPanics(t, func() {
+		emitter.RecordRepositoryGuidance(testGuidanceRecords())
+	})
 }

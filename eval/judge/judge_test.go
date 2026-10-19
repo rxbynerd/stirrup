@@ -11,56 +11,44 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/eval"
 	"github.com/rxbynerd/stirrup/types"
 )
 
-func TestTestCommand_Pass(t *testing.T) {
+func TestTestCommand_ZeroExitPasses(t *testing.T) {
 	dir := t.TempDir()
 	j := types.EvalJudge{Type: "test-command", Command: "echo ok"}
 	v, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !v.Passed {
-		t.Fatalf("expected pass, got fail: %s", v.Reason)
-	}
+	require.NoError(t, err)
+	require.True(t, v.Passed, "reason: %s", v.Reason)
 }
 
-func TestTestCommand_Fail(t *testing.T) {
+func TestTestCommand_NonZeroExitFails(t *testing.T) {
 	dir := t.TempDir()
 	j := types.EvalJudge{Type: "test-command", Command: "exit 1"}
 	v, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if v.Passed {
-		t.Fatal("expected fail, got pass")
-	}
+	require.NoError(t, err)
+	require.False(t, v.Passed)
 }
 
-func TestTestCommand_Timeout(t *testing.T) {
+func TestTestCommand_TimeoutFails(t *testing.T) {
 	dir := t.TempDir()
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
 	j := types.EvalJudge{Type: "test-command", Command: "sleep 60"}
 	v, err := Evaluate(ctx, j, JudgeContext{WorkspaceDir: dir})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if v.Passed {
-		t.Fatal("expected fail on timeout, got pass")
-	}
+	require.NoError(t, err)
+	require.False(t, v.Passed, "a command that outlives its context must fail")
 }
 
-func TestTestCommand_EmptyCommand(t *testing.T) {
+func TestTestCommand_EmptyCommandIsError(t *testing.T) {
 	dir := t.TempDir()
 	j := types.EvalJudge{Type: "test-command"}
 	_, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
-	if err == nil {
-		t.Fatal("expected error for empty command")
-	}
+	require.Error(t, err)
 }
 
 func TestFileExists_AllExist(t *testing.T) {
@@ -70,12 +58,8 @@ func TestFileExists_AllExist(t *testing.T) {
 
 	j := types.EvalJudge{Type: "file-exists", Paths: []string{"a.txt", "b.txt"}}
 	v, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !v.Passed {
-		t.Fatalf("expected pass, got fail: %s", v.Reason)
-	}
+	require.NoError(t, err)
+	require.True(t, v.Passed, "reason: %s", v.Reason)
 }
 
 func TestFileExists_SomeMissing(t *testing.T) {
@@ -84,70 +68,48 @@ func TestFileExists_SomeMissing(t *testing.T) {
 
 	j := types.EvalJudge{Type: "file-exists", Paths: []string{"a.txt", "missing.txt"}}
 	v, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if v.Passed {
-		t.Fatal("expected fail for missing file")
-	}
-	if v.Reason != "missing paths: missing.txt" {
-		t.Fatalf("unexpected reason: %s", v.Reason)
-	}
+	require.NoError(t, err)
+	require.False(t, v.Passed)
+	require.Equal(t, "missing paths: missing.txt", v.Reason)
 }
 
 func TestFileExists_EmptyPaths(t *testing.T) {
 	dir := t.TempDir()
 	j := types.EvalJudge{Type: "file-exists", Paths: []string{}}
 	v, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !v.Passed {
-		t.Fatalf("expected pass for empty paths, got fail: %s", v.Reason)
-	}
+	require.NoError(t, err)
+	require.True(t, v.Passed, "no paths to check, reason: %s", v.Reason)
 }
 
-func TestFileContains_Match(t *testing.T) {
+func TestFileContains_MatchingPatternPasses(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "hello.txt", "hello world 123")
 
 	j := types.EvalJudge{Type: "file-contains", Path: "hello.txt", Pattern: `world \d+`}
 	v, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !v.Passed {
-		t.Fatalf("expected pass, got fail: %s", v.Reason)
-	}
+	require.NoError(t, err)
+	require.True(t, v.Passed, "reason: %s", v.Reason)
 }
 
-func TestFileContains_NoMatch(t *testing.T) {
+func TestFileContains_NonMatchingPatternFails(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "hello.txt", "hello world")
 
 	j := types.EvalJudge{Type: "file-contains", Path: "hello.txt", Pattern: `goodbye`}
 	v, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if v.Passed {
-		t.Fatal("expected fail for non-matching pattern")
-	}
+	require.NoError(t, err)
+	require.False(t, v.Passed)
 }
 
-func TestFileContains_FileNotExist(t *testing.T) {
+func TestFileContains_MissingFileFails(t *testing.T) {
 	dir := t.TempDir()
 	j := types.EvalJudge{Type: "file-contains", Path: "nope.txt", Pattern: `anything`}
 	v, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if v.Passed {
-		t.Fatal("expected fail for missing file")
-	}
+	require.NoError(t, err)
+	require.False(t, v.Passed)
 }
 
-func TestComposite_AllPass(t *testing.T) {
+func TestComposite_AllPassingSubJudgesPass(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "a.txt", "content")
 
@@ -160,18 +122,12 @@ func TestComposite_AllPass(t *testing.T) {
 		},
 	}
 	v, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !v.Passed {
-		t.Fatalf("expected pass, got fail: %s", v.Reason)
-	}
-	if len(v.Details) != 2 {
-		t.Fatalf("expected 2 details, got %d", len(v.Details))
-	}
+	require.NoError(t, err)
+	require.True(t, v.Passed, "reason: %s", v.Reason)
+	require.Len(t, v.Details, 2)
 }
 
-func TestComposite_AllRequiredOneFails(t *testing.T) {
+func TestComposite_AllWithOneFailingSubJudgeFails(t *testing.T) {
 	dir := t.TempDir()
 
 	j := types.EvalJudge{
@@ -183,15 +139,11 @@ func TestComposite_AllRequiredOneFails(t *testing.T) {
 		},
 	}
 	v, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if v.Passed {
-		t.Fatal("expected fail when one sub-judge fails with require=all")
-	}
+	require.NoError(t, err)
+	require.False(t, v.Passed, "one sub-judge fails with require=all")
 }
 
-func TestComposite_AnyOnePasses(t *testing.T) {
+func TestComposite_AnyWithOnePassingSubJudgePasses(t *testing.T) {
 	dir := t.TempDir()
 
 	j := types.EvalJudge{
@@ -203,15 +155,11 @@ func TestComposite_AnyOnePasses(t *testing.T) {
 		},
 	}
 	v, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !v.Passed {
-		t.Fatalf("expected pass with require=any, got fail: %s", v.Reason)
-	}
+	require.NoError(t, err)
+	require.True(t, v.Passed, "require=any with one passing sub-judge, reason: %s", v.Reason)
 }
 
-func TestComposite_AnyAllFail(t *testing.T) {
+func TestComposite_AnyWithAllSubJudgesFailingFails(t *testing.T) {
 	dir := t.TempDir()
 
 	j := types.EvalJudge{
@@ -223,12 +171,8 @@ func TestComposite_AnyAllFail(t *testing.T) {
 		},
 	}
 	v, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if v.Passed {
-		t.Fatal("expected fail when all sub-judges fail with require=any")
-	}
+	require.NoError(t, err)
+	require.False(t, v.Passed, "all sub-judges fail with require=any")
 }
 
 func TestComposite_DefaultRequireAll(t *testing.T) {
@@ -243,12 +187,8 @@ func TestComposite_DefaultRequireAll(t *testing.T) {
 		},
 	}
 	v, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if v.Passed {
-		t.Fatal("expected fail with default require=all and one failing sub-judge")
-	}
+	require.NoError(t, err)
+	require.False(t, v.Passed, "default require=all with one failing sub-judge")
 }
 
 // markerJudge is a test-command judge that leaves name in the workspace to
@@ -261,13 +201,13 @@ func ranMarker(t *testing.T, dir, name string) bool {
 	t.Helper()
 	_, err := os.Stat(filepath.Join(dir, name))
 	if err != nil && !os.IsNotExist(err) {
-		t.Fatalf("stat %s: %v", name, err)
+		require.NoError(t, err, "stat %s", name)
 	}
 	return err == nil
 }
 
-func composite(require string, judges ...types.EvalJudge) types.EvalJudge {
-	return types.EvalJudge{Type: "composite", Require: require, Judges: judges}
+func composite(mode string, judges ...types.EvalJudge) types.EvalJudge {
+	return types.EvalJudge{Type: "composite", Require: mode, Judges: judges}
 }
 
 func detailStatuses(v eval.JudgeVerdict) []string {
@@ -281,25 +221,17 @@ func detailStatuses(v eval.JudgeVerdict) []string {
 func assertStatuses(t *testing.T, v eval.JudgeVerdict, want ...string) {
 	t.Helper()
 	got := detailStatuses(v)
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("detail statuses = %v, want %v", got, want)
-	}
+	require.Equal(t, strings.Join(want, ","), strings.Join(got, ","), "detail statuses")
 	for i, d := range v.Details {
-		if d.Passed != (d.Status == types.JudgeStatusPass) {
-			t.Errorf("details[%d]: Passed = %v with status %q", i, d.Passed, d.Status)
-		}
+		require.Equal(t, d.Status == types.JudgeStatusPass, d.Passed, "details[%d] with status %q", i, d.Status)
 	}
 }
 
 func evaluateOK(t *testing.T, j types.EvalJudge, jctx JudgeContext) eval.JudgeVerdict {
 	t.Helper()
 	v, err := Evaluate(context.Background(), j, jctx)
-	if err != nil {
-		t.Fatalf("Evaluate returned an error: %v", err)
-	}
-	if v.Passed != (v.Status == types.JudgeStatusPass) {
-		t.Errorf("Passed = %v with status %q", v.Passed, v.Status)
-	}
+	require.NoError(t, err, "Evaluate")
+	require.Equal(t, v.Status == types.JudgeStatusPass, v.Passed, "status %q", v.Status)
 	return v
 }
 
@@ -309,22 +241,14 @@ func TestComposite_AllStopsAtFirstFail(t *testing.T) {
 
 	v := evaluateOK(t, j, JudgeContext{WorkspaceDir: dir})
 
-	if v.Status != types.JudgeStatusFail || v.Passed {
-		t.Fatalf("verdict = %+v, want fail", v)
-	}
-	if !ranMarker(t, dir, "a") || !ranMarker(t, dir, "b") {
-		t.Error("sub-judges up to the failing one must run")
-	}
-	if ranMarker(t, dir, "c") {
-		t.Error("a sub-judge after the failing one must not run")
-	}
+	require.Equal(t, types.JudgeStatusFail, v.Status, "verdict = %+v", v)
+	require.False(t, v.Passed, "verdict = %+v", v)
+	require.True(t, ranMarker(t, dir, "a"), "sub-judges up to the failing one must run")
+	require.True(t, ranMarker(t, dir, "b"), "sub-judges up to the failing one must run")
+	require.False(t, ranMarker(t, dir, "c"), "a sub-judge after the failing one must not run")
 	assertStatuses(t, v, types.JudgeStatusPass, types.JudgeStatusFail, eval.JudgeStatusSkipped)
-	if want := "sub-judge 2 of 3 (test-command) failed (require all); 1 skipped"; v.Reason != want {
-		t.Errorf("Reason = %q, want %q", v.Reason, want)
-	}
-	if !strings.Contains(v.Details[2].Reason, "sub-judge 2 of 3") {
-		t.Errorf("skipped Reason = %q, should name the deciding sub-judge", v.Details[2].Reason)
-	}
+	require.Equal(t, "sub-judge 2 of 3 (test-command) failed (require all); 1 skipped", v.Reason)
+	require.Contains(t, v.Details[2].Reason, "sub-judge 2 of 3", "skipped detail should name the deciding sub-judge")
 }
 
 func TestComposite_AllFailSkipsLLMSubJudge(t *testing.T) {
@@ -334,16 +258,12 @@ func TestComposite_AllFailSkipsLLMSubJudge(t *testing.T) {
 
 	v := evaluateOK(t, j, changedJudgeContext(t, Options{ClientFactory: fake.factory(nil, nil)}))
 
-	if v.Status != types.JudgeStatusFail {
-		t.Fatalf("verdict = %+v, want fail", v)
-	}
-	if fake.calls != 0 {
-		t.Errorf("model was called %d times after a deterministic sub-judge had failed", fake.calls)
-	}
+	require.Equal(t, types.JudgeStatusFail, v.Status, "verdict = %+v", v)
+	require.Zero(t, fake.calls, "model called after a deterministic sub-judge had failed")
 	assertStatuses(t, v, types.JudgeStatusFail, eval.JudgeStatusSkipped)
-	if d := v.Details[1]; d.Type != "diff-review" || d.Record != nil {
-		t.Errorf("skipped detail = %+v, want a diff-review entry without a Record", d)
-	}
+	d := v.Details[1]
+	require.Equal(t, "diff-review", d.Type, "skipped detail = %+v", d)
+	require.Nil(t, d.Record, "skipped detail = %+v, want no Record", d)
 }
 
 func TestComposite_AnyStopsAtFirstPass(t *testing.T) {
@@ -352,16 +272,11 @@ func TestComposite_AnyStopsAtFirstPass(t *testing.T) {
 
 	v := evaluateOK(t, j, JudgeContext{WorkspaceDir: dir})
 
-	if v.Status != types.JudgeStatusPass || !v.Passed {
-		t.Fatalf("verdict = %+v, want pass", v)
-	}
-	if ranMarker(t, dir, "c") {
-		t.Error("a sub-judge after the passing one must not run")
-	}
+	require.Equal(t, types.JudgeStatusPass, v.Status, "verdict = %+v", v)
+	require.True(t, v.Passed, "verdict = %+v", v)
+	require.False(t, ranMarker(t, dir, "c"), "a sub-judge after the passing one must not run")
 	assertStatuses(t, v, types.JudgeStatusFail, types.JudgeStatusPass, eval.JudgeStatusSkipped)
-	if want := "sub-judge 2 of 3 (test-command) passed (require any); 1 skipped"; v.Reason != want {
-		t.Errorf("Reason = %q, want %q", v.Reason, want)
-	}
+	require.Equal(t, "sub-judge 2 of 3 (test-command) passed (require any); 1 skipped", v.Reason)
 }
 
 func TestComposite_AnyContinuesPastFails(t *testing.T) {
@@ -370,13 +285,9 @@ func TestComposite_AnyContinuesPastFails(t *testing.T) {
 
 	v := evaluateOK(t, j, JudgeContext{WorkspaceDir: dir})
 
-	if v.Status != types.JudgeStatusPass {
-		t.Fatalf("verdict = %+v, want pass", v)
-	}
+	require.Equal(t, types.JudgeStatusPass, v.Status, "verdict = %+v", v)
 	assertStatuses(t, v, types.JudgeStatusFail, types.JudgeStatusFail, types.JudgeStatusPass)
-	if strings.Contains(v.Reason, "skipped") {
-		t.Errorf("Reason = %q, nothing was skipped", v.Reason)
-	}
+	require.NotContains(t, v.Reason, "skipped", "nothing was skipped")
 }
 
 func TestComposite_AllErrorIsDecisive(t *testing.T) {
@@ -413,17 +324,13 @@ func TestComposite_AllErrorIsDecisive(t *testing.T) {
 
 			v := evaluateOK(t, j, jctx)
 
-			if v.Status != types.JudgeStatusError || v.Passed {
-				t.Fatalf("verdict = %+v, want error", v)
-			}
-			if ranMarker(t, dir, "c") {
-				t.Error("a sub-judge after the erroring one must not run")
-			}
+			require.Equal(t, types.JudgeStatusError, v.Status, "verdict = %+v", v)
+			require.False(t, v.Passed, "verdict = %+v", v)
+			require.False(t, ranMarker(t, dir, "c"), "a sub-judge after the erroring one must not run")
 			assertStatuses(t, v, types.JudgeStatusPass, types.JudgeStatusError, eval.JudgeStatusSkipped)
 			wantPrefix := fmt.Sprintf("sub-judge 2 of 3 (%s) errored (require all); 1 skipped: ", tc.wantType)
-			if !strings.HasPrefix(v.Reason, wantPrefix) || !strings.Contains(v.Reason, tc.wantMsg) {
-				t.Errorf("Reason = %q, want prefix %q and cause %q", v.Reason, wantPrefix, tc.wantMsg)
-			}
+			require.True(t, strings.HasPrefix(v.Reason, wantPrefix), "Reason = %q, want prefix %q", v.Reason, wantPrefix)
+			require.Contains(t, v.Reason, tc.wantMsg)
 		})
 	}
 }
@@ -436,12 +343,9 @@ func TestComposite_AnyErrorThenPassPasses(t *testing.T) {
 
 	v := evaluateOK(t, j, JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: Options{ClientFactory: fake.factory(nil, nil)}})
 
-	if v.Status != types.JudgeStatusPass || !v.Passed {
-		t.Fatalf("verdict = %+v, want pass", v)
-	}
-	if ranMarker(t, dir, "c") {
-		t.Error("a sub-judge after the passing one must not run")
-	}
+	require.Equal(t, types.JudgeStatusPass, v.Status, "verdict = %+v", v)
+	require.True(t, v.Passed, "verdict = %+v", v)
+	require.False(t, ranMarker(t, dir, "c"), "a sub-judge after the passing one must not run")
 	assertStatuses(t, v, types.JudgeStatusError, types.JudgeStatusPass, eval.JudgeStatusSkipped)
 }
 
@@ -452,14 +356,12 @@ func TestComposite_AnyErrorWithoutPassIsError(t *testing.T) {
 
 	v := evaluateOK(t, j, changedJudgeContext(t, Options{ClientFactory: fake.factory(nil, nil)}))
 
-	if v.Status != types.JudgeStatusError || v.Passed {
-		t.Fatalf("verdict = %+v, want error", v)
-	}
+	require.Equal(t, types.JudgeStatusError, v.Status, "verdict = %+v", v)
+	require.False(t, v.Passed, "verdict = %+v", v)
 	assertStatuses(t, v, types.JudgeStatusError, types.JudgeStatusFail)
 	wantPrefix := "0 of 2 sub-judges passed (require any); 1 errored, first: sub-judge 1 of 2 (diff-review): "
-	if !strings.HasPrefix(v.Reason, wantPrefix) || !strings.Contains(v.Reason, "HTTP 503") {
-		t.Errorf("Reason = %q, want prefix %q and the cause", v.Reason, wantPrefix)
-	}
+	require.True(t, strings.HasPrefix(v.Reason, wantPrefix), "Reason = %q, want prefix %q", v.Reason, wantPrefix)
+	require.Contains(t, v.Reason, "HTTP 503")
 }
 
 func TestComposite_AnyReportsFirstOfSeveralErrors(t *testing.T) {
@@ -470,15 +372,12 @@ func TestComposite_AnyReportsFirstOfSeveralErrors(t *testing.T) {
 
 	v := evaluateOK(t, j, changedJudgeContext(t, Options{ClientFactory: fake.factory(nil, nil)}))
 
-	if v.Status != types.JudgeStatusError || v.Passed {
-		t.Fatalf("verdict = %+v, want error", v)
-	}
+	require.Equal(t, types.JudgeStatusError, v.Status, "verdict = %+v", v)
+	require.False(t, v.Passed, "verdict = %+v", v)
 	assertStatuses(t, v, types.JudgeStatusFail, types.JudgeStatusError, types.JudgeStatusFail, types.JudgeStatusError)
 	want := "0 of 4 sub-judges passed (require any); 2 errored, first: sub-judge 2 of 4 (tool-trace): " +
 		"tool-trace judge requires a run trace but none was provided"
-	if v.Reason != want {
-		t.Errorf("Reason = %q, want %q", v.Reason, want)
-	}
+	require.Equal(t, want, v.Reason)
 }
 
 // cancellingClient cancels the context when asked for a completion, then
@@ -498,32 +397,26 @@ func TestComposite_CancelledBetweenSubJudgesIsError(t *testing.T) {
 	// The first sub-judge must not decide the outcome, or the composite stops
 	// before it looks at the context.
 	cases := map[string]string{"any": verdictFail, "all": verdictPass}
-	for require, undecided := range cases {
-		t.Run(require, func(t *testing.T) {
+	for mode, undecided := range cases {
+		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			client := cancellingClient{fakeClient: &fakeClient{resp: okResponse(undecided)}, cancel: cancel}
 			jctx := changedJudgeContext(t, Options{ClientFactory: func(types.JudgeLLMConfig, string) (JudgeClient, error) { return client, nil }})
-			j := composite(require, diffReviewJudge(), markerJudge("b", 0), markerJudge("c", 0))
+			j := composite(mode, diffReviewJudge(), markerJudge("b", 0), markerJudge("c", 0))
 
 			v, err := Evaluate(ctx, j, jctx)
-			if err != nil {
-				t.Fatalf("Evaluate returned an error: %v", err)
-			}
+			require.NoError(t, err, "Evaluate")
 
-			if v.Status != types.JudgeStatusError || v.Passed || v.Reason != "cancelled" {
-				t.Fatalf("verdict = %+v, want error with reason cancelled", v)
-			}
-			if ranMarker(t, jctx.WorkspaceDir, "b") || ranMarker(t, jctx.WorkspaceDir, "c") {
-				t.Error("a sub-judge ran after the context was cancelled")
-			}
-			if len(v.Details) != 3 {
-				t.Fatalf("details = %+v, want one entry per sub-judge", v.Details)
-			}
+			require.Equal(t, types.JudgeStatusError, v.Status, "verdict = %+v", v)
+			require.False(t, v.Passed, "verdict = %+v", v)
+			require.Equal(t, "cancelled", v.Reason)
+			require.False(t, ranMarker(t, jctx.WorkspaceDir, "b"), "a sub-judge ran after the context was cancelled")
+			require.False(t, ranMarker(t, jctx.WorkspaceDir, "c"), "a sub-judge ran after the context was cancelled")
+			require.Len(t, v.Details, 3, "details = %+v, want one entry per sub-judge", v.Details)
 			for _, d := range v.Details[1:] {
-				if d.Status != eval.JudgeStatusSkipped || d.Reason != "not evaluated: cancelled" {
-					t.Errorf("detail = %+v, want skipped because of cancellation", d)
-				}
+				require.Equal(t, eval.JudgeStatusSkipped, d.Status, "detail = %+v", d)
+				require.Equal(t, "not evaluated: cancelled", d.Reason, "detail = %+v", d)
 			}
 		})
 	}
@@ -536,16 +429,13 @@ func TestComposite_CancelledBeforeStartRunsNothing(t *testing.T) {
 	j := composite("all", markerJudge("a", 0), markerJudge("b", 0))
 
 	v, err := Evaluate(ctx, j, JudgeContext{WorkspaceDir: dir})
-	if err != nil {
-		t.Fatalf("Evaluate returned an error: %v", err)
-	}
+	require.NoError(t, err, "Evaluate")
 
-	if v.Status != types.JudgeStatusError || v.Passed || v.Reason != "cancelled" {
-		t.Fatalf("verdict = %+v, want error with reason cancelled", v)
-	}
-	if ranMarker(t, dir, "a") || ranMarker(t, dir, "b") {
-		t.Error("a sub-judge ran under a cancelled context")
-	}
+	require.Equal(t, types.JudgeStatusError, v.Status, "verdict = %+v", v)
+	require.False(t, v.Passed, "verdict = %+v", v)
+	require.Equal(t, "cancelled", v.Reason)
+	require.False(t, ranMarker(t, dir, "a"), "a sub-judge ran under a cancelled context")
+	require.False(t, ranMarker(t, dir, "b"), "a sub-judge ran under a cancelled context")
 	assertStatuses(t, v, eval.JudgeStatusSkipped, eval.JudgeStatusSkipped)
 }
 
@@ -563,9 +453,7 @@ func TestComposite_ReasonsAreSingularForOneSubJudge(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			v := evaluateOK(t, tc.judge, JudgeContext{WorkspaceDir: dir})
 
-			if v.Reason != tc.want {
-				t.Errorf("Reason = %q, want %q", v.Reason, tc.want)
-			}
+			require.Equal(t, tc.want, v.Reason)
 		})
 	}
 }
@@ -573,25 +461,18 @@ func TestComposite_ReasonsAreSingularForOneSubJudge(t *testing.T) {
 func TestComposite_AnyAllFailIsFailNotError(t *testing.T) {
 	v := evaluateOK(t, composite("any", markerJudge("a", 1), markerJudge("b", 2)), JudgeContext{WorkspaceDir: t.TempDir()})
 
-	if v.Status != types.JudgeStatusFail || v.Passed {
-		t.Fatalf("verdict = %+v, want fail", v)
-	}
+	require.Equal(t, types.JudgeStatusFail, v.Status, "verdict = %+v", v)
+	require.False(t, v.Passed, "verdict = %+v", v)
 	assertStatuses(t, v, types.JudgeStatusFail, types.JudgeStatusFail)
-	if want := "0 of 2 sub-judges passed (require any)"; v.Reason != want {
-		t.Errorf("Reason = %q, want %q", v.Reason, want)
-	}
+	require.Equal(t, "0 of 2 sub-judges passed (require any)", v.Reason)
 }
 
 func TestComposite_AllPassReportsStatus(t *testing.T) {
 	v := evaluateOK(t, composite("all", markerJudge("a", 0), markerJudge("b", 0)), JudgeContext{WorkspaceDir: t.TempDir()})
 
-	if v.Status != types.JudgeStatusPass {
-		t.Fatalf("verdict = %+v, want pass", v)
-	}
+	require.Equal(t, types.JudgeStatusPass, v.Status, "verdict = %+v", v)
 	assertStatuses(t, v, types.JudgeStatusPass, types.JudgeStatusPass)
-	if want := "all 2 sub-judges passed"; v.Reason != want {
-		t.Errorf("Reason = %q, want %q", v.Reason, want)
-	}
+	require.Equal(t, "all 2 sub-judges passed", v.Reason)
 }
 
 func TestComposite_NestedStatusPropagates(t *testing.T) {
@@ -605,19 +486,12 @@ func TestComposite_NestedStatusPropagates(t *testing.T) {
 
 		v := evaluateOK(t, j, JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: Options{ClientFactory: fake.factory(nil, nil)}})
 
-		if v.Status != types.JudgeStatusError {
-			t.Fatalf("verdict = %+v, want error", v)
-		}
-		if ranMarker(t, dir, "after") {
-			t.Error("a sub-judge after the erroring composite must not run")
-		}
+		require.Equal(t, types.JudgeStatusError, v.Status, "verdict = %+v", v)
+		require.False(t, ranMarker(t, dir, "after"), "a sub-judge after the erroring composite must not run")
 		assertStatuses(t, v, types.JudgeStatusError, eval.JudgeStatusSkipped)
-		if v.Details[0].Type != "composite" || !strings.Contains(v.Details[0].Reason, "1 errored") {
-			t.Errorf("details[0] = %+v, want the nested composite's reason", v.Details[0])
-		}
-		if !strings.HasPrefix(v.Reason, "sub-judge 1 of 2 (composite) errored (require all); 1 skipped: ") {
-			t.Errorf("Reason = %q", v.Reason)
-		}
+		require.Equal(t, "composite", v.Details[0].Type, "details[0] = %+v", v.Details[0])
+		require.Contains(t, v.Details[0].Reason, "1 errored", "details[0] = %+v", v.Details[0])
+		require.True(t, strings.HasPrefix(v.Reason, "sub-judge 1 of 2 (composite) errored (require all); 1 skipped: "), "Reason = %q", v.Reason)
 	})
 
 	t.Run("nested pass lets an outer all continue", func(t *testing.T) {
@@ -627,13 +501,10 @@ func TestComposite_NestedStatusPropagates(t *testing.T) {
 
 		v := evaluateOK(t, j, JudgeContext{WorkspaceDir: dir})
 
-		if v.Status != types.JudgeStatusPass {
-			t.Fatalf("verdict = %+v, want pass", v)
-		}
+		require.Equal(t, types.JudgeStatusPass, v.Status, "verdict = %+v", v)
 		assertStatuses(t, v, types.JudgeStatusPass, types.JudgeStatusPass)
-		if !ranMarker(t, dir, "after") || ranMarker(t, dir, "inner-skipped") {
-			t.Error("inner short-circuit must skip only the inner remainder")
-		}
+		require.True(t, ranMarker(t, dir, "after"), "outer all must continue after a passing inner composite")
+		require.False(t, ranMarker(t, dir, "inner-skipped"), "inner short-circuit must skip only the inner remainder")
 	})
 
 	t.Run("nested fail is decisive for an outer all", func(t *testing.T) {
@@ -642,13 +513,9 @@ func TestComposite_NestedStatusPropagates(t *testing.T) {
 
 		v := evaluateOK(t, j, JudgeContext{WorkspaceDir: dir})
 
-		if v.Status != types.JudgeStatusFail {
-			t.Fatalf("verdict = %+v, want fail", v)
-		}
+		require.Equal(t, types.JudgeStatusFail, v.Status, "verdict = %+v", v)
 		assertStatuses(t, v, types.JudgeStatusFail, eval.JudgeStatusSkipped)
-		if ranMarker(t, dir, "after") {
-			t.Error("a sub-judge after the failing composite must not run")
-		}
+		require.False(t, ranMarker(t, dir, "after"), "a sub-judge after the failing composite must not run")
 	})
 }
 
@@ -666,13 +533,9 @@ func TestComposite_DetailsKeepDeclaredOrder(t *testing.T) {
 	for _, d := range v.Details {
 		gotTypes = append(gotTypes, d.Type)
 	}
-	if want := "file-exists,file-contains,test-command,composite"; strings.Join(gotTypes, ",") != want {
-		t.Errorf("detail types = %v, want %s", gotTypes, want)
-	}
+	require.Equal(t, "file-exists,file-contains,test-command,composite", strings.Join(gotTypes, ","), "detail types = %v", gotTypes)
 	assertStatuses(t, v, types.JudgeStatusFail, eval.JudgeStatusSkipped, eval.JudgeStatusSkipped, eval.JudgeStatusSkipped)
-	if want := "sub-judge 1 of 4 (file-exists) failed (require all); 3 skipped"; v.Reason != want {
-		t.Errorf("Reason = %q, want %q", v.Reason, want)
-	}
+	require.Equal(t, "sub-judge 1 of 4 (file-exists) failed (require all); 3 skipped", v.Reason)
 }
 
 func TestComposite_DetailsCarryRecords(t *testing.T) {
@@ -693,22 +556,15 @@ func TestComposite_DetailsCarryRecords(t *testing.T) {
 
 			v := evaluateOK(t, j, changedJudgeContext(t, Options{ClientFactory: tc.client.factory(nil, nil)}))
 
-			if v.Record != nil {
-				t.Errorf("composite verdict Record = %+v, want nil", v.Record)
-			}
-			if v.Details[0].Record != nil {
-				t.Errorf("deterministic sub-judge Record = %+v, want nil", v.Details[0].Record)
-			}
+			require.Nil(t, v.Record, "composite verdict should carry no record")
+			require.Nil(t, v.Details[0].Record, "deterministic sub-judge should carry no record")
+
 			d := v.Details[1]
-			if d.Status != tc.wantStatus {
-				t.Errorf("details[1].Status = %q, want %q", d.Status, tc.wantStatus)
-			}
-			if d.Record == nil {
-				t.Fatal("diff-review detail lost its Record")
-			}
-			if d.Record.Kind != types.JudgeKindDiffReview || d.Record.ParseStatus != tc.wantParse || d.Record.ServedModel != "served-model-1" {
-				t.Errorf("details[1].Record = %+v", d.Record)
-			}
+			require.Equal(t, tc.wantStatus, d.Status)
+			require.NotNil(t, d.Record, "diff-review detail lost its Record")
+			require.Equal(t, types.JudgeKindDiffReview, d.Record.Kind)
+			require.Equal(t, tc.wantParse, d.Record.ParseStatus)
+			require.Equal(t, "served-model-1", d.Record.ServedModel)
 		})
 	}
 }
@@ -721,27 +577,26 @@ func TestComposite_NestedDetailsKeepRecordsAtAnyDepth(t *testing.T) {
 
 	v := evaluateOK(t, j, changedJudgeContext(t, Options{ClientFactory: fake.factory(nil, nil)}))
 
-	if v.Status != types.JudgeStatusPass {
-		t.Fatalf("verdict = %+v, want pass", v)
-	}
+	require.Equal(t, types.JudgeStatusPass, v.Status, "verdict = %+v", v)
+
 	middle := v.Details[1]
-	if middle.Type != "composite" || middle.Record != nil || len(middle.Details) != 1 {
-		t.Fatalf("details[1] = %+v, want a composite entry with one nested entry", middle)
-	}
+	require.Equal(t, "composite", middle.Type)
+	require.Nil(t, middle.Record)
+	require.Len(t, middle.Details, 1, "details[1] should hold one nested entry")
+
 	inner := middle.Details[0]
-	if inner.Type != "composite" || inner.Record != nil || len(inner.Details) != 2 {
-		t.Fatalf("details[1].details[0] = %+v, want a composite entry with two nested entries", inner)
-	}
+	require.Equal(t, "composite", inner.Type)
+	require.Nil(t, inner.Record)
+	require.Len(t, inner.Details, 2, "details[1].details[0] should hold two nested entries")
+
 	review := inner.Details[1]
-	if review.Type != "diff-review" || review.Status != types.JudgeStatusPass {
-		t.Fatalf("innermost entry = %+v, want a passing diff-review", review)
-	}
-	if review.Record == nil || review.Record.Kind != types.JudgeKindDiffReview || review.Record.ServedModel != "served-model-1" {
-		t.Errorf("innermost Record = %+v, want the diff-review provenance", review.Record)
-	}
-	if len(v.Details[0].Details) != 0 {
-		t.Errorf("a deterministic sub-judge carries details: %+v", v.Details[0].Details)
-	}
+	require.Equal(t, "diff-review", review.Type)
+	require.Equal(t, types.JudgeStatusPass, review.Status, "innermost entry = %+v", review)
+	require.NotNil(t, review.Record, "innermost diff-review lost its Record")
+	require.Equal(t, types.JudgeKindDiffReview, review.Record.Kind)
+	require.Equal(t, "served-model-1", review.Record.ServedModel)
+
+	require.Empty(t, v.Details[0].Details, "a deterministic sub-judge carries no details")
 }
 
 func TestComposite_ConfigurationErrorsAreHardErrors(t *testing.T) {
@@ -762,12 +617,8 @@ func TestComposite_ConfigurationErrorsAreHardErrors(t *testing.T) {
 
 			_, err := Evaluate(context.Background(), tc.judge, JudgeContext{WorkspaceDir: dir})
 
-			if err == nil || !strings.Contains(err.Error(), tc.wantMsg) {
-				t.Fatalf("err = %v, want it to mention %q", err, tc.wantMsg)
-			}
-			if ranMarker(t, dir, "a") {
-				t.Error("no sub-judge may run when the tree is invalid")
-			}
+			require.ErrorContains(t, err, tc.wantMsg)
+			require.False(t, ranMarker(t, dir, "a"), "no sub-judge may run when the tree is invalid")
 		})
 	}
 }
@@ -798,9 +649,7 @@ func TestComposite_NestedConfigurationErrorsNamePosition(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Evaluate(context.Background(), tc.judge, JudgeContext{WorkspaceDir: t.TempDir()})
 
-			if err == nil || err.Error() != tc.want {
-				t.Fatalf("err = %v, want %q", err, tc.want)
-			}
+			require.EqualError(t, err, tc.want)
 		})
 	}
 }
@@ -831,25 +680,22 @@ func TestComposite_StaticLeafErrorsAreHardErrors(t *testing.T) {
 			"does not support an llm block",
 		},
 	}
-	for _, require := range []string{"any", "all"} {
+	for _, mode := range []string{"any", "all"} {
 		for _, tc := range cases {
-			t.Run(require+"/"+tc.name, func(t *testing.T) {
+			t.Run(mode+"/"+tc.name, func(t *testing.T) {
 				dir := t.TempDir()
 				writeFile(t, dir, "present.txt", "x")
 				first := markerJudge("a", 0)
-				if require == "all" {
+				if mode == "all" {
 					first = markerJudge("a", 1)
 				}
-				j := composite(require, first, tc.leaf)
+				j := composite(mode, first, tc.leaf)
 
 				_, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
 
-				if err == nil || !strings.Contains(err.Error(), "sub-judge 2: ") || !strings.Contains(err.Error(), tc.wantMsg) {
-					t.Fatalf("err = %v, want a sub-judge 2 error mentioning %q", err, tc.wantMsg)
-				}
-				if ranMarker(t, dir, "a") {
-					t.Error("no sub-judge may run when a leaf is mis-specified")
-				}
+				require.ErrorContains(t, err, "sub-judge 2: ")
+				require.ErrorContains(t, err, tc.wantMsg)
+				require.False(t, ranMarker(t, dir, "a"), "no sub-judge may run when a leaf is mis-specified")
 			})
 		}
 	}
@@ -865,30 +711,27 @@ func TestComposite_InvalidPatternBehindPassingJudgeIsHardError(t *testing.T) {
 
 	v, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
 
-	if err == nil || !strings.Contains(err.Error(), "invalid pattern") {
-		t.Fatalf("err = %v, want an invalid pattern error", err)
-	}
-	if v.Passed || v.Status == types.JudgeStatusPass {
-		t.Errorf("verdict = %+v, a mis-specified sub-judge must not pass", v)
-	}
+	require.ErrorContains(t, err, "invalid pattern")
+	require.False(t, v.Passed, "verdict = %+v, a mis-specified sub-judge must not pass", v)
+	require.NotEqual(t, types.JudgeStatusPass, v.Status, "verdict = %+v, a mis-specified sub-judge must not pass", v)
 }
 
-func TestValidateTree(t *testing.T) {
-	valid := composite("all",
-		types.EvalJudge{Type: "file-exists", Paths: []string{"a", "dir/b"}},
-		types.EvalJudge{Type: "file-contains", Path: "a", Pattern: `^\d+$`},
-		types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{}},
-		composite("any", types.EvalJudge{Type: "test-command", Command: "true"}, diffReviewJudge()),
-	)
-	if err := ValidateTree(valid); err != nil {
-		t.Errorf("valid tree: %v", err)
-	}
-	if err := ValidateTree(types.EvalJudge{}); err == nil || !strings.Contains(err.Error(), "unknown judge type") {
-		t.Errorf("zero judge: err = %v, want an unknown type error", err)
-	}
-	if err := ValidateTree(types.EvalJudge{Type: "test-command"}); err == nil {
-		t.Error("a root leaf with a missing command was accepted")
-	}
+func TestValidateTree_AcceptsValidAndRejectsInvalid(t *testing.T) {
+	t.Run("accepts a valid tree", func(t *testing.T) {
+		valid := composite("all",
+			types.EvalJudge{Type: "file-exists", Paths: []string{"a", "dir/b"}},
+			types.EvalJudge{Type: "file-contains", Path: "a", Pattern: `^\d+$`},
+			types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{}},
+			composite("any", types.EvalJudge{Type: "test-command", Command: "true"}, diffReviewJudge()),
+		)
+		require.NoError(t, ValidateTree(valid))
+	})
+	t.Run("rejects a zero judge", func(t *testing.T) {
+		require.ErrorContains(t, ValidateTree(types.EvalJudge{}), "unknown judge type")
+	})
+	t.Run("rejects a root leaf with a missing command", func(t *testing.T) {
+		require.Error(t, ValidateTree(types.EvalJudge{Type: "test-command"}))
+	})
 }
 
 // TestDiffReview_RequiresCriteria pins that the diff-review judge fails
@@ -897,12 +740,7 @@ func TestDiffReview_RequiresCriteria(t *testing.T) {
 	dir := t.TempDir()
 	j := types.EvalJudge{Type: "diff-review"}
 	_, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
-	if err == nil {
-		t.Fatal("expected error when criteria is empty")
-	}
-	if !strings.Contains(err.Error(), "criteria") {
-		t.Errorf("error should mention criteria: %v", err)
-	}
+	require.ErrorContains(t, err, "criteria")
 }
 
 // TestDiffReview_RequiresAPIKey pins that with criteria set but
@@ -923,21 +761,14 @@ func TestDiffReview_RequiresAPIKey(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	j := types.EvalJudge{Type: "diff-review", Criteria: "be good"}
 	_, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
-	if err == nil {
-		t.Fatal("expected error when ANTHROPIC_API_KEY is unset")
-	}
-	if !strings.Contains(err.Error(), "ANTHROPIC_API_KEY") {
-		t.Errorf("error should mention the env var: %v", err)
-	}
+	require.ErrorContains(t, err, "ANTHROPIC_API_KEY")
 }
 
 // TestEvaluate_StatusMatchesPassed pins that every judge type reports a
 // Status consistent with Passed, so consumers can rely on Status alone.
 func TestEvaluate_StatusMatchesPassed(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "present.txt"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "present.txt"), []byte("x"), 0o644))
 	cases := []struct {
 		name       string
 		judge      types.EvalJudge
@@ -953,70 +784,51 @@ func TestEvaluate_StatusMatchesPassed(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			v, err := Evaluate(context.Background(), tc.judge, JudgeContext{WorkspaceDir: dir})
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			want := types.JudgeStatusFail
 			if tc.wantPassed {
 				want = types.JudgeStatusPass
 			}
-			if v.Passed != tc.wantPassed || v.Status != want {
-				t.Errorf("Passed = %v, Status = %q; want %v, %q", v.Passed, v.Status, tc.wantPassed, want)
-			}
+			require.Equal(t, tc.wantPassed, v.Passed, "status %q", v.Status)
+			require.Equal(t, want, v.Status)
 		})
 	}
 }
 
-func TestPathTraversal_FileExists(t *testing.T) {
+func TestFileExists_RejectsPathTraversal(t *testing.T) {
 	dir := t.TempDir()
 	j := types.EvalJudge{Type: "file-exists", Paths: []string{"../../../etc/passwd"}}
 	_, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
-	if err == nil {
-		t.Fatal("expected error for path traversal attempt")
-	}
+	require.Error(t, err)
 }
 
-func TestPathTraversal_FileContains(t *testing.T) {
+func TestFileContains_RejectsPathTraversal(t *testing.T) {
 	dir := t.TempDir()
 	j := types.EvalJudge{Type: "file-contains", Path: "../../../etc/passwd", Pattern: "root"}
 	_, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
-	if err == nil {
-		t.Fatal("expected error for path traversal attempt")
-	}
+	require.Error(t, err)
 }
 
-func TestUnknownJudgeType(t *testing.T) {
+func TestEvaluate_RejectsUnknownJudgeType(t *testing.T) {
 	dir := t.TempDir()
 	j := types.EvalJudge{Type: "nonexistent"}
 	_, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
-	if err == nil {
-		t.Fatal("expected error for unknown judge type")
-	}
+	require.Error(t, err)
 }
 
-func TestContainsType(t *testing.T) {
+func TestContainsType_SearchesNestedJudges(t *testing.T) {
 	nested := types.EvalJudge{Type: "composite", Judges: []types.EvalJudge{
 		{Type: "file-exists"},
 		{Type: "composite", Judges: []types.EvalJudge{{Type: "diff-review"}}},
 	}}
-	if !ContainsType(nested, "diff-review") {
-		t.Error("nested diff-review not found")
-	}
-	if ContainsType(nested, "test-command") {
-		t.Error("absent type reported present")
-	}
-	if !ContainsType(types.EvalJudge{Type: "diff-review"}, "diff-review") {
-		t.Error("top-level diff-review not found")
-	}
+	require.True(t, ContainsType(nested, "diff-review"), "nested diff-review not found")
+	require.False(t, ContainsType(nested, "test-command"), "absent type reported present")
+	require.True(t, ContainsType(types.EvalJudge{Type: "diff-review"}, "diff-review"), "top-level diff-review not found")
 }
 
 func writeFile(t *testing.T, dir, name, content string) {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("creating parent dirs: %v", err)
-	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("writing %s: %v", name, err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755), "creating parent dirs")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644), "writing %s", name)
 }

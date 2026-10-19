@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -25,18 +27,14 @@ func (endpointProvider) ServerEndpoint() (string, int) { return "api.anthropic.c
 func findHistogram[N int64 | float64](t *testing.T, reader sdkmetric.Reader, name string) ([]metricdata.HistogramDataPoint[N], bool) {
 	t.Helper()
 	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
+	require.NoError(t, reader.Collect(context.Background(), &rm), "collect metrics")
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
 			if m.Name != name {
 				continue
 			}
 			hist, ok := m.Data.(metricdata.Histogram[N])
-			if !ok {
-				t.Fatalf("%s data = %T", name, m.Data)
-			}
+			require.True(t, ok, "%s data type = %T", name, m.Data)
 			return hist.DataPoints, true
 		}
 	}
@@ -46,14 +44,20 @@ func findHistogram[N int64 | float64](t *testing.T, reader sdkmetric.Reader, nam
 func collectHistogram[N int64 | float64](t *testing.T, h *retryHarness, name string) []metricdata.HistogramDataPoint[N] {
 	t.Helper()
 	points, ok := findHistogram[N](t, h.reader, name)
-	if !ok {
-		t.Fatalf("metric %q not collected", name)
-	}
+	require.True(t, ok, "metric %q not collected", name)
 	return points
 }
 
 func attrValue(set attribute.Set, key string) (attribute.Value, bool) {
 	return set.Value(attribute.Key(key))
+}
+
+// assertStringAttr checks a string attribute on a data point. A missing
+// attribute reads as the empty string.
+func assertStringAttr(t *testing.T, set attribute.Set, key, want string) {
+	t.Helper()
+	got, _ := attrValue(set, key)
+	assert.Equal(t, want, got.AsString(), "attribute %s", key)
 }
 
 func TestLoop_GenAIClientMetrics_RecordPerAttemptAndPerTurn(t *testing.T) {
@@ -73,51 +77,38 @@ func TestLoop_GenAIClientMetrics_RecordPerAttemptAndPerTurn(t *testing.T) {
 	prov := endpointProvider{&scriptedTurnProvider{scripts: []turnScript{toolTurn, failedWithUsage, answerTurn}}}
 	h := newRetryHarness(t, prov)
 
-	if _, err := h.loop.Run(context.Background(), retryConfig(3)); err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
+	_, err := h.loop.Run(context.Background(), retryConfig(3))
+	require.NoError(t, err, "Run()")
 
 	// Three provider attempts: two successful streams and one failed
 	// mid-stream attempt that the turn retry discarded.
 	var ok, failed uint64
 	for _, dp := range collectHistogram[float64](t, h, "gen_ai.client.operation.duration") {
-		if errType, has := attrValue(dp.Attributes, "error.type"); has {
-			if errType.AsString() != "provider_stream_failed" {
-				t.Errorf("error.type = %q, want provider_stream_failed", errType.AsString())
-			}
+		errType, failedPoint := attrValue(dp.Attributes, "error.type")
+		if failedPoint {
+			assert.Equal(t, "provider_stream_failed", errType.AsString(), "attribute error.type")
 			failed += dp.Count
 		} else {
 			ok += dp.Count
 		}
-		_, failedPoint := attrValue(dp.Attributes, "error.type")
+
 		wantResponse := responseModel
 		if failedPoint {
 			wantResponse = ""
 		}
-		if v, _ := attrValue(dp.Attributes, "gen_ai.response.model"); v.AsString() != wantResponse {
-			t.Errorf("gen_ai.response.model = %q, want %q", v.AsString(), wantResponse)
-		}
-		if v, _ := attrValue(dp.Attributes, "gen_ai.provider.name"); v.AsString() != "anthropic" {
-			t.Errorf("gen_ai.provider.name = %q, want anthropic", v.AsString())
-		}
-		if v, _ := attrValue(dp.Attributes, "gen_ai.request.model"); v.AsString() != "claude-sonnet-4-6" {
-			t.Errorf("gen_ai.request.model = %q, want claude-sonnet-4-6", v.AsString())
-		}
-		if v, _ := attrValue(dp.Attributes, "server.address"); v.AsString() != "api.anthropic.com" {
-			t.Errorf("server.address = %q, want api.anthropic.com", v.AsString())
-		}
-		if v, _ := attrValue(dp.Attributes, "server.port"); v.AsInt64() != 443 {
-			t.Errorf("server.port = %d, want 443", v.AsInt64())
-		}
+		assertStringAttr(t, dp.Attributes, "gen_ai.response.model", wantResponse)
+		assertStringAttr(t, dp.Attributes, "gen_ai.provider.name", "anthropic")
+		assertStringAttr(t, dp.Attributes, "gen_ai.request.model", "claude-sonnet-4-6")
+		assertStringAttr(t, dp.Attributes, "server.address", "api.anthropic.com")
+		port, _ := attrValue(dp.Attributes, "server.port")
+		assert.Equal(t, int64(443), port.AsInt64(), "attribute server.port")
 		for _, banned := range []string{"run.id", "run.parent_id", "run.subagent", "tool.name", "gen_ai.conversation.id"} {
-			if _, has := attrValue(dp.Attributes, banned); has {
-				t.Errorf("operation.duration carries high-cardinality attribute %q", banned)
-			}
+			_, has := attrValue(dp.Attributes, banned)
+			assert.False(t, has, "operation.duration carries high-cardinality attribute %q", banned)
 		}
 	}
-	if ok != 2 || failed != 1 {
-		t.Errorf("duration points: %d successful, %d failed; want 2 and 1", ok, failed)
-	}
+	assert.Equal(t, uint64(2), ok, "successful operation.duration points")
+	assert.Equal(t, uint64(1), failed, "failed operation.duration points")
 
 	// Each attempt records the usage it reported: the retried attempt's
 	// usage stays a point of its own rather than folding into the
@@ -132,16 +123,13 @@ func TestLoop_GenAIClientMetrics_RecordPerAttemptAndPerTurn(t *testing.T) {
 		if dp.Sum == 200 || dp.Sum == 20 { // the failed attempt's usage
 			wantResponse = ""
 		}
-		if v, _ := attrValue(dp.Attributes, "gen_ai.response.model"); v.AsString() != wantResponse {
-			t.Errorf("token usage point (sum %d) gen_ai.response.model = %q, want %q", dp.Sum, v.AsString(), wantResponse)
-		}
+		model, _ := attrValue(dp.Attributes, "gen_ai.response.model")
+		assert.Equal(t, wantResponse, model.AsString(), "attribute gen_ai.response.model of token usage point with sum %d", dp.Sum)
 	}
-	if count["input"] != 3 || count["output"] != 3 {
-		t.Errorf("token usage points = %v, want 3 input and 3 output", count)
-	}
-	if sum["input"] != 350 || sum["output"] != 35 {
-		t.Errorf("token usage sums = %v, want input=350 output=35", sum)
-	}
+	assert.Equal(t, uint64(3), count["input"], "input token usage points")
+	assert.Equal(t, uint64(3), count["output"], "output token usage points")
+	assert.Equal(t, int64(350), sum["input"], "input token usage sum")
+	assert.Equal(t, int64(35), sum["output"], "output token usage sum")
 }
 
 func TestLoop_GenAITokenUsage_OmitsUnreportedCounts(t *testing.T) {
@@ -150,12 +138,11 @@ func TestLoop_GenAITokenUsage_OmitsUnreportedCounts(t *testing.T) {
 		{Type: "message_complete", StopReason: "end_turn"},
 	}}
 	h := newRetryHarness(t, &scriptedTurnProvider{scripts: []turnScript{noUsage}})
-	if _, err := h.loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if points, ok := findHistogram[int64](t, h.reader, "gen_ai.client.token.usage"); ok {
-		t.Errorf("token usage recorded %d points for a response that reported no usage, want none", len(points))
-	}
+	_, err := h.loop.Run(context.Background(), buildTestConfig())
+	require.NoError(t, err, "Run()")
+
+	points, found := findHistogram[int64](t, h.reader, "gen_ai.client.token.usage")
+	require.False(t, found, "token usage recorded %d points for a response that reported no usage", len(points))
 }
 
 func TestLoop_GenAIOperationDuration_NonRetryableFailure(t *testing.T) {
@@ -163,46 +150,37 @@ func TestLoop_GenAIOperationDuration_NonRetryableFailure(t *testing.T) {
 	_, _ = h.loop.Run(context.Background(), buildTestConfig())
 
 	points := collectHistogram[float64](t, h, "gen_ai.client.operation.duration")
-	if len(points) != 1 || points[0].Count != 1 {
-		t.Fatalf("duration points = %+v, want exactly one", points)
-	}
-	if v, _ := attrValue(points[0].Attributes, "error.type"); v.AsString() != "provider_request_failed" {
-		t.Errorf("error.type = %q, want provider_request_failed", v.AsString())
-	}
-	if _, ok := findHistogram[int64](t, h.reader, "gen_ai.client.token.usage"); ok {
-		t.Error("token usage recorded for a request that failed before streaming")
-	}
+	require.Len(t, points, 1, "operation.duration points %+v", points)
+	require.Equal(t, uint64(1), points[0].Count, "operation.duration count")
+
+	errType, _ := attrValue(points[0].Attributes, "error.type")
+	require.Equal(t, "provider_request_failed", errType.AsString(), "attribute error.type")
+
+	_, found := findHistogram[int64](t, h.reader, "gen_ai.client.token.usage")
+	require.False(t, found, "token usage recorded for a request that failed before streaming")
 }
 
-func TestLoop_TokenCountersCarryProviderAndModel(t *testing.T) {
+func TestLoop_TokenCounters_CarryProviderAndModel(t *testing.T) {
 	h := newRetryHarness(t, &scriptedTurnProvider{scripts: []turnScript{answerScript()}})
-	if _, err := h.loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
+	_, err := h.loop.Run(context.Background(), buildTestConfig())
+	require.NoError(t, err, "Run()")
 
 	var rm metricdata.ResourceMetrics
-	if err := h.reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
+	require.NoError(t, h.reader.Collect(context.Background(), &rm), "collect metrics")
 	seen := map[string]bool{}
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
-			switch m.Name {
-			case "stirrup.harness.tokens.input", "stirrup.harness.tokens.output":
-			default:
+			if m.Name != "stirrup.harness.tokens.input" && m.Name != "stirrup.harness.tokens.output" {
 				continue
 			}
 			for _, dp := range m.Data.(metricdata.Sum[int64]).DataPoints {
 				provider, _ := attrValue(dp.Attributes, "gen_ai.provider.name")
 				model, _ := attrValue(dp.Attributes, "gen_ai.request.model")
-				if provider.AsString() != "anthropic" || model.AsString() != "claude-sonnet-4-6" {
-					t.Errorf("%s provider/model = %q/%q, want anthropic/claude-sonnet-4-6", m.Name, provider.AsString(), model.AsString())
-				}
+				assert.Equal(t, "anthropic", provider.AsString(), "%s attribute gen_ai.provider.name", m.Name)
+				assert.Equal(t, "claude-sonnet-4-6", model.AsString(), "%s attribute gen_ai.request.model", m.Name)
 				seen[m.Name] = true
 			}
 		}
 	}
-	if len(seen) != 2 {
-		t.Errorf("token counters observed = %v, want input and output", seen)
-	}
+	assert.Len(t, seen, 2, "token counters observed %v, want input and output", seen)
 }

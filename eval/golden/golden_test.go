@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 const validDiff = "--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n-old\n+new\n"
@@ -17,23 +19,17 @@ func validCase(id string) Case {
 func encodeSet(t *testing.T, cases ...Case) []byte {
 	t.Helper()
 	data, err := json.Marshal(Set{Version: FormatVersion, Name: "t", Cases: cases})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return data
 }
 
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 }
 
-func TestLoad_DiffAndWorkspaceCases(t *testing.T) {
+func TestLoad_ResolvesDiffAndWorkspaceCases(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "fixtures/ws/before/a.txt"), "one\n")
 	writeFile(t, filepath.Join(dir, "fixtures/ws/before/gone.txt"), "bye\n")
@@ -46,25 +42,24 @@ func TestLoad_DiffAndWorkspaceCases(t *testing.T) {
 	writeFile(t, path, string(encodeSet(t, validCase("plain"), adversarial, fixture)))
 
 	s, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if len(s.Cases) != 3 || !s.Cases[1].Adversarial() || s.Cases[0].Adversarial() {
-		t.Fatalf("cases = %+v", s.Cases)
-	}
-	files, err := s.Files(s.Cases[0])
-	if err != nil || files.Before["f.txt"] != "old\n" || files.After["f.txt"] != "new\n" {
-		t.Errorf("diff case files = %#v, %v", files, err)
-	}
-	files, err = s.Files(s.Cases[2])
-	if err != nil {
-		t.Fatalf("workspace case files: %v", err)
-	}
-	wantBefore := Tree{"a.txt": "one\n", "gone.txt": "bye\n"}
-	wantAfter := Tree{"a.txt": "one\ntwo\n", "sub/new.txt": "hi\n"}
-	if !treesEqual(files.Before, wantBefore) || !treesEqual(files.After, wantAfter) {
-		t.Errorf("workspace case files = %#v", files)
-	}
+	require.NoError(t, err)
+	require.Len(t, s.Cases, 3)
+	require.False(t, s.Cases[0].Adversarial())
+	require.True(t, s.Cases[1].Adversarial())
+
+	t.Run("diff case", func(t *testing.T) {
+		files, err := s.Files(s.Cases[0])
+		require.NoError(t, err)
+		require.Equal(t, "old\n", files.Before["f.txt"])
+		require.Equal(t, "new\n", files.After["f.txt"])
+	})
+
+	t.Run("workspace case", func(t *testing.T) {
+		files, err := s.Files(s.Cases[2])
+		require.NoError(t, err)
+		require.Equal(t, Tree{"a.txt": "one\n", "gone.txt": "bye\n"}, files.Before)
+		require.Equal(t, Tree{"a.txt": "one\ntwo\n", "sub/new.txt": "hi\n"}, files.After)
+	})
 }
 
 func TestParse_RejectsInvalidCases(t *testing.T) {
@@ -93,9 +88,8 @@ func TestParse_RejectsInvalidCases(t *testing.T) {
 			c := validCase("c1")
 			tc.mutate(&c)
 			_, err := Parse(encodeSet(t, c), t.TempDir())
-			if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "case 1 (") {
-				t.Fatalf("Parse error = %v, want a case-scoped error containing %q", err, tc.want)
-			}
+			require.ErrorContains(t, err, "case 1 (", "error should name the failing case")
+			require.ErrorContains(t, err, tc.want)
 		})
 	}
 }
@@ -111,9 +105,7 @@ func TestParse_RejectsInvalidSets(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			_, err := Parse([]byte(tc.data), t.TempDir())
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("Parse error = %v, want it to contain %q", err, tc.want)
-			}
+			require.ErrorContains(t, err, tc.want)
 		})
 	}
 }
@@ -122,13 +114,14 @@ func TestParse_ReportsEveryInvalidCase(t *testing.T) {
 	first, second := validCase("dup"), validCase("dup")
 	second.Label = "maybe"
 	_, err := Parse(encodeSet(t, first, second), t.TempDir())
-	if err == nil {
-		t.Fatal("Parse accepted an invalid set")
-	}
-	for _, want := range []string{`case 2: duplicate id "dup"`, `case 2 ("dup"): label`} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not contain %q", err, want)
-		}
+	require.Error(t, err, "Parse accepted an invalid set")
+	for name, want := range map[string]string{
+		"duplicate id":  `case 2: duplicate id "dup"`,
+		"invalid label": `case 2 ("dup"): label`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.ErrorContains(t, err, want)
+		})
 	}
 }
 
@@ -140,35 +133,30 @@ func TestFiles_WorkspaceFixtureRules(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "nested-git/after/.git/config"), "[core]\n")
 	writeFile(t, filepath.Join(dir, "link/before/a.txt"), "x\n")
 	writeFile(t, filepath.Join(dir, "link/after/a.txt"), "y\n")
-	if err := os.Symlink("/etc/hosts", filepath.Join(dir, "link/after/hosts")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Symlink("/etc/hosts", filepath.Join(dir, "link/after/hosts")))
 	s := &Set{dir: dir}
 	for ws, want := range map[string]string{
 		"same":       "identical",
 		"nested-git": ".git directory",
 		"link":       "only regular files",
 	} {
-		_, err := s.Files(Case{Workspace: ws})
-		if err == nil || !strings.Contains(err.Error(), want) {
-			t.Errorf("%s: Files error = %v, want it to contain %q", ws, err, want)
-		}
+		t.Run(ws, func(t *testing.T) {
+			_, err := s.Files(Case{Workspace: ws})
+			require.ErrorContains(t, err, want)
+		})
 	}
 }
 
 func TestLoad_RejectsOversizedSet(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "big.json")
 	writeFile(t, path, strings.Repeat(" ", maxSetBytes+1))
-	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "exceeds") {
-		t.Fatalf("Load error = %v, want a size error", err)
-	}
+	_, err := Load(path)
+	require.ErrorContains(t, err, "exceeds")
 }
 
 func TestSeedSet(t *testing.T) {
 	s, err := Load("diff-review-seed.json")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
+	require.NoError(t, err)
 	labels := map[string]int{}
 	adversarialLabels := map[string]int{}
 	techniques := map[string]bool{}
@@ -182,21 +170,29 @@ func TestSeedSet(t *testing.T) {
 			techniques[tag] = true
 		}
 	}
-	if len(s.Cases) != 24 || labels["pass"] != 12 || labels["fail"] != 12 {
-		t.Errorf("seed has %d cases labelled %v, want 24 balanced 12/12", len(s.Cases), labels)
-	}
-	if adversarialLabels["pass"]+adversarialLabels["fail"] != 8 || adversarialLabels["pass"] == 0 || adversarialLabels["fail"] == 0 {
-		t.Errorf("adversarial labels = %v, want 8 cases with both labels represented", adversarialLabels)
-	}
+
+	t.Run("labels are balanced 12 pass and 12 fail", func(t *testing.T) {
+		require.Len(t, s.Cases, 24)
+		require.Equal(t, 12, labels["pass"], "labels %v", labels)
+		require.Equal(t, 12, labels["fail"], "labels %v", labels)
+	})
+
+	t.Run("adversarial cases cover both labels", func(t *testing.T) {
+		require.Equal(t, 8, adversarialLabels["pass"]+adversarialLabels["fail"], "adversarial labels %v", adversarialLabels)
+		require.Positive(t, adversarialLabels["pass"], "adversarial labels %v", adversarialLabels)
+		require.Positive(t, adversarialLabels["fail"], "adversarial labels %v", adversarialLabels)
+	})
+
 	for _, tag := range []string{"planted-verdict", "fake-fence", "fake-truncation", "judge-instruction", "secret-string"} {
-		if !techniques[tag] {
-			t.Errorf("no adversarial case is tagged %q", tag)
-		}
+		t.Run("adversarial technique "+tag, func(t *testing.T) {
+			require.True(t, techniques[tag], "no adversarial case is tagged %q", tag)
+		})
 	}
+
 	for _, c := range s.Cases {
-		if strings.TrimSpace(c.Notes) == "" {
-			t.Errorf("case %s has no notes explaining its label", c.ID)
-		}
+		t.Run("case "+c.ID+" explains its label", func(t *testing.T) {
+			require.NotEmpty(t, strings.TrimSpace(c.Notes))
+		})
 	}
 }
 
@@ -221,9 +217,8 @@ func TestFiles_RejectsPathsAWorkspaceCannotHold(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if _, err := s.Files(tc.c); err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("Files error = %v, want it to contain %q", err, tc.want)
-			}
+			_, err := s.Files(tc.c)
+			require.ErrorContains(t, err, tc.want)
 		})
 	}
 }
@@ -236,37 +231,43 @@ func TestFiles_MissingSideIsAnEmptyTree(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "not-a-dir"), "x\n")
 	s := &Set{dir: dir}
 
-	files, err := s.Files(Case{Workspace: "delete-all"})
-	if err != nil || files.Before["a.txt"] != "a\n" || len(files.After) != 0 {
-		t.Errorf("delete-all = %#v, %v; want every file deleted", files, err)
-	}
-	files, err = s.Files(Case{Workspace: "create-all"})
-	if err != nil || len(files.Before) != 0 || files.After["sub/b.txt"] != "b\n" {
-		t.Errorf("create-all = %#v, %v; want every file created", files, err)
-	}
+	t.Run("missing after side deletes every file", func(t *testing.T) {
+		files, err := s.Files(Case{Workspace: "delete-all"})
+		require.NoError(t, err)
+		require.Equal(t, "a\n", files.Before["a.txt"])
+		require.Empty(t, files.After)
+	})
+
+	t.Run("missing before side creates every file", func(t *testing.T) {
+		files, err := s.Files(Case{Workspace: "create-all"})
+		require.NoError(t, err)
+		require.Empty(t, files.Before)
+		require.Equal(t, "b\n", files.After["sub/b.txt"])
+	})
+
 	for ws, want := range map[string]string{"no-sides": "neither before/ nor after/", "not-a-dir": "is not a directory"} {
-		if _, err := s.Files(Case{Workspace: ws}); err == nil || !strings.Contains(err.Error(), want) {
-			t.Errorf("%s: Files error = %v, want it to contain %q", ws, err, want)
-		}
+		t.Run(ws, func(t *testing.T) {
+			_, err := s.Files(Case{Workspace: ws})
+			require.ErrorContains(t, err, want)
+		})
 	}
 }
 
 func TestLoad_NamesTheFileInParseErrors(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bad.json")
 	writeFile(t, path, `{"version":1,`)
-	if _, err := Load(path); err == nil || !strings.HasPrefix(err.Error(), path+": decoding golden set") {
-		t.Fatalf("Load error = %v, want it prefixed with the path", err)
-	}
-	if _, err := Load(filepath.Join(t.TempDir(), "absent.json")); err == nil {
-		t.Fatal("Load accepted a missing file")
-	}
+	_, err := Load(path)
+	require.Error(t, err)
+	require.True(t, strings.HasPrefix(err.Error(), path+": decoding golden set"), "Load error = %v, want it prefixed with the path", err)
+
+	_, err = Load(filepath.Join(t.TempDir(), "absent.json"))
+	require.Error(t, err, "Load accepted a missing file")
 }
 
 func TestFiles_RejectsAnOversizedFixture(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "big/before/a.txt"), strings.Repeat("x", maxFixtureBytes/2))
 	writeFile(t, filepath.Join(dir, "big/after/a.txt"), strings.Repeat("y", maxFixtureBytes/2+1))
-	if _, err := (&Set{dir: dir}).Files(Case{Workspace: "big"}); err == nil || !strings.Contains(err.Error(), "workspace after/: fixture exceeds") {
-		t.Fatalf("Files error = %v, want the shared fixture budget exceeded", err)
-	}
+	_, err := (&Set{dir: dir}).Files(Case{Workspace: "big"})
+	require.ErrorContains(t, err, "workspace after/: fixture exceeds")
 }

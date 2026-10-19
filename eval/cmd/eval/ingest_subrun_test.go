@@ -4,8 +4,9 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/eval/lakehouse"
 	"github.com/rxbynerd/stirrup/types"
@@ -35,45 +36,40 @@ func TestIngestFile_SubRunsStayInsideParentRecording(t *testing.T) {
 
 	storeDir := t.TempDir()
 	store, err := lakehouse.NewFileStore(storeDir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	require.NoError(t, err)
 	defer func() { _ = store.Close() }()
 
 	traces, recordings, skipped, err := ingestFile(context.Background(), store, tracePath, false)
-	if err != nil {
-		t.Fatalf("ingestFile: %v", err)
-	}
-	if traces != 1 || recordings != 1 || skipped != 0 {
-		t.Errorf("counts: traces=%d recordings=%d skipped=%d; want 1/1/0", traces, recordings, skipped)
-	}
+	require.NoError(t, err)
+	require.Equal(t, 1, traces, "ingested traces")
+	require.Equal(t, 1, recordings, "ingested recordings")
+	require.Equal(t, 0, skipped, "skipped lines")
+
 	for _, sub := range []string{"traces", "recordings"} {
-		entries, err := os.ReadDir(filepath.Join(storeDir, sub))
-		if err != nil {
-			t.Fatalf("read %s: %v", sub, err)
-		}
-		if len(entries) != 1 || entries[0].Name() != "run-p.json" {
-			t.Errorf("%s entries = %v, want only run-p.json", sub, entries)
-		}
+		t.Run(sub, func(t *testing.T) {
+			entries, err := os.ReadDir(filepath.Join(storeDir, sub))
+			require.NoError(t, err)
+			require.Len(t, entries, 1)
+			require.Equal(t, "run-p.json", entries[0].Name())
+		})
 	}
 
 	gotTraces, err := store.QueryTraces(context.Background(), types.TraceFilter{})
-	if err != nil {
-		t.Fatalf("QueryTraces: %v", err)
-	}
-	if len(gotTraces) != 1 || gotTraces[0].Turns != 1 || gotTraces[0].Outcome != "interrupted" {
-		t.Errorf("traces = %+v, want one interrupted run with 1 parent turn", gotTraces)
-	}
+	require.NoError(t, err)
+	require.Len(t, gotTraces, 1, "traces = %+v", gotTraces)
+	require.Equal(t, 1, gotTraces[0].Turns, "parent turns in summary")
+	require.Equal(t, "interrupted", gotTraces[0].Outcome)
+
 	recs, err := store.QueryRecordings(context.Background(), types.TraceFilter{})
-	if err != nil {
-		t.Fatalf("QueryRecordings: %v", err)
-	}
-	if len(recs) != 1 || len(recs[0].Turns) != 1 || len(recs[0].SubRuns) != 1 {
-		t.Fatalf("recordings = %+v, want one with 1 turn and 1 sub-run", recs)
-	}
-	if sub := recs[0].SubRuns[0]; sub.RunID != "run-p/sub-1" || len(sub.Turns) != 2 || sub.Summary == nil {
-		t.Errorf("sub-run = %+v, want run-p/sub-1 with 2 turns and a summary", sub)
-	}
+	require.NoError(t, err)
+	require.Len(t, recs, 1, "recordings = %+v", recs)
+	require.Len(t, recs[0].Turns, 1, "parent turns in recording")
+	require.Len(t, recs[0].SubRuns, 1, "sub-runs in recording")
+
+	sub := recs[0].SubRuns[0]
+	require.Equal(t, "run-p/sub-1", sub.RunID, "sub-run = %+v", sub)
+	require.Len(t, sub.Turns, 2, "sub-run turns")
+	require.NotNil(t, sub.Summary, "sub-run summary")
 }
 
 // TestSummariseFailingTurn_UsesParentsLastTurn pins that the mined
@@ -93,11 +89,8 @@ func TestSummariseFailingTurn_UsesParentsLastTurn(t *testing.T) {
 			},
 		}},
 	}
-	got := summariseFailingTurn(rec)
-	if !strings.Contains(got, "last turn: 4") || !strings.Contains(got, "parent gave up") {
-		t.Errorf("summary = %q, want the parent's last turn", got)
-	}
-	if strings.Contains(got, "child text") {
-		t.Errorf("summary = %q, quotes a sub-run turn", got)
-	}
+	summary := summariseFailingTurn(rec)
+	require.Contains(t, summary, "last turn: 4")
+	require.Contains(t, summary, "parent gave up")
+	require.NotContains(t, summary, "child text", "summary quotes a sub-run turn")
 }

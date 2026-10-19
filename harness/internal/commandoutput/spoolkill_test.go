@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 )
 
@@ -19,38 +22,31 @@ const (
 	spoolKillSecretEnv = "STIRRUP_SPOOL_KILL_SECRET"
 )
 
-// TestSpoolSurvivesSIGKILLWithoutSecrets drives the crash window itself: a
+// TestSpool_SurvivesSIGKILLWithoutSecrets drives the crash window itself: a
 // child process with a live capture is killed outright, leaving whatever the
 // spool held at that instant. Nothing else in the suite can prove the
 // guarantee, because every in-process path runs the completion cleanup, which
 // makes a scrubbed spool indistinguishable from a deleted one.
-func TestSpoolSurvivesSIGKILLWithoutSecrets(t *testing.T) {
+func TestSpool_SurvivesSIGKILLWithoutSecrets(t *testing.T) {
 	if os.Getenv(spoolKillChildEnv) == "1" {
 		spoolKillChild()
 		return
 	}
 	tmp := t.TempDir()
 	secret := "gh" + "p_sigkillFixture0123456789abcdef"
-	child := exec.Command(os.Args[0], "-test.run=TestSpoolSurvivesSIGKILLWithoutSecrets")
+	child := exec.Command(os.Args[0], "-test.run=^TestSpool_SurvivesSIGKILLWithoutSecrets$")
 	child.Env = append(os.Environ(), spoolKillChildEnv+"=1", spoolKillSecretEnv+"="+secret, "TMPDIR="+tmp)
 	child.Stderr = os.Stderr
 	stdout, err := child.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := child.Start(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, child.Start())
 	defer func() { _ = child.Wait() }()
+
 	ready := bufio.NewScanner(stdout)
 	for ready.Scan() && ready.Text() != "ready" {
 	}
-	if err := ready.Err(); err != nil {
-		t.Fatalf("child never reported a live spool: %v", err)
-	}
-	if err := child.Process.Kill(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, ready.Err(), "child never reported a live spool")
+	require.NoError(t, child.Process.Kill())
 	_ = child.Wait()
 
 	spooled, redacted := 0, false
@@ -66,18 +62,13 @@ func TestSpoolSurvivesSIGKILLWithoutSecrets(t *testing.T) {
 			return nil
 		}
 		spooled++
-		if strings.Contains(string(content), secret) {
-			t.Errorf("killed run left an unscrubbed secret in %s", path)
-		}
+		assert.NotContains(t, string(content), secret, "killed run left an unscrubbed secret in %s", path)
 		redacted = redacted || strings.Contains(string(content), "[REDACTED]")
 		return nil
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if spooled == 0 || !redacted {
-		t.Fatalf("the crash window was not exercised: %d spool files survived, redaction seen=%v", spooled, redacted)
-	}
+	require.NoError(t, err)
+	require.NotZero(t, spooled, "the crash window was not exercised: no spool file survived")
+	require.True(t, redacted, "the crash window was not exercised: no [REDACTED] marker survived")
 }
 
 // spoolKillChild starts a capture, drives enough output through it to force a

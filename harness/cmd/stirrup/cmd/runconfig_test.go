@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -32,9 +34,7 @@ func newTestRunConfigCommand() *cobra.Command {
 func runRunConfigForTest(t *testing.T, args []string, stdin string) (string, error) {
 	t.Helper()
 	cmd := newTestRunConfigCommand()
-	if err := cmd.ParseFlags(args); err != nil {
-		t.Fatalf("ParseFlags: %v", err)
-	}
+	require.NoError(t, cmd.ParseFlags(args))
 	var reader io.Reader
 	if stdin != "" {
 		reader = strings.NewReader(stdin)
@@ -46,6 +46,15 @@ func runRunConfigForTest(t *testing.T, args []string, stdin string) (string, err
 	return buf.String(), nil
 }
 
+// decodeRunConfigForTest parses command output as a RunConfig and fails
+// the test when the output is not valid JSON.
+func decodeRunConfigForTest(t *testing.T, out string) types.RunConfig {
+	t.Helper()
+	var cfg types.RunConfig
+	require.NoError(t, json.Unmarshal([]byte(out), &cfg), "output is not parseable JSON:\n%s", out)
+	return cfg
+}
+
 // TestRunRunConfig_FlagOnlyEmitsValidJSON pins that
 // `stirrup run-config --mode execution --provider anthropic` produces
 // a parseable RunConfig.
@@ -54,37 +63,21 @@ func TestRunRunConfig_FlagOnlyEmitsValidJSON(t *testing.T) {
 		"--mode", "execution",
 		"--provider", "anthropic",
 	}, "")
-	if err != nil {
-		t.Fatalf("runRunConfig: %v", err)
-	}
-	var cfg types.RunConfig
-	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-		t.Fatalf("emitted output is not parseable JSON: %v\n%s", err, out)
-	}
-	if cfg.Mode != "execution" {
-		t.Errorf("Mode = %q, want execution", cfg.Mode)
-	}
-	if cfg.Provider.Type != "anthropic" {
-		t.Errorf("Provider.Type = %q, want anthropic", cfg.Provider.Type)
-	}
+	require.NoError(t, err)
+	cfg := decodeRunConfigForTest(t, out)
+	assert.Equal(t, "execution", cfg.Mode)
+	assert.Equal(t, "anthropic", cfg.Provider.Type)
 }
 
-func TestRunRunConfig_ReasoningSummaryFlag(t *testing.T) {
+func TestRunRunConfig_ReasoningSummaryFlagSetsField(t *testing.T) {
 	out, err := runRunConfigForTest(t, []string{
 		"--mode", "execution",
 		"--provider", "anthropic",
 		"--reasoning-summary", "off",
 	}, "")
-	if err != nil {
-		t.Fatalf("runRunConfig: %v", err)
-	}
-	var cfg types.RunConfig
-	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-		t.Fatalf("emitted output is not parseable JSON: %v\n%s", err, out)
-	}
-	if cfg.ReasoningSummary != types.ReasoningSummaryOff {
-		t.Errorf("ReasoningSummary = %q, want off", cfg.ReasoningSummary)
-	}
+	require.NoError(t, err)
+	cfg := decodeRunConfigForTest(t, out)
+	require.Equal(t, types.ReasoningSummaryOff, cfg.ReasoningSummary)
 }
 
 // TestRunRunConfig_Idempotency pins that piping a config through
@@ -95,16 +88,10 @@ func TestRunRunConfig_Idempotency(t *testing.T) {
 		"--mode", "execution",
 		"--model", "claude-opus-4-7",
 	}, "")
-	if err != nil {
-		t.Fatalf("pass 1: %v", err)
-	}
+	require.NoError(t, err, "pass 1")
 	pass2, err := runRunConfigForTest(t, nil, pass1)
-	if err != nil {
-		t.Fatalf("pass 2: %v", err)
-	}
-	if pass1 != pass2 {
-		t.Errorf("run-config is not idempotent\npass1:\n%s\npass2:\n%s", pass1, pass2)
-	}
+	require.NoError(t, err, "pass 2")
+	require.Equal(t, pass1, pass2)
 }
 
 // TestRunRunConfig_ValidateRejectsInvalidConfig pins that --validate
@@ -119,12 +106,8 @@ func TestRunRunConfig_ValidateRejectsInvalidConfig(t *testing.T) {
 		"--model", "claude-sonnet-4-6",
 		"--prompt", "x",
 	}, "")
-	if err == nil {
-		t.Fatal("expected --validate to reject bedrock + sonnet-4-6 alias")
-	}
-	if !strings.Contains(err.Error(), "bedrock") {
-		t.Errorf("error should mention bedrock, got: %v", err)
-	}
+	require.Error(t, err, "--validate should reject bedrock with the sonnet-4-6 alias")
+	require.ErrorContains(t, err, "bedrock")
 }
 
 // TestRunRunConfig_ProviderDefaults pins the provider-derived defaults
@@ -136,17 +119,11 @@ func TestRunRunConfig_ProviderDefaults(t *testing.T) {
 		"--model", "gpt-5.4-nano",
 		"--compact",
 	}, "")
-	if err != nil {
-		t.Fatalf("runRunConfig: %v", err)
-	}
-	if !strings.Contains(out, `"apiKeyRef":"secret://OPENAI_API_KEY"`) {
-		t.Errorf("output should carry the OpenAI key reference, got: %s", out)
-	}
+	require.NoError(t, err)
+	require.Contains(t, out, `"apiKeyRef":"secret://OPENAI_API_KEY"`)
 
 	_, err = runRunConfigForTest(t, []string{"--provider", "openai-responses", "--compact"}, "")
-	if err == nil || !strings.Contains(err.Error(), "--provider=openai-responses") {
-		t.Fatalf("expected a missing --model error naming the provider, got %v", err)
-	}
+	require.ErrorContains(t, err, "--provider=openai-responses", "missing --model error should name the provider")
 }
 
 // TestRunRunConfig_ValidateAcceptsValidConfig is the positive
@@ -158,23 +135,14 @@ func TestRunRunConfig_ValidateAcceptsValidConfig(t *testing.T) {
 		"--mode", "execution",
 		"--prompt", "x",
 	}, "")
-	if err != nil {
-		t.Fatalf("runRunConfig: %v", err)
-	}
-	var cfg types.RunConfig
-	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if cfg.RunID == "" {
-		t.Error("--validate path should mint a RunID (ResolveAll)")
-	}
+	require.NoError(t, err)
+	cfg := decodeRunConfigForTest(t, out)
+	require.NotEmpty(t, cfg.RunID, "--validate should mint a RunID")
 }
 
 // TestRunRunConfig_ValidateInteractiveNoPromptShowsPlainError pins that
-// the interactive harness usage-hint must NOT fire for run-config: when
-// resolvePromptForRun returns errPromptHintRequested,
-// runRunConfigWithIO must substitute the actionable "prompt is
-// required: ..." error rather than leaking the sentinel string.
+// run-config reports the actionable prompt-required error when no prompt
+// is supplied, and never the interactive harness usage-hint sentinel.
 func TestRunRunConfig_ValidateInteractiveNoPromptShowsPlainError(t *testing.T) {
 	orig := stderrIsInteractive
 	stderrIsInteractive = func() bool { return true }
@@ -185,16 +153,9 @@ func TestRunRunConfig_ValidateInteractiveNoPromptShowsPlainError(t *testing.T) {
 		"--validate",
 		"--mode", "execution",
 	}, "")
-	if err == nil {
-		t.Fatal("run-config --validate with no prompt should fail")
-	}
-	if !strings.Contains(err.Error(), "prompt is required") {
-		t.Errorf("error should be the actionable prompt-required message, got: %v", err)
-	}
-	// The sentinel's internal string must never reach the operator.
-	if strings.Contains(err.Error(), "interactive prompt hint requested") {
-		t.Errorf("run-config leaked the harness usage-hint sentinel: %v", err)
-	}
+	require.Error(t, err)
+	require.ErrorContains(t, err, "prompt is required")
+	require.NotContains(t, err.Error(), "interactive prompt hint requested")
 }
 
 // TestRunRunConfig_CompactProducesSingleLine pins that --compact emits
@@ -204,17 +165,10 @@ func TestRunRunConfig_CompactProducesSingleLine(t *testing.T) {
 		"--compact",
 		"--mode", "planning",
 	}, "")
-	if err != nil {
-		t.Fatalf("runRunConfig: %v", err)
-	}
+	require.NoError(t, err)
 	body := strings.TrimRight(out, "\n")
-	if strings.Contains(body, "\n") {
-		t.Errorf("--compact output should be single-line, got: %q", out)
-	}
-	var cfg types.RunConfig
-	if err := json.Unmarshal([]byte(body), &cfg); err != nil {
-		t.Fatalf("compact output not parseable: %v\n%s", err, out)
-	}
+	require.NotContains(t, body, "\n", "--compact output should be single-line")
+	decodeRunConfigForTest(t, body)
 }
 
 // TestRunRunConfig_RedactScrubsSecretRefs pins that --redact rewrites
@@ -226,28 +180,16 @@ func TestRunRunConfig_RedactScrubsSecretRefs(t *testing.T) {
 		"--mode", "planning",
 		"--api-key-ref", "secret://CUSTOM_KEY",
 	}, "")
-	if err != nil {
-		t.Fatalf("runRunConfig: %v", err)
-	}
-	if !strings.Contains(out, "secret://[REDACTED]") {
-		t.Errorf("--redact should produce REDACTED placeholder, got: %s", out)
-	}
-	if strings.Contains(out, "CUSTOM_KEY") {
-		t.Errorf("--redact should scrub the original secret reference, got: %s", out)
-	}
+	require.NoError(t, err)
+	assert.Contains(t, out, "secret://[REDACTED]", "--redact should produce REDACTED placeholder")
+	assert.NotContains(t, out, "CUSTOM_KEY", "--redact should scrub the original secret reference")
 }
 
-// TestRunRunConfig_MalformedStdinJSONErrors pins the parse-error
-// surface: a regression that swallows the underlying error would drop
-// the "parsing config" message.
+// TestRunRunConfig_MalformedStdinJSONErrors pins that malformed stdin JSON
+// is reported as a config parse error.
 func TestRunRunConfig_MalformedStdinJSONErrors(t *testing.T) {
 	_, err := runRunConfigForTest(t, nil, `{"this is not valid JSON`)
-	if err == nil {
-		t.Fatal("expected parse error")
-	}
-	if !strings.Contains(err.Error(), "parsing config") {
-		t.Errorf("error should describe parse failure, got: %v", err)
-	}
+	require.ErrorContains(t, err, "parsing config")
 }
 
 // TestRunRunConfig_RoundTripFromExample pins idempotency against a real
@@ -259,16 +201,10 @@ func TestRunRunConfig_RoundTripFromExample(t *testing.T) {
 		t.Skipf("openai_responses.json example not present: %v", err)
 	}
 	pass1, err := runRunConfigForTest(t, nil, string(body))
-	if err != nil {
-		t.Fatalf("pass 1: %v", err)
-	}
+	require.NoError(t, err, "pass 1")
 	pass2, err := runRunConfigForTest(t, nil, pass1)
-	if err != nil {
-		t.Fatalf("pass 2: %v", err)
-	}
-	if pass1 != pass2 {
-		t.Errorf("normalisation pass is not idempotent")
-	}
+	require.NoError(t, err, "pass 2")
+	require.Equal(t, pass1, pass2)
 }
 
 // TestRunRunConfig_WrapperThreadsOSIO pins that the runRunConfig cobra
@@ -276,15 +212,11 @@ func TestRunRunConfig_RoundTripFromExample(t *testing.T) {
 // runRunConfigWithIO helper.
 func TestRunRunConfig_WrapperThreadsOSIO(t *testing.T) {
 	cmd := newTestRunConfigCommand()
-	if err := cmd.ParseFlags([]string{"--mode", "planning"}); err != nil {
-		t.Fatalf("ParseFlags: %v", err)
-	}
+	require.NoError(t, cmd.ParseFlags([]string{"--mode", "planning"}))
 
 	origStdout := os.Stdout
 	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
+	require.NoError(t, err)
 	os.Stdout = w
 	defer func() {
 		os.Stdout = origStdout
@@ -298,31 +230,22 @@ func TestRunRunConfig_WrapperThreadsOSIO(t *testing.T) {
 		done <- buf.String()
 	}()
 
-	if err := runRunConfig(cmd, cmd.Flags().Args()); err != nil {
-		_ = w.Close()
-		<-done
-		t.Fatalf("runRunConfig: %v", err)
-	}
+	runErr := runRunConfig(cmd, cmd.Flags().Args())
 	_ = w.Close()
 	out := <-done
+	require.NoError(t, runErr)
 
-	var cfg types.RunConfig
-	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-		t.Fatalf("os.Stdout should receive parseable JSON: %v\n%s", err, out)
-	}
-	if cfg.Mode != "planning" {
-		t.Errorf("Mode = %q, want planning", cfg.Mode)
-	}
+	cfg := decodeRunConfigForTest(t, out)
+	require.Equal(t, "planning", cfg.Mode)
 }
 
-// TestRunRunConfigWithIO_TableDriven exercises every cobra flag-reading
+// TestRunRunConfigWithIO_FlagBranches exercises every cobra flag-reading
 // branch inside runRunConfigWithIO (validate, redact, compact, plain)
 // through the real entry point, one branch per row.
-func TestRunRunConfigWithIO_TableDriven(t *testing.T) {
+func TestRunRunConfigWithIO_FlagBranches(t *testing.T) {
 	cases := []struct {
 		name    string
 		args    []string
-		stdin   string
 		wantErr bool
 		check   func(t *testing.T, out string)
 	}{
@@ -330,16 +253,9 @@ func TestRunRunConfigWithIO_TableDriven(t *testing.T) {
 			name: "flag-only emits indented JSON",
 			args: []string{"--mode", "planning", "--prompt", "x"},
 			check: func(t *testing.T, out string) {
-				if !strings.Contains(out, "\n  ") {
-					t.Errorf("default output should be indented, got: %s", out)
-				}
-				var cfg types.RunConfig
-				if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-					t.Fatalf("unparseable JSON: %v\n%s", err, out)
-				}
-				if cfg.Mode != "planning" {
-					t.Errorf("Mode = %q, want planning", cfg.Mode)
-				}
+				require.Contains(t, out, "\n  ", "default output should be indented")
+				cfg := decodeRunConfigForTest(t, out)
+				require.Equal(t, "planning", cfg.Mode)
 			},
 		},
 		{
@@ -347,25 +263,16 @@ func TestRunRunConfigWithIO_TableDriven(t *testing.T) {
 			args: []string{"--compact", "--mode", "planning"},
 			check: func(t *testing.T, out string) {
 				body := strings.TrimRight(out, "\n")
-				if strings.Contains(body, "\n") {
-					t.Errorf("--compact output should be single-line, got: %q", out)
-				}
-				var cfg types.RunConfig
-				if err := json.Unmarshal([]byte(body), &cfg); err != nil {
-					t.Fatalf("compact output not parseable: %v\n%s", err, out)
-				}
+				require.NotContains(t, body, "\n", "--compact output should be single-line")
+				decodeRunConfigForTest(t, body)
 			},
 		},
 		{
 			name: "redact rewrites secret references",
 			args: []string{"--redact", "--mode", "planning", "--api-key-ref", "secret://CUSTOM_KEY"},
 			check: func(t *testing.T, out string) {
-				if !strings.Contains(out, "secret://[REDACTED]") {
-					t.Errorf("--redact should produce REDACTED placeholder, got: %s", out)
-				}
-				if strings.Contains(out, "CUSTOM_KEY") {
-					t.Errorf("--redact should scrub the original secret reference, got: %s", out)
-				}
+				require.Contains(t, out, "secret://[REDACTED]", "--redact should produce REDACTED placeholder")
+				require.NotContains(t, out, "CUSTOM_KEY", "--redact should scrub the original secret reference")
 			},
 		},
 		{
@@ -377,24 +284,14 @@ func TestRunRunConfigWithIO_TableDriven(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := newTestRunConfigCommand()
-			if err := cmd.ParseFlags(tc.args); err != nil {
-				t.Fatalf("ParseFlags: %v", err)
-			}
-			var reader io.Reader
-			if tc.stdin != "" {
-				reader = strings.NewReader(tc.stdin)
-			}
+			require.NoError(t, cmd.ParseFlags(tc.args))
 			var buf bytes.Buffer
-			err := runRunConfigWithIO(cmd, cmd.Flags().Args(), reader, &buf)
+			err := runRunConfigWithIO(cmd, cmd.Flags().Args(), nil, &buf)
 			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected error, got nil; output: %s", buf.String())
-				}
+				require.Error(t, err, "output: %s", buf.String())
 				return
 			}
-			if err != nil {
-				t.Fatalf("runRunConfigWithIO: %v", err)
-			}
+			require.NoError(t, err)
 			if tc.check != nil {
 				tc.check(t, buf.String())
 			}
@@ -414,16 +311,9 @@ func TestRunRunConfig_EmptyEditStrategyDefaultsToMulti(t *testing.T) {
 			"--mode", "execution",
 			"--prompt", "test",
 		}, "")
-		if err != nil {
-			t.Fatalf("runRunConfig: %v", err)
-		}
-		var cfg types.RunConfig
-		if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-			t.Fatalf("unparseable JSON: %v\n%s", err, out)
-		}
-		if cfg.EditStrategy.Type != "multi" {
-			t.Errorf("EditStrategy.Type = %q, want multi (subcommand default must match CLI and validation)", cfg.EditStrategy.Type)
-		}
+		require.NoError(t, err)
+		cfg := decodeRunConfigForTest(t, out)
+		require.Equal(t, "multi", cfg.EditStrategy.Type, "subcommand default must match CLI and validation")
 	})
 
 	t.Run("base mode preserves empty for chaining", func(t *testing.T) {
@@ -431,15 +321,8 @@ func TestRunRunConfig_EmptyEditStrategyDefaultsToMulti(t *testing.T) {
 			"--mode", "execution",
 			"--prompt", "test",
 		}, "")
-		if err != nil {
-			t.Fatalf("runRunConfig: %v", err)
-		}
-		var cfg types.RunConfig
-		if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-			t.Fatalf("unparseable JSON: %v\n%s", err, out)
-		}
-		if cfg.EditStrategy.Type != "" {
-			t.Errorf("EditStrategy.Type = %q, want empty (ResolveBase must not apply defaults a downstream stage could override)", cfg.EditStrategy.Type)
-		}
+		require.NoError(t, err)
+		cfg := decodeRunConfigForTest(t, out)
+		require.Empty(t, cfg.EditStrategy.Type, "ResolveBase must not apply defaults a downstream stage could override")
 	})
 }

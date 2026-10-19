@@ -5,9 +5,10 @@ import (
 	"encoding/xml"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/eval"
 )
@@ -43,6 +44,16 @@ type junitDoc struct {
 	} `xml:"testsuite"`
 }
 
+const junitXMLHeader = `<?xml version="1.0" encoding="UTF-8"?>`
+
+// requireJUnitHeader asserts that data begins with the XML declaration the
+// reporter emits.
+func requireJUnitHeader(t *testing.T, data []byte) {
+	t.Helper()
+	got := string(data[:min(len(data), len(junitXMLHeader))])
+	require.Equal(t, junitXMLHeader, got, "XML header")
+}
+
 func sampleResult() eval.SuiteResult {
 	started := time.Date(2026, 5, 9, 9, 0, 0, 0, time.UTC)
 	return eval.SuiteResult{
@@ -63,61 +74,43 @@ func sampleResult() eval.SuiteResult {
 // on `eval run` and --to-junit on `eval convert`: a file is created at the
 // requested path with well-formed JUnit XML inside.
 func TestWriteJUnit_CreatesFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "junit.xml")
+	path := filepath.Join(t.TempDir(), "junit.xml")
 
-	if err := writeJUnit(path, sampleResult()); err != nil {
-		t.Fatalf("writeJUnit: %v", err)
-	}
+	require.NoError(t, writeJUnit(path, sampleResult()))
 
 	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("reading emitted XML: %v", err)
-	}
-
-	if !strings.HasPrefix(string(data), `<?xml version="1.0" encoding="UTF-8"?>`) {
-		t.Fatalf("missing XML header; first 64 bytes: %q", string(data[:min(len(data), 64)]))
-	}
+	require.NoError(t, err)
+	requireJUnitHeader(t, data)
 
 	var doc junitDoc
-	if err := xml.Unmarshal(data, &doc); err != nil {
-		t.Fatalf("unmarshalling emitted XML: %v\n--- output ---\n%s", err, string(data))
-	}
-	if len(doc.TestSuites) != 1 {
-		t.Fatalf("want 1 testsuite, got %d", len(doc.TestSuites))
-	}
+	require.NoError(t, xml.Unmarshal(data, &doc), "output:\n%s", data)
+	require.Len(t, doc.TestSuites, 1)
 	suite := doc.TestSuites[0]
-	if suite.Name != "convert-suite" || suite.Tests != 2 || suite.Failures != 1 || suite.Errors != 0 {
-		t.Errorf("suite attrs unexpected: %+v", suite)
-	}
+	require.Equal(t, "convert-suite", suite.Name)
+	require.Equal(t, 2, suite.Tests)
+	require.Equal(t, 1, suite.Failures)
+	require.Equal(t, 0, suite.Errors)
 
-	// File permissions must be a stable 0o644 regardless of the
-	// process umask — CI matrix runners ship with a wide range of
-	// umasks (e.g. 0077 on hardened images) and a JUnit artifact that
-	// the upload step cannot read would silently disappear.
+	// The mode is fixed at 0o644 regardless of the process umask so that
+	// CI upload steps can always read the artifact.
 	stat, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat: %v", err)
-	}
-	if perm := stat.Mode().Perm(); perm != 0o644 {
-		t.Errorf("file mode = %o, want %o", perm, 0o644)
-	}
+	require.NoError(t, err)
+	perm := stat.Mode().Perm()
+	require.Equal(t, os.FileMode(0o644), perm, "file mode %o", perm)
 }
 
-// TestWriteJUnit_BadPath confirms errors propagate when the target
-// directory does not exist. cmdRun / cmdConvert surface this through
+// TestWriteJUnit_ErrorsOnMissingDirectory confirms errors propagate when the
+// target directory does not exist. cmdRun / cmdConvert surface this through
 // log.Fatalf, but we want unit-level coverage that an error is returned.
-func TestWriteJUnit_BadPath(t *testing.T) {
+func TestWriteJUnit_ErrorsOnMissingDirectory(t *testing.T) {
 	err := writeJUnit("/nonexistent/dir/junit.xml", sampleResult())
-	if err == nil {
-		t.Fatal("expected error for unwritable path")
-	}
+	require.Error(t, err)
 }
 
-// TestConvertRoundTrip simulates `eval run --output dir` followed by
-// `eval convert --from result.json --to-junit junit.xml`: JSON → in-memory
-// SuiteResult → JUnit XML must preserve task counts and outcomes.
-func TestConvertRoundTrip(t *testing.T) {
+// TestConvert_JSONToJUnitPreservesOutcomes simulates `eval run --output dir`
+// followed by `eval convert --from result.json --to-junit junit.xml`: JSON →
+// in-memory SuiteResult → JUnit XML must preserve task counts and outcomes.
+func TestConvert_JSONToJUnitPreservesOutcomes(t *testing.T) {
 	dir := t.TempDir()
 	jsonPath := filepath.Join(dir, "result.json")
 	xmlPath := filepath.Join(dir, "junit.xml")
@@ -127,84 +120,52 @@ func TestConvertRoundTrip(t *testing.T) {
 		TaskID: "boom", Outcome: "error", DurationMs: 10, Error: "harness exec failed",
 	})
 
-	if err := writeJSON(jsonPath, original); err != nil {
-		t.Fatalf("writeJSON: %v", err)
-	}
+	require.NoError(t, writeJSON(jsonPath, original))
 
 	loaded, err := loadResult(jsonPath)
-	if err != nil {
-		t.Fatalf("loadResult: %v", err)
-	}
+	require.NoError(t, err)
 
-	if err := writeJUnit(xmlPath, loaded); err != nil {
-		t.Fatalf("writeJUnit: %v", err)
-	}
+	require.NoError(t, writeJUnit(xmlPath, loaded))
 
 	data, err := os.ReadFile(xmlPath)
-	if err != nil {
-		t.Fatalf("reading XML: %v", err)
-	}
+	require.NoError(t, err)
 	var doc junitDoc
-	if err := xml.Unmarshal(data, &doc); err != nil {
-		t.Fatalf("parsing XML: %v", err)
-	}
-	if len(doc.TestSuites) != 1 {
-		t.Fatalf("want 1 testsuite, got %d", len(doc.TestSuites))
-	}
+	require.NoError(t, xml.Unmarshal(data, &doc))
+	require.Len(t, doc.TestSuites, 1)
 	suite := doc.TestSuites[0]
-	if suite.Tests != 3 || suite.Failures != 1 || suite.Errors != 1 {
-		t.Errorf("counts unexpected: tests=%d failures=%d errors=%d (want 3/1/1)",
-			suite.Tests, suite.Failures, suite.Errors)
-	}
-	if len(suite.TestCases) != 3 {
-		t.Fatalf("want 3 testcases, got %d", len(suite.TestCases))
-	}
+	require.Equal(t, 3, suite.Tests)
+	require.Equal(t, 1, suite.Failures)
+	require.Equal(t, 1, suite.Errors)
+	require.Len(t, suite.TestCases, 3)
 
-	var passCase, failCase, errCase = false, false, false
+	names := make([]string, 0, len(suite.TestCases))
 	for _, tc := range suite.TestCases {
+		names = append(names, tc.Name)
 		switch tc.Name {
 		case "ok":
-			if tc.Failure != nil || tc.Error != nil {
-				t.Errorf("pass case has unexpected children: %+v", tc)
-			}
-			passCase = true
+			require.Nil(t, tc.Failure, "pass case has a failure child")
+			require.Nil(t, tc.Error, "pass case has an error child")
 		case "bad":
-			if tc.Failure == nil || tc.Failure.Type != "EvalFailure" {
-				t.Errorf("fail case missing or wrong <failure>: %+v", tc.Failure)
-			}
-			failCase = true
+			require.NotNil(t, tc.Failure, "fail case has no failure child")
+			require.Equal(t, "EvalFailure", tc.Failure.Type)
 		case "boom":
-			if tc.Error == nil || tc.Error.Type != "HarnessError" {
-				t.Errorf("error case missing or wrong <error>: %+v", tc.Error)
-			}
-			if tc.Error != nil && tc.Error.Message != "harness exec failed" {
-				t.Errorf("error message = %q, want harness error", tc.Error.Message)
-			}
-			errCase = true
+			require.NotNil(t, tc.Error, "error case has no error child")
+			require.Equal(t, "HarnessError", tc.Error.Type)
+			require.Equal(t, "harness exec failed", tc.Error.Message)
 		}
 	}
-	if !passCase || !failCase || !errCase {
-		t.Errorf("missing one of pass/fail/error cases: pass=%v fail=%v err=%v",
-			passCase, failCase, errCase)
-	}
+	require.ElementsMatch(t, []string{"ok", "bad", "boom"}, names)
 }
 
 // TestConvert_LoadResultRejectsBadJSON pins that cmdConvert's loadResult
 // step surfaces a useful error rather than crashing on malformed input.
 // The CLI itself uses log.Fatalf; we exercise the helper directly.
 func TestConvert_LoadResultRejectsBadJSON(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "broken.json")
-	if err := os.WriteFile(path, []byte("{not json"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	path := filepath.Join(t.TempDir(), "broken.json")
+	require.NoError(t, os.WriteFile(path, []byte("{not json"), 0o644))
+
 	_, err := loadResult(path)
-	if err == nil {
-		t.Fatal("expected error for malformed JSON")
-	}
-	if !strings.Contains(err.Error(), "parsing result JSON") {
-		t.Errorf("error = %q, want it to mention parsing", err.Error())
-	}
+	require.ErrorContains(t, err, "parsing result JSON")
 }
 
 // TestConvert_LoadResultMissingFile covers the os.ReadFile failure
@@ -215,58 +176,38 @@ func TestConvert_LoadResultRejectsBadJSON(t *testing.T) {
 // "file not found" vs "file present but corrupt".
 func TestConvert_LoadResultMissingFile(t *testing.T) {
 	_, err := loadResult("/nonexistent/path/result.json")
-	if err == nil {
-		t.Fatal("expected error for missing file")
-	}
-	if strings.Contains(err.Error(), "parsing result JSON") {
-		t.Errorf("error = %q, missing-file path must not be wrapped as a parse error", err.Error())
-	}
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "parsing result JSON",
+		"missing-file path must not be wrapped as a parse error")
 }
 
-// TestRun_ConvertDispatch exercises the `convert` arm of run()'s
-// switch end-to-end: it writes a result.json with writeJSON, calls
-// run([]string{"convert", "--from", ..., "--to-junit", ...}), and
-// asserts the JUnit XML lands at the requested path with the
-// expected header. Without this test, a refactor that miswired the
-// "convert" case (e.g. dispatching to cmdCompare) would have no
-// signal — the convert-side helpers (writeJUnit, loadResult) are
-// well-covered, but the run() dispatcher itself was untested.
+// TestRun_ConvertSubcommandWritesJUnit drives the `convert` arm of run()'s
+// switch end to end: a result.json written with writeJSON is converted to
+// JUnit XML at the requested path.
 //
-// The two required-flag check paths inside cmdConvert
-// (`-from is required`, `-to-junit is required`) call log.Fatal,
-// which exits the test process. They are not unit-tested here;
-// covering them needs subprocess testing or a fatal-interceptor
-// shim, neither of which is justified for guard clauses this small.
-func TestRun_ConvertDispatch(t *testing.T) {
+// The required-flag guards in cmdConvert call log.Fatal, which exits the
+// test process, so they are not covered here.
+func TestRun_ConvertSubcommandWritesJUnit(t *testing.T) {
 	dir := t.TempDir()
 	jsonPath := filepath.Join(dir, "result.json")
 	xmlPath := filepath.Join(dir, "junit.xml")
 
-	if err := writeJSON(jsonPath, sampleResult()); err != nil {
-		t.Fatalf("writeJSON: %v", err)
-	}
+	require.NoError(t, writeJSON(jsonPath, sampleResult()))
 
 	var stdout bytes.Buffer
 	code := run([]string{"convert", "--from", jsonPath, "--to-junit", xmlPath}, &stdout)
-	if code != 0 {
-		t.Fatalf("run convert exit code = %d, want 0", code)
-	}
+	require.Equal(t, 0, code, "run convert exit code")
 
 	data, err := os.ReadFile(xmlPath)
-	if err != nil {
-		t.Fatalf("reading emitted XML: %v", err)
-	}
-	if !strings.HasPrefix(string(data), `<?xml version="1.0" encoding="UTF-8"?>`) {
-		t.Fatalf("missing XML header; first 64 bytes: %q", string(data[:min(len(data), 64)]))
-	}
+	require.NoError(t, err)
+	requireJUnitHeader(t, data)
 }
 
 // TestCmdRun_JUnitFlag drives the `run` arm of run()'s switch with
 // --junit against a fake harness and asserts the JUnit XML is
-// created. The assertions are deliberately coarse — this is a
-// wiring test for the `*junitPath != ""` guard and the writeJUnit
-// call inside cmdRun; per-suite content shape is covered by
-// reporter tests.
+// created. The assertions are deliberately coarse: this is a wiring test
+// for the `*junitPath != ""` guard and the writeJUnit call inside cmdRun;
+// per-suite content shape is covered by reporter tests.
 func TestCmdRun_JUnitFlag(t *testing.T) {
 	dir := t.TempDir()
 	outputDir := filepath.Join(dir, "results")
@@ -286,13 +227,10 @@ if [ -n "$TRACE" ]; then
 fi
 `)
 
-	// The fixture is checked in under testdata/ so the test does not
-	// depend on the precise HCL grammar — if the grammar changes,
-	// the fixture is updated alongside it.
+	// The fixture lives under testdata/ so the test does not depend on the
+	// HCL grammar. Update it alongside any grammar change.
 	suitePath, err := filepath.Abs(filepath.Join("testdata", "minimal_suite.hcl"))
-	if err != nil {
-		t.Fatalf("resolving fixture: %v", err)
-	}
+	require.NoError(t, err)
 
 	var stdout bytes.Buffer
 	code := run([]string{
@@ -302,15 +240,9 @@ fi
 		"--output", outputDir,
 		"--junit", xmlPath,
 	}, &stdout)
-	if code != 0 {
-		t.Fatalf("run exit code = %d, want 0", code)
-	}
+	require.Equal(t, 0, code, "run exit code")
 
 	data, err := os.ReadFile(xmlPath)
-	if err != nil {
-		t.Fatalf("reading emitted XML: %v", err)
-	}
-	if !strings.HasPrefix(string(data), `<?xml version="1.0" encoding="UTF-8"?>`) {
-		t.Fatalf("missing XML header; first 64 bytes: %q", string(data[:min(len(data), 64)]))
-	}
+	require.NoError(t, err)
+	requireJUnitHeader(t, data)
 }

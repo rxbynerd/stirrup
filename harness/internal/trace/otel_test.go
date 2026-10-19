@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -80,72 +82,33 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 	emitter.RecordTurnRecord(captureTurnRecord())
 
 	trace, err := emitter.Finish(context.Background(), "success")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
-	if trace.ID != "run-otel-1" {
-		t.Errorf("ID: got %q, want %q", trace.ID, "run-otel-1")
-	}
-	if trace.Turns != 2 {
-		t.Errorf("Turns: got %d, want 2", trace.Turns)
-	}
+	assert.Equal(t, "run-otel-1", trace.ID)
+	assert.Equal(t, 2, trace.Turns)
 	wantTokens := types.TokenUsage{Input: 300, Output: 125, CacheRead: 210, CacheWrite: 30, Reasoning: 15}
-	if trace.TokenUsage != wantTokens {
-		t.Errorf("TokenUsage: got %+v, want %+v", trace.TokenUsage, wantTokens)
-	}
-	if len(trace.ToolCalls) != 2 {
-		t.Errorf("ToolCalls: got %d, want 2", len(trace.ToolCalls))
-	}
-	if trace.Outcome != "success" {
-		t.Errorf("Outcome: got %q, want %q", trace.Outcome, "success")
-	}
-
-	if trace.Config.Provider.APIKeyRef != "secret://[REDACTED]" {
-		t.Errorf("APIKeyRef should be redacted, got %q", trace.Config.Provider.APIKeyRef)
-	}
+	assert.Equal(t, wantTokens, trace.TokenUsage)
+	assert.Len(t, trace.ToolCalls, 2)
+	assert.Equal(t, "success", trace.Outcome)
+	assert.Equal(t, "secret://[REDACTED]", trace.Config.Provider.APIKeyRef, "API key reference should be redacted")
 
 	spans := exporter.GetSpans()
-	if len(spans) == 0 {
-		t.Fatal("expected OTel spans to be exported, got none")
-	}
-
 	// The Record* methods feed the aggregate only; requests and tool
 	// calls become spans through the live handles, so only the root span
 	// is exported.
-	if len(spans) != 1 {
-		t.Errorf("expected 1 span, got %d", len(spans))
-		for _, s := range spans {
-			t.Logf("  span: %s", s.Name)
-		}
-	}
+	require.Len(t, spans, 1, "expected only the root span to be exported")
+	root := findSpanByName(t, spans, "invoke_agent stirrup")
 
-	spanNames := make(map[string]int)
-	for _, s := range spans {
-		spanNames[s.Name]++
-	}
-	if spanNames["invoke_agent stirrup"] != 1 {
-		t.Errorf("expected 1 root span, got %d", spanNames["invoke_agent stirrup"])
-	}
-
-	var rootSpan tracetest.SpanStub
-	for _, s := range spans {
-		if s.Name == "invoke_agent stirrup" {
-			rootSpan = s
-			break
-		}
-	}
-
-	assertAttribute(t, rootSpan, "run.id", "run-otel-1")
-	assertAttribute(t, rootSpan, "run.mode", "execution")
-	assertAttribute(t, rootSpan, "run.outcome", "success")
-	assertAttribute(t, rootSpan, "harness.version", "dev")
+	assertAttribute(t, root, "run.id", "run-otel-1")
+	assertAttribute(t, root, "run.mode", "execution")
+	assertAttribute(t, root, "run.outcome", "success")
+	assertAttribute(t, root, "harness.version", "dev")
 
 	// GenAI semconv assertions: provider and model surface under the
 	// GenAI namespace so vendor-shipped APM dashboards recognise the
 	// spans.
-	assertAttribute(t, rootSpan, genAIProviderNameKey, "anthropic")
-	assertAttribute(t, rootSpan, genAIRequestModelKey, "claude-sonnet-4-6")
+	assertAttribute(t, root, genAIProviderNameKey, "anthropic")
+	assertAttribute(t, root, genAIRequestModelKey, "claude-sonnet-4-6")
 }
 
 func TestOTelTraceEmitter_EmptyRun(t *testing.T) {
@@ -154,77 +117,48 @@ func TestOTelTraceEmitter_EmptyRun(t *testing.T) {
 	emitter.Start("run-empty", nil)
 
 	trace, err := emitter.Finish(context.Background(), "error")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
-	if trace.Turns != 0 {
-		t.Errorf("Turns: got %d, want 0", trace.Turns)
-	}
-	if trace.Outcome != "error" {
-		t.Errorf("Outcome: got %q, want %q", trace.Outcome, "error")
-	}
+	assert.Zero(t, trace.Turns)
+	assert.Equal(t, "error", trace.Outcome)
 
 	spans := exporter.GetSpans()
-	if len(spans) != 1 {
-		t.Errorf("expected 1 span for empty run, got %d", len(spans))
-	}
-	if len(spans) > 0 && spans[0].Name != "invoke_agent stirrup" {
-		t.Errorf("expected root span name invoke_agent stirrup, got %q", spans[0].Name)
-	}
+	require.Len(t, spans, 1, "expected 1 span for empty run")
+	assert.Equal(t, "invoke_agent stirrup", spans[0].Name)
 }
 
-// TestOTelTraceEmitter_ResourceAttributes is the regression test for the
-// "unknown_service:stirrup" bug: when no Resource is attached to the
-// TracerProvider, OTel-aware backends (Zipkin, Jaeger, Tempo, ...) display
-// the service name as "unknown_service:<binary>" because the SDK falls
-// back to that placeholder. We assert here that every emitted span carries
-// service.name=stirrup so this can never silently regress.
+// Every span carries the default service identity, so OTel-aware backends
+// (Zipkin, Jaeger, Tempo, ...) do not fall back to showing
+// "unknown_service:<binary>" for spans from a TracerProvider without a Resource.
 func TestOTelTraceEmitter_ResourceAttributes(t *testing.T) {
 	t.Setenv("OTEL_SERVICE_NAME", "")
 	emitter, exporter := newTestOTelEmitter()
 
 	emitter.Start("run-resource", nil)
 	emitter.StartToolSpan(emitter.RootContext(), ToolSpanStart{Name: "read_file", Known: true}).End(ToolSpanEnd{})
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
+	_, err := emitter.Finish(context.Background(), "success")
+	require.NoError(t, err)
 
 	spans := exporter.GetSpans()
-	if len(spans) == 0 {
-		t.Fatal("expected at least one span")
-	}
+	require.NotEmpty(t, spans, "expected at least one span")
 
 	for _, span := range spans {
-		if span.Resource == nil {
-			t.Errorf("span %q: Resource is nil — TracerProvider was constructed without WithResource", span.Name)
+		if !assert.NotNil(t, span.Resource, "span %q: TracerProvider was built without WithResource", span.Name) {
 			continue
 		}
 		got := make(map[string]string)
 		for _, kv := range span.Resource.Attributes() {
 			got[string(kv.Key)] = kv.Value.AsString()
 		}
-		if got["service.name"] != observability.DefaultServiceName {
-			t.Errorf("span %q: service.name=%q, want %q",
-				span.Name, got["service.name"], observability.DefaultServiceName)
-		}
-		if got["service.version"] == "" {
-			t.Errorf("span %q: service.version missing", span.Name)
-		}
-		if got["service.instance.id"] == "" {
-			t.Errorf("span %q: service.instance.id missing", span.Name)
-		}
+		assert.Equal(t, observability.DefaultServiceName, got["service.name"], "span %q", span.Name)
+		assert.NotEmpty(t, got["service.version"], "span %q: service.version", span.Name)
+		assert.NotEmpty(t, got["service.instance.id"], "span %q: service.instance.id", span.Name)
 	}
 }
 
-// TestOTelTraceEmitter_ResourceAttributesOnSpan locks down that
-// operator-supplied ResourceOptions reach every emitted span via the
-// TracerProvider's Resource. The pre-existing
-// TestOTelTraceEmitter_ResourceAttributes covers only the default-value
-// path (service.name etc.); without this test, a regression that stopped
-// threading explicit ResourceOptions through to the TracerProvider would
-// not surface — Grafana queries grouping by deployment.environment.name would
-// quietly return empty rows.
+// Operator-supplied ResourceOptions reach every emitted span through the
+// TracerProvider's Resource, so backend queries grouping by
+// deployment.environment.name see the values on every span.
 func TestOTelTraceEmitter_ResourceAttributesOnSpan(t *testing.T) {
 	emitter, exporter := newTestOTelEmitterWithOpts(observability.ResourceOptions{
 		Environment:      "test-env",
@@ -239,32 +173,22 @@ func TestOTelTraceEmitter_ResourceAttributesOnSpan(t *testing.T) {
 		StopReason: "end_turn",
 		DurationMs: 10,
 	})
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
+	_, err := emitter.Finish(context.Background(), "success")
+	require.NoError(t, err)
 
 	spans := exporter.GetSpans()
-	if len(spans) == 0 {
-		t.Fatal("expected at least one span")
-	}
+	require.NotEmpty(t, spans, "expected at least one span")
 	for _, span := range spans {
-		if span.Resource == nil {
-			t.Errorf("span %q: Resource is nil", span.Name)
+		if !assert.NotNil(t, span.Resource, "span %q has no resource", span.Name) {
 			continue
 		}
 		got := make(map[string]string)
 		for _, kv := range span.Resource.Attributes() {
 			got[string(kv.Key)] = kv.Value.AsString()
 		}
-		if got["deployment.environment.name"] != "test-env" {
-			t.Errorf("span %q: deployment.environment.name=%q, want test-env", span.Name, got["deployment.environment.name"])
-		}
-		if got["service.namespace"] != "test-ns" {
-			t.Errorf("span %q: service.namespace=%q, want test-ns", span.Name, got["service.namespace"])
-		}
-		if got["harness.run.mode"] != "execution" {
-			t.Errorf("span %q: harness.run.mode=%q, want execution", span.Name, got["harness.run.mode"])
-		}
+		assert.Equal(t, "test-env", got["deployment.environment.name"], "span %q", span.Name)
+		assert.Equal(t, "test-ns", got["service.namespace"], "span %q", span.Name)
+		assert.Equal(t, "execution", got["harness.run.mode"], "span %q", span.Name)
 	}
 }
 
@@ -273,14 +197,11 @@ func assertAttribute(t *testing.T, span tracetest.SpanStub, key, want string) {
 	t.Helper()
 	for _, attr := range span.Attributes {
 		if string(attr.Key) == key {
-			got := attr.Value.AsString()
-			if got != want {
-				t.Errorf("attribute %q: got %q, want %q", key, got, want)
-			}
+			assert.Equal(t, want, attr.Value.AsString(), "attribute %q", key)
 			return
 		}
 	}
-	t.Errorf("attribute %q not found on span %q", key, span.Name)
+	assert.Fail(t, "attribute not found", "attribute %q not found on span %q", key, span.Name)
 }
 
 // assertIntAttribute checks that a span has the expected int64 attribute
@@ -290,14 +211,11 @@ func assertIntAttribute(t *testing.T, span tracetest.SpanStub, key string, want 
 	t.Helper()
 	for _, attr := range span.Attributes {
 		if string(attr.Key) == key {
-			got := attr.Value.AsInt64()
-			if got != want {
-				t.Errorf("attribute %q: got %d, want %d", key, got, want)
-			}
+			assert.Equal(t, want, attr.Value.AsInt64(), "attribute %q", key)
 			return
 		}
 	}
-	t.Errorf("attribute %q not found on span %q", key, span.Name)
+	assert.Fail(t, "attribute not found", "attribute %q not found on span %q", key, span.Name)
 }
 
 // assertStringSliceAttribute checks that a span has the expected string
@@ -307,30 +225,16 @@ func assertStringSliceAttribute(t *testing.T, span tracetest.SpanStub, key strin
 	t.Helper()
 	for _, attr := range span.Attributes {
 		if string(attr.Key) == key {
-			got := attr.Value.AsStringSlice()
-			if len(got) != len(want) {
-				t.Errorf("attribute %q: got %v, want %v", key, got, want)
-				return
-			}
-			for i := range got {
-				if got[i] != want[i] {
-					t.Errorf("attribute %q: got %v, want %v", key, got, want)
-					return
-				}
-			}
+			assert.Equal(t, want, attr.Value.AsStringSlice(), "attribute %q", key)
 			return
 		}
 	}
-	t.Errorf("attribute %q not found on span %q", key, span.Name)
+	assert.Fail(t, "attribute not found", "attribute %q not found on span %q", key, span.Name)
 }
 
-// TestOTelTraceEmitter_GenAIAttributes exhaustively pins the OTel
-// GenAI semantic-convention attribute set. The
-// individual GenAI attributes are also asserted opportunistically by
-// FullLifecycle, ToolCallAttributes, and SessionName, but this test
-// exists so a regression in any single GenAI attribute fails loudly
-// at the dedicated test name rather than as a side-effect of an
-// unrelated assertion.
+// TestOTelTraceEmitter_GenAIAttributes pins the GenAI semantic-convention
+// attributes on the root, chat and tool spans, so a regression in any
+// single attribute fails under this test name.
 func TestOTelTraceEmitter_GenAIAttributes(t *testing.T) {
 	emitter, exporter := newTestOTelEmitter()
 
@@ -358,29 +262,13 @@ func TestOTelTraceEmitter_GenAIAttributes(t *testing.T) {
 	emitter.StartToolSpan(emitter.RootContext(), ToolSpanStart{Name: "read_file", Known: true}).End(ToolSpanEnd{
 		Summary: &types.ToolCallTrace{Name: "read_file", DurationMs: 1, Success: true},
 	})
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
+	_, err := emitter.Finish(context.Background(), "success")
+	require.NoError(t, err)
 
 	spans := exporter.GetSpans()
-	var (
-		root tracetest.SpanStub
-		turn tracetest.SpanStub
-		tool tracetest.SpanStub
-	)
-	for _, s := range spans {
-		switch s.Name {
-		case "invoke_agent stirrup":
-			root = s
-		case "chat claude-opus-4-8":
-			turn = s
-		case "execute_tool read_file":
-			tool = s
-		}
-	}
-	if root.Name == "" || turn.Name == "" || tool.Name == "" {
-		t.Fatalf("expected invoke_agent, chat and execute_tool read_file spans; got %v", spans)
-	}
+	root := findSpanByName(t, spans, "invoke_agent stirrup")
+	turn := findSpanByName(t, spans, "chat claude-opus-4-8")
+	tool := findSpanByName(t, spans, "execute_tool read_file")
 
 	// Root span: operation name, model, provider, conversation.
 	// gen_ai.agent.id is intentionally NOT emitted; the spec defines it
@@ -390,11 +278,7 @@ func TestOTelTraceEmitter_GenAIAttributes(t *testing.T) {
 	assertAttribute(t, root, genAIProviderNameKey, "anthropic")
 	assertAttribute(t, root, genAIRequestModelKey, "claude-sonnet-4-6")
 	assertAttribute(t, root, genAIConversationIDKey, "alignment-test")
-	for _, attr := range root.Attributes {
-		if string(attr.Key) == "gen_ai.agent.id" {
-			t.Errorf("gen_ai.agent.id should not be emitted, found value %q", attr.Value.AsString())
-		}
-	}
+	assertAttributesAbsent(t, root, "gen_ai.agent.id")
 
 	// Chat span: usage tokens, finish reasons, operation name, and the
 	// per-request model/provider that backends type and price generations
@@ -412,12 +296,13 @@ func TestOTelTraceEmitter_GenAIAttributes(t *testing.T) {
 	assertAttribute(t, tool, genAIOperationNameKey, "execute_tool")
 }
 
+// assertAttributesAbsent fails for each of keys that the span carries.
 func assertAttributesAbsent(t *testing.T, span tracetest.SpanStub, keys ...string) {
 	t.Helper()
 	for _, attr := range span.Attributes {
 		for _, key := range keys {
 			if string(attr.Key) == key {
-				t.Errorf("%s: unexpected attribute %s=%s", span.Name, key, attr.Value.String())
+				assert.Fail(t, "unexpected attribute", "%s: unexpected attribute %s=%s", span.Name, key, attr.Value.String())
 			}
 		}
 	}
@@ -425,7 +310,7 @@ func assertAttributesAbsent(t *testing.T, span tracetest.SpanStub, keys ...strin
 
 // The GenAI usage keys are string constants; this pins them to the
 // semconv release that defines all five.
-func TestGenAIUsageKeysMatchSemconv(t *testing.T) {
+func TestGenAIUsageKeys_MatchSemconv(t *testing.T) {
 	for got, want := range map[string]attribute.Key{
 		genAIUsageInputTokens:              semconv.GenAIUsageInputTokensKey,
 		genAIUsageOutputTokens:             semconv.GenAIUsageOutputTokensKey,
@@ -433,9 +318,7 @@ func TestGenAIUsageKeysMatchSemconv(t *testing.T) {
 		genAIUsageCacheCreationInputTokens: semconv.GenAIUsageCacheCreationInputTokensKey,
 		genAIUsageReasoningOutputTokens:    semconv.GenAIUsageReasoningOutputTokensKey,
 	} {
-		if got != string(want) {
-			t.Errorf("attribute key %q, want semconv %q", got, want)
-		}
+		assert.Equal(t, string(want), got)
 	}
 }
 
@@ -448,7 +331,7 @@ func findSpanByName(t *testing.T, spans tracetest.SpanStubs, name string) tracet
 			return s
 		}
 	}
-	t.Fatalf("no span named %q exported", name)
+	require.FailNow(t, "span not exported", "no span named %q exported", name)
 	return tracetest.SpanStub{}
 }
 
@@ -460,35 +343,30 @@ func findSpanByName(t *testing.T, spans tracetest.SpanStubs, name string) tracet
 func TestOTelTraceEmitter_ErrorStatus(t *testing.T) {
 	t.Run("root error for non-success outcomes including cancelled", func(t *testing.T) {
 		for _, outcome := range []string{"max_turns", "cancelled"} {
-			emitter, exporter := newTestOTelEmitter()
-			emitter.Start("run-status", nil)
-			if _, err := emitter.Finish(context.Background(), outcome); err != nil {
-				t.Fatalf("Finish: %v", err)
-			}
-			span := findSpanByName(t, exporter.GetSpans(), "invoke_agent stirrup")
-			if span.Status.Code != codes.Error {
-				t.Errorf("outcome %q: root status = %v, want Error", outcome, span.Status.Code)
-			}
-			if span.Status.Description != outcome {
-				t.Errorf("outcome %q: root status description = %q, want the outcome", outcome, span.Status.Description)
-			}
-			assertAttribute(t, span, errorTypeKey, outcome)
+			t.Run(outcome, func(t *testing.T) {
+				emitter, exporter := newTestOTelEmitter()
+				emitter.Start("run-status", nil)
+				_, err := emitter.Finish(context.Background(), outcome)
+				require.NoError(t, err)
+
+				span := findSpanByName(t, exporter.GetSpans(), "invoke_agent stirrup")
+				require.Equal(t, codes.Error, span.Status.Code)
+				require.Equal(t, outcome, span.Status.Description, "root status description should be the outcome")
+				assertAttribute(t, span, errorTypeKey, outcome)
+			})
 		}
 	})
 
 	t.Run("root unset on success", func(t *testing.T) {
 		emitter, exporter := newTestOTelEmitter()
 		emitter.Start("run-status-ok", nil)
-		if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-			t.Fatalf("Finish: %v", err)
-		}
+		_, err := emitter.Finish(context.Background(), "success")
+		require.NoError(t, err)
+
 		span := findSpanByName(t, exporter.GetSpans(), "invoke_agent stirrup")
-		if span.Status.Code != codes.Unset {
-			t.Errorf("root status = %v, want Unset", span.Status.Code)
-		}
+		require.Equal(t, codes.Unset, span.Status.Code)
 		assertAttributesAbsent(t, span, errorTypeKey)
 	})
-
 }
 
 // RecordPromptResolution is config metadata, not content: the attributes
@@ -499,9 +377,9 @@ func TestOTelTraceEmitter_RecordPromptResolution(t *testing.T) {
 	emitter, exporter := newTestOTelEmitter()
 	emitter.Start("run-prompt-res", nil)
 	emitter.RecordPromptResolution("claude-fable-5", "frontier")
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
+	_, err := emitter.Finish(context.Background(), "success")
+	require.NoError(t, err)
+
 	root := findSpanByName(t, exporter.GetSpans(), "invoke_agent stirrup")
 	assertAttribute(t, root, promptModelKey, "claude-fable-5")
 	assertAttribute(t, root, promptTierKey, "frontier")
@@ -517,19 +395,13 @@ func TestOTelTraceEmitter_RecordPromptResolutionBeforeStart(t *testing.T) {
 func TestOTelTraceEmitter_TraceReferenceIdentifiesRunSpan(t *testing.T) {
 	emitter, exporter := newTestOTelEmitter()
 
-	if ref := emitter.TraceReference(); ref != nil {
-		t.Fatalf("TraceReference before Start = %+v, want nil", ref)
-	}
+	require.Nil(t, emitter.TraceReference(), "TraceReference before Start")
 
 	emitter.Start("run-ref-1", nil)
 	ref := emitter.TraceReference()
-	if ref == nil {
-		t.Fatal("TraceReference after Start = nil")
-	}
+	require.NotNil(t, ref, "TraceReference after Start")
 	rt, err := emitter.Finish(context.Background(), "success")
-	if err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
+	require.NoError(t, err)
 
 	root := findSpanByName(t, exporter.GetSpans(), "invoke_agent stirrup")
 	want := types.TraceReference{
@@ -537,27 +409,18 @@ func TestOTelTraceEmitter_TraceReferenceIdentifiesRunSpan(t *testing.T) {
 		RunSpanID: root.SpanContext.SpanID().String(),
 		Sampled:   true,
 	}
-	if *ref != want {
-		t.Errorf("TraceReference = %+v, want exported root span %+v", *ref, want)
-	}
-	if len(ref.TraceID) != 32 || len(ref.RunSpanID) != 16 {
-		t.Errorf("TraceReference IDs have lengths %d/%d, want 32/16", len(ref.TraceID), len(ref.RunSpanID))
-	}
-	if rt.TraceReference == nil || *rt.TraceReference != want {
-		t.Errorf("RunTrace.TraceReference = %+v, want %+v", rt.TraceReference, want)
-	}
+	assert.Equal(t, want, *ref, "TraceReference should identify the exported root span")
+	assert.Len(t, ref.TraceID, 32)
+	assert.Len(t, ref.RunSpanID, 16)
+	require.NotNil(t, rt.TraceReference, "RunTrace.TraceReference")
+	assert.Equal(t, want, *rt.TraceReference, "RunTrace.TraceReference")
 
 	emitter.Start("run-ref-2", nil)
 	next := emitter.TraceReference()
-	if next == nil {
-		t.Fatal("TraceReference after second Start = nil")
-	}
-	if next.TraceID == ref.TraceID {
-		t.Errorf("second run reused trace ID %s", next.TraceID)
-	}
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
+	require.NotNil(t, next, "TraceReference after second Start")
+	require.NotEqual(t, ref.TraceID, next.TraceID, "second run should get a new trace ID")
+	_, err = emitter.Finish(context.Background(), "success")
+	require.NoError(t, err)
 }
 
 func TestOTelTraceEmitter_TraceReferenceReportsUnsampledSpan(t *testing.T) {
@@ -566,29 +429,26 @@ func TestOTelTraceEmitter_TraceReferenceReportsUnsampledSpan(t *testing.T) {
 
 	emitter.Start("run-unsampled", nil)
 	ref := emitter.TraceReference()
-	if ref == nil {
-		t.Fatal("TraceReference for an unsampled run span = nil, want a reference with Sampled false")
-	}
-	if ref.Sampled {
-		t.Error("Sampled = true for a NeverSample run span")
-	}
+	require.NotNil(t, ref, "TraceReference for an unsampled run span")
+	assert.False(t, ref.Sampled, "NeverSample run span should not be sampled")
+
 	rt, err := emitter.Finish(context.Background(), "success")
-	if err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-	if rt.TraceReference == nil || rt.TraceReference.Sampled {
-		t.Errorf("RunTrace.TraceReference = %+v, want an unsampled reference", rt.TraceReference)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, rt.TraceReference, "RunTrace.TraceReference")
+	assert.False(t, rt.TraceReference.Sampled, "RunTrace.TraceReference should be unsampled")
 }
 
-func TestNonOTelEmittersDoNotProvideTraceReference(t *testing.T) {
+// TestNonOTelEmitters_DoNotProvideTraceReference keeps a run under a
+// non-OTel emitter from reporting a trace reference with no span behind it.
+func TestNonOTelEmitters_DoNotProvideTraceReference(t *testing.T) {
 	for name, e := range map[string]TraceEmitter{
 		"jsonl":  &JSONLTraceEmitter{},
 		"gcs":    &GCSTraceEmitter{},
 		"nested": &NestedJSONLEmitter{},
 	} {
-		if _, ok := e.(TraceReferenceProvider); ok {
-			t.Errorf("%s emitter implements TraceReferenceProvider; a run under it would report a reference with no OTel span behind it", name)
-		}
+		t.Run(name, func(t *testing.T) {
+			_, ok := e.(TraceReferenceProvider)
+			require.False(t, ok, "emitter implements TraceReferenceProvider; a run under it would report a reference with no OTel span behind it")
+		})
 	}
 }

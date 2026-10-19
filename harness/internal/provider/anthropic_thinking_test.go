@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -35,29 +38,16 @@ func TestAnthropicAdapter_StreamThinkingBlock(t *testing.T) {
 	events := streamAnthropicSSE(t, body)
 
 	wantTypes := []string{"thinking_delta", "thinking_delta", "thinking", "text_delta", "tool_call", "message_complete"}
-	if len(events) != len(wantTypes) {
-		t.Fatalf("got %d events, want %d: %+v", len(events), len(wantTypes), events)
-	}
-	for i, want := range wantTypes {
-		if events[i].Type != want {
-			t.Errorf("event[%d].Type = %q, want %q", i, events[i].Type, want)
-		}
-	}
-	if events[0].Text != "Let me " || events[1].Text != "check." {
-		t.Errorf("thinking deltas = %q, %q, want %q, %q", events[0].Text, events[1].Text, "Let me ", "check.")
-	}
-	if events[0].ThoughtSignature != "" || events[1].ThoughtSignature != "" {
-		t.Error("a thinking_delta carried a signature; only the complete block may")
-	}
-	if events[2].Text != "Let me check." {
-		t.Errorf("thinking text = %q, want %q", events[2].Text, "Let me check.")
-	}
-	if events[2].ThoughtSignature != "EqQBCkYIBRgC" {
-		t.Errorf("thinking signature = %q, want %q", events[2].ThoughtSignature, "EqQBCkYIBRgC")
-	}
-	if events[4].ThoughtSignature != "" {
-		t.Errorf("tool_call carried a signature %q; only thinking events may", events[4].ThoughtSignature)
-	}
+	require.Len(t, events, len(wantTypes), "events: %+v", events)
+	assert.Equal(t, wantTypes, eventTypes(events))
+
+	assert.Equal(t, "Let me ", events[0].Text, "first thinking delta")
+	assert.Equal(t, "check.", events[1].Text, "second thinking delta")
+	assert.Empty(t, events[0].ThoughtSignature, "a thinking_delta carried a signature; only the complete block may")
+	assert.Empty(t, events[1].ThoughtSignature, "a thinking_delta carried a signature; only the complete block may")
+	assert.Equal(t, "Let me check.", events[2].Text, "complete thinking text")
+	assert.Equal(t, "EqQBCkYIBRgC", events[2].ThoughtSignature, "complete thinking signature")
+	assert.Empty(t, events[4].ThoughtSignature, "only thinking events may carry a signature")
 }
 
 // TestAnthropicAdapter_StreamThinkingTextOnBlockStart pins that thinking
@@ -83,9 +73,8 @@ func TestAnthropicAdapter_StreamThinkingTextOnBlockStart(t *testing.T) {
 			block = ev.Text
 		}
 	}
-	if deltas.String() != "Start. Then." || block != "Start. Then." {
-		t.Errorf("deltas = %q, block = %q, want both %q (events %v)", deltas.String(), block, "Start. Then.", eventTypes(events))
-	}
+	assert.Equal(t, "Start. Then.", deltas.String(), "thinking deltas; events %v", eventTypes(events))
+	assert.Equal(t, "Start. Then.", block, "complete thinking block")
 }
 
 // TestAnthropicAdapter_StreamInterleavedThinking pins event order when
@@ -128,14 +117,13 @@ func TestAnthropicAdapter_StreamInterleavedThinking(t *testing.T) {
 		{Type: "tool_call", ID: "toolu_2"},
 		{Type: "message_complete"},
 	}
-	if len(events) != len(want) {
-		t.Fatalf("event types = %v, want %d events", eventTypes(events), len(want))
-	}
+	require.Len(t, events, len(want), "event types %v", eventTypes(events))
 	for i, w := range want {
 		got := events[i]
-		if got.Type != w.Type || got.Text != w.Text || got.ThoughtSignature != w.ThoughtSignature || got.ID != w.ID {
-			t.Errorf("event %d = %+v, want %+v", i, got, w)
-		}
+		assert.Equal(t, w.Type, got.Type, "event %d type", i)
+		assert.Equal(t, w.Text, got.Text, "event %d text", i)
+		assert.Equal(t, w.ThoughtSignature, got.ThoughtSignature, "event %d signature", i)
+		assert.Equal(t, w.ID, got.ID, "event %d id", i)
 	}
 }
 
@@ -149,9 +137,9 @@ func TestAnthropicAdapter_RedactedThinkingEmptyData(t *testing.T) {
 		makeSSE("message_delta", `{"delta":{"stop_reason":"end_turn"}}`),
 		makeSSE("message_stop", `{}`),
 	))
-	if len(events) != 2 || events[0].Type != "redacted_thinking" || events[0].ThoughtSignature != "" {
-		t.Fatalf("events = %+v, want redacted_thinking with empty data, then message_complete", events)
-	}
+	require.Len(t, events, 2, "events %+v: want redacted_thinking with empty data, then message_complete", events)
+	require.Equal(t, "redacted_thinking", events[0].Type)
+	require.Empty(t, events[0].ThoughtSignature)
 
 	history := thinkingReplayHistory()
 	history[1].Content = []types.ContentBlock{
@@ -161,13 +149,9 @@ func TestAnthropicAdapter_RedactedThinkingEmptyData(t *testing.T) {
 	}
 	q := quirks.DefaultRegistry().Resolve("anthropic", "claude-sonnet-5-5")
 	body, err := json.Marshal(buildAnthropicRequest(types.StreamParams{Model: "claude-sonnet-5-5", MaxTokens: 16, Messages: history}, true, q))
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err)
 	for _, raw := range assistantWireBlocks(t, body, 1) {
-		if strings.Contains(string(raw), `"redacted_thinking"`) {
-			t.Errorf("empty redacted_thinking block reached the wire: %s", raw)
-		}
+		assert.NotContains(t, string(raw), `"redacted_thinking"`, "empty redacted_thinking block reached the wire")
 	}
 }
 
@@ -185,12 +169,10 @@ func TestAnthropicAdapter_StreamThinkingOmittedText(t *testing.T) {
 
 	events := streamAnthropicSSE(t, body)
 
-	if len(events) != 2 {
-		t.Fatalf("got %d events, want 2: %+v", len(events), events)
-	}
-	if got := events[0]; got.Type != "thinking" || got.Text != "" || got.ThoughtSignature != "sig-omitted" {
-		t.Errorf("event[0] = %+v, want thinking with empty text and signature sig-omitted", got)
-	}
+	require.Len(t, events, 2, "events: %+v", events)
+	assert.Equal(t, "thinking", events[0].Type)
+	assert.Empty(t, events[0].Text)
+	assert.Equal(t, "sig-omitted", events[0].ThoughtSignature)
 }
 
 // TestAnthropicAdapter_StreamRedactedThinking pins that a redacted block's
@@ -208,21 +190,17 @@ func TestAnthropicAdapter_StreamRedactedThinking(t *testing.T) {
 
 	events := streamAnthropicSSE(t, body)
 
-	if len(events) != 3 {
-		t.Fatalf("got %d events, want 3: %+v", len(events), events)
-	}
-	if got := events[0]; got.Type != "redacted_thinking" || got.ThoughtSignature != "EmwKAhgBEgy3va" || got.Text != "" {
-		t.Errorf("event[0] = %+v, want redacted_thinking carrying the data", got)
-	}
+	require.Len(t, events, 3, "events: %+v", events)
+	assert.Equal(t, "redacted_thinking", events[0].Type)
+	assert.Equal(t, "EmwKAhgBEgy3va", events[0].ThoughtSignature)
+	assert.Empty(t, events[0].Text)
 }
 
 // jsonString returns n bytes of filler as a JSON string literal.
 func jsonString(t *testing.T, n int) string {
 	t.Helper()
 	b, err := json.Marshal(strings.Repeat("a", n))
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err)
 	return string(b)
 }
 
@@ -276,14 +254,12 @@ func TestAnthropicAdapter_ThinkingSizeCap(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			events := streamAnthropicSSE(t, joinLines(body, makeSSE("content_block_stop", `{"index":0}`), end))
 			last := events[len(events)-1]
-			if last.Type != "error" || !strings.Contains(last.Error.Error(), "thinking blocks exceed") {
-				t.Fatalf("event types = %v, want the stream to end on the thinking size-cap error", eventTypes(events))
-			}
-			for _, ev := range events[:len(events)-1] {
-				if ev.Type == "error" || ev.Type == "message_complete" {
-					t.Errorf("event types = %v, want exactly one error ending the stream", eventTypes(events))
-				}
-			}
+			require.Equal(t, "error", last.Type, "event types %v: stream should end on the thinking size-cap error", eventTypes(events))
+			require.ErrorContains(t, last.Error, "thinking blocks exceed")
+
+			earlier := eventTypes(events[:len(events)-1])
+			assert.NotContains(t, earlier, "error", "event types %v: want exactly one error, ending the stream", eventTypes(events))
+			assert.NotContains(t, earlier, "message_complete", "event types %v: want exactly one error, ending the stream", eventTypes(events))
 		})
 	}
 
@@ -295,12 +271,8 @@ func TestAnthropicAdapter_ThinkingSizeCap(t *testing.T) {
 			makeSSE("content_block_stop", `{"index":0}`),
 			end,
 		))
-		if got := eventTypes(events); len(got) != 3 || got[0] != "thinking_delta" || got[1] != "thinking" || got[2] != "message_complete" {
-			t.Fatalf("event types = %v, want [thinking_delta thinking message_complete]", got)
-		}
-		if n := len(events[1].Text) + len(events[1].ThoughtSignature); n != capBytes {
-			t.Errorf("thinking event carried %d bytes, want %d", n, capBytes)
-		}
+		require.Equal(t, []string{"thinking_delta", "thinking", "message_complete"}, eventTypes(events))
+		assert.Equal(t, capBytes, len(events[1].Text)+len(events[1].ThoughtSignature), "thinking event bytes")
 	})
 }
 
@@ -319,12 +291,10 @@ func TestAnthropicAdapter_OpenContentBlockCap(t *testing.T) {
 	)
 
 	events := streamAnthropicSSE(t, joinLines(joinLines(open...), end))
-	if len(events) != 1 || events[0].Type != "error" || !strings.Contains(events[0].Error.Error(), "content blocks open at once") {
-		t.Fatalf("event types = %v, want one open-block cap error", eventTypes(events))
-	}
+	require.Len(t, events, 1, "event types %v", eventTypes(events))
+	require.Equal(t, "error", events[0].Type)
+	require.ErrorContains(t, events[0].Error, "content blocks open at once")
 
 	events = streamAnthropicSSE(t, joinLines(joinLines(sequential...), end))
-	if got := eventTypes(events); len(got) != 1 || got[0] != "message_complete" {
-		t.Errorf("sequential blocks: event types = %v, want [message_complete]", got)
-	}
+	require.Equal(t, []string{"message_complete"}, eventTypes(events), "sequential blocks")
 }

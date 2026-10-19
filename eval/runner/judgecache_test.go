@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/eval"
 	"github.com/rxbynerd/stirrup/eval/judge"
@@ -33,9 +35,8 @@ func TestRunSuite_ReadThroughCacheSkipsTheModelForAnUnchangedWorkspace(t *testin
 		},
 	}
 	cache, err := judge.NewFileCache(filepath.Join(t.TempDir(), "judge-cache"), judge.FileCacheOptions{Mode: judge.CacheReadThrough})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	runOnce := func(mode judge.CacheMode) eval.SuiteResult {
 		t.Helper()
 		result, err := RunSuite(context.Background(), suite, RunConfig{
@@ -43,13 +44,9 @@ func TestRunSuite_ReadThroughCacheSkipsTheModelForAnUnchangedWorkspace(t *testin
 			OutputDir:    t.TempDir(),
 			JudgeOptions: judge.Options{Cache: cache, CacheMode: mode},
 		})
-		if err != nil {
-			t.Fatalf("RunSuite: %v", err)
-		}
+		require.NoError(t, err, "RunSuite")
 		for _, tr := range result.Tasks {
-			if tr.Outcome != "pass" {
-				t.Fatalf("task %s: outcome %q (%s)", tr.TaskID, tr.Outcome, tr.Error)
-			}
+			require.Equal(t, "pass", tr.Outcome, "task %s: %s", tr.TaskID, tr.Error)
 		}
 		return result
 	}
@@ -58,41 +55,27 @@ func TestRunSuite_ReadThroughCacheSkipsTheModelForAnUnchangedWorkspace(t *testin
 	}
 
 	first := runOnce(judge.CacheReadThrough)
-	if n := len(stub.requests()); n != 2 {
-		t.Fatalf("first run made %d model calls, want 2", n)
-	}
-	if got := cacheStatuses(first); got[0] != types.JudgeCacheStored || got[1] != types.JudgeCacheStored {
-		t.Errorf("first run cache statuses = %v, want both stored", got)
-	}
-	if want := (eval.JudgeCacheSummary{Mode: "read-through", Misses: 2, Stored: 2}); first.JudgeCache == nil || *first.JudgeCache != want {
-		t.Errorf("first run summary = %+v, want %+v", first.JudgeCache, want)
-	}
+	require.Len(t, stub.requests(), 2, "first run model calls")
+	assert.Equal(t, []string{types.JudgeCacheStored, types.JudgeCacheStored}, cacheStatuses(first), "first run cache statuses")
+	require.NotNil(t, first.JudgeCache, "first run summary")
+	assert.Equal(t, eval.JudgeCacheSummary{Mode: "read-through", Misses: 2, Stored: 2}, *first.JudgeCache, "first run summary")
 
 	second := runOnce(judge.CacheReadThrough)
-	if n := len(stub.requests()); n != 2 {
-		t.Errorf("second run made %d model calls, want none", n-2)
-	}
-	if got := cacheStatuses(second); got[0] != types.JudgeCacheHit || got[1] != types.JudgeCacheHit {
-		t.Errorf("second run cache statuses = %v, want both hits", got)
-	}
-	if want := (eval.JudgeCacheSummary{Mode: "read-through", Hits: 2}); second.JudgeCache == nil || *second.JudgeCache != want {
-		t.Errorf("second run summary = %+v, want %+v", second.JudgeCache, want)
-	}
+	assert.Len(t, stub.requests(), 2, "second run should make no model calls")
+	assert.Equal(t, []string{types.JudgeCacheHit, types.JudgeCacheHit}, cacheStatuses(second), "second run cache statuses")
+	require.NotNil(t, second.JudgeCache, "second run summary")
+	assert.Equal(t, eval.JudgeCacheSummary{Mode: "read-through", Hits: 2}, *second.JudgeCache, "second run summary")
 	for i := range first.Tasks {
-		a, b := first.Tasks[i].JudgeVerdict, second.Tasks[i].JudgeVerdict
-		if a.Status != b.Status || a.Reason != b.Reason {
-			t.Errorf("task %d: cached verdict %+v differs from the recorded %+v", i, b, a)
-		}
+		recorded, cached := first.Tasks[i].JudgeVerdict, second.Tasks[i].JudgeVerdict
+		assert.Equal(t, recorded.Status, cached.Status, "task %d cached status", i)
+		assert.Equal(t, recorded.Reason, cached.Reason, "task %d cached reason", i)
 	}
 
 	t.Setenv("JUDGE_E2E_KEY", "")
 	strict := runOnce(judge.CacheReplayStrict)
-	if n := len(stub.requests()); n != 2 {
-		t.Errorf("replay-strict run made %d model calls", n-2)
-	}
-	if strict.JudgeCache == nil || strict.JudgeCache.Hits != 2 {
-		t.Errorf("replay-strict summary = %+v, want two hits without a credential", strict.JudgeCache)
-	}
+	assert.Len(t, stub.requests(), 2, "replay-strict run should make no model calls")
+	require.NotNil(t, strict.JudgeCache, "replay-strict summary")
+	assert.Equal(t, 2, strict.JudgeCache.Hits, "replay-strict run should hit the cache for both tasks without a credential")
 }
 
 func TestRunSuite_LiveRunsOmitTheCacheSummary(t *testing.T) {
@@ -104,26 +87,26 @@ func TestRunSuite_LiveRunsOmitTheCacheSummary(t *testing.T) {
 
 	suite := types.EvalSuite{ID: "live-suite", Tasks: []types.EvalTask{{ID: "reviewed", Prompt: "p", Judge: diffReviewJudgeFor(stub)}}}
 	result, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness})
-	if err != nil {
-		t.Fatalf("RunSuite: %v", err)
-	}
-	if result.JudgeCache != nil {
-		t.Errorf("live run reported a cache summary: %+v", result.JudgeCache)
-	}
-	if rec := result.Tasks[0].JudgeVerdict.Record; rec == nil || rec.CacheStatus != types.JudgeCacheBypass || rec.CacheKey != "" {
-		t.Errorf("record = %+v, want the cache bypassed", rec)
-	}
-	data, err := json.Marshal(result)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := fields["judgeCache"]; ok {
-		t.Error("live result JSON carries a judgeCache field")
-	}
+	require.NoError(t, err, "RunSuite")
+
+	t.Run("reports no cache summary", func(t *testing.T) {
+		require.Nil(t, result.JudgeCache)
+	})
+
+	t.Run("bypasses the cache for the record", func(t *testing.T) {
+		rec := result.Tasks[0].JudgeVerdict.Record
+		require.NotNil(t, rec)
+		assert.Equal(t, types.JudgeCacheBypass, rec.CacheStatus)
+		assert.Empty(t, rec.CacheKey)
+	})
+
+	t.Run("omits judgeCache from the JSON", func(t *testing.T) {
+		data, err := json.Marshal(result)
+		require.NoError(t, err)
+		var fields map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(data, &fields))
+		require.NotContains(t, fields, "judgeCache")
+	})
 }
 
 func TestReplayRecording_ReplayStrictServesTheCacheWithoutACredential(t *testing.T) {
@@ -136,31 +119,24 @@ func TestReplayRecording_ReplayStrictServesTheCacheWithoutACredential(t *testing
 	gitIn(t, workspace, "config", "user.name", "t")
 	gitIn(t, workspace, "config", "user.email", "t@example.invalid")
 	gitIn(t, workspace, "commit", "-q", "--allow-empty", "-m", "baseline")
-	if err := os.WriteFile(filepath.Join(workspace, "created.txt"), []byte("agent output\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(workspace, "created.txt"), []byte("agent output\n"), 0o644))
 	cache, err := judge.NewFileCache(t.TempDir(), judge.FileCacheOptions{Mode: judge.CacheRecord})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	task := types.EvalTask{ID: "r", Judge: diffReviewJudgeFor(stub)}
 
 	recorded, err := ReplayRecording(context.Background(), types.RunRecording{RunID: "r1"}, task, workspace, judge.Options{Cache: cache, CacheMode: judge.CacheRecord}, "")
-	if err != nil || recorded.JudgeVerdict.Record.CacheStatus != types.JudgeCacheStored {
-		t.Fatalf("record replay: %+v, %v", recorded, err)
-	}
+	require.NoError(t, err, "record replay")
+	require.Equal(t, types.JudgeCacheStored, recorded.JudgeVerdict.Record.CacheStatus, "record replay cache status")
 
 	t.Setenv("JUDGE_E2E_KEY", "")
 	replayed, err := ReplayRecording(context.Background(), types.RunRecording{RunID: "r1"}, task, workspace, judge.Options{Cache: cache, CacheMode: judge.CacheReplayStrict}, "")
-	if err != nil || replayed.Outcome != "pass" || replayed.JudgeVerdict.Record.CacheStatus != types.JudgeCacheHit {
-		t.Fatalf("strict replay: %+v, %v", replayed, err)
-	}
-	if n := len(stub.requests()); n != 1 {
-		t.Errorf("judge saw %d requests, want only the recording call", n)
-	}
+	require.NoError(t, err, "strict replay")
+	require.Equal(t, "pass", replayed.Outcome, "strict replay outcome")
+	require.Equal(t, types.JudgeCacheHit, replayed.JudgeVerdict.Record.CacheStatus, "strict replay cache status")
+	assert.Len(t, stub.requests(), 1, "judge should see only the recording call")
 }
 
-func TestRunSuite_ACacheModeWithoutACacheFailsBeforeAnyHarnessRun(t *testing.T) {
+func TestRunSuite_CacheModeWithoutCacheFailsBeforeAnyHarnessRun(t *testing.T) {
 	isolateGit(t)
 	stub := newJudgeStub(t, 200, stubPassReply)
 	t.Setenv("JUDGE_E2E_KEY", "k")
@@ -169,13 +145,11 @@ func TestRunSuite_ACacheModeWithoutACacheFailsBeforeAnyHarnessRun(t *testing.T) 
 	suite := types.EvalSuite{ID: "no-cache-suite", Tasks: []types.EvalTask{{ID: "reviewed", Prompt: "p", Judge: diffReviewJudgeFor(stub)}}}
 
 	_, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness, JudgeOptions: judge.Options{CacheMode: judge.CacheReadThrough}})
-	if err == nil || !strings.Contains(err.Error(), "needs a cache") {
-		t.Fatalf("err = %v, want the missing cache reported", err)
-	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Error("the harness ran without the cache its judge mode needs")
-	}
-	if _, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness, DryRun: true, JudgeOptions: judge.Options{CacheMode: judge.CacheReadThrough}}); err != nil {
-		t.Errorf("dry run: %v; a dry run judges nothing and needs no cache", err)
-	}
+	require.ErrorContains(t, err, "needs a cache", "missing cache should be reported")
+
+	_, statErr := os.Stat(marker)
+	assert.True(t, os.IsNotExist(statErr), "the harness ran without the cache its judge mode needs")
+
+	_, err = RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness, DryRun: true, JudgeOptions: judge.Options{CacheMode: judge.CacheReadThrough}})
+	assert.NoError(t, err, "a dry run judges nothing and needs no cache")
 }

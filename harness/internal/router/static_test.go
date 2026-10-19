@@ -3,6 +3,8 @@ package router
 import (
 	"context"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestStaticRouter_Select(t *testing.T) {
@@ -13,28 +15,35 @@ func TestStaticRouter_Select(t *testing.T) {
 		Turn: 1,
 	})
 
-	if sel.Provider != "anthropic" {
-		t.Errorf("Provider = %q, want anthropic", sel.Provider)
-	}
-	if sel.Model != "claude-sonnet-4-6" {
-		t.Errorf("Model = %q, want claude-sonnet-4-6", sel.Model)
-	}
+	require.Equal(t, ModelSelection{Provider: "anthropic", Model: "claude-sonnet-4-6"}, sel)
 }
 
 func TestStaticRouter_IgnoresContext(t *testing.T) {
 	r := NewStaticRouter("bedrock", "claude-opus-4-6")
 
-	contexts := []RouterContext{
-		{Mode: "execution", Turn: 1},
-		{Mode: "planning", Turn: 5, LastStopReason: "tool_use"},
-		{Mode: "review", Turn: 20, TokenUsage: TokenUsage{Input: 100000, Output: 50000}},
+	cases := []struct {
+		name string
+		rc   RouterContext
+	}{
+		{
+			name: "execution first turn",
+			rc:   RouterContext{Mode: "execution", Turn: 1},
+		},
+		{
+			name: "planning after tool use",
+			rc:   RouterContext{Mode: "planning", Turn: 5, LastStopReason: "tool_use"},
+		},
+		{
+			name: "review with high token usage",
+			rc:   RouterContext{Mode: "review", Turn: 20, TokenUsage: TokenUsage{Input: 100000, Output: 50000}},
+		},
 	}
 
-	for _, rc := range contexts {
-		sel := r.Select(context.Background(), rc)
-		if sel.Provider != "bedrock" || sel.Model != "claude-opus-4-6" {
-			t.Errorf("Select(%+v) = %+v, want bedrock/claude-opus-4-6", rc, sel)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sel := r.Select(context.Background(), tc.rc)
+			require.Equal(t, ModelSelection{Provider: "bedrock", Model: "claude-opus-4-6"}, sel)
+		})
 	}
 }
 

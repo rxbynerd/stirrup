@@ -6,21 +6,23 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// TestWorkspaceArchiverMatchesTypesTable pins types.ExecutorCanArchiveWorkspace,
+// TestWorkspaceArchiver_ImplementorsMatchTypesTable pins types.ExecutorCanArchiveWorkspace,
 // which gates executor.workspaceExportTo at config load, against the
 // executors that actually implement WorkspaceArchiver.
-func TestWorkspaceArchiverMatchesTypesTable(t *testing.T) {
+func TestWorkspaceArchiver_ImplementorsMatchTypesTable(t *testing.T) {
 	byType := map[string]Executor{
 		"":            &LocalExecutor{},
 		"local":       &LocalExecutor{},
@@ -31,19 +33,19 @@ func TestWorkspaceArchiverMatchesTypesTable(t *testing.T) {
 		"none":        &NoneExecutor{},
 	}
 	for _, typ := range types.ValidExecutorTypeValues() {
-		if _, ok := byType[typ]; !ok {
-			t.Errorf("executor type %q missing from this parity table", typ)
-		}
+		t.Run(fmt.Sprintf("%q", typ), func(t *testing.T) {
+			require.Contains(t, byType, typ, "executor type missing from this parity table")
+		})
 	}
 	for typ, exec := range byType {
-		_, implements := exec.(WorkspaceArchiver)
-		if got := types.ExecutorCanArchiveWorkspace(typ); got != implements {
-			t.Errorf("types.ExecutorCanArchiveWorkspace(%q) = %v, but WorkspaceArchiver implemented = %v", typ, got, implements)
-		}
+		t.Run(fmt.Sprintf("%q", typ), func(t *testing.T) {
+			_, implements := exec.(WorkspaceArchiver)
+			require.Equal(t, implements, types.ExecutorCanArchiveWorkspace(typ),
+				"ExecutorCanArchiveWorkspace should match the WorkspaceArchiver implementation")
+		})
 	}
-	if _, ok := Executor(&GitLabExecutor{}).(WorkspaceArchiver); ok {
-		t.Error("GitLabExecutor (an api backend) must not implement WorkspaceArchiver")
-	}
+	_, isArchiver := Executor(&GitLabExecutor{}).(WorkspaceArchiver)
+	require.False(t, isArchiver, "GitLabExecutor (an api backend) must not implement WorkspaceArchiver")
 }
 
 type tarEntry struct {
@@ -63,13 +65,9 @@ func readTarEntries(t *testing.T, data []byte) []tarEntry {
 		if err == io.EOF {
 			return out
 		}
-		if err != nil {
-			t.Fatalf("tar.Next: %v", err)
-		}
+		require.NoError(t, err, "reading tar header")
 		body, err := io.ReadAll(tr)
-		if err != nil {
-			t.Fatalf("read %s: %v", h.Name, err)
-		}
+		require.NoError(t, err, "reading body of %s", h.Name)
 		out = append(out, tarEntry{name: h.Name, typeflag: h.Typeflag, linkname: h.Linkname, body: string(body), mode: h.Mode})
 	}
 }
@@ -78,64 +76,52 @@ func newArchiveTestLocal(t *testing.T) (*LocalExecutor, string) {
 	t.Helper()
 	dir := t.TempDir()
 	exec, err := NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
+	require.NoError(t, err)
 	return exec, exec.HostWorkspaceRoot()
 }
 
-func TestLocalExecutor_ArchiveWorkspace(t *testing.T) {
+func TestLocalExecutor_ArchiveWorkspace_IncludesFilesDirsAndSymlinks(t *testing.T) {
 	exec, root := newArchiveTestLocal(t)
-	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "sub", "a.txt"), []byte("alpha"), 0o640); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "..cache"), []byte("dots"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("sub/a.txt", filepath.Join(root, "link")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "sub"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "sub", "a.txt"), []byte("alpha"), 0o640))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "..cache"), []byte("dots"), 0o644))
+	require.NoError(t, os.Symlink("sub/a.txt", filepath.Join(root, "link")))
 
 	var buf bytes.Buffer
 	stats, err := exec.ArchiveWorkspace(context.Background(), &buf, 1<<20)
-	if err != nil {
-		t.Fatalf("ArchiveWorkspace: %v", err)
-	}
-	if stats.Bytes != int64(buf.Len()) {
-		t.Errorf("stats.Bytes = %d, want %d", stats.Bytes, buf.Len())
-	}
+	require.NoError(t, err)
+	require.Equal(t, int64(buf.Len()), stats.Bytes, "stats.Bytes should equal the archive length")
+
 	got := map[string]tarEntry{}
 	for _, e := range readTarEntries(t, buf.Bytes()) {
 		got[e.name] = e
 	}
-	if e := got["sub/a.txt"]; e.typeflag != tar.TypeReg || e.body != "alpha" || e.mode != 0o640 {
-		t.Errorf("sub/a.txt entry = %+v, want a 0640 regular file with body alpha", e)
-	}
-	if e := got["sub/"]; e.typeflag != tar.TypeDir {
-		t.Errorf("sub/ entry = %+v, want a directory", e)
-	}
-	if e := got["..cache"]; e.typeflag != tar.TypeReg {
-		t.Errorf("..cache entry = %+v, want a regular file (a leading-dot name is not an escape)", e)
-	}
-	if e := got["link"]; e.typeflag != tar.TypeSymlink || e.linkname != "sub/a.txt" {
-		t.Errorf("link entry = %+v, want an unfollowed symlink to sub/a.txt", e)
-	}
+	t.Run("regular file keeps body and mode", func(t *testing.T) {
+		e := got["sub/a.txt"]
+		require.Equal(t, byte(tar.TypeReg), e.typeflag)
+		require.Equal(t, "alpha", e.body)
+		require.Equal(t, int64(0o640), e.mode)
+	})
+	t.Run("directory entry", func(t *testing.T) {
+		require.Equal(t, byte(tar.TypeDir), got["sub/"].typeflag)
+	})
+	t.Run("leading-dot name is not an escape", func(t *testing.T) {
+		require.Equal(t, byte(tar.TypeReg), got["..cache"].typeflag)
+	})
+	t.Run("symlink is not followed", func(t *testing.T) {
+		e := got["link"]
+		require.Equal(t, byte(tar.TypeSymlink), e.typeflag)
+		require.Equal(t, "sub/a.txt", e.linkname)
+	})
 }
 
 func TestLocalExecutor_ArchiveWorkspace_RefusesEscapingSymlinks(t *testing.T) {
 	cases := map[string]func(t *testing.T, root string){
 		"outside target": func(t *testing.T, root string) {
-			if err := os.Symlink(t.TempDir(), filepath.Join(root, "escape")); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.Symlink(t.TempDir(), filepath.Join(root, "escape")))
 		},
 		"dangling": func(t *testing.T, root string) {
-			if err := os.Symlink(filepath.Join(root, "missing", "secret"), filepath.Join(root, "dangling")); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.Symlink(filepath.Join(root, "missing", "secret"), filepath.Join(root, "dangling")))
 		},
 	}
 	for name, seed := range cases {
@@ -143,52 +129,37 @@ func TestLocalExecutor_ArchiveWorkspace_RefusesEscapingSymlinks(t *testing.T) {
 			exec, root := newArchiveTestLocal(t)
 			seed(t, root)
 			_, err := exec.ArchiveWorkspace(context.Background(), io.Discard, 1<<20)
-			if err == nil || !strings.Contains(err.Error(), "refusing path") {
-				t.Fatalf("ArchiveWorkspace error = %v, want a refusal", err)
-			}
+			require.ErrorContains(t, err, "refusing path")
 		})
 	}
 }
 
-func TestLocalExecutor_ArchiveWorkspace_MissingRoot(t *testing.T) {
+func TestLocalExecutor_ArchiveWorkspace_ReportsMissingRoot(t *testing.T) {
 	exec, root := newArchiveTestLocal(t)
-	if err := os.Remove(root); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Remove(root))
 	_, err := exec.ArchiveWorkspace(context.Background(), io.Discard, 1<<20)
-	if !errors.Is(err, ErrWorkspaceRootMissing) {
-		t.Fatalf("ArchiveWorkspace error = %v, want ErrWorkspaceRootMissing", err)
-	}
+	require.ErrorIs(t, err, ErrWorkspaceRootMissing)
 }
 
-func TestLocalExecutor_ArchiveWorkspace_Cap(t *testing.T) {
+func TestLocalExecutor_ArchiveWorkspace_StopsAtByteCap(t *testing.T) {
 	exec, root := newArchiveTestLocal(t)
-	if err := os.WriteFile(filepath.Join(root, "big"), bytes.Repeat([]byte("x"), 64<<10), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(root, "big"), bytes.Repeat([]byte("x"), 64<<10), 0o644))
 	var buf bytes.Buffer
 	_, err := exec.ArchiveWorkspace(context.Background(), &buf, 16<<10)
-	if !errors.Is(err, ErrArchiveTooLarge) {
-		t.Fatalf("ArchiveWorkspace error = %v, want ErrArchiveTooLarge", err)
-	}
-	if buf.Len() > 16<<10 {
-		t.Errorf("wrote %d bytes past a %d-byte cap", buf.Len(), 16<<10)
-	}
+	require.ErrorIs(t, err, ErrArchiveTooLarge)
+	require.LessOrEqual(t, buf.Len(), 16<<10, "bytes written past the cap")
 }
 
-func TestLocalExecutor_ArchiveWorkspace_Cancelled(t *testing.T) {
+func TestLocalExecutor_ArchiveWorkspace_StopsWhenContextCancelled(t *testing.T) {
 	exec, root := newArchiveTestLocal(t)
-	if err := os.WriteFile(filepath.Join(root, "f"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(root, "f"), []byte("x"), 0o644))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := exec.ArchiveWorkspace(ctx, io.Discard, 1<<20); !errors.Is(err, context.Canceled) {
-		t.Fatalf("ArchiveWorkspace error = %v, want context.Canceled", err)
-	}
+	_, err := exec.ArchiveWorkspace(ctx, io.Discard, 1<<20)
+	require.ErrorIs(t, err, context.Canceled)
 }
 
-func TestArchiveViaExec(t *testing.T) {
+func TestArchiveViaExec_MapsExecOutcomes(t *testing.T) {
 	transport := errors.New("stream reset")
 	cases := []struct {
 		name    string
@@ -218,20 +189,13 @@ func TestArchiveViaExec(t *testing.T) {
 			})
 			switch {
 			case tc.wantIs != nil:
-				if !errors.Is(err, tc.wantIs) {
-					t.Fatalf("error = %v, want %v", err, tc.wantIs)
-				}
+				require.ErrorIs(t, err, tc.wantIs)
 			case tc.wantSub != "":
-				if err == nil || !strings.Contains(err.Error(), tc.wantSub) {
-					t.Fatalf("error = %v, want it to contain %q", err, tc.wantSub)
-				}
+				require.ErrorContains(t, err, tc.wantSub)
 			default:
-				if err != nil {
-					t.Fatalf("error = %v, want nil", err)
-				}
-				if out.String() != tc.stdout || stats.Bytes != int64(len(tc.stdout)) {
-					t.Errorf("forwarded %q (stats %d), want %q", out.String(), stats.Bytes, tc.stdout)
-				}
+				require.NoError(t, err)
+				require.Equal(t, tc.stdout, out.String(), "forwarded bytes")
+				require.Equal(t, int64(len(tc.stdout)), stats.Bytes, "stats.Bytes")
 			}
 		})
 	}
@@ -239,19 +203,17 @@ func TestArchiveViaExec(t *testing.T) {
 
 func TestWorkspaceArchiveArgv_PassesRootAsParameter(t *testing.T) {
 	argv := workspaceArchiveArgv("/bin/sh", "/work space")
-	if argv[0] != "/bin/sh" || argv[1] != "-c" || argv[len(argv)-1] != "/work space" {
-		t.Fatalf("argv = %q, want the root as the final positional parameter", argv)
-	}
-	if strings.Contains(argv[2], "/work space") {
-		t.Errorf("script %q interpolates the root", argv[2])
-	}
+	require.Equal(t, "/bin/sh", argv[0])
+	require.Equal(t, "-c", argv[1])
+	require.Equal(t, "/work space", argv[len(argv)-1], "argv = %q: root should be the final positional parameter", argv)
+	require.NotContains(t, argv[2], "/work space", "script should not interpolate the root")
 }
 
-// TestContainerExecutor_ArchiveWorkspace drives the exec-API archive path
+// TestContainerExecutor_ArchiveWorkspace_RunsTarInWorkspace drives the exec-API archive path
 // against the mock engine: the tar command runs in the workspace and its
 // stdout reaches the caller verbatim, and the missing-root status maps to
 // ErrWorkspaceRootMissing.
-func TestContainerExecutor_ArchiveWorkspace(t *testing.T) {
+func TestContainerExecutor_ArchiveWorkspace_RunsTarInWorkspace(t *testing.T) {
 	var archive bytes.Buffer
 	tw := tar.NewWriter(&archive)
 	_ = tw.WriteHeader(&tar.Header{Name: "./sandbox.txt", Mode: 0o644, Size: 2, Typeflag: tar.TypeReg})
@@ -289,21 +251,14 @@ func TestContainerExecutor_ArchiveWorkspace(t *testing.T) {
 
 			var out bytes.Buffer
 			_, err := exec.ArchiveWorkspace(context.Background(), &out, 1<<20)
-			if !slices.Equal(gotReq.Cmd, workspaceArchiveArgv("sh", containerWorkspace)) || gotReq.WorkingDir != containerWorkspace {
-				t.Errorf("exec request = %+v, want the workspace archive command in %s", gotReq, containerWorkspace)
-			}
+			require.Equal(t, workspaceArchiveArgv("sh", containerWorkspace), gotReq.Cmd, "exec command")
+			require.Equal(t, containerWorkspace, gotReq.WorkingDir, "exec working directory")
 			if tc.wantIs != nil {
-				if !errors.Is(err, tc.wantIs) {
-					t.Fatalf("error = %v, want %v", err, tc.wantIs)
-				}
+				require.ErrorIs(t, err, tc.wantIs)
 				return
 			}
-			if err != nil {
-				t.Fatalf("ArchiveWorkspace: %v", err)
-			}
-			if !bytes.Equal(out.Bytes(), archive.Bytes()) {
-				t.Errorf("archive bytes differ from the exec stdout")
-			}
+			require.NoError(t, err)
+			require.Equal(t, archive.Bytes(), out.Bytes(), "archive bytes should match the exec stdout")
 		})
 	}
 }

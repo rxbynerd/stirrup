@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // newHTTP2TLSServer starts a TLS httptest server that offers HTTP/2.
@@ -23,20 +25,17 @@ func newHTTP2TLSServer(t *testing.T, h http.Handler) *httptest.Server {
 func trustServer(t *testing.T, client *http.Client, srv *httptest.Server) {
 	t.Helper()
 	tr, ok := client.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("transport is %T, want *http.Transport", client.Transport)
-	}
+	require.True(t, ok, "transport is %T, want *http.Transport", client.Transport)
 	pool := x509.NewCertPool()
 	pool.AddCert(srv.Certificate())
 	tr.TLSClientConfig = &tls.Config{RootCAs: pool}
 }
 
+// getProto performs a GET against url and returns the negotiated HTTP major version.
 func getProto(t *testing.T, client *http.Client, url string) int {
 	t.Helper()
 	resp, err := client.Get(url)
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
+	require.NoError(t, err, "GET %s", url)
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
 	client.CloseIdleConnections()
@@ -55,20 +54,18 @@ func TestStreamingHTTPClients_NegotiateHTTP2(t *testing.T) {
 	for name, client := range clients {
 		t.Run(name, func(t *testing.T) {
 			trustServer(t, client, srv)
-			if got := getProto(t, client, srv.URL); got != 2 {
-				t.Errorf("negotiated HTTP/%d, want HTTP/2", got)
-			}
+			got := getProto(t, client, srv.URL)
+			require.Equal(t, 2, got, "negotiated HTTP major version")
 		})
 	}
 }
 
-func TestStreamingHTTPClient_CustomDialerNeedsForceAttemptHTTP2(t *testing.T) {
+func TestStreamingHTTPClient_CustomDialer_NoForceAttemptFallsBackToHTTP1(t *testing.T) {
 	srv := newHTTP2TLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 
 	client := newStreamingHTTPClient()
 	client.Transport.(*http.Transport).ForceAttemptHTTP2 = false
 	trustServer(t, client, srv)
-	if got := getProto(t, client, srv.URL); got != 1 {
-		t.Errorf("without ForceAttemptHTTP2 negotiated HTTP/%d, want HTTP/1.1", got)
-	}
+	got := getProto(t, client, srv.URL)
+	require.Equal(t, 1, got, "negotiated HTTP major version")
 }

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 )
 
@@ -29,19 +31,13 @@ func applySearchReplace(t *testing.T, path, content, oldString string) (string, 
 	rec := &writeRecorder{Executor: newTestExecutor(t, dir)}
 
 	input, err := json.Marshal(map[string]string{"path": path, "old_string": oldString, "new_string": "replacement"})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err)
 	result, err := NewSearchReplaceStrategy().Apply(context.Background(), input, rec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied {
-		t.Fatalf("expected Applied=false")
-	}
-	if after, _ := rec.ReadFile(context.Background(), path); after != content {
-		t.Fatalf("file modified: got %q, want %q", after, content)
-	}
+	require.NoError(t, err)
+	require.False(t, result.Applied, "expected Applied=false")
+
+	after, _ := rec.ReadFile(context.Background(), path)
+	require.Equal(t, content, after, "file modified")
 	return result.Error, rec
 }
 
@@ -133,18 +129,12 @@ func TestSearchReplace_MismatchHint(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			msg, rec := applySearchReplace(t, "f.txt", tt.content, tt.oldString)
 			for _, w := range tt.want {
-				if !strings.Contains(msg, w) {
-					t.Errorf("message missing %q:\n%s", w, msg)
-				}
+				require.Contains(t, msg, w)
 			}
 			for _, w := range tt.wantNot {
-				if strings.Contains(msg, w) {
-					t.Errorf("message should not contain %q:\n%s", w, msg)
-				}
+				require.NotContains(t, msg, w)
 			}
-			if rec.writes != 0 {
-				t.Errorf("writes: got %d, want 0", rec.writes)
-			}
+			require.Zero(t, rec.writes, "hint-only failure must not write the file")
 		})
 	}
 }
@@ -154,16 +144,10 @@ func TestSearchReplace_NoSimilarRegion(t *testing.T) {
 		"package main\n\nfunc main() {\n\tprintln(\"hi\")\n}\n",
 		"zebra giraffe\nantelope wildebeest")
 
-	if !strings.Contains(msg, "no similar region") {
-		t.Errorf("expected no-similar-region message, got: %s", msg)
-	}
-	if !strings.Contains(msg, "Read the file again") {
-		t.Errorf("expected re-read suggestion, got: %s", msg)
-	}
+	require.Contains(t, msg, "no similar region")
+	require.Contains(t, msg, "Read the file again")
 	for _, leaked := range []string{"package main", "println", "func main"} {
-		if strings.Contains(msg, leaked) {
-			t.Errorf("message quotes unrelated file text %q: %s", leaked, msg)
-		}
+		require.NotContains(t, msg, leaked, "message quotes unrelated file text")
 	}
 }
 
@@ -173,12 +157,8 @@ func TestSearchReplace_ClosestRegionQuoteBounds(t *testing.T) {
 	msg, _ := applySearchReplace(t, "f.txt", content,
 		"a1 a2 a3 "+long+"X\nb1 b2 b3 b4\nc1 c2 c3 c4\nd1 d2 d3 d4\ne1 e2 e3 e4")
 
-	if got := strings.Count(msg, "\n"); got > maxQuotedLines+1 {
-		t.Errorf("quoted %d newlines, want at most %d:\n%s", got, maxQuotedLines+1, msg)
-	}
-	if len(msg) > maxMismatchHintBytes {
-		t.Errorf("message length %d exceeds %d", len(msg), maxMismatchHintBytes)
-	}
+	require.LessOrEqual(t, strings.Count(msg, "\n"), maxQuotedLines+1, "message quotes too many lines:\n%s", msg)
+	require.LessOrEqual(t, len(msg), maxMismatchHintBytes, "message exceeds size bound:\n%s", msg)
 }
 
 func TestSearchReplace_CredentialPathWithholdsQuote(t *testing.T) {
@@ -186,18 +166,14 @@ func TestSearchReplace_CredentialPathWithholdsQuote(t *testing.T) {
 	old := "API_ENDPOINT=https://example.test/v1\nAPI_TOKEN=differentvalue\nREGION=eu"
 
 	plain, _ := applySearchReplace(t, "settings.txt", content, old)
-	if !strings.Contains(plain, "supersecretvalue") {
-		t.Fatalf("control: expected quote for non-credential path, got: %s", plain)
-	}
+	require.Contains(t, plain, "supersecretvalue", "control: non-credential path should quote file text")
 
 	for _, path := range []string{".env", "deploy/.env", ".ssh/config", "keys/server.pem"} {
-		msg, _ := applySearchReplace(t, path, content, old)
-		if strings.Contains(msg, "supersecretvalue") {
-			t.Errorf("%s: message quotes file text: %s", path, msg)
-		}
-		if !strings.Contains(msg, "closest region is lines 1-3") {
-			t.Errorf("%s: expected line numbers without quote, got: %s", path, msg)
-		}
+		t.Run(path, func(t *testing.T) {
+			msg, _ := applySearchReplace(t, path, content, old)
+			require.NotContains(t, msg, "supersecretvalue", "credential path should not quote file text")
+			require.Contains(t, msg, "closest region is lines 1-3")
+		})
 	}
 }
 
@@ -209,41 +185,33 @@ func TestSearchReplace_MismatchHintBoundedForLargeFile(t *testing.T) {
 	content := b.String()
 
 	hugeOld := strings.Repeat("    padding line that matches nothing in the file at all\n", 2000)
-	for name, old := range map[string]string{
-		"near match":   "    line 40000 := compute(40000)\n    line 40001 := compute(40001)",
-		"long old":     hugeOld,
-		"similar huge": strings.Repeat("\tline 7 := compute(7)\n", 3000) + "tail",
-	} {
-		t.Run(name, func(t *testing.T) {
-			msg, _ := applySearchReplace(t, "big.go", content, old)
-			if len(msg) > maxMismatchHintBytes {
-				t.Errorf("message length %d exceeds %d", len(msg), maxMismatchHintBytes)
-			}
-			if !strings.HasPrefix(msg, notFoundPrefix) {
-				t.Errorf("message lost its prefix: %.80s", msg)
-			}
+	tests := []struct {
+		name string
+		old  string
+	}{
+		{name: "near match", old: "    line 40000 := compute(40000)\n    line 40001 := compute(40001)"},
+		{name: "long old", old: hugeOld},
+		{name: "similar huge", old: strings.Repeat("\tline 7 := compute(7)\n", 3000) + "tail"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg, _ := applySearchReplace(t, "big.go", content, tt.old)
+			require.LessOrEqual(t, len(msg), maxMismatchHintBytes)
+			require.True(t, strings.HasPrefix(msg, notFoundPrefix), "message lost its prefix: %.80s", msg)
 		})
 	}
 }
 
-func TestBoundMessage_RuneBoundary(t *testing.T) {
+func TestBoundMessage_TruncatesOnRuneBoundary(t *testing.T) {
 	msg := boundMessage(strings.Repeat("é", maxMismatchHintBytes))
-	if len(msg) > maxMismatchHintBytes {
-		t.Errorf("length %d exceeds %d", len(msg), maxMismatchHintBytes)
-	}
-	if !strings.HasSuffix(msg, "...") {
-		t.Errorf("expected truncation marker, got suffix %q", msg[len(msg)-6:])
-	}
-	if strings.ContainsRune(msg, '\uFFFD') {
-		t.Error("truncation split a multi-byte rune")
-	}
+	require.LessOrEqual(t, len(msg), maxMismatchHintBytes)
+	require.True(t, strings.HasSuffix(msg, "..."), "expected truncation marker, got suffix %q", msg[max(0, len(msg)-6):])
+	require.NotContains(t, msg, "�", "truncation split a multi-byte rune")
 }
 
 func TestSearchReplace_WhitespaceOnlyOldStringHasNoHint(t *testing.T) {
 	msg, _ := applySearchReplace(t, "f.txt", "a\nb\n", "   \n  ")
-	if msg != notFoundPrefix {
-		t.Errorf("got %q, want bare %q", msg, notFoundPrefix)
-	}
+	require.Equal(t, notFoundPrefix, msg)
 }
 
 func TestMultiStrategy_ReplaceCarriesMismatchHint(t *testing.T) {
@@ -259,18 +227,10 @@ func TestMultiStrategy_ReplaceCarriesMismatchHint(t *testing.T) {
 		"new_string": "z := 3"
 	}`)
 	result, err := m.Apply(context.Background(), input, rec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied {
-		t.Fatal("expected Applied=false")
-	}
+	require.NoError(t, err)
+	require.False(t, result.Applied, "expected Applied=false")
 	for _, want := range []string{"all strategies failed", "lines 2-3", "the file indents with tabs"} {
-		if !strings.Contains(result.Error, want) {
-			t.Errorf("error missing %q: %s", want, result.Error)
-		}
+		require.Contains(t, result.Error, want)
 	}
-	if rec.writes != 0 {
-		t.Errorf("writes: got %d, want 0", rec.writes)
-	}
+	require.Zero(t, rec.writes, "hint-only failure must not write the file")
 }

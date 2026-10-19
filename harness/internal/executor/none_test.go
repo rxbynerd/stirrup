@@ -2,71 +2,49 @@ package executor
 
 import (
 	"context"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 var _ Executor = (*NoneExecutor)(nil)
 
-func TestNoneExecutor_ReadFile(t *testing.T) {
+func TestNoneExecutor_ReadFile_ReturnsNotSupported(t *testing.T) {
 	n := NewNoneExecutor()
 	_, err := n.ReadFile(context.Background(), "main.go")
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !strings.Contains(err.Error(), "not supported") {
-		t.Errorf("error should mention not supported, got %q", err.Error())
-	}
+	require.ErrorContains(t, err, "not supported")
 }
 
-func TestNoneExecutor_WriteFile(t *testing.T) {
+func TestNoneExecutor_WriteFile_ReturnsNotSupported(t *testing.T) {
 	n := NewNoneExecutor()
 	err := n.WriteFile(context.Background(), "main.go", "content")
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !strings.Contains(err.Error(), "not supported") {
-		t.Errorf("error should mention not supported, got %q", err.Error())
-	}
+	require.ErrorContains(t, err, "not supported")
 }
 
-func TestNoneExecutor_ListDirectory(t *testing.T) {
+func TestNoneExecutor_ListDirectory_ReturnsNotSupported(t *testing.T) {
 	n := NewNoneExecutor()
 	_, err := n.ListDirectory(context.Background(), ".")
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !strings.Contains(err.Error(), "not supported") {
-		t.Errorf("error should mention not supported, got %q", err.Error())
-	}
+	require.ErrorContains(t, err, "not supported")
 }
 
-func TestNoneExecutor_Exec(t *testing.T) {
+func TestNoneExecutor_Exec_ReturnsNotSupported(t *testing.T) {
 	n := NewNoneExecutor()
 	_, err := n.Exec(context.Background(), "echo hi", 0)
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !strings.Contains(err.Error(), "not supported") {
-		t.Errorf("error should mention not supported, got %q", err.Error())
-	}
+	require.ErrorContains(t, err, "not supported")
 }
 
-func TestNoneExecutor_ResolvePath(t *testing.T) {
+func TestNoneExecutor_ResolvePath_LeavesPathUnchanged(t *testing.T) {
 	n := NewNoneExecutor()
 	got, err := n.ResolvePath("foo/bar.go")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != "foo/bar.go" {
-		t.Errorf("expected path unchanged, got %q", got)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "foo/bar.go", got)
 }
 
-func TestNoneExecutor_Capabilities(t *testing.T) {
+func TestNoneExecutor_Capabilities_AllDisabled(t *testing.T) {
 	n := NewNoneExecutor()
 	caps := n.Capabilities()
-	if caps.CanRead || caps.CanWrite || caps.CanExec || caps.CanNetwork {
-		t.Errorf("expected all capabilities false, got %+v", caps)
-	}
+	require.False(t, caps.CanRead)
+	require.False(t, caps.CanWrite)
+	require.False(t, caps.CanExec)
+	require.False(t, caps.CanNetwork)
 }

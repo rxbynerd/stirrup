@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
+	"slices"
 	"testing"
 	"time"
 
@@ -14,6 +14,8 @@ import (
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -90,18 +92,13 @@ func TestBedrock_TextStreaming(t *testing.T) {
 	go consumeBedrockStream(context.Background(), reader, ch)
 	result := collectEvents(t, ch)
 
-	if len(result) != 3 {
-		t.Fatalf("expected 3 events, got %d: %+v", len(result), result)
-	}
-	if result[0].Type != "text_delta" || result[0].Text != "Hello" {
-		t.Errorf("event[0] = %+v, want text_delta/Hello", result[0])
-	}
-	if result[1].Type != "text_delta" || result[1].Text != " world" {
-		t.Errorf("event[1] = %+v, want text_delta/ world", result[1])
-	}
-	if result[2].Type != "message_complete" || result[2].StopReason != "end_turn" {
-		t.Errorf("event[2] = %+v, want message_complete/end_turn", result[2])
-	}
+	require.Len(t, result, 3, "events: %+v", result)
+	assert.Equal(t, "text_delta", result[0].Type, "event[0].Type")
+	assert.Equal(t, "Hello", result[0].Text, "event[0].Text")
+	assert.Equal(t, "text_delta", result[1].Type, "event[1].Type")
+	assert.Equal(t, " world", result[1].Text, "event[1].Text")
+	assert.Equal(t, "message_complete", result[2].Type, "event[2].Type")
+	assert.Equal(t, "end_turn", result[2].StopReason, "event[2].StopReason")
 }
 
 func TestBedrock_ToolCallStreaming(t *testing.T) {
@@ -154,27 +151,16 @@ func TestBedrock_ToolCallStreaming(t *testing.T) {
 	go consumeBedrockStream(context.Background(), reader, ch)
 	result := collectEvents(t, ch)
 
-	if len(result) != 2 {
-		t.Fatalf("expected 2 events, got %d: %+v", len(result), result)
-	}
+	require.Len(t, result, 2, "events: %+v", result)
 
 	tc := result[0]
-	if tc.Type != "tool_call" {
-		t.Fatalf("event[0].Type = %q, want tool_call", tc.Type)
-	}
-	if tc.ID != "toolu_abc" {
-		t.Errorf("event[0].ID = %q, want toolu_abc", tc.ID)
-	}
-	if tc.Name != "read_file" {
-		t.Errorf("event[0].Name = %q, want read_file", tc.Name)
-	}
-	if tc.Input["path"] != "main.go" {
-		t.Errorf("event[0].Input[path] = %v, want main.go", tc.Input["path"])
-	}
+	require.Equal(t, "tool_call", tc.Type, "event[0].Type")
+	assert.Equal(t, "toolu_abc", tc.ID, "event[0].ID")
+	assert.Equal(t, "read_file", tc.Name, "event[0].Name")
+	assert.Equal(t, "main.go", tc.Input["path"], "event[0].Input[path]")
 
-	if result[1].Type != "message_complete" || result[1].StopReason != "tool_use" {
-		t.Errorf("event[1] = %+v, want message_complete/tool_use", result[1])
-	}
+	assert.Equal(t, "message_complete", result[1].Type, "event[1].Type")
+	assert.Equal(t, "tool_use", result[1].StopReason, "event[1].StopReason")
 }
 
 func TestBedrock_MixedTextAndToolCall(t *testing.T) {
@@ -224,37 +210,28 @@ func TestBedrock_MixedTextAndToolCall(t *testing.T) {
 	go consumeBedrockStream(context.Background(), reader, ch)
 	result := collectEvents(t, ch)
 
-	if len(result) != 3 {
-		t.Fatalf("expected 3 events, got %d: %+v", len(result), result)
-	}
-	if result[0].Type != "text_delta" {
-		t.Errorf("event[0].Type = %q, want text_delta", result[0].Type)
-	}
-	if result[1].Type != "tool_call" || result[1].Name != "read_file" {
-		t.Errorf("event[1] = %+v, want tool_call/read_file", result[1])
-	}
-	if result[2].Type != "message_complete" {
-		t.Errorf("event[2].Type = %q, want message_complete", result[2].Type)
-	}
+	require.Len(t, result, 3, "events: %+v", result)
+	assert.Equal(t, "text_delta", result[0].Type, "event[0].Type")
+	assert.Equal(t, "tool_call", result[1].Type, "event[1].Type")
+	assert.Equal(t, "read_file", result[1].Name, "event[1].Name")
+	assert.Equal(t, "message_complete", result[2].Type, "event[2].Type")
 }
 
 func TestBedrock_StopReasonMapping(t *testing.T) {
 	tests := []struct {
+		name   string
 		reason brtypes.StopReason
 		want   string
 	}{
-		{brtypes.StopReasonEndTurn, "end_turn"},
-		{brtypes.StopReasonToolUse, "tool_use"},
-		{brtypes.StopReasonMaxTokens, "max_tokens"},
-		{brtypes.StopReasonStopSequence, "stop_sequence"},
-		{brtypes.StopReason("unknown_reason"), "unknown_reason"},
+		{"end turn", brtypes.StopReasonEndTurn, "end_turn"},
+		{"tool use", brtypes.StopReasonToolUse, "tool_use"},
+		{"max tokens", brtypes.StopReasonMaxTokens, "max_tokens"},
+		{"stop sequence", brtypes.StopReasonStopSequence, "stop_sequence"},
+		{"unknown reason passes through", brtypes.StopReason("unknown_reason"), "unknown_reason"},
 	}
 	for _, tt := range tests {
-		t.Run(string(tt.reason), func(t *testing.T) {
-			got := mapStopReason(tt.reason)
-			if got != tt.want {
-				t.Errorf("mapStopReason(%q) = %q, want %q", tt.reason, got, tt.want)
-			}
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, mapStopReason(tt.reason))
 		})
 	}
 }
@@ -279,15 +256,9 @@ func TestBedrock_MetadataTokens(t *testing.T) {
 	go consumeBedrockStream(context.Background(), reader, ch)
 	result := collectEvents(t, ch)
 
-	if len(result) != 2 {
-		t.Fatalf("expected 2 events, got %d: %+v", len(result), result)
-	}
-	if result[0].StopReason != "end_turn" {
-		t.Errorf("event[0].StopReason = %q, want end_turn", result[0].StopReason)
-	}
-	if result[1].OutputTokens != 150 {
-		t.Errorf("event[1].OutputTokens = %d, want 150", result[1].OutputTokens)
-	}
+	require.Len(t, result, 2, "events: %+v", result)
+	assert.Equal(t, "end_turn", result[0].StopReason, "event[0].StopReason")
+	assert.Equal(t, 150, result[1].OutputTokens, "event[1].OutputTokens")
 }
 
 func TestBedrock_StreamError(t *testing.T) {
@@ -305,18 +276,10 @@ func TestBedrock_StreamError(t *testing.T) {
 	go consumeBedrockStream(context.Background(), reader, ch)
 	result := collectEvents(t, ch)
 
-	if len(result) != 2 {
-		t.Fatalf("expected 2 events, got %d: %+v", len(result), result)
-	}
-	if result[0].Type != "text_delta" {
-		t.Errorf("event[0].Type = %q, want text_delta", result[0].Type)
-	}
-	if result[1].Type != "error" || result[1].Error == nil {
-		t.Fatalf("event[1] = %+v, want error event", result[1])
-	}
-	if !strings.Contains(result[1].Error.Error(), "connection reset") {
-		t.Errorf("error = %q, want to contain 'connection reset'", result[1].Error)
-	}
+	require.Len(t, result, 2, "events: %+v", result)
+	assert.Equal(t, "text_delta", result[0].Type, "event[0].Type")
+	require.Equal(t, "error", result[1].Type, "event[1].Type")
+	require.ErrorContains(t, result[1].Error, "connection reset")
 }
 
 func TestBedrock_ContextCancellation(t *testing.T) {
@@ -349,18 +312,13 @@ func TestBedrock_ContextCancellation(t *testing.T) {
 	go consumeBedrockStream(ctx, reader, ch)
 	result := collectEvents(t, ch)
 
-	foundError := false
-	for _, ev := range result {
-		if ev.Type == "error" && ev.Error != nil {
-			foundError = true
-		}
-	}
-	if !foundError {
-		t.Error("expected an error event from context cancellation")
-	}
+	hasError := slices.ContainsFunc(result, func(ev types.StreamEvent) bool {
+		return ev.Type == "error" && ev.Error != nil
+	})
+	require.True(t, hasError, "expected an error event from context cancellation")
 }
 
-func TestBedrock_MalformedToolInputJSONMarksToolCall(t *testing.T) {
+func TestBedrock_MalformedToolInput_MarksToolCall(t *testing.T) {
 	events := []brtypes.ConverseStreamOutput{
 		&brtypes.ConverseStreamOutputMemberContentBlockStart{
 			Value: brtypes.ContentBlockStartEvent{
@@ -423,66 +381,34 @@ func TestBedrock_TranslateMessages(t *testing.T) {
 	}
 
 	result, err := bedrockTranslateMessages(msgs)
-	if err != nil {
-		t.Fatalf("bedrockTranslateMessages() error: %v", err)
-	}
+	require.NoError(t, err)
+	require.Len(t, result, 3)
 
-	if len(result) != 3 {
-		t.Fatalf("expected 3 messages, got %d", len(result))
-	}
+	assert.Equal(t, brtypes.ConversationRoleUser, result[0].Role, "msg[0].Role")
+	require.Len(t, result[0].Content, 1, "msg[0].Content")
+	require.IsType(t, &brtypes.ContentBlockMemberText{}, result[0].Content[0], "msg[0].Content[0]")
+	text := result[0].Content[0].(*brtypes.ContentBlockMemberText)
+	assert.Equal(t, "Hello", text.Value, "msg[0].Content[0].Value")
 
-	if result[0].Role != brtypes.ConversationRoleUser {
-		t.Errorf("msg[0].Role = %q, want user", result[0].Role)
-	}
-	if len(result[0].Content) != 1 {
-		t.Fatalf("msg[0] has %d content blocks, want 1", len(result[0].Content))
-	}
-	if textBlock, ok := result[0].Content[0].(*brtypes.ContentBlockMemberText); !ok {
-		t.Errorf("msg[0].Content[0] type = %T, want ContentBlockMemberText", result[0].Content[0])
-	} else if textBlock.Value != "Hello" {
-		t.Errorf("msg[0].Content[0].Value = %q, want Hello", textBlock.Value)
-	}
+	assert.Equal(t, brtypes.ConversationRoleAssistant, result[1].Role, "msg[1].Role")
+	require.Len(t, result[1].Content, 2, "msg[1].Content")
+	require.IsType(t, &brtypes.ContentBlockMemberToolUse{}, result[1].Content[1], "msg[1].Content[1]")
+	toolUse := result[1].Content[1].(*brtypes.ContentBlockMemberToolUse)
+	assert.Equal(t, "read_file", aws.ToString(toolUse.Value.Name), "tool_use.Name")
+	assert.Equal(t, "toolu_1", aws.ToString(toolUse.Value.ToolUseId), "tool_use.ToolUseId")
 
-	if result[1].Role != brtypes.ConversationRoleAssistant {
-		t.Errorf("msg[1].Role = %q, want assistant", result[1].Role)
-	}
-	if len(result[1].Content) != 2 {
-		t.Fatalf("msg[1] has %d content blocks, want 2", len(result[1].Content))
-	}
-	if toolBlock, ok := result[1].Content[1].(*brtypes.ContentBlockMemberToolUse); !ok {
-		t.Errorf("msg[1].Content[1] type = %T, want ContentBlockMemberToolUse", result[1].Content[1])
-	} else {
-		if aws.ToString(toolBlock.Value.Name) != "read_file" {
-			t.Errorf("tool_use.Name = %q, want read_file", aws.ToString(toolBlock.Value.Name))
-		}
-		if aws.ToString(toolBlock.Value.ToolUseId) != "toolu_1" {
-			t.Errorf("tool_use.ToolUseId = %q, want toolu_1", aws.ToString(toolBlock.Value.ToolUseId))
-		}
-	}
-
-	if len(result[2].Content) != 1 {
-		t.Fatalf("msg[2] has %d content blocks, want 1", len(result[2].Content))
-	}
-	if trBlock, ok := result[2].Content[0].(*brtypes.ContentBlockMemberToolResult); !ok {
-		t.Errorf("msg[2].Content[0] type = %T, want ContentBlockMemberToolResult", result[2].Content[0])
-	} else {
-		if aws.ToString(trBlock.Value.ToolUseId) != "toolu_1" {
-			t.Errorf("tool_result.ToolUseId = %q, want toolu_1", aws.ToString(trBlock.Value.ToolUseId))
-		}
-	}
+	require.Len(t, result[2].Content, 1, "msg[2].Content")
+	require.IsType(t, &brtypes.ContentBlockMemberToolResult{}, result[2].Content[0], "msg[2].Content[0]")
+	toolResult := result[2].Content[0].(*brtypes.ContentBlockMemberToolResult)
+	assert.Equal(t, "toolu_1", aws.ToString(toolResult.Value.ToolUseId), "tool_result.ToolUseId")
 }
 
-func TestBedrock_TranslateMessages_BadRole(t *testing.T) {
+func TestBedrock_TranslateMessages_RejectsUnknownRole(t *testing.T) {
 	msgs := []types.Message{
 		{Role: "system", Content: []types.ContentBlock{{Type: "text", Text: "nope"}}},
 	}
 	_, err := bedrockTranslateMessages(msgs)
-	if err == nil {
-		t.Fatal("expected error for unsupported role, got nil")
-	}
-	if !strings.Contains(err.Error(), "unsupported message role") {
-		t.Errorf("error = %q, want to contain 'unsupported message role'", err)
-	}
+	require.ErrorContains(t, err, "unsupported message role")
 }
 
 func TestBedrock_TranslateTools(t *testing.T) {
@@ -492,26 +418,16 @@ func TestBedrock_TranslateTools(t *testing.T) {
 	}
 
 	result, err := bedrockTranslateTools(tools)
-	if err != nil {
-		t.Fatalf("bedrockTranslateTools() error: %v", err)
-	}
+	require.NoError(t, err)
+	require.Len(t, result, 1)
 
-	if len(result) != 1 {
-		t.Fatalf("expected 1 tool, got %d", len(result))
-	}
-	toolSpec, ok := result[0].(*brtypes.ToolMemberToolSpec)
-	if !ok {
-		t.Fatalf("tool type = %T, want ToolMemberToolSpec", result[0])
-	}
-	if aws.ToString(toolSpec.Value.Name) != "read_file" {
-		t.Errorf("tool.Name = %q, want read_file", aws.ToString(toolSpec.Value.Name))
-	}
-	if aws.ToString(toolSpec.Value.Description) != "Read a file" {
-		t.Errorf("tool.Description = %q, want 'Read a file'", aws.ToString(toolSpec.Value.Description))
-	}
+	require.IsType(t, &brtypes.ToolMemberToolSpec{}, result[0])
+	toolSpec := result[0].(*brtypes.ToolMemberToolSpec)
+	assert.Equal(t, "read_file", aws.ToString(toolSpec.Value.Name), "tool.Name")
+	assert.Equal(t, "Read a file", aws.ToString(toolSpec.Value.Description), "tool.Description")
 }
 
-func TestBedrock_TranslateToolResult_Error(t *testing.T) {
+func TestBedrock_TranslateToolResult_MarksErrorStatus(t *testing.T) {
 	msgs := []types.Message{
 		{
 			Role: "user",
@@ -522,17 +438,11 @@ func TestBedrock_TranslateToolResult_Error(t *testing.T) {
 	}
 
 	result, err := bedrockTranslateMessages(msgs)
-	if err != nil {
-		t.Fatalf("bedrockTranslateMessages() error: %v", err)
-	}
+	require.NoError(t, err)
 
-	trBlock, ok := result[0].Content[0].(*brtypes.ContentBlockMemberToolResult)
-	if !ok {
-		t.Fatalf("content type = %T, want ContentBlockMemberToolResult", result[0].Content[0])
-	}
-	if trBlock.Value.Status != brtypes.ToolResultStatusError {
-		t.Errorf("tool_result.Status = %q, want error", trBlock.Value.Status)
-	}
+	require.IsType(t, &brtypes.ContentBlockMemberToolResult{}, result[0].Content[0])
+	trBlock := result[0].Content[0].(*brtypes.ContentBlockMemberToolResult)
+	require.Equal(t, brtypes.ToolResultStatusError, trBlock.Value.Status)
 }
 
 func TestBedrock_BuildConverseStreamInput(t *testing.T) {
@@ -550,31 +460,16 @@ func TestBedrock_BuildConverseStreamInput(t *testing.T) {
 	}
 
 	input, err := buildConverseStreamInput(params)
-	if err != nil {
-		t.Fatalf("buildConverseStreamInput() error: %v", err)
-	}
+	require.NoError(t, err)
 
-	if aws.ToString(input.ModelId) != "anthropic.claude-sonnet-4-6-v1" {
-		t.Errorf("ModelId = %q, want anthropic.claude-sonnet-4-6-v1", aws.ToString(input.ModelId))
-	}
-	if len(input.System) != 1 {
-		t.Fatalf("System has %d blocks, want 1", len(input.System))
-	}
-	if len(input.Messages) != 1 {
-		t.Fatalf("Messages has %d entries, want 1", len(input.Messages))
-	}
-	if input.InferenceConfig == nil {
-		t.Fatal("InferenceConfig is nil")
-	}
-	if input.InferenceConfig.MaxTokens == nil || *input.InferenceConfig.MaxTokens != 4096 {
-		t.Errorf("MaxTokens = %v, want 4096", input.InferenceConfig.MaxTokens)
-	}
-	if input.InferenceConfig.Temperature == nil || *input.InferenceConfig.Temperature != 0.1 {
-		t.Errorf("Temperature = %v, want 0.1", input.InferenceConfig.Temperature)
-	}
-	if input.ToolConfig == nil || len(input.ToolConfig.Tools) != 1 {
-		t.Errorf("ToolConfig has %d tools, want 1", len(input.ToolConfig.Tools))
-	}
+	assert.Equal(t, "anthropic.claude-sonnet-4-6-v1", aws.ToString(input.ModelId), "ModelId")
+	require.Len(t, input.System, 1)
+	require.Len(t, input.Messages, 1)
+	require.NotNil(t, input.InferenceConfig)
+	assert.Equal(t, int32(4096), aws.ToInt32(input.InferenceConfig.MaxTokens), "MaxTokens")
+	assert.InDelta(t, 0.1, aws.ToFloat32(input.InferenceConfig.Temperature), 1e-6, "Temperature")
+	require.NotNil(t, input.ToolConfig)
+	assert.Len(t, input.ToolConfig.Tools, 1, "ToolConfig.Tools")
 }
 
 // TestBedrock_TemperatureWireShape pins the unset-vs-explicit-zero
@@ -604,42 +499,30 @@ func TestBedrock_TemperatureWireShape(t *testing.T) {
 					{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 				},
 			})
-			if err != nil {
-				t.Fatalf("buildConverseStreamInput() error: %v", err)
-			}
-			if input.InferenceConfig == nil {
-				t.Fatal("InferenceConfig is nil")
-			}
+			require.NoError(t, err)
+			require.NotNil(t, input.InferenceConfig)
 			got := input.InferenceConfig.Temperature
 			if tc.wantSet {
-				if got == nil {
-					t.Fatalf("Temperature unset, want *=%v", tc.wantValue)
-				}
-				if *got != tc.wantValue {
-					t.Errorf("Temperature = %v, want %v", *got, tc.wantValue)
-				}
-			} else if got != nil {
-				t.Errorf("Temperature = %v, want nil (unset)", *got)
+				require.NotNil(t, got, "Temperature should be set")
+				require.InDelta(t, tc.wantValue, *got, 1e-6)
+			} else {
+				require.Nil(t, got, "Temperature should be unset")
 			}
 		})
 	}
 }
 
-func TestBedrock_BuildConverseStreamInput_NoSystem(t *testing.T) {
+func TestBedrock_BuildConverseStreamInput_OmitsEmptySystem(t *testing.T) {
 	params := types.StreamParams{
 		Model:     "anthropic.claude-sonnet-4-6-v1",
 		MaxTokens: 1024,
 	}
 	input, err := buildConverseStreamInput(params)
-	if err != nil {
-		t.Fatalf("buildConverseStreamInput() error: %v", err)
-	}
-	if input.System != nil {
-		t.Errorf("System = %v, want nil for empty system prompt", input.System)
-	}
+	require.NoError(t, err)
+	require.Nil(t, input.System, "system prompt should be omitted when empty")
 }
 
-func TestBedrock_APIError(t *testing.T) {
+func TestBedrock_Stream_ReturnsAPIError(t *testing.T) {
 	client := &mockBedrockClient{apiErr: fmt.Errorf("access denied")}
 	adapter := &BedrockAdapter{client: client}
 
@@ -647,12 +530,7 @@ func TestBedrock_APIError(t *testing.T) {
 		Model:     "anthropic.claude-sonnet-4-6-v1",
 		MaxTokens: 1024,
 	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !strings.Contains(err.Error(), "access denied") {
-		t.Errorf("error = %q, want to contain 'access denied'", err)
-	}
+	require.ErrorContains(t, err, "access denied")
 }
 
 // TestBedrock_ToolChoiceNonAuto_WarnsDowngrade pins that Bedrock's
@@ -690,30 +568,19 @@ func TestBedrock_ToolChoiceNonAuto_WarnsDowngrade(t *testing.T) {
 	})
 
 	out := buf.String()
-	if !strings.Contains(out, "bedrock tool-choice downgraded to auto") {
-		t.Errorf("expected tool-choice downgrade warn, got: %s", out)
-	}
-	if !strings.Contains(out, "anthropic.claude-sonnet-4-6-v1") {
-		t.Errorf("warn log missing model identifier: %s", out)
-	}
-	if strings.Contains(out, "secret-prompt-text") {
-		t.Errorf("warn log leaked message content: %s", out)
-	}
+	assert.Contains(t, out, "bedrock tool-choice downgraded to auto", "expected tool-choice downgrade warn")
+	assert.Contains(t, out, "anthropic.claude-sonnet-4-6-v1", "warn log missing model identifier")
+	assert.NotContains(t, out, "secret-prompt-text", "warn log leaked message content")
+
 	// The downgrade is log-only: the request body must never carry a tool
 	// choice, mirroring the openai-responses wire-body guard. The mock
 	// captures the input before its apiErr fires, so capturedInput reflects
 	// the body the adapter built; with Tools present ToolConfig is non-nil,
 	// so the ToolChoice check below is exercised rather than skipped.
 	input := client.capturedInput
-	if input == nil {
-		t.Fatal("client never reached: buildConverseStreamInput must succeed so the wire body can be inspected")
-	}
-	if input.ToolConfig == nil {
-		t.Fatal("ToolConfig must be populated (Tools were supplied) for the ToolChoice assertion to be meaningful")
-	}
-	if input.ToolConfig.ToolChoice != nil {
-		t.Errorf("request must not project ToolChoice onto ConverseStreamInput, got: %#v", input.ToolConfig.ToolChoice)
-	}
+	require.NotNil(t, input, "client never reached: buildConverseStreamInput must succeed so the wire body can be inspected")
+	require.NotNil(t, input.ToolConfig, "ToolConfig must be populated (Tools were supplied) for the ToolChoice assertion to be meaningful")
+	require.Nil(t, input.ToolConfig.ToolChoice, "request must not project ToolChoice onto ConverseStreamInput")
 }
 
 // TestBedrock_ToolChoiceAuto_NoWarn pins the negative: the zero-value
@@ -732,9 +599,7 @@ func TestBedrock_ToolChoiceAuto_NoWarn(t *testing.T) {
 		ToolChoice: types.ToolChoiceAuto,
 	})
 
-	if out := buf.String(); strings.Contains(out, "tool-choice downgraded") {
-		t.Errorf("auto tool-choice must not warn, got: %s", out)
-	}
+	require.NotContains(t, buf.String(), "tool-choice downgraded", "auto tool-choice must not warn")
 }
 
 func TestBedrock_APIError_RecordsLatency(t *testing.T) {
@@ -742,9 +607,7 @@ func TestBedrock_APIError_RecordsLatency(t *testing.T) {
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 	metrics, err := observability.NewMetricsForTesting(provider)
-	if err != nil {
-		t.Fatalf("NewMetricsForTesting: %v", err)
-	}
+	require.NoError(t, err, "NewMetricsForTesting")
 
 	client := &mockBedrockClient{apiErr: fmt.Errorf("boom")}
 	adapter := &BedrockAdapter{client: client, Metrics: metrics}
@@ -753,15 +616,9 @@ func TestBedrock_APIError_RecordsLatency(t *testing.T) {
 		Model:     "anthropic.claude-sonnet-4-6-v1",
 		MaxTokens: 1024,
 	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"); got != 1 {
-		t.Errorf("provider_latency count = %d, want 1 (error path still records)", got)
-	}
-	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"); got != 0 {
-		t.Errorf("provider_ttfb count = %d, want 0", got)
-	}
+	require.Error(t, err)
+	assert.EqualValues(t, 1, providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"), "error path still records latency")
+	assert.EqualValues(t, 0, providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"), "error path records no time to first byte")
 }
 
 func TestBedrock_ConsumeStreamMetered_RecordsTTFB(t *testing.T) {
@@ -783,9 +640,7 @@ func TestBedrock_ConsumeStreamMetered_RecordsTTFB(t *testing.T) {
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 	metrics, err := observability.NewMetricsForTesting(provider)
-	if err != nil {
-		t.Fatalf("NewMetricsForTesting: %v", err)
-	}
+	require.NoError(t, err, "NewMetricsForTesting")
 
 	attrs := metric.WithAttributes(
 		attribute.String("provider.type", "bedrock"),
@@ -797,19 +652,14 @@ func TestBedrock_ConsumeStreamMetered_RecordsTTFB(t *testing.T) {
 	for range ch {
 	}
 
-	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"); got != 1 {
-		t.Errorf("provider_ttfb count = %d, want 1", got)
-	}
-	if got := providerHistogramTotalCount(t, reader, "gen_ai.client.operation.time_to_first_chunk"); got != 1 {
-		t.Errorf("time_to_first_chunk count = %d, want 1", got)
-	}
+	assert.EqualValues(t, 1, providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"), "provider_ttfb count")
+	assert.EqualValues(t, 1, providerHistogramTotalCount(t, reader, "gen_ai.client.operation.time_to_first_chunk"), "time_to_first_chunk count")
+
 	ttfc, _ := providerHistogramFinder(t, reader, "gen_ai.client.operation.time_to_first_chunk")
-	if v, _ := ttfc.DataPoints[0].Attributes.Value("server.address"); v.AsString() != "bedrock-runtime.us-east-1.amazonaws.com" {
-		t.Errorf("server.address = %q, want the regional Bedrock Runtime host", v.AsString())
-	}
-	if v, _ := ttfc.DataPoints[0].Attributes.Value("gen_ai.provider.name"); v.AsString() != "aws.bedrock" {
-		t.Errorf("gen_ai.provider.name = %q, want aws.bedrock", v.AsString())
-	}
+	serverAddress, _ := ttfc.DataPoints[0].Attributes.Value("server.address")
+	assert.Equal(t, "bedrock-runtime.us-east-1.amazonaws.com", serverAddress.AsString(), "server.address should be the regional Bedrock Runtime host")
+	providerName, _ := ttfc.DataPoints[0].Attributes.Value("gen_ai.provider.name")
+	assert.Equal(t, "aws.bedrock", providerName.AsString(), "gen_ai.provider.name")
 }
 
 // TestNewBedrockAdapter_RetryPolicyWiring covers the one adapter that
@@ -827,12 +677,8 @@ func TestNewBedrockAdapter_RetryPolicyWiring(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			adapter, err := NewBedrockAdapter("", "", nil, policy)
-			if err != nil {
-				t.Fatalf("NewBedrockAdapter: %v", err)
-			}
-			if adapter == nil {
-				t.Fatal("NewBedrockAdapter returned a nil adapter with no error")
-			}
+			require.NoError(t, err, "NewBedrockAdapter rejected the retry policy")
+			require.NotNil(t, adapter, "NewBedrockAdapter returned a nil adapter with no error")
 		})
 	}
 }
@@ -841,21 +687,17 @@ func TestNewBedrockAdapter_RetryPolicyWiring(t *testing.T) {
 // client, which the SDK does not apply to Bedrock Runtime by default.
 func TestNewBedrockAdapter_ReadTimeout(t *testing.T) {
 	adapter, err := NewBedrockAdapter("", "", nil, RetryPolicy{})
-	if err != nil {
-		t.Fatalf("NewBedrockAdapter: %v", err)
-	}
-	client, ok := adapter.client.(*bedrockruntime.Client)
-	if !ok {
-		t.Fatalf("client is %T, want *bedrockruntime.Client", adapter.client)
-	}
-	buildable, ok := client.Options().HTTPClient.(*awshttp.BuildableClient)
-	if !ok {
-		t.Fatalf("HTTPClient is %T, want *awshttp.BuildableClient", client.Options().HTTPClient)
-	}
-	if got, set := buildable.GetReadTimeout(); !set || got != defaultStreamIdleTimeout {
-		t.Errorf("read timeout = %v (set=%v), want %v", got, set, defaultStreamIdleTimeout)
-	}
-	if got := buildable.GetTimeout(); got != 0 {
-		t.Errorf("total timeout = %v, want 0: it would cap long ConverseStream turns", got)
-	}
+	require.NoError(t, err, "NewBedrockAdapter")
+
+	require.IsType(t, &bedrockruntime.Client{}, adapter.client, "adapter client type")
+	client := adapter.client.(*bedrockruntime.Client)
+
+	httpClient := client.Options().HTTPClient
+	require.IsType(t, &awshttp.BuildableClient{}, httpClient, "SDK HTTP client type")
+	buildable := httpClient.(*awshttp.BuildableClient)
+
+	readTimeout, set := buildable.GetReadTimeout()
+	require.True(t, set, "read timeout must be set on the SDK client")
+	assert.Equal(t, defaultStreamIdleTimeout, readTimeout, "read timeout")
+	assert.Zero(t, buildable.GetTimeout(), "total timeout would cap long ConverseStream turns")
 }

@@ -1,7 +1,7 @@
 package executor
 
 import (
-	"errors"
+	"fmt"
 	"os"
 	osexec "os/exec"
 	"path/filepath"
@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // startGrouped runs g's wrapper on the host in dir and returns a channel that
@@ -22,9 +25,7 @@ func startGrouped(t *testing.T, g groupedCommand, dir string, env []string) (std
 	out := &strings.Builder{}
 	cmd.Stdout = out
 	ch := make(chan error, 1)
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start wrapper: %v", err)
-	}
+	require.NoError(t, cmd.Start(), "start wrapper")
 	go func() { ch <- cmd.Wait() }()
 	return out, ch
 }
@@ -34,21 +35,16 @@ func runKill(t *testing.T, g groupedCommand, env []string) {
 	argv := g.killArgv()
 	cmd := osexec.Command(argv[0], argv[1:]...)
 	cmd.Env = env
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("kill script: %v: %s", err, out)
-	}
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "kill script output: %s", out)
 }
 
 func waitForFile(t *testing.T, path string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if raw, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(raw)) != "" {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("%s was not written", path)
+	require.Eventually(t, func() bool {
+		raw, err := os.ReadFile(path)
+		return err == nil && strings.TrimSpace(string(raw)) != ""
+	}, 5*time.Second, 20*time.Millisecond, "%s was not written", path)
 }
 
 func assertWrapperKilledTree(t *testing.T, g groupedCommand, dir string, env []string) {
@@ -63,19 +59,15 @@ func assertWrapperKilledTree(t *testing.T, g groupedCommand, dir string, env []s
 	select {
 	case err := <-done:
 		var exitErr *osexec.ExitError
-		if !errors.As(err, &exitErr) || exitErr.ExitCode() == 0 {
-			t.Errorf("wrapper err = %v, want a non-zero exit after the kill", err)
+		if assert.ErrorAs(t, err, &exitErr, "wrapper err = %v, want a non-zero exit after the kill", err) {
+			assert.NotZero(t, exitErr.ExitCode(), "wrapper err = %v, want a non-zero exit after the kill", err)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("wrapper still running after the kill script")
+		require.FailNow(t, "wrapper still running after the kill script")
 	}
 	time.Sleep(3 * time.Second)
-	if _, err := os.Stat(filepath.Join(dir, "after-kill")); err == nil {
-		t.Error("grandchild survived the kill script and wrote its marker")
-	}
-	if _, err := os.Stat(g.pidFile); err == nil {
-		t.Error("pid file was not removed")
-	}
+	assert.NoFileExists(t, filepath.Join(dir, "after-kill"), "grandchild survived the kill script and wrote its marker")
+	assert.NoFileExists(t, g.pidFile, "pid file was not removed")
 }
 
 // skipUnlessProvided skips when a tool the test needs is missing, except on
@@ -83,7 +75,7 @@ func assertWrapperKilledTree(t *testing.T, g groupedCommand, dir string, env []s
 func skipUnlessProvided(t *testing.T, format string, args ...any) {
 	t.Helper()
 	if os.Getenv("CI") != "" && runtime.GOOS == "linux" {
-		t.Fatalf(format, args...)
+		require.FailNow(t, fmt.Sprintf(format, args...))
 	}
 	t.Skipf(format, args...)
 }
@@ -94,9 +86,7 @@ func TestGroupedCommand_KillScriptKillsSessionWithSetsid(t *testing.T) {
 	}
 	dir := t.TempDir()
 	g, err := newGroupedCommand("/bin/sh", "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	g.pidFile = filepath.Join(dir, "pid")
 	assertWrapperKilledTree(t, g, dir, os.Environ())
 }
@@ -107,27 +97,19 @@ func TestGroupedCommand_KillScriptKillsDescendantsWithoutSetsid(t *testing.T) {
 	}
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "bin")
-	if err := os.Mkdir(bin, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Mkdir(bin, 0o755))
 	for _, tool := range []string{"sh", "sleep", "touch", "rm"} {
 		path, err := osexec.LookPath(tool)
 		if err != nil {
 			skipUnlessProvided(t, "%s not available", tool)
 		}
-		if err := os.Symlink(path, filepath.Join(bin, tool)); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.Symlink(path, filepath.Join(bin, tool)))
 	}
 	env := []string{"PATH=" + bin}
 	work := filepath.Join(dir, "work")
-	if err := os.Mkdir(work, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Mkdir(work, 0o755))
 	g, err := newGroupedCommand("/bin/sh", "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	g.pidFile = filepath.Join(dir, "pid")
 	assertWrapperKilledTree(t, g, work, env)
 }
@@ -135,9 +117,7 @@ func TestGroupedCommand_KillScriptKillsDescendantsWithoutSetsid(t *testing.T) {
 func TestGroupedCommand_PreservesExitStatusAndOutput(t *testing.T) {
 	dir := t.TempDir()
 	g, err := newGroupedCommand("/bin/sh", "echo out; exit 7")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	g.pidFile = filepath.Join(dir, "pid")
 
 	out, done := startGrouped(t, g, dir, os.Environ())
@@ -145,90 +125,73 @@ func TestGroupedCommand_PreservesExitStatusAndOutput(t *testing.T) {
 	select {
 	case werr = <-done:
 	case <-time.After(10 * time.Second):
-		t.Fatal("wrapper did not finish")
+		require.FailNow(t, "wrapper did not finish")
 	}
 	var exitErr *osexec.ExitError
-	if !errors.As(werr, &exitErr) || exitErr.ExitCode() != 7 {
-		t.Errorf("wrapper err = %v, want exit status 7", werr)
+	if assert.ErrorAs(t, werr, &exitErr, "wrapper err = %v, want exit status 7", werr) {
+		assert.Equal(t, 7, exitErr.ExitCode())
 	}
-	if out.String() != "out\n" {
-		t.Errorf("stdout = %q, want %q", out.String(), "out\n")
-	}
-	if _, err := os.Stat(g.pidFile); err == nil {
-		t.Error("pid file was not removed after the command finished")
-	}
+	assert.Equal(t, "out\n", out.String())
+	assert.NoFileExists(t, g.pidFile, "pid file was not removed after the command finished")
 }
 
 func TestGroupedCommand_KillScriptIgnoresBogusPidFile(t *testing.T) {
 	dir := t.TempDir()
 	g, err := newGroupedCommand("/bin/sh", "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	g.pidFile = filepath.Join(dir, "pid")
-	if err := os.WriteFile(g.pidFile, []byte("not-a-pid\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(g.pidFile, []byte("not-a-pid\n"), 0o600))
 	runKill(t, g, os.Environ())
 }
 
 func TestGroupedCommand_KillScriptExitsNonZeroWithoutPidFile(t *testing.T) {
 	dir := t.TempDir()
 	g, err := newGroupedCommand("/bin/sh", "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	g.pidFile = filepath.Join(dir, "missing")
 
 	argv := g.killArgv()
 	err = osexec.Command(argv[0], argv[1:]...).Run()
 	var exitErr *osexec.ExitError
-	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 3 {
-		t.Errorf("kill script err = %v, want exit status 3", err)
-	}
+	require.ErrorAs(t, err, &exitErr, "kill script err = %v, want exit status 3", err)
+	require.Equal(t, 3, exitErr.ExitCode())
 }
 
 func TestGroupedCommand_KillScriptNeverSignalsPidZeroOrOne(t *testing.T) {
-	for _, pid := range []string{"0", "1"} {
-		t.Run(pid, func(t *testing.T) {
+	cases := []struct {
+		name string
+		pid  string
+	}{
+		{name: "pid zero", pid: "0"},
+		{name: "pid one", pid: "1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			g, err := newGroupedCommand("/bin/sh", "")
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			g.pidFile = filepath.Join(dir, "pid")
-			if err := os.WriteFile(g.pidFile, []byte(pid+"\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.WriteFile(g.pidFile, []byte(tc.pid+"\n"), 0o600))
 			// kill is replaced by a recording function so a regression cannot
 			// signal the host.
 			signalLog := filepath.Join(dir, "signals")
 			argv := g.killArgv()
 			argv[2] = `kill() { echo "$*" >>"` + signalLog + `"; }
 ` + argv[2]
-			if out, err := osexec.Command(argv[0], argv[1:]...).CombinedOutput(); err != nil {
-				t.Fatalf("kill script: %v: %s", err, out)
-			}
-			if raw, err := os.ReadFile(signalLog); err == nil {
-				t.Errorf("kill script signalled pid %s: %q", pid, raw)
-			}
+			out, err := osexec.Command(argv[0], argv[1:]...).CombinedOutput()
+			require.NoError(t, err, "kill script output: %s", out)
+			require.NoFileExists(t, signalLog, "kill script signalled pid %s", tc.pid)
 		})
 	}
 }
 
 func TestNewGroupedCommand_UniquePidFiles(t *testing.T) {
 	a, err := newGroupedCommand("sh", "true")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	b, err := newGroupedCommand("sh", "true")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if a.pidFile == b.pidFile {
-		t.Errorf("pid files collide: %s", a.pidFile)
-	}
-	if got := a.runArgv(); got[len(got)-1] != "true" || got[0] != "sh" {
-		t.Errorf("runArgv = %v, want the original command as the last argument", got)
-	}
+	require.NoError(t, err)
+	assert.NotEqual(t, a.pidFile, b.pidFile, "pid files collide")
+	got := a.runArgv()
+	assert.Equal(t, "sh", got[0])
+	assert.Equal(t, "true", got[len(got)-1], "runArgv = %v, want the original command as the last argument", got)
 }

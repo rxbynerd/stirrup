@@ -4,196 +4,203 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
-// TestValidateToolChoiceName exercises the character-set and length bound
-// the adapters enforce before emitting a named-tool choice. The grammar
-// is `^[a-zA-Z0-9_-]{1,64}$` — the intersection of the three providers'
-// documented function-name grammars.
-func TestValidateToolChoiceName(t *testing.T) {
-	valid := []string{
-		"read_file",
-		"a",
-		"Tool-Name_1",
-		"ABCDEFGHIJ0123456789",
-		strings.Repeat("a", 64), // boundary: exactly 64
+// TestValidateToolChoiceName_EnforcesGrammarAndLength covers the character-set
+// and length bound the adapters enforce before emitting a named-tool choice.
+// The grammar is `^[a-zA-Z0-9_-]{1,64}$`, the intersection of the three
+// providers' documented function-name grammars.
+func TestValidateToolChoiceName_EnforcesGrammarAndLength(t *testing.T) {
+	valid := []struct {
+		name  string
+		input string
+	}{
+		{"accepts snake_case name", "read_file"},
+		{"accepts single character", "a"},
+		{"accepts hyphen, underscore and digits", "Tool-Name_1"},
+		{"accepts mixed-case alphanumerics", "ABCDEFGHIJ0123456789"},
+		{"accepts exactly 64 characters", strings.Repeat("a", 64)},
 	}
-	for _, name := range valid {
-		if err := ValidateToolChoiceName(name); err != nil {
-			t.Errorf("ValidateToolChoiceName(%q) = %v, want nil", name, err)
-		}
+	for _, tc := range valid {
+		t.Run(tc.name, func(t *testing.T) {
+			require.NoError(t, ValidateToolChoiceName(tc.input))
+		})
 	}
 
-	invalid := []string{
-		"",                      // empty
-		"bad name!",             // space + punctuation
-		"with.dot",              // dot is not in the intersection grammar
-		"slash/name",            // path separator
-		"emoji😀",                // non-ASCII
-		strings.Repeat("a", 65), // boundary: one over the limit
+	invalid := []struct {
+		name  string
+		input string
+	}{
+		{"rejects empty name", ""},
+		{"rejects space and punctuation", "bad name!"},
+		{"rejects dot", "with.dot"},
+		{"rejects path separator", "slash/name"},
+		{"rejects non-ASCII", "emoji😀"},
+		{"rejects 65 characters", strings.Repeat("a", 65)},
 	}
-	for _, name := range invalid {
-		if err := ValidateToolChoiceName(name); err == nil {
-			t.Errorf("ValidateToolChoiceName(%q) = nil, want error", name)
-		}
+	for _, tc := range invalid {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Error(t, ValidateToolChoiceName(tc.input))
+		})
 	}
 }
 
-// TestStreamParamsToolChoiceOmitempty pins the zero-value/omitempty
-// coupling the R1 compile-time guard protects at runtime: a StreamParams
-// with ToolChoice unset (ToolChoiceAuto) must marshal without a
-// toolChoice key, while a non-auto value emits it. This is the JSON
-// round-trip half of the invariant the array-index guard enforces at
-// compile time.
-func TestStreamParamsToolChoiceOmitempty(t *testing.T) {
-	auto := StreamParams{Model: "m"}
-	b, err := json.Marshal(auto)
-	if err != nil {
-		t.Fatalf("marshal auto: %v", err)
-	}
-	if strings.Contains(string(b), "toolChoice") {
-		t.Errorf("ToolChoiceAuto must be omitted from JSON, got: %s", b)
-	}
+// A ToolChoice left at its zero value (ToolChoiceAuto) must be omitted from
+// the JSON, and any other value must marshal to its string form.
+func TestStreamParams_MarshalOmitsAutoToolChoice(t *testing.T) {
+	t.Run("auto is omitted", func(t *testing.T) {
+		b, err := json.Marshal(StreamParams{Model: "m"})
+		require.NoError(t, err)
+		require.NotContains(t, string(b), "toolChoice")
+	})
 
-	required := StreamParams{Model: "m", ToolChoice: ToolChoiceRequired}
-	b, err = json.Marshal(required)
-	if err != nil {
-		t.Fatalf("marshal required: %v", err)
-	}
-	if !strings.Contains(string(b), `"toolChoice":"required"`) {
-		t.Errorf("non-auto ToolChoice must marshal to its string form, got: %s", b)
-	}
+	t.Run("non-auto marshals to its string form", func(t *testing.T) {
+		b, err := json.Marshal(StreamParams{Model: "m", ToolChoice: ToolChoiceRequired})
+		require.NoError(t, err)
+		require.Contains(t, string(b), `"toolChoice":"required"`)
+	})
 }
 
-// TestToolChoiceModeRoundTrip pins the MarshalJSON/UnmarshalJSON
+// TestToolChoiceMode_JSONRoundTrip pins the MarshalJSON/UnmarshalJSON
 // inverse: every defined member marshals to its lowercase string form
 // and unmarshals back to the same value.
-func TestToolChoiceModeRoundTrip(t *testing.T) {
+func TestToolChoiceMode_JSONRoundTrip(t *testing.T) {
 	cases := []struct {
+		name string
 		mode ToolChoiceMode
-		json string
+		wire string
 	}{
-		{ToolChoiceAuto, `"auto"`},
-		{ToolChoiceRequired, `"required"`},
-		{ToolChoiceNone, `"none"`},
-		{ToolChoiceTool, `"tool"`},
+		{"auto", ToolChoiceAuto, `"auto"`},
+		{"required", ToolChoiceRequired, `"required"`},
+		{"none", ToolChoiceNone, `"none"`},
+		{"tool", ToolChoiceTool, `"tool"`},
 	}
 	for _, tc := range cases {
-		b, err := json.Marshal(tc.mode)
-		if err != nil {
-			t.Fatalf("marshal %v: %v", tc.mode, err)
-		}
-		if string(b) != tc.json {
-			t.Errorf("marshal %v = %s, want %s", tc.mode, b, tc.json)
-		}
-		var got ToolChoiceMode
-		if err := json.Unmarshal(b, &got); err != nil {
-			t.Fatalf("unmarshal %s: %v", b, err)
-		}
-		if got != tc.mode {
-			t.Errorf("round-trip %s = %v, want %v", b, got, tc.mode)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := json.Marshal(tc.mode)
+			require.NoError(t, err)
+			require.Equal(t, tc.wire, string(b))
+
+			var got ToolChoiceMode
+			require.NoError(t, json.Unmarshal(b, &got))
+			require.Equal(t, tc.mode, got)
+		})
 	}
 }
 
-// TestToolChoiceModeString documents that String stays usable on
-// out-of-range values: unlike MarshalJSON (which rejects them), String
-// never errors so it remains safe in fmt verbs and log lines. The
+// TestToolChoiceMode_StringHandlesOutOfRange documents that String stays
+// usable on out-of-range values: unlike MarshalJSON (which rejects them),
+// String never errors so it remains safe in fmt verbs and log lines. The
 // default branch renders "unknown(N)".
-func TestToolChoiceModeString(t *testing.T) {
+func TestToolChoiceMode_StringHandlesOutOfRange(t *testing.T) {
 	cases := []struct {
+		name string
 		mode ToolChoiceMode
 		want string
 	}{
-		{ToolChoiceAuto, "auto"},
-		{ToolChoiceRequired, "required"},
-		{ToolChoiceNone, "none"},
-		{ToolChoiceTool, "tool"},
-		{ToolChoiceMode(99), "unknown(99)"},
-		{ToolChoiceMode(-1), "unknown(-1)"},
+		{"auto", ToolChoiceAuto, "auto"},
+		{"required", ToolChoiceRequired, "required"},
+		{"none", ToolChoiceNone, "none"},
+		{"tool", ToolChoiceTool, "tool"},
+		{"renders above-range value as unknown", ToolChoiceMode(99), "unknown(99)"},
+		{"renders negative value as unknown", ToolChoiceMode(-1), "unknown(-1)"},
 	}
 	for _, tc := range cases {
-		if got := tc.mode.String(); got != tc.want {
-			t.Errorf("ToolChoiceMode(%d).String() = %q, want %q", int(tc.mode), got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, tc.mode.String())
+		})
 	}
 }
 
-// TestToolChoiceModeUnmarshalRejects guards the deserialisation
+// TestToolChoiceMode_UnmarshalRejectsInvalidForms guards the deserialisation
 // hardening: an unknown string and an out-of-range integer-as-string
 // both error rather than being silently coerced to ToolChoiceAuto.
-func TestToolChoiceModeUnmarshalRejects(t *testing.T) {
-	bad := []string{
-		`"any"`,        // OpenAI/Anthropic native token, not a ToolChoiceMode form
-		`"AUTO"`,       // case-sensitive
-		`"unknown(9)"`, // the String() fallback form must not round-trip
-		`4`,            // out-of-range integer
-		`"4"`,          // out-of-range as a string
-		`""`,           // empty
-		`null`,         // not a defined form
+func TestToolChoiceMode_UnmarshalRejectsInvalidForms(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"rejects provider-native token", `"any"`},
+		{"rejects uppercase name", `"AUTO"`},
+		{"rejects String fallback form", `"unknown(9)"`},
+		{"rejects out-of-range integer", `4`},
+		{"rejects out-of-range string", `"4"`},
+		{"rejects empty string", `""`},
+		{"rejects null", `null`},
 	}
-	for _, in := range bad {
-		var m ToolChoiceMode
-		if err := json.Unmarshal([]byte(in), &m); err == nil {
-			t.Errorf("Unmarshal(%s) = nil error, want rejection", in)
-		}
-	}
-}
-
-// TestToolChoiceModeIsValid checks the predicate is true for defined
-// members and false for out-of-range values.
-func TestToolChoiceModeIsValid(t *testing.T) {
-	for _, m := range []ToolChoiceMode{ToolChoiceAuto, ToolChoiceRequired, ToolChoiceNone, ToolChoiceTool} {
-		if !m.IsValid() {
-			t.Errorf("IsValid(%v) = false, want true", m)
-		}
-	}
-	for _, m := range []ToolChoiceMode{-1, 4, 100} {
-		if m.IsValid() {
-			t.Errorf("IsValid(%d) = true, want false", int(m))
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var m ToolChoiceMode
+			require.Error(t, json.Unmarshal([]byte(tc.input), &m))
+		})
 	}
 }
 
-// TestToolChoiceModeMarshalRejects guards the serialisation hardening:
-// an out-of-range value must surface a marshal error rather than emit
-// the "unknown(N)" String() fallback onto a trace or recording.
-func TestToolChoiceModeMarshalRejects(t *testing.T) {
-	for _, m := range []ToolChoiceMode{99, -1} {
-		if _, err := json.Marshal(m); err == nil {
-			t.Errorf("Marshal(%d) = nil error, want rejection", int(m))
-		}
+// TestToolChoiceMode_IsValidDistinguishesRange checks the predicate is true
+// for defined members and false for out-of-range values.
+func TestToolChoiceMode_IsValidDistinguishesRange(t *testing.T) {
+	cases := []struct {
+		name string
+		mode ToolChoiceMode
+		want bool
+	}{
+		{"auto is valid", ToolChoiceAuto, true},
+		{"required is valid", ToolChoiceRequired, true},
+		{"none is valid", ToolChoiceNone, true},
+		{"tool is valid", ToolChoiceTool, true},
+		{"negative value is invalid", -1, false},
+		{"just above range is invalid", 4, false},
+		{"far above range is invalid", 100, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, tc.mode.IsValid())
+		})
 	}
 }
 
-// TestToolChoiceModeUnmarshalErrorTruncates pins the bounded, escaped
-// rendering of hostile input: an unknown value far longer than the
+// TestToolChoiceMode_MarshalRejectsOutOfRange guards the serialisation
+// hardening: an out-of-range value must surface a marshal error rather than
+// emit the "unknown(N)" String() fallback onto a trace or recording.
+func TestToolChoiceMode_MarshalRejectsOutOfRange(t *testing.T) {
+	cases := []struct {
+		name string
+		mode ToolChoiceMode
+	}{
+		{"rejects above-range value", 99},
+		{"rejects negative value", -1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := json.Marshal(tc.mode)
+			require.Error(t, err)
+		})
+	}
+}
+
+// TestToolChoiceMode_UnmarshalErrorTruncatesLongInput pins the bounded,
+// escaped rendering of hostile input: an unknown value far longer than the
 // 64-byte cap surfaces a quoted, ellipsis-terminated excerpt rather than
 // the full raw payload, so the error stays log-safe and bounded.
-func TestToolChoiceModeUnmarshalErrorTruncates(t *testing.T) {
+func TestToolChoiceMode_UnmarshalErrorTruncatesLongInput(t *testing.T) {
 	long := `"` + strings.Repeat("x", 200) + `"`
 	var m ToolChoiceMode
 	err := json.Unmarshal([]byte(long), &m)
-	if err == nil {
-		t.Fatal("expected error for unknown ToolChoiceMode, got nil")
-	}
+	require.Error(t, err)
+
 	msg := err.Error()
-	if !strings.Contains(msg, "…") {
-		t.Errorf("error must mark truncation with an ellipsis, got: %s", msg)
-	}
-	if len(msg) > 120 {
-		t.Errorf("error message must stay bounded, got %d bytes: %s", len(msg), msg)
-	}
+	require.Contains(t, msg, "…", "error must mark truncation with an ellipsis")
+	require.LessOrEqual(t, len(msg), 120, "error message must stay bounded: %s", msg)
 }
 
-func TestHarnessCapabilities(t *testing.T) {
+func TestHarnessCapabilities_AdvertisesFeaturesAndIsolatesSlice(t *testing.T) {
 	want := []string{"live_transcript", "reasoning_summary", "follow_up_history", "turn_abandoned"}
 	got := HarnessCapabilities()
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("HarnessCapabilities() = %v, want %v", got, want)
-	}
+	require.Equal(t, want, got)
+
 	got[0] = "mutated"
-	if again := HarnessCapabilities(); again[0] != want[0] {
-		t.Errorf("mutating the returned slice changed the next call: %v", again)
-	}
+	again := HarnessCapabilities()
+	require.Equal(t, want[0], again[0], "mutating the returned slice must not change later calls")
 }

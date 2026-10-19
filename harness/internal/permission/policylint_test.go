@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/cedar-policy/cedar-go"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
@@ -26,10 +28,7 @@ func findingRules(findings []LintFinding) []string {
 
 func assertRules(t *testing.T, findings []LintFinding, want ...string) {
 	t.Helper()
-	got := findingRules(findings)
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("findings = %v, want %v\nfull: %v", got, want, findings)
-	}
+	require.Equal(t, strings.Join(want, ","), strings.Join(findingRules(findings), ","), "full: %v", findings)
 }
 
 // harnessSchemas mirrors the real built-in tool schemas closely enough for
@@ -205,11 +204,8 @@ func TestWildcardHostPattern_Anchoring(t *testing.T) {
 		{`*://github.com/*`, true},
 		{`*https://github.com/*`, true},
 
-		// Regressions for two bypasses an earlier formulation missed: it
-		// gated on a literal "://" surviving in the pattern, so a
-		// scheme-relative pattern and a pattern that splits the separator
-		// both slipped through. Both are matched by
-		// https://evil.example/x.github.com/y.
+		// Patterns that leave the scheme or host open are flagged, including
+		// forms that split the "://" separator.
 		{`*.github.com/*`, true},
 		{`*github.com*`, true},
 		{`github.com*`, true},
@@ -224,12 +220,9 @@ func TestWildcardHostPattern_Anchoring(t *testing.T) {
 			src := `permit (principal, action == Action::"tool:web_fetch", resource == Tool::"web_fetch")
 				when { context.input.url like "` + tc.pattern + `" };`
 			findings := LintPolicySetStructure(mustParse(t, src))
-			got := len(findings) > 0
-			if got != tc.flagged {
-				t.Fatalf("pattern %q: flagged = %v, want %v (%v)", tc.pattern, got, tc.flagged, findings)
-			}
-			if got && findings[0].Rule != LintRuleWildcardHostPattern {
-				t.Fatalf("pattern %q: rule = %s, want %s", tc.pattern, findings[0].Rule, LintRuleWildcardHostPattern)
+			require.Equal(t, tc.flagged, len(findings) > 0, "findings: %v", findings)
+			if tc.flagged {
+				require.Equal(t, LintRuleWildcardHostPattern, findings[0].Rule)
 			}
 		})
 	}
@@ -281,30 +274,26 @@ func TestWildcardHostPattern_ConjunctionCredit(t *testing.T) {
 			src := `permit (principal, action == Action::"tool:web_fetch", resource == Tool::"web_fetch")
 				when { ` + tc.body + ` };`
 			findings := LintPolicySetStructure(mustParse(t, src))
-			if got := len(findings) > 0; got != tc.want {
-				t.Fatalf("flagged = %v, want %v (%v)", got, tc.want, findings)
-			}
+			require.Equal(t, tc.want, len(findings) > 0, "findings: %v", findings)
 		})
 	}
 }
 
 // De Morgan: negation swaps the roles of && and ||, so the DNF of a
 // negated subtree must come out correct rather than approximated.
-func TestWildcardHostPattern_DeMorgan(t *testing.T) {
+func TestWildcardHostPattern_NegatedDisjunctionIsCoveredByAnchor(t *testing.T) {
 	// forbid/unless widens, and !(A || B) == !A && !B, so the inner
 	// disjuncts become conjuncts: one anchor covers the group.
 	src := `forbid (principal, action, resource) unless {
 		!(!(context.input.url like "https://github.com/*") || !(context.input.url like "*.json"))
 	};`
-	if findings := LintPolicySetStructure(mustParse(t, src)); len(findings) != 0 {
-		t.Fatalf("expected the anchored conjunct to cover the group, got %v", findings)
-	}
+	require.Empty(t, LintPolicySetStructure(mustParse(t, src)), "expected the anchored conjunct to cover the group")
 }
 
 // The rule only fires where over-matching WIDENS access. Over-matching a
 // deny-list is fail-safe, and flagging it would push operators to narrow
 // a forbid.
-func TestWildcardHostPattern_PolarityMatrix(t *testing.T) {
+func TestWildcardHostPattern_FlagsOnlyWideningPolarity(t *testing.T) {
 	const pattern = `https://*.github.com/*`
 	cases := []struct {
 		name string
@@ -353,9 +342,7 @@ func TestWildcardHostPattern_PolarityMatrix(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			findings := LintPolicySetStructure(mustParse(t, tc.src))
-			if got := len(findings) > 0; got != tc.want {
-				t.Fatalf("flagged = %v, want %v (%v)", got, tc.want, findings)
-			}
+			require.Equal(t, tc.want, len(findings) > 0, "findings: %v", findings)
 		})
 	}
 }
@@ -363,21 +350,20 @@ func TestWildcardHostPattern_PolarityMatrix(t *testing.T) {
 // The rule is scoped to URL-valued attributes so a substring probe over a
 // shell command — where a wildcard before the host is the whole point —
 // is not flagged.
-func TestWildcardHostPattern_OnlyURLAttributes(t *testing.T) {
+func TestWildcardHostPattern_IgnoresNonURLAttributes(t *testing.T) {
 	src := `permit (principal, action == Action::"tool:run_command", resource == Tool::"run_command")
 		when { context.input.command like "*curl https://github.com/*" };`
 	assertRules(t, LintPolicySetStructure(mustParse(t, src)))
 }
 
-func TestWildcardHostPattern_SuffixedAttributeNames(t *testing.T) {
+func TestWildcardHostPattern_FlagsURLSuffixedAttributes(t *testing.T) {
 	// webhookUrl / callbackURI are as URL-valued as `url` itself.
 	for _, attr := range []string{"webhookUrl", "callbackURI", "baseUri"} {
 		t.Run(attr, func(t *testing.T) {
 			src := `permit (principal, action, resource) when { context.input.` + attr + ` like "https://*.github.com/*" };`
 			findings := LintPolicySetStructure(mustParse(t, src))
-			if len(findings) != 1 || findings[0].Rule != LintRuleWildcardHostPattern {
-				t.Fatalf("attr %s: findings = %v, want one wildcard-host-pattern", attr, findings)
-			}
+			require.Len(t, findings, 1)
+			require.Equal(t, LintRuleWildcardHostPattern, findings[0].Rule)
 		})
 	}
 }
@@ -391,12 +377,8 @@ func TestLintIgnoreAnnotation_DowngradesToWarning(t *testing.T) {
 
 	findings := LintPolicySetStructure(mustParse(t, src))
 	assertRules(t, findings, LintRuleWildcardHostPattern+":warning")
-	if !strings.Contains(findings[0].Message, "downgraded to a warning") {
-		t.Fatalf("message does not record the downgrade: %q", findings[0].Message)
-	}
-	if err := LintErrors("test", findings); err != nil {
-		t.Fatalf("warning-only findings must not abort: %v", err)
-	}
+	require.Contains(t, findings[0].Message, "downgraded to a warning", "message does not record the downgrade")
+	require.NoError(t, LintErrors("test", findings), "warning-only findings must not abort")
 }
 
 func TestLintIgnoreAnnotation_IsRuleScoped(t *testing.T) {
@@ -412,23 +394,20 @@ func TestLintIgnoreAnnotation_IsRuleScoped(t *testing.T) {
 	)
 }
 
-func TestLintIgnoreAnnotation_MultipleRules(t *testing.T) {
+func TestLintIgnoreAnnotation_SuppressesAllListedRules(t *testing.T) {
 	src := `@stirrupLintIgnore("wildcard-host-pattern, unknown-principal-attribute")
 	permit (principal, action, resource) when {
 		context.input.url like "https://*.github.com/*" && principal.runID == "x"
 	};`
 	findings := LintPolicySetStructure(mustParse(t, src))
-	if err := LintErrors("test", findings); err != nil {
-		t.Fatalf("both rules ignored, expected no error: %v", err)
-	}
+	require.NoError(t, LintErrors("test", findings), "both rules ignored, expected no error")
 }
 
 // --- registry-aware tier ---------------------------------------------
 
-// The #524 defect itself: destructive-shell.cedar keyed on `cmd` while
-// run_command declares `command`, so `rm -rf /workspace` sailed past the
-// policy that claimed to forbid it.
-func TestLintPolicySetTools_Issue524Regression(t *testing.T) {
+// A forbid keyed on `cmd` never fires, because run_command declares only
+// `command`; the lint must report it.
+func TestLintPolicySetTools_FlagsCmdKeyForCommandProperty(t *testing.T) {
 	src := `forbid (
 		principal,
 		action == Action::"tool:run_command",
@@ -438,15 +417,11 @@ func TestLintPolicySetTools_Issue524Regression(t *testing.T) {
 	};`
 	findings := LintPolicySetTools(mustParse(t, src), harnessSchemas())
 	assertRules(t, findings, LintRuleUndeclaredInputAttribute+":error")
-	if !strings.Contains(findings[0].Message, "context.input.cmd") {
-		t.Fatalf("message does not name the attribute: %q", findings[0].Message)
-	}
-	if !strings.Contains(findings[0].Message, "command") {
-		t.Fatalf("message does not list the declared properties: %q", findings[0].Message)
-	}
+	require.Contains(t, findings[0].Message, "context.input.cmd", "message does not name the attribute")
+	require.Contains(t, findings[0].Message, "command", "message does not list the declared properties")
 }
 
-func TestLintPolicySetTools_ScopingRules(t *testing.T) {
+func TestLintPolicySetTools_ChecksAttributesAgainstScopedTools(t *testing.T) {
 	cases := []struct {
 		name string
 		src  string
@@ -509,9 +484,7 @@ func TestLintPolicySetTools_OpenSchemaDowngradesToWarning(t *testing.T) {
 		when { context.input.project like "*" };`
 	findings := LintPolicySetTools(mustParse(t, src), schemas)
 	assertRules(t, findings, LintRuleUnverifiableInputAttribute+":warning")
-	if !strings.Contains(findings[0].Message, "mcp_jira_search") {
-		t.Fatalf("message does not name the open-schema tool: %q", findings[0].Message)
-	}
+	require.Contains(t, findings[0].Message, "mcp_jira_search", "message does not name the open-schema tool")
 }
 
 // An empty schema map disables the tier: the dry-run preflight builds
@@ -520,9 +493,8 @@ func TestLintPolicySetTools_OpenSchemaDowngradesToWarning(t *testing.T) {
 func TestLintPolicySetTools_EmptySchemasDisablesTier(t *testing.T) {
 	src := `forbid (principal, action == Action::"tool:run_command", resource)
 		when { context.input.cmd like "*rm*" };`
-	if findings := LintPolicySetTools(mustParse(t, src), nil); findings != nil {
-		t.Fatalf("expected no findings against an empty registry, got %v", findings)
-	}
+	findings := LintPolicySetTools(mustParse(t, src), nil)
+	require.Nil(t, findings, "expected no findings against an empty registry")
 }
 
 func TestLintPolicySetTools_IgnoreAnnotationApplies(t *testing.T) {
@@ -535,7 +507,7 @@ func TestLintPolicySetTools_IgnoreAnnotationApplies(t *testing.T) {
 
 // --- NewToolSchema ---------------------------------------------------
 
-func TestNewToolSchema(t *testing.T) {
+func TestNewToolSchema_ReadsPropertiesAndClosedness(t *testing.T) {
 	cases := []struct {
 		name       string
 		raw        string
@@ -570,16 +542,10 @@ func TestNewToolSchema(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := NewToolSchema(json.RawMessage(tc.raw))
-			if got.Closed != tc.wantClosed {
-				t.Errorf("Closed = %v, want %v", got.Closed, tc.wantClosed)
-			}
-			if len(got.Properties) != len(tc.wantProps) {
-				t.Fatalf("Properties = %v, want %v", got.Properties, tc.wantProps)
-			}
+			require.Equal(t, tc.wantClosed, got.Closed)
+			require.Len(t, got.Properties, len(tc.wantProps), "properties: %v", got.Properties)
 			for _, p := range tc.wantProps {
-				if !got.Properties[p] {
-					t.Errorf("missing property %q", p)
-				}
+				require.True(t, got.Properties[p], "missing property %q", p)
 			}
 		})
 	}
@@ -590,19 +556,11 @@ func TestNewToolSchema(t *testing.T) {
 func TestLoadPolicySetFromFile_RejectsStructuralDefect(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bad.cedar")
 	src := `forbid (principal, action, resource) when { context.inputs.command like "*rm*" };`
-	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(src), 0o600))
 	_, err := LoadPolicySetFromFile(path)
-	if err == nil {
-		t.Fatal("expected LoadPolicySetFromFile to reject a dead clause")
-	}
-	if !strings.Contains(err.Error(), LintRuleUnknownContextAttribute) {
-		t.Fatalf("error does not name the rule: %v", err)
-	}
-	if !strings.Contains(err.Error(), "line 1") {
-		t.Fatalf("error does not locate the policy: %v", err)
-	}
+	require.Error(t, err, "expected LoadPolicySetFromFile to reject a dead clause")
+	require.ErrorContains(t, err, LintRuleUnknownContextAttribute)
+	require.ErrorContains(t, err, "line 1", "error does not locate the policy")
 }
 
 // The dry-run preflight and every other load path must still accept a
@@ -610,9 +568,7 @@ func TestLoadPolicySetFromFile_RejectsStructuralDefect(t *testing.T) {
 func TestLoadPolicySetFromFile_AcceptsShippedStarters(t *testing.T) {
 	dir := filepath.Join("..", "..", "..", "examples", "policies")
 	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("read %s: %v", dir, err)
-	}
+	require.NoError(t, err, "read %s", dir)
 	checked := 0
 	for _, entry := range entries {
 		if filepath.Ext(entry.Name()) != ".cedar" {
@@ -621,17 +577,11 @@ func TestLoadPolicySetFromFile_AcceptsShippedStarters(t *testing.T) {
 		checked++
 		t.Run(entry.Name(), func(t *testing.T) {
 			ps, err := LoadPolicySetFromFile(filepath.Join(dir, entry.Name()))
-			if err != nil {
-				t.Fatalf("shipped starter fails the structural lint: %v", err)
-			}
-			if findings := LintPolicySetStructure(ps); len(findings) != 0 {
-				t.Fatalf("shipped starter produced findings: %v", findings)
-			}
+			require.NoError(t, err, "shipped starter fails the structural lint")
+			require.Empty(t, LintPolicySetStructure(ps), "shipped starter produced findings")
 		})
 	}
-	if checked == 0 {
-		t.Fatalf("no .cedar files found in %s — directory moved?", dir)
-	}
+	require.NotZero(t, checked, "no .cedar files found in %s; directory moved?", dir)
 }
 
 func TestNewPolicyEngine_LintAbortsConstruction(t *testing.T) {
@@ -643,9 +593,7 @@ func TestNewPolicyEngine_LintAbortsConstruction(t *testing.T) {
 	) when {
 		context.input.cmd like "*rm -rf*"
 	};`
-	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(src), 0o600))
 
 	rec := &fakeEmitter{}
 	_, err := New(
@@ -653,18 +601,13 @@ func TestNewPolicyEngine_LintAbortsConstruction(t *testing.T) {
 		PolicyEngineEnv{ToolSchemas: harnessSchemas(), Security: rec},
 		func(string) (PermissionPolicy, error) { return NewDenyAll(), nil },
 	)
-	if err == nil {
-		t.Fatal("expected construction to abort on an undeclared input attribute")
-	}
-	if !strings.Contains(err.Error(), LintRuleUndeclaredInputAttribute) {
-		t.Fatalf("error does not name the rule: %v", err)
-	}
-	if len(rec.snapshot()) != 1 || rec.snapshot()[0].event != "policy_lint" || rec.snapshot()[0].level != "error" {
-		t.Fatalf("expected one error-level policy_lint event, got %+v", rec.snapshot())
-	}
-	if rec.snapshot()[0].data["rule"] != LintRuleUndeclaredInputAttribute {
-		t.Fatalf("event does not carry the rule: %+v", rec.snapshot()[0].data)
-	}
+	require.Error(t, err, "expected construction to abort on an undeclared input attribute")
+	require.ErrorContains(t, err, LintRuleUndeclaredInputAttribute)
+	events := rec.snapshot()
+	require.Len(t, events, 1)
+	require.Equal(t, "error", events[0].level)
+	require.Equal(t, "policy_lint", events[0].event)
+	require.Equal(t, LintRuleUndeclaredInputAttribute, events[0].data["rule"], "event does not carry the rule")
 }
 
 func TestNewPolicyEngine_WarningsAreEmittedAndSurvive(t *testing.T) {
@@ -676,9 +619,7 @@ func TestNewPolicyEngine_WarningsAreEmittedAndSurvive(t *testing.T) {
 	) when {
 		context.input.jql like "*DROP*"
 	};`
-	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(src), 0o600))
 
 	rec := &fakeEmitter{}
 	pp, err := New(
@@ -686,71 +627,53 @@ func TestNewPolicyEngine_WarningsAreEmittedAndSurvive(t *testing.T) {
 		PolicyEngineEnv{ToolSchemas: harnessSchemas(), Security: rec},
 		func(string) (PermissionPolicy, error) { return NewDenyAll(), nil },
 	)
-	if err != nil {
-		t.Fatalf("an unregistered tool must warn, not abort: %v", err)
-	}
-	if pp == nil {
-		t.Fatal("expected a constructed policy")
-	}
-	if len(rec.snapshot()) != 1 || rec.snapshot()[0].level != "warn" || rec.snapshot()[0].data["rule"] != LintRuleUnknownTool {
-		t.Fatalf("expected one unknown-tool warning, got %+v", rec.snapshot())
-	}
+	require.NoError(t, err, "an unregistered tool must warn, not abort")
+	require.NotNil(t, pp, "expected a constructed policy")
+
+	events := rec.snapshot()
+	require.Len(t, events, 1, "expected one unknown-tool warning")
+	require.Equal(t, "warn", events[0].level)
+	require.Equal(t, LintRuleUnknownTool, events[0].data["rule"])
 }
 
 // --- finding formatting ----------------------------------------------
 
-func TestLintFindingString(t *testing.T) {
+func TestLintFinding_String_FormatsWithAndWithoutLine(t *testing.T) {
 	f := LintFinding{PolicyID: "policy0", Rule: LintRuleUnknownTool, Message: "nope", Line: 7}
-	if got, want := f.String(), `[unknown-tool] policy0 (line 7): nope`; got != want {
-		t.Errorf("String() = %q, want %q", got, want)
-	}
+	require.Equal(t, `[unknown-tool] policy0 (line 7): nope`, f.String())
+
 	f.Line = 0
-	if got, want := f.String(), `[unknown-tool] policy0: nope`; got != want {
-		t.Errorf("String() = %q, want %q", got, want)
-	}
+	require.Equal(t, `[unknown-tool] policy0: nope`, f.String())
 }
 
 func TestLintErrors_IgnoresWarnings(t *testing.T) {
 	findings := []LintFinding{
 		{PolicyID: "p0", Rule: "a", Severity: LintWarning, Message: "w"},
 	}
-	if err := LintErrors("src", findings); err != nil {
-		t.Fatalf("warnings must not produce an error: %v", err)
-	}
+	require.NoError(t, LintErrors("src", findings), "warnings must not produce an error")
+
 	findings = append(findings, LintFinding{PolicyID: "p1", Rule: "b", Severity: LintError, Message: "e"})
 	err := LintErrors("src", findings)
-	if err == nil {
-		t.Fatal("expected an error")
-	}
-	if strings.Contains(err.Error(), "[a]") {
-		t.Fatalf("warning leaked into the error: %v", err)
-	}
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "[a]", "warning leaked into the error")
 }
 
 // Multiple statements in one file are all linted, and findings are
 // reported against the statement that produced them.
-func TestLintPolicySetStructure_MultiStatementFile(t *testing.T) {
+func TestLintPolicySetStructure_AttributesFindingsPerStatement(t *testing.T) {
 	src := `permit (principal, action == Action::"tool:web_fetch", resource == Tool::"web_fetch")
 	when { context.input.url like "https://github.com/*" };
 
 	forbid (principal, action, resource) when { principal.role == "admin" };`
 	findings := LintPolicySetStructure(mustParse(t, src))
 	assertRules(t, findings, LintRuleUnknownPrincipalAttribute+":error")
-	if findings[0].PolicyID != "policy1" {
-		t.Fatalf("finding attributed to %q, want policy1", findings[0].PolicyID)
-	}
-	if findings[0].Line != 4 {
-		t.Fatalf("finding at line %d, want 4", findings[0].Line)
-	}
+	require.Equal(t, "policy1", findings[0].PolicyID)
+	require.Equal(t, 4, findings[0].Line)
 }
 
-func TestLint_NilPolicySet(t *testing.T) {
-	if got := LintPolicySetStructure(nil); got != nil {
-		t.Errorf("LintPolicySetStructure(nil) = %v", got)
-	}
-	if got := LintPolicySetTools(nil, harnessSchemas()); got != nil {
-		t.Errorf("LintPolicySetTools(nil) = %v", got)
-	}
+func TestLint_NilPolicySetReturnsNoFindings(t *testing.T) {
+	require.Nil(t, LintPolicySetStructure(nil))
+	require.Nil(t, LintPolicySetTools(nil, harnessSchemas()))
 }
 
 // The linter's vocabulary of request attributes is a hand-maintained
@@ -771,49 +694,45 @@ func TestLintVocabularyMatchesBuildRequest(t *testing.T) {
 		Capabilities:   []string{"shell"},
 		DynamicContext: map[string]string{"issue.title": "x"},
 	})
-	if err != nil {
-		t.Fatalf("NewPolicyEnginePolicy: %v", err)
-	}
+	require.NoError(t, err, "NewPolicyEnginePolicy")
 
 	req, entities, err := p.buildRequest(types.ToolDefinition{Name: "run_command"}, []byte(`{"command":"ls"}`))
-	if err != nil {
-		t.Fatalf("buildRequest: %v", err)
-	}
+	require.NoError(t, err, "buildRequest")
 
-	gotContext := map[string]bool{}
-	for key := range req.Context.Keys() {
-		gotContext[string(key)] = true
-	}
-	if !sameKeys(gotContext, knownContextKeys) {
-		t.Errorf("context keys = %v, linter knows %v", gotContext, knownContextKeys)
-	}
+	t.Run("context keys match the linter vocabulary", func(t *testing.T) {
+		gotContext := map[string]bool{}
+		for key := range req.Context.Keys() {
+			gotContext[string(key)] = true
+		}
+		require.True(t, sameKeys(gotContext, knownContextKeys), "context keys = %v, linter knows %v", gotContext, knownContextKeys)
+	})
 
-	gotPrincipal := map[string]bool{}
-	for key := range entities[req.Principal].Attributes.Keys() {
-		gotPrincipal[string(key)] = true
-	}
-	if !sameKeys(gotPrincipal, knownPrincipalAttrs) {
-		t.Errorf("principal attrs = %v, linter knows %v", gotPrincipal, knownPrincipalAttrs)
-	}
+	t.Run("principal attributes match the linter vocabulary", func(t *testing.T) {
+		gotPrincipal := map[string]bool{}
+		for key := range entities[req.Principal].Attributes.Keys() {
+			gotPrincipal[string(key)] = true
+		}
+		require.True(t, sameKeys(gotPrincipal, knownPrincipalAttrs), "principal attrs = %v, linter knows %v", gotPrincipal, knownPrincipalAttrs)
+	})
 
 	// Entity types and the action-ID prefix are what lintScopes rejects
 	// policies against, so pin them here too.
-	if req.Principal.Type != "User" || req.Action.Type != "Action" || req.Resource.Type != "Tool" {
-		t.Errorf("entity types = %s/%s/%s, linter expects User/Action/Tool",
-			req.Principal.Type, req.Action.Type, req.Resource.Type)
-	}
-	if !strings.HasPrefix(string(req.Action.ID), actionIDPrefix) {
-		t.Errorf("action ID %q does not carry the %q prefix the linter requires", req.Action.ID, actionIDPrefix)
-	}
+	t.Run("entity types match the scopes the linter expects", func(t *testing.T) {
+		require.EqualValues(t, "User", req.Principal.Type)
+		require.EqualValues(t, "Action", req.Action.Type)
+		require.EqualValues(t, "Tool", req.Resource.Type)
+	})
+
+	t.Run("action ID carries the linter prefix", func(t *testing.T) {
+		require.True(t, strings.HasPrefix(string(req.Action.ID), actionIDPrefix), "action ID %q does not carry the %q prefix the linter requires", req.Action.ID, actionIDPrefix)
+	})
 
 	// The action and resource entities must stay attribute-free, which is
 	// what makes the no-such-attribute rule sound.
-	if n := entities[req.Action].Attributes.Len(); n != 0 {
-		t.Errorf("action entity carries %d attributes; the no-such-attribute rule assumes none", n)
-	}
-	if n := entities[req.Resource].Attributes.Len(); n != 0 {
-		t.Errorf("resource entity carries %d attributes; the no-such-attribute rule assumes none", n)
-	}
+	t.Run("action and resource entities carry no attributes", func(t *testing.T) {
+		require.Zero(t, entities[req.Action].Attributes.Len(), "the no-such-attribute rule assumes none")
+		require.Zero(t, entities[req.Resource].Attributes.Len(), "the no-such-attribute rule assumes none")
+	})
 }
 
 func sameKeys(a, b map[string]bool) bool {
@@ -829,16 +748,11 @@ func sameKeys(a, b map[string]bool) bool {
 }
 
 // A structural-tier abort must leave the same audit evidence as a
-// registry-tier one. It previously did not: LoadPolicySetFromFile
-// returned its error before newPolicyEngineFromConfig could emit
-// anything, so the simpler and more common defect class — a misspelled
-// attribute — aborted the run silently while docs promised otherwise.
+// registry-tier one, so a misspelled attribute is never rejected silently.
 func TestNewPolicyEngine_StructuralErrorIsAudited(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "structural.cedar")
 	src := `forbid (principal, action, resource) when { context.inputs.command like "*rm*" };`
-	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(src), 0o600))
 
 	rec := &fakeEmitter{}
 	_, err := New(
@@ -846,26 +760,20 @@ func TestNewPolicyEngine_StructuralErrorIsAudited(t *testing.T) {
 		PolicyEngineEnv{ToolSchemas: harnessSchemas(), Security: rec},
 		func(string) (PermissionPolicy, error) { return NewDenyAll(), nil },
 	)
-	if err == nil {
-		t.Fatal("expected construction to abort")
-	}
+	require.Error(t, err, "expected construction to abort")
+
 	events := rec.snapshot()
-	if len(events) != 1 {
-		t.Fatalf("expected exactly one policy_lint event, got %+v", events)
-	}
-	if events[0].event != "policy_lint" || events[0].level != "error" {
-		t.Fatalf("event = %+v, want an error-level policy_lint", events[0])
-	}
-	if events[0].data["rule"] != LintRuleUnknownContextAttribute {
-		t.Fatalf("event does not carry the rule: %+v", events[0].data)
-	}
+	require.Len(t, events, 1, "expected exactly one policy_lint event")
+	require.Equal(t, "policy_lint", events[0].event)
+	require.Equal(t, "error", events[0].level)
+	require.Equal(t, LintRuleUnknownContextAttribute, events[0].data["rule"], "event does not carry the rule")
 }
 
 // The generic descent in collectURLGroups hands each child back to a
 // fresh polarity-aware walk. Node types with more than one child are the
 // ones that stress it, and neither `&&`/`||`/`!` (handled explicitly) nor
 // a bare `like` reaches that branch at all.
-func TestWildcardHostPattern_MultiChildNodes(t *testing.T) {
+func TestWildcardHostPattern_DescendsIntoMultiChildNodes(t *testing.T) {
 	cases := []struct {
 		name string
 		body string
@@ -891,16 +799,14 @@ func TestWildcardHostPattern_MultiChildNodes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			src := `permit (principal, action, resource) when { ` + tc.body + ` };`
 			findings := LintPolicySetStructure(mustParse(t, src))
-			if got := len(findings) > 0; got != tc.want {
-				t.Fatalf("flagged = %v, want %v (%v)", got, tc.want, findings)
-			}
+			require.Equal(t, tc.want, len(findings) > 0, "findings: %v", findings)
 		})
 	}
 }
 
 // normaliseFindings exists to collapse the same defect reported from
 // several disjuncts of one clause.
-func TestLint_DuplicateFindingsCollapse(t *testing.T) {
+func TestLint_CollapsesDuplicateFindings(t *testing.T) {
 	src := `forbid (principal, action, resource) when {
 		context.inputs.a like "x" || context.inputs.a like "y" || context.inputs.a like "z"
 	};`
@@ -918,36 +824,22 @@ func TestLint_FindingsFollowSourceOrder(t *testing.T) {
 		fmt.Fprintf(&sb, "forbid (principal, action, resource) when { context.bad%02d == \"x\" };\n", i)
 	}
 	findings := LintPolicySetStructure(mustParse(t, sb.String()))
-	if len(findings) != 12 {
-		t.Fatalf("expected 12 findings, got %d: %v", len(findings), findings)
-	}
+	require.Len(t, findings, 12)
 	for i, f := range findings {
-		if f.Line != i+1 {
-			t.Fatalf("finding %d is at line %d, want %d — order does not follow the file", i, f.Line, i+1)
-		}
-		if want := fmt.Sprintf("context.bad%02d", i); !strings.Contains(f.Message, want) {
-			t.Fatalf("finding %d names %q, want %s", i, f.Message, want)
-		}
+		require.Equal(t, i+1, f.Line, "finding %d is at a line that does not follow the file", i)
+		require.Contains(t, f.Message, fmt.Sprintf("context.bad%02d", i), "finding %d", i)
 	}
 }
 
-// A differential probe over the wildcard-host rule: mechanically insert
-// wildcards at every position of a canonical allow-list URL, and for
-// every pattern the linter passes, assert the REAL Cedar authorizer
-// denies a corpus of URLs on a DIFFERENT host. The rule's whole job is
-// to make "the linter said nothing" mean "the host is pinned", so that
-// implication is what gets tested rather than the rule's internals.
-//
-// Two formulations shipped inside this branch failed exactly here:
-// gating on a literal "://" let `*.github.com/*` and
-// `https:*/github.com/*` through, and treating a pattern with no
-// literal "://" as schemeless let `https:/*p` through — its `/` at
-// offset 6 belongs to the scheme separator, not the path.
+// Differential probe over the wildcard-host rule. Wildcards are inserted at
+// every position of allow-list URLs. Any pattern the linter passes must be
+// denied by the real Cedar authorizer for URLs on a different host, so a
+// clean lint result means the host is pinned.
 //
 // Scope note: this pins HOST anchoring only. A pattern that permits a
-// wider path on the same host (`https://github.com/*` reaching
-// /a and /b alike) is the allow-list working as written, not a defect,
-// so every probe URL below sits on a host the pattern never names.
+// wider path on the same host (`https://github.com/*` reaching /a and /b
+// alike) is the allow-list working as written, so every probe URL below
+// sits on a host the pattern never names.
 func TestWildcardHostPattern_NoAuthorizedBypass(t *testing.T) {
 	bases := []string{
 		"https://github.com/p",
@@ -1003,21 +895,13 @@ func TestWildcardHostPattern_NoAuthorizedBypass(t *testing.T) {
 		clean++
 
 		policy, err := NewPolicyEnginePolicy(PolicyEngineConfig{PolicySet: ps, Fallback: NewDenyAll()})
-		if err != nil {
-			t.Fatalf("build policy for %q: %v", pattern, err)
-		}
+		require.NoError(t, err, "build policy for %q", pattern)
 		for _, url := range otherHost {
 			input, err := json.Marshal(map[string]string{"url": url})
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			res, err := policy.Check(t.Context(), types.ToolDefinition{Name: "web_fetch"}, input)
-			if err != nil {
-				t.Fatalf("check %q against %q: %v", url, pattern, err)
-			}
-			if res.Allowed {
-				t.Errorf("pattern %q passes the lint but authorizes %q", pattern, url)
-			}
+			require.NoError(t, err, "check %q against %q", url, pattern)
+			assert.False(t, res.Allowed, "pattern %q passes the lint but authorizes %q", pattern, url)
 		}
 	}
 
@@ -1043,9 +927,7 @@ func TestWildcardHostPattern_NoAuthorizedBypass(t *testing.T) {
 
 	// Guards against the probe passing vacuously: if a future change
 	// flagged every pattern, no authorization would be exercised at all.
-	if clean == 0 {
-		t.Fatal("no pattern survived the lint — the probe authorized nothing and proves nothing")
-	}
+	require.NotZero(t, clean, "no pattern survived the lint, so the probe authorized nothing")
 	t.Logf("%d of %d patterns passed the lint; none authorized another host", clean, len(seen))
 }
 
@@ -1057,25 +939,30 @@ func TestWildcardHostPattern_NoAuthorizedBypass(t *testing.T) {
 func TestWildcardHostPattern_NonStringURLDoesNotAuthorize(t *testing.T) {
 	src := `permit (principal, action, resource) when { context.input.url like "https://github.com/*" };`
 	ps := mustParse(t, src)
-	if findings := LintPolicySetStructure(ps); len(findings) != 0 {
-		t.Fatalf("unexpected findings: %v", findings)
-	}
+	require.Empty(t, LintPolicySetStructure(ps), "the url-constrained permit must lint clean")
+
 	policy, err := NewPolicyEnginePolicy(PolicyEngineConfig{PolicySet: ps, Fallback: NewDenyAll()})
-	if err != nil {
-		t.Fatal(err)
+	require.NoError(t, err)
+
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"url is a number", `{"url":123}`},
+		{"url is an object", `{"url":{"a":1}}`},
+		{"url is an array", `{"url":["x"]}`},
+		{"url is null", `{"url":null}`},
+		{"url is absent", `{}`},
+		{"raw string input", `"a raw string"`},
+		{"null input", `null`},
+		{"number input", `123`},
 	}
-	for _, input := range []string{
-		`{"url":123}`, `{"url":{"a":1}}`, `{"url":["x"]}`, `{"url":null}`,
-		`{}`, `"a raw string"`, `null`, `123`,
-	} {
-		res, err := policy.Check(t.Context(), types.ToolDefinition{Name: "web_fetch"}, json.RawMessage(input))
-		if err != nil {
-			t.Errorf("input %s: %v", input, err)
-			continue
-		}
-		if res.Allowed {
-			t.Errorf("input %s was authorized by a url-constrained permit", input)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := policy.Check(t.Context(), types.ToolDefinition{Name: "web_fetch"}, json.RawMessage(tc.input))
+			require.NoError(t, err)
+			require.False(t, res.Allowed, "input %s was authorized by a url-constrained permit", tc.input)
+		})
 	}
 }
 
@@ -1098,25 +985,18 @@ func TestWildcardHostPattern_AnchoredSpellingsSurvive(t *testing.T) {
 	} {
 		t.Run(pattern, func(t *testing.T) {
 			src := `permit (principal, action, resource) when { context.input.url like "` + pattern + `" };`
-			if findings := LintPolicySetStructure(mustParse(t, src)); len(findings) != 0 {
-				t.Fatalf("anchored pattern rejected: %v", findings)
-			}
+			require.Empty(t, LintPolicySetStructure(mustParse(t, src)), "anchored pattern rejected")
 		})
 	}
 }
 
 // Polarity must survive a negation expressed through a node the DNF walk
 // does not model. `X == false`, `X != true`, `if X then false else true`
-// and `[X].contains(false)` all mean `!X`; wrapped in an outer `!`, the
-// two negations cancel and the enclosed `like` is genuinely in a
-// widening position. An earlier walk passed the parent's polarity through
-// unrecognised nodes unchanged, so it flipped once instead of twice,
-// dropped the clause from the DNF, and reported a policy clean that the
-// real authorizer used to grant any host.
+// and `[X].contains(false)` all mean `!X`. Wrapped in an outer `!`, the
+// two negations cancel and the enclosed `like` is in a widening position.
 //
-// Assertions run against cedar.Authorize, not just the lint result: this
-// class of bug is invisible to a test that only inspects findings for a
-// pattern it already expects to be flagged.
+// Clean verdicts are cross-checked against the real authorizer, because a
+// clean verdict must mean the authorizer denies another host.
 func TestWildcardHostPattern_NegationThroughUnmodelledNodes(t *testing.T) {
 	const unanchored = `context.input.url like "*.github.com/*"`
 	cases := []struct {
@@ -1151,45 +1031,27 @@ func TestWildcardHostPattern_NegationThroughUnmodelledNodes(t *testing.T) {
 				when { ` + tc.body + ` };`
 			ps := mustParse(t, src)
 			findings := LintPolicySetStructure(ps)
-			if got := len(findings) > 0; got != tc.want {
-				t.Fatalf("flagged = %v, want %v (%v)", got, tc.want, findings)
-			}
+			require.Equal(t, tc.want, len(findings) > 0, "findings: %v", findings)
 
-			// Cross-check the claim the lint result stands for: a clean
-			// verdict must mean the authorizer denies another host.
 			if tc.want {
 				return
 			}
 			policy, err := NewPolicyEnginePolicy(PolicyEngineConfig{PolicySet: ps, Fallback: NewDenyAll()})
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			input, err := json.Marshal(map[string]string{"url": "https://evil.example/x.github.com/y"})
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			res, err := policy.Check(t.Context(), types.ToolDefinition{Name: "web_fetch"}, input)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if res.Allowed {
-				t.Fatalf("policy lints clean but authorizes an attacker host: %s", tc.body)
-			}
+			require.NoError(t, err)
+			require.False(t, res.Allowed, "policy lints clean but authorizes an attacker host: %s", tc.body)
 		})
 	}
 }
 
-// Metamorphic guard over the DNF walk. Rewriting a clause into a
-// logically equivalent form must not change the linter's verdict — if
-// `url like P` is flagged, so must every spelling that means the same
-// thing, however it is dressed up in comparisons, muxes, or paired
-// negations.
-//
-// This is the generalisation of the bypass that shipped in bd53dd82: a
-// probe that varies PATTERNS cannot find a bug in how policy BODIES are
-// walked, and three rounds of hand-written body cases each covered only
-// the shapes their author had thought of. Equivalence is a property the
-// walk must have for shapes nobody enumerated.
+// Metamorphic check over the DNF walk. Rewriting a clause into a logically
+// equivalent form must not change the linter's verdict, however the clause
+// is dressed up in comparisons, muxes or paired negations. Probes that vary
+// only the pattern cannot exercise how policy bodies are walked, so this
+// test varies the body.
 func TestWildcardHostPattern_EquivalentBodiesAgree(t *testing.T) {
 	// Each entry rewrites %s — a clause — into an equivalent one.
 	equivalent := []string{
@@ -1229,33 +1091,24 @@ func TestWildcardHostPattern_EquivalentBodiesAgree(t *testing.T) {
 				src := `permit (principal, action == Action::"tool:web_fetch", resource == Tool::"web_fetch")
 					when { ` + body + ` };`
 				ps, err := cedar.NewPolicySetFromBytes("equiv.cedar", []byte(src))
-				if err != nil {
-					t.Fatalf("parse %q: %v", body, err)
-				}
+				require.NoError(t, err, "parse %q", body)
+
 				findings := LintPolicySetStructure(ps)
-				if got := len(findings) > 0; got != clause.want {
-					t.Errorf("body %q: flagged = %v, want %v (%v)", body, got, clause.want, findings)
+				if !assert.Equal(t, clause.want, len(findings) > 0, "body %q: findings %v", body, findings) {
 					continue
 				}
 				if clause.want {
 					continue
 				}
+
 				// A clean verdict must still mean the host is pinned.
 				policy, err := NewPolicyEnginePolicy(PolicyEngineConfig{PolicySet: ps, Fallback: NewDenyAll()})
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err, "body %q", body)
 				input, err := json.Marshal(map[string]string{"url": "https://evil.example/x.github.com/y"})
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
 				res, err := policy.Check(t.Context(), types.ToolDefinition{Name: "web_fetch"}, input)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if res.Allowed {
-					t.Errorf("body %q lints clean but authorizes an attacker host", body)
-				}
+				require.NoError(t, err, "body %q", body)
+				assert.False(t, res.Allowed, "body %q lints clean but authorizes an attacker host", body)
 			}
 		})
 	}
@@ -1279,20 +1132,15 @@ func TestWildcardHostPattern_NoFalsePositives(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if findings := LintPolicySetStructure(mustParse(t, tc.src)); len(findings) != 0 {
-				t.Fatalf("safe policy rejected: %v", findings)
-			}
+			require.Empty(t, LintPolicySetStructure(mustParse(t, tc.src)), "safe policy rejected")
 		})
 	}
 }
 
-// Anchoring is evaluated bottom-up over a three-valued lattice rather
-// than by materialising disjunctive normal form, which is exponential in
-// the number of conjoined disjunctions. The DNF version needed a
-// cross-product budget and, past it, degraded to treating conjuncts as
-// disjuncts — so an anchored policy with enough additional constraints
-// was rejected. Scale is therefore a correctness property, not just a
-// performance one.
+// Anchoring is evaluated bottom-up over a three-valued lattice, not by
+// materialising disjunctive normal form, which is exponential in the number
+// of conjoined disjunctions. The verdict must not depend on how many
+// constraints surround the anchor, so scale is a correctness property.
 func TestWildcardHostPattern_WideConjunctionsStayLinear(t *testing.T) {
 	for _, n := range []int{4, 8, 16, 32, 64} {
 		t.Run(fmt.Sprintf("conjuncts=%d", n), func(t *testing.T) {
@@ -1301,15 +1149,11 @@ func TestWildcardHostPattern_WideConjunctionsStayLinear(t *testing.T) {
 				parts = append(parts, `(context.input.url like "*a*" || context.input.url like "*b*")`)
 			}
 			src := `permit (principal, action, resource) when { ` + strings.Join(parts, " && ") + ` };`
-			if findings := LintPolicySetStructure(mustParse(t, src)); len(findings) != 0 {
-				t.Fatalf("anchored policy rejected at %d conjuncts: %v", n, findings)
-			}
+			require.Empty(t, LintPolicySetStructure(mustParse(t, src)), "anchored policy rejected at %d conjuncts", n)
 
-			// The mirror: drop the anchor and it must still be caught.
+			// Dropping the anchor must still be caught.
 			unanchored := `permit (principal, action, resource) when { ` + strings.Join(parts[1:], " && ") + ` };`
-			if findings := LintPolicySetStructure(mustParse(t, unanchored)); len(findings) == 0 {
-				t.Fatalf("unanchored policy accepted at %d conjuncts", n)
-			}
+			require.NotEmpty(t, LintPolicySetStructure(mustParse(t, unanchored)), "unanchored policy accepted at %d conjuncts", n)
 		})
 	}
 }
@@ -1323,7 +1167,7 @@ func TestWildcardHostPattern_WideConjunctionsStayLinear(t *testing.T) {
 //
 // The mirror matters as much: an operand with no URL attribute anywhere
 // inside is still not this rule's business.
-func TestWildcardHostPattern_UnresolvableOperands(t *testing.T) {
+func TestWildcardHostPattern_JudgesUnresolvableOperands(t *testing.T) {
 	cases := []struct {
 		name string
 		body string
@@ -1361,9 +1205,7 @@ func TestWildcardHostPattern_UnresolvableOperands(t *testing.T) {
 				when { ` + tc.body + ` };`
 			ps := mustParse(t, src)
 			findings := LintPolicySetStructure(ps)
-			if got := len(findings) > 0; got != tc.want {
-				t.Fatalf("flagged = %v, want %v (%v)", got, tc.want, findings)
-			}
+			require.Equal(t, tc.want, len(findings) > 0, "findings: %v", findings)
 		})
 	}
 }
@@ -1398,54 +1240,40 @@ func TestWildcardHostPattern_EquivalentOperandsAgree(t *testing.T) {
 		t.Run(clause.name, func(t *testing.T) {
 			for _, shape := range equivalent {
 				operand := strings.ReplaceAll(shape, "%s", "context.input.url")
-				body := fmt.Sprintf(`%s like "%s"`, operand, clause.pattern)
-				src := `permit (principal, action == Action::"tool:web_fetch", resource == Tool::"web_fetch")
-					when { ` + body + ` };`
-				ps, err := cedar.NewPolicySetFromBytes("operand.cedar", []byte(src))
-				if err != nil {
-					t.Fatalf("parse %q: %v", body, err)
-				}
-				findings := LintPolicySetStructure(ps)
-				if got := len(findings) > 0; got != clause.want {
-					t.Errorf("operand %q: flagged = %v, want %v (%v)", operand, got, clause.want, findings)
-					continue
-				}
-				if clause.want {
-					continue
-				}
-				policy, err := NewPolicyEnginePolicy(PolicyEngineConfig{PolicySet: ps, Fallback: NewDenyAll()})
-				if err != nil {
-					t.Fatal(err)
-				}
-				input, err := json.Marshal(map[string]string{"url": "https://evil.example/x.github.com/y"})
-				if err != nil {
-					t.Fatal(err)
-				}
-				res, err := policy.Check(t.Context(), types.ToolDefinition{Name: "web_fetch"}, input)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if res.Allowed {
-					t.Errorf("operand %q lints clean but authorizes an attacker host", operand)
-				}
+				t.Run(operand, func(t *testing.T) {
+					body := fmt.Sprintf(`%s like "%s"`, operand, clause.pattern)
+					src := `permit (principal, action == Action::"tool:web_fetch", resource == Tool::"web_fetch")
+						when { ` + body + ` };`
+					ps, err := cedar.NewPolicySetFromBytes("operand.cedar", []byte(src))
+					require.NoError(t, err, "parse %q", body)
+					findings := LintPolicySetStructure(ps)
+					require.Equal(t, clause.want, len(findings) > 0, "findings: %v", findings)
+					if clause.want {
+						return
+					}
+					policy, err := NewPolicyEnginePolicy(PolicyEngineConfig{PolicySet: ps, Fallback: NewDenyAll()})
+					require.NoError(t, err)
+					input, err := json.Marshal(map[string]string{"url": "https://evil.example/x.github.com/y"})
+					require.NoError(t, err)
+					res, err := policy.Check(t.Context(), types.ToolDefinition{Name: "web_fetch"}, input)
+					require.NoError(t, err)
+					require.False(t, res.Allowed, "lints clean but authorizes an attacker host")
+				})
 			}
 		})
 	}
 }
 
-// Cross-product oracle. Every wildcard-host defect found on this branch
-// was the same shape: some Cedar construct the walk does not model made
-// a clause vanish or be misjudged, and the policy linted clean while the
-// authorizer granted an attacker host. The single-axis tests above each
-// caught one such construct after it was known. This one generates the
-// combinations — pattern x operand wrapper x body wrapper x polarity —
-// and uses the real Cedar evaluator as the oracle, so a construct nobody
-// enumerated is still covered as long as it is built from these pieces.
+// Cross-product oracle for the wildcard-host rule. It generates policies from
+// the product of pattern, operand wrapper, body wrapper and polarity, then
+// uses the real Cedar evaluator to check that no lint-clean policy authorizes
+// an attacker URL. Constructs nobody listed are still covered when they are
+// built from these pieces.
 //
-// The property is one-directional on purpose: a lint-clean policy must
-// not authorize another host. A flagged policy is not asserted about,
-// because over-flagging is the safe direction and false positives are
-// pinned separately by TestWildcardHostPattern_NoFalsePositives.
+// The property is one-directional: a lint-clean policy must not authorize
+// another host. Flagged policies are not asserted about, because over-flagging
+// is the safe direction. TestWildcardHostPattern_NoFalsePositives pins false
+// positives separately.
 func TestWildcardHostPattern_CrossProductOracle(t *testing.T) {
 	operands := []string{
 		`context.input.url`,
@@ -1519,29 +1347,19 @@ func TestWildcardHostPattern_CrossProductOracle(t *testing.T) {
 						fallback = NewAllowAll()
 					}
 					policy, err := NewPolicyEnginePolicy(PolicyEngineConfig{PolicySet: ps, Fallback: fallback})
-					if err != nil {
-						t.Fatalf("build policy for %q: %v", src, err)
-					}
+					require.NoError(t, err, "build policy for %q", src)
 					for _, url := range attacker {
 						input, err := json.Marshal(map[string]string{"url": url})
-						if err != nil {
-							t.Fatal(err)
-						}
+						require.NoError(t, err)
 						res, err := policy.Check(t.Context(), types.ToolDefinition{Name: "web_fetch"}, input)
-						if err != nil {
-							t.Fatalf("check %q: %v", src, err)
-						}
-						if res.Allowed {
-							t.Errorf("lints clean but authorizes %q:\n%s", url, src)
-						}
+						require.NoError(t, err, "check %q", src)
+						assert.False(t, res.Allowed, "lints clean but authorizes %q:\n%s", url, src)
 					}
 				}
 			}
 		}
 	}
-	if clean == 0 {
-		t.Fatal("no policy survived the lint — the oracle proves nothing")
-	}
+	require.NotZero(t, clean, "no policy survived the lint; the oracle proves nothing")
 	t.Logf("%d of %d generated policies lint clean; none authorized another host", clean, total)
 }
 
@@ -1560,17 +1378,17 @@ func TestWildcardHostPattern_CrossProductOracle(t *testing.T) {
 // through, because that rejects a working policy.
 func TestNewToolSchema_AgreesWithTheRealValidator(t *testing.T) {
 	schemas := map[string]string{
-		"closed":                  `{"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":false}`,
-		"open by omission":        `{"type":"object","properties":{"a":{"type":"string"}}}`,
-		"additionalProperties {}": `{"type":"object","properties":{"a":{}},"additionalProperties":{"type":"string"}}`,
-		"additionalProperties tr": `{"type":"object","properties":{"a":{}},"additionalProperties":true}`,
-		"properties via $ref":     `{"type":"object","$ref":"#/$defs/P","additionalProperties":false,"$defs":{"P":{"properties":{"a":{"type":"string"}}}}}`,
-		"properties via allOf":    `{"type":"object","allOf":[{"properties":{"a":{"type":"string"}}}],"additionalProperties":false}`,
-		"properties via anyOf":    `{"type":"object","anyOf":[{"properties":{"a":{}}},{"properties":{"b":{}}}],"additionalProperties":false}`,
-		"empty schema object":     `{}`,
-		"closed, no properties":   `{"type":"object","additionalProperties":false}`,
-		"non-object root":         `{"type":"string"}`,
-		"nested properties":       `{"type":"object","properties":{"a":{"type":"object","properties":{"b":{}}}},"additionalProperties":false}`,
+		"closed":                    `{"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":false}`,
+		"open by omission":          `{"type":"object","properties":{"a":{"type":"string"}}}`,
+		"additionalProperties {}":   `{"type":"object","properties":{"a":{}},"additionalProperties":{"type":"string"}}`,
+		"additionalProperties true": `{"type":"object","properties":{"a":{}},"additionalProperties":true}`,
+		"properties via $ref":       `{"type":"object","$ref":"#/$defs/P","additionalProperties":false,"$defs":{"P":{"properties":{"a":{"type":"string"}}}}}`,
+		"properties via allOf":      `{"type":"object","allOf":[{"properties":{"a":{"type":"string"}}}],"additionalProperties":false}`,
+		"properties via anyOf":      `{"type":"object","anyOf":[{"properties":{"a":{}}},{"properties":{"b":{}}}],"additionalProperties":false}`,
+		"empty schema object":       `{}`,
+		"closed, no properties":     `{"type":"object","additionalProperties":false}`,
+		"non-object root":           `{"type":"string"}`,
+		"nested properties":         `{"type":"object","properties":{"a":{"type":"object","properties":{"b":{}}}},"additionalProperties":false}`,
 	}
 
 	for name, raw := range schemas {
@@ -1582,18 +1400,16 @@ func TestNewToolSchema_AgreesWithTheRealValidator(t *testing.T) {
 			validatorAccepts := security.ValidateJSONSchema(
 				json.RawMessage(`{"a":"x"}`), json.RawMessage(raw)) == nil
 
-			if callsItDead && validatorAccepts {
-				t.Fatalf("linter would reject a policy keyed on context.input.a as dead, but the validator accepts that input — a working policy would fail to load")
-			}
+			require.False(t, callsItDead && validatorAccepts,
+				"linter would reject a policy keyed on context.input.a as dead, but the validator accepts that input; a working policy would fail to load")
 		})
 	}
 }
 
-// Cedar's standard RBAC idiom is `principal in Group::"..."`, and it is
-// dead here: buildRequest gives the principal exactly one parent
-// (User::"any") and mints no Group entity. lintScopes only inspected the
-// scope head, so a body-position membership test was invisible to every
-// rule — the forbid below parsed, linted clean, loaded, and never fired.
+// Cedar's standard RBAC idiom `principal in Group::"..."` is dead here:
+// buildRequest gives the principal one parent (User::"any") and mints no
+// Group entity. The linter flags membership tests against entity types the
+// harness never mints, in the body as well as in the scope.
 func TestLintConditionEntities_DeadMembershipTests(t *testing.T) {
 	cases := []struct {
 		name string
@@ -1615,57 +1431,43 @@ func TestLintConditionEntities_DeadMembershipTests(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			src := `forbid (principal, action, resource) when { ` + tc.body + ` };`
 			findings := LintPolicySetStructure(mustParse(t, src))
-			if got := len(findings) > 0; got != tc.want {
-				t.Fatalf("flagged = %v, want %v (%v)", got, tc.want, findings)
-			}
-			if tc.want && findings[0].Rule != LintRuleUnknownScopeEntity {
-				t.Fatalf("rule = %s, want %s", findings[0].Rule, LintRuleUnknownScopeEntity)
+			require.Equal(t, tc.want, len(findings) > 0, "findings: %v", findings)
+			if tc.want {
+				require.Equal(t, LintRuleUnknownScopeEntity, findings[0].Rule)
 			}
 		})
 	}
 }
 
-// A dead forbid is the defect class issue #538 exists to catch, so pin
-// it against the authorizer rather than against the finding alone: the
-// policy really does fail to block what it names.
+// A dead forbid is the defect this lint exists to catch. The test checks the
+// authorizer as well as the finding: the policy really does fail to block
+// what it names.
 func TestLintConditionEntities_DeadForbidIsProvenDead(t *testing.T) {
 	src := `forbid (principal, action == Action::"tool:run_command", resource == Tool::"run_command")
 		when { principal in Group::"malicious-actor" };`
 	ps := mustParse(t, src)
-	if findings := LintPolicySetStructure(ps); len(findings) == 0 {
-		t.Fatal("expected the dead membership test to be flagged")
-	}
+	require.NotEmpty(t, LintPolicySetStructure(ps), "expected the dead membership test to be flagged")
 	policy, err := NewPolicyEnginePolicy(PolicyEngineConfig{PolicySet: ps, Fallback: NewAllowAll()})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	res, err := policy.Check(t.Context(), types.ToolDefinition{Name: "run_command"}, json.RawMessage(`{"command":"rm -rf /"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.Allowed {
-		t.Fatal("the forbid fired, so the finding would be a false positive — re-check knownEntityTypes against buildRequest")
-	}
+	require.NoError(t, err)
+	require.True(t, res.Allowed, "the forbid fired, so the finding would be a false positive; re-check knownEntityTypes against buildRequest")
 }
 
-// patternProperties admits names no `properties` entry lists, so
-// additionalProperties:false alongside it does not close the object. The
-// linter read such a schema as closed and rejected a working policy,
-// aborting the run with a message blaming a typo that was not there.
+// patternProperties admits names that no `properties` entry lists, so
+// additionalProperties:false alongside it does not close the object. Such a
+// schema must not be read as closed, or a policy on a pattern-matched
+// attribute would be rejected as dead.
 func TestNewToolSchema_PatternPropertiesIsNotClosed(t *testing.T) {
 	raw := `{"type":"object","properties":{"url":{"type":"string"}},"patternProperties":{"^x-":{"type":"string"}},"additionalProperties":false}`
 
 	// The real validator accepts a pattern-matched property.
-	if err := security.ValidateJSONSchema(
+	require.NoError(t, security.ValidateJSONSchema(
 		json.RawMessage(`{"url":"https://example.com","x-custom":"hello"}`),
 		json.RawMessage(raw),
-	); err != nil {
-		t.Fatalf("validator rejected a pattern-matched property, so the premise no longer holds: %v", err)
-	}
+	), "the validator must accept a pattern-matched property, or this test's premise no longer holds")
 
-	if NewToolSchema(json.RawMessage(raw)).Closed {
-		t.Fatal("schema with patternProperties read as closed; a policy on a pattern-matched attribute would be rejected as dead")
-	}
+	require.False(t, NewToolSchema(json.RawMessage(raw)).Closed, "a schema with patternProperties must not read as closed")
 
 	src := `forbid (principal, action == Action::"tool:mytool", resource) when { context.input["x-custom"] like "*" };`
 	findings := LintPolicySetTools(mustParse(t, src), map[string]ToolSchema{
@@ -1674,60 +1476,38 @@ func TestNewToolSchema_PatternPropertiesIsNotClosed(t *testing.T) {
 	assertRules(t, findings, LintRuleUnverifiableInputAttribute+":warning")
 }
 
-// Every condition block on a statement must hold for the policy to
-// apply, so they form one conjunction and share anchoring credit.
-// Evaluating each block separately reported this as unanchored while
-// Cedar requires both and the second pins the host.
+// Every condition block on a statement must hold for the policy to apply, so
+// the blocks form one conjunction and share anchoring credit: a later block
+// that pins the host anchors an earlier wildcard block.
 func TestWildcardHostPattern_CreditSharedAcrossConditionBlocks(t *testing.T) {
 	src := `permit (principal, action == Action::"tool:web_fetch", resource == Tool::"web_fetch")
 		when { context.input.url like "*.github.com/*" }
 		when { context.input.url like "https://github.com/*" };`
 	ps := mustParse(t, src)
-	if findings := LintPolicySetStructure(ps); len(findings) != 0 {
-		t.Fatalf("anchored-by-a-later-block policy rejected: %v", findings)
-	}
+	require.Empty(t, LintPolicySetStructure(ps), "anchored-by-a-later-block policy rejected")
 
-	// And the clean verdict is honest — the authorizer really does deny.
+	// The clean verdict is honest: the authorizer really does deny.
 	policy, err := NewPolicyEnginePolicy(PolicyEngineConfig{PolicySet: ps, Fallback: NewDenyAll()})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	input, err := json.Marshal(map[string]string{"url": "https://evil.example/x.github.com/y"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	res, err := policy.Check(t.Context(), types.ToolDefinition{Name: "web_fetch"}, input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Allowed {
-		t.Fatal("lints clean but authorizes an attacker host")
-	}
+	require.NoError(t, err)
+	require.False(t, res.Allowed, "lints clean but authorizes an attacker host")
 
 	// Drop the anchoring block and it must be caught again.
 	unanchored := `permit (principal, action == Action::"tool:web_fetch", resource == Tool::"web_fetch")
 		when { context.input.url like "*.github.com/*" }
 		when { context.input has url };`
-	if findings := LintPolicySetStructure(mustParse(t, unanchored)); len(findings) == 0 {
-		t.Fatal("unanchored policy accepted once split across condition blocks")
-	}
+	require.NotEmpty(t, LintPolicySetStructure(mustParse(t, unanchored)),
+		"unanchored policy accepted once split across condition blocks")
 }
 
-// TestWildcardHostPattern_UnconstrainedPathIsOutOfScope pins a scoping
-// decision that reads like a bypass and was reported as one during
-// review. `anchored || unrelated` authorizes any host, and the linter
-// says nothing.
-//
-// It stays that way because the rule judges a pattern's anchoring, not
-// whether a permit has an unconstrained path. `permit when {A || B}` is
-// the inline spelling of two permits, and neither the two-statement form
-// nor a bare unconstrained permit mentions a URL at all — so flagging
-// only the `||` would give three spellings of one policy three different
-// verdicts, and silencing the linter would be a refactor away. That is a
-// whole-policy-set rule, not this one.
-//
-// The last case is the boundary: an unanchored pattern inside a
-// disjunction is still this rule's business and must be flagged.
+// Pins the scoping decision that a permit with an unconstrained path is not
+// flagged, for example `anchored || unrelated`. The rule judges a pattern's
+// anchoring, not whether a permit has an unconstrained path, so every spelling
+// of one policy gets the same verdict. The last case is the boundary: an
+// unanchored disjunct is still flagged.
 func TestWildcardHostPattern_UnconstrainedPathIsOutOfScope(t *testing.T) {
 	const anchored = `context.input.url like "https://github.com/*"`
 	scope := `permit (principal, action == Action::"tool:web_fetch", resource == Tool::"web_fetch")`
@@ -1741,35 +1521,25 @@ func TestWildcardHostPattern_UnconstrainedPathIsOutOfScope(t *testing.T) {
 	for _, tc := range equivalentSpellings {
 		t.Run(tc.name, func(t *testing.T) {
 			ps := mustParse(t, tc.src)
-			if findings := LintPolicySetStructure(ps); len(findings) > 0 {
-				t.Fatalf("expected no findings, got %v", findings)
-			}
+			findings := LintPolicySetStructure(ps)
+			require.Empty(t, findings, "expected no findings")
 			policy, err := NewPolicyEnginePolicy(PolicyEngineConfig{PolicySet: ps, Fallback: NewDenyAll(), Mode: "planning"})
-			if err != nil {
-				t.Fatalf("build policy: %v", err)
-			}
+			require.NoError(t, err)
 			input, err := json.Marshal(map[string]string{"url": "https://evil.example/steal", "method": "GET"})
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			res, err := policy.Check(t.Context(), types.ToolDefinition{Name: "web_fetch"}, input)
-			if err != nil {
-				t.Fatalf("check: %v", err)
-			}
-			// Asserting the permissive outcome keeps the test honest: it
-			// documents what the clean verdict costs rather than implying
-			// the policy is safe.
-			if !res.Allowed {
-				t.Fatalf("expected the unconstrained path to authorize; a narrowing here means the scoping argument no longer holds and the comment above is stale")
-			}
+			require.NoError(t, err)
+			// Asserting the permissive outcome documents what the clean verdict
+			// costs rather than implying the policy is safe. If this fails, the
+			// scoping argument above no longer holds.
+			require.True(t, res.Allowed, "the unconstrained path must authorize")
 		})
 	}
 
 	t.Run("unanchored disjunct is still flagged", func(t *testing.T) {
 		src := fmt.Sprintf(`%s when { %s || context.input.url like "*.github.com/*" };`, scope, anchored)
 		findings := LintPolicySetStructure(mustParse(t, src))
-		if len(findings) != 1 || findings[0].Rule != LintRuleWildcardHostPattern {
-			t.Fatalf("expected one wildcard-host-pattern finding, got %v", findings)
-		}
+		require.Len(t, findings, 1, "findings: %v", findings)
+		require.Equal(t, LintRuleWildcardHostPattern, findings[0].Rule)
 	})
 }

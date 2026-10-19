@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"io"
-	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/workspaceexport"
@@ -64,7 +65,7 @@ func finaliseTestTrace(id string) *types.RunTrace {
 	return &types.RunTrace{ID: id, Outcome: "success", StartedAt: now, CompletedAt: now}
 }
 
-func TestFollowUpExportURI(t *testing.T) {
+func TestFollowUpExportURI_DerivesPerRunDestination(t *testing.T) {
 	cases := []struct {
 		name, base, runID, want string
 	}{
@@ -77,9 +78,8 @@ func TestFollowUpExportURI(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := followUpExportURI(tc.base, tc.runID); got != tc.want {
-				t.Errorf("followUpExportURI(%q, %q) = %q, want %q", tc.base, tc.runID, got, tc.want)
-			}
+			got := followUpExportURI(tc.base, tc.runID)
+			require.Equal(t, tc.want, got, "followUpExportURI(%q, %q)", tc.base, tc.runID)
 		})
 	}
 }
@@ -100,17 +100,12 @@ func TestPostRunPolicy_FinaliseOnlyEmits(t *testing.T) {
 	cfg := &types.RunConfig{}
 	cfg.Executor.WorkspaceExportTo = "gs://bucket/runs/primary/workspace.tar.gz"
 
-	if err := policy.finalise(cfg, finaliseTestTrace("primary"), nil); err != nil {
-		t.Fatalf("primary finalise: %v", err)
-	}
+	err := policy.finalise(cfg, finaliseTestTrace("primary"), nil)
+	require.NoError(t, err, "finalise primary run")
 	policy.finaliseFollowUp(cfg, finaliseTestTrace("run-2"), nil)
 
-	if want := []string{"primary", "run-2"}; !equalStrings(emitted, want) {
-		t.Errorf("emitted run IDs = %v, want %v", emitted, want)
-	}
-	if got := rec.destinations(); len(got) != 0 {
-		t.Errorf("finalise exported to %v, want no export outside the loop", got)
-	}
+	require.Equal(t, []string{"primary", "run-2"}, emitted, "emitted run IDs")
+	require.Empty(t, rec.destinations(), "finalise must not export outside the loop")
 }
 
 // TestPostRunPolicy_FinaliseFailedRunEmitsAndPropagates pins that a run
@@ -124,12 +119,8 @@ func TestPostRunPolicy_FinaliseFailedRunEmitsAndPropagates(t *testing.T) {
 
 	runErr := errors.New("finish trace: boom")
 	err := policy.finalise(&types.RunConfig{}, finaliseTestTrace("primary"), runErr)
-	if !errors.Is(err, runErr) {
-		t.Fatalf("finalise error = %v, want it to wrap the run error", err)
-	}
-	if emitted != 1 {
-		t.Errorf("emit called %d times, want 1", emitted)
-	}
+	require.ErrorIs(t, err, runErr, "finalise must wrap the run error")
+	require.Equal(t, 1, emitted, "emit calls")
 }
 
 // TestPostRunPolicy_FinaliseNilTraceEmitsNothing pins that a run which
@@ -141,24 +132,25 @@ func TestPostRunPolicy_FinaliseNilTraceEmitsNothing(t *testing.T) {
 		emit: func(_ context.Context, _ *types.RunConfig, _ *types.RunTrace) { emitted++ },
 	}
 	runErr := errors.New("finish trace: boom")
-	if err := policy.finalise(&types.RunConfig{}, nil, runErr); !errors.Is(err, runErr) {
-		t.Fatalf("finalise error = %v, want it to wrap the run error", err)
-	}
-	if emitted != 0 {
-		t.Errorf("emit called %d times for a nil trace, want 0", emitted)
-	}
+
+	err := policy.finalise(&types.RunConfig{}, nil, runErr)
+	require.ErrorIs(t, err, runErr, "finalise must wrap the run error")
+	require.Zero(t, emitted, "emit calls for a nil trace")
 }
 
-// TestCLISessionBudget pins the CLI's self-imposed session bound: none
-// without a follow-up window, otherwise room for ten follow-ups each
-// waited for through a full grace window.
-func TestCLISessionBudget(t *testing.T) {
-	if got := cliSessionBudget(30*time.Second, 0); got != 0 {
-		t.Errorf("budget without a window = %v, want 0 (unbounded; the primary run has its own timeout)", got)
-	}
-	if got, want := cliSessionBudget(30*time.Second, 60), 10*(30*time.Second+60*time.Second); got != want {
-		t.Errorf("budget with a 60 s window = %v, want %v", got, want)
-	}
+// TestCLISessionBudget_ScalesWithFollowUpWindow pins the CLI's self-imposed
+// session bound: none without a follow-up window, otherwise room for ten
+// follow-ups each waited for through a full grace window.
+func TestCLISessionBudget_ScalesWithFollowUpWindow(t *testing.T) {
+	t.Run("unbounded without a window", func(t *testing.T) {
+		got := cliSessionBudget(30*time.Second, 0)
+		require.Zero(t, got, "the primary run has its own timeout")
+	})
+	t.Run("ten follow-ups each with a full window", func(t *testing.T) {
+		want := 10 * (30*time.Second + 60*time.Second)
+		got := cliSessionBudget(30*time.Second, 60)
+		require.Equal(t, want, got, "budget with a 60 s window")
+	})
 }
 
 // TestPostRunPolicy_FollowUpErrRecordsOnlyRequiredExportFailures pins the
@@ -177,34 +169,18 @@ func TestPostRunPolicy_FollowUpErrRecordsOnlyRequiredExportFailures(t *testing.T
 
 	policy := &postRunPolicy{emit: noop}
 	policy.finaliseFollowUp(cfg, finaliseTestTrace("run-2"), errors.New("finish trace: boom"))
-	if err := policy.followUpErr(); err != nil {
-		t.Fatalf("a follow-up's run error was recorded as the exit status: %v", err)
-	}
+	require.NoError(t, policy.followUpErr(), "a follow-up's run error must not become the exit status")
+
 	policy.finaliseFollowUp(cfg, withReceipt("run-3", failed), nil)
-	if err := policy.followUpErr(); err != nil {
-		t.Fatalf("an optional export failure was recorded as the exit status: %v", err)
-	}
+	require.NoError(t, policy.followUpErr(), "an optional export failure must not become the exit status")
+
 	required := failed
 	required.Required = true
 	policy.finaliseFollowUp(cfg, withReceipt("run-4", required), nil)
 	err := policy.followUpErr()
-	if err == nil || !strings.Contains(err.Error(), "upload refused") || !strings.Contains(err.Error(), required.URI) {
-		t.Fatalf("followUpErr() = %v, want the required export failure", err)
-	}
-	policy.finaliseFollowUp(cfg, withReceipt("run-5", types.ExportReceipt{URI: "gs://other", Status: types.ExportStatusFailed, Required: true, Error: "later"}), nil)
-	if got := policy.followUpErr(); got != err {
-		t.Errorf("followUpErr() = %v, want the first failure kept", got)
-	}
-}
+	require.ErrorContains(t, err, "upload refused")
+	require.ErrorContains(t, err, required.URI)
 
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
+	policy.finaliseFollowUp(cfg, withReceipt("run-5", types.ExportReceipt{URI: "gs://other", Status: types.ExportStatusFailed, Required: true, Error: "later"}), nil)
+	require.Same(t, err, policy.followUpErr(), "the first required export failure must be kept")
 }

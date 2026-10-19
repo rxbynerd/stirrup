@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -146,22 +148,14 @@ func TestSpawnSubAgent_SimpleTextResponse(t *testing.T) {
 	result, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
 		Prompt: "Do a subtask",
 	})
-	if err != nil {
-		t.Fatalf("SpawnSubAgent() error: %v", err)
-	}
+	require.NoError(t, err)
 
-	if result.Outcome != "success" {
-		t.Errorf("expected outcome 'success', got %q", result.Outcome)
-	}
-	if result.Output != "Sub-agent output here." {
-		t.Errorf("expected output 'Sub-agent output here.', got %q", result.Output)
-	}
-	if result.Turns != 1 {
-		t.Errorf("expected 1 turn, got %d", result.Turns)
-	}
+	assert.Equal(t, "success", result.Outcome)
+	assert.Equal(t, "Sub-agent output here.", result.Output)
+	assert.Equal(t, 1, result.Turns)
 }
 
-// TestSpawnSubAgent_CacheKeyDiffersFromParent pins that a sub-agent's
+// TestSpawnSubAgent_CacheKeyDiffersFromParent checks that a sub-agent's
 // requests carry their own cache key, so the child's conversation is not
 // routed as a continuation of the parent's.
 func TestSpawnSubAgent_CacheKeyDiffersFromParent(t *testing.T) {
@@ -174,19 +168,15 @@ func TestSpawnSubAgent_CacheKeyDiffersFromParent(t *testing.T) {
 	parentLoop := buildSubAgentTestLoop(prov)
 	parentConfig := buildTestConfig()
 
-	if _, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
+	_, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
 		Prompt: "Do a subtask",
-	}); err != nil {
-		t.Fatalf("SpawnSubAgent() error: %v", err)
-	}
+	})
+	require.NoError(t, err)
 
 	child := prov.lastParams.CacheKey
-	if child == "" {
-		t.Fatal("sub-agent request carried no cache key")
-	}
-	if parent := providerCacheKey(parentConfig.RunID); child == parent {
-		t.Errorf("sub-agent cache key = parent's %q, want a distinct key", parent)
-	}
+	require.NotEmpty(t, child, "sub-agent request should carry a cache key")
+	require.NotEqual(t, providerCacheKey(parentConfig.RunID), child,
+		"sub-agent cache key should differ from the parent's")
 }
 
 func TestSpawnSubAgent_EmptyPromptReturnsError(t *testing.T) {
@@ -197,18 +187,13 @@ func TestSpawnSubAgent_EmptyPromptReturnsError(t *testing.T) {
 	_, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
 		Prompt: "",
 	})
-	if err == nil {
-		t.Fatal("SpawnSubAgent() expected error for empty prompt, got nil")
-	}
+	require.Error(t, err)
 }
 
-// TestCapSubAgentMaxTurns exercises the production capSubAgentMaxTurns
-// helper so all three capping branches in SpawnSubAgent (#55, B5) are
-// covered directly. The previous version of this test replicated the
-// arithmetic in the test body and never called the production code,
-// so a deletion of one of the branches would leave the test passing
-// while production was broken.
-func TestCapSubAgentMaxTurns(t *testing.T) {
+// TestCapSubAgentMaxTurns_BoundsRequestedTurns covers each branch of
+// capSubAgentMaxTurns: the default for zero, the sub-agent maximum, the
+// parent maximum, and an in-bounds request.
+func TestCapSubAgentMaxTurns_BoundsRequestedTurns(t *testing.T) {
 	tests := []struct {
 		name           string
 		requested      int
@@ -224,22 +209,15 @@ func TestCapSubAgentMaxTurns(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := capSubAgentMaxTurns(tt.requested, tt.parentMax)
-			if got != tt.expectedCapped {
-				t.Errorf("capSubAgentMaxTurns(%d, %d) = %d, want %d",
-					tt.requested, tt.parentMax, got, tt.expectedCapped)
-			}
+			require.Equal(t, tt.expectedCapped, got)
 			t.Logf("capSubAgentMaxTurns(%d, %d) = %d", tt.requested, tt.parentMax, got)
 		})
 	}
 }
 
-// TestSpawnSubAgent_MaxTurnsRespectedAtRuntime is the end-to-end
-// counterpart to TestCapSubAgentMaxTurns: it drives SpawnSubAgent
-// itself with a provider that emits text+end_turn so the run
-// completes in a single turn, and asserts the returned
-// SubAgentResult.Turns is bounded by the cap. Combined with the
-// helper test, this covers both the arithmetic and the wiring of
-// the capped value into the child loop's RunConfig (#55, B5).
+// TestSpawnSubAgent_MaxTurnsRespectedAtRuntime runs SpawnSubAgent with a
+// provider that finishes in one turn and checks that a request above the
+// sub-agent maximum still completes, with Turns bounded by the cap.
 func TestSpawnSubAgent_MaxTurnsRespectedAtRuntime(t *testing.T) {
 	prov := &mockProvider{
 		events: []types.StreamEvent{
@@ -260,22 +238,14 @@ func TestSpawnSubAgent_MaxTurnsRespectedAtRuntime(t *testing.T) {
 		Prompt:   "do a subtask",
 		MaxTurns: 999,
 	})
-	if err != nil {
-		t.Fatalf("SpawnSubAgent: %v", err)
-	}
-	if result.Outcome != "success" {
-		t.Errorf("expected outcome 'success' (cap accepted, run completed), got %q", result.Outcome)
-	}
-	if result.Turns < 1 {
-		t.Errorf("expected at least 1 turn, got %d", result.Turns)
-	}
-	// Sanity: the cap helper would have returned maxSubAgentMaxTurns
-	// for this requested value paired with parentConfig.MaxTurns=50.
-	wantCap := capSubAgentMaxTurns(999, parentConfig.MaxTurns)
-	if wantCap != maxSubAgentMaxTurns {
-		t.Errorf("test setup invariant violated: capSubAgentMaxTurns(999, %d) = %d, want %d",
-			parentConfig.MaxTurns, wantCap, maxSubAgentMaxTurns)
-	}
+	require.NoError(t, err)
+
+	assert.Equal(t, "success", result.Outcome, "run should complete with the cap applied")
+	assert.GreaterOrEqual(t, result.Turns, 1)
+	// The helper must return maxSubAgentMaxTurns for this input, or the
+	// run above did not exercise the cap.
+	assert.Equal(t, maxSubAgentMaxTurns, capSubAgentMaxTurns(999, parentConfig.MaxTurns),
+		"capSubAgentMaxTurns(999, %d)", parentConfig.MaxTurns)
 }
 
 func TestFilterToolRegistry_ExcludesSpawnAgent(t *testing.T) {
@@ -308,33 +278,22 @@ func TestFilterToolRegistry_ExcludesSpawnAgent(t *testing.T) {
 	filtered := filterToolRegistry(registry, "spawn_agent")
 	defs := filtered.List()
 
-	if len(defs) != 2 {
-		t.Fatalf("expected 2 tools after filtering, got %d", len(defs))
-	}
+	require.Len(t, defs, 2)
 
+	names := make([]string, 0, len(defs))
 	for _, def := range defs {
-		if def.Name == "spawn_agent" {
-			t.Error("filtered registry should not contain spawn_agent")
-		}
+		names = append(names, def.Name)
 	}
+	assert.NotContains(t, names, "spawn_agent")
 
-	if filtered.Resolve("spawn_agent") != nil {
-		t.Error("Resolve(\"spawn_agent\") should return nil in filtered registry")
-	}
-	if filtered.Resolve("read_file") == nil {
-		t.Error("Resolve(\"read_file\") should return non-nil in filtered registry")
-	}
-	if filtered.Resolve("run_command") == nil {
-		t.Error("Resolve(\"run_command\") should return non-nil in filtered registry")
-	}
+	assert.Nil(t, filtered.Resolve("spawn_agent"), "spawn_agent should not resolve in the filtered registry")
+	assert.NotNil(t, filtered.Resolve("read_file"))
+	assert.NotNil(t, filtered.Resolve("run_command"))
 }
 
-// The recursion guard must exclude spawn_agent by its INTERNAL id even
-// when the source registry is a Presenter that aliases spawn_agent to a
-// different model-facing name. Filtering on the presented (alias) name
-// would let the child loop inherit spawn_agent and defeat the guard
-// (issue #234 B1). Here a test profile aliases spawn_agent → "agent";
-// the filtered child must still exclude it and keep the other tools.
+// The recursion guard must exclude spawn_agent by its internal id even
+// when a Presenter aliases it to a different model-facing name. Filtering
+// on the alias would let the child loop inherit spawn_agent.
 func TestFilterToolRegistry_ExcludesAliasedSpawnAgent(t *testing.T) {
 	registry := tool.NewRegistry()
 	registry.Register(&tool.Tool{
@@ -356,36 +315,20 @@ func TestFilterToolRegistry_ExcludesAliasedSpawnAgent(t *testing.T) {
 		"run_command": "bash",
 	}, nil)
 	presenter, err := tool.NewPresenter(registry, profile)
-	if err != nil {
-		t.Fatalf("NewPresenter: %v", err)
-	}
+	require.NoError(t, err)
 
-	// Sanity: the presenter does present spawn_agent under its alias, so
-	// this test would catch the alias-keyed bug.
-	var sawAlias bool
+	presented := make([]string, 0)
 	for _, d := range presenter.List() {
-		if d.Name == "agent" {
-			sawAlias = true
-		}
+		presented = append(presented, d.Name)
 	}
-	if !sawAlias {
-		t.Fatal("precondition failed: presenter did not alias spawn_agent to 'agent'")
-	}
+	require.Contains(t, presented, "agent", "presenter should alias spawn_agent to agent")
 
 	filtered := filterToolRegistry(presenter, "spawn_agent")
 
-	if filtered.Resolve("spawn_agent") != nil {
-		t.Error("aliased spawn_agent leaked past the recursion guard (by internal name)")
-	}
-	if filtered.Resolve("agent") != nil {
-		t.Error("aliased spawn_agent leaked past the recursion guard (by alias name)")
-	}
-	if filtered.Resolve("run_command") == nil {
-		t.Error("run_command should survive filtering")
-	}
-	if len(filtered.List()) != 1 {
-		t.Errorf("expected exactly run_command to remain, got %d tools", len(filtered.List()))
-	}
+	assert.Nil(t, filtered.Resolve("spawn_agent"), "aliased spawn_agent leaked past the recursion guard by internal name")
+	assert.Nil(t, filtered.Resolve("agent"), "aliased spawn_agent leaked past the recursion guard by alias name")
+	assert.NotNil(t, filtered.Resolve("run_command"), "run_command should survive filtering")
+	assert.Len(t, filtered.List(), 1, "only run_command should remain")
 }
 
 func TestSpawnSubAgent_InheritsParentMode(t *testing.T) {
@@ -400,17 +343,13 @@ func TestSpawnSubAgent_InheritsParentMode(t *testing.T) {
 	parentConfig := buildTestConfig()
 	parentConfig.Mode = "execution"
 
-	// When mode is empty, should inherit parent's mode.
+	// An empty Mode inherits the parent's mode.
 	result, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
 		Prompt: "Do something",
 		Mode:   "",
 	})
-	if err != nil {
-		t.Fatalf("SpawnSubAgent() error: %v", err)
-	}
-	if result.Outcome != "success" {
-		t.Errorf("expected outcome 'success', got %q", result.Outcome)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "success", result.Outcome)
 }
 
 // TestSpawnSubAgent_InheritsGuardRail asserts that a sub-agent
@@ -436,30 +375,18 @@ func TestSpawnSubAgent_InheritsGuardRail(t *testing.T) {
 	result, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
 		Prompt: "Do a subtask",
 	})
-	if err != nil {
-		t.Fatalf("SpawnSubAgent() error: %v", err)
-	}
-	// A deny on PreTurn turn 0 aborts with guardrail_blocked. If the
-	// sub-agent had a nil GuardRail it would silently run to success.
-	if result.Outcome != "guardrail_blocked" {
-		t.Errorf("expected outcome 'guardrail_blocked' (parent guard inherited), got %q", result.Outcome)
-	}
+	require.NoError(t, err)
+	// A deny on PreTurn turn 0 aborts with guardrail_blocked. A sub-agent
+	// without the parent's guard would run to success.
+	require.Equal(t, "guardrail_blocked", result.Outcome, "parent guard should be inherited")
 }
 
-// TestSpawnSubAgent_HooksNeverInvokedOnChild pins the inverse of
-// TestSpawnSubAgent_InheritsGuardRail: lifecycle hooks (issue #461) are
-// parent-run-only and must NOT propagate to a spawned sub-agent,
-// regardless of what the parent's AgenticLoop.Hooks or RunConfig.Hooks
-// carry. subagent.go enforces this two ways — childConfig.Hooks is
-// nilled out and the child AgenticLoop is unconditionally given
-// hook.NewNoop() — but SpawnSubAgent exposes neither the child loop nor
-// its resolved config, so there was previously no seam to catch a
-// regression (e.g. an accidental `Hooks: parent.Hooks` on the child
-// literal) without reading source. fakeHookRunner is observably
-// distinguishable from hook.Noop via its call counters; installing it
-// on the *parent* loop and asserting it is never invoked during the
-// child's own Run() proves the child's hook phase is genuinely inert,
-// not just nil-checked away.
+// TestSpawnSubAgent_HooksNeverInvokedOnChild checks that lifecycle hooks
+// run only for the parent run. Hooks configured on the parent loop or the
+// parent RunConfig must not fire during a sub-agent spawn. subagent.go
+// clears the child's hook config and gives the child loop a no-op runner.
+// The fake runner counts calls, so a non-zero count means the child's
+// hook phase ran.
 func TestSpawnSubAgent_HooksNeverInvokedOnChild(t *testing.T) {
 	prov := &mockProvider{
 		events: []types.StreamEvent{
@@ -480,18 +407,10 @@ func TestSpawnSubAgent_HooksNeverInvokedOnChild(t *testing.T) {
 	result, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
 		Prompt: "Do a subtask",
 	})
-	if err != nil {
-		t.Fatalf("SpawnSubAgent() error: %v", err)
-	}
-	if result.Outcome != "success" {
-		t.Fatalf("prerequisite: expected outcome 'success', got %q", result.Outcome)
-	}
-	if parentHooks.preCalls != 0 {
-		t.Errorf("parent's hook.Runner.RunPre called %d times during sub-agent spawn, want 0", parentHooks.preCalls)
-	}
-	if len(parentHooks.postCalls) != 0 {
-		t.Errorf("parent's hook.Runner.RunPost called %d times during sub-agent spawn, want 0", len(parentHooks.postCalls))
-	}
+	require.NoError(t, err)
+	require.Equal(t, "success", result.Outcome)
+	assert.Zero(t, parentHooks.preCalls, "parent pre-run hook should not run during sub-agent spawn")
+	assert.Empty(t, parentHooks.postCalls, "parent post-run hook should not run during sub-agent spawn")
 }
 
 func TestCaptureTransport_RecordsTextDeltas(t *testing.T) {
@@ -502,46 +421,32 @@ func TestCaptureTransport_RecordsTextDeltas(t *testing.T) {
 	_ = ct.Emit(types.HarnessEvent{Type: "tool_result", ToolUseID: "tc_1", Content: "result"})
 	_ = ct.Emit(types.HarnessEvent{Type: "done", StopReason: "success"})
 
-	text := ct.lastText()
-	if text != "Hello world!" {
-		t.Errorf("expected 'Hello world!', got %q", text)
-	}
+	require.Equal(t, "Hello world!", ct.lastText())
 }
 
 func TestCaptureTransport_EmptyWhenNoTextDeltas(t *testing.T) {
 	ct := newCaptureTransport()
 	_ = ct.Emit(types.HarnessEvent{Type: "done"})
 
-	if text := ct.lastText(); text != "" {
-		t.Errorf("expected empty string, got %q", text)
-	}
+	require.Empty(t, ct.lastText())
 }
 
-// TestCaptureTransport_ToolCallEventIsNoOp is the regression test for issue
-// #593 on the sub-agent path: captureTransport has no case for "tool_call",
-// so the new emit from streamEventsToResult must fall through as a no-op
-// rather than panicking or perturbing accumulated text.
+// TestCaptureTransport_ToolCallEventIsNoOp checks that a tool_call event
+// passes through captureTransport without an error and without changing
+// the accumulated text.
 func TestCaptureTransport_ToolCallEventIsNoOp(t *testing.T) {
 	ct := newCaptureTransport()
 
 	_ = ct.Emit(types.HarnessEvent{Type: "text_delta", Text: "before "})
-	if err := ct.Emit(types.HarnessEvent{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: json.RawMessage(`{}`)}); err != nil {
-		t.Errorf("Emit(tool_call) returned error: %v", err)
-	}
+	require.NoError(t, ct.Emit(types.HarnessEvent{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: json.RawMessage(`{}`)}))
 	_ = ct.Emit(types.HarnessEvent{Type: "text_delta", Text: "after"})
 
-	if text := ct.lastText(); text != "before after" {
-		t.Errorf("expected 'before after', got %q", text)
-	}
+	assert.Equal(t, "before after", ct.lastText())
 }
 
-// TestSpawnSubAgent_TraceEventsForwardedToParent is the regression test
-// for issue #55 acceptance criterion #1: sub-agent JSONL trace events
-// must appear on the parent's trace emitter rather than being dropped
-// into a discarded buffer. We attach a recording emitter as the
-// parent's Trace, run a sub-agent through one turn, and assert the
-// child's RecordTurn and RecordToolCall events arrived on the parent
-// emitter, tagged with parentRunID and the child's runID.
+// TestSpawnSubAgent_TraceEventsForwardedToParent checks that the child's
+// turn traces reach the parent's trace emitter. Each forwarded turn carries
+// the parent's run ID as ParentRunID and the child's own run ID as RunID.
 func TestSpawnSubAgent_TraceEventsForwardedToParent(t *testing.T) {
 	prov := &mockProvider{
 		events: []types.StreamEvent{
@@ -557,39 +462,26 @@ func TestSpawnSubAgent_TraceEventsForwardedToParent(t *testing.T) {
 	parentConfig := buildTestConfig()
 	parentConfig.RunID = "parent-run-forward-1"
 
-	if _, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
+	_, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
 		Prompt: "do a subtask",
-	}); err != nil {
-		t.Fatalf("SpawnSubAgent: %v", err)
-	}
+	})
+	require.NoError(t, err)
 
 	turns, _ := parentEmitter.snapshot()
-	if len(turns) == 0 {
-		t.Fatal("expected at least one turn forwarded to parent emitter, got none (was the bytes.Buffer discarder reintroduced?)")
-	}
-	for _, turn := range turns {
-		if turn.ParentRunID != parentConfig.RunID {
-			t.Errorf("forwarded turn ParentRunID: got %q, want %q", turn.ParentRunID, parentConfig.RunID)
-		}
-		if turn.RunID == "" {
-			t.Errorf("forwarded turn RunID must be populated; got empty")
-		}
-		if turn.RunID == parentConfig.RunID {
-			t.Errorf("forwarded turn RunID must be the child's runID, not the parent's; got %q", turn.RunID)
-		}
-		if turn.Model != "claude-sonnet-4-6" {
-			t.Errorf("forwarded turn Model: got %q, want the router's selected model", turn.Model)
-		}
+	require.NotEmpty(t, turns, "no turn was forwarded to the parent emitter")
+	for i, turn := range turns {
+		assert.Equal(t, parentConfig.RunID, turn.ParentRunID, "turn %d ParentRunID", i)
+		assert.NotEmpty(t, turn.RunID, "turn %d RunID", i)
+		assert.NotEqual(t, parentConfig.RunID, turn.RunID, "turn %d RunID should be the child's", i)
+		assert.Equal(t, "claude-sonnet-4-6", turn.Model, "turn %d Model should be the router's selected model", i)
 	}
 }
 
-// TestSpawnSubAgent_TraceToolCallsForwardedToParent is the regression
-// test for #55 B6: the end-to-end path SpawnSubAgent → child loop
-// tool dispatch → NestedJSONLEmitter.RecordToolCall → parent emitter
-// must surface tool calls on the parent's trace stream, tagged with
-// the child's RunID and the parent's ParentRunID. The original
-// forwarding test only emitted text deltas, so the tool-call branch
-// of NestedJSONLEmitter was only covered by isolated unit tests.
+// TestSpawnSubAgent_TraceToolCallsForwardedToParent checks that tool calls
+// made by a sub-agent reach the parent's trace emitter. The path is
+// SpawnSubAgent, then child tool dispatch, then
+// NestedJSONLEmitter.RecordToolCall, then the parent emitter. Forwarded
+// calls carry the child's RunID and the parent's run ID as ParentRunID.
 func TestSpawnSubAgent_TraceToolCallsForwardedToParent(t *testing.T) {
 	prov := &multiCallProvider{
 		calls: [][]types.StreamEvent{
@@ -615,49 +507,25 @@ func TestSpawnSubAgent_TraceToolCallsForwardedToParent(t *testing.T) {
 	parentConfig := buildTestConfig()
 	parentConfig.RunID = "parent-run-toolcalls-1"
 
-	if _, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
+	_, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
 		Prompt: "do a subtask",
-	}); err != nil {
-		t.Fatalf("SpawnSubAgent: %v", err)
-	}
+	})
+	require.NoError(t, err)
 
 	_, calls := parentEmitter.snapshot()
-	if len(calls) == 0 {
-		t.Fatal("expected at least one forwarded tool call on parent emitter, got none (NestedJSONLEmitter.RecordToolCall path is broken)")
-	}
-	for _, c := range calls {
-		if c.ParentRunID != parentConfig.RunID {
-			t.Errorf("forwarded ToolCallTrace.ParentRunID: got %q, want %q", c.ParentRunID, parentConfig.RunID)
-		}
-		if c.RunID == "" {
-			t.Errorf("forwarded ToolCallTrace.RunID must be populated; got empty")
-		}
-		if c.RunID == parentConfig.RunID {
-			t.Errorf("forwarded ToolCallTrace.RunID must be the child's runID, not the parent's; got %q", c.RunID)
-		}
-		if c.Name != "test_tool" {
-			t.Errorf("forwarded ToolCallTrace.Name: got %q, want %q", c.Name, "test_tool")
-		}
-		if c.ID != "tc_1" {
-			t.Errorf("forwarded ToolCallTrace.ID: got %q, want the provider's tool_use ID %q", c.ID, "tc_1")
-		}
+	require.NotEmpty(t, calls, "no tool call was forwarded to the parent emitter")
+	for i, c := range calls {
+		assert.Equal(t, parentConfig.RunID, c.ParentRunID, "call %d ParentRunID", i)
+		assert.NotEmpty(t, c.RunID, "call %d RunID", i)
+		assert.NotEqual(t, parentConfig.RunID, c.RunID, "call %d RunID should be the child's", i)
+		assert.Equal(t, "test_tool", c.Name, "call %d Name", i)
+		assert.Equal(t, "tc_1", c.ID, "call %d ID should be the provider's tool_use ID", i)
 	}
 }
 
-// TestSpawnSubAgent_ForwardedToolErrorReasonIsScrubbed is the
-// regression test for #55 B4 (CWE-532): when a child tool fails,
-// dispatchToolCall returns the raw error text. NestedJSONLEmitter
-// then forwards that string to the parent's JSONL trace via
-// RecordToolCall, where it lands in the trace file via json.Marshal
-// — bypassing slog's ScrubHandler. The fix scrubs the string before
-// it reaches RecordToolCall.
-//
-// Setup: child tool handler returns an error containing a string
-// matching the anthropic_api_key LogScrubber pattern, child provider
-// emits a tool_call invoking that handler. After SpawnSubAgent
-// returns, assert the parent emitter saw a ToolCallTrace whose
-// ErrorReason is redacted (no fake key substring) and that at least
-// one forwarded tool call was recorded.
+// Failed tool calls forwarded to the parent trace are written with
+// json.Marshal, which bypasses the slog scrub handler, so their error text
+// must be scrubbed before it is recorded.
 func TestSpawnSubAgent_ForwardedToolErrorReasonIsScrubbed(t *testing.T) {
 	const fakeKey = "sk-ant-DEADBEEFleakcanaryABCDEF123456789"
 
@@ -681,41 +549,31 @@ func TestSpawnSubAgent_ForwardedToolErrorReasonIsScrubbed(t *testing.T) {
 	parentConfig := buildTestConfig()
 	parentConfig.RunID = "parent-run-scrub-1"
 
-	if _, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
+	_, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
 		Prompt:   "do a subtask",
 		MaxTurns: 1,
-	}); err != nil {
-		t.Fatalf("SpawnSubAgent: %v", err)
-	}
+	})
+	require.NoError(t, err)
 
 	_, calls := parentEmitter.snapshot()
-	if len(calls) == 0 {
-		t.Fatal("expected at least one forwarded tool call on parent emitter, got none")
-	}
+	require.NotEmpty(t, calls, "expected a forwarded tool call on the parent emitter")
 
-	var sawScrubbedFailure bool
+	var failed []types.ToolCallTrace
 	for _, c := range calls {
-		if c.Success {
-			continue
+		if !c.Success {
+			failed = append(failed, c)
 		}
-		if c.ErrorReason == "" {
-			t.Errorf("failed forwarded tool call has empty ErrorReason; expected scrubbed text")
-			continue
-		}
-		if strings.Contains(c.ErrorReason, fakeKey) {
-			t.Errorf("forwarded ToolCallTrace.ErrorReason leaked unscrubbed key: %q", c.ErrorReason)
-		}
-		sawScrubbedFailure = true
 	}
-	if !sawScrubbedFailure {
-		t.Fatal("expected at least one failed forwarded ToolCallTrace, got none")
+	require.NotEmpty(t, failed, "expected a failed forwarded ToolCallTrace")
+	for i, c := range failed {
+		require.NotEmpty(t, c.ErrorReason, "failed forwarded tool call %d has empty ErrorReason", i)
+		require.NotContains(t, c.ErrorReason, fakeKey, "forwarded ErrorReason leaked an unscrubbed key")
 	}
 }
 
-// leakErr's Error() embeds a fake API key to simulate a tool handler
-// surfacing an upstream error string that legitimately contains
-// secret-shaped substrings (e.g. an HTTP error wrapping the request
-// URL with an Authorization header). Used by the B4 scrub test.
+// leakErr's Error() embeds a fake API key, standing in for an upstream error
+// that legitimately contains secret-shaped text such as a request URL with
+// an Authorization header.
 type leakErr struct {
 	fakeKey string
 }
@@ -724,19 +582,15 @@ func (e *leakErr) Error() string {
 	return "upstream auth failed for request token=" + e.fakeKey
 }
 
-// TestSpawnSubAgent_MetricsTaggedAsSubAgent is the regression test for
-// issue #55 acceptance criterion #3: metrics emitted from a sub-agent
-// must carry an attribute identifying them as such (run.subagent=true
-// plus run.parent_id) so dashboards can decompose a run.
+// Metrics emitted by a sub-agent carry run.subagent=true and run.parent_id,
+// so dashboards can separate sub-agent work from top-level runs.
 func TestSpawnSubAgent_MetricsTaggedAsSubAgent(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
 
 	metrics, err := observability.NewMetricsForTesting(mp)
-	if err != nil {
-		t.Fatalf("NewMetricsForTesting: %v", err)
-	}
+	require.NoError(t, err)
 
 	prov := &mockProvider{
 		events: []types.StreamEvent{
@@ -750,25 +604,16 @@ func TestSpawnSubAgent_MetricsTaggedAsSubAgent(t *testing.T) {
 	parentConfig := buildTestConfig()
 	parentConfig.RunID = "parent-run-metrics-1"
 
-	if _, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
+	_, err = SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
 		Prompt: "do a subtask",
-	}); err != nil {
-		t.Fatalf("SpawnSubAgent: %v", err)
-	}
+	})
+	require.NoError(t, err)
 
 	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
+	require.NoError(t, reader.Collect(context.Background(), &rm))
 
-	// Inspect both stirrup.harness.runs and stirrup.harness.turns so
-	// the assertion exercises at least two of the 14 instrument call
-	// sites that go through metricAttrs() in loop.go (#55, B7). A
-	// missing metricAttrs() call on Turns specifically would not have
-	// been caught by a runs-only assertion — Runs is incremented once
-	// per run but Turns is incremented every turn, making it the most
-	// reliable "is the wiring still hooked up" probe across the
-	// per-turn instrument cluster.
+	// check reports whether the named sum has a data point tagged as a
+	// sub-agent run, and whether one carries the parent's run ID.
 	check := func(name string) (sawSubAgent, sawParentRunID bool) {
 		for _, sm := range rm.ScopeMetrics {
 			for _, m := range sm.Metrics {
@@ -793,20 +638,14 @@ func TestSpawnSubAgent_MetricsTaggedAsSubAgent(t *testing.T) {
 		return
 	}
 
-	sawRunsSubAgent, sawRunsParentRunID := check("stirrup.harness.runs")
-	if !sawRunsSubAgent {
-		t.Errorf("expected a stirrup.harness.runs data point with run.subagent=true; none found")
-	}
-	if !sawRunsParentRunID {
-		t.Errorf("expected a stirrup.harness.runs data point with run.parent_id=%q; none found", parentConfig.RunID)
-	}
-
-	sawTurnsSubAgent, sawTurnsParentRunID := check("stirrup.harness.turns")
-	if !sawTurnsSubAgent {
-		t.Errorf("expected a stirrup.harness.turns data point with run.subagent=true; none found (B7: metric attrs not propagated to per-turn instrument)")
-	}
-	if !sawTurnsParentRunID {
-		t.Errorf("expected a stirrup.harness.turns data point with run.parent_id=%q; none found", parentConfig.RunID)
+	// runs is incremented once per run and turns once per turn, so checking
+	// both covers the per-turn instruments as well as the per-run one.
+	for _, name := range []string{"stirrup.harness.runs", "stirrup.harness.turns"} {
+		t.Run(name, func(t *testing.T) {
+			sawSubAgent, sawParentRunID := check(name)
+			require.True(t, sawSubAgent, "no data point with run.subagent=true")
+			require.True(t, sawParentRunID, "no data point with run.parent_id=%q", parentConfig.RunID)
+		})
 	}
 }
 
@@ -821,9 +660,7 @@ func TestSpawnSubAgent_RecordsSubagentMetrics(t *testing.T) {
 	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
 
 	metrics, err := observability.NewMetricsForTesting(mp)
-	if err != nil {
-		t.Fatalf("NewMetricsForTesting: %v", err)
-	}
+	require.NoError(t, err)
 
 	prov := &mockProvider{
 		events: []types.StreamEvent{
@@ -838,50 +675,31 @@ func TestSpawnSubAgent_RecordsSubagentMetrics(t *testing.T) {
 	parentConfig.RunID = "parent-subagent-metrics-1"
 	parentConfig.Mode = "execution"
 
-	if _, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
+	_, err = SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
 		Prompt: "do a subtask",
-	}); err != nil {
-		t.Fatalf("SpawnSubAgent: %v", err)
-	}
+	})
+	require.NoError(t, err)
 
 	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
+	require.NoError(t, reader.Collect(context.Background(), &rm))
 
-	// stirrup.subagent.spawns: exactly 1 observation, parent.mode=execution,
-	// success=true.
 	spawns := findSubagentCounter(t, rm, "stirrup.subagent.spawns")
-	if spawns.total != 1 {
-		t.Errorf("stirrup.subagent.spawns total = %d, want 1", spawns.total)
-	}
-	if spawns.attrs["parent.mode"] != "execution" {
-		t.Errorf("parent.mode = %q, want execution", spawns.attrs["parent.mode"])
-	}
-	if spawns.attrs["success"] != "true" {
-		t.Errorf("success = %q, want true", spawns.attrs["success"])
-	}
+	assert.EqualValues(t, 1, spawns.total, "stirrup.subagent.spawns total")
+	assert.Equal(t, "execution", spawns.attrs["parent.mode"], "stirrup.subagent.spawns parent.mode")
+	assert.Equal(t, "true", spawns.attrs["success"], "stirrup.subagent.spawns success")
 
-	// stirrup.subagent.duration: at least one observation.
-	if !subagentHistogramRecorded(t, rm, "stirrup.subagent.duration") {
-		t.Error("stirrup.subagent.duration recorded no observations")
-	}
+	assert.True(t, subagentHistogramRecorded(t, rm, "stirrup.subagent.duration"),
+		"stirrup.subagent.duration recorded no observations")
 
-	// Token counters fire (their value can be zero on a mock provider
-	// that didn't report token counts, but the data point should
-	// exist).
-	if findSubagentCounter(t, rm, "stirrup.subagent.tokens.input").attrs["parent.mode"] != "execution" {
-		t.Error("stirrup.subagent.tokens.input missing parent.mode=execution attribute")
-	}
-	if findSubagentCounter(t, rm, "stirrup.subagent.tokens.output").attrs["parent.mode"] != "execution" {
-		t.Error("stirrup.subagent.tokens.output missing parent.mode=execution attribute")
-	}
+	// The mock provider reports no tokens, so the values may be zero, but
+	// the data points must exist and carry the sub-agent's labels.
 	for _, name := range []string{"stirrup.subagent.tokens.input", "stirrup.subagent.tokens.output"} {
-		attrs := findSubagentCounter(t, rm, name).attrs
-		if attrs["gen_ai.provider.name"] != "anthropic" || attrs["gen_ai.request.model"] != "claude-sonnet-4-6" {
-			t.Errorf("%s provider/model attributes = %q/%q, want anthropic/claude-sonnet-4-6",
-				name, attrs["gen_ai.provider.name"], attrs["gen_ai.request.model"])
-		}
+		t.Run(name, func(t *testing.T) {
+			attrs := findSubagentCounter(t, rm, name).attrs
+			require.Equal(t, "execution", attrs["parent.mode"])
+			require.Equal(t, "anthropic", attrs["gen_ai.provider.name"])
+			require.Equal(t, "claude-sonnet-4-6", attrs["gen_ai.request.model"])
+		})
 	}
 }
 
@@ -894,9 +712,7 @@ func TestSpawnSubAgent_TokenCountersLabelledWithRoutedSelection(t *testing.T) {
 	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
 
 	metrics, err := observability.NewMetricsForTesting(mp)
-	if err != nil {
-		t.Fatalf("NewMetricsForTesting: %v", err)
-	}
+	require.NoError(t, err)
 
 	prov := &mockProvider{
 		events: []types.StreamEvent{
@@ -916,33 +732,29 @@ func TestSpawnSubAgent_TokenCountersLabelledWithRoutedSelection(t *testing.T) {
 	parentConfig.Mode = "execution"
 	parentConfig.ModelRouter = types.ModelRouterConfig{}
 
-	if _, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
+	_, err = SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
 		Prompt: "research a thing",
 		Mode:   "research",
-	}); err != nil {
-		t.Fatalf("SpawnSubAgent: %v", err)
-	}
+	})
+	require.NoError(t, err)
 
 	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+
 	attrs := findSubagentCounter(t, rm, "stirrup.subagent.tokens.input").attrs
-	if attrs["gen_ai.provider.name"] != "anthropic" || attrs["gen_ai.request.model"] != "claude-haiku-5-5" {
-		t.Errorf("provider/model = %q/%q, want anthropic/claude-haiku-5-5",
-			attrs["gen_ai.provider.name"], attrs["gen_ai.request.model"])
-	}
+	assert.Equal(t, "anthropic", attrs["gen_ai.provider.name"])
+	assert.Equal(t, "claude-haiku-5-5", attrs["gen_ai.request.model"])
 }
 
+// Cache read and write tokens of the child run are recorded alongside its
+// input and output tokens.
 func TestSpawnSubAgent_RecordsSubagentCacheMetrics(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
 
 	metrics, err := observability.NewMetricsForTesting(mp)
-	if err != nil {
-		t.Fatalf("NewMetricsForTesting: %v", err)
-	}
+	require.NoError(t, err)
 
 	prov := &mockProvider{
 		events: []types.StreamEvent{
@@ -957,35 +769,29 @@ func TestSpawnSubAgent_RecordsSubagentCacheMetrics(t *testing.T) {
 	parentConfig.RunID = "parent-subagent-cache-metrics-1"
 	parentConfig.Mode = "execution"
 
-	if _, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
+	_, err = SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
 		Prompt: "do a subtask",
-	}); err != nil {
-		t.Fatalf("SpawnSubAgent: %v", err)
-	}
+	})
+	require.NoError(t, err)
 
 	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
+	require.NoError(t, reader.Collect(context.Background(), &rm))
 	for name, want := range map[string]int64{
 		"stirrup.subagent.tokens.input":       4000,
 		"stirrup.subagent.tokens.output":      20,
 		"stirrup.subagent.tokens.cache_read":  3000,
 		"stirrup.subagent.tokens.cache_write": 700,
 	} {
-		got := findSubagentCounter(t, rm, name)
-		if got.total != want {
-			t.Errorf("%s total = %d, want %d", name, got.total, want)
-		}
-		if got.attrs["parent.mode"] != "execution" {
-			t.Errorf("%s parent.mode = %q, want execution", name, got.attrs["parent.mode"])
-		}
+		t.Run(name, func(t *testing.T) {
+			got := findSubagentCounter(t, rm, name)
+			require.Equal(t, want, got.total)
+			require.Equal(t, "execution", got.attrs["parent.mode"])
+		})
 	}
 }
 
-// subagentCounterDP is a flattened view of an int64 counter; tests in
-// this file already use a similar helper for harness metrics, but the
-// sub-agent assertions need attribute access too.
+// subagentCounterDP is the first data point of an int64 counter, with its
+// attributes flattened to strings.
 type subagentCounterDP struct {
 	total int64
 	attrs map[string]string
@@ -999,9 +805,7 @@ func findSubagentCounter(t *testing.T, rm metricdata.ResourceMetrics, name strin
 				continue
 			}
 			sum, ok := m.Data.(metricdata.Sum[int64])
-			if !ok {
-				t.Fatalf("metric %q is not a Sum[int64]", name)
-			}
+			require.True(t, ok, "metric %q is not a Sum[int64]", name)
 			if len(sum.DataPoints) == 0 {
 				return subagentCounterDP{}
 			}
@@ -1013,7 +817,7 @@ func findSubagentCounter(t *testing.T, rm metricdata.ResourceMetrics, name strin
 			return out
 		}
 	}
-	t.Fatalf("metric %q not found", name)
+	require.Failf(t, "metric not found", "metric %q not found", name)
 	return subagentCounterDP{}
 }
 
@@ -1038,42 +842,18 @@ func subagentHistogramRecorded(t *testing.T, rm metricdata.ResourceMetrics, name
 	return false
 }
 
-// TestSpawnSubAgent_RecordsSubagentMetrics_Failure asserts that the
-// failure path through recordSpawnMetrics still records the spawn
-// counter with success=false and propagates the parent loop's
-// MetricAttrs (run.subagent, run.parent_id) onto the observation. The
-// MetricAttrs propagation is the B3 regression guard: before B3,
-// recordSpawnMetrics passed metric.WithAttributes directly, dropping
-// any base attributes from multi-level spawn trees.
-//
-// The failure is driven by a provider that streams a hard error
-// event. Run treats this as outcome="error" but, in the harness's
-// production trace path, still returns (runTrace, nil). The
-// recordSpawnMetrics signature uses err==nil as the success label —
-// so to drive success=false we wrap the parent loop's .Run by setting
-// up a child that fails internally AND we substitute SpawnSubAgent's
-// expectations: the simplest reliable path is using a panicking tool
-// chain... actually, the cleanest approach is to assert the
-// MetricAttrs propagation by inspecting any subagent observation,
-// regardless of which success label fires. The base attributes must
-// always ride through.
+// The parent loop's base MetricAttrs must reach the spawn observation even
+// when the child run fails, so spawn metrics from nested sub-agents keep
+// their run.subagent and run.parent_id attributes.
 func TestSpawnSubAgent_RecordsSubagentMetrics_Failure(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
 
 	metrics, err := observability.NewMetricsForTesting(mp)
-	if err != nil {
-		t.Fatalf("NewMetricsForTesting: %v", err)
-	}
+	require.NoError(t, err)
 
-	// Stream a provider error so the inner loop sets outcome="error".
-	// runInnerLoop returns ("error", _) and the outer Run still
-	// completes the trace cleanly: SpawnSubAgent treats Run's nil err
-	// return as success=true even though the run itself errored. We
-	// keep this assertion below conditional so the test exercises both
-	// the (success=true,inner=error) and (success=false) shapes
-	// gracefully — the load-bearing assertion is base-attr propagation.
+	// The provider streams an error event, so the child run itself fails.
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "error", Error: &providerUnavailableError{}},
@@ -1081,10 +861,7 @@ func TestSpawnSubAgent_RecordsSubagentMetrics_Failure(t *testing.T) {
 	}
 	parentLoop := buildSubAgentTestLoop(prov)
 	parentLoop.Metrics = metrics
-	// Simulate the parent itself being a sub-agent so MetricAttrs is
-	// non-empty: the B3 regression only fires when the parent already
-	// carries attributes that need to ride through to the spawn
-	// observation.
+	// Attributes that a nested sub-agent's loop carries.
 	parentLoop.MetricAttrs = []attribute.KeyValue{
 		attribute.Bool("run.subagent", true),
 		attribute.String("run.parent_id", "grandparent-run-1"),
@@ -1094,39 +871,20 @@ func TestSpawnSubAgent_RecordsSubagentMetrics_Failure(t *testing.T) {
 	parentConfig.RunID = "parent-subagent-failure-1"
 	parentConfig.Mode = "execution"
 
-	result, spawnErr := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
+	result, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
 		Prompt: "do a subtask",
 	})
-	if spawnErr != nil {
-		t.Fatalf("SpawnSubAgent: %v", spawnErr)
-	}
-	// The inner run errored; SubAgentResult.Outcome reflects that even
-	// when SpawnSubAgent itself returned no Go error.
-	if result == nil {
-		t.Fatal("SpawnSubAgent returned nil result")
-	}
+	require.NoError(t, err)
+	require.NotNil(t, result)
 
 	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
+	require.NoError(t, reader.Collect(context.Background(), &rm))
 
-	// stirrup.subagent.spawns must have fired exactly once with the
-	// parent's mode and the base MetricAttrs (B3 propagation guard).
 	spawns := findSubagentCounter(t, rm, "stirrup.subagent.spawns")
-	if spawns.total != 1 {
-		t.Errorf("stirrup.subagent.spawns total = %d, want 1", spawns.total)
-	}
-	if spawns.attrs["parent.mode"] != "execution" {
-		t.Errorf("parent.mode = %q, want execution", spawns.attrs["parent.mode"])
-	}
-	// Base MetricAttrs must propagate. Without B3 these would be absent.
-	if spawns.attrs["run.subagent"] != "true" {
-		t.Errorf("run.subagent = %q, want true (B3 metricAttrs not propagated)", spawns.attrs["run.subagent"])
-	}
-	if spawns.attrs["run.parent_id"] != "grandparent-run-1" {
-		t.Errorf("run.parent_id = %q, want grandparent-run-1", spawns.attrs["run.parent_id"])
-	}
+	assert.EqualValues(t, 1, spawns.total, "stirrup.subagent.spawns total")
+	assert.Equal(t, "execution", spawns.attrs["parent.mode"], "stirrup.subagent.spawns parent.mode")
+	assert.Equal(t, "true", spawns.attrs["run.subagent"], "base attribute run.subagent")
+	assert.Equal(t, "grandparent-run-1", spawns.attrs["run.parent_id"], "base attribute run.parent_id")
 }
 
 // providerUnavailableError is a canned error streamed through a child
@@ -1185,9 +943,7 @@ func TestSpawnSubAgent_CompactionNeverOrphansToolResults(t *testing.T) {
 	parentLoop := buildSubAgentTestLoop(nil)
 	parentLoop.Provider = prov
 	registry, ok := parentLoop.Tools.(*tool.Registry)
-	if !ok {
-		t.Fatalf("parent loop Tools is %T, want *tool.Registry", parentLoop.Tools)
-	}
+	require.True(t, ok, "parent loop Tools is %T, want *tool.Registry", parentLoop.Tools)
 	registry.Register(&tool.Tool{
 		Name:        "big_tool",
 		Description: "Returns a large output",
@@ -1203,14 +959,19 @@ func TestSpawnSubAgent_CompactionNeverOrphansToolResults(t *testing.T) {
 	parentConfig.ContextStrategy.MaxTokens = 80_000
 
 	result, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{Prompt: subTask})
-	if err != nil {
-		t.Fatalf("SpawnSubAgent: %v", err)
-	}
-	if result.Outcome != "success" {
-		t.Fatalf("outcome = %q, want success", result.Outcome)
-	}
-	if len(prov.requests) != prov.toolTurns+1 {
-		t.Fatalf("provider saw %d requests, want %d", len(prov.requests), prov.toolTurns+1)
+	require.NoError(t, err)
+	require.Equal(t, "success", result.Outcome)
+	require.Len(t, prov.requests, prov.toolTurns+1)
+
+	// precededByToolUse reports whether msgs[j] is a tool_result that answers
+	// a tool_use in the assistant message directly before it.
+	precededByToolUse := func(msgs []types.Message, j int, toolUseID string) bool {
+		if j == 0 || msgs[j-1].Role != "assistant" {
+			return false
+		}
+		return slices.ContainsFunc(msgs[j-1].Content, func(b types.ContentBlock) bool {
+			return b.Type == "tool_use" && b.ID == toolUseID
+		})
 	}
 
 	compacted := false
@@ -1218,23 +979,18 @@ func TestSpawnSubAgent_CompactionNeverOrphansToolResults(t *testing.T) {
 		if want := 2*i + 1; len(msgs) < want {
 			compacted = true
 		}
-		if len(msgs) == 0 || msgs[0].Role != "user" || msgs[0].Content[0].Text != subTask {
-			t.Fatalf("request %d does not start with the sub-agent task: %+v", i, msgs)
-		}
+		require.NotEmpty(t, msgs, "request %d", i)
+		require.Equal(t, "user", msgs[0].Role, "request %d should open with the sub-agent task", i)
+		require.Equal(t, subTask, msgs[0].Content[0].Text, "request %d should open with the sub-agent task", i)
 		for j, msg := range msgs {
 			for _, block := range msg.Content {
 				if block.Type != "tool_result" {
 					continue
 				}
-				if j == 0 || msgs[j-1].Role != "assistant" || !slices.ContainsFunc(msgs[j-1].Content, func(b types.ContentBlock) bool {
-					return b.Type == "tool_use" && b.ID == block.ToolUseID
-				}) {
-					t.Fatalf("request %d message %d: tool_result %q has no tool_use in the previous message", i, j, block.ToolUseID)
-				}
+				require.True(t, precededByToolUse(msgs, j, block.ToolUseID),
+					"request %d message %d: tool_result %q has no tool_use in the previous message", i, j, block.ToolUseID)
 			}
 		}
 	}
-	if !compacted {
-		t.Fatal("no request was compacted; the budget does not exercise compaction")
-	}
+	require.True(t, compacted, "no request was compacted; the budget does not exercise compaction")
 }

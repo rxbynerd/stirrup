@@ -10,37 +10,49 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/eval"
 	"github.com/rxbynerd/stirrup/eval/judge"
 	"github.com/rxbynerd/stirrup/types"
 )
 
 func TestJudgeFlags_CacheMode(t *testing.T) {
-	opts, err := parseJudgeFlags(t).options()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if opts.CacheMode != judge.CacheLive || opts.Cache != nil {
-		t.Errorf("default options = %+v, want live with no cache", opts)
-	}
-	for _, mode := range judge.CacheModes() {
-		opts, err := parseJudgeFlags(t, "--judge-cache", string(mode), "--judge-cache-dir", t.TempDir()).options()
-		if err != nil || opts.CacheMode != mode {
-			t.Errorf("--judge-cache %s: mode %q, err %v", mode, opts.CacheMode, err)
+	t.Run("default is live without a cache", func(t *testing.T) {
+		opts, err := parseJudgeFlags(t).options()
+		require.NoError(t, err)
+		require.Equal(t, judge.CacheLive, opts.CacheMode)
+		require.Nil(t, opts.Cache)
+	})
+
+	t.Run("each mode is accepted with a directory", func(t *testing.T) {
+		for _, mode := range judge.CacheModes() {
+			t.Run(string(mode), func(t *testing.T) {
+				opts, err := parseJudgeFlags(t, "--judge-cache", string(mode), "--judge-cache-dir", t.TempDir()).options()
+				require.NoError(t, err)
+				require.Equal(t, mode, opts.CacheMode)
+			})
 		}
-	}
-	for _, mode := range []judge.CacheMode{judge.CacheReadThrough, judge.CacheReplayStrict} {
-		_, err := parseJudgeFlags(t, "--judge-cache", string(mode)).options()
-		if err == nil || !strings.Contains(err.Error(), "--judge-cache-dir") {
-			t.Errorf("--judge-cache %s without a directory: err = %v, want one naming --judge-cache-dir", mode, err)
+	})
+
+	t.Run("reading modes need a directory", func(t *testing.T) {
+		for _, mode := range []judge.CacheMode{judge.CacheReadThrough, judge.CacheReplayStrict} {
+			t.Run(string(mode), func(t *testing.T) {
+				_, err := parseJudgeFlags(t, "--judge-cache", string(mode)).options()
+				require.ErrorContains(t, err, "--judge-cache-dir")
+			})
 		}
-	}
-	if _, err := parseJudgeFlags(t, "--judge-cache", "record").options(); err != nil {
-		t.Errorf("--judge-cache record without a directory: %v", err)
-	}
-	if _, err := parseJudgeFlags(t, "--judge-cache", "replay").options(); err == nil || !strings.Contains(err.Error(), "--judge-cache") {
-		t.Errorf("unknown mode: err = %v, want one naming --judge-cache", err)
-	}
+	})
+
+	t.Run("record works without a directory", func(t *testing.T) {
+		_, err := parseJudgeFlags(t, "--judge-cache", "record").options()
+		require.NoError(t, err)
+	})
+
+	t.Run("unknown mode is rejected", func(t *testing.T) {
+		_, err := parseJudgeFlags(t, "--judge-cache", "replay").options()
+		require.ErrorContains(t, err, "--judge-cache")
+	})
 }
 
 func TestJudgeFlags_OpenCache(t *testing.T) {
@@ -48,37 +60,34 @@ func TestJudgeFlags_OpenCache(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "never")
 		jf := parseJudgeFlags(t, "--judge-cache-dir", dir)
 		opts, err := jf.options()
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		got, err := jf.openCache(io.Discard, &opts, filepath.Join(t.TempDir(), "record-default"), nil)
-		if err != nil || got != "" || opts.Cache != nil || opts.CacheStats != nil {
-			t.Errorf("dir %q, err %v, opts %+v; want no cache in live mode", got, err, opts)
-		}
-		if _, err := os.Stat(dir); !os.IsNotExist(err) {
-			t.Errorf("live mode created %s", dir)
-		}
+		require.NoError(t, err)
+		require.Empty(t, got)
+		require.Nil(t, opts.Cache)
+		require.Nil(t, opts.CacheStats)
+
+		_, err = os.Stat(dir)
+		require.ErrorIs(t, err, os.ErrNotExist, "live mode created the cache directory")
 	})
 
 	t.Run("record defaults to the record directory", func(t *testing.T) {
 		want := filepath.Join(t.TempDir(), "out", judgeCacheDirName)
 		jf := parseJudgeFlags(t, "--judge-cache", "record")
 		opts, err := jf.options()
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+
 		got, err := jf.openCache(io.Discard, &opts, want, nil)
-		if err != nil || got != want {
-			t.Fatalf("dir %q, err %v; want %q", got, err, want)
-		}
+		require.NoError(t, err)
+		require.Equal(t, want, got)
+
 		resolved, err := filepath.EvalSymlinks(want)
-		if err != nil {
-			t.Fatalf("cache directory not created: %v", err)
-		}
+		require.NoError(t, err, "cache directory not created")
 		fc, ok := opts.Cache.(*judge.FileCache)
-		if !ok || fc.Dir() != resolved || opts.CacheStats == nil {
-			t.Errorf("opts = %+v", opts)
-		}
+		require.True(t, ok, "cache is not a file cache")
+		require.Equal(t, resolved, fc.Dir())
+		require.NotNil(t, opts.CacheStats)
 	})
 
 	for _, mode := range []string{"record", "read-through", "replay-strict"} {
@@ -86,16 +95,15 @@ func TestJudgeFlags_OpenCache(t *testing.T) {
 			want := t.TempDir()
 			jf := parseJudgeFlags(t, "--judge-cache", mode, "--judge-cache-dir", want)
 			opts, err := jf.options()
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
+
 			recordDir := filepath.Join(t.TempDir(), "unused")
-			if got, err := jf.openCache(io.Discard, &opts, recordDir, nil); err != nil || got != want {
-				t.Errorf("dir %q, err %v; want %q", got, err, want)
-			}
-			if _, err := os.Stat(recordDir); !os.IsNotExist(err) {
-				t.Errorf("the record directory was created: %v", err)
-			}
+			got, err := jf.openCache(io.Discard, &opts, recordDir, nil)
+			require.NoError(t, err)
+			require.Equal(t, want, got)
+
+			_, err = os.Stat(recordDir)
+			require.ErrorIs(t, err, os.ErrNotExist, "the record directory was created")
 		})
 	}
 
@@ -103,43 +111,34 @@ func TestJudgeFlags_OpenCache(t *testing.T) {
 		workspace := t.TempDir()
 		jf := parseJudgeFlags(t, "--judge-cache", "record", "--judge-cache-dir", filepath.Join(workspace, "cache"))
 		opts, err := jf.options()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := jf.openCache(io.Discard, &opts, "", []string{workspace}); err == nil || !strings.Contains(err.Error(), "--judge-cache-dir") {
-			t.Errorf("err = %v, want the directory refused", err)
-		}
-		if opts.Cache != nil {
-			t.Error("a refused directory was installed as the cache")
-		}
+		require.NoError(t, err)
+
+		_, err = jf.openCache(io.Discard, &opts, "", []string{workspace})
+		require.ErrorContains(t, err, "--judge-cache-dir")
+		require.Nil(t, opts.Cache, "a refused directory was installed as the cache")
 	})
 }
 
-func TestReplayWorkspaces(t *testing.T) {
+func TestReplayWorkspaces_KeepsAbsoluteRecordedPaths(t *testing.T) {
 	recordings := []types.RunRecording{
 		{Config: types.RunConfig{Executor: types.ExecutorConfig{Workspace: "/srv/runs/r1"}}},
 		{Config: types.RunConfig{Executor: types.ExecutorConfig{Workspace: "relative/ws"}}},
 		{},
 	}
 	got := replayWorkspaces("/preserved", recordings)
-	if want := []string{"/preserved", "/srv/runs/r1"}; strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Errorf("replayWorkspaces = %q, want %q", got, want)
-	}
+	require.Equal(t, []string{"/preserved", "/srv/runs/r1"}, got)
 }
 
-func TestFormatJudgeCache(t *testing.T) {
+func TestFormatJudgeCache_ReportsCountersAndErrors(t *testing.T) {
 	s := eval.JudgeCacheSummary{Mode: "read-through", Hits: 3, Misses: 1, Stored: 1}
-	if got, want := formatJudgeCache(s), "Judge cache (read-through): 3 hits, 1 misses, 1 stored, 0 bypassed"; got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
+	require.Equal(t, "Judge cache (read-through): 3 hits, 1 misses, 1 stored, 0 bypassed", formatJudgeCache(s))
+
 	s.WriteErrors = 2
-	if got := formatJudgeCache(s); !strings.HasSuffix(got, ", 2 write errors") {
-		t.Errorf("got %q, want the write errors reported", got)
-	}
+	got := formatJudgeCache(s)
+	require.True(t, strings.HasSuffix(got, ", 2 write errors"), "got %q, want the write errors reported", got)
+
 	s.Replaced = 1
-	if got, want := formatJudgeCache(s), "Judge cache (read-through): 3 hits, 1 misses, 1 stored, 0 bypassed, 1 replaced, 2 write errors"; got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
+	require.Equal(t, "Judge cache (read-through): 3 hits, 1 misses, 1 stored, 0 bypassed, 1 replaced, 2 write errors", formatJudgeCache(s))
 }
 
 func TestCmdRun_ReadThroughReplacesAnUnusableEntryWithOneWarning(t *testing.T) {
@@ -153,55 +152,37 @@ func TestCmdRun_ReadThroughReplacesAnUnusableEntryWithOneWarning(t *testing.T) {
 		"run", "--suite", suitePath, "--harness", harnessPath, "--output", outputDir,
 		"--judge-model", "m", "--judge-base-url", endpoint.srv.URL, "--judge-api-key-ref", "secret://CLI_JUDGE_KEY",
 	}
-	if code := run(append(args, "--judge-cache", "record"), io.Discard); code != 0 {
-		t.Fatalf("record: exit code %d", code)
-	}
+	code := run(append(args, "--judge-cache", "record"), io.Discard)
+	require.Equal(t, 0, code, "record exit code")
+
 	recorded, err := loadResult(filepath.Join(outputDir, "result.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	key := recorded.Tasks[0].JudgeVerdict.Record.CacheKey
 	entry := filepath.Join(cacheDir, key[:2], key[2:4], key+".json")
 	raw, err := os.ReadFile(entry)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(entry, []byte(strings.Replace(string(raw), `"parserVersion": `, `"parserVersion": 9`, 1)), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(entry, []byte(strings.Replace(string(raw), `"parserVersion": `, `"parserVersion": 9`, 1)), 0o600))
 
 	out, code := runEval(t, nil, append(args, "--judge-cache", "read-through", "--judge-cache-dir", cacheDir)...)
-	if code != 0 {
-		t.Fatalf("read-through: exit code %d:\n%s", code, out)
-	}
-	if n := strings.Count(out, "warning: replaced an unusable judge cache entry"); n != 1 || !strings.Contains(out, key) {
-		t.Errorf("want one warning naming %s, got %d:\n%s", key, n, out)
-	}
-	if !strings.Contains(out, "1 replaced") {
-		t.Errorf("summary line does not report the replacement:\n%s", out)
-	}
+	require.Equal(t, 0, code, "read-through exit code, output:\n%s", out)
+	require.Equal(t, 1, strings.Count(out, "warning: replaced an unusable judge cache entry"), "warnings in output:\n%s", out)
+	require.Contains(t, out, key)
+	require.Contains(t, out, "1 replaced")
+
 	result, err := loadResult(filepath.Join(outputDir, "result.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.JudgeCache == nil || result.JudgeCache.Replaced != 1 || result.JudgeCache.Stored != 1 {
-		t.Errorf("summary = %+v, want one replaced and stored entry", result.JudgeCache)
-	}
-	if bodies, _ := endpoint.seen(); len(bodies) != 2 {
-		t.Errorf("judge saw %d requests, want the unusable entry judged again", len(bodies))
-	}
+	require.NoError(t, err)
+	require.NotNil(t, result.JudgeCache)
+	require.Equal(t, 1, result.JudgeCache.Replaced)
+	require.Equal(t, 1, result.JudgeCache.Stored)
+
+	bodies, _ := endpoint.seen()
+	require.Len(t, bodies, 2, "the unusable entry should be judged again")
 }
 
 func TestCompletion_JudgeCacheFlagsRegistered(t *testing.T) {
 	for _, sub := range []string{"run", "replay"} {
-		have := map[string]bool{}
-		for _, f := range evalCompletionFlags[sub] {
-			have[f] = true
-		}
 		for _, f := range []string{"judge-cache", "judge-cache-dir"} {
-			if !have[f] {
-				t.Errorf("%s completion is missing -%s", sub, f)
-			}
+			require.Contains(t, evalCompletionFlags[sub], f, "%s completion", sub)
 		}
 	}
 }
@@ -215,42 +196,35 @@ func TestCmdRun_JudgeCacheRecordThenReadThrough(t *testing.T) {
 
 	runWith := func(mode string, extra ...string) eval.SuiteResult {
 		t.Helper()
-		if code := run(append([]string{
+		code := run(append([]string{
 			"run", "--suite", suitePath, "--harness", harnessPath, "--output", outputDir,
 			"--judge-model", "m", "--judge-base-url", endpoint.srv.URL, "--judge-api-key-ref", "secret://CLI_JUDGE_KEY",
 			"--judge-cache", mode,
-		}, extra...), io.Discard); code != 0 {
-			t.Fatalf("%s: exit code %d", mode, code)
-		}
+		}, extra...), io.Discard)
+		require.Equal(t, 0, code, "%s exit code", mode)
+
 		result, err := loadResult(filepath.Join(outputDir, "result.json"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(result.Tasks) != 1 || result.Tasks[0].Outcome != "pass" {
-			t.Fatalf("%s: tasks = %+v", mode, result.Tasks)
-		}
+		require.NoError(t, err)
+		require.Len(t, result.Tasks, 1, "%s task count", mode)
+		require.Equal(t, "pass", result.Tasks[0].Outcome, "%s tasks: %+v", mode, result.Tasks)
 		return result
 	}
 
 	recorded := runWith("record")
-	if want := (eval.JudgeCacheSummary{Mode: "record", Misses: 1, Stored: 1}); recorded.JudgeCache == nil || *recorded.JudgeCache != want {
-		t.Errorf("record summary = %+v, want %+v", recorded.JudgeCache, want)
-	}
+	require.NotNil(t, recorded.JudgeCache)
+	require.Equal(t, eval.JudgeCacheSummary{Mode: "record", Misses: 1, Stored: 1}, *recorded.JudgeCache)
 	key := recorded.Tasks[0].JudgeVerdict.Record.CacheKey
-	if _, err := os.Stat(filepath.Join(outputDir, judgeCacheDirName, key[:2], key[2:4], key+".json")); err != nil {
-		t.Errorf("entry not under <output>/judge-cache: %v", err)
-	}
+	require.FileExists(t, filepath.Join(outputDir, judgeCacheDirName, key[:2], key[2:4], key+".json"), "entry not under <output>/judge-cache")
 
 	replayed := runWith("read-through", "--judge-cache-dir", filepath.Join(outputDir, judgeCacheDirName))
-	if want := (eval.JudgeCacheSummary{Mode: "read-through", Hits: 1}); replayed.JudgeCache == nil || *replayed.JudgeCache != want {
-		t.Errorf("read-through summary = %+v, want %+v", replayed.JudgeCache, want)
-	}
-	if rec := replayed.Tasks[0].JudgeVerdict.Record; rec.CacheStatus != types.JudgeCacheHit || rec.CacheKey != key {
-		t.Errorf("record = %+v", rec)
-	}
-	if bodies, _ := endpoint.seen(); len(bodies) != 1 {
-		t.Errorf("judge saw %d requests, want only the recording run's", len(bodies))
-	}
+	require.NotNil(t, replayed.JudgeCache)
+	require.Equal(t, eval.JudgeCacheSummary{Mode: "read-through", Hits: 1}, *replayed.JudgeCache)
+	rec := replayed.Tasks[0].JudgeVerdict.Record
+	require.Equal(t, types.JudgeCacheHit, rec.CacheStatus)
+	require.Equal(t, key, rec.CacheKey)
+
+	bodies, _ := endpoint.seen()
+	require.Len(t, bodies, 1, "only the recording run should call the judge")
 }
 
 func TestCmdRun_DryRunOpensNoJudgeCache(t *testing.T) {
@@ -266,12 +240,11 @@ suite "dry-cache" {
   }
 }
 `)
-	if code := run([]string{"run", "--suite", suitePath, "--dry-run", "--judge-cache", "record", "--judge-cache-dir", cacheDir}, io.Discard); code != 0 {
-		t.Fatalf("exit code %d", code)
-	}
-	if _, err := os.Stat(cacheDir); !os.IsNotExist(err) {
-		t.Errorf("--dry-run created the judge cache directory: %v", err)
-	}
+	code := run([]string{"run", "--suite", suitePath, "--dry-run", "--judge-cache", "record", "--judge-cache-dir", cacheDir}, io.Discard)
+	require.Equal(t, 0, code, "exit code")
+
+	_, err := os.Stat(cacheDir)
+	require.ErrorIs(t, err, os.ErrNotExist, "--dry-run created the judge cache directory")
 }
 
 func TestCmdReplay_ReplayStrictServesTheRecordedCache(t *testing.T) {
@@ -288,44 +261,39 @@ func TestCmdReplay_ReplayStrictServesTheRecordedCache(t *testing.T) {
 			"replay", "--lakehouse", lakehouse, "--suite", suitePath, "--workspace", workspace, "--output", output,
 			"--judge-model", "m", "--judge-base-url", endpoint.srv.URL, "--judge-api-key-ref", "secret://CLI_JUDGE_KEY",
 		}, extra...)
-		if code := run(args, io.Discard); code != 0 {
-			t.Fatalf("%v: exit code %d", extra, code)
-		}
+		code := run(args, io.Discard)
+		require.Equal(t, 0, code, "replay %v exit code", extra)
+
 		result, err := loadResult(output)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		return result
 	}
 
 	cacheDir := filepath.Join(lakehouse, judgeCacheDirName)
-	if err := os.Mkdir(cacheDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Mkdir(cacheDir, 0o700))
+
 	missed := replay("--judge-cache", "replay-strict", "--judge-cache-dir", cacheDir)
-	if tr := missed.Tasks[0]; tr.Outcome != "error" || !strings.Contains(tr.Error, "replay-strict never calls the model") {
-		t.Errorf("strict replay of an empty cache: %+v", tr)
-	}
-	if bodies, _ := endpoint.seen(); len(bodies) != 0 {
-		t.Fatalf("replay-strict called the judge %d times", len(bodies))
-	}
+	tr := missed.Tasks[0]
+	require.Equal(t, "error", tr.Outcome, "strict replay of an empty cache: %+v", tr)
+	require.Contains(t, tr.Error, "replay-strict never calls the model")
+
+	bodies, _ := endpoint.seen()
+	require.Empty(t, bodies, "replay-strict called the judge")
 
 	recorded := replay("--judge-cache", "record")
-	if recorded.Tasks[0].Outcome != "pass" || recorded.JudgeCache == nil || recorded.JudgeCache.Stored != 1 {
-		t.Fatalf("record replay: %+v, summary %+v", recorded.Tasks, recorded.JudgeCache)
-	}
+	require.Equal(t, "pass", recorded.Tasks[0].Outcome, "record replay tasks: %+v", recorded.Tasks)
+	require.NotNil(t, recorded.JudgeCache)
+	require.Equal(t, 1, recorded.JudgeCache.Stored)
 
 	t.Setenv("CLI_JUDGE_KEY", "")
 	strict := replay("--judge-cache", "replay-strict", "--judge-cache-dir", cacheDir)
-	if strict.Tasks[0].Outcome != "pass" || strict.Tasks[0].JudgeVerdict.Record.CacheStatus != types.JudgeCacheHit {
-		t.Errorf("strict replay: %+v", strict.Tasks[0])
-	}
-	if want := (eval.JudgeCacheSummary{Mode: "replay-strict", Hits: 1}); strict.JudgeCache == nil || *strict.JudgeCache != want {
-		t.Errorf("strict summary = %+v, want %+v", strict.JudgeCache, want)
-	}
-	if bodies, _ := endpoint.seen(); len(bodies) != 1 {
-		t.Errorf("judge saw %d requests, want only the recording replay's", len(bodies))
-	}
+	require.Equal(t, "pass", strict.Tasks[0].Outcome, "strict replay: %+v", strict.Tasks[0])
+	require.Equal(t, types.JudgeCacheHit, strict.Tasks[0].JudgeVerdict.Record.CacheStatus)
+	require.NotNil(t, strict.JudgeCache)
+	require.Equal(t, eval.JudgeCacheSummary{Mode: "replay-strict", Hits: 1}, *strict.JudgeCache)
+
+	bodies, _ = endpoint.seen()
+	require.Len(t, bodies, 1, "only the recording replay should call the judge")
 }
 
 // gitWorkspaceWithChange is a git repository with one commit and an
@@ -341,9 +309,7 @@ func gitWorkspaceWithChange(t *testing.T) string {
 	} {
 		gitRun(t, workspace, args...)
 	}
-	if err := os.WriteFile(filepath.Join(workspace, "created.txt"), []byte("agent output\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(workspace, "created.txt"), []byte("agent output\n"), 0o644))
 	return workspace
 }
 
@@ -352,31 +318,28 @@ func gitRun(t *testing.T, dir string, args ...string) {
 	cmd := exec.Command("git", append([]string{"-c", "commit.gpgsign=false"}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_SYSTEM="+os.DevNull)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
-	}
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "git %v:\n%s", args, out)
 }
 
 func TestLoadResult_CommittedBaselinesHaveNoCacheSummary(t *testing.T) {
 	paths, err := filepath.Glob(filepath.Join("..", "..", "baselines", "*.json"))
-	if err != nil || len(paths) == 0 {
-		t.Fatalf("no committed baselines found: %v", err)
-	}
+	require.NoError(t, err, "glob committed baselines")
+	require.NotEmpty(t, paths, "no committed baselines found")
+
 	for _, path := range paths {
-		result, err := loadResult(path)
-		if err != nil {
-			t.Errorf("%s: %v", path, err)
-			continue
-		}
-		if len(result.Tasks) == 0 || result.JudgeCache != nil {
-			t.Errorf("%s: %d tasks, judge cache %+v", path, len(result.Tasks), result.JudgeCache)
-		}
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			result, err := loadResult(path)
+			require.NoError(t, err)
+			require.NotEmpty(t, result.Tasks)
+			require.Nil(t, result.JudgeCache)
+		})
 	}
 }
 
-// TestEvalSubprocess is the re-executed half of runEval and does nothing
-// in a normal test run.
-func TestEvalSubprocess(t *testing.T) {
+// TestEvalSubprocess_RunsCLIArgsFromEnv is the re-executed half of runEval and
+// does nothing in a normal test run.
+func TestEvalSubprocess_RunsCLIArgsFromEnv(t *testing.T) {
 	args := os.Getenv(subprocessArgsEnv)
 	if args == "" {
 		t.Skip("runs only when re-executed by runEval")
@@ -389,16 +352,14 @@ func TestEvalSubprocess(t *testing.T) {
 // and exit code.
 func runEval(t *testing.T, env []string, args ...string) (string, int) {
 	t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.run=^TestEvalSubprocess$")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestEvalSubprocess_RunsCLIArgsFromEnv$")
 	cmd.Env = append(append(os.Environ(), env...), subprocessArgsEnv+"="+strings.Join(args, "\x1f"))
 	out, err := cmd.CombinedOutput()
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
 		return string(out), exitErr.ExitCode()
 	}
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return string(out), 0
 }
 
@@ -424,21 +385,21 @@ func TestCmd_ReadingCacheModesNeedAnExplicitDirectory(t *testing.T) {
 				tmp := t.TempDir()
 				args, recordDir := cacheCommand(t, sub)
 				out, code := runEval(t, []string{"TMPDIR=" + tmp, "CLI_JUDGE_KEY=k"}, append(args, "--judge-cache", mode)...)
-				if code != 1 || !strings.Contains(out, "--judge-cache "+mode+" needs --judge-cache-dir") {
-					t.Fatalf("exit code %d, want 1 with a usage error naming --judge-cache-dir:\n%s", code, out)
-				}
-				if _, err := os.Stat(recordDir); !os.IsNotExist(err) {
-					t.Errorf("a reading mode created the record directory: %v", err)
-				}
+				require.Equal(t, 1, code, "want a usage error, output:\n%s", out)
+				require.Contains(t, out, "--judge-cache "+mode+" needs --judge-cache-dir")
+
+				_, err := os.Stat(recordDir)
+				require.ErrorIs(t, err, os.ErrNotExist, "a reading mode created the record directory")
+
 				entries, err := os.ReadDir(tmp)
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
+				var caches []string
 				for _, e := range entries {
 					if strings.HasPrefix(e.Name(), "stirrup-judge-cache-") {
-						t.Errorf("a temporary cache directory was created: %s", e.Name())
+						caches = append(caches, e.Name())
 					}
 				}
+				require.Empty(t, caches, "temporary cache directories created")
 			})
 		}
 	}
@@ -449,17 +410,13 @@ func TestCmd_UntrustedCacheDirectoriesAreRefused(t *testing.T) {
 		for _, mode := range []string{"record", "read-through", "replay-strict"} {
 			t.Run(sub+"/"+mode+"/world-writable", func(t *testing.T) {
 				dir := filepath.Join(t.TempDir(), "judge-cache")
-				if err := os.Mkdir(dir, 0o700); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Chmod(dir, 0o777); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, os.Mkdir(dir, 0o700))
+				require.NoError(t, os.Chmod(dir, 0o777))
+
 				args, _ := cacheCommand(t, sub)
 				out, code := runEval(t, []string{"CLI_JUDGE_KEY=k"}, append(args, "--judge-cache", mode, "--judge-cache-dir", dir)...)
-				if code == 0 || !strings.Contains(out, "lets other users write") {
-					t.Errorf("exit code %d, want the directory refused:\n%s", code, out)
-				}
+				require.NotZero(t, code, "want the directory refused:\n%s", out)
+				require.Contains(t, out, "lets other users write")
 			})
 		}
 	}
@@ -468,13 +425,13 @@ func TestCmd_UntrustedCacheDirectoriesAreRefused(t *testing.T) {
 		args, _ := cacheCommand(t, "replay")
 		workspace := args[slices.Index(args, "--workspace")+1]
 		dir := filepath.Join(workspace, "judge-cache")
+
 		out, code := runEval(t, []string{"CLI_JUDGE_KEY=k"}, append(args, "--judge-cache", "record", "--judge-cache-dir", dir)...)
-		if code == 0 || !strings.Contains(out, "agent under test can write") {
-			t.Errorf("exit code %d, want the directory refused:\n%s", code, out)
-		}
-		if _, err := os.Stat(dir); !os.IsNotExist(err) {
-			t.Errorf("the refused directory was created: %v", err)
-		}
+		require.NotZero(t, code, "want the directory refused:\n%s", out)
+		require.Contains(t, out, "agent under test can write")
+
+		_, err := os.Stat(dir)
+		require.ErrorIs(t, err, os.ErrNotExist, "the refused directory was created")
 	})
 }
 
@@ -482,13 +439,15 @@ func TestCmdReplay_ReplayStrictFailsFastOnAMissingCache(t *testing.T) {
 	args, _ := cacheCommand(t, "replay")
 	missing := filepath.Join(t.TempDir(), "no-such-cache")
 	output := filepath.Join(t.TempDir(), "replay.json")
+
 	out, code := runEval(t, nil, append(args, "--output", output, "--judge-cache", "replay-strict", "--judge-cache-dir", missing)...)
-	if code == 0 || !strings.Contains(out, "--judge-cache-dir") || !strings.Contains(out, missing) || !strings.Contains(out, "does not exist") {
-		t.Errorf("exit code %d, want a failure naming the missing directory:\n%s", code, out)
-	}
+	require.NotZero(t, code, "want a failure naming the missing directory:\n%s", out)
+	require.Contains(t, out, "--judge-cache-dir")
+	require.Contains(t, out, missing)
+	require.Contains(t, out, "does not exist")
+
 	for _, path := range []string{missing, output} {
-		if _, err := os.Stat(path); !os.IsNotExist(err) {
-			t.Errorf("%s exists after the failed open: %v", path, err)
-		}
+		_, err := os.Stat(path)
+		require.ErrorIs(t, err, os.ErrNotExist, "%s exists after the failed open", path)
 	}
 }

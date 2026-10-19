@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
@@ -124,125 +126,139 @@ func awaitWarnings(t *testing.T, tr *cancellableTransport, n int) []types.Harnes
 
 func lastMessage(t *testing.T, params types.StreamParams) types.Message {
 	t.Helper()
-	if len(params.Messages) == 0 {
-		t.Fatal("provider call carried no messages")
-	}
+	require.NotEmpty(t, params.Messages, "provider call carried no messages")
 	return params.Messages[len(params.Messages)-1]
+}
+
+// takeNotifyToken consumes the pending notify signal and reports whether
+// one was present.
+func takeNotifyToken(q *userInputQueue) bool {
+	select {
+	case <-q.notify:
+		return true
+	default:
+		return false
+	}
+}
+
+// userResponseGuardInputs returns the pre-turn inputs that carried
+// operator text.
+func userResponseGuardInputs(g *inputRecordingGuard) []guard.Input {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	var out []guard.Input
+	for _, in := range g.inputs {
+		if strings.HasPrefix(in.Source, "user_response:") {
+			out = append(out, in)
+		}
+	}
+	return out
 }
 
 func TestUserInputQueue_OrderOverflowAndClear(t *testing.T) {
 	q := newUserInputQueue()
 	for i := 1; i <= maxQueuedUserInput; i++ {
-		if !q.push(queuedUserInput{RequestID: fmt.Sprint(i), Text: fmt.Sprintf("m%d", i)}) {
-			t.Fatalf("push %d rejected below the cap", i)
-		}
+		require.True(t, q.push(queuedUserInput{RequestID: fmt.Sprint(i), Text: fmt.Sprintf("m%d", i)}),
+			"push %d rejected below the cap", i)
 	}
-	if q.push(queuedUserInput{RequestID: "overflow", Text: "one too many"}) {
-		t.Fatal("push beyond the cap was accepted")
-	}
-	select {
-	case <-q.notify:
-	default:
-		t.Fatal("notify carried no signal after pushes")
-	}
-	select {
-	case <-q.notify:
-		t.Fatal("notify carried more than one pending signal")
-	default:
-	}
+	require.False(t, q.push(queuedUserInput{RequestID: "overflow", Text: "one too many"}),
+		"push beyond the cap was accepted")
+	require.True(t, takeNotifyToken(q), "notify carried no signal after pushes")
+	require.False(t, takeNotifyToken(q), "notify carried more than one pending signal")
 
 	first, ok := q.pop()
-	if !ok || first.Text != "m1" {
-		t.Fatalf("pop = %+v, %v; want the oldest item", first, ok)
-	}
+	require.True(t, ok, "pop reported an empty queue")
+	require.Equal(t, "m1", first.Text, "pop should return the oldest item")
+
 	rest := q.drain()
-	if len(rest) != maxQueuedUserInput-1 || rest[0].Text != "m2" || rest[len(rest)-1].Text != fmt.Sprintf("m%d", maxQueuedUserInput) {
-		t.Fatalf("drain returned %d items starting %q; want the remaining items in arrival order", len(rest), rest[0].Text)
-	}
-	if _, ok := q.pop(); ok {
-		t.Fatal("pop on an empty queue reported an item")
-	}
+	require.Len(t, rest, maxQueuedUserInput-1, "drain should return the remaining items")
+	require.Equal(t, "m2", rest[0].Text, "drain should keep arrival order")
+	require.Equal(t, fmt.Sprintf("m%d", maxQueuedUserInput), rest[len(rest)-1].Text,
+		"drain should end with the newest item")
+
+	_, ok = q.pop()
+	require.False(t, ok, "pop on an empty queue reported an item")
+
 	q.push(queuedUserInput{Text: "later"})
-	if n := q.clear(); n != 1 || q.pending() != 0 {
-		t.Fatalf("clear dropped %d (pending %d), want 1 and 0", n, q.pending())
-	}
+	require.Equal(t, 1, q.clear(), "clear should drop the one queued item")
+	require.Zero(t, q.pending(), "clear should leave the queue empty")
 }
 
-func TestInjectUserInput_Composition(t *testing.T) {
-	// Onto a trailing user message: the tool results stay first.
+func TestInjectUserInput_PlacementRules(t *testing.T) {
 	msgs := []types.Message{
 		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "prompt"}}},
 		{Role: "assistant", Content: []types.ContentBlock{{Type: "tool_use", ID: "c1", Name: "test_tool"}}},
 		{Role: "user", Content: []types.ContentBlock{{Type: "tool_result", ToolUseID: "c1", Content: "ok"}}},
 	}
-	got := injectUserInput(msgs, []string{"a", "b"})
-	if len(got) != 3 {
-		t.Fatalf("injected onto a trailing user message produced %d messages, want 3", len(got))
-	}
-	if types := blockTypes(got[2]); strings.Join(types, ",") != "tool_result,text" {
-		t.Errorf("trailing message block order = %v, want tool_result then one text block", types)
-	}
-	if texts := textBlocks(got[2]); strings.Join(texts, "|") != "a\n\nb" {
-		t.Errorf("injected text = %q, want arrival order as paragraphs", texts)
-	}
 
-	// Onto a trailing text block (the turn-0 prompt): merged into it, so
-	// no adapter can glue two text parts together.
-	got = injectUserInput(msgs[:1], []string{"c"})
-	if len(got) != 1 || strings.Join(blockTypes(got[0]), ",") != "text" || got[0].Content[0].Text != "prompt\n\nc" {
-		t.Errorf("injected onto the prompt = %+v, want a single merged text block", got[0])
-	}
+	t.Run("trailing user message keeps tool results first", func(t *testing.T) {
+		got := injectUserInput(msgs, []string{"a", "b"})
+		require.Len(t, got, 3)
+		require.Equal(t, []string{"tool_result", "text"}, blockTypes(got[2]), "trailing message block order")
+		require.Equal(t, []string{"a\n\nb"}, textBlocks(got[2]), "inputs should be joined as arrival-ordered paragraphs")
+	})
 
-	// After an assistant message: a new user message, never two
-	// consecutive user messages.
-	got = injectUserInput(msgs[:2], []string{"d"})
-	if len(got) != 3 || got[2].Role != "user" || strings.Join(textBlocks(got[2]), "") != "d" {
-		t.Errorf("injected after an assistant message = %+v, want a new user message", got[len(got)-1])
-	}
+	t.Run("trailing text block is merged into", func(t *testing.T) {
+		// Merged rather than appended, so no adapter receives two adjacent text parts.
+		got := injectUserInput(msgs[:1], []string{"c"})
+		require.Len(t, got, 1)
+		require.Equal(t, []string{"text"}, blockTypes(got[0]))
+		require.Equal(t, "prompt\n\nc", got[0].Content[0].Text)
+	})
 
-	// Onto a harness-injected message (verifier feedback, escalation
-	// nudge): merged, and no longer marked synthetic, so compaction and
-	// the LLM judge keep the operator's words.
-	synthetic := []types.Message{
-		msgs[0], msgs[1],
-		{Role: "user", Synthetic: true, Content: []types.ContentBlock{{Type: "text", Text: "Verification failed."}}},
-	}
-	got = injectUserInput(synthetic, []string{"e"})
-	if len(got) != 3 || got[2].Synthetic || got[2].Content[0].Text != "Verification failed.\n\ne" {
-		t.Errorf("injected onto a synthetic message = %+v, want a merged, non-synthetic user message", got[2])
-	}
+	t.Run("after an assistant message starts a new user message", func(t *testing.T) {
+		// Never two consecutive user messages.
+		got := injectUserInput(msgs[:2], []string{"d"})
+		require.Len(t, got, 3)
+		require.Equal(t, "user", got[2].Role)
+		require.Equal(t, []string{"d"}, textBlocks(got[2]))
+	})
+
+	t.Run("harness-injected message is merged and unmarked", func(t *testing.T) {
+		// Unmarked so compaction and the LLM judge keep the operator's words.
+		synthetic := []types.Message{
+			msgs[0], msgs[1],
+			{Role: "user", Synthetic: true, Content: []types.ContentBlock{{Type: "text", Text: "Verification failed."}}},
+		}
+		got := injectUserInput(synthetic, []string{"e"})
+		require.Len(t, got, 3)
+		require.False(t, got[2].Synthetic, "operator text must not stay marked synthetic")
+		require.Equal(t, "Verification failed.\n\ne", got[2].Content[0].Text)
+	})
 }
 
-func TestInjectSyntheticUserText_Composition(t *testing.T) {
+func TestInjectSyntheticUserText_PlacementRules(t *testing.T) {
 	prompt := types.Message{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "prompt"}}}
 	assistant := types.Message{Role: "assistant", Content: []types.ContentBlock{{Type: "tool_use", ID: "c1", Name: "test_tool"}}}
 	results := types.Message{Role: "user", Content: []types.ContentBlock{{Type: "tool_result", ToolUseID: "c1", Content: "ok"}}}
 
-	// After an assistant message: a new user message marked synthetic.
-	got := injectSyntheticUserText([]types.Message{prompt, assistant}, "nudge")
-	if len(got) != 3 || got[2].Role != "user" || !got[2].Synthetic || strings.Join(textBlocks(got[2]), "") != "nudge" {
-		t.Errorf("injected after an assistant message = %+v, want a new synthetic user message", got[len(got)-1])
-	}
+	t.Run("after an assistant message is a new synthetic user message", func(t *testing.T) {
+		got := injectSyntheticUserText([]types.Message{prompt, assistant}, "nudge")
+		require.Len(t, got, 3)
+		require.Equal(t, "user", got[2].Role)
+		require.True(t, got[2].Synthetic)
+		require.Equal(t, []string{"nudge"}, textBlocks(got[2]))
+	})
 
-	// Onto tool results: appended after them, and the message keeps its
-	// unmarked state because the results are not harness-authored.
-	msgs := []types.Message{prompt, assistant, results}
-	got = injectSyntheticUserText(msgs, "nudge")
-	if len(got) != 3 || got[2].Synthetic || strings.Join(blockTypes(got[2]), ",") != "tool_result,text" {
-		t.Errorf("injected onto tool results = %+v, want tool_result then text, unmarked", got[2])
-	}
-	if len(msgs[2].Content) != 1 {
-		t.Errorf("caller's history was mutated: trailing message has %d blocks, want 1", len(msgs[2].Content))
-	}
+	t.Run("onto tool results is appended and stays unmarked", func(t *testing.T) {
+		// Tool results are not harness-authored, so the message stays unmarked.
+		msgs := []types.Message{prompt, assistant, results}
+		got := injectSyntheticUserText(msgs, "nudge")
+		require.Len(t, got, 3)
+		require.False(t, got[2].Synthetic, "tool results should not be marked synthetic")
+		require.Equal(t, []string{"tool_result", "text"}, blockTypes(got[2]))
+		require.Len(t, msgs[2].Content, 1, "caller's history was mutated")
+	})
 
-	// Onto a harness-injected message: merged and still synthetic.
-	synthetic := []types.Message{prompt, assistant,
-		{Role: "user", Synthetic: true, Content: []types.ContentBlock{{Type: "text", Text: "Verification failed."}}},
-	}
-	got = injectSyntheticUserText(synthetic, "nudge")
-	if len(got) != 3 || !got[2].Synthetic || got[2].Content[0].Text != "Verification failed.\n\nnudge" {
-		t.Errorf("injected onto a synthetic message = %+v, want a merged synthetic message", got[2])
-	}
+	t.Run("harness-injected message is merged and stays synthetic", func(t *testing.T) {
+		synthetic := []types.Message{prompt, assistant,
+			{Role: "user", Synthetic: true, Content: []types.ContentBlock{{Type: "text", Text: "Verification failed."}}},
+		}
+		got := injectSyntheticUserText(synthetic, "nudge")
+		require.Len(t, got, 3)
+		require.True(t, got[2].Synthetic)
+		require.Equal(t, "Verification failed.\n\nnudge", got[2].Content[0].Text)
+	})
 }
 
 // TestUserInputQueue_NotifyTokenAccounting pins the wake-up contract the
@@ -256,35 +272,22 @@ func TestUserInputQueue_NotifyTokenAccounting(t *testing.T) {
 	// idle consumer woke. The consumer must see an empty pop, not block.
 	q.push(queuedUserInput{Text: "drained by the run"})
 	q.drain()
-	select {
-	case <-q.notify:
-	default:
-		t.Fatal("no token after a push")
-	}
-	if _, ok := q.pop(); ok {
-		t.Fatal("stale token yielded an item")
-	}
+	require.True(t, takeNotifyToken(q), "no token after a push")
+	_, ok := q.pop()
+	require.False(t, ok, "stale token yielded an item")
 
 	// Two items while idle: one token wakes the consumer; the second
 	// item is still there for the run's first drain (or the next pop).
 	q.push(queuedUserInput{Text: "first"})
 	q.push(queuedUserInput{Text: "second"})
-	select {
-	case <-q.notify:
-	default:
-		t.Fatal("no token after two pushes")
-	}
-	if first, ok := q.pop(); !ok || first.Text != "first" {
-		t.Fatalf("pop = %+v, %v; want the oldest", first, ok)
-	}
-	if rest := q.drain(); len(rest) != 1 || rest[0].Text != "second" {
-		t.Fatalf("remaining = %+v, want the second item", rest)
-	}
-	select {
-	case <-q.notify:
-		t.Fatal("a second token was queued for the second push")
-	default:
-	}
+	require.True(t, takeNotifyToken(q), "no token after two pushes")
+	first, ok := q.pop()
+	require.True(t, ok, "pop reported an empty queue")
+	require.Equal(t, "first", first.Text, "pop should return the oldest item")
+	rest := q.drain()
+	require.Len(t, rest, 1, "drain should return the second item")
+	require.Equal(t, "second", rest[0].Text)
+	require.False(t, takeNotifyToken(q), "a second token was queued for the second push")
 }
 
 // TestLoop_UserResponseBeforeFirstProviderCallJoinsPrompt covers input
@@ -297,23 +300,16 @@ func TestLoop_UserResponseBeforeFirstProviderCallJoinsPrompt(t *testing.T) {
 	tr.FireControl(userResponse("Also add tests.", "r1"))
 
 	rt, err := loop.Run(context.Background(), buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if rt.Outcome != "success" {
-		t.Fatalf("outcome = %q, want success", rt.Outcome)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "success", rt.Outcome)
+
 	calls := prov.params()
-	if len(calls) != 1 {
-		t.Fatalf("provider calls = %d, want 1 (input joined turn 0, no extra turn)", len(calls))
-	}
+	require.Len(t, calls, 1, "input should join turn 0 with no extra turn")
 	first := calls[0].Messages[0]
-	if first.Role != "user" || strings.Join(textBlocks(first), "|") != "Hello, write a test file.\n\nAlso add tests." {
-		t.Errorf("turn-0 user message = %+v, want the prompt followed by the injected text", first)
-	}
-	if w := warningEvents(tr); len(w) != 0 {
-		t.Errorf("unexpected warnings: %+v", w)
-	}
+	require.Equal(t, "user", first.Role)
+	require.Equal(t, []string{"Hello, write a test file.\n\nAlso add tests."}, textBlocks(first),
+		"turn-0 user message should be the prompt followed by the injected text")
+	require.Empty(t, warningEvents(tr), "unexpected warnings")
 }
 
 // TestLoop_UserResponseDuringStreamFollowsToolResults covers arrival
@@ -330,23 +326,15 @@ func TestLoop_UserResponseDuringStreamFollowsToolResults(t *testing.T) {
 	}
 
 	rt, err := loop.Run(context.Background(), buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if rt.Outcome != "success" {
-		t.Fatalf("outcome = %q, want success", rt.Outcome)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "success", rt.Outcome)
+
 	calls := prov.params()
-	if len(calls) != 2 {
-		t.Fatalf("provider calls = %d, want 2", len(calls))
-	}
+	require.Len(t, calls, 2)
 	last := lastMessage(t, calls[1])
-	if last.Role != "user" || strings.Join(blockTypes(last), ",") != "tool_result,text" {
-		t.Fatalf("turn-1 trailing message = role %q blocks %v, want user [tool_result text]", last.Role, blockTypes(last))
-	}
-	if got := textBlocks(last); strings.Join(got, "") != "Focus on the parser." {
-		t.Errorf("injected text = %v", got)
-	}
+	require.Equal(t, "user", last.Role, "turn-1 trailing message role")
+	require.Equal(t, []string{"tool_result", "text"}, blockTypes(last), "turn-1 trailing message blocks")
+	require.Equal(t, "Focus on the parser.", strings.Join(textBlocks(last), ""), "injected text")
 }
 
 // TestLoop_UserResponseDuringToolDispatchFollowsToolResults covers
@@ -367,20 +355,14 @@ func TestLoop_UserResponseDuringToolDispatchFollowsToolResults(t *testing.T) {
 	loop.Tools = registry
 
 	rt, err := loop.Run(context.Background(), buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if rt.Outcome != "success" {
-		t.Fatalf("outcome = %q, want success", rt.Outcome)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "success", rt.Outcome)
+
 	calls := prov.params()
-	if len(calls) != 2 {
-		t.Fatalf("provider calls = %d, want 2", len(calls))
-	}
+	require.Len(t, calls, 2)
 	last := lastMessage(t, calls[1])
-	if strings.Join(blockTypes(last), ",") != "tool_result,text" || strings.Join(textBlocks(last), "") != "Skip the docs." {
-		t.Errorf("turn-1 trailing message = %+v, want tool_result then the injected text", last)
-	}
+	require.Equal(t, []string{"tool_result", "text"}, blockTypes(last), "turn-1 trailing message blocks")
+	require.Equal(t, "Skip the docs.", strings.Join(textBlocks(last), ""), "injected text")
 }
 
 // TestLoop_EndTurnWithQueuedInputContinuesRun pins that the run does not
@@ -396,26 +378,17 @@ func TestLoop_EndTurnWithQueuedInputContinuesRun(t *testing.T) {
 	}
 
 	rt, err := loop.Run(context.Background(), buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if rt.Outcome != "success" {
-		t.Fatalf("outcome = %q, want success", rt.Outcome)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "success", rt.Outcome)
+
 	calls := prov.params()
-	if len(calls) != 2 {
-		t.Fatalf("provider calls = %d, want 2 (end_turn continued with the queued input)", len(calls))
-	}
+	require.Len(t, calls, 2, "end_turn should continue with the queued input")
 	msgs := calls[1].Messages
-	if len(msgs) != 3 || msgs[1].Role != "assistant" || msgs[2].Role != "user" {
-		t.Fatalf("turn-1 history roles = %v, want user, assistant, user", rolesOf(msgs))
-	}
-	if strings.Join(textBlocks(msgs[2]), "") != "One more thing." {
-		t.Errorf("turn-1 user message = %+v", msgs[2])
-	}
-	if loop.userInput.pending() != 0 {
-		t.Errorf("%d inputs left queued after the run", loop.userInput.pending())
-	}
+	require.Len(t, msgs, 3, "turn-1 history")
+	require.Equal(t, "assistant", msgs[1].Role, "turn-1 history role at index 1")
+	require.Equal(t, "user", msgs[2].Role, "turn-1 history role at index 2")
+	require.Equal(t, "One more thing.", strings.Join(textBlocks(msgs[2]), ""), "turn-1 user message")
+	require.Zero(t, loop.userInput.pending(), "inputs left queued after the run")
 }
 
 func rolesOf(msgs []types.Message) []string {
@@ -437,30 +410,21 @@ func TestLoop_UserResponseOverflowIsReportedNotSilent(t *testing.T) {
 	}
 
 	w := awaitWarnings(t, tr, 1)
-	if len(w) != 1 {
-		t.Fatalf("warnings = %d (%+v), want exactly one for the overflow", len(w), w)
-	}
-	if want := fmt.Sprintf("r%d", maxQueuedUserInput+1); w[0].RequestID != want {
-		t.Errorf("warning requestId = %q, want the rejected event's %q", w[0].RequestID, want)
-	}
-	if !strings.Contains(w[0].Message, "queue full") {
-		t.Errorf("warning message = %q, want it to name the reason", w[0].Message)
-	}
+	require.Len(t, w, 1, "want exactly one warning for the overflow, got %+v", w)
+	require.Equal(t, fmt.Sprintf("r%d", maxQueuedUserInput+1), w[0].RequestID,
+		"warning should echo the rejected event's requestId")
+	require.Contains(t, w[0].Message, "queue full", "warning should name the reason")
 
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), buildTestConfig())
+	require.NoError(t, err)
+
 	texts := textBlocks(prov.params()[0].Messages[0])
-	if len(texts) != 1 {
-		t.Fatalf("turn-0 text blocks = %d, want one merged block", len(texts))
-	}
+	require.Len(t, texts, 1, "turn-0 should carry one merged text block")
 	paragraphs := strings.Split(texts[0], "\n\n")
-	if len(paragraphs) != 1+maxQueuedUserInput {
-		t.Fatalf("turn-0 paragraphs = %d, want the prompt plus %d accepted inputs", len(paragraphs), maxQueuedUserInput)
-	}
-	if paragraphs[1] != "message 1" || paragraphs[len(paragraphs)-1] != fmt.Sprintf("message %d", maxQueuedUserInput) {
-		t.Errorf("accepted inputs out of order or truncated: first %q, last %q", paragraphs[1], paragraphs[len(paragraphs)-1])
-	}
+	require.Len(t, paragraphs, 1+maxQueuedUserInput, "turn-0 should hold the prompt plus the accepted inputs")
+	require.Equal(t, "message 1", paragraphs[1], "accepted inputs out of order")
+	require.Equal(t, fmt.Sprintf("message %d", maxQueuedUserInput), paragraphs[len(paragraphs)-1],
+		"accepted inputs truncated")
 }
 
 // TestLoop_CancelDiscardsQueuedUserInput pins that cancel wins over
@@ -477,18 +441,10 @@ func TestLoop_CancelDiscardsQueuedUserInput(t *testing.T) {
 	}
 
 	rt, err := loop.Run(context.Background(), buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if rt.Outcome != "cancelled" {
-		t.Fatalf("outcome = %q, want cancelled", rt.Outcome)
-	}
-	if n := len(prov.params()); n != 1 {
-		t.Errorf("provider calls = %d, want 1 (queued input must not start another turn)", n)
-	}
-	if loop.userInput.pending() != 0 {
-		t.Errorf("%d inputs survived the cancel", loop.userInput.pending())
-	}
+	require.NoError(t, err)
+	require.Equal(t, "cancelled", rt.Outcome)
+	require.Len(t, prov.params(), 1, "queued input must not start another turn")
+	require.Zero(t, loop.userInput.pending(), "inputs survived the cancel")
 }
 
 func TestLoop_EmptyUserResponseIsRejectedWithWarning(t *testing.T) {
@@ -496,12 +452,9 @@ func TestLoop_EmptyUserResponseIsRejectedWithWarning(t *testing.T) {
 	tr.FireControl(userResponse("   ", "r-empty"))
 
 	w := awaitWarnings(t, tr, 1)
-	if len(w) != 1 || w[0].RequestID != "r-empty" {
-		t.Fatalf("warnings = %+v, want one echoing r-empty", w)
-	}
-	if loop.userInput.pending() != 0 {
-		t.Error("an empty user_response was queued")
-	}
+	require.Len(t, w, 1, "want one warning, got %+v", w)
+	require.Equal(t, "r-empty", w[0].RequestID, "warning should echo the rejected requestId")
+	require.Zero(t, loop.userInput.pending(), "an empty user_response was queued")
 }
 
 // TestLoop_UserResponseIsSanitizedLikeDynamicContext pins the shared
@@ -520,36 +473,27 @@ func TestLoop_UserResponseIsSanitizedLikeDynamicContext(t *testing.T) {
 	// The markup-only message is reported twice: sanitised, then
 	// rejected because nothing was left to inject.
 	w := awaitWarnings(t, tr, 4)
-	if len(w) != 4 {
-		t.Fatalf("warnings = %+v, want four", w)
-	}
+	require.Len(t, w, 4, "want four warnings, got %+v", w)
 	byID := map[string]string{}
 	for _, ev := range w {
 		byID[ev.RequestID] += ev.Message + "\n"
 	}
-	if !strings.Contains(byID["r-tags"], "user_response sanitized: tags_stripped") {
-		t.Errorf("r-tags warnings = %q", byID["r-tags"])
-	}
-	if !strings.Contains(byID["r-long"], "user_response sanitized: truncated") {
-		t.Errorf("r-long warnings = %q", byID["r-long"])
-	}
-	if !strings.Contains(byID["r-only-tags"], "user_response dropped: empty after sanitisation") {
-		t.Errorf("r-only-tags warnings = %q, want a rejection", byID["r-only-tags"])
-	}
+	t.Run("markup is stripped and reported", func(t *testing.T) {
+		require.Contains(t, byID["r-tags"], "user_response sanitized: tags_stripped")
+	})
+	t.Run("oversized text is truncated and reported", func(t *testing.T) {
+		require.Contains(t, byID["r-long"], "user_response sanitized: truncated")
+	})
+	t.Run("markup-only message is rejected and reported", func(t *testing.T) {
+		require.Contains(t, byID["r-only-tags"], "user_response dropped: empty after sanitisation")
+	})
 
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), buildTestConfig())
+	require.NoError(t, err)
 	paragraphs := strings.Split(textBlocks(prov.params()[0].Messages[0])[0], "\n\n")
-	if len(paragraphs) != 3 {
-		t.Fatalf("turn-0 paragraphs = %d, want the prompt plus the two accepted inputs", len(paragraphs))
-	}
-	if paragraphs[1] != "ignore the rules keep this" {
-		t.Errorf("tag-stripped input = %q", paragraphs[1])
-	}
-	if len(paragraphs[2]) != security.MaxOperatorTextBytes {
-		t.Errorf("truncated input length = %d, want %d", len(paragraphs[2]), security.MaxOperatorTextBytes)
-	}
+	require.Len(t, paragraphs, 3, "turn-0 should hold the prompt plus the two accepted inputs")
+	require.Equal(t, "ignore the rules keep this", paragraphs[1], "markup should be stripped from the accepted input")
+	require.Len(t, paragraphs[2], security.MaxOperatorTextBytes, "oversized input should be truncated to the cap")
 }
 
 // sourceDenyingGuard denies pre-turn content whose Source carries the
@@ -577,15 +521,9 @@ func TestLoop_InjectedUserInputIsGuardScreened(t *testing.T) {
 	}
 
 	rt, err := loop.Run(context.Background(), buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if rt.Outcome != "guardrail_blocked" {
-		t.Fatalf("outcome = %q, want guardrail_blocked", rt.Outcome)
-	}
-	if n := len(prov.params()); n != 1 {
-		t.Errorf("provider calls = %d, want 1 (denied input must not reach the model)", n)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "guardrail_blocked", rt.Outcome)
+	require.Len(t, prov.params(), 1, "denied input must not reach the model")
 }
 
 // TestLoop_InjectedUserInputGuardCopyIsScrubbed pins that the guard
@@ -604,33 +542,20 @@ func TestLoop_InjectedUserInputGuardCopyIsScrubbed(t *testing.T) {
 		}
 	}
 
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	g.mu.Lock()
-	var screened []guard.Input
-	for _, in := range g.inputs {
-		if strings.HasPrefix(in.Source, "user_response:") {
-			screened = append(screened, in)
-		}
-	}
-	g.mu.Unlock()
-	if len(screened) != 1 {
-		t.Fatalf("user_response guard inputs = %d, want 1", len(screened))
-	}
-	if strings.Contains(screened[0].Content, fakeAnthropicKey) || !strings.Contains(screened[0].Content, "[REDACTED]") {
-		t.Errorf("user_response guard input = %q, want the key scrubbed", screened[0].Content)
-	}
-	if got := screened[0].Metadata[guard.MetadataRedactedSpans]; got != "1" {
-		t.Errorf("user_response guard metadata = %v, want %s=1", screened[0].Metadata, guard.MetadataRedactedSpans)
-	}
+	_, err := loop.Run(context.Background(), buildTestConfig())
+	require.NoError(t, err)
+
+	screened := userResponseGuardInputs(g)
+	require.Len(t, screened, 1, "user_response guard inputs")
+	require.NotContains(t, screened[0].Content, fakeAnthropicKey, "guard input should not carry the key")
+	require.Contains(t, screened[0].Content, "[REDACTED]", "guard input should show the scrubbed key")
+	require.Equal(t, "1", screened[0].Metadata[guard.MetadataRedactedSpans], "redacted span count")
+
 	calls := prov.params()
-	if len(calls) < 2 {
-		t.Fatalf("provider calls = %d, want the reply to reach a second turn", len(calls))
-	}
-	if texts := textBlocks(lastMessage(t, calls[1])); len(texts) == 0 || !strings.Contains(texts[len(texts)-1], reply) {
-		t.Errorf("model's last user text = %q, want the operator's reply verbatim", texts)
-	}
+	require.GreaterOrEqual(t, len(calls), 2, "the reply should reach a second turn")
+	texts := textBlocks(lastMessage(t, calls[1]))
+	require.NotEmpty(t, texts, "the second turn should carry user text")
+	require.Contains(t, texts[len(texts)-1], reply, "model should receive the operator's reply verbatim")
 }
 
 // TestLoop_InjectedUserInputsGuardCopyKeepsOrder pins that two
@@ -648,24 +573,12 @@ func TestLoop_InjectedUserInputsGuardCopyKeepsOrder(t *testing.T) {
 		}
 	}
 
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	g.mu.Lock()
-	var screened []guard.Input
-	for _, in := range g.inputs {
-		if strings.HasPrefix(in.Source, "user_response:") {
-			screened = append(screened, in)
-		}
-	}
-	g.mu.Unlock()
-	if len(screened) != 1 {
-		t.Fatalf("user_response guard inputs = %d, want both inputs screened together once", len(screened))
-	}
-	if want := batchUntrustedChunks([]string{"first, nothing secret", "second, key [REDACTED]"}); screened[0].Content != want {
-		t.Errorf("user_response guard input = %q, want %q", screened[0].Content, want)
-	}
-	if got := screened[0].Metadata[guard.MetadataRedactedSpans]; got != "1" {
-		t.Errorf("redacted_spans = %q, want 1", got)
-	}
+	_, err := loop.Run(context.Background(), buildTestConfig())
+	require.NoError(t, err)
+
+	screened := userResponseGuardInputs(g)
+	require.Len(t, screened, 1, "both inputs should be screened together once")
+	want := batchUntrustedChunks([]string{"first, nothing secret", "second, key [REDACTED]"})
+	require.Equal(t, want, screened[0].Content, "chunks should keep arrival order")
+	require.Equal(t, "1", screened[0].Metadata[guard.MetadataRedactedSpans], "redacted span count")
 }

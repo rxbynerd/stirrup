@@ -12,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 )
@@ -120,22 +123,17 @@ func (e *unreachableWorkspaceExecutor) Capabilities() executor.ExecutorCapabilit
 func plantHostCanary(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "host_canary.txt"), []byte("HOSTFS_CANARY leaked-from-host-filesystem\n"), 0o644); err != nil {
-		t.Fatalf("write canary: %v", err)
-	}
+	err := os.WriteFile(filepath.Join(dir, "host_canary.txt"), []byte("HOSTFS_CANARY leaked-from-host-filesystem\n"), 0o644)
+	require.NoError(t, err, "write host canary")
 	t.Chdir(dir)
 }
 
 func runSearchTool(t *testing.T, tl *tool.Tool, input map[string]any) tool.StructuredResult {
 	t.Helper()
 	raw, err := json.Marshal(input)
-	if err != nil {
-		t.Fatalf("marshal input: %v", err)
-	}
+	require.NoError(t, err, "marshal input")
 	res, err := tl.StructuredHandler(context.Background(), raw)
-	if err != nil {
-		t.Fatalf("%s: unexpected error: %v", tl.Name, err)
-	}
+	require.NoError(t, err, "%s: unexpected error", tl.Name)
 	return res
 }
 
@@ -146,18 +144,12 @@ func TestGrepFilesTool_TreeBackedExecutorNeverReadsHostWorkingDirectory(t *testi
 	})
 
 	res := runSearchTool(t, GrepFilesTool(exec), map[string]any{"pattern": "HOSTFS_CANARY"})
-	if res.Text != noMatchesText {
-		t.Fatalf("host working-directory content reached the model: %q", res.Text)
-	}
-	if strings.Contains(res.Text, "host_canary") {
-		t.Fatalf("host path leaked into results: %q", res.Text)
-	}
+	require.Equal(t, noMatchesText, res.Text, "host working-directory content reached the model")
+	require.NotContains(t, res.Text, "host_canary", "host path leaked into results")
 
 	res = runSearchTool(t, GrepFilesTool(exec), map[string]any{"pattern": "func NewAPIExecutor"})
 	want := "harness/internal/executor/api.go:1:func NewAPIExecutor(token string) *APIExecutor {"
-	if res.Text != want {
-		t.Errorf("repository content not searched\n got: %q\nwant: %q", res.Text, want)
-	}
+	require.Equal(t, want, res.Text, "repository content not searched")
 }
 
 func TestFindFilesTool_TreeBackedExecutorNeverReadsHostWorkingDirectory(t *testing.T) {
@@ -168,18 +160,12 @@ func TestFindFilesTool_TreeBackedExecutorNeverReadsHostWorkingDirectory(t *testi
 	})
 
 	res := runSearchTool(t, FindFilesTool(exec), map[string]any{"name": "*.txt"})
-	if res.Text != noMatchesText {
-		t.Fatalf("host working-directory content reached the model: %q", res.Text)
-	}
+	require.Equal(t, noMatchesText, res.Text, "host working-directory content reached the model")
 
 	res = runSearchTool(t, FindFilesTool(exec), map[string]any{"name": "*.go"})
 	want := "harness/internal/executor/api.go\ntypes/runconfig.go"
-	if res.Text != want {
-		t.Errorf("repository tree not searched\n got: %q\nwant: %q", res.Text, want)
-	}
-	if exec.reads.Load() != 0 {
-		t.Errorf("find_files fetched %d file contents; name matching needs the tree only", exec.reads.Load())
-	}
+	assert.Equal(t, want, res.Text, "repository tree not searched")
+	assert.Zero(t, exec.reads.Load(), "name matching needs the tree only, not file contents")
 }
 
 func TestFindFilesTool_TreeBackedExecutorScopesResultsToSearchPath(t *testing.T) {
@@ -190,10 +176,7 @@ func TestFindFilesTool_TreeBackedExecutorScopesResultsToSearchPath(t *testing.T)
 	})
 
 	res := runSearchTool(t, FindFilesTool(exec), map[string]any{"name": "*.go", "path": "harness"})
-	want := "internal/api.go\nmain.go"
-	if res.Text != want {
-		t.Errorf("paths must be relative to the search root\n got: %q\nwant: %q", res.Text, want)
-	}
+	require.Equal(t, "internal/api.go\nmain.go", res.Text, "paths must be relative to the search root")
 }
 
 func TestGrepFilesTool_TreeBackedExecutorReadsPathsRelativeToRepositoryRoot(t *testing.T) {
@@ -202,9 +185,7 @@ func TestGrepFilesTool_TreeBackedExecutorReadsPathsRelativeToRepositoryRoot(t *t
 	})
 
 	res := runSearchTool(t, GrepFilesTool(exec), map[string]any{"pattern": "needle", "path": "harness"})
-	if want := "internal/api.go:1:needle here"; res.Text != want {
-		t.Errorf("match path must be relative to the search root\n got: %q\nwant: %q", res.Text, want)
-	}
+	require.Equal(t, "internal/api.go:1:needle here", res.Text, "match path must be relative to the search root")
 }
 
 func TestGrepFilesTool_TreeBackedExecutorAppliesIncludeAndExclude(t *testing.T) {
@@ -219,12 +200,8 @@ func TestGrepFilesTool_TreeBackedExecutorAppliesIncludeAndExclude(t *testing.T) 
 		"include": []string{"*.go"},
 		"exclude": []string{"testdata/*"},
 	})
-	if want := "a.go:1:needle"; res.Text != want {
-		t.Errorf("filters not applied\n got: %q\nwant: %q", res.Text, want)
-	}
-	if exec.reads.Load() != 1 {
-		t.Errorf("filtered-out files must not be fetched; got %d reads", exec.reads.Load())
-	}
+	assert.Equal(t, "a.go:1:needle", res.Text, "filters not applied")
+	assert.EqualValues(t, 1, exec.reads.Load(), "filtered-out files must not be fetched")
 }
 
 func TestGrepFilesTool_TreeBackedExecutorSkipsBinaryContent(t *testing.T) {
@@ -234,9 +211,7 @@ func TestGrepFilesTool_TreeBackedExecutorSkipsBinaryContent(t *testing.T) {
 	})
 
 	res := runSearchTool(t, GrepFilesTool(exec), map[string]any{"pattern": "needle"})
-	if want := "text.txt:1:needle"; res.Text != want {
-		t.Errorf("binary content must be skipped\n got: %q\nwant: %q", res.Text, want)
-	}
+	require.Equal(t, "text.txt:1:needle", res.Text, "binary content must be skipped")
 }
 
 func TestGrepFilesTool_TreeBackedExecutorBoundsFilesFetchedPerCall(t *testing.T) {
@@ -247,20 +222,13 @@ func TestGrepFilesTool_TreeBackedExecutorBoundsFilesFetchedPerCall(t *testing.T)
 	exec := newTreeExecutor(files)
 
 	res := runSearchTool(t, GrepFilesTool(exec), map[string]any{"pattern": "needle", "max_results": 1000})
-	if got := int(exec.reads.Load()); got != treeSearchMaxFiles {
-		t.Errorf("fetched %d files, want the %d-file cap", got, treeSearchMaxFiles)
-	}
-	if !strings.HasSuffix(res.Text, treeSearchIncompleteNotice) {
-		t.Errorf("a capped scan must tell the model it was partial, got: %q", res.Text)
-	}
+	assert.Equal(t, treeSearchMaxFiles, int(exec.reads.Load()), "a scan must stop at the file cap")
+	assert.True(t, strings.HasSuffix(res.Text, treeSearchIncompleteNotice),
+		"a capped scan must tell the model it was partial, got: %q", res.Text)
 
 	var got searchResult
-	if err := json.Unmarshal(res.Structured, &got); err != nil {
-		t.Fatalf("structured payload is not a searchResult: %v", err)
-	}
-	if !got.Truncated {
-		t.Error("a capped scan must be reported as truncated")
-	}
+	require.NoError(t, json.Unmarshal(res.Structured, &got), "structured payload is not a searchResult")
+	assert.True(t, got.Truncated, "a capped scan must be reported as truncated")
 }
 
 func TestGrepFilesTool_TreeBackedExecutorSkipsOversizedFiles(t *testing.T) {
@@ -270,12 +238,8 @@ func TestGrepFilesTool_TreeBackedExecutorSkipsOversizedFiles(t *testing.T) {
 	})
 
 	res := runSearchTool(t, GrepFilesTool(exec), map[string]any{"pattern": "needle"})
-	if want := "small.txt:1:needle"; res.Text != want {
-		t.Errorf("oversized files must be skipped\n got: %q\nwant: %q", res.Text, want)
-	}
-	if exec.reads.Load() != 1 {
-		t.Errorf("oversized files must not be fetched; got %d reads", exec.reads.Load())
-	}
+	assert.Equal(t, "small.txt:1:needle", res.Text, "oversized files must be skipped")
+	assert.EqualValues(t, 1, exec.reads.Load(), "oversized files must not be fetched")
 }
 
 func TestGrepFilesTool_TreeBackedExecutorReportsUnreadableFilesAsIncomplete(t *testing.T) {
@@ -286,12 +250,9 @@ func TestGrepFilesTool_TreeBackedExecutorReportsUnreadableFilesAsIncomplete(t *t
 	exec.readErr["b.go"] = fmt.Errorf("HTTP 403")
 
 	res := runSearchTool(t, GrepFilesTool(exec), map[string]any{"pattern": "needle"})
-	if !strings.Contains(res.Text, "a.go:1:needle") {
-		t.Errorf("readable files must still produce matches, got: %q", res.Text)
-	}
-	if !strings.HasSuffix(res.Text, treeSearchIncompleteNotice) {
-		t.Errorf("an unreadable file must mark the scan partial, got: %q", res.Text)
-	}
+	assert.Contains(t, res.Text, "a.go:1:needle", "readable files must still produce matches")
+	assert.True(t, strings.HasSuffix(res.Text, treeSearchIncompleteNotice),
+		"an unreadable file must mark the scan partial, got: %q", res.Text)
 }
 
 func TestFindFilesTool_TreeBackedExecutorReportsUpstreamTruncationAsIncomplete(t *testing.T) {
@@ -299,17 +260,12 @@ func TestFindFilesTool_TreeBackedExecutorReportsUpstreamTruncationAsIncomplete(t
 	exec.truncated = true
 
 	res := runSearchTool(t, FindFilesTool(exec), map[string]any{"name": "*.go"})
-	if !strings.HasSuffix(res.Text, treeSearchIncompleteNotice) {
-		t.Errorf("a truncated tree must mark the enumeration partial, got: %q", res.Text)
-	}
+	assert.True(t, strings.HasSuffix(res.Text, treeSearchIncompleteNotice),
+		"a truncated tree must mark the enumeration partial, got: %q", res.Text)
 
 	var got findResult
-	if err := json.Unmarshal(res.Structured, &got); err != nil {
-		t.Fatalf("structured payload is not a findResult: %v", err)
-	}
-	if !got.Truncated {
-		t.Error("a truncated tree must be reported as truncated")
-	}
+	require.NoError(t, json.Unmarshal(res.Structured, &got), "structured payload is not a findResult")
+	assert.True(t, got.Truncated, "a truncated tree must be reported as truncated")
 }
 
 func TestSearchTools_ExecutorWithoutHostPathOrTreeFailsClosed(t *testing.T) {
@@ -321,21 +277,16 @@ func TestSearchTools_ExecutorWithoutHostPathOrTreeFailsClosed(t *testing.T) {
 		tl    *tool.Tool
 		input map[string]any
 	}{
-		{"grep_files", GrepFilesTool(exec), map[string]any{"pattern": "HOSTFS_CANARY"}},
-		{"find_files", FindFilesTool(exec), map[string]any{"name": "*.txt"}},
+		{"grep files", GrepFilesTool(exec), map[string]any{"pattern": "HOSTFS_CANARY"}},
+		{"find files", FindFilesTool(exec), map[string]any{"name": "*.txt"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			raw, err := json.Marshal(tc.input)
-			if err != nil {
-				t.Fatalf("marshal input: %v", err)
-			}
+			require.NoError(t, err, "marshal input")
 			res, err := tc.tl.StructuredHandler(context.Background(), raw)
-			if err == nil {
-				t.Fatalf("expected an error rather than a host walk, got: %q", res.Text)
-			}
-			if !strings.Contains(err.Error(), "does not expose a searchable workspace") {
-				t.Errorf("error should name the missing workspace, got: %v", err)
-			}
+			require.Error(t, err, "expected an error rather than a host walk, got: %q", res.Text)
+			require.ErrorContains(t, err, "does not expose a searchable workspace",
+				"error should name the missing workspace")
 		})
 	}
 }
@@ -348,10 +299,6 @@ func TestGrepFilesTool_TreeListerOmitsColumn(t *testing.T) {
 		"a.go": "package a\nvar needle = 1\n",
 	})
 
-	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
-	res, err := GrepFilesTool(exec).StructuredHandler(context.Background(), input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	res := runSearchTool(t, GrepFilesTool(exec), map[string]any{"pattern": "needle"})
 	assertNoColumnKey(t, res.Structured)
 }

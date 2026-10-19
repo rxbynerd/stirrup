@@ -3,8 +3,9 @@ package provider
 import (
 	"bytes"
 	"context"
-	"slices"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/types"
@@ -44,9 +45,8 @@ func TestReplayProvider_SkipsSubAgentTurns(t *testing.T) {
 		textTurn("run-p", "", "parent 1"),
 	}
 	got := replayTexts(t, NewReplayProvider(turns))
-	if want := []string{"parent 0", "parent 1"}; !slices.Equal(got, want) {
-		t.Errorf("replayed %v, want %v", got, want)
-	}
+	want := []string{"parent 0", "parent 1"}
+	require.Equal(t, want, got)
 }
 
 func TestReplayProvider_ReplaysOneSubRunsTurns(t *testing.T) {
@@ -55,9 +55,8 @@ func TestReplayProvider_ReplaysOneSubRunsTurns(t *testing.T) {
 		textTurn("run-p/sub-1", "run-p", "child 1"),
 	}
 	got := replayTexts(t, NewReplayProvider(turns))
-	if want := []string{"child 0", "child 1"}; !slices.Equal(got, want) {
-		t.Errorf("replayed %v, want %v", got, want)
-	}
+	want := []string{"child 0", "child 1"}
+	require.Equal(t, want, got)
 }
 
 func TestReplayProvider_ReplaysEveryTopLevelRun(t *testing.T) {
@@ -68,9 +67,8 @@ func TestReplayProvider_ReplaysEveryTopLevelRun(t *testing.T) {
 		textTurn("run-b", "", "b0"),
 	}
 	got := replayTexts(t, NewReplayProvider(turns))
-	if want := []string{"a0", "a1", "b0"}; !slices.Equal(got, want) {
-		t.Errorf("replayed %v, want %v", got, want)
-	}
+	want := []string{"a0", "a1", "b0"}
+	require.Equal(t, want, got)
 }
 
 func TestReplayProvider_UntaggedTurnsReplayInOrder(t *testing.T) {
@@ -79,9 +77,8 @@ func TestReplayProvider_UntaggedTurnsReplayInOrder(t *testing.T) {
 		textTurn("", "", "second"),
 	}
 	got := replayTexts(t, NewReplayProvider(turns))
-	if want := []string{"first", "second"}; !slices.Equal(got, want) {
-		t.Errorf("replayed %v, want %v", got, want)
-	}
+	want := []string{"first", "second"}
+	require.Equal(t, want, got)
 }
 
 // TestReplayProvider_RecordingWithSubAgentsReplaysParentOnly writes a
@@ -101,20 +98,15 @@ func TestReplayProvider_RecordingWithSubAgentsReplaysParentOnly(t *testing.T) {
 	record(child, 0, "child 0")
 	record(parent, 0, "parent 0")
 	record(child, 1, "child 1")
-	if _, err := child.Finish(context.Background(), "success"); err != nil {
-		t.Fatal(err)
-	}
+	_, err := child.Finish(context.Background(), "success")
+	require.NoError(t, err)
 	record(parent, 1, "parent 1")
-	if _, err := parent.Finish(context.Background(), "success"); err != nil {
-		t.Fatal(err)
-	}
+	_, err = parent.Finish(context.Background(), "success")
+	require.NoError(t, err)
 
 	rec, err := tracereader.NewReader(bytes.NewReader(buf.Bytes())).ReadRecording()
-	if err != nil {
-		t.Fatalf("ReadRecording: %v", err)
-	}
+	require.NoError(t, err, "ReadRecording")
 	got := replayTexts(t, NewReplayProvider(rec.Turns))
-	if want := []string{"parent 0", "parent 1"}; !slices.Equal(got, want) {
-		t.Errorf("replayed %v, want %v", got, want)
-	}
+	want := []string{"parent 0", "parent 1"}
+	require.Equal(t, want, got)
 }

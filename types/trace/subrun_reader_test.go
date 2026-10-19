@@ -6,8 +6,9 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
-	"slices"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -28,9 +29,7 @@ func eventLines(t *testing.T, events ...map[string]any) []byte {
 func readRecordingFrom(t *testing.T, body []byte) *types.RunRecording {
 	t.Helper()
 	rec, err := NewReader(bytes.NewReader(body), WithLogger(discardLogger())).ReadRecording()
-	if err != nil {
-		t.Fatalf("ReadRecording: %v", err)
-	}
+	require.NoError(t, err)
 	return rec
 }
 
@@ -65,32 +64,20 @@ func turnTexts(turns []types.TurnRecord) []string {
 // Turns in file order and SubRuns stays empty.
 func TestReadRecording_LegacyFixtureMatchesGolden(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("testdata", "legacy_v1_subagent.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	rec := readRecordingFrom(t, body)
 	got, err := json.MarshalIndent(rec, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	got = append(got, '\n')
 
 	goldenPath := filepath.Join("testdata", "legacy_v1_subagent.golden.json")
 	if *updateGolden {
-		if err := os.WriteFile(goldenPath, got, 0o644); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(goldenPath, got, 0o644))
 	}
 	want, err := os.ReadFile(goldenPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, want) {
-		t.Errorf("legacy recording differs from golden:\n got: %s\nwant: %s", got, want)
-	}
-	if len(rec.SubRuns) != 0 {
-		t.Errorf("SubRuns = %d, want 0 for a trace without run IDs", len(rec.SubRuns))
-	}
+	require.NoError(t, err)
+	require.Equal(t, string(want), string(got), "legacy recording differs from %s", goldenPath)
+	require.Empty(t, rec.SubRuns, "a trace without run IDs has no sub-runs")
 }
 
 // TestReadRecording_GroupsSubRuns pins that a parent with two
@@ -117,47 +104,38 @@ func TestReadRecording_GroupsSubRuns(t *testing.T) {
 	)
 
 	rec := readRecordingFrom(t, body)
-	if got := turnTexts(rec.Turns); !slices.Equal(got, []string{"p0", "p1"}) {
-		t.Errorf("parent Turns = %v, want [p0 p1]", got)
+	require.Equal(t, []string{"p0", "p1"}, turnTexts(rec.Turns))
+	for i, turn := range rec.Turns {
+		require.Equal(t, parent, turn.RunID, "Turns[%d] run ID", i)
+		require.Empty(t, turn.ParentRunID, "Turns[%d] parent run ID", i)
 	}
-	for _, turn := range rec.Turns {
-		if turn.RunID != parent || turn.ParentRunID != "" {
-			t.Errorf("parent turn tags = (%q, %q), want (%q, \"\")", turn.RunID, turn.ParentRunID, parent)
-		}
-	}
-	if len(rec.SubRuns) != 2 {
-		t.Fatalf("SubRuns = %d, want 2", len(rec.SubRuns))
-	}
+
+	require.Len(t, rec.SubRuns, 2)
 	want := []struct {
-		runID, mode, outcome string
-		texts                []string
+		name, runID, mode, outcome string
+		texts                      []string
 	}{
-		{childA, "research", "success", []string{"a0", "a1"}},
-		{childB, "review", "max_turns", []string{"b0", "b1"}},
+		{"research sub-run", childA, "research", "success", []string{"a0", "a1"}},
+		{"review sub-run", childB, "review", "max_turns", []string{"b0", "b1"}},
 	}
 	for i, w := range want {
-		sub := rec.SubRuns[i]
-		if sub.RunID != w.runID || sub.ParentRunID != parent {
-			t.Errorf("SubRuns[%d] ids = (%q, %q), want (%q, %q)", i, sub.RunID, sub.ParentRunID, w.runID, parent)
-		}
-		if sub.Config.Mode != w.mode {
-			t.Errorf("SubRuns[%d].Config.Mode = %q, want %q", i, sub.Config.Mode, w.mode)
-		}
-		if got := turnTexts(sub.Turns); !slices.Equal(got, w.texts) {
-			t.Errorf("SubRuns[%d] turns = %v, want %v", i, got, w.texts)
-		}
-		for _, turn := range sub.Turns {
-			if turn.RunID != w.runID || turn.ParentRunID != parent {
-				t.Errorf("SubRuns[%d] turn tags = (%q, %q), want (%q, %q)", i, turn.RunID, turn.ParentRunID, w.runID, parent)
+		t.Run(w.name, func(t *testing.T) {
+			sub := rec.SubRuns[i]
+			require.Equal(t, w.runID, sub.RunID)
+			require.Equal(t, parent, sub.ParentRunID)
+			require.Equal(t, w.mode, sub.Config.Mode)
+			require.Equal(t, w.texts, turnTexts(sub.Turns))
+			for _, turn := range sub.Turns {
+				require.Equal(t, w.runID, turn.RunID)
+				require.Equal(t, parent, turn.ParentRunID)
 			}
-		}
-		if sub.Summary == nil || sub.Summary.Outcome != w.outcome {
-			t.Errorf("SubRuns[%d].Summary = %+v, want outcome %q", i, sub.Summary, w.outcome)
-		}
+			require.NotNil(t, sub.Summary)
+			require.Equal(t, w.outcome, sub.Summary.Outcome)
+		})
 	}
-	if rec.SubRuns[0].Summary.TokenUsage.Input != 10 || rec.SubRuns[0].Summary.DurationMs != 50 {
-		t.Errorf("SubRuns[0].Summary = %+v, want tokens and duration preserved", rec.SubRuns[0].Summary)
-	}
+
+	require.Equal(t, 10, rec.SubRuns[0].Summary.TokenUsage.Input)
+	require.EqualValues(t, 50, rec.SubRuns[0].Summary.DurationMs)
 }
 
 // TestReadRecording_SubRunWithoutLifecycleEvents pins that child
@@ -170,18 +148,11 @@ func TestReadRecording_SubRunWithoutLifecycleEvents(t *testing.T) {
 		turnLine("run-p", "", 0, "p0"),
 	)
 	rec := readRecordingFrom(t, body)
-	if got := turnTexts(rec.Turns); !slices.Equal(got, []string{"p0"}) {
-		t.Errorf("parent Turns = %v, want [p0]", got)
-	}
-	if len(rec.SubRuns) != 1 || rec.SubRuns[0].RunID != "run-p/sub-1" {
-		t.Fatalf("SubRuns = %+v, want one entry for run-p/sub-1", rec.SubRuns)
-	}
-	if rec.SubRuns[0].Summary != nil {
-		t.Errorf("Summary = %+v, want nil for an unfinished child", rec.SubRuns[0].Summary)
-	}
-	if got := turnTexts(rec.SubRuns[0].Turns); !slices.Equal(got, []string{"c0"}) {
-		t.Errorf("child turns = %v, want [c0]", got)
-	}
+	require.Equal(t, []string{"p0"}, turnTexts(rec.Turns))
+	require.Len(t, rec.SubRuns, 1)
+	require.Equal(t, "run-p/sub-1", rec.SubRuns[0].RunID)
+	require.Nil(t, rec.SubRuns[0].Summary, "an unfinished child has no summary")
+	require.Equal(t, []string{"c0"}, turnTexts(rec.SubRuns[0].Turns))
 }
 
 // TestReadRecording_TopLevelRecordsStayInTurns pins that records with
@@ -197,12 +168,8 @@ func TestReadRecording_TopLevelRecordsStayInTurns(t *testing.T) {
 			turnLine("run-p", "", 1, "p1"),
 		)
 		rec := readRecordingFrom(t, body)
-		if got := turnTexts(rec.Turns); !slices.Equal(got, []string{"p0", "p1"}) {
-			t.Errorf("Turns = %v, want [p0 p1]", got)
-		}
-		if len(rec.SubRuns) != 1 {
-			t.Errorf("SubRuns = %d, want 1", len(rec.SubRuns))
-		}
+		require.Equal(t, []string{"p0", "p1"}, turnTexts(rec.Turns))
+		require.Len(t, rec.SubRuns, 1)
 	})
 	t.Run("follow-up run", func(t *testing.T) {
 		body := eventLines(t,
@@ -213,12 +180,8 @@ func TestReadRecording_TopLevelRecordsStayInTurns(t *testing.T) {
 			turnLine("run-2", "", 0, "second"),
 		)
 		rec := readRecordingFrom(t, body)
-		if got := turnTexts(rec.Turns); !slices.Equal(got, []string{"first", "second"}) {
-			t.Errorf("Turns = %v, want [first second]", got)
-		}
-		if len(rec.SubRuns) != 0 {
-			t.Errorf("SubRuns = %d, want 0", len(rec.SubRuns))
-		}
+		require.Equal(t, []string{"first", "second"}, turnTexts(rec.Turns))
+		require.Empty(t, rec.SubRuns)
 	})
 }
 
@@ -233,13 +196,11 @@ func TestReadRecording_SynthesisesSubRunCommandOutputs(t *testing.T) {
 		child,
 	)
 	rec := readRecordingFrom(t, body)
-	if len(rec.CommandOutputs) != 1 {
-		t.Fatalf("CommandOutputs = %d, want 1", len(rec.CommandOutputs))
-	}
+	require.Len(t, rec.CommandOutputs, 1)
 	got := rec.CommandOutputs[0]
-	if got.RunID != "run-p/sub-1" || got.ParentRunID != "run-p" || got.ToolUseID != "call-1" {
-		t.Errorf("synthesised record = (%q, %q, %q), want (run-p/sub-1, run-p, call-1)", got.RunID, got.ParentRunID, got.ToolUseID)
-	}
+	require.Equal(t, "run-p/sub-1", got.RunID)
+	require.Equal(t, "run-p", got.ParentRunID)
+	require.Equal(t, "call-1", got.ToolUseID)
 }
 
 // TestReader_NextSkipsSubRunFinished pins that Next yields only the
@@ -251,10 +212,7 @@ func TestReader_NextSkipsSubRunFinished(t *testing.T) {
 		map[string]any{"kind": "run_finished", "trace": types.RunTrace{ID: "run-p", Outcome: "success"}},
 	)
 	got, err := NewReader(bytes.NewReader(body), WithLogger(discardLogger())).All()
-	if err != nil {
-		t.Fatalf("All: %v", err)
-	}
-	if len(got) != 1 || got[0].ID != "run-p" {
-		t.Fatalf("All = %+v, want only the parent trace", got)
-	}
+	require.NoError(t, err)
+	require.Len(t, got, 1, "only the parent trace is yielded")
+	require.Equal(t, "run-p", got[0].ID)
 }

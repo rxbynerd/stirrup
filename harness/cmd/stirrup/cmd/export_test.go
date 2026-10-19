@@ -5,16 +5,17 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
@@ -64,29 +65,20 @@ func sandboxTarStream(t *testing.T, files map[string]string) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
-	if err := tw.WriteHeader(&tar.Header{Name: "./", Typeflag: tar.TypeDir, Mode: 0o755}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, tw.WriteHeader(&tar.Header{Name: "./", Typeflag: tar.TypeDir, Mode: 0o755}))
 	for name, body := range files {
-		if err := tw.WriteHeader(&tar.Header{Name: "./" + name, Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(body))}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tw.Write([]byte(body)); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, tw.WriteHeader(&tar.Header{Name: "./" + name, Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(body))}))
+		_, err := tw.Write([]byte(body))
+		require.NoError(t, err)
 	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, tw.Close())
 	return buf.Bytes()
 }
 
 func uploadedFiles(t *testing.T, body []byte) map[string]string {
 	t.Helper()
 	gzr, err := gzip.NewReader(bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("gzip.NewReader: %v", err)
-	}
+	require.NoError(t, err, "gzip.NewReader")
 	tr := tar.NewReader(gzr)
 	files := map[string]string{}
 	for {
@@ -94,9 +86,7 @@ func uploadedFiles(t *testing.T, body []byte) map[string]string {
 		if err == io.EOF {
 			return files
 		}
-		if err != nil {
-			t.Fatalf("tar.Next: %v", err)
-		}
+		require.NoError(t, err, "tar.Next")
 		data, _ := io.ReadAll(tr)
 		files[h.Name] = string(data)
 	}
@@ -109,9 +99,7 @@ func TestExportWorkspace_ArchivesSandboxNotHarnessCwd(t *testing.T) {
 	for _, typ := range []string{"k8s", "k8s-sandbox"} {
 		t.Run(typ, func(t *testing.T) {
 			hostCwd := t.TempDir()
-			if err := os.WriteFile(filepath.Join(hostCwd, "host-sentinel.txt"), []byte("host"), 0o644); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.WriteFile(filepath.Join(hostCwd, "host-sentinel.txt"), []byte("host"), 0o644))
 			t.Chdir(hostCwd)
 			uploads := installGCSUploadCapture(t)
 
@@ -120,17 +108,11 @@ func TestExportWorkspace_ArchivesSandboxNotHarnessCwd(t *testing.T) {
 			cfg.Executor.WorkspaceExportTo = "gs://bucket/runs/r1/workspace.tar.gz"
 			sandbox := &archiverExecutor{stream: sandboxTarStream(t, map[string]string{"sandbox-sentinel.txt": "sandbox"})}
 
-			if _, err := exportWorkspace(context.Background(), cfg, sandbox, cfg.Executor.WorkspaceExportTo); err != nil {
-				t.Fatalf("exportWorkspace: %v", err)
-			}
+			_, err := exportWorkspace(context.Background(), cfg, sandbox, cfg.Executor.WorkspaceExportTo)
+			require.NoError(t, err)
 			got := uploads()
-			if len(got) != 1 {
-				t.Fatalf("uploads = %d, want 1", len(got))
-			}
-			files := uploadedFiles(t, got[0])
-			if len(files) != 1 || files["sandbox-sentinel.txt"] != "sandbox" {
-				t.Errorf("uploaded entries = %v, want only sandbox-sentinel.txt", files)
-			}
+			require.Len(t, got, 1)
+			assert.Equal(t, map[string]string{"sandbox-sentinel.txt": "sandbox"}, uploadedFiles(t, got[0]))
 		})
 	}
 }
@@ -146,18 +128,10 @@ func TestExportWorkspace_MissingRootNamesTheExecutor(t *testing.T) {
 	missing := &archiverExecutor{err: fmt.Errorf("archive workspace /workspace: %w", executor.ErrWorkspaceRootMissing)}
 
 	receipt, err := exportWorkspace(context.Background(), cfg, missing, cfg.Executor.WorkspaceExportTo)
-	if !errors.Is(err, executor.ErrWorkspaceRootMissing) {
-		t.Fatalf("exportWorkspace error = %v, want ErrWorkspaceRootMissing", err)
-	}
-	if !strings.Contains(err.Error(), "k8s-sandbox executor") {
-		t.Errorf("error %q does not name the executor", err)
-	}
-	if receipt.Delivered() {
-		t.Errorf("receipt = %+v, want an undelivered receipt", receipt)
-	}
-	if n := len(uploads()); n != 0 {
-		t.Errorf("uploads = %d, want 0", n)
-	}
+	require.ErrorIs(t, err, executor.ErrWorkspaceRootMissing)
+	require.ErrorContains(t, err, "k8s-sandbox executor")
+	assert.False(t, receipt.Delivered(), "receipt = %+v", receipt)
+	assert.Empty(t, uploads())
 }
 
 // TestExportWorkspace_EmptyWorkspaceUploadsAnEmptyArchive pins that an
@@ -169,19 +143,11 @@ func TestExportWorkspace_EmptyWorkspaceUploadsAnEmptyArchive(t *testing.T) {
 	cfg.Executor.WorkspaceExportTo = "gs://bucket/runs/r1/workspace.tar.gz"
 
 	receipt, err := exportWorkspace(context.Background(), cfg, &archiverExecutor{}, cfg.Executor.WorkspaceExportTo)
-	if err != nil {
-		t.Fatalf("exportWorkspace: %v", err)
-	}
-	if receipt.Status != types.ExportStatusEmpty {
-		t.Errorf("receipt status = %q, want %q", receipt.Status, types.ExportStatusEmpty)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, types.ExportStatusEmpty, receipt.Status)
 	got := uploads()
-	if len(got) != 1 {
-		t.Fatalf("uploads = %d, want 1 (an empty archive)", len(got))
-	}
-	if files := uploadedFiles(t, got[0]); len(files) != 0 {
-		t.Errorf("empty workspace uploaded entries %v", files)
-	}
+	require.Len(t, got, 1, "an empty workspace uploads one archive")
+	assert.Empty(t, uploadedFiles(t, got[0]))
 }
 
 // TestExportWorkspace_ExecutorWithoutArchiver pins that an executor lacking
@@ -193,15 +159,10 @@ func TestExportWorkspace_ExecutorWithoutArchiver(t *testing.T) {
 	cfg.Executor.WorkspaceExportTo = "gs://bucket/runs/r1/workspace.tar.gz"
 
 	receipt, err := exportWorkspace(context.Background(), cfg, &executor.NoneExecutor{}, cfg.Executor.WorkspaceExportTo)
-	if err == nil || !strings.Contains(err.Error(), "cannot archive its workspace") {
-		t.Fatalf("error = %v, want a cannot-archive failure", err)
-	}
-	if receipt.Status != types.ExportStatusFailed || receipt.URI != cfg.Executor.WorkspaceExportTo {
-		t.Errorf("receipt = %+v, want a failed receipt for the destination", receipt)
-	}
-	if n := len(uploads()); n != 0 {
-		t.Errorf("uploads = %d, want 0", n)
-	}
+	require.ErrorContains(t, err, "cannot archive its workspace")
+	assert.Equal(t, types.ExportStatusFailed, receipt.Status)
+	assert.Equal(t, cfg.Executor.WorkspaceExportTo, receipt.URI)
+	assert.Empty(t, uploads())
 }
 
 // TestRunWithConfig_ExportsLoopExecutorWorkspace pins that a harness run
@@ -215,21 +176,14 @@ func TestRunWithConfig_ExportsLoopExecutorWorkspace(t *testing.T) {
 
 	config := runOutcomeTestConfig(t, srv.URL)
 	config.Executor.WorkspaceExportTo = "gs://bucket/runs/r1/workspace.tar.gz"
-	if err := os.WriteFile(filepath.Join(config.Executor.Workspace, "seed.txt"), []byte("from the executor"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(config.Executor.Workspace, "seed.txt"), []byte("from the executor"), 0o644))
 
 	stdoutDone := captureStdout(t)
 	runErr := runWithConfig(config, runOptions{outputMode: "json"})
 	_ = stdoutDone()
-	if runErr != nil {
-		t.Fatalf("runWithConfig: %v", runErr)
-	}
+	require.NoError(t, runErr)
 	got := uploads()
-	if len(got) != 1 {
-		t.Fatalf("uploads = %d, want 1", len(got))
-	}
-	if files := uploadedFiles(t, got[0]); files["seed.txt"] != "from the executor" {
-		t.Errorf("uploaded entries = %v, want seed.txt from the executor's workspace", files)
-	}
+	require.Len(t, got, 1)
+	files := uploadedFiles(t, got[0])
+	require.Equal(t, "from the executor", files["seed.txt"], "uploaded entries = %v", files)
 }

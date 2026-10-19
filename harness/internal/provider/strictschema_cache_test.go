@@ -3,6 +3,8 @@ package provider
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestSchemaHash pins the basic correctness properties of schemaHash:
@@ -17,39 +19,43 @@ import (
 // The test is not a cryptographic collision-resistance check; that
 // belongs to the underlying primitive. The point is to keep the
 // interface honest against accidental replacement.
-func TestSchemaHash(t *testing.T) {
-	inputs := []json.RawMessage{
-		json.RawMessage(`{"type":"object"}`),
-		json.RawMessage(`{"type":"array"}`),
-		json.RawMessage(`{"type":"string"}`),
-		json.RawMessage(`{}`),
-		json.RawMessage(`{"type":"object","properties":{"x":{"type":"string"}}}`),
+func TestSchemaHash_DeterministicDistinctLength(t *testing.T) {
+	schemas := []struct {
+		name   string
+		schema json.RawMessage
+	}{
+		{name: "object", schema: json.RawMessage(`{"type":"object"}`)},
+		{name: "array", schema: json.RawMessage(`{"type":"array"}`)},
+		{name: "string", schema: json.RawMessage(`{"type":"string"}`)},
+		{name: "empty", schema: json.RawMessage(`{}`)},
+		{name: "object with property", schema: json.RawMessage(`{"type":"object","properties":{"x":{"type":"string"}}}`)},
 	}
 
-	// Determinism: hashing the same bytes twice yields the same string.
-	for _, in := range inputs {
-		first := schemaHash(in)
-		second := schemaHash(in)
-		if first != second {
-			t.Errorf("schemaHash(%s) not deterministic: %q != %q", in, first, second)
+	t.Run("deterministic", func(t *testing.T) {
+		for _, tc := range schemas {
+			t.Run(tc.name, func(t *testing.T) {
+				first := schemaHash(tc.schema)
+				second := schemaHash(tc.schema)
+				require.Equal(t, first, second)
+			})
 		}
-	}
+	})
 
-	// Distinctness: each input in the set hashes to a unique value.
-	seen := make(map[string]json.RawMessage, len(inputs))
-	for _, in := range inputs {
-		h := schemaHash(in)
-		if prev, ok := seen[h]; ok {
-			t.Errorf("schemaHash collision between %s and %s -> %q", prev, in, h)
+	t.Run("distinct inputs", func(t *testing.T) {
+		seen := make(map[string]string, len(schemas))
+		for _, tc := range schemas {
+			h := schemaHash(tc.schema)
+			prev, dup := seen[h]
+			require.False(t, dup, "%s and %s hash to the same value %q", prev, tc.name, h)
+			seen[h] = tc.name
 		}
-		seen[h] = in
-	}
+	})
 
-	// SHA-256 hex output is 64 chars. A drop to a shorter digest
-	// (e.g. CRC32) would be a regression both because it weakens
-	// collision resistance and because it would not pad to 64; pin
-	// the length so the cache-key equality cost stays bounded.
-	if h := schemaHash(inputs[0]); len(h) != 64 {
-		t.Errorf("schemaHash length = %d, want 64 (hex-encoded SHA-256)", len(h))
-	}
+	// A shorter digest (for example CRC32) would weaken collision resistance
+	// and would not pad to 64 characters, so the cache-key comparison cost
+	// stays bounded only while the length is pinned.
+	t.Run("sha256 hex length", func(t *testing.T) {
+		h := schemaHash(schemas[0].schema)
+		require.Len(t, h, 64, "want 64 hex characters (hex-encoded SHA-256)")
+	})
 }

@@ -3,7 +3,6 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	pb "github.com/rxbynerd/stirrup/gen/harness/v1"
@@ -66,23 +67,20 @@ func TestRunWithConfig_StructuredOutputAfterCorrection(t *testing.T) {
 	runErr := runWithConfig(config, runOptions{outputMode: "json"})
 	stdout := stdoutDone()
 
-	if runErr != nil {
-		t.Fatalf("runWithConfig error = %v, want nil", runErr)
-	}
+	require.NoError(t, runErr)
 	const want = `{"title":"Fix login","labels":["bug"]}`
-	if n := requests.Load(); n != 2 {
-		t.Errorf("provider requests = %d, want 2", n)
-	}
+	assert.EqualValues(t, 2, requests.Load())
+
 	result := decodeStirrupResult(t, stdout)
-	if result.Outcome != "success" || string(result.StructuredOutput) != want {
-		t.Errorf("RunResult outcome = %q, structuredOutput = %s; want success with %s", result.Outcome, result.StructuredOutput, want)
-	}
-	if done := stdioDoneEvent(t, stdout); done.Trace == nil || string(done.Trace.StructuredOutput) != want {
-		t.Errorf("done trace = %+v, want structuredOutput %s", done.Trace, want)
-	}
-	if rt := runFinishedTrace(t, tracePath); string(rt.StructuredOutput) != want {
-		t.Errorf("trace structuredOutput = %s, want %s", rt.StructuredOutput, want)
-	}
+	assert.Equal(t, "success", result.Outcome)
+	assert.Equal(t, want, string(result.StructuredOutput)) //nolint:testifylint // exact compact bytes are the behaviour under test
+
+	done := stdioDoneEvent(t, stdout)
+	require.NotNil(t, done.Trace)
+	assert.Equal(t, want, string(done.Trace.StructuredOutput)) //nolint:testifylint // exact compact bytes are the behaviour under test
+
+	rt := runFinishedTrace(t, tracePath)
+	assert.Equal(t, want, string(rt.StructuredOutput)) //nolint:testifylint // exact compact bytes are the behaviour under test
 }
 
 func TestRunWithConfig_StructuredOutputFailureExitsNonZero(t *testing.T) {
@@ -94,28 +92,20 @@ func TestRunWithConfig_StructuredOutputFailureExitsNonZero(t *testing.T) {
 	runErr := runWithConfig(config, runOptions{outputMode: "json"})
 	stdout := stdoutDone()
 
-	if runErr == nil || classifyExitCode(runErr) != 1 {
-		t.Errorf("runWithConfig error = %v (exit %d), want a non-zero exit", runErr, classifyExitCode(runErr))
-	}
-	if n := requests.Load(); n != 3 {
-		t.Errorf("provider requests = %d, want the answer and two corrective attempts", n)
-	}
+	require.Error(t, runErr)
+	assert.Equal(t, 1, classifyExitCode(runErr))
+	assert.EqualValues(t, 3, requests.Load(), "the answer and two corrective attempts")
+
 	result := decodeStirrupResult(t, stdout)
-	if result.Outcome != "structured_output_failed" {
-		t.Errorf("RunResult outcome = %q, want structured_output_failed", result.Outcome)
-	}
-	if !strings.Contains(result.Error, "missing property 'labels'") {
-		t.Errorf("RunResult error = %q, want the validation error", result.Error)
-	}
-	if result.StructuredOutput != nil {
-		t.Errorf("RunResult structuredOutput = %s, want none", result.StructuredOutput)
-	}
-	if done := stdioDoneEvent(t, stdout); done.StopReason != "structured_output_failed" {
-		t.Errorf("done stop reason = %q, want structured_output_failed", done.StopReason)
-	}
+	assert.Equal(t, "structured_output_failed", result.Outcome)
+	assert.Contains(t, result.Error, "missing property 'labels'")
+	assert.Nil(t, result.StructuredOutput)
+
+	done := stdioDoneEvent(t, stdout)
+	assert.Equal(t, "structured_output_failed", done.StopReason)
 }
 
-func TestRunWithConfig_StructuredOutputKeepsTheResultLineUnderItsCap(t *testing.T) {
+func TestRunWithConfig_StructuredOutput_ResultLineStaysUnderCap(t *testing.T) {
 	const resultLineCap = 250 * 1024
 	prefix, suffix := `{"title":"`, `","labels":["bug"]}`
 	document := func(size int) string {
@@ -144,16 +134,14 @@ func TestRunWithConfig_StructuredOutputKeepsTheResultLineUnderItsCap(t *testing.
 			stdout := stdoutDone()
 
 			for _, line := range strings.Split(stdout, "\n") {
-				if strings.HasPrefix(line, "STIRRUP_RESULT ") && len(line)+1 > resultLineCap {
-					t.Errorf("STIRRUP_RESULT line is %d bytes, over the %d-byte cap", len(line)+1, resultLineCap)
+				if strings.HasPrefix(line, "STIRRUP_RESULT ") {
+					require.LessOrEqual(t, len(line)+1, resultLineCap, "STIRRUP_RESULT line including its newline")
 				}
 			}
 			result := decodeStirrupResult(t, stdout)
-			if result.Outcome != tc.wantOutcome {
-				t.Fatalf("RunResult outcome = %q, want %q (error %q)", result.Outcome, tc.wantOutcome, result.Error)
-			}
-			if tc.wantOutcome == "success" && string(result.StructuredOutput) != tc.doc {
-				t.Errorf("structuredOutput is %d bytes, want the %d-byte document", len(result.StructuredOutput), len(tc.doc))
+			require.Equal(t, tc.wantOutcome, result.Outcome, "error %q", result.Error)
+			if tc.wantOutcome == "success" {
+				require.Equal(t, tc.doc, string(result.StructuredOutput))
 			}
 		})
 	}
@@ -163,13 +151,9 @@ func structuredJobTask(t *testing.T, providerURL string) *pb.RunConfig {
 	t.Helper()
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 	var schemaDoc map[string]any
-	if err := json.Unmarshal([]byte(cmdTriageSchema), &schemaDoc); err != nil {
-		t.Fatalf("parse schema: %v", err)
-	}
+	require.NoError(t, json.Unmarshal([]byte(cmdTriageSchema), &schemaDoc), "parse schema")
 	schema, err := structpb.NewStruct(schemaDoc)
-	if err != nil {
-		t.Fatalf("NewStruct: %v", err)
-	}
+	require.NoError(t, err, "build schema struct")
 	task := followUpJobConfig(t, providerURL, 30, 0)
 	task.FollowUpGrace = nil
 	task.MaxTurns = 3
@@ -190,7 +174,7 @@ func runStructuredJob(t *testing.T, task *pb.RunConfig) (*pb.HarnessEvent, error
 	select {
 	case runErr = <-errCh:
 	case <-time.After(15 * time.Second):
-		t.Fatal("runJob did not return")
+		require.Fail(t, "runJob did not return")
 	}
 	var done *pb.HarnessEvent
 	for _, ev := range srv.events() {
@@ -207,19 +191,13 @@ func TestRunJob_StructuredOutputOnDone(t *testing.T) {
 	installStubResultSink(t, sink)
 
 	done, runErr := runStructuredJob(t, structuredJobTask(t, provider.URL))
-	if runErr != nil {
-		t.Fatalf("runJob error = %v, want nil", runErr)
-	}
+	require.NoError(t, runErr)
 	const want = `{"title":"Fix login","labels":["bug"]}`
-	if n := requests.Load(); n != 2 {
-		t.Errorf("provider requests = %d, want 2", n)
-	}
-	if done.GetStopReason() != "success" || done.GetTrace().GetStructuredOutput() != want {
-		t.Errorf("done = %v, want success carrying structured_output %s", done, want)
-	}
-	if len(sink.calls) != 1 || string(sink.calls[0].StructuredOutput) != want {
-		t.Errorf("RunResults = %+v, want one carrying the structured output", sink.calls)
-	}
+	assert.EqualValues(t, 2, requests.Load())
+	assert.Equal(t, "success", done.GetStopReason())
+	assert.Equal(t, want, done.GetTrace().GetStructuredOutput()) //nolint:testifylint // exact compact bytes are the behaviour under test
+	require.Len(t, sink.calls, 1)
+	assert.Equal(t, want, string(sink.calls[0].StructuredOutput)) //nolint:testifylint // exact compact bytes are the behaviour under test
 }
 
 func TestRunJob_StructuredOutputFailureOnDone(t *testing.T) {
@@ -228,126 +206,107 @@ func TestRunJob_StructuredOutputFailureOnDone(t *testing.T) {
 	installStubResultSink(t, sink)
 
 	done, runErr := runStructuredJob(t, structuredJobTask(t, provider.URL))
-	if runErr == nil || classifyExitCode(runErr) != 1 {
-		t.Errorf("runJob error = %v (exit %d), want a non-zero exit", runErr, classifyExitCode(runErr))
-	}
-	if done.GetStopReason() != "structured_output_failed" || done.GetTrace().GetStructuredOutput() != "" {
-		t.Errorf("done = %v, want structured_output_failed without structured_output", done)
-	}
-	if !strings.Contains(done.GetTrace().GetError(), "not a single JSON document") {
-		t.Errorf("done.trace.error = %q, want the last validation error", done.GetTrace().GetError())
-	}
-	if len(sink.calls) != 1 || sink.calls[0].Outcome != "structured_output_failed" {
-		t.Errorf("RunResults = %+v, want one structured_output_failed result", sink.calls)
-	}
+	require.Error(t, runErr)
+	assert.Equal(t, 1, classifyExitCode(runErr))
+	assert.Equal(t, "structured_output_failed", done.GetStopReason())
+	assert.Empty(t, done.GetTrace().GetStructuredOutput())
+	assert.Contains(t, done.GetTrace().GetError(), "not a single JSON document")
+	require.Len(t, sink.calls, 1)
+	assert.Equal(t, "structured_output_failed", sink.calls[0].Outcome)
 }
 
 func writeSchemaFile(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "schema.json")
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("write schema: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600), "write schema")
 	return path
 }
 
 func TestApplyOverrides_OutputSchemaFlag(t *testing.T) {
-	t.Run("file_sets_compact_schema", func(t *testing.T) {
+	t.Run("file sets compact schema", func(t *testing.T) {
 		cmd := newTestHarnessCommand()
 		path := writeSchemaFile(t, "{\n  \"type\": \"object\",\n  \"required\": [\"title\"]\n}\n")
-		if err := cmd.ParseFlags([]string{"--output-schema", path}); err != nil {
-			t.Fatalf("ParseFlags: %v", err)
-		}
+		require.NoError(t, cmd.ParseFlags([]string{"--output-schema", path}))
 		cfg := baseFileConfig()
-		if err := applyOverrides(cmd, cfg, nil); err != nil {
-			t.Fatalf("applyOverrides: %v", err)
-		}
-		if string(cfg.OutputSchema) != `{"type":"object","required":["title"]}` {
-			t.Errorf("OutputSchema = %s", cfg.OutputSchema)
-		}
+		require.NoError(t, applyOverrides(cmd, cfg, nil))
+		require.Equal(t, `{"type":"object","required":["title"]}`, string(cfg.OutputSchema)) //nolint:testifylint // exact compact bytes are the behaviour under test
 	})
 
-	t.Run("empty_value_clears_file_schema", func(t *testing.T) {
+	t.Run("empty value clears file schema", func(t *testing.T) {
 		cmd := newTestHarnessCommand()
-		if err := cmd.ParseFlags([]string{"--output-schema="}); err != nil {
-			t.Fatalf("ParseFlags: %v", err)
-		}
+		require.NoError(t, cmd.ParseFlags([]string{"--output-schema="}))
 		cfg := baseFileConfig()
 		cfg.OutputSchema = json.RawMessage(`{"type":"object"}`)
-		if err := applyOverrides(cmd, cfg, nil); err != nil {
-			t.Fatalf("applyOverrides: %v", err)
-		}
-		if cfg.OutputSchema != nil {
-			t.Errorf("OutputSchema = %s, want cleared", cfg.OutputSchema)
-		}
+		require.NoError(t, applyOverrides(cmd, cfg, nil))
+		require.Nil(t, cfg.OutputSchema)
 	})
 
-	t.Run("unset_flag_keeps_file_schema", func(t *testing.T) {
+	t.Run("unset flag keeps file schema", func(t *testing.T) {
 		cmd := newTestHarnessCommand()
 		cfg := baseFileConfig()
 		cfg.OutputSchema = json.RawMessage(`{"type":"object"}`)
-		if err := applyOverrides(cmd, cfg, nil); err != nil {
-			t.Fatalf("applyOverrides: %v", err)
-		}
-		if string(cfg.OutputSchema) != `{"type":"object"}` {
-			t.Errorf("OutputSchema = %s, want the file's schema", cfg.OutputSchema)
-		}
+		require.NoError(t, applyOverrides(cmd, cfg, nil))
+		require.Equal(t, `{"type":"object"}`, string(cfg.OutputSchema)) //nolint:testifylint // exact compact bytes are the behaviour under test
 	})
 
-	for name, tc := range map[string]struct {
+	tests := []struct {
+		name     string
 		path     func(t *testing.T) string
 		wantCode int
 	}{
-		"malformed_json_is_a_parse_error": {func(t *testing.T) string { return writeSchemaFile(t, `{"type":`) }, exitParse},
-		"missing_file_is_an_io_error":     {func(t *testing.T) string { return filepath.Join(t.TempDir(), "absent.json") }, exitIO},
-		"directory_is_an_io_error":        {func(t *testing.T) string { return t.TempDir() }, exitIO},
-	} {
-		t.Run(name, func(t *testing.T) {
+		{
+			name:     "malformed json is a parse error",
+			path:     func(t *testing.T) string { return writeSchemaFile(t, `{"type":`) },
+			wantCode: exitParse,
+		},
+		{
+			name:     "missing file is an io error",
+			path:     func(t *testing.T) string { return filepath.Join(t.TempDir(), "absent.json") },
+			wantCode: exitIO,
+		},
+		{
+			name:     "directory is an io error",
+			path:     func(t *testing.T) string { return t.TempDir() },
+			wantCode: exitIO,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
 			cmd := newTestHarnessCommand()
-			if err := cmd.ParseFlags([]string{"--output-schema", tc.path(t)}); err != nil {
-				t.Fatalf("ParseFlags: %v", err)
-			}
+			require.NoError(t, cmd.ParseFlags([]string{"--output-schema", tc.path(t)}))
 			err := applyOverrides(cmd, baseFileConfig(), nil)
 			var exitErr *exitError
-			if !errors.As(err, &exitErr) || exitErr.code != tc.wantCode {
-				t.Errorf("applyOverrides error = %v, want exit code %d", err, tc.wantCode)
-			}
+			require.ErrorAs(t, err, &exitErr)
+			require.Equal(t, tc.wantCode, exitErr.code)
 		})
 	}
 }
 
 func TestRunRunConfig_OutputSchema(t *testing.T) {
-	t.Run("validate_rejects_uncompilable_schema", func(t *testing.T) {
+	t.Run("validate rejects uncompilable schema", func(t *testing.T) {
 		path := writeSchemaFile(t, `{"type":"strng"}`)
 		_, err := runRunConfigForTest(t, []string{"--validate", "--mode", "execution", "--prompt", "x", "--output-schema", path}, "")
 		var exitErr *exitError
-		if !errors.As(err, &exitErr) || exitErr.code != exitValidation || !strings.Contains(err.Error(), "outputSchema") {
-			t.Errorf("run-config --validate error = %v, want an outputSchema validation failure", err)
-		}
+		require.ErrorAs(t, err, &exitErr)
+		require.Equal(t, exitValidation, exitErr.code)
+		require.ErrorContains(t, err, "outputSchema")
 	})
 
-	t.Run("validate_rejects_external_ref", func(t *testing.T) {
+	t.Run("validate rejects external ref", func(t *testing.T) {
 		path := writeSchemaFile(t, `{"$ref":"https://example.com/s.json"}`)
 		_, err := runRunConfigForTest(t, []string{"--validate", "--mode", "execution", "--prompt", "x", "--output-schema", path}, "")
-		if err == nil || !strings.Contains(err.Error(), "not a local fragment") {
-			t.Errorf("run-config --validate error = %v, want the external reference rejected", err)
-		}
+		require.ErrorContains(t, err, "not a local fragment")
 	})
 
-	t.Run("emits_schema_as_json_object", func(t *testing.T) {
+	t.Run("emits schema as json object", func(t *testing.T) {
 		path := writeSchemaFile(t, cmdTriageSchema)
 		out, err := runRunConfigForTest(t, []string{"--mode", "execution", "--output-schema", path}, "")
-		if err != nil {
-			t.Fatalf("run-config: %v", err)
-		}
+		require.NoError(t, err)
 		var cfg types.RunConfig
-		if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-			t.Fatalf("parse: %v", err)
-		}
+		require.NoError(t, json.Unmarshal([]byte(out), &cfg))
 		var compact bytes.Buffer
-		if err := json.Compact(&compact, cfg.OutputSchema); err != nil || compact.String() != cmdTriageSchema {
-			t.Errorf("OutputSchema = %s (%v), want %s", cfg.OutputSchema, err, cmdTriageSchema)
-		}
+		require.NoError(t, json.Compact(&compact, cfg.OutputSchema))
+		require.Equal(t, cmdTriageSchema, compact.String()) //nolint:testifylint // exact compact bytes are the behaviour under test
 	})
 }
 
@@ -357,7 +316,5 @@ func TestBuildRunResult_CarriesStructuredOutput(t *testing.T) {
 		Outcome:          "success",
 		StructuredOutput: json.RawMessage(`{"title":"Fix login"}`),
 	}, types.DefaultMaxFinalAssistantTextBytes)
-	if string(res.StructuredOutput) != `{"title":"Fix login"}` {
-		t.Errorf("StructuredOutput = %s", res.StructuredOutput)
-	}
+	require.Equal(t, `{"title":"Fix login"}`, string(res.StructuredOutput)) //nolint:testifylint // exact compact bytes are the behaviour under test
 }

@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"net"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
@@ -98,8 +99,8 @@ func setupTestTransport(t *testing.T, srv *testServer) (*GRPCTransport, *testSer
 	)
 	if err != nil {
 		grpcServer.Stop()
-		t.Fatalf("NewGRPCTransport: %v", err)
 	}
+	require.NoError(t, err, "NewGRPCTransport")
 
 	cleanup := func() {
 		_ = tr.Close()
@@ -109,7 +110,7 @@ func setupTestTransport(t *testing.T, srv *testServer) (*GRPCTransport, *testSer
 	return tr, srv, cleanup
 }
 
-func TestGRPCTransport_Emit(t *testing.T) {
+func TestGRPCTransport_Emit_DeliversEventToServer(t *testing.T) {
 	srv := newTestServer()
 	tr, _, cleanup := setupTestTransport(t, srv)
 	defer cleanup()
@@ -119,9 +120,7 @@ func TestGRPCTransport_Emit(t *testing.T) {
 		Text: "hello world",
 	}
 
-	if err := tr.Emit(event); err != nil {
-		t.Fatalf("Emit: %v", err)
-	}
+	require.NoError(t, tr.Emit(event), "Emit")
 
 	// Close send side so server's Recv loop finishes.
 	_ = tr.stream.CloseSend()
@@ -130,18 +129,12 @@ func TestGRPCTransport_Emit(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	received := srv.getReceived()
-	if len(received) != 1 {
-		t.Fatalf("expected 1 received event, got %d", len(received))
-	}
-	if received[0].Type != "text_delta" {
-		t.Errorf("got type %q, want text_delta", received[0].Type)
-	}
-	if received[0].Text != "hello world" {
-		t.Errorf("got text %q, want hello world", received[0].Text)
-	}
+	require.Len(t, received, 1)
+	assert.Equal(t, "text_delta", received[0].Type)
+	assert.Equal(t, "hello world", received[0].Text)
 }
 
-func TestGRPCTransport_EmitWithInput(t *testing.T) {
+func TestGRPCTransport_Emit_PreservesToolCallInput(t *testing.T) {
 	srv := newTestServer()
 	tr, _, cleanup := setupTestTransport(t, srv)
 	defer cleanup()
@@ -154,26 +147,18 @@ func TestGRPCTransport_EmitWithInput(t *testing.T) {
 		Input: input,
 	}
 
-	if err := tr.Emit(event); err != nil {
-		t.Fatalf("Emit: %v", err)
-	}
+	require.NoError(t, tr.Emit(event), "Emit")
 
 	_ = tr.stream.CloseSend()
 	time.Sleep(50 * time.Millisecond)
 
 	received := srv.getReceived()
-	if len(received) != 1 {
-		t.Fatalf("expected 1 received event, got %d", len(received))
-	}
-	if received[0].Name != "read_file" {
-		t.Errorf("got name %q, want read_file", received[0].Name)
-	}
-	if string(received[0].Input) != `{"file":"test.go"}` {
-		t.Errorf("got input %q, want {\"file\":\"test.go\"}", string(received[0].Input))
-	}
+	require.Len(t, received, 1)
+	assert.Equal(t, "read_file", received[0].Name)
+	assert.JSONEq(t, `{"file":"test.go"}`, string(received[0].Input))
 }
 
-func TestGRPCTransport_OnControl(t *testing.T) {
+func TestGRPCTransport_OnControl_DeliversControlEvent(t *testing.T) {
 	srv := newTestServer(&pb.ControlEvent{
 		Type: "cancel",
 	})
@@ -187,15 +172,13 @@ func TestGRPCTransport_OnControl(t *testing.T) {
 
 	select {
 	case ev := <-received:
-		if ev.Type != "cancel" {
-			t.Errorf("got type %q, want cancel", ev.Type)
-		}
+		require.Equal(t, "cancel", ev.Type)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for control event")
+		require.FailNow(t, "timed out waiting for control event")
 	}
 }
 
-func TestGRPCTransport_OnControlTaskAssignment(t *testing.T) {
+func TestGRPCTransport_OnControl_DeliversTaskAssignment(t *testing.T) {
 	timeout := int32(300)
 	srv := newTestServer(&pb.ControlEvent{
 		Type: "task_assignment",
@@ -221,30 +204,18 @@ func TestGRPCTransport_OnControlTaskAssignment(t *testing.T) {
 
 	select {
 	case ev := <-received:
-		if ev.Type != "task_assignment" {
-			t.Fatalf("got type %q, want task_assignment", ev.Type)
-		}
-		if ev.Task == nil {
-			t.Fatal("expected Task to be non-nil")
-		}
-		if ev.Task.RunID != "run-123" {
-			t.Errorf("got RunID %q, want run-123", ev.Task.RunID)
-		}
-		if ev.Task.Prompt != "fix the bug" {
-			t.Errorf("got Prompt %q, want 'fix the bug'", ev.Task.Prompt)
-		}
-		if ev.Task.MaxTurns != 10 {
-			t.Errorf("got MaxTurns %d, want 10", ev.Task.MaxTurns)
-		}
-		if ev.Task.Provider.Type != "anthropic" {
-			t.Errorf("got Provider.Type %q, want anthropic", ev.Task.Provider.Type)
-		}
+		require.Equal(t, "task_assignment", ev.Type)
+		require.NotNil(t, ev.Task, "Task")
+		assert.Equal(t, "run-123", ev.Task.RunID)
+		assert.Equal(t, "fix the bug", ev.Task.Prompt)
+		assert.Equal(t, 10, ev.Task.MaxTurns)
+		assert.Equal(t, "anthropic", ev.Task.Provider.Type)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for task assignment")
+		require.FailNow(t, "timed out waiting for task assignment")
 	}
 }
 
-func TestGRPCTransport_OnControlPermissionResponse(t *testing.T) {
+func TestGRPCTransport_OnControl_DeliversPermissionResponse(t *testing.T) {
 	allowed := true
 	srv := newTestServer(&pb.ControlEvent{
 		Type:      "permission_response",
@@ -262,25 +233,17 @@ func TestGRPCTransport_OnControlPermissionResponse(t *testing.T) {
 
 	select {
 	case ev := <-received:
-		if ev.Type != "permission_response" {
-			t.Fatalf("got type %q, want permission_response", ev.Type)
-		}
-		if ev.RequestID != "req-42" {
-			t.Errorf("got RequestID %q, want req-42", ev.RequestID)
-		}
-		if ev.Allowed == nil || !*ev.Allowed {
-			t.Error("expected Allowed to be true")
-		}
-		if ev.Reason != "user approved" {
-			t.Errorf("got Reason %q, want 'user approved'", ev.Reason)
-		}
+		require.Equal(t, "permission_response", ev.Type)
+		assert.Equal(t, "req-42", ev.RequestID)
+		require.NotNil(t, ev.Allowed, "Allowed")
+		assert.True(t, *ev.Allowed, "Allowed")
+		assert.Equal(t, "user approved", ev.Reason)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for permission response")
+		require.FailNow(t, "timed out waiting for permission response")
 	}
 }
 
 func TestGRPCTransport_BidirectionalFlow(t *testing.T) {
-
 	srv := newTestServer()
 	tr, _, cleanup := setupTestTransport(t, srv)
 	defer cleanup()
@@ -289,7 +252,7 @@ func TestGRPCTransport_BidirectionalFlow(t *testing.T) {
 	select {
 	case serverStream = <-srv.streamCh:
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for server stream")
+		require.FailNow(t, "timed out waiting for server stream")
 	}
 
 	controlEvents := make(chan types.ControlEvent, 10)
@@ -298,7 +261,7 @@ func TestGRPCTransport_BidirectionalFlow(t *testing.T) {
 	})
 
 	timeout := int32(300)
-	if err := serverStream.Send(&pb.ControlEvent{
+	require.NoError(t, serverStream.Send(&pb.ControlEvent{
 		Type: "task_assignment",
 		Task: &pb.RunConfig{
 			RunId:    "run-bidi",
@@ -307,67 +270,43 @@ func TestGRPCTransport_BidirectionalFlow(t *testing.T) {
 			MaxTurns: 5,
 			Timeout:  &timeout,
 		},
-	}); err != nil {
-		t.Fatalf("server send task_assignment: %v", err)
-	}
+	}), "server send task_assignment")
 
 	select {
 	case ev := <-controlEvents:
-		if ev.Type != "task_assignment" {
-			t.Fatalf("expected task_assignment, got %q", ev.Type)
-		}
+		require.Equal(t, "task_assignment", ev.Type)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for task_assignment")
+		require.FailNow(t, "timed out waiting for task_assignment")
 	}
 
-	if err := tr.Emit(types.HarnessEvent{Type: "text_delta", Text: "working..."}); err != nil {
-		t.Fatalf("Emit text_delta: %v", err)
-	}
+	require.NoError(t, tr.Emit(types.HarnessEvent{Type: "text_delta", Text: "working..."}), "Emit text_delta")
+	require.NoError(t, tr.Emit(types.HarnessEvent{Type: "tool_call", ID: "tc_1", Name: "bash"}), "Emit tool_call")
 
-	if err := tr.Emit(types.HarnessEvent{Type: "tool_call", ID: "tc_1", Name: "bash"}); err != nil {
-		t.Fatalf("Emit tool_call: %v", err)
-	}
-
-	if err := serverStream.Send(&pb.ControlEvent{
+	require.NoError(t, serverStream.Send(&pb.ControlEvent{
 		Type:         "user_response",
 		UserResponse: "yes, continue",
-	}); err != nil {
-		t.Fatalf("server send user_response: %v", err)
-	}
+	}), "server send user_response")
 
 	select {
 	case ev := <-controlEvents:
-		if ev.Type != "user_response" {
-			t.Fatalf("expected user_response, got %q", ev.Type)
-		}
-		if ev.UserResponse != "yes, continue" {
-			t.Errorf("got UserResponse %q", ev.UserResponse)
-		}
+		require.Equal(t, "user_response", ev.Type)
+		assert.Equal(t, "yes, continue", ev.UserResponse)
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for user_response")
+		require.FailNow(t, "timed out waiting for user_response")
 	}
 
 	time.Sleep(50 * time.Millisecond)
 	received := srv.getReceived()
-	if len(received) < 2 {
-		t.Fatalf("expected at least 2 received events, got %d", len(received))
-	}
-	if received[0].Type != "text_delta" {
-		t.Errorf("first event type %q, want text_delta", received[0].Type)
-	}
-	if received[1].Type != "tool_call" {
-		t.Errorf("second event type %q, want tool_call", received[1].Type)
-	}
+	require.GreaterOrEqual(t, len(received), 2, "received events")
+	assert.Equal(t, "text_delta", received[0].Type)
+	assert.Equal(t, "tool_call", received[1].Type)
 }
 
-func TestGRPCTransport_Close(t *testing.T) {
+func TestGRPCTransport_Close_ReturnsNoError(t *testing.T) {
 	srv := newTestServer()
-	tr, _, cleanup := setupTestTransport(t, srv)
-	_ = cleanup // we'll close manually
+	tr, _, _ := setupTestTransport(t, srv)
 
-	if err := tr.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+	require.NoError(t, tr.Close(), "Close")
 }
 
 // TestGRPCTransport_CloseDeliversPendingEvents pins that events emitted
@@ -386,31 +325,19 @@ func TestGRPCTransport_CloseDeliversPendingEvents(t *testing.T) {
 			tr, _, cleanup := setupTestTransport(t, srv)
 			defer cleanup()
 
-			if err := tr.Emit(types.HarnessEvent{Type: "error", Message: "config validation: bad"}); err != nil {
-				t.Fatalf("attempt %d: Emit error event: %v", attempt, err)
-			}
-			if err := tr.Emit(types.HarnessEvent{Type: "done", StopReason: "error"}); err != nil {
-				t.Fatalf("attempt %d: Emit done event: %v", attempt, err)
-			}
+			require.NoError(t, tr.Emit(types.HarnessEvent{Type: "error", Message: "config validation: bad"}), "attempt %d: Emit error event", attempt)
+			require.NoError(t, tr.Emit(types.HarnessEvent{Type: "done", StopReason: "error"}), "attempt %d: Emit done event", attempt)
 
 			start := time.Now()
-			if err := tr.Close(); err != nil {
-				t.Fatalf("attempt %d: Close: %v", attempt, err)
-			}
-			// A Close that burned the whole grace never saw stream end,
-			// which is the shape of a drain regression rather than a
-			// delivery failure; without this the package just times out.
-			if elapsed := time.Since(start); elapsed >= streamEndGrace {
-				t.Fatalf("attempt %d: Close took %v, want it to return on stream end well inside the %v grace", attempt, elapsed, streamEndGrace)
-			}
+			require.NoError(t, tr.Close(), "attempt %d: Close", attempt)
+			// Close must return on stream end, not by waiting out the grace,
+			// so a drain regression fails here instead of timing out the package.
+			require.Less(t, time.Since(start), streamEndGrace, "attempt %d: Close should return on stream end", attempt)
 
 			received := srv.getReceived()
-			if len(received) != 2 {
-				t.Fatalf("attempt %d: server received %d events (%v), want the error/done pair", attempt, len(received), received)
-			}
-			if received[0].Type != "error" || received[1].Type != "done" {
-				t.Fatalf("attempt %d: server received %q then %q, want error then done", attempt, received[0].Type, received[1].Type)
-			}
+			require.Len(t, received, 2, "attempt %d: server received events %v, want the error/done pair", attempt, received)
+			require.Equal(t, "error", received[0].Type, "attempt %d", attempt)
+			require.Equal(t, "done", received[1].Type, "attempt %d", attempt)
 		}()
 	}
 }
@@ -483,16 +410,10 @@ func TestGRPCTransport_EmitDuringCloseDoesNotAbortDrain(t *testing.T) {
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 		),
 	)
-	if err != nil {
-		t.Fatalf("NewGRPCTransport: %v", err)
-	}
+	require.NoError(t, err, "NewGRPCTransport")
 
-	if err := tr.Emit(types.HarnessEvent{Type: "error", Message: "boom"}); err != nil {
-		t.Fatalf("Emit error event: %v", err)
-	}
-	if err := tr.Emit(types.HarnessEvent{Type: "done", StopReason: "error"}); err != nil {
-		t.Fatalf("Emit done event: %v", err)
-	}
+	require.NoError(t, tr.Emit(types.HarnessEvent{Type: "error", Message: "boom"}), "Emit error event")
+	require.NoError(t, tr.Emit(types.HarnessEvent{Type: "done", StopReason: "error"}), "Emit done event")
 
 	// Fires once the server has seen the half-close, i.e. while Close is
 	// inside its wait for stream end.
@@ -503,28 +424,18 @@ func TestGRPCTransport_EmitDuringCloseDoesNotAbortDrain(t *testing.T) {
 	}()
 
 	start := time.Now()
-	if err := tr.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+	require.NoError(t, tr.Close(), "Close")
 	elapsed := time.Since(start)
 
-	if err := <-emitErrCh; !errors.Is(err, ErrTransportClosed) {
-		t.Errorf("Emit during Close returned %v, want ErrTransportClosed so it never reaches SendMsg", err)
-	}
+	require.ErrorIs(t, <-emitErrCh, ErrTransportClosed, "Emit during Close must return ErrTransportClosed so it never reaches SendMsg")
 
 	// Short-circuiting the drain is the failure this guards: the abort
 	// would return Close in microseconds instead of waiting out linger.
-	if elapsed < linger {
-		t.Errorf("Close returned after %v, want it to wait for stream end (>= %v)", elapsed, linger)
-	}
+	assert.GreaterOrEqual(t, elapsed, linger, "Close should wait for stream end")
 
 	received := srv.getReceived()
-	if len(received) != 2 {
-		t.Fatalf("server received %d events (%v), want the error/done pair", len(received), received)
-	}
-	if received[1].Type != "done" {
-		t.Errorf("last event = %q, want done", received[1].Type)
-	}
+	require.Len(t, received, 2, "server received events %v, want the error/done pair", received)
+	assert.Equal(t, "done", received[1].Type, "last event")
 }
 
 func TestGRPCTransport_EmitScrubsSecrets(t *testing.T) {
@@ -538,30 +449,18 @@ func TestGRPCTransport_EmitScrubsSecrets(t *testing.T) {
 		Message: "token ghp_abcdef1234567890",
 	}
 
-	if err := tr.Emit(event); err != nil {
-		t.Fatalf("Emit: %v", err)
-	}
+	require.NoError(t, tr.Emit(event), "Emit")
 
 	_ = tr.stream.CloseSend()
 	time.Sleep(50 * time.Millisecond)
 
 	received := srv.getReceived()
-	if len(received) != 1 {
-		t.Fatalf("expected 1 received event, got %d", len(received))
-	}
+	require.Len(t, received, 1)
 
-	if strings.Contains(received[0].Content, "sk-ant-") {
-		t.Error("Anthropic API key was not scrubbed")
-	}
-	if strings.Contains(received[0].Message, "ghp_") {
-		t.Error("GitHub PAT was not scrubbed")
-	}
-	if !strings.Contains(received[0].Content, "[REDACTED]") {
-		t.Error("expected [REDACTED] in Content")
-	}
-	if !strings.Contains(received[0].Message, "[REDACTED]") {
-		t.Error("expected [REDACTED] in Message")
-	}
+	assert.NotContains(t, received[0].Content, "sk-ant-", "Anthropic API key was not scrubbed")
+	assert.NotContains(t, received[0].Message, "ghp_", "GitHub PAT was not scrubbed")
+	assert.Contains(t, received[0].Content, "[REDACTED]", "Content should carry the redaction marker")
+	assert.Contains(t, received[0].Message, "[REDACTED]", "Message should carry the redaction marker")
 }
 
 func TestGRPCTransport_EmitScrubsThinkingDeltaAndUserMessageText(t *testing.T) {
@@ -574,26 +473,21 @@ func TestGRPCTransport_EmitScrubsThinkingDeltaAndUserMessageText(t *testing.T) {
 		{Type: "user_message", Source: types.UserMessageSourceUserResponse, RequestID: "r1", Text: "use sk-ant-abc123-secret and ghp_abcdef1234567890"},
 	}
 	for _, ev := range events {
-		if err := tr.Emit(ev); err != nil {
-			t.Fatalf("Emit %s: %v", ev.Type, err)
-		}
+		require.NoError(t, tr.Emit(ev), "Emit %s", ev.Type)
 	}
 
 	_ = tr.stream.CloseSend()
 	time.Sleep(50 * time.Millisecond)
 
 	received := srv.getReceived()
-	if len(received) != len(events) {
-		t.Fatalf("expected %d received events, got %d", len(events), len(received))
-	}
+	require.Len(t, received, len(events))
 	for _, ev := range received {
-		if strings.Contains(ev.Text, "sk-ant-") || strings.Contains(ev.Text, "ghp_") || !strings.Contains(ev.Text, "[REDACTED]") {
-			t.Errorf("%s text was not scrubbed: %q", ev.Type, ev.Text)
-		}
+		assert.NotContains(t, ev.Text, "sk-ant-", "%s text was not scrubbed", ev.Type)
+		assert.NotContains(t, ev.Text, "ghp_", "%s text was not scrubbed", ev.Type)
+		assert.Contains(t, ev.Text, "[REDACTED]", "%s text was not scrubbed", ev.Type)
 	}
-	if got := received[1]; got.Source != types.UserMessageSourceUserResponse || got.RequestId != "r1" {
-		t.Errorf("user_message source/request_id = %q/%q, want them unchanged", got.Source, got.RequestId)
-	}
+	assert.Equal(t, types.UserMessageSourceUserResponse, received[1].Source, "user_message source should be unchanged")
+	assert.Equal(t, "r1", received[1].RequestId, "user_message request_id should be unchanged")
 }
 
 func TestGRPCTransport_EmitCapsScrubbedUserMessageText(t *testing.T) {
@@ -602,24 +496,17 @@ func TestGRPCTransport_EmitCapsScrubbedUserMessageText(t *testing.T) {
 	defer cleanup()
 
 	text := "sk-ant-abc123-secret " + strings.Repeat("u", maxEventFieldBytes)
-	if err := tr.Emit(types.HarnessEvent{Type: "user_message", Source: types.UserMessageSourceInitialPrompt, Text: text}); err != nil {
-		t.Fatalf("Emit: %v", err)
-	}
+	require.NoError(t, tr.Emit(types.HarnessEvent{Type: "user_message", Source: types.UserMessageSourceInitialPrompt, Text: text}), "Emit")
 
 	_ = tr.stream.CloseSend()
 	time.Sleep(50 * time.Millisecond)
 
 	received := srv.getReceived()
-	if len(received) != 1 {
-		t.Fatalf("expected 1 received event, got %d", len(received))
-	}
+	require.Len(t, received, 1)
 	got := received[0].Text
-	if len(got) > maxEventFieldBytes || !strings.Contains(got, "bytes shown]") {
-		t.Errorf("user_message text is %d bytes or lacks the truncation marker", len(got))
-	}
-	if !strings.HasPrefix(got, "[REDACTED]") {
-		t.Errorf("capped text does not start with the scrubbed secret: %q", got[:40])
-	}
+	assert.LessOrEqual(t, len(got), maxEventFieldBytes, "user_message text should be capped")
+	assert.Contains(t, got, "bytes shown]", "capped user_message text should carry the truncation marker")
+	assert.True(t, strings.HasPrefix(got, "[REDACTED]"), "capped text should start with the scrubbed secret, got %.40q", got)
 }
 
 // TestGRPCTransport_EmitScrubsInput mirrors the stdio Input-scrub fix on
@@ -635,23 +522,15 @@ func TestGRPCTransport_EmitScrubsInput(t *testing.T) {
 		Name:  "run_command",
 		Input: json.RawMessage(`{"command":"echo AKIAQWERTYUIOPASDFGH"}`),
 	}
-	if err := tr.Emit(event); err != nil {
-		t.Fatalf("Emit: %v", err)
-	}
+	require.NoError(t, tr.Emit(event), "Emit")
 
 	_ = tr.stream.CloseSend()
 	time.Sleep(50 * time.Millisecond)
 
 	received := srv.getReceived()
-	if len(received) != 1 {
-		t.Fatalf("expected 1 received event, got %d", len(received))
-	}
-	if strings.Contains(string(received[0].Input), "AKIAQWERTYUIOPASDFGH") {
-		t.Errorf("live-shaped AWS key was not scrubbed from event Input: %q", received[0].Input)
-	}
-	if !json.Valid(received[0].Input) {
-		t.Errorf("scrubbed Input is not valid JSON: %q", received[0].Input)
-	}
+	require.Len(t, received, 1)
+	assert.NotContains(t, string(received[0].Input), "AKIAQWERTYUIOPASDFGH", "live-shaped AWS key should be scrubbed from event Input")
+	assert.True(t, json.Valid(received[0].Input), "scrubbed Input should be valid JSON: %q", received[0].Input)
 }
 
 // TestGRPCTransport_EmitScrubsToolCallInput is the regression test for
@@ -669,29 +548,19 @@ func TestGRPCTransport_EmitScrubsToolCallInput(t *testing.T) {
 		Name:  "run_command",
 		Input: json.RawMessage(`{"command":"echo AKIAQWERTYUIOPASDFGH"}`),
 	}
-	if err := tr.Emit(event); err != nil {
-		t.Fatalf("Emit: %v", err)
-	}
+	require.NoError(t, tr.Emit(event), "Emit")
 
 	_ = tr.stream.CloseSend()
 	time.Sleep(50 * time.Millisecond)
 
 	received := srv.getReceived()
-	if len(received) != 1 {
-		t.Fatalf("expected 1 received event, got %d", len(received))
-	}
-	if strings.Contains(string(received[0].Input), "AKIAQWERTYUIOPASDFGH") {
-		t.Errorf("live-shaped AWS key was not scrubbed from tool_call Input: %q", received[0].Input)
-	}
-	if !json.Valid(received[0].Input) {
-		t.Errorf("scrubbed Input is not valid JSON: %q", received[0].Input)
-	}
-	if received[0].Id != "tc_1" {
-		t.Errorf("Id = %q, want tc_1 (scrubbing must not disturb other fields)", received[0].Id)
-	}
+	require.Len(t, received, 1)
+	assert.NotContains(t, string(received[0].Input), "AKIAQWERTYUIOPASDFGH", "live-shaped AWS key should be scrubbed from tool_call Input")
+	assert.True(t, json.Valid(received[0].Input), "scrubbed Input should be valid JSON: %q", received[0].Input)
+	assert.Equal(t, "tc_1", received[0].Id, "scrubbing must not disturb other fields")
 }
 
-func TestGRPCTransport_EmitFiresSecretRedactedInOutput(t *testing.T) {
+func TestGRPCTransport_Emit_LogsSecretRedactedInOutput(t *testing.T) {
 	srv := newTestServer()
 	tr, _, cleanup := setupTestTransport(t, srv)
 	defer cleanup()
@@ -699,28 +568,20 @@ func TestGRPCTransport_EmitFiresSecretRedactedInOutput(t *testing.T) {
 	var secBuf bytes.Buffer
 	tr.Security = security.NewSecurityLogger(&secBuf, "run-1")
 
-	if err := tr.Emit(types.HarnessEvent{
+	require.NoError(t, tr.Emit(types.HarnessEvent{
 		Type:    "tool_result",
 		Content: "key=sk-ant-abc123-secret",
-	}); err != nil {
-		t.Fatalf("Emit: %v", err)
-	}
+	}), "Emit")
 	_ = tr.stream.CloseSend()
 	time.Sleep(50 * time.Millisecond)
 
 	got := secBuf.String()
-	if !strings.Contains(got, `"event":"secret_redacted_in_output"`) {
-		t.Errorf("expected secret_redacted_in_output event, got %q", got)
-	}
-	if !strings.Contains(got, `"location":"transport.grpc.event.content"`) {
-		t.Errorf("expected location=transport.grpc.event.content, got %q", got)
-	}
-	if !strings.Contains(got, `"pattern":"anthropic_api_key"`) {
-		t.Errorf("expected pattern=anthropic_api_key, got %q", got)
-	}
+	assert.Contains(t, got, `"event":"secret_redacted_in_output"`)
+	assert.Contains(t, got, `"location":"transport.grpc.event.content"`)
+	assert.Contains(t, got, `"pattern":"anthropic_api_key"`)
 }
 
-func TestGRPCTransport_NoSecretEventForCleanText(t *testing.T) {
+func TestGRPCTransport_Emit_LogsNoSecurityEventForCleanText(t *testing.T) {
 	srv := newTestServer()
 	tr, _, cleanup := setupTestTransport(t, srv)
 	defer cleanup()
@@ -728,20 +589,16 @@ func TestGRPCTransport_NoSecretEventForCleanText(t *testing.T) {
 	var secBuf bytes.Buffer
 	tr.Security = security.NewSecurityLogger(&secBuf, "run-1")
 
-	if err := tr.Emit(types.HarnessEvent{Type: "text_delta", Text: "hello"}); err != nil {
-		t.Fatalf("Emit: %v", err)
-	}
+	require.NoError(t, tr.Emit(types.HarnessEvent{Type: "text_delta", Text: "hello"}), "Emit")
 	_ = tr.stream.CloseSend()
 	time.Sleep(50 * time.Millisecond)
-	if secBuf.Len() != 0 {
-		t.Errorf("expected no security events, got %q", secBuf.String())
-	}
+	require.Empty(t, secBuf.String(), "expected no security events")
 }
 
-// TestGRPCTransport_OnControlTaskAssignmentAzureFields pins that a
-// task_assignment carrying APIKeyHeader and QueryParams round-trips
-// through the proto wire format without losing data.
-func TestGRPCTransport_OnControlTaskAssignmentAzureFields(t *testing.T) {
+// TestGRPCTransport_OnControl_TaskAssignmentKeepsAzureProviderFields pins that
+// a task_assignment carrying APIKeyHeader and QueryParams round-trips through
+// the proto wire format without losing data.
+func TestGRPCTransport_OnControl_TaskAssignmentKeepsAzureProviderFields(t *testing.T) {
 	timeout := int32(300)
 	srv := newTestServer(&pb.ControlEvent{
 		Type: "task_assignment",
@@ -772,24 +629,16 @@ func TestGRPCTransport_OnControlTaskAssignmentAzureFields(t *testing.T) {
 
 	select {
 	case ev := <-received:
-		if ev.Task == nil {
-			t.Fatal("expected Task to be non-nil")
-		}
-		if got, want := ev.Task.Provider.APIKeyHeader, "api-key"; got != want {
-			t.Errorf("Provider.APIKeyHeader = %q, want %q", got, want)
-		}
-		if got, want := ev.Task.Provider.QueryParams["api-version"], "preview"; got != want {
-			t.Errorf("Provider.QueryParams[api-version] = %q, want %q", got, want)
-		}
-		if got, want := ev.Task.Provider.BaseURL, "https://example.openai.azure.com/openai/v1"; got != want {
-			t.Errorf("Provider.BaseURL = %q, want %q", got, want)
-		}
+		require.NotNil(t, ev.Task, "Task")
+		assert.Equal(t, "api-key", ev.Task.Provider.APIKeyHeader, "Provider.APIKeyHeader")
+		assert.Equal(t, "preview", ev.Task.Provider.QueryParams["api-version"], "Provider.QueryParams[api-version]")
+		assert.Equal(t, "https://example.openai.azure.com/openai/v1", ev.Task.Provider.BaseURL, "Provider.BaseURL")
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for task assignment")
+		require.FailNow(t, "timed out waiting for task assignment")
 	}
 }
 
-func TestGRPCTransport_StreamErrorStopsReadLoop(t *testing.T) {
+func TestGRPCTransport_StreamError_StopsReadLoop(t *testing.T) {
 	srv := newTestServer()
 	tr, _, _ := setupTestTransport(t, srv)
 
@@ -805,7 +654,7 @@ func TestGRPCTransport_StreamErrorStopsReadLoop(t *testing.T) {
 	case <-tr.Done():
 		// Expected — read loop exited.
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for read loop to exit after stream error")
+		require.FailNow(t, "timed out waiting for read loop to exit after stream error")
 	}
 }
 
@@ -827,20 +676,12 @@ func TestGRPCTransport_OnControl_ToolResultResponse_Success(t *testing.T) {
 
 	select {
 	case ev := <-received:
-		if ev.Type != "tool_result_response" {
-			t.Fatalf("got type %q, want tool_result_response", ev.Type)
-		}
-		if ev.RequestID != "async-tool-7" {
-			t.Errorf("got RequestID %q, want async-tool-7", ev.RequestID)
-		}
-		if ev.Content != "result body for the model" {
-			t.Errorf("got Content %q, want 'result body for the model'", ev.Content)
-		}
-		if ev.IsError != nil {
-			t.Errorf("expected IsError nil for success response, got %v", *ev.IsError)
-		}
+		require.Equal(t, "tool_result_response", ev.Type)
+		assert.Equal(t, "async-tool-7", ev.RequestID)
+		assert.Equal(t, "result body for the model", ev.Content)
+		assert.Nil(t, ev.IsError, "IsError should be nil for a success response")
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for tool_result_response")
+		require.FailNow(t, "timed out waiting for tool_result_response")
 	}
 }
 
@@ -864,27 +705,17 @@ func TestGRPCTransport_OnControl_ToolResultResponse_IsError(t *testing.T) {
 
 	select {
 	case ev := <-received:
-		if ev.Type != "tool_result_response" {
-			t.Fatalf("got type %q, want tool_result_response", ev.Type)
-		}
-		if ev.RequestID != "async-tool-9" {
-			t.Errorf("got RequestID %q, want async-tool-9", ev.RequestID)
-		}
-		if ev.Content != "upstream said no" {
-			t.Errorf("got Content %q, want 'upstream said no'", ev.Content)
-		}
-		if ev.IsError == nil {
-			t.Fatal("expected IsError non-nil for error response")
-		}
-		if !*ev.IsError {
-			t.Errorf("expected IsError=true, got false")
-		}
+		require.Equal(t, "tool_result_response", ev.Type)
+		assert.Equal(t, "async-tool-9", ev.RequestID)
+		assert.Equal(t, "upstream said no", ev.Content)
+		require.NotNil(t, ev.IsError, "IsError should be set for an error response")
+		assert.True(t, *ev.IsError, "IsError should be true for an error response")
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for tool_result_response")
+		require.FailNow(t, "timed out waiting for tool_result_response")
 	}
 }
 
-func TestGRPCTransport_EmitToolResultRequest(t *testing.T) {
+func TestGRPCTransport_Emit_ToolResultRequestWireFields(t *testing.T) {
 	// Pins the four wire fields the control plane needs to route an
 	// async tool_result_request and emit the matching response.
 	srv := newTestServer()
@@ -900,32 +731,18 @@ func TestGRPCTransport_EmitToolResultRequest(t *testing.T) {
 		Input:     input,
 	}
 
-	if err := tr.Emit(event); err != nil {
-		t.Fatalf("Emit: %v", err)
-	}
+	require.NoError(t, tr.Emit(event), "Emit")
 
 	// Close send side so the server's Recv loop completes.
 	_ = tr.stream.CloseSend()
 	time.Sleep(50 * time.Millisecond)
 
 	received := srv.getReceived()
-	if len(received) != 1 {
-		t.Fatalf("expected 1 received event, got %d", len(received))
-	}
+	require.Len(t, received, 1)
 	got := received[0]
-	if got.Type != "tool_result_request" {
-		t.Errorf("got Type %q, want tool_result_request", got.Type)
-	}
-	if got.RequestId != "async-tool-1" {
-		t.Errorf("got RequestId %q, want async-tool-1", got.RequestId)
-	}
-	if got.ToolUseId != "tc_1" {
-		t.Errorf("got ToolUseId %q, want tc_1", got.ToolUseId)
-	}
-	if got.ToolName != "async_echo" {
-		t.Errorf("got ToolName %q, want async_echo", got.ToolName)
-	}
-	if string(got.Input) != `{"prompt":"hello"}` {
-		t.Errorf("got Input %q, want %q", string(got.Input), `{"prompt":"hello"}`)
-	}
+	assert.Equal(t, "tool_result_request", got.Type)
+	assert.Equal(t, "async-tool-1", got.RequestId)
+	assert.Equal(t, "tc_1", got.ToolUseId)
+	assert.Equal(t, "async_echo", got.ToolName)
+	assert.JSONEq(t, `{"prompt":"hello"}`, string(got.Input))
 }

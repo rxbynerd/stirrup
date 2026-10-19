@@ -3,6 +3,7 @@ package provider
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
@@ -13,9 +14,8 @@ import (
 // client metrics, so the series line up.
 func assertFirstChunkSeries(t *testing.T, reader *sdkmetric.ManualReader, adapter ProviderAdapter, wantProvider, wantModel string) {
 	t.Helper()
-	if got := providerHistogramTotalCount(t, reader, "gen_ai.client.operation.time_to_first_chunk"); got != 1 {
-		t.Fatalf("time_to_first_chunk count = %d, want 1", got)
-	}
+	require.Equal(t, uint64(1), providerHistogramTotalCount(t, reader, "gen_ai.client.operation.time_to_first_chunk"))
+
 	h, _ := providerHistogramFinder(t, reader, "gen_ai.client.operation.time_to_first_chunk")
 	attrs := h.DataPoints[0].Attributes
 	wantHost, wantPort := ServerEndpointOf(adapter)
@@ -25,19 +25,20 @@ func assertFirstChunkSeries(t *testing.T, reader *sdkmetric.ManualReader, adapte
 		"gen_ai.request.model":  wantModel,
 		"server.address":        wantHost,
 	} {
-		if v, ok := attrs.Value(attribute.Key(key)); !ok || v.AsString() != want {
-			t.Errorf("time_to_first_chunk %s = %q ok=%v, want %q", key, v.AsString(), ok, want)
-		}
+		t.Run(key, func(t *testing.T) {
+			v, ok := attrs.Value(attribute.Key(key))
+			require.True(t, ok, "attribute is missing")
+			require.Equal(t, want, v.AsString())
+		})
 	}
-	if v, ok := attrs.Value("server.port"); !ok || v.AsInt64() != int64(wantPort) {
-		t.Errorf("time_to_first_chunk server.port = %d ok=%v, want %d", v.AsInt64(), ok, wantPort)
-	}
-	if n := attrs.Len(); n != 5 {
-		t.Errorf("time_to_first_chunk attribute count = %d, want 5", n)
-	}
+
+	port, ok := attrs.Value("server.port")
+	require.True(t, ok, "server.port attribute is missing")
+	require.EqualValues(t, wantPort, port.AsInt64())
+	require.Equal(t, 5, attrs.Len(), "attribute count")
 }
 
-func TestServerEndpointOf(t *testing.T) {
+func TestServerEndpointOf_ResolvesHostAndPort(t *testing.T) {
 	anthropic := NewAnthropicAdapter(staticBearer("k"), AuthModeAPIKey)
 	compat := NewOpenAICompatibleAdapter(staticBearer("k"), "http://llm.internal:8080/v1/", OpenAIAuthConfig{}, RetryPolicy{})
 	responses := NewOpenAIResponsesAdapter(staticBearer("k"), "", OpenAIAuthConfig{})
@@ -65,9 +66,8 @@ func TestServerEndpointOf(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			host, port := ServerEndpointOf(tc.adapter)
-			if host != tc.wantHost || port != tc.wantPort {
-				t.Errorf("ServerEndpointOf() = (%q, %d), want (%q, %d)", host, port, tc.wantHost, tc.wantPort)
-			}
+			require.Equal(t, tc.wantHost, host)
+			require.Equal(t, tc.wantPort, port)
 		})
 	}
 }

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
@@ -17,13 +19,9 @@ import (
 func ctxWithSpan(t *testing.T, traceHex, spanHex string) context.Context {
 	t.Helper()
 	traceID, err := oteltrace.TraceIDFromHex(traceHex)
-	if err != nil {
-		t.Fatalf("TraceIDFromHex(%q): %v", traceHex, err)
-	}
+	require.NoError(t, err, "TraceIDFromHex(%q)", traceHex)
 	spanID, err := oteltrace.SpanIDFromHex(spanHex)
-	if err != nil {
-		t.Fatalf("SpanIDFromHex(%q): %v", spanHex, err)
-	}
+	require.NoError(t, err, "SpanIDFromHex(%q)", spanHex)
 	sc := oteltrace.NewSpanContext(oteltrace.SpanContextConfig{
 		TraceID:    traceID,
 		SpanID:     spanID,
@@ -47,15 +45,11 @@ func TestSpanContextHandler_InjectsIDsWhenSpanActive(t *testing.T) {
 	logger.InfoContext(ctxWithSpan(t, traceHex, spanHex), "inside span")
 
 	var record map[string]any
-	if err := json.Unmarshal(buf.Bytes(), &record); err != nil {
-		t.Fatalf("unmarshal log record: %v\n%s", err, buf.String())
-	}
-	if got, _ := record["trace_id"].(string); got != traceHex {
-		t.Errorf("trace_id = %q, want %q", got, traceHex)
-	}
-	if got, _ := record["span_id"].(string); got != spanHex {
-		t.Errorf("span_id = %q, want %q", got, spanHex)
-	}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &record), "log output:\n%s", buf.String())
+	traceID, _ := record["trace_id"].(string)
+	spanID, _ := record["span_id"].(string)
+	assert.Equal(t, traceHex, traceID, "trace_id")
+	assert.Equal(t, spanHex, spanID, "span_id")
 }
 
 // TestSpanContextHandler_OmitsIDsWhenNoSpan asserts that a record emitted
@@ -68,15 +62,9 @@ func TestSpanContextHandler_OmitsIDsWhenNoSpan(t *testing.T) {
 	logger.InfoContext(context.Background(), "no span here")
 
 	var record map[string]any
-	if err := json.Unmarshal(buf.Bytes(), &record); err != nil {
-		t.Fatalf("unmarshal log record: %v\n%s", err, buf.String())
-	}
-	if _, ok := record["trace_id"]; ok {
-		t.Errorf("trace_id present without an active span: %v", record)
-	}
-	if _, ok := record["span_id"]; ok {
-		t.Errorf("span_id present without an active span: %v", record)
-	}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &record), "log output:\n%s", buf.String())
+	assert.NotContains(t, record, "trace_id", "record: %v", record)
+	assert.NotContains(t, record, "span_id", "record: %v", record)
 }
 
 // TestSpanContextHandler_NonContextCallOmitsIDs asserts that the plain
@@ -89,16 +77,15 @@ func TestSpanContextHandler_NonContextCallOmitsIDs(t *testing.T) {
 	logger.Info("plain info")
 
 	output := buf.String()
-	if strings.Contains(output, "trace_id") || strings.Contains(output, "span_id") {
-		t.Errorf("correlation fields present on a non-context call: %s", output)
-	}
+	assert.NotContains(t, output, "trace_id", "correlation fields present on a non-context call: %s", output)
+	assert.NotContains(t, output, "span_id", "correlation fields present on a non-context call: %s", output)
 }
 
-// TestSpanContextHandler_StillScrubs asserts the span handler sits outside
-// the scrubber so a secret in an attribute is still redacted when a span is
-// active (the scrubber runs on every value, including alongside the injected
-// correlation IDs).
-func TestSpanContextHandler_StillScrubs(t *testing.T) {
+// TestSpanContextHandler_ScrubsSecretsWithActiveSpan asserts the span handler
+// sits outside the scrubber so a secret in an attribute is still redacted when
+// a span is active (the scrubber runs on every value, including alongside the
+// injected correlation IDs).
+func TestSpanContextHandler_ScrubsSecretsWithActiveSpan(t *testing.T) {
 	var buf bytes.Buffer
 	logger := NewLogger("run-123", slog.LevelInfo, &buf)
 
@@ -106,12 +93,8 @@ func TestSpanContextHandler_StillScrubs(t *testing.T) {
 	logger.InfoContext(ctx, "auth", slog.String("token", anthropicKeyFixture))
 
 	output := buf.String()
-	if strings.Contains(output, anthropicKeyFixture) {
-		t.Errorf("secret leaked despite active span: %s", output)
-	}
-	if !strings.Contains(output, "trace_id") {
-		t.Errorf("expected trace_id alongside the scrubbed value: %s", output)
-	}
+	assert.NotContains(t, output, anthropicKeyFixture, "secret leaked despite active span: %s", output)
+	assert.Contains(t, output, "trace_id", "expected trace_id alongside the scrubbed value")
 }
 
 // TestScopedLogger_FallsBackToScopeSpan asserts that a record without a
@@ -135,19 +118,25 @@ func TestScopedLogger_FallsBackToScopeSpan(t *testing.T) {
 	logger.Info("cleared")
 
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("got %d records, want 3:\n%s", len(lines), buf.String())
+	require.Len(t, lines, 3, "log output:\n%s", buf.String())
+
+	cases := []struct {
+		name    string
+		traceID string
+		spanID  string
+	}{
+		{name: "record without own span uses scope span", traceID: scopeTrace, spanID: scopeSpan},
+		{name: "record with own span keeps it", traceID: ownTrace, spanID: ownSpan},
+		{name: "record after scope span cleared has no IDs"},
 	}
-	want := [][2]string{{scopeTrace, scopeSpan}, {ownTrace, ownSpan}, {"", ""}}
-	for i, line := range lines {
-		var record map[string]any
-		if err := json.Unmarshal([]byte(line), &record); err != nil {
-			t.Fatalf("unmarshal record %d: %v", i, err)
-		}
-		traceID, _ := record["trace_id"].(string)
-		spanID, _ := record["span_id"].(string)
-		if traceID != want[i][0] || spanID != want[i][1] {
-			t.Errorf("record %q: trace_id=%q span_id=%q, want %q %q", record["msg"], traceID, spanID, want[i][0], want[i][1])
-		}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var record map[string]any
+			require.NoError(t, json.Unmarshal([]byte(lines[i]), &record), "record %d", i)
+			traceID, _ := record["trace_id"].(string)
+			spanID, _ := record["span_id"].(string)
+			require.Equal(t, tc.traceID, traceID, "trace_id")
+			require.Equal(t, tc.spanID, spanID, "span_id")
+		})
 	}
 }

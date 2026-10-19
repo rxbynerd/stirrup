@@ -3,8 +3,11 @@ package guard
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // stubGuard is a configurable test double for GuardRail.
@@ -40,52 +43,34 @@ func deny(id, reason string) *Decision {
 	return &Decision{Verdict: VerdictDeny, GuardID: id, Reason: reason}
 }
 
-func TestSequentialEmptyAllows(t *testing.T) {
+func TestSequential_EmptyAllows(t *testing.T) {
 	s := Sequential{ID: "seq"}
 	d, err := s.Check(context.Background(), Input{Phase: PhasePreTurn})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if d.Verdict != VerdictAllow {
-		t.Fatalf("verdict = %q, want allow", d.Verdict)
-	}
-	if d.GuardID != "seq" {
-		t.Fatalf("guard id = %q, want \"seq\"", d.GuardID)
-	}
+	require.NoError(t, err)
+	require.Equal(t, VerdictAllow, d.Verdict)
+	require.Equal(t, "seq", d.GuardID)
 }
 
-func TestSequentialEmptyDefaultsID(t *testing.T) {
+func TestSequential_EmptyDefaultsID(t *testing.T) {
 	d, err := Sequential{}.Check(context.Background(), Input{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d.GuardID != "sequential" {
-		t.Fatalf("default id = %q, want \"sequential\"", d.GuardID)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "sequential", d.GuardID)
 }
 
-func TestSequentialShortCircuitsOnDeny(t *testing.T) {
+func TestSequential_ShortCircuitsOnDeny(t *testing.T) {
 	first := &stubGuard{d: allow("a")}
 	denier := &stubGuard{d: deny("b", "bad")}
 	never := &stubGuard{d: allow("c")}
 	s := Sequential{Guards: []GuardRail{first, denier, never}}
 
 	d, err := s.Check(context.Background(), Input{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if d.Verdict != VerdictDeny {
-		t.Fatalf("verdict = %q, want deny", d.Verdict)
-	}
-	if d.GuardID != "b" {
-		t.Fatalf("guard id = %q, want \"b\"", d.GuardID)
-	}
-	if never.called != 0 {
-		t.Fatalf("guards after deny were invoked %d times, expected 0", never.called)
-	}
+	require.NoError(t, err)
+	require.Equal(t, VerdictDeny, d.Verdict)
+	require.Equal(t, "b", d.GuardID)
+	require.Zero(t, never.called, "guards after deny must not run")
 }
 
-func TestSequentialPropagatesError(t *testing.T) {
+func TestSequential_PropagatesError(t *testing.T) {
 	sentinel := errors.New("boom")
 	first := &stubGuard{d: allow("a")}
 	bad := &stubGuard{err: sentinel}
@@ -93,15 +78,11 @@ func TestSequentialPropagatesError(t *testing.T) {
 	s := Sequential{Guards: []GuardRail{first, bad, never}}
 
 	_, err := s.Check(context.Background(), Input{})
-	if !errors.Is(err, sentinel) {
-		t.Fatalf("error = %v, want sentinel", err)
-	}
-	if never.called != 0 {
-		t.Fatalf("guards after error were invoked %d times, expected 0", never.called)
-	}
+	require.ErrorIs(t, err, sentinel)
+	require.Zero(t, never.called, "guards after an error must not run")
 }
 
-func TestSequentialReturnsLastDecisionWhenAllAllow(t *testing.T) {
+func TestSequential_ReturnsLastDecisionWhenAllAllow(t *testing.T) {
 	g1 := &stubGuard{d: allow("a")}
 	g2 := &stubGuard{d: spotlight("b")}
 	g3 := &stubGuard{d: allow("c")}
@@ -109,138 +90,94 @@ func TestSequentialReturnsLastDecisionWhenAllAllow(t *testing.T) {
 	// only when no later guard overrides; here g3 returns allow last.
 	s := Sequential{Guards: []GuardRail{g1, g2, g3}}
 	d, err := s.Check(context.Background(), Input{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d.GuardID != "c" {
-		t.Fatalf("expected last guard's decision, got id %q", d.GuardID)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "c", d.GuardID)
 }
 
-func TestSequentialPreservesSpotlightWhenItIsLast(t *testing.T) {
+func TestSequential_PreservesSpotlightWhenItIsLast(t *testing.T) {
 	g1 := &stubGuard{d: allow("a")}
 	g2 := &stubGuard{d: spotlight("b")}
 	s := Sequential{Guards: []GuardRail{g1, g2}}
 	d, err := s.Check(context.Background(), Input{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d.Verdict != VerdictAllowSpot {
-		t.Fatalf("verdict = %q, want spotlight", d.Verdict)
-	}
+	require.NoError(t, err)
+	require.Equal(t, VerdictAllowSpot, d.Verdict)
 }
 
-func TestParallelEmptyAllows(t *testing.T) {
+func TestParallel_EmptyAllows(t *testing.T) {
 	p := Parallel{ID: "par"}
 	d, err := p.Check(context.Background(), Input{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d.Verdict != VerdictAllow {
-		t.Fatalf("verdict = %q, want allow", d.Verdict)
-	}
-	if d.GuardID != "par" {
-		t.Fatalf("guard id = %q, want \"par\"", d.GuardID)
-	}
+	require.NoError(t, err)
+	require.Equal(t, VerdictAllow, d.Verdict)
+	require.Equal(t, "par", d.GuardID)
 }
 
-func TestParallelEmptyDefaultsID(t *testing.T) {
+func TestParallel_EmptyDefaultsID(t *testing.T) {
 	d, err := Parallel{}.Check(context.Background(), Input{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d.GuardID != "parallel" {
-		t.Fatalf("default id = %q, want \"parallel\"", d.GuardID)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "parallel", d.GuardID)
 }
 
-func TestParallelDenyBeatsSpotlightAndAllow(t *testing.T) {
+func TestParallel_DenyBeatsSpotlightAndAllow(t *testing.T) {
 	g1 := &stubGuard{d: allow("a")}
 	g2 := &stubGuard{d: spotlight("b")}
 	g3 := &stubGuard{d: deny("c", "blocked")}
 	p := Parallel{Guards: []GuardRail{g1, g2, g3}}
 
 	d, err := p.Check(context.Background(), Input{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d.Verdict != VerdictDeny {
-		t.Fatalf("verdict = %q, want deny", d.Verdict)
-	}
-	if d.GuardID != "c" {
-		t.Fatalf("guard id = %q, want \"c\"", d.GuardID)
-	}
+	require.NoError(t, err)
+	require.Equal(t, VerdictDeny, d.Verdict)
+	require.Equal(t, "c", d.GuardID)
 }
 
-func TestParallelSpotlightBeatsAllow(t *testing.T) {
+func TestParallel_SpotlightBeatsAllow(t *testing.T) {
 	g1 := &stubGuard{d: allow("a")}
 	g2 := &stubGuard{d: spotlight("b")}
 	p := Parallel{Guards: []GuardRail{g1, g2}}
 	d, err := p.Check(context.Background(), Input{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d.Verdict != VerdictAllowSpot {
-		t.Fatalf("verdict = %q, want spotlight", d.Verdict)
-	}
-	if d.GuardID != "b" {
-		t.Fatalf("guard id = %q, want \"b\"", d.GuardID)
-	}
+	require.NoError(t, err)
+	require.Equal(t, VerdictAllowSpot, d.Verdict)
+	require.Equal(t, "b", d.GuardID)
 }
 
-func TestParallelDenyWinsEvenWhenOtherGuardErrors(t *testing.T) {
+func TestParallel_DenyWinsEvenWhenOtherGuardErrors(t *testing.T) {
 	g1 := &stubGuard{err: errors.New("boom")}
 	g2 := &stubGuard{d: deny("c", "blocked")}
 	p := Parallel{Guards: []GuardRail{g1, g2}}
 
 	d, err := p.Check(context.Background(), Input{})
-	if err != nil {
-		t.Fatalf("expected no error when deny wins; got %v", err)
-	}
-	if d.Verdict != VerdictDeny {
-		t.Fatalf("verdict = %q, want deny", d.Verdict)
-	}
+	require.NoError(t, err, "a deny verdict must win over a sibling error")
+	require.Equal(t, VerdictDeny, d.Verdict)
 }
 
-func TestParallelReturnsErrorWhenNoDenyAndAGuardErrored(t *testing.T) {
+func TestParallel_ReturnsErrorWhenNoDenyAndAGuardErrored(t *testing.T) {
 	sentinel := errors.New("boom")
 	g1 := &stubGuard{err: sentinel}
 	g2 := &stubGuard{d: allow("ok")}
 	p := Parallel{Guards: []GuardRail{g1, g2}}
 
 	_, err := p.Check(context.Background(), Input{})
-	if !errors.Is(err, sentinel) {
-		t.Fatalf("error = %v, want sentinel", err)
-	}
+	require.ErrorIs(t, err, sentinel)
 }
 
-func TestParallelLatencyIsMaxOfChildren(t *testing.T) {
+func TestParallel_LatencyIsMaxOfChildren(t *testing.T) {
 	short := &stubGuard{d: &Decision{Verdict: VerdictAllow, GuardID: "s", Latency: 5 * time.Millisecond}}
 	long := &stubGuard{d: &Decision{Verdict: VerdictAllow, GuardID: "l", Latency: 50 * time.Millisecond}}
 	mid := &stubGuard{d: &Decision{Verdict: VerdictAllow, GuardID: "m", Latency: 25 * time.Millisecond}}
 	p := Parallel{Guards: []GuardRail{short, long, mid}}
 
 	d, err := p.Check(context.Background(), Input{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d.Latency != 50*time.Millisecond {
-		t.Fatalf("latency = %v, want max (50ms)", d.Latency)
-	}
+	require.NoError(t, err)
+	require.Equal(t, 50*time.Millisecond, d.Latency)
 }
 
-func TestParallelAggregatesReasonsAtStrongestRank(t *testing.T) {
+func TestParallel_AggregatesReasonsAtStrongestRank(t *testing.T) {
 	g1 := &stubGuard{d: deny("a", "first")}
 	g2 := &stubGuard{d: deny("b", "second")}
 	g3 := &stubGuard{d: allow("c")}
 	p := Parallel{Guards: []GuardRail{g1, g2, g3}}
 
 	d, err := p.Check(context.Background(), Input{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	// Both denies contribute reasons; the allow does not.
-	if d.Reason != "first, second" && d.Reason != "second, first" {
-		t.Fatalf("reason = %q, want concatenation of deny reasons", d.Reason)
-	}
+	require.ElementsMatch(t, []string{"first", "second"}, strings.Split(d.Reason, ", "))
 }

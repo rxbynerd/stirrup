@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseDiff_CreateModifyDelete(t *testing.T) {
@@ -33,14 +35,11 @@ index 4444444..0000000
 -bye
 `
 	files, err := ParseDiff(diff)
-	if err != nil {
-		t.Fatalf("ParseDiff: %v", err)
-	}
+	require.NoError(t, err)
 	wantBefore := Tree{"mod.txt": "keep\nold\ntail\n", "gone.txt": "bye\n"}
 	wantAfter := Tree{"new.txt": "one\ntwo\n", "mod.txt": "keep\nnew\ntail\n"}
-	if !treesEqual(files.Before, wantBefore) || !treesEqual(files.After, wantAfter) {
-		t.Errorf("files = %#v\nwant before %#v\nwant after %#v", files, wantBefore, wantAfter)
-	}
+	require.Equal(t, wantBefore, files.Before)
+	require.Equal(t, wantAfter, files.After)
 }
 
 func TestParseDiff_FillsUnshownLines(t *testing.T) {
@@ -58,26 +57,34 @@ func TestParseDiff_FillsUnshownLines(t *testing.T) {
 +appended
 `
 	files, err := ParseDiff(diff)
-	if err != nil {
-		t.Fatalf("ParseDiff: %v", err)
-	}
+	require.NoError(t, err)
 	before := strings.Split(strings.TrimSuffix(files.Before["f.txt"], "\n"), "\n")
 	after := strings.Split(strings.TrimSuffix(files.After["f.txt"], "\n"), "\n")
-	if len(before) != 20 || len(after) != 21 {
-		t.Fatalf("before has %d lines, after %d; want 20 and 21", len(before), len(after))
-	}
+	require.Len(t, before, 20, "before line count")
+	require.Len(t, after, 21, "after line count")
 	checks := []struct {
+		name  string
 		lines []string
 		line  int
 		want  string
 	}{
-		{before, 1, ""}, {before, 4, "c4"}, {before, 6, "c6"}, {before, 7, ""}, {before, 10, "c10"}, {before, 11, "c11"}, {before, 20, ""},
-		{after, 5, "added"}, {after, 11, "c10"}, {after, 12, ""}, {after, 20, ""}, {after, 21, "appended"},
+		{"before line 1 is blank", before, 1, ""},
+		{"before line 4 is context c4", before, 4, "c4"},
+		{"before line 6 is context c6", before, 6, "c6"},
+		{"before line 7 is blank", before, 7, ""},
+		{"before line 10 is context c10", before, 10, "c10"},
+		{"before line 11 is removed c11", before, 11, "c11"},
+		{"before line 20 is blank", before, 20, ""},
+		{"after line 5 is added", after, 5, "added"},
+		{"after line 11 is context c10", after, 11, "c10"},
+		{"after line 12 is blank", after, 12, ""},
+		{"after line 20 is blank", after, 20, ""},
+		{"after line 21 is appended", after, 21, "appended"},
 	}
 	for _, c := range checks {
-		if got := c.lines[c.line-1]; got != c.want {
-			t.Errorf("line %d = %q, want %q", c.line, got, c.want)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			require.Equal(t, c.want, c.lines[c.line-1])
+		})
 	}
 }
 
@@ -102,24 +109,18 @@ func TestParseDiff_NoNewlineAtEndOfFile(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			files, err := ParseDiff(tc.diff)
-			if err != nil {
-				t.Fatalf("ParseDiff: %v", err)
-			}
-			if files.Before["f"] != tc.before || files.After["f"] != tc.after {
-				t.Errorf("before %q after %q, want %q and %q", files.Before["f"], files.After["f"], tc.before, tc.after)
-			}
+			require.NoError(t, err)
+			require.Equal(t, tc.before, files.Before["f"])
+			require.Equal(t, tc.after, files.After["f"])
 		})
 	}
 }
 
 func TestParseDiff_EmptyContextLineIsAccepted(t *testing.T) {
 	files, err := ParseDiff("--- a/f\n+++ b/f\n@@ -1,3 +1,3 @@\n a\n\n-b\n+c\n")
-	if err != nil {
-		t.Fatalf("ParseDiff: %v", err)
-	}
-	if files.Before["f"] != "a\n\nb\n" || files.After["f"] != "a\n\nc\n" {
-		t.Errorf("files = %#v", files)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "a\n\nb\n", files.Before["f"])
+	require.Equal(t, "a\n\nc\n", files.After["f"])
 }
 
 func TestParseDiff_Rejects(t *testing.T) {
@@ -161,9 +162,7 @@ func TestParseDiff_Rejects(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			_, err := ParseDiff(tc.diff)
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("ParseDiff error = %v, want it to contain %q", err, tc.want)
-			}
+			require.ErrorContains(t, err, tc.want)
 		})
 	}
 }
@@ -183,29 +182,21 @@ func TestParseDiff_BoundsTheReconstruction(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			_, err := ParseDiff(tc.diff)
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("ParseDiff error = %v, want it to contain %q", err, tc.want)
-			}
+			require.ErrorContains(t, err, tc.want)
 		})
 	}
 }
 
 func TestParseDiff_PaddingWithinBudget(t *testing.T) {
 	files, err := ParseDiff("--- a/x\n+++ b/x\n@@ -1000000 +1000000 @@\n-a\n+b\n")
-	if err != nil {
-		t.Fatalf("ParseDiff: %v", err)
-	}
-	if want := strings.Repeat("\n", 999_999) + "a\n"; files.Before["x"] != want {
-		t.Errorf("before is %d bytes, want %d", len(files.Before["x"]), len(want))
-	}
+	require.NoError(t, err)
+	want := strings.Repeat("\n", 999_999) + "a\n"
+	require.Len(t, files.Before["x"], len(want), "before size in bytes")
+	require.Equal(t, want, files.Before["x"])
 }
 
 func TestParseDiff_TimestampedPaths(t *testing.T) {
 	files, err := ParseDiff("--- a/x\t2026-01-01 00:00:00\n+++ b/x\t2026-01-02 00:00:00\n@@ -1 +1 @@\n-a\n+b\n")
-	if err != nil {
-		t.Fatalf("ParseDiff: %v", err)
-	}
-	if files.After["x"] != "b\n" {
-		t.Errorf("files = %#v", files)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "b\n", files.After["x"])
 }

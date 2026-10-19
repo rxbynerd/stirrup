@@ -1,12 +1,13 @@
 package core
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
@@ -26,9 +27,7 @@ func fileExcerptBlock(t *testing.T) types.ContentBlock {
 		Truncated bool     `json:"truncated"`
 		Lines     []string `json:"lines"`
 	}{Path: "a.go", StartLine: 1, EndLine: 100, Truncated: true, Lines: lines})
-	if err != nil {
-		t.Fatalf("marshal excerpt: %v", err)
-	}
+	require.NoError(t, err, "marshal excerpt")
 	return types.ContentBlock{
 		Type:       "tool_result",
 		ToolUseID:  "tc_1",
@@ -48,17 +47,19 @@ func TestEstimateCurrentTokens_CountsWireEnvelope(t *testing.T) {
 
 	// 4 (msg) + 3 (block) + 10 (Content) + 1 (ToolUseID)
 	const base = 18
-	if got := estimateCurrentTokens(msgs, false); got != base {
-		t.Errorf("text-only provider: got %d, want %d", got, base)
-	}
 	wire := types.ToolResultWireEnvelope(block)
 	want := base + len(wire)/tokenEstimationDivisor
-	if got := estimateCurrentTokens(msgs, true); got != want {
-		t.Errorf("structured provider: got %d, want %d (wire envelope %d bytes)", got, want, len(wire))
-	}
-	if full := base + len(block.Structured)/tokenEstimationDivisor; want >= full {
-		t.Errorf("estimate %d does not drop the duplicated body (full envelope would give %d)", want, full)
-	}
+	full := base + len(block.Structured)/tokenEstimationDivisor
+
+	t.Run("text-only provider counts no envelope", func(t *testing.T) {
+		require.Equal(t, base, estimateCurrentTokens(msgs, false))
+	})
+	t.Run("structured provider counts the wire envelope", func(t *testing.T) {
+		require.Equal(t, want, estimateCurrentTokens(msgs, true), "wire envelope is %d bytes", len(wire))
+	})
+	t.Run("structured estimate drops the duplicated body", func(t *testing.T) {
+		require.Less(t, want, full, "full envelope would give %d", full)
+	})
 }
 
 // paramsRecordingProvider replays one scripted turn per Stream call and
@@ -106,9 +107,7 @@ func structuredToolRun(t *testing.T, result tool.StructuredResult, support Struc
 	loop.Trace = recorder
 	loop.StructuredResults = support
 	registry, ok := loop.Tools.(*tool.Registry)
-	if !ok {
-		t.Fatalf("test loop Tools is %T, want *tool.Registry", loop.Tools)
-	}
+	require.Truef(t, ok, "test loop Tools is %T, want *tool.Registry", loop.Tools)
 	registry.Register(&tool.Tool{
 		Name:        "structured_tool",
 		Description: "returns a structured payload",
@@ -119,12 +118,9 @@ func structuredToolRun(t *testing.T, result tool.StructuredResult, support Struc
 	})
 	config := buildTestConfig()
 	config.MaxTurns = 4
-	if _, err := loop.Run(context.Background(), config); err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if len(prov.requests) != 2 {
-		t.Fatalf("expected a tool turn and a final turn, got %d requests", len(prov.requests))
-	}
+	_, err := loop.Run(context.Background(), config)
+	require.NoError(t, err)
+	require.Len(t, prov.requests, 2, "expected a tool turn and a final turn")
 	return prov, strategy, recorder
 }
 
@@ -137,29 +133,34 @@ func TestLoop_EstimateFollowsStructuredResultSupport(t *testing.T) {
 		Structured: json.RawMessage(`{"blob":"` + strings.Repeat("z", 40000) + `"}`),
 		Kind:       "mcp_tool_result",
 	}
-	for _, sends := range []bool{true, false} {
-		var mu sync.Mutex
-		var asked []string
-		support := func(provider, model string) bool {
-			mu.Lock()
-			defer mu.Unlock()
-			asked = append(asked, provider+"/"+model)
-			return sends
-		}
-		_, strategy, _ := structuredToolRun(t, result, support)
-		if len(strategy.budgets) < 2 {
-			t.Fatalf("sends=%t: expected at least 2 Prepare calls, got %d", sends, len(strategy.budgets))
-		}
-		afterTool := strategy.budgets[1].CurrentTokens
-		if sends && afterTool < 10000 {
-			t.Errorf("sends=true: CurrentTokens = %d, want the 40 KB envelope counted", afterTool)
-		}
-		if !sends && afterTool > 5000 {
-			t.Errorf("sends=false: CurrentTokens = %d, want the envelope left out", afterTool)
-		}
-		if len(asked) == 0 || asked[0] != "anthropic/claude-sonnet-4-6" {
-			t.Errorf("sends=%t: StructuredResults asked about %v, want the router selection anthropic/claude-sonnet-4-6", sends, asked)
-		}
+	tests := []struct {
+		name  string
+		sends bool
+	}{
+		{name: "provider sends the envelope", sends: true},
+		{name: "provider sends text only", sends: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var asked []string
+			support := func(provider, model string) bool {
+				mu.Lock()
+				defer mu.Unlock()
+				asked = append(asked, provider+"/"+model)
+				return tt.sends
+			}
+			_, strategy, _ := structuredToolRun(t, result, support)
+			require.GreaterOrEqual(t, len(strategy.budgets), 2, "expected at least 2 Prepare calls")
+			afterTool := strategy.budgets[1].CurrentTokens
+			if tt.sends {
+				require.GreaterOrEqual(t, afterTool, 10000, "the 40 KB envelope should be counted")
+			} else {
+				require.LessOrEqual(t, afterTool, 5000, "the envelope should be left out")
+			}
+			require.NotEmpty(t, asked, "StructuredResults was never asked")
+			require.Equal(t, "anthropic/claude-sonnet-4-6", asked[0], "asked about %v, want the router selection", asked)
+		})
 	}
 }
 
@@ -171,32 +172,32 @@ func TestLoop_FullEnvelopeKeptInHistoryAndTrace(t *testing.T) {
 	result := tool.StructuredResult{Text: block.Content, Structured: block.Structured, Kind: block.Kind}
 	prov, _, recorder := structuredToolRun(t, result, nil)
 
-	var inHistory json.RawMessage
-	for _, msg := range prov.requests[1] {
-		for _, b := range msg.Content {
-			if b.Type == "tool_result" {
-				inHistory = b.Structured
+	t.Run("history keeps the full envelope", func(t *testing.T) {
+		var inHistory json.RawMessage
+		for _, msg := range prov.requests[1] {
+			for _, b := range msg.Content {
+				if b.Type == "tool_result" {
+					inHistory = b.Structured
+				}
 			}
 		}
-	}
-	if !bytes.Equal(inHistory, block.Structured) {
-		t.Errorf("history envelope differs from the tool's\n got: %.120s\nwant: %.120s", inHistory, block.Structured)
-	}
+		require.Equal(t, string(block.Structured), string(inHistory), "history envelope differs from the tool's")
+	})
 
-	recorder.mu.Lock()
-	defer recorder.mu.Unlock()
-	var traced json.RawMessage
-	for _, tr := range recorder.turnRecords {
-		for _, tc := range tr.ToolCalls {
-			traced = tc.Structured
+	t.Run("trace keeps the full envelope", func(t *testing.T) {
+		recorder.mu.Lock()
+		defer recorder.mu.Unlock()
+		var traced json.RawMessage
+		for _, tr := range recorder.turnRecords {
+			for _, tc := range tr.ToolCalls {
+				traced = tc.Structured
+			}
 		}
-	}
-	if !bytes.Equal(traced, block.Structured) {
-		t.Errorf("trace envelope differs from the tool's\n got: %.120s\nwant: %.120s", traced, block.Structured)
-	}
+		require.Equal(t, string(block.Structured), string(traced), "trace envelope differs from the tool's")
+	})
 }
 
-func TestBuildStructuredResultSupport(t *testing.T) {
+func TestBuildStructuredResultSupport_RoutesByProviderAndModel(t *testing.T) {
 	config := &types.RunConfig{
 		Provider: types.ProviderConfig{Type: "anthropic"},
 		Providers: map[string]types.ProviderConfig{
@@ -206,19 +207,20 @@ func TestBuildStructuredResultSupport(t *testing.T) {
 	}
 	support := buildStructuredResultSupport(config, quirks.DefaultRegistry())
 	tests := []struct {
+		name            string
 		provider, model string
 		want            bool
 	}{
-		{"", "claude-sonnet-4-6", true},
-		{"anthropic", "claude-sonnet-4-6", true},
-		{"vertex", "gemini-2.5-pro", true},
-		{"cheap", "gpt-4o", false},
-		{"openai-responses", "gpt-5", false},
+		{"empty provider name uses the default provider", "", "claude-sonnet-4-6", true},
+		{"anthropic provider sends structured results", "anthropic", "claude-sonnet-4-6", true},
+		{"gemini provider sends structured results", "vertex", "gemini-2.5-pro", true},
+		{"openai-compatible provider does not send structured results", "cheap", "gpt-4o", false},
+		{"openai-responses provider does not send structured results", "openai-responses", "gpt-5", false},
 	}
 	for _, tt := range tests {
-		if got := support(tt.provider, tt.model); got != tt.want {
-			t.Errorf("support(%q, %q) = %t, want %t", tt.provider, tt.model, got, tt.want)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, support(tt.provider, tt.model))
+		})
 	}
 }
 
@@ -243,9 +245,7 @@ func TestBuildStructuredResultSupport_RequiresAWireShape(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			support := buildStructuredResultSupport(config, structuredCapsResolver(tt.caps))
-			if got := support("", "m"); got != tt.want {
-				t.Errorf("support = %t, want %t", got, tt.want)
-			}
+			require.Equal(t, tt.want, support("", "m"))
 		})
 	}
 }

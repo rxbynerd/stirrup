@@ -4,8 +4,9 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 )
@@ -16,26 +17,13 @@ func TestResolveHeaders_PlaintextPassthrough(t *testing.T) {
 		"X-Region": "eu-west-1",
 	}
 	out, err := ResolveHeaders(context.Background(), security.NewEnvSecretStore(), in)
-	if err != nil {
-		t.Fatalf("ResolveHeaders: %v", err)
-	}
-	if got, want := out["X-Tenant"], "team-a"; got != want {
-		t.Errorf("X-Tenant: got %q, want %q", got, want)
-	}
-	if got, want := out["X-Region"], "eu-west-1"; got != want {
-		t.Errorf("X-Region: got %q, want %q", got, want)
-	}
-	// Input must not be mutated. `&out == &in` would compare the
-	// addresses of two local stack variables (always distinct) and
-	// could never detect a regression where ResolveHeaders returned
-	// the input map by reference. Use a mutation probe instead: if
-	// `out` and `in` share the underlying map, writing to `out`
-	// will be visible in `in`.
+	require.NoError(t, err)
+	require.Equal(t, "team-a", out["X-Tenant"])
+	require.Equal(t, "eu-west-1", out["X-Region"])
+
+	// The result must be a fresh map, not the input map.
 	out["__probe__"] = "x"
-	if in["__probe__"] == "x" {
-		t.Error("ResolveHeaders returned the input map; expected a fresh allocation")
-	}
-	delete(out, "__probe__")
+	require.NotContains(t, in, "__probe__", "ResolveHeaders returned the input map")
 }
 
 func TestResolveHeaders_SecretEnvVar(t *testing.T) {
@@ -45,36 +33,23 @@ func TestResolveHeaders_SecretEnvVar(t *testing.T) {
 		"Authorization": "secret://TEST_GRAFANA_AUTH",
 	}
 	out, err := ResolveHeaders(context.Background(), security.NewEnvSecretStore(), in)
-	if err != nil {
-		t.Fatalf("ResolveHeaders: %v", err)
-	}
-	if got, want := out["Authorization"], "Basic dXNlcjpwYXNz"; got != want {
-		t.Errorf("Authorization: got %q, want %q", got, want)
-	}
-	// Input untouched.
-	if in["Authorization"] != "secret://TEST_GRAFANA_AUTH" {
-		t.Errorf("input mutated: %q", in["Authorization"])
-	}
+	require.NoError(t, err)
+	require.Equal(t, "Basic dXNlcjpwYXNz", out["Authorization"])
+	require.Equal(t, "secret://TEST_GRAFANA_AUTH", in["Authorization"], "ResolveHeaders mutated its input")
 }
 
 func TestResolveHeaders_SecretFileScheme(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "token.txt")
-	if err := os.WriteFile(path, []byte("file-bearer-token\n"), 0o600); err != nil {
-		t.Fatalf("write secret file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte("file-bearer-token\n"), 0o600))
 
 	in := map[string]string{
 		"Authorization": "secret://file://" + path,
 	}
 	out, err := ResolveHeaders(context.Background(), security.NewEnvSecretStore(), in)
-	if err != nil {
-		t.Fatalf("ResolveHeaders: %v", err)
-	}
+	require.NoError(t, err)
 	// EnvSecretStore.Resolve trims trailing whitespace on file values.
-	if got, want := out["Authorization"], "file-bearer-token"; got != want {
-		t.Errorf("Authorization: got %q, want %q", got, want)
-	}
+	require.Equal(t, "file-bearer-token", out["Authorization"])
 }
 
 // TestResolveHeaders_MissingEnvVar pins the error path: an env var that
@@ -83,19 +58,12 @@ func TestResolveHeaders_SecretFileScheme(t *testing.T) {
 // actual mistake (typo'd header value) rather than at a generic
 // "couldn't construct exporter" log line.
 func TestResolveHeaders_MissingEnvVar(t *testing.T) {
-	if err := os.Unsetenv("STIRRUP_TEST_NOT_SET"); err != nil {
-		t.Fatalf("unset env: %v", err)
-	}
+	require.NoError(t, os.Unsetenv("STIRRUP_TEST_NOT_SET"))
 	in := map[string]string{
 		"Authorization": "secret://STIRRUP_TEST_NOT_SET",
 	}
-	out, err := ResolveHeaders(context.Background(), security.NewEnvSecretStore(), in)
-	if err == nil {
-		t.Fatalf("expected error for missing env var, got nil; out=%v", out)
-	}
-	if !strings.Contains(err.Error(), "Authorization") {
-		t.Errorf("error message must reference the header name, got %q", err.Error())
-	}
+	_, err := ResolveHeaders(context.Background(), security.NewEnvSecretStore(), in)
+	require.ErrorContains(t, err, "Authorization", "error must reference the header name")
 }
 
 // TestResolveHeaders_NilStoreWithSecret rejects a config that asks to
@@ -109,12 +77,7 @@ func TestResolveHeaders_NilStoreWithSecret(t *testing.T) {
 		"Authorization": "secret://GRAFANA_CLOUD_AUTH",
 	}
 	_, err := ResolveHeaders(context.Background(), nil, in)
-	if err == nil {
-		t.Fatal("expected error when store is nil and a header references a secret, got nil")
-	}
-	if !strings.Contains(err.Error(), "no SecretStore") {
-		t.Errorf("error must call out the missing SecretStore, got %q", err.Error())
-	}
+	require.ErrorContains(t, err, "no SecretStore")
 }
 
 // TestResolveHeaders_NilStoreWithPlaintextOnly is the symmetric case:
@@ -127,28 +90,20 @@ func TestResolveHeaders_NilStoreWithPlaintextOnly(t *testing.T) {
 		"X-Tenant": "team-a",
 	}
 	out, err := ResolveHeaders(context.Background(), nil, in)
-	if err != nil {
-		t.Fatalf("ResolveHeaders: %v", err)
-	}
-	if got := out["X-Tenant"]; got != "team-a" {
-		t.Errorf("X-Tenant: got %q, want team-a", got)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "team-a", out["X-Tenant"])
 }
 
 func TestResolveHeaders_EmptyInput(t *testing.T) {
-	out, err := ResolveHeaders(context.Background(), nil, nil)
-	if err != nil {
-		t.Fatalf("ResolveHeaders(nil): %v", err)
-	}
-	if out != nil {
-		t.Errorf("expected nil output for nil input, got %v", out)
-	}
+	t.Run("nil input", func(t *testing.T) {
+		out, err := ResolveHeaders(context.Background(), nil, nil)
+		require.NoError(t, err)
+		require.Nil(t, out)
+	})
 
-	out, err = ResolveHeaders(context.Background(), nil, map[string]string{})
-	if err != nil {
-		t.Fatalf("ResolveHeaders(empty): %v", err)
-	}
-	if out != nil {
-		t.Errorf("expected nil output for empty input, got %v", out)
-	}
+	t.Run("empty map", func(t *testing.T) {
+		out, err := ResolveHeaders(context.Background(), nil, map[string]string{})
+		require.NoError(t, err)
+		require.Nil(t, out)
+	})
 }

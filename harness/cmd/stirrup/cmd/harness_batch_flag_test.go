@@ -1,8 +1,10 @@
 package cmd
 
 import (
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -26,30 +28,16 @@ func TestBuildHarnessRunConfig_BatchFlagEnabledOnly(t *testing.T) {
 		LogLevel:      "info",
 		Batch:         true,
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
-	if cfg.Provider.Batch == nil {
-		t.Fatal("expected non-nil Provider.Batch when --batch is set")
-	}
-	if !cfg.Provider.Batch.Enabled {
-		t.Errorf("Provider.Batch.Enabled = false, want true")
-	}
-	if cfg.Provider.Batch.MaxWaitSeconds != nil {
-		t.Errorf("Provider.Batch.MaxWaitSeconds = %v, want nil (defaulted by ValidateRunConfig)", *cfg.Provider.Batch.MaxWaitSeconds)
-	}
-	if cfg.Provider.Batch.HarnessSidePolling {
-		t.Errorf("Provider.Batch.HarnessSidePolling = true, want false (operators set this via --config)")
-	}
-	if cfg.Provider.Batch.FallbackOnTimeout {
-		t.Errorf("Provider.Batch.FallbackOnTimeout = true, want false")
-	}
-	if cfg.Provider.Batch.CancelBundleOnRunCancel {
-		t.Errorf("Provider.Batch.CancelBundleOnRunCancel = true, want false")
-	}
-	if cfg.Provider.Batch.AllowInteractiveModes {
-		t.Errorf("Provider.Batch.AllowInteractiveModes = true, want false")
-	}
+	require.NoError(t, err)
+
+	batch := cfg.Provider.Batch
+	require.NotNil(t, batch, "expected non-nil Provider.Batch when --batch is set")
+	assert.True(t, batch.Enabled, "Provider.Batch.Enabled")
+	assert.Nil(t, batch.MaxWaitSeconds, "Provider.Batch.MaxWaitSeconds is defaulted by ValidateRunConfig")
+	assert.False(t, batch.HarnessSidePolling, "Provider.Batch.HarnessSidePolling is set via --config")
+	assert.False(t, batch.FallbackOnTimeout, "Provider.Batch.FallbackOnTimeout")
+	assert.False(t, batch.CancelBundleOnRunCancel, "Provider.Batch.CancelBundleOnRunCancel")
+	assert.False(t, batch.AllowInteractiveModes, "Provider.Batch.AllowInteractiveModes")
 }
 
 // TestBuildHarnessRunConfig_BatchFlagUnsetLeavesNil verifies the
@@ -69,12 +57,8 @@ func TestBuildHarnessRunConfig_BatchFlagUnsetLeavesNil(t *testing.T) {
 		TransportType: "stdio",
 		LogLevel:      "info",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
-	if cfg.Provider.Batch != nil {
-		t.Errorf("expected Provider.Batch to be nil without --batch, got %+v", cfg.Provider.Batch)
-	}
+	require.NoError(t, err)
+	require.Nil(t, cfg.Provider.Batch, "Provider.Batch without --batch")
 }
 
 // TestApplyOverrides_BatchFlagMergesWithFile pins the merge semantics
@@ -89,22 +73,13 @@ func TestApplyOverrides_BatchFlagMergesWithFile(t *testing.T) {
 		HarnessSidePolling: true,
 	}
 
-	if err := cmd.Flags().Set("batch", "true"); err != nil {
-		t.Fatalf("set --batch: %v", err)
-	}
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	require.NoError(t, cmd.Flags().Set("batch", "true"), "set --batch")
+	require.NoError(t, applyOverrides(cmd, cfg, nil))
 
-	if cfg.Provider.Batch == nil {
-		t.Fatal("expected Provider.Batch to remain non-nil after override")
-	}
-	if !cfg.Provider.Batch.Enabled {
-		t.Errorf("Provider.Batch.Enabled: --batch override failed, got false")
-	}
-	if !cfg.Provider.Batch.HarnessSidePolling {
-		t.Errorf("Provider.Batch.HarnessSidePolling: file value should survive, got false")
-	}
+	batch := cfg.Provider.Batch
+	require.NotNil(t, batch, "Provider.Batch should remain non-nil after override")
+	assert.True(t, batch.Enabled, "--batch override should set Provider.Batch.Enabled")
+	assert.True(t, batch.HarnessSidePolling, "file value should survive for Provider.Batch.HarnessSidePolling")
 }
 
 // TestApplyOverrides_BatchFlagAllocatesWhenFileOmits covers the path
@@ -113,23 +88,13 @@ func TestApplyOverrides_BatchFlagMergesWithFile(t *testing.T) {
 func TestApplyOverrides_BatchFlagAllocatesWhenFileOmits(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
-	if cfg.Provider.Batch != nil {
-		t.Fatalf("baseFileConfig should not set Batch; got %+v", cfg.Provider.Batch)
-	}
+	require.Nil(t, cfg.Provider.Batch, "baseFileConfig should not set Batch")
 
-	if err := cmd.Flags().Set("batch", "true"); err != nil {
-		t.Fatalf("set --batch: %v", err)
-	}
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	require.NoError(t, cmd.Flags().Set("batch", "true"), "set --batch")
+	require.NoError(t, applyOverrides(cmd, cfg, nil))
 
-	if cfg.Provider.Batch == nil {
-		t.Fatal("expected Provider.Batch to be allocated when --batch flips on an empty slot")
-	}
-	if !cfg.Provider.Batch.Enabled {
-		t.Errorf("Provider.Batch.Enabled = false, want true")
-	}
+	require.NotNil(t, cfg.Provider.Batch, "expected Provider.Batch to be allocated when --batch flips on an empty slot")
+	assert.True(t, cfg.Provider.Batch.Enabled, "Provider.Batch.Enabled")
 }
 
 // TestApplyOverrides_BatchFlagUnsetPreservesFile pins the precedence
@@ -143,19 +108,12 @@ func TestApplyOverrides_BatchFlagUnsetPreservesFile(t *testing.T) {
 		HarnessSidePolling: true,
 	}
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	require.NoError(t, applyOverrides(cmd, cfg, nil))
 
-	if cfg.Provider.Batch == nil {
-		t.Fatal("expected Provider.Batch to survive when --batch is unset")
-	}
-	if !cfg.Provider.Batch.Enabled {
-		t.Errorf("Provider.Batch.Enabled: file value should survive, got false")
-	}
-	if !cfg.Provider.Batch.HarnessSidePolling {
-		t.Errorf("Provider.Batch.HarnessSidePolling: file value should survive, got false")
-	}
+	batch := cfg.Provider.Batch
+	require.NotNil(t, batch, "expected Provider.Batch to survive when --batch is unset")
+	assert.True(t, batch.Enabled, "file value should survive for Provider.Batch.Enabled")
+	assert.True(t, batch.HarnessSidePolling, "file value should survive for Provider.Batch.HarnessSidePolling")
 }
 
 // TestHarnessCmd_BatchFlagHelpText pins the operator-facing flag
@@ -164,9 +122,8 @@ func TestApplyOverrides_BatchFlagUnsetPreservesFile(t *testing.T) {
 // on to find the cross-field invariants.
 func TestHarnessCmd_BatchFlagHelpText(t *testing.T) {
 	flag := harnessCmd.Flags().Lookup("batch")
-	if flag == nil {
-		t.Fatal("expected --batch flag to be registered on harnessCmd")
-	}
+	require.NotNil(t, flag, "expected --batch flag to be registered on harnessCmd")
+
 	usage := flag.Usage
 	wantSubstrings := []string{
 		"async batch submission",
@@ -178,13 +135,11 @@ func TestHarnessCmd_BatchFlagHelpText(t *testing.T) {
 		"docs/batch.md",
 	}
 	for _, want := range wantSubstrings {
-		if !strings.Contains(usage, want) {
-			t.Errorf("--batch usage text missing %q; got: %s", want, usage)
-		}
+		t.Run("mentions "+want, func(t *testing.T) {
+			require.Contains(t, usage, want)
+		})
 	}
-	if flag.DefValue != "false" {
-		t.Errorf("--batch default = %q, want \"false\"", flag.DefValue)
-	}
+	require.Equal(t, "false", flag.DefValue, "--batch default")
 }
 
 // TestApplyOverrides_BatchFlagExplicitFalseClears pins that
@@ -199,20 +154,11 @@ func TestApplyOverrides_BatchFlagExplicitFalseClears(t *testing.T) {
 		HarnessSidePolling: true,
 	}
 
-	if err := cmd.Flags().Set("batch", "false"); err != nil {
-		t.Fatalf("set --batch=false: %v", err)
-	}
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	require.NoError(t, cmd.Flags().Set("batch", "false"), "set --batch=false")
+	require.NoError(t, applyOverrides(cmd, cfg, nil))
 
-	if cfg.Provider.Batch == nil {
-		t.Fatal("expected Provider.Batch to remain non-nil after --batch=false")
-	}
-	if cfg.Provider.Batch.Enabled {
-		t.Errorf("Provider.Batch.Enabled = true, want false after --batch=false")
-	}
-	if !cfg.Provider.Batch.HarnessSidePolling {
-		t.Errorf("Provider.Batch.HarnessSidePolling: file value should survive --batch=false, got false")
-	}
+	batch := cfg.Provider.Batch
+	require.NotNil(t, batch, "expected Provider.Batch to remain non-nil after --batch=false")
+	assert.False(t, batch.Enabled, "--batch=false should clear Provider.Batch.Enabled")
+	assert.True(t, batch.HarnessSidePolling, "file value should survive --batch=false for Provider.Batch.HarnessSidePolling")
 }

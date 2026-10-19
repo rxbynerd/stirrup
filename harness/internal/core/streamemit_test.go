@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
@@ -26,20 +28,26 @@ import (
 // such as an embedder's, still never receives a secret split across
 // provider deltas.
 func TestStreamEventsToResult_DeltasAreScrubbedBeforeEmit(t *testing.T) {
-	for _, eventType := range []string{"text_delta", "thinking_delta"} {
-		split := len(fakeAnthropicKey) / 2
-		rec := &recordingTransport{}
-		ch := make(chan types.StreamEvent, 3)
-		ch <- types.StreamEvent{Type: eventType, Text: "the key is " + fakeAnthropicKey[:split]}
-		ch <- types.StreamEvent{Type: eventType, Text: fakeAnthropicKey[split:] + " and that is all"}
-		ch <- types.StreamEvent{Type: "message_complete", StopReason: "end_turn"}
-		close(ch)
-		if _, err := streamEventsToResult(context.Background(), ch, rec, true, ignoreEmitFailure, nil); err != nil {
-			t.Fatal(err)
-		}
-		if got := joinedText(rec.events, eventType); got != "the key is [REDACTED] and that is all" {
-			t.Errorf("%s reaching the transport = %q, want the key redacted", eventType, got)
-		}
+	cases := []struct {
+		name      string
+		eventType string
+	}{
+		{name: "text delta", eventType: "text_delta"},
+		{name: "thinking delta", eventType: "thinking_delta"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			split := len(fakeAnthropicKey) / 2
+			rec := &recordingTransport{}
+			ch := make(chan types.StreamEvent, 3)
+			ch <- types.StreamEvent{Type: tc.eventType, Text: "the key is " + fakeAnthropicKey[:split]}
+			ch <- types.StreamEvent{Type: tc.eventType, Text: fakeAnthropicKey[split:] + " and that is all"}
+			ch <- types.StreamEvent{Type: "message_complete", StopReason: "end_turn"}
+			close(ch)
+			_, err := streamEventsToResult(context.Background(), ch, rec, true, ignoreEmitFailure, nil)
+			require.NoError(t, err)
+			require.Equal(t, "the key is [REDACTED] and that is all", joinedText(rec.events, tc.eventType))
+		})
 	}
 }
 
@@ -68,7 +76,7 @@ func TestStreamEventsToResult_ShortReplyReleasedBeforeNextEvent(t *testing.T) {
 		case text := <-emitted:
 			got += text
 		case <-time.After(5 * time.Second):
-			t.Fatalf("reply on the transport = %q before the next provider event, want %q", got, reply)
+			require.Equal(t, reply, got, "reply reached the transport before the next provider event")
 		}
 	}
 	ch <- types.StreamEvent{Type: "message_complete", StopReason: "end_turn"}
@@ -103,15 +111,10 @@ func TestStreamEventsToResult_DeltaEmitFailureReported(t *testing.T) {
 	ch <- types.StreamEvent{Type: "text_delta", Text: "the answer, then sk-"}
 	close(ch)
 	result, err := streamEventsToResult(context.Background(), ch, tp, true, report, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := "thinking_delta text_delta text_delta"; strings.Join(failed, " ") != want {
-		t.Errorf("reported failures = %v, want %q", failed, want)
-	}
-	if len(result.Blocks) != 1 || result.Blocks[0].Text != "the answer, then sk-" {
-		t.Errorf("stream result blocks = %+v, want the full text block", result.Blocks)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "thinking_delta text_delta text_delta", strings.Join(failed, " "), "reported delta failures")
+	require.Len(t, result.Blocks, 1, "stream result blocks")
+	require.Equal(t, "the answer, then sk-", result.Blocks[0].Text)
 }
 
 // TestStreamEventsToResult_RedactionReported pins that the loop reports a
@@ -125,12 +128,12 @@ func TestStreamEventsToResult_RedactionReported(t *testing.T) {
 	ch <- types.StreamEvent{Type: "text_delta", Text: "key " + fakeAnthropicKey[:split]}
 	ch <- types.StreamEvent{Type: "text_delta", Text: fakeAnthropicKey[split:] + " done"}
 	close(ch)
-	if _, err := streamEventsToResult(context.Background(), ch, transport.NewNullTransport(), true, ignoreEmitFailure, loop.reportStreamRedaction); err != nil {
-		t.Fatal(err)
-	}
-	if out := buf.String(); !strings.Contains(out, `"secret_redacted_in_output"`) || !strings.Contains(out, `"core.stream.text_delta"`) || !strings.Contains(out, "anthropic_api_key") {
-		t.Errorf("security events = %s, want a secret_redacted_in_output for the delta", out)
-	}
+	_, err := streamEventsToResult(context.Background(), ch, transport.NewNullTransport(), true, ignoreEmitFailure, loop.reportStreamRedaction)
+	require.NoError(t, err)
+	out := buf.String()
+	require.Contains(t, out, `"secret_redacted_in_output"`)
+	require.Contains(t, out, `"core.stream.text_delta"`)
+	require.Contains(t, out, "anthropic_api_key")
 }
 
 // TestStreamEventsToResult_WithheldTextIsReported pins that the carry
@@ -153,9 +156,8 @@ func TestStreamEventsToResult_WithheldTextIsReported(t *testing.T) {
 	}
 	close(ch)
 	tp := &recordingTransport{}
-	if _, err := streamEventsToResult(context.Background(), ch, tp, true, ignoreEmitFailure, loop.reportStreamRedaction); err != nil {
-		t.Fatal(err)
-	}
+	_, err := streamEventsToResult(context.Background(), ch, tp, true, ignoreEmitFailure, loop.reportStreamRedaction)
+	require.NoError(t, err)
 	var text strings.Builder
 	warned := false
 	for _, ev := range tp.events {
@@ -166,12 +168,9 @@ func TestStreamEventsToResult_WithheldTextIsReported(t *testing.T) {
 			warned = warned || strings.HasPrefix(ev.Message, "text_delta withheld:")
 		}
 	}
-	if text.String() != "token [REDACTED] then prose" || !warned {
-		t.Errorf("stream = %q, warned = %v; want the text after the match and a warning", text.String(), warned)
-	}
-	if !strings.Contains(buf.String(), `"stream_text_withheld"`) {
-		t.Errorf("security events = %s, want a stream_text_withheld", buf.String())
-	}
+	assert.Equal(t, "token [REDACTED] then prose", text.String(), "text on the control stream")
+	assert.True(t, warned, "withheld-text warning on the control stream")
+	assert.Contains(t, buf.String(), `"stream_text_withheld"`)
 }
 
 // TestStreamEventsToResult_GRPCTransportReceivesScrubbedDeltas runs split
@@ -189,9 +188,7 @@ func TestStreamEventsToResult_GRPCTransportReceivesScrubbedDeltas(t *testing.T) 
 			grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 		))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	split := len(fakeAnthropicKey) / 2
 	bigBlock := "reasoning with " + fakeAnthropicKey + " " + strings.Repeat("long reasoning. ", 20<<10)
@@ -201,29 +198,20 @@ func TestStreamEventsToResult_GRPCTransportReceivesScrubbedDeltas(t *testing.T) 
 	ch <- types.StreamEvent{Type: "thinking", Text: bigBlock}
 	ch <- types.StreamEvent{Type: "message_complete", StopReason: "end_turn"}
 	close(ch)
-	if _, err := streamEventsToResult(context.Background(), ch, tp, true, ignoreEmitFailure, nil); err != nil {
-		t.Fatal(err)
-	}
+	_, err = streamEventsToResult(context.Background(), ch, tp, true, ignoreEmitFailure, nil)
+	require.NoError(t, err)
 	_ = tp.Close()
 
-	var text, thinking string
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		text, thinking = srv.joined("text_delta"), srv.joined("thinking_delta")
-		if strings.Contains(thinking, "truncated by harness") {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if text != "the key is [REDACTED] and that is all" {
-		t.Errorf("text on the control stream = %q, want the key redacted once", text)
-	}
-	if !strings.HasPrefix(thinking, "reasoning with [REDACTED] long") || !strings.Contains(thinking, "truncated by harness") {
-		t.Errorf("thinking on the control stream starts %q and is %d bytes; want the scrubbed head, capped", thinking[:min(len(thinking), 60)], len(thinking))
-	}
-	if strings.Contains(text+thinking, fakeAnthropicKey[split:]) {
-		t.Error("part of the key reached the control stream")
-	}
+	require.Eventually(t, func() bool {
+		return strings.Contains(srv.joined("thinking_delta"), "truncated by harness")
+	}, 5*time.Second, 10*time.Millisecond, "capped thinking block never reached the control stream")
+	text := srv.joined("text_delta")
+	thinking := srv.joined("thinking_delta")
+	assert.Equal(t, "the key is [REDACTED] and that is all", text, "text on the control stream")
+	assert.True(t, strings.HasPrefix(thinking, "reasoning with [REDACTED] long"),
+		"thinking on the control stream starts %q and is %d bytes", thinking[:min(len(thinking), 60)], len(thinking))
+	assert.Contains(t, thinking, "truncated by harness")
+	assert.NotContains(t, text+thinking, fakeAnthropicKey[split:], "part of the key reached the control stream")
 }
 
 type emitFunc func(types.HarnessEvent) error

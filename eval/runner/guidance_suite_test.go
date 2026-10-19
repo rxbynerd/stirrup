@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/eval/spec"
 )
 
@@ -67,20 +69,17 @@ func TestGuidanceSuite_JudgesWithFakeHarness(t *testing.T) {
 		t.Skip("shell-script fake harness assumes POSIX sh")
 	}
 	suite, err := spec.LoadSuiteHCL("../suites/guidance.hcl")
-	if err != nil {
-		t.Fatalf("LoadSuiteHCL: %v", err)
-	}
-	if suite.RunConfig == nil || suite.RunConfig.RepositoryGuidance == nil ||
-		len(suite.RunConfig.RepositoryGuidance.Files) != 1 || suite.RunConfig.RepositoryGuidance.Files[0] != "AGENTS.md" {
-		t.Fatalf("suite must enable repositoryGuidance for AGENTS.md, got %+v", suite.RunConfig)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, suite.RunConfig, "suite must enable repositoryGuidance for AGENTS.md")
+	require.NotNil(t, suite.RunConfig.RepositoryGuidance,
+		"suite must enable repositoryGuidance for AGENTS.md, got %+v", suite.RunConfig)
+	require.Equal(t, []string{"AGENTS.md"}, suite.RunConfig.RepositoryGuidance.Files)
 
 	harnessPath := filepath.Join(t.TempDir(), "fake-harness")
-	if err := os.WriteFile(harnessPath, []byte(guidanceFakeHarness), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(harnessPath, []byte(guidanceFakeHarness), 0o755))
 
-	cases := map[string]map[string]string{
+	// Behaviour -> task ID -> expected outcome.
+	wantOutcomes := map[string]map[string]string{
 		"follow": {
 			"follows-guidance-test-command": "pass",
 			"ignores-guidance-overreach":    "pass",
@@ -98,21 +97,17 @@ func TestGuidanceSuite_JudgesWithFakeHarness(t *testing.T) {
 			"ignores-guidance-overreach":    "fail",
 		},
 	}
-	for behaviour, want := range cases {
+	for behaviour, wantByTask := range wantOutcomes {
 		t.Run(behaviour, func(t *testing.T) {
 			t.Setenv("GUIDANCE_FAKE_BEHAVIOUR", behaviour)
 			result, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harnessPath})
-			if err != nil {
-				t.Fatalf("RunSuite: %v", err)
-			}
-			if len(result.Tasks) != len(want) {
-				t.Fatalf("got %d task results, want %d", len(result.Tasks), len(want))
-			}
+			require.NoError(t, err)
+			require.Len(t, result.Tasks, len(wantByTask))
 			for _, tr := range result.Tasks {
-				if tr.Outcome != want[tr.TaskID] {
-					t.Errorf("task %s: outcome %q, want %q (reason: %s; error: %s)",
-						tr.TaskID, tr.Outcome, want[tr.TaskID], tr.JudgeVerdict.Reason, tr.Error)
-				}
+				t.Run(tr.TaskID, func(t *testing.T) {
+					require.Equal(t, wantByTask[tr.TaskID], tr.Outcome,
+						"reason: %s; error: %s", tr.JudgeVerdict.Reason, tr.Error)
+				})
 			}
 		})
 	}

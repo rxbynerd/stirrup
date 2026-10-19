@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestScrubFenced_ScrubsFencePayloads(t *testing.T) {
@@ -28,17 +30,14 @@ func TestScrubFenced_ScrubsFencePayloads(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			got := ScrubFenced(tc.in)
-			if got != tc.want {
-				t.Errorf("ScrubFenced = %q, want %q", got, tc.want)
-			}
-			if strings.Contains(got, base64.StdEncoding.EncodeToString([]byte(key))) {
-				t.Errorf("base64 of the key survived: %q", got)
-			}
+			require.Equal(t, tc.want, got)
+			require.NotContains(t, got, base64.StdEncoding.EncodeToString([]byte(key)),
+				"base64 of the key survived")
 		})
 	}
 }
 
-func TestDecodeFences(t *testing.T) {
+func TestDecodeFences_DecodesWellFormedAndRejectsMalformed(t *testing.T) {
 	cases := map[string]struct {
 		in, want string
 		ok       bool
@@ -51,9 +50,11 @@ func TestDecodeFences(t *testing.T) {
 		"close before one": {SpotlightCloseTag + Spotlight("x"), "", false},
 	}
 	for name, tc := range cases {
-		if got, ok := DecodeFences(tc.in); got != tc.want || ok != tc.ok {
-			t.Errorf("%s: DecodeFences = %q, %v; want %q, %v", name, got, ok, tc.want, tc.ok)
-		}
+		t.Run(name, func(t *testing.T) {
+			got, ok := DecodeFences(tc.in)
+			require.Equal(t, tc.want, got)
+			require.Equal(t, tc.ok, ok)
+		})
 	}
 }
 
@@ -91,11 +92,10 @@ func FuzzScrubFenced(f *testing.F) {
 			if len(s) < 8 {
 				continue
 			}
-			if strings.Contains(out, base64.StdEncoding.EncodeToString([]byte(s))) {
-				t.Fatalf("base64 of fenced secret %q persisted: %q", s, out)
-			}
-			if strings.Count(prefix+value, s) == 1 && strings.Contains(out, s) {
-				t.Fatalf("fenced secret %q persisted raw: %q", s, out)
+			require.NotContains(t, out, base64.StdEncoding.EncodeToString([]byte(s)),
+				"base64 of fenced secret %q persisted", s)
+			if strings.Count(prefix+value, s) == 1 {
+				require.NotContains(t, out, s, "fenced secret %q persisted raw", s)
 			}
 		}
 	})

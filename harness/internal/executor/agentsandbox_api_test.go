@@ -3,6 +3,7 @@ package executor
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	metav1unstructured "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
@@ -40,7 +41,7 @@ func sandboxWithConditions(conditions []any) *metav1unstructured.Unstructured {
 	}
 }
 
-func TestSandboxReady(t *testing.T) {
+func TestSandboxReady_RequiresReadyTrueCondition(t *testing.T) {
 	tests := []struct {
 		name string
 		obj  *metav1unstructured.Unstructured
@@ -79,7 +80,7 @@ func TestSandboxReady(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "conditions present but no Ready type",
+			name: "conditions present but no ready type",
 			obj: sandboxWithConditions([]any{
 				readyCondition("Initialized", "True"),
 				readyCondition("PodScheduled", "True"),
@@ -87,7 +88,7 @@ func TestSandboxReady(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "non-Ready condition True but Ready False",
+			name: "non-ready condition true but ready false",
 			obj: sandboxWithConditions([]any{
 				readyCondition("Initialized", "True"),
 				readyCondition("Ready", "False"),
@@ -114,21 +115,21 @@ func TestSandboxReady(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "Ready type but status missing",
+			name: "ready type but status missing",
 			obj: sandboxWithConditions([]any{
 				map[string]any{"type": "Ready"},
 			}),
 			want: false,
 		},
 		{
-			name: "Ready type but status wrong type",
+			name: "ready type but status wrong type",
 			obj: sandboxWithConditions([]any{
 				map[string]any{"type": "Ready", "status": true},
 			}),
 			want: false,
 		},
 		{
-			name: "malformed entry skipped before valid Ready True",
+			name: "malformed entry skipped before valid ready true",
 			obj: sandboxWithConditions([]any{
 				"junk",
 				map[string]any{"type": 7},
@@ -140,14 +141,12 @@ func TestSandboxReady(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := sandboxReady(tt.obj); got != tt.want {
-				t.Errorf("sandboxReady() = %v, want %v", got, tt.want)
-			}
+			require.Equal(t, tt.want, sandboxReady(tt.obj))
 		})
 	}
 }
 
-func TestResolveSandboxPodName(t *testing.T) {
+func TestResolveSandboxPodName_PrefersNonEmptyAnnotation(t *testing.T) {
 	sandbox := func(name string, annotations map[string]any) *metav1unstructured.Unstructured {
 		meta := map[string]any{"name": name}
 		if annotations != nil {
@@ -186,9 +185,7 @@ func TestResolveSandboxPodName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := resolveSandboxPodName(tt.obj); got != tt.want {
-				t.Errorf("resolveSandboxPodName() = %q, want %q", got, tt.want)
-			}
+			require.Equal(t, tt.want, resolveSandboxPodName(tt.obj))
 		})
 	}
 }

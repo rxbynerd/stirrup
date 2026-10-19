@@ -11,6 +11,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Identifier values used across the OpenAI WIF happy-path tests. The exact
@@ -38,23 +41,18 @@ func newOpenAIWIFSourceForTest(t *testing.T, ts TokenSource, idpID, saID, subjec
 func openAIOAuthHandler(t *testing.T, accessToken string, expiresIn int64, verify func(req openAIOAuthRequest, raw []byte)) http.HandlerFunc {
 	t.Helper()
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("OpenAI OAuth got %s, want POST", r.Method)
-		}
-		if got := r.Header.Get("Content-Type"); got != "application/json" {
-			t.Errorf("Content-Type = %q, want application/json", got)
-		}
+		// Runs on the server goroutine, so failures are reported with assert, not require.
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 		raw, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read request body: %v", err)
+		if !assert.NoError(t, err, "read request body") {
+			return
 		}
 		var parsed openAIOAuthRequest
-		if err := json.Unmarshal(raw, &parsed); err != nil {
-			t.Fatalf("unmarshal request body: %v", err)
+		if !assert.NoError(t, json.Unmarshal(raw, &parsed), "unmarshal request body") {
+			return
 		}
-		if parsed.GrantType != openAITokenExchangeGrantType {
-			t.Errorf("grant_type = %q, want %q", parsed.GrantType, openAITokenExchangeGrantType)
-		}
+		assert.Equal(t, openAITokenExchangeGrantType, parsed.GrantType)
 		if verify != nil {
 			verify(parsed, raw)
 		}
@@ -69,23 +67,15 @@ func openAIOAuthHandler(t *testing.T, accessToken string, expiresIn int64, verif
 	}
 }
 
-func TestOpenAIWIFSource_HappyPath(t *testing.T) {
+func TestOpenAIWIFSource_ExchangesJWTForBearerToken(t *testing.T) {
 	const oidcJWT = "eyJ.fake-jwt.signature"
 	const accessToken = "openai-federated-access-token"
 
 	srv := httptest.NewServer(openAIOAuthHandler(t, accessToken, 3600, func(req openAIOAuthRequest, _ []byte) {
-		if req.SubjectToken != oidcJWT {
-			t.Errorf("subject_token = %q, want %q", req.SubjectToken, oidcJWT)
-		}
-		if req.SubjectTokenType != openAIDefaultSubjectTokenType {
-			t.Errorf("subject_token_type = %q, want default %q", req.SubjectTokenType, openAIDefaultSubjectTokenType)
-		}
-		if req.IdentityProviderID != testOpenAIIdentityProviderID {
-			t.Errorf("identity_provider_id = %q, want %q", req.IdentityProviderID, testOpenAIIdentityProviderID)
-		}
-		if req.ServiceAccountID != testOpenAIServiceAccountID {
-			t.Errorf("service_account_id = %q, want %q", req.ServiceAccountID, testOpenAIServiceAccountID)
-		}
+		assert.Equal(t, oidcJWT, req.SubjectToken, "subject_token")
+		assert.Equal(t, openAIDefaultSubjectTokenType, req.SubjectTokenType, "subject_token_type")
+		assert.Equal(t, testOpenAIIdentityProviderID, req.IdentityProviderID, "identity_provider_id")
+		assert.Equal(t, testOpenAIServiceAccountID, req.ServiceAccountID, "service_account_id")
 	}))
 	defer srv.Close()
 
@@ -97,20 +87,12 @@ func TestOpenAIWIFSource_HappyPath(t *testing.T) {
 	)
 
 	cred, err := src.Resolve(context.Background())
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if cred.BearerToken == nil {
-		t.Fatal("expected BearerToken closure")
-	}
+	require.NoError(t, err)
+	require.NotNil(t, cred.BearerToken, "expected BearerToken closure")
 
 	got, err := cred.BearerToken(context.Background())
-	if err != nil {
-		t.Fatalf("BearerToken: %v", err)
-	}
-	if got != accessToken {
-		t.Errorf("bearer = %q, want %q", got, accessToken)
-	}
+	require.NoError(t, err)
+	require.Equal(t, accessToken, got)
 }
 
 // TestOpenAIWIFSource_NoAudienceOrOrgInBody asserts the exchange body carries
@@ -133,16 +115,11 @@ func TestOpenAIWIFSource_NoAudienceOrOrgInBody(t *testing.T) {
 		srv.URL,
 	)
 	cred, err := src.Resolve(context.Background())
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if _, err := cred.BearerToken(context.Background()); err != nil {
-		t.Fatalf("BearerToken: %v", err)
-	}
+	require.NoError(t, err)
+	_, err = cred.BearerToken(context.Background())
+	require.NoError(t, err)
 	for _, forbidden := range []string{"audience", "organization_id", "project", "workspace_id", "resource"} {
-		if strings.Contains(string(capturedBody), forbidden) {
-			t.Errorf("request body must not contain %q, got body: %s", forbidden, capturedBody)
-		}
+		require.NotContains(t, string(capturedBody), forbidden, "request body must not contain %q", forbidden)
 	}
 }
 
@@ -151,9 +128,7 @@ func TestOpenAIWIFSource_NoAudienceOrOrgInBody(t *testing.T) {
 func TestOpenAIWIFSource_SubjectTokenTypeOverride(t *testing.T) {
 	const custom = "urn:ietf:params:oauth:token-type:id_token"
 	srv := httptest.NewServer(openAIOAuthHandler(t, "tok", 3600, func(req openAIOAuthRequest, _ []byte) {
-		if req.SubjectTokenType != custom {
-			t.Errorf("subject_token_type = %q, want %q", req.SubjectTokenType, custom)
-		}
+		assert.Equal(t, custom, req.SubjectTokenType)
 	}))
 	defer srv.Close()
 
@@ -164,26 +139,21 @@ func TestOpenAIWIFSource_SubjectTokenTypeOverride(t *testing.T) {
 		srv.URL,
 	)
 	cred, err := src.Resolve(context.Background())
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if _, err := cred.BearerToken(context.Background()); err != nil {
-		t.Fatalf("BearerToken: %v", err)
-	}
+	require.NoError(t, err)
+	_, err = cred.BearerToken(context.Background())
+	require.NoError(t, err)
 }
 
 // TestOpenAIWIFSource_DefaultSubjectTokenTypeApplied pins that the
 // constructor fills in the JWT default when subjectTokenType is empty.
 func TestOpenAIWIFSource_DefaultSubjectTokenTypeApplied(t *testing.T) {
 	src := NewOpenAIWIFSource(&stubTokenSource{token: []byte("x")}, testOpenAIIdentityProviderID, testOpenAIServiceAccountID, "")
-	if src.subjectTokenType != openAIDefaultSubjectTokenType {
-		t.Errorf("subjectTokenType = %q, want default %q", src.subjectTokenType, openAIDefaultSubjectTokenType)
-	}
+	require.Equal(t, openAIDefaultSubjectTokenType, src.subjectTokenType)
 }
 
-// TestOpenAIWIFSource_ExpiresInHonoured verifies the parsed expires_in feeds
+// TestOpenAIWIFSource_ExpiresInSetsTokenExpiry verifies the parsed expires_in feeds
 // into oauth2.Token.Expiry so ReuseTokenSource caches correctly.
-func TestOpenAIWIFSource_ExpiresInHonoured(t *testing.T) {
+func TestOpenAIWIFSource_ExpiresInSetsTokenExpiry(t *testing.T) {
 	const customExpiresIn int64 = 600
 	srv := httptest.NewServer(openAIOAuthHandler(t, "tok", customExpiresIn, nil))
 	defer srv.Close()
@@ -199,14 +169,10 @@ func TestOpenAIWIFSource_ExpiresInHonoured(t *testing.T) {
 	before := time.Now()
 	tok, err := inner.Token()
 	after := time.Now()
-	if err != nil {
-		t.Fatalf("Token: %v", err)
-	}
+	require.NoError(t, err)
 	expectedFloor := before.Add(time.Duration(customExpiresIn) * time.Second)
 	expectedCeil := after.Add(time.Duration(customExpiresIn) * time.Second)
-	if tok.Expiry.Before(expectedFloor) || tok.Expiry.After(expectedCeil) {
-		t.Errorf("expiry = %v, want in [%v, %v]", tok.Expiry, expectedFloor, expectedCeil)
-	}
+	require.WithinRange(t, tok.Expiry, expectedFloor, expectedCeil)
 }
 
 // TestOpenAIWIFSource_MissingExpiresInFallback verifies the 1-hour fallback
@@ -227,23 +193,14 @@ func TestOpenAIWIFSource_MissingExpiresInFallback(t *testing.T) {
 		srv.URL,
 	)
 	cred, err := src.Resolve(context.Background())
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
+	require.NoError(t, err)
 	tok1, err := cred.BearerToken(context.Background())
-	if err != nil {
-		t.Fatalf("BearerToken first: %v", err)
-	}
+	require.NoError(t, err, "BearerToken first")
 	tok2, err := cred.BearerToken(context.Background())
-	if err != nil {
-		t.Fatalf("BearerToken second: %v", err)
-	}
-	if tok1 != "tok" || tok2 != "tok" {
-		t.Errorf("bearer = (%q, %q), want both \"tok\"", tok1, tok2)
-	}
-	if got := atomic.LoadInt32(&calls); got != 1 {
-		t.Errorf("exchange hit %d times, want 1 (1-hour fallback should let cache absorb second call)", got)
-	}
+	require.NoError(t, err, "BearerToken second")
+	assert.Equal(t, "tok", tok1)
+	assert.Equal(t, "tok", tok2)
+	require.EqualValues(t, 1, atomic.LoadInt32(&calls), "1-hour fallback should let cache absorb second call")
 }
 
 // TestOpenAIWIFSource_HTTPErrorStatusSurfacesBody covers the status codes
@@ -274,23 +231,14 @@ func TestOpenAIWIFSource_HTTPErrorStatusSurfacesBody(t *testing.T) {
 				srv.URL,
 			)
 			cred, err := src.Resolve(context.Background())
-			if err != nil {
-				t.Fatalf("Resolve: %v", err)
-			}
+			require.NoError(t, err)
 			_, err = cred.BearerToken(context.Background())
-			if err == nil {
-				t.Fatal("expected error, got nil")
-			}
-			msg := err.Error()
-			if !strings.Contains(msg, "OpenAI WIF") {
-				t.Errorf("error should be prefixed with \"OpenAI WIF\", got: %v", err)
-			}
-			if !strings.Contains(msg, "returned ") {
-				t.Errorf("error should name the status code, got: %v", err)
-			}
-			if tc.body != "" && !strings.Contains(msg, strings.TrimSpace(tc.body)[:min(20, len(strings.TrimSpace(tc.body)))]) {
-				t.Errorf("error should include body excerpt, got: %v", err)
-			}
+			require.Error(t, err)
+			require.ErrorContains(t, err, "OpenAI WIF", "error should be prefixed with \"OpenAI WIF\"")
+			require.ErrorContains(t, err, "returned ", "error should name the status code")
+			bodyExcerpt := strings.TrimSpace(tc.body)
+			bodyExcerpt = bodyExcerpt[:min(20, len(bodyExcerpt))]
+			require.ErrorContains(t, err, bodyExcerpt, "error should include body excerpt")
 		})
 	}
 }
@@ -311,20 +259,12 @@ func TestOpenAIWIFSource_HTTPErrorBodyTruncated(t *testing.T) {
 		srv.URL,
 	)
 	cred, err := src.Resolve(context.Background())
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
+	require.NoError(t, err)
 	_, err = cred.BearerToken(context.Background())
-	if err == nil {
-		t.Fatal("expected error for huge body")
-	}
+	require.Error(t, err, "expected error for huge body")
 	msg := err.Error()
-	if len(msg) > 2*stsErrorBodyLimit {
-		t.Errorf("error message length %d should be capped near %d", len(msg), stsErrorBodyLimit)
-	}
-	if !strings.Contains(msg, "…") {
-		t.Errorf("error should end with truncation ellipsis when body exceeds cap, got: %q", msg[len(msg)-min(40, len(msg)):])
-	}
+	assert.LessOrEqual(t, len(msg), 2*stsErrorBodyLimit, "error message should be capped near %d", stsErrorBodyLimit)
+	assert.Contains(t, msg, "…", "error should end with truncation ellipsis when body exceeds cap")
 }
 
 // TestOpenAIWIFSource_HTTPErrorIncludesRequestID verifies the x-request-id
@@ -346,16 +286,9 @@ func TestOpenAIWIFSource_HTTPErrorIncludesRequestID(t *testing.T) {
 		srv.URL,
 	)
 	cred, err := src.Resolve(context.Background())
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
+	require.NoError(t, err)
 	_, err = cred.BearerToken(context.Background())
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !strings.Contains(err.Error(), reqID) {
-		t.Errorf("error should include request_id %q, got: %v", reqID, err)
-	}
+	require.ErrorContains(t, err, reqID)
 }
 
 // TestOpenAIWIFSource_MalformedJSONResponse covers the json.Unmarshal branch.
@@ -373,16 +306,9 @@ func TestOpenAIWIFSource_MalformedJSONResponse(t *testing.T) {
 		srv.URL,
 	)
 	cred, err := src.Resolve(context.Background())
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
+	require.NoError(t, err)
 	_, err = cred.BearerToken(context.Background())
-	if err == nil {
-		t.Fatal("expected parse error")
-	}
-	if !strings.Contains(err.Error(), "parse token response") {
-		t.Errorf("error should mention parse token response, got: %v", err)
-	}
+	require.ErrorContains(t, err, "parse token response")
 }
 
 // TestOpenAIWIFSource_EmptyAccessToken covers the empty-string guard.
@@ -400,16 +326,9 @@ func TestOpenAIWIFSource_EmptyAccessToken(t *testing.T) {
 		srv.URL,
 	)
 	cred, err := src.Resolve(context.Background())
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
+	require.NoError(t, err)
 	_, err = cred.BearerToken(context.Background())
-	if err == nil {
-		t.Fatal("expected error for empty access_token")
-	}
-	if !strings.Contains(err.Error(), "empty access_token") {
-		t.Errorf("error should mention empty access_token, got: %v", err)
-	}
+	require.ErrorContains(t, err, "empty access_token")
 }
 
 // TestOpenAIWIFSource_JWTReadFreshOnEveryExchange verifies the underlying
@@ -429,15 +348,11 @@ func TestOpenAIWIFSource_JWTReadFreshOnEveryExchange(t *testing.T) {
 	)
 	inner := &openAIWIFTokenSource{src: src}
 
-	if _, err := inner.Token(); err != nil {
-		t.Fatalf("Token first: %v", err)
-	}
-	if _, err := inner.Token(); err != nil {
-		t.Fatalf("Token second: %v", err)
-	}
-	if got := atomic.LoadInt32(&stub.calls); got != 2 {
-		t.Errorf("token source consulted %d times, want 2 (each exchange must re-read the JWT)", got)
-	}
+	_, err := inner.Token()
+	require.NoError(t, err, "Token first")
+	_, err = inner.Token()
+	require.NoError(t, err, "Token second")
+	require.EqualValues(t, 2, atomic.LoadInt32(&stub.calls), "each exchange must re-read the JWT")
 }
 
 // TestOpenAIWIFSource_ReuseTokenSourceCachesExchange pins the caching
@@ -463,25 +378,17 @@ func TestOpenAIWIFSource_ReuseTokenSourceCachesExchange(t *testing.T) {
 		srv.URL,
 	)
 	cred, err := src.Resolve(context.Background())
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
+	require.NoError(t, err)
 
 	for i := 0; i < 5; i++ {
 		got, err := cred.BearerToken(context.Background())
-		if err != nil {
-			t.Fatalf("BearerToken %d: %v", i, err)
-		}
-		if got != "cached" {
-			t.Errorf("call %d: bearer = %q", i, got)
-		}
+		require.NoError(t, err, "BearerToken %d", i)
+		assert.Equal(t, "cached", got, "call %d", i)
 	}
-	if c := atomic.LoadInt32(&exchanges); c != 1 {
-		t.Errorf("after 5 BearerToken calls, exchange hit count = %d, want 1 (ReuseTokenSource should cache)", c)
-	}
+	require.EqualValues(t, 1, atomic.LoadInt32(&exchanges), "ReuseTokenSource should cache the exchange across 5 calls")
 }
 
-func TestOpenAIWIFSource_EmptyJWTBytes(t *testing.T) {
+func TestOpenAIWIFSource_EmptyJWTRejectedWithoutExchange(t *testing.T) {
 	src := newOpenAIWIFSourceForTest(
 		t,
 		&stubTokenSource{token: []byte{}},
@@ -489,30 +396,16 @@ func TestOpenAIWIFSource_EmptyJWTBytes(t *testing.T) {
 		"http://unused.invalid",
 	)
 	cred, err := src.Resolve(context.Background())
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
+	require.NoError(t, err)
 	_, err = cred.BearerToken(context.Background())
-	if err == nil {
-		t.Fatal("expected error for empty JWT")
-	}
-	if !strings.Contains(err.Error(), "OpenAI WIF:") {
-		t.Errorf("error should be prefixed with \"OpenAI WIF:\", got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "empty token") {
-		t.Errorf("error should mention empty token, got: %v", err)
-	}
+	require.ErrorContains(t, err, "OpenAI WIF:", "error should be prefixed with \"OpenAI WIF:\"")
+	require.ErrorContains(t, err, "empty token")
 }
 
-func TestOpenAIWIFSource_NilTokenSource(t *testing.T) {
+func TestOpenAIWIFSource_NilTokenSourceRejectedAtResolve(t *testing.T) {
 	src := NewOpenAIWIFSource(nil, testOpenAIIdentityProviderID, testOpenAIServiceAccountID, "")
 	_, err := src.Resolve(context.Background())
-	if err == nil {
-		t.Fatal("expected error for nil token source")
-	}
-	if !strings.Contains(err.Error(), "token source is required") {
-		t.Errorf("error should mention token source, got: %v", err)
-	}
+	require.ErrorContains(t, err, "token source is required")
 }
 
 func TestOpenAIWIFSource_MissingRequiredFieldsAtResolve(t *testing.T) {
@@ -529,12 +422,7 @@ func TestOpenAIWIFSource_MissingRequiredFieldsAtResolve(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			src := NewOpenAIWIFSource(&stubTokenSource{token: []byte("x")}, tc.idpID, tc.saID, "")
 			_, err := src.Resolve(context.Background())
-			if err == nil {
-				t.Fatal("expected error, got nil")
-			}
-			if !strings.Contains(err.Error(), tc.errSubstr) {
-				t.Errorf("error should mention %q, got: %v", tc.errSubstr, err)
-			}
+			require.ErrorContains(t, err, tc.errSubstr)
 		})
 	}
 }
@@ -562,9 +450,7 @@ func TestOpenAIWIFSource_ConcurrentBearerCallsSingleFlight(t *testing.T) {
 		srv.URL,
 	)
 	cred, err := src.Resolve(context.Background())
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
+	require.NoError(t, err)
 
 	const goroutines = 20
 	results := make(chan string, goroutines)
@@ -586,24 +472,20 @@ func TestOpenAIWIFSource_ConcurrentBearerCallsSingleFlight(t *testing.T) {
 	for i := 0; i < goroutines; i++ {
 		select {
 		case tok := <-results:
-			if tok != "concurrent-tok" {
-				t.Errorf("goroutine %d got %q, want concurrent-tok", i, tok)
-			}
+			assert.Equal(t, "concurrent-tok", tok, "goroutine result %d", i)
 		case err := <-errs:
-			t.Fatalf("goroutine returned error: %v", err)
+			require.NoError(t, err, "goroutine returned error")
 		case <-time.After(5 * time.Second):
-			t.Fatal("timeout waiting for goroutines")
+			require.Fail(t, "timeout waiting for goroutines")
 		}
 	}
-	if got := exchanges.Load(); got != 1 {
-		t.Errorf("exchange count = %d, want 1 (ReuseTokenSource must serialise refresh)", got)
-	}
+	require.EqualValues(t, 1, exchanges.Load(), "ReuseTokenSource must serialise refresh")
 }
 
 // TestOpenAIWIFSource_NetworkError covers the http.Client.Do failure path.
 func TestOpenAIWIFSource_NetworkError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		t.Fatal("handler must not be reached after server is closed")
+		assert.Fail(t, "handler must not be reached after server is closed")
 	}))
 	url := srv.URL
 	srv.Close()
@@ -615,19 +497,10 @@ func TestOpenAIWIFSource_NetworkError(t *testing.T) {
 		url,
 	)
 	cred, err := src.Resolve(context.Background())
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
+	require.NoError(t, err)
 	_, err = cred.BearerToken(context.Background())
-	if err == nil {
-		t.Fatal("expected error against closed server")
-	}
-	if !strings.Contains(err.Error(), "OpenAI WIF:") {
-		t.Errorf("error should be prefixed with \"OpenAI WIF:\", got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "token request") {
-		t.Errorf("error should mention \"token request\", got: %v", err)
-	}
+	require.ErrorContains(t, err, "OpenAI WIF:")
+	require.ErrorContains(t, err, "token request")
 }
 
 // TestOpenAIWIFSource_NegativeExpiresInFallback verifies a negative
@@ -649,23 +522,14 @@ func TestOpenAIWIFSource_NegativeExpiresInFallback(t *testing.T) {
 		srv.URL,
 	)
 	cred, err := src.Resolve(context.Background())
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
+	require.NoError(t, err)
 	tok1, err := cred.BearerToken(context.Background())
-	if err != nil {
-		t.Fatalf("BearerToken first: %v", err)
-	}
+	require.NoError(t, err, "BearerToken first")
 	tok2, err := cred.BearerToken(context.Background())
-	if err != nil {
-		t.Fatalf("BearerToken second: %v", err)
-	}
-	if tok1 != "tok" || tok2 != "tok" {
-		t.Errorf("bearer = (%q, %q), want both \"tok\"", tok1, tok2)
-	}
-	if got := atomic.LoadInt32(&calls); got != 1 {
-		t.Errorf("exchange hit %d times, want 1 (negative expires_in must trigger 1-hour fallback)", got)
-	}
+	require.NoError(t, err, "BearerToken second")
+	assert.Equal(t, "tok", tok1)
+	assert.Equal(t, "tok", tok2)
+	require.EqualValues(t, 1, atomic.LoadInt32(&calls), "negative expires_in must trigger 1-hour fallback")
 }
 
 // TestOpenAIWIFSource_CorrelationHeaderCapped verifies a server-controlled
@@ -688,21 +552,16 @@ func TestOpenAIWIFSource_CorrelationHeaderCapped(t *testing.T) {
 		srv.URL,
 	)
 	cred, err := src.Resolve(context.Background())
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
+	require.NoError(t, err)
 	_, err = cred.BearerToken(context.Background())
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if strings.Contains(err.Error(), strings.Repeat("A", maxCorrelationIDLen+1)) {
-		t.Errorf("correlation id should be capped at %d chars, got: %v", maxCorrelationIDLen, err)
-	}
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), strings.Repeat("A", maxCorrelationIDLen+1),
+		"correlation id should be capped at %d chars", maxCorrelationIDLen)
 }
 
-// TestOpenAIWIFSource_TokenSourceError verifies an underlying TokenSource
+// TestOpenAIWIFSource_WrapsTokenSourceError verifies an underlying TokenSource
 // failure is wrapped, not swallowed.
-func TestOpenAIWIFSource_TokenSourceError(t *testing.T) {
+func TestOpenAIWIFSource_WrapsTokenSourceError(t *testing.T) {
 	src := newOpenAIWIFSourceForTest(
 		t,
 		&stubTokenSource{err: errors.New("idp boom")},
@@ -710,14 +569,7 @@ func TestOpenAIWIFSource_TokenSourceError(t *testing.T) {
 		"http://unused.invalid",
 	)
 	cred, err := src.Resolve(context.Background())
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
+	require.NoError(t, err)
 	_, err = cred.BearerToken(context.Background())
-	if err == nil {
-		t.Fatal("expected error from underlying token source")
-	}
-	if !strings.Contains(err.Error(), "idp boom") {
-		t.Errorf("error should wrap underlying token source failure, got: %v", err)
-	}
+	require.ErrorContains(t, err, "idp boom", "error should wrap underlying token source failure")
 }

@@ -2,10 +2,11 @@ package core
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -41,18 +42,13 @@ func TestLoop_CancelAfterDoneEndsSession(t *testing.T) {
 	config := buildTestConfig()
 
 	rt, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if rt.Outcome != "success" {
-		t.Fatalf("outcome = %q, want success (the run had already finished when cancel arrived)", rt.Outcome)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "success", rt.Outcome, "the run had already finished when cancel arrived")
 
 	start := time.Now()
 	RunFollowUpLoop(context.Background(), loop, config, 30, FollowUpOptions{})
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("follow-up window stayed open %v after a post-done cancel", elapsed)
-	}
+	elapsed := time.Since(start)
+	require.LessOrEqual(t, elapsed, time.Second, "follow-up window stayed open after a post-done cancel")
 }
 
 // TestLoop_CancelBeforeRunCancelsItPromptly pins that a cancel arriving
@@ -63,15 +59,9 @@ func TestLoop_CancelBeforeRunCancelsItPromptly(t *testing.T) {
 	tr.FireControl(types.ControlEvent{Type: "cancel"})
 
 	rt, err := loop.Run(context.Background(), buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if rt.Outcome != "cancelled" {
-		t.Fatalf("outcome = %q, want cancelled", rt.Outcome)
-	}
-	if n := len(prov.params()); n != 0 {
-		t.Errorf("provider called %d times after a pre-run cancel, want 0", n)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "cancelled", rt.Outcome)
+	require.Empty(t, prov.params(), "provider was called after a pre-run cancel")
 }
 
 // blockingWarningTransport parks every "warning" Emit until released,
@@ -111,17 +101,14 @@ func TestLoop_RejectionWarningNeverBlocksControlDispatch(t *testing.T) {
 	select {
 	case <-dispatched:
 	case <-time.After(2 * time.Second):
-		t.Fatal("cancel dispatch blocked behind a pending warning emit")
+		require.FailNow(t, "cancel dispatch blocked behind a pending warning emit")
 	}
-	if !loop.sessionCancelled.Load() {
-		t.Fatal("cancel was dispatched but not applied")
-	}
+	require.True(t, loop.sessionCancelled.Load(), "cancel was dispatched but not applied")
 
 	close(tr.release)
 	w := awaitWarnings(t, &tr.cancellableTransport, 1)
-	if len(w) != 1 || w[0].RequestID != "r-empty" {
-		t.Fatalf("warnings after release = %+v, want the deferred rejection", w)
-	}
+	require.Len(t, w, 1, "the deferred rejection should be the only warning")
+	require.Equal(t, "r-empty", w[0].RequestID)
 }
 
 // TestRunFollowUpLoop_FlushesQueuedInputOnExit pins that input still
@@ -137,12 +124,10 @@ func TestRunFollowUpLoop_FlushesQueuedInputOnExit(t *testing.T) {
 		RunFollowUpLoop(context.Background(), loop, buildTestConfig(), 0, FollowUpOptions{})
 
 		w := warningEvents(tr)
-		if len(w) != 2 || w[0].RequestID != "r-late-1" || w[1].RequestID != "r-late-2" {
-			t.Fatalf("warnings = %+v, want one per queued event in arrival order", w)
-		}
-		if !strings.Contains(w[0].Message, "no follow-up window") {
-			t.Errorf("warning message = %q, want the reason", w[0].Message)
-		}
+		require.Len(t, w, 2, "want one warning per queued event")
+		require.Equal(t, "r-late-1", w[0].RequestID, "warnings should follow arrival order")
+		require.Equal(t, "r-late-2", w[1].RequestID)
+		require.Contains(t, w[0].Message, "no follow-up window", "the warning should state the reason")
 	})
 
 	t.Run("grace expired with input queued", func(t *testing.T) {
@@ -155,9 +140,8 @@ func TestRunFollowUpLoop_FlushesQueuedInputOnExit(t *testing.T) {
 		RunFollowUpLoop(context.Background(), loop, buildTestConfig(), 1, FollowUpOptions{})
 
 		w := warningEvents(tr)
-		if len(w) != 1 || w[0].RequestID != "r-stale" {
-			t.Fatalf("warnings = %+v, want the stale event rejected on exit", w)
-		}
+		require.Len(t, w, 1, "want the stale event rejected on exit")
+		require.Equal(t, "r-stale", w[0].RequestID)
 	})
 }
 
@@ -187,9 +171,7 @@ func TestRunFollowUpLoop_CancelDuringFollowUpEndsSession(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
-		t.Fatal("follow-up window stayed open after a cancel during the follow-up run")
+		require.FailNow(t, "follow-up window stayed open after a cancel during the follow-up run")
 	}
-	if outcome != "cancelled" {
-		t.Errorf("follow-up outcome = %q, want cancelled", outcome)
-	}
+	require.Equal(t, "cancelled", outcome, "follow-up outcome")
 }

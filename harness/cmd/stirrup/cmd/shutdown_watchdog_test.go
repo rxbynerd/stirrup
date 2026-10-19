@@ -6,9 +6,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -52,20 +54,17 @@ func TestRunWithConfig_FirstSignalKeepsPostRunWorkPastCloseGrace(t *testing.T) {
 	runErr := runWithConfig(config, runOptions{outputMode: "json"})
 	stdout := stdoutDone()
 
-	if runErr != nil && strings.Contains(runErr.Error(), "finish trace") {
-		t.Fatalf("runWithConfig error = %v, want no trace persistence failure", runErr)
+	if runErr != nil {
+		require.NotContains(t, runErr.Error(), "finish trace", "runWithConfig should not fail on trace persistence")
 	}
-	if result := decodeStirrupResult(t, stdout); result.Outcome != "cancelled" {
-		t.Errorf("STIRRUP_RESULT outcome = %q, want cancelled", result.Outcome)
-	}
-	if _, err := os.Stat(filepath.Join(config.Executor.Workspace, "hook-finished")); err != nil {
-		t.Errorf("postRun hook did not finish after the first signal: %v", err)
-	}
+	result := decodeStirrupResult(t, stdout)
+	assert.Equal(t, "cancelled", result.Outcome, "STIRRUP_RESULT outcome")
+
+	_, err := os.Stat(filepath.Join(config.Executor.Workspace, "hook-finished"))
+	require.NoError(t, err, "postRun hook should finish after the first signal")
+
 	traceBytes, err := os.ReadFile(tracePath)
-	if err != nil {
-		t.Fatalf("read trace: %v", err)
-	}
-	if !strings.Contains(string(traceBytes), `"run_finished"`) {
-		t.Errorf("trace file has no run_finished event; the trace emitter was closed before Finish:\n%s", traceBytes)
-	}
+	require.NoError(t, err, "read trace file")
+	assert.Contains(t, string(traceBytes), `"run_finished"`,
+		"trace file should record run_finished; the trace emitter was closed before Finish")
 }

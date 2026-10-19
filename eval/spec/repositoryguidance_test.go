@@ -1,8 +1,9 @@
 package spec
 
 import (
-	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -36,30 +37,27 @@ suite "s" {
 }
 `
 	got, err := LoadSuiteHCL(writeTemp(t, "runcfg-repository-guidance.hcl", src))
-	if err != nil {
-		t.Fatalf("LoadSuiteHCL: %v", err)
-	}
+	require.NoError(t, err)
+
 	want := &types.RepositoryGuidanceConfig{
 		Files:        []string{"AGENTS.md", "CLAUDE.md"},
 		MaxBytes:     2048,
 		PinnedSHA256: map[string]string{"AGENTS.md": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"},
 	}
-	if got.RunConfig == nil || !reflect.DeepEqual(got.RunConfig.RepositoryGuidance, want) {
-		t.Fatalf("RepositoryGuidance mismatch\n got:  %#v\n want: %#v", got.RunConfig, want)
-	}
+	require.NotNil(t, got.RunConfig)
+	require.Equal(t, want, got.RunConfig.RepositoryGuidance)
 }
 
 func TestLoadSuiteHCL_GuidanceSuiteParses(t *testing.T) {
 	got, err := LoadSuiteHCL("../suites/guidance.hcl")
-	if err != nil {
-		t.Fatalf("LoadSuiteHCL: %v", err)
-	}
-	if got.ID != "repository-guidance" || len(got.Tasks) != 2 {
-		t.Fatalf("suite = %q with %d tasks, want repository-guidance with 2", got.ID, len(got.Tasks))
-	}
+	require.NoError(t, err)
+
+	require.Equal(t, "repository-guidance", got.ID)
+	require.Len(t, got.Tasks, 2)
+
 	for _, task := range got.Tasks {
-		if _, ok := task.Files["AGENTS.md"]; !ok {
-			t.Errorf("task %q must seed an AGENTS.md for the guidance loader to read", task.ID)
-		}
+		t.Run(task.ID, func(t *testing.T) {
+			require.Contains(t, task.Files, "AGENTS.md", "task must seed an AGENTS.md for the guidance loader to read")
+		})
 	}
 }

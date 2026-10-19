@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
@@ -41,9 +42,7 @@ func ledgerUsageEmitterBuilders(t *testing.T) map[string]func(t *testing.T) ledg
 				CredentialSource: &staticBearerSource{token: "t"},
 				EndpointBaseURL:  gcsSrv.URL,
 			})
-			if err != nil {
-				t.Fatalf("NewGCSTraceEmitter: %v", err)
-			}
+			require.NoError(t, err)
 			return e
 		},
 	}
@@ -61,29 +60,19 @@ func TestEmitters_LedgerUsageJoinsTokenUsage(t *testing.T) {
 			e.RecordTurn(types.TurnTrace{Turn: 0, Tokens: turn})
 			e.RecordLedgerUsage(aux, external)
 			got, err := e.Finish(context.Background(), "success")
-			if err != nil {
-				t.Fatalf("Finish: %v", err)
-			}
+			require.NoError(t, err)
+
 			want := types.TokenUsage{Input: 130, Output: 25, CacheRead: 40, Reasoning: 2}
-			if got.TokenUsage != want {
-				t.Errorf("TokenUsage = %+v, want turns plus auxiliary %+v", got.TokenUsage, want)
-			}
-			if got.AuxiliaryTokens != aux {
-				t.Errorf("AuxiliaryTokens = %+v, want %+v", got.AuxiliaryTokens, aux)
-			}
-			if got.ExternalGuardTokens != external {
-				t.Errorf("ExternalGuardTokens = %+v, want %+v", got.ExternalGuardTokens, external)
-			}
+			require.Equal(t, want, got.TokenUsage, "turn usage plus auxiliary usage")
+			require.Equal(t, aux, got.AuxiliaryTokens)
+			require.Equal(t, external, got.ExternalGuardTokens)
 
 			e.Start("run-2", &types.RunConfig{RunID: "run-2"})
 			got, err = e.Finish(context.Background(), "success")
-			if err != nil {
-				t.Fatalf("Finish: %v", err)
-			}
-			if got.TokenUsage != (types.TokenUsage{}) || got.AuxiliaryTokens != (types.TokenUsage{}) || got.ExternalGuardTokens != (types.TokenUsage{}) {
-				t.Errorf("after restart TokenUsage=%+v AuxiliaryTokens=%+v ExternalGuardTokens=%+v, want all zero",
-					got.TokenUsage, got.AuxiliaryTokens, got.ExternalGuardTokens)
-			}
+			require.NoError(t, err)
+			require.Equal(t, types.TokenUsage{}, got.TokenUsage, "turn usage after restart")
+			require.Equal(t, types.TokenUsage{}, got.AuxiliaryTokens, "auxiliary usage after restart")
+			require.Equal(t, types.TokenUsage{}, got.ExternalGuardTokens, "external guard usage after restart")
 		})
 	}
 }
@@ -93,35 +82,28 @@ func TestJSONLTraceEmitter_RunFinishedCarriesLedgerUsage(t *testing.T) {
 	e := NewJSONLTraceEmitter(&buf, false)
 	e.Start("run-1", &types.RunConfig{RunID: "run-1"})
 	e.RecordLedgerUsage(types.TokenUsage{Input: 3, Output: 4}, types.TokenUsage{Input: 9})
-	if _, err := e.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
+	_, err := e.Finish(context.Background(), "success")
+	require.NoError(t, err)
 
 	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
 	var ev struct {
 		Trace map[string]json.RawMessage `json:"trace"`
 	}
-	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &ev); err != nil {
-		t.Fatalf("unmarshal run_finished: %v", err)
-	}
-	if got := string(ev.Trace["auxiliaryTokens"]); got != `{"input":3,"output":4}` {
-		t.Errorf("auxiliaryTokens = %s", got)
-	}
-	if got := string(ev.Trace["externalGuardTokens"]); got != `{"input":9,"output":0}` {
-		t.Errorf("externalGuardTokens = %s", got)
-	}
+	require.NoError(t, json.Unmarshal([]byte(lines[len(lines)-1]), &ev))
+	require.Equal(t, `{"input":3,"output":4}`, string(ev.Trace["auxiliaryTokens"]), "auxiliaryTokens")
+	require.Equal(t, `{"input":9,"output":0}`, string(ev.Trace["externalGuardTokens"]), "externalGuardTokens")
 }
 
 func TestJSONLTraceEmitter_ZeroLedgerUsageIsOmitted(t *testing.T) {
 	var buf bytes.Buffer
 	e := NewJSONLTraceEmitter(&buf, false)
 	e.Start("run-1", &types.RunConfig{RunID: "run-1"})
-	if _, err := e.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-	if out := buf.String(); strings.Contains(out, "auxiliaryTokens") || strings.Contains(out, "externalGuardTokens") {
-		t.Errorf("run_finished carries zero ledger usage fields:\n%s", out)
-	}
+	_, err := e.Finish(context.Background(), "success")
+	require.NoError(t, err)
+
+	out := buf.String()
+	require.NotContains(t, out, "auxiliaryTokens")
+	require.NotContains(t, out, "externalGuardTokens")
 }
 
 func TestEmitters_ParentTotalIncludesForwardedChildTurnsAndAuxiliary(t *testing.T) {
@@ -133,19 +115,11 @@ func TestEmitters_ParentTotalIncludesForwardedChildTurnsAndAuxiliary(t *testing.
 	child.Start("child-run", &types.RunConfig{RunID: "child-run"})
 	child.RecordTurn(types.TurnTrace{Turn: 0, Tokens: types.TokenUsage{Input: 90}})
 	childTrace, err := child.Finish(context.Background(), "success")
-	if err != nil {
-		t.Fatalf("child Finish: %v", err)
-	}
-	if childTrace.TokenUsage.Total() != 90 {
-		t.Errorf("child TokenUsage total = %d, want its own 90", childTrace.TokenUsage.Total())
-	}
+	require.NoError(t, err)
+	require.Equal(t, 90, childTrace.TokenUsage.Total(), "child keeps its own turn usage")
 
 	parent.RecordLedgerUsage(types.TokenUsage{Input: 5}, types.TokenUsage{})
 	got, err := parent.Finish(context.Background(), "success")
-	if err != nil {
-		t.Fatalf("parent Finish: %v", err)
-	}
-	if got.TokenUsage.Total() != 105 {
-		t.Errorf("parent TokenUsage total = %d, want 10 own + 90 child + 5 auxiliary", got.TokenUsage.Total())
-	}
+	require.NoError(t, err)
+	require.Equal(t, 105, got.TokenUsage.Total(), "10 own turns + 90 child turns + 5 auxiliary")
 }

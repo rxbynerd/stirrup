@@ -9,8 +9,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirkstest"
@@ -38,89 +40,64 @@ func quirksCanonicalParams(model string) types.StreamParams {
 	}
 }
 
-// TestOpenAIQuirks_O1MiniOmitsSamplingParams pins the o-series
+// TestOpenAIQuirks_O1Mini_OmitsSamplingParams pins the o-series
 // reasoning-class wire shape: max_completion_tokens emitted at the
 // canonical key, sampling params (temperature) omitted even when the
 // caller supplies a non-nil value. The fixture is the source of truth
 // for the expected shape; AssertWireEqual normalises both sides.
-func TestOpenAIQuirks_O1MiniOmitsSamplingParams(t *testing.T) {
+func TestOpenAIQuirks_O1Mini_OmitsSamplingParams(t *testing.T) {
 	params := quirksCanonicalParams("o1-mini")
 	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
-	if !q.BehaviourFlags.OpenAI.OmitSamplingParams {
-		t.Fatalf("o1-mini: expected OmitSamplingParams=true, got false (rule not firing)")
-	}
+	require.True(t, q.BehaviourFlags.OpenAI.OmitSamplingParams, "o1-mini: rule not firing")
 	req, err := buildOpenAIRequest(params, true, q, nil)
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
+	require.NoError(t, err, "build")
 	body, err := json.Marshal(req)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath(fixtureRoot, "o1-mini", "request.json"), body)
 }
 
-// TestOpenAIQuirks_GPT5NanoOmitsSamplingParams mirrors the o1-mini
+// TestOpenAIQuirks_GPT5Nano_OmitsSamplingParams mirrors the o1-mini
 // case for the gpt-5 family. Same canonical-form body; pinned by the
 // gpt-5* rule.
-func TestOpenAIQuirks_GPT5NanoOmitsSamplingParams(t *testing.T) {
+func TestOpenAIQuirks_GPT5Nano_OmitsSamplingParams(t *testing.T) {
 	params := quirksCanonicalParams("gpt-5-nano")
 	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
-	if !q.BehaviourFlags.OpenAI.OmitSamplingParams {
-		t.Fatalf("gpt-5-nano: expected OmitSamplingParams=true, got false (rule not firing)")
-	}
+	require.True(t, q.BehaviourFlags.OpenAI.OmitSamplingParams, "gpt-5-nano: rule not firing")
 	req, err := buildOpenAIRequest(params, true, q, nil)
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
+	require.NoError(t, err, "build")
 	body, err := json.Marshal(req)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath(fixtureRoot, "gpt-5-nano", "request.json"), body)
 }
 
-// TestOpenAIQuirks_GPT5ChatLatestKeepsSamplingParams pins the carve-out:
+// TestOpenAIQuirks_GPT5ChatLatest_KeepsSamplingParams pins the carve-out:
 // gpt-5-chat-latest matches both gpt-5* and gpt-5-chat*; the longer glob
 // runs last and clears OmitSamplingParams, so temperature is on the wire.
-func TestOpenAIQuirks_GPT5ChatLatestKeepsSamplingParams(t *testing.T) {
+func TestOpenAIQuirks_GPT5ChatLatest_KeepsSamplingParams(t *testing.T) {
 	params := quirksCanonicalParams("gpt-5-chat-latest")
 	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
-	if q.BehaviourFlags.OpenAI.OmitSamplingParams {
-		t.Fatalf("gpt-5-chat-latest: expected OmitSamplingParams=false after carve-out, got true (specificity order broken)")
-	}
+	require.False(t, q.BehaviourFlags.OpenAI.OmitSamplingParams,
+		"gpt-5-chat-latest: carve-out should clear OmitSamplingParams (specificity order broken)")
 	req, err := buildOpenAIRequest(params, true, q, nil)
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
+	require.NoError(t, err, "build")
 	body, err := json.Marshal(req)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath(fixtureRoot, "gpt-5-chat-latest", "request.json"), body)
 }
 
-// TestOpenAIQuirks_GPT4oNoQuirksApply pins the negative case: gpt-4o
+// TestOpenAIQuirks_GPT4o_NoQuirksApply pins the negative case: gpt-4o
 // matches none of the openai-compatible rules. The wire body is
 // therefore the canonical openaiRequest projection: max_completion_tokens,
 // temperature transmitted, no extra body fields.
-func TestOpenAIQuirks_GPT4oNoQuirksApply(t *testing.T) {
+func TestOpenAIQuirks_GPT4o_NoQuirksApply(t *testing.T) {
 	params := quirksCanonicalParams("gpt-4o")
 	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
-	if q.BehaviourFlags.OpenAI.OmitSamplingParams {
-		t.Fatalf("gpt-4o: expected OmitSamplingParams=false, got true (rule misfire)")
-	}
-	if q.BehaviourFlags.OpenAI.TokenField != quirks.TokenFieldMaxCompletionTokens {
-		t.Fatalf("gpt-4o: expected TokenField=max_completion_tokens, got %v", q.BehaviourFlags.OpenAI.TokenField)
-	}
+	require.False(t, q.BehaviourFlags.OpenAI.OmitSamplingParams, "gpt-4o: rule misfire")
+	require.Equal(t, quirks.TokenFieldMaxCompletionTokens, q.BehaviourFlags.OpenAI.TokenField, "gpt-4o token field")
 	req, err := buildOpenAIRequest(params, true, q, nil)
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
+	require.NoError(t, err, "build")
 	body, err := json.Marshal(req)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath(fixtureRoot, "gpt-4o", "request.json"), body)
 }
 
@@ -159,34 +136,22 @@ func deepseekReplayParams(model string) types.StreamParams {
 func TestOpenAIQuirks_DeepSeekV4Flash_RequestShape(t *testing.T) {
 	params := deepseekReplayParams("deepseek-v4-flash")
 	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
-	if !q.BehaviourFlags.OpenAI.OmitSamplingParams {
-		t.Fatalf("deepseek-v4-flash: expected OmitSamplingParams=true (rule not firing)")
-	}
-	if q.BehaviourFlags.OpenAI.TokenField != quirks.TokenFieldMaxTokens {
-		t.Fatalf("deepseek-v4-flash: expected TokenField=max_tokens, got %v", q.BehaviourFlags.OpenAI.TokenField)
-	}
+	require.True(t, q.BehaviourFlags.OpenAI.OmitSamplingParams, "deepseek-v4-flash: rule not firing")
+	require.Equal(t, quirks.TokenFieldMaxTokens, q.BehaviourFlags.OpenAI.TokenField, "deepseek-v4-flash token field")
 	req, err := buildOpenAIRequest(params, true, q, nil)
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
+	require.NoError(t, err, "build")
 	body, err := json.Marshal(req)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath(fixtureRoot, "deepseek-v4-flash", "request.json"), body)
 
 	// Belt-and-braces string assertions on the load-bearing keys, so a
 	// fixture edit cannot silently weaken the contract.
 	s := string(body)
-	if !strings.Contains(s, `"max_tokens"`) || strings.Contains(s, `"max_completion_tokens"`) {
-		t.Errorf("body must use the legacy max_tokens key: %s", s)
-	}
-	if strings.Contains(s, `"temperature"`) {
-		t.Errorf("body contains temperature despite OmitSamplingParams: %s", s)
-	}
-	if !strings.Contains(s, `"reasoning_content":"The user wants the file contents; read_file is the right tool."`) {
-		t.Errorf("body missing replayed reasoning_content on the assistant message: %s", s)
-	}
+	assert.Contains(t, s, `"max_tokens"`, "body must use the legacy max_tokens key")
+	assert.NotContains(t, s, `"max_completion_tokens"`, "body must use the legacy max_tokens key")
+	assert.NotContains(t, s, `"temperature"`, "body must omit temperature despite OmitSamplingParams")
+	assert.Contains(t, s, `"reasoning_content":"The user wants the file contents; read_file is the right tool."`,
+		"body must replay reasoning_content on the assistant message")
 }
 
 // TestOpenAIQuirks_DeepSeekReasoner_RequestShape mirrors the v4-flash
@@ -199,32 +164,19 @@ func TestOpenAIQuirks_DeepSeekV4Flash_RequestShape(t *testing.T) {
 func TestOpenAIQuirks_DeepSeekReasoner_RequestShape(t *testing.T) {
 	params := deepseekReplayParams("deepseek-reasoner")
 	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
-	if !q.BehaviourFlags.OpenAI.OmitSamplingParams {
-		t.Fatalf("deepseek-reasoner: expected OmitSamplingParams=true (rule not firing)")
-	}
-	if q.BehaviourFlags.OpenAI.TokenField != quirks.TokenFieldMaxTokens {
-		t.Fatalf("deepseek-reasoner: expected TokenField=max_tokens, got %v", q.BehaviourFlags.OpenAI.TokenField)
-	}
+	require.True(t, q.BehaviourFlags.OpenAI.OmitSamplingParams, "deepseek-reasoner: rule not firing")
+	require.Equal(t, quirks.TokenFieldMaxTokens, q.BehaviourFlags.OpenAI.TokenField, "deepseek-reasoner token field")
 	req, err := buildOpenAIRequest(params, true, q, nil)
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
+	require.NoError(t, err, "build")
 	body, err := json.Marshal(req)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath(fixtureRoot, "deepseek-reasoner", "request.json"), body)
 
 	s := string(body)
-	if !strings.Contains(s, `"max_tokens"`) || strings.Contains(s, `"max_completion_tokens"`) {
-		t.Errorf("body must use the legacy max_tokens key: %s", s)
-	}
-	if strings.Contains(s, `"temperature"`) {
-		t.Errorf("body contains temperature despite OmitSamplingParams: %s", s)
-	}
-	if !strings.Contains(s, `"reasoning_content"`) {
-		t.Errorf("body missing replayed reasoning_content on the assistant message: %s", s)
-	}
+	assert.Contains(t, s, `"max_tokens"`, "body must use the legacy max_tokens key")
+	assert.NotContains(t, s, `"max_completion_tokens"`, "body must use the legacy max_tokens key")
+	assert.NotContains(t, s, `"temperature"`, "body must omit temperature despite OmitSamplingParams")
+	assert.Contains(t, s, `"reasoning_content"`, "body must replay reasoning_content on the assistant message")
 }
 
 // TestOpenAIQuirks_DeepSeekV4Flash_SSEParse drives the deepseek-v4-flash
@@ -247,9 +199,7 @@ func TestOpenAIQuirks_DeepSeekV4Flash_SSEParse(t *testing.T) {
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
 	})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	require.NoError(t, err, "Stream")
 	var complete *types.StreamEvent
 	for _, ev := range drainStream(t, ch) {
 		if ev.Type == "message_complete" {
@@ -257,20 +207,14 @@ func TestOpenAIQuirks_DeepSeekV4Flash_SSEParse(t *testing.T) {
 			complete = &evCopy
 		}
 	}
-	if complete == nil {
-		t.Fatal("no message_complete event")
-	}
-	if complete.ReplayFields == nil {
-		t.Fatal("message_complete carries no ReplayFields for deepseek-v4-flash")
-	}
+	require.NotNil(t, complete, "no message_complete event")
+	require.NotNil(t, complete.ReplayFields, "message_complete carries no ReplayFields for deepseek-v4-flash")
 	want := `"Scanning the request. Choosing an answer."`
-	if got := string(complete.ReplayFields["reasoning_content"]); got != want {
-		t.Errorf("ReplayFields[reasoning_content] = %s, want %s", got, want)
-	}
+	require.Equal(t, want, string(complete.ReplayFields["reasoning_content"]), "ReplayFields[reasoning_content]")
 }
 
-// TestOpenAIQuirks_Qwen36_SSEParse_TrailingUsage pins the streaming
-// output-token accounting fix. Qwen 3.6 via LM Studio (like OpenAI and
+// TestOpenAIQuirks_Qwen36_SSEParse_TrailingUsage pins streaming
+// output-token accounting. Qwen 3.6 via LM Studio (like OpenAI and
 // vLLM) reports usage only when stream_options.include_usage is set, and
 // delivers it in a trailing chunk whose choices array is EMPTY — arriving
 // after the finish_reason chunk that already produced message_complete.
@@ -293,9 +237,7 @@ func TestOpenAIQuirks_Qwen36_SSEParse_TrailingUsage(t *testing.T) {
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
 	})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	require.NoError(t, err, "Stream")
 
 	var (
 		sawComplete  bool
@@ -321,61 +263,34 @@ func TestOpenAIQuirks_Qwen36_SSEParse_TrailingUsage(t *testing.T) {
 			}
 		}
 	}
-	if !sawComplete {
-		t.Fatal("no message_complete event")
-	}
-	if want := mapFinishReason("stop"); stopReason != want {
-		t.Errorf("StopReason = %q, want %q", stopReason, want)
-	}
-	if outputTokens != 42 {
-		t.Errorf("OutputTokens = %d, want 42 (from the trailing choices-empty usage chunk)", outputTokens)
-	}
-	if replay != nil {
-		t.Errorf("Qwen 3.6 must not capture reasoning_content as ReplayFields, got %v", replay)
-	}
-	if text != "\n\nHello!" {
-		t.Errorf("content = %q, want %q (reasoning_content stays out of content)", text, "\n\nHello!")
-	}
+	require.True(t, sawComplete, "no message_complete event")
+	assert.Equal(t, mapFinishReason("stop"), stopReason, "StopReason")
+	assert.Equal(t, 42, outputTokens, "OutputTokens should come from the trailing choices-empty usage chunk")
+	assert.Nil(t, replay, "Qwen 3.6 must not capture reasoning_content as ReplayFields")
+	assert.Equal(t, "\n\nHello!", text, "content should exclude reasoning_content")
 }
 
 // TestOpenAIQuirks_Qwen36_RequestShape pins that Qwen 3.6 needs no
 // wire-shape quirks: the request carries the modern max_completion_tokens
 // key (not legacy max_tokens), opts into streaming usage, and never
-// threads reasoning_content (no replay rule resolves for it). This is the
-// machine-checked form of the research conclusion that Qwen 3.6 is the
-// simplest of the reasoning families at the wire level.
+// threads reasoning_content (no replay rule resolves for it).
 func TestOpenAIQuirks_Qwen36_RequestShape(t *testing.T) {
 	for _, model := range []string{"qwen/qwen3.6-27b", "qwen3.6-35b-a3b-mlx"} {
 		t.Run(model, func(t *testing.T) {
 			q := quirks.DefaultRegistry().Resolve("openai-compatible", model)
-			if len(q.ReplayFields) != 0 {
-				t.Fatalf("%s: expected no ReplayFields, got %v", model, q.ReplayFields)
-			}
-			if q.BehaviourFlags.OpenAI.OmitSamplingParams {
-				t.Errorf("%s: Qwen recommends sampling params; OmitSamplingParams must stay false", model)
-			}
+			require.Empty(t, q.ReplayFields, "expected no ReplayFields")
+			require.False(t, q.BehaviourFlags.OpenAI.OmitSamplingParams,
+				"Qwen recommends sampling params; OmitSamplingParams must stay false")
 			params := quirksCanonicalParams(model)
 			req, err := buildOpenAIRequest(params, true, q, nil)
-			if err != nil {
-				t.Fatalf("build: %v", err)
-			}
+			require.NoError(t, err, "build")
 			body, err := json.Marshal(req)
-			if err != nil {
-				t.Fatalf("marshal: %v", err)
-			}
+			require.NoError(t, err, "marshal")
 			s := string(body)
-			if !strings.Contains(s, `"max_completion_tokens"`) {
-				t.Errorf("%s: body missing max_completion_tokens: %s", model, s)
-			}
-			if strings.Contains(s, `"max_tokens"`) {
-				t.Errorf("%s: body must not use legacy max_tokens: %s", model, s)
-			}
-			if !strings.Contains(s, `"stream_options":{"include_usage":true}`) {
-				t.Errorf("%s: streaming body must opt into usage reporting: %s", model, s)
-			}
-			if strings.Contains(s, "reasoning_content") {
-				t.Errorf("%s: body must not thread reasoning_content: %s", model, s)
-			}
+			require.Contains(t, s, `"max_completion_tokens"`)
+			require.NotContains(t, s, `"max_tokens"`, "body must not use legacy max_tokens")
+			require.Contains(t, s, `"stream_options":{"include_usage":true}`, "streaming body must opt into usage reporting")
+			require.NotContains(t, s, "reasoning_content", "body must not thread reasoning_content")
 		})
 	}
 }
@@ -387,20 +302,12 @@ func TestOpenAIQuirks_Qwen36_RequestShape(t *testing.T) {
 func TestOpenAIQuirks_NoReplayRule_OmitsReplayState(t *testing.T) {
 	params := deepseekReplayParams("gpt-4o")
 	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
-	if len(q.ReplayFields) != 0 {
-		t.Fatalf("gpt-4o: expected no ReplayFields, got %v", q.ReplayFields)
-	}
+	require.Empty(t, q.ReplayFields, "gpt-4o: expected no ReplayFields")
 	req, err := buildOpenAIRequest(params, true, q, nil)
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
+	require.NoError(t, err, "build")
 	body, err := json.Marshal(req)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if strings.Contains(string(body), "reasoning_content") {
-		t.Errorf("gpt-4o body leaked reasoning_content with no rule: %s", body)
-	}
+	require.NoError(t, err, "marshal")
+	require.NotContains(t, string(body), "reasoning_content", "gpt-4o body leaked reasoning_content with no rule")
 }
 
 // TestNoRegressionMaxCompletionTokensDefault: the default
@@ -424,22 +331,14 @@ func TestNoRegressionMaxCompletionTokensDefault(t *testing.T) {
 			params := quirksCanonicalParams(model)
 			q := quirks.DefaultRegistry().Resolve("openai-compatible", model)
 			req, err := buildOpenAIRequest(params, true, q, nil)
-			if err != nil {
-				t.Fatalf("build: %v", err)
-			}
+			require.NoError(t, err, "build")
 			body, err := json.Marshal(req)
-			if err != nil {
-				t.Fatalf("marshal: %v", err)
-			}
+			require.NoError(t, err, "marshal")
 			s := string(body)
-			if !strings.Contains(s, `"max_completion_tokens"`) {
-				t.Errorf("model %q: body missing 'max_completion_tokens': %s", model, s)
-			}
-			if strings.Contains(s, `"max_tokens"`) {
-				t.Errorf("model %q: body contains legacy 'max_tokens' (regression): %s", model, s)
-			}
-			if q.BehaviourFlags.OpenAI.OmitSamplingParams && strings.Contains(s, `"temperature"`) {
-				t.Errorf("model %q: body contains 'temperature' despite OmitSamplingParams=true (suppression failed): %s", model, s)
+			require.Contains(t, s, `"max_completion_tokens"`)
+			require.NotContains(t, s, `"max_tokens"`, "body must not use the legacy max_tokens key")
+			if q.BehaviourFlags.OpenAI.OmitSamplingParams {
+				require.NotContains(t, s, `"temperature"`, "suppressed sampling params must not reach the wire")
 			}
 		})
 	}
@@ -489,71 +388,45 @@ func TestOpenAIRequest_MarshalJSON_ExtraBodyFieldCollision(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := json.Marshal(tc.req)
-			if err == nil {
-				t.Fatalf("MarshalJSON returned no error; expected collision")
-			}
-			if !strings.Contains(err.Error(), wantSubstring) {
-				t.Errorf("error message = %q, want substring %q", err.Error(), wantSubstring)
-			}
+			require.ErrorContains(t, err, wantSubstring)
 		})
 	}
 }
 
-// TestOpenAIRequest_UnmarshalJSON covers the decode paths that
-// MarshalJSON's tests would not exercise: the legacy max_tokens
-// branch (Z.ai's wire shape), the extras-catch-all that preserves
-// non-canonical top-level keys for round-trip stability, and the
-// dual-key error guard introduced alongside this test.
-func TestOpenAIRequest_UnmarshalJSON(t *testing.T) {
+// TestOpenAIRequest_UnmarshalJSON_TokenFieldsAndExtras covers the decode
+// paths that MarshalJSON's tests would not exercise: the legacy max_tokens
+// branch (Z.ai's wire shape), the extras catch-all that preserves
+// non-canonical top-level keys for round-trip stability, and the rejection
+// of requests that carry both token keys.
+func TestOpenAIRequest_UnmarshalJSON_TokenFieldsAndExtras(t *testing.T) {
 	t.Run("legacy max_tokens decodes to TokenFieldMaxTokens", func(t *testing.T) {
 		raw := []byte(`{"model":"glm-4-plus","messages":[],"stream":true,"max_tokens":4096}`)
 		var req openaiRequest
-		if err := json.Unmarshal(raw, &req); err != nil {
-			t.Fatalf("Unmarshal: %v", err)
-		}
-		if req.TokenField != quirks.TokenFieldMaxTokens {
-			t.Errorf("TokenField = %v, want TokenFieldMaxTokens", req.TokenField)
-		}
-		if req.MaxTokens != 4096 {
-			t.Errorf("MaxTokens = %d, want 4096", req.MaxTokens)
-		}
+		require.NoError(t, json.Unmarshal(raw, &req))
+		require.Equal(t, quirks.TokenFieldMaxTokens, req.TokenField)
+		require.Equal(t, 4096, req.MaxTokens)
 	})
 
 	t.Run("modern max_completion_tokens decodes to TokenFieldMaxCompletionTokens", func(t *testing.T) {
 		raw := []byte(`{"model":"o1-mini","messages":[],"stream":true,"max_completion_tokens":2048}`)
 		var req openaiRequest
-		if err := json.Unmarshal(raw, &req); err != nil {
-			t.Fatalf("Unmarshal: %v", err)
-		}
-		if req.TokenField != quirks.TokenFieldMaxCompletionTokens {
-			t.Errorf("TokenField = %v, want TokenFieldMaxCompletionTokens", req.TokenField)
-		}
-		if req.MaxTokens != 2048 {
-			t.Errorf("MaxTokens = %d, want 2048", req.MaxTokens)
-		}
+		require.NoError(t, json.Unmarshal(raw, &req))
+		require.Equal(t, quirks.TokenFieldMaxCompletionTokens, req.TokenField)
+		require.Equal(t, 2048, req.MaxTokens)
 	})
 
 	t.Run("non-canonical top-level key surfaces in ExtraBodyFields", func(t *testing.T) {
 		raw := []byte(`{"model":"glm-4-plus","messages":[],"stream":true,"max_tokens":4096,"tool_stream":true}`)
 		var req openaiRequest
-		if err := json.Unmarshal(raw, &req); err != nil {
-			t.Fatalf("Unmarshal: %v", err)
-		}
-		if v, ok := req.ExtraBodyFields["tool_stream"]; !ok || v != true {
-			t.Errorf("ExtraBodyFields[tool_stream] = %v (ok=%v), want true", v, ok)
-		}
+		require.NoError(t, json.Unmarshal(raw, &req))
+		require.Equal(t, true, req.ExtraBodyFields["tool_stream"])
 	})
 
 	t.Run("dual token keys are rejected", func(t *testing.T) {
 		raw := []byte(`{"model":"gpt-4o","messages":[],"stream":true,"max_completion_tokens":100,"max_tokens":200}`)
 		var req openaiRequest
 		err := json.Unmarshal(raw, &req)
-		if err == nil {
-			t.Fatalf("Unmarshal returned no error; expected dual-key rejection")
-		}
-		if !strings.Contains(err.Error(), "both max_completion_tokens and max_tokens present") {
-			t.Errorf("error = %q, want substring 'both max_completion_tokens and max_tokens present'", err.Error())
-		}
+		require.ErrorContains(t, err, "both max_completion_tokens and max_tokens present")
 	})
 
 	t.Run("round-trip with ExtraBodyFields preserves shape", func(t *testing.T) {
@@ -566,28 +439,14 @@ func TestOpenAIRequest_UnmarshalJSON(t *testing.T) {
 			ExtraBodyFields: map[string]any{"tool_stream": true},
 		}
 		out, err := json.Marshal(original)
-		if err != nil {
-			t.Fatalf("Marshal: %v", err)
-		}
+		require.NoError(t, err, "Marshal")
 		var round openaiRequest
-		if err := json.Unmarshal(out, &round); err != nil {
-			t.Fatalf("Unmarshal: %v", err)
-		}
-		if round.Model != original.Model {
-			t.Errorf("Model: got %q, want %q", round.Model, original.Model)
-		}
-		if round.MaxTokens != original.MaxTokens {
-			t.Errorf("MaxTokens: got %d, want %d", round.MaxTokens, original.MaxTokens)
-		}
-		if round.TokenField != original.TokenField {
-			t.Errorf("TokenField: got %v, want %v", round.TokenField, original.TokenField)
-		}
-		if round.Stream != original.Stream {
-			t.Errorf("Stream: got %v, want %v", round.Stream, original.Stream)
-		}
-		if v, ok := round.ExtraBodyFields["tool_stream"]; !ok || v != true {
-			t.Errorf("ExtraBodyFields[tool_stream] = %v (ok=%v), want true", v, ok)
-		}
+		require.NoError(t, json.Unmarshal(out, &round), "Unmarshal")
+		require.Equal(t, original.Model, round.Model)
+		require.Equal(t, original.MaxTokens, round.MaxTokens)
+		require.Equal(t, original.TokenField, round.TokenField)
+		require.Equal(t, original.Stream, round.Stream)
+		require.Equal(t, true, round.ExtraBodyFields["tool_stream"])
 	})
 
 	t.Run("tool_choice string round-trips out of ExtraBodyFields", func(t *testing.T) {
@@ -602,28 +461,16 @@ func TestOpenAIRequest_UnmarshalJSON(t *testing.T) {
 			ToolChoice: "required",
 		}
 		out, err := json.Marshal(original)
-		if err != nil {
-			t.Fatalf("Marshal: %v", err)
-		}
+		require.NoError(t, err, "Marshal")
 		var round openaiRequest
-		if err := json.Unmarshal(out, &round); err != nil {
-			t.Fatalf("Unmarshal: %v", err)
-		}
-		if _, leaked := round.ExtraBodyFields["tool_choice"]; leaked {
-			t.Errorf("tool_choice leaked into ExtraBodyFields: %+v", round.ExtraBodyFields)
-		}
-		if round.ToolChoice != "required" {
-			t.Errorf("ToolChoice = %v, want \"required\"", round.ToolChoice)
-		}
+		require.NoError(t, json.Unmarshal(out, &round), "Unmarshal")
+		require.NotContains(t, round.ExtraBodyFields, "tool_choice")
+		require.Equal(t, "required", round.ToolChoice)
 		// Re-marshalling the decoded request must reproduce the field
 		// stably (the canonical guard must not reject it).
 		out2, err := json.Marshal(round)
-		if err != nil {
-			t.Fatalf("re-Marshal: %v", err)
-		}
-		if !strings.Contains(string(out2), `"tool_choice":"required"`) {
-			t.Errorf("re-marshalled body missing tool_choice: %s", out2)
-		}
+		require.NoError(t, err, "re-Marshal")
+		require.Contains(t, string(out2), `"tool_choice":"required"`)
 	})
 
 	t.Run("tool_choice typed named object round-trips with deterministic order", func(t *testing.T) {
@@ -638,23 +485,13 @@ func TestOpenAIRequest_UnmarshalJSON(t *testing.T) {
 			},
 		}
 		out, err := json.Marshal(original)
-		if err != nil {
-			t.Fatalf("Marshal: %v", err)
-		}
+		require.NoError(t, err, "Marshal")
 		// The typed struct pins key order: "type" before "function".
-		if !strings.Contains(string(out), `"tool_choice":{"type":"function","function":{"name":"read_file"}}`) {
-			t.Errorf("marshalled body has unexpected tool_choice shape: %s", out)
-		}
+		require.Contains(t, string(out), `"tool_choice":{"type":"function","function":{"name":"read_file"}}`)
 		var round openaiRequest
-		if err := json.Unmarshal(out, &round); err != nil {
-			t.Fatalf("Unmarshal: %v", err)
-		}
-		if _, leaked := round.ExtraBodyFields["tool_choice"]; leaked {
-			t.Errorf("tool_choice leaked into ExtraBodyFields: %+v", round.ExtraBodyFields)
-		}
-		if round.ToolChoice == nil {
-			t.Error("decoded ToolChoice is nil, want the function object")
-		}
+		require.NoError(t, json.Unmarshal(out, &round), "Unmarshal")
+		require.NotContains(t, round.ExtraBodyFields, "tool_choice")
+		require.NotNil(t, round.ToolChoice, "decoded ToolChoice should hold the function object")
 	})
 }
 
@@ -665,21 +502,20 @@ func TestOpenAIRequest_UnmarshalJSON(t *testing.T) {
 func quirksLogStubServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, err := io.ReadAll(r.Body); err != nil {
-			t.Errorf("read body: %v", err)
-		}
+		_, err := io.ReadAll(r.Body)
+		assert.NoError(t, err, "read body")
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 }
 
-// TestOpenAIAdapter_OmitSamplingParams_WarnsOnSuppressedTemperatureWithRuleDescription:
+// TestOpenAIAdapter_OmitSamplingParams_WarnsWithRuleDescription:
 // when OmitSamplingParams suppresses a caller-supplied non-nil
 // Temperature, the warn log must fire, name the rule that caused the
 // suppression, and NOT include the suppressed value itself (a caller
 // value must not propagate into any log sink that captures warn records).
-func TestOpenAIAdapter_OmitSamplingParams_WarnsOnSuppressedTemperatureWithRuleDescription(t *testing.T) {
+func TestOpenAIAdapter_OmitSamplingParams_WarnsWithRuleDescription(t *testing.T) {
 	srv := quirksLogStubServer(t)
 	defer srv.Close()
 
@@ -697,33 +533,25 @@ func TestOpenAIAdapter_OmitSamplingParams_WarnsOnSuppressedTemperatureWithRuleDe
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
 	})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	require.NoError(t, err)
 	for range ch {
 	}
 
 	logOutput := buf.String()
-	if !strings.Contains(logOutput, "openai quirks suppressed caller temperature") {
-		t.Errorf("warn log message absent from output: %s", logOutput)
-	}
+	assert.Contains(t, logOutput, "openai quirks suppressed caller temperature")
 	// The reasoning-class rule description must appear in the warn
 	// record so the operator can trace which rule fired. The exact
 	// substring is the rule's Description field — if the rule text
 	// changes the substring below must change with it.
 	const wantRule = "OpenAI reasoning-class"
-	if !strings.Contains(logOutput, wantRule) {
-		t.Errorf("warn log missing rule description substring %q: %s", wantRule, logOutput)
-	}
+	assert.Contains(t, logOutput, wantRule)
 	// The suppressed value must NOT appear in the log. The number
 	// "0.5" alone could collide with a metric value or a duration, so
 	// pin against the named attribute key as well.
-	if strings.Contains(logOutput, "temperature.suppressed") {
-		t.Errorf("warn log contains legacy 'temperature.suppressed' attribute; the suppressed value must not leak: %s", logOutput)
-	}
+	assert.NotContains(t, logOutput, "temperature.suppressed", "the suppressed temperature must not leak into the warn record")
 }
 
-// TestLogReplayFieldsCapture_NonStringValue exercises the non-string
+// TestLogReplayFieldsCapture_NonStringValueLogsLengthOnly exercises the non-string
 // fallback branch in logReplayFieldsCapture's per-value switch: the
 // default arm runs json.Marshal on the value to compute its length
 // contribution. Current ReplayFields rules only register string-typed
@@ -731,7 +559,7 @@ func TestOpenAIAdapter_OmitSamplingParams_WarnsOnSuppressedTemperatureWithRuleDe
 // the helper is the safety gate for future rules — the log line must be
 // emitted with the field name and length metadata, and never the
 // literal value.
-func TestLogReplayFieldsCapture_NonStringValue(t *testing.T) {
+func TestLogReplayFieldsCapture_NonStringValueLogsLengthOnly(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
@@ -745,58 +573,41 @@ func TestLogReplayFieldsCapture_NonStringValue(t *testing.T) {
 	logReplayFieldsCapture(context.Background(), logger, "openai-compatible", "deepseek-reasoner", capture)
 
 	out := buf.String()
-	if !strings.Contains(out, "quirks replay fields captured") {
-		t.Fatalf("log line missing; got: %s", out)
-	}
-	if !strings.Contains(out, "reasoning_content") {
-		t.Errorf("log line missing field name 'reasoning_content'; got: %s", out)
-	}
-	if !strings.Contains(out, `"count":1`) {
-		t.Errorf("log line missing count=1; got: %s", out)
-	}
+	require.Contains(t, out, "quirks replay fields captured")
+	assert.Contains(t, out, "reasoning_content")
+	assert.Contains(t, out, `"count":1`)
 	// json.Marshal(float64(123.45)) = "123.45" (6 bytes). The
 	// total_len must equal 6. Pin it exactly to catch any future
 	// regression that decides to skip the default branch.
-	if !strings.Contains(out, `"total_len":6`) {
-		t.Errorf("log line missing total_len=6; got: %s", out)
-	}
+	assert.Contains(t, out, `"total_len":6`)
 	// The value itself must NOT appear in the log under any
 	// representation. "123.45" is the canonical JSON form and the
 	// one the marshal path would emit if a future refactor swapped
 	// length-reporting for value-reporting.
-	if strings.Contains(out, "123.45") {
-		t.Errorf("log leaked non-string value 123.45 (length-only invariant violated); got: %s", out)
-	}
+	assert.NotContains(t, out, "123.45", "length-only invariant: the non-string value must not be logged")
 }
 
-// TestOpenAIChunkChoice_UnmarshalJSON covers the custom decoder's three
-// observable states: a chunk with no delta key (the false branch of the
+// TestOpenAIChunkChoice_UnmarshalJSON_DeltaStates covers the custom
+// decoder's three observable states: a chunk with no delta key (the false branch of the
 // len(helper.Delta) > 0 guard), a chunk with a malformed delta value
 // (the json.Unmarshal error return), and a chunk with a valid delta (the
 // happy path that populates both RawDelta and the typed Delta).
-func TestOpenAIChunkChoice_UnmarshalJSON(t *testing.T) {
-	t.Run("no_delta", func(t *testing.T) {
+func TestOpenAIChunkChoice_UnmarshalJSON_DeltaStates(t *testing.T) {
+	t.Run("no delta key", func(t *testing.T) {
 		raw := []byte(`{"index":0,"finish_reason":"stop"}`)
 		var c openaiChunkChoice
-		if err := json.Unmarshal(raw, &c); err != nil {
-			t.Fatalf("Unmarshal: %v", err)
-		}
-		if c.RawDelta != nil {
-			t.Errorf("RawDelta = %q, want nil (no delta key present)", c.RawDelta)
-		}
+		require.NoError(t, json.Unmarshal(raw, &c))
+		require.Nil(t, c.RawDelta, "RawDelta must stay nil when no delta key is present")
 		// Delta must remain the zero value: no Role, no Content, no
 		// ToolCalls.
-		if c.Delta.Role != "" || c.Delta.Content != nil || len(c.Delta.ToolCalls) > 0 {
-			t.Errorf("Delta = %+v, want zero value", c.Delta)
-		}
-		if c.Index != 0 {
-			t.Errorf("Index = %d, want 0", c.Index)
-		}
-		if c.FinishReason == nil || *c.FinishReason != "stop" {
-			t.Errorf("FinishReason = %v, want \"stop\"", c.FinishReason)
-		}
+		require.Empty(t, c.Delta.Role)
+		require.Nil(t, c.Delta.Content)
+		require.Empty(t, c.Delta.ToolCalls)
+		require.Equal(t, 0, c.Index)
+		require.NotNil(t, c.FinishReason)
+		require.Equal(t, "stop", *c.FinishReason)
 	})
-	t.Run("malformed_delta", func(t *testing.T) {
+	t.Run("malformed delta", func(t *testing.T) {
 		// A non-object delta cannot decode into openaiDelta (which is
 		// a struct); the typed Unmarshal returns a UnmarshalTypeError
 		// that the custom UnmarshalJSON wraps under
@@ -804,41 +615,30 @@ func TestOpenAIChunkChoice_UnmarshalJSON(t *testing.T) {
 		raw := []byte(`{"index":0,"delta":"not-an-object"}`)
 		var c openaiChunkChoice
 		err := json.Unmarshal(raw, &c)
-		if err == nil {
-			t.Fatalf("Unmarshal returned no error; expected delta decode failure")
-		}
-		if !strings.Contains(err.Error(), "openaiChunkChoice.delta") {
-			t.Errorf("error = %q, want substring \"openaiChunkChoice.delta\"", err.Error())
-		}
+		require.Error(t, err)
+		require.ErrorContains(t, err, "openaiChunkChoice.delta")
 	})
-	t.Run("valid_delta", func(t *testing.T) {
+	t.Run("valid delta", func(t *testing.T) {
 		raw := []byte(`{"index":0,"delta":{"role":"assistant","content":"hello"}}`)
 		var c openaiChunkChoice
-		if err := json.Unmarshal(raw, &c); err != nil {
-			t.Fatalf("Unmarshal: %v", err)
-		}
-		if c.Delta.Role != "assistant" {
-			t.Errorf("Delta.Role = %q, want \"assistant\"", c.Delta.Role)
-		}
-		if c.Delta.Content == nil || *c.Delta.Content != "hello" {
-			t.Errorf("Delta.Content = %v, want \"hello\"", c.Delta.Content)
-		}
+		require.NoError(t, json.Unmarshal(raw, &c))
+		require.Equal(t, "assistant", c.Delta.Role)
+		require.NotNil(t, c.Delta.Content)
+		require.Equal(t, "hello", *c.Delta.Content)
 		// RawDelta must hold the raw bytes of the delta object so a
 		// ReplayFields walker can descend without coupling to the
 		// typed struct. The bytes are not whitespace-normalised; an
 		// exact match is the strongest assertion.
 		const wantRaw = `{"role":"assistant","content":"hello"}`
-		if string(c.RawDelta) != wantRaw {
-			t.Errorf("RawDelta = %q, want %q", string(c.RawDelta), wantRaw)
-		}
+		require.Equal(t, wantRaw, string(c.RawDelta)) //nolint:testifylint // exact bytes are the contract
 	})
 }
 
 // TestOpenAIAdapter_DebugLogListsAppliedRules pins the per-Stream debug
 // line: it fires at the top of every Stream call and lists the
-// descriptions of the rules that contributed to the resolution. Empty
-// rule list is still logged so a
-// future grep against the line never misses a resolution.
+// descriptions of the rules that contributed to the resolution. An empty
+// rule list is still logged, so a grep for the line never misses a
+// resolution.
 func TestOpenAIAdapter_DebugLogListsAppliedRules(t *testing.T) {
 	srv := quirksLogStubServer(t)
 	defer srv.Close()
@@ -877,20 +677,14 @@ func TestOpenAIAdapter_DebugLogListsAppliedRules(t *testing.T) {
 					{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 				},
 			})
-			if err != nil {
-				t.Fatalf("Stream: %v", err)
-			}
+			require.NoError(t, err)
 			for range ch {
 			}
 
 			logOutput := buf.String()
-			if !strings.Contains(logOutput, "openai quirks resolved") {
-				t.Errorf("debug log message absent: %s", logOutput)
-			}
+			require.Contains(t, logOutput, "openai quirks resolved")
 			for _, want := range tc.wantRuleSubstrings {
-				if !strings.Contains(logOutput, want) {
-					t.Errorf("debug log missing rule substring %q: %s", want, logOutput)
-				}
+				require.Contains(t, logOutput, want)
 			}
 		})
 	}

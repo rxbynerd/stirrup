@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -39,17 +40,13 @@ func errorServer(t *testing.T, status int, body string) *httptest.Server {
 	return srv
 }
 
-func checkOverflow(t *testing.T, err error, want bool) {
+func requireContextOverflow(t *testing.T, err error, want bool) {
 	t.Helper()
-	if err == nil {
-		t.Fatal("Stream returned no error")
-	}
-	if got := types.IsContextOverflow(err); got != want {
-		t.Errorf("IsContextOverflow(%q) = %v, want %v", err, got, want)
-	}
+	require.Error(t, err, "Stream returned no error")
+	require.Equal(t, want, types.IsContextOverflow(err), "IsContextOverflow(%q)", err)
 }
 
-func TestAnthropicAdapter_ContextOverflowError(t *testing.T) {
+func TestAnthropicAdapter_ClassifiesContextOverflow(t *testing.T) {
 	cases := append([]overflowCase{
 		{"prompt too long", http.StatusBadRequest, `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 208310 tokens > 200000 maximum"}}`, true},
 		{"input and max_tokens exceed the limit", http.StatusBadRequest, `{"type":"error","error":{"type":"invalid_request_error","message":"input length and ` + "`max_tokens`" + ` exceed context limit: 188240 + 21333 > 200000, decrease input length or ` + "`max_tokens`" + ` and try again"}}`, true},
@@ -63,12 +60,12 @@ func TestAnthropicAdapter_ContextOverflowError(t *testing.T) {
 			adapter := NewAnthropicAdapter(staticBearer("key"), AuthModeAPIKey)
 			adapter.baseURL = errorServer(t, tc.status, tc.body).URL
 			_, err := adapter.Stream(context.Background(), types.StreamParams{Model: "claude-sonnet-4-6", MaxTokens: 1024})
-			checkOverflow(t, err, tc.want)
+			requireContextOverflow(t, err, tc.want)
 		})
 	}
 }
 
-func TestOpenAIAdapter_ContextOverflowError(t *testing.T) {
+func TestOpenAIAdapter_ClassifiesContextOverflow(t *testing.T) {
 	cases := append([]overflowCase{
 		{"context_length_exceeded code", http.StatusBadRequest, `{"error":{"message":"This model's maximum context length is 128000 tokens. However, your messages resulted in 130000 tokens. Please reduce the length of the messages.","type":"invalid_request_error","param":"messages","code":"context_length_exceeded"}}`, true},
 		{"compatible server message without a code", http.StatusBadRequest, `{"error":{"message":"This model's maximum context length is 32768 tokens. However, you requested 40000 tokens.","type":"BadRequestError","code":400}}`, true},
@@ -78,12 +75,12 @@ func TestOpenAIAdapter_ContextOverflowError(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			adapter := NewOpenAICompatibleAdapter(staticBearer("key"), errorServer(t, tc.status, tc.body).URL, OpenAIAuthConfig{}, RetryPolicy{})
 			_, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
-			checkOverflow(t, err, tc.want)
+			requireContextOverflow(t, err, tc.want)
 		})
 	}
 }
 
-func TestOpenAIResponsesAdapter_ContextOverflowError(t *testing.T) {
+func TestOpenAIResponsesAdapter_ClassifiesContextOverflow(t *testing.T) {
 	cases := append([]overflowCase{
 		{"context_length_exceeded code", http.StatusBadRequest, `{"error":{"message":"Your input exceeds the context window of this model. Please adjust your input and try again.","type":"invalid_request_error","param":"input","code":"context_length_exceeded"}}`, true},
 		{"context window message without a code", http.StatusBadRequest, `{"error":{"message":"Your input exceeds the context window of this model.","type":"invalid_request_error","code":null}}`, true},
@@ -94,12 +91,12 @@ func TestOpenAIResponsesAdapter_ContextOverflowError(t *testing.T) {
 			adapter := NewOpenAIResponsesAdapter(staticBearer("key"), errorServer(t, tc.status, tc.body).URL, OpenAIAuthConfig{})
 			adapter.RetryPolicy = RetryPolicy{MaxAttempts: 1}
 			_, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-6", MaxTokens: 1024})
-			checkOverflow(t, err, tc.want)
+			requireContextOverflow(t, err, tc.want)
 		})
 	}
 }
 
-func TestOpenAIResponsesAdapter_StreamedContextOverflowError(t *testing.T) {
+func TestOpenAIResponsesAdapter_ClassifiesStreamedContextOverflow(t *testing.T) {
 	cases := []struct {
 		name  string
 		event string
@@ -113,17 +110,14 @@ func TestOpenAIResponsesAdapter_StreamedContextOverflowError(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			last := streamResponsesLastEvent(t, makeResponsesEvent(tc.event, tc.data))
-			if last.Type != "error" || last.Error == nil {
-				t.Fatalf("last event = %+v, want an error event", last)
-			}
-			if got := types.IsContextOverflow(last.Error); got != tc.want {
-				t.Errorf("IsContextOverflow(%q) = %v, want %v", last.Error, got, tc.want)
-			}
+			require.Equal(t, "error", last.Type, "last event = %+v", last)
+			require.Error(t, last.Error, "last event = %+v", last)
+			require.Equal(t, tc.want, types.IsContextOverflow(last.Error), "IsContextOverflow(%q)", last.Error)
 		})
 	}
 }
 
-func TestGeminiAdapter_ContextOverflowError(t *testing.T) {
+func TestGeminiAdapter_ClassifiesContextOverflow(t *testing.T) {
 	cases := append([]overflowCase{
 		{"input token count over the limit", http.StatusBadRequest, `{"error":{"code":400,"message":"The input token count (1200000) exceeds the maximum number of tokens allowed (1048576).","status":"INVALID_ARGUMENT"}}`, true},
 		{"unrelated invalid argument", http.StatusBadRequest, `{"error":{"code":400,"message":"Please use a valid role: user, model.","status":"INVALID_ARGUMENT"}}`, false},
@@ -133,12 +127,12 @@ func TestGeminiAdapter_ContextOverflowError(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			adapter := newGeminiTestAdapter(errorServer(t, tc.status, tc.body).URL, &stubTokenSource{token: "tok"})
 			_, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
-			checkOverflow(t, err, tc.want)
+			requireContextOverflow(t, err, tc.want)
 		})
 	}
 }
 
-func TestBedrock_ContextOverflowError(t *testing.T) {
+func TestBedrockAdapter_ClassifiesContextOverflow(t *testing.T) {
 	cases := []struct {
 		name string
 		err  error
@@ -153,7 +147,7 @@ func TestBedrock_ContextOverflowError(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			adapter := &BedrockAdapter{client: &mockBedrockClient{apiErr: tc.err}}
 			_, err := adapter.Stream(context.Background(), types.StreamParams{Model: "anthropic.claude-sonnet-4-6-v1", MaxTokens: 1024})
-			checkOverflow(t, err, tc.want)
+			requireContextOverflow(t, err, tc.want)
 		})
 	}
 
@@ -162,9 +156,9 @@ func TestBedrock_ContextOverflowError(t *testing.T) {
 		reader := newMockEventReader(nil, &brtypes.ValidationException{Message: aws.String("Input is too long for requested model.")})
 		go consumeBedrockStream(context.Background(), reader, ch)
 		events := collectEvents(t, ch)
+		require.NotEmpty(t, events, "stream produced no events")
 		last := events[len(events)-1]
-		if last.Type != "error" || !types.IsContextOverflow(last.Error) {
-			t.Errorf("last event = %+v, want a context-overflow error", last)
-		}
+		require.Equal(t, "error", last.Type, "last event = %+v", last)
+		require.True(t, types.IsContextOverflow(last.Error), "last event = %+v", last)
 	})
 }

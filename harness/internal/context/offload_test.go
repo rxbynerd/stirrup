@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -46,15 +47,9 @@ func TestOffloadToFile_WithinBudget_ReturnsUnchanged(t *testing.T) {
 		CurrentTokens:      100,
 		ReserveForResponse: 2000,
 	})
-	if err != nil {
-		t.Fatalf("Prepare() error: %v", err)
-	}
-	if len(result) != 2 {
-		t.Errorf("expected 2 messages, got %d", len(result))
-	}
-	if len(fw.written) != 0 {
-		t.Errorf("expected no files written, got %d", len(fw.written))
-	}
+	require.NoError(t, err)
+	require.Len(t, result, 2)
+	require.Empty(t, fw.written)
 }
 
 func TestOffloadToFile_OverBudget_OffloadsLargeToolResults(t *testing.T) {
@@ -90,25 +85,15 @@ func TestOffloadToFile_OverBudget_OffloadsLargeToolResults(t *testing.T) {
 		CurrentTokens:      5000,
 		ReserveForResponse: 500,
 	})
-	if err != nil {
-		t.Fatalf("Prepare() error: %v", err)
-	}
-	if len(result) != len(msgs) {
-		t.Fatalf("expected %d messages, got %d", len(msgs), len(result))
-	}
+	require.NoError(t, err)
+	require.Len(t, result, len(msgs))
 
-	// The tool_result at index 2 should have been offloaded.
-	offloaded := result[2].Content[0]
+	// The tool_result at index 2 is offloaded and replaced by a reference to its file.
 	expectedPath := ".stirrup/context/turn-2-t1.txt"
 	expectedRef := fmt.Sprintf("[Full output offloaded to %s — read this file if you need the details]", expectedPath)
-	if offloaded.Content != expectedRef {
-		t.Errorf("expected offload reference, got: %s", offloaded.Content)
-	}
+	require.Equal(t, expectedRef, result[2].Content[0].Content)
 
-	// Verify the file was written with the original content.
-	if fw.written[expectedPath] != largeContent {
-		t.Errorf("expected file to contain original content")
-	}
+	require.Equal(t, largeContent, fw.written[expectedPath], "offloaded file should hold the original content")
 }
 
 func TestOffloadToFile_PreservesReplayFieldsOnModifiedMessages(t *testing.T) {
@@ -144,24 +129,16 @@ func TestOffloadToFile_PreservesReplayFieldsOnModifiedMessages(t *testing.T) {
 		CurrentTokens:      5000,
 		ReserveForResponse: 500,
 	})
-	if err != nil {
-		t.Fatalf("Prepare() error: %v", err)
-	}
+	require.NoError(t, err)
 
 	// The rebuild must have fired (the tool_result was offloaded)…
-	if !strings.Contains(result[1].Content[0].Content, "offloaded to") {
-		t.Fatalf("expected the tool_result to be offloaded; got: %s", result[1].Content[0].Content)
-	}
+	require.Contains(t, result[1].Content[0].Content, "offloaded to")
 	// …and the replay state must have survived it intact.
-	if result[1].ReplayFields == nil {
-		t.Fatal("ReplayFields dropped by the offload rebuild")
-	}
-	if got := string(result[1].ReplayFields["reasoning_content"]); got != `"thinking..."` {
-		t.Errorf("ReplayFields[reasoning_content] = %s, want \"thinking...\"", got)
-	}
+	require.NotNil(t, result[1].ReplayFields, "ReplayFields dropped by the offload rebuild")
+	require.Equal(t, `"thinking..."`, string(result[1].ReplayFields["reasoning_content"]))
 }
 
-func TestOffloadToFile_RecentMessagesPreservedInFull(t *testing.T) {
+func TestOffloadToFile_RecentMessages_KeptInFull(t *testing.T) {
 	fw := newMockFileWriter()
 	s := NewOffloadToFileStrategy(fw)
 
@@ -192,20 +169,14 @@ func TestOffloadToFile_RecentMessagesPreservedInFull(t *testing.T) {
 		CurrentTokens:      5000,
 		ReserveForResponse: 500,
 	})
-	if err != nil {
-		t.Fatalf("Prepare() error: %v", err)
-	}
+	require.NoError(t, err)
 
 	// The tool_result at index 2 is within the last 6, so should be untouched.
-	if result[2].Content[0].Content != largeContent {
-		t.Error("recent large tool_result should not be offloaded")
-	}
-	if len(fw.written) != 0 {
-		t.Errorf("expected no files written for recent messages, got %d", len(fw.written))
-	}
+	require.Equal(t, largeContent, result[2].Content[0].Content, "recent large tool_result should not be offloaded")
+	require.Empty(t, fw.written, "no files should be written for recent messages")
 }
 
-func TestOffloadToFile_SmallToolResultsNotOffloaded(t *testing.T) {
+func TestOffloadToFile_SmallToolResults_NotOffloaded(t *testing.T) {
 	fw := newMockFileWriter()
 	s := NewOffloadToFileStrategy(fw)
 
@@ -238,17 +209,10 @@ func TestOffloadToFile_SmallToolResultsNotOffloaded(t *testing.T) {
 		CurrentTokens:      5000,
 		ReserveForResponse: 500,
 	})
-	if err != nil {
-		t.Fatalf("Prepare() error: %v", err)
-	}
+	require.NoError(t, err)
 
-	// Small tool result should remain unchanged.
-	if result[2].Content[0].Content != smallContent {
-		t.Error("small tool_result should not be offloaded")
-	}
-	if len(fw.written) != 0 {
-		t.Errorf("expected no files written for small content, got %d", len(fw.written))
-	}
+	require.Equal(t, smallContent, result[2].Content[0].Content, "small tool_result should not be offloaded")
+	require.Empty(t, fw.written, "no files should be written for small content")
 }
 
 func TestOffloadToFile_WriteFailure_FallsBackToTruncation(t *testing.T) {
@@ -285,24 +249,16 @@ func TestOffloadToFile_WriteFailure_FallsBackToTruncation(t *testing.T) {
 		CurrentTokens:      5000,
 		ReserveForResponse: 500,
 	})
-	if err != nil {
-		t.Fatalf("Prepare() error: %v", err)
-	}
+	require.NoError(t, err)
 
 	content := result[2].Content[0].Content
-	if !strings.Contains(content, "[...truncated 2000 bytes...]") {
-		t.Error("expected truncation marker in fallback content")
-	}
+	require.Contains(t, content, "[...truncated 2000 bytes...]")
 	// Should keep first 500 and last 500 chars.
-	if !strings.HasPrefix(content, strings.Repeat("q", 500)) {
-		t.Error("truncated content should start with first 500 chars")
-	}
-	if !strings.HasSuffix(content, strings.Repeat("q", 500)) {
-		t.Error("truncated content should end with last 500 chars")
-	}
+	require.True(t, strings.HasPrefix(content, strings.Repeat("q", 500)), "truncated content should start with first 500 chars")
+	require.True(t, strings.HasSuffix(content, strings.Repeat("q", 500)), "truncated content should end with last 500 chars")
 }
 
-func TestOffloadToFile_MultipleToolResultsSameTurn(t *testing.T) {
+func TestOffloadToFile_MultipleToolResults_EachOffloadedToOwnFile(t *testing.T) {
 	fw := newMockFileWriter()
 	s := NewOffloadToFileStrategy(fw)
 
@@ -330,34 +286,22 @@ func TestOffloadToFile_MultipleToolResultsSameTurn(t *testing.T) {
 		CurrentTokens:      5000,
 		ReserveForResponse: 500,
 	})
-	if err != nil {
-		t.Fatalf("Prepare() error: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Both tool results in message 0 should be offloaded to separate files.
-	if len(fw.written) != 2 {
-		t.Fatalf("expected 2 files written, got %d", len(fw.written))
-	}
+	require.Len(t, fw.written, 2)
 
 	path1 := ".stirrup/context/turn-0-t1.txt"
 	path2 := ".stirrup/context/turn-0-t2.txt"
 
-	if fw.written[path1] != large1 {
-		t.Error("first tool result not written correctly")
-	}
-	if fw.written[path2] != large2 {
-		t.Error("second tool result not written correctly")
-	}
+	require.Equal(t, large1, fw.written[path1], "content written for %s", path1)
+	require.Equal(t, large2, fw.written[path2], "content written for %s", path2)
 
 	// Verify both content blocks were replaced.
 	block0 := result[0].Content[0]
 	block1 := result[0].Content[1]
-	if !strings.Contains(block0.Content, path1) {
-		t.Errorf("first block should reference %s, got: %s", path1, block0.Content)
-	}
-	if !strings.Contains(block1.Content, path2) {
-		t.Errorf("second block should reference %s, got: %s", path2, block1.Content)
-	}
+	require.Contains(t, block0.Content, path1)
+	require.Contains(t, block1.Content, path2)
 }
 
 func TestOffloadToFile_NonToolResultMessagesUntouched(t *testing.T) {
@@ -382,23 +326,15 @@ func TestOffloadToFile_NonToolResultMessagesUntouched(t *testing.T) {
 		CurrentTokens:      5000,
 		ReserveForResponse: 500,
 	})
-	if err != nil {
-		t.Fatalf("Prepare() error: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Text messages should be completely untouched.
-	if result[0].Content[0].Text != longText {
-		t.Error("user text message was modified")
-	}
-	if result[1].Content[0].Text != longText {
-		t.Error("assistant text message was modified")
-	}
-	if len(fw.written) != 0 {
-		t.Errorf("expected no files written for non-tool-result messages, got %d", len(fw.written))
-	}
+	require.Equal(t, longText, result[0].Content[0].Text, "user text message was modified")
+	require.Equal(t, longText, result[1].Content[0].Text, "assistant text message was modified")
+	require.Empty(t, fw.written, "no files should be written for non-tool-result messages")
 }
 
-func TestOffloadToFile_ReplacementTextContainsCorrectPath(t *testing.T) {
+func TestOffloadToFile_ReplacementText_NamesOffloadPath(t *testing.T) {
 	fw := newMockFileWriter()
 	s := NewOffloadToFileStrategy(fw)
 
@@ -423,16 +359,11 @@ func TestOffloadToFile_ReplacementTextContainsCorrectPath(t *testing.T) {
 		CurrentTokens:      5000,
 		ReserveForResponse: 500,
 	})
-	if err != nil {
-		t.Fatalf("Prepare() error: %v", err)
-	}
+	require.NoError(t, err)
 
 	expectedPath := ".stirrup/context/turn-0-call_abc123.txt"
-	content := result[0].Content[0].Content
 	expectedFull := fmt.Sprintf("[Full output offloaded to %s — read this file if you need the details]", expectedPath)
-	if content != expectedFull {
-		t.Errorf("replacement text mismatch.\nwant: %s\ngot:  %s", expectedFull, content)
-	}
+	require.Equal(t, expectedFull, result[0].Content[0].Content)
 }
 
 func TestOffloadToFile_EmptyMessages_ReturnsEmpty(t *testing.T) {
@@ -444,18 +375,13 @@ func TestOffloadToFile_EmptyMessages_ReturnsEmpty(t *testing.T) {
 		CurrentTokens:      100,
 		ReserveForResponse: 2000,
 	})
-	if err != nil {
-		t.Fatalf("Prepare() error: %v", err)
-	}
-	if len(result) != 0 {
-		t.Errorf("expected 0 messages, got %d", len(result))
-	}
+	require.NoError(t, err)
+	require.Empty(t, result)
 }
 
-// TestOffloadToFile_NoRoomKeepsTaskAndLastExchange pins that the no-room
-// path keeps the task and the last complete exchange, never the results of
-// parallel tool calls without the assistant turn that made them.
-func TestOffloadToFile_NoRoomKeepsTaskAndLastExchange(t *testing.T) {
+// The no-room path keeps the task and the last complete exchange, never the
+// results of parallel tool calls without the assistant turn that made them.
+func TestOffloadToFile_NoRoom_KeepsTaskAndLastExchange(t *testing.T) {
 	msgs := parallelCallHistory(1)
 	s := NewOffloadToFileStrategy(newMockFileWriter())
 
@@ -464,16 +390,15 @@ func TestOffloadToFile_NoRoomKeepsTaskAndLastExchange(t *testing.T) {
 		CurrentTokens:      700,
 		ReserveForResponse: 100,
 	})
-	if err != nil {
-		t.Fatalf("Prepare() error: %v", err)
-	}
-	if want := []types.Message{msgs[0], msgs[5], msgs[6]}; !reflect.DeepEqual(result, want) {
-		t.Fatalf("kept %d messages, want the task and the last exchange", len(result))
-	}
-	if c := s.LastCompaction(); c == nil || c.MessagesBefore != 7 || c.MessagesAfter != 3 {
-		t.Errorf("LastCompaction = %+v, want 7 -> 3 messages", c)
-	}
-	if err := checkCompactedHistory(msgs, result); err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
+
+	want := []types.Message{msgs[0], msgs[5], msgs[6]}
+	require.Equal(t, want, result, "keeps the task and the last exchange")
+
+	c := s.LastCompaction()
+	require.NotNil(t, c, "a no-room compaction should record its LastCompaction")
+	require.Equal(t, 7, c.MessagesBefore)
+	require.Equal(t, 3, c.MessagesAfter)
+
+	require.NoError(t, checkCompactedHistory(msgs, result))
 }

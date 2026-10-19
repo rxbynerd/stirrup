@@ -2,23 +2,28 @@ package types
 
 import (
 	"encoding/json"
-	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
-func TestIsThinkingBlock(t *testing.T) {
-	cases := map[string]bool{
-		"thinking":          true,
-		"redacted_thinking": true,
-		"text":              false,
-		"tool_use":          false,
-		"tool_result":       false,
-		"":                  false,
+func TestIsThinkingBlock_ClassifiesBlockTypes(t *testing.T) {
+	cases := []struct {
+		name string
+		typ  string
+		want bool
+	}{
+		{name: "thinking", typ: "thinking", want: true},
+		{name: "redacted thinking", typ: "redacted_thinking", want: true},
+		{name: "text", typ: "text", want: false},
+		{name: "tool use", typ: "tool_use", want: false},
+		{name: "tool result", typ: "tool_result", want: false},
+		{name: "empty type", typ: "", want: false},
 	}
-	for typ, want := range cases {
-		if got := IsThinkingBlock(ContentBlock{Type: typ}); got != want {
-			t.Errorf("IsThinkingBlock(%q) = %v, want %v", typ, got, want)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, IsThinkingBlock(ContentBlock{Type: tc.typ}), "block type %q", tc.typ)
+		})
 	}
 }
 
@@ -52,12 +57,10 @@ func TestStripThinkingBlocks_RemovesBothTypesAndKeepsOrder(t *testing.T) {
 		},
 		in[2],
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("StripThinkingBlocks mismatch\n got: %+v\nwant: %+v", got, want)
-	}
-	if len(in[1].Content) != 4 || in[1].Content[0].Type != "thinking" {
-		t.Errorf("input history was mutated: %+v", in[1].Content)
-	}
+	require.Equal(t, want, got)
+
+	require.Len(t, in[1].Content, 4, "input history was mutated: %+v", in[1].Content)
+	require.Equal(t, "thinking", in[1].Content[0].Type, "input history was mutated")
 }
 
 func TestStripThinkingBlocks_NoThinkingReturnsInput(t *testing.T) {
@@ -66,12 +69,10 @@ func TestStripThinkingBlocks_NoThinkingReturnsInput(t *testing.T) {
 		{Role: "assistant", Content: []ContentBlock{{Type: "text", Text: "done"}}},
 	}
 	got := StripThinkingBlocks(in)
-	if len(got) != len(in) || &got[0] != &in[0] {
-		t.Errorf("history without thinking blocks should be returned as-is")
-	}
-	if StripThinkingBlocks(nil) != nil {
-		t.Errorf("nil history should stay nil")
-	}
+	require.Len(t, got, len(in))
+	require.Same(t, &in[0], &got[0], "history without thinking blocks should be returned as-is")
+
+	require.Nil(t, StripThinkingBlocks(nil), "nil history should stay nil")
 }
 
 // TestStripThinkingBlocks_ThinkingOnlyMessageLeftForAdapter pins that the
@@ -84,10 +85,7 @@ func TestStripThinkingBlocks_ThinkingOnlyMessageLeftForAdapter(t *testing.T) {
 		{Role: "assistant", Content: []ContentBlock{{Type: "thinking", ThoughtSignature: "sig"}}},
 	}
 	got := StripThinkingBlocks(in)
-	if len(got) != 2 || got[1].Role != "assistant" {
-		t.Fatalf("got %+v, want both messages in their original positions", got)
-	}
-	if containsThinking(got[1].Content) {
-		t.Errorf("thinking block survived: %+v", got[1].Content)
-	}
+	require.Len(t, got, 2, "both messages should keep their original positions: %+v", got)
+	require.Equal(t, "assistant", got[1].Role)
+	require.False(t, containsThinking(got[1].Content), "thinking block survived: %+v", got[1].Content)
 }

@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -20,29 +22,18 @@ func TestControlPlaneTool_DefinitionAndDispatch(t *testing.T) {
 	})
 
 	def := ct.Definition()
-	if def.Name != "search_memory" || def.Description != "Search long-term memory." {
-		t.Fatalf("definition = %+v", def)
-	}
-	if string(def.InputSchema) != string(schema) {
-		t.Fatalf("input schema not carried verbatim: %s", def.InputSchema)
-	}
-	if ct.WorkspaceMutating {
-		t.Fatal("control-plane tools must never be WorkspaceMutating")
-	}
-	if !ct.RequiresApproval {
-		t.Fatal("RequiresApproval not propagated")
-	}
-	if ct.Handler != nil || ct.StructuredHandler != nil || ct.AsyncHandler == nil {
-		t.Fatal("control-plane tool must be async-only")
-	}
+	require.Equal(t, "search_memory", def.Name, "definition = %+v", def)
+	require.Equal(t, "Search long-term memory.", def.Description, "definition = %+v", def)
+	require.Equal(t, string(schema), string(def.InputSchema), "input schema not carried verbatim")
+	require.False(t, ct.WorkspaceMutating, "control-plane tools must never be WorkspaceMutating")
+	require.True(t, ct.RequiresApproval, "RequiresApproval not propagated")
+	require.Nil(t, ct.Handler, "control-plane tool must be async-only")
+	require.Nil(t, ct.StructuredHandler, "control-plane tool must be async-only")
+	require.NotNil(t, ct.AsyncHandler, "control-plane tool must be async-only")
 
 	dispatch, err := ct.AsyncHandler(context.Background(), json.RawMessage(`{"query":"x"}`))
-	if err != nil {
-		t.Fatalf("preflight: %v", err)
-	}
-	if dispatch.Timeout != 15*time.Second {
-		t.Fatalf("timeout = %v, want 15s", dispatch.Timeout)
-	}
+	require.NoError(t, err, "preflight")
+	require.Equal(t, 15*time.Second, dispatch.Timeout)
 }
 
 func TestControlPlaneTool_ZeroTimeoutSelectsLoopDefault(t *testing.T) {
@@ -52,13 +43,7 @@ func TestControlPlaneTool_ZeroTimeoutSelectsLoopDefault(t *testing.T) {
 		InputSchema: json.RawMessage(`{"type":"object"}`),
 	})
 	dispatch, err := ct.AsyncHandler(context.Background(), json.RawMessage(`{}`))
-	if err != nil {
-		t.Fatalf("preflight: %v", err)
-	}
-	if dispatch.Timeout != 0 {
-		t.Fatalf("timeout = %v, want 0 (loop default)", dispatch.Timeout)
-	}
-	if ct.RequiresApproval {
-		t.Fatal("RequiresApproval should default to false")
-	}
+	require.NoError(t, err, "preflight")
+	require.Zero(t, dispatch.Timeout, "zero timeout should select the loop default")
+	require.False(t, ct.RequiresApproval, "RequiresApproval should default to false")
 }

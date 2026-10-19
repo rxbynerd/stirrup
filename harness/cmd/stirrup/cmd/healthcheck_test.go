@@ -1,35 +1,29 @@
 package cmd
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/health"
 )
 
 func TestRunHealthcheck_MarkerPresent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "healthy")
-	if err := health.WriteProbe(path); err != nil {
-		t.Fatalf("health.WriteProbe() error: %v", err)
-	}
+	require.NoError(t, health.WriteProbe(path), "health.WriteProbe should create the marker")
 
-	if _, err := executeRootCmd(t, []string{"healthcheck", "--file=" + path}); err != nil {
-		t.Errorf("healthcheck = %v, want nil for a present marker", err)
-	}
+	_, err := executeRootCmd(t, []string{"healthcheck", "--file=" + path})
+	require.NoError(t, err)
 }
 
 func TestRunHealthcheck_MarkerAbsent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "does-not-exist")
 
 	_, err := executeRootCmd(t, []string{"healthcheck", "--file=" + path})
-	if err == nil {
-		t.Fatal("healthcheck = nil, want an error for a missing marker")
-	}
-	if classifyExitCode(err) != 1 {
-		t.Errorf("classifyExitCode(err) = %d, want 1 (default/precondition) for an absent marker", classifyExitCode(err))
-	}
+	require.Error(t, err)
+	require.Equal(t, 1, classifyExitCode(err), "absent marker should map to the default precondition exit code")
 }
 
 func TestRunHealthcheck_MarkerUnreadable(t *testing.T) {
@@ -38,19 +32,13 @@ func TestRunHealthcheck_MarkerUnreadable(t *testing.T) {
 	}
 
 	path := filepath.Join(t.TempDir(), "healthy")
-	if err := health.WriteProbe(path); err != nil {
-		t.Fatalf("health.WriteProbe() error: %v", err)
-	}
-	if err := os.Chmod(path, 0o000); err != nil {
-		t.Fatalf("os.Chmod() error: %v", err)
-	}
+	require.NoError(t, health.WriteProbe(path), "health.WriteProbe should create the marker")
+	require.NoError(t, os.Chmod(path, 0o000), "os.Chmod should remove the marker's read permission")
 
 	_, err := executeRootCmd(t, []string{"healthcheck", "--file=" + path})
-	if err == nil {
-		t.Fatal("healthcheck = nil, want an error for an unreadable marker")
-	}
+	require.Error(t, err)
+
 	var ee *exitError
-	if !errors.As(err, &ee) || ee.code != exitIO {
-		t.Errorf("healthcheck error = %v, want it classified as an I/O error (exit %d)", err, exitIO)
-	}
+	require.ErrorAs(t, err, &ee, "unreadable marker should surface as an exitError")
+	require.Equal(t, exitIO, ee.code, "unreadable marker should exit with the I/O error code")
 }

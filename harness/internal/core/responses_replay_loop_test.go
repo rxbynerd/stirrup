@@ -10,6 +10,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
@@ -57,19 +60,19 @@ type responsesTurnServer struct {
 	bodies []string
 }
 
+// newResponsesTurnServer runs on the server's goroutine for each request,
+// so it reports failures with assert rather than require.
 func newResponsesTurnServer(t *testing.T, turns ...string) *responsesTurnServer {
 	t.Helper()
 	s := &responsesTurnServer{turns: turns}
 	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("read request body: %v", err)
-		}
+		assert.NoError(t, err, "read request body")
 		s.mu.Lock()
 		s.bodies = append(s.bodies, string(body))
 		if len(s.turns) == 0 {
 			s.mu.Unlock()
-			t.Errorf("unscripted request: %s", body)
+			assert.Fail(t, "unscripted request", "body: %s", body)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -103,12 +106,8 @@ func responsesLoopConfig() *types.RunConfig {
 func runResponsesLoop(t *testing.T, loop *AgenticLoop, config *types.RunConfig) {
 	t.Helper()
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("outcome = %q, want success", runTrace.Outcome)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "success", runTrace.Outcome)
 }
 
 // TestLoop_ResponsesReplayFollowsItsEndpoint pins the loop-level replay
@@ -126,12 +125,9 @@ func TestLoop_ResponsesReplayFollowsItsEndpoint(t *testing.T) {
 		runResponsesLoop(t, loop, responsesLoopConfig())
 
 		bodies := a.requests()
-		if len(bodies) != 2 {
-			t.Fatalf("provider A saw %d requests, want 2", len(bodies))
-		}
-		if !strings.Contains(bodies[1], "enc-turn-0") || !strings.Contains(bodies[1], `"id":"fc_0"`) {
-			t.Errorf("second request did not replay the stored turn: %s", bodies[1])
-		}
+		require.Len(t, bodies, 2)
+		require.Contains(t, bodies[1], "enc-turn-0")
+		require.Contains(t, bodies[1], `"id":"fc_0"`)
 	})
 
 	t.Run("router switch reconstructs", func(t *testing.T) {
@@ -150,22 +146,14 @@ func TestLoop_ResponsesReplayFollowsItsEndpoint(t *testing.T) {
 		})
 		runResponsesLoop(t, loop, responsesLoopConfig())
 
-		if n := len(a.requests()); n != 1 {
-			t.Fatalf("provider A saw %d requests, want 1", n)
-		}
+		require.Len(t, a.requests(), 1)
 		bodies := b.requests()
-		if len(bodies) != 1 {
-			t.Fatalf("provider B saw %d requests, want 1", len(bodies))
-		}
+		require.Len(t, bodies, 1)
 		body := bodies[0]
-		for _, leak := range []string{"enc-turn-0", `"id":`} {
-			if strings.Contains(body, leak) {
-				t.Errorf("request to another endpoint carries %s: %s", leak, body)
-			}
-		}
-		if strings.Count(body, `"call_id":"call_0"`) != 2 {
-			t.Errorf("call_0 is not paired with its output: %s", body)
-		}
+		require.NotContains(t, body, "enc-turn-0")
+		require.NotContains(t, body, `"id":`)
+		require.Equal(t, 2, strings.Count(body, `"call_id":"call_0"`),
+			"call_0 should appear in its function call and in its output: %s", body)
 	})
 }
 
@@ -218,21 +206,19 @@ func TestLoop_ResponsesReplaySurvivesSummarisation(t *testing.T) {
 			runResponsesLoop(t, loop, config)
 
 			bodies := srv.requests()
-			if len(bodies) != len(script) {
-				t.Fatalf("server saw %d requests, want %d", len(bodies), len(script))
-			}
+			require.Len(t, bodies, len(script))
 			last := bodies[len(bodies)-1]
-			if got := strings.Contains(last, "conversation_summary"); got != tc.wantSummarised {
-				t.Fatalf("last request summarised = %v, want %v: %s", got, tc.wantSummarised, last)
-			}
+			summarised := strings.Contains(last, "conversation_summary")
+			require.Equal(t, tc.wantSummarised, summarised, "last request body: %s", last)
 			for _, marker := range []string{"enc-turn-0", `"id":"rs_0"`, `"id":"fc_0"`} {
-				if got := strings.Contains(last, marker); got != tc.wantFirstTurn {
-					t.Errorf("last request carries %s = %v, want %v: %s", marker, got, tc.wantFirstTurn, last)
+				if tc.wantFirstTurn {
+					require.Contains(t, last, marker)
+				} else {
+					require.NotContains(t, last, marker)
 				}
 			}
-			if !strings.Contains(last, "enc-turn-3") || !strings.Contains(last, `"id":"fc_3"`) {
-				t.Errorf("last request did not replay the most recent stored turn: %s", last)
-			}
+			require.Contains(t, last, "enc-turn-3")
+			require.Contains(t, last, `"id":"fc_3"`)
 		})
 	}
 }

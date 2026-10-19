@@ -18,6 +18,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -83,34 +86,25 @@ func anthropicSubmitEntries(customID string) []BatchEntry {
 	}}
 }
 
-func TestHarnessPollingBatch_SubmitHappyPath(t *testing.T) {
+func TestHarnessPollingBatch_Submit_HappyPath(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("method: got %q, want POST", r.Method)
-		}
-		if r.URL.Path != "/v1/messages/batches" {
-			t.Errorf("path: got %q, want /v1/messages/batches", r.URL.Path)
-		}
-		if got := r.Header.Get("x-api-key"); got != "sk-ant-test" {
-			t.Errorf("x-api-key: got %q, want sk-ant-test", got)
-		}
-		if got := r.Header.Get("anthropic-version"); got != anthropicAPIVersion {
-			t.Errorf("anthropic-version: got %q, want %s", got, anthropicAPIVersion)
-		}
+		// Assertions here run on the server goroutine, so they use assert.
+		assert.Equal(t, http.MethodPost, r.Method, "method")
+		assert.Equal(t, "/v1/messages/batches", r.URL.Path, "path")
+		assert.Equal(t, "sk-ant-test", r.Header.Get("x-api-key"), "x-api-key")
+		assert.Equal(t, anthropicAPIVersion, r.Header.Get("anthropic-version"), "anthropic-version")
 
 		// Confirm the wire body shape: a single "requests" entry with
 		// the supplied custom_id and a passthrough params blob.
 		var body anthropicBatchSubmitRequest
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode submit body: %v", err)
+		if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&body), "decode submit body") {
+			return
 		}
-		if len(body.Requests) != 1 {
-			t.Fatalf("expected 1 request, got %d", len(body.Requests))
+		if !assert.Len(t, body.Requests, 1) {
+			return
 		}
-		if body.Requests[0].CustomID != "stirrup-run-1-turn-1" {
-			t.Errorf("custom_id: got %q", body.Requests[0].CustomID)
-		}
+		assert.Equal(t, "stirrup-run-1-turn-1", body.Requests[0].CustomID, "custom_id")
 
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, `{"id":"batch_abc","processing_status":"in_progress"}`)
@@ -121,15 +115,11 @@ func TestHarnessPollingBatch_SubmitHappyPath(t *testing.T) {
 	defer teardown()
 
 	id, err := c.Submit(context.Background(), anthropicSubmitEntries("stirrup-run-1-turn-1"))
-	if err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
-	if id != "batch_abc" {
-		t.Errorf("batchID: got %q, want batch_abc", id)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "batch_abc", id)
 }
 
-func TestHarnessPollingBatch_SubmitErrorResponse(t *testing.T) {
+func TestHarnessPollingBatch_Submit_ErrorResponse(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
@@ -141,18 +131,13 @@ func TestHarnessPollingBatch_SubmitErrorResponse(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Submit(context.Background(), anthropicSubmitEntries("stirrup-run-1-turn-1"))
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !strings.Contains(err.Error(), "400") {
-		t.Errorf("expected status 400 in error, got: %v", err)
-	}
+	require.ErrorContains(t, err, "400")
 }
 
-func TestHarnessPollingBatch_RejectsMultiEntrySubmit(t *testing.T) {
+func TestHarnessPollingBatch_Submit_RejectsMultiEntry(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		t.Error("server should not be hit on validation failure")
+		assert.Fail(t, "server should not be hit on validation failure")
 	}))
 	defer srv.Close()
 
@@ -163,15 +148,10 @@ func TestHarnessPollingBatch_RejectsMultiEntrySubmit(t *testing.T) {
 		{CustomID: "a", Provider: "anthropic", Body: json.RawMessage(`{}`)},
 		{CustomID: "b", Provider: "anthropic", Body: json.RawMessage(`{}`)},
 	})
-	if err == nil {
-		t.Fatal("expected error for multi-entry submit, got nil")
-	}
-	if !strings.Contains(err.Error(), "exactly 1") {
-		t.Errorf("expected 'exactly 1' in error, got: %v", err)
-	}
+	require.ErrorContains(t, err, "exactly 1")
 }
 
-func TestHarnessPollingBatch_SubmitMissingID(t *testing.T) {
+func TestHarnessPollingBatch_Submit_MissingID(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -183,9 +163,7 @@ func TestHarnessPollingBatch_SubmitMissingID(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Submit(context.Background(), anthropicSubmitEntries("stirrup-run-1-turn-1"))
-	if err == nil || !strings.Contains(err.Error(), "missing id") {
-		t.Fatalf("expected 'missing id' error, got: %v", err)
-	}
+	require.ErrorContains(t, err, "missing id")
 }
 
 // pollServer is a stateful test fixture: it serves a configurable
@@ -223,19 +201,13 @@ func (ps *pollServer) resultCount() int {
 	return ps.resultCalls
 }
 
-// waitForCancelCount blocks (up to timeout) until cancelCalls reaches the
-// expected count. bestEffortCancel runs in a detached goroutine, so
-// tests must wait on the side-effect rather than reading the counter
-// immediately after Result returns.
+// waitForCancelCount fails the test unless cancelCalls reaches want within
+// timeout. bestEffortCancel runs in a detached goroutine, so tests must
+// wait on the side-effect rather than reading the counter immediately
+// after Result returns.
 func (ps *pollServer) waitForCancelCount(t *testing.T, want int, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if ps.cancelCount() >= want {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	require.Eventually(t, func() bool { return ps.cancelCount() >= want }, timeout, 5*time.Millisecond)
 }
 
 func newPollServer(t *testing.T, polls []string, resultsBody string) *pollServer {
@@ -275,7 +247,7 @@ func newPollServer(t *testing.T, polls []string, resultsBody string) *pollServer
 	return ps
 }
 
-func TestHarnessPollingBatch_ResultEventually(t *testing.T) {
+func TestHarnessPollingBatch_Result_Eventually(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 	polls := []string{
 		`{"id":"batch_xyz","processing_status":"in_progress"}`,
@@ -294,31 +266,17 @@ func TestHarnessPollingBatch_ResultEventually(t *testing.T) {
 	defer teardown()
 
 	results, err := c.Result(context.Background(), "batch_xyz")
-	if err != nil {
-		t.Fatalf("Result: %v", err)
-	}
-	entry, ok := results["stirrup-run-1-turn-1"]
-	if !ok {
-		t.Fatalf("missing entry; got keys %v", keysOf(results))
-	}
-	if entry.Err != nil {
-		t.Fatalf("entry.Err: %+v", entry.Err)
-	}
-	if !strings.Contains(string(entry.Response), `"text":"ok"`) {
-		t.Errorf("response body: %s", entry.Response)
-	}
-	if n := ps.pollCount(); n < 3 {
-		t.Errorf("pollCalls: got %d, want >=3", n)
-	}
-	if n := ps.resultCount(); n != 1 {
-		t.Errorf("resultCalls: got %d, want 1", n)
-	}
-	if n := ps.cancelCount(); n != 0 {
-		t.Errorf("cancelCalls on happy path: got %d, want 0", n)
-	}
+	require.NoError(t, err)
+	require.Contains(t, results, "stirrup-run-1-turn-1")
+	entry := results["stirrup-run-1-turn-1"]
+	require.Nil(t, entry.Err, "entry error")
+	require.Contains(t, string(entry.Response), `"text":"ok"`)
+	require.GreaterOrEqual(t, ps.pollCount(), 3, "pollCalls")
+	require.Equal(t, 1, ps.resultCount(), "resultCalls")
+	require.Zero(t, ps.cancelCount(), "cancelCalls on happy path")
 }
 
-func TestHarnessPollingBatch_ResultTimeout(t *testing.T) {
+func TestHarnessPollingBatch_Result_Timeout(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 	polls := []string{`{"id":"batch_xyz","processing_status":"in_progress"}`}
 	ps := newPollServer(t, polls, "")
@@ -330,27 +288,20 @@ func TestHarnessPollingBatch_ResultTimeout(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	if err == nil {
-		t.Fatal("expected timeout error, got nil")
-	}
-	if !errors.Is(err, errBatchExpired) {
-		t.Errorf("error must wrap errBatchExpired so isBatchTimeout routes correctly; got: %v", err)
-	}
+	require.ErrorIs(t, err, errBatchExpired, "timeout must wrap errBatchExpired")
 	// bestEffortCancel is detached into a goroutine, so wait for the
 	// side-effect rather than reading the counter immediately.
 	ps.waitForCancelCount(t, 1, time.Second)
-	if n := ps.cancelCount(); n != 1 {
-		t.Errorf("cancelCalls on timeout: got %d, want 1", n)
-	}
+	require.Equal(t, 1, ps.cancelCount(), "cancelCalls on timeout")
 }
 
-// TestHarnessPollingBatch_ResultDeadlineRacesCap gives the polling client
+// TestHarnessPollingBatch_Result_DeadlineRacesCap gives the polling client
 // a run deadline and a wall-clock cap of the same length, the shape a run
 // takes once maxWaitSeconds defaults to the run timeout. Whichever fires
 // first, the run must read as past its deadline and must not surface the
 // batch-expired sentinel, which would route into FallbackOnTimeout and
 // retry on the same dead context.
-func TestHarnessPollingBatch_ResultDeadlineRacesCap(t *testing.T) {
+func TestHarnessPollingBatch_Result_DeadlineRacesCap(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 	polls := []string{`{"id":"batch_xyz","processing_status":"in_progress"}`}
 	ps := newPollServer(t, polls, "")
@@ -370,18 +321,14 @@ func TestHarnessPollingBatch_ResultDeadlineRacesCap(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Errorf("expected context.DeadlineExceeded, got: %v", err)
-		}
-		if errors.Is(err, errBatchExpired) {
-			t.Errorf("a run past its deadline must not surface the batch-expired sentinel, got: %v", err)
-		}
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		require.NotErrorIs(t, err, errBatchExpired, "a run past its deadline must not surface the batch-expired sentinel")
 	case <-time.After(2 * time.Second):
-		t.Fatal("Result did not return once both deadlines had passed")
+		require.FailNow(t, "Result did not return once both deadlines had passed")
 	}
 }
 
-func TestHarnessPollingBatch_ResultCtxCancel(t *testing.T) {
+func TestHarnessPollingBatch_Result_CtxCancel(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 	polls := []string{`{"id":"batch_xyz","processing_status":"in_progress"}`}
 	ps := newPollServer(t, polls, "")
@@ -405,22 +352,18 @@ func TestHarnessPollingBatch_ResultCtxCancel(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Errorf("expected context.Canceled, got: %v", err)
-		}
+		require.ErrorIs(t, err, context.Canceled)
 	case <-time.After(500 * time.Millisecond):
-		t.Fatal("Result did not return promptly after ctx cancel")
+		require.FailNow(t, "Result did not return promptly after ctx cancel")
 	}
 
 	// bestEffortCancel runs in a detached goroutine; wait on the
 	// side-effect rather than a sleep-and-pray window.
 	ps.waitForCancelCount(t, 1, time.Second)
-	if n := ps.cancelCount(); n != 1 {
-		t.Errorf("cancelCalls on ctx cancel: got %d, want 1", n)
-	}
+	require.Equal(t, 1, ps.cancelCount(), "cancelCalls on ctx cancel")
 }
 
-func TestHarnessPollingBatch_CredentialResolvedPerPoll(t *testing.T) {
+func TestHarnessPollingBatch_Credential_ResolvedPerPoll(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 	polls := []string{
 		`{"id":"batch_xyz","processing_status":"in_progress"}`,
@@ -435,21 +378,17 @@ func TestHarnessPollingBatch_CredentialResolvedPerPoll(t *testing.T) {
 	c, teardown := newTestPollingClient(t, ps.Server, src, time.Second)
 	defer teardown()
 
-	if _, err := c.Result(context.Background(), "batch_xyz"); err != nil {
-		t.Fatalf("Result: %v", err)
-	}
+	_, err := c.Result(context.Background(), "batch_xyz")
+	require.NoError(t, err)
 
 	// Three poll calls + one results GET = at least four resolves.
-	calls := src.resolveCalls.Load()
-	if calls < 4 {
-		t.Errorf("Resolve should be called per HTTP request; got %d, want >=4", calls)
-	}
+	require.GreaterOrEqual(t, src.resolveCalls.Load(), int64(4), "Resolve should be called per HTTP request")
 }
 
-// TestHarnessPollingBatch_ResultsURLNonOKStatus confirms a 500 from
+// TestHarnessPollingBatch_ResultsURL_NonOKStatus confirms a 500 from
 // results_url is propagated up rather than silently converted into
 // errBatchExpired, which would mask a real upstream failure.
-func TestHarnessPollingBatch_ResultsURLNonOKStatus(t *testing.T) {
+func TestHarnessPollingBatch_ResultsURL_NonOKStatus(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 
 	// resultsURL is populated after the httptest.Server starts so the
@@ -475,21 +414,14 @@ func TestHarnessPollingBatch_ResultsURLNonOKStatus(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	if err == nil {
-		t.Fatal("expected error for 500 results_url, got nil")
-	}
-	if !strings.Contains(err.Error(), "500") {
-		t.Errorf("error should include status 500, got: %v", err)
-	}
-	if errors.Is(err, errBatchExpired) {
-		t.Errorf("non-200 results_url must not be classified as batch_expired, got: %v", err)
-	}
+	require.ErrorContains(t, err, "500")
+	require.NotErrorIs(t, err, errBatchExpired, "non-200 results_url must not be classified as batch_expired")
 }
 
-// TestHarnessPollingBatch_PollOnceNonOKStatus confirms a 503 on the
+// TestHarnessPollingBatch_PollOnce_NonOKStatus confirms a 503 on the
 // first poll is surfaced as an HTTP error, not silently converted to
 // errBatchExpired.
-func TestHarnessPollingBatch_PollOnceNonOKStatus(t *testing.T) {
+func TestHarnessPollingBatch_PollOnce_NonOKStatus(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -511,15 +443,8 @@ func TestHarnessPollingBatch_PollOnceNonOKStatus(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	if err == nil {
-		t.Fatal("expected error for 503 poll, got nil")
-	}
-	if !strings.Contains(err.Error(), "503") {
-		t.Errorf("error should include status 503, got: %v", err)
-	}
-	if errors.Is(err, errBatchExpired) {
-		t.Errorf("non-200 poll status must not be classified as batch_expired, got: %v", err)
-	}
+	require.ErrorContains(t, err, "503")
+	require.NotErrorIs(t, err, errBatchExpired, "non-200 poll status must not be classified as batch_expired")
 }
 
 // TestHarnessPollingBatch_BestEffortCancel_HangsForCancelTimeout asserts
@@ -568,25 +493,17 @@ func TestHarnessPollingBatch_BestEffortCancel_HangsForCancelTimeout(t *testing.T
 	_, err := c.Result(context.Background(), "batch_xyz")
 	elapsed := time.Since(start)
 
-	if err == nil {
-		t.Fatal("expected timeout error, got nil")
-	}
-	if !errors.Is(err, errBatchExpired) {
-		t.Errorf("expected errBatchExpired, got: %v", err)
-	}
-	// The cancel handler is still blocked. The generous-but-bounded 2s
-	// upper bound is well under batchCancelTimeout (10s), so a regression
-	// that re-synchronises the call will trip it.
-	if elapsed > 2*time.Second {
-		t.Errorf("Result must not block on bestEffortCancel; took %s", elapsed)
-	}
+	require.ErrorIs(t, err, errBatchExpired)
+	// The cancel handler is still blocked. The 2s bound is well under
+	// batchCancelTimeout (10s).
+	require.LessOrEqual(t, elapsed, 2*time.Second, "Result must not block on bestEffortCancel")
 }
 
-// TestHarnessPollingBatch_CtxCancelledDuringPoll covers the
+// TestHarnessPollingBatch_CtxCancel_DuringPoll covers the
 // errors.Is(ctx-error) branch: cancel the parent ctx after the poll
 // handler has accepted the request but before it writes a response,
 // forcing the request context to be cancelled mid-flight.
-func TestHarnessPollingBatch_CtxCancelledDuringPoll(t *testing.T) {
+func TestHarnessPollingBatch_CtxCancel_DuringPoll(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -631,7 +548,7 @@ func TestHarnessPollingBatch_CtxCancelledDuringPoll(t *testing.T) {
 	select {
 	case <-pollEntered:
 	case <-time.After(time.Second):
-		t.Fatal("poll handler never entered")
+		require.FailNow(t, "poll handler never entered")
 	}
 
 	// Cancel the parent context mid-flight so the in-flight request
@@ -641,26 +558,16 @@ func TestHarnessPollingBatch_CtxCancelledDuringPoll(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Errorf("expected context.Canceled, got: %v", err)
-		}
+		require.ErrorIs(t, err, context.Canceled)
 	case <-time.After(2 * time.Second):
-		t.Fatal("Result did not return after ctx cancel during poll")
+		require.FailNow(t, "Result did not return after ctx cancel during poll")
 	}
 
 	// bestEffortCancel runs in a detached goroutine with
 	// context.Background(), so it should reach the server even though
 	// the parent ctx is now cancelled. Wait briefly for it to land.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if cancelHits.Load() > 0 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if cancelHits.Load() != 1 {
-		t.Errorf("expected exactly 1 cancel hit, got %d", cancelHits.Load())
-	}
+	require.Eventually(t, func() bool { return cancelHits.Load() > 0 }, 2*time.Second, 5*time.Millisecond)
+	require.EqualValues(t, 1, cancelHits.Load(), "cancel hits")
 }
 
 func TestHarnessPollingBatch_ResultTypeMapping(t *testing.T) {
@@ -700,22 +607,15 @@ func TestHarnessPollingBatch_ResultTypeMapping(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			var line anthropicBatchResultLine
-			if err := json.Unmarshal([]byte(`{"custom_id":"id","result":`+tc.resultJSON+`}`), &line); err != nil {
-				t.Fatalf("unmarshal fixture: %v", err)
-			}
+			require.NoError(t, json.Unmarshal([]byte(`{"custom_id":"id","result":`+tc.resultJSON+`}`), &line), "unmarshal fixture")
 			got := mapBatchResultLine(line)
 			if tc.wantSucc {
-				if got.Err != nil {
-					t.Errorf("expected success; got Err=%+v", got.Err)
-				}
-				if got.Response == nil {
-					t.Errorf("expected non-nil Response")
-				}
+				require.Nil(t, got.Err, "expected success")
+				require.NotNil(t, got.Response, "expected non-nil Response")
 				return
 			}
-			if got.Err == nil || got.Err.Type != tc.wantErrTy {
-				t.Errorf("Err.Type: got %+v, want %q", got.Err, tc.wantErrTy)
-			}
+			require.NotNil(t, got.Err, "expected an error result")
+			require.Equal(t, tc.wantErrTy, got.Err.Type)
 		})
 	}
 }
@@ -723,7 +623,7 @@ func TestHarnessPollingBatch_ResultTypeMapping(t *testing.T) {
 func TestHarnessPollingBatch_CredentialResolveFails(t *testing.T) {
 	src := &fakeCredentialSource{resolveErr: errors.New("vault down")}
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		t.Error("server should not be hit when credential resolve fails")
+		assert.Fail(t, "server should not be hit when credential resolve fails")
 	}))
 	defer srv.Close()
 
@@ -731,15 +631,13 @@ func TestHarnessPollingBatch_CredentialResolveFails(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Submit(context.Background(), anthropicSubmitEntries("id"))
-	if err == nil || !strings.Contains(err.Error(), "vault down") {
-		t.Fatalf("expected vault down error, got: %v", err)
-	}
+	require.ErrorContains(t, err, "vault down")
 }
 
 func TestHarnessPollingBatch_CredentialNilBearer(t *testing.T) {
 	src := &fakeCredentialSource{nilBearer: true}
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		t.Error("server should not be hit when no bearer token is produced")
+		assert.Fail(t, "server should not be hit when no bearer token is produced")
 	}))
 	defer srv.Close()
 
@@ -747,9 +645,7 @@ func TestHarnessPollingBatch_CredentialNilBearer(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Submit(context.Background(), anthropicSubmitEntries("id"))
-	if err == nil || !strings.Contains(err.Error(), "no bearer token") {
-		t.Fatalf("expected no-bearer-token error, got: %v", err)
-	}
+	require.ErrorContains(t, err, "no bearer token")
 }
 
 func TestHarnessPollingBatch_ResultsMissingCustomID(t *testing.T) {
@@ -764,9 +660,7 @@ func TestHarnessPollingBatch_ResultsMissingCustomID(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	if err == nil || !strings.Contains(err.Error(), "empty") {
-		t.Fatalf("expected empty-results error, got: %v", err)
-	}
+	require.ErrorContains(t, err, "empty")
 }
 
 func TestHarnessPollingBatch_ResultsURLMissing(t *testing.T) {
@@ -779,9 +673,7 @@ func TestHarnessPollingBatch_ResultsURLMissing(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	if err == nil || !strings.Contains(err.Error(), "results_url") {
-		t.Fatalf("expected missing results_url error, got: %v", err)
-	}
+	require.ErrorContains(t, err, "results_url")
 }
 
 func TestHarnessPollingBatch_JitterStaysWithinBounds(t *testing.T) {
@@ -794,9 +686,8 @@ func TestHarnessPollingBatch_JitterStaysWithinBounds(t *testing.T) {
 	high := d + d/5
 	for i := 0; i < 200; i++ {
 		got := jitter(d)
-		if got < low || got > high {
-			t.Fatalf("iter %d: jitter produced %v outside [%v, %v]", i, got, low, high)
-		}
+		require.GreaterOrEqual(t, got, low, "iter %d: below lower bound", i)
+		require.LessOrEqual(t, got, high, "iter %d: above upper bound", i)
 	}
 }
 
@@ -828,15 +719,8 @@ func TestHarnessPollingBatch_ResultsURLBadOrigin(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	if err == nil {
-		t.Fatal("expected error for off-domain results_url, got nil")
-	}
-	if !strings.Contains(err.Error(), "results_url host") {
-		t.Errorf("error should mention results_url host, got: %v", err)
-	}
-	if exfilHits.Load() != 0 {
-		t.Errorf("validation must fire before the GET; got %d hits", exfilHits.Load())
-	}
+	require.ErrorContains(t, err, "results_url host")
+	require.Zero(t, exfilHits.Load(), "validation must fire before the GET")
 }
 
 // TestHarnessPollingBatch_ResultsURLNonHTTPS confirms an http:// scheme
@@ -855,28 +739,24 @@ func TestHarnessPollingBatch_ResultsURLNonHTTPS(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	if err == nil {
-		t.Fatal("expected error for http results_url, got nil")
-	}
-	if !strings.Contains(err.Error(), "scheme") {
-		t.Errorf("error should mention scheme, got: %v", err)
-	}
+	require.ErrorContains(t, err, "scheme")
 }
 
 // TestHarnessPollingBatch_ResultsURLAnthropicHostAccepted checks
 // validateResultsURL directly: when the caller's baseURL is the
 // production Anthropic root, an *.anthropic.com results_url must pass.
 func TestHarnessPollingBatch_ResultsURLAnthropicHostAccepted(t *testing.T) {
-	cases := []string{
-		"https://api.anthropic.com/v1/messages/batches/abc/results",
-		"https://anthropic.com/results",
-		"https://eu.api.anthropic.com/results",
+	cases := []struct {
+		name string
+		url  string
+	}{
+		{name: "batch results path", url: "https://api.anthropic.com/v1/messages/batches/abc/results"},
+		{name: "bare anthropic domain", url: "https://anthropic.com/results"},
+		{name: "regional api host", url: "https://eu.api.anthropic.com/results"},
 	}
-	for _, raw := range cases {
-		t.Run(raw, func(t *testing.T) {
-			if err := validateResultsURL(raw, "https://api.anthropic.com"); err != nil {
-				t.Errorf("expected acceptance, got: %v", err)
-			}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.NoError(t, validateResultsURL(tc.url, "https://api.anthropic.com"), "expected acceptance")
 		})
 	}
 }
@@ -914,7 +794,7 @@ func TestHarnessPollingBatch_BatchIDPathEscaped(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, `{}`)
 		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.EscapedPath())
+			assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.EscapedPath())
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
@@ -924,19 +804,13 @@ func TestHarnessPollingBatch_BatchIDPathEscaped(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), sneakyID)
-	if err == nil {
-		t.Fatal("expected results_url-missing error, got nil")
-	}
+	require.Error(t, err, "expected results_url-missing error")
 
 	obs.mu.Lock()
 	defer obs.mu.Unlock()
-	if len(obs.pollPaths) == 0 {
-		t.Fatal("expected at least one poll request")
-	}
+	require.NotEmpty(t, obs.pollPaths, "expected at least one poll request")
 	wantPath := "/v1/messages/batches/" + wantPathSegment
-	if obs.pollPaths[0] != wantPath {
-		t.Errorf("poll path: got %q, want %q", obs.pollPaths[0], wantPath)
-	}
+	require.Equal(t, wantPath, obs.pollPaths[0], "poll path")
 }
 
 // TestHarnessPollingBatch_CancelURLEscaped confirms the cancel POST also
@@ -964,7 +838,7 @@ func TestHarnessPollingBatch_CancelURLEscaped(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, `{}`)
 		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.EscapedPath())
+			assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.EscapedPath())
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
@@ -974,30 +848,18 @@ func TestHarnessPollingBatch_CancelURLEscaped(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), sneakyID)
-	if err == nil {
-		t.Fatal("expected timeout error, got nil")
-	}
+	require.Error(t, err, "expected timeout error")
 
-	// bestEffortCancel runs asynchronously; wait briefly for it to fire.
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
+	// bestEffortCancel runs asynchronously, so the cancel request may land after Result returns.
+	require.Eventually(t, func() bool {
 		mu.Lock()
-		hit := len(cancelPaths) > 0
-		mu.Unlock()
-		if hit {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		defer mu.Unlock()
+		return len(cancelPaths) > 0
+	}, time.Second, 5*time.Millisecond, "expected bestEffortCancel to fire and reach the server")
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(cancelPaths) == 0 {
-		t.Fatal("expected bestEffortCancel to fire and reach the server")
-	}
-	if cancelPaths[0] != wantCancelPath {
-		t.Errorf("cancel path: got %q, want %q", cancelPaths[0], wantCancelPath)
-	}
+	require.Equal(t, wantCancelPath, cancelPaths[0], "cancel path")
 }
 
 // TestHarnessPollingBatch_SubmitTransportError covers the path where the
@@ -1008,7 +870,7 @@ func TestHarnessPollingBatch_CancelURLEscaped(t *testing.T) {
 func TestHarnessPollingBatch_SubmitTransportError(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		t.Error("server should not receive a request after Close()")
+		assert.Fail(t, "server should not receive a request after Close()")
 	}))
 	// Close immediately so the client's first connection attempt fails.
 	srv.Close()
@@ -1017,12 +879,7 @@ func TestHarnessPollingBatch_SubmitTransportError(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Submit(context.Background(), anthropicSubmitEntries("id"))
-	if err == nil {
-		t.Fatal("expected transport error, got nil")
-	}
-	if !strings.Contains(err.Error(), "submit batch") {
-		t.Errorf("error should mention 'submit batch', got: %v", err)
-	}
+	require.ErrorContains(t, err, "submit batch")
 }
 
 // TestHarnessPollingBatch_MalformedJSONLLine confirms a non-JSON line in
@@ -1045,12 +902,7 @@ func TestHarnessPollingBatch_MalformedJSONLLine(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	if err == nil {
-		t.Fatal("expected decode error, got nil")
-	}
-	if !strings.Contains(err.Error(), "decode batch result line") {
-		t.Errorf("error should mention 'decode batch result line', got: %v", err)
-	}
+	require.ErrorContains(t, err, "decode batch result line")
 }
 
 // TestHarnessPollingBatch_BackoffCapped exercises the interval-doubling
@@ -1102,17 +954,13 @@ func TestHarnessPollingBatch_BackoffCapped(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(callTimes) < 4 {
-		t.Fatalf("expected >=4 poll calls within the 40ms budget, got %d", len(callTimes))
-	}
+	require.GreaterOrEqual(t, len(callTimes), 4, "poll calls within the 40ms budget")
 	// From the third sleep onwards each interval should be <= cap + slack.
 	// Slack covers scheduler jitter on busy CI runners.
 	const slack = 20 * time.Millisecond
 	for i := 2; i < len(callTimes); i++ {
 		gap := callTimes[i].Sub(callTimes[i-1])
-		if gap > 5*time.Millisecond+slack {
-			t.Errorf("poll interval %d exceeded cap+slack: got %s", i, gap)
-		}
+		assert.LessOrEqual(t, gap, 5*time.Millisecond+slack, "poll interval %d exceeded cap+slack", i)
 	}
 }
 
@@ -1146,15 +994,11 @@ func TestHarnessPollingBatch_TimeoutFiringAlignedToDeadline(t *testing.T) {
 	_, err := c.Result(context.Background(), "batch_xyz")
 	elapsed := time.Since(start)
 
-	if err == nil || !errors.Is(err, errBatchExpired) {
-		t.Fatalf("expected errBatchExpired, got: %v", err)
-	}
+	require.ErrorIs(t, err, errBatchExpired)
 	// The deadline should fire within ~maxWait + scheduler slack. A
 	// generous 50 ms slack tolerates loaded CI runners without hiding a
 	// genuine regression (which would overshoot by a full interval +).
-	if elapsed > maxWait+50*time.Millisecond {
-		t.Errorf("timeout fired %s past maxWait; want <= maxWait + 50ms", elapsed-maxWait)
-	}
+	require.LessOrEqual(t, elapsed, maxWait+50*time.Millisecond, "timeout fired %s past maxWait", elapsed-maxWait)
 }
 
 // keysOf is a small map-introspection helper that keeps the table-
@@ -1246,9 +1090,7 @@ func newOpenAIBatchFixture(t *testing.T, polls []string, outputBody, errorBody s
 			f.uploadedFiles = append(f.uploadedFiles, body)
 			f.mu.Unlock()
 			ct := r.Header.Get("Content-Type")
-			if !strings.HasPrefix(ct, "multipart/form-data") {
-				t.Errorf("upload Content-Type: got %q, want multipart/form-data", ct)
-			}
+			assert.True(t, strings.HasPrefix(ct, "multipart/form-data"), "upload Content-Type: got %q, want multipart/form-data", ct)
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, `{"id":"file_abc","object":"file"}`)
 		case r.Method == http.MethodPost && r.URL.Path == "/batches":
@@ -1292,7 +1134,7 @@ func newOpenAIBatchFixture(t *testing.T, polls []string, outputBody, errorBody s
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, body)
 		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
@@ -1308,96 +1150,61 @@ func TestHarnessPollingBatch_OpenAISubmit_HappyPath(t *testing.T) {
 	defer teardown()
 
 	id, err := c.Submit(context.Background(), openaiSubmitEntries("stirrup-run-1-turn-1", "openai-compatible"))
-	if err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
-	if id != "batch_xyz" {
-		t.Errorf("batchID: got %q, want batch_xyz", id)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "batch_xyz", id)
 
 	uploads, creates, _, _, _ := f.snapshot()
-	if uploads != 1 || creates != 1 {
-		t.Fatalf("expected 1 upload + 1 create, got %d + %d", uploads, creates)
-	}
+	require.Equal(t, 1, uploads, "upload calls")
+	require.Equal(t, 1, creates, "create calls")
 
-	// The uploaded multipart body must contain a JSONL line carrying
-	// the submitted custom_id, the chat-completions endpoint, and the
-	// passthrough body.
-	f.mu.Lock()
-	uploaded := string(f.uploadedFiles[0])
-	createBody := string(f.createBodies[0])
-	f.mu.Unlock()
-
-	if !strings.Contains(uploaded, `"custom_id":"stirrup-run-1-turn-1"`) {
-		t.Errorf("uploaded jsonl missing custom_id: %s", uploaded)
-	}
-	if !strings.Contains(uploaded, `"url":"/v1/chat/completions"`) {
-		t.Errorf("uploaded jsonl missing chat endpoint: %s", uploaded)
-	}
-	if !strings.Contains(uploaded, `"method":"POST"`) {
-		t.Errorf("uploaded jsonl missing method=POST: %s", uploaded)
-	}
-
-	// The create body must reference file_abc and request the
-	// chat-completions endpoint with the 24h completion window.
-	if !strings.Contains(createBody, `"input_file_id":"file_abc"`) {
-		t.Errorf("create body missing input_file_id: %s", createBody)
-	}
-	if !strings.Contains(createBody, `"endpoint":"/v1/chat/completions"`) {
-		t.Errorf("create body missing endpoint: %s", createBody)
-	}
-	if !strings.Contains(createBody, `"completion_window":"24h"`) {
-		t.Errorf("create body missing completion_window: %s", createBody)
-	}
-
-	// Parse the captured multipart body and pin the part-level invariants
-	// (purpose="batch", file part filename="batch.jsonl") so a refactor
-	// that changes the multipart layout fails loudly.
 	f.mu.Lock()
 	rawUpload := f.uploadedFiles[0]
+	createBody := string(f.createBodies[0])
 	f.mu.Unlock()
-	// We didn't capture the Content-Type header here, so re-derive the
-	// boundary from the body's opening bytes: multipart bodies start
-	// with --<boundary>\r\n.
-	if !bytes.HasPrefix(rawUpload, []byte("--")) {
-		t.Fatalf("uploaded body does not start with multipart boundary marker: %q", rawUpload[:32])
-	}
-	end := bytes.Index(rawUpload, []byte("\r\n"))
-	if end < 0 {
-		t.Fatalf("uploaded body has no CRLF after boundary marker")
-	}
-	boundary := string(rawUpload[2:end])
-	reader := multipart.NewReader(bytes.NewReader(rawUpload), boundary)
-	var sawPurpose, sawFile bool
-	for {
-		part, err := reader.NextPart()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatalf("multipart NextPart: %v", err)
-		}
-		switch part.FormName() {
-		case "purpose":
-			val, _ := io.ReadAll(part)
-			if string(val) != "batch" {
-				t.Errorf("purpose field: got %q, want \"batch\"", val)
+	uploaded := string(rawUpload)
+
+	t.Run("upload jsonl line carries custom_id, endpoint and method", func(t *testing.T) {
+		require.Contains(t, uploaded, `"custom_id":"stirrup-run-1-turn-1"`)
+		require.Contains(t, uploaded, `"url":"/v1/chat/completions"`)
+		require.Contains(t, uploaded, `"method":"POST"`)
+	})
+
+	t.Run("create body references the upload and the chat endpoint", func(t *testing.T) {
+		require.Contains(t, createBody, `"input_file_id":"file_abc"`)
+		require.Contains(t, createBody, `"endpoint":"/v1/chat/completions"`)
+		require.Contains(t, createBody, `"completion_window":"24h"`)
+	})
+
+	// The upload is multipart. Its boundary is re-derived from the body's
+	// opening bytes because the request Content-Type is not captured.
+	t.Run("multipart upload has batch purpose and batch.jsonl file part", func(t *testing.T) {
+		require.True(t, bytes.HasPrefix(rawUpload, []byte("--")), "uploaded body does not start with multipart boundary marker: %q", rawUpload)
+		end := bytes.Index(rawUpload, []byte("\r\n"))
+		require.GreaterOrEqual(t, end, 0, "uploaded body has no CRLF after boundary marker")
+		boundary := string(rawUpload[2:end])
+
+		reader := multipart.NewReader(bytes.NewReader(rawUpload), boundary)
+		var sawPurpose, sawFile bool
+		for {
+			part, err := reader.NextPart()
+			if err == io.EOF {
+				break
 			}
-			sawPurpose = true
-		case "file":
-			if got := part.FileName(); got != "batch.jsonl" {
-				t.Errorf("file part filename: got %q, want batch.jsonl", got)
+			require.NoError(t, err, "multipart NextPart")
+			switch part.FormName() {
+			case "purpose":
+				val, _ := io.ReadAll(part)
+				require.Equal(t, "batch", string(val), "purpose field")
+				sawPurpose = true
+			case "file":
+				require.Equal(t, "batch.jsonl", part.FileName(), "file part filename")
+				sawFile = true
 			}
-			sawFile = true
+			_ = part.Close()
 		}
-		_ = part.Close()
-	}
-	if !sawPurpose {
-		t.Error("multipart missing purpose field")
-	}
-	if !sawFile {
-		t.Error("multipart missing file part")
-	}
+		require.True(t, sawPurpose, "multipart missing purpose field")
+		require.True(t, sawFile, "multipart missing file part")
+	})
 }
 
 func TestHarnessPollingBatch_OpenAIResponses_Submit_HappyPath(t *testing.T) {
@@ -1408,21 +1215,16 @@ func TestHarnessPollingBatch_OpenAIResponses_Submit_HappyPath(t *testing.T) {
 	c, teardown := newTestOpenAIPollingClient(t, f.Server, src, "openai-responses", time.Second)
 	defer teardown()
 
-	if _, err := c.Submit(context.Background(), openaiSubmitEntries("stirrup-run-1-turn-1", "openai-responses")); err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
+	_, err := c.Submit(context.Background(), openaiSubmitEntries("stirrup-run-1-turn-1", "openai-responses"))
+	require.NoError(t, err)
 
 	f.mu.Lock()
 	uploaded := string(f.uploadedFiles[0])
 	createBody := string(f.createBodies[0])
 	f.mu.Unlock()
 
-	if !strings.Contains(uploaded, `"url":"/v1/responses"`) {
-		t.Errorf("uploaded jsonl url: %s", uploaded)
-	}
-	if !strings.Contains(createBody, `"endpoint":"/v1/responses"`) {
-		t.Errorf("create body endpoint: %s", createBody)
-	}
+	require.Contains(t, uploaded, `"url":"/v1/responses"`)
+	require.Contains(t, createBody, `"endpoint":"/v1/responses"`)
 }
 
 func TestHarnessPollingBatch_OpenAIResult_Completed(t *testing.T) {
@@ -1441,22 +1243,16 @@ func TestHarnessPollingBatch_OpenAIResult_Completed(t *testing.T) {
 	defer teardown()
 
 	results, err := c.Result(context.Background(), "batch_xyz")
-	if err != nil {
-		t.Fatalf("Result: %v", err)
-	}
+	require.NoError(t, err)
 	entry, ok := results["stirrup-run-1-turn-1"]
-	if !ok {
-		t.Fatalf("missing entry; got keys %v", keysOf(results))
-	}
-	if entry.Err != nil {
-		t.Fatalf("entry.Err: %+v", entry.Err)
-	}
-	if !strings.Contains(string(entry.Response), `"content":"hi"`) {
-		t.Errorf("response body: %s", entry.Response)
-	}
-	if _, _, polled, cancels, downloads := f.snapshot(); polled < 4 || downloads != 1 || cancels != 0 {
-		t.Errorf("polls=%d downloads=%d cancels=%d (want polls>=4, downloads=1, cancels=0)", polled, downloads, cancels)
-	}
+	require.True(t, ok, "missing entry; got keys %v", keysOf(results))
+	require.Nil(t, entry.Err)
+	require.Contains(t, string(entry.Response), `"content":"hi"`)
+
+	_, _, polled, cancels, downloads := f.snapshot()
+	require.GreaterOrEqual(t, polled, 4, "polls")
+	require.Equal(t, 1, downloads, "downloads")
+	require.Equal(t, 0, cancels, "cancels")
 }
 
 func TestHarnessPollingBatch_OpenAIResult_Failed_WithErrorFile(t *testing.T) {
@@ -1473,19 +1269,12 @@ func TestHarnessPollingBatch_OpenAIResult_Failed_WithErrorFile(t *testing.T) {
 	defer teardown()
 
 	results, err := c.Result(context.Background(), "batch_xyz")
-	if err != nil {
-		t.Fatalf("Result: %v", err)
-	}
+	require.NoError(t, err)
 	entry, ok := results["stirrup-run-1-turn-1"]
-	if !ok {
-		t.Fatalf("missing entry; got keys %v", keysOf(results))
-	}
-	if entry.Err == nil || entry.Err.Type != "server_error" {
-		t.Errorf("Err: %+v", entry.Err)
-	}
-	if !strings.Contains(entry.Err.Message, "upstream meltdown") {
-		t.Errorf("Err.Message: %q", entry.Err.Message)
-	}
+	require.True(t, ok, "missing entry; got keys %v", keysOf(results))
+	require.NotNil(t, entry.Err)
+	require.Equal(t, "server_error", entry.Err.Type)
+	require.Contains(t, entry.Err.Message, "upstream meltdown")
 }
 
 func TestHarnessPollingBatch_OpenAIResult_Expired(t *testing.T) {
@@ -1498,12 +1287,7 @@ func TestHarnessPollingBatch_OpenAIResult_Expired(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	if err == nil {
-		t.Fatal("expected expiration error, got nil")
-	}
-	if !errors.Is(err, errBatchExpired) {
-		t.Errorf("expected wrapped errBatchExpired, got: %v", err)
-	}
+	require.ErrorIs(t, err, errBatchExpired)
 }
 
 func TestHarnessPollingBatch_OpenAIResult_Cancelled(t *testing.T) {
@@ -1516,23 +1300,17 @@ func TestHarnessPollingBatch_OpenAIResult_Cancelled(t *testing.T) {
 	defer teardown()
 
 	const customID = "stirrup-run-1-turn-1"
-	if _, err := c.Submit(context.Background(), openaiSubmitEntries(customID, "openai-compatible")); err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
+	_, err := c.Submit(context.Background(), openaiSubmitEntries(customID, "openai-compatible"))
+	require.NoError(t, err)
 	results, err := c.Result(context.Background(), "batch_xyz")
-	if err != nil {
-		t.Fatalf("Result: %v", err)
-	}
+	require.NoError(t, err)
 	// synthesizeOpenAIFailure keys the entry under the originating
 	// customID so the BatchAdapter's customID lookup surfaces the
 	// typed BatchResultError rather than an opaque "missing entry".
 	entry, ok := results[customID]
-	if !ok {
-		t.Fatalf("expected synthesised entry keyed by customID, got %v", keysOf(results))
-	}
-	if entry.Err == nil || entry.Err.Type != "batch_cancelled" {
-		t.Errorf("Err: %+v", entry.Err)
-	}
+	require.True(t, ok, "expected synthesised entry keyed by customID, got %v", keysOf(results))
+	require.NotNil(t, entry.Err)
+	require.Equal(t, "batch_cancelled", entry.Err.Type)
 }
 
 // TestHarnessPollingBatch_OpenAIAuthMode_APIKeyHeader confirms that
@@ -1567,7 +1345,7 @@ func TestHarnessPollingBatch_OpenAIAuthMode_APIKeyHeader(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, `{"id":"batch_xyz","status":"validating"}`)
 		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.Path)
 		}
 	}))
 	defer srv.Close()
@@ -1586,28 +1364,21 @@ func TestHarnessPollingBatch_OpenAIAuthMode_APIKeyHeader(t *testing.T) {
 		MaxWait:      time.Second,
 	})
 
-	if _, err := c.Submit(context.Background(), openaiSubmitEntries("id1", "openai-compatible")); err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
+	_, err := c.Submit(context.Background(), openaiSubmitEntries("id1", "openai-compatible"))
+	require.NoError(t, err)
 
 	mu.Lock()
 	defer mu.Unlock()
-	if bearerSeen {
-		t.Errorf("expected no Authorization header when APIKeyHeader is set")
-	}
-	if !seenAPIKey {
-		t.Errorf("expected api-key header to be set")
-	}
-	if apiKeyHeader != "azure-key" {
-		t.Errorf("api-key value: got %q, want azure-key", apiKeyHeader)
-	}
+	require.False(t, bearerSeen, "expected no Authorization header when APIKeyHeader is set")
+	require.True(t, seenAPIKey, "expected api-key header to be set")
+	require.Equal(t, "azure-key", apiKeyHeader, "api-key header value")
 }
 
-// TestHarnessPollingBatch_OpenAIAuthMode_APIKeyHeaderOnDownload pins
+// TestHarnessPollingBatch_OpenAIAuthMode_APIKeyHeader_OnDownload pins
 // the auth header on the file-download GET (/files/{id}/content), so a
 // regression that bypassed applyAuthHeaders on download does not ship
 // unnoticed.
-func TestHarnessPollingBatch_OpenAIAuthMode_APIKeyHeaderOnDownload(t *testing.T) {
+func TestHarnessPollingBatch_OpenAIAuthMode_APIKeyHeader_OnDownload(t *testing.T) {
 	src := &fakeCredentialSource{token: "azure-key"}
 
 	var (
@@ -1634,7 +1405,7 @@ func TestHarnessPollingBatch_OpenAIAuthMode_APIKeyHeaderOnDownload(t *testing.T)
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, `{"custom_id":"id1","response":{"status_code":200,"body":{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}}}`+"\n")
 		default:
-			t.Errorf("unexpected: %s %s", r.Method, r.URL.Path)
+			assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.Path)
 		}
 	}))
 	defer srv.Close()
@@ -1653,21 +1424,15 @@ func TestHarnessPollingBatch_OpenAIAuthMode_APIKeyHeaderOnDownload(t *testing.T)
 		MaxWait:      time.Second,
 	})
 
-	if _, err := c.Submit(context.Background(), openaiSubmitEntries("id1", "openai-compatible")); err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
-	if _, err := c.Result(context.Background(), "batch_xyz"); err != nil {
-		t.Fatalf("Result: %v", err)
-	}
+	_, err := c.Submit(context.Background(), openaiSubmitEntries("id1", "openai-compatible"))
+	require.NoError(t, err)
+	_, err = c.Result(context.Background(), "batch_xyz")
+	require.NoError(t, err)
 
 	mu.Lock()
 	defer mu.Unlock()
-	if downloadAuthHdr != "" {
-		t.Errorf("download must not carry Authorization header when APIKeyHeader set; got %q", downloadAuthHdr)
-	}
-	if downloadAPIKey != "azure-key" {
-		t.Errorf("download api-key: got %q, want azure-key", downloadAPIKey)
-	}
+	require.Empty(t, downloadAuthHdr, "download must not carry Authorization header when APIKeyHeader set")
+	require.Equal(t, "azure-key", downloadAPIKey, "download api-key header value")
 }
 
 // TestHarnessPollingBatch_OpenAIAuthMode_DefaultBearer confirms the
@@ -1695,7 +1460,7 @@ func TestHarnessPollingBatch_OpenAIAuthMode_DefaultBearer(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, `{"id":"batch_xyz","status":"validating"}`)
 		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.Path)
 		}
 	}))
 	defer srv.Close()
@@ -1708,15 +1473,12 @@ func TestHarnessPollingBatch_OpenAIAuthMode_DefaultBearer(t *testing.T) {
 		MaxWait:      time.Second,
 	})
 
-	if _, err := c.Submit(context.Background(), openaiSubmitEntries("id1", "openai-compatible")); err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
+	_, err := c.Submit(context.Background(), openaiSubmitEntries("id1", "openai-compatible"))
+	require.NoError(t, err)
 
 	mu.Lock()
 	defer mu.Unlock()
-	if authHdr != "Bearer sk-test" {
-		t.Errorf("Authorization: got %q, want %q", authHdr, "Bearer sk-test")
-	}
+	require.Equal(t, "Bearer sk-test", authHdr)
 }
 
 // TestHarnessPollingBatch_OpenAIResult_Failed_NoErrorFile confirms a
@@ -1737,23 +1499,15 @@ func TestHarnessPollingBatch_OpenAIResult_Failed_NoErrorFile(t *testing.T) {
 	defer teardown()
 
 	const customID = "stirrup-run-1-turn-1"
-	if _, err := c.Submit(context.Background(), openaiSubmitEntries(customID, "openai-compatible")); err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
+	_, err := c.Submit(context.Background(), openaiSubmitEntries(customID, "openai-compatible"))
+	require.NoError(t, err)
 	results, err := c.Result(context.Background(), "batch_xyz")
-	if err != nil {
-		t.Fatalf("Result: %v", err)
-	}
+	require.NoError(t, err)
 	entry, ok := results[customID]
-	if !ok {
-		t.Fatalf("expected synthesised entry keyed by customID, got %v", keysOf(results))
-	}
-	if entry.Err == nil || entry.Err.Type != "server_error" {
-		t.Fatalf("Err: %+v", entry.Err)
-	}
-	if !strings.Contains(entry.Err.Message, "malformed input file") {
-		t.Errorf("Err.Message: %q", entry.Err.Message)
-	}
+	require.True(t, ok, "expected synthesised entry keyed by customID, got %v", keysOf(results))
+	require.NotNil(t, entry.Err)
+	require.Equal(t, "server_error", entry.Err.Type)
+	require.Contains(t, entry.Err.Message, "malformed input file")
 }
 
 // TestHarnessPollingBatch_OpenAIBatchCreate_ScrubsErrorBody pins the
@@ -1773,7 +1527,7 @@ func TestHarnessPollingBatch_OpenAIBatchCreate_ScrubsErrorBody(t *testing.T) {
 			w.WriteHeader(http.StatusUnprocessableEntity)
 			_, _ = fmt.Fprintf(w, `{"error":{"message":"bad: %s"}}`, secret)
 		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.Path)
 		}
 	}))
 	defer srv.Close()
@@ -1782,22 +1536,16 @@ func TestHarnessPollingBatch_OpenAIBatchCreate_ScrubsErrorBody(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Submit(context.Background(), openaiSubmitEntries("id1", "openai-compatible"))
-	if err == nil {
-		t.Fatal("expected error from 422 response, got nil")
-	}
-	if strings.Contains(err.Error(), secret) {
-		t.Errorf("error must not contain raw secret; got: %s", err.Error())
-	}
-	if !strings.Contains(err.Error(), "[REDACTED]") {
-		t.Errorf("error must contain [REDACTED] sentinel; got: %s", err.Error())
-	}
+	require.Error(t, err, "expected error from 422 response")
+	require.NotContains(t, err.Error(), secret, "error must not contain raw secret")
+	require.Contains(t, err.Error(), "[REDACTED]", "error must contain [REDACTED] sentinel")
 }
 
-// TestMapOpenAIOutputLine pins the mapOpenAIOutputLine projection
-// from /v1/files content line → BatchResult across all branches. The
-// status_code==0 row guards against a silent success fabrication when
+// TestMapOpenAIOutputLine_ClassifiesEachBranch pins the mapOpenAIOutputLine
+// projection from /v1/files content line → BatchResult across all branches.
+// The status code 0 case guards against a silent success fabrication when
 // the field is absent or malformed.
-func TestMapOpenAIOutputLine(t *testing.T) {
+func TestMapOpenAIOutputLine_ClassifiesEachBranch(t *testing.T) {
 	statusBody := func(code int, body string) *struct {
 		StatusCode int             `json:"status_code"`
 		Body       json.RawMessage `json:"body"`
@@ -1811,11 +1559,10 @@ func TestMapOpenAIOutputLine(t *testing.T) {
 	tests := []struct {
 		name    string
 		line    openaiBatchOutputLine
-		wantErr string // empty => expect success
-		wantOK  bool
+		wantErr string // empty means the line maps to a successful result
 	}{
 		{
-			name: "top-level-error populated",
+			name: "top-level error maps to server error",
 			line: openaiBatchOutputLine{
 				CustomID: "id1",
 				Error: &struct {
@@ -1826,22 +1573,21 @@ func TestMapOpenAIOutputLine(t *testing.T) {
 			wantErr: "server_error",
 		},
 		{
-			name:    "nil response",
+			name:    "nil response maps to server error",
 			line:    openaiBatchOutputLine{CustomID: "id1", Response: nil},
 			wantErr: "server_error",
 		},
 		{
-			name:   "status_code 200 success",
-			line:   openaiBatchOutputLine{CustomID: "id1", Response: statusBody(200, `{"choices":[]}`)},
-			wantOK: true,
+			name: "status code 200 maps to success",
+			line: openaiBatchOutputLine{CustomID: "id1", Response: statusBody(200, `{"choices":[]}`)},
 		},
 		{
-			name:    "status_code 422 server_error",
+			name:    "status code 422 maps to server error",
 			line:    openaiBatchOutputLine{CustomID: "id1", Response: statusBody(422, `{"error":"invalid"}`)},
 			wantErr: "server_error",
 		},
 		{
-			name:    "status_code 0 absent field → server_error",
+			name:    "absent status code maps to server error",
 			line:    openaiBatchOutputLine{CustomID: "id1", Response: statusBody(0, `{"choices":[]}`)},
 			wantErr: "server_error",
 		},
@@ -1849,50 +1595,40 @@ func TestMapOpenAIOutputLine(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got := mapOpenAIOutputLine(tc.line)
-			if tc.wantOK {
-				if got.Err != nil {
-					t.Errorf("expected success, got Err=%+v", got.Err)
-				}
-				if got.Response == nil {
-					t.Errorf("expected non-nil Response")
-				}
+			if tc.wantErr == "" {
+				require.Nil(t, got.Err)
+				require.NotNil(t, got.Response)
 				return
 			}
-			if got.Err == nil || got.Err.Type != tc.wantErr {
-				t.Errorf("Err.Type: got %+v, want %q", got.Err, tc.wantErr)
-			}
+			require.NotNil(t, got.Err)
+			require.Equal(t, tc.wantErr, got.Err.Type)
 		})
 	}
 }
 
-// TestNewHarnessPollingBatchClient_PanicsOnNilCredSource pins the
+// TestNewHarnessPollingBatchClient_NilCredSource_Panics pins the
 // nil-CredSource guard: the constructor must panic with a clear message
 // rather than defer a nil-pointer dereference to the first HTTP request.
-func TestNewHarnessPollingBatchClient_PanicsOnNilCredSource(t *testing.T) {
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic on nil CredSource, got none")
-		}
-		msg, ok := r.(string)
-		if !ok {
-			t.Fatalf("expected string panic value, got %T: %v", r, r)
-		}
-		if !strings.Contains(msg, "CredSource") {
-			t.Errorf("panic message must mention CredSource, got %q", msg)
-		}
+func TestNewHarnessPollingBatchClient_NilCredSource_Panics(t *testing.T) {
+	recovered := func() (r any) {
+		defer func() { r = recover() }()
+		_ = NewHarnessPollingBatchClient(HarnessBatchClientOptions{
+			ProviderType: "anthropic",
+			APIKeyRef:    "secret://test",
+			MaxWait:      time.Second,
+		})
+		return nil
 	}()
-	_ = NewHarnessPollingBatchClient(HarnessBatchClientOptions{
-		ProviderType: "anthropic",
-		APIKeyRef:    "secret://test",
-		MaxWait:      time.Second,
-	})
+	require.NotNil(t, recovered, "expected panic on nil CredSource")
+	msg, ok := recovered.(string)
+	require.True(t, ok, "expected string panic value, got %T: %v", recovered, recovered)
+	require.Contains(t, msg, "CredSource", "panic message must mention CredSource")
 }
 
-// TestNewHarnessPollingBatchClient_DefaultsMaxWait pins that a zero
-// MaxWait is replaced with types.MaxRunTimeoutSeconds at constructor
-// time, not later deferred to an already-passed deadline.
-func TestNewHarnessPollingBatchClient_DefaultsMaxWait(t *testing.T) {
+// TestNewHarnessPollingBatchClient_ZeroMaxWait_DefaultsToRunTimeout pins
+// that a zero MaxWait is replaced with types.MaxRunTimeoutSeconds at
+// constructor time, not later deferred to an already-passed deadline.
+func TestNewHarnessPollingBatchClient_ZeroMaxWait_DefaultsToRunTimeout(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-test"}
 	c := NewHarnessPollingBatchClient(HarnessBatchClientOptions{
 		ProviderType: "anthropic",
@@ -1901,34 +1637,31 @@ func TestNewHarnessPollingBatchClient_DefaultsMaxWait(t *testing.T) {
 		MaxWait:      0,
 	})
 	want := time.Duration(types.MaxRunTimeoutSeconds) * time.Second
-	if c.maxWait != want {
-		t.Errorf("maxWait: got %s, want %s", c.maxWait, want)
-	}
+	require.Equal(t, want, c.maxWait)
 }
 
-// TestNewHarnessPollingBatchClient_DefaultBaseURL pins the
+// TestNewHarnessPollingBatchClient_BaseURL_DefaultsByProvider pins the
 // default-baseURL selection per provider type and the trailing-slash
 // stripping.
-func TestNewHarnessPollingBatchClient_DefaultBaseURL(t *testing.T) {
+func TestNewHarnessPollingBatchClient_BaseURL_DefaultsByProvider(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-test"}
 	for _, tc := range []struct {
+		name         string
 		providerType string
 		want         string
 	}{
-		{"openai-compatible", openaiDefaultBaseURL},
-		{"openai-responses", openaiDefaultBaseURL},
-		{"anthropic", anthropicBatchAPIBaseURL},
-		{"", anthropicBatchAPIBaseURL},
+		{name: "openai-compatible", providerType: "openai-compatible", want: openaiDefaultBaseURL},
+		{name: "openai-responses", providerType: "openai-responses", want: openaiDefaultBaseURL},
+		{name: "anthropic", providerType: "anthropic", want: anthropicBatchAPIBaseURL},
+		{name: "empty provider type", providerType: "", want: anthropicBatchAPIBaseURL},
 	} {
-		t.Run(tc.providerType, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			c := NewHarnessPollingBatchClient(HarnessBatchClientOptions{
 				ProviderType: tc.providerType,
 				CredSource:   src,
 				MaxWait:      time.Second,
 			})
-			if c.baseURL != tc.want {
-				t.Errorf("baseURL: got %q, want %q", c.baseURL, tc.want)
-			}
+			require.Equal(t, tc.want, c.baseURL)
 		})
 	}
 	t.Run("trims trailing slash", func(t *testing.T) {
@@ -1938,17 +1671,14 @@ func TestNewHarnessPollingBatchClient_DefaultBaseURL(t *testing.T) {
 			BaseURL:      "https://gateway.example.com/v1/",
 			MaxWait:      time.Second,
 		})
-		if c.baseURL != "https://gateway.example.com/v1" {
-			t.Errorf("baseURL: got %q, want trimmed", c.baseURL)
-		}
+		require.Equal(t, "https://gateway.example.com/v1", c.baseURL)
 	})
 }
 
-// TestNewHarnessPollingBatchClient_LoggerInjected pins that a Logger
+// TestNewHarnessPollingBatchClient_CustomLogger_IsUsed pins that a Logger
 // supplied via options replaces slog.Default on the constructed client
-// so cancel-path warnings flow through the
-// run-scoped logger.
-func TestNewHarnessPollingBatchClient_LoggerInjected(t *testing.T) {
+// so cancel-path warnings flow through the run-scoped logger.
+func TestNewHarnessPollingBatchClient_CustomLogger_IsUsed(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-test"}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil)).With("runID", "test-run")
 	c := NewHarnessPollingBatchClient(HarnessBatchClientOptions{
@@ -1958,21 +1688,16 @@ func TestNewHarnessPollingBatchClient_LoggerInjected(t *testing.T) {
 		MaxWait:      time.Second,
 		Logger:       logger,
 	})
-	if c.logger != logger {
-		t.Errorf("logger: got %p, want %p (the injected logger)", c.logger, logger)
-	}
+	require.Same(t, logger, c.logger)
 }
 
-// TestBatchAdapter_OpenAIStdio_CancelledSurfaces drives a full
-// BatchAdapter.Stream → harnessPollingBatchClient integration where the
-// fake OpenAI server returns "cancelled" on poll. The first
-// StreamEvent.Error must contain "[batch_cancelled]" — the typed
-// BatchResultError fan-in — not "missing entry" (a customID/batchID key
-// mismatch).
-func TestBatchAdapter_OpenAIStdio_CancelledSurfaces(t *testing.T) {
+// openAIBatchStreamErrors streams one request through BatchAdapter against
+// a fake OpenAI server whose batch poll returns pollBody. It returns the
+// message of every error StreamEvent and fails the test when there is none.
+func openAIBatchStreamErrors(t *testing.T, pollBody string) []string {
+	t.Helper()
 	src := &fakeCredentialSource{token: "sk-test"}
-	polls := []string{`{"id":"batch_xyz","status":"cancelled"}`}
-	f := newOpenAIBatchFixture(t, polls, "", "")
+	f := newOpenAIBatchFixture(t, []string{pollBody}, "", "")
 	defer f.Close()
 
 	c, teardown := newTestOpenAIPollingClient(t, f.Server, src, "openai-compatible", time.Second)
@@ -1986,67 +1711,34 @@ func TestBatchAdapter_OpenAIStdio_CancelledSurfaces(t *testing.T) {
 		MaxTokens: 256,
 	}
 	ch, err := adapter.Stream(context.Background(), params)
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	require.NoError(t, err)
 	events := drain(t, ch)
 
-	var sawError bool
+	var msgs []string
 	for _, ev := range events {
 		if ev.Type == "error" && ev.Error != nil {
-			sawError = true
-			msg := ev.Error.Error()
-			if !strings.Contains(msg, "batch_cancelled") {
-				t.Errorf("error did not surface batch_cancelled: %q", msg)
-			}
-			if strings.Contains(msg, "missing entry") {
-				t.Errorf("error surfaced 'missing entry' (customID/batchID key mismatch regression): %q", msg)
-			}
+			msgs = append(msgs, ev.Error.Error())
 		}
 	}
-	if !sawError {
-		t.Fatalf("expected an error StreamEvent; got %d events: %+v", len(events), events)
+	require.NotEmpty(t, msgs, "expected an error StreamEvent; got %d events: %+v", len(events), events)
+	return msgs
+}
+
+// A cancelled batch reaches the caller as a batch_cancelled error. A
+// "missing entry" error would mean the customID and batchID keys did not
+// match.
+func TestBatchAdapter_OpenAI_CancelledStatusSurfacesBatchCancelled(t *testing.T) {
+	for _, msg := range openAIBatchStreamErrors(t, `{"id":"batch_xyz","status":"cancelled"}`) {
+		require.Contains(t, msg, "batch_cancelled")
+		require.NotContains(t, msg, "missing entry", "customID/batchID key mismatch")
 	}
 }
 
-// TestBatchAdapter_OpenAIStdio_CancellingSurfaces mirrors the
-// cancelled test for the "cancelling" intermediate status (which
-// shares the cancelled case arm). Pins the integration so a future
-// regression splitting the two arms still fails loudly.
-func TestBatchAdapter_OpenAIStdio_CancellingSurfaces(t *testing.T) {
-	src := &fakeCredentialSource{token: "sk-test"}
-	polls := []string{`{"id":"batch_xyz","status":"cancelling"}`}
-	f := newOpenAIBatchFixture(t, polls, "", "")
-	defer f.Close()
-
-	c, teardown := newTestOpenAIPollingClient(t, f.Server, src, "openai-compatible", time.Second)
-	defer teardown()
-
-	adapter := NewBatchAdapter(nil, c, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "run-test")
-
-	params := types.StreamParams{
-		Model:     "gpt-4o-mini",
-		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
-		MaxTokens: 256,
-	}
-	ch, err := adapter.Stream(context.Background(), params)
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	events := drain(t, ch)
-
-	var sawError bool
-	for _, ev := range events {
-		if ev.Type == "error" && ev.Error != nil {
-			sawError = true
-			msg := ev.Error.Error()
-			if !strings.Contains(msg, "batch_cancelled") {
-				t.Errorf("error did not surface batch_cancelled: %q", msg)
-			}
-		}
-	}
-	if !sawError {
-		t.Fatalf("expected an error StreamEvent; got %d events", len(events))
+// The "cancelling" intermediate status shares the cancelled arm of the poll
+// switch. This test keeps the two arms behaving the same.
+func TestBatchAdapter_OpenAI_CancellingStatusSurfacesBatchCancelled(t *testing.T) {
+	for _, msg := range openAIBatchStreamErrors(t, `{"id":"batch_xyz","status":"cancelling"}`) {
+		require.Contains(t, msg, "batch_cancelled")
 	}
 }
 
@@ -2061,7 +1753,7 @@ func TestHarnessPollingBatch_OpenAIFileUpload_NonOKStatus(t *testing.T) {
 			_, _ = io.WriteString(w, `{"error":"slow down"}`)
 			return
 		}
-		t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.Path)
 	}))
 	defer srv.Close()
 
@@ -2069,9 +1761,7 @@ func TestHarnessPollingBatch_OpenAIFileUpload_NonOKStatus(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Submit(context.Background(), openaiSubmitEntries("id1", "openai-compatible"))
-	if err == nil || !strings.Contains(err.Error(), "429") {
-		t.Errorf("expected 429 in error, got: %v", err)
-	}
+	require.ErrorContains(t, err, "429")
 }
 
 // TestHarnessPollingBatch_OpenAIFileUpload_MissingID pins the
@@ -2085,7 +1775,7 @@ func TestHarnessPollingBatch_OpenAIFileUpload_MissingID(t *testing.T) {
 			_, _ = io.WriteString(w, `{"object":"file"}`)
 			return
 		}
-		t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.Path)
 	}))
 	defer srv.Close()
 
@@ -2093,9 +1783,7 @@ func TestHarnessPollingBatch_OpenAIFileUpload_MissingID(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Submit(context.Background(), openaiSubmitEntries("id1", "openai-compatible"))
-	if err == nil || !strings.Contains(err.Error(), "missing id") {
-		t.Errorf("expected 'missing id' in error, got: %v", err)
-	}
+	require.ErrorContains(t, err, "missing id")
 }
 
 // TestHarnessPollingBatch_OpenAIBatchCreate_NonOKStatus pins the
@@ -2111,7 +1799,7 @@ func TestHarnessPollingBatch_OpenAIBatchCreate_NonOKStatus(t *testing.T) {
 			w.WriteHeader(http.StatusUnprocessableEntity)
 			_, _ = io.WriteString(w, `{"error":"validation"}`)
 		default:
-			t.Errorf("unexpected: %s", r.URL.Path)
+			assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.Path)
 		}
 	}))
 	defer srv.Close()
@@ -2120,9 +1808,7 @@ func TestHarnessPollingBatch_OpenAIBatchCreate_NonOKStatus(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Submit(context.Background(), openaiSubmitEntries("id1", "openai-compatible"))
-	if err == nil || !strings.Contains(err.Error(), "422") {
-		t.Errorf("expected 422 in error, got: %v", err)
-	}
+	require.ErrorContains(t, err, "422")
 }
 
 // TestHarnessPollingBatch_OpenAIBatchCreate_MissingID pins the
@@ -2138,7 +1824,7 @@ func TestHarnessPollingBatch_OpenAIBatchCreate_MissingID(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, `{"status":"validating"}`)
 		default:
-			t.Errorf("unexpected: %s", r.URL.Path)
+			assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.Path)
 		}
 	}))
 	defer srv.Close()
@@ -2147,9 +1833,7 @@ func TestHarnessPollingBatch_OpenAIBatchCreate_MissingID(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Submit(context.Background(), openaiSubmitEntries("id1", "openai-compatible"))
-	if err == nil || !strings.Contains(err.Error(), "missing id") {
-		t.Errorf("expected 'missing id' in error, got: %v", err)
-	}
+	require.ErrorContains(t, err, "missing id")
 }
 
 // TestHarnessPollingBatch_OpenAIFileDownload_NonOKStatus pins the
@@ -2165,7 +1849,7 @@ func TestHarnessPollingBatch_OpenAIFileDownload_NonOKStatus(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = io.WriteString(w, `{"error":"file gone"}`)
 		default:
-			t.Errorf("unexpected: %s %s", r.Method, r.URL.Path)
+			assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.Path)
 		}
 	}))
 	defer srv.Close()
@@ -2174,9 +1858,7 @@ func TestHarnessPollingBatch_OpenAIFileDownload_NonOKStatus(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	if err == nil || !strings.Contains(err.Error(), "404") {
-		t.Errorf("expected 404 in error, got: %v", err)
-	}
+	require.ErrorContains(t, err, "404")
 }
 
 // TestHarnessPollingBatch_OpenAIPollOnce_NonOKStatus pins the non-2xx
@@ -2194,12 +1876,8 @@ func TestHarnessPollingBatch_OpenAIPollOnce_NonOKStatus(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	if err == nil || !strings.Contains(err.Error(), "503") {
-		t.Errorf("expected 503 in error, got: %v", err)
-	}
-	if errors.Is(err, errBatchExpired) {
-		t.Errorf("503 must not be conflated with errBatchExpired, got: %v", err)
-	}
+	require.ErrorContains(t, err, "503")
+	require.NotErrorIs(t, err, errBatchExpired, "503 must not be conflated with errBatchExpired")
 }
 
 // TestHarnessPollingBatch_OpenAIResult_EmptyOutputFile pins the empty
@@ -2216,9 +1894,7 @@ func TestHarnessPollingBatch_OpenAIResult_EmptyOutputFile(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	if err == nil || !strings.Contains(err.Error(), "empty") {
-		t.Errorf("expected 'empty' in error, got: %v", err)
-	}
+	require.ErrorContains(t, err, "empty")
 }
 
 // TestHarnessPollingBatch_OpenAIResult_MalformedOutputJSONL pins the
@@ -2236,9 +1912,7 @@ func TestHarnessPollingBatch_OpenAIResult_MalformedOutputJSONL(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	if err == nil || !strings.Contains(err.Error(), "decode openai batch output line") {
-		t.Errorf("expected 'decode openai batch output line' in error, got: %v", err)
-	}
+	require.ErrorContains(t, err, "decode openai batch output line")
 }
 
 // TestHarnessPollingBatch_OpenAIResult_Failed_EmptyErrorFile pins the
@@ -2257,23 +1931,15 @@ func TestHarnessPollingBatch_OpenAIResult_Failed_EmptyErrorFile(t *testing.T) {
 	defer teardown()
 
 	const customID = "stirrup-run-1-turn-1"
-	if _, err := c.Submit(context.Background(), openaiSubmitEntries(customID, "openai-compatible")); err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
+	_, err := c.Submit(context.Background(), openaiSubmitEntries(customID, "openai-compatible"))
+	require.NoError(t, err)
 	results, err := c.Result(context.Background(), "batch_xyz")
-	if err != nil {
-		t.Fatalf("Result: %v", err)
-	}
-	entry, ok := results[customID]
-	if !ok {
-		t.Fatalf("missing entry; got keys %v", keysOf(results))
-	}
-	if entry.Err == nil || entry.Err.Type != "server_error" {
-		t.Fatalf("Err: %+v", entry.Err)
-	}
-	if !strings.Contains(entry.Err.Message, "top-level fallback") {
-		t.Errorf("Err.Message: %q", entry.Err.Message)
-	}
+	require.NoError(t, err)
+	require.Contains(t, results, customID, "got keys %v", keysOf(results))
+	entry := results[customID]
+	require.NotNil(t, entry.Err)
+	require.Equal(t, "server_error", entry.Err.Type)
+	require.Contains(t, entry.Err.Message, "top-level fallback")
 }
 
 // waitForOpenAICancelCount blocks (up to timeout) until cancelCalls
@@ -2322,20 +1988,14 @@ func TestHarnessPollingBatch_OpenAIResult_TimeoutFiringAlignedToDeadline(t *test
 	_, err := c.Result(context.Background(), "batch_xyz")
 	elapsed := time.Since(start)
 
-	if err == nil || !errors.Is(err, errBatchExpired) {
-		t.Fatalf("expected errBatchExpired, got: %v", err)
-	}
-	if elapsed > maxWait+50*time.Millisecond {
-		t.Errorf("timeout fired %s past maxWait; want <= maxWait + 50ms", elapsed-maxWait)
-	}
+	require.ErrorIs(t, err, errBatchExpired)
+	require.LessOrEqual(t, elapsed, maxWait+50*time.Millisecond, "timeout fired %s past maxWait", elapsed-maxWait)
 	// best-effort cancel must hit the OpenAI cancel URL shape, not the
 	// Anthropic one.
 	waitForOpenAICancelCount(t, f, 1, time.Second)
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.cancelCalls != 1 {
-		t.Errorf("cancelCalls on timeout: got %d, want 1", f.cancelCalls)
-	}
+	require.Equal(t, 1, f.cancelCalls, "cancelCalls on timeout")
 }
 
 // TestHarnessPollingBatch_OpenAIBackoffCapped covers the cap-clamp
@@ -2386,15 +2046,11 @@ func TestHarnessPollingBatch_OpenAIBackoffCapped(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(callTimes) < 4 {
-		t.Fatalf("expected >=4 poll calls within the 40ms budget, got %d", len(callTimes))
-	}
+	require.GreaterOrEqual(t, len(callTimes), 4, "poll calls within the 40ms budget")
 	const slack = 20 * time.Millisecond
 	for i := 2; i < len(callTimes); i++ {
 		gap := callTimes[i].Sub(callTimes[i-1])
-		if gap > 5*time.Millisecond+slack {
-			t.Errorf("poll interval %d exceeded cap+slack: got %s", i, gap)
-		}
+		assert.LessOrEqual(t, gap, 5*time.Millisecond+slack, "poll interval %d exceeded cap+slack", i)
 	}
 }
 
@@ -2432,7 +2088,7 @@ func TestHarnessPollingBatch_OpenAIResult_CtxCancelledDuringPoll(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, `{}`)
 		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
@@ -2450,40 +2106,31 @@ func TestHarnessPollingBatch_OpenAIResult_CtxCancelledDuringPoll(t *testing.T) {
 	select {
 	case <-pollEntered:
 	case <-time.After(time.Second):
-		t.Fatal("poll handler never entered")
+		require.Fail(t, "poll handler never entered")
 	}
 
 	cancel()
 
 	select {
 	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Errorf("expected context.Canceled, got: %v", err)
-		}
+		require.ErrorIs(t, err, context.Canceled)
 	case <-time.After(2 * time.Second):
-		t.Fatal("Result did not return after ctx cancel during poll")
+		require.Fail(t, "Result did not return after ctx cancel during poll")
 	}
 
-	// bestEffortCancel detaches via context.Background; wait briefly.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	// bestEffortCancel detaches via context.Background, so the cancel hit
+	// arrives after Result returns.
+	require.Eventually(t, func() bool {
 		mu.Lock()
-		hit := len(cancelPaths) > 0
-		mu.Unlock()
-		if hit {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		defer mu.Unlock()
+		return len(cancelPaths) > 0
+	}, 2*time.Second, 5*time.Millisecond, "expected bestEffortCancel to reach the server")
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(cancelPaths) != 1 {
-		t.Fatalf("expected exactly 1 cancel hit, got %d (paths=%v)", len(cancelPaths), cancelPaths)
-	}
-	if !strings.HasPrefix(cancelPaths[0], "/batches/") {
-		t.Errorf("cancel URL: got %q; OpenAI cancel must hit /batches/{id}/cancel (not /v1/messages/batches/...)", cancelPaths[0])
-	}
+	require.Len(t, cancelPaths, 1, "cancel hits")
+	require.True(t, strings.HasPrefix(cancelPaths[0], "/batches/"),
+		"OpenAI cancel must hit /batches/{id}/cancel, got %q", cancelPaths[0])
 }
 
 // TestHarnessPollingBatch_OpenAIResult_TimeoutFiresOpenAICancelURL pins
@@ -2510,7 +2157,7 @@ func TestHarnessPollingBatch_OpenAIResult_TimeoutFiresOpenAICancelURL(t *testing
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, `{}`)
 		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.Path)
 		}
 	}))
 	defer srv.Close()
@@ -2519,32 +2166,20 @@ func TestHarnessPollingBatch_OpenAIResult_TimeoutFiresOpenAICancelURL(t *testing
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	if err == nil || !errors.Is(err, errBatchExpired) {
-		t.Fatalf("expected errBatchExpired, got: %v", err)
-	}
+	require.ErrorIs(t, err, errBatchExpired)
 
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
+	require.Eventually(t, func() bool {
 		mu.Lock()
-		hit := len(cancelPaths) > 0
-		mu.Unlock()
-		if hit {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		defer mu.Unlock()
+		return len(cancelPaths) > 0
+	}, time.Second, 5*time.Millisecond, "expected bestEffortCancel to reach the server")
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(cancelPaths) == 0 {
-		t.Fatal("expected bestEffortCancel to fire and reach the server")
-	}
-	if !strings.HasPrefix(cancelPaths[0], "/batches/") || !strings.HasSuffix(cancelPaths[0], "/cancel") {
-		t.Errorf("cancel URL %q; OpenAI cancel must address /batches/{id}/cancel", cancelPaths[0])
-	}
-	if strings.Contains(cancelPaths[0], "/v1/messages/") {
-		t.Errorf("cancel URL %q contains Anthropic path prefix", cancelPaths[0])
-	}
+	cancelPath := cancelPaths[0]
+	require.True(t, strings.HasPrefix(cancelPath, "/batches/") && strings.HasSuffix(cancelPath, "/cancel"),
+		"OpenAI cancel must address /batches/{id}/cancel, got %q", cancelPath)
+	require.NotContains(t, cancelPath, "/v1/messages/", "cancel URL must not use the Anthropic path prefix")
 }
 
 // TestHarnessPollingBatch_OpenAIResult_UnknownStatus pins the default
@@ -2563,15 +2198,10 @@ func TestHarnessPollingBatch_OpenAIResult_UnknownStatus(t *testing.T) {
 	// Unknown status continues to poll; the loop must exit via the
 	// wall-clock deadline (errBatchExpired) rather than a typed error
 	// on the first unrecognised status.
-	if err == nil || !errors.Is(err, errBatchExpired) {
-		t.Fatalf("expected errBatchExpired (loop continues on unknown status), got: %v", err)
-	}
-	// At least one poll fired — the loop did enter the switch's default
-	// arm before the deadline closed.
-	_, _, polls2, _, _ := f.snapshot()
-	if polls2 < 1 {
-		t.Errorf("expected >=1 poll on unknown status, got %d", polls2)
-	}
+	require.ErrorIs(t, err, errBatchExpired)
+	// At least one poll must reach the default arm before the deadline.
+	_, _, pollCount, _, _ := f.snapshot()
+	require.GreaterOrEqual(t, pollCount, 1, "poll count on unknown status")
 }
 
 // TestHarnessPollingBatch_OpenAIBatchIDPathEscaped confirms a batchID
@@ -2598,7 +2228,7 @@ func TestHarnessPollingBatch_OpenAIBatchIDPathEscaped(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = fmt.Fprintf(w, `{"id":%q,"status":"completed"}`, sneakyID)
 		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.EscapedPath())
+			assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.EscapedPath())
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
@@ -2608,17 +2238,11 @@ func TestHarnessPollingBatch_OpenAIBatchIDPathEscaped(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), sneakyID)
-	if err == nil {
-		t.Fatal("expected output_file_id-missing error, got nil")
-	}
+	require.Error(t, err, "expected output_file_id-missing error")
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(pollPaths) == 0 {
-		t.Fatal("expected at least one poll request")
-	}
+	require.NotEmpty(t, pollPaths, "expected at least one poll request")
 	wantPath := "/batches/" + wantSegment
-	if pollPaths[0] != wantPath {
-		t.Errorf("poll path: got %q, want %q", pollPaths[0], wantPath)
-	}
+	require.Equal(t, wantPath, pollPaths[0], "poll path")
 }

@@ -8,52 +8,55 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// TestRunOutcomeError_EnumeratedOutcomes pins the outcome→exit mapping
+// TestRunOutcomeError_OnlySuccessIsNil pins the outcome→exit mapping
 // against every value documented on types.RunTrace.Outcome. "success"
 // is the only outcome that must not produce an error; a future outcome
 // added to the enum without updating runSuccessOutcomes fails this
 // test rather than silently exiting 0.
-func TestRunOutcomeError_EnumeratedOutcomes(t *testing.T) {
-	nonSuccessOutcomes := []string{
-		"error",
-		"max_turns",
-		"verification_failed",
-		"verification_error",
-		"budget_exceeded",
-		"stalled",
-		"tool_failures",
-		"cancelled",
-		"timeout",
-		"max_tokens",
-		"setup_failed",
-		"hook_failed",
-		"handoff_failed",
-		"structured_output_failed",
-		"", // empty/unknown outcome must not be treated as success
-		"some_future_outcome_not_yet_invented",
+func TestRunOutcomeError_OnlySuccessIsNil(t *testing.T) {
+	nonSuccessCases := []struct {
+		name    string
+		outcome string
+	}{
+		{"error", "error"},
+		{"max turns", "max_turns"},
+		{"verification failed", "verification_failed"},
+		{"verification error", "verification_error"},
+		{"budget exceeded", "budget_exceeded"},
+		{"stalled", "stalled"},
+		{"tool failures", "tool_failures"},
+		{"cancelled", "cancelled"},
+		{"timeout", "timeout"},
+		{"max tokens", "max_tokens"},
+		{"setup failed", "setup_failed"},
+		{"hook failed", "hook_failed"},
+		{"handoff failed", "handoff_failed"},
+		{"structured output failed", "structured_output_failed"},
+		{"empty outcome", ""},
+		{"unknown future outcome", "some_future_outcome_not_yet_invented"},
 	}
-	for _, outcome := range nonSuccessOutcomes {
-		t.Run(outcome, func(t *testing.T) {
-			err := runOutcomeError(&types.RunTrace{Outcome: outcome})
-			if err == nil {
-				t.Fatalf("runOutcomeError(Outcome=%q) = nil, want a non-nil error", outcome)
-			}
-			if classifyExitCode(err) != 1 {
-				t.Errorf("classifyExitCode(runOutcomeError(%q)) = %d, want 1 (the documented default for a failed or cancelled run)", outcome, classifyExitCode(err))
-			}
+	for _, tc := range nonSuccessCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := runOutcomeError(&types.RunTrace{Outcome: tc.outcome})
+			require.Error(t, err)
+			require.Equal(t, 1, classifyExitCode(err), "failed and cancelled runs exit 1")
 		})
 	}
 
-	if err := runOutcomeError(&types.RunTrace{Outcome: "success"}); err != nil {
-		t.Errorf("runOutcomeError(Outcome=\"success\") = %v, want nil", err)
-	}
+	t.Run("success", func(t *testing.T) {
+		require.NoError(t, runOutcomeError(&types.RunTrace{Outcome: "success"}))
+	})
 
-	if err := runOutcomeError(nil); err != nil {
-		t.Errorf("runOutcomeError(nil) = %v, want nil (nil-trace callers return their own error before reaching this check)", err)
-	}
+	// Callers return their own error before a nil trace reaches this check.
+	t.Run("nil trace", func(t *testing.T) {
+		require.NoError(t, runOutcomeError(nil))
+	})
 }
 
 // openAICompatibleErrorServer replies to every request with a 401,
@@ -127,17 +130,11 @@ func TestRunWithConfig_ProviderErrorOutcome_ExitsNonZero(t *testing.T) {
 	runErr := runWithConfig(config, runOptions{outputMode: "json"})
 	stdout := stdoutDone()
 
-	if runErr == nil {
-		t.Fatal("expected a non-nil error from a provider-error outcome, got nil (this is the B4 regression: outcome=error must still fail the process)")
-	}
-	if classifyExitCode(runErr) != 1 {
-		t.Errorf("classifyExitCode(runErr) = %d, want 1", classifyExitCode(runErr))
-	}
+	require.Error(t, runErr, "an outcome of error must still fail the process")
+	assert.Equal(t, 1, classifyExitCode(runErr))
 
 	result := decodeStirrupResult(t, stdout)
-	if result.Outcome != "error" {
-		t.Errorf("STIRRUP_RESULT outcome = %q, want \"error\"", result.Outcome)
-	}
+	assert.Equal(t, "error", result.Outcome)
 }
 
 // TestRunWithConfig_SuccessOutcome_ExitsZero is the success-path
@@ -153,23 +150,16 @@ func TestRunWithConfig_SuccessOutcome_ExitsZero(t *testing.T) {
 	runErr := runWithConfig(config, runOptions{outputMode: "json"})
 	stdout := stdoutDone()
 
-	if runErr != nil {
-		t.Fatalf("expected a nil error from a successful run, got: %v", runErr)
-	}
-	if classifyExitCode(runErr) != 0 {
-		t.Errorf("classifyExitCode(runErr) = %d, want 0", classifyExitCode(runErr))
-	}
+	require.NoError(t, runErr, "a successful run must return a nil error")
+	assert.Equal(t, 0, classifyExitCode(runErr))
 
 	result := decodeStirrupResult(t, stdout)
-	if result.Outcome != "success" {
-		t.Errorf("STIRRUP_RESULT outcome = %q, want \"success\"", result.Outcome)
-	}
+	assert.Equal(t, "success", result.Outcome)
 }
 
 // decodeStirrupResult finds and parses the STIRRUP_RESULT line out of
-// captured stdout. Shared by the two runOutcome tests above; stdout
-// also carries the stdio transport's own JSON event stream, so the
-// result line is not necessarily first.
+// captured stdout. Stdout also carries the stdio transport's JSON event
+// stream, so the result line is not necessarily first.
 func decodeStirrupResult(t *testing.T, stdout string) types.RunResult {
 	t.Helper()
 	var resultLine string
@@ -179,13 +169,9 @@ func decodeStirrupResult(t *testing.T, stdout string) types.RunResult {
 			break
 		}
 	}
-	if resultLine == "" {
-		t.Fatalf("expected a STIRRUP_RESULT line, got stdout: %q", stdout)
-	}
+	require.NotEmpty(t, resultLine, "expected a STIRRUP_RESULT line in stdout: %q", stdout)
 	payload := strings.TrimPrefix(resultLine, "STIRRUP_RESULT ")
 	var result types.RunResult
-	if err := json.Unmarshal([]byte(payload), &result); err != nil {
-		t.Fatalf("STIRRUP_RESULT payload should parse as RunResult: %v\npayload: %s", err, payload)
-	}
+	require.NoError(t, json.Unmarshal([]byte(payload), &result), "STIRRUP_RESULT payload should parse as RunResult: %s", payload)
 	return result
 }

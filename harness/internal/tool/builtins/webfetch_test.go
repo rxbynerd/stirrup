@@ -6,8 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // credentialedLoopbackURL closes an httptest server to obtain a loopback URL
@@ -22,9 +23,7 @@ func credentialedLoopbackURL(t *testing.T) string {
 	srv.Close()
 
 	u, err := url.Parse(closed)
-	if err != nil {
-		t.Fatalf("parse closed URL %q: %v", closed, err)
-	}
+	require.NoError(t, err, "parse closed URL %q", closed)
 	u.User = url.UserPassword("user", "pass")
 	u.RawQuery = "api_key=supersecret"
 	return u.String()
@@ -38,19 +37,16 @@ func TestWebFetch_TransportError_DoesNotLeakCredentials(t *testing.T) {
 
 	tl := newWebFetchTool(webFetchOptions{allowPrivateHosts: true})
 	input, err := json.Marshal(map[string]string{"url": uri})
-	if err != nil {
-		t.Fatalf("marshal input: %v", err)
-	}
+	require.NoError(t, err)
 
 	_, err = tl.Handler(context.Background(), input)
-	if err == nil {
-		t.Fatal("expected a transport error dialing a closed port")
-	}
+	require.Error(t, err, "expected a transport error dialing a closed port")
 	msg := err.Error()
-	if strings.Contains(msg, "supersecret") {
-		t.Errorf("error leaked the query secret: %q", msg)
-	}
-	if strings.Contains(msg, "user:pass") {
-		t.Errorf("error leaked userinfo: %q", msg)
-	}
+
+	t.Run("omits query secret", func(t *testing.T) {
+		require.NotContains(t, msg, "supersecret", "error leaked the query secret")
+	})
+	t.Run("omits userinfo", func(t *testing.T) {
+		require.NotContains(t, msg, "user:pass", "error leaked userinfo")
+	})
 }

@@ -12,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/workspaceexport"
 	"github.com/rxbynerd/stirrup/types"
@@ -31,18 +34,12 @@ func TestRootCmd_Version(t *testing.T) {
 		rootCmd.SetArgs(nil)
 	}()
 
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("rootCmd.Execute() returned error: %v", err)
-	}
+	require.NoError(t, rootCmd.Execute())
 
 	out := buf.String()
-	if !strings.HasPrefix(out, "stirrup version ") {
-		t.Fatalf("unexpected --version output: %q (want prefix %q)", out, "stirrup version ")
-	}
+	require.True(t, strings.HasPrefix(out, "stirrup version "), "unexpected --version output: %q", out)
 	// Default link-time version when no -ldflags injected is "dev".
-	if !strings.Contains(out, "dev") {
-		t.Fatalf("--version output %q should include the default link-time version %q", out, "dev")
-	}
+	require.Contains(t, out, "dev", "--version output should include the default link-time version")
 }
 
 // TestRootCmd_BareInvocationPrintsHint pins the root behaviour: a bare
@@ -64,9 +61,7 @@ func TestRootCmd_BareInvocationPrintsHint(t *testing.T) {
 		rootCmd.SetArgs(nil)
 	}()
 
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("rootCmd.Execute() returned error: %v (a bare invocation must exit 0)", err)
-	}
+	require.NoError(t, rootCmd.Execute(), "a bare invocation must exit 0")
 
 	out := buf.String()
 	for _, want := range []string{
@@ -76,20 +71,17 @@ func TestRootCmd_BareInvocationPrintsHint(t *testing.T) {
 		"stirrup harness --help",
 		"stirrup --version",
 	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("bare-stirrup hint missing %q\n--- output ---\n%s", want, out)
-		}
+		t.Run("hint mentions "+want, func(t *testing.T) {
+			require.Contains(t, out, want)
+		})
 	}
 	// The hint must be plain text — no boxes, no headings beyond the
 	// title, and crucially no ANSI escapes.
-	if strings.Contains(out, "\x1b[") {
-		t.Errorf("bare-stirrup hint must not contain ANSI escapes\n--- output ---\n%s", out)
-	}
+	assert.NotContains(t, out, "\x1b[", "the bare-stirrup hint must not contain ANSI escapes")
 	// A regression that printed Cobra's full help instead of the hint
 	// would surface its "Available Commands:" / "Flags:" sections.
-	if strings.Contains(out, "Available Commands:") || strings.Contains(out, "Use \"stirrup [command] --help\"") {
-		t.Errorf("bare-stirrup printed Cobra's full help, want the terse hint\n--- output ---\n%s", out)
-	}
+	assert.NotContains(t, out, "Available Commands:", "bare stirrup printed Cobra's full help")
+	assert.NotContains(t, out, `Use "stirrup [command] --help"`, "bare stirrup printed Cobra's full help")
 }
 
 // fakeExporter is a workspaceexport.Exporter that returns a fixed error,
@@ -115,28 +107,20 @@ func fakeExportResult(dest, status string, err error) (types.ExportReceipt, erro
 	return types.ExportReceipt{URI: dest, Status: status}, nil
 }
 
-// TestBuildRunResult_NilTrace pins that a nil RunTrace surfaces the
+// TestBuildRunResult_NilTraceReportsInternalError pins that a nil RunTrace surfaces the
 // "internal-error" sentinel rather than a structurally valid but
 // semantically incoherent RunResult.
-func TestBuildRunResult_NilTrace(t *testing.T) {
+func TestBuildRunResult_NilTraceReportsInternalError(t *testing.T) {
 	got := buildRunResult(nil, types.DefaultMaxFinalAssistantTextBytes)
-	if got.SchemaVersion != 1 {
-		t.Errorf("SchemaVersion = %d, want 1", got.SchemaVersion)
-	}
-	if got.Outcome != "internal-error" {
-		t.Errorf("Outcome = %q, want \"internal-error\"", got.Outcome)
-	}
-	if got.RunID != "" {
-		t.Errorf("RunID = %q, want empty", got.RunID)
-	}
-	if got.Turns != 0 {
-		t.Errorf("Turns = %d, want 0", got.Turns)
-	}
+	assert.Equal(t, 1, got.SchemaVersion)
+	assert.Equal(t, "internal-error", got.Outcome)
+	assert.Empty(t, got.RunID)
+	assert.Zero(t, got.Turns)
 }
 
-// TestBuildRunResult_WithVerificationResult pins that buildRunResult
-// exposes the most recent VerificationResult as VerifierVerdict.
-func TestBuildRunResult_WithVerificationResult(t *testing.T) {
+// TestBuildRunResult_ExposesLatestVerificationVerdict pins that
+// buildRunResult exposes the most recent VerificationResult as VerifierVerdict.
+func TestBuildRunResult_ExposesLatestVerificationVerdict(t *testing.T) {
 	started := time.Now()
 	rt := &types.RunTrace{
 		ID:          "run-1",
@@ -150,24 +134,12 @@ func TestBuildRunResult_WithVerificationResult(t *testing.T) {
 		},
 	}
 	got := buildRunResult(rt, types.DefaultMaxFinalAssistantTextBytes)
-	if got.Outcome != "success" {
-		t.Errorf("Outcome = %q, want success", got.Outcome)
-	}
-	if got.RunID != "run-1" {
-		t.Errorf("RunID = %q, want run-1", got.RunID)
-	}
-	if got.DurationMs != 750 {
-		t.Errorf("DurationMs = %d, want 750", got.DurationMs)
-	}
-	if got.VerifierVerdict == nil {
-		t.Fatal("VerifierVerdict = nil, want non-nil for the most recent verification result")
-	}
-	if !got.VerifierVerdict.Passed {
-		t.Error("VerifierVerdict.Passed = false, want true (most recent verification passed)")
-	}
-	if got.VerifierVerdict.Feedback != "second pass green" {
-		t.Errorf("VerifierVerdict.Feedback = %q, want \"second pass green\"", got.VerifierVerdict.Feedback)
-	}
+	assert.Equal(t, "success", got.Outcome)
+	assert.Equal(t, "run-1", got.RunID)
+	assert.EqualValues(t, 750, got.DurationMs)
+	require.NotNil(t, got.VerifierVerdict, "want a verdict for the most recent verification result")
+	assert.True(t, got.VerifierVerdict.Passed, "most recent verification passed")
+	assert.Equal(t, "second pass green", got.VerifierVerdict.Feedback)
 }
 
 // TestBuildRunResult_NoVerificationResultsLeavesVerdictNil pins that an
@@ -178,25 +150,19 @@ func TestBuildRunResult_NoVerificationResultsLeavesVerdictNil(t *testing.T) {
 		ID:      "run-2",
 		Outcome: "success",
 	}
-	if got := buildRunResult(rt, types.DefaultMaxFinalAssistantTextBytes); got.VerifierVerdict != nil {
-		t.Errorf("VerifierVerdict = %+v, want nil", got.VerifierVerdict)
-	}
+	got := buildRunResult(rt, types.DefaultMaxFinalAssistantTextBytes)
+	require.Nil(t, got.VerifierVerdict)
 }
 
-func TestBuildRunResult_TraceReference(t *testing.T) {
+func TestBuildRunResult_CarriesAndOmitsTraceReference(t *testing.T) {
 	ref := &types.TraceReference{TraceID: "4bf92f3577b34da6a3ce929d0e0e4736", RunSpanID: "00f067aa0ba902b7", Sampled: true}
 	got := buildRunResult(&types.RunTrace{ID: "run-ref", Outcome: "success", TraceReference: ref}, types.DefaultMaxFinalAssistantTextBytes)
-	if got.TraceReference == nil || *got.TraceReference != *ref {
-		t.Errorf("TraceReference = %+v, want %+v", got.TraceReference, ref)
-	}
+	require.NotNil(t, got.TraceReference)
+	require.Equal(t, *ref, *got.TraceReference)
 
 	raw, err := json.Marshal(buildRunResult(&types.RunTrace{ID: "run-jsonl", Outcome: "success"}, types.DefaultMaxFinalAssistantTextBytes))
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if strings.Contains(string(raw), "traceReference") {
-		t.Errorf("RunResult without an OTel span serialised a traceReference: %s", raw)
-	}
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), "traceReference", "a RunResult without an OTel span must omit traceReference")
 }
 
 func TestBuildRunResult_VerificationOutcomesPopulateError(t *testing.T) {
@@ -250,20 +216,17 @@ func TestBuildRunResult_VerificationOutcomesPopulateError(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := buildRunResult(&types.RunTrace{Outcome: tc.outcome, VerificationResults: tc.results}, types.DefaultMaxFinalAssistantTextBytes)
-			if got.Error != tc.wantError {
-				t.Errorf("Error = %q, want %q", got.Error, tc.wantError)
-			}
-			if got.VerifierVerdict == nil || *got.VerifierVerdict != tc.wantVerdict {
-				t.Errorf("VerifierVerdict = %+v, want %+v", got.VerifierVerdict, tc.wantVerdict)
-			}
+			require.Equal(t, tc.wantError, got.Error)
+			require.NotNil(t, got.VerifierVerdict)
+			require.Equal(t, tc.wantVerdict, *got.VerifierVerdict)
 		})
 	}
 }
 
-// TestBuildRunResult_FinalAssistantText pins that a populated
+// TestBuildRunResult_FinalAssistantTextCarriedAndOmittedWhenEmpty pins that a populated
 // FinalAssistantText carries through verbatim and an empty one is
 // omitted from the wire via the omitempty tag.
-func TestBuildRunResult_FinalAssistantText(t *testing.T) {
+func TestBuildRunResult_FinalAssistantTextCarriedAndOmittedWhenEmpty(t *testing.T) {
 	cases := []struct {
 		name     string
 		traceIn  string
@@ -280,26 +243,16 @@ func TestBuildRunResult_FinalAssistantText(t *testing.T) {
 				FinalAssistantText: tc.traceIn,
 			}
 			got := buildRunResult(rt, types.DefaultMaxFinalAssistantTextBytes)
-			if got.FinalAssistantText != tc.wantText {
-				t.Errorf("FinalAssistantText = %q, want %q", got.FinalAssistantText, tc.wantText)
-			}
-			if got.FinalAssistantTextTruncated {
-				t.Errorf("FinalAssistantTextTruncated = true, want false: text is well under the default cap")
-			}
+			require.Equal(t, tc.wantText, got.FinalAssistantText)
+			require.False(t, got.FinalAssistantTextTruncated, "text is well under the default cap")
 			encoded, err := json.Marshal(got)
-			if err != nil {
-				t.Fatalf("marshal: %v", err)
+			require.NoError(t, err)
+			if tc.wantText == "" {
+				require.NotContains(t, string(encoded), "finalAssistantText", "empty FinalAssistantText should be omitted from JSON")
+			} else {
+				require.Contains(t, string(encoded), "finalAssistantText", "populated FinalAssistantText should be present in JSON")
 			}
-			hasField := strings.Contains(string(encoded), "finalAssistantText")
-			if tc.wantText == "" && hasField {
-				t.Errorf("empty FinalAssistantText should be omitted from JSON, got %s", encoded)
-			}
-			if tc.wantText != "" && !hasField {
-				t.Errorf("populated FinalAssistantText should be present in JSON, got %s", encoded)
-			}
-			if strings.Contains(string(encoded), "finalAssistantTextTruncated") {
-				t.Errorf("finalAssistantTextTruncated=false should be omitted from JSON, got %s", encoded)
-			}
+			require.NotContains(t, string(encoded), "finalAssistantTextTruncated", "finalAssistantTextTruncated=false should be omitted from JSON")
 		})
 	}
 }
@@ -318,31 +271,17 @@ func TestBuildRunResult_FinalAssistantTextCappedAndFlagged(t *testing.T) {
 	got := buildRunResult(rt, maxBytes)
 
 	wantPrefix := strings.Repeat("a", maxBytes)
-	if !strings.HasPrefix(got.FinalAssistantText, wantPrefix) {
-		t.Errorf("FinalAssistantText = %q, want prefix %q", got.FinalAssistantText, wantPrefix)
-	}
-	if !strings.HasSuffix(got.FinalAssistantText, "[truncated by harness]") {
-		t.Errorf("FinalAssistantText = %q, want truncation marker suffix", got.FinalAssistantText)
-	}
-	if !got.FinalAssistantTextTruncated {
-		t.Error("FinalAssistantTextTruncated = false, want true")
-	}
-	if len(got.FinalAssistantText) <= maxBytes {
-		t.Errorf("capped FinalAssistantText len = %d, want > cap %d (marker must still be present)", len(got.FinalAssistantText), maxBytes)
-	}
+	assert.True(t, strings.HasPrefix(got.FinalAssistantText, wantPrefix), "FinalAssistantText = %q, want prefix %q", got.FinalAssistantText, wantPrefix)
+	assert.True(t, strings.HasSuffix(got.FinalAssistantText, "[truncated by harness]"), "FinalAssistantText = %q, want truncation marker suffix", got.FinalAssistantText)
+	assert.True(t, got.FinalAssistantTextTruncated)
+	assert.Greater(t, len(got.FinalAssistantText), maxBytes, "the truncation marker must keep the capped text longer than the cap")
 
 	// buildRunResult must not mutate the RunTrace it was given.
-	if rt.FinalAssistantText != longText {
-		t.Errorf("rt.FinalAssistantText was mutated to %q, want untouched %q", rt.FinalAssistantText, longText)
-	}
+	assert.Equal(t, longText, rt.FinalAssistantText)
 
 	encoded, err := json.Marshal(got)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if !strings.Contains(string(encoded), `"finalAssistantTextTruncated":true`) {
-		t.Errorf("marshalled RunResult missing finalAssistantTextTruncated:true, got %s", encoded)
-	}
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"finalAssistantTextTruncated":true`)
 }
 
 // TestBuildRunResult_FinalAssistantTextUnderCapUntouched pins that text
@@ -354,12 +293,8 @@ func TestBuildRunResult_FinalAssistantTextUnderCapUntouched(t *testing.T) {
 		FinalAssistantText: "short answer",
 	}
 	got := buildRunResult(rt, 1024)
-	if got.FinalAssistantText != "short answer" {
-		t.Errorf("FinalAssistantText = %q, want unmodified %q", got.FinalAssistantText, "short answer")
-	}
-	if got.FinalAssistantTextTruncated {
-		t.Error("FinalAssistantTextTruncated = true, want false")
-	}
+	assert.Equal(t, "short answer", got.FinalAssistantText)
+	assert.False(t, got.FinalAssistantTextTruncated)
 }
 
 // TestBuildRunResult_HookFailuresCounted pins that HookFailures counts
@@ -375,9 +310,7 @@ func TestBuildRunResult_HookFailuresCounted(t *testing.T) {
 		},
 	}
 	got := buildRunResult(rt, types.DefaultMaxFinalAssistantTextBytes)
-	if got.HookFailures != 1 {
-		t.Errorf("HookFailures = %d, want 1 (skipped entries must not count)", got.HookFailures)
-	}
+	require.Equal(t, 1, got.HookFailures, "skipped entries must not count")
 }
 
 // TestBuildRunResult_NoHookResultsLeavesHookFailuresZero pins that a
@@ -385,20 +318,15 @@ func TestBuildRunResult_HookFailuresCounted(t *testing.T) {
 func TestBuildRunResult_NoHookResultsLeavesHookFailuresZero(t *testing.T) {
 	rt := &types.RunTrace{ID: "run-no-hooks", Outcome: "success"}
 	got := buildRunResult(rt, types.DefaultMaxFinalAssistantTextBytes)
-	if got.HookFailures != 0 {
-		t.Errorf("HookFailures = %d, want 0", got.HookFailures)
-	}
+	require.Zero(t, got.HookFailures)
 }
 
-func TestBuildRunResult_GitHandoff(t *testing.T) {
+func TestBuildRunResult_CarriesGitHandoff(t *testing.T) {
 	handoff := &types.GitHandoff{Branch: "stirrup/run-git", SHA: "bbb", BaseSHA: "aaa"}
 	got := buildRunResult(&types.RunTrace{ID: "run-git", Outcome: "success", Git: handoff}, types.DefaultMaxFinalAssistantTextBytes)
-	if got.Git == nil || *got.Git != *handoff {
-		t.Errorf("Git = %+v, want %+v", got.Git, handoff)
-	}
-	if got.Error != "" {
-		t.Errorf("Error = %q, want empty on success", got.Error)
-	}
+	require.NotNil(t, got.Git)
+	assert.Equal(t, *handoff, *got.Git)
+	assert.Empty(t, got.Error, "a successful run must not report an error")
 }
 
 func TestBuildRunResult_MirrorsRunErrorAndExportReceipt(t *testing.T) {
@@ -409,12 +337,9 @@ func TestBuildRunResult_MirrorsRunErrorAndExportReceipt(t *testing.T) {
 		WorkspaceExport: &types.ExportReceipt{URI: "gs://b/ws.tar.gz", Status: types.ExportStatusFailed, Required: true, Error: "upload refused"},
 	}
 	got := buildRunResult(rt, types.DefaultMaxFinalAssistantTextBytes)
-	if got.Error != rt.Error {
-		t.Errorf("Error = %q, want %q", got.Error, rt.Error)
-	}
-	if got.WorkspaceExport == nil || *got.WorkspaceExport != *rt.WorkspaceExport {
-		t.Errorf("WorkspaceExport = %+v, want %+v", got.WorkspaceExport, rt.WorkspaceExport)
-	}
+	assert.Equal(t, rt.Error, got.Error)
+	require.NotNil(t, got.WorkspaceExport)
+	assert.Equal(t, *rt.WorkspaceExport, *got.WorkspaceExport)
 }
 
 // An earlier failure outcome keeps RunResult.Error for that failure; the
@@ -427,23 +352,16 @@ func TestBuildRunResult_GitErrorOnFailedRunStaysInGitSection(t *testing.T) {
 		Git:     &types.GitHandoff{Branch: "stirrup/run-budget", Error: "final checkpoint: commit: exit status 1"},
 	}
 	got := buildRunResult(rt, types.DefaultMaxFinalAssistantTextBytes)
-	if got.Error != rt.Error {
-		t.Errorf("Error = %q, want the earliest failure %q", got.Error, rt.Error)
-	}
-	if got.Git == nil || got.Git.Error != rt.Git.Error {
-		t.Errorf("Git = %+v, want the git failure recorded", got.Git)
-	}
+	assert.Equal(t, rt.Error, got.Error, "the earliest failure must be kept")
+	require.NotNil(t, got.Git)
+	assert.Equal(t, rt.Git.Error, got.Git.Error)
 }
 
 func TestBuildRunResult_NoGitHandoffOmitsSection(t *testing.T) {
 	got := buildRunResult(&types.RunTrace{ID: "run-none", Outcome: "success"}, types.DefaultMaxFinalAssistantTextBytes)
 	data, err := json.Marshal(got)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), `"git"`) {
-		t.Errorf("RunResult JSON = %s, want no git key", data)
-	}
+	require.NoError(t, err)
+	require.NotContains(t, string(data), `"git"`, "a run without a git handoff must omit the git key")
 }
 
 // fakeCloser is an io.Closer test double recording Close call count,
@@ -478,17 +396,10 @@ func TestArmShutdownWatchdog_ClosesAfterGraceWhenRunNeverReturns(t *testing.T) {
 	armShutdownWatchdog(shutdownCtx, closer, 10*time.Millisecond)
 	shutdownCancel()
 
-	deadline := time.After(1 * time.Second)
-	for closer.callCount() == 0 {
-		select {
-		case <-deadline:
-			t.Fatal("watchdog never closed the loop within the deadline")
-		case <-time.After(5 * time.Millisecond):
-		}
-	}
-	if closer.callCount() != 1 {
-		t.Errorf("Close called %d times, want 1", closer.callCount())
-	}
+	require.Eventually(t, func() bool {
+		return closer.callCount() > 0
+	}, time.Second, 5*time.Millisecond, "watchdog never closed the loop within the deadline")
+	require.Equal(t, 1, closer.callCount(), "Close must run exactly once")
 }
 
 // TestArmShutdownWatchdog_StopPreventsClose pins that calling stop()
@@ -504,9 +415,7 @@ func TestArmShutdownWatchdog_StopPreventsClose(t *testing.T) {
 	stop()
 
 	time.Sleep(50 * time.Millisecond)
-	if closer.callCount() != 0 {
-		t.Errorf("Close called %d times, want 0 (stop() must prevent the proactive close)", closer.callCount())
-	}
+	require.Zero(t, closer.callCount(), "stop() must prevent the proactive close")
 }
 
 // TestArmShutdownWatchdog_NoShutdownNeverCloses pins that a watchdog
@@ -520,9 +429,7 @@ func TestArmShutdownWatchdog_NoShutdownNeverCloses(t *testing.T) {
 	defer stop()
 
 	time.Sleep(30 * time.Millisecond)
-	if closer.callCount() != 0 {
-		t.Errorf("Close called %d times, want 0 (no shutdown signal was ever sent)", closer.callCount())
-	}
+	require.Zero(t, closer.callCount(), "no shutdown signal was ever sent")
 }
 
 func TestHandleSignals_FirstInterruptsSecondShutsDown(t *testing.T) {
@@ -539,11 +446,11 @@ func TestHandleSignals_FirstInterruptsSecondShutsDown(t *testing.T) {
 	select {
 	case <-interrupted:
 	case <-time.After(time.Second):
-		t.Fatal("first signal did not call interrupt")
+		require.FailNow(t, "first signal did not call interrupt")
 	}
 	select {
 	case <-shutdown:
-		t.Fatal("first signal called shutdown, want post-run work left running")
+		require.FailNow(t, "first signal called shutdown, want post-run work left running")
 	case <-time.After(20 * time.Millisecond):
 	}
 
@@ -551,7 +458,7 @@ func TestHandleSignals_FirstInterruptsSecondShutsDown(t *testing.T) {
 	select {
 	case <-shutdown:
 	case <-time.After(time.Second):
-		t.Fatal("second signal did not call shutdown")
+		require.FailNow(t, "second signal did not call shutdown")
 	}
 	<-done
 }
@@ -569,11 +476,9 @@ func TestHandleSignals_NilShutdownReturnsAfterFirstSignal(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("handleSignals did not return after the first signal with no shutdown func")
+		require.FailNow(t, "handleSignals did not return after the first signal with no shutdown func")
 	}
-	if !interrupted {
-		t.Error("first signal did not call interrupt")
-	}
+	require.True(t, interrupted, "first signal did not call interrupt")
 }
 
 func installFakeExporter(t *testing.T, exp workspaceexport.Exporter, buildErr error) *bool {
@@ -592,12 +497,9 @@ func TestWorkspaceHandoff_NoDestinationSkipsExport(t *testing.T) {
 	called := installFakeExporter(t, fakeExporter{}, nil)
 	h := workspaceHandoff{primaryRunID: "run-1"}
 	receipt, err := h.Handoff(context.Background(), &types.RunConfig{RunID: "run-1"}, nil)
-	if receipt != nil || err != nil {
-		t.Fatalf("Handoff() = %+v, %v; want nil, nil without a destination", receipt, err)
-	}
-	if *called {
-		t.Error("newWorkspaceExporter was invoked despite WorkspaceExportTo being empty")
-	}
+	require.NoError(t, err)
+	require.Nil(t, receipt)
+	require.False(t, *called, "newWorkspaceExporter was invoked despite WorkspaceExportTo being empty")
 }
 
 func TestWorkspaceHandoff_SuccessfulExport(t *testing.T) {
@@ -607,16 +509,11 @@ func TestWorkspaceHandoff_SuccessfulExport(t *testing.T) {
 	cfg.Executor.WorkspaceExportTo = "gs://stirrup-results/runs/run-1/workspace.tar.gz"
 
 	receipt, err := workspaceHandoff{primaryRunID: "run-1"}.Handoff(context.Background(), cfg, &archiverExecutor{})
-	if err != nil {
-		t.Fatalf("Handoff() error: %v", err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, receipt)
 	want := types.ExportReceipt{URI: cfg.Executor.WorkspaceExportTo, Status: types.ExportStatusUploaded}
-	if receipt == nil || *receipt != want {
-		t.Errorf("receipt = %+v, want %+v", receipt, want)
-	}
-	if got := rec.destinations(); !equalStrings(got, []string{cfg.Executor.WorkspaceExportTo}) {
-		t.Errorf("export destinations = %v", got)
-	}
+	require.Equal(t, want, *receipt)
+	require.Equal(t, []string{cfg.Executor.WorkspaceExportTo}, rec.destinations())
 }
 
 func TestWorkspaceHandoff_EmptyWorkspaceIsAnEmptySuccess(t *testing.T) {
@@ -625,12 +522,9 @@ func TestWorkspaceHandoff_EmptyWorkspaceIsAnEmptySuccess(t *testing.T) {
 	cfg.Executor.WorkspaceExportTo = "gs://stirrup-results/runs/run-1/workspace.tar.gz"
 
 	receipt, err := workspaceHandoff{primaryRunID: "run-1"}.Handoff(context.Background(), cfg, &archiverExecutor{})
-	if err != nil {
-		t.Fatalf("Handoff() error = %v, want nil for an empty workspace", err)
-	}
-	if receipt == nil || receipt.Status != types.ExportStatusEmpty {
-		t.Errorf("receipt = %+v, want status empty", receipt)
-	}
+	require.NoError(t, err, "an empty workspace is a successful handoff")
+	require.NotNil(t, receipt)
+	require.Equal(t, types.ExportStatusEmpty, receipt.Status)
 }
 
 func TestWorkspaceHandoff_ExportFailureReturnsReceiptAndError(t *testing.T) {
@@ -640,12 +534,10 @@ func TestWorkspaceHandoff_ExportFailureReturnsReceiptAndError(t *testing.T) {
 	cfg.Executor.WorkspaceExportTo = "gs://stirrup-results/runs/run-1/workspace.tar.gz"
 
 	receipt, err := workspaceHandoff{primaryRunID: "run-1"}.Handoff(context.Background(), cfg, &archiverExecutor{})
-	if !errors.Is(err, sentinel) {
-		t.Errorf("error = %v, want the export failure in the chain", err)
-	}
-	if receipt == nil || receipt.URI != cfg.Executor.WorkspaceExportTo || receipt.Status == types.ExportStatusUploaded {
-		t.Errorf("receipt = %+v, want the destination without an uploaded status", receipt)
-	}
+	require.ErrorIs(t, err, sentinel)
+	require.NotNil(t, receipt)
+	require.Equal(t, cfg.Executor.WorkspaceExportTo, receipt.URI)
+	require.NotEqual(t, types.ExportStatusUploaded, receipt.Status, "a failed export must not report uploaded")
 }
 
 func TestWorkspaceHandoff_ExporterBuildFailure(t *testing.T) {
@@ -655,9 +547,8 @@ func TestWorkspaceHandoff_ExporterBuildFailure(t *testing.T) {
 	cfg.Executor.WorkspaceExportTo = "gs://stirrup-results/runs/run-1/workspace.tar.gz"
 
 	receipt, err := workspaceHandoff{primaryRunID: "run-1"}.Handoff(context.Background(), cfg, &archiverExecutor{})
-	if !errors.Is(err, build) || receipt == nil {
-		t.Errorf("Handoff() = %+v, %v; want a receipt and the build failure", receipt, err)
-	}
+	require.ErrorIs(t, err, build)
+	require.NotNil(t, receipt, "a failed exporter build still returns a receipt")
 }
 
 func TestWorkspaceHandoff_FollowUpExportsToRunScopedURI(t *testing.T) {
@@ -667,41 +558,34 @@ func TestWorkspaceHandoff_FollowUpExportsToRunScopedURI(t *testing.T) {
 	cfg.Executor.WorkspaceExportTo = "gs://bucket/runs/primary/workspace.tar.gz"
 	h := workspaceHandoff{primaryRunID: "primary"}
 
-	if _, err := h.Handoff(context.Background(), cfg, &archiverExecutor{}); err != nil {
-		t.Fatal(err)
-	}
+	_, err := h.Handoff(context.Background(), cfg, &archiverExecutor{})
+	require.NoError(t, err)
 	cfg.RunID = "run-2"
 	receipt, err := h.Handoff(context.Background(), cfg, &archiverExecutor{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	want := []string{"gs://bucket/runs/primary/workspace.tar.gz", "gs://bucket/runs/primary/run-2/workspace.tar.gz"}
-	if got := rec.destinations(); !equalStrings(got, want) {
-		t.Errorf("export destinations = %v, want %v", got, want)
-	}
-	if receipt.URI != want[1] {
-		t.Errorf("follow-up receipt URI = %q, want %q", receipt.URI, want[1])
-	}
+	require.Equal(t, want, rec.destinations())
+	require.Equal(t, want[1], receipt.URI)
 }
 
 func TestBuildRunResult_CarriesDegradedCapabilities(t *testing.T) {
-	rt := &types.RunTrace{
-		ID:      "run-degraded",
-		Outcome: "success",
-		DegradedCapabilities: []types.DegradedCapability{
-			{Kind: types.DegradedCapabilityMCP, Name: "docs", Error: "connection refused"},
-		},
-	}
-	got := buildRunResult(rt, types.DefaultMaxFinalAssistantTextBytes)
-	if len(got.DegradedCapabilities) != 1 || got.DegradedCapabilities[0].Name != "docs" {
-		t.Errorf("DegradedCapabilities = %+v, want the docs server", got.DegradedCapabilities)
-	}
+	t.Run("reports degraded capabilities", func(t *testing.T) {
+		rt := &types.RunTrace{
+			ID:      "run-degraded",
+			Outcome: "success",
+			DegradedCapabilities: []types.DegradedCapability{
+				{Kind: types.DegradedCapabilityMCP, Name: "docs", Error: "connection refused"},
+			},
+		}
+		got := buildRunResult(rt, types.DefaultMaxFinalAssistantTextBytes)
+		require.Len(t, got.DegradedCapabilities, 1)
+		require.Equal(t, "docs", got.DegradedCapabilities[0].Name)
+	})
 
-	raw, err := json.Marshal(buildRunResult(&types.RunTrace{ID: "clean", Outcome: "success"}, types.DefaultMaxFinalAssistantTextBytes))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(raw), "degradedCapabilities") {
-		t.Errorf("a clean RunResult must omit degradedCapabilities, got %s", raw)
-	}
+	t.Run("omits the field when nothing degraded", func(t *testing.T) {
+		result := buildRunResult(&types.RunTrace{ID: "clean", Outcome: "success"}, types.DefaultMaxFinalAssistantTextBytes)
+		raw, err := json.Marshal(result)
+		require.NoError(t, err)
+		require.NotContains(t, string(raw), "degradedCapabilities")
+	})
 }

@@ -2,13 +2,13 @@ package transport
 
 import (
 	"encoding/json"
-	"maps"
 	"math"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
 
@@ -20,15 +20,10 @@ import (
 // the proto RunConfig is copied into the internal types.RunConfig.
 func TestRunConfigFromProto_SessionNamePropagates(t *testing.T) {
 	name := "nightly-eval"
-	pc := &pb.RunConfig{
-		SessionName: &name,
-	}
 
-	rc := runConfigFromProto(pc)
+	rc := runConfigFromProto(&pb.RunConfig{SessionName: &name})
 
-	if rc.SessionName != "nightly-eval" {
-		t.Fatalf("SessionName not propagated: got %q, want %q", rc.SessionName, "nightly-eval")
-	}
+	require.Equal(t, "nightly-eval", rc.SessionName)
 }
 
 // TestRunConfigFromProto_PromptBuilderFieldsPreserved confirms
@@ -45,15 +40,9 @@ func TestRunConfigFromProto_PromptBuilderFieldsPreserved(t *testing.T) {
 
 	rc := runConfigFromProto(pc)
 
-	if rc.PromptBuilder.Type != "composed" {
-		t.Errorf("PromptBuilder.Type not propagated: got %q", rc.PromptBuilder.Type)
-	}
-	if rc.PromptBuilder.Template != pc.PromptBuilder.Template {
-		t.Errorf("PromptBuilder.Template not propagated: got %q", rc.PromptBuilder.Template)
-	}
-	if rc.PromptBuilder.PromptModel != "claude-fable-5" {
-		t.Errorf("PromptBuilder.PromptModel not propagated: got %q", rc.PromptBuilder.PromptModel)
-	}
+	require.Equal(t, "composed", rc.PromptBuilder.Type)
+	require.Equal(t, pc.PromptBuilder.Template, rc.PromptBuilder.Template)
+	require.Equal(t, "claude-fable-5", rc.PromptBuilder.PromptModel)
 }
 
 // TestRuleOfTwoProto_EmptyMessageDoesNotDisableEnforcement guards the
@@ -65,70 +54,38 @@ func TestRunConfigFromProto_PromptBuilderFieldsPreserved(t *testing.T) {
 // the opposite of the intended secure default.
 func TestRuleOfTwoProto_EmptyMessageDoesNotDisableEnforcement(t *testing.T) {
 	t.Run("empty message round-trips as nil enforce", func(t *testing.T) {
-		original := &pb.RuleOfTwoConfig{}
-		bytes, err := proto.Marshal(original)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
+		wire, err := proto.Marshal(&pb.RuleOfTwoConfig{})
+		require.NoError(t, err)
 
 		var decoded pb.RuleOfTwoConfig
-		if err := proto.Unmarshal(bytes, &decoded); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-
-		if decoded.Enforce != nil {
-			t.Fatalf("expected Enforce nil for empty message, got %v", *decoded.Enforce)
-		}
+		require.NoError(t, proto.Unmarshal(wire, &decoded))
+		require.Nil(t, decoded.Enforce)
 
 		rc := runConfigFromProto(&pb.RunConfig{RuleOfTwo: &decoded})
-		if rc.RuleOfTwo == nil {
-			t.Fatal("expected types.RunConfig.RuleOfTwo to be non-nil when proto sub-message is present")
-		}
-		if rc.RuleOfTwo.Enforce != nil {
-			t.Fatalf("expected types Enforce nil, got %v", *rc.RuleOfTwo.Enforce)
-		}
+		require.NotNil(t, rc.RuleOfTwo, "RuleOfTwo must be set when the proto sub-message is present")
+		require.Nil(t, rc.RuleOfTwo.Enforce)
 	})
 
 	t.Run("explicit false round-trips as &false", func(t *testing.T) {
-		f := false
-		original := &pb.RuleOfTwoConfig{Enforce: &f}
-		bytes, err := proto.Marshal(original)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
+		enforce := false
+		wire, err := proto.Marshal(&pb.RuleOfTwoConfig{Enforce: &enforce})
+		require.NoError(t, err)
 
 		var decoded pb.RuleOfTwoConfig
-		if err := proto.Unmarshal(bytes, &decoded); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-
-		if decoded.Enforce == nil {
-			t.Fatal("expected Enforce non-nil after explicit false")
-		}
-		if *decoded.Enforce != false {
-			t.Fatalf("expected Enforce false, got %v", *decoded.Enforce)
-		}
+		require.NoError(t, proto.Unmarshal(wire, &decoded))
+		require.NotNil(t, decoded.Enforce)
+		require.False(t, *decoded.Enforce)
 	})
 
 	t.Run("explicit true round-trips as &true", func(t *testing.T) {
-		tr := true
-		original := &pb.RuleOfTwoConfig{Enforce: &tr}
-		bytes, err := proto.Marshal(original)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
+		enforce := true
+		wire, err := proto.Marshal(&pb.RuleOfTwoConfig{Enforce: &enforce})
+		require.NoError(t, err)
 
 		var decoded pb.RuleOfTwoConfig
-		if err := proto.Unmarshal(bytes, &decoded); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-
-		if decoded.Enforce == nil {
-			t.Fatal("expected Enforce non-nil after explicit true")
-		}
-		if *decoded.Enforce != true {
-			t.Fatalf("expected Enforce true, got %v", *decoded.Enforce)
-		}
+		require.NoError(t, proto.Unmarshal(wire, &decoded))
+		require.NotNil(t, decoded.Enforce)
+		require.True(t, *decoded.Enforce)
 	})
 }
 
@@ -140,24 +97,21 @@ func TestRuleOfTwoProto_EmptyMessageDoesNotDisableEnforcement(t *testing.T) {
 func TestRuleOfTwoProto_RuntimeTranslation(t *testing.T) {
 	t.Run("absent runtime stays nil", func(t *testing.T) {
 		rc := runConfigFromProto(&pb.RunConfig{RuleOfTwo: &pb.RuleOfTwoConfig{}})
-		if rc.RuleOfTwo == nil {
-			t.Fatal("expected RuleOfTwo non-nil when proto sub-message present")
-		}
-		if rc.RuleOfTwo.Runtime != nil {
-			t.Fatalf("expected Runtime nil when proto runtime absent, got %+v", rc.RuleOfTwo.Runtime)
-		}
+
+		require.NotNil(t, rc.RuleOfTwo)
+		require.Nil(t, rc.RuleOfTwo.Runtime)
 	})
 
 	t.Run("empty runtime surfaces as present-but-empty", func(t *testing.T) {
 		rc := runConfigFromProto(&pb.RunConfig{
 			RuleOfTwo: &pb.RuleOfTwoConfig{Runtime: &pb.RuleOfTwoRuntimeConfig{}},
 		})
-		if rc.RuleOfTwo == nil || rc.RuleOfTwo.Runtime == nil {
-			t.Fatalf("expected present-but-empty Runtime, got %+v", rc.RuleOfTwo)
-		}
-		if rc.RuleOfTwo.Runtime.Classifier != "" || rc.RuleOfTwo.Runtime.OnDetect != "" || rc.RuleOfTwo.Runtime.GuardCriteria != nil {
-			t.Errorf("expected zero-valued Runtime, got %+v", rc.RuleOfTwo.Runtime)
-		}
+
+		require.NotNil(t, rc.RuleOfTwo)
+		require.NotNil(t, rc.RuleOfTwo.Runtime)
+		require.Empty(t, rc.RuleOfTwo.Runtime.Classifier)
+		require.Empty(t, rc.RuleOfTwo.Runtime.OnDetect)
+		require.Nil(t, rc.RuleOfTwo.Runtime.GuardCriteria)
 	})
 
 	t.Run("populated runtime translates fields", func(t *testing.T) {
@@ -171,25 +125,17 @@ func TestRuleOfTwoProto_RuntimeTranslation(t *testing.T) {
 			},
 		}
 		rc := runConfigFromProto(src)
+
 		rt := rc.RuleOfTwo.Runtime
-		if rt == nil {
-			t.Fatal("expected Runtime non-nil")
-		}
-		if rt.Classifier != "patterns" {
-			t.Errorf("Classifier: got %q, want %q", rt.Classifier, "patterns")
-		}
-		if rt.OnDetect != "block-external" {
-			t.Errorf("OnDetect: got %q, want %q", rt.OnDetect, "block-external")
-		}
-		if len(rt.GuardCriteria) != 2 || rt.GuardCriteria[0] != "sensitive_data" || rt.GuardCriteria[1] != "pii" {
-			t.Errorf("GuardCriteria: got %v", rt.GuardCriteria)
-		}
+		require.NotNil(t, rt)
+		require.Equal(t, "patterns", rt.Classifier)
+		require.Equal(t, "block-external", rt.OnDetect)
+		require.Equal(t, []string{"sensitive_data", "pii"}, rt.GuardCriteria)
+
 		// GuardCriteria must be copied, not aliased, so mutating the
 		// source after translation cannot reach the translated copy.
 		src.RuleOfTwo.Runtime.GuardCriteria[0] = "mutated"
-		if rt.GuardCriteria[0] != "sensitive_data" {
-			t.Error("GuardCriteria shares backing array with proto source")
-		}
+		require.Equal(t, "sensitive_data", rt.GuardCriteria[0], "GuardCriteria shares backing array with proto source")
 	})
 }
 
@@ -218,27 +164,16 @@ func TestRunConfigFromProto_TranslatesNewSafetyFields(t *testing.T) {
 
 	rc := runConfigFromProto(pc)
 
-	if rc.Executor.Runtime != "runsc" {
-		t.Errorf("Executor.Runtime: got %q, want runsc", rc.Executor.Runtime)
-	}
-	if rc.PermissionPolicy.PolicyFile != "/etc/stirrup/policy.cedar" {
-		t.Errorf("PolicyFile: got %q", rc.PermissionPolicy.PolicyFile)
-	}
-	if rc.PermissionPolicy.Fallback != "deny-side-effects" {
-		t.Errorf("Fallback: got %q", rc.PermissionPolicy.Fallback)
-	}
-	if rc.RuleOfTwo == nil || rc.RuleOfTwo.Enforce == nil || *rc.RuleOfTwo.Enforce != false {
-		t.Errorf("RuleOfTwo.Enforce not preserved: %+v", rc.RuleOfTwo)
-	}
-	if rc.CodeScanner == nil || rc.CodeScanner.Type != "composite" {
-		t.Errorf("CodeScanner not translated: %+v", rc.CodeScanner)
-	}
-	if rc.CodeScanner != nil && len(rc.CodeScanner.Scanners) != 2 {
-		t.Errorf("CodeScanner.Scanners: got %v", rc.CodeScanner.Scanners)
-	}
-	if rc.CodeScanner != nil && !rc.CodeScanner.BlockOnWarn {
-		t.Errorf("CodeScanner.BlockOnWarn not translated")
-	}
+	require.Equal(t, "runsc", rc.Executor.Runtime)
+	require.Equal(t, "/etc/stirrup/policy.cedar", rc.PermissionPolicy.PolicyFile)
+	require.Equal(t, "deny-side-effects", rc.PermissionPolicy.Fallback)
+	require.NotNil(t, rc.RuleOfTwo)
+	require.NotNil(t, rc.RuleOfTwo.Enforce)
+	require.False(t, *rc.RuleOfTwo.Enforce)
+	require.NotNil(t, rc.CodeScanner)
+	require.Equal(t, "composite", rc.CodeScanner.Type)
+	require.Len(t, rc.CodeScanner.Scanners, 2)
+	require.True(t, rc.CodeScanner.BlockOnWarn)
 }
 
 // TestRunConfigFromProto_TranslatesK8sExecutorFields pins that the k8s
@@ -259,24 +194,12 @@ func TestRunConfigFromProto_TranslatesK8sExecutorFields(t *testing.T) {
 
 	rc := runConfigFromProto(pc)
 
-	if rc.Executor.Type != "k8s" {
-		t.Errorf("Executor.Type: got %q, want k8s", rc.Executor.Type)
-	}
-	if rc.Executor.Runtime != "gvisor" {
-		t.Errorf("Executor.Runtime: got %q, want gvisor", rc.Executor.Runtime)
-	}
-	if rc.Executor.K8sNamespace != "agents" {
-		t.Errorf("K8sNamespace: got %q, want agents", rc.Executor.K8sNamespace)
-	}
-	if rc.Executor.K8sKubeconfig != "/home/u/.kube/config" {
-		t.Errorf("K8sKubeconfig: got %q", rc.Executor.K8sKubeconfig)
-	}
-	if rc.Executor.K8sServiceAccount != "agent-sa" {
-		t.Errorf("K8sServiceAccount: got %q, want agent-sa", rc.Executor.K8sServiceAccount)
-	}
-	if got := rc.Executor.K8sNodeSelector["disktype"]; got != "ssd" {
-		t.Errorf("K8sNodeSelector[disktype]: got %q, want ssd", got)
-	}
+	require.Equal(t, "k8s", rc.Executor.Type)
+	require.Equal(t, "gvisor", rc.Executor.Runtime)
+	require.Equal(t, "agents", rc.Executor.K8sNamespace)
+	require.Equal(t, "/home/u/.kube/config", rc.Executor.K8sKubeconfig)
+	require.Equal(t, "agent-sa", rc.Executor.K8sServiceAccount)
+	require.Equal(t, "ssd", rc.Executor.K8sNodeSelector["disktype"])
 }
 
 // TestRunConfigFromProto_TraceEmitterGCSFieldsPreserved pins that the
@@ -289,16 +212,12 @@ func TestRunConfigFromProto_TraceEmitterGCSFieldsPreserved(t *testing.T) {
 			ObjectPrefix: "traces/",
 		},
 	}
+
 	rc := runConfigFromProto(pc)
-	if rc.TraceEmitter.Type != "gcs" {
-		t.Errorf("TraceEmitter.Type: got %q, want gcs", rc.TraceEmitter.Type)
-	}
-	if rc.TraceEmitter.Bucket != "stirrup-results" {
-		t.Errorf("TraceEmitter.Bucket: got %q, want stirrup-results", rc.TraceEmitter.Bucket)
-	}
-	if rc.TraceEmitter.ObjectPrefix != "traces/" {
-		t.Errorf("TraceEmitter.ObjectPrefix: got %q, want traces/", rc.TraceEmitter.ObjectPrefix)
-	}
+
+	require.Equal(t, "gcs", rc.TraceEmitter.Type)
+	require.Equal(t, "stirrup-results", rc.TraceEmitter.Bucket)
+	require.Equal(t, "traces/", rc.TraceEmitter.ObjectPrefix)
 }
 
 // TestRunConfigFromProto_SessionNameAbsentWhenNil documents the safe default:
@@ -306,36 +225,21 @@ func TestRunConfigFromProto_TraceEmitterGCSFieldsPreserved(t *testing.T) {
 // zero value is a nil pointer), the internal RunConfig must surface the empty
 // string rather than panicking on a nil dereference.
 func TestRunConfigFromProto_SessionNameAbsentWhenNil(t *testing.T) {
-	pc := &pb.RunConfig{}
+	rc := runConfigFromProto(&pb.RunConfig{})
 
-	rc := runConfigFromProto(pc)
+	require.Empty(t, rc.SessionName)
+	require.Nil(t, rc.RuleOfTwo)
+	require.Nil(t, rc.CodeScanner)
 
-	if rc.SessionName != "" {
-		t.Fatalf("SessionName should be empty when proto field is nil, got %q", rc.SessionName)
-	}
-
-	rcEmpty := runConfigFromProto(&pb.RunConfig{})
-	if rcEmpty.RuleOfTwo != nil {
-		t.Error("RuleOfTwo should be nil when proto field absent")
-	}
-	if rcEmpty.CodeScanner != nil {
-		t.Error("CodeScanner should be nil when proto field absent")
-	}
-
-	pcUnset := &pb.RunConfig{RuleOfTwo: &pb.RuleOfTwoConfig{}}
-	rcUnset := runConfigFromProto(pcUnset)
-	if rcUnset.RuleOfTwo == nil {
-		t.Fatal("RuleOfTwo non-nil expected when proto field present")
-	}
-	if rcUnset.RuleOfTwo.Enforce != nil {
-		t.Errorf("RuleOfTwo.Enforce should be nil for empty proto sub-message; got %v", *rcUnset.RuleOfTwo.Enforce)
-	}
+	rcUnset := runConfigFromProto(&pb.RunConfig{RuleOfTwo: &pb.RuleOfTwoConfig{}})
+	require.NotNil(t, rcUnset.RuleOfTwo)
+	require.Nil(t, rcUnset.RuleOfTwo.Enforce)
 }
 
-// TestRunConfigProtoRoundTrip_GuardRail asserts that every field on the
-// proto GuardRailConfig is preserved by runConfigFromProto, including
+// TestRunConfigFromProto_GuardRailFieldsPreserved asserts that every field on
+// the proto GuardRailConfig is preserved by runConfigFromProto, including
 // the recursive Stages case.
-func TestRunConfigProtoRoundTrip_GuardRail(t *testing.T) {
+func TestRunConfigFromProto_GuardRailFieldsPreserved(t *testing.T) {
 	think := true
 	pc := &pb.RunConfig{
 		GuardRail: &pb.GuardRailConfig{
@@ -379,75 +283,34 @@ func TestRunConfigProtoRoundTrip_GuardRail(t *testing.T) {
 
 	rc := runConfigFromProto(pc)
 
-	if rc.GuardRail == nil {
-		t.Fatal("GuardRail dropped during proto translation")
-	}
-	if rc.GuardRail.Type != "composite" {
-		t.Errorf("Type: got %q, want composite", rc.GuardRail.Type)
-	}
-	if got, want := rc.GuardRail.Phases, []string{"pre_turn", "post_turn"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Errorf("Phases: got %v, want %v", got, want)
-	}
-	if rc.GuardRail.TimeoutMs != 1500 {
-		t.Errorf("TimeoutMs: got %d, want 1500", rc.GuardRail.TimeoutMs)
-	}
-	if !rc.GuardRail.FailOpen {
-		t.Errorf("FailOpen: got false, want true")
-	}
-	if rc.GuardRail.MinChunkChars != 256 {
-		t.Errorf("MinChunkChars: got %d, want 256", rc.GuardRail.MinChunkChars)
-	}
-	if len(rc.GuardRail.Stages) != 3 {
-		t.Fatalf("Stages: got %d, want 3", len(rc.GuardRail.Stages))
-	}
+	require.NotNil(t, rc.GuardRail, "GuardRail dropped during proto translation")
+	require.Equal(t, "composite", rc.GuardRail.Type)
+	require.Equal(t, []string{"pre_turn", "post_turn"}, rc.GuardRail.Phases)
+	require.Equal(t, 1500, rc.GuardRail.TimeoutMs)
+	require.True(t, rc.GuardRail.FailOpen)
+	require.Equal(t, 256, rc.GuardRail.MinChunkChars)
+	require.Len(t, rc.GuardRail.Stages, 3)
 
 	gg := rc.GuardRail.Stages[0]
-	if gg.Type != "granite-guardian" {
-		t.Errorf("Stages[0].Type: got %q", gg.Type)
-	}
-	if gg.Endpoint != "http://classifier.local:9999" {
-		t.Errorf("Stages[0].Endpoint: got %q", gg.Endpoint)
-	}
-	if gg.Model != "ibm-granite/granite-guardian-4.1-8b" {
-		t.Errorf("Stages[0].Model: got %q", gg.Model)
-	}
-	if len(gg.Criteria) != 2 || gg.Criteria[0] != "harm" || gg.Criteria[1] != "jailbreak" {
-		t.Errorf("Stages[0].Criteria: got %v", gg.Criteria)
-	}
-	if gg.CustomCriteria["my_rule"] != "no profanity" {
-		t.Errorf("Stages[0].CustomCriteria: got %v", gg.CustomCriteria)
-	}
-	if gg.Think == nil || *gg.Think != true {
-		t.Errorf("Stages[0].Think: got %v, want pointer to true", gg.Think)
-	}
+	require.Equal(t, "granite-guardian", gg.Type)
+	require.Equal(t, "http://classifier.local:9999", gg.Endpoint)
+	require.Equal(t, "ibm-granite/granite-guardian-4.1-8b", gg.Model)
+	require.Equal(t, []string{"harm", "jailbreak"}, gg.Criteria)
+	require.Equal(t, "no profanity", gg.CustomCriteria["my_rule"])
+	require.NotNil(t, gg.Think)
+	require.True(t, *gg.Think)
 
 	cj := rc.GuardRail.Stages[1]
-	if cj.Type != "cloud-judge" {
-		t.Errorf("Stages[1].Type: got %q", cj.Type)
-	}
-	if cj.Model != "claude-haiku-5-5" {
-		t.Errorf("Stages[1].Model: got %q", cj.Model)
-	}
-	if cj.TimeoutMs != 5000 {
-		t.Errorf("Stages[1].TimeoutMs: got %d", cj.TimeoutMs)
-	}
+	require.Equal(t, "cloud-judge", cj.Type)
+	require.Equal(t, "claude-haiku-5-5", cj.Model)
+	require.Equal(t, 5000, cj.TimeoutMs)
 
 	ss := rc.GuardRail.Stages[2]
-	if ss.Type != "shieldstral" {
-		t.Errorf("Stages[2].Type: got %q", ss.Type)
-	}
-	if ss.Endpoint != "https://api.mistral.ai" {
-		t.Errorf("Stages[2].Endpoint: got %q", ss.Endpoint)
-	}
-	if ss.Model != "mistralai/Shieldstral-1.0-3B" {
-		t.Errorf("Stages[2].Model: got %q", ss.Model)
-	}
-	if ss.APIKeyRef != "secret://MISTRAL_API_KEY" {
-		t.Errorf("Stages[2].APIKeyRef: got %q", ss.APIKeyRef)
-	}
-	if ss.TimeoutMs != 3000 {
-		t.Errorf("Stages[2].TimeoutMs: got %d", ss.TimeoutMs)
-	}
+	require.Equal(t, "shieldstral", ss.Type)
+	require.Equal(t, "https://api.mistral.ai", ss.Endpoint)
+	require.Equal(t, "mistralai/Shieldstral-1.0-3B", ss.Model)
+	require.Equal(t, "secret://MISTRAL_API_KEY", ss.APIKeyRef)
+	require.Equal(t, 3000, ss.TimeoutMs)
 }
 
 func TestRunConfigProtoRoundTrip_ClearToolResultsFields(t *testing.T) {
@@ -460,48 +323,39 @@ func TestRunConfigProtoRoundTrip_ClearToolResultsFields(t *testing.T) {
 		ExcludeTools: []string{"run_command", "web_fetch"},
 	}}
 	wire, err := proto.Marshal(original)
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
+	require.NoError(t, err)
+
 	var decoded pb.RunConfig
-	if err := proto.Unmarshal(wire, &decoded); err != nil {
-		t.Fatalf("Unmarshal: %v", err)
-	}
+	require.NoError(t, proto.Unmarshal(wire, &decoded))
 
 	got := runConfigFromProto(&decoded).ContextStrategy
-	if got.Type != "clear-tool-results" || got.MaxTokens != 100000 {
-		t.Errorf("Type/MaxTokens = %q/%d", got.Type, got.MaxTokens)
-	}
-	if got.Keep == nil || *got.Keep != 0 {
-		t.Errorf("Keep = %v, want an explicit 0", got.Keep)
-	}
-	if got.ClearAtLeast == nil || *got.ClearAtLeast != 20000 {
-		t.Errorf("ClearAtLeast = %v, want 20000", got.ClearAtLeast)
-	}
-	if want := []string{"run_command", "web_fetch"}; !reflect.DeepEqual(got.ExcludeTools, want) {
-		t.Errorf("ExcludeTools = %v, want %v", got.ExcludeTools, want)
-	}
+	require.Equal(t, "clear-tool-results", got.Type)
+	require.Equal(t, 100000, got.MaxTokens)
+	require.NotNil(t, got.Keep, "keep must survive as an explicit 0, not unset")
+	require.Equal(t, 0, *got.Keep)
+	require.NotNil(t, got.ClearAtLeast)
+	require.Equal(t, 20000, *got.ClearAtLeast)
+	require.Equal(t, []string{"run_command", "web_fetch"}, got.ExcludeTools)
+
 	decoded.ContextStrategy.ExcludeTools[0] = "mutated"
-	if got.ExcludeTools[0] != "run_command" {
-		t.Error("ExcludeTools aliases the proto slice")
-	}
+	require.Equal(t, "run_command", got.ExcludeTools[0], "ExcludeTools aliases the proto slice")
 }
 
 func TestRunConfigFromProto_ClearToolResultsFieldsAbsentStayUnset(t *testing.T) {
 	got := runConfigFromProto(&pb.RunConfig{ContextStrategy: &pb.ContextStrategyConfig{Type: "sliding-window"}}).ContextStrategy
-	if got.Keep != nil || got.ClearAtLeast != nil || got.ExcludeTools != nil {
-		t.Errorf("unset proto fields must stay unset, got %+v", got)
-	}
+
+	require.Nil(t, got.Keep)
+	require.Nil(t, got.ClearAtLeast)
+	require.Nil(t, got.ExcludeTools)
 }
 
-// TestRunConfigProtoRoundTrip_GuardRailNilStays_Nil documents that an
+// TestRunConfigFromProto_GuardRailAbsentStaysNil documents that an
 // absent guard_rail proto field translates to a nil GuardRail (the
 // validator then applies the default — guards are opt-in).
-func TestRunConfigProtoRoundTrip_GuardRailNilStaysNil(t *testing.T) {
+func TestRunConfigFromProto_GuardRailAbsentStaysNil(t *testing.T) {
 	rc := runConfigFromProto(&pb.RunConfig{})
-	if rc.GuardRail != nil {
-		t.Errorf("GuardRail should be nil when proto field absent; got %+v", rc.GuardRail)
-	}
+
+	require.Nil(t, rc.GuardRail)
 }
 
 // TestRunConfigFromProto_ObservabilityPropagates ensures an
@@ -518,16 +372,9 @@ func TestRunConfigFromProto_ObservabilityPropagates(t *testing.T) {
 
 	rc := runConfigFromProto(pc)
 
-	if rc.Observability.ServiceName != "agent-a" {
-		t.Errorf("Observability.ServiceName: got %q, want agent-a", rc.Observability.ServiceName)
-	}
-
-	if rc.Observability.Environment != "staging" {
-		t.Errorf("Observability.Environment: got %q, want staging", rc.Observability.Environment)
-	}
-	if rc.Observability.ServiceNamespace != "eval" {
-		t.Errorf("Observability.ServiceNamespace: got %q, want eval", rc.Observability.ServiceNamespace)
-	}
+	require.Equal(t, "agent-a", rc.Observability.ServiceName)
+	require.Equal(t, "staging", rc.Observability.Environment)
+	require.Equal(t, "eval", rc.Observability.ServiceNamespace)
 }
 
 // TestRunConfigFromProto_ObservabilityAbsentWhenNil documents the safe
@@ -537,12 +384,8 @@ func TestRunConfigFromProto_ObservabilityPropagates(t *testing.T) {
 func TestRunConfigFromProto_ObservabilityAbsentWhenNil(t *testing.T) {
 	rc := runConfigFromProto(&pb.RunConfig{})
 
-	if rc.Observability.Environment != "" {
-		t.Errorf("Observability.Environment should be empty when proto field is nil, got %q", rc.Observability.Environment)
-	}
-	if rc.Observability.ServiceNamespace != "" {
-		t.Errorf("Observability.ServiceNamespace should be empty when proto field is nil, got %q", rc.Observability.ServiceNamespace)
-	}
+	require.Empty(t, rc.Observability.Environment)
+	require.Empty(t, rc.Observability.ServiceNamespace)
 }
 
 // TestRunConfigFromProto_AzureWIFFieldsPreserved guards the Azure
@@ -568,27 +411,15 @@ func TestRunConfigFromProto_AzureWIFFieldsPreserved(t *testing.T) {
 
 	rc := runConfigFromProto(pc)
 
-	if rc.Provider.Credential == nil {
-		t.Fatal("Credential dropped during proto translation")
-	}
-	if got, want := rc.Provider.Credential.Type, "azure-workload-identity"; got != want {
-		t.Errorf("Credential.Type: got %q, want %q", got, want)
-	}
-	if got, want := rc.Provider.Credential.AzureTenantID, "11111111-2222-3333-4444-555555555555"; got != want {
-		t.Errorf("Credential.AzureTenantID: got %q, want %q", got, want)
-	}
-	if got, want := rc.Provider.Credential.AzureClientID, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"; got != want {
-		t.Errorf("Credential.AzureClientID: got %q, want %q", got, want)
-	}
-	if got, want := rc.Provider.Credential.AzureScope, "https://cognitiveservices.azure.com/.default"; got != want {
-		t.Errorf("Credential.AzureScope: got %q, want %q", got, want)
-	}
-	if got, want := rc.Provider.Credential.AzureTokenURL, "https://login.microsoftonline.us/11111111-2222-3333-4444-555555555555/oauth2/v2.0/token"; got != want {
-		t.Errorf("Credential.AzureTokenURL: got %q, want %q", got, want)
-	}
-	if rc.Provider.Credential.TokenSource == nil || rc.Provider.Credential.TokenSource.Path != "/var/run/secrets/azure/token" {
-		t.Errorf("TokenSource dropped or mangled: %+v", rc.Provider.Credential.TokenSource)
-	}
+	cred := rc.Provider.Credential
+	require.NotNil(t, cred, "Credential dropped during proto translation")
+	require.Equal(t, "azure-workload-identity", cred.Type)
+	require.Equal(t, "11111111-2222-3333-4444-555555555555", cred.AzureTenantID)
+	require.Equal(t, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", cred.AzureClientID)
+	require.Equal(t, "https://cognitiveservices.azure.com/.default", cred.AzureScope)
+	require.Equal(t, "https://login.microsoftonline.us/11111111-2222-3333-4444-555555555555/oauth2/v2.0/token", cred.AzureTokenURL)
+	require.NotNil(t, cred.TokenSource, "TokenSource dropped during proto translation")
+	require.Equal(t, "/var/run/secrets/azure/token", cred.TokenSource.Path)
 }
 
 // TestRunConfigFromProto_CredentialWIFFieldsPreserved guards the GCP
@@ -613,32 +444,17 @@ func TestRunConfigFromProto_CredentialWIFFieldsPreserved(t *testing.T) {
 
 	rc := runConfigFromProto(pc)
 
-	if rc.Provider.Credential == nil {
-		t.Fatal("Credential dropped during proto translation")
-	}
-	if got, want := rc.Provider.Credential.Type, "gcp-workload-identity-federation"; got != want {
-		t.Errorf("Credential.Type: got %q, want %q", got, want)
-	}
-	if got, want := rc.Provider.Credential.Audience, "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/azure-pool/providers/azure-provider"; got != want {
-		t.Errorf("Credential.Audience: got %q, want %q", got, want)
-	}
-	if got, want := rc.Provider.Credential.ServiceAccount, "vertex@my-project.iam.gserviceaccount.com"; got != want {
-		t.Errorf("Credential.ServiceAccount: got %q, want %q", got, want)
-	}
+	cred := rc.Provider.Credential
+	require.NotNil(t, cred, "Credential dropped during proto translation")
+	require.Equal(t, "gcp-workload-identity-federation", cred.Type)
+	require.Equal(t, "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/azure-pool/providers/azure-provider", cred.Audience)
+	require.Equal(t, "vertex@my-project.iam.gserviceaccount.com", cred.ServiceAccount)
 
-	ts := rc.Provider.Credential.TokenSource
-	if ts == nil {
-		t.Fatal("TokenSource dropped during proto translation")
-	}
-	if got, want := ts.Type, "azure-imds"; got != want {
-		t.Errorf("TokenSource.Type: got %q, want %q", got, want)
-	}
-	if got, want := ts.Resource, "api://AzureADTokenExchange"; got != want {
-		t.Errorf("TokenSource.Resource: got %q, want %q", got, want)
-	}
-	if got, want := ts.ClientID, "11111111-1111-1111-1111-111111111111"; got != want {
-		t.Errorf("TokenSource.ClientID: got %q, want %q", got, want)
-	}
+	ts := cred.TokenSource
+	require.NotNil(t, ts, "TokenSource dropped during proto translation")
+	require.Equal(t, "azure-imds", ts.Type)
+	require.Equal(t, "api://AzureADTokenExchange", ts.Resource)
+	require.Equal(t, "11111111-1111-1111-1111-111111111111", ts.ClientID)
 }
 
 // TestRunConfigFromProto_AnthropicWIFFieldsPreserved guards the four
@@ -664,24 +480,13 @@ func TestRunConfigFromProto_AnthropicWIFFieldsPreserved(t *testing.T) {
 
 	rc := runConfigFromProto(pc)
 
-	if rc.Provider.Credential == nil {
-		t.Fatal("Credential dropped during proto translation")
-	}
-	if got, want := rc.Provider.Credential.Type, "anthropic-wif"; got != want {
-		t.Errorf("Credential.Type: got %q, want %q", got, want)
-	}
-	if got, want := rc.Provider.Credential.FederationRuleID, "fdrl_abc123"; got != want {
-		t.Errorf("Credential.FederationRuleID: got %q, want %q", got, want)
-	}
-	if got, want := rc.Provider.Credential.OrganizationID, "550e8400-e29b-41d4-a716-446655440000"; got != want {
-		t.Errorf("Credential.OrganizationID: got %q, want %q", got, want)
-	}
-	if got, want := rc.Provider.Credential.ServiceAccountID, "svac_xyz789"; got != want {
-		t.Errorf("Credential.ServiceAccountID: got %q, want %q", got, want)
-	}
-	if got, want := rc.Provider.Credential.WorkspaceID, "default"; got != want {
-		t.Errorf("Credential.WorkspaceID: got %q, want %q", got, want)
-	}
+	cred := rc.Provider.Credential
+	require.NotNil(t, cred, "Credential dropped during proto translation")
+	require.Equal(t, "anthropic-wif", cred.Type)
+	require.Equal(t, "fdrl_abc123", cred.FederationRuleID)
+	require.Equal(t, "550e8400-e29b-41d4-a716-446655440000", cred.OrganizationID)
+	require.Equal(t, "svac_xyz789", cred.ServiceAccountID)
+	require.Equal(t, "default", cred.WorkspaceID)
 }
 
 // TestRunConfigFromProto_OpenAIWIFFieldsPreserved guards the three
@@ -706,24 +511,13 @@ func TestRunConfigFromProto_OpenAIWIFFieldsPreserved(t *testing.T) {
 
 	rc := runConfigFromProto(pc)
 
-	if rc.Provider.Credential == nil {
-		t.Fatal("Credential dropped during proto translation")
-	}
-	if got, want := rc.Provider.Credential.Type, "openai-wif"; got != want {
-		t.Errorf("Credential.Type: got %q, want %q", got, want)
-	}
-	if got, want := rc.Provider.Credential.OpenAIIdentityProviderID, "idp_abc123"; got != want {
-		t.Errorf("Credential.OpenAIIdentityProviderID: got %q, want %q", got, want)
-	}
-	if got, want := rc.Provider.Credential.OpenAIServiceAccountID, "sa_xyz789"; got != want {
-		t.Errorf("Credential.OpenAIServiceAccountID: got %q, want %q", got, want)
-	}
-	if got, want := rc.Provider.Credential.OpenAISubjectTokenType, "urn:ietf:params:oauth:token-type:jwt"; got != want {
-		t.Errorf("Credential.OpenAISubjectTokenType: got %q, want %q", got, want)
-	}
-	if rc.Provider.Credential.TokenSource == nil || rc.Provider.Credential.TokenSource.Audience != "https://api.openai.com/v1" {
-		t.Errorf("TokenSource dropped or mangled: %+v", rc.Provider.Credential.TokenSource)
-	}
+	require.NotNil(t, rc.Provider.Credential, "Credential dropped during proto translation")
+	assert.Equal(t, "openai-wif", rc.Provider.Credential.Type, "Credential.Type")
+	assert.Equal(t, "idp_abc123", rc.Provider.Credential.OpenAIIdentityProviderID, "Credential.OpenAIIdentityProviderID")
+	assert.Equal(t, "sa_xyz789", rc.Provider.Credential.OpenAIServiceAccountID, "Credential.OpenAIServiceAccountID")
+	assert.Equal(t, "urn:ietf:params:oauth:token-type:jwt", rc.Provider.Credential.OpenAISubjectTokenType, "Credential.OpenAISubjectTokenType")
+	require.NotNil(t, rc.Provider.Credential.TokenSource, "TokenSource dropped")
+	assert.Equal(t, "https://api.openai.com/v1", rc.Provider.Credential.TokenSource.Audience, "TokenSource.Audience")
 }
 
 // TestRunConfigFromProto_TraceEmitterProtocolAndHeadersPreserved guards
@@ -744,18 +538,10 @@ func TestRunConfigFromProto_TraceEmitterProtocolAndHeadersPreserved(t *testing.T
 
 	rc := runConfigFromProto(pc)
 
-	if got, want := rc.TraceEmitter.Protocol, "http/protobuf"; got != want {
-		t.Errorf("TraceEmitter.Protocol: got %q, want %q", got, want)
-	}
-	if got, want := rc.TraceEmitter.Endpoint, "https://otlp-gateway-prod-us-east-0.grafana.net/otlp"; got != want {
-		t.Errorf("TraceEmitter.Endpoint: got %q, want %q", got, want)
-	}
-	if got, want := rc.TraceEmitter.Headers["Authorization"], "Basic xxx"; got != want {
-		t.Errorf("TraceEmitter.Headers[Authorization]: got %q, want %q", got, want)
-	}
-	if got, want := rc.TraceEmitter.Headers["X-Tenant"], "team-a"; got != want {
-		t.Errorf("TraceEmitter.Headers[X-Tenant]: got %q, want %q", got, want)
-	}
+	assert.Equal(t, "http/protobuf", rc.TraceEmitter.Protocol, "TraceEmitter.Protocol")
+	assert.Equal(t, "https://otlp-gateway-prod-us-east-0.grafana.net/otlp", rc.TraceEmitter.Endpoint, "TraceEmitter.Endpoint")
+	assert.Equal(t, "Basic xxx", rc.TraceEmitter.Headers["Authorization"], "TraceEmitter.Headers[Authorization]")
+	assert.Equal(t, "team-a", rc.TraceEmitter.Headers["X-Tenant"], "TraceEmitter.Headers[X-Tenant]")
 }
 
 // TestRunConfigFromProto_TraceEmitterMetricsTemporalityPreserved guards
@@ -765,9 +551,7 @@ func TestRunConfigFromProto_TraceEmitterMetricsTemporalityPreserved(t *testing.T
 	rc := runConfigFromProto(&pb.RunConfig{
 		TraceEmitter: &pb.TraceEmitterConfig{Type: "otel", MetricsTemporality: "delta"},
 	})
-	if got, want := rc.TraceEmitter.MetricsTemporality, "delta"; got != want {
-		t.Errorf("TraceEmitter.MetricsTemporality: got %q, want %q", got, want)
-	}
+	require.Equal(t, "delta", rc.TraceEmitter.MetricsTemporality)
 }
 
 // TestRunConfigFromProto_TraceEmitterCaptureContentMaxBytesPreserved
@@ -777,12 +561,8 @@ func TestRunConfigFromProto_TraceEmitterCaptureContentMaxBytesPreserved(t *testi
 	rc := runConfigFromProto(&pb.RunConfig{
 		TraceEmitter: &pb.TraceEmitterConfig{Type: "otel", CaptureContent: true, CaptureContentMaxBytes: 2048},
 	})
-	if !rc.TraceEmitter.CaptureContent {
-		t.Error("TraceEmitter.CaptureContent dropped")
-	}
-	if got, want := rc.TraceEmitter.CaptureContentMaxBytes, 2048; got != want {
-		t.Errorf("TraceEmitter.CaptureContentMaxBytes: got %d, want %d", got, want)
-	}
+	assert.True(t, rc.TraceEmitter.CaptureContent, "TraceEmitter.CaptureContent dropped")
+	assert.Equal(t, 2048, rc.TraceEmitter.CaptureContentMaxBytes, "TraceEmitter.CaptureContentMaxBytes")
 }
 
 // TestRunConfigFromProto_TraceEmitterPlatformPreserved guards
@@ -796,13 +576,8 @@ func TestRunConfigFromProto_TraceEmitterPlatformPreserved(t *testing.T) {
 			PlatformOptions: map[string]string{"region": "eu-west-2", "project": "agents"},
 		},
 	})
-	if got, want := rc.TraceEmitter.Platform, "example-platform"; got != want {
-		t.Errorf("TraceEmitter.Platform: got %q, want %q", got, want)
-	}
-	want := map[string]string{"region": "eu-west-2", "project": "agents"}
-	if !maps.Equal(rc.TraceEmitter.PlatformOptions, want) {
-		t.Errorf("TraceEmitter.PlatformOptions: got %v, want %v", rc.TraceEmitter.PlatformOptions, want)
-	}
+	assert.Equal(t, "example-platform", rc.TraceEmitter.Platform, "TraceEmitter.Platform")
+	assert.Equal(t, map[string]string{"region": "eu-west-2", "project": "agents"}, rc.TraceEmitter.PlatformOptions, "TraceEmitter.PlatformOptions")
 }
 
 // TestRunConfigFromProto_ProviderRetryConfigPreserved guards the
@@ -826,21 +601,11 @@ func TestRunConfigFromProto_ProviderRetryConfigPreserved(t *testing.T) {
 
 		rc := runConfigFromProto(pc)
 
-		if rc.Provider.Retry == nil {
-			t.Fatal("Retry dropped during proto translation")
-		}
-		if got, want := rc.Provider.Retry.MaxAttempts, 4; got != want {
-			t.Errorf("Retry.MaxAttempts: got %d, want %d", got, want)
-		}
-		if got, want := rc.Provider.Retry.InitialDelayMs, 250; got != want {
-			t.Errorf("Retry.InitialDelayMs: got %d, want %d", got, want)
-		}
-		if got, want := rc.Provider.Retry.MaxDelayMs, 12000; got != want {
-			t.Errorf("Retry.MaxDelayMs: got %d, want %d", got, want)
-		}
-		if got, want := rc.Provider.Retry.WallClockBudgetMs, 60000; got != want {
-			t.Errorf("Retry.WallClockBudgetMs: got %d, want %d", got, want)
-		}
+		require.NotNil(t, rc.Provider.Retry, "Retry dropped during proto translation")
+		require.Equal(t, 4, rc.Provider.Retry.MaxAttempts)
+		require.Equal(t, 250, rc.Provider.Retry.InitialDelayMs)
+		require.Equal(t, 12000, rc.Provider.Retry.MaxDelayMs)
+		require.Equal(t, 60000, rc.Provider.Retry.WallClockBudgetMs)
 	})
 
 	t.Run("nil retry stays nil on the Go side", func(t *testing.T) {
@@ -852,9 +617,7 @@ func TestRunConfigFromProto_ProviderRetryConfigPreserved(t *testing.T) {
 
 		rc := runConfigFromProto(pc)
 
-		if rc.Provider.Retry != nil {
-			t.Fatalf("expected nil Retry when proto omits the field, got %+v", rc.Provider.Retry)
-		}
+		require.Nil(t, rc.Provider.Retry, "Retry should be nil when proto omits the field")
 	})
 }
 
@@ -868,12 +631,8 @@ func TestRunConfigFromProto_ToolDispatchMaxParallelPreserved(t *testing.T) {
 
 	rc := runConfigFromProto(pc)
 
-	if rc.ToolDispatch == nil {
-		t.Fatal("ToolDispatch sub-config dropped: got nil, want populated")
-	}
-	if rc.ToolDispatch.MaxParallel != 8 {
-		t.Errorf("ToolDispatch.MaxParallel: got %d, want 8", rc.ToolDispatch.MaxParallel)
-	}
+	require.NotNil(t, rc.ToolDispatch, "ToolDispatch sub-config dropped: got nil, want populated")
+	require.Equal(t, 8, rc.ToolDispatch.MaxParallel)
 }
 
 // TestRunConfigFromProto_BatchProviderConfigPreserved pins that the
@@ -900,40 +659,20 @@ func TestRunConfigFromProto_BatchProviderConfigPreserved(t *testing.T) {
 		}
 
 		bytes, err := proto.Marshal(original)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
+		require.NoError(t, err, "marshal")
 		var decoded pb.RunConfig
-		if err := proto.Unmarshal(bytes, &decoded); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
+		require.NoError(t, proto.Unmarshal(bytes, &decoded), "unmarshal")
 
 		rc := runConfigFromProto(&decoded)
 
-		if rc.Provider.Batch == nil {
-			t.Fatal("Batch dropped during proto translation")
-		}
-		if !rc.Provider.Batch.Enabled {
-			t.Errorf("Batch.Enabled: got false, want true")
-		}
-		if rc.Provider.Batch.MaxWaitSeconds == nil {
-			t.Fatal("Batch.MaxWaitSeconds: got nil, want non-nil pointer")
-		}
-		if got := *rc.Provider.Batch.MaxWaitSeconds; got != 3600 {
-			t.Errorf("Batch.MaxWaitSeconds: got %d, want 3600", got)
-		}
-		if !rc.Provider.Batch.HarnessSidePolling {
-			t.Errorf("Batch.HarnessSidePolling: got false, want true")
-		}
-		if !rc.Provider.Batch.FallbackOnTimeout {
-			t.Errorf("Batch.FallbackOnTimeout: got false, want true")
-		}
-		if !rc.Provider.Batch.CancelBundleOnRunCancel {
-			t.Errorf("Batch.CancelBundleOnRunCancel: got false, want true")
-		}
-		if !rc.Provider.Batch.AllowInteractiveModes {
-			t.Errorf("Batch.AllowInteractiveModes: got false, want true")
-		}
+		require.NotNil(t, rc.Provider.Batch, "Batch dropped during proto translation")
+		require.True(t, rc.Provider.Batch.Enabled, "Batch.Enabled")
+		require.NotNil(t, rc.Provider.Batch.MaxWaitSeconds, "Batch.MaxWaitSeconds")
+		require.Equal(t, 3600, *rc.Provider.Batch.MaxWaitSeconds, "Batch.MaxWaitSeconds")
+		require.True(t, rc.Provider.Batch.HarnessSidePolling, "Batch.HarnessSidePolling")
+		require.True(t, rc.Provider.Batch.FallbackOnTimeout, "Batch.FallbackOnTimeout")
+		require.True(t, rc.Provider.Batch.CancelBundleOnRunCancel, "Batch.CancelBundleOnRunCancel")
+		require.True(t, rc.Provider.Batch.AllowInteractiveModes, "Batch.AllowInteractiveModes")
 	})
 
 	t.Run("nil batch stays nil on the Go side", func(t *testing.T) {
@@ -943,9 +682,7 @@ func TestRunConfigFromProto_BatchProviderConfigPreserved(t *testing.T) {
 
 		rc := runConfigFromProto(pc)
 
-		if rc.Provider.Batch != nil {
-			t.Fatalf("expected nil Batch when proto omits the field, got %+v", rc.Provider.Batch)
-		}
+		require.Nil(t, rc.Provider.Batch, "Batch should be nil when proto omits the field")
 	})
 
 	t.Run("batch present with MaxWaitSeconds unset preserves nil", func(t *testing.T) {
@@ -961,21 +698,13 @@ func TestRunConfigFromProto_BatchProviderConfigPreserved(t *testing.T) {
 			},
 		}
 		bytes, err := proto.Marshal(original)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
+		require.NoError(t, err, "marshal")
 		var decoded pb.RunConfig
-		if err := proto.Unmarshal(bytes, &decoded); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
+		require.NoError(t, proto.Unmarshal(bytes, &decoded), "unmarshal")
 
 		rc := runConfigFromProto(&decoded)
-		if rc.Provider.Batch == nil {
-			t.Fatal("expected non-nil Batch when proto sub-message is present")
-		}
-		if rc.Provider.Batch.MaxWaitSeconds != nil {
-			t.Errorf("MaxWaitSeconds should be nil when proto field is unset; got %v", *rc.Provider.Batch.MaxWaitSeconds)
-		}
+		require.NotNil(t, rc.Provider.Batch, "Batch should be present when proto sub-message is set")
+		require.Nil(t, rc.Provider.Batch.MaxWaitSeconds, "MaxWaitSeconds should be nil when proto field is unset")
 	})
 }
 
@@ -1004,9 +733,7 @@ func TestRunConfigFromProto_CompatProfileRoundTrip(t *testing.T) {
 				},
 			}
 			rc := runConfigFromProto(pc)
-			if rc.Provider.CompatProfile != tc.wantProfile {
-				t.Errorf("CompatProfile: got %q, want %q", rc.Provider.CompatProfile, tc.wantProfile)
-			}
+			require.Equal(t, tc.wantProfile, rc.Provider.CompatProfile)
 		})
 	}
 }
@@ -1020,23 +747,21 @@ func TestRunConfigFromProto_TemperatureRoundTrip(t *testing.T) {
 		name string
 		set  *float64
 	}{
-		{name: "nil_unset", set: nil},
-		{name: "explicit_zero_greedy", set: proto.Float64(0.0)},
-		{name: "mid_range", set: proto.Float64(0.7)},
-		{name: "above_anthropic_ceiling", set: proto.Float64(1.5)},
+		{name: "nil unset", set: nil},
+		{name: "explicit zero greedy", set: proto.Float64(0.0)},
+		{name: "mid range", set: proto.Float64(0.7)},
+		{name: "above anthropic ceiling", set: proto.Float64(1.5)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			pc := &pb.RunConfig{Temperature: tc.set}
 			rc := runConfigFromProto(pc)
-			switch {
-			case tc.set == nil && rc.Temperature != nil:
-				t.Fatalf("nil-on-wire translated to non-nil internal: got %v", *rc.Temperature)
-			case tc.set != nil && rc.Temperature == nil:
-				t.Fatalf("set-on-wire (%v) dropped to nil internal", *tc.set)
-			case tc.set != nil && *rc.Temperature != *tc.set:
-				t.Errorf("Temperature: got %v, want %v", *rc.Temperature, *tc.set)
+			if tc.set == nil {
+				require.Nil(t, rc.Temperature)
+				return
 			}
+			require.NotNil(t, rc.Temperature)
+			require.InDelta(t, *tc.set, *rc.Temperature, 1e-9)
 		})
 	}
 }
@@ -1046,34 +771,21 @@ func TestRunConfigFromProto_TemperatureRoundTrip(t *testing.T) {
 // must survive verbatim and an absent one must stay empty (say nothing
 // on the wire downstream).
 func TestRunConfigFromProto_ReasoningEffortCarried(t *testing.T) {
-	if got := runConfigFromProto(&pb.RunConfig{ReasoningEffort: "high"}).ReasoningEffort; got != "high" {
-		t.Errorf("ReasoningEffort: got %q, want %q", got, "high")
-	}
-	if got := runConfigFromProto(&pb.RunConfig{}).ReasoningEffort; got != "" {
-		t.Errorf("absent reasoning_effort translated to %q, want empty", got)
-	}
+	assert.Equal(t, "high", runConfigFromProto(&pb.RunConfig{ReasoningEffort: "high"}).ReasoningEffort, "set value")
+	assert.Empty(t, runConfigFromProto(&pb.RunConfig{}).ReasoningEffort, "absent value")
 }
 
 func TestRunConfigFromProto_ReasoningSummaryCarried(t *testing.T) {
-	if got := runConfigFromProto(&pb.RunConfig{ReasoningSummary: "off"}).ReasoningSummary; got != "off" {
-		t.Errorf("ReasoningSummary: got %q, want %q", got, "off")
-	}
-	if got := runConfigFromProto(&pb.RunConfig{}).ReasoningSummary; got != "" {
-		t.Errorf("absent reasoning_summary translated to %q, want empty", got)
-	}
+	assert.Equal(t, "off", runConfigFromProto(&pb.RunConfig{ReasoningSummary: "off"}).ReasoningSummary, "set value")
+	assert.Empty(t, runConfigFromProto(&pb.RunConfig{}).ReasoningSummary, "absent value")
 }
 
 // TestRunConfigFromProto_FollowUpHistoryCarried pins follow_up_history
 // across the wire boundary: without the copy a control plane asking for
 // "continue" would silently get the reset default.
 func TestRunConfigFromProto_FollowUpHistoryCarried(t *testing.T) {
-	got := runConfigFromProto(&pb.RunConfig{FollowUpHistory: types.FollowUpHistoryContinue}).FollowUpHistory
-	if got != types.FollowUpHistoryContinue {
-		t.Errorf("FollowUpHistory: got %q, want %q", got, types.FollowUpHistoryContinue)
-	}
-	if got := runConfigFromProto(&pb.RunConfig{}).FollowUpHistory; got != "" {
-		t.Errorf("absent follow_up_history translated to %q, want empty", got)
-	}
+	assert.Equal(t, types.FollowUpHistoryContinue, runConfigFromProto(&pb.RunConfig{FollowUpHistory: types.FollowUpHistoryContinue}).FollowUpHistory, "set value")
+	assert.Empty(t, runConfigFromProto(&pb.RunConfig{}).FollowUpHistory, "absent value")
 }
 
 // TestProviderConfigFromProto_GeminiFieldsCarried pins that the four
@@ -1096,22 +808,14 @@ func TestProviderConfigFromProto_GeminiFieldsCarried(t *testing.T) {
 			{Category: "HARM_CATEGORY_HARASSMENT", Threshold: "BLOCK_NONE"},
 		},
 	})
-	if cfg.GCPProject != "proj-1" {
-		t.Errorf("GCPProject: got %q, want %q", cfg.GCPProject, "proj-1")
-	}
-	if cfg.GCPLocation != "us-central1" {
-		t.Errorf("GCPLocation: got %q, want %q", cfg.GCPLocation, "us-central1")
-	}
-	if cfg.GCPCredentialsFile != "/etc/sa.json" {
-		t.Errorf("GCPCredentialsFile: got %q, want %q", cfg.GCPCredentialsFile, "/etc/sa.json")
-	}
+	assert.Equal(t, "proj-1", cfg.GCPProject, "GCPProject")
+	assert.Equal(t, "us-central1", cfg.GCPLocation, "GCPLocation")
+	assert.Equal(t, "/etc/sa.json", cfg.GCPCredentialsFile, "GCPCredentialsFile")
 	want := []types.GeminiSafetySetting{
 		{Category: "HARM_CATEGORY_HATE_SPEECH", Threshold: "BLOCK_ONLY_HIGH"},
 		{Category: "HARM_CATEGORY_HARASSMENT", Threshold: "BLOCK_NONE"},
 	}
-	if !reflect.DeepEqual(cfg.GeminiSafetySettings, want) {
-		t.Errorf("GeminiSafetySettings: got %+v, want %+v", cfg.GeminiSafetySettings, want)
-	}
+	assert.Equal(t, want, cfg.GeminiSafetySettings, "GeminiSafetySettings")
 }
 
 // TestRunTraceToProto_OutcomePopulated pins that the canonical Outcome
@@ -1149,47 +853,26 @@ func TestRunTraceToProto_OutcomePopulated(t *testing.T) {
 				Outcome:     tc.outcome,
 			}
 			pt := runTraceToProto(tr)
-			if pt.Outcome != tc.outcome {
-				t.Errorf("Outcome: got %q, want %q", pt.Outcome, tc.outcome)
-			}
-			if pt.StopReason != tc.outcome {
-				t.Errorf("StopReason should mirror Outcome: got %q, want %q", pt.StopReason, tc.outcome)
-			}
-			if pt.RunId != "run-141" {
-				t.Errorf("RunId: got %q, want run-141", pt.RunId)
-			}
-			if pt.Turns != 3 {
-				t.Errorf("Turns: got %d, want 3", pt.Turns)
-			}
-			if pt.InputTokens != 120 || pt.OutputTokens != 45 {
-				t.Errorf("tokens: got in=%d out=%d, want in=120 out=45", pt.InputTokens, pt.OutputTokens)
-			}
-			if pt.CacheReadTokens != 80 || pt.CacheWriteTokens != 30 || pt.ReasoningTokens != 12 {
-				t.Errorf("token breakdown: got cache_read=%d cache_write=%d reasoning=%d, want 80/30/12",
-					pt.CacheReadTokens, pt.CacheWriteTokens, pt.ReasoningTokens)
-			}
-			if pt.DurationMs != 2500 {
-				t.Errorf("DurationMs: got %d, want 2500", pt.DurationMs)
-			}
+			require.Equal(t, tc.outcome, pt.Outcome, "Outcome")
+			require.Equal(t, tc.outcome, pt.StopReason, "StopReason should mirror Outcome")
+			require.Equal(t, "run-141", pt.RunId, "RunId")
+			require.EqualValues(t, 3, pt.Turns, "Turns")
+			require.EqualValues(t, 120, pt.InputTokens, "InputTokens")
+			require.EqualValues(t, 45, pt.OutputTokens, "OutputTokens")
+			require.EqualValues(t, 80, pt.CacheReadTokens, "CacheReadTokens")
+			require.EqualValues(t, 30, pt.CacheWriteTokens, "CacheWriteTokens")
+			require.EqualValues(t, 12, pt.ReasoningTokens, "ReasoningTokens")
+			require.EqualValues(t, 2500, pt.DurationMs, "DurationMs")
 
 			raw, err := proto.Marshal(pt)
-			if err != nil {
-				t.Fatalf("marshal: %v", err)
-			}
+			require.NoError(t, err, "marshal")
 			var decoded pb.RunTrace
-			if err := proto.Unmarshal(raw, &decoded); err != nil {
-				t.Fatalf("unmarshal: %v", err)
-			}
-			if decoded.Outcome != tc.outcome {
-				t.Errorf("outcome did not survive wire round-trip: got %q, want %q", decoded.Outcome, tc.outcome)
-			}
-			if decoded.StopReason != tc.outcome {
-				t.Errorf("stop_reason did not survive wire round-trip: got %q, want %q", decoded.StopReason, tc.outcome)
-			}
-			if decoded.CacheReadTokens != 80 || decoded.CacheWriteTokens != 30 || decoded.ReasoningTokens != 12 {
-				t.Errorf("token breakdown did not survive wire round-trip: got %d/%d/%d, want 80/30/12",
-					decoded.CacheReadTokens, decoded.CacheWriteTokens, decoded.ReasoningTokens)
-			}
+			require.NoError(t, proto.Unmarshal(raw, &decoded), "unmarshal")
+			require.Equal(t, tc.outcome, decoded.Outcome, "Outcome after wire round-trip")
+			require.Equal(t, tc.outcome, decoded.StopReason, "StopReason after wire round-trip")
+			require.EqualValues(t, 80, decoded.CacheReadTokens, "CacheReadTokens after wire round-trip")
+			require.EqualValues(t, 30, decoded.CacheWriteTokens, "CacheWriteTokens after wire round-trip")
+			require.EqualValues(t, 12, decoded.ReasoningTokens, "ReasoningTokens after wire round-trip")
 		})
 	}
 }
@@ -1197,20 +880,14 @@ func TestRunTraceToProto_OutcomePopulated(t *testing.T) {
 func TestRunTraceToProto_ZeroBreakdownRoundTrip(t *testing.T) {
 	pt := runTraceToProto(&types.RunTrace{ID: "run-zero", TokenUsage: types.TokenUsage{Input: 120, Output: 45}})
 	raw, err := proto.Marshal(pt)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	var decoded pb.RunTrace
-	if err := proto.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if decoded.InputTokens != 120 || decoded.OutputTokens != 45 {
-		t.Errorf("tokens: got in=%d out=%d, want in=120 out=45", decoded.InputTokens, decoded.OutputTokens)
-	}
-	if decoded.CacheReadTokens != 0 || decoded.CacheWriteTokens != 0 || decoded.ReasoningTokens != 0 {
-		t.Errorf("token breakdown: got %d/%d/%d, want all zero",
-			decoded.CacheReadTokens, decoded.CacheWriteTokens, decoded.ReasoningTokens)
-	}
+	require.NoError(t, proto.Unmarshal(raw, &decoded), "unmarshal")
+	assert.EqualValues(t, 120, decoded.InputTokens, "InputTokens")
+	assert.EqualValues(t, 45, decoded.OutputTokens, "OutputTokens")
+	assert.Zero(t, decoded.CacheReadTokens, "CacheReadTokens")
+	assert.Zero(t, decoded.CacheWriteTokens, "CacheWriteTokens")
+	assert.Zero(t, decoded.ReasoningTokens, "ReasoningTokens")
 }
 
 func TestRunTraceToProto_SaturatesTokenCounts(t *testing.T) {
@@ -1220,12 +897,10 @@ func TestRunTraceToProto_SaturatesTokenCounts(t *testing.T) {
 		CacheRead: math.MaxInt32,
 		Reasoning: math.MinInt,
 	}})
-	if pt.InputTokens != math.MaxInt32 || pt.OutputTokens != math.MaxInt32 {
-		t.Errorf("tokens: got in=%d out=%d, want both MaxInt32", pt.InputTokens, pt.OutputTokens)
-	}
-	if pt.CacheReadTokens != math.MaxInt32 || pt.ReasoningTokens != math.MinInt32 {
-		t.Errorf("breakdown: got cache_read=%d reasoning=%d, want MaxInt32/MinInt32", pt.CacheReadTokens, pt.ReasoningTokens)
-	}
+	assert.EqualValues(t, math.MaxInt32, pt.InputTokens, "InputTokens")
+	assert.EqualValues(t, math.MaxInt32, pt.OutputTokens, "OutputTokens")
+	assert.EqualValues(t, math.MaxInt32, pt.CacheReadTokens, "CacheReadTokens")
+	assert.EqualValues(t, math.MinInt32, pt.ReasoningTokens, "ReasoningTokens")
 }
 
 func TestRunTraceToProto_LedgerUsage(t *testing.T) {
@@ -1236,29 +911,24 @@ func TestRunTraceToProto_LedgerUsage(t *testing.T) {
 		ExternalGuardTokens: types.TokenUsage{Input: math.MaxInt, Output: 1},
 	})
 	raw, err := proto.Marshal(pt)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	var decoded pb.RunTrace
-	if err := proto.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	require.NoError(t, proto.Unmarshal(raw, &decoded), "unmarshal")
 	aux := decoded.GetAuxiliaryTokens()
-	if aux.GetInputTokens() != 200 || aux.GetOutputTokens() != 10 || aux.GetCacheReadTokens() != 50 ||
-		aux.GetCacheWriteTokens() != 7 || aux.GetReasoningTokens() != 3 {
-		t.Errorf("auxiliary_tokens = %v, want 200/10/50/7/3", aux)
-	}
+	assert.EqualValues(t, 200, aux.GetInputTokens(), "AuxiliaryTokens.InputTokens")
+	assert.EqualValues(t, 10, aux.GetOutputTokens(), "AuxiliaryTokens.OutputTokens")
+	assert.EqualValues(t, 50, aux.GetCacheReadTokens(), "AuxiliaryTokens.CacheReadTokens")
+	assert.EqualValues(t, 7, aux.GetCacheWriteTokens(), "AuxiliaryTokens.CacheWriteTokens")
+	assert.EqualValues(t, 3, aux.GetReasoningTokens(), "AuxiliaryTokens.ReasoningTokens")
 	ext := decoded.GetExternalGuardTokens()
-	if ext.GetInputTokens() != math.MaxInt32 || ext.GetOutputTokens() != 1 {
-		t.Errorf("external_guard_tokens = %v, want saturated input and output 1", ext)
-	}
+	assert.EqualValues(t, math.MaxInt32, ext.GetInputTokens(), "ExternalGuardTokens.InputTokens saturates")
+	assert.EqualValues(t, 1, ext.GetOutputTokens(), "ExternalGuardTokens.OutputTokens")
 }
 
 func TestRunTraceToProto_ZeroLedgerUsageIsAbsent(t *testing.T) {
 	pt := runTraceToProto(&types.RunTrace{ID: "run-plain", TokenUsage: types.TokenUsage{Input: 5}})
-	if pt.AuxiliaryTokens != nil || pt.ExternalGuardTokens != nil {
-		t.Errorf("auxiliary_tokens=%v external_guard_tokens=%v, want both absent", pt.AuxiliaryTokens, pt.ExternalGuardTokens)
-	}
+	assert.Nil(t, pt.AuxiliaryTokens, "AuxiliaryTokens")
+	assert.Nil(t, pt.ExternalGuardTokens, "ExternalGuardTokens")
 }
 
 // TestRunTraceToProto_StopDetails pins the stop_details mirror through a
@@ -1274,21 +944,15 @@ func TestRunTraceToProto_StopDetails(t *testing.T) {
 		},
 	}
 	raw, err := proto.Marshal(runTraceToProto(tr))
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	var decoded pb.RunTrace
-	if err := proto.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	require.NoError(t, proto.Unmarshal(raw, &decoded), "unmarshal")
 	got := decoded.GetStopDetails()
-	if got.GetType() != "refusal" || got.GetCategory() != "reasoning_extraction" || got.GetExplanation() != "declined" {
-		t.Errorf("stop_details = %v, want refusal/reasoning_extraction/declined", got)
-	}
+	assert.Equal(t, "refusal", got.GetType(), "StopDetails.Type")
+	assert.Equal(t, "reasoning_extraction", got.GetCategory(), "StopDetails.Category")
+	assert.Equal(t, "declined", got.GetExplanation(), "StopDetails.Explanation")
 
-	if pt := runTraceToProto(&types.RunTrace{Outcome: "success"}); pt.StopDetails != nil {
-		t.Errorf("stop_details = %v, want absent for a nil StopDetails", pt.StopDetails)
-	}
+	assert.Nil(t, runTraceToProto(&types.RunTrace{Outcome: "success"}).StopDetails, "StopDetails absent for a nil StopDetails")
 }
 
 // TestRunTraceToProto_PartialStopDetails pins that a refusal with no
@@ -1298,20 +962,14 @@ func TestRunTraceToProto_PartialStopDetails(t *testing.T) {
 		Outcome:     "refusal",
 		StopDetails: &types.StopDetails{Type: "refusal"},
 	}))
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	var decoded pb.RunTrace
-	if err := proto.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	require.NoError(t, proto.Unmarshal(raw, &decoded), "unmarshal")
 	got := decoded.GetStopDetails()
-	if got == nil {
-		t.Fatal("stop_details absent, want a message with type refusal")
-	}
-	if got.GetType() != "refusal" || got.GetCategory() != "" || got.GetExplanation() != "" {
-		t.Errorf("stop_details = %v, want type refusal with empty category and explanation", got)
-	}
+	require.NotNil(t, got, "StopDetails should be present with type refusal")
+	assert.Equal(t, "refusal", got.GetType(), "StopDetails.Type")
+	assert.Empty(t, got.GetCategory(), "StopDetails.Category")
+	assert.Empty(t, got.GetExplanation(), "StopDetails.Explanation")
 }
 
 // TestRunTraceToProto_Verification pins that the last verifier attempt
@@ -1326,29 +984,23 @@ func TestRunTraceToProto_Verification(t *testing.T) {
 		},
 	}
 	raw, err := proto.Marshal(runTraceToProto(tr))
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	var decoded pb.RunTrace
-	if err := proto.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	require.NoError(t, proto.Unmarshal(raw, &decoded), "unmarshal")
 	got := decoded.GetVerification()
-	if got.GetAttempt() != 2 || got.GetPassed() || got.GetFeedback() != "" || got.GetError() != "exec failed: [REDACTED]" {
-		t.Errorf("verification = %v, want attempt 2, failed, verifier error and no feedback", got)
-	}
+	assert.EqualValues(t, 2, got.GetAttempt(), "Verification.Attempt")
+	assert.False(t, got.GetPassed(), "Verification.Passed")
+	assert.Empty(t, got.GetFeedback(), "Verification.Feedback")
+	assert.Equal(t, "exec failed: [REDACTED]", got.GetError(), "Verification.Error")
 
 	passed := runTraceToProto(&types.RunTrace{
 		Outcome:             "success",
 		VerificationResults: []types.VerificationResult{{Attempt: 1, Passed: true}},
 	})
-	if v := passed.GetVerification(); v == nil || !v.GetPassed() || v.GetAttempt() != 1 {
-		t.Errorf("verification = %v, want a passing attempt 1", v)
-	}
+	assert.True(t, passed.GetVerification().GetPassed(), "passing Verification.Passed")
+	assert.EqualValues(t, 1, passed.GetVerification().GetAttempt(), "passing Verification.Attempt")
 
-	if pt := runTraceToProto(&types.RunTrace{Outcome: "success"}); pt.Verification != nil {
-		t.Errorf("verification = %v, want absent with no recorded attempt", pt.Verification)
-	}
+	assert.Nil(t, runTraceToProto(&types.RunTrace{Outcome: "success"}).Verification, "Verification absent with no recorded attempt")
 }
 
 // TestRunConfigFromProto_HooksAbsentStaysNil pins the nil/absent case:
@@ -1356,9 +1008,7 @@ func TestRunTraceToProto_Verification(t *testing.T) {
 // non-nil types.HooksConfig.
 func TestRunConfigFromProto_HooksAbsentStaysNil(t *testing.T) {
 	rc := runConfigFromProto(&pb.RunConfig{})
-	if rc.Hooks != nil {
-		t.Errorf("Hooks should be nil when proto field absent; got %+v", rc.Hooks)
-	}
+	require.Nil(t, rc.Hooks, "Hooks should be nil when proto field absent")
 }
 
 // TestRunConfigFromProto_HooksEmptyStaysNonNil pins the companion case:
@@ -1368,12 +1018,18 @@ func TestRunConfigFromProto_HooksAbsentStaysNil(t *testing.T) {
 // ToolDispatch preserves the unset/explicit-zero distinction.
 func TestRunConfigFromProto_HooksEmptyStaysNonNil(t *testing.T) {
 	rc := runConfigFromProto(&pb.RunConfig{Hooks: &pb.HooksConfig{}})
-	if rc.Hooks == nil {
-		t.Fatal("Hooks should be non-nil for an explicit-but-empty proto sub-message")
-	}
-	if len(rc.Hooks.PreRun) != 0 || len(rc.Hooks.PostRun) != 0 {
-		t.Errorf("expected empty PreRun/PostRun, got %+v", rc.Hooks)
-	}
+	require.NotNil(t, rc.Hooks, "Hooks should be non-nil for an explicit-but-empty proto sub-message")
+	assert.Empty(t, rc.Hooks.PreRun, "PreRun")
+	assert.Empty(t, rc.Hooks.PostRun, "PostRun")
+}
+
+// wireRoundTrip encodes in and decodes the bytes into out, so a test reads
+// values that have passed through the wire format.
+func wireRoundTrip(t *testing.T, in, out proto.Message) {
+	t.Helper()
+	raw, err := proto.Marshal(in)
+	require.NoError(t, err, "marshal")
+	require.NoError(t, proto.Unmarshal(raw, out), "unmarshal")
 }
 
 // TestRunConfigFromProto_HooksFieldsPreserved guards the translate hop
@@ -1392,38 +1048,28 @@ func TestRunConfigFromProto_HooksFieldsPreserved(t *testing.T) {
 		},
 	}
 
-	raw, err := proto.Marshal(original)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
 	var decoded pb.RunConfig
-	if err := proto.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	wireRoundTrip(t, original, &decoded)
 
 	rc := runConfigFromProto(&decoded)
-	if rc.Hooks == nil {
-		t.Fatal("Hooks dropped across the wire round-trip")
-	}
-	if len(rc.Hooks.PreRun) != 1 {
-		t.Fatalf("PreRun: got %d entries, want 1", len(rc.Hooks.PreRun))
-	}
-	pre := rc.Hooks.PreRun[0]
-	if pre.Type != "command" || pre.Name != "clone" || pre.Command != "git clone . ." || pre.TimeoutSeconds != 120 {
-		t.Errorf("PreRun[0] = %+v, want {command, clone, git clone . ., 120, false, \"\"}", pre)
-	}
+	require.NotNil(t, rc.Hooks, "Hooks dropped across the wire round-trip")
 
-	if len(rc.Hooks.PostRun) != 2 {
-		t.Fatalf("PostRun: got %d entries, want 2", len(rc.Hooks.PostRun))
-	}
+	require.Len(t, rc.Hooks.PreRun, 1)
+	pre := rc.Hooks.PreRun[0]
+	assert.Equal(t, "command", pre.Type, "PreRun[0].Type")
+	assert.Equal(t, "clone", pre.Name, "PreRun[0].Name")
+	assert.Equal(t, "git clone . .", pre.Command, "PreRun[0].Command")
+	assert.Equal(t, 120, pre.TimeoutSeconds, "PreRun[0].TimeoutSeconds")
+
+	require.Len(t, rc.Hooks.PostRun, 2)
 	post0 := rc.Hooks.PostRun[0]
-	if post0.Command != "test -f marker" || post0.RunOn != "success" || !post0.ContinueOnError {
-		t.Errorf("PostRun[0] = %+v, want {test -f marker, success, true}", post0)
-	}
+	assert.Equal(t, "test -f marker", post0.Command, "PostRun[0].Command")
+	assert.Equal(t, "success", post0.RunOn, "PostRun[0].RunOn")
+	assert.True(t, post0.ContinueOnError, "PostRun[0].ContinueOnError")
 	post1 := rc.Hooks.PostRun[1]
-	if post1.Command != "curl -X POST https://example.com" || post1.RunOn != "failure" || post1.ContinueOnError {
-		t.Errorf("PostRun[1] = %+v, want {curl -X POST https://example.com, failure, false}", post1)
-	}
+	assert.Equal(t, "curl -X POST https://example.com", post1.Command, "PostRun[1].Command")
+	assert.Equal(t, "failure", post1.RunOn, "PostRun[1].RunOn")
+	assert.False(t, post1.ContinueOnError, "PostRun[1].ContinueOnError")
 }
 
 // TestRunConfigFromProto_HooksNotAliased pins that mutating the source
@@ -1440,10 +1086,8 @@ func TestRunConfigFromProto_HooksNotAliased(t *testing.T) {
 
 	pc.Hooks.PreRun[0].Command = "mutated-after-translate"
 
-	if rc.Hooks.PreRun[0].Command != "original" {
-		t.Errorf("translated HookConfig aliases the proto's backing data: got %q, want %q",
-			rc.Hooks.PreRun[0].Command, "original")
-	}
+	require.Equal(t, "original", rc.Hooks.PreRun[0].Command,
+		"translated HookConfig aliases the proto's backing data")
 }
 
 // TestRunConfigFromProto_MCPTrustFieldsPreserved guards the MCP trust
@@ -1464,49 +1108,20 @@ func TestRunConfigFromProto_MCPTrustFieldsPreserved(t *testing.T) {
 		},
 	}
 
-	raw, err := proto.Marshal(original)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
 	var decoded pb.RunConfig
-	if err := proto.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	wireRoundTrip(t, original, &decoded)
 
 	rc := runConfigFromProto(&decoded)
 
-	if len(rc.Tools.MCPServers) != 1 {
-		t.Fatalf("MCPServers: got %d entries, want 1", len(rc.Tools.MCPServers))
-	}
+	require.Len(t, rc.Tools.MCPServers, 1)
 	srv := rc.Tools.MCPServers[0]
-
-	wantTools := []string{"lookup", "query"}
-	if len(srv.AllowedTools) != len(wantTools) {
-		t.Fatalf("AllowedTools: got %v, want %v", srv.AllowedTools, wantTools)
-	}
-	for i, want := range wantTools {
-		if srv.AllowedTools[i] != want {
-			t.Errorf("AllowedTools[%d]: got %q, want %q", i, srv.AllowedTools[i], want)
-		}
-	}
-
-	wantHosts := []string{"mcp.example.com"}
-	if len(srv.AllowedMCPHosts) != len(wantHosts) {
-		t.Fatalf("AllowedMCPHosts: got %v, want %v", srv.AllowedMCPHosts, wantHosts)
-	}
-	for i, want := range wantHosts {
-		if srv.AllowedMCPHosts[i] != want {
-			t.Errorf("AllowedMCPHosts[%d]: got %q, want %q", i, srv.AllowedMCPHosts[i], want)
-		}
-	}
+	require.Equal(t, []string{"lookup", "query"}, srv.AllowedTools)
+	require.Equal(t, []string{"mcp.example.com"}, srv.AllowedMCPHosts)
 }
 
-// TestHarnessEventToProto_AudiencePreserved guards the Audience field
-// added for sandbox_token_request (issue #516 Part A) against the same
-// silent-drop class of regression flagged by gh-95/gh-117/gh-118/gh-100: a
-// HarnessEvent's Audience must survive the internal-to-proto hop
-// unmodified, since it is the only signal the control plane gets for the
-// intended JWT `aud` claim.
+// TestHarnessEventToProto_AudiencePreserved checks that a HarnessEvent's
+// Audience survives the internal-to-proto hop unchanged. The control plane
+// has no other source for the intended JWT aud claim.
 func TestHarnessEventToProto_AudiencePreserved(t *testing.T) {
 	e := types.HarnessEvent{
 		Type:      "sandbox_token_request",
@@ -1516,21 +1131,14 @@ func TestHarnessEventToProto_AudiencePreserved(t *testing.T) {
 
 	pe := harnessEventToProto(e)
 
-	if pe.Audience != "https://haybale.internal" {
-		t.Errorf("Audience: got %q, want %q", pe.Audience, "https://haybale.internal")
-	}
-	if pe.RequestId != "req-1" {
-		t.Errorf("RequestId: got %q, want %q", pe.RequestId, "req-1")
-	}
+	assert.Equal(t, "https://haybale.internal", pe.Audience)
+	assert.Equal(t, "req-1", pe.RequestId)
 }
 
-// TestControlEventFromProto_SandboxTokenFieldsPreserved guards Token and
-// ExpiresAt (issue #516 Part A) against the same silent-drop regression
-// class as gh-95/gh-117/gh-118/gh-100. The token/expires_at case exercises
-// the actual wire path (Marshal -> Unmarshal) so the optional int64
-// unset-vs-explicit-zero distinction on ExpiresAt — the same concern
-// Temperature and Batch.MaxWaitSeconds guard above — is pinned rather than
-// assumed from an in-memory pointer copy.
+// TestControlEventFromProto_SandboxTokenFieldsPreserved checks that the
+// sandbox token response fields survive translation. The token case goes
+// through the wire format so an unset optional ExpiresAt stays nil instead
+// of reading back as an explicit zero.
 func TestControlEventFromProto_SandboxTokenFieldsPreserved(t *testing.T) {
 	t.Run("token and expires_at round-trip", func(t *testing.T) {
 		var exp int64 = 1700003600
@@ -1541,26 +1149,14 @@ func TestControlEventFromProto_SandboxTokenFieldsPreserved(t *testing.T) {
 			ExpiresAt: &exp,
 		}
 
-		raw, err := proto.Marshal(original)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
 		var decoded pb.ControlEvent
-		if err := proto.Unmarshal(raw, &decoded); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
+		wireRoundTrip(t, original, &decoded)
 
 		e := controlEventFromProto(&decoded)
 
-		if e.Token != original.Token {
-			t.Errorf("Token: got %q, want %q", e.Token, original.Token)
-		}
-		if e.ExpiresAt == nil {
-			t.Fatal("ExpiresAt: got nil, want non-nil pointer")
-		}
-		if *e.ExpiresAt != exp {
-			t.Errorf("ExpiresAt: got %d, want %d", *e.ExpiresAt, exp)
-		}
+		require.Equal(t, original.Token, e.Token)
+		require.NotNil(t, e.ExpiresAt, "ExpiresAt: got nil, want non-nil pointer")
+		require.Equal(t, exp, *e.ExpiresAt)
 	})
 
 	t.Run("expires_at unset stays nil", func(t *testing.T) {
@@ -1570,20 +1166,12 @@ func TestControlEventFromProto_SandboxTokenFieldsPreserved(t *testing.T) {
 			Token:     "some-token",
 		}
 
-		raw, err := proto.Marshal(original)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
 		var decoded pb.ControlEvent
-		if err := proto.Unmarshal(raw, &decoded); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
+		wireRoundTrip(t, original, &decoded)
 
 		e := controlEventFromProto(&decoded)
 
-		if e.ExpiresAt != nil {
-			t.Errorf("ExpiresAt should be nil when proto field is unset, got %v", *e.ExpiresAt)
-		}
+		require.Nil(t, e.ExpiresAt, "ExpiresAt should be nil when proto field is unset")
 	})
 
 	t.Run("is_error and reason round-trip for a decline", func(t *testing.T) {
@@ -1596,15 +1184,10 @@ func TestControlEventFromProto_SandboxTokenFieldsPreserved(t *testing.T) {
 
 		e := controlEventFromProto(original)
 
-		if e.IsError == nil || !*e.IsError {
-			t.Fatalf("IsError: got %v, want pointer to true", e.IsError)
-		}
-		if e.Reason != "no issuer configured" {
-			t.Errorf("Reason: got %q, want %q", e.Reason, "no issuer configured")
-		}
-		if e.Token != "" {
-			t.Errorf("Token should be empty on an error response, got %q", e.Token)
-		}
+		require.NotNil(t, e.IsError)
+		require.True(t, *e.IsError)
+		require.Equal(t, "no issuer configured", e.Reason)
+		require.Empty(t, e.Token, "Token should be empty on an error response")
 	})
 }
 
@@ -1624,36 +1207,21 @@ func TestRunConfigFromProto_MCPTrustFieldsAbsentWhenNil(t *testing.T) {
 		},
 	}
 
-	raw, err := proto.Marshal(original)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
 	var decoded pb.RunConfig
-	if err := proto.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	wireRoundTrip(t, original, &decoded)
 
 	rc := runConfigFromProto(&decoded)
 
-	if len(rc.Tools.MCPServers) != 1 {
-		t.Fatalf("MCPServers: got %d entries, want 1", len(rc.Tools.MCPServers))
-	}
+	require.Len(t, rc.Tools.MCPServers, 1)
 	srv := rc.Tools.MCPServers[0]
-
-	if len(srv.AllowedTools) != 0 {
-		t.Errorf("AllowedTools should be empty when proto field absent, got %v", srv.AllowedTools)
-	}
-	if len(srv.AllowedMCPHosts) != 0 {
-		t.Errorf("AllowedMCPHosts should be empty when proto field absent, got %v", srv.AllowedMCPHosts)
-	}
+	assert.Empty(t, srv.AllowedTools, "AllowedTools should be empty when proto field absent")
+	assert.Empty(t, srv.AllowedMCPHosts, "AllowedMCPHosts should be empty when proto field absent")
 }
 
 // TestRunConfigFromProto_ExecutorSandboxFieldsPreserved pins the executor
-// fields that had no proto mirror at all until they were added: registry
-// pinning, workspace export, k8s egress wiring, and the sandbox identity /
-// git proxy blocks. Each is marshalled and unmarshalled first so a field
-// that compiles but never reaches the wire is caught here rather than at
-// deployment time.
+// fields registry pinning, workspace export, k8s egress wiring, and the
+// sandbox identity and git proxy blocks. The values go through the wire
+// format so a field that is never encoded is caught here.
 func TestRunConfigFromProto_ExecutorSandboxFieldsPreserved(t *testing.T) {
 	original := &pb.RunConfig{
 		Executor: &pb.ExecutorConfig{
@@ -1677,56 +1245,25 @@ func TestRunConfigFromProto_ExecutorSandboxFieldsPreserved(t *testing.T) {
 		},
 	}
 
-	raw, err := proto.Marshal(original)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
 	var decoded pb.RunConfig
-	if err := proto.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	wireRoundTrip(t, original, &decoded)
 
 	ec := runConfigFromProto(&decoded).Executor
 
-	if ec.K8sEgressProxyURL != "http://egress.agents.svc:3128" {
-		t.Errorf("K8sEgressProxyURL: got %q", ec.K8sEgressProxyURL)
-	}
-	if ec.WorkspaceExportTo != "gs://stirrup-workspaces/runs" {
-		t.Errorf("WorkspaceExportTo: got %q", ec.WorkspaceExportTo)
-	}
-	wantRegistry := []string{"ghcr.io/rxbynerd/*", "docker.io/library/*"}
-	if !reflect.DeepEqual(ec.RegistryAllowlist, wantRegistry) {
-		t.Errorf("RegistryAllowlist: got %v, want %v", ec.RegistryAllowlist, wantRegistry)
-	}
+	assert.Equal(t, "http://egress.agents.svc:3128", ec.K8sEgressProxyURL)
+	assert.Equal(t, "gs://stirrup-workspaces/runs", ec.WorkspaceExportTo)
+	assert.Equal(t, []string{"ghcr.io/rxbynerd/*", "docker.io/library/*"}, ec.RegistryAllowlist)
 
-	if ec.SandboxIdentity == nil {
-		t.Fatal("SandboxIdentity nil after translation")
-	}
-	if ec.SandboxIdentity.Source != "control-plane" {
-		t.Errorf("SandboxIdentity.Source: got %q", ec.SandboxIdentity.Source)
-	}
-	if ec.SandboxIdentity.Audience != "https://haybale.internal" {
-		t.Errorf("SandboxIdentity.Audience: got %q", ec.SandboxIdentity.Audience)
-	}
-	if ec.SandboxIdentity.EnvVar != "HAYBALE_TOKEN" {
-		t.Errorf("SandboxIdentity.EnvVar: got %q", ec.SandboxIdentity.EnvVar)
-	}
+	require.NotNil(t, ec.SandboxIdentity, "SandboxIdentity nil after translation")
+	assert.Equal(t, "control-plane", ec.SandboxIdentity.Source)
+	assert.Equal(t, "https://haybale.internal", ec.SandboxIdentity.Audience)
+	assert.Equal(t, "HAYBALE_TOKEN", ec.SandboxIdentity.EnvVar)
 
-	if ec.GitProxy == nil {
-		t.Fatal("GitProxy nil after translation")
-	}
-	if ec.GitProxy.URL != "https://haybale.internal" {
-		t.Errorf("GitProxy.URL: got %q", ec.GitProxy.URL)
-	}
-	if !reflect.DeepEqual(ec.GitProxy.Hosts, []string{"github.com", "gitlab.com"}) {
-		t.Errorf("GitProxy.Hosts: got %v", ec.GitProxy.Hosts)
-	}
-	if !ec.GitProxy.RewriteSsh {
-		t.Error("GitProxy.RewriteSsh not propagated")
-	}
-	if ec.GitProxy.TokenEnvVar != "HAYBALE_TOKEN" {
-		t.Errorf("GitProxy.TokenEnvVar: got %q", ec.GitProxy.TokenEnvVar)
-	}
+	require.NotNil(t, ec.GitProxy, "GitProxy nil after translation")
+	assert.Equal(t, "https://haybale.internal", ec.GitProxy.URL)
+	assert.Equal(t, []string{"github.com", "gitlab.com"}, ec.GitProxy.Hosts)
+	assert.True(t, ec.GitProxy.RewriteSsh, "GitProxy.RewriteSsh not propagated")
+	assert.Equal(t, "HAYBALE_TOKEN", ec.GitProxy.TokenEnvVar)
 }
 
 // TestRunConfigFromProto_ExecutorSandboxFieldsAbsentStayNil documents the
@@ -1738,21 +1275,11 @@ func TestRunConfigFromProto_ExecutorSandboxFieldsAbsentStayNil(t *testing.T) {
 		Executor: &pb.ExecutorConfig{Type: "container"},
 	}).Executor
 
-	if ec.SandboxIdentity != nil {
-		t.Errorf("SandboxIdentity should be nil when proto field absent, got %+v", ec.SandboxIdentity)
-	}
-	if ec.GitProxy != nil {
-		t.Errorf("GitProxy should be nil when proto field absent, got %+v", ec.GitProxy)
-	}
-	if ec.RegistryAllowlist != nil {
-		t.Errorf("RegistryAllowlist should be nil when proto field absent, got %v", ec.RegistryAllowlist)
-	}
-	if ec.WorkspaceExportTo != "" {
-		t.Errorf("WorkspaceExportTo should be empty when proto field absent, got %q", ec.WorkspaceExportTo)
-	}
-	if ec.K8sEgressProxyURL != "" {
-		t.Errorf("K8sEgressProxyURL should be empty when proto field absent, got %q", ec.K8sEgressProxyURL)
-	}
+	assert.Nil(t, ec.SandboxIdentity, "SandboxIdentity should be nil when proto field absent")
+	assert.Nil(t, ec.GitProxy, "GitProxy should be nil when proto field absent")
+	assert.Nil(t, ec.RegistryAllowlist, "RegistryAllowlist should be nil when proto field absent")
+	assert.Empty(t, ec.WorkspaceExportTo, "WorkspaceExportTo should be empty when proto field absent")
+	assert.Empty(t, ec.K8sEgressProxyURL, "K8sEgressProxyURL should be empty when proto field absent")
 }
 
 // TestRunConfigFromProto_ExecutorSlicesNotAliased confirms the repeated
@@ -1776,12 +1303,10 @@ func TestRunConfigFromProto_ExecutorSlicesNotAliased(t *testing.T) {
 	src.Executor.RegistryAllowlist[0] = "mutated"
 	src.Executor.GitProxy.Hosts[0] = "mutated"
 
-	if ec.RegistryAllowlist[0] != "ghcr.io/rxbynerd/*" {
-		t.Error("RegistryAllowlist shares backing array with proto source")
-	}
-	if ec.GitProxy.Hosts[0] != "github.com" {
-		t.Error("GitProxy.Hosts shares backing array with proto source")
-	}
+	assert.Equal(t, "ghcr.io/rxbynerd/*", ec.RegistryAllowlist[0],
+		"RegistryAllowlist shares backing array with proto source")
+	assert.Equal(t, "github.com", ec.GitProxy.Hosts[0],
+		"GitProxy.Hosts shares backing array with proto source")
 }
 
 // TestRunConfigFromProto_ResultSinkPreserved pins every ResultSinkConfig
@@ -1798,47 +1323,26 @@ func TestRunConfigFromProto_ResultSinkPreserved(t *testing.T) {
 		},
 	}
 
-	raw, err := proto.Marshal(original)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
 	var decoded pb.RunConfig
-	if err := proto.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	wireRoundTrip(t, original, &decoded)
 
 	sink := runConfigFromProto(&decoded).ResultSink
-	if sink == nil {
-		t.Fatal("ResultSink nil after translation")
-	}
-	if sink.Type != "gcp-pubsub" {
-		t.Errorf("ResultSink.Type: got %q", sink.Type)
-	}
-	if sink.Topic != "stirrup-results" {
-		t.Errorf("ResultSink.Topic: got %q", sink.Topic)
-	}
-	if sink.MaxFinalAssistantTextBytes != 4096 {
-		t.Errorf("ResultSink.MaxFinalAssistantTextBytes: got %d, want 4096", sink.MaxFinalAssistantTextBytes)
-	}
-	want := map[string]string{"tenant": "team-a", "auth": "secret://PUBSUB_TOKEN"}
-	if !reflect.DeepEqual(sink.Attributes, want) {
-		t.Errorf("ResultSink.Attributes: got %v, want %v", sink.Attributes, want)
-	}
+	require.NotNil(t, sink, "ResultSink nil after translation")
+	assert.Equal(t, "gcp-pubsub", sink.Type)
+	assert.Equal(t, "stirrup-results", sink.Topic)
+	assert.Equal(t, 4096, sink.MaxFinalAssistantTextBytes)
+	assert.Equal(t, map[string]string{"tenant": "team-a", "auth": "secret://PUBSUB_TOKEN"}, sink.Attributes)
 
-	// The attributes map must be copied, not aliased.
 	decoded.ResultSink.Attributes["tenant"] = "mutated"
-	if sink.Attributes["tenant"] != "team-a" {
-		t.Error("ResultSink.Attributes shares the proto-owned map")
-	}
+	assert.Equal(t, "team-a", sink.Attributes["tenant"], "ResultSink.Attributes shares the proto-owned map")
 }
 
 // TestRunConfigFromProto_ResultSinkAbsentStaysNil documents that an absent
 // sub-message leaves ResultSink nil — the "sink disabled" state — rather
 // than synthesising a block whose empty Type fails validation.
 func TestRunConfigFromProto_ResultSinkAbsentStaysNil(t *testing.T) {
-	if sink := runConfigFromProto(&pb.RunConfig{}).ResultSink; sink != nil {
-		t.Errorf("ResultSink should be nil when proto field absent, got %+v", sink)
-	}
+	require.Nil(t, runConfigFromProto(&pb.RunConfig{}).ResultSink,
+		"ResultSink should be nil when proto field absent")
 }
 
 // TestRunConfigFromProto_ToolChoiceEscalationPreserved pins the escalation
@@ -1852,46 +1356,27 @@ func TestRunConfigFromProto_ToolChoiceEscalationPreserved(t *testing.T) {
 				MaxRetries: 3,
 			},
 		}
-		raw, err := proto.Marshal(original)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
 		var decoded pb.RunConfig
-		if err := proto.Unmarshal(raw, &decoded); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
+		wireRoundTrip(t, original, &decoded)
 
 		esc := runConfigFromProto(&decoded).ToolChoiceEscalation
-		if esc == nil {
-			t.Fatal("ToolChoiceEscalation nil after translation")
-		}
-		if !esc.Enabled {
-			t.Error("ToolChoiceEscalation.Enabled not propagated")
-		}
-		if esc.MaxRetries != 3 {
-			t.Errorf("ToolChoiceEscalation.MaxRetries: got %d, want 3", esc.MaxRetries)
-		}
+		require.NotNil(t, esc, "ToolChoiceEscalation nil after translation")
+		require.True(t, esc.Enabled, "ToolChoiceEscalation.Enabled not propagated")
+		require.Equal(t, 3, esc.MaxRetries)
 	})
 
 	t.Run("empty sub-message stays non-nil", func(t *testing.T) {
 		esc := runConfigFromProto(&pb.RunConfig{
 			ToolChoiceEscalation: &pb.ToolChoiceEscalationConfig{},
 		}).ToolChoiceEscalation
-		if esc == nil {
-			t.Fatal("expected non-nil ToolChoiceEscalation for an empty sub-message")
-		}
-		if esc.Enabled {
-			t.Error("empty sub-message must not enable escalation")
-		}
-		if esc.MaxRetries != 0 {
-			t.Errorf("MaxRetries: got %d, want 0 (resolves to the default)", esc.MaxRetries)
-		}
+		require.NotNil(t, esc, "expected non-nil ToolChoiceEscalation for an empty sub-message")
+		require.False(t, esc.Enabled, "empty sub-message must not enable escalation")
+		require.Equal(t, 0, esc.MaxRetries, "zero resolves to the default")
 	})
 
 	t.Run("absent stays nil", func(t *testing.T) {
-		if esc := runConfigFromProto(&pb.RunConfig{}).ToolChoiceEscalation; esc != nil {
-			t.Errorf("ToolChoiceEscalation should be nil when proto field absent, got %+v", esc)
-		}
+		require.Nil(t, runConfigFromProto(&pb.RunConfig{}).ToolChoiceEscalation,
+			"ToolChoiceEscalation should be nil when proto field absent")
 	})
 }
 
@@ -1899,34 +1384,25 @@ func TestRunConfigFromProto_ToolChoiceEscalationPreserved(t *testing.T) {
 // a wire round-trip; an absent sub-message stays nil (off).
 func TestRunConfigFromProto_WindDownPreserved(t *testing.T) {
 	t.Run("enabled", func(t *testing.T) {
-		raw, err := proto.Marshal(&pb.RunConfig{WindDown: &pb.WindDownConfig{Enabled: true}})
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
+		original := &pb.RunConfig{WindDown: &pb.WindDownConfig{Enabled: true}}
 		var decoded pb.RunConfig
-		if err := proto.Unmarshal(raw, &decoded); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
+		wireRoundTrip(t, original, &decoded)
+
 		rc := runConfigFromProto(&decoded)
-		if rc.WindDown == nil || !rc.WindDown.Enabled || !rc.WindDownEnabled() {
-			t.Fatalf("WindDown = %+v, want enabled", rc.WindDown)
-		}
+		require.NotNil(t, rc.WindDown)
+		require.True(t, rc.WindDown.Enabled)
+		require.True(t, rc.WindDownEnabled())
 	})
 
 	t.Run("empty sub-message stays non-nil and off", func(t *testing.T) {
 		rc := runConfigFromProto(&pb.RunConfig{WindDown: &pb.WindDownConfig{}})
-		if rc.WindDown == nil {
-			t.Fatal("expected non-nil WindDown for an empty sub-message")
-		}
-		if rc.WindDownEnabled() {
-			t.Error("empty sub-message must not enable wind-down")
-		}
+		require.NotNil(t, rc.WindDown, "expected non-nil WindDown for an empty sub-message")
+		require.False(t, rc.WindDownEnabled(), "empty sub-message must not enable wind-down")
 	})
 
 	t.Run("absent stays nil", func(t *testing.T) {
-		if wd := runConfigFromProto(&pb.RunConfig{}).WindDown; wd != nil {
-			t.Errorf("WindDown should be nil when proto field absent, got %+v", wd)
-		}
+		require.Nil(t, runConfigFromProto(&pb.RunConfig{}).WindDown,
+			"WindDown should be nil when proto field absent")
 	})
 }
 
@@ -1944,50 +1420,29 @@ func TestRunConfigFromProto_LogsExportPreserved(t *testing.T) {
 				},
 			},
 		}
-		raw, err := proto.Marshal(original)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
 		var decoded pb.RunConfig
-		if err := proto.Unmarshal(raw, &decoded); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
+		wireRoundTrip(t, original, &decoded)
 
 		obs := runConfigFromProto(&decoded).Observability
-		if obs.Environment != "production" {
-			t.Errorf("Environment: got %q", obs.Environment)
-		}
-		if obs.LogsExport.Type != "otlp" {
-			t.Errorf("LogsExport.Type: got %q, want otlp", obs.LogsExport.Type)
-		}
-		if obs.LogsExport.Endpoint != "otel-collector.observability.svc:4317" {
-			t.Errorf("LogsExport.Endpoint: got %q", obs.LogsExport.Endpoint)
-		}
+		require.Equal(t, "production", obs.Environment)
+		require.Equal(t, "otlp", obs.LogsExport.Type)
+		require.Equal(t, "otel-collector.observability.svc:4317", obs.LogsExport.Endpoint)
 	})
 
 	t.Run("absent leaves stderr-only zero value", func(t *testing.T) {
 		obs := runConfigFromProto(&pb.RunConfig{
 			Observability: &pb.ObservabilityConfig{Environment: "staging"},
 		}).Observability
-		if obs.LogsExport.Type != "" {
-			t.Errorf("LogsExport.Type should be empty when absent, got %q", obs.LogsExport.Type)
-		}
-		if obs.LogsExport.Endpoint != "" {
-			t.Errorf("LogsExport.Endpoint should be empty when absent, got %q", obs.LogsExport.Endpoint)
-		}
+		require.Empty(t, obs.LogsExport.Type, "LogsExport.Type should be empty when absent")
+		require.Empty(t, obs.LogsExport.Endpoint, "LogsExport.Endpoint should be empty when absent")
 	})
 }
 
-// TestRunConfigFromProto_TransportIsGRPC pins the one field the translate
-// layer sets rather than copies. RunConfig.transport has no proto mirror by
-// design, but several cross-field rules key off it — sandbox identity and
-// ruleOfTwo.runtime.onDetect="ask-upstream" both require "grpc", and the
-// batch client dispatch switches on it. Leaving it empty would make those
-// features unreachable over the wire even once their config fields exist.
+// TestRunConfigFromProto_TransportIsGRPC pins Transport.Type, which the
+// translate layer sets rather than copies. Sandbox identity, rule-of-two
+// ask-upstream and batch dispatch all depend on it being "grpc".
 func TestRunConfigFromProto_TransportIsGRPC(t *testing.T) {
-	if got := runConfigFromProto(&pb.RunConfig{}).Transport.Type; got != "grpc" {
-		t.Errorf("Transport.Type: got %q, want grpc", got)
-	}
+	require.Equal(t, "grpc", runConfigFromProto(&pb.RunConfig{}).Transport.Type)
 }
 
 // TestRunConfigFromProto_SandboxIdentityPassesValidation drives the mirrored
@@ -2028,9 +1483,8 @@ func TestRunConfigFromProto_SandboxIdentityPassesValidation(t *testing.T) {
 	}
 
 	rc := runConfigFromProto(pc)
-	if err := types.ValidateRunConfig(&rc); err != nil {
-		t.Fatalf("wire-delivered sandbox identity config rejected by validation: %v", err)
-	}
+	require.NoError(t, types.ValidateRunConfig(&rc),
+		"wire-delivered sandbox identity config rejected by validation")
 }
 
 // TestRunConfigFromProto_ControlPlaneToolsPreserved pins the wire mapping
@@ -2045,9 +1499,7 @@ func TestRunConfigFromProto_ControlPlaneToolsPreserved(t *testing.T) {
 		},
 		"required": []any{"query"},
 	})
-	if err != nil {
-		t.Fatalf("NewStruct: %v", err)
-	}
+	require.NoError(t, err, "NewStruct")
 	original := &pb.RunConfig{
 		Tools: &pb.ToolsConfig{
 			BuiltIn: []string{"read_file"},
@@ -2068,48 +1520,31 @@ func TestRunConfigFromProto_ControlPlaneToolsPreserved(t *testing.T) {
 	}
 
 	raw, err := proto.Marshal(original)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	var decoded pb.RunConfig
-	if err := proto.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	require.NoError(t, proto.Unmarshal(raw, &decoded), "unmarshal")
 
 	rc := runConfigFromProto(&decoded)
-	if len(rc.Tools.ControlPlane) != 2 {
-		t.Fatalf("ControlPlane: got %d entries, want 2", len(rc.Tools.ControlPlane))
-	}
+	require.Len(t, rc.Tools.ControlPlane, 2)
 
 	first := rc.Tools.ControlPlane[0]
-	if first.Name != "search_memory" || first.Description != "Search long-term memory." {
-		t.Errorf("first entry = %+v", first)
-	}
-	if first.TimeoutSeconds != 30 || !first.RequiresApproval {
-		t.Errorf("first timeout/approval = %d/%v, want 30/true", first.TimeoutSeconds, first.RequiresApproval)
-	}
+	assert.Equal(t, "search_memory", first.Name, "first entry name")
+	assert.Equal(t, "Search long-term memory.", first.Description, "first entry description")
+	assert.Equal(t, 30, first.TimeoutSeconds, "first entry timeout")
+	assert.True(t, first.RequiresApproval, "first entry requires approval")
+
 	var got map[string]any
-	if err := json.Unmarshal(first.InputSchema, &got); err != nil {
-		t.Fatalf("inputSchema is not a JSON object: %v (%s)", err, first.InputSchema)
-	}
-	if got["type"] != "object" {
-		t.Errorf("inputSchema.type = %v, want object", got["type"])
-	}
+	require.NoError(t, json.Unmarshal(first.InputSchema, &got), "inputSchema is not a JSON object: %s", first.InputSchema)
+	assert.Equal(t, "object", got["type"], "inputSchema.type")
 	props, _ := got["properties"].(map[string]any)
-	if _, ok := props["query"]; !ok {
-		t.Errorf("inputSchema.properties.query missing: %s", first.InputSchema)
-	}
-	if req, _ := got["required"].([]any); len(req) != 1 || req[0] != "query" {
-		t.Errorf("inputSchema.required = %v, want [query]", got["required"])
-	}
+	assert.Contains(t, props, "query", "inputSchema.properties")
+	req, _ := got["required"].([]any)
+	assert.Equal(t, []any{"query"}, req, "inputSchema.required")
 
 	second := rc.Tools.ControlPlane[1]
-	if second.InputSchema != nil {
-		t.Errorf("unset input_schema should map to nil, got %s", second.InputSchema)
-	}
-	if second.TimeoutSeconds != 0 || second.RequiresApproval {
-		t.Errorf("second entry defaults = %+v", second)
-	}
+	assert.Nil(t, second.InputSchema, "unset input_schema maps to nil")
+	assert.Zero(t, second.TimeoutSeconds, "second entry timeout default")
+	assert.False(t, second.RequiresApproval, "second entry approval default")
 }
 
 // TestRunConfigFromProto_ProtectedWriteTargetsPreserved pins
@@ -2122,28 +1557,20 @@ func TestRunConfigFromProto_ProtectedWriteTargetsPreserved(t *testing.T) {
 		},
 	}
 	raw, err := proto.Marshal(original)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	var decoded pb.RunConfig
-	if err := proto.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	require.NoError(t, proto.Unmarshal(raw, &decoded), "unmarshal")
 
 	rc := runConfigFromProto(&decoded)
 	want := []string{"AGENTS.md", "config/policies/"}
-	if !reflect.DeepEqual(rc.Tools.ProtectedWriteTargets, want) {
-		t.Fatalf("ProtectedWriteTargets: got %v, want %v", rc.Tools.ProtectedWriteTargets, want)
-	}
+	require.Equal(t, want, rc.Tools.ProtectedWriteTargets)
 
 	decoded.Tools.ProtectedWriteTargets[0] = "mutated"
-	if rc.Tools.ProtectedWriteTargets[0] != "AGENTS.md" {
-		t.Errorf("translated ProtectedWriteTargets aliases the proto's backing data: got %q", rc.Tools.ProtectedWriteTargets[0])
-	}
+	assert.Equal(t, "AGENTS.md", rc.Tools.ProtectedWriteTargets[0],
+		"translated ProtectedWriteTargets must not alias the proto's backing data")
 
-	if empty := runConfigFromProto(&pb.RunConfig{Tools: &pb.ToolsConfig{}}); empty.Tools.ProtectedWriteTargets != nil {
-		t.Errorf("unset protected_write_targets should map to nil, got %v", empty.Tools.ProtectedWriteTargets)
-	}
+	empty := runConfigFromProto(&pb.RunConfig{Tools: &pb.ToolsConfig{}})
+	assert.Nil(t, empty.Tools.ProtectedWriteTargets, "unset protected_write_targets maps to nil")
 }
 
 // TestRunConfigFromProto_MaxCostBudgetStillTranslated pins the deprecated
@@ -2157,16 +1584,10 @@ func TestRunConfigFromProto_MaxCostBudgetStillTranslated(t *testing.T) {
 
 	rc := runConfigFromProto(pc)
 
-	if rc.MaxCostBudget == nil {
-		t.Fatal("MaxCostBudget dropped in translation")
-	}
-	if *rc.MaxCostBudget != budget {
-		t.Errorf("MaxCostBudget = %v, want %v", *rc.MaxCostBudget, budget)
-	}
+	require.NotNil(t, rc.MaxCostBudget, "MaxCostBudget dropped in translation")
+	assert.InDelta(t, budget, *rc.MaxCostBudget, 1e-9)
 
-	if got := runConfigFromProto(&pb.RunConfig{}).MaxCostBudget; got != nil {
-		t.Errorf("unset max_cost_budget should map to nil, got %v", *got)
-	}
+	assert.Nil(t, runConfigFromProto(&pb.RunConfig{}).MaxCostBudget, "unset max_cost_budget maps to nil")
 }
 
 // TestRunTraceToProto_HandoffSummaryRoundTrip pins that the git handoff,
@@ -2185,30 +1606,32 @@ func TestRunTraceToProto_HandoffSummaryRoundTrip(t *testing.T) {
 		Error: "workspace export: upload refused",
 	}
 	raw, err := proto.Marshal(runTraceToProto(tr))
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	var decoded pb.RunTrace
-	if err := proto.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	require.NoError(t, proto.Unmarshal(raw, &decoded), "unmarshal")
+
 	g := decoded.GetGit()
-	if g.GetBranch() != "stirrup/run-handoff" || g.GetSha() != "abc123" || g.GetBaseSha() != "def456" || !g.GetDirty() || g.GetError() != "dirty tree" {
-		t.Errorf("git = %v, want every GitHandoff field carried", g)
-	}
+	assert.Equal(t, "stirrup/run-handoff", g.GetBranch(), "git branch")
+	assert.Equal(t, "abc123", g.GetSha(), "git sha")
+	assert.Equal(t, "def456", g.GetBaseSha(), "git base sha")
+	assert.True(t, g.GetDirty(), "git dirty")
+	assert.Equal(t, "dirty tree", g.GetError(), "git error")
+
 	r := decoded.GetWorkspaceExport()
-	if r.GetUri() != "gs://bucket/ws.tar.gz" || r.GetStatus() != "failed" || !r.GetRequired() || r.GetError() != "upload refused" ||
-		r.GetBytes() != 2048 || r.GetSha256() != "0123abcd" || r.GetFiles() != 7 {
-		t.Errorf("workspace_export = %v, want every ExportReceipt field carried", r)
-	}
-	if decoded.GetError() != "workspace export: upload refused" {
-		t.Errorf("error = %q, want the run error", decoded.GetError())
-	}
+	assert.Equal(t, "gs://bucket/ws.tar.gz", r.GetUri(), "workspace export uri")
+	assert.Equal(t, "failed", r.GetStatus(), "workspace export status")
+	assert.True(t, r.GetRequired(), "workspace export required")
+	assert.Equal(t, "upload refused", r.GetError(), "workspace export error")
+	assert.EqualValues(t, 2048, r.GetBytes(), "workspace export bytes")
+	assert.Equal(t, "0123abcd", r.GetSha256(), "workspace export sha256")
+	assert.EqualValues(t, 7, r.GetFiles(), "workspace export files")
+
+	assert.Equal(t, "workspace export: upload refused", decoded.GetError(), "run error")
 
 	bare := runTraceToProto(&types.RunTrace{Outcome: "success"})
-	if bare.Git != nil || bare.WorkspaceExport != nil || bare.Error != "" {
-		t.Errorf("bare summary = %v, want git, workspace_export and error absent", bare)
-	}
+	assert.Nil(t, bare.Git, "bare summary has no git handoff")
+	assert.Nil(t, bare.WorkspaceExport, "bare summary has no workspace export")
+	assert.Empty(t, bare.Error, "bare summary has no error")
 }
 
 // TestRunTraceToProto_SummaryStaysSmall bounds the "done" trace summary
@@ -2226,9 +1649,8 @@ func TestRunTraceToProto_SummaryStaysSmall(t *testing.T) {
 		WorkspaceExport: &types.ExportReceipt{URI: strings.Repeat("u", 1024), Status: "failed", Required: true, Error: capped},
 		Error:           capped,
 	}
-	if n := proto.Size(runTraceToProto(tr)); n > 16<<10 {
-		t.Errorf("summary size = %d bytes, want at most 16 KiB", n)
-	}
+	size := proto.Size(runTraceToProto(tr))
+	require.LessOrEqual(t, size, 16<<10, "summary size in bytes")
 }
 
 // TestRunConfigFromProto_WorkspaceExportRequiredTriState pins that an
@@ -2242,24 +1664,20 @@ func TestRunConfigFromProto_WorkspaceExportRequiredTriState(t *testing.T) {
 				WorkspaceExportTo:       "gs://bucket/ws.tar.gz",
 				WorkspaceExportRequired: in,
 			}})
-			if err != nil {
-				t.Fatalf("marshal: %v", err)
-			}
+			require.NoError(t, err, "marshal")
 			var decoded pb.RunConfig
-			if err := proto.Unmarshal(raw, &decoded); err != nil {
-				t.Fatalf("unmarshal: %v", err)
-			}
-			got := runConfigFromProto(&decoded).Executor.WorkspaceExportRequired
-			switch {
-			case in == nil && got != nil:
-				t.Errorf("WorkspaceExportRequired = %v, want nil", *got)
-			case in != nil && (got == nil || *got != *in):
-				t.Errorf("WorkspaceExportRequired = %v, want %v", got, *in)
+			require.NoError(t, proto.Unmarshal(raw, &decoded), "unmarshal")
+
+			rc := runConfigFromProto(&decoded)
+			got := rc.Executor.WorkspaceExportRequired
+			if in == nil {
+				require.Nil(t, got, "unset must translate to nil")
+			} else {
+				require.NotNil(t, got, "explicit value must translate")
+				require.Equal(t, *in, *got)
 			}
 			wantRequired := in == nil || *in
-			if req := runConfigFromProto(&decoded).Executor.ExportRequired(); req != wantRequired {
-				t.Errorf("ExportRequired() = %v, want %v", req, wantRequired)
-			}
+			require.Equal(t, wantRequired, rc.Executor.ExportRequired(), "ExportRequired()")
 		})
 	}
 }
@@ -2277,9 +1695,7 @@ func TestRunConfigFromProto_OutputSchemaRoundTrip(t *testing.T) {
 		},
 		"$defs": map[string]any{"label": map[string]any{"enum": []any{"bug", "feature"}}},
 	})
-	if err != nil {
-		t.Fatalf("NewStruct: %v", err)
-	}
+	require.NoError(t, err, "NewStruct")
 	timeout := int32(60)
 	raw, err := proto.Marshal(&pb.RunConfig{
 		RunId:            "run-structured",
@@ -2292,19 +1708,13 @@ func TestRunConfigFromProto_OutputSchemaRoundTrip(t *testing.T) {
 		Tools:            &pb.ToolsConfig{BuiltIn: []string{"read_file"}},
 		OutputSchema:     schema,
 	})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	var decoded pb.RunConfig
-	if err := proto.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	require.NoError(t, proto.Unmarshal(raw, &decoded), "unmarshal")
 	rc := runConfigFromProto(&decoded)
 
 	var got map[string]any
-	if err := json.Unmarshal(rc.OutputSchema, &got); err != nil {
-		t.Fatalf("OutputSchema is not JSON: %v (%s)", err, rc.OutputSchema)
-	}
+	require.NoError(t, json.Unmarshal(rc.OutputSchema, &got), "OutputSchema is not JSON: %s", rc.OutputSchema)
 	want := map[string]any{
 		"type":     "object",
 		"required": []any{"title"},
@@ -2314,22 +1724,15 @@ func TestRunConfigFromProto_OutputSchemaRoundTrip(t *testing.T) {
 		},
 		"$defs": map[string]any{"label": map[string]any{"enum": []any{"bug", "feature"}}},
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("OutputSchema = %v, want %v", got, want)
-	}
-	if !strings.Contains(string(rc.OutputSchema), `"maxLength":72`) {
-		t.Errorf("integer keyword rendered as %s, want an integral JSON number", rc.OutputSchema)
-	}
-	if err := types.ValidateRunConfig(&rc); err != nil {
-		t.Errorf("translated schema rejected by validation: %v", err)
-	}
+	require.Equal(t, want, got, "OutputSchema")
+	require.Contains(t, string(rc.OutputSchema), `"maxLength":72`,
+		"integer keyword must render as an integral JSON number, got %s", rc.OutputSchema)
+	require.NoError(t, types.ValidateRunConfig(&rc), "translated schema must pass validation")
 }
 
 func TestRunConfigFromProto_OutputSchemaAbsentStaysNil(t *testing.T) {
 	rc := runConfigFromProto(&pb.RunConfig{RunId: "run-free-text"})
-	if rc.OutputSchema != nil {
-		t.Errorf("OutputSchema = %s, want nil when the field is unset", rc.OutputSchema)
-	}
+	assert.Nil(t, rc.OutputSchema, "OutputSchema is nil when the field is unset")
 }
 
 func TestRunConfigFromProto_UnrenderableOutputSchemaIsRejected(t *testing.T) {
@@ -2337,14 +1740,11 @@ func TestRunConfigFromProto_UnrenderableOutputSchemaIsRejected(t *testing.T) {
 		"maximum": structpb.NewNumberValue(math.NaN()),
 	}}
 	rc := runConfigFromProto(&pb.RunConfig{OutputSchema: schema})
-	if string(rc.OutputSchema) != "null" {
-		t.Fatalf("OutputSchema = %s, want JSON null for a schema protojson cannot render", rc.OutputSchema)
-	}
+	require.Equal(t, "null", string(rc.OutputSchema), "a schema protojson cannot render translates to JSON null")
+
 	c := types.RunConfig{OutputSchema: rc.OutputSchema}
 	err := types.ValidateRunConfig(&c)
-	if err == nil || !strings.Contains(err.Error(), "outputSchema must be a JSON Schema object") {
-		t.Errorf("ValidateRunConfig error = %v, want the outputSchema rejected", err)
-	}
+	require.ErrorContains(t, err, "outputSchema must be a JSON Schema object")
 }
 
 func TestRunTraceToProto_StructuredOutputRoundTrip(t *testing.T) {
@@ -2353,20 +1753,13 @@ func TestRunTraceToProto_StructuredOutputRoundTrip(t *testing.T) {
 		Outcome:          "success",
 		StructuredOutput: json.RawMessage(doc),
 	}))
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	var decoded pb.RunTrace
-	if err := proto.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if decoded.GetStructuredOutput() != doc {
-		t.Errorf("structured_output = %q, want %q", decoded.GetStructuredOutput(), doc)
-	}
+	require.NoError(t, proto.Unmarshal(raw, &decoded), "unmarshal")
+	assert.Equal(t, doc, decoded.GetStructuredOutput(), "structured_output")
 
-	if bare := runTraceToProto(&types.RunTrace{Outcome: "success"}); bare.StructuredOutput != "" {
-		t.Errorf("structured_output = %q, want empty without a structured answer", bare.StructuredOutput)
-	}
+	bare := runTraceToProto(&types.RunTrace{Outcome: "success"})
+	assert.Empty(t, bare.StructuredOutput, "structured_output without a structured answer")
 }
 
 // TestRunConfigFromProto_CommandOutputPreserved pins every
@@ -2387,18 +1780,13 @@ func TestRunConfigFromProto_CommandOutputPreserved(t *testing.T) {
 		},
 	}
 	raw, err := proto.Marshal(original)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	var decoded pb.RunConfig
-	if err := proto.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	require.NoError(t, proto.Unmarshal(raw, &decoded), "unmarshal")
 
 	got := runConfigFromProto(&decoded).Tools.CommandOutput
-	if got.Enabled == nil || *got.Enabled {
-		t.Fatalf("Enabled: got %v, want explicit false", got.Enabled)
-	}
+	require.NotNil(t, got.Enabled, "Enabled must stay explicit")
+	require.False(t, *got.Enabled, "Enabled must stay explicitly false")
 	want := types.CommandOutputConfig{
 		Enabled:               got.Enabled,
 		FailurePosture:        types.CommandOutputPostureBestEffort,
@@ -2407,14 +1795,10 @@ func TestRunConfigFromProto_CommandOutputPreserved(t *testing.T) {
 		MaxBytesPerStream:     1 << 24,
 		MaxBytesPerRun:        1 << 26,
 	}
-	if got != want {
-		t.Errorf("CommandOutput: got %+v, want %+v", got, want)
-	}
+	assert.Equal(t, want, got, "CommandOutput")
 
 	*decoded.Tools.CommandOutput.Enabled = true
-	if *got.Enabled {
-		t.Error("translated Enabled aliases the proto message's bool")
-	}
+	assert.False(t, *got.Enabled, "translated Enabled must not alias the proto message's bool")
 }
 
 // TestRunConfigFromProto_CommandOutputUnsetKeepsDefaults pins that an
@@ -2422,28 +1806,18 @@ func TestRunConfigFromProto_CommandOutputPreserved(t *testing.T) {
 // with the documented defaults.
 func TestRunConfigFromProto_CommandOutputUnsetKeepsDefaults(t *testing.T) {
 	rc := runConfigFromProto(&pb.RunConfig{Tools: &pb.ToolsConfig{BuiltIn: []string{"run_command"}}})
-	if rc.Tools.CommandOutput != (types.CommandOutputConfig{}) {
-		t.Errorf("CommandOutput: got %+v, want zero value", rc.Tools.CommandOutput)
-	}
-	if !rc.Tools.CommandOutputCaptureEnabled() {
-		t.Error("capture must default to enabled when command_output is unset")
-	}
+	assert.Equal(t, types.CommandOutputConfig{}, rc.Tools.CommandOutput, "CommandOutput is the zero value")
+	assert.True(t, rc.Tools.CommandOutputCaptureEnabled(), "capture defaults to enabled when command_output is unset")
 }
 
 // TestRunConfigFromProto_MaxResultBytesPreserved pins the tools.maxResultBytes
 // mirror through the wire format.
 func TestRunConfigFromProto_MaxResultBytesPreserved(t *testing.T) {
 	raw, err := proto.Marshal(&pb.RunConfig{Tools: &pb.ToolsConfig{MaxResultBytes: 65536}})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	var decoded pb.RunConfig
-	if err := proto.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got := runConfigFromProto(&decoded).Tools.MaxResultBytes; got != 65536 {
-		t.Errorf("MaxResultBytes: got %d, want 65536", got)
-	}
+	require.NoError(t, proto.Unmarshal(raw, &decoded), "unmarshal")
+	require.Equal(t, 65536, runConfigFromProto(&decoded).Tools.MaxResultBytes, "MaxResultBytes")
 }
 
 // TestRunConfigFromProto_MCPOptionalPreserved pins the optional flag across
@@ -2460,24 +1834,14 @@ func TestRunConfigFromProto_MCPOptionalPreserved(t *testing.T) {
 	}
 
 	raw, err := proto.Marshal(original)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	var decoded pb.RunConfig
-	if err := proto.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	require.NoError(t, proto.Unmarshal(raw, &decoded), "unmarshal")
 
 	rc := runConfigFromProto(&decoded)
-	if len(rc.Tools.MCPServers) != 2 {
-		t.Fatalf("MCPServers: got %d entries, want 2", len(rc.Tools.MCPServers))
-	}
-	if rc.Tools.MCPServers[0].Optional {
-		t.Error("a server with no optional field must translate as required")
-	}
-	if !rc.Tools.MCPServers[1].Optional {
-		t.Error("Optional was dropped between proto and RunConfig")
-	}
+	require.Len(t, rc.Tools.MCPServers, 2)
+	assert.False(t, rc.Tools.MCPServers[0].Optional, "a server with no optional field translates as required")
+	assert.True(t, rc.Tools.MCPServers[1].Optional, "Optional survives translation")
 }
 
 func TestRunTraceToProto_DegradedCapabilities(t *testing.T) {
@@ -2489,24 +1853,17 @@ func TestRunTraceToProto_DegradedCapabilities(t *testing.T) {
 	})
 
 	raw, err := proto.Marshal(pt)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	var decoded pb.RunTrace
-	if err := proto.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if len(decoded.DegradedCapabilities) != 1 {
-		t.Fatalf("DegradedCapabilities: got %d entries, want 1", len(decoded.DegradedCapabilities))
-	}
+	require.NoError(t, proto.Unmarshal(raw, &decoded), "unmarshal")
+	require.Len(t, decoded.DegradedCapabilities, 1)
 	got := decoded.DegradedCapabilities[0]
-	if got.Kind != "mcp" || got.Name != "docs" || got.Error != "connection refused" {
-		t.Errorf("DegradedCapabilities[0] = %+v, want mcp/docs/connection refused", got)
-	}
+	assert.Equal(t, "mcp", got.Kind, "degraded kind")
+	assert.Equal(t, "docs", got.Name, "degraded name")
+	assert.Equal(t, "connection refused", got.Error, "degraded error")
 
-	if empty := runTraceToProto(&types.RunTrace{ID: "run-clean"}); len(empty.DegradedCapabilities) != 0 {
-		t.Errorf("a run with nothing degraded must carry no entries, got %v", empty.DegradedCapabilities)
-	}
+	empty := runTraceToProto(&types.RunTrace{ID: "run-clean"})
+	assert.Empty(t, empty.DegradedCapabilities, "a run with nothing degraded carries no entries")
 }
 
 // TestRunConfigFromProto_RepositoryGuidancePreserved pins every
@@ -2523,35 +1880,23 @@ func TestRunConfigFromProto_RepositoryGuidancePreserved(t *testing.T) {
 	}
 
 	raw, err := proto.Marshal(original)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	var decoded pb.RunConfig
-	if err := proto.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	require.NoError(t, proto.Unmarshal(raw, &decoded), "unmarshal")
 
 	rg := runConfigFromProto(&decoded).RepositoryGuidance
-	if rg == nil {
-		t.Fatal("RepositoryGuidance nil after translation")
-	}
+	require.NotNil(t, rg, "RepositoryGuidance must survive translation")
 	want := &types.RepositoryGuidanceConfig{
 		Files:        []string{"AGENTS.md", "CLAUDE.md"},
 		MaxBytes:     4096,
 		PinnedSHA256: map[string]string{"AGENTS.md": digest},
 	}
-	if !reflect.DeepEqual(rg, want) {
-		t.Fatalf("RepositoryGuidance: got %+v, want %+v", rg, want)
-	}
+	require.Equal(t, want, rg)
 
 	decoded.RepositoryGuidance.Files[0] = "mutated"
 	decoded.RepositoryGuidance.PinnedSha256["AGENTS.md"] = "mutated"
-	if rg.Files[0] != "AGENTS.md" {
-		t.Error("RepositoryGuidance.Files shares the proto-owned slice")
-	}
-	if rg.PinnedSHA256["AGENTS.md"] != digest {
-		t.Error("RepositoryGuidance.PinnedSHA256 shares the proto-owned map")
-	}
+	assert.Equal(t, "AGENTS.md", rg.Files[0], "RepositoryGuidance.Files must not share the proto-owned slice")
+	assert.Equal(t, digest, rg.PinnedSHA256["AGENTS.md"], "RepositoryGuidance.PinnedSHA256 must not share the proto-owned map")
 }
 
 // TestRunConfigFromProto_CorrelationPreserved pins every CorrelationConfig
@@ -2570,13 +1915,9 @@ func TestRunConfigFromProto_CorrelationPreserved(t *testing.T) {
 	}
 
 	raw, err := proto.Marshal(original)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	var decoded pb.RunConfig
-	if err := proto.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	require.NoError(t, proto.Unmarshal(raw, &decoded), "unmarshal")
 
 	got := runConfigFromProto(&decoded).Correlation
 	want := &types.CorrelationConfig{
@@ -2587,29 +1928,21 @@ func TestRunConfigFromProto_CorrelationPreserved(t *testing.T) {
 		URL:       "https://cp.example.com/runs/42",
 		Labels:    map[string]string{"agent_profile": "reviewer", "execution_mode": "batch"},
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("Correlation: got %+v, want %+v", got, want)
-	}
+	require.Equal(t, want, got)
 
 	decoded.Correlation.Labels["agent_profile"] = "mutated"
-	if got.Labels["agent_profile"] != "reviewer" {
-		t.Error("Correlation.Labels shares the proto-owned map")
-	}
+	assert.Equal(t, "reviewer", got.Labels["agent_profile"], "Correlation.Labels must not share the proto-owned map")
 }
 
 func TestRunConfigFromProto_CorrelationAbsentStaysNil(t *testing.T) {
-	if got := runConfigFromProto(&pb.RunConfig{}).Correlation; got != nil {
-		t.Errorf("Correlation should be nil when proto field absent, got %+v", got)
-	}
+	assert.Nil(t, runConfigFromProto(&pb.RunConfig{}).Correlation, "Correlation is nil when the proto field is absent")
 }
 
 // TestRunConfigFromProto_RepositoryGuidanceAbsentStaysNil documents that an
 // absent sub-message leaves guidance off rather than synthesising an empty
 // block that fails validation.
 func TestRunConfigFromProto_RepositoryGuidanceAbsentStaysNil(t *testing.T) {
-	if rg := runConfigFromProto(&pb.RunConfig{}).RepositoryGuidance; rg != nil {
-		t.Errorf("RepositoryGuidance should be nil when proto field absent, got %+v", rg)
-	}
+	assert.Nil(t, runConfigFromProto(&pb.RunConfig{}).RepositoryGuidance, "RepositoryGuidance is nil when the proto field is absent")
 }
 
 // harnessEventWireRoundTrip translates e and decodes it from the wire, so a
@@ -2617,13 +1950,9 @@ func TestRunConfigFromProto_RepositoryGuidanceAbsentStaysNil(t *testing.T) {
 func harnessEventWireRoundTrip(t *testing.T, e types.HarnessEvent) *pb.HarnessEvent {
 	t.Helper()
 	raw, err := proto.Marshal(harnessEventToProto(e))
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	var decoded pb.HarnessEvent
-	if err := proto.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	require.NoError(t, proto.Unmarshal(raw, &decoded), "unmarshal")
 	return &decoded
 }
 
@@ -2634,21 +1963,19 @@ func TestHarnessEventToProto_LiveTranscriptFields(t *testing.T) {
 		got := harnessEventWireRoundTrip(t, types.HarnessEvent{
 			Type: "user_message", Text: "fix it", Source: types.UserMessageSourceFollowUpPrompt, RequestID: "req-9",
 		})
-		if got.GetText() != "fix it" || got.GetSource() != "followup_prompt" || got.GetRequestId() != "req-9" {
-			t.Errorf("text/source/request_id = %q/%q/%q", got.GetText(), got.GetSource(), got.GetRequestId())
-		}
+		require.Equal(t, "fix it", got.GetText(), "text")
+		require.Equal(t, "followup_prompt", got.GetSource(), "source")
+		require.Equal(t, "req-9", got.GetRequestId(), "request_id")
 	})
 
 	t.Run("turn_started keeps turn 0 present", func(t *testing.T) {
 		got := harnessEventWireRoundTrip(t, types.HarnessEvent{
 			Type: "turn_started", Turn: turn(0), Model: "claude-x", Provider: "anthropic",
 		})
-		if got.Turn == nil || got.GetTurn() != 0 {
-			t.Errorf("turn = %v, want present 0", got.Turn)
-		}
-		if got.GetModel() != "claude-x" || got.GetProvider() != "anthropic" {
-			t.Errorf("model/provider = %q/%q", got.GetModel(), got.GetProvider())
-		}
+		require.NotNil(t, got.Turn, "turn 0 must stay present")
+		require.Zero(t, got.GetTurn(), "turn")
+		require.Equal(t, "claude-x", got.GetModel(), "model")
+		require.Equal(t, "anthropic", got.GetProvider(), "provider")
 	})
 
 	t.Run("turn_committed", func(t *testing.T) {
@@ -2656,40 +1983,41 @@ func TestHarnessEventToProto_LiveTranscriptFields(t *testing.T) {
 			Type: "turn_committed", Turn: turn(3), StopReason: "tool_use", ToolResultCount: 2,
 			Usage: &types.TokenUsage{Input: 100, Output: 20, CacheRead: 5, CacheWrite: 6, Reasoning: 7},
 		})
-		if got.GetTurn() != 3 || got.GetStopReason() != "tool_use" || got.GetToolResultCount() != 2 {
-			t.Errorf("turn/stop_reason/tool_result_count = %d/%q/%d", got.GetTurn(), got.GetStopReason(), got.GetToolResultCount())
-		}
+		require.EqualValues(t, 3, got.GetTurn(), "turn")
+		require.Equal(t, "tool_use", got.GetStopReason(), "stop_reason")
+		require.EqualValues(t, 2, got.GetToolResultCount(), "tool_result_count")
+
 		u := got.GetUsage()
-		if u.GetInputTokens() != 100 || u.GetOutputTokens() != 20 || u.GetCacheReadTokens() != 5 ||
-			u.GetCacheWriteTokens() != 6 || u.GetReasoningTokens() != 7 {
-			t.Errorf("usage = %v", u)
-		}
+		require.EqualValues(t, 100, u.GetInputTokens(), "input_tokens")
+		require.EqualValues(t, 20, u.GetOutputTokens(), "output_tokens")
+		require.EqualValues(t, 5, u.GetCacheReadTokens(), "cache_read_tokens")
+		require.EqualValues(t, 6, u.GetCacheWriteTokens(), "cache_write_tokens")
+		require.EqualValues(t, 7, u.GetReasoningTokens(), "reasoning_tokens")
 	})
 
 	t.Run("turn_abandoned", func(t *testing.T) {
 		got := harnessEventWireRoundTrip(t, types.HarnessEvent{
 			Type: "turn_abandoned", Turn: turn(0), AbandonReason: types.TurnAbandonedUnansweredToolCalls,
 		})
-		if got.Turn == nil || got.GetTurn() != 0 || got.GetAbandonReason() != types.TurnAbandonedUnansweredToolCalls {
-			t.Errorf("turn/abandon_reason = %v/%q", got.Turn, got.GetAbandonReason())
-		}
+		require.NotNil(t, got.Turn, "turn 0 must stay present")
+		require.Zero(t, got.GetTurn(), "turn")
+		require.Equal(t, types.TurnAbandonedUnansweredToolCalls, got.GetAbandonReason(), "abandon_reason")
 	})
 
 	t.Run("tool_result", func(t *testing.T) {
 		got := harnessEventWireRoundTrip(t, types.HarnessEvent{
 			Type: "tool_result", ToolUseID: "tu-1", Name: "read_file", Content: "boom", IsError: true, DurationMs: 42,
 		})
-		if got.GetToolUseId() != "tu-1" || got.GetName() != "read_file" || !got.GetIsError() || got.GetDurationMs() != 42 {
-			t.Errorf("tool_use_id/name/is_error/duration_ms = %q/%q/%v/%d",
-				got.GetToolUseId(), got.GetName(), got.GetIsError(), got.GetDurationMs())
-		}
+		require.Equal(t, "tu-1", got.GetToolUseId(), "tool_use_id")
+		require.Equal(t, "read_file", got.GetName(), "name")
+		require.True(t, got.GetIsError(), "is_error")
+		require.EqualValues(t, 42, got.GetDurationMs(), "duration_ms")
 	})
 
 	t.Run("unset turn and usage stay absent", func(t *testing.T) {
 		got := harnessEventWireRoundTrip(t, types.HarnessEvent{Type: "text_delta", Text: "x"})
-		if got.Turn != nil || got.Usage != nil {
-			t.Errorf("turn/usage = %v/%v, want absent", got.Turn, got.Usage)
-		}
+		require.Nil(t, got.Turn, "turn")
+		require.Nil(t, got.Usage, "usage")
 	})
 }
 
@@ -2699,128 +2027,94 @@ func TestTraceReferenceToProto_RoundTrip(t *testing.T) {
 		RunSpanID: "00f067aa0ba902b7",
 		Sampled:   true,
 	}
-	assertRef := func(t *testing.T, got *pb.TraceReference) {
+	requireRef := func(t *testing.T, got *pb.TraceReference) {
 		t.Helper()
-		if got.GetTraceId() != ref.TraceID || got.GetRunSpanId() != ref.RunSpanID || got.GetSampled() != ref.Sampled {
-			t.Errorf("trace_reference = %v, want %+v", got, *ref)
-		}
+		require.NotNil(t, got, "trace_reference")
+		require.Equal(t, ref.TraceID, got.GetTraceId(), "trace_id")
+		require.Equal(t, ref.RunSpanID, got.GetRunSpanId(), "run_span_id")
+		require.Equal(t, ref.Sampled, got.GetSampled(), "sampled")
 	}
 
 	t.Run("run_started event", func(t *testing.T) {
-		raw, err := proto.Marshal(harnessEventToProto(types.HarnessEvent{
-			Type: "run_started", ID: "run-ref", TraceReference: ref,
-		}))
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
 		var decoded pb.HarnessEvent
-		if err := proto.Unmarshal(raw, &decoded); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if decoded.GetType() != "run_started" || decoded.GetId() != "run-ref" {
-			t.Errorf("type/id = %q/%q, want run_started/run-ref", decoded.GetType(), decoded.GetId())
-		}
-		assertRef(t, decoded.GetTraceReference())
+		wireRoundTrip(t, harnessEventToProto(types.HarnessEvent{
+			Type: "run_started", ID: "run-ref", TraceReference: ref,
+		}), &decoded)
+		require.Equal(t, "run_started", decoded.GetType())
+		require.Equal(t, "run-ref", decoded.GetId())
+		requireRef(t, decoded.GetTraceReference())
 	})
 
 	t.Run("done summary", func(t *testing.T) {
-		raw, err := proto.Marshal(runTraceToProto(&types.RunTrace{Outcome: "success", TraceReference: ref}))
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
 		var decoded pb.RunTrace
-		if err := proto.Unmarshal(raw, &decoded); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		assertRef(t, decoded.GetTraceReference())
+		wireRoundTrip(t, runTraceToProto(&types.RunTrace{Outcome: "success", TraceReference: ref}), &decoded)
+		requireRef(t, decoded.GetTraceReference())
 	})
 
 	t.Run("unsampled reference keeps sampled false", func(t *testing.T) {
 		got := traceReferenceToProto(&types.TraceReference{TraceID: ref.TraceID, RunSpanID: ref.RunSpanID})
-		if got == nil || got.GetSampled() {
-			t.Errorf("trace_reference = %v, want present with sampled false", got)
-		}
+		require.NotNil(t, got, "trace_reference")
+		require.False(t, got.GetSampled(), "sampled")
 	})
 
 	t.Run("absent stays absent", func(t *testing.T) {
-		if pe := harnessEventToProto(types.HarnessEvent{Type: "text_delta"}); pe.TraceReference != nil {
-			t.Errorf("event trace_reference = %v, want nil", pe.TraceReference)
-		}
-		if pt := runTraceToProto(&types.RunTrace{Outcome: "success"}); pt.TraceReference != nil {
-			t.Errorf("summary trace_reference = %v, want nil", pt.TraceReference)
-		}
+		pe := harnessEventToProto(types.HarnessEvent{Type: "text_delta"})
+		require.Nil(t, pe.TraceReference, "event trace_reference")
+		pt := runTraceToProto(&types.RunTrace{Outcome: "success"})
+		require.Nil(t, pt.TraceReference, "summary trace_reference")
 	})
 }
 
-func TestTraceContextToProto_ToolResultRequest(t *testing.T) {
+func TestTraceContextToProto_ToolResultRequestCarriesTraceContext(t *testing.T) {
 	carrier := &types.TraceContext{
 		Traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
 		Tracestate:  "vendor=opaque",
 	}
-	raw, err := proto.Marshal(harnessEventToProto(types.HarnessEvent{
-		Type: "tool_result_request", RequestID: "req-1", ToolUseID: "tc_1", TraceContext: carrier,
-	}))
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
 	var decoded pb.HarnessEvent
-	if err := proto.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	wireRoundTrip(t, harnessEventToProto(types.HarnessEvent{
+		Type: "tool_result_request", RequestID: "req-1", ToolUseID: "tc_1", TraceContext: carrier,
+	}), &decoded)
 	got := decoded.GetTraceContext()
-	if got.GetTraceparent() != carrier.Traceparent || got.GetTracestate() != carrier.Tracestate {
-		t.Errorf("trace_context = %v, want %+v", got, *carrier)
-	}
-	if decoded.GetRequestId() != "req-1" || decoded.GetToolUseId() != "tc_1" {
-		t.Errorf("request_id/tool_use_id = %q/%q, want req-1/tc_1", decoded.GetRequestId(), decoded.GetToolUseId())
-	}
+	require.Equal(t, carrier.Traceparent, got.GetTraceparent(), "traceparent")
+	require.Equal(t, carrier.Tracestate, got.GetTracestate(), "tracestate")
+	require.Equal(t, "req-1", decoded.GetRequestId())
+	require.Equal(t, "tc_1", decoded.GetToolUseId())
 
-	if pe := harnessEventToProto(types.HarnessEvent{Type: "tool_result_request"}); pe.TraceContext != nil {
-		t.Errorf("absent trace context translated to %v, want nil", pe.TraceContext)
-	}
+	pe := harnessEventToProto(types.HarnessEvent{Type: "tool_result_request"})
+	require.Nil(t, pe.TraceContext, "absent trace context")
 }
 
-func TestTraceContextFromProto_TaskAssignment(t *testing.T) {
-	raw, err := proto.Marshal(&pb.ControlEvent{
+func TestTraceContextFromProto_TaskAssignmentCarriesTraceContext(t *testing.T) {
+	var decoded pb.ControlEvent
+	wireRoundTrip(t, &pb.ControlEvent{
 		Type: "task_assignment",
 		Task: &pb.RunConfig{RunId: "run-parented"},
 		TraceContext: &pb.TraceContext{
 			Traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
 			Tracestate:  "vendor=opaque",
 		},
-	})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var decoded pb.ControlEvent
-	if err := proto.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	}, &decoded)
 	e := controlEventFromProto(&decoded)
 	want := types.TraceContext{
 		Traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
 		Tracestate:  "vendor=opaque",
 	}
-	if e.TraceContext == nil || *e.TraceContext != want {
-		t.Errorf("trace context = %+v, want %+v", e.TraceContext, want)
-	}
-	if e.Task == nil || e.Task.RunID != "run-parented" {
-		t.Errorf("task = %+v, want run-parented", e.Task)
-	}
+	require.NotNil(t, e.TraceContext, "trace context")
+	require.Equal(t, want, *e.TraceContext)
+	require.NotNil(t, e.Task, "task")
+	require.Equal(t, "run-parented", e.Task.RunID)
 
-	if e := controlEventFromProto(&pb.ControlEvent{Type: "task_assignment"}); e.TraceContext != nil {
-		t.Errorf("absent trace context translated to %+v, want nil", e.TraceContext)
-	}
+	absent := controlEventFromProto(&pb.ControlEvent{Type: "task_assignment"})
+	require.Nil(t, absent.TraceContext, "absent trace context")
 }
 
 func TestHarnessEventToProto_ReadyCapabilities(t *testing.T) {
-	got := harnessEventWireRoundTrip(t, types.HarnessEvent{
+	decoded := harnessEventWireRoundTrip(t, types.HarnessEvent{
 		Type: "ready", HarnessVersion: "dev", Capabilities: types.HarnessCapabilities(),
 	})
-	if want := types.HarnessCapabilities(); !reflect.DeepEqual(got.GetCapabilities(), want) {
-		t.Errorf("capabilities = %v, want %v", got.GetCapabilities(), want)
-	}
-	if bare := harnessEventWireRoundTrip(t, types.HarnessEvent{Type: "ready"}); len(bare.GetCapabilities()) != 0 {
-		t.Errorf("a ready without capabilities arrived with %v", bare.GetCapabilities())
-	}
+	want := types.HarnessCapabilities()
+	require.Equal(t, want, decoded.GetCapabilities(), "capabilities")
+
+	bare := harnessEventWireRoundTrip(t, types.HarnessEvent{Type: "ready"})
+	require.Empty(t, bare.GetCapabilities(), "ready without capabilities")
 }

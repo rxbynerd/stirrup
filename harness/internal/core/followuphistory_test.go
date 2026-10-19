@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/ruleoftwo"
@@ -41,7 +43,7 @@ func toolResults(ids ...string) types.Message {
 	return m
 }
 
-func TestCommittedHistory(t *testing.T) {
+func TestCommittedHistory_DropsUnansweredToolTurns(t *testing.T) {
 	feedback := types.Message{
 		Role:      "user",
 		Synthetic: true,
@@ -93,10 +95,7 @@ func TestCommittedHistory(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := committedHistory(tc.messages)
-			if !reflect.DeepEqual(got, tc.want) {
-				t.Errorf("committedHistory:\n got %+v\nwant %+v", got, tc.want)
-			}
+			require.Equal(t, tc.want, committedHistory(tc.messages))
 		})
 	}
 }
@@ -105,12 +104,8 @@ func TestCommittedHistory_ReturnsAFreshSlice(t *testing.T) {
 	messages := []types.Message{userText("task"), assistantToolUse("t1"), toolResults("t1"), assistantToolUse("t2")}
 	got := committedHistory(messages)
 	got = append(got, userText("next"))
-	if messages[3].Role != "assistant" {
-		t.Fatalf("appending to the committed history overwrote the input: %+v", messages[3])
-	}
-	if len(got) != 4 {
-		t.Fatalf("len = %d, want 4", len(got))
-	}
+	require.Equal(t, "assistant", messages[3].Role, "appending to the committed history overwrote the input")
+	require.Len(t, got, 4)
 }
 
 // followUpSession runs the primary run and then RunFollowUpLoop,
@@ -119,9 +114,7 @@ func TestCommittedHistory_ReturnsAFreshSlice(t *testing.T) {
 func followUpSession(t *testing.T, loop *AgenticLoop, tr *cancellableTransport, config *types.RunConfig, prompts ...string) []*types.RunTrace {
 	t.Helper()
 	primary, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("primary Run: %v", err)
-	}
+	require.NoError(t, err, "primary Run")
 	traces := []*types.RunTrace{primary}
 
 	completed := make(chan *types.RunTrace, len(prompts))
@@ -139,7 +132,7 @@ func followUpSession(t *testing.T, loop *AgenticLoop, tr *cancellableTransport, 
 		case rt := <-completed:
 			traces = append(traces, rt)
 		case <-time.After(5 * time.Second):
-			t.Fatalf("follow-up %d did not complete", i+1)
+			require.Fail(t, fmt.Sprintf("follow-up %d did not complete", i+1))
 		}
 	}
 	cancel()
@@ -155,46 +148,28 @@ func TestRunFollowUpLoop_ContinueCarriesCommittedHistory(t *testing.T) {
 
 	traces := followUpSession(t, loop, tr, config, "first follow-up", "second follow-up")
 	for i, rt := range traces {
-		if rt.Outcome != "success" {
-			t.Errorf("run %d outcome = %q, want success", i, rt.Outcome)
-		}
+		assert.Equal(t, "success", rt.Outcome, "run %d outcome", i)
 	}
 
 	calls := prov.params()
-	if len(calls) != 4 {
-		t.Fatalf("provider calls = %d, want 4 (two primary turns, one per follow-up)", len(calls))
-	}
+	require.Len(t, calls, 4, "two primary turns, one per follow-up")
 	second := calls[2].Messages
-	if want := []string{"user", "assistant", "user", "assistant", "user"}; !reflect.DeepEqual(rolesOf(second), want) {
-		t.Fatalf("first follow-up roles = %v, want %v", rolesOf(second), want)
-	}
-	if got := second[0].Content[0].Text; got != "Hello, write a test file." {
-		t.Errorf("first follow-up lost the primary prompt: %q", got)
-	}
-	if second[1].Content[0].Type != "tool_use" || second[2].Content[0].ToolUseID != second[1].Content[0].ID {
-		t.Errorf("first follow-up lost the primary tool round trip: %+v / %+v", second[1], second[2])
-	}
-	if got := textBlocks(second[4]); !reflect.DeepEqual(got, []string{"first follow-up"}) {
-		t.Errorf("first follow-up prompt message = %v", got)
-	}
+	require.Equal(t, []string{"user", "assistant", "user", "assistant", "user"}, rolesOf(second), "first follow-up roles")
+	assert.Equal(t, "Hello, write a test file.", second[0].Content[0].Text, "first follow-up lost the primary prompt")
+	assert.Equal(t, "tool_use", second[1].Content[0].Type, "first follow-up lost the primary tool call")
+	assert.Equal(t, second[1].Content[0].ID, second[2].Content[0].ToolUseID, "first follow-up lost the primary tool round trip")
+	assert.Equal(t, []string{"first follow-up"}, textBlocks(second[4]), "first follow-up prompt message")
 
 	third := calls[3].Messages
-	if len(third) != len(second)+2 || !reflect.DeepEqual(third[:len(second)], second) {
-		t.Fatalf("second follow-up did not extend the first's history:\n got %v", rolesOf(third))
-	}
-	if got := textBlocks(third[len(third)-1]); !reflect.DeepEqual(got, []string{"second follow-up"}) {
-		t.Errorf("second follow-up prompt message = %v", got)
-	}
+	require.Len(t, third, len(second)+2, "second follow-up history length")
+	require.Equal(t, second, third[:len(second)], "second follow-up did not extend the first's history")
+	assert.Equal(t, []string{"second follow-up"}, textBlocks(third[len(third)-1]), "second follow-up prompt message")
 
 	for i, c := range calls {
-		if c.System != calls[0].System {
-			t.Errorf("call %d system prompt differs from the primary run's", i)
-		}
+		assert.Equal(t, calls[0].System, c.System, "call %d system prompt differs from the primary run's", i)
 		for _, m := range c.Messages {
 			for _, text := range textBlocks(m) {
-				if strings.Contains(text, c.System) {
-					t.Errorf("call %d carried the system prompt in its history", i)
-				}
+				assert.NotContains(t, text, c.System, "call %d carried the system prompt in its history", i)
 			}
 		}
 	}
@@ -211,14 +186,11 @@ func TestRunFollowUpLoop_ResetStartsEachFollowUpFromItsPrompt(t *testing.T) {
 			followUpSession(t, loop, tr, config, "first follow-up", "second follow-up")
 
 			calls := prov.params()
-			if len(calls) != 4 {
-				t.Fatalf("provider calls = %d, want 4", len(calls))
-			}
+			require.Len(t, calls, 4)
 			for i, want := range map[int]string{2: "first follow-up", 3: "second follow-up"} {
 				got := calls[i].Messages
-				if len(got) != 1 || !reflect.DeepEqual(textBlocks(got[0]), []string{want}) {
-					t.Errorf("call %d history = %+v, want only the prompt %q", i, got, want)
-				}
+				require.Len(t, got, 1, "call %d history", i)
+				require.Equal(t, []string{want}, textBlocks(got[0]), "call %d prompt", i)
 			}
 		})
 	}
@@ -233,13 +205,10 @@ func TestRun_PrimaryRunIgnoresCarriedHistory(t *testing.T) {
 	config.FollowUpHistory = types.FollowUpHistoryContinue
 
 	for range 2 {
-		if _, err := loop.Run(context.Background(), config); err != nil {
-			t.Fatalf("Run: %v", err)
-		}
+		_, err := loop.Run(context.Background(), config)
+		require.NoError(t, err, "direct Run")
 	}
-	if got := prov.params()[1].Messages; len(got) != 1 {
-		t.Errorf("a second direct Run carried %d messages, want only its prompt", len(got))
-	}
+	assert.Len(t, prov.params()[1].Messages, 1, "a second direct Run carried history, want only its prompt")
 }
 
 // emitToolScript calls emit_tool once, then ends every later turn.
@@ -254,9 +223,7 @@ var emitToolScript = [][]types.StreamEvent{
 func registerEmitTool(t *testing.T, loop *AgenticLoop, output string) {
 	t.Helper()
 	registry, ok := loop.Tools.(*tool.Registry)
-	if !ok {
-		t.Fatalf("test loop Tools is %T, want *tool.Registry", loop.Tools)
-	}
+	require.True(t, ok, "test loop Tools is %T, want *tool.Registry", loop.Tools)
 	registry.Register(&tool.Tool{
 		Name:        "emit_tool",
 		Description: "returns a fixed output",
@@ -294,29 +261,18 @@ func TestRunFollowUpLoop_ContinueRedactsUnscreenedCarriedToolResults(t *testing.
 	config.FollowUpHistory = types.FollowUpHistoryContinue
 
 	traces := followUpSession(t, loop, tr, config, "carry on")
-	if traces[0].Outcome != "max_turns" {
-		t.Fatalf("primary outcome = %q, want max_turns", traces[0].Outcome)
-	}
-	if !loop.RuleOfTwo.Tripped() {
-		t.Error("screening the carried tool result did not trip the latch")
-	}
+	require.Equal(t, "max_turns", traces[0].Outcome, "primary outcome")
+	assert.True(t, loop.RuleOfTwo.Tripped(), "screening the carried tool result should trip the latch")
 
 	calls := prov.params()
-	if len(calls) != 2 {
-		t.Fatalf("provider calls = %d, want 2", len(calls))
-	}
+	require.Len(t, calls, 2)
 	followUp := calls[1].Messages
 	results := toolResultContents(followUp)
-	if len(results) != 1 {
-		t.Fatalf("follow-up carried %d tool results, want 1", len(results))
-	}
-	if strings.Contains(results[0], fakeLiveAWSKey) || !strings.Contains(results[0], ruleoftwo.RedactionPlaceholder) {
-		t.Errorf("carried tool result reached the model unredacted: %q", results[0])
-	}
+	require.Len(t, results, 1, "carried tool results")
+	assert.NotContains(t, results[0], fakeLiveAWSKey, "carried tool result reached the model unredacted")
+	assert.Contains(t, results[0], ruleoftwo.RedactionPlaceholder, "carried tool result was not redacted")
 	last := followUp[len(followUp)-1]
-	if want := []string{"tool_result", "text"}; !reflect.DeepEqual(blockTypes(last), want) {
-		t.Errorf("follow-up prompt was not merged after the carried results: %v", blockTypes(last))
-	}
+	assert.Equal(t, []string{"tool_result", "text"}, blockTypes(last), "follow-up prompt was not merged after the carried results")
 }
 
 // TestRunFollowUpLoop_ContinueAbortsOnUnscreenedCarriedSecret pins that a
@@ -333,28 +289,21 @@ func TestRunFollowUpLoop_ContinueAbortsOnUnscreenedCarriedSecret(t *testing.T) {
 	config.FollowUpHistory = types.FollowUpHistoryContinue
 
 	traces := followUpSession(t, loop, tr, config, "carry on", "start over")
-	if got := []string{traces[0].Outcome, traces[1].Outcome, traces[2].Outcome}; !reflect.DeepEqual(got, []string{"max_turns", "rule_of_two_violation", "success"}) {
-		t.Fatalf("outcomes = %v", got)
-	}
+	require.Equal(t, []string{"max_turns", "rule_of_two_violation", "success"},
+		[]string{traces[0].Outcome, traces[1].Outcome, traces[2].Outcome}, "outcomes")
 	calls := prov.params()
-	if len(calls) != 2 {
-		t.Fatalf("provider calls = %d, want 2 (the aborted follow-up makes none)", len(calls))
-	}
-	if got := calls[1].Messages; len(got) != 1 || !reflect.DeepEqual(textBlocks(got[0]), []string{"start over"}) {
-		t.Errorf("follow-up after an abort carried history: %+v", got)
-	}
+	require.Len(t, calls, 2, "the aborted follow-up makes no provider call")
+	got := calls[1].Messages
+	require.Len(t, got, 1, "follow-up after an abort carried history")
+	assert.Equal(t, []string{"start over"}, textBlocks(got[0]), "follow-up after an abort prompt")
 	var warned bool
 	for _, w := range warningEvents(tr) {
 		if strings.Contains(w.Message, "followUpHistory") && strings.Contains(w.Message, "rule_of_two_violation") {
 			warned = true
 		}
 	}
-	if !warned {
-		t.Error("no warning reported that the follow-up's history was not continued")
-	}
-	if !loop.RuleOfTwo.Tripped() {
-		t.Error("the latch reset across follow-up runs")
-	}
+	assert.True(t, warned, "no warning reported that the follow-up's history was not continued")
+	assert.True(t, loop.RuleOfTwo.Tripped(), "the latch should stay tripped across follow-up runs")
 }
 
 // markerGuard returns verdict for pre-turn content containing any of
@@ -403,16 +352,11 @@ func TestRunFollowUpLoop_ContinueGuardsUnscreenedCarriedToolResults(t *testing.T
 
 	followUpSession(t, loop, tr, config, "carry on")
 
-	if g.matches() != 1 {
-		t.Errorf("guard screened the carried tool result %d times, want 1", g.matches())
-	}
+	assert.Equal(t, 1, g.matches(), "guard should screen the carried tool result once")
 	calls := prov.params()
-	if len(calls) != 2 {
-		t.Fatalf("provider calls = %d, want 2", len(calls))
-	}
-	if got := toolResultContents(calls[1].Messages); !reflect.DeepEqual(got, []string{"[content blocked by guardrail]"}) {
-		t.Errorf("denied carried tool result reached the model: %q", got)
-	}
+	require.Len(t, calls, 2)
+	assert.Equal(t, []string{"[content blocked by guardrail]"}, toolResultContents(calls[1].Messages),
+		"denied carried tool result reached the model")
 }
 
 // TestRunFollowUpLoop_ContinueDoesNotRescreenScreenedTail pins that a
@@ -434,17 +378,12 @@ func TestRunFollowUpLoop_ContinueDoesNotRescreenScreenedTail(t *testing.T) {
 	config.FollowUpHistory = types.FollowUpHistoryContinue
 
 	traces := followUpSession(t, loop, tr, config, "carry on")
-	if traces[0].Outcome != "error" {
-		t.Fatalf("primary outcome = %q, want error", traces[0].Outcome)
-	}
-	if g.matches() != 1 {
-		t.Errorf("guard screened the tool result %d times, want 1", g.matches())
-	}
+	require.Equal(t, "error", traces[0].Outcome, "primary outcome")
+	assert.Equal(t, 1, g.matches(), "guard should screen the tool result once")
 	calls := prov.params()
 	results := toolResultContents(calls[len(calls)-1].Messages)
-	if len(results) != 1 || strings.Count(results[0], guard.SpotlightOpenTag) != 1 {
-		t.Errorf("follow-up tool result = %q, want it spotlighted exactly once", results)
-	}
+	require.Len(t, results, 1, "follow-up tool results")
+	assert.Equal(t, 1, strings.Count(results[0], guard.SpotlightOpenTag), "follow-up tool result should be spotlighted exactly once")
 }
 
 // TestRunFollowUpLoop_ContinueKeepsThinkingStrippedAfterRewrite pins that
@@ -460,58 +399,58 @@ func TestRunFollowUpLoop_ContinueKeepsThinkingStrippedAfterRewrite(t *testing.T)
 
 	followUpSession(t, loop, tr, config, "carry on")
 
-	if len(prov.sent) != 3 {
-		t.Fatalf("provider saw %d requests, want 3", len(prov.sent))
-	}
-	if got := thinkingSignatures(prov.sent[2]); len(got) != 0 {
-		t.Errorf("follow-up replayed thinking %v from a rewritten history", got)
-	}
+	require.Len(t, prov.sent, 3, "provider requests")
+	assert.Empty(t, thinkingSignatures(prov.sent[2]), "follow-up replayed thinking from a rewritten history")
 }
 
-func TestRetainHistory(t *testing.T) {
+func TestRetainHistory_CarriesOnlyContinuableRuns(t *testing.T) {
 	history := []types.Message{userText("task"), assistantText("done")}
 	continueConfig := buildTestConfig()
 	continueConfig.FollowUpHistory = types.FollowUpHistoryContinue
 
 	for _, outcome := range []string{"guardrail_blocked", "rule_of_two_violation"} {
-		loop := buildTestLoop(nil)
-		loop.retainHistory(continueConfig, outcome, history)
-		if loop.carried == nil || loop.carried.withheld != outcome || loop.carried.messages != nil {
-			t.Errorf("outcome %q: carried = %+v, want the history withheld", outcome, loop.carried)
-		}
+		t.Run(fmt.Sprintf("withholds history after %s", outcome), func(t *testing.T) {
+			loop := buildTestLoop(nil)
+			loop.retainHistory(continueConfig, outcome, history)
+			require.NotNil(t, loop.carried)
+			assert.Equal(t, outcome, loop.carried.withheld)
+			assert.Nil(t, loop.carried.messages)
+		})
 	}
 
-	subAgent := buildTestLoop(nil)
-	subAgent.ParentRunID = "parent"
-	subAgent.retainHistory(continueConfig, "success", history)
-	if subAgent.carried != nil {
-		t.Errorf("a sub-agent kept history: %+v", subAgent.carried)
-	}
+	t.Run("sub-agent keeps no history", func(t *testing.T) {
+		subAgent := buildTestLoop(nil)
+		subAgent.ParentRunID = "parent"
+		subAgent.retainHistory(continueConfig, "success", history)
+		assert.Nil(t, subAgent.carried)
+	})
 
-	reset := buildTestLoop(nil)
-	reset.retainHistory(buildTestConfig(), "success", history)
-	if reset.carried != nil {
-		t.Errorf("followUpHistory reset kept history: %+v", reset.carried)
-	}
+	t.Run("reset follow-up history keeps no history", func(t *testing.T) {
+		reset := buildTestLoop(nil)
+		reset.retainHistory(buildTestConfig(), "success", history)
+		assert.Nil(t, reset.carried)
+	})
 
-	kept := buildTestLoop(nil)
-	kept.cacheKey = "run-key"
-	kept.retainHistory(continueConfig, "success", history)
-	if kept.carried == nil || !reflect.DeepEqual(kept.carried.messages, history) || kept.carried.unscreened {
-		t.Errorf("success: carried = %+v, want the screened history", kept.carried)
-	}
-	if kept.carried.toolCalls != 0 || kept.carried.cacheKey != "run-key" {
-		t.Errorf("success: carried toolCalls, cacheKey = %d, %q, want 0, run-key", kept.carried.toolCalls, kept.carried.cacheKey)
-	}
+	t.Run("success keeps the screened history", func(t *testing.T) {
+		kept := buildTestLoop(nil)
+		kept.cacheKey = "run-key"
+		kept.retainHistory(continueConfig, "success", history)
+		require.NotNil(t, kept.carried)
+		assert.Equal(t, history, kept.carried.messages)
+		assert.False(t, kept.carried.unscreened)
+		assert.Equal(t, 0, kept.carried.toolCalls)
+		assert.Equal(t, "run-key", kept.carried.cacheKey)
+	})
 
-	// The unanswered trailing tool call is not part of the committed
-	// history, so it does not count.
-	withTools := []types.Message{userText("task"), assistantToolUse("t1", "t2"), toolResults("t1", "t2"), assistantToolUse("t3")}
-	counted := buildTestLoop(nil)
-	counted.retainHistory(continueConfig, "success", withTools)
-	if counted.carried == nil || counted.carried.toolCalls != 2 {
-		t.Errorf("carried = %+v, want 2 tool calls", counted.carried)
-	}
+	t.Run("counts only answered tool calls", func(t *testing.T) {
+		// The unanswered trailing tool call is not part of the committed
+		// history, so it does not count.
+		withTools := []types.Message{userText("task"), assistantToolUse("t1", "t2"), toolResults("t1", "t2"), assistantToolUse("t3")}
+		counted := buildTestLoop(nil)
+		counted.retainHistory(continueConfig, "success", withTools)
+		require.NotNil(t, counted.carried)
+		assert.Equal(t, 2, counted.carried.toolCalls)
+	})
 }
 
 // eventsFromRun returns the events from the n-th run_started (0-based)
@@ -554,26 +493,21 @@ func TestRunFollowUpLoop_ContinueTranscriptReportsOnlyTheNewPrompt(t *testing.T)
 	config.FollowUpHistory = types.FollowUpHistoryContinue
 
 	followUpSession(t, loop, tr, config, "carry on")
-	if g.matches() != 1 {
-		t.Fatalf("guard screened the carried tool result %d times, want 1", g.matches())
-	}
-	if last := prov.params()[1].Messages; !reflect.DeepEqual(blockTypes(last[len(last)-1]), []string{"tool_result", "text"}) {
-		t.Fatalf("follow-up prompt was not merged after the carried results: %v", blockTypes(last[len(last)-1]))
-	}
-	if results := toolResultContents(prov.params()[1].Messages); len(results) != 1 || strings.Count(results[0], guard.SpotlightOpenTag) != 1 {
-		t.Errorf("follow-up tool result = %q, want it spotlighted exactly once", results)
-	}
+	require.Equal(t, 1, g.matches(), "guard should screen the carried tool result once")
+	followUpMessages := prov.params()[1].Messages
+	require.Equal(t, []string{"tool_result", "text"}, blockTypes(followUpMessages[len(followUpMessages)-1]),
+		"follow-up prompt was not merged after the carried results")
+	results := toolResultContents(followUpMessages)
+	require.Len(t, results, 1, "follow-up tool results")
+	assert.Equal(t, 1, strings.Count(results[0], guard.SpotlightOpenTag), "follow-up tool result should be spotlighted exactly once")
 
 	followUp := eventsFromRun(tr.Events(), 1)
-	got := eventTypeList(followUp)
 	want := []string{"run_started", "user_message", "turn_started", "text_delta", "turn_committed", "done"}
-	if fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Fatalf("follow-up event types = %v\nwant %v", got, want)
-	}
+	require.Equal(t, want, eventTypeList(followUp), "follow-up event types")
 	msg := followUp[1]
-	if msg.Source != types.UserMessageSourceFollowUpPrompt || msg.Text != "carry on" || msg.RequestID != "r1" {
-		t.Errorf("follow-up user_message = source %q text %q requestId %q", msg.Source, msg.Text, msg.RequestID)
-	}
+	assert.Equal(t, types.UserMessageSourceFollowUpPrompt, msg.Source, "follow-up user_message source")
+	assert.Equal(t, "carry on", msg.Text, "follow-up user_message text")
+	assert.Equal(t, "r1", msg.RequestID, "follow-up user_message requestId")
 }
 
 // TestRunFollowUpLoop_ContinueWithheldWarningFollowsRunStarted pins that
@@ -597,9 +531,7 @@ func TestRunFollowUpLoop_ContinueWithheldWarningFollowsRunStarted(t *testing.T) 
 			warned = true
 		}
 	}
-	if !warned {
-		t.Errorf("withheld-history warning missing from the follow-up's own events: %v", eventTypeList(third))
-	}
+	require.True(t, warned, "withheld-history warning missing from the follow-up's own events: %v", eventTypeList(third))
 }
 
 // phaseMarkerGuard denies content of the given phase that contains
@@ -651,7 +583,7 @@ func TestRunFollowUpLoop_ContinueCarriesNothingAfterScreeningEndsARun(t *testing
 			wantOutcome: "guardrail_blocked",
 		},
 		{
-			name:   "Rule-of-Two abort on a later turn's tool result",
+			name:   "rule-of-two abort on a later turn's tool result",
 			script: emitToolScript,
 			prompt: "do the thing",
 			arm: func(t *testing.T, l *AgenticLoop) {
@@ -671,13 +603,12 @@ func TestRunFollowUpLoop_ContinueCarriesNothingAfterScreeningEndsARun(t *testing
 			config.FollowUpHistory = types.FollowUpHistoryContinue
 
 			traces := followUpSession(t, loop, tr, config, "start over")
-			if traces[0].Outcome != tc.wantOutcome || traces[1].Outcome != "success" {
-				t.Fatalf("outcomes = %q, %q, want %q then success", traces[0].Outcome, traces[1].Outcome, tc.wantOutcome)
-			}
+			require.Equal(t, tc.wantOutcome, traces[0].Outcome, "primary outcome")
+			require.Equal(t, "success", traces[1].Outcome, "follow-up outcome")
 			calls := prov.params()
-			if got := calls[len(calls)-1].Messages; len(got) != 1 || !reflect.DeepEqual(textBlocks(got[0]), []string{"start over"}) {
-				t.Errorf("follow-up request = %+v, want the prompt alone", got)
-			}
+			followUpRequest := calls[len(calls)-1].Messages
+			require.Len(t, followUpRequest, 1, "follow-up request should hold its prompt alone")
+			require.Equal(t, []string{"start over"}, textBlocks(followUpRequest[0]), "follow-up request prompt")
 			followUp := eventsFromRun(tr.Events(), 1)
 			var warned bool
 			for _, ev := range followUp {
@@ -685,9 +616,9 @@ func TestRunFollowUpLoop_ContinueCarriesNothingAfterScreeningEndsARun(t *testing
 					warned = true
 				}
 			}
-			if len(followUp) == 0 || followUp[0].Type != "run_started" || !warned {
-				t.Errorf("follow-up events = %v, want run_started first and the withheld-history warning", eventTypeList(followUp))
-			}
+			require.NotEmpty(t, followUp, "follow-up events")
+			require.Equal(t, "run_started", followUp[0].Type, "follow-up events should start with run_started")
+			require.True(t, warned, "follow-up events should carry the withheld-history warning: %v", eventTypeList(followUp))
 		})
 	}
 }
@@ -712,25 +643,16 @@ func TestRunFollowUpLoop_ContinueScreensCarriedVerifierFeedbackOnce(t *testing.T
 
 	const prompt = "carry on; the issue is ghp_abcdef1234567890"
 	traces := followUpSession(t, loop, tr, config, prompt)
-	if traces[0].Outcome != "budget_exceeded" {
-		t.Fatalf("primary outcome = %q, want budget_exceeded with the feedback unanswered", traces[0].Outcome)
-	}
-	if n := len(g.feedbackChecks()); n != 1 {
-		t.Errorf("verifier feedback screened %d times, want 1", n)
-	}
+	require.Equal(t, "budget_exceeded", traces[0].Outcome, "primary run should stop at the budget with the feedback unanswered")
+	require.Len(t, g.feedbackChecks(), 1, "verifier feedback should be screened once")
 	calls := prov.params()
 	followUp := calls[len(calls)-1].Messages
 	last := followUp[len(followUp)-1]
-	if last.Origin != types.MessageOriginVerifierFeedback {
-		t.Errorf("merged message origin = %q, want verifier_feedback", last.Origin)
-	}
+	require.Equal(t, types.MessageOriginVerifierFeedback, last.Origin, "merged message origin")
 	text := strings.Join(textBlocks(last), "\n")
-	if !strings.Contains(text, "tests fail; the fixture key is [REDACTED]") || strings.Contains(text, guard.SpotlightOpenTag) {
-		t.Errorf("carried feedback did not reach the model scrubbed and unfenced: %q", text)
-	}
-	if !strings.Contains(text, prompt) {
-		t.Errorf("follow-up prompt was rewritten as feedback: %q", text)
-	}
+	require.Contains(t, text, "tests fail; the fixture key is [REDACTED]", "carried feedback should reach the model scrubbed")
+	require.NotContains(t, text, guard.SpotlightOpenTag, "carried feedback should reach the model unfenced")
+	require.Contains(t, text, prompt, "follow-up prompt should not be rewritten as feedback")
 }
 
 // TestRunFollowUpLoop_ContinueScreeningLeavesThePreviousHistoryIntact pins
@@ -746,12 +668,10 @@ func TestRunFollowUpLoop_ContinueScreeningLeavesThePreviousHistoryIntact(t *test
 	config.MaxTurns = 1
 	config.FollowUpHistory = types.FollowUpHistoryContinue
 
-	if _, err := loop.Run(context.Background(), config); err != nil {
-		t.Fatalf("primary Run: %v", err)
-	}
-	if loop.carried == nil || !loop.carried.unscreened {
-		t.Fatalf("carried = %+v, want an unscreened tail", loop.carried)
-	}
+	_, err := loop.Run(context.Background(), config)
+	require.NoError(t, err, "primary run")
+	require.NotNil(t, loop.carried, "primary run should carry its history")
+	require.True(t, loop.carried.unscreened, "carried history should be an unscreened tail")
 	kept := loop.carried.messages
 	keptTail := kept[len(kept)-1].Content
 
@@ -768,17 +688,16 @@ func TestRunFollowUpLoop_ContinueScreeningLeavesThePreviousHistoryIntact(t *test
 	select {
 	case <-completed:
 	case <-time.After(5 * time.Second):
-		t.Fatal("follow-up did not complete")
+		require.Fail(t, "follow-up did not complete")
 	}
 	cancel()
 	<-done
 
-	if got := toolResultContents(prov.params()[1].Messages); len(got) != 1 || !strings.Contains(got[0], ruleoftwo.RedactionPlaceholder) {
-		t.Fatalf("follow-up tool result = %q, want it redacted", got)
-	}
-	if len(keptTail) != 1 || keptTail[0].Content != output {
-		t.Errorf("the previous run's tool-result blocks were rewritten in place: %+v", keptTail)
-	}
+	results := toolResultContents(prov.params()[1].Messages)
+	require.Len(t, results, 1, "follow-up tool result")
+	require.Contains(t, results[0], ruleoftwo.RedactionPlaceholder, "follow-up tool result should be redacted")
+	require.Len(t, keptTail, 1, "previous run's tool-result blocks")
+	require.Equal(t, output, keptTail[0].Content, "the previous run's tool-result blocks should not be rewritten in place")
 }
 
 func TestRunFollowUpLoop_ContinueRestartsTurnNumbering(t *testing.T) {
@@ -791,13 +710,11 @@ func TestRunFollowUpLoop_ContinueRestartsTurnNumbering(t *testing.T) {
 
 	for _, ev := range eventsFromRun(tr.Events(), 1) {
 		if ev.Type == "turn_started" {
-			if *ev.Turn != 0 {
-				t.Errorf("follow-up's first turn_started turn = %d, want 0", *ev.Turn)
-			}
+			require.Equal(t, 0, *ev.Turn, "follow-up's first turn_started turn")
 			return
 		}
 	}
-	t.Error("follow-up sent no turn_started")
+	require.Fail(t, "follow-up sent no turn_started")
 }
 
 // TestRunFollowUpLoop_EscalationCountsCarriedToolCalls pins that under
@@ -827,9 +744,7 @@ func TestRunFollowUpLoop_EscalationCountsCarriedToolCalls(t *testing.T) {
 			// The primary run calls a tool, then answers; the scripted
 			// follow-ups answer without calling one.
 			calls := prov.params()
-			if got, want := len(calls), 2+2*tc.wantFollowUps; got != want {
-				t.Errorf("provider calls = %d, want %d", got, want)
-			}
+			require.Len(t, calls, 2+2*tc.wantFollowUps, "provider calls")
 			assertPrompted(t, calls, tc.wantPrompted)
 		})
 	}
@@ -861,9 +776,7 @@ func assertPrompted(t *testing.T, calls []types.StreamParams, want []int) {
 			got = append(got, i)
 		}
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("calls carrying the escalation retry message = %v, want %v", got, want)
-	}
+	require.Equal(t, want, got, "calls carrying the escalation retry message")
 }
 
 // TestRunFollowUpLoop_ContinueEscalatesWhenCarriedHistoryHasNoToolCalls
@@ -880,14 +793,10 @@ func TestRunFollowUpLoop_ContinueEscalatesWhenCarriedHistoryHasNoToolCalls(t *te
 
 	// Each run answers without a tool and is retried once.
 	calls := prov.params()
-	if len(calls) != 4 {
-		t.Fatalf("provider calls = %d, want 4", len(calls))
-	}
+	require.Len(t, calls, 4, "provider calls")
 	// The follow-up's history already holds the primary run's retry
 	// message, so only the new one raises the count.
-	if promptCount(calls[3]) != promptCount(calls[2])+1 {
-		t.Errorf("follow-up retry carries %d escalation messages, its first request %d; want one more", promptCount(calls[3]), promptCount(calls[2]))
-	}
+	require.Equal(t, promptCount(calls[2])+1, promptCount(calls[3]), "follow-up retry escalation messages")
 }
 
 // TestRunFollowUpLoop_EscalationAfterWithheldHistoryStartsFromZero pins
@@ -911,30 +820,22 @@ func TestRunFollowUpLoop_EscalationAfterWithheldHistoryStartsFromZero(t *testing
 
 	wantOutcomes := []string{"success", "guardrail_blocked", "success"}
 	for i, want := range wantOutcomes {
-		if traces[i].Outcome != want {
-			t.Fatalf("run %d outcome = %q, want %q", i, traces[i].Outcome, want)
-		}
+		require.Equal(t, want, traces[i].Outcome, "run %d outcome", i)
 	}
 	// Primary: tool call, answer. Blocked follow-up: one call, not
 	// escalated because the carried history holds a tool call. Fresh
 	// follow-up: an answer without a tool, then its retry.
 	calls := prov.params()
-	if len(calls) != 5 {
-		t.Fatalf("provider calls = %d, want 5", len(calls))
-	}
+	require.Len(t, calls, 5, "provider calls")
 	assertPrompted(t, calls, []int{4})
-	want := providerCacheKey(traces[2].ID)
+	freshKey := providerCacheKey(traces[2].ID)
 	for _, i := range []int{3, 4} {
-		if calls[i].CacheKey != want {
-			t.Errorf("call %d CacheKey = %q, want the fresh follow-up's own %q", i, calls[i].CacheKey, want)
-		}
+		require.Equal(t, freshKey, calls[i].CacheKey, "call %d CacheKey should be the fresh follow-up's own", i)
 	}
-	if calls[2].CacheKey != providerCacheKey(traces[0].ID) {
-		t.Errorf("blocked follow-up CacheKey = %q, want the primary run's", calls[2].CacheKey)
-	}
+	require.Equal(t, providerCacheKey(traces[0].ID), calls[2].CacheKey, "blocked follow-up CacheKey should be the primary run's")
 }
 
-func TestBeginRunState(t *testing.T) {
+func TestBeginRunState_ResetsStateFromCarriedHistory(t *testing.T) {
 	config := buildTestConfig()
 	own := providerCacheKey(config.RunID)
 	history := []types.Message{userText("task"), assistantText("done")}
@@ -957,9 +858,8 @@ func TestBeginRunState(t *testing.T) {
 			loop.cacheKey = "stale"
 			loop.carriedToolCalls = 9
 			loop.beginRunState(config, tc.carried)
-			if loop.cacheKey != tc.wantKey || loop.carriedToolCalls != tc.wantCalls {
-				t.Errorf("cacheKey, carriedToolCalls = %q, %d, want %q, %d", loop.cacheKey, loop.carriedToolCalls, tc.wantKey, tc.wantCalls)
-			}
+			require.Equal(t, tc.wantKey, loop.cacheKey, "cache key")
+			require.Equal(t, tc.wantCalls, loop.carriedToolCalls, "carried tool calls")
 		})
 	}
 }
@@ -997,22 +897,16 @@ func TestRunFollowUpLoop_ContinueFencesScrubbedSpansOnce(t *testing.T) {
 			config.FollowUpHistory = types.FollowUpHistoryContinue
 
 			traces := followUpSession(t, loop, tr, config, "carry on", "and again")
-			if traces[0].Outcome != tc.outcome {
-				t.Fatalf("primary outcome = %q, want %q", traces[0].Outcome, tc.outcome)
-			}
+			require.Equal(t, tc.outcome, traces[0].Outcome, "primary outcome")
 			screened := 0
 			for _, in := range g.arrivedInputs() {
 				if strings.Contains(in.Content, "TOOL-OUTPUT") {
 					screened++
 				}
 			}
-			if screened != 1 {
-				t.Errorf("guard screened the tool result %d times across three runs, want 1", screened)
-			}
+			require.Equal(t, 1, screened, "tool result screened across three runs")
 			calls := prov.params()
-			if results := toolResultContents(calls[len(calls)-1].Messages); len(results) != 1 || results[0] != want {
-				t.Errorf("second follow-up tool result = %q, want %q", results, want)
-			}
+			require.Equal(t, []string{want}, toolResultContents(calls[len(calls)-1].Messages), "second follow-up tool result")
 		})
 	}
 }
@@ -1026,17 +920,11 @@ func TestRunFollowUpLoop_ContinueKeepsOneCacheKey(t *testing.T) {
 	traces := followUpSession(t, loop, tr, config, "first follow-up", "second follow-up")
 
 	want := providerCacheKey(traces[0].ID)
-	if want == "" {
-		t.Fatal("primary run has no cache key")
-	}
+	require.NotEmpty(t, want, "primary run should have a cache key")
 	calls := prov.params()
-	if len(calls) != 4 {
-		t.Fatalf("provider calls = %d, want 4", len(calls))
-	}
+	require.Len(t, calls, 4, "provider calls")
 	for i, c := range calls {
-		if c.CacheKey != want {
-			t.Errorf("call %d CacheKey = %q, want the primary run's %q", i, c.CacheKey, want)
-		}
+		require.Equal(t, want, c.CacheKey, "call %d CacheKey should be the primary run's", i)
 	}
 }
 
@@ -1049,19 +937,15 @@ func TestRunFollowUpLoop_ResetKeepsPerRunCacheKeys(t *testing.T) {
 	traces := followUpSession(t, loop, tr, config, "first follow-up", "second follow-up")
 
 	calls := prov.params()
-	if len(calls) != 4 {
-		t.Fatalf("provider calls = %d, want 4", len(calls))
-	}
+	require.Len(t, calls, 4, "provider calls")
 	// Calls 0 and 1 are the primary run's two turns; calls 2 and 3 are
 	// the follow-ups' only turns.
 	for i, runIndex := range []int{0, 0, 1, 2} {
-		if want := providerCacheKey(traces[runIndex].ID); calls[i].CacheKey != want {
-			t.Errorf("call %d CacheKey = %q, want run %d's %q", i, calls[i].CacheKey, runIndex, want)
-		}
+		want := providerCacheKey(traces[runIndex].ID)
+		require.Equal(t, want, calls[i].CacheKey, "call %d CacheKey should be run %d's", i, runIndex)
 	}
-	if calls[2].CacheKey == calls[0].CacheKey || calls[3].CacheKey == calls[2].CacheKey {
-		t.Errorf("runs shared a cache key: %q, %q, %q", calls[0].CacheKey, calls[2].CacheKey, calls[3].CacheKey)
-	}
+	require.NotEqual(t, calls[0].CacheKey, calls[2].CacheKey, "primary and follow-up runs should not share a cache key")
+	require.NotEqual(t, calls[2].CacheKey, calls[3].CacheKey, "follow-up runs should not share a cache key")
 }
 
 // TestRunFollowUpLoop_ContinueWithheldHistoryGetsAFreshCacheKey pins that
@@ -1079,17 +963,9 @@ func TestRunFollowUpLoop_ContinueWithheldHistoryGetsAFreshCacheKey(t *testing.T)
 
 	traces := followUpSession(t, loop, tr, config, "start over")
 
-	if traces[0].Outcome != "guardrail_blocked" {
-		t.Fatalf("primary outcome = %q, want guardrail_blocked", traces[0].Outcome)
-	}
+	require.Equal(t, "guardrail_blocked", traces[0].Outcome, "primary outcome")
 	calls := prov.params()
-	if len(calls) != 2 {
-		t.Fatalf("provider calls = %d, want 2", len(calls))
-	}
-	if want := providerCacheKey(traces[1].ID); calls[1].CacheKey != want {
-		t.Errorf("follow-up CacheKey = %q, want its own run's %q", calls[1].CacheKey, want)
-	}
-	if calls[1].CacheKey == calls[0].CacheKey {
-		t.Errorf("follow-up reused the blocked run's cache key %q", calls[0].CacheKey)
-	}
+	require.Len(t, calls, 2, "provider calls")
+	require.Equal(t, providerCacheKey(traces[1].ID), calls[1].CacheKey, "follow-up CacheKey should be its own run's")
+	require.NotEqual(t, calls[0].CacheKey, calls[1].CacheKey, "follow-up should not reuse the blocked run's cache key")
 }

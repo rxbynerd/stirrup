@@ -13,6 +13,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirkstest"
 	"github.com/rxbynerd/stirrup/types"
@@ -48,9 +51,7 @@ func newResponsesScript(t *testing.T, sse ...[]byte) *responsesScript {
 	empty := []byte(makeResponsesEvent("response.completed", `{"response":{"status":"completed","output":[]}}`))
 	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("read request body: %v", err)
-		}
+		assert.NoError(t, err, "read request body")
 		s.mu.Lock()
 		s.bodies = append(s.bodies, body)
 		reply := empty
@@ -78,9 +79,7 @@ func (s *responsesScript) lastBody(t *testing.T) []byte {
 	t.Helper()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.bodies) == 0 {
-		t.Fatal("no request recorded")
-	}
+	require.NotEmpty(t, s.bodies, "no request recorded")
 	return s.bodies[len(s.bodies)-1]
 }
 
@@ -93,9 +92,7 @@ func streamTurn(t *testing.T, adapter *OpenAIResponsesAdapter, model string, mes
 		MaxTokens: 1024,
 		Messages:  messages,
 	})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	require.NoError(t, err, "Stream")
 	return drainStream(t, ch)
 }
 
@@ -121,9 +118,7 @@ func replayDisabledLevels(t *testing.T, logs string) []string {
 			Level string `json:"level"`
 			Msg   string `json:"msg"`
 		}
-		if err := json.Unmarshal([]byte(line), &rec); err != nil {
-			t.Fatalf("decode log line %q: %v", line, err)
-		}
+		require.NoError(t, json.Unmarshal([]byte(line), &rec), "decode log line %q", line)
 		if rec.Msg == replayDisabledMsg {
 			levels = append(levels, rec.Level)
 		}
@@ -138,29 +133,22 @@ func messageComplete(t *testing.T, events []types.StreamEvent) types.StreamEvent
 			return ev
 		}
 	}
-	t.Fatal("no message_complete event")
+	require.FailNow(t, "no message_complete event")
 	return types.StreamEvent{}
 }
 
 func storedReplayItems(t *testing.T, ev types.StreamEvent) []json.RawMessage {
 	t.Helper()
-	raw, ok := ev.ReplayFields[responsesReplayKey]
-	if !ok {
-		t.Fatalf("message_complete carries no %s: %v", responsesReplayKey, ev.ReplayFields)
-	}
+	require.Contains(t, ev.ReplayFields, responsesReplayKey, "message_complete carries no replay items")
 	var items []json.RawMessage
-	if err := json.Unmarshal(raw, &items); err != nil {
-		t.Fatalf("stored replay is not a JSON array: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(ev.ReplayFields[responsesReplayKey], &items), "stored replay is not a JSON array")
 	return items
 }
 
 func replayOriginOf(t *testing.T, fields map[string]json.RawMessage) string {
 	t.Helper()
 	var origin string
-	if err := json.Unmarshal(fields[responsesReplayOriginKey], &origin); err != nil {
-		t.Fatalf("decode %s: %v", responsesReplayOriginKey, err)
-	}
+	require.NoError(t, json.Unmarshal(fields[responsesReplayOriginKey], &origin), "decode %s", responsesReplayOriginKey)
 	return origin
 }
 
@@ -168,12 +156,8 @@ func replayOriginOf(t *testing.T, fields map[string]json.RawMessage) string {
 func jsonValuesEqual(t *testing.T, a, b []byte) bool {
 	t.Helper()
 	var av, bv any
-	if err := json.Unmarshal(a, &av); err != nil {
-		t.Fatalf("decode %s: %v", a, err)
-	}
-	if err := json.Unmarshal(b, &bv); err != nil {
-		t.Fatalf("decode %s: %v", b, err)
-	}
+	require.NoError(t, json.Unmarshal(a, &av), "decode %s", a)
+	require.NoError(t, json.Unmarshal(b, &bv), "decode %s", b)
 	return reflect.DeepEqual(av, bv)
 }
 
@@ -241,9 +225,7 @@ func fixtureToolResults() types.Message {
 func storedTurn(t *testing.T, origin string, blocks []types.ContentBlock, items ...string) types.Message {
 	t.Helper()
 	originJSON, err := json.Marshal(origin)
-	if err != nil {
-		t.Fatalf("marshal origin: %v", err)
-	}
+	require.NoError(t, err, "marshal origin")
 	return types.Message{
 		Role:    "assistant",
 		Content: blocks,
@@ -264,9 +246,7 @@ func assertCallsPaired(t *testing.T, input []json.RawMessage) {
 			Type   string `json:"type"`
 			CallID string `json:"call_id"`
 		}
-		if err := json.Unmarshal(raw, &item); err != nil {
-			t.Fatalf("decode input item: %v", err)
-		}
+		require.NoError(t, json.Unmarshal(raw, &item), "decode input item")
 		switch item.Type {
 		case "function_call":
 			calls[item.CallID]++
@@ -275,9 +255,7 @@ func assertCallsPaired(t *testing.T, input []json.RawMessage) {
 		}
 	}
 	for id, n := range calls {
-		if n != 0 {
-			t.Errorf("call_id %q is unpaired (calls minus outputs = %d)", id, n)
-		}
+		assert.Zero(t, n, "call_id %q is unpaired (calls minus outputs)", id)
 	}
 }
 
@@ -287,9 +265,7 @@ func requestInput(t *testing.T, body []byte) []json.RawMessage {
 	var req struct {
 		Input []json.RawMessage `json:"input"`
 	}
-	if err := json.Unmarshal(body, &req); err != nil {
-		t.Fatalf("decode body: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(body, &req), "decode body")
 	return req.Input
 }
 
@@ -314,44 +290,24 @@ func TestOpenAIResponsesAdapter_ReplayCapturesOutputItems(t *testing.T) {
 			callIDs = append(callIDs, ev.ID)
 		}
 	}
-	if text.String() != "Reading both files." {
-		t.Errorf("text = %q, want %q", text.String(), "Reading both files.")
-	}
-	if strings.Join(callIDs, ",") != "call_fx1,call_fx2" {
-		t.Errorf("tool calls = %v, want [call_fx1 call_fx2]", callIDs)
-	}
+	require.Equal(t, "Reading both files.", text.String())
+	require.Equal(t, []string{"call_fx1", "call_fx2"}, callIDs)
 
 	complete := messageComplete(t, events)
-	if complete.StopReason != "tool_use" {
-		t.Errorf("StopReason = %q, want tool_use", complete.StopReason)
-	}
-	if len(complete.ReplayFields) != 2 {
-		t.Errorf("ReplayFields keys = %d, want %s and %s", len(complete.ReplayFields), responsesReplayKey, responsesReplayOriginKey)
-	}
+	require.Equal(t, "tool_use", complete.StopReason)
+	require.Len(t, complete.ReplayFields, 2, "want keys %s and %s", responsesReplayKey, responsesReplayOriginKey)
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath("testdata", "quirks", "openai-responses", "gpt-5.6-sol", "replay.json"), complete.ReplayFields[responsesReplayKey])
 
 	wantOrigin := responsesReplayOrigin(responsesReplayModel, script.srv.URL)
-	if got := replayOriginOf(t, complete.ReplayFields); got != wantOrigin {
-		t.Errorf("origin = %q, want %q", got, wantOrigin)
-	}
-	if strings.Contains(string(complete.ReplayFields[responsesReplayOriginKey]), "127.0.0.1") {
-		t.Errorf("origin carries the base URL: %s", complete.ReplayFields[responsesReplayOriginKey])
-	}
+	require.Equal(t, wantOrigin, replayOriginOf(t, complete.ReplayFields))
+	require.NotContains(t, string(complete.ReplayFields[responsesReplayOriginKey]), "127.0.0.1", "origin carries the base URL")
 
 	items := storedReplayItems(t, complete)
-	if len(items) != 4 {
-		t.Fatalf("stored %d items, want 4", len(items))
-	}
-	if bytes.Contains(complete.ReplayFields[responsesReplayKey], []byte("created_by")) {
-		t.Errorf("stored items keep created_by: %s", complete.ReplayFields[responsesReplayKey])
-	}
-	if !bytes.Contains(items[1], []byte(`"phase":"commentary"`)) {
-		t.Errorf("message item lost its phase: %s", items[1])
-	}
+	require.Len(t, items, 4)
+	require.NotContains(t, string(complete.ReplayFields[responsesReplayKey]), "created_by")
+	require.Contains(t, string(items[1]), `"phase":"commentary"`, "message item lost its phase")
 	for _, i := range []int{0, 2, 3} {
-		if !bytes.Contains(sse, items[i]) {
-			t.Errorf("item %d is not byte-identical to the streamed payload: %s", i, items[i])
-		}
+		assert.True(t, bytes.Contains(sse, items[i]), "item %d is not byte-identical to the streamed payload: %s", i, items[i])
 	}
 }
 
@@ -367,9 +323,8 @@ func TestOpenAIResponsesAdapter_ReplayPrefersCompletedOutput(t *testing.T) {
 	}, "")
 	complete := messageComplete(t, streamResponsesSSE(t, []byte(sse), nil))
 	stored := string(complete.ReplayFields[responsesReplayKey])
-	if !strings.Contains(stored, "final-copy") || strings.Contains(stored, "streamed-copy") {
-		t.Errorf("stored replay = %s, want the response.completed items", stored)
-	}
+	require.Contains(t, stored, "final-copy", "stored replay should use the response.completed items")
+	require.NotContains(t, stored, "streamed-copy")
 }
 
 // TestOpenAIResponsesAdapter_ReplayFallsBackToStreamedItemsInOutputOrder
@@ -387,9 +342,7 @@ func TestOpenAIResponsesAdapter_ReplayFallsBackToStreamedItemsInOutputOrder(t *t
 	}, "")
 	complete := messageComplete(t, streamResponsesSSE(t, []byte(sse), nil))
 	want := "[" + reasoning + "," + message + "," + call + "]"
-	if got := string(complete.ReplayFields[responsesReplayKey]); got != want {
-		t.Errorf("stored replay =\n%s\nwant\n%s", got, want)
-	}
+	require.Equal(t, want, string(complete.ReplayFields[responsesReplayKey]))
 }
 
 // TestOpenAIResponsesAdapter_ReplaySkipsIncompleteTurns pins that a
@@ -399,15 +352,9 @@ func TestOpenAIResponsesAdapter_ReplaySkipsIncompleteTurns(t *testing.T) {
 	var logs bytes.Buffer
 	sse := makeResponsesEvent("response.incomplete", `{"response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"enc"},{"type":"message","id":"msg_1","role":"assistant","status":"incomplete","content":[{"type":"output_text","text":"part"}]}]}}`)
 	complete := messageComplete(t, streamResponsesSSE(t, []byte(sse), debugJSONLogger(&logs)))
-	if complete.StopReason != "max_tokens" {
-		t.Errorf("StopReason = %q, want max_tokens", complete.StopReason)
-	}
-	if complete.ReplayFields != nil {
-		t.Errorf("ReplayFields = %s, want nil", complete.ReplayFields[responsesReplayKey])
-	}
-	if !strings.Contains(logs.String(), replayReasonIncomplete) {
-		t.Errorf("log missing reason %q: %s", replayReasonIncomplete, logs.String())
-	}
+	require.Equal(t, "max_tokens", complete.StopReason)
+	require.Nil(t, complete.ReplayFields)
+	require.Contains(t, logs.String(), replayReasonIncomplete)
 }
 
 // TestOpenAIResponsesAdapter_ReplayFailedTurnStoresNothing pins that a
@@ -421,21 +368,15 @@ func TestOpenAIResponsesAdapter_ReplayFailedTurnStoresNothing(t *testing.T) {
 	}, "")
 	adapter := newResponsesScript(t, []byte(sse)).adapter(nil)
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: responsesReplayModel, MaxTokens: 1024, Messages: []types.Message{replayUserPrompt}})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	require.NoError(t, err, "Stream")
 	sawError := false
 	for _, ev := range collectEvents(t, ch) {
 		if ev.Type == "error" {
 			sawError = true
 		}
-		if ev.ReplayFields != nil {
-			t.Errorf("%s event carries ReplayFields", ev.Type)
-		}
+		assert.Nil(t, ev.ReplayFields, "%s event carries ReplayFields", ev.Type)
 	}
-	if !sawError {
-		t.Error("failed turn emitted no error event")
-	}
+	require.True(t, sawError, "failed turn emitted no error event")
 }
 
 // TestOpenAIResponsesAdapter_ReplayNoOutputNoReplayFields pins that a turn
@@ -447,16 +388,14 @@ func TestOpenAIResponsesAdapter_ReplayNoOutputNoReplayFields(t *testing.T) {
 		makeResponsesEvent("response.completed", `{"response":{"status":"completed","output":[]}}`),
 	}, "")
 	complete := messageComplete(t, streamResponsesSSE(t, []byte(sse), nil))
-	if complete.ReplayFields != nil {
-		t.Errorf("ReplayFields = %v, want nil", complete.ReplayFields)
-	}
+	require.Nil(t, complete.ReplayFields)
 }
 
-// TestOpenAIResponsesAdapter_ReplayOptOuts pins every condition that
+// TestOpenAIResponsesAdapter_ReplayOptOutConditions pins every condition that
 // disables replay for a turn: the turn still streams normally,
 // message_complete carries no ReplayFields, and one WARN names the reason
 // without any item content.
-func TestOpenAIResponsesAdapter_ReplayOptOuts(t *testing.T) {
+func TestOpenAIResponsesAdapter_ReplayOptOutConditions(t *testing.T) {
 	oversized := strings.Repeat("A", maxResponsesReplayBytes+1)
 	bigReasoning := `{"type":"reasoning","id":"rs_big","summary":[],"encrypted_content":"` + oversized + `"}`
 	call := `{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read_file","arguments":"{\"path\":\"secret-arg\"}","status":"completed"}`
@@ -543,19 +482,12 @@ func TestOpenAIResponsesAdapter_ReplayOptOuts(t *testing.T) {
 			var logs bytes.Buffer
 			events := streamResponsesSSE(t, []byte(strings.Join(tc.sse, "")), debugJSONLogger(&logs))
 			complete := messageComplete(t, events)
-			if complete.ReplayFields != nil {
-				t.Errorf("ReplayFields = %d keys, want nil", len(complete.ReplayFields))
-			}
+			require.Nil(t, complete.ReplayFields)
 			out := logs.String()
-			if levels := replayDisabledLevels(t, out); len(levels) != 1 || levels[0] != "WARN" {
-				t.Errorf("replay-disabled records = %v, want one WARN; log: %.500s", levels, out)
-			}
-			if !strings.Contains(out, tc.wantReason) {
-				t.Errorf("log missing reason %q: %.500s", tc.wantReason, out)
-			}
-			if strings.Contains(out, "AAAAAAAAAAAAAAAA") || strings.Contains(out, "secret-arg") {
-				t.Errorf("log leaked item content: %.500s", out)
-			}
+			require.Equal(t, []string{"WARN"}, replayDisabledLevels(t, out), "replay-disabled records should be one WARN")
+			require.Contains(t, out, tc.wantReason)
+			require.NotContains(t, out, "AAAAAAAAAAAAAAAA", "log leaked item content")
+			require.NotContains(t, out, "secret-arg", "log leaked item content")
 		})
 	}
 }
@@ -572,15 +504,11 @@ func TestOpenAIResponsesAdapter_ReplayMissingEncryptedContentWarnsOnce(t *testin
 	for range 3 {
 		streamTurn(t, adapter, responsesReplayModel, replayUserPrompt)
 	}
-	if got := replayDisabledLevels(t, logs.String()); !reflect.DeepEqual(got, []string{"WARN", "DEBUG", "DEBUG"}) {
-		t.Errorf("levels = %v, want [WARN DEBUG DEBUG]", got)
-	}
+	require.Equal(t, []string{"WARN", "DEBUG", "DEBUG"}, replayDisabledLevels(t, logs.String()))
 
 	logs.Reset()
 	streamTurn(t, script.adapter(debugJSONLogger(&logs)), responsesReplayModel, replayUserPrompt)
-	if got := replayDisabledLevels(t, logs.String()); !reflect.DeepEqual(got, []string{"WARN"}) {
-		t.Errorf("a new adapter logged %v, want [WARN]", got)
-	}
+	require.Equal(t, []string{"WARN"}, replayDisabledLevels(t, logs.String()), "a new adapter should log one WARN")
 }
 
 // TestOpenAIResponsesAdapter_ReplayCaptureGatedByModel pins that models
@@ -592,12 +520,9 @@ func TestOpenAIResponsesAdapter_ReplayCaptureGatedByModel(t *testing.T) {
 		t.Run(model, func(t *testing.T) {
 			var logs bytes.Buffer
 			events := streamTurn(t, newResponsesScript(t, sse).adapter(debugJSONLogger(&logs)), model, replayUserPrompt)
-			if complete := messageComplete(t, events); complete.ReplayFields != nil {
-				t.Errorf("ReplayFields = %v, want nil", complete.ReplayFields)
-			}
-			if strings.Contains(logs.String(), "openai-responses output replay") {
-				t.Errorf("replay logged for a model without replay: %s", logs.String())
-			}
+			complete := messageComplete(t, events)
+			require.Nil(t, complete.ReplayFields)
+			require.NotContains(t, logs.String(), "openai-responses output replay", "replay logged for a model without replay")
 		})
 	}
 }
@@ -612,24 +537,16 @@ func TestOpenAIResponsesAdapter_ReplayCaptureLogIsLengthOnly(t *testing.T) {
 	var record map[string]any
 	for _, line := range strings.Split(logs.String(), "\n") {
 		if strings.Contains(line, "openai-responses output replay captured") {
-			if err := json.Unmarshal([]byte(line), &record); err != nil {
-				t.Fatalf("decode log line: %v", err)
-			}
+			require.NoError(t, json.Unmarshal([]byte(line), &record), "decode log line")
 		}
 	}
-	if record == nil {
-		t.Fatalf("no capture log line: %s", logs.String())
-	}
-	if record["items"] != float64(4) {
-		t.Errorf("items = %v, want 4", record["items"])
-	}
-	if n, ok := record["total_len"].(float64); !ok || n <= 0 {
-		t.Errorf("total_len = %v, want a positive byte count", record["total_len"])
-	}
+	require.NotNil(t, record, "no capture log line: %s", logs.String())
+	require.InDelta(t, 4, record["items"], 0)
+	totalLen, ok := record["total_len"].(float64)
+	require.True(t, ok, "total_len = %v, want a byte count", record["total_len"])
+	require.Positive(t, totalLen)
 	for _, leak := range []string{"placeholder-encrypted-reasoning-state", "Reading both files."} {
-		if strings.Contains(logs.String(), leak) {
-			t.Errorf("log leaked %q", leak)
-		}
+		assert.NotContains(t, logs.String(), leak)
 	}
 }
 
@@ -642,30 +559,22 @@ func TestTranslateMessagesResponses_ReplaysStoredItemsVerbatim(t *testing.T) {
 	origin := replayOriginOf(t, assistant.ReplayFields)
 
 	got := translateMessagesResponses([]types.Message{replayUserPrompt, assistant, fixtureToolResults()}, origin)
-	if len(got) != 1+len(stored)+2 {
-		t.Fatalf("got %d input items, want %d", len(got), 1+len(stored)+2)
-	}
+	require.Len(t, got, 1+len(stored)+2)
 	for i, item := range stored {
-		if got[1+i].Raw == nil || !jsonValuesEqual(t, got[1+i].Raw, item) {
-			t.Errorf("input item %d = %s, want stored item %s", 1+i, got[1+i].Raw, item)
-		}
+		raw := got[1+i].Raw
+		assert.True(t, raw != nil && jsonValuesEqual(t, raw, item), "input item %d = %s, want stored item %s", 1+i, raw, item)
 	}
 	for i, callID := range []string{"call_fx1", "call_fx2"} {
 		out := got[1+len(stored)+i]
-		if out.Type != "function_call_output" || out.CallID != callID {
-			t.Errorf("item %d = %+v, want function_call_output for %s", 1+len(stored)+i, out, callID)
-		}
+		assert.Equal(t, "function_call_output", out.Type, "input item %d", 1+len(stored)+i)
+		assert.Equal(t, callID, out.CallID, "input item %d", 1+len(stored)+i)
 	}
 
 	body, err := json.Marshal(got)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	sent := requestInput(t, []byte(`{"input":`+string(body)+`}`))
 	for i, item := range stored {
-		if !jsonValuesEqual(t, sent[1+i], item) {
-			t.Errorf("wire item %d = %s, want stored item %s", 1+i, sent[1+i], item)
-		}
+		assert.True(t, jsonValuesEqual(t, sent[1+i], item), "wire item %d = %s, want stored item %s", 1+i, sent[1+i], item)
 	}
 }
 
@@ -682,21 +591,15 @@ func TestTranslateMessagesResponses_ReplayIsSemanticallyIdentical(t *testing.T) 
 
 	got := translateMessagesResponses([]types.Message{msg}, testReplayOrigin)
 	body, err := json.Marshal(got)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	sent := requestInput(t, []byte(`{"input":`+string(body)+`}`))
-	if len(sent) != 2 {
-		t.Fatalf("sent %d items, want 2: %s", len(sent), body)
-	}
+	require.Len(t, sent, 2, "replayed items: %s", body)
 	for i, want := range []string{message, call} {
-		if !jsonValuesEqual(t, sent[i], []byte(want)) {
-			t.Errorf("item %d = %s, want the value of %s", i, sent[i], want)
-		}
+		require.JSONEq(t, want, string(sent[i]), "item %d", i)
 	}
-	if !bytes.Contains(body, []byte("u003c")) || bytes.ContainsAny(body, "<\n") {
-		t.Errorf("replayed items are not compacted and HTML-escaped: %s", body)
-	}
+	require.Contains(t, string(body), "u003c", "replayed items are not HTML-escaped")
+	require.NotContains(t, string(body), "<", "replayed items are not compacted")
+	require.NotContains(t, string(body), "\n", "replayed items are not compacted")
 }
 
 // TestTranslateMessagesResponses_ReplayConsistencyFallback pins the
@@ -771,19 +674,12 @@ func TestTranslateMessagesResponses_ReplayConsistencyFallback(t *testing.T) {
 			reconstructed.ReplayFields = nil
 
 			got, err := json.Marshal(translateMessagesResponses([]types.Message{msg}, origin))
-			if err != nil {
-				t.Fatalf("marshal: %v", err)
-			}
+			require.NoError(t, err, "marshal")
 			want, err := json.Marshal(translateMessagesResponses([]types.Message{reconstructed}, origin))
-			if err != nil {
-				t.Fatalf("marshal reconstruction: %v", err)
-			}
-			if !bytes.Equal(got, want) {
-				t.Errorf("got\n%s\nwant reconstruction\n%s", got, want)
-			}
-			if bytes.Contains(got, []byte(`"id":`)) || bytes.Contains(got, []byte("encrypted_content")) {
-				t.Errorf("fallback leaked stored item fields: %s", got)
-			}
+			require.NoError(t, err, "marshal reconstruction")
+			require.Equal(t, string(want), string(got), "fallback differs from the reconstruction")
+			require.NotContains(t, string(got), `"id":`, "fallback leaked stored item ids")
+			require.NotContains(t, string(got), "encrypted_content", "fallback leaked stored reasoning state")
 		})
 	}
 }
@@ -821,13 +717,9 @@ func TestTranslateMessagesResponses_ReplayConsistencyAccepts(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := translateMessagesResponses([]types.Message{tc.msg}, origin)
-			if len(got) != tc.items {
-				t.Fatalf("got %d items, want %d replayed: %+v", len(got), tc.items, got)
-			}
+			require.Len(t, got, tc.items, "replayed items: %+v", got)
 			for i, item := range got {
-				if item.Raw == nil {
-					t.Errorf("item %d was reconstructed, want replayed: %+v", i, item)
-				}
+				require.NotNil(t, item.Raw, "item %d was reconstructed, want replayed", i)
 			}
 		})
 	}
@@ -841,16 +733,10 @@ func TestTranslateMessagesResponses_EmptyOriginReconstructs(t *testing.T) {
 	stripped := cloneMessage(assistant)
 	stripped.ReplayFields = nil
 	got, err := json.Marshal(translateMessagesResponses([]types.Message{assistant}, ""))
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	want, err := json.Marshal(translateMessagesResponses([]types.Message{stripped}, ""))
-	if err != nil {
-		t.Fatalf("marshal reconstruction: %v", err)
-	}
-	if !bytes.Equal(got, want) {
-		t.Errorf("got\n%s\nwant reconstruction\n%s", got, want)
-	}
+	require.NoError(t, err, "marshal reconstruction")
+	require.Equal(t, string(want), string(got), "origin-less request differs from the reconstruction")
 }
 
 // TestTranslateMessagesResponses_OtherReplayKeysIgnored pins that a message
@@ -863,13 +749,9 @@ func TestTranslateMessagesResponses_OtherReplayKeysIgnored(t *testing.T) {
 		ReplayFields: map[string]json.RawMessage{"reasoning_content": json.RawMessage(`"thinking"`)},
 	}
 	got, err := json.Marshal(translateMessagesResponses([]types.Message{msg}, testReplayOrigin))
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 	want := `[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]`
-	if string(got) != want {
-		t.Errorf("got %s, want %s", got, want)
-	}
+	require.Equal(t, want, string(got))
 }
 
 // TestOpenAIResponsesAdapter_ReplaySecondTurnRequestBody drives two turns
@@ -886,24 +768,14 @@ func TestOpenAIResponsesAdapter_ReplaySecondTurnRequestBody(t *testing.T) {
 	streamTurn(t, adapter, responsesReplayModel, replayUserPrompt, assistant, fixtureToolResults())
 	body := script.lastBody(t)
 
-	if !bytes.Contains(body, []byte(`"include":["reasoning.encrypted_content"]`)) {
-		t.Errorf("second-turn body lacks the encrypted-reasoning include: %s", body)
-	}
+	require.Contains(t, string(body), `"include":["reasoning.encrypted_content"]`, "second-turn body lacks the encrypted-reasoning include")
 	input := requestInput(t, body)
-	if len(input) != 1+len(stored)+2 {
-		t.Fatalf("input has %d items, want %d: %s", len(input), 1+len(stored)+2, body)
-	}
+	require.Len(t, input, 1+len(stored)+2, "input items: %s", body)
 	for i, item := range stored {
-		if !jsonValuesEqual(t, input[1+i], item) {
-			t.Errorf("input[%d] = %s, want stored item %s", 1+i, input[1+i], item)
-		}
+		require.JSONEq(t, string(item), string(input[1+i]), "input[%d] should replay the stored item", 1+i)
 	}
-	if n := bytes.Count(body, []byte(`"role":"assistant"`)); n != 1 {
-		t.Errorf("assistant message items = %d, want 1 (no reconstructed duplicate)", n)
-	}
-	if bytes.Contains(body, []byte("created_by")) {
-		t.Errorf("replayed body carries the output-only created_by: %s", body)
-	}
+	require.Equal(t, 1, strings.Count(string(body), `"role":"assistant"`), "no reconstructed duplicate of the assistant message")
+	require.NotContains(t, string(body), "created_by", "replayed body carries the output-only created_by")
 	assertCallsPaired(t, input)
 }
 
@@ -923,14 +795,13 @@ func TestOpenAIResponsesAdapter_ReplayPairingFallback(t *testing.T) {
 
 	streamTurn(t, adapter, responsesReplayModel, replayUserPrompt, assistant, results)
 	body := script.lastBody(t)
-	if bytes.Contains(body, []byte("placeholder-encrypted-reasoning-state")) || bytes.Contains(body, []byte("call_fx")) || bytes.Contains(body, []byte(`"id":`)) {
-		t.Errorf("body replayed stale stored items: %s", body)
-	}
+	require.NotContains(t, string(body), "placeholder-encrypted-reasoning-state", "body replayed stored reasoning state")
+	require.NotContains(t, string(body), "call_fx", "body replayed stored call ids")
+	require.NotContains(t, string(body), `"id":`, "body replayed stored item ids")
 	input := requestInput(t, body)
 	assertCallsPaired(t, input)
-	if !bytes.Contains(body, []byte(`"call_id":"call_h1"`)) || !bytes.Contains(body, []byte(`"call_id":"call_h2"`)) {
-		t.Errorf("reconstruction lost the harness call ids: %s", body)
-	}
+	require.Contains(t, string(body), `"call_id":"call_h1"`, "reconstruction lost the harness call id call_h1")
+	require.Contains(t, string(body), `"call_id":"call_h2"`, "reconstruction lost the harness call id call_h2")
 }
 
 // TestOpenAIResponsesAdapter_ReplayOriginMismatchReconstructs pins the
@@ -960,11 +831,10 @@ func TestOpenAIResponsesAdapter_ReplayOriginMismatchReconstructs(t *testing.T) {
 			}
 			streamTurn(t, second.adapter(nil), tc.model, replayUserPrompt, assistant, fixtureToolResults())
 			body := second.lastBody(t)
-			if got := bytes.Contains(body, []byte("placeholder-encrypted-reasoning-state")); got != tc.wantReplay {
-				t.Errorf("replayed = %v, want %v: %s", got, tc.wantReplay, body)
-			}
-			if !tc.wantReplay && bytes.Contains(body, []byte(`"id":`)) {
-				t.Errorf("reconstruction carries item ids: %s", body)
+			replayed := strings.Contains(string(body), "placeholder-encrypted-reasoning-state")
+			require.Equal(t, tc.wantReplay, replayed, "stored reasoning state replayed: %s", body)
+			if !tc.wantReplay {
+				require.NotContains(t, string(body), `"id":`, "reconstruction carries item ids")
 			}
 			assertCallsPaired(t, requestInput(t, body))
 		})
@@ -981,18 +851,14 @@ func TestOpenAIResponsesAdapter_ReplayNonReasoningModelsReconstruct(t *testing.T
 	stripped := cloneMessage(assistant)
 	stripped.ReplayFields = nil
 	want, err := json.Marshal(translateMessagesResponses([]types.Message{replayUserPrompt, stripped, fixtureToolResults()}, ""))
-	if err != nil {
-		t.Fatalf("marshal reconstruction: %v", err)
-	}
+	require.NoError(t, err, "marshal reconstruction")
 
 	for _, model := range []string{"gpt-4o", "gpt-4.1", "gpt-5-chat-latest"} {
 		t.Run(model, func(t *testing.T) {
 			script := newResponsesScript(t)
 			stored := cloneMessage(assistant)
 			origin, err := json.Marshal(responsesReplayOrigin(model, script.srv.URL))
-			if err != nil {
-				t.Fatalf("marshal origin: %v", err)
-			}
+			require.NoError(t, err, "marshal origin")
 			stored.ReplayFields[responsesReplayOriginKey] = origin
 
 			streamTurn(t, script.adapter(nil), model, replayUserPrompt, stored, fixtureToolResults())
@@ -1000,14 +866,10 @@ func TestOpenAIResponsesAdapter_ReplayNonReasoningModelsReconstruct(t *testing.T
 			var req struct {
 				Input json.RawMessage `json:"input"`
 			}
-			if err := json.Unmarshal(body, &req); err != nil {
-				t.Fatalf("decode body: %v", err)
-			}
+			require.NoError(t, json.Unmarshal(body, &req), "decode body")
 			assertJSONEqual(t, req.Input, string(want))
 			for _, leak := range []string{`"id":`, "encrypted_content", `"phase":`, `"include":`} {
-				if bytes.Contains(body, []byte(leak)) {
-					t.Errorf("body carries %s: %s", leak, body)
-				}
+				require.NotContains(t, string(body), leak, "body carries %s", leak)
 			}
 		})
 	}
@@ -1025,9 +887,7 @@ func TestOpenAIResponsesAdapter_WireTapDumpsReplayedRequest(t *testing.T) {
 	adapter.WireTap(&dump)
 	streamTurn(t, adapter, responsesReplayModel, replayUserPrompt, assistant, fixtureToolResults())
 	for _, want := range []string{"POST /responses", "reasoning.encrypted_content", "placeholder-encrypted-reasoning-state"} {
-		if !strings.Contains(dump.String(), want) {
-			t.Errorf("wire dump lacks %q: %.800s", want, dump.String())
-		}
+		require.Contains(t, dump.String(), want, "wire dump")
 	}
 }
 
@@ -1038,22 +898,14 @@ func TestOpenAIResponsesAdapter_WireTapDumpsReplayedRequest(t *testing.T) {
 func TestResponsesInput_ReplayedItemRoundTrip(t *testing.T) {
 	raw := []byte("{ \"type\": \"reasoning\", \"id\": \"rs_1\", \"summary\": [],\n  \"encrypted_content\": \"a<b&c>d\" }")
 	var item responsesInput
-	if err := json.Unmarshal(raw, &item); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if item.Type != "reasoning" || !bytes.Equal(item.Raw, raw) {
-		t.Errorf("decoded %+v, want reasoning kept raw", item)
-	}
+	require.NoError(t, json.Unmarshal(raw, &item), "unmarshal")
+	require.Equal(t, "reasoning", item.Type)
+	require.Equal(t, string(raw), string(item.Raw), "reasoning item is kept raw")
 	back, err := json.Marshal(item)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if !jsonValuesEqual(t, back, raw) {
-		t.Errorf("re-marshal = %s, want the value of %s", back, raw)
-	}
-	if err := json.Unmarshal([]byte(`{"type":"reasoning"}`), &responsesInput{}); err == nil {
-		t.Error("id-less reasoning item must stay an unknown variant")
-	}
+	require.NoError(t, err, "marshal")
+	require.JSONEq(t, string(raw), string(back), "re-marshal")
+	err = json.Unmarshal([]byte(`{"type":"reasoning"}`), &responsesInput{})
+	require.Error(t, err, "id-less reasoning item must stay an unknown variant")
 }
 
 // TestOpenAIAdapter_IgnoresResponsesReplayKey pins that the
@@ -1062,9 +914,7 @@ func TestResponsesInput_ReplayedItemRoundTrip(t *testing.T) {
 // would be skipped, and no built-in rule names them.
 func TestOpenAIAdapter_IgnoresResponsesReplayKey(t *testing.T) {
 	for _, key := range []string{responsesReplayKey, responsesReplayOriginKey} {
-		if threadableOpenAIReplayPath(key) {
-			t.Fatalf("%s must not be a threadable Chat Completions replay path", key)
-		}
+		require.False(t, threadableOpenAIReplayPath(key), "%s must not be a threadable Chat Completions replay path", key)
 	}
 	assistant, _ := fixtureReplayTurn(t)
 	for _, paths := range [][]string{
@@ -1073,11 +923,9 @@ func TestOpenAIAdapter_IgnoresResponsesReplayKey(t *testing.T) {
 	} {
 		out := translateMessages("", []types.Message{assistant}, paths)
 		body, err := json.Marshal(out)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		if bytes.Contains(body, []byte("encrypted_content")) || bytes.Contains(body, []byte("openai_responses")) || bytes.Contains(body, []byte("@")) {
-			t.Errorf("chat body leaked Responses replay state (paths %v): %s", paths, body)
+		require.NoError(t, err, "marshal")
+		for _, leak := range []string{"encrypted_content", "openai_responses", "@"} {
+			require.NotContains(t, string(body), leak, "chat body leaked Responses replay state (paths %v)", paths)
 		}
 	}
 }

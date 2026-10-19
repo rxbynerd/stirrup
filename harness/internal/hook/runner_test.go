@@ -9,6 +9,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -85,28 +88,18 @@ func TestExecRunner_RunPre_Ordering(t *testing.T) {
 	}
 
 	results, err := r.RunPre(context.Background())
-	if err != nil {
-		t.Fatalf("RunPre() error = %v, want nil", err)
-	}
-	if len(results) != 3 {
-		t.Fatalf("len(results) = %d, want 3", len(results))
-	}
+	require.NoError(t, err)
+	require.Len(t, results, 3)
+
 	wantOrder := []string{"echo first", "echo second", "echo third"}
 	for i, call := range exec.calls {
-		if call.command != wantOrder[i] {
-			t.Errorf("call[%d].command = %q, want %q", i, call.command, wantOrder[i])
-		}
+		assert.Equal(t, wantOrder[i], call.command, "call[%d].command", i)
 	}
 	for i, res := range results {
-		if res.Phase != PhasePreRun {
-			t.Errorf("results[%d].Phase = %q, want %q", i, res.Phase, PhasePreRun)
-		}
-		if res.Index != i {
-			t.Errorf("results[%d].Index = %d, want %d", i, res.Index, i)
-		}
-		if res.Skipped || res.Error != "" {
-			t.Errorf("results[%d] unexpectedly failed/skipped: %+v", i, res)
-		}
+		assert.Equal(t, PhasePreRun, res.Phase, "results[%d].Phase", i)
+		assert.Equal(t, i, res.Index, "results[%d].Index", i)
+		assert.False(t, res.Skipped, "results[%d] must not be skipped", i)
+		assert.Empty(t, res.Error, "results[%d] must not fail", i)
 	}
 }
 
@@ -128,30 +121,16 @@ func TestExecRunner_RunPre_FatalFailureSkipsRemaining(t *testing.T) {
 	}
 
 	results, err := r.RunPre(context.Background())
-	if err == nil {
-		t.Fatal("RunPre() error = nil, want non-nil after a fatal hook failure")
-	}
-	if !strings.Contains(err.Error(), "boom") {
-		t.Errorf("error must name the failing hook, got: %v", err)
-	}
-	if len(exec.calls) != 2 {
-		t.Fatalf("Exec called %d times, want 2 (dispatch must stop after the fatal failure)", len(exec.calls))
-	}
-	if len(results) != 3 {
-		t.Fatalf("len(results) = %d, want 3 (skipped entries still recorded, Index-aligned)", len(results))
-	}
-	if results[0].Skipped || results[0].Error != "" {
-		t.Errorf("results[0] must have succeeded: %+v", results[0])
-	}
-	if results[1].Skipped || results[1].Error == "" {
-		t.Errorf("results[1] must record the failure, not a skip: %+v", results[1])
-	}
-	if !results[2].Skipped {
-		t.Errorf("results[2] must be Skipped after the fatal failure: %+v", results[2])
-	}
-	if results[2].Name != "never-runs" {
-		t.Errorf("results[2].Name = %q, want %q (Index alignment)", results[2].Name, "never-runs")
-	}
+	require.ErrorContains(t, err, "boom", "error must name the failing hook")
+	require.Len(t, exec.calls, 2, "dispatch must stop after the fatal failure")
+	require.Len(t, results, 3, "skipped entries must still be recorded, Index-aligned")
+
+	assert.False(t, results[0].Skipped, "results[0] must have succeeded")
+	assert.Empty(t, results[0].Error, "results[0] must have succeeded")
+	assert.False(t, results[1].Skipped, "results[1] must record the failure, not a skip")
+	assert.NotEmpty(t, results[1].Error, "results[1] must record the failure, not a skip")
+	assert.True(t, results[2].Skipped, "results[2] must be skipped after the fatal failure")
+	assert.Equal(t, "never-runs", results[2].Name, "results[2] must keep Index alignment")
 }
 
 func TestExecRunner_ContinueOnError_DispatchContinuesAndPhaseSucceeds(t *testing.T) {
@@ -171,24 +150,18 @@ func TestExecRunner_ContinueOnError_DispatchContinuesAndPhaseSucceeds(t *testing
 	}
 
 	results, err := r.RunPre(context.Background())
-	if err != nil {
-		t.Fatalf("RunPre() error = %v, want nil (only continueOnError hook failed)", err)
-	}
-	if len(exec.calls) != 2 {
-		t.Fatalf("Exec called %d times, want 2 (continueOnError must not stop the phase)", len(exec.calls))
-	}
-	if !results[0].ContinuedOnError || results[0].Error == "" {
-		t.Errorf("results[0] must record ContinuedOnError with an Error, got: %+v", results[0])
-	}
-	if results[1].Skipped {
-		t.Errorf("results[1] must not be skipped: %+v", results[1])
-	}
+	require.NoError(t, err, "only a continueOnError hook failed")
+	require.Len(t, exec.calls, 2, "continueOnError must not stop the phase")
+
+	assert.True(t, results[0].ContinuedOnError, "results[0] must record ContinuedOnError")
+	assert.NotEmpty(t, results[0].Error, "results[0] must record the failure")
+	assert.False(t, results[1].Skipped, "results[1] must not be skipped")
 }
 
-// TestExecRunner_TimedOut pins that isTimeoutErr classifies a wrapped
-// executor.ErrTimeout as a timeout via errors.Is, not by matching the
-// formatted text.
-func TestExecRunner_TimedOut(t *testing.T) {
+// TestExecRunner_RunPre_WrappedErrTimeoutIsTimedOut pins that isTimeoutErr
+// classifies a wrapped executor.ErrTimeout as a timeout via errors.Is, not
+// by matching the formatted text.
+func TestExecRunner_RunPre_WrappedErrTimeoutIsTimedOut(t *testing.T) {
 	exec := newMockExecutor()
 	exec.execFunc = func(_ context.Context, _ string, timeout time.Duration) (*executor.ExecResult, error) {
 		return &executor.ExecResult{ExitCode: -1}, fmt.Errorf("%w after %s: %w", executor.ErrTimeout, timeout, context.DeadlineExceeded)
@@ -199,24 +172,17 @@ func TestExecRunner_TimedOut(t *testing.T) {
 	}
 
 	results, err := r.RunPre(context.Background())
-	if err == nil {
-		t.Fatal("RunPre() error = nil, want non-nil for a timed-out fatal hook")
-	}
-	if len(results) != 1 {
-		t.Fatalf("len(results) = %d, want 1", len(results))
-	}
-	if !results[0].TimedOut {
-		t.Errorf("results[0].TimedOut = false, want true")
-	}
-	if !strings.Contains(results[0].Error, "timed out") {
-		t.Errorf("results[0].Error = %q, want it to mention the timeout", results[0].Error)
-	}
+	require.Error(t, err, "a timed-out fatal hook must fail the phase")
+	require.Len(t, results, 1)
+
+	assert.True(t, results[0].TimedOut, "results[0] must be marked as timed out")
+	assert.Contains(t, results[0].Error, "timed out", "results[0].Error must mention the timeout")
 }
 
-// TestExecRunner_DeadlineExceededTimedOut pins that a bare, unwrapped
-// context.DeadlineExceeded — not itself wrapping executor.ErrTimeout — is
-// NOT classified as a timeout.
-func TestExecRunner_DeadlineExceededTimedOut(t *testing.T) {
+// TestExecRunner_BareDeadlineExceededNotTimedOut pins that a bare, unwrapped
+// context.DeadlineExceeded, which does not wrap executor.ErrTimeout, is NOT
+// classified as a timeout.
+func TestExecRunner_BareDeadlineExceededNotTimedOut(t *testing.T) {
 	exec := newMockExecutor()
 	exec.execFunc = func(_ context.Context, _ string, _ time.Duration) (*executor.ExecResult, error) {
 		return nil, context.DeadlineExceeded
@@ -227,12 +193,8 @@ func TestExecRunner_DeadlineExceededTimedOut(t *testing.T) {
 	}
 
 	results, err := r.RunPre(context.Background())
-	if err == nil {
-		t.Fatal("RunPre() error = nil, want non-nil")
-	}
-	if results[0].TimedOut {
-		t.Errorf("results[0].TimedOut = true, want false: a bare context.DeadlineExceeded does not wrap executor.ErrTimeout")
-	}
+	require.Error(t, err)
+	require.False(t, results[0].TimedOut, "a bare context.DeadlineExceeded does not wrap executor.ErrTimeout")
 }
 
 // TestExecRunner_CancelledContext_NotTimedOut pins that a hook killed by
@@ -250,24 +212,15 @@ func TestExecRunner_CancelledContext_NotTimedOut(t *testing.T) {
 	}
 
 	results, err := r.RunPre(context.Background())
-	if err == nil {
-		t.Fatal("RunPre() error = nil, want non-nil for a cancelled fatal hook")
-	}
-	if len(results) != 1 {
-		t.Fatalf("len(results) = %d, want 1", len(results))
-	}
-	if results[0].TimedOut {
-		t.Errorf("results[0].TimedOut = true, want false: a parent-context cancel is not a timeout")
-	}
-	if results[0].Error == "" {
-		t.Error("results[0].Error is empty, want the cancellation surfaced")
-	}
-	if strings.Contains(results[0].Error, "timed out") {
-		t.Errorf("results[0].Error = %q, must not claim the hook timed out (it was cancelled, not deadline-expired)", results[0].Error)
-	}
+	require.Error(t, err, "a cancelled fatal hook must fail the phase")
+	require.Len(t, results, 1)
+
+	assert.False(t, results[0].TimedOut, "a parent-context cancel is not a timeout")
+	assert.NotEmpty(t, results[0].Error, "the cancellation must be surfaced")
+	assert.NotContains(t, results[0].Error, "timed out", "a cancelled hook must not claim it timed out")
 }
 
-func TestExecRunner_TruncationAndScrub(t *testing.T) {
+func TestExecRunner_RunPre_TruncatesAndScrubsOutput(t *testing.T) {
 	secret := "AKIAABCDEFGHIJKLMNOP" // matches the aws_access_key_id pattern
 	longOutput := strings.Repeat("x", maxOutputTailBytes*2) + secret
 
@@ -281,26 +234,17 @@ func TestExecRunner_TruncationAndScrub(t *testing.T) {
 	}
 
 	results, err := r.RunPre(context.Background())
-	if err != nil {
-		t.Fatalf("RunPre() error = %v, want nil", err)
-	}
-	if !results[0].Truncated {
-		t.Error("results[0].Truncated = false, want true")
-	}
-	if len(results[0].OutputTail) > maxOutputTailBytes {
-		t.Errorf("len(OutputTail) = %d, want <= %d", len(results[0].OutputTail), maxOutputTailBytes)
-	}
-	if strings.Contains(results[0].OutputTail, secret) {
-		t.Errorf("OutputTail leaked the unscrubbed secret: %q", results[0].OutputTail)
-	}
+	require.NoError(t, err)
+
+	assert.True(t, results[0].Truncated, "output over the tail cap must set Truncated")
+	assert.LessOrEqual(t, len(results[0].OutputTail), maxOutputTailBytes, "OutputTail must be capped")
+	assert.NotContains(t, results[0].OutputTail, secret, "OutputTail must not leak the unscrubbed secret")
 }
 
-// TestExecRunner_TruncationTrimsUTF8RuneBoundary is a regression fixture
-// for a byte-index tail cut that lands mid-rune: "€" encodes as 3 bytes,
-// so combined = "€" + "\n" + 4093 "y"s cuts exactly 1 byte into "€",
-// leaving a bare continuation-byte pair at the start before
-// trimToRuneBoundary runs.
-func TestExecRunner_TruncationTrimsUTF8RuneBoundary(t *testing.T) {
+// TestExecRunner_RunPre_TruncationTrimsToRuneBoundary pins that a tail cut
+// landing inside a multi-byte rune drops the partial bytes. The cut falls
+// one byte into the three-byte "€" sign.
+func TestExecRunner_RunPre_TruncationTrimsToRuneBoundary(t *testing.T) {
 	const euroSign = "€"
 	stderrFiller := strings.Repeat("y", maxOutputTailBytes-3)
 
@@ -314,30 +258,18 @@ func TestExecRunner_TruncationTrimsUTF8RuneBoundary(t *testing.T) {
 	}
 
 	results, err := r.RunPre(context.Background())
-	if err != nil {
-		t.Fatalf("RunPre() error = %v, want nil", err)
-	}
+	require.NoError(t, err)
 	tail := results[0].OutputTail
 
-	if !results[0].Truncated {
-		t.Fatal("Truncated = false, want true")
-	}
-	if !utf8.ValidString(tail) {
-		t.Fatalf("OutputTail is not valid UTF-8: %q", tail)
-	}
-	if strings.ContainsRune(tail, utf8.RuneError) {
-		t.Errorf("OutputTail contains U+FFFD (replacement character), want none introduced: %q", tail)
-	}
-	want := "\n" + stderrFiller
-	if tail != want {
-		t.Errorf("OutputTail = %q, want %q (the straddled euro sign's continuation bytes trimmed)", tail, want)
-	}
+	require.True(t, results[0].Truncated, "output over the tail cap must set Truncated")
+	require.True(t, utf8.ValidString(tail), "OutputTail must be valid UTF-8, got %q", tail)
+	assert.False(t, strings.ContainsRune(tail, utf8.RuneError), "OutputTail must not contain U+FFFD, got %q", tail)
+	assert.Equal(t, "\n"+stderrFiller, tail, "the partial euro sign bytes must be trimmed")
 }
 
-// TestExecRunner_StderrOnlyOutput pins that when a hook writes nothing
-// to stdout, OutputTail is exactly the stderr text with no spurious
-// leading newline.
-func TestExecRunner_StderrOnlyOutput(t *testing.T) {
+// TestExecRunner_RunPre_StderrOnlyOutputHasNoLeadingNewline pins that when a
+// hook writes nothing to stdout, OutputTail is exactly the stderr text.
+func TestExecRunner_RunPre_StderrOnlyOutputHasNoLeadingNewline(t *testing.T) {
 	exec := newMockExecutor()
 	exec.execFunc = func(context.Context, string, time.Duration) (*executor.ExecResult, error) {
 		return &executor.ExecResult{ExitCode: 0, Stderr: "warning: something"}, nil
@@ -348,59 +280,50 @@ func TestExecRunner_StderrOnlyOutput(t *testing.T) {
 	}
 
 	results, err := r.RunPre(context.Background())
-	if err != nil {
-		t.Fatalf("RunPre() error = %v, want nil", err)
-	}
-	if results[0].OutputTail != "warning: something" {
-		t.Errorf("OutputTail = %q, want %q (no leading newline for stderr-only output)", results[0].OutputTail, "warning: something")
-	}
-	if results[0].Truncated {
-		t.Error("Truncated = true, want false for short output")
-	}
+	require.NoError(t, err)
+
+	assert.Equal(t, "warning: something", results[0].OutputTail, "stderr-only output must not get a leading newline")
+	assert.False(t, results[0].Truncated, "short output must not be truncated")
 }
 
 func TestExecRunner_RunPost_RunOnMatrix(t *testing.T) {
 	cases := []struct {
+		name        string
 		runOn       string
 		outcome     string
 		wantSkipped bool
 	}{
-		{"", "success", false},
-		{"", "error", false},
-		{"always", "success", false},
-		{"always", "error", false},
-		{"success", "success", false},
-		{"success", "error", true},
-		{"failure", "success", true},
-		{"failure", "error", false},
-		{"failure", "timeout", false},
+		{"unset runOn runs after success", "", "success", false},
+		{"unset runOn runs after error", "", "error", false},
+		{"always runs after success", "always", "success", false},
+		{"always runs after error", "always", "error", false},
+		{"success runs after success", "success", "success", false},
+		{"success skips after error", "success", "error", true},
+		{"failure skips after success", "failure", "success", true},
+		{"failure runs after error", "failure", "error", false},
+		{"failure runs after timeout", "failure", "timeout", false},
 	}
 	for _, tc := range cases {
-		t.Run(fmt.Sprintf("runOn=%s/outcome=%s", tc.runOn, tc.outcome), func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			exec := newMockExecutor()
 			r := &ExecRunner{
 				Hooks: &types.HooksConfig{PostRun: []types.HookConfig{{Name: "h", Command: "true", RunOn: tc.runOn}}},
 				Exec:  exec,
 			}
 			results, err := r.RunPost(context.Background(), tc.outcome)
-			if err != nil {
-				t.Fatalf("RunPost() error = %v, want nil", err)
-			}
-			if results[0].Skipped != tc.wantSkipped {
-				t.Errorf("Skipped = %v, want %v", results[0].Skipped, tc.wantSkipped)
-			}
-			gotDispatched := len(exec.calls) == 1
-			if gotDispatched == tc.wantSkipped {
-				t.Errorf("dispatched = %v, want dispatched == !Skipped", gotDispatched)
-			}
+			require.NoError(t, err)
+			require.Equal(t, tc.wantSkipped, results[0].Skipped)
+
+			wantDispatched := !tc.wantSkipped
+			require.Equal(t, wantDispatched, len(exec.calls) == 1, "dispatched must equal !Skipped")
 		})
 	}
 }
 
-// TestExecRunner_RunPost_DeadCtx pins that RunPost handles an
-// already-cancelled ctx by surfacing the resulting error on the
+// TestExecRunner_RunPost_CancelledCtxSurfacesError pins that RunPost handles
+// an already-cancelled ctx by surfacing the resulting error on the
 // HookExecution rather than panicking or hanging.
-func TestExecRunner_RunPost_DeadCtx(t *testing.T) {
+func TestExecRunner_RunPost_CancelledCtxSurfacesError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -414,16 +337,11 @@ func TestExecRunner_RunPost_DeadCtx(t *testing.T) {
 	}
 
 	results, err := r.RunPost(ctx, "success")
-	if err == nil {
-		t.Fatal("RunPost() error = nil, want non-nil for a dead ctx")
-	}
-	if results[0].Error == "" {
-		t.Error("results[0].Error is empty, want the ctx-cancelled error surfaced")
-	}
+	require.Error(t, err, "RunPost() must fail for a cancelled ctx")
+
+	assert.NotEmpty(t, results[0].Error, "the ctx-cancelled error must be surfaced")
 	// A plain cancel (not a deadline) must not be classified as a timeout.
-	if results[0].TimedOut {
-		t.Error("results[0].TimedOut = true, want false: an explicitly cancelled ctx is not a timeout")
-	}
+	assert.False(t, results[0].TimedOut, "an explicitly cancelled ctx is not a timeout")
 }
 
 // TestExecRunner_RunPost_BudgetExpiryMidHook pins that a detached-ctx
@@ -446,12 +364,8 @@ func TestExecRunner_RunPost_BudgetExpiryMidHook(t *testing.T) {
 	}
 
 	results, err := r.RunPost(ctx, "success")
-	if err == nil {
-		t.Fatal("RunPost() error = nil, want non-nil")
-	}
-	if !results[0].TimedOut {
-		t.Errorf("results[0].TimedOut = false, want true for an expired detached-ctx budget")
-	}
+	require.Error(t, err)
+	require.True(t, results[0].TimedOut, "an expired detached-ctx budget must be a timeout")
 }
 
 func TestExecRunner_CapabilityGuard_ClampsToMaxTimeout(t *testing.T) {
@@ -462,15 +376,10 @@ func TestExecRunner_CapabilityGuard_ClampsToMaxTimeout(t *testing.T) {
 		Exec:  exec,
 	}
 
-	if _, err := r.RunPre(context.Background()); err != nil {
-		t.Fatalf("RunPre() error = %v, want nil", err)
-	}
-	if len(exec.calls) != 1 {
-		t.Fatalf("Exec called %d times, want 1", len(exec.calls))
-	}
-	if exec.calls[0].timeout != exec.caps.MaxTimeout {
-		t.Errorf("dispatched timeout = %v, want clamped to Capabilities().MaxTimeout = %v", exec.calls[0].timeout, exec.caps.MaxTimeout)
-	}
+	_, err := r.RunPre(context.Background())
+	require.NoError(t, err)
+	require.Len(t, exec.calls, 1)
+	require.Equal(t, exec.caps.MaxTimeout, exec.calls[0].timeout, "dispatched timeout must be clamped to Capabilities().MaxTimeout")
 }
 
 func TestExecRunner_EffectiveTimeoutDefaultsWhenUnset(t *testing.T) {
@@ -479,36 +388,30 @@ func TestExecRunner_EffectiveTimeoutDefaultsWhenUnset(t *testing.T) {
 		Hooks: &types.HooksConfig{PreRun: []types.HookConfig{{Name: "h", Command: "true"}}},
 		Exec:  exec,
 	}
-	if _, err := r.RunPre(context.Background()); err != nil {
-		t.Fatalf("RunPre() error = %v, want nil", err)
-	}
+	_, err := r.RunPre(context.Background())
+	require.NoError(t, err)
+
 	want := time.Duration(types.DefaultHookTimeoutSeconds) * time.Second
-	if exec.calls[0].timeout != want {
-		t.Errorf("dispatched timeout = %v, want default %v", exec.calls[0].timeout, want)
-	}
+	require.Equal(t, want, exec.calls[0].timeout, "dispatched timeout must default to the hook default")
 }
 
-func TestExecRunner_NilExecutor(t *testing.T) {
+func TestExecRunner_RunPre_NilExecutorReturnsError(t *testing.T) {
 	r := &ExecRunner{
 		Hooks: &types.HooksConfig{PreRun: []types.HookConfig{{Name: "h", Command: "true"}}},
 	}
 	results, err := r.RunPre(context.Background())
-	if err == nil {
-		t.Fatal("RunPre() error = nil, want non-nil for a misconfigured (nil Exec) runner")
-	}
-	if results[0].Error == "" {
-		t.Error("results[0].Error is empty, want a misconfiguration message")
-	}
+	require.Error(t, err, "a runner with a nil Exec must be rejected as misconfigured")
+	require.NotEmpty(t, results[0].Error, "the misconfiguration must be recorded on the hook")
 }
 
-func TestExecRunner_NilHooksConfig(t *testing.T) {
+func TestExecRunner_NilHooksConfig_ReturnsNilResults(t *testing.T) {
 	r := &ExecRunner{Exec: newMockExecutor()}
+
 	preResults, preErr := r.RunPre(context.Background())
-	if preErr != nil || preResults != nil {
-		t.Errorf("RunPre() with nil Hooks = (%v, %v), want (nil, nil)", preResults, preErr)
-	}
+	require.NoError(t, preErr, "RunPre() with nil Hooks must not error")
+	assert.Nil(t, preResults, "RunPre() with nil Hooks must return no results")
+
 	postResults, postErr := r.RunPost(context.Background(), "success")
-	if postErr != nil || postResults != nil {
-		t.Errorf("RunPost() with nil Hooks = (%v, %v), want (nil, nil)", postResults, postErr)
-	}
+	require.NoError(t, postErr, "RunPost() with nil Hooks must not error")
+	assert.Nil(t, postResults, "RunPost() with nil Hooks must return no results")
 }

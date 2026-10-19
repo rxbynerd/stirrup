@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -16,7 +18,7 @@ import (
 // misalignment-monitoring guide, ResponseErrorEvent and ResponseError in the
 // OpenAPI spec). They are documented, not probed against the live API.
 
-// streamResponsesSSE serves body as a 200 SSE response and returns the
+// streamResponsesLastEvent serves body as a 200 SSE response and returns the
 // adapter's terminal event.
 func streamResponsesLastEvent(t *testing.T, body string) types.StreamEvent {
 	t.Helper()
@@ -29,13 +31,9 @@ func streamResponsesLastEvent(t *testing.T, body string) types.StreamEvent {
 
 	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-6", MaxTokens: 1024})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 	events := collectEvents(t, ch)
-	if len(events) == 0 {
-		t.Fatal("no events")
-	}
+	require.NotEmpty(t, events)
 	return events[len(events)-1]
 }
 
@@ -69,12 +67,9 @@ func TestOpenAIResponsesAdapter_FailedEventIncludesErrorCode(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			last := streamResponsesLastEvent(t, makeResponsesEvent("response.failed", tc.data))
-			if last.Type != "error" || last.Error == nil {
-				t.Fatalf("last event = %+v, want an error event", last)
-			}
-			if got := last.Error.Error(); got != tc.want {
-				t.Errorf("error = %q, want %q", got, tc.want)
-			}
+			require.Equal(t, "error", last.Type, "last event = %+v", last)
+			require.Error(t, last.Error)
+			require.Equal(t, tc.want, last.Error.Error())
 		})
 	}
 }
@@ -114,12 +109,9 @@ func TestOpenAIResponsesAdapter_ErrorEventIncludesCode(t *testing.T) {
 				makeResponsesEvent("error", tc.data),
 			}, "")
 			last := streamResponsesLastEvent(t, body)
-			if last.Type != "error" || last.Error == nil {
-				t.Fatalf("last event = %+v, want an error event", last)
-			}
-			if got := last.Error.Error(); got != tc.want {
-				t.Errorf("error = %q, want %q", got, tc.want)
-			}
+			require.Equal(t, "error", last.Type, "last event = %+v", last)
+			require.Error(t, last.Error)
+			require.Equal(t, tc.want, last.Error.Error())
 		})
 	}
 }
@@ -138,16 +130,9 @@ func TestOpenAIResponsesAdapter_HTTP403MisalignmentIncludesCodeAndIsNotRetried(t
 	adapter.RetryPolicy = fastRetryPolicy()
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-6-astra", MaxTokens: 1024})
-	if err == nil {
-		t.Fatal("expected an error for a 403 response")
-	}
-	want := "openai responses API returned status 403: This request was blocked by misalignment monitoring. (code: misalignment_policy_violation)"
-	if got := err.Error(); got != want {
-		t.Errorf("error = %q, want %q", got, want)
-	}
-	if got := atomic.LoadInt32(&attempts); got != 1 {
-		t.Errorf("server attempts = %d, want 1: a misalignment stop must not be retried", got)
-	}
+	require.Error(t, err, "expected an error for a 403 response")
+	require.EqualError(t, err, "openai responses API returned status 403: This request was blocked by misalignment monitoring. (code: misalignment_policy_violation)")
+	require.Equal(t, int32(1), atomic.LoadInt32(&attempts), "a misalignment stop must not be retried")
 }
 
 func TestOpenAIResponsesAdapter_HTTPErrorWithoutCodeKeepsMessageOnly(t *testing.T) {
@@ -160,12 +145,8 @@ func TestOpenAIResponsesAdapter_HTTPErrorWithoutCodeKeepsMessageOnly(t *testing.
 
 	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 	_, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-6", MaxTokens: 1024})
-	if err == nil {
-		t.Fatal("expected an error for a 400 response")
-	}
-	if got, want := err.Error(), "openai responses API returned status 400: Invalid input"; got != want {
-		t.Errorf("error = %q, want %q", got, want)
-	}
+	require.Error(t, err, "expected an error for a 400 response")
+	require.EqualError(t, err, "openai responses API returned status 400: Invalid input")
 }
 
 func TestOpenAIResponsesAdapter_HTTPErrorBodies(t *testing.T) {
@@ -205,12 +186,8 @@ func TestOpenAIResponsesAdapter_HTTPErrorBodies(t *testing.T) {
 			adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 			adapter.RetryPolicy = RetryPolicy{MaxAttempts: 1}
 			_, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-6", MaxTokens: 1024})
-			if err == nil {
-				t.Fatalf("expected an error for status %d", tc.status)
-			}
-			if got := err.Error(); got != tc.want {
-				t.Errorf("error = %q, want %q", got, tc.want)
-			}
+			require.Error(t, err, "expected an error for status %d", tc.status)
+			require.EqualError(t, err, tc.want)
 		})
 	}
 }
@@ -232,14 +209,7 @@ func TestOpenAIResponsesAdapter_QuotaExhausted429SurfacesCode(t *testing.T) {
 	adapter.RetryPolicy = fastRetryPolicy()
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-6", MaxTokens: 1024})
-	if err == nil {
-		t.Fatal("expected an error for a quota 429")
-	}
-	want := "openai responses API returned status 429: Organization spend limit reached. (code: organization_spend_limit_exceeded)"
-	if got := err.Error(); got != want {
-		t.Errorf("error = %q, want %q", got, want)
-	}
-	if got := atomic.LoadInt32(&attempts); got != 1 {
-		t.Errorf("server attempts = %d, want 1", got)
-	}
+	require.Error(t, err, "expected an error for a quota 429")
+	require.EqualError(t, err, "openai responses API returned status 429: Organization spend limit reached. (code: organization_spend_limit_exceeded)")
+	require.Equal(t, int32(1), atomic.LoadInt32(&attempts))
 }

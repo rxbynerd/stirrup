@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -44,7 +46,7 @@ func errorStub(err error) *stubVerifier {
 
 var _ Verifier = (*CompositeVerifier)(nil)
 
-func TestCompositeVerifier_AllPass(t *testing.T) {
+func TestCompositeVerifier_PassesWhenAllVerifiersPass(t *testing.T) {
 	v1 := passingStub(map[string]any{"tool": "lint"})
 	v2 := passingStub(map[string]any{"tool": "test"})
 	v3 := passingStub(map[string]any{"tool": "typecheck"})
@@ -52,49 +54,32 @@ func TestCompositeVerifier_AllPass(t *testing.T) {
 	c := NewCompositeVerifier([]Verifier{v1, v2, v3})
 	result, err := c.Verify(context.Background(), VerifyContext{})
 
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Passed {
-		t.Fatal("expected composite to pass when all sub-verifiers pass")
-	}
-	if result.Feedback != "" {
-		t.Errorf("expected no feedback, got %q", result.Feedback)
-	}
-	// Details from all three should be present, keyed by index.
-	for _, key := range []string{"verifier_0", "verifier_1", "verifier_2"} {
-		if _, ok := result.Details[key]; !ok {
-			t.Errorf("expected details key %q to be present", key)
-		}
-	}
-	if !v1.called || !v2.called || !v3.called {
-		t.Error("expected all sub-verifiers to be called")
+	require.NoError(t, err)
+	require.True(t, result.Passed)
+	require.Empty(t, result.Feedback)
+	// Details from all three verifiers are kept, keyed by index.
+	require.Contains(t, result.Details, "verifier_0")
+	require.Contains(t, result.Details, "verifier_1")
+	require.Contains(t, result.Details, "verifier_2")
+	for i, v := range []*stubVerifier{v1, v2, v3} {
+		require.True(t, v.called, "sub-verifier %d should be called", i)
 	}
 }
 
-func TestCompositeVerifier_FirstFails(t *testing.T) {
+func TestCompositeVerifier_StopsAtFirstFailure(t *testing.T) {
 	v1 := failingStub("lint errors found", map[string]any{"tool": "lint"})
 	v2 := passingStub(map[string]any{"tool": "test"})
 
 	c := NewCompositeVerifier([]Verifier{v1, v2})
 	result, err := c.Verify(context.Background(), VerifyContext{})
 
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.Passed {
-		t.Fatal("expected composite to fail")
-	}
-	if result.Feedback != "lint errors found" {
-		t.Errorf("expected failure feedback, got %q", result.Feedback)
-	}
-	// Second verifier should not have been called (short-circuit).
-	if v2.called {
-		t.Error("expected short-circuit: second verifier should not have been called")
-	}
+	require.NoError(t, err)
+	require.False(t, result.Passed)
+	require.Equal(t, "lint errors found", result.Feedback)
+	require.False(t, v2.called, "second verifier should be skipped after a failure")
 }
 
-func TestCompositeVerifier_MiddleFails(t *testing.T) {
+func TestCompositeVerifier_MiddleFailureKeepsDetailsAndStops(t *testing.T) {
 	v1 := passingStub(map[string]any{"tool": "lint"})
 	v2 := failingStub("test failures", map[string]any{"tool": "test", "failures": 3})
 	v3 := passingStub(map[string]any{"tool": "typecheck"})
@@ -102,42 +87,24 @@ func TestCompositeVerifier_MiddleFails(t *testing.T) {
 	c := NewCompositeVerifier([]Verifier{v1, v2, v3})
 	result, err := c.Verify(context.Background(), VerifyContext{})
 
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.Passed {
-		t.Fatal("expected composite to fail")
-	}
-	if result.Feedback != "test failures" {
-		t.Errorf("expected failure feedback, got %q", result.Feedback)
-	}
-	// First verifier's details should be preserved.
-	if _, ok := result.Details["verifier_0"]; !ok {
-		t.Error("expected details from first (passing) verifier to be preserved")
-	}
-	// Failing verifier's details should also be present.
-	if _, ok := result.Details["verifier_1"]; !ok {
-		t.Error("expected details from failing verifier to be present")
-	}
-	// Third verifier should not have been called.
-	if v3.called {
-		t.Error("expected short-circuit: third verifier should not have been called")
-	}
+	require.NoError(t, err)
+	require.False(t, result.Passed)
+	require.Equal(t, "test failures", result.Feedback)
+	// Details from the passing first verifier and the failing second one are both kept.
+	require.Contains(t, result.Details, "verifier_0")
+	require.Contains(t, result.Details, "verifier_1")
+	require.False(t, v3.called, "third verifier should be skipped after a failure")
 }
 
-func TestCompositeVerifier_EmptyList(t *testing.T) {
+func TestCompositeVerifier_EmptyListPasses(t *testing.T) {
 	c := NewCompositeVerifier([]Verifier{})
 	result, err := c.Verify(context.Background(), VerifyContext{})
 
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Passed {
-		t.Fatal("expected empty composite to pass (vacuous truth)")
-	}
+	require.NoError(t, err)
+	require.True(t, result.Passed, "an empty composite passes vacuously")
 }
 
-func TestCompositeVerifier_ErrorPropagated(t *testing.T) {
+func TestCompositeVerifier_ErrorStopsAndPropagates(t *testing.T) {
 	v1 := passingStub(map[string]any{"tool": "lint"})
 	v2 := errorStub(fmt.Errorf("network timeout"))
 	v3 := passingStub(nil)
@@ -145,97 +112,59 @@ func TestCompositeVerifier_ErrorPropagated(t *testing.T) {
 	c := NewCompositeVerifier([]Verifier{v1, v2, v3})
 	_, err := c.Verify(context.Background(), VerifyContext{})
 
-	if err == nil {
-		t.Fatal("expected error to be propagated")
-	}
-	if got := err.Error(); got != "composite verifier [1]: network timeout" {
-		t.Errorf("unexpected error message: %q", got)
-	}
-	if v3.called {
-		t.Error("expected short-circuit on error: third verifier should not have been called")
-	}
+	require.EqualError(t, err, "composite verifier [1]: network timeout")
+	require.False(t, v3.called, "third verifier should be skipped after an error")
 }
 
-func TestCompositeVerifier_SingleVerifier(t *testing.T) {
+func TestCompositeVerifier_SinglePassingVerifierPasses(t *testing.T) {
 	// A composite with one verifier should behave identically to that verifier.
 	inner := passingStub(map[string]any{"exitCode": 0})
 
 	c := NewCompositeVerifier([]Verifier{inner})
 	result, err := c.Verify(context.Background(), VerifyContext{})
 
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Passed {
-		t.Fatal("expected single-verifier composite to pass")
-	}
-	if _, ok := result.Details["verifier_0"]; !ok {
-		t.Error("expected details from the single verifier")
-	}
+	require.NoError(t, err)
+	require.True(t, result.Passed)
+	require.Contains(t, result.Details, "verifier_0")
 }
 
-func TestCompositeVerifier_SingleVerifierFailing(t *testing.T) {
+func TestCompositeVerifier_SingleFailingVerifierFails(t *testing.T) {
 	inner := failingStub("compilation failed", map[string]any{"exitCode": 1})
 
 	c := NewCompositeVerifier([]Verifier{inner})
 	result, err := c.Verify(context.Background(), VerifyContext{})
 
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.Passed {
-		t.Fatal("expected single-verifier composite to fail")
-	}
-	if result.Feedback != "compilation failed" {
-		t.Errorf("expected feedback from inner verifier, got %q", result.Feedback)
-	}
+	require.NoError(t, err)
+	require.False(t, result.Passed)
+	require.Equal(t, "compilation failed", result.Feedback)
 }
 
-func TestCompositeVerifier_ContextCancellation(t *testing.T) {
+func TestCompositeVerifier_CancelledContextReturnsError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 
-	// First verifier passes but cancels the context as a side effect.
 	v1 := &stubVerifier{
 		result: &types.VerificationResult{Passed: true},
 	}
 	v2 := passingStub(nil)
 
 	c := NewCompositeVerifier([]Verifier{v1, v2})
-
-	// Cancel before the second verifier gets a chance to run.
-	cancel()
-
 	_, err := c.Verify(ctx, VerifyContext{})
 
-	// The context was already cancelled before the first verifier ran,
-	// so the composite should detect it before invoking the first verifier.
-	if err == nil {
-		t.Fatal("expected error due to context cancellation")
-	}
-	if ctx.Err() == nil {
-		t.Fatal("expected context to be cancelled")
-	}
+	require.Error(t, err)
+	require.Error(t, ctx.Err(), "the context should be cancelled")
 }
 
-func TestCompositeVerifier_NilDetails(t *testing.T) {
-	// Verifier that passes with nil details should not add a key to merged.
+func TestCompositeVerifier_NilDetailsAddNoKey(t *testing.T) {
+	// A verifier with nil details adds no key to the merged details.
 	v1 := passingStub(nil)
 	v2 := passingStub(map[string]any{"tool": "test"})
 
 	c := NewCompositeVerifier([]Verifier{v1, v2})
 	result, err := c.Verify(context.Background(), VerifyContext{})
 
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Passed {
-		t.Fatal("expected composite to pass")
-	}
-	// v1 had nil details, so verifier_0 should not appear.
-	if _, ok := result.Details["verifier_0"]; ok {
-		t.Error("expected nil-details verifier to not add a key")
-	}
-	if _, ok := result.Details["verifier_1"]; !ok {
-		t.Error("expected verifier_1 details to be present")
-	}
+	require.NoError(t, err)
+	require.True(t, result.Passed)
+	require.NotContains(t, result.Details, "verifier_0")
+	require.Contains(t, result.Details, "verifier_1")
 }

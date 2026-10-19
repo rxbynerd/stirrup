@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 )
 
@@ -146,9 +148,7 @@ func TestGrepFilesTool_SandboxExecRejectsShellInjection(t *testing.T) {
 	for _, p := range payloads {
 		t.Run(p.name, func(t *testing.T) {
 			dir := t.TempDir()
-			if err := os.WriteFile(filepath.Join(dir, "benign.txt"), []byte("needle\n"), 0o644); err != nil {
-				t.Fatalf("write fixture: %v", err)
-			}
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "benign.txt"), []byte("needle\n"), 0o644), "write fixture")
 			fe := &injectionSandboxExecutor{dir: dir}
 
 			grep := GrepFilesTool(fe)
@@ -163,21 +163,15 @@ func TestGrepFilesTool_SandboxExecRejectsShellInjection(t *testing.T) {
 				args["exclude"] = p.exclude
 			}
 			input, err := json.Marshal(args)
-			if err != nil {
-				t.Fatalf("marshal input: %v", err)
-			}
+			require.NoError(t, err, "marshal input")
 			// The tool call itself may legitimately error (a bad regex) or
 			// return no matches — the payload is search input, not shell
 			// syntax, either way. What must never happen is the canary
 			// side effect firing.
 			_, _ = invokeText(context.Background(), grep, input)
 
-			if _, statErr := os.Stat(filepath.Join(dir, p.canary)); statErr == nil {
-				t.Fatalf("shell injection fired: canary file %q was created", p.canary)
-			}
-			if len(fe.commands) == 0 {
-				t.Fatal("expected at least one Exec command to have been issued")
-			}
+			require.NoFileExists(t, filepath.Join(dir, p.canary), "shell injection fired: canary file %q was created", p.canary)
+			require.NotEmpty(t, fe.commands, "expected at least one Exec command to have been issued")
 		})
 	}
 }
@@ -221,9 +215,7 @@ func TestFindFilesTool_SandboxExecRejectsShellInjection(t *testing.T) {
 	for _, p := range payloads {
 		t.Run(p.name, func(t *testing.T) {
 			dir := t.TempDir()
-			if err := os.WriteFile(filepath.Join(dir, "benign.txt"), []byte("x"), 0o644); err != nil {
-				t.Fatalf("write fixture: %v", err)
-			}
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "benign.txt"), []byte("x"), 0o644), "write fixture")
 			fe := &injectionSandboxExecutor{dir: dir}
 
 			find := FindFilesTool(fe)
@@ -238,14 +230,10 @@ func TestFindFilesTool_SandboxExecRejectsShellInjection(t *testing.T) {
 				args["exclude"] = p.exclude
 			}
 			input, err := json.Marshal(args)
-			if err != nil {
-				t.Fatalf("marshal input: %v", err)
-			}
+			require.NoError(t, err, "marshal input")
 			_, _ = invokeText(context.Background(), find, input)
 
-			if _, statErr := os.Stat(filepath.Join(dir, p.canary)); statErr == nil {
-				t.Fatalf("shell injection fired: canary file %q was created", p.canary)
-			}
+			require.NoFileExists(t, filepath.Join(dir, p.canary), "shell injection fired: canary file %q was created", p.canary)
 		})
 	}
 }

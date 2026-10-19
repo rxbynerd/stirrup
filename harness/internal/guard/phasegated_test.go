@@ -3,65 +3,50 @@ package guard
 import (
 	"context"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
-func TestPhaseGatedDelegatesOnSelectedPhase(t *testing.T) {
+func TestPhaseGated_DelegatesOnSelectedPhase(t *testing.T) {
 	inner := &stubGuard{d: deny("inner", "blocked")}
 	g := PhaseGated{Phases: []Phase{PhasePreTool}, Inner: inner}
 
 	d, err := g.Check(context.Background(), Input{Phase: PhasePreTool})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if inner.called != 1 {
-		t.Fatalf("inner called %d times, want 1", inner.called)
-	}
-	// Decision should be propagated verbatim.
-	if d.Verdict != VerdictDeny || d.GuardID != "inner" || d.Reason != "blocked" {
-		t.Fatalf("decision = %+v, want verbatim deny from inner", d)
-	}
+	require.NoError(t, err)
+	require.Equal(t, 1, inner.called, "inner should be called once")
+
+	// The inner decision is propagated verbatim.
+	require.Equal(t, VerdictDeny, d.Verdict)
+	require.Equal(t, "inner", d.GuardID)
+	require.Equal(t, "blocked", d.Reason)
 }
 
-func TestPhaseGatedSkipsUnselectedPhase(t *testing.T) {
+func TestPhaseGated_SkipsUnselectedPhase(t *testing.T) {
 	inner := &stubGuard{d: deny("inner", "should-not-fire")}
 	g := PhaseGated{Phases: []Phase{PhasePreTool}, Inner: inner}
 
 	d, err := g.Check(context.Background(), Input{Phase: PhasePostTurn})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if inner.called != 0 {
-		t.Fatalf("inner called %d times, want 0", inner.called)
-	}
-	if d.Verdict != VerdictAllow {
-		t.Fatalf("verdict = %q, want allow", d.Verdict)
-	}
-	if d.GuardID != "phase-gated:skipped" {
-		t.Fatalf("guard id = %q, want \"phase-gated:skipped\"", d.GuardID)
-	}
+	require.NoError(t, err)
+	require.Equal(t, 0, inner.called, "inner should not be called")
+	require.Equal(t, VerdictAllow, d.Verdict)
+	require.Equal(t, "phase-gated:skipped", d.GuardID)
 }
 
-func TestPhaseGatedEmptyPhasesSkipsEverything(t *testing.T) {
+func TestPhaseGated_EmptyPhasesSkipsEverything(t *testing.T) {
 	inner := &stubGuard{d: deny("inner", "should-not-fire")}
 	g := PhaseGated{Inner: inner}
 
 	for _, ph := range []Phase{PhasePreTurn, PhasePreTool, PhasePostTurn} {
 		t.Run(string(ph), func(t *testing.T) {
 			d, err := g.Check(context.Background(), Input{Phase: ph})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if d.Verdict != VerdictAllow {
-				t.Fatalf("verdict = %q, want allow (empty Phases skips all)", d.Verdict)
-			}
+			require.NoError(t, err)
+			require.Equal(t, VerdictAllow, d.Verdict, "empty Phases skips all")
 		})
 	}
-	if inner.called != 0 {
-		t.Fatalf("inner invoked %d times despite empty Phases, want 0", inner.called)
-	}
+	require.Equal(t, 0, inner.called, "inner should not be invoked despite empty Phases")
 }
 
-func TestChecksPhase(t *testing.T) {
+func TestChecksPhase_ReportsWhetherGuardChecksPhase(t *testing.T) {
 	judge := &stubGuard{d: &Decision{Verdict: VerdictAllow, GuardID: "stub"}}
 	cases := []struct {
 		name string
@@ -83,8 +68,8 @@ func TestChecksPhase(t *testing.T) {
 		{"composite holding a typed nil", &Sequential{Guards: []GuardRail{(*PhaseGated)(nil), judge}}, true},
 	}
 	for _, tc := range cases {
-		if got := ChecksPhase(tc.g, PhasePreTurn); got != tc.want {
-			t.Errorf("%s: ChecksPhase = %v, want %v", tc.name, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, ChecksPhase(tc.g, PhasePreTurn))
+		})
 	}
 }

@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // secretFixture is one representative secret per pattern in secretPatterns.
@@ -62,10 +64,10 @@ func multilineSecretFixtures() []secretFixture {
 	}
 }
 
-// TestScrubWriterRedactsSecretStraddlingChunkBoundary is the writer's
+// TestScrubWriter_RedactsSecretStraddlingChunkBoundary is the writer's
 // central guarantee: a secret split across two chunks is still redacted, so
 // chunked output is byte-identical to a whole-stream Scrub.
-func TestScrubWriterRedactsSecretStraddlingChunkBoundary(t *testing.T) {
+func TestScrubWriter_RedactsSecretStraddlingChunkBoundary(t *testing.T) {
 	for _, fixture := range append(secretFixtures(), multilineSecretFixtures()...) {
 		t.Run(fixture.pattern, func(t *testing.T) {
 			window := 4 * len(fixture.text)
@@ -86,39 +88,33 @@ func TestScrubWriterRedactsSecretStraddlingChunkBoundary(t *testing.T) {
 					w := newScrubWriter(&sink, chunk, window)
 					feed(t, w, input, writeSize)
 					got := sink.String()
-					if strings.Contains(got, fixture.sensitive) {
-						t.Fatalf("overlap=%d writeSize=%d: secret survived chunking", overlap, writeSize)
-					}
-					if want := Scrub(input); got != want {
-						t.Fatalf("overlap=%d writeSize=%d: chunked output diverges from whole-stream Scrub", overlap, writeSize)
-					}
+					require.NotContains(t, got, fixture.sensitive, "overlap=%d writeSize=%d: secret survived chunking", overlap, writeSize)
+					require.Equal(t, Scrub(input), got, "overlap=%d writeSize=%d: chunked output diverges from whole-stream Scrub", overlap, writeSize)
 				}
 			}
 		})
 	}
 }
 
-// TestScrubWriterRedactsFatJWTAtDefaultBoundary repeats the boundary case at
+// TestScrubWriter_RedactsFatJWTAtDefaultBoundary repeats the boundary case at
 // the shipped chunk and window sizes with the largest fixture, so the
 // default carry window is proven against a realistic worst case rather than
 // only against test-sized chunks.
-func TestScrubWriterRedactsFatJWTAtDefaultBoundary(t *testing.T) {
+func TestScrubWriter_RedactsFatJWTAtDefaultBoundary(t *testing.T) {
 	jwt := fatJWTFixture()
-	if len(jwt) >= ScrubCarryWindow {
-		t.Fatalf("fixture JWT of %d bytes no longer fits the %d byte carry window", len(jwt), ScrubCarryWindow)
-	}
+	require.Less(t, len(jwt), ScrubCarryWindow, "fixture JWT no longer fits the carry window")
 	input := filler(scrubChunkBytes-len(jwt)/2) + jwt + " " + filler(ScrubCarryWindow)
 	var sink bytes.Buffer
 	w := NewScrubWriter(&sink)
 	feed(t, w, input, 4<<10)
-	if got := sink.String(); strings.Contains(got, "c2lnbmF0dXJlLXZhbHVlLTAxMjM0NTY3ODk") || got != Scrub(input) {
-		t.Fatal("fat JWT straddling the default chunk boundary was not fully redacted")
-	}
+	got := sink.String()
+	require.NotContains(t, got, "c2lnbmF0dXJlLXZhbHVlLTAxMjM0NTY3ODk", "fat JWT straddling the default chunk boundary was not fully redacted")
+	require.Equal(t, Scrub(input), got, "chunked output diverges from whole-stream Scrub")
 }
 
-// TestScrubWriterRedactsRSAKeyAtDefaultBoundary proves the default carry
+// TestScrubWriter_RedactsRSAKeyAtDefaultBoundary proves the default carry
 // window against the largest PEM key the scrubber is expected to see whole.
-func TestScrubWriterRedactsRSAKeyAtDefaultBoundary(t *testing.T) {
+func TestScrubWriter_RedactsRSAKeyAtDefaultBoundary(t *testing.T) {
 	key := rsa4096PEMFixture()
 	input := filler(scrubChunkBytes-len(key)/2) + key + "\n" + filler(ScrubCarryWindow)
 	var sink bytes.Buffer
@@ -126,37 +122,36 @@ func TestScrubWriterRedactsRSAKeyAtDefaultBoundary(t *testing.T) {
 	feed(t, w, input, 4<<10)
 	got := sink.String()
 	assertNoPEMBody(t, got, pemBodyLines(51))
-	if got != Scrub(input) {
-		t.Fatal("RSA key straddling the default chunk boundary was not redacted as one span")
-	}
+	require.Equal(t, Scrub(input), got, "RSA key straddling the default chunk boundary was not redacted as one span")
 }
 
-// TestScrubWriterRescansAfterLineAwareCutIsBlocked covers the case where the
+// TestScrubWriter_RescansAfterLineAwareCutIsBlocked covers the case where the
 // line-aware cut cannot be used: several patterns match across a newline
 // (their separators are \s), so a span reaching offset 0 can block the cut at
 // the last newline. The byte cut taken instead must be boundary-scanned in
 // its own right, or a secret straddling it is scrubbed in two halves — and
 // two halves that individually match nothing leave the secret intact.
-func TestScrubWriterRescansAfterLineAwareCutIsBlocked(t *testing.T) {
+func TestScrubWriter_RescansAfterLineAwareCutIsBlocked(t *testing.T) {
 	blocker := "Basic \nQQQQQQQQ."
 	secret := "AKIA" + "ABCDEFGHIJKLMNOP"
-	sizes := []struct{ chunk, window int }{
-		{scrubChunkBytes, ScrubCarryWindow},
-		{2048, 512},
+	sizes := []struct {
+		name          string
+		chunk, window int
+	}{
+		{"default sizes", scrubChunkBytes, ScrubCarryWindow},
+		{"small sizes", 2048, 512},
 	}
 	for _, size := range sizes {
-		input := blocker + strings.Repeat("x", size.chunk-len(blocker)-len(secret)/2) +
-			secret + strings.Repeat("y", size.window+64)
-		var sink bytes.Buffer
-		w := newScrubWriter(&sink, size.chunk, size.window)
-		feed(t, w, input, 4096)
-		got := sink.String()
-		if strings.Contains(got, secret) {
-			t.Errorf("chunk=%d window=%d: secret straddling the byte cut survived", size.chunk, size.window)
-		}
-		if want := Scrub(input); got != want {
-			t.Errorf("chunk=%d window=%d: chunked output diverges from whole-stream Scrub", size.chunk, size.window)
-		}
+		t.Run(size.name, func(t *testing.T) {
+			input := blocker + strings.Repeat("x", size.chunk-len(blocker)-len(secret)/2) +
+				secret + strings.Repeat("y", size.window+64)
+			var sink bytes.Buffer
+			w := newScrubWriter(&sink, size.chunk, size.window)
+			feed(t, w, input, 4096)
+			got := sink.String()
+			require.NotContains(t, got, secret, "secret straddling the byte cut survived")
+			require.Equal(t, Scrub(input), got, "chunked output diverges from whole-stream Scrub")
+		})
 	}
 }
 
@@ -170,52 +165,49 @@ func TestSecretPatternsMatchSingleSpanUnderCarryWindow(t *testing.T) {
 		fixtures[f.pattern] = f
 	}
 	for _, p := range SecretPatterns() {
-		f, ok := fixtures[p.Name]
-		if !ok {
-			t.Errorf("pattern %q has no boundary fixture; add one so the carry window stays proven", p.Name)
-			continue
-		}
-		span := p.Re.FindStringIndex(f.text)
-		if span == nil {
-			t.Errorf("pattern %q does not match its own fixture", p.Name)
-			continue
-		}
-		if got := span[1] - span[0]; got >= ScrubCarryWindow {
-			t.Errorf("pattern %q matches a %d byte span, which the %d byte carry window cannot reassemble", p.Name, got, ScrubCarryWindow)
-		}
-		if !strings.Contains(f.text[span[0]:span[1]], f.sensitive) {
-			t.Errorf("pattern %q matches a span that excludes the sensitive value", p.Name)
-		}
+		t.Run(p.Name, func(t *testing.T) {
+			f, ok := fixtures[p.Name]
+			require.True(t, ok, "pattern %q has no boundary fixture; add one so the carry window stays proven", p.Name)
+			span := p.Re.FindStringIndex(f.text)
+			require.NotNil(t, span, "pattern %q does not match its own fixture", p.Name)
+			require.Less(t, span[1]-span[0], ScrubCarryWindow, "pattern %q matches a span the carry window cannot reassemble", p.Name)
+			require.Contains(t, f.text[span[0]:span[1]], f.sensitive, "pattern %q matches a span that excludes the sensitive value", p.Name)
+		})
 	}
 	// A PEM match spans the whole key, so the largest keys in use must
 	// still fit: RSA-4096 is about 3.3 KiB and RSA-8192 about 6.4 KiB.
-	for name, key := range map[string]string{
-		"RSA-4096": rsa4096PEMFixture(),
-		"RSA-8192": pemKey("RSA PRIVATE KEY", pemBodyLines(100), "\n"),
-	} {
-		span := secretPatternRe(t, "pem_private_key").FindStringIndex(key)
-		if span == nil || span[1]-span[0] != len(key) || len(key) >= ScrubCarryWindow {
-			t.Errorf("%s key of %d bytes is not one match under the %d byte carry window (match %v)", name, len(key), ScrubCarryWindow, span)
-		}
+	keys := map[string]string{
+		"rsa-4096": rsa4096PEMFixture(),
+		"rsa-8192": pemKey("RSA PRIVATE KEY", pemBodyLines(100), "\n"),
+	}
+	for name, key := range keys {
+		t.Run(name, func(t *testing.T) {
+			span := secretPatternRe(t, "pem_private_key").FindStringIndex(key)
+			require.NotNil(t, span, "key of %d bytes has no PEM match", len(key))
+			require.Equal(t, len(key), span[1]-span[0], "PEM match does not cover the whole %d byte key", len(key))
+			require.Less(t, len(key), ScrubCarryWindow, "key does not fit the %d byte carry window", ScrubCarryWindow)
+		})
 	}
 }
 
 func secretPatternRe(t *testing.T, name string) *regexp.Regexp {
 	t.Helper()
+	var re *regexp.Regexp
 	for _, p := range SecretPatterns() {
 		if p.Name == name {
-			return p.Re
+			re = p.Re
+			break
 		}
 	}
-	t.Fatalf("no secret pattern %q", name)
-	return nil
+	require.NotNil(t, re, "no secret pattern %q", name)
+	return re
 }
 
-// TestScrubWriterResidualExceedsBuffer documents the residual risk the
-// chunked writer accepts: a single secret longer than the writer's whole
-// buffer cannot be held for reassembly, so only its leading portion is
-// redacted and the remainder reaches the sink.
-func TestScrubWriterResidualExceedsBuffer(t *testing.T) {
+// TestScrubWriter_OversizedSecretRedactsOnlyLeadingPortion documents the
+// residual risk the chunked writer accepts: a single secret longer than the
+// writer's whole buffer cannot be held for reassembly, so only its leading
+// portion is redacted and the remainder reaches the sink.
+func TestScrubWriter_OversizedSecretRedactsOnlyLeadingPortion(t *testing.T) {
 	const window, chunk = 512, 2048
 	tail := strings.Repeat("a", 8*(chunk+window))
 	input := "Bearer " + tail + " end"
@@ -223,29 +215,24 @@ func TestScrubWriterResidualExceedsBuffer(t *testing.T) {
 	w := newScrubWriter(&sink, chunk, window)
 	feed(t, w, input, 256)
 	got := sink.String()
-	if !strings.HasPrefix(got, redactedPlaceholder) {
-		t.Fatalf("leading portion of an oversized secret must still be redacted, got %.32q", got)
-	}
-	if !strings.Contains(got, strings.Repeat("a", chunk)) {
-		t.Fatal("residual is expected: the tail of a secret longer than the buffer survives")
-	}
+	require.True(t, strings.HasPrefix(got, redactedPlaceholder), "leading portion of an oversized secret must still be redacted, got %.32q", got)
+	require.Contains(t, got, strings.Repeat("a", chunk), "residual is expected: the tail of a secret longer than the buffer survives")
 }
 
-// TestScrubWriterDifferentialAgainstWholeStreamScrub searches the space the
+// TestScrubWriter_DifferentialAgainstWholeStreamScrub searches the space the
 // hand-written boundary fixtures cannot: random chunk and window sizes,
 // random write sizes, filler with and without newlines, secrets at random
 // offsets, and spans the buffer cannot reassemble mixed in. A secret shorter
 // than the carry window must never survive, whatever the layout around it.
 //
 // The generator is seeded, so a failure is reproducible from the reported
-// seed. It reliably catches a writer that emits a chunk boundary without
-// re-scanning it: reverting the rescan in flush makes this fail on six
-// patterns.
-func TestScrubWriterDifferentialAgainstWholeStreamScrub(t *testing.T) {
+// seed. The test catches a writer that emits a chunk boundary without
+// re-scanning it.
+func TestScrubWriter_DifferentialAgainstWholeStreamScrub(t *testing.T) {
 	rng := rand.New(rand.NewSource(7)) //nolint:gosec // deterministic test input, not a security decision
 	fixtures := append(secretFixtures(), multilineSecretFixtures()...)
 	// Spans that begin a chunk and reach across its last newline block the
-	// line-aware cut, which is the layout that exposed a leak.
+	// line-aware cut, so the byte cut and its rescan must handle them.
 	blockers := []string{"Basic \nQQQQQQQQ.", "api_key =\naaaaaaaa", "Bearer\nzzzz", "account_key:\nbbbbbbbbbbbb"}
 	for seed := 0; seed < 1500; seed++ {
 		window := 256 + rng.Intn(512)
@@ -282,14 +269,14 @@ func TestScrubWriterDifferentialAgainstWholeStreamScrub(t *testing.T) {
 		got := sink.String()
 		want := Scrub(input)
 		for _, f := range placed {
-			if strings.Contains(got, f.sensitive) && !strings.Contains(want, f.sensitive) {
-				t.Fatalf("seed=%d chunk=%d window=%d solid=%v: %s leaked", seed, chunk, window, solid, f.pattern)
+			if !strings.Contains(want, f.sensitive) {
+				require.NotContains(t, got, f.sensitive, "seed=%d chunk=%d window=%d solid=%v: %s leaked", seed, chunk, window, solid, f.pattern)
 			}
 		}
 		// A span the buffer cannot hold is cut mid-match by design, so only
 		// streams without one are required to match byte for byte.
-		if !oversized && got != want {
-			t.Fatalf("seed=%d chunk=%d window=%d solid=%v: output diverges from whole-stream Scrub", seed, chunk, window, solid)
+		if !oversized {
+			require.Equal(t, want, got, "seed=%d chunk=%d window=%d solid=%v: output diverges from whole-stream Scrub", seed, chunk, window, solid)
 		}
 	}
 }
@@ -308,9 +295,10 @@ func randomFiller(rng *rand.Rand, n int, solid bool) string {
 	return string(b)
 }
 
-// TestScrubWriterStatsMatchWholeStreamScrub keeps the redaction statistics
-// reported to the trace correct after the move to per-chunk scrubbing.
-func TestScrubWriterStatsMatchWholeStreamScrub(t *testing.T) {
+// TestScrubWriter_StatsMatchWholeStreamScrub checks that the redaction
+// statistics reported to the trace match a whole-stream scrub when the writer
+// scrubs per chunk.
+func TestScrubWriter_StatsMatchWholeStreamScrub(t *testing.T) {
 	var b strings.Builder
 	for round := 0; b.Len() < 4*(scrubChunkBytes+ScrubCarryWindow); round++ {
 		for i, f := range secretFixtures() {
@@ -324,22 +312,16 @@ func TestScrubWriterStatsMatchWholeStreamScrub(t *testing.T) {
 	w := NewScrubWriter(&sink)
 	feed(t, w, input, 3000)
 	want, wantStats := ScrubWithStats(input)
-	if sink.String() != want {
-		t.Fatal("chunked output diverges from whole-stream Scrub")
-	}
+	require.Equal(t, want, sink.String(), "chunked output diverges from whole-stream Scrub")
 	got := w.Stats()
-	if got.Count != wantStats.Count {
-		t.Fatalf("redaction count=%d want %d", got.Count, wantStats.Count)
-	}
-	if strings.Join(sortedCopy(got.Patterns), ",") != strings.Join(sortedCopy(wantStats.Patterns), ",") {
-		t.Fatalf("redaction patterns=%v want %v", got.Patterns, wantStats.Patterns)
-	}
+	require.Equal(t, wantStats.Count, got.Count)
+	require.ElementsMatch(t, wantStats.Patterns, got.Patterns)
 }
 
-// TestScrubWriterBufferStaysBounded proves the peak allocation claim: the
+// TestScrubWriter_BufferStaysBounded proves the peak allocation claim: the
 // writer's buffer never grows with the stream, only with its chunk and
 // window.
-func TestScrubWriterBufferStaysBounded(t *testing.T) {
+func TestScrubWriter_BufferStaysBounded(t *testing.T) {
 	w := NewScrubWriter(io.Discard)
 	block := []byte(strings.Repeat("stirrup command output line\n", 8<<10))
 	var before runtime.MemStats
@@ -347,23 +329,17 @@ func TestScrubWriterBufferStaysBounded(t *testing.T) {
 	runtime.ReadMemStats(&before)
 	streamed := 0
 	for i := 0; i < 16; i++ {
-		if _, err := w.Write(block); err != nil {
-			t.Fatal(err)
-		}
+		_, err := w.Write(block)
+		require.NoError(t, err)
 		streamed += len(block)
-		if cap(w.pending) > w.maxPending {
-			t.Fatalf("pending buffer grew to %d bytes, above the %d byte cap", cap(w.pending), w.maxPending)
-		}
+		require.LessOrEqual(t, cap(w.pending), w.maxPending, "pending buffer grew above the cap")
 	}
-	if err := w.Close(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, w.Close())
 	var after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&after)
-	if live := int64(after.HeapAlloc) - int64(before.HeapAlloc); live > int64(w.maxPending)*8 {
-		t.Fatalf("live heap grew by %d bytes across a %d byte stream", live, streamed)
-	}
+	live := int64(after.HeapAlloc) - int64(before.HeapAlloc)
+	require.LessOrEqual(t, live, int64(w.maxPending)*8, "live heap growth across a %d byte stream", streamed)
 }
 
 func BenchmarkScrubWriter(b *testing.B) {
@@ -372,12 +348,9 @@ func BenchmarkScrubWriter(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		w := NewScrubWriter(io.Discard)
-		if _, err := w.Write(block); err != nil {
-			b.Fatal(err)
-		}
-		if err := w.Close(); err != nil {
-			b.Fatal(err)
-		}
+		_, err := w.Write(block)
+		require.NoError(b, err)
+		require.NoError(b, w.Close())
 	}
 }
 
@@ -389,16 +362,10 @@ func feed(t *testing.T, w *ScrubWriter, input string, writeSize int) {
 			end = len(input)
 		}
 		n, err := w.Write([]byte(input[offset:end]))
-		if err != nil {
-			t.Fatalf("write: %v", err)
-		}
-		if n != end-offset {
-			t.Fatalf("short write %d of %d", n, end-offset)
-		}
+		require.NoError(t, err, "write at offset %d", offset)
+		require.Equal(t, end-offset, n, "short write")
 	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
+	require.NoError(t, w.Close(), "close")
 }
 
 // filler produces secret-free output of an exact length that always ends on
@@ -411,17 +378,7 @@ func filler(n int) string {
 	return strings.Repeat("x", n-1) + " "
 }
 
-func sortedCopy(in []string) []string {
-	out := append([]string(nil), in...)
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j] < out[j-1]; j-- {
-			out[j], out[j-1] = out[j-1], out[j]
-		}
-	}
-	return out
-}
-
-func TestRetreatCutPastSpans(t *testing.T) {
+func TestRetreatCutPastSpans_CutIsNotInsideAnySpan(t *testing.T) {
 	cases := map[string]struct {
 		spans [][]int
 		cut   int
@@ -436,8 +393,9 @@ func TestRetreatCutPastSpans(t *testing.T) {
 		"cut at zero":        {[][]int{{0, 5}}, 0, 0},
 	}
 	for name, tc := range cases {
-		if got := retreatCutPastSpans(tc.spans, tc.cut); got != tc.want {
-			t.Errorf("%s: retreatCutPastSpans(%v, %d) = %d, want %d", name, tc.spans, tc.cut, got, tc.want)
-		}
+		t.Run(name, func(t *testing.T) {
+			got := retreatCutPastSpans(tc.spans, tc.cut)
+			require.Equal(t, tc.want, got, "retreatCutPastSpans(%v, %d)", tc.spans, tc.cut)
+		})
 	}
 }

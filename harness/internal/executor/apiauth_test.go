@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestAPIExecutorBackends_AuthHeaders pins the per-forge auth header of both
@@ -45,14 +48,14 @@ func TestAPIExecutorBackends_AuthHeaders(t *testing.T) {
 		call func(context.Context, Executor) error
 	}{
 		{
-			name: "ReadFile",
+			name: "read file",
 			call: func(ctx context.Context, e Executor) error {
 				_, err := e.ReadFile(ctx, "README.md")
 				return err
 			},
 		},
 		{
-			name: "ListDirectory",
+			name: "list directory",
 			call: func(ctx context.Context, e Executor) error {
 				_, err := e.ListDirectory(ctx, ".")
 				return err
@@ -60,34 +63,42 @@ func TestAPIExecutorBackends_AuthHeaders(t *testing.T) {
 		},
 	}
 
-	for _, backend := range backends {
-		for _, op := range operations {
-			for _, tokenCase := range []struct {
-				name  string
-				token string
-			}{{name: "with token", token: "test-token"}, {name: "unauthenticated", token: ""}} {
-				t.Run(backend.name+"/"+op.name+"/"+tokenCase.name, func(t *testing.T) {
-					want := backend.wantHeader
-					if tokenCase.token == "" {
-						want = ""
-					}
-					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-						if got := r.Header.Get(backend.header); got != want {
-							t.Errorf("%s = %q, want %q", backend.header, got, want)
-						}
-						if _, ok := r.Header[http.CanonicalHeaderKey(backend.header)]; ok && want == "" {
-							t.Errorf("%s should be absent for an empty token", backend.header)
-						}
-						w.Header().Set("Content-Type", "application/json")
-						_, _ = w.Write([]byte("[]"))
-					}))
-					defer server.Close()
+	tokenCases := []struct {
+		name  string
+		token string
+	}{
+		{name: "with token", token: "test-token"},
+		{name: "unauthenticated", token: ""},
+	}
 
-					if err := op.call(context.Background(), backend.newFor(server.URL, tokenCase.token)); err != nil {
-						t.Fatalf("unexpected error: %v", err)
+	for _, backend := range backends {
+		t.Run(backend.name, func(t *testing.T) {
+			for _, op := range operations {
+				t.Run(op.name, func(t *testing.T) {
+					for _, tokenCase := range tokenCases {
+						t.Run(tokenCase.name, func(t *testing.T) {
+							want := backend.wantHeader
+							if tokenCase.token == "" {
+								want = ""
+							}
+							// The handler runs on the server's goroutine, so it must use assert, not require.
+							server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+								assert.Equal(t, want, r.Header.Get(backend.header), "header %s", backend.header)
+								if want == "" {
+									_, present := r.Header[http.CanonicalHeaderKey(backend.header)]
+									assert.False(t, present, "header %s should be absent for an empty token", backend.header)
+								}
+								w.Header().Set("Content-Type", "application/json")
+								_, _ = w.Write([]byte("[]"))
+							}))
+							defer server.Close()
+
+							e := backend.newFor(server.URL, tokenCase.token)
+							require.NoError(t, op.call(context.Background(), e))
+						})
 					}
 				})
 			}
-		}
+		})
 	}
 }

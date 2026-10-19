@@ -3,23 +3,22 @@ package spec
 import (
 	"os"
 	"path/filepath"
-	"reflect"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// TestLoadSuiteHCL_StructEquality parses an HCL fixture and asserts it
+// TestLoadSuiteHCL_DecodesFullSuite parses an HCL fixture and asserts it
 // deep-equals a hand-rolled types.EvalSuite literal with the same
 // logical content.
-func TestLoadSuiteHCL_StructEquality(t *testing.T) {
+func TestLoadSuiteHCL_DecodesFullSuite(t *testing.T) {
 	hclPath := filepath.Join("testdata", "sample.hcl")
 
 	got, err := LoadSuiteHCL(hclPath)
-	if err != nil {
-		t.Fatalf("LoadSuiteHCL: %v", err)
-	}
+	require.NoError(t, err)
 
 	want := types.EvalSuite{
 		ID:          "sample-suite",
@@ -56,9 +55,7 @@ func TestLoadSuiteHCL_StructEquality(t *testing.T) {
 		},
 	}
 
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("HCL parse mismatch\n got:  %#v\n want: %#v", got, want)
-	}
+	require.Equal(t, want, got)
 }
 
 // TestLoadSuiteHCL_CommentsTolerated confirms that all three HCL comment
@@ -85,15 +82,10 @@ suite "with-comments" {
 `
 	path := writeTemp(t, "comments.hcl", src)
 	got, err := LoadSuiteHCL(path)
-	if err != nil {
-		t.Fatalf("LoadSuiteHCL: %v", err)
-	}
-	if got.ID != "with-comments" || len(got.Tasks) != 1 {
-		t.Fatalf("unexpected suite: %#v", got)
-	}
-	if got.Tasks[0].Prompt != "hello" {
-		t.Errorf("Prompt = %q, want %q", got.Tasks[0].Prompt, "hello")
-	}
+	require.NoError(t, err)
+	require.Equal(t, "with-comments", got.ID)
+	require.Len(t, got.Tasks, 1)
+	require.Equal(t, "hello", got.Tasks[0].Prompt)
 }
 
 // TestLoadSuiteHCL_HeredocPreserved asserts that a `<<-EOT` heredoc
@@ -116,19 +108,15 @@ func TestLoadSuiteHCL_HeredocPreserved(t *testing.T) {
 		"}\n"
 	path := writeTemp(t, "heredoc.hcl", src)
 	got, err := LoadSuiteHCL(path)
-	if err != nil {
-		t.Fatalf("LoadSuiteHCL: %v", err)
-	}
-	want := "first\nsecond\n"
-	if got.Tasks[0].Prompt != want {
-		t.Fatalf("Prompt = %q, want %q", got.Tasks[0].Prompt, want)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "first\nsecond\n", got.Tasks[0].Prompt)
 }
 
-// TestLoadSuiteHCL_SeedFiles asserts that labelled `file` blocks decode
-// into EvalTask.Files keyed by the (cleaned) workspace-relative path, with
-// the heredoc content preserved and nested paths supported.
-func TestLoadSuiteHCL_SeedFiles(t *testing.T) {
+// TestLoadSuiteHCL_DecodesSeedFilesByPath asserts that labelled `file`
+// blocks decode into EvalTask.Files keyed by the (cleaned)
+// workspace-relative path, with the heredoc content preserved and nested
+// paths supported.
+func TestLoadSuiteHCL_DecodesSeedFilesByPath(t *testing.T) {
 	src := "suite \"seed\" {\n" +
 		"  task \"t1\" {\n" +
 		"    mode   = \"execution\"\n" +
@@ -150,19 +138,11 @@ func TestLoadSuiteHCL_SeedFiles(t *testing.T) {
 		"}\n"
 	path := writeTemp(t, "seed.hcl", src)
 	got, err := LoadSuiteHCL(path)
-	if err != nil {
-		t.Fatalf("LoadSuiteHCL: %v", err)
-	}
+	require.NoError(t, err)
 	files := got.Tasks[0].Files
-	if len(files) != 2 {
-		t.Fatalf("Files len = %d, want 2 (%v)", len(files), files)
-	}
-	if files["README.md"] != "# Title\nbody\n" {
-		t.Errorf("README.md = %q, want %q", files["README.md"], "# Title\nbody\n")
-	}
-	if files["docs/guide.txt"] != "hello" {
-		t.Errorf("docs/guide.txt = %q, want %q", files["docs/guide.txt"], "hello")
-	}
+	require.Len(t, files, 2)
+	assert.Equal(t, "# Title\nbody\n", files["README.md"])
+	assert.Equal(t, "hello", files["docs/guide.txt"])
 }
 
 // TestLoadSuiteHCL_CompositeChildrenOrdered asserts that composite
@@ -192,29 +172,20 @@ suite "c" {
 `
 	path := writeTemp(t, "composite.hcl", src)
 	got, err := LoadSuiteHCL(path)
-	if err != nil {
-		t.Fatalf("LoadSuiteHCL: %v", err)
-	}
+	require.NoError(t, err)
 	j := got.Tasks[0].Judge
-	if j.Type != "composite" || j.Require != "all" {
-		t.Fatalf("unexpected outer judge: %#v", j)
-	}
-	if len(j.Judges) != 2 {
-		t.Fatalf("got %d sub-judges, want 2", len(j.Judges))
-	}
-	if j.Judges[0].Type != "file-exists" {
-		t.Errorf("Judges[0].Type = %q, want %q", j.Judges[0].Type, "file-exists")
-	}
-	if j.Judges[1].Type != "file-contains" {
-		t.Errorf("Judges[1].Type = %q, want %q", j.Judges[1].Type, "file-contains")
-	}
+	require.Equal(t, "composite", j.Type)
+	require.Equal(t, "all", j.Require)
+	require.Len(t, j.Judges, 2)
+	assert.Equal(t, "file-exists", j.Judges[0].Type)
+	assert.Equal(t, "file-contains", j.Judges[1].Type)
 }
 
-// TestLoadSuiteHCL_ToolTraceJudge parses a tool-trace judge with a
+// TestLoadSuiteHCL_DecodesToolTraceJudge parses a tool-trace judge with a
 // sequence, two per-tool call expectations, and forbid_unknown, asserting
 // the block decodes into types.ToolTraceCriteria with the call labels and
 // bounds preserved.
-func TestLoadSuiteHCL_ToolTraceJudge(t *testing.T) {
+func TestLoadSuiteHCL_DecodesToolTraceJudge(t *testing.T) {
 	src := `
 suite "tt" {
   task "t1" {
@@ -239,31 +210,23 @@ suite "tt" {
 `
 	path := writeTemp(t, "tooltrace.hcl", src)
 	got, err := LoadSuiteHCL(path)
-	if err != nil {
-		t.Fatalf("LoadSuiteHCL: %v", err)
-	}
+	require.NoError(t, err)
 	j := got.Tasks[0].Judge
-	if j.Type != "tool-trace" {
-		t.Fatalf("judge type = %q, want tool-trace", j.Type)
-	}
-	if j.ToolTrace == nil {
-		t.Fatal("ToolTrace is nil")
-	}
-	if len(j.ToolTrace.Sequence) != 2 || j.ToolTrace.Sequence[0] != "read_file" || j.ToolTrace.Sequence[1] != "edit_file" {
-		t.Errorf("Sequence = %v", j.ToolTrace.Sequence)
-	}
-	if !j.ToolTrace.ForbidUnknown {
-		t.Error("ForbidUnknown = false, want true")
-	}
-	if len(j.ToolTrace.Calls) != 2 {
-		t.Fatalf("got %d call expectations, want 2", len(j.ToolTrace.Calls))
-	}
-	if j.ToolTrace.Calls[0].Name != "edit_file" || j.ToolTrace.Calls[0].MinCalls != 1 || !j.ToolTrace.Calls[0].AllSucceeded {
-		t.Errorf("Calls[0] = %#v", j.ToolTrace.Calls[0])
-	}
-	if j.ToolTrace.Calls[1].Name != "write_file" || j.ToolTrace.Calls[1].MaxCalls == nil || *j.ToolTrace.Calls[1].MaxCalls != 0 {
-		t.Errorf("Calls[1] = %#v", j.ToolTrace.Calls[1])
-	}
+	require.Equal(t, "tool-trace", j.Type)
+	require.NotNil(t, j.ToolTrace)
+	assert.Equal(t, []string{"read_file", "edit_file"}, j.ToolTrace.Sequence)
+	assert.True(t, j.ToolTrace.ForbidUnknown)
+	require.Len(t, j.ToolTrace.Calls, 2)
+
+	editCall := j.ToolTrace.Calls[0]
+	assert.Equal(t, "edit_file", editCall.Name)
+	assert.Equal(t, 1, editCall.MinCalls)
+	assert.True(t, editCall.AllSucceeded)
+
+	writeCall := j.ToolTrace.Calls[1]
+	assert.Equal(t, "write_file", writeCall.Name)
+	require.NotNil(t, writeCall.MaxCalls)
+	assert.Equal(t, 0, *writeCall.MaxCalls)
 }
 
 // TestLoadSuiteHCL_ToolTraceRejectedOnWrongType asserts a tool_trace block
@@ -286,9 +249,8 @@ suite "tt" {
 }
 `
 	path := writeTemp(t, "tooltrace-bad.hcl", src)
-	if _, err := LoadSuiteHCL(path); err == nil {
-		t.Fatal("expected error for tool_trace block on file-exists judge, got none")
-	}
+	_, err := LoadSuiteHCL(path)
+	require.Error(t, err)
 }
 
 // TestLoadSuiteHCL_ToolTraceRequiresBlock asserts a tool-trace judge with
@@ -306,9 +268,8 @@ suite "tt" {
 }
 `
 	path := writeTemp(t, "tooltrace-empty.hcl", src)
-	if _, err := LoadSuiteHCL(path); err == nil {
-		t.Fatal("expected error for tool-trace judge with no tool_trace block, got none")
-	}
+	_, err := LoadSuiteHCL(path)
+	require.Error(t, err)
 }
 
 // TestLoadSuiteHCL_ValidationErrors covers all the guard-rails: missing
@@ -483,13 +444,9 @@ suite "s" {
 		t.Run(tc.name, func(t *testing.T) {
 			path := writeTemp(t, "case.hcl", tc.src)
 			_, err := LoadSuiteHCL(path)
-			if err == nil {
-				t.Fatalf("expected error containing %v, got nil", tc.wantErrFrags)
-			}
+			require.Error(t, err)
 			for _, frag := range tc.wantErrFrags {
-				if !strings.Contains(err.Error(), frag) {
-					t.Fatalf("error = %q, want it to contain %q", err.Error(), frag)
-				}
+				require.ErrorContains(t, err, frag)
 			}
 		})
 	}
@@ -518,15 +475,8 @@ suite "s" {
 `
 	path := writeTemp(t, "unknown.hcl", src)
 	_, err := LoadSuiteHCL(path)
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !strings.Contains(err.Error(), "unsupported top-level block") {
-		t.Fatalf("error = %q, want it to mention unsupported top-level block", err.Error())
-	}
-	if !strings.Contains(err.Error(), "variable") {
-		t.Fatalf("error = %q, want it to name the offending block", err.Error())
-	}
+	require.ErrorContains(t, err, "unsupported top-level block")
+	require.ErrorContains(t, err, "variable")
 }
 
 // TestLoadSuiteHCL_UnknownTopLevelAttributesDeterministic asserts that
@@ -551,18 +501,13 @@ suite "s" {
 `
 	path := writeTemp(t, "attrs.hcl", src)
 	_, err := LoadSuiteHCL(path)
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !strings.Contains(err.Error(), `unsupported top-level attribute "alpha"`) {
-		t.Fatalf("error = %q, want it to name alpha first (sorted)", err.Error())
-	}
+	require.ErrorContains(t, err, `unsupported top-level attribute "alpha"`)
 }
 
-// TestLoadSuiteHCL_UnknownTopLevelBlockOutsideProbeList ensures the
-// catch-all branch in rejectUnsupportedTopLevel handles block types
-// that aren't part of the named probe list (e.g. `output`, `resource`).
-func TestLoadSuiteHCL_UnknownTopLevelBlockOutsideProbeList(t *testing.T) {
+// TestLoadSuiteHCL_RejectsOtherTopLevelBlockTypes rejects top-level block
+// types beyond the named ones (for example `output`) with the same
+// unsupported-block error.
+func TestLoadSuiteHCL_RejectsOtherTopLevelBlockTypes(t *testing.T) {
 	src := `
 output "x" {
   value = "y"
@@ -581,15 +526,8 @@ suite "s" {
 `
 	path := writeTemp(t, "output-block.hcl", src)
 	_, err := LoadSuiteHCL(path)
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !strings.Contains(err.Error(), "unsupported top-level block") {
-		t.Fatalf("error = %q, want it to mention unsupported top-level block", err.Error())
-	}
-	if !strings.Contains(err.Error(), "output") {
-		t.Fatalf("error = %q, want it to name the offending block", err.Error())
-	}
+	require.ErrorContains(t, err, "unsupported top-level block")
+	require.ErrorContains(t, err, "output")
 }
 
 // TestLoadSuiteHCL_EmptyFile fails clearly rather than panicking when
@@ -597,17 +535,12 @@ suite "s" {
 func TestLoadSuiteHCL_EmptyFile(t *testing.T) {
 	path := writeTemp(t, "empty.hcl", "")
 	_, err := LoadSuiteHCL(path)
-	if err == nil {
-		t.Fatal("expected error for empty file")
-	}
-	if !strings.Contains(err.Error(), "no suite block found") {
-		t.Fatalf("error = %q, want it to say no suite block was found", err.Error())
-	}
+	require.ErrorContains(t, err, "no suite block found")
 }
 
-// TestLoadSuiteHCL_TwoSuiteBlocks fails clearly: exactly one suite per
-// file is the contract.
-func TestLoadSuiteHCL_TwoSuiteBlocks(t *testing.T) {
+// TestLoadSuiteHCL_RejectsTwoSuiteBlocks fails clearly: exactly one suite
+// per file is the contract.
+func TestLoadSuiteHCL_RejectsTwoSuiteBlocks(t *testing.T) {
 	src := `
 suite "a" {
   task "t1" {
@@ -633,30 +566,21 @@ suite "b" {
 `
 	path := writeTemp(t, "two.hcl", src)
 	_, err := LoadSuiteHCL(path)
-	if err == nil {
-		t.Fatal("expected error for two suite blocks")
-	}
-	if !strings.Contains(err.Error(), "exactly one suite block") {
-		t.Fatalf("error = %q, want it to mention the one-suite contract", err.Error())
-	}
+	require.ErrorContains(t, err, "exactly one suite block")
 }
 
-// TestLoadSuiteHCL_MalformedBytes returns a clear parser error rather
+// TestLoadSuiteHCL_RejectsMalformedHCL returns a clear parser error rather
 // than panicking when the input isn't valid HCL.
-func TestLoadSuiteHCL_MalformedBytes(t *testing.T) {
+func TestLoadSuiteHCL_RejectsMalformedHCL(t *testing.T) {
 	path := writeTemp(t, "broken.hcl", `suite "x" { not even close to valid {{`)
 	_, err := LoadSuiteHCL(path)
-	if err == nil {
-		t.Fatal("expected error for malformed HCL")
-	}
+	require.Error(t, err)
 }
 
-// TestLoadSuiteHCL_MissingFile surfaces the underlying os error.
-func TestLoadSuiteHCL_MissingFile(t *testing.T) {
+// TestLoadSuiteHCL_ReportsMissingFile surfaces the underlying os error.
+func TestLoadSuiteHCL_ReportsMissingFile(t *testing.T) {
 	_, err := LoadSuiteHCL("/nonexistent/missing.hcl")
-	if err == nil {
-		t.Fatal("expected error for missing file")
-	}
+	require.Error(t, err)
 }
 
 // TestLoadSuiteHCL_TaskMissingJudgeBlock pins the gohcl.DecodeBody
@@ -668,19 +592,14 @@ func TestLoadSuiteHCL_TaskMissingJudgeBlock(t *testing.T) {
 	src := `suite "s" { task "t" { prompt = "x" } }`
 	path := writeTemp(t, "no-judge.hcl", src)
 	_, err := LoadSuiteHCL(path)
-	if err == nil {
-		t.Fatal("expected error for task missing judge block")
-	}
-	if !strings.Contains(err.Error(), "judge") {
-		t.Fatalf("error = %q, want it to mention judge", err.Error())
-	}
+	require.ErrorContains(t, err, "judge")
 }
 
-// TestLoadSuiteHCL_NonCompositeWithChildJudge pins the contract that
+// TestLoadSuiteHCL_RejectsNestedJudgeOnNonComposite pins the contract that
 // nesting `judge` blocks inside a non-composite parent is rejected
 // loudly rather than silently dropped (gohcl decodes the field for
 // every judge type).
-func TestLoadSuiteHCL_NonCompositeWithChildJudge(t *testing.T) {
+func TestLoadSuiteHCL_RejectsNestedJudgeOnNonComposite(t *testing.T) {
 	src := `
 suite "s" {
   task "t1" {
@@ -699,19 +618,15 @@ suite "s" {
 `
 	path := writeTemp(t, "non-composite-with-child.hcl", src)
 	_, err := LoadSuiteHCL(path)
-	if err == nil {
-		t.Fatal("expected error for non-composite judge with nested judge block")
-	}
-	if !strings.Contains(err.Error(), "does not support nested judge blocks") {
-		t.Fatalf("error = %q, want it to mention nested judge blocks", err.Error())
-	}
+	require.Error(t, err)
+	require.ErrorContains(t, err, "does not support nested judge blocks")
 }
 
-// TestLoadSuiteHCL_EmptyCompositeJudge pins the contract that a
+// TestLoadSuiteHCL_RejectsEmptyCompositeJudge pins the contract that a
 // composite block with zero children is rejected. The runtime evaluator
 // would otherwise treat `all` of zero as a vacuous pass, producing
 // misleading green CI for what is almost always a forgotten typo.
-func TestLoadSuiteHCL_EmptyCompositeJudge(t *testing.T) {
+func TestLoadSuiteHCL_RejectsEmptyCompositeJudge(t *testing.T) {
 	src := `
 suite "s" {
   task "t1" {
@@ -726,12 +641,8 @@ suite "s" {
 `
 	path := writeTemp(t, "empty-composite.hcl", src)
 	_, err := LoadSuiteHCL(path)
-	if err == nil {
-		t.Fatal("expected error for empty composite judge")
-	}
-	if !strings.Contains(err.Error(), "at least one nested judge block") {
-		t.Fatalf("error = %q, want it to mention nested judge requirement", err.Error())
-	}
+	require.Error(t, err)
+	require.ErrorContains(t, err, "at least one nested judge block")
 }
 
 // TestLoadSuiteHCL_CompositeRequireDefaultsToAll pins the contract that
@@ -755,39 +666,27 @@ suite "s" {
 `
 	path := writeTemp(t, "default-require.hcl", src)
 	got, err := LoadSuiteHCL(path)
-	if err != nil {
-		t.Fatalf("LoadSuiteHCL: %v", err)
-	}
-	if len(got.Tasks) != 1 {
-		t.Fatalf("got %d tasks, want 1", len(got.Tasks))
-	}
-	if got.Tasks[0].Judge.Require != "all" {
-		t.Fatalf("Require = %q, want %q", got.Tasks[0].Judge.Require, "all")
-	}
+	require.NoError(t, err)
+	require.Len(t, got.Tasks, 1)
+	require.Equal(t, "all", got.Tasks[0].Judge.Require)
 }
 
-// TestLoadSuiteHCL_SuiteBlockMissingLabel pins the diagnostic surfaced
+// TestLoadSuiteHCL_RejectsSuiteBlockWithoutLabel pins the diagnostic surfaced
 // by rejectUnsupportedTopLevel when `suite` is written without an id
 // label. This is distinct from the `suite ""` empty-label path and
 // fires earlier (PartialContent reports a label arity mismatch).
-func TestLoadSuiteHCL_SuiteBlockMissingLabel(t *testing.T) {
+func TestLoadSuiteHCL_RejectsSuiteBlockWithoutLabel(t *testing.T) {
 	src := "suite {\n  task \"t\" { judge { type = \"file-exists\"; paths = [\"a.txt\"] } }\n}\n"
 	path := writeTemp(t, "no-label.hcl", src)
 	_, err := LoadSuiteHCL(path)
-	if err == nil {
-		t.Fatal("expected error for suite block with missing label")
-	}
-	if err.Error() == "" {
-		t.Fatal("expected non-empty error message")
-	}
+	require.Error(t, err)
+	require.NotEmpty(t, err.Error(), "error message for a labelless suite block")
 }
 
 func writeTemp(t *testing.T, name, content string) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 	return path
 }

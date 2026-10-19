@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
@@ -108,9 +110,7 @@ func newRetryHarness(t *testing.T, prov provider.ProviderAdapter) *retryHarness 
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
 	metrics, err := observability.NewMetricsForTesting(mp)
-	if err != nil {
-		t.Fatalf("NewMetricsForTesting: %v", err)
-	}
+	require.NoError(t, err, "NewMetricsForTesting")
 	h := &retryHarness{
 		trace:     &usageTraceEmitter{agg: trace.NewJSONLTraceEmitter(&bytes.Buffer{}, false)},
 		transport: &bytes.Buffer{},
@@ -165,9 +165,8 @@ func (h *retryHarness) retryWarnings() []string {
 func (h *retryHarness) turnRetryOutcomes(t *testing.T) map[string]int64 {
 	t.Helper()
 	var rm metricdata.ResourceMetrics
-	if err := h.reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
+	err := h.reader.Collect(context.Background(), &rm)
+	require.NoError(t, err, "collect metrics")
 	out := make(map[string]int64)
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
@@ -195,47 +194,28 @@ func TestLoop_TurnRetry_OverloadedMidStreamThenSuccess(t *testing.T) {
 	h := newRetryHarness(t, prov)
 
 	runTrace, err := h.loop.Run(context.Background(), retryConfig(3))
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("Outcome = %q, want success", runTrace.Outcome)
-	}
-	if n := prov.callCount(); n != 3 {
-		t.Errorf("Stream calls = %d, want 3", n)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "success", runTrace.Outcome)
+	assert.Equal(t, 3, prov.callCount())
 
 	turns := h.turns()
-	if len(turns) != 2 {
-		t.Fatalf("recorded %d turns, want 2: a retried attempt must not add a turn", len(turns))
-	}
-	if turns[0].Retries != 0 || turns[1].Retries != 1 {
-		t.Errorf("turn retries = [%d %d], want [0 1]", turns[0].Retries, turns[1].Retries)
-	}
-	if turns[1].StopReason != "end_turn" {
-		t.Errorf("retried turn StopReason = %q, want end_turn", turns[1].StopReason)
-	}
+	require.Len(t, turns, 2, "a retried attempt must not add a turn")
+	assert.Equal(t, 0, turns[0].Retries)
+	assert.Equal(t, 1, turns[1].Retries)
+	assert.Equal(t, "end_turn", turns[1].StopReason)
 
 	records := h.turnRecords()
-	if len(records) != 2 {
-		t.Fatalf("recorded %d turn records, want 2", len(records))
-	}
+	require.Len(t, records, 2)
 	for _, block := range records[1].ModelOutput {
-		if strings.Contains(block.Text, "discarded partial") {
-			t.Errorf("retried turn kept output from the discarded attempt: %+v", records[1].ModelOutput)
-		}
+		assert.NotContains(t, block.Text, "discarded partial", "retried turn kept output from the discarded attempt")
 	}
 
 	warnings := h.retryWarnings()
-	if len(warnings) != 1 {
-		t.Fatalf("retry warnings = %d, want 1:\n%s", len(warnings), h.transport.String())
-	}
-	if !strings.Contains(warnings[0], "turn 1 attempt 1") || !strings.Contains(warnings[0], "overloaded_error") {
-		t.Errorf("warning does not name the discarded attempt and its error: %s", warnings[0])
-	}
-	if got := h.turnRetryOutcomes(t); got[turnRetryOutcomeSucceeded] != 1 || len(got) != 1 {
-		t.Errorf("turn retry outcomes = %v, want exactly one succeeded", got)
-	}
+	require.Len(t, warnings, 1, "transport output:\n%s", h.transport.String())
+	assert.Contains(t, warnings[0], "turn 1 attempt 1", "warning names the discarded attempt")
+	assert.Contains(t, warnings[0], "overloaded_error", "warning names the error")
+
+	assert.Equal(t, map[string]int64{turnRetryOutcomeSucceeded: 1}, h.turnRetryOutcomes(t))
 }
 
 func TestLoop_TurnRetry_PreStreamRetryableErrorThenSuccess(t *testing.T) {
@@ -246,19 +226,13 @@ func TestLoop_TurnRetry_PreStreamRetryableErrorThenSuccess(t *testing.T) {
 	h := newRetryHarness(t, prov)
 
 	runTrace, err := h.loop.Run(context.Background(), retryConfig(3))
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("Outcome = %q, want success", runTrace.Outcome)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "success", runTrace.Outcome)
+
 	turns := h.turns()
-	if len(turns) != 1 || turns[0].Retries != 1 {
-		t.Fatalf("turns = %+v, want one turn with Retries 1", turns)
-	}
-	if len(h.retryWarnings()) != 1 {
-		t.Errorf("retry warnings = %d, want 1", len(h.retryWarnings()))
-	}
+	require.Len(t, turns, 1)
+	require.Equal(t, 1, turns[0].Retries)
+	assert.Len(t, h.retryWarnings(), 1)
 }
 
 func TestLoop_TurnRetry_NonRetryableErrorEndsRunOnFirstFailure(t *testing.T) {
@@ -268,7 +242,7 @@ func TestLoop_TurnRetry_NonRetryableErrorEndsRunOnFirstFailure(t *testing.T) {
 	}{
 		{"401 before the stream", turnScript{err: errors.New("anthropic API returned status 401: invalid x-api-key")}},
 		{"400 before the stream", turnScript{err: errors.New("anthropic API returned status 400: prompt is too long")}},
-		{"insufficient_quota 429 before the stream", turnScript{err: errors.New("openai API returned status 429: You exceeded your current quota")}},
+		{"insufficient quota 429 before the stream", turnScript{err: errors.New("openai API returned status 429: You exceeded your current quota")}},
 		{"unclassified stream error", turnScript{events: []types.StreamEvent{{Type: "error", Error: errors.New("parse tool input JSON: unexpected end")}}}},
 	}
 	for _, tc := range cases {
@@ -277,21 +251,11 @@ func TestLoop_TurnRetry_NonRetryableErrorEndsRunOnFirstFailure(t *testing.T) {
 			h := newRetryHarness(t, prov)
 
 			runTrace, err := h.loop.Run(context.Background(), retryConfig(3))
-			if err != nil {
-				t.Fatalf("Run() error: %v", err)
-			}
-			if runTrace.Outcome != "error" {
-				t.Errorf("Outcome = %q, want error", runTrace.Outcome)
-			}
-			if n := prov.callCount(); n != 1 {
-				t.Errorf("Stream calls = %d, want 1", n)
-			}
-			if w := h.retryWarnings(); len(w) != 0 {
-				t.Errorf("unexpected retry warnings: %v", w)
-			}
-			if got := h.turnRetryOutcomes(t); len(got) != 0 {
-				t.Errorf("turn retry outcomes = %v, want none for a turn that never hit a retryable failure", got)
-			}
+			require.NoError(t, err)
+			require.Equal(t, "error", runTrace.Outcome)
+			require.Equal(t, 1, prov.callCount(), "stream calls")
+			require.Empty(t, h.retryWarnings(), "no retry warning for a non-retryable failure")
+			require.Empty(t, h.turnRetryOutcomes(t), "no turn retry outcome for a turn that never hit a retryable failure")
 		})
 	}
 }
@@ -302,9 +266,9 @@ func TestLoop_TurnRetry_StopsAtAttemptCount(t *testing.T) {
 		maxAttempts int
 		wantCalls   int
 	}{
-		{"maxAttempts 2 allows one retry", 2, 2},
-		{"maxAttempts 3 allows two retries", 3, 3},
-		{"maxAttempts 5 is capped at two retries", 5, 3},
+		{"max attempts 2 allows one retry", 2, 2},
+		{"max attempts 3 allows two retries", 3, 3},
+		{"max attempts 5 is capped at two retries", 5, 3},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -312,25 +276,16 @@ func TestLoop_TurnRetry_StopsAtAttemptCount(t *testing.T) {
 			h := newRetryHarness(t, prov)
 
 			runTrace, err := h.loop.Run(context.Background(), retryConfig(tc.maxAttempts))
-			if err != nil {
-				t.Fatalf("Run() error: %v", err)
-			}
-			if runTrace.Outcome != "error" {
-				t.Errorf("Outcome = %q, want error", runTrace.Outcome)
-			}
-			if n := prov.callCount(); n != tc.wantCalls {
-				t.Errorf("Stream calls = %d, want %d", n, tc.wantCalls)
-			}
+			require.NoError(t, err)
+			require.Equal(t, "error", runTrace.Outcome)
+			require.Equal(t, tc.wantCalls, prov.callCount(), "stream calls")
+
 			turns := h.turns()
-			if len(turns) != 1 || turns[0].StopReason != "error" || turns[0].Retries != tc.wantCalls-1 {
-				t.Errorf("turns = %+v, want one error turn with Retries %d", turns, tc.wantCalls-1)
-			}
-			if w := h.retryWarnings(); len(w) != tc.wantCalls-1 {
-				t.Errorf("retry warnings = %d, want %d", len(w), tc.wantCalls-1)
-			}
-			if got := h.turnRetryOutcomes(t); got[turnRetryOutcomeExhausted] != 1 || len(got) != 1 {
-				t.Errorf("turn retry outcomes = %v, want exactly one exhausted", got)
-			}
+			require.Len(t, turns, 1)
+			require.Equal(t, "error", turns[0].StopReason)
+			require.Equal(t, tc.wantCalls-1, turns[0].Retries)
+			require.Len(t, h.retryWarnings(), tc.wantCalls-1)
+			require.Equal(t, map[string]int64{turnRetryOutcomeExhausted: 1}, h.turnRetryOutcomes(t))
 		})
 	}
 }
@@ -340,15 +295,10 @@ func TestLoop_TurnRetry_DisabledWhenMaxAttemptsIsOne(t *testing.T) {
 	h := newRetryHarness(t, prov)
 
 	runTrace, err := h.loop.Run(context.Background(), retryConfig(1))
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "error" || prov.callCount() != 1 {
-		t.Errorf("Outcome = %q after %d calls, want error after 1", runTrace.Outcome, prov.callCount())
-	}
-	if got := h.turnRetryOutcomes(t); len(got) != 0 {
-		t.Errorf("turn retry outcomes = %v, want none when turn retry is disabled", got)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "error", runTrace.Outcome)
+	assert.Equal(t, 1, prov.callCount(), "stream calls")
+	assert.Empty(t, h.turnRetryOutcomes(t), "turn retry is disabled")
 }
 
 func TestLoop_TurnRetry_StopsAtWallClockBudget(t *testing.T) {
@@ -365,18 +315,10 @@ func TestLoop_TurnRetry_StopsAtWallClockBudget(t *testing.T) {
 	config.Provider.Retry.WallClockBudgetMs = 25
 
 	runTrace, err := h.loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "error" {
-		t.Errorf("Outcome = %q, want error", runTrace.Outcome)
-	}
-	if n := prov.callCount(); n != 2 {
-		t.Errorf("Stream calls = %d, want 2", n)
-	}
-	if got := h.turnRetryOutcomes(t); got[turnRetryOutcomeBudgetExhausted] != 1 || len(got) != 1 {
-		t.Errorf("turn retry outcomes = %v, want exactly one budget_exhausted", got)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "error", runTrace.Outcome)
+	assert.Equal(t, 2, prov.callCount(), "stream calls")
+	assert.Equal(t, map[string]int64{turnRetryOutcomeBudgetExhausted: 1}, h.turnRetryOutcomes(t))
 }
 
 func TestLoop_TurnRetry_RunDeadlineWinsDuringBackoff(t *testing.T) {
@@ -392,21 +334,11 @@ func TestLoop_TurnRetry_RunDeadlineWinsDuringBackoff(t *testing.T) {
 	defer cancel()
 	start := time.Now()
 	runTrace, err := h.loop.Run(ctx, config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if elapsed := time.Since(start); elapsed > 10*time.Second {
-		t.Fatalf("Run took %v; the run deadline did not interrupt the backoff", elapsed)
-	}
-	if runTrace.Outcome != "timeout" {
-		t.Errorf("Outcome = %q, want timeout", runTrace.Outcome)
-	}
-	if n := prov.callCount(); n != 1 {
-		t.Errorf("Stream calls = %d, want 1", n)
-	}
-	if got := h.turnRetryOutcomes(t); got[turnRetryOutcomeContextDone] != 1 || len(got) != 1 {
-		t.Errorf("turn retry outcomes = %v, want exactly one context_done", got)
-	}
+	require.NoError(t, err)
+	require.LessOrEqual(t, time.Since(start), 10*time.Second, "the run deadline must interrupt the backoff")
+	assert.Equal(t, "timeout", runTrace.Outcome)
+	assert.Equal(t, 1, prov.callCount(), "stream calls")
+	assert.Equal(t, map[string]int64{turnRetryOutcomeContextDone: 1}, h.turnRetryOutcomes(t))
 }
 
 func TestLoop_TurnRetry_CancelledRunIsNotRetried(t *testing.T) {
@@ -416,18 +348,10 @@ func TestLoop_TurnRetry_CancelledRunIsNotRetried(t *testing.T) {
 	h := newRetryHarness(t, prov)
 
 	runTrace, err := h.loop.Run(ctx, retryConfig(3))
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "cancelled" {
-		t.Errorf("Outcome = %q, want cancelled", runTrace.Outcome)
-	}
-	if n := prov.calls.Load(); n != 1 {
-		t.Errorf("Stream calls = %d, want 1", n)
-	}
-	if got := h.turnRetryOutcomes(t); len(got) != 0 {
-		t.Errorf("turn retry outcomes = %v, want none", got)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "cancelled", runTrace.Outcome)
+	assert.EqualValues(t, 1, prov.calls.Load(), "stream calls")
+	assert.Empty(t, h.turnRetryOutcomes(t))
 }
 
 // cancelThenRetryableProvider cancels the run and then fails with an error that
@@ -452,22 +376,15 @@ func TestLoop_TurnRetry_ChargesUsageReportedByDiscardedAttempt(t *testing.T) {
 	h := newRetryHarness(t, prov)
 
 	runTrace, err := h.loop.Run(context.Background(), retryConfig(3))
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("Outcome = %q, want success", runTrace.Outcome)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "success", runTrace.Outcome)
+
 	turns := h.turns()
-	if len(turns) != 1 {
-		t.Fatalf("recorded %d turns, want 1", len(turns))
-	}
-	if turns[0].Tokens.Input != 140 || turns[0].Tokens.Output != 14 {
-		t.Errorf("turn tokens = %+v, want input 140 and output 14 including the discarded attempt", turns[0].Tokens)
-	}
-	if runTrace.TokenUsage.Input != 140 || runTrace.TokenUsage.Output != 14 {
-		t.Errorf("run tokens = %+v, want input 140 and output 14", runTrace.TokenUsage)
-	}
+	require.Len(t, turns, 1)
+	assert.Equal(t, 140, turns[0].Tokens.Input, "turn input tokens include the discarded attempt")
+	assert.Equal(t, 14, turns[0].Tokens.Output, "turn output tokens include the discarded attempt")
+	assert.Equal(t, 140, runTrace.TokenUsage.Input, "run input tokens")
+	assert.Equal(t, 14, runTrace.TokenUsage.Output, "run output tokens")
 }
 
 func TestLoop_TurnRetry_UsesSelectedProviderPolicy(t *testing.T) {
@@ -476,46 +393,48 @@ func TestLoop_TurnRetry_UsesSelectedProviderPolicy(t *testing.T) {
 		"secondary": {Type: "openai-compatible", Retry: &types.ProviderRetryConfig{MaxAttempts: 2, InitialDelayMs: 7, MaxDelayMs: 7}},
 		"bare":      {Type: "openai-compatible"},
 	}
-	if got := turnRetryPolicyFor(config, "secondary"); got.maxRetries != 1 || got.initialDelay != 7*time.Millisecond {
-		t.Errorf("secondary policy = %+v, want its own retry block", got)
-	}
-	if got := turnRetryPolicyFor(config, "bare"); got.maxRetries != 2 || got.initialDelay != time.Millisecond {
-		t.Errorf("bare policy = %+v, want the default provider's retry block", got)
-	}
-	if got := turnRetryPolicyFor(config, "anthropic"); got.maxRetries != 2 {
-		t.Errorf("default provider policy = %+v, want two retries", got)
-	}
-	config.Provider.Retry = nil
-	if got := turnRetryPolicyFor(config, "anthropic"); got != (turnRetryPolicy{}) {
-		t.Errorf("nil retry block policy = %+v, want turn retry disabled", got)
-	}
+
+	t.Run("selected provider uses its own retry block", func(t *testing.T) {
+		got := turnRetryPolicyFor(config, "secondary")
+		require.Equal(t, 1, got.maxRetries)
+		require.Equal(t, 7*time.Millisecond, got.initialDelay)
+	})
+	t.Run("provider without a retry block uses the default provider's block", func(t *testing.T) {
+		got := turnRetryPolicyFor(config, "bare")
+		require.Equal(t, 2, got.maxRetries)
+		require.Equal(t, time.Millisecond, got.initialDelay)
+	})
+	t.Run("default provider uses the top-level retry block", func(t *testing.T) {
+		got := turnRetryPolicyFor(config, "anthropic")
+		require.Equal(t, 2, got.maxRetries)
+	})
+	t.Run("nil retry block disables turn retry", func(t *testing.T) {
+		config.Provider.Retry = nil
+		require.Equal(t, turnRetryPolicy{}, turnRetryPolicyFor(config, "anthropic"))
+	})
 }
 
 func TestTurnRetryPolicyFor_ZeroDelaysFallBackToDefaults(t *testing.T) {
 	config := buildTestConfig()
 	config.Provider.Retry = &types.ProviderRetryConfig{MaxAttempts: 3}
 	got := turnRetryPolicyFor(config, "anthropic")
-	if got.initialDelay != turnRetryInitialDelayFallback || got.maxDelay != turnRetryMaxDelayFallback {
-		t.Fatalf("policy = %+v, want initial %v and max %v", got, turnRetryInitialDelayFallback, turnRetryMaxDelayFallback)
-	}
-	if d := got.delay(0); d < turnRetryInitialDelayFallback/2 {
-		t.Errorf("delay(0) = %v, want at least %v so retries are not back to back", d, turnRetryInitialDelayFallback/2)
-	}
+	require.Equal(t, turnRetryInitialDelayFallback, got.initialDelay)
+	require.Equal(t, turnRetryMaxDelayFallback, got.maxDelay)
+	assert.GreaterOrEqual(t, got.delay(0), turnRetryInitialDelayFallback/2, "first retry must not be back to back")
 }
 
 func TestTurnRetryPolicy_DelayUsesEqualJitter(t *testing.T) {
 	p := turnRetryPolicy{maxRetries: 2, initialDelay: 100 * time.Millisecond, maxDelay: 300 * time.Millisecond}
 	for range 200 {
-		if d := p.delay(0); d < 50*time.Millisecond || d >= 100*time.Millisecond {
-			t.Fatalf("delay(0) = %v, want within [50ms, 100ms)", d)
-		}
-		if d := p.delay(2); d < 150*time.Millisecond || d >= 300*time.Millisecond {
-			t.Fatalf("delay(2) = %v, want within [150ms, 300ms) after the maxDelay cap", d)
-		}
+		first := p.delay(0)
+		require.GreaterOrEqual(t, first, 50*time.Millisecond, "delay(0) is at least half the initial delay")
+		require.Less(t, first, 100*time.Millisecond, "delay(0) is below the initial delay")
+
+		capped := p.delay(2)
+		require.GreaterOrEqual(t, capped, 150*time.Millisecond, "delay(2) is at least half the capped delay")
+		require.Less(t, capped, 300*time.Millisecond, "delay(2) is below the capped delay")
 	}
-	if d := (turnRetryPolicy{initialDelay: time.Second}).delay(0); d != 0 {
-		t.Errorf("delay with zero maxDelay = %v, want 0", d)
-	}
+	assert.Zero(t, (turnRetryPolicy{initialDelay: time.Second}).delay(0), "delay with zero maxDelay")
 }
 
 // TestLoop_TurnRetry_DroppedConnectionWithRealAdapter drives the loop
@@ -530,11 +449,9 @@ func TestLoop_TurnRetry_DroppedConnectionWithRealAdapter(t *testing.T) {
 			_, _ = fmt.Fprint(w, `data: {"id":"c","choices":[{"index":0,"delta":{"content":"discarded partial"},"finish_reason":null}]}`+"\n\n")
 			w.(http.Flusher).Flush()
 			conn, _, err := w.(http.Hijacker).Hijack()
-			if err != nil {
-				t.Errorf("Hijack: %v", err)
-				return
+			if assert.NoError(t, err, "hijack the connection") {
+				_ = conn.Close()
 			}
-			_ = conn.Close()
 			return
 		}
 		_, _ = fmt.Fprint(w,
@@ -549,18 +466,13 @@ func TestLoop_TurnRetry_DroppedConnectionWithRealAdapter(t *testing.T) {
 	h := newRetryHarness(t, adapter)
 
 	runTrace, err := h.loop.Run(context.Background(), retryConfig(3))
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("Outcome = %q, want success", runTrace.Outcome)
-	}
-	if n := hits.Load(); n != 2 {
-		t.Errorf("server saw %d requests, want 2", n)
-	}
-	if turns := h.turns(); len(turns) != 1 || turns[0].Retries != 1 {
-		t.Errorf("turns = %+v, want one turn with Retries 1", turns)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "success", runTrace.Outcome)
+	assert.EqualValues(t, 2, hits.Load(), "server requests")
+
+	turns := h.turns()
+	require.Len(t, turns, 1)
+	assert.Equal(t, 1, turns[0].Retries)
 }
 
 // TestLoop_TurnRetry_TerminalStatusWithRealAdapter pins that a 401, a 400
@@ -574,7 +486,7 @@ func TestLoop_TurnRetry_TerminalStatusWithRealAdapter(t *testing.T) {
 	}{
 		{"401", http.StatusUnauthorized, `{"error":{"message":"Incorrect API key provided"}}`},
 		{"400", http.StatusBadRequest, `{"error":{"message":"Unknown parameter: foo","type":"invalid_request_error"}}`},
-		{"insufficient_quota 429", http.StatusTooManyRequests, `{"error":{"message":"You exceeded your current quota","type":"insufficient_quota","code":"insufficient_quota"}}`},
+		{"insufficient quota 429", http.StatusTooManyRequests, `{"error":{"message":"You exceeded your current quota","type":"insufficient_quota","code":"insufficient_quota"}}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -592,15 +504,9 @@ func TestLoop_TurnRetry_TerminalStatusWithRealAdapter(t *testing.T) {
 			h := newRetryHarness(t, adapter)
 
 			runTrace, err := h.loop.Run(context.Background(), retryConfig(3))
-			if err != nil {
-				t.Fatalf("Run() error: %v", err)
-			}
-			if runTrace.Outcome != "error" {
-				t.Errorf("Outcome = %q, want error", runTrace.Outcome)
-			}
-			if n := hits.Load(); n != 1 {
-				t.Errorf("server saw %d requests, want 1", n)
-			}
+			require.NoError(t, err)
+			require.Equal(t, "error", runTrace.Outcome)
+			require.EqualValues(t, 1, hits.Load(), "server requests")
 		})
 	}
 }
@@ -618,13 +524,7 @@ func TestLoop_TurnRetry_SkipsBatchTurns(t *testing.T) {
 	h := newRetryHarness(t, prov)
 
 	runTrace, err := h.loop.Run(context.Background(), retryConfig(3))
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "error" {
-		t.Errorf("Outcome = %q, want error", runTrace.Outcome)
-	}
-	if n := prov.callCount(); n != 1 {
-		t.Errorf("Stream calls = %d, want 1: a batch turn must not be resubmitted", n)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "error", runTrace.Outcome)
+	assert.Equal(t, 1, prov.callCount(), "a batch turn must not be resubmitted")
 }

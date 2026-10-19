@@ -10,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -35,9 +38,7 @@ func liveSandbox(t *testing.T, ctx context.Context, hostDir string) *executor.Co
 		Network:           &types.NetworkConfig{Mode: "none"},
 		RegistryAllowlist: []string{"localhost/*", "docker.io/library/*", "ghcr.io/rxbynerd/*"},
 	})
-	if err != nil {
-		t.Fatalf("NewContainerExecutorWithContext: %v", err)
-	}
+	require.NoError(t, err, "NewContainerExecutorWithContext")
 	t.Cleanup(func() { _ = exec.Close() })
 	return exec
 }
@@ -51,70 +52,45 @@ func TestContainer_PlantedRepositoryConfigNeverReachesHost(t *testing.T) {
 	defer cancel()
 
 	hostDir := t.TempDir()
-	if err := os.Chmod(hostDir, 0o777); err != nil {
-		t.Fatalf("chmod workspace: %v", err)
-	}
+	require.NoError(t, os.Chmod(hostDir, 0o777), "chmod workspace")
 	// Never mounted into the sandbox: a payload can only create a file here
 	// by running on the host.
 	hostMarkers := t.TempDir()
-	if err := os.Chmod(hostMarkers, 0o777); err != nil {
-		t.Fatalf("chmod markers: %v", err)
-	}
+	require.NoError(t, os.Chmod(hostMarkers, 0o777), "chmod markers")
 	marker := func(name string) string { return filepath.Join(hostMarkers, name) }
 
 	sandboxExec := liveSandbox(t, ctx, hostDir)
 	inSandbox := func(command string) string {
 		t.Helper()
 		res, err := sandboxExec.Exec(ctx, command, time.Minute)
-		if err != nil {
-			t.Fatalf("sandbox %q: %v", command, err)
-		}
-		if res.ExitCode != 0 {
-			t.Fatalf("sandbox %q: exit %d\nstdout: %s\nstderr: %s", command, res.ExitCode, res.Stdout, res.Stderr)
-		}
+		require.NoError(t, err, "sandbox %q", command)
+		require.Equal(t, 0, res.ExitCode, "sandbox %q\nstdout: %s\nstderr: %s", command, res.Stdout, res.Stderr)
 		return strings.TrimSpace(res.Stdout)
 	}
 
 	inSandbox("git init -q && git -c user.name=agent -c user.email=agent@example.com commit -q --allow-empty -m seed")
 	inSandbox("git config core.fsmonitor " + shellQuote("touch "+marker("fsmonitor")+"; echo /"))
 	inSandbox("git config filter.pwn.clean " + shellQuote("touch "+marker("filter")+"; cat"))
-	if err := sandboxExec.WriteFile(ctx, ".gitattributes", "* filter=pwn\n"); err != nil {
-		t.Fatalf("write .gitattributes: %v", err)
-	}
-	if err := sandboxExec.WriteFile(ctx, ".git/hooks/pre-commit", "#!/bin/sh\ntouch "+marker("hook")+"\n"); err != nil {
-		t.Fatalf("write hook: %v", err)
-	}
+	require.NoError(t, sandboxExec.WriteFile(ctx, ".gitattributes", "* filter=pwn\n"), "write .gitattributes")
+	require.NoError(t, sandboxExec.WriteFile(ctx, ".git/hooks/pre-commit", "#!/bin/sh\ntouch "+marker("hook")+"\n"), "write pre-commit hook")
 	inSandbox("chmod +x .git/hooks/pre-commit")
 
 	gs := NewDeterministicGitStrategy(sandboxExec)
-	if err := gs.Setup(ctx, hostDir, "container-run"); err != nil {
-		t.Fatalf("Setup: %v", err)
-	}
-	if err := sandboxExec.WriteFile(ctx, "change.txt", "agent output\n"); err != nil {
-		t.Fatalf("write change: %v", err)
-	}
-	if err := gs.Checkpoint(ctx, "Turn 1: 1 tool calls"); err != nil {
-		t.Fatalf("Checkpoint: %v", err)
-	}
+	require.NoError(t, gs.Setup(ctx, hostDir, "container-run"), "Setup")
+	require.NoError(t, sandboxExec.WriteFile(ctx, "change.txt", "agent output\n"), "write change")
+	require.NoError(t, gs.Checkpoint(ctx, "Turn 1: 1 tool calls"), "Checkpoint")
 	result, err := gs.Finalise(ctx, "success")
-	if err != nil {
-		t.Fatalf("Finalise: %v", err)
-	}
-	if result.Branch != "stirrup/container-run" || !ValidSHA(result.SHA) {
-		t.Errorf("Finalise = %+v", result)
-	}
+	require.NoError(t, err, "Finalise")
+	assert.Equal(t, "stirrup/container-run", result.Branch, "Finalise result: %+v", result)
+	assert.True(t, ValidSHA(result.SHA), "Finalise result: %+v", result)
 
 	entries, err := os.ReadDir(hostMarkers)
-	if err != nil {
-		t.Fatalf("ReadDir markers: %v", err)
-	}
+	require.NoError(t, err, "ReadDir markers")
+	planted := make([]string, 0, len(entries))
 	for _, e := range entries {
-		t.Errorf("planted %s payload ran on the host", e.Name())
+		planted = append(planted, e.Name())
 	}
-	if got := inSandbox("git log -1 --format=%an"); got != HarnessIdentityName {
-		t.Errorf("sandbox commit author = %q, want %q", got, HarnessIdentityName)
-	}
-	if got := inSandbox("git rev-parse HEAD"); got != result.SHA {
-		t.Errorf("sandbox HEAD = %q, Finalise reported %q", got, result.SHA)
-	}
+	assert.Empty(t, planted, "planted payloads ran on the host")
+	assert.Equal(t, HarnessIdentityName, inSandbox("git log -1 --format=%an"), "sandbox commit author")
+	assert.Equal(t, result.SHA, inSandbox("git rev-parse HEAD"), "sandbox HEAD")
 }

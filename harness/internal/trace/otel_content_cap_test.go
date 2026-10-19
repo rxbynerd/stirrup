@@ -7,6 +7,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -28,26 +30,27 @@ func attrMapOf(attrs []attribute.KeyValue) map[string]attribute.Value {
 
 func TestAppendContentAttribute_UnderCapUnchanged(t *testing.T) {
 	value := genAIInputMessagesJSON([]types.Message{textMessage("user", "hello")})
-	for _, maxBytes := range []int{0, len(value)} {
-		got := attrMapOf(appendContentAttribute(nil, genAIInputMessagesKey, value, maxBytes))
-		if got[genAIInputMessagesKey].AsString() != value {
-			t.Errorf("maxBytes %d: value changed to %q", maxBytes, got[genAIInputMessagesKey].AsString())
-		}
-		if _, ok := got[contentTruncatedKey(genAIInputMessagesKey)]; ok {
-			t.Errorf("maxBytes %d: truncation marker set on an uncapped value", maxBytes)
-		}
+	cases := []struct {
+		name     string
+		maxBytes int
+	}{
+		{name: "zero limit", maxBytes: 0},
+		{name: "limit equal to value length", maxBytes: len(value)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := attrMapOf(appendContentAttribute(nil, genAIInputMessagesKey, value, tc.maxBytes))
+			require.Equal(t, value, got[genAIInputMessagesKey].AsString())
+			require.NotContains(t, got, contentTruncatedKey(genAIInputMessagesKey))
+		})
 	}
 }
 
 func TestAppendContentAttribute_MarksTruncation(t *testing.T) {
 	value := genAIInputMessagesJSON([]types.Message{textMessage("user", strings.Repeat("x", 600))})
 	got := attrMapOf(appendContentAttribute(nil, genAIInputMessagesKey, value, 256))
-	if !got["stirrup.gen_ai.input.messages.truncated"].AsBool() {
-		t.Errorf("expected stirrup.gen_ai.input.messages.truncated=true, got %v", got)
-	}
-	if n := len(got[genAIInputMessagesKey].AsString()); n > 256 {
-		t.Errorf("capped value is %d bytes, want <= 256", n)
-	}
+	assert.True(t, got["stirrup.gen_ai.input.messages.truncated"].AsBool(), "attributes: %v", got)
+	assert.LessOrEqual(t, len(got[genAIInputMessagesKey].AsString()), 256)
 }
 
 func TestCapContentValue_InputMessagesKeepNewest(t *testing.T) {
@@ -60,15 +63,11 @@ func TestCapContentValue_InputMessagesKeepNewest(t *testing.T) {
 	capped := capContentValue(genAIInputMessagesKey, value, 600)
 
 	var got []genAIMessage
-	if err := json.Unmarshal([]byte(capped), &got); err != nil {
-		t.Fatalf("capped input messages are not valid JSON: %v\n%s", err, capped)
-	}
-	if len(capped) > 600 {
-		t.Errorf("capped value is %d bytes, want <= 600", len(capped))
-	}
-	if len(got) != 2 || !strings.HasPrefix(got[0].Parts[0].Content, "second") || !strings.HasPrefix(got[1].Parts[0].Content, "third") {
-		t.Errorf("expected the two newest messages in order, got %s", capped)
-	}
+	require.NoError(t, json.Unmarshal([]byte(capped), &got), "capped input messages are not valid JSON: %s", capped)
+	assert.LessOrEqual(t, len(capped), 600)
+	require.Len(t, got, 2, "expected the two newest messages, got %s", capped)
+	assert.True(t, strings.HasPrefix(got[0].Parts[0].Content, "second"), "got %s", capped)
+	assert.True(t, strings.HasPrefix(got[1].Parts[0].Content, "third"), "got %s", capped)
 }
 
 func TestCapContentValue_OutputMessagesKeepLeadingParts(t *testing.T) {
@@ -79,15 +78,12 @@ func TestCapContentValue_OutputMessagesKeepLeadingParts(t *testing.T) {
 	capped := capContentValue(genAIOutputMessagesKey, value, 300)
 
 	var got []genAIMessage
-	if err := json.Unmarshal([]byte(capped), &got); err != nil {
-		t.Fatalf("capped output messages are not valid JSON: %v\n%s", err, capped)
-	}
-	if len(capped) > 300 {
-		t.Errorf("capped value is %d bytes, want <= 300", len(capped))
-	}
-	if len(got) != 1 || got[0].FinishReason != "tool_use" || len(got[0].Parts) != 1 || got[0].Parts[0].Type != "text" {
-		t.Errorf("expected the assistant message with only its leading text part, got %s", capped)
-	}
+	require.NoError(t, json.Unmarshal([]byte(capped), &got), "capped output messages are not valid JSON: %s", capped)
+	assert.LessOrEqual(t, len(capped), 300)
+	require.Len(t, got, 1, "expected the assistant message only, got %s", capped)
+	assert.Equal(t, "tool_use", got[0].FinishReason, "got %s", capped)
+	require.Len(t, got[0].Parts, 1, "expected only the leading text part, got %s", capped)
+	assert.Equal(t, "text", got[0].Parts[0].Type, "got %s", capped)
 }
 
 func TestCapContentValue_ShrinksOversizedSinglePart(t *testing.T) {
@@ -98,20 +94,16 @@ func TestCapContentValue_ShrinksOversizedSinglePart(t *testing.T) {
 	capped := capContentValue(genAISystemInstructionsKey, value, 256)
 
 	var got []genAIPart
-	if err := json.Unmarshal([]byte(capped), &got); err != nil {
-		t.Fatalf("capped system instructions are not valid JSON: %v\n%s", err, capped)
-	}
+	require.NoError(t, json.Unmarshal([]byte(capped), &got), "capped system instructions are not valid JSON: %s", capped)
 	// One repeated unit encodes to 12 bytes, so a tight cut lands within
 	// that of the cap.
-	if len(capped) > 256 || len(capped) < 256-12 {
-		t.Errorf("capped value is %d bytes, want within 12 bytes below 256", len(capped))
-	}
-	if len(got) != 1 || got[0].Type != "text" || got[0].Content == "" || !strings.HasPrefix(text, got[0].Content) {
-		t.Errorf("expected one text part holding a prefix of the prompt, got %s", capped)
-	}
-	if !utf8.ValidString(got[0].Content) {
-		t.Errorf("shortened text is not valid UTF-8: %q", got[0].Content)
-	}
+	assert.GreaterOrEqual(t, len(capped), 256-12)
+	assert.LessOrEqual(t, len(capped), 256)
+	require.Len(t, got, 1, "got %s", capped)
+	assert.Equal(t, "text", got[0].Type, "got %s", capped)
+	assert.NotEmpty(t, got[0].Content, "got %s", capped)
+	assert.True(t, strings.HasPrefix(text, got[0].Content), "expected a prefix of the prompt, got %s", capped)
+	assert.True(t, utf8.ValidString(got[0].Content), "shortened text is not valid UTF-8: %q", got[0].Content)
 }
 
 func TestCapContentValue_ShrinksOversizedToolResponseInNewestMessage(t *testing.T) {
@@ -122,16 +114,15 @@ func TestCapContentValue_ShrinksOversizedToolResponseInNewestMessage(t *testing.
 	capped := capContentValue(genAIInputMessagesKey, value, 300)
 
 	var got []genAIMessage
-	if err := json.Unmarshal([]byte(capped), &got); err != nil {
-		t.Fatalf("capped input messages are not valid JSON: %v\n%s", err, capped)
-	}
-	if len(capped) > 300 {
-		t.Errorf("capped value is %d bytes, want <= 300", len(capped))
-	}
-	if len(got) != 1 || len(got[0].Parts) != 1 || got[0].Parts[0].Type != "tool_call_response" ||
-		got[0].Parts[0].ID != "tu-1" || got[0].Parts[0].Response == nil || *got[0].Parts[0].Response == "" {
-		t.Errorf("expected the newest message with a shortened tool response, got %s", capped)
-	}
+	require.NoError(t, json.Unmarshal([]byte(capped), &got), "capped input messages are not valid JSON: %s", capped)
+	assert.LessOrEqual(t, len(capped), 300)
+	require.Len(t, got, 1, "expected the newest message only, got %s", capped)
+	require.Len(t, got[0].Parts, 1, "got %s", capped)
+	part := got[0].Parts[0]
+	assert.Equal(t, "tool_call_response", part.Type, "got %s", capped)
+	assert.Equal(t, "tu-1", part.ID, "got %s", capped)
+	require.NotNil(t, part.Response, "got %s", capped)
+	assert.NotEmpty(t, *part.Response, "got %s", capped)
 }
 
 func TestCapContentValue_ToolArgumentsBecomeJSONString(t *testing.T) {
@@ -139,23 +130,18 @@ func TestCapContentValue_ToolArgumentsBecomeJSONString(t *testing.T) {
 	capped := capContentValue(genAIToolCallArgumentsKey, args, 256)
 
 	var got string
-	if err := json.Unmarshal([]byte(capped), &got); err != nil {
-		t.Fatalf("capped arguments are not a JSON string: %v\n%s", err, capped)
-	}
-	if len(capped) > 256 {
-		t.Errorf("capped value is %d bytes, want <= 256", len(capped))
-	}
-	if !strings.HasPrefix(args, got) || got == "" {
-		t.Errorf("expected a prefix of the arguments, got %q", got)
-	}
+	require.NoError(t, json.Unmarshal([]byte(capped), &got), "capped arguments are not a JSON string: %s", capped)
+	assert.LessOrEqual(t, len(capped), 256)
+	assert.NotEmpty(t, got)
+	assert.True(t, strings.HasPrefix(args, got), "expected a prefix of the arguments, got %q", got)
 }
 
 func TestCapContentValue_ToolResultTruncatedOnRuneBoundary(t *testing.T) {
 	result := strings.Repeat("ü", 300)
 	capped := capContentValue(genAIToolCallResultKey, result, 257)
-	if len(capped) > 257 || !utf8.ValidString(capped) || !strings.HasPrefix(result, capped) {
-		t.Errorf("tool result not truncated to a valid UTF-8 prefix within 257 bytes: %d bytes", len(capped))
-	}
+	require.LessOrEqual(t, len(capped), 257)
+	require.True(t, utf8.ValidString(capped), "capped tool result is not valid UTF-8: %q", capped)
+	require.True(t, strings.HasPrefix(result, capped), "capped tool result is not a prefix of the input: %q", capped)
 }
 
 // TestOTelTraceEmitter_CaptureContentMaxBytes_CapsSpanAttributes drives a
@@ -185,9 +171,8 @@ func TestOTelTraceEmitter_CaptureContentMaxBytes_CapsSpanAttributes(t *testing.T
 		Input:  json.RawMessage(`{"path":"` + strings.Repeat("p", 400) + `"}`),
 		Output: big,
 	}})
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
+	_, err := emitter.Finish(context.Background(), "success")
+	require.NoError(t, err)
 
 	chat := findSpan(t, exporter, "chat")
 	for _, key := range []string{genAIInputMessagesKey, genAIOutputMessagesKey, genAISystemInstructionsKey} {
@@ -195,9 +180,8 @@ func TestOTelTraceEmitter_CaptureContentMaxBytes_CapsSpanAttributes(t *testing.T
 	}
 	toolSpan := findSpan(t, exporter, "execute_tool read_file")
 	assertCappedJSON(t, toolSpan, genAIToolCallArgumentsKey, maxBytes)
-	if v, _ := spanAttrString(toolSpan, genAIToolCallResultKey); len(v) > maxBytes {
-		t.Errorf("tool result is %d bytes, want <= %d", len(v), maxBytes)
-	}
+	toolResult, _ := spanAttrString(toolSpan, genAIToolCallResultKey)
+	assert.LessOrEqual(t, len(toolResult), maxBytes)
 	root := findSpan(t, exporter, "invoke_agent stirrup")
 	assertCappedJSON(t, root, genAIInputMessagesKey, maxBytes)
 }
@@ -205,23 +189,14 @@ func TestOTelTraceEmitter_CaptureContentMaxBytes_CapsSpanAttributes(t *testing.T
 func assertCappedJSON(t *testing.T, span tracetest.SpanStub, key string, maxBytes int) {
 	t.Helper()
 	v, ok := spanAttrString(span, key)
-	if !ok {
-		t.Errorf("%s: %s missing", span.Name, key)
-		return
-	}
-	if len(v) > maxBytes {
-		t.Errorf("%s: %s is %d bytes, want <= %d", span.Name, key, len(v), maxBytes)
-	}
-	if !json.Valid([]byte(v)) {
-		t.Errorf("%s: %s is not valid JSON: %s", span.Name, key, v)
-	}
+	require.True(t, ok, "%s: %s missing", span.Name, key)
+	assert.LessOrEqual(t, len(v), maxBytes, "%s: %s", span.Name, key)
+	assert.True(t, json.Valid([]byte(v)), "%s: %s is not valid JSON: %s", span.Name, key, v)
 	found := false
 	for _, attr := range span.Attributes {
 		if string(attr.Key) == contentTruncatedKey(key) && attr.Value.AsBool() {
 			found = true
 		}
 	}
-	if !found {
-		t.Errorf("%s: %s missing its truncation marker", span.Name, key)
-	}
+	assert.True(t, found, "%s: %s missing its truncation marker", span.Name, key)
 }

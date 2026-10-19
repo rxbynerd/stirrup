@@ -3,20 +3,20 @@ package types
 import (
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestClassifyForQuarantine_Empty pins that an empty recording set
 // produces no flags. A no-data miner output is allowed through
 // without a quarantine challenge.
 func TestClassifyForQuarantine_Empty(t *testing.T) {
-	flags := ClassifyForQuarantine(nil)
-	if len(flags) != 0 {
-		t.Errorf("nil recordings flags = %v, want empty", flags)
-	}
-	flags = ClassifyForQuarantine([]RunRecording{})
-	if len(flags) != 0 {
-		t.Errorf("empty recordings flags = %v, want empty", flags)
-	}
+	t.Run("nil recordings", func(t *testing.T) {
+		require.Empty(t, ClassifyForQuarantine(nil))
+	})
+	t.Run("empty recordings", func(t *testing.T) {
+		require.Empty(t, ClassifyForQuarantine([]RunRecording{}))
+	})
 }
 
 // TestClassifyForQuarantine_SmallPayload pins that recordings well
@@ -36,9 +36,7 @@ func TestClassifyForQuarantine_SmallPayload(t *testing.T) {
 		},
 	}
 	flags := ClassifyForQuarantine(recordings)
-	if len(flags) != 0 {
-		t.Errorf("small-payload recording flags = %v, want empty", flags)
-	}
+	require.Empty(t, flags)
 }
 
 // TestClassifyForQuarantine_LargeToolOutput pins that a tool call
@@ -62,9 +60,8 @@ func TestClassifyForQuarantine_LargeToolOutput(t *testing.T) {
 		},
 	}
 	flags := ClassifyForQuarantine(recordings)
-	if len(flags) != 1 || flags[0] != QuarantineLargePayload {
-		t.Errorf("large-payload flags = %v, want [%s]", flags, QuarantineLargePayload)
-	}
+	require.Len(t, flags, 1, "flags = %v", flags)
+	require.Equal(t, QuarantineLargePayload, flags[0])
 }
 
 // TestClassifyForQuarantine_LargeTurnAggregate pins that a turn
@@ -89,11 +86,14 @@ func TestClassifyForQuarantine_LargeTurnAggregate(t *testing.T) {
 		},
 	}
 	flags := ClassifyForQuarantine(recordings)
-	if len(flags) != 1 || flags[0] != QuarantineLargePayload {
-		t.Errorf("aggregate-large flags = %v, want [%s]", flags, QuarantineLargePayload)
-	}
+	require.Len(t, flags, 1, "flags = %v", flags)
+	require.Equal(t, QuarantineLargePayload, flags[0])
 }
 
+// TestClassifyForQuarantine_LargeArchivedCommandStream pins that a
+// large scrubbed command stream in the archived command outputs trips
+// QuarantineLargePayload even when the tool call output is a small
+// preview.
 func TestClassifyForQuarantine_LargeArchivedCommandStream(t *testing.T) {
 	recordings := []RunRecording{{
 		RunID:          "r1",
@@ -101,9 +101,8 @@ func TestClassifyForQuarantine_LargeArchivedCommandStream(t *testing.T) {
 		CommandOutputs: []CommandOutputRecord{{Stdout: CommandOutputStreamRecord{ScrubbedBytes: DefaultLargePayloadBytes + 1}}},
 	}}
 	flags := ClassifyForQuarantine(recordings)
-	if len(flags) != 1 || flags[0] != QuarantineLargePayload {
-		t.Fatalf("flags=%v", flags)
-	}
+	require.Len(t, flags, 1, "flags = %v", flags)
+	require.Equal(t, QuarantineLargePayload, flags[0])
 }
 
 // TestClassifyForQuarantine_LargeSubRunTurn pins that a large payload
@@ -120,7 +119,6 @@ func TestClassifyForQuarantine_LargeSubRunTurn(t *testing.T) {
 		}},
 	}}
 	flags := ClassifyForQuarantine(recordings)
-	if len(flags) != 1 || flags[0] != QuarantineLargePayload {
-		t.Errorf("sub-run large flags = %v, want [%s]", flags, QuarantineLargePayload)
-	}
+	require.Len(t, flags, 1, "flags = %v", flags)
+	require.Equal(t, QuarantineLargePayload, flags[0])
 }

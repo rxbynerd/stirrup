@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
@@ -132,9 +133,7 @@ func callMCPText(t *testing.T, tl *tool.Tool, input json.RawMessage) (string, er
 
 func callMCPStructured(t *testing.T, tl *tool.Tool, input json.RawMessage) (tool.StructuredResult, error) {
 	t.Helper()
-	if tl.StructuredHandler == nil {
-		t.Fatalf("tool %q has no StructuredHandler", tl.Name)
-	}
+	require.NotNil(t, tl.StructuredHandler, "tool %q has no StructuredHandler", tl.Name)
 	return tl.StructuredHandler(context.Background(), input)
 }
 
@@ -159,32 +158,17 @@ func TestConnect_ToolDiscovery(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 	config := types.MCPServerConfig{Name: "docs", URI: srv.URL}
 
-	if err := client.Connect(context.Background(), config, secrets); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	require.NoError(t, client.Connect(context.Background(), config, secrets))
 
 	defs := registry.List()
-	if len(defs) != 2 {
-		t.Fatalf("expected 2 tools, got %d", len(defs))
-	}
-
-	if defs[0].Name != "mcp_docs_search" {
-		t.Errorf("tool[0].Name = %q, want %q", defs[0].Name, "mcp_docs_search")
-	}
-	if defs[1].Name != "mcp_docs_fetch" {
-		t.Errorf("tool[1].Name = %q, want %q", defs[1].Name, "mcp_docs_fetch")
-	}
+	require.Len(t, defs, 2)
+	assert.Equal(t, "mcp_docs_search", defs[0].Name)
+	assert.Equal(t, "mcp_docs_fetch", defs[1].Name)
 
 	resolved := registry.Resolve("mcp_docs_search")
-	if resolved == nil {
-		t.Fatal("Resolve returned nil for mcp_docs_search")
-	}
-	if !resolved.WorkspaceMutating {
-		t.Error("MCP tools should default to WorkspaceMutating=true")
-	}
-	if !resolved.RequiresApproval {
-		t.Error("MCP tools should default to RequiresApproval=true")
-	}
+	require.NotNil(t, resolved, "Resolve returned nil for mcp_docs_search")
+	assert.True(t, resolved.WorkspaceMutating, "MCP tools should default to WorkspaceMutating=true")
+	assert.True(t, resolved.RequiresApproval, "MCP tools should default to RequiresApproval=true")
 }
 
 // TestConnect_ToolAnnotations verifies the bridge parses server-declared MCP
@@ -215,36 +199,24 @@ func TestConnect_ToolAnnotations(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 	config := types.MCPServerConfig{Name: "svc", URI: srv.URL}
 
-	if err := client.Connect(context.Background(), config, secrets); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	require.NoError(t, client.Connect(context.Background(), config, secrets))
 
 	resolved := registry.Resolve("mcp_svc_lookup")
-	if resolved == nil {
-		t.Fatal("Resolve returned nil for mcp_svc_lookup")
-	}
-	if resolved.Annotations == nil {
-		t.Fatal("server annotations were not carried onto the tool")
-	}
-	if resolved.Annotations.Title != "Lookup" {
-		t.Errorf("Annotations.Title = %q, want %q", resolved.Annotations.Title, "Lookup")
-	}
-	if resolved.Annotations.ReadOnlyHint == nil || !*resolved.Annotations.ReadOnlyHint {
-		t.Error("ReadOnlyHint should round-trip as true")
-	}
+	require.NotNil(t, resolved, "Resolve returned nil for mcp_svc_lookup")
+	require.NotNil(t, resolved.Annotations, "server annotations were not carried onto the tool")
+	assert.Equal(t, "Lookup", resolved.Annotations.Title)
+	require.NotNil(t, resolved.Annotations.ReadOnlyHint)
+	assert.True(t, *resolved.Annotations.ReadOnlyHint, "ReadOnlyHint should round-trip as true")
+
 	// The advisory hint must not override the conservative gating defaults.
-	if !resolved.WorkspaceMutating || !resolved.RequiresApproval {
-		t.Error("server readOnlyHint must not relax WorkspaceMutating/RequiresApproval")
-	}
+	assert.True(t, resolved.WorkspaceMutating, "server readOnlyHint must not relax WorkspaceMutating")
+	assert.True(t, resolved.RequiresApproval, "server readOnlyHint must not relax RequiresApproval")
 
 	// The annotations also surface on the model-facing Presentation.
 	def := resolved.Definition()
-	if def.Presentation == nil || def.Presentation.Annotations == nil {
-		t.Fatalf("Definition().Presentation.Annotations missing: %+v", def.Presentation)
-	}
-	if def.Presentation.Annotations.Title != "Lookup" {
-		t.Errorf("Presentation Annotations.Title = %q, want %q", def.Presentation.Annotations.Title, "Lookup")
-	}
+	require.NotNil(t, def.Presentation, "Definition().Presentation is missing")
+	require.NotNil(t, def.Presentation.Annotations, "Definition().Presentation.Annotations is missing")
+	assert.Equal(t, "Lookup", def.Presentation.Annotations.Title)
 }
 
 func TestConnect_ToolCallDispatch(t *testing.T) {
@@ -263,22 +235,14 @@ func TestConnect_ToolCallDispatch(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 	config := types.MCPServerConfig{Name: "test", URI: srv.URL}
 
-	if err := client.Connect(context.Background(), config, secrets); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	require.NoError(t, client.Connect(context.Background(), config, secrets))
 
 	resolved := registry.Resolve("mcp_test_echo")
-	if resolved == nil {
-		t.Fatal("tool not found")
-	}
+	require.NotNil(t, resolved, "tool not found")
 
 	result, err := callMCPText(t, resolved, json.RawMessage(`{}`))
-	if err != nil {
-		t.Fatalf("Handler: %v", err)
-	}
-	if result != "result from echo" {
-		t.Errorf("result = %q, want %q", result, "result from echo")
-	}
+	require.NoError(t, err)
+	require.Equal(t, "result from echo", result)
 }
 
 func TestConnect_SessionIDManagement(t *testing.T) {
@@ -297,32 +261,20 @@ func TestConnect_SessionIDManagement(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 	config := types.MCPServerConfig{Name: "sess", URI: srv.URL}
 
-	if err := client.Connect(context.Background(), config, secrets); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	require.NoError(t, client.Connect(context.Background(), config, secrets))
 
 	// tools/list was request #1 — should have no session ID.
 	reqs := log.get()
-	if len(reqs) < 1 {
-		t.Fatal("expected at least 1 request")
-	}
-	if reqs[0].SessionID != "" {
-		t.Errorf("first request should have no session ID, got %q", reqs[0].SessionID)
-	}
+	require.NotEmpty(t, reqs)
+	assert.Empty(t, reqs[0].SessionID, "first request should have no session ID")
 
 	resolved := registry.Resolve("mcp_sess_ping")
-	if resolved == nil {
-		t.Fatal("tool not found")
-	}
+	require.NotNil(t, resolved, "tool not found")
 	_, _ = callMCPText(t, resolved, json.RawMessage(`{}`))
 
 	reqs = log.get()
-	if len(reqs) < 2 {
-		t.Fatal("expected at least 2 requests")
-	}
-	if reqs[1].SessionID != "session-abc-123" {
-		t.Errorf("second request session ID = %q, want %q", reqs[1].SessionID, "session-abc-123")
-	}
+	require.GreaterOrEqual(t, len(reqs), 2)
+	assert.Equal(t, "session-abc-123", reqs[1].SessionID)
 }
 
 // TestConnect_RejectsOversizedSessionID pins the maxMCPSessionIDLen cap: a
@@ -341,20 +293,14 @@ func TestConnect_RejectsOversizedSessionID(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 	config := types.MCPServerConfig{Name: "sess", URI: srv.URL}
 
-	if err := client.Connect(context.Background(), config, secrets); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	require.NoError(t, client.Connect(context.Background(), config, secrets))
 
 	resolved := registry.Resolve("mcp_sess_ping")
-	if resolved == nil {
-		t.Fatal("tool not found")
-	}
+	require.NotNil(t, resolved, "tool not found")
 	_, _ = callMCPText(t, resolved, json.RawMessage(`{}`))
 
 	for i, r := range log.get() {
-		if r.SessionID != "" {
-			t.Errorf("request %d carried a session ID %q; oversized ID should have been rejected", i, r.SessionID)
-		}
+		assert.Emptyf(t, r.SessionID, "request %d carried an oversized session ID", i)
 	}
 }
 
@@ -374,18 +320,11 @@ func TestConnect_AuthHeader(t *testing.T) {
 		APIKeyRef: "secret://MCP_TOKEN",
 	}
 
-	if err := client.Connect(context.Background(), config, secrets); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	require.NoError(t, client.Connect(context.Background(), config, secrets))
 
 	reqs := log.get()
-	if len(reqs) < 1 {
-		t.Fatal("expected at least 1 request")
-	}
-	want := "Bearer my-secret-token"
-	if reqs[0].Authorization != want {
-		t.Errorf("Authorization = %q, want %q", reqs[0].Authorization, want)
-	}
+	require.NotEmpty(t, reqs)
+	assert.Equal(t, "Bearer my-secret-token", reqs[0].Authorization)
 }
 
 func TestConnect_NoAuthHeaderWhenNoAPIKeyRef(t *testing.T) {
@@ -398,14 +337,10 @@ func TestConnect_NoAuthHeaderWhenNoAPIKeyRef(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 	config := types.MCPServerConfig{Name: "noauth", URI: srv.URL}
 
-	if err := client.Connect(context.Background(), config, secrets); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	require.NoError(t, client.Connect(context.Background(), config, secrets))
 
 	reqs := log.get()
-	if reqs[0].Authorization != "" {
-		t.Errorf("Authorization should be empty, got %q", reqs[0].Authorization)
-	}
+	assert.Empty(t, reqs[0].Authorization, "Authorization header should be absent")
 }
 
 func TestConnect_JSONRPCError(t *testing.T) {
@@ -422,12 +357,7 @@ func TestConnect_JSONRPCError(t *testing.T) {
 	config := types.MCPServerConfig{Name: "broken", URI: srv.URL}
 
 	err := client.Connect(context.Background(), config, secrets)
-	if err == nil {
-		t.Fatal("expected error from Connect")
-	}
-	if got := err.Error(); !strings.Contains(got, "JSON-RPC error") {
-		t.Errorf("error = %q, want it to contain 'JSON-RPC error'", got)
-	}
+	require.ErrorContains(t, err, "JSON-RPC error")
 }
 
 func TestConnect_ToolNamePrefixing(t *testing.T) {
@@ -445,17 +375,11 @@ func TestConnect_ToolNamePrefixing(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 
 	config := types.MCPServerConfig{Name: "analytics", URI: srv.URL}
-	if err := client.Connect(context.Background(), config, secrets); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	require.NoError(t, client.Connect(context.Background(), config, secrets))
 
 	resolved := registry.Resolve("mcp_analytics_run_query")
-	if resolved == nil {
-		t.Fatal("expected tool with prefixed name mcp_analytics_run_query")
-	}
-	if resolved.Description != "Run a query" {
-		t.Errorf("Description = %q, want %q", resolved.Description, "Run a query")
-	}
+	require.NotNil(t, resolved, "expected tool with prefixed name mcp_analytics_run_query")
+	assert.Equal(t, "Run a query", resolved.Description)
 }
 
 func TestConnect_MultipleServers(t *testing.T) {
@@ -479,27 +403,15 @@ func TestConnect_MultipleServers(t *testing.T) {
 	configA := types.MCPServerConfig{Name: "alpha", URI: srvA.URL}
 	configB := types.MCPServerConfig{Name: "beta", URI: srvB.URL}
 
-	if err := client.Connect(context.Background(), configA, secrets); err != nil {
-		t.Fatalf("Connect alpha: %v", err)
-	}
-	if err := client.Connect(context.Background(), configB, secrets); err != nil {
-		t.Fatalf("Connect beta: %v", err)
-	}
+	require.NoError(t, client.Connect(context.Background(), configA, secrets), "connect alpha")
+	require.NoError(t, client.Connect(context.Background(), configB, secrets), "connect beta")
 
 	defs := registry.List()
-	if len(defs) != 3 {
-		t.Fatalf("expected 3 tools, got %d", len(defs))
-	}
+	require.Len(t, defs, 3)
 
-	if registry.Resolve("mcp_alpha_search") == nil {
-		t.Error("missing mcp_alpha_search")
-	}
-	if registry.Resolve("mcp_beta_search") == nil {
-		t.Error("missing mcp_beta_search")
-	}
-	if registry.Resolve("mcp_beta_index") == nil {
-		t.Error("missing mcp_beta_index")
-	}
+	assert.NotNil(t, registry.Resolve("mcp_alpha_search"), "missing mcp_alpha_search")
+	assert.NotNil(t, registry.Resolve("mcp_beta_search"), "missing mcp_beta_search")
+	assert.NotNil(t, registry.Resolve("mcp_beta_index"), "missing mcp_beta_index")
 }
 
 func TestConnect_MissingName(t *testing.T) {
@@ -508,9 +420,7 @@ func TestConnect_MissingName(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 
 	err := client.Connect(context.Background(), types.MCPServerConfig{URI: "http://localhost"}, secrets)
-	if err == nil {
-		t.Fatal("expected error for missing Name")
-	}
+	require.Error(t, err)
 }
 
 func TestConnect_MissingURI(t *testing.T) {
@@ -519,9 +429,7 @@ func TestConnect_MissingURI(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 
 	err := client.Connect(context.Background(), types.MCPServerConfig{Name: "test"}, secrets)
-	if err == nil {
-		t.Fatal("expected error for missing URI")
-	}
+	require.Error(t, err)
 }
 
 func TestConnect_ToolCallError(t *testing.T) {
@@ -552,25 +460,16 @@ func TestConnect_ToolCallError(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 
 	config := types.MCPServerConfig{Name: "errserver", URI: srv.URL}
-	if err := client.Connect(context.Background(), config, secrets); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	require.NoError(t, client.Connect(context.Background(), config, secrets))
 
 	resolved := registry.Resolve("mcp_errserver_fail")
-	if resolved == nil {
-		t.Fatal("tool not found")
-	}
+	require.NotNil(t, resolved, "tool not found")
 
 	_, err := callMCPText(t, resolved, json.RawMessage(`{}`))
-	if err == nil {
-		t.Fatal("expected error from tool call")
-	}
-	if !strings.Contains(err.Error(), "something went wrong") {
-		t.Errorf("error = %q, want it to contain 'something went wrong'", err.Error())
-	}
+	require.ErrorContains(t, err, "something went wrong")
 }
 
-func TestClose(t *testing.T) {
+func TestClient_Close_RemovesSessions(t *testing.T) {
 	tools := []mcpTool{
 		{Name: "x", Description: "X", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
@@ -580,18 +479,14 @@ func TestClose(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 
 	config := types.MCPServerConfig{Name: "srv", URI: srv.URL}
-	if err := client.Connect(context.Background(), config, secrets); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	require.NoError(t, client.Connect(context.Background(), config, secrets))
 
 	_ = client.Close()
 
 	client.mu.Lock()
 	n := len(client.sessions)
 	client.mu.Unlock()
-	if n != 0 {
-		t.Errorf("expected 0 sessions after Close, got %d", n)
-	}
+	assert.Zero(t, n, "sessions remaining after Close")
 }
 
 func TestConnect_RejectsFileSchemeURI(t *testing.T) {
@@ -603,12 +498,7 @@ func TestConnect_RejectsFileSchemeURI(t *testing.T) {
 		Name: "evil",
 		URI:  "file:///etc/passwd",
 	}, secrets)
-	if err == nil {
-		t.Fatal("expected error for file:// URI scheme")
-	}
-	if !strings.Contains(err.Error(), "not allowed") {
-		t.Errorf("error = %q, want it to contain 'not allowed'", err.Error())
-	}
+	require.ErrorContains(t, err, "not allowed")
 }
 
 func TestConnect_RejectsNoSchemeURI(t *testing.T) {
@@ -620,41 +510,41 @@ func TestConnect_RejectsNoSchemeURI(t *testing.T) {
 		Name: "bad",
 		URI:  "localhost:8080",
 	}, secrets)
-	if err == nil {
-		t.Fatal("expected error for URI without http/https scheme")
-	}
-	if !strings.Contains(err.Error(), "not allowed") {
-		t.Errorf("error = %q, want it to contain 'not allowed'", err.Error())
-	}
+	require.ErrorContains(t, err, "not allowed")
 }
 
 func TestNewClient_NilHTTPClient_HasTimeout(t *testing.T) {
 	registry := tool.NewRegistry()
 	client := NewClient(registry, nil)
-	if client.httpClient.Timeout == 0 {
-		t.Error("default HTTP client should have a non-zero timeout")
-	}
+	assert.NotZero(t, client.httpClient.Timeout, "default HTTP client should have a non-zero timeout")
+
 	tr, ok := client.httpClient.Transport.(*http.Transport)
-	if !ok {
-		t.Fatal("expected *http.Transport as default transport")
-	}
-	if tr.TLSHandshakeTimeout == 0 {
-		t.Error("TLSHandshakeTimeout should be non-zero")
-	}
+	require.True(t, ok, "expected *http.Transport as default transport")
+	assert.NotZero(t, tr.TLSHandshakeTimeout, "TLSHandshakeTimeout should be non-zero")
 }
 
 func TestNewClient_ExplicitHTTPClient_Preserved(t *testing.T) {
 	registry := tool.NewRegistry()
 	custom := &http.Client{}
 	client := NewClient(registry, custom)
-	if client.httpClient != custom {
-		t.Error("explicit HTTP client should be preserved, not replaced")
-	}
+	assert.Same(t, custom, client.httpClient, "explicit HTTP client should be preserved, not replaced")
 }
 
 // TestMCPCall_RecordsMetrics_Success asserts that a successful tools/call
 // records stirrup.mcp.calls (with success=true) and stirrup.mcp.duration
 // when the client has a Metrics instance attached.
+// attachTestMetrics routes the client's metrics to a manual reader so tests
+// can inspect the observations recorded by a call.
+func attachTestMetrics(t *testing.T, client *Client) *sdkmetric.ManualReader {
+	t.Helper()
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	m, err := observability.NewMetricsForTesting(provider)
+	require.NoError(t, err)
+	client.Metrics = m
+	return reader
+}
+
 func TestMCPCall_RecordsMetrics_Success(t *testing.T) {
 	tools := []mcpTool{{
 		Name:        "echo",
@@ -665,54 +555,28 @@ func TestMCPCall_RecordsMetrics_Success(t *testing.T) {
 	srv, _ := fakeMCPServer(t, tools, "")
 	registry := tool.NewRegistry()
 	client := NewClient(registry, srv.Client())
-
-	reader := sdkmetric.NewManualReader()
-	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	m, err := observability.NewMetricsForTesting(provider)
-	if err != nil {
-		t.Fatalf("NewMetricsForTesting: %v", err)
-	}
-	client.Metrics = m
+	reader := attachTestMetrics(t, client)
 
 	secrets := &stubSecretStore{secrets: map[string]string{}}
-	if err := client.Connect(context.Background(), types.MCPServerConfig{Name: "metrics-srv", URI: srv.URL}, secrets); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	require.NoError(t, client.Connect(context.Background(), types.MCPServerConfig{Name: "metrics-srv", URI: srv.URL}, secrets))
 
 	resolved := registry.Resolve("mcp_metrics-srv_echo")
-	if resolved == nil {
-		t.Fatal("tool not found")
-	}
-	if _, err := callMCPText(t, resolved, json.RawMessage(`{}`)); err != nil {
-		t.Fatalf("Handler: %v", err)
-	}
+	require.NotNil(t, resolved, "tool not found")
+	_, err := callMCPText(t, resolved, json.RawMessage(`{}`))
+	require.NoError(t, err)
 
 	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
+	require.NoError(t, reader.Collect(context.Background(), &rm))
 
-	got := findInt64Counter(t, rm, "stirrup.mcp.calls")
-	if got.total != 1 {
-		t.Errorf("stirrup.mcp.calls total = %d, want 1", got.total)
-	}
-	if got.attrs["server.name"] != "metrics-srv" {
-		t.Errorf("server.name = %q, want %q", got.attrs["server.name"], "metrics-srv")
-	}
-	if got.attrs["tool.name"] != "echo" {
-		t.Errorf("tool.name = %q, want %q", got.attrs["tool.name"], "echo")
-	}
-	if got.attrs["success"] != "true" {
-		t.Errorf("success = %q, want %q", got.attrs["success"], "true")
-	}
+	calls := findInt64Counter(t, rm, "stirrup.mcp.calls")
+	assert.Equal(t, int64(1), calls.total, "stirrup.mcp.calls total")
+	assert.Equal(t, "metrics-srv", calls.attrs["server.name"], "server.name attribute")
+	assert.Equal(t, "echo", calls.attrs["tool.name"], "tool.name attribute")
+	assert.Equal(t, "true", calls.attrs["success"], "success attribute")
 
-	dur := findFloat64Histogram(t, rm, "stirrup.mcp.duration")
-	if dur.count == 0 {
-		t.Error("stirrup.mcp.duration recorded no observations")
-	}
-	if dur.attrs["server.name"] != "metrics-srv" {
-		t.Errorf("duration server.name = %q, want %q", dur.attrs["server.name"], "metrics-srv")
-	}
+	duration := findFloat64Histogram(t, rm, "stirrup.mcp.duration")
+	assert.NotZero(t, duration.count, "stirrup.mcp.duration observations")
+	assert.Equal(t, "metrics-srv", duration.attrs["server.name"], "duration server.name attribute")
 }
 
 // TestMCPCall_RecordsMetrics_Failure asserts a failed tools/call still
@@ -742,40 +606,22 @@ func TestMCPCall_RecordsMetrics_Failure(t *testing.T) {
 
 	registry := tool.NewRegistry()
 	client := NewClient(registry, srv.Client())
-
-	reader := sdkmetric.NewManualReader()
-	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	m, err := observability.NewMetricsForTesting(provider)
-	if err != nil {
-		t.Fatalf("NewMetricsForTesting: %v", err)
-	}
-	client.Metrics = m
+	reader := attachTestMetrics(t, client)
 
 	secrets := &stubSecretStore{secrets: map[string]string{}}
-	if err := client.Connect(context.Background(), types.MCPServerConfig{Name: "boom-srv", URI: srv.URL}, secrets); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	require.NoError(t, client.Connect(context.Background(), types.MCPServerConfig{Name: "boom-srv", URI: srv.URL}, secrets))
 
 	resolved := registry.Resolve("mcp_boom-srv_boom")
-	if resolved == nil {
-		t.Fatal("tool not found")
-	}
-	if _, err := callMCPText(t, resolved, json.RawMessage(`{}`)); err == nil {
-		t.Fatal("expected handler error from isError=true response")
-	}
+	require.NotNil(t, resolved, "tool not found")
+	_, err := callMCPText(t, resolved, json.RawMessage(`{}`))
+	require.Error(t, err, "expected handler error from isError=true response")
 
 	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
+	require.NoError(t, reader.Collect(context.Background(), &rm))
 
-	got := findInt64Counter(t, rm, "stirrup.mcp.calls")
-	if got.total != 1 {
-		t.Errorf("stirrup.mcp.calls total = %d, want 1", got.total)
-	}
-	if got.attrs["success"] != "false" {
-		t.Errorf("success = %q, want %q", got.attrs["success"], "false")
-	}
+	calls := findInt64Counter(t, rm, "stirrup.mcp.calls")
+	assert.Equal(t, int64(1), calls.total, "stirrup.mcp.calls total")
+	assert.Equal(t, "false", calls.attrs["success"], "success attribute")
 }
 
 // counterDataPoint is a flattened view of a single int64 counter
@@ -794,9 +640,7 @@ func findInt64Counter(t *testing.T, rm metricdata.ResourceMetrics, name string) 
 				continue
 			}
 			sum, ok := mt.Data.(metricdata.Sum[int64])
-			if !ok {
-				t.Fatalf("metric %q is not a Sum[int64]", name)
-			}
+			require.True(t, ok, "metric %q is not a Sum[int64]", name)
 			if len(sum.DataPoints) == 0 {
 				return counterDataPoint{}
 			}
@@ -808,7 +652,7 @@ func findInt64Counter(t *testing.T, rm metricdata.ResourceMetrics, name string) 
 			return counterDataPoint{total: dp.Value, attrs: attrs}
 		}
 	}
-	t.Fatalf("metric %q not found", name)
+	require.Failf(t, "metric not found", "%q", name)
 	return counterDataPoint{}
 }
 
@@ -825,9 +669,7 @@ func findFloat64Histogram(t *testing.T, rm metricdata.ResourceMetrics, name stri
 				continue
 			}
 			h, ok := mt.Data.(metricdata.Histogram[float64])
-			if !ok {
-				t.Fatalf("metric %q is not a Histogram[float64]", name)
-			}
+			require.True(t, ok, "metric %q is not a Histogram[float64]", name)
 			if len(h.DataPoints) == 0 {
 				return histogramDataPoint{}
 			}
@@ -839,7 +681,7 @@ func findFloat64Histogram(t *testing.T, rm metricdata.ResourceMetrics, name stri
 			return histogramDataPoint{count: dp.Count, attrs: attrs}
 		}
 	}
-	t.Fatalf("metric %q not found", name)
+	require.Failf(t, "metric not found", "%q", name)
 	return histogramDataPoint{}
 }
 
@@ -860,22 +702,17 @@ func TestRegisterMCPTool_TruncatesLongNames(t *testing.T) {
 	client := NewClient(registry, srv.Client())
 
 	secrets := &stubSecretStore{secrets: map[string]string{}}
-	if err := client.Connect(context.Background(), types.MCPServerConfig{Name: "long", URI: srv.URL}, secrets); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	require.NoError(t, client.Connect(context.Background(), types.MCPServerConfig{Name: "long", URI: srv.URL}, secrets))
 
 	// Registry stores the prefixed, sanitised name. The remote-side name
 	// portion of the registered tool must be exactly maxMCPToolNameLen.
 	wantSuffix := strings.Repeat("a", maxMCPToolNameLen)
 	wantRegistered := "mcp_long_" + wantSuffix
-	if registry.Resolve(wantRegistered) == nil {
-		defs := registry.List()
-		got := make([]string, 0, len(defs))
-		for _, d := range defs {
-			got = append(got, d.Name)
-		}
-		t.Fatalf("expected registered tool %q, got names %v", wantRegistered, got)
+	names := make([]string, 0, len(registry.List()))
+	for _, d := range registry.List() {
+		names = append(names, d.Name)
 	}
+	require.NotNil(t, registry.Resolve(wantRegistered), "expected registered tool %q, got names %v", wantRegistered, names)
 }
 
 // TestRegisterMCPTool_RecordsTruncatedToolName extends the truncation
@@ -893,42 +730,24 @@ func TestRegisterMCPTool_RecordsTruncatedToolName(t *testing.T) {
 	srv, _ := fakeMCPServer(t, tools, "")
 	registry := tool.NewRegistry()
 	client := NewClient(registry, srv.Client())
-
-	reader := sdkmetric.NewManualReader()
-	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	m, err := observability.NewMetricsForTesting(provider)
-	if err != nil {
-		t.Fatalf("NewMetricsForTesting: %v", err)
-	}
-	client.Metrics = m
+	reader := attachTestMetrics(t, client)
 
 	secrets := &stubSecretStore{secrets: map[string]string{}}
-	if err := client.Connect(context.Background(), types.MCPServerConfig{Name: "long-srv", URI: srv.URL}, secrets); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	require.NoError(t, client.Connect(context.Background(), types.MCPServerConfig{Name: "long-srv", URI: srv.URL}, secrets))
 
 	wantSuffix := strings.Repeat("a", maxMCPToolNameLen)
 	resolved := registry.Resolve("mcp_long-srv_" + wantSuffix)
-	if resolved == nil {
-		t.Fatal("registered tool not found")
-	}
-	if _, err := callMCPText(t, resolved, json.RawMessage(`{}`)); err != nil {
-		t.Fatalf("Handler: %v", err)
-	}
+	require.NotNil(t, resolved, "registered tool not found")
+	_, err := callMCPText(t, resolved, json.RawMessage(`{}`))
+	require.NoError(t, err)
 
 	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
+	require.NoError(t, reader.Collect(context.Background(), &rm))
 
-	got := findInt64Counter(t, rm, "stirrup.mcp.calls")
-	gotName := got.attrs["tool.name"]
-	if len(gotName) != maxMCPToolNameLen {
-		t.Errorf("tool.name length = %d, want %d", len(gotName), maxMCPToolNameLen)
-	}
-	if gotName != wantSuffix {
-		t.Errorf("tool.name = %q, want %q", gotName, wantSuffix)
-	}
+	calls := findInt64Counter(t, rm, "stirrup.mcp.calls")
+	gotName := calls.attrs["tool.name"]
+	assert.Len(t, gotName, maxMCPToolNameLen, "tool.name length")
+	assert.Equal(t, wantSuffix, gotName, "tool.name attribute")
 }
 
 // TestConnect_CapsToolsPerServer asserts the per-server tool count cap
@@ -950,14 +769,9 @@ func TestConnect_CapsToolsPerServer(t *testing.T) {
 	client := NewClient(registry, srv.Client())
 
 	secrets := &stubSecretStore{secrets: map[string]string{}}
-	if err := client.Connect(context.Background(), types.MCPServerConfig{Name: "flood", URI: srv.URL}, secrets); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	require.NoError(t, client.Connect(context.Background(), types.MCPServerConfig{Name: "flood", URI: srv.URL}, secrets))
 
-	got := len(registry.List())
-	if got != maxMCPToolsPerServer {
-		t.Errorf("registered tool count = %d, want %d (cap)", got, maxMCPToolsPerServer)
-	}
+	require.Len(t, registry.List(), maxMCPToolsPerServer, "registered tools should be capped at maxMCPToolsPerServer")
 }
 
 // TestConnect_AllowedToolsFiltersAdvertised verifies the per-server
@@ -980,22 +794,12 @@ func TestConnect_AllowedToolsFiltersAdvertised(t *testing.T) {
 		URI:          srv.URL,
 		AllowedTools: []string{"search", "fetch"},
 	}
-	if err := client.Connect(context.Background(), config, secrets); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	require.NoError(t, client.Connect(context.Background(), config, secrets))
 
-	if registry.Resolve("mcp_docs_search") == nil {
-		t.Error("allowlisted tool 'search' should be registered")
-	}
-	if registry.Resolve("mcp_docs_fetch") == nil {
-		t.Error("allowlisted tool 'fetch' should be registered")
-	}
-	if registry.Resolve("mcp_docs_exfiltrate") != nil {
-		t.Error("tool 'exfiltrate' is not in the allowlist and must be rejected")
-	}
-	if got := len(registry.List()); got != 2 {
-		t.Errorf("registered tool count = %d, want 2", got)
-	}
+	assert.NotNil(t, registry.Resolve("mcp_docs_search"), "allowlisted tool search should be registered")
+	assert.NotNil(t, registry.Resolve("mcp_docs_fetch"), "allowlisted tool fetch should be registered")
+	assert.Nil(t, registry.Resolve("mcp_docs_exfiltrate"), "tool exfiltrate is not in the allowlist and must be rejected")
+	assert.Len(t, registry.List(), 2, "registered tool count")
 }
 
 // TestConnect_EmptyAllowedToolsRegistersAll pins the backward-compatible
@@ -1012,12 +816,8 @@ func TestConnect_EmptyAllowedToolsRegistersAll(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 
 	config := types.MCPServerConfig{Name: "srv", URI: srv.URL}
-	if err := client.Connect(context.Background(), config, secrets); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
-	if got := len(registry.List()); got != 2 {
-		t.Errorf("registered tool count = %d, want 2 (unset allowlist registers all)", got)
-	}
+	require.NoError(t, client.Connect(context.Background(), config, secrets))
+	require.Len(t, registry.List(), 2, "an unset allowlist should register every advertised tool")
 }
 
 // TestConnect_RejectsNonHTTPSRemote verifies a remote (non-loopback) server
@@ -1032,12 +832,8 @@ func TestConnect_RejectsNonHTTPSRemote(t *testing.T) {
 		Name: "remote",
 		URI:  "http://mcp.example.com/rpc",
 	}, secrets)
-	if err == nil {
-		t.Fatal("expected error for non-https remote URI")
-	}
-	if !strings.Contains(err.Error(), "https") {
-		t.Errorf("error = %q, want it to mention https", err.Error())
-	}
+	require.Error(t, err, "expected error for non-https remote URI")
+	require.ErrorContains(t, err, "https")
 }
 
 // TestConnect_RejectsPrivateIPURI verifies the connect-time SSRF guard refuses
@@ -1046,8 +842,8 @@ func TestConnect_RejectsNonHTTPSRemote(t *testing.T) {
 // the cloud metadata endpoint; 10.0.0.1 is RFC1918.
 func TestConnect_RejectsPrivateIPURI(t *testing.T) {
 	cases := []struct{ name, uri string }{
-		{"link_local_metadata", "https://169.254.169.254/latest/meta-data"},
-		{"rfc1918", "https://10.0.0.1/rpc"},
+		{"link-local metadata address", "https://169.254.169.254/latest/meta-data"},
+		{"rfc1918 address", "https://10.0.0.1/rpc"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1059,12 +855,8 @@ func TestConnect_RejectsPrivateIPURI(t *testing.T) {
 				Name: "ssrf",
 				URI:  tc.uri,
 			}, secrets)
-			if err == nil {
-				t.Fatalf("expected SSRF rejection for %q", tc.uri)
-			}
-			if !strings.Contains(err.Error(), "private host") {
-				t.Errorf("error = %q, want it to mention 'private host'", err.Error())
-			}
+			require.Error(t, err, "expected SSRF rejection for %q", tc.uri)
+			require.ErrorContains(t, err, "private host")
 		})
 	}
 }
@@ -1075,45 +867,36 @@ func TestConnect_AllowedMCPHostsPin(t *testing.T) {
 	srv, _ := fakeMCPServer(t, []mcpTool{
 		{Name: "a", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}, "")
-	registry := tool.NewRegistry()
-	client := NewClient(registry, srv.Client())
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 
-	// A pin that does not include the server's loopback host must reject.
-	err := client.Connect(context.Background(), types.MCPServerConfig{
-		Name:            "pinned",
-		URI:             srv.URL,
-		AllowedMCPHosts: []string{"only.example.com"},
-	}, secrets)
-	if err == nil {
-		t.Fatal("expected rejection: host not in allowedMcpHosts")
-	}
-	if !strings.Contains(err.Error(), "allowedMcpHosts") {
-		t.Errorf("error = %q, want it to mention allowedMcpHosts", err.Error())
-	}
+	t.Run("rejects host outside the pin", func(t *testing.T) {
+		client := NewClient(tool.NewRegistry(), srv.Client())
+		err := client.Connect(context.Background(), types.MCPServerConfig{
+			Name:            "pinned",
+			URI:             srv.URL,
+			AllowedMCPHosts: []string{"only.example.com"},
+		}, secrets)
+		require.Error(t, err, "expected rejection: host not in allowedMcpHosts")
+		require.ErrorContains(t, err, "allowedMcpHosts")
+	})
 
-	// A pin that includes the actual host (127.0.0.1) must admit.
-	host := mustHost(t, srv.URL)
-	registry2 := tool.NewRegistry()
-	client2 := NewClient(registry2, srv.Client())
-	if err := client2.Connect(context.Background(), types.MCPServerConfig{
-		Name:            "pinned",
-		URI:             srv.URL,
-		AllowedMCPHosts: []string{host},
-	}, secrets); err != nil {
-		t.Fatalf("Connect with matching pin: %v", err)
-	}
-	if registry2.Resolve("mcp_pinned_a") == nil {
-		t.Error("tool should register when host is pinned")
-	}
+	t.Run("admits the pinned host", func(t *testing.T) {
+		registry := tool.NewRegistry()
+		client := NewClient(registry, srv.Client())
+		host := mustHost(t, srv.URL)
+		require.NoError(t, client.Connect(context.Background(), types.MCPServerConfig{
+			Name:            "pinned",
+			URI:             srv.URL,
+			AllowedMCPHosts: []string{host},
+		}, secrets))
+		require.NotNil(t, registry.Resolve("mcp_pinned_a"), "tool should register when host is pinned")
+	})
 }
 
 func mustHost(t *testing.T, raw string) string {
 	t.Helper()
 	u, err := url.Parse(raw)
-	if err != nil {
-		t.Fatalf("parse %q: %v", raw, err)
-	}
+	require.NoError(t, err, "parse %q", raw)
 	return u.Hostname()
 }
 
@@ -1145,20 +928,12 @@ func TestConnect_LocalhostNameDefaultTransport(t *testing.T) {
 	client := NewClient(registry, nil) // default transport: LoopbackAwareDialContext
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 
-	if err := client.Connect(context.Background(), types.MCPServerConfig{Name: "local", URI: uri}, secrets); err != nil {
-		t.Fatalf("Connect to %s: %v", uri, err)
-	}
+	require.NoError(t, client.Connect(context.Background(), types.MCPServerConfig{Name: "local", URI: uri}, secrets), "connect to %s", uri)
 	resolved := registry.Resolve("mcp_local_ping")
-	if resolved == nil {
-		t.Fatal("tool not registered")
-	}
+	require.NotNil(t, resolved, "tool not registered")
 	out, err := resolved.StructuredHandler(context.Background(), json.RawMessage(`{}`))
-	if err != nil {
-		t.Fatalf("tool call through loopback-name dial failed: %v", err)
-	}
-	if out.Text != "pong" {
-		t.Fatalf("tool result = %q, want pong", out.Text)
-	}
+	require.NoError(t, err, "tool call through loopback-name dial")
+	require.Equal(t, "pong", out.Text)
 }
 
 // credentialedURI rewrites base (e.g. an httptest server URL) to embed
@@ -1167,9 +942,7 @@ func TestConnect_LocalhostNameDefaultTransport(t *testing.T) {
 func credentialedURI(t *testing.T, base string) string {
 	t.Helper()
 	u, err := url.Parse(base)
-	if err != nil {
-		t.Fatalf("parse base URL %q: %v", base, err)
-	}
+	require.NoError(t, err, "parse base URL %q", base)
 	u.User = url.UserPassword("user", "pass")
 	u.RawQuery = "api_key=supersecret"
 	return u.String()
@@ -1179,12 +952,8 @@ func credentialedURI(t *testing.T, base string) string {
 // value appears in s.
 func assertNoSecret(t *testing.T, where, s string) {
 	t.Helper()
-	if strings.Contains(s, "user:pass") {
-		t.Errorf("%s leaked userinfo: %q", where, s)
-	}
-	if strings.Contains(s, "supersecret") {
-		t.Errorf("%s leaked query secret: %q", where, s)
-	}
+	assert.NotContains(t, s, "user:pass", "%s leaked userinfo", where)
+	assert.NotContains(t, s, "supersecret", "%s leaked query secret", where)
 }
 
 // TestCall_NonOKError_DoesNotLeakCredentials drives the non-200 error site in
@@ -1200,18 +969,13 @@ func TestCall_NonOKError_DoesNotLeakCredentials(t *testing.T) {
 	sess, err := newSession(context.Background(),
 		types.MCPServerConfig{Name: "leaky", URI: uri},
 		&stubSecretStore{secrets: map[string]string{}})
-	if err != nil {
-		t.Fatalf("newSession: %v", err)
-	}
-	if strings.Contains(sess.displayURI, "user:pass") || strings.Contains(sess.displayURI, "supersecret") {
-		t.Fatalf("displayURI itself leaked credentials: %q", sess.displayURI)
-	}
+	require.NoError(t, err)
+	require.NotContains(t, sess.displayURI, "user:pass", "displayURI leaked userinfo")
+	require.NotContains(t, sess.displayURI, "supersecret", "displayURI leaked query secret")
 
 	client := NewClient(tool.NewRegistry(), srv.Client())
 	_, err = client.call(context.Background(), sess, "tools/list", nil)
-	if err == nil {
-		t.Fatal("expected error from non-200 response")
-	}
+	require.Error(t, err, "expected error from non-200 response")
 	assertNoSecret(t, "non-200 error", err.Error())
 }
 
@@ -1229,19 +993,15 @@ func TestCall_TransportError_DoesNotLeakCredentials(t *testing.T) {
 	sess, err := newSession(context.Background(),
 		types.MCPServerConfig{Name: "leaky", URI: uri},
 		&stubSecretStore{secrets: map[string]string{}})
-	if err != nil {
-		t.Fatalf("newSession: %v", err)
-	}
+	require.NoError(t, err)
 
 	client := NewClient(tool.NewRegistry(), nil) // default transport: real dial
 	_, err = client.call(context.Background(), sess, "tools/list", nil)
-	if err == nil {
-		t.Fatal("expected transport error from closed port")
-	}
+	require.Error(t, err, "expected transport error from closed port")
 	assertNoSecret(t, "transport error", err.Error())
 }
 
-func TestDisplaySafeURI(t *testing.T) {
+func TestDisplaySafeURI_StripsUserinfoQueryAndFragment(t *testing.T) {
 	tests := []struct {
 		name string
 		in   string
@@ -1256,15 +1016,13 @@ func TestDisplaySafeURI(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := displaySafeURI(tt.in)
-			if got != tt.want {
-				t.Errorf("displaySafeURI(%q) = %q, want %q", tt.in, got, tt.want)
-			}
+			assert.Equal(t, tt.want, got, "displaySafeURI(%q)", tt.in)
 			assertNoSecret(t, "displaySafeURI", got)
 		})
 	}
 }
 
-func TestConnect_AllowlistedToolNotAdvertised(t *testing.T) {
+func TestConnect_MissingAllowlistedTool_ReturnsMissingToolsError(t *testing.T) {
 	tools := []mcpTool{
 		{Name: "search", Description: "Search", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		{Name: "extra", Description: "Extra", InputSchema: json.RawMessage(`{"type":"object"}`)},
@@ -1281,27 +1039,16 @@ func TestConnect_AllowlistedToolNotAdvertised(t *testing.T) {
 	}, secrets)
 
 	var missing *MissingToolsError
-	if !errors.As(err, &missing) {
-		t.Fatalf("Connect error = %v, want *MissingToolsError", err)
-	}
-	if missing.Server != "docs" {
-		t.Errorf("Server = %q, want docs", missing.Server)
-	}
-	if got, want := strings.Join(missing.Tools, ","), "fetch,lookup"; got != want {
-		t.Errorf("Tools = %q, want %q (allowlist order, deduplicated)", got, want)
-	}
-	if !strings.Contains(err.Error(), `"docs"`) || !strings.Contains(err.Error(), "fetch, lookup") {
-		t.Errorf("error should name the server and missing tools, got: %v", err)
-	}
-	if registry.Resolve("mcp_docs_search") == nil {
-		t.Errorf("advertised allowlisted tool should still be registered; registry: %v", registry.List())
-	}
-	if len(registry.List()) != 1 {
-		t.Errorf("registry has %d tools, want only the advertised allowlisted one", len(registry.List()))
-	}
+	require.ErrorAs(t, err, &missing)
+	assert.Equal(t, "docs", missing.Server)
+	assert.Equal(t, "fetch,lookup", strings.Join(missing.Tools, ","), "missing tools in allowlist order, deduplicated")
+	require.ErrorContains(t, err, `"docs"`)
+	require.ErrorContains(t, err, "fetch, lookup")
+	assert.NotNil(t, registry.Resolve("mcp_docs_search"), "advertised allowlisted tool should still be registered")
+	assert.Len(t, registry.List(), 1, "only the advertised allowlisted tool should be registered")
 }
 
-func TestConnect_AllowlistFullyAdvertisedReportsNothing(t *testing.T) {
+func TestConnect_AllowlistFullyAdvertised_ConnectsCleanly(t *testing.T) {
 	tools := []mcpTool{
 		{Name: "search", Description: "Search", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		{Name: "extra", Description: "Extra", InputSchema: json.RawMessage(`{"type":"object"}`)},
@@ -1311,15 +1058,10 @@ func TestConnect_AllowlistFullyAdvertisedReportsNothing(t *testing.T) {
 	client := NewClient(registry, srv.Client())
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 
-	err := client.Connect(context.Background(), types.MCPServerConfig{
+	require.NoError(t, client.Connect(context.Background(), types.MCPServerConfig{
 		Name:         "docs",
 		URI:          srv.URL,
 		AllowedTools: []string{"search"},
-	}, secrets)
-	if err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
-	if len(registry.List()) != 1 {
-		t.Errorf("registry has %d tools, want 1", len(registry.List()))
-	}
+	}, secrets))
+	require.Len(t, registry.List(), 1)
 }

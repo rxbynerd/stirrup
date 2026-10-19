@@ -3,6 +3,8 @@ package hook
 import (
 	"context"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestNoop_ImplementsRunner is a compile-time satisfaction guard.
@@ -10,16 +12,18 @@ func TestNoop_ImplementsRunner(t *testing.T) {
 	var _ Runner = NewNoop()
 }
 
-func TestNoop_RunPreAndRunPostAreNoOps(t *testing.T) {
+func TestNoop_RunPreAndRunPost_AreNoOps(t *testing.T) {
 	n := NewNoop()
 
-	preResults, preErr := n.RunPre(context.Background())
-	if preErr != nil || preResults != nil {
-		t.Errorf("RunPre() = (%v, %v), want (nil, nil)", preResults, preErr)
-	}
+	t.Run("run pre returns no results and no error", func(t *testing.T) {
+		results, err := n.RunPre(context.Background())
+		require.NoError(t, err)
+		require.Nil(t, results)
+	})
 
-	postResults, postErr := n.RunPost(context.Background(), "success")
-	if postErr != nil || postResults != nil {
-		t.Errorf("RunPost() = (%v, %v), want (nil, nil)", postResults, postErr)
-	}
+	t.Run("run post returns no results and no error", func(t *testing.T) {
+		results, err := n.RunPost(context.Background(), "success")
+		require.NoError(t, err)
+		require.Nil(t, results)
+	})
 }

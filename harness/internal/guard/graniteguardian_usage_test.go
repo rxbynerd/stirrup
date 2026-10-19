@@ -2,10 +2,11 @@ package guard
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -20,57 +21,48 @@ func newUsageGraniteServer(t *testing.T, body string) *httptest.Server {
 	return srv
 }
 
-func TestGraniteGuardianReportsResponseUsage(t *testing.T) {
+func TestGraniteGuardian_ReportsResponseUsage(t *testing.T) {
 	srv := newUsageGraniteServer(t, `{"choices":[{"message":{"content":"<score>no</score>"}}],"usage":{"prompt_tokens":412,"completion_tokens":7}}`)
 	var reported []types.TokenUsage
 	g, err := NewGraniteGuardian(GraniteGuardianConfig{
 		Endpoint:    srv.URL,
 		ReportUsage: func(u types.TokenUsage) { reported = append(reported, u) },
 	})
-	if err != nil {
-		t.Fatalf("construct: %v", err)
-	}
-	if _, err := g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "benign output"}); err != nil {
-		t.Fatalf("Check: %v", err)
-	}
+	require.NoError(t, err)
+
+	_, err = g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "benign output"})
+	require.NoError(t, err)
+
 	want := types.TokenUsage{Input: 412, Output: 7}
-	if len(reported) != 1 || reported[0] != want {
-		t.Errorf("reported usage = %+v, want one report of %+v", reported, want)
-	}
+	require.Equal(t, []types.TokenUsage{want}, reported)
 }
 
-func TestGraniteGuardianReportsUsageOfUnparseableVerdict(t *testing.T) {
+func TestGraniteGuardian_ReportsUsageOfUnparseableVerdict(t *testing.T) {
 	srv := newUsageGraniteServer(t, `{"choices":[{"message":{"content":""},"finish_reason":"length"}],"usage":{"prompt_tokens":300,"completion_tokens":64}}`)
 	var reported types.TokenUsage
 	g, err := NewGraniteGuardian(GraniteGuardianConfig{
 		Endpoint:    srv.URL,
 		ReportUsage: func(u types.TokenUsage) { reported.Add(u) },
 	})
-	if err != nil {
-		t.Fatalf("construct: %v", err)
-	}
-	if _, err := g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "benign output"}); !errors.Is(err, ErrResponseTruncated) {
-		t.Fatalf("Check error = %v, want ErrResponseTruncated", err)
-	}
-	if want := (types.TokenUsage{Input: 300, Output: 64}); reported != want {
-		t.Errorf("reported usage = %+v, want %+v", reported, want)
-	}
+	require.NoError(t, err)
+
+	_, err = g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "benign output"})
+	require.ErrorIs(t, err, ErrResponseTruncated)
+
+	require.Equal(t, types.TokenUsage{Input: 300, Output: 64}, reported)
 }
 
-func TestGraniteGuardianSkipsUsageReportWithoutUsage(t *testing.T) {
+func TestGraniteGuardian_SkipsUsageReportWithoutPositiveUsage(t *testing.T) {
 	srv := newUsageGraniteServer(t, `{"choices":[{"message":{"content":"<score>no</score>"}}],"usage":{"prompt_tokens":-5,"completion_tokens":0}}`)
 	calls := 0
 	g, err := NewGraniteGuardian(GraniteGuardianConfig{
 		Endpoint:    srv.URL,
 		ReportUsage: func(types.TokenUsage) { calls++ },
 	})
-	if err != nil {
-		t.Fatalf("construct: %v", err)
-	}
-	if _, err := g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "benign output"}); err != nil {
-		t.Fatalf("Check: %v", err)
-	}
-	if calls != 0 {
-		t.Errorf("ReportUsage called %d times for a response with no positive usage, want 0", calls)
-	}
+	require.NoError(t, err)
+
+	_, err = g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "benign output"})
+	require.NoError(t, err)
+
+	require.Zero(t, calls, "ReportUsage called for a response with no positive usage")
 }

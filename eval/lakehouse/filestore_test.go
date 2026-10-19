@@ -2,12 +2,14 @@ package lakehouse
 
 import (
 	"context"
-	"math"
 	"os"
 	"path/filepath"
-	"sort"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -37,117 +39,71 @@ func makeRecording(runID string, trace types.RunTrace) types.RunRecording {
 	}
 }
 
-func TestStoreAndQueryTrace(t *testing.T) {
-	dir := t.TempDir()
-	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+func TestStoreTrace_RoundTripsThroughQuery(t *testing.T) {
+	fs, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
 	defer func() { _ = fs.Close() }()
 
 	ctx := context.Background()
 	trace := makeTrace("t1", "success", "execution", "claude-sonnet-4-6", time.Now(), 1000, 3, types.TokenUsage{Input: 100, Output: 200})
 
-	if err := fs.StoreTrace(ctx, trace); err != nil {
-		t.Fatalf("StoreTrace: %v", err)
-	}
+	require.NoError(t, fs.StoreTrace(ctx, trace))
 
 	results, err := fs.QueryTraces(ctx, types.TraceFilter{})
-	if err != nil {
-		t.Fatalf("QueryTraces: %v", err)
-	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 trace, got %d", len(results))
-	}
-	if results[0].ID != "t1" {
-		t.Fatalf("expected trace ID t1, got %s", results[0].ID)
-	}
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, "t1", results[0].ID)
 }
 
-func TestStoreAndQueryRecording(t *testing.T) {
-	dir := t.TempDir()
-	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+func TestStoreRecording_RoundTripsThroughQuery(t *testing.T) {
+	fs, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
 	defer func() { _ = fs.Close() }()
 
 	ctx := context.Background()
 	trace := makeTrace("r1", "success", "execution", "claude-sonnet-4-6", time.Now(), 500, 2, types.TokenUsage{Input: 50, Output: 100})
 	rec := makeRecording("r1", trace)
 
-	if err := fs.StoreRecording(ctx, rec); err != nil {
-		t.Fatalf("StoreRecording: %v", err)
-	}
+	require.NoError(t, fs.StoreRecording(ctx, rec))
 
 	results, err := fs.QueryRecordings(ctx, types.TraceFilter{})
-	if err != nil {
-		t.Fatalf("QueryRecordings: %v", err)
-	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 recording, got %d", len(results))
-	}
-	if results[0].RunID != "r1" {
-		t.Fatalf("expected recording RunID r1, got %s", results[0].RunID)
-	}
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, "r1", results[0].RunID)
 }
 
-func TestStoreTrace_EmptyID(t *testing.T) {
-	dir := t.TempDir()
-	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+func TestStoreTrace_RejectsEmptyID(t *testing.T) {
+	fs, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
 
 	err = fs.StoreTrace(context.Background(), types.RunTrace{})
-	if err == nil {
-		t.Fatal("expected error for empty trace ID")
-	}
+	require.Error(t, err)
 }
 
-func TestStoreRecording_EmptyRunID(t *testing.T) {
-	dir := t.TempDir()
-	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+func TestStoreRecording_RejectsEmptyRunID(t *testing.T) {
+	fs, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
 
 	err = fs.StoreRecording(context.Background(), types.RunRecording{})
-	if err == nil {
-		t.Fatal("expected error for empty recording RunID")
-	}
+	require.Error(t, err)
 }
 
-func TestQueryTraces_EmptyStore(t *testing.T) {
-	dir := t.TempDir()
-	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+func TestQueryTraces_EmptyStoreReturnsNone(t *testing.T) {
+	fs, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
 
 	results, err := fs.QueryTraces(context.Background(), types.TraceFilter{})
-	if err != nil {
-		t.Fatalf("QueryTraces: %v", err)
-	}
-	if len(results) != 0 {
-		t.Fatalf("expected 0 traces, got %d", len(results))
-	}
+	require.NoError(t, err)
+	require.Empty(t, results)
 }
 
-func TestQueryRecordings_EmptyStore(t *testing.T) {
-	dir := t.TempDir()
-	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+func TestQueryRecordings_EmptyStoreReturnsNone(t *testing.T) {
+	fs, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
 
 	results, err := fs.QueryRecordings(context.Background(), types.TraceFilter{})
-	if err != nil {
-		t.Fatalf("QueryRecordings: %v", err)
-	}
-	if len(results) != 0 {
-		t.Fatalf("expected 0 recordings, got %d", len(results))
-	}
+	require.NoError(t, err)
+	require.Empty(t, results)
 }
 
 func seedTraces(t *testing.T, fs *FileStore) {
@@ -163,113 +119,71 @@ func seedTraces(t *testing.T, fs *FileStore) {
 		makeTrace("t5", "success", "execution", "claude-sonnet-4-6", base.Add(4*time.Hour), 5000, 2, types.TokenUsage{Input: 500, Output: 1000}),
 	}
 	for _, tr := range traces {
-		if err := fs.StoreTrace(ctx, tr); err != nil {
-			t.Fatalf("seed StoreTrace %s: %v", tr.ID, err)
-		}
+		require.NoError(t, fs.StoreTrace(ctx, tr), "seed StoreTrace %s", tr.ID)
 	}
 }
 
 func TestQueryTraces_FilterAfter(t *testing.T) {
-	dir := t.TempDir()
-	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	fs, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
 	seedTraces(t, fs)
 
 	after := time.Date(2025, 1, 1, 2, 0, 0, 0, time.UTC)
 	results, err := fs.QueryTraces(context.Background(), types.TraceFilter{After: &after})
-	if err != nil {
-		t.Fatalf("QueryTraces: %v", err)
-	}
+	require.NoError(t, err)
 	// t3 is exactly at the boundary (not strictly after), t4 and t5 are after
-	if len(results) != 2 {
-		t.Fatalf("expected 2 traces after boundary, got %d", len(results))
-	}
+	require.Len(t, results, 2)
 }
 
 func TestQueryTraces_FilterBefore(t *testing.T) {
-	dir := t.TempDir()
-	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	fs, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
 	seedTraces(t, fs)
 
 	before := time.Date(2025, 1, 1, 2, 0, 0, 0, time.UTC)
 	results, err := fs.QueryTraces(context.Background(), types.TraceFilter{Before: &before})
-	if err != nil {
-		t.Fatalf("QueryTraces: %v", err)
-	}
+	require.NoError(t, err)
 	// t1 (00:00) and t2 (01:00) are before 02:00; t3 is exactly at boundary (not strictly before)
-	if len(results) != 2 {
-		t.Fatalf("expected 2 traces before boundary, got %d", len(results))
-	}
+	require.Len(t, results, 2)
 }
 
 func TestQueryTraces_FilterOutcome(t *testing.T) {
-	dir := t.TempDir()
-	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	fs, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
 	seedTraces(t, fs)
 
 	results, err := fs.QueryTraces(context.Background(), types.TraceFilter{Outcome: "success"})
-	if err != nil {
-		t.Fatalf("QueryTraces: %v", err)
-	}
-	if len(results) != 3 {
-		t.Fatalf("expected 3 success traces, got %d", len(results))
-	}
+	require.NoError(t, err)
+	require.Len(t, results, 3)
 }
 
 func TestQueryTraces_FilterMode(t *testing.T) {
-	dir := t.TempDir()
-	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	fs, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
 	seedTraces(t, fs)
 
 	results, err := fs.QueryTraces(context.Background(), types.TraceFilter{Mode: "execution"})
-	if err != nil {
-		t.Fatalf("QueryTraces: %v", err)
-	}
-	if len(results) != 3 {
-		t.Fatalf("expected 3 execution traces, got %d", len(results))
-	}
+	require.NoError(t, err)
+	require.Len(t, results, 3)
 }
 
 func TestQueryTraces_FilterModel(t *testing.T) {
-	dir := t.TempDir()
-	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	fs, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
 	seedTraces(t, fs)
 
 	results, err := fs.QueryTraces(context.Background(), types.TraceFilter{Model: "claude-opus-4"})
-	if err != nil {
-		t.Fatalf("QueryTraces: %v", err)
-	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 opus trace, got %d", len(results))
-	}
-	if results[0].ID != "t4" {
-		t.Fatalf("expected t4, got %s", results[0].ID)
-	}
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, "t4", results[0].ID)
 }
 
 // TestQueryTraces_FilterProvider pins that TraceFilter.Provider is
 // honoured by the FileStore; a regression would silently let through
 // traces from the wrong provider.
 func TestQueryTraces_FilterProvider(t *testing.T) {
-	dir := t.TempDir()
-	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	fs, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
 	ctx := context.Background()
 	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 
@@ -285,9 +199,7 @@ func TestQueryTraces_FilterProvider(t *testing.T) {
 	} {
 		tr := makeTrace(tc.id, "success", "execution", tc.model, base, 1000, 1, types.TokenUsage{Input: 10, Output: 20})
 		tr.Config.Provider.Type = tc.provider
-		if err := fs.StoreTrace(ctx, tr); err != nil {
-			t.Fatalf("StoreTrace %s: %v", tc.id, err)
-		}
+		require.NoError(t, fs.StoreTrace(ctx, tr), "StoreTrace %s", tc.id)
 	}
 
 	cases := []struct {
@@ -300,36 +212,21 @@ func TestQueryTraces_FilterProvider(t *testing.T) {
 		{"bedrock", nil},
 	}
 	for _, tc := range cases {
-		got, err := fs.QueryTraces(ctx, types.TraceFilter{Provider: tc.provider})
-		if err != nil {
-			t.Fatalf("QueryTraces %q: %v", tc.provider, err)
-		}
-		gotIDs := make([]string, len(got))
-		for i, tr := range got {
-			gotIDs[i] = tr.ID
-		}
-		sort.Strings(gotIDs)
-		want := append([]string{}, tc.wantIDs...)
-		sort.Strings(want)
-		if len(gotIDs) != len(want) {
-			t.Errorf("provider=%q: got %v, want %v", tc.provider, gotIDs, want)
-			continue
-		}
-		for i := range gotIDs {
-			if gotIDs[i] != want[i] {
-				t.Errorf("provider=%q: got %v, want %v", tc.provider, gotIDs, want)
-				break
+		t.Run(tc.provider, func(t *testing.T) {
+			got, err := fs.QueryTraces(ctx, types.TraceFilter{Provider: tc.provider})
+			require.NoError(t, err)
+			gotIDs := make([]string, 0, len(got))
+			for _, tr := range got {
+				gotIDs = append(gotIDs, tr.ID)
 			}
-		}
+			require.ElementsMatch(t, tc.wantIDs, gotIDs)
+		})
 	}
 }
 
 func TestQueryTraces_CombinedFilters(t *testing.T) {
-	dir := t.TempDir()
-	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	fs, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
 	seedTraces(t, fs)
 
 	after := time.Date(2025, 1, 1, 0, 30, 0, 0, time.UTC)
@@ -339,170 +236,99 @@ func TestQueryTraces_CombinedFilters(t *testing.T) {
 		Mode:    "execution",
 		Model:   "claude-sonnet-4-6",
 	})
-	if err != nil {
-		t.Fatalf("QueryTraces: %v", err)
-	}
+	require.NoError(t, err)
 	// t3 (02:00, success, execution, sonnet) and t5 (04:00, success, execution, sonnet)
-	if len(results) != 2 {
-		t.Fatalf("expected 2 traces, got %d", len(results))
-	}
+	require.Len(t, results, 2)
 }
 
 func TestQueryTraces_Limit(t *testing.T) {
-	dir := t.TempDir()
-	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	fs, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
 	seedTraces(t, fs)
 
 	results, err := fs.QueryTraces(context.Background(), types.TraceFilter{Limit: 2})
-	if err != nil {
-		t.Fatalf("QueryTraces: %v", err)
-	}
-	if len(results) != 2 {
-		t.Fatalf("expected 2 traces, got %d", len(results))
-	}
+	require.NoError(t, err)
+	require.Len(t, results, 2)
 	// Should be sorted descending by StartedAt, so t5 first, then t4
-	if results[0].ID != "t5" {
-		t.Fatalf("expected first result t5, got %s", results[0].ID)
-	}
-	if results[1].ID != "t4" {
-		t.Fatalf("expected second result t4, got %s", results[1].ID)
-	}
+	require.Equal(t, "t5", results[0].ID)
+	require.Equal(t, "t4", results[1].ID)
 }
 
 func TestQueryTraces_LimitZeroReturnsAll(t *testing.T) {
-	dir := t.TempDir()
-	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	fs, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
 	seedTraces(t, fs)
 
 	results, err := fs.QueryTraces(context.Background(), types.TraceFilter{Limit: 0})
-	if err != nil {
-		t.Fatalf("QueryTraces: %v", err)
-	}
-	if len(results) != 5 {
-		t.Fatalf("expected 5 traces, got %d", len(results))
-	}
+	require.NoError(t, err)
+	require.Len(t, results, 5)
 }
 
-func TestQueryTraces_SortOrder(t *testing.T) {
-	dir := t.TempDir()
-	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+func TestQueryTraces_SortsNewestFirst(t *testing.T) {
+	fs, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
 	seedTraces(t, fs)
 
 	results, err := fs.QueryTraces(context.Background(), types.TraceFilter{})
-	if err != nil {
-		t.Fatalf("QueryTraces: %v", err)
-	}
+	require.NoError(t, err)
 	for i := 1; i < len(results); i++ {
-		if results[i].StartedAt.After(results[i-1].StartedAt) {
-			t.Fatalf("results not sorted descending at index %d: %v after %v", i, results[i].StartedAt, results[i-1].StartedAt)
-		}
+		require.False(t, results[i].StartedAt.After(results[i-1].StartedAt),
+			"results not sorted descending at index %d: %v after %v", i, results[i].StartedAt, results[i-1].StartedAt)
 	}
 }
 
-func TestMetrics_EmptyStore(t *testing.T) {
-	dir := t.TempDir()
-	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+func TestMetrics_EmptyStoreReportsZero(t *testing.T) {
+	fs, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
 
 	m, err := fs.Metrics(context.Background(), types.TraceFilter{})
-	if err != nil {
-		t.Fatalf("Metrics: %v", err)
-	}
-	if m.Count != 0 {
-		t.Fatalf("expected count 0, got %d", m.Count)
-	}
-	if m.PassRate != 0 {
-		t.Fatalf("expected pass rate 0, got %f", m.PassRate)
-	}
+	require.NoError(t, err)
+	require.Zero(t, m.Count)
+	require.Zero(t, m.PassRate)
 }
 
-func approxEqual(a, b, epsilon float64) bool {
-	return math.Abs(a-b) < epsilon
-}
-
-func TestMetrics_Computation(t *testing.T) {
-	dir := t.TempDir()
-	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+func TestMetrics_ComputesAggregates(t *testing.T) {
+	fs, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
 	seedTraces(t, fs)
 
 	m, err := fs.Metrics(context.Background(), types.TraceFilter{})
-	if err != nil {
-		t.Fatalf("Metrics: %v", err)
-	}
+	require.NoError(t, err)
 
-	if m.Count != 5 {
-		t.Fatalf("expected count 5, got %d", m.Count)
-	}
+	require.Equal(t, 5, m.Count)
 
 	// 3 out of 5 are success
-	expectedPassRate := 3.0 / 5.0
-	if !approxEqual(m.PassRate, expectedPassRate, 0.001) {
-		t.Fatalf("expected pass rate %f, got %f", expectedPassRate, m.PassRate)
-	}
+	require.InDelta(t, 3.0/5.0, m.PassRate, 0.001)
 
 	// Mean turns: (3+5+7+10+2) / 5 = 5.4
-	if !approxEqual(m.MeanTurns, 5.4, 0.001) {
-		t.Fatalf("expected mean turns 5.4, got %f", m.MeanTurns)
-	}
+	require.InDelta(t, 5.4, m.MeanTurns, 0.001)
 
 	// Mean tokens: total input+output per trace = 300+600+900+1200+1500 = 4500; mean = 900
-	if !approxEqual(m.MeanTokens, 900.0, 0.001) {
-		t.Fatalf("expected mean tokens 900, got %f", m.MeanTokens)
-	}
+	require.InDelta(t, 900.0, m.MeanTokens, 0.001)
 
 	// Durations sorted: 1000, 2000, 3000, 4000, 5000
 	// P50: index = 0.5 * 4 = 2.0 -> sorted[2] = 3000
-	if !approxEqual(m.P50Duration, 3000, 0.001) {
-		t.Fatalf("expected P50 3000, got %f", m.P50Duration)
-	}
+	require.InDelta(t, 3000, m.P50Duration, 0.001)
 
 	// P95: index = 0.95 * 4 = 3.8 -> sorted[3] + 0.8*(sorted[4]-sorted[3]) = 4000 + 800 = 4800
-	if !approxEqual(m.P95Duration, 4800, 0.001) {
-		t.Fatalf("expected P95 4800, got %f", m.P95Duration)
-	}
+	require.InDelta(t, 4800, m.P95Duration, 0.001)
 }
 
-func TestMetrics_WithFilter(t *testing.T) {
-	dir := t.TempDir()
-	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+func TestMetrics_AppliesFilter(t *testing.T) {
+	fs, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
 	seedTraces(t, fs)
 
 	m, err := fs.Metrics(context.Background(), types.TraceFilter{Outcome: "success"})
-	if err != nil {
-		t.Fatalf("Metrics: %v", err)
-	}
+	require.NoError(t, err)
 
-	if m.Count != 3 {
-		t.Fatalf("expected count 3, got %d", m.Count)
-	}
-	if !approxEqual(m.PassRate, 1.0, 0.001) {
-		t.Fatalf("expected pass rate 1.0, got %f", m.PassRate)
-	}
+	require.Equal(t, 3, m.Count)
+	require.InDelta(t, 1.0, m.PassRate, 0.001)
 }
 
 func TestQueryRecordings_FilterByOutcome(t *testing.T) {
-	dir := t.TempDir()
-	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	fs, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
 
 	ctx := context.Background()
 	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -510,23 +336,13 @@ func TestQueryRecordings_FilterByOutcome(t *testing.T) {
 	t1 := makeTrace("r1", "success", "execution", "claude-sonnet-4-6", base, 1000, 3, types.TokenUsage{Input: 100, Output: 200})
 	t2 := makeTrace("r2", "error", "execution", "claude-sonnet-4-6", base.Add(time.Hour), 2000, 5, types.TokenUsage{Input: 200, Output: 400})
 
-	if err := fs.StoreRecording(ctx, makeRecording("r1", t1)); err != nil {
-		t.Fatalf("StoreRecording: %v", err)
-	}
-	if err := fs.StoreRecording(ctx, makeRecording("r2", t2)); err != nil {
-		t.Fatalf("StoreRecording: %v", err)
-	}
+	require.NoError(t, fs.StoreRecording(ctx, makeRecording("r1", t1)))
+	require.NoError(t, fs.StoreRecording(ctx, makeRecording("r2", t2)))
 
 	results, err := fs.QueryRecordings(ctx, types.TraceFilter{Outcome: "success"})
-	if err != nil {
-		t.Fatalf("QueryRecordings: %v", err)
-	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 recording, got %d", len(results))
-	}
-	if results[0].RunID != "r1" {
-		t.Fatalf("expected r1, got %s", results[0].RunID)
-	}
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, "r1", results[0].RunID)
 }
 
 // TestParentOnlyToolCalls_FiltersForwardedSubAgentEntries asserts the
@@ -539,9 +355,7 @@ func TestParentOnlyToolCalls_FiltersForwardedSubAgentEntries(t *testing.T) {
 		ToolCalls: []types.ToolCallSummary{
 			// parent-only entry: empty RunID/ParentRunID
 			{Name: "read_file", DurationMs: 10, Success: true},
-			// parent-only entry: RunID equal to trace.ID (forwarder
-			// path tags both parent and child the same way once a
-			// future writer normalises the wire shape)
+			// parent-only entry: RunID equal to trace.ID
 			{Name: "run_command", DurationMs: 20, Success: true, RunID: "parent-1"},
 			// forwarded sub-agent entry: ParentRunID set
 			{Name: "read_file", DurationMs: 30, Success: true, RunID: "sub-1", ParentRunID: "parent-1"},
@@ -551,15 +365,11 @@ func TestParentOnlyToolCalls_FiltersForwardedSubAgentEntries(t *testing.T) {
 	}
 
 	got := parentOnlyToolCalls(trace)
-	if len(got) != 2 {
-		t.Fatalf("expected 2 parent-only tool calls, got %d (%+v)", len(got), got)
-	}
+	require.Len(t, got, 2, "parent-only tool calls: %+v", got)
 	for _, tc := range got {
-		if tc.ParentRunID != "" {
-			t.Errorf("parentOnlyToolCalls returned forwarded entry: %+v", tc)
-		}
-		if tc.RunID != "" && tc.RunID != trace.ID {
-			t.Errorf("parentOnlyToolCalls returned cross-run entry: %+v", tc)
+		assert.Empty(t, tc.ParentRunID, "parentOnlyToolCalls returned forwarded entry: %+v", tc)
+		if tc.RunID != "" {
+			assert.Equal(t, trace.ID, tc.RunID, "parentOnlyToolCalls returned cross-run entry: %+v", tc)
 		}
 	}
 }
@@ -596,18 +406,10 @@ func TestComputeMetrics_SubAgentToolCallsDoNotInflate(t *testing.T) {
 	mParent := computeMetrics([]types.RunTrace{parentOnly})
 	mSub := computeMetrics([]types.RunTrace{withSubAgent})
 
-	if mParent.Count != mSub.Count {
-		t.Errorf("Count: parent=%d sub=%d (forwarded entries must not inflate)", mParent.Count, mSub.Count)
-	}
-	if mParent.MeanTurns != mSub.MeanTurns {
-		t.Errorf("MeanTurns: parent=%v sub=%v", mParent.MeanTurns, mSub.MeanTurns)
-	}
-	if mParent.MeanTokens != mSub.MeanTokens {
-		t.Errorf("MeanTokens: parent=%v sub=%v", mParent.MeanTokens, mSub.MeanTokens)
-	}
-	if mParent.PassRate != mSub.PassRate {
-		t.Errorf("PassRate: parent=%v sub=%v", mParent.PassRate, mSub.PassRate)
-	}
+	assert.Equal(t, mParent.Count, mSub.Count, "Count")
+	assert.InDelta(t, mParent.MeanTurns, mSub.MeanTurns, 1e-9, "MeanTurns")
+	assert.InDelta(t, mParent.MeanTokens, mSub.MeanTokens, 1e-9, "MeanTokens")
+	assert.InDelta(t, mParent.PassRate, mSub.PassRate, 1e-9, "PassRate")
 }
 
 // makeBatchTrace is makeTrace's twin with Batch enabled on the
@@ -627,11 +429,8 @@ func makeBatchTrace(id, outcome, model string, started time.Time, durationMs int
 // duration percentile pairs, so batch queue time does not skew the
 // streaming latency signal.
 func TestMetrics_BucketsStreamingAndBatchSeparately(t *testing.T) {
-	dir := t.TempDir()
-	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	fs, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
 
 	ctx := context.Background()
 	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -646,33 +445,19 @@ func TestMetrics_BucketsStreamingAndBatchSeparately(t *testing.T) {
 		makeBatchTrace("b3", "success", "claude-sonnet-4-6", base.Add(5*time.Hour), 10000, 1, types.TokenUsage{}),
 	}
 	for _, tr := range traces {
-		if err := fs.StoreTrace(ctx, tr); err != nil {
-			t.Fatalf("StoreTrace %s: %v", tr.ID, err)
-		}
+		require.NoError(t, fs.StoreTrace(ctx, tr), "StoreTrace %s", tr.ID)
 	}
 
 	m, err := fs.Metrics(ctx, types.TraceFilter{})
-	if err != nil {
-		t.Fatalf("Metrics: %v", err)
-	}
+	require.NoError(t, err)
 
-	if m.Count != 6 {
-		t.Errorf("Count = %d, want 6", m.Count)
-	}
-	if !approxEqual(m.P50Duration, 200, 0.001) {
-		t.Errorf("streaming P50 = %v, want 200", m.P50Duration)
-	}
+	assert.Equal(t, 6, m.Count, "Count")
+	assert.InDelta(t, 200, m.P50Duration, 0.001, "streaming P50")
 	// P95 of [100,200,300] using rank=0.95*2=1.9 -> 200 + 0.9*100 = 290
-	if !approxEqual(m.P95Duration, 290, 0.001) {
-		t.Errorf("streaming P95 = %v, want 290", m.P95Duration)
-	}
-	if !approxEqual(m.BatchP50Duration, 5000, 0.001) {
-		t.Errorf("batch P50 = %v, want 5000", m.BatchP50Duration)
-	}
+	assert.InDelta(t, 290, m.P95Duration, 0.001, "streaming P95")
+	assert.InDelta(t, 5000, m.BatchP50Duration, 0.001, "batch P50")
 	// P95 of [1000,5000,10000] using rank=0.95*2=1.9 -> 5000 + 0.9*5000 = 9500
-	if !approxEqual(m.BatchP95Duration, 9500, 0.001) {
-		t.Errorf("batch P95 = %v, want 9500", m.BatchP95Duration)
-	}
+	assert.InDelta(t, 9500, m.BatchP95Duration, 0.001, "batch P95")
 }
 
 // TestMetrics_BatchBucketsZeroWhenNoBatchTraces pins the zero-value
@@ -680,23 +465,14 @@ func TestMetrics_BucketsStreamingAndBatchSeparately(t *testing.T) {
 // bucket reports 0 (not NaN, not nil-equivalent) so downstream JSON
 // consumers see a stable shape.
 func TestMetrics_BatchBucketsZeroWhenNoBatchTraces(t *testing.T) {
-	dir := t.TempDir()
-	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	fs, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
 	seedTraces(t, fs)
 
 	m, err := fs.Metrics(context.Background(), types.TraceFilter{})
-	if err != nil {
-		t.Fatalf("Metrics: %v", err)
-	}
-	if m.BatchP50Duration != 0 {
-		t.Errorf("BatchP50Duration = %v, want 0 (no batch traces seeded)", m.BatchP50Duration)
-	}
-	if m.BatchP95Duration != 0 {
-		t.Errorf("BatchP95Duration = %v, want 0 (no batch traces seeded)", m.BatchP95Duration)
-	}
+	require.NoError(t, err)
+	assert.Zero(t, m.BatchP50Duration, "batch P50 with no batch traces seeded")
+	assert.Zero(t, m.BatchP95Duration, "batch P95 with no batch traces seeded")
 }
 
 // TestMetrics_LegacyTracesCountAsStreaming pins the backward-compat
@@ -705,11 +481,8 @@ func TestMetrics_BatchBucketsZeroWhenNoBatchTraces(t *testing.T) {
 // that migrated from a pre-#138 schema would drop legacy traces out
 // of every duration percentile pair.
 func TestMetrics_LegacyTracesCountAsStreaming(t *testing.T) {
-	dir := t.TempDir()
-	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	fs, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
 
 	ctx := context.Background()
 	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -730,48 +503,41 @@ func TestMetrics_LegacyTracesCountAsStreaming(t *testing.T) {
 		Batch: &types.BatchProviderConfig{Enabled: false},
 	}
 	for _, tr := range []types.RunTrace{legacy, explicitStreaming, disabledBatch} {
-		if err := fs.StoreTrace(ctx, tr); err != nil {
-			t.Fatalf("StoreTrace %s: %v", tr.ID, err)
-		}
+		require.NoError(t, fs.StoreTrace(ctx, tr), "StoreTrace %s", tr.ID)
 	}
 
 	m, err := fs.Metrics(ctx, types.TraceFilter{})
-	if err != nil {
-		t.Fatalf("Metrics: %v", err)
-	}
+	require.NoError(t, err)
 	// All three landed in streaming. Median of [500,700,900] = 700.
-	if !approxEqual(m.P50Duration, 700, 0.001) {
-		t.Errorf("streaming P50 = %v, want 700", m.P50Duration)
-	}
-	if m.BatchP50Duration != 0 || m.BatchP95Duration != 0 {
-		t.Errorf("batch buckets non-zero with no enabled-batch traces: P50=%v P95=%v", m.BatchP50Duration, m.BatchP95Duration)
-	}
+	assert.InDelta(t, 700, m.P50Duration, 0.001, "streaming P50")
+	assert.Zero(t, m.BatchP50Duration, "batch P50 with no enabled-batch traces")
+	assert.Zero(t, m.BatchP95Duration, "batch P95 with no enabled-batch traces")
 }
 
-// TestIsBatchRun exercises the classifier directly so a future
-// refactor that swaps the predicate has a single failure point
-// rather than ricocheting through every bucketing test.
-func TestIsBatchRun(t *testing.T) {
+// TestIsBatchRun_ClassifiesByBatchEnabledFlag exercises the classifier
+// directly so a future refactor that swaps the predicate has a single
+// failure point rather than ricocheting through every bucketing test.
+func TestIsBatchRun_ClassifiesByBatchEnabledFlag(t *testing.T) {
 	cases := []struct {
-		name string
-		t    types.RunTrace
-		want bool
+		name  string
+		trace types.RunTrace
+		want  bool
 	}{
-		{"nil-provider", types.RunTrace{}, false},
+		{"nil provider", types.RunTrace{}, false},
 		{
-			"provider-without-batch",
+			"provider without batch",
 			types.RunTrace{Config: types.RunConfig{Provider: types.ProviderConfig{Type: "anthropic"}}},
 			false,
 		},
 		{
-			"batch-disabled",
+			"batch disabled",
 			types.RunTrace{Config: types.RunConfig{Provider: types.ProviderConfig{
 				Batch: &types.BatchProviderConfig{Enabled: false},
 			}}},
 			false,
 		},
 		{
-			"batch-enabled",
+			"batch enabled",
 			types.RunTrace{Config: types.RunConfig{Provider: types.ProviderConfig{
 				Batch: &types.BatchProviderConfig{Enabled: true},
 			}}},
@@ -780,9 +546,7 @@ func TestIsBatchRun(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isBatchRun(tc.t); got != tc.want {
-				t.Errorf("isBatchRun(%s) = %v, want %v", tc.name, got, tc.want)
-			}
+			require.Equal(t, tc.want, isBatchRun(tc.trace))
 		})
 	}
 }
@@ -801,26 +565,15 @@ func TestComputeMetrics_SingleTrace(t *testing.T) {
 
 	m := computeMetrics(traces)
 
-	if m.Count != 1 {
-		t.Errorf("Count = %d, want 1", m.Count)
-	}
-	if !approxEqual(m.P50Duration, 750, 0.001) {
-		t.Errorf("P50Duration = %v, want 750 (single-element branch)", m.P50Duration)
-	}
-	if !approxEqual(m.P95Duration, 750, 0.001) {
-		t.Errorf("P95Duration = %v, want 750 (single-element branch)", m.P95Duration)
-	}
+	assert.Equal(t, 1, m.Count)
+	assert.InDelta(t, 750, m.P50Duration, 0.001, "single-element P50")
+	assert.InDelta(t, 750, m.P95Duration, 0.001, "single-element P95")
 }
 
-func TestClose(t *testing.T) {
-	dir := t.TempDir()
-	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
-	if err := fs.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+func TestFileStore_Close_ReturnsNil(t *testing.T) {
+	fs, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, fs.Close())
 }
 
 // TestWriteJSON_ConcurrentStoreTraceIsAtomic pins that two goroutines
@@ -828,11 +581,8 @@ func TestClose(t *testing.T) {
 // on disk, never a torn file with a JSON prefix followed by stale
 // trailing bytes.
 func TestWriteJSON_ConcurrentStoreTraceIsAtomic(t *testing.T) {
-	dir := t.TempDir()
-	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	fs, err := NewFileStore(t.TempDir())
+	require.NoError(t, err)
 	defer func() { _ = fs.Close() }()
 
 	id := "run-concurrent"
@@ -859,18 +609,10 @@ func TestWriteJSON_ConcurrentStoreTraceIsAtomic(t *testing.T) {
 	// The final file must parse as valid JSON matching one of the two
 	// inputs (the last successful rename wins, but either is valid).
 	got, err := fs.QueryTraces(context.Background(), types.TraceFilter{})
-	if err != nil {
-		t.Fatalf("QueryTraces: %v", err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("expected 1 trace, got %d", len(got))
-	}
-	if got[0].ID != id {
-		t.Errorf("ID: got %q, want %q", got[0].ID, id)
-	}
-	if got[0].Outcome != "success" && got[0].Outcome != "error" {
-		t.Errorf("Outcome: got %q, want success|error", got[0].Outcome)
-	}
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, id, got[0].ID)
+	require.Contains(t, []string{"success", "error"}, got[0].Outcome)
 }
 
 // TestWriteJSON_TempFileCleanedOnRenameFailure pins that a failure on
@@ -880,29 +622,23 @@ func TestWriteJSON_ConcurrentStoreTraceIsAtomic(t *testing.T) {
 func TestWriteJSON_TempFileCleanedOnRenameFailure(t *testing.T) {
 	dir := t.TempDir()
 	fs, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	require.NoError(t, err)
 	defer func() { _ = fs.Close() }()
 
 	// Force a rename failure by passing a path under a non-existent
 	// subdirectory. os.CreateTemp succeeds (it creates inside the
 	// existing root), but the rename to the bad path fails.
 	badPath := filepath.Join(dir, "missing", "out.json")
-	err = fs.writeJSON(badPath, map[string]any{"x": 1})
-	if err == nil {
-		t.Fatal("expected writeJSON to fail; got nil")
-	}
+	require.Error(t, fs.writeJSON(badPath, map[string]any{"x": 1}))
 
 	// Walk the root: no .tmp-*.json should remain.
 	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("ReadDir: %v", err)
-	}
+	require.NoError(t, err)
+	var leaked []string
 	for _, e := range entries {
-		name := e.Name()
-		if len(name) >= 4 && name[:4] == ".tmp" {
-			t.Errorf("leaked temp file: %s", name)
+		if strings.HasPrefix(e.Name(), ".tmp") {
+			leaked = append(leaked, e.Name())
 		}
 	}
+	require.Empty(t, leaked, "temp files left after rename failure")
 }

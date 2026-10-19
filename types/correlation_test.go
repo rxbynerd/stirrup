@@ -3,9 +3,10 @@ package types
 import (
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func fullCorrelation() *CorrelationConfig {
@@ -19,7 +20,7 @@ func fullCorrelation() *CorrelationConfig {
 	}
 }
 
-func TestValidateRunConfig_CorrelationAccepted(t *testing.T) {
+func TestValidateRunConfig_Correlation_AcceptsValidBlocks(t *testing.T) {
 	labels := make(map[string]string, MaxCorrelationLabels)
 	for i := range MaxCorrelationLabels {
 		labels[fmt.Sprintf("k%d", i)] = "v"
@@ -28,14 +29,14 @@ func TestValidateRunConfig_CorrelationAccepted(t *testing.T) {
 		"absent":                nil,
 		"empty block":           {},
 		"fully populated":       fullCorrelation(),
-		"199-char session ID":   {SessionID: strings.Repeat("s", MaxCorrelationSessionIDLength)},
-		"session ID with space": {SessionID: "nightly sweep 1"},
-		"255-byte task ID":      {TaskID: strings.Repeat("t", MaxCorrelationIDLength)},
-		"unicode user ID":       {UserID: "café-文字"},
-		"http URL":              {URL: "http://localhost:8080/runs/1"},
-		"URL with query":        {URL: "https://cp.example.com/runs?id=42&tab=trace"},
+		"199-char session id":   {SessionID: strings.Repeat("s", MaxCorrelationSessionIDLength)},
+		"session id with space": {SessionID: "nightly sweep 1"},
+		"255-byte task id":      {TaskID: strings.Repeat("t", MaxCorrelationIDLength)},
+		"unicode user id":       {UserID: "café-文字"},
+		"http url":              {URL: "http://localhost:8080/runs/1"},
+		"url with query":        {URL: "https://cp.example.com/runs?id=42&tab=trace"},
 		"uppercase scheme":      {URL: "HTTPS://cp.example.com/runs/1"},
-		"1500-byte URL":         {URL: "https://cp.example.com/" + strings.Repeat("a", MaxCorrelationURLLength-len("https://cp.example.com/"))},
+		"1500-byte url":         {URL: "https://cp.example.com/" + strings.Repeat("a", MaxCorrelationURLLength-len("https://cp.example.com/"))},
 		"sixteen labels":        {Labels: labels},
 		"64-char label key":     {Labels: map[string]string{"a" + strings.Repeat("b", 63): "v"}},
 	}
@@ -43,14 +44,12 @@ func TestValidateRunConfig_CorrelationAccepted(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			c := validConfig()
 			c.Correlation = corr
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("expected valid correlation, got: %v", err)
-			}
+			require.NoError(t, ValidateRunConfig(c))
 		})
 	}
 }
 
-func TestValidateRunConfig_CorrelationRejected(t *testing.T) {
+func TestValidateRunConfig_Correlation_RejectsInvalidBlocks(t *testing.T) {
 	seventeen := make(map[string]string, MaxCorrelationLabels+1)
 	for i := range MaxCorrelationLabels + 1 {
 		seventeen[fmt.Sprintf("k%d", i)] = "v"
@@ -60,23 +59,23 @@ func TestValidateRunConfig_CorrelationRejected(t *testing.T) {
 		corr CorrelationConfig
 		want string
 	}{
-		{"200-char session ID", CorrelationConfig{SessionID: strings.Repeat("s", 200)}, "correlation.sessionId must be <= 199 bytes"},
-		{"non-ASCII session ID", CorrelationConfig{SessionID: "café"}, "correlation.sessionId must be printable US-ASCII"},
-		{"newline in session ID", CorrelationConfig{SessionID: "a\nb"}, "correlation.sessionId must be printable US-ASCII"},
-		{"over-long task ID", CorrelationConfig{TaskID: strings.Repeat("t", 256)}, "correlation.taskId must be <= 255 bytes"},
-		{"over-long attempt ID", CorrelationConfig{AttemptID: strings.Repeat("a", 256)}, "correlation.attemptId must be <= 255 bytes"},
-		{"over-long user ID", CorrelationConfig{UserID: strings.Repeat("u", 256)}, "correlation.userId must be <= 255 bytes"},
-		{"control char in user ID", CorrelationConfig{UserID: "u\x1b[31m"}, "correlation.userId contains non-printable"},
-		{"invalid UTF-8 task ID", CorrelationConfig{TaskID: "bad\xff"}, "correlation.taskId must be valid UTF-8"},
-		{"javascript URL", CorrelationConfig{URL: "javascript:alert(1)"}, "correlation.url must be an absolute http or https URL"},
-		{"relative URL", CorrelationConfig{URL: "/runs/42"}, "correlation.url must be an absolute http or https URL"},
-		{"ftp URL", CorrelationConfig{URL: "ftp://cp.example.com/runs/42"}, "correlation.url must be an absolute http or https URL"},
-		{"URL without host", CorrelationConfig{URL: "https:///runs/42"}, "correlation.url must include a host"},
-		{"port-only URL", CorrelationConfig{URL: "http://:80/"}, "correlation.url must include a host"},
-		{"URL with fragment", CorrelationConfig{URL: "https://cp.example.com/runs/42#access_token=abc"}, "correlation.url must not include a fragment"},
-		{"URL with empty fragment", CorrelationConfig{URL: "https://cp.example.com/runs/42#"}, "correlation.url must not include a fragment"},
-		{"URL with userinfo", CorrelationConfig{URL: "https://alice:hunter2@cp.example.com/runs/42"}, "correlation.url must not include userinfo"},
-		{"over-long URL", CorrelationConfig{URL: "https://cp.example.com/" + strings.Repeat("a", MaxCorrelationURLLength)}, "correlation.url must be <= 1500 bytes"},
+		{"200-char session id", CorrelationConfig{SessionID: strings.Repeat("s", 200)}, "correlation.sessionId must be <= 199 bytes"},
+		{"non-ascii session id", CorrelationConfig{SessionID: "café"}, "correlation.sessionId must be printable US-ASCII"},
+		{"newline in session id", CorrelationConfig{SessionID: "a\nb"}, "correlation.sessionId must be printable US-ASCII"},
+		{"over-long task id", CorrelationConfig{TaskID: strings.Repeat("t", 256)}, "correlation.taskId must be <= 255 bytes"},
+		{"over-long attempt id", CorrelationConfig{AttemptID: strings.Repeat("a", 256)}, "correlation.attemptId must be <= 255 bytes"},
+		{"over-long user id", CorrelationConfig{UserID: strings.Repeat("u", 256)}, "correlation.userId must be <= 255 bytes"},
+		{"control char in user id", CorrelationConfig{UserID: "u\x1b[31m"}, "correlation.userId contains non-printable"},
+		{"invalid utf-8 task id", CorrelationConfig{TaskID: "bad\xff"}, "correlation.taskId must be valid UTF-8"},
+		{"javascript url", CorrelationConfig{URL: "javascript:alert(1)"}, "correlation.url must be an absolute http or https URL"},
+		{"relative url", CorrelationConfig{URL: "/runs/42"}, "correlation.url must be an absolute http or https URL"},
+		{"ftp url", CorrelationConfig{URL: "ftp://cp.example.com/runs/42"}, "correlation.url must be an absolute http or https URL"},
+		{"url without host", CorrelationConfig{URL: "https:///runs/42"}, "correlation.url must include a host"},
+		{"port-only url", CorrelationConfig{URL: "http://:80/"}, "correlation.url must include a host"},
+		{"url with fragment", CorrelationConfig{URL: "https://cp.example.com/runs/42#access_token=abc"}, "correlation.url must not include a fragment"},
+		{"url with empty fragment", CorrelationConfig{URL: "https://cp.example.com/runs/42#"}, "correlation.url must not include a fragment"},
+		{"url with userinfo", CorrelationConfig{URL: "https://alice:hunter2@cp.example.com/runs/42"}, "correlation.url must not include userinfo"},
+		{"over-long url", CorrelationConfig{URL: "https://cp.example.com/" + strings.Repeat("a", MaxCorrelationURLLength)}, "correlation.url must be <= 1500 bytes"},
 		{"seventeenth label", CorrelationConfig{Labels: seventeen}, "correlation.labels must have at most 16 entries"},
 		{"__proto__ label key", CorrelationConfig{Labels: map[string]string{"__proto__": "v"}}, `correlation.labels key "__proto__"`},
 		{"uppercase label key", CorrelationConfig{Labels: map[string]string{"Agent": "v"}}, `correlation.labels key "Agent"`},
@@ -91,82 +90,59 @@ func TestValidateRunConfig_CorrelationRejected(t *testing.T) {
 			corr := tc.corr
 			c.Correlation = &corr
 			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("expected an error containing %q", tc.want)
-			}
-			if !strings.Contains(err.Error(), tc.want) {
-				t.Errorf("error should contain %q, got: %v", tc.want, err)
-			}
+			require.ErrorContains(t, err, tc.want)
 		})
 	}
 }
 
-func TestValidateRunConfig_CorrelationURLErrorOmitsUserinfo(t *testing.T) {
+func TestValidateRunConfig_Correlation_URLErrorOmitsUserinfo(t *testing.T) {
 	c := validConfig()
 	c.Correlation = &CorrelationConfig{URL: "https://alice:hunter2@cp.example.com/runs/42"}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected a userinfo error")
-	}
-	if strings.Contains(err.Error(), "hunter2") {
-		t.Errorf("error must not echo the URL's credentials: %v", err)
-	}
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "hunter2", "error must not echo the URL's credentials")
 }
 
-func TestValidateRunConfig_CorrelationLabelKeyEchoIsCapped(t *testing.T) {
+func TestValidateRunConfig_Correlation_LabelKeyEchoIsCapped(t *testing.T) {
 	c := validConfig()
 	long := "Bad" + strings.Repeat("x", 500)
 	c.Correlation = &CorrelationConfig{Labels: map[string]string{long: "v"}}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected a label key error")
-	}
-	if strings.Contains(err.Error(), long[:100]) {
-		t.Errorf("error echoes more than 64 bytes of the key: %v", err)
-	}
-	if !strings.Contains(err.Error(), long[:64]+`"…`) {
-		t.Errorf("error should echo the key's first 64 bytes and an ellipsis, got: %v", err)
-	}
+	require.Error(t, err)
+	t.Run("does not echo more than 64 bytes of the key", func(t *testing.T) {
+		require.NotContains(t, err.Error(), long[:100])
+	})
+	t.Run("echoes the first 64 bytes of the key and an ellipsis", func(t *testing.T) {
+		require.Contains(t, err.Error(), long[:64]+`"…`)
+	})
 }
 
-func TestRedact_CorrelationPreservedAsDeepCopy(t *testing.T) {
+func TestRedact_Correlation_PreservedAsDeepCopy(t *testing.T) {
 	rc := RunConfig{
 		Provider:    ProviderConfig{APIKeyRef: "secret://k"},
 		Correlation: fullCorrelation(),
 	}
 	redacted := rc.Redact()
-	if !reflect.DeepEqual(redacted.Correlation, fullCorrelation()) {
-		t.Fatalf("Correlation should survive Redact unchanged, got %+v", redacted.Correlation)
-	}
+	require.Equal(t, fullCorrelation(), redacted.Correlation, "Correlation should survive Redact unchanged")
 	redacted.Correlation.URL = "mutated"
 	redacted.Correlation.Labels["agent_profile"] = "mutated"
-	if !reflect.DeepEqual(rc.Correlation, fullCorrelation()) {
-		t.Errorf("mutating the redacted copy reached the live config: %+v", rc.Correlation)
-	}
+	require.Equal(t, fullCorrelation(), rc.Correlation, "mutating the redacted copy reached the live config")
 }
 
-func TestCorrelationConfig_JSONFieldNames(t *testing.T) {
+func TestCorrelationConfig_JSON_FieldNames(t *testing.T) {
 	raw, err := json.Marshal(RunConfig{Correlation: fullCorrelation()})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err)
 	var decoded struct {
 		Correlation map[string]json.RawMessage `json:"correlation"`
 	}
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(raw, &decoded))
 	for _, key := range []string{"sessionId", "taskId", "attemptId", "userId", "url", "labels"} {
-		if _, ok := decoded.Correlation[key]; !ok {
-			t.Errorf("correlation JSON lacks %q: %s", key, raw)
-		}
+		t.Run(key, func(t *testing.T) {
+			require.Contains(t, decoded.Correlation, key, "correlation JSON: %s", raw)
+		})
 	}
 
 	bare, err := json.Marshal(RunConfig{})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if strings.Contains(string(bare), `"correlation"`) {
-		t.Errorf("an absent block must be omitted: %s", bare)
-	}
+	require.NoError(t, err)
+	require.NotContains(t, string(bare), `"correlation"`, "an absent block must be omitted: %s", bare)
 }

@@ -4,31 +4,19 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
-func TestMarkContextOverflow(t *testing.T) {
+func TestMarkContextOverflow_KeepsMessageAndDetection(t *testing.T) {
 	base := errors.New("prompt is too long")
 	marked := MarkContextOverflow(base)
 
-	if !IsContextOverflow(marked) {
-		t.Fatal("IsContextOverflow(marked) = false, want true")
-	}
-	if marked.Error() != base.Error() {
-		t.Errorf("marked message = %q, want %q", marked.Error(), base.Error())
-	}
-	if !errors.Is(marked, base) {
-		t.Error("marked error does not wrap the original")
-	}
-	if !IsContextOverflow(fmt.Errorf("execute request: %w", marked)) {
-		t.Error("IsContextOverflow does not see a mark under a wrapping error")
-	}
-	if IsContextOverflow(base) {
-		t.Error("IsContextOverflow(unmarked) = true, want false")
-	}
-	if IsContextOverflow(nil) {
-		t.Error("IsContextOverflow(nil) = true, want false")
-	}
-	if MarkContextOverflow(nil) != nil {
-		t.Error("MarkContextOverflow(nil) is not nil")
-	}
+	require.True(t, IsContextOverflow(marked), "marked error must be detected as an overflow")
+	require.Equal(t, base.Error(), marked.Error())
+	require.ErrorIs(t, marked, base)
+	require.True(t, IsContextOverflow(fmt.Errorf("execute request: %w", marked)), "mark must be found under a wrapping error")
+	require.False(t, IsContextOverflow(base), "unmarked error must not be detected as an overflow")
+	require.False(t, IsContextOverflow(nil))
+	require.NoError(t, MarkContextOverflow(nil))
 }

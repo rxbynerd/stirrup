@@ -1,11 +1,12 @@
 package types
 
 import (
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
-func TestEffectivePromptModel(t *testing.T) {
+func TestRunConfig_EffectivePromptModel(t *testing.T) {
 	tests := []struct {
 		name   string
 		mutate func(*RunConfig)
@@ -96,85 +97,61 @@ func TestEffectivePromptModel(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			c := validConfig()
 			tt.mutate(c)
-			if got := c.EffectivePromptModel(); got != tt.want {
-				t.Errorf("EffectivePromptModel() = %q, want %q", got, tt.want)
-			}
+			require.Equal(t, tt.want, c.EffectivePromptModel())
 		})
 	}
 }
 
-func TestEffectivePromptModel_NilReceiver(t *testing.T) {
+func TestRunConfig_EffectivePromptModel_NilReceiverUsesDefault(t *testing.T) {
 	var c *RunConfig
-	if got := c.EffectivePromptModel(); got != DefaultModel {
-		t.Errorf("EffectivePromptModel() on nil = %q, want %q", got, DefaultModel)
-	}
+	require.Equal(t, DefaultModel, c.EffectivePromptModel())
 }
 
-func TestValidateRunConfig_PromptModelWithSystemPromptOverride(t *testing.T) {
+func TestValidateRunConfig_RejectsPromptModelWithSystemPromptOverride(t *testing.T) {
 	c := validConfig()
 	c.SystemPromptOverride = "You are a helpful agent."
 	c.PromptBuilder.PromptModel = "claude-fable-5"
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for promptModel combined with systemPromptOverride")
-	}
-	if !strings.Contains(err.Error(), "promptBuilder.promptModel") {
-		t.Errorf("expected error to mention promptBuilder.promptModel, got: %v", err)
-	}
+	require.Error(t, err)
+	require.ErrorContains(t, err, "promptBuilder.promptModel")
 }
 
-func TestValidateRunConfig_TemplateWithSystemPromptOverride(t *testing.T) {
+func TestValidateRunConfig_RejectsTemplateWithSystemPromptOverride(t *testing.T) {
 	c := validConfig()
 	c.SystemPromptOverride = "You are a helpful agent."
 	c.PromptBuilder.Template = "You are an agent for {{.Model}}."
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for template combined with systemPromptOverride")
-	}
-	if !strings.Contains(err.Error(), "promptBuilder.template") {
-		t.Errorf("expected error to mention promptBuilder.template, got: %v", err)
-	}
+	require.Error(t, err)
+	require.ErrorContains(t, err, "promptBuilder.template")
 }
 
-func TestValidateRunConfig_TemplateSyntaxError(t *testing.T) {
+func TestValidateRunConfig_RejectsTemplateSyntaxError(t *testing.T) {
 	c := validConfig()
 	c.PromptBuilder.Template = "broken {{if .Tier}} unclosed"
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for unparseable template")
-	}
-	if !strings.Contains(err.Error(), "text/template") {
-		t.Errorf("expected error to mention text/template, got: %v", err)
-	}
+	require.Error(t, err)
+	require.ErrorContains(t, err, "text/template")
 }
 
 // An uncompiled prompt from an external prompt-management system uses
 // "{{var}}" placeholders, which Go's template parser rejects as an
 // undefined function. Validation must catch this before run start.
-func TestValidateRunConfig_TemplateLangfusePlaceholder(t *testing.T) {
+func TestValidateRunConfig_RejectsMustachePlaceholderInTemplate(t *testing.T) {
 	c := validConfig()
 	c.PromptBuilder.Template = "You are an {{criticlevel}} movie critic"
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for mustache-style placeholder in template")
-	}
-	if !strings.Contains(err.Error(), "promptBuilder.template") {
-		t.Errorf("expected error to mention promptBuilder.template, got: %v", err)
-	}
+	require.Error(t, err)
+	require.ErrorContains(t, err, "promptBuilder.template")
 }
 
-func TestValidateRunConfig_ValidTemplateAccepted(t *testing.T) {
+func TestValidateRunConfig_AcceptsValidTemplate(t *testing.T) {
 	c := validConfig()
 	c.PromptBuilder.Template = `You are a coding agent.{{if eq .Tier "frontier"}} Act when ready.{{end}}`
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("expected valid template to be accepted, got: %v", err)
-	}
+	require.NoError(t, ValidateRunConfig(c))
 }
 
-func TestValidateRunConfig_PromptModelAloneAccepted(t *testing.T) {
+func TestValidateRunConfig_AcceptsPromptModelAlone(t *testing.T) {
 	c := validConfig()
 	c.PromptBuilder.PromptModel = "claude-fable-5"
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("expected promptModel without override to be accepted, got: %v", err)
-	}
+	require.NoError(t, ValidateRunConfig(c))
 }

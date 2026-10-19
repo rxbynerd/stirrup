@@ -4,18 +4,17 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestWriteProbe_CreatesFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "healthy")
 
-	if err := WriteProbe(path); err != nil {
-		t.Fatalf("WriteProbe() error: %v", err)
-	}
+	require.NoError(t, WriteProbe(path))
 
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("probe file does not exist after WriteProbe: %v", err)
-	}
+	_, err := os.Stat(path)
+	require.NoError(t, err, "probe file does not exist after WriteProbe")
 }
 
 // TestWriteProbe_MissingParentDirReturnsError pins the caller-visible
@@ -25,72 +24,48 @@ func TestWriteProbe_CreatesFile(t *testing.T) {
 func TestWriteProbe_MissingParentDirReturnsError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing-parent", "healthy")
 
-	if err := WriteProbe(path); err == nil {
-		t.Fatal("WriteProbe() = nil, want an error when the parent directory is missing")
-	}
+	require.Error(t, WriteProbe(path))
 }
 
 func TestWriteProbe_Idempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "healthy")
 
-	if err := WriteProbe(path); err != nil {
-		t.Fatalf("first WriteProbe() error: %v", err)
-	}
-	if err := WriteProbe(path); err != nil {
-		t.Fatalf("second WriteProbe() error: %v", err)
-	}
+	require.NoError(t, WriteProbe(path), "first WriteProbe() call")
+	require.NoError(t, WriteProbe(path), "second WriteProbe() call")
 
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("probe file does not exist after second WriteProbe: %v", err)
-	}
+	_, err := os.Stat(path)
+	require.NoError(t, err, "probe file does not exist after second WriteProbe")
 }
 
 func TestRemoveProbe_RemovesFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "healthy")
 
-	if err := WriteProbe(path); err != nil {
-		t.Fatalf("WriteProbe() error: %v", err)
-	}
+	require.NoError(t, WriteProbe(path))
+	require.NoError(t, RemoveProbe(path))
 
-	if err := RemoveProbe(path); err != nil {
-		t.Fatalf("RemoveProbe() error: %v", err)
-	}
-
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("probe file still exists after RemoveProbe")
-	}
+	_, err := os.Stat(path)
+	require.True(t, os.IsNotExist(err), "probe file still exists after RemoveProbe")
 }
 
 func TestRemoveProbe_NonexistentFileReturnsNil(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "does-not-exist")
 
-	if err := RemoveProbe(path); err != nil {
-		t.Fatalf("RemoveProbe() on nonexistent file returned error: %v", err)
-	}
+	require.NoError(t, RemoveProbe(path))
 }
 
 func TestCheckProbe_MarkerPresent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "healthy")
 
-	if err := WriteProbe(path); err != nil {
-		t.Fatalf("WriteProbe() error: %v", err)
-	}
-
-	if err := CheckProbe(path); err != nil {
-		t.Fatalf("CheckProbe() error: %v", err)
-	}
+	require.NoError(t, WriteProbe(path))
+	require.NoError(t, CheckProbe(path))
 }
 
 func TestCheckProbe_MarkerAbsent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "does-not-exist")
 
 	err := CheckProbe(path)
-	if err == nil {
-		t.Fatal("CheckProbe() = nil, want an error for a missing marker")
-	}
-	if !os.IsNotExist(err) {
-		t.Errorf("CheckProbe() error = %v, want os.IsNotExist to be true", err)
-	}
+	require.Error(t, err)
+	require.True(t, os.IsNotExist(err), "CheckProbe() error = %v, want os.IsNotExist to be true", err)
 }
 
 func TestCheckProbe_MarkerUnreadable(t *testing.T) {
@@ -99,18 +74,10 @@ func TestCheckProbe_MarkerUnreadable(t *testing.T) {
 	}
 
 	path := filepath.Join(t.TempDir(), "healthy")
-	if err := WriteProbe(path); err != nil {
-		t.Fatalf("WriteProbe() error: %v", err)
-	}
-	if err := os.Chmod(path, 0o000); err != nil {
-		t.Fatalf("os.Chmod() error: %v", err)
-	}
+	require.NoError(t, WriteProbe(path))
+	require.NoError(t, os.Chmod(path, 0o000))
 
 	err := CheckProbe(path)
-	if err == nil {
-		t.Fatal("CheckProbe() = nil, want a permission error for an unreadable marker")
-	}
-	if os.IsNotExist(err) {
-		t.Errorf("CheckProbe() error = %v, want a permission error distinguishable from absent", err)
-	}
+	require.Error(t, err)
+	require.False(t, os.IsNotExist(err), "CheckProbe() error = %v, want a permission error distinguishable from absent", err)
 }

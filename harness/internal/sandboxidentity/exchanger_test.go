@@ -3,9 +3,11 @@ package sandboxidentity
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -21,17 +23,12 @@ func TestExchanger_CountsRequestsAndSequencesIDs(t *testing.T) {
 		},
 	}
 	ex := NewExchanger(mt)
-	if got := ex.Requests(); got != 0 {
-		t.Fatalf("Requests() before any exchange = %d, want 0", got)
-	}
+	require.Equal(t, 0, ex.Requests(), "requests before any exchange")
 
 	for i := 1; i <= 3; i++ {
-		if _, err := ex.Exchange(context.Background(), "aud", time.Second); err != nil {
-			t.Fatalf("Exchange() %d error: %v", i, err)
-		}
-		if got := ex.Requests(); got != i {
-			t.Errorf("Requests() after %d exchanges = %d", i, got)
-		}
+		_, err := ex.Exchange(context.Background(), "aud", time.Second)
+		require.NoError(t, err, "exchange %d", i)
+		require.Equal(t, i, ex.Requests(), "requests after exchange %d", i)
 	}
 
 	mt.mu.Lock()
@@ -43,18 +40,10 @@ func TestExchanger_CountsRequestsAndSequencesIDs(t *testing.T) {
 	mt.emitErr = errors.New("stream closed")
 	mt.mu.Unlock()
 
-	want := []string{"sbid-1", "sbid-2", "sbid-3"}
-	if strings.Join(ids, ",") != strings.Join(want, ",") {
-		t.Errorf("request IDs = %v, want %v", ids, want)
-	}
-	if handlers != 1 {
-		t.Errorf("Exchanger attached %d control handlers, want 1", handlers)
-	}
+	assert.Equal(t, []string{"sbid-1", "sbid-2", "sbid-3"}, ids, "request IDs")
+	assert.Equal(t, 1, handlers, "control handlers attached by the exchanger")
 
-	if _, err := ex.Exchange(context.Background(), "aud", time.Second); err == nil {
-		t.Fatal("expected an error when emit fails")
-	}
-	if got := ex.Requests(); got != 3 {
-		t.Errorf("Requests() after a failed emit = %d, want 3 (a request that never left is not counted)", got)
-	}
+	_, err := ex.Exchange(context.Background(), "aud", time.Second)
+	require.Error(t, err, "expected an error when emit fails")
+	require.Equal(t, 3, ex.Requests(), "a request that never left is not counted")
 }

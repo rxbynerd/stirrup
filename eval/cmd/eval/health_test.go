@@ -6,8 +6,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/eval"
 	"github.com/rxbynerd/stirrup/types"
@@ -40,9 +41,7 @@ func writeHealthSuite(t *testing.T, attrs string) string {
   }
 }
 `
-	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(src), 0o644))
 	return path
 }
 
@@ -51,41 +50,42 @@ func runHealthSuite(t *testing.T, suitePath string, extra ...string) eval.SuiteR
 	harnessPath := writeFakeHarness(t, failingExitHarness)
 	outputDir := filepath.Join(t.TempDir(), "out")
 	args := append([]string{"run", "--suite", suitePath, "--harness", harnessPath, "--output", outputDir}, extra...)
-	if code := run(args, io.Discard); code != 0 {
-		t.Fatalf("run() exit code = %d, want 0", code)
-	}
+	require.Zero(t, run(args, io.Discard), "run() exit code")
+
 	data, err := os.ReadFile(filepath.Join(outputDir, "result.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	var result eval.SuiteResult
-	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, json.Unmarshal(data, &result))
 	return result
 }
 
 func TestCmdRun_FailedRunKeepsJudgePassAndReportsHealth(t *testing.T) {
 	result := runHealthSuite(t, writeHealthSuite(t, ""))
 	task := result.Tasks[0]
-	if task.Outcome != "pass" || task.RunHealth != types.RunFailed {
-		t.Errorf("outcome %q health %q, want pass / failed", task.Outcome, task.RunHealth)
-	}
-	if result.PassRate != 1 || result.HealthyPassRate == nil || *result.HealthyPassRate != 0 {
-		t.Errorf("rates = %v / %v, want 1 / 0", result.PassRate, result.HealthyPassRate)
-	}
-	if result.RequireHealthy {
-		t.Error("requireHealthy set without the flag or the attribute")
-	}
+
+	t.Run("task keeps the judge pass and reports failed health", func(t *testing.T) {
+		require.Equal(t, "pass", task.Outcome)
+		require.Equal(t, types.RunFailed, task.RunHealth)
+	})
+	t.Run("rates count judge passes and healthy passes separately", func(t *testing.T) {
+		require.InDelta(t, 1.0, result.PassRate, 1e-9)
+		require.NotNil(t, result.HealthyPassRate)
+		require.Zero(t, *result.HealthyPassRate)
+	})
+	t.Run("require healthy is off without the flag or attribute", func(t *testing.T) {
+		require.False(t, result.RequireHealthy)
+	})
 }
 
 func TestCmdRun_RequireHealthyFlagAndAttributeAreRecorded(t *testing.T) {
-	if r := runHealthSuite(t, writeHealthSuite(t, ""), "--require-healthy"); !r.RequireHealthy {
-		t.Error("--require-healthy not recorded in the result")
-	}
-	if r := runHealthSuite(t, writeHealthSuite(t, "  require_healthy = true\n")); !r.RequireHealthy {
-		t.Error("the require_healthy attribute not recorded in the result")
-	}
+	t.Run("flag is recorded in the result", func(t *testing.T) {
+		result := runHealthSuite(t, writeHealthSuite(t, ""), "--require-healthy")
+		require.True(t, result.RequireHealthy)
+	})
+	t.Run("attribute is recorded in the result", func(t *testing.T) {
+		result := runHealthSuite(t, writeHealthSuite(t, "  require_healthy = true\n"))
+		require.True(t, result.RequireHealthy)
+	})
 }
 
 func TestPrintSummary_HealthyPassRate(t *testing.T) {
@@ -94,20 +94,24 @@ func TestPrintSummary_HealthyPassRate(t *testing.T) {
 		Tasks: []eval.TaskResult{{TaskID: "a", Outcome: "pass"}, {TaskID: "b", Outcome: "pass"}}}
 	var b bytes.Buffer
 	printSummary(&b, result, false)
-	for _, want := range []string{
-		"Pass rate: 100.0% (mean per-task pass fraction)",
-		"Healthy pass rate: 25.0% (judge passed and run healthy; 2 tasks, 2 trials each)",
-		"require_healthy: the comparison gate counts only healthy judge passes",
-	} {
-		if !strings.Contains(b.String(), want) {
-			t.Errorf("summary missing %q:\n%s", want, b.String())
-		}
+	summary := b.String()
+
+	tests := []struct {
+		name string
+		want string
+	}{
+		{name: "pass rate line", want: "Pass rate: 100.0% (mean per-task pass fraction)"},
+		{name: "healthy pass rate line", want: "Healthy pass rate: 25.0% (judge passed and run healthy; 2 tasks, 2 trials each)"},
+		{name: "require healthy note", want: "require_healthy: the comparison gate counts only healthy judge passes"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Contains(t, summary, tc.want)
+		})
 	}
 
 	result.HealthyPassRate, result.RequireHealthy = nil, false
 	b.Reset()
 	printSummary(&b, result, false)
-	if strings.Contains(b.String(), "ealthy") {
-		t.Errorf("a result without run health mentions health:\n%s", b.String())
-	}
+	require.NotContains(t, b.String(), "ealthy", "a result without run health should not mention health")
 }

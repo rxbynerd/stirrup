@@ -10,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -21,18 +22,14 @@ func mergedUsage(t *testing.T, events []types.StreamEvent) types.TokenUsage {
 	var got types.TokenUsage
 	seen := false
 	for _, ev := range events {
-		if ev.Type == "error" {
-			t.Fatalf("unexpected error event: %v", ev.Error)
-		}
+		require.NotEqual(t, "error", ev.Type, "unexpected error event: %v", ev.Error)
 		if ev.Type != "message_complete" {
 			continue
 		}
 		seen = true
 		got.MergeEvent(ev)
 	}
-	if !seen {
-		t.Fatalf("no message_complete event in %+v", events)
-	}
+	require.True(t, seen, "no message_complete event in %+v", events)
 	return got
 }
 
@@ -66,9 +63,7 @@ func streamAnthropicUsage(t *testing.T, messageDeltas ...string) types.TokenUsag
 	adapter.baseURL = serveSSE(t, joinLines(lines...)).URL
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "claude-sonnet-5-5", MaxTokens: 1024})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 	return mergedUsage(t, collectEvents(t, ch))
 }
 
@@ -78,9 +73,7 @@ func streamResponsesUsage(t *testing.T, terminal string) types.TokenUsage {
 	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), serveSSE(t, body).URL, OpenAIAuthConfig{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-6", MaxTokens: 1024})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 	return mergedUsage(t, collectEvents(t, ch))
 }
 
@@ -88,9 +81,7 @@ func streamGeminiUsage(t *testing.T, chunk string) types.TokenUsage {
 	t.Helper()
 	adapter := newGeminiTestAdapter(serveSSE(t, makeGeminiData(chunk)).URL, &stubTokenSource{token: "tok"})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-3.8-pro"})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 	return mergedUsage(t, collectEvents(t, ch))
 }
 
@@ -149,9 +140,7 @@ func TestSetEventUsage_CapsSubsetsAtTheirTotals(t *testing.T) {
 			setEventUsage(&ev, tc.in)
 			var got types.TokenUsage
 			got.MergeEvent(ev)
-			if got != tc.want {
-				t.Errorf("usage = %+v, want %+v", got, tc.want)
-			}
+			require.Equal(t, tc.want, got)
 		})
 	}
 }
@@ -163,47 +152,47 @@ func TestAdapters_ClampHostileUsage(t *testing.T) {
 	anthropicHostile := `"usage":{"input_tokens":` + maxInt64JSON + `,"cache_creation_input_tokens":-5,"cache_read_input_tokens":` + maxInt64JSON + `,"output_tokens":-1,"output_tokens_details":{"thinking_tokens":` + maxInt64JSON + `}}`
 	cases := []struct {
 		name string
-		got  func(t *testing.T) types.TokenUsage
+		run  func(t *testing.T) types.TokenUsage
 		want types.TokenUsage
 	}{
 		{
 			name: "anthropic stream",
-			got: func(t *testing.T) types.TokenUsage {
+			run: func(t *testing.T) types.TokenUsage {
 				return streamAnthropicUsage(t, `{"delta":{"stop_reason":"end_turn"},`+anthropicHostile+`}`)
 			},
 			want: types.TokenUsage{Input: maxReportedTokens, CacheRead: maxReportedTokens},
 		},
 		{
 			name: "anthropic batch",
-			got: func(t *testing.T) types.TokenUsage {
+			run: func(t *testing.T) types.TokenUsage {
 				return fabricatedUsage(t, `{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn",`+anthropicHostile+`}`, "anthropic")
 			},
 			want: types.TokenUsage{Input: maxReportedTokens, CacheRead: maxReportedTokens},
 		},
 		{
 			name: "openai responses",
-			got: func(t *testing.T) types.TokenUsage {
+			run: func(t *testing.T) types.TokenUsage {
 				return streamResponsesUsage(t, makeResponsesEvent("response.completed", `{"response":{"id":"resp_1","status":"completed","output":[{"type":"message","id":"msg_1"}],"usage":{"input_tokens":-3,"input_tokens_details":{"cached_tokens":`+maxInt64JSON+`,"cache_write_tokens":`+maxInt64JSON+`},"output_tokens":`+maxInt64JSON+`,"output_tokens_details":{"reasoning_tokens":-2}}}}`))
 			},
 			want: types.TokenUsage{Output: maxReportedTokens},
 		},
 		{
 			name: "openai chat",
-			got: func(t *testing.T) types.TokenUsage {
+			run: func(t *testing.T) types.TokenUsage {
 				return streamChatUsage(t, "data: "+`{"id":"c1","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":`+maxInt64JSON+`,"prompt_tokens_details":{"cached_tokens":-1},"completion_tokens":50,"completion_tokens_details":{"reasoning_tokens":`+maxInt64JSON+`}}}`+"\n\ndata: [DONE]\n\n")
 			},
 			want: types.TokenUsage{Input: maxReportedTokens, Output: 50, Reasoning: 50},
 		},
 		{
 			name: "gemini",
-			got: func(t *testing.T) types.TokenUsage {
+			run: func(t *testing.T) types.TokenUsage {
 				return streamGeminiUsage(t, `{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":-10,"cachedContentTokenCount":500,"candidatesTokenCount":`+maxInt64JSON+`,"thoughtsTokenCount":`+maxInt64JSON+`}}`)
 			},
 			want: types.TokenUsage{Output: maxReportedTokens, Reasoning: maxReportedTokens},
 		},
 		{
 			name: "bedrock",
-			got: func(t *testing.T) types.TokenUsage {
+			run: func(t *testing.T) types.TokenUsage {
 				return mergedUsage(t, bedrockUsageEvents(t, &brtypes.TokenUsage{
 					InputTokens:           aws.Int32(-5),
 					OutputTokens:          aws.Int32(math.MaxInt32),
@@ -216,9 +205,8 @@ func TestAdapters_ClampHostileUsage(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.got(t); got != tc.want {
-				t.Errorf("usage = %+v, want %+v", got, tc.want)
-			}
+			got := tc.run(t)
+			require.Equal(t, tc.want, got)
 		})
 	}
 }
@@ -238,14 +226,10 @@ func TestAnthropicAdapter_ReportsUsageFromMessageDelta(t *testing.T) {
 	adapter.baseURL = serveSSE(t, body).URL
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "claude-sonnet-5-5", MaxTokens: 1024})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 	got := mergedUsage(t, collectEvents(t, ch))
 	want := types.TokenUsage{Input: 4 + 310 + 2162, Output: 941, CacheRead: 2162, CacheWrite: 310, Reasoning: 468}
-	if got != want {
-		t.Errorf("usage = %+v, want %+v", got, want)
-	}
+	require.Equal(t, want, got)
 }
 
 // An Anthropic-compatible endpoint that reports only output_tokens on
@@ -253,12 +237,10 @@ func TestAnthropicAdapter_ReportsUsageFromMessageDelta(t *testing.T) {
 // its estimate.
 func TestAnthropicAdapter_OutputOnlyUsageLeavesInputUnreported(t *testing.T) {
 	got := streamAnthropicUsage(t, `{"delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":17}}`)
-	if want := (types.TokenUsage{Output: 17}); got != want {
-		t.Errorf("usage = %+v, want %+v", got, want)
-	}
+	require.Equal(t, types.TokenUsage{Output: 17}, got)
 }
 
-func TestAnthropicAdapter_PartialUsageShapes(t *testing.T) {
+func TestAnthropicAdapter_ReportsPartialUsage(t *testing.T) {
 	cases := []struct {
 		name   string
 		deltas []string
@@ -290,9 +272,8 @@ func TestAnthropicAdapter_PartialUsageShapes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := streamAnthropicUsage(t, tc.deltas...); got != tc.want {
-				t.Errorf("usage = %+v, want %+v", got, tc.want)
-			}
+			got := streamAnthropicUsage(t, tc.deltas...)
+			require.Equal(t, tc.want, got)
 		})
 	}
 }
@@ -308,9 +289,7 @@ func TestFabricateStream_AnthropicReportsUsage(t *testing.T) {
 	}`
 	got := fabricatedUsage(t, response, "anthropic")
 	want := types.TokenUsage{Input: 2622, Output: 941, CacheRead: 2000, CacheWrite: 100, Reasoning: 468}
-	if got != want {
-		t.Errorf("usage = %+v, want %+v", got, want)
-	}
+	require.Equal(t, want, got)
 }
 
 // In the Responses usage fixtures input_tokens already includes
@@ -335,14 +314,13 @@ func TestOpenAIResponsesAdapter_ReportsUsage(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := streamResponsesUsage(t, tc.terminal); got != responsesUsageWant {
-				t.Errorf("usage = %+v, want %+v", got, responsesUsageWant)
-			}
+			got := streamResponsesUsage(t, tc.terminal)
+			require.Equal(t, responsesUsageWant, got)
 		})
 	}
 }
 
-func TestOpenAIResponsesAdapter_PartialUsageShapes(t *testing.T) {
+func TestOpenAIResponsesAdapter_ReportsPartialUsage(t *testing.T) {
 	cases := []struct {
 		name  string
 		usage string
@@ -362,18 +340,16 @@ func TestOpenAIResponsesAdapter_PartialUsageShapes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			terminal := makeResponsesEvent("response.completed", `{"response":{"id":"resp_1","status":"completed","output":[{"type":"message","id":"msg_1"}]`+tc.usage+`}}`)
-			if got := streamResponsesUsage(t, terminal); got != tc.want {
-				t.Errorf("usage = %+v, want %+v", got, tc.want)
-			}
+			got := streamResponsesUsage(t, terminal)
+			require.Equal(t, tc.want, got)
 		})
 	}
 }
 
 func TestFabricateStream_OpenAIResponsesReportsUsage(t *testing.T) {
 	response := `{"status":"completed","output":[{"type":"message","id":"msg_1","content":[{"type":"output_text","text":"ok"}]}],` + responsesUsageFixture + `}`
-	if got := fabricatedUsage(t, response, "openai-responses"); got != responsesUsageWant {
-		t.Errorf("usage = %+v, want %+v", got, responsesUsageWant)
-	}
+	got := fabricatedUsage(t, response, "openai-responses")
+	require.Equal(t, responsesUsageWant, got)
 }
 
 func streamChatUsage(t *testing.T, sse string) types.TokenUsage {
@@ -384,9 +360,7 @@ func streamChatUsage(t *testing.T, sse string) types.TokenUsage {
 		MaxTokens: 1024,
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
 	})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 	return mergedUsage(t, collectEvents(t, ch))
 }
 
@@ -395,9 +369,8 @@ func streamChatUsage(t *testing.T, sse string) types.TokenUsage {
 // empty-choices chunk after finish_reason.
 func TestOpenAICompatibleAdapter_ReportsTrailingUsageFromCapture(t *testing.T) {
 	sse := string(streamFixtureSSE(t, "testdata/quirks/openai-compatible/qwen3.6-27b/response.sse"))
-	if got, want := streamChatUsage(t, sse), (types.TokenUsage{Input: 16, Output: 42, Reasoning: 31}); got != want {
-		t.Errorf("usage = %+v, want %+v", got, want)
-	}
+	got := streamChatUsage(t, sse)
+	require.Equal(t, types.TokenUsage{Input: 16, Output: 42, Reasoning: 31}, got)
 }
 
 // Usage attached to the finish chunk itself, with
@@ -406,9 +379,8 @@ func TestOpenAICompatibleAdapter_ReportsUsageOnFinishChunk(t *testing.T) {
 	sse := "data: " + `{"id":"c1","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":9000,"prompt_tokens_details":{"cached_tokens":8000},"completion_tokens":120,"completion_tokens_details":{"reasoning_tokens":64},"total_tokens":9120}}` + "\n\n" +
 		"data: [DONE]\n\n"
 	want := types.TokenUsage{Input: 9000, Output: 120, CacheRead: 8000, Reasoning: 64}
-	if got := streamChatUsage(t, sse); got != want {
-		t.Errorf("usage = %+v, want %+v", got, want)
-	}
+	got := streamChatUsage(t, sse)
+	require.Equal(t, want, got)
 }
 
 // A server that ignores stream_options.include_usage sends no usage
@@ -416,12 +388,10 @@ func TestOpenAICompatibleAdapter_ReportsUsageOnFinishChunk(t *testing.T) {
 func TestOpenAICompatibleAdapter_NoUsageLeavesCountsUnreported(t *testing.T) {
 	sse := "data: " + `{"id":"c1","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}` + "\n\n" +
 		"data: [DONE]\n\n"
-	if got := streamChatUsage(t, sse); got != (types.TokenUsage{}) {
-		t.Errorf("usage = %+v, want all zero", got)
-	}
+	require.Zero(t, streamChatUsage(t, sse))
 }
 
-func TestOpenAICompatibleAdapter_PartialUsageShapes(t *testing.T) {
+func TestOpenAICompatibleAdapter_ReportsPartialUsage(t *testing.T) {
 	cases := []struct {
 		name  string
 		usage string
@@ -442,9 +412,8 @@ func TestOpenAICompatibleAdapter_PartialUsageShapes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			sse := "data: " + `{"id":"c1","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}],"usage":` + tc.usage + `}` + "\n\n" +
 				"data: [DONE]\n\n"
-			if got := streamChatUsage(t, sse); got != tc.want {
-				t.Errorf("usage = %+v, want %+v", got, tc.want)
-			}
+			got := streamChatUsage(t, sse)
+			require.Equal(t, tc.want, got)
 		})
 	}
 }
@@ -462,9 +431,7 @@ func TestOpenAICompatibleAdapter_EmitsUsageOnce(t *testing.T) {
 		MaxTokens: 1024,
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
 	})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 	events := collectEvents(t, ch)
 	withUsage := 0
 	for _, ev := range events {
@@ -472,21 +439,17 @@ func TestOpenAICompatibleAdapter_EmitsUsageOnce(t *testing.T) {
 			withUsage++
 		}
 	}
-	if withUsage != 1 {
-		t.Errorf("usage-bearing message_complete events = %d, want 1: %+v", withUsage, events)
-	}
-	if got, want := mergedUsage(t, events), (types.TokenUsage{Input: 300, Output: 40}); got != want {
-		t.Errorf("usage = %+v, want %+v", got, want)
-	}
+	require.Equal(t, 1, withUsage, "usage-bearing message_complete events: %+v", events)
+	want := types.TokenUsage{Input: 300, Output: 40}
+	require.Equal(t, want, mergedUsage(t, events))
 }
 
 func TestFabricateStream_OpenAIChatReportsUsage(t *testing.T) {
 	response := `{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
 		"usage":{"prompt_tokens":9000,"prompt_tokens_details":{"cached_tokens":8000},"completion_tokens":120,"completion_tokens_details":{"reasoning_tokens":64}}}`
 	want := types.TokenUsage{Input: 9000, Output: 120, CacheRead: 8000, Reasoning: 64}
-	if got := fabricatedUsage(t, response, "openai-compatible"); got != want {
-		t.Errorf("usage = %+v, want %+v", got, want)
-	}
+	got := fabricatedUsage(t, response, "openai-compatible")
+	require.Equal(t, want, got)
 }
 
 // Gemini reports thoughts beside, not inside, candidatesTokenCount; the
@@ -496,12 +459,10 @@ func TestFabricateStream_OpenAIChatReportsUsage(t *testing.T) {
 func TestGeminiAdapter_ReportsUsageWithThoughtsInOutput(t *testing.T) {
 	got := streamGeminiUsage(t, `{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5000,"cachedContentTokenCount":4096,"candidatesTokenCount":120,"thoughtsTokenCount":900,"totalTokenCount":6020}}`)
 	want := types.TokenUsage{Input: 5000, Output: 120 + 900, CacheRead: 4096, Reasoning: 900}
-	if got != want {
-		t.Errorf("usage = %+v, want %+v", got, want)
-	}
+	require.Equal(t, want, got)
 }
 
-func TestGeminiAdapter_PartialUsageShapes(t *testing.T) {
+func TestGeminiAdapter_ReportsPartialUsage(t *testing.T) {
 	cases := []struct {
 		name  string
 		usage string
@@ -521,9 +482,7 @@ func TestGeminiAdapter_PartialUsageShapes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := streamGeminiUsage(t, `{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":`+tc.usage+`}`)
-			if got != tc.want {
-				t.Errorf("usage = %+v, want %+v", got, tc.want)
-			}
+			require.Equal(t, tc.want, got)
 		})
 	}
 }
@@ -532,9 +491,7 @@ func TestGeminiAdapter_PartialUsageShapes(t *testing.T) {
 // promptFeedback chunk.
 func TestGeminiAdapter_ReportsUsageOnBlockedPrompt(t *testing.T) {
 	got := streamGeminiUsage(t, `{"promptFeedback":{"blockReason":"SAFETY"},"usageMetadata":{"promptTokenCount":812,"totalTokenCount":812}}`)
-	if want := (types.TokenUsage{Input: 812}); got != want {
-		t.Errorf("usage = %+v, want %+v", got, want)
-	}
+	require.Equal(t, types.TokenUsage{Input: 812}, got)
 }
 
 // Bedrock delivers usage on the metadata event after messageStop.
@@ -601,9 +558,8 @@ func TestBedrock_ReportsUsageFromMetadata(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := mergedUsage(t, bedrockUsageEvents(t, tc.usage)); got != tc.want {
-				t.Errorf("usage = %+v, want %+v", got, tc.want)
-			}
+			got := mergedUsage(t, bedrockUsageEvents(t, tc.usage))
+			require.Equal(t, tc.want, got)
 		})
 	}
 }
@@ -616,12 +572,8 @@ func TestBedrock_MetadataWithoutUsageEmitsNoMessageComplete(t *testing.T) {
 			completes++
 		}
 	}
-	if completes != 1 {
-		t.Errorf("message_complete events = %d, want 1 (messageStop only): %+v", completes, events)
-	}
-	if got := mergedUsage(t, events); got != (types.TokenUsage{}) {
-		t.Errorf("usage = %+v, want all zero", got)
-	}
+	require.Equal(t, 1, completes, "want one message_complete from messageStop: %+v", events)
+	require.Zero(t, mergedUsage(t, events))
 }
 
 func TestFabricateStream_NoUsageLeavesCountsUnreported(t *testing.T) {
@@ -635,9 +587,7 @@ func TestFabricateStream_NoUsageLeavesCountsUnreported(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.providerType, func(t *testing.T) {
-			if got := fabricatedUsage(t, tc.response, tc.providerType); got != (types.TokenUsage{}) {
-				t.Errorf("usage = %+v, want all zero", got)
-			}
+			require.Zero(t, fabricatedUsage(t, tc.response, tc.providerType))
 		})
 	}
 }

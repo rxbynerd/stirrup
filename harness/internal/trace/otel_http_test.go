@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
@@ -86,9 +88,7 @@ func TestNewOTelTraceEmitter_HTTPProtocol_RoutesToV1Traces(t *testing.T) {
 			Headers:  map[string]string{authHeader: authValue},
 		},
 	})
-	if err != nil {
-		t.Fatalf("NewOTelTraceEmitter: %v", err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = emitter.Close() })
 
 	emitter.Start("run-http-1", &types.RunConfig{
@@ -108,37 +108,24 @@ func TestNewOTelTraceEmitter_HTTPProtocol_RoutesToV1Traces(t *testing.T) {
 	// retries on transient errors.
 	flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := emitter.Finish(flushCtx, "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
+	_, err = emitter.Finish(flushCtx, "success")
+	require.NoError(t, err, "Finish")
 	// Closing forces a Shutdown (final flush) so we can synchronously
 	// inspect the captured POSTs without polling.
-	if err := emitter.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+	require.NoError(t, emitter.Close(), "Close")
 
 	requests := fake.snapshot()
-	if len(requests) == 0 {
-		t.Fatalf("expected at least one OTLP/HTTP POST, got 0")
-	}
+	require.NotEmpty(t, requests, "expected at least one OTLP/HTTP POST")
 
 	// Path must end in /v1/traces — the SDK appends this segment to
 	// our base path, mirroring what Grafana Cloud's gateway expects
 	// (the configured URL ends in /otlp; the SDK appends the
 	// per-signal segment).
 	got := requests[0]
-	if !strings.HasSuffix(got.path, "/v1/traces") {
-		t.Errorf("path must end in /v1/traces, got %q", got.path)
-	}
-	if got.contentType != "application/x-protobuf" {
-		t.Errorf("content-type must be application/x-protobuf (binary OTLP), got %q", got.contentType)
-	}
-	if v := got.headers.Get(authHeader); v != authValue {
-		t.Errorf("Authorization header: got %q, want %q (the OTel SDK must forward configured headers verbatim)", v, authValue)
-	}
-	if got.bodyLen == 0 {
-		t.Errorf("expected non-empty protobuf body, got 0 bytes")
-	}
+	assert.True(t, strings.HasSuffix(got.path, "/v1/traces"), "path must end in /v1/traces, got %q", got.path)
+	assert.Equal(t, "application/x-protobuf", got.contentType, "content-type must be binary OTLP")
+	assert.Equal(t, authValue, got.headers.Get(authHeader), "the OTel SDK must forward configured headers verbatim")
+	assert.NotZero(t, got.bodyLen, "expected non-empty protobuf body")
 }
 
 // TestNewOTelTraceEmitter_HTTPProtocol_RejectsUnknownProtocol pins the
@@ -154,12 +141,8 @@ func TestNewOTelTraceEmitter_HTTPProtocol_RejectsUnknownProtocol(t *testing.T) {
 			Protocol: "http", // not in the closed set
 		},
 	})
-	if err == nil {
-		t.Fatalf("expected error for unsupported protocol, got nil")
-	}
-	if !strings.Contains(err.Error(), "unsupported OTLP protocol") {
-		t.Errorf("error must call out the bad protocol, got %q", err.Error())
-	}
+	require.Error(t, err)
+	require.ErrorContains(t, err, "unsupported OTLP protocol")
 }
 
 // TestNewOTelTraceEmitter_HTTPProtocol_HeaderValueDoesNotLeakToSlog is
@@ -170,9 +153,7 @@ func TestNewOTelTraceEmitter_HTTPProtocol_RejectsUnknownProtocol(t *testing.T) {
 // and asserts that the resolved bearer never appears.
 //
 // The exporter init path does not currently emit the headers map to
-// slog, so this assertion is "no leak" — not "must log". A future
-// regression that started logging the headers map would be caught
-// here even before security review.
+// slog, so this assertion is "no leak" — not "must log".
 func TestNewOTelTraceEmitter_HTTPProtocol_HeaderValueDoesNotLeakToSlog(t *testing.T) {
 	fake := &fakeOTLPHTTPServer{}
 	srv := httptest.NewServer(fake.handler())
@@ -185,9 +166,7 @@ func TestNewOTelTraceEmitter_HTTPProtocol_HeaderValueDoesNotLeakToSlog(t *testin
 	resolved, err := observability.ResolveHeaders(context.Background(),
 		security.NewEnvSecretStore(),
 		map[string]string{"Authorization": "secret://STIRRUP_TEST_BEARER"})
-	if err != nil {
-		t.Fatalf("ResolveHeaders: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Route slog through a buffer for the duration of the test.
 	var logBuf bytes.Buffer
@@ -203,9 +182,7 @@ func TestNewOTelTraceEmitter_HTTPProtocol_HeaderValueDoesNotLeakToSlog(t *testin
 			Headers:  resolved,
 		},
 	})
-	if err != nil {
-		t.Fatalf("NewOTelTraceEmitter: %v", err)
-	}
+	require.NoError(t, err)
 	emitter.Start("run-leak-1", &types.RunConfig{
 		RunID:    "run-leak-1",
 		Mode:     "execution",
@@ -214,14 +191,11 @@ func TestNewOTelTraceEmitter_HTTPProtocol_HeaderValueDoesNotLeakToSlog(t *testin
 	emitter.RecordTurn(types.TurnTrace{Turn: 1, DurationMs: 5})
 	flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := emitter.Finish(flushCtx, "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
+	_, err = emitter.Finish(flushCtx, "success")
+	require.NoError(t, err, "Finish")
 	_ = emitter.Close()
 
-	if strings.Contains(logBuf.String(), "ultra-secret-bearer-zzy") {
-		t.Fatalf("resolved bearer leaked into slog output: %s", logBuf.String())
-	}
+	require.NotContains(t, logBuf.String(), "ultra-secret-bearer-zzy", "resolved bearer must not appear in slog output")
 }
 
 // recordingExporter is a span-exporter decorator that records the
@@ -262,28 +236,17 @@ func TestNewOTelTraceEmitter_WrapSpanExporterSeesFinalAttributes(t *testing.T) {
 			return rec
 		},
 	})
-	if err != nil {
-		t.Fatalf("NewOTelTraceEmitter: %v", err)
-	}
+	require.NoError(t, err)
 	emitter.Start("run-wrap-1", &types.RunConfig{RunID: "run-wrap-1", Mode: "execution"})
 	flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := emitter.Finish(flushCtx, "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-	if err := emitter.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+	_, err = emitter.Finish(flushCtx, "success")
+	require.NoError(t, err, "Finish")
+	require.NoError(t, emitter.Close(), "Close")
 
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
-	if len(rec.names) == 0 {
-		t.Fatal("decorator saw no spans")
-	}
-	if got := rec.attrs["run.outcome"]; got != "success" {
-		t.Errorf("decorator saw run.outcome = %q, want the end-time value %q", got, "success")
-	}
-	if len(fake.snapshot()) == 0 {
-		t.Error("decorated exporter did not reach the collector")
-	}
+	require.NotEmpty(t, rec.names, "decorator must see spans")
+	assert.Equal(t, "success", rec.attrs["run.outcome"], "decorator must see the end-time run.outcome")
+	assert.NotEmpty(t, fake.snapshot(), "decorated exporter must reach the collector")
 }

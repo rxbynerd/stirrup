@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/cedar-policy/cedar-go"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -51,9 +53,7 @@ func (f *fakeEmitter) snapshot() []recordedEvent {
 func mustParse(t *testing.T, policy string) *cedar.PolicySet {
 	t.Helper()
 	ps, err := cedar.NewPolicySetFromBytes("test", []byte(policy))
-	if err != nil {
-		t.Fatalf("parse cedar: %v", err)
-	}
+	require.NoError(t, err)
 	return ps
 }
 
@@ -71,15 +71,12 @@ func newTestPolicy(t *testing.T, cfg PolicyEngineConfig) *PolicyEnginePolicy {
 		cfg.Workspace = "/tmp/ws"
 	}
 	p, err := NewPolicyEnginePolicy(cfg)
-	if err != nil {
-		t.Fatalf("NewPolicyEnginePolicy: %v", err)
-	}
+	require.NoError(t, err)
 	return p
 }
 
-// TestPolicyEngine_AllowPath: a permit policy on web_fetch to *.github.com
-// allows a matching call.
-func TestPolicyEngine_AllowPath(t *testing.T) {
+// A permit policy on web_fetch scoped to *.github.com allows a matching call.
+func TestPolicyEngine_PermitMatchAllowsCall(t *testing.T) {
 	policy := `permit (
 		principal,
 		action == Action::"tool:web_fetch",
@@ -98,32 +95,20 @@ func TestPolicyEngine_AllowPath(t *testing.T) {
 	tool := types.ToolDefinition{Name: "web_fetch"}
 	input := json.RawMessage(`{"url":"https://api.github.com/repos/foo/bar"}`)
 	result, err := p.Check(context.Background(), tool, input)
-	if err != nil {
-		t.Fatalf("Check: %v", err)
-	}
-	if !result.Allowed {
-		t.Fatalf("expected allow, got deny: %q", result.Reason)
-	}
+	require.NoError(t, err)
+	require.True(t, result.Allowed, "expected allow, got deny: %q", result.Reason)
 
 	events := emitter.snapshot()
-	if len(events) != 1 {
-		t.Fatalf("expected 1 security event, got %d: %+v", len(events), events)
-	}
-	if events[0].event != "policy_decision" {
-		t.Errorf("expected policy_decision event, got %q", events[0].event)
-	}
-	if events[0].data["decision"] != "allow" {
-		t.Errorf("expected decision=allow in event data, got %v", events[0].data["decision"])
-	}
-	matched, ok := events[0].data["matchedPolicies"].([]string)
-	if !ok || len(matched) == 0 {
-		t.Errorf("expected non-empty matchedPolicies in event data, got %v", events[0].data["matchedPolicies"])
-	}
+	require.Len(t, events, 1, "security events: %+v", events)
+	assert.Equal(t, "policy_decision", events[0].event)
+	assert.Equal(t, "allow", events[0].data["decision"])
+	matched, _ := events[0].data["matchedPolicies"].([]string)
+	assert.NotEmpty(t, matched, "matchedPolicies in event data")
 }
 
-// TestPolicyEngine_ForbidPath: a forbid policy on run_command blocks a
-// `rm -rf /` command and reports the matched policy ID.
-func TestPolicyEngine_ForbidPath(t *testing.T) {
+// A forbid policy on run_command blocks a `rm -rf /` command and reports the
+// matched policy ID.
+func TestPolicyEngine_ForbidMatchDeniesCall(t *testing.T) {
 	policy := `forbid (
 		principal,
 		action == Action::"tool:run_command",
@@ -142,32 +127,21 @@ func TestPolicyEngine_ForbidPath(t *testing.T) {
 	tool := types.ToolDefinition{Name: "run_command"}
 	input := json.RawMessage(`{"command":"rm -rf /"}`)
 	result, err := p.Check(context.Background(), tool, input)
-	if err != nil {
-		t.Fatalf("Check: %v", err)
-	}
-	if result.Allowed {
-		t.Fatalf("expected deny, got allow")
-	}
-	if !strings.Contains(result.Reason, "policy0") {
-		t.Errorf("expected reason to include matched policy ID 'policy0', got %q", result.Reason)
-	}
+	require.NoError(t, err)
+	require.False(t, result.Allowed, "expected deny, got allow")
+	assert.Contains(t, result.Reason, "policy0")
 
 	events := emitter.snapshot()
-	if len(events) != 1 || events[0].event != "policy_denied" {
-		t.Fatalf("expected one policy_denied event, got %+v", events)
-	}
-	if events[0].level != "warn" {
-		t.Errorf("expected level=warn on policy_denied, got %q", events[0].level)
-	}
-	matched, ok := events[0].data["matchedPolicies"].([]string)
-	if !ok || len(matched) == 0 || matched[0] != "policy0" {
-		t.Errorf("expected matchedPolicies=[policy0], got %v", events[0].data["matchedPolicies"])
-	}
+	require.Len(t, events, 1, "events: %+v", events)
+	assert.Equal(t, "policy_denied", events[0].event)
+	assert.Equal(t, "warn", events[0].level)
+	matched, _ := events[0].data["matchedPolicies"].([]string)
+	require.NotEmpty(t, matched, "matchedPolicies in event data")
+	assert.Equal(t, "policy0", matched[0])
 }
 
-// TestPolicyEngine_NoDecision_Deny: a tool not covered by any policy
-// falls through to the configured fallback. With deny-side-effects, a
-// workspace-mutating tool is denied.
+// A tool not covered by any policy falls through to the configured fallback.
+// With deny-side-effects, a workspace-mutating tool is denied.
 func TestPolicyEngine_NoDecision_FallbackDeny(t *testing.T) {
 	// Policy only covers web_fetch; write_file goes to the fallback.
 	policy := `permit (
@@ -185,27 +159,18 @@ func TestPolicyEngine_NoDecision_FallbackDeny(t *testing.T) {
 
 	tool := types.ToolDefinition{Name: "write_file"}
 	result, err := p.Check(context.Background(), tool, json.RawMessage(`{"path":"/tmp/x"}`))
-	if err != nil {
-		t.Fatalf("Check: %v", err)
-	}
-	if result.Allowed {
-		t.Fatalf("expected fallback deny, got allow")
-	}
+	require.NoError(t, err)
+	require.False(t, result.Allowed, "expected fallback deny, got allow")
 
 	events := emitter.snapshot()
-	if len(events) != 1 || events[0].event != "policy_decision" {
-		t.Fatalf("expected one policy_decision event, got %+v", events)
-	}
-	if events[0].data["decision"] != "no_match" {
-		t.Errorf("expected decision=no_match, got %v", events[0].data["decision"])
-	}
-	if !strings.HasPrefix(events[0].data["fallback"].(string), "deny") {
-		t.Errorf("expected fallback outcome to start with 'deny', got %v", events[0].data["fallback"])
-	}
+	require.Len(t, events, 1, "events: %+v", events)
+	assert.Equal(t, "policy_decision", events[0].event)
+	assert.Equal(t, "no_match", events[0].data["decision"])
+	fallback, _ := events[0].data["fallback"].(string)
+	assert.True(t, strings.HasPrefix(fallback, "deny"), "fallback outcome %v should start with 'deny'", events[0].data["fallback"])
 }
 
-// TestPolicyEngine_NoDecision_FallbackAllow: same as above with an
-// allow-all fallback — confirms the fallback's decision is honoured.
+// A tool with no matching policy takes the allow-all fallback's decision.
 func TestPolicyEngine_NoDecision_FallbackAllow(t *testing.T) {
 	policy := `permit (
 		principal,
@@ -222,23 +187,14 @@ func TestPolicyEngine_NoDecision_FallbackAllow(t *testing.T) {
 
 	tool := types.ToolDefinition{Name: "anything_else"}
 	result, err := p.Check(context.Background(), tool, json.RawMessage(`{}`))
-	if err != nil {
-		t.Fatalf("Check: %v", err)
-	}
-	if !result.Allowed {
-		t.Fatalf("expected fallback allow, got deny: %q", result.Reason)
-	}
+	require.NoError(t, err)
+	require.True(t, result.Allowed, "expected fallback allow, got deny: %q", result.Reason)
 
 	events := emitter.snapshot()
-	if len(events) != 1 || events[0].event != "policy_decision" {
-		t.Fatalf("expected one policy_decision event, got %+v", events)
-	}
-	if events[0].data["decision"] != "no_match" {
-		t.Errorf("expected decision=no_match, got %v", events[0].data["decision"])
-	}
-	if events[0].data["fallback"] != "allow" {
-		t.Errorf("expected fallback outcome to be 'allow', got %v", events[0].data["fallback"])
-	}
+	require.Len(t, events, 1, "events: %+v", events)
+	assert.Equal(t, "policy_decision", events[0].event)
+	assert.Equal(t, "no_match", events[0].data["decision"])
+	assert.Equal(t, "allow", events[0].data["fallback"])
 }
 
 // TestPolicyEngine_ForbidWinsOverPermit confirms Cedar's documented
@@ -264,17 +220,12 @@ func TestPolicyEngine_ForbidWinsOverPermit(t *testing.T) {
 
 	tool := types.ToolDefinition{Name: "web_fetch"}
 	result, err := p.Check(context.Background(), tool, json.RawMessage(`{"url":"https://example.com/"}`))
-	if err != nil {
-		t.Fatalf("Check: %v", err)
-	}
-	if result.Allowed {
-		t.Fatalf("expected forbid to win, got allow")
-	}
+	require.NoError(t, err)
+	require.False(t, result.Allowed, "expected forbid to win, got allow")
 }
 
-// TestPolicyEngine_SubAgentCap exercises the parentRunId attribute path:
-// a sub-agent (parentRunId set) is forbidden from run_command.
-func TestPolicyEngine_SubAgentCap(t *testing.T) {
+// A sub-agent (parentRunId set) is forbidden from run_command.
+func TestPolicyEngine_SubAgentCap_DeniesRunCommand(t *testing.T) {
 	policy := `forbid (
 		principal,
 		action == Action::"tool:run_command",
@@ -291,25 +242,17 @@ func TestPolicyEngine_SubAgentCap(t *testing.T) {
 
 	tool := types.ToolDefinition{Name: "run_command"}
 	result, err := p.Check(context.Background(), tool, json.RawMessage(`{"command":"echo hi"}`))
-	if err != nil {
-		t.Fatalf("Check: %v", err)
-	}
-	if result.Allowed {
-		t.Fatalf("expected sub-agent run_command to be denied")
-	}
+	require.NoError(t, err)
+	require.False(t, result.Allowed, "expected sub-agent run_command to be denied")
 
-	// Without parentRunId, the same call should be allowed (no policy matches → fallback allow-all).
+	// Without parentRunId, no policy matches and the allow-all fallback applies.
 	p2 := newTestPolicy(t, PolicyEngineConfig{
 		PolicySet: mustParse(t, policy),
 		Fallback:  NewAllowAll(),
 	})
 	result2, err := p2.Check(context.Background(), tool, json.RawMessage(`{"command":"echo hi"}`))
-	if err != nil {
-		t.Fatalf("Check: %v", err)
-	}
-	if !result2.Allowed {
-		t.Fatalf("expected parent-run run_command to be allowed (no parentRunId), got deny: %q", result2.Reason)
-	}
+	require.NoError(t, err)
+	require.True(t, result2.Allowed, "expected parent-run run_command to be allowed (no parentRunId), got deny: %q", result2.Reason)
 }
 
 // TestGoValueToCedar_DeepNestingReturnsError: a tool input nested past
@@ -324,22 +267,15 @@ func TestGoValueToCedar_DeepNestingReturnsError(t *testing.T) {
 	}
 
 	_, err := goValueToCedar(nested)
-	if err == nil {
-		t.Fatal("expected error on deeply-nested input, got nil")
-	}
-	if want := "too deeply nested"; !strings.Contains(err.Error(), want) {
-		t.Fatalf("expected error to mention %q, got %q", want, err.Error())
-	}
+	require.ErrorContains(t, err, "too deeply nested")
 
-	// Sanity: input at exactly the limit should still parse without
-	// a depth error so legitimate nested objects keep working.
+	// Input at exactly the limit still converts, so legitimate nested objects keep working.
 	var atLimit any = "leaf"
 	for i := 0; i < maxCedarDepth-1; i++ {
 		atLimit = map[string]any{"k": atLimit}
 	}
-	if _, err := goValueToCedar(atLimit); err != nil {
-		t.Fatalf("unexpected error at depth %d: %v", maxCedarDepth-1, err)
-	}
+	_, err = goValueToCedar(atLimit)
+	require.NoError(t, err, "depth %d", maxCedarDepth-1)
 }
 
 // TestPolicyEngine_ForChildRun_PopulatesParentRunID: a sub-agent's
@@ -364,44 +300,23 @@ func TestPolicyEngine_ForChildRun_PopulatesParentRunID(t *testing.T) {
 	tool := types.ToolDefinition{Name: "run_command"}
 
 	parentResult, err := parent.Check(context.Background(), tool, json.RawMessage(`{"command":"echo hi"}`))
-	if err != nil {
-		t.Fatalf("parent Check: %v", err)
-	}
-	if !parentResult.Allowed {
-		t.Fatalf("parent run_command should fall through to allow-all fallback (no parentRunId), got deny: %q", parentResult.Reason)
-	}
+	require.NoError(t, err, "parent Check")
+	require.True(t, parentResult.Allowed, "parent run_command should fall through to allow-all fallback (no parentRunId), got deny: %q", parentResult.Reason)
 
 	child := parent.ForChildRun("run-child-1", "")
-	if child == nil {
-		t.Fatal("ForChildRun returned nil")
-	}
-	if child == parent {
-		t.Fatal("ForChildRun should return a clone, not the receiver")
-	}
-	if child.parentRunID != "run-parent-1" {
-		t.Errorf("child.parentRunID: got %q, want run-parent-1", child.parentRunID)
-	}
-	if child.runID != "run-child-1" {
-		t.Errorf("child.runID: got %q, want run-child-1", child.runID)
-	}
+	require.NotNil(t, child, "ForChildRun returned nil")
+	require.NotSame(t, parent, child, "ForChildRun should return a clone, not the receiver")
+	assert.Equal(t, "run-parent-1", child.parentRunID)
+	assert.Equal(t, "run-child-1", child.runID)
 
 	childResult, err := child.Check(context.Background(), tool, json.RawMessage(`{"command":"echo hi"}`))
-	if err != nil {
-		t.Fatalf("child Check: %v", err)
-	}
-	if childResult.Allowed {
-		t.Fatalf("child run_command should be denied by subagent-capability-cap, got allow")
-	}
+	require.NoError(t, err, "child Check")
+	require.False(t, childResult.Allowed, "child run_command should be denied by subagent-capability-cap, got allow")
 
-	// Cloning twice with no-op IDs leaves the parent's runID untouched
-	// — guards against a future regression that mutates the receiver.
+	// Empty IDs keep the existing values, and ForChildRun never mutates the receiver.
 	child2 := parent.ForChildRun("", "")
-	if child2.runID != parent.runID {
-		t.Errorf("ForChildRun(\"\", \"\") should preserve runID; got %q", child2.runID)
-	}
-	if parent.parentRunID != "" {
-		t.Errorf("parent parentRunID was mutated to %q", parent.parentRunID)
-	}
+	assert.Equal(t, parent.runID, child2.runID, `ForChildRun("", "") should preserve runID`)
+	assert.Empty(t, parent.parentRunID, "parent parentRunID was mutated")
 }
 
 // TestPolicyEngine_ForChildRun_UsesChildMode pins that a child clone
@@ -428,53 +343,30 @@ func TestPolicyEngine_ForChildRun_UsesChildMode(t *testing.T) {
 	check := func(t *testing.T, p *PolicyEnginePolicy) bool {
 		t.Helper()
 		result, err := p.Check(context.Background(), tool, input)
-		if err != nil {
-			t.Fatalf("Check: %v", err)
-		}
+		require.NoError(t, err, "Check")
 		return result.Allowed
 	}
 
-	if !check(t, parent) {
-		t.Fatal("execution parent: write_file should fall through to the allow-all fallback")
-	}
+	require.True(t, check(t, parent), "execution parent: write_file should fall through to the allow-all fallback")
 
 	research := parent.ForChildRun("run-child-1", "research")
-	if research.mode != "research" {
-		t.Errorf("child mode = %q, want research", research.mode)
-	}
-	if check(t, research) {
-		t.Error("research child: write_file should be denied by the principal.mode forbid")
-	}
-	if parent.mode != "execution" {
-		t.Errorf("parent mode mutated to %q", parent.mode)
-	}
+	assert.Equal(t, "research", research.mode, "child mode")
+	assert.False(t, check(t, research), "research child: write_file should be denied by the principal.mode forbid")
+	assert.Equal(t, "execution", parent.mode, "parent mode")
 
 	inherited := parent.ForChildRun("run-child-2", "")
-	if inherited.mode != "execution" {
-		t.Errorf("empty childMode should keep the parent's mode; got %q", inherited.mode)
-	}
-	if !check(t, inherited) {
-		t.Error("child inheriting execution mode: write_file should be allowed")
-	}
+	assert.Equal(t, "execution", inherited.mode, "empty childMode should keep the parent's mode")
+	assert.True(t, check(t, inherited), "child inheriting execution mode: write_file should be allowed")
 }
 
-// TestPolicyEngine_StarterPolicies round-trips the four shipped starter
-// policy files through the real evaluator. Inputs use the field names
-// the tools' JSON Schemas actually declare (`command` for run_command,
-// `content` for write_file, `url` for web_fetch) — the schema validator
-// rejects anything else before Cedar runs, so a policy keyed on an
-// undeclared name can never fire in production. Issue #524 shipped
-// exactly that bug, and this test's earlier `{"cmd": ...}` input
-// encoded it as green.
-func TestPolicyEngine_StarterPolicies(t *testing.T) {
-	// Locate the policies directory relative to this test file. The test
-	// runs from the package directory, so walk up to the repo root.
+// The starter policy files are evaluated with the field names the tools'
+// JSON Schemas declare (`command` for run_command, `content` for write_file,
+// `url` for web_fetch). The schema validator rejects other names before Cedar
+// runs, so a policy keyed on an undeclared name never fires in production.
+func TestPolicyEngine_StarterPolicyDecisions(t *testing.T) {
+	// Go runs tests from the package directory, so the repo root is three levels up.
 	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	// permission_test.go sits at harness/internal/permission; the example
-	// policies live at examples/policies — three levels up.
+	require.NoError(t, err)
 	root := filepath.Clean(filepath.Join(wd, "..", "..", ".."))
 	policiesDir := filepath.Join(root, "examples", "policies")
 
@@ -511,9 +403,8 @@ func TestPolicyEngine_StarterPolicies(t *testing.T) {
 			allowed: true,
 		},
 		{
-			// Cedar `like` wildcards match `/`, so the retired pattern
-			// `https://*.github.com/*` matched this URL. The anchored
-			// per-host patterns must not.
+			// Cedar `like` wildcards match `/`, so `https://*.github.com/*`
+			// would match this URL. The anchored per-host patterns must not.
 			name:     "github-only-fetch does not permit embedded-host bypass",
 			file:     "github-only-fetch.cedar",
 			tool:     "web_fetch",
@@ -559,9 +450,7 @@ func TestPolicyEngine_StarterPolicies(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(policiesDir, tc.file)
 			ps, err := LoadPolicySetFromFile(path)
-			if err != nil {
-				t.Fatalf("load %s: %v", tc.file, err)
-			}
+			require.NoError(t, err, "load %s", tc.file)
 			cfg := PolicyEngineConfig{
 				PolicySet: ps,
 				// allow-all isolates each file's own permit/forbid
@@ -578,73 +467,53 @@ func TestPolicyEngine_StarterPolicies(t *testing.T) {
 			p := newTestPolicy(t, cfg)
 			tool := types.ToolDefinition{Name: tc.tool}
 			result, err := p.Check(context.Background(), tool, json.RawMessage(tc.input))
-			if err != nil {
-				t.Fatalf("Check: %v", err)
-			}
-			if result.Allowed != tc.allowed {
-				t.Fatalf("%s: expected allowed=%v, got allowed=%v reason=%q",
-					tc.file, tc.allowed, result.Allowed, result.Reason)
-			}
+			require.NoError(t, err)
+			require.Equal(t, tc.allowed, result.Allowed, "reason: %q", result.Reason)
 		})
 	}
 }
 
-// TestNewPolicyEnginePolicy_Validation: PolicySet and Fallback are required.
-func TestNewPolicyEnginePolicy_Validation(t *testing.T) {
-	if _, err := NewPolicyEnginePolicy(PolicyEngineConfig{}); err == nil {
-		t.Error("expected error when PolicySet is nil")
-	}
-	if _, err := NewPolicyEnginePolicy(PolicyEngineConfig{
-		PolicySet: cedar.NewPolicySet(),
-	}); err == nil {
-		t.Error("expected error when Fallback is nil")
-	}
+// PolicySet and Fallback are required.
+func TestNewPolicyEnginePolicy_RequiresPolicySetAndFallback(t *testing.T) {
+	t.Run("missing policy set", func(t *testing.T) {
+		_, err := NewPolicyEnginePolicy(PolicyEngineConfig{})
+		require.Error(t, err)
+	})
+
+	t.Run("missing fallback", func(t *testing.T) {
+		_, err := NewPolicyEnginePolicy(PolicyEngineConfig{
+			PolicySet: cedar.NewPolicySet(),
+		})
+		require.Error(t, err)
+	})
 }
 
-// TestLoadPolicySetFromFile_Errors covers the three constructor failure
-// modes the task calls out.
+// LoadPolicySetFromFile rejects a missing file, an empty path and invalid Cedar syntax.
 func TestLoadPolicySetFromFile_Errors(t *testing.T) {
 	t.Run("missing file", func(t *testing.T) {
 		_, err := LoadPolicySetFromFile("/nonexistent/path.cedar")
-		if err == nil {
-			t.Fatal("expected error for missing file")
-		}
-		if !strings.Contains(err.Error(), "read policy file") {
-			t.Errorf("expected error to mention 'read policy file', got %v", err)
-		}
+		require.ErrorContains(t, err, "read policy file")
 	})
 
 	t.Run("empty path", func(t *testing.T) {
 		_, err := LoadPolicySetFromFile("")
-		if err == nil {
-			t.Fatal("expected error for empty path")
-		}
+		require.Error(t, err)
 	})
 
 	t.Run("bad cedar syntax", func(t *testing.T) {
 		dir := t.TempDir()
 		bad := filepath.Join(dir, "bad.cedar")
-		if err := os.WriteFile(bad, []byte("this is not a policy"), 0o600); err != nil {
-			t.Fatalf("write tmp file: %v", err)
-		}
+		require.NoError(t, os.WriteFile(bad, []byte("this is not a policy"), 0o600))
 		_, err := LoadPolicySetFromFile(bad)
-		if err == nil {
-			t.Fatal("expected error for invalid Cedar syntax")
-		}
-		if !strings.Contains(err.Error(), "parse policy file") {
-			t.Errorf("expected error to mention 'parse policy file', got %v", err)
-		}
+		require.ErrorContains(t, err, "parse policy file")
 	})
 }
 
-// TestNew_PolicyEngine_RejectsRecursiveFallback: cfg.Fallback ==
-// "policy-engine" must be rejected at construction time.
+// cfg.Fallback == "policy-engine" must be rejected at construction time.
 func TestNew_PolicyEngine_RejectsRecursiveFallback(t *testing.T) {
 	dir := t.TempDir()
 	policyFile := filepath.Join(dir, "p.cedar")
-	if err := os.WriteFile(policyFile, []byte(`permit (principal, action, resource);`), 0o600); err != nil {
-		t.Fatalf("write tmp file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(policyFile, []byte(`permit (principal, action, resource);`), 0o600))
 
 	cfg := types.PermissionPolicyConfig{
 		Type:       "policy-engine",
@@ -654,22 +523,14 @@ func TestNew_PolicyEngine_RejectsRecursiveFallback(t *testing.T) {
 	_, err := New(cfg, PolicyEngineEnv{}, func(string) (PermissionPolicy, error) {
 		return NewAllowAll(), nil
 	})
-	if err == nil {
-		t.Fatal("expected error when fallback is policy-engine")
-	}
-	if !strings.Contains(err.Error(), "policy-engine") {
-		t.Errorf("expected error to mention policy-engine, got %v", err)
-	}
+	require.ErrorContains(t, err, "policy-engine")
 }
 
-// TestNew_PolicyEngine_DefaultFallback: when cfg.Fallback is unset, the
-// builder is invoked with "deny-side-effects".
+// When cfg.Fallback is unset, the builder is invoked with "deny-side-effects".
 func TestNew_PolicyEngine_DefaultFallback(t *testing.T) {
 	dir := t.TempDir()
 	policyFile := filepath.Join(dir, "p.cedar")
-	if err := os.WriteFile(policyFile, []byte(`permit (principal, action, resource);`), 0o600); err != nil {
-		t.Fatalf("write tmp file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(policyFile, []byte(`permit (principal, action, resource);`), 0o600))
 
 	var requested string
 	cfg := types.PermissionPolicyConfig{
@@ -680,17 +541,13 @@ func TestNew_PolicyEngine_DefaultFallback(t *testing.T) {
 		requested = name
 		return NewDenySideEffects(nil), nil
 	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if requested != "deny-side-effects" {
-		t.Errorf("expected default fallback 'deny-side-effects', got %q", requested)
-	}
+	require.NoError(t, err, "New")
+	require.Equal(t, "deny-side-effects", requested, "default fallback")
 }
 
-// TestNew_PolicyEngine_MissingFile surfaces the file-not-found error
+// TestNew_PolicyEngine_MissingFileErrors surfaces the file-not-found error
 // from LoadPolicySetFromFile through the New constructor.
-func TestNew_PolicyEngine_MissingFile(t *testing.T) {
+func TestNew_PolicyEngine_MissingFileErrors(t *testing.T) {
 	cfg := types.PermissionPolicyConfig{
 		Type:       "policy-engine",
 		PolicyFile: "/does/not/exist.cedar",
@@ -698,22 +555,15 @@ func TestNew_PolicyEngine_MissingFile(t *testing.T) {
 	_, err := New(cfg, PolicyEngineEnv{}, func(string) (PermissionPolicy, error) {
 		return NewAllowAll(), nil
 	})
-	if err == nil {
-		t.Fatal("expected error for missing policy file")
-	}
+	require.Error(t, err)
 }
 
-// TestPermissionNew_EmptyTypeReturnsError: a zero-value
+// TestPermissionNew_EmptyType_ReturnsError: a zero-value
 // PermissionPolicyConfig must error rather than silently coercing to
 // allow-all.
-func TestPermissionNew_EmptyTypeReturnsError(t *testing.T) {
+func TestPermissionNew_EmptyType_ReturnsError(t *testing.T) {
 	_, err := New(types.PermissionPolicyConfig{}, PolicyEngineEnv{}, nil)
-	if err == nil {
-		t.Fatal("expected error for empty cfg.Type")
-	}
-	if !strings.Contains(err.Error(), "type is required") {
-		t.Errorf("expected error to mention required type, got: %v", err)
-	}
+	require.ErrorContains(t, err, "type is required")
 }
 
 // TestNew_PolicyEngine_RequiresPolicyFile fails fast when policyFile is
@@ -723,22 +573,15 @@ func TestNew_PolicyEngine_RequiresPolicyFile(t *testing.T) {
 	_, err := New(cfg, PolicyEngineEnv{}, func(string) (PermissionPolicy, error) {
 		return NewAllowAll(), nil
 	})
-	if err == nil {
-		t.Fatal("expected error when policyFile is empty")
-	}
-	if !strings.Contains(err.Error(), "policyFile") {
-		t.Errorf("expected error to mention policyFile, got %v", err)
-	}
+	require.ErrorContains(t, err, "policyFile")
 }
 
-// TestNew_PolicyEngine_BadFallbackType is the case where the fallback
-// builder itself returns an error.
-func TestNew_PolicyEngine_BadFallbackType(t *testing.T) {
+// TestNew_PolicyEngine_FallbackBuildFailureErrors is the case where the
+// fallback builder itself returns an error.
+func TestNew_PolicyEngine_FallbackBuildFailureErrors(t *testing.T) {
 	dir := t.TempDir()
 	policyFile := filepath.Join(dir, "p.cedar")
-	if err := os.WriteFile(policyFile, []byte(`permit (principal, action, resource);`), 0o600); err != nil {
-		t.Fatalf("write tmp file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(policyFile, []byte(`permit (principal, action, resource);`), 0o600))
 	cfg := types.PermissionPolicyConfig{
 		Type:       "policy-engine",
 		PolicyFile: policyFile,
@@ -747,12 +590,7 @@ func TestNew_PolicyEngine_BadFallbackType(t *testing.T) {
 	_, err := New(cfg, PolicyEngineEnv{}, func(string) (PermissionPolicy, error) {
 		return nil, errAFailure
 	})
-	if err == nil {
-		t.Fatal("expected error when fallback builder fails")
-	}
-	if !strings.Contains(err.Error(), "build fallback") {
-		t.Errorf("expected error to mention 'build fallback', got %v", err)
-	}
+	require.ErrorContains(t, err, "build fallback")
 }
 
 // errAFailure is a sentinel for the builder-failure test above.

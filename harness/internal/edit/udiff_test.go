@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 )
 
@@ -14,44 +17,24 @@ func TestUdiffStrategy_ToolDefinition(t *testing.T) {
 	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	def := s.ToolDefinition()
 
-	if def.Name != "apply_diff" {
-		t.Errorf("name: got %q, want %q", def.Name, "apply_diff")
-	}
-	if def.Description == "" {
-		t.Error("description should not be empty")
-	}
-	if len(def.InputSchema) == 0 {
-		t.Error("input schema should not be empty")
-	}
+	assert.Equal(t, "apply_diff", def.Name)
+	assert.NotEmpty(t, def.Description)
+	assert.NotEmpty(t, def.InputSchema)
 
-	// Verify schema contains required fields.
 	var schema map[string]interface{}
-	if err := json.Unmarshal(def.InputSchema, &schema); err != nil {
-		t.Fatalf("unmarshal schema: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(def.InputSchema, &schema))
 	props, ok := schema["properties"].(map[string]interface{})
-	if !ok {
-		t.Fatal("schema missing properties")
-	}
-	if _, ok := props["path"]; !ok {
-		t.Error("schema missing 'path' property")
-	}
-	if _, ok := props["diff"]; !ok {
-		t.Error("schema missing 'diff' property")
-	}
+	require.True(t, ok, "schema missing properties")
+	assert.Contains(t, props, "path")
+	assert.Contains(t, props, "diff")
 }
 
 func TestUdiffStrategy_ExactMatch_SingleHunk(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
+	exec, err := executor.NewLocalExecutor(t.TempDir())
+	require.NoError(t, err)
 
 	original := "line 1\nline 2\nline 3\nline 4\nline 5\n"
-	if err := exec.WriteFile(context.Background(), "file.txt", original); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	require.NoError(t, exec.WriteFile(context.Background(), "file.txt", original))
 
 	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	diff := `--- a/file.txt
@@ -64,37 +47,21 @@ func TestUdiffStrategy_ExactMatch_SingleHunk(t *testing.T) {
 
 	input, _ := json.Marshal(map[string]string{"path": "file.txt", "diff": diff})
 	result, err := s.Apply(context.Background(), json.RawMessage(input), exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if !result.Applied {
-		t.Fatalf("expected Applied=true; error: %s", result.Error)
-	}
-	if result.Path != "file.txt" {
-		t.Errorf("path: got %q, want %q", result.Path, "file.txt")
-	}
+	require.NoError(t, err)
+	require.True(t, result.Applied, "expected Applied=true; error: %s", result.Error)
+	assert.Equal(t, "file.txt", result.Path)
 
 	content, err := exec.ReadFile(context.Background(), "file.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	expected := "line 1\nline 2\nline THREE\nline 4\nline 5\n"
-	if content != expected {
-		t.Errorf("content:\ngot:  %q\nwant: %q", content, expected)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "line 1\nline 2\nline THREE\nline 4\nline 5\n", content)
 }
 
 func TestUdiffStrategy_ExactMatch_MultiHunk(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
+	exec, err := executor.NewLocalExecutor(t.TempDir())
+	require.NoError(t, err)
 
 	original := "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n"
-	if err := exec.WriteFile(context.Background(), "file.txt", original); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	require.NoError(t, exec.WriteFile(context.Background(), "file.txt", original))
 
 	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	// First hunk replaces line 2 (b->B), second hunk replaces line 8 (h->H).
@@ -114,34 +81,20 @@ func TestUdiffStrategy_ExactMatch_MultiHunk(t *testing.T) {
 
 	input, _ := json.Marshal(map[string]string{"path": "file.txt", "diff": diff})
 	result, err := s.Apply(context.Background(), json.RawMessage(input), exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if !result.Applied {
-		t.Fatalf("expected Applied=true; error: %s", result.Error)
-	}
+	require.NoError(t, err)
+	require.True(t, result.Applied, "expected Applied=true; error: %s", result.Error)
 
 	content, err := exec.ReadFile(context.Background(), "file.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	expected := "a\nB\nc\nd\ne\nf\ng\nH\ni\nj\n"
-	if content != expected {
-		t.Errorf("content:\ngot:  %q\nwant: %q", content, expected)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "a\nB\nc\nd\ne\nf\ng\nH\ni\nj\n", content)
 }
 
 func TestUdiffStrategy_MultiHunk_OffsetAdjustment(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
+	exec, err := executor.NewLocalExecutor(t.TempDir())
+	require.NoError(t, err)
 
 	original := "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n"
-	if err := exec.WriteFile(context.Background(), "file.txt", original); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	require.NoError(t, exec.WriteFile(context.Background(), "file.txt", original))
 
 	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	// First hunk adds a line after b (3 old -> 4 new = +1 offset).
@@ -161,35 +114,21 @@ func TestUdiffStrategy_MultiHunk_OffsetAdjustment(t *testing.T) {
 
 	input, _ := json.Marshal(map[string]string{"path": "file.txt", "diff": diff})
 	result, err := s.Apply(context.Background(), json.RawMessage(input), exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if !result.Applied {
-		t.Fatalf("expected Applied=true; error: %s", result.Error)
-	}
+	require.NoError(t, err)
+	require.True(t, result.Applied, "expected Applied=true; error: %s", result.Error)
 
 	content, err := exec.ReadFile(context.Background(), "file.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	expected := "a\nb\nb2\nc\nd\ne\nf\ng\nH\ni\nj\n"
-	if content != expected {
-		t.Errorf("content:\ngot:  %q\nwant: %q", content, expected)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "a\nb\nb2\nc\nd\ne\nf\ng\nH\ni\nj\n", content)
 }
 
 func TestUdiffStrategy_WhitespaceInsensitiveFallback(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
+	exec, err := executor.NewLocalExecutor(t.TempDir())
+	require.NoError(t, err)
 
 	// File uses tabs, diff uses spaces — whitespace-insensitive should match.
 	original := "\tline 1\n\tline 2\n\tline 3\n"
-	if err := exec.WriteFile(context.Background(), "file.txt", original); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	require.NoError(t, exec.WriteFile(context.Background(), "file.txt", original))
 
 	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	diff := `--- a/file.txt
@@ -202,37 +141,23 @@ func TestUdiffStrategy_WhitespaceInsensitiveFallback(t *testing.T) {
 
 	input, _ := json.Marshal(map[string]string{"path": "file.txt", "diff": diff})
 	result, err := s.Apply(context.Background(), json.RawMessage(input), exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if !result.Applied {
-		t.Fatalf("expected Applied=true; error: %s", result.Error)
-	}
+	require.NoError(t, err)
+	require.True(t, result.Applied, "expected Applied=true; error: %s", result.Error)
 
 	content, err := exec.ReadFile(context.Background(), "file.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
+	require.NoError(t, err)
 	// The replacement text from the diff is used (with spaces), not the
 	// original file indentation. Context lines keep the original file text.
-	expected := "\tline 1\n  line TWO\n\tline 3\n"
-	if content != expected {
-		t.Errorf("content:\ngot:  %q\nwant: %q", content, expected)
-	}
+	require.Equal(t, "\tline 1\n  line TWO\n\tline 3\n", content)
 }
 
 func TestUdiffStrategy_FuzzyFallback(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
+	exec, err := executor.NewLocalExecutor(t.TempDir())
+	require.NoError(t, err)
 
 	// Context lines slightly differ from the diff (within 80% similarity).
 	original := "function calculateTotal(items) {\n  let total = 0;\n  for (const item of items) {\n    total += item.price;\n  }\n  return total;\n}\n"
-	if err := exec.WriteFile(context.Background(), "calc.js", original); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	require.NoError(t, exec.WriteFile(context.Background(), "calc.js", original))
 
 	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	// The context lines have minor differences: "calculateTotl" vs "calculateTotal"
@@ -249,33 +174,20 @@ func TestUdiffStrategy_FuzzyFallback(t *testing.T) {
 
 	input, _ := json.Marshal(map[string]string{"path": "calc.js", "diff": diff})
 	result, err := s.Apply(context.Background(), json.RawMessage(input), exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if !result.Applied {
-		t.Fatalf("expected Applied=true via fuzzy match; error: %s", result.Error)
-	}
+	require.NoError(t, err)
+	require.True(t, result.Applied, "expected Applied=true via fuzzy match; error: %s", result.Error)
 
 	content, err := exec.ReadFile(context.Background(), "calc.js")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if !strings.Contains(content, "for (const entry of items)") {
-		t.Errorf("expected fuzzy-matched replacement; got:\n%s", content)
-	}
+	require.NoError(t, err)
+	require.Contains(t, content, "for (const entry of items)")
 }
 
 func TestUdiffStrategy_FuzzyFailure_BelowThreshold(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
+	exec, err := executor.NewLocalExecutor(t.TempDir())
+	require.NoError(t, err)
 
 	original := "completely different content\nanother line\nmore stuff\n"
-	if err := exec.WriteFile(context.Background(), "file.txt", original); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	require.NoError(t, exec.WriteFile(context.Background(), "file.txt", original))
 
 	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	// Context lines bear no resemblance to the actual file.
@@ -289,24 +201,13 @@ func TestUdiffStrategy_FuzzyFailure_BelowThreshold(t *testing.T) {
 
 	input, _ := json.Marshal(map[string]string{"path": "file.txt", "diff": diff})
 	result, err := s.Apply(context.Background(), json.RawMessage(input), exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied {
-		t.Error("expected Applied=false when context lines are too different")
-	}
-	if !strings.Contains(result.Error, "no match within lines") {
-		t.Errorf("expected matching location error; got: %s", result.Error)
-	}
+	require.NoError(t, err)
+	assert.False(t, result.Applied, "context lines are too different to match")
+	assert.Contains(t, result.Error, "no match within lines")
 
-	// Verify the file was not modified.
 	content, err := exec.ReadFile(context.Background(), "file.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if content != original {
-		t.Errorf("file should not have been modified; got:\n%s", content)
-	}
+	require.NoError(t, err)
+	require.Equal(t, original, content)
 }
 
 // buildAnchorTestFile constructs a file with a whitespace-equal (but not
@@ -340,16 +241,11 @@ func buildAnchorTestFile(fillerCount int, includeTarget bool) (content string, t
 // whitespace-equal block far from the hunk's declared line when a
 // plausible match exists near the declared location.
 func TestUdiffStrategy_AnchoredFallback_IgnoresEarlyDuplicateBlock(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
+	exec, err := executor.NewLocalExecutor(t.TempDir())
+	require.NoError(t, err)
 
 	original, targetLine := buildAnchorTestFile(60, true)
-	if err := exec.WriteFile(context.Background(), "file.txt", original); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	require.NoError(t, exec.WriteFile(context.Background(), "file.txt", original))
 
 	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	// The file uses 4 spaces near the top and a tab at the true target;
@@ -365,27 +261,21 @@ func TestUdiffStrategy_AnchoredFallback_IgnoresEarlyDuplicateBlock(t *testing.T)
 
 	input, _ := json.Marshal(map[string]string{"path": "file.txt", "diff": diff})
 	result, err := s.Apply(context.Background(), json.RawMessage(input), exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
+	require.NoError(t, err)
 
-	content, readErr := exec.ReadFile(context.Background(), "file.txt")
-	if readErr != nil {
-		t.Fatalf("ReadFile: %v", readErr)
-	}
+	content, err := exec.ReadFile(context.Background(), "file.txt")
+	require.NoError(t, err)
 
 	// The early duplicate must never be touched, whether the fix landed the
 	// edit on the true target or failed closed.
-	if !strings.Contains(content, "    line A\n    line B\n    line C\n") {
-		t.Fatalf("early duplicate block was modified (silent wrong-region edit); got:\n%s", content)
-	}
+	require.Contains(t, content, "    line A\n    line B\n    line C\n",
+		"early duplicate block was modified (silent wrong-region edit)")
 
 	if result.Applied {
-		if !strings.Contains(content, "\tline A\nline B changed\n\tline C\n") {
-			t.Errorf("expected the edit to land on the true target; got:\n%s", content)
-		}
-	} else if content != original {
-		t.Errorf("file should be unmodified when Applied=false; got:\n%s", content)
+		require.Contains(t, content, "\tline A\nline B changed\n\tline C\n",
+			"expected the edit to land on the true target")
+	} else {
+		require.Equal(t, original, content, "file should be unmodified when Applied=false")
 	}
 }
 
@@ -394,18 +284,13 @@ func TestUdiffStrategy_AnchoredFallback_IgnoresEarlyDuplicateBlock(t *testing.T)
 // resolve via the whitespace-insensitive fallback when the true target
 // is within the search window.
 func TestUdiffStrategy_AnchoredFallback_SmallDriftStillSucceeds(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
+	exec, err := executor.NewLocalExecutor(t.TempDir())
+	require.NoError(t, err)
 
 	// The real block sits 3 lines below the declared start (line 1),
 	// inside the anchoring window.
 	original := "\tpad 0\n\tpad 1\n\tpad 2\n\tline 1\n\tline 2\n\tline 3\n"
-	if err := exec.WriteFile(context.Background(), "file.txt", original); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	require.NoError(t, exec.WriteFile(context.Background(), "file.txt", original))
 
 	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	diff := `--- a/file.txt
@@ -418,21 +303,12 @@ func TestUdiffStrategy_AnchoredFallback_SmallDriftStillSucceeds(t *testing.T) {
 
 	input, _ := json.Marshal(map[string]string{"path": "file.txt", "diff": diff})
 	result, err := s.Apply(context.Background(), json.RawMessage(input), exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if !result.Applied {
-		t.Fatalf("expected small line-number drift to still resolve; error: %s", result.Error)
-	}
+	require.NoError(t, err)
+	require.True(t, result.Applied, "expected small line-number drift to still resolve; error: %s", result.Error)
 
 	content, err := exec.ReadFile(context.Background(), "file.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	expected := "\tpad 0\n\tpad 1\n\tpad 2\n\tline 1\n  line TWO\n\tline 3\n"
-	if content != expected {
-		t.Errorf("content:\ngot:  %q\nwant: %q", content, expected)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "\tpad 0\n\tpad 1\n\tpad 2\n\tline 1\n  line TWO\n\tline 3\n", content)
 }
 
 // TestUdiffStrategy_AnchoredFallback_OutOfRegionMatchFailsClosed pins the
@@ -440,18 +316,13 @@ func TestUdiffStrategy_AnchoredFallback_SmallDriftStillSucceeds(t *testing.T) {
 // the hunk's declared region, the strategy must report Applied=false
 // with an actionable error rather than reaching past the window.
 func TestUdiffStrategy_AnchoredFallback_OutOfRegionMatchFailsClosed(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
+	exec, err := executor.NewLocalExecutor(t.TempDir())
+	require.NoError(t, err)
 
 	// No true target: the only whitespace-equal match is the early
 	// duplicate, outside the window around the declared line.
 	original, targetLine := buildAnchorTestFile(60, false)
-	if err := exec.WriteFile(context.Background(), "file.txt", original); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	require.NoError(t, exec.WriteFile(context.Background(), "file.txt", original))
 
 	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	diff := fmt.Sprintf(`--- a/file.txt
@@ -464,31 +335,16 @@ func TestUdiffStrategy_AnchoredFallback_OutOfRegionMatchFailsClosed(t *testing.T
 
 	input, _ := json.Marshal(map[string]string{"path": "file.txt", "diff": diff})
 	result, err := s.Apply(context.Background(), json.RawMessage(input), exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied {
-		t.Fatalf("expected Applied=false for an out-of-region-only match; got content modified")
-	}
-	if !strings.Contains(result.Error, "no match within lines") {
-		t.Errorf("expected an actionable window error; got: %s", result.Error)
-	}
-	if !strings.Contains(result.Error, fmt.Sprintf("declared start line %d", targetLine)) {
-		t.Errorf("expected the error to cite the declared start line; got: %s", result.Error)
-	}
+	require.NoError(t, err)
+	require.False(t, result.Applied, "expected Applied=false for an out-of-region-only match")
+	assert.Contains(t, result.Error, "no match within lines")
+	assert.Contains(t, result.Error, fmt.Sprintf("declared start line %d", targetLine))
 
 	content, err := exec.ReadFile(context.Background(), "file.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if content != original {
-		t.Errorf("file should be unmodified when Applied=false; got:\n%s", content)
-	}
-	// And, just as importantly, the early duplicate — the only match that
-	// exists anywhere in the file — must be untouched.
-	if !strings.Contains(content, "    line A\n    line B\n    line C\n") {
-		t.Errorf("early duplicate block was modified; got:\n%s", content)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, original, content, "file should be unmodified when Applied=false")
+	// The early duplicate is the only match in the file and must stay untouched.
+	require.Contains(t, content, "    line A\n    line B\n    line C\n")
 }
 
 // TestUdiffStrategy_AnchoredFuzzyFallback_IgnoresEarlyLookalike is the
@@ -496,11 +352,8 @@ func TestUdiffStrategy_AnchoredFallback_OutOfRegionMatchFailsClosed(t *testing.T
 // early block that merely resembles the pattern must not outscore the
 // true, drifted target outside the search window.
 func TestUdiffStrategy_AnchoredFuzzyFallback_IgnoresEarlyLookalike(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
+	exec, err := executor.NewLocalExecutor(t.TempDir())
+	require.NoError(t, err)
 
 	// Both blocks are near-misses on the pattern's first context line, so
 	// this can only resolve via fuzzy matching. The early block scores
@@ -524,9 +377,7 @@ func TestUdiffStrategy_AnchoredFuzzyFallback_IgnoresEarlyLookalike(t *testing.T)
 	b.WriteString("}\n")
 	original := b.String()
 
-	if err := exec.WriteFile(context.Background(), "calc.js", original); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	require.NoError(t, exec.WriteFile(context.Background(), "calc.js", original))
 
 	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	diff := fmt.Sprintf(`--- a/calc.js
@@ -539,34 +390,26 @@ func TestUdiffStrategy_AnchoredFuzzyFallback_IgnoresEarlyLookalike(t *testing.T)
 
 	input, _ := json.Marshal(map[string]string{"path": "calc.js", "diff": diff})
 	result, err := s.Apply(context.Background(), json.RawMessage(input), exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
+	require.NoError(t, err)
 
-	content, readErr := exec.ReadFile(context.Background(), "calc.js")
-	if readErr != nil {
-		t.Fatalf("ReadFile: %v", readErr)
-	}
+	content, err := exec.ReadFile(context.Background(), "calc.js")
+	require.NoError(t, err)
 
 	// The early block's own removed-line text ("item") must survive
 	// untouched; only the true target's copy may become "entry".
-	if !strings.Contains(content, "let totale = 0;\n  for (const item of items) {") {
-		t.Fatalf("early lookalike block was modified (silent wrong-region edit); got:\n%s", content)
-	}
-	if result.Applied && !strings.Contains(content, "for (const entry of items)") {
-		t.Errorf("expected the edit to land on the true target; got:\n%s", content)
-	}
-	if !result.Applied && content != original {
-		t.Errorf("file should be unmodified when Applied=false; got:\n%s", content)
+	require.Contains(t, content, "let totale = 0;\n  for (const item of items) {",
+		"early lookalike block was modified (silent wrong-region edit)")
+	if result.Applied {
+		require.Contains(t, content, "for (const entry of items)",
+			"expected the edit to land on the true target")
+	} else {
+		require.Equal(t, original, content, "file should be unmodified when Applied=false")
 	}
 }
 
 func TestUdiffStrategy_NewFileCreation(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
+	exec, err := executor.NewLocalExecutor(t.TempDir())
+	require.NoError(t, err)
 
 	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	diff := `--- /dev/null
@@ -578,34 +421,20 @@ func TestUdiffStrategy_NewFileCreation(t *testing.T) {
 
 	input, _ := json.Marshal(map[string]string{"path": "new_file.txt", "diff": diff})
 	result, err := s.Apply(context.Background(), json.RawMessage(input), exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if !result.Applied {
-		t.Fatalf("expected Applied=true for new file; error: %s", result.Error)
-	}
+	require.NoError(t, err)
+	require.True(t, result.Applied, "expected Applied=true for new file; error: %s", result.Error)
 
 	content, err := exec.ReadFile(context.Background(), "new_file.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	expected := "first line\nsecond line\nthird line\n"
-	if content != expected {
-		t.Errorf("content:\ngot:  %q\nwant: %q", content, expected)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "first line\nsecond line\nthird line\n", content)
 }
 
 func TestUdiffStrategy_FileDeletion(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
+	exec, err := executor.NewLocalExecutor(t.TempDir())
+	require.NoError(t, err)
 
 	original := "line 1\nline 2\nline 3\n"
-	if err := exec.WriteFile(context.Background(), "doomed.txt", original); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	require.NoError(t, exec.WriteFile(context.Background(), "doomed.txt", original))
 
 	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	diff := `--- a/doomed.txt
@@ -617,32 +446,19 @@ func TestUdiffStrategy_FileDeletion(t *testing.T) {
 
 	input, _ := json.Marshal(map[string]string{"path": "doomed.txt", "diff": diff})
 	result, err := s.Apply(context.Background(), json.RawMessage(input), exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if !result.Applied {
-		t.Fatalf("expected Applied=true for deletion; error: %s", result.Error)
-	}
+	require.NoError(t, err)
+	require.True(t, result.Applied, "expected Applied=true for deletion; error: %s", result.Error)
 
 	content, err := exec.ReadFile(context.Background(), "doomed.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if content != "" {
-		t.Errorf("expected empty file after deletion; got: %q", content)
-	}
+	require.NoError(t, err)
+	require.Empty(t, content, "expected empty file after deletion")
 }
 
 func TestUdiffStrategy_HunkLineMismatch(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
+	exec, err := executor.NewLocalExecutor(t.TempDir())
+	require.NoError(t, err)
 
-	if err := exec.WriteFile(context.Background(), "file.txt", "a\nb\nc\n"); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	require.NoError(t, exec.WriteFile(context.Background(), "file.txt", "a\nb\nc\n"))
 
 	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	// Header claims 5 old lines but body only has 3.
@@ -656,27 +472,15 @@ func TestUdiffStrategy_HunkLineMismatch(t *testing.T) {
 
 	input, _ := json.Marshal(map[string]string{"path": "file.txt", "diff": diff})
 	result, err := s.Apply(context.Background(), json.RawMessage(input), exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied {
-		t.Error("expected Applied=false for mismatched line counts")
-	}
-	if !strings.Contains(result.Error, "parse diff") {
-		t.Errorf("expected parse diff error; got: %s", result.Error)
-	}
+	require.NoError(t, err)
+	assert.False(t, result.Applied, "expected Applied=false for mismatched line counts")
+	require.Contains(t, result.Error, "parse diff")
 }
 
 func TestUdiffStrategy_MalformedDiff(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
-
-	if err := exec.WriteFile(context.Background(), "file.txt", "content\n"); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	exec, err := executor.NewLocalExecutor(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, exec.WriteFile(context.Background(), "file.txt", "content\n"))
 
 	s := NewUdiffStrategy(defaultFuzzyThreshold)
 
@@ -706,61 +510,38 @@ func TestUdiffStrategy_MalformedDiff(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			input, _ := json.Marshal(map[string]string{"path": "file.txt", "diff": tc.diff})
 			result, err := s.Apply(context.Background(), json.RawMessage(input), exec)
-			if err != nil {
-				t.Fatalf("Apply: %v", err)
-			}
-			if result.Applied {
-				t.Error("expected Applied=false for malformed diff")
-			}
-			if !strings.Contains(result.Error, tc.want) {
-				t.Errorf("expected error containing %q; got: %s", tc.want, result.Error)
-			}
+			require.NoError(t, err)
+			require.False(t, result.Applied)
+			require.Contains(t, result.Error, tc.want)
 		})
 	}
 }
 
 func TestUdiffStrategy_MissingPath(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
+	exec, err := executor.NewLocalExecutor(t.TempDir())
+	require.NoError(t, err)
 
 	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	input := json.RawMessage(`{"diff": "@@ -1,1 +1,1 @@\n-old\n+new"}`)
 
 	result, err := s.Apply(context.Background(), input, exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied {
-		t.Error("expected Applied=false for missing path")
-	}
-	if result.Error == "" {
-		t.Error("expected an error message")
-	}
+	require.NoError(t, err)
+	require.False(t, result.Applied)
+	require.NotEmpty(t, result.Error)
 }
 
 func TestUdiffStrategy_InvalidJSON(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
+	exec, err := executor.NewLocalExecutor(t.TempDir())
+	require.NoError(t, err)
 
 	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	_, err = s.Apply(context.Background(), json.RawMessage(`{invalid`), exec)
-	if err == nil {
-		t.Fatal("expected error for invalid JSON")
-	}
+	require.Error(t, err)
 }
 
 func TestUdiffStrategy_NonexistentFile(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
+	exec, err := executor.NewLocalExecutor(t.TempDir())
+	require.NoError(t, err)
 
 	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	diff := `--- a/missing.txt
@@ -771,19 +552,14 @@ func TestUdiffStrategy_NonexistentFile(t *testing.T) {
 
 	input, _ := json.Marshal(map[string]string{"path": "missing.txt", "diff": diff})
 	result, err := s.Apply(context.Background(), json.RawMessage(input), exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied {
-		t.Error("expected Applied=false for nonexistent file")
-	}
-	if !strings.Contains(result.Error, "read file") {
-		t.Errorf("expected read file error; got: %s", result.Error)
-	}
+	require.NoError(t, err)
+	require.False(t, result.Applied)
+	require.Contains(t, result.Error, "read file")
 }
 
-func TestParseHunkHeader(t *testing.T) {
+func TestParseHunkHeader_ParsesRangesAndRejectsMalformed(t *testing.T) {
 	tests := []struct {
+		name     string
 		input    string
 		wantOldS int
 		wantOldC int
@@ -791,90 +567,80 @@ func TestParseHunkHeader(t *testing.T) {
 		wantNewC int
 		wantErr  bool
 	}{
-		{"@@ -1,4 +1,6 @@", 1, 4, 1, 6, false},
-		{"@@ -10,3 +12,5 @@ func main()", 10, 3, 12, 5, false},
-		{"@@ -1 +1 @@", 1, 1, 1, 1, false},
-		{"@@ -0,0 +1,3 @@", 0, 0, 1, 3, false},
-		{"@@ invalid @@", 0, 0, 0, 0, true},
-		{"@@ -1,4 @@", 0, 0, 0, 0, true},
-		{"not a header", 0, 0, 0, 0, true},
+		{"both ranges with counts", "@@ -1,4 +1,6 @@", 1, 4, 1, 6, false},
+		{"trailing function context", "@@ -10,3 +12,5 @@ func main()", 10, 3, 12, 5, false},
+		{"omitted counts default to one", "@@ -1 +1 @@", 1, 1, 1, 1, false},
+		{"empty old range", "@@ -0,0 +1,3 @@", 0, 0, 1, 3, false},
+		{"non-numeric ranges", "@@ invalid @@", 0, 0, 0, 0, true},
+		{"missing new range", "@@ -1,4 @@", 0, 0, 0, 0, true},
+		{"no hunk marker", "not a header", 0, 0, 0, 0, true},
 	}
 
 	for _, tc := range tests {
-		t.Run(tc.input, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			h, err := parseHunkHeader(tc.input)
 			if tc.wantErr {
-				if err == nil {
-					t.Error("expected error")
-				}
+				require.Error(t, err)
 				return
 			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if h.oldStart != tc.wantOldS || h.oldCount != tc.wantOldC {
-				t.Errorf("old: got %d,%d want %d,%d", h.oldStart, h.oldCount, tc.wantOldS, tc.wantOldC)
-			}
-			if h.newStart != tc.wantNewS || h.newCount != tc.wantNewC {
-				t.Errorf("new: got %d,%d want %d,%d", h.newStart, h.newCount, tc.wantNewS, tc.wantNewC)
-			}
+			require.NoError(t, err)
+			require.Equal(t, tc.wantOldS, h.oldStart, "old start")
+			require.Equal(t, tc.wantOldC, h.oldCount, "old count")
+			require.Equal(t, tc.wantNewS, h.newStart, "new start")
+			require.Equal(t, tc.wantNewC, h.newCount, "new count")
 		})
 	}
 }
 
-func TestLevenshtein(t *testing.T) {
+func TestLevenshtein_EditDistance(t *testing.T) {
 	tests := []struct {
+		name string
 		a, b string
 		want int
 	}{
-		{"", "", 0},
-		{"abc", "abc", 0},
-		{"abc", "abd", 1},
-		{"kitten", "sitting", 3},
-		{"", "abc", 3},
-		{"abc", "", 3},
+		{"both empty", "", "", 0},
+		{"identical strings", "abc", "abc", 0},
+		{"single substitution", "abc", "abd", 1},
+		{"kitten to sitting", "kitten", "sitting", 3},
+		{"empty first operand", "", "abc", 3},
+		{"empty second operand", "abc", "", 3},
 	}
 
 	for _, tc := range tests {
-		got := levenshtein(tc.a, tc.b)
-		if got != tc.want {
-			t.Errorf("levenshtein(%q, %q) = %d, want %d", tc.a, tc.b, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, levenshtein(tc.a, tc.b))
+		})
 	}
 }
 
-func TestLineSimilarity(t *testing.T) {
+func TestLineSimilarity_ScoreBounds(t *testing.T) {
 	tests := []struct {
+		name    string
 		a, b    string
 		wantMin float64
 		wantMax float64
 	}{
-		{"abc", "abc", 1.0, 1.0},
-		{"", "", 1.0, 1.0},
-		{"abc", "xyz", 0.0, 0.01},
-		{"calculateTotal", "calculateTotl", 0.9, 1.0},
+		{"identical lines", "abc", "abc", 1.0, 1.0},
+		{"both empty", "", "", 1.0, 1.0},
+		{"disjoint lines", "abc", "xyz", 0.0, 0.01},
+		{"one character dropped", "calculateTotal", "calculateTotl", 0.9, 1.0},
 	}
 
 	for _, tc := range tests {
-		got := lineSimilarity(tc.a, tc.b)
-		if got < tc.wantMin || got > tc.wantMax {
-			t.Errorf("lineSimilarity(%q, %q) = %f, want [%f, %f]",
-				tc.a, tc.b, got, tc.wantMin, tc.wantMax)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			got := lineSimilarity(tc.a, tc.b)
+			require.GreaterOrEqual(t, got, tc.wantMin)
+			require.LessOrEqual(t, got, tc.wantMax)
+		})
 	}
 }
 
-func TestUdiffStrategy_PureAddition(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
+func TestUdiffStrategy_PureAddition_InsertsLines(t *testing.T) {
+	exec, err := executor.NewLocalExecutor(t.TempDir())
+	require.NoError(t, err)
 
 	original := "line 1\nline 2\nline 3\n"
-	if err := exec.WriteFile(context.Background(), "file.txt", original); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	require.NoError(t, exec.WriteFile(context.Background(), "file.txt", original))
 
 	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	// Hunk that only adds lines (no context, no removals).
@@ -886,18 +652,11 @@ func TestUdiffStrategy_PureAddition(t *testing.T) {
 
 	input, _ := json.Marshal(map[string]string{"path": "file.txt", "diff": diff})
 	result, err := s.Apply(context.Background(), json.RawMessage(input), exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if !result.Applied {
-		t.Fatalf("expected Applied=true; error: %s", result.Error)
-	}
+	require.NoError(t, err)
+	require.True(t, result.Applied, "expected Applied=true; error: %s", result.Error)
 
 	content, err := exec.ReadFile(context.Background(), "file.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if !strings.Contains(content, "inserted 1") || !strings.Contains(content, "inserted 2") {
-		t.Errorf("expected inserted lines; got:\n%s", content)
-	}
+	require.NoError(t, err)
+	require.Contains(t, content, "inserted 1")
+	require.Contains(t, content, "inserted 2")
 }

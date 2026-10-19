@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 
 	pb "github.com/rxbynerd/stirrup/gen/harness/v1"
@@ -100,9 +102,7 @@ func (s *scriptedControlPlane) events() []*pb.HarnessEvent {
 func serveControlPlane(t *testing.T, srv pb.HarnessServiceServer) {
 	t.Helper()
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("net.Listen: %v", err)
-	}
+	require.NoError(t, err, "net.Listen")
 	grpcServer := grpc.NewServer()
 	pb.RegisterHarnessServiceServer(grpcServer, srv)
 	go func() { _ = grpcServer.Serve(lis) }()
@@ -117,7 +117,7 @@ func (s *scriptedControlPlane) waitDone(t *testing.T, what string) string {
 	case sr := <-s.dones:
 		return sr
 	case <-time.After(15 * time.Second):
-		t.Fatalf("no done for %s", what)
+		require.Failf(t, "timed out waiting for done", "no done for %s", what)
 		return ""
 	}
 }
@@ -166,6 +166,17 @@ func followUpJobConfig(t *testing.T, providerURL string, timeoutSecs, graceSecs 
 	}
 }
 
+// awaitRunJob requires runJob to return nil within 15 seconds.
+func awaitRunJob(t *testing.T, errCh <-chan error) {
+	t.Helper()
+	select {
+	case err := <-errCh:
+		require.NoError(t, err, "runJob()")
+	case <-time.After(15 * time.Second):
+		require.Fail(t, "runJob did not return within 15 seconds")
+	}
+}
+
 // TestRunJob_FollowUpGetsFreshTimeout pins the budget contract end to
 // end: a follow-up that arrives after the primary run's timeout would
 // have expired still gets its own full budget and completes with
@@ -199,24 +210,13 @@ func TestRunJob_FollowUpGetsFreshTimeout(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() { errCh <- runJob(jobCmd, nil) }()
 
-	if sr := srv.waitDone(t, "primary run"); sr != "success" {
-		t.Fatalf("primary done stop_reason = %q, want success", sr)
-	}
-	if sr := srv.waitDone(t, "follow-up run"); sr != "success" {
-		t.Fatalf("follow-up done stop_reason = %q, want success (a fresh budget, not the primary's remainder)", sr)
-	}
+	primary := srv.waitDone(t, "primary run")
+	require.Equal(t, "success", primary, "primary run stop_reason")
+	followUp := srv.waitDone(t, "follow-up run")
+	require.Equal(t, "success", followUp, "follow-up run should get a fresh budget, not the primary's remainder")
 
-	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Fatalf("runJob() error = %v, want nil", err)
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("runJob did not return after cancel")
-	}
-	if got := requests.Load(); got != 2 {
-		t.Errorf("provider requests = %d, want 2 (one per run)", got)
-	}
+	awaitRunJob(t, errCh)
+	require.Equal(t, int32(2), requests.Load(), "one provider request per run")
 }
 
 // TestRunJob_FollowUpsFinaliseEachRun pins per-run finalisation end to
@@ -246,45 +246,26 @@ func TestRunJob_FollowUpsFinaliseEachRun(t *testing.T) {
 	go func() { errCh <- runJob(jobCmd, nil) }()
 
 	for _, what := range []string{"primary", "follow-up 1", "follow-up 2"} {
-		if sr := srv.waitDone(t, what); sr != "success" {
-			t.Fatalf("%s done stop_reason = %q, want success", what, sr)
-		}
+		require.Equal(t, "success", srv.waitDone(t, what), "%s done stop_reason", what)
 	}
-	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Fatalf("runJob() error = %v, want nil", err)
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("runJob did not return after cancel")
-	}
+	awaitRunJob(t, errCh)
 
-	if got := requests.Load(); got != 3 {
-		t.Errorf("provider requests = %d, want 3 (one per run)", got)
-	}
-	if len(sink.calls) != 3 {
-		t.Fatalf("result sink emitted %d results, want exactly one per run (3)", len(sink.calls))
-	}
+	assert.Equal(t, int32(3), requests.Load(), "one provider request per run")
+	require.Len(t, sink.calls, 3, "one result per run")
 	ids := []string{sink.calls[0].RunID, sink.calls[1].RunID, sink.calls[2].RunID}
-	if ids[0] != "job-followup-primary" {
-		t.Errorf("first result RunID = %q, want the primary run's", ids[0])
-	}
-	if ids[1] == ids[0] || ids[2] == ids[0] || ids[1] == ids[2] {
-		t.Errorf("run IDs are not distinct: %v", ids)
-	}
+	assert.Equal(t, "job-followup-primary", ids[0], "first result RunID is the primary run's")
+	assert.NotEqual(t, ids[0], ids[1], "run IDs must be distinct")
+	assert.NotEqual(t, ids[0], ids[2], "run IDs must be distinct")
+	assert.NotEqual(t, ids[1], ids[2], "run IDs must be distinct")
 	for i, r := range sink.calls {
-		if r.Outcome != "success" {
-			t.Errorf("result %d outcome = %q, want success", i, r.Outcome)
-		}
+		assert.Equal(t, "success", r.Outcome, "result %d outcome", i)
 	}
 	want := []string{
 		"gs://bucket/runs/primary/workspace.tar.gz",
 		"gs://bucket/runs/primary/" + ids[1] + "/workspace.tar.gz",
 		"gs://bucket/runs/primary/" + ids[2] + "/workspace.tar.gz",
 	}
-	if got := exporter.destinations(); !equalStrings(got, want) {
-		t.Errorf("export destinations = %v, want %v", got, want)
-	}
+	assert.Equal(t, want, exporter.destinations(), "workspace export destinations")
 }
 
 // TestRunJob_MidRunUserResponseIsInjected drives a user_response into an
@@ -345,32 +326,23 @@ func TestRunJob_MidRunUserResponseIsInjected(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() { errCh <- runJob(jobCmd, nil) }()
 
-	if sr := srv.waitDone(t, "the run"); sr != "success" {
-		t.Fatalf("done stop_reason = %q, want success", sr)
-	}
-	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Fatalf("runJob() error = %v, want nil", err)
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("runJob did not return")
-	}
+	require.Equal(t, "success", srv.waitDone(t, "the run"), "done stop_reason")
+	awaitRunJob(t, errCh)
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(bodies) != 2 {
-		t.Fatalf("provider requests = %d, want 2 (the queued input continued the run past end_turn)", len(bodies))
-	}
+	require.Len(t, bodies, 2, "the queued input continues the run past end_turn")
 	second := bodies[1]
 	assistant := strings.Index(second, `"content":"hi"`)
 	injected := strings.Index(second, "And again.")
-	if assistant < 0 || injected < 0 || injected < assistant {
-		t.Errorf("second request did not carry the assistant turn followed by the injected input:\n%s", second)
-	}
+	assert.True(t, assistant >= 0 && injected >= 0 && injected >= assistant,
+		"second request should carry the assistant turn followed by the injected input:\n%s", second)
+
+	var dropped []string
 	for _, ev := range srv.events() {
 		if ev.Type == "warning" && ev.RequestId == "mid-run-1" {
-			t.Errorf("the accepted user_response was reported dropped: %s", ev.Message)
+			dropped = append(dropped, ev.Message)
 		}
 	}
+	assert.Empty(t, dropped, "the accepted user_response was reported dropped")
 }

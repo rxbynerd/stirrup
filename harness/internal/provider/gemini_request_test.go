@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -74,9 +76,7 @@ type decodedGenerationCfg struct {
 func decodeGeminiRequest(t *testing.T, body []byte) decodedRequest {
 	t.Helper()
 	var dr decodedRequest
-	if err := json.Unmarshal(body, &dr); err != nil {
-		t.Fatalf("decode request body: %v\nbody=%s", err, body)
-	}
+	require.NoError(t, json.Unmarshal(body, &dr), "body=%s", body)
 	return dr
 }
 
@@ -88,19 +88,12 @@ func TestBuildGenerateContentRequest_SystemInstructionFromParams(t *testing.T) {
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 	dr := decodeGeminiRequest(t, body)
-	if dr.SystemInstruction == nil {
-		t.Fatalf("expected systemInstruction, got nil")
-	}
-	if len(dr.SystemInstruction.Parts) != 1 || dr.SystemInstruction.Parts[0].Text != "You are a helpful coding assistant." {
-		t.Errorf("systemInstruction.parts mismatch: %+v", dr.SystemInstruction.Parts)
-	}
-	if dr.SystemInstruction.Role != "" {
-		t.Errorf("systemInstruction.role should be empty (Vertex ignores it), got %q", dr.SystemInstruction.Role)
-	}
+	require.NotNil(t, dr.SystemInstruction, "expected systemInstruction")
+	require.Len(t, dr.SystemInstruction.Parts, 1)
+	require.Equal(t, "You are a helpful coding assistant.", dr.SystemInstruction.Parts[0].Text)
+	require.Empty(t, dr.SystemInstruction.Role, "Vertex ignores systemInstruction.role")
 }
 
 func TestBuildGenerateContentRequest_SingleUserText(t *testing.T) {
@@ -110,19 +103,13 @@ func TestBuildGenerateContentRequest_SingleUserText(t *testing.T) {
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "Hello"}}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(toolNameByID) != 0 {
-		t.Errorf("toolNameByID should be empty, got %v", toolNameByID)
-	}
+	require.NoError(t, err)
+	require.Empty(t, toolNameByID)
 	dr := decodeGeminiRequest(t, body)
-	if len(dr.Contents) != 1 {
-		t.Fatalf("expected 1 content, got %d: %+v", len(dr.Contents), dr.Contents)
-	}
-	if dr.Contents[0].Role != "user" || len(dr.Contents[0].Parts) != 1 || dr.Contents[0].Parts[0].Text != "Hello" {
-		t.Errorf("user content mismatch: %+v", dr.Contents[0])
-	}
+	require.Len(t, dr.Contents, 1)
+	require.Equal(t, "user", dr.Contents[0].Role)
+	require.Len(t, dr.Contents[0].Parts, 1)
+	require.Equal(t, "Hello", dr.Contents[0].Parts[0].Text)
 }
 
 func TestBuildGenerateContentRequest_MultiTurnWithToolUse(t *testing.T) {
@@ -139,47 +126,32 @@ func TestBuildGenerateContentRequest_MultiTurnWithToolUse(t *testing.T) {
 			}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if toolNameByID["call_1"] != "read_file" {
-		t.Errorf("toolNameByID[call_1] = %q, want read_file", toolNameByID["call_1"])
-	}
+	require.NoError(t, err)
+	require.Equal(t, "read_file", toolNameByID["call_1"])
 
 	dr := decodeGeminiRequest(t, body)
-	if len(dr.Contents) != 3 {
-		t.Fatalf("expected 3 contents, got %d: %+v", len(dr.Contents), dr.Contents)
-	}
+	require.Len(t, dr.Contents, 3)
 
-	// 0: user text
-	if dr.Contents[0].Role != "user" || dr.Contents[0].Parts[0].Text != "Read main.go" {
-		t.Errorf("contents[0]: %+v", dr.Contents[0])
-	}
-	// 1: model with text + functionCall in one Content
-	if dr.Contents[1].Role != "model" || len(dr.Contents[1].Parts) != 2 {
-		t.Errorf("contents[1] should be model/2-parts, got %+v", dr.Contents[1])
-	}
-	if dr.Contents[1].Parts[0].Text != "Sure, reading it now." {
-		t.Errorf("contents[1].parts[0].text = %q", dr.Contents[1].Parts[0].Text)
-	}
-	if dr.Contents[1].Parts[1].FunctionCall == nil ||
-		dr.Contents[1].Parts[1].FunctionCall.Name != "read_file" {
-		t.Errorf("contents[1].parts[1].functionCall: %+v", dr.Contents[1].Parts[1].FunctionCall)
-	}
-	// 2: function-role response
-	if dr.Contents[2].Role != "function" || len(dr.Contents[2].Parts) != 1 {
-		t.Errorf("contents[2] should be function/1-part, got %+v", dr.Contents[2])
-	}
+	// User text.
+	require.Equal(t, "user", dr.Contents[0].Role)
+	require.Len(t, dr.Contents[0].Parts, 1)
+	require.Equal(t, "Read main.go", dr.Contents[0].Parts[0].Text)
+
+	// Model turn: text and functionCall share one Content.
+	require.Equal(t, "model", dr.Contents[1].Role)
+	require.Len(t, dr.Contents[1].Parts, 2)
+	require.Equal(t, "Sure, reading it now.", dr.Contents[1].Parts[0].Text)
+	require.NotNil(t, dr.Contents[1].Parts[1].FunctionCall)
+	require.Equal(t, "read_file", dr.Contents[1].Parts[1].FunctionCall.Name)
+
+	// Function-role response.
+	require.Equal(t, "function", dr.Contents[2].Role)
+	require.Len(t, dr.Contents[2].Parts, 1)
 	resp := dr.Contents[2].Parts[0].FunctionResponse
-	if resp == nil || resp.Name != "read_file" {
-		t.Errorf("contents[2].parts[0].functionResponse: %+v", resp)
-	}
-	if resp.Response["content"] != "package main" {
-		t.Errorf("response.content = %v", resp.Response["content"])
-	}
-	if _, hasError := resp.Response["error"]; hasError {
-		t.Errorf("response.error should not be present on success: %+v", resp.Response)
-	}
+	require.NotNil(t, resp)
+	require.Equal(t, "read_file", resp.Name)
+	require.Equal(t, "package main", resp.Response["content"])
+	require.NotContains(t, resp.Response, "error", "response.error should not be present on success")
 }
 
 func TestBuildGenerateContentRequest_AssistantToolUseCoalescing(t *testing.T) {
@@ -193,28 +165,17 @@ func TestBuildGenerateContentRequest_AssistantToolUseCoalescing(t *testing.T) {
 			}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if toolNameByID["c1"] != "list" || toolNameByID["c2"] != "read_file" {
-		t.Errorf("toolNameByID = %v", toolNameByID)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "list", toolNameByID["c1"])
+	require.Equal(t, "read_file", toolNameByID["c2"])
 	dr := decodeGeminiRequest(t, body)
-	if len(dr.Contents) != 2 {
-		t.Fatalf("expected 2 contents (one user, one model), got %d: %+v", len(dr.Contents), dr.Contents)
-	}
-	if dr.Contents[1].Role != "model" {
-		t.Fatalf("contents[1].role = %q, want model", dr.Contents[1].Role)
-	}
-	if len(dr.Contents[1].Parts) != 2 {
-		t.Fatalf("expected 2 parts in coalesced model content, got %d: %+v", len(dr.Contents[1].Parts), dr.Contents[1].Parts)
-	}
-	if dr.Contents[1].Parts[0].FunctionCall == nil || dr.Contents[1].Parts[0].FunctionCall.Name != "list" {
-		t.Errorf("parts[0]: %+v", dr.Contents[1].Parts[0])
-	}
-	if dr.Contents[1].Parts[1].FunctionCall == nil || dr.Contents[1].Parts[1].FunctionCall.Name != "read_file" {
-		t.Errorf("parts[1]: %+v", dr.Contents[1].Parts[1])
-	}
+	require.Len(t, dr.Contents, 2, "expected one user and one model content")
+	require.Equal(t, "model", dr.Contents[1].Role)
+	require.Len(t, dr.Contents[1].Parts, 2, "expected both tool calls coalesced into one model content")
+	require.NotNil(t, dr.Contents[1].Parts[0].FunctionCall)
+	require.Equal(t, "list", dr.Contents[1].Parts[0].FunctionCall.Name)
+	require.NotNil(t, dr.Contents[1].Parts[1].FunctionCall)
+	require.Equal(t, "read_file", dr.Contents[1].Parts[1].FunctionCall.Name)
 }
 
 func TestBuildGenerateContentRequest_ToolResultUnknownIDErrors(t *testing.T) {
@@ -226,12 +187,7 @@ func TestBuildGenerateContentRequest_ToolResultUnknownIDErrors(t *testing.T) {
 			}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	if err == nil {
-		t.Fatalf("expected error for unknown tool_use_id, got nil")
-	}
-	if !strings.Contains(err.Error(), "ghost") {
-		t.Errorf("error should reference the unknown id, got %q", err.Error())
-	}
+	require.ErrorContains(t, err, "ghost")
 }
 
 func TestBuildGenerateContentRequest_ErrorToolResultIncludesErrorFlag(t *testing.T) {
@@ -246,23 +202,14 @@ func TestBuildGenerateContentRequest_ErrorToolResultIncludesErrorFlag(t *testing
 			}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 	dr := decodeGeminiRequest(t, body)
-	if len(dr.Contents) < 2 {
-		t.Fatalf("expected >=2 contents, got %d", len(dr.Contents))
-	}
+	require.GreaterOrEqual(t, len(dr.Contents), 2)
 	resp := dr.Contents[len(dr.Contents)-1].Parts[0].FunctionResponse
-	if resp == nil {
-		t.Fatalf("expected functionResponse on last part")
-	}
-	if resp.Response["content"] != "ENOENT" {
-		t.Errorf("response.content = %v, want ENOENT", resp.Response["content"])
-	}
-	if errFlag, ok := resp.Response["error"]; !ok || errFlag != true {
-		t.Errorf("response.error = %v, want true", errFlag)
-	}
+	require.NotNil(t, resp, "expected functionResponse on last part")
+	require.Equal(t, "ENOENT", resp.Response["content"])
+	require.Contains(t, resp.Response, "error")
+	require.Equal(t, true, resp.Response["error"])
 }
 
 func TestBuildGenerateContentRequest_DefaultSafetySettings(t *testing.T) {
@@ -272,35 +219,22 @@ func TestBuildGenerateContentRequest_DefaultSafetySettings(t *testing.T) {
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 	dr := decodeGeminiRequest(t, body)
-	if len(dr.SafetySettings) != 5 {
-		t.Fatalf("expected 5 default safety settings, got %d: %+v", len(dr.SafetySettings), dr.SafetySettings)
-	}
-	expectedCategories := map[string]bool{
-		"HARM_CATEGORY_HATE_SPEECH":       false,
-		"HARM_CATEGORY_HARASSMENT":        false,
-		"HARM_CATEGORY_DANGEROUS_CONTENT": false,
-		"HARM_CATEGORY_SEXUALLY_EXPLICIT": false,
-		"HARM_CATEGORY_CIVIC_INTEGRITY":   false,
-	}
+	require.Len(t, dr.SafetySettings, 5)
+
+	gotCategories := make([]string, 0, len(dr.SafetySettings))
 	for _, s := range dr.SafetySettings {
-		if _, ok := expectedCategories[s.Category]; !ok {
-			t.Errorf("unexpected category %q", s.Category)
-			continue
-		}
-		expectedCategories[s.Category] = true
-		if s.Threshold != "BLOCK_NONE" {
-			t.Errorf("category %q threshold = %q, want BLOCK_NONE", s.Category, s.Threshold)
-		}
+		gotCategories = append(gotCategories, s.Category)
+		require.Equal(t, "BLOCK_NONE", s.Threshold, "category %s", s.Category)
 	}
-	for c, seen := range expectedCategories {
-		if !seen {
-			t.Errorf("missing default safety setting for %q", c)
-		}
-	}
+	require.ElementsMatch(t, []string{
+		"HARM_CATEGORY_HATE_SPEECH",
+		"HARM_CATEGORY_HARASSMENT",
+		"HARM_CATEGORY_DANGEROUS_CONTENT",
+		"HARM_CATEGORY_SEXUALLY_EXPLICIT",
+		"HARM_CATEGORY_CIVIC_INTEGRITY",
+	}, gotCategories)
 }
 
 func TestBuildGenerateContentRequest_CustomSafetySettings(t *testing.T) {
@@ -314,26 +248,19 @@ func TestBuildGenerateContentRequest_CustomSafetySettings(t *testing.T) {
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
 	}, custom, quirks.ProviderQuirks{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 	dr := decodeGeminiRequest(t, body)
-	if len(dr.SafetySettings) != 2 {
-		t.Fatalf("expected 2 custom safety settings, got %d", len(dr.SafetySettings))
-	}
-	if dr.SafetySettings[0].Category != "HARM_CATEGORY_DANGEROUS_CONTENT" || dr.SafetySettings[0].Threshold != "BLOCK_ONLY_HIGH" {
-		t.Errorf("safetySettings[0] mismatch: %+v", dr.SafetySettings[0])
-	}
-	if dr.SafetySettings[1].Category != "HARM_CATEGORY_HATE_SPEECH" || dr.SafetySettings[1].Threshold != "BLOCK_MEDIUM_AND_ABOVE" {
-		t.Errorf("safetySettings[1] mismatch: %+v", dr.SafetySettings[1])
-	}
+	require.Equal(t, []decodedSafetyEntry{
+		{Category: "HARM_CATEGORY_DANGEROUS_CONTENT", Threshold: "BLOCK_ONLY_HIGH"},
+		{Category: "HARM_CATEGORY_HATE_SPEECH", Threshold: "BLOCK_MEDIUM_AND_ABOVE"},
+	}, dr.SafetySettings)
 }
 
-// TestBuildGenerateContentRequest_StreamFunctionCallArgumentsFalseWhenToolsPresent
+// TestBuildGenerateContentRequest_StreamFunctionCallArgsFalseWithTools
 // pins the request shape: when tools are declared the adapter sets
 // functionCallingConfig.mode="AUTO" and streamFunctionCallArguments=false.
 // See geminiToolConfig in gemini_types.go for why the flag stays off.
-func TestBuildGenerateContentRequest_StreamFunctionCallArgumentsFalseWhenToolsPresent(t *testing.T) {
+func TestBuildGenerateContentRequest_StreamFunctionCallArgsFalseWithTools(t *testing.T) {
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model: "gemini-2.5-pro",
 		Messages: []types.Message{
@@ -347,34 +274,20 @@ func TestBuildGenerateContentRequest_StreamFunctionCallArgumentsFalseWhenToolsPr
 			},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 	dr := decodeGeminiRequest(t, body)
-	if dr.ToolConfig == nil {
-		t.Fatalf("expected toolConfig to be set")
-	}
-	if dr.ToolConfig.FunctionCallingConfig.Mode != "AUTO" {
-		t.Errorf("mode = %q, want AUTO", dr.ToolConfig.FunctionCallingConfig.Mode)
-	}
-	if dr.ToolConfig.FunctionCallingConfig.StreamFunctionCallArguments {
-		t.Errorf("streamFunctionCallArguments should be false")
-	}
-	if len(dr.Tools) != 1 || len(dr.Tools[0].FunctionDeclarations) != 1 {
-		t.Fatalf("tool declarations not as expected: %+v", dr.Tools)
-	}
+	require.NotNil(t, dr.ToolConfig, "expected toolConfig to be set")
+	require.Equal(t, "AUTO", dr.ToolConfig.FunctionCallingConfig.Mode)
+	require.False(t, dr.ToolConfig.FunctionCallingConfig.StreamFunctionCallArguments)
+	require.Len(t, dr.Tools, 1)
+	require.Len(t, dr.Tools[0].FunctionDeclarations, 1)
 	decl := dr.Tools[0].FunctionDeclarations[0]
-	if decl.Name != "read_file" {
-		t.Errorf("decl.name = %q", decl.Name)
-	}
+	require.Equal(t, "read_file", decl.Name)
+
 	// Parameters must be Gemini-shaped (uppercase types).
 	var params map[string]any
-	if err := json.Unmarshal(decl.Parameters, &params); err != nil {
-		t.Fatalf("decode parameters: %v", err)
-	}
-	if params["type"] != "OBJECT" {
-		t.Errorf("parameters.type = %v, want OBJECT", params["type"])
-	}
+	require.NoError(t, json.Unmarshal(decl.Parameters, &params))
+	require.Equal(t, "OBJECT", params["type"])
 }
 
 // TestBuildGenerateContentRequest_ToolChoice pins the
@@ -415,33 +328,18 @@ func TestBuildGenerateContentRequest_ToolChoice(t *testing.T) {
 				Messages:       []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
 				Tools:          baseTools,
 			}, nil, q)
-			if err != nil {
-				t.Fatalf("build: %v", err)
-			}
+			require.NoError(t, err)
 			dr := decodeGeminiRequest(t, body)
-			if dr.ToolConfig == nil {
-				t.Fatalf("expected toolConfig to be set")
-			}
-			if got := dr.ToolConfig.FunctionCallingConfig.Mode; got != tc.wantMode {
-				t.Errorf("mode = %q, want %q", got, tc.wantMode)
-			}
-			got := dr.ToolConfig.FunctionCallingConfig.AllowedFunctionNames
-			if len(got) != len(tc.wantAllowed) {
-				t.Fatalf("allowedFunctionNames = %v, want %v", got, tc.wantAllowed)
-			}
-			for i := range got {
-				if got[i] != tc.wantAllowed[i] {
-					t.Errorf("allowedFunctionNames[%d] = %q, want %q", i, got[i], tc.wantAllowed[i])
-				}
-			}
+			require.NotNil(t, dr.ToolConfig, "expected toolConfig to be set")
+			require.Equal(t, tc.wantMode, dr.ToolConfig.FunctionCallingConfig.Mode)
+			require.Equal(t, tc.wantAllowed, dr.ToolConfig.FunctionCallingConfig.AllowedFunctionNames)
 		})
 	}
 }
 
 // TestBuildGenerateContentRequest_ToolChoiceUnsupportedCapability pins
 // the graceful no-op: a zero-value capability leaves the mode at AUTO
-// even for a ToolChoiceRequired request (the historical default emitted
-// whenever tools are present).
+// even for a ToolChoiceRequired request.
 func TestBuildGenerateContentRequest_ToolChoiceUnsupportedCapability(t *testing.T) {
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model:      "gemini-2.5-pro",
@@ -451,16 +349,10 @@ func TestBuildGenerateContentRequest_ToolChoiceUnsupportedCapability(t *testing.
 			{Name: "read_file", Description: "read", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
+	require.NoError(t, err)
 	dr := decodeGeminiRequest(t, body)
-	if dr.ToolConfig == nil {
-		t.Fatalf("expected toolConfig to be set")
-	}
-	if got := dr.ToolConfig.FunctionCallingConfig.Mode; got != "AUTO" {
-		t.Errorf("zero-value capability: mode = %q, want AUTO", got)
-	}
+	require.NotNil(t, dr.ToolConfig, "expected toolConfig to be set")
+	require.Equal(t, "AUTO", dr.ToolConfig.FunctionCallingConfig.Mode)
 }
 
 // TestBuildGenerateContentRequest_ToolChoice_PartialCapability asserts
@@ -486,26 +378,20 @@ func TestBuildGenerateContentRequest_ToolChoice_PartialCapability(t *testing.T) 
 				Messages:   []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
 				Tools:      tools,
 			}, nil, quirks.ProviderQuirks{ToolChoice: tc.cap})
-			if err != nil {
-				t.Fatalf("build: %v", err)
-			}
+			require.NoError(t, err)
 			dr := decodeGeminiRequest(t, body)
-			if dr.ToolConfig == nil {
-				t.Fatalf("expected toolConfig to be set")
-			}
-			if got := dr.ToolConfig.FunctionCallingConfig.Mode; got != "AUTO" {
-				t.Errorf("partial capability: mode = %q, want AUTO", got)
-			}
+			require.NotNil(t, dr.ToolConfig, "expected toolConfig to be set")
+			require.Equal(t, "AUTO", dr.ToolConfig.FunctionCallingConfig.Mode)
 		})
 	}
 }
 
-// TestStreamFunctionCallArgsFromQuirks_TrueForV2AndV3 pins the projection
+// TestStreamFunctionCallArgsFromQuirks_ShapeMapsToWireFlag pins the projection
 // from the resolved GeminiStreamArgsShape onto the wire boolean: the
 // default (StreamArgsOff) keeps the flag false; V2/V3 flip it to true.
 // The `default` arm of the switch is a forward-compatibility safety net
 // and is not exercised here (unreachable without an out-of-range enum).
-func TestStreamFunctionCallArgsFromQuirks_TrueForV2AndV3(t *testing.T) {
+func TestStreamFunctionCallArgsFromQuirks_ShapeMapsToWireFlag(t *testing.T) {
 	cases := []struct {
 		name  string
 		shape quirks.GeminiStreamArgsShape
@@ -537,16 +423,10 @@ func TestStreamFunctionCallArgsFromQuirks_TrueForV2AndV3(t *testing.T) {
 					},
 				},
 			}, nil, q)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			require.NoError(t, err)
 			dr := decodeGeminiRequest(t, body)
-			if dr.ToolConfig == nil {
-				t.Fatalf("expected toolConfig to be present when tools are declared")
-			}
-			if got := dr.ToolConfig.FunctionCallingConfig.StreamFunctionCallArguments; got != tc.want {
-				t.Errorf("streamFunctionCallArguments = %v, want %v", got, tc.want)
-			}
+			require.NotNil(t, dr.ToolConfig, "expected toolConfig to be present when tools are declared")
+			require.Equal(t, tc.want, dr.ToolConfig.FunctionCallingConfig.StreamFunctionCallArguments)
 		})
 	}
 }
@@ -558,16 +438,10 @@ func TestBuildGenerateContentRequest_NoToolConfigWhenNoTools(t *testing.T) {
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 	dr := decodeGeminiRequest(t, body)
-	if dr.ToolConfig != nil {
-		t.Errorf("toolConfig should be nil when no tools, got %+v", dr.ToolConfig)
-	}
-	if len(dr.Tools) != 0 {
-		t.Errorf("tools should be empty, got %+v", dr.Tools)
-	}
+	require.Nil(t, dr.ToolConfig, "toolConfig should be omitted when no tools are declared")
+	require.Empty(t, dr.Tools)
 }
 
 func TestBuildGenerateContentRequest_BadToolSchemaErrors(t *testing.T) {
@@ -584,12 +458,7 @@ func TestBuildGenerateContentRequest_BadToolSchemaErrors(t *testing.T) {
 			},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	if err == nil {
-		t.Fatalf("expected error for tool schema with $ref")
-	}
-	if !strings.Contains(err.Error(), "bad_tool") {
-		t.Errorf("error should mention the failing tool name, got %q", err.Error())
-	}
+	require.ErrorContains(t, err, "bad_tool")
 }
 
 func TestBuildGenerateContentRequest_MultipleSystemMessagesConcatenated(t *testing.T) {
@@ -602,23 +471,15 @@ func TestBuildGenerateContentRequest_MultipleSystemMessagesConcatenated(t *testi
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 	dr := decodeGeminiRequest(t, body)
-	if dr.SystemInstruction == nil {
-		t.Fatalf("expected systemInstruction")
-	}
-	got := dr.SystemInstruction.Parts[0].Text
-	want := "Base system prompt.\n\nExtra rule A.\n\nExtra rule B."
-	if got != want {
-		t.Errorf("systemInstruction text mismatch:\n got: %q\nwant: %q", got, want)
-	}
-	// The system messages should not also appear in Contents.
+	require.NotNil(t, dr.SystemInstruction, "expected systemInstruction")
+	require.NotEmpty(t, dr.SystemInstruction.Parts)
+	require.Equal(t, "Base system prompt.\n\nExtra rule A.\n\nExtra rule B.", dr.SystemInstruction.Parts[0].Text)
+
+	// System messages are folded into systemInstruction, not sent as contents.
 	for _, c := range dr.Contents {
-		if c.Role == "system" {
-			t.Errorf("system message leaked into contents: %+v", c)
-		}
+		require.NotEqual(t, "system", c.Role)
 	}
 }
 
@@ -631,12 +492,7 @@ func TestBuildGenerateContentRequest_AssistantToolResultRejected(t *testing.T) {
 			}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	if err == nil {
-		t.Fatalf("expected error for tool_result on assistant message")
-	}
-	if !strings.Contains(err.Error(), "tool_result") {
-		t.Errorf("error should mention tool_result, got %q", err.Error())
-	}
+	require.ErrorContains(t, err, "tool_result")
 }
 
 func TestBuildGenerateContentRequest_GenerationConfig(t *testing.T) {
@@ -648,19 +504,22 @@ func TestBuildGenerateContentRequest_GenerationConfig(t *testing.T) {
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 	dr := decodeGeminiRequest(t, body)
-	if dr.GenerationConfig == nil {
-		t.Fatalf("expected generationConfig")
+	require.NotNil(t, dr.GenerationConfig, "expected generationConfig")
+	require.Equal(t, 2048, dr.GenerationConfig.MaxOutputTokens)
+	require.NotNil(t, dr.GenerationConfig.Temperature)
+	require.InDelta(t, 0.2, *dr.GenerationConfig.Temperature, 1e-9)
+}
+
+// findModelContent returns the first model-role content in the decoded request, or nil.
+func findModelContent(dr decodedRequest) *decodedContent {
+	for i := range dr.Contents {
+		if dr.Contents[i].Role == "model" {
+			return &dr.Contents[i]
+		}
 	}
-	if dr.GenerationConfig.MaxOutputTokens != 2048 {
-		t.Errorf("maxOutputTokens = %d, want 2048", dr.GenerationConfig.MaxOutputTokens)
-	}
-	if dr.GenerationConfig.Temperature == nil || *dr.GenerationConfig.Temperature != 0.2 {
-		t.Errorf("temperature = %v, want 0.2", dr.GenerationConfig.Temperature)
-	}
+	return nil
 }
 
 // TestBuildGenerateContentRequest_TemperatureWireShape pins the unset-vs-
@@ -696,26 +555,20 @@ func TestBuildGenerateContentRequest_TemperatureWireShape(t *testing.T) {
 				Temperature: tc.temperature,
 				Messages:    messages,
 			}, nil, quirks.ProviderQuirks{})
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			require.NoError(t, err)
 			bs := string(body)
-			hasKey := strings.Contains(bs, `"temperature"`)
-			if tc.wantTemperature && !hasKey {
-				t.Errorf("missing 'temperature' for non-nil pointer: %s", bs)
+			if tc.wantTemperature {
+				require.Contains(t, bs, `"temperature"`, "non-nil pointer must emit temperature")
+			} else {
+				require.NotContains(t, bs, `"temperature"`, "nil pointer must omit temperature (omitempty)")
 			}
-			if !tc.wantTemperature && hasKey {
-				t.Errorf("contains 'temperature' for nil pointer (omitempty broken): %s", bs)
+			if tc.wantTempSubstring != "" {
+				require.Contains(t, bs, tc.wantTempSubstring)
 			}
-			if tc.wantTempSubstring != "" && !strings.Contains(bs, tc.wantTempSubstring) {
-				t.Errorf("missing %q in body: %s", tc.wantTempSubstring, bs)
-			}
-			hasMaxOut := strings.Contains(bs, `"maxOutputTokens"`)
-			if tc.wantMaxOutTokens && !hasMaxOut {
-				t.Errorf("missing 'maxOutputTokens' for non-zero MaxTokens: %s", bs)
-			}
-			if !tc.wantMaxOutTokens && hasMaxOut {
-				t.Errorf("contains 'maxOutputTokens' for zero MaxTokens (nil-guard broken): %s", bs)
+			if tc.wantMaxOutTokens {
+				require.Contains(t, bs, `"maxOutputTokens"`, "non-zero MaxTokens must emit maxOutputTokens")
+			} else {
+				require.NotContains(t, bs, `"maxOutputTokens"`, "zero MaxTokens must omit maxOutputTokens")
 			}
 		})
 	}
@@ -730,31 +583,22 @@ func TestBuildGenerateContentRequest_AssistantToolUseEmptyInputBecomesEmptyObjec
 			}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 	dr := decodeGeminiRequest(t, body)
-	if len(dr.Contents) != 1 || len(dr.Contents[0].Parts) != 1 {
-		t.Fatalf("unexpected contents: %+v", dr.Contents)
-	}
+	require.Len(t, dr.Contents, 1)
+	require.Len(t, dr.Contents[0].Parts, 1)
 	fc := dr.Contents[0].Parts[0].FunctionCall
-	if fc == nil {
-		t.Fatalf("expected functionCall")
-	}
+	require.NotNil(t, fc, "expected functionCall on the part")
 	// Args should serialise as "{}" not be omitted entirely (Vertex
 	// requires a present args object on functionCall).
 	var argsObj map[string]any
-	if err := json.Unmarshal(fc.Args, &argsObj); err != nil {
-		t.Fatalf("decode args: %v (raw=%s)", err, fc.Args)
-	}
-	if len(argsObj) != 0 {
-		t.Errorf("args = %v, want empty object", argsObj)
-	}
+	require.NoError(t, json.Unmarshal(fc.Args, &argsObj), "raw args=%s", fc.Args)
+	require.Empty(t, argsObj, "args should serialise as an empty object")
 }
 
-// TestBuildGenerateContentRequest_BodyIsValidJSON guards against accidental
-// non-JSON output (e.g. from an Encoder that wraps in newlines, or a
-// programmer error introducing a Stringer that breaks marshalling).
+// TestBuildGenerateContentRequest_BodyIsValidJSON guards against the request
+// body ceasing to be a JSON object, for example from a programmer error that
+// breaks marshalling.
 func TestBuildGenerateContentRequest_BodyIsValidJSON(t *testing.T) {
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model: "gemini-2.5-pro",
@@ -762,13 +606,9 @@ func TestBuildGenerateContentRequest_BodyIsValidJSON(t *testing.T) {
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 	var generic map[string]any
-	if err := json.Unmarshal(body, &generic); err != nil {
-		t.Fatalf("body is not valid JSON: %v\nbody=%s", err, body)
-	}
+	require.NoError(t, json.Unmarshal(body, &generic), "body=%s", body)
 }
 
 // TestBuildGenerateContentRequest_UserTextAndToolResultOrdering pins the
@@ -789,20 +629,14 @@ func TestBuildGenerateContentRequest_UserTextAndToolResultOrdering(t *testing.T)
 			}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 	dr := decodeGeminiRequest(t, body)
 	// contents: [model(call), function(response), user(text)]
-	if len(dr.Contents) != 3 {
-		t.Fatalf("expected 3 contents, got %d: %+v", len(dr.Contents), dr.Contents)
-	}
-	if dr.Contents[1].Role != "function" {
-		t.Errorf("contents[1].role = %q, want function", dr.Contents[1].Role)
-	}
-	if dr.Contents[2].Role != "user" || dr.Contents[2].Parts[0].Text != "follow-up note" {
-		t.Errorf("contents[2] mismatch: %+v", dr.Contents[2])
-	}
+	require.Len(t, dr.Contents, 3)
+	require.Equal(t, "function", dr.Contents[1].Role)
+	require.Equal(t, "user", dr.Contents[2].Role)
+	require.NotEmpty(t, dr.Contents[2].Parts)
+	require.Equal(t, "follow-up note", dr.Contents[2].Parts[0].Text)
 }
 
 // TestBuildGenerateContentRequest_ThoughtSignatureRoundTrip asserts that
@@ -828,30 +662,14 @@ func TestBuildGenerateContentRequest_ThoughtSignatureRoundTrip(t *testing.T) {
 			}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 	dr := decodeGeminiRequest(t, body)
 
-	var modelContent *decodedContent
-	for i := range dr.Contents {
-		if dr.Contents[i].Role == "model" {
-			modelContent = &dr.Contents[i]
-			break
-		}
-	}
-	if modelContent == nil {
-		t.Fatal("expected a model-role content in the request body")
-	}
-	if len(modelContent.Parts) != 1 {
-		t.Fatalf("expected 1 part on the model content, got %d", len(modelContent.Parts))
-	}
-	if modelContent.Parts[0].FunctionCall == nil {
-		t.Fatal("expected functionCall on the model part")
-	}
-	if modelContent.Parts[0].ThoughtSignature != sig {
-		t.Errorf("model.parts[0].thoughtSignature = %q, want %q", modelContent.Parts[0].ThoughtSignature, sig)
-	}
+	model := findModelContent(dr)
+	require.NotNil(t, model, "expected a model-role content in the request body")
+	require.Len(t, model.Parts, 1)
+	require.NotNil(t, model.Parts[0].FunctionCall, "expected functionCall on the model part")
+	require.Equal(t, sig, model.Parts[0].ThoughtSignature)
 }
 
 // TestBuildGenerateContentRequest_ThoughtSignatureRoundTripOnText asserts
@@ -869,26 +687,13 @@ func TestBuildGenerateContentRequest_ThoughtSignatureRoundTripOnText(t *testing.
 			}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 	dr := decodeGeminiRequest(t, body)
-	var modelContent *decodedContent
-	for i := range dr.Contents {
-		if dr.Contents[i].Role == "model" {
-			modelContent = &dr.Contents[i]
-			break
-		}
-	}
-	if modelContent == nil || len(modelContent.Parts) != 1 {
-		t.Fatalf("expected one model part, got %+v", modelContent)
-	}
-	if modelContent.Parts[0].Text != "hello!" {
-		t.Errorf("model.parts[0].text = %q, want hello!", modelContent.Parts[0].Text)
-	}
-	if modelContent.Parts[0].ThoughtSignature != sig {
-		t.Errorf("model.parts[0].thoughtSignature = %q, want %q", modelContent.Parts[0].ThoughtSignature, sig)
-	}
+	model := findModelContent(dr)
+	require.NotNil(t, model, "expected a model-role content in the request body")
+	require.Len(t, model.Parts, 1)
+	require.Equal(t, "hello!", model.Parts[0].Text)
+	require.Equal(t, sig, model.Parts[0].ThoughtSignature)
 }
 
 // TestBuildGenerateContentRequest_NoThoughtSignatureWhenAbsent confirms
@@ -904,15 +709,11 @@ func TestBuildGenerateContentRequest_NoThoughtSignatureWhenAbsent(t *testing.T) 
 			}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if strings.Contains(string(body), "thoughtSignature") {
-		t.Errorf("request body must not contain thoughtSignature when no signature was set; body=%s", body)
-	}
+	require.NoError(t, err)
+	require.NotContains(t, string(body), "thoughtSignature", "no signature was set, so the field must be omitted")
 }
 
-// TestGeminiThoughtSignatureFullRoundTrip confirms JSON decode of the
+// TestGeminiThoughtSignature_FullRoundTrip confirms JSON decode of the
 // Vertex wire type and serialisation by BuildGenerateContentRequest agree:
 // parse a Gemini 3.x response chunk containing a functionCall with a
 // thoughtSignature, hand-build the ContentBlock the harness would persist,
@@ -920,21 +721,17 @@ func TestBuildGenerateContentRequest_NoThoughtSignatureWhenAbsent(t *testing.T) 
 // Vertex. Does not drive consumeSSE or streamEventsToResult directly;
 // those paths are covered by TestGeminiAdapter_ThoughtSignatureCapturedOnToolCall
 // and TestStreamEventsToResult_ThoughtSignaturePropagatedToBlock.
-func TestGeminiThoughtSignatureFullRoundTrip(t *testing.T) {
+func TestGeminiThoughtSignature_FullRoundTrip(t *testing.T) {
 	const sig = "AY89a18t+D98lADcFYKgjMgoHS7rOPAQUE=="
 
 	chunkJSON := `{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"docs/safety-rings.md"}},"thoughtSignature":"` + sig + `"}]},"finishReason":"STOP"}]}`
 	var chunk generateContentChunk
-	if err := json.Unmarshal([]byte(chunkJSON), &chunk); err != nil {
-		t.Fatalf("decode chunk: %v", err)
-	}
-	if len(chunk.Candidates) == 0 || chunk.Candidates[0].Content == nil || len(chunk.Candidates[0].Content.Parts) == 0 {
-		t.Fatal("decoded chunk has no parts")
-	}
+	require.NoError(t, json.Unmarshal([]byte(chunkJSON), &chunk), "decode chunk")
+	require.NotEmpty(t, chunk.Candidates, "decoded chunk has no candidates")
+	require.NotNil(t, chunk.Candidates[0].Content, "decoded chunk has no content")
+	require.NotEmpty(t, chunk.Candidates[0].Content.Parts, "decoded chunk has no parts")
 	gotSig := chunk.Candidates[0].Content.Parts[0].ThoughtSignature
-	if gotSig != sig {
-		t.Fatalf("decoded thoughtSignature = %q, want %q", gotSig, sig)
-	}
+	require.Equal(t, sig, gotSig, "decoded thoughtSignature")
 
 	messages := []types.Message{
 		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "Read it"}}},
@@ -956,12 +753,8 @@ func TestGeminiThoughtSignatureFullRoundTrip(t *testing.T) {
 		Model:    "gemini-3.1-pro-preview",
 		Messages: messages,
 	}, nil, quirks.ProviderQuirks{})
-	if err != nil {
-		t.Fatalf("BuildGenerateContentRequest: %v", err)
-	}
-	if !strings.Contains(string(body), `"thoughtSignature":"`+sig+`"`) {
-		t.Errorf("round-tripped request body missing thoughtSignature=%q\nbody=%s", sig, body)
-	}
+	require.NoError(t, err, "BuildGenerateContentRequest")
+	require.Contains(t, string(body), `"thoughtSignature":"`+sig+`"`, "round-tripped request body")
 }
 
 // TestGeminiToolResultResponse_MarshalErrorOnInvalidStructured asserts a
@@ -975,11 +768,10 @@ func TestGeminiToolResultResponse_MarshalErrorOnInvalidStructured(t *testing.T) 
 		Structured: json.RawMessage(`{not json`),
 		Kind:       "file_excerpt",
 	}
-	cap := quirks.StructuredToolResultCapability{Supported: true, ObjectResponse: true}
+	capability := quirks.StructuredToolResultCapability{Supported: true, ObjectResponse: true}
 
-	if _, err := geminiToolResultResponse(block, cap); err == nil {
-		t.Fatal("expected marshal error for invalid Structured payload, got nil")
-	}
+	_, err := geminiToolResultResponse(block, capability)
+	require.Error(t, err, "invalid Structured payload must fail to marshal")
 }
 
 // TestGeminiToolResultResponse_TextOnlyWhenCapabilityWithholdsStructured
@@ -995,17 +787,9 @@ func TestGeminiToolResultResponse_TextOnlyWhenCapabilityWithholdsStructured(t *t
 		Kind:       "file_excerpt",
 	}
 	raw, err := geminiToolResultResponse(block, quirks.StructuredToolResultCapability{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 	var body map[string]interface{}
-	if err := json.Unmarshal(raw, &body); err != nil {
-		t.Fatalf("text-only body should be valid JSON: %v (raw=%s)", err, raw)
-	}
-	if body["content"] != "ok" {
-		t.Errorf("content = %v, want ok", body["content"])
-	}
-	if _, ok := body["structured"]; ok {
-		t.Errorf("structured must be absent when capability withholds it, got %v", body["structured"])
-	}
+	require.NoError(t, json.Unmarshal(raw, &body), "text-only body must be valid JSON: raw=%s", raw)
+	require.Equal(t, "ok", body["content"])
+	require.NotContains(t, body, "structured", "capability withholds structured, so it must be absent")
 }

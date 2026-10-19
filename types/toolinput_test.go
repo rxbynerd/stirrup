@@ -3,9 +3,11 @@ package types
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
-func TestNormalizeToolInput(t *testing.T) {
+func TestNormalizeToolInput_NormalizesEmptyAndKeepsObjects(t *testing.T) {
 	tests := []struct {
 		name string
 		in   json.RawMessage
@@ -23,9 +25,8 @@ func TestNormalizeToolInput(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := string(NormalizeToolInput(tt.in)); got != tt.want {
-				t.Errorf("NormalizeToolInput(%q) = %q, want %q", tt.in, got, tt.want)
-			}
+			got := string(NormalizeToolInput(tt.in))
+			require.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -36,13 +37,9 @@ func TestNormalizeToolInput(t *testing.T) {
 func TestNormalizeToolInput_NilMapMarshalsToObject(t *testing.T) {
 	var input map[string]any
 	raw, err := json.Marshal(input)
-	if err != nil {
-		t.Fatalf("marshal nil map: %v", err)
-	}
-	if string(raw) != "null" {
-		t.Fatalf("precondition: nil map marshals to %q, want null", raw)
-	}
-	if got := string(NormalizeToolInput(raw)); got != "{}" {
-		t.Errorf("NormalizeToolInput(marshalled nil map) = %q, want {}", got)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "null", string(raw), "precondition: nil map marshals to null")
+
+	got := string(NormalizeToolInput(raw))
+	require.Equal(t, "{}", got)
 }

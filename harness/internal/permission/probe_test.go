@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
-func TestPolicyEnginePolicy_Probe_OK(t *testing.T) {
+func TestPolicyEnginePolicy_Probe_SucceedsWithPermitPolicy(t *testing.T) {
 	policy := `permit (
 		principal,
 		action == Action::"tool:web_fetch",
@@ -18,9 +20,7 @@ func TestPolicyEnginePolicy_Probe_OK(t *testing.T) {
 		PolicySet: mustParse(t, policy),
 		Fallback:  NewDenySideEffects(map[string]bool{"write_file": true}),
 	})
-	if err := p.Probe(context.Background()); err != nil {
-		t.Fatalf("Probe: unexpected error: %v", err)
-	}
+	require.NoError(t, p.Probe(context.Background()))
 }
 
 func TestPolicyEnginePolicy_Probe_DoesNotTriggerFallback(t *testing.T) {
@@ -38,19 +38,13 @@ func TestPolicyEnginePolicy_Probe_DoesNotTriggerFallback(t *testing.T) {
 		PolicySet: mustParse(t, policy),
 		Fallback:  fb,
 	})
-	if err := p.Probe(context.Background()); err != nil {
-		t.Fatalf("Probe: unexpected error: %v", err)
-	}
-	if fb.called {
-		t.Error("Probe consulted the fallback policy; it must evaluate Cedar directly to avoid a live ask-upstream prompt")
-	}
+	require.NoError(t, p.Probe(context.Background()))
+	require.False(t, fb.called, "Probe consulted the fallback policy; it must evaluate Cedar directly to avoid a live ask-upstream prompt")
 }
 
-func TestPolicyEnginePolicy_Probe_NilSet(t *testing.T) {
+func TestPolicyEnginePolicy_Probe_NilPolicyReturnsError(t *testing.T) {
 	var p *PolicyEnginePolicy
-	if err := p.Probe(context.Background()); err == nil {
-		t.Fatal("Probe on nil policy should error")
-	}
+	require.Error(t, p.Probe(context.Background()))
 }
 
 // recordingFallback records whether Check was called, standing in for a

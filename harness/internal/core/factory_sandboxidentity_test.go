@@ -15,6 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/sandboxidentity"
 	"github.com/rxbynerd/stirrup/types"
@@ -156,16 +159,14 @@ func fakeDockerEngine(t *testing.T) (socketPath string, capture *engineCapture, 
 	t.Helper()
 
 	dir, err := os.MkdirTemp("/tmp", "sbid-de-")
-	if err != nil {
-		t.Fatalf("create temp dir: %v", err)
-	}
+	require.NoError(t, err, "create temp dir")
 	sock := filepath.Join(dir, "s.sock")
 
 	listener, err := net.Listen("unix", sock)
 	if err != nil {
 		_ = os.RemoveAll(dir)
-		t.Fatalf("listen on unix socket: %v", err)
 	}
+	require.NoError(t, err, "listen on unix socket")
 
 	capture = &engineCapture{}
 
@@ -297,16 +298,10 @@ func (c *engineCapture) argvSeen() [][]string {
 // waitForStdin blocks until the engine has seen n stdin deliveries.
 func (c *engineCapture) waitForStdin(t *testing.T, n int, timeout time.Duration) []string {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		if got := c.stdinSeen(); len(got) >= n {
-			return got
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %d stdin deliveries, saw %d", n, len(c.stdinSeen()))
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	require.EventuallyWithT(t, func(collect *assert.CollectT) {
+		assert.GreaterOrEqual(collect, len(c.stdinSeen()), n, "stdin deliveries")
+	}, timeout, 10*time.Millisecond)
+	return c.stdinSeen()
 }
 
 func sandboxIdentityContainerConfig(t *testing.T, runID, providerURL string) *types.RunConfig {
@@ -350,15 +345,13 @@ func sandboxIdentityContainerConfig(t *testing.T, runID, providerURL string) *ty
 	}
 }
 
-// TestBuildLoopWithTransport_SandboxIdentity_ContainerEnvWiring is the
-// end-to-end factory test for executor.sandboxIdentity +
-// executor.gitProxy on the container executor: the harness requests a
-// sandbox_token_request, the created container's env carries the token
-// var, its _FILE companion, and the four GIT_CONFIG_* pairs with a
-// credential helper that reads the token file, the private token tmpfs is
-// mounted, and the initial token is delivered over exec stdin — never in
-// argv — before the loop is returned.
-func TestBuildLoopWithTransport_SandboxIdentity_ContainerEnvWiring(t *testing.T) {
+// TestBuildLoopWithTransport_SandboxIdentity_ContainerEnvAndGitConfig is the
+// end-to-end factory test for sandboxIdentity and gitProxy on the container
+// executor. The token reaches the container as env vars and a token file, the
+// git config rewrites use a credential helper that reads that file, the
+// token tmpfs is mounted, and the initial token arrives over exec stdin and
+// never in exec argv.
+func TestBuildLoopWithTransport_SandboxIdentity_ContainerEnvAndGitConfig(t *testing.T) {
 	sock, capture, cleanupEngine := fakeDockerEngine(t)
 	defer cleanupEngine()
 	t.Setenv("DOCKER_HOST", "unix://"+sock)
@@ -370,81 +363,63 @@ func TestBuildLoopWithTransport_SandboxIdentity_ContainerEnvWiring(t *testing.T)
 	config := sandboxIdentityContainerConfig(t, "sandboxidentity-integration-test", server.URL)
 
 	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
-	if err != nil {
-		t.Fatalf("BuildLoopWithTransport() error: %v", err)
-	}
+	require.NoError(t, err)
 	defer func() { _ = loop.Close() }()
 
 	env := capture.envMap()
-	if got := env["HAYBALE_TOKEN"]; got != "the-jwt-token" {
-		t.Errorf("HAYBALE_TOKEN = %q, want %q", got, "the-jwt-token")
-	}
-	if got := env["HAYBALE_TOKEN_FILE"]; got != executor.SandboxIdentityTokenPath {
-		t.Errorf("HAYBALE_TOKEN_FILE = %q, want %q", got, executor.SandboxIdentityTokenPath)
-	}
-	if got := env["GIT_CONFIG_COUNT"]; got != "4" {
-		t.Errorf("GIT_CONFIG_COUNT = %q, want %q", got, "4")
-	}
 
-	wantInsteadOfKey := "url.http://haybale.internal:8466/github.com/.insteadOf"
-	wantValues := map[string]bool{
-		"https://github.com/":   false,
-		"git@github.com:":       false,
-		"ssh://git@github.com/": false,
-	}
-	credKey := "credential.http://haybale.internal:8466/.helper"
-	var credValue string
-	for i := 0; i < 4; i++ {
-		key := env["GIT_CONFIG_KEY_"+strconv.Itoa(i)]
-		value := env["GIT_CONFIG_VALUE_"+strconv.Itoa(i)]
-		switch key {
-		case wantInsteadOfKey:
-			wantValues[value] = true
-		case credKey:
-			credValue = value
-		default:
-			t.Errorf("unexpected GIT_CONFIG_KEY_%d %q", i, key)
-		}
-	}
-	for v, seen := range wantValues {
-		if !seen {
-			t.Errorf("missing insteadOf value %q", v)
-		}
-	}
-	wantCredValue := `!f() { echo username=x-access-token; echo "password=$(cat ` + executor.SandboxIdentityTokenPath + `)"; }; f`
-	if credValue != wantCredValue {
-		t.Errorf("credential helper = %q, want %q", credValue, wantCredValue)
-	}
-	if strings.Contains(credValue, "the-jwt-token") || strings.Contains(credValue, "$HAYBALE_TOKEN") {
-		t.Errorf("credential helper %q must read the token file, not the env var", credValue)
-	}
+	t.Run("token env vars", func(t *testing.T) {
+		require.Equal(t, "the-jwt-token", env["HAYBALE_TOKEN"])
+		require.Equal(t, executor.SandboxIdentityTokenPath, env["HAYBALE_TOKEN_FILE"])
+	})
 
-	if _, mounted := capture.HostConfig.Tmpfs[executor.SandboxIdentityTokenDir]; !mounted {
-		t.Errorf("container created without the token tmpfs at %s (Tmpfs=%v)", executor.SandboxIdentityTokenDir, capture.HostConfig.Tmpfs)
-	}
+	t.Run("git config rewrites and credential helper", func(t *testing.T) {
+		insteadOfKey := "url.http://haybale.internal:8466/github.com/.insteadOf"
+		credKey := "credential.http://haybale.internal:8466/.helper"
+		wantCredValue := `!f() { echo username=x-access-token; echo "password=$(cat ` + executor.SandboxIdentityTokenPath + `)"; }; f`
 
-	// The initial token reached the sandbox over exec stdin, exactly once,
-	// and appeared in no exec argv.
-	if got := capture.stdinSeen(); len(got) != 1 || got[0] != "the-jwt-token" {
-		t.Errorf("exec stdin deliveries = %q, want exactly one carrying the token", got)
-	}
-	for _, argv := range capture.argvSeen() {
-		for _, arg := range argv {
-			if strings.Contains(arg, "the-jwt-token") {
-				t.Errorf("token appeared in exec argv: %q", argv)
+		require.Equal(t, "4", env["GIT_CONFIG_COUNT"])
+
+		var insteadOfValues []string
+		var credValue string
+		for i := 0; i < 4; i++ {
+			key := env["GIT_CONFIG_KEY_"+strconv.Itoa(i)]
+			value := env["GIT_CONFIG_VALUE_"+strconv.Itoa(i)]
+			switch key {
+			case insteadOfKey:
+				insteadOfValues = append(insteadOfValues, value)
+			case credKey:
+				credValue = value
+			default:
+				require.Failf(t, "unexpected git config key", "GIT_CONFIG_KEY_%d = %q", i, key)
 			}
 		}
-	}
 
-	// Without an expiry the control plane sees exactly one request,
-	// carrying the configured audience, and no refresh is scheduled.
-	requests := tp.emittedOfType("sandbox_token_request")
-	if len(requests) != 1 {
-		t.Fatalf("expected exactly one sandbox_token_request, got %d", len(requests))
-	}
-	if requests[0].Audience != "https://haybale.internal" {
-		t.Errorf("Audience = %q, want https://haybale.internal", requests[0].Audience)
-	}
+		require.Subset(t, insteadOfValues, []string{"https://github.com/", "git@github.com:", "ssh://git@github.com/"})
+		require.Equal(t, wantCredValue, credValue)
+		require.NotContains(t, credValue, "the-jwt-token", "credential helper must read the token file, not the env var")
+		require.NotContains(t, credValue, "$HAYBALE_TOKEN", "credential helper must read the token file, not the env var")
+	})
+
+	t.Run("token tmpfs mounted", func(t *testing.T) {
+		require.Contains(t, capture.HostConfig.Tmpfs, executor.SandboxIdentityTokenDir, "container created without the token tmpfs")
+	})
+
+	t.Run("token delivered over stdin, not argv", func(t *testing.T) {
+		require.Equal(t, []string{"the-jwt-token"}, capture.stdinSeen(), "exec stdin deliveries")
+		for _, argv := range capture.argvSeen() {
+			for _, arg := range argv {
+				require.NotContains(t, arg, "the-jwt-token", "token appeared in exec argv")
+			}
+		}
+	})
+
+	t.Run("single token request with audience", func(t *testing.T) {
+		// Without an expiry the control plane sees exactly one request and no refresh is scheduled.
+		requests := tp.emittedOfType("sandbox_token_request")
+		require.Len(t, requests, 1)
+		require.Equal(t, "https://haybale.internal", requests[0].Audience)
+	})
 }
 
 // TestBuildLoopWithTransport_SandboxIdentity_RefreshesToken drives the
@@ -467,24 +442,14 @@ func TestBuildLoopWithTransport_SandboxIdentity_RefreshesToken(t *testing.T) {
 	config := sandboxIdentityContainerConfig(t, "sandboxidentity-refresh-test", server.URL)
 
 	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
-	if err != nil {
-		t.Fatalf("BuildLoopWithTransport() error: %v", err)
-	}
+	require.NoError(t, err)
 
 	deliveries := capture.waitForStdin(t, 2, 5*time.Second)
-	if err := loop.Close(); err != nil {
-		t.Errorf("Close() error: %v", err)
-	}
+	require.NoError(t, loop.Close())
 
-	if deliveries[0] != "jwt-1" || deliveries[1] != "jwt-2" {
-		t.Errorf("stdin deliveries = %q, want the initial token followed by the refreshed one", deliveries)
-	}
-	if got := len(tp.emittedOfType("sandbox_token_request")); got < 2 {
-		t.Errorf("expected at least 2 sandbox_token_requests, got %d", got)
-	}
-	if warnings := tp.emittedOfType("warning"); len(warnings) != 0 {
-		t.Errorf("unexpected warning(s) on a successful refresh: %+v", warnings)
-	}
+	require.Equal(t, []string{"jwt-1", "jwt-2"}, deliveries[:2], "initial token followed by the refreshed token")
+	require.GreaterOrEqual(t, len(tp.emittedOfType("sandbox_token_request")), 2)
+	require.Empty(t, tp.emittedOfType("warning"), "no warning on a successful refresh")
 
 	tp.mu.Lock()
 	emitted := append([]types.HarnessEvent(nil), tp.emitted...)
@@ -492,9 +457,7 @@ func TestBuildLoopWithTransport_SandboxIdentity_RefreshesToken(t *testing.T) {
 	for _, e := range emitted {
 		raw, _ := json.Marshal(e)
 		for _, tok := range deliveries {
-			if strings.Contains(string(raw), tok) {
-				t.Errorf("emitted event carries a sandbox identity token: %s", raw)
-			}
+			require.NotContains(t, string(raw), tok, "emitted event carries a sandbox identity token")
 		}
 	}
 }
@@ -537,22 +500,14 @@ func TestBuildLoopWithTransport_SandboxIdentity_NilTransportFailsClosed(t *testi
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 
 	_, err := BuildLoopWithTransport(context.Background(), config, nil)
-	if err == nil {
-		t.Fatal("expected an error when sandboxIdentity is set but no transport was pre-established")
-	}
-	if !strings.Contains(err.Error(), "sandboxIdentity") {
-		t.Errorf("error should reference sandboxIdentity, got: %v", err)
-	}
+	require.Error(t, err, "expected an error when sandboxIdentity is set but no transport was pre-established")
+	require.ErrorContains(t, err, "sandboxIdentity")
 }
 
-// sandboxIdentityFailClosedConfig builds the shared RunConfig for the
-// fail-closed integration tests below: a container executor (so
-// fakeDockerEngine can observe whether /containers/create was ever hit) with
-// executor.sandboxIdentity configured and no gitProxy (irrelevant to these
-// failure modes, all of which abort before ComposeEnv runs). The provider
-// BaseURL is a closed local port — never dialed, since every case here fails
-// before the loop is otherwise assembled — mirroring
-// TestBuildLoopWithTransport_SandboxIdentity_NilTransportFailsClosed above.
+// sandboxIdentityFailClosedConfig returns a container RunConfig with
+// sandboxIdentity set and no gitProxy, for failure cases that abort before
+// the loop is assembled. The provider BaseURL is a closed local port and is
+// never dialed.
 func sandboxIdentityFailClosedConfig(t *testing.T, runID string) *types.RunConfig {
 	t.Helper()
 	config := sandboxIdentityContainerConfig(t, runID, "http://127.0.0.1:1")
@@ -560,15 +515,11 @@ func sandboxIdentityFailClosedConfig(t *testing.T, runID string) *types.RunConfi
 	return config
 }
 
-// TestBuildLoopWithTransport_SandboxIdentity_DeclineNoContainerCreate
-// covers a control plane responding with IsError: true. A unit test on
-// sandboxidentity.Exchange already proves Exchange itself fails closed on
-// a decline; this test proves the *factory* honours that error before
-// reaching the executor layer — a regression that swapped step order,
-// dropped the error check, or logged-and-continued would pass every other
-// test but must fail this one, because the fake Docker Engine below would
-// then observe a real /containers/create call.
-func TestBuildLoopWithTransport_SandboxIdentity_DeclineNoContainerCreate(t *testing.T) {
+// TestBuildLoopWithTransport_SandboxIdentity_DeclineSkipsContainerCreate
+// covers a control plane that answers with IsError: true. The factory must
+// reject the decline before any sandbox is created; otherwise the fake Docker
+// Engine would record a /containers/create call.
+func TestBuildLoopWithTransport_SandboxIdentity_DeclineSkipsContainerCreate(t *testing.T) {
 	sock, capture, cleanupEngine := fakeDockerEngine(t)
 	defer cleanupEngine()
 	t.Setenv("DOCKER_HOST", "unix://"+sock)
@@ -577,26 +528,17 @@ func TestBuildLoopWithTransport_SandboxIdentity_DeclineNoContainerCreate(t *test
 	config := sandboxIdentityFailClosedConfig(t, "sandboxidentity-decline-test")
 
 	_, err := BuildLoopWithTransport(context.Background(), config, tp)
-	if err == nil {
-		t.Fatal("expected an error when the control plane declines the sandbox identity exchange")
-	}
-	if !strings.Contains(err.Error(), "declined") {
-		t.Errorf("error should name the decline failure mode, got: %v", err)
-	}
-	if got := capture.createCallCount(); got != 0 {
-		t.Errorf("fake Docker Engine recorded %d /containers/create call(s), want 0 (sandbox must not be created before a declined exchange)", got)
-	}
+	require.Error(t, err, "expected an error when the control plane declines the sandbox identity exchange")
+	require.ErrorContains(t, err, "declined")
+	require.Zero(t, capture.createCallCount(), "sandbox must not be created before a declined exchange")
 }
 
-// TestBuildLoopWithTransport_SandboxIdentity_TimeoutNoContainerCreate
-// covers a control plane that never responds. BuildLoopWithTransport is
-// invoked with a short-lived ctx (rather than waiting out
-// sandboxidentity.DefaultTimeout's 60s) so the ctx branch of Exchange's
-// underlying transport.Correlator.Await ends the wait quickly; the failure
-// mode under test — cancellation/timeout aborting before sandbox creation —
-// is the same one a real control-plane outage or network partition would
-// trigger via the 60s default.
-func TestBuildLoopWithTransport_SandboxIdentity_TimeoutNoContainerCreate(t *testing.T) {
+// TestBuildLoopWithTransport_SandboxIdentity_TimeoutSkipsContainerCreate
+// covers a control plane that never responds. The test uses a short context
+// deadline instead of sandboxidentity.DefaultTimeout so the wait ends quickly.
+// Cancellation must abort before sandbox creation, as it would during a real
+// control-plane outage.
+func TestBuildLoopWithTransport_SandboxIdentity_TimeoutSkipsContainerCreate(t *testing.T) {
 	sock, capture, cleanupEngine := fakeDockerEngine(t)
 	defer cleanupEngine()
 	t.Setenv("DOCKER_HOST", "unix://"+sock)
@@ -608,23 +550,17 @@ func TestBuildLoopWithTransport_SandboxIdentity_TimeoutNoContainerCreate(t *test
 	defer cancel()
 
 	_, err := BuildLoopWithTransport(ctx, config, tp)
-	if err == nil {
-		t.Fatal("expected an error when the control plane never responds")
-	}
-	if !strings.Contains(err.Error(), "cancelled") {
-		t.Errorf("error should name the cancellation/timeout failure mode, got: %v", err)
-	}
-	if got := capture.createCallCount(); got != 0 {
-		t.Errorf("fake Docker Engine recorded %d /containers/create call(s), want 0 (sandbox must not be created before a timed-out exchange)", got)
-	}
+	require.Error(t, err, "expected an error when the control plane never responds")
+	require.ErrorContains(t, err, "cancelled")
+	require.Zero(t, capture.createCallCount(), "sandbox must not be created before a timed-out exchange")
 }
 
-// TestBuildLoopWithTransport_SandboxIdentity_OversizeTokenNoContainerCreate
+// TestBuildLoopWithTransport_SandboxIdentity_OversizeTokenSkipsContainerCreate
 // covers a control plane that responds successfully, but with a token
 // exceeding sandboxidentity.MaxTokenBytes. Exchange treats this as a hard
 // failure (never truncated-and-used); this test proves the factory aborts
 // before sandbox creation rather than passing the oversized token through.
-func TestBuildLoopWithTransport_SandboxIdentity_OversizeTokenNoContainerCreate(t *testing.T) {
+func TestBuildLoopWithTransport_SandboxIdentity_OversizeTokenSkipsContainerCreate(t *testing.T) {
 	sock, capture, cleanupEngine := fakeDockerEngine(t)
 	defer cleanupEngine()
 	t.Setenv("DOCKER_HOST", "unix://"+sock)
@@ -633,13 +569,7 @@ func TestBuildLoopWithTransport_SandboxIdentity_OversizeTokenNoContainerCreate(t
 	config := sandboxIdentityFailClosedConfig(t, "sandboxidentity-oversize-test")
 
 	_, err := BuildLoopWithTransport(context.Background(), config, tp)
-	if err == nil {
-		t.Fatal("expected an error for an oversized sandbox identity token")
-	}
-	if !strings.Contains(err.Error(), "byte cap") {
-		t.Errorf("error should name the oversize failure mode, got: %v", err)
-	}
-	if got := capture.createCallCount(); got != 0 {
-		t.Errorf("fake Docker Engine recorded %d /containers/create call(s), want 0 (sandbox must not be created before an oversize-token failure)", got)
-	}
+	require.Error(t, err, "expected an error for an oversized sandbox identity token")
+	require.ErrorContains(t, err, "byte cap")
+	require.Zero(t, capture.createCallCount(), "sandbox must not be created before an oversize-token failure")
 }

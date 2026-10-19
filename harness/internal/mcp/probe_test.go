@@ -3,11 +3,11 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/types"
@@ -24,32 +24,24 @@ func TestProbe_HandshakeSucceedsWithoutRegistering(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 	config := types.MCPServerConfig{Name: "docs", URI: srv.URL}
 
-	if err := client.Probe(context.Background(), config, secrets); err != nil {
-		t.Fatalf("Probe: unexpected error: %v", err)
-	}
+	err := client.Probe(context.Background(), config, secrets)
+	require.NoError(t, err)
 
-	// A probe must NOT register tools — that is the contract difference
-	// from Connect.
-	if defs := registry.List(); len(defs) != 0 {
-		t.Errorf("Probe registered %d tools; expected 0 (probe must not mutate the registry)", len(defs))
-	}
+	// Unlike Connect, a probe must not register tools.
+	require.Empty(t, registry.List(), "probe must not mutate the registry")
 }
 
-func TestProbe_BadScheme(t *testing.T) {
+func TestProbe_RejectsNonHTTPScheme(t *testing.T) {
 	client := NewClient(tool.NewRegistry(), nil)
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 	config := types.MCPServerConfig{Name: "bad", URI: "file:///etc/passwd"}
 
 	err := client.Probe(context.Background(), config, secrets)
-	if err == nil {
-		t.Fatal("Probe: expected error for non-http scheme")
-	}
-	if !strings.Contains(err.Error(), "scheme") {
-		t.Errorf("error should mention the rejected scheme, got: %v", err)
-	}
+	require.Error(t, err)
+	require.ErrorContains(t, err, "scheme")
 }
 
-func TestProbe_ServerError(t *testing.T) {
+func TestProbe_FailsOnServerError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte("boom"))
@@ -61,15 +53,11 @@ func TestProbe_ServerError(t *testing.T) {
 	config := types.MCPServerConfig{Name: "down", URI: srv.URL}
 
 	err := client.Probe(context.Background(), config, secrets)
-	if err == nil {
-		t.Fatal("Probe: expected error for 5xx server")
-	}
-	if !strings.Contains(err.Error(), "down") {
-		t.Errorf("error should name the server, got: %v", err)
-	}
+	require.Error(t, err)
+	require.ErrorContains(t, err, "down")
 }
 
-func TestProbe_AllowlistedToolNotAdvertised(t *testing.T) {
+func TestProbe_ReportsMissingAllowlistedTool(t *testing.T) {
 	srv, _ := fakeMCPServer(t, []mcpTool{{Name: "search", InputSchema: json.RawMessage(`{"type":"object"}`)}}, "")
 	client := NewClient(tool.NewRegistry(), srv.Client())
 	secrets := &stubSecretStore{secrets: map[string]string{}}
@@ -81,24 +69,19 @@ func TestProbe_AllowlistedToolNotAdvertised(t *testing.T) {
 	}, secrets)
 
 	var missing *MissingToolsError
-	if !errors.As(err, &missing) {
-		t.Fatalf("Probe error = %v, want *MissingToolsError", err)
-	}
-	if len(missing.Tools) != 1 || missing.Tools[0] != "fetch" {
-		t.Errorf("Tools = %v, want [fetch]", missing.Tools)
-	}
+	require.ErrorAs(t, err, &missing)
+	require.Equal(t, []string{"fetch"}, missing.Tools)
 }
 
-func TestProbe_AllowlistFullyAdvertised(t *testing.T) {
+func TestProbe_AcceptsFullyAdvertisedAllowlist(t *testing.T) {
 	srv, _ := fakeMCPServer(t, []mcpTool{{Name: "search", InputSchema: json.RawMessage(`{"type":"object"}`)}}, "")
 	client := NewClient(tool.NewRegistry(), srv.Client())
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 
-	if err := client.Probe(context.Background(), types.MCPServerConfig{
+	err := client.Probe(context.Background(), types.MCPServerConfig{
 		Name:         "docs",
 		URI:          srv.URL,
 		AllowedTools: []string{"search"},
-	}, secrets); err != nil {
-		t.Fatalf("Probe: %v", err)
-	}
+	}, secrets)
+	require.NoError(t, err)
 }

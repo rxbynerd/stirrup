@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -12,7 +14,7 @@ import (
 // input-examples reliability controls per provider, gated on the resolved
 // quirks capability. They exercise the builders directly, no live calls.
 
-func toolWith222Example() types.ToolDefinition {
+func demoToolWithExample() types.ToolDefinition {
 	return types.ToolDefinition{
 		Name:        "demo",
 		Description: "Demo tool. Example: {\"x\": \"hi\"}",
@@ -32,177 +34,128 @@ func userTurn() []types.Message {
 func decodeObject(t *testing.T, raw json.RawMessage) map[string]json.RawMessage {
 	t.Helper()
 	var m map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &m); err != nil {
-		t.Fatalf("decode object: %v\nraw: %s", err, raw)
-	}
+	require.NoError(t, json.Unmarshal(raw, &m), "raw: %s", raw)
 	return m
 }
 
-func schemaHasExamples(t *testing.T, schema json.RawMessage) bool {
-	t.Helper()
-	_, ok := decodeObject(t, schema)["examples"]
-	return ok
-}
-
-func TestOpenAIChat_222_ParallelAndExamples_NonStrict(t *testing.T) {
+func TestOpenAIChat_NonStrictModel_DisablesParallelAndFoldsExamples(t *testing.T) {
 	disable := false
 	params := types.StreamParams{
 		Model:             "gpt-4o", // non-strict
 		Messages:          userTurn(),
-		Tools:             []types.ToolDefinition{toolWith222Example()},
+		Tools:             []types.ToolDefinition{demoToolWithExample()},
 		MaxTokens:         100,
 		ParallelToolCalls: &disable,
 	}
 	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
 	req, err := buildOpenAIRequest(params, true, q, nil)
-	if err != nil {
-		t.Fatalf("buildOpenAIRequest: %v", err)
-	}
+	require.NoError(t, err)
 	body, err := json.Marshal(req)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err)
+
 	top := decodeObject(t, body)
-	if string(top["parallel_tool_calls"]) != "false" {
-		t.Errorf("parallel_tool_calls = %s, want false", top["parallel_tool_calls"])
-	}
+	require.Equal(t, "false", string(top["parallel_tool_calls"]))
 
 	var tools []json.RawMessage
-	if err := json.Unmarshal(top["tools"], &tools); err != nil {
-		t.Fatalf("tools: %v", err)
-	}
-	fn := decodeObject(t, decodeObject(t, tools[0])["function"])
-	if !schemaHasExamples(t, fn["parameters"]) {
-		t.Errorf("non-strict tool schema is missing the folded examples keyword: %s", fn["parameters"])
-	}
+	require.NoError(t, json.Unmarshal(top["tools"], &tools))
+	function := decodeObject(t, decodeObject(t, tools[0])["function"])
+	require.Contains(t, decodeObject(t, function["parameters"]), "examples",
+		"non-strict tool schema should carry the folded examples keyword: %s", function["parameters"])
 }
 
-func TestOpenAIChat_222_StrictModelOmitsExamples(t *testing.T) {
+func TestOpenAIChat_StrictModel_OmitsExamplesAndSetsStrict(t *testing.T) {
 	params := types.StreamParams{
 		Model:     "gpt-5", // strict-mode model
 		Messages:  userTurn(),
-		Tools:     []types.ToolDefinition{toolWith222Example()},
+		Tools:     []types.ToolDefinition{demoToolWithExample()},
 		MaxTokens: 100,
 	}
 	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
 	req, err := buildOpenAIRequest(params, true, q, newStrictSchemaCache())
-	if err != nil {
-		t.Fatalf("buildOpenAIRequest: %v", err)
-	}
+	require.NoError(t, err)
 	body, err := json.Marshal(req)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err)
+
 	var tools []json.RawMessage
-	if err := json.Unmarshal(decodeObject(t, body)["tools"], &tools); err != nil {
-		t.Fatalf("tools: %v", err)
-	}
-	fn := decodeObject(t, tools[0])
-	if string(fn["function"]) == "" {
-		t.Fatalf("tool has no function entry: %s", tools[0])
-	}
-	fnObj := decodeObject(t, fn["function"])
-	if string(fnObj["strict"]) != "true" {
-		t.Errorf("strict model should emit strict:true, got %s", fnObj["strict"])
-	}
+	require.NoError(t, json.Unmarshal(decodeObject(t, body)["tools"], &tools))
+	entry := decodeObject(t, tools[0])
+	require.NotEmpty(t, entry["function"], "tool has no function entry: %s", tools[0])
+	function := decodeObject(t, entry["function"])
+	require.Equal(t, "true", string(function["strict"]), "strict model should emit strict:true")
 	// Structured-outputs strict mode rejects `examples`; the description
 	// text remains the example carrier.
-	if schemaHasExamples(t, fnObj["parameters"]) {
-		t.Errorf("strict tool schema must not carry examples: %s", fnObj["parameters"])
-	}
+	require.NotContains(t, decodeObject(t, function["parameters"]), "examples",
+		"strict tool schema must not carry examples: %s", function["parameters"])
 }
 
-func TestOpenAIChat_222_DefaultsOmitParallel(t *testing.T) {
+func TestOpenAIChat_UnsetParallel_OmitsField(t *testing.T) {
 	params := types.StreamParams{
 		Model:     "gpt-4o",
 		Messages:  userTurn(),
-		Tools:     []types.ToolDefinition{toolWith222Example()},
+		Tools:     []types.ToolDefinition{demoToolWithExample()},
 		MaxTokens: 100,
 	}
 	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
 	req, err := buildOpenAIRequest(params, true, q, nil)
-	if err != nil {
-		t.Fatalf("buildOpenAIRequest: %v", err)
-	}
+	require.NoError(t, err)
 	body, err := json.Marshal(req)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if _, ok := decodeObject(t, body)["parallel_tool_calls"]; ok {
-		t.Error("parallel_tool_calls must be omitted when the caller did not set it")
-	}
+	require.NoError(t, err)
+
+	require.NotContains(t, decodeObject(t, body), "parallel_tool_calls",
+		"parallel_tool_calls must be omitted when the caller did not set it")
 }
 
-func TestResponses_222_ParallelAndExamples(t *testing.T) {
+func TestResponses_EnabledParallel_EmitsTrueAndFoldsExamples(t *testing.T) {
 	enable := true
 	params := types.StreamParams{
 		Model:             "gpt-4o",
 		Messages:          userTurn(),
-		Tools:             []types.ToolDefinition{toolWith222Example()},
+		Tools:             []types.ToolDefinition{demoToolWithExample()},
 		MaxTokens:         100,
 		ParallelToolCalls: &enable,
 	}
 	q := quirks.DefaultRegistry().Resolve("openai-responses", params.Model)
 	req, err := buildResponsesRequest(params, q, nil, "")
-	if err != nil {
-		t.Fatalf("buildResponsesRequest: %v", err)
-	}
+	require.NoError(t, err)
 	body, err := json.Marshal(req)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err)
+
 	top := decodeObject(t, body)
-	if string(top["parallel_tool_calls"]) != "true" {
-		t.Errorf("parallel_tool_calls = %s, want true", top["parallel_tool_calls"])
-	}
+	require.Equal(t, "true", string(top["parallel_tool_calls"]))
 	var tools []json.RawMessage
-	if err := json.Unmarshal(top["tools"], &tools); err != nil {
-		t.Fatalf("tools: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(top["tools"], &tools))
 	// Responses tools are flat: parameters sits directly on the entry.
-	if !schemaHasExamples(t, decodeObject(t, tools[0])["parameters"]) {
-		t.Errorf("responses tool schema is missing folded examples: %s", tools[0])
-	}
+	require.Contains(t, decodeObject(t, decodeObject(t, tools[0])["parameters"]), "examples",
+		"responses tool schema is missing folded examples: %s", tools[0])
 }
 
-func TestAnthropic_222_ExamplesAndDisableParallel(t *testing.T) {
+func TestAnthropic_DisabledParallel_SetsAutoToolChoice(t *testing.T) {
 	disable := false
 	params := types.StreamParams{
 		Model:             "claude-sonnet-4-5",
 		Messages:          userTurn(),
-		Tools:             []types.ToolDefinition{toolWith222Example()},
+		Tools:             []types.ToolDefinition{demoToolWithExample()},
 		MaxTokens:         100,
 		ParallelToolCalls: &disable,
 	}
 	q := quirks.DefaultRegistry().Resolve("anthropic", params.Model)
 	body, err := json.Marshal(buildAnthropicRequest(params, true, q))
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err)
 	top := decodeObject(t, body)
 
 	// disable_parallel_tool_use rides on a synthesised auto tool_choice.
-	tc := decodeObject(t, top["tool_choice"])
-	if string(tc["type"]) != `"auto"` {
-		t.Errorf("tool_choice.type = %s, want \"auto\"", tc["type"])
-	}
-	if string(tc["disable_parallel_tool_use"]) != "true" {
-		t.Errorf("tool_choice.disable_parallel_tool_use = %s, want true", tc["disable_parallel_tool_use"])
-	}
+	toolChoice := decodeObject(t, top["tool_choice"])
+	require.Equal(t, `"auto"`, string(toolChoice["type"]))
+	require.Equal(t, "true", string(toolChoice["disable_parallel_tool_use"]))
 
 	// examples ride on the native input_examples field; the schema is
 	// sent untouched.
 	var tools []json.RawMessage
-	if err := json.Unmarshal(top["tools"], &tools); err != nil {
-		t.Fatalf("tools: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(top["tools"], &tools))
 	tool := decodeObject(t, tools[0])
-	if string(tool["input_examples"]) != `[{"x":"hi"}]` {
-		t.Errorf("anthropic tool input_examples = %s, want [{\"x\":\"hi\"}]\ntool: %s", tool["input_examples"], tools[0])
-	}
-	if schemaHasExamples(t, tool["input_schema"]) {
-		t.Errorf("anthropic tool input_schema carries folded examples alongside the native field: %s", tools[0])
-	}
+	require.JSONEq(t, `[{"x":"hi"}]`, string(tool["input_examples"]))
+	require.NotContains(t, decodeObject(t, tool["input_schema"]), "examples",
+		"anthropic tool input_schema carries folded examples alongside the native field: %s", tools[0])
 }
 
 // TestTranslateToolsAnthropic_ExamplesPlacement pins the three capability
@@ -220,12 +173,12 @@ func TestTranslateToolsAnthropic_ExamplesPlacement(t *testing.T) {
 		want       string
 	}{
 		{
-			name:       "native",
+			name:       "native field",
 			capability: quirks.ToolExamplesCapability{Supported: true, Native: true},
 			want:       `[{"name":"demo","description":"Demo tool. Example: {\"x\": \"hi\"}","input_schema":{"type":"object","properties":{"x":{"type":"string"}},"required":["x"]},"input_examples":[{"x":"hi"}]},{"name":"plain","description":"No examples.","input_schema":{"type":"object"}}]`,
 		},
 		{
-			name:       "schema_fold",
+			name:       "schema fold",
 			capability: quirks.ToolExamplesCapability{Supported: true},
 			want:       `[{"name":"demo","description":"Demo tool. Example: {\"x\": \"hi\"}","input_schema":{"examples":[{"x":"hi"}],"properties":{"x":{"type":"string"}},"required":["x"],"type":"object"}},{"name":"plain","description":"No examples.","input_schema":{"type":"object"}}]`,
 		},
@@ -237,97 +190,78 @@ func TestTranslateToolsAnthropic_ExamplesPlacement(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			tools := []types.ToolDefinition{toolWith222Example(), plain}
+			tools := []types.ToolDefinition{demoToolWithExample(), plain}
 			got, err := json.Marshal(translateToolsAnthropic(tools, tc.capability))
-			if err != nil {
-				t.Fatalf("marshal: %v", err)
-			}
-			if string(got) != tc.want {
-				t.Errorf("tools wire mismatch\n got: %s\nwant: %s", got, tc.want)
-			}
-			if string(tools[0].InputSchema) != `{"type":"object","properties":{"x":{"type":"string"}},"required":["x"]}` {
-				t.Errorf("input tool schema was mutated: %s", tools[0].InputSchema)
-			}
+			require.NoError(t, err)
+			require.Equal(t, tc.want, string(got))
+			require.JSONEq(t, `{"type":"object","properties":{"x":{"type":"string"}},"required":["x"]}`,
+				string(tools[0].InputSchema), "translation must not mutate the input tool schema")
 		})
 	}
 }
 
-func TestAnthropic_222_ParallelEnabledIsNoOp(t *testing.T) {
+func TestAnthropic_EnabledParallel_OmitsToolChoice(t *testing.T) {
 	enable := true
 	params := types.StreamParams{
 		Model:             "claude-sonnet-4-5",
 		Messages:          userTurn(),
-		Tools:             []types.ToolDefinition{toolWith222Example()},
+		Tools:             []types.ToolDefinition{demoToolWithExample()},
 		MaxTokens:         100,
 		ParallelToolCalls: &enable, // parallel is the default; nothing to emit
 	}
 	q := quirks.DefaultRegistry().Resolve("anthropic", params.Model)
 	body, err := json.Marshal(buildAnthropicRequest(params, true, q))
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if _, ok := decodeObject(t, body)["tool_choice"]; ok {
-		t.Error("enabling parallel (the Anthropic default) must not synthesise a tool_choice object")
-	}
+	require.NoError(t, err)
+
+	require.NotContains(t, decodeObject(t, body), "tool_choice",
+		"enabling parallel (the Anthropic default) must not synthesise a tool_choice object")
 }
 
-func TestAnthropic_222_RequiredChoiceCarriesDisableParallel(t *testing.T) {
+func TestAnthropic_RequiredChoice_CarriesDisableParallel(t *testing.T) {
 	disable := false
 	params := types.StreamParams{
 		Model:             "claude-sonnet-4-5",
 		Messages:          userTurn(),
-		Tools:             []types.ToolDefinition{toolWith222Example()},
+		Tools:             []types.ToolDefinition{demoToolWithExample()},
 		MaxTokens:         100,
 		ToolChoice:        types.ToolChoiceRequired,
 		ParallelToolCalls: &disable,
 	}
 	q := quirks.DefaultRegistry().Resolve("anthropic", params.Model)
 	body, err := json.Marshal(buildAnthropicRequest(params, true, q))
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	tc := decodeObject(t, decodeObject(t, body)["tool_choice"])
-	if string(tc["type"]) != `"any"` {
-		t.Errorf("tool_choice.type = %s, want \"any\" (required)", tc["type"])
-	}
-	if string(tc["disable_parallel_tool_use"]) != "true" {
-		t.Errorf("required tool_choice should still carry disable_parallel_tool_use, got %s", tc["disable_parallel_tool_use"])
-	}
+	require.NoError(t, err)
+
+	toolChoice := decodeObject(t, decodeObject(t, body)["tool_choice"])
+	require.Equal(t, `"any"`, string(toolChoice["type"]), "required maps to the any tool_choice type")
+	require.Equal(t, "true", string(toolChoice["disable_parallel_tool_use"]),
+		"required tool_choice should still carry disable_parallel_tool_use")
 }
 
-func TestGemini_222_NoParallelNoExamples(t *testing.T) {
+func TestGemini_ParallelAndExamples_AreNotEmitted(t *testing.T) {
 	disable := false
 	params := types.StreamParams{
 		Model:             "gemini-2.5-pro",
 		Messages:          userTurn(),
-		Tools:             []types.ToolDefinition{toolWith222Example()},
+		Tools:             []types.ToolDefinition{demoToolWithExample()},
 		MaxTokens:         100,
 		ParallelToolCalls: &disable, // unsupported on Gemini → no-op
 	}
 	q := quirks.DefaultRegistry().Resolve("gemini", params.Model)
 	body, _, err := BuildGenerateContentRequest(params, nil, q)
-	if err != nil {
-		t.Fatalf("BuildGenerateContentRequest: %v", err)
-	}
+	require.NoError(t, err)
 	top := decodeObject(t, body)
-	for _, k := range []string{"parallel_tool_calls", "parallelToolCalls"} {
-		if _, ok := top[k]; ok {
-			t.Errorf("Gemini request must not carry %q (no native control)", k)
-		}
-	}
+
+	// Gemini has no native parallel-tool control in either casing.
+	require.NotContains(t, top, "parallel_tool_calls")
+	require.NotContains(t, top, "parallelToolCalls")
+
 	// Gemini's ToolExamples capability is zero, so examples never fold into
 	// the function-declaration schema.
 	var tools []json.RawMessage
-	if err := json.Unmarshal(top["tools"], &tools); err != nil {
-		t.Fatalf("tools: %v", err)
-	}
-	decls := decodeObject(t, tools[0])
-	var fnDecls []json.RawMessage
-	if err := json.Unmarshal(decls["functionDeclarations"], &fnDecls); err != nil {
-		t.Fatalf("functionDeclarations: %v", err)
-	}
-	params0 := decodeObject(t, fnDecls[0])["parameters"]
-	if schemaHasExamples(t, params0) {
-		t.Errorf("Gemini tool schema must not carry examples: %s", params0)
-	}
+	require.NoError(t, json.Unmarshal(top["tools"], &tools))
+	declarations := decodeObject(t, tools[0])
+	var functionDecls []json.RawMessage
+	require.NoError(t, json.Unmarshal(declarations["functionDeclarations"], &functionDecls))
+	schema := decodeObject(t, functionDecls[0])["parameters"]
+	require.NotContains(t, decodeObject(t, schema), "examples", "Gemini tool schema must not carry examples: %s", schema)
 }

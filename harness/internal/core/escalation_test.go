@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/trace/noop"
@@ -103,7 +105,7 @@ func noToolAnswer() []types.StreamEvent {
 	}
 }
 
-// toolCallThenDone is the recovered turn: the model calls a tool.
+// toolCallTurn is the recovered turn: the model calls a tool.
 func toolCallTurn() []types.StreamEvent {
 	return []types.StreamEvent{
 		{Type: "tool_call", ID: "tc1", Name: "test_tool", Input: map[string]any{}},
@@ -179,12 +181,12 @@ func escalationConfig(mode string) *types.RunConfig {
 	}
 }
 
+// countNoToolWhenRequired returns the total no_tool_when_required tool
+// failures recorded on the metric reader.
 func countNoToolWhenRequired(t *testing.T, reader *sdkmetric.ManualReader) int64 {
 	t.Helper()
 	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
+	require.NoError(t, reader.Collect(context.Background(), &rm))
 	var total int64
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
@@ -214,7 +216,9 @@ var (
 	promptCaps = fakeCapabilityResolver{cap: quirks.ToolChoiceCapability{Supported: true, Required: false}}
 )
 
-func TestEscalationPolicy_Decide(t *testing.T) {
+// TestEscalationPolicy_DecideByInput checks the escalation decision for each
+// combination of mode, stop reason, tool availability, and prior history.
+func TestEscalationPolicy_DecideByInput(t *testing.T) {
 	base := EscalationInput{
 		Mode:           "execution",
 		Provider:       "anthropic",
@@ -333,44 +337,40 @@ func TestEscalationPolicy_Decide(t *testing.T) {
 				tc.mutate(&in)
 			}
 			got := tc.policy.Decide(in)
-			if got.Kind != tc.wantKind {
-				t.Errorf("Decide kind = %v, want %v", got.Kind, tc.wantKind)
+			require.Equal(t, tc.wantKind, got.Kind)
+			if got.Kind == EscalationPrompt {
+				require.NotEmpty(t, got.PromptMessage, "prompt escalation must carry a PromptMessage")
 			}
-			if got.Kind == EscalationPrompt && got.PromptMessage == "" {
-				t.Error("prompt escalation must carry a non-empty PromptMessage")
-			}
-			if got.Kind == EscalationNative && got.PromptMessage != "" {
-				t.Error("native escalation must not carry a PromptMessage")
+			if got.Kind == EscalationNative {
+				require.Empty(t, got.PromptMessage, "native escalation must not carry a PromptMessage")
 			}
 		})
 	}
 }
 
-// TestEscalationKindString pins the wire form of each EscalationKind.
-// These strings are written verbatim into the escalation.kind OTel span
-// attribute, so a rename of an iota constant that forgot to update
-// String() would silently produce a wrong span label. EscalationNone's
-// "none" reaches String() only via the default fall-through, so the value
-// is asserted explicitly here rather than relying on indirect coverage.
-func TestEscalationKindString(t *testing.T) {
+// TestEscalationKind_StringMatchesWireForm pins the wire form of each
+// EscalationKind. The strings are written verbatim into the escalation.kind
+// span attribute.
+func TestEscalationKind_StringMatchesWireForm(t *testing.T) {
 	cases := []struct {
+		name string
 		kind EscalationKind
 		want string
 	}{
-		{EscalationNone, "none"},
-		{EscalationNative, "native"},
-		{EscalationPrompt, "prompt"},
+		{name: "none", kind: EscalationNone, want: "none"},
+		{name: "native", kind: EscalationNative, want: "native"},
+		{name: "prompt", kind: EscalationPrompt, want: "prompt"},
 	}
 	for _, tc := range cases {
-		if got := tc.kind.String(); got != tc.want {
-			t.Errorf("EscalationKind(%d).String() = %q, want %q", tc.kind, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, tc.kind.String())
+		})
 	}
 }
 
-// TestEscalation_NativeRetryOnMissedTool covers the acceptance criterion:
-// a first-turn no-tool answer on a workspace-dependent task with a
-// native-capable provider triggers a retry that forces ToolChoiceRequired.
+// TestEscalation_NativeRetryOnMissedTool pins that a first-turn no-tool answer
+// on a workspace-dependent task, with a native-capable provider, triggers a
+// retry that forces ToolChoiceRequired.
 func TestEscalation_NativeRetryOnMissedTool(t *testing.T) {
 	prov := &sequencedProvider{scripts: [][]types.StreamEvent{
 		noToolAnswer(),
@@ -379,22 +379,13 @@ func TestEscalation_NativeRetryOnMissedTool(t *testing.T) {
 	}}
 	loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, nativeCaps))
 
-	if _, err := loop.Run(context.Background(), escalationConfig("execution")); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if prov.calls() < 2 {
-		t.Fatalf("expected at least 2 provider calls (answer + forced retry), got %d", prov.calls())
-	}
+	_, err := loop.Run(context.Background(), escalationConfig("execution"))
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, prov.calls(), 2, "expected an answer followed by a forced retry")
 	// The first call is auto; the retry must force required tool choice.
-	if got := prov.choiceAt(0); got != types.ToolChoiceAuto {
-		t.Errorf("first call ToolChoice = %v, want auto", got)
-	}
-	if got := prov.choiceAt(1); got != types.ToolChoiceRequired {
-		t.Errorf("retry call ToolChoice = %v, want required", got)
-	}
-	if n := countNoToolWhenRequired(t, reader); n != 1 {
-		t.Errorf("no_tool_when_required count = %d, want 1", n)
-	}
+	assert.Equal(t, types.ToolChoiceAuto, prov.choiceAt(0), "first call")
+	assert.Equal(t, types.ToolChoiceRequired, prov.choiceAt(1), "retry call")
+	assert.Equal(t, int64(1), countNoToolWhenRequired(t, reader))
 }
 
 // TestEscalation_PromptFallback covers the prompt-fallback path: a
@@ -408,39 +399,27 @@ func TestEscalation_PromptFallback(t *testing.T) {
 	}}
 	loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, promptCaps))
 
-	if _, err := loop.Run(context.Background(), escalationConfig("execution")); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if prov.calls() < 2 {
-		t.Fatalf("expected a retry, got %d provider calls", prov.calls())
-	}
+	_, err := loop.Run(context.Background(), escalationConfig("execution"))
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, prov.calls(), 2, "expected a retry")
 	for i := 0; i < prov.calls(); i++ {
-		if prov.choiceAt(i) == types.ToolChoiceRequired {
-			t.Errorf("prompt fallback must not force required tool choice; call %d did", i)
-		}
+		assert.NotEqual(t, types.ToolChoiceRequired, prov.choiceAt(i),
+			"prompt fallback must not force required tool choice on call %d", i)
 	}
-	if n := countNoToolWhenRequired(t, reader); n != 1 {
-		t.Errorf("no_tool_when_required count = %d, want 1", n)
-	}
+	assert.Equal(t, int64(1), countNoToolWhenRequired(t, reader))
 }
 
-// TestEscalation_DisabledNoRetry pins the OFF-by-default safety: with no
-// escalation policy a first-turn no-tool answer is accepted as the final
-// answer — no retry, no emission. This is the "legitimate no-tool answer"
-// / "bare run unchanged" acceptance case.
+// TestEscalation_DisabledNoRetry pins that with no escalation policy a
+// first-turn no-tool answer is accepted as the final answer: no retry and no
+// metric emission.
 func TestEscalation_DisabledNoRetry(t *testing.T) {
 	prov := &sequencedProvider{scripts: [][]types.StreamEvent{noToolAnswer()}}
 	loop, reader := buildEscalationLoop(prov, nil)
 
-	if _, err := loop.Run(context.Background(), escalationConfig("execution")); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if prov.calls() != 1 {
-		t.Errorf("disabled escalation must not retry; got %d provider calls", prov.calls())
-	}
-	if n := countNoToolWhenRequired(t, reader); n != 0 {
-		t.Errorf("no_tool_when_required count = %d, want 0 when disabled", n)
-	}
+	_, err := loop.Run(context.Background(), escalationConfig("execution"))
+	require.NoError(t, err)
+	assert.Equal(t, 1, prov.calls(), "disabled escalation must not retry")
+	assert.Equal(t, int64(0), countNoToolWhenRequired(t, reader))
 }
 
 // TestEscalation_TerminalStopReasonsNoRetry pins that an enabled policy
@@ -449,31 +428,26 @@ func TestEscalation_DisabledNoRetry(t *testing.T) {
 func TestEscalation_TerminalStopReasonsNoRetry(t *testing.T) {
 	// A context-window stop with nothing left to compact ends the run as
 	// context_exhausted rather than with the stop reason.
-	wantOutcome := map[string]string{
-		"refusal":                       "refusal",
-		"model_context_window_exceeded": "context_exhausted",
+	cases := []struct {
+		stop        string
+		wantOutcome string
+	}{
+		{stop: "refusal", wantOutcome: "refusal"},
+		{stop: "model_context_window_exceeded", wantOutcome: "context_exhausted"},
 	}
-	for _, stop := range []string{"refusal", "model_context_window_exceeded"} {
-		t.Run(stop, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.stop, func(t *testing.T) {
 			prov := &sequencedProvider{scripts: [][]types.StreamEvent{
-				{{Type: "text_delta", Text: "I can't help with that."}, {Type: "message_complete", StopReason: stop}},
+				{{Type: "text_delta", Text: "I can't help with that."}, {Type: "message_complete", StopReason: tc.stop}},
 				toolCallTurn(),
 			}}
 			loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, nativeCaps))
 
 			runTrace, err := loop.Run(context.Background(), escalationConfig("execution"))
-			if err != nil {
-				t.Fatalf("Run: %v", err)
-			}
-			if prov.calls() != 1 {
-				t.Errorf("%s must not escalate; got %d provider calls", stop, prov.calls())
-			}
-			if runTrace.Outcome != wantOutcome[stop] {
-				t.Errorf("Outcome = %q, want %q", runTrace.Outcome, wantOutcome[stop])
-			}
-			if n := countNoToolWhenRequired(t, reader); n != 0 {
-				t.Errorf("no_tool_when_required count = %d, want 0", n)
-			}
+			require.NoError(t, err)
+			assert.Equal(t, 1, prov.calls(), "stop must not escalate")
+			assert.Equal(t, tc.wantOutcome, runTrace.Outcome)
+			assert.Equal(t, int64(0), countNoToolWhenRequired(t, reader))
 		})
 	}
 }
@@ -506,18 +480,10 @@ func TestEscalation_MaxTokensStopRecoversWithoutEscalating(t *testing.T) {
 			loop, reader := buildEscalationLoop(prov, policy)
 
 			runTrace, err := loop.Run(context.Background(), escalationConfig("execution"))
-			if err != nil {
-				t.Fatalf("Run: %v", err)
-			}
-			if runTrace.Outcome != "success" {
-				t.Errorf("Outcome = %q, want success", runTrace.Outcome)
-			}
-			if got := prov.choiceAt(1); got != types.ToolChoiceAuto {
-				t.Errorf("tool choice after the recovery = %v, want auto", got)
-			}
-			if n := countNoToolWhenRequired(t, reader); n != 0 {
-				t.Errorf("no_tool_when_required count = %d, want 0", n)
-			}
+			require.NoError(t, err)
+			assert.Equal(t, "success", runTrace.Outcome)
+			assert.Equal(t, types.ToolChoiceAuto, prov.choiceAt(1), "tool choice after the recovery")
+			assert.Equal(t, int64(0), countNoToolWhenRequired(t, reader))
 		})
 	}
 }
@@ -534,15 +500,9 @@ func TestEscalation_TerminalMaxTokensStopNoRetry(t *testing.T) {
 	config.MaxTurns = 1
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.Outcome != "max_tokens" {
-		t.Errorf("Outcome = %q, want max_tokens", runTrace.Outcome)
-	}
-	if n := countNoToolWhenRequired(t, reader); n != 0 {
-		t.Errorf("no_tool_when_required count = %d, want 0", n)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "max_tokens", runTrace.Outcome)
+	assert.Equal(t, int64(0), countNoToolWhenRequired(t, reader))
 }
 
 // TestEscalation_NoToolsNoRetry pins that escalation never fires when no
@@ -552,12 +512,9 @@ func TestEscalation_NoToolsNoRetry(t *testing.T) {
 	prov := &sequencedProvider{scripts: [][]types.StreamEvent{noToolAnswer()}}
 	loop := buildEscalationLoopNoTools(prov, newDefaultEscalationPolicy(1, nativeCaps))
 
-	if _, err := loop.Run(context.Background(), escalationConfig("execution")); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if prov.calls() != 1 {
-		t.Errorf("no-tools run must not escalate; got %d provider calls", prov.calls())
-	}
+	_, err := loop.Run(context.Background(), escalationConfig("execution"))
+	require.NoError(t, err)
+	require.Equal(t, 1, prov.calls(), "no-tools run must not escalate")
 }
 
 // TestEscalation_ResearchAllowsFetchTool pins the mode-aware policy for
@@ -573,15 +530,10 @@ func TestEscalation_ResearchAllowsFetchTool(t *testing.T) {
 	}}
 	loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, promptCaps))
 
-	if _, err := loop.Run(context.Background(), escalationConfig("research")); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if prov.calls() < 2 {
-		t.Errorf("research mode must escalate a first-turn no-tool answer; got %d calls", prov.calls())
-	}
-	if n := countNoToolWhenRequired(t, reader); n != 1 {
-		t.Errorf("no_tool_when_required count = %d, want 1", n)
-	}
+	_, err := loop.Run(context.Background(), escalationConfig("research"))
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, prov.calls(), 2, "research mode must escalate a first-turn no-tool answer")
+	assert.Equal(t, int64(1), countNoToolWhenRequired(t, reader))
 }
 
 // TestEscalation_MaxRetryCapEnforced is the unbounded-loop guard at the
@@ -591,18 +543,13 @@ func TestEscalation_MaxRetryCapEnforced(t *testing.T) {
 	prov := &sequencedProvider{scripts: [][]types.StreamEvent{noToolAnswer()}}
 	loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, nativeCaps))
 
-	if _, err := loop.Run(context.Background(), escalationConfig("execution")); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), escalationConfig("execution"))
+	require.NoError(t, err)
 	// One escalation (cap=1): the original answer + exactly one forced
 	// retry. The retry also answers with no tool, but the cap prevents any
 	// further escalation, so the run terminates at 2 provider calls.
-	if prov.calls() != 2 {
-		t.Errorf("cap=1 must yield exactly 2 provider calls (answer + 1 retry), got %d", prov.calls())
-	}
-	if n := countNoToolWhenRequired(t, reader); n != 1 {
-		t.Errorf("no_tool_when_required count = %d, want exactly 1 (cap enforced)", n)
-	}
+	assert.Equal(t, 2, prov.calls(), "cap=1 must yield exactly 2 provider calls (answer + 1 retry)")
+	assert.Equal(t, int64(1), countNoToolWhenRequired(t, reader))
 }
 
 // TestEscalation_MaxRetryCapEnforcedAtTwo pins that the cap ceiling is
@@ -613,20 +560,13 @@ func TestEscalation_MaxRetryCapEnforcedAtTwo(t *testing.T) {
 	prov := &sequencedProvider{scripts: [][]types.StreamEvent{noToolAnswer()}}
 	loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(2, nativeCaps))
 
-	if _, err := loop.Run(context.Background(), escalationConfig("execution")); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if prov.calls() != 3 {
-		t.Errorf("cap=2 must yield exactly 3 provider calls (answer + 2 retries), got %d", prov.calls())
-	}
-	if n := countNoToolWhenRequired(t, reader); n != 2 {
-		t.Errorf("no_tool_when_required count = %d, want exactly 2 (cap=2 enforced)", n)
-	}
+	_, err := loop.Run(context.Background(), escalationConfig("execution"))
+	require.NoError(t, err)
+	assert.Equal(t, 3, prov.calls(), "cap=2 must yield exactly 3 provider calls (answer + 2 retries)")
+	assert.Equal(t, int64(2), countNoToolWhenRequired(t, reader))
 	// Every forced retry must carry ToolChoiceRequired (native-capable).
 	for i := 1; i < prov.calls(); i++ {
-		if prov.choiceAt(i) != types.ToolChoiceRequired {
-			t.Errorf("retry call %d ToolChoice = %v, want required", i, prov.choiceAt(i))
-		}
+		assert.Equal(t, types.ToolChoiceRequired, prov.choiceAt(i), "retry call %d", i)
 	}
 }
 
@@ -641,14 +581,11 @@ func TestEscalation_RecoveryStopsAfterToolCall(t *testing.T) {
 	}}
 	loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(2, nativeCaps))
 
-	if _, err := loop.Run(context.Background(), escalationConfig("execution")); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), escalationConfig("execution"))
+	require.NoError(t, err)
 	// answer (escalate) -> tool call (PriorToolCalls becomes 1) ->
 	// final no-tool answer accepted (PriorToolCalls > 0 blocks escalation).
-	if n := countNoToolWhenRequired(t, reader); n != 1 {
-		t.Errorf("no_tool_when_required count = %d, want 1 (recovery stops once a tool is called)", n)
-	}
+	assert.Equal(t, int64(1), countNoToolWhenRequired(t, reader), "recovery stops once a tool is called")
 }
 
 // TestEscalationPolicy_NativeAddsUserTurnWhenTrailingAssistantRejected
@@ -664,15 +601,11 @@ func TestEscalationPolicy_NativeAddsUserTurnWhenTrailingAssistantRejected(t *tes
 	}
 	rejecting := fakeCapabilityResolver{cap: quirks.ToolChoiceCapability{Supported: true, Required: true, RejectsTrailingAssistant: true}}
 	got := newDefaultEscalationPolicy(1, rejecting).Decide(in)
-	if got.Kind != EscalationNative {
-		t.Fatalf("Decide kind = %v, want native", got.Kind)
-	}
-	if got.PromptMessage == "" {
-		t.Error("native escalation for a provider rejecting a trailing assistant message must carry a PromptMessage")
-	}
-	if got := newDefaultEscalationPolicy(1, nativeCaps).Decide(in); got.PromptMessage != "" {
-		t.Errorf("native escalation PromptMessage = %q, want empty for a provider accepting a trailing assistant message", got.PromptMessage)
-	}
+	require.Equal(t, EscalationNative, got.Kind)
+	assert.NotEmpty(t, got.PromptMessage, "a provider rejecting a trailing assistant message needs a PromptMessage")
+
+	accepting := newDefaultEscalationPolicy(1, nativeCaps).Decide(in)
+	assert.Empty(t, accepting.PromptMessage, "a provider accepting a trailing assistant message needs no PromptMessage")
 }
 
 // TestEscalation_RetryHistoryShapeByProvider drives the loop with the
@@ -704,27 +637,20 @@ func TestEscalation_RetryHistoryShapeByProvider(t *testing.T) {
 			loop, _ := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, quirks.DefaultRegistry()))
 			loop.Router = router.NewStaticRouter(tc.provider, tc.model)
 
-			if _, err := loop.Run(context.Background(), escalationConfig("execution")); err != nil {
-				t.Fatalf("Run: %v", err)
-			}
-			if got := prov.choiceAt(1); got != tc.wantChoice {
-				t.Errorf("retry call ToolChoice = %v, want %v", got, tc.wantChoice)
-			}
+			_, err := loop.Run(context.Background(), escalationConfig("execution"))
+			require.NoError(t, err)
+
+			got := prov.choiceAt(1)
+			require.Equal(t, tc.wantChoice, got, "retry call tool choice")
+
 			history := prov.historyAt(1)
-			if len(history) < 2 {
-				t.Fatalf("retry history has %d messages, want at least the prompt and the no-tool answer", len(history))
-			}
+			require.GreaterOrEqual(t, len(history), 2, "retry history should hold the prompt and the no-tool answer")
 			last := history[len(history)-1]
-			if last.Role != tc.wantLastRole {
-				t.Fatalf("retry history ends on %q, want %q", last.Role, tc.wantLastRole)
-			}
+			require.Equal(t, tc.wantLastRole, last.Role, "retry history last role")
 			if last.Role == "user" {
-				if !last.Synthetic {
-					t.Error("trailing user message is not marked synthetic")
-				}
-				if prev := history[len(history)-2]; prev.Role != "assistant" {
-					t.Errorf("message before the synthetic user turn has role %q, want the assistant's no-tool answer", prev.Role)
-				}
+				require.True(t, last.Synthetic, "trailing user message should be marked synthetic")
+				prev := history[len(history)-2]
+				require.Equal(t, "assistant", prev.Role, "message before the synthetic user turn should be the no-tool answer")
 			}
 		})
 	}

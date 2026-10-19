@@ -11,6 +11,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -23,9 +26,7 @@ func geminiRecordingServer(t *testing.T, body string) (*httptest.Server, func() 
 	var bodies []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("read request body: %v", err)
-		}
+		assert.NoError(t, err, "read request body")
 		mu.Lock()
 		bodies = append(bodies, string(b))
 		mu.Unlock()
@@ -57,18 +58,13 @@ func TestGeminiAdapter_ThoughtPartsStreamAsThinkingDelta(t *testing.T) {
 		Model:    "gemini-3.8-flash",
 		Messages: []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "read a.go"}}}},
 	})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 	events := collectEvents(t, ch)
 
 	thinking, text := splitDeltas(events)
-	if got, want := strings.Join(thinking, "|"), "**Plan**\n\n|Read the file first."; got != want {
-		t.Errorf("thinking_delta fragments = %q, want %q", got, want)
-	}
-	if text != "Reading it." {
-		t.Errorf("answer text = %q, want %q", text, "Reading it.")
-	}
+	assert.Equal(t, "**Plan**\n\n|Read the file first.", strings.Join(thinking, "|"), "thinking_delta fragments")
+	assert.Equal(t, "Reading it.", text, "answer text")
+
 	var calls []types.StreamEvent
 	var stop string
 	for _, ev := range events {
@@ -78,25 +74,22 @@ func TestGeminiAdapter_ThoughtPartsStreamAsThinkingDelta(t *testing.T) {
 		case "message_complete":
 			stop = ev.StopReason
 		case "error":
-			t.Fatalf("unexpected error event: %v", ev.Error)
+			require.FailNowf(t, "unexpected error event", "%v", ev.Error)
 		}
 	}
-	if len(calls) != 1 || calls[0].ThoughtSignature != sig || calls[0].Input["path"] != "a.go" {
-		t.Fatalf("tool calls = %+v, want one read_file(a.go) carrying the signature", calls)
-	}
-	if stop != "tool_use" {
-		t.Errorf("stop reason = %q, want tool_use", stop)
-	}
+	require.Len(t, calls, 1, "tool calls")
+	assert.Equal(t, sig, calls[0].ThoughtSignature, "tool call thought signature")
+	assert.Equal(t, "a.go", calls[0].Input["path"], "tool call path")
+	assert.Equal(t, "tool_use", stop, "stop reason")
 
 	sent := bodies()
-	if len(sent) != 1 || !strings.Contains(sent[0], `"thinkingConfig":{"includeThoughts":true}`) {
-		t.Errorf("request did not ask for thoughts: %v", sent)
-	}
+	require.Len(t, sent, 1)
+	assert.Contains(t, sent[0], `"thinkingConfig":{"includeThoughts":true}`, "request did not ask for thoughts")
 }
 
 // With reasoningSummary off no thoughts are requested, and a replayed
 // history never sends a thought part back.
-func TestGeminiAdapter_ReasoningSummaryOffAndReplay(t *testing.T) {
+func TestGeminiAdapter_ReasoningSummaryOff_OmitsThoughtsOnReplay(t *testing.T) {
 	srv, bodies := geminiRecordingServer(t, makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"text":"done"}]},"finishReason":"STOP"}]}`))
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 
@@ -113,24 +106,15 @@ func TestGeminiAdapter_ReasoningSummaryOffAndReplay(t *testing.T) {
 			{Role: "user", Content: []types.ContentBlock{{Type: "tool_result", ToolUseID: "gemini-1-0", Content: "package a"}}},
 		},
 	})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 	collectEvents(t, ch)
 
 	sent := bodies()
-	if len(sent) != 1 {
-		t.Fatalf("got %d requests, want 1", len(sent))
-	}
-	if strings.Contains(sent[0], "includeThoughts") || strings.Contains(sent[0], "thinkingConfig") {
-		t.Errorf("reasoningSummary off still configured thinking: %s", sent[0])
-	}
-	if strings.Contains(sent[0], `"thought"`) {
-		t.Errorf("replayed history carries a thought part: %s", sent[0])
-	}
-	if !strings.Contains(sent[0], `"thoughtSignature":"sig"`) {
-		t.Errorf("replayed functionCall lost its signature: %s", sent[0])
-	}
+	require.Len(t, sent, 1)
+	assert.NotContains(t, sent[0], "includeThoughts", "reasoningSummary off still configured thinking")
+	assert.NotContains(t, sent[0], "thinkingConfig", "reasoningSummary off still configured thinking")
+	assert.NotContains(t, sent[0], `"thought"`, "replayed history carries a thought part")
+	assert.Contains(t, sent[0], `"thoughtSignature":"sig"`, "replayed functionCall lost its signature")
 }
 
 // TestBuildGenerateContentRequest_IncludeThoughtsGate pins which requests
@@ -139,22 +123,24 @@ func TestGeminiAdapter_ReasoningSummaryOffAndReplay(t *testing.T) {
 // receives no thinkingConfig, since models that do not think reject one.
 func TestBuildGenerateContentRequest_IncludeThoughtsGate(t *testing.T) {
 	cases := []struct {
-		model, effort, summary string
-		want                   string
+		name          string
+		model, effort string
+		summary       string
+		want          string
 	}{
-		{model: "gemini-2.0-flash", want: ""},
-		{model: "gemini-2.5-pro", want: ""},
-		{model: "gemini-2.5-flash-lite", want: ""},
-		{model: "gemini-2.0-flash", effort: "low", want: `{"thinkingLevel":"LOW","includeThoughts":true}`},
-		{model: "gemini-2.0-flash", effort: "low", summary: types.ReasoningSummaryOff, want: `{"thinkingLevel":"LOW"}`},
-		{model: "gemini-3.8-flash", want: `{"includeThoughts":true}`},
-		{model: "gemini-3.6-flash", want: `{"includeThoughts":true}`},
-		{model: "gemini-3.1-pro-preview", want: `{"includeThoughts":true}`},
-		{model: "gemini-2.5-flash", want: `{"includeThoughts":true}`},
-		{model: "gemini-3.8-flash", summary: types.ReasoningSummaryOff, want: ""},
+		{name: "legacy flash without effort omits thinking config", model: "gemini-2.0-flash", want: ""},
+		{name: "2.5 pro without effort omits thinking config", model: "gemini-2.5-pro", want: ""},
+		{name: "2.5 flash-lite without effort omits thinking config", model: "gemini-2.5-flash-lite", want: ""},
+		{name: "effort low sets thinking level and includes thoughts", model: "gemini-2.0-flash", effort: "low", want: `{"thinkingLevel":"LOW","includeThoughts":true}`},
+		{name: "effort low with summary off sets thinking level only", model: "gemini-2.0-flash", effort: "low", summary: types.ReasoningSummaryOff, want: `{"thinkingLevel":"LOW"}`},
+		{name: "3.8 flash includes thoughts by default", model: "gemini-3.8-flash", want: `{"includeThoughts":true}`},
+		{name: "3.6 flash includes thoughts by default", model: "gemini-3.6-flash", want: `{"includeThoughts":true}`},
+		{name: "3.1 pro preview includes thoughts by default", model: "gemini-3.1-pro-preview", want: `{"includeThoughts":true}`},
+		{name: "2.5 flash includes thoughts by default", model: "gemini-2.5-flash", want: `{"includeThoughts":true}`},
+		{name: "summary off omits thinking config", model: "gemini-3.8-flash", summary: types.ReasoningSummaryOff, want: ""},
 	}
 	for _, tc := range cases {
-		t.Run(fmt.Sprintf("%s effort=%q summary=%q", tc.model, tc.effort, tc.summary), func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			params := types.StreamParams{
 				Model:            tc.model,
 				ReasoningEffort:  tc.effort,
@@ -162,24 +148,18 @@ func TestBuildGenerateContentRequest_IncludeThoughtsGate(t *testing.T) {
 				Messages:         []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
 			}
 			body, _, err := BuildGenerateContentRequest(params, nil, quirks.DefaultRegistry().Resolve("gemini", tc.model))
-			if err != nil {
-				t.Fatalf("build: %v", err)
-			}
+			require.NoError(t, err, "build request")
 			var req struct {
 				GenerationConfig *struct {
 					ThinkingConfig json.RawMessage `json:"thinkingConfig"`
 				} `json:"generationConfig"`
 			}
-			if err := json.Unmarshal(body, &req); err != nil {
-				t.Fatalf("decode: %v", err)
-			}
+			require.NoError(t, json.Unmarshal(body, &req), "decode request")
 			var got string
 			if req.GenerationConfig != nil {
 				got = string(req.GenerationConfig.ThinkingConfig)
 			}
-			if got != tc.want {
-				t.Errorf("thinkingConfig = %s, want %s", got, tc.want)
-			}
+			require.Equal(t, tc.want, got, "thinkingConfig")
 		})
 	}
 }

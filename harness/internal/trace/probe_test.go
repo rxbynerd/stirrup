@@ -6,9 +6,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestGCSTraceEmitter_Probe_OK(t *testing.T) {
+func TestGCSTraceEmitter_Probe_ReadsBucketMetadata(t *testing.T) {
 	var sawBucketGet bool
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/storage/v1/b/") {
@@ -18,7 +21,7 @@ func TestGCSTraceEmitter_Probe_OK(t *testing.T) {
 			return
 		}
 		// Any upload POST here would mean the probe is not read-only.
-		t.Errorf("unexpected request %s %s (probe must be read-only)", r.Method, r.URL.Path)
+		assert.Failf(t, "unexpected request", "%s %s (probe must be read-only)", r.Method, r.URL.Path)
 		w.WriteHeader(http.StatusBadRequest)
 	}))
 	defer httpSrv.Close()
@@ -28,18 +31,12 @@ func TestGCSTraceEmitter_Probe_OK(t *testing.T) {
 		CredentialSource: &staticBearerSource{token: "tok"},
 		EndpointBaseURL:  httpSrv.URL,
 	})
-	if err != nil {
-		t.Fatalf("NewGCSTraceEmitter: %v", err)
-	}
-	if err := emitter.Probe(context.Background()); err != nil {
-		t.Fatalf("Probe: unexpected error: %v", err)
-	}
-	if !sawBucketGet {
-		t.Error("Probe should issue a bucket-metadata GET")
-	}
+	require.NoError(t, err)
+	require.NoError(t, emitter.Probe(context.Background()))
+	require.True(t, sawBucketGet, "Probe should issue a bucket-metadata GET")
 }
 
-func TestGCSTraceEmitter_Probe_Denied(t *testing.T) {
+func TestGCSTraceEmitter_Probe_ReturnsErrorOnForbidden(t *testing.T) {
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"error":{"message":"permission denied"}}`))
@@ -51,22 +48,15 @@ func TestGCSTraceEmitter_Probe_Denied(t *testing.T) {
 		CredentialSource: &staticBearerSource{token: "tok"},
 		EndpointBaseURL:  httpSrv.URL,
 	})
-	if err != nil {
-		t.Fatalf("NewGCSTraceEmitter: %v", err)
-	}
+	require.NoError(t, err)
+
 	err = emitter.Probe(context.Background())
-	if err == nil {
-		t.Fatal("Probe: expected error for 403, got nil")
-	}
-	if !strings.Contains(err.Error(), "403") {
-		t.Errorf("error should carry the GCS status, got: %v", err)
-	}
+	require.Error(t, err, "Probe should fail when GCS returns 403")
+	require.ErrorContains(t, err, "403", "error should carry the GCS status")
 }
 
 func TestOTelTraceEmitter_Probe_NilProviderIsNoop(t *testing.T) {
 	// A zero-value emitter (nil provider) must not panic; Probe is a no-op.
 	emitter := &OTelTraceEmitter{}
-	if err := emitter.Probe(context.Background()); err != nil {
-		t.Fatalf("Probe with nil provider should be a no-op, got: %v", err)
-	}
+	require.NoError(t, emitter.Probe(context.Background()), "Probe with nil provider should be a no-op")
 }

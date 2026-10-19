@@ -2,7 +2,6 @@ package executor
 
 import (
 	"context"
-	"errors"
 	"os"
 	osexec "os/exec"
 	"path/filepath"
@@ -10,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -20,65 +21,57 @@ func newTestExecutor(t *testing.T) (*LocalExecutor, string) {
 	// On macOS, t.TempDir() returns /var/... but EvalSymlinks resolves to
 	// /private/var/.... Resolve here so test assertions match.
 	dir, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		t.Fatalf("EvalSymlinks: %v", err)
-	}
+	require.NoError(t, err, "EvalSymlinks")
 	exec, err := NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
+	require.NoError(t, err, "NewLocalExecutor")
 	return exec, dir
 }
 
-func TestNewLocalExecutor_InvalidPaths(t *testing.T) {
-	_, err := NewLocalExecutor("/nonexistent/path/that/does/not/exist")
-	if err == nil {
-		t.Fatal("expected error for nonexistent workspace")
-	}
+func TestNewLocalExecutor_RejectsMissingAndFileWorkspaces(t *testing.T) {
+	t.Run("nonexistent directory", func(t *testing.T) {
+		_, err := NewLocalExecutor("/nonexistent/path/that/does/not/exist")
+		require.Error(t, err)
+	})
 
-	// File, not directory.
-	f := filepath.Join(t.TempDir(), "file.txt")
-	_ = os.WriteFile(f, []byte("x"), 0o644)
-	_, err = NewLocalExecutor(f)
-	if err == nil {
-		t.Fatal("expected error for file workspace")
-	}
+	t.Run("regular file", func(t *testing.T) {
+		f := filepath.Join(t.TempDir(), "file.txt")
+		_ = os.WriteFile(f, []byte("x"), 0o644)
+		_, err := NewLocalExecutor(f)
+		require.Error(t, err)
+	})
 }
 
 func TestResolvePath_Basic(t *testing.T) {
 	exec, dir := newTestExecutor(t)
 
 	resolved, err := exec.ResolvePath("foo.txt")
-	if err != nil {
-		t.Fatalf("ResolvePath: %v", err)
-	}
-	if resolved != filepath.Join(dir, "foo.txt") {
-		t.Errorf("got %q, want %q", resolved, filepath.Join(dir, "foo.txt"))
-	}
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(dir, "foo.txt"), resolved)
 }
 
 func TestResolvePath_TraversalRejected(t *testing.T) {
 	exec, _ := newTestExecutor(t)
 
-	cases := []string{
-		"../etc/passwd",
-		"foo/../../etc/passwd",
-		"../../../tmp/evil",
+	cases := []struct {
+		name string
+		path string
+	}{
+		{name: "parent directory", path: "../etc/passwd"},
+		{name: "nested parent directory", path: "foo/../../etc/passwd"},
+		{name: "repeated parent directories", path: "../../../tmp/evil"},
 	}
-	for _, p := range cases {
-		_, err := exec.ResolvePath(p)
-		if err == nil {
-			t.Errorf("expected error for path traversal %q", p)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := exec.ResolvePath(tc.path)
+			require.Error(t, err)
+		})
 	}
 }
 
 func TestResolvePath_AbsoluteOutsideWorkspace(t *testing.T) {
 	exec, _ := newTestExecutor(t)
 	_, err := exec.ResolvePath("/etc/passwd")
-	if err == nil {
-		t.Fatal("expected error for absolute path outside workspace")
-	}
+	require.Error(t, err)
 }
 
 func TestResolvePath_SymlinkEscapesWorkspace(t *testing.T) {
@@ -86,25 +79,16 @@ func TestResolvePath_SymlinkEscapesWorkspace(t *testing.T) {
 
 	// Create a symlink inside the workspace that points to /tmp (outside).
 	link := filepath.Join(dir, "escape_link")
-	if err := os.Symlink("/tmp", link); err != nil {
-		t.Fatalf("Symlink: %v", err)
-	}
+	require.NoError(t, os.Symlink("/tmp", link))
 
 	// Attempting to resolve a path through the symlink should fail because
 	// the resolved target (/tmp/...) is outside the workspace.
 	_, err := exec.ResolvePath("escape_link/somefile")
-	if err == nil {
-		t.Fatal("expected error for symlink escaping workspace")
-	}
-	if !strings.Contains(err.Error(), "escapes workspace") {
-		t.Errorf("error should mention workspace escape, got: %v", err)
-	}
+	require.ErrorContains(t, err, "escapes workspace")
 
 	// The symlink target itself should also be rejected.
 	_, err = exec.ResolvePath("escape_link")
-	if err == nil {
-		t.Fatal("expected error for symlink target outside workspace")
-	}
+	require.Error(t, err, "symlink target outside workspace")
 }
 
 func TestResolvePath_AbsoluteInsideWorkspace(t *testing.T) {
@@ -116,36 +100,26 @@ func TestResolvePath_AbsoluteInsideWorkspace(t *testing.T) {
 
 	// An absolute path that falls inside the workspace should be accepted.
 	resolved, err := exec.ResolvePath(testFile)
-	if err != nil {
-		t.Fatalf("ResolvePath: %v", err)
-	}
-	if resolved != testFile {
-		t.Errorf("got %q, want %q", resolved, testFile)
-	}
+	require.NoError(t, err)
+	require.Equal(t, testFile, resolved)
 }
 
-func TestReadFile(t *testing.T) {
+func TestReadFile_ReturnsContent(t *testing.T) {
 	exec, dir := newTestExecutor(t)
 	content := "hello world"
 	_ = os.WriteFile(filepath.Join(dir, "test.txt"), []byte(content), 0o644)
 
 	got, err := exec.ReadFile(context.Background(), "test.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if got != content {
-		t.Errorf("got %q, want %q", got, content)
-	}
+	require.NoError(t, err)
+	require.Equal(t, content, got)
 }
 
-func TestReadFile_Directory(t *testing.T) {
+func TestReadFile_RejectsDirectory(t *testing.T) {
 	exec, dir := newTestExecutor(t)
 	_ = os.MkdirAll(filepath.Join(dir, "subdir"), 0o755)
 
 	_, err := exec.ReadFile(context.Background(), "subdir")
-	if err == nil {
-		t.Fatal("expected error reading directory as file")
-	}
+	require.Error(t, err)
 }
 
 func TestReadFile_TooLarge(t *testing.T) {
@@ -156,109 +130,69 @@ func TestReadFile_TooLarge(t *testing.T) {
 	_ = f.Close()
 
 	_, err := exec.ReadFile(context.Background(), "big.bin")
-	if err == nil {
-		t.Fatal("expected error for oversized file")
-	}
-	if !strings.Contains(err.Error(), "too large") {
-		t.Errorf("unexpected error: %v", err)
-	}
+	require.ErrorContains(t, err, "too large")
 }
 
-func TestWriteFile(t *testing.T) {
+func TestWriteFile_CreatesParentDirectories(t *testing.T) {
 	exec, dir := newTestExecutor(t)
 
 	err := exec.WriteFile(context.Background(), "sub/dir/test.txt", "content")
-	if err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	require.NoError(t, err)
 
 	data, _ := os.ReadFile(filepath.Join(dir, "sub", "dir", "test.txt"))
-	if string(data) != "content" {
-		t.Errorf("got %q, want %q", string(data), "content")
-	}
+	require.Equal(t, "content", string(data))
 }
 
 func TestWriteFile_TooLarge(t *testing.T) {
 	exec, _ := newTestExecutor(t)
 	bigContent := strings.Repeat("x", maxFileSize+1)
 	err := exec.WriteFile(context.Background(), "big.txt", bigContent)
-	if err == nil {
-		t.Fatal("expected error for oversized content")
-	}
+	require.Error(t, err)
 }
 
 func TestWriteFile_TraversalRejected(t *testing.T) {
 	exec, _ := newTestExecutor(t)
 	err := exec.WriteFile(context.Background(), "../escape.txt", "bad")
-	if err == nil {
-		t.Fatal("expected error for path traversal write")
-	}
+	require.Error(t, err)
 }
 
-func TestListDirectory(t *testing.T) {
+func TestListDirectory_ListsFilesAndSlashSuffixedDirs(t *testing.T) {
 	exec, dir := newTestExecutor(t)
 	_ = os.WriteFile(filepath.Join(dir, "a.txt"), []byte(""), 0o644)
 	_ = os.MkdirAll(filepath.Join(dir, "subdir"), 0o755)
 
 	entries, err := exec.ListDirectory(context.Background(), ".")
-	if err != nil {
-		t.Fatalf("ListDirectory: %v", err)
-	}
+	require.NoError(t, err)
 
-	found := map[string]bool{}
-	for _, e := range entries {
-		found[e] = true
-	}
-	if !found["a.txt"] {
-		t.Error("missing a.txt")
-	}
-	if !found["subdir/"] {
-		t.Error("missing subdir/ (should have trailing slash)")
-	}
+	require.Contains(t, entries, "a.txt")
+	require.Contains(t, entries, "subdir/", "directories should have a trailing slash")
 }
 
-func TestExec_Basic(t *testing.T) {
+func TestExec_ZeroExitCapturesStdout(t *testing.T) {
 	exec, _ := newTestExecutor(t)
 
 	result, err := exec.Exec(context.Background(), "echo hello", 0)
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if result.ExitCode != 0 {
-		t.Errorf("exit code: got %d, want 0", result.ExitCode)
-	}
-	if strings.TrimSpace(result.Stdout) != "hello" {
-		t.Errorf("stdout: got %q, want %q", result.Stdout, "hello\n")
-	}
+	require.NoError(t, err)
+	require.Equal(t, 0, result.ExitCode)
+	require.Equal(t, "hello", strings.TrimSpace(result.Stdout))
 }
 
 func TestExec_NonZeroExit(t *testing.T) {
 	exec, _ := newTestExecutor(t)
 
 	result, err := exec.Exec(context.Background(), "exit 42", 0)
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if result.ExitCode != 42 {
-		t.Errorf("exit code: got %d, want 42", result.ExitCode)
-	}
+	require.NoError(t, err)
+	require.Equal(t, 42, result.ExitCode)
 }
 
 func TestExec_Timeout(t *testing.T) {
 	exec, _ := newTestExecutor(t)
 
 	_, err := exec.Exec(context.Background(), "sleep 60", 100*time.Millisecond)
-	if err == nil {
-		t.Fatal("expected timeout error")
-	}
-	if !strings.Contains(err.Error(), "timed out") {
-		t.Errorf("unexpected error: %v", err)
-	}
+	require.ErrorContains(t, err, "timed out")
 	// A genuine deadline expiry must satisfy errors.Is against the shared
 	// executor sentinel, not a match on the formatted text.
-	if !errors.Is(err, ErrTimeout) {
-		t.Errorf("err = %v, want errors.Is(err, ErrTimeout)", err)
-	}
+	require.ErrorIs(t, err, ErrTimeout)
 }
 
 // TestExec_CancelledContext_NotErrTimeout verifies that a context
@@ -277,21 +211,12 @@ func TestExec_CancelledContext_NotErrTimeout(t *testing.T) {
 	}()
 
 	result, err := exec.Exec(ctx, "echo started; sleep 30", 60*time.Second)
-	if err == nil {
-		t.Fatal("expected an error from the cancelled command")
-	}
-	if errors.Is(err, ErrTimeout) {
-		t.Errorf("err = %v, must not satisfy errors.Is(err, ErrTimeout): the command was cancelled after 200ms, not deadline-expired after the configured 60s", err)
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("err = %v, want errors.Is(err, context.Canceled)", err)
-	}
-	if strings.Contains(err.Error(), "timed out") {
-		t.Errorf("err = %v, must not claim the command timed out", err)
-	}
-	if result == nil || !strings.Contains(result.Stdout, "started") {
-		t.Errorf("result = %+v, want Stdout to preserve output captured before the cancel", result)
-	}
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrTimeout, "cancelled after 200ms, not deadline-expired after the configured 60s")
+	require.ErrorIs(t, err, context.Canceled)
+	require.NotContains(t, err.Error(), "timed out")
+	require.NotNil(t, result)
+	require.Contains(t, result.Stdout, "started", "output captured before the cancel should be preserved")
 }
 
 // TestExec_KillsOrphanedGrandchildPromptly verifies that a compound
@@ -314,15 +239,11 @@ func TestExec_KillsOrphanedGrandchildPromptly(t *testing.T) {
 	_, err := exec.Exec(ctx, "echo start; sleep 30; echo finished", 60*time.Second)
 	elapsed := time.Since(start)
 
-	if err == nil {
-		t.Fatal("expected an error from the cancelled command")
-	}
+	require.Error(t, err)
 	// Bounded well under the 30s grandchild sleep; generous enough to
 	// be non-flaky (200ms cancel delay + shortCommandKillGrace + CI
 	// scheduling slack), but nowhere near the un-fixed ~30s.
-	if elapsed > 5*time.Second {
-		t.Errorf("Exec took %v after ctx cancellation, want well under 5s (orphaned grandchild must not block Wait())", elapsed)
-	}
+	require.LessOrEqual(t, elapsed, 5*time.Second, "orphaned grandchild must not block Exec after cancellation")
 }
 
 func TestExec_MaxTimeoutCapped(t *testing.T) {
@@ -330,12 +251,8 @@ func TestExec_MaxTimeoutCapped(t *testing.T) {
 
 	// Passing a timeout exceeding max should be capped, not rejected.
 	result, err := exec.Exec(context.Background(), "echo ok", 10*time.Minute)
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if strings.TrimSpace(result.Stdout) != "ok" {
-		t.Errorf("stdout: got %q, want %q", result.Stdout, "ok\n")
-	}
+	require.NoError(t, err)
+	require.Equal(t, "ok", strings.TrimSpace(result.Stdout))
 }
 
 func TestExec_OutputTruncation(t *testing.T) {
@@ -347,15 +264,9 @@ func TestExec_OutputTruncation(t *testing.T) {
 	_ = os.WriteFile(bigFile, []byte(data), 0o644)
 
 	result, err := exec.Exec(context.Background(), "cat big.txt", 10*time.Second)
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if !strings.HasSuffix(result.Stdout, truncatedSuffix) {
-		t.Errorf("expected truncation suffix on large output, got last 50 chars: %q", result.Stdout[len(result.Stdout)-50:])
-	}
-	if !result.OutputTruncated {
-		t.Error("expected ExecResult.OutputTruncated true on capped output")
-	}
+	require.NoError(t, err)
+	require.True(t, strings.HasSuffix(result.Stdout, truncatedSuffix), "expected truncation suffix on large output")
+	require.True(t, result.OutputTruncated, "expected ExecResult.OutputTruncated on capped output")
 }
 
 // capturingEmitter records the originalSize argument of the most recent
@@ -387,41 +298,22 @@ func TestExec_OutputStreamingBounded(t *testing.T) {
 	// 16 MB of stdout, well past the 1 MB cap.
 	const totalBytes = 16777216
 	result, err := exec.Exec(context.Background(), "head -c 16777216 /dev/zero", 30*time.Second)
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err)
 	payload := strings.TrimSuffix(result.Stdout, truncatedSuffix)
-	if len(payload) != maxOutputSize {
-		t.Errorf("retained payload = %d bytes, want exactly cap %d", len(payload), maxOutputSize)
-	}
-	if !strings.HasSuffix(result.Stdout, truncatedSuffix) {
-		t.Errorf("expected truncation suffix on over-cap output")
-	}
-	if emitter.outputTruncCount != 1 {
-		t.Errorf("OutputTruncated fired %d times, want 1", emitter.outputTruncCount)
-	}
-	if emitter.lastOriginalSize != totalBytes {
-		t.Errorf("OutputTruncated originalSize = %d, want true total %d (not the capped %d)",
-			emitter.lastOriginalSize, totalBytes, maxOutputSize)
-	}
+	require.Len(t, payload, maxOutputSize, "retained payload should be exactly the cap")
+	require.True(t, strings.HasSuffix(result.Stdout, truncatedSuffix), "expected truncation suffix on over-cap output")
+	require.Equal(t, 1, emitter.outputTruncCount, "OutputTruncated should fire once")
+	require.Equal(t, totalBytes, emitter.lastOriginalSize, "OutputTruncated should report the true total, not the capped size")
 }
 
 func TestExecStream_PreservesOutputBeyondLegacyCap(t *testing.T) {
 	exec, _ := newTestExecutor(t)
 	var stdout, stderr strings.Builder
 	result, err := exec.ExecStream(context.Background(), "yes x | head -c 2097152", 10*time.Second, &stdout, &stderr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.ExitCode != 0 {
-		t.Fatalf("exit code=%d", result.ExitCode)
-	}
-	if stdout.Len() != 2*1024*1024 {
-		t.Fatalf("stdout bytes=%d want %d", stdout.Len(), 2*1024*1024)
-	}
-	if strings.Contains(stdout.String(), truncatedSuffix) {
-		t.Fatal("streaming output was legacy-truncated")
-	}
+	require.NoError(t, err)
+	require.Equal(t, 0, result.ExitCode)
+	require.Equal(t, 2*1024*1024, stdout.Len())
+	require.NotContains(t, stdout.String(), truncatedSuffix, "streaming output was legacy-truncated")
 }
 
 // TestExec_OutputTruncated_CombinedAcrossStreams locks in the trigger
@@ -438,15 +330,10 @@ func TestExec_OutputTruncated_CombinedAcrossStreams(t *testing.T) {
 	// 600 KB to stdout + 600 KB to stderr = 1.2 MB combined, each under 1 MB.
 	const perStream = 600 * 1024
 	cmd := "head -c 614400 /dev/zero; head -c 614400 /dev/zero 1>&2"
-	if _, err := exec.Exec(context.Background(), cmd, 30*time.Second); err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if emitter.outputTruncCount != 1 {
-		t.Fatalf("OutputTruncated fired %d times, want 1 (combined streams exceed cap)", emitter.outputTruncCount)
-	}
-	if want := 2 * perStream; emitter.lastOriginalSize != want {
-		t.Errorf("OutputTruncated originalSize = %d, want combined total %d", emitter.lastOriginalSize, want)
-	}
+	_, err := exec.Exec(context.Background(), cmd, 30*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, 1, emitter.outputTruncCount, "combined streams exceed the cap")
+	require.Equal(t, 2*perStream, emitter.lastOriginalSize, "OutputTruncated should report the combined total")
 }
 
 // retainedLen returns the number of payload bytes a cappedWriter currently
@@ -455,30 +342,21 @@ func retainedLen(w *cappedWriter) int {
 	return len(strings.TrimSuffix(w.result(), truncatedSuffix))
 }
 
-func TestCappedWriter(t *testing.T) {
+func TestCappedWriter_RetainsUpToCapAndCountsAll(t *testing.T) {
 	t.Run("retains all bytes under the cap", func(t *testing.T) {
 		w := newCappedWriter(100)
 		n, err := w.Write([]byte("hello"))
-		if err != nil || n != 5 {
-			t.Fatalf("Write = (%d, %v), want (5, nil)", n, err)
-		}
-		if w.seen() != 5 {
-			t.Errorf("seen = %d, want 5", w.seen())
-		}
-		if got := w.result(); got != "hello" {
-			t.Errorf("result = %q, want %q", got, "hello")
-		}
+		require.NoError(t, err)
+		require.Equal(t, 5, n)
+		require.Equal(t, 5, w.seen())
+		require.Equal(t, "hello", w.result())
 	})
 
 	t.Run("exact-fit is not truncated", func(t *testing.T) {
 		w := newCappedWriter(5)
 		_, _ = w.Write([]byte("hello"))
-		if w.seen() != 5 {
-			t.Errorf("seen = %d, want 5", w.seen())
-		}
-		if got := w.result(); got != "hello" {
-			t.Errorf("filling exactly to the cap must not append suffix: result = %q", got)
-		}
+		require.Equal(t, 5, w.seen())
+		require.Equal(t, "hello", w.result(), "filling exactly to the cap must not append suffix")
 	})
 
 	t.Run("stops retaining past the cap but accepts and counts all bytes", func(t *testing.T) {
@@ -487,18 +365,11 @@ func TestCappedWriter(t *testing.T) {
 		// the producer never blocks, while retaining only the first limit bytes
 		// and counting the true total.
 		n, err := w.Write([]byte("abcdefghij"))
-		if err != nil || n != 10 {
-			t.Fatalf("Write = (%d, %v), want (10, nil)", n, err)
-		}
-		if w.seen() != 10 {
-			t.Errorf("seen = %d, want true total 10", w.seen())
-		}
-		if rl := retainedLen(w); rl != 4 {
-			t.Errorf("retained = %d, want cap 4", rl)
-		}
-		if got := w.result(); got != "abcd"+truncatedSuffix {
-			t.Errorf("result = %q, want %q", got, "abcd"+truncatedSuffix)
-		}
+		require.NoError(t, err)
+		require.Equal(t, 10, n)
+		require.Equal(t, 10, w.seen())
+		require.Equal(t, 4, retainedLen(w))
+		require.Equal(t, "abcd"+truncatedSuffix, w.result())
 	})
 
 	t.Run("drops bytes across multiple writes once full", func(t *testing.T) {
@@ -507,31 +378,20 @@ func TestCappedWriter(t *testing.T) {
 		_, _ = w.Write([]byte("cd"))
 		// Now full; further writes are accepted, counted, but discarded.
 		n, err := w.Write([]byte("efgh"))
-		if err != nil || n != 4 {
-			t.Fatalf("post-fill Write = (%d, %v), want (4, nil)", n, err)
-		}
-		if w.seen() != 8 {
-			t.Errorf("seen = %d, want true total 8", w.seen())
-		}
-		if rl := retainedLen(w); rl != 4 {
-			t.Errorf("retained = %d, want cap 4", rl)
-		}
-		if got := w.result(); got != "abcd"+truncatedSuffix {
-			t.Errorf("result must append truncation suffix once full: got %q, want %q", got, "abcd"+truncatedSuffix)
-		}
+		require.NoError(t, err)
+		require.Equal(t, 4, n)
+		require.Equal(t, 8, w.seen())
+		require.Equal(t, 4, retainedLen(w))
+		require.Equal(t, "abcd"+truncatedSuffix, w.result(), "result must append truncation suffix once full")
 	})
 }
 
-func TestExec_WorkingDirectory(t *testing.T) {
+func TestExec_WorkingDirectoryIsWorkspace(t *testing.T) {
 	exec, dir := newTestExecutor(t)
 
 	result, err := exec.Exec(context.Background(), "pwd", 0)
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if strings.TrimSpace(result.Stdout) != dir {
-		t.Errorf("working dir: got %q, want %q", strings.TrimSpace(result.Stdout), dir)
-	}
+	require.NoError(t, err)
+	require.Equal(t, dir, strings.TrimSpace(result.Stdout))
 }
 
 func TestExec_FiltersSecretEnvironment(t *testing.T) {
@@ -539,12 +399,8 @@ func TestExec_FiltersSecretEnvironment(t *testing.T) {
 	exec, _ := newTestExecutor(t)
 
 	result, err := exec.Exec(context.Background(), "printf %s \"$STIRRUP_TEST_SECRET\"", 0)
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if result.Stdout != "" {
-		t.Fatalf("expected secret env to be filtered, got %q", result.Stdout)
-	}
+	require.NoError(t, err)
+	require.Empty(t, result.Stdout, "secret environment variable should be filtered")
 }
 
 // TestNewLocalExecutorWithConfig_RejectsAllowlist confirms that the local
@@ -555,23 +411,14 @@ func TestExec_FiltersSecretEnvironment(t *testing.T) {
 func TestNewLocalExecutorWithConfig_RejectsAllowlist(t *testing.T) {
 	dir := t.TempDir()
 	resolved, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		t.Fatalf("EvalSymlinks: %v", err)
-	}
+	require.NoError(t, err, "EvalSymlinks")
 
 	_, err = NewLocalExecutorWithConfig(LocalExecutorConfig{
 		Workspace: resolved,
 		Network:   &types.NetworkConfig{Mode: "allowlist", Allowlist: []string{"example.com"}},
 	})
-	if err == nil {
-		t.Fatal("expected error for allowlist mode on local executor")
-	}
-	if !strings.Contains(err.Error(), "allowlist") {
-		t.Errorf("error should mention allowlist, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "container executor") {
-		t.Errorf("error should hint at container executor, got: %v", err)
-	}
+	require.ErrorContains(t, err, "allowlist")
+	require.ErrorContains(t, err, "container executor", "error should hint at the container executor")
 }
 
 // TestNewLocalExecutorWithConfig_AllowsNoneAndNil confirms that the
@@ -579,31 +426,31 @@ func TestNewLocalExecutorWithConfig_RejectsAllowlist(t *testing.T) {
 func TestNewLocalExecutorWithConfig_AllowsNoneAndNil(t *testing.T) {
 	dir := t.TempDir()
 	resolved, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		t.Fatalf("EvalSymlinks: %v", err)
-	}
+	require.NoError(t, err, "EvalSymlinks")
 
-	if _, err := NewLocalExecutorWithConfig(LocalExecutorConfig{Workspace: resolved}); err != nil {
-		t.Errorf("nil network: %v", err)
-	}
-	if _, err := NewLocalExecutorWithConfig(LocalExecutorConfig{
-		Workspace: resolved,
-		Network:   &types.NetworkConfig{Mode: "none"},
-	}); err != nil {
-		t.Errorf("mode=none: %v", err)
-	}
+	t.Run("nil network", func(t *testing.T) {
+		_, err := NewLocalExecutorWithConfig(LocalExecutorConfig{Workspace: resolved})
+		require.NoError(t, err)
+	})
+
+	t.Run("network mode none", func(t *testing.T) {
+		_, err := NewLocalExecutorWithConfig(LocalExecutorConfig{
+			Workspace: resolved,
+			Network:   &types.NetworkConfig{Mode: "none"},
+		})
+		require.NoError(t, err)
+	})
 }
 
-func TestCapabilities(t *testing.T) {
+func TestLocalExecutor_CapabilitiesEnableAll(t *testing.T) {
 	exec, _ := newTestExecutor(t)
 	caps := exec.Capabilities()
 
-	if !caps.CanRead || !caps.CanWrite || !caps.CanExec || !caps.CanNetwork {
-		t.Error("local executor should have all capabilities enabled")
-	}
-	if caps.MaxTimeout != maxTimeout {
-		t.Errorf("MaxTimeout: got %v, want %v", caps.MaxTimeout, maxTimeout)
-	}
+	require.True(t, caps.CanRead, "CanRead should be enabled")
+	require.True(t, caps.CanWrite, "CanWrite should be enabled")
+	require.True(t, caps.CanExec, "CanExec should be enabled")
+	require.True(t, caps.CanNetwork, "CanNetwork should be enabled")
+	require.Equal(t, maxTimeout, caps.MaxTimeout)
 }
 
 // TestMaxTimeout_Is30Minutes pins the literal cap value itself. The other
@@ -612,9 +459,7 @@ func TestCapabilities(t *testing.T) {
 // which would pass even if the value were silently changed; this test is
 // the actual regression tripwire for the cap value.
 func TestMaxTimeout_Is30Minutes(t *testing.T) {
-	if maxTimeout != 30*time.Minute {
-		t.Errorf("maxTimeout = %v, want 30m (issue #461 raised the shared executor cap from 5m)", maxTimeout)
-	}
+	require.Equal(t, 30*time.Minute, maxTimeout)
 }
 
 // processRunning reports whether pid is a live, non-zombie process.
@@ -639,7 +484,7 @@ func readPid(t *testing.T, path string) int {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("pid file %s was not written", path)
+	require.FailNowf(t, "pid file was not written", "path: %s", path)
 	return 0
 }
 
@@ -657,14 +502,10 @@ func TestExec_TimeoutKillsBackgroundGrandchild(t *testing.T) {
 	// stops it from writing the marker after the command timed out.
 	command := "sh -c 'sleep 2; touch after-timeout' >/dev/null 2>&1 & sleep 600"
 	_, err := exec.Exec(context.Background(), command, 500*time.Millisecond)
-	if !errors.Is(err, ErrTimeout) {
-		t.Fatalf("err = %v, want ErrTimeout", err)
-	}
+	require.ErrorIs(t, err, ErrTimeout)
 
 	time.Sleep(3 * time.Second)
-	if _, statErr := os.Stat(filepath.Join(dir, "after-timeout")); statErr == nil {
-		t.Fatal("background grandchild survived the timeout and wrote its marker")
-	}
+	require.NoFileExists(t, filepath.Join(dir, "after-timeout"), "background grandchild survived the timeout and wrote its marker")
 }
 
 func TestExec_TimeoutKillsProcessTree(t *testing.T) {
@@ -676,17 +517,11 @@ func TestExec_TimeoutKillsProcessTree(t *testing.T) {
 	go func() { _, _ = exec.Exec(context.Background(), command, 1500*time.Millisecond) }()
 
 	pid := readPid(t, pidFile)
-	if !processRunning(t, pid) {
-		t.Fatalf("sleeper %d is not running before the timeout", pid)
-	}
+	require.True(t, processRunning(t, pid), "sleeper %d should be running before the timeout", pid)
 
-	deadline := time.Now().Add(10 * time.Second)
-	for processRunning(t, pid) {
-		if time.Now().After(deadline) {
-			t.Fatalf("sleeper %d still running after the command timed out", pid)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	require.Eventually(t, func() bool {
+		return !processRunning(t, pid)
+	}, 10*time.Second, 50*time.Millisecond, "sleeper %d still running after the command timed out", pid)
 }
 
 func TestExec_CancelKillsTermIgnoringProcessTree(t *testing.T) {
@@ -706,44 +541,31 @@ func TestExec_CancelKillsTermIgnoringProcessTree(t *testing.T) {
 	cancel()
 	select {
 	case err := <-done:
-		if err == nil || errors.Is(err, ErrTimeout) {
-			t.Fatalf("err = %v, want a plain cancellation", err)
-		}
+		require.Error(t, err, "Exec should return an error after cancellation")
+		require.NotErrorIs(t, err, ErrTimeout, "want a plain cancellation, got %v", err)
 	case <-time.After(10 * time.Second):
-		t.Fatal("Exec did not return after cancellation")
+		require.Fail(t, "Exec did not return after cancellation")
 	}
 
 	// Exec returns only after the group has been SIGKILLed.
-	deadline := time.Now().Add(2 * time.Second)
-	for processRunning(t, pid) {
-		if time.Now().After(deadline) {
-			t.Fatalf("SIGTERM-ignoring process %d survived cancellation", pid)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	require.Eventually(t, func() bool {
+		return !processRunning(t, pid)
+	}, 2*time.Second, 50*time.Millisecond, "SIGTERM-ignoring process %d survived cancellation", pid)
 }
 
 func TestExec_NormalCompletionLeavesBackgroundProcessAndExitCode(t *testing.T) {
 	exec, dir := newTestExecutor(t)
 
 	result, err := exec.Exec(context.Background(), "(sleep 1; touch detached) >/dev/null 2>&1 & echo out; echo err >&2; exit 7", 10*time.Second)
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if result.ExitCode != 7 || result.Stdout != "out\n" || result.Stderr != "err\n" {
-		t.Errorf("result = %+v, want exit 7, stdout %q, stderr %q", result, "out\n", "err\n")
-	}
+	require.NoError(t, err)
+	require.Equal(t, 7, result.ExitCode)
+	require.Equal(t, "out\n", result.Stdout)
+	require.Equal(t, "err\n", result.Stderr)
 
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, statErr := os.Stat(filepath.Join(dir, "detached")); statErr == nil {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("a command that finished normally must not kill the background processes it left behind")
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	require.Eventually(t, func() bool {
+		_, statErr := os.Stat(filepath.Join(dir, "detached"))
+		return statErr == nil
+	}, 5*time.Second, 50*time.Millisecond, "a command that finished normally must not kill the background processes it left behind")
 }
 
 type traversalCounter struct{ blocked int }
@@ -756,23 +578,25 @@ func TestResolvePathQuietly_RejectsEscapesWithoutSecurityEvent(t *testing.T) {
 	exec, dir := newTestExecutor(t)
 	counter := &traversalCounter{}
 	exec.Security = counter
-	if err := os.Symlink(t.TempDir(), filepath.Join(dir, "escape_link")); err != nil {
-		t.Fatalf("Symlink: %v", err)
-	}
+	require.NoError(t, os.Symlink(t.TempDir(), filepath.Join(dir, "escape_link")))
 
-	for _, p := range []string{"escape_link/somefile", "../outside", "/etc/passwd"} {
-		if _, err := exec.ResolvePathQuietly(p); err == nil || !strings.Contains(err.Error(), "escapes workspace") {
-			t.Errorf("ResolvePathQuietly(%q) error = %v, want a workspace escape", p, err)
-		}
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "symlink escape", path: "escape_link/somefile"},
+		{name: "relative escape", path: "../outside"},
+		{name: "absolute path outside workspace", path: "/etc/passwd"},
 	}
-	if counter.blocked != 0 {
-		t.Errorf("ResolvePathQuietly emitted %d path traversal events, want 0", counter.blocked)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := exec.ResolvePathQuietly(tc.path)
+			require.ErrorContains(t, err, "escapes workspace")
+		})
 	}
+	require.Zero(t, counter.blocked, "ResolvePathQuietly must not emit path traversal events")
 
-	if _, err := exec.ResolvePath("escape_link/somefile"); err == nil {
-		t.Fatal("ResolvePath must reject the escaping symlink")
-	}
-	if counter.blocked != 1 {
-		t.Errorf("ResolvePath emitted %d path traversal events, want 1", counter.blocked)
-	}
+	_, err := exec.ResolvePath("escape_link/somefile")
+	require.Error(t, err, "ResolvePath must reject the escaping symlink")
+	require.Equal(t, 1, counter.blocked, "ResolvePath should emit one path traversal event")
 }

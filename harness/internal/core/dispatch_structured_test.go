@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -47,18 +49,17 @@ func TestDispatch_StructuredHandlerCarriesPayload(t *testing.T) {
 		context.Background(),
 		types.ToolCall{ID: "tc1", Name: "structured_echo", Input: json.RawMessage(`{}`)},
 	)
-	if !success {
-		t.Fatalf("expected success, got failure: %q", out)
-	}
-	if out != "text fallback" {
-		t.Errorf("text fallback mismatch: %q", out)
-	}
-	if string(structured.payload) != `{"field":"value"}` {
-		t.Errorf("structured payload mismatch: %s", structured.payload)
-	}
-	if structured.kind != "command_result" {
-		t.Errorf("structured kind mismatch: %q", structured.kind)
-	}
+	require.True(t, success, "expected success, got failure: %q", out)
+
+	t.Run("text fallback", func(t *testing.T) {
+		require.Equal(t, "text fallback", out)
+	})
+	t.Run("structured payload", func(t *testing.T) {
+		require.JSONEq(t, `{"field":"value"}`, string(structured.payload))
+	})
+	t.Run("structured kind", func(t *testing.T) {
+		require.Equal(t, "command_result", structured.kind)
+	})
 }
 
 func TestDispatch_PlainHandlerHasNilStructured(t *testing.T) {
@@ -69,15 +70,15 @@ func TestDispatch_PlainHandlerHasNilStructured(t *testing.T) {
 		context.Background(),
 		types.ToolCall{ID: "tc1", Name: "plain_echo", Input: json.RawMessage(`{}`)},
 	)
-	if !success || out != "plain text" {
-		t.Fatalf("unexpected result: success=%v out=%q", success, out)
-	}
-	if structured.payload != nil {
-		t.Errorf("plain-Handler tool must yield nil structured payload, got: %s", structured.payload)
-	}
-	if structured.kind != "" {
-		t.Errorf("plain-Handler tool must yield empty kind, got: %q", structured.kind)
-	}
+	require.True(t, success, "expected success, got failure: %q", out)
+	require.Equal(t, "plain text", out)
+
+	t.Run("nil structured payload", func(t *testing.T) {
+		require.Nil(t, structured.payload, "plain-Handler tool must yield nil structured payload")
+	})
+	t.Run("empty kind", func(t *testing.T) {
+		require.Empty(t, structured.kind, "plain-Handler tool must yield empty kind")
+	})
 }
 
 // TestPlanAndDispatch_StructuredFlowsToResult pins that the structured payload
@@ -95,27 +96,19 @@ func TestPlanAndDispatch_StructuredFlowsToResult(t *testing.T) {
 		"anthropic",
 		"claude-sonnet-4-6",
 	)
-	if stall != "" {
-		t.Fatalf("unexpected stall outcome: %q", stall)
-	}
-	if len(results) != 1 || len(records) != 1 {
-		t.Fatalf("expected 1 result/record, got %d/%d", len(results), len(records))
-	}
-	if results[0].Content != "text fallback" {
-		t.Errorf("result text fallback mismatch: %q", results[0].Content)
-	}
-	if string(results[0].Structured) != `{"field":"value"}` {
-		t.Errorf("ToolResult.Structured mismatch: %s", results[0].Structured)
-	}
-	if results[0].Kind != "command_result" {
-		t.Errorf("ToolResult.Kind mismatch: %q", results[0].Kind)
-	}
-	if string(records[0].Structured) != `{"field":"value"}` {
-		t.Errorf("ToolCallRecord.Structured mismatch: %s", records[0].Structured)
-	}
-	if records[0].Kind != "command_result" {
-		t.Errorf("ToolCallRecord.Kind mismatch: %q", records[0].Kind)
-	}
+	require.Empty(t, stall, "unexpected stall outcome")
+	require.Len(t, results, 1)
+	require.Len(t, records, 1)
+
+	t.Run("tool result", func(t *testing.T) {
+		require.Equal(t, "text fallback", results[0].Content)
+		require.JSONEq(t, `{"field":"value"}`, string(results[0].Structured))
+		require.Equal(t, "command_result", results[0].Kind)
+	})
+	t.Run("tool call record", func(t *testing.T) {
+		require.JSONEq(t, `{"field":"value"}`, string(records[0].Structured))
+		require.Equal(t, "command_result", records[0].Kind)
+	})
 }
 
 // TestPlanAndDispatch_StructuredResultAndRecordDoNotAlias pins that the
@@ -135,18 +128,13 @@ func TestPlanAndDispatch_StructuredResultAndRecordDoNotAlias(t *testing.T) {
 		"anthropic",
 		"claude-sonnet-4-6",
 	)
-	if stall != "" {
-		t.Fatalf("unexpected stall outcome: %q", stall)
-	}
-	if len(results) != 1 || len(records) != 1 {
-		t.Fatalf("expected 1 result/record, got %d/%d", len(results), len(records))
-	}
-	if len(results[0].Structured) == 0 || len(records[0].Structured) == 0 {
-		t.Fatalf("both structured payloads must be populated")
-	}
+	require.Empty(t, stall, "unexpected stall outcome")
+	require.Len(t, results, 1)
+	require.Len(t, records, 1)
+	require.NotEmpty(t, results[0].Structured, "result structured payload must be populated")
+	require.NotEmpty(t, records[0].Structured, "record structured payload must be populated")
+
 	// Mutate the result's payload in place; the record's copy must be unaffected.
 	results[0].Structured[0] = 'X'
-	if string(records[0].Structured) != `{"field":"value"}` {
-		t.Errorf("record payload mutated via result alias: %s", records[0].Structured)
-	}
+	require.JSONEq(t, `{"field":"value"}`, string(records[0].Structured))
 }

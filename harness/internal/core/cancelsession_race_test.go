@@ -2,9 +2,10 @@ package core
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestCancelSession_ConcurrentWithRunStartAlwaysCancelsRun races a
@@ -35,9 +36,7 @@ func TestCancelSession_ConcurrentWithRunStartAlwaysCancelsRun(t *testing.T) {
 		close(start)
 		wg.Wait()
 
-		if !errors.Is(context.Cause(runCtx), ErrControlStreamLost) {
-			t.Fatalf("iteration %d: run cause = %v, want ErrControlStreamLost", i, context.Cause(runCtx))
-		}
+		require.ErrorIs(t, context.Cause(runCtx), ErrControlStreamLost, "iteration %d", i)
 		cancelRun(nil)
 		loop.stopControlRouting()
 	}

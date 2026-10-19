@@ -7,14 +7,16 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestCmdJudgeCalibrate_InterruptDuringTheLastJudgmentExits1(t *testing.T) {
+func TestCmdJudgeCalibrate_InterruptDuringLastJudgment_ExitsOneWithoutReport(t *testing.T) {
 	endpoint := newJudgeEndpoint(t)
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -39,13 +41,8 @@ func TestCmdJudgeCalibrate_InterruptDuringTheLastJudgmentExits1(t *testing.T) {
 	code, stdout, stderr := runCalibrate(t, "--golden", seedGoldenPath, "--judge-model", "m", "--judge-base-url", srv.URL,
 		"--judge-api-key-ref", "secret://CLI_JUDGE_KEY", "--output", output)
 
-	if code != 1 || !strings.Contains(stderr, "context canceled (after 23 judgments)") {
-		t.Fatalf("exit %d, want 1 naming the 23 judgments made\nstderr:\n%s", code, stderr)
-	}
-	if stdout != "" {
-		t.Errorf("an interrupted calibration printed a report:\n%s", stdout)
-	}
-	if _, err := os.Stat(output); !os.IsNotExist(err) {
-		t.Errorf("an interrupted calibration wrote %s (stat: %v)", output, err)
-	}
+	require.Equal(t, 1, code, "stderr:\n%s", stderr)
+	require.Contains(t, stderr, "context canceled (after 23 judgments)")
+	assert.Empty(t, stdout, "an interrupted calibration printed a report")
+	assert.NoFileExists(t, output, "an interrupted calibration wrote the report")
 }

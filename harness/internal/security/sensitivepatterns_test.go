@@ -2,10 +2,12 @@ package security
 
 import (
 	"encoding/base64"
-	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func hasFinding(fs []SensitiveFinding, name string) bool {
@@ -32,185 +34,156 @@ func findByName(fs []SensitiveFinding, name string) (SensitiveFinding, bool) {
 func TestDetectSensitive_CreditCardLuhnValid(t *testing.T) {
 	fs := DetectSensitive("payment card 4111111111111111 on file")
 	f, ok := findByName(fs, "pii/credit_card")
-	if !ok {
-		t.Fatalf("expected pii/credit_card finding, got %v", fs)
-	}
-	if f.Tier != TierLatch {
-		t.Errorf("tier = %q, want %q", f.Tier, TierLatch)
-	}
+	require.True(t, ok, "expected pii/credit_card finding, got %v", fs)
+	require.Equal(t, TierLatch, f.Tier)
 }
 
 func TestDetectSensitive_CreditCardLuhnInvalid(t *testing.T) {
 	fs := DetectSensitive("invoice ref 4111111111111112 cleared")
-	if hasFinding(fs, "pii/credit_card") {
-		t.Errorf("Luhn-invalid number produced a finding: %v", fs)
-	}
+	require.False(t, hasFinding(fs, "pii/credit_card"), "Luhn-invalid number produced a finding: %v", fs)
 }
 
 // Nil UUIDs and zero-filled placeholders satisfy the Luhn checksum
-// (sum 0) but no issued card starts with 0; found live in
-// examples/runconfig/azure-openai-wif-usgov.json during the
-// repo-corpus false-positive pass.
+// (sum 0), but no issued card starts with 0.
 func TestDetectSensitive_CreditCardZeroFilled(t *testing.T) {
-	for _, input := range []string{
-		"tenant 00000000-0000-0000-0000-000000000000 selected",
-		"masked card 0000 0000 0000 0000 on record",
+	for _, tc := range []struct{ name, input string }{
+		{name: "nil uuid", input: "tenant 00000000-0000-0000-0000-000000000000 selected"},
+		{name: "zero-filled masked card", input: "masked card 0000 0000 0000 0000 on record"},
 	} {
-		if fs := DetectSensitive(input); hasFinding(fs, "pii/credit_card") {
-			t.Errorf("input %q produced a credit-card finding: %v", input, fs)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			fs := DetectSensitive(tc.input)
+			require.False(t, hasFinding(fs, "pii/credit_card"), "credit-card finding: %v", fs)
+		})
 	}
 }
 
 func TestDetectSensitive_CreditCardSeparators(t *testing.T) {
-	for _, input := range []string{
-		"4111 1111 1111 1111",
-		"4111-1111-1111-1111",
+	for _, tc := range []struct{ name, card string }{
+		{name: "space separators", card: "4111 1111 1111 1111"},
+		{name: "dash separators", card: "4111-1111-1111-1111"},
 	} {
-		fs := DetectSensitive("card " + input + " expires soon")
-		f, ok := findByName(fs, "pii/credit_card")
-		if !ok {
-			t.Errorf("input %q: expected pii/credit_card finding, got %v", input, fs)
-			continue
-		}
-		if got := ("card " + input + " expires soon")[f.Start:f.End]; got != input {
-			t.Errorf("input %q: span sliced %q", input, got)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			content := "card " + tc.card + " expires soon"
+			fs := DetectSensitive(content)
+			f, ok := findByName(fs, "pii/credit_card")
+			require.True(t, ok, "expected pii/credit_card finding, got %v", fs)
+			require.Equal(t, tc.card, content[f.Start:f.End])
+		})
 	}
 }
 
 func TestDetectSensitive_IBAN(t *testing.T) {
-	fs := DetectSensitive("transfer to GB82WEST12345698765432 today")
-	f, ok := findByName(fs, "pii/iban")
-	if !ok {
-		t.Fatalf("expected pii/iban finding, got %v", fs)
-	}
-	if f.Tier != TierLatch {
-		t.Errorf("tier = %q, want %q", f.Tier, TierLatch)
-	}
+	t.Run("valid iban latches", func(t *testing.T) {
+		fs := DetectSensitive("transfer to GB82WEST12345698765432 today")
+		f, ok := findByName(fs, "pii/iban")
+		require.True(t, ok, "expected pii/iban finding, got %v", fs)
+		require.Equal(t, TierLatch, f.Tier)
+	})
 
-	fs = DetectSensitive("transfer to GB82WEST12345698765431 today")
-	if hasFinding(fs, "pii/iban") {
-		t.Errorf("mod-97-broken IBAN produced a finding: %v", fs)
-	}
+	t.Run("mod-97-broken iban is ignored", func(t *testing.T) {
+		fs := DetectSensitive("transfer to GB82WEST12345698765431 today")
+		require.False(t, hasFinding(fs, "pii/iban"), "mod-97-broken IBAN produced a finding: %v", fs)
+	})
 }
 
 func TestDetectSensitive_SSNAnchored(t *testing.T) {
 	fs := DetectSensitive("Customer SSN: 123-45-6789 verified")
 	f, ok := findByName(fs, "pii/ssn_anchored")
-	if !ok {
-		t.Fatalf("expected pii/ssn_anchored finding, got %v", fs)
-	}
-	if f.Tier != TierLatch {
-		t.Errorf("tier = %q, want %q", f.Tier, TierLatch)
-	}
-	if hasFinding(fs, "pii/ssn_bare") {
-		t.Errorf("anchored SSN also produced pii/ssn_bare: %v", fs)
-	}
+	require.True(t, ok, "expected pii/ssn_anchored finding, got %v", fs)
+	require.Equal(t, TierLatch, f.Tier)
+	require.False(t, hasFinding(fs, "pii/ssn_bare"), "anchored SSN also produced pii/ssn_bare: %v", fs)
 }
 
 func TestDetectSensitive_SSNBare(t *testing.T) {
 	fs := DetectSensitive("value 123-45-6789 recorded")
 	f, ok := findByName(fs, "pii/ssn_bare")
-	if !ok {
-		t.Fatalf("expected pii/ssn_bare finding, got %v", fs)
-	}
-	if f.Tier != TierWarn {
-		t.Errorf("tier = %q, want %q", f.Tier, TierWarn)
-	}
-	if hasFinding(fs, "pii/ssn_anchored") {
-		t.Errorf("bare SSN also produced pii/ssn_anchored: %v", fs)
-	}
+	require.True(t, ok, "expected pii/ssn_bare finding, got %v", fs)
+	require.Equal(t, TierWarn, f.Tier)
+	require.False(t, hasFinding(fs, "pii/ssn_anchored"), "bare SSN also produced pii/ssn_anchored: %v", fs)
 }
 
 func TestDetectSensitive_SSNAnchorOutsideWindow(t *testing.T) {
 	content := "ssn " + strings.Repeat("x", 70) + " 123-45-6789"
 	fs := DetectSensitive(content)
-	if hasFinding(fs, "pii/ssn_anchored") {
-		t.Errorf("anchor beyond the ±64 window still latched: %v", fs)
-	}
-	if !hasFinding(fs, "pii/ssn_bare") {
-		t.Errorf("expected pii/ssn_bare finding, got %v", fs)
-	}
+	require.False(t, hasFinding(fs, "pii/ssn_anchored"), "anchor beyond the ±64 window still latched: %v", fs)
+	require.True(t, hasFinding(fs, "pii/ssn_bare"), "expected pii/ssn_bare finding, got %v", fs)
 }
 
 func TestDetectSensitive_EmailBulk(t *testing.T) {
-	five := "a1@example.com b2@example.com c3@example.com d4@example.com e5@example.com"
-	fs := DetectSensitive(five)
-	f, ok := findByName(fs, "pii/email_bulk")
-	if !ok {
-		t.Fatalf("expected pii/email_bulk finding, got %v", fs)
-	}
-	if f.Tier != TierWarn {
-		t.Errorf("tier = %q, want %q", f.Tier, TierWarn)
-	}
-	if got := five[f.Start:f.End]; got != "a1@example.com" {
-		t.Errorf("finding should span the first address, sliced %q", got)
-	}
+	t.Run("five distinct addresses fire", func(t *testing.T) {
+		five := "a1@example.com b2@example.com c3@example.com d4@example.com e5@example.com"
+		fs := DetectSensitive(five)
+		f, ok := findByName(fs, "pii/email_bulk")
+		require.True(t, ok, "expected pii/email_bulk finding, got %v", fs)
+		require.Equal(t, TierWarn, f.Tier)
+		require.Equal(t, "a1@example.com", five[f.Start:f.End])
+	})
 
-	four := "a1@example.com b2@example.com c3@example.com d4@example.com"
-	if fs := DetectSensitive(four); hasFinding(fs, "pii/email_bulk") {
-		t.Errorf("4 distinct addresses fired: %v", fs)
-	}
+	t.Run("four distinct addresses do not fire", func(t *testing.T) {
+		four := "a1@example.com b2@example.com c3@example.com d4@example.com"
+		fs := DetectSensitive(four)
+		require.False(t, hasFinding(fs, "pii/email_bulk"), "4 distinct addresses fired: %v", fs)
+	})
 
-	repeated := strings.Repeat("a1@example.com ", 9)
-	if fs := DetectSensitive(repeated); hasFinding(fs, "pii/email_bulk") {
-		t.Errorf("repeats of one address fired: %v", fs)
-	}
+	t.Run("repeats of one address do not fire", func(t *testing.T) {
+		repeated := strings.Repeat("a1@example.com ", 9)
+		fs := DetectSensitive(repeated)
+		require.False(t, hasFinding(fs, "pii/email_bulk"), "repeats of one address fired: %v", fs)
+	})
 
-	caseFolded := "A1@Example.com a1@example.COM b2@example.com c3@example.com d4@example.com"
-	if fs := DetectSensitive(caseFolded); hasFinding(fs, "pii/email_bulk") {
-		t.Errorf("case variants of one address counted as distinct: %v", fs)
-	}
+	t.Run("case variants of one address are not distinct", func(t *testing.T) {
+		caseFolded := "A1@Example.com a1@example.COM b2@example.com c3@example.com d4@example.com"
+		fs := DetectSensitive(caseFolded)
+		require.False(t, hasFinding(fs, "pii/email_bulk"), "case variants of one address counted as distinct: %v", fs)
+	})
 }
 
 func TestDetectSensitive_SecretPattern(t *testing.T) {
 	fs := DetectSensitive("key is sk-ant-" + "abc123_DEF-456")
 	f, ok := findByName(fs, "secret/anthropic_api_key")
-	if !ok {
-		t.Fatalf("expected secret/anthropic_api_key finding, got %v", fs)
-	}
-	if f.Tier != TierLatch {
-		t.Errorf("tier = %q, want %q", f.Tier, TierLatch)
-	}
+	require.True(t, ok, "expected secret/anthropic_api_key finding, got %v", fs)
+	require.Equal(t, TierLatch, f.Tier)
 }
 
 func TestDetectSensitive_ExampleKeyAllowlist(t *testing.T) {
-	for _, key := range []string{"AKIAIOSFODNN7EXAMPLE", "AKIAI44QH8DHBEXAMPLE"} {
-		if fs := DetectSensitive("old key was " + key + ", revoked"); len(fs) != 0 {
-			t.Errorf("doc example %s produced findings: %v", key, fs)
-		}
+	for _, tc := range []struct{ name, key string }{
+		{name: "docs example 1", key: "AKIAIOSFODNN7EXAMPLE"},
+		{name: "docs example 2", key: "AKIAI44QH8DHBEXAMPLE"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := DetectSensitive("old key was " + tc.key + ", revoked")
+			require.Empty(t, fs, "doc example %s produced findings", tc.key)
+		})
 	}
 
-	real := "AKIA" + "ABCDEFGHIJKLMNOP"
-	fs := DetectSensitive("found " + real + " in .env")
-	if !hasFinding(fs, "secret/aws_access_key_id") {
-		t.Errorf("non-example AKIA key not detected: %v", fs)
-	}
+	realKey := "AKIA" + "ABCDEFGHIJKLMNOP"
+	fs := DetectSensitive("found " + realKey + " in .env")
+	require.True(t, hasFinding(fs, "secret/aws_access_key_id"), "non-example AKIA key not detected: %v", fs)
 }
 
 // Greedy variable-length patterns absorb an appended EXAMPLE into the
-// match, so a within-match tail check let an attacker suppress
-// detection of a real key by suffixing it. The exclusion is now
-// exact-literal (plus the fixed-length AKIA tail convention), so
-// these must keep latching.
+// match, so the exclusion is exact-literal: suffixing a real key with
+// EXAMPLE must still latch.
 func TestDetectSensitive_ExampleSuffixBypassPrevented(t *testing.T) {
-	realGHP := "ghp_" + "myrealtoken1234"
-	if fs := DetectSensitive("key: " + realGHP + "EXAMPLE"); !hasFinding(fs, "secret/github_pat") {
-		t.Errorf("EXAMPLE-suffix bypass: %q not detected", realGHP+"EXAMPLE")
-	}
+	t.Run("github pat with EXAMPLE suffix", func(t *testing.T) {
+		realGHP := "ghp_" + "myrealtoken1234"
+		fs := DetectSensitive("key: " + realGHP + "EXAMPLE")
+		require.True(t, hasFinding(fs, "secret/github_pat"), "not detected: %v", fs)
+	})
 
-	realAnthropic := "sk-ant-" + "abc123DEF456xyz789AB"
-	if fs := DetectSensitive(realAnthropic + "EXAMPLE"); !hasFinding(fs, "secret/anthropic_api_key") {
-		t.Errorf("EXAMPLE-suffix bypass: anthropic key %q not detected", realAnthropic+"EXAMPLE")
-	}
+	t.Run("anthropic key with EXAMPLE suffix", func(t *testing.T) {
+		realAnthropic := "sk-ant-" + "abc123DEF456xyz789AB"
+		fs := DetectSensitive(realAnthropic + "EXAMPLE")
+		require.True(t, hasFinding(fs, "secret/anthropic_api_key"), "not detected: %v", fs)
+	})
 
 	// Fixed-length AKIA cannot absorb the suffix: the appended EXAMPLE
 	// sits after the 20-char match and must not suppress it.
-	realAKIA := "AKIA" + "ABCDEFGHIJKLMNOP"
-	if fs := DetectSensitive("leak " + realAKIA + "EXAMPLE"); !hasFinding(fs, "secret/aws_access_key_id") {
-		t.Errorf("EXAMPLE-suffix bypass: AKIA key with appended EXAMPLE not detected: %v", fs)
-	}
+	t.Run("aws access key with EXAMPLE suffix", func(t *testing.T) {
+		realAKIA := "AKIA" + "ABCDEFGHIJKLMNOP"
+		fs := DetectSensitive("leak " + realAKIA + "EXAMPLE")
+		require.True(t, hasFinding(fs, "secret/aws_access_key_id"), "not detected: %v", fs)
+	})
 }
 
 func TestDetectSensitive_SpanOffsets(t *testing.T) {
@@ -218,67 +191,58 @@ func TestDetectSensitive_SpanOffsets(t *testing.T) {
 	content := "before " + key + " after"
 	fs := DetectSensitive(content)
 	f, ok := findByName(fs, "secret/aws_access_key_id")
-	if !ok {
-		t.Fatalf("expected secret/aws_access_key_id finding, got %v", fs)
-	}
-	if got := content[f.Start:f.End]; got != key {
-		t.Errorf("span sliced %q, want %q", got, key)
-	}
+	require.True(t, ok, "expected secret/aws_access_key_id finding, got %v", fs)
+	require.Equal(t, key, content[f.Start:f.End])
 }
 
-// aws_secret_access_key has a (?i) prefix so its lowerRe is non-nil —
-// this exercises the lowerRe scan path, whose offsets Wave 3 uses for
-// redaction. Uppercase characters before the key pin the byte-
-// preserving property of asciiLower: replacing it with anything that
-// can change byte length would shift the span and fail here.
+// aws_secret_access_key has a (?i) prefix, so its lowerRe is non-nil and
+// this exercises the lowerRe scan path, whose offsets drive redaction.
+// Uppercase characters before the key pin the byte-preserving property
+// of asciiLower: replacing it with anything that can change byte length
+// would shift the span and fail here.
 func TestDetectSensitive_SpanOffsets_LowerRePath(t *testing.T) {
 	key := strings.Repeat("Ab1+", 10)
 	content := "BEFORE AWS_SECRET_ACCESS_KEY = " + key + " AFTER"
 	fs := DetectSensitive(content)
 	f, ok := findByName(fs, "secret/aws_secret_access_key")
-	if !ok {
-		t.Fatalf("expected secret/aws_secret_access_key finding, got %v", fs)
-	}
+	require.True(t, ok, "expected secret/aws_secret_access_key finding, got %v", fs)
 	got := content[f.Start:f.End]
-	if !strings.HasSuffix(got, key) || !strings.HasPrefix(got, "AWS_SECRET_ACCESS_KEY") {
-		t.Errorf("lowerRe span sliced %q, want %q through %q", got, "AWS_SECRET_ACCESS_KEY", key)
-	}
+	require.True(t, strings.HasPrefix(got, "AWS_SECRET_ACCESS_KEY"), "lowerRe span sliced %q", got)
+	require.True(t, strings.HasSuffix(got, key), "lowerRe span sliced %q", got)
 }
 
-// Pins the deviation from the scrubber pack: a secret:// reference is
-// a pointer, not key material, so it reports at warn tier.
+// A secret:// reference is a pointer, not key material, so it reports at
+// warn tier.
 func TestDetectSensitive_SecretRefIsWarn(t *testing.T) {
 	fs := DetectSensitive(`"apiKeyRef": "secret://ANTHROPIC_API_KEY"`)
 	f, ok := findByName(fs, "secret/secret_ref")
-	if !ok {
-		t.Fatalf("expected secret/secret_ref finding, got %v", fs)
-	}
-	if f.Tier != TierWarn {
-		t.Errorf("tier = %q, want %q", f.Tier, TierWarn)
-	}
+	require.True(t, ok, "expected secret/secret_ref finding, got %v", fs)
+	require.Equal(t, TierWarn, f.Tier)
 }
 
 func TestDetectSensitive_BearerProse(t *testing.T) {
-	if fs := DetectSensitive("Use Bearer tokens for HTTP authentication"); hasFinding(fs, "secret/bearer_token") {
-		t.Errorf("prose mention of bearer tokens latched: %v", fs)
-	}
+	t.Run("prose mention does not latch", func(t *testing.T) {
+		fs := DetectSensitive("Use Bearer tokens for HTTP authentication")
+		require.False(t, hasFinding(fs, "secret/bearer_token"), "prose mention of bearer tokens latched: %v", fs)
+	})
 
-	fs := DetectSensitive("Authorization: Bearer " + "a1b2c3d4e5f6g7h8i9j0k1")
-	if !hasFinding(fs, "secret/bearer_token") {
-		t.Errorf("credential-shaped bearer token not detected: %v", fs)
-	}
+	t.Run("credential-shaped token is detected", func(t *testing.T) {
+		fs := DetectSensitive("Authorization: Bearer " + "a1b2c3d4e5f6g7h8i9j0k1")
+		require.True(t, hasFinding(fs, "secret/bearer_token"), "credential-shaped bearer token not detected: %v", fs)
+	})
 }
 
 func TestDetectSensitive_BasicAuthProse(t *testing.T) {
-	if fs := DetectSensitive("Basic auth is the simplest scheme"); hasFinding(fs, "secret/basic_auth") {
-		t.Errorf("prose mention of basic auth latched: %v", fs)
-	}
+	t.Run("prose mention does not latch", func(t *testing.T) {
+		fs := DetectSensitive("Basic auth is the simplest scheme")
+		require.False(t, hasFinding(fs, "secret/basic_auth"), "prose mention of basic auth latched: %v", fs)
+	})
 
-	payload := base64.StdEncoding.EncodeToString([]byte("123456:" + "glc_token12345"))
-	fs := DetectSensitive("Authorization: Basic " + payload)
-	if !hasFinding(fs, "secret/basic_auth") {
-		t.Errorf("real basic credential not detected: %v", fs)
-	}
+	t.Run("real basic credential is detected", func(t *testing.T) {
+		payload := base64.StdEncoding.EncodeToString([]byte("123456:" + "glc_token12345"))
+		fs := DetectSensitive("Authorization: Basic " + payload)
+		require.True(t, hasFinding(fs, "secret/basic_auth"), "real basic credential not detected: %v", fs)
+	})
 }
 
 // TestBasicAuth_DetectorAndScrubberAgree pins that every long Basic payload
@@ -292,21 +256,16 @@ func TestBasicAuth_DetectorAndScrubberAgree(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			input := "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte(raw))
-			if !hasFinding(DetectSensitive(input), "secret/basic_auth") {
-				t.Fatalf("detector missed %q", input)
-			}
-			if got, want := Scrub(input), "Authorization: [REDACTED]"; got != want {
-				t.Errorf("Scrub(%q) = %q, want %q", input, got, want)
-			}
+			fs := DetectSensitive(input)
+			require.True(t, hasFinding(fs, "secret/basic_auth"), "detector missed %q", input)
+			require.Equal(t, "Authorization: [REDACTED]", Scrub(input))
 		})
 	}
 }
 
 func TestDetectSensitive_GrafanaDocExampleAllowlisted(t *testing.T) {
 	fs := DetectSensitive(`auth: "Basic MTIzNDU2OmdsY18uLi4="`)
-	if hasFinding(fs, "secret/basic_auth") {
-		t.Errorf("docs/observability-cloud.md example latched: %v", fs)
-	}
+	require.False(t, hasFinding(fs, "secret/basic_auth"), "docs/observability-cloud.md example latched: %v", fs)
 }
 
 // TestDetectSensitive_PEMBodyWithDocLiteralStillLatches pins that the
@@ -316,88 +275,82 @@ func TestDetectSensitive_PEMBodyWithDocLiteralStillLatches(t *testing.T) {
 	body := pemBodyLines(6)
 	body[3] = "MTIzNDU2OmdsY18uLi4=" + body[3][20:]
 	fs := DetectSensitive("cat id_rsa\n" + pemKey("RSA PRIVATE KEY", body, "\n") + "\n")
-	var latched bool
-	for _, f := range fs {
-		latched = latched || (f.Name == "secret/pem_private_key" && f.Tier == TierLatch)
-	}
-	if !latched {
-		t.Fatalf("no latch-tier pem_private_key finding for a key body holding a doc literal: %v", fs)
-	}
-	if fs := DetectSensitive("Basic MTIzNDU2OmdsY18uLi4="); hasFinding(fs, "secret/basic_auth") {
-		t.Errorf("bare documentation literal latched: %v", fs)
-	}
+	latched := slices.ContainsFunc(fs, func(f SensitiveFinding) bool {
+		return f.Name == "secret/pem_private_key" && f.Tier == TierLatch
+	})
+	require.True(t, latched, "no latch-tier pem_private_key finding for a key body holding a doc literal: %v", fs)
+
+	bare := DetectSensitive("Basic MTIzNDU2OmdsY18uLi4=")
+	require.False(t, hasFinding(bare, "secret/basic_auth"), "bare documentation literal latched: %v", bare)
 }
 
 func TestDetectSensitive_APIKeyHeaderSecretRef(t *testing.T) {
-	for _, input := range []string{
-		"dd-api-key: secret://DD_API_KEY",
-		"x-api-key: secret://X_API_KEY",
+	for _, tc := range []struct{ name, input string }{
+		{name: "dd-api-key reference", input: "dd-api-key: secret://DD_API_KEY"},
+		{name: "x-api-key reference", input: "x-api-key: secret://X_API_KEY"},
 	} {
-		for _, f := range DetectSensitive(input) {
-			if f.Tier == TierLatch {
-				t.Errorf("input %q: secret:// header value produced latch finding %s", input, f.Name)
+		t.Run(tc.name, func(t *testing.T) {
+			for _, f := range DetectSensitive(tc.input) {
+				require.NotEqual(t, TierLatch, f.Tier, "secret:// header value produced latch finding %s", f.Name)
 			}
-		}
+		})
 	}
 
-	hex32 := strings.Repeat("0123456789abcdef", 2)
-	fs := DetectSensitive("api-key: " + hex32)
-	if !hasFinding(fs, "secret/api_key_header") {
-		t.Errorf("real api-key header value not detected: %v", fs)
-	}
+	t.Run("real api-key value is detected", func(t *testing.T) {
+		hex32 := strings.Repeat("0123456789abcdef", 2)
+		fs := DetectSensitive("api-key: " + hex32)
+		require.True(t, hasFinding(fs, "secret/api_key_header"), "real api-key header value not detected: %v", fs)
+	})
 }
 
-// Suppressing any match followed by "://" let an attacker drop
-// api_key_header detection by appending "://anything" to a real
-// value. Only the bare secret://-reference shape may suppress.
+// Only the bare secret:// reference shape may suppress a match followed
+// by "://"; any other value followed by "://" must still latch.
 func TestDetectSensitive_APIKeyHeaderURLSuffixBypassPrevented(t *testing.T) {
-	realKey := strings.Repeat("0123456789abcdef", 2)
-	fs := DetectSensitive("api-key: " + realKey + "://api.attacker.example/steal")
-	if !hasFinding(fs, "secret/api_key_header") {
-		t.Errorf("api-key value followed by :// was suppressed: %v", fs)
-	}
+	t.Run("key followed by :// is still detected", func(t *testing.T) {
+		realKey := strings.Repeat("0123456789abcdef", 2)
+		fs := DetectSensitive("api-key: " + realKey + "://api.attacker.example/steal")
+		require.True(t, hasFinding(fs, "secret/api_key_header"), "api-key value followed by :// was suppressed: %v", fs)
+	})
 
 	// A value that merely ends in the word "secret" is still potential
 	// key material; only the exact scheme word is a reference.
-	fs = DetectSensitive("api-key: " + "a1b2c3d4e5f6secret" + "://api.attacker.example/steal")
-	if !hasFinding(fs, "secret/api_key_header") {
-		t.Errorf("api-key value ending in 'secret' followed by :// was suppressed: %v", fs)
-	}
+	t.Run("value ending in secret is still detected", func(t *testing.T) {
+		fs := DetectSensitive("api-key: " + "a1b2c3d4e5f6secret" + "://api.attacker.example/steal")
+		require.True(t, hasFinding(fs, "secret/api_key_header"), "api-key value ending in 'secret' followed by :// was suppressed: %v", fs)
+	})
 }
 
 func TestDetectSensitive_Empty(t *testing.T) {
-	if fs := DetectSensitive(""); fs != nil {
-		t.Errorf("empty content produced findings: %v", fs)
-	}
+	require.Nil(t, DetectSensitive(""))
 }
 
 // Mixed-case inputs exercise the ASCII-lowered fast path that replaces
 // the canonical (?i) regexes; missing them here means the lowered
 // variants drifted from the scrubber sources.
 func TestDetectSensitive_CaseInsensitivePatternsViaLoweredPath(t *testing.T) {
-	fs := DetectSensitive("Authorization: BEARER " + "A1B2C3D4E5F6G7H8I9J0")
-	if !hasFinding(fs, "secret/bearer_token") {
-		t.Errorf("uppercase bearer credential not detected: %v", fs)
-	}
+	t.Run("uppercase bearer credential", func(t *testing.T) {
+		fs := DetectSensitive("Authorization: BEARER " + "A1B2C3D4E5F6G7H8I9J0")
+		require.True(t, hasFinding(fs, "secret/bearer_token"), "uppercase bearer credential not detected: %v", fs)
+	})
 
-	val := strings.Repeat("Ab1+", 10)
-	fs = DetectSensitive("AWS_SECRET_ACCESS_KEY = " + val)
-	if !hasFinding(fs, "secret/aws_secret_access_key") {
-		t.Errorf("uppercase aws_secret_access_key assignment not detected: %v", fs)
-	}
+	t.Run("uppercase aws secret key assignment", func(t *testing.T) {
+		val := strings.Repeat("Ab1+", 10)
+		fs := DetectSensitive("AWS_SECRET_ACCESS_KEY = " + val)
+		require.True(t, hasFinding(fs, "secret/aws_secret_access_key"), "uppercase aws_secret_access_key assignment not detected: %v", fs)
+	})
 
-	hex32 := strings.Repeat("0123456789ABCDEF", 2)
-	fs = DetectSensitive("PASSWORD: " + hex32)
-	if !hasFinding(fs, "secret/generic_hex_secret") {
-		t.Errorf("uppercase generic hex secret not detected: %v", fs)
-	}
+	t.Run("uppercase generic hex secret", func(t *testing.T) {
+		hex32 := strings.Repeat("0123456789ABCDEF", 2)
+		fs := DetectSensitive("PASSWORD: " + hex32)
+		require.True(t, hasFinding(fs, "secret/generic_hex_secret"), "uppercase generic hex secret not detected: %v", fs)
+	})
 }
 
 // Every prefilter literal must keep appearing in its scrubber regex
 // source: the prefilters skip the regex when no literal is present, so
 // a scrubber rename that drops a literal would silently disable
 // detection rather than fail loudly.
-func TestPrefilterLiteralsStayInSyncWithScrubberSources(t *testing.T) {
+func TestPrefilterLiterals_StayInScrubberSources(t *testing.T) {
 	sources := map[string]string{}
 	for _, p := range SecretPatterns() {
 		sources[p.Name] = strings.ToLower(p.Re.String())
@@ -408,16 +361,13 @@ func TestPrefilterLiteralsStayInSyncWithScrubberSources(t *testing.T) {
 		"api_key_header":        apiKeyHeaderPrefilterLits,
 		"generic_hex_secret":    genericHexPrefilterLits,
 	} {
-		src, ok := sources[name]
-		if !ok {
-			t.Errorf("scrubber pattern %q no longer exists", name)
-			continue
-		}
-		for _, lit := range lits {
-			if !strings.Contains(src, lit) {
-				t.Errorf("prefilter literal %q for %s not found in regex source %q", lit, name, src)
+		t.Run(name, func(t *testing.T) {
+			src, ok := sources[name]
+			require.True(t, ok, "scrubber pattern %q no longer exists", name)
+			for _, lit := range lits {
+				require.Contains(t, src, lit)
 			}
-		}
+		})
 	}
 }
 
@@ -443,47 +393,46 @@ func TestLowerVariant_EquivalentToCanonical(t *testing.T) {
 	for _, s := range samples {
 		corpus = append(corpus, s, "PREFIX "+s+" suffix", strings.ToUpper(s), strings.ToLower(s))
 	}
-	hasLowerRe := 0
+	withLowerRe := 0
 	for _, p := range sensitivePatterns {
 		if p.lowerRe == nil {
 			continue
 		}
-		hasLowerRe++
-		for _, s := range corpus {
-			canonical := p.Re.FindAllStringIndex(s, -1)
-			lowered := p.lowerRe.FindAllStringIndex(asciiLower(s), -1)
-			if !reflect.DeepEqual(canonical, lowered) {
-				t.Errorf("pattern %s diverges on %q: canonical %v, lowerRe %v", p.Name, s, canonical, lowered)
+		withLowerRe++
+		t.Run(p.Name, func(t *testing.T) {
+			for _, s := range corpus {
+				canonical := p.Re.FindAllStringIndex(s, -1)
+				lowered := p.lowerRe.FindAllStringIndex(asciiLower(s), -1)
+				require.Equal(t, canonical, lowered, "diverges on %q", s)
 			}
-		}
+		})
 	}
-	if hasLowerRe == 0 {
-		t.Error("no pattern has a lowerRe — the fast path is dead and this test vacuous")
-	}
+	require.Positive(t, withLowerRe, "no pattern has a lowerRe; the fast path is dead and this test is vacuous")
 }
 
-func TestHasUnsafeClassRange(t *testing.T) {
+// Ranges within one case lower cleanly and must stay eligible; the (?i)
+// scrubber patterns rely on them.
+func TestHasUnsafeClassRange_FlagsCaseCrossingRanges(t *testing.T) {
 	cases := []struct {
+		name string
 		src  string
 		want bool
 	}{
-		{`[0-F]`, true},
-		{`[A-z]`, true},
-		{`[?-Z]`, true},
-		{`[Z-a]`, true},
-		// Both-uppercase ranges lower cleanly and must stay eligible:
-		// every current (?i) scrubber pattern contains [A-Za-z...].
-		{`[A-Z]`, false},
-		{`[A-Za-z0-9+/]`, false},
-		{`[a-z0-9]`, false},
-		{`\baws\b\s*[:=]\s*[A-Za-z0-9/+=]{40}`, false},
-		{`abc-DEF`, false},
-		{`[a\-Z]`, false},
+		{name: "digit to uppercase", src: `[0-F]`, want: true},
+		{name: "uppercase to lowercase spanning punctuation", src: `[A-z]`, want: true},
+		{name: "punctuation to uppercase", src: `[?-Z]`, want: true},
+		{name: "uppercase to lowercase across the bracket gap", src: `[Z-a]`, want: true},
+		{name: "uppercase range", src: `[A-Z]`, want: false},
+		{name: "mixed-case class", src: `[A-Za-z0-9+/]`, want: false},
+		{name: "lowercase range", src: `[a-z0-9]`, want: false},
+		{name: "full scrubber pattern", src: `\baws\b\s*[:=]\s*[A-Za-z0-9/+=]{40}`, want: false},
+		{name: "hyphen outside a class", src: `abc-DEF`, want: false},
+		{name: "escaped hyphen in a class", src: `[a\-Z]`, want: false},
 	}
 	for _, tc := range cases {
-		if got := hasUnsafeClassRange(tc.src); got != tc.want {
-			t.Errorf("hasUnsafeClassRange(%q) = %v, want %v", tc.src, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, hasUnsafeClassRange(tc.src))
+		})
 	}
 }
 
@@ -493,12 +442,10 @@ func TestHasUnsafeClassRange(t *testing.T) {
 // tool result.
 func TestDetectBulk_ZeroLengthMatchTerminates(t *testing.T) {
 	p := &SensitivePattern{Name: "test/zero", Re: regexp.MustCompile(`a*`), Tier: TierWarn, MinDistinct: 3}
-	if f, ok := detectBulk("bbbb", p); ok {
-		t.Errorf("only the empty string matches, expected no finding, got %v", f)
-	}
-	if _, ok := detectBulk("xaxbxaax", p); !ok {
-		t.Error(`expected a finding: "", "a", "aa" are three distinct matches`)
-	}
+	f, ok := detectBulk("bbbb", p)
+	require.False(t, ok, "only the empty string matches, expected no finding, got %v", f)
+	_, ok = detectBulk("xaxbxaax", p)
+	require.True(t, ok, `expected a finding: "", "a", "aa" are three distinct matches`)
 }
 
 // The DetectSensitive memo caches scan results keyed on the p.Re
@@ -506,12 +453,13 @@ func TestDetectBulk_ZeroLengthMatchTerminates(t *testing.T) {
 // sharing a *regexp.Regexp also agree on lowerRe (both nil or both the
 // same), or one pattern would silently receive matches computed
 // against the wrong haystack.
-func TestSensitivePatternCacheInvariant(t *testing.T) {
+func TestSensitivePatterns_SharedRegexpAgreesOnLowerRe(t *testing.T) {
 	for i := 1; i < len(sensitivePatterns); i++ {
 		a, b := sensitivePatterns[i-1], sensitivePatterns[i]
-		if a.Re == b.Re && a.lowerRe != b.lowerRe {
-			t.Errorf("patterns %s and %s share Re but differ on lowerRe — memo cache would serve wrong matches", a.Name, b.Name)
+		if a.Re != b.Re {
+			continue
 		}
+		require.Same(t, a.lowerRe, b.lowerRe, "patterns %s and %s share Re but differ on lowerRe; memo cache would serve wrong matches", a.Name, b.Name)
 	}
 }
 

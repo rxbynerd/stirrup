@@ -5,10 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
@@ -38,9 +39,7 @@ func TestTokenCalibration_Observe(t *testing.T) {
 			for _, o := range tc.observations {
 				c.observe(o[0], o[1])
 			}
-			if got := c.factor(); math.Abs(got-tc.want) > 1e-9 {
-				t.Errorf("factor() = %v, want %v", got, tc.want)
-			}
+			require.InDelta(t, tc.want, c.factor(), 1e-9)
 		})
 	}
 }
@@ -51,23 +50,17 @@ func TestNewTurnBudget_ScalesRoomByRatio(t *testing.T) {
 	c.observe(10_000, 20_000)
 
 	b := newTurnBudget(window, 20_000, c, 5_000)
-	if b.prepare.ReserveForResponse != 20_000 || b.prepare.CurrentTokens != 5_000 {
-		t.Fatalf("reserve or current tokens changed: %+v", b.prepare)
-	}
-	if room := b.prepare.MaxTokens - b.prepare.ReserveForResponse; room != 40_000 {
-		t.Errorf("room = %d estimated tokens, want 40000 (80000 provider tokens at 2.0 per estimated token)", room)
-	}
-	if !strings.Contains(b.describeLimit(), "2.00 provider tokens per estimated token") {
-		t.Errorf("describeLimit() does not name the ratio: %q", b.describeLimit())
-	}
+	require.Equal(t, 20_000, b.prepare.ReserveForResponse)
+	require.Equal(t, 5_000, b.prepare.CurrentTokens)
+
+	room := b.prepare.MaxTokens - b.prepare.ReserveForResponse
+	require.Equal(t, 40_000, room,
+		"room in estimated tokens: 80000 provider tokens at 2.0 per estimated token")
+	require.Contains(t, b.describeLimit(), "2.00 provider tokens per estimated token")
 
 	neutral := newTurnBudget(window, 20_000, tokenCalibration{}, 5_000)
-	if neutral.prepare.MaxTokens != window.tokens {
-		t.Errorf("uncalibrated MaxTokens = %d, want the window %d", neutral.prepare.MaxTokens, window.tokens)
-	}
-	if strings.Contains(neutral.describeLimit(), "per estimated token") {
-		t.Errorf("uncalibrated describeLimit() names a ratio: %q", neutral.describeLimit())
-	}
+	require.Equal(t, window.tokens, neutral.prepare.MaxTokens, "uncalibrated budget uses the window")
+	require.NotContains(t, neutral.describeLimit(), "per estimated token")
 }
 
 // usageReportingProvider answers toolTurns tool calls, then ends the run.
@@ -129,31 +122,24 @@ func TestLoop_CalibrationCompactsEarlierWhenProviderCountsMore(t *testing.T) {
 		config.ContextStrategy.MaxTokens = 6_000
 
 		runTrace, err := loop.Run(context.Background(), config)
-		if err != nil {
-			t.Fatalf("Run: %v", err)
-		}
-		if runTrace.Outcome != "success" {
-			t.Fatalf("outcome = %q, want success", runTrace.Outcome)
-		}
+		require.NoError(t, err)
+		require.Equal(t, "success", runTrace.Outcome)
 		return prov.requests
 	}
 
 	matched := firstCompactedRequest(run(t, 1))
 	doubled := firstCompactedRequest(run(t, 2))
-	if matched < 0 {
-		t.Fatal("the run whose provider matches the estimate never compacted; the budget no longer exercises compaction")
-	}
-	if doubled < 0 || doubled >= matched {
-		t.Fatalf("first compacted request with doubled input = %d, want earlier than %d with matching input", doubled, matched)
-	}
+	require.GreaterOrEqual(t, matched, 0,
+		"the run whose provider matches the estimate never compacted; the budget no longer exercises compaction")
+	require.GreaterOrEqual(t, doubled, 0, "the run whose provider doubles the input never compacted")
+	require.Less(t, doubled, matched,
+		"the doubled-input run should compact on an earlier request than the matched-input run")
 
 	// The doubled run's compacted requests fit half the room in estimate.
 	reserve := effectiveReserveForResponse(6_000)
 	limit := contextpkg.FitLimit(contextpkg.TokenBudget{MaxTokens: reserve + (6_000-reserve)/2, ReserveForResponse: reserve})
 	for i, req := range run(t, 2)[doubled:] {
-		if got := requestTokens(req); got > limit {
-			t.Errorf("request %d estimates %d tokens, over the calibrated fit limit of %d", doubled+i, got, limit)
-		}
+		require.LessOrEqual(t, requestTokens(req), limit, "request %d is over the calibrated fit limit", doubled+i)
 	}
 }
 
@@ -164,22 +150,26 @@ func (r windowResolver) Resolve(providerType, model string) quirks.ProviderQuirk
 	return quirks.ProviderQuirks{ContextWindow: r[providerType+"/"+model]}
 }
 
-func TestEffectiveContextWindow(t *testing.T) {
-	cases := []struct{ explicit, registered, want int }{
-		{0, 0, 0},
-		{100_000, 0, 100_000},
-		{0, 128_000, 128_000},
-		{64_000, 128_000, 64_000},
-		{300_000, 128_000, 128_000},
+func TestEffectiveContextWindow_PicksSmallerNonZeroWindow(t *testing.T) {
+	cases := []struct {
+		name                 string
+		explicit, registered int
+		want                 int
+	}{
+		{"no windows gives zero", 0, 0, 0},
+		{"explicit window without a registered one", 100_000, 0, 100_000},
+		{"registered window without an explicit one", 0, 128_000, 128_000},
+		{"smaller explicit window wins", 64_000, 128_000, 64_000},
+		{"larger explicit window is capped by the registered one", 300_000, 128_000, 128_000},
 	}
 	for _, tc := range cases {
-		if got := effectiveContextWindow(tc.explicit, tc.registered); got != tc.want {
-			t.Errorf("effectiveContextWindow(%d, %d) = %d, want %d", tc.explicit, tc.registered, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, effectiveContextWindow(tc.explicit, tc.registered))
+		})
 	}
 }
 
-func TestResolveContextWindow(t *testing.T) {
+func TestResolveContextWindow_SourceAndCap(t *testing.T) {
 	resolver := windowResolver{"openai-compatible/gpt-4o": 128_000}
 	cases := []struct {
 		name         string
@@ -211,9 +201,9 @@ func TestResolveContextWindow(t *testing.T) {
 				ContextStrategy: types.ContextStrategyConfig{MaxTokens: tc.explicit},
 			}
 			got := loop.resolveContextWindow(config, tc.providerName, tc.model)
-			if got.tokens != tc.want || !strings.Contains(got.source, tc.wantSource) || got.cappedFrom != tc.wantCapped {
-				t.Errorf("resolveContextWindow = %+v, want %d tokens, source containing %q, cappedFrom %d", got, tc.want, tc.wantSource, tc.wantCapped)
-			}
+			require.Equal(t, tc.want, got.tokens, "window tokens")
+			require.Contains(t, got.source, tc.wantSource)
+			require.Equal(t, tc.wantCapped, got.cappedFrom, "explicit window that was capped")
 		})
 	}
 }
@@ -239,22 +229,19 @@ func TestLoop_RegisteredWindowBoundsEveryRequest(t *testing.T) {
 	config.ContextStrategy.MaxTokens = 0
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("outcome = %q, want success", runTrace.Outcome)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "success", runTrace.Outcome)
+
 	limit := contextpkg.FitLimit(contextpkg.TokenBudget{MaxTokens: window, ReserveForResponse: effectiveReserveForResponse(window)})
 	for i, req := range prov.requests {
-		if got := requestTokens(req); got > limit || got > window {
-			t.Errorf("request %d estimates %d tokens, over the fit limit %d of the %d-token window", i, got, limit, window)
-		}
+		got := requestTokens(req)
+		require.LessOrEqual(t, got, limit, "request %d is over the fit limit of the %d-token window", i, window)
+		require.LessOrEqual(t, got, window, "request %d is over the %d-token window", i, window)
 	}
+
 	last := prov.requests[len(prov.requests)-1]
-	if full := 6*30_000 + requestTokens(types.StreamParams{System: last.System, Tools: last.Tools}); full <= window {
-		t.Fatalf("history of about %d tokens never outgrows the window; the test no longer exercises it", full)
-	}
+	full := 6*30_000 + requestTokens(types.StreamParams{System: last.System, Tools: last.Tools})
+	require.Greater(t, full, window, "history never outgrows the window; the test no longer exercises it")
 }
 
 // TestSpawnSubAgent_InheritsRegisteredWindow pins that a sub-agent budgets
@@ -279,20 +266,14 @@ func TestSpawnSubAgent_InheritsRegisteredWindow(t *testing.T) {
 	config.ContextStrategy.MaxTokens = 0
 
 	result, err := SpawnSubAgent(context.Background(), parent, config, SubAgentConfig{Prompt: "Do a subtask"})
-	if err != nil {
-		t.Fatalf("SpawnSubAgent: %v", err)
-	}
-	if result.Outcome != "success" {
-		t.Fatalf("outcome = %q, want success", result.Outcome)
-	}
-	if len(prov.requests) != 7 {
-		t.Fatalf("provider saw %d requests, want 7", len(prov.requests))
-	}
+	require.NoError(t, err)
+	require.Equal(t, "success", result.Outcome)
+	require.Len(t, prov.requests, 7, "provider requests")
+
 	limit := contextpkg.FitLimit(contextpkg.TokenBudget{MaxTokens: window, ReserveForResponse: effectiveReserveForResponse(window)})
 	for i, req := range prov.requests {
-		if got := requestTokens(req); got > limit {
-			t.Errorf("child request %d estimates %d tokens, over the fit limit %d of the %d-token window", i, got, limit, window)
-		}
+		require.LessOrEqual(t, requestTokens(req), limit,
+			"child request %d is over the fit limit of the %d-token window", i, window)
 	}
 }
 
@@ -306,11 +287,8 @@ func TestLoop_ExplicitWindowAboveRegisteredWarns(t *testing.T) {
 	var events bytes.Buffer
 	loop.Transport = transport.NewStdioTransport(&events, &bytes.Buffer{})
 
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	want := "contextStrategy.maxTokens=200000 exceeds the 128000-token context window registered for claude-sonnet-4-6"
-	if !strings.Contains(events.String(), want) {
-		t.Errorf("transport events do not contain %q:\n%s", want, events.String())
-	}
+	_, err := loop.Run(context.Background(), buildTestConfig())
+	require.NoError(t, err)
+	require.Contains(t, events.String(),
+		"contextStrategy.maxTokens=200000 exceeds the 128000-token context window registered for claude-sonnet-4-6")
 }

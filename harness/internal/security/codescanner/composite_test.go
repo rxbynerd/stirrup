@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // fakeScanner returns a fixed result regardless of input. Used so
@@ -26,50 +28,33 @@ func TestCompositeScanner_UnionsFindings(t *testing.T) {
 
 	c := NewCompositeScanner(a, b)
 	res, err := c.Scan(context.Background(), "x.go", []byte("content"))
-	if err != nil {
-		t.Fatalf("Scan: %v", err)
-	}
-	if len(res.Findings) != 2 {
-		t.Fatalf("expected 2 findings (union), got %d", len(res.Findings))
-	}
-	if res.Findings[0].Rule != "a/1" || res.Findings[1].Rule != "b/2" {
-		t.Errorf("unexpected ordering: %+v", res.Findings)
-	}
+	require.NoError(t, err)
+	require.Len(t, res.Findings, 2)
+	require.Equal(t, "a/1", res.Findings[0].Rule)
+	require.Equal(t, "b/2", res.Findings[1].Rule)
 }
 
 func TestCompositeScanner_PropagatesErrors(t *testing.T) {
 	want := errors.New("boom")
 	c := NewCompositeScanner(fakeScanner{err: want})
 	_, err := c.Scan(context.Background(), "x.go", []byte("y"))
-	if !errors.Is(err, want) {
-		t.Errorf("expected error to wrap boom, got %v", err)
-	}
+	require.ErrorIs(t, err, want)
 }
 
 func TestNewComposite_RejectsEmpty(t *testing.T) {
 	_, err := newComposite(nil, "")
-	if err == nil {
-		t.Fatal("expected error for empty scanners list")
-	}
+	require.Error(t, err)
 }
 
 func TestNewComposite_RejectsUnknownChild(t *testing.T) {
 	_, err := newComposite([]string{"patterns", "nope"}, "")
-	if err == nil {
-		t.Fatal("expected error for unknown child name")
-	}
+	require.Error(t, err)
 }
 
 func TestNewComposite_BuildsKnownChildren(t *testing.T) {
 	c, err := newComposite([]string{"patterns", "none"}, "")
-	if err != nil {
-		t.Fatalf("newComposite: %v", err)
-	}
+	require.NoError(t, err)
 	cc, ok := c.(*CompositeScanner)
-	if !ok {
-		t.Fatalf("expected *CompositeScanner, got %T", c)
-	}
-	if len(cc.scanners) != 2 {
-		t.Errorf("expected 2 children, got %d", len(cc.scanners))
-	}
+	require.True(t, ok, "expected *CompositeScanner, got %T", c)
+	require.Len(t, cc.scanners, 2)
 }

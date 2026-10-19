@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 )
 
@@ -19,90 +21,69 @@ func defaultCriteria() []string {
 	return []string{"sensitive_data", "pii"}
 }
 
-func TestPatternMonitor_LatchTierFindingTripsOnce(t *testing.T) {
-	m := NewPatternMonitor(true, "block-external", defaultCriteria(), false)
-	if m.Tripped() {
-		t.Fatal("fresh monitor must not be tripped")
-	}
-
-	det := m.ObserveChunks(context.Background(), "tool_result", 1, []string{"creds: " + fakeLiveAWSKey})
-	if !det.Transition {
-		t.Error("first latch-tier detection must report Transition")
-	}
-	if det.Tier != security.TierLatch {
-		t.Errorf("Tier = %q, want %q", det.Tier, security.TierLatch)
-	}
-	found := false
-	for _, p := range det.Patterns {
-		if p == "secret/aws_access_key_id" {
-			found = true
+func countPattern(patterns []string, name string) int {
+	n := 0
+	for _, p := range patterns {
+		if p == name {
+			n++
 		}
 	}
-	if !found {
-		t.Errorf("Patterns = %v, want secret/aws_access_key_id", det.Patterns)
-	}
-	if !m.Tripped() {
-		t.Fatal("monitor must be tripped after a latch-tier finding")
-	}
+	return n
+}
+
+func requireEmptyDetection(t *testing.T, det Detection) {
+	t.Helper()
+	require.Empty(t, det.Patterns, "detection must report no patterns")
+	require.Empty(t, det.Tier, "detection must report no tier")
+	require.False(t, det.Transition, "detection must not report a transition")
+}
+
+func TestPatternMonitor_LatchTierFindingTripsOnce(t *testing.T) {
+	m := NewPatternMonitor(true, "block-external", defaultCriteria(), false)
+	require.False(t, m.Tripped(), "fresh monitor must not be tripped")
+
+	det := m.ObserveChunks(context.Background(), "tool_result", 1, []string{"creds: " + fakeLiveAWSKey})
+	require.True(t, det.Transition, "first latch-tier detection must report Transition")
+	require.Equal(t, security.TierLatch, det.Tier)
+	require.Contains(t, det.Patterns, "secret/aws_access_key_id")
+	require.True(t, m.Tripped(), "monitor must be tripped after a latch-tier finding")
 
 	// One-way: there is no reset path. Subsequent observations and
 	// guard trips must never report another transition and the latch
 	// must stay set.
-	if again := m.ObserveChunks(context.Background(), "tool_result", 2, []string{fakeLiveAWSKey}); again.Transition {
-		t.Error("second observation must not report Transition")
-	}
-	if m.TripFromGuard("g1", "sensitive_data") {
-		t.Error("TripFromGuard after latch must not report a transition")
-	}
-	if !m.Tripped() {
-		t.Error("latch must remain set")
-	}
+	again := m.ObserveChunks(context.Background(), "tool_result", 2, []string{fakeLiveAWSKey})
+	require.False(t, again.Transition, "second observation must not report Transition")
+	require.False(t, m.TripFromGuard("g1", "sensitive_data"), "TripFromGuard after latch must not report a transition")
+	require.True(t, m.Tripped(), "latch must remain set")
 }
 
 func TestPatternMonitor_SkipsRescanAfterTrip(t *testing.T) {
 	m := NewPatternMonitor(true, "block-external", defaultCriteria(), false)
 	m.ObserveChunks(context.Background(), "tool_result", 1, []string{fakeLiveAWSKey})
-	if !m.Tripped() {
-		t.Fatal("setup: monitor must be tripped")
-	}
+	require.True(t, m.Tripped(), "setup: monitor must be tripped")
+
 	det := m.ObserveChunks(context.Background(), "tool_result", 2, []string{fakeLiveAWSKey})
-	if len(det.Patterns) != 0 || det.Tier != "" || det.Transition {
-		t.Errorf("post-trip observation must be empty, got %+v", det)
-	}
+	requireEmptyDetection(t, det)
 }
 
-// TestPatternMonitor_WarnTierSuppressedAfterLatch pins the documented
-// contract that post-latch scanning — including warn-tier telemetry —
-// is suspended: after a latch-tier trip, warn-only content produces an
-// empty Detection (no patterns, so the caller emits no events). The
-// rule_of_two_triggered event's scanning_suspended field is what tells
-// operators soak data ends here.
+// After a latch-tier trip, scanning is suspended for every tier, so
+// warn-only content produces an empty Detection.
 func TestPatternMonitor_WarnTierSuppressedAfterLatch(t *testing.T) {
 	m := NewPatternMonitor(true, "block-external", defaultCriteria(), false)
-	if det := m.ObserveChunks(context.Background(), "tool_result", 1, []string{fakeLiveAWSKey}); !det.Transition {
-		t.Fatal("setup: latch-tier content must trip the monitor")
-	}
-	det := m.ObserveChunks(context.Background(), "tool_result", 2, []string{"see secret://SOME_REF for the key"})
-	if len(det.Patterns) != 0 || det.Tier != "" || det.Transition {
-		t.Errorf("post-latch warn-tier observation must be empty Detection, got %+v", det)
-	}
+	det := m.ObserveChunks(context.Background(), "tool_result", 1, []string{fakeLiveAWSKey})
+	require.True(t, det.Transition, "setup: latch-tier content must trip the monitor")
+
+	det = m.ObserveChunks(context.Background(), "tool_result", 2, []string{"see secret://SOME_REF for the key"})
+	requireEmptyDetection(t, det)
 }
 
 func TestPatternMonitor_WarnTierDoesNotLatch(t *testing.T) {
 	m := NewPatternMonitor(true, "block-external", defaultCriteria(), false)
 	det := m.ObserveChunks(context.Background(), "tool_result", 1, []string{"see secret://SOME_REF for the key"})
-	if m.Tripped() {
-		t.Error("warn-tier finding must not trip the latch")
-	}
-	if det.Transition {
-		t.Error("warn-tier finding must not report Transition")
-	}
-	if det.Tier != security.TierWarn {
-		t.Errorf("Tier = %q, want %q", det.Tier, security.TierWarn)
-	}
-	if len(det.Patterns) != 1 || det.Patterns[0] != "secret/secret_ref" {
-		t.Errorf("Patterns = %v, want [secret/secret_ref]", det.Patterns)
-	}
+	require.False(t, m.Tripped(), "warn-tier finding must not trip the latch")
+	require.False(t, det.Transition, "warn-tier finding must not report Transition")
+	require.Equal(t, security.TierWarn, det.Tier)
+	require.Equal(t, []string{"secret/secret_ref"}, det.Patterns)
 }
 
 func TestPatternMonitor_DeduplicatesPatternNames(t *testing.T) {
@@ -112,62 +93,37 @@ func TestPatternMonitor_DeduplicatesPatternNames(t *testing.T) {
 		"first " + fakeLiveAWSKey,
 		"second AKIAZXCVBNMASDFGHJKLQ",
 	})
-	count := 0
-	for _, p := range det.Patterns {
-		if p == "secret/aws_access_key_id" {
-			count++
-		}
-	}
-	if count != 1 {
-		t.Errorf("secret/aws_access_key_id appeared %d times, want 1 (set semantics)", count)
-	}
+	require.Equal(t, 1, countPattern(det.Patterns, "secret/aws_access_key_id"),
+		"pattern name must appear exactly once (set semantics)")
 }
 
-func TestPatternMonitor_OverlappingFindingsAreASet(t *testing.T) {
+func TestPatternMonitor_OverlappingPatternsReportedOnce(t *testing.T) {
 	m := NewPatternMonitor(true, "block-external", defaultCriteria(), false)
 	// One sk-ant- key matches both the anthropic and openai patterns:
 	// both names are reported, each exactly once.
 	det := m.ObserveChunks(context.Background(), "tool_result", 1, []string{"key sk-ant-api03-aaaabbbbccccddddeeee"})
-	seen := make(map[string]int)
-	for _, p := range det.Patterns {
-		seen[p]++
-	}
-	if seen["secret/anthropic_api_key"] != 1 || seen["secret/openai_api_key"] != 1 {
-		t.Errorf("Patterns = %v, want both anthropic and openai names exactly once", det.Patterns)
-	}
-	if det.Transition != true {
-		t.Error("overlapping latch findings must still produce exactly one transition")
-	}
+	require.Equal(t, 1, countPattern(det.Patterns, "secret/anthropic_api_key"),
+		"anthropic pattern name must appear exactly once")
+	require.Equal(t, 1, countPattern(det.Patterns, "secret/openai_api_key"),
+		"openai pattern name must appear exactly once")
+	require.True(t, det.Transition, "overlapping latch findings must still produce exactly one transition")
 }
 
 func TestPatternMonitor_StaticallySensitiveStartsTripped(t *testing.T) {
 	m := NewPatternMonitor(false, "block-external", defaultCriteria(), true)
-	if !m.Tripped() {
-		t.Fatal("staticallySensitive monitor must start tripped")
-	}
+	require.True(t, m.Tripped(), "staticallySensitive monitor must start tripped")
+
 	det := m.ObserveChunks(context.Background(), "prompt", 0, []string{fakeLiveAWSKey})
-	if det.Transition {
-		t.Error("pre-tripped monitor must never report a transition")
-	}
-	if len(det.Patterns) != 0 {
-		t.Errorf("pre-tripped monitor must skip scanning, got patterns %v", det.Patterns)
-	}
+	require.False(t, det.Transition, "pre-tripped monitor must never report a transition")
+	require.Empty(t, det.Patterns, "pre-tripped monitor must skip scanning")
 }
 
 func TestPatternMonitor_GuardCriteriaFiltering(t *testing.T) {
-	m := NewPatternMonitor(true, "block-external", []string{"sensitive_data", "pii"}, false)
-	if m.TripFromGuard("g1", "jailbreak") {
-		t.Error("non-matching criterion must not trip")
-	}
-	if m.Tripped() {
-		t.Fatal("monitor tripped on a non-matching criterion")
-	}
-	if !m.TripFromGuard("g1", "sensitive_data") {
-		t.Error("matching criterion must trip and report the transition")
-	}
-	if !m.Tripped() {
-		t.Fatal("monitor must be tripped after a matching criterion")
-	}
+	m := NewPatternMonitor(true, "block-external", defaultCriteria(), false)
+	require.False(t, m.TripFromGuard("g1", "jailbreak"), "non-matching criterion must not trip")
+	require.False(t, m.Tripped(), "monitor must not trip on a non-matching criterion")
+	require.True(t, m.TripFromGuard("g1", "sensitive_data"), "matching criterion must trip and report the transition")
+	require.True(t, m.Tripped(), "monitor must be tripped after a matching criterion")
 }
 
 func TestPatternMonitor_TransitionReportedExactlyOnceConcurrently(t *testing.T) {
@@ -196,48 +152,33 @@ func TestPatternMonitor_TransitionReportedExactlyOnceConcurrently(t *testing.T) 
 	}
 	close(start)
 	wg.Wait()
-	if got := transitions.Load(); got != 1 {
-		t.Fatalf("transitions = %d, want exactly 1", got)
-	}
-	if !m.Tripped() {
-		t.Fatal("monitor must be tripped after concurrent latch attempts")
-	}
+	require.EqualValues(t, 1, transitions.Load(), "exactly one concurrent latch attempt must report the transition")
+	require.True(t, m.Tripped(), "monitor must be tripped after concurrent latch attempts")
 }
 
-func TestPatternMonitor_ActionAndEnforcing(t *testing.T) {
-	enforcing := NewPatternMonitor(true, "abort", defaultCriteria(), false)
-	if !enforcing.Enforcing() {
-		t.Error("Enforcing() = false, want true")
-	}
-	if got := enforcing.Action(); got != "abort" {
-		t.Errorf("enforcing Action() = %q, want %q", got, "abort")
-	}
+func TestPatternMonitor_ActionReflectsEnforcement(t *testing.T) {
+	t.Run("enforcing monitor reports the configured action", func(t *testing.T) {
+		m := NewPatternMonitor(true, "abort", defaultCriteria(), false)
+		require.True(t, m.Enforcing())
+		require.Equal(t, "abort", m.Action())
+	})
 
-	observing := NewPatternMonitor(false, "abort", defaultCriteria(), false)
-	if observing.Enforcing() {
-		t.Error("Enforcing() = true, want false")
-	}
-	if got := observing.Action(); got != "warn" {
-		t.Errorf("observe-only Action() = %q, want %q (forced when not enforcing)", got, "warn")
-	}
+	t.Run("observe-only monitor forces the warn action", func(t *testing.T) {
+		m := NewPatternMonitor(false, "abort", defaultCriteria(), false)
+		require.False(t, m.Enforcing())
+		require.Equal(t, "warn", m.Action(), "observe-only action must be forced to warn")
+	})
 }
 
 func TestPatternMonitor_RedactReplacesLatchSpans(t *testing.T) {
 	m := NewPatternMonitor(true, "redact", defaultCriteria(), false)
 	in := "before " + fakeLiveAWSKey + " after"
 	out, n := m.Redact(in)
-	if n != 1 {
-		t.Errorf("redaction count = %d, want 1", n)
-	}
-	if strings.Contains(out, fakeLiveAWSKey) {
-		t.Errorf("redacted output still contains the key: %q", out)
-	}
-	if !strings.Contains(out, RedactionPlaceholder) {
-		t.Errorf("redacted output missing placeholder: %q", out)
-	}
-	if !strings.HasPrefix(out, "before ") || !strings.HasSuffix(out, " after") {
-		t.Errorf("surrounding text not preserved: %q", out)
-	}
+	require.Equal(t, 1, n, "redaction count")
+	require.NotContains(t, out, fakeLiveAWSKey, "redacted output must not contain the key")
+	require.Contains(t, out, RedactionPlaceholder, "redacted output must contain the placeholder")
+	require.True(t, strings.HasPrefix(out, "before "), "text before the key must be preserved: %q", out)
+	require.True(t, strings.HasSuffix(out, " after"), "text after the key must be preserved: %q", out)
 }
 
 func TestPatternMonitor_RedactMergesOverlappingSpans(t *testing.T) {
@@ -246,50 +187,32 @@ func TestPatternMonitor_RedactMergesOverlappingSpans(t *testing.T) {
 	// overlapping spans; the output must carry a single placeholder.
 	in := "key sk-ant-api03-aaaabbbbccccddddeeee end"
 	out, n := m.Redact(in)
-	if n != 1 {
-		t.Errorf("redaction count = %d, want 1 (overlapping spans merge)", n)
-	}
-	if got := strings.Count(out, RedactionPlaceholder); got != 1 {
-		t.Errorf("placeholder count = %d, want 1: %q", got, out)
-	}
-	if strings.Contains(out, "sk-ant-") {
-		t.Errorf("redacted output still contains key material: %q", out)
-	}
+	require.Equal(t, 1, n, "overlapping spans must merge into one redaction")
+	require.Equal(t, 1, strings.Count(out, RedactionPlaceholder), "output must carry a single placeholder: %q", out)
+	require.NotContains(t, out, "sk-ant-", "redacted output must not contain key material")
 }
 
 func TestPatternMonitor_RedactLeavesWarnTierIntact(t *testing.T) {
 	m := NewPatternMonitor(true, "redact", defaultCriteria(), false)
 	in := "see secret://SOME_REF for details"
 	out, n := m.Redact(in)
-	if n != 0 {
-		t.Errorf("redaction count = %d, want 0 for warn-tier content", n)
-	}
-	if out != in {
-		t.Errorf("warn-tier content must pass through unchanged, got %q", out)
-	}
+	require.Equal(t, 0, n, "warn-tier content must not be redacted")
+	require.Equal(t, in, out, "warn-tier content must pass through unchanged")
 }
 
-// TestPatternMonitor_RedactKeepsScanningAfterLatch pins the wave-4
-// exception to skip-after-trip: an enforcing redact monitor must keep
-// returning detections post-latch so the loop can rewrite spans on
-// every later tool result. Every other action (and observe-only)
-// suspends scanning — covered by TestPatternMonitor_SkipsRescanAfterTrip
-// and TestPatternMonitor_WarnTierSuppressedAfterLatch.
+// An enforcing redact monitor is the one action that keeps scanning
+// after the latch, so later tool results can have their spans rewritten.
+// Every other action suspends scanning; see
+// TestPatternMonitor_NonRedactActionSuspendsScanning.
 func TestPatternMonitor_RedactKeepsScanningAfterLatch(t *testing.T) {
 	m := NewPatternMonitor(true, "redact", defaultCriteria(), false)
-	if det := m.ObserveChunks(context.Background(), "tool_result", 1, []string{fakeLiveAWSKey}); !det.Transition {
-		t.Fatal("setup: first latch-tier content must transition")
-	}
-	det := m.ObserveChunks(context.Background(), "tool_result", 2, []string{"another " + fakeLiveAWSKey})
-	if det.Transition {
-		t.Error("redact must not report a second transition")
-	}
-	if len(det.Patterns) == 0 {
-		t.Error("redact must keep scanning post-latch (non-empty Detection), got empty")
-	}
-	if det.Tier != security.TierLatch {
-		t.Errorf("Tier = %q, want latch", det.Tier)
-	}
+	det := m.ObserveChunks(context.Background(), "tool_result", 1, []string{fakeLiveAWSKey})
+	require.True(t, det.Transition, "setup: first latch-tier content must transition")
+
+	det = m.ObserveChunks(context.Background(), "tool_result", 2, []string{"another " + fakeLiveAWSKey})
+	require.False(t, det.Transition, "redact must not report a second transition")
+	require.NotEmpty(t, det.Patterns, "redact must keep scanning after the latch")
+	require.Equal(t, security.TierLatch, det.Tier)
 }
 
 func TestPatternMonitor_NonRedactActionSuspendsScanning(t *testing.T) {
@@ -298,9 +221,7 @@ func TestPatternMonitor_NonRedactActionSuspendsScanning(t *testing.T) {
 			m := NewPatternMonitor(true, action, defaultCriteria(), false)
 			m.ObserveChunks(context.Background(), "tool_result", 1, []string{fakeLiveAWSKey})
 			det := m.ObserveChunks(context.Background(), "tool_result", 2, []string{fakeLiveAWSKey})
-			if len(det.Patterns) != 0 {
-				t.Errorf("action %q must suspend scanning post-latch, got %+v", action, det)
-			}
+			require.Empty(t, det.Patterns, "action %q must suspend scanning after the latch", action)
 		})
 	}
 }
@@ -308,22 +229,14 @@ func TestPatternMonitor_NonRedactActionSuspendsScanning(t *testing.T) {
 func TestNoop_NeverTripsNeverEnforces(t *testing.T) {
 	m := NewNoop()
 	det := m.ObserveChunks(context.Background(), "tool_result", 1, []string{fakeLiveAWSKey})
-	if len(det.Patterns) != 0 || det.Transition {
-		t.Errorf("Noop must not detect, got %+v", det)
-	}
-	if m.TripFromGuard("g1", "sensitive_data") {
-		t.Error("Noop must not trip from a guard")
-	}
-	if m.Tripped() {
-		t.Error("Noop must never be tripped")
-	}
-	if m.Enforcing() {
-		t.Error("Noop must never enforce")
-	}
-	if got := m.Action(); got != "warn" {
-		t.Errorf("Noop Action() = %q, want %q", got, "warn")
-	}
-	if out, n := m.Redact("anything " + fakeLiveAWSKey); out != "anything "+fakeLiveAWSKey || n != 0 {
-		t.Errorf("Noop Redact must pass through unchanged, got (%q, %d)", out, n)
-	}
+	require.Empty(t, det.Patterns, "Noop must not detect patterns")
+	require.False(t, det.Transition, "Noop must not report a transition")
+	require.False(t, m.TripFromGuard("g1", "sensitive_data"), "Noop must not trip from a guard")
+	require.False(t, m.Tripped(), "Noop must never be tripped")
+	require.False(t, m.Enforcing(), "Noop must never enforce")
+	require.Equal(t, "warn", m.Action())
+
+	out, n := m.Redact("anything " + fakeLiveAWSKey)
+	require.Equal(t, "anything "+fakeLiveAWSKey, out, "Noop Redact must pass content through unchanged")
+	require.Equal(t, 0, n, "Noop Redact must not count redactions")
 }

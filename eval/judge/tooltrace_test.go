@@ -4,11 +4,13 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// trace builds a RunTrace from a list of (name, success) tool calls. Names
-// are treated as internal tool IDs (InternalName left empty, the default
+// traceFromCalls builds a RunTrace from a list of tool calls. Names are
+// treated as internal tool IDs (InternalName left empty, the default
 // profile case).
 func traceFromCalls(calls ...types.ToolCallSummary) *types.RunTrace {
 	return &types.RunTrace{ToolCalls: calls}
@@ -23,20 +25,16 @@ func TestToolTrace_RequiresTrace(t *testing.T) {
 		Sequence: []string{"read_file"},
 	}}
 	_, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: t.TempDir()})
-	if err == nil {
-		t.Fatal("expected error when trace is nil, got none")
-	}
+	require.Error(t, err)
 }
 
 func TestToolTrace_RequiresCriteria(t *testing.T) {
 	j := types.EvalJudge{Type: "tool-trace"}
 	_, err := Evaluate(context.Background(), j, JudgeContext{Trace: traceFromCalls()})
-	if err == nil {
-		t.Fatal("expected error when toolTrace block is nil, got none")
-	}
+	require.Error(t, err)
 }
 
-func TestToolTrace_SequencePass(t *testing.T) {
+func TestToolTrace_Sequence_PassesInOrder(t *testing.T) {
 	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{
 		Sequence: []string{"read_file", "edit_file"},
 	}}
@@ -46,15 +44,11 @@ func TestToolTrace_SequencePass(t *testing.T) {
 		call("edit_file", true),
 	)
 	v, err := Evaluate(context.Background(), j, JudgeContext{Trace: tr})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !v.Passed {
-		t.Fatalf("expected pass, got fail: %s", v.Reason)
-	}
+	require.NoError(t, err)
+	require.True(t, v.Passed, "expected pass, got fail: %s", v.Reason)
 }
 
-func TestToolTrace_SequenceOrderViolation(t *testing.T) {
+func TestToolTrace_Sequence_FailsOnOrderViolation(t *testing.T) {
 	// edit_file before read_file violates read-before-edit.
 	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{
 		Sequence: []string{"read_file", "edit_file"},
@@ -64,15 +58,11 @@ func TestToolTrace_SequenceOrderViolation(t *testing.T) {
 		call("read_file", true),
 	)
 	v, err := Evaluate(context.Background(), j, JudgeContext{Trace: tr})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if v.Passed {
-		t.Fatal("expected fail when edit precedes read, got pass")
-	}
+	require.NoError(t, err)
+	require.False(t, v.Passed, "expected fail when edit precedes read")
 }
 
-func TestToolTrace_SequenceMatchesInternalNameUnderProfile(t *testing.T) {
+func TestToolTrace_Sequence_MatchesInternalName(t *testing.T) {
 	// Under a profile the model-facing Name is an alias; the assertion is
 	// written against the internal ID, which lives in InternalName.
 	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{
@@ -83,103 +73,83 @@ func TestToolTrace_SequenceMatchesInternalNameUnderProfile(t *testing.T) {
 		types.ToolCallSummary{Name: "str_replace", InternalName: "edit_file", Success: true},
 	)
 	v, err := Evaluate(context.Background(), j, JudgeContext{Trace: tr})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !v.Passed {
-		t.Fatalf("expected pass matching internal names, got fail: %s", v.Reason)
-	}
+	require.NoError(t, err)
+	require.True(t, v.Passed, "got fail: %s", v.Reason)
 }
 
-func TestToolTrace_CallMinCalls(t *testing.T) {
+func TestToolTrace_Calls_FailsBelowMinCalls(t *testing.T) {
 	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{
 		Calls: []types.ToolCallExpectation{{Name: "edit_file", MinCalls: 2}},
 	}}
 	tr := traceFromCalls(call("edit_file", true))
 	v, err := Evaluate(context.Background(), j, JudgeContext{Trace: tr})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if v.Passed {
-		t.Fatal("expected fail when min_calls not met, got pass")
-	}
+	require.NoError(t, err)
+	require.False(t, v.Passed, "expected fail when min_calls not met")
 }
 
-func TestToolTrace_CallMaxCallsForbid(t *testing.T) {
-	// A no-tool answer task: assert read_file was NOT called (max 0).
+func TestToolTrace_Calls_MaxZeroForbidsTool(t *testing.T) {
+	// A no-tool answer task: write_file must not be called (max 0).
 	zero := 0
 	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{
 		Calls: []types.ToolCallExpectation{{Name: "write_file", MaxCalls: &zero}},
 	}}
-	pass := traceFromCalls(call("read_file", true))
-	v, err := Evaluate(context.Background(), j, JudgeContext{Trace: pass})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !v.Passed {
-		t.Fatalf("expected pass when write_file absent, got fail: %s", v.Reason)
-	}
 
-	fail := traceFromCalls(call("write_file", true))
-	v, err = Evaluate(context.Background(), j, JudgeContext{Trace: fail})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if v.Passed {
-		t.Fatal("expected fail when write_file present with max 0, got pass")
-	}
+	t.Run("passes when tool absent", func(t *testing.T) {
+		tr := traceFromCalls(call("read_file", true))
+		v, err := Evaluate(context.Background(), j, JudgeContext{Trace: tr})
+		require.NoError(t, err)
+		require.True(t, v.Passed, "got fail: %s", v.Reason)
+	})
+
+	t.Run("fails when tool present", func(t *testing.T) {
+		tr := traceFromCalls(call("write_file", true))
+		v, err := Evaluate(context.Background(), j, JudgeContext{Trace: tr})
+		require.NoError(t, err)
+		require.False(t, v.Passed, "expected fail when write_file present with max 0")
+	})
 }
 
-func TestToolTrace_AllSucceeded(t *testing.T) {
+func TestToolTrace_Calls_FailsWhenAnyCallErrors(t *testing.T) {
 	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{
 		Calls: []types.ToolCallExpectation{{Name: "edit_file", MinCalls: 1, AllSucceeded: true}},
 	}}
 	tr := traceFromCalls(call("edit_file", false), call("edit_file", true))
 	v, err := Evaluate(context.Background(), j, JudgeContext{Trace: tr})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if v.Passed {
-		t.Fatal("expected fail when an edit_file call errored, got pass")
-	}
+	require.NoError(t, err)
+	require.False(t, v.Passed, "expected fail when an edit_file call errored")
 }
 
-func TestToolTrace_ForbidUnknownRecovers(t *testing.T) {
-	// A failed search_files (renamed-tool miss) followed by a successful
-	// grep_files is acceptable recovery only if the failed name itself
-	// eventually succeeds; search_files never does, so ForbidUnknown fails.
+func TestToolTrace_ForbidUnknown_RecoveryRules(t *testing.T) {
 	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{
 		ForbidUnknown: true,
 	}}
-	tr := traceFromCalls(
-		call("search_files", false),
-		call("grep_files", true),
-	)
-	v, err := Evaluate(context.Background(), j, JudgeContext{Trace: tr})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if v.Passed {
-		t.Fatal("expected fail: search_files failed and never succeeded")
-	}
 
-	// A failed edit_file retried successfully is acceptable recovery.
-	ok := traceFromCalls(
-		call("edit_file", false),
-		call("edit_file", true),
-	)
-	v, err = Evaluate(context.Background(), j, JudgeContext{Trace: ok})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !v.Passed {
-		t.Fatalf("expected pass: edit_file recovered, got fail: %s", v.Reason)
-	}
+	t.Run("fails when failed tool never succeeds", func(t *testing.T) {
+		// A later success of a different tool does not resolve a failed
+		// search_files, which never succeeds.
+		tr := traceFromCalls(
+			call("search_files", false),
+			call("grep_files", true),
+		)
+		v, err := Evaluate(context.Background(), j, JudgeContext{Trace: tr})
+		require.NoError(t, err)
+		require.False(t, v.Passed, "expected fail: search_files failed and never succeeded")
+	})
+
+	t.Run("passes when failed tool is retried successfully", func(t *testing.T) {
+		tr := traceFromCalls(
+			call("edit_file", false),
+			call("edit_file", true),
+		)
+		v, err := Evaluate(context.Background(), j, JudgeContext{Trace: tr})
+		require.NoError(t, err)
+		require.True(t, v.Passed, "edit_file recovered, got fail: %s", v.Reason)
+	})
 }
 
-// TestToolTrace_ForbidUnknownTrailingFailureFails pins that a success
-// EARLIER in the trace must not resolve a LATER failure of the same tool.
-func TestToolTrace_ForbidUnknownTrailingFailureFails(t *testing.T) {
+func TestToolTrace_ForbidUnknown_TrailingFailureFails(t *testing.T) {
+	// A success earlier in the trace must not resolve a later failure of the
+	// same tool.
 	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{
 		ForbidUnknown: true,
 	}}
@@ -188,17 +158,12 @@ func TestToolTrace_ForbidUnknownTrailingFailureFails(t *testing.T) {
 		call("edit_file", false),
 	)
 	v, err := Evaluate(context.Background(), j, JudgeContext{Trace: tr})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if v.Passed {
-		t.Fatal("expected fail: trailing edit_file failure was never followed by a success")
-	}
+	require.NoError(t, err)
+	require.False(t, v.Passed, "expected fail: trailing edit_file failure was never followed by a success")
 }
 
-// TestToolTrace_ForbidUnknownFailThenSuccessPasses is the recovery pair to the
-// trailing-failure case: a failure followed by a later success is resolved.
-func TestToolTrace_ForbidUnknownFailThenSuccessPasses(t *testing.T) {
+func TestToolTrace_ForbidUnknown_FailThenSuccessPasses(t *testing.T) {
+	// A failure followed by a later success of the same tool is resolved.
 	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{
 		ForbidUnknown: true,
 	}}
@@ -207,91 +172,65 @@ func TestToolTrace_ForbidUnknownFailThenSuccessPasses(t *testing.T) {
 		call("edit_file", true),
 	)
 	v, err := Evaluate(context.Background(), j, JudgeContext{Trace: tr})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !v.Passed {
-		t.Fatalf("expected pass: edit_file failure recovered by a later success, got fail: %s", v.Reason)
-	}
+	require.NoError(t, err)
+	require.True(t, v.Passed, "expected pass: edit_file failure recovered by a later success, got fail: %s", v.Reason)
 }
 
-// TestToolTrace_ForbidUnknownEmptyTraceFails pins that forbid_unknown
-// against a zero-call trace must FAIL rather than pass vacuously.
-func TestToolTrace_ForbidUnknownEmptyTraceFails(t *testing.T) {
+func TestToolTrace_ForbidUnknown_EmptyTraceFails(t *testing.T) {
+	// A zero-call trace must not pass forbid_unknown vacuously.
 	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{
 		ForbidUnknown: true,
 	}}
 	v, err := Evaluate(context.Background(), j, JudgeContext{Trace: traceFromCalls()})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if v.Passed {
-		t.Fatal("expected fail: forbid_unknown against an empty trace must not pass vacuously")
-	}
+	require.NoError(t, err)
+	require.False(t, v.Passed, "expected fail: forbid_unknown against an empty trace must not pass vacuously")
 }
 
-// TestToolTrace_AllSucceededZeroCallsFails pins that a tool absent from the
-// trace with all_succeeded set and no min_calls must FAIL, not pass vacuously.
-func TestToolTrace_AllSucceededZeroCallsFails(t *testing.T) {
+func TestToolTrace_Calls_AllSucceededWithNoCallFails(t *testing.T) {
+	// A tool absent from the trace with all_succeeded set and no min_calls
+	// must not pass vacuously.
 	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{
 		Calls: []types.ToolCallExpectation{{Name: "edit_file", AllSucceeded: true}},
 	}}
 	tr := traceFromCalls(call("read_file", true))
 	v, err := Evaluate(context.Background(), j, JudgeContext{Trace: tr})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if v.Passed {
-		t.Fatal("expected fail: all_succeeded with no matching call and no min_calls must not pass vacuously")
-	}
+	require.NoError(t, err)
+	require.False(t, v.Passed, "expected fail: all_succeeded with no matching call and no min_calls must not pass vacuously")
 }
 
-// TestToolTrace_AllSucceeded_Pass: two successful calls with all_succeeded pass.
-func TestToolTrace_AllSucceeded_Pass(t *testing.T) {
+func TestToolTrace_Calls_AllSucceededPasses(t *testing.T) {
 	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{
 		Calls: []types.ToolCallExpectation{{Name: "edit_file", MinCalls: 1, AllSucceeded: true}},
 	}}
 	tr := traceFromCalls(call("edit_file", true), call("edit_file", true))
 	v, err := Evaluate(context.Background(), j, JudgeContext{Trace: tr})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !v.Passed {
-		t.Fatalf("expected pass when all edit_file calls succeeded, got fail: %s", v.Reason)
-	}
+	require.NoError(t, err)
+	require.True(t, v.Passed, "expected pass when all edit_file calls succeeded, got fail: %s", v.Reason)
 }
 
-func TestToolTrace_CallMinCalls_Pass(t *testing.T) {
+func TestToolTrace_Calls_MinCallsMetPasses(t *testing.T) {
 	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{
 		Calls: []types.ToolCallExpectation{{Name: "edit_file", MinCalls: 2}},
 	}}
 	tr := traceFromCalls(call("edit_file", true), call("edit_file", true))
 	v, err := Evaluate(context.Background(), j, JudgeContext{Trace: tr})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !v.Passed {
-		t.Fatalf("expected pass when min_calls met, got fail: %s", v.Reason)
-	}
+	require.NoError(t, err)
+	require.True(t, v.Passed, "expected pass when min_calls met, got fail: %s", v.Reason)
 }
 
-// TestToolTrace_CallMaxCalls_Pass covers a non-zero upper bound being respected.
-func TestToolTrace_CallMaxCalls_Pass(t *testing.T) {
+// TestToolTrace_Calls_WithinMaxPasses covers a non-zero upper bound being respected.
+func TestToolTrace_Calls_WithinMaxPasses(t *testing.T) {
 	two := 2
 	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{
 		Calls: []types.ToolCallExpectation{{Name: "edit_file", MaxCalls: &two}},
 	}}
 	tr := traceFromCalls(call("edit_file", true))
 	v, err := Evaluate(context.Background(), j, JudgeContext{Trace: tr})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !v.Passed {
-		t.Fatalf("expected pass when calls within max, got fail: %s", v.Reason)
-	}
+	require.NoError(t, err)
+	require.True(t, v.Passed, "expected pass when calls within max, got fail: %s", v.Reason)
 }
 
-func TestToolTrace_CompositeWithFileJudge(t *testing.T) {
+func TestToolTrace_Composite_SubJudgeReceivesTrace(t *testing.T) {
 	// The composite path threads JudgeContext (including Trace) to every
 	// sub-judge, so a tool-trace sub-judge sees the trace.
 	dir := t.TempDir()
@@ -308,10 +247,6 @@ func TestToolTrace_CompositeWithFileJudge(t *testing.T) {
 	}
 	tr := traceFromCalls(call("read_file", true), call("edit_file", true))
 	v, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir, Trace: tr})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !v.Passed {
-		t.Fatalf("expected composite pass, got fail: %s", v.Reason)
-	}
+	require.NoError(t, err)
+	require.True(t, v.Passed, "expected composite pass, got fail: %s", v.Reason)
 }

@@ -5,6 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/sandboxidentity"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -34,28 +37,17 @@ func TestBuildLoopWithTransport_SandboxIdentity_RefresherClosesFirst(t *testing.
 	config := sandboxIdentityContainerConfig(t, "sandboxidentity-close-order-test", server.URL)
 
 	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
-	if err != nil {
-		t.Fatalf("BuildLoopWithTransport() error: %v", err)
-	}
+	require.NoError(t, err)
 
 	last := loop.ownedClosers[len(loop.ownedClosers)-1]
-	if _, ok := last.(*sandboxidentity.Refresher); !ok {
-		t.Fatalf("last owned closer is %T, want *sandboxidentity.Refresher so it closes first", last)
-	}
+	require.IsType(t, (*sandboxidentity.Refresher)(nil), last,
+		"the refresher must be the last owned closer so it closes first")
 
-	if err := loop.Close(); err != nil {
-		t.Errorf("Close() error: %v", err)
-	}
-	if err := tp.Close(); err != nil {
-		t.Errorf("transport Close() error: %v", err)
-	}
+	assert.NoError(t, loop.Close())
+	assert.NoError(t, tp.Close())
 
-	if warnings := tp.emittedOfType("warning"); len(warnings) != 0 {
-		t.Errorf("shutdown with a pending refresh must not warn, got %+v", warnings)
-	}
-	if got := tp.emittedAfterClose(); got != 0 {
-		t.Errorf("%d event(s) were emitted after the transport closed", got)
-	}
+	assert.Empty(t, tp.emittedOfType("warning"), "shutdown with a pending refresh must not warn")
+	assert.Zero(t, tp.emittedAfterClose(), "no event may be emitted after the transport closed")
 }
 
 // TestRunFollowUpLoop_SandboxIdentity_ReusesRefresher pins that follow-up
@@ -77,18 +69,13 @@ func TestRunFollowUpLoop_SandboxIdentity_ReusesRefresher(t *testing.T) {
 	defer cancel()
 
 	loop, err := BuildLoopWithTransport(ctx, config, tp)
-	if err != nil {
-		t.Fatalf("BuildLoopWithTransport() error: %v", err)
-	}
+	require.NoError(t, err)
 	defer func() { _ = loop.Close() }()
 	closersBefore := len(loop.ownedClosers)
 
-	if _, err := loop.Run(ctx, config); err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if got := len(tp.emittedOfType("done")); got != 1 {
-		t.Fatalf("expected 1 done event after the primary run, got %d", got)
-	}
+	_, err = loop.Run(ctx, config)
+	require.NoError(t, err)
+	require.Len(t, tp.emittedOfType("done"), 1, "the primary run must emit one done event")
 
 	handlersBefore := tp.handlerCount()
 	finished := make(chan struct{})
@@ -101,33 +88,23 @@ func TestRunFollowUpLoop_SandboxIdentity_ReusesRefresher(t *testing.T) {
 	// rather than fanned out to nobody.
 	tp.deliver(types.ControlEvent{Type: "user_response", UserResponse: "again"})
 
-	deadline := time.Now().Add(10 * time.Second)
-	for len(tp.emittedOfType("done")) < 2 {
-		if time.Now().After(deadline) {
-			t.Fatal("follow-up run never completed")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	require.Eventually(t, func() bool {
+		return len(tp.emittedOfType("done")) >= 2
+	}, 10*time.Second, 10*time.Millisecond, "the follow-up run never completed")
+
 	tp.deliver(types.ControlEvent{Type: "cancel"})
 	select {
 	case <-finished:
 	case <-time.After(5 * time.Second):
-		t.Fatal("RunFollowUpLoop did not return after cancel")
+		require.FailNow(t, "RunFollowUpLoop did not return after cancel")
 	}
 
-	if got := capture.createCallCount(); got != 1 {
-		t.Errorf("follow-up created %d container(s) in total, want 1 (the sandbox is reused)", got)
-	}
-	if got := capture.stdinSeen(); len(got) != 1 {
-		t.Errorf("follow-up delivered %d token(s) in total, want 1", len(got))
-	}
-	if got := len(tp.emittedOfType("sandbox_token_request")); got != 1 {
-		t.Errorf("follow-up sent %d sandbox_token_request(s) in total, want 1", got)
-	}
-	if got := len(loop.ownedClosers); got != closersBefore {
-		t.Errorf("follow-up changed the owned closers from %d to %d; the refresher must be built once", closersBefore, got)
-	}
-	if got := tp.handlerCount(); got != handlersBefore {
-		t.Errorf("follow-up left %d control handler(s) registered, want %d; the loop registers one at build and shares it", got, handlersBefore)
-	}
+	assert.Equal(t, 1, capture.createCallCount(),
+		"the follow-up must reuse the sandbox, so only one container is created in total")
+	assert.Len(t, capture.stdinSeen(), 1, "one token is delivered in total")
+	assert.Len(t, tp.emittedOfType("sandbox_token_request"), 1, "one sandbox_token_request is sent in total")
+	assert.Len(t, loop.ownedClosers, closersBefore,
+		"the refresher must be built once, so the owned closers do not change")
+	assert.Equal(t, handlersBefore, tp.handlerCount(),
+		"the loop registers one control handler at build and shares it")
 }

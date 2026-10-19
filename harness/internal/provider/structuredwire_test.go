@@ -1,13 +1,15 @@
 package provider
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
@@ -37,29 +39,21 @@ func structuredWireWorkspace(t *testing.T) executor.Executor {
 		}
 		return os.WriteFile(target, nil, 0o600)
 	})
-	if err != nil {
-		t.Fatalf("mirror source tree: %v", err)
-	}
+	require.NoError(t, err, "mirror source tree")
+
 	sources, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatalf("glob sources: %v", err)
-	}
+	require.NoError(t, err, "glob sources")
 	for _, src := range sources {
 		if strings.HasSuffix(src, "_test.go") {
 			continue
 		}
 		data, err := os.ReadFile(src)
-		if err != nil {
-			t.Fatalf("read %s: %v", src, err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, src), data, 0o600); err != nil {
-			t.Fatalf("write %s: %v", src, err)
-		}
+		require.NoError(t, err, "read %s", src)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, src), data, 0o600), "write %s", src)
 	}
+
 	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("new local executor: %v", err)
-	}
+	require.NoError(t, err, "new local executor")
 	return exec
 }
 
@@ -78,12 +72,9 @@ var structuredWireCases = []structuredWireCase{
 func runStructuredTool(t *testing.T, exec executor.Executor, c structuredWireCase) types.ContentBlock {
 	t.Helper()
 	res, err := c.tool(exec).StructuredHandler(context.Background(), json.RawMessage(c.input))
-	if err != nil {
-		t.Fatalf("%s: %v", c.name, err)
-	}
-	if len(res.Structured) == 0 || res.Kind == "" {
-		t.Fatalf("%s returned no structured envelope", c.name)
-	}
+	require.NoError(t, err, "%s", c.name)
+	require.NotEmpty(t, res.Structured, "%s returned no structured envelope", c.name)
+	require.NotEmpty(t, res.Kind, "%s returned no structured envelope kind", c.name)
 	return types.ContentBlock{
 		Type:       "tool_result",
 		ToolUseID:  "call_1",
@@ -103,19 +94,15 @@ func toolResultHistory(block types.ContentBlock) []types.Message {
 	}
 }
 
+// anthropicEnvelopePart returns the fields of the JSON envelope that the
+// Anthropic tool_result content carries as its second part.
 func anthropicEnvelopePart(t *testing.T, content json.RawMessage) map[string]json.RawMessage {
 	t.Helper()
 	var parts []anthropicToolResultPart
-	if err := json.Unmarshal(content, &parts); err != nil {
-		t.Fatalf("tool_result content is not the array form: %v", err)
-	}
-	if len(parts) != 2 {
-		t.Fatalf("expected text and envelope parts, got %d", len(parts))
-	}
+	require.NoError(t, json.Unmarshal(content, &parts), "tool_result content is not the array form")
+	require.Len(t, parts, 2, "expected text and envelope parts")
 	var fields map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(parts[1].Text), &fields); err != nil {
-		t.Fatalf("envelope part is not a JSON object: %v", err)
-	}
+	require.NoError(t, json.Unmarshal([]byte(parts[1].Text), &fields), "envelope part is not a JSON object")
 	return fields
 }
 
@@ -132,19 +119,14 @@ func TestAnthropicStructuredToolResult_WireSizeBound(t *testing.T) {
 			wire := anthropicToolResultContent(block, capability)
 			anthropicEnvelopePart(t, wire)
 			textOnly, err := json.Marshal(block.Content)
-			if err != nil {
-				t.Fatalf("marshal text: %v", err)
-			}
+			require.NoError(t, err, "marshal text")
+
 			rawRatio := float64(len(wire)) / float64(len(block.Content))
 			encodedRatio := float64(len(wire)) / float64(len(textOnly))
 			t.Logf("text=%d structured=%d wire=%d raw ratio=%.3f encoded ratio=%.3f",
 				len(block.Content), len(block.Structured), len(wire), rawRatio, encodedRatio)
-			if rawRatio > 1.15 {
-				t.Errorf("wire size is %.3f times the text rendering, want at most 1.15", rawRatio)
-			}
-			if encodedRatio > 1.15 {
-				t.Errorf("wire size is %.3f times the text-only encoding, want at most 1.15", encodedRatio)
-			}
+			assert.LessOrEqual(t, rawRatio, 1.15, "wire size relative to the text rendering")
+			assert.LessOrEqual(t, encodedRatio, 1.15, "wire size relative to the text-only encoding")
 		})
 	}
 }
@@ -196,19 +178,13 @@ func TestStructuredToolResult_MetadataReachesAnthropicAndGemini(t *testing.T) {
 			check := func(provider string, fields map[string]json.RawMessage) {
 				t.Helper()
 				for k, v := range c.want {
-					if got := string(fields[k]); got != v {
-						t.Errorf("%s: %s = %s, want %s", provider, k, got, v)
-					}
+					assert.Equal(t, v, string(fields[k]), "%s: %s", provider, k)
 				}
 				for _, k := range c.present {
-					if _, ok := fields[k]; !ok {
-						t.Errorf("%s: %s missing from the envelope", provider, k)
-					}
+					assert.Contains(t, fields, k, "%s: %s missing from the envelope", provider, k)
 				}
 				for _, k := range c.absent {
-					if _, ok := fields[k]; ok {
-						t.Errorf("%s: duplicated body field %s sent", provider, k)
-					}
+					assert.NotContains(t, fields, k, "%s: duplicated body field %s sent", provider, k)
 				}
 			}
 
@@ -223,31 +199,21 @@ func TestStructuredToolResult_MetadataReachesAnthropicAndGemini(t *testing.T) {
 					} `json:"content"`
 				} `json:"messages"`
 			}
-			if err := json.Unmarshal(raw, &decoded); err != nil {
-				t.Fatalf("decode anthropic body: %v", err)
-			}
+			require.NoError(t, json.Unmarshal(raw, &decoded), "decode anthropic body")
 			check("anthropic", anthropicEnvelopePart(t, decoded.Messages[2].Content[0].Content))
 
 			body, _, err := BuildGenerateContentRequest(types.StreamParams{
 				Model: "gemini-2.5-pro", Tools: anthropicTools(), Messages: toolResultHistory(block),
 			}, nil, geminiCap)
-			if err != nil {
-				t.Fatalf("build gemini request: %v", err)
-			}
+			require.NoError(t, err, "build gemini request")
 			var resp struct {
 				Content    string                     `json:"content"`
 				Structured map[string]json.RawMessage `json:"structured"`
 				Kind       string                     `json:"kind"`
 			}
-			if err := json.Unmarshal(geminiFunctionResponseFromBody(t, body), &resp); err != nil {
-				t.Fatalf("decode gemini response: %v", err)
-			}
-			if resp.Content != block.Content {
-				t.Errorf("gemini: content is not the canonical text")
-			}
-			if resp.Kind != block.Kind {
-				t.Errorf("gemini: kind = %q, want %q", resp.Kind, block.Kind)
-			}
+			require.NoError(t, json.Unmarshal(geminiFunctionResponseFromBody(t, body), &resp), "decode gemini response")
+			require.Equal(t, block.Content, resp.Content, "gemini: content is not the canonical text")
+			require.Equal(t, block.Kind, resp.Kind, "gemini: kind")
 			check("gemini", resp.Structured)
 		})
 	}
@@ -265,22 +231,19 @@ func TestStructuredToolResult_EncodingLeavesHistoryEnvelopeIntact(t *testing.T) 
 	_ = mustMarshal(t, buildAnthropicRequest(types.StreamParams{
 		Model: "claude-sonnet-4-5", MaxTokens: 1024, Messages: history,
 	}, true, quirks.DefaultRegistry().Resolve("anthropic", "claude-sonnet-4-5")))
-	if _, _, err := BuildGenerateContentRequest(types.StreamParams{
+	_, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model: "gemini-2.5-pro", Messages: history,
-	}, nil, quirks.DefaultRegistry().Resolve("gemini", "gemini-2.5-pro")); err != nil {
-		t.Fatalf("build gemini request: %v", err)
-	}
+	}, nil, quirks.DefaultRegistry().Resolve("gemini", "gemini-2.5-pro"))
+	require.NoError(t, err, "build gemini request")
 
 	got := history[2].Content[0].Structured
-	if !bytes.Equal(got, original) {
-		t.Fatalf("history envelope changed by encoding")
-	}
+	require.Equal(t, string(original), string(got), "history envelope changed by encoding")
+
 	var excerpt struct {
 		Lines []string `json:"lines"`
 	}
-	if err := json.Unmarshal(got, &excerpt); err != nil || len(excerpt.Lines) == 0 {
-		t.Fatalf("history envelope lost its lines (err=%v)", err)
-	}
+	require.NoError(t, json.Unmarshal(got, &excerpt), "history envelope is not a JSON object")
+	require.NotEmpty(t, excerpt.Lines, "history envelope lost its lines")
 }
 
 // TestGeminiToolResultResponse_IdenticalStructuredCollapses pins that an
@@ -291,11 +254,8 @@ func TestGeminiToolResultResponse_IdenticalStructuredCollapses(t *testing.T) {
 		Type: "tool_result", ToolUseID: "call_1", Content: payload,
 		Structured: json.RawMessage(payload), Kind: types.ToolResultKindCommandOutputChunk,
 	}, quirks.StructuredToolResultCapability{Supported: true, ObjectResponse: true})
-	if err != nil {
-		t.Fatalf("geminiToolResultResponse: %v", err)
-	}
+	require.NoError(t, err, "geminiToolResultResponse")
+
 	want := mustMarshal(t, geminiFunctionResponseBody{Content: payload})
-	if !bytes.Equal(raw, want) {
-		t.Errorf("identical envelope must collapse to content only\n got:  %s\n want: %s", raw, want)
-	}
+	require.Equal(t, string(want), string(raw), "identical envelope must collapse to content only")
 }

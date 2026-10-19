@@ -13,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
@@ -98,9 +101,7 @@ func hostGit(t *testing.T, dir string, args ...string) string {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
-	}
+	require.NoError(t, err, "git %v\n%s", args, out)
 	return strings.TrimSpace(string(out))
 }
 
@@ -111,9 +112,7 @@ func newGitFinaliseLoop(t *testing.T, repo string, prov *toolLoopProvider, probe
 	loop := buildTestLoop(nil)
 	loop.Provider = prov
 	exec, err := executor.NewLocalExecutor(repo)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
+	require.NoError(t, err, "NewLocalExecutor")
 	loop.Git = git.NewDeterministicGitStrategy(exec)
 	rec := &recordingTransport{}
 	loop.Transport = rec
@@ -136,29 +135,16 @@ func newGitFinaliseLoop(t *testing.T, repo string, prov *toolLoopProvider, probe
 // git handoff names the branch, the new HEAD and base.
 func assertCommittedOnRunBranch(t *testing.T, repo, base, file, outcome string, rt *types.RunTrace) {
 	t.Helper()
-	if rt == nil {
-		t.Fatal("Run returned a nil trace")
-	}
-	if rt.Outcome != outcome {
-		t.Fatalf("outcome = %q, want %q", rt.Outcome, outcome)
-	}
+	require.NotNil(t, rt, "Run returned a nil trace")
+	require.Equal(t, outcome, rt.Outcome)
+
 	head := hostGit(t, repo, "rev-parse", "HEAD")
-	if got := hostGit(t, repo, "ls-tree", "--name-only", "HEAD", file); got != file {
-		t.Errorf("%s is not committed at HEAD (ls-tree = %q)", file, got)
-	}
-	if got, want := hostGit(t, repo, "log", "-1", "--format=%s"), "Final checkpoint (outcome: "+outcome+")"; got != want {
-		t.Errorf("HEAD commit message = %q, want %q", got, want)
-	}
-	if status := hostGit(t, repo, "status", "--porcelain"); status != "" {
-		t.Errorf("working tree still dirty after the final checkpoint:\n%s", status)
-	}
-	want := types.GitHandoff{Branch: "stirrup/test-run-1", SHA: head, BaseSHA: base}
-	if rt.Git == nil {
-		t.Fatal("RunTrace.Git = nil, want the git handoff")
-	}
-	if *rt.Git != want {
-		t.Errorf("RunTrace.Git = %+v, want %+v", *rt.Git, want)
-	}
+	assert.Equal(t, file, hostGit(t, repo, "ls-tree", "--name-only", "HEAD", file), "%s is not committed at HEAD", file)
+	assert.Equal(t, "Final checkpoint (outcome: "+outcome+")", hostGit(t, repo, "log", "-1", "--format=%s"), "HEAD commit message")
+	assert.Empty(t, hostGit(t, repo, "status", "--porcelain"), "working tree still dirty after the final checkpoint")
+
+	require.NotNil(t, rt.Git, "RunTrace.Git should hold the git handoff")
+	assert.Equal(t, types.GitHandoff{Branch: "stirrup/test-run-1", SHA: head, BaseSHA: base}, *rt.Git)
 }
 
 func TestRun_BudgetExceededCommitsLastToolTurn(t *testing.T) {
@@ -169,9 +155,7 @@ func TestRun_BudgetExceededCommitsLastToolTurn(t *testing.T) {
 	config.MaxTokenBudget = &budget
 
 	rt, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	require.NoError(t, err)
 	assertCommittedOnRunBranch(t, repo, base, probeFile(1), "budget_exceeded", rt)
 }
 
@@ -182,9 +166,7 @@ func TestRun_StalledCommitsLastToolTurn(t *testing.T) {
 	loop, config, _ := newGitFinaliseLoop(t, repo, prov, probe)
 
 	rt, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	require.NoError(t, err)
 	assertCommittedOnRunBranch(t, repo, base, probeFile(2*stallRepeats), "stalled", rt)
 }
 
@@ -196,9 +178,7 @@ func TestRun_ToolFailuresCommitsLastToolTurn(t *testing.T) {
 	loop, config, _ := newGitFinaliseLoop(t, repo, &toolLoopProvider{}, probe)
 
 	rt, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	require.NoError(t, err)
 	assertCommittedOnRunBranch(t, repo, base, probeFile(maxConsecutiveFailures), "tool_failures", rt)
 }
 
@@ -213,9 +193,7 @@ func TestRun_TimeoutCommitsOnDetachedContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	rt, err := loop.Run(ctx, config)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	require.NoError(t, err)
 	assertCommittedOnRunBranch(t, repo, base, probeFile(1), "timeout", rt)
 }
 
@@ -231,9 +209,7 @@ func TestRun_CancellationCommitsOnDetachedContext(t *testing.T) {
 	loop, config, _ := newGitFinaliseLoop(t, repo, &toolLoopProvider{}, probe)
 
 	rt, err := loop.Run(ctx, config)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	require.NoError(t, err)
 	assertCommittedOnRunBranch(t, repo, base, probeFile(1), "cancelled", rt)
 }
 
@@ -242,9 +218,7 @@ func TestRun_NoGitIdentityCommitsAsHarnessAndSucceeds(t *testing.T) {
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	for _, name := range []string{"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL"} {
 		t.Setenv(name, "")
-		if err := os.Unsetenv(name); err != nil {
-			t.Fatalf("unset %s: %v", name, err)
-		}
+		require.NoError(t, os.Unsetenv(name), "unset %s", name)
 	}
 	repo, base := newGitRepo(t)
 	hostGit(t, repo, "config", "user.useConfigOnly", "true")
@@ -253,26 +227,22 @@ func TestRun_NoGitIdentityCommitsAsHarnessAndSucceeds(t *testing.T) {
 	loop, config, rec := newGitFinaliseLoop(t, repo, &toolLoopProvider{stopAfter: 1}, probe)
 
 	rt, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if rt.Outcome != "success" {
-		t.Fatalf("outcome = %q, want success", rt.Outcome)
-	}
-	if rt.Git == nil || rt.Git.Error != "" || rt.Git.Dirty || rt.Git.SHA == base {
-		t.Fatalf("RunTrace.Git = %+v, want a clean handoff past base %s", rt.Git, base)
-	}
-	if got := hostGit(t, repo, "ls-tree", "--name-only", "HEAD", probeFile(1)); got != probeFile(1) {
-		t.Errorf("%s is not committed at HEAD", probeFile(1))
-	}
+	require.NoError(t, err)
+	require.Equal(t, "success", rt.Outcome)
+	require.NotNil(t, rt.Git, "RunTrace.Git should hold the git handoff")
+	assert.Empty(t, rt.Git.Error, "handoff should not record an error")
+	assert.False(t, rt.Git.Dirty, "handoff should not report a dirty tree")
+	assert.NotEqual(t, base, rt.Git.SHA, "handoff should move past base %s", base)
+
+	assert.Equal(t, probeFile(1), hostGit(t, repo, "ls-tree", "--name-only", "HEAD", probeFile(1)), "%s should be committed at HEAD", probeFile(1))
+
 	want := git.HarnessIdentityName + " <" + git.HarnessIdentityEmail + ">"
-	if got := hostGit(t, repo, "log", "--format=%an <%ae>", base+"..HEAD"); got == "" || strings.Trim(strings.ReplaceAll(got, want, ""), "\n") != "" {
-		t.Errorf("run commits authored as %q, want only %q", got, want)
-	}
+	got := hostGit(t, repo, "log", "--format=%an <%ae>", base+"..HEAD")
+	assert.NotEmpty(t, got, "run should add commits past base")
+	assert.Empty(t, strings.Trim(strings.ReplaceAll(got, want, ""), "\n"), "run commits authored as %q, want only %q", got, want)
+
 	for _, ev := range rec.events {
-		if ev.Type == "warning" {
-			t.Errorf("unexpected warning event: %s", ev.Message)
-		}
+		assert.NotEqual(t, "warning", ev.Type, "unexpected warning event: %s", ev.Message)
 	}
 }
 
@@ -292,24 +262,15 @@ func TestRun_FinalCheckpointFailureOnSuccessYieldsHandoffFailed(t *testing.T) {
 	loop.Hooks = hooks
 
 	rt, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if rt.Outcome != "handoff_failed" {
-		t.Fatalf("outcome = %q, want handoff_failed", rt.Outcome)
-	}
-	if rt.Git == nil || !strings.Contains(rt.Git.Error, "final checkpoint") {
-		t.Fatalf("RunTrace.Git = %+v, want the final checkpoint failure text", rt.Git)
-	}
-	if rt.Git.SHA != base || rt.Git.Branch != "stirrup/test-run-1" || !rt.Git.Dirty {
-		t.Errorf("RunTrace.Git = %+v, want the run branch at base %s, dirty", *rt.Git, base)
-	}
-	if len(hooks.postCalls) != 1 || hooks.postCalls[0] != "handoff_failed" {
-		t.Errorf("postRun hooks saw outcomes %v, want [handoff_failed]", hooks.postCalls)
-	}
-	if !hasEvent(rec, "done", "handoff_failed") {
-		t.Error("done event does not carry handoff_failed")
-	}
+	require.NoError(t, err)
+	require.Equal(t, "handoff_failed", rt.Outcome)
+	require.NotNil(t, rt.Git, "RunTrace.Git should hold the git handoff")
+	require.Contains(t, rt.Git.Error, "final checkpoint")
+	assert.Equal(t, base, rt.Git.SHA, "handoff SHA should stay at base")
+	assert.Equal(t, "stirrup/test-run-1", rt.Git.Branch)
+	assert.True(t, rt.Git.Dirty, "handoff should report a dirty tree")
+	assert.Equal(t, []string{"handoff_failed"}, hooks.postCalls, "postRun hooks should see the handoff_failed outcome")
+	assert.True(t, hasEvent(rec, "done", "handoff_failed"), "done event should carry handoff_failed")
 }
 
 func TestRun_FinalCheckpointFailureKeepsEarlierFailureOutcome(t *testing.T) {
@@ -320,15 +281,10 @@ func TestRun_FinalCheckpointFailureKeepsEarlierFailureOutcome(t *testing.T) {
 	config.MaxTokenBudget = &budget
 
 	rt, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if rt.Outcome != "budget_exceeded" {
-		t.Fatalf("outcome = %q, want budget_exceeded kept", rt.Outcome)
-	}
-	if rt.Git == nil || rt.Git.Error == "" {
-		t.Fatalf("RunTrace.Git = %+v, want the git failure recorded", rt.Git)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "budget_exceeded", rt.Outcome, "the earlier failure outcome should be kept")
+	require.NotNil(t, rt.Git, "RunTrace.Git should record the git failure")
+	require.NotEmpty(t, rt.Git.Error, "RunTrace.Git should record the git failure")
 }
 
 func TestRun_DirtyTreeAfterFinalCheckpointYieldsHandoffFailed(t *testing.T) {
@@ -348,15 +304,11 @@ func TestRun_DirtyTreeAfterFinalCheckpointYieldsHandoffFailed(t *testing.T) {
 	loop, config, _ := newGitFinaliseLoop(t, repo, &toolLoopProvider{stopAfter: 1}, probe)
 
 	rt, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if rt.Outcome != "handoff_failed" {
-		t.Fatalf("outcome = %q, want handoff_failed", rt.Outcome)
-	}
-	if rt.Git == nil || !rt.Git.Dirty || rt.Git.Error != errDirtyAfterFinalCheckpoint.Error() {
-		t.Errorf("RunTrace.Git = %+v, want dirty with %q", rt.Git, errDirtyAfterFinalCheckpoint)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "handoff_failed", rt.Outcome)
+	require.NotNil(t, rt.Git, "RunTrace.Git should hold the git handoff")
+	assert.True(t, rt.Git.Dirty, "handoff should report a dirty tree")
+	assert.Equal(t, errDirtyAfterFinalCheckpoint.Error(), rt.Git.Error)
 }
 
 func TestRun_PostRunHookEditsAreNotCommitted(t *testing.T) {
@@ -368,18 +320,11 @@ func TestRun_PostRunHookEditsAreNotCommitted(t *testing.T) {
 	}}
 
 	rt, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if rt.Outcome != "success" {
-		t.Fatalf("outcome = %q, want success", rt.Outcome)
-	}
-	if got := hostGit(t, repo, "status", "--porcelain"); got != "?? hook.txt" {
-		t.Errorf("status = %q, want only the hook's file untracked", got)
-	}
-	if rt.Git == nil || rt.Git.Dirty {
-		t.Errorf("RunTrace.Git = %+v, want the handoff taken before the hook ran", rt.Git)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "success", rt.Outcome)
+	assert.Equal(t, "?? hook.txt", hostGit(t, repo, "status", "--porcelain"), "only the hook's file should be untracked")
+	require.NotNil(t, rt.Git, "RunTrace.Git should hold the git handoff")
+	assert.False(t, rt.Git.Dirty, "the handoff should be taken before the hook runs")
 }
 
 // fakeFinaliseGit returns a fixed Finalise result and records the outcome
@@ -400,12 +345,9 @@ func (g *fakeFinaliseGit) Finalise(_ context.Context, outcome string) (*types.Gi
 func TestRun_NoneGitStrategyOmitsGitHandoff(t *testing.T) {
 	loop := buildTestLoop(simpleSuccessProvider())
 	rt, err := loop.Run(context.Background(), buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if rt.Outcome != "success" || rt.Git != nil {
-		t.Errorf("outcome = %q, Git = %+v; want success with no git handoff", rt.Outcome, rt.Git)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "success", rt.Outcome)
+	require.Nil(t, rt.Git, "the none strategy should not produce a git handoff")
 }
 
 func TestRun_FinaliseReceivesPreGitOutcome(t *testing.T) {
@@ -413,30 +355,19 @@ func TestRun_FinaliseReceivesPreGitOutcome(t *testing.T) {
 	fake := &fakeFinaliseGit{handoff: &types.GitHandoff{Branch: "b", SHA: "s", BaseSHA: "s"}}
 	loop.Git = fake
 	rt, err := loop.Run(context.Background(), buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if fake.outcome != "success" {
-		t.Errorf("Finalise outcome = %q, want success", fake.outcome)
-	}
-	if rt.Git == nil || *rt.Git != *fake.handoff {
-		t.Errorf("RunTrace.Git = %+v, want %+v", rt.Git, fake.handoff)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "success", fake.outcome, "Finalise should receive the pre-git outcome")
+	require.Equal(t, fake.handoff, rt.Git, "RunTrace.Git should be the handoff from Finalise")
 }
 
 func TestRun_FinaliseErrorWithoutHandoffIsRecorded(t *testing.T) {
 	loop := buildTestLoop(simpleSuccessProvider())
 	loop.Git = &fakeFinaliseGit{err: errors.New("strategy broke")}
 	rt, err := loop.Run(context.Background(), buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if rt.Outcome != "handoff_failed" {
-		t.Errorf("outcome = %q, want handoff_failed", rt.Outcome)
-	}
-	if rt.Git == nil || rt.Git.Error != "strategy broke" {
-		t.Errorf("RunTrace.Git = %+v, want the error recorded", rt.Git)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "handoff_failed", rt.Outcome)
+	require.NotNil(t, rt.Git, "RunTrace.Git should record the error")
+	assert.Equal(t, "strategy broke", rt.Git.Error)
 }
 
 func TestRun_GitHandoffErrorIsScrubbedAndCapped(t *testing.T) {
@@ -446,22 +377,13 @@ func TestRun_GitHandoffErrorIsScrubbedAndCapped(t *testing.T) {
 	long := "commit hook printed " + spanProbeKey + " " + strings.Repeat("x", 4*maxFailureTextBytes)
 	loop.Git = &fakeFinaliseGit{handoff: &types.GitHandoff{}, err: errors.New(long)}
 	rt, err := loop.Run(context.Background(), buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if rt.Git == nil {
-		t.Fatal("RunTrace.Git = nil")
-	}
-	if strings.Contains(rt.Git.Error, spanProbeKey) {
-		t.Error("RunTrace.Git.Error carries the unscrubbed key")
-	}
-	if len(rt.Git.Error) > maxFailureTextBytes+len("... [truncated by harness]") {
-		t.Errorf("RunTrace.Git.Error is %d bytes, want it capped near %d", len(rt.Git.Error), maxFailureTextBytes)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, rt.Git, "RunTrace.Git should record the error")
+	assert.NotContains(t, rt.Git.Error, spanProbeKey, "RunTrace.Git.Error should not carry the unscrubbed key")
+	assert.LessOrEqual(t, len(rt.Git.Error), maxFailureTextBytes+len("... [truncated by harness]"),
+		"RunTrace.Git.Error should be capped near %d bytes", maxFailureTextBytes)
 	for _, ev := range rec.events {
-		if strings.Contains(ev.Message, spanProbeKey) {
-			t.Errorf("%s event carries the unscrubbed key", ev.Type)
-		}
+		assert.NotContains(t, ev.Message, spanProbeKey, "%s event should not carry the unscrubbed key", ev.Type)
 	}
 }
 

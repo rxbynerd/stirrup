@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -40,27 +42,13 @@ func TestTestRunnerVerifier_PassingTests(t *testing.T) {
 		Executor: mock,
 	})
 
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Passed {
-		t.Fatal("expected Passed to be true")
-	}
-	if result.Feedback != "" {
-		t.Errorf("expected no feedback on pass, got %q", result.Feedback)
-	}
-	if mock.lastCommand != "go test ./..." {
-		t.Errorf("expected command %q, got %q", "go test ./...", mock.lastCommand)
-	}
-	if mock.lastTimeout != 30*time.Second {
-		t.Errorf("expected timeout %v, got %v", 30*time.Second, mock.lastTimeout)
-	}
-	if result.Details["command"] != "go test ./..." {
-		t.Errorf("expected details command, got %v", result.Details["command"])
-	}
-	if result.Details["exitCode"] != 0 {
-		t.Errorf("expected details exitCode 0, got %v", result.Details["exitCode"])
-	}
+	require.NoError(t, err)
+	require.True(t, result.Passed)
+	require.Empty(t, result.Feedback)
+	require.Equal(t, "go test ./...", mock.lastCommand)
+	require.Equal(t, 30*time.Second, mock.lastTimeout)
+	require.Equal(t, "go test ./...", result.Details["command"])
+	require.Equal(t, 0, result.Details["exitCode"])
 }
 
 func TestTestRunnerVerifier_FailingTests(t *testing.T) {
@@ -77,34 +65,18 @@ func TestTestRunnerVerifier_FailingTests(t *testing.T) {
 		Executor: mock,
 	})
 
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.Passed {
-		t.Fatal("expected Passed to be false")
-	}
-	if !strings.Contains(result.Feedback, "npm test") {
-		t.Errorf("feedback should mention the command, got %q", result.Feedback)
-	}
-	if !strings.Contains(result.Feedback, "exit code 1") {
-		t.Errorf("feedback should mention the exit code, got %q", result.Feedback)
-	}
-	if !strings.Contains(result.Feedback, "FAIL: TestSomething") {
-		t.Errorf("feedback should include test output, got %q", result.Feedback)
-	}
-	if result.Details["exitCode"] != 1 {
-		t.Errorf("expected details exitCode 1, got %v", result.Details["exitCode"])
-	}
-	if mock.lastTimeout != defaultTestTimeout {
-		t.Errorf("expected default timeout %v, got %v", defaultTestTimeout, mock.lastTimeout)
-	}
+	require.NoError(t, err)
+	require.False(t, result.Passed)
+	require.Contains(t, result.Feedback, "npm test")
+	require.Contains(t, result.Feedback, "exit code 1")
+	require.Contains(t, result.Feedback, "FAIL: TestSomething")
+	require.Equal(t, 1, result.Details["exitCode"])
+	require.Equal(t, defaultTestTimeout, mock.lastTimeout)
 }
 
 func TestTestRunnerVerifier_OutputTruncation(t *testing.T) {
 	bigOutput := strings.Repeat("FAIL: line of test output\n", 300)
-	if len(bigOutput) <= maxFeedbackLen {
-		t.Fatal("test setup error: output should exceed maxFeedbackLen")
-	}
+	require.Greater(t, len(bigOutput), maxFeedbackLen, "test setup error: output should exceed maxFeedbackLen")
 
 	mock := &mockExecutor{
 		result: &executor.ExecResult{
@@ -119,18 +91,10 @@ func TestTestRunnerVerifier_OutputTruncation(t *testing.T) {
 		Executor: mock,
 	})
 
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.Passed {
-		t.Fatal("expected Passed to be false")
-	}
-	if !strings.Contains(result.Feedback, "[...truncated...]") {
-		t.Error("expected truncation marker in feedback")
-	}
-	if !strings.HasSuffix(strings.TrimSpace(result.Feedback), "FAIL: line of test output") {
-		t.Errorf("expected tail of output to be preserved, got %q", result.Feedback[len(result.Feedback)-80:])
-	}
+	require.NoError(t, err)
+	require.False(t, result.Passed)
+	require.Contains(t, result.Feedback, "[...truncated...]")
+	require.True(t, strings.HasSuffix(strings.TrimSpace(result.Feedback), "FAIL: line of test output"), "feedback should keep the tail of the output")
 }
 
 func TestTestRunnerVerifier_ExecError(t *testing.T) {
@@ -144,15 +108,9 @@ func TestTestRunnerVerifier_ExecError(t *testing.T) {
 		Executor: mock,
 	})
 
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !strings.Contains(err.Error(), "exec failed") {
-		t.Errorf("error should mention exec failure, got %q", err.Error())
-	}
-	if !strings.Contains(err.Error(), "command timed out") {
-		t.Errorf("error should wrap underlying cause, got %q", err.Error())
-	}
+	require.Error(t, err)
+	require.ErrorContains(t, err, "exec failed")
+	require.ErrorContains(t, err, "command timed out")
 }
 
 func TestTestRunnerVerifier_InvalidExecutor(t *testing.T) {
@@ -162,12 +120,8 @@ func TestTestRunnerVerifier_InvalidExecutor(t *testing.T) {
 		Executor: "not an executor",
 	})
 
-	if err == nil {
-		t.Fatal("expected error for invalid executor type")
-	}
-	if !strings.Contains(err.Error(), "does not implement Exec") {
-		t.Errorf("error should mention missing Exec, got %q", err.Error())
-	}
+	require.Error(t, err)
+	require.ErrorContains(t, err, "does not implement Exec")
 }
 
 func TestTestRunnerVerifier_NilExecutor(t *testing.T) {
@@ -177,12 +131,10 @@ func TestTestRunnerVerifier_NilExecutor(t *testing.T) {
 		Executor: nil,
 	})
 
-	if err == nil {
-		t.Fatal("expected error for nil executor")
-	}
+	require.Error(t, err)
 }
 
-func TestCombineOutput(t *testing.T) {
+func TestCombineOutput_JoinsStdoutAndStderr(t *testing.T) {
 	tests := []struct {
 		name           string
 		stdout, stderr string
@@ -196,14 +148,12 @@ func TestCombineOutput(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := combineOutput(tt.stdout, tt.stderr)
-			if got != tt.want {
-				t.Errorf("combineOutput(%q, %q) = %q, want %q", tt.stdout, tt.stderr, got, tt.want)
-			}
+			require.Equal(t, tt.want, got)
 		})
 	}
 }
 
-func TestTruncateFeedback(t *testing.T) {
+func TestTruncateFeedback_KeepsTailAndMarksCut(t *testing.T) {
 	tests := []struct {
 		name   string
 		input  string
@@ -217,39 +167,31 @@ func TestTruncateFeedback(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := truncateFeedback(tt.input, tt.maxLen)
-			if got != tt.want {
-				t.Errorf("truncateFeedback(%q, %d) = %q, want %q", tt.input, tt.maxLen, got, tt.want)
-			}
+			require.Equal(t, tt.want, got)
 		})
 	}
 }
 
 func TestNewTestRunnerVerifier_DefaultTimeout(t *testing.T) {
 	v := NewTestRunnerVerifier("go test ./...", 0)
-	if v.timeout != defaultTestTimeout {
-		t.Errorf("expected default timeout %v, got %v", defaultTestTimeout, v.timeout)
-	}
+	require.Equal(t, defaultTestTimeout, v.timeout)
 }
 
 func TestNewTestRunnerVerifier_NegativeTimeout(t *testing.T) {
 	v := NewTestRunnerVerifier("go test ./...", -1*time.Second)
-	if v.timeout != defaultTestTimeout {
-		t.Errorf("expected default timeout %v for negative input, got %v", defaultTestTimeout, v.timeout)
-	}
+	require.Equal(t, defaultTestTimeout, v.timeout)
 }
 
 var _ Verifier = (*TestRunnerVerifier)(nil)
 
 var _ commandExecutor = (*mockExecutor)(nil)
 
-func TestTestRunnerVerifier_ReturnsCorrectType(t *testing.T) {
+func TestTestRunnerVerifier_ReturnsVerificationResult(t *testing.T) {
 	mock := &mockExecutor{
 		result: &executor.ExecResult{ExitCode: 0},
 	}
 	v := NewTestRunnerVerifier("echo ok", time.Second)
 	result, err := v.Verify(context.Background(), VerifyContext{Executor: mock})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 	var _ *types.VerificationResult = result //nolint:staticcheck // intentional compile-time type check
 }

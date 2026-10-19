@@ -11,9 +11,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
@@ -54,9 +56,7 @@ func newGuidanceFixtureRepo(t *testing.T, files map[string]string) string {
 	}
 	src := t.TempDir()
 	for name, content := range files {
-		if err := os.WriteFile(filepath.Join(src, name), []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(filepath.Join(src, name), []byte(content), 0o644))
 	}
 	for _, args := range [][]string{
 		{"init", "--quiet"},
@@ -65,9 +65,8 @@ func newGuidanceFixtureRepo(t *testing.T, files map[string]string) string {
 	} {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = src
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "git %v\n%s", args, out)
 	}
 	return src
 }
@@ -95,15 +94,13 @@ func systemPromptFromRequest(t *testing.T, body string) string {
 			Content string `json:"content"`
 		} `json:"messages"`
 	}
-	if err := json.Unmarshal([]byte(body), &req); err != nil {
-		t.Fatalf("decode provider request: %v", err)
-	}
+	require.NoError(t, json.Unmarshal([]byte(body), &req), "decode provider request")
 	for _, m := range req.Messages {
 		if m.Role == "system" {
 			return m.Content
 		}
 	}
-	t.Fatalf("provider request carried no system message: %s", body)
+	require.FailNow(t, "provider request carried no system message", "request body: %s", body)
 	return ""
 }
 
@@ -111,9 +108,7 @@ func buildGuidanceLoop(t *testing.T, config *types.RunConfig) (*AgenticLoop, *gu
 	t.Helper()
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 	loop, err := BuildLoopWithTransport(context.Background(), config, transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}))
-	if err != nil {
-		t.Fatalf("BuildLoopWithTransport: %v", err)
-	}
+	require.NoError(t, err, "BuildLoopWithTransport")
 	t.Cleanup(func() { _ = loop.Close() })
 	rec := &guidanceRecordingTrace{JSONLTraceEmitter: trace.NewJSONLTraceEmitter(&bytes.Buffer{}, false)}
 	loop.Trace = rec
@@ -133,23 +128,14 @@ func TestBuildLoop_RepositoryGuidance_AdvisoryLoadsFromClonedCheckout(t *testing
 
 	loop, rec := buildGuidanceLoop(t, config)
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("Outcome = %q, want success", runTrace.Outcome)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "success", runTrace.Outcome)
 
 	fence := "<repository_guidance path=\"AGENTS.md\">\n" + guidanceTestContent + "\n</repository_guidance>"
-	if len(bodies) != 1 {
-		t.Fatalf("provider requests = %d, want 1", len(bodies))
-	}
-	if system := systemPromptFromRequest(t, bodies[0]); !strings.Contains(system, fence) {
-		t.Errorf("system prompt sent to the provider lacks the fenced guidance:\n%s", system)
-	}
-	if len(rec.systemInstructions) != 1 || !strings.Contains(rec.systemInstructions[0], fence) {
-		t.Errorf("recorded system instructions lack the fenced guidance: %q", rec.systemInstructions)
-	}
+	require.Len(t, bodies, 1)
+	assert.Contains(t, systemPromptFromRequest(t, bodies[0]), fence, "system prompt sent to the provider")
+	require.Len(t, rec.systemInstructions, 1)
+	assert.Contains(t, rec.systemInstructions[0], fence, "recorded system instructions")
 
 	want := []types.RepositoryGuidanceRecord{{
 		Path:          "AGENTS.md",
@@ -158,15 +144,13 @@ func TestBuildLoop_RepositoryGuidance_AdvisoryLoadsFromClonedCheckout(t *testing
 		SHA256:        sha256HexString(guidanceTestContent),
 		RenderedBytes: len(guidanceTestContent),
 	}}
-	if fmt.Sprint(runTrace.RepositoryGuidance) != fmt.Sprint(want) {
-		t.Errorf("RunTrace.RepositoryGuidance = %+v, want %+v", runTrace.RepositoryGuidance, want)
-	}
+	require.Equal(t, want, runTrace.RepositoryGuidance)
 }
 
-func TestBuildLoop_RepositoryGuidance_Pinned(t *testing.T) {
+func TestBuildLoop_RepositoryGuidance_PinnedDigestGatesLoad(t *testing.T) {
 	src := newGuidanceFixtureRepo(t, map[string]string{"AGENTS.md": guidanceTestContent})
 
-	t.Run("wrong_digest_fails_before_provider", func(t *testing.T) {
+	t.Run("mismatched digest fails before provider", func(t *testing.T) {
 		var hits atomic.Int32
 		server := newOpenAIServer(t, &hits, nil, nil)
 		defer server.Close()
@@ -180,18 +164,13 @@ func TestBuildLoop_RepositoryGuidance_Pinned(t *testing.T) {
 
 		loop, _ := buildGuidanceLoop(t, config)
 		runTrace, err := loop.Run(context.Background(), config)
-		if err == nil || !strings.Contains(err.Error(), "does not match its pinned SHA-256") {
-			t.Fatalf("Run error = %v, want a pinned digest mismatch", err)
-		}
-		if runTrace.Outcome != "setup_failed" {
-			t.Errorf("Outcome = %q, want setup_failed", runTrace.Outcome)
-		}
-		if hits.Load() != 0 || runTrace.Turns != 0 {
-			t.Errorf("provider calls = %d, turns = %d; want none before a digest mismatch", hits.Load(), runTrace.Turns)
-		}
+		require.ErrorContains(t, err, "does not match its pinned SHA-256")
+		require.Equal(t, "setup_failed", runTrace.Outcome)
+		require.Zero(t, hits.Load(), "provider calls before a digest mismatch")
+		require.Zero(t, runTrace.Turns, "turns before a digest mismatch")
 	})
 
-	t.Run("right_digest_loads", func(t *testing.T) {
+	t.Run("matching digest loads guidance", func(t *testing.T) {
 		var bodies []string
 		server := newOpenAIServer(t, nil, []string{finalAnswerChunk("p-1")}, &bodies)
 		defer server.Close()
@@ -205,19 +184,14 @@ func TestBuildLoop_RepositoryGuidance_Pinned(t *testing.T) {
 
 		loop, _ := buildGuidanceLoop(t, config)
 		runTrace, err := loop.Run(context.Background(), config)
-		if err != nil {
-			t.Fatalf("Run: %v", err)
-		}
-		if runTrace.Outcome != "success" {
-			t.Fatalf("Outcome = %q, want success", runTrace.Outcome)
-		}
+		require.NoError(t, err)
+		require.Equal(t, "success", runTrace.Outcome)
+
 		system := systemPromptFromRequest(t, bodies[0])
-		if !strings.Contains(system, "Operator-approved repository guidance from AGENTS.md") || !strings.Contains(system, guidanceTestContent) {
-			t.Errorf("system prompt lacks the operator-approved guidance:\n%s", system)
-		}
-		if len(runTrace.RepositoryGuidance) != 1 || runTrace.RepositoryGuidance[0].Tier != types.RepositoryGuidanceTierPinned {
-			t.Errorf("RunTrace.RepositoryGuidance = %+v, want one pinned record", runTrace.RepositoryGuidance)
-		}
+		require.Contains(t, system, "Operator-approved repository guidance from AGENTS.md")
+		require.Contains(t, system, guidanceTestContent)
+		require.Len(t, runTrace.RepositoryGuidance, 1)
+		require.Equal(t, types.RepositoryGuidanceTierPinned, runTrace.RepositoryGuidance[0].Tier)
 	})
 }
 
@@ -228,15 +202,13 @@ func TestBuildLoop_RepositoryGuidance_DoesNotChangePermissionDecisions(t *testin
 	src := newGuidanceFixtureRepo(t, map[string]string{"AGENTS.md": hostile, "build": "artifact"})
 
 	policyPath := filepath.Join(t.TempDir(), "policy.cedar")
-	if err := os.WriteFile(policyPath, []byte(`forbid (
+	require.NoError(t, os.WriteFile(policyPath, []byte(`forbid (
 	principal,
 	action == Action::"tool:run_command",
 	resource == Tool::"run_command"
 ) when {
 	context.input has command && context.input.command like "*rm -rf*"
-};`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+};`), 0o644))
 
 	policies := map[string]types.PermissionPolicyConfig{
 		"deny-side-effects": {Type: "deny-side-effects"},
@@ -244,7 +216,7 @@ func TestBuildLoop_RepositoryGuidance_DoesNotChangePermissionDecisions(t *testin
 	}
 	for name, policy := range policies {
 		for _, withGuidance := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/guidance=%v", name, withGuidance), func(t *testing.T) {
+			t.Run(fmt.Sprintf("%s policy, guidance %t", name, withGuidance), func(t *testing.T) {
 				var bodies []string
 				server := newOpenAIServer(t, nil, []string{
 					openAIChunk(`{"id":"d-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"run_command","arguments":"{\"command\":\"rm -rf build\"}"}}]},"finish_reason":null}]}`) +
@@ -260,25 +232,19 @@ func TestBuildLoop_RepositoryGuidance_DoesNotChangePermissionDecisions(t *testin
 				if withGuidance {
 					config.RepositoryGuidance = &types.RepositoryGuidanceConfig{Files: []string{"AGENTS.md"}}
 				}
-				buildDir := filepath.Join(config.Executor.Workspace, "build")
+				artifact := filepath.Join(config.Executor.Workspace, "build")
 
 				loop, _ := buildGuidanceLoop(t, config)
 				runTrace, err := loop.Run(context.Background(), config)
-				if err != nil {
-					t.Fatalf("Run: %v", err)
+				require.NoError(t, err)
+				require.Equal(t, 1, runTrace.PermissionDenials)
+				require.Len(t, bodies, 2)
+				require.Contains(t, bodies[1], "Permission denied", "second provider request should carry the denial as its tool result")
+				if withGuidance {
+					require.Contains(t, systemPromptFromRequest(t, bodies[0]), "rm -rf build", "guidance did not reach the system prompt, so the test proves nothing")
 				}
-				if runTrace.PermissionDenials != 1 {
-					t.Errorf("PermissionDenials = %d, want 1", runTrace.PermissionDenials)
-				}
-				if len(bodies) != 2 || !strings.Contains(bodies[1], "Permission denied") {
-					t.Errorf("second provider request does not carry the denial as the tool result")
-				}
-				if withGuidance && !strings.Contains(systemPromptFromRequest(t, bodies[0]), "rm -rf build") {
-					t.Errorf("guidance did not reach the system prompt, so the test proves nothing")
-				}
-				if _, err := os.Stat(buildDir); err != nil {
-					t.Errorf("the denied command ran: %v", err)
-				}
+				_, err = os.Stat(artifact)
+				require.NoError(t, err, "the denied command removed the build artifact")
 			})
 		}
 	}
@@ -286,28 +252,21 @@ func TestBuildLoop_RepositoryGuidance_DoesNotChangePermissionDecisions(t *testin
 
 func TestBuildLoop_RepositoryGuidance_SymlinkOutsideWorkspaceIsRejected(t *testing.T) {
 	outside := filepath.Join(t.TempDir(), "secret.md")
-	if err := os.WriteFile(outside, []byte("host-only content"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(outside, []byte("host-only content"), 0o644))
 
 	var hits atomic.Int32
 	server := newOpenAIServer(t, &hits, nil, nil)
 	defer server.Close()
 
 	config := buildOpenAIConfig(t, server.URL)
-	if err := os.Symlink(outside, filepath.Join(config.Executor.Workspace, "AGENTS.md")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Symlink(outside, filepath.Join(config.Executor.Workspace, "AGENTS.md")))
 	config.RepositoryGuidance = &types.RepositoryGuidanceConfig{Files: []string{"AGENTS.md"}}
 
 	loop, _ := buildGuidanceLoop(t, config)
 	runTrace, err := loop.Run(context.Background(), config)
-	if err == nil || !strings.Contains(err.Error(), "escapes workspace") {
-		t.Fatalf("Run error = %v, want a workspace-escape rejection", err)
-	}
-	if runTrace.Outcome != "setup_failed" || hits.Load() != 0 {
-		t.Errorf("Outcome = %q, provider calls = %d; want setup_failed with no provider call", runTrace.Outcome, hits.Load())
-	}
+	require.ErrorContains(t, err, "escapes workspace")
+	require.Equal(t, "setup_failed", runTrace.Outcome)
+	require.Zero(t, hits.Load(), "provider calls for a rejected guidance file")
 }
 
 // remoteGuidanceExecutor is a non-host executor double: it serves guidance
@@ -334,9 +293,7 @@ func (r *remoteGuidanceExecutor) ReadFile(_ context.Context, path string) (strin
 
 func TestLoop_RepositoryGuidance_ReadsThroughExecutorNotHost(t *testing.T) {
 	hostWorkspace := t.TempDir()
-	if err := os.WriteFile(filepath.Join(hostWorkspace, "AGENTS.md"), []byte("HOST DECOY"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(hostWorkspace, "AGENTS.md"), []byte("HOST DECOY"), 0o644))
 	remote := &remoteGuidanceExecutor{files: map[string]string{"AGENTS.md": "Remote sandbox conventions."}}
 
 	prov := simpleSuccessProvider()
@@ -346,26 +303,20 @@ func TestLoop_RepositoryGuidance_ReadsThroughExecutorNotHost(t *testing.T) {
 
 	config := buildTestConfig()
 	config.Executor.Workspace = hostWorkspace
-	if _, err := loop.Run(context.Background(), config); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if !strings.Contains(prov.lastParams.System, "Remote sandbox conventions.") {
-		t.Errorf("system prompt lacks the executor-served guidance:\n%s", prov.lastParams.System)
-	}
-	if strings.Contains(prov.lastParams.System, "HOST DECOY") {
-		t.Errorf("guidance was read from the host filesystem")
-	}
-	if len(remote.reads) != 1 || remote.reads[0] != "AGENTS.md" {
-		t.Errorf("executor reads = %v, want exactly [AGENTS.md]", remote.reads)
-	}
+	_, err := loop.Run(context.Background(), config)
+	require.NoError(t, err)
+
+	system := prov.lastParams.System
+	assert.Contains(t, system, "Remote sandbox conventions.", "system prompt should carry the executor-served guidance")
+	assert.NotContains(t, system, "HOST DECOY", "guidance was read from the host filesystem")
+	assert.Equal(t, []string{"AGENTS.md"}, remote.reads, "executor reads")
 }
 
 func TestLoop_RepositoryGuidance_AbsentLeavesSystemPromptUnchanged(t *testing.T) {
 	without := simpleSuccessProvider()
 	loop := buildTestLoop(without)
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), buildTestConfig())
+	require.NoError(t, err)
 
 	want, err := prompt.NewDefaultPromptBuilder().Build(context.Background(), prompt.PromptContext{
 		Mode:      "execution",
@@ -373,12 +324,8 @@ func TestLoop_RepositoryGuidance_AbsentLeavesSystemPromptUnchanged(t *testing.T)
 		MaxTurns:  20,
 		Model:     "claude-sonnet-4-6",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if without.lastParams.System != want {
-		t.Errorf("system prompt without guidance differs from the builder's guidance-free output")
-	}
+	require.NoError(t, err)
+	require.Equal(t, want, without.lastParams.System, "system prompt without guidance should match the builder's guidance-free output")
 }
 
 func TestSpawnSubAgent_RendersParentGuidanceSnapshot(t *testing.T) {
@@ -390,22 +337,17 @@ func TestSpawnSubAgent_RendersParentGuidanceSnapshot(t *testing.T) {
 
 	config := buildTestConfig()
 	config.RepositoryGuidance = &types.RepositoryGuidanceConfig{Files: []string{"AGENTS.md"}}
-	if _, err := parent.Run(context.Background(), config); err != nil {
-		t.Fatalf("parent Run: %v", err)
-	}
+	_, err := parent.Run(context.Background(), config)
+	require.NoError(t, err, "parent run")
 
 	remote.files["AGENTS.md"] = "Edited mid-run."
 	childProv := simpleSuccessProvider()
 	parent.Provider = childProv
-	if _, err := SpawnSubAgent(context.Background(), parent, config, SubAgentConfig{Prompt: "child task"}); err != nil {
-		t.Fatalf("SpawnSubAgent: %v", err)
-	}
-	if !strings.Contains(childProv.lastParams.System, "Parent-loaded conventions.") {
-		t.Errorf("sub-agent system prompt lacks the parent's guidance:\n%s", childProv.lastParams.System)
-	}
-	if len(remote.reads) != 1 {
-		t.Errorf("guidance reads = %d, want 1 (the sub-agent must reuse the parent's snapshot)", len(remote.reads))
-	}
+	_, err = SpawnSubAgent(context.Background(), parent, config, SubAgentConfig{Prompt: "child task"})
+	require.NoError(t, err, "SpawnSubAgent")
+
+	assert.Contains(t, childProv.lastParams.System, "Parent-loaded conventions.", "sub-agent system prompt should carry the parent's guidance")
+	assert.Len(t, remote.reads, 1, "guidance reads: the sub-agent must reuse the parent's snapshot")
 }
 
 const sensitiveGuidance = "# Conventions\n\nDeploy with AWS_ACCESS_KEY_ID=" + fakeLiveAWSKey + " and keep this line.\n"
@@ -428,22 +370,13 @@ func TestLoop_RepositoryGuidance_SensitiveDataTripsRuleOfTwoGate(t *testing.T) {
 
 	config := buildTestConfig()
 	config.MaxTurns = 4
-	if _, err := loop.Run(context.Background(), config); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if !monitor.Tripped() {
-		t.Fatal("a latch-tier pattern in loaded guidance must trip the sensitive-data latch")
-	}
-	if ran.Load() != 0 {
-		t.Errorf("run_command executed %d times; the tripped gate must revoke external communication", ran.Load())
-	}
+	_, err := loop.Run(context.Background(), config)
+	require.NoError(t, err)
+	require.True(t, monitor.Tripped(), "a latch-tier pattern in loaded guidance must trip the sensitive-data latch")
+	assert.Zero(t, ran.Load(), "run_command ran; the tripped gate must revoke external communication")
 	out := secBuf.String()
-	if !strings.Contains(out, `"source":"repository_guidance"`) {
-		t.Errorf("expected a sensitive_data_detected event sourced from repository_guidance, got: %s", out)
-	}
-	if !strings.Contains(out, permission.RuleOfTwoDeniedReason) {
-		t.Errorf("expected the Rule-of-Two denial reason, got: %s", out)
-	}
+	assert.Contains(t, out, `"source":"repository_guidance"`, "a sensitive_data_detected event sourced from repository_guidance")
+	assert.Contains(t, out, permission.RuleOfTwoDeniedReason, "the Rule-of-Two denial reason")
 }
 
 func TestLoop_RepositoryGuidance_SensitiveDataAbortsBeforeProviderCall(t *testing.T) {
@@ -454,15 +387,9 @@ func TestLoop_RepositoryGuidance_SensitiveDataAbortsBeforeProviderCall(t *testin
 	loop.RuleOfTwo = ruleoftwo.NewPatternMonitor(true, "abort", []string{"sensitive_data"}, false)
 
 	runTrace, err := loop.Run(context.Background(), buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.Outcome != "rule_of_two_violation" {
-		t.Errorf("outcome = %q, want rule_of_two_violation", runTrace.Outcome)
-	}
-	if prov.calls != 0 {
-		t.Errorf("provider was called %d times; a guidance-triggered abort must precede the first provider call", prov.calls)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "rule_of_two_violation", runTrace.Outcome)
+	assert.Zero(t, prov.calls, "a guidance-triggered abort must precede the first provider call")
 }
 
 func TestLoop_RepositoryGuidance_SensitiveDataIsRedactedFromPrompt(t *testing.T) {
@@ -472,20 +399,13 @@ func TestLoop_RepositoryGuidance_SensitiveDataIsRedactedFromPrompt(t *testing.T)
 	loop.RuleOfTwo = ruleoftwo.NewPatternMonitor(true, "redact", []string{"sensitive_data"}, false)
 
 	runTrace, err := loop.Run(context.Background(), buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Errorf("outcome = %q, want success (redact keeps the run alive)", runTrace.Outcome)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "success", runTrace.Outcome, "redact keeps the run alive")
+
 	system := prov.lastParams.System
-	if strings.Contains(system, fakeLiveAWSKey) {
-		t.Errorf("key survived redaction in the system prompt:\n%s", system)
-	}
-	if !strings.Contains(system, ruleoftwo.RedactionPlaceholder) || !strings.Contains(system, "keep this line") {
-		t.Errorf("system prompt lacks the placeholder or the surrounding guidance:\n%s", system)
-	}
-	if loop.repositoryGuidance[0].RenderedBytes != len(loop.repositoryGuidance[0].Content) {
-		t.Errorf("renderedBytes = %d, want the redacted content length %d", loop.repositoryGuidance[0].RenderedBytes, len(loop.repositoryGuidance[0].Content))
-	}
+	assert.NotContains(t, system, fakeLiveAWSKey, "key survived redaction in the system prompt")
+	assert.Contains(t, system, ruleoftwo.RedactionPlaceholder, "the redaction placeholder")
+	assert.Contains(t, system, "keep this line", "guidance surrounding the redacted key")
+	assert.Equal(t, len(loop.repositoryGuidance[0].Content), loop.repositoryGuidance[0].RenderedBytes,
+		"renderedBytes should equal the redacted content length")
 }

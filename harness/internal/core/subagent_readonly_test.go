@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
@@ -185,41 +186,22 @@ func TestPrepareSubAgent_ReadOnlyChildToolsAndPermissions(t *testing.T) {
 				parentConfig.PermissionPolicy = types.PermissionPolicyConfig{Type: parentPolicy.policy}
 
 				run, err := prepareSubAgent(context.Background(), parent, parentConfig, SubAgentConfig{Prompt: "investigate", Mode: mode})
-				if err != nil {
-					t.Fatalf("prepareSubAgent: %v", err)
-				}
+				require.NoError(t, err, "prepareSubAgent")
 
-				offered := offeredToolIDs(run.loop)
 				wantOffered := []string{"read_file", "grep_files", "web_fetch", "ticket_lookup"}
-				if !slices.Equal(offered, wantOffered) {
-					t.Errorf("offered tools = %v, want %v", offered, wantOffered)
-				}
-				if !slices.Equal(run.effectiveTools, wantOffered) {
-					t.Errorf("effectiveTools = %v, want %v", run.effectiveTools, wantOffered)
-				}
+				require.Equal(t, wantOffered, offeredToolIDs(run.loop), "offered tools")
+				require.Equal(t, wantOffered, run.effectiveTools, "effective tools")
 
 				for _, name := range mutatingSpawnTools {
 					result, err := run.loop.Permissions.Check(context.Background(), types.ToolDefinition{Name: name}, json.RawMessage(`{}`))
-					if err != nil {
-						t.Fatalf("Check(%s): %v", name, err)
-					}
-					if result.Allowed {
-						t.Errorf("child permission chain allowed %s", name)
-					}
+					require.NoError(t, err, "Check(%s)", name)
+					require.False(t, result.Allowed, "child permission chain allowed %s", name)
 				}
-				if got := rt.requested(); len(got) != 0 {
-					t.Errorf("mutating checks asked upstream for %v, want no requests", got)
-				}
+				require.Empty(t, rt.requested(), "mutating checks must not ask upstream")
 
-				if want := []string{"read_file", "grep_files", "web_fetch"}; !slices.Equal(run.config.Tools.BuiltIn, want) {
-					t.Errorf("recorded tools.builtIn = %v, want %v", run.config.Tools.BuiltIn, want)
-				}
-				if run.config.PermissionPolicy.Type != parentPolicy.wantPolicy {
-					t.Errorf("recorded permission policy = %q, want %q", run.config.PermissionPolicy.Type, parentPolicy.wantPolicy)
-				}
-				if run.config.Mode != mode {
-					t.Errorf("recorded mode = %q, want %q", run.config.Mode, mode)
-				}
+				require.Equal(t, []string{"read_file", "grep_files", "web_fetch"}, run.config.Tools.BuiltIn, "recorded tools.builtIn")
+				require.Equal(t, parentPolicy.wantPolicy, run.config.PermissionPolicy.Type, "recorded permission policy")
+				require.Equal(t, mode, run.config.Mode, "recorded mode")
 			})
 		}
 	}
@@ -242,29 +224,26 @@ func TestSpawnSubAgent_ReadOnlyChildCannotDispatchMutatingTools(t *testing.T) {
 	parentTrace := &recordingTraceEmitter{}
 	parent.Trace = parentTrace
 
-	if _, err := SpawnSubAgent(context.Background(), parent, buildTestConfig(), SubAgentConfig{
+	_, err := SpawnSubAgent(context.Background(), parent, buildTestConfig(), SubAgentConfig{
 		Prompt: "edit things",
 		Mode:   "research",
-	}); err != nil {
-		t.Fatalf("SpawnSubAgent: %v", err)
-	}
+	})
+	require.NoError(t, err, "SpawnSubAgent")
 
 	for _, name := range mutatingSpawnTools {
-		if n := calls.count(name); n != 0 {
-			t.Errorf("%s handler ran %d times in a research child", name, n)
-		}
+		t.Run(name, func(t *testing.T) {
+			require.Zero(t, calls.count(name), "handler must not run in a research child")
+		})
 	}
-	if calls.count("read_file") != 1 {
-		t.Errorf("read_file handler ran %d times, want 1", calls.count("read_file"))
-	}
+	require.Equal(t, 1, calls.count("read_file"), "read_file handler runs")
+
 	_, toolCalls := parentTrace.snapshot()
-	if len(toolCalls) != len(mutatingSpawnTools)+1 {
-		t.Fatalf("recorded %d child tool calls, want %d", len(toolCalls), len(mutatingSpawnTools)+1)
-	}
+	require.Len(t, toolCalls, len(mutatingSpawnTools)+1)
 	for _, tc := range toolCalls {
-		if wantSuccess := tc.Name == "read_file"; tc.Success != wantSuccess {
-			t.Errorf("child call to %s recorded success=%v, want %v", tc.Name, tc.Success, wantSuccess)
-		}
+		t.Run("trace "+tc.Name, func(t *testing.T) {
+			wantSuccess := tc.Name == "read_file"
+			require.Equal(t, wantSuccess, tc.Success, "recorded success")
+		})
 	}
 }
 
@@ -286,20 +265,17 @@ func TestSpawnSubAgent_ReadOnlyChildOfAskUpstreamParentNeverAsks(t *testing.T) {
 	parentConfig := buildTestConfig()
 	parentConfig.PermissionPolicy = types.PermissionPolicyConfig{Type: "ask-upstream"}
 
-	if _, err := SpawnSubAgent(context.Background(), parent, parentConfig, SubAgentConfig{
+	_, err := SpawnSubAgent(context.Background(), parent, parentConfig, SubAgentConfig{
 		Prompt: "edit things",
 		Mode:   "research",
-	}); err != nil {
-		t.Fatalf("SpawnSubAgent: %v", err)
-	}
+	})
+	require.NoError(t, err, "SpawnSubAgent")
 
-	if got := rt.requested(); !slices.Equal(got, []string{"web_fetch"}) {
-		t.Errorf("permission requests = %v, want only web_fetch", got)
-	}
+	assert.Equal(t, []string{"web_fetch"}, rt.requested(), "permission requests")
 	for _, name := range []string{"write_file", "run_command", "mcp_docs_update"} {
-		if n := calls.count(name); n != 0 {
-			t.Errorf("%s handler ran %d times", name, n)
-		}
+		t.Run(name, func(t *testing.T) {
+			require.Zero(t, calls.count(name), "handler must not run")
+		})
 	}
 }
 
@@ -326,34 +302,31 @@ func TestSpawnSubAgent_ReadOnlyParentCannotSpawnExecutionChild(t *testing.T) {
 				return json.Marshal(result)
 			})
 			out, err := spawn.Handler(context.Background(), json.RawMessage(`{"prompt":"write the fix","mode":"execution"}`))
-			if err == nil {
-				t.Fatalf("spawn_agent returned %q, want a tool error", out)
-			}
-			if !strings.Contains(err.Error(), "cannot spawn") || !strings.Contains(err.Error(), parentMode) {
-				t.Errorf("error %q does not explain the rejected transition", err)
-			}
-			if n := prov.calls.Load(); n != 0 {
-				t.Errorf("provider received %d requests, want 0 (no child may start)", n)
-			}
+			require.Error(t, err, "spawn_agent returned %q, want a tool error", out)
+			require.ErrorContains(t, err, "cannot spawn")
+			require.ErrorContains(t, err, parentMode, "rejection names the parent mode")
+			require.Zero(t, prov.calls.Load(), "no child may start")
 		})
 	}
 }
 
-// TestCheckSubAgentMode enumerates the mode-transition rule.
-func TestCheckSubAgentMode(t *testing.T) {
+// TestCheckSubAgentMode_ExecutionChildNeedsExecutionParent enumerates the
+// mode-transition rule.
+func TestCheckSubAgentMode_ExecutionChildNeedsExecutionParent(t *testing.T) {
 	allModes := append([]string{"execution"}, readOnlyModeNames...)
 	for _, parentMode := range allModes {
 		for _, childMode := range allModes {
-			err := checkSubAgentMode(parentMode, childMode)
-			wantErr := parentMode != "execution" && childMode == "execution"
-			if (err != nil) != wantErr {
-				t.Errorf("checkSubAgentMode(%q, %q) error = %v, want error %v", parentMode, childMode, err, wantErr)
-			}
+			t.Run(parentMode+"/"+childMode, func(t *testing.T) {
+				err := checkSubAgentMode(parentMode, childMode)
+				if parentMode != "execution" && childMode == "execution" {
+					require.Error(t, err)
+				} else {
+					require.NoError(t, err)
+				}
+			})
 		}
 	}
-	if err := checkSubAgentMode("research", "unknown"); err == nil {
-		t.Error("a read-only parent must not spawn a child in an unrecognised mode")
-	}
+	require.Error(t, checkSubAgentMode("research", "unknown"), "a read-only parent must not spawn a child in an unrecognised mode")
 }
 
 // TestPrepareSubAgent_AllowedTransitionsValidate runs every allowed
@@ -362,9 +335,9 @@ func TestCheckSubAgentMode(t *testing.T) {
 // child config.
 func TestPrepareSubAgent_AllowedTransitionsValidate(t *testing.T) {
 	policyPath := filepath.Join(t.TempDir(), "policy.cedar")
-	if err := os.WriteFile(policyPath, []byte(`permit (principal, action, resource);`), 0o644); err != nil {
-		t.Fatalf("write policy: %v", err)
-	}
+	err := os.WriteFile(policyPath, []byte(`permit (principal, action, resource);`), 0o644)
+	require.NoError(t, err, "write policy")
+
 	readOnlyBuiltIns := []string{"read_file", "grep_files", "web_fetch", "spawn_agent"}
 	parents := []struct {
 		name     string
@@ -385,9 +358,8 @@ func TestPrepareSubAgent_AllowedTransitionsValidate(t *testing.T) {
 		parentConfig.Mode = p.mode
 		parentConfig.Tools.BuiltIn = p.builtIn
 		parentConfig.PermissionPolicy = p.policy
-		if err := types.ValidateRunConfig(parentConfig); err != nil {
-			t.Fatalf("%s: parent config must be valid: %v", p.name, err)
-		}
+		require.NoError(t, types.ValidateRunConfig(parentConfig), "%s: parent config must be valid", p.name)
+
 		childModes := readOnlyModeNames
 		if p.mode == "execution" {
 			childModes = append([]string{"execution", ""}, readOnlyModeNames...)
@@ -399,16 +371,12 @@ func TestPrepareSubAgent_AllowedTransitionsValidate(t *testing.T) {
 				parent.Tools = registry
 
 				run, err := prepareSubAgent(context.Background(), parent, parentConfig, SubAgentConfig{Prompt: "subtask", Mode: childMode})
-				if err != nil {
-					t.Fatalf("prepareSubAgent: %v", err)
-				}
+				require.NoError(t, err, "prepareSubAgent")
 				// The nested run ID ("parent/sub-N") is deliberately outside
 				// the operator-facing run ID pattern; validate the rest.
 				validated := *run.config
 				validated.RunID = "child-run"
-				if err := types.ValidateRunConfig(&validated); err != nil {
-					t.Errorf("child config fails validation: %v", err)
-				}
+				require.NoError(t, types.ValidateRunConfig(&validated), "child config fails validation")
 			})
 		}
 	}
@@ -429,35 +397,20 @@ func TestSpawnSubAgent_ChildTraceRecordsEnforcedConfig(t *testing.T) {
 	}
 
 	run, err := prepareSubAgent(context.Background(), parent, parentConfig, SubAgentConfig{Prompt: "investigate", Mode: "research"})
-	if err != nil {
-		t.Fatalf("prepareSubAgent: %v", err)
-	}
+	require.NoError(t, err, "prepareSubAgent")
 	runTrace, err := run.execute(context.Background())
-	if err != nil {
-		t.Fatalf("execute: %v", err)
-	}
+	require.NoError(t, err, "execute")
 
 	got := runTrace.Config
-	if got.Mode != "research" {
-		t.Errorf("recorded mode = %q, want research", got.Mode)
-	}
-	if want := []string{"read_file", "grep_files", "web_fetch"}; !slices.Equal(got.Tools.BuiltIn, want) {
-		t.Errorf("recorded tools.builtIn = %v, want %v", got.Tools.BuiltIn, want)
-	}
-	if got.PermissionPolicy.Type != "deny-side-effects" {
-		t.Errorf("recorded permission policy = %q, want deny-side-effects", got.PermissionPolicy.Type)
-	}
-	if want := (types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 100000}); !reflect.DeepEqual(got.ContextStrategy, want) {
-		t.Errorf("recorded context strategy = %+v, want %+v", got.ContextStrategy, want)
-	}
-	if want := []string{"read_file", "grep_files", "web_fetch", "ticket_lookup"}; !slices.Equal(runTrace.EffectiveTools, want) {
-		t.Errorf("trace effectiveTools = %v, want %v", runTrace.EffectiveTools, want)
-	}
+	assert.Equal(t, "research", got.Mode, "recorded mode")
+	assert.Equal(t, []string{"read_file", "grep_files", "web_fetch"}, got.Tools.BuiltIn, "recorded tools.builtIn")
+	assert.Equal(t, "deny-side-effects", got.PermissionPolicy.Type, "recorded permission policy")
+	assert.Equal(t, types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 100000}, got.ContextStrategy, "recorded context strategy")
+	assert.Equal(t, []string{"read_file", "grep_files", "web_fetch", "ticket_lookup"}, runTrace.EffectiveTools, "trace effectiveTools")
 
-	if parentConfig.Tools.BuiltIn != nil || parentConfig.PermissionPolicy.Type != "allow-all" || parentConfig.ContextStrategy.Type != "clear-tool-results" {
-		t.Errorf("parent config mutated: builtIn=%v policy=%q context=%q",
-			parentConfig.Tools.BuiltIn, parentConfig.PermissionPolicy.Type, parentConfig.ContextStrategy.Type)
-	}
+	assert.Nil(t, parentConfig.Tools.BuiltIn, "parent builtIn tools mutated")
+	assert.Equal(t, "allow-all", parentConfig.PermissionPolicy.Type, "parent permission policy mutated")
+	assert.Equal(t, "clear-tool-results", parentConfig.ContextStrategy.Type, "parent context strategy mutated")
 }
 
 // TestSpawnSubAgent_CedarModeRuleFiresForResearchChild pins that a Cedar
@@ -473,17 +426,15 @@ func TestSpawnSubAgent_CedarModeRuleFiresForResearchChild(t *testing.T) {
 	) when {
 		principal.mode == "research"
 	};`
-	if err := os.WriteFile(policyPath, []byte(policy), 0o644); err != nil {
-		t.Fatalf("write policy: %v", err)
-	}
+	err := os.WriteFile(policyPath, []byte(policy), 0o644)
+	require.NoError(t, err, "write policy")
+
 	engine, err := permission.New(
 		types.PermissionPolicyConfig{Type: "policy-engine", PolicyFile: policyPath, Fallback: "allow-all"},
 		permission.PolicyEngineEnv{RunID: "run-parent-1", Mode: "execution"},
 		func(string) (permission.PermissionPolicy, error) { return permission.NewAllowAll(), nil },
 	)
-	if err != nil {
-		t.Fatalf("permission.New: %v", err)
-	}
+	require.NoError(t, err, "permission.New")
 
 	registry, _ := spawnParentRegistry(t, true)
 	parent := buildSubAgentTestLoop(&mockProvider{})
@@ -496,31 +447,19 @@ func TestSpawnSubAgent_CedarModeRuleFiresForResearchChild(t *testing.T) {
 	decide := func(t *testing.T, pp permission.PermissionPolicy) *permission.PermissionResult {
 		t.Helper()
 		result, err := pp.Check(context.Background(), webFetch, input)
-		if err != nil {
-			t.Fatalf("Check: %v", err)
-		}
+		require.NoError(t, err, "Check")
 		return result
 	}
 
-	if !decide(t, parent.Permissions).Allowed {
-		t.Fatal("execution parent: web_fetch should fall through to the allow-all fallback")
-	}
+	require.True(t, decide(t, parent.Permissions).Allowed, "execution parent: web_fetch should fall through to the allow-all fallback")
 
 	research, err := prepareSubAgent(context.Background(), parent, parentConfig, SubAgentConfig{Prompt: "look it up", Mode: "research"})
-	if err != nil {
-		t.Fatalf("prepareSubAgent(research): %v", err)
-	}
-	if decide(t, research.loop.Permissions).Allowed {
-		t.Error("research child: web_fetch should be denied by the principal.mode rule")
-	}
+	require.NoError(t, err, "prepareSubAgent(research)")
+	require.False(t, decide(t, research.loop.Permissions).Allowed, "research child: web_fetch should be denied by the principal.mode rule")
 
 	execution, err := prepareSubAgent(context.Background(), parent, parentConfig, SubAgentConfig{Prompt: "look it up", Mode: "execution"})
-	if err != nil {
-		t.Fatalf("prepareSubAgent(execution): %v", err)
-	}
-	if !decide(t, execution.loop.Permissions).Allowed {
-		t.Error("execution child: the research-only rule must not fire")
-	}
+	require.NoError(t, err, "prepareSubAgent(execution)")
+	require.True(t, decide(t, execution.loop.Permissions).Allowed, "execution child: the research-only rule must not fire")
 }
 
 // TestPrepareSubAgent_ExecutionChildKeepsParentAuthority pins that an
@@ -533,27 +472,19 @@ func TestPrepareSubAgent_ExecutionChildKeepsParentAuthority(t *testing.T) {
 	parentConfig := buildTestConfig()
 
 	run, err := prepareSubAgent(context.Background(), parent, parentConfig, SubAgentConfig{Prompt: "fix it", Mode: "execution"})
-	if err != nil {
-		t.Fatalf("prepareSubAgent: %v", err)
-	}
+	require.NoError(t, err, "prepareSubAgent")
+
 	offered := offeredToolIDs(run.loop)
-	if slices.Contains(offered, "spawn_agent") {
-		t.Error("execution child offered spawn_agent")
-	}
+	assert.NotContains(t, offered, "spawn_agent", "execution child offered spawn_agent")
 	for _, name := range mutatingSpawnTools {
-		if !slices.Contains(offered, name) {
-			t.Errorf("execution child lost %s", name)
-		}
+		t.Run(name, func(t *testing.T) {
+			require.Contains(t, offered, name, "execution child must keep the parent tool")
+		})
 	}
-	if _, gated := run.loop.Permissions.(*permission.SideEffectGate); gated {
-		t.Error("execution child permission chain wrapped in a SideEffectGate")
-	}
-	if run.config.PermissionPolicy.Type != "allow-all" {
-		t.Errorf("recorded permission policy = %q, want the parent's allow-all", run.config.PermissionPolicy.Type)
-	}
-	if slices.Contains(run.config.Tools.BuiltIn, "spawn_agent") {
-		t.Errorf("recorded tools.builtIn %v includes spawn_agent", run.config.Tools.BuiltIn)
-	}
+	_, gated := run.loop.Permissions.(*permission.SideEffectGate)
+	assert.False(t, gated, "execution child permission chain wrapped in a SideEffectGate")
+	assert.Equal(t, "allow-all", run.config.PermissionPolicy.Type, "recorded permission policy")
+	assert.NotContains(t, run.config.Tools.BuiltIn, "spawn_agent", "recorded tools.builtIn")
 }
 
 // TestPrepareSubAgent_ReadOnlyChildWithoutBuiltInsIsRejected pins that a
@@ -574,12 +505,8 @@ func TestPrepareSubAgent_ReadOnlyChildWithoutBuiltInsIsRejected(t *testing.T) {
 	parent.Tools = registry
 
 	_, err := prepareSubAgent(context.Background(), parent, buildTestConfig(), SubAgentConfig{Prompt: "look", Mode: "review"})
-	if err == nil {
-		t.Fatal("expected an error for a read-only child with no built-in tools")
-	}
-	if !strings.Contains(err.Error(), "no read-only built-in tools") {
-		t.Errorf("error %q does not name the missing tools", err)
-	}
+	require.Error(t, err)
+	require.ErrorContains(t, err, "no read-only built-in tools")
 }
 
 var _ permission.Transport = (*permissionRequestTransport)(nil)

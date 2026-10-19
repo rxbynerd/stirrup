@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
-	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -33,12 +34,8 @@ func TestSlidingWindow_NoTruncation(t *testing.T) {
 		CurrentTokens:      100,
 		ReserveForResponse: 2000,
 	})
-	if err != nil {
-		t.Fatalf("Prepare() error: %v", err)
-	}
-	if len(result) != 2 {
-		t.Errorf("expected 2 messages, got %d", len(result))
-	}
+	require.NoError(t, err)
+	require.Len(t, result, 2)
 }
 
 func TestSlidingWindow_DropsOldestExchangesKeepingTask(t *testing.T) {
@@ -56,22 +53,12 @@ func TestSlidingWindow_DropsOldestExchangesKeepingTask(t *testing.T) {
 		CurrentTokens:      estimateHistory(msgs),
 		ReserveForResponse: 100,
 	})
-	if err != nil {
-		t.Fatalf("Prepare() error: %v", err)
-	}
+	require.NoError(t, err)
 	// FitLimit is 360: dropping the first exchange after the task fits.
-	if len(result) != 3 {
-		t.Fatalf("expected 3 messages after truncation, got %d", len(result))
-	}
-	if result[0].Content[0].Text != strings.Repeat("a", 400) {
-		t.Error("expected the task to stay first")
-	}
-	if result[1].Content[0].Text != strings.Repeat("d", 400) {
-		t.Error("expected the retained tail to start at the second assistant turn")
-	}
-	if got, want := s.LastCompaction().TokensAfter, estimateHistory(result); got != want {
-		t.Errorf("TokensAfter = %d, want %d", got, want)
-	}
+	require.Len(t, result, 3)
+	require.Equal(t, strings.Repeat("a", 400), result[0].Content[0].Text, "keeps the task first")
+	require.Equal(t, strings.Repeat("d", 400), result[1].Content[0].Text, "retained tail starts at the second assistant turn")
+	require.Equal(t, estimateHistory(result), s.LastCompaction().TokensAfter)
 }
 
 func TestSlidingWindow_PreservesTaskAndLastExchange(t *testing.T) {
@@ -89,13 +76,9 @@ func TestSlidingWindow_PreservesTaskAndLastExchange(t *testing.T) {
 		CurrentTokens:      5000,
 		ReserveForResponse: 50,
 	})
-	if err != nil {
-		t.Fatalf("Prepare() error: %v", err)
-	}
+	require.NoError(t, err)
 	// Even though budget is tiny, the task and the last exchange survive.
-	if want := []types.Message{msgs[0], msgs[3], msgs[4]}; !reflect.DeepEqual(result, want) {
-		t.Errorf("expected the task and the last exchange, got %d messages", len(result))
-	}
+	require.Equal(t, []types.Message{msgs[0], msgs[3], msgs[4]}, result)
 }
 
 func TestSlidingWindow_ZeroBudgetKeepsSingleExchange(t *testing.T) {
@@ -111,18 +94,12 @@ func TestSlidingWindow_ZeroBudgetKeepsSingleExchange(t *testing.T) {
 		CurrentTokens:      200,
 		ReserveForResponse: 100,
 	})
-	if err != nil {
-		t.Fatalf("Prepare() error: %v", err)
-	}
-	if len(result) != 3 {
-		t.Errorf("expected the task and its only exchange kept, got %d messages", len(result))
-	}
-	if s.LastCompaction() != nil {
-		t.Error("expected no compaction when nothing can be dropped")
-	}
+	require.NoError(t, err)
+	require.Len(t, result, 3, "keeps the task and its only exchange")
+	require.Nil(t, s.LastCompaction(), "no compaction when nothing can be dropped")
 }
 
-func TestSlidingWindow_NegativeAvailable(t *testing.T) {
+func TestSlidingWindow_NegativeBudgetKeepsTaskAndLastExchange(t *testing.T) {
 	s := NewSlidingWindowStrategy()
 	msgs := []types.Message{
 		makeMessage("user", "a"),
@@ -137,15 +114,13 @@ func TestSlidingWindow_NegativeAvailable(t *testing.T) {
 		CurrentTokens:      500,
 		ReserveForResponse: 100,
 	})
-	if err != nil {
-		t.Fatalf("Prepare() error: %v", err)
-	}
-	if want := []types.Message{msgs[0], msgs[3], msgs[4]}; !reflect.DeepEqual(result, want) {
-		t.Errorf("expected the task and the last exchange with negative budget, got %d messages", len(result))
-	}
-	if c := s.LastCompaction(); c == nil || c.MessagesBefore != 5 || c.MessagesAfter != 3 {
-		t.Errorf("LastCompaction = %+v, want 5 -> 3 messages", c)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []types.Message{msgs[0], msgs[3], msgs[4]}, result)
+
+	c := s.LastCompaction()
+	require.NotNil(t, c, "compaction event")
+	require.Equal(t, 5, c.MessagesBefore)
+	require.Equal(t, 3, c.MessagesAfter)
 }
 
 func TestSlidingWindow_SingleMessage(t *testing.T) {
@@ -159,15 +134,11 @@ func TestSlidingWindow_SingleMessage(t *testing.T) {
 		CurrentTokens:      500,
 		ReserveForResponse: 5,
 	})
-	if err != nil {
-		t.Fatalf("Prepare() error: %v", err)
-	}
-	if len(result) != 1 {
-		t.Errorf("expected 1 message, got %d", len(result))
-	}
+	require.NoError(t, err)
+	require.Len(t, result, 1)
 }
 
-func TestSlidingWindow_ToolUseMessages(t *testing.T) {
+func TestSlidingWindow_ToolCallHistoryUnchangedWhenNoSafeCut(t *testing.T) {
 	s := NewSlidingWindowStrategy()
 
 	toolInput, _ := json.Marshal(map[string]string{"path": "main.go"})
@@ -193,14 +164,10 @@ func TestSlidingWindow_ToolUseMessages(t *testing.T) {
 		CurrentTokens:      600,
 		ReserveForResponse: 100,
 	})
-	if err != nil {
-		t.Fatalf("Prepare() error: %v", err)
-	}
+	require.NoError(t, err)
 	// The only exchange is the last one, so nothing can be dropped
 	// without separating the tool_result from its tool_use.
-	if !reflect.DeepEqual(result, msgs) {
-		t.Errorf("expected the history unchanged, got %d messages", len(result))
-	}
+	require.Equal(t, msgs, result)
 }
 
 // TestSlidingWindow_ParallelCallsNeverOrphanResults pins that a cut never
@@ -215,16 +182,10 @@ func TestSlidingWindow_ParallelCallsNeverOrphanResults(t *testing.T) {
 		CurrentTokens:      estimateHistory(msgs),
 		ReserveForResponse: 100,
 	})
-	if err != nil {
-		t.Fatalf("Prepare() error: %v", err)
-	}
+	require.NoError(t, err)
 	want := []types.Message{msgs[0], msgs[3], msgs[4]}
-	if !reflect.DeepEqual(result, want) {
-		t.Fatalf("kept %+v, want the task and the last exchange", result)
-	}
-	if got, want := s.LastCompaction().TokensAfter, estimateHistory(want); got != want {
-		t.Errorf("TokensAfter = %d, want %d", got, want)
-	}
+	require.Equal(t, want, result, "keeps the task and the last exchange")
+	require.Equal(t, estimateHistory(want), s.LastCompaction().TokensAfter)
 }
 
 // TestSlidingWindow_DropsFewestExchanges pins over generated histories that
@@ -236,12 +197,11 @@ func TestSlidingWindow_DropsFewestExchanges(t *testing.T) {
 		msgs := generateHistory(r, r.IntN(14))
 		overhead := r.IntN(3000)
 		for _, budget := range compactionBudgets(msgs, overhead) {
+			label := fmt.Sprintf("seed %d max=%d", seed, budget.MaxTokens)
 			available := FitLimit(budget)
 			s := NewSlidingWindowStrategy()
 			result, err := s.Prepare(context.Background(), msgs, budget)
-			if err != nil {
-				t.Fatalf("seed %d: Prepare() error: %v", seed, err)
-			}
+			require.NoError(t, err, label)
 			tokensWithCut := func(cut int) int {
 				total := budget.CurrentTokens
 				for _, msg := range msgs[1:cut] {
@@ -252,31 +212,22 @@ func TestSlidingWindow_DropsFewestExchanges(t *testing.T) {
 			last := lastExchangeStart(msgs)
 			c := s.LastCompaction()
 			if c == nil {
-				if len(result) != len(msgs) {
-					t.Fatalf("seed %d max=%d: %d messages dropped without a compaction event", seed, budget.MaxTokens, len(msgs)-len(result))
-				}
-				if available > 0 && budget.CurrentTokens > available && last > 1 {
-					t.Fatalf("seed %d max=%d: over budget with droppable exchanges but nothing dropped", seed, budget.MaxTokens)
-				}
+				require.Len(t, result, len(msgs), "%s: messages dropped without a compaction event", label)
+				require.False(t, available > 0 && budget.CurrentTokens > available && last > 1,
+					"%s: over budget with droppable exchanges but nothing dropped", label)
 				continue
 			}
 			cut := len(msgs) - len(result) + 1
 			if available <= 0 {
-				if cut != last {
-					t.Fatalf("seed %d max=%d: no-room cut = %d, want the last exchange at %d", seed, budget.MaxTokens, cut, last)
-				}
+				require.Equal(t, last, cut, "%s: no-room cut should be the last exchange", label)
 				continue
 			}
-			if got, want := c.TokensAfter, tokensWithCut(cut); got != want {
-				t.Fatalf("seed %d max=%d: TokensAfter = %d, want %d", seed, budget.MaxTokens, got, want)
-			}
-			if c.TokensAfter > available && cut != last {
-				t.Fatalf("seed %d max=%d: still over budget at cut %d before the last exchange %d", seed, budget.MaxTokens, cut, last)
-			}
+			require.Equal(t, tokensWithCut(cut), c.TokensAfter, "%s: TokensAfter", label)
+			require.False(t, c.TokensAfter > available && cut != last,
+				"%s: still over budget at cut %d before the last exchange %d", label, cut, last)
 			for earlier := 1; earlier < cut; earlier++ {
-				if msgs[earlier].Role == "assistant" && tokensWithCut(earlier) <= available {
-					t.Fatalf("seed %d max=%d: cut %d drops more than needed; cut %d already fits", seed, budget.MaxTokens, cut, earlier)
-				}
+				require.False(t, msgs[earlier].Role == "assistant" && tokensWithCut(earlier) <= available,
+					"%s: cut %d drops more than needed; cut %d already fits", label, cut, earlier)
 			}
 		}
 	}
@@ -292,12 +243,10 @@ func TestSlidingWindow_EstimateCountsThinkingTextNotSignature(t *testing.T) {
 		{Type: "redacted_thinking", ThoughtSignature: strings.Repeat("d", 4000)},
 	}}
 	// 4 (message) + 3 + 100 (thinking block and its text) + 3 (redacted block)
-	if got := estimateTokens(msg); got != 110 {
-		t.Errorf("estimateTokens = %d, want 110 (thinking text and block overhead only)", got)
-	}
+	require.Equal(t, 110, estimateTokens(msg), "thinking text and block overhead only")
 }
 
-func TestSlidingWindow_ImplementsInterface(t *testing.T) {
+func TestSlidingWindow_ImplementsContextStrategy(t *testing.T) {
 	var _ ContextStrategy = (*SlidingWindowStrategy)(nil)
 }
 
@@ -306,11 +255,11 @@ func TestSlidingWindow_ImplementsInterface(t *testing.T) {
 // estimate, so the window drops it rather than overflowing the context.
 func TestSlidingWindow_CountsReplayFields(t *testing.T) {
 	stored := `["` + strings.Repeat("A", 40*1024-4) + `"]`
+	plain := makeMessage("assistant", strings.Repeat("b", 400))
 	withReplay := makeMessage("assistant", strings.Repeat("b", 400))
 	withReplay.ReplayFields = map[string]json.RawMessage{"openai_responses.output": json.RawMessage(stored)}
-	if got, want := estimateTokens(withReplay), estimateTokens(makeMessage("assistant", strings.Repeat("b", 400)))+40*1024/4; got != want {
-		t.Fatalf("estimateTokens = %d, want %d", got, want)
-	}
+	require.Equal(t, estimateTokens(plain)+40*1024/4, estimateTokens(withReplay),
+		"replay state adds one token per four bytes")
 
 	msgs := []types.Message{
 		makeMessage("user", strings.Repeat("a", 400)),
@@ -326,18 +275,13 @@ func TestSlidingWindow_CountsReplayFields(t *testing.T) {
 		CurrentTokens:      estimateHistory(msgs),
 		ReserveForResponse: 100,
 	})
-	if err != nil {
-		t.Fatalf("Prepare() error: %v", err)
-	}
+	require.NoError(t, err)
 	// Dropping the first exchange after the task removes the replay state
 	// and fits the remaining four messages in the fit limit of 810.
-	if len(result) != 4 || result[0].Content[0].Text != strings.Repeat("a", 400) ||
-		result[1].Content[0].Text != strings.Repeat("d", 400) {
-		t.Fatalf("kept %d messages, want the task and the last 3", len(result))
-	}
-	if got, want := s.LastCompaction().TokensAfter, estimateHistory(result); got != want {
-		t.Errorf("TokensAfter = %d, want %d", got, want)
-	}
+	require.Len(t, result, 4, "want the task and the last 3 messages")
+	require.Equal(t, strings.Repeat("a", 400), result[0].Content[0].Text, "keeps the task first")
+	require.Equal(t, strings.Repeat("d", 400), result[1].Content[0].Text, "retained tail starts at the second assistant turn")
+	require.Equal(t, estimateHistory(result), s.LastCompaction().TokensAfter)
 }
 
 // TestEstimateTokens_CountsEveryFieldSent pins that the estimate counts the
@@ -347,21 +291,22 @@ func TestEstimateTokens_CountsEveryFieldSent(t *testing.T) {
 	call := types.Message{Role: "assistant", Content: []types.ContentBlock{{
 		Type: "tool_use", ID: "call_0001", Name: "read_file", Input: json.RawMessage(strings.Repeat("i", 40)),
 	}}}
-	// 4 (message) + 3 (block) + 2 (ID) + 2 (name) + 10 (input)
-	if got := estimateTokens(call); got != 21 {
-		t.Errorf("tool_use estimate = %d, want 21", got)
-	}
 	result := types.Message{Role: "user", Content: []types.ContentBlock{{
 		Type: "tool_result", ToolUseID: "call_0001", Content: strings.Repeat("c", 400),
 		Structured: json.RawMessage(strings.Repeat("s", 200)), Kind: "file_read",
 	}}}
-	// 4 (message) + 3 (block) + 2 (tool use ID) + 100 (content) + 50 (structured)
-	if got := estimateTokens(result); got != 159 {
-		t.Errorf("tool_result estimate = %d, want 159", got)
-	}
-	if got := EstimateHistoryTokens([]types.Message{call, result}); got != 180 {
-		t.Errorf("EstimateHistoryTokens = %d, want 180", got)
-	}
+
+	t.Run("tool use block", func(t *testing.T) {
+		// 4 (message) + 3 (block) + 2 (ID) + 2 (name) + 10 (input)
+		require.Equal(t, 21, estimateTokens(call))
+	})
+	t.Run("tool result block", func(t *testing.T) {
+		// 4 (message) + 3 (block) + 2 (tool use ID) + 100 (content) + 50 (structured)
+		require.Equal(t, 159, estimateTokens(result))
+	})
+	t.Run("history of both messages", func(t *testing.T) {
+		require.Equal(t, 180, EstimateHistoryTokens([]types.Message{call, result}))
+	})
 }
 
 // structuredToolHistory is a task followed by exchanges of one read_file
@@ -398,21 +343,12 @@ func TestSlidingWindow_StructuredResultsDropFewestExchanges(t *testing.T) {
 
 	s := NewSlidingWindowStrategy()
 	result, err := s.Prepare(context.Background(), msgs, budget)
-	if err != nil {
-		t.Fatalf("Prepare() error: %v", err)
-	}
+	require.NoError(t, err)
 	kept := overhead + EstimateHistoryTokens(result)
-	if got := s.LastCompaction().TokensAfter; got != kept {
-		t.Errorf("TokensAfter = %d, want %d", got, kept)
-	}
-	if kept > limit {
-		t.Fatalf("kept history estimates at %d, over the fit limit of %d", kept, limit)
-	}
+	require.Equal(t, kept, s.LastCompaction().TokensAfter)
+	require.LessOrEqual(t, kept, limit, "kept history exceeds the fit limit")
 	cut := len(msgs) - len(result) + 1
-	if cut < 3 {
-		t.Fatalf("nothing was dropped from a history of %d tokens", budget.CurrentTokens)
-	}
-	if oneMore := overhead + EstimateHistoryTokens(pinTask(msgs, cut-2)); oneMore <= limit {
-		t.Errorf("dropped one exchange too many: keeping it estimates at %d within the fit limit of %d", oneMore, limit)
-	}
+	require.GreaterOrEqual(t, cut, 3, "nothing was dropped from a history of %d tokens", budget.CurrentTokens)
+	oneMore := overhead + EstimateHistoryTokens(pinTask(msgs, cut-2))
+	require.Greater(t, oneMore, limit, "keeping one more exchange should exceed the fit limit")
 }

@@ -6,11 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"slices"
 	"sort"
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -152,17 +153,14 @@ func TestLoop_LogRecordsCorrelateWithRunAndRequestSpans(t *testing.T) {
 		return string(out), nil
 	}
 
-	if _, err := parentLoop.Run(context.Background(), parentConfig); err != nil {
-		t.Fatalf("parent Run: %v", err)
-	}
+	_, err := parentLoop.Run(context.Background(), parentConfig)
+	require.NoError(t, err)
 
 	spans := spanExporter.GetSpans()
 	one := func(name string) tracetest.SpanStub {
 		t.Helper()
 		found := spansNamed(spans, name)
-		if len(found) != 1 {
-			t.Fatalf("found %d %q spans, want 1", len(found), name)
-		}
+		require.Len(t, found, 1, "spans named %q", name)
 		return found[0]
 	}
 	root := one("invoke_agent stirrup")
@@ -177,9 +175,8 @@ func TestLoop_LogRecordsCorrelateWithRunAndRequestSpans(t *testing.T) {
 			childChats = append(childChats, chat)
 		}
 	}
-	if len(parentChats) != 2 || len(childChats) != 1 {
-		t.Fatalf("found %d parent and %d child chat spans, want 2 and 1", len(parentChats), len(childChats))
-	}
+	require.Len(t, parentChats, 2, "chat spans under the root span")
+	require.Len(t, childChats, 1, "chat spans under the sub-agent span")
 	sort.Slice(parentChats, func(i, j int) bool { return parentChats[i].StartTime.Before(parentChats[j].StartTime) })
 
 	traceID := root.SpanContext.TraceID()
@@ -201,20 +198,16 @@ func TestLoop_LogRecordsCorrelateWithRunAndRequestSpans(t *testing.T) {
 	}
 
 	exported := logExporter.all()
-	if len(exported) == 0 {
-		t.Fatal("no log records exported")
-	}
+	require.NotEmpty(t, exported, "no log records exported")
 	got := map[string][]string{}
 	for _, r := range exported {
-		if r.traceID != traceID {
-			t.Errorf("OTLP record %q has trace ID %s, want the run's %s", r.message, r.traceID, traceID)
-		}
+		assert.Equal(t, traceID, r.traceID, "OTLP record %q trace ID", r.message)
 		got[r.message] = append(got[r.message], spanOf[r.spanID])
 	}
-	for message, spans := range want {
-		if !slices.Equal(got[message], spans) {
-			t.Errorf("OTLP %q records correlate with %v, want %v", message, got[message], spans)
-		}
+	for message, wantSpans := range want {
+		t.Run("otlp "+message, func(t *testing.T) {
+			require.Equal(t, wantSpans, got[message])
+		})
 	}
 
 	gotStderr := map[string][]string{}
@@ -227,26 +220,17 @@ func TestLoop_LogRecordsCorrelateWithRunAndRequestSpans(t *testing.T) {
 			TraceID string `json:"trace_id"`
 			SpanID  string `json:"span_id"`
 		}
-		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
-			t.Fatalf("stderr line is not JSON: %v\n%s", err, scanner.Text())
-		}
-		if line.TraceID != traceID.String() {
-			t.Errorf("stderr record %q has trace_id %q, want %s", line.Msg, line.TraceID, traceID)
-		}
+		require.NoError(t, json.Unmarshal(scanner.Bytes(), &line), "stderr line is not JSON: %s", scanner.Text())
+		assert.Equal(t, traceID.String(), line.TraceID, "stderr record %q trace_id", line.Msg)
 		spanID, err := oteltrace.SpanIDFromHex(line.SpanID)
-		if err != nil {
-			t.Errorf("stderr record %q has span_id %q: %v", line.Msg, line.SpanID, err)
-			continue
-		}
+		require.NoError(t, err, "stderr record %q span_id %q", line.Msg, line.SpanID)
 		gotStderr[line.Msg] = append(gotStderr[line.Msg], spanOf[spanID])
 	}
-	if lines != len(exported) {
-		t.Errorf("stderr has %d records, OTLP has %d", lines, len(exported))
-	}
-	for message, spans := range want {
-		if !slices.Equal(gotStderr[message], spans) {
-			t.Errorf("stderr %q records correlate with %v, want %v", message, gotStderr[message], spans)
-		}
+	assert.Equal(t, len(exported), lines, "stderr record count, compared with OTLP record count")
+	for message, wantSpans := range want {
+		t.Run("stderr "+message, func(t *testing.T) {
+			require.Equal(t, wantSpans, gotStderr[message])
+		})
 	}
 }
 
@@ -267,23 +251,16 @@ func TestLoop_LogRecordsCarryNoCorrelationWithoutARunSpan(t *testing.T) {
 	}})
 	loop.Logger = logger
 	loop.LogScope = scope
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), buildTestConfig())
+	require.NoError(t, err)
 
 	scanner := bufio.NewScanner(&stderr)
 	lines := 0
 	for scanner.Scan() {
 		lines++
 		var line map[string]any
-		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
-			t.Fatalf("stderr line is not JSON: %v", err)
-		}
-		if _, ok := line["trace_id"]; ok {
-			t.Errorf("record %q carries trace_id without a run span", line["msg"])
-		}
+		require.NoError(t, json.Unmarshal(scanner.Bytes(), &line), "stderr line is not JSON: %s", scanner.Text())
+		assert.NotContains(t, line, "trace_id", "record %q carries trace_id without a run span", line["msg"])
 	}
-	if lines == 0 {
-		t.Fatal("no records logged")
-	}
+	require.NotZero(t, lines, "no records logged")
 }

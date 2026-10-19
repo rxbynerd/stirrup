@@ -15,6 +15,8 @@ import (
 	"testing"
 
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/types"
@@ -43,28 +45,18 @@ func requireEmptyToolCall(t *testing.T, events []types.StreamEvent, wantName str
 		case "tool_call":
 			calls = append(calls, events[i])
 		case "error":
-			t.Fatalf("unexpected error event: %v", events[i].Error)
+			require.Failf(t, "unexpected error event", "%v", events[i].Error)
 		}
 	}
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 tool_call event, got %d: %+v", len(calls), calls)
-	}
-	if calls[0].Name != wantName {
-		t.Errorf("tool_call.Name = %q, want %q", calls[0].Name, wantName)
-	}
-	if len(calls[0].Input) != 0 {
-		t.Errorf("tool_call.Input = %+v, want no arguments", calls[0].Input)
-	}
+	require.Len(t, calls, 1, "tool_call events: %+v", calls)
+	assert.Equal(t, wantName, calls[0].Name)
+	assert.Empty(t, calls[0].Input, "tool_call should carry no arguments")
 
 	// The loop marshals Input into the stored tool_use block. A nil map
 	// marshals to null, so the adapter's output must normalize to an object.
 	raw, err := json.Marshal(calls[0].Input)
-	if err != nil {
-		t.Fatalf("marshal tool input: %v", err)
-	}
-	if got := string(types.NormalizeToolInput(raw)); got != "{}" {
-		t.Errorf("normalized tool input = %q, want {}", got)
-	}
+	require.NoError(t, err, "marshal tool input")
+	assert.Equal(t, "{}", string(types.NormalizeToolInput(raw)))
 }
 
 // Anthropic sends a tool_use content_block_start with no input_json_delta
@@ -81,9 +73,7 @@ func TestAnthropicAdapter_ZeroArgumentToolCall(t *testing.T) {
 	adapter.baseURL = srv.URL
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "claude-sonnet-4-6", MaxTokens: 1024})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 	requireEmptyToolCall(t, collectEvents(t, ch), "git_status")
 }
 
@@ -99,9 +89,7 @@ func TestOpenAIAdapter_ZeroArgumentToolCall(t *testing.T) {
 	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 	requireEmptyToolCall(t, collectEvents(t, ch), "git_status")
 }
 
@@ -117,9 +105,7 @@ func TestOpenAIResponsesAdapter_ZeroArgumentToolCall(t *testing.T) {
 	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-5", MaxTokens: 1024})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 	requireEmptyToolCall(t, collectEvents(t, ch), "git_status")
 }
 
@@ -130,17 +116,14 @@ func TestGeminiAdapter_ZeroArgumentToolCall(t *testing.T) {
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-3.1-pro-preview"})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 	requireEmptyToolCall(t, collectEvents(t, ch), "git_status")
 }
 
-// TestAnthropicAdapter_ZeroArgumentToolCallRoundTrip walks the reported
-// failure end to end on the adapter that 400s: stream a parameterless
-// tool_use, rebuild the assistant turn the way the loop does, and send it
-// back. The replayed request must carry an object, since Anthropic rejects
-// the entire conversation over a null tool input.
+// TestAnthropicAdapter_ZeroArgumentToolCallRoundTrip streams a parameterless
+// tool_use, rebuilds the assistant turn the way the loop does, and sends it
+// back. Anthropic rejects the whole conversation when a replayed tool input
+// is null, so the replayed request must carry an object.
 func TestAnthropicAdapter_ZeroArgumentToolCallRoundTrip(t *testing.T) {
 	turns := []string{
 		joinLines(
@@ -158,17 +141,16 @@ func TestAnthropicAdapter_ZeroArgumentToolCallRoundTrip(t *testing.T) {
 		),
 	}
 
+	// The handler runs on the server's goroutine, so it reports with assert.
 	var requestBodies []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("read request body: %v", err)
+		if !assert.NoError(t, err, "read request body") {
 			return
 		}
 		idx := len(requestBodies)
 		requestBodies = append(requestBodies, string(body))
-		if idx >= len(turns) {
-			t.Errorf("unexpected request %d", idx)
+		if !assert.Less(t, idx, len(turns), "unexpected request %d", idx) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -190,9 +172,7 @@ func TestAnthropicAdapter_ZeroArgumentToolCallRoundTrip(t *testing.T) {
 		MaxTokens: 1024,
 		Messages:  messages,
 	})
-	if err != nil {
-		t.Fatalf("Stream() turn 1: %v", err)
-	}
+	require.NoError(t, err, "stream turn 1")
 
 	// Store the tool call's input unnormalized — a nil map marshals to null.
 	// The adapter is the last line of defence for history it did not build
@@ -203,13 +183,9 @@ func TestAnthropicAdapter_ZeroArgumentToolCallRoundTrip(t *testing.T) {
 			call = ev
 		}
 	}
-	if call.Name != "git_status" {
-		t.Fatalf("turn 1 produced no git_status call: %+v", call)
-	}
+	require.Equal(t, "git_status", call.Name, "turn 1 produced no git_status call: %+v", call)
 	inputBytes, err := json.Marshal(call.Input)
-	if err != nil {
-		t.Fatalf("marshal tool input: %v", err)
-	}
+	require.NoError(t, err, "marshal tool input")
 
 	messages = append(messages,
 		types.Message{Role: "assistant", Content: []types.ContentBlock{{
@@ -230,21 +206,13 @@ func TestAnthropicAdapter_ZeroArgumentToolCallRoundTrip(t *testing.T) {
 		MaxTokens: 1024,
 		Messages:  messages,
 	})
-	if err != nil {
-		t.Fatalf("Stream() turn 2: %v", err)
-	}
+	require.NoError(t, err, "stream turn 2")
 	collectEvents(t, ch)
 
-	if len(requestBodies) < 2 {
-		t.Fatalf("expected 2 requests, got %d", len(requestBodies))
-	}
+	require.GreaterOrEqual(t, len(requestBodies), 2, "expected 2 requests")
 	replay := requestBodies[1]
-	if strings.Contains(replay, `"input":null`) {
-		t.Errorf("replayed turn carries a null tool input:\n%s", replay)
-	}
-	if !strings.Contains(replay, `"input":{}`) {
-		t.Errorf("replayed turn missing an empty tool input object:\n%s", replay)
-	}
+	assert.NotContains(t, replay, `"input":null`, "replayed turn carries a null tool input")
+	assert.Contains(t, replay, `"input":{}`, "replayed turn missing an empty tool input object")
 }
 
 // emptyToolInputForms are the shapes a stored tool_use block can carry for a
@@ -275,15 +243,9 @@ func TestTranslateMessagesAnthropic_EmptyToolInputBecomesObject(t *testing.T) {
 			out := translateMessagesAnthropic(zeroArgAssistantTurn(form), quirks.StructuredToolResultCapability{})
 
 			wire, err := json.Marshal(out)
-			if err != nil {
-				t.Fatalf("marshal request messages: %v", err)
-			}
-			if strings.Contains(string(wire), `"input":null`) {
-				t.Errorf("wire carries a null tool input: %s", wire)
-			}
-			if !strings.Contains(string(wire), `"input":{}`) {
-				t.Errorf("wire missing an empty tool input object: %s", wire)
-			}
+			require.NoError(t, err, "marshal request messages")
+			require.NotContains(t, string(wire), `"input":null`)
+			require.Contains(t, string(wire), `"input":{}`)
 		})
 	}
 }
@@ -297,12 +259,8 @@ func TestTranslateMessagesAnthropic_NonToolBlocksOmitInput(t *testing.T) {
 	}
 
 	wire, err := json.Marshal(translateMessagesAnthropic(messages, quirks.StructuredToolResultCapability{}))
-	if err != nil {
-		t.Fatalf("marshal request messages: %v", err)
-	}
-	if strings.Contains(string(wire), `"input"`) {
-		t.Errorf("non-tool_use block carries an input key: %s", wire)
-	}
+	require.NoError(t, err, "marshal request messages")
+	require.NotContains(t, string(wire), `"input"`, "non-tool_use block carries an input key")
 }
 
 func TestTranslateMessages_EmptyToolInputBecomesObjectArguments(t *testing.T) {
@@ -316,9 +274,7 @@ func TestTranslateMessages_EmptyToolInputBecomesObjectArguments(t *testing.T) {
 					args = tc.Function.Arguments
 				}
 			}
-			if args != "{}" {
-				t.Errorf("tool call arguments = %q, want {}", args)
-			}
+			require.Equal(t, "{}", args)
 		})
 	}
 }
@@ -332,9 +288,7 @@ func TestTranslateMessagesResponses_EmptyToolInputBecomesObjectArguments(t *test
 					args = item.Arguments
 				}
 			}
-			if args != "{}" {
-				t.Errorf("function_call arguments = %q, want {}", args)
-			}
+			require.Equal(t, "{}", args)
 		})
 	}
 }
@@ -343,9 +297,7 @@ func TestTranslateMessagesGemini_EmptyToolInputBecomesObjectArgs(t *testing.T) {
 	for name, form := range emptyToolInputForms {
 		t.Run(name, func(t *testing.T) {
 			contents, _, err := translateMessagesGemini("", zeroArgAssistantTurn(form), quirks.StructuredToolResultCapability{}, "function")
-			if err != nil {
-				t.Fatalf("translateMessagesGemini: %v", err)
-			}
+			require.NoError(t, err, "translateMessagesGemini")
 
 			var args string
 			for _, c := range contents {
@@ -355,9 +307,7 @@ func TestTranslateMessagesGemini_EmptyToolInputBecomesObjectArgs(t *testing.T) {
 					}
 				}
 			}
-			if args != "{}" {
-				t.Errorf("functionCall.args = %q, want {}", args)
-			}
+			require.Equal(t, "{}", args)
 		})
 	}
 }
@@ -366,27 +316,20 @@ func TestBedrockTranslateContentBlocks_EmptyToolInputBecomesObject(t *testing.T)
 	for name, form := range emptyToolInputForms {
 		t.Run(name, func(t *testing.T) {
 			blocks, err := bedrockTranslateContentBlocks(zeroArgAssistantTurn(form)[0].Content)
-			if err != nil {
-				t.Fatalf("bedrockTranslateContentBlocks: %v", err)
-			}
+			require.NoError(t, err, "bedrockTranslateContentBlocks")
 
-			var found bool
+			var uses []*brtypes.ContentBlockMemberToolUse
 			for _, b := range blocks {
-				use, ok := b.(*brtypes.ContentBlockMemberToolUse)
-				if !ok {
-					continue
-				}
-				found = true
-				raw, err := use.Value.Input.MarshalSmithyDocument()
-				if err != nil {
-					t.Fatalf("marshal tool use document: %v", err)
-				}
-				if string(raw) != "{}" {
-					t.Errorf("tool use input = %q, want {}", raw)
+				if use, ok := b.(*brtypes.ContentBlockMemberToolUse); ok {
+					uses = append(uses, use)
 				}
 			}
-			if !found {
-				t.Fatal("no toolUse block produced")
+			require.NotEmpty(t, uses, "no toolUse block produced")
+
+			for _, use := range uses {
+				raw, err := use.Value.Input.MarshalSmithyDocument()
+				require.NoError(t, err, "marshal tool use document")
+				require.Equal(t, "{}", string(raw))
 			}
 		})
 	}

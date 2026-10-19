@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -52,32 +55,23 @@ func runLiveDiffReview(t *testing.T, keyEnv string, llm types.JudgeLLMConfig) {
 
 	ctx := context.Background()
 	task := types.EvalTask{ID: "live", Judge: j}
-	if err := PreflightSuite(ctx, []types.EvalTask{task}, Options{}); err != nil {
-		t.Fatalf("preflight: %v", err)
-	}
+	require.NoError(t, PreflightSuite(ctx, []types.EvalTask{task}, Options{}), "preflight")
 
 	jctx := changedJudgeContext(t, Options{})
 	verdict, err := Evaluate(ctx, j, jctx)
-	if err != nil {
-		t.Fatalf("Evaluate: %v", err)
-	}
+	require.NoError(t, err, "Evaluate")
 	rec := verdict.Record
-	if rec == nil {
-		t.Fatal("verdict has no record")
-	}
+	require.NotNil(t, rec, "verdict has no record")
 	t.Logf("verdict=%s parse=%s stop=%s served=%s tokens=%d/%d latency=%dms reason=%q",
 		verdict.Status, rec.ParseStatus, rec.StopReason, rec.ServedModel,
 		rec.InputTokens, rec.OutputTokens, rec.LatencyMs, verdict.Reason)
-	if verdict.Status != types.JudgeStatusPass && verdict.Status != types.JudgeStatusFail {
-		t.Errorf("status = %q, want pass or fail", verdict.Status)
-	}
-	if rec.ParseStatus != types.JudgeParseOK && rec.ParseStatus != types.JudgeParseLastMatch {
-		t.Errorf("parse status = %q, want the nonce-bound verdict to parse", rec.ParseStatus)
-	}
-	if rec.ServedModel == "" || rec.InputTokens == 0 {
-		t.Errorf("record lacks provider metadata: %+v", rec)
-	}
-	if strings.Contains(verdict.Reason, key) {
-		t.Error("verdict reason contains the API key")
-	}
+
+	assert.Contains(t, []string{types.JudgeStatusPass, types.JudgeStatusFail}, verdict.Status,
+		"verdict status should be pass or fail")
+	assert.Contains(t, []string{types.JudgeParseOK, types.JudgeParseLastMatch}, rec.ParseStatus,
+		"the nonce-bound verdict should parse")
+	assert.NotEmpty(t, rec.ServedModel, "record lacks provider metadata: %+v", rec)
+	assert.NotZero(t, rec.InputTokens, "record lacks provider metadata: %+v", rec)
+	// A plain bool assertion keeps the key out of failure output, which NotContains would print.
+	assert.False(t, strings.Contains(verdict.Reason, key), "verdict reason contains the API key") //nolint:testifylint // NotContains prints the secret on failure
 }

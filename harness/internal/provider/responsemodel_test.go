@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -30,9 +32,7 @@ func completedResponseModel(t *testing.T, events []types.StreamEvent) (string, b
 			got = ev.ResponseModel
 		}
 	}
-	if completes == 0 {
-		t.Fatal("no message_complete event")
-	}
+	require.Positive(t, completes, "no message_complete event")
 	return got, consistent
 }
 
@@ -42,9 +42,8 @@ func TestAnthropicAdapter_ResponseModel(t *testing.T) {
 		makeSSE("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":9}}`),
 		makeSSE("message_stop", `{"type":"message_stop"}`),
 	))
-	if got, _ := completedResponseModel(t, events); got != "claude-sonnet-5-5-20260301" {
-		t.Errorf("ResponseModel = %q, want claude-sonnet-5-5-20260301", got)
-	}
+	got, _ := completedResponseModel(t, events)
+	require.Equal(t, "claude-sonnet-5-5-20260301", got)
 }
 
 func TestAnthropicAdapter_ResponseModelAbsent(t *testing.T) {
@@ -53,9 +52,8 @@ func TestAnthropicAdapter_ResponseModelAbsent(t *testing.T) {
 		makeSSE("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":9}}`),
 		makeSSE("message_stop", `{"type":"message_stop"}`),
 	))
-	if got, _ := completedResponseModel(t, events); got != "" {
-		t.Errorf("ResponseModel = %q, want empty when message_start is unusable", got)
-	}
+	got, _ := completedResponseModel(t, events)
+	require.Empty(t, got, "message_start is unusable")
 }
 
 func TestOpenAIAdapter_ResponseModelOnEveryMessageComplete(t *testing.T) {
@@ -68,13 +66,11 @@ func TestOpenAIAdapter_ResponseModelOnEveryMessageComplete(t *testing.T) {
 
 	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-6", MaxTokens: 64})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	require.NoError(t, err, "Stream")
+
 	got, consistent := completedResponseModel(t, drainStream(t, ch))
-	if got != "gpt-6-2026-08-01" || !consistent {
-		t.Errorf("ResponseModel = %q (consistent=%v), want gpt-6-2026-08-01 on every message_complete", got, consistent)
-	}
+	require.Equal(t, "gpt-6-2026-08-01", got)
+	require.True(t, consistent, "message_complete events carry differing ResponseModel values")
 }
 
 func TestOpenAIResponsesAdapter_ResponseModel(t *testing.T) {
@@ -86,9 +82,8 @@ func TestOpenAIResponsesAdapter_ResponseModel(t *testing.T) {
 			}
 			sse := []byte(makeResponsesEvent(event, fmt.Sprintf(`{"response":{"model":"gpt-6-2026-08-01","status":%q,"output":[]}}`, status)))
 			events := streamTurn(t, newResponsesScript(t, sse).adapter(nil), responsesReplayModel, replayUserPrompt)
-			if got, _ := completedResponseModel(t, events); got != "gpt-6-2026-08-01" {
-				t.Errorf("ResponseModel = %q, want gpt-6-2026-08-01", got)
-			}
+			got, _ := completedResponseModel(t, events)
+			require.Equal(t, "gpt-6-2026-08-01", got)
 		})
 	}
 }
@@ -109,12 +104,10 @@ func TestGeminiAdapter_ResponseModel(t *testing.T) {
 
 			adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 			ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-3.8-pro"})
-			if err != nil {
-				t.Fatalf("Stream: %v", err)
-			}
-			if got, _ := completedResponseModel(t, collectEvents(t, ch)); got != "gemini-3.8-pro-001" {
-				t.Errorf("ResponseModel = %q, want gemini-3.8-pro-001", got)
-			}
+			require.NoError(t, err, "Stream")
+
+			got, _ := completedResponseModel(t, collectEvents(t, ch))
+			require.Equal(t, "gemini-3.8-pro-001", got)
 		})
 	}
 }
@@ -138,9 +131,8 @@ func TestFabricateStream_ResponseModel(t *testing.T) {
 			for ev := range ch {
 				events = append(events, ev)
 			}
-			if got, _ := completedResponseModel(t, events); got != "claude-sonnet-5-5-20260301" {
-				t.Errorf("ResponseModel = %q, want claude-sonnet-5-5-20260301", got)
-			}
+			got, _ := completedResponseModel(t, events)
+			require.Equal(t, "claude-sonnet-5-5-20260301", got)
 		})
 	}
 }

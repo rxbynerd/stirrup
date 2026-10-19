@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -80,50 +82,44 @@ func TestStructuredEnvelopes_WireViewKeepsEveryNonBodyField(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.kind, func(t *testing.T) {
 			full, err := json.Marshal(tt.payload)
-			if err != nil {
-				t.Fatalf("marshal: %v", err)
-			}
+			require.NoError(t, err, "marshal payload")
 			wire := types.ToolResultWireEnvelope(types.ContentBlock{
 				Type: "tool_result", Content: "text rendering", Kind: tt.kind, Structured: full,
 			})
+
 			var fullFields, wireFields map[string]json.RawMessage
-			if err := json.Unmarshal(full, &fullFields); err != nil {
-				t.Fatalf("decode full: %v", err)
-			}
-			if err := json.Unmarshal(wire, &wireFields); err != nil {
-				t.Fatalf("decode wire view %s: %v", wire, err)
-			}
+			require.NoError(t, json.Unmarshal(full, &fullFields), "decode full envelope")
+			require.NoError(t, json.Unmarshal(wire, &wireFields), "decode wire view %s", wire)
+
 			for _, name := range jsonFieldNames(tt.payload) {
-				if _, ok := fullFields[name]; !ok {
-					t.Errorf("fixture leaves field %q unset, so the wire view is not checked for it", name)
-				}
+				require.Contains(t, fullFields, name,
+					"fixture leaves field %q unset, so the wire view is not checked for it", name)
 			}
+
 			isBody := map[string]bool{}
 			for _, k := range tt.body {
 				isBody[k] = true
-				if _, ok := fullFields[k]; !ok {
-					t.Errorf("body field %q is not in the full envelope", k)
-				}
+				require.Contains(t, fullFields, k, "body field %q is not in the full envelope", k)
 			}
 			for k, v := range fullFields {
 				got, ok := wireFields[k]
-				switch {
-				case isBody[k] && ok:
-					t.Errorf("body field %q reached the wire view", k)
-				case !isBody[k] && !ok:
-					t.Errorf("field %q is missing from the wire view %s", k, wire)
-				case !isBody[k] && string(got) != string(v):
-					t.Errorf("field %q = %s on the wire, want %s", k, got, v)
+				if isBody[k] {
+					require.False(t, ok, "body field %q reached the wire view", k)
+					continue
 				}
+				require.True(t, ok, "field %q is missing from the wire view %s", k, wire)
+				require.Equal(t, string(v), string(got), "field %q on the wire", k)
 			}
+
 			isDerived := map[string]bool{}
 			for _, k := range tt.derived {
 				isDerived[k] = true
 			}
 			for k := range wireFields {
-				if _, ok := fullFields[k]; !ok && !isDerived[k] {
-					t.Errorf("wire view has field %q the envelope lacks", k)
+				if isDerived[k] {
+					continue
 				}
+				require.Contains(t, fullFields, k, "wire view has field %q the envelope lacks", k)
 			}
 		})
 	}

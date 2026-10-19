@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirkstest"
 	"github.com/rxbynerd/stirrup/types"
@@ -45,9 +47,7 @@ func TestAnthropicContract_ToolEnabledRequestBody(t *testing.T) {
 	}
 	q := quirks.DefaultRegistry().Resolve("anthropic", params.Model)
 	body, err := json.Marshal(buildAnthropicRequest(params, true, q))
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal anthropic request")
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath("testdata", "quirks", "anthropic", "claude-sonnet-4-6", "request.json"), body)
 }
 
@@ -71,9 +71,7 @@ func TestAnthropicContract_ClaudeSonnet5OmitsTemperature(t *testing.T) {
 	}
 	q := quirks.DefaultRegistry().Resolve("anthropic", params.Model)
 	body, err := json.Marshal(buildAnthropicRequest(params, true, q))
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal anthropic request")
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath("testdata", "quirks", "anthropic", "claude-sonnet-5", "request.json"), body)
 }
 
@@ -91,14 +89,10 @@ func TestResponsesContract_ToolEnabledRequestBody(t *testing.T) {
 	}
 	q := quirks.DefaultRegistry().Resolve("openai-responses", params.Model)
 	req, err := buildResponsesRequest(params, q, nil, "")
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
+	require.NoError(t, err, "build responses request")
 	req.Stream = true
 	body, err := json.Marshal(req)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal responses request")
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath("testdata", "quirks", "openai-responses", "gpt-4o", "request.json"), body)
 }
 
@@ -118,13 +112,9 @@ func TestResponsesContract_GPT56RequestBody(t *testing.T) {
 	}
 	q := quirks.DefaultRegistry().Resolve("openai-responses", params.Model)
 	req, err := buildResponsesRequest(params, q, nil, "")
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
+	require.NoError(t, err, "build responses request")
 	req.Stream = true
 	body, err := json.Marshal(req)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal responses request")
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath("testdata", "quirks", "openai-responses", "gpt-5.6-sol", "request.json"), body)
 }

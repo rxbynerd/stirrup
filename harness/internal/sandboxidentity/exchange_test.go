@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -72,7 +74,7 @@ func (m *mockTransport) lastEmitted() *types.HarnessEvent {
 func boolPtr(b bool) *bool    { return &b }
 func int64Ptr(v int64) *int64 { return &v }
 
-func TestExchange_Success(t *testing.T) {
+func TestExchange_ReturnsTokenAndExpiry(t *testing.T) {
 	mt := &mockTransport{
 		respond: func(requestID string) (types.ControlEvent, bool) {
 			return types.ControlEvent{
@@ -85,54 +87,34 @@ func TestExchange_Success(t *testing.T) {
 	}
 
 	result, err := Exchange(context.Background(), mt, "https://haybale.internal", time.Second)
-	if err != nil {
-		t.Fatalf("Exchange() error: %v", err)
-	}
-	if result.Token != "the-jwt" {
-		t.Errorf("Token = %q, want %q", result.Token, "the-jwt")
-	}
-	if result.ExpiresAt == nil || *result.ExpiresAt != 1234 {
-		t.Errorf("ExpiresAt = %v, want 1234", result.ExpiresAt)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "the-jwt", result.Token)
+	require.NotNil(t, result.ExpiresAt)
+	require.Equal(t, int64(1234), *result.ExpiresAt)
 
 	emitted := mt.lastEmitted()
-	if emitted == nil {
-		t.Fatal("expected a sandbox_token_request to be emitted")
-	}
-	if emitted.Type != "sandbox_token_request" {
-		t.Errorf("Type = %q, want sandbox_token_request", emitted.Type)
-	}
-	if emitted.Audience != "https://haybale.internal" {
-		t.Errorf("Audience = %q, want https://haybale.internal", emitted.Audience)
-	}
-	if emitted.RequestID == "" {
-		t.Error("RequestID should be set on the outbound request")
-	}
+	require.NotNil(t, emitted, "expected a sandbox_token_request to be emitted")
+	require.Equal(t, "sandbox_token_request", emitted.Type)
+	require.Equal(t, "https://haybale.internal", emitted.Audience)
+	require.NotEmpty(t, emitted.RequestID, "RequestID should be set on the outbound request")
 }
 
-// TestExchange_Timeout asserts fail-closed behaviour: no response within
+// TestExchange_TimeoutFailsClosed asserts fail-closed behaviour: no response within
 // the bounded wait returns an error and a zero Result, never a partial or
 // default token.
-func TestExchange_Timeout(t *testing.T) {
+func TestExchange_TimeoutFailsClosed(t *testing.T) {
 	mt := &mockTransport{} // never responds
 
 	result, err := Exchange(context.Background(), mt, "aud", 20*time.Millisecond)
-	if err == nil {
-		t.Fatal("expected a timeout error, got nil")
-	}
-	if result.Token != "" {
-		t.Errorf("expected empty token on timeout, got %q", result.Token)
-	}
+	require.Error(t, err)
+	require.Empty(t, result.Token)
 }
 
-// TestExchange_DefaultTimeoutWhenZero verifies the timeout<=0 → DefaultTimeout
-// fallback — the shape factory.go uses in production
-// (sandboxidentity.Exchange(ctx, tp, si.Audience, 0)) — actually takes
-// effect rather than firing a zero-duration timer. Mirrors
-// transport.TestCorrelator_DefaultTimeoutWhenZero's technique: we cannot
-// wait out the full 60s default, so cancel via ctx after a short delay and
-// assert the call did not return near-instantly.
-func TestExchange_DefaultTimeoutWhenZero(t *testing.T) {
+// TestExchange_ZeroTimeoutUsesDefault verifies that a timeout of zero falls
+// back to DefaultTimeout rather than firing immediately. The default is too
+// long to wait out, so the test cancels the context after a short delay and
+// checks that the call did not return at once.
+func TestExchange_ZeroTimeoutUsesDefault(t *testing.T) {
 	mt := &mockTransport{} // never responds
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -144,35 +126,26 @@ func TestExchange_DefaultTimeoutWhenZero(t *testing.T) {
 
 	result, err := Exchange(ctx, mt, "aud", 0)
 	elapsed := time.Since(start)
-	if err == nil {
-		t.Fatal("expected an error from the cancelled context")
-	}
-	if result.Token != "" {
-		t.Errorf("expected empty token, got %q", result.Token)
-	}
-	if elapsed < 15*time.Millisecond {
-		t.Errorf("returned too quickly (%s) — a zero timeout may have fired immediately instead of falling back to DefaultTimeout", elapsed)
-	}
+	require.Error(t, err)
+	require.Empty(t, result.Token)
+	require.GreaterOrEqual(t, elapsed, 15*time.Millisecond,
+		"a zero timeout may have fired immediately instead of falling back to DefaultTimeout")
 }
 
-// TestExchange_ContextCancelled asserts cancellation also fails closed.
-func TestExchange_ContextCancelled(t *testing.T) {
+// TestExchange_CancelledContextFailsClosed asserts cancellation also fails closed.
+func TestExchange_CancelledContextFailsClosed(t *testing.T) {
 	mt := &mockTransport{}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	result, err := Exchange(ctx, mt, "aud", time.Second)
-	if err == nil {
-		t.Fatal("expected an error from a cancelled context, got nil")
-	}
-	if result.Token != "" {
-		t.Errorf("expected empty token, got %q", result.Token)
-	}
+	require.Error(t, err)
+	require.Empty(t, result.Token)
 }
 
-// TestExchange_Decline asserts a control-plane decline (IsError) aborts
+// TestExchange_DeclineReturnsReason asserts a control-plane decline (IsError) aborts
 // with an error incorporating Reason, never proceeding with a token.
-func TestExchange_Decline(t *testing.T) {
+func TestExchange_DeclineReturnsReason(t *testing.T) {
 	mt := &mockTransport{
 		respond: func(requestID string) (types.ControlEvent, bool) {
 			return types.ControlEvent{
@@ -185,20 +158,13 @@ func TestExchange_Decline(t *testing.T) {
 	}
 
 	result, err := Exchange(context.Background(), mt, "aud", time.Second)
-	if err == nil {
-		t.Fatal("expected an error from a declined exchange")
-	}
-	if !strings.Contains(err.Error(), "no issuer configured") {
-		t.Errorf("error %q should incorporate the decline reason", err.Error())
-	}
-	if result.Token != "" {
-		t.Errorf("expected empty token on decline, got %q", result.Token)
-	}
+	require.ErrorContains(t, err, "no issuer configured")
+	require.Empty(t, result.Token)
 }
 
-// TestExchange_OverCap asserts a token exceeding MaxTokenBytes is treated
+// TestExchange_OversizedTokenRejected asserts a token exceeding MaxTokenBytes is treated
 // as an error and never truncated-and-used.
-func TestExchange_OverCap(t *testing.T) {
+func TestExchange_OversizedTokenRejected(t *testing.T) {
 	oversized := strings.Repeat("a", MaxTokenBytes+1)
 	mt := &mockTransport{
 		respond: func(requestID string) (types.ControlEvent, bool) {
@@ -211,21 +177,15 @@ func TestExchange_OverCap(t *testing.T) {
 	}
 
 	result, err := Exchange(context.Background(), mt, "aud", time.Second)
-	if err == nil {
-		t.Fatal("expected an error for an oversized token")
-	}
-	if result.Token != "" {
-		t.Error("an oversized token must not be returned, truncated or otherwise")
-	}
-	if strings.Contains(err.Error(), oversized) {
-		t.Error("error message must not contain the raw oversized token content")
-	}
+	require.Error(t, err)
+	require.Empty(t, result.Token)
+	require.NotContains(t, err.Error(), oversized, "error message must not contain the raw token content")
 }
 
-// TestExchange_EmptyToken asserts a success-shaped response (IsError not
+// TestExchange_EmptyTokenIsError asserts a success-shaped response (IsError not
 // set) carrying no token is still treated as a failure rather than an
 // empty-string credential silently flowing into env composition.
-func TestExchange_EmptyToken(t *testing.T) {
+func TestExchange_EmptyTokenIsError(t *testing.T) {
 	mt := &mockTransport{
 		respond: func(requestID string) (types.ControlEvent, bool) {
 			return types.ControlEvent{
@@ -236,17 +196,12 @@ func TestExchange_EmptyToken(t *testing.T) {
 	}
 
 	_, err := Exchange(context.Background(), mt, "aud", time.Second)
-	if err == nil {
-		t.Fatal("expected an error for an empty token")
-	}
+	require.Error(t, err)
 }
 
-// TestExchange_NoTokenInLogs is the CF-1 carry-forward test (issue #516):
-// no slog record emitted during a token exchange (success, decline,
-// timeout, or over-cap) may contain the literal token value, and returned
-// errors must not surface it either. Exchange must destructure
-// ControlEvent to named fields rather than %v/%+v-formatting or
-// json.Marshal-ing the whole struct.
+// TestExchange_NoTokenInLogs asserts that neither slog output nor errors from a
+// successful or declined exchange contain the token. Exchange must read named
+// ControlEvent fields, never format the whole struct.
 func TestExchange_NoTokenInLogs(t *testing.T) {
 	const secretToken = "eyJhbGciOiJFUzI1NiJ9.super-secret-payload-value.signature-goes-here"
 
@@ -268,20 +223,12 @@ func TestExchange_NoTokenInLogs(t *testing.T) {
 	}
 
 	result, err := Exchange(context.Background(), mt, "aud", time.Second)
-	if err != nil {
-		t.Fatalf("Exchange() error: %v", err)
-	}
-	if result.Token != secretToken {
-		t.Fatalf("sanity check: expected the returned token to equal the secret fixture")
-	}
+	require.NoError(t, err)
+	require.Equal(t, secretToken, result.Token, "returned token should match the fixture")
+	require.NotContains(t, buf.String(), secretToken, "token leaked into slog output")
 
-	if strings.Contains(buf.String(), secretToken) {
-		t.Errorf("token leaked into slog output: %s", buf.String())
-	}
-
-	// Also exercise the decline and over-cap paths, which construct error
-	// strings from response fields — confirm neither leaks a token value
-	// through fmt.Errorf.
+	// The decline path builds its error from response fields, so the error
+	// must not embed the token either.
 	mtDecline := &mockTransport{
 		respond: func(requestID string) (types.ControlEvent, bool) {
 			return types.ControlEvent{
@@ -293,11 +240,7 @@ func TestExchange_NoTokenInLogs(t *testing.T) {
 		},
 	}
 	_, declineErr := Exchange(context.Background(), mtDecline, "aud", time.Second)
-	if declineErr == nil || strings.Contains(declineErr.Error(), secretToken) {
-		t.Errorf("decline error must not contain the token: %v", declineErr)
-	}
-
-	if strings.Contains(buf.String(), secretToken) {
-		t.Errorf("token leaked into slog output after decline path: %s", buf.String())
-	}
+	require.Error(t, declineErr)
+	require.NotContains(t, declineErr.Error(), secretToken, "decline error must not contain the token")
+	require.NotContains(t, buf.String(), secretToken, "token leaked into slog output after decline path")
 }

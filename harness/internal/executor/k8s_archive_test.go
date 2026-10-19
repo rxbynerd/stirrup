@@ -6,10 +6,10 @@ import (
 	"errors"
 	"io"
 	"net/url"
-	"slices"
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
@@ -47,9 +47,7 @@ func fakePodExecCore(t *testing.T, stream *fakePodStream, urls *[]*url.URL) *pod
 	t.Helper()
 	cfg := &rest.Config{Host: "http://127.0.0.1:1"}
 	clientset, err := kubernetes.NewForConfig(cfg)
-	if err != nil {
-		t.Fatalf("NewForConfig: %v", err)
-	}
+	require.NoError(t, err, "kubernetes.NewForConfig")
 	prev := newRemoteExecutor
 	t.Cleanup(func() { newRemoteExecutor = prev })
 	newRemoteExecutor = func(_ *rest.Config, u *url.URL) (remotecommand.Executor, error) {
@@ -93,33 +91,20 @@ func TestPodExecCore_ArchiveWorkspace(t *testing.T) {
 			stats, err := core.ArchiveWorkspace(context.Background(), &out, 1<<20)
 			switch {
 			case tc.wantIs != nil:
-				if !errors.Is(err, tc.wantIs) {
-					t.Fatalf("error = %v, want %v", err, tc.wantIs)
-				}
+				require.ErrorIs(t, err, tc.wantIs)
 			case tc.wantSub != "":
-				if err == nil || !strings.Contains(err.Error(), tc.wantSub) {
-					t.Fatalf("error = %v, want it to contain %q", err, tc.wantSub)
-				}
+				require.ErrorContains(t, err, tc.wantSub)
 			default:
-				if err != nil {
-					t.Fatalf("error = %v, want nil", err)
-				}
-				if out.String() != "tarbytes" || stats.Bytes != int64(len("tarbytes")) {
-					t.Errorf("forwarded %q (stats %d), want the tar bytes", out.String(), stats.Bytes)
-				}
+				require.NoError(t, err)
+				require.Equal(t, "tarbytes", out.String(), "forwarded tar bytes")
+				require.Equal(t, int64(len("tarbytes")), stats.Bytes, "reported byte count")
 			}
-			if !stream.hadDeadline {
-				t.Error("pods/exec ran without a deadline")
-			}
-			if len(urls) != 1 {
-				t.Fatalf("pods/exec requests = %d, want 1", len(urls))
-			}
-			if !strings.HasSuffix(urls[0].Path, "/namespaces/ns/pods/run-pod/exec") {
-				t.Errorf("request path = %q, want the run Pod's exec subresource", urls[0].Path)
-			}
-			if got, want := urls[0].Query()["command"], workspaceArchiveArgv("/bin/sh", k8sWorkspace); !slices.Equal(got, want) {
-				t.Errorf("command = %q, want %q", got, want)
-			}
+
+			require.True(t, stream.hadDeadline, "pods/exec ran without a deadline")
+			require.Len(t, urls, 1, "pods/exec requests")
+			require.True(t, strings.HasSuffix(urls[0].Path, "/namespaces/ns/pods/run-pod/exec"),
+				"request path %q should end with the run Pod's exec subresource", urls[0].Path)
+			require.Equal(t, workspaceArchiveArgv("/bin/sh", k8sWorkspace), urls[0].Query()["command"])
 		})
 	}
 }

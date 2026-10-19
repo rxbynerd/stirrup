@@ -3,12 +3,13 @@ package builtins
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/types"
@@ -20,11 +21,8 @@ import (
 // rendering still begins with "\n"; a regression here would silently change
 // the model-visible output for silent-but-failing commands.
 func TestFormatRunCommand_ExitCodeOnlyNoOutput(t *testing.T) {
-	got := formatRunCommand("", "", 2)
-	const want = "\n[exit code: 2]"
-	if got != want {
-		t.Fatalf("formatRunCommand(\"\", \"\", 2) = %q, want %q", got, want)
-	}
+	want := "\n[exit code: 2]"
+	require.Equal(t, want, formatRunCommand("", "", 2))
 }
 
 // TestRunCommandTool_TimeoutClampedTo300s pins the run_command tool's
@@ -43,13 +41,11 @@ func TestRunCommandTool_TimeoutClampedTo300s(t *testing.T) {
 
 	tl := RunCommandTool(exec)
 	input := json.RawMessage(`{"command":"true","timeout":9000}`)
-	if _, err := tl.StructuredHandler(context.Background(), input); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	_, err := tl.StructuredHandler(context.Background(), input)
+	require.NoError(t, err)
 
-	if want := 300 * time.Second; gotTimeout != want {
-		t.Errorf("Exec timeout = %v, want %v (tool-layer clamp must stay independent of the raised executor cap)", gotTimeout, want)
-	}
+	want := 300 * time.Second
+	require.Equal(t, want, gotTimeout, "tool-layer clamp must stay independent of the raised executor cap")
 }
 
 // TestRunCommandTool_TimeoutReturnsPartialOutputAsSoftOutcome pins the
@@ -77,35 +73,30 @@ func TestRunCommandTool_TimeoutReturnsPartialOutputAsSoftOutcome(t *testing.T) {
 	tl := RunCommandTool(exec)
 	input := json.RawMessage(`{"command":"sleep 999","timeout":5}`)
 	got, err := tl.StructuredHandler(context.Background(), input)
-	if err != nil {
-		t.Fatalf("unexpected hard error for a timeout: %v", err)
-	}
+	require.NoError(t, err, "a timeout must not be a hard error")
 
-	if got.Kind != kindCommandResult {
-		t.Errorf("Kind = %q, want %q", got.Kind, kindCommandResult)
-	}
+	t.Run("kind", func(t *testing.T) {
+		require.Equal(t, kindCommandResult, got.Kind)
+	})
 
-	var structured commandResult
-	if err := json.Unmarshal(got.Structured, &structured); err != nil {
-		t.Fatalf("unmarshal structured result: %v", err)
-	}
-	want := commandResult{
-		Stdout:         "partial stdout before kill\n",
-		Stderr:         "partial stderr before kill\n",
-		ExitCode:       0,
-		TimedOut:       true,
-		TimeoutSeconds: 5,
-	}
-	if structured != want {
-		t.Errorf("structured mismatch\n got: %+v\nwant: %+v", structured, want)
-	}
+	t.Run("structured payload", func(t *testing.T) {
+		var structured commandResult
+		require.NoError(t, json.Unmarshal(got.Structured, &structured))
 
-	if !strings.Contains(got.Text, "partial stdout before kill") {
-		t.Errorf("Text = %q, want partial stdout preserved", got.Text)
-	}
-	if !strings.Contains(got.Text, "[timed out after 5s]") {
-		t.Errorf("Text = %q, want an explicit timed-out marker", got.Text)
-	}
+		want := commandResult{
+			Stdout:         "partial stdout before kill\n",
+			Stderr:         "partial stderr before kill\n",
+			ExitCode:       0,
+			TimedOut:       true,
+			TimeoutSeconds: 5,
+		}
+		require.Equal(t, want, structured)
+	})
+
+	t.Run("text fallback", func(t *testing.T) {
+		require.Contains(t, got.Text, "partial stdout before kill", "text must preserve partial stdout")
+		require.Contains(t, got.Text, "[timed out after 5s]", "text must carry an explicit timed-out marker")
+	})
 }
 
 // TestRunCommandTool_NonTimeoutErrorStillPropagates is the counterpart to
@@ -127,23 +118,25 @@ func TestRunCommandTool_NonTimeoutErrorStillPropagates(t *testing.T) {
 	tl := RunCommandTool(exec)
 	input := json.RawMessage(`{"command":"true","timeout":5}`)
 	got, err := tl.StructuredHandler(context.Background(), input)
-	if err == nil {
-		t.Fatalf("expected an error for a non-timeout Exec failure, got nil (result: %+v)", got)
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("err = %v, want errors.Is(err, context.Canceled)", err)
-	}
-	if errors.Is(err, executor.ErrTimeout) {
-		t.Errorf("err = %v, must not satisfy errors.Is(err, executor.ErrTimeout)", err)
-	}
+	require.Error(t, err, "a non-timeout exec failure must be a hard error, got result %+v", got)
+	require.ErrorIs(t, err, context.Canceled)
+	require.NotErrorIs(t, err, executor.ErrTimeout)
 }
 
 func TestRunCommandTool_DescriptionStatesProcessTreeKillGuarantee(t *testing.T) {
 	desc := RunCommandTool(&mockExecutor{}).Description
-	for _, want := range []string{"the processes it started are killed", "SIGKILL", "detached into their own session or process group"} {
-		if !strings.Contains(desc, want) {
-			t.Errorf("run_command description missing %q: %s", want, desc)
-		}
+
+	for _, tc := range []struct {
+		name string
+		want string
+	}{
+		{name: "kills started processes", want: "the processes it started are killed"},
+		{name: "mentions sigkill", want: "SIGKILL"},
+		{name: "covers detached processes", want: "detached into their own session or process group"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Contains(t, desc, tc.want)
+		})
 	}
 }
 
@@ -164,30 +157,32 @@ func TestRunCommandTool_UncapturedOutputBoundedKeepsStderrAndExitCode(t *testing
 		},
 	}
 
-	got, err := RunCommandToolWithStore(exec, nil, types.CommandOutputConfig{}, budget).StructuredHandler(context.Background(), json.RawMessage(`{"command":"build","timeout":5}`))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(got.Text) > budget {
-		t.Fatalf("Text is %d bytes, want <= %d", len(got.Text), budget)
-	}
-	for _, want := range []string{
-		"STDOUT-HEAD", "STDOUT-TAIL", "[run_command stdout truncated: ",
-		"\nSTDERR:\nSTDERR-HEAD", "STDERR-TAIL", "[run_command stderr truncated: ",
+	tl := RunCommandToolWithStore(exec, nil, types.CommandOutputConfig{}, budget)
+	got, err := tl.StructuredHandler(context.Background(), json.RawMessage(`{"command":"build","timeout":5}`))
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(got.Text), budget, "text must fit the result budget")
+
+	for _, tc := range []struct {
+		name string
+		want string
+	}{
+		{name: "stdout head", want: "STDOUT-HEAD"},
+		{name: "stdout tail", want: "STDOUT-TAIL"},
+		{name: "stdout truncation marker", want: "[run_command stdout truncated: "},
+		{name: "stderr head", want: "\nSTDERR:\nSTDERR-HEAD"},
+		{name: "stderr tail", want: "STDERR-TAIL"},
+		{name: "stderr truncation marker", want: "[run_command stderr truncated: "},
 	} {
-		if !strings.Contains(got.Text, want) {
-			t.Errorf("Text is missing %q", want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			require.Contains(t, got.Text, tc.want)
+		})
 	}
-	if !strings.HasSuffix(got.Text, "STDERR-TAIL\n[exit code: 1]\n[timed out after 5s]") {
-		t.Errorf("Text ends %q, want the stderr tail then the exit-code and timeout markers", got.Text[len(got.Text)-80:])
-	}
-	if got.Structured != nil || got.Kind != "" {
-		t.Errorf("truncated result kept its structured envelope (kind %q)", got.Kind)
-	}
-	if !RunCommandToolWithStore(exec, nil, types.CommandOutputConfig{}, budget).SelfBoundedResult {
-		t.Error("uncaptured run_command must report SelfBoundedResult")
-	}
+
+	require.True(t, strings.HasSuffix(got.Text, "STDERR-TAIL\n[exit code: 1]\n[timed out after 5s]"),
+		"text must end with the stderr tail, then the exit-code and timeout markers")
+	require.Nil(t, got.Structured, "truncated result must not keep its structured envelope")
+	require.Empty(t, got.Kind, "truncated result must not keep its structured envelope")
+	require.True(t, tl.SelfBoundedResult, "uncaptured run_command must report SelfBoundedResult")
 }
 
 // TestRunCommandTool_UncapturedSmallStderrKeptWhole checks that a short
@@ -195,15 +190,12 @@ func TestRunCommandTool_UncapturedOutputBoundedKeepsStderrAndExitCode(t *testing
 func TestRunCommandTool_UncapturedSmallStderrKeptWhole(t *testing.T) {
 	const budget = 4 << 10
 	got, truncated := boundCommandText(strings.Repeat("o", 1<<20), "error: build failed", 2, "", budget)
-	if !truncated || len(got) > budget {
-		t.Fatalf("got %d bytes (truncated=%t), want <= %d and truncated", len(got), truncated, budget)
-	}
-	if !strings.HasSuffix(got, "\nSTDERR:\nerror: build failed\n[exit code: 2]") {
-		t.Errorf("stderr or exit code lost: %q", got[len(got)-80:])
-	}
-	if len(got) < budget-64 {
-		t.Errorf("got %d bytes, want stdout to use the space stderr left unused", len(got))
-	}
+
+	require.True(t, truncated, "a 1 MiB stdout must be truncated")
+	require.LessOrEqual(t, len(got), budget)
+	require.True(t, strings.HasSuffix(got, "\nSTDERR:\nerror: build failed\n[exit code: 2]"),
+		"stderr and exit code must survive truncation")
+	require.GreaterOrEqual(t, len(got), budget-64, "stdout should use the space stderr left unused")
 }
 
 // TestElideMiddle_RespectsRuneBoundaries checks that elision never splits a
@@ -211,12 +203,10 @@ func TestRunCommandTool_UncapturedSmallStderrKeptWhole(t *testing.T) {
 func TestElideMiddle_RespectsRuneBoundaries(t *testing.T) {
 	s := strings.Repeat("€", 10_000)
 	for _, limit := range []int{10, 200, 201, 202, 1000} {
-		got := elideMiddle(s, limit, "stdout")
-		if len(got) > limit {
-			t.Errorf("limit %d: got %d bytes", limit, len(got))
-		}
-		if !utf8.ValidString(got) {
-			t.Errorf("limit %d: result is not valid UTF-8", limit)
-		}
+		t.Run(fmt.Sprintf("limit %d", limit), func(t *testing.T) {
+			got := elideMiddle(s, limit, "stdout")
+			require.LessOrEqual(t, len(got), limit)
+			require.True(t, utf8.ValidString(got), "result must be valid UTF-8")
+		})
 	}
 }

@@ -1,9 +1,10 @@
 package reporter
 
 import (
-	"math"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/eval"
 	"github.com/rxbynerd/stirrup/types"
@@ -11,11 +12,7 @@ import (
 
 const epsilon = 0.001
 
-func approxEqual(a, b float64) bool {
-	return math.Abs(a-b) < epsilon
-}
-
-// helper to build a minimal TaskResult.
+// task builds a minimal TaskResult.
 func task(id, outcome string, trace *types.RunTrace) eval.TaskResult {
 	return eval.TaskResult{
 		TaskID:  id,
@@ -35,7 +32,7 @@ func suite(runID string, tasks ...eval.TaskResult) eval.SuiteResult {
 	}
 }
 
-func TestCompare(t *testing.T) {
+func TestCompare_CountsRegressionsAndImprovements(t *testing.T) {
 	tests := []struct {
 		name             string
 		baseline         eval.SuiteResult
@@ -45,7 +42,7 @@ func TestCompare(t *testing.T) {
 		wantHasRegress   bool
 	}{
 		{
-			name:             "identical results — no changes",
+			name:             "identical results have no changes",
 			baseline:         suite("base", task("a", "pass", nil), task("b", "fail", nil)),
 			current:          suite("curr", task("a", "pass", nil), task("b", "fail", nil)),
 			wantRegressions:  0,
@@ -53,7 +50,7 @@ func TestCompare(t *testing.T) {
 			wantHasRegress:   false,
 		},
 		{
-			name:             "one regression pass to fail",
+			name:             "pass to fail is a regression",
 			baseline:         suite("base", task("a", "pass", nil)),
 			current:          suite("curr", task("a", "fail", nil)),
 			wantRegressions:  1,
@@ -61,7 +58,7 @@ func TestCompare(t *testing.T) {
 			wantHasRegress:   true,
 		},
 		{
-			name:             "one regression pass to error",
+			name:             "pass to error is a regression",
 			baseline:         suite("base", task("a", "pass", nil)),
 			current:          suite("curr", task("a", "error", nil)),
 			wantRegressions:  1,
@@ -69,7 +66,7 @@ func TestCompare(t *testing.T) {
 			wantHasRegress:   true,
 		},
 		{
-			name:             "one improvement fail to pass",
+			name:             "fail to pass is an improvement",
 			baseline:         suite("base", task("a", "fail", nil)),
 			current:          suite("curr", task("a", "pass", nil)),
 			wantRegressions:  0,
@@ -77,7 +74,7 @@ func TestCompare(t *testing.T) {
 			wantHasRegress:   false,
 		},
 		{
-			name:             "one improvement error to pass",
+			name:             "error to pass is an improvement",
 			baseline:         suite("base", task("a", "error", nil)),
 			current:          suite("curr", task("a", "pass", nil)),
 			wantRegressions:  0,
@@ -101,7 +98,7 @@ func TestCompare(t *testing.T) {
 			wantHasRegress:   true,
 		},
 		{
-			name:             "baseline has tasks not in current",
+			name:             "baseline has tasks missing from current",
 			baseline:         suite("base", task("a", "pass", nil), task("b", "pass", nil)),
 			current:          suite("curr", task("a", "pass", nil)),
 			wantRegressions:  0,
@@ -109,7 +106,7 @@ func TestCompare(t *testing.T) {
 			wantHasRegress:   false,
 		},
 		{
-			name:             "current has tasks not in baseline",
+			name:             "current has tasks missing from baseline",
 			baseline:         suite("base", task("a", "pass", nil)),
 			current:          suite("curr", task("a", "pass", nil), task("b", "fail", nil)),
 			wantRegressions:  0,
@@ -122,20 +119,14 @@ func TestCompare(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			report := Compare(tt.baseline, tt.current, DefaultOptions())
 
-			if got := len(report.Regressions); got != tt.wantRegressions {
-				t.Errorf("regressions: got %d, want %d", got, tt.wantRegressions)
-			}
-			if got := len(report.Improvements); got != tt.wantImprovements {
-				t.Errorf("improvements: got %d, want %d", got, tt.wantImprovements)
-			}
-			if report.Summary.HasRegressions != tt.wantHasRegress {
-				t.Errorf("HasRegressions: got %v, want %v", report.Summary.HasRegressions, tt.wantHasRegress)
-			}
+			require.Len(t, report.Regressions, tt.wantRegressions, "regressions")
+			require.Len(t, report.Improvements, tt.wantImprovements, "improvements")
+			require.Equal(t, tt.wantHasRegress, report.Summary.HasRegressions, "HasRegressions")
 		})
 	}
 }
 
-func TestCompare_TurnDeltas(t *testing.T) {
+func TestCompare_ReportsTurnDeltas(t *testing.T) {
 	baseline := suite("base",
 		task("a", "pass", trace(5)),
 		task("b", "fail", trace(3)),
@@ -147,44 +138,28 @@ func TestCompare_TurnDeltas(t *testing.T) {
 
 	report := Compare(baseline, current, DefaultOptions())
 
-	if len(report.Regressions) != 1 {
-		t.Fatalf("expected 1 regression, got %d", len(report.Regressions))
-	}
+	require.Len(t, report.Regressions, 1)
 	reg := report.Regressions[0]
-	if reg.TaskID != "a" {
-		t.Errorf("regression TaskID: got %q, want %q", reg.TaskID, "a")
-	}
-	if reg.TurnsDelta != 3 {
-		t.Errorf("regression TurnsDelta: got %d, want %d", reg.TurnsDelta, 3)
-	}
+	assert.Equal(t, "a", reg.TaskID, "regression TaskID")
+	assert.Equal(t, 3, reg.TurnsDelta, "regression TurnsDelta")
 
-	if len(report.Improvements) != 1 {
-		t.Fatalf("expected 1 improvement, got %d", len(report.Improvements))
-	}
+	require.Len(t, report.Improvements, 1)
 	imp := report.Improvements[0]
-	if imp.TaskID != "b" {
-		t.Errorf("improvement TaskID: got %q, want %q", imp.TaskID, "b")
-	}
-	if imp.TurnsDelta != -1 {
-		t.Errorf("improvement TurnsDelta: got %d, want %d", imp.TurnsDelta, -1)
-	}
+	assert.Equal(t, "b", imp.TaskID, "improvement TaskID")
+	assert.Equal(t, -1, imp.TurnsDelta, "improvement TurnsDelta")
 }
 
-func TestCompare_NilTraces(t *testing.T) {
+func TestCompare_NilBaselineTraceZeroTurnsDelta(t *testing.T) {
 	baseline := suite("base", task("a", "pass", nil))
 	current := suite("curr", task("a", "fail", trace(5)))
 
 	report := Compare(baseline, current, DefaultOptions())
 
-	if len(report.Regressions) != 1 {
-		t.Fatalf("expected 1 regression, got %d", len(report.Regressions))
-	}
-	if report.Regressions[0].TurnsDelta != 0 {
-		t.Errorf("expected zero TurnsDelta with nil baseline trace, got %d", report.Regressions[0].TurnsDelta)
-	}
+	require.Len(t, report.Regressions, 1)
+	require.Equal(t, 0, report.Regressions[0].TurnsDelta, "nil baseline trace should give a zero turns delta")
 }
 
-func TestCompare_Summary(t *testing.T) {
+func TestCompare_SummaryPassRates(t *testing.T) {
 	baseline := suite("base",
 		task("a", "pass", trace(5)),
 		task("b", "fail", trace(3)),
@@ -198,18 +173,10 @@ func TestCompare_Summary(t *testing.T) {
 	s := report.Summary
 
 	// Baseline: 1/2 pass = 0.5, Current: 2/2 pass = 1.0
-	if !approxEqual(s.BaselinePassRate, 0.5) {
-		t.Errorf("BaselinePassRate: got %f, want 0.5", s.BaselinePassRate)
-	}
-	if !approxEqual(s.CurrentPassRate, 1.0) {
-		t.Errorf("CurrentPassRate: got %f, want 1.0", s.CurrentPassRate)
-	}
-	if !approxEqual(s.PassRateDelta, 0.5) {
-		t.Errorf("PassRateDelta: got %f, want 0.5", s.PassRateDelta)
-	}
-	if s.HasRegressions {
-		t.Error("HasRegressions should be false when there are no regressions")
-	}
+	assert.InDelta(t, 0.5, s.BaselinePassRate, epsilon, "BaselinePassRate")
+	assert.InDelta(t, 1.0, s.CurrentPassRate, epsilon, "CurrentPassRate")
+	assert.InDelta(t, 0.5, s.PassRateDelta, epsilon, "PassRateDelta")
+	assert.False(t, s.HasRegressions, "HasRegressions should be false when there are no regressions")
 }
 
 func TestFormatText_NoRegressions(t *testing.T) {
@@ -229,18 +196,10 @@ func TestFormatText_NoRegressions(t *testing.T) {
 
 	got := FormatText(report)
 
-	if !strings.Contains(got, "Eval Comparison: run-2 vs run-1") {
-		t.Error("missing header")
-	}
-	if !strings.Contains(got, "No regressions found.") {
-		t.Error("should show 'No regressions found.' when there are none")
-	}
-	if !strings.Contains(got, "Improvements (1):") {
-		t.Error("missing improvements section")
-	}
-	if !strings.Contains(got, "task-bar: fail → pass") {
-		t.Error("missing improvement detail")
-	}
+	assert.Contains(t, got, "Eval Comparison: run-2 vs run-1")
+	assert.Contains(t, got, "No regressions found.", "should show 'No regressions found.' when there are none")
+	assert.Contains(t, got, "Improvements (1):")
+	assert.Contains(t, got, "task-bar: fail → pass")
 }
 
 func TestFormatText_WithRegressions(t *testing.T) {
@@ -260,13 +219,7 @@ func TestFormatText_WithRegressions(t *testing.T) {
 
 	got := FormatText(report)
 
-	if !strings.Contains(got, "Regressions (1):") {
-		t.Error("missing regressions header")
-	}
-	if !strings.Contains(got, "task-foo: pass → fail") {
-		t.Error("missing regression detail")
-	}
-	if strings.Contains(got, "No regressions found.") {
-		t.Error("should not show 'No regressions found.' when there are regressions")
-	}
+	assert.Contains(t, got, "Regressions (1):")
+	assert.Contains(t, got, "task-foo: pass → fail")
+	assert.NotContains(t, got, "No regressions found.", "should not show 'No regressions found.' when there are regressions")
 }

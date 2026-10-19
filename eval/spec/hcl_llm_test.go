@@ -1,9 +1,10 @@
 package spec
 
 import (
-	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -30,7 +31,7 @@ suite "dr" {
 `
 }
 
-func TestLoadSuiteHCL_DiffReviewLLMBlock(t *testing.T) {
+func TestLoadSuiteHCL_DiffReviewLLMBlock_MapsAllFields(t *testing.T) {
 	src := diffReviewSuite(`
       llm {
         provider          = "openai-compatible"
@@ -46,9 +47,7 @@ func TestLoadSuiteHCL_DiffReviewLLMBlock(t *testing.T) {
       }
 `)
 	suite, err := LoadSuiteHCL(writeTemp(t, "llm.hcl", src))
-	if err != nil {
-		t.Fatalf("LoadSuiteHCL: %v", err)
-	}
+	require.NoError(t, err)
 
 	zero := 0.0
 	want := &types.JudgeLLMConfig{
@@ -63,38 +62,30 @@ func TestLoadSuiteHCL_DiffReviewLLMBlock(t *testing.T) {
 		StructuredOutput: "prompt_only",
 		AllowTruncated:   true,
 	}
-	got := suite.Tasks[0].Judge.LLM
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("LLM = %+v, want %+v", got, want)
-	}
+	require.Equal(t, want, suite.Tasks[0].Judge.LLM)
 }
 
-func TestLoadSuiteHCL_DiffReviewLLMBlockOptional(t *testing.T) {
+func TestLoadSuiteHCL_DiffReviewLLMBlock_OmittedIsNil(t *testing.T) {
 	suite, err := LoadSuiteHCL(writeTemp(t, "nollm.hcl", diffReviewSuite("")))
-	if err != nil {
-		t.Fatalf("LoadSuiteHCL: %v", err)
-	}
-	if suite.Tasks[0].Judge.LLM != nil {
-		t.Errorf("LLM = %+v, want nil when no block is declared", suite.Tasks[0].Judge.LLM)
-	}
+	require.NoError(t, err)
+	require.Nil(t, suite.Tasks[0].Judge.LLM)
 }
 
-func TestLoadSuiteHCL_DiffReviewLLMTemperatureUnsetStaysNil(t *testing.T) {
+func TestLoadSuiteHCL_DiffReviewLLMBlock_UnsetTemperatureIsNil(t *testing.T) {
 	src := diffReviewSuite(`
       llm {
         model = "claude-haiku-5-5"
       }
 `)
 	suite, err := LoadSuiteHCL(writeTemp(t, "temp.hcl", src))
-	if err != nil {
-		t.Fatalf("LoadSuiteHCL: %v", err)
-	}
-	if suite.Tasks[0].Judge.LLM.Temperature != nil {
-		t.Errorf("Temperature = %v, want nil so it is omitted on the wire", *suite.Tasks[0].Judge.LLM.Temperature)
-	}
+	require.NoError(t, err)
+
+	llm := suite.Tasks[0].Judge.LLM
+	require.NotNil(t, llm)
+	require.Nil(t, llm.Temperature, "temperature must stay nil so it is omitted on the wire")
 }
 
-func TestLoadSuiteHCL_DiffReviewLLMInsideComposite(t *testing.T) {
+func TestLoadSuiteHCL_DiffReviewLLMBlock_InsideComposite(t *testing.T) {
 	src := `
 suite "dr" {
   task "t1" {
@@ -118,15 +109,11 @@ suite "dr" {
 }
 `
 	suite, err := LoadSuiteHCL(writeTemp(t, "composite.hcl", src))
-	if err != nil {
-		t.Fatalf("LoadSuiteHCL: %v", err)
-	}
-	if suite.Tasks[0].Judge.Judges[1].LLM == nil {
-		t.Error("nested diff-review judge lost its llm block")
-	}
+	require.NoError(t, err)
+	require.NotNil(t, suite.Tasks[0].Judge.Judges[1].LLM, "nested diff-review judge lost its llm block")
 }
 
-func TestLoadSuiteHCL_DiffReviewLLMBlockErrors(t *testing.T) {
+func TestLoadSuiteHCL_DiffReviewLLMBlock_RejectsInvalidFields(t *testing.T) {
 	cases := []struct {
 		name  string
 		llm   string
@@ -191,61 +178,72 @@ func TestLoadSuiteHCL_DiffReviewLLMBlockErrors(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := LoadSuiteHCL(writeTemp(t, "bad.hcl", diffReviewSuite("      "+tc.llm)))
-			if err == nil {
-				t.Fatal("expected an error")
-			}
+			require.Error(t, err)
 			for _, want := range tc.wants {
-				if !strings.Contains(err.Error(), want) {
-					t.Errorf("error %q should contain %q", err, want)
-				}
+				require.ErrorContains(t, err, want)
 			}
 		})
 	}
 }
 
-func TestLoadSuiteHCL_BadKeyRefErrorDoesNotEchoTheValue(t *testing.T) {
-	for _, ref := range []string{"sk-live-abc123", "secret://sk-live-abc123"} {
-		src := diffReviewSuite("      " + llmBlock(`model = "m"`, `api_key_ref = "`+ref+`"`))
-		_, err := LoadSuiteHCL(writeTemp(t, "leak.hcl", src))
-		if err == nil {
-			t.Fatalf("api_key_ref %q accepted", ref)
-		}
-		if strings.Contains(err.Error(), "abc123") {
-			t.Errorf("error echoes the api_key_ref value: %v", err)
-		}
+func TestLoadSuiteHCL_LLMBlock_ErrorOmitsAPIKeyRefValue(t *testing.T) {
+	cases := []struct {
+		name string
+		ref  string
+	}{
+		{name: "raw key", ref: "sk-live-abc123"},
+		{name: "secret reference", ref: "secret://sk-live-abc123"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := diffReviewSuite("      " + llmBlock(`model = "m"`, `api_key_ref = "`+tc.ref+`"`))
+			_, err := LoadSuiteHCL(writeTemp(t, "leak.hcl", src))
+			require.Error(t, err)
+			require.NotContains(t, err.Error(), "abc123", "error echoes the api_key_ref value")
+		})
 	}
 }
 
-func TestLoadSuiteHCL_BadBaseURLErrorDoesNotEchoCredentials(t *testing.T) {
+func TestLoadSuiteHCL_LLMBlock_ErrorOmitsBaseURLCredentials(t *testing.T) {
 	src := diffReviewSuite(llmBlock(`model = "m"`, `base_url = "https://user:hunter2@example.com"`))
 	_, err := LoadSuiteHCL(writeTemp(t, "leak.hcl", src))
-	if err == nil {
-		t.Fatal("expected an error")
-	}
-	if strings.Contains(err.Error(), "hunter2") {
-		t.Errorf("error echoes the embedded credential: %v", err)
-	}
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "hunter2", "error echoes the embedded credential")
 }
 
 func TestLoadSuiteHCL_LLMBlockRejectedOnOtherJudgeTypes(t *testing.T) {
-	for _, body := range []string{
-		`type = "file-exists"
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "file-exists judge",
+			body: `type = "file-exists"
       paths = ["a.txt"]`,
-		`type = "test-command"
+		},
+		{
+			name: "test-command judge",
+			body: `type = "test-command"
       command = "true"`,
-		`type = "composite"
+		},
+		{
+			name: "composite judge",
+			body: `type = "composite"
       judge {
         type  = "file-exists"
         paths = ["a.txt"]
       }`,
-	} {
-		src := `
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := `
 suite "bad" {
   task "t1" {
     mode   = "execution"
     prompt = "p"
     judge {
-      ` + body + `
+      ` + tc.body + `
       llm {
         model = "claude-haiku-5-5"
       }
@@ -253,13 +251,10 @@ suite "bad" {
   }
 }
 `
-		_, err := LoadSuiteHCL(writeTemp(t, "wrongtype.hcl", src))
-		if err == nil {
-			t.Errorf("llm block accepted on judge %q", strings.SplitN(body, "\n", 2)[0])
-			continue
-		}
-		if !strings.Contains(err.Error(), "does not support an llm block") || !strings.Contains(err.Error(), "diff-review") {
-			t.Errorf("error %q should name the llm block and the diff-review type", err)
-		}
+			_, err := LoadSuiteHCL(writeTemp(t, "wrongtype.hcl", src))
+			require.Error(t, err, "llm block should be rejected on this judge type")
+			require.ErrorContains(t, err, "does not support an llm block")
+			require.ErrorContains(t, err, "diff-review")
+		})
 	}
 }

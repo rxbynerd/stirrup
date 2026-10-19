@@ -12,13 +12,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/rxbynerd/stirrup/types"
 )
 
-func TestDoWithRetry_529ThenSuccess(t *testing.T) {
+func TestDoWithRetry_Retries529ThenSucceeds(t *testing.T) {
 	var attempts atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if attempts.Add(1) == 1 {
@@ -34,30 +36,20 @@ func TestDoWithRetry_529ThenSuccess(t *testing.T) {
 	req := newPostReq(t, srv.URL, `{"x":1}`)
 	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req,
 		testOpts(defaultTestPolicy(), m))
-	if err != nil {
-		t.Fatalf("DoWithRetry: %v", err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
-	if n := attempts.Load(); n != 2 {
-		t.Fatalf("attempts = %d, want 2", n)
-	}
-	if got := retryOutcomeFromMetrics(t, reader)[retryOutcomeSucceeded]; got != 1 {
-		t.Errorf("succeeded outcomes = %d, want 1", got)
-	}
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.EqualValues(t, 2, attempts.Load())
+	require.Equal(t, int64(1), retryOutcomeFromMetrics(t, reader)[retryOutcomeSucceeded])
 }
 
 func TestRetryOutcomeMetric_TaggedRequestScope(t *testing.T) {
 	m, reader := newTestMetrics(t)
 	recordOutcome(context.Background(), m, "anthropic", "claude", retryOutcomeSucceeded)
-	if got := retryOutcomesByScope(t, reader)["request"]; got != 1 {
-		t.Errorf("request-scope outcomes = %d, want 1", got)
-	}
+	require.Equal(t, int64(1), retryOutcomesByScope(t, reader)["request"])
 }
 
-func TestRetryableTransportErr(t *testing.T) {
+func TestClassifyTransportError_RetryableKinds(t *testing.T) {
 	cases := []struct {
 		name string
 		err  error
@@ -68,17 +60,15 @@ func TestRetryableTransportErr(t *testing.T) {
 		{"idle stream", fmt.Errorf("read SSE stream: %w", fmt.Errorf("%w for 120s", errStreamIdle)), true},
 		{"connection reset", fmt.Errorf("read SSE stream: %w", syscall.ECONNRESET), true},
 		{"broken pipe", syscall.EPIPE, true},
-		{"unexpected EOF", fmt.Errorf("read SSE stream: %w", io.ErrUnexpectedEOF), true},
-		{"EOF", fmt.Errorf("execute request: %w", io.EOF), true},
+		{"unexpected eof", fmt.Errorf("read SSE stream: %w", io.ErrUnexpectedEOF), true},
+		{"eof", fmt.Errorf("execute request: %w", io.EOF), true},
 		{"network timeout", timeoutError{}, true},
 		{"context cancelled", fmt.Errorf("execute request: %w", context.Canceled), false},
 		{"context deadline", fmt.Errorf("execute request: %w", context.DeadlineExceeded), false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := types.IsRetryable(classifyTransportError(tc.err)); got != tc.want {
-				t.Errorf("retryable(%v) = %v, want %v", tc.err, got, tc.want)
-			}
+			require.Equal(t, tc.want, types.IsRetryable(classifyTransportError(tc.err)))
 		})
 	}
 }
@@ -147,21 +137,15 @@ func TestStreamingAdapters_ClassifyPreStreamStatus(t *testing.T) {
 				defer srv.Close()
 
 				err := stream(srv.URL)
-				if err == nil {
-					t.Fatalf("Stream() succeeded, want a status %d error", tc.status)
-				}
-				if got := types.IsRetryable(err); got != tc.want {
-					t.Errorf("IsRetryable(%v) = %v, want %v", err, got, tc.want)
-				}
-				if n := hits.Load(); n != 1 {
-					t.Errorf("server saw %d requests, want 1 under a single-attempt policy", n)
-				}
+				require.Error(t, err)
+				require.Equal(t, tc.want, types.IsRetryable(err))
+				require.EqualValues(t, 1, hits.Load(), "single-attempt policy should send one request")
 			})
 		}
 	}
 }
 
-func TestAnthropicAdapter_529ThenSuccessThroughDoWithRetry(t *testing.T) {
+func TestAnthropicAdapter_Retries529ThenStreamsToCompletion(t *testing.T) {
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if hits.Add(1) == 1 {
@@ -182,34 +166,30 @@ func TestAnthropicAdapter_529ThenSuccessThroughDoWithRetry(t *testing.T) {
 	a.baseURL = srv.URL
 	a.RetryPolicy = RetryPolicy{MaxAttempts: 3, InitialDelay: time.Millisecond, MaxDelay: time.Millisecond, WallClockBudget: 5 * time.Second}
 	ch, err := a.Stream(context.Background(), types.StreamParams{Model: "claude-sonnet-4-6", MaxTokens: 1024})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 	events := collectEvents(t, ch)
-	if len(events) == 0 || events[len(events)-1].Type != "message_complete" {
-		t.Fatalf("events = %+v, want a trailing message_complete", events)
-	}
-	if n := hits.Load(); n != 2 {
-		t.Errorf("server saw %d requests, want 2", n)
-	}
+	require.NotEmpty(t, events)
+	require.Equal(t, "message_complete", events[len(events)-1].Type, "events = %+v", events)
+	require.EqualValues(t, 2, hits.Load())
 }
 
 func TestAnthropicStreamError_Classification(t *testing.T) {
 	cases := []struct {
+		name string
 		data string
 		want bool
 	}{
-		{`{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`, true},
-		{`{"type":"error","error":{"type":"api_error","message":"Internal server error"}}`, true},
-		{`{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long"}}`, false},
-		{`{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}`, false},
-		{`{"type":"error","error":{"message":"no type"}}`, false},
-		{`not json`, false},
+		{"overloaded error", `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`, true},
+		{"api error", `{"type":"error","error":{"type":"api_error","message":"Internal server error"}}`, true},
+		{"invalid request error", `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long"}}`, false},
+		{"authentication error", `{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}`, false},
+		{"missing error type", `{"type":"error","error":{"message":"no type"}}`, false},
+		{"non-json payload", `not json`, false},
 	}
 	for _, tc := range cases {
-		if got := types.IsRetryable(anthropicStreamError(tc.data)); got != tc.want {
-			t.Errorf("anthropicStreamError(%s) retryable = %v, want %v", tc.data, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, types.IsRetryable(anthropicStreamError(tc.data)))
+		})
 	}
 }
 
@@ -219,10 +199,10 @@ func TestSSE_OverloadedErrorEventIsRetryable(t *testing.T) {
 		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"text_delta","text":"partial"}}`),
 		makeSSE("error", `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`),
 	))
+	require.NotEmpty(t, events)
 	last := events[len(events)-1]
-	if last.Type != "error" || !types.IsRetryable(last.Error) {
-		t.Fatalf("last event = %+v, want a retryable error", last)
-	}
+	require.Equal(t, "error", last.Type, "last event = %+v", last)
+	require.True(t, types.IsRetryable(last.Error), "last event = %+v, want a retryable error", last)
 }
 
 func TestAnthropicAdapter_ConnectionDroppedMidStreamIsRetryable(t *testing.T) {
@@ -234,8 +214,7 @@ func TestAnthropicAdapter_ConnectionDroppedMidStreamIsRetryable(t *testing.T) {
 			makeSSE("content_block_delta", `{"index":0,"delta":{"type":"text_delta","text":"partial"}}`),
 		))
 		conn, _, err := w.(http.Hijacker).Hijack()
-		if err != nil {
-			t.Errorf("Hijack: %v", err)
+		if !assert.NoError(t, err, "hijack connection") {
 			return
 		}
 		_ = conn.Close()
@@ -245,17 +224,12 @@ func TestAnthropicAdapter_ConnectionDroppedMidStreamIsRetryable(t *testing.T) {
 	a := NewAnthropicAdapter(staticBearer("k"), AuthModeAPIKey)
 	a.baseURL = srv.URL
 	ch, err := a.Stream(context.Background(), types.StreamParams{Model: "claude-sonnet-4-6", MaxTokens: 1024})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 	events := collectEvents(t, ch)
+	require.NotEmpty(t, events)
 	last := events[len(events)-1]
-	if last.Type != "error" {
-		t.Fatalf("last event = %+v, want an error", last)
-	}
-	if !types.IsRetryable(last.Error) {
-		t.Errorf("error = %v, want it marked retryable", last.Error)
-	}
+	require.Equal(t, "error", last.Type, "last event = %+v", last)
+	require.True(t, types.IsRetryable(last.Error), "error = %v, want it marked retryable", last.Error)
 }
 
 func TestOpenAIResponsesStreamError_Classification(t *testing.T) {
@@ -288,12 +262,8 @@ func TestOpenAIResponsesStreamError_Classification(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			last := streamResponsesLastEvent(t, tc.body)
-			if last.Type != "error" {
-				t.Fatalf("last event = %+v, want an error", last)
-			}
-			if got := types.IsRetryable(last.Error); got != tc.want {
-				t.Errorf("IsRetryable(%v) = %v, want %v", last.Error, got, tc.want)
-			}
+			require.Equal(t, "error", last.Type, "last event = %+v", last)
+			require.Equal(t, tc.want, types.IsRetryable(last.Error))
 		})
 	}
 }
@@ -303,9 +273,7 @@ func TestOpenAIResponsesStreamError_Classification(t *testing.T) {
 func retryOutcomesByScope(t *testing.T, reader *sdkmetric.ManualReader) map[string]int64 {
 	t.Helper()
 	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
+	require.NoError(t, reader.Collect(context.Background(), &rm), "collect metrics")
 	out := make(map[string]int64)
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {

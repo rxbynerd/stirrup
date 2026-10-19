@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -18,18 +19,14 @@ func newInferenceTestMetrics(t *testing.T) (*Metrics, *sdkmetric.ManualReader) {
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 	m, err := newMetricsFromMeter(provider.Meter("test"), provider)
-	if err != nil {
-		t.Fatalf("newMetricsFromMeter() error: %v", err)
-	}
+	require.NoError(t, err)
 	return m, reader
 }
 
 func collectMetric(t *testing.T, reader *sdkmetric.ManualReader, name string) metricdata.Metrics {
 	t.Helper()
 	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("Collect() error: %v", err)
-	}
+	require.NoError(t, reader.Collect(context.Background(), &rm))
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
 			if m.Name == name {
@@ -37,7 +34,7 @@ func collectMetric(t *testing.T, reader *sdkmetric.ManualReader, name string) me
 			}
 		}
 	}
-	t.Fatalf("metric %q not collected", name)
+	require.FailNowf(t, "metric not collected", "metric %q", name)
 	return metricdata.Metrics{}
 }
 
@@ -70,34 +67,26 @@ func TestGenAIClientMetrics_InstrumentDefinitions(t *testing.T) {
 	tokenBuckets := []float64{1, 4, 16, 64, 256, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304, 16777216, 67108864}
 	durationBuckets := []float64{0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92}
 
-	tokens := collectMetric(t, reader, "gen_ai.client.token.usage")
-	if tokens.Unit != "{token}" {
-		t.Errorf("token usage unit = %q, want {token}", tokens.Unit)
-	}
-	th, ok := tokens.Data.(metricdata.Histogram[int64])
-	if !ok {
-		t.Fatalf("token usage data = %T, want Histogram[int64]", tokens.Data)
-	}
-	for _, dp := range th.DataPoints {
-		if !slices.Equal(dp.Bounds, tokenBuckets) {
-			t.Errorf("token usage bounds = %v, want %v", dp.Bounds, tokenBuckets)
+	t.Run("token usage", func(t *testing.T) {
+		tokens := collectMetric(t, reader, "gen_ai.client.token.usage")
+		require.Equal(t, "{token}", tokens.Unit)
+		th, ok := tokens.Data.(metricdata.Histogram[int64])
+		require.True(t, ok, "token usage data = %T, want Histogram[int64]", tokens.Data)
+		for _, dp := range th.DataPoints {
+			require.True(t, slices.Equal(tokenBuckets, dp.Bounds), "bounds = %v, want %v", dp.Bounds, tokenBuckets)
 		}
-	}
+	})
 
 	for _, name := range []string{"gen_ai.client.operation.duration", "gen_ai.client.operation.time_to_first_chunk"} {
-		got := collectMetric(t, reader, name)
-		if got.Unit != "s" {
-			t.Errorf("%s unit = %q, want s", name, got.Unit)
-		}
-		h, ok := got.Data.(metricdata.Histogram[float64])
-		if !ok {
-			t.Fatalf("%s data = %T, want Histogram[float64]", name, got.Data)
-		}
-		for _, dp := range h.DataPoints {
-			if !slices.Equal(dp.Bounds, durationBuckets) {
-				t.Errorf("%s bounds = %v, want %v", name, dp.Bounds, durationBuckets)
+		t.Run(name, func(t *testing.T) {
+			got := collectMetric(t, reader, name)
+			require.Equal(t, "s", got.Unit)
+			h, ok := got.Data.(metricdata.Histogram[float64])
+			require.True(t, ok, "data = %T, want Histogram[float64]", got.Data)
+			for _, dp := range h.DataPoints {
+				require.True(t, slices.Equal(durationBuckets, dp.Bounds), "bounds = %v, want %v", dp.Bounds, durationBuckets)
 			}
-		}
+		})
 	}
 }
 
@@ -109,31 +98,23 @@ func TestRecordInferenceTokens_RecordsInputAndOutputPoints(t *testing.T) {
 	sums := make(map[string]int64)
 	for _, dp := range got.DataPoints {
 		attrs := inferenceAttrMap(dp.Attributes)
-		if dp.Count != 1 {
-			t.Errorf("token type %v count = %d, want 1", attrs["gen_ai.token.type"], dp.Count)
-		}
-		sums[attrs["gen_ai.token.type"].AsString()] = dp.Sum
-		want := map[string]attribute.Value{
-			"gen_ai.operation.name": attribute.StringValue("chat"),
-			"gen_ai.provider.name":  attribute.StringValue("anthropic"),
-			"gen_ai.request.model":  attribute.StringValue("claude-haiku-4-5"),
-			"gen_ai.response.model": attribute.StringValue("claude-haiku-4-5-20251001"),
-			"server.address":        attribute.StringValue("api.anthropic.com"),
-			"server.port":           attribute.IntValue(443),
-			"gen_ai.token.type":     attrs["gen_ai.token.type"],
-		}
-		if len(attrs) != len(want) {
-			t.Errorf("attribute set = %v, want exactly %v", attrs, want)
-		}
-		for k, v := range want {
-			if attrs[k] != v {
-				t.Errorf("attribute %s = %v, want %v", k, attrs[k], v)
+		tokenType := attrs["gen_ai.token.type"].AsString()
+		sums[tokenType] = dp.Sum
+		t.Run(tokenType, func(t *testing.T) {
+			require.Equal(t, uint64(1), dp.Count)
+			want := map[string]attribute.Value{
+				"gen_ai.operation.name": attribute.StringValue("chat"),
+				"gen_ai.provider.name":  attribute.StringValue("anthropic"),
+				"gen_ai.request.model":  attribute.StringValue("claude-haiku-4-5"),
+				"gen_ai.response.model": attribute.StringValue("claude-haiku-4-5-20251001"),
+				"server.address":        attribute.StringValue("api.anthropic.com"),
+				"server.port":           attribute.IntValue(443),
+				"gen_ai.token.type":     attrs["gen_ai.token.type"],
 			}
-		}
+			require.Equal(t, want, attrs)
+		})
 	}
-	if len(sums) != 2 || sums["input"] != 1200 || sums["output"] != 80 {
-		t.Errorf("token sums by type = %v, want input=1200 output=80", sums)
-	}
+	require.Equal(t, map[string]int64{"input": 1200, "output": 80}, sums)
 }
 
 func TestInferenceAttrs_OmitsUnknownFields(t *testing.T) {
@@ -142,19 +123,16 @@ func TestInferenceAttrs_OmitsUnknownFields(t *testing.T) {
 
 	got := collectMetric(t, reader, "gen_ai.client.operation.duration").Data.(metricdata.Histogram[float64])
 	attrs := inferenceAttrMap(got.DataPoints[0].Attributes)
+	gotStrings := make(map[string]string, len(attrs))
+	for k, v := range attrs {
+		gotStrings[k] = v.AsString()
+	}
 	want := map[string]string{
 		"gen_ai.operation.name": "chat",
 		"gen_ai.provider.name":  "aws.bedrock",
 		"gen_ai.request.model":  "m",
 	}
-	if len(attrs) != len(want) {
-		t.Errorf("attribute set = %v, want exactly %v", attrs, want)
-	}
-	for k, v := range want {
-		if attrs[k].AsString() != v {
-			t.Errorf("attribute %s = %v, want %v", k, attrs[k], v)
-		}
-	}
+	require.Equal(t, want, gotStrings)
 }
 
 func TestRecordInferenceTokens_SkipsUnreportedCounts(t *testing.T) {
@@ -162,38 +140,29 @@ func TestRecordInferenceTokens_SkipsUnreportedCounts(t *testing.T) {
 	m.RecordInferenceTokens(context.Background(), testInference(), 0, 80)
 
 	got := collectMetric(t, reader, "gen_ai.client.token.usage").Data.(metricdata.Histogram[int64])
-	if len(got.DataPoints) != 1 {
-		t.Fatalf("data points = %d, want only the output point", len(got.DataPoints))
-	}
+	require.Len(t, got.DataPoints, 1, "only the output point is recorded")
 	attrs := inferenceAttrMap(got.DataPoints[0].Attributes)
-	if attrs["gen_ai.token.type"].AsString() != "output" || got.DataPoints[0].Sum != 80 {
-		t.Errorf("point = %v sum %d, want output sum 80", attrs["gen_ai.token.type"], got.DataPoints[0].Sum)
-	}
+	require.Equal(t, "output", attrs["gen_ai.token.type"].AsString())
+	require.Equal(t, int64(80), got.DataPoints[0].Sum)
 }
 
-func TestRecordInferenceDuration_ErrorTypeOnlyOnFailure(t *testing.T) {
+func TestRecordInferenceDuration_SetsErrorTypeOnlyOnFailure(t *testing.T) {
 	m, reader := newInferenceTestMetrics(t)
 	ctx := context.Background()
 	m.RecordInferenceDuration(ctx, testInference(), 2*time.Second, "")
 	m.RecordInferenceDuration(ctx, testInference(), 500*time.Millisecond, "provider_request_failed")
 
 	got := collectMetric(t, reader, "gen_ai.client.operation.duration").Data.(metricdata.Histogram[float64])
-	if len(got.DataPoints) != 2 {
-		t.Fatalf("data points = %d, want 2 (one per error.type value)", len(got.DataPoints))
-	}
+	require.Len(t, got.DataPoints, 2, "one data point per error.type value")
 	for _, dp := range got.DataPoints {
 		errType, hasErr := inferenceAttrMap(dp.Attributes)["error.type"]
 		switch {
 		case hasErr && errType.AsString() == "provider_request_failed":
-			if dp.Sum != 0.5 {
-				t.Errorf("failed duration sum = %v, want 0.5 seconds", dp.Sum)
-			}
+			require.InDelta(t, 0.5, dp.Sum, 1e-9, "failed request duration in seconds")
 		case !hasErr:
-			if dp.Sum != 2 {
-				t.Errorf("successful duration sum = %v, want 2 seconds", dp.Sum)
-			}
+			require.InDelta(t, 2.0, dp.Sum, 1e-9, "successful request duration in seconds")
 		default:
-			t.Errorf("unexpected error.type %v", errType)
+			require.Failf(t, "unexpected error.type", "error.type = %v", errType)
 		}
 	}
 }
@@ -204,42 +173,36 @@ func TestRecordFirstChunk_FeedsLegacyAndGenAIHistograms(t *testing.T) {
 	m.RecordFirstChunk(context.Background(), legacy, testInference(), 1500*time.Millisecond)
 
 	ttfb := collectMetric(t, reader, "stirrup.harness.provider_ttfb").Data.(metricdata.Histogram[float64])
-	if ttfb.DataPoints[0].Sum != 1500 {
-		t.Errorf("provider_ttfb sum = %v, want 1500 milliseconds", ttfb.DataPoints[0].Sum)
-	}
+	require.InDelta(t, 1500.0, ttfb.DataPoints[0].Sum, 1e-9, "legacy histogram sum in milliseconds")
+
 	ttfc := collectMetric(t, reader, "gen_ai.client.operation.time_to_first_chunk").Data.(metricdata.Histogram[float64])
-	if ttfc.DataPoints[0].Sum != 1.5 {
-		t.Errorf("time_to_first_chunk sum = %v, want 1.5 seconds", ttfc.DataPoints[0].Sum)
-	}
+	require.InDelta(t, 1.5, ttfc.DataPoints[0].Sum, 1e-9, "GenAI histogram sum in seconds")
 	attrs := inferenceAttrMap(ttfc.DataPoints[0].Attributes)
-	if attrs["gen_ai.provider.name"].AsString() != "anthropic" || attrs["gen_ai.request.model"].AsString() != "claude-haiku-4-5" {
-		t.Errorf("time_to_first_chunk attributes = %v, want GenAI provider and model", attrs)
-	}
-	if _, ok := attrs["provider.type"]; ok {
-		t.Errorf("time_to_first_chunk carries legacy attribute provider.type")
-	}
+	require.Equal(t, "anthropic", attrs["gen_ai.provider.name"].AsString())
+	require.Equal(t, "claude-haiku-4-5", attrs["gen_ai.request.model"].AsString())
+	require.NotContains(t, attrs, "provider.type", "GenAI histogram carries the legacy attribute")
 }
 
-func TestServerEndpointFromURL(t *testing.T) {
+func TestServerEndpointFromURL_ExtractsHostAndPort(t *testing.T) {
 	cases := []struct {
+		name     string
 		url      string
 		wantHost string
 		wantPort int
 	}{
-		{"https://api.anthropic.com/v1/messages", "api.anthropic.com", 443},
-		{"http://localhost:11434/v1", "localhost", 11434},
-		{"http://llm.internal/v1", "llm.internal", 80},
-		{"https://us-central1-aiplatform.googleapis.com:8443/v1/projects", "us-central1-aiplatform.googleapis.com", 8443},
-		{"", "", 0},
-		{"not a url", "", 0},
-		{"/relative/path", "", 0},
+		{"https with default port", "https://api.anthropic.com/v1/messages", "api.anthropic.com", 443},
+		{"http with explicit port", "http://localhost:11434/v1", "localhost", 11434},
+		{"http with default port", "http://llm.internal/v1", "llm.internal", 80},
+		{"https with explicit port", "https://us-central1-aiplatform.googleapis.com:8443/v1/projects", "us-central1-aiplatform.googleapis.com", 8443},
+		{"empty url", "", "", 0},
+		{"url without scheme", "not a url", "", 0},
+		{"relative path", "/relative/path", "", 0},
 	}
 	for _, tc := range cases {
-		t.Run(tc.url, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			host, port := ServerEndpointFromURL(tc.url)
-			if host != tc.wantHost || port != tc.wantPort {
-				t.Errorf("ServerEndpointFromURL(%q) = (%q, %d), want (%q, %d)", tc.url, host, port, tc.wantHost, tc.wantPort)
-			}
+			require.Equal(t, tc.wantHost, host)
+			require.Equal(t, tc.wantPort, port)
 		})
 	}
 }

@@ -11,82 +11,64 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 )
 
-func TestCapLine(t *testing.T) {
-	short := strings.Repeat("a", maxLineBytes)
-	if got := capLine(short); got != short {
-		t.Fatal("a line at the cap must pass through unchanged")
-	}
+func TestCapLine_BoundsLineLength(t *testing.T) {
+	t.Run("passes a line at the cap through unchanged", func(t *testing.T) {
+		short := strings.Repeat("a", maxLineBytes)
+		require.Equal(t, short, capLine(short))
+	})
 
-	long := strings.Repeat("ü", maxLineBytes) // two bytes per rune
-	got := capLine(long)
-	if len(got) > maxLineBytes {
-		t.Fatalf("capped line is %d bytes, want <= %d", len(got), maxLineBytes)
-	}
-	if !utf8.ValidString(got) {
-		t.Fatal("capped line split a UTF-8 rune")
-	}
-	if !strings.HasSuffix(got, fmt.Sprintf(" of %d bytes shown]", len(long))) {
-		t.Fatalf("marker must name the original length: %q", got[len(got)-60:])
-	}
-	if got := capLine(got); len(got) > maxLineBytes {
-		t.Fatal("re-capping must stay within the cap")
-	}
+	t.Run("caps a long multibyte line on a rune boundary", func(t *testing.T) {
+		long := strings.Repeat("ü", maxLineBytes) // two bytes per rune
+		got := capLine(long)
+		require.LessOrEqual(t, len(got), maxLineBytes)
+		require.True(t, utf8.ValidString(got), "capped line split a UTF-8 rune")
+		marker := fmt.Sprintf(" of %d bytes shown]", len(long))
+		require.Truef(t, strings.HasSuffix(got, marker), "marker must name the original length: %q", got[len(got)-60:])
+	})
+
+	t.Run("re-capping a capped line stays within the cap", func(t *testing.T) {
+		got := capLine(strings.Repeat("ü", maxLineBytes))
+		require.LessOrEqual(t, len(capLine(got)), maxLineBytes)
+	})
 }
 
 func TestReadFileTool_CapsSingleLongLine(t *testing.T) {
 	dir := t.TempDir()
 	const size = 3 << 20
-	if err := os.WriteFile(filepath.Join(dir, "bundle.min.js"), []byte(strings.Repeat("x", size)), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "bundle.min.js"), []byte(strings.Repeat("x", size)), 0o644))
 	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	res, err := ReadFileTool(exec).StructuredHandler(context.Background(), json.RawMessage(`{"path":"bundle.min.js"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(res.Text, "1\t") {
-		t.Fatalf("expected a line-numbered rendering, got %.40q", res.Text)
-	}
-	if line := strings.TrimPrefix(res.Text, "1\t"); len(line) > maxLineBytes {
-		t.Fatalf("rendered line is %d bytes, want <= %d", len(line), maxLineBytes)
-	}
+	require.NoError(t, err)
+	require.Truef(t, strings.HasPrefix(res.Text, "1\t"), "expected a line-numbered rendering, got %.40q", res.Text)
+	line := strings.TrimPrefix(res.Text, "1\t")
+	require.LessOrEqual(t, len(line), maxLineBytes)
+
 	marker := fmt.Sprintf("of %d bytes shown]", size)
-	if !strings.HasSuffix(res.Text, marker) {
-		t.Fatalf("text must end with a marker naming the original size: %q", res.Text[len(res.Text)-60:])
-	}
+	require.Truef(t, strings.HasSuffix(res.Text, marker), "text must end with a marker naming the original size: %q", res.Text[len(res.Text)-60:])
 
 	var excerpt fileExcerpt
-	if err := json.Unmarshal(res.Structured, &excerpt); err != nil {
-		t.Fatal(err)
-	}
-	if len(excerpt.Lines) != 1 || len(excerpt.Lines[0]) > maxLineBytes || !strings.HasSuffix(excerpt.Lines[0], marker) {
-		t.Fatalf("structured lines must carry the same capped line (got %d lines)", len(excerpt.Lines))
-	}
+	require.NoError(t, json.Unmarshal(res.Structured, &excerpt))
+	require.Len(t, excerpt.Lines, 1, "structured lines must carry the same capped line")
+	require.LessOrEqual(t, len(excerpt.Lines[0]), maxLineBytes)
+	require.True(t, strings.HasSuffix(excerpt.Lines[0], marker), "structured line must carry the same marker")
 }
 
 func TestReadFileTool_ShortLinesUnchanged(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\ntwo\n"), 0o644))
 	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	out, err := invokeText(context.Background(), ReadFileTool(exec), json.RawMessage(`{"path":"a.txt"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out != "1\tone\n2\ttwo" {
-		t.Fatalf("got %q", out)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "1\tone\n2\ttwo", out)
 }
 
 // hostRipgrepExecutor is a HostPathWorkspace executor whose Exec answers
@@ -126,9 +108,7 @@ func TestGrepFilesTool_CapsLongMatchedLinesOnEverySearchPath(t *testing.T) {
 			setup: func(t *testing.T) executor.Executor {
 				withRipgrepProbe(t, false)
 				dir := t.TempDir()
-				if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte(longLine+"\n"+shortLine+"\n"), 0o644); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte(longLine+"\n"+shortLine+"\n"), 0o644))
 				return &hostAndExecExecutor{root: dir}
 			},
 		},
@@ -182,26 +162,18 @@ func TestGrepFilesTool_CapsLongMatchedLinesOnEverySearchPath(t *testing.T) {
 			res := runSearchTool(t, GrepFilesTool(tt.setup(t)), map[string]any{"pattern": "needle"})
 
 			var result searchResult
-			if err := json.Unmarshal(res.Structured, &result); err != nil {
-				t.Fatal(err)
-			}
-			if len(result.Matches) != 2 {
-				t.Fatalf("expected 2 matches, got %d", len(result.Matches))
-			}
+			require.NoError(t, json.Unmarshal(res.Structured, &result))
+			require.Len(t, result.Matches, 2)
+
 			long, short := result.Matches[0].Text, result.Matches[1].Text
-			if len(long) > maxLineBytes {
-				t.Fatalf("matched line is %d bytes, want <= %d", len(long), maxLineBytes)
-			}
-			if !strings.HasPrefix(long, "needle") || !strings.HasSuffix(long, fmt.Sprintf("of %d bytes shown]", len(longLine))) {
-				t.Fatalf("shortened line must keep its head and carry the marker: %q", long[len(long)-60:])
-			}
-			if short != shortLine {
-				t.Fatalf("short line must be unchanged, got %q", short)
-			}
+			require.LessOrEqual(t, len(long), maxLineBytes)
+			require.True(t, strings.HasPrefix(long, "needle"), "shortened line must keep its head")
+			marker := fmt.Sprintf("of %d bytes shown]", len(longLine))
+			require.Truef(t, strings.HasSuffix(long, marker), "shortened line must carry the marker: %q", long[len(long)-60:])
+			require.Equal(t, shortLine, short)
+
 			for _, line := range strings.Split(res.Text, "\n") {
-				if len(line) > maxLineBytes+len("a.txt:1:") {
-					t.Fatalf("rendered match line is %d bytes", len(line))
-				}
+				require.LessOrEqual(t, len(line), maxLineBytes+len("a.txt:1:"), "rendered match line is too long")
 			}
 		})
 	}

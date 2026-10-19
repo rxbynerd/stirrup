@@ -16,6 +16,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -45,7 +47,7 @@ func collectEvents(t *testing.T, ch <-chan types.StreamEvent) []types.StreamEven
 	return events
 }
 
-func TestAnthropicAdapter_StreamTextDelta(t *testing.T) {
+func TestAnthropicAdapter_Stream_EmitsTextDeltas(t *testing.T) {
 	body := joinLines(
 		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"text","text":""}}`),
 		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"text_delta","text":"Hello"}}`),
@@ -55,13 +57,10 @@ func TestAnthropicAdapter_StreamTextDelta(t *testing.T) {
 		makeSSE("message_stop", `{}`),
 	)
 
+	// The handler runs on the server goroutine, so it reports with assert.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("x-api-key"); got != "test-key" {
-			t.Errorf("expected x-api-key=test-key, got %q", got)
-		}
-		if got := r.Header.Get("anthropic-version"); got != anthropicAPIVersion {
-			t.Errorf("expected anthropic-version=%s, got %q", anthropicAPIVersion, got)
-		}
+		assert.Equal(t, "test-key", r.Header.Get("x-api-key"), "x-api-key header")
+		assert.Equal(t, anthropicAPIVersion, r.Header.Get("anthropic-version"), "anthropic-version header")
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, body)
@@ -75,25 +74,17 @@ func TestAnthropicAdapter_StreamTextDelta(t *testing.T) {
 		Model:     "claude-sonnet-4-6",
 		MaxTokens: 1024,
 	})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 
 	events := collectEvents(t, ch)
 
-	if len(events) != 3 {
-		t.Fatalf("expected 3 events, got %d: %+v", len(events), events)
-	}
-
-	if events[0].Type != "text_delta" || events[0].Text != "Hello" {
-		t.Errorf("event[0] = %+v, want text_delta/Hello", events[0])
-	}
-	if events[1].Type != "text_delta" || events[1].Text != " world" {
-		t.Errorf("event[1] = %+v, want text_delta/ world", events[1])
-	}
-	if events[2].Type != "message_complete" || events[2].StopReason != "end_turn" {
-		t.Errorf("event[2] = %+v, want message_complete/end_turn", events[2])
-	}
+	require.Len(t, events, 3, "events: %+v", events)
+	assert.Equal(t, "text_delta", events[0].Type)
+	assert.Equal(t, "Hello", events[0].Text)
+	assert.Equal(t, "text_delta", events[1].Type)
+	assert.Equal(t, " world", events[1].Text)
+	assert.Equal(t, "message_complete", events[2].Type)
+	assert.Equal(t, "end_turn", events[2].StopReason)
 }
 
 // TestAnthropicAdapter_LongSSELineRoundTrips guards against a regression to
@@ -103,9 +94,7 @@ func TestAnthropicAdapter_StreamTextDelta(t *testing.T) {
 func TestAnthropicAdapter_LongSSELineRoundTrips(t *testing.T) {
 	longText := strings.Repeat("a", 200*1024)
 	encoded, err := json.Marshal(longText)
-	if err != nil {
-		t.Fatalf("json.Marshal: %v", err)
-	}
+	require.NoError(t, err)
 
 	body := joinLines(
 		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"text","text":""}}`),
@@ -129,24 +118,18 @@ func TestAnthropicAdapter_LongSSELineRoundTrips(t *testing.T) {
 		Model:     "claude-sonnet-4-6",
 		MaxTokens: 1024,
 	})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 
 	events := collectEvents(t, ch)
 
-	if len(events) != 2 {
-		t.Fatalf("expected 2 events, got %d: %+v", len(events), events)
-	}
-	if events[0].Type != "text_delta" || len(events[0].Text) != len(longText) {
-		t.Errorf("event[0] = type %q text-len %d, want text_delta len %d", events[0].Type, len(events[0].Text), len(longText))
-	}
-	if events[1].Type != "message_complete" || events[1].StopReason != "end_turn" {
-		t.Errorf("event[1] = %+v, want message_complete/end_turn", events[1])
-	}
+	require.Len(t, events, 2, "events: %+v", events)
+	assert.Equal(t, "text_delta", events[0].Type)
+	assert.Len(t, events[0].Text, len(longText), "text delta length")
+	assert.Equal(t, "message_complete", events[1].Type)
+	assert.Equal(t, "end_turn", events[1].StopReason)
 }
 
-func TestAnthropicAdapter_StreamToolUse(t *testing.T) {
+func TestAnthropicAdapter_Stream_EmitsToolCall(t *testing.T) {
 	body := joinLines(
 		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"tool_use","id":"toolu_123","name":"read_file"}}`),
 		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}`),
@@ -170,35 +153,21 @@ func TestAnthropicAdapter_StreamToolUse(t *testing.T) {
 		Model:     "claude-sonnet-4-6",
 		MaxTokens: 1024,
 	})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 
 	events := collectEvents(t, ch)
 
-	if len(events) != 2 {
-		t.Fatalf("expected 2 events, got %d: %+v", len(events), events)
-	}
+	require.Len(t, events, 2, "events: %+v", events)
+	require.Equal(t, "tool_call", events[0].Type)
+	assert.Equal(t, "toolu_123", events[0].ID)
+	assert.Equal(t, "read_file", events[0].Name)
+	assert.Equal(t, "main.go", events[0].Input["path"])
 
-	if events[0].Type != "tool_call" {
-		t.Fatalf("event[0].Type = %q, want tool_call", events[0].Type)
-	}
-	if events[0].ID != "toolu_123" {
-		t.Errorf("event[0].ID = %q, want toolu_123", events[0].ID)
-	}
-	if events[0].Name != "read_file" {
-		t.Errorf("event[0].Name = %q, want read_file", events[0].Name)
-	}
-	if events[0].Input["path"] != "main.go" {
-		t.Errorf("event[0].Input[path] = %v, want main.go", events[0].Input["path"])
-	}
-
-	if events[1].Type != "message_complete" || events[1].StopReason != "tool_use" {
-		t.Errorf("event[1] = %+v, want message_complete/tool_use", events[1])
-	}
+	assert.Equal(t, "message_complete", events[1].Type)
+	assert.Equal(t, "tool_use", events[1].StopReason)
 }
 
-func TestAnthropicAdapter_HTTPError(t *testing.T) {
+func TestAnthropicAdapter_HTTPError_IncludesResponseBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = fmt.Fprint(w, `{"error":{"message":"invalid x-api-key"}}`)
@@ -212,15 +181,10 @@ func TestAnthropicAdapter_HTTPError(t *testing.T) {
 		Model:     "claude-sonnet-4-6",
 		MaxTokens: 1024,
 	})
-	if err == nil {
-		t.Fatal("expected error for 401 response, got nil")
-	}
-	if !strings.Contains(err.Error(), "invalid x-api-key") {
-		t.Errorf("expected error body in message, got: %v", err)
-	}
+	require.ErrorContains(t, err, "invalid x-api-key")
 }
 
-func TestAnthropicAdapter_HTTPErrorNoBody(t *testing.T) {
+func TestAnthropicAdapter_HTTPError_IncludesStatusWithoutBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -233,15 +197,10 @@ func TestAnthropicAdapter_HTTPErrorNoBody(t *testing.T) {
 		Model:     "claude-sonnet-4-6",
 		MaxTokens: 1024,
 	})
-	if err == nil {
-		t.Fatal("expected error for 500 response, got nil")
-	}
-	if !strings.Contains(err.Error(), "500") {
-		t.Errorf("expected status code in error, got: %v", err)
-	}
+	require.ErrorContains(t, err, "500")
 }
 
-func TestAnthropicAdapter_HTTPErrorBodyTruncated(t *testing.T) {
+func TestAnthropicAdapter_HTTPError_TruncatesLargeBody(t *testing.T) {
 	largeBody := strings.Repeat("x", 8192)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
@@ -256,17 +215,11 @@ func TestAnthropicAdapter_HTTPErrorBodyTruncated(t *testing.T) {
 		Model:     "claude-sonnet-4-6",
 		MaxTokens: 1024,
 	})
-	if err == nil {
-		t.Fatal("expected error for 400 response, got nil")
-	}
-	// Body should be truncated to 4096 bytes.
+	require.Error(t, err)
+	// The body is truncated to 4096 bytes.
 	errMsg := err.Error()
-	if len(errMsg) > 4200 {
-		t.Errorf("error message too large (%d chars), body should be truncated to 4096 bytes", len(errMsg))
-	}
-	if !strings.Contains(errMsg, "400") {
-		t.Errorf("expected status code in error, got: %v", err)
-	}
+	assert.LessOrEqual(t, len(errMsg), 4200, "error message should truncate the 8 KiB body")
+	assert.Contains(t, errMsg, "400")
 }
 
 // TestAnthropicAdapter_TransportError_DoesNotLeakCredentials drives the
@@ -276,15 +229,12 @@ func TestAnthropicAdapter_HTTPErrorBodyTruncated(t *testing.T) {
 // from Do embeds that URL and does not redact the query string, so the
 // wrapped error must report only the dial-level cause.
 func TestAnthropicAdapter_TransportError_DoesNotLeakCredentials(t *testing.T) {
-
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	closed := srv.URL
 	srv.Close()
 
 	u, err := url.Parse(closed)
-	if err != nil {
-		t.Fatalf("parse closed URL %q: %v", closed, err)
-	}
+	require.NoError(t, err, "parse closed URL %q", closed)
 	u.User = url.UserPassword("user", "pass")
 	u.RawQuery = "api_key=supersecret"
 
@@ -295,19 +245,13 @@ func TestAnthropicAdapter_TransportError_DoesNotLeakCredentials(t *testing.T) {
 		Model:     "claude-sonnet-4-6",
 		MaxTokens: 1024,
 	})
-	if err == nil {
-		t.Fatal("expected a transport error dialing a closed port")
-	}
+	require.Error(t, err, "dialing a closed port must fail")
 	msg := err.Error()
-	if strings.Contains(msg, "supersecret") {
-		t.Errorf("transport error leaked the query secret: %q", msg)
-	}
-	if strings.Contains(msg, "user:pass") {
-		t.Errorf("transport error leaked userinfo: %q", msg)
-	}
+	assert.NotContains(t, msg, "supersecret", "transport error must not leak the query secret")
+	assert.NotContains(t, msg, "user:pass", "transport error must not leak userinfo")
 }
 
-func TestAnthropicAdapter_RequestBody(t *testing.T) {
+func TestAnthropicAdapter_RequestBody_WireFields(t *testing.T) {
 	var received struct {
 		Model        string          `json:"model"`
 		System       json.RawMessage `json:"system"`
@@ -316,10 +260,9 @@ func TestAnthropicAdapter_RequestBody(t *testing.T) {
 		Stream       bool            `json:"stream"`
 	}
 
+	// The handler runs on the server goroutine, so it reports with assert.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
-			t.Errorf("decode request body: %v", err)
-		}
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&received), "decode request body")
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, makeSSE("message_stop", `{}`))
@@ -336,28 +279,16 @@ func TestAnthropicAdapter_RequestBody(t *testing.T) {
 		Temperature: types.Float64Ptr(0.5),
 		CacheKey:    "k",
 	})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 
 	for range ch {
 	}
 
-	if !received.Stream {
-		t.Error("expected stream=true in request body")
-	}
-	if received.Model != "claude-sonnet-4-6" {
-		t.Errorf("model = %q, want claude-sonnet-4-6", received.Model)
-	}
-	if want := `[{"type":"text","text":"You are helpful.","cache_control":{"type":"ephemeral"}}]`; string(received.System) != want {
-		t.Errorf("system = %s, want %s", received.System, want)
-	}
-	if want := `{"type":"ephemeral"}`; string(received.CacheControl) != want {
-		t.Errorf("cache_control = %s, want %s", received.CacheControl, want)
-	}
-	if received.MaxTokens != 4096 {
-		t.Errorf("max_tokens = %d, want 4096", received.MaxTokens)
-	}
+	assert.True(t, received.Stream, "stream=true in request body")
+	assert.Equal(t, "claude-sonnet-4-6", received.Model)
+	assert.JSONEq(t, `[{"type":"text","text":"You are helpful.","cache_control":{"type":"ephemeral"}}]`, string(received.System))
+	assert.JSONEq(t, `{"type":"ephemeral"}`, string(received.CacheControl))
+	assert.Equal(t, 4096, received.MaxTokens)
 }
 
 // TestAnthropicAdapter_TemperatureWireShape pins the unset-vs-explicit-zero
@@ -395,22 +326,18 @@ func TestAnthropicAdapter_TemperatureWireShape(t *testing.T) {
 				MaxTokens:   1024,
 				Temperature: tc.temperature,
 			})
-			if err != nil {
-				t.Fatalf("Stream() error: %v", err)
-			}
+			require.NoError(t, err)
 			for range ch {
 			}
 
 			body := string(rawBody)
-			hasKey := strings.Contains(body, `"temperature"`)
-			if tc.wantTemperature && !hasKey {
-				t.Errorf("missing 'temperature' for non-nil pointer: %s", body)
+			if tc.wantTemperature {
+				require.Contains(t, body, `"temperature"`, "non-nil temperature must be serialised")
+			} else {
+				require.NotContains(t, body, `"temperature"`, "nil temperature must be omitted")
 			}
-			if !tc.wantTemperature && hasKey {
-				t.Errorf("contains 'temperature' for nil pointer (omitempty broken): %s", body)
-			}
-			if tc.wantTempSubstring != "" && !strings.Contains(body, tc.wantTempSubstring) {
-				t.Errorf("missing %q in body: %s", tc.wantTempSubstring, body)
+			if tc.wantTempSubstring != "" {
+				require.Contains(t, body, tc.wantTempSubstring)
 			}
 		})
 	}
@@ -423,19 +350,20 @@ func TestAnthropicAdapter_TemperatureWireShape(t *testing.T) {
 // these models. claude-sonnet-4-6 is the negative control.
 func TestAnthropicAdapter_TemperatureSuppressedForNoSamplingParamsModels(t *testing.T) {
 	cases := []struct {
+		name        string
 		model       string
 		wantOmitted bool
 	}{
-		{model: "claude-opus-4-7", wantOmitted: true},
-		{model: "claude-opus-4-8", wantOmitted: true},
-		{model: "claude-sonnet-5", wantOmitted: true},
-		{model: "claude-fable-5", wantOmitted: true},
-		{model: "claude-mythos-5", wantOmitted: true},
-		{model: "claude-sonnet-4-6", wantOmitted: false},
+		{name: "opus 4.7 omits temperature", model: "claude-opus-4-7", wantOmitted: true},
+		{name: "opus 4.8 omits temperature", model: "claude-opus-4-8", wantOmitted: true},
+		{name: "sonnet 5 omits temperature", model: "claude-sonnet-5", wantOmitted: true},
+		{name: "fable 5 omits temperature", model: "claude-fable-5", wantOmitted: true},
+		{name: "mythos 5 omits temperature", model: "claude-mythos-5", wantOmitted: true},
+		{name: "sonnet 4.6 keeps temperature", model: "claude-sonnet-4-6", wantOmitted: false},
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.model, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			var rawBody []byte
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				rawBody, _ = io.ReadAll(r.Body)
@@ -453,18 +381,14 @@ func TestAnthropicAdapter_TemperatureSuppressedForNoSamplingParamsModels(t *test
 				MaxTokens:   1024,
 				Temperature: types.Float64Ptr(0.1),
 			})
-			if err != nil {
-				t.Fatalf("Stream() error: %v", err)
-			}
+			require.NoError(t, err)
 			for range ch {
 			}
 
-			hasKey := strings.Contains(string(rawBody), `"temperature"`)
-			if tc.wantOmitted && hasKey {
-				t.Errorf("%s: body contains 'temperature' despite OmitSamplingParams suppression: %s", tc.model, rawBody)
-			}
-			if !tc.wantOmitted && !hasKey {
-				t.Errorf("%s: body missing 'temperature' (over-broad suppression?): %s", tc.model, rawBody)
+			if tc.wantOmitted {
+				require.NotContains(t, string(rawBody), `"temperature"`, "OmitSamplingParams must suppress temperature")
+			} else {
+				require.Contains(t, string(rawBody), `"temperature"`, "temperature must not be suppressed for this model")
 			}
 		})
 	}
@@ -505,23 +429,14 @@ func TestAnthropicAdapter_OmitSamplingParams_WarnsOnSuppressedTemperature(t *tes
 		MaxTokens:   4096,
 		Temperature: types.Float64Ptr(0.5),
 	})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	require.NoError(t, err)
 	for range ch {
 	}
 
 	logOutput := buf.String()
-	if !strings.Contains(logOutput, "anthropic quirks suppressed caller temperature") {
-		t.Errorf("warn log message absent from output: %s", logOutput)
-	}
-	const wantRule = "Claude Sonnet 5"
-	if !strings.Contains(logOutput, wantRule) {
-		t.Errorf("warn log missing rule description substring %q: %s", wantRule, logOutput)
-	}
-	if strings.Contains(logOutput, "0.5") {
-		t.Errorf("warn log leaks the suppressed temperature value: %s", logOutput)
-	}
+	assert.Contains(t, logOutput, "anthropic quirks suppressed caller temperature", "warn log message")
+	assert.Contains(t, logOutput, "Claude Sonnet 5", "warn log should name the suppressing rule")
+	assert.NotContains(t, logOutput, "0.5", "warn log must not leak the suppressed temperature")
 }
 
 // TestAnthropicAdapter_OmitSamplingParams_NoWarnWhenTemperatureUnset covers
@@ -551,18 +466,12 @@ func TestAnthropicAdapter_OmitSamplingParams_NoWarnWhenTemperatureUnset(t *testi
 		MaxTokens:   4096,
 		Temperature: nil,
 	})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	require.NoError(t, err)
 	for range ch {
 	}
 
-	if strings.Contains(string(rawBody), `"temperature"`) {
-		t.Errorf("body contains 'temperature' for nil Temperature on an omit-family model: %s", rawBody)
-	}
-	if strings.Contains(buf.String(), "anthropic quirks suppressed caller temperature") {
-		t.Errorf("warn log fired despite no caller-supplied Temperature to suppress: %s", buf.String())
-	}
+	assert.NotContains(t, string(rawBody), `"temperature"`, "nil temperature must be omitted on an omit-family model")
+	assert.NotContains(t, buf.String(), "anthropic quirks suppressed caller temperature", "no warn without a caller-supplied temperature")
 }
 
 // TestAnthropicAdapter_DebugLogListsAppliedRules pins the per-Stream debug
@@ -610,29 +519,23 @@ func TestAnthropicAdapter_DebugLogListsAppliedRules(t *testing.T) {
 					{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 				},
 			})
-			if err != nil {
-				t.Fatalf("Stream: %v", err)
-			}
+			require.NoError(t, err)
 			for range ch {
 			}
 
 			logOutput := buf.String()
-			if !strings.Contains(logOutput, "anthropic quirks resolved") {
-				t.Errorf("debug log message absent: %s", logOutput)
-			}
+			require.Contains(t, logOutput, "anthropic quirks resolved", "debug log message")
 			for _, want := range tc.wantRuleSubstrings {
-				if !strings.Contains(logOutput, want) {
-					t.Errorf("debug log missing rule substring %q: %s", want, logOutput)
-				}
+				require.Contains(t, logOutput, want, "debug log should list the applied rule")
 			}
 		})
 	}
 }
 
-// TestAnthropicAdapter_DebugLogsPromptCacheUsage pins the per-stream cache
+// TestAnthropicAdapter_DebugLog_PromptCacheUsage pins the per-stream cache
 // health line: one record carrying the three usage counts when
 // message_delta reports usage, and none when no input is reported.
-func TestAnthropicAdapter_DebugLogsPromptCacheUsage(t *testing.T) {
+func TestAnthropicAdapter_DebugLog_PromptCacheUsage(t *testing.T) {
 	stop := makeSSE("message_stop", `{}`)
 	cases := []struct {
 		name   string
@@ -670,9 +573,7 @@ func TestAnthropicAdapter_DebugLogsPromptCacheUsage(t *testing.T) {
 			adapter.Logger = slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 			ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "claude-sonnet-5-5", MaxTokens: 256})
-			if err != nil {
-				t.Fatalf("Stream: %v", err)
-			}
+			require.NoError(t, err)
 			for range ch {
 			}
 
@@ -680,35 +581,25 @@ func TestAnthropicAdapter_DebugLogsPromptCacheUsage(t *testing.T) {
 			dec := json.NewDecoder(&buf)
 			for dec.More() {
 				var rec map[string]any
-				if err := dec.Decode(&rec); err != nil {
-					t.Fatalf("decode log: %v", err)
-				}
+				require.NoError(t, dec.Decode(&rec), "decode log")
 				if rec["msg"] == "anthropic prompt cache" {
 					records = append(records, rec)
 				}
 			}
 			if tc.want == nil {
-				if len(records) != 0 {
-					t.Errorf("got %d prompt cache records, want 0: %v", len(records), records)
-				}
+				require.Empty(t, records, "prompt cache records")
 				return
 			}
-			if len(records) != 1 {
-				t.Fatalf("got %d prompt cache records, want 1: %v", len(records), records)
-			}
+			require.Len(t, records, 1, "prompt cache records")
 			for key, want := range tc.want {
-				if got := records[0][key]; got != want {
-					t.Errorf("%s = %v, want %v", key, got, want)
-				}
+				require.InDelta(t, want, records[0][key], 0, "log field %s", key)
 			}
-			if got := records[0]["provider.model"]; got != "claude-sonnet-5-5" {
-				t.Errorf("provider.model = %v, want claude-sonnet-5-5", got)
-			}
+			require.Equal(t, "claude-sonnet-5-5", records[0]["provider.model"])
 		})
 	}
 }
 
-func TestSSE_DeltaForUnknownIndex(t *testing.T) {
+func TestSSE_ContentDelta_UnknownIndexIsSkipped(t *testing.T) {
 	// Send a content_block_delta for an index that has no content_block_start.
 	// The adapter should skip it silently — no panic, no error event.
 	body := joinLines(
@@ -731,29 +622,19 @@ func TestSSE_DeltaForUnknownIndex(t *testing.T) {
 		Model:     "claude-sonnet-4-6",
 		MaxTokens: 1024,
 	})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 
 	events := collectEvents(t, ch)
 
 	for _, ev := range events {
-		if ev.Type == "error" {
-			t.Errorf("unexpected error event: %v", ev.Error)
-		}
-		if ev.Type == "text_delta" {
-			t.Errorf("unexpected text_delta event for unknown index: %q", ev.Text)
-		}
+		assert.NotEqual(t, "error", ev.Type, "unexpected error event: %v", ev.Error)
+		assert.NotEqual(t, "text_delta", ev.Type, "unexpected text_delta event for unknown index: %q", ev.Text)
 	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event (message_complete), got %d: %+v", len(events), events)
-	}
-	if events[0].Type != "message_complete" {
-		t.Errorf("event[0].Type = %q, want message_complete", events[0].Type)
-	}
+	require.Len(t, events, 1, "expected only message_complete: %+v", events)
+	require.Equal(t, "message_complete", events[0].Type)
 }
 
-func TestSSE_MalformedContentBlockStart(t *testing.T) {
+func TestSSE_MalformedContentBlockStart_EmitsErrorEvent(t *testing.T) {
 	body := joinLines(
 		makeSSE("content_block_start", `{not valid json`),
 		makeSSE("message_stop", `{}`),
@@ -773,28 +654,23 @@ func TestSSE_MalformedContentBlockStart(t *testing.T) {
 		Model:     "claude-sonnet-4-6",
 		MaxTokens: 1024,
 	})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 
 	events := collectEvents(t, ch)
 
-	foundError := false
+	var errorEvents []types.StreamEvent
 	for _, ev := range events {
 		if ev.Type == "error" {
-			foundError = true
-			if ev.Error == nil {
-				t.Error("error event has nil Error field")
-			}
+			errorEvents = append(errorEvents, ev)
 		}
 	}
-	if !foundError {
-		t.Error("expected an error event for malformed content_block_start JSON")
+	require.NotEmpty(t, errorEvents, "expected an error event for malformed content_block_start JSON")
+	for _, ev := range errorEvents {
+		assert.Error(t, ev.Error, "error event has nil Error field")
 	}
 }
 
-func TestSSE_MalformedToolInputMarksToolCall(t *testing.T) {
-
+func TestSSE_MalformedToolInput_MarksToolCall(t *testing.T) {
 	body := joinLines(
 		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"tool_use","id":"toolu_bad","name":"read_file"}}`),
 		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}`),
@@ -818,16 +694,13 @@ func TestSSE_MalformedToolInputMarksToolCall(t *testing.T) {
 		Model:     "claude-sonnet-4-6",
 		MaxTokens: 1024,
 	})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 
 	events := collectEvents(t, ch)
 	requireMarkedToolCall(t, events, "toolu_bad", "read_file", `{"path":INVALID`)
 }
 
-func TestSSE_MultipleBlocks(t *testing.T) {
-
+func TestSSE_MultipleToolBlocks_EmitSeparateToolCalls(t *testing.T) {
 	body := joinLines(
 		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"tool_use","id":"toolu_aaa","name":"read_file"}}`),
 		makeSSE("content_block_start", `{"index":1,"content_block":{"type":"tool_use","id":"toolu_bbb","name":"write_file"}}`),
@@ -853,49 +726,30 @@ func TestSSE_MultipleBlocks(t *testing.T) {
 		Model:     "claude-sonnet-4-6",
 		MaxTokens: 1024,
 	})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 
 	events := collectEvents(t, ch)
 
 	var toolCalls []types.StreamEvent
 	for _, ev := range events {
-		if ev.Type == "error" {
-			t.Fatalf("unexpected error event: %v", ev.Error)
-		}
+		require.NotEqual(t, "error", ev.Type, "unexpected error event: %v", ev.Error)
 		if ev.Type == "tool_call" {
 			toolCalls = append(toolCalls, ev)
 		}
 	}
 
-	if len(toolCalls) != 2 {
-		t.Fatalf("expected 2 tool_call events, got %d", len(toolCalls))
-	}
+	require.Len(t, toolCalls, 2, "expected 2 tool_call events")
 
-	if toolCalls[0].ID != "toolu_aaa" {
-		t.Errorf("toolCalls[0].ID = %q, want toolu_aaa", toolCalls[0].ID)
-	}
-	if toolCalls[0].Name != "read_file" {
-		t.Errorf("toolCalls[0].Name = %q, want read_file", toolCalls[0].Name)
-	}
-	if toolCalls[0].Input["path"] != "a.go" {
-		t.Errorf("toolCalls[0].Input[path] = %v, want a.go", toolCalls[0].Input["path"])
-	}
+	assert.Equal(t, "toolu_aaa", toolCalls[0].ID)
+	assert.Equal(t, "read_file", toolCalls[0].Name)
+	assert.Equal(t, "a.go", toolCalls[0].Input["path"])
 
-	if toolCalls[1].ID != "toolu_bbb" {
-		t.Errorf("toolCalls[1].ID = %q, want toolu_bbb", toolCalls[1].ID)
-	}
-	if toolCalls[1].Name != "write_file" {
-		t.Errorf("toolCalls[1].Name = %q, want write_file", toolCalls[1].Name)
-	}
-	if toolCalls[1].Input["path"] != "b.go" {
-		t.Errorf("toolCalls[1].Input[path] = %v, want b.go", toolCalls[1].Input["path"])
-	}
+	assert.Equal(t, "toolu_bbb", toolCalls[1].ID)
+	assert.Equal(t, "write_file", toolCalls[1].Name)
+	assert.Equal(t, "b.go", toolCalls[1].Input["path"])
 }
 
-func TestAnthropicAdapter_ContextCancellation(t *testing.T) {
-
+func TestAnthropicAdapter_ContextCancel_EndsWithErrorEvent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -917,30 +771,24 @@ func TestAnthropicAdapter_ContextCancellation(t *testing.T) {
 		Model:     "claude-sonnet-4-6",
 		MaxTokens: 1024,
 	})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 
 	cancel()
 
 	events := collectEvents(t, ch)
 
-	if len(events) == 0 {
-		t.Fatal("expected at least one event after cancellation")
-	}
+	require.NotEmpty(t, events, "expected at least one event after cancellation")
 	last := events[len(events)-1]
-	if last.Type != "error" {
-		t.Errorf("last event type = %q, want error", last.Type)
-	}
+	require.Equal(t, "error", last.Type)
 }
 
-// TestAnthropicAdapter_BearerClosureError asserts that a failure inside
+// TestAnthropicAdapter_BearerError_SkipsRequest asserts that a failure inside
 // the bearer closure (e.g. a federation source whose STS exchange
 // returned a 4xx) is surfaced synchronously by Stream without ever
 // hitting the upstream API.
-func TestAnthropicAdapter_BearerClosureError(t *testing.T) {
+func TestAnthropicAdapter_BearerError_SkipsRequest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		t.Fatal("anthropic adapter should not have hit the network when the bearer closure errors")
+		assert.Fail(t, "anthropic adapter should not have hit the network when the bearer closure errors")
 	}))
 	defer srv.Close()
 
@@ -951,29 +799,17 @@ func TestAnthropicAdapter_BearerClosureError(t *testing.T) {
 		Model:     "claude-sonnet-4-6",
 		MaxTokens: 16,
 	})
-	if err == nil {
-		t.Fatal("expected error from bearer closure failure")
-	}
-	if !strings.Contains(err.Error(), "STS returned 401") {
-		t.Errorf("error should preserve closure cause, got: %v", err)
-	}
+	require.Error(t, err, "expected error from bearer closure failure")
+	require.ErrorContains(t, err, "STS returned 401", "error should preserve closure cause")
 }
 
-func TestAnthropicAdapter_StreamingClientTimeouts(t *testing.T) {
+func TestAnthropicAdapter_StreamingClient_Timeouts(t *testing.T) {
 	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
-	if adapter.httpClient.Timeout != 0 {
-		t.Errorf("HTTP client Timeout = %v, want 0: a total deadline cuts long streams, which idleTimeoutBody bounds instead", adapter.httpClient.Timeout)
-	}
+	assert.Zero(t, adapter.httpClient.Timeout, "a total deadline cuts long streams, which idleTimeoutBody bounds instead")
 	tr, ok := adapter.httpClient.Transport.(*http.Transport)
-	if !ok {
-		t.Fatal("expected *http.Transport")
-	}
-	if tr.TLSHandshakeTimeout == 0 {
-		t.Error("TLSHandshakeTimeout should be non-zero")
-	}
-	if tr.ResponseHeaderTimeout == 0 {
-		t.Error("ResponseHeaderTimeout should be non-zero")
-	}
+	require.True(t, ok, "expected *http.Transport")
+	assert.NotZero(t, tr.TLSHandshakeTimeout, "TLSHandshakeTimeout should be non-zero")
+	assert.NotZero(t, tr.ResponseHeaderTimeout, "ResponseHeaderTimeout should be non-zero")
 }
 
 // providerHistogramFinder collects a named float64 histogram from a
@@ -981,9 +817,7 @@ func TestAnthropicAdapter_StreamingClientTimeouts(t *testing.T) {
 func providerHistogramFinder(t *testing.T, reader *sdkmetric.ManualReader, name string) (metricdata.Histogram[float64], bool) {
 	t.Helper()
 	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("Collect(): %v", err)
-	}
+	require.NoError(t, reader.Collect(context.Background(), &rm), "Collect()")
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
 			if m.Name != name {
@@ -1012,7 +846,7 @@ func providerHistogramTotalCount(t *testing.T, reader *sdkmetric.ManualReader, n
 	return total
 }
 
-func TestAnthropicAdapter_RecordsLatencyAndTTFB(t *testing.T) {
+func TestAnthropicAdapter_Metrics_RecordsLatencyAndTTFB(t *testing.T) {
 	body := joinLines(
 		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"text","text":""}}`),
 		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"text_delta","text":"Hi"}}`),
@@ -1032,9 +866,7 @@ func TestAnthropicAdapter_RecordsLatencyAndTTFB(t *testing.T) {
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 	metrics, err := observability.NewMetricsForTesting(provider)
-	if err != nil {
-		t.Fatalf("NewMetricsForTesting: %v", err)
-	}
+	require.NoError(t, err, "NewMetricsForTesting")
 
 	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
 	adapter.baseURL = srv.URL
@@ -1044,34 +876,25 @@ func TestAnthropicAdapter_RecordsLatencyAndTTFB(t *testing.T) {
 		Model:     "claude-sonnet-4-6",
 		MaxTokens: 1024,
 	})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	require.NoError(t, err)
 	for range ch {
 	}
 
-	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"); got != 1 {
-		t.Errorf("provider_latency count = %d, want 1", got)
-	}
-	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"); got != 1 {
-		t.Errorf("provider_ttfb count = %d, want 1", got)
-	}
+	assert.Equal(t, uint64(1), providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"), "provider_latency count")
+	assert.Equal(t, uint64(1), providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"), "provider_ttfb count")
 
 	h, ok := providerHistogramFinder(t, reader, "stirrup.harness.provider_latency")
-	if !ok || len(h.DataPoints) == 0 {
-		t.Fatal("expected at least one provider_latency data point")
-	}
+	require.True(t, ok, "provider_latency histogram is missing")
+	require.NotEmpty(t, h.DataPoints, "expected at least one provider_latency data point")
 	attrs := h.DataPoints[0].Attributes
-	if v, ok := attrs.Value("provider.type"); !ok || v.AsString() != "anthropic" {
-		t.Errorf("provider.type attr = %v ok=%v, want anthropic", v.AsString(), ok)
-	}
-	if v, ok := attrs.Value("provider.model"); !ok || v.AsString() != "claude-sonnet-4-6" {
-		t.Errorf("provider.model attr = %v ok=%v, want claude-sonnet-4-6", v.AsString(), ok)
-	}
+	v, ok := attrs.Value("provider.type")
+	assert.True(t, ok, "provider.type attribute is missing")
+	assert.Equal(t, "anthropic", v.AsString(), "provider.type attribute")
+	v, ok = attrs.Value("provider.model")
+	assert.True(t, ok, "provider.model attribute is missing")
+	assert.Equal(t, "claude-sonnet-4-6", v.AsString(), "provider.model attribute")
 
-	if got := providerHistogramTotalCount(t, reader, "gen_ai.client.operation.time_to_first_chunk"); got != 1 {
-		t.Errorf("time_to_first_chunk count = %d, want 1", got)
-	}
+	assert.Equal(t, uint64(1), providerHistogramTotalCount(t, reader, "gen_ai.client.operation.time_to_first_chunk"), "time_to_first_chunk count")
 	ttfc, _ := providerHistogramFinder(t, reader, "gen_ai.client.operation.time_to_first_chunk")
 	genAIAttrs := ttfc.DataPoints[0].Attributes
 	wantHost, wantPort := observability.ServerEndpointFromURL(srv.URL)
@@ -1081,18 +904,18 @@ func TestAnthropicAdapter_RecordsLatencyAndTTFB(t *testing.T) {
 		"gen_ai.request.model":  "claude-sonnet-4-6",
 		"server.address":        wantHost,
 	} {
-		if v, ok := genAIAttrs.Value(attribute.Key(key)); !ok || v.AsString() != want {
-			t.Errorf("time_to_first_chunk %s = %q ok=%v, want %q", key, v.AsString(), ok, want)
-		}
+		v, ok := genAIAttrs.Value(attribute.Key(key))
+		assert.True(t, ok, "time_to_first_chunk %s is missing", key)
+		assert.Equal(t, want, v.AsString(), "time_to_first_chunk %s", key)
 	}
-	if v, ok := genAIAttrs.Value("server.port"); !ok || v.AsInt64() != int64(wantPort) {
-		t.Errorf("time_to_first_chunk server.port = %d ok=%v, want %d", v.AsInt64(), ok, wantPort)
-	}
+	v, ok = genAIAttrs.Value("server.port")
+	assert.True(t, ok, "time_to_first_chunk server.port is missing")
+	assert.Equal(t, int64(wantPort), v.AsInt64(), "time_to_first_chunk server.port")
 }
 
 // On HTTP error, latency must still be recorded (one sample) but TTFB must not
 // fire because no stream events were observed.
-func TestAnthropicAdapter_RecordsLatencyOnHTTPError(t *testing.T) {
+func TestAnthropicAdapter_Metrics_RecordsLatencyOnHTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = fmt.Fprint(w, `{"error":{"message":"bad key"}}`)
@@ -1103,40 +926,29 @@ func TestAnthropicAdapter_RecordsLatencyOnHTTPError(t *testing.T) {
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 	metrics, err := observability.NewMetricsForTesting(provider)
-	if err != nil {
-		t.Fatalf("NewMetricsForTesting: %v", err)
-	}
+	require.NoError(t, err, "NewMetricsForTesting")
 
 	adapter := NewAnthropicAdapter(staticBearer("bad-key"), AuthModeAPIKey)
 	adapter.baseURL = srv.URL
 	adapter.Metrics = metrics
 
-	if _, err := adapter.Stream(context.Background(), types.StreamParams{
+	_, err = adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "claude-sonnet-4-6",
 		MaxTokens: 1024,
-	}); err == nil {
-		t.Fatal("expected error")
-	}
+	})
+	require.Error(t, err)
 
-	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"); got != 1 {
-		t.Errorf("provider_latency count = %d, want 1 (error path still records)", got)
-	}
-	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"); got != 0 {
-		t.Errorf("provider_ttfb count = %d, want 0 (no stream observed)", got)
-	}
+	assert.Equal(t, uint64(1), providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"), "provider_latency count (error path still records)")
+	assert.Equal(t, uint64(0), providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"), "provider_ttfb count (no stream observed)")
 }
 
-// TestAnthropicAdapter_StaticKeyModeUsesXApiKey asserts that AuthModeAPIKey
+// TestAnthropicAdapter_APIKeyMode_UsesXApiKeyHeader asserts that AuthModeAPIKey
 // sends the credential in the x-api-key header and does NOT set
 // Authorization.
-func TestAnthropicAdapter_StaticKeyModeUsesXApiKey(t *testing.T) {
+func TestAnthropicAdapter_APIKeyMode_UsesXApiKeyHeader(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("x-api-key"); got != "sk-ant-api03-fake" {
-			t.Errorf("x-api-key = %q, want sk-ant-api03-fake", got)
-		}
-		if got := r.Header.Get("Authorization"); got != "" {
-			t.Errorf("Authorization should be empty in API key mode, got %q", got)
-		}
+		assert.Equal(t, "sk-ant-api03-fake", r.Header.Get("x-api-key"), "x-api-key header")
+		assert.Empty(t, r.Header.Get("Authorization"), "Authorization should be empty in API key mode")
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, makeSSE("message_stop", `{}`))
@@ -1150,25 +962,19 @@ func TestAnthropicAdapter_StaticKeyModeUsesXApiKey(t *testing.T) {
 		Model:     "claude-sonnet-4-6",
 		MaxTokens: 16,
 	})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	require.NoError(t, err)
 	for range ch {
 	}
 }
 
-// TestAnthropicAdapter_WIFModeUsesAuthorizationBearer asserts that
+// TestAnthropicAdapter_BearerMode_UsesAuthorizationHeader asserts that
 // AuthModeBearer sends the credential as Authorization: Bearer and does
 // NOT set x-api-key. WIF OAuth access tokens (sk-ant-oat01-...) are
 // rejected by Anthropic's /v1/messages endpoint when sent via x-api-key.
-func TestAnthropicAdapter_WIFModeUsesAuthorizationBearer(t *testing.T) {
+func TestAnthropicAdapter_BearerMode_UsesAuthorizationHeader(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer sk-ant-oat01-fake" {
-			t.Errorf("Authorization = %q, want Bearer sk-ant-oat01-fake", got)
-		}
-		if got := r.Header.Get("x-api-key"); got != "" {
-			t.Errorf("x-api-key should be empty in WIF mode, got %q", got)
-		}
+		assert.Equal(t, "Bearer sk-ant-oat01-fake", r.Header.Get("Authorization"), "Authorization header")
+		assert.Empty(t, r.Header.Get("x-api-key"), "x-api-key should be empty in WIF mode")
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, makeSSE("message_stop", `{}`))
@@ -1182,9 +988,7 @@ func TestAnthropicAdapter_WIFModeUsesAuthorizationBearer(t *testing.T) {
 		Model:     "claude-sonnet-4-6",
 		MaxTokens: 16,
 	})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	require.NoError(t, err)
 	for range ch {
 	}
 }
@@ -1237,22 +1041,14 @@ func TestAnthropic_ThoughtSignatureNotLeakedToAnthropicAPI(t *testing.T) {
 		Messages:  messages,
 		MaxTokens: 16,
 	})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	require.NoError(t, err)
 	for range ch {
 	}
 
-	if len(capturedBody) == 0 {
-		t.Fatal("expected the Anthropic server to receive a request body")
-	}
+	require.NotEmpty(t, capturedBody, "expected the Anthropic server to receive a request body")
 	bodyStr := string(capturedBody)
-	if strings.Contains(bodyStr, "thought_signature") {
-		t.Errorf("Anthropic request body contains \"thought_signature\" — Gemini-private state leaked to Anthropic API.\nbody = %s", bodyStr)
-	}
-	if strings.Contains(bodyStr, sig) {
-		t.Errorf("Anthropic request body contains the signature value %q.\nbody = %s", sig, bodyStr)
-	}
+	assert.NotContains(t, bodyStr, "thought_signature", "Gemini-private state must not reach the Anthropic API")
+	assert.NotContains(t, bodyStr, sig, "the thought signature value must not reach the Anthropic API")
 }
 
 // fastRetryPolicy returns a RetryPolicy with millisecond-scale delays so
@@ -1268,9 +1064,9 @@ func fastRetryPolicy() RetryPolicy {
 	}
 }
 
-// TestAnthropicAdapter_RetriesOn429ThenSucceeds asserts providerRetry
+// TestAnthropicAdapter_Retry_SucceedsAfter429 asserts providerRetry
 // applies on the Anthropic adapter, not just openai-compatible.
-func TestAnthropicAdapter_RetriesOn429ThenSucceeds(t *testing.T) {
+func TestAnthropicAdapter_Retry_SucceedsAfter429(t *testing.T) {
 	var attempts int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if atomic.AddInt32(&attempts, 1) == 1 {
@@ -1291,14 +1087,10 @@ func TestAnthropicAdapter_RetriesOn429ThenSucceeds(t *testing.T) {
 		Model:     "claude-sonnet-4-6",
 		MaxTokens: 1024,
 	})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 	collectEvents(t, ch)
 
-	if got := atomic.LoadInt32(&attempts); got != 2 {
-		t.Fatalf("server attempts: got %d, want 2 (one 429, one success)", got)
-	}
+	require.Equal(t, int32(2), atomic.LoadInt32(&attempts), "server attempts: one 429, then one success")
 }
 
 // TestAnthropicAdapter_RetryDisabled_ExactlyOneAttempt asserts that a zero
@@ -1320,12 +1112,8 @@ func TestAnthropicAdapter_RetryDisabled_ExactlyOneAttempt(t *testing.T) {
 		Model:     "claude-sonnet-4-6",
 		MaxTokens: 1024,
 	})
-	if err == nil {
-		t.Fatal("expected an error for a persistent 429 with retry disabled")
-	}
-	if got := atomic.LoadInt32(&attempts); got != 1 {
-		t.Fatalf("server attempts: got %d, want 1", got)
-	}
+	require.Error(t, err, "a persistent 429 with retry disabled must fail")
+	require.Equal(t, int32(1), atomic.LoadInt32(&attempts), "server attempts")
 }
 
 // TestAnthropicAdapter_StreamFailureAfterStartIsNotRetried asserts the
@@ -1348,12 +1136,13 @@ func TestAnthropicAdapter_StreamFailureAfterStartIsNotRetried(t *testing.T) {
 			f.Flush()
 		}
 		hj, ok := w.(http.Hijacker)
-		if !ok {
-			t.Fatal("ResponseWriter does not support Hijack")
+		// Runs on the server goroutine, so failures use assert rather than require.
+		if !assert.True(t, ok, "ResponseWriter does not support Hijack") {
+			return
 		}
 		conn, _, err := hj.Hijack()
-		if err != nil {
-			t.Fatalf("hijack: %v", err)
+		if !assert.NoError(t, err, "hijack") {
+			return
 		}
 		_ = conn.Close()
 	}))
@@ -1367,21 +1156,14 @@ func TestAnthropicAdapter_StreamFailureAfterStartIsNotRetried(t *testing.T) {
 		Model:     "claude-sonnet-4-6",
 		MaxTokens: 1024,
 	})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 
 	events := collectEvents(t, ch)
-	if len(events) == 0 {
-		t.Fatal("expected at least the pre-drop text_delta event")
-	}
-	if last := events[len(events)-1]; last.Type != "error" {
-		t.Errorf("expected a terminal error event after the mid-stream drop, got %+v", last)
-	}
+	require.NotEmpty(t, events, "expected at least the pre-drop text_delta event")
+	last := events[len(events)-1]
+	assert.Equal(t, "error", last.Type, "terminal event after the mid-stream drop: %+v", last)
 
-	if got := atomic.LoadInt32(&attempts); got != 1 {
-		t.Fatalf("server attempts: got %d, want 1 — a mid-stream failure must not be retried", got)
-	}
+	require.Equal(t, int32(1), atomic.LoadInt32(&attempts), "a mid-stream failure must not be retried")
 }
 
 // streamAnthropicSSE serves body as a 200 SSE response and returns every
@@ -1402,13 +1184,11 @@ func streamAnthropicSSE(t *testing.T, body string) []types.StreamEvent {
 		Model:     "claude-sonnet-5-5",
 		MaxTokens: 1024,
 	})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	require.NoError(t, err)
 	return collectEvents(t, ch)
 }
 
-func TestSSE_MessageDeltaRefusalCarriesStopDetails(t *testing.T) {
+func TestSSE_MessageDeltaRefusal_CarriesStopDetails(t *testing.T) {
 	events := streamAnthropicSSE(t, joinLines(
 		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"text","text":""}}`),
 		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"text_delta","text":"I can't help with that."}}`),
@@ -1418,36 +1198,30 @@ func TestSSE_MessageDeltaRefusalCarriesStopDetails(t *testing.T) {
 	))
 
 	last := events[len(events)-1]
-	if last.Type != "message_complete" || last.StopReason != "refusal" {
-		t.Fatalf("last event = %+v, want message_complete/refusal", last)
-	}
+	require.Equal(t, "message_complete", last.Type)
+	require.Equal(t, "refusal", last.StopReason)
 	want := types.StopDetails{
 		Type:        "refusal",
 		Category:    "cyber",
 		Explanation: "This request was declined because it conflicts with Anthropic's Usage Policy.",
 	}
-	if last.StopDetails == nil || *last.StopDetails != want {
-		t.Errorf("StopDetails = %+v, want %+v", last.StopDetails, want)
-	}
-	if last.OutputTokens != 12 {
-		t.Errorf("OutputTokens = %d, want 12", last.OutputTokens)
-	}
+	require.NotNil(t, last.StopDetails)
+	assert.Equal(t, want, *last.StopDetails)
+	assert.Equal(t, 12, last.OutputTokens)
 }
 
-func TestSSE_MessageDeltaRefusalNullCategory(t *testing.T) {
+func TestSSE_MessageDeltaRefusal_NullCategory(t *testing.T) {
 	events := streamAnthropicSSE(t, joinLines(
 		makeSSE("message_delta", `{"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"type":"refusal","category":null,"explanation":null}}}`),
 		makeSSE("message_stop", `{"type":"message_stop"}`),
 	))
 
 	last := events[len(events)-1]
-	want := types.StopDetails{Type: "refusal"}
-	if last.StopDetails == nil || *last.StopDetails != want {
-		t.Errorf("StopDetails = %+v, want %+v", last.StopDetails, want)
-	}
+	require.NotNil(t, last.StopDetails)
+	require.Equal(t, types.StopDetails{Type: "refusal"}, *last.StopDetails)
 }
 
-func TestSSE_MessageDeltaStopDetailsAbsentOrUnparseable(t *testing.T) {
+func TestSSE_MessageDeltaStopDetails_AbsentOrUnparseable(t *testing.T) {
 	cases := map[string]string{
 		"null":       `{"delta":{"stop_reason":"end_turn","stop_details":null}}`,
 		"absent":     `{"delta":{"stop_reason":"end_turn"}}`,
@@ -1460,32 +1234,25 @@ func TestSSE_MessageDeltaStopDetailsAbsentOrUnparseable(t *testing.T) {
 				makeSSE("message_delta", delta),
 				makeSSE("message_stop", `{}`),
 			))
-			if len(events) != 1 {
-				t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
-			}
-			if events[0].Type != "message_complete" || events[0].StopReason != "end_turn" {
-				t.Errorf("event = %+v, want message_complete/end_turn", events[0])
-			}
-			if events[0].StopDetails != nil {
-				t.Errorf("StopDetails = %+v, want nil", events[0].StopDetails)
-			}
+			require.Len(t, events, 1, "events: %+v", events)
+			require.Equal(t, "message_complete", events[0].Type)
+			require.Equal(t, "end_turn", events[0].StopReason)
+			require.Nil(t, events[0].StopDetails)
 		})
 	}
 }
 
-// TestSSE_MessageDeltaStopDetailsWrongShapeKeepsValidFields pins that a
+// TestSSE_MessageDeltaStopDetails_WrongShapeKeepsValidFields pins that a
 // malformed field degrades on its own: the refusal type survives a
 // category of the wrong JSON type.
-func TestSSE_MessageDeltaStopDetailsWrongShapeKeepsValidFields(t *testing.T) {
+func TestSSE_MessageDeltaStopDetails_WrongShapeKeepsValidFields(t *testing.T) {
 	events := streamAnthropicSSE(t, joinLines(
 		makeSSE("message_delta", `{"delta":{"stop_reason":"refusal","stop_details":{"type":"refusal","category":{"nested":true},"explanation":42}}}`),
 		makeSSE("message_stop", `{}`),
 	))
 	last := events[len(events)-1]
-	want := types.StopDetails{Type: "refusal", Category: "other"}
-	if last.StopDetails == nil || *last.StopDetails != want {
-		t.Errorf("StopDetails = %+v, want %+v", last.StopDetails, want)
-	}
+	require.NotNil(t, last.StopDetails)
+	require.Equal(t, types.StopDetails{Type: "refusal", Category: "other"}, *last.StopDetails)
 }
 
 func TestParseAnthropicStopDetails_BoundsAndCategories(t *testing.T) {
@@ -1529,12 +1296,9 @@ func TestParseAnthropicStopDetails_BoundsAndCategories(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := parseAnthropicStopDetails(json.RawMessage(tc.raw))
-			if got == nil || *got != tc.want {
-				t.Errorf("parseAnthropicStopDetails(%s) = %+v, want %+v", tc.raw, got, tc.want)
-			}
-			if got != nil && !utf8.ValidString(got.Explanation) {
-				t.Errorf("Explanation %q is not valid UTF-8", got.Explanation)
-			}
+			require.NotNil(t, got)
+			require.Equal(t, tc.want, *got)
+			require.True(t, utf8.ValidString(got.Explanation), "explanation %q is not valid UTF-8", got.Explanation)
 		})
 	}
 }
@@ -1548,19 +1312,11 @@ func TestSSE_ErrorEventSurfacesErrorType(t *testing.T) {
 		makeSSE("message_stop", `{}`),
 	))
 
-	if len(events) != 2 {
-		t.Fatalf("expected text_delta then error, got %d events: %+v", len(events), events)
-	}
-	if events[0].Type != "text_delta" {
-		t.Errorf("event[0] = %+v, want text_delta", events[0])
-	}
+	require.Len(t, events, 2, "events: %+v", events)
+	assert.Equal(t, "text_delta", events[0].Type)
 	last := events[1]
-	if last.Type != "error" || last.Error == nil {
-		t.Fatalf("event[1] = %+v, want an error event", last)
-	}
-	if got, want := last.Error.Error(), "anthropic API stream error (overloaded_error): Overloaded"; got != want {
-		t.Errorf("error = %q, want %q", got, want)
-	}
+	require.Equal(t, "error", last.Type)
+	require.EqualError(t, last.Error, "anthropic API stream error (overloaded_error): Overloaded")
 }
 
 func TestSSE_ErrorEventBeforeContent(t *testing.T) {
@@ -1568,12 +1324,9 @@ func TestSSE_ErrorEventBeforeContent(t *testing.T) {
 		makeSSE("error", `{"type":"error","error":{"type":"api_error","message":"Internal server error"}}`),
 		makeSSE("message_stop", `{}`),
 	))
-	if len(events) != 1 || events[0].Type != "error" || events[0].Error == nil {
-		t.Fatalf("events = %+v, want a single error event", events)
-	}
-	if got, want := events[0].Error.Error(), "anthropic API stream error (api_error): Internal server error"; got != want {
-		t.Errorf("error = %q, want %q", got, want)
-	}
+	require.Len(t, events, 1, "events: %+v", events)
+	require.Equal(t, "error", events[0].Type)
+	require.EqualError(t, events[0].Error, "anthropic API stream error (api_error): Internal server error")
 }
 
 func TestSSE_TruncatedErrorEventData(t *testing.T) {
@@ -1583,23 +1336,23 @@ func TestSSE_TruncatedErrorEventData(t *testing.T) {
 		makeSSE("error", `{"type":"error","error":{"type":"overloaded_er`),
 	))
 	last := events[len(events)-1]
-	if last.Type != "error" || last.Error == nil {
-		t.Fatalf("last event = %+v, want an error event", last)
-	}
-	if got, want := last.Error.Error(), "anthropic API stream error"; got != want {
-		t.Errorf("error = %q, want %q", got, want)
-	}
+	require.Equal(t, "error", last.Type)
+	require.EqualError(t, last.Error, "anthropic API stream error")
 }
 
 func TestAnthropicStreamError_DegenerateBodies(t *testing.T) {
-	cases := map[string]string{
-		`{"error":{"message":"boom"}}`: "anthropic API stream error: boom",
-		`{}`:                           "anthropic API stream error",
-		`not json`:                     "anthropic API stream error",
+	cases := []struct {
+		name string
+		data string
+		want string
+	}{
+		{name: "error message", data: `{"error":{"message":"boom"}}`, want: "anthropic API stream error: boom"},
+		{name: "empty object", data: `{}`, want: "anthropic API stream error"},
+		{name: "not json", data: `not json`, want: "anthropic API stream error"},
 	}
-	for data, want := range cases {
-		if got := anthropicStreamError(data).Error(); got != want {
-			t.Errorf("anthropicStreamError(%q) = %q, want %q", data, got, want)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, anthropicStreamError(tc.data).Error())
+		})
 	}
 }

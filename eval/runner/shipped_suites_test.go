@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/eval/spec"
 )
 
@@ -13,29 +15,19 @@ import (
 // is caught before an operator runs it.
 func TestShippedSuites_DryRunValidates(t *testing.T) {
 	paths, err := filepath.Glob(filepath.Join("..", "suites", "*.hcl"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(paths) == 0 {
-		t.Fatal("no shipped suites found")
-	}
+	require.NoError(t, err)
+	require.NotEmpty(t, paths, "no shipped suites found")
 	for _, path := range paths {
 		t.Run(filepath.Base(path), func(t *testing.T) {
 			suite, err := spec.LoadSuiteHCL(path)
-			if err != nil {
-				t.Fatalf("LoadSuiteHCL: %v", err)
-			}
+			require.NoError(t, err, "LoadSuiteHCL")
 			result, err := RunSuite(context.Background(), suite, RunConfig{DryRun: true})
-			if err != nil {
-				t.Fatalf("RunSuite: %v", err)
-			}
-			if len(result.Tasks) == 0 {
-				t.Fatal("suite has no tasks")
-			}
+			require.NoError(t, err, "RunSuite")
+			require.NotEmpty(t, result.Tasks, "suite has no tasks")
 			for _, task := range result.Tasks {
-				if task.Outcome != "pass" {
-					t.Errorf("task %s: outcome %q, error %q", task.TaskID, task.Outcome, task.Error)
-				}
+				t.Run(task.TaskID, func(t *testing.T) {
+					require.Equal(t, "pass", task.Outcome, "task error %q", task.Error)
+				})
 			}
 		})
 	}

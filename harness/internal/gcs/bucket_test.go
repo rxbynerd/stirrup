@@ -6,9 +6,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestBucketAccessible_OK(t *testing.T) {
+func TestBucketAccessible_GetsBucketMetadataWithBearer(t *testing.T) {
 	var gotMethod, gotPath, gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
@@ -24,21 +27,15 @@ func TestBucketAccessible_OK(t *testing.T) {
 		Bearer:          staticBearer("tok"),
 		EndpointBaseURL: srv.URL,
 	})
-	if err != nil {
-		t.Fatalf("BucketAccessible: unexpected error: %v", err)
-	}
-	if gotMethod != http.MethodGet {
-		t.Errorf("method = %q, want GET (read-only)", gotMethod)
-	}
-	if !strings.HasSuffix(gotPath, "/storage/v1/b/my-bucket") {
-		t.Errorf("path = %q, want bucket-metadata route", gotPath)
-	}
-	if gotAuth != "Bearer tok" {
-		t.Errorf("auth = %q, want bearer token applied", gotAuth)
-	}
+	require.NoError(t, err)
+
+	assert.Equal(t, http.MethodGet, gotMethod, "probe must be read-only")
+	assert.Truef(t, strings.HasSuffix(gotPath, "/storage/v1/b/my-bucket"),
+		"path = %q, want bucket-metadata route", gotPath)
+	assert.Equal(t, "Bearer tok", gotAuth, "bearer token must be applied")
 }
 
-func TestBucketAccessible_NotFound(t *testing.T) {
+func TestBucketAccessible_NotFoundErrorNamesStatusAndBucket(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"error":{"message":"not found"}}`))
@@ -50,17 +47,12 @@ func TestBucketAccessible_NotFound(t *testing.T) {
 		Bearer:          staticBearer("tok"),
 		EndpointBaseURL: srv.URL,
 	})
-	if err == nil {
-		t.Fatal("BucketAccessible: expected error for 404")
-	}
-	if !strings.Contains(err.Error(), "404") || !strings.Contains(err.Error(), "missing") {
-		t.Errorf("error should carry status and bucket name, got: %v", err)
-	}
+	require.Error(t, err)
+	require.ErrorContains(t, err, "404", "error should carry the HTTP status")
+	require.ErrorContains(t, err, "missing", "error should carry the bucket name")
 }
 
 func TestBucketAccessible_RequiresBearer(t *testing.T) {
 	err := BucketAccessible(context.Background(), http.DefaultClient, BucketProbeOptions{Bucket: "b"})
-	if err == nil {
-		t.Fatal("expected error when bearer is nil")
-	}
+	require.Error(t, err, "bearer is nil")
 }

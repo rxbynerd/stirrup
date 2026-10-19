@@ -6,6 +6,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
@@ -29,9 +31,7 @@ func newRecorder(t *testing.T, inner PermissionPolicy, policy string) (Permissio
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	m, err := observability.NewMetricsForTesting(provider)
-	if err != nil {
-		t.Fatalf("NewMetricsForTesting: %v", err)
-	}
+	require.NoError(t, err)
 	return NewMetricRecorder(inner, m, policy), reader
 }
 
@@ -42,27 +42,14 @@ func TestMetricRecorder_RecordsAllow(t *testing.T) {
 		&stubPolicy{result: &PermissionResult{Allowed: true}},
 		"allow-all",
 	)
-	if _, err := rec.Check(context.Background(), types.ToolDefinition{Name: "read_file"}, nil); err != nil {
-		t.Fatalf("Check: %v", err)
-	}
+	_, err := rec.Check(context.Background(), types.ToolDefinition{Name: "read_file"}, nil)
+	require.NoError(t, err)
 
-	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
-	dps := collectInt64Counters(t, rm, "stirrup.permission.decisions")
-	if len(dps) != 1 {
-		t.Fatalf("expected 1 decision, got %d", len(dps))
-	}
-	if dps[0].attrs["decision"] != "allow" {
-		t.Errorf("decision = %q, want allow", dps[0].attrs["decision"])
-	}
-	if dps[0].attrs["policy"] != "allow-all" {
-		t.Errorf("policy = %q, want allow-all", dps[0].attrs["policy"])
-	}
-	if dps[0].attrs["tool"] != "read_file" {
-		t.Errorf("tool = %q, want read_file", dps[0].attrs["tool"])
-	}
+	dps := collectDecisions(t, reader)
+	require.Len(t, dps, 1)
+	assert.Equal(t, "allow", dps[0].attrs["decision"])
+	assert.Equal(t, "allow-all", dps[0].attrs["policy"])
+	assert.Equal(t, "read_file", dps[0].attrs["tool"])
 }
 
 // TestMetricRecorder_RecordsDeny verifies decision="deny" on a
@@ -72,24 +59,13 @@ func TestMetricRecorder_RecordsDeny(t *testing.T) {
 		&stubPolicy{result: &PermissionResult{Allowed: false, Reason: "no"}},
 		"deny-side-effects",
 	)
-	if _, err := rec.Check(context.Background(), types.ToolDefinition{Name: "write_file"}, nil); err != nil {
-		t.Fatalf("Check: %v", err)
-	}
+	_, err := rec.Check(context.Background(), types.ToolDefinition{Name: "write_file"}, nil)
+	require.NoError(t, err)
 
-	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
-	dps := collectInt64Counters(t, rm, "stirrup.permission.decisions")
-	if len(dps) != 1 {
-		t.Fatalf("expected 1 decision, got %d", len(dps))
-	}
-	if dps[0].attrs["decision"] != "deny" {
-		t.Errorf("decision = %q, want deny", dps[0].attrs["decision"])
-	}
-	if dps[0].attrs["policy"] != "deny-side-effects" {
-		t.Errorf("policy = %q, want deny-side-effects", dps[0].attrs["policy"])
-	}
+	dps := collectDecisions(t, reader)
+	require.Len(t, dps, 1)
+	assert.Equal(t, "deny", dps[0].attrs["decision"])
+	assert.Equal(t, "deny-side-effects", dps[0].attrs["policy"])
 }
 
 // TestMetricRecorder_RecordsError verifies decision="error" when the
@@ -99,79 +75,51 @@ func TestMetricRecorder_RecordsError(t *testing.T) {
 		&stubPolicy{err: errors.New("transport failed")},
 		"ask-upstream",
 	)
-	_, gotErr := rec.Check(context.Background(), types.ToolDefinition{Name: "spawn_agent"}, nil)
-	if gotErr == nil {
-		t.Fatal("expected error to propagate")
-	}
+	_, err := rec.Check(context.Background(), types.ToolDefinition{Name: "spawn_agent"}, nil)
+	require.Error(t, err, "expected error to propagate")
 
-	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
-	dps := collectInt64Counters(t, rm, "stirrup.permission.decisions")
-	if len(dps) != 1 {
-		t.Fatalf("expected 1 decision, got %d", len(dps))
-	}
-	if dps[0].attrs["decision"] != "error" {
-		t.Errorf("decision = %q, want error", dps[0].attrs["decision"])
-	}
-	if dps[0].attrs["policy"] != "ask-upstream" {
-		t.Errorf("policy = %q, want ask-upstream", dps[0].attrs["policy"])
-	}
+	dps := collectDecisions(t, reader)
+	require.Len(t, dps, 1)
+	assert.Equal(t, "error", dps[0].attrs["decision"])
+	assert.Equal(t, "ask-upstream", dps[0].attrs["policy"])
 }
 
-// TestMetricRecorder_NilMetricsReturnsInner verifies the wrapper has
+// TestMetricRecorder_NilMetrics_ReturnsInner verifies the wrapper has
 // zero overhead when metrics are disabled.
-func TestMetricRecorder_NilMetricsReturnsInner(t *testing.T) {
+func TestMetricRecorder_NilMetrics_ReturnsInner(t *testing.T) {
 	inner := &stubPolicy{result: &PermissionResult{Allowed: true}}
 	got := NewMetricRecorder(inner, nil, "allow-all")
-	if got != inner {
-		t.Errorf("nil metrics must return inner unchanged")
-	}
+	require.Same(t, inner, got, "nil metrics must return inner unchanged")
 }
 
 // TestUnwrap_PassesThroughWrapper verifies the standalone Unwrap helper
 // returns the inner policy when wrapped, and the policy itself when not.
 func TestUnwrap_PassesThroughWrapper(t *testing.T) {
 	inner := &stubPolicy{result: &PermissionResult{Allowed: true}}
-	if Unwrap(inner) != inner {
-		t.Error("Unwrap on unwrapped policy must return self")
-	}
 
-	rec, _ := newRecorder(t, inner, "allow-all")
-	if Unwrap(rec) != inner {
-		t.Error("Unwrap on wrapped policy must return inner")
-	}
+	t.Run("unwrapped policy returns itself", func(t *testing.T) {
+		require.Same(t, inner, Unwrap(inner))
+	})
+
+	t.Run("wrapped policy returns inner", func(t *testing.T) {
+		rec, _ := newRecorder(t, inner, "allow-all")
+		require.Same(t, inner, Unwrap(rec))
+	})
 }
 
-// TestMetricRecorder_AddApprovalToolViaUnwrap verifies that callers
-// can reach the inner AskUpstreamPolicy through Unwrap to register
-// late-arriving approval tools. Without this access path,
-// wrapping ask-upstream would silently auto-allow tools registered
-// after policy construction (e.g. spawn_agent). The wrapper does not
-// expose its own AddApprovalTool — the canonical entry point is
-// Unwrap, which is uniform across wrapped and unwrapped policies.
-func TestMetricRecorder_AddApprovalToolViaUnwrap(t *testing.T) {
+// TestMetricRecorder_Unwrap_AddsApprovalTools verifies that callers can
+// reach the inner AskUpstreamPolicy through Unwrap to register tools that
+// arrive after construction. The wrapper has no AddApprovalTool of its
+// own, so an unreachable inner policy would auto-allow those tools.
+func TestMetricRecorder_Unwrap_AddsApprovalTools(t *testing.T) {
 	ask := NewAskUpstreamPolicy(nopTransport{}, map[string]bool{}, 0)
 	rec, _ := newRecorder(t, ask, "ask-upstream")
 
 	inner, ok := Unwrap(rec).(*AskUpstreamPolicy)
-	if !ok {
-		t.Fatalf("Unwrap should reach *AskUpstreamPolicy through the metric wrapper, got %T", Unwrap(rec))
-	}
+	require.True(t, ok, "Unwrap should reach *AskUpstreamPolicy through the metric wrapper, got %T", Unwrap(rec))
 	inner.AddApprovalTool("late_tool")
 
-	got := ask.ApprovalToolNames()
-	var found bool
-	for _, n := range got {
-		if n == "late_tool" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("late_tool not in approval set; got %v", got)
-	}
+	require.Contains(t, ask.ApprovalToolNames(), "late_tool")
 }
 
 // nopTransport is a Transport stub for tests that need an
@@ -188,6 +136,15 @@ type counterDataPoint struct {
 	attrs map[string]string
 }
 
+// collectDecisions returns the data points recorded on the permission
+// decision counter since the reader was created.
+func collectDecisions(t *testing.T, reader *sdkmetric.ManualReader) []counterDataPoint {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+	return collectInt64Counters(t, rm, "stirrup.permission.decisions")
+}
+
 func collectInt64Counters(t *testing.T, rm metricdata.ResourceMetrics, name string) []counterDataPoint {
 	t.Helper()
 	for _, sm := range rm.ScopeMetrics {
@@ -196,9 +153,7 @@ func collectInt64Counters(t *testing.T, rm metricdata.ResourceMetrics, name stri
 				continue
 			}
 			sum, ok := mt.Data.(metricdata.Sum[int64])
-			if !ok {
-				t.Fatalf("metric %q is not a Sum[int64]", name)
-			}
+			require.True(t, ok, "metric %q is not a Sum[int64]", name)
 			out := make([]counterDataPoint, 0, len(sum.DataPoints))
 			for _, dp := range sum.DataPoints {
 				attrs := make(map[string]string)

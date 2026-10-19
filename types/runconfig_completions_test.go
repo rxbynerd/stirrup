@@ -3,6 +3,8 @@ package types
 import (
 	"sort"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestCompletionValues_SortedAndNonEmpty pins that completion output is
@@ -29,25 +31,17 @@ func TestCompletionValues_SortedAndNonEmpty(t *testing.T) {
 		{"guard rails", ValidGuardRailTypeValues()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if len(tc.got) == 0 {
-				t.Fatalf("%s: empty slice", tc.name)
-			}
-			if !sort.StringsAreSorted(tc.got) {
-				t.Errorf("%s: not sorted: %v", tc.name, tc.got)
-			}
-			for _, v := range tc.got {
-				if v == "" {
-					t.Errorf("%s: contains empty string", tc.name)
-				}
-			}
+			require.NotEmpty(t, tc.got)
+			require.True(t, sort.StringsAreSorted(tc.got), "not sorted: %v", tc.got)
+			require.NotContains(t, tc.got, "", "contains an empty string")
 		})
 	}
 }
 
-// TestCompletionValues_TrackValidatorMaps pins that every key in the
+// TestCompletionValues_MatchValidatorMaps pins that every key in the
 // validator's closed-set map (minus the filtered empty string) appears
 // in the matching completion helper output.
-func TestCompletionValues_TrackValidatorMaps(t *testing.T) {
+func TestCompletionValues_MatchValidatorMaps(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		backing     map[string]bool
@@ -78,14 +72,9 @@ func TestCompletionValues_TrackValidatorMaps(t *testing.T) {
 				}
 				expected[k] = struct{}{}
 			}
-			if len(tc.got) != len(expected) {
-				t.Fatalf("%s: got %d values, want %d (backing map %v)",
-					tc.name, len(tc.got), len(expected), tc.backing)
-			}
+			require.Len(t, tc.got, len(expected), "backing map %v", tc.backing)
 			for _, v := range tc.got {
-				if _, ok := expected[v]; !ok {
-					t.Errorf("%s: helper returned %q not present in backing map", tc.name, v)
-				}
+				require.Contains(t, expected, v, "helper returned %q not present in backing map", v)
 			}
 		})
 	}

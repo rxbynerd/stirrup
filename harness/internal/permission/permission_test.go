@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -14,12 +16,8 @@ func TestAllowAll_AlwaysAllows(t *testing.T) {
 	input := json.RawMessage(`{"path": "/tmp/test"}`)
 
 	result, err := policy.Check(context.Background(), tool, input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Allowed {
-		t.Error("AllowAll should allow all calls")
-	}
+	require.NoError(t, err)
+	require.True(t, result.Allowed)
 }
 
 func TestDenySideEffects_DeniesKnownTools(t *testing.T) {
@@ -31,15 +29,9 @@ func TestDenySideEffects_DeniesKnownTools(t *testing.T) {
 
 	tool := types.ToolDefinition{Name: "write_file"}
 	result, err := policy.Check(context.Background(), tool, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.Allowed {
-		t.Error("should deny workspace-mutating tool")
-	}
-	if result.Reason == "" {
-		t.Error("expected non-empty denial reason")
-	}
+	require.NoError(t, err)
+	require.False(t, result.Allowed)
+	require.NotEmpty(t, result.Reason, "denial reason")
 }
 
 func TestDenySideEffects_AllowsReadOnlyTools(t *testing.T) {
@@ -50,23 +42,15 @@ func TestDenySideEffects_AllowsReadOnlyTools(t *testing.T) {
 
 	tool := types.ToolDefinition{Name: "read_file"}
 	result, err := policy.Check(context.Background(), tool, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Allowed {
-		t.Error("should allow non-mutating tool")
-	}
+	require.NoError(t, err)
+	require.True(t, result.Allowed)
 }
 
-func TestDenySideEffects_EmptySet(t *testing.T) {
+func TestDenySideEffects_EmptySetAllowsAllTools(t *testing.T) {
 	policy := NewDenySideEffects(map[string]bool{})
 
 	tool := types.ToolDefinition{Name: "anything"}
 	result, err := policy.Check(context.Background(), tool, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Allowed {
-		t.Error("should allow all tools when set is empty")
-	}
+	require.NoError(t, err)
+	require.True(t, result.Allowed)
 }

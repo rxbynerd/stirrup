@@ -7,21 +7,21 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// TestStarterPolicies_PassTheLoadTimeLinter runs the shipped Cedar
-// starters through the exact linter a run applies to an operator's policy
-// file (issue #538), with the schemas the built-in tools actually declare.
+// TestStarterPolicies_PassTheLoadTimeLinter runs the shipped Cedar starters
+// through the exact linter a run applies to an operator's policy file, with
+// the schemas the built-in tools actually declare.
 //
-// This is the repo-side half of the guarantee: the linter protects
-// operator-authored files at load time, and this test protects the files
-// the project ships as the template for those. Issue #524 shipped
-// destructive-shell.cedar keyed on `cmd` while run_command declares
-// `command`, so a plain `rm -rf /workspace` was allowed by the policy that
-// claimed to forbid it.
+// The linter protects operator-authored files at load time, and this test
+// protects the files the project ships as the template for those. A policy
+// keyed on an attribute the tool does not declare matches nothing, so a
+// starter must reference only declared attributes.
 //
 // The starters are held to a stricter bar than the linter enforces at
 // runtime: warnings fail this test too. A shipped starter that warns is a
@@ -37,9 +37,7 @@ func TestStarterPolicies_PassTheLoadTimeLinter(t *testing.T) {
 
 	policiesDir := filepath.Join("..", "..", "..", "..", "examples", "policies")
 	entries, err := os.ReadDir(policiesDir)
-	if err != nil {
-		t.Fatalf("read %s: %v", policiesDir, err)
-	}
+	require.NoError(t, err)
 
 	checked := 0
 	for _, entry := range entries {
@@ -49,39 +47,34 @@ func TestStarterPolicies_PassTheLoadTimeLinter(t *testing.T) {
 		checked++
 		t.Run(entry.Name(), func(t *testing.T) {
 			ps, err := permission.LoadPolicySetFromFile(filepath.Join(policiesDir, entry.Name()))
-			if err != nil {
-				t.Fatalf("starter fails the structural lint: %v", err)
-			}
+			require.NoError(t, err, "starter fails the structural lint")
+
 			findings := append(
 				permission.LintPolicySetStructure(ps),
 				permission.LintPolicySetTools(ps, schemas)...,
 			)
-			for _, f := range findings {
-				t.Errorf("%s", f)
-			}
+			require.Empty(t, findings)
 		})
 	}
-	if checked == 0 {
-		t.Fatalf("no .cedar files found in %s — directory moved?", policiesDir)
-	}
+	require.NotZero(t, checked, "no .cedar files found in %s; directory moved?", policiesDir)
 }
 
-// TestBuiltinSchemasAreClosed pins the property the linter's
-// "can never fire" claim rests on: tool dispatch validates input against
-// the JSON Schema before consulting Cedar, so an undeclared property is
-// rejected before the policy engine sees it — but only when the schema
-// closes the object. A built-in that stops setting
-// additionalProperties:false would silently downgrade every
-// undeclared-input-attribute error against it to a warning.
-func TestBuiltinSchemasAreClosed(t *testing.T) {
+// TestBuiltinSchemas_AreClosed pins the property the linter's "can never
+// fire" claim rests on: tool dispatch validates input against the JSON Schema
+// before consulting Cedar, so an undeclared property is rejected before the
+// policy engine sees it, but only when the schema closes the object. A
+// built-in that stops setting additionalProperties:false would silently
+// downgrade every undeclared-input-attribute error against it to a warning.
+func TestBuiltinSchemas_AreClosed(t *testing.T) {
 	registry := tool.NewRegistry()
 	registerAllForTest(registry, &mockExecutor{})
 
 	for _, def := range registry.List() {
-		schema := permission.NewToolSchema(def.InputSchema)
-		if !schema.Closed {
-			t.Errorf("tool %q does not set additionalProperties:false; the policy linter cannot prove a clause keyed on an undeclared attribute is dead", def.Name)
-		}
+		t.Run(def.Name, func(t *testing.T) {
+			schema := permission.NewToolSchema(def.InputSchema)
+			require.True(t, schema.Closed,
+				"tool does not set additionalProperties:false; the policy linter cannot prove a clause keyed on an undeclared attribute is dead")
+		})
 	}
 }
 
@@ -90,9 +83,8 @@ func TestBuiltinSchemasAreClosed(t *testing.T) {
 func TestAutonomousAllowListStarter_Decisions(t *testing.T) {
 	path := filepath.Join("..", "..", "..", "..", "examples", "policies", "autonomous-allow-list.cedar")
 	ps, err := permission.LoadPolicySetFromFile(path)
-	if err != nil {
-		t.Fatalf("load %s: %v", path, err)
-	}
+	require.NoError(t, err)
+
 	policy, err := permission.NewPolicyEnginePolicy(permission.PolicyEngineConfig{
 		PolicySet: ps,
 		Fallback:  permission.NewDenyAll(),
@@ -100,9 +92,7 @@ func TestAutonomousAllowListStarter_Decisions(t *testing.T) {
 		Mode:      "execution",
 		Workspace: "/workspace",
 	})
-	if err != nil {
-		t.Fatalf("NewPolicyEnginePolicy: %v", err)
-	}
+	require.NoError(t, err)
 
 	cases := []struct {
 		name  string
@@ -125,12 +115,8 @@ func TestAutonomousAllowListStarter_Decisions(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			result, err := policy.Check(context.Background(), types.ToolDefinition{Name: tc.tool}, json.RawMessage(tc.input))
-			if err != nil {
-				t.Fatalf("Check: %v", err)
-			}
-			if result.Allowed != tc.allow {
-				t.Errorf("Allowed = %v, want %v (reason: %q)", result.Allowed, tc.allow, result.Reason)
-			}
+			require.NoError(t, err)
+			require.Equal(t, tc.allow, result.Allowed, "reason: %q", result.Reason)
 		})
 	}
 }

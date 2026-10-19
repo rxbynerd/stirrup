@@ -1,8 +1,9 @@
 package spec
 
 import (
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func trialsSuiteSource(trialsLine string) string {
@@ -18,62 +19,59 @@ func trialsSuiteSource(trialsLine string) string {
 		"}\n"
 }
 
-func TestLoadSuiteHCL_Trials(t *testing.T) {
-	got, err := LoadSuiteHCL(writeTemp(t, "trials.hcl", trialsSuiteSource("  trials = 3\n")))
-	if err != nil {
-		t.Fatalf("LoadSuiteHCL: %v", err)
-	}
-	if got.Trials != 3 {
-		t.Errorf("Trials = %d, want 3", got.Trials)
-	}
+func TestLoadSuiteHCL_Trials_ParsesCount(t *testing.T) {
+	t.Run("reads the attribute", func(t *testing.T) {
+		got, err := LoadSuiteHCL(writeTemp(t, "trials.hcl", trialsSuiteSource("  trials = 3\n")))
+		require.NoError(t, err)
+		require.Equal(t, 3, got.Trials)
+	})
 
-	unset, err := LoadSuiteHCL(writeTemp(t, "no-trials.hcl", trialsSuiteSource("")))
-	if err != nil {
-		t.Fatalf("LoadSuiteHCL: %v", err)
+	t.Run("defaults to zero when the attribute is absent", func(t *testing.T) {
+		got, err := LoadSuiteHCL(writeTemp(t, "no-trials.hcl", trialsSuiteSource("")))
+		require.NoError(t, err)
+		require.Equal(t, 0, got.Trials)
+	})
+}
+
+func TestLoadSuiteHCL_Trials_RejectsNonPositive(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+	}{
+		{name: "zero", line: "  trials = 0\n"},
+		{name: "negative", line: "  trials = -2\n"},
 	}
-	if unset.Trials != 0 {
-		t.Errorf("Trials = %d, want 0 when the attribute is absent", unset.Trials)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := LoadSuiteHCL(writeTemp(t, "bad-trials.hcl", trialsSuiteSource(tc.line)))
+			require.ErrorContains(t, err, "trials must be at least 1")
+		})
 	}
 }
 
-func TestLoadSuiteHCL_TrialsRejectsNonPositive(t *testing.T) {
-	for _, line := range []string{"  trials = 0\n", "  trials = -2\n"} {
-		_, err := LoadSuiteHCL(writeTemp(t, "bad-trials.hcl", trialsSuiteSource(line)))
-		if err == nil || !strings.Contains(err.Error(), "trials must be at least 1") {
-			t.Errorf("%q: error = %v, want a trials validation error", strings.TrimSpace(line), err)
-		}
-	}
+func TestLoadSuiteHCL_Trials_CapsAt20(t *testing.T) {
+	t.Run("accepts 20", func(t *testing.T) {
+		got, err := LoadSuiteHCL(writeTemp(t, "cap.hcl", trialsSuiteSource("  trials = 20\n")))
+		require.NoError(t, err)
+		require.Equal(t, 20, got.Trials)
+	})
+
+	t.Run("rejects 21", func(t *testing.T) {
+		_, err := LoadSuiteHCL(writeTemp(t, "over.hcl", trialsSuiteSource("  trials = 21\n")))
+		require.ErrorContains(t, err, "trials must be at most 20, got 21")
+	})
 }
 
-func TestLoadSuiteHCL_TrialsCap(t *testing.T) {
-	got, err := LoadSuiteHCL(writeTemp(t, "cap.hcl", trialsSuiteSource("  trials = 20\n")))
-	if err != nil {
-		t.Fatalf("trials = 20: %v", err)
-	}
-	if got.Trials != 20 {
-		t.Errorf("Trials = %d, want 20", got.Trials)
-	}
+func TestLoadSuiteHCL_RequireHealthy_ParsesFlag(t *testing.T) {
+	t.Run("reads true when set", func(t *testing.T) {
+		got, err := LoadSuiteHCL(writeTemp(t, "require.hcl", trialsSuiteSource("  require_healthy = true\n")))
+		require.NoError(t, err)
+		require.True(t, got.RequireHealthy)
+	})
 
-	_, err = LoadSuiteHCL(writeTemp(t, "over.hcl", trialsSuiteSource("  trials = 21\n")))
-	if err == nil || !strings.Contains(err.Error(), "trials must be at most 20, got 21") {
-		t.Errorf("trials = 21: error = %v, want a cap error", err)
-	}
-}
-
-func TestLoadSuiteHCL_RequireHealthy(t *testing.T) {
-	got, err := LoadSuiteHCL(writeTemp(t, "require.hcl", trialsSuiteSource("  require_healthy = true\n")))
-	if err != nil {
-		t.Fatalf("LoadSuiteHCL: %v", err)
-	}
-	if !got.RequireHealthy {
-		t.Error("RequireHealthy = false, want true")
-	}
-
-	unset, err := LoadSuiteHCL(writeTemp(t, "no-require.hcl", trialsSuiteSource("")))
-	if err != nil {
-		t.Fatalf("LoadSuiteHCL: %v", err)
-	}
-	if unset.RequireHealthy {
-		t.Error("RequireHealthy = true when the attribute is absent")
-	}
+	t.Run("is false when the attribute is absent", func(t *testing.T) {
+		unset, err := LoadSuiteHCL(writeTemp(t, "no-require.hcl", trialsSuiteSource("")))
+		require.NoError(t, err)
+		require.False(t, unset.RequireHealthy)
+	})
 }

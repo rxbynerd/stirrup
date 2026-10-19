@@ -11,11 +11,13 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"slices"
 	"strings"
 	"testing"
 	"testing/iotest"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -56,9 +58,7 @@ func newLiveContainerExecutor(t *testing.T, ctx context.Context, sandboxIdentity
 		SandboxIdentityToken: sandboxIdentity,
 		Lifecycle:            life,
 	})
-	if err != nil {
-		t.Fatalf("NewContainerExecutorWithContext: %v", err)
-	}
+	require.NoError(t, err, "NewContainerExecutorWithContext")
 	t.Cleanup(func() { _ = exec.Close() })
 	return exec
 }
@@ -81,56 +81,36 @@ func TestContainerExecutor_SandboxIdentityToken_LiveEngine(t *testing.T) {
 		third  = "eyJhbGciOiJFUzI1NiJ9.third-token-that-never-fully-arrives.sig"
 	)
 	for i, token := range []string{first, second} {
-		if err := exec.WriteSandboxIdentityToken(ctx, token); err != nil {
-			t.Fatalf("WriteSandboxIdentityToken #%d: %v", i+1, err)
-		}
+		err := exec.WriteSandboxIdentityToken(ctx, token)
+		require.NoError(t, err, "WriteSandboxIdentityToken #%d", i+1)
 		res, err := exec.Exec(ctx, "cat "+SandboxIdentityTokenPath, 30*time.Second)
-		if err != nil {
-			t.Fatalf("cat token #%d: %v", i+1, err)
-		}
-		if res.Stdout != token {
-			t.Errorf("token file after delivery #%d = %q, want %q (stderr %q)", i+1, res.Stdout, token, res.Stderr)
-		}
+		require.NoError(t, err, "cat token #%d", i+1)
+		require.Equal(t, token, res.Stdout, "token file after delivery #%d (stderr %q)", i+1, res.Stderr)
 	}
 
 	// A client that dies mid-stream must not replace the valid token with
 	// a partial one.
 	aborted := io.MultiReader(strings.NewReader(third[:12]), iotest.ErrReader(errors.New("client aborted")))
 	result, err := exec.execInContainerInput(ctx, sandboxIdentityWriteCommand(len(third)), exec.workspace, aborted, containerFileIOTimeout)
-	if err == nil && (result == nil || result.ExitCode == 0) {
-		t.Fatalf("aborted delivery reported success (result %+v)", result)
-	}
+	reportedSuccess := err == nil && (result == nil || result.ExitCode == 0)
+	require.False(t, reportedSuccess, "aborted delivery reported success (result %+v)", result)
 	res, err := exec.Exec(ctx, "cat "+SandboxIdentityTokenPath, 30*time.Second)
-	if err != nil {
-		t.Fatalf("cat token after aborted delivery: %v", err)
-	}
-	if res.Stdout != second {
-		t.Errorf("token file after an aborted delivery = %q, want the previous token %q", res.Stdout, second)
-	}
+	require.NoError(t, err, "cat token after aborted delivery")
+	require.Equal(t, second, res.Stdout, "token file after an aborted delivery")
 
 	res, err = exec.Exec(ctx, "stat -c '%a %U' "+SandboxIdentityTokenPath+" && ls -A "+SandboxIdentityTokenDir, 30*time.Second)
-	if err != nil {
-		t.Fatalf("stat token: %v", err)
-	}
+	require.NoError(t, err, "stat token")
 	lines := strings.Split(strings.TrimSpace(res.Stdout), "\n")
-	if len(lines) < 2 || lines[0] != "600 nobody" {
-		t.Errorf("token file mode/owner = %q, want \"600 nobody\" (output %q)", lines, res.Stdout)
-	}
-	if strings.Contains(res.Stdout, ".token.tmp") {
-		t.Errorf("staging file left behind: %q", res.Stdout)
-	}
+	assert.GreaterOrEqual(t, len(lines), 2, "stat and ls output %q", res.Stdout)
+	assert.Equal(t, "600 nobody", lines[0], "token file mode and owner")
+	assert.NotContains(t, res.Stdout, ".token.tmp", "staging file left behind")
 
-	if _, err := exec.ReadFile(ctx, SandboxIdentityTokenPath); err == nil {
-		t.Error("ReadFile reached the token through the workspace-scoped file API")
-	}
+	_, err = exec.ReadFile(ctx, SandboxIdentityTokenPath)
+	require.Error(t, err, "ReadFile reached the token through the workspace-scoped file API")
 	entries, err := exec.ListDirectory(ctx, ".")
-	if err != nil {
-		t.Fatalf("ListDirectory: %v", err)
-	}
+	require.NoError(t, err, "ListDirectory")
 	for _, e := range entries {
-		if strings.Contains(e, "token") {
-			t.Errorf("workspace listing contains a token artefact: %q", entries)
-		}
+		assert.NotContains(t, e, "token", "workspace listing contains a token artefact: %q", entries)
 	}
 }
 
@@ -145,9 +125,7 @@ func TestContainerExecutor_ReadFile_SymlinkEscape_LiveEngine(t *testing.T) {
 	exec := liveContainerExecutor(t, ctx, true)
 
 	const token = "SECRET-TOKEN-VALUE-eyJhbGciOiJFUzI1NiJ9"
-	if err := exec.WriteSandboxIdentityToken(ctx, token); err != nil {
-		t.Fatalf("WriteSandboxIdentityToken: %v", err)
-	}
+	require.NoError(t, exec.WriteSandboxIdentityToken(ctx, token), "WriteSandboxIdentityToken")
 	setup := strings.Join([]string{
 		"printf inside > /workspace/real.txt",
 		"ln -sf real.txt /workspace/alias",
@@ -155,35 +133,31 @@ func TestContainerExecutor_ReadFile_SymlinkEscape_LiveEngine(t *testing.T) {
 		"ln -sf /etc/hostname /workspace/hostlink",
 		"ln -sf " + SandboxIdentityTokenDir + " /workspace/dirlink",
 	}, " && ")
-	if res, err := exec.Exec(ctx, setup, 30*time.Second); err != nil || res.ExitCode != 0 {
-		t.Fatalf("symlink setup failed: err=%v result=%+v", err, res)
-	}
+	res, err := exec.Exec(ctx, setup, 30*time.Second)
+	require.NoError(t, err, "symlink setup")
+	require.Zero(t, res.ExitCode, "symlink setup result %+v", res)
 
 	hostname, err := exec.Exec(ctx, "cat /etc/hostname", 30*time.Second)
-	if err != nil {
-		t.Fatalf("read hostname: %v", err)
-	}
+	require.NoError(t, err, "read hostname")
 
 	for _, probe := range []string{"link", "hostlink", "dirlink/token"} {
-		emitter := &mockSecurityEmitter{}
-		exec.Security = emitter
-		content, err := exec.ReadFile(ctx, probe)
-		if err == nil || !strings.Contains(err.Error(), "escapes workspace") {
-			t.Errorf("ReadFile(%s) = (%q, %v), want a workspace-escape error", probe, content, err)
-		}
-		if strings.Contains(content, token) || (hostname.Stdout != "" && strings.Contains(content, strings.TrimSpace(hostname.Stdout))) {
-			t.Errorf("ReadFile(%s) disclosed out-of-workspace content: %q", probe, content)
-		}
-		if emitter.pathTraversalCount != 1 {
-			t.Errorf("ReadFile(%s) emitted PathTraversalBlocked %d times, want 1", probe, emitter.pathTraversalCount)
-		}
+		t.Run(probe, func(t *testing.T) {
+			emitter := &mockSecurityEmitter{}
+			exec.Security = emitter
+			content, err := exec.ReadFile(ctx, probe)
+			require.ErrorContains(t, err, "escapes workspace")
+			require.NotContains(t, content, token, "ReadFile disclosed out-of-workspace content")
+			if hostname.Stdout != "" {
+				require.NotContains(t, content, strings.TrimSpace(hostname.Stdout), "ReadFile disclosed out-of-workspace content")
+			}
+			require.Equal(t, 1, emitter.pathTraversalCount, "PathTraversalBlocked emissions")
+		})
 	}
 	exec.Security = nil
 
 	got, err := exec.ReadFile(ctx, "alias")
-	if err != nil || got != "inside" {
-		t.Errorf("ReadFile(alias) = (%q, %v), want an in-workspace symlink to read its target", got, err)
-	}
+	require.NoError(t, err, "ReadFile(alias)")
+	require.Equal(t, "inside", got, "in-workspace symlink should read its target")
 }
 
 // TestContainerExecutor_ListDirectory_MarksDirectories_LiveEngine pins the
@@ -195,16 +169,11 @@ func TestContainerExecutor_ListDirectory_MarksDirectories_LiveEngine(t *testing.
 	exec := liveContainerExecutor(t, ctx, false)
 
 	res, err := exec.Exec(ctx, "mkdir -p sub && echo hi > top.txt && echo nested > sub/nested.txt", 30*time.Second)
-	if err != nil || res.ExitCode != 0 {
-		t.Fatalf("seed workspace: err %v, result %+v", err, res)
-	}
+	require.NoError(t, err, "seed workspace")
+	require.Zero(t, res.ExitCode, "seed workspace result %+v", res)
 	entries, err := exec.ListDirectory(ctx, ".")
-	if err != nil {
-		t.Fatalf("ListDirectory: %v", err)
-	}
-	if !slices.Equal(entries, []string{"sub/", "top.txt"}) {
-		t.Errorf("ListDirectory(.) = %q, want [sub/ top.txt]", entries)
-	}
+	require.NoError(t, err, "ListDirectory")
+	require.Equal(t, []string{"sub/", "top.txt"}, entries)
 }
 
 // TestContainerExecutor_ArchiveWorkspace_LiveEngine pins that the archive
@@ -216,30 +185,32 @@ func TestContainerExecutor_ArchiveWorkspace_LiveEngine(t *testing.T) {
 	exec := liveContainerExecutor(t, ctx, false)
 
 	res, err := exec.Exec(ctx, "mkdir -p sub && echo hi > top.txt && echo nested > sub/nested.txt && ln -s top.txt alias", 30*time.Second)
-	if err != nil || res.ExitCode != 0 {
-		t.Fatalf("seed workspace: err %v, result %+v", err, res)
-	}
+	require.NoError(t, err, "seed workspace")
+	require.Zero(t, res.ExitCode, "seed workspace result %+v", res)
 	var buf strings.Builder
 	stats, err := exec.ArchiveWorkspace(ctx, &buf, 1<<20)
-	if err != nil {
-		t.Fatalf("ArchiveWorkspace: %v", err)
-	}
-	if stats.Bytes != int64(buf.Len()) {
-		t.Errorf("stats.Bytes = %d, want %d", stats.Bytes, buf.Len())
-	}
+	require.NoError(t, err, "ArchiveWorkspace")
+
 	got := map[string]tarEntry{}
 	for _, e := range readTarEntries(t, []byte(buf.String())) {
 		got[strings.TrimPrefix(e.name, "./")] = e
 	}
-	if e := got["top.txt"]; e.typeflag != tar.TypeReg || e.body != "hi\n" {
-		t.Errorf("top.txt = %+v, want a regular file with body hi", e)
-	}
-	if e := got["sub/nested.txt"]; e.body != "nested\n" {
-		t.Errorf("sub/nested.txt = %+v, want body nested", e)
-	}
-	if e := got["alias"]; e.typeflag != tar.TypeSymlink || e.linkname != "top.txt" {
-		t.Errorf("alias = %+v, want a symlink to top.txt", e)
-	}
+	t.Run("stats count archived bytes", func(t *testing.T) {
+		require.Equal(t, int64(buf.Len()), stats.Bytes)
+	})
+	t.Run("regular file keeps its body", func(t *testing.T) {
+		e := got["top.txt"]
+		require.EqualValues(t, tar.TypeReg, e.typeflag)
+		require.Equal(t, "hi\n", e.body)
+	})
+	t.Run("nested file keeps its body", func(t *testing.T) {
+		require.Equal(t, "nested\n", got["sub/nested.txt"].body)
+	})
+	t.Run("symlink is archived as a symlink", func(t *testing.T) {
+		e := got["alias"]
+		require.EqualValues(t, tar.TypeSymlink, e.typeflag)
+		require.Equal(t, "top.txt", e.linkname)
+	})
 }
 
 // containerProcessGone runs a probe inside the container that succeeds when
@@ -249,9 +220,7 @@ func containerProcessGone(t *testing.T, ctx context.Context, exec *ContainerExec
 	t.Helper()
 	probe := `pid=$(cat ` + pidFile + `); [ -e /proc/$pid/stat ] || exit 0; read -r l </proc/$pid/stat; case "${l##*) }" in Z*) exit 0 ;; esac; exit 1`
 	res, err := exec.Exec(ctx, probe, 30*time.Second)
-	if err != nil {
-		t.Fatalf("probe %s: %v", pidFile, err)
-	}
+	require.NoError(t, err, "probe %s", pidFile)
 	return res.ExitCode == 0
 }
 
@@ -268,16 +237,13 @@ func TestContainerExecutor_TimeoutKillsProcessTree_LiveEngine(t *testing.T) {
 			sleeperPID := "/tmp/" + name + "-sleeper.pid"
 			marker := "/tmp/" + name + "-after-timeout"
 			command := "sh -c 'sleep 3; touch " + marker + "' >/dev/null 2>&1 & sleep 600 & echo $! > " + sleeperPID + "; wait"
-			if err := call(command); !errors.Is(err, ErrTimeout) {
-				t.Fatalf("err = %v, want ErrTimeout", err)
-			}
-			if !containerProcessGone(t, ctx, exec, sleeperPID) {
-				t.Error("sleep 600 survived the timeout")
-			}
+			err := call(command)
+			require.ErrorIs(t, err, ErrTimeout)
+			require.True(t, containerProcessGone(t, ctx, exec, sleeperPID), "sleep 600 survived the timeout")
 			time.Sleep(4 * time.Second)
-			if res, err := exec.Exec(ctx, "test ! -e "+marker, 30*time.Second); err != nil || res.ExitCode != 0 {
-				t.Errorf("detached grandchild survived the timeout and wrote its marker: err=%v result=%+v", err, res)
-			}
+			res, err := exec.Exec(ctx, "test ! -e "+marker, 30*time.Second)
+			require.NoError(t, err, "marker check")
+			require.Zero(t, res.ExitCode, "detached grandchild survived the timeout and wrote its marker")
 		})
 	}
 	run(t, "exec", func(command string) error {
@@ -289,14 +255,12 @@ func TestContainerExecutor_TimeoutKillsProcessTree_LiveEngine(t *testing.T) {
 		return err
 	})
 
-	t.Run("unaffected", func(t *testing.T) {
+	t.Run("normal exit keeps status and output", func(t *testing.T) {
 		res, err := exec.Exec(ctx, "echo out; echo err >&2; exit 7", 30*time.Second)
-		if err != nil {
-			t.Fatalf("Exec: %v", err)
-		}
-		if res.ExitCode != 7 || res.Stdout != "out\n" || res.Stderr != "err\n" {
-			t.Errorf("result = %+v, want exit 7, stdout %q, stderr %q", res, "out\n", "err\n")
-		}
+		require.NoError(t, err, "Exec")
+		require.Equal(t, 7, res.ExitCode, "exit code")
+		require.Equal(t, "out\n", res.Stdout, "stdout")
+		require.Equal(t, "err\n", res.Stderr, "stderr")
 	})
 }
 
@@ -308,11 +272,11 @@ const (
 	orphanLifetime = 20 * time.Second
 )
 
-// TestContainerOrphanHelper is the body of the child process the orphan test
-// kills. It builds a container executor with a short lifetime, reports the
-// container ID, and then waits to be killed; it does nothing when run as part
-// of the normal suite.
-func TestContainerOrphanHelper(t *testing.T) {
+// TestContainerExecutor_OrphanHelperProcess is the body of the child process
+// the orphan test kills. It builds a container executor with a short lifetime,
+// reports the container ID, and then waits to be killed; it does nothing when
+// run as part of the normal suite.
+func TestContainerExecutor_OrphanHelperProcess(t *testing.T) {
 	if os.Getenv(orphanHelperEnv) == "" {
 		t.Skip("helper process for TestContainerExecutor_OrphanReapedAfterHarnessKill")
 	}
@@ -359,15 +323,11 @@ func TestContainerExecutor_OrphanReapedAfterHarnessKill(t *testing.T) {
 	}
 	api := newContainerAPIClient(sock)
 
-	cmd := exec.Command(os.Args[0], "-test.run=^TestContainerOrphanHelper$", "-test.v")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestContainerExecutor_OrphanHelperProcess$", "-test.v")
 	cmd.Env = append(os.Environ(), orphanHelperEnv+"=1")
 	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("stdout pipe: %v", err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start helper: %v", err)
-	}
+	require.NoError(t, err, "stdout pipe")
+	require.NoError(t, cmd.Start(), "start helper")
 	killed := false
 	var id string
 	t.Cleanup(func() {
@@ -394,36 +354,31 @@ func TestContainerExecutor_OrphanReapedAfterHarnessKill(t *testing.T) {
 	select {
 	case id = <-ready:
 	case <-time.After(2 * time.Minute):
-		t.Fatal("helper did not report a container ID")
+		require.Fail(t, "helper did not report a container ID")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	c, found, err := inspectContainer(ctx, api, id)
-	if err != nil || !found {
-		t.Fatalf("inspect running sandbox: found=%v err=%v", found, err)
-	}
-	if !c.State.Running || c.Config.Labels["stirrup.sandbox"] != "true" || c.Config.Labels["stirrup.run-id"] != "orphan-test" {
-		t.Fatalf("sandbox = running %v labels %v, want running with stirrup labels", c.State.Running, c.Config.Labels)
-	}
+	require.NoError(t, err, "inspect running sandbox")
+	require.True(t, found, "inspect running sandbox")
+	require.True(t, c.State.Running, "sandbox should be running")
+	require.Equal(t, "true", c.Config.Labels["stirrup.sandbox"], "stirrup.sandbox label")
+	require.Equal(t, "orphan-test", c.Config.Labels["stirrup.run-id"], "stirrup.run-id label")
 
-	if err := cmd.Process.Kill(); err != nil {
-		t.Fatalf("SIGKILL helper: %v", err)
-	}
+	require.NoError(t, cmd.Process.Kill(), "SIGKILL helper")
 	killed = true
 	_ = cmd.Wait()
 
 	deadline := time.Now().Add(orphanLifetime + 30*time.Second)
 	for {
 		_, found, err := inspectContainer(ctx, api, id)
-		if err != nil {
-			t.Fatalf("inspect after kill: %v", err)
-		}
+		require.NoError(t, err, "inspect after kill")
 		if !found {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("container %s still present %v after the harness was killed", id, orphanLifetime+30*time.Second)
+			require.Failf(t, "container still present", "container %s still present %v after the harness was killed", id, orphanLifetime+30*time.Second)
 		}
 		time.Sleep(time.Second)
 	}

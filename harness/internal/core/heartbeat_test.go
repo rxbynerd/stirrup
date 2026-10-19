@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -37,49 +39,42 @@ func (t *recordingTransport) heartbeatCount() int {
 	return count
 }
 
-func TestStartHeartbeat_EmitsEvents(t *testing.T) {
+func TestStartHeartbeat_EmitsHeartbeatEvents(t *testing.T) {
 	rec := &recordingTransport{}
 	loop := &AgenticLoop{
 		Transport: rec,
 	}
 
-	ctx := context.Background()
-	stop := loop.startHeartbeat(ctx, 10*time.Millisecond)
+	stop := loop.startHeartbeat(context.Background(), 10*time.Millisecond)
 
 	// Wait long enough for several heartbeats to fire.
 	time.Sleep(60 * time.Millisecond)
 	stop()
 
-	count := rec.heartbeatCount()
-	if count < 2 {
-		t.Errorf("expected at least 2 heartbeat events, got %d", count)
-	}
+	require.GreaterOrEqual(t, rec.heartbeatCount(), 2)
 }
 
-func TestStartHeartbeat_StopsOnCancel(t *testing.T) {
+func TestStartHeartbeat_StopFunctionHaltsHeartbeats(t *testing.T) {
 	rec := &recordingTransport{}
 	loop := &AgenticLoop{
 		Transport: rec,
 	}
 
-	ctx := context.Background()
-	stop := loop.startHeartbeat(ctx, 10*time.Millisecond)
+	stop := loop.startHeartbeat(context.Background(), 10*time.Millisecond)
 
 	time.Sleep(30 * time.Millisecond)
 	stop()
 
 	countAtStop := rec.heartbeatCount()
 
-	// Wait a bit more and verify no additional heartbeats arrived. The
-	// production guarantee is "stops eventually": a ticker tick that has
-	// already been selected before ctx.Done is observed may still fire once
-	// after stop(). Tolerate at most one extra heartbeat post-cancel.
+	// The production guarantee is "stops eventually": a ticker tick that has
+	// already been selected before the stop signal is observed may still fire
+	// once after stop(). Tolerate at most one extra heartbeat.
 	time.Sleep(30 * time.Millisecond)
 	countAfter := rec.heartbeatCount()
 
-	if countAfter-countAtStop > 1 {
-		t.Errorf("heartbeat continued after cancel beyond tolerance: %d at stop, %d after (max +1 allowed)", countAtStop, countAfter)
-	}
+	require.LessOrEqual(t, countAfter-countAtStop, 1,
+		"heartbeat continued after stop beyond tolerance: %d at stop, %d after", countAtStop, countAfter)
 }
 
 func TestStartHeartbeat_RespectsContextCancellation(t *testing.T) {
@@ -96,16 +91,14 @@ func TestStartHeartbeat_RespectsContextCancellation(t *testing.T) {
 
 	countAtCancel := rec.heartbeatCount()
 
-	// Wait a bit more and verify no additional heartbeats arrived beyond
-	// tolerance. The production guarantee is "stops eventually": a ticker
-	// tick that has already been selected before ctx.Done is observed may
-	// still fire once after cancel(). Tolerate at most one extra heartbeat.
+	// The production guarantee is "stops eventually": a ticker tick that has
+	// already been selected before ctx.Done is observed may still fire once
+	// after cancel(). Tolerate at most one extra heartbeat.
 	time.Sleep(30 * time.Millisecond)
 	countAfter := rec.heartbeatCount()
 
-	if countAfter-countAtCancel > 1 {
-		t.Errorf("heartbeat continued after context cancel beyond tolerance: %d at cancel, %d after (max +1 allowed)", countAtCancel, countAfter)
-	}
+	require.LessOrEqual(t, countAfter-countAtCancel, 1,
+		"heartbeat continued after context cancel beyond tolerance: %d at cancel, %d after", countAtCancel, countAfter)
 }
 
 func TestStartHeartbeat_CancelBeforeFirstTick(t *testing.T) {
@@ -114,23 +107,18 @@ func TestStartHeartbeat_CancelBeforeFirstTick(t *testing.T) {
 		Transport: rec,
 	}
 
-	// Cancel the context before startHeartbeat is invoked so the goroutine's
-	// first action is to observe an already-Done context. This exercises the
-	// cold path of the non-blocking pre-check added in ca80ca7: the outer
-	// select's `ctx.Done` arm should fire on the very first iteration, before
-	// any ticker tick is consumed.
+	// Cancel before startHeartbeat runs, so the goroutine starts with an
+	// already-done context and should exit before the first tick.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	_ = loop.startHeartbeat(ctx, 10*time.Millisecond)
 
-	// Sleep three ticker intervals: ample time for the goroutine to have
-	// either taken the pre-check exit or, in the worst case, entered the
-	// blocking select before noticing cancellation.
+	// Three ticker intervals is enough for the goroutine to exit. One heartbeat
+	// is tolerated because the goroutine may reach the blocking select before it
+	// observes the cancellation.
 	time.Sleep(30 * time.Millisecond)
 
-	count := rec.heartbeatCount()
-	if count > 1 {
-		t.Errorf("expected at most 1 heartbeat on cold-path cancel-before-first-tick (pre-check should usually catch ctx.Done with count=0; tolerate 1 to avoid flakiness when the goroutine entered the blocking select before observing cancellation), got %d", count)
-	}
+	require.LessOrEqual(t, rec.heartbeatCount(), 1,
+		"expected at most 1 heartbeat when the context is cancelled before the first tick")
 }

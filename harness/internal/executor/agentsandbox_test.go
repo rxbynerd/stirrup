@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
@@ -21,18 +22,35 @@ func baseSandboxCfg() K8sExecutorConfig {
 	}
 }
 
-// TestBuildSandboxPodSpec_ProxyAndExtraEnvAdditive is B-K8S:
-// buildSandboxPodSpec is the shared env-merge block for both the k8s and
-// k8s-sandbox executors (issue #516) — the production GKE deployment
-// target. Every other test in this file calls it with extraEnv == nil, so
-// the shared "proxyEnv + extraEnv" append block (harness/internal/executor/k8s.go's
-// buildSandboxPodSpec) has no coverage proving both sets survive together:
-// a broken index, wrong append order, or accidental overwrite of proxyEnv
-// would not be caught by anything else here. This test supplies a
-// non-empty proxyEnv (HTTP(S)_PROXY/NO_PROXY, issue #42) alongside a
-// realistic non-empty extraEnv (the sandbox identity token plus the
-// GIT_CONFIG_* pairs sandboxidentity.ComposeEnv produces, issue #516) and
-// asserts both land on the Pod additively.
+// requireQuantityAt asserts that list[name] is set and numerically equal to
+// want. Quantities are compared with Cmp, so "1" and "1000m" match.
+func requireQuantityAt(t *testing.T, list corev1.ResourceList, name corev1.ResourceName, want resource.Quantity, what string) {
+	t.Helper()
+	got, ok := list[name]
+	require.True(t, ok, "%s is not set", what)
+	require.Zero(t, got.Cmp(want), "%s = %s, want %s", what, got.String(), want.String())
+}
+
+// asObjectMap returns an unstructured value as a map, failing the test when it
+// has another type.
+func asObjectMap(t *testing.T, path string, v any) map[string]any {
+	t.Helper()
+	m, ok := v.(map[string]any)
+	require.Truef(t, ok, "%s is %T, want a map", path, v)
+	return m
+}
+
+// asObjectSlice returns an unstructured value as a slice, failing the test when
+// it has another type.
+func asObjectSlice(t *testing.T, path string, v any) []any {
+	t.Helper()
+	s, ok := v.([]any)
+	require.Truef(t, ok, "%s is %T, want a slice", path, v)
+	return s
+}
+
+// TestBuildSandboxPodSpec_ProxyAndExtraEnvAdditive checks that buildSandboxPodSpec
+// keeps both the proxy env and the extra env, with the proxy entries first.
 func TestBuildSandboxPodSpec_ProxyAndExtraEnvAdditive(t *testing.T) {
 	cfg := baseSandboxCfg()
 	proxyEnv := []corev1.EnvVar{
@@ -46,143 +64,101 @@ func TestBuildSandboxPodSpec_ProxyAndExtraEnvAdditive(t *testing.T) {
 		Hosts:      []string{"github.com"},
 		RewriteSsh: true,
 	})
-	if err != nil {
-		t.Fatalf("ComposeEnv() error: %v", err)
-	}
+	require.NoError(t, err, "ComposeEnv")
 	extraEnv := make([]EnvPair, len(composed))
 	for i, e := range composed {
 		extraEnv[i] = EnvPair{Name: e.Name, Value: e.Value}
 	}
-	if len(proxyEnv) == 0 || len(extraEnv) == 0 {
-		t.Fatalf("precondition: both proxyEnv (%d) and extraEnv (%d) must be non-empty", len(proxyEnv), len(extraEnv))
-	}
+	require.NotEmpty(t, proxyEnv, "precondition: proxyEnv")
+	require.NotEmpty(t, extraEnv, "precondition: extraEnv")
 
 	spec := buildSandboxPodSpec(cfg, proxyEnv, extraEnv)
 
 	gotEnv := spec.Containers[0].Env
-	wantLen := len(proxyEnv) + len(extraEnv)
-	if len(gotEnv) != wantLen {
-		t.Fatalf("Containers[0].Env has %d entries, want %d (proxyEnv + extraEnv, additive)", len(gotEnv), wantLen)
-	}
+	require.Len(t, gotEnv, len(proxyEnv)+len(extraEnv), "Containers[0].Env must hold proxyEnv and extraEnv")
 
-	// proxyEnv must occupy the leading entries, in order — buildSandboxPodSpec
-	// appends proxyEnv first, then extraEnv.
 	for i, want := range proxyEnv {
-		if gotEnv[i].Name != want.Name || gotEnv[i].Value != want.Value {
-			t.Errorf("Env[%d] = %+v, want proxyEnv entry %+v", i, gotEnv[i], want)
-		}
+		require.Equal(t, want.Name, gotEnv[i].Name, "Env[%d] name", i)
+		require.Equal(t, want.Value, gotEnv[i].Value, "Env[%d] value", i)
 	}
-	// extraEnv must follow, in order, with none of proxyEnv's entries
-	// truncated, overwritten, or reordered away.
 	for i, want := range extraEnv {
 		idx := len(proxyEnv) + i
-		if gotEnv[idx].Name != want.Name || gotEnv[idx].Value != want.Value {
-			t.Errorf("Env[%d] = %+v, want extraEnv entry %+v", idx, gotEnv[idx], want)
-		}
+		require.Equal(t, want.Name, gotEnv[idx].Name, "Env[%d] name", idx)
+		require.Equal(t, want.Value, gotEnv[idx].Value, "Env[%d] value", idx)
 	}
 }
 
-// TestApplyAgentSandboxAdmissionDeltas covers the four GKE secure-sandbox-policy
-// deltas: forced gvisor runtime, default CPU+mem limits/requests, the gvisor
-// nodeSelector merge, and the gvisor toleration (added once, idempotently).
-func TestApplyAgentSandboxAdmissionDeltas(t *testing.T) {
+// TestApplyAgentSandboxAdmissionDeltas_AppliesGVisorPolicy covers the four GKE
+// secure-sandbox-policy deltas: the forced gvisor runtime, default CPU and memory
+// limits and requests, the gvisor nodeSelector merge, and the gvisor toleration,
+// which is added once even when the deltas are applied twice.
+func TestApplyAgentSandboxAdmissionDeltas_AppliesGVisorPolicy(t *testing.T) {
 	t.Run("forces gvisor even when runtime was empty", func(t *testing.T) {
-		cfg := baseSandboxCfg() // Runtime unset → buildSandboxPodSpec leaves RuntimeClassName nil
+		cfg := baseSandboxCfg() // Runtime is unset, so buildSandboxPodSpec leaves RuntimeClassName nil.
 		spec := buildSandboxPodSpec(cfg, nil, nil)
-		if spec.RuntimeClassName != nil {
-			t.Fatalf("precondition: base spec RuntimeClassName = %v, want nil", spec.RuntimeClassName)
-		}
+		require.Nil(t, spec.RuntimeClassName, "precondition: base RuntimeClassName")
+
 		applyAgentSandboxAdmissionDeltas(&spec)
-		if spec.RuntimeClassName == nil || *spec.RuntimeClassName != gkeSandboxRuntimeValue {
-			t.Errorf("RuntimeClassName = %v, want %q", spec.RuntimeClassName, gkeSandboxRuntimeValue)
-		}
+
+		require.NotNil(t, spec.RuntimeClassName)
+		require.Equal(t, gkeSandboxRuntimeValue, *spec.RuntimeClassName)
 	})
 
 	t.Run("fills default cpu+mem limits and requests when resources nil", func(t *testing.T) {
 		cfg := baseSandboxCfg()
 		spec := buildSandboxPodSpec(cfg, nil, nil)
-		// Precondition: no resources pinned (cfg.Resources nil).
-		if len(spec.Containers[0].Resources.Limits) != 0 {
-			t.Fatalf("precondition: base container has limits %v, want none", spec.Containers[0].Resources.Limits)
-		}
+		require.Empty(t, spec.Containers[0].Resources.Limits, "precondition: no limits without cfg.Resources")
+
 		applyAgentSandboxAdmissionDeltas(&spec)
 
 		res := spec.Containers[0].Resources
-		cpuLim, ok := res.Limits[corev1.ResourceCPU]
-		if !ok || cpuLim.Cmp(agentSandboxDefaultCPU) != 0 {
-			t.Errorf("cpu limit = %v, want %v", cpuLim, agentSandboxDefaultCPU)
-		}
-		memLim, ok := res.Limits[corev1.ResourceMemory]
-		if !ok || memLim.Cmp(agentSandboxDefaultMemory) != 0 {
-			t.Errorf("memory limit = %v, want %v", memLim, agentSandboxDefaultMemory)
-		}
-		cpuReq, ok := res.Requests[corev1.ResourceCPU]
-		if !ok || cpuReq.Cmp(agentSandboxDefaultCPU) != 0 {
-			t.Errorf("cpu request = %v, want %v", cpuReq, agentSandboxDefaultCPU)
-		}
-		memReq, ok := res.Requests[corev1.ResourceMemory]
-		if !ok || memReq.Cmp(agentSandboxDefaultMemory) != 0 {
-			t.Errorf("memory request = %v, want %v", memReq, agentSandboxDefaultMemory)
-		}
+		requireQuantityAt(t, res.Limits, corev1.ResourceCPU, agentSandboxDefaultCPU, "cpu limit")
+		requireQuantityAt(t, res.Limits, corev1.ResourceMemory, agentSandboxDefaultMemory, "memory limit")
+		requireQuantityAt(t, res.Requests, corev1.ResourceCPU, agentSandboxDefaultCPU, "cpu request")
+		requireQuantityAt(t, res.Requests, corev1.ResourceMemory, agentSandboxDefaultMemory, "memory request")
 	})
 
 	t.Run("preserves caller-set resources", func(t *testing.T) {
 		cfg := baseSandboxCfg()
 		cfg.Resources = &types.ResourceLimits{CPUs: 2, MemoryMB: 1024}
 		spec := buildSandboxPodSpec(cfg, nil, nil)
-		// Precondition: the caller's values are already on the base spec via
-		// resourcesToPodResources.
 		wantCPU := resource.MustParse("2")
 		wantMem := resource.MustParse("1024Mi")
-		if got := spec.Containers[0].Resources.Limits[corev1.ResourceCPU]; got.Cmp(wantCPU) != 0 {
-			t.Fatalf("precondition: base cpu limit = %v, want %v", got, wantCPU)
-		}
+		// The caller's values are already on the base spec via resourcesToPodResources.
+		requireQuantityAt(t, spec.Containers[0].Resources.Limits, corev1.ResourceCPU, wantCPU, "precondition: base cpu limit")
 
 		applyAgentSandboxAdmissionDeltas(&spec)
 
 		res := spec.Containers[0].Resources
-		if got := res.Limits[corev1.ResourceCPU]; got.Cmp(wantCPU) != 0 {
-			t.Errorf("cpu limit = %v, want caller value %v (must not be overwritten with default)", got, wantCPU)
-		}
-		if got := res.Limits[corev1.ResourceMemory]; got.Cmp(wantMem) != 0 {
-			t.Errorf("memory limit = %v, want caller value %v (must not be overwritten with default)", got, wantMem)
-		}
+		requireQuantityAt(t, res.Limits, corev1.ResourceCPU, wantCPU, "cpu limit")
+		requireQuantityAt(t, res.Limits, corev1.ResourceMemory, wantMem, "memory limit")
 	})
 
 	t.Run("fills only the missing side when caller pins one resource", func(t *testing.T) {
-		// Caller pins memory but not CPU. The gap-fill must add the CPU default
-		// (limit + request) while leaving the caller's memory untouched — the
-		// admission policy requires BOTH cpu and memory limits.
+		// The caller pins memory but not CPU. The CPU default must fill both the
+		// limit and the request, and the caller's memory must stay as set, because
+		// the admission policy requires both CPU and memory limits.
 		cfg := baseSandboxCfg()
 		cfg.Resources = &types.ResourceLimits{MemoryMB: 1024}
 		spec := buildSandboxPodSpec(cfg, nil, nil)
+
 		applyAgentSandboxAdmissionDeltas(&spec)
 
 		res := spec.Containers[0].Resources
-		if got := res.Limits[corev1.ResourceCPU]; got.Cmp(agentSandboxDefaultCPU) != 0 {
-			t.Errorf("cpu limit = %v, want filled default %v", got, agentSandboxDefaultCPU)
-		}
-		if got := res.Requests[corev1.ResourceCPU]; got.Cmp(agentSandboxDefaultCPU) != 0 {
-			t.Errorf("cpu request = %v, want filled default %v", got, agentSandboxDefaultCPU)
-		}
-		wantMem := resource.MustParse("1024Mi")
-		if got := res.Limits[corev1.ResourceMemory]; got.Cmp(wantMem) != 0 {
-			t.Errorf("memory limit = %v, want caller value %v (not overwritten by the default)", got, wantMem)
-		}
+		requireQuantityAt(t, res.Limits, corev1.ResourceCPU, agentSandboxDefaultCPU, "cpu limit")
+		requireQuantityAt(t, res.Requests, corev1.ResourceCPU, agentSandboxDefaultCPU, "cpu request")
+		requireQuantityAt(t, res.Limits, corev1.ResourceMemory, resource.MustParse("1024Mi"), "memory limit")
 	})
 
 	t.Run("merges nodeSelector with a pre-existing entry", func(t *testing.T) {
 		cfg := baseSandboxCfg()
 		cfg.NodeSelector = map[string]string{"disktype": "ssd"}
 		spec := buildSandboxPodSpec(cfg, nil, nil)
+
 		applyAgentSandboxAdmissionDeltas(&spec)
 
-		if spec.NodeSelector[gkeSandboxRuntimeKey] != gkeSandboxRuntimeValue {
-			t.Errorf("nodeSelector[%q] = %q, want %q", gkeSandboxRuntimeKey, spec.NodeSelector[gkeSandboxRuntimeKey], gkeSandboxRuntimeValue)
-		}
-		if spec.NodeSelector["disktype"] != "ssd" {
-			t.Errorf("pre-existing nodeSelector entry was clobbered: %v", spec.NodeSelector)
-		}
+		require.Equal(t, gkeSandboxRuntimeValue, spec.NodeSelector[gkeSandboxRuntimeKey], "nodeSelector[%s]", gkeSandboxRuntimeKey)
+		require.Equal(t, "ssd", spec.NodeSelector["disktype"], "pre-existing nodeSelector entry")
 	})
 
 	t.Run("adds the gvisor toleration and is idempotent", func(t *testing.T) {
@@ -190,7 +166,7 @@ func TestApplyAgentSandboxAdmissionDeltas(t *testing.T) {
 		spec := buildSandboxPodSpec(cfg, nil, nil)
 
 		applyAgentSandboxAdmissionDeltas(&spec)
-		applyAgentSandboxAdmissionDeltas(&spec) // second call must not duplicate
+		applyAgentSandboxAdmissionDeltas(&spec) // The second call must not add a duplicate.
 
 		count := 0
 		for _, tol := range spec.Tolerations {
@@ -199,18 +175,15 @@ func TestApplyAgentSandboxAdmissionDeltas(t *testing.T) {
 				count++
 			}
 		}
-		if count != 1 {
-			t.Errorf("gvisor toleration count = %d, want exactly 1 (idempotent)", count)
-		}
+		require.Equal(t, 1, count, "gvisor toleration count")
 	})
 }
 
-// TestBuildSandboxObject asserts the assembled Sandbox CR carries the
-// v1alpha1 apiVersion/kind, the Delete shutdown policy, a ~12h shutdownTime,
-// the per-pod labels on the podTemplate, and that the admission deltas
-// (gvisor runtime + resource limits) survived the typed→unstructured
-// conversion into spec.podTemplate.spec.
-func TestBuildSandboxObject(t *testing.T) {
+// TestBuildSandboxObject_EmitsSandboxCR checks the assembled Sandbox CR: the
+// v1alpha1 apiVersion and kind, the Delete shutdown policy, a 12h shutdown time,
+// the per-pod labels on the pod template, and the admission deltas and hardened
+// security fields that must survive the typed-to-unstructured conversion.
+func TestBuildSandboxObject_EmitsSandboxCR(t *testing.T) {
 	const ns, name = "default", "stirrup-abc123"
 
 	cfg := baseSandboxCfg()
@@ -219,140 +192,73 @@ func TestBuildSandboxObject(t *testing.T) {
 
 	before := time.Now()
 	obj, err := buildSandboxObject(ns, name, "", spec, before.Add(agentSandboxMaxTTL))
-	if err != nil {
-		t.Fatalf("buildSandboxObject: %v", err)
-	}
+	require.NoError(t, err, "buildSandboxObject")
 
-	if got := obj.Object["apiVersion"]; got != "agents.x-k8s.io/v1alpha1" {
-		t.Errorf("apiVersion = %v, want agents.x-k8s.io/v1alpha1", got)
-	}
-	if got := obj.Object["kind"]; got != "Sandbox" {
-		t.Errorf("kind = %v, want Sandbox", got)
-	}
+	specMap := asObjectMap(t, "spec", obj.Object["spec"])
+	podTemplate := asObjectMap(t, "spec.podTemplate", specMap["podTemplate"])
+	ptSpec := asObjectMap(t, "spec.podTemplate.spec", podTemplate["spec"])
+	containers := asObjectSlice(t, "spec.podTemplate.spec.containers", ptSpec["containers"])
+	require.NotEmpty(t, containers, "spec.podTemplate.spec.containers")
+	c0 := asObjectMap(t, "containers[0]", containers[0])
 
-	specMap, ok := obj.Object["spec"].(map[string]any)
-	if !ok {
-		t.Fatalf("spec is not a map: %T", obj.Object["spec"])
-	}
-	if got := specMap["shutdownPolicy"]; got != "Delete" {
-		t.Errorf("spec.shutdownPolicy = %v, want Delete", got)
-	}
+	t.Run("identifies the sandbox kind", func(t *testing.T) {
+		require.Equal(t, "agents.x-k8s.io/v1alpha1", obj.Object["apiVersion"])
+		require.Equal(t, "Sandbox", obj.Object["kind"])
+	})
 
-	shutdownStr, ok := specMap["shutdownTime"].(string)
-	if !ok {
-		t.Fatalf("spec.shutdownTime is not a string: %T", specMap["shutdownTime"])
-	}
-	shutdown, err := time.Parse(time.RFC3339, shutdownStr)
-	if err != nil {
-		t.Fatalf("spec.shutdownTime %q does not parse as RFC3339: %v", shutdownStr, err)
-	}
-	// Should be ~12h ahead of when we built it. Allow a generous slack window so
-	// the assertion is not flaky, while still catching a wildly wrong TTL.
-	delta := shutdown.Sub(before)
-	if delta < agentSandboxMaxTTL-time.Minute || delta > agentSandboxMaxTTL+time.Minute {
-		t.Errorf("shutdownTime delta = %v, want ~%v ahead", delta, agentSandboxMaxTTL)
-	}
+	t.Run("sets the Delete shutdown policy and a 12h shutdown time", func(t *testing.T) {
+		require.Equal(t, "Delete", specMap["shutdownPolicy"])
 
-	podTemplate, ok := specMap["podTemplate"].(map[string]any)
-	if !ok {
-		t.Fatalf("spec.podTemplate is not a map: %T", specMap["podTemplate"])
-	}
-	ptMeta, ok := podTemplate["metadata"].(map[string]any)
-	if !ok {
-		t.Fatalf("spec.podTemplate.metadata is not a map: %T", podTemplate["metadata"])
-	}
-	ptLabels, ok := ptMeta["labels"].(map[string]any)
-	if !ok {
-		t.Fatalf("spec.podTemplate.metadata.labels is not a map: %T", ptMeta["labels"])
-	}
-	if got := ptLabels[k8sPodNameLabel]; got != name {
-		t.Errorf("podTemplate label %q = %v, want %q", k8sPodNameLabel, got, name)
-	}
-	if got := ptLabels[k8sSandboxLabel]; got != "true" {
-		t.Errorf("podTemplate label %q = %v, want \"true\"", k8sSandboxLabel, got)
-	}
+		shutdownStr, ok := specMap["shutdownTime"].(string)
+		require.Truef(t, ok, "spec.shutdownTime is %T, want a string", specMap["shutdownTime"])
+		shutdown, err := time.Parse(time.RFC3339, shutdownStr)
+		require.NoError(t, err, "spec.shutdownTime %q", shutdownStr)
+		// The one-minute slack keeps the check stable while still catching a wrong TTL.
+		require.WithinDuration(t, before.Add(agentSandboxMaxTTL), shutdown, time.Minute, "spec.shutdownTime")
+	})
 
-	ptSpec, ok := podTemplate["spec"].(map[string]any)
-	if !ok {
-		t.Fatalf("spec.podTemplate.spec is not a map: %T", podTemplate["spec"])
-	}
-	if got := ptSpec["runtimeClassName"]; got != gkeSandboxRuntimeValue {
-		t.Errorf("podTemplate.spec.runtimeClassName = %v, want %q", got, gkeSandboxRuntimeValue)
-	}
+	t.Run("labels the pod template", func(t *testing.T) {
+		ptMeta := asObjectMap(t, "spec.podTemplate.metadata", podTemplate["metadata"])
+		ptLabels := asObjectMap(t, "spec.podTemplate.metadata.labels", ptMeta["labels"])
+		require.Equal(t, name, ptLabels[k8sPodNameLabel], "label %s", k8sPodNameLabel)
+		require.Equal(t, "true", ptLabels[k8sSandboxLabel], "label %s", k8sSandboxLabel)
+	})
 
-	containers, ok := ptSpec["containers"].([]any)
-	if !ok || len(containers) == 0 {
-		t.Fatalf("spec.podTemplate.spec.containers is not a non-empty slice: %T", ptSpec["containers"])
-	}
-	c0, ok := containers[0].(map[string]any)
-	if !ok {
-		t.Fatalf("containers[0] is not a map: %T", containers[0])
-	}
-	resources, ok := c0["resources"].(map[string]any)
-	if !ok {
-		t.Fatalf("containers[0].resources is not a map: %T", c0["resources"])
-	}
-	limits, ok := resources["limits"].(map[string]any)
-	if !ok {
-		t.Fatalf("containers[0].resources.limits is not a map: %T", resources["limits"])
-	}
-	if _, ok := limits["cpu"]; !ok {
-		t.Errorf("containers[0].resources.limits missing cpu: %v", limits)
-	}
-	if _, ok := limits["memory"]; !ok {
-		t.Errorf("containers[0].resources.limits missing memory: %v", limits)
-	}
+	t.Run("keeps the gvisor runtime and default resource limits", func(t *testing.T) {
+		require.Equal(t, gkeSandboxRuntimeValue, ptSpec["runtimeClassName"])
 
-	// The hardened security fields must survive the typed→unstructured conversion
-	// into the CR. A regression that silently dropped any of these would weaken
-	// the sandbox without failing any other assertion, so guard them explicitly.
-	if got := ptSpec["automountServiceAccountToken"]; got != false {
-		t.Errorf("podTemplate.spec.automountServiceAccountToken = %v, want false", got)
-	}
-	if podSC, ok := ptSpec["securityContext"].(map[string]any); !ok {
-		t.Errorf("podTemplate.spec.securityContext missing/!map: %T", ptSpec["securityContext"])
-	} else if got := podSC["fsGroup"]; got != int64(k8sRunAsUserUID) {
-		t.Errorf("pod securityContext.fsGroup = %v (%T), want %d", got, got, k8sRunAsUserUID)
-	}
+		resources := asObjectMap(t, "containers[0].resources", c0["resources"])
+		limits := asObjectMap(t, "containers[0].resources.limits", resources["limits"])
+		require.Contains(t, limits, "cpu")
+		require.Contains(t, limits, "memory")
+	})
 
-	cSC, ok := c0["securityContext"].(map[string]any)
-	if !ok {
-		t.Fatalf("containers[0].securityContext is not a map: %T", c0["securityContext"])
-	}
-	if got := cSC["allowPrivilegeEscalation"]; got != false {
-		t.Errorf("container allowPrivilegeEscalation = %v, want false", got)
-	}
-	if got := cSC["runAsNonRoot"]; got != true {
-		t.Errorf("container runAsNonRoot = %v, want true", got)
-	}
-	if got := cSC["runAsUser"]; got != int64(k8sRunAsUserUID) {
-		t.Errorf("container runAsUser = %v (%T), want %d", got, got, k8sRunAsUserUID)
-	}
-	if seccomp, ok := cSC["seccompProfile"].(map[string]any); !ok {
-		t.Errorf("container seccompProfile missing/!map: %T", cSC["seccompProfile"])
-	} else if got := seccomp["type"]; got != "RuntimeDefault" {
-		t.Errorf("container seccompProfile.type = %v, want RuntimeDefault", got)
-	}
-	if caps, ok := cSC["capabilities"].(map[string]any); !ok {
-		t.Errorf("container capabilities missing/!map: %T", cSC["capabilities"])
-	} else if drop, ok := caps["drop"].([]any); !ok || len(drop) != 1 || drop[0] != "ALL" {
-		t.Errorf("container capabilities.drop = %v, want [ALL]", caps["drop"])
-	}
+	t.Run("keeps the hardened pod security context", func(t *testing.T) {
+		require.Equal(t, false, ptSpec["automountServiceAccountToken"])
 
-	// The ephemeral /workspace emptyDir must survive too — without it a non-root
-	// UID cannot write the workspace.
-	vols, ok := ptSpec["volumes"].([]any)
-	if !ok || len(vols) == 0 {
-		t.Fatalf("podTemplate.spec.volumes is not a non-empty slice: %T", ptSpec["volumes"])
-	}
-	v0, ok := vols[0].(map[string]any)
-	if !ok {
-		t.Fatalf("volumes[0] is not a map: %T", vols[0])
-	}
-	if got := v0["name"]; got != k8sWorkspaceVolume {
-		t.Errorf("volumes[0].name = %v, want %q", got, k8sWorkspaceVolume)
-	}
-	if _, ok := v0["emptyDir"]; !ok {
-		t.Errorf("volumes[0] is not an emptyDir: %v", v0)
-	}
+		podSC := asObjectMap(t, "spec.podTemplate.spec.securityContext", ptSpec["securityContext"])
+		require.Equal(t, int64(k8sRunAsUserUID), podSC["fsGroup"])
+	})
+
+	t.Run("keeps the hardened container security context", func(t *testing.T) {
+		cSC := asObjectMap(t, "containers[0].securityContext", c0["securityContext"])
+		require.Equal(t, false, cSC["allowPrivilegeEscalation"])
+		require.Equal(t, true, cSC["runAsNonRoot"])
+		require.Equal(t, int64(k8sRunAsUserUID), cSC["runAsUser"])
+
+		seccomp := asObjectMap(t, "containers[0].securityContext.seccompProfile", cSC["seccompProfile"])
+		require.Equal(t, "RuntimeDefault", seccomp["type"])
+
+		caps := asObjectMap(t, "containers[0].securityContext.capabilities", cSC["capabilities"])
+		require.Equal(t, []any{"ALL"}, caps["drop"])
+	})
+
+	t.Run("keeps the ephemeral workspace emptyDir volume", func(t *testing.T) {
+		// Without this volume a non-root UID cannot write the workspace.
+		volumes := asObjectSlice(t, "spec.podTemplate.spec.volumes", ptSpec["volumes"])
+		require.NotEmpty(t, volumes, "spec.podTemplate.spec.volumes")
+		v0 := asObjectMap(t, "volumes[0]", volumes[0])
+		require.Equal(t, k8sWorkspaceVolume, v0["name"])
+		require.Contains(t, v0, "emptyDir")
+	})
 }
