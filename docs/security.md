@@ -95,8 +95,8 @@ covering:
   `cat -A` `$` line ends, joined with `<br>` or with spaces on one line,
   or a line followed by other text, such as a `...` the model appends,
   which with the lines after it reaches the sinks. A `path:line:` prefix
-  whose path is longer than 255 characters, starts with `-`, or holds a
-  quote or shell syntax is not recognised either
+  whose path has more than eight space-separated parts, starts with `-`,
+  or holds a quote or shell syntax is not recognised either
 - API-key header values
 - Key/value-anchored 32-character hex secrets
 - `secret://` references themselves, through the reference syntax the
