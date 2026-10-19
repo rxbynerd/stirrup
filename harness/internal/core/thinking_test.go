@@ -25,7 +25,7 @@ func runStreamEvents(t *testing.T, events []types.StreamEvent) ([]types.ContentB
 		ch <- ev
 	}
 	close(ch)
-	result, err := streamEventsToResult(context.Background(), ch, tp, true, ignoreEmitFailure)
+	result, err := streamEventsToResult(context.Background(), ch, tp, true, ignoreEmitFailure, nil)
 	if err != nil {
 		t.Fatalf("streamEventsToResult() error: %v", err)
 	}
@@ -47,7 +47,7 @@ func recordStreamEventsWith(t *testing.T, events []types.StreamEvent, streamThin
 		ch <- ev
 	}
 	close(ch)
-	result, err := streamEventsToResult(context.Background(), ch, rec, streamThinking, ignoreEmitFailure)
+	result, err := streamEventsToResult(context.Background(), ch, rec, streamThinking, ignoreEmitFailure, nil)
 	if err != nil {
 		t.Fatalf("streamEventsToResult() error: %v", err)
 	}

@@ -274,7 +274,7 @@ func TestOTelTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 			},
 		},
 		ModelOutput: []types.ContentBlock{
-			{Type: "text", Text: "ack, your bearer Bearer ABCDEFG is unsafe"},
+			{Type: "text", Text: "ack, your bearer Bearer ABCDEFG1 is unsafe"},
 			{Type: "tool_use", ID: "tu-1", Name: "run_command", Input: json.RawMessage(`{"cmd":"echo sk-ant-api03-leak-leak"}`)},
 		},
 		ToolCalls: []types.ToolCallRecord{{
@@ -304,7 +304,7 @@ func TestOTelTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 				"sk-ant-api03-redactme",
 				"sk-ant-api03-leak",
 				"sk-ant-api03-sysleak",
-				"Bearer ABCDEFG",
+				"Bearer ABCDEFG1",
 			} {
 				if strings.Contains(value, secret) {
 					t.Errorf("scrubber missed %q in span %q attribute %q:\n%s",

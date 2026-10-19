@@ -890,6 +890,14 @@ deadline. Sub-agent runs still nest under their spawning tool span.
 `stirrup job` and `stirrup harness` run follow-ups on the session
 context, so each follow-up starts a new trace.
 
+Deltas reach a `harnessapi.Transport` re-chunked: `text_delta` and
+`thinking_delta` fragments concatenate to the model's text with
+recognised secrets redacted, and held text is emitted no later than the
+next event of the model's response or the end of the stream. The harness does not scrub every other
+event's string fields; the shipped transports scrub all of them, so an
+embedder's transport should too. See
+[`security.md`](security.md#control-stream-scrubbing).
+
 For per-package detail see [`AGENTS.md`](../AGENTS.md). For the gRPC
 contract and control-plane handshake see
 [`deployment.md`](deployment.md).

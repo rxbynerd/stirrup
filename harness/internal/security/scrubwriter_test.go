@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"math/rand"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -19,9 +20,11 @@ type secretFixture struct {
 	sensitive string
 }
 
+// fatJWTFixture is a JWT with a large payload. Its header and payload hold
+// "_", as base64url segments of real tokens usually do.
 func fatJWTFixture() string {
-	payload := strings.Repeat("eyJzdWIiOiJzdGlycnVwLXJ1bm5lciIsImF1ZCI6InN0cy5hbXpvbmF3cy5jb20i", 96)
-	return "ey" + "JhbGciOiJSUzI1NiIsImtpZCI6InN0aXJydXAtdGVzdCJ9." + payload + ".c2lnbmF0dXJlLXZhbHVlLTAxMjM0NTY3ODk"
+	payload := strings.Repeat("eyJzdWIiOiJzdGlycnVwLXJ1bm5lciIs_ImF1ZCI6InN0cy5hbXpvbmF3cy5jb20i", 96)
+	return "ey" + "JhbGciOiJSUzI1NiIs_ImtpZCI6InN0aXJydXAtdGVzdCJ9." + payload + ".c2lnbmF0dXJlLXZhbHVlLTAxMjM0NTY3ODk"
 }
 
 func secretFixtures() []secretFixture {
@@ -39,7 +42,7 @@ func secretFixtures() []secretFixture {
 		{"gcp_api_key", "AI" + "zaA2345678901234567890123456789012345", "zaA2345678901234567890123456789012345"},
 		{"basic_auth", "Basic " + "c3RpcnJ1cDpzdXBlcnNlY3JldA==", "c3RpcnJ1cDpzdXBlcnNlY3JldA=="},
 		{"bearer_token", "Bearer " + "abc.def.ghi-token-value-0123456789", "abc.def.ghi-token-value-0123456789"},
-		{"pem_private_key", "-----BEGIN RSA PRIVATE KEY-----", "-----BEGIN RSA PRIVATE KEY-----"},
+		{"pem_private_key", pemKey("EC PRIVATE KEY", pemBodyLines(3), "\n"), pemBodyLines(3)[2]},
 		{"secret_ref", "secret:" + "//provider/api-key", "provider/api-key"},
 		{"api_key_header", "x-api-key: " + "0123456789abcdefABCDEF", "0123456789abcdefABCDEF"},
 		{"generic_hex_secret", "api_key = " + "0123456789abcdef0123456789abcdef", "0123456789abcdef0123456789abcdef"},
@@ -48,18 +51,14 @@ func secretFixtures() []secretFixture {
 	}
 }
 
-// multilineSecretFixtures cover the patterns whose separators are \s, so the
-// match itself spans a newline. Straddling one of these puts the last
-// newline of the flushable region inside a secret, which is the only way the
-// line-aware cut and the boundary scan interact.
+// multilineSecretFixtures cover the PEM pattern, the only one whose match
+// spans a newline. Straddling one of these puts the last newline of the
+// flushable region inside a secret, which is the only way the line-aware
+// cut and the boundary scan interact.
 func multilineSecretFixtures() []secretFixture {
 	return []secretFixture{
-		{"basic_auth", "Basic \nc3RpcnJ1cDpzdXBlcnNlY3JldA==", "c3RpcnJ1cDpzdXBlcnNlY3JldA=="},
-		{"bearer_token", "Bearer\n" + "abc.def.ghi-token-value-0123456789", "abc.def.ghi-token-value-0123456789"},
-		{"aws_secret_access_key", "aws_secret_access_key =\n" + "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
-		{"azure_storage_key", "account_key:\n" + "QWJjZGVmR2hpSmtsTW5vcFFyc3RVdnd4WXoxMjM0NTY3ODkwYWJjZGVmZ2g=", "QWJjZGVmR2hpSmtsTW5vcFFyc3RVdnd4WXoxMjM0NTY3ODkwYWJjZGVmZ2g"},
-		{"generic_hex_secret", "api_key =\n" + "0123456789abcdef0123456789abcdef", "0123456789abcdef0123456789abcdef"},
 		{"pem_private_key", "-----BEGIN\nRSA PRIVATE KEY-----", "-----BEGIN\nRSA PRIVATE KEY-----"},
+		{"pem_private_key", pemKey("EC PRIVATE KEY", pemBodyLines(2), "\n"), pemBodyLines(2)[1]},
 	}
 }
 
@@ -114,6 +113,21 @@ func TestScrubWriterRedactsFatJWTAtDefaultBoundary(t *testing.T) {
 	feed(t, w, input, 4<<10)
 	if got := sink.String(); strings.Contains(got, "c2lnbmF0dXJlLXZhbHVlLTAxMjM0NTY3ODk") || got != Scrub(input) {
 		t.Fatal("fat JWT straddling the default chunk boundary was not fully redacted")
+	}
+}
+
+// TestScrubWriterRedactsRSAKeyAtDefaultBoundary proves the default carry
+// window against the largest PEM key the scrubber is expected to see whole.
+func TestScrubWriterRedactsRSAKeyAtDefaultBoundary(t *testing.T) {
+	key := rsa4096PEMFixture()
+	input := filler(scrubChunkBytes-len(key)/2) + key + "\n" + filler(ScrubCarryWindow)
+	var sink bytes.Buffer
+	w := NewScrubWriter(&sink)
+	feed(t, w, input, 4<<10)
+	got := sink.String()
+	assertNoPEMBody(t, got, pemBodyLines(51))
+	if got != Scrub(input) {
+		t.Fatal("RSA key straddling the default chunk boundary was not redacted as one span")
 	}
 }
 
@@ -173,6 +187,28 @@ func TestSecretPatternsMatchSingleSpanUnderCarryWindow(t *testing.T) {
 			t.Errorf("pattern %q matches a span that excludes the sensitive value", p.Name)
 		}
 	}
+	// A PEM match spans the whole key, so the largest keys in use must
+	// still fit: RSA-4096 is about 3.3 KiB and RSA-8192 about 6.4 KiB.
+	for name, key := range map[string]string{
+		"RSA-4096": rsa4096PEMFixture(),
+		"RSA-8192": pemKey("RSA PRIVATE KEY", pemBodyLines(100), "\n"),
+	} {
+		span := secretPatternRe(t, "pem_private_key").FindStringIndex(key)
+		if span == nil || span[1]-span[0] != len(key) || len(key) >= ScrubCarryWindow {
+			t.Errorf("%s key of %d bytes is not one match under the %d byte carry window (match %v)", name, len(key), ScrubCarryWindow, span)
+		}
+	}
+}
+
+func secretPatternRe(t *testing.T, name string) *regexp.Regexp {
+	t.Helper()
+	for _, p := range SecretPatterns() {
+		if p.Name == name {
+			return p.Re
+		}
+	}
+	t.Fatalf("no secret pattern %q", name)
+	return nil
 }
 
 // TestScrubWriterResidualExceedsBuffer documents the residual risk the
@@ -383,4 +419,25 @@ func sortedCopy(in []string) []string {
 		}
 	}
 	return out
+}
+
+func TestRetreatCutPastSpans(t *testing.T) {
+	cases := map[string]struct {
+		spans [][]int
+		cut   int
+		want  int
+	}{
+		"no spans":           {nil, 10, 10},
+		"cut inside a span":  {[][]int{{4, 12}}, 10, 4},
+		"cut at span start":  {[][]int{{10, 12}}, 10, 10},
+		"cut at span end":    {[][]int{{4, 10}}, 10, 10},
+		"second pass needed": {[][]int{{6, 12}, {2, 8}}, 10, 2},
+		"unrelated spans":    {[][]int{{0, 2}, {12, 20}}, 10, 10},
+		"cut at zero":        {[][]int{{0, 5}}, 0, 0},
+	}
+	for name, tc := range cases {
+		if got := retreatCutPastSpans(tc.spans, tc.cut); got != tc.want {
+			t.Errorf("%s: retreatCutPastSpans(%v, %d) = %d, want %d", name, tc.spans, tc.cut, got, tc.want)
+		}
+	}
 }

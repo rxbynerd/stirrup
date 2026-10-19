@@ -120,7 +120,7 @@ func DynamicContextFragment() PromptFragment {
 }
 
 func (f *dynamicContextFragment) Render(_ context.Context, pc PromptContext) (string, error) {
-	dynamicContext, _ := security.SanitizeDynamicContext(pc.DynamicContext)
+	dynamicContext := renderedDynamicContext(pc)
 	if len(dynamicContext) == 0 {
 		return "", nil
 	}
@@ -139,6 +139,27 @@ func (f *dynamicContextFragment) Render(_ context.Context, pc PromptContext) (st
 	}
 
 	return sb.String(), nil
+}
+
+// renderedDynamicContext returns the dynamic-context values as the prompt
+// renders them: sanitised, with a value's fenced form from
+// FencedDynamicContext used when its fences decode to that value. A value
+// whose fenced form does not decode to it is fenced whole, since it holds
+// text the turn-0 guard read redacted.
+func renderedDynamicContext(pc PromptContext) map[string]string {
+	values, _ := security.SanitizeDynamicContext(pc.DynamicContext)
+	for k, fenced := range pc.FencedDynamicContext {
+		v, ok := values[k]
+		if !ok {
+			continue
+		}
+		if decoded, ok := security.DecodeFences(fenced); ok && decoded == v {
+			values[k] = fenced
+		} else {
+			values[k] = security.Spotlight(v)
+		}
+	}
+	return values
 }
 
 type workspacePathFragment struct{}

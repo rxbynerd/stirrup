@@ -182,7 +182,7 @@ The `guard` package (`guard/`) provides an LLM-based safety classifier called at
 ## Security Foundations
 
 - **SecretStore**: resolves `secret://` references from env vars, files, and AWS SSM. API keys are not stored in `RunConfig`.
-- **LogScrubber**: regex-based redaction of 7 secret patterns in log/trace output.
+- **LogScrubber**: regex-based redaction of 19 secret patterns in log/trace output.
 - **Input validation**: JSON Schema Draft 2020-12 validation via `santhosh-tekuri/jsonschema`, with external schema loading disabled and prototype pollution keys stripped.
 - **RunConfig validation**: hard security invariants for read-only modes, bounded max turns/timeout, `FollowUpGrace <= 3600s`, `MaxCostBudget <= $100` (a config-time bound only — the budget itself is never enforced), and `MaxTokenBudget <= 50M`.
 - **HTTP client timeouts**: provider adapters and MCP/web fetch clients use explicit HTTP clients with timeouts.

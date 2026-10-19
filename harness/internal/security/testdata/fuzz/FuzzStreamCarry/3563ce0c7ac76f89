@@ -1,0 +1,6 @@
+go test fuzz v1
+string("bfABCDEOCP-APIM-SUBSCRIPTION-KEY: 0123456789abcdefABCDEF after")
+string("")
+uint16(0)
+byte('\x00')
+byte('\x06')

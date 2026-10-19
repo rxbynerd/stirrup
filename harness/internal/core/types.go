@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -169,6 +170,11 @@ type AgenticLoop struct {
 	// before the first turn. Sub-agents render this snapshot instead of
 	// re-reading files the parent run may since have edited.
 	repositoryGuidance []prompt.GuidanceDocument
+
+	// turnZeroContext is the current run's dynamic-context values in key
+	// order, as the system prompt renders them: sanitised and, under the
+	// Rule-of-Two redact action, redacted.
+	turnZeroContext []string
 
 	// writeProtection is the security guard's protected-write set for
 	// the current run, built once repository guidance has loaded.
@@ -767,22 +773,67 @@ func boundedResponseModel(model string) string {
 // usage the provider reported before the failure. With streamThinking
 // false no thinking_delta reaches the transport; thinking blocks are
 // persisted either way.
-func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp transport.Transport, streamThinking bool, emitFailed func(event string, err error)) (*streamResult, error) {
+//
+// Deltas reach the transport through a security.StreamCarry, which
+// scrubs them as one stream: a secret split across two provider deltas is
+// redacted before any transport, shipped or embedded, sees it. The carry
+// re-chunks deltas and is flushed before any other event is emitted and on
+// every return, which keeps the stream's order and loses no text. redacted,
+// when non-nil, is told the patterns the carry redacted in each release.
+func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp transport.Transport, streamThinking bool, emitFailed func(event string, err error), redacted func(event string, patterns []string)) (*streamResult, error) {
 	result := &streamResult{}
 	var currentText string
 	inText := false
+
+	var carry security.StreamCarry
+	carriedType := ""
+	emitDelta := func(eventType, text string, patterns []string) {
+		if len(patterns) > 0 && redacted != nil {
+			redacted(eventType, patterns)
+		}
+		if text != "" {
+			if err := tp.Emit(types.HarnessEvent{Type: eventType, Text: text}); err != nil {
+				emitFailed(eventType, err)
+			}
+		}
+		if slices.Contains(patterns, security.StreamWithheld) {
+			warning := eventType + " withheld: a possible secret ran past 1 MiB, so the stream resumes after it ends; the trace keeps the text scrubbed"
+			if err := tp.Emit(types.HarnessEvent{Type: "warning", Message: warning}); err != nil {
+				emitFailed("warning", err)
+			}
+		}
+	}
+	flushDeltas := func() {
+		out, patterns := carry.Flush()
+		emitDelta(carriedType, out, patterns)
+	}
+	defer flushDeltas()
+	// pushDelta releases what the carry can of text; a whole block is
+	// complete, so it is scanned once and goes out as one event.
+	pushDelta := func(eventType, text string, whole bool) {
+		if eventType != carriedType {
+			flushDeltas()
+			carriedType = eventType
+		}
+		var out string
+		var patterns []string
+		if whole {
+			out, patterns = carry.FlushWith(text)
+		} else {
+			out, patterns = carry.Push(text)
+		}
+		emitDelta(eventType, out, patterns)
+	}
 
 	// blockStreamed records whether the current thinking block's text
 	// reached the transport as deltas; a block that arrives whole is
 	// forwarded as one delta at its boundary instead.
 	blockStreamed := false
-	forwardThinking := func(text string) {
+	forwardThinking := func(text string, whole bool) {
 		if !streamThinking || text == "" {
 			return
 		}
-		if err := tp.Emit(types.HarnessEvent{Type: "thinking_delta", Text: text}); err != nil {
-			emitFailed("thinking_delta", err)
-		}
+		pushDelta("thinking_delta", text, whole)
 	}
 
 	for event := range ch {
@@ -792,6 +843,9 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 		default:
 		}
 
+		if event.Type != "text_delta" && event.Type != "thinking_delta" {
+			flushDeltas()
+		}
 		switch event.Type {
 		case "text_delta":
 			if !inText {
@@ -799,12 +853,7 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 				currentText = ""
 			}
 			currentText += event.Text
-			if err := tp.Emit(types.HarnessEvent{
-				Type: "text_delta",
-				Text: event.Text,
-			}); err != nil {
-				emitFailed("text_delta", err)
-			}
+			pushDelta("text_delta", event.Text, false)
 
 		case "tool_call":
 			// Flush any accumulated text block.
@@ -859,13 +908,13 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 
 		case "thinking_delta":
 			blockStreamed = true
-			forwardThinking(event.Text)
+			forwardThinking(event.Text, false)
 
 		case "thinking", "redacted_thinking":
 			// Persisted in stream order so the provider can replay them.
 			// Redacted reasoning is opaque and never forwarded.
 			if event.Type == "thinking" && !blockStreamed {
-				forwardThinking(event.Text)
+				forwardThinking(event.Text, true)
 			}
 			blockStreamed = false
 			if inText {

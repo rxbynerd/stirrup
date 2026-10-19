@@ -817,10 +817,16 @@ func TestLoop_TurnStartedOncePerTurnAcrossRetries(t *testing.T) {
 	}
 }
 
+// eventTypeList returns the event types in order, with a run of deltas of
+// one type listed once: the stream carry re-chunks deltas, so their count
+// is not part of the event contract.
 func eventTypeList(events []types.HarnessEvent) []string {
-	out := make([]string, len(events))
-	for i, ev := range events {
-		out[i] = ev.Type
+	var out []string
+	for _, ev := range events {
+		if n := len(out); n > 0 && out[n-1] == ev.Type && (ev.Type == "text_delta" || ev.Type == "thinking_delta") {
+			continue
+		}
+		out = append(out, ev.Type)
 	}
 	return out
 }

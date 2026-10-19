@@ -134,6 +134,15 @@ func (sl *SecurityLogger) SecretRedactedInOutput(pattern, location string) {
 	})
 }
 
+// StreamTextWithheld emits when the stream carry withholds a possible
+// secret longer than it holds, so the control stream misses text the trace
+// keeps.
+func (sl *SecurityLogger) StreamTextWithheld(location string) {
+	sl.Emit("warn", "stream_text_withheld", map[string]any{
+		"location": location,
+	})
+}
+
 // FileSizeLimitExceeded emits when a file read/write is blocked by size limits.
 func (sl *SecurityLogger) FileSizeLimitExceeded(path string, size, limit int64) {
 	sl.Emit("warn", "file_size_limit_exceeded", map[string]any{

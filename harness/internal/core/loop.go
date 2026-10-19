@@ -291,18 +291,28 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 			turnZeroAbort = true
 		}
 	}
+	l.turnZeroContext = sortedContextValues(dynamicContext)
+	// The turn-0 guard reads dynamic context scrubbed, so with one
+	// configured the model reads the text it could not see fenced.
+	var fencedContext map[string]string
+	if guard.ChecksPhase(l.GuardRail, guard.PhasePreTurn) {
+		if fencedContext = fenceDynamicContext(dynamicContext); len(fencedContext) > 0 {
+			l.recordSpotlightApplied(runCtx, guard.PhasePreTurn, &guard.Decision{Verdict: guard.VerdictAllowSpot, GuardID: harnessSpotlightGuardID, Reason: "dynamic context held spans the scrubber replaced"})
+		}
+	}
 	l.writeProtection = l.buildWriteProtection()
 
 	promptModel := config.EffectivePromptModel()
 	systemPrompt, err := l.Prompt.Build(runCtx, prompt.PromptContext{
-		Mode:               config.Mode,
-		Workspace:          config.Executor.Workspace,
-		Executor:           l.Executor,
-		MaxTurns:           config.MaxTurns,
-		Model:              promptModel,
-		DynamicContext:     dynamicContext,
-		OutputSchema:       config.OutputSchema,
-		RepositoryGuidance: l.repositoryGuidance,
+		Mode:                 config.Mode,
+		Workspace:            config.Executor.Workspace,
+		Executor:             l.Executor,
+		MaxTurns:             config.MaxTurns,
+		Model:                promptModel,
+		DynamicContext:       dynamicContext,
+		FencedDynamicContext: fencedContext,
+		OutputSchema:         config.OutputSchema,
+		RepositoryGuidance:   l.repositoryGuidance,
 	})
 	if err != nil {
 		return l.finishWithOutcome(runCtx, config, setupOutcome(runCtx, "error"), fmt.Errorf("build system prompt: %w", err), stopHeartbeat)
@@ -825,18 +835,21 @@ func (l *AgenticLoop) runInnerLoop(
 			return messages, blocked, finalAssistantText, nil
 		}
 
-		// See collectUntrustedChunks / docs/guardrails.md for what
-		// counts as untrusted content per turn. Turn 0 chunks were
-		// already scanned by the Rule-of-Two monitor in Run() under their
-		// own labels, so only the guard sees them here.
+		// See docs/guardrails.md for what counts as untrusted content
+		// per turn. Turn 0 chunks were already scanned by the Rule-of-Two
+		// monitor in Run() under their own labels, so only the guard sees
+		// them here.
 		if turn == 0 {
-			if chunks := collectUntrustedChunks(messages, turn, config.DynamicContext, config.Prompt); len(chunks) > 0 {
+			if chunks, spans := l.preTurnGuardCopy(turnZeroChunks(config.Prompt, l.turnZeroContext)); len(chunks) > 0 {
 				in := guard.Input{
 					Phase:   guard.PhasePreTurn,
 					Content: batchUntrustedChunks(chunks),
 					Source:  fmt.Sprintf("batched:n=%d", len(chunks)),
 					Mode:    config.Mode,
 					RunID:   config.RunID,
+				}
+				if spans > 0 {
+					in.Metadata = map[string]string{guard.MetadataRedactedSpans: strconv.Itoa(spans)}
 				}
 				allow, decision, _ := l.guardCheck(ctx, in, guardFailOpen(config))
 				l.ratchetRuleOfTwo(ctx, config, decision, turn)
@@ -1131,6 +1144,12 @@ func (l *AgenticLoop) runInnerLoop(
 					Source:  "model_output",
 					Mode:    config.Mode,
 					RunID:   config.RunID,
+				}
+				if guard.ChecksPhase(l.GuardRail, guard.PhasePostTurn) {
+					if scrubbed, n := scrubForGuard([]string{finalText}); n > 0 {
+						in.Content = scrubbed[0]
+						in.Metadata = map[string]string{guard.MetadataRedactedSpans: strconv.Itoa(n)}
+					}
 				}
 				allow, decision, spotlight := l.guardCheck(ctx, in, guardFailOpen(config))
 				l.ratchetRuleOfTwo(ctx, config, decision, turn)
@@ -1711,8 +1730,8 @@ func (l *AgenticLoop) emitRuleOfTwoTriggered(config *types.RunConfig, source, ac
 }
 
 // sortedContextValues returns the non-empty dynamic-context values in
-// key order, matching collectUntrustedChunks' deterministic ordering so
-// detection events are stable across runs of the same config.
+// key order, so detection events and the turn-0 guard input are stable
+// across runs of the same config.
 func sortedContextValues(dynamicContext map[string]string) []string {
 	if len(dynamicContext) == 0 {
 		return nil
@@ -1789,23 +1808,24 @@ func (l *AgenticLoop) screenArrivedContent(ctx context.Context, config *types.Ru
 	// never receives a secret.
 	last := &messages[len(messages)-1]
 	guardSource := fmt.Sprintf("batched:n=%d", len(chunks))
+	checked := guard.ChecksPhase(l.GuardRail, guard.PhasePreTurn)
 	var spans int
-	var scrubbed []int
-	if feedback {
-		// Feedback is scrubbed in history too; tool results keep their
-		// content for the model and are scrubbed for the guard alone.
-		spans, scrubbed = scrubVerifierFeedback(last)
+	var scrubbed []scrubbedToolResult
+	switch {
+	case feedback:
+		// Feedback is scrubbed in history too, so the guard reads what
+		// the model will and nothing needs fencing; tool results keep
+		// their content for the model and are scrubbed for the guard
+		// alone, when one reads them.
+		spans = scrubVerifierFeedback(last)
 		chunks = arrivedUntrustedChunks(messages)
 		guardSource = fmt.Sprintf("%s:n=%d", types.MessageOriginVerifierFeedback, len(chunks))
-	} else {
-		spans, scrubbed = scrubbedToolResults(*last)
-		for i := range chunks {
-			chunks[i] = security.Scrub(chunks[i])
-		}
+	case checked:
+		chunks, spans, scrubbed = scrubToolResultsForGuard(*last)
 	}
 	// A guard cannot judge what the scrubber hid from it, so with one
-	// configured the harness fences every scrubbed block for the model.
-	fence := len(scrubbed) > 0 && guard.ChecksPhase(l.GuardRail, guard.PhasePreTurn)
+	// configured the harness fences each hidden span for the model.
+	fence := len(scrubbed) > 0 && checked
 	in := guard.Input{
 		Phase:   guard.PhasePreTurn,
 		Content: batchUntrustedChunks(chunks),
@@ -1816,7 +1836,7 @@ func (l *AgenticLoop) screenArrivedContent(ctx context.Context, config *types.Ru
 		// per-turn cost the min-chunk gate saves does not apply.
 		IgnoreMinChunk: feedback,
 	}
-	if fence {
+	if spans > 0 {
 		in.Metadata = map[string]string{guard.MetadataRedactedSpans: strconv.Itoa(spans)}
 	}
 	allow, decision, spotlight := l.guardCheck(ctx, in, guardFailOpen(config))
@@ -1828,8 +1848,9 @@ func (l *AgenticLoop) screenArrivedContent(ctx context.Context, config *types.Ru
 		spotlightUntrustedChunks(messages)
 		l.recordSpotlightApplied(ctx, guard.PhasePreTurn, decision)
 	case fence:
-		fenceBlocks(last, scrubbed)
-		l.recordSpotlightApplied(ctx, guard.PhasePreTurn, &guard.Decision{Verdict: guard.VerdictAllowSpot, GuardID: harnessSpotlightGuardID, Reason: "content held spans the scrubber replaced"})
+		if fenceScrubbedSpans(last, scrubbed) {
+			l.recordSpotlightApplied(ctx, guard.PhasePreTurn, &guard.Decision{Verdict: guard.VerdictAllowSpot, GuardID: harnessSpotlightGuardID, Reason: "content held spans the scrubber replaced"})
+		}
 	}
 	return ""
 }
@@ -1857,36 +1878,36 @@ func (l *AgenticLoop) appendVerifierFeedback(ctx context.Context, config *types.
 	return appendUserBlock(messages, merged, true), ""
 }
 
-// collectUntrustedChunks returns the chunks of untrusted content that
-// just entered the message history at the start of the given turn: on
-// turn 0, the initial prompt plus DynamicContext entries (sorted by
-// key); on later turns, the text blocks of a verifier-feedback last
-// message, or otherwise every tool_result block's Content and
-// Structured payload in the last message — both are model-visible
-// (see docs/architecture.md "Structured tool results"), so both need
-// classification. v1 does not reclassify earlier-turn content already
-// in history, nor model-emitted text (handled at PhasePostTurn).
-func collectUntrustedChunks(messages []types.Message, turn int, dynamicContext map[string]types.DynamicContextValue, prompt string) []string {
-	if turn == 0 {
-		chunks := make([]string, 0, 1+len(dynamicContext))
-		if prompt != "" {
-			chunks = append(chunks, prompt)
-		}
-		// Deterministic ordering: the guard adapter assigns chunk indices,
-		// and operators debugging a deny benefit from stability.
-		keys := make([]string, 0, len(dynamicContext))
-		for k := range dynamicContext {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			if v := dynamicContext[k]; v.Value != "" {
-				chunks = append(chunks, v.Value)
-			}
-		}
-		return chunks
+// turnZeroChunks returns the content that enters the run before its first
+// turn: the prompt and then contextValues.
+func turnZeroChunks(prompt string, contextValues []string) []string {
+	chunks := make([]string, 0, 1+len(contextValues))
+	if prompt != "" {
+		chunks = append(chunks, prompt)
 	}
-	return arrivedUntrustedChunks(messages)
+	return append(chunks, contextValues...)
+}
+
+// preTurnGuardCopy returns the pre_turn guard's copy of chunks and the
+// number of matches the scrubber replaced in it. With no guard checking
+// pre_turn nothing reads the copy, so chunks are returned unscrubbed.
+func (l *AgenticLoop) preTurnGuardCopy(chunks []string) ([]string, int) {
+	if !guard.ChecksPhase(l.GuardRail, guard.PhasePreTurn) {
+		return chunks, 0
+	}
+	return scrubForGuard(append([]string(nil), chunks...))
+}
+
+// scrubForGuard applies security.ScrubForGuard to each chunk in place and
+// returns chunks and the number of matches it replaced.
+func scrubForGuard(chunks []string) ([]string, int) {
+	spans := 0
+	for i := range chunks {
+		var stats security.ScrubStats
+		chunks[i], stats = security.ScrubForGuard(chunks[i])
+		spans += stats.Count
+	}
+	return chunks, spans
 }
 
 // arrivedUntrustedChunks returns the untrusted chunks of the message that
@@ -1934,57 +1955,137 @@ func isVerifierFeedback(m types.Message) bool {
 
 // scrubVerifierFeedback runs the log scrubber over the text blocks of a
 // verifier-feedback message, which can carry workspace command output,
-// and returns the spans it replaced and the blocks they were in.
-func scrubVerifierFeedback(m *types.Message) (int, []int) {
+// and returns the number of spans it replaced.
+func scrubVerifierFeedback(m *types.Message) int {
 	spans := 0
-	var blocks []int
 	for i := range m.Content {
 		if m.Content[i].Type != "text" {
 			continue
 		}
 		var stats security.ScrubStats
 		m.Content[i].Text, stats = security.ScrubWithStats(m.Content[i].Text)
-		if stats.Count > 0 {
-			spans += stats.Count
-			blocks = append(blocks, i)
-		}
+		spans += stats.Count
 	}
-	return spans, blocks
+	return spans
 }
 
-// scrubbedToolResults returns the spans the log scrubber would replace in
-// the tool_result blocks of m, Content and Structured payload alike, and
-// the blocks they are in.
-func scrubbedToolResults(m types.Message) (int, []int) {
-	spans := 0
-	var blocks []int
+// scrubbedToolResult is a tool_result block the log scrubber changed: the
+// ranges of its Content it replaced, and its scrubbed Structured payload
+// when that held a match.
+type scrubbedToolResult struct {
+	block      int
+	ranges     []security.ScrubRange
+	structured string
+}
+
+// scrubToolResultsForGuard returns the guard's copy of the tool_result
+// blocks of m, Content and Structured payload alike in the order
+// arrivedUntrustedChunks gives them, with the log scrubber applied; the
+// number of matches it replaced; and the blocks it changed.
+func scrubToolResultsForGuard(m types.Message) ([]string, int, []scrubbedToolResult) {
+	var chunks []string
+	matches := 0
+	var changed []scrubbedToolResult
 	for i, b := range m.Content {
 		if b.Type != "tool_result" {
 			continue
 		}
-		_, content := security.ScrubWithStats(b.Content)
-		_, structured := security.ScrubWithStats(string(b.Structured))
-		if n := content.Count + structured.Count; n > 0 {
-			spans += n
-			blocks = append(blocks, i)
+		c := scrubbedToolResult{block: i}
+		n := 0
+		if b.Content != "" {
+			text, ranges, stats := security.ScrubForGuardWithSpans(b.Content)
+			chunks = append(chunks, text)
+			c.ranges = ranges
+			n += stats.Count
+		}
+		if len(b.Structured) > 0 {
+			text, stats := security.ScrubForGuard(string(b.Structured))
+			chunks = append(chunks, text)
+			if stats.Count > 0 {
+				c.structured = text
+			}
+			n += stats.Count
+		}
+		if n > 0 {
+			matches += n
+			changed = append(changed, c)
 		}
 	}
-	return spans, blocks
+	return chunks, matches, changed
 }
 
-// fenceBlocks spotlights the given blocks of m, dropping their structured
-// payload so adapters send the fenced text rather than the raw JSON.
-func fenceBlocks(m *types.Message, blocks []int) {
-	for _, i := range blocks {
-		b := &m.Content[i]
-		switch b.Type {
-		case "tool_result":
-			b.Content = guard.ApplySpotlight(b.Content)
-		case "text":
-			b.Text = guard.ApplySpotlight(b.Text)
+// fenceScrubbedSpans spotlights, in each changed block of m, the original
+// text of the ranges the scrubber replaced, and drops the block's
+// structured payload so adapters send the fenced text rather than the raw
+// JSON. A block whose only match was in an empty-Content block's payload
+// gets the payload's scrubbed text instead. It reports whether it fenced
+// anything.
+func fenceScrubbedSpans(m *types.Message, changed []scrubbedToolResult) bool {
+	fenced := false
+	for _, c := range changed {
+		b := &m.Content[c.block]
+		switch {
+		case len(c.ranges) > 0:
+			b.Content = fenceRanges(b.Content, c.ranges)
+			fenced = true
+		case b.Content == "":
+			b.Content = c.structured
 		}
 		b.Structured, b.Kind = nil, ""
 	}
+	return fenced
+}
+
+const (
+	// fenceMergeGap is the plain-text gap below which two scrubbed ranges
+	// share one fence, since a tag pair costs more than the gap.
+	fenceMergeGap = 64
+	// fenceMaxRanges is the number of merged ranges above which a block is
+	// fenced whole, so per-range tags cannot inflate a result: the fenced
+	// text is at most the base64 of the block plus fenceMaxRanges tag
+	// pairs.
+	fenceMaxRanges = 32
+)
+
+// fenceDynamicContext returns, for each value of dynamicContext holding
+// text the scrubber replaces, the value with those ranges fenced.
+func fenceDynamicContext(dynamicContext map[string]string) map[string]string {
+	var fenced map[string]string
+	for k, v := range dynamicContext {
+		if _, ranges, _ := security.ScrubForGuardWithSpans(v); len(ranges) > 0 {
+			if fenced == nil {
+				fenced = make(map[string]string)
+			}
+			fenced[k] = fenceRanges(v, ranges)
+		}
+	}
+	return fenced
+}
+
+// fenceRanges returns text with its ordered, disjoint ranges spotlighted:
+// nearby ranges share a fence, and past fenceMaxRanges the whole text is
+// one fence.
+func fenceRanges(text string, ranges []security.ScrubRange) string {
+	var merged []security.ScrubRange
+	for _, r := range ranges {
+		if n := len(merged); n > 0 && r.Start-merged[n-1].End < fenceMergeGap {
+			merged[n-1].End = r.End
+			continue
+		}
+		merged = append(merged, r)
+	}
+	if len(merged) > fenceMaxRanges {
+		return guard.ApplySpotlight(text)
+	}
+	var b strings.Builder
+	prev := 0
+	for _, r := range merged {
+		b.WriteString(text[prev:r.Start])
+		b.WriteString(guard.ApplySpotlight(text[r.Start:r.End]))
+		prev = r.End
+	}
+	b.WriteString(text[prev:])
+	return b.String()
 }
 
 // batchUntrustedChunks concatenates chunks under per-chunk delimiters
@@ -2101,7 +2202,10 @@ func (l *AgenticLoop) redactDynamicContext(dynamicContext map[string]string) int
 	for k, v := range dynamicContext {
 		redacted, n := l.RuleOfTwo.Redact(v)
 		if n > 0 {
-			dynamicContext[k] = redacted
+			// A placeholder can outgrow the span it replaces; re-capping
+			// keeps the value the fence is built from the one the prompt
+			// renders.
+			dynamicContext[k], _ = security.SanitizeOperatorText(redacted)
 			total += n
 		}
 	}

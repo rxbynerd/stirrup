@@ -35,21 +35,21 @@ func historyEndingWith(last types.Message) []types.Message {
 	}
 }
 
-func TestCollectUntrustedChunks_VerifierFeedbackTextBlocks(t *testing.T) {
+func TestArrivedUntrustedChunks_VerifierFeedbackTextBlocks(t *testing.T) {
 	messages := historyEndingWith(feedbackMessage("Test command failed:\nboom"))
-	chunks := collectUntrustedChunks(messages, 3, nil, "the task")
+	chunks := arrivedUntrustedChunks(messages)
 	if len(chunks) != 1 || chunks[0] != "Test command failed:\nboom" {
 		t.Fatalf("chunks = %q, want the feedback text only", chunks)
 	}
 }
 
-func TestCollectUntrustedChunks_EscalationNudgeNotCollected(t *testing.T) {
+func TestArrivedUntrustedChunks_EscalationNudgeNotCollected(t *testing.T) {
 	nudge := types.Message{
 		Role:      "user",
 		Synthetic: true,
 		Content:   []types.ContentBlock{{Type: "text", Text: "Please call a tool."}},
 	}
-	if chunks := collectUntrustedChunks(historyEndingWith(nudge), 3, nil, ""); chunks != nil {
+	if chunks := arrivedUntrustedChunks(historyEndingWith(nudge)); chunks != nil {
 		t.Errorf("escalation nudge collected as untrusted: %q", chunks)
 	}
 }
@@ -108,6 +108,23 @@ func TestScrubVerifierFeedback_ScrubsTextBlocks(t *testing.T) {
 	scrubVerifierFeedback(&msg)
 	if strings.Contains(msg.Content[0].Text, fakeLiveAWSKey) {
 		t.Errorf("key survived scrubbing: %q", msg.Content[0].Text)
+	}
+}
+
+// TestScrubVerifierFeedback_SkipsNonTextBlocks pins that only text blocks
+// are scrubbed and counted: another block is left as it is.
+func TestScrubVerifierFeedback_SkipsNonTextBlocks(t *testing.T) {
+	msg := feedbackMessage("key " + fakeLiveAWSKey)
+	other := types.ContentBlock{Type: "tool_result", ToolUseID: "t1", Content: "key " + fakeLiveAWSKey}
+	msg.Content = append([]types.ContentBlock{other}, msg.Content...)
+	if n := scrubVerifierFeedback(&msg); n != 1 {
+		t.Errorf("matches = %d, want 1 from the text block alone", n)
+	}
+	if !reflect.DeepEqual(msg.Content[0], other) {
+		t.Errorf("non-text block changed: %+v", msg.Content[0])
+	}
+	if strings.Contains(msg.Content[1].Text, fakeLiveAWSKey) {
+		t.Errorf("text block not scrubbed: %q", msg.Content[1].Text)
 	}
 }
 

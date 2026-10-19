@@ -80,16 +80,11 @@ outbound request, not one per chunk. Combined with the opt-in
 this keeps the per-turn overhead bounded even when many small tool
 outputs are returned.
 
-The guard receives arrived content with the log scrubber applied, so a
-span the scrubber replaces reaches it as `[REDACTED]`. Since the guard
-cannot judge what it cannot see, the harness spotlights every tool
-result or verifier feedback block that held such a span, whatever the
-verdict. It also sets `Input.Metadata["redacted_spans"]` to the number
-of spans replaced, for guard implementations that want it; the shipped
-adapters do not forward it, so the `[REDACTED]` placeholder in the
-content is the only signal they pass on. A block the guard also
-spotlights is wrapped once. See
-[Scrubbed content is fenced](security.md#scrubbed-content-is-fenced).
+Every `pre_turn` input reaches the guard with the log scrubber applied,
+and text the scrubber hid from the guard is fenced for the model in
+tool results and turn-0 dynamic context; see [Guard input](#guard-input)
+and
+[Guard input is scrubbed, and hidden spans are fenced](security.md#scrubbed-content-is-fenced).
 A deny or spotlight of arrived tool results, like the harness's own
 fence, drops each result's structured payload, which the Anthropic and
 Gemini adapters would otherwise send beside the rewritten text.
@@ -177,7 +172,11 @@ to the user. Built-in default criterion combines:
   in the prior turns. Useful for read-only modes where the agent's
   job is to summarise or extract.
 - **Secret leak** — AWS access keys, SSH private keys, and a
-  configurable corp-domain pattern in the response.
+  configurable corp-domain pattern in the response. The guard reads the
+  response with the log scrubber applied, so a secret in a format the
+  scrubber recognises reaches it as `[REDACTED]` and is already
+  redacted from the control stream and trace; this criterion catches
+  the formats the scrubber does not know.
 
 Enable when:
 - The output goes to a human reviewer or downstream system.
@@ -188,6 +187,43 @@ Skip when:
 - The run is a fully-automated execution loop where the assistant
   text is observability noise and the workspace edits are the
   deliverable.
+
+## Guard input
+
+Every `guard.Input` reaches the guard with the log scrubber applied,
+when a guard checks that phase, except that `secret://` references are
+left as written: they point at a secret rather than hold one. The
+scrubber replaces each match with the literal text `[REDACTED]`, which
+can also occur in genuine content. `Input.Metadata["redacted_spans"]`, when set, is the number of
+scrubber matches across the whole input: two matches inside one fence
+count two, and a secret in both a tool result's text and its
+structured payload counts twice. The shipped adapters (`granite-guardian`,
+`shieldstral`, `cloud-judge`) do not forward it, so for them the
+placeholder is the only signal that something was replaced.
+
+| `Source` | Phase | Content | What the model sees | Hidden spans fenced | Guard `spotlight` verdict |
+|---|---|---|---|---|---|
+| `batched:n=N` (turn 0) | `pre_turn` | the prompt, then each dynamic-context value in key order, after sanitisation and the Rule-of-Two `redact` action | the prompt as written; dynamic context with hidden spans fenced | dynamic context only | not applied (a deny ends the run) |
+| `user_response:n=N` | `pre_turn` | the queued inputs in arrival order | as written | no | not applied (a deny ends the run) |
+| `batched:n=N` (tool results) | `pre_turn` | each result's text, then its structured payload | the result with hidden spans fenced | yes, on allow | wraps each result once |
+| `verifier_feedback:n=N` | `pre_turn` | the feedback's text blocks | the scrubbed copy | no (already scrubbed) | wraps the feedback |
+| `model_output` | `post_turn` | the final assistant text | unchanged | no | logged only |
+| `tool_call:<name>` | `pre_tool` | the call's arguments, also as `ToolInput` (valid JSON) | unchanged; the handler gets the arguments as written | no | not applicable |
+
+`N` is the number of chunks. A batched `pre_turn` input is the chunks
+joined under `--- chunk N ---` header lines, counted from 0; a
+single-chunk batch still has one header. Turn 0 and arrived tool
+results share the `batched:` source, which is kept so the
+`guard.source` span attribute stays stable. Repository guidance is not
+part of the turn-0 input.
+
+A guard cannot judge text the scrubber hid. For tool results and
+dynamic context the harness fences that text for the model; the
+prompt and `user_response` are operator input and are not fenced, so
+ticket or chat text a control plane relays through them is a blind
+spot inside scrubber matches. For `pre_tool` the hidden text can be
+exactly the argument under review. See
+[Guard input is scrubbed, and hidden spans are fenced](security.md#scrubbed-content-is-fenced).
 
 ## Adapters
 
@@ -444,8 +480,8 @@ Config-driven composites (`GuardRailConfig`) always wire a sequential
 chain — deny short-circuits, and a non-deny result is the last guard's
 decision. The harness also exports a `Parallel` composite (deny beats
 spotlight beats allow, aggregated across every guard) but it has no
-config-file equivalent yet; use it by constructing `guard.Parallel`
-directly via the harnessapi.
+config-file equivalent yet, and `harnessapi` does not expose guard
+types, so it is constructed only in Go inside the harness module.
 
 ## Latency budget
 
@@ -665,7 +701,7 @@ Five instruments emitted by `harness/internal/observability/metrics.go`:
 | `stirrup.guard.checks` | counter | `guard.id`, `guard.phase`, `guard.verdict` |
 | `stirrup.guard.errors` | counter | `guard.id`, `guard.phase` |
 | `stirrup.guard.skips` | counter | `guard.id`, `guard.phase`, `reason` |
-| `stirrup.guard.spotlights` | counter | `guard.id` (`harness:scrubbed-spans` for the harness's own fence) |
+| `stirrup.guard.spotlights` | counter | `guard.id` (`harness:scrubbed-spans` for the harness's own fence), `guard.phase` |
 | `stirrup.guard.duration` | histogram | `guard.id`, `guard.phase` |
 
 A healthy production fleet sees `errors` and `skips` at low rates
@@ -674,7 +710,7 @@ signal for a degraded classifier.
 
 ### Security events
 
-Five new event types on the `SecurityEventEmitter`:
+Five event types on the `SecurityEventEmitter`:
 
 - `guard_allowed` (debug-level)
 - `guard_spotlighted`

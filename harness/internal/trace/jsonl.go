@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -639,8 +640,9 @@ func scrubRawJSON(raw json.RawMessage, redactionDisabled bool) json.RawMessage {
 	if redactionDisabled || len(raw) == 0 {
 		return raw
 	}
-	scrubbed := security.Scrub(string(raw))
-	if scrubbed == string(raw) {
+	unescaped := unescapeSpotlightTags(string(raw))
+	scrubbed := security.ScrubFenced(unescaped)
+	if scrubbed == unescaped {
 		return raw
 	}
 	if json.Valid([]byte(scrubbed)) {
@@ -659,6 +661,20 @@ func scrubRawJSON(raw json.RawMessage, redactionDisabled bool) json.RawMessage {
 		return json.RawMessage(`{}`)
 	}
 	return json.RawMessage(wrapped)
+}
+
+// unescapeSpotlightTags writes the spotlight tags in raw back as "<" and
+// ">", which an HTML-escaping encoder writes as \u003c and \u003e; the
+// JSON value is unchanged, and ScrubFenced can then find the fences.
+func unescapeSpotlightTags(raw string) string {
+	if !strings.Contains(raw, `\u003c`) {
+		return raw
+	}
+	for _, tag := range []string{security.SpotlightOpenTag, security.SpotlightCloseTag} {
+		escaped := strings.NewReplacer("<", `\u003c`, ">", `\u003e`).Replace(tag)
+		raw = strings.ReplaceAll(raw, escaped, tag)
+	}
+	return raw
 }
 
 // redactConfig returns config as persisted: secret references stripped and
@@ -698,12 +714,14 @@ func redactRunConfig(config *types.RunConfig) types.RunConfig {
 	return redacted
 }
 
-// scrubOrPass returns security.Scrub(s), or s verbatim under the --debug
-// bypass. Centralised so every scrub call site here and in otel.go reads
-// identically rather than hand-rolling the conditional.
+// scrubOrPass returns security.ScrubFenced(s), or s verbatim under the
+// --debug bypass. Centralised so every scrub call site here and in otel.go
+// reads identically rather than hand-rolling the conditional. Fences are
+// decoded because history and the system prompt can hold spotlighted
+// secrets.
 func scrubOrPass(s string, redactionDisabled bool) string {
 	if redactionDisabled {
 		return s
 	}
-	return security.Scrub(s)
+	return security.ScrubFenced(s)
 }

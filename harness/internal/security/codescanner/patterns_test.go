@@ -50,6 +50,21 @@ func TestPatternScanner_BlocksOnAWSKey(t *testing.T) {
 	}
 }
 
+// TestPatternScanner_BlocksOnNextLineYAMLValue pins that a key/value
+// secret whose value sits on the next, indented YAML line blocks the write.
+func TestPatternScanner_BlocksOnNextLineYAMLValue(t *testing.T) {
+	s := NewPatternScanner()
+	content := []byte("aws:\n  aws_secret_access_key:\n    " + strings.Repeat("Ab1/", 10) + "\n")
+
+	res, err := s.Scan(context.Background(), "values.yaml", content)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if !res.HasBlocking() {
+		t.Fatalf("expected blocking finding, got: %+v", res.Findings)
+	}
+}
+
 func TestPatternScanner_WarnsOnDynamicEvalSink(t *testing.T) {
 	s := NewPatternScanner()
 	content := []byte("def run(expr):\n    return eval(expr)\n")
@@ -375,5 +390,28 @@ func TestMatchesInterpreter(t *testing.T) {
 		if got := matchesInterpreter(tc.interp, names); got != tc.want {
 			t.Errorf("matchesInterpreter(%q) = %v, want %v", tc.interp, got, tc.want)
 		}
+	}
+}
+
+// TestPatternScanner_PEMKeyIsOneFindingOnItsBeginLine pins that the
+// multi-line PEM pattern still reports a key once, at its BEGIN line.
+func TestPatternScanner_PEMKeyIsOneFindingOnItsBeginLine(t *testing.T) {
+	s := NewPatternScanner()
+	key := "-----BEGIN EC PRIVATE KEY-----\n" +
+		"MHcCAQEEIBkg4LVWM9nuwNSk3yByxZpYRTBnVJk5oWp1Mzs8Kjp2oAoGCCqGSM49\n" +
+		"AwEHoUQDQgAEjzN8ZWbE0Z2Lm1hH3u6h5n6f3QK8m1o8w6m7u9S2Hn2b6eL0kV0b\n" +
+		"-----END EC PRIVATE KEY-----\n"
+	res, err := s.Scan(context.Background(), "deploy/key.pem", []byte("# test key\n"+key))
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	var lines []int
+	for _, f := range res.Findings {
+		if f.Rule == "secret/pem_private_key" {
+			lines = append(lines, f.Line)
+		}
+	}
+	if !slices.Equal(lines, []int{2}) {
+		t.Errorf("pem_private_key findings on lines %v, want one on line 2; all findings: %+v", lines, res.Findings)
 	}
 }

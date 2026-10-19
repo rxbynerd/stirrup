@@ -115,6 +115,10 @@ func buildSensitivePatterns() []SensitivePattern {
 			sp.prefilter = anyLiteral(apiKeyHeaderPrefilterLits)
 		case "aws_access_key_id":
 			sp.Validate = validAWSAccessKeyID
+		case "pem_private_key":
+			// The match spans the key body, which an attacker can extend
+			// with a documentation literal; no documented key is exempt.
+			sp.Validate = nil
 		case "aws_secret_access_key":
 			sp.prefilter = anyLiteral(awsSecretPrefilterLits)
 		case "azure_storage_key":

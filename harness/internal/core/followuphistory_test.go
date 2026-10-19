@@ -725,8 +725,8 @@ func TestRunFollowUpLoop_ContinueScreensCarriedVerifierFeedbackOnce(t *testing.T
 		t.Errorf("merged message origin = %q, want verifier_feedback", last.Origin)
 	}
 	text := strings.Join(textBlocks(last), "\n")
-	if !strings.Contains(text, guard.ApplySpotlight("tests fail; the fixture key is [REDACTED]")) {
-		t.Errorf("carried feedback did not reach the model scrubbed and fenced: %q", text)
+	if !strings.Contains(text, "tests fail; the fixture key is [REDACTED]") || strings.Contains(text, guard.SpotlightOpenTag) {
+		t.Errorf("carried feedback did not reach the model scrubbed and unfenced: %q", text)
 	}
 	if !strings.Contains(text, prompt) {
 		t.Errorf("follow-up prompt was rewritten as feedback: %q", text)
@@ -959,6 +959,59 @@ func TestBeginRunState(t *testing.T) {
 			loop.beginRunState(config, tc.carried)
 			if loop.cacheKey != tc.wantKey || loop.carriedToolCalls != tc.wantCalls {
 				t.Errorf("cacheKey, carriedToolCalls = %q, %d, want %q, %d", loop.cacheKey, loop.carriedToolCalls, tc.wantKey, tc.wantCalls)
+			}
+		})
+	}
+}
+
+// TestRunFollowUpLoop_ContinueFencesScrubbedSpansOnce pins that a carried
+// tool result holding a scrubbed span reaches the follow-ups' model with
+// that span fenced exactly once, whether the previous run screened the
+// result or left it for the follow-up to screen, and that a second
+// follow-up carrying already-fenced history neither re-screens nor
+// re-wraps it.
+func TestRunFollowUpLoop_ContinueFencesScrubbedSpansOnce(t *testing.T) {
+	output := "TOOL-OUTPUT key " + fakeAnthropicKey + " end"
+	want := "TOOL-OUTPUT key " + guard.ApplySpotlight(fakeAnthropicKey) + " end"
+	cases := map[string]struct {
+		script   [][]types.StreamEvent
+		maxTurns int
+		outcome  string
+	}{
+		"screened by the previous run": {
+			script:   [][]types.StreamEvent{emitToolScript[0], {{Type: "error", Error: errors.New("synthetic stream failure")}}, scriptEndTurn},
+			maxTurns: 20,
+			outcome:  "error",
+		},
+		"screened by the follow-up": {script: emitToolScript, maxTurns: 1, outcome: "max_turns"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			prov := &recordingScriptProvider{script: tc.script}
+			loop, tr := buildUserInputTestLoop(prov)
+			registerEmitTool(t, loop, output)
+			g := &inputRecordingGuard{}
+			loop.GuardRail = g
+			config := buildTestConfig()
+			config.MaxTurns = tc.maxTurns
+			config.FollowUpHistory = types.FollowUpHistoryContinue
+
+			traces := followUpSession(t, loop, tr, config, "carry on", "and again")
+			if traces[0].Outcome != tc.outcome {
+				t.Fatalf("primary outcome = %q, want %q", traces[0].Outcome, tc.outcome)
+			}
+			screened := 0
+			for _, in := range g.arrivedInputs() {
+				if strings.Contains(in.Content, "TOOL-OUTPUT") {
+					screened++
+				}
+			}
+			if screened != 1 {
+				t.Errorf("guard screened the tool result %d times across three runs, want 1", screened)
+			}
+			calls := prov.params()
+			if results := toolResultContents(calls[len(calls)-1].Messages); len(results) != 1 || results[0] != want {
+				t.Errorf("second follow-up tool result = %q, want %q", results, want)
 			}
 		})
 	}

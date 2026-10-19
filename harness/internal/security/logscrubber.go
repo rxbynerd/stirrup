@@ -39,8 +39,8 @@ var secretPatterns = []namedPattern{
 	// base64-ish shapes but no distinctive prefix. Keep them anchored to
 	// well-known key/value field names so ordinary hashes, IDs, and trace
 	// fragments are not scrubbed just because they share an alphabet.
-	{"aws_secret_access_key", regexp.MustCompile(`(?i)\baws_secret_access_key\b\s*[:=]\s*["']?[A-Za-z0-9/+=]{40}["']?`)},
-	{"azure_storage_key", regexp.MustCompile(`(?i)\b(?:azure_storage_account_key|storage_account_key|account_key|accountKey|primary_access_key|secondary_access_key)\b\s*[:=]\s*["']?[A-Za-z0-9+/]{40,88}={0,2}["']?`)},
+	{"aws_secret_access_key", regexp.MustCompile(`(?i)\baws_secret_access_key\b` + kvSep + `["']?[A-Za-z0-9/+=]{40}["']?`)},
+	{"azure_storage_key", regexp.MustCompile(`(?i)\b(?:azure_storage_account_key|storage_account_key|account_key|accountKey|primary_access_key|secondary_access_key)\b` + kvSep + `["']?[A-Za-z0-9+/]{40,88}={0,2}["']?`)},
 	{"slack_token", regexp.MustCompile(`xox[abprs]-[A-Za-z0-9-]{10,}`)},
 	{"gcp_api_key", regexp.MustCompile(`AIza[0-9A-Za-z_-]{35}`)},
 	// basic_auth precedes bearer_token so the two HTTP-auth families
@@ -49,16 +49,19 @@ var secretPatterns = []namedPattern{
 	// docs/observability-cloud.md), and the bearer_token pattern below
 	// would not match this prefix. Without this entry, a resolved
 	// Basic token leaking into slog output would land unscrubbed.
-	{"basic_auth", regexp.MustCompile(`(?i)Basic\s+[A-Za-z0-9+/]+=*`)},
-	{"bearer_token", regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9._~+/=-]+`)},
-	{"pem_private_key", regexp.MustCompile(`-----BEGIN[\s\w]+KEY-----`)},
+	{"basic_auth", regexp.MustCompile(`(?i)Basic[ \t]+[A-Za-z0-9+/]+=*`)},
+	{"bearer_token", regexp.MustCompile(`(?i)Bearer[ \t]+[A-Za-z0-9._~+/=-]+`)},
+	{"pem_private_key", regexp.MustCompile(pemPrivateKeyPattern)},
 	// Case-insensitive: a shell resolves "secret://" and "SECRET://"
 	// identically, and this pattern is the last line of defence for a
 	// hook command whose case-insensitive ValidateRunConfig rejection
 	// was bypassed (e.g. RunConfig built without going through
 	// validation) — matching lowercase only would let a case-varied
-	// reference ride into a persisted trace unredacted.
-	{"secret_ref", regexp.MustCompile(`(?i)secret://[^\s"']+`)},
+	// reference ride into a persisted trace unredacted. The body is the
+	// reference syntax the secret stores accept (an environment variable,
+	// file:// path or ssm:// parameter), so shell syntax after a
+	// reference is never hidden from a guard.
+	{"secret_ref", regexp.MustCompile(`(?i)secret://[A-Za-z0-9_./:@+~%=-]+`)},
 	// api_key_header matches the literal "<header>: <value>" forms used
 	// for non-Bearer auth on Azure OpenAI and APIM-fronted gateways. These
 	// keys do not have a distinctive prefix (Azure keys are hex-y but
@@ -66,8 +69,8 @@ var secretPatterns = []namedPattern{
 	// only reliable anchor. The pattern is anchored on a header name we
 	// know stirrup emits — adding more variants here is preferable to a
 	// permissive token catch-all.
-	{"api_key_header", regexp.MustCompile(`(?i)\b(?:api-key|x-api-key|Ocp-Apim-Subscription-Key)\s*:\s*[A-Za-z0-9._~+/=-]+`)},
-	{"generic_hex_secret", regexp.MustCompile(`(?i)\b(?:api[_-]?key|token|secret|client[_-]?secret|access[_-]?token|auth[_-]?token|password)\b\s*[:=]\s*["']?[a-f0-9]{32}["']?`)},
+	{"api_key_header", regexp.MustCompile(`(?i)\b(?:api-key|x-api-key|Ocp-Apim-Subscription-Key)[ \t]*:[ \t]*[A-Za-z0-9._~+/=-]+`)},
+	{"generic_hex_secret", regexp.MustCompile(`(?i)\b(?:api[_-]?key|token|secret|client[_-]?secret|access[_-]?token|auth[_-]?token|password)\b` + kvSep + `["']?[a-f0-9]{32}["']?`)},
 	// oidc_jwt matches a three-segment JWT whose header begins with
 	// "eyJ" (the base64url prefix of `{"`). Federation flows propagate
 	// runner OIDC tokens, AWS web-identity tokens, and GCP STS subject
@@ -85,11 +88,71 @@ var secretPatterns = []namedPattern{
 	{"gcp_access_token", regexp.MustCompile(`ya29\.[A-Za-z0-9_-]+`)},
 }
 
+// kvSep separates a key from its value in the key/value patterns: a colon
+// or equals sign, with the value on the same line or, as YAML allows, on
+// the next line indented. An unindented next line is left alone, since it
+// can be a command rather than a value.
+const kvSep = `[ \t]*[:=][ \t]*(?:\r?\n[ \t]+)?`
+
+// pemPrivateKeyPattern matches a PEM or PGP key block from its BEGIN line
+// through its END line, or without one through the whole base64 lines after
+// it. Lines may be raw, "\n"- or "\\n"-escaped, quoted list elements,
+// concatenated string literals, or line-numbered with an optional path; the
+// body admits only base64 lines, armour headers directly after BEGIN and
+// the harness's own truncation marker, so a line of prose ends the match.
+const pemPrivateKeyPattern = pemHeader + `(?:` +
+	`(?:` + pemArmour + pemSep + pemItem + `)?(?:` + pemSep + pemItem + `)*` + pemSep + pemEnd + `|` +
+	`(?:` + pemArmour + `(?:` + pemOpenLine + `))?(?:` + pemOpenLine + `)*)`
+
+const (
+	pemHeader    = `-----BEGIN[\s\w]+KEY(?:\s+BLOCK)?-----`
+	pemEnd       = `-----END[\s\w]+KEY(?:\s+BLOCK)?-----`
+	pemHSpace    = `[\t \x{A0}]*`
+	pemEscBreak  = `\\\\r\\\\n|\\\\n|\\r\\n|\\n|"\s*,\s*"|'\s*,\s*'|"\s*\+\s*"|'\s*\+\s*'`
+	pemLineBreak = `(?:\r?\n|` + pemEscBreak + `)`
+	pemSep       = pemHSpace + `(?:` + pemLineBreak + pemHSpace + pemLineNumber + `)+`
+	// pemLineNumber is the "12\t" of read_file and cat -n output, or the
+	// "12:" of grep -n, before a line, after the "path:" of grep -rn and
+	// search_files output; grep marks context lines "path-12-" instead.
+	// The path holds no quote or shell syntax, cannot begin with "-" (an
+	// END line is not a path), and has at most eight space-separated
+	// parts, so a line of prose stops being a possible path.
+	pemLineNumber = `(?:(?:` + pemPath + `[:-])?[0-9]+(?:\t|\\t|:|-)` + pemHSpace + `)?`
+	pemPath       = `[^-\s:"'\\;|&$` + "`" + `()<>][^\s:"'\\;|&$` + "`" + `()<>]*(?: [^\s:"'\\;|&$` + "`" + `()<>]+){0,7}`
+	pemItem       = `(?:[A-Za-z0-9+/=]+|\[\.\.\.truncated(?: [0-9]+ bytes)?\.\.\.\])`
+	// pemArmour is RFC 1421/4880 armour header lines and the line break
+	// that, with the next line's, makes the blank line before the body.
+	pemArmour = `(?:` + pemSep + `[A-Za-z][A-Za-z0-9-]*:[^\r\n"\\;|&$` + "`" + `()<>]*)+` + pemHSpace + pemLineBreak
+	// pemOpenLine is a body line of a block with no END line. A raw line
+	// must be base64 to its end; an escaped one ends where base64 does.
+	pemOpenLine = `(?:` + pemHSpace + `\r?\n` + pemHSpace + pemLineNumber + `)+` + pemItem + pemHSpace + `\r?(?m:$)|` +
+		pemHSpace + `(?:(?:` + pemEscBreak + `)` + pemHSpace + `)+` + pemItem
+)
+
 // matchValidators narrows patterns whose regex also matches ordinary prose.
 // A match is redacted only when its validator returns true; patterns absent
 // from the map redact every match.
 var matchValidators = map[string]func(match string) bool{
-	"basic_auth": isBasicCredential,
+	"basic_auth":   isBasicCredential,
+	"bearer_token": isBearerCredential,
+}
+
+// bearerProseWords are the words that follow "bearer" in prose about HTTP
+// authentication rather than in a header carrying a token.
+var bearerProseWords = map[string]bool{
+	"token": true, "tokens": true, "auth": true, "authentication": true,
+	"authorization": true, "scheme": true, "schemes": true, "header": true,
+	"headers": true, "credential": true, "credentials": true, "value": true,
+	"values": true, "string": true, "prefix": true, "type": true,
+	"format": true, "and": true, "or": true, "is": true, "the": true,
+	"a": true, "an": true,
+}
+
+// isBearerCredential reports whether a bearer_token match is a credential
+// rather than prose such as "bearer token": every value is redacted except
+// one of bearerProseWords.
+func isBearerCredential(match string) bool {
+	return !bearerProseWords[strings.ToLower(tokenAfterSpace(match))]
 }
 
 // isBasicCredential reports whether a basic_auth match is a credential
@@ -100,29 +163,41 @@ func isBasicCredential(match string) bool {
 	return ok
 }
 
-// replaceValidated replaces every match of re that valid accepts. A rejected
+// replaceValidated replaces every match of re that valid accepts.
+func replaceValidated(re *regexp.Regexp, value string, valid func(string) bool) (string, int) {
+	matches := findValidated(re, value, valid)
+	if len(matches) == 0 {
+		return value, 0
+	}
+	var b strings.Builder
+	prev := 0
+	for _, m := range matches {
+		b.WriteString(value[prev:m[0]])
+		b.WriteString(redactedPlaceholder)
+		prev = m[1]
+	}
+	b.WriteString(value[prev:])
+	return b.String(), len(matches)
+}
+
+// findValidated returns the matches of re that valid accepts. A rejected
 // match does not consume the text after its first byte, so a credential
 // directly following a rejected match is still examined.
-func replaceValidated(re *regexp.Regexp, value string, valid func(string) bool) (string, int) {
-	var b strings.Builder
-	redacted := 0
-	for rest := value; ; {
-		loc := re.FindStringIndex(rest)
+func findValidated(re *regexp.Regexp, value string, valid func(string) bool) [][]int {
+	var matches [][]int
+	for off := 0; ; {
+		loc := re.FindStringIndex(value[off:])
 		if loc == nil {
-			b.WriteString(rest)
-			break
+			return matches
 		}
-		if valid(rest[loc[0]:loc[1]]) {
-			b.WriteString(rest[:loc[0]])
-			b.WriteString(redactedPlaceholder)
-			redacted++
-			rest = rest[loc[1]:]
+		start, end := off+loc[0], off+loc[1]
+		if valid(value[start:end]) {
+			matches = append(matches, []int{start, end})
+			off = end
 			continue
 		}
-		b.WriteString(rest[:loc[0]+1])
-		rest = rest[loc[0]+1:]
+		off = start + 1
 	}
-	return b.String(), redacted
 }
 
 // ScrubStats reports redactions performed by ScrubWithStats. Count is the

@@ -70,12 +70,22 @@ const (
 //
 //	"text_delta"
 //	  - text: incremental text fragment from the model's response.
+//	  Fragments are not the provider's deltas and have no stable size or
+//	  count. Concatenated in order they give the model's text with
+//	  recognised secrets redacted. Text a secret pattern could still
+//	  match is held back and sent no later than the next event of the
+//	  model's response ("tool_call", "turn_committed", "done") or the end
+//	  of the stream; ordinary prose is sent as it arrives. "heartbeat"
+//	  and "warning" events raised outside the response are not ordered
+//	  against held text. There is no timer: delta silence is not a stall,
+//	  use "heartbeat".
 //
 //	"thinking_delta"
 //	  - text: incremental reasoning text from the model's response, where
 //	          the provider exposes it. Opaque (redacted) reasoning is
 //	          never sent.
-//	  None are sent when RunConfig.reasoning_summary is "off".
+//	  None are sent when RunConfig.reasoning_summary is "off". Fragments
+//	  are re-chunked and held back as "text_delta" fragments are.
 //
 //	"tool_call"
 //	  - id:    unique tool-use ID assigned by the model.

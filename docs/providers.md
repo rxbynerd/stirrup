@@ -70,7 +70,8 @@ content blocks at once. Batch results are parsed into the same shape.
 
 While a block streams, the adapter also forwards each fragment of its
 reasoning text as it arrives, which the loop sends to the control
-plane as `thinking_delta` events; the complete block remains the only
+plane as `thinking_delta` events after its secret carry (see
+[Control-stream scrubbing](security.md#control-stream-scrubbing)); the complete block remains the only
 thing persisted. A block whose reasoning text is empty, the
 `claude-sonnet-5-5` default, produces no `thinking_delta`. See
 [Watching a run live](integration-guide.md#watching-a-run-live).
@@ -302,8 +303,10 @@ See `examples/runconfig/azure-openai.json`.
 
 **Reasoning text.** Servers that stream reasoning in a non-standard
 `reasoning_content` delta field (DeepSeek, Z.ai GLM, LM Studio) have
-each fragment forwarded as a `thinking_delta` event, whether or not a
-replay rule also captures it for the next turn. Chat Completions has no
+each fragment forwarded, through the loop's secret carry (see
+[Control-stream scrubbing](security.md#control-stream-scrubbing)), as
+`thinking_delta` events, whether or not a replay rule also captures it
+for the next turn. Chat Completions has no
 request control for this, so `reasoningSummary` changes nothing on the
 wire; `off` only stops the loop forwarding the events. A
 `reasoning_content` value that is not a JSON string is ignored. The

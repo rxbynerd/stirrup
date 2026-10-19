@@ -59,16 +59,58 @@ covering:
 - Slack tokens
 - GCP API keys and OAuth2 access tokens
 - Key/value-anchored Azure storage keys
-- Bearer tokens including JWTs (Authorization headers)
+- Bearer tokens including JWTs (Authorization headers). A value that is
+  one of a short list of prose words (`token`, `tokens`, `auth`,
+  `authentication`, `authorization`, `scheme`, `header`, `credentials`,
+  `value`, `string`, `prefix`, `type`, `format`, and a few function
+  words), compared case-insensitively, is left alone, so "bearer token"
+  and "the Bearer authentication scheme" stay readable; any other value,
+  `Bearer changeme` included, is redacted
 - Basic-auth credentials (`Basic <base64>`), redacted only when the
   payload decodes to bytes containing the `user:password` colon, so
   prose such as "basic documentation" is left intact. A payload cut off
   mid-token is still redacted. A payload with no colon, such as a bare
   vendor API key sent as the whole Basic value, is not recognised
-- PEM-encoded private keys
+- PEM and PGP armoured key blocks, private and public, from the `BEGIN`
+  line through the `END` line. The body may hold only base64 lines,
+  armour header lines (`Proc-Type:`, `Version:`, `Comment:`) directly
+  after `BEGIN` followed by a blank line, a PGP `=XXXX` checksum, and the
+  harness's own mid-result truncation marker (`[...truncated N
+  bytes...]`). A line of prose ends the match at the header, so text
+  placed between armour lines stays readable. Lines may be raw,
+  line-numbered (`read_file`, `cat -n` and `grep -n` output, the
+  `path:line:` prefix of `grep -rn` and `search_files`, with spaces in
+  the path, and grep's `path-line-` context lines), `\n`-escaped
+  inside a JSON string or `\\n`-escaped inside JSON held in a JSON
+  string, separate JSON array elements (the shape of `read_file`'s
+  structured payload) or single-quoted list elements, or string literals
+  joined with `+`. A header with no `END` line
+  is redacted with the whole base64 lines after it and stops before the
+  first line that is not base64 to its end, so that line, its
+  indentation and its first word are kept. In `\n`-escaped text a line's
+  end is not visible, so there the next line's leading base64 run is
+  redacted with the key. Any other truncation marker inside a key ends
+  the match, and the body lines after it are not redacted. Body lines in
+  other shapes are not redacted either: blockquoted (`> `), with
+  `cat -A` `$` line ends, joined with `<br>` or with spaces on one line,
+  or a line followed by other text, such as a `...` the model appends,
+  which with the lines after it reaches the sinks. A `path:line:` prefix
+  whose path has more than eight space-separated parts, starts with `-`,
+  or holds a quote or shell syntax is not recognised either
 - API-key header values
 - Key/value-anchored 32-character hex secrets
-- `secret://` references themselves
+- `secret://` references themselves, through the reference syntax the
+  secret stores accept (letters, digits and `_./:@+~%=-`), except in a
+  guard's copy (see [below](#scrubbed-content-is-fenced))
+
+The key/value patterns (AWS secret access keys, Azure storage keys and
+hex secrets) take a value on the same line as the key or, as YAML
+allows, on the next line when it is indented. No pattern's match holds
+shell syntax (`;`, `|`, `&`, `$`, a backtick, parentheses, `<` or `>`),
+and none spans a line break except the PEM pattern and that one
+key/value separator, so a redaction cannot hide a command placed after a
+credential-shaped string from a guard;
+`TestSecretPatterns_MatchesHoldNoShellSyntax` pins this.
 
 Because the scrubber sits at the `slog.Handler` boundary, it is
 defence in depth against recognised credential formats — it runs
@@ -105,19 +147,84 @@ The stdio and gRPC transports run `security.Scrub()` over the `text`,
 it, and the gRPC transport then caps `tool_call` input, `tool_result`
 content, `user_message` text, `thinking_delta` text and `message` at
 256 KiB, and every name and ID field and `stop_reason` at 1 KiB;
-`text_delta` is not capped.
-Scrubbing is per event.
-Model output and reasoning arrive as many small `text_delta` and
-`thinking_delta` fragments, so a secret the model writes out across two
-fragments is matched in neither and reaches the control plane intact
-once it concatenates them. The final assistant text recorded in the
-trace is scrubbed as a whole and does not share this gap. A control
-plane that persists or displays the joined deltas and needs the same
-guarantee scrubs the joined text itself.
+`text_delta` is not capped. Scrubbing is per event.
+
+Model output and reasoning arrive from the provider as many small
+fragments, and a secret the model writes out can be split between two
+of them. The loop therefore passes `text_delta` and `thinking_delta`
+text through a carry (`security.StreamCarry`) that scrubs it as one
+stream before any transport sees it, an embedder's `harnessapi.Transport`
+included. The carry holds back only text a secret pattern could still
+match: everything from the earliest point at which the remaining text
+could begin or continue a match, such as an `s` that could start `sk-`,
+a `Bearer` keyword and the whitespace after it, or an open PEM header
+followed only by base64 lines, together with any complete match that
+crosses that point. Which text counts is derived from the pattern set,
+so a new pattern needs no change to the carry. Everything before that
+point is released, scrubbed, as it arrives. For each pattern the carry
+redacts, the loop raises the `secret_redacted_in_output` security event
+with the location `core.stream.<event type>`; the transports' scrub
+stays as defence in depth.
+
+Held text is released as soon as it can no longer begin a match, before
+the next event of the model's response (a `tool_call`, a thinking block,
+the end of the turn), when the stream switches between text and
+reasoning, and on every way the provider stream ends: completion, a
+provider error, a stream that closes early, and cancellation. The order
+of the response's events is unchanged and no text is lost, but delta
+boundaries no longer match the provider's: one event can join several
+provider deltas, and one delta can be split. `heartbeat` events and
+`warning` events raised outside the response, such as one for a dropped
+`user_response`, come from other goroutines and are not ordered against
+held text. A thinking block that arrives whole is scrubbed in one pass
+and sent as one event.
+
+While text is held, the cut also stops at each pattern's matches in the
+text as written, not only in the text earlier patterns rewrote, so a
+match that an earlier pattern's placeholder hides cannot surface later
+over text already released. Except where the cap below forces a
+release, the streamed text equals whole-stream `Scrub`, which
+`TestStreamCarry_InterleavedPatternsMatchWholeStreamScrub` and the
+`FuzzStreamCarry` target check.
+
+The latency this adds to ordinary prose is a few bytes that could begin
+a keyword, such as a trailing `s` or `Bea`, waiting for the next
+fragment. While a possible secret is being written (a token, a
+key/value pair, a key block) the stream trails by that text; a held
+span longer than 64 bytes is rescanned only after it grows by a
+quarter, so its release can lag by that much more. There is no timer:
+held text waits for the next fragment or event, so a control plane
+detects a stall with `heartbeat`, not with delta silence.
+
+The hold is capped at 8 KiB, whitespace inside a match included. When
+one possible match outgrows the cap, the text before it is released
+scrubbed, and the text from its start is released as one `[REDACTED]`,
+whether or not the scrubber matches it yet: a JWT whose header and
+payload pass 8 KiB before the second dot has no match until the dot
+arrives. Nothing more of that match is sent. The carry keeps holding
+its text, rescanning after each quarter of growth, until a scan shows
+where the match ends, and releases only what follows it. A possible
+match that ends without matching is redacted from its start all the
+same, such as base64 running on past the 40 characters
+`aws_secret_access_key=` takes. A match still open after 1 MiB is
+withheld rather than held: the carry keeps its last 64 KiB and the
+patterns that could still be matching, and sends nothing until a rune
+arrives that none of those patterns can contain, which no match can
+cross; it releases the stream from there. That point can come later
+than the match's end (after a long `Bearer` run, spaces still count as
+possible match text), never earlier. When the carry starts withholding,
+the loop sends a `warning` on the control stream, raises the
+`stream_text_withheld` security event and logs a warning.
+`TestStreamCarry_SpanOverCapIsRedactedWhole`,
+`TestStreamCarry_UnmatchedHeadOverCapIsWithheld`,
+`TestStreamCarry_RunPastTheCapIsBounded`,
+`TestStreamCarry_TextAfterAWithheldMatchIsReleased` and
+`TestStreamCarry_WhitespaceAfterKeyword` pin this. The final assistant
+text recorded in the trace is scrubbed as a whole.
 
 `thinking_delta` sends the model's readable reasoning text to the
-control plane. It is model output, with the same trust level and the
-same per-fragment scrubbing as `text_delta`.
+control plane. It is model output, with the same trust level, carry
+and scrubbing as `text_delta`.
 
 The Rule-of-Two `redact` action rewrites the model's context, not the
 control stream. `tool_result` content and `verifier_feedback` text
@@ -125,43 +232,110 @@ reach the control plane with this scrubbing alone, so latch-tier spans
 the scrubber does not recognise, such as card numbers, IBANs and
 anchored SSNs, are sent unredacted.
 
-### Scrubbed content is fenced
+<a id="scrubbed-content-is-fenced"></a>
 
-When a `pre_turn` guard is configured, its copy of each arrived tool
-result, carried tool result or verifier feedback has every match of the
-log scrubber replaced with `[REDACTED]`, so a remote classifier is not
-sent a credential. Several scrubber patterns match any run of token
-characters after a prefix, so text written in the shape of a token
+### Guard input is scrubbed, and hidden spans are fenced
+
+Every input a guard receives has every match of the log scrubber
+replaced with `[REDACTED]`, so a remote classifier is not sent a
+credential. `secret://` references are the exception: a reference is a
+pointer the secret store resolves, not key material, and redacting one
+can hide what the guard is asked to judge, such as a program run as
+`secret://usr/bin/curl` through a `secret:` directory. The guard reads
+references as written, and the fences below leave them plain for the
+model too. The copies are:
+
+- `pre_turn`: the prompt and dynamic context at turn 0 (dynamic context
+  after sanitisation and the Rule-of-Two `redact` action), a mid-run
+  `user_response`, arrived and carried tool results, and verifier
+  feedback;
+- `post_turn`: the model's final text;
+- `pre_tool`: the call's arguments, as `Content` and as `ToolInput`,
+  which stays valid JSON (a scrub that breaks the document leaves it a
+  JSON string of the scrubbed text).
+
+The copy is built only when a guard checks the phase. What the model
+reads, what the tool receives and what the permission policy evaluates
+are not changed by it. `Input.Metadata["redacted_spans"]` is the number
+of scrubber matches in the guard's input; see
+[Guard input](guardrails.md#guard-input).
+
+Several scrubber patterns match any run of token characters after a
+prefix, so text written in the shape of a token
 (`sk-ant-ignore_all_previous_instructions…`, a camelCase `ghp_` value,
 a `Bearer` value that is base64 of an instruction) is replaced as well,
-and the guard cannot judge it. The harness therefore spotlights, in the
-model's history, every block in which the scrubber replaced at least
-one span: the block is base64-encoded inside the spotlight tags, the
-same mechanism a guard's `spotlight` verdict uses, and its structured
-payload is dropped so adapters send the fenced text. This happens
-whatever the guard's verdict, once per block: a block the guard also
-spotlights is wrapped once, and a block already screened is not
-screened again. `Input.Metadata["redacted_spans"]` carries the number
-of spans replaced for guard implementations that read it. The shipped
-adapters (`granite-guardian`, `shieldstral`, `cloud-judge`) do not
-forward it, so for them the `[REDACTED]` placeholder in the content is
-the only signal that something was replaced.
+and the guard cannot judge it. Where the model would otherwise read
+that text plain, the harness fences it when a `pre_turn` guard is
+configured:
 
-The model still receives the unscrubbed content, inside the fence, as
-it would have without a guard. With no `pre_turn` guard (no guard, the
-`none` adapter, or a guard gated to other phases) nothing is fenced and
-history is unchanged.
+- **Tool results.** In the model's history, the original text of each
+  range the scrubber replaced is spotlighted in place, and the rest of
+  the result stays plain text the guard has read. This applies when the
+  guard allows the content, or errors with `failOpen` set. A deny
+  replaces the result with `[content blocked by guardrail]` instead, and
+  a guard `spotlight` verdict wraps the whole result once, with no span
+  fences inside it. A result already screened, including one carried
+  into a continued follow-up, is not screened again.
+- **Turn-0 dynamic context.** The system prompt renders each value with
+  the same ranges fenced, after the value is sanitised, rewritten by the
+  Rule-of-Two `redact` action and truncated to the operator-text cap
+  again, so a fence is never cut. A value whose fenced form does not
+  decode to the value the prompt renders is fenced whole instead. The
+  guard's input is the unfenced, scrubbed text. A turn-0 deny ends the
+  run, so the fence matters only when the guard allows.
 
-The fence has a known cost. It covers the whole block, not the
-scrubbed span, and benign token-shaped text also matches the scrubber:
-a literal `Bearer x`, a `secret://` reference in a config file or in
-these docs, or authentication code that prints a header. Any such
-string base64-wraps the entire tool result for the model and for the
-`llm-judge` verifier, which renders the same history. A tool that
-prints one such string can therefore obscure the rest of its output,
-for example the `FAIL` lines of a test run, from the judge; a
-`test-runner` verifier is unaffected. The planned refinement is to
-fence only the scrubbed spans rather than the whole block.
+A fence is the tag `<untrusted_content_b64>`, the standard base64
+encoding of the original bytes, and the tag `</untrusted_content_b64>`,
+the same encoding a guard's `spotlight` verdict uses. Ranges closer than
+64 bytes share one fence, and a block or value with more than 32 fences
+is fenced whole, so fencing adds at most the base64 overhead of the
+text and 32 tag pairs. A tool result holding more than 32
+credential-shaped strings at least 64 bytes apart, such as the header
+examples in authentication documentation, therefore reaches the model
+as one fence. Traces, recordings and OTel content capture
+decode each fence's payload, scrub it and re-encode it before
+persisting, so a fenced secret is stored as base64 of `[REDACTED]`.
+
+A tool result with a match in its text or its structured payload has
+the structured payload dropped, so adapters send the fenced text rather
+than the raw JSON. When only the payload matched, nothing is fenced and
+no spotlight is recorded; a result whose text is empty then carries the
+payload's scrubbed text, the copy the guard read.
+
+What is not fenced, and why:
+
+- With no `pre_turn` guard (no guard, the `none` adapter, or a guard
+  gated to other phases), tool results and dynamic context reach the
+  model unchanged.
+- Verifier feedback is scrubbed in the model's history in every
+  configuration, so the model reads the copy a guard judges. A guard's
+  `spotlight` verdict on feedback wraps it like a tool result.
+- The prompt (`config.Prompt`) and a mid-run `user_response` reach the
+  model as written: they are operator input, and fencing them would mark
+  the operator's own instructions as untrusted, so a `spotlight` verdict
+  on them is not applied either. When a control plane templates ticket
+  text into the prompt or relays end-user chat through `user_response`,
+  token-shaped text inside it is neither judged by the guard nor fenced
+  for the model. Third-party text belongs in dynamic context, which is
+  fenced.
+- `post_turn` and `pre_tool` content is not rewritten. A guard cannot
+  judge what the scrubber hid, and for `pre_tool` the hidden text can be
+  exactly the argument under review. Because no match holds shell
+  syntax, a command written after a credential-shaped string stays
+  visible to the guard.
+- Repository guidance is not part of the turn-0 guard input.
+
+Fencing ranges rather than whole blocks keeps the cost of a false match
+small. Benign token-shaped text also matches the scrubber, such as a
+literal `Bearer abc123`, a `secret://` reference in a config file or in
+these docs, or authentication code that prints a header. Such a string
+is base64-wrapped where it stands, for the model and for the
+`llm-judge` verifier, which renders the same history, while the rest of
+the output stays readable to both, such as the `FAIL` lines of a test
+run. The costs that remain are the dropped structured payload, which
+leaves the model only the result's text, and that a fenced string
+cannot be copied literally, for example into an `edit_file`
+`old_string`.
 
 ### Transport-error URL unwrapping
 
@@ -775,8 +949,10 @@ Controls layered from outside in:
    turns.
 
   ── Provider boundary ─────────────────────────────────────
-   SecretStore + LogScrubber: secrets resolve lazily and never
-   appear in logs or trace artifacts.
+   SecretStore + LogScrubber: secrets resolve lazily; recognised
+   secret formats are redacted from logs and trace artifacts.
+   StreamCarry: model text and reasoning scrubbed as one stream
+   before any transport sees a delta.
 
   ── Per-turn ──────────────────────────────────────────────
    GuardRail (pre-turn): LLM classifier on untrusted text

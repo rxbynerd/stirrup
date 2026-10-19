@@ -1009,14 +1009,14 @@ func TestBuildGuardRail_CompositeWithPhasesWraps(t *testing.T) {
 	}
 }
 
-// TestCollectUntrustedChunks_Turn0 asserts that on turn 0 the helper
-// returns the user prompt followed by sorted dynamic-context values.
-func TestCollectUntrustedChunks_Turn0(t *testing.T) {
-	chunks := collectUntrustedChunks(nil, 0, map[string]types.DynamicContextValue{
-		"b_key": {Value: "second"},
-		"a_key": {Value: "first"},
-	}, "user prompt")
-	want := []string{"user prompt", "first", "second"}
+// TestTurnZeroGuardChunks_ScrubsPromptThenContext asserts that the turn-0
+// guard copy holds the prompt and then the context values in order, each
+// with the log scrubber applied, and counts the matches replaced.
+func TestTurnZeroGuardChunks_ScrubsPromptThenContext(t *testing.T) {
+	loop := buildTestLoop(nil)
+	loop.GuardRail = &inputRecordingGuard{}
+	chunks, spans := loop.preTurnGuardCopy(turnZeroChunks("user prompt "+fakeAnthropicKey, []string{"first", "second ghp_abcdefghijklmnop"}))
+	want := []string{"user prompt [REDACTED]", "first", "second [REDACTED]"}
 	if len(chunks) != len(want) {
 		t.Fatalf("expected %d chunks, got %d: %v", len(want), len(chunks), chunks)
 	}
@@ -1025,12 +1025,14 @@ func TestCollectUntrustedChunks_Turn0(t *testing.T) {
 			t.Errorf("chunk[%d]: want %q, got %q", i, w, chunks[i])
 		}
 	}
+	if spans != 2 {
+		t.Errorf("spans = %d, want 2", spans)
+	}
 }
 
-// TestCollectUntrustedChunks_TurnNExtractsToolResults asserts that on
-// turn N>0 the helper extracts every tool_result block's Content from
-// the last user message.
-func TestCollectUntrustedChunks_TurnNExtractsToolResults(t *testing.T) {
+// TestArrivedUntrustedChunks_ExtractsToolResults asserts that the helper
+// extracts every tool_result block's Content from the last user message.
+func TestArrivedUntrustedChunks_ExtractsToolResults(t *testing.T) {
 	messages := []types.Message{
 		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "ignored"}}},
 		{Role: "assistant", Content: []types.ContentBlock{{Type: "text", Text: "calling tools"}}},
@@ -1039,7 +1041,7 @@ func TestCollectUntrustedChunks_TurnNExtractsToolResults(t *testing.T) {
 			{Type: "tool_result", ToolUseID: "tc_2", Content: "result two"},
 		}},
 	}
-	chunks := collectUntrustedChunks(messages, 1, nil, "")
+	chunks := arrivedUntrustedChunks(messages)
 	if len(chunks) != 2 {
 		t.Fatalf("expected 2 chunks, got %d: %v", len(chunks), chunks)
 	}

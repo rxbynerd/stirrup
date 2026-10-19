@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime/debug"
+	"strconv"
 	"sync"
 	"time"
 
@@ -146,6 +147,9 @@ func (l *AgenticLoop) planAndDispatch(
 			ToolInput: input,
 			Mode:      config.Mode,
 			RunID:     config.RunID,
+		}
+		if guard.ChecksPhase(l.GuardRail, guard.PhasePreTool) {
+			scrubToolInputForGuard(&preToolIn, input)
 		}
 		preToolAllow, preToolDecision, _ := l.guardCheck(toolSpanCtx, preToolIn, guardFailOpen(config))
 		if !preToolAllow {
@@ -430,4 +434,22 @@ func (l *AgenticLoop) emitToolCallMetrics(
 // don't alias the same backing slice. bytes.Clone preserves nil vs empty.
 func cloneRawMessage(raw json.RawMessage) json.RawMessage {
 	return bytes.Clone(raw)
+}
+
+// scrubToolInputForGuard gives the pre_tool guard the scrubbed copy of a
+// call's arguments, as Content and as ToolInput, which stays valid JSON:
+// a scrub that breaks the document leaves it a JSON string of the
+// scrubbed text. The handler and the permission policy keep input as is.
+func scrubToolInputForGuard(in *guard.Input, input json.RawMessage) {
+	scrubbed, stats := security.ScrubForGuard(string(input))
+	if stats.Count == 0 {
+		return
+	}
+	in.Content = scrubbed
+	in.ToolInput = json.RawMessage(scrubbed)
+	if !json.Valid(in.ToolInput) {
+		quoted, _ := json.Marshal(scrubbed)
+		in.ToolInput = quoted
+	}
+	in.Metadata = map[string]string{guard.MetadataRedactedSpans: strconv.Itoa(stats.Count)}
 }

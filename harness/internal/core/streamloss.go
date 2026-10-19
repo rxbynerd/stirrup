@@ -1,6 +1,10 @@
 package core
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/rxbynerd/stirrup/harness/internal/security"
+)
 
 // ControlStreamLost ends the session because the control stream ended
 // with cause. An active run is cancelled and ends with outcome
@@ -16,6 +20,23 @@ func (l *AgenticLoop) ControlStreamLost(cause error) {
 		lost = fmt.Errorf("%w: %w", ErrControlStreamLost, cause)
 	}
 	l.cancelSession(lost, "control stream lost")
+}
+
+// reportStreamRedaction records a secret the stream carry redacted from a
+// delta; the transports find nothing left to redact in it, so the security
+// event is raised here.
+func (l *AgenticLoop) reportStreamRedaction(event string, patterns []string) {
+	if l.Security == nil {
+		return
+	}
+	for _, p := range patterns {
+		if p == security.StreamWithheld {
+			l.Logger.Warn("stream text withheld: a possible secret ran past the carry's bound", "event", event)
+			l.Security.StreamTextWithheld("core.stream." + event)
+			continue
+		}
+		l.Security.SecretRedactedInOutput(p, "core.stream."+event)
+	}
 }
 
 // logEmitFailure logs a failed transport emit. After the control stream

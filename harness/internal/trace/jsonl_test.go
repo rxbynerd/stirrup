@@ -5,13 +5,16 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
 	"github.com/rxbynerd/stirrup/types/version"
 )
@@ -278,7 +281,7 @@ func TestJSONLTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 			},
 		},
 		ModelOutput: []types.ContentBlock{
-			{Type: "text", Text: "ack, your bearer Bearer ABCDEFG is unsafe"},
+			{Type: "text", Text: "ack, your bearer Bearer ABCDEFG1 is unsafe"},
 		},
 		ToolCalls: []types.ToolCallRecord{
 			{
@@ -302,7 +305,7 @@ func TestJSONLTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 	if strings.Contains(on_disk, "sk-ant-api03-leak-leak") {
 		t.Errorf("scrubber missed tool input secret in on-disk trace:\n%s", on_disk)
 	}
-	if strings.Contains(on_disk, "Bearer ABCDEFG") {
+	if strings.Contains(on_disk, "Bearer ABCDEFG1") {
 		t.Errorf("scrubber missed bearer token in on-disk trace:\n%s", on_disk)
 	}
 	// At least one [REDACTED] marker proves the scrubber ran.
@@ -1093,6 +1096,67 @@ func TestScrubRawJSON_PreservesValidJSON(t *testing.T) {
 	}
 	if decoded["token"] != "[REDACTED]" {
 		t.Errorf("token field = %q, want [REDACTED]", decoded["token"])
+	}
+}
+
+// TestScrubContentBlocks_DecodesFencedSecret pins that a secret the loop
+// fenced for the model is redacted in the persisted copy: the fence
+// payload is decoded, scrubbed and re-encoded rather than stored as
+// base64 of the key.
+func TestScrubContentBlocks_DecodesFencedSecret(t *testing.T) {
+	const key = "sk-ant-api03-QUJDZGVmR0hJSktMbW5vcFFSU1RVdld4eXow"
+	encoded := base64.StdEncoding.EncodeToString([]byte(key))
+	fence := func(s string) string { return security.Spotlight(s) }
+	structured, err := json.Marshal(map[string]string{"text": "x " + fence(key)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn := types.TurnRecord{ModelInput: types.ModelInput{Messages: []types.Message{{
+		Role: "user",
+		Content: []types.ContentBlock{
+			{Type: "tool_result", ToolUseID: "a", Content: "prefix " + fence(key) + " suffix"},
+			{Type: "tool_result", ToolUseID: "b", Content: fence("whole block with " + key)},
+			{Type: "tool_result", ToolUseID: "c", Content: "ok", Structured: structured},
+			{Type: "tool_result", ToolUseID: "d", Content: "benign " + fence("plain words")},
+			{Type: "tool_result", ToolUseID: "e", Content: "notes mention " + security.SpotlightOpenTag + " tags.\nTOKEN=" + fence(key) + "\n"},
+		},
+	}}}}
+	got := scrubTurnRecord(turn, false).ModelInput.Messages[0].Content
+	all, _ := json.Marshal(got)
+	if strings.Contains(string(all), encoded) || strings.Contains(string(all), key) {
+		t.Fatalf("persisted blocks carry the key or its base64: %s", all)
+	}
+	if want := "prefix " + fence("[REDACTED]") + " suffix"; got[0].Content != want {
+		t.Errorf("span fence persisted as %q, want %q", got[0].Content, want)
+	}
+	if want := fence("whole block with [REDACTED]"); got[1].Content != want {
+		t.Errorf("whole-block fence persisted as %q, want %q", got[1].Content, want)
+	}
+	if want := "benign " + fence("plain words"); got[3].Content != want {
+		t.Errorf("benign fence persisted as %q, want it unchanged", got[3].Content)
+	}
+}
+
+// TestScrubRawJSON_PEMKeyAsLineArray covers read_file's structured shape:
+// a key held one line per array element is redacted as one match and the
+// payload keeps its object shape rather than taking the string-wrap path.
+func TestScrubRawJSON_PEMKeyAsLineArray(t *testing.T) {
+	body := []string{
+		"MIIEowIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLezV6ffAt0gun",
+		"VTLw7onLRnrq0/IzW7yWR7QkrmBL7jTKEn5u+qKhbwKfBstIs+bMY2Zkp18gnTxK",
+	}
+	lines := append(append([]string{"x", "-----BEGIN RSA PRIVATE KEY-----"}, body...), "-----END RSA PRIVATE KEY-----", "y")
+	in, err := json.Marshal(map[string][]string{"lines": lines})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := scrubRawJSON(in, false)
+	var decoded struct{ Lines []string }
+	if err := json.Unmarshal(out, &decoded); err != nil {
+		t.Fatalf("scrubbed output should decode as an object: %v (out=%s)", err, out)
+	}
+	if want := []string{"x", "[REDACTED]", "y"}; !slices.Equal(decoded.Lines, want) {
+		t.Errorf("lines = %q, want %q", decoded.Lines, want)
 	}
 }
 

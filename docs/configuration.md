@@ -1206,18 +1206,20 @@ of the stream as the command produces it, remain as integrity metadata.
 
 The scrubber buffers up to 64 KiB plus a 16 KiB carry window, cutting each
 chunk on a line boundary where one is available. The carry window is what
-lets a secret split across two chunks still be redacted as one span; every
-pattern the scrubber knows matches a span far shorter than the window, a
-fat JWT included. Three consequences follow:
+lets a secret split across two chunks still be redacted as one span. Every
+pattern the scrubber knows matches a span shorter than the window from
+realistic output: a fat JWT, and a PEM key block, which spans the whole
+key (about 3.3 KiB for RSA-4096 and 6.4 KiB for RSA-8192), are pinned
+under it by `TestSecretPatternsMatchSingleSpanUnderCarryWindow`. Three
+consequences follow:
 
 - **Residual.** A span longer than the carry window cannot be held for
   reassembly, so it is cut mid-match: its leading portion is redacted and
   the remainder reaches the spool. Anything that span swallowed shares its
-  fate, including a shorter secret nested inside it. No pattern in the
-  current set produces a match of that length from realistic output —
-  reaching it takes something like an unterminated `Bearer` token running
-  for tens of kilobytes — so this bounds future patterns more than it
-  describes current ones.
+  fate, including a shorter secret nested inside it. Reaching it takes
+  something like an unterminated `Bearer` token running for tens of
+  kilobytes, a key block larger than any RSA key in use, or an
+  unterminated key header followed by more than 16 KiB of base64 lines.
 - **Trailing output on a crash.** Up to one buffer of the most recent output
   is still in memory when a process is killed and is lost rather than
   spooled. A crashed run writes no archive, so the spool is forensic

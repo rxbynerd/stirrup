@@ -45,6 +45,7 @@ just              # build + test
 just build        # binaries: ./stirrup and ./stirrup-eval
 just test         # go test ./harness/... ./types/... ./eval/...
 just lint         # golangci-lint v2
+just fuzz-scrub   # short fuzz runs of the secret scrubber
 just vuln         # govulncheck across all four workspace modules
 just proto        # buf generate
 just buf-lint     # buf lint
@@ -61,8 +62,8 @@ buf generate
 buf lint
 ```
 
-CI runs the equivalent of `just test` + `just test-race` + a full
-build via the reusable `_verify.yml` workflow on every push, plus an
+CI runs the equivalent of `just test` + `just test-race` +
+`just fuzz-scrub` + a full build via the reusable `_verify.yml` workflow on every push, plus an
 `eval-gate` job (baselined eval suites against committed baselines,
 pinned to a cheap model) on every push and a container publish on
 every merge to `main`. A failing `compare` exit fails the eval gate.
