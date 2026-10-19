@@ -3,7 +3,6 @@ package core
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"sync"
@@ -17,29 +16,14 @@ import (
 )
 
 // decodeFences replaces each spotlight fence in s with the text it
-// encodes, failing the test on a payload that is not base64.
+// encodes, failing the test on a fence that does not decode.
 func decodeFences(t *testing.T, s string) string {
 	t.Helper()
-	var b strings.Builder
-	for {
-		open := strings.Index(s, guard.SpotlightOpenTag)
-		if open < 0 {
-			b.WriteString(s)
-			return b.String()
-		}
-		b.WriteString(s[:open])
-		s = s[open+len(guard.SpotlightOpenTag):]
-		end := strings.Index(s, guard.SpotlightCloseTag)
-		if end < 0 {
-			t.Fatalf("unclosed fence in %q", s)
-		}
-		decoded, err := base64.StdEncoding.DecodeString(s[:end])
-		if err != nil {
-			t.Fatalf("fence payload is not base64: %v", err)
-		}
-		b.Write(decoded)
-		s = s[end+len(guard.SpotlightCloseTag):]
+	decoded, ok := security.DecodeFences(s)
+	if !ok {
+		t.Fatalf("a fence in %q does not decode", s)
 	}
+	return decoded
 }
 
 // fenceText fences the ranges the scrubber replaces in text, as the loop
