@@ -50,6 +50,21 @@ func TestPatternScanner_BlocksOnAWSKey(t *testing.T) {
 	}
 }
 
+// TestPatternScanner_BlocksOnNextLineYAMLValue pins that a key/value
+// secret whose value sits on the next, indented YAML line blocks the write.
+func TestPatternScanner_BlocksOnNextLineYAMLValue(t *testing.T) {
+	s := NewPatternScanner()
+	content := []byte("aws:\n  aws_secret_access_key:\n    " + strings.Repeat("Ab1/", 10) + "\n")
+
+	res, err := s.Scan(context.Background(), "values.yaml", content)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if !res.HasBlocking() {
+		t.Fatalf("expected blocking finding, got: %+v", res.Findings)
+	}
+}
+
 func TestPatternScanner_WarnsOnDynamicEvalSink(t *testing.T) {
 	s := NewPatternScanner()
 	content := []byte("def run(expr):\n    return eval(expr)\n")

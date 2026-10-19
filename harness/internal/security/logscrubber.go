@@ -39,8 +39,8 @@ var secretPatterns = []namedPattern{
 	// base64-ish shapes but no distinctive prefix. Keep them anchored to
 	// well-known key/value field names so ordinary hashes, IDs, and trace
 	// fragments are not scrubbed just because they share an alphabet.
-	{"aws_secret_access_key", regexp.MustCompile(`(?i)\baws_secret_access_key\b[ \t]*[:=][ \t]*["']?[A-Za-z0-9/+=]{40}["']?`)},
-	{"azure_storage_key", regexp.MustCompile(`(?i)\b(?:azure_storage_account_key|storage_account_key|account_key|accountKey|primary_access_key|secondary_access_key)\b[ \t]*[:=][ \t]*["']?[A-Za-z0-9+/]{40,88}={0,2}["']?`)},
+	{"aws_secret_access_key", regexp.MustCompile(`(?i)\baws_secret_access_key\b` + kvSep + `["']?[A-Za-z0-9/+=]{40}["']?`)},
+	{"azure_storage_key", regexp.MustCompile(`(?i)\b(?:azure_storage_account_key|storage_account_key|account_key|accountKey|primary_access_key|secondary_access_key)\b` + kvSep + `["']?[A-Za-z0-9+/]{40,88}={0,2}["']?`)},
 	{"slack_token", regexp.MustCompile(`xox[abprs]-[A-Za-z0-9-]{10,}`)},
 	{"gcp_api_key", regexp.MustCompile(`AIza[0-9A-Za-z_-]{35}`)},
 	// basic_auth precedes bearer_token so the two HTTP-auth families
@@ -70,7 +70,7 @@ var secretPatterns = []namedPattern{
 	// know stirrup emits — adding more variants here is preferable to a
 	// permissive token catch-all.
 	{"api_key_header", regexp.MustCompile(`(?i)\b(?:api-key|x-api-key|Ocp-Apim-Subscription-Key)[ \t]*:[ \t]*[A-Za-z0-9._~+/=-]+`)},
-	{"generic_hex_secret", regexp.MustCompile(`(?i)\b(?:api[_-]?key|token|secret|client[_-]?secret|access[_-]?token|auth[_-]?token|password)\b[ \t]*[:=][ \t]*["']?[a-f0-9]{32}["']?`)},
+	{"generic_hex_secret", regexp.MustCompile(`(?i)\b(?:api[_-]?key|token|secret|client[_-]?secret|access[_-]?token|auth[_-]?token|password)\b` + kvSep + `["']?[a-f0-9]{32}["']?`)},
 	// oidc_jwt matches a three-segment JWT whose header begins with
 	// "eyJ" (the base64url prefix of `{"`). Federation flows propagate
 	// runner OIDC tokens, AWS web-identity tokens, and GCP STS subject
@@ -87,6 +87,12 @@ var secretPatterns = []namedPattern{
 	// get pulled into the redaction span.
 	{"gcp_access_token", regexp.MustCompile(`ya29\.[A-Za-z0-9_-]+`)},
 }
+
+// kvSep separates a key from its value in the key/value patterns: a colon
+// or equals sign, with the value on the same line or, as YAML allows, on
+// the next line indented. An unindented next line is left alone, since it
+// can be a command rather than a value.
+const kvSep = `[ \t]*[:=][ \t]*(?:\r?\n[ \t]+)?`
 
 // pemPrivateKeyPattern matches a PEM or PGP key block from its BEGIN line
 // through its END line, or without one through the whole base64 lines after

