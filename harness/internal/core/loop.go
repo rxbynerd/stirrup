@@ -2202,7 +2202,10 @@ func (l *AgenticLoop) redactDynamicContext(dynamicContext map[string]string) int
 	for k, v := range dynamicContext {
 		redacted, n := l.RuleOfTwo.Redact(v)
 		if n > 0 {
-			dynamicContext[k] = redacted
+			// A placeholder can outgrow the span it replaces; re-capping
+			// keeps the value the fence is built from the one the prompt
+			// renders.
+			dynamicContext[k], _ = security.SanitizeOperatorText(redacted)
 			total += n
 		}
 	}

@@ -143,7 +143,9 @@ func (f *dynamicContextFragment) Render(_ context.Context, pc PromptContext) (st
 
 // renderedDynamicContext returns the dynamic-context values as the prompt
 // renders them: sanitised, with a value's fenced form from
-// FencedDynamicContext used when its fences decode to that value.
+// FencedDynamicContext used when its fences decode to that value. A value
+// whose fenced form does not decode to it is fenced whole, since it holds
+// text the turn-0 guard read redacted.
 func renderedDynamicContext(pc PromptContext) map[string]string {
 	values, _ := security.SanitizeDynamicContext(pc.DynamicContext)
 	for k, fenced := range pc.FencedDynamicContext {
@@ -153,6 +155,8 @@ func renderedDynamicContext(pc PromptContext) map[string]string {
 		}
 		if decoded, ok := security.DecodeFences(fenced); ok && decoded == v {
 			values[k] = fenced
+		} else {
+			values[k] = security.Spotlight(v)
 		}
 	}
 	return values
