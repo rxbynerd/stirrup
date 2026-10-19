@@ -179,9 +179,9 @@ func heldPatterns(p string, segs []scrubSegment, from, viable int) []string {
 // since its match can run across a placeholder.
 //
 // While some text is held, the spans include each pattern's matches in p
-// as written, not only in the rewritten text: a match an earlier pattern's
-// placeholder hides now can surface once later text changes that earlier
-// match, so text it covers is held with the rest.
+// as written, not only in the rewritten text: a match hidden behind an
+// earlier pattern's placeholder can surface once later text changes that
+// earlier match, so text it covers is held with the rest.
 //
 // When the stream byte before p is a word byte, p is scanned behind a "_"
 // so a leading \b sees it as the whole stream does; no pattern or prefix
