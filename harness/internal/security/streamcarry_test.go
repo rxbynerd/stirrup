@@ -466,8 +466,10 @@ func TestStreamCarry_UnmatchedHeadOverCapIsWithheld(t *testing.T) {
 
 // TestStreamCarry_RunPastTheCapIsBounded pins the two bounds on a match the
 // cap cut: only its head is held once the cap forces a release, and past
-// streamCarryRunMax nothing more is released until Flush.
+// streamCarryRunMax only a window of it is kept, the carry reports that it
+// is withholding text, and text after the match is still released.
 func TestStreamCarry_RunPastTheCapIsBounded(t *testing.T) {
+	lowerRunMax(t)
 	var c StreamCarry
 	run := "Bearer " + strings.Repeat("a", 4*streamCarryMax)
 	got := ""
@@ -481,18 +483,63 @@ func TestStreamCarry_RunPastTheCapIsBounded(t *testing.T) {
 	if got != "[REDACTED]" {
 		t.Fatalf("released %q from a run four times streamCarryMax, want one placeholder", clip(got))
 	}
-	if out, _ := c.Push(strings.Repeat("a", 64<<10)); out != "" {
+	if out, _ := c.Push(strings.Repeat("a", streamCarryDrainWindow)); out != "" {
 		t.Fatalf("released %q from an open run", clip(out))
 	}
-	c.Push(strings.Repeat("a", streamCarryRunMax) + " then prose")
-	if !c.drain || len(c.pending) != 0 {
-		t.Fatalf("a run past streamCarryRunMax still holds %d bytes", len(c.pending))
+	out, patterns := c.Push(strings.Repeat("a", streamCarryRunMax))
+	if out != "" || !c.drain || !slices.Contains(patterns, StreamWithheld) {
+		t.Fatalf("a run past streamCarryRunMax released %q and reported %v, want nothing released and %q", clip(out), patterns, StreamWithheld)
 	}
+	for range 8 {
+		if out, patterns := c.Push(strings.Repeat("a", streamCarryDrainWindow)); out != "" || len(patterns) > 0 || len(c.pending) > 2*streamCarryDrainWindow {
+			t.Fatalf("an open withheld run released %q, reported %v and holds %d bytes", clip(out), patterns, len(c.pending))
+		}
+	}
+	c.Push("\nthen prose")
+	if out, _ := c.Flush(); out != "\nthen prose" {
+		t.Fatalf("Flush after the withheld run ended released %q, want the text after it", clip(out))
+	}
+	c.Push("Bearer " + strings.Repeat("a", 2*streamCarryRunMax))
 	if out, _ := c.Flush(); out != "" {
-		t.Fatalf("Flush after a drained run released %q", clip(out))
+		t.Fatalf("Flush of a run still open released %q", clip(out))
 	}
 	if out, _ := c.Push("next stream"); out != "next stream" {
 		t.Fatalf("carry after Flush released %q", out)
+	}
+}
+
+// lowerRunMax shrinks the withholding bounds for one test, so a run past
+// them costs a fraction of the production 1 MiB to stream.
+func lowerRunMax(t *testing.T) {
+	t.Helper()
+	t.Cleanup(SetStreamCarryBoundsForTest(128<<10, 16<<10))
+}
+
+// TestStreamCarry_TextAfterAWithheldMatchIsReleased pins that the carry
+// withholds only while a match is still open: a match that ends before the
+// run reaches streamCarryRunMax withholds nothing, and one that ends after
+// it withholds only itself, so the text after both reaches the sink.
+func TestStreamCarry_TextAfterAWithheldMatchIsReleased(t *testing.T) {
+	lowerRunMax(t)
+	prose := strings.Repeat("plain words here. ", 3*streamCarryRunMax/8/18)
+	for _, n := range []int{streamCarryRunMax * 19 / 20, streamCarryRunMax * 6 / 5} {
+		input := "ghp_" + strings.Repeat("a", n) + " MATCH-ENDED " + prose
+		var c StreamCarry
+		var b strings.Builder
+		var reported []string
+		for _, f := range chunk(input, 512) {
+			out, patterns := c.Push(f)
+			b.WriteString(out)
+			reported = append(reported, patterns...)
+		}
+		out, _ := c.Flush()
+		b.WriteString(out)
+		if got, want := b.String(), Scrub(input); got != want {
+			t.Errorf("%d-byte match: streamed %q, want %q", n, clip(got), clip(want))
+		}
+		if withheld := slices.Contains(reported, StreamWithheld); withheld != (n > streamCarryRunMax) {
+			t.Errorf("%d-byte match: reported withholding = %v", n, withheld)
+		}
 	}
 }
 
@@ -622,8 +669,9 @@ func TestStreamCarry_AdversarialStreamsStayFast(t *testing.T) {
 }
 
 // FuzzStreamCarry checks the carry's invariants on head followed by reps
-// copies of body, split into alternating fragment sizes: no raw text
-// whole-stream Scrub redacts is released; unless the cap forced a release,
+// copies of body, split into alternating fragment sizes, with the
+// withholding bound lowered so inputs reach it: no raw text whole-stream
+// Scrub redacts is released; unless the cap forced a release,
 // the output is the whole stream scrubbed; no piece of valid input splits
 // a rune; the hold stays bounded; and Flush empties the carry.
 func FuzzStreamCarry(f *testing.F) {
@@ -638,6 +686,9 @@ func FuzzStreamCarry(f *testing.F) {
 	f.Add("", "sk-", uint16(4000), uint8(0), uint8(0))
 	f.Add("", "secret://a/", uint16(1000), uint8(2), uint8(0))
 	f.Add("Bearer ", " ", uint16(9000), uint8(63), uint8(0))
+	f.Add("ghp_", "a", uint16(40000), uint8(255), uint8(31))
+	f.Add("ghp_", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ended, then prose. ", uint16(400), uint8(255), uint8(255))
+	f.Cleanup(SetStreamCarryBoundsForTest(24<<10, 4<<10))
 	f.Fuzz(func(t *testing.T, head, body string, reps uint16, a, b uint8) {
 		input := head + strings.Repeat(body, min(int(reps), (64<<10)/max(len(body), 1)))
 		sizes := [2]int{1 + int(a), 1 + int(b)}

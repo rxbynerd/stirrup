@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -790,11 +791,16 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 		if len(patterns) > 0 && redacted != nil {
 			redacted(eventType, patterns)
 		}
-		if text == "" {
-			return
+		if text != "" {
+			if err := tp.Emit(types.HarnessEvent{Type: eventType, Text: text}); err != nil {
+				emitFailed(eventType, err)
+			}
 		}
-		if err := tp.Emit(types.HarnessEvent{Type: eventType, Text: text}); err != nil {
-			emitFailed(eventType, err)
+		if slices.Contains(patterns, security.StreamWithheld) {
+			warning := eventType + " withheld: a possible secret ran past 1 MiB, so the stream resumes after it ends; the trace keeps the text scrubbed"
+			if err := tp.Emit(types.HarnessEvent{Type: "warning", Message: warning}); err != nil {
+				emitFailed("warning", err)
+			}
 		}
 	}
 	flushDeltas := func() {

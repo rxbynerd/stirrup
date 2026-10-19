@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"strings"
 	"sync"
@@ -129,6 +130,47 @@ func TestStreamEventsToResult_RedactionReported(t *testing.T) {
 	}
 	if out := buf.String(); !strings.Contains(out, `"secret_redacted_in_output"`) || !strings.Contains(out, `"core.stream.text_delta"`) || !strings.Contains(out, "anthropic_api_key") {
 		t.Errorf("security events = %s, want a secret_redacted_in_output for the delta", out)
+	}
+}
+
+// TestStreamEventsToResult_WithheldTextIsReported pins that the carry
+// withholding a possible secret past its bound is visible: the control
+// stream gets a warning, a security event is raised, and the text after
+// the match still arrives.
+func TestStreamEventsToResult_WithheldTextIsReported(t *testing.T) {
+	t.Cleanup(security.SetStreamCarryBoundsForTest(64<<10, 8<<10))
+	var buf bytes.Buffer
+	loop := &AgenticLoop{Security: security.NewSecurityLogger(&buf, "run-1"), Logger: slog.New(slog.DiscardHandler)}
+	run := "token ghp_" + strings.Repeat("a", 80<<10)
+	var events []types.StreamEvent
+	for i := 0; i < len(run); i += 4 << 10 {
+		events = append(events, types.StreamEvent{Type: "text_delta", Text: run[i:min(i+4<<10, len(run))]})
+	}
+	events = append(events, types.StreamEvent{Type: "text_delta", Text: " then prose"}, types.StreamEvent{Type: "message_complete", StopReason: "end_turn"})
+	ch := make(chan types.StreamEvent, len(events))
+	for _, ev := range events {
+		ch <- ev
+	}
+	close(ch)
+	tp := &recordingTransport{}
+	if _, err := streamEventsToResult(context.Background(), ch, tp, true, ignoreEmitFailure, loop.reportStreamRedaction); err != nil {
+		t.Fatal(err)
+	}
+	var text strings.Builder
+	warned := false
+	for _, ev := range tp.events {
+		switch ev.Type {
+		case "text_delta":
+			text.WriteString(ev.Text)
+		case "warning":
+			warned = warned || strings.HasPrefix(ev.Message, "text_delta withheld:")
+		}
+	}
+	if text.String() != "token [REDACTED] then prose" || !warned {
+		t.Errorf("stream = %q, warned = %v; want the text after the match and a warning", text.String(), warned)
+	}
+	if !strings.Contains(buf.String(), `"stream_text_withheld"`) {
+		t.Errorf("security events = %s, want a stream_text_withheld", buf.String())
 	}
 }
 

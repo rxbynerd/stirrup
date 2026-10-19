@@ -12,9 +12,6 @@ const (
 	// match is held until it ends, up to streamCarryRunMax.
 	streamCarryMax = 8 << 10
 
-	// streamCarryRunMax bounds the bytes held for a match that outgrew
-	// streamCarryMax. Past it, nothing more is released until Flush.
-	streamCarryRunMax = 1 << 20
 
 	// streamCarryRescanBytes is the held size above which the carry
 	// rescans only once the held text has grown by a quarter, so a long
@@ -22,6 +19,27 @@ const (
 	// fragment.
 	streamCarryRescanBytes = 64
 )
+
+// streamCarryRunMax bounds the bytes held for a match that outgrew
+// streamCarryMax. Past it the carry withholds the match without holding
+// it, keeping streamCarryDrainWindow bytes, and releases text again from
+// the first rune no open match can contain. Tests lower both.
+var streamCarryRunMax, streamCarryDrainWindow = 1 << 20, 64 << 10
+
+// SetStreamCarryBoundsForTest sets streamCarryRunMax and
+// streamCarryDrainWindow and returns a function restoring them. It lets a
+// test of a carry's caller reach the bounds without streaming megabytes;
+// it is not safe to call while a carry is in use.
+func SetStreamCarryBoundsForTest(runMax, window int) (restore func()) {
+	oldRunMax, oldWindow := streamCarryRunMax, streamCarryDrainWindow
+	streamCarryRunMax, streamCarryDrainWindow = runMax, window
+	return func() { streamCarryRunMax, streamCarryDrainWindow = oldRunMax, oldWindow }
+}
+
+// StreamWithheld is reported by Push, in place of a pattern name, when the
+// carry starts withholding a possible match longer than streamCarryRunMax:
+// text from there to the end of that match is not released.
+const StreamWithheld = "stream_withheld"
 
 // StreamCarry scrubs a stream of text fragments as it arrives, so a secret
 // split between two fragments is redacted as if the stream had been
@@ -43,8 +61,10 @@ type StreamCarry struct {
 	unscanned int
 	// run is set while the context is the head of a match that outgrew
 	// streamCarryMax, already released as a placeholder; drain once that
-	// match outgrew streamCarryRunMax.
+	// match outgrew streamCarryRunMax, with open naming the patterns whose
+	// match the withheld text may still be part of.
 	run, drain bool
+	open       []bool
 	// scanned is the bytes scanned and forced the number of releases the
 	// cap forced; both are read by tests.
 	scanned int
@@ -54,24 +74,122 @@ type StreamCarry struct {
 // Push adds fragment and returns the scrubbed text that can be released
 // and the names of the patterns redacted in it.
 func (c *StreamCarry) Push(fragment string) (string, []string) {
-	if c.drain {
-		return "", nil
-	}
 	c.pending = append(c.pending, fragment...)
 	c.unscanned += len(fragment)
 	switch held := c.held(); {
-	case c.run && len(c.pending) > streamCarryRunMax:
-		c.pending, c.ctx, c.drain = nil, 0, true
-		return "", nil
+	case c.drain:
+		if c.unscanned < streamCarryDrainWindow/4 {
+			return "", nil
+		}
+		c.unscanned = 0
+		return c.resume(false)
 	case c.run:
-		if c.unscanned < len(c.pending)/4 {
+		if c.unscanned < len(c.pending)/4 && len(c.pending) <= streamCarryRunMax {
 			return "", nil
 		}
 	case held > streamCarryRescanBytes && c.unscanned < held/4 && held <= streamCarryMax:
 		return "", nil
 	}
 	c.unscanned = 0
-	return c.release(false)
+	out, patterns := c.release(false)
+	if c.run && len(c.pending) > streamCarryRunMax {
+		c.startDrain()
+		patterns = append(patterns, StreamWithheld)
+	}
+	return out, patterns
+}
+
+// startDrain withholds the open match without holding it: the patterns
+// that could still be matching are recorded and only the last
+// streamCarryDrainWindow bytes are kept, as context.
+func (c *StreamCarry) startDrain() {
+	c.drain, c.open = true, make([]bool, len(secretPatterns))
+	c.trackOpen(c.pending, len(c.pending))
+	c.dropToWindow()
+}
+
+// trackOpen records the patterns that could be matching from before
+// offset before in p through its end.
+func (c *StreamCarry) trackOpen(p []byte, before int) {
+	for i, re := range streamPrefixes {
+		if loc := re.FindIndex(p); loc != nil && loc[0] < before && loc[0] < len(p) {
+			c.open[i] = true
+		}
+	}
+}
+
+func (c *StreamCarry) dropToWindow() {
+	p := c.pending
+	from := max(0, len(p)-streamCarryDrainWindow)
+	if from > 0 {
+		c.afterWord = isWordByte(p[from-1])
+	}
+	c.pending = append(c.pending[:0], p[from:]...)
+	c.ctx = len(c.pending)
+}
+
+// resume looks, in the text withheld since the last scan, for the first
+// rune no open match can contain. No match crosses it, so the carry
+// releases the stream from there as usual; until one arrives the text
+// stays withheld. With all set, the rest is released as Flush does.
+func (c *StreamCarry) resume(all bool) (string, []string) {
+	p := c.pending
+	c.scanned += len(p)
+	_, _, spans, viable := carryScan(string(p), c.afterWord)
+	at := -1
+	for b := c.ctx; ; {
+		at = resumePoint(p, b, spans, c.open)
+		if at < 0 {
+			break
+		}
+		before := slices.Clone(c.open)
+		c.trackOpen(p, at)
+		if slices.Equal(before, c.open) {
+			break
+		}
+		b = at
+	}
+	if at < 0 || viable < at {
+		if all {
+			return "", nil
+		}
+		c.dropToWindow()
+		return "", nil
+	}
+	c.drain, c.run, c.open = false, false, nil
+	c.keep(p, at, at)
+	return c.release(all)
+}
+
+// resumePoint returns the offset, from from on, of the first rune that no
+// pattern marked in open can match and that no span crosses, or -1.
+func resumePoint(p []byte, from int, spans [][]int, open []bool) int {
+	for b := from; b < len(p); {
+		if moved := pastSpanCrossing(spans, b); moved != b {
+			b = moved
+			continue
+		}
+		if !utf8.RuneStart(p[b]) {
+			b++
+			continue
+		}
+		r, size := utf8.DecodeRune(p[b:])
+		if !anyAlphabetHas(open, r) {
+			return b
+		}
+		b += size
+	}
+	return -1
+}
+
+// pastSpanCrossing moves b to the end of a span that crosses it.
+func pastSpanCrossing(spans [][]int, b int) int {
+	for _, span := range spans {
+		if span[0] < b && span[1] > b {
+			return span[1]
+		}
+	}
+	return b
 }
 
 // Flush returns the held text, scrubbed, and the names of the patterns
@@ -82,13 +200,15 @@ func (c *StreamCarry) Flush() (string, []string) { return c.FlushWith("") }
 // The held text and text are scanned as one, with no release forced at
 // the cap.
 func (c *StreamCarry) FlushWith(text string) (string, []string) {
+	c.pending = append(c.pending, text...)
 	var out string
 	var patterns []string
-	if !c.drain {
-		c.pending = append(c.pending, text...)
+	if c.drain {
+		out, patterns = c.resume(true)
+	} else {
 		out, patterns = c.release(true)
 	}
-	c.pending, c.ctx, c.unscanned, c.afterWord, c.run, c.drain = c.pending[:0], 0, 0, false, false, false
+	c.pending, c.ctx, c.unscanned, c.afterWord, c.run, c.drain, c.open = c.pending[:0], 0, 0, false, false, false, nil
 	return out, patterns
 }
 

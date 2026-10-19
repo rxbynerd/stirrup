@@ -3,6 +3,7 @@ package security
 import (
 	"regexp"
 	"regexp/syntax"
+	"unicode"
 )
 
 // streamPrefixes holds, for each entry of secretPatterns, a regexp that
@@ -10,6 +11,64 @@ import (
 // or continue a match once more text arrives; streamPrefixAny matches when
 // any of them does, which costs one scan rather than one per pattern.
 var streamPrefixes, streamPrefixAny = buildStreamPrefixes()
+
+// patternAlphabets holds, for each entry of secretPatterns, ranges holding
+// every rune a match of it can contain.
+var patternAlphabets = buildPatternAlphabets()
+
+func buildPatternAlphabets() [][][2]rune {
+	out := make([][][2]rune, len(secretPatterns))
+	for i, p := range secretPatterns {
+		re, err := syntax.Parse(p.re.String(), syntax.Perl)
+		if err != nil {
+			panic("security: reparse " + p.name + ": " + err.Error())
+		}
+		out[i] = alphabetOf(re, nil)
+	}
+	return out
+}
+
+func alphabetOf(re *syntax.Regexp, out [][2]rune) [][2]rune {
+	switch re.Op {
+	case syntax.OpLiteral:
+		for _, r := range re.Rune {
+			out = append(out, [2]rune{r, r})
+			if re.Flags&syntax.FoldCase != 0 {
+				for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+					out = append(out, [2]rune{f, f})
+				}
+			}
+		}
+	case syntax.OpCharClass:
+		for j := 0; j+1 < len(re.Rune); j += 2 {
+			out = append(out, [2]rune{re.Rune[j], re.Rune[j+1]})
+		}
+	case syntax.OpAnyCharNotNL:
+		out = append(out, [2]rune{0, '\n' - 1}, [2]rune{'\n' + 1, unicode.MaxRune})
+	case syntax.OpAnyChar:
+		out = append(out, [2]rune{0, unicode.MaxRune})
+	}
+	for _, sub := range re.Sub {
+		out = alphabetOf(sub, out)
+	}
+	return out
+}
+
+// anyAlphabetHas reports whether r can occur in a match of a pattern
+// marked in patterns.
+func anyAlphabetHas(patterns []bool, r rune) bool {
+	for i, on := range patterns {
+		if !on {
+			continue
+		}
+		for _, rg := range patternAlphabets[i] {
+			if rg[0] <= r && r <= rg[1] {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 func buildStreamPrefixes() ([]*regexp.Regexp, *regexp.Regexp) {
 	out := make([]*regexp.Regexp, len(secretPatterns))
