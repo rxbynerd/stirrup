@@ -199,6 +199,26 @@ func TestScrub_BasicAuth_LongBase64(t *testing.T) {
 	}
 }
 
+// TestScrub_Bearer_RedactsOnlyCredentials pins that a bearer token is
+// redacted while prose about bearer tokens is left readable: a value of
+// letters alone shorter than 16 characters is an English word.
+func TestScrub_Bearer_RedactsOnlyCredentials(t *testing.T) {
+	tests := []struct{ input, want string }{
+		{"Authorization: Bearer abc123", "Authorization: [REDACTED]"},
+		{"Authorization: Bearer eyJhbGciOiJIUzI1NiJ9", "Authorization: [REDACTED]"},
+		{"Bearer ABCDEFGHIJKLMNOP", "[REDACTED]"},
+		{"Bearer x-y", "[REDACTED]"},
+		{"Send a bearer token in the header.", "Send a bearer token in the header."},
+		{"The Bearer authentication scheme", "The Bearer authentication scheme"},
+		{"bearer tokens, then Bearer s3cr3t", "bearer tokens, then [REDACTED]"},
+	}
+	for _, tt := range tests {
+		if got := Scrub(tt.input); got != tt.want {
+			t.Errorf("Scrub(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
 // TestScrub_BasicAuth_RedactsOnlyCredentials pins that the basic_auth
 // pattern redacts payloads that decode to "user:password" (padded and raw
 // base64, any scheme case) and leaves prose that merely starts with the

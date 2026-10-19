@@ -53,7 +53,7 @@ func fenceText(text string) string {
 // up a result: a result dense with matches is fenced whole, sparse ranges
 // stay granular, and nearby ranges share one fence.
 func TestFenceScrubbedSpans_InflationIsBounded(t *testing.T) {
-	dense := strings.Repeat("Bearer x ", 100<<10/9)
+	dense := strings.Repeat("Bearer x1 ", 100<<10/9)
 	got := fenceText(dense)
 	if ratio := float64(len(got)) / float64(len(dense)); ratio > 1.4 {
 		t.Errorf("dense result fenced to %.2f times its size, want at most 1.4", ratio)
@@ -67,6 +67,11 @@ func TestFenceScrubbedSpans_InflationIsBounded(t *testing.T) {
 	got = fenceText(sparse)
 	if strings.Count(got, guard.SpotlightOpenTag) != 2 || !strings.Contains(got, gap) || decodeFences(t, got) != sparse {
 		t.Errorf("sparse result = %q, want two fences with the plain text between them", got)
+	}
+
+	docs := strings.Repeat("Send the bearer token in the Authorization header, as the OAuth documentation describes. ", 40)
+	if got = fenceText(docs); got != docs {
+		t.Errorf("prose about bearer tokens was fenced: %q", got[:min(len(got), 80)])
 	}
 
 	near := "a " + fakeAnthropicKey + " and ghp_abcdef end"
@@ -87,7 +92,7 @@ func TestRedactedSpansCountsMatches(t *testing.T) {
 		spans  string
 		fences int
 	}{
-		{"two matches in one fence", types.ContentBlock{Content: "Bearer x secret://a"}, "2", 1},
+		{"two matches in one fence", types.ContentBlock{Content: "Bearer x1 secret://a"}, "2", 1},
 		{"content and structured", types.ContentBlock{Content: "key " + fakeAnthropicKey, Structured: []byte(`{"key":"` + fakeAnthropicKey + `"}`)}, "2", 1},
 	}
 	for _, tc := range cases {
@@ -154,7 +159,7 @@ func TestScreenArrivedContent_StructuredOnlyMatch(t *testing.T) {
 // scrubbed copy is not built when no guard checks pre_turn: history is
 // untouched and the scrub's cost is not paid.
 func TestScreenArrivedContent_NoPreTurnGuardSkipsScrub(t *testing.T) {
-	output := strings.Repeat("Bearer x ", 100<<10/9)
+	output := strings.Repeat("Bearer x1 ", 100<<10/9)
 	postTurnOnly := guard.PhaseGated{Phases: []guard.Phase{guard.PhasePostTurn}, Inner: &verdictRecordingGuard{verdict: guard.VerdictAllow}}
 	allocs := func(g guard.GuardRail) (float64, string) {
 		loop := buildTestLoop(nil)
@@ -387,8 +392,8 @@ func TestScreenArrivedContent_RedactThenFenceAcrossBlocks(t *testing.T) {
 	cleanPayload := []byte(`{"ok":true}`)
 	messages := []types.Message{userText("task"), assistantToolUse("t1"), {Role: "user", Content: []types.ContentBlock{
 		{Type: "tool_result", ToolUseID: "t1", Content: "clean output", Structured: cleanPayload},
-		{Type: "tool_result", ToolUseID: "t2", Content: "card " + fakeLuhnCard + " header Bearer x", Structured: []byte(`{"auth":"Bearer x"}`)},
-		{Type: "tool_result", ToolUseID: "t3", Content: "just Bearer x"},
+		{Type: "tool_result", ToolUseID: "t2", Content: "card " + fakeLuhnCard + " header Bearer x1", Structured: []byte(`{"auth":"Bearer x1"}`)},
+		{Type: "tool_result", ToolUseID: "t3", Content: "just Bearer x1"},
 	}}}
 	if outcome := loop.screenArrivedContent(context.Background(), buildTestConfig(), 1, messages); outcome != "" {
 		t.Fatalf("outcome = %q", outcome)
@@ -396,8 +401,8 @@ func TestScreenArrivedContent_RedactThenFenceAcrossBlocks(t *testing.T) {
 	blocks := messages[2].Content
 	wants := []string{
 		"clean output",
-		"card " + ruleoftwo.RedactionPlaceholder + " header " + guard.ApplySpotlight("Bearer x"),
-		"just " + guard.ApplySpotlight("Bearer x"),
+		"card " + ruleoftwo.RedactionPlaceholder + " header " + guard.ApplySpotlight("Bearer x1"),
+		"just " + guard.ApplySpotlight("Bearer x1"),
 	}
 	for i, want := range wants {
 		if blocks[i].Content != want {
@@ -420,7 +425,7 @@ func TestArrivedAndScrubbedChunksHaveSameShape(t *testing.T) {
 		{Role: "user", Content: []types.ContentBlock{{Type: "tool_result", Content: "a"}}},
 		{Role: "user", Content: []types.ContentBlock{{Type: "tool_result", Structured: []byte(`{}`)}}},
 		{Role: "user", Content: []types.ContentBlock{{Type: "tool_result"}, {Type: "text", Text: "x"}, {Type: "tool_result", Content: "b " + fakeAnthropicKey, Structured: []byte(`{"k":"` + fakeAnthropicKey + `"}`)}}},
-		{Role: "user", Content: []types.ContentBlock{{Type: "tool_result", Content: "Bearer x"}, {Type: "tool_result", Content: "plain"}}},
+		{Role: "user", Content: []types.ContentBlock{{Type: "tool_result", Content: "Bearer x1"}, {Type: "tool_result", Content: "plain"}}},
 	}
 	for i, m := range messages {
 		arrived := arrivedUntrustedChunks([]types.Message{m})

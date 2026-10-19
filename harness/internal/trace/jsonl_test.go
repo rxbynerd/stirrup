@@ -281,7 +281,7 @@ func TestJSONLTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 			},
 		},
 		ModelOutput: []types.ContentBlock{
-			{Type: "text", Text: "ack, your bearer Bearer ABCDEFG is unsafe"},
+			{Type: "text", Text: "ack, your bearer Bearer ABCDEFG1 is unsafe"},
 		},
 		ToolCalls: []types.ToolCallRecord{
 			{
@@ -305,7 +305,7 @@ func TestJSONLTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 	if strings.Contains(on_disk, "sk-ant-api03-leak-leak") {
 		t.Errorf("scrubber missed tool input secret in on-disk trace:\n%s", on_disk)
 	}
-	if strings.Contains(on_disk, "Bearer ABCDEFG") {
+	if strings.Contains(on_disk, "Bearer ABCDEFG1") {
 		t.Errorf("scrubber missed bearer token in on-disk trace:\n%s", on_disk)
 	}
 	// At least one [REDACTED] marker proves the scrubber ran.

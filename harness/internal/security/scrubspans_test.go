@@ -36,9 +36,9 @@ func scrubSpanCorpus() []string {
 		// Bearer match ends at the placeholder it cannot cross.
 		"Authorization: Bearer abc.sk-ant-api03-QUJDZGVmR0hJSktM tail",
 		"Authorization: Bearer sk-ant-api03-QUJDZGVmR0hJSktM",
-		// secret_ref runs across the placeholder of a Bearer match whose
-		// whitespace had stopped it on the original text.
-		"secret://aBearer tok!more and after",
+		// A secret_ref whose body runs into a Bearer match: the two
+		// matches overlap and their ranges merge.
+		"secret://aBearer tok1!more and after",
 		"secret://sk-ant-api03-QUJDZGVmR0hJSktM!rest",
 		// Literal placeholder text, alone and adjacent to matches.
 		"[REDACTED]", "x[REDACTED]sk-ant-api03-QUJDZGVmR0hJSktM", "secret://[REDACTED]x y",
@@ -170,7 +170,8 @@ func TestScrubWithSpans_SpansCoverTheReplacedText(t *testing.T) {
 	}{
 		{"key sk-ant-api03-QUJDZGVmR0hJSktM here", []string{"sk-ant-api03-QUJDZGVmR0hJSktM"}},
 		{"Bearer abc.sk-ant-api03-QUJDZGVmR0hJSktM tail", []string{"Bearer abc.sk-ant-api03-QUJDZGVmR0hJSktM"}},
-		{"secret://aBearer tok!more and after", []string{"secret://aBearer tok"}},
+		{"secret://aBearer tok1!more and after", []string{"secret://aBearer tok1"}},
+		{"use a bearer token here", nil},
 		{"a ghp_x b ghs_y c", []string{"ghp_x", "ghs_y"}},
 		{"nothing here", nil},
 	}

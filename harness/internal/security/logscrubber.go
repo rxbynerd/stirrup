@@ -123,7 +123,16 @@ const (
 // A match is redacted only when its validator returns true; patterns absent
 // from the map redact every match.
 var matchValidators = map[string]func(match string) bool{
-	"basic_auth": isBasicCredential,
+	"basic_auth":   isBasicCredential,
+	"bearer_token": isBearerCredential,
+}
+
+// isBearerCredential reports whether a bearer_token match is a credential
+// rather than prose such as "bearer token": a token of letters alone must
+// be at least 16 characters long.
+func isBearerCredential(match string) bool {
+	tok := tokenAfterSpace(match)
+	return len(tok) >= 16 || !isASCIIAlpha(tok)
 }
 
 // isBasicCredential reports whether a basic_auth match is a credential

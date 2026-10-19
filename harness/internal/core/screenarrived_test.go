@@ -163,7 +163,7 @@ func TestScreenArrivedContent_FencesScrubbedToolResults(t *testing.T) {
 	// Spans this far apart are fenced one by one.
 	gap := " " + strings.Repeat("plain ", fenceMergeGap/6+1)
 	testRun := "--- FAIL: TestLogin (0.01s)\n    auth_test.go:42: got 401\n" +
-		"request: Authorization: Bearer x\n--- FAIL: TestLogout (0.02s)\nFAIL"
+		"request: Authorization: Bearer x1\n--- FAIL: TestLogout (0.02s)\nFAIL"
 	cases := []struct {
 		name    string
 		output  string
@@ -181,7 +181,7 @@ func TestScreenArrivedContent_FencesScrubbedToolResults(t *testing.T) {
 		},
 		{
 			name: "benign token text keeps the rest readable", output: testRun, verdict: guard.VerdictAllow,
-			want: strings.Replace(testRun, "Bearer x", guard.ApplySpotlight("Bearer x"), 1), spans: "1",
+			want: strings.Replace(testRun, "Bearer x1", guard.ApplySpotlight("Bearer x1"), 1), spans: "1",
 		},
 		{
 			name: "several spans", output: "a=" + fakeAnthropicKey + gap + "b=ghp_abcdef" + gap + "c=ghp_abcdefAB", verdict: guard.VerdictAllow,
