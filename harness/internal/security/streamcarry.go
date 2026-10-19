@@ -6,17 +6,21 @@ import (
 )
 
 const (
-	// streamCarryMax bounds the bytes a StreamCarry holds unreleased.
-	// Text one possible match spans beyond it, whitespace inside a match
-	// included, is released anyway: a match longer than this is redacted
-	// through its first streamCarryMax bytes and its tail reaches the sink.
+	// streamCarryMax bounds the bytes a StreamCarry holds unreleased while
+	// no possible match outgrows it. Once one does, the held text from the
+	// start of that match goes out as one placeholder, and the rest of the
+	// match is held until it ends, up to streamCarryRunMax.
 	streamCarryMax = 8 << 10
+
+	// streamCarryRunMax bounds the bytes held for a match that outgrew
+	// streamCarryMax. Past it, nothing more is released until Flush.
+	streamCarryRunMax = 1 << 20
 
 	// streamCarryRescanBytes is the held size above which the carry
 	// rescans only once the held text has grown by a quarter, so a long
 	// held span costs amortised linear time rather than a full scan per
 	// fragment.
-	streamCarryRescanBytes = 256
+	streamCarryRescanBytes = 64
 )
 
 // StreamCarry scrubs a stream of text fragments as it arrives, so a secret
@@ -37,9 +41,12 @@ type StreamCarry struct {
 	ctx       int
 	afterWord bool
 	unscanned int
-	// scanned counts the bytes scanned and forced the releases made at
-	// the cap, so a test can pin that rescanning stays amortised and tell
-	// a stream the cap cut.
+	// run is set while the context is the head of a match that outgrew
+	// streamCarryMax, already released as a placeholder; drain once that
+	// match outgrew streamCarryRunMax.
+	run, drain bool
+	// scanned is the bytes scanned and forced the number of releases the
+	// cap forced; both are read by tests.
 	scanned int
 	forced  int
 }
@@ -47,20 +54,35 @@ type StreamCarry struct {
 // Push adds fragment and returns the scrubbed text that can be released
 // and the names of the patterns redacted in it.
 func (c *StreamCarry) Push(fragment string) (string, []string) {
+	if c.drain {
+		return "", nil
+	}
 	c.pending = append(c.pending, fragment...)
 	c.unscanned += len(fragment)
-	if held := c.held(); held <= streamCarryRescanBytes || c.unscanned >= held/4 || held > streamCarryMax {
-		c.unscanned = 0
-		return c.release(false)
+	switch held := c.held(); {
+	case c.run && len(c.pending) > streamCarryRunMax:
+		c.pending, c.ctx, c.drain = nil, 0, true
+		return "", nil
+	case c.run:
+		if c.unscanned < len(c.pending)/4 {
+			return "", nil
+		}
+	case held > streamCarryRescanBytes && c.unscanned < held/4 && held <= streamCarryMax:
+		return "", nil
 	}
-	return "", nil
+	c.unscanned = 0
+	return c.release(false)
 }
 
 // Flush returns the held text, scrubbed, and the names of the patterns
 // redacted in it, and empties the carry.
 func (c *StreamCarry) Flush() (string, []string) {
-	out, patterns := c.release(true)
-	c.pending, c.ctx, c.unscanned, c.afterWord = c.pending[:0], 0, 0, false
+	var out string
+	var patterns []string
+	if !c.drain {
+		out, patterns = c.release(true)
+	}
+	c.pending, c.ctx, c.unscanned, c.afterWord, c.run, c.drain = c.pending[:0], 0, 0, false, false, false
 	return out, patterns
 }
 
@@ -75,50 +97,73 @@ func (c *StreamCarry) release(all bool) (string, []string) {
 	p := c.pending
 	c.scanned += len(p)
 	segs, ranges, viable := carryScan(string(p), c.afterWord)
-	cut, forced := len(p), false
+	cut := len(p)
 	if !all {
-		cut, forced = c.cut(p, ranges, viable)
+		cut = runeStartAtOrBefore(p, retreatCutPastSpans(ranges, max(viable, c.ctx)))
+		if !c.run && len(p)-cut > streamCarryMax {
+			return c.forceRelease(p, segs, viable, cut)
+		}
 	}
 	if cut <= c.ctx {
 		return "", nil
 	}
-	out, patterns := releasedText(p, segs, c.ctx, cut)
+	out, patterns := releasedText(segs, c.ctx, cut)
 	// The next scan starts at a complete match that ends at the cut, so a
-	// later pattern sees its placeholder as the whole stream would. After
-	// a forced cut the match may still grow, so it is not rescanned.
+	// later pattern sees its placeholder as the whole stream would.
 	next := cut
 	for _, r := range ranges {
-		if r[1] == cut && !forced {
+		if r[1] == cut {
 			next = min(next, r[0])
 		}
 	}
+	c.keep(p, next, cut)
+	c.run = false
+	return out, patterns
+}
+
+// forceRelease releases the held text before cut, scrubbed, and the text
+// from cut on, which a possible match longer than streamCarryMax holds, as
+// one placeholder. That text stays as context and the rest of the match is
+// held until a scan shows where it ends, so none of the match is released.
+func (c *StreamCarry) forceRelease(p []byte, segs []scrubSegment, viable, cut int) (string, []string) {
+	c.forced++
+	from := max(cut, c.ctx)
+	out, patterns := releasedText(segs, c.ctx, from)
+	for _, name := range heldPatterns(string(p), segs, from, viable) {
+		if !slices.Contains(patterns, name) {
+			patterns = append(patterns, name)
+		}
+	}
+	c.keep(p, cut, runeStartAtOrBefore(p, len(p)))
+	c.run = true
+	return out + redactedPlaceholder, patterns
+}
+
+// keep drops the buffer before next and makes [next, cut) the context.
+func (c *StreamCarry) keep(p []byte, next, cut int) {
 	if next > 0 {
 		c.afterWord = isWordByte(p[next-1])
 	}
 	c.pending = append(c.pending[:0], p[next:]...)
 	c.ctx = cut - next
-	return out, patterns
 }
 
-// cut returns the offset in p up to which held text can be released and
-// whether the cap forced it.
-func (c *StreamCarry) cut(p []byte, ranges [][]int, viable int) (int, bool) {
-	cut := runeStartAtOrBefore(p, retreatCutPastSpans(ranges, max(viable, c.ctx)))
-	if len(p)-cut <= streamCarryMax {
-		return cut, false
+// heldPatterns names the patterns behind a forced placeholder: those
+// redacted from offset from on, and those whose match could begin at
+// viable.
+func heldPatterns(p string, segs []scrubSegment, from, viable int) []string {
+	var names []string
+	for _, seg := range segs {
+		if seg.redacted && seg.start >= from && !slices.Contains(names, seg.pattern) {
+			names = append(names, seg.pattern)
+		}
 	}
-	// One possible match outgrew the cap. Release at least the excess,
-	// holding back what could begin a match within the last
-	// streamCarryMax bytes, as if the stream started there.
-	c.forced++
-	lo := runeStartAtOrAfter(p, len(p)-streamCarryMax)
-	c.scanned += len(p) - lo
-	_, _, rest := carryScan(string(p[lo:]), isWordByte(p[lo-1]))
-	forced := lo + rest
-	if cut = retreatCutPastSpans(ranges, forced); cut < lo {
-		cut = forced
+	for i, re := range streamPrefixes {
+		if loc := re.FindStringIndex(p[viable:]); loc != nil && loc[0] == 0 && !slices.Contains(names, secretPatterns[i].name) {
+			names = append(names, secretPatterns[i].name)
+		}
 	}
-	return runeStartAtOrAfter(p, cut), true
+	return names
 }
 
 // carryScan scrubs p and returns its segments, the ranges the scrubber
@@ -147,15 +192,14 @@ func carryScan(p string, afterWord bool) ([]scrubSegment, [][]int, int) {
 			viable = min(viable, originalOffset(segs, loc[0]))
 		}
 	})
-	if shift > 0 {
-		segs = unshiftSegments(segs)
-		viable--
-	}
 	var ranges [][]int
 	for _, r := range redactedRanges(segs) {
-		ranges = append(ranges, []int{r.Start, r.End})
+		ranges = append(ranges, []int{r.Start - shift, r.End - shift})
 	}
-	return segs, ranges, viable
+	if shift > 0 {
+		segs = unshiftSegments(segs)
+	}
+	return segs, ranges, viable - shift
 }
 
 // unshiftSegments drops the one-byte sentinel carryScan prepends, which
@@ -183,19 +227,15 @@ func isWordByte(b byte) bool {
 }
 
 // releasedText returns the scrubbed text standing for original bytes
-// [from, to) of p and the patterns redacted in it. A placeholder belongs to
-// the side its replaced bytes start on, so one a forced cut crosses is
-// released whole with the head of its match; the bytes of one that starts
-// in the context are released as they are, since its head already was.
-func releasedText(p []byte, segs []scrubSegment, from, to int) (string, []string) {
+// [from, to) of the text segs spell and the patterns redacted in it. A
+// placeholder belongs to the side its replaced bytes start on: one that
+// starts in the context stands for bytes a placeholder already went out
+// for, so nothing is released for them.
+func releasedText(segs []scrubSegment, from, to int) (string, []string) {
 	var out []byte
 	var patterns []string
 	for _, seg := range segs {
 		if seg.redacted {
-			if seg.start < from && seg.end > from {
-				out = append(out, p[from:min(seg.end, to)]...)
-				continue
-			}
 			if seg.start >= from && seg.start < to {
 				out = append(out, seg.text...)
 				if !slices.Contains(patterns, seg.pattern) {
@@ -230,14 +270,4 @@ func runeStartAtOrBefore(p []byte, i int) int {
 		i--
 	}
 	return max(i, 0)
-}
-
-func runeStartAtOrAfter(p []byte, i int) int {
-	for i > 0 && i < len(p) && !utf8.RuneStart(p[i]) {
-		i++
-	}
-	if i >= len(p) {
-		return runeStartAtOrBefore(p, len(p))
-	}
-	return i
 }

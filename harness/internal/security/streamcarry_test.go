@@ -38,6 +38,54 @@ func chunk(s string, n int) []string {
 	return out
 }
 
+// streamThrough is streamThroughCarry on a caller's carry, so a test can
+// read its counters.
+func streamThrough(c *StreamCarry, fragments []string) string {
+	var b strings.Builder
+	for _, f := range fragments {
+		out, _ := c.Push(f)
+		b.WriteString(out)
+	}
+	out, _ := c.Flush()
+	b.WriteString(out)
+	return b.String()
+}
+
+// clip shortens s for a failure message.
+func clip(s string) string {
+	if len(s) > 120 {
+		return s[:60] + "…" + s[len(s)-60:]
+	}
+	return s
+}
+
+// secretWindow is the length of the substrings assertNoSecretWindows looks
+// for: long enough that one does not recur in plain text by chance.
+const secretWindow = 16
+
+// assertNoSecretWindows fails when got holds a secretWindow-byte substring
+// of text whole-stream Scrub redacts from input that whole-stream Scrub
+// does not also release elsewhere.
+func assertNoSecretWindows(t *testing.T, input, got string) {
+	t.Helper()
+	whole, ranges, _ := ScrubWithSpans(input)
+	windows := func(s string) map[string]bool {
+		set := map[string]bool{}
+		for i := 0; i+secretWindow <= len(s); i++ {
+			set[s[i:i+secretWindow]] = true
+		}
+		return set
+	}
+	released, allowed := windows(got), windows(whole)
+	for _, r := range ranges {
+		for i := r.Start; i+secretWindow <= r.End; i++ {
+			if w := input[i : i+secretWindow]; released[w] && !allowed[w] {
+				t.Fatalf("released text holds %q, redacted at offset %d of the input", w, i)
+			}
+		}
+	}
+}
+
 func streamFixtures() []secretFixture {
 	encrypted := "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,0123456789ABCDEF\n\n" +
 		strings.Join(pemBodyLines(12), "\n") + "\n-----END RSA PRIVATE KEY-----"
@@ -265,29 +313,101 @@ func TestStreamCarry_ShortSecretBehindLongHoldIsRedacted(t *testing.T) {
 	}
 }
 
-// TestStreamCarry_SpanOverCapLeaksOnlyBeyondTheCap pins the documented
-// residual for a match longer than streamCarryMax: everything through its
-// first streamCarryMax bytes is redacted, and only body lines starting
-// after that offset can reach the sink.
-func TestStreamCarry_SpanOverCapLeaksOnlyBeyondTheCap(t *testing.T) {
+// TestStreamCarry_SpanOverCapIsRedactedWhole pins that a match longer
+// than streamCarryMax is redacted through its end: the forced release sends
+// its head as a placeholder, and the rest is withheld until the match ends.
+func TestStreamCarry_SpanOverCapIsRedactedWhole(t *testing.T) {
 	body := pemBodyLines(200)
 	for i := range body {
 		body[i] = fmt.Sprintf("Z%03d", i) + body[i][4:]
 	}
-	key := pemKey("RSA PRIVATE KEY", body, "\n")
-	input := "key: " + key + "\nafter"
-	keyStart := strings.Index(input, key)
+	input := "key: " + pemKey("RSA PRIVATE KEY", body, "\n") + "\nafter"
 	for _, size := range []int{1, 7, 50, 500, 3000} {
-		got, _ := streamThroughCarry(chunk(input, size))
-		for _, line := range body {
-			at := keyStart + strings.Index(key, line)
-			leaked := strings.Contains(got, line)
-			if leaked && at-keyStart < streamCarryMax {
-				t.Fatalf("%d-byte fragments: body line at key offset %d leaked, inside the first %d bytes", size, at-keyStart, streamCarryMax)
+		var c StreamCarry
+		got := streamThrough(&c, chunk(input, size))
+		assertNoPEMBody(t, got, body)
+		if want := Scrub(input); got != want {
+			t.Fatalf("%d-byte fragments: streamed output %q, want %q", size, got, want)
+		}
+		if c.forced == 0 {
+			t.Fatalf("%d-byte fragments: the cap forced no release", size)
+		}
+	}
+}
+
+// TestStreamCarry_UnmatchedHeadOverCapIsWithheld pins that text the cap
+// forces out while it could still begin a match goes out as a placeholder:
+// a JWT whose header and payload pass streamCarryMax before the second dot
+// arrives has no match yet, and none of it may reach the sink.
+func TestStreamCarry_UnmatchedHeadOverCapIsWithheld(t *testing.T) {
+	payload := strings.Repeat("eyJzdWIiOiJydW5uZXIi", 9<<10/20)
+	jwt := "eyJhbGciOiJSUzI1NiJ9." + payload + ".c2lnbmF0dXJl"
+	cases := map[string]string{
+		"jwt":              "token: " + jwt + " end",
+		"bearer, no dots":  "auth: Bearer x" + strings.Repeat("eyJhbGciOiJSUzI1NiJ9", 9<<10/20) + " end",
+		"jwt behind prose": strings.Repeat("words ", 1300) + jwt + " end",
+	}
+	for name, input := range cases {
+		for _, size := range []int{1, 7, 500, 4093} {
+			var c StreamCarry
+			got := streamThrough(&c, chunk(input, size))
+			assertNoSecretWindows(t, input, got)
+			if want := Scrub(input); got != want {
+				t.Fatalf("%s, %d-byte fragments: streamed output %q, want %q", name, size, clip(got), clip(want))
 			}
 		}
-		if !strings.HasPrefix(got, "key: [REDACTED]") {
-			t.Fatalf("%d-byte fragments: key head not redacted: %q", size, got[:40])
+	}
+}
+
+// TestStreamCarry_RunPastTheCapIsBounded pins the two bounds on a match the
+// cap cut: only its head is held once the cap forces a release, and past
+// streamCarryRunMax nothing more is released until Flush.
+func TestStreamCarry_RunPastTheCapIsBounded(t *testing.T) {
+	var c StreamCarry
+	run := "Bearer " + strings.Repeat("a", 4*streamCarryMax)
+	got := ""
+	for i := 0; i < len(run); i += 7 {
+		out, _ := c.Push(run[i:min(i+7, len(run))])
+		got += out
+		if !c.run && c.held() > streamCarryMax {
+			t.Fatalf("carry holds %d bytes, above streamCarryMax", c.held())
+		}
+	}
+	if got != "[REDACTED]" {
+		t.Fatalf("released %q from a run four times streamCarryMax, want one placeholder", clip(got))
+	}
+	for i := 0; i < streamCarryRunMax; i += 4 << 10 {
+		if out, _ := c.Push(strings.Repeat("a", 4<<10)); out != "" {
+			t.Fatalf("released %q from an open run", clip(out))
+		}
+	}
+	c.Push(" then prose")
+	if !c.drain || len(c.pending) != 0 {
+		t.Fatalf("a run past streamCarryRunMax still holds %d bytes", len(c.pending))
+	}
+	if out, _ := c.Flush(); out != "" {
+		t.Fatalf("Flush after a drained run released %q", clip(out))
+	}
+	if out, _ := c.Push("next stream"); out != "next stream" {
+		t.Fatalf("carry after Flush released %q", out)
+	}
+}
+
+// TestStreamCarry_ForcedRescanIsAmortised pins that a match that keeps
+// repeating its own leading literal past the cap is not rescanned in full
+// for every fragment.
+func TestStreamCarry_ForcedRescanIsAmortised(t *testing.T) {
+	for name, run := range map[string]string{
+		"openai keys": strings.Repeat("sk-", 10000),
+		"secret refs": strings.Repeat("secret://a/", 3000),
+	} {
+		var c StreamCarry
+		for i := range len(run) {
+			c.Push(run[i : i+1])
+		}
+		c.Flush()
+		if c.scanned > 16*len(run) {
+			t.Errorf("%s: carry scanned %d bytes for a %d byte stream, over 16 times its length", name, c.scanned, len(run))
 		}
 	}
 }
@@ -309,28 +429,10 @@ func TestStreamCarry_RuneStraddlingForcedCut(t *testing.T) {
 	}
 }
 
-// TestStreamCarry_HoldIsBounded pins streamCarryMax: a run no pattern ends
-// is released once it outgrows the bound, so a stream cannot be stalled.
-func TestStreamCarry_HoldIsBounded(t *testing.T) {
-	var c StreamCarry
-	run := "Bearer " + strings.Repeat("a", 4*streamCarryMax)
-	released := 0
-	for i := 0; i < len(run); i += 7 {
-		out, _ := c.Push(run[i:min(i+7, len(run))])
-		released += len(out)
-		if c.held() > streamCarryMax {
-			t.Fatalf("carry holds %d bytes, above streamCarryMax", c.held())
-		}
-	}
-	if released == 0 {
-		t.Fatal("nothing was released from a run four times streamCarryMax")
-	}
-}
-
 // TestStreamCarry_WhitespaceAfterKeyword pins that whitespace inside a
 // match is held like the rest of it: a secret split after a whitespace run
-// is redacted while the keyword and whitespace fit in streamCarryMax, and
-// reaches the sink once they do not.
+// is redacted whether or not the keyword and whitespace fit in
+// streamCarryMax.
 func TestStreamCarry_WhitespaceAfterKeyword(t *testing.T) {
 	pem := "RSA PRIVATE KEY-----\n" + strings.Join(pemBodyLines(3), "\n") + "\n-----END RSA PRIVATE KEY-----"
 	cases := []struct{ keyword, secret, sensitive string }{
@@ -344,9 +446,11 @@ func TestStreamCarry_WhitespaceAfterKeyword(t *testing.T) {
 		for _, ws := range []int{0, 80, 90, 100, 3000, limit, limit + 1} {
 			head := tc.keyword + strings.Repeat(" ", max(ws, 1))
 			got, _ := streamThroughCarry(append(chunk(head, 64), tc.secret+" tail"))
-			leaked := strings.Contains(got, tc.sensitive)
-			if want := ws > limit; leaked != want {
-				t.Errorf("%s followed by %d spaces: secret leaked = %v, want %v", tc.keyword, ws, leaked, want)
+			if strings.Contains(got, tc.sensitive) {
+				t.Errorf("%s followed by %d spaces: secret leaked", tc.keyword, ws)
+			}
+			if want := Scrub(head + tc.secret + " tail"); got != want {
+				t.Errorf("%s followed by %d spaces: streamed output %q, want %q", tc.keyword, ws, clip(got), clip(want))
 			}
 		}
 	}
@@ -365,6 +469,18 @@ func TestStreamCarry_RescanIsAmortised(t *testing.T) {
 	c.Flush()
 	if n := len(run) + 1<<20; c.scanned > 16*n {
 		t.Errorf("carry scanned %d bytes for a %d byte stream, over 16 times its length", c.scanned, n)
+	}
+
+	// Many short tokens, each held while it streams and released when it
+	// ends, below the size at which the quarter-growth rule applies.
+	hovering := strings.Repeat("Bearer "+strings.Repeat("Ab0", 64)+" then ", 64)
+	c = StreamCarry{}
+	for i := 0; i < len(hovering); i += 3 {
+		c.Push(hovering[i:min(i+3, len(hovering))])
+	}
+	c.Flush()
+	if c.scanned > 16*len(hovering) {
+		t.Errorf("carry scanned %d bytes for %d bytes of short tokens, over 16 times their length", c.scanned, len(hovering))
 	}
 }
 
@@ -396,23 +512,29 @@ func TestStreamCarry_AdversarialStreamsStayFast(t *testing.T) {
 	}
 }
 
-// FuzzStreamCarry checks the carry's invariants on arbitrary input split
-// into alternating fragment sizes: unless the cap forced a release, the
-// output is the whole stream scrubbed; no piece of valid input splits a
-// rune; the hold stays bounded; and Flush empties the carry.
+// FuzzStreamCarry checks the carry's invariants on head followed by reps
+// copies of body, split into alternating fragment sizes: no raw text
+// whole-stream Scrub redacts is released; unless the cap forced a release,
+// the output is the whole stream scrubbed; no piece of valid input splits
+// a rune; the hold stays bounded; and Flush empties the carry.
 func FuzzStreamCarry(f *testing.F) {
 	for _, fx := range prefixFixtures() {
-		f.Add("before "+fx.text+" after", uint8(1), uint8(7))
+		f.Add("before "+fx.text+" after", "", uint16(0), uint8(1), uint8(7))
 	}
-	f.Add("café 日本語 Bearer x", uint8(1), uint8(2))
-	f.Fuzz(func(t *testing.T, input string, a, b uint8) {
+	f.Add("café 日本語 Bearer x", "", uint16(0), uint8(1), uint8(2))
+	f.Add("token: eyJhbGciOiJSUzI1NiJ9.", "eyJzdWIiOiJydW5uZXIi", uint16(500), uint8(6), uint8(200))
+	f.Add("", "sk-", uint16(4000), uint8(0), uint8(0))
+	f.Add("", "secret://a/", uint16(1000), uint8(2), uint8(0))
+	f.Add("Bearer ", " ", uint16(9000), uint8(63), uint8(0))
+	f.Fuzz(func(t *testing.T, head, body string, reps uint16, a, b uint8) {
+		input := head + strings.Repeat(body, min(int(reps), (64<<10)/max(len(body), 1)))
 		sizes := [2]int{1 + int(a), 1 + int(b)}
 		var c StreamCarry
 		var out strings.Builder
 		valid := utf8.ValidString(input)
 		emit := func(piece string, _ []string) {
 			if valid && !utf8.ValidString(piece) {
-				t.Fatalf("piece %q of valid input is not valid UTF-8", piece)
+				t.Fatalf("piece %q of valid input is not valid UTF-8", clip(piece))
 			}
 			out.WriteString(piece)
 		}
@@ -420,13 +542,14 @@ func FuzzStreamCarry(f *testing.F) {
 			n := min(sizes[i%2], len(rest))
 			emit(c.Push(rest[:n]))
 			rest = rest[n:]
-			if c.held() > streamCarryMax {
+			if !c.run && c.held() > streamCarryMax {
 				t.Fatalf("carry holds %d bytes, above streamCarryMax", c.held())
 			}
 		}
 		emit(c.Flush())
+		assertNoSecretWindows(t, input, out.String())
 		if want := Scrub(input); c.forced == 0 && out.String() != want {
-			t.Fatalf("released text %q, want %q", out.String(), want)
+			t.Fatalf("released text %q, want %q", clip(out.String()), clip(want))
 		}
 		if rest, _ := c.Flush(); rest != "" {
 			t.Fatalf("second Flush returned %q", rest)
