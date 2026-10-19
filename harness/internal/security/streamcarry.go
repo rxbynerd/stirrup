@@ -12,7 +12,6 @@ const (
 	// match is held until it ends, up to streamCarryRunMax.
 	streamCarryMax = 8 << 10
 
-
 	// streamCarryRescanBytes is the held size above which the carry
 	// rescans only once the held text has grown by a quarter, so a long
 	// held span costs amortised linear time rather than a full scan per
