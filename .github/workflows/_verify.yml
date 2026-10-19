@@ -87,7 +87,7 @@ jobs:
       - name: Run race detector on concurrency-heavy packages
         run: go test -race ./harness/internal/executor/... ./harness/internal/provider/... ./harness/internal/core/...
 
-      # Short fuzz runs of the scrubber's streaming and span invariants.
+      # Short fuzz runs of the scrubber's streaming, span and fence invariants.
       # A minimise time of zero keeps a failure from stalling the job. A
       # failing input is written under testdata/fuzz, which the next step
       # uploads so it can be committed as a seed. Fuzzing is random, so it
@@ -100,6 +100,7 @@ jobs:
         run: |
           go test ./internal/security/ -run '^$' -fuzz '^FuzzStreamCarry$' -fuzztime 20s -fuzzminimizetime 0
           go test ./internal/security/ -run '^$' -fuzz '^FuzzScrubWithSpans$' -fuzztime 20s -fuzzminimizetime 0
+          go test ./internal/security/ -run '^$' -fuzz '^FuzzScrubFenced$' -fuzztime 20s -fuzzminimizetime 0
 
       - name: Upload failing fuzz input
         if: failure() && steps.fuzz.outcome == 'failure'

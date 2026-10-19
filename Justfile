@@ -20,6 +20,7 @@ test-race:
 fuzz-scrub:
     go test ./harness/internal/security/ -run '^$' -fuzz '^FuzzStreamCarry$' -fuzztime 20s -fuzzminimizetime 0
     go test ./harness/internal/security/ -run '^$' -fuzz '^FuzzScrubWithSpans$' -fuzztime 20s -fuzzminimizetime 0
+    go test ./harness/internal/security/ -run '^$' -fuzz '^FuzzScrubFenced$' -fuzztime 20s -fuzzminimizetime 0
 
 lint:
     golangci-lint run ./harness/... ./types/... ./eval/... ./examples/controlplane/...
