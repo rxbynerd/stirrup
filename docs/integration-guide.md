@@ -907,8 +907,10 @@ the stream; ordinary prose is sent as it arrives. `heartbeat` and
 `user_response`, are not ordered against held text and can arrive
 first. There is no timer, so delta silence is not a stall signal: use
 `heartbeat`. A possible match longer than 8 KiB is sent as one
-`[REDACTED]` from its start, and nothing more of it is sent; see
-[`security.md`](security.md#control-stream-scrubbing) for that bound.
+`[REDACTED]` from its start, and nothing more of it is sent; one still
+open after 1 MiB also brings a `warning` saying the stream is withheld
+until it ends. See [`security.md`](security.md#control-stream-scrubbing)
+for both bounds.
 The `done` trace's final assistant text is scrubbed whole.
 
 **Capability gating.** A harness that predates these events sends none

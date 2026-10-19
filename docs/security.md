@@ -59,9 +59,13 @@ covering:
 - Slack tokens
 - GCP API keys and OAuth2 access tokens
 - Key/value-anchored Azure storage keys
-- Bearer tokens including JWTs (Authorization headers). A value of
-  letters alone shorter than 16 characters is taken for prose, so
-  "bearer token" and "the Bearer authentication scheme" stay readable
+- Bearer tokens including JWTs (Authorization headers). A value that is
+  one of a short list of prose words (`token`, `tokens`, `auth`,
+  `authentication`, `authorization`, `scheme`, `header`, `credentials`,
+  `value`, `string`, `prefix`, `type`, `format`, and a few function
+  words), compared case-insensitively, is left alone, so "bearer token"
+  and "the Bearer authentication scheme" stay readable; any other value,
+  `Bearer changeme` included, is redacted
 - Basic-auth credentials (`Basic <base64>`), redacted only when the
   payload decodes to bytes containing the `user:password` colon, so
   prose such as "basic documentation" is left intact. A payload cut off
@@ -74,8 +78,9 @@ covering:
   harness's own mid-result truncation marker (`[...truncated N
   bytes...]`). A line of prose ends the match at the header, so text
   placed between armour lines stays readable. Lines may be raw,
-  line-numbered (`read_file`, `cat -n` and `grep -n` output, and the
-  `path:line:` prefix of `grep -rn` and `search_files`), `\n`-escaped
+  line-numbered (`read_file`, `cat -n` and `grep -n` output, the
+  `path:line:` prefix of `grep -rn` and `search_files`, with spaces in
+  the path, and grep's `path-line-` context lines), `\n`-escaped
   inside a JSON string or `\\n`-escaped inside JSON held in a JSON
   string, separate JSON array elements (the shape of `read_file`'s
   structured payload) or single-quoted list elements, or string literals
@@ -89,15 +94,21 @@ covering:
   other shapes are not redacted either: blockquoted (`> `), with
   `cat -A` `$` line ends, joined with `<br>` or with spaces on one line,
   or a line followed by other text, such as a `...` the model appends,
-  which with the lines after it reaches the sinks
+  which with the lines after it reaches the sinks. A `path:line:` prefix
+  whose path is longer than 255 characters, starts with `-`, or holds a
+  quote or shell syntax is not recognised either
 - API-key header values
 - Key/value-anchored 32-character hex secrets
 - `secret://` references themselves, through the reference syntax the
-  secret stores accept (letters, digits and `_./:@+~%=-`)
+  secret stores accept (letters, digits and `_./:@+~%=-`), except in a
+  guard's copy (see [below](#scrubbed-content-is-fenced))
 
-No pattern's match holds shell syntax (`;`, `|`, `&`, `$`, a backtick,
-parentheses, `<` or `>`), and none but the PEM pattern spans a line
-break, so a redaction cannot hide a command placed after a
+The key/value patterns (AWS secret access keys, Azure storage keys and
+hex secrets) take a value on the same line as the key or, as YAML
+allows, on the next line when it is indented. No pattern's match holds
+shell syntax (`;`, `|`, `&`, `$`, a backtick, parentheses, `<` or `>`),
+and none spans a line break except the PEM pattern and that one
+key/value separator, so a redaction cannot hide a command placed after a
 credential-shaped string from a guard;
 `TestSecretPatterns_MatchesHoldNoShellSyntax` pins this.
 
@@ -195,12 +206,19 @@ its text, rescanning after each quarter of growth, until a scan shows
 where the match ends, and releases only what follows it. A possible
 match that ends without matching is redacted from its start all the
 same, such as base64 running on past the 40 characters
-`aws_secret_access_key=` takes. A match still open after 1 MiB stops
-the delta stream: nothing more of that text or reasoning run is sent
-until the carry is flushed at the response's next event or its end.
+`aws_secret_access_key=` takes. A match still open after 1 MiB is
+withheld rather than held: the carry keeps its last 64 KiB and the
+patterns that could still be matching, and sends nothing until a rune
+arrives that none of those patterns can contain, which no match can
+cross; it releases the stream from there. That point can come later
+than the match's end (after a long `Bearer` run, spaces still count as
+possible match text), never earlier. When the carry starts withholding,
+the loop sends a `warning` on the control stream, raises the
+`stream_text_withheld` security event and logs a warning.
 `TestStreamCarry_SpanOverCapIsRedactedWhole`,
 `TestStreamCarry_UnmatchedHeadOverCapIsWithheld`,
-`TestStreamCarry_RunPastTheCapIsBounded` and
+`TestStreamCarry_RunPastTheCapIsBounded`,
+`TestStreamCarry_TextAfterAWithheldMatchIsReleased` and
 `TestStreamCarry_WhitespaceAfterKeyword` pin this. The final assistant
 text recorded in the trace is scrubbed as a whole.
 
@@ -220,7 +238,12 @@ anchored SSNs, are sent unredacted.
 
 Every input a guard receives has every match of the log scrubber
 replaced with `[REDACTED]`, so a remote classifier is not sent a
-credential:
+credential. `secret://` references are the exception: a reference is a
+pointer the secret store resolves, not key material, and redacting one
+can hide what the guard is asked to judge, such as a program run as
+`secret://usr/bin/curl` through a `secret:` directory. The guard reads
+references as written, and the fences below leave them plain for the
+model too. The copies are:
 
 - `pre_turn`: the prompt and dynamic context at turn 0 (dynamic context
   after sanitisation and the Rule-of-Two `redact` action), a mid-run

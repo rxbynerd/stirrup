@@ -191,9 +191,10 @@ Skip when:
 ## Guard input
 
 Every `guard.Input` reaches the guard with the log scrubber applied,
-when a guard checks that phase. The scrubber replaces each match with
-the literal text `[REDACTED]`, which can also occur in genuine
-content. `Input.Metadata["redacted_spans"]`, when set, is the number of
+when a guard checks that phase, except that `secret://` references are
+left as written: they point at a secret rather than hold one. The
+scrubber replaces each match with the literal text `[REDACTED]`, which
+can also occur in genuine content. `Input.Metadata["redacted_spans"]`, when set, is the number of
 scrubber matches across the whole input: two matches inside one fence
 count two, and a secret in both a tool result's text and its
 structured payload counts twice. The shipped adapters (`granite-guardian`,
