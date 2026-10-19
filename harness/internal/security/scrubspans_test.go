@@ -229,8 +229,9 @@ func TestScrubWithSpans_ManyMatchesStayLinear(t *testing.T) {
 	key := rsa4096PEMFixture() + "\n"
 	shapes := map[string]string{
 		"github tokens":         strings.Repeat("ghp_a ", size/6),
-		"bearer tokens":         strings.Repeat("Bearer x ", size/9),
-		"secret refs in bearer": strings.Repeat("secret://aBearer x!y ", size/21),
+		"bearer tokens":         strings.Repeat("Bearer x1 ", size/10),
+		"bearer prose":          strings.Repeat("Bearer x ", size/9),
+		"secret refs in bearer": strings.Repeat("secret://aBearer x1!y ", size/22),
 		"PEM keys":              strings.Repeat(key, size/len(key)),
 	}
 	for name, in := range shapes {
