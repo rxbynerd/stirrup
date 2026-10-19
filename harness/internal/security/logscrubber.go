@@ -39,8 +39,8 @@ var secretPatterns = []namedPattern{
 	// base64-ish shapes but no distinctive prefix. Keep them anchored to
 	// well-known key/value field names so ordinary hashes, IDs, and trace
 	// fragments are not scrubbed just because they share an alphabet.
-	{"aws_secret_access_key", regexp.MustCompile(`(?i)\baws_secret_access_key\b\s*[:=]\s*["']?[A-Za-z0-9/+=]{40}["']?`)},
-	{"azure_storage_key", regexp.MustCompile(`(?i)\b(?:azure_storage_account_key|storage_account_key|account_key|accountKey|primary_access_key|secondary_access_key)\b\s*[:=]\s*["']?[A-Za-z0-9+/]{40,88}={0,2}["']?`)},
+	{"aws_secret_access_key", regexp.MustCompile(`(?i)\baws_secret_access_key\b[ \t]*[:=][ \t]*["']?[A-Za-z0-9/+=]{40}["']?`)},
+	{"azure_storage_key", regexp.MustCompile(`(?i)\b(?:azure_storage_account_key|storage_account_key|account_key|accountKey|primary_access_key|secondary_access_key)\b[ \t]*[:=][ \t]*["']?[A-Za-z0-9+/]{40,88}={0,2}["']?`)},
 	{"slack_token", regexp.MustCompile(`xox[abprs]-[A-Za-z0-9-]{10,}`)},
 	{"gcp_api_key", regexp.MustCompile(`AIza[0-9A-Za-z_-]{35}`)},
 	// basic_auth precedes bearer_token so the two HTTP-auth families
@@ -49,16 +49,19 @@ var secretPatterns = []namedPattern{
 	// docs/observability-cloud.md), and the bearer_token pattern below
 	// would not match this prefix. Without this entry, a resolved
 	// Basic token leaking into slog output would land unscrubbed.
-	{"basic_auth", regexp.MustCompile(`(?i)Basic\s+[A-Za-z0-9+/]+=*`)},
-	{"bearer_token", regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9._~+/=-]+`)},
+	{"basic_auth", regexp.MustCompile(`(?i)Basic[ \t]+[A-Za-z0-9+/]+=*`)},
+	{"bearer_token", regexp.MustCompile(`(?i)Bearer[ \t]+[A-Za-z0-9._~+/=-]+`)},
 	{"pem_private_key", regexp.MustCompile(pemPrivateKeyPattern)},
 	// Case-insensitive: a shell resolves "secret://" and "SECRET://"
 	// identically, and this pattern is the last line of defence for a
 	// hook command whose case-insensitive ValidateRunConfig rejection
 	// was bypassed (e.g. RunConfig built without going through
 	// validation) — matching lowercase only would let a case-varied
-	// reference ride into a persisted trace unredacted.
-	{"secret_ref", regexp.MustCompile(`(?i)secret://[^\s"']+`)},
+	// reference ride into a persisted trace unredacted. The body is the
+	// reference syntax the secret stores accept (an environment variable,
+	// file:// path or ssm:// parameter), so shell syntax after a
+	// reference is never hidden from a guard.
+	{"secret_ref", regexp.MustCompile(`(?i)secret://[A-Za-z0-9_./:@+~%=-]+`)},
 	// api_key_header matches the literal "<header>: <value>" forms used
 	// for non-Bearer auth on Azure OpenAI and APIM-fronted gateways. These
 	// keys do not have a distinctive prefix (Azure keys are hex-y but
@@ -66,8 +69,8 @@ var secretPatterns = []namedPattern{
 	// only reliable anchor. The pattern is anchored on a header name we
 	// know stirrup emits — adding more variants here is preferable to a
 	// permissive token catch-all.
-	{"api_key_header", regexp.MustCompile(`(?i)\b(?:api-key|x-api-key|Ocp-Apim-Subscription-Key)\s*:\s*[A-Za-z0-9._~+/=-]+`)},
-	{"generic_hex_secret", regexp.MustCompile(`(?i)\b(?:api[_-]?key|token|secret|client[_-]?secret|access[_-]?token|auth[_-]?token|password)\b\s*[:=]\s*["']?[a-f0-9]{32}["']?`)},
+	{"api_key_header", regexp.MustCompile(`(?i)\b(?:api-key|x-api-key|Ocp-Apim-Subscription-Key)[ \t]*:[ \t]*[A-Za-z0-9._~+/=-]+`)},
+	{"generic_hex_secret", regexp.MustCompile(`(?i)\b(?:api[_-]?key|token|secret|client[_-]?secret|access[_-]?token|auth[_-]?token|password)\b[ \t]*[:=][ \t]*["']?[a-f0-9]{32}["']?`)},
 	// oidc_jwt matches a three-segment JWT whose header begins with
 	// "eyJ" (the base64url prefix of `{"`). Federation flows propagate
 	// runner OIDC tokens, AWS web-identity tokens, and GCP STS subject
@@ -107,7 +110,7 @@ const (
 	pemItem       = `(?:[A-Za-z0-9+/=]+|\[\.\.\.truncated(?: [0-9]+ bytes)?\.\.\.\])`
 	// pemArmour is RFC 1421/4880 armour header lines and the line break
 	// that, with the next line's, makes the blank line before the body.
-	pemArmour = `(?:` + pemSep + `[A-Za-z][A-Za-z0-9-]*:[^\r\n"\\]*)+` + pemHSpace + pemLineBreak
+	pemArmour = `(?:` + pemSep + `[A-Za-z][A-Za-z0-9-]*:[^\r\n"\\;|&$` + "`" + `()<>]*)+` + pemHSpace + pemLineBreak
 	// pemOpenLine is a body line of a block with no END line. A raw line
 	// must be base64 to its end; an escaped one ends where base64 does.
 	pemOpenLine = `(?:` + pemHSpace + `\r?\n` + pemHSpace + pemLineNumber + `)+` + pemItem + pemHSpace + `\r?(?m:$)|` +

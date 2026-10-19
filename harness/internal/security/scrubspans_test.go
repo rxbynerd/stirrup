@@ -170,7 +170,7 @@ func TestScrubWithSpans_SpansCoverTheReplacedText(t *testing.T) {
 	}{
 		{"key sk-ant-api03-QUJDZGVmR0hJSktM here", []string{"sk-ant-api03-QUJDZGVmR0hJSktM"}},
 		{"Bearer abc.sk-ant-api03-QUJDZGVmR0hJSktM tail", []string{"Bearer abc.sk-ant-api03-QUJDZGVmR0hJSktM"}},
-		{"secret://aBearer tok!more and after", []string{"secret://aBearer tok!more"}},
+		{"secret://aBearer tok!more and after", []string{"secret://aBearer tok"}},
 		{"a ghp_x b ghs_y c", []string{"ghp_x", "ghs_y"}},
 		{"nothing here", nil},
 	}
@@ -246,5 +246,6 @@ func FuzzScrubWithSpans(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, value string) {
 		checkScrubSpans(t, value)
+		checkMatchesHoldNoShellSyntax(t, value)
 	})
 }

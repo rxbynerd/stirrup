@@ -51,18 +51,14 @@ func secretFixtures() []secretFixture {
 	}
 }
 
-// multilineSecretFixtures cover the patterns whose separators are \s, so the
-// match itself spans a newline. Straddling one of these puts the last
-// newline of the flushable region inside a secret, which is the only way the
-// line-aware cut and the boundary scan interact.
+// multilineSecretFixtures cover the PEM pattern, the only one whose match
+// spans a newline. Straddling one of these puts the last newline of the
+// flushable region inside a secret, which is the only way the line-aware
+// cut and the boundary scan interact.
 func multilineSecretFixtures() []secretFixture {
 	return []secretFixture{
-		{"basic_auth", "Basic \nc3RpcnJ1cDpzdXBlcnNlY3JldA==", "c3RpcnJ1cDpzdXBlcnNlY3JldA=="},
-		{"bearer_token", "Bearer\n" + "abc.def.ghi-token-value-0123456789", "abc.def.ghi-token-value-0123456789"},
-		{"aws_secret_access_key", "aws_secret_access_key =\n" + "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
-		{"azure_storage_key", "account_key:\n" + "QWJjZGVmR2hpSmtsTW5vcFFyc3RVdnd4WXoxMjM0NTY3ODkwYWJjZGVmZ2g=", "QWJjZGVmR2hpSmtsTW5vcFFyc3RVdnd4WXoxMjM0NTY3ODkwYWJjZGVmZ2g"},
-		{"generic_hex_secret", "api_key =\n" + "0123456789abcdef0123456789abcdef", "0123456789abcdef0123456789abcdef"},
 		{"pem_private_key", "-----BEGIN\nRSA PRIVATE KEY-----", "-----BEGIN\nRSA PRIVATE KEY-----"},
+		{"pem_private_key", pemKey("EC PRIVATE KEY", pemBodyLines(2), "\n"), pemBodyLines(2)[1]},
 	}
 }
 
