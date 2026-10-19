@@ -113,8 +113,12 @@ const (
 	pemSep       = pemHSpace + `(?:` + pemLineBreak + pemHSpace + pemLineNumber + `)+`
 	// pemLineNumber is the "12\t" of read_file and cat -n output, or the
 	// "12:" of grep -n, before a line, after the "path:" of grep -rn and
-	// search_files output.
-	pemLineNumber = `(?:(?:[A-Za-z0-9_./~+@%=-]+:)?[0-9]+(?:\t|\\t|:)` + pemHSpace + `)?`
+	// search_files output; grep marks context lines "path-12-" instead.
+	// The path may hold spaces but no quote or shell syntax, cannot begin
+	// with "-" (an END line is not a path), and is bounded so a line of
+	// prose cannot be held as a possible path.
+	pemLineNumber = `(?:(?:` + pemPath + `[:-])?[0-9]+(?:\t|\\t|:|-)` + pemHSpace + `)?`
+	pemPath       = `(?:[^-\r\n:"'\\;|&$` + "`" + `()<>][^\r\n:"'\\;|&$` + "`" + `()<>]{0,254})`
 	pemItem       = `(?:[A-Za-z0-9+/=]+|\[\.\.\.truncated(?: [0-9]+ bytes)?\.\.\.\])`
 	// pemArmour is RFC 1421/4880 armour header lines and the line break
 	// that, with the next line's, makes the blank line before the body.

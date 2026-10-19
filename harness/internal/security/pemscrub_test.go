@@ -212,13 +212,14 @@ func TestScrub_PEMKeyLineNumbered(t *testing.T) {
 func TestScrub_PEMKeyInQuotedAndPrefixedLines(t *testing.T) {
 	body := pemBodyLines(6)
 	key := pemKey("RSA PRIVATE KEY", body, "\n")
-	numbered := func(lines []string) string {
+	numberedAs := func(format string, lines []string) string {
 		var b strings.Builder
 		for i, l := range lines {
-			fmt.Fprintf(&b, "keys/id_rsa.pem:%d:%s\n", i+1, l)
+			fmt.Fprintf(&b, format, i+1, l)
 		}
 		return b.String()
 	}
+	numbered := func(lines []string) string { return numberedAs("keys/id_rsa.pem:%d:%s\n", lines) }
 	inner, err := json.Marshal(map[string]string{"key": key})
 	if err != nil {
 		t.Fatal(err)
@@ -236,6 +237,18 @@ func TestScrub_PEMKeyInQuotedAndPrefixedLines(t *testing.T) {
 		"search_files": {
 			numbered(append(append([]string{"PLAINLINE-1 starting"}, keyLines...), "PLAINLINE-2 after")),
 			"keys/id_rsa.pem:1:PLAINLINE-1 starting\nkeys/id_rsa.pem:2:[REDACTED]\nkeys/id_rsa.pem:10:PLAINLINE-2 after\n",
+		},
+		"path with a space": {
+			numberedAs("my dir/key file.pem:%d:%s\n", append(append([]string{"PLAINLINE-1 starting"}, keyLines...), "PLAINLINE-2 after")),
+			"my dir/key file.pem:1:PLAINLINE-1 starting\nmy dir/key file.pem:2:[REDACTED]\nmy dir/key file.pem:10:PLAINLINE-2 after\n",
+		},
+		"grep context lines": {
+			numberedAs("a.pem-%d-%s\n", append(append([]string{"PLAINLINE-1 starting"}, keyLines...), "PLAINLINE-2 after")),
+			"a.pem-1-PLAINLINE-1 starting\na.pem-2-[REDACTED]\na.pem-10-PLAINLINE-2 after\n",
+		},
+		"grep context lines no END": {
+			numberedAs("a.pem-%d-%s\n", append(openLines, "END-OF-STREAM with spaces")),
+			"a.pem-1-[REDACTED]\na.pem-8-END-OF-STREAM with spaces\n",
 		},
 		"search_files no END": {
 			numbered(append(openLines, "END-OF-STREAM with spaces")),
@@ -374,34 +387,36 @@ func pemLinearShapes(size int) map[string]string {
 	key := rsa4096PEMFixture() + "\n"
 	line := pemBodyLines(1)[0]
 	return map[string]string{
-		"headers":                strings.Repeat("-----BEGIN RSA PRIVATE KEY-----", size/31),
-		"BEGIN":                  strings.Repeat("-----BEGIN ", size/11),
-		"END":                    strings.Repeat("-----END RSA PRIVATE KEY-----", size/29),
-		"keys":                   strings.Repeat(key, size/len(key)),
-		"headers with base64":    strings.Repeat("-----BEGIN A KEY-----\n"+line+"\n", size/87),
-		"headers with prose":     strings.Repeat("-----BEGIN A KEY----- some words that never end ", size/48),
-		"one header, hyphens":    "-----BEGIN A KEY-----" + strings.Repeat("A-", size/2),
-		"one header, base64":     "-----BEGIN A KEY-----\n" + strings.Repeat(line+"\n", size/65),
-		"one header, prose":      "-----BEGIN A KEY-----" + strings.Repeat("word ", size/5),
-		"BEGIN headers, no KEY":  strings.Repeat("-----BEGIN "+strings.Repeat("w", 64), size/75),
-		"header then many ENDs":  "-----BEGIN A KEY-----" + strings.Repeat("\n-----END B", size/11),
-		"bodies split by dashes": strings.Repeat("-----BEGIN A KEY-----"+strings.Repeat("Q", 200)+"--", size/223),
-		"armour lines":           "-----BEGIN A KEY-----" + strings.Repeat("\nA: b", size/5),
-		"headers with armour":    strings.Repeat("-----BEGIN A KEY-----\nProc-Type: 4,ENCRYPTED\n", size/45),
-		"JSON line array":        "-----BEGIN A KEY-----" + strings.Repeat(`","`+line, size/68),
-		"JSON headers":           strings.Repeat(`"-----BEGIN A KEY-----","`+line+`",`, size/90),
-		"escaped lines":          "-----BEGIN A KEY-----" + strings.Repeat(`\n`+line, size/66),
-		"markers":                "-----BEGIN A KEY-----" + strings.Repeat("\n[...truncated 1 bytes...]", size/27),
-		"blank lines":            "-----BEGIN A KEY-----" + strings.Repeat("\n \n", size/3),
-		"non-breaking spaces":    "-----BEGIN A KEY-----" + strings.Repeat("\u00a0", size/2),
-		"numbered lines":         "-----BEGIN A KEY-----" + strings.Repeat("\n 12\t"+line, size/70),
-		"numbered headers":       strings.Repeat(" 1\t-----BEGIN A KEY-----\n 2\t"+line+"\n", size/94),
-		"PGP blocks":             strings.Repeat("-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: 1\n\n"+line+"\n=ABCD\n", size/120),
-		"path-prefixed lines":    "-----BEGIN A KEY-----" + strings.Repeat("\nkeys/a.pem:12:"+line, size/80),
-		"path-prefixed prose":    strings.Repeat("-----BEGIN A KEY-----\nkeys/a.pem:12:"+strings.Repeat("a/", 30)+"\n", size/100),
-		"double-escaped lines":   "-----BEGIN A KEY-----" + strings.Repeat(`\\n`+line, size/67),
-		"quoted list":            "-----BEGIN A KEY-----" + strings.Repeat(`', '`+line, size/68),
-		"concatenated literals":  "-----BEGIN A KEY-----" + strings.Repeat(`\n" + "`+line, size/71),
+		"headers":                 strings.Repeat("-----BEGIN RSA PRIVATE KEY-----", size/31),
+		"BEGIN":                   strings.Repeat("-----BEGIN ", size/11),
+		"END":                     strings.Repeat("-----END RSA PRIVATE KEY-----", size/29),
+		"keys":                    strings.Repeat(key, size/len(key)),
+		"headers with base64":     strings.Repeat("-----BEGIN A KEY-----\n"+line+"\n", size/87),
+		"headers with prose":      strings.Repeat("-----BEGIN A KEY----- some words that never end ", size/48),
+		"one header, hyphens":     "-----BEGIN A KEY-----" + strings.Repeat("A-", size/2),
+		"one header, base64":      "-----BEGIN A KEY-----\n" + strings.Repeat(line+"\n", size/65),
+		"one header, prose":       "-----BEGIN A KEY-----" + strings.Repeat("word ", size/5),
+		"BEGIN headers, no KEY":   strings.Repeat("-----BEGIN "+strings.Repeat("w", 64), size/75),
+		"header then many ENDs":   "-----BEGIN A KEY-----" + strings.Repeat("\n-----END B", size/11),
+		"bodies split by dashes":  strings.Repeat("-----BEGIN A KEY-----"+strings.Repeat("Q", 200)+"--", size/223),
+		"armour lines":            "-----BEGIN A KEY-----" + strings.Repeat("\nA: b", size/5),
+		"headers with armour":     strings.Repeat("-----BEGIN A KEY-----\nProc-Type: 4,ENCRYPTED\n", size/45),
+		"JSON line array":         "-----BEGIN A KEY-----" + strings.Repeat(`","`+line, size/68),
+		"JSON headers":            strings.Repeat(`"-----BEGIN A KEY-----","`+line+`",`, size/90),
+		"escaped lines":           "-----BEGIN A KEY-----" + strings.Repeat(`\n`+line, size/66),
+		"markers":                 "-----BEGIN A KEY-----" + strings.Repeat("\n[...truncated 1 bytes...]", size/27),
+		"blank lines":             "-----BEGIN A KEY-----" + strings.Repeat("\n \n", size/3),
+		"non-breaking spaces":     "-----BEGIN A KEY-----" + strings.Repeat("\u00a0", size/2),
+		"numbered lines":          "-----BEGIN A KEY-----" + strings.Repeat("\n 12\t"+line, size/70),
+		"numbered headers":        strings.Repeat(" 1\t-----BEGIN A KEY-----\n 2\t"+line+"\n", size/94),
+		"PGP blocks":              strings.Repeat("-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: 1\n\n"+line+"\n=ABCD\n", size/120),
+		"path-prefixed lines":     "-----BEGIN A KEY-----" + strings.Repeat("\nkeys/a.pem:12:"+line, size/80),
+		"path-prefixed prose":     strings.Repeat("-----BEGIN A KEY-----\nkeys/a.pem:12:"+strings.Repeat("a/", 30)+"\n", size/100),
+		"spaced paths":            "-----BEGIN A KEY-----" + strings.Repeat("\nmy dir/a b.pem-12-"+line, size/86),
+		"prose lines after BEGIN": "-----BEGIN A KEY-----" + strings.Repeat("\nsome words and more words with no colon at all", size/47),
+		"double-escaped lines":    "-----BEGIN A KEY-----" + strings.Repeat(`\\n`+line, size/67),
+		"quoted list":             "-----BEGIN A KEY-----" + strings.Repeat(`', '`+line, size/68),
+		"concatenated literals":   "-----BEGIN A KEY-----" + strings.Repeat(`\n" + "`+line, size/71),
 	}
 }
 

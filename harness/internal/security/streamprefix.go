@@ -91,9 +91,9 @@ func atEnd(re *syntax.Regexp) *syntax.Regexp {
 
 // prefixesOf returns a regexp matching every prefix of every string re
 // matches, the empty string and the whole matches included. Assertions are
-// taken as satisfied and counted repetitions as unbounded, so the result
-// matches a superset of those prefixes: the carry may hold a little more
-// text than it must, never less.
+// taken as satisfied and a counted repetition's lower bound as zero, so the
+// result matches a superset of those prefixes: the carry may hold a little
+// more text than it must, never less.
 func prefixesOf(re *syntax.Regexp) *syntax.Regexp {
 	switch re.Op {
 	case syntax.OpNoMatch:
@@ -115,7 +115,15 @@ func prefixesOf(re *syntax.Regexp) *syntax.Regexp {
 		return questOf(re)
 	case syntax.OpCapture:
 		return prefixesOf(re.Sub[0])
-	case syntax.OpStar, syntax.OpPlus, syntax.OpRepeat:
+	case syntax.OpRepeat:
+		if re.Max == 0 {
+			return emptyMatch()
+		}
+		if re.Max > 0 {
+			return concatOf(&syntax.Regexp{Op: syntax.OpRepeat, Min: 0, Max: re.Max - 1, Sub: []*syntax.Regexp{re.Sub[0]}, Flags: re.Flags}, prefixesOf(re.Sub[0]))
+		}
+		return concatOf(&syntax.Regexp{Op: syntax.OpStar, Sub: []*syntax.Regexp{re.Sub[0]}, Flags: re.Flags}, prefixesOf(re.Sub[0]))
+	case syntax.OpStar, syntax.OpPlus:
 		return concatOf(&syntax.Regexp{Op: syntax.OpStar, Sub: []*syntax.Regexp{re.Sub[0]}, Flags: re.Flags}, prefixesOf(re.Sub[0]))
 	case syntax.OpQuest:
 		return prefixesOf(re.Sub[0])
