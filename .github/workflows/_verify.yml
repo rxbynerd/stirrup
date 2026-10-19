@@ -88,13 +88,25 @@ jobs:
         run: go test -race ./harness/internal/executor/... ./harness/internal/provider/... ./harness/internal/core/...
 
       # Short fuzz runs of the scrubber's streaming and span invariants.
-      # A minimise time of zero keeps a failure from stalling the job,
-      # and a failing input is printed for adding to testdata.
+      # A minimise time of zero keeps a failure from stalling the job. A
+      # failing input is written under testdata/fuzz, which the next step
+      # uploads so it can be committed as a seed. Fuzzing is random, so it
+      # runs only in routine CI: a release gate (inputs.ref set) reruns the
+      # committed seeds through `go test` above instead.
       - name: Fuzz the secret scrubber
+        id: fuzz
+        if: inputs.ref == ''
         working-directory: harness
         run: |
           go test ./internal/security/ -run '^$' -fuzz '^FuzzStreamCarry$' -fuzztime 20s -fuzzminimizetime 0
           go test ./internal/security/ -run '^$' -fuzz '^FuzzScrubWithSpans$' -fuzztime 20s -fuzzminimizetime 0
+
+      - name: Upload failing fuzz input
+        if: failure() && steps.fuzz.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-failure
+          path: harness/internal/security/testdata/fuzz/
 
       - name: Build stirrup binary
         working-directory: harness
