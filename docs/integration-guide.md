@@ -901,8 +901,8 @@ in order they give the model's text with recognised secrets redacted,
 including a secret split between two provider deltas. Text a secret
 pattern could still match, such as a partly written token or an open
 key block, is held back and sent no later than the next event of the
-model's response (`tool_call`, `turn_committed`, `done`) or the end of
-the stream; ordinary prose is sent as it arrives. `heartbeat` and
+model's response (`tool_call`, `turn_committed`, `turn_abandoned`,
+`done`) or the end of the stream; ordinary prose is sent as it arrives. `heartbeat` and
 `warning` events raised outside the response, such as one for a dropped
 `user_response`, are not ordered against held text and can arrive
 first. There is no timer, so delta silence is not a stall signal: use
