@@ -206,6 +206,58 @@ func TestScrub_PEMKeyLineNumbered(t *testing.T) {
 	}
 }
 
+// TestScrub_PEMKeyInQuotedAndPrefixedLines covers keys in the line shapes
+// of search_files and grep -rn output, JSON held in a JSON string, Python
+// lists and concatenated string literals, with and without an END line.
+func TestScrub_PEMKeyInQuotedAndPrefixedLines(t *testing.T) {
+	body := pemBodyLines(6)
+	key := pemKey("RSA PRIVATE KEY", body, "\n")
+	numbered := func(lines []string) string {
+		var b strings.Builder
+		for i, l := range lines {
+			fmt.Fprintf(&b, "keys/id_rsa.pem:%d:%s\n", i+1, l)
+		}
+		return b.String()
+	}
+	inner, err := json.Marshal(map[string]string{"key": key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nested, err := json.Marshal(map[string]string{"manifest": string(inner)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	quoted := func(open, sep, close string, lines []string) string {
+		return open + strings.Join(lines, sep) + close
+	}
+	keyLines := append(append([]string{"-----BEGIN RSA PRIVATE KEY-----"}, body...), "-----END RSA PRIVATE KEY-----")
+	openLines := append([]string{"-----BEGIN RSA PRIVATE KEY-----"}, body...)
+	cases := map[string]struct{ in, want string }{
+		"search_files": {
+			numbered(append(append([]string{"PLAINLINE-1 starting"}, keyLines...), "PLAINLINE-2 after")),
+			"keys/id_rsa.pem:1:PLAINLINE-1 starting\nkeys/id_rsa.pem:2:[REDACTED]\nkeys/id_rsa.pem:10:PLAINLINE-2 after\n",
+		},
+		"search_files no END": {
+			numbered(append(openLines, "END-OF-STREAM with spaces")),
+			"keys/id_rsa.pem:1:[REDACTED]\nkeys/id_rsa.pem:8:END-OF-STREAM with spaces\n",
+		},
+		"JSON in a JSON string":    {string(nested), `{"manifest":"{\"key\":\"[REDACTED]\"}"}`},
+		"Python list":              {quoted("keys = ['", "', '", "']", keyLines), "keys = ['[REDACTED]']"},
+		"Python list no END":       {quoted("keys = ['", "', '", "']", openLines), "keys = ['[REDACTED]']"},
+		"Go concatenation":         {quoted("key := \"", "\\n\" +\n\t\"", "\\n\"\n", keyLines), "key := \"[REDACTED]\\n\"\n"},
+		"JavaScript concatenation": {quoted("const key = '", "\\n' +\n  '", "';", keyLines), "const key = '[REDACTED]';"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := Scrub(tc.in)
+			assertNoPEMBody(t, got, body)
+			if got != tc.want {
+				t.Errorf("Scrub = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestScrub_PEMKeyWithoutEndLineStopsAtProse pins that a block with no
 // END line ends at the first line that is not base64 to its end, so the
 // line's leading word is not taken for key material.
@@ -345,6 +397,11 @@ func pemLinearShapes(size int) map[string]string {
 		"numbered lines":         "-----BEGIN A KEY-----" + strings.Repeat("\n 12\t"+line, size/70),
 		"numbered headers":       strings.Repeat(" 1\t-----BEGIN A KEY-----\n 2\t"+line+"\n", size/94),
 		"PGP blocks":             strings.Repeat("-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: 1\n\n"+line+"\n=ABCD\n", size/120),
+		"path-prefixed lines":    "-----BEGIN A KEY-----" + strings.Repeat("\nkeys/a.pem:12:"+line, size/80),
+		"path-prefixed prose":    strings.Repeat("-----BEGIN A KEY-----\nkeys/a.pem:12:"+strings.Repeat("a/", 30)+"\n", size/100),
+		"double-escaped lines":   "-----BEGIN A KEY-----" + strings.Repeat(`\\n`+line, size/67),
+		"quoted list":            "-----BEGIN A KEY-----" + strings.Repeat(`', '`+line, size/68),
+		"concatenated literals":  "-----BEGIN A KEY-----" + strings.Repeat(`\n" + "`+line, size/71),
 	}
 }
 

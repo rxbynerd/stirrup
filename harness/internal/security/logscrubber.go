@@ -90,8 +90,9 @@ var secretPatterns = []namedPattern{
 
 // pemPrivateKeyPattern matches a PEM or PGP key block from its BEGIN line
 // through its END line, or without one through the whole base64 lines after
-// it. Lines may be raw, "\n"-escaped, JSON array elements or line-numbered;
-// the body admits only base64 lines, armour headers directly after BEGIN and
+// it. Lines may be raw, "\n"- or "\\n"-escaped, quoted list elements,
+// concatenated string literals, or line-numbered with an optional path; the
+// body admits only base64 lines, armour headers directly after BEGIN and
 // the harness's own truncation marker, so a line of prose ends the match.
 const pemPrivateKeyPattern = pemHeader + `(?:` +
 	`(?:` + pemArmour + pemSep + pemItem + `)?(?:` + pemSep + pemItem + `)*` + pemSep + pemEnd + `|` +
@@ -101,12 +102,13 @@ const (
 	pemHeader    = `-----BEGIN[\s\w]+KEY(?:\s+BLOCK)?-----`
 	pemEnd       = `-----END[\s\w]+KEY(?:\s+BLOCK)?-----`
 	pemHSpace    = `[\t \x{A0}]*`
-	pemEscBreak  = `\\r\\n|\\n|"\s*,\s*"`
+	pemEscBreak  = `\\\\r\\\\n|\\\\n|\\r\\n|\\n|"\s*,\s*"|'\s*,\s*'|"\s*\+\s*"|'\s*\+\s*'`
 	pemLineBreak = `(?:\r?\n|` + pemEscBreak + `)`
 	pemSep       = pemHSpace + `(?:` + pemLineBreak + pemHSpace + pemLineNumber + `)+`
 	// pemLineNumber is the "12\t" of read_file and cat -n output, or the
-	// "12:" of grep -n, before a line.
-	pemLineNumber = `(?:[0-9]+(?:\t|\\t|:)` + pemHSpace + `)?`
+	// "12:" of grep -n, before a line, after the "path:" of grep -rn and
+	// search_files output.
+	pemLineNumber = `(?:(?:[A-Za-z0-9_./~+@%=-]+:)?[0-9]+(?:\t|\\t|:)` + pemHSpace + `)?`
 	pemItem       = `(?:[A-Za-z0-9+/=]+|\[\.\.\.truncated(?: [0-9]+ bytes)?\.\.\.\])`
 	// pemArmour is RFC 1421/4880 armour header lines and the line break
 	// that, with the next line's, makes the blank line before the body.
