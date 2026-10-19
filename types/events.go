@@ -305,7 +305,7 @@ func Float64Ptr(v float64) *float64 {
 //
 // Type discriminates the event shape: "text_delta", "thinking_delta",
 // "tool_call", "tool_result", "user_message", "turn_started",
-// "turn_committed", "done", "error", "warning", "heartbeat", "ready",
+// "turn_committed", "turn_abandoned", "done", "error", "warning", "heartbeat", "ready",
 // "run_started", "permission_request", "tool_result_request",
 // "batch_submission", "batch_waiting", "batch_cancel_request",
 // "sandbox_token_request". The per-type field table is the HarnessEvent
@@ -320,9 +320,12 @@ func Float64Ptr(v float64) *float64 {
 //
 // "run_started" carries the run ID in ID and, when the trace emitter
 // records an OTel run span, that span's TraceReference. It is sent once
-// per run after setup, before the run's first "user_message". Under
-// `stirrup job` "ready" is per session, so a follow-up run's
-// "run_started" follows the previous run's "done".
+// per run after setup, before the run's first "user_message". Rule-of-Two
+// and continueOnError pre-run hook warnings raised during setup are held
+// until it is sent, or until the "error" of a run that fails setup and so
+// sends none. Under `stirrup job` "ready"
+// is per session, so a follow-up run's "run_started" follows the
+// previous run's "done".
 //
 // Source takes one of the UserMessageSource* values; the vocabulary is
 // open, so consumers preserve values they do not recognise. Turn is a
@@ -347,13 +350,14 @@ type HarnessEvent struct {
 	TraceContext   *TraceContext   `json:"traceContext,omitempty"`   // the tool call's span context (tool_result_request only)
 
 	Source          string      `json:"source,omitempty"`          // where a user_message's text came from (user_message only)
-	Turn            *int        `json:"turn,omitempty"`            // run-scoped turn number (turn_started and turn_committed)
+	Turn            *int        `json:"turn,omitempty"`            // run-scoped turn number (turn_started, turn_committed and turn_abandoned)
 	Model           string      `json:"model,omitempty"`           // the routed model (turn_started only)
 	Provider        string      `json:"provider,omitempty"`        // the routed provider's adapter type, never a providers-map key (turn_started only)
 	Usage           *TokenUsage `json:"usage,omitempty"`           // the turn's token usage, nil when it reported none (turn_committed only)
 	ToolResultCount int         `json:"toolResultCount,omitempty"` // tool results the turn appended (turn_committed only)
 	IsError         bool        `json:"isError,omitempty"`         // the call failed (tool_result only)
 	DurationMs      int64       `json:"durationMs,omitempty"`      // the call's run time, excluding dispatch queueing (tool_result only)
+	AbandonReason   string      `json:"abandonReason,omitempty"`   // why the turn left no valid history, one of the TurnAbandoned* values (turn_abandoned only)
 }
 
 // Contract capabilities a harness advertises on "ready".
@@ -366,13 +370,37 @@ const (
 	CapabilityReasoningSummary = "reasoning_summary"
 	// CapabilityFollowUpHistory: RunConfig.FollowUpHistory is honoured.
 	CapabilityFollowUpHistory = "follow_up_history"
+	// CapabilityTurnAbandoned: every turn_started is followed by exactly
+	// one turn_committed or turn_abandoned.
+	CapabilityTurnAbandoned = "turn_abandoned"
 )
 
 // HarnessCapabilities returns the capabilities this harness advertises on
 // "ready", as a new slice on every call.
 func HarnessCapabilities() []string {
-	return []string{CapabilityLiveTranscript, CapabilityReasoningSummary, CapabilityFollowUpHistory}
+	return []string{CapabilityLiveTranscript, CapabilityReasoningSummary, CapabilityFollowUpHistory, CapabilityTurnAbandoned}
 }
+
+// Values of HarnessEvent.AbandonReason on a "turn_abandoned" event. The
+// vocabulary is open, so consumers preserve values they do not recognise.
+const (
+	// TurnAbandonedNoResponse: the turn ended before a usable response
+	// arrived (a provider error, cancellation, an exhausted context window
+	// or token budget).
+	TurnAbandonedNoResponse = "no_response"
+	// TurnAbandonedEmptyResponse: the response held nothing that may enter
+	// history, such as an empty message or one cut off before any text.
+	TurnAbandonedEmptyResponse = "empty_response"
+	// TurnAbandonedMissingToolCalls: the response stopped for tool use but
+	// carried no tool calls.
+	TurnAbandonedMissingToolCalls = "missing_tool_calls"
+	// TurnAbandonedUnansweredToolCalls: dispatch stopped before every tool
+	// call in the turn had a result.
+	TurnAbandonedUnansweredToolCalls = "unanswered_tool_calls"
+	// TurnAbandonedGuardrailBlocked: a post-turn guardrail rejected the
+	// turn's answer.
+	TurnAbandonedGuardrailBlocked = "guardrail_blocked"
+)
 
 // Values of HarnessEvent.Source on a "user_message" event.
 const (

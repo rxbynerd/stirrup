@@ -135,3 +135,85 @@ func TestGRPCTransport_OversizedToolResultDoesNotEndStream(t *testing.T) {
 		t.Fatalf("later event text = %q, want after", received[2].Text)
 	}
 }
+
+func TestBoundEventFields_CapsIdentifiers(t *testing.T) {
+	big := strings.Repeat("é", maxEventIdentifierBytes)
+
+	for _, ev := range []types.HarnessEvent{
+		{Type: "tool_call", ID: big, Name: big},
+		{Type: "tool_result", ToolUseID: big, Name: big},
+		{Type: "user_message", Source: types.UserMessageSourceUserResponse, RequestID: big},
+		{Type: "warning", Message: "user_response dropped: empty text", RequestID: big},
+		{Type: "permission_request", RequestID: big, ToolName: big},
+	} {
+		boundEventFields(&ev)
+		for field, got := range map[string]string{
+			"id": ev.ID, "name": ev.Name, "tool_use_id": ev.ToolUseID, "request_id": ev.RequestID, "tool_name": ev.ToolName,
+		} {
+			if len(got) > maxEventIdentifierBytes || !utf8.ValidString(got) {
+				t.Errorf("%s %s is %d bytes (valid UTF-8: %v)", ev.Type, field, len(got), utf8.ValidString(got))
+			}
+		}
+	}
+
+	call := types.HarnessEvent{Type: "tool_call", ID: big}
+	result := types.HarnessEvent{Type: "tool_result", ToolUseID: big}
+	boundEventFields(&call)
+	boundEventFields(&result)
+	if call.ID != result.ToolUseID {
+		t.Error("a capped tool_result tool_use_id no longer matches its capped tool_call id")
+	}
+
+	done := types.HarnessEvent{Type: "done", StopReason: big}
+	boundEventFields(&done)
+	if len(done.StopReason) > maxEventIdentifierBytes {
+		t.Errorf("done stop_reason is %d bytes", len(done.StopReason))
+	}
+
+	bigMessage := strings.Repeat("m", 6<<20)
+	warning := types.HarnessEvent{Type: "warning", Message: bigMessage}
+	boundEventFields(&warning)
+	if len(warning.Message) > maxEventFieldBytes || !strings.HasSuffix(warning.Message, fmt.Sprintf(" of %d bytes shown]", len(bigMessage))) {
+		t.Errorf("warning message is %d bytes or lacks the marker", len(warning.Message))
+	}
+
+	short := types.HarnessEvent{Type: "tool_call", ID: "tc1", Name: "read_file"}
+	boundEventFields(&short)
+	if short.ID != "tc1" || short.Name != "read_file" {
+		t.Errorf("identifiers under the cap were altered: %+v", short)
+	}
+}
+
+func TestGRPCTransport_OversizedIdentifiersDoNotEndStream(t *testing.T) {
+	srv := newTestServer()
+	tr, _, cleanup := setupTestTransport(t, srv)
+	defer cleanup()
+
+	big := strings.Repeat("n", 6<<20)
+	for _, ev := range []types.HarnessEvent{
+		{Type: "tool_call", ID: "tc1", Name: big, Input: json.RawMessage(`{}`)},
+		{Type: "tool_result", ToolUseID: "tc1", Name: big, Content: "ok"},
+		{Type: "user_message", Source: types.UserMessageSourceUserResponse, Text: "hi", RequestID: big},
+		{Type: "text_delta", Text: "after"},
+	} {
+		if err := tr.Emit(ev); err != nil {
+			t.Fatalf("Emit %s: %v", ev.Type, err)
+		}
+	}
+
+	_ = tr.stream.CloseSend()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(srv.getReceived()) < 4 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	received := srv.getReceived()
+	if len(received) != 4 {
+		t.Fatalf("server received %d events, want 4", len(received))
+	}
+	if len(received[0].Name) != maxEventIdentifierBytes || len(received[1].Name) != maxEventIdentifierBytes || len(received[2].RequestId) != maxEventIdentifierBytes {
+		t.Fatalf("identifier lengths = %d, %d, %d, want %d", len(received[0].Name), len(received[1].Name), len(received[2].RequestId), maxEventIdentifierBytes)
+	}
+	if received[3].Text != "after" {
+		t.Fatalf("later event text = %q, want after", received[3].Text)
+	}
+}

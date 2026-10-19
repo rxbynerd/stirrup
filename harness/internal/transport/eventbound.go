@@ -15,15 +15,28 @@ import (
 // enforces by aborting the whole stream.
 const maxEventFieldBytes = 256 << 10
 
+// maxEventIdentifierBytes bounds the name and ID fields of every event.
+// Tool names, tool-use IDs and echoed request IDs come from the model, an
+// MCP server or the control plane, so none of them is trusted to be short.
+const maxEventIdentifierBytes = 1 << 10
+
 const eventTruncationFmt = "\n[truncated by harness for the control stream: %d of %d bytes shown]"
 
 // boundEventFields caps the event fields that carry tool payloads,
-// appended user text and reasoning. The model's view is bounded
-// separately by tools.maxResultBytes; this cap protects the control
-// stream when that budget is raised, a tool input is large, a
-// user_message carries a long prompt, or a provider delivers a whole
-// reasoning block as one thinking_delta. text_delta stays uncapped.
+// appended user text, reasoning and messages, and every name, ID and stop
+// reason. The model's view is bounded separately by tools.maxResultBytes;
+// this cap protects the control stream when that budget is raised, a tool
+// input is large, a user_message carries a long prompt, a warning quotes
+// model output, or a provider delivers a whole reasoning block as one
+// thinking_delta. text_delta stays uncapped.
 func boundEventFields(event *types.HarnessEvent) {
+	event.ID = capEventIdentifier(event.ID)
+	event.Name = capEventIdentifier(event.Name)
+	event.ToolUseID = capEventIdentifier(event.ToolUseID)
+	event.RequestID = capEventIdentifier(event.RequestID)
+	event.ToolName = capEventIdentifier(event.ToolName)
+	event.StopReason = capEventIdentifier(event.StopReason)
+	event.Message = capEventText(event.Message)
 	switch event.Type {
 	case "tool_result":
 		event.Content = capEventText(event.Content)
@@ -43,6 +56,13 @@ func capEventText(s string) string {
 	longest := fmt.Sprintf(eventTruncationFmt, len(s), len(s))
 	head := truncateUTF8(s, maxEventFieldBytes-len(longest))
 	return head + fmt.Sprintf(eventTruncationFmt, len(head), len(s))
+}
+
+// capEventIdentifier keeps the head of s on a UTF-8 boundary within
+// maxEventIdentifierBytes. It appends no marker, so equal identifiers stay
+// equal after capping and a tool_result still matches its tool_call.
+func capEventIdentifier(s string) string {
+	return truncateUTF8(s, maxEventIdentifierBytes)
 }
 
 // capEventInput replaces an oversized JSON input with a JSON string holding

@@ -516,10 +516,49 @@ func TestLoop_TurnStartedReportsTheProviderType(t *testing.T) {
 	}
 }
 
-// TestLoop_TurnNotCommitted pins the turns that open without committing:
-// their output was discarded, a stall cut their dispatch short, or a
-// guardrail rejected their answer.
-func TestLoop_TurnNotCommitted(t *testing.T) {
+// assertTurnsClosed fails unless every turn_started is followed by exactly
+// one turn_committed or turn_abandoned for the same turn, before the next
+// turn_started or done.
+func assertTurnsClosed(t *testing.T, events []types.HarnessEvent) {
+	t.Helper()
+	var open *int
+	for _, ev := range events {
+		switch ev.Type {
+		case "turn_started":
+			if open != nil {
+				t.Errorf("turn %d started while turn %d was open: %v", *ev.Turn, *open, eventTypeList(events))
+			}
+			open = ev.Turn
+		case "turn_committed", "turn_abandoned":
+			if open == nil || ev.Turn == nil || *ev.Turn != *open {
+				t.Errorf("%s for turn %v does not close the open turn %v: %v", ev.Type, ev.Turn, open, eventTypeList(events))
+			}
+			open = nil
+		case "done":
+			if open != nil {
+				t.Errorf("done arrived while turn %d was open: %v", *open, eventTypeList(events))
+			}
+		}
+	}
+	if open != nil {
+		t.Errorf("turn %d never closed: %v", *open, eventTypeList(events))
+	}
+}
+
+// abandonReasons returns the abandon reason of each turn_abandoned event.
+func abandonReasons(events []types.HarnessEvent) []string {
+	var reasons []string
+	for _, ev := range events {
+		if ev.Type == "turn_abandoned" {
+			reasons = append(reasons, ev.AbandonReason)
+		}
+	}
+	return reasons
+}
+
+// TestLoop_TurnAbandoned pins the turns that open without committing and
+// the reason each turn_abandoned reports.
+func TestLoop_TurnAbandoned(t *testing.T) {
 	t.Run("dispatch cut short by consecutive failures", func(t *testing.T) {
 		var calls []types.StreamEvent
 		for i := range maxConsecutiveFailures + 1 {
@@ -543,6 +582,10 @@ func TestLoop_TurnNotCommitted(t *testing.T) {
 		if got := eventsOfType(tp, "turn_committed"); len(got) != 0 {
 			t.Errorf("turn with unanswered calls committed: %+v", got)
 		}
+		if got := abandonReasons(tp.events); fmt.Sprint(got) != "["+types.TurnAbandonedUnansweredToolCalls+"]" {
+			t.Errorf("abandon reasons = %v, want [%s]", got, types.TurnAbandonedUnansweredToolCalls)
+		}
+		assertTurnsClosed(t, tp.events)
 	})
 
 	t.Run("answer rejected by the post-turn guard", func(t *testing.T) {
@@ -560,6 +603,10 @@ func TestLoop_TurnNotCommitted(t *testing.T) {
 		if len(eventsOfType(tp, "turn_started")) != 1 || len(eventsOfType(tp, "turn_committed")) != 0 {
 			t.Errorf("event types = %v, want a turn_started without a turn_committed", eventTypeList(tp.events))
 		}
+		if got := abandonReasons(tp.events); fmt.Sprint(got) != "["+types.TurnAbandonedGuardrailBlocked+"]" {
+			t.Errorf("abandon reasons = %v, want [%s]", got, types.TurnAbandonedGuardrailBlocked)
+		}
+		assertTurnsClosed(t, tp.events)
 	})
 
 	t.Run("provider error after the last retry", func(t *testing.T) {
@@ -578,13 +625,48 @@ func TestLoop_TurnNotCommitted(t *testing.T) {
 		var order []string
 		for _, ev := range tp.events {
 			switch ev.Type {
-			case "turn_started", "turn_committed", "done":
+			case "turn_started", "turn_committed", "turn_abandoned", "done":
 				order = append(order, ev.Type)
 			}
 		}
-		if want := "[turn_started done]"; fmt.Sprint(order) != want {
+		if want := "[turn_started turn_abandoned done]"; fmt.Sprint(order) != want {
 			t.Errorf("events = %v, want %s", order, want)
 		}
+		if got := abandonReasons(tp.events); fmt.Sprint(got) != "["+types.TurnAbandonedNoResponse+"]" {
+			t.Errorf("abandon reasons = %v, want [%s]", got, types.TurnAbandonedNoResponse)
+		}
+	})
+
+	t.Run("empty end_turn response", func(t *testing.T) {
+		loop := buildTestLoop(&mockProvider{events: []types.StreamEvent{stopWith("end_turn")}})
+		tp := &recordingTransport{}
+		loop.Transport = tp
+
+		if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if got := abandonReasons(tp.events); fmt.Sprint(got) != "["+types.TurnAbandonedEmptyResponse+"]" {
+			t.Errorf("abandon reasons = %v, want [%s]", got, types.TurnAbandonedEmptyResponse)
+		}
+		assertTurnsClosed(t, tp.events)
+	})
+
+	t.Run("tool_use stop without tool calls", func(t *testing.T) {
+		loop := buildTestLoop(&mockProvider{events: []types.StreamEvent{{Type: "text_delta", Text: "calling"}, stopWith("tool_use")}})
+		tp := &recordingTransport{}
+		loop.Transport = tp
+
+		rt, err := loop.Run(context.Background(), buildTestConfig())
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if rt.Outcome != "error" {
+			t.Fatalf("outcome = %q, want error", rt.Outcome)
+		}
+		if got := abandonReasons(tp.events); fmt.Sprint(got) != "["+types.TurnAbandonedMissingToolCalls+"]" {
+			t.Errorf("abandon reasons = %v, want [%s]", got, types.TurnAbandonedMissingToolCalls)
+		}
+		assertTurnsClosed(t, tp.events)
 	})
 
 	t.Run("output-limit turn with no text is discarded", func(t *testing.T) {
@@ -599,6 +681,10 @@ func TestLoop_TurnNotCommitted(t *testing.T) {
 		if fmt.Sprint(committed) != "[1]" {
 			t.Errorf("committed turns = %v, want only turn 1", committed)
 		}
+		if got := abandonReasons(h.transport.Events()); fmt.Sprint(got) != "["+types.TurnAbandonedEmptyResponse+"]" {
+			t.Errorf("abandon reasons = %v, want [%s]", got, types.TurnAbandonedEmptyResponse)
+		}
+		assertTurnsClosed(t, h.transport.Events())
 	})
 
 	t.Run("output-limit turn with text commits before its recovery instruction", func(t *testing.T) {
@@ -737,4 +823,106 @@ func eventTypeList(events []types.HarnessEvent) []string {
 		out[i] = ev.Type
 	}
 	return out
+}
+
+// TestCommittableAssistantBlocks pins which turns may enter history: an
+// abandoned turn must leave nothing a continued follow-up could replay.
+func TestCommittableAssistantBlocks(t *testing.T) {
+	text := types.ContentBlock{Type: "text", Text: "answer"}
+	call := types.ContentBlock{Type: "tool_use", ID: "tc1", Name: "read_file"}
+	for _, tc := range []struct {
+		name  string
+		stop  string
+		in    []types.ContentBlock
+		keeps bool
+	}{
+		{"tool_use with calls", "tool_use", []types.ContentBlock{text, call}, true},
+		{"tool_use without calls", "tool_use", []types.ContentBlock{text}, false},
+		{"empty stop reason", "", []types.ContentBlock{text}, false},
+		{"end_turn with text", "end_turn", []types.ContentBlock{text}, true},
+		{"end_turn with calls only", "end_turn", []types.ContentBlock{call}, false},
+		{"max_tokens without text", "max_tokens", []types.ContentBlock{{Type: "thinking", Text: "t"}}, false},
+	} {
+		if _, keeps := committableAssistantBlocks(tc.stop, tc.in); keeps != tc.keeps {
+			t.Errorf("%s: keeps = %v, want %v", tc.name, keeps, tc.keeps)
+		}
+	}
+}
+
+// runOrder returns the run-lifecycle events in order, naming each
+// warning by whether its message contains marker.
+func runOrder(events []types.HarnessEvent, marker string) []string {
+	var order []string
+	for _, ev := range events {
+		switch ev.Type {
+		case "run_started", "error", "done":
+			order = append(order, ev.Type)
+		case "user_message":
+			if ev.Source == types.UserMessageSourceInitialPrompt {
+				order = append(order, ev.Type)
+			}
+		case "warning":
+			if strings.Contains(ev.Message, marker) {
+				order = append(order, "warning")
+			}
+		}
+	}
+	return order
+}
+
+// TestLoop_SetupWarningsFollowRunStarted pins that warnings raised during
+// run setup arrive after run_started and before the initial prompt's
+// user_message, and that a run failing setup still delivers them, ahead
+// of its error.
+func TestLoop_SetupWarningsFollowRunStarted(t *testing.T) {
+	t.Run("turn-0 rule of two", func(t *testing.T) {
+		loop := buildTestLoop(simpleSuccessProvider())
+		loop.RuleOfTwo = ruleoftwo.NewPatternMonitor(true, "redact", []string{"sensitive_data"}, false)
+		tp := &recordingTransport{}
+		loop.Transport = tp
+		config := buildTestConfig()
+		config.Prompt = "deploy with AWS_ACCESS_KEY_ID=" + fakeLiveAWSKey
+
+		if _, err := loop.Run(context.Background(), config); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if got, want := fmt.Sprint(runOrder(tp.events, "rule of two")), "[run_started warning user_message done]"; got != want {
+			t.Errorf("order = %s, want %s", got, want)
+		}
+	})
+
+	t.Run("continueOnError pre-run hook", func(t *testing.T) {
+		loop := buildTestLoop(simpleSuccessProvider())
+		loop.Hooks = &fakeHookRunner{preResults: []types.HookExecution{
+			{Phase: "preRun", Index: 0, Name: "warm-cache", ContinuedOnError: true, Error: "exit code 1"},
+		}}
+		tp := &recordingTransport{}
+		loop.Transport = tp
+
+		if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if got, want := fmt.Sprint(runOrder(tp.events, "warm-cache")), "[run_started warning user_message done]"; got != want {
+			t.Errorf("order = %s, want %s", got, want)
+		}
+	})
+
+	t.Run("setup failure", func(t *testing.T) {
+		loop := buildTestLoop(simpleSuccessProvider())
+		loop.Hooks = &fakeHookRunner{
+			preResults: []types.HookExecution{
+				{Phase: "preRun", Index: 0, Name: "warm-cache", ContinuedOnError: true, Error: "exit code 1"},
+			},
+			preErr: errSentinelPreHookFailure,
+		}
+		tp := &recordingTransport{}
+		loop.Transport = tp
+
+		if _, err := loop.Run(context.Background(), buildTestConfig()); err == nil {
+			t.Fatal("Run: want the pre-run hook failure")
+		}
+		if got, want := fmt.Sprint(runOrder(tp.events, "warm-cache")), "[warning error done]"; got != want {
+			t.Errorf("order = %s, want %s", got, want)
+		}
+	})
 }

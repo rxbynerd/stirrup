@@ -2666,6 +2666,15 @@ func TestHarnessEventToProto_LiveTranscriptFields(t *testing.T) {
 		}
 	})
 
+	t.Run("turn_abandoned", func(t *testing.T) {
+		got := harnessEventWireRoundTrip(t, types.HarnessEvent{
+			Type: "turn_abandoned", Turn: turn(0), AbandonReason: types.TurnAbandonedUnansweredToolCalls,
+		})
+		if got.Turn == nil || got.GetTurn() != 0 || got.GetAbandonReason() != types.TurnAbandonedUnansweredToolCalls {
+			t.Errorf("turn/abandon_reason = %v/%q", got.Turn, got.GetAbandonReason())
+		}
+	})
+
 	t.Run("tool_result", func(t *testing.T) {
 		got := harnessEventWireRoundTrip(t, types.HarnessEvent{
 			Type: "tool_result", ToolUseID: "tu-1", Name: "read_file", Content: "boom", IsError: true, DurationMs: 42,

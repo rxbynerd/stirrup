@@ -1,19 +1,22 @@
 // Command controlplane is a minimal control plane for `stirrup job`. It
-// serves the HarnessService.RunTask stream for exactly one run: it waits for
-// the harness to connect, assigns the RunConfig from a file, answers
-// permission requests, prints events as they arrive and exits with a status
-// that reflects the run's outcome.
+// serves the HarnessService.RunTask stream for exactly one session: it waits
+// for the harness to connect, assigns the RunConfig from a file, answers
+// permission requests, prints events as they arrive, sends each -followup
+// prompt after a run's done to start the next run, and exits with a status
+// that reflects the runs' outcomes.
 //
 // The transport is plaintext and unauthenticated; run it on loopback or a
 // private network only.
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -21,8 +24,9 @@ import (
 	harnessv1 "github.com/rxbynerd/stirrup/gen/harness/v1"
 )
 
-// Exit statuses: 0 for a successful run, 1 for a run that did not succeed or
-// a stream that ended without a done event, 2 for a usage or setup error.
+// Exit statuses: 0 when every run succeeded, 1 for a run that did not
+// succeed or a stream that ended without the last done event, 2 for a usage
+// or setup error.
 const (
 	exitSuccess = 0
 	exitFailed  = 1
@@ -40,6 +44,14 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	configPath := fs.String("config", "", "path to the RunConfig JSON file to assign (required)")
 	addrFile := fs.String("addr-file", "", "write the bound listen address to this file once listening")
 	permission := fs.String("permission", "deny", "how to answer permission requests: allow, deny or ask")
+	var followUps []string
+	fs.Func("followup", "prompt to send as a user_response after a run's done, starting a follow-up run; repeat for more runs (needs followUpGrace in the RunConfig)", func(v string) error {
+		if strings.TrimSpace(v) == "" {
+			return errors.New("must not be empty")
+		}
+		followUps = append(followUps, v)
+		return nil
+	})
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -57,6 +69,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		writef(stderr, "controlplane: %v\n", err)
 		return exitUsage
 	}
+	if len(followUps) > 0 && cfg.GetFollowUpGrace() <= 0 {
+		writef(stderr, "controlplane: -followup needs followUpGrace in the RunConfig; without it the harness closes the stream after the first run\n")
+		return exitUsage
+	}
 
 	lis, err := net.Listen("tcp", *listen)
 	if err != nil {
@@ -70,11 +86,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 	}
-	return serve(lis, newServer(cfg, mode, stdin, stdout, stderr), stderr)
+	srv := newServer(cfg, mode, stdin, stdout, stderr)
+	srv.followUps = followUps
+	return serve(lis, srv, stderr)
 }
 
-// serve runs the gRPC server on lis until the single run finishes and returns
-// the process exit status.
+// serve runs the gRPC server on lis until the session's last run finishes and
+// returns the process exit status.
 func serve(lis net.Listener, srv *server, stderr io.Writer) int {
 	gs := grpc.NewServer()
 	harnessv1.RegisterHarnessServiceServer(gs, srv)

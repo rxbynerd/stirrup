@@ -103,8 +103,10 @@ crashed run leaves behind, is described in
 The stdio and gRPC transports run `security.Scrub()` over the `text`,
 `content`, `message` and `input` fields of every event before sending
 it, and the gRPC transport then caps `tool_call` input, `tool_result`
-content, `user_message` text and `thinking_delta` text at 256 KiB;
-`text_delta` is not capped. Scrubbing is per event.
+content, `user_message` text, `thinking_delta` text and `message` at
+256 KiB, and every name and ID field and `stop_reason` at 1 KiB;
+`text_delta` is not capped.
+Scrubbing is per event.
 Model output and reasoning arrive as many small `text_delta` and
 `thinking_delta` fragments, so a secret the model writes out across two
 fragments is matched in neither and reaches the control plane intact

@@ -28,6 +28,17 @@ func TestSuccessModeStreamsOneFinalMessage(t *testing.T) {
 	}
 }
 
+func TestEmptyModeStreamsAMessageWithoutContent(t *testing.T) {
+	rec := post(t, newHandler("empty"), "/chat/completions")
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if strings.Contains(body, finalMessage) || !strings.Contains(body, `"content":""`) || !strings.Contains(body, `"finish_reason":"stop"`) {
+		t.Errorf("body is not an empty message that ends the turn:\n%s", body)
+	}
+}
+
 func TestErrorModeRejectsWithBadRequest(t *testing.T) {
 	rec := post(t, newHandler("error"), "/chat/completions")
 	if rec.Code != http.StatusBadRequest {

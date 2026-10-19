@@ -110,15 +110,18 @@ jobs:
             -ldflags="-X github.com/rxbynerd/stirrup/types/version.version=${VERSION_LABEL} -X github.com/rxbynerd/stirrup/types/version.commit=${COMMIT_SHA}" \
             -o stirrup-eval ./eval/cmd/eval
 
-      # Drives one task through the example control plane, a scripted
-      # provider and the binary built above, then checks that a provider
-      # failure turns into a non-zero exit. See examples/controlplane/README.md.
+      # Drives tasks through the example control plane, a scripted
+      # provider and the binary built above (a run, a follow-up run and an
+      # abandoned turn), then checks that a provider failure turns into a
+      # non-zero exit. See examples/controlplane/README.md.
       - name: Smoke-test the control-plane example
         env:
           STIRRUP: ${{ github.workspace }}/harness/stirrup
         run: |
           set -euo pipefail
           examples/controlplane/smoke.sh success
+          examples/controlplane/smoke.sh followup
+          examples/controlplane/smoke.sh abandoned-turn
           if examples/controlplane/smoke.sh provider-error; then
             echo "provider-error scenario unexpectedly succeeded" >&2
             exit 1

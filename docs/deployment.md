@@ -32,7 +32,7 @@ sequenceDiagram
         H->>CP: heartbeat (every 30s)
         H-->>CP: turn_started
         H-->>CP: text_delta · thinking_delta · tool_call · tool_result
-        H-->>CP: turn_committed · user_message
+        H-->>CP: turn_committed or turn_abandoned · user_message
         opt RequiresApproval tool
             H->>CP: permission_request
             CP-->>H: permission_response
@@ -163,10 +163,12 @@ IMDS, GitHub Actions OIDC). See
    `HarnessEvent{type:"run_started"}` carrying the run ID in `id` and,
    when the run records an OTel span, the run span's `trace_reference`
    (`trace_id`, `run_span_id`, `sampled`), then a `user_message` with
-   the prompt. A run that fails setup sends no `run_started`.
-   Throughout the run the harness emits a live transcript —
-   `turn_started`, `text_delta`, `thinking_delta`, `tool_call`,
-   `tool_result`, `turn_committed` and `user_message` (see
+   the prompt. Rule-of-Two and `continueOnError` `preRun` hook warnings
+   raised during setup follow `run_started`. A run that fails setup
+   sends no `run_started`, and those warnings precede its `error`. Throughout the run the harness emits a live
+   transcript — `turn_started`, `text_delta`, `thinking_delta`,
+   `tool_call`, `tool_result`, `turn_committed` or `turn_abandoned`, and
+   `user_message` (see
    [Watching a run live](integration-guide.md#watching-a-run-live)) —
    plus `heartbeat` (every 30 s) and, depending on the permission
    policy, `permission_request` events. Tools declared in

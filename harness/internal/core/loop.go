@@ -181,6 +181,8 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 
 	l.startTrace(ctx, config)
 	l.failure = runFailure{}
+	l.holdSetupWarnings()
+	defer l.releaseSetupWarnings()
 	carried := l.takeCarriedHistory(followUp != nil)
 
 	// A non-nil TraceContext here was set by the caller; otherwise
@@ -350,6 +352,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		}
 	}
 	l.emitRunStarted(config.RunID)
+	l.releaseSetupWarnings()
 
 	// After run_started, so the withheld-history warning and any screening
 	// of a carried tail are attributed to this run.
@@ -796,6 +799,10 @@ func (l *AgenticLoop) runInnerLoop(
 	cacheKey := l.cacheKey
 	var calibration tokenCalibration
 
+	// Every return path not closing its turn ended it before a usable
+	// response arrived.
+	defer l.emitTurnAbandoned(types.TurnAbandonedNoResponse)
+
 	for *nextTurn < config.MaxTurns {
 		turn := *nextTurn
 		*nextTurn = turn + 1
@@ -1101,6 +1108,8 @@ func (l *AgenticLoop) runInnerLoop(
 				l.Trace.RecordTurnRecord(turnRecord)
 				if appended {
 					l.emitTurnCommitted(turn, sr.StopReason, summary.Tokens, 0)
+				} else {
+					l.emitTurnAbandoned(types.TurnAbandonedEmptyResponse)
 				}
 				messages = l.applyEscalation(ctx, config, decision, selection.Provider, selection.Model, messages, &pendingToolChoice)
 				escalationsSoFar++
@@ -1126,7 +1135,7 @@ func (l *AgenticLoop) runInnerLoop(
 				allow, decision, spotlight := l.guardCheck(ctx, in, guardFailOpen(config))
 				l.ratchetRuleOfTwo(ctx, config, decision, turn)
 				if !allow {
-
+					l.emitTurnAbandoned(types.TurnAbandonedGuardrailBlocked)
 					return messages, "guardrail_blocked", priorFinalText, nil
 				}
 				if spotlight {
@@ -1136,6 +1145,8 @@ func (l *AgenticLoop) runInnerLoop(
 			}
 			if appended {
 				l.emitTurnCommitted(turn, sr.StopReason, summary.Tokens, 0)
+			} else {
+				l.emitTurnAbandoned(types.TurnAbandonedEmptyResponse)
 			}
 			// The run does not end while unconsumed operator input
 			// exists: queued user_response text becomes the next user
@@ -1173,6 +1184,8 @@ func (l *AgenticLoop) runInnerLoop(
 			l.Trace.RecordTurnRecord(turnRecord)
 			if appended {
 				l.emitTurnCommitted(turn, sr.StopReason, summary.Tokens, 0)
+			} else {
+				l.emitTurnAbandoned(types.TurnAbandonedEmptyResponse)
 			}
 			return messages, sr.StopReason, finalAssistantText, sr.StopDetails
 		}
@@ -1180,6 +1193,7 @@ func (l *AgenticLoop) runInnerLoop(
 			// Provider declared tool_use but produced no tool blocks —
 			// degenerate but observable.
 			l.Trace.RecordTurnRecord(turnRecord)
+			l.emitTurnAbandoned(types.TurnAbandonedMissingToolCalls)
 			l.noteFailure("error", "provider reported a tool_use stop without any tool calls")
 			return messages, "error", finalAssistantText, nil
 		}
@@ -1201,6 +1215,8 @@ func (l *AgenticLoop) runInnerLoop(
 		// the turn is not valid to replay and does not commit.
 		if len(toolResults) == len(toolCalls) {
 			l.emitTurnCommitted(turn, sr.StopReason, summary.Tokens, len(toolResults))
+		} else {
+			l.emitTurnAbandoned(types.TurnAbandonedUnansweredToolCalls)
 		}
 		// Escalation triggers only on the first assistant turn with
 		// no prior tool calls; once non-zero, a later no-tool answer
@@ -1691,10 +1707,7 @@ func (l *AgenticLoop) emitRuleOfTwoTriggered(config *types.RunConfig, source, ac
 	} else {
 		msg = fmt.Sprintf("rule of two: sensitive data detected (source %q); action %q is observe-only", source, action)
 	}
-	_ = l.Transport.Emit(types.HarnessEvent{
-		Type:    "warning",
-		Message: msg,
-	})
+	l.emitRunWarning(types.HarnessEvent{Message: msg})
 }
 
 // sortedContextValues returns the non-empty dynamic-context values in
@@ -2180,12 +2193,7 @@ func (l *AgenticLoop) recordHookExecutions(spanCtx context.Context, execs []type
 		if !exec.ContinuedOnError {
 			continue
 		}
-		if err := l.Transport.Emit(types.HarnessEvent{
-			Type:    "warning",
-			Message: formatHookWarning(exec),
-		}); err != nil {
-			l.logEmitFailure("warning", err)
-		}
+		l.emitRunWarning(types.HarnessEvent{Message: formatHookWarning(exec)})
 	}
 }
 
@@ -2224,6 +2232,7 @@ func postHookBudget(hooks *types.HooksConfig) time.Duration {
 // recoverable; the git final checkpoint does not, since Git.Setup has not
 // completed.
 func (l *AgenticLoop) finishWithOutcome(ctx context.Context, config *types.RunConfig, outcome string, err error, stopHeartbeat func()) (*types.RunTrace, error) {
+	l.releaseSetupWarnings()
 	l.noteFailure(outcome, err.Error())
 	outcome = l.finalizeCommandOutput(ctx, outcome)
 	if emitErr := l.Transport.Emit(types.HarnessEvent{
