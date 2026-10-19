@@ -96,10 +96,10 @@ func (c *StreamCarry) release(all bool) (string, []string) {
 	}
 	p := c.pending
 	c.scanned += len(p)
-	segs, ranges, viable := carryScan(string(p), c.afterWord)
+	segs, ranges, spans, viable := carryScan(string(p), c.afterWord)
 	cut := len(p)
 	if !all {
-		cut = runeStartAtOrBefore(p, retreatCutPastSpans(ranges, max(viable, c.ctx)))
+		cut = runeStartAtOrBefore(p, retreatCutPastSpans(spans, max(viable, c.ctx)))
 		if !c.run && len(p)-cut > streamCarryMax {
 			return c.forceRelease(p, segs, viable, cut)
 		}
@@ -167,15 +167,20 @@ func heldPatterns(p string, segs []scrubSegment, from, viable int) []string {
 }
 
 // carryScan scrubs p and returns its segments, the ranges the scrubber
-// replaces, and the earliest offset from which a pattern could still match
-// once more text arrives. A pattern scanning text an earlier replacement
-// rewrote is tested on that text too, since its match can run across a
-// placeholder.
+// replaces, the spans a cut must not fall inside, and the earliest offset
+// from which a pattern could still match once more text arrives. A pattern
+// scanning text an earlier replacement rewrote is tested on that text too,
+// since its match can run across a placeholder.
+//
+// While some text is held, the spans include each pattern's matches in p
+// as written, not only in the rewritten text: a match an earlier pattern's
+// placeholder hides now can surface once later text changes that earlier
+// match, so text it covers is held with the rest.
 //
 // When the stream byte before p is a word byte, p is scanned behind a "_"
 // so a leading \b sees it as the whole stream does; no pattern or prefix
 // can begin with "_", so the sentinel itself never matches.
-func carryScan(p string, afterWord bool) ([]scrubSegment, [][]int, int) {
+func carryScan(p string, afterWord bool) ([]scrubSegment, [][]int, [][]int, int) {
 	shift := 0
 	if afterWord {
 		p, shift = "_"+p, 1
@@ -192,14 +197,22 @@ func carryScan(p string, afterWord bool) ([]scrubSegment, [][]int, int) {
 			viable = min(viable, originalOffset(segs, loc[0]))
 		}
 	})
-	var ranges [][]int
+	var ranges, spans [][]int
 	for _, r := range redactedRanges(segs) {
 		ranges = append(ranges, []int{r.Start - shift, r.End - shift})
+	}
+	spans = append(spans, ranges...)
+	if viable < len(p) {
+		for _, sp := range secretPatterns {
+			for _, m := range patternMatches(sp, p) {
+				spans = append(spans, []int{m[0] - shift, m[1] - shift})
+			}
+		}
 	}
 	if shift > 0 {
 		segs = unshiftSegments(segs)
 	}
-	return segs, ranges, viable - shift
+	return segs, ranges, spans, viable - shift
 }
 
 // unshiftSegments drops the one-byte sentinel carryScan prepends, which

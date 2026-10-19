@@ -83,12 +83,7 @@ func scrubSegments(value string, visit func(pattern int, current string, segs []
 		if visit != nil {
 			visit(i, current, segs)
 		}
-		var matches [][]int
-		if valid := matchValidators[p.name]; valid != nil {
-			matches = findValidated(p.re, current, valid)
-		} else {
-			matches = p.re.FindAllStringIndex(current, -1)
-		}
+		matches := patternMatches(p, current)
 		if len(matches) == 0 {
 			continue
 		}
@@ -97,6 +92,15 @@ func scrubSegments(value string, visit func(pattern int, current string, segs []
 		segs = replaceSegments(segs, matches, p.name)
 	}
 	return segs, stats
+}
+
+// patternMatches returns the matches of p in value that its validator, if
+// any, accepts.
+func patternMatches(p namedPattern, value string) [][]int {
+	if valid := matchValidators[p.name]; valid != nil {
+		return findValidated(p.re, value, valid)
+	}
+	return p.re.FindAllStringIndex(value, -1)
 }
 
 func joinSegments(segs []scrubSegment) string {

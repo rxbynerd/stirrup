@@ -249,6 +249,33 @@ func TestStreamCarry_RandomFragmentsMatchWholeStreamScrub(t *testing.T) {
 	}
 }
 
+// TestStreamCarry_InterleavedPatternsMatchWholeStreamScrub pins the carry
+// against pattern order: text a later pattern matches is held while an
+// earlier pattern's placeholder hides it, since later text can remove that
+// placeholder and expose the later match.
+func TestStreamCarry_InterleavedPatternsMatchWholeStreamScrub(t *testing.T) {
+	atoms := []string{"ya29.", "Bearer ", "Basic ", "AKIA", "ABCDEFGHIJKLMNOP", "sk-", "sk-ant-", "secret://", "eyJ", ".", " ", "\n",
+		"-----BEGIN ", "RSA PRIVATE KEY-----\n", "-----END RSA PRIVATE KEY-----", "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=", "x", "_",
+		"ghp_", "token=", "0123456789abcdef0123456789abcdef", "api-key: ", "xoxb-", "AIza", "=", "\"", ":"}
+	rng := rand.New(rand.NewSource(1)) //nolint:gosec // deterministic test input, not a security decision
+	for seed := 0; seed < 6000; seed++ {
+		var b strings.Builder
+		for n := 2 + rng.Intn(8); n > 0; n-- {
+			b.WriteString(atoms[rng.Intn(len(atoms))])
+		}
+		input := b.String()
+		var fragments []string
+		for rest := input; rest != ""; {
+			n := min(1+rng.Intn(6), len(rest))
+			fragments = append(fragments, rest[:n])
+			rest = rest[n:]
+		}
+		if got, _ := streamThroughCarry(fragments); got != Scrub(input) {
+			t.Fatalf("seed %d: %q streamed as %q, want %q", seed, input, got, Scrub(input))
+		}
+	}
+}
+
 // TestStreamCarry_ReleasesOrdinaryProseImmediately bounds the latency the
 // carry adds to text no pattern can match: only a short word-fragment
 // that could begin a keyword is ever held.
@@ -522,6 +549,9 @@ func FuzzStreamCarry(f *testing.F) {
 		f.Add("before "+fx.text+" after", "", uint16(0), uint8(1), uint8(7))
 	}
 	f.Add("café 日本語 Bearer x", "", uint16(0), uint8(1), uint8(2))
+	f.Add("-ya29.Bearer AKIAABCDEFGHIJKLMNOP", " tail", uint16(1), uint8(0), uint8(3))
+	f.Add("ya29.api-key: sk-ant-RSA PRIVATE KEY-----\n", "", uint16(0), uint8(2), uint8(4))
+	f.Add("eyJya29.secret://Bearer ghp_", "", uint16(0), uint8(0), uint8(5))
 	f.Add("token: eyJhbGciOiJSUzI1NiJ9.", "eyJzdWIiOiJydW5uZXIi", uint16(500), uint8(6), uint8(200))
 	f.Add("", "sk-", uint16(4000), uint8(0), uint8(0))
 	f.Add("", "secret://a/", uint16(1000), uint8(2), uint8(0))
