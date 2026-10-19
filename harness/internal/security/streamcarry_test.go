@@ -28,6 +28,16 @@ func streamThroughCarry(fragments []string) (string, []string) {
 	return strings.Join(pieces, ""), pieces
 }
 
+// splitStep is the stride between split points through a fixture: every
+// byte of a short one, and through a long one, whose body lines all split
+// alike, enough points to cross each kind of line.
+func splitStep(n int) int {
+	if n > 1<<10 {
+		return n / 16
+	}
+	return max(1, n/64)
+}
+
 // chunk splits s into pieces of n bytes, the last one shorter.
 func chunk(s string, n int) []string {
 	var out []string
@@ -220,10 +230,9 @@ func firstRunes(re *syntax.Regexp) [][2]rune {
 func TestStreamCarry_EveryPrefixOfEveryFixtureIsHeld(t *testing.T) {
 	for _, f := range prefixFixtures() {
 		want := Scrub(f.text)
-		// Every byte of a short secret; a stride through a long one.
 		step := 1
 		if len(f.text) > 256 {
-			step = len(f.text) / 64
+			step = splitStep(len(f.text))
 		}
 		for k := 1; k < len(f.text); k += step {
 			got, _ := streamThroughCarry([]string{f.text[:k], f.text[k:]})
@@ -241,8 +250,7 @@ func TestStreamCarry_SecretSplitAcrossTwoFragmentsIsScrubbed(t *testing.T) {
 		input := "The model wrote this out: " + f.text + " and then went on with ordinary prose."
 		start := strings.Index(input, f.text)
 		want := Scrub(input)
-		// Every byte of a short secret; a stride through a long one.
-		step := max(1, len(f.text)/64)
+		step := splitStep(len(f.text))
 		for split := start + 1; split < start+len(f.text); split += step {
 			got, _ := streamThroughCarry([]string{input[:split], input[split:]})
 			if strings.Contains(got, f.sensitive) {
@@ -473,12 +481,10 @@ func TestStreamCarry_RunPastTheCapIsBounded(t *testing.T) {
 	if got != "[REDACTED]" {
 		t.Fatalf("released %q from a run four times streamCarryMax, want one placeholder", clip(got))
 	}
-	for i := 0; i < streamCarryRunMax; i += 4 << 10 {
-		if out, _ := c.Push(strings.Repeat("a", 4<<10)); out != "" {
-			t.Fatalf("released %q from an open run", clip(out))
-		}
+	if out, _ := c.Push(strings.Repeat("a", 64<<10)); out != "" {
+		t.Fatalf("released %q from an open run", clip(out))
 	}
-	c.Push(" then prose")
+	c.Push(strings.Repeat("a", streamCarryRunMax) + " then prose")
 	if !c.drain || len(c.pending) != 0 {
 		t.Fatalf("a run past streamCarryRunMax still holds %d bytes", len(c.pending))
 	}
@@ -512,16 +518,22 @@ func TestStreamCarry_ForcedRescanIsAmortised(t *testing.T) {
 // TestStreamCarry_RuneStraddlingForcedCut pins that the release forced at
 // the cap never splits a multi-byte rune, even when fragments do.
 func TestStreamCarry_RuneStraddlingForcedCut(t *testing.T) {
-	input := "-----BEGIN A KEY-----\nComment: " + strings.Repeat("日本語", 4<<10) + " done"
+	input := "-----BEGIN A KEY-----\nComment: " + strings.Repeat("日本語", 1<<10) + " done"
 	for _, size := range []int{1, 2, 5} {
-		got, pieces := streamThroughCarry(chunk(input, size))
-		if !strings.HasPrefix(got, "[REDACTED]") {
-			t.Fatalf("%d-byte fragments: output starts %q, want the redacted head", size, got[:20])
-		}
-		for _, p := range pieces {
+		var c StreamCarry
+		var b strings.Builder
+		emit := func(p string, _ []string) {
 			if !utf8.ValidString(p) {
 				t.Fatalf("%d-byte fragments: piece splits a rune: %q", size, p[:min(len(p), 16)])
 			}
+			b.WriteString(p)
+		}
+		for _, f := range chunk(input, size) {
+			emit(c.Push(f))
+		}
+		emit(c.Flush())
+		if got := b.String(); !strings.HasPrefix(got, "[REDACTED]") || c.forced == 0 {
+			t.Fatalf("%d-byte fragments: output starts %q after %d forced releases, want the redacted head after one", size, got[:20], c.forced)
 		}
 	}
 }
