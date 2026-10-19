@@ -31,7 +31,27 @@ type scrubSegment struct {
 // a later match can extend across an earlier placeholder; its range is
 // mapped back to the original bytes the placeholder stood for.
 func ScrubWithSpans(value string) (string, []ScrubRange, ScrubStats) {
-	segs, stats := scrubSegments(value, nil)
+	segs, stats := scrubSegments(value, "", nil)
+	return joinSegments(segs), redactedRanges(segs), stats
+}
+
+// guardKeptPattern is the pattern a guard's copy keeps: a secret://
+// reference is a pointer to a secret, not key material, and redacting it
+// can hide the program or path a guard is asked to judge.
+const guardKeptPattern = "secret_ref"
+
+// ScrubForGuard is ScrubWithStats for a copy of text a guard judges: every
+// pattern but secret_ref is applied, so a secret:// reference stays
+// readable.
+func ScrubForGuard(value string) (string, ScrubStats) {
+	segs, stats := scrubSegments(value, guardKeptPattern, nil)
+	return joinSegments(segs), stats
+}
+
+// ScrubForGuardWithSpans is ScrubForGuard plus the ranges it replaced, as
+// ScrubWithSpans returns them.
+func ScrubForGuardWithSpans(value string) (string, []ScrubRange, ScrubStats) {
+	segs, stats := scrubSegments(value, guardKeptPattern, nil)
 	return joinSegments(segs), redactedRanges(segs), stats
 }
 
@@ -73,12 +93,16 @@ func originalOffset(segs []scrubSegment, x int) int {
 }
 
 // scrubSegments runs the patterns in turn over value, as ScrubWithStats
-// does, and returns the segments of the result. A non-nil visit is called
-// with each pattern's index and the text that pattern is about to scan.
-func scrubSegments(value string, visit func(pattern int, current string, segs []scrubSegment)) ([]scrubSegment, ScrubStats) {
+// does, skipping the one named skip, and returns the segments of the
+// result. A non-nil visit is called with each pattern's index and the
+// text that pattern is about to scan.
+func scrubSegments(value, skip string, visit func(pattern int, current string, segs []scrubSegment)) ([]scrubSegment, ScrubStats) {
 	segs := []scrubSegment{{text: value, start: 0, end: len(value)}}
 	stats := ScrubStats{}
 	for i, p := range secretPatterns {
+		if p.name == skip {
+			continue
+		}
 		current := joinSegments(segs)
 		if visit != nil {
 			visit(i, current, segs)

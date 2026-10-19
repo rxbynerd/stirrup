@@ -315,7 +315,7 @@ func carryScan(p string, afterWord bool) ([]scrubSegment, [][]int, [][]int, int)
 	if loc := streamPrefixAny.FindStringIndex(p); loc != nil {
 		viable = loc[0]
 	}
-	segs, _ := scrubSegments(p, func(i int, current string, segs []scrubSegment) {
+	segs, _ := scrubSegments(p, "", func(i int, current string, segs []scrubSegment) {
 		if len(segs) == 1 {
 			return
 		}

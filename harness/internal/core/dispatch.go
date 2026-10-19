@@ -441,7 +441,7 @@ func cloneRawMessage(raw json.RawMessage) json.RawMessage {
 // a scrub that breaks the document leaves it a JSON string of the
 // scrubbed text. The handler and the permission policy keep input as is.
 func scrubToolInputForGuard(in *guard.Input, input json.RawMessage) {
-	scrubbed, stats := security.ScrubWithStats(string(input))
+	scrubbed, stats := security.ScrubForGuard(string(input))
 	if stats.Count == 0 {
 		return
 	}
