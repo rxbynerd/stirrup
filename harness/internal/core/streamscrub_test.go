@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -67,6 +68,21 @@ func TestStreamEventsToResult_SecretSplitAcrossDeltasIsScrubbed(t *testing.T) {
 				t.Errorf("%s text on the wire = %q, want the split key redacted", eventType, got)
 			}
 		})
+	}
+}
+
+// TestStreamEventsToResult_WholeThinkingBlockIsScrubbedWhole pins that a
+// thinking block arriving whole is scrubbed as one text, not cut at the
+// stream carry's cap first: a block longer than the cap goes out exactly
+// as whole-text Scrub leaves it.
+func TestStreamEventsToResult_WholeThinkingBlockIsScrubbedWhole(t *testing.T) {
+	block := "the reasoning ends on aws_secret_access_key=" + strings.Repeat("QUJDREVGR0hJSktMTU5P", 600)
+	wire := stdioWireEvents(t, context.Background(), []types.StreamEvent{
+		{Type: "thinking", Text: block},
+		{Type: "message_complete", StopReason: "end_turn"},
+	})
+	if got, want := joinedText(wire, "thinking_delta"), security.Scrub(block); got != want {
+		t.Fatalf("thinking block streamed as %q, want %q", got[:min(len(got), 80)], want[:min(len(want), 80)])
 	}
 }
 

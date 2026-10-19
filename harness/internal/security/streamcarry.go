@@ -76,10 +76,16 @@ func (c *StreamCarry) Push(fragment string) (string, []string) {
 
 // Flush returns the held text, scrubbed, and the names of the patterns
 // redacted in it, and empties the carry.
-func (c *StreamCarry) Flush() (string, []string) {
+func (c *StreamCarry) Flush() (string, []string) { return c.FlushWith("") }
+
+// FlushWith adds text that ends the stream and returns what Flush returns.
+// The held text and text are scanned as one, with no release forced at
+// the cap.
+func (c *StreamCarry) FlushWith(text string) (string, []string) {
 	var out string
 	var patterns []string
 	if !c.drain {
+		c.pending = append(c.pending, text...)
 		out, patterns = c.release(true)
 	}
 	c.pending, c.ctx, c.unscanned, c.afterWord, c.run, c.drain = c.pending[:0], 0, 0, false, false, false

@@ -803,17 +803,19 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 	}
 	defer flushDeltas()
 	// pushDelta releases what the carry can of text; a whole block is
-	// complete, so it and anything held before it go out as one event.
+	// complete, so it and anything held before it are scanned and go out
+	// as one event.
 	pushDelta := func(eventType, text string, whole bool) {
 		if eventType != carriedType {
 			flushDeltas()
 			carriedType = eventType
 		}
-		out, patterns := carry.Push(text)
+		var out string
+		var patterns []string
 		if whole {
-			rest, more := carry.Flush()
-			out += rest
-			patterns = append(patterns, more...)
+			out, patterns = carry.FlushWith(text)
+		} else {
+			out, patterns = carry.Push(text)
 		}
 		emitDelta(eventType, out, patterns)
 	}
