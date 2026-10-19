@@ -1118,6 +1118,7 @@ func TestScrubContentBlocks_DecodesFencedSecret(t *testing.T) {
 			{Type: "tool_result", ToolUseID: "b", Content: fence("whole block with " + key)},
 			{Type: "tool_result", ToolUseID: "c", Content: "ok", Structured: structured},
 			{Type: "tool_result", ToolUseID: "d", Content: "benign " + fence("plain words")},
+			{Type: "tool_result", ToolUseID: "e", Content: "notes mention " + security.SpotlightOpenTag + " tags.\nTOKEN=" + fence(key) + "\n"},
 		},
 	}}}}
 	got := scrubTurnRecord(turn, false).ModelInput.Messages[0].Content
