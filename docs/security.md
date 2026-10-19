@@ -165,8 +165,8 @@ boundaries no longer match the provider's: one event can join several
 provider deltas, and one delta can be split. `heartbeat` events and
 `warning` events raised outside the response, such as one for a dropped
 `user_response`, come from other goroutines and are not ordered against
-held text. A thinking block that arrives whole is scrubbed in one pass,
-together with any text held before it.
+held text. A thinking block that arrives whole is scrubbed in one pass
+and sent as one event.
 
 While text is held, the cut also stops at each pattern's matches in the
 text as written, not only in the text earlier patterns rewrote, so a
