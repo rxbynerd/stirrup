@@ -259,16 +259,19 @@ failure after the stream opens, it is not retried.
 ### Tool search
 
 Under [lazy tool loading](configuration.md#lazy-tool-loading) with the
-`auto` strategy, Claude models from the 4.5 generation on use
-Anthropic's server-side tool search
+`auto` strategy, the Claude models listed in the configuration
+[model table](configuration.md#lazy-tool-loading) use Anthropic's
+server-side tool search
 ([`ToolSearch` quirk](provider-quirks.md#3-wave-2-rules-builtinrules))
 instead of the harness `tool_search` tool. The feature is generally
 available and needs no beta header; the wire shape below is taken from
 Anthropic's documentation and is not probed.
 
-The adapter adds the search tool only when the loop asks for it, the
-resolved model has the capability, and at least one tool is deferred.
-The search tool goes first in `tools` and is never deferred, which
+The adapter adds the search tool only when the request carries
+`ToolSearch`, the resolved model's `ToolSearch` capability is supported,
+and at least one tool is deferred. When `ToolSearch` is requested for a
+model without the capability, the adapter logs the downgrade at Debug
+and sends every tool loaded. The search tool goes first in `tools` and is never deferred, which
 satisfies the API's rule that not every tool may carry
 `defer_loading`. Every deferred definition is sent in full with
 `"defer_loading": true`, on every turn, loaded or not, so the tool
@@ -305,19 +308,33 @@ loaded. An empty `tool_references` array means the search matched
 nothing. A failed search carries `tool_search_tool_result_error` with
 an `error_code` (`invalid_tool_input`, `unavailable`,
 `too_many_requests` or `execution_time_exceeded`) and an
-`error_message`; the adapter reports both and the stream continues. A
-result in any other shape loads nothing and is logged at Debug. The
-harness never sends a `tool_result` for a `srvtoolu_` call: the search
-runs on Anthropic's side and the turn's `stop_reason` is unaffected.
+`error_message`; the adapter reports both, marks the event as failed,
+and the stream continues. The recorded `tool_search_result` block of a
+failed search holds the error code in `name` and the message in
+`content`, with `is_error` set. A result in any other shape loads
+nothing and is logged at Warn, because it leaves the loaded set out of
+step with the provider. The harness never sends a `tool_result` for a
+`srvtoolu_` call: the search runs on Anthropic's side and the turn's
+`stop_reason` is unaffected.
 
 On the next request both blocks are replayed in place, rebuilt in the
 exact shape the API returned, so the API keeps the referenced
-definitions expanded for the rest of the run. Only a call naming an
-Anthropic search tool and answered by a result in the same message is
-replayed. When a request does not carry the search tool (the run
+definitions expanded for the rest of the run. A failed search replays
+as a `tool_search_tool_result_error` with the recorded code and
+message, and with the code `unavailable` when none was recorded, since
+the API rejects an empty code. Only a call naming an Anthropic search
+tool (`tool_search_tool_bm25` or `tool_search_tool_regex`) and answered
+by a result in the same message is replayed; a search recorded from
+another provider, such as the OpenAI hosted `tool_search`, is dropped
+together with its result. When a request does not carry the search tool (the run
 routed this turn to a model without the capability, or nothing is
 deferred), every recorded search block is dropped and every tool is
 sent loaded; a message left empty by the drop is omitted.
+
+Batch turns build their request through the same code, so the native
+search is sent in a batch turn exactly as in a streamed one, and the
+batch response is decoded into the same events and blocks. The batch
+path is not probed against the live batch endpoint.
 
 ## AWS Bedrock
 
