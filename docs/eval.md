@@ -137,8 +137,12 @@ suite → task layering:
 Per-task `run_config_overrides` follows the existing
 `types.RunConfigOverrides` shape and currently surfaces `provider`,
 `model_router`, `context_strategy`, `edit_strategy`, `verifier`,
-and `max_turns`. Only fields explicitly set on the overlay take
-effect; everything else passes the baseline through unchanged.
+`tool_choice_escalation`, and `max_turns`. Only fields explicitly set
+on the overlay take effect; everything else passes the baseline
+through unchanged. A `provider` block's `replay_file` resolves against
+the suite file's directory, on the baseline and on an override alike,
+so a suite can ship its recordings beside it (see
+[Replay doubles](#replay-doubles)).
 
 Per-task mode is set via the task block's `mode` attribute, not
 `run_config_overrides`. The runner always passes the task's mode
@@ -1142,17 +1146,42 @@ traces, and let the `replay` runner re-evaluate old recordings under
 new judge criteria without re-running the harness
 (`eval/runner/replay.go`).
 
-`ReplayProvider` also backs the tool-use reliability suite's
-no-credential gate. The `stirrup-eval run` subcommand spawns the real
-`stirrup harness` binary, which selects a provider from the RunConfig
-and so always needs live credentials; there is no replay-provider
-RunConfig path. To run the tool-use behaviours with no provider and no
-network, `harness/internal/core/tooluse_replay_test.go` drives the
-agentic loop in process with a `ReplayProvider` and a real
-`LocalExecutor` over synthetic workspaces, asserting the same workspace
-state and tool-call traces the HCL suite's judges check. That test is
-the gate; `eval/suites/tooluse.hcl` is its live-provider-comparable
-form.
+`ReplayProvider` is also selectable from a RunConfig as
+`provider.type = "replay"` with `replayFile` naming the recording (see
+[`providers.md`](providers.md#replay)), which is how a suite runs
+through the real `stirrup harness` binary with no provider credential:
+
+```hcl
+task "read-before-edit" {
+  mode   = "execution"
+  prompt = "..."
+
+  file "greeting.txt" {
+    content = "hello old world\n"
+  }
+
+  run_config_overrides {
+    provider {
+      type        = "replay"
+      replay_file = "fixtures/tooluse/read-before-edit.jsonl"
+    }
+  }
+
+  judge { ... }
+}
+```
+
+The seeded workspace, the tool registry, the executor and the judges
+are the real ones; only the model is scripted. `stirrup-eval run
+--provider <type> --model <id>` (with the matching key reference)
+runs the same tasks live: the harness drops the recording path when
+its provider is switched on the command line, so one suite serves both
+forms. `eval/suites/tooluse.hcl` is built this way and runs in the
+`verify` CI job from the recordings under `eval/suites/fixtures/`;
+`harness/internal/core/tooluse_replay_test.go` pins the same
+behaviours in process, including two a replay cannot reach (MCP name
+normalization, which needs an MCP server, and streaming tool-call
+parsing, which is an adapter wire property).
 
 #### Where recordings come from
 
@@ -1444,7 +1473,7 @@ tree gains a `run_config.redacted.json` per task. See
 | `--junit`        | empty            | Write JUnit XML to this path after `result.json`. Each task is one `testcase`. A task with more than one trial carries a `system-out` summary of every trial, its `failure` or `error` message is prefixed with the pass count (for example `1/3 trials passed: ...`), and the body ends with the reason of each non-passing trial. Single-trial output is unchanged. |
 | `--model`        | empty            | Model to run every task with, forwarded to each harness invocation as `--model`. Overrides the harness default and any model pinned by the suite's `run_config` block. CI uses this to pin the per-push gate to a cheap model and the release sweep to stronger ones. |
 | `--prompt-model` | empty            | Prompt model to render system prompts with, forwarded to each harness invocation as `--prompt-model`. The wire model is unchanged. See [Comparing prompts across models](#comparing-prompts-across-models). |
-| `--provider`     | empty            | Provider type to run every task against, forwarded as `--provider`. Overrides the harness default and any provider pinned by the suite's `run_config` block. |
+| `--provider`     | empty            | Provider type to run every task against, forwarded as `--provider`. Overrides the harness default and any provider pinned by the suite's `run_config` block, and switches a replay-backed suite to a live run (the harness drops each task's recording path on the switch). |
 | `--base-url`     | empty            | API base URL for the `openai-compatible` / `openai-responses` providers, forwarded as `--base-url`. |
 | `--api-key-ref`  | empty            | `secret://` reference for the provider API key, forwarded as `--api-key-ref`. A reference the harness resolves through `SecretStore` at runtime — never a literal key. |
 | `--judge-provider` | empty          | Provider (`anthropic` or `openai-compatible`) for `diff-review` judges that have no `llm` block. Empty keeps the Anthropic default; `decision` is refused (see [The `decision` provider](#the-decision-provider)). See [The `diff-review` judge](#the-diff-review-judge). |
