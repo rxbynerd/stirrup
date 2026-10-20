@@ -67,7 +67,7 @@ func loadRunConfigFile(path string) (*types.RunConfig, error) {
 	if err := dec.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("parsing run_config_file %q: %w", path, err)
 	}
-	spec.AnchorReplayFiles(&cfg, filepath.Dir(path))
+	spec.AnchorRunConfigPaths(&cfg, filepath.Dir(path))
 	return &cfg, nil
 }
 

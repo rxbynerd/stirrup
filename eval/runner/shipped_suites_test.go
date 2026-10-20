@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/eval/spec"
+	tracereader "github.com/rxbynerd/stirrup/types/trace"
 )
 
 // TestShippedSuites_DryRunValidates runs --dry-run validation over every
@@ -33,5 +34,52 @@ func TestShippedSuites_DryRunValidates(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+// TestShippedSuites_ReplayFixturesLoad opens every recording a shipped
+// suite names and checks it replays cleanly, and that every fixture file
+// is named by some suite. A dry run validates only the RunConfig, so a
+// renamed or malformed fixture would otherwise surface only when the
+// harness binary runs.
+func TestShippedSuites_ReplayFixturesLoad(t *testing.T) {
+	must := require.New(t)
+	paths, err := filepath.Glob(filepath.Join("..", "suites", "*.hcl"))
+	must.NoError(err)
+	referenced := map[string]bool{}
+	for _, path := range paths {
+		suite, err := spec.LoadSuiteHCL(path)
+		must.NoError(err, "LoadSuiteHCL %s", path)
+		var files []string
+		if suite.RunConfig != nil && suite.RunConfig.Provider.ReplayFile != "" {
+			files = append(files, suite.RunConfig.Provider.ReplayFile)
+		}
+		for _, task := range suite.Tasks {
+			if task.RunConfigOverrides != nil && task.RunConfigOverrides.Provider != nil && task.RunConfigOverrides.Provider.ReplayFile != "" {
+				files = append(files, task.RunConfigOverrides.Provider.ReplayFile)
+			}
+		}
+		for _, file := range files {
+			t.Run(filepath.Base(path)+"/"+filepath.Base(file), func(t *testing.T) {
+				must := require.New(t)
+				referenced[file] = true
+				reader, err := tracereader.Open(file)
+				must.NoError(err, "open recording")
+				defer func() { _ = reader.Close() }()
+				recording, err := reader.ReadRecording()
+				must.NoError(err)
+				must.NotEmpty(recording.Turns, "recording has no turns")
+				must.Zero(reader.SkippedLines(), "recording has oversized lines")
+				must.Zero(reader.MalformedLines(), "recording has malformed lines")
+			})
+		}
+	}
+	fixtures, err := filepath.Glob(filepath.Join("..", "suites", "fixtures", "*", "*.jsonl"))
+	must.NoError(err)
+	must.NotEmpty(fixtures, "no fixtures found")
+	for _, fixture := range fixtures {
+		abs, err := filepath.Abs(fixture)
+		must.NoError(err)
+		must.True(referenced[abs], "fixture %s is not named by any shipped suite", fixture)
 	}
 }
