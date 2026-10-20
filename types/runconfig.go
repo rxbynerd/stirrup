@@ -1512,7 +1512,7 @@ type ToolsConfig struct {
 	// LazyLoading keeps the tool definitions a turn carries small: tools
 	// outside the eager set are deferred and reach the model only after
 	// it searches for them. Off unless Enabled is set.
-	LazyLoading LazyToolLoadingConfig `json:"lazyLoading,omitempty"`
+	LazyLoading LazyToolLoadingConfig `json:"lazyLoading,omitzero"`
 }
 
 // LazyToolLoadingConfig configures deferred tool loading. A deferred tool

@@ -38,8 +38,7 @@
       "type": ""
     },
     "tools": {
-      "commandOutput": {},
-      "lazyLoading": {}
+      "commandOutput": {}
     },
     "maxTurns": 0,
     "observability": {
@@ -262,8 +261,7 @@
         "type": ""
       },
       "tools": {
-        "commandOutput": {},
-        "lazyLoading": {}
+        "commandOutput": {}
       },
       "maxTurns": 0,
       "observability": {
