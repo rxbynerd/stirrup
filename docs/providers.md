@@ -623,10 +623,11 @@ Under [lazy tool loading](configuration.md#lazy-tool-loading) with the
 native strategy, `gpt-5.4` and later 5.x models and the `gpt-6*` family
 use OpenAI's hosted
 [tool search](https://developers.openai.com/api/docs/guides/tools-tool-search).
-The adapter sends it only when the loop asks for a native search and the
-resolved quirks advertise the `ToolSearch` capability; every other model,
-and every request the loop serves with the harness's own `tool_search`
-tool, gets no search entry and no `defer_loading`.
+The adapter sends it only when the loop asks for a native search, the
+resolved quirks advertise the `ToolSearch` capability, and at least one
+tool in the request is deferred; every other model, every request the
+loop serves with the harness's own `tool_search` tool, and every request
+with nothing deferred gets no search entry and no `defer_loading`.
 
 The request lists every function tool as usual, adds
 `"defer_loading": true` to each deferred one, and appends the hosted
@@ -645,7 +646,8 @@ The adapter sends flat top-level functions. With flat functions the model
 still sees each deferred function's name and description from the first
 turn; only the parameter schema is deferred, so the saving is smaller
 than on Anthropic. Operators who need deferred tools hidden entirely set
-`tools.lazyLoading.strategy: "harness"`.
+`tools.lazyLoading.strategy: "harness"`, which keeps the names and
+descriptions out of the request until a search loads them.
 
 A search arrives as two output items ahead of the function call that
 uses a loaded tool: a `tool_search_call`, whose `arguments` is a JSON
@@ -655,9 +657,9 @@ as a `tool_search` event (ID is the call item's `id`, because hosted
 items carry `"call_id": null`; a call without an `id` gets
 `tool_search_<output_index>`) and a `tool_search_result` event paired
 with the earliest unanswered call. The result names every function in
-`tools`, including functions inside `namespace` entries; other entry
-types are ignored. A `namespace` field on a later `function_call` is
-ignored. A malformed search item produces an event with no input or no
+`tools`, including functions inside a `namespace` entry (a namespace
+nested inside another is ignored); other entry types are ignored. A
+`namespace` field on a later `function_call` is ignored. A malformed search item produces an event with no input or no
 loaded tools rather than failing the turn. OpenAI documents no failure
 shape for hosted search, so the adapter never reports a failed search.
 
@@ -674,8 +676,18 @@ input, and the output's `tools` lists the request's own definitions of
 the loaded tools, each with `defer_loading: true`. This reconstruction
 is best effort. The adapter drops both items of a search, and still sends
 the function calls that follow, when the request has no hosted search,
-when a loaded tool has no definition in the request, when the search
-failed, or when the call or its result is missing or repeated.
+when the search was recorded by another provider (a call not named
+`tool_search`, such as an Anthropic `tool_search_tool_bm25` pair left by
+a router switch), when a loaded tool has no definition in the request,
+when the search failed, or when the call or its result is missing or
+repeated.
+
+**Batch.** Batch turns send the hosted search entry under the same
+conditions as streamed turns. A batch result is decoded by the same code
+as a streamed response, but batch turns never capture output items, so a
+hosted search from a batch turn is always replayed through the
+reconstruction above. Neither the batch request nor its replay has been
+probed against the live API.
 
 The request shape, the output items, verbatim replay and reconstruction
 all follow OpenAI's guide; none has been probed against the live API.
