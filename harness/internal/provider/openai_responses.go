@@ -1761,7 +1761,7 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 	calls := make(map[string]*responsesCallState)
 	replay := newResponsesReplayCapture(logger, model, replayOrigin, &o.replayWarnedNoEncrypted)
 	summary := &responsesSummaryParts{logger: logger}
-	searches := &responsesToolSearches{logger: logger}
+	searches := newResponsesToolSearches(logger)
 
 	scanner := bufio.NewScanner(resp.Body)
 	// Increase the buffer ceiling so a single SSE record carrying a large
@@ -1889,6 +1889,15 @@ func (s *responsesSummaryParts) text(itemID string, index int, delta string) str
 type responsesToolSearches struct {
 	logger  *slog.Logger
 	pending []string
+}
+
+// newResponsesToolSearches returns the search pairing state for one
+// response. A nil logger discards its debug records.
+func newResponsesToolSearches(logger *slog.Logger) *responsesToolSearches {
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+	return &responsesToolSearches{logger: logger}
 }
 
 // call returns the tool_search event for a completed tool_search_call.

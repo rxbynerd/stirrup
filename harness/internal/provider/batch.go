@@ -904,42 +904,35 @@ type openaiResponsesBatchResponse struct {
 	IncompleteDetails *struct {
 		Reason string `json:"reason"`
 	} `json:"incomplete_details,omitempty"`
-	Output []openaiResponsesBatchOutputItem `json:"output,omitempty"`
-	Usage  *responsesUsage                  `json:"usage,omitempty"`
-}
-
-// openaiResponsesBatchOutputItem is one item in response.output. Type
-// discriminates: "message" carries assistant text inside content[];
-// "function_call" carries a single call's id/name/arguments flat.
-type openaiResponsesBatchOutputItem struct {
-	Type      string                             `json:"type"`
-	ID        string                             `json:"id,omitempty"`
-	CallID    string                             `json:"call_id,omitempty"`
-	Name      string                             `json:"name,omitempty"`
-	Arguments string                             `json:"arguments,omitempty"`
-	Content   []openaiResponsesBatchContentBlock `json:"content,omitempty"`
-}
-
-type openaiResponsesBatchContentBlock struct {
-	Type string `json:"type"` // "output_text" | "refusal" | ...
-	Text string `json:"text,omitempty"`
+	// Output items decode with the streaming adapter's type, which reads
+	// a tool_search_call's object arguments without failing the response.
+	Output []responsesOutputItem `json:"output,omitempty"`
+	Usage  *responsesUsage       `json:"usage,omitempty"`
 }
 
 // fabricateOpenAIResponsesStream mirrors the SSE event sequence the
 // Responses adapter's consumeSSE produces on a completed response: one
 // text_delta per assistant output_text content block, one tool_call per
-// function_call output item (in upstream order — the JSON array
-// preserves document order), then a single message_complete carrying
-// the derived stop reason and the reported usage.
+// function_call output item, and a tool_search or tool_search_result
+// event per hosted tool search item with the streaming ID and pairing
+// rules, all in upstream order (the JSON array preserves document
+// order), then a single message_complete carrying the derived stop
+// reason and the reported usage.
 func fabricateOpenAIResponsesStream(ch chan<- types.StreamEvent, response json.RawMessage) error {
 	var resp openaiResponsesBatchResponse
 	if err := json.Unmarshal(response, &resp); err != nil {
 		return fmt.Errorf("fabricate openai responses stream: decode response: %w", err)
 	}
 
+	ctx := context.Background()
+	searches := newResponsesToolSearches(nil)
 	hasTool := false
-	for _, item := range resp.Output {
+	for i, item := range resp.Output {
 		switch item.Type {
+		case "tool_search_call":
+			ch <- searches.call(ctx, item, i)
+		case "tool_search_output":
+			ch <- searches.output(ctx, item)
 		case "message":
 			for _, block := range item.Content {
 				if block.Type == "output_text" && block.Text != "" {
