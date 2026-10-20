@@ -440,7 +440,8 @@ format from Chat Completions:
 
 - Top-level `instructions` field (not a system message in the array).
 - Typed `input[]` items: `message`, `function_call`, `function_call_output`,
-  and replayed `reasoning` items.
+  replayed `reasoning` items, and `tool_search_call` /
+  `tool_search_output` items under [hosted tool search](#hosted-tool-search).
 - Flat tool schema.
 - `max_output_tokens` (not `max_tokens`).
 - Explicit `store: false`.
@@ -453,15 +454,17 @@ Selected explicitly via `provider.type: "openai-responses"`. There is
 would mask configuration errors.
 
 **Intentional exclusions:** OpenAI built-in tools (`web_search`,
-`file_search`, `computer_use`, `code_interpreter`) and server-side state
+`file_search`, `computer_use`, `code_interpreter`; hosted `tool_search`
+is the one exception, sent only under lazy tool loading) and server-side state
 via `previous_response_id`. The harness manages its own conversation
 history and does not delegate to server-side state.
 
 **Output replay.** With `store: false`, OpenAI documents that stateless
 reasoning models need every prior response output item resent. For the
 reasoning families (`o[1-9]*`, `gpt-5*` except `gpt-5-chat*`, and
-`gpt-6*`), the adapter captures each turn's `reasoning`, `message`, and
-`function_call` output items and replays them, as semantically identical
+`gpt-6*`), the adapter captures each turn's `reasoning`, `message`,
+`function_call`, `tool_search_call`, and `tool_search_output` output
+items and replays them, as semantically identical
 JSON, on later requests to the same model and endpoint, so reasoning
 items (with `encrypted_content`), item ids, `status`, and the assistant
 `phase` reach the model. Replay is all-or-nothing per turn: a turn whose
@@ -596,6 +599,72 @@ retried; the full classification is in
 the stream opens is never retried. These codes are documented in
 OpenAI's error-codes and misalignment-monitoring guides; they have not
 been probed against the live API.
+
+### Hosted tool search
+
+Under [lazy tool loading](configuration.md#lazy-tool-loading) with the
+native strategy, `gpt-5.4` and later 5.x models and the `gpt-6*` family
+use OpenAI's hosted
+[tool search](https://developers.openai.com/api/docs/guides/tools-tool-search).
+The adapter sends it only when the loop asks for a native search and the
+resolved quirks advertise the `ToolSearch` capability; every other model,
+and every request the loop serves with the harness's own `tool_search`
+tool, gets no search entry and no `defer_loading`.
+
+The request lists every function tool as usual, adds
+`"defer_loading": true` to each deferred one, and appends the hosted
+search entry last, with no field other than its type. On the strict
+families `defer_loading` sits beside `strict: true`:
+
+```json
+"tools": [
+  {"type": "function", "name": "read_file", "description": "Read a file", "parameters": {...}, "strict": true},
+  {"type": "function", "name": "mcp_jira_create_issue", "description": "Create a Jira issue", "parameters": {...}, "strict": true, "defer_loading": true},
+  {"type": "tool_search"}
+]
+```
+
+The adapter sends flat top-level functions. With flat functions the model
+still sees each deferred function's name and description from the first
+turn; only the parameter schema is deferred, so the saving is smaller
+than on Anthropic. Operators who need deferred tools hidden entirely set
+`tools.lazyLoading.strategy: "harness"`.
+
+A search arrives as two output items ahead of the function call that
+uses a loaded tool: a `tool_search_call`, whose `arguments` is a JSON
+object (a `function_call` carries a string), and a `tool_search_output`,
+whose `tools` array holds the loaded definitions. The adapter emits them
+as a `tool_search` event (ID is the call item's `id`, because hosted
+items carry `"call_id": null`; a call without an `id` gets
+`tool_search_<output_index>`) and a `tool_search_result` event paired
+with the earliest unanswered call. The result names every function in
+`tools`, including functions inside `namespace` entries; other entry
+types are ignored. A `namespace` field on a later `function_call` is
+ignored. A malformed search item produces an event with no input or no
+loaded tools rather than failing the turn. OpenAI documents no failure
+shape for hosted search, so the adapter never reports a failed search.
+
+**Replay.** On the reasoning families both items are captured with the
+turn's other output items and replay verbatim, in place. They take no
+part in the check that the stored items still match the persisted
+message, so a search never forces reconstruction, but they replay only
+to a request that carries the hosted search entry; otherwise the turn
+is reconstructed without them. A reconstructed turn rebuilds each search
+as a `tool_search_call` and `tool_search_output` with
+`"execution": "server"`, `"call_id": null` and
+`"status": "completed"`: the call's `arguments` is the persisted search
+input, and the output's `tools` lists the request's own definitions of
+the loaded tools, each with `defer_loading: true`. This reconstruction
+is best effort. The adapter drops both items of a search, and still sends
+the function calls that follow, when the request has no hosted search,
+when a loaded tool has no definition in the request, when the search
+failed, or when the call or its result is missing or repeated.
+
+The request shape, the output items, verbatim replay and reconstruction
+all follow OpenAI's guide; none has been probed against the live API.
+Namespaces (grouping, for example, each MCP server's tools so the model
+sees only the group until it loads one) and client-executed search
+(`"execution": "client"`, answered by the harness) are not implemented.
 
 ## Google Gemini via Vertex AI
 

@@ -454,6 +454,8 @@ test catch malformed paths at registry-build time.
 | `openai-responses`  | `gpt-5.6*`         | OpenAI Responses gpt-5.6 family: `reasoning.effort` `low`..`max` (documented, not probed); omit sampling params (inferred) |
 | `openai-responses`  | `gpt-5-chat*`      | OpenAI Responses gpt-5-chat carve-out: no `reasoning.encrypted_content` include or output replay (inferred, not probed) |
 | `openai-responses`  | `gpt-6*`           | OpenAI Responses gpt-6 family: the `gpt-5*` reasoning rules plus omit sampling params and `reasoning.effort` `low`..`max` (documented, not probed) |
+| `openai-responses`  | `gpt-5.[4-9]*`     | OpenAI Responses gpt-5.4 and later 5.x: hosted `tool_search` with `defer_loading` under lazy tool loading (documented, not probed; see [providers.md](providers.md#hosted-tool-search)) |
+| `openai-responses`  | `gpt-6*`           | OpenAI Responses gpt-6 family: hosted `tool_search` with `defer_loading` under lazy tool loading (documented, not probed) |
 | `anthropic`         | `*`                | Anthropic: `tool_choice.disable_parallel_tool_use` (#222) |
 | `anthropic`         | `*`                | Anthropic: tool examples on the native `input_examples` field (probed 2026-09-30) |
 | `anthropic`         | `*`                | Anthropic: prompt caching via `system` `cache_control` breakpoint plus top-level automatic `cache_control` (the latter on keyed requests only) |
