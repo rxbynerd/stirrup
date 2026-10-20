@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -208,11 +209,76 @@ func applyAnthropicParallel(tc *anthropicToolChoice, params types.StreamParams, 
 // anthropicTool is the Messages API custom-tool object. Like
 // anthropicContentBlock it is an explicit allowlist: types.ToolDefinition's
 // Presentation never reaches the wire except through InputExamples.
+//
+// ServerType is set only on the native tool search entry, which MarshalJSON
+// emits as its type and name alone.
 type anthropicTool struct {
 	Name          string            `json:"name"`
 	Description   string            `json:"description"`
 	InputSchema   json.RawMessage   `json:"input_schema"`
 	InputExamples []json.RawMessage `json:"input_examples,omitempty"`
+	DeferLoading  bool              `json:"defer_loading,omitempty"`
+	ServerType    string            `json:"-"`
+}
+
+// anthropicToolFields drops anthropicTool's MarshalJSON so the struct-tag
+// encoding can be reused without recursion.
+type anthropicToolFields anthropicTool
+
+func (t anthropicTool) MarshalJSON() ([]byte, error) {
+	if t.ServerType != "" {
+		return json.Marshal(struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		}{Type: t.ServerType, Name: t.Name})
+	}
+	return json.Marshal(anthropicToolFields(t))
+}
+
+// Wire identifiers of the native tool search variants.
+const (
+	anthropicToolSearchBM25Type  = "tool_search_tool_bm25_20251119"
+	anthropicToolSearchBM25Name  = "tool_search_tool_bm25"
+	anthropicToolSearchRegexType = "tool_search_tool_regex_20251119"
+	anthropicToolSearchRegexName = "tool_search_tool_regex"
+)
+
+// anthropicToolSearchTool returns the native search tool entry for a
+// quirks.ToolSearchCapability variant; any variant other than "regex"
+// selects BM25.
+func anthropicToolSearchTool(variant string) anthropicTool {
+	if variant == "regex" {
+		return anthropicTool{ServerType: anthropicToolSearchRegexType, Name: anthropicToolSearchRegexName}
+	}
+	return anthropicTool{ServerType: anthropicToolSearchBM25Type, Name: anthropicToolSearchBM25Name}
+}
+
+func isAnthropicToolSearchName(name string) bool {
+	return name == anthropicToolSearchBM25Name || name == anthropicToolSearchRegexName
+}
+
+// anthropicToolSearchActive reports whether a request carries the native
+// tool search: the loop asked for it, the resolved model has one, and at
+// least one tool is deferred. The search tool itself is never deferred,
+// which satisfies the API's rule that not every tool may be.
+func anthropicToolSearchActive(params types.StreamParams, capability quirks.ToolSearchCapability) bool {
+	if !params.ToolSearch || !capability.Supported {
+		return false
+	}
+	return slices.ContainsFunc(params.Tools, func(t types.ToolDefinition) bool { return t.Deferred })
+}
+
+// withAnthropicToolSearch puts the native search tool first and marks each
+// deferred definition with defer_loading. tools is translateToolsAnthropic's
+// projection of defs, index for index.
+func withAnthropicToolSearch(tools []anthropicTool, defs []types.ToolDefinition, variant string) []anthropicTool {
+	out := make([]anthropicTool, 0, len(tools)+1)
+	out = append(out, anthropicToolSearchTool(variant))
+	for i, t := range tools {
+		t.DeferLoading = defs[i].Deferred
+		out = append(out, t)
+	}
+	return out
 }
 
 // translateToolsAnthropic projects the tool definitions onto the wire,
@@ -311,16 +377,22 @@ type anthropicMessage struct {
 // Signature is the thinking block's signature or the redacted_thinking
 // block's opaque data; MarshalJSON places it under the key each type
 // requires, so it never rides on any other block type.
+//
+// A tool_search_tool_result block is rebuilt from ToolReferences (the
+// loaded tools' wire names) or, when IsError is set, from Text holding
+// "<error_code>: <error_message>"; MarshalJSON emits only its documented
+// keys.
 type anthropicContentBlock struct {
-	Type      string          `json:"type"`
-	Text      string          `json:"text,omitempty"`
-	ID        string          `json:"id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Input     json.RawMessage `json:"input,omitempty"`
-	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   json.RawMessage `json:"content,omitempty"`
-	IsError   bool            `json:"is_error,omitempty"`
-	Signature string          `json:"-"`
+	Type           string          `json:"type"`
+	Text           string          `json:"text,omitempty"`
+	ID             string          `json:"id,omitempty"`
+	Name           string          `json:"name,omitempty"`
+	Input          json.RawMessage `json:"input,omitempty"`
+	ToolUseID      string          `json:"tool_use_id,omitempty"`
+	Content        json.RawMessage `json:"content,omitempty"`
+	IsError        bool            `json:"is_error,omitempty"`
+	Signature      string          `json:"-"`
+	ToolReferences []string        `json:"-"`
 }
 
 // anthropicContentBlockFields drops anthropicContentBlock's MarshalJSON so
@@ -345,9 +417,56 @@ func (b anthropicContentBlock) MarshalJSON() ([]byte, error) {
 			Type string `json:"type"`
 			Data string `json:"data"`
 		}{Type: b.Type, Data: b.Signature})
+	case "server_tool_use":
+		return json.Marshal(struct {
+			Type  string          `json:"type"`
+			ID    string          `json:"id"`
+			Name  string          `json:"name"`
+			Input json.RawMessage `json:"input"`
+		}{Type: b.Type, ID: b.ID, Name: b.Name, Input: types.NormalizeToolInput(b.Input)})
+	case "tool_search_tool_result":
+		return json.Marshal(struct {
+			Type      string `json:"type"`
+			ToolUseID string `json:"tool_use_id"`
+			Content   any    `json:"content"`
+		}{Type: b.Type, ToolUseID: b.ToolUseID, Content: anthropicToolSearchResultContent(b)})
 	default:
 		return json.Marshal(anthropicContentBlockFields(b))
 	}
+}
+
+const (
+	anthropicToolSearchResultType = "tool_search_tool_search_result"
+	anthropicToolSearchErrorType  = "tool_search_tool_result_error"
+)
+
+// anthropicToolReference is one entry of a tool search result's
+// tool_references array.
+type anthropicToolReference struct {
+	Type     string `json:"type"`
+	ToolName string `json:"tool_name"`
+}
+
+// anthropicToolSearchResultContent rebuilds a replayed result's content.
+// A search result always carries tool_references, as an empty array when
+// the search matched nothing.
+func anthropicToolSearchResultContent(b anthropicContentBlock) any {
+	if b.IsError {
+		code, message, _ := strings.Cut(b.Text, ": ")
+		return struct {
+			Type         string `json:"type"`
+			ErrorCode    string `json:"error_code"`
+			ErrorMessage string `json:"error_message"`
+		}{Type: anthropicToolSearchErrorType, ErrorCode: code, ErrorMessage: message}
+	}
+	refs := make([]anthropicToolReference, len(b.ToolReferences))
+	for i, name := range b.ToolReferences {
+		refs[i] = anthropicToolReference{Type: "tool_reference", ToolName: name}
+	}
+	return struct {
+		Type           string                   `json:"type"`
+		ToolReferences []anthropicToolReference `json:"tool_references"`
+	}{Type: anthropicToolSearchResultType, ToolReferences: refs}
 }
 
 // anthropicToolResultPart is one entry in the array form of a tool_result
@@ -369,13 +488,46 @@ type anthropicToolResultPart struct {
 // ThoughtSignature is read only from thinking and redacted_thinking blocks.
 // A thinking block without one is dropped: the API cannot verify an
 // unsigned block, so it is not replayable.
-func translateMessagesAnthropic(messages []types.Message, cap quirks.StructuredToolResultCapability) []anthropicMessage {
+//
+// tool_search and tool_search_result blocks become server_tool_use and
+// tool_search_tool_result blocks only when toolSearch is set, and only as a
+// matched pair (see anthropicReplayableToolSearches). Otherwise they are
+// dropped: the request carries no search tool to answer them, and every
+// tool is sent loaded.
+func translateMessagesAnthropic(messages []types.Message, cap quirks.StructuredToolResultCapability, toolSearch bool) []anthropicMessage {
 	out := make([]anthropicMessage, 0, len(messages))
 	skipped := false
 	for _, msg := range messages {
 		blocks := make([]anthropicContentBlock, 0, len(msg.Content))
 		onlyThinking := true
+		var searches map[string]bool
+		if toolSearch {
+			searches = anthropicReplayableToolSearches(msg.Content)
+		}
 		for _, b := range msg.Content {
+			switch b.Type {
+			case "tool_search":
+				if searches[b.ID] {
+					blocks = append(blocks, anthropicContentBlock{
+						Type:  "server_tool_use",
+						ID:    b.ID,
+						Name:  b.Name,
+						Input: b.Input,
+					})
+				}
+				continue
+			case "tool_search_result":
+				if searches[b.ToolUseID] {
+					blocks = append(blocks, anthropicContentBlock{
+						Type:           "tool_search_tool_result",
+						ToolUseID:      b.ToolUseID,
+						ToolReferences: b.ToolReferences,
+						IsError:        b.IsError,
+						Text:           b.Content,
+					})
+				}
+				continue
+			}
 			if types.IsThinkingBlock(b) {
 				if b.ThoughtSignature == "" {
 					continue
@@ -400,7 +552,8 @@ func translateMessagesAnthropic(messages []types.Message, cap quirks.StructuredT
 			})
 		}
 		// The API rejects an empty content array, so a message left empty by
-		// stripped or unsigned thinking blocks is omitted, and the turns on
+		// stripped or unsigned thinking blocks or dropped tool search blocks
+		// is omitted, and the turns on
 		// either side are joined when that leaves two of the same role.
 		if len(blocks) == 0 && onlyThinking {
 			skipped = true
@@ -414,6 +567,27 @@ func translateMessagesAnthropic(messages []types.Message, cap quirks.StructuredT
 		skipped = false
 	}
 	return out
+}
+
+// anthropicReplayableToolSearches returns the call IDs of the native tool
+// searches in one message's content that can be replayed: a tool_search
+// block naming an Anthropic search tool, answered by a tool_search_result
+// in the same message. An unanswered call, an orphaned result, or a search
+// recorded from another provider's tool is not a valid replay.
+func anthropicReplayableToolSearches(content []types.ContentBlock) map[string]bool {
+	calls := make(map[string]bool)
+	for _, b := range content {
+		if b.Type == "tool_search" && b.ID != "" && isAnthropicToolSearchName(b.Name) {
+			calls[b.ID] = true
+		}
+	}
+	paired := make(map[string]bool, len(calls))
+	for _, b := range content {
+		if b.Type == "tool_search_result" && calls[b.ToolUseID] {
+			paired[b.ToolUseID] = true
+		}
+	}
+	return paired
 }
 
 // anthropicToolUseInput renders the `input` field of one content block for
@@ -475,8 +649,11 @@ type sseContentBlockStart struct {
 	ContentBlock sseContentBlock `json:"content_block"`
 }
 
+// sseContentBlock is a started content block. A tool_search_tool_result
+// block arrives whole: ToolUseID names its server_tool_use call and Content
+// holds the result, decoded by parseAnthropicToolSearchResult.
 type sseContentBlock struct {
-	Type      string          `json:"type"` // "text" | "tool_use" | "thinking" | "redacted_thinking"
+	Type      string          `json:"type"` // "text" | "tool_use" | "thinking" | "redacted_thinking" | "server_tool_use" | "tool_search_tool_result"
 	ID        string          `json:"id,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	Text      string          `json:"text,omitempty"`
@@ -484,6 +661,64 @@ type sseContentBlock struct {
 	Thinking  string          `json:"thinking,omitempty"`
 	Signature string          `json:"signature,omitempty"`
 	Data      string          `json:"data,omitempty"`
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+	Content   json.RawMessage `json:"content,omitempty"`
+}
+
+// toolSearchCallEvent builds the tool_search event for a closed
+// server_tool_use block. The input normally streams as input_json_delta;
+// startInput, the input on content_block_start, is used when none did.
+// Input the harness cannot decode leaves Input nil, which replays as {}.
+func toolSearchCallEvent(ctx context.Context, logger *slog.Logger, id, name, streamed string, startInput json.RawMessage) types.StreamEvent {
+	ev := types.StreamEvent{Type: "tool_search", ID: id, Name: name}
+	raw := []byte(streamed)
+	if len(raw) == 0 {
+		raw = startInput
+	}
+	if len(raw) == 0 {
+		return ev
+	}
+	if err := json.Unmarshal(raw, &ev.Input); err != nil {
+		logger.DebugContext(ctx, "anthropic tool search input not decoded",
+			slog.String("provider.type", "anthropic"),
+			slog.String("error", err.Error()),
+		)
+	}
+	return ev
+}
+
+// parseAnthropicToolSearchResult builds the tool_search_result event for a
+// tool_search_tool_result block. An error result carries its code in Name
+// and its message in Text. A content shape the adapter does not recognise
+// is reported as a search that loaded nothing rather than failing the
+// stream.
+func parseAnthropicToolSearchResult(ctx context.Context, logger *slog.Logger, toolUseID string, content json.RawMessage) types.StreamEvent {
+	ev := types.StreamEvent{Type: "tool_search_result", ID: toolUseID}
+	var body struct {
+		Type           string                   `json:"type"`
+		ToolReferences []anthropicToolReference `json:"tool_references"`
+		ErrorCode      string                   `json:"error_code"`
+		ErrorMessage   string                   `json:"error_message"`
+	}
+	err := json.Unmarshal(content, &body)
+	switch {
+	case err == nil && body.Type == anthropicToolSearchResultType:
+		for _, ref := range body.ToolReferences {
+			if ref.ToolName != "" {
+				ev.ToolReferences = append(ev.ToolReferences, ref.ToolName)
+			}
+		}
+	case err == nil && body.Type == anthropicToolSearchErrorType:
+		ev.Name = body.ErrorCode
+		ev.Text = body.ErrorMessage
+	default:
+		attrs := []any{slog.String("provider.type", "anthropic"), slog.String("content.type", capUTF8(body.Type, maxStopDetailsTypeBytes))}
+		if err != nil {
+			attrs = append(attrs, slog.String("error", err.Error()))
+		}
+		logger.DebugContext(ctx, "anthropic tool search result not recognised", attrs...)
+	}
+	return ev
 }
 
 type sseContentBlockDelta struct {
@@ -662,7 +897,9 @@ func anthropicStreamError(data string) error {
 // string system prompt and no cache_control, so callers that do not route
 // through the registry get the baseline shape. With PromptCaching set, the
 // system breakpoint is sent on every request and the top-level breakpoint
-// only when params.CacheKey marks a multi-turn conversation.
+// only when params.CacheKey marks a multi-turn conversation. The native
+// tool search is added only when anthropicToolSearchActive holds; otherwise
+// ToolDefinition.Deferred is ignored and every tool is sent loaded.
 //
 // TODO(batch): if the batch endpoint rejects fields the streaming endpoint
 // accepts (e.g. thinking_config), change the return type to
@@ -686,12 +923,17 @@ func buildAnthropicRequest(params types.StreamParams, stream bool, q quirks.Prov
 	if caching && params.CacheKey != "" {
 		cacheControl = ephemeralCacheControl()
 	}
+	toolSearch := anthropicToolSearchActive(params, q.ToolSearch)
+	tools := translateToolsAnthropic(params.Tools, q.ToolExamples)
+	if toolSearch {
+		tools = withAnthropicToolSearch(tools, params.Tools, q.ToolSearch.Variant)
+	}
 	return anthropicRequest{
 		Model:    params.Model,
 		System:   system,
-		Messages: translateMessagesAnthropic(params.Messages, q.StructuredToolResults),
+		Messages: translateMessagesAnthropic(params.Messages, q.StructuredToolResults, toolSearch),
 
-		Tools:        translateToolsAnthropic(params.Tools, q.ToolExamples),
+		Tools:        tools,
 		MaxTokens:    params.MaxTokens,
 		Temperature:  temperature,
 		ToolChoice:   applyAnthropicParallel(anthropicToolChoiceFromParams(params, q.ToolChoice), params, q.ParallelToolCalls),
@@ -889,7 +1131,9 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 	}
 
 	// Track in-flight content blocks by index for tool_use JSON and thinking
-	// accumulation. signature holds a redacted_thinking block's data.
+	// accumulation. signature holds a redacted_thinking block's data; raw
+	// holds a server_tool_use block's start input or a
+	// tool_search_tool_result block's content.
 	type blockState struct {
 		blockType string
 		id        string
@@ -897,6 +1141,7 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 		jsonBuf   strings.Builder
 		thinking  strings.Builder
 		signature strings.Builder
+		raw       json.RawMessage
 	}
 	blocks := make(map[int]*blockState)
 
@@ -982,6 +1227,15 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 				if !appendThinking(&bs.signature, cbs.ContentBlock.Data) {
 					return
 				}
+			case "server_tool_use":
+				bs.raw = cbs.ContentBlock.Input
+			case "tool_search_tool_result":
+				bs.id = cbs.ContentBlock.ToolUseID
+				bs.raw = cbs.ContentBlock.Content
+			}
+			if len(bs.raw) > maxToolInputSize {
+				emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("%s block exceeds %d byte limit", bs.blockType, maxToolInputSize)})
+				return
 			}
 			blocks[cbs.Index] = bs
 
@@ -1037,6 +1291,12 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 			switch blockType {
 			case "tool_use":
 				emitEvent(toolCallEvent(bs.id, bs.name, bs.jsonBuf.String()))
+			case "server_tool_use":
+				if isAnthropicToolSearchName(bs.name) {
+					emitEvent(toolSearchCallEvent(ctx, logger, bs.id, bs.name, bs.jsonBuf.String(), bs.raw))
+				}
+			case "tool_search_tool_result":
+				emitEvent(parseAnthropicToolSearchResult(ctx, logger, bs.id, bs.raw))
 			case "thinking":
 				emitEvent(types.StreamEvent{
 					Type:             "thinking",
