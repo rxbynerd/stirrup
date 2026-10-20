@@ -333,14 +333,6 @@ func Float64Ptr(v float64) *float64 {
 // "sandbox_token_request". The per-type field table is the HarnessEvent
 // comment in proto/harness/v1/harness.proto.
 //
-// "tools_loaded" reports that a tool search under lazy tool loading made
-// deferred tools visible to the model: Tools lists their internal IDs,
-// Name is the search tool that loaded them (ToolSearchToolName for the
-// harness search, otherwise the provider's native search tool), Input is
-// the search input, Source "native" or "harness" says which search ran, and
-// Turn is the turn it ran in. It is sent once per search that loaded at
-// least one tool not already loaded, before that turn's tool results and
-// before the turn is committed or abandoned.
 // RequestID correlates a request event with its matching ControlEvent
 // response. See docs/deployment.md for the gRPC sequence and
 // docs/batch.md for the batch event correlation.
@@ -358,9 +350,10 @@ func Float64Ptr(v float64) *float64 {
 // is per session, so a follow-up run's "run_started" follows the
 // previous run's "done".
 //
-// Source takes one of the UserMessageSource* values; the vocabulary is
-// open, so consumers preserve values they do not recognise. Turn is a
-// pointer so turn 0 is present on the wire.
+// Source takes one of the UserMessageSource* values on a "user_message"
+// and one of the ToolsLoadedSource* values on a "tools_loaded"; both
+// vocabularies are open, so consumers preserve values they do not
+// recognise. Turn is a pointer so turn 0 is present on the wire.
 type HarnessEvent struct {
 	Type           string          `json:"type"`
 	Text           string          `json:"text,omitempty"`
@@ -380,8 +373,8 @@ type HarnessEvent struct {
 	TraceReference *TraceReference `json:"traceReference,omitempty"` // run span identity (run_started only); the done summary carries it on Trace
 	TraceContext   *TraceContext   `json:"traceContext,omitempty"`   // the tool call's span context (tool_result_request only)
 
-	Source          string      `json:"source,omitempty"`          // where a user_message's text came from (user_message only)
-	Turn            *int        `json:"turn,omitempty"`            // run-scoped turn number (turn_started, turn_committed and turn_abandoned)
+	Source          string      `json:"source,omitempty"`          // where a user_message's text came from, or which search loaded tools (user_message and tools_loaded)
+	Turn            *int        `json:"turn,omitempty"`            // run-scoped turn number (turn_started, turn_committed, turn_abandoned and tools_loaded)
 	Model           string      `json:"model,omitempty"`           // the routed model (turn_started only)
 	Provider        string      `json:"provider,omitempty"`        // the routed provider's adapter type, never a providers-map key (turn_started only)
 	Usage           *TokenUsage `json:"usage,omitempty"`           // the turn's token usage, nil when it reported none (turn_committed only)
@@ -435,6 +428,12 @@ const (
 	// TurnAbandonedGuardrailBlocked: a post-turn guardrail rejected the
 	// turn's answer.
 	TurnAbandonedGuardrailBlocked = "guardrail_blocked"
+)
+
+// Values of HarnessEvent.Source on a "tools_loaded" event.
+const (
+	ToolsLoadedSourceNative  = "native"
+	ToolsLoadedSourceHarness = "harness"
 )
 
 // Values of HarnessEvent.Source on a "user_message" event.

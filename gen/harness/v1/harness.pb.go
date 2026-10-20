@@ -26,9 +26,10 @@ const (
 //
 // Each event has a type discriminator; only the fields relevant to that type
 // are populated. The name and ID fields (id, name, tool_use_id, request_id,
-// tool_name) and stop_reason are capped at 1 KiB on every event type, cut on
-// a UTF-8 boundary without a marker, so equal values stay equal after
-// capping. The table below documents which fields are set per type:
+// tool_name), stop_reason and source are capped at 1 KiB on every event
+// type, cut on a UTF-8 boundary without a marker, so equal values stay
+// equal after capping. The table below documents which fields are set per
+// type:
 //
 //	"ready"
 //	  - harness_version: build version string of the harness binary.
@@ -98,6 +99,25 @@ const (
 //	  - content:     string result returned by the tool.
 //	  - is_error:    true when the call failed.
 //	  - duration_ms: the call's run time in milliseconds.
+//
+//	"tools_loaded"
+//	  - tools:  internal IDs of the deferred tools the search loaded, in
+//	            load order; at most 256 entries.
+//	  - source: which search ran, "native" or "harness"; see that field.
+//	  - name:   the search tool's name: "tool_search" for the harness
+//	            search, otherwise the provider's native search tool.
+//	            Informational only: OpenAI's hosted search is also named
+//	            "tool_search", so only source tells the two apart.
+//	  - input:  JSON-encoded search input, capped as on "tool_call".
+//	  - turn:   the turn the search ran in.
+//	  Sent under lazy tool loading (RunConfig `tools.lazyLoading`) once per
+//	  search that loaded at least one tool not already loaded. A native
+//	  search's event is sent when the response is accepted, after the
+//	  turn's "tool_call" events and before its "tool_result" events; a
+//	  harness search's event follows the "tool_result" of its tool_search
+//	  call. Either precedes the turn's "turn_committed" or
+//	  "turn_abandoned", and the tools stay loaded when the turn is
+//	  abandoned. Advertised by the "lazy_tool_loading" capability.
 //
 //	"turn_committed"
 //	  - turn:              the turn number its "turn_started" carried.
@@ -211,16 +231,6 @@ type HarnessEvent struct {
 	//	"batch_cancel_request", "sandbox_token_request".
 	//
 	// Consumers should ignore types they do not recognise.
-	//
-	// "tools_loaded" reports that a tool search under lazy tool loading
-	// (tools.lazy_loading) made deferred tools visible to the model: `tools`
-	// lists their internal IDs, `name` is the search tool that loaded them
-	// ("tool_search" for the harness search, otherwise the provider's native
-	// search tool), `input` is the search input, `source` is "native" or
-	// "harness" for the search that ran, and `turn` is the turn it ran in.
-	// Sent once per search that loaded a tool not already loaded, before
-	// that turn's tool results and before the turn is committed or
-	// abandoned.
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
 	// Incremental text fragment from the model. Set on "text_delta" events,
 	// and on "thinking_delta" events for reasoning text. On "user_message"
@@ -233,12 +243,14 @@ type HarnessEvent struct {
 	// started.
 	Id string `protobuf:"bytes,3,opt,name=id,proto3" json:"id,omitempty"`
 	// Tool name. Set on "tool_call" events, and on "tool_result" events to
-	// the same name as the matching "tool_call".
+	// the same name as the matching "tool_call". On "tools_loaded" events,
+	// the search tool that ran.
 	Name string `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
 	// JSON-encoded tool input parameters. Set on "tool_call",
-	// "permission_request", and "tool_result_request" events. On "tool_call"
-	// events the field is capped at 256 KiB: a capped input arrives as a JSON
-	// string, not the original object, ending in
+	// "permission_request", and "tool_result_request" events, and on
+	// "tools_loaded" events to the search input. On "tool_call" and
+	// "tools_loaded" events the field is capped at 256 KiB: a capped input
+	// arrives as a JSON string, not the original object, ending in
 	// "[truncated by harness for the control stream: N of M bytes shown]".
 	Input []byte `protobuf:"bytes,5,opt,name=input,proto3" json:"input,omitempty"`
 	// The tool-use ID this result corresponds to. Set on "tool_result" and
@@ -316,9 +328,14 @@ type HarnessEvent struct {
 	//	"compaction_summary"           reserved; not currently emitted.
 	//
 	// Every value other than the first three is text the harness wrote.
+	// On "tools_loaded" events, which search loaded the tools, from an
+	// equally open vocabulary:
+	//
+	//	"native"                       the provider's own tool search.
+	//	"harness"                      the harness's tool_search tool.
 	Source string `protobuf:"bytes,17,opt,name=source,proto3" json:"source,omitempty"`
 	// The run-scoped turn number, starting at 0. Set on "turn_started",
-	// "turn_committed" and "turn_abandoned" events.
+	// "turn_committed", "turn_abandoned" and "tools_loaded" events.
 	Turn *int32 `protobuf:"varint,18,opt,name=turn,proto3,oneof" json:"turn,omitempty"`
 	// The model the router selected for the turn. Set on "turn_started".
 	Model string `protobuf:"bytes,19,opt,name=model,proto3" json:"model,omitempty"`
@@ -358,7 +375,7 @@ type HarnessEvent struct {
 	//	"guardrail_blocked"     a post-turn guardrail rejected the answer.
 	AbandonReason string `protobuf:"bytes,26,opt,name=abandon_reason,json=abandonReason,proto3" json:"abandon_reason,omitempty"`
 	// Internal IDs of the deferred tools a search loaded. Set on
-	// "tools_loaded" events.
+	// "tools_loaded" events; at most 256 entries, each capped like a name.
 	Tools         []string `protobuf:"bytes,27,rep,name=tools,proto3" json:"tools,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -6299,9 +6316,9 @@ func (x *ToolsConfig) GetLazyLoading() *LazyToolLoadingConfig {
 
 // LazyToolLoadingConfig keeps the tool definitions a turn carries small:
 // tools outside the eager set are deferred and reach the model only after
-// it searches for them. A deferred tool stays registered, permission-gated
-// and dispatchable exactly like an eager one; only its visibility to the
-// model changes.
+// it searches for them. A deferred tool stays registered and
+// permission-gated like an eager one, and is dispatchable once loaded;
+// only its visibility to the model changes.
 type LazyToolLoadingConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Optional. Turns lazy loading on. Off by default: every registered
@@ -6317,7 +6334,8 @@ type LazyToolLoadingConfig struct {
 	// Optional. Internal IDs of the tools sent on every turn without a
 	// search. Empty selects every registered built-in tool, so only
 	// MCP-imported and control-plane tools are deferred by default. At most
-	// 256 entries.
+	// 256 entries, each non-empty, at most 256 bytes, and free of
+	// whitespace, control characters and the reserved `*`, `?` and `[`.
 	Eager []string `protobuf:"bytes,3,rep,name=eager,proto3" json:"eager,omitempty"`
 	// Optional. How many tools one harness search loads. 0 selects 5;
 	// maximum 20. The provider's native search applies its own limit.

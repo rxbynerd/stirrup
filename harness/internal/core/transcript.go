@@ -144,14 +144,16 @@ func (l *AgenticLoop) emitTurnAbandoned(reason string) {
 }
 
 // emitToolsLoaded reports deferred tools a search loaded, by internal ID.
-// search names the search tool and input is its input; turn is the open
-// turn, omitted when none is open.
-func (l *AgenticLoop) emitToolsLoaded(search string, input json.RawMessage, tools []string) {
+// source is one of the ToolsLoadedSource* values, search names the search
+// tool and input is its input; turn is the open turn, omitted when none
+// is open.
+func (l *AgenticLoop) emitToolsLoaded(source, search string, input json.RawMessage, tools []string) {
 	ev := types.HarnessEvent{
-		Type:  "tools_loaded",
-		Name:  search,
-		Input: bytes.Clone(input),
-		Tools: tools,
+		Type:   "tools_loaded",
+		Source: source,
+		Name:   search,
+		Input:  bytes.Clone(input),
+		Tools:  tools,
 	}
 	if l.openTurn != nil {
 		turn := *l.openTurn

@@ -310,7 +310,7 @@ func (l *AgenticLoop) planAndDispatch(
 			l.logEmitFailure("tool_result", err)
 		}
 		if len(p.toolsLoaded) > 0 {
-			l.emitToolsLoaded(p.internalName, p.input, p.toolsLoaded)
+			l.emitToolsLoaded(types.ToolsLoadedSourceHarness, p.internalName, p.input, p.toolsLoaded)
 		}
 
 		if outcome := stall.recordToolCall(p.call.Name, stallInput(p.call), p.output, p.success); outcome != "" {

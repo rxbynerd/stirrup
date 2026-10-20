@@ -56,7 +56,7 @@ func (l *AgenticLoop) loadSearchedTools(blocks []types.ContentBlock) []string {
 				continue
 			}
 			search := searches[b.ToolUseID]
-			l.emitToolsLoaded(search.Name, search.Input, added)
+			l.emitToolsLoaded(types.ToolsLoadedSourceNative, search.Name, search.Input, added)
 			loaded = append(loaded, added...)
 		}
 	}

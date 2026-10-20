@@ -132,6 +132,7 @@ func TestLoop_LazyTools_HarnessSearchLoadsADeferredTool(t *testing.T) {
 
 	loadedEvents := toolsLoadedEvents(tp)
 	must.Len(loadedEvents, 1)
+	must.Equal(types.ToolsLoadedSourceHarness, loadedEvents[0].Source)
 	must.Equal(types.ToolSearchToolName, loadedEvents[0].Name)
 	must.Equal([]string{lazyMCPTool}, loadedEvents[0].Tools)
 	must.JSONEq(`{"query":"github issue"}`, string(loadedEvents[0].Input))
@@ -208,6 +209,7 @@ func TestLoop_LazyTools_NativeSearchLoadsFromTheStream(t *testing.T) {
 
 	loadedEvents := toolsLoadedEvents(tp)
 	must.Len(loadedEvents, 1)
+	must.Equal(types.ToolsLoadedSourceNative, loadedEvents[0].Source)
 	must.Equal("tool_search_tool_bm25", loadedEvents[0].Name)
 	must.Equal([]string{lazyMCPTool}, loadedEvents[0].Tools)
 	must.Equal(0, *loadedEvents[0].Turn)
