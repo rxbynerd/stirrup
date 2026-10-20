@@ -25,6 +25,8 @@ func TestToolSearchCapability_ResolvesPerModel(t *testing.T) {
 		{"anthropic", "claude-mythos-5-1", true, "bm25"},
 		{"anthropic", "claude-opus-4-1-20250805", false, ""},
 		{"anthropic", "claude-sonnet-4-20250514", false, ""},
+		{"anthropic", "claude-3-5-sonnet-20241022", false, ""},
+		{"anthropic", "claude-3-5-haiku-20241022", false, ""},
 		{"openai-responses", "gpt-5.4", true, "hosted"},
 		{"openai-responses", "gpt-5.5-mini", true, "hosted"},
 		{"openai-responses", "gpt-6-astra", true, "hosted"},
