@@ -1558,7 +1558,19 @@ const (
 	DefaultLazyToolSearchResults = 5
 	MaxLazyToolSearchResults     = 20
 	maxLazyToolEagerEntries      = 256
+	maxLazyToolEagerNameBytes    = 256
 )
+
+// lazyToolEagerReservedChars are reserved for a future pattern form of
+// tools.lazyLoading.eager entries.
+const lazyToolEagerReservedChars = "*?["
+
+// nativeToolSearchNames are the tool names Anthropic's native tool search
+// uses in requests and responses, so no control-plane tool may take one.
+var nativeToolSearchNames = map[string]bool{
+	"tool_search_tool_bm25":  true,
+	"tool_search_tool_regex": true,
+}
 
 var validLazyToolStrategies = map[string]bool{
 	"":                      true,
@@ -4077,7 +4089,9 @@ func validateBuiltInTools(builtIns []string, errs *[]string) {
 // loading is off, so a config does not start failing when it is turned
 // on. Eager entries are checked for shape only: MCP tool names are not
 // known until discovery, so an eager entry naming no registered tool is
-// reported at run start, not here.
+// reported at run start, not here. The shape rules are looser than any
+// provider's tool-name grammar because an MCP server's tool names are
+// not constrained by one.
 func validateLazyToolLoading(cfg LazyToolLoadingConfig, errs *[]string) {
 	if !validLazyToolStrategies[cfg.Strategy] {
 		*errs = append(*errs, fmt.Sprintf(
@@ -4097,11 +4111,11 @@ func validateLazyToolLoading(cfg LazyToolLoadingConfig, errs *[]string) {
 	seen := make(map[string]int, len(cfg.Eager))
 	for i, name := range cfg.Eager {
 		path := fmt.Sprintf("tools.lazyLoading.eager[%d]", i)
-		switch {
+		switch problem := lazyToolEagerNameProblem(name); {
 		case name == "":
 			*errs = append(*errs, path+" must not be empty")
-		case !controlPlaneToolNamePattern.MatchString(name):
-			*errs = append(*errs, fmt.Sprintf("%s %q must match %s", path, name, controlPlaneToolNamePattern.String()))
+		case problem != "":
+			*errs = append(*errs, fmt.Sprintf("%s %q %s", path, name, problem))
 		case name == ToolSearchToolName:
 			*errs = append(*errs, fmt.Sprintf("%s %q is the harness tool search, which is always visible", path, name))
 		default:
@@ -4112,6 +4126,26 @@ func validateLazyToolLoading(cfg LazyToolLoadingConfig, errs *[]string) {
 			}
 		}
 	}
+}
+
+// lazyToolEagerNameProblem returns the rule a non-empty eager entry
+// breaks, or "" when it breaks none.
+func lazyToolEagerNameProblem(name string) string {
+	if len(name) > maxLazyToolEagerNameBytes {
+		return fmt.Sprintf("is %d bytes; at most %d", len(name), maxLazyToolEagerNameBytes)
+	}
+	if strings.ContainsAny(name, lazyToolEagerReservedChars) {
+		return "must not contain *, ? or [, which are reserved"
+	}
+	for _, r := range name {
+		switch {
+		case unicode.IsSpace(r):
+			return "must not contain whitespace"
+		case unicode.IsControl(r):
+			return "must not contain control characters"
+		}
+	}
+	return ""
 }
 
 // controlPlaneToolNamePattern bounds ControlPlaneToolConfig.Name to the
@@ -4148,6 +4182,8 @@ func validateControlPlaneTools(config *RunConfig, errs *[]string) {
 			*errs = append(*errs, fmt.Sprintf("%s.name %q collides with a built-in tool", path, ct.Name))
 		case ct.Name == ToolSearchToolName:
 			*errs = append(*errs, fmt.Sprintf("%s.name %q is reserved for the harness tool search", path, ct.Name))
+		case nativeToolSearchNames[ct.Name]:
+			*errs = append(*errs, fmt.Sprintf("%s.name %q is reserved for native tool search", path, ct.Name))
 		case strings.HasPrefix(ct.Name, "mcp_"):
 			*errs = append(*errs, fmt.Sprintf("%s.name %q must not use the mcp_ prefix reserved for MCP-imported tools", path, ct.Name))
 		default:
