@@ -13,8 +13,9 @@ import (
 // tool-name normalization between the agentic loop and the wrapped
 // adapter's wire serialisation — the single source of truth for "the
 // provider sees a name the provider accepts". It rewrites tool
-// definitions and tool_use names on egress and reverse-maps inbound
-// tool_call events back to the registry-side name; a collision between
+// definitions, tool_use names and tool_search_result references on
+// egress and reverse-maps inbound tool_call names and tool_search_result
+// references back to the registry-side name; a collision between
 // two internal names fails the call before any wire request is issued.
 // See docs/architecture.md "Provider-facing tool name normalization".
 type NormalizingAdapter struct {
@@ -39,7 +40,8 @@ func NewNormalizingAdapter(inner ProviderAdapter, providerType string) *Normaliz
 var _ ProviderAdapter = (*NormalizingAdapter)(nil)
 
 // Stream rewrites params, forwards to the inner adapter, and
-// reverse-rewrites tool_call events on the inbound side.
+// reverse-rewrites tool_call and tool_search_result events on the
+// inbound side.
 func (a *NormalizingAdapter) Stream(ctx context.Context, params types.StreamParams) (<-chan types.StreamEvent, error) {
 	mapping, err := a.buildMapping(params.Tools)
 	if err != nil {
@@ -60,8 +62,11 @@ func (a *NormalizingAdapter) Stream(ctx context.Context, params types.StreamPara
 	go func() {
 		defer close(out)
 		for ev := range innerCh {
-			if ev.Type == "tool_call" {
+			switch ev.Type {
+			case "tool_call":
 				ev.Name = mapping.Reverse(ev.Name)
+			case "tool_search_result":
+				ev.ToolReferences = translateNames(ev.ToolReferences, mapping.Reverse)
 			}
 			select {
 			case out <- ev:
@@ -145,9 +150,10 @@ func (a *NormalizingAdapter) rewriteParams(params types.StreamParams, mapping *t
 }
 
 // cloneMessagesWithTranslatedToolNames returns a copy of messages with
-// every tool_use ContentBlock's Name translated through the mapping.
-// Other block types pass through unchanged; the slice copy makes the
-// rewrite safe against caller-side aliasing.
+// every tool_use ContentBlock's Name and every tool_search_result
+// block's ToolReferences translated through the mapping. Other block
+// types pass through unchanged; the slice copy makes the rewrite safe
+// against caller-side aliasing.
 func cloneMessagesWithTranslatedToolNames(messages []types.Message, mapping *toolname.Mapping) []types.Message {
 	if len(messages) == 0 {
 		return messages
@@ -160,11 +166,27 @@ func cloneMessagesWithTranslatedToolNames(messages []types.Message, mapping *too
 		}
 		blocks := slices.Clone(m.Content)
 		for j, b := range blocks {
-			if b.Type == "tool_use" {
+			switch b.Type {
+			case "tool_use":
 				blocks[j].Name = mapping.Translate(b.Name)
+			case "tool_search_result":
+				blocks[j].ToolReferences = translateNames(b.ToolReferences, mapping.Translate)
 			}
 		}
 		out[i].Content = blocks
+	}
+	return out
+}
+
+// translateNames returns a new slice of names mapped through translate,
+// leaving the input untouched; nil stays nil.
+func translateNames(names []string, translate func(string) string) []string {
+	if names == nil {
+		return nil
+	}
+	out := make([]string, len(names))
+	for i, name := range names {
+		out[i] = translate(name)
 	}
 	return out
 }
