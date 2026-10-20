@@ -61,7 +61,7 @@ func TestRunFollowUpLoop_LazyTools_ReportsSetupOncePerSession(t *testing.T) {
 	loop.Logger = bufferLogger(&logs)
 	registry := loop.Tools.(*tool.Registry)
 	registerLazyMCPTool(registry, lazyMCPTool)
-	registry.Register(builtins.ToolSearchTool())
+	registry.Register(builtins.ToolSearchTool(types.LazyToolLoadingConfig{}))
 	loop.LazyTools = tool.NewLazyLoader(registry, types.LazyToolLoadingConfig{Enabled: true, Eager: []string{"test_tool", "no_such_tool"}}, tool.LazyLoaderOptions{})
 	config := buildTestConfig()
 	config.FollowUpHistory = types.FollowUpHistoryContinue
@@ -94,7 +94,7 @@ func TestLoop_LazyTools_LogsWhatRunStartDefers(t *testing.T) {
 		registry.Register(tool.ControlPlaneTool(types.ControlPlaneToolConfig{
 			Name: "ticket_lookup", Description: "look up a ticket", InputSchema: json.RawMessage(`{"type":"object"}`),
 		}))
-		registry.Register(builtins.ToolSearchTool())
+		registry.Register(builtins.ToolSearchTool(types.LazyToolLoadingConfig{}))
 		loop.LazyTools = tool.NewLazyLoader(registry, types.LazyToolLoadingConfig{Enabled: true, Strategy: types.LazyToolStrategyHarness},
 			tool.LazyLoaderOptions{ControlPlaneTools: []string{"ticket_lookup"}})
 
@@ -120,7 +120,7 @@ func TestLoop_LazyTools_LogsWhatRunStartDefers(t *testing.T) {
 		var logs bytes.Buffer
 		loop.Logger = bufferLogger(&logs)
 		registry := loop.Tools.(*tool.Registry)
-		registry.Register(builtins.ToolSearchTool())
+		registry.Register(builtins.ToolSearchTool(types.LazyToolLoadingConfig{}))
 		loop.LazyTools = tool.NewLazyLoader(registry, types.LazyToolLoadingConfig{Enabled: true}, tool.LazyLoaderOptions{})
 
 		_, err := loop.Run(context.Background(), buildTestConfig())
@@ -150,7 +150,7 @@ func TestSpawnSubAgent_LazyTools_ChildReportsNoSetup(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			must := require.New(t)
 			registry, _ := spawnParentRegistry(t, true)
-			registry.Register(builtins.ToolSearchTool())
+			registry.Register(builtins.ToolSearchTool(types.LazyToolLoadingConfig{}))
 			parent := buildSubAgentTestLoop(&mockProvider{})
 			parent.Tools = registry
 			var logs bytes.Buffer

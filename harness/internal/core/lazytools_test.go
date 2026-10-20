@@ -66,7 +66,7 @@ func buildLazyTestLoop(t *testing.T, prov *scriptedParamsProvider, cfg types.Laz
 			return "issue opened", nil
 		},
 	})
-	registry.Register(builtins.ToolSearchTool())
+	registry.Register(builtins.ToolSearchTool(types.LazyToolLoadingConfig{}))
 	cfg.Enabled = true
 	loop.LazyTools = tool.NewLazyLoader(registry, cfg, tool.LazyLoaderOptions{MCPServers: []string{"github"}})
 	tp := &recordingTransport{}
@@ -331,7 +331,7 @@ func TestLoop_LazyTools_NothingDeferredIsANoOp(t *testing.T) {
 	loop := buildTestLoop(nil)
 	loop.Provider = prov
 	registry := loop.Tools.(*tool.Registry)
-	registry.Register(builtins.ToolSearchTool())
+	registry.Register(builtins.ToolSearchTool(types.LazyToolLoadingConfig{}))
 	loop.LazyTools = tool.NewLazyLoader(registry, types.LazyToolLoadingConfig{Enabled: true}, tool.LazyLoaderOptions{})
 	loop.ToolSearch = func(string, string) quirks.ToolSearchCapability {
 		return quirks.ToolSearchCapability{Supported: true}
@@ -395,7 +395,7 @@ func TestPrepareSubAgent_ChildGetsAFreshLazyLoader(t *testing.T) {
 		WorkspaceMutating: true,
 		Handler:           func(context.Context, json.RawMessage) (string, error) { return "", nil },
 	})
-	registry.Register(builtins.ToolSearchTool())
+	registry.Register(builtins.ToolSearchTool(types.LazyToolLoadingConfig{}))
 	parent.LazyTools = tool.NewLazyLoader(registry, types.LazyToolLoadingConfig{Enabled: true}, tool.LazyLoaderOptions{MCPServers: []string{"github"}})
 	parent.LazyTools.Load([]string{lazyMCPTool})
 	parent.ToolSearch = func(string, string) quirks.ToolSearchCapability { return quirks.ToolSearchCapability{} }

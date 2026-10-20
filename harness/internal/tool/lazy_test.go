@@ -196,6 +196,89 @@ func TestLazyLoader_SearchRanksNameAboveDescriptionAboveSchema(t *testing.T) {
 	must.Empty(l.Search("weather", 0))
 }
 
+func matchIDs(matches []LazyMatch) []string {
+	out := make([]string, len(matches))
+	for i, m := range matches {
+		out[i] = m.ID
+	}
+	return out
+}
+
+func TestLazyLoader_SearchRanksByScoreAcrossRegistrationOrder(t *testing.T) {
+	must := require.New(t)
+	schemaHit := fixedTool("mcp_srv_beta", "Something else")
+	schemaHit.InputSchema = json.RawMessage(`{"type":"object","properties":{"widget":{"type":"string"}}}`)
+	l := NewLazyLoader(newRegistryWith(
+		fixedTool("read_file", "Read a file"),
+		schemaHit,
+		fixedTool("mcp_srv_alpha", "Create a widget"),
+		fixedTool("mcp_srv_widget", "Unrelated text"),
+	), types.LazyToolLoadingConfig{Enabled: true}, LazyLoaderOptions{})
+
+	must.Equal([]string{"mcp_srv_widget", "mcp_srv_alpha", "mcp_srv_beta"}, matchIDs(l.Search("widget", 0)),
+		"a later name hit outranks an earlier description hit, which outranks a schema hit")
+}
+
+func TestLazyLoader_SearchAccumulatesTermScores(t *testing.T) {
+	must := require.New(t)
+	l := NewLazyLoader(newRegistryWith(
+		fixedTool("read_file", "Read a file"),
+		fixedTool("mcp_srv_issue", "Unrelated text"),
+		fixedTool("mcp_srv_other", "Add a comment to an issue"),
+	), types.LazyToolLoadingConfig{Enabled: true}, LazyLoaderOptions{})
+
+	must.Equal([]string{"mcp_srv_other", "mcp_srv_issue"}, matchIDs(l.Search("issue comment", 0)),
+		"two description hits outscore one name hit")
+}
+
+func TestLazyLoader_SearchScoresAtMost32Terms(t *testing.T) {
+	must := require.New(t)
+	l := NewLazyLoader(newRegistryWith(
+		fixedTool("read_file", "Read a file"),
+		fixedTool("mcp_srv_widget", "Make widgets"),
+	), types.LazyToolLoadingConfig{Enabled: true}, LazyLoaderOptions{})
+	query := ""
+	for i := range maxSearchTerms {
+		query += fmt.Sprintf("filler%02d ", i)
+	}
+
+	must.NotPanics(func() { l.Search(query+"widget", 0) })
+	must.Empty(l.Search(query+"widget", 0), "the 33rd term is not scored")
+	must.Equal([]string{"mcp_srv_widget"}, matchIDs(l.Search("widget "+query, 0)))
+}
+
+func TestLazyLoader_SearchFoldsNonASCIICase(t *testing.T) {
+	must := require.New(t)
+	l := NewLazyLoader(newRegistryWith(
+		fixedTool("read_file", "Read a file"),
+		fixedTool("mcp_srv_cv", "Build a résumé"),
+	), types.LazyToolLoadingConfig{Enabled: true}, LazyLoaderOptions{})
+	must.Equal([]string{"mcp_srv_cv"}, matchIDs(l.Search("RÉSUMÉ", 0)))
+}
+
+func TestLazyLoader_SearchExcludesLoadedTools(t *testing.T) {
+	must := require.New(t)
+	l := NewLazyLoader(lazyFixture(), types.LazyToolLoadingConfig{Enabled: true}, lazyFixtureOptions)
+	l.Load([]string{"mcp_github_create_issue"})
+
+	must.Equal([]string{"mcp_github_list_pulls"}, matchIDs(l.Search("github", 0)))
+	must.Equal([]string{"mcp_github_create_issue"}, matchIDs(l.LoadedMatches("github")))
+	must.Empty(l.LoadedMatches("ticket"), "a loaded tool that does not match is not reported")
+}
+
+func TestLazyLoader_InternalIDPassesUnknownNamesThrough(t *testing.T) {
+	must := require.New(t)
+	l := NewLazyLoader(lazyFixture(), types.LazyToolLoadingConfig{Enabled: true}, lazyFixtureOptions)
+	must.Equal("mcp_nowhere_tool", l.InternalID("mcp_nowhere_tool"))
+}
+
+func TestSchemaSearchText_IgnoresUnparseableSchemas(t *testing.T) {
+	must := require.New(t)
+	must.Empty(schemaSearchText(json.RawMessage(`{"properties":`)))
+	must.Empty(schemaSearchText(nil))
+	must.Equal("path\nfile to read\n", schemaSearchText(json.RawMessage(`{"properties":{"path":{"description":"File to read"}}}`)))
+}
+
 func TestLazyLoader_SearchClampsLimit(t *testing.T) {
 	must := require.New(t)
 	reg := NewRegistry()
@@ -220,13 +303,14 @@ func TestLazyLoader_KeysOnInternalIDsUnderAProfile(t *testing.T) {
 
 	must.True(l.Deferred("run_command"))
 	must.Equal("run_command", l.InternalID("bash"))
-	must.Equal([]string{"run_command"}, l.Load([]string{l.InternalID("bash")}))
-	must.Contains(defNames(l.Visible(false)), "bash", "a loaded tool is sent under its presented name")
 
 	matches := l.Search("shell", 0)
 	must.Len(matches, 1)
 	must.Equal("run_command", matches[0].ID)
 	must.Equal("bash", matches[0].Definition.Name)
+
+	must.Equal([]string{"run_command"}, l.Load([]string{l.InternalID("bash")}))
+	must.Contains(defNames(l.Visible(false)), "bash", "a loaded tool is sent under its presented name")
 
 	messages := []types.Message{
 		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},

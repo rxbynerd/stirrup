@@ -1277,7 +1277,7 @@ func buildToolRegistry(exec executor.Executor, es edit.EditStrategy, cfg types.T
 	// schema index and the Cedar lint know it; the loop's lazy loader
 	// decides whether a turn sends it.
 	if cfg.LazyLoading.Enabled {
-		registry.Register(builtins.ToolSearchTool())
+		registry.Register(builtins.ToolSearchTool(cfg.LazyLoading))
 	}
 	return registry
 }

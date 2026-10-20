@@ -308,16 +308,28 @@ func (l *LazyLoader) Visible(native bool) []types.ToolDefinition {
 	return out
 }
 
-// Search returns the deferred tools that best match query, at most limit
-// of them (clamped to 1..EffectiveMaxResults). Each query term scores the
-// strongest field it appears in: name, then description, then input
-// schema property names and descriptions. Ties keep registration order;
-// tools matching no term are not returned.
+// Search returns the deferred tools not yet loaded that best match query,
+// at most limit of them (clamped to 1..EffectiveMaxResults). Each query
+// term scores the strongest field it appears in: name, then description,
+// then input schema property names and descriptions. Ties keep
+// registration order; tools matching no term are not returned.
 func (l *LazyLoader) Search(query string, limit int) []LazyMatch {
 	maxResults := l.cfg.EffectiveMaxResults()
 	if limit <= 0 || limit > maxResults {
 		limit = maxResults
 	}
+	return l.search(query, limit, func(id string) bool { return !l.Loaded(id) })
+}
+
+// LoadedMatches returns the loaded deferred tools that match query,
+// ranked as Search ranks them, at most MaxLazyToolSearchResults of them.
+func (l *LazyLoader) LoadedMatches(query string) []LazyMatch {
+	return l.search(query, types.MaxLazyToolSearchResults, l.Loaded)
+}
+
+// search ranks the deferred tools for which include reports true against
+// query and returns at most limit of them.
+func (l *LazyLoader) search(query string, limit int, include func(id string) bool) []LazyMatch {
 	terms := searchTerms(query)
 	if len(terms) == 0 {
 		return nil
@@ -327,7 +339,7 @@ func (l *LazyLoader) Search(query string, limit int) []LazyMatch {
 	}
 	var hits []scored
 	for i, e := range l.entries {
-		if !l.deferred[e.id] {
+		if !l.deferred[e.id] || !include(e.id) {
 			continue
 		}
 		name := strings.ToLower(e.def.Name)

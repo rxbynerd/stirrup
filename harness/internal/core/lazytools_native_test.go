@@ -121,7 +121,7 @@ func TestLoadSearchedTools_CapsReferencesPerResult(t *testing.T) {
 			Handler:     func(context.Context, json.RawMessage) (string, error) { return "", nil },
 		})
 	}
-	registry.Register(builtins.ToolSearchTool())
+	registry.Register(builtins.ToolSearchTool(types.LazyToolLoadingConfig{}))
 	loop.LazyTools = tool.NewLazyLoader(registry, types.LazyToolLoadingConfig{Enabled: true}, tool.LazyLoaderOptions{})
 	blocks := []types.ContentBlock{
 		{Type: "tool_search", ID: "srvtoolu_1", Name: "tool_search_tool_bm25"},
