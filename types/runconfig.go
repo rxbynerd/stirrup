@@ -4835,8 +4835,13 @@ func validateReplayProviderFields(path string, cfg ProviderConfig, errs *[]strin
 		}
 		return
 	}
-	if cfg.ReplayFile == "" {
+	switch cfg.ReplayFile {
+	case "":
 		*errs = append(*errs, fmt.Sprintf("%s.replayFile is required for provider type %q", path, "replay"))
+	case "-":
+		// The trace reader treats "-" as stdin, which the harness may
+		// already be consuming for a piped RunConfig.
+		*errs = append(*errs, fmt.Sprintf("%s.replayFile must be a file path, not %q", path, "-"))
 	}
 	if cfg.APIKeyRef != "" {
 		*errs = append(*errs, fmt.Sprintf("%s.apiKeyRef must not be set for provider type %q; a replay provider resolves no credential", path, "replay"))

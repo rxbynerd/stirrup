@@ -3105,3 +3105,91 @@ func TestSandboxLifecycle_MaxLifetime(t *testing.T) {
 		must.Equal(10*time.Minute+executor.SandboxGCMargin, sandboxLifecycle(cfg, 0).MaxLifetime)
 	})
 }
+
+// writeReplayRecording writes a JSONL trace holding the given turn_record
+// lines and returns its path.
+func writeReplayRecording(t *testing.T, lines ...string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "recording.jsonl")
+	require.NoError(t, os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600))
+	return path
+}
+
+func TestBuildProvider_Replay_ServesRecordedTurns(t *testing.T) {
+	must := require.New(t)
+	path := writeReplayRecording(t,
+		`{"kind":"turn_record","turn":1,"modelOutput":[{"type":"tool_use","id":"c1","name":"read_file","input":{"path":"a.txt"}}]}`,
+		`{"kind":"turn_record","turn":2,"modelOutput":[{"type":"text","text":"done"}]}`,
+	)
+	prov, err := buildProvider(context.Background(), types.ProviderConfig{Type: "replay", ReplayFile: path}, &stubSecretStore{})
+	must.NoError(err)
+	replay, ok := prov.(*provider.ReplayProvider)
+	must.True(ok, "buildProvider type = %T, want *provider.ReplayProvider", prov)
+	must.Equal(2, replay.Len())
+}
+
+func TestBuildProvider_Replay_RejectsMissingFile(t *testing.T) {
+	must := require.New(t)
+	_, err := buildProvider(context.Background(), types.ProviderConfig{
+		Type:       "replay",
+		ReplayFile: filepath.Join(t.TempDir(), "absent.jsonl"),
+	}, &stubSecretStore{})
+	must.ErrorContains(err, "open replay file")
+}
+
+func TestBuildProvider_Replay_RejectsRecordingWithoutTurns(t *testing.T) {
+	must := require.New(t)
+	path := writeReplayRecording(t, `{"kind":"run_started","runId":"r1"}`)
+	_, err := buildProvider(context.Background(), types.ProviderConfig{Type: "replay", ReplayFile: path}, &stubSecretStore{})
+	must.ErrorContains(err, "holds no turn_record event")
+}
+
+// TestBuildLoop_ReplayProvider_RunsRecordedTurns drives a RunConfig that
+// selects the replay provider through the factory and the full agentic
+// loop: the recorded edit_file call lands on the seeded workspace and the
+// run completes with no credential and no network.
+func TestBuildLoop_ReplayProvider_RunsRecordedTurns(t *testing.T) {
+	must := require.New(t)
+	workspace := t.TempDir()
+	target := filepath.Join(workspace, "greeting.txt")
+	must.NoError(os.WriteFile(target, []byte("hello old world\n"), 0o644))
+	recording := writeReplayRecording(t,
+		`{"kind":"turn_record","turn":1,"modelOutput":[{"type":"tool_use","id":"c1","name":"edit_file","input":{"path":"greeting.txt","operation":"replace","old_string":"old","new_string":"new"}}]}`,
+		`{"kind":"turn_record","turn":2,"modelOutput":[{"type":"text","text":"Updated."}]}`,
+	)
+
+	timeout := 30
+	enforce := false
+	config := &types.RunConfig{
+		RunID:            "replay-provider-loop",
+		Mode:             "execution",
+		Prompt:           "Change old to new.",
+		Provider:         types.ProviderConfig{Type: "replay", ReplayFile: recording},
+		ModelRouter:      types.ModelRouterConfig{Type: "static", Model: "replay"},
+		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 200000},
+		Executor:         types.ExecutorConfig{Type: "local", Workspace: workspace},
+		EditStrategy:     types.EditStrategyConfig{Type: "multi"},
+		Verifier:         types.VerifierConfig{Type: "none"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		RuleOfTwo:        &types.RuleOfTwoConfig{Enforce: &enforce},
+		MaxTurns:         4,
+		Timeout:          &timeout,
+	}
+	must.NoError(types.ValidateRunConfig(config))
+
+	loop, err := BuildLoopWithTransport(context.Background(), config, transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}))
+	must.NoError(err)
+	defer func() { _ = loop.Close() }()
+
+	runTrace, err := loop.Run(context.Background(), config)
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
+	got, err := os.ReadFile(target)
+	must.NoError(err)
+	must.Equal("hello new world\n", string(got))
+	must.Len(runTrace.ToolCalls, 1)
+	must.Equal("edit_file", runTrace.ToolCalls[0].Name)
+}

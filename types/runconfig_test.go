@@ -8285,6 +8285,15 @@ func TestValidateRunConfig_ReplayProvider_RequiresReplayFile(t *testing.T) {
 	must.ErrorContains(ValidateRunConfig(c), "provider.replayFile is required")
 }
 
+// TestValidateRunConfig_ReplayProvider_RejectsStdinPath pins that the
+// trace reader's stdin alias is not accepted as a recording path.
+func TestValidateRunConfig_ReplayProvider_RejectsStdinPath(t *testing.T) {
+	must := require.New(t)
+	c := validConfig()
+	c.Provider = ProviderConfig{Type: "replay", ReplayFile: "-"}
+	must.ErrorContains(ValidateRunConfig(c), "provider.replayFile must be a file path")
+}
+
 // TestValidateRunConfig_ReplayProvider_RejectsCredentialFields pins that
 // credential-shaped fields are rejected on a replay provider, so a
 // recording cannot be run with a stale key reference that looks live.

@@ -44,6 +44,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/harness/internal/verifier"
 	"github.com/rxbynerd/stirrup/types"
+	tracereader "github.com/rxbynerd/stirrup/types/trace"
 )
 
 // The executor capability the factory dispatches on and the narrower
@@ -767,6 +768,12 @@ func buildProviders(ctx context.Context, config *types.RunConfig, secrets securi
 }
 
 func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets security.SecretStore) (provider.ProviderAdapter, error) {
+	// A replay provider serves a recording and resolves no credential, so
+	// it is built before the credential source a live adapter needs.
+	if cfg.Type == "replay" {
+		return buildReplayProvider(cfg.ReplayFile)
+	}
+
 	src, err := credential.BuildSource(cfg, secrets)
 	if err != nil {
 		return nil, fmt.Errorf("build credential source: %w", err)
@@ -841,6 +848,27 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 	default:
 		return nil, fmt.Errorf("unsupported provider type: %q (supported: anthropic, bedrock, gemini, openai-compatible, openai-responses)", cfg.Type)
 	}
+}
+
+// buildReplayProvider loads the turn_record events of a JSONL trace and
+// serves them as the model output of successive turns. A recording with
+// no replayable turn fails here rather than on the first turn, so a
+// mis-pointed path surfaces at construction.
+func buildReplayProvider(path string) (provider.ProviderAdapter, error) {
+	reader, err := tracereader.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open replay file: %w", err)
+	}
+	defer func() { _ = reader.Close() }()
+	recording, err := reader.ReadRecording()
+	if err != nil {
+		return nil, fmt.Errorf("read replay file %q: %w", path, err)
+	}
+	adapter := provider.NewReplayProvider(recording.Turns)
+	if adapter.Len() == 0 {
+		return nil, fmt.Errorf("replay file %q holds no turn_record event to replay", path)
+	}
+	return adapter, nil
 }
 
 func buildRouter(cfg types.ModelRouterConfig, defaultProvider string) router.ModelRouter {
