@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -440,7 +441,7 @@ type anthropicBatchResponse struct {
 }
 
 type anthropicBatchContentBlock struct {
-	Type      string          `json:"type"` // "text" | "tool_use" | "thinking" | "redacted_thinking"
+	Type      string          `json:"type"` // "text" | "tool_use" | "thinking" | "redacted_thinking" | "server_tool_use" | "tool_search_tool_result"
 	Text      string          `json:"text,omitempty"`
 	ID        string          `json:"id,omitempty"`
 	Name      string          `json:"name,omitempty"`
@@ -448,12 +449,15 @@ type anthropicBatchContentBlock struct {
 	Thinking  string          `json:"thinking,omitempty"`
 	Signature string          `json:"signature,omitempty"`
 	Data      string          `json:"data,omitempty"`
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+	Content   json.RawMessage `json:"content,omitempty"`
 }
 
 // fabricateAnthropicStream mirrors the SSE event sequence consumeSSE
 // produces in anthropic.go: one text_delta per text content block (not
 // per token), one tool_call per tool_use block, one thinking or
-// redacted_thinking event per reasoning block, then a single
+// redacted_thinking event per reasoning block, one tool_search and
+// tool_search_result event per native tool search, then a single
 // message_complete carrying the assembled content blocks plus
 // stop_reason and reported usage — observationally indistinguishable from
 // the live SSE path for the agentic loop.
@@ -463,9 +467,34 @@ func fabricateAnthropicStream(ch chan<- types.StreamEvent, response json.RawMess
 		return fmt.Errorf("fabricate anthropic stream: decode response: %w", err)
 	}
 
+	ctx, logger := context.Background(), slog.Default()
 	blocks := make([]types.ContentBlock, 0, len(resp.Content))
 	for _, block := range resp.Content {
 		switch block.Type {
+		case "server_tool_use":
+			if !isAnthropicToolSearchName(block.Name) {
+				continue
+			}
+			ch <- toolSearchCallEvent(ctx, logger, block.ID, block.Name, "", block.Input)
+			blocks = append(blocks, types.ContentBlock{
+				Type:  "tool_search",
+				ID:    block.ID,
+				Name:  block.Name,
+				Input: block.Input,
+			})
+		case "tool_search_tool_result":
+			ev := parseAnthropicToolSearchResult(ctx, logger, block.ToolUseID, block.Content)
+			ch <- ev
+			result := types.ContentBlock{
+				Type:           "tool_search_result",
+				ToolUseID:      block.ToolUseID,
+				ToolReferences: ev.ToolReferences,
+			}
+			if ev.Name != "" {
+				result.IsError = true
+				result.Content = ev.Name + ": " + ev.Text
+			}
+			blocks = append(blocks, result)
 		case "text":
 			ch <- types.StreamEvent{Type: "text_delta", Text: block.Text}
 			blocks = append(blocks, types.ContentBlock{
