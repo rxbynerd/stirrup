@@ -11,7 +11,7 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-const toolSearchModel = "gpt-5.5"
+const responsesToolSearchModel = "gpt-5.5"
 
 var (
 	readFileTool = types.ToolDefinition{
@@ -27,23 +27,23 @@ var (
 	}
 )
 
-// toolSearchQuirks resolves quirks with hosted tool search on or off and
+// responsesToolSearchQuirks resolves quirks with hosted tool search on or off and
 // strict mode off, so a test pins one concern at a time.
-func toolSearchQuirks(supported bool) quirks.ProviderQuirks {
+func responsesToolSearchQuirks(supported bool) quirks.ProviderQuirks {
 	return quirks.NewRegistry([]quirks.Rule{{
 		ProviderType: "openai-responses",
-		ModelMatch:   toolSearchModel,
+		ModelMatch:   responsesToolSearchModel,
 		Description:  "test: hosted tool search",
 		LastVerified: quirks.Date("2026-10-20"),
 		Apply: func(q *quirks.ProviderQuirks) {
 			q.ToolSearch = quirks.ToolSearchCapability{Supported: supported, Variant: "hosted"}
 		},
-	}}).Resolve("openai-responses", toolSearchModel)
+	}}).Resolve("openai-responses", responsesToolSearchModel)
 }
 
-func toolSearchParams() types.StreamParams {
+func responsesToolSearchParams() types.StreamParams {
 	return types.StreamParams{
-		Model:      toolSearchModel,
+		Model:      responsesToolSearchModel,
 		MaxTokens:  1024,
 		ToolSearch: true,
 		Tools:      []types.ToolDefinition{readFileTool, jiraCreateTool},
@@ -69,14 +69,14 @@ func requestTools(t *testing.T, params types.StreamParams, q quirks.ProviderQuir
 
 func TestBuildResponsesRequest_ToolSearchAppendsHostedEntry(t *testing.T) {
 	must := require.New(t)
-	tools := requestTools(t, toolSearchParams(), toolSearchQuirks(true))
+	tools := requestTools(t, responsesToolSearchParams(), responsesToolSearchQuirks(true))
 	must.Len(tools, 3)
 	must.Equal(map[string]any{"type": "tool_search"}, tools[2], "hosted search entry carries only its type")
 }
 
 func TestBuildResponsesRequest_ToolSearchDefersOnlyDeferredTools(t *testing.T) {
 	must := require.New(t)
-	tools := requestTools(t, toolSearchParams(), toolSearchQuirks(true))
+	tools := requestTools(t, responsesToolSearchParams(), responsesToolSearchQuirks(true))
 	must.Len(tools, 3)
 	must.Equal("read_file", tools[0]["name"])
 	must.NotContains(tools[0], "defer_loading")
@@ -88,9 +88,9 @@ func TestBuildResponsesRequest_ToolSearchDefersOnlyDeferredTools(t *testing.T) {
 
 func TestBuildResponsesRequest_ToolSearchComposesWithStrictMode(t *testing.T) {
 	must := require.New(t)
-	q := toolSearchQuirks(true)
+	q := responsesToolSearchQuirks(true)
 	q.BehaviourFlags.OpenAI.StrictMode = true
-	tools := requestTools(t, toolSearchParams(), q)
+	tools := requestTools(t, responsesToolSearchParams(), q)
 	must.Len(tools, 3)
 	must.Equal(true, tools[1]["strict"])
 	must.Equal(true, tools[1]["defer_loading"])
@@ -106,12 +106,12 @@ func TestBuildResponsesRequest_ToolSearchGateOff(t *testing.T) {
 		params func() types.StreamParams
 		q      quirks.ProviderQuirks
 	}{
-		{"quirks do not support it", toolSearchParams, toolSearchQuirks(false)},
+		{"quirks do not support it", responsesToolSearchParams, responsesToolSearchQuirks(false)},
 		{"loop did not ask for it", func() types.StreamParams {
-			p := toolSearchParams()
+			p := responsesToolSearchParams()
 			p.ToolSearch = false
 			return p
-		}, toolSearchQuirks(true)},
+		}, responsesToolSearchQuirks(true)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -128,16 +128,16 @@ func TestBuildResponsesRequest_ToolSearchGateOff(t *testing.T) {
 
 func TestBuildResponsesRequest_ToolSearchWithoutToolsSendsNoTools(t *testing.T) {
 	must := require.New(t)
-	params := toolSearchParams()
+	params := responsesToolSearchParams()
 	params.Tools = nil
-	req, err := buildResponsesRequest(params, toolSearchQuirks(true), nil, "")
+	req, err := buildResponsesRequest(params, responsesToolSearchQuirks(true), nil, "")
 	must.NoError(err)
 	must.Empty(req.Tools)
 }
 
 func TestResponsesTool_RoundTripsHostedSearchEntry(t *testing.T) {
 	must := require.New(t)
-	req, err := buildResponsesRequest(toolSearchParams(), toolSearchQuirks(true), nil, "")
+	req, err := buildResponsesRequest(responsesToolSearchParams(), responsesToolSearchQuirks(true), nil, "")
 	must.NoError(err)
 	body, err := json.Marshal(req)
 	must.NoError(err)
@@ -157,9 +157,9 @@ const (
 	loadedFunctionCall   = `{"type":"function_call","id":"fc_1","call_id":"call_1","name":"mcp_jira_create_issue","namespace":"mcp_jira_create_issue","arguments":"{\"title\":\"Broken build\"}","status":"completed"}`
 )
 
-// toolSearchSSE is one response that searches, loads a deferred tool and
+// responsesToolSearchSSE is one response that searches, loads a deferred tool and
 // calls it.
-func toolSearchSSE() []byte {
+func responsesToolSearchSSE() []byte {
 	return []byte(strings.Join([]string{
 		makeResponsesEvent("response.output_item.added", `{"output_index":0,"item":{"type":"tool_search_call","id":"tsc_1","execution":"server","call_id":null,"status":"in_progress","arguments":{}}}`),
 		makeResponsesEvent("response.output_item.done", `{"output_index":0,"item":`+toolSearchCallItem+`}`),
@@ -174,7 +174,7 @@ func toolSearchSSE() []byte {
 
 func TestOpenAIResponsesAdapter_StreamEmitsHostedToolSearch(t *testing.T) {
 	must := require.New(t)
-	events := streamResponsesSSE(t, toolSearchSSE(), nil)
+	events := streamResponsesSSE(t, responsesToolSearchSSE(), nil)
 
 	must.Len(events, 4)
 	must.Equal(types.StreamEvent{
@@ -298,9 +298,9 @@ func TestResponsesOutputItem_FunctionCallArgumentsMustBeAString(t *testing.T) {
 	must.Error(err, "object arguments are accepted only on tool_search_call items")
 }
 
-// toolSearchTurnBlocks is the assistant content the loop persists for
-// toolSearchSSE.
-func toolSearchTurnBlocks() []types.ContentBlock {
+// responsesToolSearchTurnBlocks is the assistant content the loop persists for
+// responsesToolSearchSSE.
+func responsesToolSearchTurnBlocks() []types.ContentBlock {
 	return []types.ContentBlock{
 		{Type: "tool_search", ID: "tsc_1", Name: "tool_search", Input: json.RawMessage(`{"paths":["mcp_jira_create_issue"]}`)},
 		{Type: "tool_search_result", ToolUseID: "tsc_1", ToolReferences: []string{"mcp_jira_create_issue"}},
@@ -308,7 +308,7 @@ func toolSearchTurnBlocks() []types.ContentBlock {
 	}
 }
 
-func toolSearchHistory(blocks []types.ContentBlock) []types.Message {
+func responsesToolSearchHistory(blocks []types.ContentBlock) []types.Message {
 	return []types.Message{
 		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "file a ticket"}}},
 		{Role: "assistant", Content: blocks},
@@ -318,9 +318,9 @@ func toolSearchHistory(blocks []types.ContentBlock) []types.Message {
 
 func TestBuildResponsesRequest_ToolSearchReconstructsSearchItems(t *testing.T) {
 	must := require.New(t)
-	params := toolSearchParams()
-	params.Messages = toolSearchHistory(toolSearchTurnBlocks())
-	req, err := buildResponsesRequest(params, toolSearchQuirks(true), nil, "")
+	params := responsesToolSearchParams()
+	params.Messages = responsesToolSearchHistory(responsesToolSearchTurnBlocks())
+	req, err := buildResponsesRequest(params, responsesToolSearchQuirks(true), nil, "")
 	must.NoError(err)
 	input, err := json.Marshal(req.Input)
 	must.NoError(err)
@@ -339,13 +339,13 @@ func TestBuildResponsesRequest_ToolSearchReconstructsSearchItems(t *testing.T) {
 
 func TestBuildResponsesRequest_ToolSearchReconstructsEmptyResult(t *testing.T) {
 	must := require.New(t)
-	params := toolSearchParams()
-	params.Messages = toolSearchHistory([]types.ContentBlock{
+	params := responsesToolSearchParams()
+	params.Messages = responsesToolSearchHistory([]types.ContentBlock{
 		{Type: "tool_search", ID: "tsc_1", Name: "tool_search", Input: json.RawMessage(`{"paths":["nothing"]}`)},
 		{Type: "tool_search_result", ToolUseID: "tsc_1"},
 		{Type: "text", Text: "No matching tool."},
 	})
-	req, err := buildResponsesRequest(params, toolSearchQuirks(true), nil, "")
+	req, err := buildResponsesRequest(params, responsesToolSearchQuirks(true), nil, "")
 	must.NoError(err)
 	input, err := json.Marshal(req.Input)
 	must.NoError(err)
@@ -353,33 +353,33 @@ func TestBuildResponsesRequest_ToolSearchReconstructsEmptyResult(t *testing.T) {
 }
 
 func TestBuildResponsesRequest_ToolSearchDropsUnreconstructableSearches(t *testing.T) {
-	blocks := toolSearchTurnBlocks
+	blocks := responsesToolSearchTurnBlocks
 	cases := []struct {
 		name   string
 		blocks func() []types.ContentBlock
 		q      quirks.ProviderQuirks
 		params func(types.StreamParams) types.StreamParams
 	}{
-		{name: "quirks do not support tool search", blocks: blocks, q: toolSearchQuirks(false)},
-		{name: "loop did not ask for tool search", blocks: blocks, q: toolSearchQuirks(true),
+		{name: "quirks do not support tool search", blocks: blocks, q: responsesToolSearchQuirks(false)},
+		{name: "loop did not ask for tool search", blocks: blocks, q: responsesToolSearchQuirks(true),
 			params: func(p types.StreamParams) types.StreamParams { p.ToolSearch = false; return p }},
-		{name: "loaded tool missing from the request", blocks: blocks, q: toolSearchQuirks(true),
+		{name: "loaded tool missing from the request", blocks: blocks, q: responsesToolSearchQuirks(true),
 			params: func(p types.StreamParams) types.StreamParams { p.Tools = p.Tools[:1]; return p }},
-		{name: "failed search", q: toolSearchQuirks(true), blocks: func() []types.ContentBlock {
+		{name: "failed search", q: responsesToolSearchQuirks(true), blocks: func() []types.ContentBlock {
 			b := blocks()
 			b[1] = types.ContentBlock{Type: "tool_search_result", ToolUseID: "tsc_1", IsError: true, Content: "unavailable: search failed"}
 			return b
 		}},
-		{name: "result without its call", q: toolSearchQuirks(true), blocks: func() []types.ContentBlock { return blocks()[1:] }},
-		{name: "call without its result", q: toolSearchQuirks(true), blocks: func() []types.ContentBlock {
+		{name: "result without its call", q: responsesToolSearchQuirks(true), blocks: func() []types.ContentBlock { return blocks()[1:] }},
+		{name: "call without its result", q: responsesToolSearchQuirks(true), blocks: func() []types.ContentBlock {
 			b := blocks()
 			return []types.ContentBlock{b[0], b[2]}
 		}},
-		{name: "repeated call id", q: toolSearchQuirks(true), blocks: func() []types.ContentBlock {
+		{name: "repeated call id", q: responsesToolSearchQuirks(true), blocks: func() []types.ContentBlock {
 			b := blocks()
 			return []types.ContentBlock{b[0], b[0], b[1], b[2]}
 		}},
-		{name: "search input not JSON", q: toolSearchQuirks(true), blocks: func() []types.ContentBlock {
+		{name: "search input not JSON", q: responsesToolSearchQuirks(true), blocks: func() []types.ContentBlock {
 			b := blocks()
 			b[0].Input = json.RawMessage(`{"paths":`)
 			return b
@@ -388,8 +388,8 @@ func TestBuildResponsesRequest_ToolSearchDropsUnreconstructableSearches(t *testi
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
-			params := toolSearchParams()
-			params.Messages = toolSearchHistory(tc.blocks())
+			params := responsesToolSearchParams()
+			params.Messages = responsesToolSearchHistory(tc.blocks())
 			if tc.params != nil {
 				params = tc.params(params)
 			}
@@ -416,20 +416,20 @@ func TestBuildResponsesRequest_ToolSearchDropsUnreconstructableSearches(t *testi
 // replays the stored search items verbatim ahead of the function call.
 func TestOpenAIResponsesAdapter_ToolSearchReplaysItemsInPlace(t *testing.T) {
 	must := require.New(t)
-	script := newResponsesScript(t, toolSearchSSE())
+	script := newResponsesScript(t, responsesToolSearchSSE())
 	adapter := script.adapter(nil)
-	params := toolSearchParams()
+	params := responsesToolSearchParams()
 	params.Model = responsesReplayModel
 
 	ch, err := adapter.Stream(t.Context(), params)
 	must.NoError(err)
 	events := drainStream(t, ch)
 	assistant := assistantFromEvents(events)
-	must.Equal(toolSearchTurnBlocks(), assistant.Content)
+	must.Equal(responsesToolSearchTurnBlocks(), assistant.Content)
 	stored := storedReplayItems(t, messageComplete(t, events))
 	must.Len(stored, 3)
 
-	params.Messages = toolSearchHistory(assistant.Content)
+	params.Messages = responsesToolSearchHistory(assistant.Content)
 	params.Messages[1].ReplayFields = assistant.ReplayFields
 	ch, err = adapter.Stream(t.Context(), params)
 	must.NoError(err)
@@ -448,9 +448,9 @@ func TestOpenAIResponsesAdapter_ToolSearchReplaysItemsInPlace(t *testing.T) {
 // the next request has no hosted search.
 func TestOpenAIResponsesAdapter_ToolSearchReplayNeedsHostedSearch(t *testing.T) {
 	must := require.New(t)
-	script := newResponsesScript(t, toolSearchSSE())
+	script := newResponsesScript(t, responsesToolSearchSSE())
 	adapter := script.adapter(nil)
-	params := toolSearchParams()
+	params := responsesToolSearchParams()
 	params.Model = responsesReplayModel
 
 	ch, err := adapter.Stream(t.Context(), params)
@@ -458,7 +458,7 @@ func TestOpenAIResponsesAdapter_ToolSearchReplayNeedsHostedSearch(t *testing.T) 
 	assistant := assistantFromEvents(drainStream(t, ch))
 
 	params.ToolSearch = false
-	params.Messages = toolSearchHistory(assistant.Content)
+	params.Messages = responsesToolSearchHistory(assistant.Content)
 	params.Messages[1].ReplayFields = assistant.ReplayFields
 	ch, err = adapter.Stream(t.Context(), params)
 	must.NoError(err)

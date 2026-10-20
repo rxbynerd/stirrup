@@ -705,7 +705,7 @@ func TestTranslateMessagesResponses_ReplayConsistencyFallback(t *testing.T) {
 			`{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"},{"type":"input_image"}]}`)},
 		{"stored item not completed", handBuilt([]types.ContentBlock{text("ok")},
 			`{"type":"message","id":"msg_1","role":"assistant","status":"incomplete","content":[{"type":"output_text","text":"ok"}]}`)},
-		{"stored tool search items without a hosted search", handBuilt(toolSearchTurnBlocks(), toolSearchCallItem, toolSearchOutputItem, loadedFunctionCall)},
+		{"stored tool search items without a hosted search", handBuilt(responsesToolSearchTurnBlocks(), toolSearchCallItem, toolSearchOutputItem, loadedFunctionCall)},
 		{"reasoning-only turn", handBuilt(nil, `{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"enc"}`)},
 		{"refusal-only stored message against a text block", handBuilt([]types.ContentBlock{text("I can't help with that.")},
 			`{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"refusal","refusal":"I can't help with that."}]}`)},
@@ -761,9 +761,9 @@ func TestTranslateMessagesResponses_ReplayConsistencyAccepts(t *testing.T) {
 			[]types.ContentBlock{{Type: "tool_use", ID: "call_1", Name: "list"}},
 			reasoning, `{"type":"function_call","id":"fc_1","call_id":"call_1","name":"list","arguments":"","status":"completed"}`), nil, 2},
 		{"tool search items under a hosted search", storedTurn(t, origin,
-			toolSearchTurnBlocks(), toolSearchCallItem, toolSearchOutputItem, loadedFunctionCall), search, 3},
+			responsesToolSearchTurnBlocks(), toolSearchCallItem, toolSearchOutputItem, loadedFunctionCall), search, 3},
 		{"tool search blocks dropped from the message", storedTurn(t, origin,
-			toolSearchTurnBlocks()[2:], toolSearchCallItem, toolSearchOutputItem, loadedFunctionCall), search, 3},
+			responsesToolSearchTurnBlocks()[2:], toolSearchCallItem, toolSearchOutputItem, loadedFunctionCall), search, 3},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
