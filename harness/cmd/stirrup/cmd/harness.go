@@ -171,6 +171,11 @@ type harnessCLIOptions struct {
 	GCPLocation        string
 	GCPCredentialsFile string
 
+	// ReplayFile is the recording the "replay" provider serves; meaningful
+	// only when ProviderType == "replay" (ValidateRunConfig rejects it
+	// otherwise).
+	ReplayFile string
+
 	// Anthropic Workload Identity Federation fields; meaningful only
 	// when ProviderType == "anthropic". Any of the four ID fields being
 	// set infers credential.type=anthropic-wif.
@@ -370,11 +375,12 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 		Prompt:      opts.Prompt,
 		Provider: types.ProviderConfig{
 			Type: opts.ProviderType,
-			// Dropped for gemini (Vertex AI uses GCP IAM) and for Azure
-			// WIF (bearer comes from OAuth2 exchange); the validator
-			// rejects APIKeyRef in both cases.
+			// Dropped for gemini (Vertex AI uses GCP IAM), for replay (no
+			// credential at all) and for Azure WIF (bearer comes from
+			// OAuth2 exchange); the validator rejects APIKeyRef in each
+			// case.
 			APIKeyRef: func() string {
-				if opts.ProviderType == "gemini" || opts.AzureTenantID != "" {
+				if opts.ProviderType == "gemini" || opts.ProviderType == "replay" || opts.AzureTenantID != "" {
 					return ""
 				}
 				return opts.APIKeyRef
@@ -433,6 +439,9 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 		config.Provider.GCPProject = opts.GCPProject
 		config.Provider.GCPLocation = opts.GCPLocation
 		config.Provider.GCPCredentialsFile = opts.GCPCredentialsFile
+	}
+	if opts.ProviderType == "replay" {
+		config.Provider.ReplayFile = opts.ReplayFile
 	}
 
 	// --gcp-credentials-file implies credential.type=gcp-service-account
@@ -885,11 +894,17 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	}
 	if changed("provider") {
 		cfg.Provider.Type, _ = f.GetString("provider")
-		// Vertex AI uses GCP IAM, not API keys; clear a lingering
-		// file-provided APIKeyRef on switching to gemini, mirroring
-		// buildHarnessRunConfig's flag-only behaviour.
-		if cfg.Provider.Type == "gemini" && !changed("api-key-ref") {
+		// Vertex AI uses GCP IAM and replay resolves no credential;
+		// clear a lingering file-provided APIKeyRef on switching to
+		// either, mirroring buildHarnessRunConfig's flag-only behaviour.
+		if (cfg.Provider.Type == "gemini" || cfg.Provider.Type == "replay") && !changed("api-key-ref") {
 			cfg.Provider.APIKeyRef = ""
+		}
+		// A recording path belongs to the replay provider alone; switching
+		// a replay-backed document to a live provider drops it so the
+		// same document serves both a recorded and a live run.
+		if cfg.Provider.Type != "replay" && !changed("replay-file") {
+			cfg.Provider.ReplayFile = ""
 		}
 	}
 	if changed("model") {
@@ -934,6 +949,9 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	}
 	if changed("gcp-project") {
 		cfg.Provider.GCPProject, _ = f.GetString("gcp-project")
+	}
+	if changed("replay-file") {
+		cfg.Provider.ReplayFile, _ = f.GetString("replay-file")
 	}
 	if changed("gcp-location") {
 		cfg.Provider.GCPLocation, _ = f.GetString("gcp-location")

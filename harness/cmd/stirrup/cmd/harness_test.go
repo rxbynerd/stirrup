@@ -5208,3 +5208,114 @@ func TestRunHarness_BareNonInteractiveKeepsError(t *testing.T) {
 	must.ErrorContains(err, "prompt is required")
 	check.NotContains(errBuf.String(), "USAGE", "non-TTY path must not print the grouped hint")
 }
+
+// TestBuildHarnessRunConfig_ReplayScopesReplayFileAndDropsKey pins the
+// flag-only path for the replay provider: the recording path rides on the
+// provider and the key reference is dropped, so the result validates.
+func TestBuildHarnessRunConfig_ReplayScopesReplayFileAndDropsKey(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          "execution",
+		Prompt:        "test",
+		ProviderType:  "replay",
+		APIKeyRef:     "secret://ANTHROPIC_API_KEY",
+		ReplayFile:    "recordings/run.jsonl",
+		Model:         "replay",
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+	})
+	must.NoError(err)
+	check.Equal("recordings/run.jsonl", cfg.Provider.ReplayFile)
+	check.Empty(cfg.Provider.APIKeyRef, "APIKeyRef should be cleared for replay")
+	must.NoError(types.ValidateRunConfig(cfg))
+}
+
+// TestBuildHarnessRunConfig_ReplayFileScopedToReplayProvider pins that a
+// --replay-file left on the command line does not leak onto a live
+// provider, which the validator would reject.
+func TestBuildHarnessRunConfig_ReplayFileScopedToReplayProvider(t *testing.T) {
+	must := require.New(t)
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          "execution",
+		Prompt:        "test",
+		ProviderType:  "anthropic",
+		APIKeyRef:     "secret://ANTHROPIC_API_KEY",
+		ReplayFile:    "recordings/run.jsonl",
+		Model:         "claude-sonnet-4-6",
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+	})
+	must.NoError(err)
+	must.Empty(cfg.Provider.ReplayFile)
+}
+
+// TestApplyOverrides_ReplayFileFlagSetsRecording pins that --replay-file
+// lands on a --config document's provider.
+func TestApplyOverrides_ReplayFileFlagSetsRecording(t *testing.T) {
+	must := require.New(t)
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Provider = types.ProviderConfig{Type: "replay", ReplayFile: "old.jsonl"}
+	cfg.ModelRouter.Provider = ""
+	must.NoError(cmd.Flags().Set("replay-file", "new.jsonl"))
+
+	must.NoError(applyOverrides(cmd, cfg, nil))
+
+	must.Equal("new.jsonl", cfg.Provider.ReplayFile)
+}
+
+// TestApplyOverrides_LiveProviderSwitchClearsReplayFile pins that a
+// replay-backed document run with --provider <live> drops the recording
+// path, so one document serves a recorded run by default and a live run
+// on request.
+func TestApplyOverrides_LiveProviderSwitchClearsReplayFile(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Provider = types.ProviderConfig{Type: "replay", ReplayFile: "run.jsonl"}
+	cfg.ModelRouter.Provider = ""
+	cfg.ModelRouter.Model = "replay"
+	setFlag := func(name, value string) {
+		must.NoError(cmd.Flags().Set(name, value), "set %s", name)
+	}
+	setFlag("provider", "anthropic")
+	setFlag("api-key-ref", "secret://ANTHROPIC_API_KEY")
+	setFlag("model", "claude-sonnet-4-6")
+
+	must.NoError(applyOverrides(cmd, cfg, nil))
+
+	check.Equal("anthropic", cfg.Provider.Type)
+	check.Empty(cfg.Provider.ReplayFile, "ReplayFile should be cleared on a live-provider switch")
+	must.NoError(types.ValidateRunConfig(cfg))
+}
+
+// TestApplyOverrides_ReplaySwitchClearsAPIKeyRef pins that switching a
+// live document to replay via --provider drops the file-provided key
+// reference, which the validator rejects on a replay provider.
+func TestApplyOverrides_ReplaySwitchClearsAPIKeyRef(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.ModelRouter.Provider = ""
+	setFlag := func(name, value string) {
+		must.NoError(cmd.Flags().Set(name, value), "set %s", name)
+	}
+	setFlag("provider", "replay")
+	setFlag("replay-file", "run.jsonl")
+
+	must.NoError(applyOverrides(cmd, cfg, nil))
+
+	check.Equal("replay", cfg.Provider.Type)
+	check.Empty(cfg.Provider.APIKeyRef, "APIKeyRef should be cleared on replay switch")
+	check.Equal("run.jsonl", cfg.Provider.ReplayFile)
+	must.NoError(types.ValidateRunConfig(cfg))
+}
