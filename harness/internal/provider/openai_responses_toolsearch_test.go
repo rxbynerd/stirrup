@@ -365,10 +365,18 @@ func TestBuildResponsesRequest_ToolSearchDropsUnreconstructableSearches(t *testi
 			params: func(p types.StreamParams) types.StreamParams { p.ToolSearch = false; return p }},
 		{name: "loaded tool missing from the request", blocks: blocks, q: responsesToolSearchQuirks(true),
 			params: func(p types.StreamParams) types.StreamParams { p.Tools = p.Tools[:1]; return p }},
-		{name: "failed search", q: responsesToolSearchQuirks(true), blocks: func() []types.ContentBlock {
+		{name: "failed search with code and message", q: responsesToolSearchQuirks(true), blocks: func() []types.ContentBlock {
 			b := blocks()
-			b[1] = types.ContentBlock{Type: "tool_search_result", ToolUseID: "tsc_1", IsError: true, Content: "unavailable: search failed"}
+			b[1] = types.ContentBlock{Type: "tool_search_result", ToolUseID: "tsc_1", IsError: true, Name: "unavailable", Content: "search failed"}
 			return b
+		}},
+		{name: "failed search with neither code nor message", q: responsesToolSearchQuirks(true), blocks: func() []types.ContentBlock {
+			b := blocks()
+			b[1] = types.ContentBlock{Type: "tool_search_result", ToolUseID: "tsc_1", IsError: true}
+			return b
+		}},
+		{name: "search recorded by another provider", q: responsesToolSearchQuirks(true), blocks: func() []types.ContentBlock {
+			return responsesAnthropicSearchBlocks("srvtoolu_1")
 		}},
 		{name: "result without its call", q: responsesToolSearchQuirks(true), blocks: func() []types.ContentBlock { return blocks()[1:] }},
 		{name: "call without its result", q: responsesToolSearchQuirks(true), blocks: func() []types.ContentBlock {
@@ -409,6 +417,47 @@ func TestBuildResponsesRequest_ToolSearchDropsUnreconstructableSearches(t *testi
 			must.Equal([]string{"message", "function_call", "function_call_output"}, kinds)
 		})
 	}
+}
+
+// responsesAnthropicSearchBlocks is a search pair as the Anthropic adapter
+// records it, followed by the call that uses the loaded tool.
+func responsesAnthropicSearchBlocks(id string) []types.ContentBlock {
+	return []types.ContentBlock{
+		{Type: "tool_search", ID: id, Name: "tool_search_tool_bm25", Input: json.RawMessage(`{"query":"jira","limit":5}`)},
+		{Type: "tool_search_result", ToolUseID: id, ToolReferences: []string{"mcp_jira_create_issue"}},
+		{Type: "tool_use", ID: "call_1", Name: "mcp_jira_create_issue", Input: json.RawMessage(`{"title":"Broken build"}`)},
+	}
+}
+
+func TestBuildResponsesRequest_ToolSearchRebuildsOnlyOwnSearchesFromMixedHistory(t *testing.T) {
+	must := require.New(t)
+	params := responsesToolSearchParams()
+	blocks := responsesAnthropicSearchBlocks("srvtoolu_1")
+	blocks = append(blocks, responsesToolSearchTurnBlocks()[:2]...)
+	params.Messages = responsesToolSearchHistory(blocks)
+	req, err := buildResponsesRequest(params, responsesToolSearchQuirks(true), nil, "")
+	must.NoError(err)
+	body, err := json.Marshal(req)
+	must.NoError(err)
+
+	var calls, outputs int
+	for _, raw := range requestInput(t, body) {
+		var item struct {
+			Type string `json:"type"`
+		}
+		must.NoError(json.Unmarshal(raw, &item))
+		switch item.Type {
+		case "tool_search_call":
+			calls++
+		case "tool_search_output":
+			outputs++
+		}
+	}
+	must.Equal(1, calls, "only the hosted search call is rebuilt")
+	must.Equal(1, outputs, "only the hosted search output is rebuilt")
+	must.NotContains(string(body), "tool_search_tool_bm25")
+	must.NotContains(string(body), "srvtoolu_1")
+	must.Contains(string(body), `"arguments":{"paths":["mcp_jira_create_issue"]}`)
 }
 
 // TestOpenAIResponsesAdapter_ToolSearchReplaysItemsInPlace streams a turn

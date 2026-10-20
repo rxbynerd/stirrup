@@ -1301,10 +1301,14 @@ func reconstructableToolSearches(blocks []types.ContentBlock, search *responsesT
 	calls := make(map[string]int)
 	results := make(map[string]int)
 	invalidInput := make(map[string]bool)
+	foreign := make(map[string]bool)
 	for _, b := range blocks {
 		switch b.Type {
 		case "tool_search":
 			calls[b.ID]++
+			if b.Name != responsesToolSearchType {
+				foreign[b.ID] = true
+			}
 			if !json.Valid(types.NormalizeToolInput(b.Input)) {
 				invalidInput[b.ID] = true
 			}
@@ -1315,7 +1319,7 @@ func reconstructableToolSearches(blocks []types.ContentBlock, search *responsesT
 	out := make(map[string][]responsesTool)
 	for _, b := range blocks {
 		id := b.ToolUseID
-		if b.Type != "tool_search_result" || b.IsError || calls[id] != 1 || results[id] != 1 || invalidInput[id] {
+		if b.Type != "tool_search_result" || b.IsError || calls[id] != 1 || results[id] != 1 || invalidInput[id] || foreign[id] {
 			continue
 		}
 		if loaded, ok := search.loaded(b.ToolReferences); ok {
