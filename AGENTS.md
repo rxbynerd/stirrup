@@ -26,7 +26,7 @@ stirrup/
       router/                # ModelRouter: static, per-mode, dynamic
       prompt/                # PromptBuilder: per-mode text/template prompts (model tiers, #492), composed fragments, operator templates, overrides
       context/               # ContextStrategy: sliding window, summarise, offload-to-file, clear tool results
-      tool/                  # ToolRegistry + built-in tools, including spawn_agent
+      tool/                  # ToolRegistry, profile Presenter, LazyLoader + built-in tools, including spawn_agent and tool_search
       tool/toolname/         # Per-provider tool-name normalization + collision detection (#223)
       executor/              # Executor: local, container (Docker/Podman), API (GitHub), replay
       edit/                  # EditStrategy: whole-file, search-replace, udiff, multi-strategy

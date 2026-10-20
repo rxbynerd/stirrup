@@ -455,6 +455,10 @@ The exchange audience is set on the `tokenSource` (canonically
 | `--guardrail-model` | (none) | Model identifier for the GuardRail classifier. Empty applies the adapter-defined default: `ibm-granite/granite-guardian-4.1-8b` for `granite-guardian` and `claude-haiku-5-5` for `cloud-judge`. `shieldstral` has no default and requires the id the server exposes (for example `mistralai/Shieldstral-1.0-3B` on vLLM; LM Studio lists its own model ids). The `cloud-judge` default is in Anthropic API format — when the primary provider is Bedrock, set the Bedrock-format ID (e.g. `anthropic.claude-haiku-5-5`). JSON path: `guardRail.model`. |
 | `--guardrail-fail-open` | `false` | When set, classifier transport errors / timeouts produce an allow verdict plus a `guard_error` security event instead of blocking the run. Default is fail-closed. Top-level only — governs the whole guardrail tree. JSON path: `guardRail.failOpen`. See [`guardrails.md`](guardrails.md#fail-open-posture). |
 | `--tools-profile` | (none) | Model-facing toolset profile. Closed enum: `""`/`default` (no aliasing, internal tool names) or `coding-classic` (terse coding-CLI aliases). Changes only the names the model sees; dispatch identities and gating are unchanged. JSON path: `tools.profile`. See [Toolset profiles](#toolset-profiles). |
+| `--lazy-tools` | `false` | Turns on lazy tool loading: tools outside the eager set reach the model only after it searches for them. JSON path: `tools.lazyLoading.enabled`. See [Lazy tool loading](#lazy-tool-loading). |
+| `--lazy-tools-strategy` | (none) | How deferred tools are searched: `auto` (the default) uses the provider's native tool search where the model has one and the harness `tool_search` otherwise; `harness` always uses `tool_search`. JSON path: `tools.lazyLoading.strategy`. |
+| `--lazy-tools-eager` | (none) | Repeatable internal tool ID sent on every turn without a search. Replaces any `tools.lazyLoading.eager` list from `--config`. Unset defers only MCP-imported and control-plane tools. JSON path: `tools.lazyLoading.eager`. |
+| `--lazy-tools-max-results` | `0` | How many tools one harness `tool_search` loads. `0` selects 5; the maximum is 20. JSON path: `tools.lazyLoading.maxResults`. |
 
 See also: [`docs/executors/k8s.md`](executors/k8s.md) for the `k8s`
 executor's architecture, deployment recipes, egress model, and the full
@@ -1142,6 +1146,113 @@ either "called by internal name under the default profile" or "the name
 did not resolve to a known tool under a non-default profile". The active
 `tools.profile` is recorded in the trace's attached `RunConfig`, so the
 two cases are distinguishable by reading it alongside the record.
+
+## Lazy tool loading
+
+`tools.lazyLoading` keeps the tool definitions each turn carries small.
+Tools outside an *eager* set are *deferred*: they stay registered,
+permission-gated and dispatchable, but their definitions reach the model
+only once a tool search loads them. A run with dozens of MCP-imported or
+control-plane tools stops paying for every definition on every turn,
+and the model chooses among fewer tools at once. Lazy loading is off by
+default; a run that does not set `enabled` sends every registered tool
+on every turn.
+
+```json
+{
+  "tools": {
+    "mcpServers": [{"name": "github", "uri": "https://mcp.example.com/github"}],
+    "lazyLoading": {
+      "enabled": true,
+      "strategy": "auto",
+      "eager": [],
+      "maxResults": 5
+    }
+  }
+}
+```
+
+| Field | Default | Semantics |
+|---|---|---|
+| `enabled` | `false` | Turns lazy loading on. |
+| `strategy` | `auto` | `auto` uses the provider's native tool search where the routed model has one, and the harness `tool_search` tool otherwise. `harness` always uses `tool_search`. |
+| `eager` | every built-in tool | Internal tool IDs sent on every turn. Empty selects every registered tool that is neither MCP-imported (`mcp_` prefix) nor a [control-plane tool](#control-plane-tools), so only those two groups are deferred. A non-empty list makes exactly those tools eager and defers every other registered tool, built-ins included. At most 256 entries; `tool_search` may not be listed because it is always eager. |
+| `maxResults` | `5` | How many tools one harness `tool_search` loads, 1–20. A native search applies the provider's own limit. |
+
+The eager list names internal tool IDs (`run_command`, not the
+`coding-classic` alias `bash`). It interacts with `tools.builtIn` only
+through registration: a tool `tools.builtIn` leaves out is never
+registered, so it is neither eager nor deferred. MCP tool names are
+known only after discovery, so an `eager` entry that matches no
+registered tool is not a validation error; the run starts, logs it,
+and sends a `warning` event naming it after `run_started`.
+
+**Strategies and providers.** Under `auto`, the harness consults the
+quirks registry for the routed provider and model on every turn, so a
+router that switches models mid-run switches search paths with it:
+
+| Provider and model | `auto` uses |
+|---|---|
+| `anthropic`: Claude Opus 4.5–4.8, Sonnet 4.5–4.6, Haiku 4.5 and the Claude 5 generation | Native search: the Anthropic BM25 tool search tool, with deferred tools sent with `defer_loading` |
+| `openai-responses`: `gpt-5.4` and later 5.x, the `gpt-6` family | Native search: the hosted `tool_search` tool, with deferred tools sent with `defer_loading` |
+| Every other provider and model (Gemini, `openai-compatible`, Bedrock, older Claude and GPT models) | The harness `tool_search` tool |
+
+With a native search, every tool is sent on every turn and the deferred
+ones are flagged for deferred loading, so the request stays the same
+from turn to turn; the provider searches and expands the definitions of
+the tools it finds. With the harness search, a turn sends the eager
+tools, the tools loaded so far, and `tool_search` itself, whose
+description names the deferred groups (each MCP server, control-plane
+tools, built-ins) and their sizes without listing the tools. A call to
+`tool_search` loads the best matches on name, description and parameter
+names, and the next turn sends their full definitions. A native search
+also needs at least one eager tool besides `tool_search`, because a
+provider rejects a request whose every tool is deferred; without one,
+`auto` falls back to the harness search.
+
+The OpenAI hosted search defers only parameter schemas: with the flat
+function list the harness sends, the model still sees every deferred
+tool's name and description. Set `strategy: "harness"` to keep deferred
+tools hidden until they are loaded.
+
+**Nothing to defer.** When every registered tool is eager (for example
+a run with no MCP servers or control-plane tools and an empty `eager`
+list), lazy loading changes nothing: the harness sends the plain tool
+list, without `tool_search`, and asks for no native search.
+
+**Calling an unloaded tool.** A call to a deferred tool that no search
+has loaded is rejected before dispatch with `Tool "<name>" is not
+loaded; call tool_search to load it first`, recorded as an
+`unknown_tool` failure. A loaded tool is dispatched exactly like an
+eager one. The loaded set lasts for the run. A follow-up run keeps it
+when it continues the previous run's history
+(`followUpHistory: "continue"`) and starts empty otherwise. A
+sub-agent starts with the eager tools of its own tool set and nothing
+loaded; a read-only sub-agent, which drops every MCP tool because MCP
+tools are registered as workspace-mutating, usually has nothing to
+defer and so gets no `tool_search`.
+
+**Permissions.** `tool_search` is neither `WorkspaceMutating` nor
+`RequiresApproval`, so the permission policy is never consulted for it
+and read-only modes admit it: it changes only which definitions the
+model sees. Every loaded tool keeps its own flags and is gated by the
+permission policy when it is called, exactly as without lazy loading.
+Because the policy is never consulted for `tool_search`, a Cedar rule
+naming it has no effect.
+
+**What is recorded.** Each search that loads a tool not already loaded
+sends a `tools_loaded` event naming the search tool (`tool_search`, or
+the provider's native search tool), its input, the turn, and the
+internal IDs it loaded; see
+[`integration-guide.md`](integration-guide.md#watching-a-run-live). In
+the JSONL trace, a turn record's `modelInput.tools` lists the
+definitions the turn sent, each deferred one marked `deferred: true`.
+A native search appears in the turn's `modelOutput` as a `tool_search`
+block (the search input) and a `tool_search_result` block whose
+`tool_references` lists the internal IDs it loaded; a harness search
+is an ordinary `tool_search` tool call and result. Both blocks are
+replayed to the provider that produced them; another provider drops
+them.
 
 ## Command output capture
 
