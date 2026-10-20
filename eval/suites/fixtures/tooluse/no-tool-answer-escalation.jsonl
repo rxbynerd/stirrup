@@ -1,0 +1,4 @@
+{"kind":"turn_record","turn":1,"modelOutput":[{"type":"text","text":"The file looks fine; it declares package main."}]}
+{"kind":"turn_record","turn":2,"modelOutput":[{"type":"tool_use","id":"c1","name":"read_file","input":{"path":"main.go"}}]}
+{"kind":"turn_record","turn":3,"modelOutput":[{"type":"tool_use","id":"c2","name":"edit_file","input":{"path":"package.txt","operation":"rewrite","content":"main\n"}}]}
+{"kind":"turn_record","turn":4,"modelOutput":[{"type":"text","text":"Confirmed package main."}]}
