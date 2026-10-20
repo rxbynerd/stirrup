@@ -5234,26 +5234,23 @@ func TestBuildHarnessRunConfig_ReplayScopesReplayFileAndDropsKey(t *testing.T) {
 	must.NoError(types.ValidateRunConfig(cfg))
 }
 
-// TestBuildHarnessRunConfig_ReplayFileScopedToReplayProvider pins that a
-// --replay-file left on the command line does not leak onto a live
-// provider, which the validator would reject.
-func TestBuildHarnessRunConfig_ReplayFileScopedToReplayProvider(t *testing.T) {
-	must := require.New(t)
-	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
-		RunID:         "test-run",
-		Mode:          "execution",
-		Prompt:        "test",
-		ProviderType:  "anthropic",
-		APIKeyRef:     "secret://ANTHROPIC_API_KEY",
-		ReplayFile:    "recordings/run.jsonl",
-		Model:         "claude-sonnet-4-6",
-		MaxTurns:      20,
-		Timeout:       600,
-		TransportType: "stdio",
-		LogLevel:      "info",
-	})
-	must.NoError(err)
-	must.Empty(cfg.Provider.ReplayFile)
+// TestBuildRunConfig_ReplayFileWithoutReplayProviderRejected pins that a
+// --replay-file given to a live (or defaulted) provider is carried onto
+// the config and refused by validation, never silently dropped into a
+// live run.
+func TestBuildRunConfig_ReplayFileWithoutReplayProviderRejected(t *testing.T) {
+	for _, args := range [][]string{
+		{"--replay-file", "run.jsonl"},
+		{"--provider", "anthropic", "--replay-file", "run.jsonl"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			must := require.New(t)
+			cmd := newTestHarnessCommand()
+			must.NoError(cmd.ParseFlags(append([]string{"--prompt", "p", "--mode", "execution"}, args...)))
+			_, err := BuildRunConfig(RunConfigSources{Cmd: cmd, Resolve: ResolveAll})
+			must.ErrorContains(err, "replayFile is only valid for provider type \"replay\"")
+		})
+	}
 }
 
 // TestApplyOverrides_ReplayFileFlagSetsRecording pins that --replay-file
@@ -5263,49 +5260,78 @@ func TestApplyOverrides_ReplayFileFlagSetsRecording(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Provider = types.ProviderConfig{Type: "replay", ReplayFile: "old.jsonl"}
-	cfg.ModelRouter.Provider = ""
+	cfg.ModelRouter.Provider = "replay"
 	must.NoError(cmd.Flags().Set("replay-file", "new.jsonl"))
 
 	must.NoError(applyOverrides(cmd, cfg, nil))
 
 	must.Equal("new.jsonl", cfg.Provider.ReplayFile)
+	must.Equal("replay", cfg.ModelRouter.Provider, "router untouched without --provider")
 }
 
-// TestApplyOverrides_LiveProviderSwitchClearsReplayFile pins that a
+// replayFileConfig is a --config document that selects the replay
+// provider the way `stirrup run-config --provider replay` writes it,
+// router provider and placeholder model included.
+func replayFileConfig() *types.RunConfig {
+	cfg := baseFileConfig()
+	cfg.Provider = types.ProviderConfig{Type: "replay", ReplayFile: "run.jsonl"}
+	cfg.ModelRouter = types.ModelRouterConfig{Type: "static", Provider: "replay", Model: "replay"}
+	return cfg
+}
+
+// TestApplyOverrides_LiveProviderSwitchDropsReplayFields pins that a
 // replay-backed document run with --provider <live> drops the recording
-// path, so one document serves a recorded run by default and a live run
-// on request.
-func TestApplyOverrides_LiveProviderSwitchClearsReplayFile(t *testing.T) {
+// path and the placeholder model and follows the router, so one document
+// serves a recorded run by default and a live run on request.
+func TestApplyOverrides_LiveProviderSwitchDropsReplayFields(t *testing.T) {
 	must := require.New(t)
 	check := assert.New(t)
 	cmd := newTestHarnessCommand()
-	cfg := baseFileConfig()
-	cfg.Provider = types.ProviderConfig{Type: "replay", ReplayFile: "run.jsonl"}
-	cfg.ModelRouter.Provider = ""
-	cfg.ModelRouter.Model = "replay"
+	cfg := replayFileConfig()
 	setFlag := func(name, value string) {
 		must.NoError(cmd.Flags().Set(name, value), "set %s", name)
 	}
 	setFlag("provider", "anthropic")
 	setFlag("api-key-ref", "secret://ANTHROPIC_API_KEY")
-	setFlag("model", "claude-sonnet-4-6")
 
 	must.NoError(applyOverrides(cmd, cfg, nil))
 
 	check.Equal("anthropic", cfg.Provider.Type)
 	check.Empty(cfg.Provider.ReplayFile, "ReplayFile should be cleared on a live-provider switch")
-	must.NoError(types.ValidateRunConfig(cfg))
+	check.Equal("anthropic", cfg.ModelRouter.Provider, "router should follow the switch")
+	check.Empty(cfg.ModelRouter.Model, "placeholder model should be cleared for the defaults step")
+}
+
+// TestApplyOverrides_LiveProviderSwitchKeepsExplicitFlags pins that
+// --replay-file and --model given alongside --provider survive the switch,
+// so validation reports the stray recording path instead of hiding it.
+func TestApplyOverrides_LiveProviderSwitchKeepsExplicitFlags(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	cmd := newTestHarnessCommand()
+	cfg := replayFileConfig()
+	setFlag := func(name, value string) {
+		must.NoError(cmd.Flags().Set(name, value), "set %s", name)
+	}
+	setFlag("provider", "anthropic")
+	setFlag("replay-file", "kept.jsonl")
+	setFlag("model", "claude-sonnet-4-6")
+
+	must.NoError(applyOverrides(cmd, cfg, nil))
+
+	check.Equal("kept.jsonl", cfg.Provider.ReplayFile)
+	check.Equal("claude-sonnet-4-6", cfg.ModelRouter.Model)
+	must.ErrorContains(types.ValidateRunConfig(cfg), "replayFile is only valid")
 }
 
 // TestApplyOverrides_ReplaySwitchClearsAPIKeyRef pins that switching a
 // live document to replay via --provider drops the file-provided key
-// reference, which the validator rejects on a replay provider.
+// reference and follows the router, so the result validates.
 func TestApplyOverrides_ReplaySwitchClearsAPIKeyRef(t *testing.T) {
 	must := require.New(t)
 	check := assert.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
-	cfg.ModelRouter.Provider = ""
 	setFlag := func(name, value string) {
 		must.NoError(cmd.Flags().Set(name, value), "set %s", name)
 	}
@@ -5317,5 +5343,58 @@ func TestApplyOverrides_ReplaySwitchClearsAPIKeyRef(t *testing.T) {
 	check.Equal("replay", cfg.Provider.Type)
 	check.Empty(cfg.Provider.APIKeyRef, "APIKeyRef should be cleared on replay switch")
 	check.Equal("run.jsonl", cfg.Provider.ReplayFile)
+	check.Equal("replay", cfg.ModelRouter.Provider, "router should follow the switch")
 	must.NoError(types.ValidateRunConfig(cfg))
+}
+
+// TestApplyOverrides_ReplaySwitchKeepsExplicitAPIKeyRef pins that an
+// explicit --api-key-ref alongside --provider replay is kept, so
+// validation reports the conflict instead of silently discarding the
+// operator's flag.
+func TestApplyOverrides_ReplaySwitchKeepsExplicitAPIKeyRef(t *testing.T) {
+	must := require.New(t)
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	setFlag := func(name, value string) {
+		must.NoError(cmd.Flags().Set(name, value), "set %s", name)
+	}
+	setFlag("provider", "replay")
+	setFlag("replay-file", "run.jsonl")
+	setFlag("api-key-ref", "secret://KEPT")
+
+	must.NoError(applyOverrides(cmd, cfg, nil))
+
+	must.Equal("secret://KEPT", cfg.Provider.APIKeyRef)
+	must.ErrorContains(types.ValidateRunConfig(cfg), "apiKeyRef must not be set for provider type \"replay\"")
+}
+
+// TestBuildRunConfig_ReplayDocumentSwitchedLive pins the whole resolution
+// pipeline for the replay-to-live switch: the anthropic default model
+// fills the cleared placeholder, and a provider with no default model
+// gets the existing "--model is required" error.
+func TestBuildRunConfig_ReplayDocumentSwitchedLive(t *testing.T) {
+	doc := `{"mode":"execution","prompt":"p","provider":{"type":"replay","replayFile":"run.jsonl"},"modelRouter":{"type":"static","provider":"replay","model":"replay"}}`
+	t.Run("anthropic gets its default model", func(t *testing.T) {
+		must := require.New(t)
+		cfg, err := resolveProviderDefaults(t, doc, "--provider", "anthropic")
+		must.NoError(err)
+		must.Equal("anthropic", cfg.Provider.Type)
+		must.Empty(cfg.Provider.ReplayFile)
+		must.Equal("secret://ANTHROPIC_API_KEY", cfg.Provider.APIKeyRef)
+		must.Equal("claude-sonnet-4-6", cfg.ModelRouter.Model)
+		must.Equal("anthropic", cfg.ModelRouter.Provider)
+	})
+	t.Run("openai-compatible demands a model", func(t *testing.T) {
+		must := require.New(t)
+		_, err := resolveProviderDefaults(t, doc, "--provider", "openai-compatible")
+		must.ErrorContains(err, "--model is required with --provider=openai-compatible")
+	})
+	t.Run("document untouched without --provider", func(t *testing.T) {
+		must := require.New(t)
+		cfg, err := resolveProviderDefaults(t, doc)
+		must.NoError(err)
+		must.Equal("replay", cfg.Provider.Type)
+		must.Equal("run.jsonl", cfg.Provider.ReplayFile)
+		must.Equal("replay", cfg.ModelRouter.Model)
+	})
 }

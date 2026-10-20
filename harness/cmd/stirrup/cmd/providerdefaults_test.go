@@ -193,6 +193,17 @@ func TestProviderDefaults_GeminiRejectsClaudeModel(t *testing.T) {
 	must.ErrorContains(err, "Anthropic model name")
 }
 
+// TestProviderDefaults_ReplayDocumentGetsModelLabel pins the document
+// path: a replay document without a model gets the label, not the
+// "--model is required" error.
+func TestProviderDefaults_ReplayDocumentGetsModelLabel(t *testing.T) {
+	must := require.New(t)
+	cfg, err := resolveProviderDefaults(t, `{"mode":"execution","prompt":"p","provider":{"type":"replay","replayFile":"run.jsonl"}}`)
+	must.NoError(err)
+	must.Equal("replay", cfg.ModelRouter.Model)
+	must.Empty(cfg.Provider.APIKeyRef)
+}
+
 // TestProviderDefaults_ReplayCarriesNoKeyAndLabelsTheModel pins that the
 // replay provider gets no key reference and a placeholder model, so a
 // recorded run needs only --provider and --replay-file.

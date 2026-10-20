@@ -893,18 +893,32 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 		cfg.LogLevel, _ = f.GetString("log-level")
 	}
 	if changed("provider") {
+		previous := cfg.Provider.Type
 		cfg.Provider.Type, _ = f.GetString("provider")
+		// A router that named the previous type by its type string
+		// follows the switch; it would otherwise reference a provider
+		// the document no longer declares.
+		if previous != "" && cfg.ModelRouter.Provider == previous {
+			cfg.ModelRouter.Provider = cfg.Provider.Type
+		}
 		// Vertex AI uses GCP IAM and replay resolves no credential;
 		// clear a lingering file-provided APIKeyRef on switching to
 		// either, mirroring buildHarnessRunConfig's flag-only behaviour.
 		if (cfg.Provider.Type == "gemini" || cfg.Provider.Type == "replay") && !changed("api-key-ref") {
 			cfg.Provider.APIKeyRef = ""
 		}
-		// A recording path belongs to the replay provider alone; switching
-		// a replay-backed document to a live provider drops it so the
-		// same document serves both a recorded and a live run.
-		if cfg.Provider.Type != "replay" && !changed("replay-file") {
-			cfg.Provider.ReplayFile = ""
+		// Fields a provider type owns are dropped when --provider leaves
+		// that type and the field's own flag was not given: a recording
+		// path belongs to the replay provider alone, and the "replay"
+		// model label stands in for a model no live provider serves, so
+		// applyProviderDefaults supplies or demands a real one.
+		if previous == "replay" && cfg.Provider.Type != "replay" {
+			if !changed("replay-file") {
+				cfg.Provider.ReplayFile = ""
+			}
+			if !changed("model") && cfg.ModelRouter.Model == defaultReplayModel {
+				cfg.ModelRouter.Model = ""
+			}
 		}
 	}
 	if changed("model") {
@@ -950,9 +964,6 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	if changed("gcp-project") {
 		cfg.Provider.GCPProject, _ = f.GetString("gcp-project")
 	}
-	if changed("replay-file") {
-		cfg.Provider.ReplayFile, _ = f.GetString("replay-file")
-	}
 	if changed("gcp-location") {
 		cfg.Provider.GCPLocation, _ = f.GetString("gcp-location")
 	}
@@ -970,6 +981,9 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 		if path != "" && cfg.Provider.Credential == nil {
 			cfg.Provider.Credential = &types.CredentialConfig{Type: "gcp-service-account"}
 		}
+	}
+	if changed("replay-file") {
+		cfg.Provider.ReplayFile, _ = f.GetString("replay-file")
 	}
 
 	// Anthropic WIF folding lives in BuildRunConfig as a single
