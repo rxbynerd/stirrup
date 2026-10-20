@@ -357,6 +357,7 @@ func buildConverseStreamInput(params types.StreamParams) (*bedrockruntime.Conver
 // translateMessages converts stirrup messages to Bedrock messages.
 func bedrockTranslateMessages(msgs []types.Message) ([]brtypes.Message, error) {
 	out := make([]brtypes.Message, 0, len(msgs))
+	dropped := false
 	for _, msg := range msgs {
 		role, err := mapRole(msg.Role)
 		if err != nil {
@@ -366,10 +367,21 @@ func bedrockTranslateMessages(msgs []types.Message) ([]brtypes.Message, error) {
 		if err != nil {
 			return nil, fmt.Errorf("message (role=%s): %w", msg.Role, err)
 		}
-		out = append(out, brtypes.Message{
-			Role:    role,
-			Content: blocks,
-		})
+		if len(blocks) == 0 && hasToolSearchBlocks(msg.Content) {
+			dropped = true
+			continue
+		}
+		// Converse requires alternating roles, so the messages on either
+		// side of a dropped one are joined.
+		if last := len(out) - 1; dropped && last >= 0 && out[last].Role == role {
+			out[last].Content = append(out[last].Content, blocks...)
+		} else {
+			out = append(out, brtypes.Message{
+				Role:    role,
+				Content: blocks,
+			})
+		}
+		dropped = false
 	}
 	return out, nil
 }
