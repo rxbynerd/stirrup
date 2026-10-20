@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"syscall"
 
+	"github.com/rxbynerd/stirrup/eval/spec"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -65,6 +67,7 @@ func loadRunConfigFile(path string) (*types.RunConfig, error) {
 	if err := dec.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("parsing run_config_file %q: %w", path, err)
 	}
+	spec.AnchorReplayFiles(&cfg, filepath.Dir(path))
 	return &cfg, nil
 }
 
@@ -137,6 +140,10 @@ func mergeOverrides(baseline *types.RunConfig, overlay *types.RunConfigOverrides
 	}
 	if overlay.MaxTurns != nil {
 		baseline.MaxTurns = *overlay.MaxTurns
+	}
+	if overlay.ToolChoiceEscalation != nil {
+		escalation := *overlay.ToolChoiceEscalation
+		baseline.ToolChoiceEscalation = &escalation
 	}
 
 	return baseline

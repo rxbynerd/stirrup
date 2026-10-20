@@ -2,6 +2,7 @@ package spec
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -22,56 +23,66 @@ type runConfigSpec struct {
 	// sets it logs one warning per task and caps nothing.
 	//
 	// Deprecated: cost budgeting is a no-op.
-	MaxCostBudget        *float64                `hcl:"max_cost_budget,optional"`
-	Timeout              *int                    `hcl:"timeout,optional"`
-	FollowUpGrace        *int                    `hcl:"follow_up_grace,optional"`
-	LogLevel             string                  `hcl:"log_level,optional"`
-	SystemPromptOverride string                  `hcl:"system_prompt_override,optional"`
-	SensitiveData        *bool                   `hcl:"sensitive_data,optional"`
-	Provider             *providerSpec           `hcl:"provider,block"`
-	ModelRouter          *modelRouterSpec        `hcl:"model_router,block"`
-	PromptBuilder        *promptBuilderSpec      `hcl:"prompt_builder,block"`
-	ContextStrategy      *contextStrategySpec    `hcl:"context_strategy,block"`
-	Executor             *executorSpec           `hcl:"executor,block"`
-	EditStrategy         *editStrategySpec       `hcl:"edit_strategy,block"`
-	Verifier             *verifierSpec           `hcl:"verifier,block"`
-	PermissionPolicy     *permissionPolicySpec   `hcl:"permission_policy,block"`
-	GitStrategy          *gitStrategySpec        `hcl:"git_strategy,block"`
-	Transport            *transportSpec          `hcl:"transport,block"`
-	TraceEmitter         *traceEmitterSpec       `hcl:"trace_emitter,block"`
-	Tools                *toolsSpec              `hcl:"tools,block"`
-	RuleOfTwo            *ruleOfTwoSpec          `hcl:"rule_of_two,block"`
-	CodeScanner          *codeScannerSpec        `hcl:"code_scanner,block"`
-	GuardRail            *guardRailSpec          `hcl:"guard_rail,block"`
-	Observability        *observabilitySpec      `hcl:"observability,block"`
-	RepositoryGuidance   *repositoryGuidanceSpec `hcl:"repository_guidance,block"`
+	MaxCostBudget        *float64                  `hcl:"max_cost_budget,optional"`
+	Timeout              *int                      `hcl:"timeout,optional"`
+	FollowUpGrace        *int                      `hcl:"follow_up_grace,optional"`
+	LogLevel             string                    `hcl:"log_level,optional"`
+	SystemPromptOverride string                    `hcl:"system_prompt_override,optional"`
+	SensitiveData        *bool                     `hcl:"sensitive_data,optional"`
+	Provider             *providerSpec             `hcl:"provider,block"`
+	ModelRouter          *modelRouterSpec          `hcl:"model_router,block"`
+	PromptBuilder        *promptBuilderSpec        `hcl:"prompt_builder,block"`
+	ContextStrategy      *contextStrategySpec      `hcl:"context_strategy,block"`
+	Executor             *executorSpec             `hcl:"executor,block"`
+	EditStrategy         *editStrategySpec         `hcl:"edit_strategy,block"`
+	Verifier             *verifierSpec             `hcl:"verifier,block"`
+	PermissionPolicy     *permissionPolicySpec     `hcl:"permission_policy,block"`
+	GitStrategy          *gitStrategySpec          `hcl:"git_strategy,block"`
+	Transport            *transportSpec            `hcl:"transport,block"`
+	TraceEmitter         *traceEmitterSpec         `hcl:"trace_emitter,block"`
+	Tools                *toolsSpec                `hcl:"tools,block"`
+	RuleOfTwo            *ruleOfTwoSpec            `hcl:"rule_of_two,block"`
+	CodeScanner          *codeScannerSpec          `hcl:"code_scanner,block"`
+	GuardRail            *guardRailSpec            `hcl:"guard_rail,block"`
+	Observability        *observabilitySpec        `hcl:"observability,block"`
+	RepositoryGuidance   *repositoryGuidanceSpec   `hcl:"repository_guidance,block"`
+	ToolChoiceEscalation *toolChoiceEscalationSpec `hcl:"tool_choice_escalation,block"`
 }
 
 // runConfigOverridesSpec mirrors types.RunConfigOverrides. Every field
 // is a pointer / optional so a sparse overlay is the natural shape.
 // Mode is intentionally absent from the HCL surface; see docs/eval.md.
 type runConfigOverridesSpec struct {
-	MaxTurns        *int                 `hcl:"max_turns,optional"`
-	Provider        *providerSpec        `hcl:"provider,block"`
-	ModelRouter     *modelRouterSpec     `hcl:"model_router,block"`
-	ContextStrategy *contextStrategySpec `hcl:"context_strategy,block"`
-	EditStrategy    *editStrategySpec    `hcl:"edit_strategy,block"`
-	Verifier        *verifierSpec        `hcl:"verifier,block"`
+	MaxTurns             *int                      `hcl:"max_turns,optional"`
+	Provider             *providerSpec             `hcl:"provider,block"`
+	ModelRouter          *modelRouterSpec          `hcl:"model_router,block"`
+	ContextStrategy      *contextStrategySpec      `hcl:"context_strategy,block"`
+	EditStrategy         *editStrategySpec         `hcl:"edit_strategy,block"`
+	Verifier             *verifierSpec             `hcl:"verifier,block"`
+	ToolChoiceEscalation *toolChoiceEscalationSpec `hcl:"tool_choice_escalation,block"`
 }
 
 type providerSpec struct {
-	Type                 string                    `hcl:"type"`
-	APIKeyRef            string                    `hcl:"api_key_ref,optional"`
-	Region               string                    `hcl:"region,optional"`
-	Profile              string                    `hcl:"profile,optional"`
-	BaseURL              string                    `hcl:"base_url,optional"`
-	APIKeyHeader         string                    `hcl:"api_key_header,optional"`
-	QueryParams          map[string]string         `hcl:"query_params,optional"`
-	GCPProject           string                    `hcl:"gcp_project,optional"`
-	GCPLocation          string                    `hcl:"gcp_location,optional"`
-	GCPCredentialsFile   string                    `hcl:"gcp_credentials_file,optional"`
+	Type               string            `hcl:"type"`
+	APIKeyRef          string            `hcl:"api_key_ref,optional"`
+	Region             string            `hcl:"region,optional"`
+	Profile            string            `hcl:"profile,optional"`
+	BaseURL            string            `hcl:"base_url,optional"`
+	APIKeyHeader       string            `hcl:"api_key_header,optional"`
+	QueryParams        map[string]string `hcl:"query_params,optional"`
+	GCPProject         string            `hcl:"gcp_project,optional"`
+	GCPLocation        string            `hcl:"gcp_location,optional"`
+	GCPCredentialsFile string            `hcl:"gcp_credentials_file,optional"`
+	// ReplayFile is resolved relative to the suite file by LoadSuiteHCL,
+	// so a suite can ship its recordings beside it.
+	ReplayFile           string                    `hcl:"replay_file,optional"`
 	Credential           *credentialSpec           `hcl:"credential,block"`
 	GeminiSafetySettings []geminiSafetySettingSpec `hcl:"gemini_safety_setting,block"`
+}
+
+type toolChoiceEscalationSpec struct {
+	Enabled    bool `hcl:"enabled,optional"`
+	MaxRetries int  `hcl:"max_retries,optional"`
 }
 
 type credentialSpec struct {
@@ -416,6 +427,7 @@ func runConfigSpecToType(s *runConfigSpec) *types.RunConfig {
 			})
 		}
 	}
+	out.ToolChoiceEscalation = toolChoiceEscalationSpecToType(s.ToolChoiceEscalation)
 	if s.RuleOfTwo != nil {
 		out.RuleOfTwo = &types.RuleOfTwoConfig{Enforce: s.RuleOfTwo.Enforce}
 		if s.RuleOfTwo.Runtime != nil {
@@ -483,7 +495,42 @@ func runConfigOverridesSpecToType(s *runConfigOverridesSpec) *types.RunConfigOve
 		v := verifierSpecToType(s.Verifier)
 		out.Verifier = &v
 	}
+	out.ToolChoiceEscalation = toolChoiceEscalationSpecToType(s.ToolChoiceEscalation)
 	return out
+}
+
+func toolChoiceEscalationSpecToType(s *toolChoiceEscalationSpec) *types.ToolChoiceEscalationConfig {
+	if s == nil {
+		return nil
+	}
+	return &types.ToolChoiceEscalationConfig{Enabled: s.Enabled, MaxRetries: s.MaxRetries}
+}
+
+// AnchorReplayFiles resolves every relative provider replayFile in cfg
+// against baseDir, so a recording path written beside the document that
+// names it keeps pointing there when the harness runs from a workspace.
+// The result is absolute: the harness opens the path from the task
+// workspace, not from the runner's working directory.
+func AnchorReplayFiles(cfg *types.RunConfig, baseDir string) {
+	if cfg == nil {
+		return
+	}
+	anchorReplayFile(&cfg.Provider, baseDir)
+	for name, provider := range cfg.Providers {
+		anchorReplayFile(&provider, baseDir)
+		cfg.Providers[name] = provider
+	}
+}
+
+func anchorReplayFile(provider *types.ProviderConfig, baseDir string) {
+	if provider.ReplayFile == "" || filepath.IsAbs(provider.ReplayFile) {
+		return
+	}
+	joined := filepath.Join(baseDir, provider.ReplayFile)
+	if abs, err := filepath.Abs(joined); err == nil {
+		joined = abs
+	}
+	provider.ReplayFile = joined
 }
 
 func providerSpecToType(s *providerSpec) types.ProviderConfig {
@@ -498,6 +545,7 @@ func providerSpecToType(s *providerSpec) types.ProviderConfig {
 		GCPProject:         s.GCPProject,
 		GCPLocation:        s.GCPLocation,
 		GCPCredentialsFile: s.GCPCredentialsFile,
+		ReplayFile:         s.ReplayFile,
 	}
 	if s.Credential != nil {
 		c := credentialSpecToType(*s.Credential)
