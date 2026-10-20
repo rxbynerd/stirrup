@@ -88,52 +88,58 @@ its verdicts without changing any outcome. See
 
 ## Tool-use reliability suite (`tooluse.hcl`)
 
-`tooluse.hcl` gives the tool redesign (schema redesign, MCP name
-normalization, tool-choice escalation, structured results, toolset
-profiles) end-to-end regression coverage. Each task is a small
-synthetic repo exercising one behaviour, judged on both the final
-workspace state (`file-exists` / `file-contains`) and the tool-call
-path (`tool-trace`, documented in [`docs/eval.md`](../../docs/eval.md)).
+`tooluse.hcl` gives the tool redesign (schema redesign, tool-choice
+escalation, structured results, toolset profiles) end-to-end
+regression coverage. Each task seeds a small synthetic workspace and
+exercises one behaviour, judged on both the final workspace state
+(`file-exists` / `file-contains`) and the tool-call path
+(`tool-trace`, documented in [`docs/eval.md`](../../docs/eval.md)).
 
-### Running without provider credentials (the default gate)
+### Running without provider credentials (the default)
 
-The acceptance criterion is that the suite runs locally with no live
-provider and no network. `stirrup-eval run` spawns the real `stirrup
-harness` binary, which has no replay-provider path, so that subcommand
-is the live-provider form. The no-credential gate is instead the
-in-process replay regression at
-`harness/internal/core/tooluse_replay_test.go`: it drives the same
-behaviours through the agentic loop with a `ReplayProvider` and a real
-`LocalExecutor` over synthetic workspaces, asserting the same workspace
-state and tool-call traces the HCL judges check. It runs under:
+Every task seeds its workspace with `file` blocks and names a
+recording under `fixtures/tooluse/` through a `run_config_overrides`
+`provider { type = "replay" }` block, so `stirrup-eval run` spawns the
+real `stirrup harness` binary and drives its tool registry, a real
+`LocalExecutor` and the judges over a scripted conversation:
 
 ```sh
-go test ./harness/internal/core/ -run TestToolUse
+./stirrup-eval run --suite eval/suites/tooluse.hcl --output results/tooluse
 ```
 
-No `ANTHROPIC_API_KEY`, no network, deterministic.
+No `ANTHROPIC_API_KEY`, no network, deterministic. The `verify` CI job
+runs it on every push. A recording is a JSONL trace whose
+`turn_record` events carry the model output of each turn in order
+(format in [`docs/providers.md`](../../docs/providers.md#replay)); the
+fixtures are hand-written to the shapes
+`harness/internal/core/tooluse_replay_test.go` pins in process, and
+that Go test remains the unit-level gate for the same behaviours.
+Two of its behaviours stay in process only: MCP name normalization
+needs an MCP server the runner does not start, and streaming
+tool-call parsing is a wire property of each adapter that a replay
+bypasses by design.
 
 ### Running against a live provider (opt-in)
 
-To measure a real model, pin the provider/model with a suite-level
-`run_config` block (or a `--config` baseline) supplying the credential
-as a `secret://` reference, then:
+To measure a real model, pass the provider on the command line. The
+harness drops each task's recording path when its provider is
+switched, so the seeded workspaces, prompts and judges are unchanged:
 
 ```sh
 ANTHROPIC_API_KEY=... ./stirrup-eval run \
     --suite eval/suites/tooluse.hcl \
-    --output results/tooluse
+    --provider anthropic --api-key-ref secret://ANTHROPIC_API_KEY \
+    --model claude-sonnet-5 \
+    --output results/tooluse-live
 ```
 
-To compare models, run the suite once per model — pass `--model` to
-`stirrup-eval run` (it overrides both the harness default and any
-suite-pinned `model_router`), or layer a per-task
-`run_config_overrides` `model_router` block — and diff the
-`result.json` files with `stirrup-eval compare`. Live-provider runs
-are slow and spend credits; they are an explicit opt-in and are not
-part of default CI. No baseline ships for this suite, so the eval
-gate neither runs nor compares it until an operator promotes one
-(see "Promoting a mined suite" for the baseline workflow).
+To compare models, run the suite once per model with a different
+`--model` and diff the `result.json` files with `stirrup-eval
+compare`. Live-provider runs are slow and spend credits; they are an
+explicit opt-in and are not part of default CI. No baseline ships for
+this suite, so the eval gate neither runs nor compares it until an
+operator promotes one (see "Promoting a mined suite" for the baseline
+workflow).
 
 ## Acceptance suite (`acceptance.hcl`)
 

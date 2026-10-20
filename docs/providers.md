@@ -1032,6 +1032,45 @@ silently dropping them would mask future schema features.
 See `examples/runconfig/vertex-gemini.json` and
 `examples/runconfig/vertex-gemini-wif.json`.
 
+## Replay
+
+`provider.type = "replay"` serves recorded model output instead of
+calling a model. `ReplayProvider` (`harness/internal/provider/replay.go`)
+answers each `Stream` call with the next recorded turn's content
+blocks: `text` becomes `text_delta`, `tool_use` becomes a `tool_call`,
+and `thinking` / `redacted_thinking` are forwarded unsigned. The stop
+reason is `tool_use` when the turn holds a tool call and `end_turn`
+otherwise. Requesting more turns than the recording holds fails the
+call, which ends the run as an error rather than looping.
+
+| Field | Required | Notes |
+|---|---|---|
+| `provider.replayFile` | yes | JSONL trace file. Relative paths resolve against the harness working directory. |
+| `provider.apiKeyRef`, `provider.credential`, `provider.baseUrl` | rejected | A replay provider resolves no credential and contacts no endpoint. |
+
+The file is read by `types/trace.Reader.ReadRecording`, so any trace
+the `jsonl` emitter wrote is a valid recording and replays the turns of
+its top-level run (a sub-agent's turns are dropped). A hand-written
+recording needs only the `turn_record` lines:
+
+```jsonl
+{"kind":"turn_record","turn":1,"modelOutput":[{"type":"tool_use","id":"c1","name":"read_file","input":{"path":"main.go"}}]}
+{"kind":"turn_record","turn":2,"modelOutput":[{"type":"text","text":"It declares package main."}]}
+```
+
+Tool names are the external names the model would have seen on the
+wire. The replay provider has no name-normalization policy of its own,
+so the strictest policy applies (no hyphens, no leading digit) and a
+recorded call to a tool whose registered name needs rewriting must use
+the rewritten form. A recording with no `turn_record` event is rejected
+when the provider is built.
+
+What a replay does not exercise: the wire parsing of any adapter (a
+`tool_call` is emitted whole, never reassembled from deltas), provider
+quirks, retries, and `ReplayFields` capture. The eval framework's
+tool-use suite runs on this provider by default; see
+[`eval.md`](eval.md#replay-doubles).
+
 ## Per-model wire-shape quirks
 
 Provider/model pairs sometimes diverge from the adapter's canonical
