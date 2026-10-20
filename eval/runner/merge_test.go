@@ -1000,3 +1000,36 @@ func captureStderr(t *testing.T, fn func()) string {
 	_ = r.Close()
 	return buf.String()
 }
+
+// TestMergeOverrides_ToolChoiceEscalationCopied pins that the overlay's
+// escalation block replaces the baseline's and is copied rather than
+// aliased, so a later mutation of the overlay cannot leak into a merged
+// config another task already holds.
+func TestMergeOverrides_ToolChoiceEscalationCopied(t *testing.T) {
+	must := require.New(t)
+	baseline := baselineRunConfig()
+	overlay := &types.RunConfigOverrides{
+		ToolChoiceEscalation: &types.ToolChoiceEscalationConfig{Enabled: true, MaxRetries: 2},
+	}
+
+	got := mergeOverrides(baseline, overlay)
+	must.NotNil(got.ToolChoiceEscalation)
+	must.True(got.ToolChoiceEscalation.Enabled)
+	must.Equal(2, got.ToolChoiceEscalation.MaxRetries)
+	overlay.ToolChoiceEscalation.MaxRetries = 3
+	must.Equal(2, got.ToolChoiceEscalation.MaxRetries, "merged block should not alias the overlay")
+}
+
+// TestLoadRunConfigFile_AnchorsReplayFile pins that a relative replayFile
+// in a run_config_file resolves against that file's directory.
+func TestLoadRunConfigFile_AnchorsReplayFile(t *testing.T) {
+	must := require.New(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "runconfig.json")
+	must.NoError(os.WriteFile(path, []byte(`{"mode":"execution","provider":{"type":"replay","replayFile":"recordings/run.jsonl"},"providers":{"abs":{"type":"replay","replayFile":"/abs/run.jsonl"}}}`), 0o600))
+
+	cfg, err := loadRunConfigFile(path)
+	must.NoError(err)
+	must.Equal(filepath.Join(dir, "recordings/run.jsonl"), cfg.Provider.ReplayFile)
+	must.Equal("/abs/run.jsonl", cfg.Providers["abs"].ReplayFile)
+}

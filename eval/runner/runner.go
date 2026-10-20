@@ -174,6 +174,10 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 		return eval.SuiteResult{}, baselineErr
 	}
 
+	if err := checkLiveFlagsAgainstReplay(suite, baseline, cfg); err != nil {
+		return eval.SuiteResult{}, err
+	}
+
 	trials := resolveTrials(cfg, suite)
 
 	if cfg.DryRun {
@@ -287,6 +291,33 @@ dispatch:
 // task ID is a path-safe single segment (so per-task artifact directories
 // cannot escape OutputDir via traversal sequences), and that every task's judge
 // tree is valid, so a misconfigured judge fails before any agent run.
+// checkLiveFlagsAgainstReplay refuses a live-run flag that would not take
+// effect: the harness drops a task's recording only when --provider is
+// switched, so --model, --base-url or --api-key-ref alone would leave a
+// replay-backed suite replaying while its result named the requested
+// model.
+func checkLiveFlagsAgainstReplay(suite types.EvalSuite, baseline *types.RunConfig, cfg RunConfig) error {
+	if cfg.Provider != "" || (cfg.Model == "" && cfg.BaseURL == "" && cfg.APIKeyRef == "") {
+		return nil
+	}
+	if !suiteReplaysByDefault(suite, baseline) {
+		return nil
+	}
+	return fmt.Errorf("suite %q is replay-backed: --model, --base-url and --api-key-ref apply only to a live run; pass --provider to switch it live", suite.ID)
+}
+
+func suiteReplaysByDefault(suite types.EvalSuite, baseline *types.RunConfig) bool {
+	if baseline != nil && baseline.Provider.Type == "replay" {
+		return true
+	}
+	for _, task := range suite.Tasks {
+		if task.RunConfigOverrides != nil && task.RunConfigOverrides.Provider != nil && task.RunConfigOverrides.Provider.Type == "replay" {
+			return true
+		}
+	}
+	return false
+}
+
 func validateSuite(suite types.EvalSuite) error {
 	if suite.ID == "" {
 		return fmt.Errorf("suite ID is required")

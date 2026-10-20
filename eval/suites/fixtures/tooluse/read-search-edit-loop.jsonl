@@ -1,0 +1,4 @@
+{"kind":"turn_record","turn":1,"modelOutput":[{"type":"tool_use","id":"c1","name":"grep_files","input":{"pattern":"func Double","include":["*.go"]}}]}
+{"kind":"turn_record","turn":2,"modelOutput":[{"type":"tool_use","id":"c2","name":"read_file","input":{"path":"calc.go"}}]}
+{"kind":"turn_record","turn":3,"modelOutput":[{"type":"tool_use","id":"c3","name":"edit_file","input":{"path":"calc.go","operation":"replace","old_string":"return n + n","new_string":"return n * 2"}}]}
+{"kind":"turn_record","turn":4,"modelOutput":[{"type":"text","text":"Double now returns n * 2."}]}

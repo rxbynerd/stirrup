@@ -801,7 +801,10 @@ deterministically:
 - **`ReplayProvider`** (`harness/internal/provider/replay.go`)
   implements `ProviderAdapter` by replaying recorded
   `TurnRecord.ModelOutput` as stream events. Atomic turn counter, no
-  API calls.
+  API calls. Selectable from a RunConfig as `provider.type = "replay"`
+  with `replayFile` naming the recording, so a suite runs through the
+  real harness binary without a credential
+  ([`providers.md`](providers.md#replay)).
 - **`ReplayExecutor`** (`harness/internal/executor/replay.go`)
   implements `Executor` by replaying recorded tool call outputs
   indexed by `(toolName, canonicalInput)`. Tracks writes for

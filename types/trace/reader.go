@@ -50,6 +50,9 @@ type Reader struct {
 	// resetScanner.
 	skipped    int
 	discarding bool
+	// malformed counts lines that were not valid JSON for their shape
+	// and were dropped.
+	malformed int
 }
 
 // ReaderOption customises a Reader.
@@ -85,6 +88,12 @@ func NewReader(r io.Reader, opts ...ReaderOption) *Reader {
 // reader has discarded so far.
 func (r *Reader) SkippedLines() int {
 	return r.skipped
+}
+
+// MalformedLines reports how many lines the reader has dropped so far
+// because they did not decode as the trace shape their kind announced.
+func (r *Reader) MalformedLines() int {
+	return r.malformed
 }
 
 // Open opens path for reading and returns a Reader that owns the file.
@@ -164,6 +173,7 @@ func (r *Reader) Next() (*types.RunTrace, error) {
 		}
 		trace, ok, err := decodeRunTraceLine(line)
 		if err != nil {
+			r.malformed++
 			r.logger.Debug("trace.Reader: skip malformed line",
 				"err", err.Error(),
 				"bytes", len(line),
@@ -306,6 +316,7 @@ func (r *Reader) ReadRecording() (*types.RunRecording, error) {
 		}
 		var probe kindOnly
 		if err := json.Unmarshal(line, &probe); err != nil {
+			r.malformed++
 			r.logger.Debug("trace.Reader: skip malformed line",
 				"err", err.Error(),
 				"bytes", len(line),
@@ -315,6 +326,7 @@ func (r *Reader) ReadRecording() (*types.RunRecording, error) {
 		if probe.Kind == "" {
 			var trace types.RunTrace
 			if err := json.Unmarshal(line, &trace); err != nil {
+				r.malformed++
 				r.logger.Debug("trace.Reader: skip malformed legacy line",
 					"err", err.Error(),
 					"bytes", len(line),
@@ -328,6 +340,7 @@ func (r *Reader) ReadRecording() (*types.RunRecording, error) {
 		}
 		var ev streamedEvent
 		if err := json.Unmarshal(line, &ev); err != nil {
+			r.malformed++
 			r.logger.Debug("trace.Reader: skip malformed event",
 				"err", err.Error(),
 				"bytes", len(line),

@@ -652,3 +652,20 @@ func TestReadRecording_SubRunSystemPromptDoesNotReplaceParents(t *testing.T) {
 	must.NoError(err)
 	must.Equal("parent prompt", rec.SystemPrompt, "a sub-run prompt must not replace the parent's")
 }
+
+// TestReader_MalformedLines_CountsDroppedLines pins that a recording's
+// dropped lines are observable, so a consumer that needs every line can
+// refuse a partial read instead of acting on shifted turns.
+func TestReader_MalformedLines_CountsDroppedLines(t *testing.T) {
+	must := require.New(t)
+	src := `{"kind":"turn_record","turn":1,"modelOutput":[{"type":"text","text":"a"}]}` + "\n" +
+		`{"kind":"turn_record",` + "\n" +
+		`not json at all` + "\n" +
+		`{"kind":"turn_record","turn":2,"modelOutput":[{"type":"text","text":"b"}]}` + "\n"
+	r := NewReader(strings.NewReader(src), WithLogger(slog.New(slog.DiscardHandler)))
+	rec, err := r.ReadRecording()
+	must.NoError(err)
+	must.Len(rec.Turns, 2)
+	must.Equal(2, r.MalformedLines())
+	must.Zero(r.SkippedLines())
+}

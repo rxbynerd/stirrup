@@ -180,6 +180,7 @@ Quick map for "I need to change X" lookups:
 | Want to change… | Look in… |
 |---|---|
 | Provider behaviour or wire format | `harness/internal/provider/<name>.go` |
+| Replay provider (`provider.type=replay`, `--replay-file`; recorded model output, no credential) | `harness/internal/provider/replay.go`, factory arm `core/factory.go::buildReplayProvider`, eval path anchoring `eval/spec/runconfig.go::AnchorReplayFiles` (operator doc: `docs/providers.md#replay`) |
 | System prompt content or model tiers (the `.md` files are Go text/templates) | `harness/internal/prompt/systemprompts/*.md`, `harness/internal/prompt/modeltier.go` (operator doc: `docs/configuration.md#system-prompt-templating`) |
 | Tool definition or schema | `harness/internal/tool/builtins/<name>.go` |
 | Control-plane-fulfilled tools (`tools.controlPlane`) | `harness/internal/tool/controlplane.go` (builder), registration in `core/factory.go::buildToolRegistry`, validation in `types/runconfig.go::validateControlPlaneTools` (operator doc: `docs/configuration.md#control-plane-tools`) |

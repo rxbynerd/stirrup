@@ -511,4 +511,7 @@ type RunConfigOverrides struct {
 	EditStrategy    *EditStrategyConfig    `json:"editStrategy,omitempty"`
 	Verifier        *VerifierConfig        `json:"verifier,omitempty"`
 	MaxTurns        *int                   `json:"maxTurns,omitempty"`
+	// ToolChoiceEscalation replaces the baseline's tool-choice escalation
+	// block for one task; nil keeps the baseline's.
+	ToolChoiceEscalation *ToolChoiceEscalationConfig `json:"toolChoiceEscalation,omitempty"`
 }

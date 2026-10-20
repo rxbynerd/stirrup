@@ -48,6 +48,9 @@ func replayableTurns(turns []types.TurnRecord) []types.TurnRecord {
 	return kept
 }
 
+// Len reports how many turns the provider can serve.
+func (rp *ReplayProvider) Len() int { return len(rp.turns) }
+
 // Stream replays the next recorded turn's model output as a channel of
 // StreamEvents. Returns an error if all turns have been exhausted.
 func (rp *ReplayProvider) Stream(ctx context.Context, _ types.StreamParams) (<-chan types.StreamEvent, error) {
