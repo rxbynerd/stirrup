@@ -4835,13 +4835,15 @@ func validateReplayProviderFields(path string, cfg ProviderConfig, errs *[]strin
 		}
 		return
 	}
-	switch cfg.ReplayFile {
-	case "":
+	switch {
+	case cfg.ReplayFile == "":
 		*errs = append(*errs, fmt.Sprintf("%s.replayFile is required for provider type %q", path, "replay"))
-	case "-":
+	case cfg.ReplayFile == "-":
 		// The trace reader treats "-" as stdin, which the harness may
 		// already be consuming for a piped RunConfig.
 		*errs = append(*errs, fmt.Sprintf("%s.replayFile must be a file path, not %q", path, "-"))
+	case pathHasDotDotSegment(cfg.ReplayFile) || pathHasDotDotSegment(filepath.Clean(cfg.ReplayFile)):
+		*errs = append(*errs, fmt.Sprintf("%s.replayFile %q must not contain \"..\" path segments", path, cfg.ReplayFile))
 	}
 	if cfg.APIKeyRef != "" {
 		*errs = append(*errs, fmt.Sprintf("%s.apiKeyRef must not be set for provider type %q; a replay provider resolves no credential", path, "replay"))
@@ -4850,7 +4852,7 @@ func validateReplayProviderFields(path string, cfg ProviderConfig, errs *[]strin
 		*errs = append(*errs, fmt.Sprintf("%s.credential must not be set for provider type %q; a replay provider resolves no credential", path, "replay"))
 	}
 	if cfg.BaseURL != "" {
-		*errs = append(*errs, fmt.Sprintf("%s.baseUrl is not used by provider type %q", path, "replay"))
+		*errs = append(*errs, fmt.Sprintf("%s.baseUrl must not be set for provider type %q; a replay provider contacts no endpoint", path, "replay"))
 	}
 }
 
