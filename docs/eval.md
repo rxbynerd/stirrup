@@ -139,10 +139,15 @@ Per-task `run_config_overrides` follows the existing
 `model_router`, `context_strategy`, `edit_strategy`, `verifier`,
 `tool_choice_escalation`, and `max_turns`. Only fields explicitly set
 on the overlay take effect; everything else passes the baseline
-through unchanged. A `provider` block's `replay_file` resolves against
-the suite file's directory, on the baseline and on an override alike,
-so a suite can ship its recordings beside it (see
-[Replay doubles](#replay-doubles)).
+through unchanged, except that a `provider` block replaces the
+baseline's provider block as a whole rather than merging into it. A
+`provider` block's `replay_file` resolves against the suite file's
+directory, on the baseline and on an override alike, so a suite can
+ship its recordings beside it (see [Replay doubles](#replay-doubles));
+a `run_config_file` baseline's `replayFile` resolves against that JSON
+file's directory. The resolved absolute paths appear in the retained
+`run_config.redacted.json`, so that artifact is specific to the machine
+that ran the suite.
 
 Per-task mode is set via the task block's `mode` attribute, not
 `run_config_overrides`. The runner always passes the task's mode
@@ -1176,7 +1181,9 @@ are the real ones; only the model is scripted. `stirrup-eval run
 --provider <type> --model <id>` (with the matching key reference)
 runs the same tasks live: the harness drops the recording path when
 its provider is switched on the command line, so one suite serves both
-forms. `eval/suites/tooluse.hcl` is built this way and runs in the
+forms. The runner refuses `--model`, `--base-url` or `--api-key-ref`
+without `--provider` on such a suite, since the tasks would keep
+replaying while the result named the requested model. `eval/suites/tooluse.hcl` is built this way and runs in the
 `verify` CI job from the recordings under `eval/suites/fixtures/`;
 `harness/internal/core/tooluse_replay_test.go` pins the same
 behaviours in process, including two a replay cannot reach (MCP name
@@ -1196,9 +1203,9 @@ file, carrying the full `ModelInput.Messages`, the model's
 partially-written files left behind by an interrupted run.
 
 Pre-streaming traces (single-blob `RunTrace` lines) parse through the
-same reader as recordings with no transcript turns; replay against
-those files is a degenerate case that succeeds only if the eval suite
-asks for zero turns.
+same reader as recordings with no transcript turns; the replay
+provider rejects them at construction because there is nothing to
+serve.
 
 ### Trace lakehouse
 

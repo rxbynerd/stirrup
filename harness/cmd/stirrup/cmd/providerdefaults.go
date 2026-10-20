@@ -13,8 +13,8 @@ const (
 	defaultAnthropicKeyRef = "secret://ANTHROPIC_API_KEY"
 	defaultOpenAIKeyRef    = "secret://OPENAI_API_KEY"
 	// defaultReplayModel labels a replayed run whose recording decides
-	// every turn; the name only reaches prompt-tier selection and
-	// telemetry.
+	// every turn; no model is called, so the name is a label wherever
+	// it is read.
 	defaultReplayModel = "replay"
 )
 

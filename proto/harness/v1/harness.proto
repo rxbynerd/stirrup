@@ -1681,10 +1681,11 @@ message ProviderConfig {
   string compat_profile = 15;
 
   // For "replay": path to a JSONL trace recording whose turn_record events
-  // supply the model output of every turn, in order. Read by the harness
-  // process from its own filesystem (relative to its working directory
-  // when not absolute). Required for "replay"; rejected for every other
-  // type, as are api_key_ref and credential alongside it.
+  // supply the model output of every turn, in order. For eval and testing:
+  // the harness process reads a regular file from its own filesystem
+  // (relative to its working directory when not absolute; ".." segments
+  // are rejected). Required for "replay" and rejected for every other
+  // type. A replay provider rejects api_key_ref, credential and base_url.
   // Next available field number: 17.
   string replay_file = 16;
 }

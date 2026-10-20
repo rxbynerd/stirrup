@@ -294,7 +294,7 @@ reference.
 | `--provider` | `anthropic` | One of `anthropic`, `bedrock`, `openai-compatible`, `openai-responses`, `gemini`, `replay`. `replay` serves recorded model output from `--replay-file` and needs no credential; see [Replay](#replay). |
 | `--model` | `claude-sonnet-4-6` for `anthropic`; none otherwise | Model id for the static / per-mode router. Required for every provider other than `anthropic`; omitting it exits 1 with an error naming the provider. |
 | `--prompt-model` | (none) | Model identity the system prompt templates render against, without changing the wire model. Combine with `--model` to compare a prompt tuned for one model against another. Empty derives the prompt model from the effective model. JSON path: `promptBuilder.promptModel`. See [System prompt templating](#system-prompt-templating). |
-| `--api-key-ref` | `secret://ANTHROPIC_API_KEY` for `anthropic`; `secret://OPENAI_API_KEY` for `openai-compatible` / `openai-responses`; none for `bedrock` / `gemini` / `replay` | A `secret://` reference. API keys never live in `RunConfig`. The default applies only when neither the flag nor `--config` supplies a value and no `credential` block is set; `--api-key-ref=""` sends no key (a keyless local server). Rejected for `gemini` (Vertex uses GCP IAM). |
+| `--api-key-ref` | `secret://ANTHROPIC_API_KEY` for `anthropic`; `secret://OPENAI_API_KEY` for `openai-compatible` / `openai-responses`; none for `bedrock` / `gemini` / `replay` | A `secret://` reference. API keys never live in `RunConfig`. The default applies only when neither the flag nor `--config` supplies a value and no `credential` block is set; `--api-key-ref=""` sends no key (a keyless local server). Rejected for `gemini` (Vertex uses GCP IAM) and for `replay` (no model is called). |
 | `--base-url` | (none) | Provider base URL. Required for Azure / gateway scenarios. |
 | `--api-key-header` | (none) | Header name. Empty = `Authorization: Bearer`; set to `api-key` for Azure key auth. |
 | `--query-param key=value` | (none) | Repeatable. Adds query parameters to every provider request URL — e.g. `--query-param api-version=preview` for Azure. Keys here override duplicates already encoded in `--base-url`. |
@@ -402,7 +402,7 @@ Gemini thinking depth is not a provider-scoped flag: the generic
 
 | Flag | Default | Notes |
 |---|---|---|
-| `--replay-file` | (none) | Path to a JSONL trace recording whose `turn_record` events supply each turn's model output, in order. Required when `--provider=replay`; rejected on every other provider. The harness opens the path from its own filesystem, relative to its working directory when not absolute. JSON path: `provider.replayFile`. |
+| `--replay-file` | (none) | Path to a JSONL trace recording whose `turn_record` events supply each turn's model output, in order. Required when `--provider=replay`; rejected on every other provider, and rejected when it contains a `..` segment, like the other host paths a control plane can set. The harness opens the path from its own filesystem, relative to its working directory when not absolute; the eval runner resolves a suite's relative paths against the suite file instead. Must be a regular file of at most 64 MiB. JSON path: `provider.replayFile`. |
 
 The `replay` provider calls no model: each turn's output is the next
 `turn_record` of the recording, so the harness drives its real tool
@@ -416,11 +416,17 @@ hand-written file of `turn_record` lines; the format and limits are in
 records a skip for its provider probe because there is nothing to
 reach.
 
-Switching provider on the command line drops a recording path the
-`--config` document carried (`--provider anthropic` on a replay
-document runs it live), and `--provider replay` drops the document's
-`apiKeyRef`, mirroring how a switch to `gemini` clears a stale key.
-The eval suites rely on the first direction: see
+A `--provider` switch on a `--config` document drops the fields the
+previous type owned when their own flag was not given, and rewrites a
+static router that named the previous type: `--provider anthropic` on
+a replay document drops `replayFile` and the `replay` model label (so
+the anthropic default model applies, or `--model` is demanded for a
+provider without one) and runs it live; `--provider replay` drops the
+document's `apiKeyRef`, mirroring how a switch to `gemini` clears a
+stale key. Only the top-level `provider` is switched; entries in the
+`providers` map are untouched. A leftover `credential` block or
+`baseUrl` on a switch to `replay` is not dropped and fails validation.
+The eval suites rely on the switch to live: see
 [`eval.md`](eval.md#replay-doubles).
 
 ### Anthropic Workload Identity Federation
