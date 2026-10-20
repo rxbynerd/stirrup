@@ -26,6 +26,10 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.StringArray("query-param", nil, "Repeatable key=value query parameter appended to every provider request URL (e.g. api-version=preview). Used by the openai-* adapters.")
 	f.String("provider-compat-profile", "", "Optional compatibility profile selecting a pre-defined provider-quirks rule. Closed set; current legal values: \"\" (no profile), \"zai-glm\" (Z.ai GLM tool_stream + legacy max_tokens).")
 	f.String("tools-profile", "", "Model-facing toolset profile (sets tools.profile). Closed set; current legal values: \"\"/\"default\" (no aliasing, internal tool names), \"coding-classic\" (terse coding-CLI aliases: grep, find, bash). Dispatch identities are unchanged regardless of profile.")
+	f.Bool("lazy-tools", false, "Turn on lazy tool loading (sets tools.lazyLoading.enabled): tools outside the eager set reach the model only after it searches for them. See docs/configuration.md#lazy-tool-loading.")
+	f.String("lazy-tools-strategy", "", "How deferred tools are searched (sets tools.lazyLoading.strategy): \"auto\" (default) uses the provider's native tool search where the model has one and the harness tool_search otherwise; \"harness\" always uses tool_search.")
+	f.StringArray("lazy-tools-eager", nil, "Repeatable internal tool ID sent on every turn without a search (sets tools.lazyLoading.eager). Replaces any list from --config. Unset defers only MCP-imported and control-plane tools.")
+	f.Int("lazy-tools-max-results", 0, "How many tools one harness tool_search loads (sets tools.lazyLoading.maxResults). 0 selects 5; maximum 20.")
 	f.StringArray("protected-write-target", nil, "Repeatable workspace-relative path that write tools may not target (e.g. AGENTS.md, config/policies/). A trailing / protects the directory and everything beneath it; otherwise the exact path only. Files loaded via --repository-guidance-file are protected in addition. Replaces any tools.protectedWriteTargets from --config.")
 	f.String("gcp-project", "", "GCP project ID hosting the Vertex AI usage. Required when --provider=gemini.")
 	f.String("gcp-location", "global", "Vertex AI location: \"global\" or a region (e.g. us-central1). Determines the URL host and project location segment.")
@@ -157,6 +161,7 @@ func addRunConfigFlagCompletions(cmd *cobra.Command) {
 	staticValues("guardrail", types.ValidGuardRailTypeValues())
 	staticValues("provider-compat-profile", types.ValidCompatProfileValues())
 	staticValues("tools-profile", types.ValidToolsProfileValues())
+	staticValues("lazy-tools-strategy", types.ValidLazyToolStrategyValues())
 
 	// log-level and api-key-header are not validator-closed sets in
 	// types/runconfig.go, but operators benefit from a hinted completion.
