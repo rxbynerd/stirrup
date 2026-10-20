@@ -224,6 +224,10 @@ type AgenticLoop struct {
 	// turn_committed nor turn_abandoned yet; nil between turns.
 	openTurn *int
 
+	// turnSearch is the tool search the current turn offers under lazy
+	// tool loading, set when the turn's tools are chosen.
+	turnSearch lazySearch
+
 	// setupWarnings holds the warnings raised during run setup until the
 	// run's run_started is sent; see holdSetupWarnings.
 	setupWarnings setupWarningHold
@@ -461,8 +465,9 @@ type structuredOutput struct {
 
 // preflightToolCall runs the deterministic, model-free checks every tool
 // call must pass before the PhasePreTool guard and dispatch: unknown-tool
-// and unloaded-deferred-tool rejection, malformed-arguments rejection, prototype-pollution strip,
-// JSON-schema validation, and the tool-input tripwires. t is call's resolved tool, nil when unknown.
+// and unloaded-deferred-tool rejection, malformed-arguments rejection,
+// prototype-pollution strip, JSON-schema validation, and the tool-input
+// tripwires. t is call's resolved tool, nil when unknown.
 //
 // On success it returns the cleaned input (the form both the guard and the
 // handler see) and an empty category. On rejection it returns the
@@ -478,7 +483,7 @@ func (l *AgenticLoop) preflightToolCall(call types.ToolCall, t *tool.Tool) (json
 		return nil, "Unknown tool: " + call.Name, observability.ToolFailureUnknownTool
 	}
 	if l.LazyTools != nil && l.LazyTools.Unloaded(t.Name) {
-		return nil, fmt.Sprintf("Tool %q is not loaded; call %s to load it first", call.Name, types.ToolSearchToolName), observability.ToolFailureUnknownTool
+		return nil, l.turnSearch.notLoadedMessage(call.Name), observability.ToolFailureToolNotLoaded
 	}
 
 	if call.InvalidInput != nil {
@@ -1065,13 +1070,20 @@ func estimateSystemPromptTokens(systemPrompt string) int {
 }
 
 // estimateToolDefinitionTokens estimates the token count for tool definitions
-// that are sent alongside messages in each API call. A deferred definition
-// reaches the model's context only once a native search loads it, so it is
-// not counted.
+// that are sent alongside messages in each API call, counting no deferred
+// definition.
 func estimateToolDefinitionTokens(tools []types.ToolDefinition) int {
+	return estimateLoadedToolDefinitionTokens(tools, nil)
+}
+
+// estimateLoadedToolDefinitionTokens is estimateToolDefinitionTokens for a
+// native tool search turn: a deferred definition reaches the model's
+// context once a search loads it, so it counts when loaded reports its
+// model-facing name. A nil loaded counts no deferred definition.
+func estimateLoadedToolDefinitionTokens(tools []types.ToolDefinition, loaded func(name string) bool) int {
 	total := 0
 	for _, t := range tools {
-		if t.Deferred {
+		if t.Deferred && (loaded == nil || !loaded(t.Name)) {
 			continue
 		}
 		total += toolDefinitionOverheadTokens

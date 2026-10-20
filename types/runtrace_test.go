@@ -57,6 +57,7 @@ func TestToolCallTrace_ErrorCategoryInBoundedSet(t *testing.T) {
 	// imported — types must not depend on harness/internal/observability.
 	validCategories := map[string]struct{}{
 		"unknown_tool":                {},
+		"tool_not_loaded":             {},
 		"invalid_arguments":           {},
 		"schema_validation_failed":    {},
 		"security_guard_denied":       {},

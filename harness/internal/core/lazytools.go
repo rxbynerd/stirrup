@@ -4,20 +4,57 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// visibleTools returns the tool definitions a turn routed to selection
-// sends, and whether the turn uses the provider's native tool search.
-// Without lazy loading every registered tool is sent.
-func (l *AgenticLoop) visibleTools(selection router.ModelSelection) ([]types.ToolDefinition, bool) {
-	if l.LazyTools == nil {
-		return l.Tools.List(), false
+// maxSearchReferences bounds the tool references kept from one native
+// tool_search_result block.
+const maxSearchReferences = 256
+
+// maxLoggedSearchReferences bounds the dropped references named in one
+// debug log line.
+const maxLoggedSearchReferences = 16
+
+// lazySearch is the tool search a turn offers the model under lazy tool
+// loading: the provider's native search, or the harness tool_search.
+type lazySearch struct {
+	native bool
+	// tool is the native search tool's name; empty for the harness search.
+	tool string
+}
+
+// notLoadedMessage is the rejection text for a call to the deferred tool
+// name before a search has loaded it.
+func (s lazySearch) notLoadedMessage(name string) string {
+	if s.native {
+		return fmt.Sprintf("Tool %q is not loaded; search for it with %s first", name, s.tool)
 	}
-	supported := l.ToolSearch != nil && l.ToolSearch(selection.Provider, selection.Model).Supported
-	native := l.LazyTools.UsesNative(supported)
-	return l.LazyTools.Visible(native), native
+	return fmt.Sprintf("Tool %q is not loaded; call %s to load it first", name, types.ToolSearchToolName)
+}
+
+// visibleTools returns the tool definitions a turn routed to selection
+// sends, and the tool search it offers. Without lazy loading every
+// registered tool is sent.
+func (l *AgenticLoop) visibleTools(selection router.ModelSelection) ([]types.ToolDefinition, lazySearch) {
+	if l.LazyTools == nil {
+		return l.Tools.List(), lazySearch{}
+	}
+	var capability quirks.ToolSearchCapability
+	if l.ToolSearch != nil {
+		capability = l.ToolSearch(selection.Provider, selection.Model)
+	}
+	if l.LazyTools.UsesNative(capability.Supported) {
+		return l.LazyTools.Visible(true), lazySearch{native: true, tool: capability.NativeToolName()}
+	}
+	return l.LazyTools.Visible(false), lazySearch{}
+}
+
+// deferredToolLoaded reports whether a search has loaded the deferred tool
+// presented as name.
+func (l *AgenticLoop) deferredToolLoaded(name string) bool {
+	return l.LazyTools != nil && l.LazyTools.Loaded(l.LazyTools.InternalID(name))
 }
 
 // presentToolReferences returns messages with tool_search_result
@@ -29,11 +66,14 @@ func (l *AgenticLoop) presentToolReferences(messages []types.Message) []types.Me
 	return l.LazyTools.PresentReferences(messages)
 }
 
-// loadSearchedTools maps the references of every tool_search_result block
-// in a response to internal IDs, in place, and loads them. Each search
-// that loaded a tool not already loaded is reported as a tools_loaded
-// event; the tools it loaded are returned in order.
-func (l *AgenticLoop) loadSearchedTools(blocks []types.ContentBlock) []string {
+// loadSearchedTools rewrites the references of every tool_search_result
+// block in a response, in place, to the internal IDs of the registered
+// deferred tools they name, and loads them. native is whether the turn
+// offered the provider's native search; without it a result is
+// unsolicited, keeps no references and loads nothing. Each search that
+// loaded a tool not already loaded is reported as a tools_loaded event;
+// the tools it loaded are returned in order.
+func (l *AgenticLoop) loadSearchedTools(ctx context.Context, blocks []types.ContentBlock, native bool) []string {
 	if l.LazyTools == nil {
 		return nil
 	}
@@ -45,10 +85,8 @@ func (l *AgenticLoop) loadSearchedTools(blocks []types.ContentBlock) []string {
 		case "tool_search":
 			searches[b.ID] = *b
 		case "tool_search_result":
-			for j, name := range b.ToolReferences {
-				b.ToolReferences[j] = l.LazyTools.InternalID(name)
-			}
-			if b.IsError {
+			b.ToolReferences = l.searchReferences(ctx, b.ToolReferences, native)
+			if b.IsError || len(b.ToolReferences) == 0 {
 				continue
 			}
 			added := l.LazyTools.Load(b.ToolReferences)
@@ -61,6 +99,33 @@ func (l *AgenticLoop) loadSearchedTools(blocks []types.ContentBlock) []string {
 		}
 	}
 	return loaded
+}
+
+// searchReferences returns the internal IDs of the registered deferred
+// tools among refs, at most maxSearchReferences of them, or nil when
+// native is false. Every other reference is dropped and logged at debug.
+func (l *AgenticLoop) searchReferences(ctx context.Context, refs []string, native bool) []string {
+	if len(refs) == 0 {
+		return nil
+	}
+	var kept, dropped []string
+	droppedCount := 0
+	for _, name := range refs {
+		id := l.LazyTools.InternalID(name)
+		if native && l.LazyTools.Deferred(id) && len(kept) < maxSearchReferences {
+			kept = append(kept, id)
+			continue
+		}
+		droppedCount++
+		if len(dropped) < maxLoggedSearchReferences {
+			dropped = append(dropped, name)
+		}
+	}
+	if droppedCount > 0 {
+		l.Logger.DebugContext(ctx, "tool search result references dropped",
+			"nativeSearch", native, "dropped", droppedCount, "tools", dropped)
+	}
+	return kept
 }
 
 // lazyLoadedCount returns how many tools the run has loaded; zero without

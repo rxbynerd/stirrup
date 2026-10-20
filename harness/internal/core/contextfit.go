@@ -26,7 +26,7 @@ func (l *AgenticLoop) fitPreparedRequest(
 	span oteltrace.Span,
 ) ([]types.Message, int, error) {
 	systemTokens := estimateSystemPromptTokens(systemPrompt)
-	toolTokens := estimateToolDefinitionTokens(toolDefs)
+	toolTokens := estimateLoadedToolDefinitionTokens(toolDefs, l.deferredToolLoaded)
 	tokens := estimateCurrentTokens(prepared, budget.structuredResults) + systemTokens + toolTokens
 	limit := contextpkg.FitLimit(budget.prepare)
 	if tokens <= limit {

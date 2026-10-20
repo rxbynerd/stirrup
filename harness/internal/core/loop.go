@@ -884,11 +884,12 @@ func (l *AgenticLoop) runInnerLoop(
 
 		// Token estimate includes system prompt and tool definitions —
 		// these consume context but aren't in the message history.
-		toolDefs, nativeToolSearch := l.visibleTools(selection)
+		toolDefs, search := l.visibleTools(selection)
+		l.turnSearch = search
 		structuredResults := l.sendsStructuredResults(selection.Provider, selection.Model)
 		currentTokens := estimateCurrentTokens(messages, structuredResults) +
 			estimateSystemPromptTokens(systemPrompt) +
-			estimateToolDefinitionTokens(toolDefs)
+			estimateLoadedToolDefinitionTokens(toolDefs, l.deferredToolLoaded)
 		window := l.resolveContextWindow(config, selection.Provider, selection.Model)
 		if turn == 0 && window.cappedFrom > 0 {
 			l.Logger.WarnContext(ctx, "contextStrategy.maxTokens exceeds the model's registered context window",
@@ -990,7 +991,7 @@ func (l *AgenticLoop) runInnerLoop(
 			ReasoningSummary: types.ResolveReasoningSummary(providerType, config.ReasoningSummary),
 			ToolChoice:       turnToolChoice,
 			CacheKey:         cacheKey,
-			ToolSearch:       nativeToolSearch,
+			ToolSearch:       search.native,
 		}
 		l.emitTurnStarted(turn, selection.Model, providerType)
 
@@ -1053,7 +1054,7 @@ func (l *AgenticLoop) runInnerLoop(
 			dispatched = len(toolCalls)
 		}
 		outputLimitRecovery := l.canRecoverFromOutputLimit(sr.StopReason, turn, config.MaxTurns)
-		attempt.toolsLoaded = l.loadSearchedTools(sr.Blocks)
+		attempt.toolsLoaded = l.loadSearchedTools(chatCtx, sr.Blocks, params.ToolSearch)
 		summary := l.recordAttemptUsage(chatCtx, config, tokenTracker, ledger, turn, selection, selectedProvider, attempt, dispatched, outputLimitRecovery, windDown)
 		// A turn that dispatches tool calls is recorded after them, so its
 		// summary includes the tools a harness tool_search loaded.
