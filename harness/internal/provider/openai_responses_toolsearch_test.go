@@ -297,3 +297,195 @@ func TestResponsesOutputItem_FunctionCallArgumentsMustBeAString(t *testing.T) {
 	err := json.Unmarshal([]byte(`{"type":"function_call","call_id":"call_1","arguments":{"path":"a.go"}}`), &item)
 	must.Error(err, "object arguments are accepted only on tool_search_call items")
 }
+
+// toolSearchTurnBlocks is the assistant content the loop persists for
+// toolSearchSSE.
+func toolSearchTurnBlocks() []types.ContentBlock {
+	return []types.ContentBlock{
+		{Type: "tool_search", ID: "tsc_1", Name: "tool_search", Input: json.RawMessage(`{"paths":["mcp_jira_create_issue"]}`)},
+		{Type: "tool_search_result", ToolUseID: "tsc_1", ToolReferences: []string{"mcp_jira_create_issue"}},
+		{Type: "tool_use", ID: "call_1", Name: "mcp_jira_create_issue", Input: json.RawMessage(`{"title":"Broken build"}`)},
+	}
+}
+
+func toolSearchHistory(blocks []types.ContentBlock) []types.Message {
+	return []types.Message{
+		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "file a ticket"}}},
+		{Role: "assistant", Content: blocks},
+		{Role: "user", Content: []types.ContentBlock{{Type: "tool_result", ToolUseID: "call_1", Content: "PROJ-1"}}},
+	}
+}
+
+func TestBuildResponsesRequest_ToolSearchReconstructsSearchItems(t *testing.T) {
+	must := require.New(t)
+	params := toolSearchParams()
+	params.Messages = toolSearchHistory(toolSearchTurnBlocks())
+	req, err := buildResponsesRequest(params, toolSearchQuirks(true), nil, "")
+	must.NoError(err)
+	input, err := json.Marshal(req.Input)
+	must.NoError(err)
+
+	must.JSONEq(`[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"file a ticket"}]},
+		{"type":"tool_search_call","execution":"server","call_id":null,"status":"completed","arguments":{"paths":["mcp_jira_create_issue"]}},
+		{"type":"tool_search_output","execution":"server","call_id":null,"status":"completed","tools":[
+			{"type":"function","name":"mcp_jira_create_issue","description":"Create a Jira issue","defer_loading":true,
+			 "parameters":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"]}}
+		]},
+		{"type":"function_call","call_id":"call_1","name":"mcp_jira_create_issue","arguments":"{\"title\":\"Broken build\"}"},
+		{"type":"function_call_output","call_id":"call_1","output":"PROJ-1"}
+	]`, string(input))
+}
+
+func TestBuildResponsesRequest_ToolSearchReconstructsEmptyResult(t *testing.T) {
+	must := require.New(t)
+	params := toolSearchParams()
+	params.Messages = toolSearchHistory([]types.ContentBlock{
+		{Type: "tool_search", ID: "tsc_1", Name: "tool_search", Input: json.RawMessage(`{"paths":["nothing"]}`)},
+		{Type: "tool_search_result", ToolUseID: "tsc_1"},
+		{Type: "text", Text: "No matching tool."},
+	})
+	req, err := buildResponsesRequest(params, toolSearchQuirks(true), nil, "")
+	must.NoError(err)
+	input, err := json.Marshal(req.Input)
+	must.NoError(err)
+	must.Contains(string(input), `{"type":"tool_search_output","execution":"server","call_id":null,"status":"completed","tools":[]}`)
+}
+
+func TestBuildResponsesRequest_ToolSearchDropsUnreconstructableSearches(t *testing.T) {
+	blocks := toolSearchTurnBlocks
+	cases := []struct {
+		name   string
+		blocks func() []types.ContentBlock
+		q      quirks.ProviderQuirks
+		params func(types.StreamParams) types.StreamParams
+	}{
+		{name: "quirks do not support tool search", blocks: blocks, q: toolSearchQuirks(false)},
+		{name: "loop did not ask for tool search", blocks: blocks, q: toolSearchQuirks(true),
+			params: func(p types.StreamParams) types.StreamParams { p.ToolSearch = false; return p }},
+		{name: "loaded tool missing from the request", blocks: blocks, q: toolSearchQuirks(true),
+			params: func(p types.StreamParams) types.StreamParams { p.Tools = p.Tools[:1]; return p }},
+		{name: "failed search", q: toolSearchQuirks(true), blocks: func() []types.ContentBlock {
+			b := blocks()
+			b[1] = types.ContentBlock{Type: "tool_search_result", ToolUseID: "tsc_1", IsError: true, Content: "unavailable: search failed"}
+			return b
+		}},
+		{name: "result without its call", q: toolSearchQuirks(true), blocks: func() []types.ContentBlock { return blocks()[1:] }},
+		{name: "call without its result", q: toolSearchQuirks(true), blocks: func() []types.ContentBlock {
+			b := blocks()
+			return []types.ContentBlock{b[0], b[2]}
+		}},
+		{name: "repeated call id", q: toolSearchQuirks(true), blocks: func() []types.ContentBlock {
+			b := blocks()
+			return []types.ContentBlock{b[0], b[0], b[1], b[2]}
+		}},
+		{name: "search input not JSON", q: toolSearchQuirks(true), blocks: func() []types.ContentBlock {
+			b := blocks()
+			b[0].Input = json.RawMessage(`{"paths":`)
+			return b
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			params := toolSearchParams()
+			params.Messages = toolSearchHistory(tc.blocks())
+			if tc.params != nil {
+				params = tc.params(params)
+			}
+			req, err := buildResponsesRequest(params, tc.q, nil, "")
+			must.NoError(err)
+			body, err := json.Marshal(req)
+			must.NoError(err)
+
+			var kinds []string
+			for _, raw := range requestInput(t, body) {
+				var item struct {
+					Type string `json:"type"`
+				}
+				must.NoError(json.Unmarshal(raw, &item))
+				kinds = append(kinds, item.Type)
+			}
+			must.Equal([]string{"message", "function_call", "function_call_output"}, kinds)
+		})
+	}
+}
+
+// TestOpenAIResponsesAdapter_ToolSearchReplaysItemsInPlace streams a turn
+// that searches and calls a loaded tool, then pins that the next request
+// replays the stored search items verbatim ahead of the function call.
+func TestOpenAIResponsesAdapter_ToolSearchReplaysItemsInPlace(t *testing.T) {
+	must := require.New(t)
+	script := newResponsesScript(t, toolSearchSSE())
+	adapter := script.adapter(nil)
+	params := toolSearchParams()
+	params.Model = responsesReplayModel
+
+	ch, err := adapter.Stream(t.Context(), params)
+	must.NoError(err)
+	events := drainStream(t, ch)
+	assistant := assistantFromEvents(events)
+	must.Equal(toolSearchTurnBlocks(), assistant.Content)
+	stored := storedReplayItems(t, messageComplete(t, events))
+	must.Len(stored, 3)
+
+	params.Messages = toolSearchHistory(assistant.Content)
+	params.Messages[1].ReplayFields = assistant.ReplayFields
+	ch, err = adapter.Stream(t.Context(), params)
+	must.NoError(err)
+	drainStream(t, ch)
+
+	input := requestInput(t, script.lastBody(t))
+	must.Len(input, 5)
+	for i, raw := range stored {
+		must.True(jsonValuesEqual(t, raw, input[i+1]), "input item %d is not the stored item: %s", i+1, input[i+1])
+	}
+	assertCallsPaired(t, input)
+}
+
+// TestOpenAIResponsesAdapter_ToolSearchReplayNeedsHostedSearch pins that a
+// stored turn holding search items is reconstructed, without them, when
+// the next request has no hosted search.
+func TestOpenAIResponsesAdapter_ToolSearchReplayNeedsHostedSearch(t *testing.T) {
+	must := require.New(t)
+	script := newResponsesScript(t, toolSearchSSE())
+	adapter := script.adapter(nil)
+	params := toolSearchParams()
+	params.Model = responsesReplayModel
+
+	ch, err := adapter.Stream(t.Context(), params)
+	must.NoError(err)
+	assistant := assistantFromEvents(drainStream(t, ch))
+
+	params.ToolSearch = false
+	params.Messages = toolSearchHistory(assistant.Content)
+	params.Messages[1].ReplayFields = assistant.ReplayFields
+	ch, err = adapter.Stream(t.Context(), params)
+	must.NoError(err)
+	drainStream(t, ch)
+
+	body := string(script.lastBody(t))
+	must.NotContains(body, "tool_search")
+	must.NotContains(body, `"id":`)
+}
+
+func TestResponsesInput_ToolSearchItemsRoundTrip(t *testing.T) {
+	truthy := true
+	cases := []responsesInput{
+		{Type: "tool_search_call", SearchArguments: json.RawMessage(`{"paths":["crm"]}`)},
+		{Type: "tool_search_output", LoadedTools: []responsesTool{{
+			Type: "function", Name: "list_open_orders", Parameters: json.RawMessage(`{"type":"object"}`), DeferLoading: &truthy,
+		}}},
+		{Type: "tool_search_output", LoadedTools: []responsesTool{}},
+	}
+	for _, in := range cases {
+		t.Run(in.Type, func(t *testing.T) {
+			must := require.New(t)
+			body, err := json.Marshal(in)
+			must.NoError(err)
+			var back responsesInput
+			must.NoError(json.Unmarshal(body, &back))
+			must.Equal(in, back)
+		})
+	}
+}

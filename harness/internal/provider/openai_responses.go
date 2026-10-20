@@ -421,13 +421,16 @@ func responsesStoreValue(m quirks.OpenAIResponsesStoreMode) bool {
 // endpoint) reject an empty "output" on message / function_call items.
 // See docs/provider-quirks.md for the function_call_output invariant.
 type responsesInput struct {
-	Type      string                  `json:"-"` // "message" | "function_call" | "function_call_output" | "reasoning" (Raw only)
+	Type      string                  `json:"-"` // "message" | "function_call" | "function_call_output" | "tool_search_call" | "tool_search_output" | "reasoning" (Raw only)
 	Role      string                  `json:"-"` // for "message"
 	Content   []responsesContentBlock `json:"-"` // for "message"
 	Name      string                  `json:"-"` // for "function_call"
 	CallID    string                  `json:"-"` // for "function_call" / "function_call_output"
 	Arguments string                  `json:"-"` // for "function_call" — JSON string
 	Output    string                  `json:"-"` // for "function_call_output" — required even when empty
+
+	SearchArguments json.RawMessage `json:"-"` // for "tool_search_call" — JSON object
+	LoadedTools     []responsesTool `json:"-"` // for "tool_search_output"
 
 	// Raw is a stored output item to replay; when set, MarshalJSON returns
 	// it and ignores the typed fields. The enclosing json.Marshal compacts
@@ -463,6 +466,24 @@ func (r responsesInput) MarshalJSON() ([]byte, error) {
 			Type:   r.Type,
 			CallID: r.CallID,
 			Output: r.Output,
+		})
+	case "tool_search_call":
+		return json.Marshal(responsesToolSearchCallInputWire{
+			Type:      r.Type,
+			Execution: responsesToolSearchExecution,
+			Status:    "completed",
+			Arguments: r.SearchArguments,
+		})
+	case "tool_search_output":
+		tools := r.LoadedTools
+		if tools == nil {
+			tools = []responsesTool{}
+		}
+		return json.Marshal(responsesToolSearchOutputInputWire{
+			Type:      r.Type,
+			Execution: responsesToolSearchExecution,
+			Status:    "completed",
+			Tools:     tools,
 		})
 	default:
 		// Unknown variants would previously have been serialised as a
@@ -517,10 +538,46 @@ func (r *responsesInput) UnmarshalJSON(data []byte) error {
 		}
 		r.CallID = w.CallID
 		r.Output = w.Output
+	case "tool_search_call":
+		var w responsesToolSearchCallInputWire
+		if err := json.Unmarshal(data, &w); err != nil {
+			return err
+		}
+		r.SearchArguments = w.Arguments
+	case "tool_search_output":
+		var w responsesToolSearchOutputInputWire
+		if err := json.Unmarshal(data, &w); err != nil {
+			return err
+		}
+		r.LoadedTools = w.Tools
 	default:
 		return fmt.Errorf("responsesInput: unknown type %q", head.Type)
 	}
 	return nil
+}
+
+// responsesToolSearchExecution is the execution mode of hosted tool
+// search items.
+const responsesToolSearchExecution = "server"
+
+// responsesToolSearchCallInputWire is the wire shape for a reconstructed
+// type=="tool_search_call". CallID is always null for hosted search.
+type responsesToolSearchCallInputWire struct {
+	Type      string          `json:"type"`
+	Execution string          `json:"execution"`
+	CallID    *string         `json:"call_id"`
+	Status    string          `json:"status"`
+	Arguments json.RawMessage `json:"arguments"`
+}
+
+// responsesToolSearchOutputInputWire is the wire shape for a reconstructed
+// type=="tool_search_output". CallID is always null for hosted search.
+type responsesToolSearchOutputInputWire struct {
+	Type      string          `json:"type"`
+	Execution string          `json:"execution"`
+	CallID    *string         `json:"call_id"`
+	Status    string          `json:"status"`
+	Tools     []responsesTool `json:"tools"`
 }
 
 // responsesMessageInputWire is the wire shape for type=="message".
@@ -836,7 +893,7 @@ func responsesReplayOriginFor(q quirks.ProviderQuirks, model, baseURL string) st
 // program items, compaction) disable replay for their turn.
 func replayableResponsesItem(itemType string) bool {
 	switch itemType {
-	case "reasoning", "message", "function_call":
+	case "reasoning", "message", "function_call", "tool_search_call", "tool_search_output":
 		return true
 	}
 	return false
@@ -896,6 +953,7 @@ func checkResponsesReplayItems(raws []json.RawMessage) (items []responsesReplayI
 					return nil, replayReasonNotAssistant, item.Type
 				}
 			}
+		case "tool_search_call", "tool_search_output":
 		default:
 			return nil, replayReasonUnreplayable, item.Type
 		}
@@ -1095,19 +1153,25 @@ func (c *responsesReplayCapture) disable(ctx context.Context, reason string, att
 // items came from that origin and still match its content is replayed
 // instead (see replayedResponsesItems); every other turn is reconstructed
 // without item ids, so one turn never mixes the two.
-func translateMessagesResponses(messages []types.Message, replayOrigin string) []responsesInput {
+//
+// search is the request's hosted tool search, or nil when it has none.
+// tool_search and tool_search_result blocks are reconstructed only under
+// a search, and only as complete pairs (see reconstructableToolSearches);
+// otherwise they are dropped.
+func translateMessagesResponses(messages []types.Message, replayOrigin string, search *responsesToolSearch) []responsesInput {
 	var out []responsesInput
 
 	for _, msg := range messages {
 		switch msg.Role {
 		case "assistant":
-			if replayed := replayedResponsesItems(msg, replayOrigin); replayed != nil {
+			if replayed := replayedResponsesItems(msg, replayOrigin, search); replayed != nil {
 				out = append(out, replayed...)
 				continue
 			}
 
 			var textParts []string
 			var calls []responsesInput
+			searches := reconstructableToolSearches(msg.Content, search)
 
 			for _, block := range msg.Content {
 				switch block.Type {
@@ -1121,6 +1185,20 @@ func translateMessagesResponses(messages []types.Message, replayOrigin string) [
 						Name:      block.Name,
 						Arguments: args,
 					})
+				case "tool_search":
+					if _, ok := searches[block.ID]; ok {
+						calls = append(calls, responsesInput{
+							Type:            "tool_search_call",
+							SearchArguments: types.NormalizeToolInput(block.Input),
+						})
+					}
+				case "tool_search_result":
+					if loaded, ok := searches[block.ToolUseID]; ok {
+						calls = append(calls, responsesInput{
+							Type:        "tool_search_output",
+							LoadedTools: loaded,
+						})
+					}
 				}
 			}
 
@@ -1173,6 +1251,80 @@ func translateMessagesResponses(messages []types.Message, replayOrigin string) [
 	return out
 }
 
+// responsesToolSearch is a request's hosted tool search as message
+// translation needs it.
+type responsesToolSearch struct {
+	// definitions maps each function tool's wire name to its translated
+	// definition, as the request's tools array carries it.
+	definitions map[string]responsesTool
+}
+
+// newResponsesToolSearch indexes a request's translated function tools.
+func newResponsesToolSearch(tools []responsesTool) *responsesToolSearch {
+	s := &responsesToolSearch{definitions: make(map[string]responsesTool, len(tools))}
+	for _, t := range tools {
+		if t.Type == "function" {
+			s.definitions[t.Name] = t
+		}
+	}
+	return s
+}
+
+// loaded returns the definitions a rebuilt tool_search_output carries for
+// names, each flagged defer_loading, or false when a name has no
+// definition in the request.
+func (s *responsesToolSearch) loaded(names []string) ([]responsesTool, bool) {
+	out := make([]responsesTool, 0, len(names))
+	for _, name := range names {
+		def, ok := s.definitions[name]
+		if !ok {
+			return nil, false
+		}
+		truthy := true
+		def.DeferLoading = &truthy
+		out = append(out, def)
+	}
+	return out, true
+}
+
+// reconstructableToolSearches returns, keyed by call ID, the loaded
+// definitions of each provider-side search in blocks that can be rebuilt
+// as a tool_search_call and tool_search_output pair. A search is left out,
+// and both its blocks dropped, when the request has no hosted search, when
+// either block is missing or repeated, when the search failed (no error
+// shape is documented for hosted search output), when its input is not
+// valid JSON, or when a loaded tool has no definition in the request.
+func reconstructableToolSearches(blocks []types.ContentBlock, search *responsesToolSearch) map[string][]responsesTool {
+	if search == nil {
+		return nil
+	}
+	calls := make(map[string]int)
+	results := make(map[string]int)
+	invalidInput := make(map[string]bool)
+	for _, b := range blocks {
+		switch b.Type {
+		case "tool_search":
+			calls[b.ID]++
+			if !json.Valid(types.NormalizeToolInput(b.Input)) {
+				invalidInput[b.ID] = true
+			}
+		case "tool_search_result":
+			results[b.ToolUseID]++
+		}
+	}
+	out := make(map[string][]responsesTool)
+	for _, b := range blocks {
+		id := b.ToolUseID
+		if b.Type != "tool_search_result" || b.IsError || calls[id] != 1 || results[id] != 1 || invalidInput[id] {
+			continue
+		}
+		if loaded, ok := search.loaded(b.ToolReferences); ok {
+			out[b.ToolUseID] = loaded
+		}
+	}
+	return out
+}
+
 // replayedResponsesItems returns msg's stored output items as input items,
 // or nil when the turn must be reconstructed. The stored items are used
 // only when they came from origin, pass checkResponsesReplayItems, and
@@ -1181,7 +1333,9 @@ func translateMessagesResponses(messages []types.Message, replayOrigin string) [
 // must equal the text blocks. A message the harness has since rewritten
 // therefore never replays stale items. Replayed items are semantically
 // identical to the stored JSON; json.Marshal compacts and HTML-escapes them.
-func replayedResponsesItems(msg types.Message, origin string) []responsesInput {
+// Stored tool search items take no part in the match and replay in place,
+// but only to a request with a hosted search (search non-nil).
+func replayedResponsesItems(msg types.Message, origin string, search *responsesToolSearch) []responsesInput {
 	if origin == "" {
 		return nil
 	}
@@ -1202,6 +1356,10 @@ func replayedResponsesItems(msg types.Message, origin string) []responsesInput {
 	var storedText strings.Builder
 	for _, item := range items {
 		switch item.Type {
+		case "tool_search_call", "tool_search_output":
+			if search == nil {
+				return nil
+			}
 		case "function_call":
 			if _, dup := storedCalls[item.CallID]; dup {
 				return nil
@@ -1342,6 +1500,10 @@ func buildResponsesRequest(params types.StreamParams, q quirks.ProviderQuirks, s
 	if err != nil {
 		return responsesRequest{}, err
 	}
+	var search *responsesToolSearch
+	if toolSearch {
+		search = newResponsesToolSearch(tools)
+	}
 	effort := projectReasoningEffort(params.ReasoningEffort, q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels)
 	temperature := params.Temperature
 	if responsesOmitsTemperature(q, effort) {
@@ -1358,7 +1520,7 @@ func buildResponsesRequest(params types.StreamParams, q quirks.ProviderQuirks, s
 	return responsesRequest{
 		Model:             params.Model,
 		Instructions:      params.System,
-		Input:             translateMessagesResponses(params.Messages, replayOrigin),
+		Input:             translateMessagesResponses(params.Messages, replayOrigin, search),
 		Tools:             tools,
 		MaxTokens:         params.MaxTokens,
 		Temperature:       temperature,

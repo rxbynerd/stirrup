@@ -171,7 +171,9 @@ func jsonValuesEqual(t *testing.T, a, b []byte) bool {
 
 // assistantFromEvents builds the assistant Message the agentic loop
 // persists for a stream: text deltas are joined into a text block that
-// closes at each tool call, and message_complete's ReplayFields ride along.
+// closes at each tool call or tool search, tool searches become
+// tool_search and tool_search_result blocks, and message_complete's
+// ReplayFields ride along.
 func assistantFromEvents(events []types.StreamEvent) types.Message {
 	msg := types.Message{Role: "assistant"}
 	var text strings.Builder
@@ -192,6 +194,13 @@ func assistantFromEvents(events []types.StreamEvent) types.Message {
 			flush()
 			input, _ := json.Marshal(ev.Input)
 			msg.Content = append(msg.Content, types.ContentBlock{Type: "tool_use", ID: ev.ID, Name: ev.Name, Input: input})
+		case "tool_search":
+			flush()
+			input, _ := json.Marshal(ev.Input)
+			msg.Content = append(msg.Content, types.ContentBlock{Type: "tool_search", ID: ev.ID, Name: ev.Name, Input: input})
+		case "tool_search_result":
+			flush()
+			msg.Content = append(msg.Content, types.ContentBlock{Type: "tool_search_result", ToolUseID: ev.ID, ToolReferences: ev.ToolReferences})
 		case "message_complete":
 			flush()
 			msg.ReplayFields = ev.ReplayFields
@@ -470,6 +479,11 @@ func TestOpenAIResponsesAdapter_ReplayOptOutConditions(t *testing.T) {
 			wantReason: replayReasonNotCompleted,
 		},
 		{
+			name:       "tool search item not completed",
+			sse:        []string{completed(`{"type":"tool_search_call","id":"tsc_1","execution":"server","call_id":null,"status":"in_progress","arguments":{"paths":["secret-arg"]}}`, call)},
+			wantReason: replayReasonNotCompleted,
+		},
+		{
 			name:       "turn ends with a reasoning item",
 			sse:        []string{completed(call, `{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"enc"}`)},
 			wantReason: replayReasonEndsInReasoning,
@@ -585,7 +599,7 @@ func TestTranslateMessagesResponses_ReplaysStoredItemsVerbatim(t *testing.T) {
 	assistant, stored := fixtureReplayTurn(t)
 	origin := replayOriginOf(t, assistant.ReplayFields)
 
-	got := translateMessagesResponses([]types.Message{replayUserPrompt, assistant, fixtureToolResults()}, origin)
+	got := translateMessagesResponses([]types.Message{replayUserPrompt, assistant, fixtureToolResults()}, origin, nil)
 	must.Len(got, 1+len(stored)+2)
 	for i, item := range stored {
 		raw := got[1+i].Raw
@@ -617,7 +631,7 @@ func TestTranslateMessagesResponses_ReplayIsSemanticallyIdentical(t *testing.T) 
 		{Type: "tool_use", ID: "call_1", Name: "run", Input: json.RawMessage(`{"cmd":"x<y&&z"}`)},
 	}, message, call)
 
-	got := translateMessagesResponses([]types.Message{msg}, testReplayOrigin)
+	got := translateMessagesResponses([]types.Message{msg}, testReplayOrigin, nil)
 	body, err := json.Marshal(got)
 	must.NoError(err, "marshal")
 	sent := requestInput(t, []byte(`{"input":`+string(body)+`}`))
@@ -691,6 +705,7 @@ func TestTranslateMessagesResponses_ReplayConsistencyFallback(t *testing.T) {
 			`{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"},{"type":"input_image"}]}`)},
 		{"stored item not completed", handBuilt([]types.ContentBlock{text("ok")},
 			`{"type":"message","id":"msg_1","role":"assistant","status":"incomplete","content":[{"type":"output_text","text":"ok"}]}`)},
+		{"stored tool search items without a hosted search", handBuilt(toolSearchTurnBlocks(), toolSearchCallItem, toolSearchOutputItem, loadedFunctionCall)},
 		{"reasoning-only turn", handBuilt(nil, `{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"enc"}`)},
 		{"refusal-only stored message against a text block", handBuilt([]types.ContentBlock{text("I can't help with that.")},
 			`{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"refusal","refusal":"I can't help with that."}]}`)},
@@ -702,9 +717,9 @@ func TestTranslateMessagesResponses_ReplayConsistencyFallback(t *testing.T) {
 			reconstructed := msg
 			reconstructed.ReplayFields = nil
 
-			got, err := json.Marshal(translateMessagesResponses([]types.Message{msg}, origin))
+			got, err := json.Marshal(translateMessagesResponses([]types.Message{msg}, origin, nil))
 			must.NoError(err, "marshal")
-			want, err := json.Marshal(translateMessagesResponses([]types.Message{reconstructed}, origin))
+			want, err := json.Marshal(translateMessagesResponses([]types.Message{reconstructed}, origin, nil))
 			must.NoError(err, "marshal reconstruction")
 			must.Equal(string(want), string(got), "fallback differs from the reconstruction")
 			must.NotContains(string(got), `"id":`, "fallback leaked stored item ids")
@@ -722,31 +737,38 @@ func TestTranslateMessagesResponses_ReplayConsistencyAccepts(t *testing.T) {
 	reasoning := `{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"enc"}`
 	done := `{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"done"}]}`
 
+	search := newResponsesToolSearch(nil)
+
 	cases := []struct {
-		name  string
-		msg   types.Message
-		items int
+		name   string
+		msg    types.Message
+		search *responsesToolSearch
+		items  int
 	}{
 		{"tool calls reordered", func() types.Message {
 			m := cloneMessage(base)
 			m.Content[1], m.Content[2] = m.Content[2], m.Content[1]
 			return m
-		}(), 4},
+		}(), nil, 4},
 		{"reasoning then message without tools", storedTurn(t, origin,
-			[]types.ContentBlock{{Type: "text", Text: "done"}}, reasoning, done), 2},
+			[]types.ContentBlock{{Type: "text", Text: "done"}}, reasoning, done), nil, 2},
 		{"refusal-only message without text blocks", storedTurn(t, origin, nil,
-			`{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"refusal","refusal":"no"}]}`), 1},
+			`{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"refusal","refusal":"no"}]}`), nil, 1},
 		{"arguments differ only in layout", storedTurn(t, origin,
 			[]types.ContentBlock{{Type: "tool_use", ID: "call_1", Name: "run", Input: json.RawMessage(`{"a":[1,2],"b":1}`)}},
-			reasoning, `{"type":"function_call","id":"fc_1","call_id":"call_1","name":"run","arguments":"{ \"b\": 1, \"a\": [1, 2] }","status":"completed"}`), 2},
+			reasoning, `{"type":"function_call","id":"fc_1","call_id":"call_1","name":"run","arguments":"{ \"b\": 1, \"a\": [1, 2] }","status":"completed"}`), nil, 2},
 		{"empty arguments against empty input", storedTurn(t, origin,
 			[]types.ContentBlock{{Type: "tool_use", ID: "call_1", Name: "list"}},
-			reasoning, `{"type":"function_call","id":"fc_1","call_id":"call_1","name":"list","arguments":"","status":"completed"}`), 2},
+			reasoning, `{"type":"function_call","id":"fc_1","call_id":"call_1","name":"list","arguments":"","status":"completed"}`), nil, 2},
+		{"tool search items under a hosted search", storedTurn(t, origin,
+			toolSearchTurnBlocks(), toolSearchCallItem, toolSearchOutputItem, loadedFunctionCall), search, 3},
+		{"tool search blocks dropped from the message", storedTurn(t, origin,
+			toolSearchTurnBlocks()[2:], toolSearchCallItem, toolSearchOutputItem, loadedFunctionCall), search, 3},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
-			got := translateMessagesResponses([]types.Message{tc.msg}, origin)
+			got := translateMessagesResponses([]types.Message{tc.msg}, origin, tc.search)
 			must.Len(got, tc.items, "replayed items: %+v", got)
 			for i, item := range got {
 				must.NotNil(item.Raw, "item %d was reconstructed, want replayed", i)
@@ -763,9 +785,9 @@ func TestTranslateMessagesResponses_EmptyOriginReconstructs(t *testing.T) {
 	assistant, _ := fixtureReplayTurn(t)
 	stripped := cloneMessage(assistant)
 	stripped.ReplayFields = nil
-	got, err := json.Marshal(translateMessagesResponses([]types.Message{assistant}, ""))
+	got, err := json.Marshal(translateMessagesResponses([]types.Message{assistant}, "", nil))
 	must.NoError(err, "marshal")
-	want, err := json.Marshal(translateMessagesResponses([]types.Message{stripped}, ""))
+	want, err := json.Marshal(translateMessagesResponses([]types.Message{stripped}, "", nil))
 	must.NoError(err, "marshal reconstruction")
 	must.Equal(string(want), string(got), "origin-less request differs from the reconstruction")
 }
@@ -780,7 +802,7 @@ func TestTranslateMessagesResponses_OtherReplayKeysIgnored(t *testing.T) {
 		Content:      []types.ContentBlock{{Type: "text", Text: "done"}},
 		ReplayFields: map[string]json.RawMessage{"reasoning_content": json.RawMessage(`"thinking"`)},
 	}
-	got, err := json.Marshal(translateMessagesResponses([]types.Message{msg}, testReplayOrigin))
+	got, err := json.Marshal(translateMessagesResponses([]types.Message{msg}, testReplayOrigin, nil))
 	must.NoError(err, "marshal")
 	want := `[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]`
 	must.Equal(want, string(got))
@@ -886,7 +908,7 @@ func TestOpenAIResponsesAdapter_ReplayNonReasoningModelsReconstruct(t *testing.T
 	assistant, _ := fixtureReplayTurn(t)
 	stripped := cloneMessage(assistant)
 	stripped.ReplayFields = nil
-	want, err := json.Marshal(translateMessagesResponses([]types.Message{replayUserPrompt, stripped, fixtureToolResults()}, ""))
+	want, err := json.Marshal(translateMessagesResponses([]types.Message{replayUserPrompt, stripped, fixtureToolResults()}, "", nil))
 	must.NoError(err, "marshal reconstruction")
 
 	for _, model := range []string{"gpt-4o", "gpt-4.1", "gpt-5-chat-latest"} {

@@ -110,6 +110,31 @@ func responsesBuilderCases() []struct {
 			},
 		},
 		{
+			// A reconstructed hosted search: the tool_search_output carries
+			// the loaded definition from Tools, flagged defer_loading.
+			name: "tool_search_history",
+			params: types.StreamParams{
+				Model:      "gpt-5.5",
+				MaxTokens:  1024,
+				ToolSearch: true,
+				Tools: []types.ToolDefinition{
+					{Name: "read_file", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`)},
+					{Name: "mcp_jira_create_issue", Description: "Create a Jira issue", InputSchema: json.RawMessage(`{"type":"object","properties":{"title":{"type":"string"}},"required":["title"]}`), Deferred: true},
+				},
+				Messages: []types.Message{
+					{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "file a ticket"}}},
+					{Role: "assistant", Content: []types.ContentBlock{
+						{Type: "tool_search", ID: "tsc_1", Name: "tool_search", Input: json.RawMessage(`{"paths":["mcp_jira_create_issue"]}`)},
+						{Type: "tool_search_result", ToolUseID: "tsc_1", ToolReferences: []string{"mcp_jira_create_issue"}},
+						{Type: "tool_use", ID: "call_1", Name: "mcp_jira_create_issue", Input: json.RawMessage(`{"title":"Broken build"}`)},
+					}},
+					{Role: "user", Content: []types.ContentBlock{
+						{Type: "tool_result", ToolUseID: "call_1", Content: "PROJ-1"},
+					}},
+				},
+			},
+		},
+		{
 			name: "cache_key",
 			params: types.StreamParams{
 				Model:     "gpt-4o",
