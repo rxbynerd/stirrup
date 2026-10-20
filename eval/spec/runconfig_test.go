@@ -1156,3 +1156,26 @@ suite "s" {
 	must.ErrorContains(err, "secret://")
 	check.ErrorContains(err, "run_config_overrides.provider.api_key_ref")
 }
+
+// TestAnchorRunConfigPaths_ResolvesRelativeReplayFiles pins the anchoring
+// rule for the default provider and the providers map: relative paths
+// become absolute under baseDir, absolute paths and empty values pass
+// through, and a nil config is a no-op.
+func TestAnchorRunConfigPaths_ResolvesRelativeReplayFiles(t *testing.T) {
+	must := require.New(t)
+	base := t.TempDir()
+	cfg := &types.RunConfig{
+		Provider: types.ProviderConfig{Type: "replay", ReplayFile: "rec/a.jsonl"},
+		Providers: map[string]types.ProviderConfig{
+			"abs":  {Type: "replay", ReplayFile: "/abs/b.jsonl"},
+			"rel":  {Type: "replay", ReplayFile: "rec/c.jsonl"},
+			"live": {Type: "anthropic"},
+		},
+	}
+	AnchorRunConfigPaths(cfg, base)
+	must.Equal(filepath.Join(base, "rec/a.jsonl"), cfg.Provider.ReplayFile)
+	must.Equal("/abs/b.jsonl", cfg.Providers["abs"].ReplayFile)
+	must.Equal(filepath.Join(base, "rec/c.jsonl"), cfg.Providers["rel"].ReplayFile)
+	must.Empty(cfg.Providers["live"].ReplayFile)
+	AnchorRunConfigPaths(nil, base)
+}

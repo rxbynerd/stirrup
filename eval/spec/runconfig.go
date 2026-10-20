@@ -63,18 +63,16 @@ type runConfigOverridesSpec struct {
 }
 
 type providerSpec struct {
-	Type               string            `hcl:"type"`
-	APIKeyRef          string            `hcl:"api_key_ref,optional"`
-	Region             string            `hcl:"region,optional"`
-	Profile            string            `hcl:"profile,optional"`
-	BaseURL            string            `hcl:"base_url,optional"`
-	APIKeyHeader       string            `hcl:"api_key_header,optional"`
-	QueryParams        map[string]string `hcl:"query_params,optional"`
-	GCPProject         string            `hcl:"gcp_project,optional"`
-	GCPLocation        string            `hcl:"gcp_location,optional"`
-	GCPCredentialsFile string            `hcl:"gcp_credentials_file,optional"`
-	// ReplayFile is resolved relative to the suite file by LoadSuiteHCL,
-	// so a suite can ship its recordings beside it.
+	Type                 string                    `hcl:"type"`
+	APIKeyRef            string                    `hcl:"api_key_ref,optional"`
+	Region               string                    `hcl:"region,optional"`
+	Profile              string                    `hcl:"profile,optional"`
+	BaseURL              string                    `hcl:"base_url,optional"`
+	APIKeyHeader         string                    `hcl:"api_key_header,optional"`
+	QueryParams          map[string]string         `hcl:"query_params,optional"`
+	GCPProject           string                    `hcl:"gcp_project,optional"`
+	GCPLocation          string                    `hcl:"gcp_location,optional"`
+	GCPCredentialsFile   string                    `hcl:"gcp_credentials_file,optional"`
 	ReplayFile           string                    `hcl:"replay_file,optional"`
 	Credential           *credentialSpec           `hcl:"credential,block"`
 	GeminiSafetySettings []geminiSafetySettingSpec `hcl:"gemini_safety_setting,block"`
@@ -525,12 +523,13 @@ func toolChoiceEscalationSpecToType(s *toolChoiceEscalationSpec) *types.ToolChoi
 	return &types.ToolChoiceEscalationConfig{Enabled: s.Enabled, MaxRetries: s.MaxRetries}
 }
 
-// AnchorReplayFiles resolves every relative provider replayFile in cfg
-// against baseDir, so a recording path written beside the document that
-// names it keeps pointing there when the harness runs from a workspace.
-// The result is absolute: the harness opens the path from the task
-// workspace, not from the runner's working directory.
-func AnchorReplayFiles(cfg *types.RunConfig, baseDir string) {
+// AnchorRunConfigPaths resolves the relative host paths in cfg that the
+// harness opens itself against baseDir, the directory of the document
+// that named them, so they keep pointing there when the harness runs
+// from a task workspace. The result is absolute. Today the only such
+// path is a provider's replayFile; credential files stay as written
+// because they are environment-local rather than shipped with a suite.
+func AnchorRunConfigPaths(cfg *types.RunConfig, baseDir string) {
 	if cfg == nil {
 		return
 	}
