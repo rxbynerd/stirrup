@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -97,4 +98,17 @@ func TestFabricateStream_OpenAIResponsesToolSearchMatchesStream(t *testing.T) {
 			must.Equal(s.OutputTokens, b.OutputTokens)
 		})
 	}
+}
+
+func TestFabricateStream_OpenAIResponsesToolSearchCapsNamespaceDepth(t *testing.T) {
+	must := require.New(t)
+	output := `{"type":"tool_search_output","id":"tso_1","status":"completed","tools":` + string(responsesNestedNamespaces(4990)) + `}`
+
+	start := time.Now()
+	got := responsesFabricate(t, responsesBatchResult(responsesBatchSearchCall, output))
+
+	must.Less(time.Since(start), time.Second, "deeply nested namespaces must not be re-decoded per level")
+	must.Len(got, 3, "events: %+v", got)
+	must.Equal("tool_search_result", got[1].Type)
+	must.Empty(got[1].ToolReferences, "a function nested past the depth cap is not loaded")
 }

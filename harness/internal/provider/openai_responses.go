@@ -1978,14 +1978,19 @@ type responsesLoadedTool struct {
 	Tools json.RawMessage `json:"tools"`
 }
 
+// responsesMaxNamespaceDepth bounds how deep responsesLoadedToolNames
+// descends: the top-level array is depth 1 and a namespace's tools are
+// depth 2. Namespaces nested further are ignored without being decoded.
+const responsesMaxNamespaceDepth = 2
+
 // responsesLoadedToolNames returns the names of the functions in a
-// tool_search_output's tools array, flattening namespaces, in order and
-// without duplicates.
+// tool_search_output's tools array, flattening namespaces up to
+// responsesMaxNamespaceDepth, in order and without duplicates.
 func responsesLoadedToolNames(raw json.RawMessage) ([]string, error) {
 	var names []string
 	seen := make(map[string]bool)
-	var walk func(json.RawMessage) error
-	walk = func(raw json.RawMessage) error {
+	var walk func(json.RawMessage, int) error
+	walk = func(raw json.RawMessage, depth int) error {
 		if len(raw) == 0 {
 			return nil
 		}
@@ -2001,14 +2006,16 @@ func responsesLoadedToolNames(raw json.RawMessage) ([]string, error) {
 					names = append(names, e.Name)
 				}
 			case "namespace":
-				if err := walk(e.Tools); err != nil {
-					return err
+				if depth < responsesMaxNamespaceDepth {
+					if err := walk(e.Tools, depth+1); err != nil {
+						return err
+					}
 				}
 			}
 		}
 		return nil
 	}
-	if err := walk(raw); err != nil {
+	if err := walk(raw, 1); err != nil {
 		return nil, err
 	}
 	return names, nil

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -294,6 +295,51 @@ func TestResponsesLoadedToolNames_FlattensNamespaces(t *testing.T) {
 	]`))
 	must.NoError(err)
 	must.Equal([]string{"get_weather", "list_open_orders", "get_customer_profile"}, names)
+}
+
+// responsesNestedNamespaces returns a tools array whose single namespace
+// entry nests another namespace depth-1 more times, with one function at
+// the innermost level.
+func responsesNestedNamespaces(depth int) json.RawMessage {
+	var b strings.Builder
+	for range depth {
+		b.WriteString(`[{"type":"namespace","name":"n","tools":`)
+	}
+	b.WriteString(`[{"type":"function","name":"deep"}]`)
+	for range depth {
+		b.WriteString(`}]`)
+	}
+	return json.RawMessage(b.String())
+}
+
+func TestResponsesLoadedToolNames_CapsNamespaceDepth(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want []string
+	}{
+		{"function at depth 1", `[{"type":"function","name":"a"}]`, []string{"a"}},
+		{"function in a namespace at depth 2", `[{"type":"namespace","tools":[{"type":"function","name":"b"}]}]`, []string{"b"}},
+		{"function in a namespace nested at depth 3", `[{"type":"namespace","tools":[{"type":"namespace","tools":[{"type":"function","name":"c"}]},{"type":"function","name":"d"}]}]`, []string{"d"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			names, err := responsesLoadedToolNames(json.RawMessage(tc.raw))
+			must.NoError(err)
+			must.Equal(tc.want, names)
+		})
+	}
+}
+
+func TestResponsesLoadedToolNames_DeepNestingIsLinear(t *testing.T) {
+	must := require.New(t)
+	raw := responsesNestedNamespaces(4990)
+	start := time.Now()
+	names, err := responsesLoadedToolNames(raw)
+	must.NoError(err)
+	must.Empty(names)
+	must.Less(time.Since(start), time.Second, "deeply nested namespaces must not be re-decoded per level")
 }
 
 func TestResponsesOutputItem_FunctionCallArgumentsMustBeAString(t *testing.T) {
