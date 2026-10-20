@@ -8427,7 +8427,7 @@ func TestValidateRunConfig_ReplayProvider_RejectsCredentialFields(t *testing.T) 
 		{
 			name:      "baseUrl",
 			mutate:    func(p *ProviderConfig) { p.BaseURL = "https://example.com" },
-			errSubstr: "baseUrl is not used by provider type \"replay\"",
+			errSubstr: "baseUrl must not be set for provider type \"replay\"",
 		},
 	}
 	for _, tc := range cases {
@@ -8441,10 +8441,57 @@ func TestValidateRunConfig_ReplayProvider_RejectsCredentialFields(t *testing.T) 
 	}
 }
 
-// TestValidateRunConfig_ReplayFileLeakRejected pins that replayFile cannot
-// ride along on a live provider, for the default entry and for a named
-// entry in the Providers map.
-func TestValidateRunConfig_ReplayFileLeakRejected(t *testing.T) {
+// TestValidateRunConfig_ReplayProvider_RejectsDotDotPath pins the same
+// path-segment rule the other host paths a control plane can set carry.
+func TestValidateRunConfig_ReplayProvider_RejectsDotDotPath(t *testing.T) {
+	for _, path := range []string{"../run.jsonl", "a/../../run.jsonl", "recordings/../../run.jsonl"} {
+		t.Run(path, func(t *testing.T) {
+			must := require.New(t)
+			c := validConfig()
+			c.Provider = ProviderConfig{Type: "replay", ReplayFile: path}
+			must.ErrorContains(ValidateRunConfig(c), "must not contain \"..\" path segments")
+		})
+	}
+}
+
+// TestValidateRunConfig_ReplayProvider_NamedEntryValidated pins that a
+// replay entry in the Providers map gets the same checks under its own
+// path prefix.
+func TestValidateRunConfig_ReplayProvider_NamedEntryValidated(t *testing.T) {
+	cases := []struct {
+		name      string
+		entry     ProviderConfig
+		errSubstr string
+	}{
+		{name: "missing replayFile", entry: ProviderConfig{Type: "replay"}, errSubstr: "providers[alt].replayFile is required"},
+		{name: "stdin alias", entry: ProviderConfig{Type: "replay", ReplayFile: "-"}, errSubstr: "providers[alt].replayFile must be a file path"},
+		{name: "apiKeyRef", entry: ProviderConfig{Type: "replay", ReplayFile: "run.jsonl", APIKeyRef: "secret://K"}, errSubstr: "providers[alt].apiKeyRef must not be set"},
+		{name: "credential", entry: ProviderConfig{Type: "replay", ReplayFile: "run.jsonl", Credential: &CredentialConfig{Type: "static"}}, errSubstr: "providers[alt].credential must not be set"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			c := validConfig()
+			c.Providers = map[string]ProviderConfig{"alt": tc.entry}
+			must.ErrorContains(ValidateRunConfig(c), tc.errSubstr)
+		})
+	}
+}
+
+// TestValidateRunConfig_ReplayProvider_RejectsBatch pins that batch
+// submission, which only the live HTTP adapters implement, is refused on
+// a replay provider.
+func TestValidateRunConfig_ReplayProvider_RejectsBatch(t *testing.T) {
+	must := require.New(t)
+	c := validConfig()
+	c.Provider = ProviderConfig{Type: "replay", ReplayFile: "run.jsonl", Batch: &BatchProviderConfig{Enabled: true}}
+	must.Error(ValidateRunConfig(c))
+}
+
+// TestValidateRunConfig_ReplayFile_RejectedOnLiveProvider pins that
+// replayFile cannot ride along on a live provider, for the default entry
+// and for a named entry in the Providers map.
+func TestValidateRunConfig_ReplayFile_RejectedOnLiveProvider(t *testing.T) {
 	t.Run("default", func(t *testing.T) {
 		must := require.New(t)
 		c := validConfig()

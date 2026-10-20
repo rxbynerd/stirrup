@@ -21,6 +21,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -3374,9 +3375,98 @@ func TestBuildProviders_EmptyAPIKeyRef_RejectedInProvidersMap(t *testing.T) {
 // lines and returns its path.
 func writeReplayRecording(t *testing.T, lines ...string) string {
 	t.Helper()
+	must := require.New(t)
 	path := filepath.Join(t.TempDir(), "recording.jsonl")
-	require.NoError(t, os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600))
+	must.NoError(os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600))
 	return path
+}
+
+const (
+	replayToolTurn = `{"kind":"turn_record","turn":1,"modelOutput":[{"type":"tool_use","id":"c1","name":"read_file","input":{"path":"a.txt"}}]}`
+	replayTextTurn = `{"kind":"turn_record","turn":2,"modelOutput":[{"type":"text","text":"done"}]}`
+)
+
+// TestBuildProvider_Replay_RejectsIncompleteRecording pins that a recording
+// the reader would have to drop a line from is refused outright, since a
+// dropped line would shift every later turn onto the wrong request.
+func TestBuildProvider_Replay_RejectsIncompleteRecording(t *testing.T) {
+	oversized := `{"kind":"turn_record","turn":2,"modelOutput":[{"type":"text","text":"` + strings.Repeat("x", 4*1024*1024) + `"}]}`
+	cases := []struct {
+		name      string
+		lines     []string
+		errSubstr string
+	}{
+		{name: "malformed middle line", lines: []string{replayToolTurn, `{"kind":"turn_record",`, replayTextTurn}, errSubstr: "1 malformed line(s)"},
+		{name: "oversized middle line", lines: []string{replayToolTurn, oversized, replayTextTurn}, errSubstr: "line(s) over"},
+		{name: "only malformed lines", lines: []string{"not json", "{"}, errSubstr: "malformed line(s)"},
+		{name: "only sub-agent turns", lines: []string{`{"kind":"turn_record","turn":1,"runId":"child","parentRunId":"parent","modelOutput":[{"type":"text","text":"x"}]}`}, errSubstr: "holds only sub-agent turns"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			path := writeReplayRecording(t, tc.lines...)
+			_, err := buildProvider(context.Background(), types.ProviderConfig{Type: "replay", ReplayFile: path}, &stubSecretStore{})
+			must.ErrorContains(err, tc.errSubstr)
+		})
+	}
+}
+
+// TestBuildProvider_Replay_RejectsNonRegularOrOversizedFile pins that the
+// loader returns promptly with an error for a path that is not a bounded
+// regular file, since the path can arrive from a control plane.
+func TestBuildProvider_Replay_RejectsNonRegularOrOversizedFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("FIFOs and /dev/null are POSIX")
+	}
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "fifo")
+	require.New(t).NoError(syscall.Mkfifo(fifo, 0o600))
+	huge := filepath.Join(dir, "huge.jsonl")
+	require.New(t).NoError(os.WriteFile(huge, nil, 0o600))
+	require.New(t).NoError(os.Truncate(huge, maxReplayFileBytes+1))
+
+	cases := []struct {
+		name      string
+		path      string
+		errSubstr string
+	}{
+		{name: "directory", path: dir, errSubstr: "not a regular file"},
+		{name: "fifo", path: fifo, errSubstr: "not a regular file"},
+		{name: "character device", path: "/dev/null", errSubstr: "not a regular file"},
+		{name: "over the size cap", path: huge, errSubstr: "the cap is"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			done := make(chan error, 1)
+			go func() {
+				_, err := buildProvider(context.Background(), types.ProviderConfig{Type: "replay", ReplayFile: tc.path}, &stubSecretStore{})
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				must.ErrorContains(err, tc.errSubstr)
+			case <-time.After(5 * time.Second):
+				must.FailNow("buildProvider did not return for " + tc.name)
+			}
+		})
+	}
+}
+
+// TestBuildProviders_Replay_NamedEntryServed pins that a replay entry in
+// the providers map is built like the default one and routable by name.
+func TestBuildProviders_Replay_NamedEntryServed(t *testing.T) {
+	must := require.New(t)
+	path := writeReplayRecording(t, replayToolTurn, replayTextTurn)
+	cfg := &types.RunConfig{
+		Provider:  types.ProviderConfig{Type: "replay", ReplayFile: path},
+		Providers: map[string]types.ProviderConfig{"recorded": {Type: "replay", ReplayFile: path}},
+	}
+	_, providers, err := buildProviders(context.Background(), cfg, &stubSecretStore{})
+	must.NoError(err)
+	named, ok := providers["recorded"].(*provider.ReplayProvider)
+	must.True(ok, "providers[recorded] type = %T", providers["recorded"])
+	must.Equal(2, named.Len())
 }
 
 func TestBuildProvider_Replay_ServesRecordedTurns(t *testing.T) {
