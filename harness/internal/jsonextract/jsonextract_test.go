@@ -3,12 +3,13 @@ package jsonextract
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // nonce_extraction_vectors.json is mirrored byte-for-byte in eval/judge/testdata; change both copies together.
@@ -30,45 +31,35 @@ var vectorErrors = map[string]error{
 }
 
 func TestObjectWithNonce_Vectors(t *testing.T) {
+	must := require.New(t)
 	raw, err := os.ReadFile(filepath.Join("testdata", "nonce_extraction_vectors.json"))
-	if err != nil {
-		t.Fatalf("read vectors: %v", err)
-	}
+	must.NoError(err, "read vectors")
+
 	var v extractionVectors
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&v); err != nil {
-		t.Fatalf("decode vectors: %v", err)
-	}
-	if len(v.Cases) == 0 {
-		t.Fatal("vectors file has no cases")
-	}
+	must.NoError(dec.Decode(&v), "decode vectors")
+	must.NotEmpty(v.Cases, "vectors file has no cases")
+
 	for _, tc := range v.Cases {
 		t.Run(tc.Name, func(t *testing.T) {
-			if (tc.Error == "") == (len(tc.Members) == 0) {
-				t.Fatalf("case must set exactly one of members and error")
-			}
+			must := require.New(t)
+			hasError := tc.Error != ""
+			hasMembers := len(tc.Members) > 0
+			must.NotEqual(hasError, hasMembers, "case must set exactly one of members and error")
+
 			members, err := ObjectWithNonce(tc.Input, tc.Nonce)
-			if tc.Error != "" {
+			if hasError {
 				want, ok := vectorErrors[tc.Error]
-				if !ok {
-					t.Fatalf("unknown error name %q", tc.Error)
-				}
-				if !errors.Is(err, want) {
-					t.Fatalf("ObjectWithNonce = %v, %v; want error %v", members, err, want)
-				}
+				must.True(ok, "unknown error name %q", tc.Error)
+				must.ErrorIs(err, want)
 				return
 			}
-			if err != nil {
-				t.Fatalf("ObjectWithNonce: %v", err)
-			}
+
+			must.NoError(err)
 			got, err := json.Marshal(members)
-			if err != nil {
-				t.Fatalf("marshal members: %v", err)
-			}
-			if !sameJSON(got, tc.Members) {
-				t.Fatalf("members = %s, want %s", got, tc.Members)
-			}
+			must.NoError(err, "marshal members")
+			must.True(sameJSON(got, tc.Members), "members = %s, want %s", got, tc.Members)
 		})
 	}
 }
@@ -84,14 +75,13 @@ func TestObjectWithNonce_ScanBudgetFailsClosed(t *testing.T) {
 		"braces_after_match":  verdict + strings.Repeat("{", 200_000),
 	} {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			start := time.Now()
-			members, err := ObjectWithNonce(in, nonce)
-			if !errors.Is(err, ErrScanBudget) {
-				t.Fatalf("ObjectWithNonce = %v, %v; want ErrScanBudget", members, err)
-			}
-			if elapsed := time.Since(start); elapsed > 5*time.Second {
-				t.Fatalf("extraction took %s; the scan budget is not bounding work", elapsed)
-			}
+			_, err := ObjectWithNonce(in, nonce)
+			must.ErrorIs(err, ErrScanBudget)
+
+			elapsed := time.Since(start)
+			must.LessOrEqual(elapsed, 5*time.Second, "the scan budget is not bounding work")
 		})
 	}
 }

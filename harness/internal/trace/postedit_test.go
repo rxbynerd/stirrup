@@ -9,12 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/codes"
 
 	"github.com/rxbynerd/stirrup/types"
 )
 
 func TestJSONLTraceEmitter_RecordPostEditCheck_StreamsAccumulatesAndScrubs(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 	emitter.Start("run-post-edit", nil)
@@ -29,15 +31,12 @@ func TestJSONLTraceEmitter_RecordPostEditCheck_StreamsAccumulatesAndScrubs(t *te
 	})
 
 	trace, err := emitter.Finish(context.Background(), "success")
-	if err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-	if len(trace.PostEditChecks) != 2 {
-		t.Fatalf("PostEditChecks = %+v", trace.PostEditChecks)
-	}
-	if got := trace.PostEditChecks[0]; got.ToolUseID != "toolu_1" || got.ExitCode != 1 || got.Command != "gofmt -l {path}" {
-		t.Errorf("PostEditChecks[0] = %+v", got)
-	}
+	must.NoError(err)
+	must.Len(trace.PostEditChecks, 2)
+	first := trace.PostEditChecks[0]
+	must.Equal("toolu_1", first.ToolUseID)
+	must.Equal(1, first.ExitCode)
+	must.Equal("gofmt -l {path}", first.Command)
 
 	var streamed []Event
 	for _, ev := range readEvents(t, buf.Bytes()) {
@@ -45,15 +44,14 @@ func TestJSONLTraceEmitter_RecordPostEditCheck_StreamsAccumulatesAndScrubs(t *te
 			streamed = append(streamed, ev)
 		}
 	}
-	if len(streamed) != 2 || streamed[1].PostEditCheck == nil || !streamed[1].PostEditCheck.TimedOut {
-		t.Fatalf("post_edit_check events = %+v", streamed)
-	}
-	if strings.Contains(buf.String(), "sk-ant-api03-leak") {
-		t.Errorf("secret reached the persisted trace:\n%s", buf.String())
-	}
+	must.Len(streamed, 2)
+	must.NotNil(streamed[1].PostEditCheck)
+	must.True(streamed[1].PostEditCheck.TimedOut)
+	must.NotContains(buf.String(), "sk-ant-api03-leak", "secret reached the persisted trace")
 }
 
 func TestGCSTraceEmitter_RecordPostEditCheck_AccumulatesAndScrubs(t *testing.T) {
+	must := require.New(t)
 	srv := newGCSCaptureServer()
 	httpSrv := httptest.NewServer(srv.handler())
 	defer httpSrv.Close()
@@ -63,9 +61,7 @@ func TestGCSTraceEmitter_RecordPostEditCheck_AccumulatesAndScrubs(t *testing.T) 
 		CredentialSource: &staticBearerSource{token: "test-token"},
 		EndpointBaseURL:  httpSrv.URL,
 	})
-	if err != nil {
-		t.Fatalf("NewGCSTraceEmitter: %v", err)
-	}
+	must.NoError(err)
 	emitter.Start("run-gcs-post-edit", nil)
 	emitter.RecordPostEditCheck(types.PostEditCheckRecord{
 		ToolUseID: "toolu_1", Tool: "edit_file", Path: "a.go", Command: "gofmt -l {path}", ExitCode: 1,
@@ -76,40 +72,32 @@ func TestGCSTraceEmitter_RecordPostEditCheck_AccumulatesAndScrubs(t *testing.T) 
 	})
 
 	tr, err := emitter.Finish(context.Background(), "success")
-	if err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-	if len(tr.PostEditChecks) != 2 || tr.PostEditChecks[0].ToolUseID != "toolu_1" || !tr.PostEditChecks[1].TimedOut {
-		t.Fatalf("returned PostEditChecks = %+v", tr.PostEditChecks)
-	}
+	must.NoError(err)
+	must.Len(tr.PostEditChecks, 2)
+	must.Equal("toolu_1", tr.PostEditChecks[0].ToolUseID)
+	must.True(tr.PostEditChecks[1].TimedOut)
 
 	body := string(srv.last().Body)
-	if strings.Contains(body, "sk-ant-api03-leak") {
-		t.Errorf("secret reached the uploaded trace:\n%s", body)
-	}
+	must.NotContains(body, "sk-ant-api03-leak", "secret reached the uploaded trace")
 	var uploaded types.RunTrace
-	if err := json.Unmarshal([]byte(strings.TrimSpace(body)), &uploaded); err != nil {
-		t.Fatalf("unmarshal uploaded body: %v", err)
-	}
-	if len(uploaded.PostEditChecks) != 2 || uploaded.PostEditChecks[0].ExitCode != 1 {
-		t.Errorf("uploaded PostEditChecks = %+v", uploaded.PostEditChecks)
-	}
+	must.NoError(json.Unmarshal([]byte(strings.TrimSpace(body)), &uploaded))
+	must.Len(uploaded.PostEditChecks, 2)
+	must.Equal(1, uploaded.PostEditChecks[0].ExitCode)
 }
 
 func TestJSONLTraceEmitter_NoPostEditChecks_OmitsField(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 	emitter.Start("run-none", nil)
 	trace, err := emitter.Finish(context.Background(), "success")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if trace.PostEditChecks != nil || strings.Contains(buf.String(), "postEditChecks") {
-		t.Errorf("unexpected post-edit data: %+v / %s", trace.PostEditChecks, buf.String())
-	}
+	must.NoError(err)
+	must.Nil(trace.PostEditChecks)
+	must.NotContains(buf.String(), "postEditChecks")
 }
 
 func TestOTelTraceEmitter_RecordPostEditCheck_EmitsSpanAndAggregates(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := newTestOTelEmitter()
 	emitter.Start("run-otel-post-edit", &types.RunConfig{RunID: "run-otel-post-edit"})
 
@@ -117,12 +105,8 @@ func TestOTelTraceEmitter_RecordPostEditCheck_EmitsSpanAndAggregates(t *testing.
 	emitter.RecordPostEditCheck(types.PostEditCheckRecord{Tool: "edit_file", Path: "b.go", Command: "go vet"})
 
 	trace, err := emitter.Finish(context.Background(), "success")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(trace.PostEditChecks) != 2 {
-		t.Fatalf("PostEditChecks = %+v", trace.PostEditChecks)
-	}
+	must.NoError(err)
+	must.Len(trace.PostEditChecks, 2)
 
 	var spans int
 	for _, s := range exporter.GetSpans() {
@@ -134,23 +118,20 @@ func TestOTelTraceEmitter_RecordPostEditCheck_EmitsSpanAndAggregates(t *testing.
 		for _, kv := range s.Attributes {
 			attrs[string(kv.Key)] = kv.Value.AsInterface()
 		}
-		if attrs["post_edit_check.command"] != "go vet" {
-			t.Errorf("span attributes = %v", attrs)
-		}
-		if want := time.Duration(attrs["post_edit_check.duration_ms"].(int64)) * time.Millisecond; s.EndTime.Sub(s.StartTime) != want {
-			t.Errorf("span lasts %s, want the check duration %s", s.EndTime.Sub(s.StartTime), want)
-		}
+		must.Equal("go vet", attrs["post_edit_check.command"], "span attributes: %v", attrs)
+
+		want := time.Duration(attrs["post_edit_check.duration_ms"].(int64)) * time.Millisecond
+		must.Equal(want, s.EndTime.Sub(s.StartTime), "span should last the check duration")
+
 		failed := attrs["post_edit_check.exit_code"] != int64(0)
-		if failed != (s.Status.Code == codes.Error) {
-			t.Errorf("span status %v does not match exit code %v", s.Status.Code, attrs["post_edit_check.exit_code"])
-		}
+		must.Equal(failed, s.Status.Code == codes.Error,
+			"span status %v does not match exit code %v", s.Status.Code, attrs["post_edit_check.exit_code"])
 	}
-	if spans != 2 {
-		t.Errorf("post_edit_check spans = %d, want 2", spans)
-	}
+	must.Equal(2, spans)
 }
 
 func TestNestedJSONLEmitter_ForwardsPostEditCheckToParent(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	parent := NewJSONLTraceEmitter(&buf, false)
 	parent.Start("parent-run-1", nil)
@@ -160,10 +141,7 @@ func TestNestedJSONLEmitter_ForwardsPostEditCheckToParent(t *testing.T) {
 	child.RecordPostEditCheck(types.PostEditCheckRecord{Tool: "edit_file", Path: "a.go", Command: "true"})
 
 	trace, err := parent.Finish(context.Background(), "success")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(trace.PostEditChecks) != 1 || trace.PostEditChecks[0].Path != "a.go" {
-		t.Fatalf("parent PostEditChecks = %+v", trace.PostEditChecks)
-	}
+	must.NoError(err)
+	must.Len(trace.PostEditChecks, 1)
+	must.Equal("a.go", trace.PostEditChecks[0].Path)
 }

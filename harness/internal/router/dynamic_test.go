@@ -3,6 +3,8 @@ package router
 import (
 	"context"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // Shared fixtures for all dynamic router tests.
@@ -22,6 +24,7 @@ var (
 )
 
 func TestDynamicRouter_CheapStopReason(t *testing.T) {
+	must := require.New(t)
 	r := NewDynamicRouter(standardConfig)
 
 	sel := r.Select(context.Background(), RouterContext{
@@ -30,12 +33,11 @@ func TestDynamicRouter_CheapStopReason(t *testing.T) {
 		LastStopReason: "tool_use",
 	})
 
-	if sel != cheapSel {
-		t.Errorf("Select() = %s/%s, want %s/%s (cheap)", sel.Provider, sel.Model, cheapSel.Provider, cheapSel.Model)
-	}
+	must.Equal(cheapSel, sel)
 }
 
 func TestDynamicRouter_HighTurnCount(t *testing.T) {
+	must := require.New(t)
 	r := NewDynamicRouter(standardConfig)
 
 	sel := r.Select(context.Background(), RouterContext{
@@ -44,12 +46,11 @@ func TestDynamicRouter_HighTurnCount(t *testing.T) {
 		LastStopReason: "end_turn",
 	})
 
-	if sel != expensiveSel {
-		t.Errorf("Select() = %s/%s, want %s/%s (expensive)", sel.Provider, sel.Model, expensiveSel.Provider, expensiveSel.Model)
-	}
+	must.Equal(expensiveSel, sel)
 }
 
 func TestDynamicRouter_HighTokenUsage(t *testing.T) {
+	must := require.New(t)
 	r := NewDynamicRouter(standardConfig)
 
 	sel := r.Select(context.Background(), RouterContext{
@@ -59,12 +60,11 @@ func TestDynamicRouter_HighTokenUsage(t *testing.T) {
 		TokenUsage:     TokenUsage{Input: 10000, Output: 55000},
 	})
 
-	if sel != expensiveSel {
-		t.Errorf("Select() = %s/%s, want %s/%s (expensive)", sel.Provider, sel.Model, expensiveSel.Provider, expensiveSel.Model)
-	}
+	must.Equal(expensiveSel, sel)
 }
 
-func TestDynamicRouter_NormalTurn(t *testing.T) {
+func TestDynamicRouter_BelowThresholds_SelectsDefault(t *testing.T) {
+	must := require.New(t)
 	r := NewDynamicRouter(standardConfig)
 
 	sel := r.Select(context.Background(), RouterContext{
@@ -74,12 +74,11 @@ func TestDynamicRouter_NormalTurn(t *testing.T) {
 		TokenUsage:     TokenUsage{Input: 5000, Output: 2000},
 	})
 
-	if sel != defaultSel {
-		t.Errorf("Select() = %s/%s, want %s/%s (default)", sel.Provider, sel.Model, defaultSel.Provider, defaultSel.Model)
-	}
+	must.Equal(defaultSel, sel)
 }
 
-func TestDynamicRouter_CheapStopReasonTakesPriorityOverHighTurn(t *testing.T) {
+func TestDynamicRouter_CheapStopReason_WinsOverHighTurn(t *testing.T) {
+	must := require.New(t)
 	r := NewDynamicRouter(standardConfig)
 
 	// Turn 15 would normally trigger expensive, but tool_use stop reason
@@ -91,13 +90,11 @@ func TestDynamicRouter_CheapStopReasonTakesPriorityOverHighTurn(t *testing.T) {
 		TokenUsage:     TokenUsage{Input: 80000, Output: 60000},
 	})
 
-	if sel != cheapSel {
-		t.Errorf("Select() = %s/%s, want %s/%s (cheap should win over expensive thresholds)",
-			sel.Provider, sel.Model, cheapSel.Provider, cheapSel.Model)
-	}
+	must.Equal(cheapSel, sel)
 }
 
-func TestDynamicRouter_ZeroThresholdsAlwaysExpensive(t *testing.T) {
+func TestDynamicRouter_ZeroThresholds_AreDisabled(t *testing.T) {
+	must := require.New(t)
 	cfg := DynamicRouterConfig{
 		DefaultSelection:        defaultSel,
 		CheapSelection:          cheapSel,
@@ -115,13 +112,11 @@ func TestDynamicRouter_ZeroThresholdsAlwaysExpensive(t *testing.T) {
 		LastStopReason: "end_turn",
 	})
 
-	if sel != defaultSel {
-		t.Errorf("Select() = %s/%s, want %s/%s (zero thresholds are disabled)",
-			sel.Provider, sel.Model, defaultSel.Provider, defaultSel.Model)
-	}
+	must.Equal(defaultSel, sel)
 }
 
-func TestDynamicRouter_NoCheapStopReasonsNeverCheap(t *testing.T) {
+func TestDynamicRouter_NoCheapStopReasons_NeverSelectsCheap(t *testing.T) {
+	must := require.New(t)
 	cfg := DynamicRouterConfig{
 		DefaultSelection:        defaultSel,
 		CheapSelection:          cheapSel,
@@ -139,10 +134,7 @@ func TestDynamicRouter_NoCheapStopReasonsNeverCheap(t *testing.T) {
 		LastStopReason: "tool_use",
 	})
 
-	if sel != defaultSel {
-		t.Errorf("Select() = %s/%s, want %s/%s (no cheap stop reasons configured)",
-			sel.Provider, sel.Model, defaultSel.Provider, defaultSel.Model)
-	}
+	must.Equal(defaultSel, sel)
 }
 
 func TestDynamicRouter_CustomSelections(t *testing.T) {
@@ -191,15 +183,15 @@ func TestDynamicRouter_CustomSelections(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			sel := r.Select(context.Background(), tt.rc)
-			if sel != tt.want {
-				t.Errorf("Select() = %s/%s, want %s/%s", sel.Provider, sel.Model, tt.want.Provider, tt.want.Model)
-			}
+			must.Equal(tt.want, sel)
 		})
 	}
 }
 
-func TestDynamicRouter_Turn0NoHistory(t *testing.T) {
+func TestDynamicRouter_FirstTurn_SelectsDefault(t *testing.T) {
+	must := require.New(t)
 	r := NewDynamicRouter(standardConfig)
 
 	sel := r.Select(context.Background(), RouterContext{
@@ -207,10 +199,7 @@ func TestDynamicRouter_Turn0NoHistory(t *testing.T) {
 		Turn: 0,
 	})
 
-	if sel != defaultSel {
-		t.Errorf("Select() = %s/%s, want %s/%s (default for first turn)",
-			sel.Provider, sel.Model, defaultSel.Provider, defaultSel.Model)
-	}
+	must.Equal(defaultSel, sel)
 }
 
 func TestDynamicRouter_ImplementsInterface(t *testing.T) {

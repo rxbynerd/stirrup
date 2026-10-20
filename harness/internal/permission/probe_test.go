@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
-func TestPolicyEnginePolicy_Probe_OK(t *testing.T) {
+func TestPolicyEnginePolicy_Probe_SucceedsWithPermitPolicy(t *testing.T) {
+	must := require.New(t)
 	policy := `permit (
 		principal,
 		action == Action::"tool:web_fetch",
@@ -18,12 +21,11 @@ func TestPolicyEnginePolicy_Probe_OK(t *testing.T) {
 		PolicySet: mustParse(t, policy),
 		Fallback:  NewDenySideEffects(map[string]bool{"write_file": true}),
 	})
-	if err := p.Probe(context.Background()); err != nil {
-		t.Fatalf("Probe: unexpected error: %v", err)
-	}
+	must.NoError(p.Probe(context.Background()))
 }
 
 func TestPolicyEnginePolicy_Probe_DoesNotTriggerFallback(t *testing.T) {
+	must := require.New(t)
 	// The synthetic probe tool matches no policy, so a Check() would
 	// delegate to the fallback. Probe must NOT do that — it evaluates the
 	// Cedar set directly. Use a fallback that records whether it was
@@ -38,19 +40,14 @@ func TestPolicyEnginePolicy_Probe_DoesNotTriggerFallback(t *testing.T) {
 		PolicySet: mustParse(t, policy),
 		Fallback:  fb,
 	})
-	if err := p.Probe(context.Background()); err != nil {
-		t.Fatalf("Probe: unexpected error: %v", err)
-	}
-	if fb.called {
-		t.Error("Probe consulted the fallback policy; it must evaluate Cedar directly to avoid a live ask-upstream prompt")
-	}
+	must.NoError(p.Probe(context.Background()))
+	must.False(fb.called, "Probe consulted the fallback policy; it must evaluate Cedar directly to avoid a live ask-upstream prompt")
 }
 
-func TestPolicyEnginePolicy_Probe_NilSet(t *testing.T) {
+func TestPolicyEnginePolicy_Probe_NilPolicyReturnsError(t *testing.T) {
+	must := require.New(t)
 	var p *PolicyEnginePolicy
-	if err := p.Probe(context.Background()); err == nil {
-		t.Fatal("Probe on nil policy should error")
-	}
+	must.Error(p.Probe(context.Background()))
 }
 
 // recordingFallback records whether Check was called, standing in for a

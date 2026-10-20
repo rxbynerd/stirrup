@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
@@ -62,6 +63,7 @@ func (f *fakeOTLPMetricsServer) snapshot() []capturedMetricsRequest {
 // forcing a flush via Close() POSTs to /v1/metrics with the configured
 // header.
 func TestNewMetrics_HTTPProtocol_RoutesToV1Metrics(t *testing.T) {
+	must := require.New(t)
 	fake := &fakeOTLPMetricsServer{}
 	srv := httptest.NewServer(fake.handler())
 	defer srv.Close()
@@ -79,9 +81,7 @@ func TestNewMetrics_HTTPProtocol_RoutesToV1Metrics(t *testing.T) {
 		Endpoint: srv.URL,
 		Headers:  map[string]string{authHeader: authValue},
 	}, ResourceOptions{})
-	if err != nil {
-		t.Fatalf("NewMetrics: %v", err)
-	}
+	must.NoError(err)
 
 	// Without a measurement, the periodic reader's first export would be
 	// a no-op and the test would race against the first collection cycle.
@@ -90,25 +90,26 @@ func TestNewMetrics_HTTPProtocol_RoutesToV1Metrics(t *testing.T) {
 
 	// Close drives a final ForceFlush + Shutdown synchronously, so the
 	// test can assert on captured POSTs immediately after it returns.
-	if err := m.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+	must.NoError(m.Close())
 
 	requests := fake.snapshot()
-	if len(requests) == 0 {
-		t.Fatalf("expected at least one OTLP/HTTP metrics POST, got 0")
-	}
+	must.NotEmpty(requests, "expected at least one OTLP/HTTP metrics POST")
 	got := requests[0]
-	if !strings.HasSuffix(got.path, "/v1/metrics") {
-		t.Errorf("path must end in /v1/metrics, got %q", got.path)
-	}
-	if got.contentType != "application/x-protobuf" {
-		t.Errorf("content-type must be application/x-protobuf, got %q", got.contentType)
-	}
-	if v := got.headers.Get(authHeader); v != authValue {
-		t.Errorf("Authorization header: got %q, want %q", v, authValue)
-	}
-	if got.bodyLen == 0 {
-		t.Errorf("expected non-empty protobuf body, got 0 bytes")
-	}
+
+	t.Run("path ends in v1 metrics", func(t *testing.T) {
+		must := require.New(t)
+		must.True(strings.HasSuffix(got.path, "/v1/metrics"), "got path %q", got.path)
+	})
+	t.Run("content type is protobuf", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("application/x-protobuf", got.contentType)
+	})
+	t.Run("sends configured authorization header", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(authValue, got.headers.Get(authHeader))
+	})
+	t.Run("body is non-empty", func(t *testing.T) {
+		must := require.New(t)
+		must.NotZero(got.bodyLen, "expected non-empty protobuf body")
+	})
 }

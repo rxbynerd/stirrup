@@ -3,13 +3,14 @@ package git
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 )
 
-func TestWorkspaceRoot(t *testing.T) {
+func TestWorkspaceRoot_ParsesPwdOutput(t *testing.T) {
 	tests := []struct {
 		name    string
 		result  *executor.ExecResult
@@ -28,25 +29,20 @@ func TestWorkspaceRoot(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
+			var gotCommand string
 			exec := newScriptedExecutor(func(command string) (*executor.ExecResult, error) {
-				if command != "pwd -P" {
-					t.Fatalf("unexpected command %q", command)
-				}
+				gotCommand = command
 				return tt.result, tt.err
 			})
 			got, err := WorkspaceRoot(context.Background(), exec)
+			must.Equal("pwd -P", gotCommand)
 			if tt.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("WorkspaceRoot() error = %v, want it to contain %q", err, tt.wantErr)
-				}
+				must.ErrorContains(err, tt.wantErr)
 				return
 			}
-			if err != nil {
-				t.Fatalf("WorkspaceRoot() error: %v", err)
-			}
-			if got != tt.want {
-				t.Errorf("WorkspaceRoot() = %q, want %q", got, tt.want)
-			}
+			must.NoError(err)
+			must.Equal(tt.want, got)
 		})
 	}
 }

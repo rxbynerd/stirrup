@@ -3,9 +3,9 @@ package core
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -26,6 +26,7 @@ func TestLoop_ProviderErrorSpanIsScrubbed(t *testing.T) {
 	}
 	for name, prov := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			loop := buildTestLoop(nil)
 			loop.Provider = prov
 			exporter := tracetest.NewInMemoryExporter()
@@ -34,12 +35,8 @@ func TestLoop_ProviderErrorSpanIsScrubbed(t *testing.T) {
 			loop.Tracer = tp.Tracer("test")
 
 			runTrace, err := loop.Run(context.Background(), buildTestConfig())
-			if err != nil {
-				t.Fatalf("Run() error: %v", err)
-			}
-			if runTrace.Outcome != "error" {
-				t.Errorf("Outcome = %q, want error", runTrace.Outcome)
-			}
+			must.NoError(err)
+			must.Equal("error", runTrace.Outcome)
 
 			var span *tracetest.SpanStub
 			for _, s := range exporter.GetSpans() {
@@ -47,27 +44,21 @@ func TestLoop_ProviderErrorSpanIsScrubbed(t *testing.T) {
 					span = &s
 				}
 			}
-			if span == nil {
-				t.Fatal("no provider.stream span exported")
-			}
-			if span.Status.Code != codes.Error || strings.Contains(span.Status.Description, probe) {
-				t.Errorf("span status = %+v, want an unleaked error status", span.Status)
-			}
+			must.NotNil(span, "no provider.stream span exported")
+			must.Equal(codes.Error, span.Status.Code)
+			must.NotContains(span.Status.Description, probe)
 
 			var exceptionMessage string
 			for _, ev := range span.Events {
 				for _, attr := range ev.Attributes {
-					if strings.Contains(attr.Value.String(), probe) {
-						t.Errorf("span event %q attribute %s leaks the probe: %q", ev.Name, attr.Key, attr.Value.String())
-					}
+					must.NotContains(attr.Value.String(), probe,
+						"span event %q attribute %s", ev.Name, attr.Key)
 					if ev.Name == "exception" && attr.Key == "exception.message" {
 						exceptionMessage = attr.Value.AsString()
 					}
 				}
 			}
-			if !strings.Contains(exceptionMessage, "[REDACTED]") {
-				t.Errorf("exception.message = %q, want the scrubbed error", exceptionMessage)
-			}
+			must.Contains(exceptionMessage, "[REDACTED]")
 		})
 	}
 }

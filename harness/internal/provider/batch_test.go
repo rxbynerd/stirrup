@@ -12,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -80,6 +83,7 @@ func (s *stubProvider) Stream(_ context.Context, _ types.StreamParams) (<-chan t
 // goroutine fails the test rather than wedging the whole suite.
 func drain(t *testing.T, ch <-chan types.StreamEvent) []types.StreamEvent {
 	t.Helper()
+	must := require.New(t)
 	deadline := time.After(2 * time.Second)
 	var out []types.StreamEvent
 	for {
@@ -90,7 +94,7 @@ func drain(t *testing.T, ch <-chan types.StreamEvent) []types.StreamEvent {
 			}
 			out = append(out, ev)
 		case <-deadline:
-			t.Fatalf("drain: timed out waiting for channel close (collected %d events)", len(out))
+			must.FailNowf("timed out waiting for channel close", "drain: collected %d events", len(out))
 		}
 	}
 }
@@ -100,6 +104,7 @@ func drain(t *testing.T, ch <-chan types.StreamEvent) []types.StreamEvent {
 // -----------------------------------------------------------------------------
 
 func TestFabricateStream_AnthropicTextAndToolUse(t *testing.T) {
+	must := require.New(t)
 	response := []byte(`{
 		"content": [
 			{"type": "text", "text": "hello "},
@@ -119,35 +124,21 @@ func TestFabricateStream_AnthropicTextAndToolUse(t *testing.T) {
 		got = append(got, ev)
 	}
 
-	if len(got) != 4 {
-		t.Fatalf("expected 4 events (2 text_delta + 1 tool_call + 1 message_complete), got %d: %+v", len(got), got)
-	}
-	if got[0].Type != "text_delta" || got[0].Text != "hello " {
-		t.Errorf("event 0: got %+v, want text_delta(hello )", got[0])
-	}
-	if got[1].Type != "text_delta" || got[1].Text != "world" {
-		t.Errorf("event 1: got %+v, want text_delta(world)", got[1])
-	}
-	if got[2].Type != "tool_call" || got[2].ID != "tu_1" || got[2].Name != "read_file" {
-		t.Errorf("event 2: got %+v, want tool_call(tu_1, read_file)", got[2])
-	}
-	if got[2].Input["path"] != "/etc/hosts" {
-		t.Errorf("event 2 input: got %+v, want path=/etc/hosts", got[2].Input)
-	}
-	if got[3].Type != "message_complete" {
-		t.Fatalf("event 3: got %+v, want message_complete", got[3])
-	}
-	if got[3].StopReason != "tool_use" {
-		t.Errorf("event 3 stop_reason: got %q, want tool_use", got[3].StopReason)
-	}
-	if got[3].OutputTokens != 42 {
-		t.Errorf("event 3 output_tokens: got %d, want 42", got[3].OutputTokens)
-	}
+	must.Len(got, 4, "expected 2 text_delta, 1 tool_call and 1 message_complete events: %+v", got)
+	must.Equal("text_delta", got[0].Type, "event 0 type")
+	must.Equal("hello ", got[0].Text, "event 0 text")
+	must.Equal("text_delta", got[1].Type, "event 1 type")
+	must.Equal("world", got[1].Text, "event 1 text")
+	must.Equal("tool_call", got[2].Type, "event 2 type")
+	must.Equal("tu_1", got[2].ID, "event 2 id")
+	must.Equal("read_file", got[2].Name, "event 2 name")
+	must.Equal("/etc/hosts", got[2].Input["path"], "event 2 input path")
+	must.Equal("message_complete", got[3].Type, "event 3 type")
+	must.Equal("tool_use", got[3].StopReason, "event 3 stop reason")
+	must.Equal(42, got[3].OutputTokens, "event 3 output tokens")
 	// message_complete carries the assembled content blocks the
 	// streaming consumer would have produced for the same response.
-	if len(got[3].Content) != 3 {
-		t.Fatalf("event 3 content: got %d blocks, want 3", len(got[3].Content))
-	}
+	must.Len(got[3].Content, 3, "event 3 content blocks")
 }
 
 // TestFabricateStream_OpenAIChatCompletions covers the mapping of an
@@ -156,6 +147,7 @@ func TestFabricateStream_AnthropicTextAndToolUse(t *testing.T) {
 // agentic loop expects. Text content + tool_calls + finish_reason +
 // usage.completion_tokens together exercise the four-event happy path.
 func TestFabricateStream_OpenAIChatCompletions(t *testing.T) {
+	must := require.New(t)
 	response := []byte(`{
 		"choices": [
 			{
@@ -182,29 +174,18 @@ func TestFabricateStream_OpenAIChatCompletions(t *testing.T) {
 	for ev := range ch {
 		got = append(got, ev)
 	}
-	if len(got) != 3 {
-		t.Fatalf("expected 3 events (text_delta + tool_call + message_complete), got %d: %+v", len(got), got)
-	}
-	if got[0].Type != "text_delta" || got[0].Text != "hello world" {
-		t.Errorf("event 0: %+v", got[0])
-	}
-	if got[1].Type != "tool_call" || got[1].ID != "call_1" || got[1].Name != "read_file" {
-		t.Errorf("event 1: %+v", got[1])
-	}
-	if got[1].Input["path"] != "/etc/hosts" {
-		t.Errorf("event 1 input: %+v", got[1].Input)
-	}
-	if got[2].Type != "message_complete" {
-		t.Fatalf("event 2: %+v", got[2])
-	}
+	must.Len(got, 3, "expected text_delta, tool_call and message_complete events: %+v", got)
+	must.Equal("text_delta", got[0].Type, "event 0 type")
+	must.Equal("hello world", got[0].Text, "event 0 text")
+	must.Equal("tool_call", got[1].Type, "event 1 type")
+	must.Equal("call_1", got[1].ID, "event 1 id")
+	must.Equal("read_file", got[1].Name, "event 1 name")
+	must.Equal("/etc/hosts", got[1].Input["path"], "event 1 input path")
+	must.Equal("message_complete", got[2].Type, "event 2 type")
 	// mapFinishReason converts "tool_calls" to "tool_use" — match
 	// the streaming adapter's stop-reason vocabulary.
-	if got[2].StopReason != "tool_use" {
-		t.Errorf("event 2 stop_reason: got %q, want tool_use", got[2].StopReason)
-	}
-	if got[2].OutputTokens != 42 {
-		t.Errorf("event 2 output_tokens: got %d, want 42", got[2].OutputTokens)
-	}
+	must.Equal("tool_use", got[2].StopReason, "event 2 stop reason")
+	must.Equal(42, got[2].OutputTokens, "event 2 output tokens")
 }
 
 // TestFabricateStream_OpenAIChatCompletions_TextOnly pins the
@@ -212,6 +193,7 @@ func TestFabricateStream_OpenAIChatCompletions(t *testing.T) {
 // text_delta + one message_complete with stop_reason mapped to
 // end_turn.
 func TestFabricateStream_OpenAIChatCompletions_TextOnly(t *testing.T) {
+	must := require.New(t)
 	response := []byte(`{
 		"choices": [
 			{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
@@ -225,12 +207,10 @@ func TestFabricateStream_OpenAIChatCompletions_TextOnly(t *testing.T) {
 	for ev := range ch {
 		got = append(got, ev)
 	}
-	if len(got) != 2 || got[0].Type != "text_delta" || got[1].Type != "message_complete" {
-		t.Fatalf("unexpected events: %+v", got)
-	}
-	if got[1].StopReason != "end_turn" {
-		t.Errorf("stop_reason: got %q, want end_turn", got[1].StopReason)
-	}
+	must.Len(got, 2, "unexpected events: %+v", got)
+	must.Equal("text_delta", got[0].Type)
+	must.Equal("message_complete", got[1].Type)
+	must.Equal("end_turn", got[1].StopReason, "stop reason")
 }
 
 // TestFabricateStream_OpenAIChatCompletions_NoChoices covers the
@@ -239,13 +219,12 @@ func TestFabricateStream_OpenAIChatCompletions_TextOnly(t *testing.T) {
 // the error keeps the failure debuggable instead of silently emitting
 // only a message_complete.
 func TestFabricateStream_OpenAIChatCompletions_NoChoices(t *testing.T) {
+	must := require.New(t)
 	ch := make(chan types.StreamEvent, 1)
 	fabricateStream(ch, []byte(`{"choices":[]}`), "openai-compatible")
 	close(ch)
 	got := <-ch
-	if got.Type != "error" {
-		t.Fatalf("expected error event, got %+v", got)
-	}
+	must.Equal("error", got.Type, "expected error event, got %+v", got)
 }
 
 // TestFabricateStream_OpenAIResponses covers the Responses-API
@@ -254,6 +233,7 @@ func TestFabricateStream_OpenAIChatCompletions_NoChoices(t *testing.T) {
 // derived stop reason picks tool_use when any function_call item is
 // present, matching openai_responses.go::deriveStopReason.
 func TestFabricateStream_OpenAIResponses(t *testing.T) {
+	must := require.New(t)
 	response := []byte(`{
 		"status": "completed",
 		"output": [
@@ -272,24 +252,16 @@ func TestFabricateStream_OpenAIResponses(t *testing.T) {
 	for ev := range ch {
 		got = append(got, ev)
 	}
-	if len(got) != 3 {
-		t.Fatalf("expected 3 events (text_delta + tool_call + message_complete), got %d: %+v", len(got), got)
-	}
-	if got[0].Type != "text_delta" || got[0].Text != "hi" {
-		t.Errorf("event 0: %+v", got[0])
-	}
-	if got[1].Type != "tool_call" || got[1].ID != "call_1" || got[1].Name != "read_file" {
-		t.Errorf("event 1: %+v", got[1])
-	}
-	if got[1].Input["path"] != "/etc/hosts" {
-		t.Errorf("event 1 input: %+v", got[1].Input)
-	}
-	if got[2].Type != "message_complete" || got[2].StopReason != "tool_use" {
-		t.Errorf("event 2: %+v", got[2])
-	}
-	if got[2].OutputTokens != 12 {
-		t.Errorf("event 2 output_tokens: got %d, want 12", got[2].OutputTokens)
-	}
+	must.Len(got, 3, "expected text_delta, tool_call and message_complete events: %+v", got)
+	must.Equal("text_delta", got[0].Type, "event 0 type")
+	must.Equal("hi", got[0].Text, "event 0 text")
+	must.Equal("tool_call", got[1].Type, "event 1 type")
+	must.Equal("call_1", got[1].ID, "event 1 id")
+	must.Equal("read_file", got[1].Name, "event 1 name")
+	must.Equal("/etc/hosts", got[1].Input["path"], "event 1 input path")
+	must.Equal("message_complete", got[2].Type, "event 2 type")
+	must.Equal("tool_use", got[2].StopReason, "event 2 stop reason")
+	must.Equal(12, got[2].OutputTokens, "event 2 output tokens")
 }
 
 // TestFabricateStream_OpenAIResponses_Incomplete covers the incomplete
@@ -298,6 +270,7 @@ func TestFabricateStream_OpenAIResponses(t *testing.T) {
 // max_tokens vocabulary so the agentic loop's truncation handling
 // fires.
 func TestFabricateStream_OpenAIResponses_Incomplete(t *testing.T) {
+	must := require.New(t)
 	response := []byte(`{
 		"status": "incomplete",
 		"incomplete_details": {"reason": "max_output_tokens"},
@@ -311,43 +284,28 @@ func TestFabricateStream_OpenAIResponses_Incomplete(t *testing.T) {
 	for ev := range ch {
 		got = append(got, ev)
 	}
-	if len(got) != 2 || got[1].Type != "message_complete" {
-		t.Fatalf("unexpected events: %+v", got)
-	}
-	if got[1].StopReason != "max_tokens" {
-		t.Errorf("stop_reason: got %q, want max_tokens", got[1].StopReason)
-	}
+	must.Len(got, 2, "unexpected events: %+v", got)
+	must.Equal("message_complete", got[1].Type)
+	must.Equal("max_tokens", got[1].StopReason, "stop reason")
 }
 
-// TestDeriveOpenAIResponsesStopReason pins the full
-// status × incomplete-reason × has-tool matrix for the batch path's
-// deriveOpenAIResponsesStopReason.
 // TestBatchAdapter_marshalRequestBody_OpenAICompatible pins the
-// openai-compatible arm of marshalRequestBody. Asserts the marshalled
-// JSON is the Chat Completions wire
-// body shape with stream=false.
+// openai-compatible arm of marshalRequestBody: the body is a Chat
+// Completions request with stream set to false.
 func TestBatchAdapter_marshalRequestBody_OpenAICompatible(t *testing.T) {
+	must := require.New(t)
 	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "run-test")
 	body, err := a.marshalRequestBody(types.StreamParams{
 		Model:     "gpt-4o-mini",
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
 		MaxTokens: 256,
 	})
-	if err != nil {
-		t.Fatalf("marshalRequestBody: %v", err)
-	}
+	must.NoError(err, "marshalRequestBody")
 	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(body, &raw); err != nil {
-		t.Fatalf("decode marshalled body: %v", err)
-	}
-	if _, ok := raw["model"]; !ok {
-		t.Errorf("marshalled body missing model: %s", body)
-	}
-	if _, ok := raw["stream"]; !ok {
-		t.Errorf("openai-compatible body must carry stream=false: %s", body)
-	} else if string(raw["stream"]) != "false" {
-		t.Errorf("openai-compatible body must carry stream=false; got %s", raw["stream"])
-	}
+	must.NoError(json.Unmarshal(body, &raw), "decode marshalled body")
+	must.Contains(raw, "model", "marshalled body: %s", body)
+	must.Contains(raw, "stream", "openai-compatible body must carry stream=false: %s", body)
+	must.Equal("false", string(raw["stream"]), "openai-compatible stream")
 }
 
 // TestBatchAdapter_marshalRequestBody_AnthropicSendsNoCacheControl pins
@@ -355,10 +313,10 @@ func TestBatchAdapter_marshalRequestBody_OpenAICompatible(t *testing.T) {
 // anywhere, even for a model the registry caches and a request carrying a
 // cache key.
 func TestBatchAdapter_marshalRequestBody_AnthropicSendsNoCacheControl(t *testing.T) {
+	must := require.New(t)
 	const model = "claude-sonnet-4-6"
-	if !quirks.DefaultRegistry().Resolve("anthropic", model).BehaviourFlags.Anthropic.PromptCaching {
-		t.Fatalf("precondition: registry must enable PromptCaching for %s", model)
-	}
+	must.True(quirks.DefaultRegistry().Resolve("anthropic", model).BehaviourFlags.Anthropic.PromptCaching,
+		"precondition: registry must enable PromptCaching for %s", model)
 	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "anthropic", "run-test")
 	body, err := a.marshalRequestBody(types.StreamParams{
 		Model:     model,
@@ -367,22 +325,12 @@ func TestBatchAdapter_marshalRequestBody_AnthropicSendsNoCacheControl(t *testing
 		MaxTokens: 256,
 		CacheKey:  "k",
 	})
-	if err != nil {
-		t.Fatalf("marshalRequestBody: %v", err)
-	}
-	if strings.Contains(string(body), "cache_control") {
-		t.Errorf("batch body carries cache_control: %s", body)
-	}
+	must.NoError(err, "marshalRequestBody")
+	must.NotContains(string(body), "cache_control", "batch body carries cache_control: %s", body)
 	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(body, &raw); err != nil {
-		t.Fatalf("decode marshalled body: %v", err)
-	}
-	if got := string(raw["system"]); got != `"sys"` {
-		t.Errorf("system = %s, want the plain string \"sys\"", got)
-	}
-	if got := string(raw["stream"]); got != "false" {
-		t.Errorf("stream = %s, want false", got)
-	}
+	must.NoError(json.Unmarshal(body, &raw), "decode marshalled body")
+	must.Equal(`"sys"`, string(raw["system"]), "system must be a plain string")
+	must.Equal("false", string(raw["stream"]), "stream")
 }
 
 // TestBatchAdapter_MarshalUsesInjectedRegistry pins the Registry
@@ -399,6 +347,7 @@ func TestBatchAdapter_marshalRequestBody_AnthropicSendsNoCacheControl(t *testing
 // like rule rather than depending on the real Z.ai package, to
 // keep batch_test self-contained.
 func TestBatchAdapter_MarshalUsesInjectedRegistry(t *testing.T) {
+	must := require.New(t)
 	customRule := quirks.Rule{
 		ProviderType: "openai-compatible",
 		ModelMatch:   "synthetic-*",
@@ -417,22 +366,12 @@ func TestBatchAdapter_MarshalUsesInjectedRegistry(t *testing.T) {
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
 		MaxTokens: 256,
 	})
-	if err != nil {
-		t.Fatalf("marshalRequestBody: %v", err)
-	}
+	must.NoError(err, "marshalRequestBody")
 	var raw map[string]any
-	if err := json.Unmarshal(body, &raw); err != nil {
-		t.Fatalf("decode body: %v", err)
-	}
-	if _, ok := raw["max_tokens"]; !ok {
-		t.Errorf("body missing 'max_tokens' (injected registry rule did not apply): %s", body)
-	}
-	if _, ok := raw["max_completion_tokens"]; ok {
-		t.Errorf("body contains 'max_completion_tokens'; injected rule should have switched the key: %s", body)
-	}
-	if v, ok := raw["tool_stream"]; !ok || v != true {
-		t.Errorf("body missing 'tool_stream':true (injected rule did not populate ExtraBodyFields): %s", body)
-	}
+	must.NoError(json.Unmarshal(body, &raw), "decode body")
+	must.Contains(raw, "max_tokens", "injected registry rule did not apply: %s", body)
+	must.NotContains(raw, "max_completion_tokens", "injected rule should have switched the key: %s", body)
+	must.Equal(true, raw["tool_stream"], "injected rule did not populate ExtraBodyFields: %s", body)
 }
 
 // TestBatchAdapter_MarshalFallsBackToDefaultRegistryWhenNil pins the
@@ -441,6 +380,7 @@ func TestBatchAdapter_MarshalUsesInjectedRegistry(t *testing.T) {
 // production code path) leave Registry unset; the fallback to
 // quirks.DefaultRegistry() preserves their behaviour.
 func TestBatchAdapter_MarshalFallsBackToDefaultRegistryWhenNil(t *testing.T) {
+	must := require.New(t)
 	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "run-test")
 	// Registry intentionally left nil.
 	body, err := a.marshalRequestBody(types.StreamParams{
@@ -448,13 +388,8 @@ func TestBatchAdapter_MarshalFallsBackToDefaultRegistryWhenNil(t *testing.T) {
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
 		MaxTokens: 256,
 	})
-	if err != nil {
-		t.Fatalf("marshalRequestBody: %v", err)
-	}
-	s := string(body)
-	if !strings.Contains(s, `"max_completion_tokens"`) {
-		t.Errorf("nil-registry fallback failed: body missing max_completion_tokens: %s", s)
-	}
+	must.NoError(err, "marshalRequestBody")
+	must.Contains(string(body), `"max_completion_tokens"`, "nil-registry fallback failed: %s", body)
 }
 
 // TestBatchAdapter_marshalRequestBody_OpenAIResponses pins the
@@ -462,25 +397,18 @@ func TestBatchAdapter_MarshalFallsBackToDefaultRegistryWhenNil(t *testing.T) {
 // Responses wire body shape, model present, stream key absent (omitempty
 // stripping in buildResponsesRequest).
 func TestBatchAdapter_marshalRequestBody_OpenAIResponses(t *testing.T) {
+	must := require.New(t)
 	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-responses", "run-test")
 	body, err := a.marshalRequestBody(types.StreamParams{
 		Model:     "gpt-4o-mini",
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
 		MaxTokens: 256,
 	})
-	if err != nil {
-		t.Fatalf("marshalRequestBody: %v", err)
-	}
+	must.NoError(err, "marshalRequestBody")
 	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(body, &raw); err != nil {
-		t.Fatalf("decode marshalled body: %v", err)
-	}
-	if _, ok := raw["model"]; !ok {
-		t.Errorf("marshalled body missing model: %s", body)
-	}
-	if _, ok := raw["stream"]; ok {
-		t.Errorf("openai-responses body must not carry stream key (omitempty), got: %s", body)
-	}
+	must.NoError(json.Unmarshal(body, &raw), "decode marshalled body")
+	must.Contains(raw, "model", "marshalled body: %s", body)
+	must.NotContains(raw, "stream", "openai-responses body must not carry stream key (omitempty), got: %s", body)
 }
 
 // TestBatchAdapter_marshalRequestBody_OpenAIResponsesReasoningParity pins
@@ -500,6 +428,8 @@ func TestBatchAdapter_marshalRequestBody_OpenAIResponsesReasoningParity(t *testi
 	}
 	for _, tc := range cases {
 		t.Run(tc.model, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
 			inner := NewOpenAIResponsesAdapter(staticBearer("test-key"), baseURL, OpenAIAuthConfig{})
 			a := NewBatchAdapter(inner, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-responses", "run-test")
 			assistant := storedTurn(t, responsesReplayOrigin(tc.model, baseURL),
@@ -520,9 +450,7 @@ func TestBatchAdapter_marshalRequestBody_OpenAIResponsesReasoningParity(t *testi
 				}},
 				MaxTokens: 256,
 			})
-			if err != nil {
-				t.Fatalf("marshalRequestBody: %v", err)
-			}
+			must.NoError(err, "marshalRequestBody")
 			s := string(body)
 			for field, want := range map[string]bool{
 				`"include":["reasoning.encrypted_content"]`: tc.gated,
@@ -530,19 +458,19 @@ func TestBatchAdapter_marshalRequestBody_OpenAIResponsesReasoningParity(t *testi
 				`"encrypted_content":"enc-batch"`: tc.gated,
 				`"id":"fc_1"`:                     tc.gated,
 			} {
-				if got := strings.Contains(s, field); got != want {
-					t.Errorf("body contains %s = %v, want %v: %s", field, got, want, s)
-				}
+				check.Equal(want, strings.Contains(s, field), "body contains %s: %s", field, s)
 			}
 			assertCallsPaired(t, requestInput(t, body))
 		})
 	}
 }
 
-// TestFabricateStream_OpenAIResponsesNeverCaptures pins that batch results
-// carry no stored output items, so a batched turn is reconstructed on the
-// next request even on a reasoning model.
-func TestFabricateStream_OpenAIResponsesNeverCaptures(t *testing.T) {
+// TestFabricateStream_OpenAIResponses_CarriesNoReplayFields pins that batch
+// results carry no stored output items, so a batched turn is reconstructed on
+// the next request even on a reasoning model.
+func TestFabricateStream_OpenAIResponses_CarriesNoReplayFields(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	response := []byte(`{
 		"status": "completed",
 		"output": [
@@ -559,16 +487,15 @@ func TestFabricateStream_OpenAIResponsesNeverCaptures(t *testing.T) {
 		if ev.Type == "message_complete" {
 			sawComplete = true
 		}
-		if ev.ReplayFields != nil {
-			t.Errorf("%s event carries ReplayFields: %v", ev.Type, ev.ReplayFields)
-		}
+		check.Nil(ev.ReplayFields, "%s event carries ReplayFields", ev.Type)
 	}
-	if !sawComplete {
-		t.Error("no message_complete event")
-	}
+	must.True(sawComplete, "no message_complete event")
 }
 
-func TestDeriveOpenAIResponsesStopReason(t *testing.T) {
+// TestDeriveOpenAIResponsesStopReason_MapsStatusAndReason pins the full
+// status × incomplete-reason × has-tool matrix for the batch path's
+// deriveOpenAIResponsesStopReason.
+func TestDeriveOpenAIResponsesStopReason_MapsStatusAndReason(t *testing.T) {
 	mkIncomplete := func(reason string) *struct {
 		Reason string `json:"reason"`
 	} {
@@ -650,25 +577,21 @@ func TestDeriveOpenAIResponsesStopReason(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got := deriveOpenAIResponsesStopReason(tc.resp, tc.hasTool)
-			if got != tc.want {
-				t.Errorf("got %q, want %q", got, tc.want)
-			}
+			must.Equal(tc.want, got)
 		})
 	}
 }
 
 func TestFabricateStream_UnsupportedProviderEmitsError(t *testing.T) {
+	must := require.New(t)
 	ch := make(chan types.StreamEvent, 1)
 	fabricateStream(ch, []byte(`{}`), "bedrock")
 	close(ch)
 	got := <-ch
-	if got.Type != "error" {
-		t.Errorf("got type %q, want error", got.Type)
-	}
-	if got.Error == nil || !strings.Contains(got.Error.Error(), "unsupported provider type") {
-		t.Errorf("expected unsupported-provider error, got %v", got.Error)
-	}
+	must.Equal("error", got.Type)
+	must.ErrorContains(got.Error, "unsupported provider type")
 }
 
 // -----------------------------------------------------------------------------
@@ -690,6 +613,7 @@ func anthropicParams() types.StreamParams {
 }
 
 func TestBatchAdapter_Stream_HappyPath(t *testing.T) {
+	must := require.New(t)
 	response := json.RawMessage(`{
 		"content": [{"type": "text", "text": "hello"}],
 		"stop_reason": "end_turn",
@@ -705,83 +629,58 @@ func TestBatchAdapter_Stream_HappyPath(t *testing.T) {
 
 	a := batchAdapter(t, client, &types.BatchProviderConfig{Enabled: true}, nil)
 	ch, err := a.Stream(context.Background(), anthropicParams())
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	must.NoError(err)
 	events := drain(t, ch)
 
-	if len(events) != 2 {
-		t.Fatalf("expected 2 events, got %d: %+v", len(events), events)
-	}
-	if events[0].Type != "text_delta" || events[0].Text != "hello" {
-		t.Errorf("event 0: %+v", events[0])
-	}
-	if events[1].Type != "message_complete" || events[1].StopReason != "end_turn" {
-		t.Errorf("event 1: %+v", events[1])
-	}
+	must.Len(events, 2)
+	must.Equal("text_delta", events[0].Type)
+	must.Equal("hello", events[0].Text)
+	must.Equal("message_complete", events[1].Type)
+	must.Equal("end_turn", events[1].StopReason)
 
 	client.mu.Lock()
 	defer client.mu.Unlock()
-	if len(client.submitted) != 1 || len(client.submitted[0]) != 1 {
-		t.Fatalf("expected one single-entry submit, got %+v", client.submitted)
-	}
-	if client.submitted[0][0].CustomID != "stirrup-run-test-turn-1" {
-		t.Errorf("custom_id: got %q, want stirrup-run-test-turn-1", client.submitted[0][0].CustomID)
-	}
-	if client.submitted[0][0].Provider != "anthropic" {
-		t.Errorf("provider: got %q, want anthropic", client.submitted[0][0].Provider)
-	}
+	must.Len(client.submitted, 1)
+	must.Len(client.submitted[0], 1)
+	must.Equal("stirrup-run-test-turn-1", client.submitted[0][0].CustomID)
+	must.Equal("anthropic", client.submitted[0][0].Provider)
 }
 
 func TestBatchAdapter_Stream_TurnCounterIncrements(t *testing.T) {
-	emptyResponse := json.RawMessage(`{"content":[],"stop_reason":"end_turn","usage":{"output_tokens":0}}`)
+	must := require.New(t)
 	client := &fakeBatchClient{
 		resultFn: func(batchID string) (map[string]*BatchResult, error) {
 			return map[string]*BatchResult{}, nil // missing -> error, but we only inspect submitted
 		},
 		submitFn: func(entries []BatchEntry) (string, error) { return "id", nil },
 	}
-	_ = emptyResponse
 
 	a := batchAdapter(t, client, &types.BatchProviderConfig{Enabled: true}, nil)
 	for i := 0; i < 3; i++ {
 		ch, err := a.Stream(context.Background(), anthropicParams())
-		if err != nil {
-			t.Fatalf("Stream %d: %v", i, err)
-		}
-		_ = drain(t, ch)
+		must.NoError(err, "Stream %d", i)
+		drain(t, ch)
 	}
 	client.mu.Lock()
 	defer client.mu.Unlock()
-	if len(client.submitted) != 3 {
-		t.Fatalf("expected 3 submits, got %d", len(client.submitted))
-	}
+	must.Len(client.submitted, 3)
 	for i, batch := range client.submitted {
 		want := fmt.Sprintf("stirrup-run-test-turn-%d", i+1)
-		if batch[0].CustomID != want {
-			t.Errorf("submit %d: custom_id %q, want %q", i, batch[0].CustomID, want)
-		}
+		must.Equal(want, batch[0].CustomID, "submit %d", i)
 	}
 }
 
 func TestBatchAdapter_Stream_SubmitError(t *testing.T) {
+	must := require.New(t)
 	client := &fakeBatchClient{submitErr: errors.New("network unreachable")}
 	a := batchAdapter(t, client, &types.BatchProviderConfig{Enabled: true}, nil)
 
 	ch, err := a.Stream(context.Background(), anthropicParams())
-	if err != nil {
-		t.Fatalf("Stream returned err: %v (should surface via channel)", err)
-	}
+	must.NoError(err, "submit failures surface via the channel")
 	events := drain(t, ch)
-	if len(events) != 1 {
-		t.Fatalf("expected 1 error event, got %d: %+v", len(events), events)
-	}
-	if events[0].Type != "error" {
-		t.Errorf("got type %q, want error", events[0].Type)
-	}
-	if events[0].Error == nil || !strings.Contains(events[0].Error.Error(), "network unreachable") {
-		t.Errorf("expected submit error chain, got: %v", events[0].Error)
-	}
+	must.Len(events, 1)
+	must.Equal("error", events[0].Type)
+	must.ErrorContains(events[0].Error, "network unreachable")
 }
 
 // TestBatchAdapter_LastBatchID_EmptyBeforeSubmit pins the contract
@@ -789,10 +688,9 @@ func TestBatchAdapter_Stream_SubmitError(t *testing.T) {
 // empty string when no batch has been submitted yet, so a
 // streaming-only fallback path can detect the absence cleanly.
 func TestBatchAdapter_LastBatchID_EmptyBeforeSubmit(t *testing.T) {
+	must := require.New(t)
 	a := batchAdapter(t, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, nil)
-	if got := a.LastBatchID(); got != "" {
-		t.Errorf("LastBatchID before Submit = %q, want empty", got)
-	}
+	must.Empty(a.LastBatchID(), "LastBatchID before Submit")
 }
 
 // TestBatchAdapter_LastBatchID_PopulatedAfterSubmit confirms the
@@ -801,6 +699,7 @@ func TestBatchAdapter_LastBatchID_EmptyBeforeSubmit(t *testing.T) {
 // Both the control-plane handle ("batch-N") and the polling client's
 // "msgbatch_..." flow through this single accessor unchanged.
 func TestBatchAdapter_LastBatchID_PopulatedAfterSubmit(t *testing.T) {
+	must := require.New(t)
 	response := json.RawMessage(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"output_tokens":1}}`)
 	client := &fakeBatchClient{
 		submitFn: func(_ []BatchEntry) (string, error) { return "msgbatch_abc123", nil },
@@ -811,14 +710,10 @@ func TestBatchAdapter_LastBatchID_PopulatedAfterSubmit(t *testing.T) {
 	a := batchAdapter(t, client, &types.BatchProviderConfig{Enabled: true}, nil)
 
 	ch, err := a.Stream(context.Background(), anthropicParams())
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	_ = drain(t, ch)
+	must.NoError(err)
+	drain(t, ch)
 
-	if got := a.LastBatchID(); got != "msgbatch_abc123" {
-		t.Errorf("LastBatchID after Submit = %q, want %q", got, "msgbatch_abc123")
-	}
+	must.Equal("msgbatch_abc123", a.LastBatchID())
 }
 
 // TestBatchAdapter_LastBatchID_UnchangedOnSubmitError pins the
@@ -828,6 +723,7 @@ func TestBatchAdapter_LastBatchID_PopulatedAfterSubmit(t *testing.T) {
 // references the most recent successful submission, not a transient
 // failure that produced no provider-side batch.
 func TestBatchAdapter_LastBatchID_UnchangedOnSubmitError(t *testing.T) {
+	must := require.New(t)
 	response := json.RawMessage(`{"content":[],"stop_reason":"end_turn","usage":{"output_tokens":0}}`)
 	calls := 0
 	client := &fakeBatchClient{
@@ -845,27 +741,19 @@ func TestBatchAdapter_LastBatchID_UnchangedOnSubmitError(t *testing.T) {
 	a := batchAdapter(t, client, &types.BatchProviderConfig{Enabled: true}, nil)
 
 	ch, err := a.Stream(context.Background(), anthropicParams())
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	_ = drain(t, ch)
-	if got := a.LastBatchID(); got != "msgbatch_first" {
-		t.Fatalf("LastBatchID after first Submit = %q, want msgbatch_first", got)
-	}
+	must.NoError(err)
+	drain(t, ch)
+	must.Equal("msgbatch_first", a.LastBatchID(), "after first Submit")
 
-	// Second Stream Submit returns an error; LastBatchID must still
-	// hold the previous successful value.
+	// The second Submit fails; LastBatchID must still hold the previous value.
 	ch2, err := a.Stream(context.Background(), anthropicParams())
-	if err != nil {
-		t.Fatalf("Stream 2: %v", err)
-	}
-	_ = drain(t, ch2)
-	if got := a.LastBatchID(); got != "msgbatch_first" {
-		t.Errorf("LastBatchID after failed Submit = %q, want msgbatch_first (unchanged)", got)
-	}
+	must.NoError(err, "second Stream")
+	drain(t, ch2)
+	must.Equal("msgbatch_first", a.LastBatchID(), "after failed Submit")
 }
 
 func TestBatchAdapter_Stream_ResultError(t *testing.T) {
+	must := require.New(t)
 	client := &fakeBatchClient{
 		resultFn: func(_ string) (map[string]*BatchResult, error) {
 			return map[string]*BatchResult{
@@ -875,19 +763,16 @@ func TestBatchAdapter_Stream_ResultError(t *testing.T) {
 	}
 	a := batchAdapter(t, client, &types.BatchProviderConfig{Enabled: true}, nil)
 	ch, err := a.Stream(context.Background(), anthropicParams())
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	must.NoError(err)
 	events := drain(t, ch)
-	if len(events) != 1 || events[0].Type != "error" {
-		t.Fatalf("expected single error event, got %+v", events)
-	}
-	if msg := events[0].Error.Error(); !strings.Contains(msg, "batch_cancelled") || !strings.Contains(msg, "user aborted") {
-		t.Errorf("error chain: %q (want both 'batch_cancelled' and 'user aborted')", msg)
-	}
+	must.Len(events, 1)
+	must.Equal("error", events[0].Type)
+	must.ErrorContains(events[0].Error, "batch_cancelled")
+	must.ErrorContains(events[0].Error, "user aborted")
 }
 
 func TestBatchAdapter_Stream_MissingEntry(t *testing.T) {
+	must := require.New(t)
 	client := &fakeBatchClient{
 		resultFn: func(_ string) (map[string]*BatchResult, error) {
 			return map[string]*BatchResult{"other-id": {Response: json.RawMessage(`{}`)}}, nil
@@ -896,15 +781,13 @@ func TestBatchAdapter_Stream_MissingEntry(t *testing.T) {
 	a := batchAdapter(t, client, &types.BatchProviderConfig{Enabled: true}, nil)
 	ch, _ := a.Stream(context.Background(), anthropicParams())
 	events := drain(t, ch)
-	if len(events) != 1 || events[0].Type != "error" {
-		t.Fatalf("expected single error event, got %+v", events)
-	}
-	if !strings.Contains(events[0].Error.Error(), "missing entry") {
-		t.Errorf("expected 'missing entry' in error, got %q", events[0].Error)
-	}
+	must.Len(events, 1)
+	must.Equal("error", events[0].Type)
+	must.ErrorContains(events[0].Error, "missing entry")
 }
 
 func TestBatchAdapter_Stream_CtxCancel(t *testing.T) {
+	must := require.New(t)
 	client := &fakeBatchClient{
 		resultFn: func(_ string) (map[string]*BatchResult, error) {
 			return nil, context.Canceled
@@ -916,19 +799,15 @@ func TestBatchAdapter_Stream_CtxCancel(t *testing.T) {
 	cancel()
 
 	ch, err := a.Stream(ctx, anthropicParams())
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	must.NoError(err)
 	events := drain(t, ch)
-	if len(events) != 1 || events[0].Type != "error" {
-		t.Fatalf("expected single error event, got %+v", events)
-	}
-	if !strings.Contains(events[0].Error.Error(), "cancelled") {
-		t.Errorf("expected 'cancelled' in error, got %q", events[0].Error)
-	}
+	must.Len(events, 1)
+	must.Equal("error", events[0].Type)
+	must.ErrorContains(events[0].Error, "cancelled")
 }
 
 func TestBatchAdapter_Stream_TimeoutWithoutFallback(t *testing.T) {
+	must := require.New(t)
 	client := &fakeBatchClient{
 		resultFn: func(_ string) (map[string]*BatchResult, error) {
 			return nil, fmt.Errorf("%w: simulated", errBatchExpired)
@@ -937,15 +816,13 @@ func TestBatchAdapter_Stream_TimeoutWithoutFallback(t *testing.T) {
 	a := batchAdapter(t, client, &types.BatchProviderConfig{Enabled: true, FallbackOnTimeout: false}, nil)
 	ch, _ := a.Stream(context.Background(), anthropicParams())
 	events := drain(t, ch)
-	if len(events) != 1 || events[0].Type != "error" {
-		t.Fatalf("expected single error event, got %+v", events)
-	}
-	if !errors.Is(events[0].Error, errBatchExpired) {
-		t.Errorf("expected errBatchExpired in chain, got %v", events[0].Error)
-	}
+	must.Len(events, 1)
+	must.Equal("error", events[0].Type)
+	must.ErrorIs(events[0].Error, errBatchExpired)
 }
 
 func TestBatchAdapter_Stream_TimeoutFallback(t *testing.T) {
+	must := require.New(t)
 	client := &fakeBatchClient{
 		resultFn: func(_ string) (map[string]*BatchResult, error) {
 			return nil, fmt.Errorf("%w: simulated", errBatchExpired)
@@ -962,18 +839,11 @@ func TestBatchAdapter_Stream_TimeoutFallback(t *testing.T) {
 	ch, _ := a.Stream(context.Background(), anthropicParams())
 	events := drain(t, ch)
 
-	if inner.called.Load() != 1 {
-		t.Errorf("expected inner adapter to be called once, got %d", inner.called.Load())
-	}
-	if len(events) != 2 {
-		t.Fatalf("expected 2 events from inner, got %d: %+v", len(events), events)
-	}
-	if events[0].Type != "text_delta" || events[0].Text != "fallback" {
-		t.Errorf("event 0: %+v", events[0])
-	}
-	if events[1].Type != "message_complete" {
-		t.Errorf("event 1: %+v", events[1])
-	}
+	must.Equal(int64(1), inner.called.Load(), "inner adapter calls")
+	must.Len(events, 2)
+	must.Equal("text_delta", events[0].Type)
+	must.Equal("fallback", events[0].Text)
+	must.Equal("message_complete", events[1].Type)
 }
 
 // TestBatchAdapter_Stream_DeadRunDoesNotFallBack pins the boundary
@@ -982,6 +852,7 @@ func TestBatchAdapter_Stream_TimeoutFallback(t *testing.T) {
 // cancellation rather than route into the streaming fallback, which could
 // only fail on the same dead context.
 func TestBatchAdapter_Stream_DeadRunDoesNotFallBack(t *testing.T) {
+	must := require.New(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	client := &fakeBatchClient{
 		resultFn: func(_ string) (map[string]*BatchResult, error) {
@@ -995,75 +866,67 @@ func TestBatchAdapter_Stream_DeadRunDoesNotFallBack(t *testing.T) {
 	ch, _ := a.Stream(ctx, anthropicParams())
 	events := drain(t, ch)
 
-	if inner.called.Load() != 0 {
-		t.Errorf("the streaming fallback must not run for a cancelled run, called %d times", inner.called.Load())
-	}
-	if len(events) != 1 || events[0].Type != "error" {
-		t.Fatalf("expected a single error event, got %+v", events)
-	}
-	if !errors.Is(events[0].Error, context.Canceled) {
-		t.Errorf("expected context.Canceled in the chain, got %v", events[0].Error)
-	}
+	must.Zero(inner.called.Load(), "the streaming fallback must not run for a cancelled run")
+	must.Len(events, 1)
+	must.Equal("error", events[0].Type)
+	must.ErrorIs(events[0].Error, context.Canceled)
 }
 
-// TestExpiredOrCancelled pins the tie-break the batch clients share:
-// a live context keeps the errBatchExpired sentinel (so FallbackOnTimeout
-// still routes), a dead one yields ctx.Err().
-func TestExpiredOrCancelled(t *testing.T) {
+// TestExpiredOrCancelled_LiveVersusCancelledContext pins the tie-break the
+// batch clients share: a live context keeps the errBatchExpired sentinel (so
+// FallbackOnTimeout still routes), a dead one yields ctx.Err().
+func TestExpiredOrCancelled_LiveVersusCancelledContext(t *testing.T) {
 	expired := fmt.Errorf("%w: simulated", errBatchExpired)
 
-	if got := expiredOrCancelled(context.Background(), expired); !errors.Is(got, errBatchExpired) {
-		t.Errorf("live context: got %v, want the errBatchExpired sentinel", got)
-	}
+	t.Run("live context keeps the expired sentinel", func(t *testing.T) {
+		must := require.New(t)
+		must.ErrorIs(expiredOrCancelled(context.Background(), expired), errBatchExpired)
+	})
 
-	cancelled, cancel := context.WithCancel(context.Background())
-	cancel()
-	got := expiredOrCancelled(cancelled, expired)
-	if !errors.Is(got, context.Canceled) {
-		t.Errorf("cancelled context: got %v, want context.Canceled", got)
-	}
-	if errors.Is(got, errBatchExpired) {
-		t.Error("a cancelled run must not surface the batch-expired sentinel")
-	}
+	t.Run("cancelled context yields context.Canceled", func(t *testing.T) {
+		must := require.New(t)
+		cancelled, cancel := context.WithCancel(context.Background())
+		cancel()
+		got := expiredOrCancelled(cancelled, expired)
+		must.ErrorIs(got, context.Canceled)
+		must.NotErrorIs(got, errBatchExpired, "a cancelled run must not surface the batch-expired sentinel")
+	})
 }
 
-// TestBatchWaitCap pins which batch waits get a wall-clock cap at all.
+// TestBatchWaitCap_ArmsOnlyInsideRunDeadline pins which batch waits get a wall-clock cap at all.
 // A cap at or beyond the run deadline is dropped so the run deadline is
 // the only reachable outcome; only a cap strictly inside the run's
 // remaining budget is armed, and only then can FallbackOnTimeout fire.
-func TestBatchWaitCap(t *testing.T) {
+func TestBatchWaitCap_ArmsOnlyInsideRunDeadline(t *testing.T) {
 	t.Run("no run deadline arms the cap", func(t *testing.T) {
+		must := require.New(t)
 		capAt, armed := batchWaitCap(context.Background(), time.Minute)
-		if !armed {
-			t.Fatal("a context without a deadline must arm the cap")
-		}
-		if time.Until(capAt) <= 0 {
-			t.Errorf("cap must be in the future, got %s", capAt)
-		}
+		must.True(armed, "a context without a deadline must arm the cap")
+		must.Positive(time.Until(capAt), "cap must be in the future, got %s", capAt)
 	})
 
 	t.Run("cap inside the run budget is armed", func(t *testing.T) {
+		must := require.New(t)
 		ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 		defer cancel()
-		if _, armed := batchWaitCap(ctx, time.Minute); !armed {
-			t.Error("a cap well inside the run deadline must be armed")
-		}
+		_, armed := batchWaitCap(ctx, time.Minute)
+		must.True(armed, "a cap well inside the run deadline must be armed")
 	})
 
 	for _, tc := range []struct {
-		name     string
-		maxWait  time.Duration
-		runBudge time.Duration
+		name      string
+		maxWait   time.Duration
+		runBudget time.Duration
 	}{
 		{"cap equal to the run budget is dropped", time.Minute, time.Minute},
 		{"cap beyond the run budget is dropped", time.Hour, time.Minute},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), tc.runBudge)
+			must := require.New(t)
+			ctx, cancel := context.WithTimeout(context.Background(), tc.runBudget)
 			defer cancel()
-			if _, armed := batchWaitCap(ctx, tc.maxWait); armed {
-				t.Error("the cap must be dropped when the run deadline binds first")
-			}
+			_, armed := batchWaitCap(ctx, tc.maxWait)
+			must.False(armed, "the cap must be dropped when the run deadline binds first")
 		})
 	}
 }
@@ -1075,6 +938,7 @@ func TestBatchWaitCap(t *testing.T) {
 // the inner function isolates the failure to the input decode
 // without depending on the wrapper's plumbing.
 func TestFabricateAnthropicStream_MalformedToolInput(t *testing.T) {
+	must := require.New(t)
 	// Note: the tool_use Input field is json.RawMessage, so a
 	// truncated object literal inside the message body forces the
 	// unmarshal of Input itself to fail.
@@ -1084,12 +948,7 @@ func TestFabricateAnthropicStream_MalformedToolInput(t *testing.T) {
 
 	ch := make(chan types.StreamEvent, 4)
 	err := fabricateAnthropicStream(ch, response)
-	if err == nil {
-		t.Fatal("expected error for malformed tool_use input, got nil")
-	}
-	if !strings.Contains(err.Error(), "decode") {
-		t.Errorf("error chain = %q, want it to mention 'decode'", err.Error())
-	}
+	must.ErrorContains(err, "decode")
 }
 
 // TestFabricateStream_AnthropicDecodeError covers the
@@ -1099,6 +958,7 @@ func TestFabricateAnthropicStream_MalformedToolInput(t *testing.T) {
 // it (the agentic loop is the only consumer and expects all
 // failures on-channel).
 func TestFabricateStream_AnthropicDecodeError(t *testing.T) {
+	must := require.New(t)
 	// A response whose tool_use input field is a truncated JSON
 	// value triggers fabricateAnthropicStream's decode error path,
 	// which fabricateStream must relay to the channel.
@@ -1116,9 +976,7 @@ func TestFabricateStream_AnthropicDecodeError(t *testing.T) {
 			sawError = true
 		}
 	}
-	if !sawError {
-		t.Error("expected a decode error StreamEvent from fabricateStream")
-	}
+	must.True(sawError, "expected a decode error StreamEvent from fabricateStream")
 }
 
 // TestBatchAdapter_Stream_ResultNonTransientError covers the
@@ -1128,6 +986,7 @@ func TestFabricateStream_AnthropicDecodeError(t *testing.T) {
 // provider-side rejection (rate limit, invalid model) could be
 // swallowed or misclassified as a timeout.
 func TestBatchAdapter_Stream_ResultNonTransientError(t *testing.T) {
+	must := require.New(t)
 	client := &fakeBatchClient{
 		resultFn: func(_ string) (map[string]*BatchResult, error) {
 			return nil, fmt.Errorf("provider-side rejection")
@@ -1135,38 +994,27 @@ func TestBatchAdapter_Stream_ResultNonTransientError(t *testing.T) {
 	}
 	a := batchAdapter(t, client, &types.BatchProviderConfig{Enabled: true}, nil)
 	ch, err := a.Stream(context.Background(), anthropicParams())
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	must.NoError(err)
 	events := drain(t, ch)
-	if len(events) != 1 || events[0].Type != "error" {
-		t.Fatalf("expected single error event, got %+v", events)
-	}
-	msg := events[0].Error.Error()
-	if !strings.Contains(msg, "batch result:") || !strings.Contains(msg, "provider-side rejection") {
-		t.Errorf("error chain = %q, want both 'batch result:' and 'provider-side rejection'", msg)
-	}
+	must.Len(events, 1)
+	must.Equal("error", events[0].Type)
+	must.ErrorContains(events[0].Error, "batch result:")
+	must.ErrorContains(events[0].Error, "provider-side rejection")
 }
 
 func TestBatchAdapter_Stream_UnsupportedProviderEmitsError(t *testing.T) {
+	must := require.New(t)
 	client := &fakeBatchClient{}
 	a := NewBatchAdapter(nil, client, &types.BatchProviderConfig{Enabled: true}, "bedrock", "run-test")
 	ch, err := a.Stream(context.Background(), anthropicParams())
-	if err != nil {
-		t.Fatalf("Stream returned err: %v (should surface via channel)", err)
-	}
+	must.NoError(err, "unsupported provider surfaces via the channel")
 	events := drain(t, ch)
-	if len(events) != 1 || events[0].Type != "error" {
-		t.Fatalf("expected single error event, got %+v", events)
-	}
-	if !strings.Contains(events[0].Error.Error(), `unsupported provider type "bedrock"`) {
-		t.Errorf("expected unsupported provider error, got: %v", events[0].Error)
-	}
+	must.Len(events, 1)
+	must.Equal("error", events[0].Type)
+	must.ErrorContains(events[0].Error, `unsupported provider type "bedrock"`)
 	client.mu.Lock()
 	defer client.mu.Unlock()
-	if len(client.submitted) != 0 {
-		t.Errorf("expected no submits for unsupported provider, got %+v", client.submitted)
-	}
+	must.Empty(client.submitted, "no submits for unsupported provider")
 }
 
 // -----------------------------------------------------------------------------
@@ -1235,6 +1083,7 @@ func (m *mockBatchTransport) emittedSnapshot() []types.HarnessEvent {
 }
 
 func TestControlPlaneBatchClient_SubmitAndResult(t *testing.T) {
+	must := require.New(t)
 	tr := &mockBatchTransport{}
 	c := NewControlPlaneBatchClient(tr, 5*time.Second, false)
 
@@ -1245,27 +1094,17 @@ func TestControlPlaneBatchClient_SubmitAndResult(t *testing.T) {
 	}
 
 	batchID, err := c.Submit(context.Background(), []BatchEntry{entry})
-	if err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
+	must.NoError(err)
 
 	em := tr.lastEmitted()
-	if em == nil || em.Type != "batch_submission" {
-		t.Fatalf("expected batch_submission emitted, got %+v", em)
-	}
-	if em.RequestID != batchID {
-		t.Errorf("requestID echoed: got %q, want %q", em.RequestID, batchID)
-	}
+	must.NotNil(em, "expected batch_submission emitted")
+	must.Equal("batch_submission", em.Type)
+	must.Equal(batchID, em.RequestID, "requestID echoed")
 	var payload BatchSubmission
-	if err := json.Unmarshal(em.Input, &payload); err != nil {
-		t.Fatalf("unmarshal submission payload: %v", err)
-	}
-	if payload.ProviderType != "anthropic" || payload.CustomID != "run-test-turn-1" {
-		t.Errorf("payload: %+v", payload)
-	}
-	if string(payload.Body) != string(entry.Body) {
-		t.Errorf("payload body mismatch")
-	}
+	must.NoError(json.Unmarshal(em.Input, &payload), "unmarshal submission payload")
+	must.Equal("anthropic", payload.ProviderType)
+	must.Equal("run-test-turn-1", payload.CustomID)
+	must.Equal(string(entry.Body), string(payload.Body), "payload body")
 
 	// Inject the matching batch_result; Result should return a map keyed
 	// by the original custom_id.
@@ -1280,39 +1119,27 @@ func TestControlPlaneBatchClient_SubmitAndResult(t *testing.T) {
 	}()
 
 	results, err := c.Result(context.Background(), batchID)
-	if err != nil {
-		t.Fatalf("Result: %v", err)
-	}
-	got, ok := results["run-test-turn-1"]
-	if !ok {
-		t.Fatalf("expected result keyed by custom_id, got %+v", results)
-	}
-	if got.Err != nil {
-		t.Errorf("expected success, got err %+v", got.Err)
-	}
-	if !strings.Contains(string(got.Response), `"text":"hi"`) {
-		t.Errorf("unexpected response: %s", got.Response)
-	}
+	must.NoError(err)
+	must.Contains(results, "run-test-turn-1", "expected result keyed by custom_id")
+	got := results["run-test-turn-1"]
+	must.Nil(got.Err, "expected success")
+	must.Contains(string(got.Response), `"text":"hi"`)
 
-	// Cleanup proof: a second Result on the same batchID surfaces
-	// "no pending submission", confirming the success path called
-	// releasePending and dropped both maps.
-	if _, err := c.Result(context.Background(), batchID); err == nil ||
-		!strings.Contains(err.Error(), "no pending submission") {
-		t.Errorf("expected 'no pending submission' on second Result, got %v", err)
-	}
+	// A completed batch is released, so a second Result reports no pending submission.
+	_, err = c.Result(context.Background(), batchID)
+	must.ErrorContains(err, "no pending submission", "second Result")
 }
 
 func TestControlPlaneBatchClient_SubmitMultiEntryRejected(t *testing.T) {
+	must := require.New(t)
 	tr := &mockBatchTransport{}
 	c := NewControlPlaneBatchClient(tr, time.Second, false)
 	_, err := c.Submit(context.Background(), []BatchEntry{{}, {}})
-	if err == nil || !strings.Contains(err.Error(), "expected exactly 1 entry") {
-		t.Errorf("expected single-entry contract error, got: %v", err)
-	}
+	must.ErrorContains(err, "expected exactly 1 entry")
 }
 
 func TestControlPlaneBatchClient_Result_Timeout(t *testing.T) {
+	must := require.New(t)
 	tr := &mockBatchTransport{}
 	c := NewControlPlaneBatchClient(tr, 50*time.Millisecond, false)
 
@@ -1321,20 +1148,11 @@ func TestControlPlaneBatchClient_Result_Timeout(t *testing.T) {
 		Provider: "anthropic",
 		Body:     json.RawMessage(`{}`),
 	}})
-	if err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
+	must.NoError(err)
 
 	_, err = c.Result(context.Background(), batchID)
-	if err == nil {
-		t.Fatal("expected timeout error")
-	}
-	if !errors.Is(err, errBatchExpired) {
-		t.Errorf("expected errBatchExpired in chain, got %v", err)
-	}
-	if !strings.Contains(err.Error(), batchID) {
-		t.Errorf("timeout error should name the batch, got %v", err)
-	}
+	must.ErrorIs(err, errBatchExpired)
+	must.ErrorContains(err, batchID, "timeout error should name the batch")
 }
 
 // TestControlPlaneBatchClient_Result_DeadlineRacesCap arms the run
@@ -1343,6 +1161,7 @@ func TestControlPlaneBatchClient_Result_Timeout(t *testing.T) {
 // arm Go picks, the result must classify as DeadlineExceeded and must not
 // carry the batch-expired sentinel that routes into FallbackOnTimeout.
 func TestControlPlaneBatchClient_Result_DeadlineRacesCap(t *testing.T) {
+	must := require.New(t)
 	tr := &mockBatchTransport{}
 	c := NewControlPlaneBatchClient(tr, 20*time.Millisecond, false)
 
@@ -1351,26 +1170,19 @@ func TestControlPlaneBatchClient_Result_DeadlineRacesCap(t *testing.T) {
 		Provider: "anthropic",
 		Body:     json.RawMessage(`{}`),
 	}})
-	if err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
+	must.NoError(err)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 
 	_, err = c.Result(ctx, batchID)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("expected context.DeadlineExceeded, got %v", err)
-	}
-	if errors.Is(err, errBatchExpired) {
-		t.Errorf("a run past its deadline must not surface the batch-expired sentinel, got %v", err)
-	}
-	if !strings.Contains(err.Error(), batchID) {
-		t.Errorf("error should name the batch, got %v", err)
-	}
+	must.ErrorIs(err, context.DeadlineExceeded)
+	must.NotErrorIs(err, errBatchExpired, "a run past its deadline must not surface the batch-expired sentinel")
+	must.ErrorContains(err, batchID)
 }
 
 func TestControlPlaneBatchClient_Result_ContextCancel(t *testing.T) {
+	must := require.New(t)
 	tr := &mockBatchTransport{}
 	c := NewControlPlaneBatchClient(tr, time.Hour, false)
 
@@ -1379,9 +1191,7 @@ func TestControlPlaneBatchClient_Result_ContextCancel(t *testing.T) {
 		Provider: "anthropic",
 		Body:     json.RawMessage(`{}`),
 	}})
-	if err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
+	must.NoError(err)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -1389,12 +1199,11 @@ func TestControlPlaneBatchClient_Result_ContextCancel(t *testing.T) {
 		cancel()
 	}()
 	_, err = c.Result(ctx, batchID)
-	if err == nil || !errors.Is(err, context.Canceled) {
-		t.Errorf("expected context.Canceled in chain, got: %v", err)
-	}
+	must.ErrorIs(err, context.Canceled)
 }
 
-func TestControlPlaneBatchClient_BatchWaitingHeartbeat(t *testing.T) {
+func TestControlPlaneBatchClient_Result_EmitsWaitingHeartbeats(t *testing.T) {
+	must := require.New(t)
 	prev := setBatchWaitingHeartbeatInterval(25 * time.Millisecond)
 	t.Cleanup(func() { setBatchWaitingHeartbeatInterval(prev) })
 
@@ -1406,9 +1215,7 @@ func TestControlPlaneBatchClient_BatchWaitingHeartbeat(t *testing.T) {
 		Provider: "anthropic",
 		Body:     json.RawMessage(`{}`),
 	}})
-	if err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
+	must.NoError(err)
 
 	// Resolve the batch after enough ticks have fired so we can assert
 	// at least two heartbeats land alongside the result.
@@ -1421,9 +1228,8 @@ func TestControlPlaneBatchClient_BatchWaitingHeartbeat(t *testing.T) {
 		})
 	}()
 
-	if _, err := c.Result(context.Background(), batchID); err != nil {
-		t.Fatalf("Result: %v", err)
-	}
+	_, err = c.Result(context.Background(), batchID)
+	must.NoError(err)
 
 	// Settle: give the heartbeat goroutine one extra tick to notice the
 	// pending entry was removed and exit cleanly.
@@ -1435,12 +1241,11 @@ func TestControlPlaneBatchClient_BatchWaitingHeartbeat(t *testing.T) {
 			waiting++
 		}
 	}
-	if waiting < 2 {
-		t.Errorf("expected at least 2 batch_waiting heartbeats, got %d (emitted=%+v)", waiting, tr.emittedSnapshot())
-	}
+	must.GreaterOrEqual(waiting, 2, "batch_waiting heartbeats (emitted=%+v)", tr.emittedSnapshot())
 }
 
 func TestControlPlaneBatchClient_IgnoresUnrelatedControlEvents(t *testing.T) {
+	must := require.New(t)
 	tr := &mockBatchTransport{}
 	c := NewControlPlaneBatchClient(tr, time.Second, false)
 
@@ -1449,9 +1254,7 @@ func TestControlPlaneBatchClient_IgnoresUnrelatedControlEvents(t *testing.T) {
 		Provider: "anthropic",
 		Body:     json.RawMessage(`{}`),
 	}})
-	if err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
+	must.NoError(err)
 
 	go func() {
 		time.Sleep(20 * time.Millisecond)
@@ -1465,23 +1268,20 @@ func TestControlPlaneBatchClient_IgnoresUnrelatedControlEvents(t *testing.T) {
 	}()
 
 	results, err := c.Result(context.Background(), batchID)
-	if err != nil {
-		t.Fatalf("Result: %v", err)
-	}
-	got, ok := results["run-test-turn-1"]
-	if !ok || got == nil {
-		t.Fatalf("expected entry, got %+v", results)
-	}
-	if got.Err == nil || got.Err.Type != "invalid_request_error" {
-		t.Errorf("expected synthetic invalid_request_error, got %+v", got.Err)
-	}
+	must.NoError(err)
+	must.Contains(results, "run-test-turn-1")
+	got := results["run-test-turn-1"]
+	must.NotNil(got)
+	must.NotNil(got.Err, "expected synthetic invalid_request_error")
+	must.Equal("invalid_request_error", got.Err.Type)
 }
 
-// TestControlPlaneBatchClient_DeliverBeforeResult exercises the race
+// TestControlPlaneBatchClient_Result_BuffersEarlyDelivery exercises the race
 // where handleControl delivers a batch_result before Result is even
 // called: Result must return the buffered value rather than spuriously
 // surfacing "no pending submission".
-func TestControlPlaneBatchClient_DeliverBeforeResult(t *testing.T) {
+func TestControlPlaneBatchClient_Result_BuffersEarlyDelivery(t *testing.T) {
+	must := require.New(t)
 	tr := &mockBatchTransport{}
 	c := NewControlPlaneBatchClient(tr, time.Second, false)
 
@@ -1490,9 +1290,7 @@ func TestControlPlaneBatchClient_DeliverBeforeResult(t *testing.T) {
 		Provider: "anthropic",
 		Body:     json.RawMessage(`{}`),
 	}})
-	if err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
+	must.NoError(err)
 
 	// Deliver the result before Result is called; the buffered channel
 	// holds the value until Result drains it.
@@ -1503,27 +1301,20 @@ func TestControlPlaneBatchClient_DeliverBeforeResult(t *testing.T) {
 	})
 
 	results, err := c.Result(context.Background(), batchID)
-	if err != nil {
-		t.Fatalf("Result after early delivery: %v", err)
-	}
-	got, ok := results["run-test-turn-1"]
-	if !ok || got == nil {
-		t.Fatalf("expected entry keyed by custom_id, got %+v", results)
-	}
-	if got.Err != nil {
-		t.Errorf("expected success, got err %+v", got.Err)
-	}
+	must.NoError(err, "Result after early delivery")
+	must.Contains(results, "run-test-turn-1")
+	got := results["run-test-turn-1"]
+	must.NotNil(got)
+	must.Nil(got.Err, "expected success")
 
-	// Cleanup proof: a second Result returns "no pending submission".
-	if _, err := c.Result(context.Background(), batchID); err == nil ||
-		!strings.Contains(err.Error(), "no pending submission") {
-		t.Errorf("expected 'no pending submission' on second Result, got %v", err)
-	}
+	_, err = c.Result(context.Background(), batchID)
+	must.ErrorContains(err, "no pending submission", "second Result")
 }
 
 // TestControlPlaneBatchClient_CancelBundle_TimeoutEmits: a timeout exit
 // emits a batch_cancel_request when cancelBundleOnExit=true.
 func TestControlPlaneBatchClient_CancelBundle_TimeoutEmits(t *testing.T) {
+	must := require.New(t)
 	tr := &mockBatchTransport{}
 	c := NewControlPlaneBatchClient(tr, 30*time.Millisecond, true)
 
@@ -1532,13 +1323,10 @@ func TestControlPlaneBatchClient_CancelBundle_TimeoutEmits(t *testing.T) {
 		Provider: "anthropic",
 		Body:     json.RawMessage(`{}`),
 	}})
-	if err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
+	must.NoError(err)
 
-	if _, err := c.Result(context.Background(), batchID); !errors.Is(err, errBatchExpired) {
-		t.Fatalf("expected errBatchExpired, got %v", err)
-	}
+	_, err = c.Result(context.Background(), batchID)
+	must.ErrorIs(err, errBatchExpired)
 
 	var cancel int
 	for _, ev := range tr.emittedSnapshot() {
@@ -1546,14 +1334,13 @@ func TestControlPlaneBatchClient_CancelBundle_TimeoutEmits(t *testing.T) {
 			cancel++
 		}
 	}
-	if cancel != 1 {
-		t.Errorf("expected exactly 1 batch_cancel_request, got %d (emitted=%+v)", cancel, tr.emittedSnapshot())
-	}
+	must.Equal(1, cancel, "batch_cancel_request count (emitted=%+v)", tr.emittedSnapshot())
 }
 
 // TestControlPlaneBatchClient_CancelBundle_CtxCancelEmits mirrors
 // TestControlPlaneBatchClient_CancelBundle_TimeoutEmits on the ctx-cancel arm.
 func TestControlPlaneBatchClient_CancelBundle_CtxCancelEmits(t *testing.T) {
+	must := require.New(t)
 	tr := &mockBatchTransport{}
 	c := NewControlPlaneBatchClient(tr, time.Hour, true)
 
@@ -1562,18 +1349,15 @@ func TestControlPlaneBatchClient_CancelBundle_CtxCancelEmits(t *testing.T) {
 		Provider: "anthropic",
 		Body:     json.RawMessage(`{}`),
 	}})
-	if err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
+	must.NoError(err)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		time.Sleep(15 * time.Millisecond)
 		cancel()
 	}()
-	if _, err := c.Result(ctx, batchID); !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled, got %v", err)
-	}
+	_, err = c.Result(ctx, batchID)
+	must.ErrorIs(err, context.Canceled)
 
 	var cancelEvents int
 	for _, ev := range tr.emittedSnapshot() {
@@ -1581,15 +1365,14 @@ func TestControlPlaneBatchClient_CancelBundle_CtxCancelEmits(t *testing.T) {
 			cancelEvents++
 		}
 	}
-	if cancelEvents != 1 {
-		t.Errorf("expected exactly 1 batch_cancel_request, got %d", cancelEvents)
-	}
+	must.Equal(1, cancelEvents, "batch_cancel_request count (emitted=%+v)", tr.emittedSnapshot())
 }
 
 // TestControlPlaneBatchClient_CancelBundle_DisabledNoEmit: when
 // cancelBundleOnExit=false, the cancel/timeout arms emit nothing beyond
 // the original batch_submission.
 func TestControlPlaneBatchClient_CancelBundle_DisabledNoEmit(t *testing.T) {
+	must := require.New(t)
 	tr := &mockBatchTransport{}
 	c := NewControlPlaneBatchClient(tr, time.Hour, false)
 
@@ -1598,61 +1381,52 @@ func TestControlPlaneBatchClient_CancelBundle_DisabledNoEmit(t *testing.T) {
 		Provider: "anthropic",
 		Body:     json.RawMessage(`{}`),
 	}})
-	if err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
+	must.NoError(err)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := c.Result(ctx, batchID); !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled, got %v", err)
-	}
+	_, err = c.Result(ctx, batchID)
+	must.ErrorIs(err, context.Canceled)
 
+	var cancelEvents []types.HarnessEvent
 	for _, ev := range tr.emittedSnapshot() {
 		if ev.Type == "batch_cancel_request" {
-			t.Errorf("unexpected batch_cancel_request emitted with cancelBundleOnExit=false: %+v", ev)
+			cancelEvents = append(cancelEvents, ev)
 		}
 	}
+	must.Empty(cancelEvents, "cancelBundleOnExit=false must not emit batch_cancel_request")
 }
 
 // TestDecodeBatchResult_MalformedJSON asserts a non-JSON content
 // surfaces as a synthetic invalid_request_error rather than panicking.
 func TestDecodeBatchResult_MalformedJSON(t *testing.T) {
+	must := require.New(t)
 	got := decodeBatchResult(types.ControlEvent{
 		Type:      "batch_result",
 		RequestID: "batch-1",
 		Content:   "{not-json",
 	})
-	if got == nil || got.Err == nil {
-		t.Fatalf("expected synthetic error, got %+v", got)
-	}
-	if got.Err.Type != "invalid_request_error" {
-		t.Errorf("type: got %q, want invalid_request_error", got.Err.Type)
-	}
-	if !strings.Contains(got.Err.Message, "decode batch_result") {
-		t.Errorf("message: got %q, want substring 'decode batch_result'", got.Err.Message)
-	}
+	must.NotNil(got)
+	must.NotNil(got.Err, "expected synthetic error")
+	must.Equal("invalid_request_error", got.Err.Type)
+	must.Contains(got.Err.Message, "decode batch_result")
 }
 
-// TestDecodeBatchResult_SizeCap asserts a Content payload above
+// TestDecodeBatchResult_RejectsOversizedContent asserts a Content payload above
 // maxBatchResponseBytes surfaces as a synthetic invalid_request_error
 // without attempting to decode the oversized blob.
-func TestDecodeBatchResult_SizeCap(t *testing.T) {
+func TestDecodeBatchResult_RejectsOversizedContent(t *testing.T) {
+	must := require.New(t)
 	oversized := strings.Repeat("a", maxBatchResponseBytes+1)
 	got := decodeBatchResult(types.ControlEvent{
 		Type:      "batch_result",
 		RequestID: "batch-1",
 		Content:   oversized,
 	})
-	if got == nil || got.Err == nil {
-		t.Fatalf("expected synthetic error, got %+v", got)
-	}
-	if got.Err.Type != "invalid_request_error" {
-		t.Errorf("type: got %q, want invalid_request_error", got.Err.Type)
-	}
-	if !strings.Contains(got.Err.Message, "exceeds") {
-		t.Errorf("message: got %q, want substring 'exceeds'", got.Err.Message)
-	}
+	must.NotNil(got)
+	must.NotNil(got.Err, "expected synthetic error")
+	must.Equal("invalid_request_error", got.Err.Type)
+	must.Contains(got.Err.Message, "exceeds")
 }
 
 // TestDecodeBatchResult_ContentIsCanonical walks the batch_result wire
@@ -1669,29 +1443,26 @@ func TestDecodeBatchResult_ContentIsCanonical(t *testing.T) {
 			name    string
 			isError *bool
 		}{
-			{"is_error_absent", nil},
-			{"is_error_false", boolPtr(false)},
+			{"is_error absent", nil},
+			{"is_error false", boolPtr(false)},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
+				must := require.New(t)
 				got := decodeBatchResult(types.ControlEvent{
 					Type:      "batch_result",
 					RequestID: "batch-1",
 					Content:   successContent,
 					IsError:   tc.isError,
 				})
-				if got.Err != nil {
-					t.Fatalf("expected success, got err %+v", got.Err)
-				}
-				if !strings.Contains(string(got.Response), `"text":"hi"`) {
-					t.Errorf("response: got %s, want the decoded payload", got.Response)
-				}
+				must.Nil(got.Err, "expected success")
+				must.Contains(string(got.Response), `"text":"hi"`, "decoded payload")
 			})
 		}
 	})
 
 	// Every error type in the taxonomy must survive the round trip
 	// verbatim rather than being flattened into invalid_request_error.
-	t.Run("error_types", func(t *testing.T) {
+	t.Run("error types", func(t *testing.T) {
 		for _, errType := range []string{
 			"batch_expired", "batch_cancelled", "invalid_request_error", "server_error",
 		} {
@@ -1699,25 +1470,20 @@ func TestDecodeBatchResult_ContentIsCanonical(t *testing.T) {
 				name    string
 				isError *bool
 			}{
-				{"is_error_absent", nil},
-				{"is_error_true", boolPtr(true)},
+				{"is_error absent", nil},
+				{"is_error true", boolPtr(true)},
 			} {
 				t.Run(errType+"/"+tc.name, func(t *testing.T) {
+					must := require.New(t)
 					got := decodeBatchResult(types.ControlEvent{
 						Type:      "batch_result",
 						RequestID: "batch-1",
 						Content:   fmt.Sprintf(`{"err":{"type":%q,"message":"upstream said so"}}`, errType),
 						IsError:   tc.isError,
 					})
-					if got.Err == nil {
-						t.Fatalf("expected an error entry, got %+v", got)
-					}
-					if got.Err.Type != errType {
-						t.Errorf("type: got %q, want %q", got.Err.Type, errType)
-					}
-					if got.Err.Message != "upstream said so" {
-						t.Errorf("message: got %q, want the payload's message", got.Err.Message)
-					}
+					must.NotNil(got.Err, "expected an error entry")
+					must.Equal(errType, got.Err.Type)
+					must.Equal("upstream said so", got.Err.Message)
 				})
 			}
 		}
@@ -1731,23 +1497,23 @@ func TestDecodeBatchResult_ContentIsCanonical(t *testing.T) {
 			wantSubstrs []string
 		}{
 			{
-				name:        "missing_content",
+				name:        "missing content",
 				content:     "",
 				wantSubstrs: []string{"missing content"},
 			},
 			{
-				name:        "neither_response_nor_err",
+				name:        "neither response nor err",
 				content:     `{}`,
 				wantSubstrs: []string{"neither response nor err"},
 			},
 			{
-				name:        "neither_with_is_error_true",
+				name:        "neither with is_error true",
 				content:     `{}`,
 				isError:     boolPtr(true),
 				wantSubstrs: []string{"neither response nor err"},
 			},
 			{
-				name:        "neither_with_is_error_false",
+				name:        "neither with is_error false",
 				content:     `{}`,
 				isError:     boolPtr(false),
 				wantSubstrs: []string{"neither response nor err"},
@@ -1756,71 +1522,66 @@ func TestDecodeBatchResult_ContentIsCanonical(t *testing.T) {
 				// json.RawMessage stores a JSON null as four bytes, so a
 				// bare length test would read this as a success and
 				// fabricate an empty assistant turn.
-				name:        "null_response_counts_as_absent",
+				name:        "null response counts as absent",
 				content:     `{"response":null}`,
 				wantSubstrs: []string{"neither response nor err"},
 			},
 			{
-				name:        "both_response_and_err",
+				name:        "both response and err",
 				content:     `{"response":{"content":[]},"err":{"type":"server_error"}}`,
 				wantSubstrs: []string{"both response and err", `"server_error"`},
 			},
 			{
-				name:        "both_with_is_error_true",
+				name:        "both with is_error true",
 				content:     `{"response":{"content":[]},"err":{"type":"server_error"}}`,
 				isError:     boolPtr(true),
 				wantSubstrs: []string{"both response and err"},
 			},
 			{
-				name:        "both_with_is_error_false",
+				name:        "both with is_error false",
 				content:     `{"response":{"content":[]},"err":{"type":"server_error"}}`,
 				isError:     boolPtr(false),
 				wantSubstrs: []string{"both response and err"},
 			},
 			{
-				name:        "is_error_true_with_success_payload",
+				name:        "is_error true with success payload",
 				content:     successContent,
 				isError:     boolPtr(true),
 				wantSubstrs: []string{"is_error=true", "a success response"},
 			},
 			{
-				name:        "is_error_false_with_error_payload",
+				name:        "is_error false with error payload",
 				content:     `{"err":{"type":"batch_expired","message":"gone"}}`,
 				isError:     boolPtr(false),
 				wantSubstrs: []string{"is_error=false", `err.type="batch_expired"`},
 			},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
+				must := require.New(t)
 				got := decodeBatchResult(types.ControlEvent{
 					Type:      "batch_result",
 					RequestID: "batch-1",
 					Content:   tc.content,
 					IsError:   tc.isError,
 				})
-				if got == nil || got.Err == nil {
-					t.Fatalf("expected a synthetic error, got %+v", got)
-				}
-				if got.Err.Type != "invalid_request_error" {
-					t.Errorf("type: got %q, want invalid_request_error", got.Err.Type)
-				}
-				if len(got.Response) != 0 {
-					t.Errorf("a rejected entry must not carry a response, got %s", got.Response)
-				}
+				must.NotNil(got)
+				must.NotNil(got.Err, "expected a synthetic error")
+				must.Equal("invalid_request_error", got.Err.Type)
+				must.Empty(got.Response, "a rejected entry must not carry a response")
 				for _, want := range tc.wantSubstrs {
-					if !strings.Contains(got.Err.Message, want) {
-						t.Errorf("message %q missing %q", got.Err.Message, want)
-					}
+					must.Contains(got.Err.Message, want)
 				}
 			})
 		}
 	})
 }
 
-// TestControlPlaneBatchClient_ContradictoryIsErrorOverWire drives a
+// TestControlPlaneBatchClient_ContradictoryIsErrorReachesResult drives a
 // contradicting batch_result through the transport rather than calling
 // decodeBatchResult directly, pinning that handleControl routes the
 // rejection to the waiting Result caller.
-func TestControlPlaneBatchClient_ContradictoryIsErrorOverWire(t *testing.T) {
+func TestControlPlaneBatchClient_ContradictoryIsErrorReachesResult(t *testing.T) {
+	must := require.New(t)
 	tr := &mockBatchTransport{}
 	c := NewControlPlaneBatchClient(tr, time.Second, false)
 
@@ -1829,9 +1590,7 @@ func TestControlPlaneBatchClient_ContradictoryIsErrorOverWire(t *testing.T) {
 		Provider: "anthropic",
 		Body:     json.RawMessage(`{}`),
 	}})
-	if err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
+	must.NoError(err)
 
 	isError := true
 	tr.deliver(types.ControlEvent{
@@ -1842,25 +1601,20 @@ func TestControlPlaneBatchClient_ContradictoryIsErrorOverWire(t *testing.T) {
 	})
 
 	results, err := c.Result(context.Background(), batchID)
-	if err != nil {
-		t.Fatalf("Result: %v", err)
-	}
-	got, ok := results["run-test-turn-1"]
-	if !ok || got == nil {
-		t.Fatalf("expected an entry keyed by custom_id, got %+v", results)
-	}
-	if got.Err == nil || got.Err.Type != "invalid_request_error" {
-		t.Fatalf("expected invalid_request_error, got %+v", got)
-	}
-	if !strings.Contains(got.Err.Message, "is_error=true") {
-		t.Errorf("message %q should name the contradicting flag", got.Err.Message)
-	}
+	must.NoError(err)
+	must.Contains(results, "run-test-turn-1")
+	got := results["run-test-turn-1"]
+	must.NotNil(got)
+	must.NotNil(got.Err, "expected invalid_request_error")
+	must.Equal("invalid_request_error", got.Err.Type)
+	must.Contains(got.Err.Message, "is_error=true", "message should name the contradicting flag")
 }
 
-// TestControlPlaneBatchClient_SubmitEmitFailureCleansUp drives an Emit
+// TestControlPlaneBatchClient_Submit_EmitFailureDropsPending drives an Emit
 // failure on batch_submission and asserts the pending entry was dropped
 // (no leak; subsequent Result reports "no pending submission").
-func TestControlPlaneBatchClient_SubmitEmitFailureCleansUp(t *testing.T) {
+func TestControlPlaneBatchClient_Submit_EmitFailureDropsPending(t *testing.T) {
+	must := require.New(t)
 	tr := &mockBatchTransport{
 		emitErr:      errors.New("simulated emit failure"),
 		emitErrTypes: map[string]bool{"batch_submission": true},
@@ -1872,31 +1626,23 @@ func TestControlPlaneBatchClient_SubmitEmitFailureCleansUp(t *testing.T) {
 		Provider: "anthropic",
 		Body:     json.RawMessage(`{}`),
 	}})
-	if err == nil {
-		t.Fatal("expected emit error from Submit")
-	}
-	if !strings.Contains(err.Error(), "simulated emit failure") {
-		t.Errorf("expected wrapped emit error, got %v", err)
-	}
-	if batchID != "" {
-		t.Errorf("Submit returned non-empty batchID on failure: %q", batchID)
-	}
+	must.ErrorContains(err, "simulated emit failure")
+	must.Empty(batchID, "Submit must return no batch ID on failure")
+
 	emitted := tr.emittedSnapshot()
-	if len(emitted) != 1 || emitted[0].Type != "batch_submission" {
-		t.Fatalf("expected single batch_submission emit, got %+v", emitted)
-	}
+	must.Len(emitted, 1, "emitted=%+v", emitted)
+	must.Equal("batch_submission", emitted[0].Type)
 	requestID := emitted[0].RequestID
 
-	if _, err := c.Result(context.Background(), requestID); err == nil ||
-		!strings.Contains(err.Error(), "no pending submission") {
-		t.Errorf("expected 'no pending submission' after Submit failure, got %v", err)
-	}
+	_, err = c.Result(context.Background(), requestID)
+	must.ErrorContains(err, "no pending submission")
 }
 
-// TestControlPlaneBatchClient_HeartbeatExitsOnCtxCancel asserts the
+// TestControlPlaneBatchClient_Heartbeat_StopsOnCtxCancel asserts the
 // heartbeat goroutine terminates promptly when its context is cancelled
 // before any tick has fired.
-func TestControlPlaneBatchClient_HeartbeatExitsOnCtxCancel(t *testing.T) {
+func TestControlPlaneBatchClient_Heartbeat_StopsOnCtxCancel(t *testing.T) {
+	must := require.New(t)
 	// Use a long interval so the ticker cannot fire during the test
 	// window; the goroutine should exit via the ctx.Done() arm.
 	prev := setBatchWaitingHeartbeatInterval(time.Hour)
@@ -1911,9 +1657,7 @@ func TestControlPlaneBatchClient_HeartbeatExitsOnCtxCancel(t *testing.T) {
 		Provider: "anthropic",
 		Body:     json.RawMessage(`{}`),
 	}})
-	if err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
+	must.NoError(err)
 	cancel()
 	c.releasePending(batchID)
 
@@ -1921,17 +1665,20 @@ func TestControlPlaneBatchClient_HeartbeatExitsOnCtxCancel(t *testing.T) {
 	// have been emitted; only the original batch_submission is on the
 	// wire.
 	time.Sleep(20 * time.Millisecond)
+	var waiting []types.HarnessEvent
 	for _, ev := range tr.emittedSnapshot() {
 		if ev.Type == "batch_waiting" {
-			t.Errorf("unexpected batch_waiting emitted before ticker fired: %+v", ev)
+			waiting = append(waiting, ev)
 		}
 	}
+	must.Empty(waiting, "batch_waiting emitted before ticker fired")
 }
 
 // TestBatchAdapter_Stream_TimeoutFallback_InnerStreamError asserts that
 // when FallbackOnTimeout fires and the inner adapter itself returns an
 // error, the BatchAdapter surfaces a single error event.
 func TestBatchAdapter_Stream_TimeoutFallback_InnerStreamError(t *testing.T) {
+	must := require.New(t)
 	client := &fakeBatchClient{
 		resultFn: func(_ string) (map[string]*BatchResult, error) {
 			return nil, fmt.Errorf("%w: simulated", errBatchExpired)
@@ -1943,12 +1690,9 @@ func TestBatchAdapter_Stream_TimeoutFallback_InnerStreamError(t *testing.T) {
 	ch, _ := a.Stream(context.Background(), anthropicParams())
 	events := drain(t, ch)
 
-	if len(events) != 1 || events[0].Type != "error" {
-		t.Fatalf("expected single error event, got %+v", events)
-	}
-	if !strings.Contains(events[0].Error.Error(), "batch fallback to streaming failed") {
-		t.Errorf("expected fallback-failure error, got %v", events[0].Error)
-	}
+	must.Len(events, 1, "events: %+v", events)
+	must.Equal("error", events[0].Type)
+	must.ErrorContains(events[0].Error, "batch fallback to streaming failed")
 }
 
 // erroringProvider is a ProviderAdapter that always fails on Stream.
@@ -1961,6 +1705,7 @@ func (e *erroringProvider) Stream(_ context.Context, _ types.StreamParams) (<-ch
 // TestBatchAdapter_Stream_TimeoutFallback_CtxCancelDuringRelay asserts
 // the channel closes cleanly when ctx is cancelled mid-relay.
 func TestBatchAdapter_Stream_TimeoutFallback_CtxCancelDuringRelay(t *testing.T) {
+	must := require.New(t)
 	client := &fakeBatchClient{
 		resultFn: func(_ string) (map[string]*BatchResult, error) {
 			return nil, fmt.Errorf("%w: simulated", errBatchExpired)
@@ -1976,33 +1721,27 @@ func TestBatchAdapter_Stream_TimeoutFallback_CtxCancelDuringRelay(t *testing.T) 
 	deadline := time.After(2 * time.Second)
 	select {
 	case ev, ok := <-ch:
-		if !ok {
-			t.Fatal("channel closed before first event")
-		}
-		if ev.Type != "text_delta" || ev.Text != "first" {
-			t.Fatalf("unexpected first event: %+v", ev)
-		}
+		must.True(ok, "channel closed before first event")
+		must.Equal("text_delta", ev.Type)
+		must.Equal("first", ev.Text)
 	case <-deadline:
-		t.Fatal("timed out waiting for first event from inner")
+		must.Fail("timed out waiting for first event from inner")
 	}
 
 	cancel()
 	close(inner.release)
 
-	// Channel must close cleanly (no goroutine leak). The relay races
-	// the second send against ctx.Done() per event — Go's select is
-	// non-deterministic so the second event may or may not land before
-	// pumpInner notices the cancellation. Either way, the channel must
-	// close without wedging.
+	// The relay may or may not send the second event after cancel; the
+	// channel must close without wedging either way.
 	deadline = time.After(2 * time.Second)
 	for {
 		select {
 		case _, ok := <-ch:
 			if !ok {
-				return // success: closed cleanly
+				return
 			}
 		case <-deadline:
-			t.Fatal("channel did not close after ctx cancel")
+			must.Fail("channel did not close after ctx cancel")
 		}
 	}
 }
@@ -2026,11 +1765,12 @@ func (b *blockingProvider) Stream(_ context.Context, _ types.StreamParams) (<-ch
 	return ch, nil
 }
 
-// TestFabricateStream_AnthropicParityWithReference compares the
+// TestFabricateStream_AnthropicMatchesReferenceSequence compares the
 // fabricator's output against a hand-rolled reference sequence for a
 // single text + tool_use fixture. Guards against drift between the SSE
 // consumer (consumeSSE in anthropic.go) and the batch fabricator.
-func TestFabricateStream_AnthropicParityWithReference(t *testing.T) {
+func TestFabricateStream_AnthropicMatchesReferenceSequence(t *testing.T) {
+	must := require.New(t)
 	response := []byte(`{
 		"content": [
 			{"type": "text", "text": "hi"},
@@ -2041,15 +1781,9 @@ func TestFabricateStream_AnthropicParityWithReference(t *testing.T) {
 	}`)
 
 	ch := make(chan types.StreamEvent, 8)
-	if err := fabricateAnthropicStream(ch, response); err != nil {
-		t.Fatalf("fabricateAnthropicStream: %v", err)
-	}
+	must.NoError(fabricateAnthropicStream(ch, response))
 	close(ch)
-
-	var got []types.StreamEvent
-	for ev := range ch {
-		got = append(got, ev)
-	}
+	got := drain(t, ch)
 
 	// Reference sequence: one text_delta per text block, one tool_call
 	// per tool_use block, then a single message_complete carrying the
@@ -2062,38 +1796,32 @@ func TestFabricateStream_AnthropicParityWithReference(t *testing.T) {
 			{Type: "tool_use", ID: "tu_a", Name: "read_file", Input: json.RawMessage(`{"path": "/etc/hosts"}`)},
 		}},
 	}
-	if len(got) != len(want) {
-		t.Fatalf("event count: got %d, want %d (%+v)", len(got), len(want), got)
-	}
+	must.Len(got, len(want))
 	for i := range want {
-		if got[i].Type != want[i].Type {
-			t.Errorf("event %d: type %q, want %q", i, got[i].Type, want[i].Type)
-		}
-		if got[i].Text != want[i].Text {
-			t.Errorf("event %d: text %q, want %q", i, got[i].Text, want[i].Text)
-		}
-		if got[i].ID != want[i].ID || got[i].Name != want[i].Name {
-			t.Errorf("event %d: id/name %q/%q, want %q/%q", i, got[i].ID, got[i].Name, want[i].ID, want[i].Name)
-		}
-		if want[i].StopReason != "" && got[i].StopReason != want[i].StopReason {
-			t.Errorf("event %d: stop_reason %q, want %q", i, got[i].StopReason, want[i].StopReason)
-		}
-		if want[i].OutputTokens != 0 && got[i].OutputTokens != want[i].OutputTokens {
-			t.Errorf("event %d: output_tokens %d, want %d", i, got[i].OutputTokens, want[i].OutputTokens)
-		}
-		// Tool input check (event index 1).
-		if want[i].Type == "tool_call" {
-			if got[i].Input["path"] != want[i].Input["path"] {
-				t.Errorf("event %d: tool input path %v, want %v", i, got[i].Input, want[i].Input)
+		t.Run(fmt.Sprintf("event %d %s", i, want[i].Type), func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(want[i].Type, got[i].Type)
+			must.Equal(want[i].Text, got[i].Text)
+			must.Equal(want[i].ID, got[i].ID)
+			must.Equal(want[i].Name, got[i].Name)
+			if want[i].StopReason != "" {
+				must.Equal(want[i].StopReason, got[i].StopReason)
 			}
-		}
+			if want[i].OutputTokens != 0 {
+				must.Equal(want[i].OutputTokens, got[i].OutputTokens)
+			}
+			if want[i].Type == "tool_call" {
+				must.Equal(want[i].Input["path"], got[i].Input["path"])
+			}
+		})
 	}
 }
 
-// TestFabricateStream_AnthropicThinkingParity pins that a batch result's
-// thinking and redacted_thinking blocks produce the same events, in the
-// same order, as consumeSSE does for a streamed response.
-func TestFabricateStream_AnthropicThinkingParity(t *testing.T) {
+// TestFabricateStream_AnthropicThinkingBlocksKeepOrder pins that a batch
+// result's thinking and redacted_thinking blocks produce the same events, in
+// the same order, as consumeSSE does for a streamed response.
+func TestFabricateStream_AnthropicThinkingBlocksKeepOrder(t *testing.T) {
+	must := require.New(t)
 	response := []byte(`{
 		"content": [
 			{"type": "thinking", "thinking": "", "signature": "sig-batch"},
@@ -2106,14 +1834,9 @@ func TestFabricateStream_AnthropicThinkingParity(t *testing.T) {
 	}`)
 
 	ch := make(chan types.StreamEvent, 8)
-	if err := fabricateAnthropicStream(ch, response); err != nil {
-		t.Fatalf("fabricateAnthropicStream: %v", err)
-	}
+	must.NoError(fabricateAnthropicStream(ch, response))
 	close(ch)
-	var got []types.StreamEvent
-	for ev := range ch {
-		got = append(got, ev)
-	}
+	got := drain(t, ch)
 
 	want := []types.StreamEvent{
 		{Type: "thinking", ThoughtSignature: "sig-batch"},
@@ -2122,26 +1845,30 @@ func TestFabricateStream_AnthropicThinkingParity(t *testing.T) {
 		{Type: "tool_call", ID: "tu_a"},
 		{Type: "message_complete"},
 	}
-	if len(got) != len(want) {
-		t.Fatalf("event count: got %d, want %d (%+v)", len(got), len(want), got)
-	}
+	must.Len(got, len(want))
 	for i := range want {
-		if got[i].Type != want[i].Type || got[i].Text != want[i].Text ||
-			got[i].ThoughtSignature != want[i].ThoughtSignature || got[i].ID != want[i].ID {
-			t.Errorf("event %d = %+v, want %+v", i, got[i], want[i])
-		}
+		t.Run(fmt.Sprintf("event %d %s", i, want[i].Type), func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(want[i].Type, got[i].Type)
+			must.Equal(want[i].Text, got[i].Text)
+			must.Equal(want[i].ThoughtSignature, got[i].ThoughtSignature)
+			must.Equal(want[i].ID, got[i].ID)
+		})
 	}
+
 	blocks := got[4].Content
-	if len(blocks) != 4 || blocks[0].Type != "thinking" || blocks[0].ThoughtSignature != "sig-batch" ||
-		blocks[2].Type != "redacted_thinking" || blocks[2].ThoughtSignature != "data-batch" {
-		t.Errorf("message_complete content = %+v, want the thinking blocks in order", blocks)
-	}
+	must.Len(blocks, 4, "message_complete content")
+	must.Equal("thinking", blocks[0].Type)
+	must.Equal("sig-batch", blocks[0].ThoughtSignature)
+	must.Equal("redacted_thinking", blocks[2].Type)
+	must.Equal("data-batch", blocks[2].ThoughtSignature)
 }
 
 // TestFabricateStream_AnthropicThinkingMatchesStream pins the parity the
 // batch path promises: a batch result yields the same events as a streamed
 // response with the same content, thinking text included.
 func TestFabricateStream_AnthropicThinkingMatchesStream(t *testing.T) {
+	must := require.New(t)
 	response := []byte(`{
 		"content": [
 			{"type": "thinking", "thinking": "plan it", "signature": "sig-batch"},
@@ -2170,27 +1897,26 @@ func TestFabricateStream_AnthropicThinkingMatchesStream(t *testing.T) {
 	))
 
 	ch := make(chan types.StreamEvent, 8)
-	if err := fabricateAnthropicStream(ch, response); err != nil {
-		t.Fatalf("fabricateAnthropicStream: %v", err)
-	}
+	must.NoError(fabricateAnthropicStream(ch, response))
 	close(ch)
-	var batched []types.StreamEvent
-	for ev := range ch {
-		batched = append(batched, ev)
-	}
+	batched := drain(t, ch)
 
 	// A batch response has no incremental reasoning to report; the loop
 	// forwards its whole thinking block instead.
 	streamed = slices.DeleteFunc(streamed, func(ev types.StreamEvent) bool { return ev.Type == "thinking_delta" })
-	if len(batched) != len(streamed) {
-		t.Fatalf("batch events %v, streamed events %v", eventTypes(batched), eventTypes(streamed))
-	}
+	must.Equal(eventTypes(streamed), eventTypes(batched))
 	for i := range streamed {
-		s, b := streamed[i], batched[i]
-		if s.Type != b.Type || s.Text != b.Text || s.ThoughtSignature != b.ThoughtSignature ||
-			s.ID != b.ID || s.Name != b.Name || fmt.Sprint(s.Input) != fmt.Sprint(b.Input) || s.StopReason != b.StopReason {
-			t.Errorf("event %d: batch %+v, streamed %+v", i, b, s)
-		}
+		t.Run(fmt.Sprintf("event %d %s", i, streamed[i].Type), func(t *testing.T) {
+			must := require.New(t)
+			s, b := streamed[i], batched[i]
+			must.Equal(s.Type, b.Type)
+			must.Equal(s.Text, b.Text)
+			must.Equal(s.ThoughtSignature, b.ThoughtSignature)
+			must.Equal(s.ID, b.ID)
+			must.Equal(s.Name, b.Name)
+			must.Equal(fmt.Sprint(s.Input), fmt.Sprint(b.Input))
+			must.Equal(s.StopReason, b.StopReason)
+		})
 	}
 }
 
@@ -2198,6 +1924,7 @@ func TestFabricateStream_AnthropicThinkingMatchesStream(t *testing.T) {
 // batch path sends tool examples on the native input_examples field and
 // leaves the schema untouched, as Stream does.
 func TestBatchAdapter_marshalRequestBody_AnthropicInputExamples(t *testing.T) {
+	must := require.New(t)
 	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "anthropic", "run-test")
 	params := types.StreamParams{
 		Model:     "claude-sonnet-5-5",
@@ -2211,31 +1938,27 @@ func TestBatchAdapter_marshalRequestBody_AnthropicInputExamples(t *testing.T) {
 		}},
 	}
 	body, err := a.marshalRequestBody(params)
-	if err != nil {
-		t.Fatalf("marshalRequestBody: %v", err)
-	}
+	must.NoError(err)
 	var req struct {
 		Tools []struct {
 			InputSchema   map[string]json.RawMessage `json:"input_schema"`
 			InputExamples []json.RawMessage          `json:"input_examples"`
 		} `json:"tools"`
 	}
-	if err := json.Unmarshal(body, &req); err != nil {
-		t.Fatalf("decode batch body: %v\n%s", err, body)
-	}
-	if len(req.Tools) != 1 || len(req.Tools[0].InputExamples) != 1 || string(req.Tools[0].InputExamples[0]) != `{"x":"hi"}` {
-		t.Fatalf("tools = %+v, want one tool with input_examples [{\"x\":\"hi\"}]\n%s", req.Tools, body)
-	}
-	if _, folded := req.Tools[0].InputSchema["examples"]; folded {
-		t.Errorf("input_schema carries examples; want them only on input_examples\n%s", body)
-	}
+	must.NoError(json.Unmarshal(body, &req), "decode batch body:\n%s", body)
+	must.Len(req.Tools, 1, "batch body:\n%s", body)
+	must.Len(req.Tools[0].InputExamples, 1, "batch body:\n%s", body)
+	must.JSONEq(`{"x":"hi"}`, string(req.Tools[0].InputExamples[0]), "batch body:\n%s", body)
+	must.NotContains(req.Tools[0].InputSchema, "examples",
+		"input_schema must not carry examples; batch body:\n%s", body)
 }
 
-// TestBatchAdapter_marshalRequestBody_AnthropicEffort pins that the batch
-// path applies the same effort allow-list as Stream: a supported level is
-// projected onto output_config and an unsupported one fails at marshal
+// TestBatchAdapter_marshalRequestBody_AnthropicEffortAllowList pins that the
+// batch path applies the same effort allow-list as Stream: a supported level
+// is projected onto output_config and an unsupported one fails at marshal
 // time rather than as a per-item batch error hours later.
-func TestBatchAdapter_marshalRequestBody_AnthropicEffort(t *testing.T) {
+func TestBatchAdapter_marshalRequestBody_AnthropicEffortAllowList(t *testing.T) {
+	must := require.New(t)
 	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "anthropic", "run-test")
 	params := types.StreamParams{
 		Model:           "claude-sonnet-5-5",
@@ -2244,15 +1967,10 @@ func TestBatchAdapter_marshalRequestBody_AnthropicEffort(t *testing.T) {
 		ReasoningEffort: "high",
 	}
 	body, err := a.marshalRequestBody(params)
-	if err != nil {
-		t.Fatalf("marshalRequestBody: %v", err)
-	}
-	if !strings.Contains(string(body), `"output_config":{"effort":"high"}`) {
-		t.Errorf("batch body missing output_config.effort: %s", body)
-	}
+	must.NoError(err)
+	must.Contains(string(body), `"output_config":{"effort":"high"}`)
 
 	params.ReasoningEffort = "minimal"
-	if _, err := a.marshalRequestBody(params); err == nil {
-		t.Error("marshalRequestBody accepted reasoningEffort \"minimal\" for claude-sonnet-5-5, want error")
-	}
+	_, err = a.marshalRequestBody(params)
+	must.Error(err, "reasoningEffort minimal on claude-sonnet-5-5 should be rejected")
 }

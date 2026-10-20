@@ -1,11 +1,16 @@
 package egressproxy
 
 import (
-	"strings"
+	"fmt"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewMatcher_ParsesEntries(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	m, err := NewMatcher([]string{
 		"example.com",
 		"*.example.com",
@@ -14,9 +19,7 @@ func TestNewMatcher_ParsesEntries(t *testing.T) {
 		"  EXAMPLE.NET.  ",
 		"",
 	})
-	if err != nil {
-		t.Fatalf("NewMatcher: %v", err)
-	}
+	must.NoError(err)
 
 	got := m.Entries()
 	want := map[string]bool{
@@ -27,179 +30,160 @@ func TestNewMatcher_ParsesEntries(t *testing.T) {
 		"example.net:443":    true,
 	}
 
-	if len(got) != len(want) {
-		t.Fatalf("entries: got %d, want %d (%v)", len(got), len(want), got)
-	}
+	must.Len(got, len(want), "entries: %v", got)
 	for _, entry := range got {
-		if !want[entry] {
-			t.Errorf("unexpected entry %q", entry)
-		}
+		check.True(want[entry], "unexpected entry %q", entry)
 	}
 }
 
 func TestNewMatcher_RejectsMalformed(t *testing.T) {
-	cases := []string{
-		"example.com:abc",   // non-numeric port
-		"example.com:0",     // out of range
-		"example.com:99999", // out of range
-		"foo bar.com",       // whitespace inside host
-		":443",              // empty host
-		"*.:443",            // empty host with wildcard
+	cases := []struct {
+		name  string
+		entry string
+	}{
+		{"non-numeric port", "example.com:abc"},
+		{"port zero", "example.com:0"},
+		{"port above 65535", "example.com:99999"},
+		{"whitespace inside host", "foo bar.com"},
+		{"empty host", ":443"},
+		{"empty host with wildcard", "*.:443"},
 	}
-	for _, c := range cases {
-		if _, err := NewMatcher([]string{c}); err == nil {
-			t.Errorf("expected error for malformed entry %q", c)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			_, err := NewMatcher([]string{tc.entry})
+			must.Error(err, "entry %q", tc.entry)
+		})
 	}
 }
 
 func TestMatcher_ExactMatch(t *testing.T) {
+	must := require.New(t)
 	m, err := NewMatcher([]string{"example.com"})
-	if err != nil {
-		t.Fatalf("NewMatcher: %v", err)
-	}
+	must.NoError(err)
 
 	cases := []struct {
+		name string
 		host string
 		port int
 		want bool
 	}{
-		{"example.com", 443, true},
-		{"EXAMPLE.COM", 443, true},
-		{"example.com.", 443, true}, // trailing dot canonicalisation
-		{"example.com", 80, false},  // port mismatch
-		{"foo.example.com", 443, false},
-		{"evilexample.com", 443, false},
-		{"", 443, false},
+		{"exact host and port", "example.com", 443, true},
+		{"host is case-insensitive", "EXAMPLE.COM", 443, true},
+		{"trailing dot is canonicalised", "example.com.", 443, true},
+		{"port mismatch", "example.com", 80, false},
+		{"subdomain does not match", "foo.example.com", 443, false},
+		{"suffix without label boundary", "evilexample.com", 443, false},
+		{"empty host", "", 443, false},
 	}
 	for _, tc := range cases {
-		got := m.Match(tc.host, tc.port)
-		if got != tc.want {
-			t.Errorf("Match(%q,%d): got %v, want %v", tc.host, tc.port, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			got := m.Match(tc.host, tc.port)
+			must.Equal(tc.want, got)
+		})
 	}
 }
 
 func TestMatcher_Wildcard(t *testing.T) {
+	must := require.New(t)
 	m, err := NewMatcher([]string{"*.example.com"})
-	if err != nil {
-		t.Fatalf("NewMatcher: %v", err)
-	}
+	must.NoError(err)
 
 	cases := []struct {
+		name string
 		host string
 		port int
 		want bool
 	}{
-		{"a.example.com", 443, true},
-		{"a.b.example.com", 443, true},
-		{"deeply.nested.sub.example.com", 443, true},
-		// Wildcard does NOT match the bare apex per RFC 6125.
-		{"example.com", 443, false},
-		// A host that merely ends with `example.com` but lacks the `.` boundary
-		// must not match (defeat `evilexample.com` style attacks).
-		{"evilexample.com", 443, false},
-		// Port mismatch
-		{"a.example.com", 80, false},
+		{"single-label subdomain", "a.example.com", 443, true},
+		{"multi-label subdomain", "a.b.example.com", 443, true},
+		{"deeply nested subdomain", "deeply.nested.sub.example.com", 443, true},
+		// The wildcard does not match the bare apex (RFC 6125).
+		{"bare apex", "example.com", 443, false},
+		// The wildcard requires a label boundary, so suffix lookalikes are rejected.
+		{"suffix without label boundary", "evilexample.com", 443, false},
+		{"port mismatch", "a.example.com", 80, false},
 	}
 	for _, tc := range cases {
-		got := m.Match(tc.host, tc.port)
-		if got != tc.want {
-			t.Errorf("Match(%q,%d): got %v, want %v", tc.host, tc.port, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			got := m.Match(tc.host, tc.port)
+			must.Equal(tc.want, got)
+		})
 	}
 }
 
 func TestMatcher_PortSuffixIsExact(t *testing.T) {
+	must := require.New(t)
 	m, err := NewMatcher([]string{"apt.example.org:80"})
-	if err != nil {
-		t.Fatalf("NewMatcher: %v", err)
-	}
+	must.NoError(err)
 
-	if !m.Match("apt.example.org", 80) {
-		t.Error("expected port-80 match")
-	}
-	// A port-suffixed entry must NOT also allow 443.
-	if m.Match("apt.example.org", 443) {
-		t.Error("port-80 entry must not also match port 443")
-	}
+	must.True(m.Match("apt.example.org", 80))
+	// A port-suffixed entry must not also allow 443.
+	must.False(m.Match("apt.example.org", 443))
 }
 
 func TestMatcher_DefaultPortIs443(t *testing.T) {
+	must := require.New(t)
 	m, err := NewMatcher([]string{"example.com"})
-	if err != nil {
-		t.Fatalf("NewMatcher: %v", err)
-	}
-	if !m.Match("example.com", 443) {
-		t.Error("entry without explicit port should default to 443")
-	}
-	for _, p := range []int{80, 8080, 22, 25} {
-		if m.Match("example.com", p) {
-			t.Errorf("entry without explicit port must not match port %d", p)
-		}
+	must.NoError(err)
+
+	must.True(m.Match("example.com", 443), "entry without explicit port should default to 443")
+	for _, port := range []int{80, 8080, 22, 25} {
+		t.Run(fmt.Sprintf("port %d", port), func(t *testing.T) {
+			must := require.New(t)
+			must.False(m.Match("example.com", port), "entry without explicit port must not match")
+		})
 	}
 }
 
-func TestMatcher_NilSafe(t *testing.T) {
+func TestMatcher_NilReceiverIsSafe(t *testing.T) {
+	must := require.New(t)
 	var m *Matcher
-	if m.Match("example.com", 443) {
-		t.Error("nil matcher should reject everything")
-	}
-	if entries := m.Entries(); entries != nil {
-		t.Errorf("nil matcher Entries should be nil, got %v", entries)
-	}
+	must.False(m.Match("example.com", 443), "nil matcher should reject everything")
+	must.Nil(m.Entries())
 }
 
 func TestMatcher_MixedEntries(t *testing.T) {
+	must := require.New(t)
 	m, err := NewMatcher([]string{
 		"api.github.com",
 		"*.githubusercontent.com",
 		"registry.npmjs.org",
 		"apt.example.org:80",
 	})
-	if err != nil {
-		t.Fatalf("NewMatcher: %v", err)
-	}
+	must.NoError(err)
 
-	allow := []struct {
+	cases := []struct {
+		name string
 		host string
 		port int
+		want bool
 	}{
-		{"api.github.com", 443},
-		{"raw.githubusercontent.com", 443},
-		{"objects.githubusercontent.com", 443},
-		{"registry.npmjs.org", 443},
-		{"apt.example.org", 80},
+		{"exact host is allowed", "api.github.com", 443, true},
+		{"wildcard subdomain is allowed", "raw.githubusercontent.com", 443, true},
+		{"second wildcard subdomain is allowed", "objects.githubusercontent.com", 443, true},
+		{"registry host is allowed", "registry.npmjs.org", 443, true},
+		{"port-suffixed host is allowed on its port", "apt.example.org", 80, true},
+		{"apex of an allowlisted host is denied", "github.com", 443, false},
+		{"allowlisted host on another port is denied", "api.github.com", 80, false},
+		{"wildcard apex is denied", "githubusercontent.com", 443, false},
+		{"unlisted host is denied", "npmjs.org", 443, false},
+		{"port-80 entry does not allow 443", "apt.example.org", 443, false},
 	}
-	for _, c := range allow {
-		if !m.Match(c.host, c.port) {
-			t.Errorf("expected allow: %s:%d", c.host, c.port)
-		}
-	}
-
-	deny := []struct {
-		host string
-		port int
-	}{
-		{"github.com", 443},            // not allowlisted apex
-		{"api.github.com", 80},         // wrong port
-		{"githubusercontent.com", 443}, // wildcard apex not allowed
-		{"npmjs.org", 443},
-		{"apt.example.org", 443}, // port-80 entry must not allow 443
-	}
-	for _, c := range deny {
-		if m.Match(c.host, c.port) {
-			t.Errorf("expected deny: %s:%d", c.host, c.port)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			got := m.Match(tc.host, tc.port)
+			must.Equal(tc.want, got)
+		})
 	}
 }
 
 func TestNewMatcher_ErrorMentionsEntry(t *testing.T) {
+	must := require.New(t)
 	_, err := NewMatcher([]string{"example.com:abc"})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !strings.Contains(err.Error(), "example.com:abc") {
-		t.Errorf("error should reference the offending entry, got: %v", err)
-	}
+	must.Error(err)
+	must.ErrorContains(err, "example.com:abc", "error should reference the offending entry")
 }

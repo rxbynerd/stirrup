@@ -9,10 +9,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func newTestGitLabExecutor(serverURL string) *GitLabExecutor {
@@ -94,6 +96,7 @@ func TestGitLabExecutor_RequestShape(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			var gotPath string
 			var gotQuery url.Values
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -108,27 +111,19 @@ func TestGitLabExecutor_RequestShape(t *testing.T) {
 			e.project = tt.project
 			e.ref = tt.ref
 
-			if err := tt.call(context.Background(), e); err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if gotPath != tt.wantPath {
-				t.Errorf("path = %q, want %q", gotPath, tt.wantPath)
-			}
+			must.NoError(tt.call(context.Background(), e))
+			must.Equal(tt.wantPath, gotPath)
 			for key, want := range tt.wantQuery {
-				if got := gotQuery.Get(key); got != want {
-					t.Errorf("query %q = %q, want %q", key, got, want)
-				}
+				must.Equal(want, gotQuery.Get(key), "query %q", key)
 			}
 			for _, key := range tt.absent {
-				if _, ok := gotQuery[key]; ok {
-					t.Errorf("query %q should be absent, got %q", key, gotQuery.Get(key))
-				}
+				must.NotContains(gotQuery, key, "query %q should be absent", key)
 			}
 		})
 	}
 }
 
-func TestGitLabExecutor_ReadFile(t *testing.T) {
+func TestGitLabExecutor_ReadFile_ContentAndErrors(t *testing.T) {
 	content := "package main\n\nfunc main() {}\n"
 	tests := []struct {
 		name         string
@@ -147,6 +142,7 @@ func TestGitLabExecutor_ReadFile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(tt.status)
 				_, _ = w.Write([]byte(tt.body))
@@ -155,23 +151,12 @@ func TestGitLabExecutor_ReadFile(t *testing.T) {
 
 			got, err := newTestGitLabExecutor(server.URL).ReadFile(context.Background(), tt.path)
 			if tt.wantErr != "" {
-				if err == nil {
-					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
-				}
-				if !strings.Contains(err.Error(), tt.wantErr) {
-					t.Errorf("error = %q, want it to contain %q", err.Error(), tt.wantErr)
-				}
-				if got := errors.Is(err, fs.ErrNotExist); got != tt.wantNotExist {
-					t.Errorf("errors.Is(err, fs.ErrNotExist) = %v, want %v", got, tt.wantNotExist)
-				}
+				must.ErrorContains(err, tt.wantErr)
+				must.Equal(tt.wantNotExist, errors.Is(err, fs.ErrNotExist), "errors.Is(err, fs.ErrNotExist)")
 				return
 			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if got != tt.want {
-				t.Errorf("content = %q, want %q", got, tt.want)
-			}
+			must.NoError(err)
+			must.Equal(tt.want, got)
 		})
 	}
 }
@@ -180,36 +165,27 @@ func TestGitLabExecutor_ReadFile(t *testing.T) {
 // on tree entries: list_directory's recursion and its "directories carry a
 // trailing slash" contract both depend on it.
 func TestGitLabExecutor_ListDirectory_DirectoryMarkers(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	entries := []gitlabTreeEntry{
 		{Name: "docs", Type: "tree"},
 		{Name: "go.mod", Type: "blob"},
 		{Name: "vendored", Type: "commit"},
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Accept"); got != "application/json" {
-			t.Errorf("Accept = %q, want application/json", got)
-		}
+		check.Equal("application/json", r.Header.Get("Accept"), "Accept header")
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(entries)
 	}))
 	defer server.Close()
 
 	names, err := newTestGitLabExecutor(server.URL).ListDirectory(context.Background(), ".")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	want := []string{"docs/", "go.mod", "vendored"}
-	if len(names) != len(want) {
-		t.Fatalf("names = %v, want %v", names, want)
-	}
-	for i, name := range names {
-		if name != want[i] {
-			t.Errorf("entry %d = %q, want %q", i, name, want[i])
-		}
-	}
+	must.NoError(err)
+	must.Equal([]string{"docs/", "go.mod", "vendored"}, names)
 }
 
 func TestGitLabExecutor_ListDirectory_Empty(t *testing.T) {
+	must := require.New(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte("[]"))
@@ -217,12 +193,8 @@ func TestGitLabExecutor_ListDirectory_Empty(t *testing.T) {
 	defer server.Close()
 
 	names, err := newTestGitLabExecutor(server.URL).ListDirectory(context.Background(), "empty-dir")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(names) != 0 {
-		t.Errorf("expected no entries, got %v", names)
-	}
+	must.NoError(err)
+	must.Empty(names)
 }
 
 // TestGitLabExecutor_ListDirectory_Paginates covers the tree endpoint's
@@ -244,6 +216,7 @@ func TestGitLabExecutor_ListDirectory_Paginates(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			var calls atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)
@@ -262,20 +235,15 @@ func TestGitLabExecutor_ListDirectory_Paginates(t *testing.T) {
 			defer server.Close()
 
 			names, err := newTestGitLabExecutor(server.URL).ListDirectory(context.Background(), "pkg")
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if len(names) != tt.wantNames {
-				t.Errorf("names = %d entries, want %d", len(names), tt.wantNames)
-			}
-			if got := int(calls.Load()); got != tt.wantCalls {
-				t.Errorf("requests = %d, want %d", got, tt.wantCalls)
-			}
+			must.NoError(err)
+			must.Len(names, tt.wantNames, "entry count")
+			must.Equal(tt.wantCalls, int(calls.Load()), "request count")
 		})
 	}
 }
 
-func TestGitLabExecutor_ListDirectory_Error(t *testing.T) {
+func TestGitLabExecutor_ListDirectory_ErrorStatus(t *testing.T) {
+	must := require.New(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"message":"404 Tree Not Found"}`))
@@ -283,42 +251,41 @@ func TestGitLabExecutor_ListDirectory_Error(t *testing.T) {
 	defer server.Close()
 
 	_, err := newTestGitLabExecutor(server.URL).ListDirectory(context.Background(), "nope")
-	if err == nil {
-		t.Fatal("expected error for 404")
-	}
-	if !strings.Contains(err.Error(), "HTTP 404") {
-		t.Errorf("error = %q, want it to mention HTTP 404", err.Error())
-	}
+	must.ErrorContains(err, "HTTP 404")
 }
 
-func TestGitLabExecutor_UnsupportedOperations(t *testing.T) {
+func TestGitLabExecutor_WriteFileAndExec_AreUnsupported(t *testing.T) {
 	e := NewGitLabExecutor("token", "acme/repo", "main")
 
-	if err := e.WriteFile(context.Background(), "file.txt", "content"); err == nil ||
-		!strings.Contains(err.Error(), "write operations not supported") {
-		t.Errorf("WriteFile error = %v, want write operations not supported", err)
-	}
-	if _, err := e.Exec(context.Background(), "ls", time.Second); err == nil ||
-		!strings.Contains(err.Error(), "command execution not supported") {
-		t.Errorf("Exec error = %v, want command execution not supported", err)
-	}
+	t.Run("write file", func(t *testing.T) {
+		must := require.New(t)
+		err := e.WriteFile(context.Background(), "file.txt", "content")
+		must.ErrorContains(err, "write operations not supported")
+	})
+	t.Run("exec", func(t *testing.T) {
+		must := require.New(t)
+		_, err := e.Exec(context.Background(), "ls", time.Second)
+		must.ErrorContains(err, "command execution not supported")
+	})
 }
 
-func TestGitLabExecutor_ResolvePathAndCapabilities(t *testing.T) {
+func TestGitLabExecutor_ResolvePath_ReturnsInputUnchanged(t *testing.T) {
+	must := require.New(t)
 	e := NewGitLabExecutor("token", "acme/repo", "main")
 
 	got, err := e.ResolvePath("some/path")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != "some/path" {
-		t.Errorf("ResolvePath = %q, want %q", got, "some/path")
-	}
+	must.NoError(err)
+	must.Equal("some/path", got)
+}
 
-	caps := e.Capabilities()
-	if !caps.CanRead || caps.CanWrite || caps.CanExec || !caps.CanNetwork {
-		t.Errorf("capabilities = %+v, want read-only with network", caps)
-	}
+func TestGitLabExecutor_Capabilities_ReadOnlyWithNetwork(t *testing.T) {
+	must := require.New(t)
+	caps := NewGitLabExecutor("token", "acme/repo", "main").Capabilities()
+
+	must.True(caps.CanRead, "capabilities = %+v", caps)
+	must.False(caps.CanWrite, "capabilities = %+v", caps)
+	must.False(caps.CanExec, "capabilities = %+v", caps)
+	must.True(caps.CanNetwork, "capabilities = %+v", caps)
 }
 
 // Verify that GitLabExecutor satisfies the Executor interface.

@@ -7,11 +7,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 	typestrace "github.com/rxbynerd/stirrup/types/trace"
 )
 
-func TestJSONLCommandOutputRecordAndArchiveLink(t *testing.T) {
+func TestJSONLTraceEmitter_RecordsCommandOutputAndArchiveLink(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 	emitter.Start("run-1", &types.RunConfig{})
@@ -21,28 +24,21 @@ func TestJSONLCommandOutputRecordAndArchiveLink(t *testing.T) {
 	}
 	emitter.RecordCommandOutput(record)
 	emitter.RecordCommandOutputArchive("/tmp/run-1.command-output.tar.gz")
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatal(err)
-	}
+	_, err := emitter.Finish(context.Background(), "success")
+	must.NoError(err)
+
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("lines=%d\n%s", len(lines), buf.String())
-	}
+	must.Len(lines, 3, "trace:\n%s", buf.String())
+
 	var event Event
-	if err := json.Unmarshal([]byte(lines[1]), &event); err != nil {
-		t.Fatal(err)
-	}
-	if event.Kind != EventKindCommandOutputRecord || event.CommandOutput == nil || event.CommandOutput.Stdout.RawBytes != 99 {
-		t.Fatalf("event=%+v", event)
-	}
-	if strings.Contains(lines[1], "stdout.txt content") {
-		t.Fatal("trace embedded command stream content")
-	}
+	must.NoError(json.Unmarshal([]byte(lines[1]), &event))
+	must.Equal(EventKindCommandOutputRecord, event.Kind)
+	must.NotNil(event.CommandOutput, "event=%+v", event)
+	must.EqualValues(99, event.CommandOutput.Stdout.RawBytes)
+	must.NotContains(lines[1], "stdout.txt content", "trace must not embed command stream content")
+
 	recording, err := typestrace.NewReader(strings.NewReader(buf.String())).ReadRecording()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(recording.CommandOutputs) != 1 || recording.FinalOutcome.CommandOutputArchive == "" {
-		t.Fatalf("recording=%+v", recording)
-	}
+	must.NoError(err)
+	must.Len(recording.CommandOutputs, 1, "recording=%+v", recording)
+	must.NotEmpty(recording.FinalOutcome.CommandOutputArchive)
 }

@@ -2,11 +2,11 @@ package transport
 
 import (
 	"context"
-	"errors"
 	"net"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -46,6 +46,7 @@ func (s *endOnSignalServer) RunTask(stream pb.HarnessService_RunTaskServer) erro
 // opened with ctx, plus the server so a test can stop it.
 func dialLivenessTransport(t *testing.T, ctx context.Context, srv pb.HarnessServiceServer) (*GRPCTransport, *grpc.Server) {
 	t.Helper()
+	must := require.New(t)
 	lis := bufconn.Listen(bufSize)
 	grpcServer := grpc.NewServer()
 	pb.RegisterHarnessServiceServer(grpcServer, srv)
@@ -60,19 +61,18 @@ func dialLivenessTransport(t *testing.T, ctx context.Context, srv pb.HarnessServ
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 		),
 	)
-	if err != nil {
-		t.Fatalf("NewGRPCTransport: %v", err)
-	}
+	must.NoError(err, "NewGRPCTransport")
 	t.Cleanup(func() { _ = tr.Close() })
 	return tr, grpcServer
 }
 
 func waitTransportDone(t *testing.T, tr *GRPCTransport) {
 	t.Helper()
+	must := require.New(t)
 	select {
 	case <-tr.Done():
 	case <-time.After(5 * time.Second):
-		t.Fatal("read loop did not exit after the stream ended")
+		must.FailNow("read loop did not exit after the stream ended")
 	}
 }
 
@@ -80,28 +80,27 @@ func waitTransportDone(t *testing.T, tr *GRPCTransport) {
 // lazily, on the first message.
 func openStream(t *testing.T, tr *GRPCTransport, srv *endOnSignalServer) {
 	t.Helper()
+	must := require.New(t)
 	tr.OnControl(func(types.ControlEvent) {})
-	if err := tr.Emit(types.HarnessEvent{Type: "ready"}); err != nil {
-		t.Fatalf("Emit ready: %v", err)
-	}
+	must.NoError(tr.Emit(types.HarnessEvent{Type: "ready"}), "Emit ready")
 	select {
 	case <-srv.opened:
 	case <-time.After(5 * time.Second):
-		t.Fatal("server never saw the RPC")
+		must.FailNow("server never saw the RPC")
 	}
 }
 
-func TestGRPCTransport_ErrNilWhileLive(t *testing.T) {
+func TestGRPCTransport_Err_NilWhileStreamLive(t *testing.T) {
+	must := require.New(t)
 	srv := newEndOnSignalServer()
 	tr, _ := dialLivenessTransport(t, context.Background(), srv)
 	openStream(t, tr, srv)
 
-	if err := tr.Err(); err != nil {
-		t.Errorf("Err() on a live stream = %v, want nil", err)
-	}
+	must.NoError(tr.Err(), "Err() on a live stream")
 }
 
-func TestGRPCTransport_PeerEndingRPCIsReportedAsLoss(t *testing.T) {
+func TestGRPCTransport_PeerEndedRPC_ReportedAsLoss(t *testing.T) {
+	must := require.New(t)
 	srv := newEndOnSignalServer()
 	tr, _ := dialLivenessTransport(t, context.Background(), srv)
 	openStream(t, tr, srv)
@@ -109,12 +108,11 @@ func TestGRPCTransport_PeerEndingRPCIsReportedAsLoss(t *testing.T) {
 	close(srv.end)
 	waitTransportDone(t, tr)
 
-	if err := tr.Err(); !errors.Is(err, ErrPeerEndedStream) {
-		t.Errorf("Err() = %v, want ErrPeerEndedStream", err)
-	}
+	must.ErrorIs(tr.Err(), ErrPeerEndedStream)
 }
 
-func TestGRPCTransport_ConnectionFailureIsReportedAsLoss(t *testing.T) {
+func TestGRPCTransport_ConnectionFailure_ReportedAsLoss(t *testing.T) {
+	must := require.New(t)
 	srv := newEndOnSignalServer()
 	tr, grpcServer := dialLivenessTransport(t, context.Background(), srv)
 	openStream(t, tr, srv)
@@ -123,37 +121,27 @@ func TestGRPCTransport_ConnectionFailureIsReportedAsLoss(t *testing.T) {
 	waitTransportDone(t, tr)
 
 	err := tr.Err()
-	if err == nil {
-		t.Fatal("Err() = nil after the server stopped, want the connection failure")
-	}
-	if errors.Is(err, ErrPeerEndedStream) {
-		t.Errorf("Err() = %v, want a connection failure rather than an orderly peer end", err)
-	}
-	if code := status.Code(err); code == codes.OK {
-		t.Errorf("Err() = %v, want a gRPC status error", err)
-	}
+	must.Error(err, "Err() after the server stopped")
+	must.NotErrorIs(err, ErrPeerEndedStream, "a connection failure rather than an orderly peer end")
+	must.NotEqual(codes.OK, status.Code(err), "Err() should be a gRPC status error")
 }
 
-func TestGRPCTransport_LocalCloseIsNotALoss(t *testing.T) {
+func TestGRPCTransport_LocalClose_NotALoss(t *testing.T) {
+	must := require.New(t)
 	useShortStreamEndGrace(t)
 	srv := newTestServer()
 	tr, _ := dialLivenessTransport(t, context.Background(), srv)
 	tr.OnControl(func(types.ControlEvent) {})
-	if err := tr.Emit(types.HarnessEvent{Type: "done"}); err != nil {
-		t.Fatalf("Emit done: %v", err)
-	}
+	must.NoError(tr.Emit(types.HarnessEvent{Type: "done"}), "Emit done")
 
-	if err := tr.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+	must.NoError(tr.Close(), "Close")
 	waitTransportDone(t, tr)
 
-	if err := tr.Err(); err != nil {
-		t.Errorf("Err() after Close = %v, want nil", err)
-	}
+	must.NoError(tr.Err(), "Err() after Close")
 }
 
-func TestGRPCTransport_StreamContextCancelIsNotALoss(t *testing.T) {
+func TestGRPCTransport_StreamContextCancel_NotALoss(t *testing.T) {
+	must := require.New(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	srv := newEndOnSignalServer()
@@ -163,7 +151,5 @@ func TestGRPCTransport_StreamContextCancelIsNotALoss(t *testing.T) {
 	cancel()
 	waitTransportDone(t, tr)
 
-	if err := tr.Err(); err != nil {
-		t.Errorf("Err() after the stream context was cancelled = %v, want nil", err)
-	}
+	must.NoError(tr.Err(), "Err() after the stream context was cancelled")
 }

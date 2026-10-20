@@ -2,8 +2,9 @@ package provider
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirkstest"
@@ -49,14 +50,13 @@ func geminiToolRoundTripParams(model string) types.StreamParams {
 // marshalled request body.
 func geminiContentRoles(t *testing.T, body []byte) []string {
 	t.Helper()
+	must := require.New(t)
 	var req struct {
 		Contents []struct {
 			Role string `json:"role"`
 		} `json:"contents"`
 	}
-	if err := json.Unmarshal(body, &req); err != nil {
-		t.Fatalf("unmarshal body: %v\nbody: %s", err, body)
-	}
+	must.NoError(json.Unmarshal(body, &req), "unmarshal body: %s", body)
 	roles := make([]string, 0, len(req.Contents))
 	for _, c := range req.Contents {
 		roles = append(roles, c.Role)
@@ -68,13 +68,10 @@ func geminiContentRoles(t *testing.T, body []byte) []string {
 // switch: the 3.6/3.7 families place a functionResponse on role:"user"
 // while every earlier family keeps the historical role.
 //
-// The boundary comes from the AI Studio surface, which stopped
-// accepting role:"function" at 3.6; Vertex, which this adapter calls,
-// still accepts either role for all three families. Both roles were
-// probed on both surfaces on 2026-08-13, so this test pins a choice
-// made for forward-compatibility rather than a live Vertex rejection —
-// which is exactly why it needs a test: nothing in a Vertex run fails
-// today if the flag regresses.
+// The boundary comes from the AI Studio surface, which rejects
+// role:"function" from 3.6 onward. Vertex, which this adapter calls,
+// accepts either role for every family, so a regression in the flag
+// fails no live Vertex run; this test is the guard.
 func TestGeminiQuirks_ToolResultRole_ByFamily(t *testing.T) {
 	cases := []struct {
 		model string
@@ -89,33 +86,27 @@ func TestGeminiQuirks_ToolResultRole_ByFamily(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.model, func(t *testing.T) {
+			must := require.New(t)
 			params := geminiToolRoundTripParams(tc.model)
 			q := quirks.DefaultRegistry().Resolve("gemini", tc.model)
 			body, _, err := BuildGenerateContentRequest(params, nil, q)
-			if err != nil {
-				t.Fatalf("BuildGenerateContentRequest: %v", err)
-			}
+			must.NoError(err)
 			roles := geminiContentRoles(t, body)
-			if len(roles) != 3 {
-				t.Fatalf("contents roles = %v, want 3 entries (user text, model turn, tool result)", roles)
-			}
-			if roles[2] != tc.want {
-				t.Errorf("tool-result role = %q, want %q (body: %s)", roles[2], tc.want, body)
-			}
+			must.Len(roles, 3, "contents roles %v: want user text, model turn, tool result", roles)
+			must.Equal(tc.want, roles[2], "tool-result role (body: %s)", body)
 		})
 	}
 }
 
 // TestGeminiQuirks_OmitSamplingParams_ByFamily pins that the families
 // which deprecate the sampling knobs send no temperature, while earlier
-// families still do. The API ignores rather than rejects a deprecated
-// temperature, so the only observable consequence is what the trace
-// records — which is exactly why it needs a test rather than a live
-// 400 to catch a regression.
+// families still do. The API ignores a deprecated temperature rather than
+// rejecting it, so no live request fails if one is sent; only this body
+// check catches a regression.
 func TestGeminiQuirks_OmitSamplingParams_ByFamily(t *testing.T) {
 	cases := []struct {
-		model string
-		want  bool // want temperature on the wire
+		model           string
+		wantTemperature bool
 	}{
 		{"gemini-2.5-pro", true},
 		{"gemini-3.1-pro-preview", true},
@@ -124,21 +115,20 @@ func TestGeminiQuirks_OmitSamplingParams_ByFamily(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.model, func(t *testing.T) {
+			must := require.New(t)
 			params := geminiQuirksCanonicalParams(tc.model)
 			q := quirks.DefaultRegistry().Resolve("gemini", tc.model)
 			body, _, err := BuildGenerateContentRequest(params, nil, q)
-			if err != nil {
-				t.Fatalf("BuildGenerateContentRequest: %v", err)
-			}
-			got := strings.Contains(string(body), `"temperature"`)
-			if got != tc.want {
-				t.Errorf("temperature present = %v, want %v (body: %s)", got, tc.want, body)
+			must.NoError(err)
+			if tc.wantTemperature {
+				must.Contains(string(body), `"temperature"`, "body: %s", body)
+			} else {
+				must.NotContains(string(body), `"temperature"`, "body: %s", body)
 			}
 			// maxOutputTokens must survive the suppression: only the
 			// sampling knobs are deprecated, not the whole config.
-			if !strings.Contains(string(body), `"maxOutputTokens":4096`) {
-				t.Errorf("maxOutputTokens dropped alongside temperature: %s", body)
-			}
+			must.Contains(string(body), `"maxOutputTokens":4096`,
+				"maxOutputTokens dropped alongside temperature (body: %s)", body)
 		})
 	}
 }
@@ -149,38 +139,40 @@ func TestGeminiQuirks_OmitSamplingParams_ByFamily(t *testing.T) {
 // tolerates lowercase, emitting the documented casing keeps the wire
 // body readable against the reference.
 func TestGeminiQuirks_ThinkingLevel_Wire(t *testing.T) {
-	params := geminiQuirksCanonicalParams("gemini-3.7-flash")
-	q := quirks.DefaultRegistry().Resolve("gemini", params.Model)
+	const model = "gemini-3.7-flash"
+	q := quirks.DefaultRegistry().Resolve("gemini", model)
 
-	params.ReasoningEffort = "high"
-	body, _, err := BuildGenerateContentRequest(params, nil, q)
-	if err != nil {
-		t.Fatalf("BuildGenerateContentRequest: %v", err)
-	}
-	if !strings.Contains(string(body), `"thinkingConfig":{"thinkingLevel":"HIGH","includeThoughts":true}`) {
-		t.Errorf("thinkingConfig absent or malformed: %s", body)
-	}
+	t.Run("explicit level is uppercased with summaries", func(t *testing.T) {
+		must := require.New(t)
+		params := geminiQuirksCanonicalParams(model)
+		params.ReasoningEffort = "high"
+		body, _, err := BuildGenerateContentRequest(params, nil, q)
+		must.NoError(err)
+		must.Contains(string(body), `"thinkingConfig":{"thinkingLevel":"HIGH","includeThoughts":true}`,
+			"body: %s", body)
+	})
 
 	// Empty effort sends no level so the model keeps its own default; an
 	// emitted THINKING_LEVEL_UNSPECIFIED would be a behaviour change
 	// disguised as a default.
-	params.ReasoningEffort = ""
-	summaryOnly, _, err := BuildGenerateContentRequest(params, nil, q)
-	if err != nil {
-		t.Fatalf("BuildGenerateContentRequest (summary only): %v", err)
-	}
-	if !strings.Contains(string(summaryOnly), `"thinkingConfig":{"includeThoughts":true}`) {
-		t.Errorf("empty thinking level did not reduce thinkingConfig to includeThoughts: %s", summaryOnly)
-	}
+	t.Run("empty level sends summaries only", func(t *testing.T) {
+		must := require.New(t)
+		params := geminiQuirksCanonicalParams(model)
+		params.ReasoningEffort = ""
+		body, _, err := BuildGenerateContentRequest(params, nil, q)
+		must.NoError(err)
+		must.Contains(string(body), `"thinkingConfig":{"includeThoughts":true}`, "body: %s", body)
+	})
 
-	params.ReasoningSummary = types.ReasoningSummaryOff
-	bare, _, err := BuildGenerateContentRequest(params, nil, q)
-	if err != nil {
-		t.Fatalf("BuildGenerateContentRequest (bare): %v", err)
-	}
-	if strings.Contains(string(bare), "thinkingConfig") {
-		t.Errorf("empty thinking level emitted thinkingConfig anyway: %s", bare)
-	}
+	t.Run("empty level and summary off omit thinking config", func(t *testing.T) {
+		must := require.New(t)
+		params := geminiQuirksCanonicalParams(model)
+		params.ReasoningEffort = ""
+		params.ReasoningSummary = types.ReasoningSummaryOff
+		body, _, err := BuildGenerateContentRequest(params, nil, q)
+		must.NoError(err)
+		must.NotContains(string(body), "thinkingConfig", "body: %s", body)
+	})
 }
 
 // TestGeminiQuirks_ThinkingLevel_RejectedBeforeWire pins the
@@ -208,22 +200,18 @@ func TestGeminiQuirks_ThinkingLevel_RejectedBeforeWire(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.model+"/"+tc.level, func(t *testing.T) {
+			must := require.New(t)
 			params := geminiQuirksCanonicalParams(tc.model)
 			q := quirks.DefaultRegistry().Resolve("gemini", tc.model)
 			params.ReasoningEffort = tc.level
 			_, _, err := BuildGenerateContentRequest(params, nil, q)
-			if tc.wantError {
-				if err == nil {
-					t.Fatalf("expected rejection of level %q on %s, got none", tc.level, tc.model)
-				}
-				if !strings.Contains(err.Error(), tc.level) || !strings.Contains(err.Error(), tc.model) {
-					t.Errorf("error message must name the level and model: %v", err)
-				}
+			if !tc.wantError {
+				must.NoError(err)
 				return
 			}
-			if err != nil {
-				t.Fatalf("unexpected rejection of level %q on %s: %v", tc.level, tc.model, err)
-			}
+			must.Error(err)
+			must.ErrorContains(err, tc.level, "error message must name the level")
+			must.ErrorContains(err, tc.model, "error message must name the model")
 		})
 	}
 }
@@ -232,13 +220,12 @@ func TestGeminiQuirks_ThinkingLevel_RejectedBeforeWire(t *testing.T) {
 // request body, tool round trip included, so any future rule that
 // changes the shape has to restate it here.
 func TestGeminiQuirks_Gemini37Flash_WireFixture(t *testing.T) {
+	must := require.New(t)
 	params := geminiToolRoundTripParams("gemini-3.7-flash")
 	q := quirks.DefaultRegistry().Resolve("gemini", params.Model)
 	params.ReasoningEffort = "low"
 	body, _, err := BuildGenerateContentRequest(params, nil, q)
-	if err != nil {
-		t.Fatalf("BuildGenerateContentRequest: %v", err)
-	}
+	must.NoError(err)
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath(geminiFixtureRoot, "gemini-3.7-flash", "request.json"), body)
 }
 
@@ -246,13 +233,12 @@ func TestGeminiQuirks_Gemini37Flash_WireFixture(t *testing.T) {
 // The two fixtures differ only in the model-specific thinking level, so
 // a diff between them isolates what 3.7 actually changed.
 func TestGeminiQuirks_Gemini36Flash_WireFixture(t *testing.T) {
+	must := require.New(t)
 	params := geminiToolRoundTripParams("gemini-3.6-flash")
 	q := quirks.DefaultRegistry().Resolve("gemini", params.Model)
 	params.ReasoningEffort = "minimal"
 	body, _, err := BuildGenerateContentRequest(params, nil, q)
-	if err != nil {
-		t.Fatalf("BuildGenerateContentRequest: %v", err)
-	}
+	must.NoError(err)
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath(geminiFixtureRoot, "gemini-3.6-flash", "request.json"), body)
 }
 
@@ -261,13 +247,11 @@ func TestGeminiQuirks_Gemini36Flash_WireFixture(t *testing.T) {
 // part's thoughtSignature, which Gemini 3 requires on every replayed
 // call — dropping it is a 400 one turn later.
 func TestGeminiQuirks_ThoughtSignatureSurvivesRoleSwitch(t *testing.T) {
+	must := require.New(t)
 	params := geminiToolRoundTripParams("gemini-3.7-flash")
 	q := quirks.DefaultRegistry().Resolve("gemini", params.Model)
 	body, _, err := BuildGenerateContentRequest(params, nil, q)
-	if err != nil {
-		t.Fatalf("BuildGenerateContentRequest: %v", err)
-	}
-	if !strings.Contains(string(body), `"thoughtSignature":"sig-abc"`) {
-		t.Errorf("thoughtSignature missing from replayed functionCall: %s", body)
-	}
+	must.NoError(err)
+	must.Contains(string(body), `"thoughtSignature":"sig-abc"`,
+		"thoughtSignature missing from replayed functionCall (body: %s)", body)
 }

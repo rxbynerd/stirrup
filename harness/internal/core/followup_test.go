@@ -10,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
@@ -62,7 +65,8 @@ func buildFollowUpTestLoop(t *testing.T) (*AgenticLoop, *controllableTransport) 
 	return loop, tr
 }
 
-func TestRunFollowUpLoop_ZeroGracePeriod(t *testing.T) {
+func TestRunFollowUpLoop_ZeroGraceReturnsImmediately(t *testing.T) {
+	must := require.New(t)
 	loop, _ := buildFollowUpTestLoop(t)
 	config := buildTestConfig()
 
@@ -70,12 +74,12 @@ func TestRunFollowUpLoop_ZeroGracePeriod(t *testing.T) {
 	RunFollowUpLoop(context.Background(), loop, config, 0, FollowUpOptions{})
 	elapsed := time.Since(start)
 
-	if elapsed > 500*time.Millisecond {
-		t.Fatalf("expected immediate return for zero grace period, took %v", elapsed)
-	}
+	must.LessOrEqual(elapsed, 500*time.Millisecond, "expected immediate return for zero grace period")
 }
 
-func TestRunFollowUpLoop_FollowUpRequestArrives(t *testing.T) {
+func TestRunFollowUpLoop_FollowUpStartsRun(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop, tr := buildFollowUpTestLoop(t)
 	config := buildTestConfig()
 
@@ -101,24 +105,22 @@ func TestRunFollowUpLoop_FollowUpRequestArrives(t *testing.T) {
 	select {
 	case <-ran:
 	case <-time.After(3 * time.Second):
-		t.Fatal("follow-up run did not complete")
+		must.Fail("follow-up run did not complete")
 	}
 	cancel()
 
 	select {
 	case <-done:
-		if config.Prompt != "Please also add tests." {
-			t.Errorf("expected config.Prompt to be updated to follow-up prompt, got %q", config.Prompt)
-		}
-		if config.RunID == "test-run-1" {
-			t.Error("expected config.RunID to be refreshed for follow-up run")
-		}
+		check.Equal("Please also add tests.", config.Prompt, "config.Prompt should carry the follow-up prompt")
+		check.NotEqual("test-run-1", config.RunID, "config.RunID should be refreshed for the follow-up run")
 	case <-time.After(3 * time.Second):
-		t.Fatal("RunFollowUpLoop did not return within timeout after follow-up")
+		must.Fail("RunFollowUpLoop did not return within timeout after follow-up")
 	}
 }
 
 func TestRunFollowUpLoop_GracePeriodExpiresNoFollowUp(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop, _ := buildFollowUpTestLoop(t)
 	config := buildTestConfig()
 
@@ -130,23 +132,16 @@ func TestRunFollowUpLoop_GracePeriodExpiresNoFollowUp(t *testing.T) {
 	elapsed := time.Since(start)
 
 	// Should have waited approximately 1 second (the grace period).
-	if elapsed < 800*time.Millisecond {
-		t.Fatalf("expected ~1s wait for grace period, returned after %v", elapsed)
-	}
-	if elapsed > 3*time.Second {
-		t.Fatalf("expected return after ~1s grace period, took %v", elapsed)
-	}
+	must.GreaterOrEqual(elapsed, 800*time.Millisecond, "expected ~1s wait for grace period")
+	must.LessOrEqual(elapsed, 3*time.Second, "expected return after ~1s grace period")
 
 	// Config should be unchanged since no follow-up arrived.
-	if config.Prompt != originalPrompt {
-		t.Errorf("expected prompt to remain %q, got %q", originalPrompt, config.Prompt)
-	}
-	if config.RunID != originalRunID {
-		t.Errorf("expected RunID to remain %q, got %q", originalRunID, config.RunID)
-	}
+	check.Equal(originalPrompt, config.Prompt, "prompt should remain unchanged")
+	check.Equal(originalRunID, config.RunID, "RunID should remain unchanged")
 }
 
 func TestRunFollowUpLoop_ContextCancelledDuringWait(t *testing.T) {
+	must := require.New(t)
 	loop, _ := buildFollowUpTestLoop(t)
 	config := buildTestConfig()
 
@@ -166,7 +161,7 @@ func TestRunFollowUpLoop_ContextCancelledDuringWait(t *testing.T) {
 	case <-done:
 		// Good — returned promptly after cancellation.
 	case <-time.After(2 * time.Second):
-		t.Fatal("RunFollowUpLoop did not return within 2s of context cancellation")
+		must.Fail("RunFollowUpLoop did not return within 2s of context cancellation")
 	}
 }
 
@@ -174,6 +169,7 @@ func TestRunFollowUpLoop_ContextCancelledDuringWait(t *testing.T) {
 // ControlEvent arriving during the grace window — with no run active —
 // ends the session promptly rather than waiting for the grace timer.
 func TestRunFollowUpLoop_CancelControlEventExitsWait(t *testing.T) {
+	must := require.New(t)
 	loop, tr := buildFollowUpTestLoop(t)
 	config := buildTestConfig()
 
@@ -193,7 +189,7 @@ func TestRunFollowUpLoop_CancelControlEventExitsWait(t *testing.T) {
 	case <-done:
 		// Good — returned promptly via the idle-cancel route.
 	case <-time.After(2 * time.Second):
-		t.Fatal("RunFollowUpLoop did not return within 2s of cancel ControlEvent")
+		must.Fail("RunFollowUpLoop did not return within 2s of cancel ControlEvent")
 	}
 }
 
@@ -202,6 +198,7 @@ func TestRunFollowUpLoop_CancelControlEventExitsWait(t *testing.T) {
 // the config the run used (fresh RunID, the follow-up prompt) and the
 // trace the run produced, in arrival order.
 func TestRunFollowUpLoop_OnRunCompleteReceivesEachRun(t *testing.T) {
+	must := require.New(t)
 	loop, tr := buildFollowUpTestLoop(t)
 	config := buildTestConfig()
 
@@ -228,12 +225,13 @@ func TestRunFollowUpLoop_OnRunCompleteReceivesEachRun(t *testing.T) {
 		})
 	}()
 
-	for _, prompt := range []string{"first follow-up", "second follow-up"} {
+	prompts := []string{"first follow-up", "second follow-up"}
+	for _, prompt := range prompts {
 		tr.FireControl(types.ControlEvent{Type: "user_response", UserResponse: prompt})
 		select {
 		case <-ran:
 		case <-time.After(3 * time.Second):
-			t.Fatalf("OnRunComplete not called for %q", prompt)
+			must.Fail("OnRunComplete was not called", "for prompt %q", prompt)
 		}
 	}
 	cancel()
@@ -241,30 +239,19 @@ func TestRunFollowUpLoop_OnRunCompleteReceivesEachRun(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(seen) != 2 {
-		t.Fatalf("OnRunComplete called %d times, want 2", len(seen))
+	must.Len(seen, len(prompts), "OnRunComplete should fire once per follow-up")
+	for i, want := range prompts {
+		t.Run(want, func(t *testing.T) {
+			must := require.New(t)
+			got := seen[i]
+			must.Equal(want, got.prompt)
+			must.NoError(got.err)
+			must.NotNil(got.trace)
+			must.Equal(got.runID, got.trace.ID, "trace.ID should match the run's RunID")
+			must.NotEqual("test-run-1", got.runID, "follow-up should not reuse the primary RunID")
+		})
 	}
-	for i, want := range []string{"first follow-up", "second follow-up"} {
-		got := seen[i]
-		if got.prompt != want {
-			t.Errorf("call %d prompt = %q, want %q", i, got.prompt, want)
-		}
-		if got.err != nil {
-			t.Errorf("call %d err = %v, want nil", i, got.err)
-		}
-		if got.trace == nil {
-			t.Fatalf("call %d trace is nil", i)
-		}
-		if got.trace.ID != got.runID {
-			t.Errorf("call %d trace.ID = %q, want the run's config.RunID %q", i, got.trace.ID, got.runID)
-		}
-		if got.runID == "test-run-1" {
-			t.Errorf("call %d still carries the primary RunID", i)
-		}
-	}
-	if seen[0].runID == seen[1].runID {
-		t.Errorf("both follow-ups share RunID %q; each run must get its own", seen[0].runID)
-	}
+	must.NotEqual(seen[0].runID, seen[1].runID, "each follow-up should get its own RunID")
 }
 
 // deadlineProvider records the deadline of every Stream context so a
@@ -297,6 +284,7 @@ func (p *deadlineProvider) Stream(ctx context.Context, _ types.StreamParams) (<-
 // bounded by a fresh RunTimeout minted when it starts — not by whatever
 // the primary run left over.
 func TestRunFollowUpLoop_EachRunGetsFreshTimeout(t *testing.T) {
+	must := require.New(t)
 	loop, tr := buildFollowUpTestLoop(t)
 	// The first run takes a while, so a deadline shared with it would be
 	// visibly shorter on the second run than a fresh one.
@@ -324,7 +312,7 @@ func TestRunFollowUpLoop_EachRunGetsFreshTimeout(t *testing.T) {
 		select {
 		case <-ran:
 		case <-time.After(3 * time.Second):
-			t.Fatalf("follow-up %q did not complete", prompt)
+			must.Fail("follow-up did not complete", "for prompt %q", prompt)
 		}
 	}
 	cancel()
@@ -332,23 +320,20 @@ func TestRunFollowUpLoop_EachRunGetsFreshTimeout(t *testing.T) {
 
 	prov.mu.Lock()
 	defer prov.mu.Unlock()
-	if len(prov.deadlines) != 2 {
-		t.Fatalf("provider saw %d runs, want 2", len(prov.deadlines))
-	}
+	must.Len(prov.deadlines, 2, "provider should see one run per follow-up")
 	for i, dl := range prov.deadlines {
-		if !prov.hadDL[i] {
-			t.Fatalf("run %d had no deadline; want a fresh %v budget", i, runTimeout)
-		}
-		budget := dl.Sub(started[i])
-		if budget < runTimeout-time.Second || budget > runTimeout+time.Second {
-			t.Errorf("run %d budget = %v, want ≈ %v measured from its own start", i, budget, runTimeout)
-		}
+		t.Run(fmt.Sprintf("run %d", i), func(t *testing.T) {
+			must := require.New(t)
+			must.True(prov.hadDL[i], "run should have a deadline, want a fresh %v budget", runTimeout)
+			budget := dl.Sub(started[i])
+			must.GreaterOrEqual(budget, runTimeout-time.Second, "budget should be measured from the run's own start")
+			must.LessOrEqual(budget, runTimeout+time.Second, "budget should be measured from the run's own start")
+		})
 	}
 	// A shared deadline would make the two equal; a fresh one is later
 	// by at least the first run's duration.
-	if gap := prov.deadlines[1].Sub(prov.deadlines[0]); gap < firstRunDuration {
-		t.Errorf("second run's deadline is only %v after the first's; want a fresh budget (≥ %v later)", gap, firstRunDuration)
-	}
+	must.GreaterOrEqual(prov.deadlines[1].Sub(prov.deadlines[0]), firstRunDuration,
+		"second run's deadline should be a fresh budget, at least the first run's duration later")
 }
 
 // liveCtxProvider fails the stream when the context it receives is
@@ -363,11 +348,12 @@ func (p *liveCtxProvider) Stream(ctx context.Context, params types.StreamParams)
 	return p.mockProvider.Stream(ctx, params)
 }
 
-// TestLoop_SecondRunOnSameLoopGetsLiveContext pins that a loop reused
+// TestLoop_ReusedAcrossRunsGetsLiveContext pins that a loop reused
 // for a follow-up establishes a fresh span-parent context per run: the
 // provider must never be called with the previous run's cancelled
 // context.
-func TestLoop_SecondRunOnSameLoopGetsLiveContext(t *testing.T) {
+func TestLoop_ReusedAcrossRunsGetsLiveContext(t *testing.T) {
+	must := require.New(t)
 	prov := &liveCtxProvider{mockProvider: mockProvider{events: []types.StreamEvent{
 		{Type: "text_delta", Text: "ok"},
 		{Type: "message_complete", StopReason: "end_turn"},
@@ -379,12 +365,8 @@ func TestLoop_SecondRunOnSameLoopGetsLiveContext(t *testing.T) {
 	for i := range 2 {
 		config.RunID = fmt.Sprintf("run-%d", i)
 		rt, err := loop.Run(context.Background(), config)
-		if err != nil {
-			t.Fatalf("run %d: %v", i, err)
-		}
-		if rt.Outcome != "success" {
-			t.Fatalf("run %d outcome = %q, want success", i, rt.Outcome)
-		}
+		must.NoError(err, "run %d", i)
+		must.Equal("success", rt.Outcome, "run %d outcome", i)
 	}
 }
 
@@ -392,6 +374,7 @@ func TestLoop_SecondRunOnSameLoopGetsLiveContext(t *testing.T) {
 // window measures idle time between runs: a follow-up that outlives the
 // grace period does not close the window the moment it finishes.
 func TestRunFollowUpLoop_GraceCountsIdleTimeAfterRun(t *testing.T) {
+	must := require.New(t)
 	loop, tr := buildFollowUpTestLoop(t)
 	loop.Provider = &deadlineProvider{delay: 1200 * time.Millisecond}
 	config := buildTestConfig()
@@ -409,13 +392,13 @@ func TestRunFollowUpLoop_GraceCountsIdleTimeAfterRun(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(6 * time.Second):
-		t.Fatal("RunFollowUpLoop did not return")
+		must.Fail("RunFollowUpLoop did not return")
 	}
 	// ≈ 1.2 s run + 1 s idle grace; well over the 1.2 s an
 	// arrival-reset timer would allow.
-	if elapsed := time.Since(fired); elapsed < 2*time.Second {
-		t.Fatalf("returned %v after the follow-up arrived; the grace window should restart after the run completes", elapsed)
-	}
+	elapsed := time.Since(fired)
+	must.GreaterOrEqual(elapsed, 2*time.Second,
+		"the grace window should restart after the run completes")
 }
 
 // resettingFinalizer records the run IDs a loop re-keys its owned
@@ -438,15 +421,15 @@ func (f *resettingFinalizer) Reset(runID string) error {
 // command-output store is re-keyed to every run's ID — primary and each
 // follow-up — before that run captures anything.
 func TestRunFollowUpLoop_ResetsCommandOutputPerRun(t *testing.T) {
+	must := require.New(t)
 	loop, tr := buildFollowUpTestLoop(t)
 	store := &resettingFinalizer{}
 	loop.CommandOutput = store
 	loop.OwnsCommandOutput = true
 	config := buildTestConfig()
 
-	if _, err := loop.Run(context.Background(), config); err != nil {
-		t.Fatalf("primary Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), config)
+	must.NoError(err, "primary run")
 
 	ran := make(chan string, 2)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -464,7 +447,7 @@ func TestRunFollowUpLoop_ResetsCommandOutputPerRun(t *testing.T) {
 		case id := <-ran:
 			followUps = append(followUps, id)
 		case <-time.After(3 * time.Second):
-			t.Fatalf("follow-up %q did not complete", prompt)
+			must.Fail("follow-up did not complete", "for prompt %q", prompt)
 		}
 	}
 	cancel()
@@ -473,9 +456,7 @@ func TestRunFollowUpLoop_ResetsCommandOutputPerRun(t *testing.T) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	want := append([]string{"test-run-1"}, followUps...)
-	if strings.Join(store.resets, ",") != strings.Join(want, ",") {
-		t.Fatalf("store reset to %v, want one reset per run %v", store.resets, want)
-	}
+	must.Equal(want, store.resets, "store should be reset once per run")
 }
 
 // TestRunFollowUpLoop_ReattributesLoggersPerRun pins that a follow-up's
@@ -483,6 +464,8 @@ func TestRunFollowUpLoop_ResetsCommandOutputPerRun(t *testing.T) {
 // ID rather than the primary's, so an event correlates with the run
 // that produced it.
 func TestRunFollowUpLoop_ReattributesLoggersPerRun(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var logBuf, secBuf bytes.Buffer
 	loop, tr := buildFollowUpTestLoop(t)
 	scope := observability.NewRunScope("test-run-1")
@@ -491,9 +474,8 @@ func TestRunFollowUpLoop_ReattributesLoggersPerRun(t *testing.T) {
 	loop.Security = security.NewSecurityLogger(&secBuf, "test-run-1")
 	config := buildTestConfig()
 
-	if _, err := loop.Run(context.Background(), config); err != nil {
-		t.Fatalf("primary Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), config)
+	must.NoError(err, "primary run")
 	logBuf.Reset()
 	secBuf.Reset()
 
@@ -513,24 +495,16 @@ func TestRunFollowUpLoop_ReattributesLoggersPerRun(t *testing.T) {
 	select {
 	case <-ran:
 	case <-time.After(3 * time.Second):
-		t.Fatal("follow-up did not complete")
+		must.Fail("follow-up did not complete")
 	}
 	cancel()
 	<-done
 
-	followUp := config.RunID
-	if followUp == "test-run-1" {
-		t.Fatal("follow-up did not mint a fresh RunID")
-	}
-	if !strings.Contains(logBuf.String(), `"runId":"`+followUp+`"`) {
-		t.Errorf("follow-up log lines do not carry %q:\n%s", followUp, logBuf.String())
-	}
-	if strings.Contains(logBuf.String(), `"runId":"test-run-1"`) {
-		t.Errorf("follow-up log lines still attributed to the primary run:\n%s", logBuf.String())
-	}
-	if !strings.Contains(secBuf.String(), `"runId":"`+followUp+`"`) {
-		t.Errorf("follow-up security events do not carry %q:\n%s", followUp, secBuf.String())
-	}
+	followUpRunID := config.RunID
+	must.NotEqual("test-run-1", followUpRunID, "follow-up should mint a fresh RunID")
+	check.Contains(logBuf.String(), `"runId":"`+followUpRunID+`"`, "follow-up log lines should carry the follow-up RunID")
+	check.NotContains(logBuf.String(), `"runId":"test-run-1"`, "follow-up log lines should not carry the primary RunID")
+	check.Contains(secBuf.String(), `"runId":"`+followUpRunID+`"`, "follow-up security events should carry the follow-up RunID")
 }
 
 // TestRunFollowUpLoop_InputDuringFollowUpRunJoinsThatRun pins that the
@@ -538,6 +512,8 @@ func TestRunFollowUpLoop_ReattributesLoggersPerRun(t *testing.T) {
 // follow-up is active is injected into that run at its next turn
 // boundary, not held back as the prompt of yet another run.
 func TestRunFollowUpLoop_InputDuringFollowUpRunJoinsThatRun(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptEndTurn, scriptEndTurn}}
 	loop, tr := buildUserInputTestLoop(prov)
 	config := buildTestConfig()
@@ -561,7 +537,7 @@ func TestRunFollowUpLoop_InputDuringFollowUpRunJoinsThatRun(t *testing.T) {
 	select {
 	case <-completed:
 	case <-time.After(3 * time.Second):
-		t.Fatal("follow-up run did not complete")
+		must.Fail("follow-up run did not complete")
 	}
 	cancel()
 	<-done
@@ -569,17 +545,9 @@ func TestRunFollowUpLoop_InputDuringFollowUpRunJoinsThatRun(t *testing.T) {
 	// Two provider calls from one run: the second is the continuation
 	// carrying the injected input. A third call, or a second completed
 	// run, would mean the input was held for another run instead.
-	if n := len(completed); n != 0 {
-		t.Fatalf("%d extra follow-up run(s) completed before the loop exited", n)
-	}
+	must.Empty(completed, "extra follow-up runs completed before the loop exited")
 	calls := prov.params()
-	if len(calls) != 2 {
-		t.Fatalf("provider calls = %d, want 2 (one run, continued once with the injected input)", len(calls))
-	}
-	if calls[0].Messages[0].Content[0].Text != "start a follow-up" {
-		t.Errorf("follow-up prompt = %q", calls[0].Messages[0].Content[0].Text)
-	}
-	if got := strings.Join(textBlocks(lastMessage(t, calls[1])), ""); got != "while you are at it" {
-		t.Errorf("turn-1 injected input = %q", got)
-	}
+	must.Len(calls, 2, "one run, continued once with the injected input")
+	check.Equal("start a follow-up", calls[0].Messages[0].Content[0].Text, "follow-up prompt")
+	check.Equal("while you are at it", strings.Join(textBlocks(lastMessage(t, calls[1])), ""), "turn-1 injected input")
 }

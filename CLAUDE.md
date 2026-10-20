@@ -52,6 +52,16 @@ package Y") is almost always a false positive caused by `go.work`
 resolution. Always verify with `go build` and `go test` before
 acting on an LSP error.
 
+### Test conventions
+
+Tests assert through a per-scope `must := require.New(t)` (and
+`check := assert.New(t)`) in `(want, got)` order, rebuilt inside every
+`t.Run` closure, are named `Test<Subject>_<Behaviour>[_<Detail>]` so
+each reads on its own in JUnit output, and keep `must` on the test
+goroutine. The full
+guidance is in [`CONTRIBUTING.md#writing-tests`](CONTRIBUTING.md#writing-tests);
+`testifylint` enforces the mechanical part under `just lint`.
+
 ### Lint policy
 
 `golangci-lint v2` is the source of truth, but linter suggestions

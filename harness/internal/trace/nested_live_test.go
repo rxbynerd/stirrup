@@ -3,9 +3,9 @@ package trace
 import (
 	"bytes"
 	"context"
-	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/codes"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
@@ -15,25 +15,20 @@ import (
 type spawnKey struct{}
 
 func TestNestedJSONLEmitter_JSONLParentHasNoLiveSpans(t *testing.T) {
+	must := require.New(t)
 	spawnCtx := context.WithValue(context.Background(), spawnKey{}, "spawn")
 	child := NewNestedJSONLEmitter(NewJSONLTraceEmitter(&bytes.Buffer{}, false), "run-p", spawnCtx)
 	child.Start("run-c", &types.RunConfig{RunID: "run-c"})
 
-	if got := child.RootContext(); got != spawnCtx {
-		t.Error("RootContext without an agent span should return the spawn context")
-	}
-	if h := child.StartChatSpan(spawnCtx, ChatSpanStart{Model: "m"}); h != nil {
-		t.Error("StartChatSpan over a JSONL parent returned a handle")
-	}
-	if h := child.StartToolSpan(spawnCtx, ToolSpanStart{Name: "read_file"}); h != nil {
-		t.Error("StartToolSpan over a JSONL parent returned a handle")
-	}
-	if _, err := child.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
+	must.Same(spawnCtx, child.RootContext(), "RootContext without an agent span should return the spawn context")
+	must.Nil(child.StartChatSpan(spawnCtx, ChatSpanStart{Model: "m"}), "StartChatSpan over a JSONL parent returned a handle")
+	must.Nil(child.StartToolSpan(spawnCtx, ToolSpanStart{Name: "read_file"}), "StartToolSpan over a JSONL parent returned a handle")
+	_, err := child.Finish(context.Background(), "success")
+	must.NoError(err, "child Finish")
 }
 
 func TestNestedJSONLEmitter_SubAgentSpanTree(t *testing.T) {
+	must := require.New(t)
 	parent, exporter := startLiveRun(t, true)
 	parent.RecordSystemInstructions("parent system prompt")
 	spawn := parent.StartToolSpan(parent.RootContext(), ToolSpanStart{CallID: "tu-spawn", Name: "spawn_agent", Known: true})
@@ -57,9 +52,8 @@ func TestNestedJSONLEmitter_SubAgentSpanTree(t *testing.T) {
 		Summary: &types.ToolCallTrace{Success: true},
 	})
 	child.RecordTurn(types.TurnTrace{StopReason: "end_turn"})
-	if _, err := child.Finish(context.Background(), "max_turns"); err != nil {
-		t.Fatalf("child Finish: %v", err)
-	}
+	_, err := child.Finish(context.Background(), "max_turns")
+	must.NoError(err, "child Finish")
 	spawn.End(ToolSpanEnd{Summary: &types.ToolCallTrace{Success: true}})
 	finishLiveRun(t, parent)
 
@@ -69,13 +63,21 @@ func TestNestedJSONLEmitter_SubAgentSpanTree(t *testing.T) {
 	chat := findSpan(t, exporter, "chat m")
 	tool := findSpan(t, exporter, "execute_tool read_file")
 
-	for _, pair := range []struct{ child, parent string }{
-		{spawnSpan.Name, root.Name}, {sub.Name, spawnSpan.Name}, {chat.Name, sub.Name}, {tool.Name, sub.Name},
-	} {
-		c, p := findSpan(t, exporter, pair.child), findSpan(t, exporter, pair.parent)
-		if c.Parent.SpanID() != p.SpanContext.SpanID() {
-			t.Errorf("%s is not a child of %s", pair.child, pair.parent)
-		}
+	links := []struct {
+		name, child, parent string
+	}{
+		{"spawn span under root", spawnSpan.Name, root.Name},
+		{"sub-agent span under spawn tool", sub.Name, spawnSpan.Name},
+		{"chat span under sub-agent", chat.Name, sub.Name},
+		{"tool span under sub-agent", tool.Name, sub.Name},
+	}
+	for _, link := range links {
+		t.Run(link.name, func(t *testing.T) {
+			must := require.New(t)
+			c := findSpan(t, exporter, link.child)
+			p := findSpan(t, exporter, link.parent)
+			must.Equal(p.SpanContext.SpanID(), c.Parent.SpanID())
+		})
 	}
 
 	assertAttribute(t, sub, genAIAgentNameKey, agentNameSubAgent)
@@ -84,26 +86,22 @@ func TestNestedJSONLEmitter_SubAgentSpanTree(t *testing.T) {
 	assertAttribute(t, sub, "run.mode", "research")
 	assertAttribute(t, sub, "run.outcome", "max_turns")
 	assertAttribute(t, sub, errorTypeKey, "max_turns")
-	if sub.Status.Code != codes.Error {
-		t.Errorf("sub-agent status = %v, want Error", sub.Status.Code)
-	}
+	must.Equal(codes.Error, sub.Status.Code, "sub-agent span status")
 	for _, s := range []string{chat.Name, tool.Name} {
 		assertAttribute(t, findSpan(t, exporter, s), genAIAgentNameKey, agentNameSubAgent)
 	}
 
 	in, _ := spanAttrString(sub, genAIInputMessagesKey)
 	out, _ := spanAttrString(sub, genAIOutputMessagesKey)
-	if !strings.Contains(in, "child seed prompt") || !strings.Contains(out, "child final answer") {
-		t.Errorf("sub-agent span I/O = %q / %q, want the child's prompt and answer", in, out)
-	}
+	must.Contains(in, "child seed prompt", "sub-agent span input should hold the child prompt")
+	must.Contains(out, "child final answer", "sub-agent span output should hold the child answer")
 	assertAttributesAbsent(t, chat, genAISystemInstructionsKey)
 	rootIn, _ := spanAttrString(root, genAIInputMessagesKey)
-	if strings.Contains(rootIn, "child") {
-		t.Errorf("child content leaked into the root span: %q", rootIn)
-	}
+	must.NotContains(rootIn, "child", "child content leaked into the root span")
 }
 
 func TestNestedJSONLEmitter_SubAgentSpanContentScrubbed(t *testing.T) {
+	must := require.New(t)
 	parent, exporter := startLiveRun(t, true)
 	spawn := parent.StartToolSpan(parent.RootContext(), ToolSpanStart{CallID: "tu-spawn", Name: "spawn_agent", Known: true})
 	child := NewNestedJSONLEmitter(parent, "run-live", contextWithSpan(spawn))
@@ -119,25 +117,25 @@ func TestNestedJSONLEmitter_SubAgentSpanContentScrubbed(t *testing.T) {
 		Summary: &types.TurnTrace{StopReason: "end_turn"},
 		Record:  &record,
 	})
-	if _, err := child.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("child Finish: %v", err)
-	}
+	_, err := child.Finish(context.Background(), "success")
+	must.NoError(err, "child Finish")
 	spawn.End(ToolSpanEnd{Summary: &types.ToolCallTrace{Success: true}})
 	finishLiveRun(t, parent)
 
 	sub := findSpan(t, exporter, "invoke_agent stirrup.subagent")
 	for _, span := range []string{sub.Name, "chat m"} {
-		for _, attr := range findSpan(t, exporter, span).Attributes {
-			if strings.Contains(attr.Value.String(), liveSecret) {
-				t.Errorf("%s attribute %s leaks the secret", span, attr.Key)
+		t.Run(span, func(t *testing.T) {
+			must := require.New(t)
+			for _, attr := range findSpan(t, exporter, span).Attributes {
+				must.NotContains(attr.Value.String(), liveSecret, "attribute %s leaks the secret", attr.Key)
 			}
-		}
+		})
 	}
+
 	in, _ := spanAttrString(sub, genAIInputMessagesKey)
 	out, _ := spanAttrString(sub, genAIOutputMessagesKey)
-	if !strings.Contains(in, "[REDACTED") || !strings.Contains(out, "[REDACTED") {
-		t.Errorf("sub-agent span I/O = %q / %q, want redaction markers", in, out)
-	}
+	must.Contains(in, "[REDACTED", "sub-agent span input should contain a redaction marker")
+	must.Contains(out, "[REDACTED", "sub-agent span output should contain a redaction marker")
 }
 
 // startRecorder is a parent emitter that records the live-span starts
@@ -159,6 +157,7 @@ func (r *startRecorder) StartToolSpan(_ context.Context, start ToolSpanStart) To
 }
 
 func TestNestedJSONLEmitter_ForwardingTagsRunIDs(t *testing.T) {
+	must := require.New(t)
 	rec := &startRecorder{JSONLTraceEmitter: NewJSONLTraceEmitter(&bytes.Buffer{}, false)}
 	child := NewNestedJSONLEmitter(rec, "run-p", context.Background())
 	child.Start("run-c", nil)
@@ -166,18 +165,27 @@ func TestNestedJSONLEmitter_ForwardingTagsRunIDs(t *testing.T) {
 	child.StartChatSpan(context.Background(), ChatSpanStart{Model: "m", RunID: "run-g", ParentRunID: "run-c"})
 	child.StartToolSpan(context.Background(), ToolSpanStart{Name: "read_file"})
 
-	if len(rec.chats) != 2 || len(rec.tools) != 1 {
-		t.Fatalf("forwarded %d chat and %d tool starts, want 2 and 1", len(rec.chats), len(rec.tools))
-	}
-	if got := rec.chats[0]; got.RunID != "run-c" || got.ParentRunID != "run-p" {
-		t.Errorf("untagged chat forwarded as %q/%q, want run-c/run-p", got.RunID, got.ParentRunID)
-	}
-	if got := rec.chats[1]; got.RunID != "run-g" || got.ParentRunID != "run-c" {
-		t.Errorf("pre-tagged chat forwarded as %q/%q, want its own tags", got.RunID, got.ParentRunID)
-	}
-	if got := rec.tools[0]; got.RunID != "run-c" || got.ParentRunID != "run-p" {
-		t.Errorf("tool forwarded as %q/%q, want run-c/run-p", got.RunID, got.ParentRunID)
-	}
+	must.Len(rec.chats, 2, "forwarded chat starts")
+	must.Len(rec.tools, 1, "forwarded tool starts")
+
+	t.Run("untagged chat takes the child run IDs", func(t *testing.T) {
+		must := require.New(t)
+		got := rec.chats[0]
+		must.Equal("run-c", got.RunID)
+		must.Equal("run-p", got.ParentRunID)
+	})
+	t.Run("pre-tagged chat keeps its own run IDs", func(t *testing.T) {
+		must := require.New(t)
+		got := rec.chats[1]
+		must.Equal("run-g", got.RunID)
+		must.Equal("run-c", got.ParentRunID)
+	})
+	t.Run("tool takes the child run IDs", func(t *testing.T) {
+		must := require.New(t)
+		got := rec.tools[0]
+		must.Equal("run-c", got.RunID)
+		must.Equal("run-p", got.ParentRunID)
+	})
 }
 
 func contextWithSpan(h ToolSpan) context.Context {

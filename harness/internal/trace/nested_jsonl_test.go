@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"strings"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -71,6 +73,8 @@ func (r *recordingEmitter) Finish(ctx context.Context, outcome string) (*types.R
 }
 
 func TestNestedJSONLEmitter_ForwardsTurnsAndToolCalls(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	parent := &recordingEmitter{}
 	child := NewNestedJSONLEmitter(parent, "parent-run-1", context.Background())
 
@@ -89,56 +93,40 @@ func TestNestedJSONLEmitter_ForwardsTurnsAndToolCalls(t *testing.T) {
 	})
 	child.RecordPermissionDenial()
 
-	if len(parent.turns) != 1 {
-		t.Fatalf("expected 1 forwarded turn, got %d", len(parent.turns))
-	}
-	if len(parent.toolCalls) != 1 {
-		t.Fatalf("expected 1 forwarded tool call, got %d", len(parent.toolCalls))
-	}
-	if parent.permissionDenials != 1 {
-		t.Fatalf("expected 1 forwarded permission denial, got %d", parent.permissionDenials)
-	}
-	if parent.turns[0].RunID != "sub-run-1" {
-		t.Errorf("forwarded turn RunID: got %q, want %q", parent.turns[0].RunID, "sub-run-1")
-	}
-	if parent.turns[0].ParentRunID != "parent-run-1" {
-		t.Errorf("forwarded turn ParentRunID: got %q, want %q", parent.turns[0].ParentRunID, "parent-run-1")
-	}
-	if parent.toolCalls[0].RunID != "sub-run-1" {
-		t.Errorf("forwarded tool call RunID: got %q, want %q", parent.toolCalls[0].RunID, "sub-run-1")
-	}
-	if parent.toolCalls[0].ParentRunID != "parent-run-1" {
-		t.Errorf("forwarded tool call ParentRunID: got %q, want %q", parent.toolCalls[0].ParentRunID, "parent-run-1")
-	}
+	must.Len(parent.turns, 1, "forwarded turns")
+	must.Len(parent.toolCalls, 1, "forwarded tool calls")
+	must.Equal(1, parent.permissionDenials, "forwarded permission denials")
+
+	turn := parent.turns[0]
+	check.Equal("sub-run-1", turn.RunID, "forwarded turn RunID")
+	check.Equal("parent-run-1", turn.ParentRunID, "forwarded turn ParentRunID")
+	check.Equal("sub-run-1", parent.toolCalls[0].RunID, "forwarded tool call RunID")
+	check.Equal("parent-run-1", parent.toolCalls[0].ParentRunID, "forwarded tool call ParentRunID")
 	// Original turn fields must round-trip unchanged.
-	if parent.turns[0].Tokens.Input != 100 || parent.turns[0].Tokens.Output != 50 {
-		t.Errorf("forwarded turn token usage corrupted: %+v", parent.turns[0].Tokens)
-	}
-	if parent.turns[0].StopReason != "end_turn" {
-		t.Errorf("forwarded turn StopReason: got %q, want %q", parent.turns[0].StopReason, "end_turn")
-	}
+	check.Equal(100, turn.Tokens.Input, "forwarded turn input tokens")
+	check.Equal(50, turn.Tokens.Output, "forwarded turn output tokens")
+	check.Equal("end_turn", turn.StopReason, "forwarded turn StopReason")
 }
 
 func TestNestedJSONLEmitter_DoesNotCallParentStartOrFinish(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	parent := &recordingEmitter{}
 	child := NewNestedJSONLEmitter(parent, "parent-run-1", context.Background())
 
 	child.Start("sub-run-1", &types.RunConfig{Mode: "execution"})
 
-	if len(parent.starts) != 0 {
-		t.Errorf("NestedJSONLEmitter.Start must not call parent.Start; got %d calls", len(parent.starts))
-	}
+	check.Empty(parent.starts, "NestedJSONLEmitter.Start must not call parent.Start")
 
-	if _, err := child.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("child Finish: %v", err)
-	}
+	_, err := child.Finish(context.Background(), "success")
+	must.NoError(err, "child Finish")
 
-	if len(parent.finishes) != 0 {
-		t.Errorf("NestedJSONLEmitter.Finish must not call parent.Finish; got %d calls", len(parent.finishes))
-	}
+	check.Empty(parent.finishes, "NestedJSONLEmitter.Finish must not call parent.Finish")
 }
 
 func TestNestedJSONLEmitter_FinishReturnsLocalRunTrace(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	parent := &recordingEmitter{}
 	child := NewNestedJSONLEmitter(parent, "parent-run-1", context.Background())
 
@@ -173,50 +161,31 @@ func TestNestedJSONLEmitter_FinishReturnsLocalRunTrace(t *testing.T) {
 	child.RecordPermissionDenial()
 
 	rt, err := child.Finish(context.Background(), "success")
-	if err != nil {
-		t.Fatalf("child Finish: %v", err)
-	}
-	if rt == nil {
-		t.Fatal("child Finish returned nil RunTrace")
-	}
-	if rt.ID != "sub-run-1" {
-		t.Errorf("RunTrace.ID: got %q, want %q", rt.ID, "sub-run-1")
-	}
-	if rt.Turns != 2 {
-		t.Errorf("RunTrace.Turns: got %d, want 2", rt.Turns)
-	}
+	must.NoError(err, "child Finish")
+	must.NotNil(rt)
+
+	check.Equal("sub-run-1", rt.ID, "RunTrace.ID")
+	check.Equal(2, rt.Turns, "RunTrace.Turns")
 	wantTokens := types.TokenUsage{Input: 40, Output: 60, CacheRead: 10, CacheWrite: 2, Reasoning: 3}
-	if rt.TokenUsage != wantTokens {
-		t.Errorf("RunTrace.TokenUsage: got %+v, want %+v", rt.TokenUsage, wantTokens)
-	}
+	check.Equal(wantTokens, rt.TokenUsage, "RunTrace.TokenUsage")
+	check.Len(rt.ToolCalls, 1, "RunTrace.ToolCalls")
+	check.Equal(2, rt.PermissionDenials, "RunTrace.PermissionDenials")
+	check.Equal("success", rt.Outcome, "RunTrace.Outcome")
+	check.Equal("secret://[REDACTED]", rt.Config.Provider.APIKeyRef, "APIKeyRef redacted in returned RunTrace")
+
 	encoded, err := json.Marshal(rt)
-	if err != nil {
-		t.Fatalf("marshal RunTrace: %v", err)
-	}
-	if !strings.Contains(string(encoded), `"tokenUsage":{"input":40,"output":60,"cacheRead":10,"cacheWrite":2,"reasoning":3}`) {
-		t.Errorf("encoded RunTrace missing the token usage breakdown: %s", encoded)
-	}
+	must.NoError(err, "marshal RunTrace")
+	check.Contains(string(encoded),
+		`"tokenUsage":{"input":40,"output":60,"cacheRead":10,"cacheWrite":2,"reasoning":3}`,
+		"encoded RunTrace token usage breakdown")
+
 	parent.mu.Lock()
 	forwarded := append([]types.TurnTrace(nil), parent.turns...)
 	parent.mu.Unlock()
-	if len(forwarded) != 2 {
-		t.Fatalf("parent received %d turns, want 2", len(forwarded))
-	}
-	if forwarded[1].Tokens != (types.TokenUsage{Input: 30, Output: 40, CacheRead: 6, CacheWrite: 2, Reasoning: 3}) || !forwarded[1].InputReported {
-		t.Errorf("forwarded turn lost its usage breakdown: %+v", forwarded[1])
-	}
-	if len(rt.ToolCalls) != 1 {
-		t.Errorf("RunTrace.ToolCalls: got %d, want 1", len(rt.ToolCalls))
-	}
-	if rt.PermissionDenials != 2 {
-		t.Errorf("RunTrace.PermissionDenials: got %d, want 2", rt.PermissionDenials)
-	}
-	if rt.Outcome != "success" {
-		t.Errorf("RunTrace.Outcome: got %q, want %q", rt.Outcome, "success")
-	}
-	if rt.Config.Provider.APIKeyRef != "secret://[REDACTED]" {
-		t.Errorf("APIKeyRef must be redacted in returned RunTrace, got %q", rt.Config.Provider.APIKeyRef)
-	}
+	must.Len(forwarded, 2, "forwarded turns")
+	check.Equal(types.TokenUsage{Input: 30, Output: 40, CacheRead: 6, CacheWrite: 2, Reasoning: 3},
+		forwarded[1].Tokens, "forwarded turn usage breakdown")
+	check.True(forwarded[1].InputReported, "forwarded turn InputReported")
 }
 
 // TestNestedJSONLEmitter_ThinkingBlocksScrubbedOnParentFile pins that a
@@ -224,6 +193,7 @@ func TestNestedJSONLEmitter_FinishReturnsLocalRunTrace(t *testing.T) {
 // rules as the parent's own: the signature and redacted data never persist,
 // and a secret in the thinking text is redacted.
 func TestNestedJSONLEmitter_ThinkingBlocksScrubbedOnParentFile(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	parent := NewJSONLTraceEmitter(&buf, false)
 	parent.Start("parent-run-1", nil)
@@ -247,28 +217,35 @@ func TestNestedJSONLEmitter_ThinkingBlocksScrubbedOnParentFile(t *testing.T) {
 		},
 		ModelOutput: thinking,
 	})
-	if _, err := child.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("child Finish: %v", err)
-	}
-	if _, err := parent.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("parent Finish: %v", err)
-	}
+
+	_, err := child.Finish(context.Background(), "success")
+	must.NoError(err, "child Finish")
+	_, err = parent.Finish(context.Background(), "success")
+	must.NoError(err, "parent Finish")
 
 	onDisk := buf.String()
-	if !strings.Contains(onDisk, `"kind":"turn_record"`) {
-		t.Fatalf("child turn record not on the parent file:\n%s", onDisk)
+	must.Contains(onDisk, `"kind":"turn_record"`, "child turn record on the parent file")
+
+	for _, tc := range []struct {
+		name   string
+		leaked string
+	}{
+		{name: "signature is not persisted", leaked: signature},
+		{name: "redacted data is not persisted", leaked: redacted},
+		{name: "secret is not persisted", leaked: secret},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.NotContains(onDisk, tc.leaked)
+		})
 	}
-	for _, leaked := range []string{signature, redacted, secret} {
-		if strings.Contains(onDisk, leaked) {
-			t.Errorf("%q survived into the parent trace:\n%s", leaked, onDisk)
-		}
-	}
-	if !strings.Contains(onDisk, `"type":"thinking","text":"the key is [REDACTED]`) {
-		t.Errorf("thinking text should persist scrubbed, got:\n%s", onDisk)
-	}
+
+	must.Contains(onDisk, `"type":"thinking","text":"the key is [REDACTED]`,
+		"thinking text should persist scrubbed")
 }
 
 func TestNestedJSONLEmitter_NilParentIsSafe(t *testing.T) {
+	must := require.New(t)
 	// A nil parent must not panic. This protects against accidental
 	// construction paths in tests or future callers.
 	child := NewNestedJSONLEmitter(nil, "parent-run-1", context.Background())
@@ -276,7 +253,7 @@ func TestNestedJSONLEmitter_NilParentIsSafe(t *testing.T) {
 	child.RecordTurn(types.TurnTrace{Turn: 0})
 	child.RecordToolCall(types.ToolCallTrace{Name: "t"})
 	child.RecordPermissionDenial()
-	if _, err := child.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish with nil parent: %v", err)
-	}
+
+	_, err := child.Finish(context.Background(), "success")
+	must.NoError(err, "Finish with nil parent")
 }

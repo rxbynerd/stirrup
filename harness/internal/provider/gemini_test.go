@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"golang.org/x/oauth2"
 
@@ -49,81 +51,59 @@ func newGeminiTestAdapter(srvURL string, ts oauth2.TokenSource) *GeminiAdapter {
 // text part followed by a STOP finish reason produces a single text_delta
 // followed by a message_complete with stop_reason=end_turn.
 func TestGeminiAdapter_StreamSingleText(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"text":"Hello"}]}}]}`) +
 		makeGeminiData(`{"candidates":[{"finishReason":"STOP"}]}`)
 
+	// The handler runs on the server goroutine, so it reports with assert rather than require.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-
-		if !strings.Contains(r.URL.Path, "/projects/test-project/locations/us-central1/publishers/google/models/gemini-2.5-pro:streamGenerateContent") {
-			t.Errorf("unexpected path %q", r.URL.Path)
-		}
-		if got := r.URL.Query().Get("alt"); got != "sse" {
-			t.Errorf("alt query param = %q, want sse", got)
-		}
+		check.Contains(r.URL.Path, "/projects/test-project/locations/us-central1/publishers/google/models/gemini-2.5-pro:streamGenerateContent")
+		check.Equal("sse", r.URL.Query().Get("alt"), "alt query param")
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, body)
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	ts := &stubTokenSource{token: "test-token"}
 	adapter := newGeminiTestAdapter(srv.URL, ts)
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro", MaxTokens: 1024})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
-	if len(events) != 2 {
-		t.Fatalf("expected 2 events, got %d: %+v", len(events), events)
-	}
-	if events[0].Type != "text_delta" || events[0].Text != "Hello" {
-		t.Errorf("event[0] = %+v, want text_delta/Hello", events[0])
-	}
-	if events[1].Type != "message_complete" || events[1].StopReason != "end_turn" {
-		t.Errorf("event[1] = %+v, want message_complete/end_turn", events[1])
-	}
+	must.Len(events, 2, "events: %+v", events)
+	must.Equal("text_delta", events[0].Type, "event[0] = %+v", events[0])
+	must.Equal("Hello", events[0].Text, "event[0] = %+v", events[0])
+	must.Equal("message_complete", events[1].Type, "event[1] = %+v", events[1])
+	must.Equal("end_turn", events[1].StopReason, "event[1] = %+v", events[1])
 }
 
 // TestGeminiAdapter_StreamMultipleTextDeltas verifies that consecutive text
 // chunks are passed through as separate text_delta events whose
 // concatenation reproduces the model's full output.
 func TestGeminiAdapter_StreamMultipleTextDeltas(t *testing.T) {
+	must := require.New(t)
 	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"text":"Hel"}]}}]}`) +
 		makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"text":"lo"}]}}]}`) +
 		makeGeminiData(`{"candidates":[{"finishReason":"STOP"}]}`)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprint(w, body)
-	}))
-	defer srv.Close()
+	srv := serveSSE(t, body)
 
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	must.NoError(err)
 
-	events := collectEvents(t, ch)
-
-	var got string
-	textCount := 0
-	for _, ev := range events {
+	var deltas []string
+	for _, ev := range collectEvents(t, ch) {
 		if ev.Type == "text_delta" {
-			textCount++
-			got += ev.Text
+			deltas = append(deltas, ev.Text)
 		}
 	}
-	if textCount != 2 {
-		t.Errorf("expected 2 text_delta events, got %d", textCount)
-	}
-	if got != "Hello" {
-		t.Errorf("concatenated text = %q, want %q", got, "Hello")
-	}
+	must.Len(deltas, 2, "text_delta events")
+	must.Equal("Hello", strings.Join(deltas, ""), "concatenated text")
 }
 
 // TestGeminiAdapter_StreamedToolCall exercises the partialArgs streaming
@@ -132,24 +112,18 @@ func TestGeminiAdapter_StreamMultipleTextDeltas(t *testing.T) {
 // must collapse these into a single tool_call event with the final
 // argument object and a synthesised gemini-* ID.
 func TestGeminiAdapter_StreamedToolCall(t *testing.T) {
+	must := require.New(t)
 	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","partialArgs":{},"willContinue":true}}]}}]}`) +
 		makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","partialArgs":{"path":"main.g"},"willContinue":true}}]}}]}`) +
 		makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"main.go"},"willContinue":false}}]}}]}`) +
 		makeGeminiData(`{"candidates":[{"finishReason":"STOP"}]}`)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprint(w, body)
-	}))
-	defer srv.Close()
+	srv := serveSSE(t, body)
 
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
 	var toolCalls []types.StreamEvent
@@ -161,60 +135,40 @@ func TestGeminiAdapter_StreamedToolCall(t *testing.T) {
 		case "message_complete":
 			stop = &events[i]
 		case "error":
-			t.Fatalf("unexpected error event: %v", events[i].Error)
+			must.FailNow("unexpected error event", "%v", events[i].Error)
 		}
 	}
 
-	if len(toolCalls) != 1 {
-		t.Fatalf("expected 1 tool_call event, got %d: %+v", len(toolCalls), toolCalls)
-	}
+	must.Len(toolCalls, 1, "tool_call events: %+v", toolCalls)
 	tc := toolCalls[0]
-	if tc.Name != "read_file" {
-		t.Errorf("tool_call.Name = %q, want read_file", tc.Name)
-	}
-	if !strings.HasPrefix(tc.ID, "gemini-") {
-		t.Errorf("tool_call.ID = %q, want prefix gemini-", tc.ID)
-	}
-	if tc.Input["path"] != "main.go" {
-		t.Errorf("tool_call.Input[path] = %v, want main.go", tc.Input["path"])
-	}
-	if stop == nil {
-		t.Fatal("expected message_complete event")
-	}
+	must.Equal("read_file", tc.Name, "tool_call.Name")
+	must.True(strings.HasPrefix(tc.ID, "gemini-"), "tool_call.ID = %q, want prefix gemini-", tc.ID)
+	must.Equal("main.go", tc.Input["path"], "tool_call.Input[path]")
+	must.NotNil(stop, "expected message_complete event")
 	// STOP with a functionCall present remaps to tool_use.
-	if stop.StopReason != "tool_use" {
-		t.Errorf("stop_reason = %q, want tool_use", stop.StopReason)
-	}
+	must.Equal("tool_use", stop.StopReason, "stop_reason")
 }
 
 // TestGeminiAdapter_NonObjectArgsMarkToolCall covers a gateway that sends
 // functionCall.args as something other than a JSON object: the call is
 // marked rather than ending the stream.
 func TestGeminiAdapter_NonObjectArgsMarkToolCall(t *testing.T) {
+	must := require.New(t)
 	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":"{\"path\": \"main.go\",}"}}]}}]}`) +
 		makeGeminiData(`{"candidates":[{"finishReason":"STOP"}]}`)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprint(w, body)
-	}))
-	defer srv.Close()
+	srv := serveSSE(t, body)
 
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
 	call := requireMarkedToolCall(t, events, "", "read_file", `"{\"path\": \"main.go\",}"`)
-	if !strings.HasPrefix(call.ID, "gemini-") {
-		t.Errorf("tool_call.ID = %q, want prefix gemini-", call.ID)
-	}
+	must.True(strings.HasPrefix(call.ID, "gemini-"), "tool_call.ID = %q, want prefix gemini-", call.ID)
 	for _, ev := range events {
-		if ev.Type == "message_complete" && ev.StopReason != "tool_use" {
-			t.Errorf("stop_reason = %q, want tool_use", ev.StopReason)
+		if ev.Type == "message_complete" {
+			must.Equal("tool_use", ev.StopReason, "stop_reason")
 		}
 	}
 }
@@ -222,23 +176,17 @@ func TestGeminiAdapter_NonObjectArgsMarkToolCall(t *testing.T) {
 // TestGeminiAdapter_MultiToolCallTurn ensures two tool calls in the same
 // turn produce two distinct tool_call events with unique IDs.
 func TestGeminiAdapter_MultiToolCallTurn(t *testing.T) {
+	must := require.New(t)
 	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"a.go"}}}]}}]}`) +
 		makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"list_directory","args":{"path":"."}}}]}}]}`) +
 		makeGeminiData(`{"candidates":[{"finishReason":"STOP"}]}`)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprint(w, body)
-	}))
-	defer srv.Close()
+	srv := serveSSE(t, body)
 
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
 	var calls []types.StreamEvent
@@ -247,81 +195,57 @@ func TestGeminiAdapter_MultiToolCallTurn(t *testing.T) {
 			calls = append(calls, ev)
 		}
 	}
-	if len(calls) != 2 {
-		t.Fatalf("expected 2 tool_call events, got %d", len(calls))
-	}
-	if calls[0].Name != "read_file" || calls[1].Name != "list_directory" {
-		t.Errorf("tool names = %q, %q; want read_file, list_directory", calls[0].Name, calls[1].Name)
-	}
-	if calls[0].ID == calls[1].ID {
-		t.Errorf("tool_call IDs collided: %q == %q", calls[0].ID, calls[1].ID)
-	}
+	must.Len(calls, 2, "tool_call events")
+	must.Equal("read_file", calls[0].Name, "first tool name")
+	must.Equal("list_directory", calls[1].Name, "second tool name")
+	must.NotEqual(calls[0].ID, calls[1].ID, "tool_call IDs must be distinct")
 }
 
-// TestGeminiAdapter_MaxTokens pins the MAX_TOKENS finish-reason mapping.
-func TestGeminiAdapter_MaxTokens(t *testing.T) {
+// TestGeminiAdapter_MaxTokensFinishReason pins the MAX_TOKENS finish-reason mapping.
+func TestGeminiAdapter_MaxTokensFinishReason(t *testing.T) {
+	must := require.New(t)
 	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"text":"truncated"}]},"finishReason":"MAX_TOKENS"}]}`)
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprint(w, body)
-	}))
-	defer srv.Close()
+	srv := serveSSE(t, body)
 
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
-	if len(events) < 2 {
-		t.Fatalf("expected at least 2 events, got %d", len(events))
-	}
+	must.GreaterOrEqual(len(events), 2, "expected at least 2 events")
 	last := events[len(events)-1]
-	if last.Type != "message_complete" || last.StopReason != "max_tokens" {
-		t.Errorf("last event = %+v, want message_complete/max_tokens", last)
-	}
+	must.Equal("message_complete", last.Type, "last event = %+v", last)
+	must.Equal("max_tokens", last.StopReason, "last event = %+v", last)
 }
 
 // TestGeminiAdapter_SafetyBlocked ensures that a partial text_delta
 // preceding a SAFETY finish reason is forwarded before the stop event,
 // and the stop reason is the canonical "safety_blocked" string.
 func TestGeminiAdapter_SafetyBlocked(t *testing.T) {
+	must := require.New(t)
 	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"text":"partial"}]}}]}`) +
 		makeGeminiData(`{"candidates":[{"finishReason":"SAFETY"}]}`)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprint(w, body)
-	}))
-	defer srv.Close()
+	srv := serveSSE(t, body)
 
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
-	if len(events) != 2 {
-		t.Fatalf("expected 2 events (partial text + stop), got %d: %+v", len(events), events)
-	}
-	if events[0].Type != "text_delta" || events[0].Text != "partial" {
-		t.Errorf("event[0] = %+v, want text_delta/partial", events[0])
-	}
-	if events[1].Type != "message_complete" || events[1].StopReason != "safety_blocked" {
-		t.Errorf("event[1] = %+v, want message_complete/safety_blocked", events[1])
-	}
+	must.Len(events, 2, "expected partial text and stop, got %+v", events)
+	must.Equal("text_delta", events[0].Type, "event[0] = %+v", events[0])
+	must.Equal("partial", events[0].Text, "event[0] = %+v", events[0])
+	must.Equal("message_complete", events[1].Type, "event[1] = %+v", events[1])
+	must.Equal("safety_blocked", events[1].StopReason, "event[1] = %+v", events[1])
 }
 
 // TestGeminiAdapter_ContextCancellationMidStream ensures that cancelling
 // the context terminates the stream cleanly with an error event.
 func TestGeminiAdapter_ContextCancellationMidStream(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -338,88 +262,64 @@ func TestGeminiAdapter_ContextCancellationMidStream(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ch, err := adapter.Stream(ctx, types.StreamParams{Model: "gemini-2.5-pro"})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	must.NoError(err)
 
 	cancel()
 	events := collectEvents(t, ch)
-	if len(events) == 0 {
-		t.Fatal("expected at least one event after cancellation")
-	}
-	last := events[len(events)-1]
-	if last.Type != "error" {
-		t.Errorf("last event type = %q, want error", last.Type)
-	}
+	must.NotEmpty(events, "expected at least one event after cancellation")
+	must.Equal("error", events[len(events)-1].Type, "last event type")
 }
 
-// TestGeminiAdapter_HTTPError verifies that non-200 responses surface as
+// TestGeminiAdapter_HTTPErrorIncludesStatusAndBody verifies that non-200 responses surface as
 // errors that include the bounded body excerpt and the status code.
-func TestGeminiAdapter_HTTPError(t *testing.T) {
+func TestGeminiAdapter_HTTPErrorIncludesStatusAndBody(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = fmt.Fprint(w, `{"error":{"message":"invalid token"}}`)
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
-	if err == nil {
-		t.Fatal("expected error from 401 response, got nil")
-	}
-	if !strings.Contains(err.Error(), "401") {
-		t.Errorf("error should mention status 401, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "invalid token") {
-		t.Errorf("error should include body excerpt, got: %v", err)
-	}
+	must.Error(err, "expected error from 401 response")
+	must.ErrorContains(err, "401", "error should mention status 401")
+	must.ErrorContains(err, "invalid token", "error should include body excerpt")
 }
 
 // TestGeminiAdapter_HTTPErrorBodyTruncated confirms the 4 KiB cap on the
 // error body excerpt.
 func TestGeminiAdapter_HTTPErrorBodyTruncated(t *testing.T) {
+	must := require.New(t)
 	largeBody := strings.Repeat("x", 8192)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = fmt.Fprint(w, largeBody)
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
+	must.Error(err)
 	// Error message must not contain the full 8 KiB body.
-	if len(err.Error()) > 4400 {
-		t.Errorf("error message too large (%d chars); body excerpt should be capped at 4 KiB", len(err.Error()))
-	}
+	must.LessOrEqual(len(err.Error()), 4400, "body excerpt should be capped at 4 KiB")
 }
 
 // TestGeminiAdapter_ToolInputSizeCap ensures a runaway tool-call
 // argument blob does not exhaust memory: when a single snapshot
 // exceeds maxToolInputSize the adapter emits an error and exits cleanly.
-func TestGeminiAdapter_ToolInputSizeCap(t *testing.T) {
-
+func TestGeminiAdapter_ToolInputSizeCapEmitsError(t *testing.T) {
+	must := require.New(t)
 	huge := strings.Repeat("a", maxToolInputSize+10)
 	payload := fmt.Sprintf(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"explode","args":{"x":%q},"willContinue":false}}]}}]}`, huge)
-	body := makeGeminiData(payload)
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprint(w, body)
-	}))
-	defer srv.Close()
+	srv := serveSSE(t, makeGeminiData(payload))
 
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	must.NoError(err)
 	events := collectEvents(t, ch)
 
 	foundError := false
@@ -428,14 +328,13 @@ func TestGeminiAdapter_ToolInputSizeCap(t *testing.T) {
 			foundError = true
 		}
 	}
-	if !foundError {
-		t.Errorf("expected tool-input cap error, got: %+v", events)
-	}
+	must.True(foundError, "expected tool-input cap error, got: %+v", events)
 }
 
 // TestGeminiAdapter_AuthorizationHeader checks the request carries the
 // "Bearer <token>" Authorization header sourced from the TokenSource.
 func TestGeminiAdapter_AuthorizationHeader(t *testing.T) {
+	must := require.New(t)
 	var seenAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seenAuth = r.Header.Get("Authorization")
@@ -449,24 +348,19 @@ func TestGeminiAdapter_AuthorizationHeader(t *testing.T) {
 	adapter := newGeminiTestAdapter(srv.URL, ts)
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	must.NoError(err)
 	for range ch {
 	}
 
-	if seenAuth != "Bearer ya29.test-access-token" {
-		t.Errorf("Authorization header = %q, want %q", seenAuth, "Bearer ya29.test-access-token")
-	}
-	if ts.calls.Load() != 1 {
-		t.Errorf("token fetched %d times, want 1", ts.calls.Load())
-	}
+	must.Equal("Bearer ya29.test-access-token", seenAuth, "Authorization header")
+	must.EqualValues(1, ts.calls.Load(), "token fetch count")
 }
 
 // TestGeminiAdapter_TokenSourceErrorPropagated ensures a TokenSource
 // failure aborts the call before any HTTP traffic.
 func TestGeminiAdapter_TokenSourceErrorPropagated(t *testing.T) {
-	hits := atomic.Int64{}
+	must := require.New(t)
+	var hits atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
 	}))
@@ -476,35 +370,22 @@ func TestGeminiAdapter_TokenSourceErrorPropagated(t *testing.T) {
 	adapter := newGeminiTestAdapter(srv.URL, ts)
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
-	if err == nil {
-		t.Fatal("expected error from token source, got nil")
-	}
-	if !strings.Contains(err.Error(), "ADC") {
-		t.Errorf("expected error to wrap token source error, got: %v", err)
-	}
-	if hits.Load() != 0 {
-		t.Errorf("HTTP server hit %d times despite token failure", hits.Load())
-	}
+	must.Error(err, "expected error from token source")
+	must.ErrorContains(err, "ADC", "error should wrap token source error")
+	must.Zero(hits.Load(), "HTTP server hit despite token failure")
 }
 
-// TestGeminiAdapter_UsageMetadata verifies that CandidatesTokenCount on
+// TestGeminiAdapter_UsageMetadataOutputTokens verifies that CandidatesTokenCount on
 // the terminal chunk surfaces as OutputTokens on the stop event.
-func TestGeminiAdapter_UsageMetadata(t *testing.T) {
+func TestGeminiAdapter_UsageMetadataOutputTokens(t *testing.T) {
+	must := require.New(t)
 	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":42,"candidatesTokenCount":17,"totalTokenCount":59}}`)
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprint(w, body)
-	}))
-	defer srv.Close()
+	srv := serveSSE(t, body)
 
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
 	var stop *types.StreamEvent
@@ -513,17 +394,13 @@ func TestGeminiAdapter_UsageMetadata(t *testing.T) {
 			stop = &events[i]
 		}
 	}
-	if stop == nil {
-		t.Fatal("expected message_complete event")
-	}
-	if stop.OutputTokens != 17 {
-		t.Errorf("OutputTokens = %d, want 17", stop.OutputTokens)
-	}
+	must.NotNil(stop, "expected message_complete event")
+	must.Equal(17, stop.OutputTokens, "OutputTokens")
 }
 
-// TestGeminiAdapter_BuildURL covers the global vs regional host
+// TestGeminiAdapter_BuildURL_GlobalAndRegionalHosts covers the global vs regional host
 // derivation plus the project / location / model substitutions.
-func TestGeminiAdapter_BuildURL(t *testing.T) {
+func TestGeminiAdapter_BuildURL_GlobalAndRegionalHosts(t *testing.T) {
 	cases := []struct {
 		name     string
 		project  string
@@ -548,10 +425,9 @@ func TestGeminiAdapter_BuildURL(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			a := NewGeminiAdapter(bearerFromTokenSource(&stubTokenSource{}), tc.project, tc.location, nil)
-			if got := a.buildURL(tc.model); got != tc.want {
-				t.Errorf("buildURL = %q, want %q", got, tc.want)
-			}
+			must.Equal(tc.want, a.buildURL(tc.model))
 		})
 	}
 }
@@ -560,6 +436,7 @@ func TestGeminiAdapter_BuildURL(t *testing.T) {
 // every Stream call records exactly one latency sample, and every stream
 // that produces at least one event records exactly one TTFB sample.
 func TestGeminiAdapter_RecordsLatencyAndTTFB(t *testing.T) {
+	must := require.New(t)
 	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP"}]}`)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -573,39 +450,30 @@ func TestGeminiAdapter_RecordsLatencyAndTTFB(t *testing.T) {
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
 	metrics, err := observability.NewMetricsForTesting(mp)
-	if err != nil {
-		t.Fatalf("NewMetricsForTesting: %v", err)
-	}
+	must.NoError(err, "NewMetricsForTesting")
 
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 	adapter.Metrics = metrics
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
-	if err != nil {
-		t.Fatalf("Stream(): %v", err)
-	}
+	must.NoError(err, "Stream()")
 	for range ch {
 	}
 
-	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"); got != 1 {
-		t.Errorf("provider_latency count = %d, want 1", got)
-	}
-	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"); got != 1 {
-		t.Errorf("provider_ttfb count = %d, want 1", got)
-	}
+	must.EqualValues(1, providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"), "provider_latency count")
+	must.EqualValues(1, providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"), "provider_ttfb count")
 	assertFirstChunkSeries(t, reader, adapter, "gcp.vertex_ai", "gemini-2.5-pro")
 
 	h, ok := providerHistogramFinder(t, reader, "stirrup.harness.provider_latency")
-	if !ok || len(h.DataPoints) == 0 {
-		t.Fatal("expected at least one provider_latency data point")
-	}
+	must.True(ok, "expected provider_latency histogram")
+	must.NotEmpty(h.DataPoints, "expected at least one provider_latency data point")
 	attrs := h.DataPoints[0].Attributes
-	if v, ok := attrs.Value("provider.type"); !ok || v.AsString() != "gemini" {
-		t.Errorf("provider.type attr = %v ok=%v, want gemini", v.AsString(), ok)
-	}
-	if v, ok := attrs.Value("provider.model"); !ok || v.AsString() != "gemini-2.5-pro" {
-		t.Errorf("provider.model attr = %v ok=%v, want gemini-2.5-pro", v.AsString(), ok)
-	}
+	providerType, ok := attrs.Value("provider.type")
+	must.True(ok, "provider.type attribute missing")
+	must.Equal("gemini", providerType.AsString(), "provider.type attr")
+	providerModel, ok := attrs.Value("provider.model")
+	must.True(ok, "provider.model attribute missing")
+	must.Equal("gemini-2.5-pro", providerModel.AsString(), "provider.model attr")
 }
 
 // TestGeminiAdapter_DataPrefixVariants pins the SSE `data:` framing parser:
@@ -616,39 +484,35 @@ func TestGeminiAdapter_DataPrefixVariants(t *testing.T) {
 	cases := []struct {
 		name string
 		body string
+		// wantText is checked only when set. A naive double-TrimPrefix would
+		// corrupt a text value that starts with "data:".
+		wantText string
 	}{
 		{
-			name: "with-space",
+			name: "with space after data prefix",
 			body: "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hi\"}]}}]}\n\n" +
 				"data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\n",
 		},
 		{
-			name: "no-space",
+			name: "no space after data prefix",
 			body: "data:{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hi\"}]}}]}\n\n" +
 				"data:{\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\n",
 		},
 		{
-			// The payload value itself starts with "data:"; a naive
-			// double-TrimPrefix would corrupt it.
-			name: "value-starts-with-data",
+			name: "value starts with data prefix",
 			body: "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"data:image/png;base64,abcd\"}]}}]}\n\n" +
 				"data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\n",
+			wantText: "data:image/png;base64,abcd",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "text/event-stream")
-				w.WriteHeader(http.StatusOK)
-				_, _ = fmt.Fprint(w, tc.body)
-			}))
-			defer srv.Close()
+			must := require.New(t)
+			srv := serveSSE(t, tc.body)
 
 			adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 			ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
-			if err != nil {
-				t.Fatalf("Stream(): %v", err)
-			}
+			must.NoError(err)
 			events := collectEvents(t, ch)
 			var got string
 			var stop *types.StreamEvent
@@ -659,17 +523,13 @@ func TestGeminiAdapter_DataPrefixVariants(t *testing.T) {
 				case "message_complete":
 					stop = &events[i]
 				case "error":
-					t.Fatalf("unexpected error: %v", events[i].Error)
+					must.FailNow("unexpected error event", "%v", events[i].Error)
 				}
 			}
-			if got == "" {
-				t.Errorf("no text_delta event received; payload was likely dropped or malformed")
-			}
-			if stop == nil {
-				t.Fatal("expected message_complete")
-			}
-			if tc.name == "value-starts-with-data" && got != "data:image/png;base64,abcd" {
-				t.Errorf("text_delta value = %q, want preserved data: prefix", got)
+			must.NotEmpty(got, "no text_delta event received; payload was likely dropped or malformed")
+			must.NotNil(stop, "expected message_complete")
+			if tc.wantText != "" {
+				must.Equal(tc.wantText, got, "text_delta value should keep the data: prefix")
 			}
 		})
 	}
@@ -679,6 +539,7 @@ func TestGeminiAdapter_DataPrefixVariants(t *testing.T) {
 // tool calls streamed across willContinue=true chunks accumulate into
 // separate slots and produce two distinct tool_call events.
 func TestGeminiAdapter_SimultaneousInterleavedToolCalls(t *testing.T) {
+	must := require.New(t)
 	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"tool_a","partialArgs":{},"willContinue":true}}]}}]}`) +
 		makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"tool_b","partialArgs":{},"willContinue":true}}]}}]}`) +
 		makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"tool_a","args":{"path":"a.go"},"willContinue":false}}]}}]}`) +
@@ -694,32 +555,20 @@ func TestGeminiAdapter_SimultaneousInterleavedToolCalls(t *testing.T) {
 
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
-	if err != nil {
-		t.Fatalf("Stream(): %v", err)
-	}
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
 	calls := map[string]types.StreamEvent{}
 	for _, ev := range events {
+		must.NotEqual("error", ev.Type, "unexpected error event: %v", ev.Error)
 		if ev.Type == "tool_call" {
 			calls[ev.Name] = ev
 		}
-		if ev.Type == "error" {
-			t.Fatalf("unexpected error event: %v", ev.Error)
-		}
 	}
-	if len(calls) != 2 {
-		t.Fatalf("expected 2 distinct tool_call events, got %d (names: %v)", len(calls), calls)
-	}
-	if calls["tool_a"].Input["path"] != "a.go" {
-		t.Errorf("tool_a path = %v, want a.go", calls["tool_a"].Input["path"])
-	}
-	if calls["tool_b"].Input["path"] != "b.go" {
-		t.Errorf("tool_b path = %v, want b.go", calls["tool_b"].Input["path"])
-	}
-	if calls["tool_a"].ID == calls["tool_b"].ID {
-		t.Errorf("interleaved tool calls collided on ID %q", calls["tool_a"].ID)
-	}
+	must.Len(calls, 2, "tool_call names: %v", calls)
+	must.Equal("a.go", calls["tool_a"].Input["path"])
+	must.Equal("b.go", calls["tool_b"].Input["path"])
+	must.NotEqual(calls["tool_a"].ID, calls["tool_b"].ID, "interleaved tool calls must get distinct IDs")
 }
 
 // TestGeminiAdapter_PromptFeedbackBlock verifies B4: a chunk with
@@ -727,6 +576,7 @@ func TestGeminiAdapter_SimultaneousInterleavedToolCalls(t *testing.T) {
 // message_complete with StopReason=safety_blocked rather than an empty
 // stream.
 func TestGeminiAdapter_PromptFeedbackBlock(t *testing.T) {
+	must := require.New(t)
 	body := makeGeminiData(`{"promptFeedback":{"blockReason":"SAFETY"}}`)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -738,40 +588,30 @@ func TestGeminiAdapter_PromptFeedbackBlock(t *testing.T) {
 
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
-	if err != nil {
-		t.Fatalf("Stream(): %v", err)
-	}
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
-	}
-	if events[0].Type != "message_complete" {
-		t.Errorf("event type = %q, want message_complete", events[0].Type)
-	}
-	if events[0].StopReason != "safety_blocked" {
-		t.Errorf("stop_reason = %q, want safety_blocked", events[0].StopReason)
-	}
+	must.Len(events, 1, "events: %+v", events)
+	must.Equal("message_complete", events[0].Type)
+	must.Equal("safety_blocked", events[0].StopReason)
 }
 
 // TestGeminiAdapter_BuildURLEscapesModel asserts a model name containing a
 // slash percent-encodes into the URL rather than rewriting the path shape,
 // a defensive check independent of upstream validation.
 func TestGeminiAdapter_BuildURLEscapesModel(t *testing.T) {
+	must := require.New(t)
 	a := NewGeminiAdapter(bearerFromTokenSource(&stubTokenSource{}), "test-project", "global", nil)
 	got := a.buildURL("model/with/slashes")
-	if !strings.Contains(got, "%2F") {
-		t.Errorf("buildURL did not percent-encode slashes in model name: %s", got)
-	}
-	if strings.Contains(got, "model/with/slashes") {
-		t.Errorf("raw slashes leaked into URL: %s", got)
-	}
+	must.Contains(got, "%2F", "model slashes must be percent-encoded")
+	must.NotContains(got, "model/with/slashes", "raw slashes must not reach the URL")
 }
 
 // TestGeminiAdapter_MalformedSSEChunk pins the parser-error path: a
 // 200 response with an unparseable chunk body must surface as an
 // error event and close the channel.
 func TestGeminiAdapter_MalformedSSEChunk(t *testing.T) {
+	must := require.New(t)
 	body := "data: {not valid json\n\n"
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -783,18 +623,11 @@ func TestGeminiAdapter_MalformedSSEChunk(t *testing.T) {
 
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
-	if err != nil {
-		t.Fatalf("Stream(): %v", err)
-	}
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
-	if len(events) == 0 {
-		t.Fatal("expected at least one error event, got nothing")
-	}
-	last := events[len(events)-1]
-	if last.Type != "error" {
-		t.Errorf("last event type = %q, want error", last.Type)
-	}
+	must.NotEmpty(events, "expected at least one error event")
+	must.Equal("error", events[len(events)-1].Type)
 }
 
 // TestGeminiAdapter_BlankFunctionCallName pins the empty-name guard: a
@@ -802,6 +635,7 @@ func TestGeminiAdapter_MalformedSSEChunk(t *testing.T) {
 // error event and abort the stream, rather than silently coalescing into
 // a "" slot.
 func TestGeminiAdapter_BlankFunctionCallName(t *testing.T) {
+	must := require.New(t)
 	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"args":{"path":"x"}}}]}}]}`)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -813,29 +647,22 @@ func TestGeminiAdapter_BlankFunctionCallName(t *testing.T) {
 
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
-	if err != nil {
-		t.Fatalf("Stream(): %v", err)
-	}
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
 
-	var errCount int
+	var errEvents, otherEvents []types.StreamEvent
 	for _, ev := range events {
 		switch ev.Type {
 		case "error":
-			errCount++
-			if ev.Error == nil || !strings.Contains(ev.Error.Error(), "functionCall part missing name") {
-				t.Errorf("error event = %+v, want error containing %q", ev, "functionCall part missing name")
-			}
-		case "tool_call":
-			t.Errorf("unexpected tool_call event: %+v", ev)
-		case "message_complete":
-			t.Errorf("unexpected message_complete event: %+v", ev)
+			errEvents = append(errEvents, ev)
+		case "tool_call", "message_complete":
+			otherEvents = append(otherEvents, ev)
 		}
 	}
-	if errCount != 1 {
-		t.Errorf("expected exactly 1 error event, got %d (events=%+v)", errCount, events)
-	}
+	must.Empty(otherEvents, "expected no tool_call or message_complete events")
+	must.Len(errEvents, 1, "events: %+v", events)
+	must.ErrorContains(errEvents[0].Error, "functionCall part missing name")
 }
 
 // TestGeminiAdapter_ToolCallBufferDrainOnFinishReason verifies the
@@ -843,6 +670,7 @@ func TestGeminiAdapter_BlankFunctionCallName(t *testing.T) {
 // by a finishReason=STOP chunk (without a closing willContinue=false)
 // must still surface exactly one tool_call event.
 func TestGeminiAdapter_ToolCallBufferDrainOnFinishReason(t *testing.T) {
+	must := require.New(t)
 	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","partialArgs":{"path":"x.go"},"willContinue":true}}]}}]}`) +
 		makeGeminiData(`{"candidates":[{"finishReason":"STOP"}]}`)
 
@@ -855,9 +683,7 @@ func TestGeminiAdapter_ToolCallBufferDrainOnFinishReason(t *testing.T) {
 
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
-	if err != nil {
-		t.Fatalf("Stream(): %v", err)
-	}
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
 	var calls []types.StreamEvent
@@ -866,15 +692,9 @@ func TestGeminiAdapter_ToolCallBufferDrainOnFinishReason(t *testing.T) {
 			calls = append(calls, ev)
 		}
 	}
-	if len(calls) != 1 {
-		t.Fatalf("expected exactly 1 tool_call (drain path), got %d: %+v", len(calls), calls)
-	}
-	if calls[0].Name != "read_file" {
-		t.Errorf("tool_call.Name = %q, want read_file", calls[0].Name)
-	}
-	if calls[0].Input["path"] != "x.go" {
-		t.Errorf("tool_call.Input[path] = %v, want x.go", calls[0].Input["path"])
-	}
+	must.Len(calls, 1, "drain path must emit exactly one tool_call: %+v", calls)
+	must.Equal("read_file", calls[0].Name)
+	must.Equal("x.go", calls[0].Input["path"])
 }
 
 // TestGeminiAdapter_UsageMetadataDerivedFromTotal verifies the fallback
@@ -882,6 +702,7 @@ func TestGeminiAdapter_ToolCallBufferDrainOnFinishReason(t *testing.T) {
 // zero but TotalTokenCount and PromptTokenCount allow derivation,
 // the adapter computes total - prompt and reports that.
 func TestGeminiAdapter_UsageMetadataDerivedFromTotal(t *testing.T) {
+	must := require.New(t)
 	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":30,"candidatesTokenCount":0,"totalTokenCount":80}}`)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -893,9 +714,7 @@ func TestGeminiAdapter_UsageMetadataDerivedFromTotal(t *testing.T) {
 
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
-	if err != nil {
-		t.Fatalf("Stream(): %v", err)
-	}
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
 	var stop *types.StreamEvent
@@ -904,18 +723,10 @@ func TestGeminiAdapter_UsageMetadataDerivedFromTotal(t *testing.T) {
 			stop = &events[i]
 		}
 	}
-	if stop == nil {
-		t.Fatal("expected message_complete")
-	}
-	if stop.OutputTokens != 50 {
-		t.Errorf("OutputTokens = %d, want 50 (total 80 - prompt 30)", stop.OutputTokens)
-	}
-	if stop.InputTokens != 30 {
-		t.Errorf("InputTokens = %d, want 30 (promptTokenCount)", stop.InputTokens)
-	}
-	if stop.ReasoningTokens != 0 {
-		t.Errorf("ReasoningTokens = %d, want 0 without thoughtsTokenCount", stop.ReasoningTokens)
-	}
+	must.NotNil(stop, "expected message_complete")
+	must.Equal(50, stop.OutputTokens, "total 80 minus prompt 30")
+	must.Equal(30, stop.InputTokens, "promptTokenCount")
+	must.Equal(0, stop.ReasoningTokens, "no thoughtsTokenCount")
 }
 
 // TestGeminiAdapter_RecitationFinishReason pins the RECITATION enum
@@ -923,6 +734,7 @@ func TestGeminiAdapter_UsageMetadataDerivedFromTotal(t *testing.T) {
 // (Vertex emits them when the model would otherwise reproduce
 // copyrighted training data) and the trace must distinguish them.
 func TestGeminiAdapter_RecitationFinishReason(t *testing.T) {
+	must := require.New(t)
 	body := makeGeminiData(`{"candidates":[{"finishReason":"RECITATION"}]}`)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -934,23 +746,19 @@ func TestGeminiAdapter_RecitationFinishReason(t *testing.T) {
 
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
-	if err != nil {
-		t.Fatalf("Stream(): %v", err)
-	}
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
-	}
-	if events[0].Type != "message_complete" || events[0].StopReason != "recitation_blocked" {
-		t.Errorf("event = %+v, want message_complete/recitation_blocked", events[0])
-	}
+	must.Len(events, 1, "events: %+v", events)
+	must.Equal("message_complete", events[0].Type)
+	must.Equal("recitation_blocked", events[0].StopReason)
 }
 
 // TestGeminiAdapter_EmptyStream verifies the adapter handles a 200 OK
 // with an empty body cleanly: the channel closes with no events and
 // no error. Mirrors the OpenAI adapter's behaviour.
 func TestGeminiAdapter_EmptyStream(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -959,33 +767,22 @@ func TestGeminiAdapter_EmptyStream(t *testing.T) {
 
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
-	if err != nil {
-		t.Fatalf("Stream(): %v", err)
-	}
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
-	if len(events) != 0 {
-		t.Errorf("expected 0 events on empty stream, got %d: %+v", len(events), events)
-	}
+	must.Empty(events, "empty body must yield no events")
 }
 
 // TestGeminiAdapter_StreamingClientTimeouts pins the streaming client shape:
 // no total deadline, with bounded TLS handshake and response-header phases.
 func TestGeminiAdapter_StreamingClientTimeouts(t *testing.T) {
+	must := require.New(t)
 	a := NewGeminiAdapter(bearerFromTokenSource(&stubTokenSource{}), "p", "global", nil)
-	if a.httpClient.Timeout != 0 {
-		t.Errorf("HTTP client Timeout = %v, want 0: a total deadline cuts long streams, which idleTimeoutBody bounds instead", a.httpClient.Timeout)
-	}
+	must.Zero(a.httpClient.Timeout, "no total deadline: idleTimeoutBody bounds long streams")
 	tr, ok := a.httpClient.Transport.(*http.Transport)
-	if !ok {
-		t.Fatal("expected *http.Transport")
-	}
-	if tr.TLSHandshakeTimeout == 0 {
-		t.Error("TLSHandshakeTimeout should be non-zero")
-	}
-	if tr.ResponseHeaderTimeout == 0 {
-		t.Error("ResponseHeaderTimeout should be non-zero")
-	}
+	must.True(ok, "expected *http.Transport")
+	must.NotZero(tr.TLSHandshakeTimeout, "TLS handshake timeout")
+	must.NotZero(tr.ResponseHeaderTimeout, "response header timeout")
 }
 
 // TestGeminiAdapter_NonStreamedFunctionCall3xShape pins the parser against
@@ -995,6 +792,7 @@ func TestGeminiAdapter_StreamingClientTimeouts(t *testing.T) {
 // Derived from a real captured Vertex AI response against
 // gemini-3.1-pro-preview.
 func TestGeminiAdapter_NonStreamedFunctionCall3xShape(t *testing.T) {
+	must := require.New(t)
 	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"docs/safety-rings.md"}}}]},"finishReason":"STOP"}]}`)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1007,49 +805,36 @@ func TestGeminiAdapter_NonStreamedFunctionCall3xShape(t *testing.T) {
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-3.1-pro-preview"})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
 
 	var toolCalls []types.StreamEvent
 	var stop *types.StreamEvent
 	for i := range events {
+		must.NotEqual("error", events[i].Type, "unexpected error event: %v", events[i].Error)
 		switch events[i].Type {
 		case "tool_call":
 			toolCalls = append(toolCalls, events[i])
 		case "message_complete":
 			stop = &events[i]
-		case "error":
-			t.Fatalf("unexpected error event: %v", events[i].Error)
 		}
 	}
 
-	if len(toolCalls) != 1 {
-		t.Fatalf("expected 1 tool_call event, got %d: %+v", len(toolCalls), toolCalls)
-	}
+	must.Len(toolCalls, 1, "tool_call events: %+v", toolCalls)
 	tc := toolCalls[0]
-	if tc.Name != "read_file" {
-		t.Errorf("tool_call.Name = %q, want read_file", tc.Name)
-	}
-	if tc.Input["path"] != "docs/safety-rings.md" {
-		t.Errorf("tool_call.Input[path] = %v, want docs/safety-rings.md", tc.Input["path"])
-	}
+	must.Equal("read_file", tc.Name)
+	must.Equal("docs/safety-rings.md", tc.Input["path"])
 
-	if stop == nil {
-		t.Fatal("expected message_complete event")
-	}
-
-	if stop.StopReason != "tool_use" {
-		t.Errorf("stop_reason = %q, want tool_use", stop.StopReason)
-	}
+	must.NotNil(stop, "expected message_complete event")
+	must.Equal("tool_use", stop.StopReason)
 }
 
 // TestGeminiAdapter_ThoughtSignatureCapturedOnToolCall asserts a
 // `thoughtSignature` blob on a functionCall part surfaces on the emitted
 // tool_call StreamEvent for next-turn round-trip.
 func TestGeminiAdapter_ThoughtSignatureCapturedOnToolCall(t *testing.T) {
+	must := require.New(t)
 	const sig = "AY89a18t+D98lADcFYKgjMgoHS7rOPAQUE=="
 	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"docs/safety-rings.md"}},"thoughtSignature":"` + sig + `"}]},"finishReason":"STOP"}]}`)
 
@@ -1063,33 +848,26 @@ func TestGeminiAdapter_ThoughtSignatureCapturedOnToolCall(t *testing.T) {
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-3.1-pro-preview"})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
 
 	var toolCall *types.StreamEvent
 	for i := range events {
+		must.NotEqual("error", events[i].Type, "unexpected error event: %v", events[i].Error)
 		if events[i].Type == "tool_call" {
 			toolCall = &events[i]
 		}
-		if events[i].Type == "error" {
-			t.Fatalf("unexpected error event: %v", events[i].Error)
-		}
 	}
-	if toolCall == nil {
-		t.Fatal("expected a tool_call event")
-	}
-	if toolCall.ThoughtSignature != sig {
-		t.Errorf("tool_call.ThoughtSignature = %q, want %q", toolCall.ThoughtSignature, sig)
-	}
+	must.NotNil(toolCall, "expected a tool_call event")
+	must.Equal(sig, toolCall.ThoughtSignature)
 }
 
 // TestGeminiAdapter_ThoughtSignatureMissingIsEmpty confirms a pre-3.x
 // response (no `thoughtSignature` on the part) leaves the StreamEvent's
 // ThoughtSignature empty, so it round-trips via `omitempty`.
 func TestGeminiAdapter_ThoughtSignatureMissingIsEmpty(t *testing.T) {
+	must := require.New(t)
 	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"x"}}}]},"finishReason":"STOP"}]}`)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1102,9 +880,7 @@ func TestGeminiAdapter_ThoughtSignatureMissingIsEmpty(t *testing.T) {
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
 	var toolCall *types.StreamEvent
@@ -1113,12 +889,8 @@ func TestGeminiAdapter_ThoughtSignatureMissingIsEmpty(t *testing.T) {
 			toolCall = &events[i]
 		}
 	}
-	if toolCall == nil {
-		t.Fatal("expected a tool_call event")
-	}
-	if toolCall.ThoughtSignature != "" {
-		t.Errorf("tool_call.ThoughtSignature = %q, want empty", toolCall.ThoughtSignature)
-	}
+	must.NotNil(toolCall, "expected a tool_call event")
+	must.Empty(toolCall.ThoughtSignature, "a response without thoughtSignature must leave it empty")
 }
 
 // TestGeminiAdapter_ThoughtSignatureCapturedViaDrainPath pins the drain
@@ -1126,6 +898,7 @@ func TestGeminiAdapter_ThoughtSignatureMissingIsEmpty(t *testing.T) {
 // is flushed when finishReason arrives, and the buffered thoughtSignature
 // must travel with it onto the emitted StreamEvent.
 func TestGeminiAdapter_ThoughtSignatureCapturedViaDrainPath(t *testing.T) {
+	must := require.New(t)
 	const sig = "DRAINABLE=="
 	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","partialArgs":{"path":"x.go"},"willContinue":true},"thoughtSignature":"`+sig+`"}]}}]}`) +
 		makeGeminiData(`{"candidates":[{"finishReason":"STOP"}]}`)
@@ -1139,26 +912,18 @@ func TestGeminiAdapter_ThoughtSignatureCapturedViaDrainPath(t *testing.T) {
 
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-3.1-pro-preview"})
-	if err != nil {
-		t.Fatalf("Stream(): %v", err)
-	}
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
 	var calls []types.StreamEvent
 	for _, ev := range events {
+		must.NotEqual("error", ev.Type, "unexpected error event: %v", ev.Error)
 		if ev.Type == "tool_call" {
 			calls = append(calls, ev)
 		}
-		if ev.Type == "error" {
-			t.Fatalf("unexpected error event: %v", ev.Error)
-		}
 	}
-	if len(calls) != 1 {
-		t.Fatalf("expected exactly 1 tool_call from the drain path, got %d: %+v", len(calls), calls)
-	}
-	if calls[0].ThoughtSignature != sig {
-		t.Errorf("drained tool_call.ThoughtSignature = %q, want %q", calls[0].ThoughtSignature, sig)
-	}
+	must.Len(calls, 1, "drain path must emit exactly one tool_call: %+v", calls)
+	must.Equal(sig, calls[0].ThoughtSignature)
 }
 
 // TestGeminiAdapter_ThoughtSignatureLastNonEmptyWins pins the deliberate
@@ -1166,7 +931,8 @@ func TestGeminiAdapter_ThoughtSignatureCapturedViaDrainPath(t *testing.T) {
 // buffer retains the most recent NON-EMPTY thoughtSignature value; an
 // absent field on a continuation chunk must not clobber a prior signature.
 func TestGeminiAdapter_ThoughtSignatureLastNonEmptyWins(t *testing.T) {
-	t.Run("later_non_empty_supersedes_earlier", func(t *testing.T) {
+	t.Run("later non-empty signature supersedes earlier", func(t *testing.T) {
+		must := require.New(t)
 		body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","partialArgs":{"path":"a"},"willContinue":true},"thoughtSignature":"FIRST=="}]}}]}`) +
 			makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","partialArgs":{"path":"ab"},"willContinue":true}}]}}]}`) +
 			makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"abc"}},"thoughtSignature":"LAST=="}]},"finishReason":"STOP"}]}`)
@@ -1180,29 +946,22 @@ func TestGeminiAdapter_ThoughtSignatureLastNonEmptyWins(t *testing.T) {
 
 		adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 		ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-3.1-pro-preview"})
-		if err != nil {
-			t.Fatalf("Stream(): %v", err)
-		}
+		must.NoError(err)
 
 		events := collectEvents(t, ch)
 		var toolCall *types.StreamEvent
 		for i := range events {
+			must.NotEqual("error", events[i].Type, "unexpected error event: %v", events[i].Error)
 			if events[i].Type == "tool_call" {
 				toolCall = &events[i]
 			}
-			if events[i].Type == "error" {
-				t.Fatalf("unexpected error event: %v", events[i].Error)
-			}
 		}
-		if toolCall == nil {
-			t.Fatal("expected a tool_call event")
-		}
-		if toolCall.ThoughtSignature != "LAST==" {
-			t.Errorf("tool_call.ThoughtSignature = %q, want %q", toolCall.ThoughtSignature, "LAST==")
-		}
+		must.NotNil(toolCall, "expected a tool_call event")
+		must.Equal("LAST==", toolCall.ThoughtSignature)
 	})
 
-	t.Run("absent_field_on_later_chunks_does_not_clobber", func(t *testing.T) {
+	t.Run("absent field on later chunks does not clobber", func(t *testing.T) {
+		must := require.New(t)
 		body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","partialArgs":{"path":"a"},"willContinue":true},"thoughtSignature":"ONLY=="}]}}]}`) +
 			makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","partialArgs":{"path":"ab"},"willContinue":true}}]}}]}`) +
 			makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"abc"}}}]},"finishReason":"STOP"}]}`)
@@ -1216,25 +975,17 @@ func TestGeminiAdapter_ThoughtSignatureLastNonEmptyWins(t *testing.T) {
 
 		adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 		ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-3.1-pro-preview"})
-		if err != nil {
-			t.Fatalf("Stream(): %v", err)
-		}
+		must.NoError(err)
 
 		events := collectEvents(t, ch)
 		var toolCall *types.StreamEvent
 		for i := range events {
+			must.NotEqual("error", events[i].Type, "unexpected error event: %v", events[i].Error)
 			if events[i].Type == "tool_call" {
 				toolCall = &events[i]
 			}
-			if events[i].Type == "error" {
-				t.Fatalf("unexpected error event: %v", events[i].Error)
-			}
 		}
-		if toolCall == nil {
-			t.Fatal("expected a tool_call event")
-		}
-		if toolCall.ThoughtSignature != "ONLY==" {
-			t.Errorf("tool_call.ThoughtSignature = %q, want %q (later chunks without the field must not clobber the earlier value)", toolCall.ThoughtSignature, "ONLY==")
-		}
+		must.NotNil(toolCall, "expected a tool_call event")
+		must.Equal("ONLY==", toolCall.ThoughtSignature, "later chunks without the field must not clobber the earlier value")
 	})
 }

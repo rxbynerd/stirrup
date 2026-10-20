@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 type secretStringer struct{ token string }
@@ -67,11 +69,11 @@ func TestScrubHandler_ScrubsEveryValueKindOnBothSinks(t *testing.T) {
 		{"nested group containing error", func(l *slog.Logger) {
 			l.Info("m", slog.Group("g", slog.Group("h", slog.Any("error", rootErr))))
 		}},
-		{"With-bound error", func(l *slog.Logger) { l.With("error", rootErr).Info("m") }},
-		{"With-bound string", func(l *slog.Logger) { l.With("token", key).Info("m") }},
-		{"LogValuer string", func(l *slog.Logger) { l.Info("m", "v", secretValuer{key}) }},
-		{"LogValuer group", func(l *slog.Logger) { l.Info("m", "v", secretGroupValuer{key}) }},
-		{"Stringer", func(l *slog.Logger) { l.Info("m", "v", secretStringer{key}) }},
+		{"with-bound error", func(l *slog.Logger) { l.With("error", rootErr).Info("m") }},
+		{"with-bound string", func(l *slog.Logger) { l.With("token", key).Info("m") }},
+		{"log valuer string", func(l *slog.Logger) { l.Info("m", "v", secretValuer{key}) }},
+		{"log valuer group", func(l *slog.Logger) { l.Info("m", "v", secretGroupValuer{key}) }},
+		{"stringer", func(l *slog.Logger) { l.Info("m", "v", secretStringer{key}) }},
 		{"map", func(l *slog.Logger) { l.Info("m", "v", map[string]string{"auth": key}) }},
 		{"struct", func(l *slog.Logger) { l.Info("m", "v", secretStruct{Name: "n", Token: key}) }},
 		{"struct pointer", func(l *slog.Logger) { l.Info("m", "v", &secretStruct{Name: "n", Token: key}) }},
@@ -82,6 +84,7 @@ func TestScrubHandler_ScrubsEveryValueKindOnBothSinks(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var buf bytes.Buffer
 			capture := newCaptureHandler()
 			spy := &spyNotifier{}
@@ -89,24 +92,17 @@ func TestScrubHandler_ScrubsEveryValueKindOnBothSinks(t *testing.T) {
 
 			tc.log(logger)
 
-			if strings.Contains(buf.String(), key) {
-				t.Errorf("key leaked into JSON sink: %s", buf.String())
-			}
+			must.NotContains(buf.String(), key, "key leaked into JSON sink")
 			records := capture.snapshot()
-			if len(records) != 1 {
-				t.Fatalf("export sink received %d records, want 1", len(records))
-			}
-			if got := renderRecord(records[0]); strings.Contains(got, key) {
-				t.Errorf("key leaked into export sink: %s", got)
-			}
-			if len(spy.snapshot()) == 0 {
-				t.Error("SecretRedactedInOutput did not fire")
-			}
+			must.Len(records, 1, "export sink records")
+			must.NotContains(renderRecord(records[0]), key, "key leaked into export sink")
+			must.NotEmpty(spy.snapshot(), "SecretRedactedInOutput did not fire")
 		})
 	}
 }
 
 func TestScrubHandler_NonScalarValuesRenderAsOneJSONString(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	capture := newCaptureHandler()
 	logger := NewLoggerWithExport("run-1", slog.LevelInfo, &buf, nil, capture)
@@ -119,9 +115,10 @@ func TestScrubHandler_NonScalarValuesRenderAsOneJSONString(t *testing.T) {
 	)
 
 	var rec map[string]any
-	if err := json.Unmarshal(buf.Bytes(), &rec); err != nil {
-		t.Fatalf("unmarshal: %v\n%s", err, buf.String())
-	}
+	must.NoError(json.Unmarshal(buf.Bytes(), &rec), "record: %s", buf.String())
+	records := capture.snapshot()
+	must.Len(records, 1, "export sink records")
+
 	want := map[string]string{
 		"map":    `{"a":"1","b":"2"}`,
 		"struct": `{"name":"n","token":"t"}`,
@@ -129,28 +126,17 @@ func TestScrubHandler_NonScalarValuesRenderAsOneJSONString(t *testing.T) {
 		"html":   `{"k":"<&>"}`,
 	}
 	for k, w := range want {
-		got, ok := rec[k].(string)
-		if !ok {
-			t.Errorf("%s: JSON sink value is %T, want string", k, rec[k])
-			continue
-		}
-		if got != w {
-			t.Errorf("%s: JSON sink = %q, want %q", k, got, w)
-		}
-	}
-
-	records := capture.snapshot()
-	if len(records) != 1 {
-		t.Fatalf("export sink received %d records, want 1", len(records))
-	}
-	for k, w := range want {
-		if got, _ := attrValue(records[0], k); got != w {
-			t.Errorf("%s: export sink = %q, want %q", k, got, w)
-		}
+		t.Run(k, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(w, rec[k], "JSON sink")
+			got, _ := attrValue(records[0], k)
+			must.Equal(w, got, "export sink")
+		})
 	}
 }
 
 func TestScrubHandler_TextualKindsRenderAsText(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	logger := NewLogger("run-1", slog.LevelInfo, &buf)
 
@@ -162,9 +148,7 @@ func TestScrubHandler_TextualKindsRenderAsText(t *testing.T) {
 	)
 
 	var rec map[string]any
-	if err := json.Unmarshal(buf.Bytes(), &rec); err != nil {
-		t.Fatalf("unmarshal: %v\n%s", err, buf.String())
-	}
+	must.NoError(json.Unmarshal(buf.Bytes(), &rec), "record: %s", buf.String())
 	want := map[string]string{
 		"bytes":    "plain body",
 		"stringer": "stringer holds t",
@@ -172,30 +156,33 @@ func TestScrubHandler_TextualKindsRenderAsText(t *testing.T) {
 		"named":    "n",
 	}
 	for k, w := range want {
-		if got, _ := rec[k].(string); got != w {
-			t.Errorf("%s = %v, want %q", k, rec[k], w)
-		}
+		t.Run(k, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(w, rec[k])
+		})
 	}
 }
 
 func TestScrubHandler_ScalarKindsKeepTheirShape(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	logger := NewLogger("run-1", slog.LevelInfo, &buf)
 
 	logger.Info("m", "i", 3, "named", namedInt(7), "b", true, "f", 1.5, "d", slog.DurationValue(2e9))
 
 	var rec map[string]any
-	if err := json.Unmarshal(buf.Bytes(), &rec); err != nil {
-		t.Fatalf("unmarshal: %v\n%s", err, buf.String())
-	}
-	for k, w := range map[string]any{"i": float64(3), "named": float64(7), "b": true, "f": 1.5, "d": float64(2e9)} {
-		if rec[k] != w {
-			t.Errorf("%s = %#v, want %#v", k, rec[k], w)
-		}
+	must.NoError(json.Unmarshal(buf.Bytes(), &rec), "record: %s", buf.String())
+	want := map[string]any{"i": float64(3), "named": float64(7), "b": true, "f": 1.5, "d": float64(2e9)}
+	for k, w := range want {
+		t.Run(k, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(w, rec[k])
+		})
 	}
 }
 
 func TestScrubHandler_UnrenderableValuesDoNotPanic(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	logger := NewLogger("run-1", slog.LevelInfo, &buf)
 	var nilErr *wrappedErr
@@ -207,17 +194,18 @@ func TestScrubHandler_UnrenderableValuesDoNotPanic(t *testing.T) {
 	)
 
 	var rec map[string]any
-	if err := json.Unmarshal(buf.Bytes(), &rec); err != nil {
-		t.Fatalf("unmarshal: %v\n%s", err, buf.String())
-	}
+	must.NoError(json.Unmarshal(buf.Bytes(), &rec), "record: %s", buf.String())
 	for _, k := range []string{"panics", "nilptr"} {
-		if rec[k] != "[unrenderable log value]" {
-			t.Errorf("%s = %v, want placeholder", k, rec[k])
-		}
+		t.Run(k, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal("[unrenderable log value]", rec[k], "want placeholder")
+		})
 	}
-	if got, _ := rec["chan"].(string); !strings.HasPrefix(got, "0x") {
-		t.Errorf("chan = %v, want %%+v fallback", rec["chan"])
-	}
+	t.Run("chan", func(t *testing.T) {
+		must := require.New(t)
+		got, _ := rec["chan"].(string)
+		must.True(strings.HasPrefix(got, "0x"), "chan = %v, want %%+v fallback", rec["chan"])
+	})
 }
 
 type wrappedErr struct{ inner error }
@@ -227,26 +215,31 @@ func (e *wrappedErr) Error() string { return e.inner.Error() }
 func TestScrubHandler_ZeroAttrAndNilValueAreUnchanged(t *testing.T) {
 	h := &ScrubHandler{}
 
-	if got := h.scrubAttrAndReport(slog.Attr{}); !got.Equal(slog.Attr{}) {
-		t.Errorf("zero attr = %v, want it unchanged", got)
-	}
-	got := h.scrubAttrAndReport(slog.Any("k", nil))
-	if got.Key != "k" || got.Value.Kind() != slog.KindAny || got.Value.Any() != nil {
-		t.Errorf("nil value = %v (kind %v), want a nil KindAny value", got, got.Value.Kind())
-	}
+	t.Run("zero attr is unchanged", func(t *testing.T) {
+		must := require.New(t)
+		got := h.scrubAttrAndReport(slog.Attr{})
+		must.True(got.Equal(slog.Attr{}), "zero attr = %v, want it unchanged", got)
+	})
 
-	var buf bytes.Buffer
-	logger := NewLogger("run-1", slog.LevelInfo, &buf)
-	logger.Info("m", slog.Attr{}, "nilval", nil)
+	t.Run("nil value stays a nil any value", func(t *testing.T) {
+		must := require.New(t)
+		got := h.scrubAttrAndReport(slog.Any("k", nil))
+		must.Equal("k", got.Key)
+		must.Equal(slog.KindAny, got.Value.Kind())
+		must.Nil(got.Value.Any())
+	})
 
-	var rec map[string]any
-	if err := json.Unmarshal(buf.Bytes(), &rec); err != nil {
-		t.Fatalf("unmarshal: %v\n%s", err, buf.String())
-	}
-	if v, ok := rec["nilval"]; !ok || v != nil {
-		t.Errorf("nilval = %#v (present=%v), want JSON null", v, ok)
-	}
-	if _, ok := rec[""]; ok {
-		t.Errorf("record has an empty-key attribute: %s", buf.String())
-	}
+	t.Run("record renders nil as JSON null and drops empty keys", func(t *testing.T) {
+		must := require.New(t)
+		var buf bytes.Buffer
+		logger := NewLogger("run-1", slog.LevelInfo, &buf)
+		logger.Info("m", slog.Attr{}, "nilval", nil)
+
+		var rec map[string]any
+		must.NoError(json.Unmarshal(buf.Bytes(), &rec), "record: %s", buf.String())
+		v, ok := rec["nilval"]
+		must.True(ok, "nilval is missing from the record")
+		must.Nil(v, "nilval should be JSON null")
+		must.NotContains(rec, "", "record has an empty-key attribute")
+	})
 }

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
@@ -16,14 +18,11 @@ import (
 // IsValid() == true without standing up a TracerProvider.
 func ctxWithSpan(t *testing.T, traceHex, spanHex string) context.Context {
 	t.Helper()
+	must := require.New(t)
 	traceID, err := oteltrace.TraceIDFromHex(traceHex)
-	if err != nil {
-		t.Fatalf("TraceIDFromHex(%q): %v", traceHex, err)
-	}
+	must.NoError(err, "TraceIDFromHex(%q)", traceHex)
 	spanID, err := oteltrace.SpanIDFromHex(spanHex)
-	if err != nil {
-		t.Fatalf("SpanIDFromHex(%q): %v", spanHex, err)
-	}
+	must.NoError(err, "SpanIDFromHex(%q)", spanHex)
 	sc := oteltrace.NewSpanContext(oteltrace.SpanContextConfig{
 		TraceID:    traceID,
 		SpanID:     spanID,
@@ -37,6 +36,8 @@ func ctxWithSpan(t *testing.T, traceHex, spanHex string) context.Context {
 // emitted via InfoContext inside an active span carries lowercase trace_id
 // and span_id attributes matching the span context.
 func TestSpanContextHandler_InjectsIDsWhenSpanActive(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	const (
 		traceHex = "0102030405060708090a0b0c0d0e0f10"
 		spanHex  = "0102030405060708"
@@ -47,58 +48,51 @@ func TestSpanContextHandler_InjectsIDsWhenSpanActive(t *testing.T) {
 	logger.InfoContext(ctxWithSpan(t, traceHex, spanHex), "inside span")
 
 	var record map[string]any
-	if err := json.Unmarshal(buf.Bytes(), &record); err != nil {
-		t.Fatalf("unmarshal log record: %v\n%s", err, buf.String())
-	}
-	if got, _ := record["trace_id"].(string); got != traceHex {
-		t.Errorf("trace_id = %q, want %q", got, traceHex)
-	}
-	if got, _ := record["span_id"].(string); got != spanHex {
-		t.Errorf("span_id = %q, want %q", got, spanHex)
-	}
+	must.NoError(json.Unmarshal(buf.Bytes(), &record), "log output:\n%s", buf.String())
+	traceID, _ := record["trace_id"].(string)
+	spanID, _ := record["span_id"].(string)
+	check.Equal(traceHex, traceID, "trace_id")
+	check.Equal(spanHex, spanID, "span_id")
 }
 
 // TestSpanContextHandler_OmitsIDsWhenNoSpan asserts that a record emitted
 // without an active span (context.Background or a non-Context call) does not
 // carry trace_id / span_id, so untraced lines stay clean.
 func TestSpanContextHandler_OmitsIDsWhenNoSpan(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	var buf bytes.Buffer
 	logger := NewLogger("run-123", slog.LevelInfo, &buf)
 
 	logger.InfoContext(context.Background(), "no span here")
 
 	var record map[string]any
-	if err := json.Unmarshal(buf.Bytes(), &record); err != nil {
-		t.Fatalf("unmarshal log record: %v\n%s", err, buf.String())
-	}
-	if _, ok := record["trace_id"]; ok {
-		t.Errorf("trace_id present without an active span: %v", record)
-	}
-	if _, ok := record["span_id"]; ok {
-		t.Errorf("span_id present without an active span: %v", record)
-	}
+	must.NoError(json.Unmarshal(buf.Bytes(), &record), "log output:\n%s", buf.String())
+	check.NotContains(record, "trace_id", "record: %v", record)
+	check.NotContains(record, "span_id", "record: %v", record)
 }
 
 // TestSpanContextHandler_NonContextCallOmitsIDs asserts that the plain
 // (non-Context) Info path, which slog drives with context.Background(),
 // also produces no correlation fields.
 func TestSpanContextHandler_NonContextCallOmitsIDs(t *testing.T) {
+	check := assert.New(t)
 	var buf bytes.Buffer
 	logger := NewLogger("run-123", slog.LevelInfo, &buf)
 
 	logger.Info("plain info")
 
 	output := buf.String()
-	if strings.Contains(output, "trace_id") || strings.Contains(output, "span_id") {
-		t.Errorf("correlation fields present on a non-context call: %s", output)
-	}
+	check.NotContains(output, "trace_id", "correlation fields present on a non-context call: %s", output)
+	check.NotContains(output, "span_id", "correlation fields present on a non-context call: %s", output)
 }
 
-// TestSpanContextHandler_StillScrubs asserts the span handler sits outside
-// the scrubber so a secret in an attribute is still redacted when a span is
-// active (the scrubber runs on every value, including alongside the injected
-// correlation IDs).
-func TestSpanContextHandler_StillScrubs(t *testing.T) {
+// TestSpanContextHandler_ScrubsSecretsWithActiveSpan asserts the span handler
+// sits outside the scrubber so a secret in an attribute is still redacted when
+// a span is active (the scrubber runs on every value, including alongside the
+// injected correlation IDs).
+func TestSpanContextHandler_ScrubsSecretsWithActiveSpan(t *testing.T) {
+	check := assert.New(t)
 	var buf bytes.Buffer
 	logger := NewLogger("run-123", slog.LevelInfo, &buf)
 
@@ -106,18 +100,15 @@ func TestSpanContextHandler_StillScrubs(t *testing.T) {
 	logger.InfoContext(ctx, "auth", slog.String("token", anthropicKeyFixture))
 
 	output := buf.String()
-	if strings.Contains(output, anthropicKeyFixture) {
-		t.Errorf("secret leaked despite active span: %s", output)
-	}
-	if !strings.Contains(output, "trace_id") {
-		t.Errorf("expected trace_id alongside the scrubbed value: %s", output)
-	}
+	check.NotContains(output, anthropicKeyFixture, "secret leaked despite active span: %s", output)
+	check.Contains(output, "trace_id", "expected trace_id alongside the scrubbed value")
 }
 
 // TestScopedLogger_FallsBackToScopeSpan asserts that a record without a
 // span of its own carries the scope's span, a record with one keeps
 // it, and an invalid scope span stops the fallback.
 func TestScopedLogger_FallsBackToScopeSpan(t *testing.T) {
+	must := require.New(t)
 	const (
 		scopeTrace = "0102030405060708090a0b0c0d0e0f10"
 		scopeSpan  = "0102030405060708"
@@ -135,19 +126,26 @@ func TestScopedLogger_FallsBackToScopeSpan(t *testing.T) {
 	logger.Info("cleared")
 
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("got %d records, want 3:\n%s", len(lines), buf.String())
+	must.Len(lines, 3, "log output:\n%s", buf.String())
+
+	cases := []struct {
+		name    string
+		traceID string
+		spanID  string
+	}{
+		{name: "record without own span uses scope span", traceID: scopeTrace, spanID: scopeSpan},
+		{name: "record with own span keeps it", traceID: ownTrace, spanID: ownSpan},
+		{name: "record after scope span cleared has no IDs"},
 	}
-	want := [][2]string{{scopeTrace, scopeSpan}, {ownTrace, ownSpan}, {"", ""}}
-	for i, line := range lines {
-		var record map[string]any
-		if err := json.Unmarshal([]byte(line), &record); err != nil {
-			t.Fatalf("unmarshal record %d: %v", i, err)
-		}
-		traceID, _ := record["trace_id"].(string)
-		spanID, _ := record["span_id"].(string)
-		if traceID != want[i][0] || spanID != want[i][1] {
-			t.Errorf("record %q: trace_id=%q span_id=%q, want %q %q", record["msg"], traceID, spanID, want[i][0], want[i][1])
-		}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			var record map[string]any
+			must.NoError(json.Unmarshal([]byte(lines[i]), &record), "record %d", i)
+			traceID, _ := record["trace_id"].(string)
+			spanID, _ := record["span_id"].(string)
+			must.Equal(tc.traceID, traceID, "trace_id")
+			must.Equal(tc.spanID, spanID, "span_id")
+		})
 	}
 }

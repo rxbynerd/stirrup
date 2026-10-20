@@ -2,27 +2,34 @@ package types
 
 import (
 	"encoding/json"
-	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
-func TestIsThinkingBlock(t *testing.T) {
-	cases := map[string]bool{
-		"thinking":          true,
-		"redacted_thinking": true,
-		"text":              false,
-		"tool_use":          false,
-		"tool_result":       false,
-		"":                  false,
+func TestIsThinkingBlock_ClassifiesBlockTypes(t *testing.T) {
+	cases := []struct {
+		name string
+		typ  string
+		want bool
+	}{
+		{name: "thinking", typ: "thinking", want: true},
+		{name: "redacted thinking", typ: "redacted_thinking", want: true},
+		{name: "text", typ: "text", want: false},
+		{name: "tool use", typ: "tool_use", want: false},
+		{name: "tool result", typ: "tool_result", want: false},
+		{name: "empty type", typ: "", want: false},
 	}
-	for typ, want := range cases {
-		if got := IsThinkingBlock(ContentBlock{Type: typ}); got != want {
-			t.Errorf("IsThinkingBlock(%q) = %v, want %v", typ, got, want)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, IsThinkingBlock(ContentBlock{Type: tc.typ}), "block type %q", tc.typ)
+		})
 	}
 }
 
 func TestStripThinkingBlocks_RemovesBothTypesAndKeepsOrder(t *testing.T) {
+	must := require.New(t)
 	in := []Message{
 		{Role: "user", Content: []ContentBlock{{Type: "text", Text: "go"}}},
 		{
@@ -52,26 +59,23 @@ func TestStripThinkingBlocks_RemovesBothTypesAndKeepsOrder(t *testing.T) {
 		},
 		in[2],
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("StripThinkingBlocks mismatch\n got: %+v\nwant: %+v", got, want)
-	}
-	if len(in[1].Content) != 4 || in[1].Content[0].Type != "thinking" {
-		t.Errorf("input history was mutated: %+v", in[1].Content)
-	}
+	must.Equal(want, got)
+
+	must.Len(in[1].Content, 4, "input history was mutated: %+v", in[1].Content)
+	must.Equal("thinking", in[1].Content[0].Type, "input history was mutated")
 }
 
 func TestStripThinkingBlocks_NoThinkingReturnsInput(t *testing.T) {
+	must := require.New(t)
 	in := []Message{
 		{Role: "user", Content: []ContentBlock{{Type: "text", Text: "go"}}},
 		{Role: "assistant", Content: []ContentBlock{{Type: "text", Text: "done"}}},
 	}
 	got := StripThinkingBlocks(in)
-	if len(got) != len(in) || &got[0] != &in[0] {
-		t.Errorf("history without thinking blocks should be returned as-is")
-	}
-	if StripThinkingBlocks(nil) != nil {
-		t.Errorf("nil history should stay nil")
-	}
+	must.Len(got, len(in))
+	must.Same(&in[0], &got[0], "history without thinking blocks should be returned as-is")
+
+	must.Nil(StripThinkingBlocks(nil), "nil history should stay nil")
 }
 
 // TestStripThinkingBlocks_ThinkingOnlyMessageLeftForAdapter pins that the
@@ -79,15 +83,13 @@ func TestStripThinkingBlocks_NoThinkingReturnsInput(t *testing.T) {
 // stays in place for the adapter to handle (the Anthropic adapter's wire
 // shape is pinned by TestBuildAnthropicRequest_ThinkingOnlyTurnOmitted).
 func TestStripThinkingBlocks_ThinkingOnlyMessageLeftForAdapter(t *testing.T) {
+	must := require.New(t)
 	in := []Message{
 		{Role: "user", Content: []ContentBlock{{Type: "text", Text: "go"}}},
 		{Role: "assistant", Content: []ContentBlock{{Type: "thinking", ThoughtSignature: "sig"}}},
 	}
 	got := StripThinkingBlocks(in)
-	if len(got) != 2 || got[1].Role != "assistant" {
-		t.Fatalf("got %+v, want both messages in their original positions", got)
-	}
-	if containsThinking(got[1].Content) {
-		t.Errorf("thinking block survived: %+v", got[1].Content)
-	}
+	must.Len(got, 2, "both messages should keep their original positions: %+v", got)
+	must.Equal("assistant", got[1].Role)
+	must.False(containsThinking(got[1].Content), "thinking block survived: %+v", got[1].Content)
 }

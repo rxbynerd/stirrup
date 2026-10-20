@@ -1,6 +1,10 @@
 package eval
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func trials(outcomes ...string) []TrialResult {
 	out := make([]TrialResult, len(outcomes))
@@ -33,45 +37,46 @@ func TestTrialCounts_MajorityOutcome(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := TaskResult{Trials: trials(tc.outcomes...)}.Counts()
-			if c.Total() != len(tc.outcomes) {
-				t.Errorf("Total() = %d, want %d", c.Total(), len(tc.outcomes))
-			}
-			if got := c.Outcome(); got != tc.want {
-				t.Errorf("Outcome() = %q, want %q (counts %+v)", got, tc.want, c)
-			}
-			if got := c.PassFraction(); got != tc.fraction {
-				t.Errorf("PassFraction() = %v, want %v", got, tc.fraction)
-			}
+			must.Equal(len(tc.outcomes), c.Total())
+			must.Equal(tc.want, c.Outcome(), "counts %+v", c)
+			must.InDelta(tc.fraction, c.PassFraction(), 1e-9)
 		})
 	}
 }
 
-func TestTrialCounts_Empty(t *testing.T) {
+func TestTrialCounts_Empty_ReportsError(t *testing.T) {
+	must := require.New(t)
 	var c TrialCounts
-	if c.Outcome() != "error" || c.PassFraction() != 0 || c.Total() != 0 {
-		t.Errorf("empty counts: outcome=%q fraction=%v total=%d", c.Outcome(), c.PassFraction(), c.Total())
-	}
+	must.Equal("error", c.Outcome())
+	must.Zero(c.PassFraction())
+	must.Zero(c.Total())
 }
 
-// TestTaskResult_CountsWithoutTrials pins that a result without Trials
+// TestTaskResult_Counts_FallsBackToOutcome pins that a result without Trials
 // counts as one trial of its Outcome.
-func TestTaskResult_CountsWithoutTrials(t *testing.T) {
-	for outcome, want := range map[string]TrialCounts{
-		"pass":  {Pass: 1},
-		"fail":  {Fail: 1},
-		"error": {Error: 1},
-		"":      {Error: 1},
-	} {
-		if got := (TaskResult{Outcome: outcome}).Counts(); got != want {
-			t.Errorf("Counts() for outcome %q = %+v, want %+v", outcome, got, want)
-		}
+func TestTaskResult_Counts_FallsBackToOutcome(t *testing.T) {
+	cases := []struct {
+		name    string
+		outcome string
+		want    TrialCounts
+	}{
+		{"pass outcome", "pass", TrialCounts{Pass: 1}},
+		{"fail outcome", "fail", TrialCounts{Fail: 1}},
+		{"error outcome", "error", TrialCounts{Error: 1}},
+		{"empty outcome", "", TrialCounts{Error: 1}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, TaskResult{Outcome: tc.outcome}.Counts())
+		})
 	}
 }
 
-func TestTaskResult_CountsPrefersTrials(t *testing.T) {
+func TestTaskResult_Counts_PrefersTrials(t *testing.T) {
+	must := require.New(t)
 	r := TaskResult{Outcome: "pass", Trials: trials("fail", "fail", "pass")}
-	if got := r.Counts(); got != (TrialCounts{Pass: 1, Fail: 2}) {
-		t.Errorf("Counts() = %+v, want trials to take precedence over Outcome", got)
-	}
+	must.Equal(TrialCounts{Pass: 1, Fail: 2}, r.Counts(), "trials take precedence over Outcome")
 }

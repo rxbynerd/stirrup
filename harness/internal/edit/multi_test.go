@@ -8,66 +8,39 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 )
 
-func TestMultiStrategy_ToolDefinition(t *testing.T) {
+func TestMultiStrategy_ToolDefinition_DeclaresOperationSchema(t *testing.T) {
+	must := require.New(t)
 	m := NewMultiStrategy(defaultFuzzyThreshold)
 	def := m.ToolDefinition()
 
-	if def.Name != "edit_file" {
-		t.Errorf("name: got %q, want %q", def.Name, "edit_file")
-	}
-	if len(def.InputSchema) == 0 {
-		t.Error("input schema should not be empty")
+	must.Equal("edit_file", def.Name)
+	must.NotEmpty(def.InputSchema, "input schema should not be empty")
+
+	var schema map[string]interface{}
+	must.NoError(json.Unmarshal(def.InputSchema, &schema), "schema is not valid JSON")
+
+	props, ok := schema["properties"].(map[string]interface{})
+	must.True(ok, "schema missing properties")
+	for _, field := range []string{"path", "operation", "content", "diff", "old_string", "new_string"} {
+		must.Contains(props, field, "schema missing property %q", field)
 	}
 
-	// Verify the schema is valid JSON containing expected fields, the
-	// operation enum is declared, and operation is on the required list.
-	var schema map[string]interface{}
-	if err := json.Unmarshal(def.InputSchema, &schema); err != nil {
-		t.Fatalf("schema is not valid JSON: %v", err)
-	}
-	props, ok := schema["properties"].(map[string]interface{})
-	if !ok {
-		t.Fatal("schema missing properties")
-	}
-	for _, field := range []string{"path", "operation", "content", "diff", "old_string", "new_string"} {
-		if _, exists := props[field]; !exists {
-			t.Errorf("schema missing property %q", field)
-		}
-	}
 	opProp, ok := props["operation"].(map[string]interface{})
-	if !ok {
-		t.Fatal("operation property missing or wrong type")
-	}
+	must.True(ok, "operation property missing or wrong type")
 	enum, ok := opProp["enum"].([]interface{})
-	if !ok {
-		t.Fatal("operation enum missing")
-	}
+	must.True(ok, "operation enum missing")
 	for _, want := range []string{"replace", "delete", "rewrite", "patch"} {
-		found := false
-		for _, v := range enum {
-			if v == want {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("operation enum missing %q", want)
-		}
+		must.Contains(enum, want, "operation enum missing %q", want)
 	}
+
 	required, _ := schema["required"].([]interface{})
-	hasOperation := false
-	for _, v := range required {
-		if v == "operation" {
-			hasOperation = true
-		}
-	}
-	if !hasOperation {
-		t.Error("operation should be listed in required")
-	}
+	must.Contains(required, "operation", "operation should be listed in required")
 }
 
 // maxEditFileDescriptionLen mirrors the cap used for built-in tool
@@ -76,50 +49,43 @@ func TestMultiStrategy_ToolDefinition(t *testing.T) {
 // runnable.
 const maxEditFileDescriptionLen = 2000
 
-// TestMultiStrategy_DescriptionEnrichedShape asserts that the edit_file
-// description carries when-to-use guidance, an example labelled
+// TestMultiStrategy_Description_IncludesGuidanceAndExample asserts that the
+// edit_file description carries when-to-use guidance, an example labelled
 // "Example", and a bounded length. The example is extracted by finding
 // the rightmost "Example" marker and walking the brace balance to
 // capture the JSON object, matching the helper in
 // harness/internal/tool/builtins/builtins_test.go.
-func TestMultiStrategy_DescriptionEnrichedShape(t *testing.T) {
+func TestMultiStrategy_Description_IncludesGuidanceAndExample(t *testing.T) {
+	must := require.New(t)
 	m := NewMultiStrategy(defaultFuzzyThreshold)
 	def := m.ToolDefinition()
 
-	if len(def.Description) > maxEditFileDescriptionLen {
-		t.Errorf("description length %d exceeds cap %d", len(def.Description), maxEditFileDescriptionLen)
-	}
+	must.LessOrEqual(len(def.Description), maxEditFileDescriptionLen, "description exceeds length cap")
 	// hasPositiveUseThis rejects negated matches (a description
 	// containing only "Do not use this..." would otherwise pass an
 	// unguarded strings.Contains check). Mirrors the helper in
 	// harness/internal/tool/builtins/builtins_test.go.
-	if !hasPositiveUseThis(def.Description) {
-		t.Errorf("description missing positive when-to-use guidance (expected non-negated \"Use this\" clause)")
-	}
+	must.True(hasPositiveUseThis(def.Description),
+		"description missing positive when-to-use guidance (expected non-negated \"Use this\" clause)")
+
 	example, ok := extractEditFileJSONExample(def.Description)
-	if !ok {
-		t.Fatalf("description missing JSON example after \"Example\" marker; got: %s", def.Description)
-	}
+	must.True(ok, "description missing JSON example after \"Example\" marker; got: %s", def.Description)
 	var probe map[string]any
-	if err := json.Unmarshal([]byte(example), &probe); err != nil {
-		t.Errorf("example is not valid JSON: %v\nexample: %s", err, example)
-	}
+	must.NoError(json.Unmarshal([]byte(example), &probe), "example is not valid JSON: %s", example)
 
 	// The structured InputExamples must mirror the description example
 	// byte-for-byte; adapters send it natively or fold it into the schema
 	// `examples` keyword for providers that support it.
-	if def.Presentation == nil || len(def.Presentation.InputExamples) != 1 {
-		t.Fatalf("ToolDefinition().Presentation = %+v, want exactly one InputExample", def.Presentation)
-	}
-	if got := string(def.Presentation.InputExamples[0]); got != example {
-		t.Errorf("InputExamples[0] drifted from description:\n got = %s\nwant = %s", got, example)
-	}
+	must.NotNil(def.Presentation, "ToolDefinition().Presentation is nil")
+	must.Len(def.Presentation.InputExamples, 1, "want exactly one InputExample")
+	must.Equal(example, string(def.Presentation.InputExamples[0]), "InputExamples[0] drifted from description")
 }
 
 // TestEditStrategyInputExamples_PassDispatchValidation pins that every edit
 // strategy's worked example validates against the strategy's own schema
 // with the validator dispatch uses, mirroring the built-in tools test.
 func TestEditStrategyInputExamples_PassDispatchValidation(t *testing.T) {
+	must := require.New(t)
 	strategies := []EditStrategy{
 		NewMultiStrategy(defaultFuzzyThreshold),
 		NewUdiffStrategy(defaultFuzzyThreshold),
@@ -133,15 +99,12 @@ func TestEditStrategyInputExamples_PassDispatchValidation(t *testing.T) {
 			continue
 		}
 		for i, example := range def.Presentation.InputExamples {
-			if err := security.ValidateJSONSchema(example, def.InputSchema); err != nil {
-				t.Errorf("%T: InputExamples[%d] fails its InputSchema: %v\nexample: %s", s, i, err, example)
-			}
+			err := security.ValidateJSONSchema(example, def.InputSchema)
+			must.NoError(err, "%T: InputExamples[%d] fails its InputSchema\nexample: %s", s, i, example)
 			validated++
 		}
 	}
-	if validated == 0 {
-		t.Fatal("no edit strategy input examples were validated")
-	}
+	must.NotZero(validated, "no edit strategy input examples were validated")
 }
 
 // hasPositiveUseThis reports whether desc contains a "Use this" clause
@@ -222,13 +185,13 @@ func extractEditFileJSONExample(desc string) (string, bool) {
 	return "", false
 }
 
-// TestExtractEditFileJSONExample locks the contract of the
-// extractEditFileJSONExample helper, the oracle
-// TestMultiStrategy_DescriptionEnrichedShape uses to pin the description's
-// example. It duplicates the extractJSONExample helper in
+// TestExtractEditFileJSONExample_ReturnsRightmostObject locks the contract of
+// the extractEditFileJSONExample helper, the oracle
+// TestMultiStrategy_Description_IncludesGuidanceAndExample uses to pin the
+// description's example. It duplicates the extractJSONExample helper in
 // harness/internal/tool/builtins intentionally, so the two suites run
 // independently.
-func TestExtractEditFileJSONExample(t *testing.T) {
+func TestExtractEditFileJSONExample_ReturnsRightmostObject(t *testing.T) {
 	cases := []struct {
 		name   string
 		input  string
@@ -263,18 +226,16 @@ func TestExtractEditFileJSONExample(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got, ok := extractEditFileJSONExample(tc.input)
-			if ok != tc.wantOK {
-				t.Errorf("ok mismatch: got %v, want %v", ok, tc.wantOK)
-			}
-			if got != tc.want {
-				t.Errorf("value mismatch: got %q, want %q", got, tc.want)
-			}
+			must.Equal(tc.wantOK, ok)
+			must.Equal(tc.want, got)
 		})
 	}
 }
 
 func TestMultiStrategy_RoutesPatchToUdiff(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -289,20 +250,15 @@ func TestMultiStrategy_RoutesPatchToUdiff(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if !result.Applied {
-		t.Errorf("expected Applied=true; error: %s", result.Error)
-	}
+	must.NoError(err)
+	must.True(result.Applied, "expected Applied=true; error: %s", result.Error)
 
 	content, _ := exec.ReadFile(context.Background(), "test.txt")
-	if content != "line1\nline2_modified\nline3\n" {
-		t.Errorf("unexpected content: %q", content)
-	}
+	must.Equal("line1\nline2_modified\nline3\n", content)
 }
 
 func TestMultiStrategy_RoutesReplaceToSearchReplace(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -317,20 +273,15 @@ func TestMultiStrategy_RoutesReplaceToSearchReplace(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if !result.Applied {
-		t.Errorf("expected Applied=true; error: %s", result.Error)
-	}
+	must.NoError(err)
+	must.True(result.Applied, "expected Applied=true; error: %s", result.Error)
 
 	content, _ := exec.ReadFile(context.Background(), "test.txt")
-	if content != "hello universe" {
-		t.Errorf("unexpected content: %q", content)
-	}
+	must.Equal("hello universe", content)
 }
 
 func TestMultiStrategy_RoutesDeleteToSearchReplace(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -344,20 +295,15 @@ func TestMultiStrategy_RoutesDeleteToSearchReplace(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if !result.Applied {
-		t.Errorf("expected Applied=true; error: %s", result.Error)
-	}
+	must.NoError(err)
+	must.True(result.Applied, "expected Applied=true; error: %s", result.Error)
 
 	content, _ := exec.ReadFile(context.Background(), "test.txt")
-	if content != "hello" {
-		t.Errorf("unexpected content: %q", content)
-	}
+	must.Equal("hello", content)
 }
 
 func TestMultiStrategy_RoutesRewriteToWholeFile(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -369,20 +315,15 @@ func TestMultiStrategy_RoutesRewriteToWholeFile(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if !result.Applied {
-		t.Errorf("expected Applied=true; error: %s", result.Error)
-	}
+	must.NoError(err)
+	must.True(result.Applied, "expected Applied=true; error: %s", result.Error)
 
 	content, _ := exec.ReadFile(context.Background(), "new.txt")
-	if content != "brand new content" {
-		t.Errorf("unexpected content: %q", content)
-	}
+	must.Equal("brand new content", content)
 }
 
 func TestMultiStrategy_FallbackPatchToWholeFile(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -401,20 +342,15 @@ func TestMultiStrategy_FallbackPatchToWholeFile(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if !result.Applied {
-		t.Errorf("expected Applied=true via fallback; error: %s", result.Error)
-	}
+	must.NoError(err)
+	must.True(result.Applied, "expected Applied=true via fallback; error: %s", result.Error)
 
 	content, _ := exec.ReadFile(context.Background(), "test.txt")
-	if content != "fallback content" {
-		t.Errorf("unexpected content: %q", content)
-	}
+	must.Equal("fallback content", content)
 }
 
 func TestMultiStrategy_FallbackReplaceToWholeFile(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -433,25 +369,19 @@ func TestMultiStrategy_FallbackReplaceToWholeFile(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if !result.Applied {
-		t.Errorf("expected Applied=true via fallback; error: %s", result.Error)
-	}
+	must.NoError(err)
+	must.True(result.Applied, "expected Applied=true via fallback; error: %s", result.Error)
 
 	content, _ := exec.ReadFile(context.Background(), "test.txt")
-	if content != "whole file fallback" {
-		t.Errorf("unexpected content: %q", content)
-	}
+	must.Equal("whole file fallback", content)
 }
 
 func TestMultiStrategy_MissingOperation(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
 	m := NewMultiStrategy(defaultFuzzyThreshold)
-	// No operation field — the new contract requires one.
 	input := json.RawMessage(`{
 		"path": "test.txt",
 		"old_string": "x",
@@ -459,18 +389,13 @@ func TestMultiStrategy_MissingOperation(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied {
-		t.Error("expected Applied=false when operation is missing")
-	}
-	if !contains(result.Error, "operation is required") {
-		t.Errorf("error should mention required operation, got: %s", result.Error)
-	}
+	must.NoError(err)
+	must.False(result.Applied)
+	must.Contains(result.Error, "operation is required")
 }
 
 func TestMultiStrategy_ReplaceMissingNewString(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -482,20 +407,15 @@ func TestMultiStrategy_ReplaceMissingNewString(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied {
-		t.Error("expected Applied=false when replace omits new_string")
-	}
-	if !contains(result.Error, "new_string") {
-		t.Errorf("error should mention new_string, got: %s", result.Error)
-	}
+	must.NoError(err)
+	must.False(result.Applied)
+	must.Contains(result.Error, "new_string")
 }
 
 // TestMultiStrategy_ReplaceMissingOldString covers operation=replace with
 // new_string set but old_string absent.
 func TestMultiStrategy_ReplaceMissingOldString(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -507,20 +427,15 @@ func TestMultiStrategy_ReplaceMissingOldString(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied {
-		t.Error("expected Applied=false when replace omits old_string")
-	}
-	if !contains(result.Error, "old_string") {
-		t.Errorf("error should mention old_string, got: %s", result.Error)
-	}
+	must.NoError(err)
+	must.False(result.Applied)
+	must.Contains(result.Error, "old_string")
 }
 
 // TestMultiStrategy_DeleteMissingOldString covers operation=delete with
 // both old_string and new_string absent.
 func TestMultiStrategy_DeleteMissingOldString(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -531,18 +446,13 @@ func TestMultiStrategy_DeleteMissingOldString(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied {
-		t.Error("expected Applied=false when delete omits old_string")
-	}
-	if !contains(result.Error, "old_string") {
-		t.Errorf("error should mention old_string, got: %s", result.Error)
-	}
+	must.NoError(err)
+	must.False(result.Applied)
+	must.Contains(result.Error, "old_string")
 }
 
 func TestMultiStrategy_DeleteWithNewStringRejected(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -555,18 +465,13 @@ func TestMultiStrategy_DeleteWithNewStringRejected(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied {
-		t.Error("expected Applied=false when delete supplies new_string")
-	}
-	if !contains(result.Error, "delete") {
-		t.Errorf("error should mention delete operation, got: %s", result.Error)
-	}
+	must.NoError(err)
+	must.False(result.Applied)
+	must.Contains(result.Error, "delete")
 }
 
 func TestMultiStrategy_RewriteMissingContent(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -577,18 +482,13 @@ func TestMultiStrategy_RewriteMissingContent(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied {
-		t.Error("expected Applied=false when rewrite omits content")
-	}
-	if !contains(result.Error, "content") {
-		t.Errorf("error should mention content, got: %s", result.Error)
-	}
+	must.NoError(err)
+	must.False(result.Applied)
+	must.Contains(result.Error, "content")
 }
 
 func TestMultiStrategy_PatchMissingDiff(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -599,18 +499,13 @@ func TestMultiStrategy_PatchMissingDiff(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied {
-		t.Error("expected Applied=false when patch omits diff")
-	}
-	if !contains(result.Error, "diff") {
-		t.Errorf("error should mention diff, got: %s", result.Error)
-	}
+	must.NoError(err)
+	must.False(result.Applied)
+	must.Contains(result.Error, "diff")
 }
 
 func TestMultiStrategy_UnknownOperation(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -621,18 +516,13 @@ func TestMultiStrategy_UnknownOperation(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied {
-		t.Error("expected Applied=false for unknown operation")
-	}
-	if !contains(result.Error, "unknown operation") {
-		t.Errorf("error should mention unknown operation, got: %s", result.Error)
-	}
+	must.NoError(err)
+	must.False(result.Applied)
+	must.Contains(result.Error, "unknown operation")
 }
 
 func TestMultiStrategy_MissingPath(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -640,15 +530,12 @@ func TestMultiStrategy_MissingPath(t *testing.T) {
 	input := json.RawMessage(`{"operation": "rewrite", "content": "hello"}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied {
-		t.Error("expected Applied=false for missing path")
-	}
+	must.NoError(err)
+	must.False(result.Applied)
 }
 
-func TestMultiStrategy_InvalidJSON(t *testing.T) {
+func TestMultiStrategy_InvalidJSON_ReturnsError(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -656,12 +543,11 @@ func TestMultiStrategy_InvalidJSON(t *testing.T) {
 	input := json.RawMessage(`{invalid`)
 
 	_, err := m.Apply(context.Background(), input, exec)
-	if err == nil {
-		t.Fatal("expected error for invalid JSON")
-	}
+	must.Error(err)
 }
 
 func TestMultiStrategy_AllStrategiesFail(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -680,21 +566,15 @@ func TestMultiStrategy_AllStrategiesFail(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied {
-		t.Error("expected Applied=false when all strategies fail")
-	}
-	if result.Error == "" {
-		t.Error("expected an error message listing failures")
-	}
-	if !contains(result.Error, "udiff") || !contains(result.Error, "search-replace") {
-		t.Errorf("error should mention failed strategies, got: %s", result.Error)
-	}
+	must.NoError(err)
+	must.False(result.Applied)
+	must.NotEmpty(result.Error, "expected an error message listing failures")
+	must.Contains(result.Error, "udiff")
+	must.Contains(result.Error, "search-replace")
 }
 
 func TestMultiStrategy_PrimaryWinsOverFallback(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -711,48 +591,25 @@ func TestMultiStrategy_PrimaryWinsOverFallback(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if !result.Applied {
-		t.Fatalf("expected Applied=true; error: %s", result.Error)
-	}
+	must.NoError(err)
+	must.True(result.Applied, "error: %s", result.Error)
 
 	content, _ := exec.ReadFile(context.Background(), "test.txt")
-	if content != "line1\nline2_via_diff\nline3\n" {
-		t.Errorf("primary patch should have applied, got content: %q", content)
-	}
+	must.Equal("line1\nline2_via_diff\nline3\n", content)
 }
 
 func newTestExecutor(t *testing.T, dir string) executor.Executor {
 	t.Helper()
+	must := require.New(t)
 	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
+	must.NoError(err)
 	return exec
 }
 
 func writeTestFile(t *testing.T, dir, name, content string) {
 	t.Helper()
+	must := require.New(t)
 	path := filepath.Join(dir, name)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && searchSubstring(s, substr)
-}
-
-func searchSubstring(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
+	must.NoError(os.MkdirAll(filepath.Dir(path), 0o755))
+	must.NoError(os.WriteFile(path, []byte(content), 0o644))
 }

@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/rxbynerd/stirrup/harness/internal/observability/otlp"
@@ -19,44 +20,46 @@ import (
 // registerTestPlatform adds a platform to the registry for one test.
 func registerTestPlatform(t *testing.T, name string, def definition) {
 	t.Helper()
-	if _, exists := registry[name]; exists {
-		t.Fatalf("test platform %q collides with a registered platform", name)
-	}
+	must := require.New(t)
+	must.NotContains(registry, name, "test platform %q collides with a registered platform", name)
 	registry[name] = def
 	t.Cleanup(func() { delete(registry, name) })
 }
 
-// TestRequiredProtocolMatchesTypes pins the validation-time table of
+// TestRequiredProtocol_MatchesRegisteredProfiles pins the validation-time table of
 // required protocols to each registered profile's RequiredProtocol.
-func TestRequiredProtocolMatchesTypes(t *testing.T) {
+func TestRequiredProtocol_MatchesRegisteredProfiles(t *testing.T) {
 	_, deps := staticAWS("eu-west-2")
 	opts := map[string]map[string]string{"cloudwatch": {"logGroup": "/stirrup/agents"}}
 	for _, name := range sortedKeys(registry) {
-		p, err := Resolve(context.Background(), name, opts[name], deps)
-		if err != nil {
-			t.Fatalf("Resolve %q: %v", name, err)
-		}
-		if got := types.RequiredTraceEmitterProtocol(name); got != p.RequiredProtocol {
-			t.Errorf("types requires protocol %q for %q, the profile requires %q", got, name, p.RequiredProtocol)
-		}
+		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
+			p, err := Resolve(context.Background(), name, opts[name], deps)
+			must.NoError(err, "resolve %q", name)
+			want := p.RequiredProtocol
+			got := types.RequiredTraceEmitterProtocol(name)
+			must.Equal(want, got, "types must require the profile's protocol for %q", name)
+		})
 	}
 }
 
-func TestResolve_NoPlatform(t *testing.T) {
+func TestResolve_EmptyPlatformIsZeroProfile(t *testing.T) {
+	must := require.New(t)
 	p, err := Resolve(context.Background(), "", nil, Deps{})
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if p.name != "" || p.RequiredProtocol != "" || p.Signals != nil || p.ResourceAttrs != nil || p.WrapTransport != nil || p.WrapSpanExporter != nil {
-		t.Errorf("empty platform must resolve to the zero Profile, got %+v", p)
-	}
+	must.NoError(err)
+	must.Empty(p.name, "empty platform must resolve to the zero Profile, got %+v", p)
+	must.Empty(p.RequiredProtocol)
+	must.Nil(p.Signals)
+	must.Nil(p.ResourceAttrs)
+	must.Nil(p.WrapTransport)
+	must.Nil(p.WrapSpanExporter)
 
-	if _, err := Resolve(context.Background(), "", map[string]string{"k": "v"}, Deps{}); err == nil {
-		t.Error("options without a platform must be rejected")
-	}
+	_, err = Resolve(context.Background(), "", map[string]string{"k": "v"}, Deps{})
+	must.Error(err, "options without a platform must be rejected")
 }
 
 func TestResolve_ValidatesOptions(t *testing.T) {
+	must := require.New(t)
 	var gotOpts map[string]string
 	registerTestPlatform(t, "test-platform", definition{
 		options: map[string]bool{"needed": true, "extra": false},
@@ -68,20 +71,14 @@ func TestResolve_ValidatesOptions(t *testing.T) {
 	ctx := context.Background()
 
 	p, err := Resolve(ctx, "test-platform", map[string]string{"needed": "x", "extra": "y"}, Deps{})
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if p.name != "test-platform" {
-		t.Errorf("profile name = %q, want test-platform", p.name)
-	}
-	if !maps.Equal(gotOpts, map[string]string{"needed": "x", "extra": "y"}) {
-		t.Errorf("builder received %v", gotOpts)
-	}
+	must.NoError(err)
+	must.Equal("test-platform", p.name)
+	must.Equal(map[string]string{"needed": "x", "extra": "y"}, gotOpts, "builder must receive the options unchanged")
 
 	cases := map[string]struct {
-		name string
-		opts map[string]string
-		want string
+		platform string
+		opts     map[string]string
+		want     string
 	}{
 		"unknown platform": {"no-such-platform", nil, `unknown traceEmitter.platform "no-such-platform"`},
 		"unknown option":   {"test-platform", map[string]string{"needed": "x", "typo": "y"}, `does not accept option "typo" (accepted: extra, needed)`},
@@ -90,24 +87,22 @@ func TestResolve_ValidatesOptions(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := Resolve(ctx, tc.name, tc.opts, Deps{})
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Errorf("expected error containing %q, got %v", tc.want, err)
-			}
+			must := require.New(t)
+			_, err := Resolve(ctx, tc.platform, tc.opts, Deps{})
+			must.ErrorContains(err, tc.want)
 		})
 	}
 }
 
 func TestResolve_WrapsBuilderError(t *testing.T) {
+	must := require.New(t)
 	registerTestPlatform(t, "failing-platform", definition{
 		build: func(context.Context, map[string]string, Deps) (Profile, error) {
 			return Profile{}, errors.New("no region")
 		},
 	})
 	_, err := Resolve(context.Background(), "failing-platform", nil, Deps{})
-	if err == nil || err.Error() != `platform "failing-platform": no region` {
-		t.Errorf("got %v", err)
-	}
+	must.EqualError(err, `platform "failing-platform": no region`)
 }
 
 func noEnv(string) string { return "" }
@@ -120,6 +115,7 @@ func envOf(vars map[string]string) func(string) string {
 func identityWrap(_ otlp.Signal, rt http.RoundTripper) http.RoundTripper { return rt }
 
 func TestApply_NoProfileKeepsExistingCascade(t *testing.T) {
+	must := require.New(t)
 	headers := map[string]string{"Authorization": "Bearer t"}
 	got, err := Apply(Input{
 		TraceEmitter: types.TraceEmitterConfig{
@@ -131,33 +127,30 @@ func TestApply_NoProfileKeepsExistingCascade(t *testing.T) {
 		Headers: headers,
 		Getenv:  noEnv,
 	}, Profile{})
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
+	must.NoError(err)
 	for sig, s := range map[otlp.Signal]otlp.Settings{otlp.SignalTraces: got.Traces, otlp.SignalMetrics: got.Metrics, otlp.SignalLogs: got.Logs} {
-		if s.Endpoint != "https://gw.example/otlp" || s.Protocol != otlp.ProtocolHTTPProtobuf || !maps.Equal(s.Headers, headers) || s.HTTPClient != nil {
-			t.Errorf("%s settings = %+v, want the trace endpoint, protocol and headers", sig, s)
-		}
+		t.Run(string(sig), func(t *testing.T) {
+			must := require.New(t)
+			must.Equal("https://gw.example/otlp", s.Endpoint, "endpoint must come from the trace endpoint")
+			must.Equal(otlp.ProtocolHTTPProtobuf, s.Protocol, "protocol must come from the trace protocol")
+			must.Equal(headers, s.Headers, "headers must come from the explicit headers")
+			must.Nil(s.HTTPClient, "no profile must add a transport")
+		})
 	}
-	if got.Metrics.Temporality != "delta" || got.Traces.Temporality != "" {
-		t.Errorf("temporality must reach the metric exporter only, got metrics %q traces %q", got.Metrics.Temporality, got.Traces.Temporality)
-	}
-	if got.Platform != "" || got.ResourceAttrs != nil || got.WrapSpanExporter != nil {
-		t.Errorf("no profile must add no decoration, got %+v", got)
-	}
+	must.Equal("delta", got.Metrics.Temporality, "temporality must reach the metric exporter")
+	must.Empty(got.Traces.Temporality, "temporality must not reach the trace exporter")
+	must.Empty(got.Platform)
+	must.Nil(got.ResourceAttrs)
+	must.Nil(got.WrapSpanExporter)
 }
 
 func TestApply_DefaultsWithoutAnyEndpoint(t *testing.T) {
+	must := require.New(t)
 	got, err := Apply(Input{TraceEmitter: types.TraceEmitterConfig{Type: "otel"}, Getenv: noEnv}, Profile{})
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if got.Traces.Endpoint != defaultTraceEndpoint {
-		t.Errorf("trace endpoint = %q, want %q", got.Traces.Endpoint, defaultTraceEndpoint)
-	}
-	if got.Metrics.Endpoint != "" || got.Logs.Endpoint != "" {
-		t.Errorf("metrics and logs must stay unset, got %q and %q", got.Metrics.Endpoint, got.Logs.Endpoint)
-	}
+	must.NoError(err)
+	must.Equal(defaultTraceEndpoint, got.Traces.Endpoint)
+	must.Empty(got.Metrics.Endpoint, "metrics endpoint must stay unset")
+	must.Empty(got.Logs.Endpoint, "logs endpoint must stay unset")
 }
 
 func signalProfile() Profile {
@@ -261,52 +254,42 @@ func TestApply_Precedence(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			got, err := Apply(Input{
 				TraceEmitter: tc.cfg,
 				LogsEndpoint: tc.logsEndpoint,
 				Headers:      tc.explicitHeaders,
 				Getenv:       envOf(tc.env),
 			}, signalProfile())
-			if err != nil {
-				t.Fatalf("Apply: %v", err)
-			}
-			if got.Traces.Endpoint != tc.traces || got.Metrics.Endpoint != tc.metrics || got.Logs.Endpoint != tc.logs {
-				t.Errorf("endpoints = traces %q metrics %q logs %q, want %q %q %q",
-					got.Traces.Endpoint, got.Metrics.Endpoint, got.Logs.Endpoint, tc.traces, tc.metrics, tc.logs)
-			}
-			for _, s := range []otlp.Settings{got.Traces, got.Metrics, got.Logs} {
-				if s.Protocol != tc.protocol {
-					t.Errorf("protocol = %q, want %q", s.Protocol, tc.protocol)
-				}
-			}
-			if !maps.Equal(got.Logs.Headers, tc.logHeaders) {
-				t.Errorf("log headers = %v, want %v", got.Logs.Headers, tc.logHeaders)
-			}
-			if !maps.Equal(got.Metrics.Headers, tc.metricHdrs) {
-				t.Errorf("metric headers = %v, want %v (profile log headers must not leak)", got.Metrics.Headers, tc.metricHdrs)
-			}
-			if got.Platform != "test-platform" || len(got.ResourceAttrs) != 1 {
-				t.Errorf("platform name and resource attributes must pass through, got %q %v", got.Platform, got.ResourceAttrs)
-			}
+			must.NoError(err)
+			must.Equal(tc.traces, got.Traces.Endpoint, "traces endpoint")
+			must.Equal(tc.metrics, got.Metrics.Endpoint, "metrics endpoint")
+			must.Equal(tc.logs, got.Logs.Endpoint, "logs endpoint")
+			must.Equal(tc.protocol, got.Traces.Protocol, "traces protocol")
+			must.Equal(tc.protocol, got.Metrics.Protocol, "metrics protocol")
+			must.Equal(tc.protocol, got.Logs.Protocol, "logs protocol")
+			must.True(maps.Equal(tc.logHeaders, got.Logs.Headers), "log headers = %v, want %v", got.Logs.Headers, tc.logHeaders)
+			must.True(maps.Equal(tc.metricHdrs, got.Metrics.Headers), "metric headers = %v, want %v (profile log headers must not leak)", got.Metrics.Headers, tc.metricHdrs)
+			must.Equal("test-platform", got.Platform, "platform name must pass through")
+			must.Len(got.ResourceAttrs, 1, "resource attributes must pass through")
 		})
 	}
 }
 
-func TestApply_NeverWritesBack(t *testing.T) {
+func TestApply_DoesNotMutateInputs(t *testing.T) {
+	must := require.New(t)
 	cfg := types.TraceEmitterConfig{Type: "otel", Headers: map[string]string{"X-Tenant": "a"}}
 	headers := map[string]string{"X-Tenant": "a"}
-	if _, err := Apply(Input{TraceEmitter: cfg, Headers: headers, Getenv: noEnv}, signalProfile()); err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if cfg.Endpoint != "" || cfg.Protocol != "" || cfg.MetricsEndpoint != "" {
-		t.Errorf("config must not be modified, got %+v", cfg)
-	}
-	if !maps.Equal(headers, map[string]string{"X-Tenant": "a"}) {
-		t.Errorf("explicit headers must not be modified, got %v", headers)
-	}
+	_, err := Apply(Input{TraceEmitter: cfg, Headers: headers, Getenv: noEnv}, signalProfile())
+	must.NoError(err)
+	must.Empty(cfg.Endpoint, "config must not be modified")
+	must.Empty(cfg.Protocol, "config must not be modified")
+	must.Empty(cfg.MetricsEndpoint, "config must not be modified")
+	must.Equal(map[string]string{"X-Tenant": "a"}, headers, "explicit headers must not be modified")
 }
 
 func TestApply_WrapTransportBuildsBoundedClients(t *testing.T) {
+	must := require.New(t)
 	var wrapped []otlp.Signal
 	p := Profile{
 		name:             "signing-platform",
@@ -317,23 +300,17 @@ func TestApply_WrapTransportBuildsBoundedClients(t *testing.T) {
 		},
 	}
 	got, err := Apply(Input{TraceEmitter: types.TraceEmitterConfig{Type: "otel", Endpoint: "https://backend.example"}, Getenv: noEnv}, p)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
+	must.NoError(err)
 	for _, s := range []otlp.Settings{got.Traces, got.Metrics, got.Logs} {
-		if s.HTTPClient == nil || s.HTTPClient.Timeout != exportRequestTimeout {
-			t.Fatalf("signed signals need a client with an explicit timeout, got %+v", s.HTTPClient)
-		}
-		if s.HTTPClient == http.DefaultClient {
-			t.Fatal("http.DefaultClient must not be used")
-		}
+		must.NotNil(s.HTTPClient, "signed signals need their own client")
+		must.Equal(exportRequestTimeout, s.HTTPClient.Timeout, "signed signals need a client with an explicit timeout")
+		must.NotSame(http.DefaultClient, s.HTTPClient, "http.DefaultClient must not be used")
 	}
-	if len(wrapped) != 3 {
-		t.Errorf("WrapTransport called for %v, want each of the three signals", wrapped)
-	}
+	must.Len(wrapped, 3, "WrapTransport must run for each of the three signals, got %v", wrapped)
 }
 
 func TestApply_WrapTransportOnlyForTheProfilesEndpoints(t *testing.T) {
+	must := require.New(t)
 	p := signalProfile()
 	p.WrapTransport = identityWrap
 	got, err := Apply(Input{
@@ -341,21 +318,15 @@ func TestApply_WrapTransportOnlyForTheProfilesEndpoints(t *testing.T) {
 		Headers:      map[string]string{"X-Tenant": "a"},
 		Getenv:       envOf(map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "http://local:4318"}),
 	}, p)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if got.Traces.HTTPClient != nil || got.Logs.HTTPClient != nil {
-		t.Error("signals redirected away from the profile's endpoints must not use its transport")
-	}
-	if !maps.Equal(got.Logs.Headers, map[string]string{"X-Tenant": "a"}) {
-		t.Errorf("redirected log headers = %v, want only the explicit headers", got.Logs.Headers)
-	}
-	if got.Metrics.HTTPClient == nil {
-		t.Error("metrics still go to the profile's endpoint and must use its transport")
-	}
+	must.NoError(err)
+	must.Nil(got.Traces.HTTPClient, "redirected traces must not use the profile's transport")
+	must.Nil(got.Logs.HTTPClient, "redirected logs must not use the profile's transport")
+	must.Equal(map[string]string{"X-Tenant": "a"}, got.Logs.Headers, "redirected log headers must be only the explicit headers")
+	must.NotNil(got.Metrics.HTTPClient, "metrics still go to the profile's endpoint and must use its transport")
 }
 
 func TestApply_WrappedClientDoesNotFollowRedirects(t *testing.T) {
+	must := require.New(t)
 	var elsewhere atomic.Int32
 	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		elsewhere.Add(1)
@@ -368,20 +339,16 @@ func TestApply_WrappedClientDoesNotFollowRedirects(t *testing.T) {
 
 	got, err := Apply(Input{TraceEmitter: types.TraceEmitterConfig{Type: "otel", Endpoint: origin.URL}, Getenv: noEnv},
 		Profile{name: "signing-platform", RequiredProtocol: otlp.ProtocolHTTPProtobuf, WrapTransport: identityWrap})
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
+	must.NoError(err)
 	resp, err := got.Traces.HTTPClient.Post(origin.URL+"/v1/traces", "application/x-protobuf", strings.NewReader("payload"))
-	if err != nil {
-		t.Fatalf("Post: %v", err)
-	}
+	must.NoError(err, "POST to the redirecting origin")
 	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusTemporaryRedirect || elsewhere.Load() != 0 {
-		t.Errorf("status %d, %d requests reached the redirect target; want the redirect returned unfollowed", resp.StatusCode, elsewhere.Load())
-	}
+	must.Equal(http.StatusTemporaryRedirect, resp.StatusCode, "the redirect must be returned, not followed")
+	must.Zero(elsewhere.Load(), "no request may reach the redirect target")
 }
 
 func TestApply_RejectsContradictions(t *testing.T) {
+	must := require.New(t)
 	headerProfile := Profile{name: "header-platform", Signals: map[otlp.Signal]SignalDefaults{
 		otlp.SignalLogs: {Headers: map[string]string{"x-h": "v"}},
 	}}
@@ -420,14 +387,12 @@ func TestApply_RejectsContradictions(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			_, err := Apply(Input{TraceEmitter: tc.cfg, Headers: tc.headers, Getenv: noEnv}, tc.profile)
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Errorf("expected error containing %q, got %v", tc.want, err)
-			}
+			must.ErrorContains(err, tc.want)
 		})
 	}
 
-	if _, err := Apply(Input{TraceEmitter: types.TraceEmitterConfig{Type: "otel"}, Getenv: noEnv}, Profile{name: "attr-only", ResourceAttrs: []attribute.KeyValue{attribute.String("a", "b")}}); err != nil {
-		t.Errorf("a profile that only adds attributes must work over grpc: %v", err)
-	}
+	_, err := Apply(Input{TraceEmitter: types.TraceEmitterConfig{Type: "otel"}, Getenv: noEnv}, Profile{name: "attr-only", ResourceAttrs: []attribute.KeyValue{attribute.String("a", "b")}})
+	must.NoError(err, "a profile that only adds attributes must work over grpc")
 }

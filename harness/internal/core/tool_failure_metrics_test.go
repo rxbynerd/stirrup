@@ -6,10 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/trace/noop"
@@ -57,12 +58,11 @@ func (errorPolicy) Check(_ context.Context, _ types.ToolDefinition, _ json.RawMe
 // async_preflight_error test currently needs this distinction).
 func buildMetricsHarness(t *testing.T, tools []*tool.Tool, perm permission.PermissionPolicy, gr guard.GuardRail, tr transport.Transport) (*AgenticLoop, *sdkmetric.ManualReader) {
 	t.Helper()
+	must := require.New(t)
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	metrics, err := observability.NewMetricsForTesting(mp)
-	if err != nil {
-		t.Fatalf("NewMetricsForTesting: %v", err)
-	}
+	must.NoError(err, "NewMetricsForTesting")
 	registry := tool.NewRegistry()
 	for _, tl := range tools {
 		registry.Register(tl)
@@ -111,10 +111,9 @@ type failureDataPoint struct {
 // empty slice when the counter has no observations.
 func collectFailures(t *testing.T, reader *sdkmetric.ManualReader) []failureDataPoint {
 	t.Helper()
+	must := require.New(t)
 	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
+	must.NoError(reader.Collect(context.Background(), &rm))
 	var out []failureDataPoint
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
@@ -122,9 +121,7 @@ func collectFailures(t *testing.T, reader *sdkmetric.ManualReader) []failureData
 				continue
 			}
 			sum, ok := m.Data.(metricdata.Sum[int64])
-			if !ok {
-				t.Fatalf("expected Sum[int64] for tool_failures, got %T", m.Data)
-			}
+			must.True(ok, "expected Sum[int64] for tool_failures, got %T", m.Data)
 			for _, dp := range sum.DataPoints {
 				fp := failureDataPoint{value: dp.Value}
 				for _, kv := range dp.Attributes.ToSlice() {
@@ -242,14 +239,14 @@ func handlerlessTool() *tool.Tool {
 	}
 }
 
-// TestToolFailureMetrics_TableDriven verifies that each
-// dispatch-site failure category emits the
+// TestToolFailureMetrics_EmitsOneObservationPerFailureCategory verifies
+// that each dispatch-site failure category emits the
 // stirrup.harness.tool_failures counter with the correct (tool.name,
 // category, provider.type, provider.model, run.mode) label set.
 //
 // One row per category that can fire from preflightToolCall,
 // executeToolCall, or planAndDispatch's PhasePreTool guard check.
-func TestToolFailureMetrics_TableDriven(t *testing.T) {
+func TestToolFailureMetrics_EmitsOneObservationPerFailureCategory(t *testing.T) {
 	const (
 		wantProvider = "anthropic"
 		wantModel    = "claude-sonnet-4-6"
@@ -372,6 +369,7 @@ func TestToolFailureMetrics_TableDriven(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			loop, reader := buildMetricsHarness(t, tc.tools, tc.perm, tc.guard, tc.transport)
 			cfg := &types.RunConfig{
 				RunID:        "test-run",
@@ -383,32 +381,17 @@ func TestToolFailureMetrics_TableDriven(t *testing.T) {
 				[]types.ToolCall{tc.call}, &stallDetector{},
 				wantProvider, wantModel,
 			)
-			if outcome != "" {
-				t.Fatalf("unexpected stall outcome %q", outcome)
-			}
+			must.Empty(outcome, "no stall outcome expected")
 			failures := collectFailures(t, reader)
-			if len(failures) != 1 {
-				t.Fatalf("expected 1 tool_failures observation, got %d: %+v", len(failures), failures)
-			}
-			got := failures[0]
-			if got.value != 1 {
-				t.Errorf("value = %d, want 1", got.value)
-			}
-			if got.tool != tc.wantTool {
-				t.Errorf("tool.name = %q, want %q", got.tool, tc.wantTool)
-			}
-			if got.category != tc.wantCategory.String() {
-				t.Errorf("category = %q, want %q", got.category, tc.wantCategory.String())
-			}
-			if got.provider != wantProvider {
-				t.Errorf("provider.type = %q, want %q", got.provider, wantProvider)
-			}
-			if got.model != wantModel {
-				t.Errorf("provider.model = %q, want %q", got.model, wantModel)
-			}
-			if got.mode != wantMode {
-				t.Errorf("run.mode = %q, want %q", got.mode, wantMode)
-			}
+			must.Len(failures, 1, "tool_failures observations: %+v", failures)
+			must.Equal(failureDataPoint{
+				value:    1,
+				tool:     tc.wantTool,
+				category: tc.wantCategory.String(),
+				provider: wantProvider,
+				model:    wantModel,
+				mode:     wantMode,
+			}, failures[0])
 		})
 	}
 }
@@ -418,6 +401,7 @@ func TestToolFailureMetrics_TableDriven(t *testing.T) {
 // Without this guard, a regression that swapped the !success branch
 // for an unconditional emit would inflate the counter on every call.
 func TestToolFailureMetrics_NoEmissionOnSuccess(t *testing.T) {
+	must := require.New(t)
 	loop, reader := buildMetricsHarness(t, []*tool.Tool{trivialTool()}, nil, nil, nil)
 	cfg := &types.RunConfig{
 		RunID:        "test-run-ok",
@@ -429,20 +413,18 @@ func TestToolFailureMetrics_NoEmissionOnSuccess(t *testing.T) {
 		[]types.ToolCall{{ID: "tc_ok", Name: "trivial", Input: json.RawMessage(`{}`)}},
 		&stallDetector{}, "anthropic", "claude-sonnet-4-6",
 	)
-	if outcome != "" {
-		t.Fatalf("unexpected stall outcome %q", outcome)
-	}
-	if failures := collectFailures(t, reader); len(failures) != 0 {
-		t.Errorf("expected no tool_failures observations on success path, got %+v", failures)
-	}
+	must.Empty(outcome, "no stall outcome expected")
+	must.Empty(collectFailures(t, reader), "expected no tool_failures observations on success path")
 }
 
-// TestToolFailureMetrics_StallTermination verifies the stall detector
-// surfaces its terminations into the tool-failure series. Five
-// consecutive failed calls trip the consecutive-failures path; the
-// metric emission must carry the stall_consecutive_failures category
-// alongside the per-call handler_error emissions.
-func TestToolFailureMetrics_StallTermination(t *testing.T) {
+// TestToolFailureMetrics_StallConsecutiveFailuresEmitsCategory verifies
+// the stall detector surfaces its terminations into the tool-failure
+// series. Five consecutive failed calls trip the consecutive-failures
+// path; the metric emission must carry the stall_consecutive_failures
+// category alongside the per-call handler_error emissions.
+func TestToolFailureMetrics_StallConsecutiveFailuresEmitsCategory(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop, reader := buildMetricsHarness(t, []*tool.Tool{erroringTool()}, nil, nil, nil)
 	cfg := &types.RunConfig{
 		RunID:        "test-run-stall",
@@ -463,9 +445,7 @@ func TestToolFailureMetrics_StallTermination(t *testing.T) {
 		calls, &stallDetector{},
 		"anthropic", "claude-sonnet-4-6",
 	)
-	if outcome != "tool_failures" {
-		t.Fatalf("expected stall outcome tool_failures, got %q", outcome)
-	}
+	must.Equal("tool_failures", outcome, "stall outcome")
 	failures := collectFailures(t, reader)
 	// We expect: 5 handler_error emissions (one per failed call) and
 	// exactly one stall_consecutive_failures emission tagged with the
@@ -482,12 +462,8 @@ func TestToolFailureMetrics_StallTermination(t *testing.T) {
 			stallCount += fp.value
 		}
 	}
-	if handlerErrors != 5 {
-		t.Errorf("handler_error count = %d, want 5", handlerErrors)
-	}
-	if stallCount != 1 {
-		t.Errorf("stall_consecutive_failures count = %d, want 1", stallCount)
-	}
+	check.Equal(int64(5), handlerErrors, "handler_error count")
+	check.Equal(int64(1), stallCount, "stall_consecutive_failures count")
 }
 
 // TestToolFailureCategory_BoundedCardinality is the cardinality guard:
@@ -496,6 +472,8 @@ func TestToolFailureMetrics_StallTermination(t *testing.T) {
 // the metric's label cardinality; this test pins the bound by asserting
 // every emission's category is recognised.
 func TestToolFailureCategory_BoundedCardinality(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	// Mix of categories from different dispatch sites so the assertion
 	// sweeps every emission path: unknown_tool, schema_validation_failed,
 	// handler_error, and the stall path.
@@ -522,17 +500,13 @@ func TestToolFailureCategory_BoundedCardinality(t *testing.T) {
 		"anthropic", "claude-sonnet-4-6",
 	)
 	failures := collectFailures(t, reader)
-	if len(failures) == 0 {
-		t.Fatal("expected at least one tool_failures observation; none were emitted")
-	}
+	must.NotEmpty(failures, "expected at least one tool_failures observation")
 	for _, fp := range failures {
-		if fp.category == "" {
-			t.Errorf("emission with empty category: %+v", fp)
+		if !check.NotEmpty(fp.category, "emission with empty category: %+v", fp) {
 			continue
 		}
-		if !observability.ToolFailureCategory(fp.category).IsValid() {
-			t.Errorf("emission carried unknown category %q: %+v", fp.category, fp)
-		}
+		check.True(observability.ToolFailureCategory(fp.category).IsValid(),
+			"emission carried unknown category %q: %+v", fp.category, fp)
 	}
 }
 
@@ -551,6 +525,7 @@ func TestToolFailureCategory_BoundedCardinality(t *testing.T) {
 // that swapped IsValid() for a weaker check (e.g. != "") would let this
 // observation through and fail the assertion.
 func TestToolFailureCategory_InvalidCategoryDropped(t *testing.T) {
+	must := require.New(t)
 	loop, reader := buildMetricsHarness(t, []*tool.Tool{trivialTool()}, nil, nil, nil)
 
 	// A failed call with a category that is not in the enum. IsValid()
@@ -564,31 +539,27 @@ func TestToolFailureCategory_InvalidCategoryDropped(t *testing.T) {
 	}
 	// Guard the test's own premise: if this string ever becomes a real
 	// enum member the test is no longer exercising the rejection branch.
-	if bogus.failureCategory.IsValid() {
-		t.Fatalf("test premise broken: %q is now a valid category", bogus.failureCategory)
-	}
+	must.False(bogus.failureCategory.IsValid(),
+		"test premise broken: %q is now a valid category", bogus.failureCategory)
 
 	got := loop.emitToolCallMetrics(
 		context.Background(), bogus, 5*time.Millisecond,
 		"anthropic", "claude-sonnet-4-6", "execution",
 	)
-	if got != "trivial" {
-		t.Errorf("metricToolName = %q, want %q (no sentinel substitution for a non-unknown_tool category)", got, "trivial")
-	}
+	must.Equal("trivial", got,
+		"metric tool name: no sentinel substitution for a non-unknown_tool category")
 
 	failures := collectFailures(t, reader)
-	if len(failures) != 0 {
-		t.Fatalf("expected no tool_failures observation for an invalid category, got %d: %+v", len(failures), failures)
-	}
+	must.Empty(failures, "expected no tool_failures observation for an invalid category")
 }
 
-// TestToolFailureCategory_EnumIsValid sanity-checks the enum itself:
-// every exported ToolFailure* constant declared in toolfailure.go must
-// be registered in allToolFailureCategories. A new constant added
-// without a matching map entry would IsValid()=false at runtime and
-// silently drop emissions; this test catches that omission at build
-// time of the test binary.
-func TestToolFailureCategory_EnumIsValid(t *testing.T) {
+// TestToolFailureCategory_IsValidAcceptsOnlyRegisteredConstants checks the
+// enum itself: every exported ToolFailure* constant declared in
+// toolfailure.go must be registered in allToolFailureCategories. A new
+// constant added without a matching map entry would IsValid()=false at
+// runtime and silently drop emissions; this test catches that omission at
+// build time of the test binary.
+func TestToolFailureCategory_IsValidAcceptsOnlyRegisteredConstants(t *testing.T) {
 	known := []observability.ToolFailureCategory{
 		observability.ToolFailureUnknownTool,
 		observability.ToolFailureInvalidArguments,
@@ -613,18 +584,29 @@ func TestToolFailureCategory_EnumIsValid(t *testing.T) {
 		observability.ToolFailureNoToolWhenRequired,
 	}
 	for _, c := range known {
-		if !c.IsValid() {
-			t.Errorf("constant %q is not registered in allToolFailureCategories", c)
-		}
-		if c.String() == "" {
-			t.Errorf("constant has empty wire string")
-		}
+		t.Run(string(c), func(t *testing.T) {
+			must := require.New(t)
+			must.True(c.IsValid(), "%q is not registered in allToolFailureCategories", c)
+			must.NotEmpty(c.String(), "wire string is empty")
+		})
 	}
+
 	// Free-form strings must always fail validation.
-	for _, bogus := range []string{"", "not_a_category", "PermissionDenied", "UNKNOWN_TOOL"} {
-		if observability.ToolFailureCategory(bogus).IsValid() {
-			t.Errorf("bogus category %q must not validate", bogus)
-		}
+	bogusCategories := []struct {
+		name  string
+		value string
+	}{
+		{name: "empty string", value: ""},
+		{name: "unregistered snake case", value: "not_a_category"},
+		{name: "pascal case", value: "PermissionDenied"},
+		{name: "upper snake case", value: "UNKNOWN_TOOL"},
+	}
+	for _, tc := range bogusCategories {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.False(observability.ToolFailureCategory(tc.value).IsValid(),
+				"bogus category %q must not validate", tc.value)
+		})
 	}
 }
 
@@ -648,6 +630,26 @@ func (streamErroringProvider) Stream(_ context.Context, _ types.StreamParams) (<
 	return ch, nil
 }
 
+// failuresInCategory returns the observations recorded under category.
+func failuresInCategory(failures []failureDataPoint, category string) []failureDataPoint {
+	var out []failureDataPoint
+	for _, fp := range failures {
+		if fp.category == category {
+			out = append(out, fp)
+		}
+	}
+	return out
+}
+
+// sumFailureValues totals the counter values across the observations.
+func sumFailureValues(failures []failureDataPoint) int64 {
+	var total int64
+	for _, fp := range failures {
+		total += fp.value
+	}
+	return total
+}
+
 // buildProviderFailureLoop builds a loop wired to a manual-reader
 // metric provider with the supplied test provider and a test tool
 // (which forces the loop to attach tool definitions to its request,
@@ -656,12 +658,11 @@ func buildProviderFailureLoop(t *testing.T, prov interface {
 	Stream(context.Context, types.StreamParams) (<-chan types.StreamEvent, error)
 }) (*AgenticLoop, *sdkmetric.ManualReader, *types.RunConfig) {
 	t.Helper()
+	must := require.New(t)
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	metrics, err := observability.NewMetricsForTesting(mp)
-	if err != nil {
-		t.Fatalf("NewMetricsForTesting: %v", err)
-	}
+	must.NoError(err, "NewMetricsForTesting")
 	registry := tool.NewRegistry()
 	registry.Register(trivialTool())
 	loop := &AgenticLoop{
@@ -705,20 +706,16 @@ func buildProviderFailureLoop(t *testing.T, prov interface {
 // before any events flow, the stirrup.harness.tool_failures counter
 // must increment with category=provider_request_failed.
 func TestToolFailureMetrics_ProviderRequestRejected(t *testing.T) {
+	must := require.New(t)
 	loop, reader, cfg := buildProviderFailureLoop(t, erroringProvider{})
 	_, _ = loop.Run(context.Background(), cfg)
 	failures := collectFailures(t, reader)
-	found := false
-	for _, fp := range failures {
-		if fp.category == observability.ToolFailureProviderRequest.String() {
-			found = true
-			if fp.provider != "anthropic" || fp.model != "claude-sonnet-4-6" || fp.mode != "execution" {
-				t.Errorf("labels = %+v, want provider/model/mode populated", fp)
-			}
-		}
-	}
-	if !found {
-		t.Errorf("expected provider_request_failed observation, got %+v", failures)
+	matching := failuresInCategory(failures, observability.ToolFailureProviderRequest.String())
+	must.NotEmpty(matching, "expected provider_request_failed observation, got %+v", failures)
+	for _, fp := range matching {
+		must.Equal("anthropic", fp.provider, "provider.type label of %+v", fp)
+		must.Equal("claude-sonnet-4-6", fp.model, "provider.model label of %+v", fp)
+		must.Equal("execution", fp.mode, "run.mode label of %+v", fp)
 	}
 }
 
@@ -726,18 +723,12 @@ func TestToolFailureMetrics_ProviderRequestRejected(t *testing.T) {
 // mid-stream-failure path: a tool-bearing turn whose stream errors
 // after opening must emit category=provider_stream_failed.
 func TestToolFailureMetrics_ProviderStreamFailed(t *testing.T) {
+	must := require.New(t)
 	loop, reader, cfg := buildProviderFailureLoop(t, streamErroringProvider{})
 	_, _ = loop.Run(context.Background(), cfg)
 	failures := collectFailures(t, reader)
-	found := false
-	for _, fp := range failures {
-		if fp.category == observability.ToolFailureProviderStream.String() {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("expected provider_stream_failed observation, got %+v", failures)
-	}
+	must.NotEmpty(failuresInCategory(failures, observability.ToolFailureProviderStream.String()),
+		"expected provider_stream_failed observation, got %+v", failures)
 }
 
 // TestToolFailureMetrics_ErrorCategoryInTrace verifies the
@@ -745,6 +736,7 @@ func TestToolFailureMetrics_ProviderStreamFailed(t *testing.T) {
 // same category that lands on stirrup.harness.tool_failures so JSONL
 // traces and metrics dashboards report the same taxonomy.
 func TestToolFailureMetrics_ErrorCategoryInTrace(t *testing.T) {
+	must := require.New(t)
 	loop, _ := buildMetricsHarness(t, []*tool.Tool{erroringTool()}, nil, nil, nil)
 	rec := &recordingTraceEmitter{}
 	loop.Trace = rec
@@ -760,27 +752,23 @@ func TestToolFailureMetrics_ErrorCategoryInTrace(t *testing.T) {
 		"anthropic", "claude-sonnet-4-6",
 	)
 	_, calls := rec.snapshot()
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 recorded tool call, got %d", len(calls))
-	}
-	if calls[0].Success {
-		t.Fatal("expected failed call")
-	}
-	if calls[0].ErrorCategory != observability.ToolFailureHandlerError.String() {
-		t.Errorf("ErrorCategory = %q, want %q", calls[0].ErrorCategory, observability.ToolFailureHandlerError)
-	}
+	must.Len(calls, 1, "recorded tool calls")
+	must.False(calls[0].Success, "expected failed call")
+	must.Equal(observability.ToolFailureHandlerError.String(), calls[0].ErrorCategory)
 }
 
 // TestToolFailureMetrics_StallRepeatedCallsTermination covers the
-// stall_repeated_calls termination path (distinct from
-// stall_consecutive_failures, which the existing
-// TestToolFailureMetrics_StallTermination exercises). Three identical
-// successful calls first produce a nudge, which emits no stall
-// observation; three more after the nudge trip the stall, and the
-// co-emission block in planAndDispatch must add exactly one
+// stall_repeated_calls termination path. It is distinct from
+// stall_consecutive_failures, which
+// TestToolFailureMetrics_StallConsecutiveFailuresEmitsCategory exercises.
+//
+// Three identical successful calls first produce a nudge, which emits
+// no stall observation. Three more after the nudge trip the stall, and
+// the co-emission block in planAndDispatch must add exactly one
 // stall_repeated_calls observation to stirrup.harness.tool_failures,
 // even though no per-call dispatch failed.
 func TestToolFailureMetrics_StallRepeatedCallsTermination(t *testing.T) {
+	must := require.New(t)
 	loop, reader := buildMetricsHarness(t, []*tool.Tool{trivialTool()}, nil, nil, nil)
 	cfg := &types.RunConfig{
 		RunID:        "test-run-stall-repeat",
@@ -800,41 +788,26 @@ func TestToolFailureMetrics_StallRepeatedCallsTermination(t *testing.T) {
 		calls, stall,
 		"anthropic", "claude-sonnet-4-6",
 	)
-	if outcome != "" {
-		t.Fatalf("first batch: outcome %q, want a nudge instead of a stall", outcome)
-	}
-	if _, ok := stall.takeNudge(); !ok {
-		t.Fatal("first batch: no nudge")
-	}
-	for _, fp := range collectFailures(t, reader) {
-		if fp.category == observability.ToolFailureStallRepeated.String() {
-			t.Fatalf("stall_repeated_calls observed before any termination: %+v", fp)
-		}
-	}
+	must.Empty(outcome, "first batch should nudge instead of stalling")
+	_, ok := stall.takeNudge()
+	must.True(ok, "first batch: no nudge")
+	must.Empty(failuresInCategory(collectFailures(t, reader), observability.ToolFailureStallRepeated.String()),
+		"stall_repeated_calls observed before any termination")
+
 	_, _, outcome = loop.planAndDispatch(
 		context.Background(), cfg,
 		calls, stall,
 		"anthropic", "claude-sonnet-4-6",
 	)
-	if outcome != "stalled" {
-		t.Fatalf("expected stall outcome 'stalled', got %q", outcome)
+	must.Equal("stalled", outcome)
+	stallRepeated := failuresInCategory(collectFailures(t, reader), observability.ToolFailureStallRepeated.String())
+	for _, fp := range stallRepeated {
+		must.Equal("trivial", fp.tool, "stall_repeated_calls tool.name")
+		must.Equal("anthropic", fp.provider, "stall_repeated_calls provider.type label of %+v", fp)
+		must.Equal("claude-sonnet-4-6", fp.model, "stall_repeated_calls provider.model label of %+v", fp)
+		must.Equal("execution", fp.mode, "stall_repeated_calls run.mode label of %+v", fp)
 	}
-	failures := collectFailures(t, reader)
-	var stallRepeated int64
-	for _, fp := range failures {
-		if fp.category == observability.ToolFailureStallRepeated.String() {
-			stallRepeated += fp.value
-			if fp.tool != "trivial" {
-				t.Errorf("stall_repeated_calls tool.name = %q, want %q", fp.tool, "trivial")
-			}
-			if fp.provider != "anthropic" || fp.model != "claude-sonnet-4-6" || fp.mode != "execution" {
-				t.Errorf("stall_repeated_calls labels = %+v, want provider/model/mode populated", fp)
-			}
-		}
-	}
-	if stallRepeated != 1 {
-		t.Errorf("stall_repeated_calls count = %d, want exactly 1", stallRepeated)
-	}
+	must.Equal(int64(1), sumFailureValues(stallRepeated), "stall_repeated_calls count")
 }
 
 // TestToolFailureMetrics_AsyncDeadlineRoutesToTimeout pins the
@@ -844,6 +817,7 @@ func TestToolFailureMetrics_StallRepeatedCallsTermination(t *testing.T) {
 // async_cancelled to detect user-cancellation spikes, and a
 // deadline-bounded run polluting that series would defeat the alert.
 func TestToolFailureMetrics_AsyncDeadlineRoutesToTimeout(t *testing.T) {
+	must := require.New(t)
 	tr := newAsyncTestTransport()
 	loop, reader := buildMetricsHarness(t, []*tool.Tool{asyncEchoTool()}, nil, nil, tr)
 	cfg := &types.RunConfig{
@@ -864,25 +838,13 @@ func TestToolFailureMetrics_AsyncDeadlineRoutesToTimeout(t *testing.T) {
 		&stallDetector{},
 		"anthropic", "claude-sonnet-4-6",
 	)
-	if outcome != "" {
-		t.Fatalf("unexpected stall outcome %q", outcome)
-	}
+	must.Empty(outcome, "unexpected stall outcome")
 	failures := collectFailures(t, reader)
-	var timeoutHits, cancelledHits int64
-	for _, fp := range failures {
-		switch fp.category {
-		case observability.ToolFailureAsyncTimeout.String():
-			timeoutHits += fp.value
-		case observability.ToolFailureAsyncCancelled.String():
-			cancelledHits += fp.value
-		}
-	}
-	if timeoutHits != 1 {
-		t.Errorf("async_timeout count = %d, want exactly 1; full failures = %+v", timeoutHits, failures)
-	}
-	if cancelledHits != 0 {
-		t.Errorf("async_cancelled count = %d, want 0 (deadline must NOT route to cancelled); full failures = %+v", cancelledHits, failures)
-	}
+	timeoutHits := sumFailureValues(failuresInCategory(failures, observability.ToolFailureAsyncTimeout.String()))
+	cancelledHits := sumFailureValues(failuresInCategory(failures, observability.ToolFailureAsyncCancelled.String()))
+	must.Equal(int64(1), timeoutHits, "async_timeout count; full failures = %+v", failures)
+	must.Equal(int64(0), cancelledHits,
+		"async_cancelled count; a deadline must not route to cancelled; full failures = %+v", failures)
 }
 
 // TestToolFailureMetrics_AsyncCancelled exercises the user-driven
@@ -892,6 +854,7 @@ func TestToolFailureMetrics_AsyncDeadlineRoutesToTimeout(t *testing.T) {
 // async_timeout — the operator-visible distinction the deadline split
 // preserves.
 func TestToolFailureMetrics_AsyncCancelled(t *testing.T) {
+	must := require.New(t)
 	tr := newAsyncTestTransport()
 	loop, reader := buildMetricsHarness(t, []*tool.Tool{asyncEchoTool()}, nil, nil, tr)
 	cfg := &types.RunConfig{
@@ -920,25 +883,13 @@ func TestToolFailureMetrics_AsyncCancelled(t *testing.T) {
 		&stallDetector{},
 		"anthropic", "claude-sonnet-4-6",
 	)
-	if outcome != "" {
-		t.Fatalf("unexpected stall outcome %q", outcome)
-	}
+	must.Empty(outcome, "unexpected stall outcome")
 	failures := collectFailures(t, reader)
-	var timeoutHits, cancelledHits int64
-	for _, fp := range failures {
-		switch fp.category {
-		case observability.ToolFailureAsyncTimeout.String():
-			timeoutHits += fp.value
-		case observability.ToolFailureAsyncCancelled.String():
-			cancelledHits += fp.value
-		}
-	}
-	if cancelledHits != 1 {
-		t.Errorf("async_cancelled count = %d, want exactly 1; full failures = %+v", cancelledHits, failures)
-	}
-	if timeoutHits != 0 {
-		t.Errorf("async_timeout count = %d, want 0 on explicit cancellation; full failures = %+v", timeoutHits, failures)
-	}
+	cancelledHits := sumFailureValues(failuresInCategory(failures, observability.ToolFailureAsyncCancelled.String()))
+	timeoutHits := sumFailureValues(failuresInCategory(failures, observability.ToolFailureAsyncTimeout.String()))
+	must.Equal(int64(1), cancelledHits, "async_cancelled count; full failures = %+v", failures)
+	must.Equal(int64(0), timeoutHits,
+		"async_timeout count on explicit cancellation; full failures = %+v", failures)
 }
 
 // TestToolFailureMetrics_AsyncUpstreamError exercises the
@@ -947,6 +898,7 @@ func TestToolFailureMetrics_AsyncCancelled(t *testing.T) {
 // async_upstream_error to keep upstream faults distinct from
 // harness-side faults on dashboards.
 func TestToolFailureMetrics_AsyncUpstreamError(t *testing.T) {
+	must := require.New(t)
 	tr := newAsyncTestTransport()
 	loop, reader := buildMetricsHarness(t, []*tool.Tool{asyncEchoTool()}, nil, nil, tr)
 	cfg := &types.RunConfig{
@@ -978,28 +930,16 @@ func TestToolFailureMetrics_AsyncUpstreamError(t *testing.T) {
 		&stallDetector{},
 		"anthropic", "claude-sonnet-4-6",
 	)
-	if outcome != "" {
-		t.Fatalf("unexpected stall outcome %q", outcome)
-	}
-	if len(results) != 1 || !results[0].IsError {
-		t.Fatalf("expected one errored result, got %+v", results)
-	}
-	if !strings.Contains(results[0].Content, "upstream_error:") {
-		t.Errorf("result content missing upstream_error: prefix, got %q", results[0].Content)
-	}
+	must.Empty(outcome, "unexpected stall outcome")
+	must.Len(results, 1)
+	must.True(results[0].IsError, "expected errored result, got %+v", results)
+	must.Contains(results[0].Content, "upstream_error:")
 	failures := collectFailures(t, reader)
-	var upstreamHits int64
-	for _, fp := range failures {
-		if fp.category == observability.ToolFailureAsyncUpstreamError.String() {
-			upstreamHits += fp.value
-			if fp.tool != "async_echo" {
-				t.Errorf("async_upstream_error tool.name = %q, want %q", fp.tool, "async_echo")
-			}
-		}
+	upstream := failuresInCategory(failures, observability.ToolFailureAsyncUpstreamError.String())
+	for _, fp := range upstream {
+		must.Equal("async_echo", fp.tool, "async_upstream_error tool.name")
 	}
-	if upstreamHits != 1 {
-		t.Errorf("async_upstream_error count = %d, want exactly 1; full failures = %+v", upstreamHits, failures)
-	}
+	must.Equal(int64(1), sumFailureValues(upstream), "async_upstream_error count; full failures = %+v", failures)
 }
 
 // TestToolFailureMetrics_AsyncPanic exercises the Phase 2 goroutine
@@ -1009,6 +949,7 @@ func TestToolFailureMetrics_AsyncUpstreamError(t *testing.T) {
 // dispatch_parallel_test.go covers that invariant; this test focuses
 // on the metric emission specifically.
 func TestToolFailureMetrics_AsyncPanic(t *testing.T) {
+	must := require.New(t)
 	tr := newAsyncTestTransport()
 	panicTool := &tool.Tool{
 		Name:        "async_will_panic",
@@ -1032,28 +973,16 @@ func TestToolFailureMetrics_AsyncPanic(t *testing.T) {
 		&stallDetector{},
 		"anthropic", "claude-sonnet-4-6",
 	)
-	if outcome != "" {
-		t.Fatalf("unexpected stall outcome %q", outcome)
-	}
-	if len(results) != 1 || !results[0].IsError {
-		t.Fatalf("expected one errored result on panic, got %+v", results)
-	}
-	if !strings.Contains(results[0].Content, "panic") {
-		t.Errorf("result content missing 'panic' substring, got %q", results[0].Content)
-	}
+	must.Empty(outcome, "unexpected stall outcome")
+	must.Len(results, 1)
+	must.True(results[0].IsError, "expected errored result on panic, got %+v", results)
+	must.Contains(results[0].Content, "panic")
 	failures := collectFailures(t, reader)
-	var panicHits int64
-	for _, fp := range failures {
-		if fp.category == observability.ToolFailureAsyncPanic.String() {
-			panicHits += fp.value
-			if fp.tool != "async_will_panic" {
-				t.Errorf("async_panic tool.name = %q, want %q", fp.tool, "async_will_panic")
-			}
-		}
+	panics := failuresInCategory(failures, observability.ToolFailureAsyncPanic.String())
+	for _, fp := range panics {
+		must.Equal("async_will_panic", fp.tool, "async_panic tool.name")
 	}
-	if panicHits != 1 {
-		t.Errorf("async_panic count = %d, want exactly 1; full failures = %+v", panicHits, failures)
-	}
+	must.Equal(int64(1), sumFailureValues(panics), "async_panic count; full failures = %+v", failures)
 }
 
 // TestToolFailureMetrics_AsyncInternalError exercises the defensive
@@ -1068,6 +997,7 @@ func TestToolFailureMetrics_AsyncPanic(t *testing.T) {
 // ID — the override unblocks Await like the real extractor but delivers
 // the wrong concrete type, driving the fallthrough.
 func TestToolFailureMetrics_AsyncInternalError(t *testing.T) {
+	must := require.New(t)
 	tr := newAsyncTestTransport()
 	loop, reader := buildMetricsHarness(t, []*tool.Tool{asyncEchoTool()}, nil, nil, tr)
 	// Override the extractor BEFORE the first dispatch constructs the
@@ -1105,26 +1035,14 @@ func TestToolFailureMetrics_AsyncInternalError(t *testing.T) {
 		&stallDetector{},
 		"anthropic", "claude-sonnet-4-6",
 	)
-	if outcome != "" {
-		t.Fatalf("unexpected stall outcome %q", outcome)
-	}
-	if len(results) != 1 || !results[0].IsError {
-		t.Fatalf("expected one errored result, got %+v", results)
-	}
-	if !strings.Contains(results[0].Content, "internal error: unexpected payload type") {
-		t.Errorf("result content missing internal-error prefix, got %q", results[0].Content)
-	}
+	must.Empty(outcome, "unexpected stall outcome")
+	must.Len(results, 1)
+	must.True(results[0].IsError, "expected errored result, got %+v", results)
+	must.Contains(results[0].Content, "internal error: unexpected payload type")
 	failures := collectFailures(t, reader)
-	var internalHits int64
-	for _, fp := range failures {
-		if fp.category == observability.ToolFailureAsyncInternal.String() {
-			internalHits += fp.value
-			if fp.tool != "async_echo" {
-				t.Errorf("async_internal_error tool.name = %q, want %q", fp.tool, "async_echo")
-			}
-		}
+	internal := failuresInCategory(failures, observability.ToolFailureAsyncInternal.String())
+	for _, fp := range internal {
+		must.Equal("async_echo", fp.tool, "async_internal_error tool.name")
 	}
-	if internalHits != 1 {
-		t.Errorf("async_internal_error count = %d, want exactly 1; full failures = %+v", internalHits, failures)
-	}
+	must.Equal(int64(1), sumFailureValues(internal), "async_internal_error count; full failures = %+v", failures)
 }

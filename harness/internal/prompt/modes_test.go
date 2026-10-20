@@ -3,26 +3,24 @@ package prompt
 import (
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestModePrompts_AllModesPresent(t *testing.T) {
+	must := require.New(t)
 	prompts := ModePrompts()
 
 	expectedModes := []string{"execution", "planning", "review", "research", "toil"}
 	for _, mode := range expectedModes {
-		text, ok := prompts[mode]
-		if !ok {
-			t.Errorf("ModePrompts() missing mode %q", mode)
-			continue
-		}
-		if text == "" {
-			t.Errorf("ModePrompts()[%q] is empty", mode)
-		}
+		t.Run(mode, func(t *testing.T) {
+			must := require.New(t)
+			must.Contains(prompts, mode)
+			must.NotEmpty(prompts[mode])
+		})
 	}
 
-	if len(prompts) != len(expectedModes) {
-		t.Errorf("ModePrompts() has %d entries, want %d", len(prompts), len(expectedModes))
-	}
+	must.Len(prompts, len(expectedModes))
 }
 
 func TestModePrompts_ExpectedPhrases(t *testing.T) {
@@ -41,11 +39,10 @@ func TestModePrompts_ExpectedPhrases(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.mode, func(t *testing.T) {
+			must := require.New(t)
 			text := prompts[tc.mode]
 			for _, phrase := range tc.phrases {
-				if !strings.Contains(text, phrase) {
-					t.Errorf("ModePrompts()[%q] does not contain %q", tc.mode, phrase)
-				}
+				must.Contains(text, phrase)
 			}
 		})
 	}
@@ -53,21 +50,22 @@ func TestModePrompts_ExpectedPhrases(t *testing.T) {
 
 func TestModePrompts_NoLeadingTrailingWhitespace(t *testing.T) {
 	for mode, text := range ModePrompts() {
-		if text != strings.TrimSpace(text) {
-			t.Errorf("ModePrompts()[%q] has leading/trailing whitespace", mode)
-		}
+		t.Run(mode, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(strings.TrimSpace(text), text)
+		})
 	}
 }
 
 func TestModePrompts_Idempotent(t *testing.T) {
+	must := require.New(t)
 	a := ModePrompts()
 	b := ModePrompts()
-	if len(a) != len(b) {
-		t.Fatal("ModePrompts() returned different lengths on successive calls")
-	}
+	must.Len(b, len(a), "ModePrompts() returned different lengths on successive calls")
 	for k, v := range a {
-		if b[k] != v {
-			t.Errorf("ModePrompts()[%q] differs between calls", k)
-		}
+		t.Run(k, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(v, b[k])
+		})
 	}
 }

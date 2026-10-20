@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -20,67 +22,67 @@ func lifecycleK8sCfg() K8sExecutorConfig {
 func TestBuildSandboxPod_DeadlineAndRunLabel(t *testing.T) {
 	pod := buildSandboxPod(lifecycleK8sCfg(), "stirrup-abc", nil)
 
-	if pod.Spec.ActiveDeadlineSeconds == nil || *pod.Spec.ActiveDeadlineSeconds != 4200 {
-		t.Errorf("activeDeadlineSeconds = %v, want 4200", pod.Spec.ActiveDeadlineSeconds)
-	}
-	if got := pod.Labels[k8sRunIDLabel]; got != "run-42" {
-		t.Errorf("run-id label = %q, want run-42", got)
-	}
-	if pod.Labels[k8sSandboxLabel] != "true" || pod.Labels[k8sPodNameLabel] != "stirrup-abc" {
-		t.Errorf("labels = %v, want the sandbox marker and pod-name labels kept", pod.Labels)
-	}
+	t.Run("active deadline matches the run lifetime", func(t *testing.T) {
+		must := require.New(t)
+		must.NotNil(pod.Spec.ActiveDeadlineSeconds)
+		must.Equal(int64(4200), *pod.Spec.ActiveDeadlineSeconds)
+	})
+	t.Run("run id label is set", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("run-42", pod.Labels[k8sRunIDLabel])
+	})
+	t.Run("sandbox marker and pod name labels are kept", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("true", pod.Labels[k8sSandboxLabel])
+		must.Equal("stirrup-abc", pod.Labels[k8sPodNameLabel])
+	})
 }
 
 func TestBuildSandboxPod_NoLifetimeLeavesDeadlineUnset(t *testing.T) {
+	must := require.New(t)
 	cfg := lifecycleK8sCfg()
 	cfg.Lifecycle = Lifecycle{}
 	pod := buildSandboxPod(cfg, "stirrup-abc", nil)
 
-	if pod.Spec.ActiveDeadlineSeconds != nil {
-		t.Errorf("activeDeadlineSeconds = %d, want nil", *pod.Spec.ActiveDeadlineSeconds)
-	}
-	if _, ok := pod.Labels[k8sRunIDLabel]; ok {
-		t.Errorf("labels = %v, want no run-id label for an empty run ID", pod.Labels)
-	}
+	must.Nil(pod.Spec.ActiveDeadlineSeconds)
+	must.NotContains(pod.Labels, k8sRunIDLabel, "an empty run ID must not produce a run-id label")
 }
 
 func TestBuildSandboxPod_OwnerReference(t *testing.T) {
 	harness := &HarnessPod{Namespace: "stirrup", Name: "job-xyz", UID: "uid-1"}
 
 	t.Run("same namespace owns the sandbox", func(t *testing.T) {
+		must := require.New(t)
 		cfg := lifecycleK8sCfg()
 		cfg.HarnessPod = harness
 		pod := buildSandboxPod(cfg, "stirrup-abc", nil)
 
-		if len(pod.OwnerReferences) != 1 {
-			t.Fatalf("ownerReferences = %v, want exactly one", pod.OwnerReferences)
-		}
+		must.Len(pod.OwnerReferences, 1)
 		ref := pod.OwnerReferences[0]
-		if ref.Kind != "Pod" || ref.APIVersion != "v1" || ref.Name != "job-xyz" || string(ref.UID) != "uid-1" {
-			t.Errorf("ownerReference = %+v, want Pod v1 job-xyz/uid-1", ref)
-		}
-		if ref.Controller != nil || ref.BlockOwnerDeletion != nil {
-			t.Errorf("ownerReference = %+v, want neither controller nor blockOwnerDeletion (the latter needs finalizers RBAC)", ref)
-		}
+		must.Equal("Pod", ref.Kind)
+		must.Equal("v1", ref.APIVersion)
+		must.Equal("job-xyz", ref.Name)
+		must.Equal("uid-1", string(ref.UID))
+		must.Nil(ref.Controller, "owner reference must not set controller")
+		must.Nil(ref.BlockOwnerDeletion, "blockOwnerDeletion needs finalizers RBAC, so it must stay unset")
 	})
 
 	t.Run("different namespace gets none", func(t *testing.T) {
+		must := require.New(t)
 		cfg := lifecycleK8sCfg()
 		cfg.Namespace = "sandboxes"
 		cfg.HarnessPod = harness
-		if refs := buildSandboxPod(cfg, "stirrup-abc", nil).OwnerReferences; len(refs) != 0 {
-			t.Errorf("ownerReferences = %v, want none across namespaces", refs)
-		}
+		must.Empty(buildSandboxPod(cfg, "stirrup-abc", nil).OwnerReferences, "no owner across namespaces")
 	})
 
 	t.Run("unknown harness pod gets none", func(t *testing.T) {
-		if refs := buildSandboxPod(lifecycleK8sCfg(), "stirrup-abc", nil).OwnerReferences; len(refs) != 0 {
-			t.Errorf("ownerReferences = %v, want none", refs)
-		}
+		must := require.New(t)
+		must.Empty(buildSandboxPod(lifecycleK8sCfg(), "stirrup-abc", nil).OwnerReferences)
 	})
 }
 
-func TestHarnessPodFromEnv(t *testing.T) {
+func TestHarnessPodFromEnv_ReadsPodIdentity(t *testing.T) {
+	must := require.New(t)
 	env := map[string]string{
 		EnvPodName:      "job-xyz",
 		EnvPodUID:       "uid-1",
@@ -89,59 +91,59 @@ func TestHarnessPodFromEnv(t *testing.T) {
 	get := func(k string) string { return env[k] }
 
 	got := HarnessPodFromEnv(get)
-	if got == nil || got.Name != "job-xyz" || got.UID != "uid-1" || got.Namespace != "stirrup" {
-		t.Fatalf("HarnessPodFromEnv = %+v, want job-xyz/uid-1 in stirrup", got)
-	}
+	must.NotNil(got)
+	must.Equal("job-xyz", got.Name)
+	must.Equal("uid-1", got.UID)
+	must.Equal("stirrup", got.Namespace)
 
 	for _, missing := range []string{EnvPodName, EnvPodUID, EnvPodNamespace} {
-		saved := env[missing]
-		env[missing] = ""
-		if p := HarnessPodFromEnv(get); p != nil {
-			t.Errorf("HarnessPodFromEnv without %s = %+v, want nil", missing, p)
-		}
-		env[missing] = saved
+		t.Run("nil when "+missing+" is empty", func(t *testing.T) {
+			must := require.New(t)
+			withoutMissing := func(k string) string {
+				if k == missing {
+					return ""
+				}
+				return env[k]
+			}
+			must.Nil(HarnessPodFromEnv(withoutMissing))
+		})
 	}
 }
 
 func TestEgressPolicyFor_CarriesRunLabel(t *testing.T) {
 	for _, mode := range []string{"none", "allowlist"} {
-		np, err := egressPolicyFor(&types.NetworkConfig{Mode: mode}, "stirrup", "stirrup-abc", "run-42")
-		if err != nil {
-			t.Fatalf("egressPolicyFor(%s): %v", mode, err)
-		}
-		if np.Labels[k8sRunIDLabel] != "run-42" || np.Labels[k8sSandboxLabel] != "true" {
-			t.Errorf("%s policy labels = %v, want sandbox marker and run-id", mode, np.Labels)
-		}
-		if _, ok := np.Spec.PodSelector.MatchLabels[k8sRunIDLabel]; ok {
-			t.Errorf("%s policy selector = %v, must stay keyed on the pod name only", mode, np.Spec.PodSelector.MatchLabels)
-		}
+		t.Run(mode, func(t *testing.T) {
+			must := require.New(t)
+			np, err := egressPolicyFor(&types.NetworkConfig{Mode: mode}, "stirrup", "stirrup-abc", "run-42")
+			must.NoError(err)
+			must.Equal("run-42", np.Labels[k8sRunIDLabel])
+			must.Equal("true", np.Labels[k8sSandboxLabel])
+			must.NotContains(np.Spec.PodSelector.MatchLabels, k8sRunIDLabel, "selector must stay keyed on the pod name only")
+		})
 	}
 }
 
-func TestK8sLabelValue(t *testing.T) {
+func TestK8sLabelValue_TruncatesToValidLabel(t *testing.T) {
 	long := strings.Repeat("a", 62) + "-" + strings.Repeat("b", 20)
-	tests := []struct{ in, want string }{
-		{"run-1738000000000000000", "run-1738000000000000000"},
-		{"", ""},
-		{long, strings.Repeat("a", 62)},
-		{strings.Repeat("a", 62) + "_x", strings.Repeat("a", 62)},
+	tests := []struct{ name, in, want string }{
+		{"keeps a valid run id", "run-1738000000000000000", "run-1738000000000000000"},
+		{"keeps an empty value", "", ""},
+		{"shortens a value over 63 characters", long, strings.Repeat("a", 62)},
+		{"strips an invalid tail", strings.Repeat("a", 62) + "_x", strings.Repeat("a", 62)},
 	}
 	for _, tt := range tests {
-		if got := k8sLabelValue(tt.in); got != tt.want {
-			t.Errorf("k8sLabelValue(%q) = %q, want %q", tt.in, got, tt.want)
-		}
-		if len(k8sLabelValue(tt.in)) > 63 {
-			t.Errorf("k8sLabelValue(%q) exceeds 63 characters", tt.in)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
+			got := k8sLabelValue(tt.in)
+			must.Equal(tt.want, got)
+			must.LessOrEqual(len(got), 63)
+		})
 	}
 }
 
 func TestBuildSandboxObject_CarriesRunLabel(t *testing.T) {
+	must := require.New(t)
 	obj, err := buildSandboxObject("stirrup", "stirrup-abc", "run-42", buildSandboxPodSpec(lifecycleK8sCfg(), nil, nil), time.Now())
-	if err != nil {
-		t.Fatalf("buildSandboxObject: %v", err)
-	}
-	if got := obj.GetLabels()[k8sRunIDLabel]; got != "run-42" {
-		t.Errorf("sandbox run-id label = %q, want run-42", got)
-	}
+	must.NoError(err)
+	must.Equal("run-42", obj.GetLabels()[k8sRunIDLabel])
 }

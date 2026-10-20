@@ -9,6 +9,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -43,16 +45,14 @@ func mcpServerReturningCallResult(t *testing.T, toolName, rawCallResult string) 
 // tool for serverName/toolName.
 func connectAndResolve(t *testing.T, srv *httptest.Server, serverName, toolName string) *tool.Tool {
 	t.Helper()
+	must := require.New(t)
 	registry := tool.NewRegistry()
 	client := NewClient(registry, srv.Client())
 	secrets := &stubSecretStore{secrets: map[string]string{}}
-	if err := client.Connect(context.Background(), types.MCPServerConfig{Name: serverName, URI: srv.URL}, secrets); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
+	err := client.Connect(context.Background(), types.MCPServerConfig{Name: serverName, URI: srv.URL}, secrets)
+	must.NoError(err)
 	resolved := registry.Resolve("mcp_" + serverName + "_" + toolName)
-	if resolved == nil {
-		t.Fatalf("tool mcp_%s_%s not registered", serverName, toolName)
-	}
+	must.NotNil(resolved, "tool mcp_%s_%s not registered", serverName, toolName)
 	return resolved
 }
 
@@ -60,6 +60,7 @@ func connectAndResolve(t *testing.T, srv *httptest.Server, serverName, toolName 
 // structuredContent is preserved into the envelope under the mcp_tool_result
 // kind, with the text content kept as the canonical fallback.
 func TestMCP_PreservesStructuredContent(t *testing.T) {
+	must := require.New(t)
 	raw := `{
 		"content": [{"type": "text", "text": "42 rows"}],
 		"structuredContent": {"rows": 42, "table": "users"}
@@ -67,32 +68,23 @@ func TestMCP_PreservesStructuredContent(t *testing.T) {
 	resolved := connectAndResolve(t, mcpServerReturningCallResult(t, "query", raw), "db", "query")
 
 	res, err := callMCPStructured(t, resolved, json.RawMessage(`{}`))
-	if err != nil {
-		t.Fatalf("call: %v", err)
-	}
-	if res.Text != "42 rows" {
-		t.Errorf("text fallback = %q, want %q", res.Text, "42 rows")
-	}
-	if res.Kind != kindMCPToolResult {
-		t.Errorf("kind = %q, want %q", res.Kind, kindMCPToolResult)
-	}
+	must.NoError(err)
+	must.Equal("42 rows", res.Text, "text fallback")
+	must.Equal(kindMCPToolResult, res.Kind)
+
 	var env mcpStructuredResult
-	if err := json.Unmarshal(res.Structured, &env); err != nil {
-		t.Fatalf("decode envelope: %v\nstructured: %s", err, res.Structured)
-	}
+	must.NoError(json.Unmarshal(res.Structured, &env), "decode envelope")
 	var sc map[string]any
-	if err := json.Unmarshal(env.StructuredContent, &sc); err != nil {
-		t.Fatalf("decode structuredContent: %v", err)
-	}
-	if sc["rows"] != float64(42) || sc["table"] != "users" {
-		t.Errorf("structuredContent = %v, want rows=42 table=users", sc)
-	}
+	must.NoError(json.Unmarshal(env.StructuredContent, &sc), "decode structuredContent")
+	must.InDelta(42.0, sc["rows"], 0)
+	must.Equal("users", sc["table"])
 }
 
 // TestMCP_MarksNonTextContent pins that resource links, embedded resources,
 // and unrecognised content types are represented explicitly in the envelope
 // rather than silently dropped, while the text content remains the fallback.
 func TestMCP_MarksNonTextContent(t *testing.T) {
+	must := require.New(t)
 	raw := `{
 		"content": [
 			{"type": "text", "text": "see attached"},
@@ -106,38 +98,50 @@ func TestMCP_MarksNonTextContent(t *testing.T) {
 	resolved := connectAndResolve(t, mcpServerReturningCallResult(t, "fetch", raw), "files", "fetch")
 
 	res, err := callMCPStructured(t, resolved, json.RawMessage(`{}`))
-	if err != nil {
-		t.Fatalf("call: %v", err)
-	}
-	if res.Text != "see attached" {
-		t.Errorf("text fallback = %q, want %q", res.Text, "see attached")
-	}
+	must.NoError(err)
+	must.Equal("see attached", res.Text, "text fallback")
+
 	var env mcpStructuredResult
-	if err := json.Unmarshal(res.Structured, &env); err != nil {
-		t.Fatalf("decode envelope: %v", err)
-	}
+	must.NoError(json.Unmarshal(res.Structured, &env), "decode envelope")
+	must.Len(env.NonText, 5, "expected descriptors for link, resource, image, audio and unsupported: %+v", env.NonText)
+
 	byKind := map[string]mcpNonTextContent{}
 	for _, n := range env.NonText {
 		byKind[n.Kind] = n
 	}
-	if len(env.NonText) != 5 {
-		t.Fatalf("expected 5 non-text descriptors (link, resource, image, audio, unsupported), got %d: %+v", len(env.NonText), env.NonText)
-	}
-	if rl, ok := byKind["resource_link"]; !ok || rl.URI != "file:///report.pdf" || rl.Name != "report" {
-		t.Errorf("resource_link descriptor wrong/missing: %+v", rl)
-	}
-	if rs, ok := byKind["resource"]; !ok || rs.URI != "file:///note.txt" || rs.Text != "inline note" {
-		t.Errorf("embedded resource descriptor wrong/missing: %+v", rs)
-	}
-	if img, ok := byKind["image"]; !ok || img.MimeType != "image/png" {
-		t.Errorf("image descriptor wrong/missing: %+v", img)
-	}
-	if au, ok := byKind["audio"]; !ok || au.MimeType != "audio/mpeg" {
-		t.Errorf("audio descriptor wrong/missing (shares the image arm but the discriminator must be 'audio'): %+v", au)
-	}
-	if un, ok := byKind["unsupported"]; !ok || un.Name != "future_kind" {
-		t.Errorf("unsupported descriptor wrong/missing (a new content kind must be marked, not dropped): %+v", un)
-	}
+	t.Run("resource link", func(t *testing.T) {
+		must := require.New(t)
+		rl, ok := byKind["resource_link"]
+		must.True(ok, "descriptor missing")
+		must.Equal("file:///report.pdf", rl.URI)
+		must.Equal("report", rl.Name)
+	})
+	t.Run("embedded resource", func(t *testing.T) {
+		must := require.New(t)
+		rs, ok := byKind["resource"]
+		must.True(ok, "descriptor missing")
+		must.Equal("file:///note.txt", rs.URI)
+		must.Equal("inline note", rs.Text)
+	})
+	t.Run("image", func(t *testing.T) {
+		must := require.New(t)
+		img, ok := byKind["image"]
+		must.True(ok, "descriptor missing")
+		must.Equal("image/png", img.MimeType)
+	})
+	t.Run("audio", func(t *testing.T) {
+		must := require.New(t)
+		// Audio shares the image arm, so its discriminator must still be 'audio'.
+		au, ok := byKind["audio"]
+		must.True(ok, "descriptor missing")
+		must.Equal("audio/mpeg", au.MimeType)
+	})
+	t.Run("unsupported content type", func(t *testing.T) {
+		must := require.New(t)
+		un, ok := byKind["unsupported"]
+		must.True(ok, "a new content kind must be marked, not dropped")
+		must.Equal("future_kind", un.Name)
+	})
 }
 
 // TestMCP_BoundsOversizedStructuredContent pins that a structuredContent
@@ -145,42 +149,32 @@ func TestMCP_MarksNonTextContent(t *testing.T) {
 // so an untrusted server cannot blow up memory/trace via a giant payload. The
 // text fallback survives intact.
 func TestMCP_BoundsOversizedStructuredContent(t *testing.T) {
+	must := require.New(t)
 	huge := strings.Repeat("A", maxMCPStructuredSize+1)
 	rawResult, err := json.Marshal(map[string]any{
 		"content":           []map[string]any{{"type": "text", "text": "ok"}},
 		"structuredContent": map[string]any{"blob": huge},
 	})
-	if err != nil {
-		t.Fatalf("marshal raw result: %v", err)
-	}
+	must.NoError(err)
 	resolved := connectAndResolve(t, mcpServerReturningCallResult(t, "big", string(rawResult)), "hostile", "big")
 
 	res, err := callMCPStructured(t, resolved, json.RawMessage(`{}`))
-	if err != nil {
-		t.Fatalf("call: %v", err)
-	}
-	if res.Text != "ok" {
-		t.Errorf("text fallback = %q, want %q", res.Text, "ok")
-	}
-	if len(res.Structured) > maxMCPStructuredSize {
-		t.Fatalf("structured envelope %d bytes exceeds bound %d — oversized content not dropped", len(res.Structured), maxMCPStructuredSize)
-	}
+	must.NoError(err)
+	must.Equal("ok", res.Text, "text fallback")
+	must.LessOrEqual(len(res.Structured), maxMCPStructuredSize, "oversized content not dropped")
+
 	var env mcpStructuredResult
-	if err := json.Unmarshal(res.Structured, &env); err != nil {
-		t.Fatalf("decode envelope: %v", err)
-	}
-	if len(env.StructuredContent) != 0 {
-		t.Errorf("oversized structuredContent should have been dropped, got %d bytes", len(env.StructuredContent))
-	}
-	if len(env.NonText) != 1 || env.NonText[0].Kind != "unsupported" {
-		t.Errorf("expected an 'unsupported' marker for the dropped content, got %+v", env.NonText)
-	}
+	must.NoError(json.Unmarshal(res.Structured, &env), "decode envelope")
+	must.Empty(env.StructuredContent, "oversized structuredContent should have been dropped")
+	must.Len(env.NonText, 1, "expected an 'unsupported' marker for the dropped content: %+v", env.NonText)
+	must.Equal("unsupported", env.NonText[0].Kind)
 }
 
 // TestMCP_BoundsEmbeddedResourceText pins that an oversized embedded-resource
 // text body is truncated to the per-resource bound and flagged Truncated,
 // rather than inlined whole.
 func TestMCP_BoundsEmbeddedResourceText(t *testing.T) {
+	must := require.New(t)
 	huge := strings.Repeat("B", maxMCPEmbeddedResourceTextLen+500)
 	rawResult, err := json.Marshal(map[string]any{
 		"content": []map[string]any{
@@ -188,71 +182,47 @@ func TestMCP_BoundsEmbeddedResourceText(t *testing.T) {
 			{"type": "resource", "resource": map[string]any{"uri": "file:///big.txt", "text": huge}},
 		},
 	})
-	if err != nil {
-		t.Fatalf("marshal raw result: %v", err)
-	}
+	must.NoError(err)
 	resolved := connectAndResolve(t, mcpServerReturningCallResult(t, "bigres", string(rawResult)), "hostile", "bigres")
 
 	res, err := callMCPStructured(t, resolved, json.RawMessage(`{}`))
-	if err != nil {
-		t.Fatalf("call: %v", err)
-	}
+	must.NoError(err)
+
 	var env mcpStructuredResult
-	if err := json.Unmarshal(res.Structured, &env); err != nil {
-		t.Fatalf("decode envelope: %v", err)
-	}
-	if len(env.NonText) != 1 {
-		t.Fatalf("expected 1 resource descriptor, got %+v", env.NonText)
-	}
+	must.NoError(json.Unmarshal(res.Structured, &env), "decode envelope")
+	must.Len(env.NonText, 1, "expected 1 resource descriptor: %+v", env.NonText)
 	d := env.NonText[0]
-	if d.Kind != "resource" || !d.Truncated {
-		t.Errorf("descriptor = %+v, want kind=resource truncated=true", d)
-	}
-	if len(d.Text) != maxMCPEmbeddedResourceTextLen {
-		t.Errorf("inlined text = %d bytes, want exactly %d (truncated)", len(d.Text), maxMCPEmbeddedResourceTextLen)
-	}
+	must.Equal("resource", d.Kind)
+	must.True(d.Truncated, "descriptor %+v should be truncated", d)
+	must.Len(d.Text, maxMCPEmbeddedResourceTextLen, "inlined text should be truncated to the per-resource bound")
 }
 
 // TestMCP_TextOnlyResultHasNoStructured pins the no-regression path: a
 // text-only tools/call result produces no structured envelope and no kind.
 func TestMCP_TextOnlyResultHasNoStructured(t *testing.T) {
+	must := require.New(t)
 	raw := `{"content": [{"type": "text", "text": "plain"}]}`
 	resolved := connectAndResolve(t, mcpServerReturningCallResult(t, "echo", raw), "srv", "echo")
 
 	res, err := callMCPStructured(t, resolved, json.RawMessage(`{}`))
-	if err != nil {
-		t.Fatalf("call: %v", err)
-	}
-	if res.Text != "plain" {
-		t.Errorf("text = %q, want %q", res.Text, "plain")
-	}
-	if len(res.Structured) != 0 {
-		t.Errorf("text-only result must carry no structured envelope, got %s", res.Structured)
-	}
-	if res.Kind != "" {
-		t.Errorf("text-only result must carry no kind, got %q", res.Kind)
-	}
+	must.NoError(err)
+	must.Equal("plain", res.Text)
+	must.Empty(res.Structured, "text-only result must carry no structured envelope")
+	must.Empty(res.Kind, "text-only result must carry no kind")
 }
 
 // TestMCP_NullStructuredContentIsAbsent pins that an explicit
 // "structuredContent": null does NOT fabricate a structured turn.
 func TestMCP_NullStructuredContentIsAbsent(t *testing.T) {
+	must := require.New(t)
 	raw := `{"content":[{"type":"text","text":"x"}],"structuredContent":null}`
 	resolved := connectAndResolve(t, mcpServerReturningCallResult(t, "nullsc", raw), "srv", "nullsc")
 
 	res, err := callMCPStructured(t, resolved, json.RawMessage(`{}`))
-	if err != nil {
-		t.Fatalf("call: %v", err)
-	}
-	if res.Text != "x" {
-		t.Errorf("text = %q, want %q", res.Text, "x")
-	}
-	if len(res.Structured) != 0 {
-		t.Errorf("null structuredContent must produce no envelope, got %s", res.Structured)
-	}
-	if res.Kind != "" {
-		t.Errorf("null structuredContent must produce no kind, got %q", res.Kind)
-	}
+	must.NoError(err)
+	must.Equal("x", res.Text)
+	must.Empty(res.Structured, "null structuredContent must produce no envelope")
+	must.Empty(res.Kind, "null structuredContent must produce no kind")
 }
 
 // TestMCP_CapsContentItemCount pins that the content item-count cap fires
@@ -260,34 +230,26 @@ func TestMCP_NullStructuredContentIsAbsent(t *testing.T) {
 // maxMCPContentItems descriptors plus a truncation marker, stays within the
 // size bound, and the overflow is marked rather than silently dropped.
 func TestMCP_CapsContentItemCount(t *testing.T) {
+	must := require.New(t)
 	items := make([]contentItem, maxMCPContentItems+200)
 	for i := range items {
 		items[i] = contentItem{Type: "image", MimeType: "image/png"}
 	}
 	encoded := buildMCPStructured(toolsCallResult{Content: items})
-	if len(encoded) == 0 {
-		t.Fatal("expected a non-nil envelope")
-	}
-	if len(encoded) > maxMCPStructuredSize {
-		t.Fatalf("envelope %d bytes exceeds bound %d", len(encoded), maxMCPStructuredSize)
-	}
+	must.NotEmpty(encoded, "expected a non-nil envelope")
+	must.LessOrEqual(len(encoded), maxMCPStructuredSize)
+
 	var env mcpStructuredResult
-	if err := json.Unmarshal(encoded, &env); err != nil {
-		t.Fatalf("decode envelope: %v", err)
-	}
-	// maxMCPContentItems image descriptors + 1 truncation marker.
-	if len(env.NonText) != maxMCPContentItems+1 {
-		t.Fatalf("expected %d descriptors (cap + marker), got %d", maxMCPContentItems+1, len(env.NonText))
-	}
+	must.NoError(json.Unmarshal(encoded, &env), "decode envelope")
+	must.Len(env.NonText, maxMCPContentItems+1, "expected the item cap plus one truncation marker")
+
 	var marked bool
 	for _, n := range env.NonText {
 		if n.Kind == "unsupported" && strings.Contains(n.Name, "item-count bound") {
 			marked = true
 		}
 	}
-	if !marked {
-		t.Errorf("expected a truncation marker for the dropped items, got %+v", env.NonText)
-	}
+	must.True(marked, "expected a truncation marker for the dropped items, got %+v", env.NonText)
 }
 
 // TestMCP_OversizedAssembledEnvelopeIsMarked pins that when many
@@ -295,28 +257,23 @@ func TestMCP_CapsContentItemCount(t *testing.T) {
 // the size bound, the bridge returns a marker envelope rather than silently
 // dropping everything.
 func TestMCP_OversizedAssembledEnvelopeIsMarked(t *testing.T) {
-	// Each resource_link carries a long URI; enough of them (under the item
-	// count cap) exceed maxMCPStructuredSize once assembled.
+	must := require.New(t)
 	longURI := "file:///" + strings.Repeat("a", 2048)
-	const n = 200 // 200 * ~2KB ~= 400KB > 256KB, but well under maxMCPContentItems
+	// 200 links of about 2 KiB each exceed maxMCPStructuredSize and stay under maxMCPContentItems.
+	const n = 200
 	items := make([]contentItem, n)
 	for i := range items {
 		items[i] = contentItem{Type: "resource_link", URI: longURI}
 	}
 	encoded := buildMCPStructured(toolsCallResult{Content: items})
-	if len(encoded) == 0 {
-		t.Fatal("expected a non-nil marker envelope, got nil")
-	}
-	if len(encoded) > maxMCPStructuredSize {
-		t.Fatalf("marker envelope %d bytes exceeds bound %d", len(encoded), maxMCPStructuredSize)
-	}
+	must.NotEmpty(encoded, "expected a non-nil marker envelope")
+	must.LessOrEqual(len(encoded), maxMCPStructuredSize, "marker envelope")
+
 	var env mcpStructuredResult
-	if err := json.Unmarshal(encoded, &env); err != nil {
-		t.Fatalf("decode envelope: %v", err)
-	}
-	if len(env.NonText) != 1 || env.NonText[0].Kind != "unsupported" || !strings.Contains(env.NonText[0].Name, "envelope dropped") {
-		t.Errorf("expected a single 'envelope dropped' marker, got %+v", env.NonText)
-	}
+	must.NoError(json.Unmarshal(encoded, &env), "decode envelope")
+	must.Len(env.NonText, 1, "expected a single 'envelope dropped' marker, got %+v", env.NonText)
+	must.Equal("unsupported", env.NonText[0].Kind)
+	must.Contains(env.NonText[0].Name, "envelope dropped")
 }
 
 // TestMCP_BinaryBlobResourceNotInlined pins that an embedded resource
@@ -324,59 +281,44 @@ func TestMCP_OversizedAssembledEnvelopeIsMarked(t *testing.T) {
 // body — the bridge never forwards untrusted binary bytes, only the URI
 // handle.
 func TestMCP_BinaryBlobResourceNotInlined(t *testing.T) {
+	must := require.New(t)
 	raw := `{"content":[{"type":"text","text":"ok"},{"type":"resource","resource":{"uri":"file:///img.png","mimeType":"image/png","blob":"BASE64DATA=="}}]}`
 	resolved := connectAndResolve(t, mcpServerReturningCallResult(t, "blobres", raw), "files", "blobres")
 
 	res, err := callMCPStructured(t, resolved, json.RawMessage(`{}`))
-	if err != nil {
-		t.Fatalf("call: %v", err)
-	}
+	must.NoError(err)
+
 	var env mcpStructuredResult
-	if err := json.Unmarshal(res.Structured, &env); err != nil {
-		t.Fatalf("decode envelope: %v", err)
-	}
-	if len(env.NonText) != 1 {
-		t.Fatalf("expected 1 resource descriptor, got %+v", env.NonText)
-	}
+	must.NoError(json.Unmarshal(res.Structured, &env), "decode envelope")
+	must.Len(env.NonText, 1, "expected 1 resource descriptor: %+v", env.NonText)
 	d := env.NonText[0]
-	if d.Kind != "resource" {
-		t.Errorf("kind = %q, want resource", d.Kind)
-	}
-	if !d.Truncated {
-		t.Errorf("binary blob resource must be flagged Truncated, got %+v", d)
-	}
-	if d.Text != "" {
-		t.Errorf("binary blob must not be inlined as text, got %q", d.Text)
-	}
-	if d.URI != "file:///img.png" {
-		t.Errorf("URI = %q, want file:///img.png (the durable handle)", d.URI)
-	}
+	must.Equal("resource", d.Kind)
+	must.True(d.Truncated, "binary blob resource must be flagged Truncated: %+v", d)
+	must.Empty(d.Text, "binary blob must not be inlined as text")
+	must.Equal("file:///img.png", d.URI, "the URI is the durable handle")
 }
 
-// TestSanitizeMCPToolName_RuneSafe pins that truncation is rune-safe: a name
-// of 65 three-byte runes (195 bytes) truncates to exactly maxMCPToolNameLen
-// runes and stays valid UTF-8 — a byte-slice cut would split a codepoint and
-// emit an invalid string into the tool.name metric attribute.
-func TestSanitizeMCPToolName_RuneSafe(t *testing.T) {
-	// "世" is a 3-byte UTF-8 rune.
-	long := strings.Repeat("世", maxMCPToolNameLen+20)
-	got := sanitizeMCPToolName(long)
-	if !utf8.ValidString(got) {
-		t.Fatalf("sanitised name is not valid UTF-8: %q", got)
-	}
-	if n := utf8.RuneCountInString(got); n != maxMCPToolNameLen {
-		t.Errorf("rune count = %d, want %d", n, maxMCPToolNameLen)
-	}
+// TestSanitizeMCPToolName_TruncatesOnRuneBoundary pins that truncation counts
+// runes, not bytes: a name of multi-byte runes truncates to exactly
+// maxMCPToolNameLen runes and stays valid UTF-8. A byte-slice cut would split
+// a codepoint and emit an invalid string into the tool.name metric attribute.
+func TestSanitizeMCPToolName_TruncatesOnRuneBoundary(t *testing.T) {
+	t.Run("long name truncates to the rune cap", func(t *testing.T) {
+		must := require.New(t)
+		long := strings.Repeat("世", maxMCPToolNameLen+20)
+		got := sanitizeMCPToolName(long)
+		must.True(utf8.ValidString(got), "sanitised name is not valid UTF-8: %q", got)
+		must.Equal(maxMCPToolNameLen, utf8.RuneCountInString(got))
+	})
 
-	// A short name is returned unchanged.
-	short := "echo"
-	if sanitizeMCPToolName(short) != short {
-		t.Errorf("short name was altered: %q", sanitizeMCPToolName(short))
-	}
+	t.Run("short name unchanged", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("echo", sanitizeMCPToolName("echo"))
+	})
 
-	// An ASCII name exactly at the cap is unchanged.
-	atCap := strings.Repeat("a", maxMCPToolNameLen)
-	if got := sanitizeMCPToolName(atCap); got != atCap {
-		t.Errorf("at-cap name altered: len %d", len(got))
-	}
+	t.Run("name at cap unchanged", func(t *testing.T) {
+		must := require.New(t)
+		atCap := strings.Repeat("a", maxMCPToolNameLen)
+		must.Equal(atCap, sanitizeMCPToolName(atCap))
+	})
 }

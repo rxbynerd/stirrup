@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -18,10 +20,10 @@ func respondWith(ev types.ControlEvent) func(string) (types.ControlEvent, bool) 
 	}
 }
 
-// TestExchange_ErrorSentinels pins the sentinel each outcome wraps and
-// which of them count as transient, since the refresher's retry decision
-// rests on that classification.
-func TestExchange_ErrorSentinels(t *testing.T) {
+// TestExchange_ErrorWrapsSentinelAndTransientFlag pins the sentinel each
+// outcome wraps and which of them count as transient, since the refresher's
+// retry decision rests on that classification.
+func TestExchange_ErrorWrapsSentinelAndTransientFlag(t *testing.T) {
 	cases := []struct {
 		name      string
 		mt        *mockTransport
@@ -67,16 +69,11 @@ func TestExchange_ErrorSentinels(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			result, err := Exchange(context.Background(), tc.mt, "aud", 20*time.Millisecond)
-			if !errors.Is(err, tc.want) {
-				t.Fatalf("Exchange() error = %v, want %v", err, tc.want)
-			}
-			if result.Token != "" {
-				t.Errorf("Exchange() returned a token alongside %v", tc.want)
-			}
-			if IsTransient(err) != tc.transient {
-				t.Errorf("IsTransient(%v) = %v, want %v", err, IsTransient(err), tc.transient)
-			}
+			must.ErrorIs(err, tc.want)
+			must.Empty(result.Token, "a failed exchange must not return a token")
+			must.Equal(tc.transient, IsTransient(err))
 		})
 	}
 }
@@ -96,48 +93,37 @@ func TestExchange_RejectsTokensThatCouldInjectHelperDirectives(t *testing.T) {
 		"non-ascii":       "ünïcode.token",
 	} {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			mt := &mockTransport{respond: respondWith(types.ControlEvent{Token: token})}
 			result, err := Exchange(context.Background(), mt, "aud", time.Second)
-			if !errors.Is(err, ErrMalformedToken) {
-				t.Fatalf("Exchange() error = %v, want ErrMalformedToken", err)
-			}
-			if result.Token != "" {
-				t.Error("a malformed token must not be returned")
-			}
-			if strings.Contains(err.Error(), "abc") {
-				t.Errorf("error %q must not carry the rejected token", err)
-			}
+			must.ErrorIs(err, ErrMalformedToken)
+			must.Empty(result.Token, "a malformed token must not be returned")
+			must.NotContains(err.Error(), "abc", "error must not carry the rejected token")
 		})
 	}
 
-	mt := &mockTransport{respond: respondWith(types.ControlEvent{Token: "eyJhbGciOiJFUzI1NiJ9.payload-with_all~allowed+chars/=.sig"})}
-	if _, err := Exchange(context.Background(), mt, "aud", time.Second); err != nil {
-		t.Errorf("a base64url JWT with dots must be accepted, got %v", err)
-	}
+	t.Run("accepts base64url jwt", func(t *testing.T) {
+		must := require.New(t)
+		mt := &mockTransport{respond: respondWith(types.ControlEvent{Token: "eyJhbGciOiJFUzI1NiJ9.payload-with_all~allowed+chars/=.sig"})}
+		_, err := Exchange(context.Background(), mt, "aud", time.Second)
+		must.NoError(err, "a base64url JWT with dots must be accepted")
+	})
 }
 
 // TestExchange_SanitisesDeclineReason asserts a control-plane reason is
 // stripped of control characters and capped before it reaches an error
 // that is later interpolated into a warning event and a log line.
 func TestExchange_SanitisesDeclineReason(t *testing.T) {
+	must := require.New(t)
 	hostile := "issuer revoked\nusername=attacker\r\x00" + strings.Repeat("x", 500)
 	mt := &mockTransport{respond: respondWith(types.ControlEvent{IsError: boolPtr(true), Reason: hostile})}
 
 	_, err := Exchange(context.Background(), mt, "aud", time.Second)
-	if !errors.Is(err, ErrDeclined) {
-		t.Fatalf("Exchange() error = %v, want ErrDeclined", err)
-	}
+	must.ErrorIs(err, ErrDeclined)
+
 	msg := err.Error()
-	if strings.ContainsAny(msg, "\n\r\x00") {
-		t.Errorf("error %q carries control characters from the reason", msg)
-	}
-	if !strings.Contains(msg, "issuer revokedusername=attacker") {
-		t.Errorf("error %q should keep the printable part of the reason", msg)
-	}
-	if strings.Count(msg, "x") > maxReasonRunes {
-		t.Errorf("error %q was not capped at %d runes", msg, maxReasonRunes)
-	}
-	if !strings.HasSuffix(msg, "…") {
-		t.Errorf("a capped reason should end with an ellipsis, got %q", msg)
-	}
+	must.False(strings.ContainsAny(msg, "\n\r\x00"), "error %q carries control characters from the reason", msg)
+	must.Contains(msg, "issuer revokedusername=attacker")
+	must.LessOrEqual(strings.Count(msg, "x"), maxReasonRunes, "reason must be capped at %d runes", maxReasonRunes)
+	must.True(strings.HasSuffix(msg, "…"), "a capped reason should end with an ellipsis, got %q", msg)
 }

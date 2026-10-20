@@ -1,11 +1,13 @@
 package spec
 
 import (
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
-func TestLoadSuiteHCL_ShadowSubJudge(t *testing.T) {
+func TestLoadSuiteHCL_AcceptsShadowSubJudge(t *testing.T) {
+	must := require.New(t)
 	src := `
 suite "s" {
   task "t1" {
@@ -26,24 +28,33 @@ suite "s" {
 }
 `
 	suite, err := LoadSuiteHCL(writeTemp(t, "shadow.hcl", src))
-	if err != nil {
-		t.Fatalf("LoadSuiteHCL: %v", err)
-	}
+	must.NoError(err)
 	subs := suite.Tasks[0].Judge.Judges
-	if len(subs) != 2 || subs[0].Shadow || !subs[1].Shadow {
-		t.Fatalf("sub-judges = %+v, want the second one marked shadow", subs)
-	}
+	must.Len(subs, 2, "sub-judges = %+v", subs)
+	must.False(subs[0].Shadow, "first sub-judge should not be a shadow")
+	must.True(subs[1].Shadow, "second sub-judge should be a shadow")
 }
 
-func TestLoadSuiteHCL_ShadowRulesRejected(t *testing.T) {
-	cases := map[string]string{
-		"top-level shadow": `
+func TestLoadSuiteHCL_RejectsInvalidShadowJudges(t *testing.T) {
+	cases := []struct {
+		name    string
+		wantErr string
+		judge   string
+	}{
+		{
+			name:    "top-level shadow",
+			wantErr: "only valid on a composite sub-judge",
+			judge: `
     judge {
       type   = "file-exists"
       paths  = ["a.txt"]
       shadow = true
     }`,
-		"composite of shadows": `
+		},
+		{
+			name:    "composite of shadows",
+			wantErr: "at least one sub-judge that is not a shadow",
+			judge: `
     judge {
       type = "composite"
       judge {
@@ -52,8 +63,11 @@ func TestLoadSuiteHCL_ShadowRulesRejected(t *testing.T) {
         shadow = true
       }
     }`,
-	}
-	cases["top-level decision judge"] = `
+		},
+		{
+			name:    "top-level decision judge",
+			wantErr: `provider "decision" is usable only on a shadow judge`,
+			judge: `
     judge {
       type     = "diff-review"
       criteria = "the change adds a test"
@@ -61,8 +75,12 @@ func TestLoadSuiteHCL_ShadowRulesRejected(t *testing.T) {
         provider = "decision"
         model    = "jev-latest"
       }
-    }`
-	cases["deciding decision sub-judge"] = `
+    }`,
+		},
+		{
+			name:    "deciding decision sub-judge",
+			wantErr: `sub-judge 2: llm provider "decision"`,
+			judge: `
     judge {
       type = "composite"
       judge {
@@ -77,8 +95,12 @@ func TestLoadSuiteHCL_ShadowRulesRejected(t *testing.T) {
           model    = "jev-latest"
         }
       }
-    }`
-	cases["shadow test-command"] = `
+    }`,
+		},
+		{
+			name:    "shadow test-command",
+			wantErr: `sub-judge 2: a "test-command" judge cannot be a shadow`,
+			judge: `
     judge {
       type = "composite"
       judge {
@@ -90,26 +112,22 @@ func TestLoadSuiteHCL_ShadowRulesRejected(t *testing.T) {
         command = "make fmt"
         shadow  = true
       }
-    }`
-	wants := map[string]string{
-		"shadow test-command":         `sub-judge 2: a "test-command" judge cannot be a shadow`,
-		"top-level shadow":            "only valid on a composite sub-judge",
-		"composite of shadows":        "at least one sub-judge that is not a shadow",
-		"top-level decision judge":    `provider "decision" is usable only on a shadow judge`,
-		"deciding decision sub-judge": `sub-judge 2: llm provider "decision"`,
+    }`,
+		},
 	}
-	for name, judge := range cases {
-		t.Run(name, func(t *testing.T) {
-			src := "suite \"s\" {\n  task \"t1\" {\n    prompt = \"p\"\n" + judge + "\n  }\n}\n"
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			src := "suite \"s\" {\n  task \"t1\" {\n    prompt = \"p\"\n" + tc.judge + "\n  }\n}\n"
 			_, err := LoadSuiteHCL(writeTemp(t, "shadow.hcl", src))
-			if err == nil || !strings.Contains(err.Error(), wants[name]) || !strings.Contains(err.Error(), `task "t1"`) {
-				t.Fatalf("LoadSuiteHCL error = %v, want a task-scoped error containing %q", err, wants[name])
-			}
+			must.ErrorContains(err, tc.wantErr)
+			must.ErrorContains(err, `task "t1"`)
 		})
 	}
 }
 
-func TestLoadSuiteHCL_ShadowDecisionJudge(t *testing.T) {
+func TestLoadSuiteHCL_AcceptsShadowDecisionJudge(t *testing.T) {
+	must := require.New(t)
 	src := `
 suite "s" {
   task "t1" {
@@ -134,11 +152,9 @@ suite "s" {
 }
 `
 	suite, err := LoadSuiteHCL(writeTemp(t, "decision.hcl", src))
-	if err != nil {
-		t.Fatalf("LoadSuiteHCL: %v", err)
-	}
+	must.NoError(err)
 	sub := suite.Tasks[0].Judge.Judges[1]
-	if !sub.Shadow || sub.LLM == nil || sub.LLM.Provider != "decision" {
-		t.Fatalf("sub-judge = %+v, want a shadow decision judge", sub)
-	}
+	must.True(sub.Shadow, "sub-judge = %+v", sub)
+	must.NotNil(sub.LLM, "sub-judge = %+v", sub)
+	must.Equal("decision", sub.LLM.Provider)
 }

@@ -3,8 +3,10 @@ package credential
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
@@ -36,118 +38,90 @@ func (m *mockSecretStore) Resolve(_ context.Context, ref string) (string, error)
 var _ security.SecretStore = (*mockSecretStore)(nil)
 
 func TestStaticSource_Resolve(t *testing.T) {
+	must := require.New(t)
 	secrets := &mockSecretStore{values: map[string]string{
 		"secret://MY_KEY": "sk-test-123",
 	}}
 	src := &StaticSource{secrets: secrets, ref: "secret://MY_KEY"}
 
 	cred, err := src.Resolve(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cred.BearerToken == nil {
-		t.Fatal("BearerToken closure should be non-nil for static source")
-	}
+	must.NoError(err)
+	must.NotNil(cred.BearerToken, "BearerToken closure should be non-nil for static source")
+
 	tok, err := cred.BearerToken(context.Background())
-	if err != nil {
-		t.Fatalf("BearerToken closure returned error: %v", err)
-	}
-	if tok != "sk-test-123" {
-		t.Errorf("BearerToken closure value = %q, want %q", tok, "sk-test-123")
-	}
-	if cred.AWSCredentials != nil {
-		t.Error("AWSCredentials should be nil for static source")
-	}
+	must.NoError(err)
+	must.Equal("sk-test-123", tok)
+	must.Nil(cred.AWSCredentials, "AWSCredentials should be nil for static source")
 }
 
 // TestStaticSource_ClosureUsesCachedValue verifies that the BearerToken
 // closure does not re-resolve the SecretStore on every call: a static
 // secret is fetched once at Source.Resolve time and reused thereafter.
-// This is the critical efficiency property that lets adapters call the
-// closure on every provider request without paying for repeated
-// SecretStore round-trips.
+// Adapters call the closure on every provider request, so this avoids a
+// SecretStore round-trip per request.
 func TestStaticSource_ClosureUsesCachedValue(t *testing.T) {
+	must := require.New(t)
 	secrets := &mockSecretStore{values: map[string]string{
 		"secret://MY_KEY": "sk-test-123",
 	}}
 	src := &StaticSource{secrets: secrets, ref: "secret://MY_KEY"}
 
 	cred, err := src.Resolve(context.Background())
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if secrets.calls != 1 {
-		t.Fatalf("after Resolve, secrets.calls = %d, want 1", secrets.calls)
-	}
-	if cred.BearerToken == nil {
-		t.Fatal("BearerToken closure should be non-nil")
-	}
+	must.NoError(err)
+	must.Equal(1, secrets.calls, "after Resolve")
+	must.NotNil(cred.BearerToken)
 
 	for i := 0; i < 10; i++ {
 		tok, err := cred.BearerToken(context.Background())
-		if err != nil {
-			t.Fatalf("closure call %d returned error: %v", i, err)
-		}
-		if tok != "sk-test-123" {
-			t.Errorf("closure call %d value = %q, want %q", i, tok, "sk-test-123")
-		}
+		must.NoError(err, "closure call %d", i)
+		must.Equal("sk-test-123", tok, "closure call %d", i)
 	}
 
-	if secrets.calls != 1 {
-		t.Errorf("after 10 closure calls, secrets.calls = %d, want 1 (closure must reuse cached value)", secrets.calls)
-	}
+	must.Equal(1, secrets.calls, "after 10 closure calls; closure must reuse cached value")
 }
 
 func TestStaticSource_ResolveError(t *testing.T) {
+	must := require.New(t)
 	secrets := &mockSecretStore{err: fmt.Errorf("vault unreachable")}
 	src := &StaticSource{secrets: secrets, ref: "secret://MISSING"}
 
 	_, err := src.Resolve(context.Background())
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
+	must.Error(err)
 }
 
 func TestAWSDefaultSource_Resolve(t *testing.T) {
+	must := require.New(t)
 	src := &AWSDefaultSource{}
+
 	cred, err := src.Resolve(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cred.AWSCredentials != nil {
-		t.Error("AWSCredentials should be nil for default source (signals use SDK chain)")
-	}
-	if cred.BearerToken != nil {
-		t.Error("BearerToken closure should be nil for AWS default source")
-	}
+	must.NoError(err)
+	must.Nil(cred.AWSCredentials, "nil AWSCredentials signals use of the SDK credential chain")
+	must.Nil(cred.BearerToken, "BearerToken closure should be nil for AWS default source")
 }
 
 func TestBuildSource_InfersBedrock(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{Type: "bedrock"}
+
 	src, err := BuildSource(cfg, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if _, ok := src.(*AWSDefaultSource); !ok {
-		t.Errorf("expected *AWSDefaultSource, got %T", src)
-	}
+	must.NoError(err)
+	must.IsType((*AWSDefaultSource)(nil), src)
 }
 
 func TestBuildSource_InfersStatic(t *testing.T) {
+	must := require.New(t)
 	secrets := &mockSecretStore{values: map[string]string{
 		"secret://KEY": "value",
 	}}
 	cfg := types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://KEY"}
+
 	src, err := BuildSource(cfg, secrets)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if _, ok := src.(*StaticSource); !ok {
-		t.Errorf("expected *StaticSource, got %T", src)
-	}
+	must.NoError(err)
+	must.IsType((*StaticSource)(nil), src)
 }
 
 func TestBuildSource_ExplicitStatic(t *testing.T) {
+	must := require.New(t)
 	secrets := &mockSecretStore{values: map[string]string{
 		"secret://KEY": "value",
 	}}
@@ -158,32 +132,28 @@ func TestBuildSource_ExplicitStatic(t *testing.T) {
 			Type: "static",
 		},
 	}
+
 	src, err := BuildSource(cfg, secrets)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if _, ok := src.(*StaticSource); !ok {
-		t.Errorf("expected *StaticSource, got %T", src)
-	}
+	must.NoError(err)
+	must.IsType((*StaticSource)(nil), src)
 }
 
 func TestBuildSource_ExplicitAWSDefault(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{
 		Type: "bedrock",
 		Credential: &types.CredentialConfig{
 			Type: "aws-default",
 		},
 	}
+
 	src, err := BuildSource(cfg, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if _, ok := src.(*AWSDefaultSource); !ok {
-		t.Errorf("expected *AWSDefaultSource, got %T", src)
-	}
+	must.NoError(err)
+	must.IsType((*AWSDefaultSource)(nil), src)
 }
 
 func TestBuildSource_WebIdentity(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{
 		Type:   "bedrock",
 		Region: "us-east-1",
@@ -196,20 +166,18 @@ func TestBuildSource_WebIdentity(t *testing.T) {
 			},
 		},
 	}
+
 	src, err := BuildSource(cfg, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if _, ok := src.(*WebIdentityAWSSource); !ok {
-		t.Errorf("expected *WebIdentityAWSSource, got %T", src)
-	}
+	must.NoError(err)
+	must.IsType((*WebIdentityAWSSource)(nil), src)
 }
 
-// TestBuildSource_AzureWorkloadIdentityBadTokenSourceType verifies that
+// TestBuildSource_AzureWorkloadIdentity_BadTokenSourceType verifies that
 // an unsupported inner TokenSource type wraps the BuildTokenSource
 // failure with "build token source" rather than silently falling
 // through to a malformed or nil source.
-func TestBuildSource_AzureWorkloadIdentityBadTokenSourceType(t *testing.T) {
+func TestBuildSource_AzureWorkloadIdentity_BadTokenSourceType(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{
 		Type: "openai-compatible",
 		Credential: &types.CredentialConfig{
@@ -221,152 +189,124 @@ func TestBuildSource_AzureWorkloadIdentityBadTokenSourceType(t *testing.T) {
 			},
 		},
 	}
+
 	_, err := BuildSource(cfg, nil)
-	if err == nil {
-		t.Fatal("expected error for unsupported inner token source type, got nil")
-	}
-	if !strings.Contains(err.Error(), "build token source") {
-		t.Errorf("error should wrap with 'build token source', got: %v", err)
-	}
+	must.ErrorContains(err, "build token source")
 }
 
 func TestBuildSource_UnsupportedType(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{
 		Type: "anthropic",
 		Credential: &types.CredentialConfig{
 			Type: "kerberos",
 		},
 	}
+
 	_, err := BuildSource(cfg, nil)
-	if err == nil {
-		t.Fatal("expected error for unsupported credential type")
-	}
+	must.Error(err)
 }
 
 func TestBuildTokenSource_GKEMetadata(t *testing.T) {
+	must := require.New(t)
 	ts, err := BuildTokenSource(&types.TokenSourceConfig{
 		Type:     "gke-metadata",
 		Audience: "sts.amazonaws.com",
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if _, ok := ts.(*GKEMetadataTokenSource); !ok {
-		t.Errorf("expected *GKEMetadataTokenSource, got %T", ts)
-	}
+	must.NoError(err)
+	must.IsType((*GKEMetadataTokenSource)(nil), ts)
 }
 
 func TestBuildTokenSource_File(t *testing.T) {
+	must := require.New(t)
 	ts, err := BuildTokenSource(&types.TokenSourceConfig{
 		Type: "file",
 		Path: "/tmp/token",
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if _, ok := ts.(*FileTokenSource); !ok {
-		t.Errorf("expected *FileTokenSource, got %T", ts)
-	}
+	must.NoError(err)
+	must.IsType((*FileTokenSource)(nil), ts)
 }
 
 func TestBuildTokenSource_Env(t *testing.T) {
+	must := require.New(t)
 	ts, err := BuildTokenSource(&types.TokenSourceConfig{
 		Type:   "env",
 		EnvVar: "TOKEN",
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if _, ok := ts.(*EnvTokenSource); !ok {
-		t.Errorf("expected *EnvTokenSource, got %T", ts)
-	}
+	must.NoError(err)
+	must.IsType((*EnvTokenSource)(nil), ts)
 }
 
-func TestBuildTokenSource_Nil(t *testing.T) {
+func TestBuildTokenSource_NilConfigErrors(t *testing.T) {
+	must := require.New(t)
 	_, err := BuildTokenSource(nil)
-	if err == nil {
-		t.Fatal("expected error for nil token source config")
-	}
+	must.Error(err)
 }
 
 func TestBuildTokenSource_UnsupportedType(t *testing.T) {
+	must := require.New(t)
 	_, err := BuildTokenSource(&types.TokenSourceConfig{Type: "unknown-source"})
-	if err == nil {
-		t.Fatal("expected error for unsupported token source type")
-	}
+	must.Error(err)
 }
 
 func TestBuildTokenSource_AWSIRSA(t *testing.T) {
+	must := require.New(t)
 	ts, err := BuildTokenSource(&types.TokenSourceConfig{Type: "aws-irsa"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if _, ok := ts.(*AWSIRSATokenSource); !ok {
-		t.Errorf("expected *AWSIRSATokenSource, got %T", ts)
-	}
+	must.NoError(err)
+	must.IsType((*AWSIRSATokenSource)(nil), ts)
 }
 
 func TestBuildTokenSource_AzureIMDS(t *testing.T) {
+	must := require.New(t)
 	ts, err := BuildTokenSource(&types.TokenSourceConfig{
 		Type:     "azure-imds",
 		Resource: "https://management.azure.com/",
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if _, ok := ts.(*AzureIMDSTokenSource); !ok {
-		t.Errorf("expected *AzureIMDSTokenSource, got %T", ts)
-	}
+	must.NoError(err)
+	must.IsType((*AzureIMDSTokenSource)(nil), ts)
 }
 
-func TestBuildTokenSource_AzureIMDSMissingResource(t *testing.T) {
+func TestBuildTokenSource_AzureIMDS_MissingResource(t *testing.T) {
+	must := require.New(t)
 	_, err := BuildTokenSource(&types.TokenSourceConfig{Type: "azure-imds"})
-	if err == nil {
-		t.Fatal("expected error for azure-imds without resource")
-	}
+	must.Error(err)
 }
 
+// TestBuildTokenSource_GitHubActionsOIDC needs the env var set before
+// BuildTokenSource runs: the constructor reads the issuance URL once and
+// keeps it for the source's lifetime.
 func TestBuildTokenSource_GitHubActionsOIDC(t *testing.T) {
-	// The constructor reads the issuance URL once, freezing it across
-	// the source's lifetime, so the env var must be set before
-	// BuildTokenSource is invoked.
+	must := require.New(t)
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://token.actions.githubusercontent.com/?api-version=2.0")
 
 	ts, err := BuildTokenSource(&types.TokenSourceConfig{
 		Type:     "github-actions-oidc",
 		Audience: "sts.amazonaws.com",
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if _, ok := ts.(*GitHubActionsOIDCTokenSource); !ok {
-		t.Errorf("expected *GitHubActionsOIDCTokenSource, got %T", ts)
-	}
+	must.NoError(err)
+	must.IsType((*GitHubActionsOIDCTokenSource)(nil), ts)
 }
 
-func TestBuildTokenSource_GitHubActionsOIDCMissingURLEnv(t *testing.T) {
+func TestBuildTokenSource_GitHubActionsOIDC_MissingURLEnv(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
 
 	_, err := BuildTokenSource(&types.TokenSourceConfig{
 		Type:     "github-actions-oidc",
 		Audience: "sts.amazonaws.com",
 	})
-	if err == nil {
-		t.Fatal("expected error when ACTIONS_ID_TOKEN_REQUEST_URL is unset at build time")
-	}
-	if !strings.Contains(err.Error(), "ACTIONS_ID_TOKEN_REQUEST_URL") {
-		t.Errorf("error should name the missing env var: %v", err)
-	}
+	must.ErrorContains(err, "ACTIONS_ID_TOKEN_REQUEST_URL")
 }
 
-func TestBuildTokenSource_GitHubActionsOIDCMissingAudience(t *testing.T) {
+func TestBuildTokenSource_GitHubActionsOIDC_MissingAudience(t *testing.T) {
+	must := require.New(t)
 	_, err := BuildTokenSource(&types.TokenSourceConfig{Type: "github-actions-oidc"})
-	if err == nil {
-		t.Fatal("expected error for github-actions-oidc without audience")
-	}
+	must.Error(err)
 }
 
 func TestBuildSource_GCPWorkloadIdentityFederation(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cfg := types.ProviderConfig{
 		Type: "gemini",
 		Credential: &types.CredentialConfig{
@@ -378,26 +318,19 @@ func TestBuildSource_GCPWorkloadIdentityFederation(t *testing.T) {
 			},
 		},
 	}
+
 	src, err := BuildSource(cfg, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	must.NoError(err)
 	wif, ok := src.(*GCPWorkloadIdentityFederationSource)
-	if !ok {
-		t.Fatalf("expected *GCPWorkloadIdentityFederationSource, got %T", src)
-	}
-	if wif.audience != cfg.Credential.Audience {
-		t.Errorf("audience = %q, want %q", wif.audience, cfg.Credential.Audience)
-	}
-	if wif.serviceAccount != cfg.Credential.ServiceAccount {
-		t.Errorf("serviceAccount = %q, want %q", wif.serviceAccount, cfg.Credential.ServiceAccount)
-	}
-	if _, ok := wif.tokenSource.(*AWSIRSATokenSource); !ok {
-		t.Errorf("expected wrapped AWSIRSATokenSource, got %T", wif.tokenSource)
-	}
+	must.True(ok, "expected *GCPWorkloadIdentityFederationSource, got %T", src)
+
+	check.Equal(cfg.Credential.Audience, wif.audience)
+	check.Equal(cfg.Credential.ServiceAccount, wif.serviceAccount)
+	check.IsType((*AWSIRSATokenSource)(nil), wif.tokenSource, "wrapped token source")
 }
 
-func TestBuildSource_GCPWorkloadIdentityFederationMissingAudience(t *testing.T) {
+func TestBuildSource_GCPWorkloadIdentityFederation_MissingAudience(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{
 		Type: "gemini",
 		Credential: &types.CredentialConfig{
@@ -407,13 +340,13 @@ func TestBuildSource_GCPWorkloadIdentityFederationMissingAudience(t *testing.T) 
 			},
 		},
 	}
+
 	_, err := BuildSource(cfg, nil)
-	if err == nil {
-		t.Fatal("expected error for missing audience")
-	}
+	must.Error(err)
 }
 
-func TestBuildSource_GCPWorkloadIdentityFederationMissingTokenSource(t *testing.T) {
+func TestBuildSource_GCPWorkloadIdentityFederation_MissingTokenSource(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{
 		Type: "gemini",
 		Credential: &types.CredentialConfig{
@@ -421,10 +354,9 @@ func TestBuildSource_GCPWorkloadIdentityFederationMissingTokenSource(t *testing.
 			Audience: "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/q",
 		},
 	}
+
 	_, err := BuildSource(cfg, nil)
-	if err == nil {
-		t.Fatal("expected error for missing token source")
-	}
+	must.Error(err)
 }
 
 // TestBuildSource_AzureWorkloadIdentity verifies that the dispatch
@@ -433,6 +365,8 @@ func TestBuildSource_GCPWorkloadIdentityFederationMissingTokenSource(t *testing.
 // validated upstream (in types.ValidateRunConfig), so the dispatch
 // itself only needs to wire fields.
 func TestBuildSource_AzureWorkloadIdentity(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cfg := types.ProviderConfig{
 		Type: "openai-compatible",
 		Credential: &types.CredentialConfig{
@@ -446,35 +380,22 @@ func TestBuildSource_AzureWorkloadIdentity(t *testing.T) {
 			},
 		},
 	}
+
 	src, err := BuildSource(cfg, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	must.NoError(err)
 	azure, ok := src.(*AzureWorkloadIdentitySource)
-	if !ok {
-		t.Fatalf("expected *AzureWorkloadIdentitySource, got %T", src)
-	}
-	if azure.tenantID != cfg.Credential.AzureTenantID {
-		t.Errorf("tenantID = %q, want %q", azure.tenantID, cfg.Credential.AzureTenantID)
-	}
-	if azure.clientID != cfg.Credential.AzureClientID {
-		t.Errorf("clientID = %q, want %q", azure.clientID, cfg.Credential.AzureClientID)
-	}
-	if azure.scope != cfg.Credential.AzureScope {
-		t.Errorf("scope = %q, want %q", azure.scope, cfg.Credential.AzureScope)
-	}
-	if _, ok := azure.tokenSource.(*FileTokenSource); !ok {
-		t.Errorf("expected wrapped FileTokenSource, got %T", azure.tokenSource)
-	}
+	must.True(ok, "expected *AzureWorkloadIdentitySource, got %T", src)
+
+	check.Equal(cfg.Credential.AzureTenantID, azure.tenantID)
+	check.Equal(cfg.Credential.AzureClientID, azure.clientID)
+	check.Equal(cfg.Credential.AzureScope, azure.scope)
+	check.IsType((*FileTokenSource)(nil), azure.tokenSource, "wrapped token source")
 }
 
-// TestBuildSource_AzureWorkloadIdentityDefaultsScope verifies that an
-// empty AzureScope in the RunConfig is left empty at the dispatch layer
-// — the constructor itself applies the default
-// "https://cognitiveservices.azure.com/.default". This split keeps the
-// "what was the operator's input" record honest while still producing a
-// usable source.
-func TestBuildSource_AzureWorkloadIdentityDefaultsScope(t *testing.T) {
+// TestBuildSource_AzureWorkloadIdentity_DefaultsScope verifies that an
+// empty AzureScope yields the Cognitive Services default scope.
+func TestBuildSource_AzureWorkloadIdentity_DefaultsScope(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{
 		Type: "openai-responses",
 		Credential: &types.CredentialConfig{
@@ -487,20 +408,16 @@ func TestBuildSource_AzureWorkloadIdentityDefaultsScope(t *testing.T) {
 			},
 		},
 	}
+
 	src, err := BuildSource(cfg, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	must.NoError(err)
 	azure, ok := src.(*AzureWorkloadIdentitySource)
-	if !ok {
-		t.Fatalf("expected *AzureWorkloadIdentitySource, got %T", src)
-	}
-	if azure.scope != "https://cognitiveservices.azure.com/.default" {
-		t.Errorf("scope default not applied: got %q", azure.scope)
-	}
+	must.True(ok, "expected *AzureWorkloadIdentitySource, got %T", src)
+	must.Equal("https://cognitiveservices.azure.com/.default", azure.scope)
 }
 
-func TestBuildSource_AzureWorkloadIdentityMissingTenant(t *testing.T) {
+func TestBuildSource_AzureWorkloadIdentity_MissingTenant(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{
 		Type: "openai-compatible",
 		Credential: &types.CredentialConfig{
@@ -512,16 +429,13 @@ func TestBuildSource_AzureWorkloadIdentityMissingTenant(t *testing.T) {
 			},
 		},
 	}
+
 	_, err := BuildSource(cfg, nil)
-	if err == nil {
-		t.Fatal("expected error for missing azureTenantId")
-	}
-	if !strings.Contains(err.Error(), "azureTenantId") {
-		t.Errorf("error should name azureTenantId: %v", err)
-	}
+	must.ErrorContains(err, "azureTenantId")
 }
 
-func TestBuildSource_AzureWorkloadIdentityMissingClient(t *testing.T) {
+func TestBuildSource_AzureWorkloadIdentity_MissingClient(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{
 		Type: "openai-compatible",
 		Credential: &types.CredentialConfig{
@@ -533,16 +447,13 @@ func TestBuildSource_AzureWorkloadIdentityMissingClient(t *testing.T) {
 			},
 		},
 	}
+
 	_, err := BuildSource(cfg, nil)
-	if err == nil {
-		t.Fatal("expected error for missing azureClientId")
-	}
-	if !strings.Contains(err.Error(), "azureClientId") {
-		t.Errorf("error should name azureClientId: %v", err)
-	}
+	must.ErrorContains(err, "azureClientId")
 }
 
-func TestBuildSource_AzureWorkloadIdentityMissingTokenSource(t *testing.T) {
+func TestBuildSource_AzureWorkloadIdentity_MissingTokenSource(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{
 		Type: "openai-compatible",
 		Credential: &types.CredentialConfig{
@@ -551,11 +462,7 @@ func TestBuildSource_AzureWorkloadIdentityMissingTokenSource(t *testing.T) {
 			AzureClientID: "22222222-2222-2222-2222-222222222222",
 		},
 	}
+
 	_, err := BuildSource(cfg, nil)
-	if err == nil {
-		t.Fatal("expected error for missing token source")
-	}
-	if !strings.Contains(err.Error(), "tokenSource") {
-		t.Errorf("error should name tokenSource: %v", err)
-	}
+	must.ErrorContains(err, "tokenSource")
 }

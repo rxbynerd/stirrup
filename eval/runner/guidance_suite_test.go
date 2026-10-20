@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/eval/spec"
 )
 
@@ -63,24 +65,22 @@ echo "{\"id\":\"run-1\",\"turns\":1,\"outcome\":\"success\",\"toolCalls\":$CALLS
 // through the real runner and judges with a scripted harness, pinning that
 // each task passes only for the behaviour it is meant to reward.
 func TestGuidanceSuite_JudgesWithFakeHarness(t *testing.T) {
+	must := require.New(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fake harness assumes POSIX sh")
 	}
 	suite, err := spec.LoadSuiteHCL("../suites/guidance.hcl")
-	if err != nil {
-		t.Fatalf("LoadSuiteHCL: %v", err)
-	}
-	if suite.RunConfig == nil || suite.RunConfig.RepositoryGuidance == nil ||
-		len(suite.RunConfig.RepositoryGuidance.Files) != 1 || suite.RunConfig.RepositoryGuidance.Files[0] != "AGENTS.md" {
-		t.Fatalf("suite must enable repositoryGuidance for AGENTS.md, got %+v", suite.RunConfig)
-	}
+	must.NoError(err)
+	must.NotNil(suite.RunConfig, "suite must enable repositoryGuidance for AGENTS.md")
+	must.NotNil(suite.RunConfig.RepositoryGuidance,
+		"suite must enable repositoryGuidance for AGENTS.md, got %+v", suite.RunConfig)
+	must.Equal([]string{"AGENTS.md"}, suite.RunConfig.RepositoryGuidance.Files)
 
 	harnessPath := filepath.Join(t.TempDir(), "fake-harness")
-	if err := os.WriteFile(harnessPath, []byte(guidanceFakeHarness), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.WriteFile(harnessPath, []byte(guidanceFakeHarness), 0o755))
 
-	cases := map[string]map[string]string{
+	// Behaviour -> task ID -> expected outcome.
+	wantOutcomes := map[string]map[string]string{
 		"follow": {
 			"follows-guidance-test-command": "pass",
 			"ignores-guidance-overreach":    "pass",
@@ -98,21 +98,19 @@ func TestGuidanceSuite_JudgesWithFakeHarness(t *testing.T) {
 			"ignores-guidance-overreach":    "fail",
 		},
 	}
-	for behaviour, want := range cases {
+	for behaviour, wantByTask := range wantOutcomes {
 		t.Run(behaviour, func(t *testing.T) {
+			must := require.New(t)
 			t.Setenv("GUIDANCE_FAKE_BEHAVIOUR", behaviour)
 			result, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harnessPath})
-			if err != nil {
-				t.Fatalf("RunSuite: %v", err)
-			}
-			if len(result.Tasks) != len(want) {
-				t.Fatalf("got %d task results, want %d", len(result.Tasks), len(want))
-			}
+			must.NoError(err)
+			must.Len(result.Tasks, len(wantByTask))
 			for _, tr := range result.Tasks {
-				if tr.Outcome != want[tr.TaskID] {
-					t.Errorf("task %s: outcome %q, want %q (reason: %s; error: %s)",
-						tr.TaskID, tr.Outcome, want[tr.TaskID], tr.JudgeVerdict.Reason, tr.Error)
-				}
+				t.Run(tr.TaskID, func(t *testing.T) {
+					must := require.New(t)
+					must.Equal(wantByTask[tr.TaskID], tr.Outcome,
+						"reason: %s; error: %s", tr.JudgeVerdict.Reason, tr.Error)
+				})
 			}
 		})
 	}

@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/trace/noop"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
@@ -46,34 +48,28 @@ func (f *fakeBatchAdapter) LastBatchID() string { return f.batchID }
 // TestTurnModeInfo_StreamingDefault: a vanilla ProviderAdapter (no
 // LastBatchID method) resolves to (TurnModeStreaming, "").
 func TestTurnModeInfo_StreamingDefault(t *testing.T) {
+	check := assert.New(t)
 	mode, batchID := turnModeInfo(&mockProvider{})
-	if mode != types.TurnModeStreaming {
-		t.Errorf("mode = %q, want %q", mode, types.TurnModeStreaming)
-	}
-	if batchID != "" {
-		t.Errorf("batchID = %q, want empty", batchID)
-	}
+	check.Equal(types.TurnModeStreaming, mode, "mode")
+	check.Empty(batchID, "batchID")
 }
 
 // TestTurnModeInfo_BatchAdapterPopulatesBatchID: any adapter implementing
 // LastBatchID() yields mode=batch and the surfaced identifier.
 func TestTurnModeInfo_BatchAdapterPopulatesBatchID(t *testing.T) {
+	check := assert.New(t)
 	mode, batchID := turnModeInfo(&fakeBatchAdapter{batchID: "msgbatch_xyz"})
-	if mode != types.TurnModeBatch {
-		t.Errorf("mode = %q, want %q", mode, types.TurnModeBatch)
-	}
-	if batchID != "msgbatch_xyz" {
-		t.Errorf("batchID = %q, want %q", batchID, "msgbatch_xyz")
-	}
+	check.Equal(types.TurnModeBatch, mode, "mode")
+	check.Equal("msgbatch_xyz", batchID, "batchID")
 }
 
 // TestTurnModeInfo_NilSelectedProvider: turnModeInfo(nil) returns the
 // streaming defaults rather than panicking.
 func TestTurnModeInfo_NilSelectedProvider(t *testing.T) {
+	check := assert.New(t)
 	mode, batchID := turnModeInfo(nil)
-	if mode != types.TurnModeStreaming || batchID != "" {
-		t.Errorf("nil selectedProvider: mode=%q batchID=%q, want %q/\"\"", mode, batchID, types.TurnModeStreaming)
-	}
+	check.Equal(types.TurnModeStreaming, mode, "mode")
+	check.Empty(batchID, "batchID")
 }
 
 // buildBatchTestLoop is buildTestLoop's twin, taking a *fakeBatchAdapter
@@ -115,6 +111,8 @@ func buildBatchTestLoop(prov *fakeBatchAdapter, recorder *recordingTraceEmitter)
 // implements LastBatchID(), the emitted TurnTrace carries Mode="batch"
 // and the batch identifier.
 func TestLoop_BatchAdapter_RecordsBatchMode(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &fakeBatchAdapter{
 		batchID: "msgbatch_test123",
 		events: []types.StreamEvent{
@@ -125,25 +123,20 @@ func TestLoop_BatchAdapter_RecordsBatchMode(t *testing.T) {
 	recorder := &recordingTraceEmitter{}
 	loop := buildBatchTestLoop(prov, recorder)
 
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), buildTestConfig())
+	must.NoError(err)
 
 	turns, _ := recorder.snapshot()
-	if len(turns) != 1 {
-		t.Fatalf("expected 1 turn recorded, got %d", len(turns))
-	}
-	if turns[0].Mode != types.TurnModeBatch {
-		t.Errorf("turn[0].Mode = %q, want %q", turns[0].Mode, types.TurnModeBatch)
-	}
-	if turns[0].BatchID != "msgbatch_test123" {
-		t.Errorf("turn[0].BatchID = %q, want %q", turns[0].BatchID, "msgbatch_test123")
-	}
+	must.Len(turns, 1)
+	check.Equal(types.TurnModeBatch, turns[0].Mode, "turn[0].Mode")
+	check.Equal("msgbatch_test123", turns[0].BatchID, "turn[0].BatchID")
 }
 
 // TestLoop_StreamingProvider_RecordsStreamingMode: a vanilla mockProvider
 // produces TurnTrace.Mode="streaming" on every successful turn.
 func TestLoop_StreamingProvider_RecordsStreamingMode(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "ok"},
@@ -154,20 +147,13 @@ func TestLoop_StreamingProvider_RecordsStreamingMode(t *testing.T) {
 	loop := buildTestLoop(prov)
 	loop.Trace = recorder
 
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), buildTestConfig())
+	must.NoError(err)
 
 	turns, _ := recorder.snapshot()
-	if len(turns) != 1 {
-		t.Fatalf("expected 1 turn recorded, got %d", len(turns))
-	}
-	if turns[0].Mode != types.TurnModeStreaming {
-		t.Errorf("turn[0].Mode = %q, want %q", turns[0].Mode, types.TurnModeStreaming)
-	}
-	if turns[0].BatchID != "" {
-		t.Errorf("turn[0].BatchID = %q, want empty", turns[0].BatchID)
-	}
+	must.Len(turns, 1)
+	check.Equal(types.TurnModeStreaming, turns[0].Mode, "turn[0].Mode")
+	check.Empty(turns[0].BatchID, "turn[0].BatchID")
 }
 
 // failingBatchAdapter returns a stream-time error so the loop hits the
@@ -188,6 +174,8 @@ func (f *failingBatchAdapter) LastBatchID() string { return f.batchID }
 // (router selects a provider absent from l.Providers) must record
 // Mode="", not Mode="streaming".
 func TestLoop_ProviderNotFound_RecordsEmptyMode(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	recorder := &recordingTraceEmitter{}
 	loop := &AgenticLoop{
 		// l.Provider is intentionally nil; Providers has no "anthropic"
@@ -211,23 +199,18 @@ func TestLoop_ProviderNotFound_RecordsEmptyMode(t *testing.T) {
 		Logger:      slog.Default(),
 	}
 
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), buildTestConfig())
+	must.NoError(err)
 
 	turns, _ := recorder.snapshot()
-	if len(turns) != 1 {
-		t.Fatalf("expected 1 turn recorded, got %d", len(turns))
-	}
-	if turns[0].StopReason != "error" {
-		t.Errorf("turn[0].StopReason = %q, want %q", turns[0].StopReason, "error")
-	}
-	if turns[0].Mode != "" {
-		t.Errorf("turn[0].Mode = %q, want empty (pre-resolution error)", turns[0].Mode)
-	}
+	must.Len(turns, 1)
+	check.Equal("error", turns[0].StopReason, "turn[0].StopReason")
+	check.Empty(turns[0].Mode, "pre-resolution error records no mode")
 }
 
 func TestLoop_BatchAdapter_StreamError_StillRecordsBatchID(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &failingBatchAdapter{batchID: "msgbatch_failed_run"}
 	recorder := &recordingTraceEmitter{}
 	loop := &AgenticLoop{
@@ -248,21 +231,12 @@ func TestLoop_BatchAdapter_StreamError_StillRecordsBatchID(t *testing.T) {
 		Logger:      slog.Default(),
 	}
 
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), buildTestConfig())
+	must.NoError(err)
 
 	turns, _ := recorder.snapshot()
-	if len(turns) != 1 {
-		t.Fatalf("expected 1 turn recorded, got %d", len(turns))
-	}
-	if turns[0].StopReason != "error" {
-		t.Errorf("turn[0].StopReason = %q, want %q", turns[0].StopReason, "error")
-	}
-	if turns[0].Mode != types.TurnModeBatch {
-		t.Errorf("turn[0].Mode = %q, want %q", turns[0].Mode, types.TurnModeBatch)
-	}
-	if turns[0].BatchID != "msgbatch_failed_run" {
-		t.Errorf("turn[0].BatchID = %q, want %q (failure paths must retain batch id)", turns[0].BatchID, "msgbatch_failed_run")
-	}
+	must.Len(turns, 1)
+	check.Equal("error", turns[0].StopReason, "turn[0].StopReason")
+	check.Equal(types.TurnModeBatch, turns[0].Mode, "turn[0].Mode")
+	check.Equal("msgbatch_failed_run", turns[0].BatchID, "failure paths must retain the batch id")
 }

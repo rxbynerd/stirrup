@@ -1,6 +1,7 @@
 package credential
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -9,9 +10,10 @@ import (
 	"encoding/pem"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -26,15 +28,12 @@ var (
 
 func testServiceAccountPEM(t *testing.T) string {
 	t.Helper()
+	must := require.New(t)
 	fakeRSAKeyOnce.Do(func() {
 		key, err := rsa.GenerateKey(rand.Reader, 2048)
-		if err != nil {
-			t.Fatalf("generate RSA key: %v", err)
-		}
+		must.NoError(err, "generate RSA key")
 		der, err := x509.MarshalPKCS8PrivateKey(key)
-		if err != nil {
-			t.Fatalf("marshal PKCS8 key: %v", err)
-		}
+		must.NoError(err, "marshal PKCS8 key")
 		// google.JWTConfigFromJSON accepts both PKCS#1 and PKCS#8 PEM
 		// encodings; PKCS#8 with a "PRIVATE KEY" header is the form the
 		// real Google IAM service emits, so we mirror that.
@@ -51,6 +50,7 @@ func testServiceAccountPEM(t *testing.T) string {
 // shape. Returns the file path.
 func writeServiceAccountJSON(t *testing.T, dir string, overrides map[string]any) string {
 	t.Helper()
+	must := require.New(t)
 	doc := map[string]any{
 		"type":                        "service_account",
 		"project_id":                  "test-project",
@@ -70,176 +70,121 @@ func writeServiceAccountJSON(t *testing.T, dir string, overrides map[string]any)
 		doc[k] = v
 	}
 	data, err := json.Marshal(doc)
-	if err != nil {
-		t.Fatalf("marshal service account JSON: %v", err)
-	}
+	must.NoError(err, "marshal service account JSON")
 	path := filepath.Join(dir, "key.json")
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatalf("write key file: %v", err)
-	}
+	must.NoError(os.WriteFile(path, data, 0o600), "write key file")
+	return path
+}
+
+// writeUserCredentialsJSON writes an authorized_user credential file, which
+// both credential sources must reject.
+func writeUserCredentialsJSON(t *testing.T, dir string) string {
+	t.Helper()
+	must := require.New(t)
+	path := filepath.Join(dir, "user.json")
+	body := []byte(`{"type":"authorized_user","client_id":"x","client_secret":"y","refresh_token":"z"}`)
+	must.NoError(os.WriteFile(path, body, 0o600), "write user creds")
 	return path
 }
 
 func TestGoogleADCSource_RejectsAuthorizedUser(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "user.json")
-	body := []byte(`{"type":"authorized_user","client_id":"x","client_secret":"y","refresh_token":"z"}`)
-	if err := os.WriteFile(path, body, 0o600); err != nil {
-		t.Fatalf("write user creds: %v", err)
-	}
-	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
+	must := require.New(t)
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", writeUserCredentialsJSON(t, t.TempDir()))
 
 	src := &GoogleADCSource{}
 	_, err := src.Resolve(context.Background())
-	if err == nil {
-		t.Fatal("expected error rejecting user-mode credentials, got nil")
-	}
-	msg := err.Error()
+	must.Error(err)
 	for _, want := range []string{"authorized_user", "GOOGLE_APPLICATION_CREDENTIALS", "gcp-service-account", "gcp-workload-identity"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("error message missing %q guidance:\n%s", want, msg)
-		}
+		t.Run("guidance mentions "+want, func(t *testing.T) {
+			must := require.New(t)
+			must.ErrorContains(err, want)
+		})
 	}
 }
 
 func TestGoogleADCSource_AcceptsServiceAccount(t *testing.T) {
-	dir := t.TempDir()
-	path := writeServiceAccountJSON(t, dir, nil)
+	must := require.New(t)
+	path := writeServiceAccountJSON(t, t.TempDir(), nil)
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
 
 	src := &GoogleADCSource{}
 	cred, err := src.Resolve(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cred.BearerToken == nil {
-		t.Fatal("BearerToken closure should be non-nil for service-account ADC")
-	}
-	if cred.AWSCredentials != nil {
-		t.Error("AWSCredentials should be nil for Google credentials")
-	}
+	must.NoError(err)
+	must.NotNil(cred.BearerToken)
+	must.Nil(cred.AWSCredentials)
 }
 
 func TestServiceAccountKeySource_AcceptsValidKey(t *testing.T) {
-	dir := t.TempDir()
-	path := writeServiceAccountJSON(t, dir, nil)
+	must := require.New(t)
+	path := writeServiceAccountJSON(t, t.TempDir(), nil)
 
 	src := NewServiceAccountKeySource(path)
 	cred, err := src.Resolve(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cred.BearerToken == nil {
-		t.Fatal("BearerToken closure should be non-nil")
-	}
+	must.NoError(err)
+	must.NotNil(cred.BearerToken)
 }
 
 func TestServiceAccountKeySource_RejectsMissingFile(t *testing.T) {
+	must := require.New(t)
 	src := NewServiceAccountKeySource(filepath.Join(t.TempDir(), "does-not-exist.json"))
 	_, err := src.Resolve(context.Background())
-	if err == nil {
-		t.Fatal("expected error for missing file, got nil")
-	}
-	if !strings.Contains(err.Error(), "open service account key") {
-		t.Errorf("error should mention open failure, got: %v", err)
-	}
+	must.ErrorContains(err, "open service account key")
 }
 
 func TestServiceAccountKeySource_RejectsEmptyPath(t *testing.T) {
+	must := require.New(t)
 	src := NewServiceAccountKeySource("")
 	_, err := src.Resolve(context.Background())
-	if err == nil {
-		t.Fatal("expected error for empty path, got nil")
-	}
+	must.Error(err)
 }
 
 func TestServiceAccountKeySource_RejectsOversizedFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "huge.json")
-	// Write a file just over the cap. Content does not need to be
-	// valid JSON; the size check trips first.
-	big := make([]byte, maxServiceAccountKeyBytes+1)
-	for i := range big {
-		big[i] = 'a'
-	}
-	if err := os.WriteFile(path, big, 0o600); err != nil {
-		t.Fatalf("write huge file: %v", err)
-	}
+	must := require.New(t)
+	path := filepath.Join(t.TempDir(), "huge.json")
+	// Content does not need to be valid JSON; the size check trips first.
+	big := bytes.Repeat([]byte{'a'}, maxServiceAccountKeyBytes+1)
+	must.NoError(os.WriteFile(path, big, 0o600), "write huge file")
 
 	src := NewServiceAccountKeySource(path)
 	_, err := src.Resolve(context.Background())
-	if err == nil {
-		t.Fatal("expected error for oversized file, got nil")
-	}
-	if !strings.Contains(err.Error(), "refusing to read files larger than") {
-		t.Errorf("error should mention size cap, got: %v", err)
-	}
+	must.ErrorContains(err, "refusing to read files larger than")
 }
 
 func TestServiceAccountKeySource_RejectsAuthorizedUser(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "user.json")
-	body := []byte(`{"type":"authorized_user","client_id":"x","client_secret":"y","refresh_token":"z"}`)
-	if err := os.WriteFile(path, body, 0o600); err != nil {
-		t.Fatalf("write user creds: %v", err)
-	}
-
-	src := NewServiceAccountKeySource(path)
+	must := require.New(t)
+	src := NewServiceAccountKeySource(writeUserCredentialsJSON(t, t.TempDir()))
 	_, err := src.Resolve(context.Background())
-	if err == nil {
-		t.Fatal("expected error rejecting authorized_user JSON, got nil")
-	}
-	if !strings.Contains(err.Error(), "authorized_user") {
-		t.Errorf("error should mention authorized_user, got: %v", err)
-	}
+	must.ErrorContains(err, "authorized_user")
 }
 
 func TestServiceAccountKeySource_RejectsMalformedJSON(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "bad.json")
-	if err := os.WriteFile(path, []byte("{not valid json"), 0o600); err != nil {
-		t.Fatalf("write bad json: %v", err)
-	}
+	must := require.New(t)
+	path := filepath.Join(t.TempDir(), "bad.json")
+	must.NoError(os.WriteFile(path, []byte("{not valid json"), 0o600), "write bad json")
 
 	src := NewServiceAccountKeySource(path)
 	_, err := src.Resolve(context.Background())
-	if err == nil {
-		t.Fatal("expected error for malformed JSON, got nil")
-	}
-	if !strings.Contains(err.Error(), "parse service account key") {
-		t.Errorf("error should mention parse failure, got: %v", err)
-	}
+	must.ErrorContains(err, "parse service account key")
 }
 
 func TestServiceAccountKeySource_RejectsMissingType(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "notype.json")
-	if err := os.WriteFile(path, []byte(`{"project_id":"x"}`), 0o600); err != nil {
-		t.Fatalf("write notype.json: %v", err)
-	}
+	must := require.New(t)
+	path := filepath.Join(t.TempDir(), "notype.json")
+	must.NoError(os.WriteFile(path, []byte(`{"project_id":"x"}`), 0o600), "write notype.json")
 
 	src := NewServiceAccountKeySource(path)
 	_, err := src.Resolve(context.Background())
-	if err == nil {
-		t.Fatal("expected error for missing type field, got nil")
-	}
+	must.Error(err)
 }
 
 func TestServiceAccountKeySource_RejectsUnknownType(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "weird.json")
-	if err := os.WriteFile(path, []byte(`{"type":"external_account"}`), 0o600); err != nil {
-		t.Fatalf("write weird.json: %v", err)
-	}
+	must := require.New(t)
+	path := filepath.Join(t.TempDir(), "weird.json")
+	must.NoError(os.WriteFile(path, []byte(`{"type":"external_account"}`), 0o600), "write weird.json")
 
 	src := NewServiceAccountKeySource(path)
 	_, err := src.Resolve(context.Background())
-	if err == nil {
-		t.Fatal("expected error for unknown type, got nil")
-	}
-	if !strings.Contains(err.Error(), `"external_account"`) {
-		t.Errorf("error should mention the rejected type, got: %v", err)
-	}
+	must.ErrorContains(err, `"external_account"`)
 }
 
 // TestServiceAccountKeySource_ContextCancelDoesNotFailRefresh verifies
@@ -249,71 +194,54 @@ func TestServiceAccountKeySource_RejectsUnknownType(t *testing.T) {
 // context. We only check the error, if any, is not "context canceled";
 // the fake credentials aren't signed with a key Google IAM trusts.
 func TestServiceAccountKeySource_ContextCancelDoesNotFailRefresh(t *testing.T) {
-	dir := t.TempDir()
-	path := writeServiceAccountJSON(t, dir, nil)
+	must := require.New(t)
+	path := writeServiceAccountJSON(t, t.TempDir(), nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	src := NewServiceAccountKeySource(path)
 	cred, err := src.Resolve(ctx)
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if cred.BearerToken == nil {
-		t.Fatal("expected BearerToken closure")
-	}
+	must.NoError(err)
+	must.NotNil(cred.BearerToken)
 	cancel()
 
-	// The closure will hit the OAuth2 endpoint via the underlying
-	// oauth2.TokenSource and likely fail because the JWT was signed with
-	// a fake key. The point is that the failure must not be due to the
-	// cancelled Resolve ctx — refresh is bound to context.Background()
-	// internally, not to the caller-supplied ctx.
+	// Refresh runs under context.Background(), so the cancelled Resolve
+	// context must not appear in its error. The fake key makes the refresh
+	// itself fail, which is expected.
 	_, err = cred.BearerToken(context.Background())
-	if err != nil && strings.Contains(err.Error(), "context canceled") {
-		t.Fatalf("BearerToken closure failed with cancelled Resolve context — refresh ctx is still bound to factory ctx: %v", err)
+	if err != nil {
+		must.NotContains(err.Error(), "context canceled", "refresh ctx is still bound to the Resolve context")
 	}
 }
 
 func TestServiceAccountKeySource_RejectsDirectory(t *testing.T) {
-	dir := t.TempDir()
-
-	src := NewServiceAccountKeySource(dir)
+	must := require.New(t)
+	src := NewServiceAccountKeySource(t.TempDir())
 	_, err := src.Resolve(context.Background())
-	if err == nil {
-		t.Fatal("expected error when path points at a directory, got nil")
-	}
-	if !strings.Contains(err.Error(), "directory") {
-		t.Errorf("error should mention directory, got: %v", err)
-	}
+	must.ErrorContains(err, "directory")
 }
 
-func TestGoogleWorkloadIdentitySource_Construct(t *testing.T) {
+func TestGoogleWorkloadIdentitySource_ResolveReturnsBearerToken(t *testing.T) {
+	must := require.New(t)
 	// We cannot meaningfully test Resolve() without a metadata server;
 	// the test just confirms the constructor returns a source whose
 	// Resolve produces a non-nil BearerToken closure synchronously
 	// (oauth2.ReuseTokenSource is lazy; no network call yet).
 	src := NewGoogleWorkloadIdentitySource()
 	cred, err := src.Resolve(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cred.BearerToken == nil {
-		t.Fatal("BearerToken closure should be non-nil after Resolve")
-	}
+	must.NoError(err)
+	must.NotNil(cred.BearerToken)
 }
 
-func TestBuildSource_InfersGemini(t *testing.T) {
+func TestBuildSource_GeminiWithoutCredentialUsesADC(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{Type: "gemini"}
 	src, err := BuildSource(cfg, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if _, ok := src.(*GoogleADCSource); !ok {
-		t.Errorf("expected *GoogleADCSource, got %T", src)
-	}
+	must.NoError(err)
+	must.IsType(&GoogleADCSource{}, src)
 }
 
 func TestBuildSource_ExplicitGCPDefault(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{
 		Type: "gemini",
 		Credential: &types.CredentialConfig{
@@ -321,15 +249,12 @@ func TestBuildSource_ExplicitGCPDefault(t *testing.T) {
 		},
 	}
 	src, err := BuildSource(cfg, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if _, ok := src.(*GoogleADCSource); !ok {
-		t.Errorf("expected *GoogleADCSource, got %T", src)
-	}
+	must.NoError(err)
+	must.IsType(&GoogleADCSource{}, src)
 }
 
 func TestBuildSource_ExplicitGCPServiceAccount(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{
 		Type:               "gemini",
 		GCPCredentialsFile: "/etc/secrets/key.json",
@@ -338,22 +263,17 @@ func TestBuildSource_ExplicitGCPServiceAccount(t *testing.T) {
 		},
 	}
 	src, err := BuildSource(cfg, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	must.NoError(err)
 	sa, ok := src.(*ServiceAccountKeySource)
-	if !ok {
-		t.Fatalf("expected *ServiceAccountKeySource, got %T", src)
-	}
-	if sa.path != "/etc/secrets/key.json" {
-		t.Errorf("path = %q, want %q", sa.path, "/etc/secrets/key.json")
-	}
+	must.True(ok, "expected *ServiceAccountKeySource, got %T", src)
+	must.Equal("/etc/secrets/key.json", sa.path)
 }
 
 // TestBuildSource_UnsupportedGCPCredentialTypeReturnsError verifies an
 // unrecognised credential.type fails loudly rather than silently
 // falling through to the default ADC source.
 func TestBuildSource_UnsupportedGCPCredentialTypeReturnsError(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{
 		Type: "gemini",
 		Credential: &types.CredentialConfig{
@@ -361,12 +281,11 @@ func TestBuildSource_UnsupportedGCPCredentialTypeReturnsError(t *testing.T) {
 		},
 	}
 	_, err := BuildSource(cfg, nil)
-	if err == nil {
-		t.Fatal("expected error for unsupported gcp credential type, got nil")
-	}
+	must.Error(err)
 }
 
 func TestBuildSource_ExplicitGCPWorkloadIdentity(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{
 		Type: "gemini",
 		Credential: &types.CredentialConfig{
@@ -374,10 +293,6 @@ func TestBuildSource_ExplicitGCPWorkloadIdentity(t *testing.T) {
 		},
 	}
 	src, err := BuildSource(cfg, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if _, ok := src.(*GoogleWorkloadIdentitySource); !ok {
-		t.Errorf("expected *GoogleWorkloadIdentitySource, got %T", src)
-	}
+	must.NoError(err)
+	must.IsType(&GoogleWorkloadIdentitySource{}, src)
 }

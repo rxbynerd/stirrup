@@ -8,64 +8,65 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
-func TestCapEventText(t *testing.T) {
+// truncationMarkerSuffix is the tail a capped value ends with, naming the
+// original size in bytes.
+func truncationMarkerSuffix(originalBytes int) string {
+	return fmt.Sprintf(" of %d bytes shown]", originalBytes)
+}
+
+func TestCapEventText_TruncatesWithMarkerAndValidUTF8(t *testing.T) {
+	must := require.New(t)
 	small := strings.Repeat("a", maxEventFieldBytes)
-	if got := capEventText(small); got != small {
-		t.Fatal("text at the cap must pass through unchanged")
-	}
+	must.Equal(small, capEventText(small), "text at the cap must pass through unchanged")
+
 	big := strings.Repeat("é", maxEventFieldBytes)
 	got := capEventText(big)
-	if len(got) > maxEventFieldBytes || !utf8.ValidString(got) {
-		t.Fatalf("capped text is %d bytes (valid UTF-8: %v)", len(got), utf8.ValidString(got))
-	}
-	if !strings.HasSuffix(got, fmt.Sprintf(" of %d bytes shown]", len(big))) {
-		t.Fatalf("marker must name the original size: %q", got[len(got)-80:])
-	}
+	must.LessOrEqual(len(got), maxEventFieldBytes)
+	must.True(utf8.ValidString(got), "capped text must be valid UTF-8")
+	must.True(strings.HasSuffix(got, truncationMarkerSuffix(len(big))), "marker must name the original size")
 }
 
 func TestBoundEventFields_CapsUserMessageAndThinkingText(t *testing.T) {
+	must := require.New(t)
 	big := strings.Repeat("é", maxEventFieldBytes)
 
 	for _, typ := range []string{"user_message", "thinking_delta"} {
-		ev := types.HarnessEvent{Type: typ, Source: types.UserMessageSourceInitialPrompt, Text: big}
-		boundEventFields(&ev)
-		if len(ev.Text) > maxEventFieldBytes || !utf8.ValidString(ev.Text) || !strings.HasSuffix(ev.Text, fmt.Sprintf(" of %d bytes shown]", len(big))) {
-			t.Errorf("%s text is %d bytes (valid UTF-8: %v) or lacks the marker", typ, len(ev.Text), utf8.ValidString(ev.Text))
-		}
+		t.Run(typ, func(t *testing.T) {
+			must := require.New(t)
+			ev := types.HarnessEvent{Type: typ, Source: types.UserMessageSourceInitialPrompt, Text: big}
+			boundEventFields(&ev)
+			must.LessOrEqual(len(ev.Text), maxEventFieldBytes)
+			must.True(utf8.ValidString(ev.Text), "capped text must be valid UTF-8")
+			must.True(strings.HasSuffix(ev.Text, truncationMarkerSuffix(len(big))), "marker must name the original size")
+		})
 	}
 
 	delta := types.HarnessEvent{Type: "text_delta", Text: big}
 	boundEventFields(&delta)
-	if delta.Text != big {
-		t.Error("text_delta text was altered; it is not capped")
-	}
+	must.Equal(big, delta.Text, "text_delta text must not be capped")
 }
 
-func TestCapEventInput(t *testing.T) {
+func TestCapEventInput_PassesSmallInputAndTruncatesLarge(t *testing.T) {
+	must := require.New(t)
 	small := json.RawMessage(`{"path":"a.go"}`)
-	if got := capEventInput(small); string(got) != string(small) {
-		t.Fatal("input under the cap must pass through unchanged")
-	}
+	must.Equal(small, capEventInput(small), "input under the cap must pass through unchanged")
 
 	for name, input := range map[string]json.RawMessage{
 		"plain":           json.RawMessage(`{"content":"` + strings.Repeat("x", 1<<20) + `"}`),
-		"escape-expanded": json.RawMessage(`{"content":"` + strings.Repeat("<", 1<<20) + `"}`),
+		"escape expanded": json.RawMessage(`{"content":"` + strings.Repeat("<", 1<<20) + `"}`),
 	} {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			got := capEventInput(input)
-			if len(got) > maxEventFieldBytes {
-				t.Fatalf("capped input is %d bytes, want <= %d", len(got), maxEventFieldBytes)
-			}
+			must.LessOrEqual(len(got), maxEventFieldBytes)
 			var s string
-			if err := json.Unmarshal(got, &s); err != nil {
-				t.Fatalf("capped input must be a valid JSON string: %v", err)
-			}
-			if !strings.HasSuffix(s, fmt.Sprintf(" of %d bytes shown]", len(input))) {
-				t.Fatalf("marker must name the original size: %q", s[len(s)-80:])
-			}
+			must.NoError(json.Unmarshal(got, &s), "capped input must be a valid JSON string")
+			must.True(strings.HasSuffix(s, truncationMarkerSuffix(len(input))), "marker must name the original size")
 		})
 	}
 }
@@ -79,18 +80,14 @@ func TestCapEventInput_KeepsHeadOfEscapeHeavyInput(t *testing.T) {
 		"quotes": {body: strings.Repeat(`\"`, 1<<18), wantHead: `{"content":"\"\"`},
 	} {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			input := json.RawMessage(`{"content":"` + tc.body + `"}`)
 			got := capEventInput(input)
-			if len(got) > maxEventFieldBytes {
-				t.Fatalf("capped input is %d bytes, want <= %d", len(got), maxEventFieldBytes)
-			}
+			must.LessOrEqual(len(got), maxEventFieldBytes)
 			var s string
-			if err := json.Unmarshal(got, &s); err != nil {
-				t.Fatalf("capped input must be a valid JSON string: %v", err)
-			}
-			if !strings.HasPrefix(s, tc.wantHead) || len(s) < 32<<10 {
-				t.Fatalf("capped input dropped its head: %d bytes, starts %q", len(s), s[:min(len(s), 40)])
-			}
+			must.NoError(json.Unmarshal(got, &s), "capped input must be a valid JSON string")
+			must.True(strings.HasPrefix(s, tc.wantHead), "capped input must keep its head")
+			must.GreaterOrEqual(len(s), 32<<10, "capped input must keep at least 32 KiB")
 		})
 	}
 }
@@ -100,43 +97,34 @@ func TestCapEventInput_KeepsHeadOfEscapeHeavyInput(t *testing.T) {
 // receive limit aborts the stream on an oversized message, and checks the
 // stream survives to deliver a later event.
 func TestGRPCTransport_OversizedToolResultDoesNotEndStream(t *testing.T) {
+	must := require.New(t)
 	srv := newTestServer()
 	tr, _, cleanup := setupTestTransport(t, srv)
 	defer cleanup()
 
 	const size = 6 << 20
-	if err := tr.Emit(types.HarnessEvent{Type: "tool_result", ToolUseID: "tc1", Content: strings.Repeat("r", size)}); err != nil {
-		t.Fatalf("Emit oversized tool_result: %v", err)
-	}
+	must.NoError(tr.Emit(types.HarnessEvent{Type: "tool_result", ToolUseID: "tc1", Content: strings.Repeat("r", size)}), "emit oversized tool_result")
 	bigInput := json.RawMessage(`{"content":"` + strings.Repeat("w", size) + `"}`)
-	if err := tr.Emit(types.HarnessEvent{Type: "tool_call", ID: "tc2", Name: "write_file", Input: bigInput}); err != nil {
-		t.Fatalf("Emit oversized tool_call: %v", err)
-	}
-	if err := tr.Emit(types.HarnessEvent{Type: "text_delta", Text: "after"}); err != nil {
-		t.Fatalf("Emit after oversized events: %v", err)
-	}
+	must.NoError(tr.Emit(types.HarnessEvent{Type: "tool_call", ID: "tc2", Name: "write_file", Input: bigInput}), "emit oversized tool_call")
+	must.NoError(tr.Emit(types.HarnessEvent{Type: "text_delta", Text: "after"}), "emit event after oversized events")
 
 	_ = tr.stream.CloseSend()
-	deadline := time.Now().Add(5 * time.Second)
-	for len(srv.getReceived()) < 3 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
+	must.Eventually(func() bool { return len(srv.getReceived()) >= 3 }, 5*time.Second, 10*time.Millisecond)
 	received := srv.getReceived()
-	if len(received) != 3 {
-		t.Fatalf("server received %d events, want 3", len(received))
-	}
-	if got := received[0].Content; len(got) > maxEventFieldBytes || !strings.HasSuffix(got, fmt.Sprintf(" of %d bytes shown]", size)) {
-		t.Fatalf("tool_result content is %d bytes or lacks the marker", len(got))
-	}
-	if got := received[1].Input; len(got) > maxEventFieldBytes || !json.Valid(got) {
-		t.Fatalf("tool_call input is %d bytes (valid JSON: %v)", len(got), json.Valid(got))
-	}
-	if received[2].Text != "after" {
-		t.Fatalf("later event text = %q, want after", received[2].Text)
-	}
+	must.Len(received, 3)
+
+	content := received[0].Content
+	must.LessOrEqual(len(content), maxEventFieldBytes)
+	must.True(strings.HasSuffix(content, truncationMarkerSuffix(size)), "tool_result content must carry the truncation marker")
+
+	must.LessOrEqual(len(received[1].Input), maxEventFieldBytes)
+	must.True(json.Valid(received[1].Input), "tool_call input must remain valid JSON")
+
+	must.Equal("after", received[2].Text, "event after the oversized events must be delivered")
 }
 
 func TestBoundEventFields_CapsIdentifiers(t *testing.T) {
+	must := require.New(t)
 	big := strings.Repeat("é", maxEventIdentifierBytes)
 
 	for _, ev := range []types.HarnessEvent{
@@ -146,45 +134,42 @@ func TestBoundEventFields_CapsIdentifiers(t *testing.T) {
 		{Type: "warning", Message: "user_response dropped: empty text", RequestID: big},
 		{Type: "permission_request", RequestID: big, ToolName: big},
 	} {
-		boundEventFields(&ev)
-		for field, got := range map[string]string{
-			"id": ev.ID, "name": ev.Name, "tool_use_id": ev.ToolUseID, "request_id": ev.RequestID, "tool_name": ev.ToolName,
-		} {
-			if len(got) > maxEventIdentifierBytes || !utf8.ValidString(got) {
-				t.Errorf("%s %s is %d bytes (valid UTF-8: %v)", ev.Type, field, len(got), utf8.ValidString(got))
+		t.Run(ev.Type, func(t *testing.T) {
+			must := require.New(t)
+			boundEventFields(&ev)
+			for field, got := range map[string]string{
+				"id": ev.ID, "name": ev.Name, "tool_use_id": ev.ToolUseID, "request_id": ev.RequestID, "tool_name": ev.ToolName,
+			} {
+				must.LessOrEqual(len(got), maxEventIdentifierBytes, "%s is over the identifier cap", field)
+				must.True(utf8.ValidString(got), "%s must be valid UTF-8", field)
 			}
-		}
+		})
 	}
 
 	call := types.HarnessEvent{Type: "tool_call", ID: big}
 	result := types.HarnessEvent{Type: "tool_result", ToolUseID: big}
 	boundEventFields(&call)
 	boundEventFields(&result)
-	if call.ID != result.ToolUseID {
-		t.Error("a capped tool_result tool_use_id no longer matches its capped tool_call id")
-	}
+	must.Equal(call.ID, result.ToolUseID, "capped tool_result tool_use_id must match capped tool_call id")
 
 	done := types.HarnessEvent{Type: "done", StopReason: big}
 	boundEventFields(&done)
-	if len(done.StopReason) > maxEventIdentifierBytes {
-		t.Errorf("done stop_reason is %d bytes", len(done.StopReason))
-	}
+	must.LessOrEqual(len(done.StopReason), maxEventIdentifierBytes, "done stop_reason must be capped")
 
 	bigMessage := strings.Repeat("m", 6<<20)
 	warning := types.HarnessEvent{Type: "warning", Message: bigMessage}
 	boundEventFields(&warning)
-	if len(warning.Message) > maxEventFieldBytes || !strings.HasSuffix(warning.Message, fmt.Sprintf(" of %d bytes shown]", len(bigMessage))) {
-		t.Errorf("warning message is %d bytes or lacks the marker", len(warning.Message))
-	}
+	must.LessOrEqual(len(warning.Message), maxEventFieldBytes)
+	must.True(strings.HasSuffix(warning.Message, truncationMarkerSuffix(len(bigMessage))), "warning message must carry the truncation marker")
 
 	short := types.HarnessEvent{Type: "tool_call", ID: "tc1", Name: "read_file"}
 	boundEventFields(&short)
-	if short.ID != "tc1" || short.Name != "read_file" {
-		t.Errorf("identifiers under the cap were altered: %+v", short)
-	}
+	must.Equal("tc1", short.ID, "identifier under the cap must not be altered")
+	must.Equal("read_file", short.Name, "identifier under the cap must not be altered")
 }
 
 func TestGRPCTransport_OversizedIdentifiersDoNotEndStream(t *testing.T) {
+	must := require.New(t)
 	srv := newTestServer()
 	tr, _, cleanup := setupTestTransport(t, srv)
 	defer cleanup()
@@ -196,24 +181,15 @@ func TestGRPCTransport_OversizedIdentifiersDoNotEndStream(t *testing.T) {
 		{Type: "user_message", Source: types.UserMessageSourceUserResponse, Text: "hi", RequestID: big},
 		{Type: "text_delta", Text: "after"},
 	} {
-		if err := tr.Emit(ev); err != nil {
-			t.Fatalf("Emit %s: %v", ev.Type, err)
-		}
+		must.NoError(tr.Emit(ev), "emit %s", ev.Type)
 	}
 
 	_ = tr.stream.CloseSend()
-	deadline := time.Now().Add(5 * time.Second)
-	for len(srv.getReceived()) < 4 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
+	must.Eventually(func() bool { return len(srv.getReceived()) >= 4 }, 5*time.Second, 10*time.Millisecond)
 	received := srv.getReceived()
-	if len(received) != 4 {
-		t.Fatalf("server received %d events, want 4", len(received))
-	}
-	if len(received[0].Name) != maxEventIdentifierBytes || len(received[1].Name) != maxEventIdentifierBytes || len(received[2].RequestId) != maxEventIdentifierBytes {
-		t.Fatalf("identifier lengths = %d, %d, %d, want %d", len(received[0].Name), len(received[1].Name), len(received[2].RequestId), maxEventIdentifierBytes)
-	}
-	if received[3].Text != "after" {
-		t.Fatalf("later event text = %q, want after", received[3].Text)
-	}
+	must.Len(received, 4)
+	must.Len(received[0].Name, maxEventIdentifierBytes, "tool_call name must be capped")
+	must.Len(received[1].Name, maxEventIdentifierBytes, "tool_result name must be capped")
+	must.Len(received[2].RequestId, maxEventIdentifierBytes, "request_id must be capped")
+	must.Equal("after", received[3].Text, "event after the oversized identifiers must be delivered")
 }

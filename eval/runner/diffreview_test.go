@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/eval/judge"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -98,16 +100,13 @@ func diffReviewJudgeFor(stub *judgeStub) types.EvalJudge {
 // probeLog parses the harness's probe lines keyed by task ID.
 func probeLog(t *testing.T, path string, taskIDs ...string) map[string][2]string {
 	t.Helper()
+	must := require.New(t)
 	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("reading probe log: %v", err)
-	}
+	must.NoError(err, "reading probe log")
 	out := map[string][2]string{}
 	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
 		parts := strings.SplitN(line, "|", 3)
-		if len(parts) != 3 {
-			t.Fatalf("malformed probe line %q", line)
-		}
+		must.Len(parts, 3, "malformed probe line %q", line)
 		for _, id := range taskIDs {
 			if strings.HasPrefix(parts[0], "evaltask-"+id+"-") {
 				out[id] = [2]string{parts[1], parts[2]}
@@ -122,6 +121,7 @@ func probeLog(t *testing.T, path string, taskIDs ...string) map[string][2]string
 // private directory so leaked judge dirs can be counted.
 func isolateGit(t *testing.T) string {
 	t.Helper()
+	must := require.New(t)
 	for _, bin := range []string{"git", "sh"} {
 		if _, err := exec.LookPath(bin); err != nil {
 			t.Skipf("%s not on PATH", bin)
@@ -130,9 +130,7 @@ func isolateGit(t *testing.T) string {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	tmp, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	t.Setenv("TMPDIR", tmp)
 	return tmp
 }
@@ -140,38 +138,37 @@ func isolateGit(t *testing.T) string {
 // judgeDirs lists judge-owned git dirs left in tmp.
 func judgeDirs(t *testing.T, tmp string) []string {
 	t.Helper()
+	must := require.New(t)
 	dirs, err := filepath.Glob(filepath.Join(tmp, "evaljudge-*"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	return dirs
 }
 
 func gitIn(t *testing.T, dir string, args ...string) {
 	t.Helper()
+	must := require.New(t)
 	cmd := exec.Command("git", append([]string{"-c", "commit.gpgsign=false"}, args...)...)
 	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
-	}
+	out, err := cmd.CombinedOutput()
+	must.NoError(err, "git %s\n%s", strings.Join(args, " "), out)
 }
 
 // upstreamRepo is a one-commit repository for `repo` tasks to clone.
 func upstreamRepo(t *testing.T) string {
 	t.Helper()
+	must := require.New(t)
 	upstream := t.TempDir()
 	gitIn(t, upstream, "init", "-q")
 	gitIn(t, upstream, "config", "user.name", "seed")
 	gitIn(t, upstream, "config", "user.email", "seed@example.invalid")
-	if err := os.WriteFile(filepath.Join(upstream, "upstream.txt"), []byte("hello upstream\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.WriteFile(filepath.Join(upstream, "upstream.txt"), []byte("hello upstream\n"), 0o644))
 	gitIn(t, upstream, "add", "-A")
 	gitIn(t, upstream, "commit", "-q", "-m", "seed")
 	return upstream
 }
 
 func TestRunSuite_DiffReviewWorkspacesHaveNoBaselineGitDir(t *testing.T) {
+	must := require.New(t)
 	tmp := isolateGit(t)
 	stub := newJudgeStub(t, 200, stubPassReply)
 	t.Setenv("JUDGE_E2E_KEY", "k")
@@ -196,33 +193,29 @@ func TestRunSuite_DiffReviewWorkspacesHaveNoBaselineGitDir(t *testing.T) {
 	}
 
 	result, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness, OutputDir: t.TempDir()})
-	if err != nil {
-		t.Fatalf("RunSuite: %v", err)
-	}
+	must.NoError(err)
 	for _, tr := range result.Tasks {
-		if tr.Outcome != "pass" {
-			t.Errorf("task %s: outcome %q (error %q, reason %q)", tr.TaskID, tr.Outcome, tr.Error, tr.JudgeVerdict.Reason)
-		}
-	}
-	if n := len(stub.requests()); n != 4 {
-		t.Errorf("judge saw %d requests, want one per diff-review task (4)", n)
+		t.Run(tr.TaskID, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal("pass", tr.Outcome, "task error %q, reason %q", tr.Error, tr.JudgeVerdict.Reason)
+		})
 	}
 
 	got := probeLog(t, probe, "plain", "reviewed", "nested", "empty", "cloned")
 	for _, id := range []string{"plain", "reviewed", "nested", "empty"} {
-		if head, listing := got[id][0], got[id][1]; head != "none" || strings.Contains(listing, ".git") {
-			t.Errorf("task %s: head=%q listing=%q, want no git repository in the workspace", id, head, listing)
-		}
+		t.Run(id+" workspace", func(t *testing.T) {
+			must := require.New(t)
+			must.Equal("none", got[id][0], "workspace should not be a git repository")
+			must.NotContains(got[id][1], ".git", "workspace listing should not show a git directory")
+		})
 	}
-	if head := got["cloned"][0]; head != "seed" {
-		t.Errorf("cloned task head = %q, want the upstream commit untouched", head)
-	}
-	if left := judgeDirs(t, tmp); len(left) != 0 {
-		t.Errorf("judge git dirs left behind: %v", left)
-	}
+	must.Equal("seed", got["cloned"][0], "cloned task should keep the upstream commit")
+	must.Len(stub.requests(), 4, "judge should see one request per diff-review task")
+	must.Empty(judgeDirs(t, tmp), "judge git dirs left behind")
 }
 
 func TestRunSuite_RepoTaskDiffHoldsOnlyTheAgentChange(t *testing.T) {
+	must := require.New(t)
 	isolateGit(t)
 	stub := newJudgeStub(t, 200, stubPassReply)
 	t.Setenv("JUDGE_E2E_KEY", "k")
@@ -238,23 +231,21 @@ func TestRunSuite_RepoTaskDiffHoldsOnlyTheAgentChange(t *testing.T) {
 		}},
 	}
 	result, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness})
-	if err != nil {
-		t.Fatalf("RunSuite: %v", err)
-	}
-	if tr := result.Tasks[0]; tr.Outcome != "pass" || tr.JudgeVerdict.Record == nil || tr.JudgeVerdict.Record.BaselineSource != types.JudgeBaselineRunner {
-		t.Fatalf("task = %+v", tr)
-	}
+	must.NoError(err)
+	tr := result.Tasks[0]
+	must.Equal("pass", tr.Outcome, "task error %q", tr.Error)
+	must.NotNil(tr.JudgeVerdict.Record)
+	must.Equal(types.JudgeBaselineRunner, tr.JudgeVerdict.Record.BaselineSource)
+
 	reqs := stub.requests()
-	if len(reqs) != 1 {
-		t.Fatalf("judge saw %d requests, want 1", len(reqs))
-	}
-	if !strings.Contains(reqs[0], "created.txt") || !strings.Contains(reqs[0], "agent output") {
-		t.Errorf("judge request is missing the agent's change:\n%s", reqs[0])
-	}
+	must.Len(reqs, 1)
+	must.Contains(reqs[0], "created.txt", "judge request is missing the agent's change")
+	must.Contains(reqs[0], "agent output", "judge request is missing the agent's change")
 	for _, leaked := range []string{"seed-content", "seed override", "hello upstream"} {
-		if strings.Contains(reqs[0], leaked) {
-			t.Errorf("judge request attributes %q, which the agent did not write, to the agent:\n%s", leaked, reqs[0])
-		}
+		t.Run("excludes "+leaked, func(t *testing.T) {
+			must := require.New(t)
+			must.NotContains(reqs[0], leaked, "judge request attributes content the agent did not write")
+		})
 	}
 }
 
@@ -271,6 +262,7 @@ func TestRunSuite_JudgeDirRemovedOnEveryPath(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			tmp := isolateGit(t)
 			stub := newJudgeStub(t, tc.status, tc.reply)
 			t.Setenv("JUDGE_E2E_KEY", "k")
@@ -279,20 +271,16 @@ func TestRunSuite_JudgeDirRemovedOnEveryPath(t *testing.T) {
 
 			suite := types.EvalSuite{ID: "cleanup-suite", Tasks: []types.EvalTask{{ID: "reviewed", Prompt: "p", Judge: diffReviewJudgeFor(stub)}}}
 			result, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness})
-			if err != nil {
-				t.Fatalf("RunSuite: %v", err)
-			}
-			if got := result.Tasks[0].Outcome; got != tc.outcome {
-				t.Errorf("outcome = %q, want %q (%s)", got, tc.outcome, result.Tasks[0].Error)
-			}
-			if left := judgeDirs(t, tmp); len(left) != 0 {
-				t.Errorf("judge git dirs left behind: %v", left)
-			}
+			must.NoError(err)
+			tr := result.Tasks[0]
+			must.Equal(tc.outcome, tr.Outcome, "task error %q", tr.Error)
+			must.Empty(judgeDirs(t, tmp), "judge git dirs left behind")
 		})
 	}
 }
 
 func TestRunSuite_RetainsJudgeBaselineForReplay(t *testing.T) {
+	must := require.New(t)
 	isolateGit(t)
 	stub := newJudgeStub(t, 200, stubPassReply)
 	t.Setenv("JUDGE_E2E_KEY", "k")
@@ -302,35 +290,30 @@ func TestRunSuite_RetainsJudgeBaselineForReplay(t *testing.T) {
 
 	seed := map[string]string{"a.txt": "seed-content\n"}
 	task := types.EvalTask{ID: "reviewed", Prompt: "p", Files: seed, Judge: diffReviewJudgeFor(stub)}
-	if _, err := RunSuite(context.Background(), types.EvalSuite{ID: "retain-suite", Tasks: []types.EvalTask{task}}, RunConfig{HarnessPath: harness, OutputDir: out}); err != nil {
-		t.Fatalf("RunSuite: %v", err)
-	}
+	_, err := RunSuite(context.Background(), types.EvalSuite{ID: "retain-suite", Tasks: []types.EvalTask{task}}, RunConfig{HarnessPath: harness, OutputDir: out})
+	must.NoError(err)
 	sidecar := filepath.Join(out, "retain-suite", "reviewed", judge.BaselineSidecarName)
-	if _, err := os.Stat(sidecar); err != nil {
-		t.Fatalf("baseline sidecar not retained: %v", err)
-	}
+	_, err = os.Stat(sidecar)
+	must.NoError(err, "baseline sidecar not retained")
 
 	workspace := t.TempDir()
 	for name, content := range map[string]string{"a.txt": "seed-content\n", "created.txt": "replayed change\n"} {
-		if err := os.WriteFile(filepath.Join(workspace, name), []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		must.NoError(os.WriteFile(filepath.Join(workspace, name), []byte(content), 0o644))
 	}
 	result, err := ReplayRecording(context.Background(), types.RunRecording{RunID: "r1"}, task, workspace, judge.Options{}, sidecar)
-	if err != nil {
-		t.Fatalf("ReplayRecording: %v", err)
-	}
-	if result.Outcome != "pass" || result.JudgeVerdict.Record == nil || result.JudgeVerdict.Record.BaselineSource != types.JudgeBaselineSidecar {
-		t.Errorf("result = %+v", result)
-	}
+	must.NoError(err)
+	must.Equal("pass", result.Outcome, "result = %+v", result)
+	must.NotNil(result.JudgeVerdict.Record)
+	must.Equal(types.JudgeBaselineSidecar, result.JudgeVerdict.Record.BaselineSource)
+
 	reqs := stub.requests()
 	last := reqs[len(reqs)-1]
-	if !strings.Contains(last, "replayed change") || strings.Contains(last, "seed-content") {
-		t.Errorf("replay did not diff against the retained baseline:\n%s", last)
-	}
+	must.Contains(last, "replayed change", "replay did not diff against the retained baseline")
+	must.NotContains(last, "seed-content", "replay diff should not include the retained baseline")
 }
 
 func TestRunSuite_DiffReviewJudgesBaselineDiffNotSeededFiles(t *testing.T) {
+	must := require.New(t)
 	isolateGit(t)
 	stub := newJudgeStub(t, 200, stubPassReply)
 	t.Setenv("JUDGE_E2E_KEY", "k")
@@ -348,43 +331,40 @@ func TestRunSuite_DiffReviewJudgesBaselineDiffNotSeededFiles(t *testing.T) {
 	}
 
 	result, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness, OutputDir: t.TempDir()})
-	if err != nil {
-		t.Fatalf("RunSuite: %v", err)
-	}
+	must.NoError(err)
 
 	reviewed := result.Tasks[0]
-	if reviewed.Outcome != "pass" || reviewed.JudgeVerdict.Status != types.JudgeStatusPass || reviewed.JudgeVerdict.Reason != "looks good" {
-		t.Fatalf("reviewed task = %+v", reviewed)
-	}
+	must.Equal("pass", reviewed.Outcome, "reviewed task = %+v", reviewed)
+	must.Equal(types.JudgeStatusPass, reviewed.JudgeVerdict.Status)
+	must.Equal("looks good", reviewed.JudgeVerdict.Reason)
+
 	rec := reviewed.JudgeVerdict.Record
-	if rec == nil || rec.ServedModel != "stub-judge" || rec.RequestedModel != "stub-model" || rec.InputTokens != 5 || rec.OutputTokens != 3 || rec.InputBytes == 0 {
-		t.Errorf("record = %+v", rec)
-	}
+	must.NotNil(rec, "reviewed task has no judge record")
+	must.Equal("stub-judge", rec.ServedModel)
+	must.Equal("stub-model", rec.RequestedModel)
+	must.Equal(5, rec.InputTokens)
+	must.Equal(3, rec.OutputTokens)
+	must.NotZero(rec.InputBytes)
 
 	reqs := stub.requests()
-	if len(reqs) != 1 {
-		t.Fatalf("judge saw %d requests, want 1", len(reqs))
-	}
+	must.Len(reqs, 1)
 	body := reqs[0]
-	if !strings.Contains(body, "created.txt") || !strings.Contains(body, "agent output") {
-		t.Errorf("judge request is missing the agent's untracked file:\n%s", body)
-	}
+	must.Contains(body, "created.txt", "judge request is missing the agent's untracked file")
+	must.Contains(body, "agent output", "judge request is missing the agent's untracked file")
 	for _, leaked := range []string{"seed-content", "runconfig.json"} {
-		if strings.Contains(body, leaked) {
-			t.Errorf("judge request contains %q, which is not part of the agent's change:\n%s", leaked, body)
-		}
+		t.Run("excludes "+leaked, func(t *testing.T) {
+			must := require.New(t)
+			must.NotContains(body, leaked, "judge request contains content outside the agent's change")
+		})
 	}
 
 	listings := probeLog(t, probe, "reviewed", "plain")
-	if strings.Contains(listings["reviewed"][1], "runconfig.json") {
-		t.Errorf("diff-reviewed workspace holds runconfig.json: %q", listings["reviewed"][1])
-	}
-	if !strings.Contains(listings["plain"][1], "runconfig.json") {
-		t.Errorf("non-diff task workspace lost runconfig.json: %q", listings["plain"][1])
-	}
+	must.NotContains(listings["reviewed"][1], "runconfig.json", "diff-reviewed workspace should not hold runconfig.json")
+	must.Contains(listings["plain"][1], "runconfig.json", "non-diff task workspace should keep runconfig.json")
 }
 
 func TestRunSuite_JudgeErrorKeepsRecordAndIsNotAFail(t *testing.T) {
+	must := require.New(t)
 	isolateGit(t)
 	stub := newJudgeStub(t, 503, `{"error":"overloaded"}`)
 	t.Setenv("JUDGE_E2E_KEY", "k")
@@ -396,29 +376,21 @@ func TestRunSuite_JudgeErrorKeepsRecordAndIsNotAFail(t *testing.T) {
 		Tasks: []types.EvalTask{{ID: "reviewed", Prompt: "p", Judge: diffReviewJudgeFor(stub)}},
 	}
 	result, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness, OutputDir: t.TempDir()})
-	if err != nil {
-		t.Fatalf("RunSuite: %v", err)
-	}
+	must.NoError(err)
 
 	tr := result.Tasks[0]
-	if tr.Outcome != "error" {
-		t.Errorf("outcome = %q, want error: an unreachable judge is not a failed task", tr.Outcome)
-	}
-	if !strings.Contains(tr.Error, "HTTP 503") || !strings.Contains(tr.Error, "after 3 attempts") {
-		t.Errorf("error = %q", tr.Error)
-	}
-	if n := len(stub.requests()); n != 3 {
-		t.Errorf("judge saw %d requests, want 3 attempts", n)
-	}
-	if tr.JudgeVerdict.Status != types.JudgeStatusError || tr.JudgeVerdict.Passed {
-		t.Errorf("verdict = %+v", tr.JudgeVerdict)
-	}
-	if tr.JudgeVerdict.Record == nil || len(tr.JudgeVerdict.Record.ConfigHash) != 64 {
-		t.Errorf("error verdict lost its record: %+v", tr.JudgeVerdict.Record)
-	}
+	must.Equal("error", tr.Outcome, "an unreachable judge is not a failed task")
+	must.Contains(tr.Error, "HTTP 503")
+	must.Contains(tr.Error, "after 3 attempts")
+	must.Len(stub.requests(), 3, "judge should be called once per attempt")
+	must.Equal(types.JudgeStatusError, tr.JudgeVerdict.Status)
+	must.False(tr.JudgeVerdict.Passed)
+	must.NotNil(tr.JudgeVerdict.Record, "error verdict lost its record")
+	must.Len(tr.JudgeVerdict.Record.ConfigHash, 64)
 }
 
 func TestRunSuite_JudgeDefaultsFlowToDiffReviewJudges(t *testing.T) {
+	must := require.New(t)
 	isolateGit(t)
 	stub := newJudgeStub(t, 200, stubPassReply)
 	t.Setenv("JUDGE_E2E_KEY", "k")
@@ -439,13 +411,12 @@ func TestRunSuite_JudgeDefaultsFlowToDiffReviewJudges(t *testing.T) {
 			Model: "cli-model", BaseURL: stub.srv.URL, APIKeyRef: "secret://JUDGE_E2E_KEY",
 		}},
 	})
-	if err != nil {
-		t.Fatalf("RunSuite: %v", err)
-	}
+	must.NoError(err)
 	for _, tr := range result.Tasks {
-		if tr.Outcome != "pass" {
-			t.Errorf("task %s: outcome %q (%s)", tr.TaskID, tr.Outcome, tr.Error)
-		}
+		t.Run(tr.TaskID, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal("pass", tr.Outcome, "task error %q", tr.Error)
+		})
 	}
 
 	var models []string
@@ -457,12 +428,12 @@ func TestRunSuite_JudgeDefaultsFlowToDiffReviewJudges(t *testing.T) {
 			models = append(models, "stub-model")
 		}
 	}
-	if len(models) != 2 || models[0] != "cli-model" || models[1] != "stub-model" {
-		t.Errorf("models requested = %v, want the CLI default for the block-less judge and the explicit block's model for the other", models)
-	}
+	must.Equal([]string{"cli-model", "stub-model"}, models,
+		"the block-less judge should use the CLI default model and the explicit block its own model")
 }
 
-func TestReplayRecordingForwardsJudgeOptions(t *testing.T) {
+func TestReplayRecording_ForwardsJudgeOptions(t *testing.T) {
+	must := require.New(t)
 	isolateGit(t)
 	stub := newJudgeStub(t, 200, stubPassReply)
 	t.Setenv("JUDGE_E2E_KEY", "k")
@@ -472,24 +443,21 @@ func TestReplayRecordingForwardsJudgeOptions(t *testing.T) {
 	gitIn(t, workspace, "config", "user.name", "t")
 	gitIn(t, workspace, "config", "user.email", "t@example.invalid")
 	gitIn(t, workspace, "commit", "-q", "--allow-empty", "-m", "baseline")
-	if err := os.WriteFile(filepath.Join(workspace, "new.txt"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.WriteFile(filepath.Join(workspace, "new.txt"), []byte("x"), 0o644))
 
 	task := types.EvalTask{ID: "r", Judge: types.EvalJudge{Type: "diff-review", Criteria: "c"}}
 	result, err := ReplayRecording(context.Background(), types.RunRecording{RunID: "r1"}, task, workspace, judge.Options{
 		LLMDefaults: &types.JudgeLLMConfig{Model: "replay-model", BaseURL: stub.srv.URL, APIKeyRef: "secret://JUDGE_E2E_KEY"},
 	}, "")
-	if err != nil {
-		t.Fatalf("ReplayRecording: %v", err)
-	}
-	if result.Outcome != "pass" || result.JudgeVerdict.Record == nil || result.JudgeVerdict.Record.RequestedModel != "replay-model" ||
-		result.JudgeVerdict.Record.BaselineSource != types.JudgeBaselineWorkspaceHead {
-		t.Errorf("result = %+v", result)
-	}
+	must.NoError(err)
+	must.Equal("pass", result.Outcome, "result = %+v", result)
+	must.NotNil(result.JudgeVerdict.Record)
+	must.Equal("replay-model", result.JudgeVerdict.Record.RequestedModel)
+	must.Equal(types.JudgeBaselineWorkspaceHead, result.JudgeVerdict.Record.BaselineSource)
 }
 
-func TestReplayRecordingJudgeErrorReturnsErrorOutcomeWithRecord(t *testing.T) {
+func TestReplayRecording_JudgeErrorReturnsErrorOutcomeWithRecord(t *testing.T) {
+	must := require.New(t)
 	isolateGit(t)
 	stub := newJudgeStub(t, 400, `{"error":"bad request"}`)
 	t.Setenv("JUDGE_E2E_KEY", "k")
@@ -502,45 +470,37 @@ func TestReplayRecordingJudgeErrorReturnsErrorOutcomeWithRecord(t *testing.T) {
 
 	task := types.EvalTask{ID: "r", Judge: diffReviewJudgeFor(stub)}
 	result, err := ReplayRecording(context.Background(), types.RunRecording{RunID: "r1"}, task, workspace, judge.Options{}, "")
-	if err == nil {
-		t.Fatal("expected the judge error to be returned")
-	}
-	if result.TaskID != "r" || result.Outcome != "error" || result.JudgeVerdict.Status != types.JudgeStatusError {
-		t.Errorf("result = %+v", result)
-	}
-	if result.JudgeVerdict.Record == nil {
-		t.Error("error verdict lost its record")
-	}
+	must.Error(err, "expected the judge error to be returned")
+	must.Equal("r", result.TaskID)
+	must.Equal("error", result.Outcome, "result = %+v", result)
+	must.Equal(types.JudgeStatusError, result.JudgeVerdict.Status)
+	must.NotNil(result.JudgeVerdict.Record, "error verdict lost its record")
 }
 
-func TestReplayRecordingCompositeErrorIsAnErrorOutcomeWithoutAnError(t *testing.T) {
+func TestReplayRecording_CompositeErrorReturnsErrorOutcomeNotError(t *testing.T) {
+	must := require.New(t)
 	workspace := t.TempDir()
-	if err := os.Mkdir(filepath.Join(workspace, "dir"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.Mkdir(filepath.Join(workspace, "dir"), 0o755))
 	task := types.EvalTask{ID: "c", Judge: types.EvalJudge{Type: "composite", Require: "all", Judges: []types.EvalJudge{
 		{Type: "file-contains", Path: "dir", Pattern: "x"},
 		{Type: "file-exists", Paths: []string{"dir"}},
 	}}}
 
 	result, err := ReplayRecording(context.Background(), types.RunRecording{RunID: "r1"}, task, workspace, judge.Options{}, "")
-	if err != nil {
-		t.Fatalf("ReplayRecording: %v", err)
-	}
+	must.NoError(err)
 
-	if result.Outcome != "error" || result.JudgeVerdict.Status != types.JudgeStatusError || result.JudgeVerdict.Passed {
-		t.Fatalf("result = %+v, want the error outcome", result)
-	}
-	if !strings.HasPrefix(result.Error, "sub-judge 1 of 2 (file-contains) errored (require all); 1 skipped: ") {
-		t.Errorf("Error = %q, want the composite reason", result.Error)
-	}
-	if len(result.JudgeVerdict.Details) != 2 || result.JudgeVerdict.Details[1].Status != "skipped" {
-		t.Errorf("details = %+v, want the evaluated and skipped sub-judges kept", result.JudgeVerdict.Details)
-	}
+	must.Equal("error", result.Outcome, "result = %+v, want the error outcome", result)
+	must.Equal(types.JudgeStatusError, result.JudgeVerdict.Status)
+	must.False(result.JudgeVerdict.Passed)
+	must.True(strings.HasPrefix(result.Error, "sub-judge 1 of 2 (file-contains) errored (require all); 1 skipped: "),
+		"Error = %q, want the composite reason", result.Error)
+	must.Len(result.JudgeVerdict.Details, 2, "want the evaluated and skipped sub-judges kept")
+	must.Equal("skipped", result.JudgeVerdict.Details[1].Status)
 }
 
 func TestRunSuite_HarnessFailureResults(t *testing.T) {
 	t.Run("no trace", func(t *testing.T) {
+		must := require.New(t)
 		isolateGit(t)
 		stub := newJudgeStub(t, 200, stubPassReply)
 		t.Setenv("JUDGE_E2E_KEY", "k")
@@ -548,19 +508,16 @@ func TestRunSuite_HarnessFailureResults(t *testing.T) {
 		suite := types.EvalSuite{ID: "harness-fail", Tasks: []types.EvalTask{{ID: "t", Prompt: "p", Judge: diffReviewJudgeFor(stub)}}}
 
 		result, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness})
-		if err != nil {
-			t.Fatal(err)
-		}
+		must.NoError(err)
 		tr := result.Tasks[0]
-		if tr.Outcome != "error" || tr.JudgeVerdict.Status != types.JudgeStatusError || !strings.Contains(tr.Error, "harness failed") {
-			t.Fatalf("task = %+v", tr)
-		}
-		if n := len(stub.requests()); n != 0 {
-			t.Errorf("judge called %d times without a trace", n)
-		}
+		must.Equal("error", tr.Outcome, "task = %+v", tr)
+		must.Equal(types.JudgeStatusError, tr.JudgeVerdict.Status)
+		must.Contains(tr.Error, "harness failed")
+		must.Empty(stub.requests(), "judge should not be called without a trace")
 	})
 
 	t.Run("trace left and judge errors", func(t *testing.T) {
+		must := require.New(t)
 		isolateGit(t)
 		stub := newJudgeStub(t, http.StatusBadRequest, `{"type":"error","error":{"message":"bad request"}}`)
 		t.Setenv("JUDGE_E2E_KEY", "k")
@@ -579,26 +536,21 @@ exit 3
 		suite := types.EvalSuite{ID: "harness-fail", Tasks: []types.EvalTask{{ID: "t", Prompt: "p", Judge: diffReviewJudgeFor(stub)}}}
 
 		result, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness})
-		if err != nil {
-			t.Fatal(err)
-		}
+		must.NoError(err)
 		tr := result.Tasks[0]
-		if tr.Outcome != "error" || !strings.Contains(tr.Error, "judge failed after harness error") {
-			t.Fatalf("task = %+v", tr)
-		}
-		if tr.Trace == nil || tr.Trace.ID != "t" {
-			t.Errorf("trace = %+v, want the harness's trace kept", tr.Trace)
-		}
-		if tr.JudgeVerdict.Status != types.JudgeStatusError || tr.JudgeVerdict.Record == nil || tr.JudgeVerdict.Record.Kind != types.JudgeKindDiffReview {
-			t.Errorf("verdict = %+v, want the diff-review error verdict with its record", tr.JudgeVerdict)
-		}
-		if n := len(stub.requests()); n != 1 {
-			t.Errorf("judge saw %d requests, want 1", n)
-		}
+		must.Equal("error", tr.Outcome, "task = %+v", tr)
+		must.Contains(tr.Error, "judge failed after harness error")
+		must.NotNil(tr.Trace, "the harness trace should be kept")
+		must.Equal("t", tr.Trace.ID)
+		must.Equal(types.JudgeStatusError, tr.JudgeVerdict.Status, "want the diff-review error verdict with its record")
+		must.NotNil(tr.JudgeVerdict.Record)
+		must.Equal(types.JudgeKindDiffReview, tr.JudgeVerdict.Record.Kind)
+		must.Len(stub.requests(), 1, "judge should be called once")
 	})
 }
 
 func TestRunSuite_PreflightFailsBeforeAnyHarnessRun(t *testing.T) {
+	must := require.New(t)
 	isolateGit(t)
 	t.Setenv("JUDGE_E2E_KEY", "")
 	marker := filepath.Join(t.TempDir(), "harness-ran")
@@ -608,18 +560,23 @@ func TestRunSuite_PreflightFailsBeforeAnyHarnessRun(t *testing.T) {
 		{ID: "first", Prompt: "p", Judge: diffReviewJudgeFor(stub)},
 		{ID: "second", Prompt: "p", Judge: diffReviewJudgeFor(stub)},
 	}}
-	for _, dryRun := range []bool{false, true} {
-		_, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness, DryRun: dryRun})
-		if err == nil || !strings.Contains(err.Error(), `task "first"`) || !strings.Contains(err.Error(), "secret://JUDGE_E2E_KEY") {
-			t.Errorf("dry run %v: err = %v, want a preflight error naming the task and reference", dryRun, err)
-		}
+	for _, tc := range []struct {
+		name   string
+		dryRun bool
+	}{
+		{name: "real run", dryRun: false},
+		{name: "dry run", dryRun: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			_, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness, DryRun: tc.dryRun})
+			must.ErrorContains(err, `task "first"`)
+			must.ErrorContains(err, "secret://JUDGE_E2E_KEY")
+		})
 	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Error("the harness ran despite a failed preflight")
-	}
-	if n := len(stub.requests()); n != 0 {
-		t.Errorf("judge saw %d requests", n)
-	}
+	_, err := os.Stat(marker)
+	must.ErrorIs(err, os.ErrNotExist, "the harness ran despite a failed preflight")
+	must.Empty(stub.requests(), "judge should not be called after a failed preflight")
 }
 
 func TestRunSuite_JSONSuitesGetTheLoaderLLMChecks(t *testing.T) {
@@ -642,14 +599,11 @@ func TestRunSuite_JSONSuitesGetTheLoaderLLMChecks(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			var suite types.EvalSuite
-			if err := json.Unmarshal([]byte(tc.suite), &suite); err != nil {
-				t.Fatal(err)
-			}
+			must.NoError(json.Unmarshal([]byte(tc.suite), &suite))
 			_, err := RunSuite(context.Background(), suite, RunConfig{DryRun: true})
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("err = %v, want one containing %q", err, tc.wantErr)
-			}
+			must.ErrorContains(err, tc.wantErr)
 		})
 	}
 }
@@ -674,26 +628,22 @@ func TestRunSuite_JSONSuitesGetTheJudgeTreeChecksBeforeAnyHarnessRun(t *testing.
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			marker := filepath.Join(t.TempDir(), "harness-ran")
 			harness := writeFakeHarness(t, "#!/bin/sh\ntouch "+marker+"\n")
 			var suite types.EvalSuite
-			if err := json.Unmarshal([]byte(tc.suite), &suite); err != nil {
-				t.Fatal(err)
-			}
+			must.NoError(json.Unmarshal([]byte(tc.suite), &suite))
 
 			_, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness})
-
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("err = %v, want one containing %q", err, tc.wantErr)
-			}
-			if _, err := os.Stat(marker); !os.IsNotExist(err) {
-				t.Error("the harness ran despite an invalid judge tree")
-			}
+			must.ErrorContains(err, tc.wantErr)
+			_, err = os.Stat(marker)
+			must.ErrorIs(err, os.ErrNotExist, "the harness ran despite an invalid judge tree")
 		})
 	}
 }
 
-func TestReplayRecordingRefusesADecidingDecisionJudge(t *testing.T) {
+func TestReplayRecording_RefusesDecidingDecisionJudge(t *testing.T) {
+	must := require.New(t)
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
@@ -706,13 +656,10 @@ func TestReplayRecordingRefusesADecidingDecisionJudge(t *testing.T) {
 
 	result, err := ReplayRecording(context.Background(), types.RunRecording{RunID: "r1"}, task, t.TempDir(), judge.Options{}, "")
 
-	if err == nil || !strings.Contains(err.Error(), `task "d"`) || !strings.Contains(err.Error(), "usable only on a shadow judge") {
-		t.Fatalf("err = %v, want the deciding decision judge refused", err)
-	}
-	if result.Outcome != "error" || result.TaskID != "d" {
-		t.Errorf("result = %+v, want the error outcome", result)
-	}
-	if calls.Load() != 0 {
-		t.Errorf("the decision endpoint was called %d times", calls.Load())
-	}
+	must.Error(err, "the deciding decision judge must be refused")
+	must.ErrorContains(err, `task "d"`)
+	must.ErrorContains(err, "usable only on a shadow judge")
+	must.Equal("error", result.Outcome)
+	must.Equal("d", result.TaskID)
+	must.Zero(calls.Load(), "the decision endpoint must not be called")
 }

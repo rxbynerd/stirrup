@@ -11,10 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// TestComposeEnv_GitCredentialHelper_StubHaybale drives a REAL git binary
+// TestComposeEnv_GitCredentialHelper_PresentsTokenFileContent drives a REAL git binary
 // against a stub HTTP server standing in for haybale, using ONLY the env
 // ComposeEnv produces plus the token file it points at, and asserts the
 // Basic-auth password git presents equals the token in that file — the
@@ -32,7 +34,7 @@ import (
 // Both the "https://" form and the "git@host:"/"ssh://" insteadOf
 // rewriting must route through the proxy; the "ssh scp-form" subtest pins
 // the latter through a real git binary rather than by string match alone.
-func TestComposeEnv_GitCredentialHelper_StubHaybale(t *testing.T) {
+func TestComposeEnv_GitCredentialHelper_PresentsTokenFileContent(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git binary not found in PATH")
 	}
@@ -53,6 +55,7 @@ func TestComposeEnv_GitCredentialHelper_StubHaybale(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var (
 				mu           sync.Mutex
 				sawNoAuth    bool
@@ -97,18 +100,13 @@ func TestComposeEnv_GitCredentialHelper_StubHaybale(t *testing.T) {
 			// tokenPathPattern accepts; the file stands in for the
 			// executor-delivered SandboxIdentityTokenPath.
 			tokenPath := filepath.Join(t.TempDir(), "token")
-			if err := os.WriteFile(tokenPath, []byte(wantToken), 0o600); err != nil {
-				t.Fatalf("write token file: %v", err)
-			}
+			must.NoError(os.WriteFile(tokenPath, []byte(wantToken), 0o600), "write token file")
+
 			env, err := ComposeEnv("HAYBALE_TOKEN", composedToken, tokenPath, gp)
-			if err != nil {
-				t.Fatalf("ComposeEnv() error: %v", err)
-			}
+			must.NoError(err, "ComposeEnv()")
 
 			path, ok := os.LookupEnv("PATH")
-			if !ok {
-				t.Fatal("PATH is not set in the test process environment")
-			}
+			must.True(ok, "PATH is not set in the test process environment")
 			envStrings := []string{
 				"PATH=" + path,
 				"HOME=" + t.TempDir(),
@@ -140,21 +138,11 @@ func TestComposeEnv_GitCredentialHelper_StubHaybale(t *testing.T) {
 			mu.Lock()
 			defer mu.Unlock()
 
-			if !sawNoAuth {
-				t.Error("expected an initial unauthenticated request (git should probe before invoking the credential helper)")
-			}
-			if !sawAuth {
-				t.Fatal("expected a follow-up request carrying Basic auth from the composed credential helper")
-			}
-			if capturedUser != "x-access-token" {
-				t.Errorf("Basic-auth username = %q, want %q", capturedUser, "x-access-token")
-			}
-			if capturedPass != wantToken {
-				t.Errorf("Basic-auth password = %q, want the token file's content %q", capturedPass, wantToken)
-			}
-			if capturedPass == composedToken {
-				t.Error("git presented the env var's token rather than reading the token file")
-			}
+			must.True(sawNoAuth, "expected an initial unauthenticated request (git should probe before invoking the credential helper)")
+			must.True(sawAuth, "expected a follow-up request carrying Basic auth from the composed credential helper")
+			must.Equal("x-access-token", capturedUser)
+			must.Equal(wantToken, capturedPass, "Basic-auth password should be the token file's content")
+			must.NotEqual(composedToken, capturedPass, "git presented the env var's token rather than reading the token file")
 		})
 	}
 }

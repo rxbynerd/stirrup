@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"strings"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/observability/otlp"
 )
@@ -84,41 +86,35 @@ func attrValue(r slog.Record, key string) (string, bool) {
 // export handler (the disabled default) produces JSON on the writer and does
 // not fan out anywhere else — the stderr-only behaviour is unchanged.
 func TestNewLoggerWithExport_NilHandlerIsStderrOnly(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	logger := NewLoggerWithExport("run-1", slog.LevelInfo, &buf, nil, nil)
 
 	logger.Info("hello", "k", "v")
 
 	var record map[string]any
-	if err := json.Unmarshal(buf.Bytes(), &record); err != nil {
-		t.Fatalf("stderr output is not valid JSON: %v\n%s", err, buf.String())
-	}
-	if record["msg"] != "hello" {
-		t.Errorf("msg = %v, want hello", record["msg"])
-	}
+	err := json.Unmarshal(buf.Bytes(), &record)
+	must.NoError(err, "stderr output is not valid JSON:\n%s", buf.String())
+	must.Equal("hello", record["msg"])
 }
 
 // TestNewLoggerWithExport_FansOutToBothSinks asserts that with an export
 // handler wired, the same record reaches the stderr JSON sink and the export
 // sink.
 func TestNewLoggerWithExport_FansOutToBothSinks(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var buf bytes.Buffer
-	cap := newCaptureHandler()
-	logger := NewLoggerWithExport("run-1", slog.LevelInfo, &buf, nil, cap)
+	sink := newCaptureHandler()
+	logger := NewLoggerWithExport("run-1", slog.LevelInfo, &buf, nil, sink)
 
 	logger.Info("fanned out", "k", "v")
 
-	if !strings.Contains(buf.String(), "fanned out") {
-		t.Errorf("message missing from stderr sink: %s", buf.String())
-	}
+	check.Contains(buf.String(), "fanned out", "message missing from stderr sink")
 
-	records := cap.snapshot()
-	if len(records) != 1 {
-		t.Fatalf("export sink received %d records, want 1", len(records))
-	}
-	if records[0].Message != "fanned out" {
-		t.Errorf("export record message = %q, want %q", records[0].Message, "fanned out")
-	}
+	records := sink.snapshot()
+	must.Len(records, 1, "export sink records")
+	must.Equal("fanned out", records[0].Message)
 }
 
 // TestNewLoggerWithExport_ScrubsOnExportPath asserts that a secret is
@@ -126,56 +122,46 @@ func TestNewLoggerWithExport_FansOutToBothSinks(t *testing.T) {
 // the captured record carries the [REDACTED] placeholder rather than the raw
 // key.
 func TestNewLoggerWithExport_ScrubsOnExportPath(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	var buf bytes.Buffer
-	cap := newCaptureHandler()
-	logger := NewLoggerWithExport("run-1", slog.LevelInfo, &buf, nil, cap)
+	sink := newCaptureHandler()
+	logger := NewLoggerWithExport("run-1", slog.LevelInfo, &buf, nil, sink)
 
 	logger.Info("auth", slog.String("token", anthropicKeyFixture))
 
-	if strings.Contains(buf.String(), anthropicKeyFixture) {
-		t.Errorf("secret leaked into stderr sink: %s", buf.String())
-	}
+	check.NotContains(buf.String(), anthropicKeyFixture, "secret leaked into stderr sink")
 
-	records := cap.snapshot()
-	if len(records) != 1 {
-		t.Fatalf("export sink received %d records, want 1", len(records))
-	}
-	got, ok := attrValue(records[0], "token")
-	if !ok {
-		t.Fatalf("token attribute missing on export record")
-	}
-	if strings.Contains(got, "sk-ant-api03") {
-		t.Errorf("secret leaked into export sink: token=%q", got)
-	}
-	if !strings.Contains(got, "[REDACTED]") {
-		t.Errorf("expected [REDACTED] on export path, got token=%q", got)
-	}
+	records := sink.snapshot()
+	must.Len(records, 1, "export sink records")
+	token, ok := attrValue(records[0], "token")
+	must.True(ok, "token attribute missing on export record")
+	check.NotContains(token, "sk-ant-api03", "secret leaked into export sink")
+	check.Contains(token, "[REDACTED]", "expected [REDACTED] on export path")
 }
 
 // TestNewLoggerWithExport_CorrelatesOnExportPath asserts the span handler
 // also enriches records on the export path: a record emitted via InfoContext
 // inside a span carries trace_id / span_id on the captured export record.
 func TestNewLoggerWithExport_CorrelatesOnExportPath(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	const (
 		traceHex = "0102030405060708090a0b0c0d0e0f10"
 		spanHex  = "0102030405060708"
 	)
 	var buf bytes.Buffer
-	cap := newCaptureHandler()
-	logger := NewLoggerWithExport("run-1", slog.LevelInfo, &buf, nil, cap)
+	sink := newCaptureHandler()
+	logger := NewLoggerWithExport("run-1", slog.LevelInfo, &buf, nil, sink)
 
 	logger.InfoContext(ctxWithSpan(t, traceHex, spanHex), "inside span")
 
-	records := cap.snapshot()
-	if len(records) != 1 {
-		t.Fatalf("export sink received %d records, want 1", len(records))
-	}
-	if got, _ := attrValue(records[0], "trace_id"); got != traceHex {
-		t.Errorf("export record trace_id = %q, want %q", got, traceHex)
-	}
-	if got, _ := attrValue(records[0], "span_id"); got != spanHex {
-		t.Errorf("export record span_id = %q, want %q", got, spanHex)
-	}
+	records := sink.snapshot()
+	must.Len(records, 1, "export sink records")
+	traceID, _ := attrValue(records[0], "trace_id")
+	check.Equal(traceHex, traceID, "export record trace_id")
+	spanID, _ := attrValue(records[0], "span_id")
+	check.Equal(spanHex, spanID, "export record span_id")
 }
 
 // TestNewLogExporter_ConstructsWithoutDialing asserts the OTLP/gRPC log
@@ -183,29 +169,26 @@ func TestNewLoggerWithExport_CorrelatesOnExportPath(t *testing.T) {
 // endpoint (the gRPC exporter dials lazily on first export), and that Close
 // on the returned exporter is safe.
 func TestNewLogExporter_ConstructsWithoutDialing(t *testing.T) {
+	must := require.New(t)
 	exp, handler, err := NewLogExporter(context.Background(), otlp.Settings{Endpoint: "localhost:4317"}, ResourceOptions{})
-	if err != nil {
-		t.Fatalf("NewLogExporter: %v", err)
-	}
-	if handler == nil {
-		t.Fatal("NewLogExporter returned a nil handler")
-	}
-	if exp == nil {
-		t.Fatal("NewLogExporter returned a nil exporter")
-	}
-	if err := exp.Close(); err != nil {
-		t.Errorf("Close: %v", err)
-	}
+	must.NoError(err)
+	must.NotNil(handler, "NewLogExporter returned a nil handler")
+	must.NotNil(exp, "NewLogExporter returned a nil exporter")
+	must.NoError(exp.Close())
 }
 
 // TestLogExporter_NilReceiverSafe asserts Flush and Close tolerate a nil
 // receiver so the factory can defer them unconditionally.
 func TestLogExporter_NilReceiverSafe(t *testing.T) {
 	var e *LogExporter
-	if err := e.Flush(context.Background()); err != nil {
-		t.Errorf("Flush on nil receiver: %v", err)
-	}
-	if err := e.Close(); err != nil {
-		t.Errorf("Close on nil receiver: %v", err)
-	}
+
+	t.Run("flush on nil receiver", func(t *testing.T) {
+		must := require.New(t)
+		must.NoError(e.Flush(context.Background()))
+	})
+
+	t.Run("close on nil receiver", func(t *testing.T) {
+		must := require.New(t)
+		must.NoError(e.Close())
+	})
 }

@@ -2,73 +2,81 @@ package security
 
 import (
 	"net"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
-func TestValidatePublicHost(t *testing.T) {
+func TestValidatePublicHost_ClassifiesHosts(t *testing.T) {
 	cases := []struct {
 		name    string
 		host    string
 		wantErr bool
 	}{
-		{"loopback_ipv4", "127.0.0.1", true},
-		{"loopback_ipv6", "::1", true},
-		{"localhost_name", "localhost", true},
-		{"localhost_suffix", "svc.localhost", true},
-		{"rfc1918", "10.0.0.1", true},
-		{"cgnat", "100.64.0.1", true},
-		{"link_local_metadata", "169.254.169.254", true},
-		{"unspecified", "0.0.0.0", true},
-		{"public_ip", "1.1.1.1", false},
-		{"empty", "", true},
+		{"loopback ipv4", "127.0.0.1", true},
+		{"loopback ipv6", "::1", true},
+		{"localhost name", "localhost", true},
+		{"localhost suffix", "svc.localhost", true},
+		{"rfc1918 address", "10.0.0.1", true},
+		{"cgnat address", "100.64.0.1", true},
+		{"link-local metadata address", "169.254.169.254", true},
+		{"unspecified address", "0.0.0.0", true},
+		{"public ip", "1.1.1.1", false},
+		{"empty host", "", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			err := ValidatePublicHost(tc.host)
-			if tc.wantErr != (err != nil) {
-				t.Fatalf("ValidatePublicHost(%q) err = %v, wantErr = %v", tc.host, err, tc.wantErr)
+			if tc.wantErr {
+				must.Error(err)
+			} else {
+				must.NoError(err)
 			}
 		})
 	}
 }
 
-func TestIsPublicIP(t *testing.T) {
-	if IsPublicIP(net.ParseIP("127.0.0.1")) {
-		t.Error("loopback should not be public")
+func TestIsPublicIP_ClassifiesAddresses(t *testing.T) {
+	cases := []struct {
+		name string
+		ip   string
+		want bool
+	}{
+		{"loopback is not public", "127.0.0.1", false},
+		{"link-local metadata address is not public", "169.254.169.254", false},
+		{"rfc 6598 cgnat address is not public", "100.64.0.1", false},
+		{"address just below cgnat range is public", "100.63.255.255", true},
+		{"public address is public", "1.1.1.1", true},
 	}
-	if IsPublicIP(net.ParseIP("169.254.169.254")) {
-		t.Error("link-local metadata IP should not be public")
-	}
-	if IsPublicIP(net.ParseIP("100.64.0.1")) {
-		t.Error("RFC 6598 CGNAT (100.64.0.0/10) should not be public")
-	}
-	if !IsPublicIP(net.ParseIP("100.63.255.255")) {
-		t.Error("100.63.255.255 is just below the CGNAT range and should be public")
-	}
-	if !IsPublicIP(net.ParseIP("1.1.1.1")) {
-		t.Error("1.1.1.1 should be public")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, IsPublicIP(net.ParseIP(tc.ip)))
+		})
 	}
 }
 
-func TestIsLoopbackHost(t *testing.T) {
+func TestIsLoopbackHost_ClassifiesHosts(t *testing.T) {
 	cases := []struct {
+		name string
 		host string
 		want bool
 	}{
-		{"localhost", true},
-		{"svc.localhost", true},
-		{"127.0.0.1", true},
-		{"::1", true},
-		{"LOCALHOST", true},
-		{"mcp.example.com", false},
-		{"10.0.0.1", false},
-		{"", false},
+		{"localhost name", "localhost", true},
+		{"localhost suffix", "svc.localhost", true},
+		{"loopback ipv4", "127.0.0.1", true},
+		{"loopback ipv6", "::1", true},
+		{"uppercase localhost", "LOCALHOST", true},
+		{"public hostname", "mcp.example.com", false},
+		{"rfc1918 address", "10.0.0.1", false},
+		{"empty host", "", false},
 	}
 	for _, tc := range cases {
-		if got := IsLoopbackHost(tc.host); got != tc.want {
-			t.Errorf("IsLoopbackHost(%q) = %v, want %v", tc.host, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, IsLoopbackHost(tc.host))
+		})
 	}
 }
 
@@ -78,33 +86,26 @@ func TestIsLoopbackHost(t *testing.T) {
 // port so a connection error is expected, but it must be a dial error, never
 // the "private host" rejection.
 func TestLoopbackAwareDialContext_AdmitsLoopbackName(t *testing.T) {
+	must := require.New(t)
 	dial := LoopbackAwareDialContext(0)
 	_, err := dial(t.Context(), "tcp", "localhost:1")
-	if err != nil && strings.Contains(err.Error(), "private host") {
-		t.Fatalf("loopback name must not be SSRF-rejected, got %v", err)
+	if err != nil {
+		must.NotContains(err.Error(), "private host", "loopback name must not be SSRF-rejected")
 	}
 }
 
 func TestSafeDialContext_BlocksPrivate(t *testing.T) {
+	must := require.New(t)
 	dial := SafeDialContext(false, 0)
 	_, err := dial(t.Context(), "tcp", "10.0.0.1:443")
-	if err == nil {
-		t.Fatal("SafeDialContext should refuse a private dial target")
-	}
-	if !strings.Contains(err.Error(), "private host") {
-		t.Errorf("err = %v, want 'private host'", err)
-	}
+	must.ErrorContains(err, "private host")
 }
 
 func TestLoopbackAwareDialContext_BlocksNonLoopbackPrivate(t *testing.T) {
+	must := require.New(t)
 	dial := LoopbackAwareDialContext(0)
 	// A non-loopback private address (e.g. a rebind to the metadata endpoint)
 	// must still be refused.
 	_, err := dial(t.Context(), "tcp", "169.254.169.254:443")
-	if err == nil {
-		t.Fatal("LoopbackAwareDialContext should refuse a non-loopback private target")
-	}
-	if !strings.Contains(err.Error(), "private host") {
-		t.Errorf("err = %v, want 'private host'", err)
-	}
+	must.ErrorContains(err, "private host")
 }

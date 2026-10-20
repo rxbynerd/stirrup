@@ -13,6 +13,8 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/eval"
 	"github.com/rxbynerd/stirrup/types"
 	"github.com/rxbynerd/stirrup/types/version"
@@ -67,15 +69,13 @@ func cachedOptions(mode CacheMode, cache Cache, fake *fakeClient) Options {
 	return Options{Cache: cache, CacheMode: mode, ClientFactory: fake.factory(nil, nil)}
 }
 
-func TestCacheKey(t *testing.T) {
+func TestCacheKey_IsStableAndSensitiveToEachInput(t *testing.T) {
+	must := require.New(t)
 	cfg, input := strings.Repeat("c", 64), strings.Repeat("d", 64)
 	key := CacheKey(cfg, input, 0)
-	if !validCacheKey(key) {
-		t.Fatalf("key %q is not a lowercase hex SHA-256", key)
-	}
-	if again := CacheKey(cfg, input, 0); again != key {
-		t.Errorf("key is not stable: %s then %s", key, again)
-	}
+	must.True(validCacheKey(key), "key %q is not a lowercase hex SHA-256", key)
+	must.Equal(key, CacheKey(cfg, input, 0), "key is not stable")
+
 	for name, other := range map[string]string{
 		"config hash":  CacheKey(strings.Repeat("e", 64), input, 0),
 		"input hash":   CacheKey(cfg, strings.Repeat("e", 64), 0),
@@ -83,42 +83,38 @@ func TestCacheKey(t *testing.T) {
 		"swapped":      CacheKey(input, cfg, 0),
 		"shifted":      CacheKey(cfg+input[:1], input[1:], 0),
 	} {
-		if other == key {
-			t.Errorf("changing the %s does not change the key", name)
-		}
+		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
+			must.NotEqual(key, other)
+		})
 	}
 }
 
 func TestCacheKey_Golden(t *testing.T) {
-	if got, want := CacheKey(strings.Repeat("a", 64), strings.Repeat("b", 64), 0), "da30bf31d9fa084d90ac6545e096346b2b189f7ee91d970d2eac92aec75aff19"; got != want {
-		t.Errorf("CacheKey = %s, want %s", got, want)
-	}
+	must := require.New(t)
+	want := "da30bf31d9fa084d90ac6545e096346b2b189f7ee91d970d2eac92aec75aff19"
+	must.Equal(want, CacheKey(strings.Repeat("a", 64), strings.Repeat("b", 64), 0), "CacheKey output changed for fixed inputs")
 }
 
-func TestEvaluateDiffReview_CacheKeyIgnoresTheNonceButNotTheConfig(t *testing.T) {
+func TestEvaluateDiffReview_CacheKey_IgnoresNonceButNotConfig(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("ANTHROPIC_API_KEY", "k")
 	dir, base := changedWorkspace(t)
-	evaluate := func(j types.EvalJudge) (string, string) {
+	evaluate := func(t *testing.T, j types.EvalJudge) (string, string) {
 		t.Helper()
+		must := require.New(t)
 		fake := &fakeClient{resp: okResponse(verdictPass)}
 		v, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: cachedOptions(CacheRecord, newMemCache(), fake)})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if want := CacheKey(v.Record.ConfigHash, v.Record.InputSHA256, 0); v.Record.CacheKey != want {
-			t.Errorf("cache key %s, want the key of sample 0 of the recorded hashes, %s", v.Record.CacheKey, want)
-		}
+		must.NoError(err)
+		must.Equal(CacheKey(v.Record.ConfigHash, v.Record.InputSHA256, 0), v.Record.CacheKey, "cache key is not the key of sample 0")
 		return v.Record.CacheKey, promptNonce(fake.got.User)
 	}
 
-	key1, nonce1 := evaluate(diffReviewJudge())
-	key2, nonce2 := evaluate(diffReviewJudge())
-	if nonce1 == nonce2 {
-		t.Fatal("the fence nonce repeated across calls")
-	}
-	if key1 != key2 || !validCacheKey(key1) {
-		t.Errorf("keys %q and %q differ for the same configuration and input", key1, key2)
-	}
+	key1, nonce1 := evaluate(t, diffReviewJudge())
+	key2, nonce2 := evaluate(t, diffReviewJudge())
+	must.NotEqual(nonce1, nonce2, "the fence nonce repeated across calls")
+	must.Equal(key1, key2, "keys differ for the same configuration and input")
+	must.True(validCacheKey(key1), "key %q is not a lowercase hex SHA-256", key1)
 
 	otherModel := diffReviewJudge()
 	otherModel.LLM = &types.JudgeLLMConfig{Model: "another-model"}
@@ -128,9 +124,11 @@ func TestEvaluateDiffReview_CacheKeyIgnoresTheNonceButNotTheConfig(t *testing.T)
 	otherTemperature := diffReviewJudge()
 	otherTemperature.LLM = &types.JudgeLLMConfig{Model: DefaultLLMModel, Temperature: &temp}
 	for name, j := range map[string]types.EvalJudge{"model": otherModel, "criteria": otherCriteria, "temperature": otherTemperature} {
-		if key, _ := evaluate(j); key == key1 {
-			t.Errorf("changing the %s does not change the key", name)
-		}
+		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
+			key, _ := evaluate(t, j)
+			must.NotEqual(key1, key)
+		})
 	}
 }
 
@@ -170,6 +168,7 @@ func TestEvaluateDiffReview_CacheModes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.mode), func(t *testing.T) {
+			must := require.New(t)
 			cache := newMemCache()
 			fake := &fakeClient{resp: okResponse(verdictPass)}
 			stats := &CacheStats{}
@@ -177,73 +176,63 @@ func TestEvaluateDiffReview_CacheModes(t *testing.T) {
 			opts.CacheStats = stats
 			for i, s := range tc.steps {
 				v, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: opts})
-				if err != nil {
-					t.Fatalf("step %d: %v", i, err)
-				}
-				if v.Status != types.JudgeStatusPass || v.Reason != "meets the criteria" {
-					t.Errorf("step %d: verdict = %+v", i, v)
-				}
-				if v.Record.CacheStatus != s.wantStatus || fake.calls != s.wantCalls {
-					t.Errorf("step %d: cache status %q after %d model calls, want %q after %d", i, v.Record.CacheStatus, fake.calls, s.wantStatus, s.wantCalls)
-				}
-				if wantKey := tc.mode != CacheLive; (v.Record.CacheKey != "") != wantKey {
-					t.Errorf("step %d: cache key %q, want one set: %v", i, v.Record.CacheKey, wantKey)
-				}
+				must.NoError(err, "step %d", i)
+				must.Equal(types.JudgeStatusPass, v.Status, "step %d", i)
+				must.Equal("meets the criteria", v.Reason, "step %d", i)
+				must.Equal(s.wantStatus, v.Record.CacheStatus, "step %d", i)
+				must.Equal(s.wantCalls, fake.calls, "step %d", i)
+				must.Equal(tc.mode != CacheLive, v.Record.CacheKey != "", "step %d: cache key set", i)
 			}
-			if cache.gets != tc.wantGets || cache.puts != tc.wantPuts {
-				t.Errorf("cache saw %d gets and %d puts, want %d and %d", cache.gets, cache.puts, tc.wantGets, tc.wantPuts)
-			}
-			if got := stats.Summary(tc.mode); got != tc.wantStats {
-				t.Errorf("stats = %+v, want %+v", got, tc.wantStats)
-			}
-			if raw, _ := json.Marshal(stats.Summary(tc.mode)); strings.Contains(string(raw), "replaced") {
-				t.Errorf("summary JSON %s carries replaced without an unusable entry", raw)
-			}
+			must.Equal(tc.wantGets, cache.gets)
+			must.Equal(tc.wantPuts, cache.puts)
+			must.Equal(tc.wantStats, stats.Summary(tc.mode))
+			raw, _ := json.Marshal(stats.Summary(tc.mode))
+			must.NotContains(string(raw), "replaced", "summary JSON %s carries replaced without an unusable entry", raw)
 		})
 	}
 }
 
-func TestEvaluateDiffReview_CacheHitCarriesTheStoredVerdict(t *testing.T) {
+func TestEvaluateDiffReview_CacheHit_ServesStoredVerdict(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("ANTHROPIC_API_KEY", "k")
 	dir, base := changedWorkspace(t)
 	cache := newMemCache()
 	recorder := &fakeClient{resp: okResponse(verdictFail)}
 	stored, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: cachedOptions(CacheRecord, cache, recorder)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	entry := cache.entries[stored.Record.CacheKey]
-	if entry.Record == nil || entry.Record.CacheStatus != "" || entry.Record.CacheKey != "" {
-		t.Errorf("stored entry carries per-evaluation cache fields: %+v", entry.Record)
-	}
+	must.NotNil(entry.Record, "stored entry has no record")
+	must.Empty(entry.Record.CacheStatus, "stored entry carries a per-evaluation cache status: %+v", entry.Record)
+	must.Empty(entry.Record.CacheKey, "stored entry carries a per-evaluation cache key: %+v", entry.Record)
 
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	built := 0
 	hit, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: Options{
 		Cache: cache, CacheMode: CacheReplayStrict, ClientFactory: countingFactory(recorder, &built),
 	}})
-	if err != nil {
-		t.Fatalf("a hit must not need the credential: %v", err)
-	}
-	if built != 0 || recorder.calls != 1 {
-		t.Errorf("client built %d times and called %d times, want no client for a hit", built, recorder.calls)
-	}
-	if hit.Passed || hit.Status != types.JudgeStatusFail || hit.Reason != "no test added" {
-		t.Errorf("hit verdict = %+v, want the stored fail", hit)
-	}
+	must.NoError(err, "a hit must not need the credential")
+	must.Zero(built, "a hit must not build a client")
+	must.Equal(1, recorder.calls, "a hit must not call the model")
+	must.False(hit.Passed)
+	must.Equal(types.JudgeStatusFail, hit.Status)
+	must.Equal("no test added", hit.Reason)
+
 	rec, want := hit.Record, stored.Record
-	if rec.CacheStatus != types.JudgeCacheHit || rec.CacheKey != want.CacheKey ||
-		rec.ServedModel != want.ServedModel || rec.InputTokens != want.InputTokens || rec.OutputTokens != want.OutputTokens ||
-		rec.ParseStatus != want.ParseStatus || rec.StopReason != want.StopReason ||
-		rec.ConfigHash != want.ConfigHash || rec.InputSHA256 != want.InputSHA256 || rec.BaselineSource != want.BaselineSource {
-		t.Errorf("hit record = %+v\nstored record = %+v", rec, want)
-	}
-	if rec.LatencyMs > 1000 {
-		t.Errorf("hit latency %d ms is not a lookup time", rec.LatencyMs)
-	}
+	must.Equal(types.JudgeCacheHit, rec.CacheStatus)
+	must.Equal(want.CacheKey, rec.CacheKey)
+	must.Equal(want.ServedModel, rec.ServedModel)
+	must.Equal(want.InputTokens, rec.InputTokens)
+	must.Equal(want.OutputTokens, rec.OutputTokens)
+	must.Equal(want.ParseStatus, rec.ParseStatus)
+	must.Equal(want.StopReason, rec.StopReason)
+	must.Equal(want.ConfigHash, rec.ConfigHash)
+	must.Equal(want.InputSHA256, rec.InputSHA256)
+	must.Equal(want.BaselineSource, rec.BaselineSource)
+	must.LessOrEqual(rec.LatencyMs, int64(1000), "hit latency is not a lookup time")
 }
 
-func TestEvaluateDiffReview_SamplesAreCachedSeparately(t *testing.T) {
+func TestEvaluateDiffReview_CacheKey_SeparatesSamples(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("ANTHROPIC_API_KEY", "k")
 	dir, base := changedWorkspace(t)
 	cache := newMemCache()
@@ -253,34 +242,28 @@ func TestEvaluateDiffReview_SamplesAreCachedSeparately(t *testing.T) {
 		v, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{
 			WorkspaceDir: dir, Baseline: &base, Sample: sample, Options: cachedOptions(CacheReadThrough, cache, fake),
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
+		must.NoError(err)
 		return v
 	}
 
 	keys := map[string]bool{}
 	for sample := range 3 {
 		v := judgeSample(sample)
-		if v.Record.CacheStatus != types.JudgeCacheStored || v.Record.CacheKey != CacheKey(v.Record.ConfigHash, v.Record.InputSHA256, sample) {
-			t.Errorf("sample %d: record = %+v, want a stored verdict under the sample's key", sample, v.Record)
-		}
+		must.Equal(types.JudgeCacheStored, v.Record.CacheStatus, "sample %d", sample)
+		must.Equal(CacheKey(v.Record.ConfigHash, v.Record.InputSHA256, sample), v.Record.CacheKey, "sample %d", sample)
 		keys[v.Record.CacheKey] = true
 	}
-	if len(keys) != 3 || fake.calls != 3 {
-		t.Fatalf("%d distinct keys and %d model calls for 3 samples, want 3 of each", len(keys), fake.calls)
-	}
+	must.Len(keys, 3, "distinct keys for 3 samples")
+	must.Equal(3, fake.calls, "model calls for 3 samples")
 	for sample := range 3 {
-		if v := judgeSample(sample); v.Record.CacheStatus != types.JudgeCacheHit {
-			t.Errorf("repeat of sample %d: cache status = %q, want hit", sample, v.Record.CacheStatus)
-		}
+		v := judgeSample(sample)
+		must.Equal(types.JudgeCacheHit, v.Record.CacheStatus, "repeat of sample %d", sample)
 	}
-	if fake.calls != 3 {
-		t.Errorf("model calls = %d after repeating every sample, want 3", fake.calls)
-	}
+	must.Equal(3, fake.calls, "model calls after repeating every sample")
 }
 
-func TestEvaluateDiffReview_ReplayStrictMissIsAnErrorWithoutAModelCall(t *testing.T) {
+func TestEvaluateDiffReview_ReplayStrictMiss_ErrorsWithoutModelCall(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	cache := newMemCache()
 	fake := &fakeClient{resp: okResponse(verdictPass)}
@@ -289,29 +272,23 @@ func TestEvaluateDiffReview_ReplayStrictMissIsAnErrorWithoutAModelCall(t *testin
 	jctx := changedJudgeContext(t, Options{Cache: cache, CacheMode: CacheReplayStrict, ClientFactory: countingFactory(fake, &built), CacheStats: stats})
 
 	v, err := Evaluate(context.Background(), diffReviewJudge(), jctx)
-	if err == nil {
-		t.Fatalf("expected an error, got %+v", v)
-	}
-	if v.Passed || v.Status != types.JudgeStatusError {
-		t.Errorf("verdict = %+v, want error status", v)
-	}
-	for _, want := range []string{"no verdict for key " + v.Record.CacheKey, "replay-strict never calls the model"} {
-		if !strings.Contains(v.Reason, want) {
-			t.Errorf("reason %q should contain %q", v.Reason, want)
-		}
-	}
-	if v.Record.CacheStatus != types.JudgeCacheMiss || !validCacheKey(v.Record.CacheKey) {
-		t.Errorf("record = %+v", v.Record)
-	}
-	if built != 0 || fake.calls != 0 || cache.puts != 0 {
-		t.Errorf("replay-strict built %d clients, made %d calls and %d puts", built, fake.calls, cache.puts)
-	}
-	if got := stats.Summary(CacheReplayStrict); got.Misses != 1 || got.Hits != 0 || got.Stored != 0 {
-		t.Errorf("stats = %+v", got)
-	}
+	must.Error(err, "verdict = %+v", v)
+	must.False(v.Passed)
+	must.Equal(types.JudgeStatusError, v.Status)
+	must.Contains(v.Reason, "no verdict for key "+v.Record.CacheKey)
+	must.Contains(v.Reason, "replay-strict never calls the model")
+	must.Equal(types.JudgeCacheMiss, v.Record.CacheStatus)
+	must.True(validCacheKey(v.Record.CacheKey), "record = %+v", v.Record)
+	must.Zero(built, "replay-strict built a client")
+	must.Zero(fake.calls, "replay-strict made a model call")
+	must.Zero(cache.puts, "replay-strict stored a verdict")
+	got := stats.Summary(CacheReplayStrict)
+	must.Equal(1, got.Misses, "stats = %+v", got)
+	must.Zero(got.Hits, "stats = %+v", got)
+	must.Zero(got.Stored, "stats = %+v", got)
 }
 
-func TestEvaluateDiffReview_UncacheableVerdictsAreNeverStored(t *testing.T) {
+func TestEvaluateDiffReview_UncacheableVerdict_IsNeverStored(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "k")
 	cases := []struct {
 		name    string
@@ -328,30 +305,25 @@ func TestEvaluateDiffReview_UncacheableVerdictsAreNeverStored(t *testing.T) {
 	for _, mode := range []CacheMode{CacheRecord, CacheReadThrough} {
 		for _, tc := range cases {
 			t.Run(string(mode)+"/"+tc.name, func(t *testing.T) {
+				must := require.New(t)
 				cache := newMemCache()
 				fake := &fakeClient{resp: tc.resp, err: tc.callErr}
 				jctx := changedJudgeContext(t, cachedOptions(mode, cache, fake))
 				for range 2 {
 					v, err := Evaluate(context.Background(), diffReviewJudge(), jctx)
-					if err == nil || v.Status != types.JudgeStatusError {
-						t.Fatalf("verdict = %+v, err = %v, want an error", v, err)
-					}
-					if v.Record.CacheStatus != types.JudgeCacheMiss {
-						t.Errorf("cache status = %q, want miss", v.Record.CacheStatus)
-					}
+					must.Error(err, "verdict = %+v", v)
+					must.Equal(types.JudgeStatusError, v.Status)
+					must.Equal(types.JudgeCacheMiss, v.Record.CacheStatus)
 				}
-				if cache.puts != 0 || len(cache.entries) != 0 {
-					t.Errorf("an error verdict was stored: %d puts", cache.puts)
-				}
-				if fake.calls != 2 {
-					t.Errorf("model called %d times, want every attempt to reach the model", fake.calls)
-				}
+				must.Zero(cache.puts, "an error verdict was stored")
+				must.Empty(cache.entries, "an error verdict was stored")
+				must.Equal(2, fake.calls, "every attempt should reach the model")
 			})
 		}
 	}
 }
 
-func TestCacheableVerdict(t *testing.T) {
+func TestCacheableVerdict_OnlyUsableVerdictsAreCached(t *testing.T) {
 	rec := func(parse string) *types.JudgeRecord { return &types.JudgeRecord{ParseStatus: parse} }
 	cases := []struct {
 		name string
@@ -369,20 +341,20 @@ func TestCacheableVerdict(t *testing.T) {
 		{"no record", eval.JudgeVerdict{Passed: true, Status: types.JudgeStatusPass}, false},
 	}
 	for _, tc := range cases {
-		if got := cacheableVerdict(tc.v); got != tc.want {
-			t.Errorf("%s: cacheable = %v, want %v", tc.name, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, cacheableVerdict(tc.v))
+		})
 	}
 }
 
-func TestEvaluateDiffReview_UnusableEntries(t *testing.T) {
+func TestEvaluateDiffReview_UnusableEntries_ReplacedOrRejected(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("ANTHROPIC_API_KEY", "k")
 	dir, base := changedWorkspace(t)
 	recorder := &fakeClient{resp: okResponse(verdictPass)}
 	good, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: cachedOptions(CacheRecord, newMemCache(), recorder)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	key := good.Record.CacheKey
 
 	tamper := map[string]func(*memCache){
@@ -410,6 +382,7 @@ func TestEvaluateDiffReview_UnusableEntries(t *testing.T) {
 	}
 	for name, corrupt := range tamper {
 		t.Run(name+"/read-through overwrites", func(t *testing.T) {
+			must := require.New(t)
 			cache := newMemCache()
 			corrupt(cache)
 			fake := &fakeClient{resp: okResponse(verdictPass)}
@@ -417,27 +390,23 @@ func TestEvaluateDiffReview_UnusableEntries(t *testing.T) {
 			opts := cachedOptions(CacheReadThrough, cache, fake)
 			opts.CacheStats = stats
 			v, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: opts})
-			if err != nil || v.Status != types.JudgeStatusPass {
-				t.Fatalf("verdict = %+v, err = %v", v, err)
-			}
-			if fake.calls != 1 || v.Record.CacheStatus != types.JudgeCacheStored {
-				t.Errorf("%d model calls, cache status %q; want the entry treated as a miss and replaced", fake.calls, v.Record.CacheStatus)
-			}
-			if err := checkCachedVerdict(cache.entries[key], v.Record); err != nil || cache.corrupt[key] {
-				t.Errorf("entry not replaced with a usable one: %v", err)
-			}
+			must.NoError(err, "verdict = %+v", v)
+			must.Equal(types.JudgeStatusPass, v.Status, "verdict = %+v", v)
+			must.Equal(1, fake.calls, "the entry should be treated as a miss")
+			must.Equal(types.JudgeCacheStored, v.Record.CacheStatus)
+			must.NoError(checkCachedVerdict(cache.entries[key], v.Record), "entry not replaced with a usable one")
+			must.False(cache.corrupt[key], "entry is still marked unreadable")
 			summary := stats.Summary(CacheReadThrough)
-			if want := (eval.JudgeCacheSummary{Mode: "read-through", Misses: 1, Stored: 1, Replaced: 1}); summary != want {
-				t.Errorf("stats = %+v, want %+v", summary, want)
-			}
-			if err := stats.UnusableError(); err == nil || !strings.Contains(err.Error(), key) || !strings.Contains(err.Error(), "is unusable") {
-				t.Errorf("UnusableError = %v, want one naming key %s", err, key)
-			}
-			if raw, err := json.Marshal(summary); err != nil || !strings.Contains(string(raw), `"replaced":1`) {
-				t.Errorf("summary JSON %s (err %v) lacks the replaced count", raw, err)
-			}
+			must.Equal(eval.JudgeCacheSummary{Mode: "read-through", Misses: 1, Stored: 1, Replaced: 1}, summary)
+			unusableErr := stats.UnusableError()
+			must.ErrorContains(unusableErr, key)
+			must.ErrorContains(unusableErr, "is unusable")
+			raw, err := json.Marshal(summary)
+			must.NoError(err)
+			must.Contains(string(raw), `"replaced":1`, "summary JSON %s lacks the replaced count", raw)
 		})
 		t.Run(name+"/replay-strict errors", func(t *testing.T) {
+			must := require.New(t)
 			cache := newMemCache()
 			corrupt(cache)
 			fake := &fakeClient{resp: okResponse(verdictPass)}
@@ -445,20 +414,21 @@ func TestEvaluateDiffReview_UnusableEntries(t *testing.T) {
 			opts := cachedOptions(CacheReplayStrict, cache, fake)
 			opts.CacheStats = stats
 			v, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: opts})
-			if err == nil || v.Status != types.JudgeStatusError || !strings.Contains(v.Reason, "is unusable") || !strings.Contains(v.Reason, key) {
-				t.Fatalf("verdict = %+v, err = %v, want an unusable-entry error naming the key", v, err)
-			}
-			if fake.calls != 0 || cache.puts != 0 {
-				t.Errorf("%d model calls and %d puts in replay-strict", fake.calls, cache.puts)
-			}
-			if got := stats.Summary(CacheReplayStrict); got.Replaced != 0 || stats.UnusableError() != nil {
-				t.Errorf("stats = %+v; replay-strict replaces nothing", got)
-			}
+			must.Error(err, "verdict = %+v", v)
+			must.Equal(types.JudgeStatusError, v.Status)
+			must.Contains(v.Reason, "is unusable")
+			must.Contains(v.Reason, key)
+			must.Zero(fake.calls, "replay-strict made a model call")
+			must.Zero(cache.puts, "replay-strict stored a verdict")
+			got := stats.Summary(CacheReplayStrict)
+			must.Zero(got.Replaced, "stats = %+v; replay-strict replaces nothing", got)
+			must.NoError(stats.UnusableError(), "replay-strict reports no unusable entry")
 		})
 	}
 }
 
-func TestEvaluateDiffReview_CacheWriteFailureKeepsTheVerdict(t *testing.T) {
+func TestEvaluateDiffReview_CacheWriteFailure_KeepsVerdict(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("ANTHROPIC_API_KEY", "k")
 	cache := newMemCache()
 	cache.putErr = errors.New("disk full")
@@ -468,35 +438,33 @@ func TestEvaluateDiffReview_CacheWriteFailureKeepsTheVerdict(t *testing.T) {
 	opts.CacheStats = stats
 
 	v, err := Evaluate(context.Background(), diffReviewJudge(), changedJudgeContext(t, opts))
-	if err != nil || v.Status != types.JudgeStatusPass {
-		t.Fatalf("verdict = %+v, err = %v", v, err)
-	}
-	if v.Record.CacheStatus != types.JudgeCacheMiss {
-		t.Errorf("cache status = %q, want miss for an entry that was not written", v.Record.CacheStatus)
-	}
-	if got := stats.Summary(CacheRecord); got.WriteErrors != 1 || got.Stored != 0 || got.Misses != 1 {
-		t.Errorf("stats = %+v", got)
-	}
-	if err := stats.WriteError(); err == nil || !strings.Contains(err.Error(), "disk full") {
-		t.Errorf("WriteError = %v", err)
-	}
+	must.NoError(err, "verdict = %+v", v)
+	must.Equal(types.JudgeStatusPass, v.Status, "verdict = %+v", v)
+	must.Equal(types.JudgeCacheMiss, v.Record.CacheStatus, "an entry that was not written reports a miss")
+	got := stats.Summary(CacheRecord)
+	must.Equal(1, got.WriteErrors, "stats = %+v", got)
+	must.Zero(got.Stored, "stats = %+v", got)
+	must.Equal(1, got.Misses, "stats = %+v", got)
+	must.ErrorContains(stats.WriteError(), "disk full")
 }
 
-func TestEvaluateDiffReview_CacheModeNeedsACache(t *testing.T) {
+func TestEvaluateDiffReview_CacheMode_RequiresCache(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("ANTHROPIC_API_KEY", "k")
 	fake := &fakeClient{resp: okResponse(verdictPass)}
 	for _, mode := range []CacheMode{CacheRecord, CacheReadThrough, CacheReplayStrict, "bogus"} {
-		v, err := Evaluate(context.Background(), diffReviewJudge(), changedJudgeContext(t, Options{CacheMode: mode, ClientFactory: fake.factory(nil, nil)}))
-		if err == nil || v.Status != types.JudgeStatusError {
-			t.Errorf("%s: verdict = %+v, err = %v, want an error", mode, v, err)
-		}
+		t.Run(string(mode), func(t *testing.T) {
+			must := require.New(t)
+			v, err := Evaluate(context.Background(), diffReviewJudge(), changedJudgeContext(t, Options{CacheMode: mode, ClientFactory: fake.factory(nil, nil)}))
+			must.Error(err, "verdict = %+v", v)
+			must.Equal(types.JudgeStatusError, v.Status)
+		})
 	}
-	if fake.calls != 0 {
-		t.Errorf("model called %d times under an unusable cache configuration", fake.calls)
-	}
+	must.Zero(fake.calls, "model called under an unusable cache configuration")
 }
 
-func TestEvaluateDiffReview_PreLookupErrorsBypassTheCache(t *testing.T) {
+func TestEvaluateDiffReview_PreLookupError_BypassesCache(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("ANTHROPIC_API_KEY", "k")
 	dir, base := newWorkspace(t, map[string]string{"a.txt": "one\n"})
 	cache := newMemCache()
@@ -506,18 +474,17 @@ func TestEvaluateDiffReview_PreLookupErrorsBypassTheCache(t *testing.T) {
 	opts.CacheStats = stats
 
 	v, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: opts})
-	if err == nil || !strings.Contains(v.Reason, "no reviewable change") {
-		t.Fatalf("verdict = %+v, err = %v, want the empty-diff error", v, err)
-	}
-	if v.Record.CacheStatus != types.JudgeCacheBypass || v.Record.CacheKey != "" || cache.gets != 0 {
-		t.Errorf("record = %+v after %d gets, want the cache bypassed", v.Record, cache.gets)
-	}
-	if got := stats.Summary(CacheReadThrough); got.Bypassed != 1 {
-		t.Errorf("stats = %+v", got)
-	}
+	must.Error(err, "verdict = %+v", v)
+	must.Contains(v.Reason, "no reviewable change")
+	must.Equal(types.JudgeCacheBypass, v.Record.CacheStatus, "record = %+v", v.Record)
+	must.Empty(v.Record.CacheKey)
+	must.Zero(cache.gets, "the cache was consulted")
+	got := stats.Summary(CacheReadThrough)
+	must.Equal(1, got.Bypassed, "stats = %+v", got)
 }
 
-func TestComposite_ChildrenUseTheCache(t *testing.T) {
+func TestComposite_Children_UseCache(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("ANTHROPIC_API_KEY", "k")
 	dir, base := changedWorkspace(t)
 	cache := newMemCache()
@@ -528,91 +495,110 @@ func TestComposite_ChildrenUseTheCache(t *testing.T) {
 	statuses := make([]string, 0, 2)
 	for range 2 {
 		v := evaluateOK(t, j, jctx)
-		if v.Status != types.JudgeStatusPass || v.Details[1].Record == nil {
-			t.Fatalf("verdict = %+v", v)
-		}
+		must.Equal(types.JudgeStatusPass, v.Status, "verdict = %+v", v)
+		must.NotNil(v.Details[1].Record, "verdict = %+v", v)
 		statuses = append(statuses, v.Details[1].Record.CacheStatus)
 	}
-	if statuses[0] != types.JudgeCacheStored || statuses[1] != types.JudgeCacheHit || fake.calls != 1 {
-		t.Errorf("sub-judge cache statuses %v after %d model calls, want [stored hit] after 1", statuses, fake.calls)
-	}
+	must.Equal([]string{types.JudgeCacheStored, types.JudgeCacheHit}, statuses, "sub-judge cache statuses after %d model calls", fake.calls)
+	must.Equal(1, fake.calls, "model calls")
 }
 
 func TestPreflightSuite_CacheModes(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("PREFLIGHT_UNSET_KEY", "")
 	tasks := []types.EvalTask{{ID: "t", Judge: types.EvalJudge{
 		Type: "diff-review", Criteria: "c",
 		LLM: &types.JudgeLLMConfig{Model: "m", APIKeyRef: "secret://PREFLIGHT_UNSET_KEY", BaseURL: "https://judge.invalid"},
 	}}}
 
-	if err := PreflightSuite(context.Background(), tasks, Options{CacheMode: CacheReplayStrict}); err != nil {
-		t.Errorf("replay-strict: %v, want no credential or endpoint check", err)
+	must.NoError(PreflightSuite(context.Background(), tasks, Options{CacheMode: CacheReplayStrict}), "replay-strict checks no credential or endpoint")
+	for _, tc := range []struct {
+		name string
+		mode CacheMode
+	}{
+		{"unset", ""},
+		{"live", CacheLive},
+		{"record", CacheRecord},
+		{"read-through", CacheReadThrough},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			err := PreflightSuite(context.Background(), tasks, Options{CacheMode: tc.mode})
+			must.ErrorContains(err, "secret://PREFLIGHT_UNSET_KEY")
+		})
 	}
-	for _, mode := range []CacheMode{"", CacheLive, CacheRecord, CacheReadThrough} {
-		err := PreflightSuite(context.Background(), tasks, Options{CacheMode: mode})
-		if err == nil || !strings.Contains(err.Error(), "secret://PREFLIGHT_UNSET_KEY") {
-			t.Errorf("%q: err = %v, want the unresolvable reference reported", mode, err)
-		}
-	}
-	if err := PreflightSuite(context.Background(), tasks, Options{CacheMode: "bogus"}); err == nil || !strings.Contains(err.Error(), "bogus") {
-		t.Errorf("unknown mode: err = %v", err)
-	}
+	err := PreflightSuite(context.Background(), tasks, Options{CacheMode: "bogus"})
+	must.ErrorContains(err, "bogus")
+
 	invalid := []types.EvalTask{{ID: "t", Judge: types.EvalJudge{Type: "diff-review", Criteria: "c", LLM: &types.JudgeLLMConfig{Provider: "openai-compatible", Model: "m"}}}}
-	if err := PreflightSuite(context.Background(), invalid, Options{CacheMode: CacheReplayStrict}); err == nil {
-		t.Error("replay-strict skipped configuration validation")
-	}
+	must.Error(PreflightSuite(context.Background(), invalid, Options{CacheMode: CacheReplayStrict}), "replay-strict skipped configuration validation")
 }
 
-func TestParseCacheMode(t *testing.T) {
-	for in, want := range map[string]CacheMode{"": CacheLive, "live": CacheLive, "record": CacheRecord, "read-through": CacheReadThrough, "replay-strict": CacheReplayStrict} {
-		got, err := ParseCacheMode(in)
-		if err != nil || got != want {
-			t.Errorf("ParseCacheMode(%q) = %q, %v; want %q", in, got, err, want)
-		}
+func TestParseCacheMode_AcceptsKnownRejectsUnknown(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   string
+		want CacheMode
+	}{
+		{"unset defaults to live", "", CacheLive},
+		{"live", "live", CacheLive},
+		{"record", "record", CacheRecord},
+		{"read-through", "read-through", CacheReadThrough},
+		{"replay-strict", "replay-strict", CacheReplayStrict},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			got, err := ParseCacheMode(tc.in)
+			must.NoError(err)
+			must.Equal(tc.want, got)
+		})
 	}
 	for _, in := range []string{"Live", "readthrough", "replay", "off"} {
-		if _, err := ParseCacheMode(in); err == nil {
-			t.Errorf("ParseCacheMode(%q) accepted an unknown mode", in)
-		}
+		t.Run("rejects "+in, func(t *testing.T) {
+			must := require.New(t)
+			_, err := ParseCacheMode(in)
+			must.Error(err)
+		})
 	}
 }
 
 func TestCacheStats_NilIsSafe(t *testing.T) {
+	must := require.New(t)
 	var s *CacheStats
 	s.count(types.JudgeCacheHit)
 	s.writeFailed(errors.New("x"))
 	s.replacing(errors.New("y"))
-	if got := s.Summary(CacheReadThrough); got != (eval.JudgeCacheSummary{Mode: "read-through"}) {
-		t.Errorf("Summary = %+v, want empty counts", got)
-	}
-	if s.WriteError() != nil || s.UnusableError() != nil {
-		t.Error("a nil CacheStats reported an error")
-	}
+	must.Equal(eval.JudgeCacheSummary{Mode: "read-through"}, s.Summary(CacheReadThrough))
+	must.NoError(s.WriteError(), "a nil CacheStats reported an error")
+	must.NoError(s.UnusableError(), "a nil CacheStats reported an error")
 }
 
 func TestOptions_CheckCacheAvailable(t *testing.T) {
+	must := require.New(t)
 	reviewed := []types.EvalTask{{ID: "plain", Judge: types.EvalJudge{Type: "file-exists"}}, {ID: "nested", Judge: composite("all", diffReviewJudge())}}
 	unreviewed := reviewed[:1]
 	for _, mode := range []CacheMode{CacheRecord, CacheReadThrough, CacheReplayStrict} {
-		err := Options{CacheMode: mode}.CheckCacheAvailable(reviewed)
-		if err == nil || !strings.Contains(err.Error(), `task "nested"`) {
-			t.Errorf("%s without a cache: err = %v, want the task named", mode, err)
-		}
-		if err := (Options{CacheMode: mode, Cache: newMemCache()}).CheckCacheAvailable(reviewed); err != nil {
-			t.Errorf("%s with a cache: %v", mode, err)
-		}
-		if err := (Options{CacheMode: mode}).CheckCacheAvailable(unreviewed); err != nil {
-			t.Errorf("%s with no diff-review judge: %v", mode, err)
-		}
+		t.Run(string(mode), func(t *testing.T) {
+			must := require.New(t)
+			err := Options{CacheMode: mode}.CheckCacheAvailable(reviewed)
+			must.ErrorContains(err, `task "nested"`, "without a cache")
+			must.NoError(Options{CacheMode: mode, Cache: newMemCache()}.CheckCacheAvailable(reviewed), "with a cache")
+			must.NoError(Options{CacheMode: mode}.CheckCacheAvailable(unreviewed), "with no diff-review judge")
+		})
 	}
-	for _, mode := range []CacheMode{"", CacheLive} {
-		if err := (Options{CacheMode: mode}).CheckCacheAvailable(reviewed); err != nil {
-			t.Errorf("mode %q: %v", mode, err)
-		}
+	for _, tc := range []struct {
+		name string
+		mode CacheMode
+	}{
+		{"unset", ""},
+		{"live", CacheLive},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.NoError(Options{CacheMode: tc.mode}.CheckCacheAvailable(reviewed))
+		})
 	}
-	if err := (Options{CacheMode: "bogus"}).CheckCacheAvailable(reviewed); err == nil {
-		t.Error("an unknown mode passed")
-	}
+	must.Error(Options{CacheMode: "bogus"}.CheckCacheAvailable(reviewed), "an unknown mode passed")
 }
 
 // fileCacheVerdict is a cacheable verdict for FileCache tests.
@@ -624,63 +610,67 @@ func fileCacheVerdict(reason string) eval.JudgeVerdict {
 }
 
 func TestFileCache_RoundTripAndLayout(t *testing.T) {
+	must := require.New(t)
 	dir := filepath.Join(t.TempDir(), "judge-cache")
 	c, err := NewFileCache(dir, FileCacheOptions{Mode: CacheReadThrough})
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	key := CacheKey(strings.Repeat("a", 64), strings.Repeat("b", 64), 0)
-	if _, found, err := c.Get(key); found || err != nil {
-		t.Fatalf("empty cache: found %v, err %v", found, err)
-	}
+	_, found, err := c.Get(key)
+	must.NoError(err)
+	must.False(found, "empty cache reported an entry")
+
 	want := fileCacheVerdict("stored reason")
 	before := time.Now().UTC().Truncate(time.Second)
-	if err := c.Put(key, want); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(c.Put(key, want))
+
 	path := filepath.Join(dir, key[:2], key[2:4], key+".json")
 	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("entry not at the fan-out path: %v", err)
-	}
+	must.NoError(err, "entry not at the fan-out path")
 	for _, field := range []string{`"key": "` + key + `"`, `"schemaVersion": 1`, fmt.Sprintf(`"parserVersion": %d`, diffReviewParserVersion), `"evalVersion": "` + version.Full() + `"`, `"createdAt"`, `"verdict"`} {
-		if !strings.Contains(string(raw), field) {
-			t.Errorf("entry is missing %s:\n%s", field, raw)
-		}
+		must.Contains(string(raw), field, "entry is missing %s:\n%s", field, raw)
 	}
+
 	got, found, err := c.Get(key)
-	if err != nil || !found {
-		t.Fatalf("Get: found %v, err %v", found, err)
-	}
-	if got.Record == nil || got.Record.CacheRecordedAt.Before(before) || got.Record.CacheRecordedBy != version.Full() {
-		t.Fatalf("record %+v lacks the entry's provenance", got.Record)
-	}
+	must.NoError(err)
+	must.True(found, "stored entry not found")
+	must.NotNil(got.Record, "entry has no record")
+	must.False(got.Record.CacheRecordedAt.Before(before), "entry recorded at %v, before %v", got.Record.CacheRecordedAt, before)
+	must.Equal(version.Full(), got.Record.CacheRecordedBy, "entry lacks the record provenance")
+
 	rec := *got.Record
 	rec.CacheRecordedAt, rec.CacheRecordedBy = time.Time{}, ""
-	if got.Reason != want.Reason || got.Status != want.Status || !got.Passed || rec != *want.Record {
-		t.Errorf("got %+v, want %+v", got, want)
-	}
+	must.Equal(want.Reason, got.Reason)
+	must.Equal(want.Status, got.Status)
+	must.True(got.Passed)
+	must.Equal(*want.Record, rec)
 }
 
 func TestFileCache_RejectsInvalidKeys(t *testing.T) {
+	must := require.New(t)
 	c, err := NewFileCache(t.TempDir(), FileCacheOptions{Mode: CacheReadThrough})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, key := range []string{
-		"", "abc", "abcdef", strings.Repeat("a", 63), strings.Repeat("a", 65),
-		"../" + strings.Repeat("a", 61), strings.Repeat("A", 64), strings.Repeat("g", 64),
+	must.NoError(err)
+	for _, tc := range []struct {
+		name string
+		key  string
+	}{
+		{"empty", ""},
+		{"three characters", "abc"},
+		{"six characters", "abcdef"},
+		{"63 characters", strings.Repeat("a", 63)},
+		{"65 characters", strings.Repeat("a", 65)},
+		{"path traversal", "../" + strings.Repeat("a", 61)},
+		{"uppercase hex", strings.Repeat("A", 64)},
+		{"non-hex characters", strings.Repeat("g", 64)},
 	} {
-		if err := c.Put(key, fileCacheVerdict("x")); err == nil {
-			t.Errorf("Put accepted key %q", key)
-		}
-		if _, _, err := c.Get(key); err == nil {
-			t.Errorf("Get accepted key %q", key)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Error(c.Put(tc.key, fileCacheVerdict("x")), "Put accepted the key")
+			_, _, err := c.Get(tc.key)
+			must.Error(err, "Get accepted the key")
+		})
 	}
-	if _, err := NewFileCache("", FileCacheOptions{Mode: CacheRecord}); err == nil {
-		t.Error("NewFileCache accepted an empty directory")
-	}
+	_, err = NewFileCache("", FileCacheOptions{Mode: CacheRecord})
+	must.Error(err, "NewFileCache accepted an empty directory")
 }
 
 func TestFileCache_UnusableEntriesAreErrors(t *testing.T) {
@@ -704,89 +694,71 @@ func TestFileCache_UnusableEntriesAreErrors(t *testing.T) {
 	}
 	for name, content := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			dir := t.TempDir()
 			c, err := NewFileCache(dir, FileCacheOptions{Mode: CacheReadThrough})
-			if err != nil {
-				t.Fatal(err)
-			}
+			must.NoError(err)
 			path := filepath.Join(dir, key[:2], key[2:4], key+".json")
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			if _, found, err := c.Get(key); err == nil || !found {
-				t.Errorf("found %v, err %v; want an unusable existing entry", found, err)
-			}
+			must.NoError(os.MkdirAll(filepath.Dir(path), 0o755))
+			must.NoError(os.WriteFile(path, []byte(content), 0o644))
+			_, found, err := c.Get(key)
+			must.True(found, "unusable entry reported as a miss")
+			must.Error(err, "unusable entry was served")
 		})
 	}
 
 	t.Run("control: a current entry is served", func(t *testing.T) {
+		must := require.New(t)
 		dir := t.TempDir()
 		c, err := NewFileCache(dir, FileCacheOptions{Mode: CacheReadThrough})
-		if err != nil {
-			t.Fatal(err)
-		}
+		must.NoError(err)
 		path := filepath.Join(dir, key[:2], key[2:4], key+".json")
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(entryWith(key, 1, current, strings.Repeat("r", 1000))), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if _, found, err := c.Get(key); err != nil || !found {
-			t.Errorf("found %v, err %v; want the entry served", found, err)
-		}
+		must.NoError(os.MkdirAll(filepath.Dir(path), 0o700))
+		must.NoError(os.WriteFile(path, []byte(entryWith(key, 1, current, strings.Repeat("r", 1000))), 0o600))
+		_, found, err := c.Get(key)
+		must.NoError(err, "want the entry served")
+		must.True(found, "want the entry served")
 	})
 }
 
 func TestFileCache_DirectoryAtTheEntryPathIsUnusable(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	c, err := NewFileCache(dir, FileCacheOptions{Mode: CacheReadThrough})
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	key := CacheKey("c", "i", 0)
-	if err := os.MkdirAll(filepath.Join(dir, key[:2], key[2:4], key+".json"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if _, found, err := c.Get(key); !found || err == nil {
-		t.Errorf("found %v, err %v; want an unusable entry, not a miss", found, err)
-	}
+	must.NoError(os.MkdirAll(filepath.Join(dir, key[:2], key[2:4], key+".json"), 0o700))
+	_, found, err := c.Get(key)
+	must.True(found, "a directory at the entry path was a miss, want an unusable entry")
+	must.Error(err, "a directory at the entry path was served")
 }
 
 func TestFileCache_FailedPutLeavesNoPartialFile(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	c, err := NewFileCache(dir, FileCacheOptions{Mode: CacheReadThrough})
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	key := CacheKey("c", "i", 0)
 	target := filepath.Join(dir, key[:2], key[2:4], key+".json")
-	if err := os.MkdirAll(filepath.Join(target, "occupied"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Put(key, fileCacheVerdict("x")); err == nil {
-		t.Fatal("Put succeeded over a directory")
-	}
+	must.NoError(os.MkdirAll(filepath.Join(target, "occupied"), 0o755))
+	must.Error(c.Put(key, fileCacheVerdict("x")), "Put succeeded over a directory")
+
 	entries, err := os.ReadDir(filepath.Dir(target))
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
+	var leftovers []string
 	for _, e := range entries {
 		if e.Name() != key+".json" {
-			t.Errorf("failed Put left %s behind", e.Name())
+			leftovers = append(leftovers, e.Name())
 		}
 	}
+	must.Empty(leftovers, "failed Put left files beside the entry")
 }
 
 func TestFileCache_ConcurrentPutsOfOneKey(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	c, err := NewFileCache(dir, FileCacheOptions{Mode: CacheReadThrough})
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	key := CacheKey("c", "i", 0)
 	const writers = 16
 	var wg sync.WaitGroup
@@ -803,71 +775,67 @@ func TestFileCache_ConcurrentPutsOfOneKey(t *testing.T) {
 	}
 	wg.Wait()
 	close(errs)
+	var failures []error
 	for err := range errs {
-		t.Error(err)
+		failures = append(failures, err)
 	}
+	must.NoError(errors.Join(failures...), "concurrent cache operations")
+
 	got, found, err := c.Get(key)
-	if err != nil || !found || !strings.HasPrefix(got.Reason, "writer ") {
-		t.Fatalf("final entry: %+v, found %v, err %v", got, found, err)
-	}
+	must.NoError(err, "final Get")
+	must.True(found, "final entry not found")
+	must.True(strings.HasPrefix(got.Reason, "writer "), "final entry %+v", got)
+
 	entries, err := os.ReadDir(filepath.Join(dir, key[:2], key[2:4]))
-	if err != nil {
-		t.Fatal(err)
+	must.NoError(err)
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
 	}
-	if len(entries) != 1 {
-		names := make([]string, 0, len(entries))
-		for _, e := range entries {
-			names = append(names, e.Name())
-		}
-		t.Errorf("directory holds %v, want only the entry", names)
-	}
+	must.Len(names, 1, "directory holds %v, want only the entry", names)
 }
 
-func TestEvaluateDiffReview_FileCacheCorruptEntry(t *testing.T) {
+func TestEvaluateDiffReview_CorruptFileCacheEntry_IsRejectedThenReplaced(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("ANTHROPIC_API_KEY", "k")
 	dir, base := changedWorkspace(t)
 	cacheDir := t.TempDir()
 	c, err := NewFileCache(cacheDir, FileCacheOptions{Mode: CacheReadThrough})
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	recorder := &fakeClient{resp: okResponse(verdictPass)}
 	first, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: cachedOptions(CacheRecord, c, recorder)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	key := first.Record.CacheKey
 	path := filepath.Join(cacheDir, key[:2], key[2:4], key+".json")
-	if err := os.WriteFile(path, []byte(`{"key":"`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.WriteFile(path, []byte(`{"key":"`), 0o644))
 
 	strict := &fakeClient{resp: okResponse(verdictPass)}
 	v, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: cachedOptions(CacheReplayStrict, c, strict)})
-	if err == nil || v.Status != types.JudgeStatusError || !strings.Contains(v.Reason, "is unusable") || strict.calls != 0 {
-		t.Fatalf("replay-strict over a corrupt entry: verdict %+v, err %v, %d calls", v, err, strict.calls)
-	}
+	must.Error(err, "replay-strict served a corrupt entry")
+	must.Equal(types.JudgeStatusError, v.Status)
+	must.Contains(v.Reason, "is unusable")
+	must.Zero(strict.calls, "replay-strict called the model")
 
 	through := &fakeClient{resp: okResponse(verdictPass)}
 	v, err = Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: cachedOptions(CacheReadThrough, c, through)})
-	if err != nil || v.Record.CacheStatus != types.JudgeCacheStored || through.calls != 1 {
-		t.Fatalf("read-through over a corrupt entry: verdict %+v, err %v, %d calls", v, err, through.calls)
-	}
+	must.NoError(err, "read-through over a corrupt entry")
+	must.Equal(types.JudgeCacheStored, v.Record.CacheStatus)
+	must.Equal(1, through.calls)
+
 	v, err = Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: cachedOptions(CacheReplayStrict, c, strict)})
-	if err != nil || v.Record.CacheStatus != types.JudgeCacheHit || strict.calls != 0 {
-		t.Errorf("after the overwrite: verdict %+v, err %v, %d calls", v, err, strict.calls)
-	}
+	must.NoError(err, "replay-strict after the overwrite")
+	must.Equal(types.JudgeCacheHit, v.Record.CacheStatus)
+	must.Zero(strict.calls, "replay-strict called the model after the overwrite")
 }
 
 // cacheModesWithADirectory are the modes that open a FileCache.
 var cacheModesWithADirectory = []CacheMode{CacheRecord, CacheReadThrough, CacheReplayStrict}
 
-func TestNewFileCache_RefusesADirectoryInsideAForbiddenRoot(t *testing.T) {
+func TestNewFileCache_RefusesDirectoryInsideForbiddenRoot(t *testing.T) {
+	must := require.New(t)
 	workspace := t.TempDir()
 	link := filepath.Join(t.TempDir(), "link")
-	if err := os.Symlink(workspace, link); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.Symlink(workspace, link))
 	for _, mode := range cacheModesWithADirectory {
 		for name, dir := range map[string]string{
 			"the root itself":   workspace,
@@ -875,111 +843,104 @@ func TestNewFileCache_RefusesADirectoryInsideAForbiddenRoot(t *testing.T) {
 			"through a symlink": filepath.Join(link, "judge-cache"),
 		} {
 			t.Run(string(mode)+"/"+name, func(t *testing.T) {
+				must := require.New(t)
 				if mode == CacheReplayStrict {
-					if err := os.MkdirAll(dir, 0o700); err != nil {
-						t.Fatal(err)
-					}
+					must.NoError(os.MkdirAll(dir, 0o700))
 				}
 				_, err := NewFileCache(dir, FileCacheOptions{Mode: mode, ForbiddenRoots: []string{t.TempDir(), workspace}})
-				if err == nil || !strings.Contains(err.Error(), "agent under test can write") {
-					t.Fatalf("err = %v, want the directory refused", err)
-				}
+				must.ErrorContains(err, "agent under test can write", "want the directory refused")
 				if mode != CacheReplayStrict && dir != workspace {
-					if _, err := os.Stat(dir); !os.IsNotExist(err) {
-						t.Errorf("a refused directory was created: %v", err)
-					}
+					_, err = os.Stat(dir)
+					must.ErrorIs(err, os.ErrNotExist, "a refused directory was created")
 				}
 			})
 		}
 	}
 
 	beside := filepath.Join(filepath.Dir(workspace), filepath.Base(workspace)+"-cache")
-	if _, err := NewFileCache(beside, FileCacheOptions{Mode: CacheRecord, ForbiddenRoots: []string{workspace}}); err != nil {
-		t.Errorf("a sibling sharing the root's name as a prefix was refused: %v", err)
-	}
+	_, err := NewFileCache(beside, FileCacheOptions{Mode: CacheRecord, ForbiddenRoots: []string{workspace}})
+	must.NoError(err, "a sibling sharing the root's name as a prefix was refused")
 }
 
 func TestNewFileCache_ReplayStrictNeedsAnExistingDirectory(t *testing.T) {
+	must := require.New(t)
 	missing := filepath.Join(t.TempDir(), "absent", "judge-cache")
 	_, err := NewFileCache(missing, FileCacheOptions{Mode: CacheReplayStrict})
-	if err == nil || !strings.Contains(err.Error(), missing) || !strings.Contains(err.Error(), "does not exist") {
-		t.Fatalf("err = %v, want the missing directory named", err)
-	}
-	if _, err := os.Stat(filepath.Dir(missing)); !os.IsNotExist(err) {
-		t.Errorf("replay-strict created %s: %v", filepath.Dir(missing), err)
-	}
+	must.ErrorContains(err, missing, "want the missing directory named")
+	must.ErrorContains(err, "does not exist")
+	_, err = os.Stat(filepath.Dir(missing))
+	must.ErrorIs(err, os.ErrNotExist, "replay-strict created %s", filepath.Dir(missing))
 
 	file := filepath.Join(t.TempDir(), "judge-cache")
-	if err := os.WriteFile(file, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.WriteFile(file, nil, 0o600))
 	for _, mode := range cacheModesWithADirectory {
-		if _, err := NewFileCache(file, FileCacheOptions{Mode: mode}); err == nil {
-			t.Errorf("%s: a regular file was accepted as the cache directory", mode)
-		}
+		t.Run("regular file/"+string(mode), func(t *testing.T) {
+			must := require.New(t)
+			_, err := NewFileCache(file, FileCacheOptions{Mode: mode})
+			must.Error(err, "a regular file was accepted as the cache directory")
+		})
 	}
 	for _, mode := range []CacheMode{"", CacheLive, "bogus"} {
-		if _, err := NewFileCache(t.TempDir(), FileCacheOptions{Mode: mode}); err == nil {
-			t.Errorf("mode %q opened a FileCache", mode)
-		}
+		t.Run(fmt.Sprintf("rejects mode %q", mode), func(t *testing.T) {
+			must := require.New(t)
+			_, err := NewFileCache(t.TempDir(), FileCacheOptions{Mode: mode})
+			must.Error(err, "mode %q opened a FileCache", mode)
+		})
 	}
 }
 
 func TestFileCache_ReplayStrictIsReadOnly(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	c, err := NewFileCache(dir, FileCacheOptions{Mode: CacheReplayStrict})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Put(CacheKey("c", "i", 0), fileCacheVerdict("x")); err == nil {
-		t.Error("Put succeeded on a replay-strict cache")
-	}
-	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
-		t.Errorf("replay-strict Put left %v (err %v)", entries, err)
-	}
+	must.NoError(err)
+	must.Error(c.Put(CacheKey("c", "i", 0), fileCacheVerdict("x")), "Put succeeded on a replay-strict cache")
+
+	entries, err := os.ReadDir(dir)
+	must.NoError(err)
+	must.Empty(entries, "replay-strict Put left entries")
 }
 
-func TestOptions_CheckCacheOutside(t *testing.T) {
+func TestOptions_CheckCacheOutside_RefusesCacheInsideWorkspace(t *testing.T) {
+	must := require.New(t)
 	workspace := t.TempDir()
 	c, err := NewFileCache(filepath.Join(workspace, "judge-cache"), FileCacheOptions{Mode: CacheRecord})
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	opts := Options{Cache: c, CacheMode: CacheReadThrough}
-	if err := opts.CheckCacheOutside(workspace); err == nil || !strings.Contains(err.Error(), "agent under test can write") {
-		t.Errorf("err = %v, want the cache inside the workspace refused", err)
-	}
-	if err := opts.CheckCacheOutside(t.TempDir()); err != nil {
-		t.Errorf("a cache outside the workspace was refused: %v", err)
-	}
-	opts.CacheMode = CacheLive
-	if err := opts.CheckCacheOutside(workspace); err != nil {
-		t.Errorf("live mode checked its unused cache: %v", err)
-	}
-	if err := (Options{Cache: newMemCache(), CacheMode: CacheReadThrough}).CheckCacheOutside(workspace); err != nil {
-		t.Errorf("a cache with no directory was refused: %v", err)
-	}
+
+	t.Run("cache inside workspace is refused", func(t *testing.T) {
+		must := require.New(t)
+		must.ErrorContains(opts.CheckCacheOutside(workspace), "agent under test can write")
+	})
+	t.Run("cache outside workspace is accepted", func(t *testing.T) {
+		must := require.New(t)
+		must.NoError(opts.CheckCacheOutside(t.TempDir()))
+	})
+	t.Run("live mode ignores its unused cache", func(t *testing.T) {
+		must := require.New(t)
+		live := opts
+		live.CacheMode = CacheLive
+		must.NoError(live.CheckCacheOutside(workspace))
+	})
+	t.Run("cache without a directory is accepted", func(t *testing.T) {
+		must := require.New(t)
+		must.NoError((Options{Cache: newMemCache(), CacheMode: CacheReadThrough}).CheckCacheOutside(workspace))
+	})
 }
 
 // rewriteEntry applies edit to the JSON object stored in the entry file at
 // path.
 func rewriteEntry(t *testing.T, path string, edit func(entry map[string]any)) {
 	t.Helper()
+	must := require.New(t)
 	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	var entry map[string]any
-	if err := json.Unmarshal(raw, &entry); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(json.Unmarshal(raw, &entry))
 	edit(entry)
-	if raw, err = json.Marshal(entry); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	raw, err = json.Marshal(entry)
+	must.NoError(err)
+	must.NoError(os.WriteFile(path, raw, 0o600))
 }
 
 func TestEvaluateDiffReview_EntriesFromAnotherParserVersionAreNotServed(t *testing.T) {
@@ -993,78 +954,67 @@ func TestEvaluateDiffReview_EntriesFromAnotherParserVersionAreNotServed(t *testi
 		"no parser version":    func(e map[string]any) { delete(e, "parserVersion") },
 	} {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			cacheDir := t.TempDir()
 			c, err := NewFileCache(cacheDir, FileCacheOptions{Mode: CacheReadThrough})
-			if err != nil {
-				t.Fatal(err)
-			}
+			must.NoError(err)
 			first, err := evaluate(CacheRecord, c, &fakeClient{resp: okResponse(verdictPass)})
-			if err != nil {
-				t.Fatal(err)
-			}
+			must.NoError(err)
 			key := first.Record.CacheKey
 			path := filepath.Join(cacheDir, key[:2], key[2:4], key+".json")
 			rewriteEntry(t, path, edit)
 
 			strict := &fakeClient{resp: okResponse(verdictPass)}
 			v, err := evaluate(CacheReplayStrict, c, strict)
-			if err == nil || v.Status != types.JudgeStatusError || !strings.Contains(v.Reason, "parser version") || strict.calls != 0 {
-				t.Fatalf("replay-strict: verdict %+v, err %v, %d calls; want an unusable-entry error", v, err, strict.calls)
-			}
+			must.Error(err, "replay-strict served the entry")
+			must.Equal(types.JudgeStatusError, v.Status)
+			must.Contains(v.Reason, "parser version")
+			must.Zero(strict.calls, "replay-strict called the model")
 
 			through := &fakeClient{resp: okResponse(verdictPass)}
 			stats := &CacheStats{}
 			opts := cachedOptions(CacheReadThrough, c, through)
 			opts.CacheStats = stats
 			v, err = Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: opts})
-			if err != nil || v.Record.CacheStatus != types.JudgeCacheStored || through.calls != 1 {
-				t.Fatalf("read-through: verdict %+v, err %v, %d calls; want the entry judged again and replaced", v, err, through.calls)
-			}
-			if got := stats.Summary(CacheReadThrough); got.Replaced != 1 {
-				t.Errorf("stats = %+v, want the entry counted as replaced", got)
-			}
-			if _, found, err := c.Get(key); !found || err != nil {
-				t.Errorf("replaced entry: found %v, err %v", found, err)
-			}
+			must.NoError(err, "read-through over the entry")
+			must.Equal(types.JudgeCacheStored, v.Record.CacheStatus, "want the entry judged again")
+			must.Equal(1, through.calls)
+			must.Equal(1, stats.Summary(CacheReadThrough).Replaced, "want the entry counted as replaced")
+
+			_, found, err := c.Get(key)
+			must.NoError(err, "replaced entry")
+			must.True(found, "replaced entry not found")
 		})
 	}
 }
 
 func TestEvaluateDiffReview_HitsCarrySanitisedProvenance(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("ANTHROPIC_API_KEY", "k")
 	dir, base := changedWorkspace(t)
 	cacheDir := t.TempDir()
 	c, err := NewFileCache(cacheDir, FileCacheOptions{Mode: CacheReadThrough})
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	evaluate := func(mode CacheMode) eval.JudgeVerdict {
 		t.Helper()
 		v, err := Evaluate(context.Background(), diffReviewJudge(), JudgeContext{WorkspaceDir: dir, Baseline: &base, Options: cachedOptions(mode, c, &fakeClient{resp: okResponse(verdictPass)})})
-		if err != nil {
-			t.Fatal(err)
-		}
+		must.NoError(err)
 		return v
 	}
 	recordFields := func(rec *types.JudgeRecord) map[string]json.RawMessage {
 		t.Helper()
 		raw, err := json.Marshal(rec)
-		if err != nil {
-			t.Fatal(err)
-		}
+		must.NoError(err)
 		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(raw, &fields); err != nil {
-			t.Fatal(err)
-		}
+		must.NoError(json.Unmarshal(raw, &fields))
 		return fields
 	}
 
 	stored := evaluate(CacheRecord)
-	for _, field := range []string{"cacheRecordedAt", "cacheRecordedBy"} {
-		if _, ok := recordFields(stored.Record)[field]; ok {
-			t.Errorf("a stored verdict's record carries %s", field)
-		}
-	}
+	storedFields := recordFields(stored.Record)
+	must.NotContains(storedFields, "cacheRecordedAt", "a stored verdict's record carries cacheRecordedAt")
+	must.NotContains(storedFields, "cacheRecordedBy", "a stored verdict's record carries cacheRecordedBy")
+
 	key := stored.Record.CacheKey
 	var createdAt time.Time
 	rewriteEntry(t, filepath.Join(cacheDir, key[:2], key[2:4], key+".json"), func(e map[string]any) {
@@ -1072,71 +1022,68 @@ func TestEvaluateDiffReview_HitsCarrySanitisedProvenance(t *testing.T) {
 		rec := e["verdict"].(map[string]any)["record"].(map[string]any)
 		rec["servedModel"] = "\x1b[31mevil\x1b[0m"
 		rec["stopReason"] = "end_turn\n\x00" + strings.Repeat("s", 2*maxRecordFieldBytes)
-		if err := createdAt.UnmarshalText([]byte(e["createdAt"].(string))); err != nil {
-			t.Fatal(err)
-		}
+		must.NoError(createdAt.UnmarshalText([]byte(e["createdAt"].(string))))
 	})
 
 	hit := evaluate(CacheReplayStrict)
 	rec := hit.Record
-	if rec.CacheStatus != types.JudgeCacheHit {
-		t.Fatalf("record = %+v, want a hit", rec)
-	}
+	must.Equal(types.JudgeCacheHit, rec.CacheStatus, "want a hit, got record %+v", rec)
 	for name, got := range map[string]string{"servedModel": rec.ServedModel, "stopReason": rec.StopReason, "cacheRecordedBy": rec.CacheRecordedBy} {
-		if strings.ContainsFunc(got, unicode.IsControl) || len(got) > maxRecordFieldBytes+len("...") {
-			t.Errorf("%s = %q, want control characters stripped and the length capped", name, got)
-		}
+		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
+			must.False(strings.ContainsFunc(got, unicode.IsControl), "%s = %q, want control characters stripped", name, got)
+			must.LessOrEqual(len(got), maxRecordFieldBytes+len("..."), "%s = %q, want the length capped", name, got)
+		})
 	}
-	if rec.ServedModel != "[31mevil [0m" || rec.CacheRecordedBy != "v9 [2J" {
-		t.Errorf("servedModel %q, cacheRecordedBy %q", rec.ServedModel, rec.CacheRecordedBy)
-	}
-	if !rec.CacheRecordedAt.Equal(createdAt) {
-		t.Errorf("cacheRecordedAt = %v, want the entry's createdAt %v", rec.CacheRecordedAt, createdAt)
-	}
-	for _, field := range []string{"cacheRecordedAt", "cacheRecordedBy"} {
-		if _, ok := recordFields(rec)[field]; !ok {
-			t.Errorf("a hit's record JSON lacks %s", field)
-		}
-	}
+	must.Equal("[31mevil [0m", rec.ServedModel, "servedModel")
+	must.Equal("v9 [2J", rec.CacheRecordedBy, "cacheRecordedBy")
+	must.True(rec.CacheRecordedAt.Equal(createdAt), "cacheRecordedAt = %v, want the entry's createdAt %v", rec.CacheRecordedAt, createdAt)
+
+	hitFields := recordFields(rec)
+	must.Contains(hitFields, "cacheRecordedAt", "a hit's record JSON lacks cacheRecordedAt")
+	must.Contains(hitFields, "cacheRecordedBy", "a hit's record JSON lacks cacheRecordedBy")
 }
 
 func TestEvaluateDiffReview_DocumentedCacheableVerdicts(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	recordThenServe := func(t *testing.T, j types.EvalJudge, jctx JudgeContext, reply string) (stored, hit eval.JudgeVerdict) {
 		t.Helper()
+		must := require.New(t)
 		t.Setenv("ANTHROPIC_API_KEY", "k")
 		c, err := NewFileCache(t.TempDir(), FileCacheOptions{Mode: CacheRecord})
-		if err != nil {
-			t.Fatal(err)
-		}
+		must.NoError(err)
 		jctx.Options = cachedOptions(CacheRecord, c, &fakeClient{resp: okResponse(reply)})
-		if stored, err = Evaluate(context.Background(), j, jctx); err != nil || stored.Record.CacheStatus != types.JudgeCacheStored {
-			t.Fatalf("record: verdict %+v, err %v; want the verdict stored", stored, err)
-		}
+		stored, err = Evaluate(context.Background(), j, jctx)
+		must.NoError(err, "record: verdict %+v", stored)
+		must.Equal(types.JudgeCacheStored, stored.Record.CacheStatus, "record: want the verdict stored")
+
 		t.Setenv("ANTHROPIC_API_KEY", "")
 		strict := &fakeClient{resp: okResponse(reply)}
 		jctx.Options = cachedOptions(CacheReplayStrict, c, strict)
-		if hit, err = Evaluate(context.Background(), j, jctx); err != nil || hit.Record.CacheStatus != types.JudgeCacheHit || strict.calls != 0 {
-			t.Fatalf("replay-strict: verdict %+v, err %v, %d calls; want a hit", hit, err, strict.calls)
-		}
+		hit, err = Evaluate(context.Background(), j, jctx)
+		must.NoError(err, "replay-strict: verdict %+v", hit)
+		must.Equal(types.JudgeCacheHit, hit.Record.CacheStatus, "replay-strict: want a hit")
+		must.Zero(strict.calls, "replay-strict called the model")
 		return stored, hit
 	}
 
 	t.Run("last_match", func(t *testing.T) {
+		must := require.New(t)
 		stored, hit := recordThenServe(t, diffReviewJudge(), changedJudgeContext(t, Options{}), verdictFail+"\n"+verdictFail)
-		if stored.Record.ParseStatus != types.JudgeParseLastMatch || hit.Record.ParseStatus != types.JudgeParseLastMatch || hit.Status != types.JudgeStatusFail {
-			t.Errorf("stored %+v, hit %+v; want a last_match fail served", stored.Record, hit)
-		}
+		must.Equal(types.JudgeParseLastMatch, stored.Record.ParseStatus, "stored verdict parse status")
+		must.Equal(types.JudgeParseLastMatch, hit.Record.ParseStatus, "served verdict parse status")
+		must.Equal(types.JudgeStatusFail, hit.Status, "served verdict status")
 	})
 
 	t.Run("truncated input with allow_truncated", func(t *testing.T) {
+		must := require.New(t)
 		dir, base := newWorkspace(t, map[string]string{"a.txt": "one\n"})
 		writeFiles(t, dir, map[string]string{"big.txt": strings.Repeat("padding line\n", 500)})
 		j := diffReviewJudge()
 		j.LLM = &types.JudgeLLMConfig{Model: "m", MaxInputBytes: 400, AllowTruncated: true}
 		_, hit := recordThenServe(t, j, JudgeContext{WorkspaceDir: dir, Baseline: &base}, verdictPass)
-		if !hit.Record.Truncated || hit.Status != types.JudgeStatusPass || hit.Record.InputBytes <= 400 {
-			t.Errorf("hit = %+v, record %+v; want the truncated-input pass served", hit, hit.Record)
-		}
+		must.True(hit.Record.Truncated, "served hit %+v: want the truncated flag", hit)
+		must.Equal(types.JudgeStatusPass, hit.Status)
+		must.Greater(hit.Record.InputBytes, 400)
 	})
 }

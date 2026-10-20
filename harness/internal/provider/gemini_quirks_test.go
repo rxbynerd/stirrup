@@ -9,8 +9,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirkstest"
@@ -55,21 +57,18 @@ func geminiQuirksCanonicalParams(model string) types.StreamParams {
 // through unmarshal→marshal so key ordering and whitespace are not
 // load-bearing.
 func TestGeminiQuirks_Gemini25Pro_StreamArgsOff(t *testing.T) {
+	must := require.New(t)
 	params := geminiQuirksCanonicalParams("gemini-2.5-pro")
 	q := quirks.DefaultRegistry().Resolve("gemini", params.Model)
-	if q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape != quirks.StreamArgsOff {
-		t.Fatalf("gemini-2.5-pro: expected StreamArgsOff, got %v (Gemini base rule not firing)", q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape)
-	}
+	must.Equal(quirks.StreamArgsOff, q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape,
+		"gemini-2.5-pro: Gemini base rule must set StreamArgsOff")
 	body, _, err := BuildGenerateContentRequest(params, nil, q)
-	if err != nil {
-		t.Fatalf("BuildGenerateContentRequest: %v", err)
-	}
+	must.NoError(err)
 	// Negative check ahead of the fixture comparison so a failure names
 	// the load-bearing invariant directly: the wire body must not
 	// enable streamFunctionCallArguments.
-	if strings.Contains(string(body), `"streamFunctionCallArguments":true`) {
-		t.Errorf("gemini-2.5-pro: body contains streamFunctionCallArguments=true (post-#191 default violated): %s", body)
-	}
+	must.NotContains(string(body), `"streamFunctionCallArguments":true`,
+		"gemini-2.5-pro: request body must not enable streamFunctionCallArguments")
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath(geminiFixtureRoot, "gemini-2.5-pro", "request.json"), body)
 }
 
@@ -80,18 +79,15 @@ func TestGeminiQuirks_Gemini25Pro_StreamArgsOff(t *testing.T) {
 // body entirely) on every 3.x request until a verified rule explicitly
 // opts into a different shape.
 func TestGeminiQuirks_Gemini31PreviewLocked_StreamArgsOff(t *testing.T) {
+	must := require.New(t)
 	params := geminiQuirksCanonicalParams("gemini-3.1-pro-preview")
 	q := quirks.DefaultRegistry().Resolve("gemini", params.Model)
-	if q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape != quirks.StreamArgsOff {
-		t.Fatalf("gemini-3.1-pro-preview: expected StreamArgsOff, got %v (post-#191 default violated)", q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape)
-	}
+	must.Equal(quirks.StreamArgsOff, q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape,
+		"gemini-3.1-pro-preview: Gemini base rule must set StreamArgsOff")
 	body, _, err := BuildGenerateContentRequest(params, nil, q)
-	if err != nil {
-		t.Fatalf("BuildGenerateContentRequest: %v", err)
-	}
-	if strings.Contains(string(body), `"streamFunctionCallArguments":true`) {
-		t.Errorf("gemini-3.1-pro-preview: body contains streamFunctionCallArguments=true (post-#191 regression): %s", body)
-	}
+	must.NoError(err)
+	must.NotContains(string(body), `"streamFunctionCallArguments":true`,
+		"gemini-3.1-pro-preview: request body must not enable streamFunctionCallArguments")
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath(geminiFixtureRoot, "gemini-3.1-pro-preview", "request.json"), body)
 }
 
@@ -102,10 +98,10 @@ func TestGeminiQuirks_Gemini31PreviewLocked_StreamArgsOff(t *testing.T) {
 // touching a real Vertex AI endpoint.
 func geminiQuirksLogStubServer(t *testing.T) *httptest.Server {
 	t.Helper()
+	check := assert.New(t)
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, err := io.ReadAll(r.Body); err != nil {
-			t.Errorf("read body: %v", err)
-		}
+		_, err := io.ReadAll(r.Body)
+		check.NoError(err, "read request body")
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w,
@@ -122,6 +118,8 @@ func geminiQuirksLogStubServer(t *testing.T) *httptest.Server {
 // verbatim from the rule's Description field, so renaming the
 // description requires updating this test in lockstep.
 func TestGeminiAdapter_QuirksDebugLogListsAppliedRules(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	srv := geminiQuirksLogStubServer(t)
 	defer srv.Close()
 
@@ -139,20 +137,14 @@ func TestGeminiAdapter_QuirksDebugLogListsAppliedRules(t *testing.T) {
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
 	})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	must.NoError(err)
 	for range ch {
 	}
 
 	logOutput := buf.String()
-	if !strings.Contains(logOutput, "gemini quirks resolved") {
-		t.Errorf("debug log message absent from output: %s", logOutput)
-	}
+	check.Contains(logOutput, "gemini quirks resolved")
 	const wantRule = "Gemini: off streamFunctionCallArguments"
-	if !strings.Contains(logOutput, wantRule) {
-		t.Errorf("debug log missing rule description substring %q: %s", wantRule, logOutput)
-	}
+	check.Contains(logOutput, wantRule)
 }
 
 // TestGeminiAdapter_QuirksDebugLog_NilLoggerNoPanic confirms the
@@ -162,6 +154,7 @@ func TestGeminiAdapter_QuirksDebugLogListsAppliedRules(t *testing.T) {
 // refactor that drops the guard fails this test rather than
 // surfacing as a nil-deref panic in production.
 func TestGeminiAdapter_QuirksDebugLog_NilLoggerNoPanic(t *testing.T) {
+	must := require.New(t)
 	srv := geminiQuirksLogStubServer(t)
 	defer srv.Close()
 
@@ -176,9 +169,7 @@ func TestGeminiAdapter_QuirksDebugLog_NilLoggerNoPanic(t *testing.T) {
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
 	})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	must.NoError(err)
 	for range ch {
 	}
 }
@@ -190,43 +181,30 @@ func TestGeminiAdapter_QuirksDebugLog_NilLoggerNoPanic(t *testing.T) {
 // value of GeminiStreamArgsShape, so callers that bypass the registry
 // would regress silently only if a base rule wrote a non-zero value.
 func TestGeminiQuirks_ZeroValueIsIdenticalToDefaultRegistry(t *testing.T) {
+	must := require.New(t)
 	params := geminiQuirksCanonicalParams("gemini-2.5-pro")
 
 	pre, _, err := BuildGenerateContentRequest(params, nil, quirks.ProviderQuirks{})
-	if err != nil {
-		t.Fatalf("zero-value build: %v", err)
-	}
+	must.NoError(err)
 	post, _, err := BuildGenerateContentRequest(params, nil, quirks.DefaultRegistry().Resolve("gemini", "gemini-2.5-pro"))
-	if err != nil {
-		t.Fatalf("registry-resolved build: %v", err)
-	}
-	if !bytes.Equal(pre, post) {
-		t.Errorf("zero-value vs registry-resolved wire shape diverged:\n pre:  %s\n post: %s", pre, post)
-	}
+	must.NoError(err)
+	must.Equal(string(pre), string(post), "zero-value and registry-resolved wire shapes must match")
 }
 
-// TestGeminiQuirks_OmitSamplingParams_NoOpForGemini is the
-// cross-family isolation sanity check: a Gemini resolution must
-// never touch the OpenAI behaviour flags. Without this guard a
-// future rule author who copy-pastes from the openai-compatible
-// rule set and forgets to retarget BehaviourFlags.Gemini could
-// silently flip OmitSamplingParams on the OpenAI sub-struct of a
-// Gemini-keyed quirks result — a no-op for the Gemini adapter today
-// but the kind of latent cross-talk that surfaces months later when
-// the same ProviderQuirks value is read by a different code path.
+// TestGeminiQuirks_OmitSamplingParams_NoOpForGemini checks that a Gemini
+// resolution leaves the OpenAI behaviour flags at their zero values, so a
+// Gemini-keyed ProviderQuirks never carries OpenAI settings.
 func TestGeminiQuirks_OmitSamplingParams_NoOpForGemini(t *testing.T) {
 	for _, model := range []string{"gemini-2.5-pro", "gemini-3.1-pro-preview", "gemini-unknown-future"} {
 		t.Run(model, func(t *testing.T) {
+			must := require.New(t)
 			q := quirks.DefaultRegistry().Resolve("gemini", model)
-			if q.BehaviourFlags.OpenAI.OmitSamplingParams {
-				t.Errorf("gemini/%s: OpenAI.OmitSamplingParams = true; Gemini rules must not touch OpenAI flags", model)
-			}
-			if q.BehaviourFlags.OpenAI.TokenField != quirks.TokenFieldMaxCompletionTokens {
-				t.Errorf("gemini/%s: OpenAI.TokenField = %v, want zero default", model, q.BehaviourFlags.OpenAI.TokenField)
-			}
-			if len(q.BehaviourFlags.OpenAI.ExtraBodyFields) != 0 {
-				t.Errorf("gemini/%s: OpenAI.ExtraBodyFields = %+v, want empty", model, q.BehaviourFlags.OpenAI.ExtraBodyFields)
-			}
+			must.False(q.BehaviourFlags.OpenAI.OmitSamplingParams,
+				"Gemini rules must not set OpenAI.OmitSamplingParams")
+			must.Equal(quirks.TokenFieldMaxCompletionTokens, q.BehaviourFlags.OpenAI.TokenField,
+				"Gemini rules must leave OpenAI.TokenField at its zero default")
+			must.Empty(q.BehaviourFlags.OpenAI.ExtraBodyFields,
+				"Gemini rules must not add OpenAI.ExtraBodyFields")
 		})
 	}
 }

@@ -3,9 +3,12 @@ package router
 import (
 	"context"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
-func TestPerModeRouter_KnownMode(t *testing.T) {
+func TestPerModeRouter_ConfiguredModeOverridesDefault(t *testing.T) {
+	must := require.New(t)
 	r := NewPerModeRouter(
 		ModelSelection{Provider: "anthropic", Model: "claude-sonnet-4-6"},
 		map[string]ModelSelection{
@@ -15,15 +18,11 @@ func TestPerModeRouter_KnownMode(t *testing.T) {
 
 	sel := r.Select(context.Background(), RouterContext{Mode: "planning", Turn: 1})
 
-	if sel.Provider != "anthropic" {
-		t.Errorf("Provider = %q, want anthropic", sel.Provider)
-	}
-	if sel.Model != "claude-opus-4-6" {
-		t.Errorf("Model = %q, want claude-opus-4-6", sel.Model)
-	}
+	must.Equal(ModelSelection{Provider: "anthropic", Model: "claude-opus-4-6"}, sel)
 }
 
 func TestPerModeRouter_UnknownModeFallsBackToDefault(t *testing.T) {
+	must := require.New(t)
 	r := NewPerModeRouter(
 		ModelSelection{Provider: "anthropic", Model: "claude-sonnet-4-6"},
 		map[string]ModelSelection{
@@ -33,12 +32,7 @@ func TestPerModeRouter_UnknownModeFallsBackToDefault(t *testing.T) {
 
 	sel := r.Select(context.Background(), RouterContext{Mode: "unknown-mode", Turn: 3})
 
-	if sel.Provider != "anthropic" {
-		t.Errorf("Provider = %q, want anthropic", sel.Provider)
-	}
-	if sel.Model != "claude-sonnet-4-6" {
-		t.Errorf("Model = %q, want claude-sonnet-4-6", sel.Model)
-	}
+	must.Equal(ModelSelection{Provider: "anthropic", Model: "claude-sonnet-4-6"}, sel)
 }
 
 func TestPerModeRouter_EmptyMapAlwaysReturnsDefault(t *testing.T) {
@@ -47,14 +41,16 @@ func TestPerModeRouter_EmptyMapAlwaysReturnsDefault(t *testing.T) {
 
 	modes := []string{"execution", "planning", "review", "research", "toil"}
 	for _, mode := range modes {
-		sel := r.Select(context.Background(), RouterContext{Mode: mode, Turn: 1})
-		if sel != def {
-			t.Errorf("Select(mode=%q) = %+v, want %+v", mode, sel, def)
-		}
+		t.Run(mode, func(t *testing.T) {
+			must := require.New(t)
+			sel := r.Select(context.Background(), RouterContext{Mode: mode, Turn: 1})
+
+			must.Equal(def, sel)
+		})
 	}
 }
 
-func TestPerModeRouter_MultipleModesConfigured(t *testing.T) {
+func TestPerModeRouter_RoutesEachConfiguredMode(t *testing.T) {
 	r := NewPerModeRouter(
 		ModelSelection{Provider: "anthropic", Model: "claude-sonnet-4-6"},
 		map[string]ModelSelection{
@@ -65,23 +61,44 @@ func TestPerModeRouter_MultipleModesConfigured(t *testing.T) {
 	)
 
 	tests := []struct {
-		mode      string
-		wantProv  string
-		wantModel string
+		name string
+		mode string
+		want ModelSelection
 	}{
-		{"planning", "anthropic", "claude-opus-4-6"},
-		{"toil", "anthropic", "claude-haiku-3"},
-		{"execution", "bedrock", "claude-sonnet-4-6"},
-		{"review", "anthropic", "claude-sonnet-4-6"},   // unmapped, falls back to default
-		{"research", "anthropic", "claude-sonnet-4-6"}, // unmapped, falls back to default
+		{
+			name: "planning uses its mapped selection",
+			mode: "planning",
+			want: ModelSelection{Provider: "anthropic", Model: "claude-opus-4-6"},
+		},
+		{
+			name: "toil uses its mapped selection",
+			mode: "toil",
+			want: ModelSelection{Provider: "anthropic", Model: "claude-haiku-3"},
+		},
+		{
+			name: "execution uses its mapped selection",
+			mode: "execution",
+			want: ModelSelection{Provider: "bedrock", Model: "claude-sonnet-4-6"},
+		},
+		{
+			name: "unmapped review falls back to default",
+			mode: "review",
+			want: ModelSelection{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		},
+		{
+			name: "unmapped research falls back to default",
+			mode: "research",
+			want: ModelSelection{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		},
 	}
 
 	for _, tt := range tests {
-		sel := r.Select(context.Background(), RouterContext{Mode: tt.mode, Turn: 1})
-		if sel.Provider != tt.wantProv || sel.Model != tt.wantModel {
-			t.Errorf("Select(mode=%q) = %s/%s, want %s/%s",
-				tt.mode, sel.Provider, sel.Model, tt.wantProv, tt.wantModel)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
+			sel := r.Select(context.Background(), RouterContext{Mode: tt.mode, Turn: 1})
+
+			must.Equal(tt.want, sel)
+		})
 	}
 }
 
@@ -90,6 +107,7 @@ func TestPerModeRouter_ImplementsInterface(t *testing.T) {
 }
 
 func TestPerModeRouter_DoesNotAliasModeMap(t *testing.T) {
+	must := require.New(t)
 	modeMap := map[string]ModelSelection{
 		"planning": {Provider: "anthropic", Model: "claude-opus-4-6"},
 	}
@@ -102,7 +120,8 @@ func TestPerModeRouter_DoesNotAliasModeMap(t *testing.T) {
 	modeMap["planning"] = ModelSelection{Provider: "changed", Model: "changed"}
 
 	sel := r.Select(context.Background(), RouterContext{Mode: "planning", Turn: 1})
-	if sel.Provider != "anthropic" || sel.Model != "claude-opus-4-6" {
-		t.Errorf("router was affected by mutation of input map: got %s/%s", sel.Provider, sel.Model)
-	}
+	must.Equal(ModelSelection{Provider: "anthropic", Model: "claude-opus-4-6"},
+		sel,
+		"router was affected by mutation of input map",
+	)
 }

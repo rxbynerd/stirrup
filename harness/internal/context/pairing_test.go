@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -241,13 +243,10 @@ func TestCompaction_ParallelCallHistoryStaysPaired(t *testing.T) {
 		for name, newStrategy := range compactionStrategies() {
 			for _, budget := range compactionBudgets(msgs, 0) {
 				t.Run(fmt.Sprintf("%s/extra=%d/max=%d", name, extra, budget.MaxTokens), func(t *testing.T) {
+					must := require.New(t)
 					result, err := newStrategy().Prepare(context.Background(), msgs, budget)
-					if err != nil {
-						t.Fatalf("Prepare() error: %v", err)
-					}
-					if err := checkCompactedHistory(msgs, result); err != nil {
-						t.Fatal(err)
-					}
+					must.NoError(err, "Prepare()")
+					must.NoError(checkCompactedHistory(msgs, result))
 				})
 			}
 		}
@@ -255,6 +254,7 @@ func TestCompaction_ParallelCallHistoryStaysPaired(t *testing.T) {
 }
 
 func TestCompaction_GeneratedHistoriesStayPaired(t *testing.T) {
+	must := require.New(t)
 	compactions := map[string]int{}
 	for seed := range uint64(150) {
 		r := rand.New(rand.NewPCG(seed, 624))
@@ -264,12 +264,8 @@ func TestCompaction_GeneratedHistoriesStayPaired(t *testing.T) {
 			for _, budget := range compactionBudgets(msgs, overhead) {
 				strategy := newStrategy()
 				result, err := strategy.Prepare(context.Background(), msgs, budget)
-				if err != nil {
-					t.Fatalf("seed %d %s max=%d: Prepare() error: %v", seed, name, budget.MaxTokens, err)
-				}
-				if err := checkCompactedHistory(msgs, result); err != nil {
-					t.Fatalf("seed %d %s max=%d: %v", seed, name, budget.MaxTokens, err)
-				}
+				must.NoError(err, "seed %d %s max=%d: Prepare()", seed, name, budget.MaxTokens)
+				must.NoError(checkCompactedHistory(msgs, result), "seed %d %s max=%d", seed, name, budget.MaxTokens)
 				if strategy.LastCompaction() != nil {
 					compactions[name]++
 				}
@@ -277,9 +273,10 @@ func TestCompaction_GeneratedHistoriesStayPaired(t *testing.T) {
 		}
 	}
 	for name := range compactionStrategies() {
-		if compactions[name] == 0 {
-			t.Errorf("%s never compacted a generated history; the sweep does not exercise it", name)
-		}
+		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
+			must.NotZero(compactions[name], "the sweep never compacted a generated history")
+		})
 	}
 }
 
@@ -287,6 +284,7 @@ func TestCompaction_GeneratedHistoriesStayPaired(t *testing.T) {
 // which only drop messages keep an unchanged tail of the original history after
 // the task, so provider replay state stays with its own message.
 func TestCompaction_GeneratedHistoriesKeepSuffix(t *testing.T) {
+	must := require.New(t)
 	strategies := compactionStrategies()
 	delete(strategies, "offload-to-file")
 	delete(strategies, "offload-to-file-write-failure")
@@ -298,50 +296,61 @@ func TestCompaction_GeneratedHistoriesKeepSuffix(t *testing.T) {
 		for name, newStrategy := range strategies {
 			for _, budget := range compactionBudgets(msgs, 0) {
 				result, err := newStrategy().Prepare(context.Background(), msgs, budget)
-				if err != nil {
-					t.Fatalf("seed %d %s: Prepare() error: %v", seed, name, err)
-				}
+				must.NoError(err, "seed %d %s: Prepare()", seed, name)
 				tail := result[1:]
-				if want := msgs[len(msgs)-len(tail):]; !reflect.DeepEqual(tail, want) {
-					t.Fatalf("seed %d %s max=%d: retained messages are not an unchanged tail of the history", seed, name, budget.MaxTokens)
-				}
+				want := msgs[len(msgs)-len(tail):]
+				must.Equal(want, tail, "seed %d %s max=%d: retained messages are not an unchanged tail of the history", seed, name, budget.MaxTokens)
 			}
 		}
 	}
 }
 
-func TestPairSafeCut(t *testing.T) {
+func TestPairSafeCut_ReturnsPairSafeIndex(t *testing.T) {
 	msgs := parallelCallHistory(1) // task, a, u, a, u, a, u
 	cases := []struct {
+		name            string
 		candidate, want int
 	}{
-		{-3, 1}, {0, 1}, {1, 1}, {2, 3}, {3, 3}, {4, 5}, {5, 5}, {6, 5}, {40, 5},
+		{"negative candidate", -3, 1},
+		{"zero candidate", 0, 1},
+		{"first assistant turn", 1, 1},
+		{"first tool result", 2, 3},
+		{"second assistant turn", 3, 3},
+		{"result of second assistant turn", 4, 5},
+		{"third assistant turn", 5, 5},
+		{"last message", 6, 5},
+		{"candidate past the end", 40, 5},
 	}
 	for _, tc := range cases {
-		if got := pairSafeCut(msgs, tc.candidate); got != tc.want {
-			t.Errorf("pairSafeCut(%d) = %d, want %d", tc.candidate, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, pairSafeCut(msgs, tc.candidate))
+		})
 	}
-	if got := pairSafeCut(msgs[:1], 1); got != 0 {
-		t.Errorf("pairSafeCut on a task-only history = %d, want 0", got)
-	}
-	if got := pairSafeCut(nil, 1); got != 0 {
-		t.Errorf("pairSafeCut on an empty history = %d, want 0", got)
-	}
+	t.Run("task-only history", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(0, pairSafeCut(msgs[:1], 1))
+	})
+	t.Run("empty history", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(0, pairSafeCut(nil, 1))
+	})
 }
 
-func TestMinimalHistory(t *testing.T) {
+func TestMinimalHistory_KeepsTaskAndLastExchange(t *testing.T) {
 	msgs := parallelCallHistory(1)
-	result, compacted := minimalHistory(msgs)
-	if !compacted {
-		t.Fatal("expected a compacted history")
-	}
-	if want := []types.Message{msgs[0], msgs[5], msgs[6]}; !reflect.DeepEqual(result, want) {
-		t.Errorf("minimalHistory kept %d messages, want the task and the last exchange", len(result))
-	}
 
-	short := msgs[:3]
-	if result, compacted := minimalHistory(short); compacted || len(result) != 3 {
-		t.Errorf("a single-exchange history must be kept whole, got %d messages (compacted=%v)", len(result), compacted)
-	}
+	t.Run("drops earlier exchanges", func(t *testing.T) {
+		must := require.New(t)
+		result, compacted := minimalHistory(msgs)
+		must.True(compacted, "expected a compacted history")
+		must.Equal([]types.Message{msgs[0], msgs[5], msgs[6]}, result)
+	})
+
+	t.Run("keeps a single exchange whole", func(t *testing.T) {
+		must := require.New(t)
+		result, compacted := minimalHistory(msgs[:3])
+		must.False(compacted, "a single-exchange history must be kept whole")
+		must.Len(result, 3)
+	})
 }

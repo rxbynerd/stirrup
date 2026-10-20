@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -123,7 +125,9 @@ func buildTestLoopWithSecurity(prov *mockProvider, securitySink io.Writer) *Agen
 	}
 }
 
-func TestLoop_SimpleTextResponse(t *testing.T) {
+func TestLoop_SimpleTextResponse_SucceedsInOneTurn(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "Hello! "},
@@ -136,16 +140,10 @@ func TestLoop_SimpleTextResponse(t *testing.T) {
 	config := buildTestConfig()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
+	must.NoError(err)
 
-	if runTrace.Outcome != "success" {
-		t.Errorf("expected outcome 'success', got %q", runTrace.Outcome)
-	}
-	if runTrace.Turns != 1 {
-		t.Errorf("expected 1 turn, got %d", runTrace.Turns)
-	}
+	check.Equal("success", runTrace.Outcome)
+	check.Equal(1, runTrace.Turns)
 }
 
 // TestLoop_ForwardsConfiguredTemperature pins that the loop never silently
@@ -165,6 +163,7 @@ func TestLoop_ForwardsConfiguredTemperature(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			prov := &mockProvider{
 				events: []types.StreamEvent{
 					{Type: "text_delta", Text: "Hi"},
@@ -175,15 +174,10 @@ func TestLoop_ForwardsConfiguredTemperature(t *testing.T) {
 			config := buildTestConfig()
 			config.Temperature = tc.override
 
-			if _, err := loop.Run(context.Background(), config); err != nil {
-				t.Fatalf("Run() error: %v", err)
-			}
-			if prov.lastParams.Temperature == nil {
-				t.Fatalf("loop temperature = nil, want *=%v (loop must never forward nil)", tc.want)
-			}
-			if *prov.lastParams.Temperature != tc.want {
-				t.Errorf("loop temperature = %v, want *=%v", *prov.lastParams.Temperature, tc.want)
-			}
+			_, err := loop.Run(context.Background(), config)
+			must.NoError(err)
+			must.NotNil(prov.lastParams.Temperature, "loop must never forward a nil temperature")
+			must.InDelta(tc.want, *prov.lastParams.Temperature, 0)
 		})
 	}
 }
@@ -220,31 +214,28 @@ func (p *cacheKeyRecorder) Stream(_ context.Context, params types.StreamParams) 
 // empty for a run with no ID so unrelated runs never share a key.
 func TestLoop_CacheKeyIsStableHashOfRunID(t *testing.T) {
 	cases := []struct {
+		name  string
 		runID string
 		want  string
 	}{
-		{runID: "test-run-1", want: "404b0dfface497f076048e07aa412671"},
-		{runID: "test-run-2", want: "a7dbe4f7807e61746b98d54eda1f237e"},
-		{runID: "", want: ""},
+		{name: "first run", runID: "test-run-1", want: "404b0dfface497f076048e07aa412671"},
+		{name: "second run", runID: "test-run-2", want: "a7dbe4f7807e61746b98d54eda1f237e"},
+		{name: "empty run ID", runID: "", want: ""},
 	}
 	for _, tc := range cases {
-		t.Run("runID="+tc.runID, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			prov := &cacheKeyRecorder{}
 			loop := buildTestLoop(&mockProvider{})
 			loop.Provider = prov
 			config := buildTestConfig()
 			config.RunID = tc.runID
 
-			if _, err := loop.Run(context.Background(), config); err != nil {
-				t.Fatalf("Run() error: %v", err)
-			}
-			if len(prov.keys) != 2 {
-				t.Fatalf("Stream calls = %d, want 2", len(prov.keys))
-			}
+			_, err := loop.Run(context.Background(), config)
+			must.NoError(err)
+			must.Len(prov.keys, 2, "Stream calls")
 			for turn, got := range prov.keys {
-				if got != tc.want {
-					t.Errorf("turn %d CacheKey = %q, want %q", turn, got, tc.want)
-				}
+				must.Equal(tc.want, got, "turn %d CacheKey", turn)
 			}
 		})
 	}
@@ -254,6 +245,8 @@ func TestLoop_CacheKeyIsStableHashOfRunID(t *testing.T) {
 // the real Responses adapter and pins that the wire body carries the run's
 // cache key as prompt_cache_key and does not carry the raw run ID.
 func TestLoop_ResponsesBodyCarriesCacheKeyNotRunID(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	const runID = "run-7f3a-control-plane-id"
 	sse := "event: response.output_text.delta\n" +
 		`data: {"item_id":"msg_1","output_index":0,"delta":"done"}` + "\n\n" +
@@ -266,9 +259,7 @@ func TestLoop_ResponsesBodyCarriesCacheKeyNotRunID(t *testing.T) {
 	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("read request body: %v", err)
-		}
+		check.NoError(err, "read request body")
 		mu.Lock()
 		bodies = append(bodies, string(body))
 		mu.Unlock()
@@ -283,27 +274,21 @@ func TestLoop_ResponsesBodyCarriesCacheKeyNotRunID(t *testing.T) {
 	config := buildTestConfig()
 	config.RunID = runID
 
-	if _, err := loop.Run(context.Background(), config); err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
+	_, err := loop.Run(context.Background(), config)
+	must.NoError(err)
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(bodies) == 0 {
-		t.Fatal("no request reached the Responses endpoint")
-	}
+	must.NotEmpty(bodies, "no request reached the Responses endpoint")
 	want := `"prompt_cache_key":"` + providerCacheKey(runID) + `"`
 	for i, body := range bodies {
-		if !strings.Contains(body, want) {
-			t.Errorf("request %d missing %s: %s", i, want, body)
-		}
-		if strings.Contains(body, runID) {
-			t.Errorf("request %d carries the raw run ID: %s", i, body)
-		}
+		check.Contains(body, want, "request %d", i)
+		check.NotContains(body, runID, "request %d carries the raw run ID", i)
 	}
 }
 
-func TestLoop_SanitizesDynamicContextBeforePromptBuildAndEmitsEvents(t *testing.T) {
+func TestLoop_DynamicContext_SanitizedBeforePromptBuild(t *testing.T) {
+	must := require.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "Done"},
@@ -322,28 +307,20 @@ func TestLoop_SanitizesDynamicContextBeforePromptBuildAndEmitsEvents(t *testing.
 	}
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("expected success outcome, got %q", runTrace.Outcome)
-	}
-	if got := capturingPrompt.last.DynamicContext["issue"]; got != "Fix main.go" {
-		t.Fatalf("expected sanitized dynamic context, got %q", got)
-	}
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
+	must.Equal("Fix main.go", capturingPrompt.last.DynamicContext["issue"])
+
 	event := securityEvents.String()
-	if !strings.Contains(event, "dynamic_context_sanitized") || !strings.Contains(event, `"key":"issue"`) {
-		t.Fatalf("expected dynamic context security event, got %q", event)
-	}
-	if strings.Contains(event, "Fix main.go") {
-		t.Fatalf("security event should not include context content: %q", event)
-	}
+	must.Contains(event, "dynamic_context_sanitized")
+	must.Contains(event, `"key":"issue"`)
+	must.NotContains(event, "Fix main.go", "security event must not include context content")
 }
 
-// TestLoop_ThreadsPromptModelIntoPromptContext pins that the loop threads
+// TestLoop_PromptModel_ThreadedIntoPromptContext pins that the loop threads
 // the resolved prompt model into PromptContext: the promptModel override
 // when set, otherwise the router's model.
-func TestLoop_ThreadsPromptModelIntoPromptContext(t *testing.T) {
+func TestLoop_PromptModel_ThreadedIntoPromptContext(t *testing.T) {
 	tests := []struct {
 		name        string
 		promptModel string
@@ -354,6 +331,7 @@ func TestLoop_ThreadsPromptModelIntoPromptContext(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			prov := &mockProvider{
 				events: []types.StreamEvent{
 					{Type: "text_delta", Text: "Done"},
@@ -366,20 +344,18 @@ func TestLoop_ThreadsPromptModelIntoPromptContext(t *testing.T) {
 			config := buildTestConfig()
 			config.PromptBuilder.PromptModel = tt.promptModel
 
-			if _, err := loop.Run(context.Background(), config); err != nil {
-				t.Fatalf("Run() error: %v", err)
-			}
-			if got := capturingPrompt.last.Model; got != tt.want {
-				t.Fatalf("PromptContext.Model = %q, want %q", got, tt.want)
-			}
+			_, err := loop.Run(context.Background(), config)
+			must.NoError(err)
+			must.Equal(tt.want, capturingPrompt.last.Model)
 		})
 	}
 }
 
-// TestLoop_ThreadsExecutorIntoPromptContext pins that the workspace prompt
+// TestLoop_Executor_ThreadedIntoPromptContext pins that the workspace prompt
 // fragments receive the run's executor, so they read the sandbox rather
 // than the configured host path.
-func TestLoop_ThreadsExecutorIntoPromptContext(t *testing.T) {
+func TestLoop_Executor_ThreadedIntoPromptContext(t *testing.T) {
+	must := require.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "Done"},
@@ -392,17 +368,16 @@ func TestLoop_ThreadsExecutorIntoPromptContext(t *testing.T) {
 	capturingPrompt := &capturingPromptBuilder{}
 	loop.Prompt = capturingPrompt
 
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if got, ok := capturingPrompt.last.Executor.(*executor.NoneExecutor); !ok || got != exec {
-		t.Fatalf("PromptContext.Executor = %#v, want the loop's executor", capturingPrompt.last.Executor)
-	}
+	_, err := loop.Run(context.Background(), buildTestConfig())
+	must.NoError(err)
+	got, ok := capturingPrompt.last.Executor.(*executor.NoneExecutor)
+	must.True(ok, "PromptContext.Executor is %#v", capturingPrompt.last.Executor)
+	must.Same(exec, got)
 }
 
-func TestLoop_ToolUseAndContinue(t *testing.T) {
-
-	callCount := 0
+func TestLoop_ToolUse_ContinuesUntilEndTurn(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &multiCallProvider{
 		calls: [][]types.StreamEvent{
 			{
@@ -415,28 +390,23 @@ func TestLoop_ToolUseAndContinue(t *testing.T) {
 			},
 		},
 	}
-	_ = callCount
 
 	loop := buildTestLoop(nil)
 	loop.Provider = prov
 
 	config := buildTestConfig()
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
+	must.NoError(err)
 
-	if runTrace.Outcome != "success" {
-		t.Errorf("expected outcome 'success', got %q", runTrace.Outcome)
-	}
-	if runTrace.Turns != 2 {
-		t.Errorf("expected 2 turns, got %d", runTrace.Turns)
-	}
+	check.Equal("success", runTrace.Outcome)
+	check.Equal(2, runTrace.Turns)
 }
 
-// TestLoop_TurnTraceCountsToolCalls pins that each TurnTrace carries the
+// TestLoop_TurnTrace_CountsToolCalls pins that each TurnTrace carries the
 // number of tool calls its turn dispatched.
-func TestLoop_TurnTraceCountsToolCalls(t *testing.T) {
+func TestLoop_TurnTrace_CountsToolCalls(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &multiCallProvider{
 		calls: [][]types.StreamEvent{
 			{
@@ -455,28 +425,23 @@ func TestLoop_TurnTraceCountsToolCalls(t *testing.T) {
 	rec := &recordingTraceEmitter{}
 	loop.Trace = rec
 
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
+	_, err := loop.Run(context.Background(), buildTestConfig())
+	must.NoError(err)
 
 	rec.mu.Lock()
 	turns := append([]types.TurnTrace(nil), rec.turns...)
 	rec.mu.Unlock()
-	if len(turns) != 2 {
-		t.Fatalf("got %d turn traces, want 2", len(turns))
-	}
-	if turns[0].ToolCalls != 2 {
-		t.Errorf("tool-calling turn ToolCalls = %d, want 2", turns[0].ToolCalls)
-	}
-	if turns[1].ToolCalls != 0 {
-		t.Errorf("final turn ToolCalls = %d, want 0", turns[1].ToolCalls)
-	}
+	must.Len(turns, 2)
+	check.Equal(2, turns[0].ToolCalls, "tool-calling turn")
+	check.Equal(0, turns[1].ToolCalls, "final turn")
 }
 
-// TestLoop_TurnTraceIgnoresToolBlocksOnNonToolUseStop pins that a turn which
+// TestLoop_TurnTrace_IgnoresToolBlocksOnNonToolUseStop pins that a turn which
 // stops for a reason other than tool_use reports zero tool calls even when
 // the response carries a tool block, because the loop never dispatches it.
-func TestLoop_TurnTraceIgnoresToolBlocksOnNonToolUseStop(t *testing.T) {
+func TestLoop_TurnTrace_IgnoresToolBlocksOnNonToolUseStop(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	prov := &multiCallProvider{
 		calls: [][]types.StreamEvent{
 			{
@@ -490,32 +455,24 @@ func TestLoop_TurnTraceIgnoresToolBlocksOnNonToolUseStop(t *testing.T) {
 	rec := &recordingTraceEmitter{}
 	loop.Trace = rec
 
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
+	_, err := loop.Run(context.Background(), buildTestConfig())
+	must.NoError(err)
 
 	rec.mu.Lock()
 	turns := append([]types.TurnTrace(nil), rec.turns...)
 	rec.mu.Unlock()
-	if len(turns) == 0 {
-		t.Fatal("got no turn traces")
-	}
-	if turns[0].ToolCalls != 0 {
-		t.Errorf("max_tokens turn ToolCalls = %d, want 0", turns[0].ToolCalls)
-	}
+	must.NotEmpty(turns, "turn traces")
+	check.Equal(0, turns[0].ToolCalls, "max_tokens turn")
 }
 
-// TestLoop_ToolCallEventsPrecedeMatchingToolResults is the regression test
-// for issue #593: the transport must see a tool_call event for every
-// dispatched tool, carrying the same id the matching tool_result later
-// echoes back as tool_use_id, and the tool_call must appear first. The
-// ordering holds regardless of dispatch mode: the emit happens inside
-// streamEventsToResult, which fully drains the provider stream before
-// planAndDispatch is ever called, so it precedes both the synchronous
-// dispatch this test's three sync-handler calls take and the async
-// fan-out exercised separately by
-// TestParallelDispatch_ToolCallEventsPrecedeAsyncToolResults.
+// TestLoop_ToolCallEventsPrecedeMatchingToolResults pins that the transport
+// sees a tool_call event for every dispatched tool, carrying the id that the
+// matching tool_result echoes back as tool_use_id, and that the tool_call
+// arrives first. The event is emitted while the provider stream is drained,
+// before any dispatch starts.
 func TestLoop_ToolCallEventsPrecedeMatchingToolResults(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &multiCallProvider{
 		calls: [][]types.StreamEvent{
 			{
@@ -537,17 +494,14 @@ func TestLoop_ToolCallEventsPrecedeMatchingToolResults(t *testing.T) {
 	loop.Transport = transport.NewStdioTransport(&transportBuf, &bytes.Buffer{})
 
 	config := buildTestConfig()
-	if _, err := loop.Run(context.Background(), config); err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
+	_, err := loop.Run(context.Background(), config)
+	must.NoError(err)
 
 	lines := strings.Split(strings.TrimSpace(transportBuf.String()), "\n")
 	var events []types.HarnessEvent
 	for _, line := range lines {
 		var e types.HarnessEvent
-		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			t.Fatalf("unmarshal event %q: %v", line, err)
-		}
+		must.NoError(json.Unmarshal([]byte(line), &e), "unmarshal event %q", line)
 		events = append(events, e)
 	}
 
@@ -557,34 +511,26 @@ func TestLoop_ToolCallEventsPrecedeMatchingToolResults(t *testing.T) {
 		switch e.Type {
 		case "tool_call":
 			toolCallIdx[e.ID] = i
-			if string(e.Input) != `{"n":1}` && string(e.Input) != `{"n":2}` && string(e.Input) != `{"n":3}` {
-				t.Errorf("tool_call %s Input = %q, want one of {n:1,2,3}", e.ID, e.Input)
-			}
+			check.Contains([]string{`{"n":1}`, `{"n":2}`, `{"n":3}`}, string(e.Input), "tool_call %s Input", e.ID)
 		case "tool_result":
 			toolResultIdx[e.ToolUseID] = i
 		}
 	}
 
 	wantIDs := []string{"tc_1", "tc_2", "tc_3"}
-	if len(toolCallIdx) != len(wantIDs) {
-		t.Fatalf("expected %d tool_call events, got %d: %+v", len(wantIDs), len(toolCallIdx), toolCallIdx)
-	}
+	must.Len(toolCallIdx, len(wantIDs), "tool_call events: %+v", toolCallIdx)
 	for _, id := range wantIDs {
-		callIdx, ok := toolCallIdx[id]
-		if !ok {
-			t.Fatalf("missing tool_call event for %q", id)
-		}
-		resultIdx, ok := toolResultIdx[id]
-		if !ok {
-			t.Fatalf("missing tool_result event for %q", id)
-		}
-		if callIdx >= resultIdx {
-			t.Errorf("tool_call for %q at index %d did not precede its tool_result at index %d", id, callIdx, resultIdx)
-		}
+		t.Run(id, func(t *testing.T) {
+			must := require.New(t)
+			must.Contains(toolCallIdx, id, "missing tool_call event")
+			must.Contains(toolResultIdx, id, "missing tool_result event")
+			must.Less(toolCallIdx[id], toolResultIdx[id], "tool_call must precede its tool_result")
+		})
 	}
 }
 
-func TestLoop_MaxTurns(t *testing.T) {
+func TestLoop_MaxTurns_StopsWithMaxTurnsOutcome(t *testing.T) {
+	must := require.New(t)
 	// Provider always requests tool calls, never stops.
 	prov := &infiniteToolCallProvider{}
 
@@ -595,19 +541,15 @@ func TestLoop_MaxTurns(t *testing.T) {
 	config.MaxTurns = 3
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-
-	if runTrace.Outcome != "max_turns" {
-		t.Errorf("expected outcome 'max_turns', got %q", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.Equal("max_turns", runTrace.Outcome)
 }
 
 // TestLoop_FinalAssistantText_Populated pins the happy path: a run whose
 // final assistant turn carries text lands that text on
 // RunTrace.FinalAssistantText.
 func TestLoop_FinalAssistantText_Populated(t *testing.T) {
+	must := require.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "The answer "},
@@ -620,20 +562,15 @@ func TestLoop_FinalAssistantText_Populated(t *testing.T) {
 	config := buildTestConfig()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("expected outcome 'success', got %q", runTrace.Outcome)
-	}
-	if runTrace.FinalAssistantText != "The answer is 42." {
-		t.Errorf("FinalAssistantText = %q, want %q", runTrace.FinalAssistantText, "The answer is 42.")
-	}
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
+	must.Equal("The answer is 42.", runTrace.FinalAssistantText)
 }
 
 // TestLoop_FinalAssistantText_LastNonEmptyAcrossTurns pins that the loop
 // captures the last non-empty assistant text across every turn.
 func TestLoop_FinalAssistantText_LastNonEmptyAcrossTurns(t *testing.T) {
+	must := require.New(t)
 	prov := &multiCallProvider{
 		calls: [][]types.StreamEvent{
 			{
@@ -653,21 +590,16 @@ func TestLoop_FinalAssistantText_LastNonEmptyAcrossTurns(t *testing.T) {
 	config := buildTestConfig()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("expected outcome 'success', got %q", runTrace.Outcome)
-	}
-	if runTrace.FinalAssistantText != "All done." {
-		t.Errorf("FinalAssistantText = %q, want %q", runTrace.FinalAssistantText, "All done.")
-	}
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
+	must.Equal("All done.", runTrace.FinalAssistantText)
 }
 
 // TestLoop_FinalAssistantText_EmptyWhenNoText pins the omit path: a run
 // that never produces an assistant text block leaves FinalAssistantText
 // empty so the omitempty tag drops it from the emitted RunResult.
 func TestLoop_FinalAssistantText_EmptyWhenNoText(t *testing.T) {
+	must := require.New(t)
 	prov := &infiniteToolCallProvider{}
 
 	loop := buildTestLoop(nil)
@@ -676,15 +608,9 @@ func TestLoop_FinalAssistantText_EmptyWhenNoText(t *testing.T) {
 	config.MaxTurns = 3
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "max_turns" {
-		t.Fatalf("expected outcome 'max_turns', got %q", runTrace.Outcome)
-	}
-	if runTrace.FinalAssistantText != "" {
-		t.Errorf("FinalAssistantText = %q, want empty", runTrace.FinalAssistantText)
-	}
+	must.NoError(err)
+	must.Equal("max_turns", runTrace.Outcome)
+	must.Empty(runTrace.FinalAssistantText)
 }
 
 // TestLoop_FinalAssistantText_GuardrailBlockedDoesNotLeakDeniedText pins
@@ -692,6 +618,7 @@ func TestLoop_FinalAssistantText_EmptyWhenNoText(t *testing.T) {
 // turn's final text, that text must not appear on
 // RunTrace.FinalAssistantText.
 func TestLoop_FinalAssistantText_GuardrailBlockedDoesNotLeakDeniedText(t *testing.T) {
+	must := require.New(t)
 	const deniedText = "The secret is ghp_shouldnotleak and here it is."
 	prov := &mockProvider{
 		events: []types.StreamEvent{
@@ -709,15 +636,9 @@ func TestLoop_FinalAssistantText_GuardrailBlockedDoesNotLeakDeniedText(t *testin
 	config := buildTestConfig()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "guardrail_blocked" {
-		t.Fatalf("outcome = %q, want guardrail_blocked", runTrace.Outcome)
-	}
-	if runTrace.FinalAssistantText != "" {
-		t.Errorf("FinalAssistantText = %q, want empty (denied turn's text must not leak)", runTrace.FinalAssistantText)
-	}
+	must.NoError(err)
+	must.Equal("guardrail_blocked", runTrace.Outcome)
+	must.Empty(runTrace.FinalAssistantText, "denied turn's text must not leak")
 }
 
 // TestLoop_FinalAssistantText_GuardrailBlockedReturnsPriorApprovedText is
@@ -725,6 +646,7 @@ func TestLoop_FinalAssistantText_GuardrailBlockedDoesNotLeakDeniedText(t *testin
 // guard denies the final turn's text, the run must surface the prior turn's
 // non-denied text, not the denied answer.
 func TestLoop_FinalAssistantText_GuardrailBlockedReturnsPriorApprovedText(t *testing.T) {
+	must := require.New(t)
 	const priorText = "Prior non-denied answer."
 	const deniedText = "Denied final answer."
 	prov := &multiCallProvider{
@@ -752,18 +674,10 @@ func TestLoop_FinalAssistantText_GuardrailBlockedReturnsPriorApprovedText(t *tes
 	config := buildTestConfig()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "guardrail_blocked" {
-		t.Fatalf("outcome = %q, want guardrail_blocked", runTrace.Outcome)
-	}
-	if runTrace.FinalAssistantText != priorText {
-		t.Errorf("FinalAssistantText = %q, want %q (prior non-denied turn's text)", runTrace.FinalAssistantText, priorText)
-	}
-	if strings.Contains(runTrace.FinalAssistantText, deniedText) {
-		t.Errorf("FinalAssistantText leaked denied turn's text: %q", runTrace.FinalAssistantText)
-	}
+	must.NoError(err)
+	must.Equal("guardrail_blocked", runTrace.Outcome)
+	must.Equal(priorText, runTrace.FinalAssistantText, "prior non-denied turn's text")
+	must.NotContains(runTrace.FinalAssistantText, deniedText, "denied turn's text must not leak")
 }
 
 // TestLoop_FinalAssistantText_NotClobberedByEmptyLaterTurn pins that a
@@ -771,6 +685,7 @@ func TestLoop_FinalAssistantText_GuardrailBlockedReturnsPriorApprovedText(t *tes
 // turn's text. Distinct from LastNonEmptyAcrossTurns, which covers a later
 // non-empty turn overwriting an earlier one.
 func TestLoop_FinalAssistantText_NotClobberedByEmptyLaterTurn(t *testing.T) {
+	must := require.New(t)
 	const text0 = "Here is the result."
 	prov := &multiCallProvider{
 		calls: [][]types.StreamEvent{
@@ -780,7 +695,6 @@ func TestLoop_FinalAssistantText_NotClobberedByEmptyLaterTurn(t *testing.T) {
 				{Type: "message_complete", StopReason: "tool_use"},
 			},
 			{
-
 				{Type: "message_complete", StopReason: "end_turn"},
 			},
 		},
@@ -790,20 +704,15 @@ func TestLoop_FinalAssistantText_NotClobberedByEmptyLaterTurn(t *testing.T) {
 	config := buildTestConfig()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("outcome = %q, want success", runTrace.Outcome)
-	}
-	if runTrace.FinalAssistantText != text0 {
-		t.Errorf("FinalAssistantText = %q, want %q (earlier text retained across empty end_turn)", runTrace.FinalAssistantText, text0)
-	}
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
+	must.Equal(text0, runTrace.FinalAssistantText, "earlier text retained across empty end_turn")
 }
 
 // TestLoop_FinalAssistantText_ReachesPersistedJSONLTrace proves the field
 // reaches the persisted trace, not merely the returned struct.
 func TestLoop_FinalAssistantText_ReachesPersistedJSONLTrace(t *testing.T) {
+	must := require.New(t)
 	const answer = "The persisted answer."
 	prov := &mockProvider{
 		events: []types.StreamEvent{
@@ -816,32 +725,24 @@ func TestLoop_FinalAssistantText_ReachesPersistedJSONLTrace(t *testing.T) {
 	loop.Trace = trace.NewJSONLTraceEmitter(&buf, false)
 	config := buildTestConfig()
 
-	if _, err := loop.Run(context.Background(), config); err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
+	_, err := loop.Run(context.Background(), config)
+	must.NoError(err)
 
-	var found bool
+	var finished []trace.Event
 	for _, line := range bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n")) {
 		if len(line) == 0 {
 			continue
 		}
 		var ev trace.Event
-		if err := json.Unmarshal(line, &ev); err != nil {
-			t.Fatalf("unmarshal trace line: %v", err)
-		}
-		if ev.Kind != trace.EventKindRunFinished {
-			continue
-		}
-		found = true
-		if ev.Trace == nil {
-			t.Fatal("run_finished event carries nil Trace")
-		}
-		if ev.Trace.FinalAssistantText != answer {
-			t.Errorf("persisted FinalAssistantText = %q, want %q", ev.Trace.FinalAssistantText, answer)
+		must.NoError(json.Unmarshal(line, &ev), "unmarshal trace line")
+		if ev.Kind == trace.EventKindRunFinished {
+			finished = append(finished, ev)
 		}
 	}
-	if !found {
-		t.Fatal("no run_finished event found in JSONL output")
+	must.NotEmpty(finished, "no run_finished event found in JSONL output")
+	for _, ev := range finished {
+		must.NotNil(ev.Trace, "run_finished event carries nil Trace")
+		must.Equal(answer, ev.Trace.FinalAssistantText, "persisted FinalAssistantText")
 	}
 }
 
@@ -849,6 +750,7 @@ func TestLoop_FinalAssistantText_ReachesPersistedJSONLTrace(t *testing.T) {
 // assistant text is passed through security.Scrub before it reaches the
 // trace/resultSink.
 func TestLoop_FinalAssistantText_ScrubbedBeforePersist(t *testing.T) {
+	must := require.New(t)
 	// ghp_ GitHub PAT shape is a known deterministic scrub pattern.
 	const secret = "ghp_0123456789abcdefghijABCDEFGHIJ0123"
 	prov := &mockProvider{
@@ -861,18 +763,14 @@ func TestLoop_FinalAssistantText_ScrubbedBeforePersist(t *testing.T) {
 	config := buildTestConfig()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if strings.Contains(runTrace.FinalAssistantText, secret) || strings.Contains(runTrace.FinalAssistantText, "ghp_") {
-		t.Errorf("FinalAssistantText leaked raw secret: %q", runTrace.FinalAssistantText)
-	}
-	if !strings.Contains(runTrace.FinalAssistantText, "[REDACTED]") {
-		t.Errorf("FinalAssistantText = %q, want scrubbed [REDACTED] marker", runTrace.FinalAssistantText)
-	}
+	must.NoError(err)
+	must.NotContains(runTrace.FinalAssistantText, secret, "raw secret must not persist")
+	must.NotContains(runTrace.FinalAssistantText, "ghp_", "raw token prefix must not persist")
+	must.Contains(runTrace.FinalAssistantText, "[REDACTED]", "want scrubbed marker")
 }
 
-func TestLoop_BudgetExceeded(t *testing.T) {
+func TestLoop_ZeroTokenBudget_FirstTurnProceeds(t *testing.T) {
+	must := require.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "Hello"},
@@ -887,30 +785,27 @@ func TestLoop_BudgetExceeded(t *testing.T) {
 	config.MaxTokenBudget = &maxTokens
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
+	must.NoError(err)
 
 	// Budget is checked at the start of each turn; totalTokens(0) >
 	// maxTokenBudget(0) is false, so the first turn proceeds and there is
 	// no re-check afterward.
-	if runTrace.Outcome != "success" {
-		t.Errorf("expected outcome 'success' with zero token budget (check happens before first turn), got %q", runTrace.Outcome)
-	}
+	must.Equal("success", runTrace.Outcome, "check happens before the first turn")
 }
 
-func TestTokenTracker(t *testing.T) {
+func TestTokenTracker_RecordTurn_ReportsUsage(t *testing.T) {
+	must := require.New(t)
 	tt := &TokenTracker{}
 
 	tt.RecordTurn(types.TokenUsage{Input: 1000, Output: 500})
 
 	tokens := tt.Tokens()
-	if tokens.Input != 1000 || tokens.Output != 500 {
-		t.Errorf("expected tokens 1000/500, got %d/%d", tokens.Input, tokens.Output)
-	}
+	must.Equal(1000, tokens.Input)
+	must.Equal(500, tokens.Output)
 }
 
-func TestCollectToolCalls(t *testing.T) {
+func TestCollectToolCalls_ReturnsToolUseBlocksInOrder(t *testing.T) {
+	must := require.New(t)
 	blocks := []types.ContentBlock{
 		{Type: "text", Text: "some text"},
 		{Type: "tool_use", ID: "tc_1", Name: "read_file", Input: json.RawMessage(`{"path":"main.go"}`)},
@@ -919,28 +814,17 @@ func TestCollectToolCalls(t *testing.T) {
 	}
 
 	calls := collectToolCalls(blocks, nil)
-	if len(calls) != 2 {
-		t.Fatalf("expected 2 tool calls, got %d", len(calls))
-	}
-	if calls[0].Name != "read_file" {
-		t.Errorf("expected first call to be read_file, got %s", calls[0].Name)
-	}
-	if calls[1].Name != "write_file" {
-		t.Errorf("expected second call to be write_file, got %s", calls[1].Name)
-	}
+	must.Len(calls, 2)
+	must.Equal("read_file", calls[0].Name)
+	must.Equal("write_file", calls[1].Name)
 }
 
-func TestBuildMessages(t *testing.T) {
+func TestBuildMessages_WrapsPromptAsUserMessage(t *testing.T) {
+	must := require.New(t)
 	msgs := buildMessages("hello")
-	if len(msgs) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(msgs))
-	}
-	if msgs[0].Role != "user" {
-		t.Errorf("expected role 'user', got %q", msgs[0].Role)
-	}
-	if msgs[0].Content[0].Text != "hello" {
-		t.Errorf("expected text 'hello', got %q", msgs[0].Content[0].Text)
-	}
+	must.Len(msgs, 1)
+	must.Equal("user", msgs[0].Role)
+	must.Equal("hello", msgs[0].Content[0].Text)
 }
 
 // multiCallProvider returns different event sequences for successive calls.
@@ -1043,6 +927,7 @@ func (m *failingVerifier) Verify(_ context.Context, _ verifier.VerifyContext) (*
 // --- P0: Security-critical tests ---
 
 func TestDispatchToolCall_UnknownTool(t *testing.T) {
+	must := require.New(t)
 	loop := buildTestLoop(&mockProvider{})
 
 	call := types.ToolCall{
@@ -1052,12 +937,8 @@ func TestDispatchToolCall_UnknownTool(t *testing.T) {
 	}
 
 	output, success := loop.dispatchToolCall(context.Background(), call)
-	if success {
-		t.Error("expected success == false for unknown tool")
-	}
-	if !strings.Contains(output, "Unknown tool") {
-		t.Errorf("expected output to contain 'Unknown tool', got %q", output)
-	}
+	must.False(success)
+	must.Contains(output, "Unknown tool")
 }
 
 // TestDispatchToolCall_LegacySearchFilesEmitsHint pins the migration error
@@ -1065,6 +946,7 @@ func TestDispatchToolCall_UnknownTool(t *testing.T) {
 // legacy search_files tool: the dispatcher must direct the caller to the
 // two replacement tools rather than emitting an opaque "Unknown tool".
 func TestDispatchToolCall_LegacySearchFilesEmitsHint(t *testing.T) {
+	must := require.New(t)
 	loop := buildTestLoop(&mockProvider{})
 
 	call := types.ToolCall{
@@ -1074,48 +956,32 @@ func TestDispatchToolCall_LegacySearchFilesEmitsHint(t *testing.T) {
 	}
 
 	output, success := loop.dispatchToolCall(context.Background(), call)
-	if success {
-		t.Error("expected success == false for legacy search_files name")
-	}
-	if !strings.Contains(output, "search_files") {
-		t.Errorf("expected output to mention search_files, got %q", output)
-	}
-	if !strings.Contains(output, "grep_files") {
-		t.Errorf("expected output to suggest grep_files, got %q", output)
-	}
-	if !strings.Contains(output, "find_files") {
-		t.Errorf("expected output to suggest find_files, got %q", output)
-	}
+	must.False(success)
+	must.Contains(output, "search_files")
+	must.Contains(output, "grep_files")
+	must.Contains(output, "find_files")
 	// The parenthetical suffixes are load-bearing model-guidance text; a
 	// silent reword that drops either descriptor would degrade
 	// self-correction without failing the name-only checks above.
-	if !strings.Contains(output, "regex content search") {
-		t.Errorf("expected hint to describe grep_files as 'regex content search', got %q", output)
-	}
-	if !strings.Contains(output, "glob filename search") {
-		t.Errorf("expected hint to describe find_files as 'glob filename search', got %q", output)
-	}
+	must.Contains(output, "regex content search", "grep_files must be described as regex content search")
+	must.Contains(output, "glob filename search", "find_files must be described as glob filename search")
 }
 
 // TestRenamedToolHint exercises the rename table directly so the wording
 // of each entry is contracted independently of the dispatcher. The
 // dispatcher test above covers the wiring; this one pins the hint
 // strings themselves.
-func TestRenamedToolHint(t *testing.T) {
+func TestRenamedToolHint_WordingAndUnknownNames(t *testing.T) {
+	must := require.New(t)
 	want := "tool not found: search_files; use grep_files (regex content search) or find_files (glob filename search)"
 	got, ok := renamedToolHint("search_files")
-	if !ok {
-		t.Fatal("expected renamedToolHint to recognise search_files")
-	}
-	if got != want {
-		t.Errorf("hint mismatch:\n got:  %q\n want: %q", got, want)
-	}
+	must.True(ok, "renamedToolHint must recognise search_files")
+	must.Equal(want, got)
 
 	// Unrecognised names must return ok=false so the caller falls through
 	// to the generic unknown-tool path.
-	if _, ok := renamedToolHint("not_a_tool"); ok {
-		t.Error("renamedToolHint must return ok=false for unrecognised names")
-	}
+	_, ok = renamedToolHint("not_a_tool")
+	must.False(ok)
 }
 
 type errorVerifier struct{}
@@ -1144,6 +1010,7 @@ func (c *closeTracker) Close() error {
 }
 
 func TestDispatchToolCall_PermissionDenied(t *testing.T) {
+	must := require.New(t)
 	var secBuf bytes.Buffer
 	loop := buildTestLoopWithSecurity(&mockProvider{}, &secBuf)
 
@@ -1173,32 +1040,20 @@ func TestDispatchToolCall_PermissionDenied(t *testing.T) {
 	}
 
 	output, success := loop.dispatchToolCall(context.Background(), call)
-	if success {
-		t.Error("expected success == false for denied tool")
-	}
-	if !strings.Contains(output, "Permission denied") {
-		t.Errorf("expected output to contain 'Permission denied', got %q", output)
-	}
+	must.False(success)
+	must.Contains(output, "Permission denied")
 	rt, err := loop.Trace.Finish(context.Background(), "error")
-	if err != nil {
-		t.Fatalf("finish trace: %v", err)
-	}
-	if rt.PermissionDenials != 1 {
-		t.Errorf("PermissionDenials = %d, want 1", rt.PermissionDenials)
-	}
+	must.NoError(err)
+	must.Equal(1, rt.PermissionDenials)
 
-	// Assert the SecurityLogger was actually called. Without this, a
-	// regression that nil-skips the call would silently pass.
+	// The denial must also be written to the security log.
 	logged := secBuf.String()
-	if !strings.Contains(logged, "permission_denied") {
-		t.Errorf("expected security log to contain 'permission_denied', got %q", logged)
-	}
-	if !strings.Contains(logged, "dangerous_tool") {
-		t.Errorf("expected security log to contain tool name 'dangerous_tool', got %q", logged)
-	}
+	must.Contains(logged, "permission_denied")
+	must.Contains(logged, "dangerous_tool")
 }
 
 func TestDispatchToolCall_ToolHandlerError(t *testing.T) {
+	must := require.New(t)
 	loop := buildTestLoop(&mockProvider{})
 
 	// Register a tool whose handler returns an error.
@@ -1222,15 +1077,12 @@ func TestDispatchToolCall_ToolHandlerError(t *testing.T) {
 	}
 
 	output, success := loop.dispatchToolCall(context.Background(), call)
-	if success {
-		t.Error("expected success == false for erroring tool handler")
-	}
-	if !strings.Contains(output, "Tool error") {
-		t.Errorf("expected output to contain 'Tool error', got %q", output)
-	}
+	must.False(success)
+	must.Contains(output, "Tool error")
 }
 
 func TestDispatchToolCall_InvalidInput(t *testing.T) {
+	must := require.New(t)
 	loop := buildTestLoop(&mockProvider{})
 
 	// Register a tool that requires a "path" field.
@@ -1254,15 +1106,12 @@ func TestDispatchToolCall_InvalidInput(t *testing.T) {
 	}
 
 	output, success := loop.dispatchToolCall(context.Background(), call)
-	if success {
-		t.Error("expected success == false for invalid input")
-	}
-	if !strings.Contains(output, "Invalid input") {
-		t.Errorf("expected output to contain 'Invalid input', got %q", output)
-	}
+	must.False(success)
+	must.Contains(output, "Invalid input")
 }
 
 func TestDispatchToolCall_ToolGuardRejectsBeforePermissionAndHandler(t *testing.T) {
+	must := require.New(t)
 	loop := buildTestLoop(&mockProvider{})
 
 	handlerCalled := false
@@ -1290,36 +1139,24 @@ func TestDispatchToolCall_ToolGuardRejectsBeforePermissionAndHandler(t *testing.
 	}
 
 	output, success := loop.dispatchToolCall(context.Background(), call)
-	if success {
-		t.Error("expected success == false for guarded tool call")
-	}
-	if !strings.Contains(output, "security guard") {
-		t.Errorf("expected output to mention security guard, got %q", output)
-	}
-	if perm.called {
-		t.Error("permission check should not run after guard rejection")
-	}
-	if handlerCalled {
-		t.Error("tool handler should not run after guard rejection")
-	}
+	must.False(success)
+	must.Contains(output, "security guard")
+	must.False(perm.called, "permission check should not run after guard rejection")
+	must.False(handlerCalled, "tool handler should not run after guard rejection")
 	event := securityEvents.String()
-	if !strings.Contains(event, "tool_call_guard_triggered") || !strings.Contains(event, "exfiltration_command") {
-		t.Fatalf("expected security event with guard finding, got %q", event)
-	}
+	must.Contains(event, "tool_call_guard_triggered")
+	must.Contains(event, "exfiltration_command")
 }
 
 func TestCheckBudget_TokenLimitExceeded(t *testing.T) {
+	must := require.New(t)
 	tt := &TokenTracker{}
 	tt.RecordTurn(types.TokenUsage{Input: 1_000_000, Output: 100_000})
 
 	maxTokens := 500_000
 	check := tt.CheckBudget(&maxTokens)
-	if check.WithinBudget {
-		t.Error("expected WithinBudget == false when tokens exceed limit")
-	}
-	if check.Reason != "token_limit_exceeded" {
-		t.Errorf("expected reason 'token_limit_exceeded', got %q", check.Reason)
-	}
+	must.False(check.WithinBudget)
+	must.Equal("token_limit_exceeded", check.Reason)
 }
 
 // --- P1: Reliability-critical tests ---
@@ -1331,7 +1168,8 @@ type terminalProviderError struct{ msg string }
 func (e terminalProviderError) Error() string   { return e.msg }
 func (e terminalProviderError) Retryable() bool { return false }
 
-func TestLoop_ProviderStreamError(t *testing.T) {
+func TestLoop_ProviderStreamError_TerminalErrorNotRetried(t *testing.T) {
+	must := require.New(t)
 	prov := &errorProvider{err: terminalProviderError{"anthropic API returned status 401: invalid x-api-key"}}
 
 	loop := buildTestLoop(nil)
@@ -1339,21 +1177,14 @@ func TestLoop_ProviderStreamError(t *testing.T) {
 	config := retryConfig(3)
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() should not return a Go error on provider stream failure, got: %v", err)
-	}
-	if runTrace == nil {
-		t.Fatal("expected non-nil RunTrace even on provider error")
-	}
-	if runTrace.Outcome != "error" {
-		t.Errorf("expected outcome 'error', got %q", runTrace.Outcome)
-	}
-	if prov.calls != 1 {
-		t.Errorf("Stream calls = %d, want 1: a non-retryable error must not be retried", prov.calls)
-	}
+	must.NoError(err, "provider stream failure must not return a Go error")
+	must.NotNil(runTrace)
+	must.Equal("error", runTrace.Outcome)
+	must.Equal(1, prov.calls, "a non-retryable error must not be retried")
 }
 
-func TestLoop_StreamEventError(t *testing.T) {
+func TestLoop_StreamEventError_TerminalErrorNotRetried(t *testing.T) {
+	must := require.New(t)
 	prov := &streamErrorProvider{err: terminalProviderError{"anthropic API stream error (invalid_request_error): prompt is too long"}}
 
 	loop := buildTestLoop(nil)
@@ -1361,18 +1192,10 @@ func TestLoop_StreamEventError(t *testing.T) {
 	config := retryConfig(3)
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() should not return a Go error on stream event error, got: %v", err)
-	}
-	if runTrace == nil {
-		t.Fatal("expected non-nil RunTrace even on stream event error")
-	}
-	if runTrace.Outcome != "error" {
-		t.Errorf("expected outcome 'error', got %q", runTrace.Outcome)
-	}
-	if prov.calls != 1 {
-		t.Errorf("Stream calls = %d, want 1: a non-retryable error must not be retried", prov.calls)
-	}
+	must.NoError(err, "stream event error must not return a Go error")
+	must.NotNil(runTrace)
+	must.Equal("error", runTrace.Outcome)
+	must.Equal(1, prov.calls, "a non-retryable error must not be retried")
 }
 
 // TestLoop_ProviderError_SurfacesViaTransport guards against the loop
@@ -1398,6 +1221,7 @@ func TestLoop_ProviderError_SurfacesViaTransport(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var transportBuf, logBuf bytes.Buffer
 
 			registry := tool.NewRegistry()
@@ -1419,27 +1243,18 @@ func TestLoop_ProviderError_SurfacesViaTransport(t *testing.T) {
 			}
 
 			runTrace, err := loop.Run(context.Background(), buildTestConfig())
-			if err != nil {
-				t.Fatalf("Run() returned Go error: %v", err)
-			}
-			if runTrace.Outcome != "error" {
-				t.Fatalf("expected outcome 'error', got %q", runTrace.Outcome)
-			}
+			must.NoError(err)
+			must.Equal("error", runTrace.Outcome)
 
-			if !strings.Contains(transportBuf.String(), tc.needle) {
-				t.Errorf("transport stream missing error detail %q; got:\n%s", tc.needle, transportBuf.String())
-			}
-			if !strings.Contains(transportBuf.String(), `"type":"warning"`) {
-				t.Errorf("expected a warning event on the transport stream; got:\n%s", transportBuf.String())
-			}
-			if !strings.Contains(logBuf.String(), tc.needle) {
-				t.Errorf("slog output missing error detail %q; got:\n%s", tc.needle, logBuf.String())
-			}
+			must.Contains(transportBuf.String(), tc.needle, "transport stream should carry the error detail")
+			must.Contains(transportBuf.String(), `"type":"warning"`, "transport stream should carry a warning event")
+			must.Contains(logBuf.String(), tc.needle, "slog output should carry the error detail")
 		})
 	}
 }
 
 func TestLoop_ContextCancelled(t *testing.T) {
+	must := require.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "Hello"},
@@ -1456,18 +1271,13 @@ func TestLoop_ContextCancelled(t *testing.T) {
 	cancel()
 
 	runTrace, err := loop.Run(ctx, config)
-	if err != nil {
-		t.Fatalf("Run() should not return a Go error on context cancellation, got: %v", err)
-	}
-	if runTrace == nil {
-		t.Fatal("expected non-nil RunTrace even on context cancellation")
-	}
-	if runTrace.Outcome != "cancelled" {
-		t.Errorf("expected outcome 'cancelled', got %q", runTrace.Outcome)
-	}
+	must.NoError(err, "cancellation should not surface as a Go error")
+	must.NotNil(runTrace, "cancellation should still return a RunTrace")
+	must.Equal("cancelled", runTrace.Outcome)
 }
 
 func TestLoop_VerificationFailed(t *testing.T) {
+	must := require.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "Done with the task."},
@@ -1480,15 +1290,12 @@ func TestLoop_VerificationFailed(t *testing.T) {
 	config := buildTestConfig()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "verification_failed" {
-		t.Errorf("expected outcome 'verification_failed', got %q", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.Equal("verification_failed", runTrace.Outcome)
 }
 
 func TestLoop_VerificationError(t *testing.T) {
+	must := require.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "Done with the task."},
@@ -1501,18 +1308,15 @@ func TestLoop_VerificationError(t *testing.T) {
 	config := buildTestConfig()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "verification_error" {
-		t.Errorf("expected outcome 'verification_error', got %q", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.Equal("verification_error", runTrace.Outcome)
 }
 
 // TestLoop_MaxTokensStopIsFailureOnceRecoveriesAreSpent pins that a
 // model which keeps stopping at the output limit ends the run with
 // max_tokens after the bounded recoveries.
 func TestLoop_MaxTokensStopIsFailureOnceRecoveriesAreSpent(t *testing.T) {
+	must := require.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "Partial answer"},
@@ -1524,18 +1328,13 @@ func TestLoop_MaxTokensStopIsFailureOnceRecoveriesAreSpent(t *testing.T) {
 	config := buildTestConfig()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "max_tokens" {
-		t.Errorf("expected outcome 'max_tokens', got %q", runTrace.Outcome)
-	}
-	if runTrace.Turns != maxOutputLimitRecoveries+1 {
-		t.Errorf("Turns = %d, want %d (one per recovery plus the terminal stop)", runTrace.Turns, maxOutputLimitRecoveries+1)
-	}
+	must.NoError(err)
+	must.Equal("max_tokens", runTrace.Outcome)
+	must.Equal(maxOutputLimitRecoveries+1, runTrace.Turns, "one turn per recovery plus the terminal stop")
 }
 
 func TestLoop_PromptBuildError(t *testing.T) {
+	must := require.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "Hello"},
@@ -1548,30 +1347,21 @@ func TestLoop_PromptBuildError(t *testing.T) {
 	config := buildTestConfig()
 
 	_, err := loop.Run(context.Background(), config)
-	if err == nil {
-		t.Fatal("expected non-nil error when prompt builder fails")
-	}
-	if !strings.Contains(err.Error(), "build system prompt") {
-		t.Errorf("expected error to mention prompt building, got: %v", err)
-	}
+	must.ErrorContains(err, "build system prompt")
 }
 
-func TestEstimateCurrentTokens(t *testing.T) {
+func TestEstimateCurrentTokens_CountsOverheadAndContent(t *testing.T) {
+	must := require.New(t)
 	// Empty messages should return 1 (minimum).
-	if got := estimateCurrentTokens(nil, true); got != 1 {
-		t.Errorf("empty messages: want 1, got %d", got)
-	}
+	must.Equal(1, estimateCurrentTokens(nil, true), "empty messages")
 
 	// A single text message: overhead + content tokens.
 	msgs := []types.Message{{
 		Role:    "user",
 		Content: []types.ContentBlock{{Type: "text", Text: strings.Repeat("x", 40)}},
 	}}
-	got := estimateCurrentTokens(msgs, true)
 	// 4 (message overhead) + 3 (block overhead) + 10 (40/4 chars) = 17
-	if got != 17 {
-		t.Errorf("single text message: want 17, got %d", got)
-	}
+	must.Equal(17, estimateCurrentTokens(msgs, true), "single text message")
 
 	// Tool use block includes ID, Name, and Input metadata.
 	toolMsg := []types.Message{{
@@ -1583,17 +1373,15 @@ func TestEstimateCurrentTokens(t *testing.T) {
 			Input: json.RawMessage(`{"path":"/foo"}`), // 15 chars → 3 tokens
 		}},
 	}}
-	got = estimateCurrentTokens(toolMsg, true)
 	// 4 (msg) + 3 (block) + 4 (ID) + 2 (Name) + 3 (Input) = 16
-	if got != 16 {
-		t.Errorf("tool_use message: want 16, got %d", got)
-	}
+	must.Equal(16, estimateCurrentTokens(toolMsg, true), "tool_use message")
 }
 
 // TestEstimateCurrentTokens_CountsReplayFields pins that replay state
 // resent with a message counts toward the estimate: a 40 KB stored
 // Responses output array adds 10240 tokens.
 func TestEstimateCurrentTokens_CountsReplayFields(t *testing.T) {
+	must := require.New(t)
 	msg := types.Message{
 		Role:    "assistant",
 		Content: []types.ContentBlock{{Type: "text", Text: "ok"}},
@@ -1603,25 +1391,19 @@ func TestEstimateCurrentTokens_CountsReplayFields(t *testing.T) {
 		},
 	}
 	// 4 (msg) + 3 (block) + (40960 + 7) / 4 = 10248
-	if got := estimateCurrentTokens([]types.Message{msg}, true); got != 10248 {
-		t.Errorf("message with 40 KB replay state: want 10248, got %d", got)
-	}
+	must.Equal(10248, estimateCurrentTokens([]types.Message{msg}, true), "message with 40 KB replay state")
 }
 
-func TestEstimateSystemPromptTokens(t *testing.T) {
+func TestEstimateSystemPromptTokens_AddsMessageOverhead(t *testing.T) {
+	must := require.New(t)
 	prompt := strings.Repeat("a", 400) // 400 chars → 100 content tokens
-	got := estimateSystemPromptTokens(prompt)
 	// 100 + 4 (message overhead) = 104
-	if got != 104 {
-		t.Errorf("system prompt 400 chars: want 104, got %d", got)
-	}
+	must.Equal(104, estimateSystemPromptTokens(prompt), "system prompt of 400 chars")
 }
 
-func TestEstimateToolDefinitionTokens(t *testing.T) {
-	// No tools → 0.
-	if got := estimateToolDefinitionTokens(nil); got != 0 {
-		t.Errorf("no tools: want 0, got %d", got)
-	}
+func TestEstimateToolDefinitionTokens_ScalesWithToolCount(t *testing.T) {
+	must := require.New(t)
+	must.Zero(estimateToolDefinitionTokens(nil), "no tools")
 
 	tools := []types.ToolDefinition{{
 		Name:        "read_file",                                          // 9 → 2
@@ -1630,19 +1412,15 @@ func TestEstimateToolDefinitionTokens(t *testing.T) {
 	}}
 	got := estimateToolDefinitionTokens(tools)
 	// 10 (overhead) + 2 + 8 + 8 = 28
-	if got != 28 {
-		t.Errorf("single tool: want 28, got %d", got)
-	}
+	must.Equal(28, got, "single tool")
 
 	// Multiple tools scale linearly.
 	tools = append(tools, tools[0])
-	got2 := estimateToolDefinitionTokens(tools)
-	if got2 != got*2 {
-		t.Errorf("two identical tools: want %d, got %d", got*2, got2)
-	}
+	must.Equal(got*2, estimateToolDefinitionTokens(tools), "two identical tools")
 }
 
-func TestEstimateTokens_OverheadSignificance(t *testing.T) {
+func TestEstimateTokens_PerMessageOverheadDominatesShortMessages(t *testing.T) {
+	must := require.New(t)
 	// With many short messages, overhead should dominate over content.
 	// 20 messages with tiny content.
 	msgs := make([]types.Message, 20)
@@ -1652,21 +1430,18 @@ func TestEstimateTokens_OverheadSignificance(t *testing.T) {
 			Content: []types.ContentBlock{{Type: "text", Text: "ok"}},
 		}
 	}
-	got := estimateCurrentTokens(msgs, true)
 	// Each message: 4 (msg overhead) + 3 (block overhead) + 0 ("ok" is 2 chars → 0 at /4) = 7
 	// 20 * 7 = 140
-	if got != 140 {
-		t.Errorf("20 short messages: want 140, got %d", got)
-	}
+	must.Equal(140, estimateCurrentTokens(msgs, true), "20 short messages")
 }
 
-// TestEffectiveReserveForResponse pins the reserve-scaling boundary: any
+// TestEffectiveReserveForResponse_ScalesDownAtOrBelowDefault pins the reserve-scaling boundary: any
 // maxTokens above defaultReserveForResponse (including the unset/negative
 // sentinels) is untouched byte-for-byte. At and below the boundary the
 // reserve scales down to smallContextReserveDivisor's fraction of
 // maxTokens, floored at 1 token so the provider is never asked for a
 // zero-token completion.
-func TestEffectiveReserveForResponse(t *testing.T) {
+func TestEffectiveReserveForResponse_ScalesDownAtOrBelowDefault(t *testing.T) {
 	tests := []struct {
 		name      string
 		maxTokens int
@@ -1677,16 +1452,15 @@ func TestEffectiveReserveForResponse(t *testing.T) {
 		{"the assumed default window is untouched", defaultMaxContextTokens, defaultReserveForResponse},
 		{"just above the boundary is untouched", defaultReserveForResponse + 1, defaultReserveForResponse},
 		{"at the boundary scales down", defaultReserveForResponse, defaultReserveForResponse / smallContextReserveDivisor},
-		{"issue #444's own repro value", 32768, 32768 / smallContextReserveDivisor},
+		{"32 KB window scales down", 32768, 32768 / smallContextReserveDivisor},
 		{"small local-model window", 8192, 8192 / smallContextReserveDivisor},
 		{"sub-divisor budget floors at 1 token, never 0", 2, 1},
 		{"single-token budget floors at 1 token", 1, 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := effectiveReserveForResponse(tt.maxTokens); got != tt.want {
-				t.Errorf("effectiveReserveForResponse(%d) = %d, want %d", tt.maxTokens, got, tt.want)
-			}
+			must := require.New(t)
+			must.Equal(tt.want, effectiveReserveForResponse(tt.maxTokens))
 		})
 	}
 }
@@ -1697,6 +1471,7 @@ func TestEffectiveReserveForResponse(t *testing.T) {
 // flat defaultReserveForResponse, which a small-context server cannot
 // honour.
 func TestLoop_SmallContextBudgetScalesProviderMaxTokens(t *testing.T) {
+	must := require.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "ok"},
@@ -1708,15 +1483,11 @@ func TestLoop_SmallContextBudgetScalesProviderMaxTokens(t *testing.T) {
 	config := buildTestConfig()
 	config.ContextStrategy = types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 32768}
 
-	if _, err := loop.Run(context.Background(), config); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), config)
+	must.NoError(err)
 
 	want := 32768 / smallContextReserveDivisor
-	if prov.lastParams.MaxTokens != want {
-		t.Errorf("provider StreamParams.MaxTokens = %d, want %d (scaled reserve, not the flat %d default)",
-			prov.lastParams.MaxTokens, want, defaultReserveForResponse)
-	}
+	must.Equal(want, prov.lastParams.MaxTokens, "scaled reserve, not the flat %d default", defaultReserveForResponse)
 }
 
 // TestLoop_SmallContextBudgetWarnsOnce pins that an operator running a
@@ -1724,6 +1495,7 @@ func TestLoop_SmallContextBudgetScalesProviderMaxTokens(t *testing.T) {
 // "warning" event) instead of silent truncation, exactly once per run
 // since maxTokens is constant for the run's life.
 func TestLoop_SmallContextBudgetWarnsOnce(t *testing.T) {
+	must := require.New(t)
 	var transportBuf, logBuf bytes.Buffer
 
 	prov := &multiCallProvider{
@@ -1746,36 +1518,23 @@ func TestLoop_SmallContextBudgetWarnsOnce(t *testing.T) {
 	config := buildTestConfig()
 	config.ContextStrategy = types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 32768}
 
-	if _, err := loop.Run(context.Background(), config); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), config)
+	must.NoError(err)
 
 	const needle = "context response reserve scaled down"
-	if !strings.Contains(logBuf.String(), needle) {
-		t.Errorf("expected a slog warning about the scaled-down reserve; got:\n%s", logBuf.String())
-	}
-	if n := strings.Count(logBuf.String(), needle); n != 1 {
-		t.Errorf("expected exactly 1 reserve-scaling warning log line across the run's 2 turns, got %d:\n%s", n, logBuf.String())
-	}
-	if !strings.Contains(transportBuf.String(), `"type":"warning"`) {
-		t.Errorf("expected a warning event on the transport stream for a scaled-down reserve; got:\n%s", transportBuf.String())
-	}
-	if !strings.Contains(transportBuf.String(), "32768") {
-		t.Errorf("expected the transport warning to name the configured maxTokens; got:\n%s", transportBuf.String())
-	}
+	must.Contains(logBuf.String(), needle, "slog should warn about the scaled-down reserve")
+	must.Equal(1, strings.Count(logBuf.String(), needle), "warn once across the run's 2 turns")
+	must.Contains(transportBuf.String(), `"type":"warning"`, "transport stream should carry a warning event for the scaled-down reserve")
+	must.Contains(transportBuf.String(), "32768", "transport warning should name the configured maxTokens")
 }
 
-func TestBuildLoop_InvalidConfig(t *testing.T) {
+func TestBuildLoop_RejectsMaxTurnsAboveLimit(t *testing.T) {
+	must := require.New(t)
 	config := buildTestConfig()
 	config.MaxTurns = 200 // exceeds the maximum of 100
 
 	_, err := BuildLoop(context.Background(), config)
-	if err == nil {
-		t.Fatal("expected error for invalid config with maxTurns > 100")
-	}
-	if !strings.Contains(err.Error(), "maxTurns") {
-		t.Errorf("expected error to mention maxTurns, got: %v", err)
-	}
+	must.ErrorContains(err, "maxTurns")
 }
 
 // TestStreamEventsToResult_ThoughtSignaturePropagatedToBlock pins the
@@ -1784,7 +1543,8 @@ func TestBuildLoop_InvalidConfig(t *testing.T) {
 func TestStreamEventsToResult_ThoughtSignaturePropagatedToBlock(t *testing.T) {
 	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
 
-	t.Run("non_empty_signature_survives", func(t *testing.T) {
+	t.Run("keeps a non-empty signature", func(t *testing.T) {
+		must := require.New(t)
 		ch := make(chan types.StreamEvent, 2)
 		ch <- types.StreamEvent{
 			Type:             "tool_call",
@@ -1797,21 +1557,14 @@ func TestStreamEventsToResult_ThoughtSignaturePropagatedToBlock(t *testing.T) {
 		close(ch)
 
 		result, err := streamEventsToResult(context.Background(), ch, tp, true, ignoreEmitFailure, nil)
-		if err != nil {
-			t.Fatalf("streamEventsToResult() error: %v", err)
-		}
-		if len(result.Blocks) != 1 {
-			t.Fatalf("expected 1 block, got %d: %+v", len(result.Blocks), result.Blocks)
-		}
-		if result.Blocks[0].Type != "tool_use" {
-			t.Errorf("Blocks[0].Type = %q, want tool_use", result.Blocks[0].Type)
-		}
-		if result.Blocks[0].ThoughtSignature != "AY89==" {
-			t.Errorf("Blocks[0].ThoughtSignature = %q, want %q", result.Blocks[0].ThoughtSignature, "AY89==")
-		}
+		must.NoError(err)
+		must.Len(result.Blocks, 1)
+		must.Equal("tool_use", result.Blocks[0].Type)
+		must.Equal("AY89==", result.Blocks[0].ThoughtSignature)
 	})
 
-	t.Run("empty_signature_stays_empty", func(t *testing.T) {
+	t.Run("keeps an empty signature empty", func(t *testing.T) {
+		must := require.New(t)
 		ch := make(chan types.StreamEvent, 2)
 		ch <- types.StreamEvent{
 			Type:  "tool_call",
@@ -1823,15 +1576,9 @@ func TestStreamEventsToResult_ThoughtSignaturePropagatedToBlock(t *testing.T) {
 		close(ch)
 
 		result, err := streamEventsToResult(context.Background(), ch, tp, true, ignoreEmitFailure, nil)
-		if err != nil {
-			t.Fatalf("streamEventsToResult() error: %v", err)
-		}
-		if len(result.Blocks) != 1 {
-			t.Fatalf("expected 1 block, got %d: %+v", len(result.Blocks), result.Blocks)
-		}
-		if result.Blocks[0].ThoughtSignature != "" {
-			t.Errorf("Blocks[0].ThoughtSignature = %q, want empty (zero value must not be mutated)", result.Blocks[0].ThoughtSignature)
-		}
+		must.NoError(err)
+		must.Len(result.Blocks, 1)
+		must.Empty(result.Blocks[0].ThoughtSignature, "zero value must not be mutated")
 	})
 }
 
@@ -1839,8 +1586,9 @@ func TestStreamEventsToResult_ThoughtSignaturePropagatedToBlock(t *testing.T) {
 // in-loop hop for message-level replay state: the message_complete event's
 // ReplayFields must land on the streamResult, and appendAssistantContent
 // must attach it to the persisted assistant Message so the next request
-// can round-trip it. Mirrors the ThoughtSignature test above.
+// can round-trip it.
 func TestStreamEventsToResult_ReplayFieldsStashedAndAttached(t *testing.T) {
+	must := require.New(t)
 	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
 
 	replay := map[string]json.RawMessage{
@@ -1856,36 +1604,25 @@ func TestStreamEventsToResult_ReplayFieldsStashedAndAttached(t *testing.T) {
 	close(ch)
 
 	result, err := streamEventsToResult(context.Background(), ch, tp, true, ignoreEmitFailure, nil)
-	if err != nil {
-		t.Fatalf("streamEventsToResult() error: %v", err)
-	}
-	if string(result.ReplayFields["reasoning_content"]) != `"step by step"` {
-		t.Errorf("streamResult.ReplayFields = %v, want reasoning_content stashed", result.ReplayFields)
-	}
+	must.NoError(err)
+	must.Equal(`"step by step"`, string(result.ReplayFields["reasoning_content"]), "stream result should stash reasoning_content")
 
 	messages := appendAssistantContent(nil, result.Blocks, result.ReplayFields)
-	if len(messages) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(messages))
-	}
-	if string(messages[0].ReplayFields["reasoning_content"]) != `"step by step"` {
-		t.Errorf("assistant Message.ReplayFields = %v, want reasoning_content attached", messages[0].ReplayFields)
-	}
+	must.Len(messages, 1)
+	must.Equal(`"step by step"`, string(messages[0].ReplayFields["reasoning_content"]), "assistant message should carry reasoning_content")
 
-	// The no-replay path must leave the field nil so the persisted
-	// message serialises byte-identically to the prior shape.
+	// Without replay state the field stays nil, so the message serialises unchanged.
 	plain := appendAssistantContent(nil, result.Blocks, nil)
-	if plain[0].ReplayFields != nil {
-		t.Errorf("nil replay state must stay nil on the Message, got %v", plain[0].ReplayFields)
-	}
+	must.Nil(plain[0].ReplayFields, "nil replay state must stay nil on the message")
 }
 
-// TestStreamEventsToResult_EmitsToolCallEvent is the regression test for
-// issue #593: the "tool_call" case must call tp.Emit with the same
-// normalised input bytes appended to history, so a control plane's view of
-// a call's input matches what the provider replays on the next turn. A nil
-// Input map exercises NormalizeToolInput's null-to-{} rewrite on both
-// paths.
+// TestStreamEventsToResult_EmitsToolCallEvent pins that the "tool_call" case
+// emits the same normalised input bytes that are appended to history, so a
+// control plane's view of a call's input matches what the provider replays
+// on the next turn. A nil Input map exercises NormalizeToolInput's
+// null-to-{} rewrite on both paths.
 func TestStreamEventsToResult_EmitsToolCallEvent(t *testing.T) {
+	must := require.New(t)
 	var transportBuf bytes.Buffer
 	tp := transport.NewStdioTransport(&transportBuf, &bytes.Buffer{})
 
@@ -1895,36 +1632,19 @@ func TestStreamEventsToResult_EmitsToolCallEvent(t *testing.T) {
 	close(ch)
 
 	result, err := streamEventsToResult(context.Background(), ch, tp, true, ignoreEmitFailure, nil)
-	if err != nil {
-		t.Fatalf("streamEventsToResult() error: %v", err)
-	}
-	if len(result.Blocks) != 1 || result.Blocks[0].Type != "tool_use" {
-		t.Fatalf("expected 1 tool_use block, got %+v", result.Blocks)
-	}
+	must.NoError(err)
+	must.Len(result.Blocks, 1)
+	must.Equal("tool_use", result.Blocks[0].Type)
 
 	lines := strings.Split(strings.TrimSpace(transportBuf.String()), "\n")
-	if len(lines) != 1 {
-		t.Fatalf("expected exactly 1 emitted event, got %d:\n%s", len(lines), transportBuf.String())
-	}
+	must.Len(lines, 1, "expected exactly 1 emitted event")
 	var e types.HarnessEvent
-	if err := json.Unmarshal([]byte(lines[0]), &e); err != nil {
-		t.Fatalf("unmarshal emitted event: %v", err)
-	}
-	if e.Type != "tool_call" {
-		t.Errorf("emitted event Type = %q, want tool_call", e.Type)
-	}
-	if e.ID != "tc_1" {
-		t.Errorf("emitted event ID = %q, want tc_1", e.ID)
-	}
-	if e.Name != "read_file" {
-		t.Errorf("emitted event Name = %q, want read_file", e.Name)
-	}
-	if string(e.Input) != string(result.Blocks[0].Input) {
-		t.Errorf("emitted event Input = %q, want it to match the history block's Input %q byte-for-byte", e.Input, result.Blocks[0].Input)
-	}
-	if string(e.Input) != "{}" {
-		t.Errorf("emitted event Input = %q, want normalised nil input {}", e.Input)
-	}
+	must.NoError(json.Unmarshal([]byte(lines[0]), &e))
+	must.Equal("tool_call", e.Type)
+	must.Equal("tc_1", e.ID)
+	must.Equal("read_file", e.Name)
+	must.Equal(string(result.Blocks[0].Input), string(e.Input), "emitted input should match the history block input byte-for-byte")
+	must.Equal("{}", string(e.Input), "nil input should normalise to {}")
 }
 
 // TestStreamEventsToResult_ToolCallEventInputDoesNotAliasHistory guards
@@ -1937,6 +1657,7 @@ func TestStreamEventsToResult_EmitsToolCallEvent(t *testing.T) {
 // than a JSON round-trip, so a shared backing array would survive into the
 // assertion below undetected by any JSON-level test.
 func TestStreamEventsToResult_ToolCallEventInputDoesNotAliasHistory(t *testing.T) {
+	must := require.New(t)
 	tr := newAsyncTestTransport()
 
 	ch := make(chan types.StreamEvent, 2)
@@ -1945,28 +1666,21 @@ func TestStreamEventsToResult_ToolCallEventInputDoesNotAliasHistory(t *testing.T
 	close(ch)
 
 	result, err := streamEventsToResult(context.Background(), ch, tr, true, ignoreEmitFailure, nil)
-	if err != nil {
-		t.Fatalf("streamEventsToResult() error: %v", err)
-	}
+	must.NoError(err)
 
 	events := tr.Events()
-	if len(events) != 1 {
-		t.Fatalf("expected 1 emitted event, got %d", len(events))
-	}
+	must.Len(events, 1)
 	eventInput := events[0].Input
 	historyInput := result.Blocks[0].Input
 
-	if &eventInput[0] == &historyInput[0] {
-		t.Fatal("emitted event Input and history block Input share a backing array (should be cloned)")
-	}
+	must.NotSame(&eventInput[0], &historyInput[0], "emitted event Input and history block Input should not share a backing array")
 
 	eventInput[0] = '!'
-	if historyInput[0] == '!' {
-		t.Error("mutating the emitted event's Input mutated the history block's Input")
-	}
+	must.NotEqual(byte('!'), historyInput[0], "mutating the emitted event's Input should not mutate the history block's Input")
 }
 
 func TestStreamEventsToResult_MergesMessageCompleteFields(t *testing.T) {
+	must := require.New(t)
 	ch := make(chan types.StreamEvent, 3)
 	ch <- types.StreamEvent{Type: "text_delta", Text: "Hello"}
 	ch <- types.StreamEvent{Type: "message_complete", StopReason: "end_turn"}
@@ -1974,30 +1688,22 @@ func TestStreamEventsToResult_MergesMessageCompleteFields(t *testing.T) {
 	close(ch)
 
 	result, err := streamEventsToResult(context.Background(), ch, transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}), true, ignoreEmitFailure, nil)
-	if err != nil {
-		t.Fatalf("streamEventsToResult() error: %v", err)
-	}
-	if result.StopReason != "end_turn" {
-		t.Fatalf("expected stop reason to be preserved, got %q", result.StopReason)
-	}
-	if result.Usage.Output != 42 {
-		t.Fatalf("expected output tokens to be preserved, got %d", result.Usage.Output)
-	}
+	must.NoError(err)
+	must.Equal("end_turn", result.StopReason, "stop reason should be preserved")
+	must.Equal(42, result.Usage.Output, "output tokens should be preserved")
 }
 
 func TestAgenticLoopClose_ClosesOwnedResources(t *testing.T) {
+	must := require.New(t)
 	first := &closeTracker{}
 	second := &closeTracker{}
 	loop := &AgenticLoop{
 		ownedClosers: []io.Closer{first, second},
 	}
 
-	if err := loop.Close(); err != nil {
-		t.Fatalf("Close() error: %v", err)
-	}
-	if !first.closed || !second.closed {
-		t.Fatalf("expected both closers to run, got first=%v second=%v", first.closed, second.closed)
-	}
+	must.NoError(loop.Close())
+	must.True(first.closed, "first owned closer should run")
+	must.True(second.closed, "second owned closer should run")
 }
 
 // TestDispatchToolCall_EmitsPrototypePollutionBlocked confirms that when a
@@ -2005,6 +1711,7 @@ func TestAgenticLoopClose_ClosesOwnedResources(t *testing.T) {
 // emits the PrototypePollutionBlocked security event before validation AND
 // passes a cleaned input (without the dangerous keys) to the tool handler.
 func TestDispatchToolCall_EmitsPrototypePollutionBlocked(t *testing.T) {
+	must := require.New(t)
 	registry := tool.NewRegistry()
 
 	var capturedInput json.RawMessage
@@ -2036,32 +1743,18 @@ func TestDispatchToolCall_EmitsPrototypePollutionBlocked(t *testing.T) {
 		Name:  "test_tool",
 		Input: json.RawMessage(`{"__proto__":{"admin":true},"safe":"v"}`),
 	})
-	if !ok {
-		t.Fatalf("dispatchToolCall returned !ok: %s", out)
-	}
+	must.True(ok, "dispatchToolCall should succeed, got output: %s", out)
 
 	got := secBuf.String()
-	if !strings.Contains(got, `"event":"prototype_pollution_blocked"`) {
-		t.Errorf("expected prototype_pollution_blocked event, got %q", got)
-	}
-	if !strings.Contains(got, "__proto__") {
-		t.Errorf("expected __proto__ in dropped keys, got %q", got)
-	}
-	if !strings.Contains(got, `"tool":"test_tool"`) {
-		t.Errorf("expected tool name in event, got %q", got)
-	}
+	must.Contains(got, `"event":"prototype_pollution_blocked"`)
+	must.Contains(got, "__proto__", "dropped keys should name __proto__")
+	must.Contains(got, `"tool":"test_tool"`, "security event should name the tool")
 
 	// The handler must receive a cleaned input: no __proto__ key, but still
 	// carrying the safe sibling.
-	if len(capturedInput) == 0 {
-		t.Fatal("handler was not invoked or received empty input")
-	}
-	if strings.Contains(string(capturedInput), "__proto__") {
-		t.Errorf("handler received pollution key in input: %s", capturedInput)
-	}
-	if !strings.Contains(string(capturedInput), `"safe":"v"`) {
-		t.Errorf("handler input missing safe key, got: %s", capturedInput)
-	}
+	must.NotEmpty(capturedInput, "handler should be invoked with input")
+	must.NotContains(string(capturedInput), "__proto__", "handler should not receive the pollution key")
+	must.Contains(string(capturedInput), `"safe":"v"`, "handler input should keep the safe key")
 }
 
 // recordingContextStrategy wraps another ContextStrategy and snapshots the
@@ -2105,6 +1798,7 @@ func (r *recordingContextStrategy) LastCompaction() *contextpkg.CompactionEvent 
 // (the snapshot for turn 0's Prepare is the pre-run zero). The final
 // post-Run atomic read gives the value stored after the LAST Prepare.
 func TestLoop_ContextTokensGaugeReflectsCompaction(t *testing.T) {
+	must := require.New(t)
 	// A heavy first assistant turn dominates the token count. It fits the
 	// budget on its own, but once a second sizeable exchange exists the
 	// history does not, and the sliding window drops the heavy turn,
@@ -2141,25 +1835,18 @@ func TestLoop_ContextTokensGaugeReflectsCompaction(t *testing.T) {
 	// hold the ~1000-token heavy turn but not the ~600-token turn after it.
 	config.ContextStrategy = types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 2000}
 
-	if _, err := loop.Run(context.Background(), config); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), config)
+	must.NoError(err)
 
 	// rec.atomics[i] reflects loop.lastContextTokens at the start of turn
 	// i's Prepare invocation — the value stored after turn (i-1)'s
 	// Prepare. The first entry is 0 (pre-run reset).
-	if len(rec.atomics) != 3 {
-		t.Fatalf("expected 3 Prepare invocations, got %d (atomics=%v)", len(rec.atomics), rec.atomics)
-	}
-	if rec.atomics[0] != 0 {
-		t.Errorf("rec.atomics[0] = %d, want 0 (pre-run reset)", rec.atomics[0])
-	}
+	must.Len(rec.atomics, 3, "Prepare invocations (atomics=%v)", rec.atomics)
+	must.Zero(rec.atomics[0], "gauge before the first Prepare")
 	// Value after turn 1's Prepare, which still holds the heavy turn: it
 	// is the only exchange, so nothing can be dropped yet.
 	afterTurn1 := rec.atomics[2]
-	if afterTurn1 <= rec.atomics[1] {
-		t.Fatalf("afterTurn1 = %d, expected the heavy turn to exceed the turn-0 value %d", afterTurn1, rec.atomics[1])
-	}
+	must.Greater(afterTurn1, rec.atomics[1], "heavy turn should raise the gauge above the turn-0 value")
 
 	// Read the value stored after the LAST Prepare directly from the
 	// atomic; the loop has finished by now, so this is stable.
@@ -2170,15 +1857,12 @@ func TestLoop_ContextTokensGaugeReflectsCompaction(t *testing.T) {
 
 	// The last Prepare received [task, heavy turn, result, turn, result]
 	// and must keep only the task and the last exchange.
-	if in, out := rec.inputs[2], rec.prepared[2]; in != 5 || out != 3 {
-		t.Fatalf("expected the last Prepare to compact 5 messages to 3, got %d -> %d (in=%v out=%v)", in, out, rec.inputs, rec.prepared)
-	}
+	must.Equal(5, rec.inputs[2], "messages passed to the last Prepare")
+	must.Equal(3, rec.prepared[2], "messages kept by the last Prepare")
 
 	// Compaction shrinks the message contribution: dropping the heavy
 	// turn leaves the final count strictly below the value that held it.
-	if finalValue >= afterTurn1 {
-		t.Errorf("expected final gauge value < afterTurn1; got final=%d afterTurn1=%d", finalValue, afterTurn1)
-	}
+	must.Less(finalValue, afterTurn1, "gauge after compaction should drop below the value that held the heavy turn")
 }
 
 // TestLoop_SmallContextBudgetRetainsHistory pins that a small-but-workable
@@ -2189,6 +1873,7 @@ func TestLoop_ContextTokensGaugeReflectsCompaction(t *testing.T) {
 // TestLoop_ContextTokensGaugeReflectsCompaction's genuinely-impossible
 // budget, which does collapse to the task and the last exchange.
 func TestLoop_SmallContextBudgetRetainsHistory(t *testing.T) {
+	must := require.New(t)
 	prov := &multiCallProvider{
 		calls: [][]types.StreamEvent{
 			{
@@ -2221,25 +1906,17 @@ func TestLoop_SmallContextBudgetRetainsHistory(t *testing.T) {
 	config.Prompt = strings.Repeat("a", 8000)
 	config.ContextStrategy = types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 32768}
 
-	if _, err := loop.Run(context.Background(), config); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), config)
+	must.NoError(err)
 
-	if len(rec.prepared) < 3 {
-		t.Fatalf("expected >= 3 Prepare invocations, got %v", rec.prepared)
-	}
+	must.GreaterOrEqual(len(rec.prepared), 3, "Prepare invocations (prepared=%v)", rec.prepared)
 	t.Logf("input lengths: %v, prepared lengths: %v", rec.inputs, rec.prepared)
 
-	for i := range rec.prepared {
-		if rec.prepared[i] != rec.inputs[i] {
-			t.Errorf("Prepare call %d truncated history from %d to %d messages (full sequence in=%v out=%v); a small-but-workable context budget must not silently drop real history (#444)",
-				i, rec.inputs[i], rec.prepared[i], rec.inputs, rec.prepared)
-		}
-	}
+	// A small-but-workable budget must not silently drop real history.
+	must.Equal(rec.inputs, rec.prepared, "each Prepare call should keep all of its input messages")
+
 	last := rec.prepared[len(rec.prepared)-1]
-	if last <= 3 {
-		t.Fatalf("expected the final Prepare call to retain more than the task and the last exchange, got %d messages (full sequence=%v)", last, rec.prepared)
-	}
+	must.Greater(last, 3, "final Prepare should retain more than the task and the last exchange (prepared=%v)", rec.prepared)
 }
 
 // TestLoop_RecordsContextTokensGauge asserts that runInnerLoop publishes the
@@ -2249,13 +1926,12 @@ func TestLoop_SmallContextBudgetRetainsHistory(t *testing.T) {
 // Run captures the loop's own callback output while it is still alive
 // (the loop unregisters its callback via defer at Run return).
 func TestLoop_RecordsContextTokensGauge(t *testing.T) {
+	must := require.New(t)
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
 	metrics, err := observability.NewMetricsForTesting(mp)
-	if err != nil {
-		t.Fatalf("NewMetricsForTesting: %v", err)
-	}
+	must.NoError(err, "NewMetricsForTesting")
 
 	// Register a probe callback that captures the gauge observation each
 	// time the SDK collects. We use a multiCallProvider so the loop runs
@@ -2264,16 +1940,13 @@ func TestLoop_RecordsContextTokensGauge(t *testing.T) {
 	var (
 		observedMu     sync.Mutex
 		observedValues []int64
-		observedAttrs  []attribute.Set
 	)
 	unregister, err := metrics.RegisterContextTokensCallback(func() (int64, []attribute.KeyValue) {
 		// Only present to force a Collect cycle that surfaces every
 		// registered callback, including the loop's own.
 		return 0, nil
 	})
-	if err != nil {
-		t.Fatalf("RegisterContextTokensCallback: %v", err)
-	}
+	must.NoError(err, "RegisterContextTokensCallback")
 	defer unregister()
 
 	prov := &multiCallProvider{
@@ -2303,22 +1976,17 @@ func TestLoop_RecordsContextTokensGauge(t *testing.T) {
 			attribute.String("source", "test-probe"),
 		}
 	})
-	if err != nil {
-		t.Fatalf("RegisterContextTokensCallback (probe): %v", err)
-	}
+	must.NoError(err, "RegisterContextTokensCallback (probe)")
 	defer captureUnreg()
 
 	config := buildTestConfig()
-	if _, err := loop.Run(context.Background(), config); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err = loop.Run(context.Background(), config)
+	must.NoError(err)
 
 	// The run's own callback is now unregistered, but the probe is still
 	// active; Collect observes the post-run lastContextTokens value.
 	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
+	must.NoError(reader.Collect(context.Background(), &rm))
 
 	// Find the gauge in the output and assert it has the expected shape.
 	var gaugeDataPoints []metricdata.DataPoint[int64]
@@ -2328,31 +1996,19 @@ func TestLoop_RecordsContextTokensGauge(t *testing.T) {
 				continue
 			}
 			g, ok := m.Data.(metricdata.Gauge[int64])
-			if !ok {
-				t.Fatalf("context_tokens has unexpected data type %T (want Gauge[int64])", m.Data)
-			}
+			must.True(ok, "context_tokens data type %T (want Gauge[int64])", m.Data)
 			gaugeDataPoints = append(gaugeDataPoints, g.DataPoints...)
 		}
 	}
-	if len(gaugeDataPoints) == 0 {
-		t.Fatal("expected at least one context_tokens gauge data point")
-	}
+	must.NotEmpty(gaugeDataPoints, "context_tokens gauge data points")
 
 	// The probe captured the loop's atomic on the final Collect; assert
 	// it matches what the loop should have stored after the second turn.
 	observedMu.Lock()
 	probeValues := append([]int64(nil), observedValues...)
-	probeAttrs := append([]attribute.Set(nil), observedAttrs...)
 	observedMu.Unlock()
-	_ = probeAttrs
-	if len(probeValues) == 0 {
-		t.Fatal("probe callback never fired")
-	}
+	must.NotEmpty(probeValues, "probe callback should fire during Collect")
 	finalValue := probeValues[len(probeValues)-1]
-	if finalValue <= 0 {
-		t.Errorf("expected lastContextTokens > 0 after run, got %d", finalValue)
-	}
-	if finalValue != loop.lastContextTokens.Load() {
-		t.Errorf("probe captured %d but atomic now reads %d", finalValue, loop.lastContextTokens.Load())
-	}
+	must.Positive(finalValue, "lastContextTokens after run")
+	must.Equal(loop.lastContextTokens.Load(), finalValue, "probe capture should match the atomic after run")
 }

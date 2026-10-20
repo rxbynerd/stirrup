@@ -6,35 +6,71 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 )
 
 func TestValidateGitRef_RejectsOptionInjection(t *testing.T) {
-	for _, ref := range []string{"--upload-pack=/bin/sh", "-x", "--output=foo"} {
-		if err := validateGitRef(ref); err == nil {
-			t.Errorf("validateGitRef(%q) = nil, want rejection of leading '-'", ref)
-		}
+	cases := []struct {
+		name string
+		ref  string
+	}{
+		{"long option with value", "--upload-pack=/bin/sh"},
+		{"short option", "-x"},
+		{"long option", "--output=foo"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Error(validateGitRef(tc.ref), "leading '-' must be rejected")
+		})
 	}
 }
 
 func TestValidateGitRef_RejectsShellMetacharacters(t *testing.T) {
-	for _, ref := range []string{"$(rm -rf /)", "foo; echo pwned", "a`id`b", "a|b", "a&b", "a b"} {
-		if err := validateGitRef(ref); err == nil {
-			t.Errorf("validateGitRef(%q) = nil, want rejection of shell metacharacter", ref)
-		}
+	cases := []struct {
+		name string
+		ref  string
+	}{
+		{"command substitution", "$(rm -rf /)"},
+		{"semicolon", "foo; echo pwned"},
+		{"backticks", "a`id`b"},
+		{"pipe", "a|b"},
+		{"ampersand", "a&b"},
+		{"space", "a b"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Error(validateGitRef(tc.ref), "shell metacharacter must be rejected")
+		})
 	}
 }
 
 func TestValidateGitRef_AcceptsNormalRefs(t *testing.T) {
-	for _, ref := range []string{"HEAD", "HEAD~3", "main", "v1.2.3", "abc123def", "feature/x"} {
-		if err := validateGitRef(ref); err != nil {
-			t.Errorf("validateGitRef(%q) = %v, want nil", ref, err)
-		}
+	cases := []struct {
+		name string
+		ref  string
+	}{
+		{"bare HEAD", "HEAD"},
+		{"relative HEAD", "HEAD~3"},
+		{"branch name", "main"},
+		{"semver tag", "v1.2.3"},
+		{"abbreviated sha", "abc123def"},
+		{"branch with slash", "feature/x"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.NoError(validateGitRef(tc.ref))
+		})
 	}
 }
 
@@ -61,15 +97,15 @@ func captureExec(captured *[]string) *mockExecutor {
 }
 
 func TestGitDiff_PathWithShellMetacharactersIsQuoted(t *testing.T) {
+	must := require.New(t)
 	var captured []string
 	mock := captureExec(&captured)
 	tl := GitDiffTool(mock)
 
 	// A path that, unquoted, would run `rm -rf /` as a second command.
 	in := json.RawMessage(`{"path": "foo; rm -rf /"}`)
-	if _, err := tl.StructuredHandler(context.Background(), in); err != nil {
-		t.Fatalf("handler returned error: %v", err)
-	}
+	_, err := tl.StructuredHandler(context.Background(), in)
+	must.NoError(err)
 
 	// Find the `git diff` command (not the rev-parse guard) and assert the
 	// hostile path was single-quoted so sh treats it as one literal argument.
@@ -79,53 +115,43 @@ func TestGitDiff_PathWithShellMetacharactersIsQuoted(t *testing.T) {
 			diffCmd = c
 		}
 	}
-	if diffCmd == "" {
-		t.Fatalf("no `git diff` command was issued; captured=%v", captured)
-	}
-	if !strings.Contains(diffCmd, "'foo; rm -rf /'") {
-		t.Errorf("path was not shell-quoted; command = %q", diffCmd)
-	}
+	must.NotEmpty(diffCmd, "no `git diff` command was issued; captured=%v", captured)
+	must.Contains(diffCmd, "'foo; rm -rf /'", "path was not shell-quoted; command = %q", diffCmd)
 	// The `;` must be inside the quotes — there must be exactly one command.
-	if strings.Count(diffCmd, ";") != 1 {
-		t.Errorf("unexpected `;` outside quotes; command = %q", diffCmd)
-	}
+	must.Equal(1, strings.Count(diffCmd, ";"), "unexpected `;` outside quotes; command = %q", diffCmd)
 }
 
 func TestGitShow_RefWithOptionInjectionIsRejected(t *testing.T) {
+	must := require.New(t)
 	var captured []string
 	mock := captureExec(&captured)
 	tl := GitShowTool(mock)
 
 	in := json.RawMessage(`{"ref": "--upload-pack=/bin/sh"}`)
 	_, err := tl.StructuredHandler(context.Background(), in)
-	if err == nil {
-		t.Fatalf("handler accepted option-injection ref")
-	}
+	must.Error(err, "handler accepted option-injection ref")
 	// The rejection must happen before any `git show` reaches the shell.
 	for _, c := range captured {
-		if strings.Contains(c, "'show'") {
-			t.Errorf("git show was executed despite hostile ref: %q", c)
-		}
+		must.NotContains(c, "'show'", "git show was executed despite hostile ref: %q", c)
 	}
 }
 
 func TestGitShow_RefWithCommandSubstitutionIsRejected(t *testing.T) {
+	must := require.New(t)
 	var captured []string
 	mock := captureExec(&captured)
 	tl := GitShowTool(mock)
 
 	in := json.RawMessage(`{"ref": "$(touch /tmp/pwned)"}`)
-	if _, err := tl.StructuredHandler(context.Background(), in); err == nil {
-		t.Fatalf("handler accepted command-substitution ref")
-	}
+	_, err := tl.StructuredHandler(context.Background(), in)
+	must.Error(err, "handler accepted command-substitution ref")
 	for _, c := range captured {
-		if strings.Contains(c, "'show'") {
-			t.Errorf("git show executed despite hostile ref: %q", c)
-		}
+		must.NotContains(c, "'show'", "git show executed despite hostile ref: %q", c)
 	}
 }
 
 func TestGitStatus_NonGitWorkspaceErrorsClearly(t *testing.T) {
+	must := require.New(t)
 	mock := &mockExecutor{
 		execFunc: func(_ context.Context, command string, _ time.Duration) (*executor.ExecResult, error) {
 			// Simulate git reporting the directory is not a work tree.
@@ -134,12 +160,7 @@ func TestGitStatus_NonGitWorkspaceErrorsClearly(t *testing.T) {
 	}
 	tl := GitStatusTool(mock)
 	_, err := tl.StructuredHandler(context.Background(), json.RawMessage(`{}`))
-	if err == nil {
-		t.Fatalf("expected error for non-git workspace")
-	}
-	if !strings.Contains(err.Error(), "not a git repository") {
-		t.Errorf("error %q does not clearly state the workspace is not a git repository", err)
-	}
+	must.ErrorContains(err, "not a git repository")
 }
 
 func TestGitDiff_PathTraversalRejected(t *testing.T) {
@@ -159,15 +180,25 @@ func TestGitDiff_PathTraversalRejected(t *testing.T) {
 		},
 	}
 	tl := GitDiffTool(mock)
-	for _, p := range []string{"../etc/passwd", "/etc/passwd"} {
-		in := json.RawMessage(`{"path": ` + jsonString(p) + `}`)
-		if _, err := tl.StructuredHandler(context.Background(), in); err == nil {
-			t.Errorf("path %q was accepted; want traversal rejection", p)
-		}
+	cases := []struct {
+		name string
+		path string
+	}{
+		{"parent directory escape", "../etc/passwd"},
+		{"absolute path", "/etc/passwd"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			in := json.RawMessage(`{"path": ` + jsonString(tc.path) + `}`)
+			_, err := tl.StructuredHandler(context.Background(), in)
+			must.Error(err, "path %q was accepted; want traversal rejection", tc.path)
+		})
 	}
 }
 
 func TestGitDiff_OutputTruncated(t *testing.T) {
+	must := require.New(t)
 	// Build a diff larger than both caps.
 	var big strings.Builder
 	for i := 0; i < gitDiffMaxLines+1000; i++ {
@@ -183,23 +214,17 @@ func TestGitDiff_OutputTruncated(t *testing.T) {
 	}
 	tl := GitDiffTool(mock)
 	res, err := tl.StructuredHandler(context.Background(), json.RawMessage(`{}`))
-	if err != nil {
-		t.Fatalf("handler error: %v", err)
-	}
-	if !strings.Contains(res.Text, gitDiffTruncSentinel) {
-		t.Errorf("truncation sentinel missing from text output")
-	}
+	must.NoError(err)
+	must.Contains(res.Text, gitDiffTruncSentinel, "truncation sentinel missing from text output")
+
 	var payload gitDiffResult
-	if err := json.Unmarshal(res.Structured, &payload); err != nil {
-		t.Fatalf("unmarshal structured: %v", err)
-	}
-	if !payload.Truncated {
-		t.Errorf("structured payload not marked truncated")
-	}
+	must.NoError(json.Unmarshal(res.Structured, &payload))
+	must.True(payload.Truncated, "structured payload not marked truncated")
+
 	lineCount := strings.Count(payload.Diff, "\n")
-	if lineCount > gitDiffMaxLines+2 { // +sentinel line
-		t.Errorf("diff has %d lines, exceeds line cap %d", lineCount, gitDiffMaxLines)
-	}
+	// The +2 allows for the sentinel line.
+	must.LessOrEqual(lineCount, gitDiffMaxLines+2,
+		"diff has %d lines, exceeds line cap %d", lineCount, gitDiffMaxLines)
 }
 
 // TestGitDiff_PathLeadingDashRejected covers the option-injection guard on the
@@ -207,17 +232,15 @@ func TestGitDiff_OutputTruncated(t *testing.T) {
 // TestValidateGitRef_RejectsOptionInjection). A path like "-p" must be rejected
 // before any git command is issued, so it can never be read as a git flag.
 func TestGitDiff_PathLeadingDashRejected(t *testing.T) {
+	must := require.New(t)
 	var captured []string
 	mock := captureExec(&captured)
 	tl := GitDiffTool(mock)
 
-	if _, err := tl.StructuredHandler(context.Background(), json.RawMessage(`{"path": "-p"}`)); err == nil {
-		t.Fatalf("handler accepted leading-dash path")
-	}
+	_, err := tl.StructuredHandler(context.Background(), json.RawMessage(`{"path": "-p"}`))
+	must.Error(err, "handler accepted leading-dash path")
 	for _, c := range captured {
-		if strings.Contains(c, "'diff'") {
-			t.Errorf("git diff was executed despite hostile path: %q", c)
-		}
+		must.NotContains(c, "'diff'", "git diff was executed despite hostile path: %q", c)
 	}
 }
 
@@ -226,76 +249,79 @@ func TestGitDiff_PathLeadingDashRejected(t *testing.T) {
 // which would otherwise skip validateGitPath. The path portion must still be
 // containment-checked, and git show must not run when it escapes.
 func TestGitShow_ColonRefTraversalRejected(t *testing.T) {
-	var captured []string
-	mock := captureExec(&captured)
-	// Reject any escaping path the way the local executor would.
-	mock.resolvePathFunc = func(p string) (string, error) {
-		if strings.Contains(p, "..") || strings.HasPrefix(p, "/") {
-			return "", os.ErrPermission
-		}
-		return "/workspace/" + p, nil
+	cases := []struct {
+		name string
+		ref  string
+	}{
+		{"parent directory escape", "HEAD:../../../etc/passwd"},
+		{"absolute path", "HEAD:/etc/passwd"},
 	}
-	tl := GitShowTool(mock)
-
-	for _, ref := range []string{"HEAD:../../../etc/passwd", "HEAD:/etc/passwd"} {
-		captured = nil
-		in := json.RawMessage(`{"ref": ` + jsonString(ref) + `}`)
-		if _, err := tl.StructuredHandler(context.Background(), in); err == nil {
-			t.Errorf("colon-ref %q was accepted; want traversal rejection", ref)
-		}
-		for _, c := range captured {
-			if strings.Contains(c, "'show'") {
-				t.Errorf("git show executed despite traversal colon-ref %q: %q", ref, c)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			var captured []string
+			mock := captureExec(&captured)
+			// Reject any escaping path the way the local executor would.
+			mock.resolvePathFunc = func(p string) (string, error) {
+				if strings.Contains(p, "..") || strings.HasPrefix(p, "/") {
+					return "", os.ErrPermission
+				}
+				return "/workspace/" + p, nil
 			}
-		}
+			tl := GitShowTool(mock)
+
+			in := json.RawMessage(`{"ref": ` + jsonString(tc.ref) + `}`)
+			_, err := tl.StructuredHandler(context.Background(), in)
+			must.Error(err, "colon-ref %q was accepted; want traversal rejection", tc.ref)
+			for _, c := range captured {
+				must.NotContains(c, "'show'", "git show executed despite traversal colon-ref %q: %q", tc.ref, c)
+			}
+		})
 	}
 }
 
-// TestValidateColonRefPath_Branches covers the helper's three arms directly:
-// no colon (no-op), trailing colon with empty path (no-op), and an escaping
-// path (rejected).
-func TestValidateColonRefPath_Branches(t *testing.T) {
+// TestValidateColonRefPath_ContainmentByRefForm checks the helper's three
+// shapes: no colon, a colon with an empty path, and a colon with an escaping path.
+func TestValidateColonRefPath_ContainmentByRefForm(t *testing.T) {
 	mock := &mockExecutor{resolvePathFunc: func(p string) (string, error) {
 		if strings.Contains(p, "..") {
 			return "", os.ErrPermission
 		}
 		return "/workspace/" + p, nil
 	}}
-	if err := validateColonRefPath(mock, "HEAD"); err != nil {
-		t.Errorf("no-colon ref rejected: %v", err)
-	}
-	if err := validateColonRefPath(mock, "HEAD:"); err != nil {
-		t.Errorf("empty-path colon-ref rejected: %v", err)
-	}
-	if err := validateColonRefPath(mock, "HEAD:../escape"); err == nil {
-		t.Errorf("escaping colon-ref accepted")
-	}
+	t.Run("ref without colon is accepted", func(t *testing.T) {
+		must := require.New(t)
+		must.NoError(validateColonRefPath(mock, "HEAD"))
+	})
+	t.Run("empty path after colon is accepted", func(t *testing.T) {
+		must := require.New(t)
+		must.NoError(validateColonRefPath(mock, "HEAD:"))
+	})
+	t.Run("escaping path after colon is rejected", func(t *testing.T) {
+		must := require.New(t)
+		must.Error(validateColonRefPath(mock, "HEAD:../escape"))
+	})
 }
 
 // TestGitShow_ColonRefInWorkspaceAccepted confirms the colon-ref guard does not
-// reject a legitimate in-workspace path (so the bypass fix is not over-broad).
+// reject a legitimate in-workspace path.
 func TestGitShow_ColonRefInWorkspaceAccepted(t *testing.T) {
+	must := require.New(t)
 	var captured []string
 	mock := captureExec(&captured)
 	tl := GitShowTool(mock)
 
 	in := json.RawMessage(`{"ref": "HEAD:README.md"}`)
-	if _, err := tl.StructuredHandler(context.Background(), in); err != nil {
-		t.Fatalf("in-workspace colon-ref rejected: %v", err)
-	}
-	ran := false
-	for _, c := range captured {
-		if strings.Contains(c, "'show'") {
-			ran = true
-		}
-	}
-	if !ran {
-		t.Errorf("git show did not run for a valid colon-ref; captured=%v", captured)
-	}
+	_, err := tl.StructuredHandler(context.Background(), in)
+	must.NoError(err, "in-workspace colon-ref rejected")
+
+	ran := slices.ContainsFunc(captured, func(c string) bool {
+		return strings.Contains(c, "'show'")
+	})
+	must.True(ran, "git show did not run for a valid colon-ref; captured=%v", captured)
 }
 
-// TestGitErrText covers the three arms of the error-message surface.
-func TestGitErrText(t *testing.T) {
+func TestGitErrText_PrefersStderrThenStdoutThenExitCode(t *testing.T) {
 	cases := []struct {
 		name string
 		res  executor.ExecResult
@@ -307,10 +333,8 @@ func TestGitErrText(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := gitErrText(&tc.res)
-			if got != tc.want {
-				t.Errorf("gitErrText = %q, want %q", got, tc.want)
-			}
+			must := require.New(t)
+			must.Equal(tc.want, gitErrText(&tc.res))
 		})
 	}
 }
@@ -318,6 +342,7 @@ func TestGitErrText(t *testing.T) {
 // TestGitShow_NonZeroExitSurfacesStderr drives a handler-level non-zero exit
 // (e.g. a non-existent ref) and asserts the stderr text reaches the error.
 func TestGitShow_NonZeroExitSurfacesStderr(t *testing.T) {
+	must := require.New(t)
 	mock := &mockExecutor{
 		execFunc: func(_ context.Context, command string, _ time.Duration) (*executor.ExecResult, error) {
 			if strings.Contains(command, "is-inside-work-tree") {
@@ -328,151 +353,156 @@ func TestGitShow_NonZeroExitSurfacesStderr(t *testing.T) {
 	}
 	tl := GitShowTool(mock)
 	_, err := tl.StructuredHandler(context.Background(), json.RawMessage(`{"ref": "nope"}`))
-	if err == nil {
-		t.Fatalf("expected error for non-existent ref")
-	}
-	if !strings.Contains(err.Error(), "bad revision 'nope'") {
-		t.Errorf("error %q does not surface git stderr", err)
-	}
+	must.Error(err, "expected error for non-existent ref")
+	must.ErrorContains(err, "bad revision 'nope'")
 }
 
 func TestParsePorcelainZ_RenameAndCopy(t *testing.T) {
+	must := require.New(t)
 	// Rename (R) and copy (C) records each carry the original path in the
 	// following NUL field: `XY <new>\0<orig>\0`. Build a fixture covering a
 	// rename, a copy, and a plain modification.
 	out := "R  new.go\x00old.go\x00C  copy.go\x00src.go\x00 M plain.go\x00"
 	entries, truncated := parsePorcelainZ(out, 100)
-	if truncated {
-		t.Fatalf("unexpected truncation")
-	}
-	if len(entries) != 3 {
-		t.Fatalf("got %d entries, want 3: %+v", len(entries), entries)
-	}
-	if entries[0].Code != "R " || entries[0].Path != "new.go" || entries[0].OrigPath != "old.go" {
-		t.Errorf("rename entry wrong: %+v", entries[0])
-	}
-	if entries[1].Code != "C " || entries[1].Path != "copy.go" || entries[1].OrigPath != "src.go" {
-		t.Errorf("copy entry wrong: %+v", entries[1])
-	}
-	if entries[2].Code != " M" || entries[2].Path != "plain.go" || entries[2].OrigPath != "" {
-		t.Errorf("plain entry wrong: %+v", entries[2])
-	}
+	must.False(truncated, "unexpected truncation")
+	must.Len(entries, 3, "entries: %+v", entries)
+
+	t.Run("rename", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("R ", entries[0].Code)
+		must.Equal("new.go", entries[0].Path)
+		must.Equal("old.go", entries[0].OrigPath)
+	})
+	t.Run("copy", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("C ", entries[1].Code)
+		must.Equal("copy.go", entries[1].Path)
+		must.Equal("src.go", entries[1].OrigPath)
+	})
+	t.Run("plain modification", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(" M", entries[2].Code)
+		must.Equal("plain.go", entries[2].Path)
+		must.Empty(entries[2].OrigPath)
+	})
 }
 
 func TestParsePorcelainZ_Truncation(t *testing.T) {
+	must := require.New(t)
 	out := " M a\x00 M b\x00 M c\x00"
 	entries, truncated := parsePorcelainZ(out, 2)
-	if !truncated {
-		t.Errorf("expected truncation at cap 2")
-	}
-	if len(entries) != 2 {
-		t.Errorf("got %d entries, want 2", len(entries))
-	}
+	must.True(truncated, "expected truncation at cap 2")
+	must.Len(entries, 2)
 }
 
 func TestParseNameStatusZ_RenameAndCopy(t *testing.T) {
+	must := require.New(t)
 	// name-status -z for R/C is: status\0 <orig>\0 <new>\0; M is: status\0 <path>\0.
 	out := "R100\x00old.go\x00new.go\x00M\x00plain.go\x00C75\x00src.go\x00copy.go\x00"
 	files, truncated := parseNameStatusZ(out, 100)
-	if truncated {
-		t.Fatalf("unexpected truncation")
-	}
-	if len(files) != 3 {
-		t.Fatalf("got %d files, want 3: %+v", len(files), files)
-	}
-	if files[0].Status != "R" || files[0].OrigPath != "old.go" || files[0].Path != "new.go" {
-		t.Errorf("rename file wrong: %+v", files[0])
-	}
-	if files[1].Status != "M" || files[1].Path != "plain.go" || files[1].OrigPath != "" {
-		t.Errorf("modify file wrong: %+v", files[1])
-	}
-	if files[2].Status != "C" || files[2].OrigPath != "src.go" || files[2].Path != "copy.go" {
-		t.Errorf("copy file wrong: %+v", files[2])
-	}
+	must.False(truncated, "unexpected truncation")
+	must.Len(files, 3, "files: %+v", files)
+
+	t.Run("rename", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("R", files[0].Status)
+		must.Equal("old.go", files[0].OrigPath)
+		must.Equal("new.go", files[0].Path)
+	})
+	t.Run("modify", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("M", files[1].Status)
+		must.Equal("plain.go", files[1].Path)
+		must.Empty(files[1].OrigPath)
+	})
+	t.Run("copy", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("C", files[2].Status)
+		must.Equal("src.go", files[2].OrigPath)
+		must.Equal("copy.go", files[2].Path)
+	})
 }
 
 func TestParseNameStatusZ_Truncation(t *testing.T) {
+	must := require.New(t)
 	out := "M\x00a\x00M\x00b\x00M\x00c\x00"
 	files, truncated := parseNameStatusZ(out, 2)
-	if !truncated {
-		t.Errorf("expected truncation at cap 2")
-	}
-	if len(files) != 2 {
-		t.Errorf("got %d files, want 2", len(files))
-	}
+	must.True(truncated, "expected truncation at cap 2")
+	must.Len(files, 2)
 }
 
 func TestFormatGitStatus_RenameRendering(t *testing.T) {
+	must := require.New(t)
 	r := gitStatusResult{
 		Branch:  "main",
 		Entries: []gitStatusEntry{{Code: "R ", Path: "new.go", OrigPath: "old.go"}},
 	}
-	got := formatGitStatus(r)
-	if !strings.Contains(got, "R  old.go -> new.go") {
-		t.Errorf("rename rendering missing arrow form; got:\n%s", got)
-	}
+	must.Contains(formatGitStatus(r), "R  old.go -> new.go", "rename must render in arrow form")
 }
 
 func TestFormatGitStatus_CleanAndTruncated(t *testing.T) {
+	must := require.New(t)
 	clean := formatGitStatus(gitStatusResult{Branch: "main", Clean: true})
-	if !strings.Contains(clean, "working tree clean") {
-		t.Errorf("clean rendering wrong: %q", clean)
-	}
+	must.Contains(clean, "working tree clean")
+
 	trunc := formatGitStatus(gitStatusResult{
 		Branch:    "main",
 		Entries:   []gitStatusEntry{{Code: " M", Path: "a"}},
 		Truncated: true,
 	})
-	if !strings.Contains(trunc, "status truncated") {
-		t.Errorf("truncated rendering missing sentinel: %q", trunc)
-	}
+	must.Contains(trunc, "status truncated", "truncated status must carry the sentinel")
 }
 
-func TestFormatGitChangedFiles_RenameAndEmptyAndTruncated(t *testing.T) {
-	empty := formatGitChangedFiles(gitChangedFilesResult{})
-	if empty != "no changed files" {
-		t.Errorf("empty rendering wrong: %q", empty)
-	}
-	rename := formatGitChangedFiles(gitChangedFilesResult{
-		Files: []gitChangedFile{{Status: "R", Path: "new.go", OrigPath: "old.go"}},
+func TestFormatGitChangedFiles_EmptyRenameAndTruncated(t *testing.T) {
+	t.Run("empty list", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("no changed files", formatGitChangedFiles(gitChangedFilesResult{}))
 	})
-	if !strings.Contains(rename, "old.go -> new.go") {
-		t.Errorf("rename rendering missing arrow form; got: %q", rename)
-	}
-	trunc := formatGitChangedFiles(gitChangedFilesResult{
-		Files:     []gitChangedFile{{Status: "M", Path: "a"}},
-		Truncated: true,
+	t.Run("rename in arrow form", func(t *testing.T) {
+		must := require.New(t)
+		out := formatGitChangedFiles(gitChangedFilesResult{
+			Files: []gitChangedFile{{Status: "R", Path: "new.go", OrigPath: "old.go"}},
+		})
+		must.Contains(out, "old.go -> new.go")
 	})
-	if !strings.Contains(trunc, "truncated") {
-		t.Errorf("truncated rendering missing sentinel: %q", trunc)
-	}
+	t.Run("truncated list carries sentinel", func(t *testing.T) {
+		must := require.New(t)
+		out := formatGitChangedFiles(gitChangedFilesResult{
+			Files:     []gitChangedFile{{Status: "M", Path: "a"}},
+			Truncated: true,
+		})
+		must.Contains(out, "truncated")
+	})
 }
 
-func TestCurrentBranch_DetachedUnbornUnknown(t *testing.T) {
-	detached := currentBranch(context.Background(), &mockExecutor{
-		execFunc: func(_ context.Context, _ string, _ time.Duration) (*executor.ExecResult, error) {
-			return &executor.ExecResult{ExitCode: 0, Stdout: "HEAD\n"}, nil
-		},
+func TestCurrentBranch_ReportsDetachedUnbornAndUnknown(t *testing.T) {
+	t.Run("detached HEAD", func(t *testing.T) {
+		must := require.New(t)
+		branch := currentBranch(context.Background(), &mockExecutor{
+			execFunc: func(_ context.Context, _ string, _ time.Duration) (*executor.ExecResult, error) {
+				return &executor.ExecResult{ExitCode: 0, Stdout: "HEAD\n"}, nil
+			},
+		})
+		must.Equal("HEAD (detached)", branch)
 	})
-	if detached != "HEAD (detached)" {
-		t.Errorf("detached = %q, want %q", detached, "HEAD (detached)")
-	}
-	unborn := currentBranch(context.Background(), &mockExecutor{
-		execFunc: func(_ context.Context, _ string, _ time.Duration) (*executor.ExecResult, error) {
-			return &executor.ExecResult{ExitCode: 128, Stderr: "no commit yet"}, nil
-		},
+	t.Run("unborn branch", func(t *testing.T) {
+		must := require.New(t)
+		branch := currentBranch(context.Background(), &mockExecutor{
+			execFunc: func(_ context.Context, _ string, _ time.Duration) (*executor.ExecResult, error) {
+				return &executor.ExecResult{ExitCode: 128, Stderr: "no commit yet"}, nil
+			},
+		})
+		must.Equal("(unborn)", branch)
 	})
-	if unborn != "(unborn)" {
-		t.Errorf("unborn = %q, want %q", unborn, "(unborn)")
-	}
-	unknown := currentBranch(context.Background(), &mockExecutor{
-		execFunc: func(_ context.Context, _ string, _ time.Duration) (*executor.ExecResult, error) {
-			return nil, context.Canceled
-		},
+	t.Run("command failure", func(t *testing.T) {
+		must := require.New(t)
+		branch := currentBranch(context.Background(), &mockExecutor{
+			execFunc: func(_ context.Context, _ string, _ time.Duration) (*executor.ExecResult, error) {
+				return nil, context.Canceled
+			},
+		})
+		must.Equal("(unknown)", branch)
 	})
-	if unknown != "(unknown)" {
-		t.Errorf("unknown = %q, want %q", unknown, "(unknown)")
-	}
 }
 
 // TestBoundDiff_ByteCapTrimsToNewline asserts the byte cap trims back to the
@@ -480,22 +510,19 @@ func TestCurrentBranch_DetachedUnbornUnknown(t *testing.T) {
 // no ragged partial final line). Uses a single line longer than the byte cap so
 // only the byte cap fires.
 func TestBoundDiff_ByteCapTrimsToNewline(t *testing.T) {
+	must := require.New(t)
 	// Two complete lines whose combined length exceeds the byte cap, with the
 	// second line straddling the cap boundary. After the byte cap the output
 	// must end in a newline and contain no partial trailing line.
 	line := strings.Repeat("x", gitDiffMaxBytes-10) + "\n"
 	tail := strings.Repeat("y", 100) + "\n"
 	got, truncated := boundDiff(line + tail)
-	if !truncated {
-		t.Fatalf("expected truncation")
-	}
+	must.True(truncated, "expected truncation")
+
 	body := strings.TrimSuffix(got, gitDiffTruncSentinel)
-	if !strings.HasSuffix(body, "\n") {
-		t.Errorf("byte-capped body does not end at a line boundary: %q", body[max(0, len(body)-20):])
-	}
-	if strings.Contains(body, "y") {
-		t.Errorf("byte-capped body included the partial straddling line")
-	}
+	must.True(strings.HasSuffix(body, "\n"),
+		"byte-capped body does not end at a line boundary: %q", body[max(0, len(body)-20):])
+	must.NotContains(body, "y", "byte-capped body included the partial straddling line")
 }
 
 // TestBoundDiff_MidRuneByteCap asserts the byte cap never slices through a
@@ -503,20 +530,19 @@ func TestBoundDiff_ByteCapTrimsToNewline(t *testing.T) {
 // of multi-byte runes longer than the cap, with no newline before the cap,
 // trims to empty rather than to a broken rune.
 func TestBoundDiff_MidRuneByteCap(t *testing.T) {
+	must := require.New(t)
 	// '€' is 3 bytes; a run with no newline before the cap forces the
 	// no-newline branch, which must yield empty (not a half-rune).
 	huge := strings.Repeat("€", gitDiffMaxBytes) // far exceeds the byte cap
 	got, truncated := boundDiff(huge)
-	if !truncated {
-		t.Fatalf("expected truncation")
-	}
+	must.True(truncated, "expected truncation")
+
 	body := strings.TrimSuffix(got, gitDiffTruncSentinel)
-	if !utf8.ValidString(body) {
-		t.Errorf("byte cap produced invalid UTF-8")
-	}
+	must.True(utf8.ValidString(body), "byte cap produced invalid UTF-8")
 }
 
 func TestGitTools_RealRepoEndToEnd(t *testing.T) {
+	must := require.New(t)
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
@@ -525,9 +551,7 @@ func TestGitTools_RealRepoEndToEnd(t *testing.T) {
 	// symlinks) agrees with the workspace root on macOS where TempDir is under
 	// a /var -> /private/var symlink.
 	resolved, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		t.Fatalf("eval symlinks: %v", err)
-	}
+	must.NoError(err)
 	dir = resolved
 
 	runGitCmd := func(args ...string) {
@@ -538,9 +562,8 @@ func TestGitTools_RealRepoEndToEnd(t *testing.T) {
 			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
 			"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com",
 		)
-		if out, err := c.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		out, err := c.CombinedOutput()
+		must.NoError(err, "git %v: %s", args, out)
 	}
 
 	runGitCmd("init", "-q")
@@ -548,123 +571,63 @@ func TestGitTools_RealRepoEndToEnd(t *testing.T) {
 	runGitCmd("config", "user.name", "test")
 
 	tracked := filepath.Join(dir, "tracked.txt")
-	if err := os.WriteFile(tracked, []byte("original\n"), 0o644); err != nil {
-		t.Fatalf("write tracked: %v", err)
-	}
+	must.NoError(os.WriteFile(tracked, []byte("original\n"), 0o644))
 	runGitCmd("add", "tracked.txt")
 	runGitCmd("commit", "-q", "-m", "initial")
 
-	if err := os.WriteFile(tracked, []byte("original\nmodified\n"), 0o644); err != nil {
-		t.Fatalf("modify tracked: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("new\n"), 0o644); err != nil {
-		t.Fatalf("write untracked: %v", err)
-	}
+	must.NoError(os.WriteFile(tracked, []byte("original\nmodified\n"), 0o644))
+	must.NoError(os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("new\n"), 0o644))
 
 	ex, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("new local executor: %v", err)
-	}
+	must.NoError(err)
 	ctx := context.Background()
 
 	statusRes, err := GitStatusTool(ex).StructuredHandler(ctx, json.RawMessage(`{}`))
-	if err != nil {
-		t.Fatalf("git_status: %v", err)
-	}
+	must.NoError(err)
 	var status gitStatusResult
-	if err := json.Unmarshal(statusRes.Structured, &status); err != nil {
-		t.Fatalf("unmarshal status: %v", err)
-	}
-	if status.Clean {
-		t.Errorf("status reported clean, expected changes")
-	}
-	gotModified, gotUntracked := false, false
-	for _, e := range status.Entries {
-		if e.Path == "tracked.txt" && e.Unstaged == "M" {
-			gotModified = true
-		}
-		if e.Path == "untracked.txt" && e.Code == "??" {
-			gotUntracked = true
-		}
-	}
-	if !gotModified {
-		t.Errorf("git_status did not report modified tracked.txt; entries=%+v", status.Entries)
-	}
-	if !gotUntracked {
-		t.Errorf("git_status did not report untracked.txt; entries=%+v", status.Entries)
-	}
+	must.NoError(json.Unmarshal(statusRes.Structured, &status))
+	must.False(status.Clean, "status reported clean, expected changes")
+	must.True(slices.ContainsFunc(status.Entries, func(e gitStatusEntry) bool {
+		return e.Path == "tracked.txt" && e.Unstaged == "M"
+	}), "git_status did not report modified tracked.txt; entries=%+v", status.Entries)
+	must.True(slices.ContainsFunc(status.Entries, func(e gitStatusEntry) bool {
+		return e.Path == "untracked.txt" && e.Code == "??"
+	}), "git_status did not report untracked.txt; entries=%+v", status.Entries)
 
 	cfRes, err := GitChangedFilesTool(ex).StructuredHandler(ctx, json.RawMessage(`{"staged": false}`))
-	if err != nil {
-		t.Fatalf("git_changed_files: %v", err)
-	}
+	must.NoError(err)
 	var changed gitChangedFilesResult
-	if err := json.Unmarshal(cfRes.Structured, &changed); err != nil {
-		t.Fatalf("unmarshal changed: %v", err)
-	}
-	foundTracked := false
-	for _, f := range changed.Files {
-		if f.Path == "tracked.txt" && f.Status == "M" {
-			foundTracked = true
-		}
-	}
-	if !foundTracked {
-		t.Errorf("git_changed_files did not report modified tracked.txt; files=%+v", changed.Files)
-	}
+	must.NoError(json.Unmarshal(cfRes.Structured, &changed))
+	must.True(slices.ContainsFunc(changed.Files, func(f gitChangedFile) bool {
+		return f.Path == "tracked.txt" && f.Status == "M"
+	}), "git_changed_files did not report modified tracked.txt; files=%+v", changed.Files)
 
 	diffRes, err := GitDiffTool(ex).StructuredHandler(ctx, json.RawMessage(`{}`))
-	if err != nil {
-		t.Fatalf("git_diff: %v", err)
-	}
-	if !strings.Contains(diffRes.Text, "+modified") {
-		t.Errorf("git_diff text missing the added line; got:\n%s", diffRes.Text)
-	}
+	must.NoError(err)
+	must.Contains(diffRes.Text, "+modified", "git_diff text missing the added line")
 
 	diffPathRes, err := GitDiffTool(ex).StructuredHandler(ctx, json.RawMessage(`{"path": "tracked.txt"}`))
-	if err != nil {
-		t.Fatalf("git_diff path: %v", err)
-	}
-	if !strings.Contains(diffPathRes.Text, "tracked.txt") {
-		t.Errorf("scoped git_diff missing path; got:\n%s", diffPathRes.Text)
-	}
+	must.NoError(err)
+	must.Contains(diffPathRes.Text, "tracked.txt", "scoped git_diff missing path")
 
 	showRes, err := GitShowTool(ex).StructuredHandler(ctx, json.RawMessage(`{"ref": "HEAD", "path": "tracked.txt"}`))
-	if err != nil {
-		t.Fatalf("git_show: %v", err)
-	}
-	if !strings.Contains(showRes.Text, "original") {
-		t.Errorf("git_show missing committed content; got:\n%s", showRes.Text)
-	}
+	must.NoError(err)
+	must.Contains(showRes.Text, "original", "git_show missing committed content")
 
 	// Staging last, since it empties the unstaged view checked above.
 	runGitCmd("add", "tracked.txt")
 	stagedFiles, err := GitChangedFilesTool(ex).StructuredHandler(ctx, json.RawMessage(`{"staged": true}`))
-	if err != nil {
-		t.Fatalf("git_changed_files staged: %v", err)
-	}
+	must.NoError(err)
 	var staged gitChangedFilesResult
-	if err := json.Unmarshal(stagedFiles.Structured, &staged); err != nil {
-		t.Fatalf("unmarshal staged: %v", err)
-	}
-	if !staged.Staged {
-		t.Errorf("staged result not flagged staged")
-	}
-	foundStaged := false
-	for _, f := range staged.Files {
-		if f.Path == "tracked.txt" && f.Status == "M" {
-			foundStaged = true
-		}
-	}
-	if !foundStaged {
-		t.Errorf("staged git_changed_files did not report tracked.txt; files=%+v", staged.Files)
-	}
+	must.NoError(json.Unmarshal(stagedFiles.Structured, &staged))
+	must.True(staged.Staged, "staged result not flagged staged")
+	must.True(slices.ContainsFunc(staged.Files, func(f gitChangedFile) bool {
+		return f.Path == "tracked.txt" && f.Status == "M"
+	}), "staged git_changed_files did not report tracked.txt; files=%+v", staged.Files)
+
 	stagedDiff, err := GitDiffTool(ex).StructuredHandler(ctx, json.RawMessage(`{"staged": true}`))
-	if err != nil {
-		t.Fatalf("git_diff staged: %v", err)
-	}
-	if !strings.Contains(stagedDiff.Text, "+modified") {
-		t.Errorf("staged git_diff missing the added line; got:\n%s", stagedDiff.Text)
-	}
+	must.NoError(err)
+	must.Contains(stagedDiff.Text, "+modified", "staged git_diff missing the added line")
 }
 
 // jsonString returns a JSON-encoded string literal for use inside hand-built

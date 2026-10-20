@@ -6,9 +6,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/types"
@@ -20,6 +21,7 @@ import (
 // it ran on the host. It needs STIRRUP_TEST_CONTAINER_SOCKET (the engine's
 // Unix socket) and STIRRUP_TEST_CONTAINER_IMAGE (an image containing git).
 func TestContainer_ComposedPromptReadsSandbox(t *testing.T) {
+	must := require.New(t)
 	sock := os.Getenv("STIRRUP_TEST_CONTAINER_SOCKET")
 	if sock == "" {
 		t.Skip("STIRRUP_TEST_CONTAINER_SOCKET not set; skipping live container engine test")
@@ -32,13 +34,9 @@ func TestContainer_ComposedPromptReadsSandbox(t *testing.T) {
 	defer cancel()
 
 	hostDir := t.TempDir()
-	if err := os.Chmod(hostDir, 0o777); err != nil {
-		t.Fatalf("chmod workspace: %v", err)
-	}
+	must.NoError(os.Chmod(hostDir, 0o777), "chmod workspace")
 	hostMarkers := t.TempDir()
-	if err := os.Chmod(hostMarkers, 0o777); err != nil {
-		t.Fatalf("chmod markers: %v", err)
-	}
+	must.NoError(os.Chmod(hostMarkers, 0o777), "chmod markers")
 	marker := filepath.Join(hostMarkers, "fsmonitor-ran")
 
 	sandbox, err := executor.NewContainerExecutorWithContext(ctx, executor.ContainerExecutorConfig{
@@ -48,31 +46,34 @@ func TestContainer_ComposedPromptReadsSandbox(t *testing.T) {
 		Network:           &types.NetworkConfig{Mode: "none"},
 		RegistryAllowlist: []string{"localhost/*", "docker.io/library/*", "ghcr.io/rxbynerd/*"},
 	})
-	if err != nil {
-		t.Fatalf("NewContainerExecutorWithContext: %v", err)
-	}
+	must.NoError(err, "NewContainerExecutorWithContext")
 	t.Cleanup(func() { _ = sandbox.Close() })
 
 	seed := "git init -q && git -c user.name=agent -c user.email=agent@example.com commit -q --allow-empty -m seed" +
 		" && git config core.fsmonitor 'touch " + marker + "; echo /'" +
 		" && mkdir pkg && echo 'package pkg' > pkg/pkg.go && echo hi > notes.txt"
 	res, err := sandbox.Exec(ctx, seed, time.Minute)
-	if err != nil || res.ExitCode != 0 {
-		t.Fatalf("seed sandbox: err %v, result %+v", err, res)
-	}
+	must.NoError(err, "seed sandbox")
+	must.Zero(res.ExitCode, "seed sandbox result %+v", res)
 
 	b := NewComposedPromptBuilder(WithFragments(DefaultComposedFragments()...))
 	got, err := b.Build(ctx, PromptContext{Mode: "execution", Executor: sandbox})
-	if err != nil {
-		t.Fatalf("Build() error: %v", err)
-	}
+	must.NoError(err, "Build()")
 
-	if _, err := os.Stat(marker); err == nil {
-		t.Fatal("the planted fsmonitor payload ran on the host")
+	_, statErr := os.Stat(marker)
+	must.Error(statErr, "the planted fsmonitor payload ran on the host")
+
+	tests := []struct {
+		name string
+		want string
+	}{
+		{name: "workspace listing", want: "Workspace files:\n  .git/\n  notes.txt\n  pkg/"},
+		{name: "git status", want: "Git status:\n?? notes.txt\n?? pkg/"},
 	}
-	for _, want := range []string{"Workspace files:\n  .git/\n  notes.txt\n  pkg/", "Git status:\n?? notes.txt\n?? pkg/"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("composed prompt missing %q:\n%s", want, got)
-		}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Contains(got, tc.want)
+		})
 	}
 }

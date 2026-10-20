@@ -14,6 +14,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -39,10 +42,10 @@ var auxiliaryUsage = map[string]types.TokenUsage{
 }
 
 func (s *auxiliaryUsageServer) handler(t *testing.T) http.HandlerFunc {
+	check := assert.New(t)
 	return func(w http.ResponseWriter, r *http.Request) {
 		raw, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("read request: %v", err)
+		if !check.NoError(err, "read request") {
 			return
 		}
 		body := string(raw)
@@ -52,15 +55,13 @@ func (s *auxiliaryUsageServer) handler(t *testing.T) http.HandlerFunc {
 			category, content = "summary", "condensed history"
 		case strings.Contains(body, "You are a verification judge"):
 			m := judgeNonceRe.FindStringSubmatch(body)
-			if m == nil {
-				t.Errorf("judge request carries no nonce instruction")
+			if !check.NotNil(m, "judge request carries no nonce instruction") {
 				return
 			}
 			category, content = "judge", fmt.Sprintf(`{"reasoning":"ok","nonce":%q,"passed":true,"feedback":"meets criteria"}`, m[1])
 		case strings.Contains(body, "You are a safety classifier"):
 			m := guardNonceRe.FindStringSubmatch(body)
-			if m == nil {
-				t.Errorf("guard request carries no nonce instruction")
+			if !check.NotNil(m, "guard request carries no nonce instruction") {
 				return
 			}
 			category, content = "guard", fmt.Sprintf(`{"nonce":%q,"verdict":"allow","reason":"benign"}`, m[1])
@@ -113,6 +114,7 @@ func scaled(u types.TokenUsage, n int) types.TokenUsage {
 // calls are charged and reported as auxiliary usage; the granite usage is
 // reported only and never ends the run, even past maxTokenBudget.
 func TestBuildLoop_AuxiliaryCallsChargeTheRunLedger(t *testing.T) {
+	must := require.New(t)
 	// A first run with an ample window records the loop's context
 	// estimates, from which the second run's window is chosen so the
 	// summarise strategy first compacts on the fifth model call.
@@ -124,41 +126,32 @@ func TestBuildLoop_AuxiliaryCallsChargeTheRunLedger(t *testing.T) {
 			break
 		}
 	}
-	if maxTokens == 0 {
-		t.Fatal("no maxTokens makes the summarise strategy first compact on the fifth call")
-	}
+	must.NotZero(maxTokens, "no maxTokens makes the summarise strategy first compact on the fifth call")
 
 	run := runAuxiliaryLedgerLoop(t, maxTokens, false)
-	runTrace, srv := run.trace, run.srv
-	graniteCalls := run.graniteCalls
-	budget := run.budget
+	turns := run.srv.count("turn")
+	summaries := run.srv.count("summary")
+	judges := run.srv.count("judge")
+	guards := run.srv.count("guard")
+	must.Positive(summaries, "summary calls")
+	must.Positive(judges, "judge calls")
+	must.Positive(guards, "guard calls")
 
-	turns, summaries, judges, guards := srv.count("turn"), srv.count("summary"), srv.count("judge"), srv.count("guard")
-	if summaries == 0 || judges == 0 || guards == 0 {
-		t.Fatalf("auxiliary calls: summary=%d judge=%d guard=%d, want each at least once", summaries, judges, guards)
-	}
 	wantAux := scaled(auxiliaryUsage["summary"], summaries)
 	wantAux.Add(scaled(auxiliaryUsage["judge"], judges))
 	wantAux.Add(scaled(auxiliaryUsage["guard"], guards))
-	if runTrace.AuxiliaryTokens != wantAux {
-		t.Errorf("AuxiliaryTokens = %+v, want %+v (summary=%d judge=%d guard=%d)", runTrace.AuxiliaryTokens, wantAux, summaries, judges, guards)
-	}
+	must.Equal(wantAux, run.trace.AuxiliaryTokens, "auxiliary usage: summary=%d judge=%d guard=%d", summaries, judges, guards)
+
 	wantTotal := scaled(auxiliaryUsage["turn"], turns)
 	wantTotal.Add(wantAux)
-	if runTrace.TokenUsage != wantTotal {
-		t.Errorf("TokenUsage = %+v, want turns plus auxiliary %+v", runTrace.TokenUsage, wantTotal)
-	}
+	must.Equal(wantTotal, run.trace.TokenUsage, "total usage: turns plus auxiliary")
 
-	wantExternal := types.TokenUsage{Input: 1000000 * graniteCalls, Output: graniteCalls}
-	if graniteCalls == 0 {
-		t.Fatal("the granite-guardian stage was never called")
-	}
-	if runTrace.ExternalGuardTokens != wantExternal {
-		t.Errorf("ExternalGuardTokens = %+v, want %+v", runTrace.ExternalGuardTokens, wantExternal)
-	}
-	if runTrace.TokenUsage.Total()+wantExternal.Total() <= budget {
-		t.Fatalf("test setup: external usage %d does not push past the %d-token budget", wantExternal.Total(), budget)
-	}
+	wantExternal := types.TokenUsage{Input: 1000000 * run.graniteCalls, Output: run.graniteCalls}
+	must.NotZero(run.graniteCalls, "the granite-guardian stage was never called")
+	must.Equal(wantExternal, run.trace.ExternalGuardTokens)
+
+	must.Greater(run.trace.TokenUsage.Total()+wantExternal.Total(), run.budget,
+		"test setup: external usage must push the run past the token budget")
 }
 
 type auxiliaryLedgerRun struct {
@@ -175,12 +168,12 @@ type auxiliaryLedgerRun struct {
 // per-call context estimates.
 func runAuxiliaryLedgerLoop(t *testing.T, maxTokens int, recordEstimates bool) auxiliaryLedgerRun {
 	t.Helper()
+	must := require.New(t)
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 	workspace := t.TempDir()
 	for _, name := range []string{"a.txt", "b.txt", "c.txt", "d.txt", "e.txt"} {
-		if err := os.WriteFile(filepath.Join(workspace, name), []byte(strings.Repeat("file contents line\n", 150)), 0o644); err != nil {
-			t.Fatalf("seed %s: %v", name, err)
-		}
+		content := []byte(strings.Repeat("file contents line\n", 150))
+		must.NoError(os.WriteFile(filepath.Join(workspace, name), content, 0o644), "seed %s", name)
 	}
 
 	srv := &auxiliaryUsageServer{
@@ -233,9 +226,7 @@ func runAuxiliaryLedgerLoop(t *testing.T, maxTokens int, recordEstimates bool) a
 	}
 
 	loop, err := BuildLoopWithTransport(context.Background(), config, &recordingTransport{})
-	if err != nil {
-		t.Fatalf("BuildLoopWithTransport: %v", err)
-	}
+	must.NoError(err, "BuildLoopWithTransport")
 	defer func() { _ = loop.Close() }()
 
 	var rec *recordingStrategy
@@ -245,12 +236,8 @@ func runAuxiliaryLedgerLoop(t *testing.T, maxTokens int, recordEstimates bool) a
 	}
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("Outcome = %q, want success", runTrace.Outcome)
-	}
+	must.NoError(err, "loop.Run")
+	must.Equal("success", runTrace.Outcome)
 	graniteMu.Lock()
 	calls := graniteCalls
 	graniteMu.Unlock()

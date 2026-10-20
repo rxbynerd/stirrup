@@ -3,6 +3,8 @@ package credential
 import (
 	"context"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // mockTokenSource returns a fixed token for testing.
@@ -15,59 +17,48 @@ func (m *mockTokenSource) Token(_ context.Context) ([]byte, error) {
 	return m.token, m.err
 }
 
-func TestWebIdentityAWSSource_Resolve(t *testing.T) {
+func TestWebIdentityAWSSource_Resolve_ReturnsAWSCredentials(t *testing.T) {
+	must := require.New(t)
 	ts := &mockTokenSource{token: []byte("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test")}
 	src := NewWebIdentityAWSSource(ts, "us-east-1", "arn:aws:iam::123456789012:role/test", "stirrup-test")
 
 	cred, err := src.Resolve(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cred.AWSCredentials == nil {
-		t.Fatal("AWSCredentials should be non-nil for web identity source")
-	}
-	if cred.BearerToken != nil {
-		t.Error("BearerToken closure should be nil for AWS credential source")
-	}
+	must.NoError(err)
+	must.NotNil(cred.AWSCredentials, "web identity source must return AWS credentials")
+	must.Nil(cred.BearerToken, "AWS credential source must not return a bearer token")
 }
 
-func TestWebIdentityAWSSource_DefaultSessionName(t *testing.T) {
+func TestWebIdentityAWSSource_EmptySessionNameDefaultsToStirrup(t *testing.T) {
 	ts := &mockTokenSource{token: []byte("test-token")}
 	src := NewWebIdentityAWSSource(ts, "eu-west-1", "arn:aws:iam::123456789012:role/test", "")
 
-	if src.sessionName != "stirrup" {
-		t.Errorf("sessionName = %q, want %q", src.sessionName, "stirrup")
-	}
+	t.Run("session name defaults to stirrup", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("stirrup", src.sessionName)
+	})
 
-	cred, err := src.Resolve(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cred.AWSCredentials == nil {
-		t.Fatal("AWSCredentials should be non-nil")
-	}
+	t.Run("resolve returns AWS credentials", func(t *testing.T) {
+		must := require.New(t)
+		cred, err := src.Resolve(context.Background())
+		must.NoError(err)
+		must.NotNil(cred.AWSCredentials)
+	})
 }
 
-func TestTokenSourceAdapter_GetIdentityToken(t *testing.T) {
+func TestTokenSourceAdapter_GetIdentityToken_ReturnsSourceToken(t *testing.T) {
+	must := require.New(t)
 	expected := []byte("test-oidc-token")
-	ts := &mockTokenSource{token: expected}
-	adapter := &tokenSourceAdapter{ts: ts}
+	adapter := &tokenSourceAdapter{ts: &mockTokenSource{token: expected}}
 
 	token, err := adapter.GetIdentityToken()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if string(token) != string(expected) {
-		t.Errorf("token = %q, want %q", string(token), string(expected))
-	}
+	must.NoError(err)
+	must.Equal(expected, token)
 }
 
-func TestTokenSourceAdapter_Error(t *testing.T) {
-	ts := &mockTokenSource{err: context.DeadlineExceeded}
-	adapter := &tokenSourceAdapter{ts: ts}
+func TestTokenSourceAdapter_GetIdentityToken_PropagatesSourceError(t *testing.T) {
+	must := require.New(t)
+	adapter := &tokenSourceAdapter{ts: &mockTokenSource{err: context.DeadlineExceeded}}
 
 	_, err := adapter.GetIdentityToken()
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
+	must.Error(err)
 }

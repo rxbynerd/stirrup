@@ -14,51 +14,47 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
 func parseJudgeFlags(t *testing.T, args ...string) *judgeFlags {
 	t.Helper()
+	must := require.New(t)
 	fs := flag.NewFlagSet("test", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	jf := addJudgeFlags(fs)
-	if err := fs.Parse(args); err != nil {
-		t.Fatalf("parse: %v", err)
-	}
+	must.NoError(fs.Parse(args))
 	return jf
 }
 
-func TestJudgeFlags_Options(t *testing.T) {
+func TestJudgeFlags_Options_ValidatesAndBuildsDefaults(t *testing.T) {
 	t.Run("unset leaves the built-in default", func(t *testing.T) {
+		must := require.New(t)
 		opts, err := parseJudgeFlags(t).options()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if opts.LLMDefaults != nil {
-			t.Errorf("LLMDefaults = %+v, want nil", opts.LLMDefaults)
-		}
+		must.NoError(err)
+		must.Nil(opts.LLMDefaults)
 	})
 
 	t.Run("set flags become defaults", func(t *testing.T) {
+		must := require.New(t)
 		opts, err := parseJudgeFlags(t,
 			"--judge-provider", "openai-compatible",
 			"--judge-model", "m",
 			"--judge-base-url", "https://gateway.example/v1",
 			"--judge-api-key-ref", "secret://GATEWAY_KEY",
 		).options()
-		if err != nil {
-			t.Fatal(err)
-		}
+		must.NoError(err)
 		want := types.JudgeLLMConfig{Provider: "openai-compatible", Model: "m", BaseURL: "https://gateway.example/v1", APIKeyRef: "secret://GATEWAY_KEY"}
-		if opts.LLMDefaults == nil || *opts.LLMDefaults != want {
-			t.Errorf("LLMDefaults = %+v, want %+v", opts.LLMDefaults, want)
-		}
+		must.NotNil(opts.LLMDefaults)
+		must.Equal(want, *opts.LLMDefaults)
 	})
 
 	t.Run("model alone is accepted for the default provider", func(t *testing.T) {
-		if _, err := parseJudgeFlags(t, "--judge-model", "claude-sonnet-5-5").options(); err != nil {
-			t.Fatal(err)
-		}
+		must := require.New(t)
+		_, err := parseJudgeFlags(t, "--judge-model", "claude-sonnet-5-5").options()
+		must.NoError(err)
 	})
 
 	invalid := []struct {
@@ -74,31 +70,25 @@ func TestJudgeFlags_Options(t *testing.T) {
 	}
 	for _, tc := range invalid {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			_, err := parseJudgeFlags(t, tc.args...).options()
-			if err == nil {
-				t.Fatal("expected an error")
-			}
-			if !strings.Contains(err.Error(), "--judge-*") || !strings.Contains(strings.ToLower(err.Error()), tc.want) {
-				t.Errorf("error = %q, want it to name the flags and mention %q", err, tc.want)
-			}
-			if strings.Contains(err.Error(), "sk-live-abc123") {
-				t.Errorf("error echoes the literal key: %q", err)
-			}
+			must.Error(err)
+			must.ErrorContains(err, "--judge-*", "error should name the flags")
+			must.Contains(strings.ToLower(err.Error()), tc.want)
+			must.NotContains(err.Error(), "sk-live-abc123", "error must not echo the literal key")
 		})
 	}
 }
 
 func TestCompletion_JudgeFlagsRegistered(t *testing.T) {
+	judgeFlagNames := []string{"judge-provider", "judge-model", "judge-base-url", "judge-api-key-ref"}
 	for _, sub := range []string{"run", "replay"} {
-		have := map[string]bool{}
-		for _, f := range evalCompletionFlags[sub] {
-			have[f] = true
-		}
-		for _, f := range []string{"judge-provider", "judge-model", "judge-base-url", "judge-api-key-ref"} {
-			if !have[f] {
-				t.Errorf("%s completion is missing -%s", sub, f)
+		t.Run(sub, func(t *testing.T) {
+			must := require.New(t)
+			for _, f := range judgeFlagNames {
+				must.Contains(evalCompletionFlags[sub], f, "completion is missing -%s", f)
 			}
-		}
+		})
 	}
 }
 
@@ -153,10 +143,9 @@ suite "judge-flags-suite" {
 
 func writeSuite(t *testing.T, src string) string {
 	t.Helper()
+	must := require.New(t)
 	path := filepath.Join(t.TempDir(), "suite.hcl")
-	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.WriteFile(path, []byte(src), 0o644))
 	return path
 }
 
@@ -177,6 +166,7 @@ fi
 `
 
 func TestCmdRun_JudgeFlagsConfigureDiffReviewJudge(t *testing.T) {
+	must := require.New(t)
 	endpoint := newJudgeEndpoint(t)
 	t.Setenv("CLI_JUDGE_KEY", "cli-secret")
 
@@ -192,46 +182,32 @@ func TestCmdRun_JudgeFlagsConfigureDiffReviewJudge(t *testing.T) {
 		"--judge-base-url", endpoint.srv.URL,
 		"--judge-api-key-ref", "secret://CLI_JUDGE_KEY",
 	}, io.Discard)
-	if exitCode != 0 {
-		t.Fatalf("run() exit code = %d, want 0", exitCode)
-	}
+	must.Equal(0, exitCode, "run() exit code")
 
 	result, err := loadResult(filepath.Join(outputDir, "result.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Tasks) != 1 {
-		t.Fatalf("got %d tasks, want 1", len(result.Tasks))
-	}
+	must.NoError(err)
+	must.Len(result.Tasks, 1)
 	task := result.Tasks[0]
-	if task.Outcome != "pass" || task.JudgeVerdict.Status != types.JudgeStatusPass {
-		t.Fatalf("task = %+v", task)
-	}
+	must.Equal("pass", task.Outcome)
+	must.Equal(types.JudgeStatusPass, task.JudgeVerdict.Status)
 	rec := task.JudgeVerdict.Record
-	if rec == nil || rec.RequestedModel != "cli-judge-model" || rec.ServedModel != "served-model" {
-		t.Errorf("record = %+v", rec)
-	}
+	must.NotNil(rec)
+	must.Equal("cli-judge-model", rec.RequestedModel)
+	must.Equal("served-model", rec.ServedModel)
 
 	bodies, keys := endpoint.seen()
-	if len(bodies) != 1 {
-		t.Fatalf("judge saw %d requests, want 1", len(bodies))
-	}
-	if keys[0] != "cli-secret" {
-		t.Errorf("x-api-key = %q, want the resolved secret", keys[0])
-	}
-	if !strings.Contains(bodies[0], "created.txt") || !strings.Contains(bodies[0], "agent output") {
-		t.Errorf("judge request is missing the agent's change:\n%s", bodies[0])
-	}
+	must.Len(bodies, 1, "judge should receive exactly one request")
+	must.Equal("cli-secret", keys[0], "x-api-key should carry the resolved secret")
+	must.Contains(bodies[0], "created.txt", "judge request should include the agent's change")
+	must.Contains(bodies[0], "agent output", "judge request should include the agent's change")
+
 	raw, err := os.ReadFile(filepath.Join(outputDir, "result.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(raw), "cli-secret") {
-		t.Error("result.json contains the resolved API key")
-	}
+	must.NoError(err)
+	must.NotContains(string(raw), "cli-secret", "result.json must not contain the resolved API key")
 }
 
 func TestCmdReplay_JudgeFlagsConfigureDiffReviewJudge(t *testing.T) {
+	must := require.New(t)
 	endpoint := newJudgeEndpoint(t)
 	t.Setenv("CLI_JUDGE_KEY", "cli-secret")
 
@@ -244,13 +220,10 @@ func TestCmdReplay_JudgeFlagsConfigureDiffReviewJudge(t *testing.T) {
 	} {
 		cmd := exec.Command("git", append([]string{"-c", "commit.gpgsign=false"}, args...)...)
 		cmd.Dir = workspace
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		out, err := cmd.CombinedOutput()
+		must.NoError(err, "git %v\n%s", args, out)
 	}
-	if err := os.WriteFile(filepath.Join(workspace, "created.txt"), []byte("agent output\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.WriteFile(filepath.Join(workspace, "created.txt"), []byte("agent output\n"), 0o644))
 
 	lakehouse := seedRecordings(t, []string{"r1"}, []string{"success"})
 	output := filepath.Join(t.TempDir(), "replay.json")
@@ -264,20 +237,15 @@ func TestCmdReplay_JudgeFlagsConfigureDiffReviewJudge(t *testing.T) {
 		"--judge-base-url", endpoint.srv.URL,
 		"--judge-api-key-ref", "secret://CLI_JUDGE_KEY",
 	}, io.Discard)
-	if exitCode != 0 {
-		t.Fatalf("run() exit code = %d, want 0", exitCode)
-	}
+	must.Equal(0, exitCode, "run() exit code")
 
 	result, err := loadResult(output)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Tasks) != 1 || result.Tasks[0].Outcome != "pass" {
-		t.Fatalf("tasks = %+v", result.Tasks)
-	}
-	if rec := result.Tasks[0].JudgeVerdict.Record; rec == nil || rec.RequestedModel != "replay-judge-model" {
-		t.Errorf("record = %+v", rec)
-	}
+	must.NoError(err)
+	must.Len(result.Tasks, 1)
+	must.Equal("pass", result.Tasks[0].Outcome)
+	rec := result.Tasks[0].JudgeVerdict.Record
+	must.NotNil(rec)
+	must.Equal("replay-judge-model", rec.RequestedModel)
 }
 
 func TestCmdRun_JudgeOutputNeverCarriesTheAPIKey(t *testing.T) {
@@ -287,9 +255,10 @@ func TestCmdRun_JudgeOutputNeverCarriesTheAPIKey(t *testing.T) {
 		return `{"model":"m","content":[{"type":"text","text":` + string(quoted) + `}],"stop_reason":"` + stop + `","usage":{"input_tokens":1,"output_tokens":1}}`
 	}
 	cases := map[string]struct {
-		provider string
-		status   int
-		reply    func(r *http.Request, nonce string) string
+		provider          string
+		status            int
+		reply             func(r *http.Request, nonce string) string
+		redactionOptional bool
 	}{
 		"error body echoes the headers": {
 			provider: "anthropic", status: http.StatusUnauthorized,
@@ -320,6 +289,7 @@ func TestCmdRun_JudgeOutputNeverCarriesTheAPIKey(t *testing.T) {
 			reply: func(r *http.Request, _ string) string {
 				return anthropicText("no: "+r.Header.Get("x-api-key"), "refusal")
 			},
+			redactionOptional: true,
 		},
 		"served model and stop reason echo the key": {
 			provider: "anthropic", status: http.StatusOK,
@@ -337,6 +307,7 @@ func TestCmdRun_JudgeOutputNeverCarriesTheAPIKey(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			t.Setenv("CLI_JUDGE_KEY", key)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				raw, _ := io.ReadAll(r.Body)
@@ -366,31 +337,22 @@ func TestCmdRun_JudgeOutputNeverCarriesTheAPIKey(t *testing.T) {
 			}, &stdout)
 
 			result, err := loadResult(filepath.Join(outputDir, "result.json"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(result.Tasks) != 1 {
-				t.Fatalf("got %d tasks, want 1", len(result.Tasks))
-			}
+			must.NoError(err)
+			must.Len(result.Tasks, 1)
 			task := result.Tasks[0]
-			if task.Outcome == "pass" {
-				t.Fatalf("task passed: %+v", task)
-			}
-			if !strings.Contains(task.JudgeVerdict.Reason+task.Error, "[redacted]") && name != "refusal quotes the key" {
-				t.Errorf("reason %q / error %q does not show the redaction", task.JudgeVerdict.Reason, task.Error)
+			must.NotEqual("pass", task.Outcome, "task should not pass")
+			if !tc.redactionOptional {
+				must.Contains(task.JudgeVerdict.Reason+task.Error, "[redacted]", "reason or error should show the redaction")
 			}
 			artefacts := map[string]string{"reason": task.JudgeVerdict.Reason, "error": task.Error, "stdout": stdout.String()}
 			for _, path := range []string{filepath.Join(outputDir, "result.json"), junitPath} {
 				raw, err := os.ReadFile(path)
-				if err != nil {
-					t.Fatal(err)
-				}
+				must.NoError(err)
 				artefacts[filepath.Base(path)] = string(raw)
 			}
 			for where, text := range artefacts {
-				if strings.Contains(text, key) || strings.Contains(text, key[:12]) {
-					t.Errorf("%s carries the API key:\n%s", where, text)
-				}
+				must.NotContains(text, key, "%s carries the API key", where)
+				must.NotContains(text, key[:12], "%s carries a prefix of the API key", where)
 			}
 		})
 	}
@@ -401,6 +363,7 @@ func TestCmdRun_JudgeOutputNeverCarriesTheAPIKey(t *testing.T) {
 const subprocessArgsEnv = "EVAL_CMD_SUBPROCESS_ARGS"
 
 func TestCmdRun_MissingJudgeKeyFailsBeforeAnyHarnessRun(t *testing.T) {
+	must := require.New(t)
 	if args := os.Getenv(subprocessArgsEnv); args != "" {
 		os.Exit(run(strings.Split(args, "\x1f"), io.Discard))
 	}
@@ -424,26 +387,30 @@ suite "preflight-suite" {
   }
 }
 `)
-	for _, extra := range [][]string{nil, {"--dry-run"}} {
-		args := append([]string{"run", "--suite", suite, "--harness", harnessPath, "--output", t.TempDir()}, extra...)
-		cmd := exec.Command(os.Args[0], "-test.run=^TestCmdRun_MissingJudgeKeyFailsBeforeAnyHarnessRun$")
-		cmd.Env = append(os.Environ(), subprocessArgsEnv+"="+strings.Join(args, "\x1f"), "ANTHROPIC_API_KEY=")
-		out, err := cmd.CombinedOutput()
-		if err == nil {
-			t.Fatalf("%v: exited 0, want a failure\n%s", extra, out)
-		}
-		for _, want := range []string{`task "first"`, "secret://ANTHROPIC_API_KEY"} {
-			if !strings.Contains(string(out), want) {
-				t.Errorf("%v: output does not contain %q:\n%s", extra, want, out)
-			}
-		}
+	for _, tc := range []struct {
+		name  string
+		extra []string
+	}{
+		{name: "without dry-run"},
+		{name: "with dry-run", extra: []string{"--dry-run"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			args := append([]string{"run", "--suite", suite, "--harness", harnessPath, "--output", t.TempDir()}, tc.extra...)
+			cmd := exec.Command(os.Args[0], "-test.run=^TestCmdRun_MissingJudgeKeyFailsBeforeAnyHarnessRun$")
+			cmd.Env = append(os.Environ(), subprocessArgsEnv+"="+strings.Join(args, "\x1f"), "ANTHROPIC_API_KEY=")
+			out, err := cmd.CombinedOutput()
+			must.Error(err, "exited 0, want a failure\n%s", out)
+			must.Contains(string(out), `task "first"`)
+			must.Contains(string(out), "secret://ANTHROPIC_API_KEY")
+		})
 	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Error("the harness ran despite a missing judge key")
-	}
+	_, err := os.Stat(marker)
+	must.ErrorIs(err, os.ErrNotExist, "the harness ran despite a missing judge key")
 }
 
 func TestCmdRun_DecisionJudgeProviderFailsBeforeAnyHarnessRun(t *testing.T) {
+	must := require.New(t)
 	if args := os.Getenv(subprocessArgsEnv); args != "" {
 		os.Exit(run(strings.Split(args, "\x1f"), io.Discard))
 	}
@@ -456,18 +423,14 @@ func TestCmdRun_DecisionJudgeProviderFailsBeforeAnyHarnessRun(t *testing.T) {
 	cmd := exec.Command(os.Args[0], "-test.run=^TestCmdRun_DecisionJudgeProviderFailsBeforeAnyHarnessRun$")
 	cmd.Env = append(os.Environ(), subprocessArgsEnv+"="+strings.Join(args, "\x1f"))
 	out, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Fatalf("exited 0, want a failure\n%s", out)
-	}
-	if !strings.Contains(string(out), `"decision" cannot be the default`) {
-		t.Errorf("output does not name the refused provider:\n%s", out)
-	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Error("the harness ran with the decision provider as the judge default")
-	}
+	must.Error(err, "exited 0, want a failure\n%s", out)
+	must.Contains(string(out), `"decision" cannot be the default`)
+	_, err = os.Stat(marker)
+	must.ErrorIs(err, os.ErrNotExist, "the harness ran with the decision provider as the judge default")
 }
 
 func TestCmdReplay_MissingJudgeKeyFailsBeforeAnyReplay(t *testing.T) {
+	must := require.New(t)
 	if args := os.Getenv(subprocessArgsEnv); args != "" {
 		os.Exit(run(strings.Split(args, "\x1f"), io.Discard))
 	}
@@ -480,15 +443,9 @@ func TestCmdReplay_MissingJudgeKeyFailsBeforeAnyReplay(t *testing.T) {
 	cmd := exec.Command(os.Args[0], "-test.run=^TestCmdReplay_MissingJudgeKeyFailsBeforeAnyReplay$")
 	cmd.Env = append(os.Environ(), subprocessArgsEnv+"="+strings.Join(args, "\x1f"), "REPLAY_UNSET_KEY=")
 	out, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Fatalf("exited 0, want a failure\n%s", out)
-	}
-	for _, want := range []string{`task "review"`, "secret://REPLAY_UNSET_KEY"} {
-		if !strings.Contains(string(out), want) {
-			t.Errorf("output does not contain %q:\n%s", want, out)
-		}
-	}
-	if _, err := os.Stat(output); !os.IsNotExist(err) {
-		t.Error("replay wrote a result despite a missing judge key")
-	}
+	must.Error(err, "exited 0, want a failure\n%s", out)
+	must.Contains(string(out), `task "review"`)
+	must.Contains(string(out), "secret://REPLAY_UNSET_KEY")
+	_, err = os.Stat(output)
+	must.ErrorIs(err, os.ErrNotExist, "replay wrote a result despite a missing judge key")
 }

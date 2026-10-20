@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/trace/noop"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
@@ -68,22 +69,17 @@ type toolUseScenario struct {
 // summary counts in the trace). It fails the test on any setup error.
 func runToolUseScenario(t *testing.T, sc toolUseScenario) (string, *types.RunTrace, *recordingTransport) {
 	t.Helper()
+	must := require.New(t)
 
 	workspace := t.TempDir()
 	for rel, content := range sc.workspaceFiles {
 		abs := filepath.Join(workspace, rel)
-		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-			t.Fatalf("seed dir for %q: %v", rel, err)
-		}
-		if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
-			t.Fatalf("seed file %q: %v", rel, err)
-		}
+		must.NoError(os.MkdirAll(filepath.Dir(abs), 0o755), "seed dir for %q", rel)
+		must.NoError(os.WriteFile(abs, []byte(content), 0o644), "seed file %q", rel)
 	}
 
 	exec, err := executor.NewLocalExecutor(workspace)
-	if err != nil {
-		t.Fatalf("build local executor: %v", err)
-	}
+	must.NoError(err)
 
 	var es edit.EditStrategy
 	switch sc.editStrategy {
@@ -135,12 +131,8 @@ func runToolUseScenario(t *testing.T, sc toolUseScenario) (string, *types.RunTra
 	}
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("loop.Run: %v", err)
-	}
-	if runTrace == nil {
-		t.Fatal("nil RunTrace")
-	}
+	must.NoError(err)
+	must.NotNil(runTrace)
 	return workspace, runTrace, rec
 }
 
@@ -149,6 +141,7 @@ func runToolUseScenario(t *testing.T, sc toolUseScenario) (string, *types.RunTra
 // recorded — every dispatched tool call produces exactly one tool_result.
 func toolResultContent(t *testing.T, rec *recordingTransport, toolUseID string) string {
 	t.Helper()
+	must := require.New(t)
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
 	for _, ev := range rec.events {
@@ -156,7 +149,7 @@ func toolResultContent(t *testing.T, rec *recordingTransport, toolUseID string) 
 			return ev.Content
 		}
 	}
-	t.Fatalf("no tool_result event recorded for tool-use ID %q", toolUseID)
+	must.Fail("no tool_result event recorded", "tool-use ID %q", toolUseID)
 	return ""
 }
 
@@ -178,6 +171,7 @@ func toolCallNames(tr *types.RunTrace) []string {
 // assertSequence checks each want name appears in the given relative order.
 func assertSequence(t *testing.T, tr *types.RunTrace, want ...string) {
 	t.Helper()
+	must := require.New(t)
 	got := toolCallNames(tr)
 	idx := 0
 	for _, n := range got {
@@ -185,9 +179,7 @@ func assertSequence(t *testing.T, tr *types.RunTrace, want ...string) {
 			idx++
 		}
 	}
-	if idx != len(want) {
-		t.Fatalf("tool-call sequence %v does not contain %v in order", got, want)
-	}
+	must.Equal(len(want), idx, "tool-call sequence %v should contain %v in order", got, want)
 }
 
 func countCalls(tr *types.RunTrace, internalName string) (total, failed int) {
@@ -207,12 +199,21 @@ func countCalls(tr *types.RunTrace, internalName string) (total, failed int) {
 	return total, failed
 }
 
+// requireToolCallCounts asserts how many calls to a tool the run dispatched
+// and how many of those failed.
+func requireToolCallCounts(t *testing.T, tr *types.RunTrace, internalName string, wantTotal, wantFailed int) {
+	t.Helper()
+	must := require.New(t)
+	total, failed := countCalls(tr, internalName)
+	must.Equal(wantTotal, total, "%s calls", internalName)
+	must.Equal(wantFailed, failed, "%s failed calls", internalName)
+}
+
 func readWorkspaceFile(t *testing.T, workspace, rel string) string {
 	t.Helper()
+	must := require.New(t)
 	data, err := os.ReadFile(filepath.Join(workspace, rel))
-	if err != nil {
-		t.Fatalf("read %q: %v", rel, err)
-	}
+	must.NoError(err, "read %q", rel)
 	return string(data)
 }
 
@@ -232,10 +233,11 @@ func finalText(text string) types.TurnRecord {
 	}
 }
 
-// TestToolUse_ReadSearchEditBuildLoop covers the core coding loop: the model
-// searches for a symbol, reads the matching file, edits it, then a final
-// answer.
-func TestToolUse_ReadSearchEditBuildLoop(t *testing.T) {
+// TestToolUse_SearchReadEdit_AppliesEdit covers the core coding loop: the
+// model searches for a symbol, reads the matching file, edits it, then gives
+// a final answer.
+func TestToolUse_SearchReadEdit_AppliesEdit(t *testing.T) {
+	must := require.New(t)
 	workspace, tr, _ := runToolUseScenario(t, toolUseScenario{
 		editStrategy: "multi",
 		workspaceFiles: map[string]string{
@@ -250,17 +252,14 @@ func TestToolUse_ReadSearchEditBuildLoop(t *testing.T) {
 	})
 
 	assertSequence(t, tr, "grep_files", "read_file", "edit_file")
-	if got := readWorkspaceFile(t, workspace, "calc.go"); !strings.Contains(got, "return n * 2") {
-		t.Fatalf("edit not applied; calc.go = %q", got)
-	}
-	if total, failed := countCalls(tr, "edit_file"); total != 1 || failed != 0 {
-		t.Fatalf("edit_file calls: total=%d failed=%d, want 1/0", total, failed)
-	}
+	must.Contains(readWorkspaceFile(t, workspace, "calc.go"), "return n * 2", "edit not applied to calc.go")
+	requireToolCallCounts(t, tr, "edit_file", 1, 0)
 }
 
 // TestToolUse_ReadBeforeEdit asserts the trace records read_file before
 // edit_file.
 func TestToolUse_ReadBeforeEdit(t *testing.T) {
+	must := require.New(t)
 	workspace, tr, _ := runToolUseScenario(t, toolUseScenario{
 		editStrategy: "multi",
 		workspaceFiles: map[string]string{
@@ -274,15 +273,13 @@ func TestToolUse_ReadBeforeEdit(t *testing.T) {
 	})
 
 	assertSequence(t, tr, "read_file", "edit_file")
-	if got := readWorkspaceFile(t, workspace, "greeting.txt"); got != "hello new world\n" {
-		t.Fatalf("greeting.txt = %q, want %q", got, "hello new world\n")
-	}
+	must.Equal("hello new world\n", readWorkspaceFile(t, workspace, "greeting.txt"))
 }
 
-// TestToolUse_LineRangeReading exercises read_file with start_line + limit
-// and asserts the returned tool result carries the requested line window —
-// lines 5-7 of the fixture and nothing outside it.
-func TestToolUse_LineRangeReading(t *testing.T) {
+// TestToolUse_ReadFile_ReturnsRequestedLineWindow exercises read_file with
+// start_line + limit and asserts the returned tool result carries the
+// requested line window — lines 5-7 of the fixture and nothing outside it.
+func TestToolUse_ReadFile_ReturnsRequestedLineWindow(t *testing.T) {
 	// Distinct, greppable line contents so an off-by-one window leak is
 	// detectable: "line-05", "line-06", ... "line-20".
 	lines := make([]string, 0, 20)
@@ -299,35 +296,36 @@ func TestToolUse_LineRangeReading(t *testing.T) {
 		},
 	})
 
-	if total, failed := countCalls(tr, "read_file"); total != 1 || failed != 0 {
-		t.Fatalf("read_file calls: total=%d failed=%d, want 1/0", total, failed)
-	}
+	requireToolCallCounts(t, tr, "read_file", 1, 0)
 
 	// The window must be exactly lines 5-7; lines 4 and 8 must be absent.
 	out := toolResultContent(t, rec, "c1")
 	for _, want := range []string{"line-05", "line-06", "line-07"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("read_file result missing %q in window; got:\n%s", want, out)
-		}
+		t.Run("includes "+want, func(t *testing.T) {
+			must := require.New(t)
+			must.Contains(out, want)
+		})
 	}
 	for _, unwanted := range []string{"line-04", "line-08"} {
-		if strings.Contains(out, unwanted) {
-			t.Errorf("read_file result leaked out-of-window line %q; got:\n%s", unwanted, out)
-		}
+		t.Run("excludes "+unwanted, func(t *testing.T) {
+			must := require.New(t)
+			must.NotContains(out, unwanted)
+		})
 	}
 }
 
-// TestToolUse_BoundedSearch asserts a broad grep with max_results=2 caps the
-// returned matches end-to-end over a workspace with twenty hits: the
-// rendered tool result the model sees must carry exactly two match lines,
-// not all twenty. The grep text rendering carries no truncation marker
-// (the structured flag is pinned separately in
-// TestGrepFilesTool_StructuredTruncated), so this test asserts the
-// behavioural cap rather than the flag.
-func TestToolUse_BoundedSearch(t *testing.T) {
+// TestToolUse_GrepFiles_CapsMatchesAtMaxResults asserts a broad grep with
+// max_results=2 caps the returned matches end-to-end over a workspace with
+// twenty hits: the rendered tool result the model sees must carry exactly two
+// match lines, not all twenty. The grep text rendering carries no truncation
+// marker (the structured flag is pinned separately in
+// TestGrepFilesTool_StructuredTruncated), so this test asserts the behavioural
+// cap rather than the flag.
+func TestToolUse_GrepFiles_CapsMatchesAtMaxResults(t *testing.T) {
+	must := require.New(t)
 	files := map[string]string{}
 	for i := 0; i < 10; i++ {
-		files["f"+string(rune('0'+i))+".txt"] = "needle here\nneedle again\n"
+		files[fmt.Sprintf("f%d.txt", i)] = "needle here\nneedle again\n"
 	}
 	_, tr, rec := runToolUseScenario(t, toolUseScenario{
 		workspaceFiles: files,
@@ -337,9 +335,7 @@ func TestToolUse_BoundedSearch(t *testing.T) {
 		},
 	})
 
-	if total, failed := countCalls(tr, "grep_files"); total != 1 || failed != 0 {
-		t.Fatalf("grep_files calls: total=%d failed=%d, want 1/0", total, failed)
-	}
+	requireToolCallCounts(t, tr, "grep_files", 1, 0)
 
 	// The workspace has 20 matches (2 per file x 10 files); max_results=2
 	// must cap the rendered output to 2 match lines.
@@ -350,15 +346,14 @@ func TestToolUse_BoundedSearch(t *testing.T) {
 			matchLines++
 		}
 	}
-	if matchLines != 2 {
-		t.Errorf("grep_files returned %d match lines, want 2 (max_results bound); got:\n%s", matchLines, out)
-	}
+	must.Equal(2, matchLines, "match lines in grep_files output (max_results bound):\n%s", out)
 }
 
-// TestToolUse_InvalidArgRecovery drives an edit_file with a missing required
-// field, then a corrected call. Asserts the first call failed, the second
-// succeeded, and the file ended in the corrected state.
-func TestToolUse_InvalidArgRecovery(t *testing.T) {
+// TestToolUse_EditFile_RecoversFromInvalidArgs drives an edit_file with a
+// missing required field, then a corrected call. Asserts the first call
+// failed, the second succeeded, and the file ended in the corrected state.
+func TestToolUse_EditFile_RecoversFromInvalidArgs(t *testing.T) {
+	must := require.New(t)
 	workspace, tr, _ := runToolUseScenario(t, toolUseScenario{
 		editStrategy: "multi",
 		workspaceFiles: map[string]string{
@@ -374,24 +369,20 @@ func TestToolUse_InvalidArgRecovery(t *testing.T) {
 		},
 	})
 
-	total, failed := countCalls(tr, "edit_file")
-	if total != 2 || failed != 1 {
-		t.Fatalf("edit_file calls: total=%d failed=%d, want 2/1", total, failed)
-	}
-	if got := readWorkspaceFile(t, workspace, "config.txt"); !strings.Contains(got, "mode=on") {
-		t.Fatalf("config.txt = %q, want mode=on", got)
-	}
+	requireToolCallCounts(t, tr, "edit_file", 2, 1)
+	must.Contains(readWorkspaceFile(t, workspace, "config.txt"), "mode=on")
 }
 
-// TestToolUse_AmbiguousEdit covers the ambiguous-edit-request behaviour: the
-// first edit_file 'replace' uses an old_string that matches multiple
-// locations, which the search-replace strategy rejects
-// with an exactly-one-match error; the model recovers with a more specific
+// TestToolUse_EditFile_RecoversFromAmbiguousMatch covers the ambiguous-edit
+// request behaviour: the first edit_file 'replace' uses an old_string that
+// matches multiple locations, which the search-replace strategy rejects with
+// an exactly-one-match error; the model recovers with a more specific
 // old_string. This is a distinct failure mode from invalid-arg recovery
 // (missing field) — here the arguments are well-formed but not unique.
 // Asserts two attempts (first fails), final file in the corrected state, and
 // that the failure message named the multi-location ambiguity.
-func TestToolUse_AmbiguousEdit(t *testing.T) {
+func TestToolUse_EditFile_RecoversFromAmbiguousMatch(t *testing.T) {
+	must := require.New(t)
 	workspace, tr, rec := runToolUseScenario(t, toolUseScenario{
 		editStrategy: "multi",
 		workspaceFiles: map[string]string{
@@ -408,28 +399,20 @@ func TestToolUse_AmbiguousEdit(t *testing.T) {
 		},
 	})
 
-	total, failed := countCalls(tr, "edit_file")
-	if total != 2 || failed != 1 {
-		t.Fatalf("edit_file calls: total=%d failed=%d, want 2/1", total, failed)
-	}
+	requireToolCallCounts(t, tr, "edit_file", 2, 1)
 	// The first attempt's error must name the multi-location ambiguity so the
 	// model has a signal to recover from.
-	firstErr := toolResultContent(t, rec, "c1")
-	if !strings.Contains(firstErr, "match") {
-		t.Errorf("first edit_file error should name the ambiguity; got %q", firstErr)
-	}
+	must.Contains(toolResultContent(t, rec, "c1"), "match", "first edit_file error should name the ambiguity")
 	// Final state: section [b]'s value changed, section [a]'s did not.
-	got := readWorkspaceFile(t, workspace, "settings.ini")
-	if got != "[a]\nvalue = 1\n[b]\nvalue = 2\n" {
-		t.Fatalf("settings.ini = %q, want only the [b] value changed", got)
-	}
+	must.Equal("[a]\nvalue = 1\n[b]\nvalue = 2\n", readWorkspaceFile(t, workspace, "settings.ini"))
 }
 
-// TestToolUse_UnknownToolRecovery calls the retired search_files name, gets
-// the directional renamed-tool hint, then recovers with grep_files. Asserts
-// the failed call's error names the replacements and that the recovery
-// call succeeded.
-func TestToolUse_UnknownToolRecovery(t *testing.T) {
+// TestToolUse_RetiredToolName_RecoversWithHint calls the retired search_files
+// name, gets the directional renamed-tool hint, then recovers with grep_files.
+// Asserts the failed call's error names the replacements and that the
+// recovery call succeeded.
+func TestToolUse_RetiredToolName_RecoversWithHint(t *testing.T) {
+	must := require.New(t)
 	_, tr, _ := runToolUseScenario(t, toolUseScenario{
 		workspaceFiles: map[string]string{
 			"src.go": "package src\n// TODO: implement\n",
@@ -441,12 +424,8 @@ func TestToolUse_UnknownToolRecovery(t *testing.T) {
 		},
 	})
 
-	if total, failed := countCalls(tr, "search_files"); total != 1 || failed != 1 {
-		t.Fatalf("search_files calls: total=%d failed=%d, want 1/1", total, failed)
-	}
-	if total, failed := countCalls(tr, "grep_files"); total != 1 || failed != 0 {
-		t.Fatalf("grep_files calls: total=%d failed=%d, want 1/0", total, failed)
-	}
+	requireToolCallCounts(t, tr, "search_files", 1, 1)
+	requireToolCallCounts(t, tr, "grep_files", 1, 0)
 	// The renamed-tool hint must name both replacements so the model can
 	// recover in-loop.
 	var hint string
@@ -455,16 +434,15 @@ func TestToolUse_UnknownToolRecovery(t *testing.T) {
 			hint = c.ErrorReason
 		}
 	}
-	if !strings.Contains(hint, "grep_files") || !strings.Contains(hint, "find_files") {
-		t.Fatalf("renamed-tool hint %q does not name both replacements", hint)
-	}
+	must.Contains(hint, "grep_files", "renamed-tool hint should name grep_files")
+	must.Contains(hint, "find_files", "renamed-tool hint should name find_files")
 }
 
-// TestToolUse_MultiToolTurn drives a single assistant turn that emits two
-// tool calls (read + find) before any tool result, exercising the
-// fan-out/ordered-recording path in planAndDispatch. Asserts both calls were
-// recorded in order.
-func TestToolUse_MultiToolTurn(t *testing.T) {
+// TestToolUse_MultiToolTurn_DispatchesInOrder drives a single assistant turn
+// that emits two tool calls (read + find) before any tool result, exercising
+// the fan-out/ordered-recording path in planAndDispatch. Asserts both calls
+// were recorded in order.
+func TestToolUse_MultiToolTurn_DispatchesInOrder(t *testing.T) {
 	_, tr, _ := runToolUseScenario(t, toolUseScenario{
 		workspaceFiles: map[string]string{
 			"a.go": "package a\n",
@@ -482,20 +460,17 @@ func TestToolUse_MultiToolTurn(t *testing.T) {
 	})
 
 	assertSequence(t, tr, "read_file", "find_files")
-	if total, failed := countCalls(tr, "read_file"); total != 1 || failed != 0 {
-		t.Fatalf("read_file: total=%d failed=%d, want 1/0", total, failed)
-	}
-	if total, failed := countCalls(tr, "find_files"); total != 1 || failed != 0 {
-		t.Fatalf("find_files: total=%d failed=%d, want 1/0", total, failed)
-	}
+	requireToolCallCounts(t, tr, "read_file", 1, 0)
+	requireToolCallCounts(t, tr, "find_files", 1, 0)
 }
 
-// TestToolUse_NoToolAnswerEscalates exercises tool-choice escalation: in
-// execution mode the model first answers with text only, having called no
-// tool. With the escalation policy enabled the loop forces a retry; the
-// retried turn calls read_file and the run then completes with outcome
-// "success", not max_turns or a crash.
-func TestToolUse_NoToolAnswerEscalates(t *testing.T) {
+// TestToolUse_NoToolAnswer_EscalatesToToolCall exercises tool-choice
+// escalation: in execution mode the model first answers with text only,
+// having called no tool. With the escalation policy enabled the loop forces a
+// retry; the retried turn calls read_file and the run then completes with
+// outcome "success", not max_turns or a crash.
+func TestToolUse_NoToolAnswer_EscalatesToToolCall(t *testing.T) {
+	must := require.New(t)
 	_, tr, _ := runToolUseScenario(t, toolUseScenario{
 		escalationRetries: 1,
 		mode:              "execution",
@@ -512,18 +487,17 @@ func TestToolUse_NoToolAnswerEscalates(t *testing.T) {
 		},
 	})
 
-	if total, failed := countCalls(tr, "read_file"); total != 1 || failed != 0 {
-		t.Fatalf("expected exactly one successful read_file after escalation; got total=%d failed=%d names %v", total, failed, toolCallNames(tr))
-	}
-	if tr.Outcome != "success" {
-		t.Fatalf("expected run to complete with outcome 'success' after escalation recovery, got %q", tr.Outcome)
-	}
+	total, failed := countCalls(tr, "read_file")
+	must.Equal(1, total, "read_file calls after escalation; tool names %v", toolCallNames(tr))
+	must.Zero(failed, "failed read_file calls after escalation")
+	must.Equal("success", tr.Outcome, "run should complete after escalation recovery")
 }
 
-// TestToolUse_NoToolAnswerAcceptedWhenEscalationOff is the control: with the
+// TestToolUse_NoToolAnswer_AcceptedWhenEscalationOff is the control: with the
 // escalation policy disabled (the OFF-by-default posture) a no-tool answer is
 // accepted unchanged and no tool is called.
-func TestToolUse_NoToolAnswerAcceptedWhenEscalationOff(t *testing.T) {
+func TestToolUse_NoToolAnswer_AcceptedWhenEscalationOff(t *testing.T) {
+	must := require.New(t)
 	_, tr, _ := runToolUseScenario(t, toolUseScenario{
 		mode: "execution",
 		workspaceFiles: map[string]string{
@@ -534,18 +508,17 @@ func TestToolUse_NoToolAnswerAcceptedWhenEscalationOff(t *testing.T) {
 		},
 	})
 
-	if len(tr.ToolCalls) != 0 {
-		t.Fatalf("expected no tool calls with escalation off; got %v", toolCallNames(tr))
-	}
+	must.Empty(tr.ToolCalls, "no tool calls expected with escalation off; tool names %v", toolCallNames(tr))
 }
 
-// TestToolUse_MCPNameNormalization registers a tool under an MCP-style
-// internal name containing a hyphen and wraps the replay provider in a
-// NormalizingAdapter under the Gemini policy (which forbids hyphens). The
-// replay emits a tool_call under the EXTERNAL (sanitized) name; the
-// normalizer must reverse it to the internal name so dispatch resolves and
-// the tool runs. Asserts the trace records the internal MCP name and success.
-func TestToolUse_MCPNameNormalization(t *testing.T) {
+// TestToolUse_MCPName_NormalizedToInternalName registers a tool under an
+// MCP-style internal name containing a hyphen and wraps the replay provider
+// in a NormalizingAdapter under the Gemini policy (which forbids hyphens). The
+// replay emits a tool_call under the EXTERNAL (sanitized) name; the normalizer
+// must reverse it to the internal name so dispatch resolves and the tool runs.
+// Asserts the trace records the internal MCP name and success.
+func TestToolUse_MCPName_NormalizedToInternalName(t *testing.T) {
+	must := require.New(t)
 	const internalName = "mcp__docs__fetch-page"
 
 	ran := false
@@ -574,16 +547,12 @@ func TestToolUse_MCPNameNormalization(t *testing.T) {
 		},
 	})
 
-	if !ran {
-		t.Fatal("MCP tool handler did not run; reverse name mapping failed")
-	}
-	if total, failed := countCalls(tr, internalName); total != 1 || failed != 0 {
-		t.Fatalf("%s calls: total=%d failed=%d, want 1/0", internalName, total, failed)
-	}
+	must.True(ran, "MCP tool handler did not run; reverse name mapping failed")
+	requireToolCallCounts(t, tr, internalName, 1, 0)
 }
 
-// TestToolUse_StreamingToolCallParsing exercises provider-specific streaming
-// tool-call parsing through the real openai-compatible adapter's SSE
+// TestToolUse_StreamingToolCall_ReassemblesSplitArgs exercises provider-specific
+// streaming tool-call parsing through the real openai-compatible adapter's SSE
 // parser, driven by a loopback httptest server — no network, no live key
 // (the credential is a dummy resolved from the test env). The server streams
 // an OpenAI-style tool_calls delta whose arguments arrive split across two
@@ -592,14 +561,13 @@ func TestToolUse_MCPNameNormalization(t *testing.T) {
 // fake-provider counterpart to the ReplayProvider tasks: ReplayProvider
 // bypasses wire parsing, whereas this task proves the streamed-delta parser
 // itself produces a dispatchable tool call.
-func TestToolUse_StreamingToolCallParsing(t *testing.T) {
+func TestToolUse_StreamingToolCall_ReassemblesSplitArgs(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 
 	workspace := t.TempDir()
 	target := filepath.Join(workspace, "target.txt")
-	if err := os.WriteFile(target, []byte("hello old world\n"), 0o644); err != nil {
-		t.Fatalf("seed target: %v", err)
-	}
+	must.NoError(os.WriteFile(target, []byte("hello old world\n"), 0o644), "seed target")
 
 	// Turn 1 streams a tool_calls delta with the function name in the first
 	// chunk and the arguments split across two subsequent chunks, so the
@@ -638,9 +606,7 @@ func TestToolUse_StreamingToolCallParsing(t *testing.T) {
 	}
 
 	loop, err := BuildLoopWithTransport(context.Background(), config, transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}))
-	if err != nil {
-		t.Fatalf("BuildLoopWithTransport: %v", err)
-	}
+	must.NoError(err)
 	// Order matters: defers run LIFO, so server.Close() is registered first
 	// and loop.Close() second, ensuring the loop tears down its provider
 	// transport before the httptest server stops listening. Closing the
@@ -650,32 +616,18 @@ func TestToolUse_StreamingToolCallParsing(t *testing.T) {
 	defer func() { _ = loop.Close() }()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("loop.Run: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("expected success, got %q", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
 
 	got, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("read target: %v", err)
-	}
-	if string(got) != "hello new world\n" {
-		t.Fatalf("target.txt = %q, want %q", string(got), "hello new world\n")
-	}
-	if total, failed := countCalls(runTrace, "search_replace"); total != 1 || failed != 0 {
-		t.Fatalf("search_replace calls: total=%d failed=%d, want 1/0", total, failed)
-	}
+	must.NoError(err, "read target")
+	must.Equal("hello new world\n", string(got))
+	requireToolCallCounts(t, runTrace, "search_replace", 1, 0)
 	// Assert the tool reached the wire: the first request must advertise
 	// search_replace in its tools payload. Without this, a regression that
 	// dropped the tool from the request body could still pass on the
 	// streamed-response parse alone (the canned response names the tool
 	// regardless of what was sent).
-	if len(requestBodies) == 0 {
-		t.Fatalf("no provider requests captured")
-	}
-	if !strings.Contains(requestBodies[0], "search_replace") {
-		t.Fatalf("first request body does not advertise search_replace tool:\n%s", requestBodies[0])
-	}
+	must.NotEmpty(requestBodies, "no provider requests captured")
+	must.Contains(requestBodies[0], "search_replace", "first request should advertise the search_replace tool")
 }

@@ -12,6 +12,9 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
@@ -51,12 +54,14 @@ func (f *fakeGuard) Check(_ context.Context, in guard.Input) (*guard.Decision, e
 	}, nil
 }
 
-// TestLoop_NoneGuardLeavesBehaviorUnchanged asserts that running the
+// TestLoop_NoneGuard_LeavesBehaviorUnchanged asserts that running the
 // loop with the package-default Noop guard reproduces the no-guard
 // behaviour byte-for-byte: outcome=="success", one turn, no calls to
 // any classifier. This is the load-bearing invariant for landing
 // guardrails behind a default-off configuration.
-func TestLoop_NoneGuardLeavesBehaviorUnchanged(t *testing.T) {
+func TestLoop_NoneGuard_LeavesBehaviorUnchanged(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "Hello"},
@@ -69,24 +74,20 @@ func TestLoop_NoneGuardLeavesBehaviorUnchanged(t *testing.T) {
 	config := buildTestConfig()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Errorf("expected outcome 'success', got %q", runTrace.Outcome)
-	}
-	if runTrace.Turns != 1 {
-		t.Errorf("expected 1 turn, got %d", runTrace.Turns)
-	}
+	must.NoError(err)
+	check.Equal("success", runTrace.Outcome)
+	check.Equal(1, runTrace.Turns)
 }
 
-// TestLoop_PreTurnDenyTurn0ReturnsGuardrailBlocked asserts that a
+// TestLoop_PreTurnDenyOnTurnZero_ReturnsGuardrailBlocked asserts that a
 // PreTurn deny on turn 0 aborts the run with outcome
 // "guardrail_blocked" instead of silently letting the user prompt
 // reach the model. replaceUntrustedChunks cannot rewrite the initial
 // prompt (it has not been appended to the message history yet), so
 // the only correct action is to abort.
-func TestLoop_PreTurnDenyTurn0ReturnsGuardrailBlocked(t *testing.T) {
+func TestLoop_PreTurnDenyOnTurnZero_ReturnsGuardrailBlocked(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &countingProvider{}
 	loop := buildTestLoop(nil)
 	loop.Provider = prov
@@ -94,18 +95,10 @@ func TestLoop_PreTurnDenyTurn0ReturnsGuardrailBlocked(t *testing.T) {
 	config := buildTestConfig()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "guardrail_blocked" {
-		t.Errorf("outcome = %q, want guardrail_blocked", runTrace.Outcome)
-	}
-	if prov.calls != 0 {
-		t.Errorf("provider was called %d times; want 0 (run must abort before model contact)", prov.calls)
-	}
-	if runTrace.Turns != 0 {
-		t.Errorf("turns = %d, want 0", runTrace.Turns)
-	}
+	must.NoError(err)
+	check.Equal("guardrail_blocked", runTrace.Outcome)
+	check.Equal(0, prov.calls, "run must abort before model contact")
+	check.Equal(0, runTrace.Turns)
 }
 
 // countingProvider records how many times Stream was invoked.
@@ -123,11 +116,13 @@ func (c *countingProvider) Stream(_ context.Context, _ types.StreamParams) (<-ch
 	return ch, nil
 }
 
-// TestLoop_PostTurnDenyProducesGuardrailBlocked asserts that a
+// TestLoop_PostTurnDeny_ProducesGuardrailBlocked asserts that a
 // VerdictDeny at PhasePostTurn terminates the run with the new
 // "guardrail_blocked" outcome. PreTurn is configured to allow so we
 // reach the PostTurn deny rather than aborting at turn-0 PreTurn.
-func TestLoop_PostTurnDenyProducesGuardrailBlocked(t *testing.T) {
+func TestLoop_PostTurnDeny_ProducesGuardrailBlocked(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "I will help with that."},
@@ -147,40 +142,24 @@ func TestLoop_PostTurnDenyProducesGuardrailBlocked(t *testing.T) {
 	config := buildTestConfig()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "guardrail_blocked" {
-		t.Errorf("expected outcome 'guardrail_blocked', got %q", runTrace.Outcome)
-	}
+	must.NoError(err)
+	check.Equal("guardrail_blocked", runTrace.Outcome)
 
 	seen := g.seen
-	if len(seen) < 2 {
-		t.Fatalf("expected fake guard to see at least 2 phases, got %v", seen)
-	}
-	if seen[0] != guard.PhasePreTurn {
-		t.Errorf("expected first phase pre_turn, got %s", seen[0])
-	}
-	foundPostTurn := false
-	for _, p := range seen {
-		if p == guard.PhasePostTurn {
-			foundPostTurn = true
-			break
-		}
-	}
-	if !foundPostTurn {
-		t.Errorf("expected fake guard to see post_turn, got %v", seen)
-	}
+	must.GreaterOrEqual(len(seen), 2, "expected fake guard to see at least 2 phases, got %v", seen)
+	check.Equal(guard.PhasePreTurn, seen[0])
+	check.Contains(seen, guard.PhasePostTurn)
 }
 
-// TestLoop_PreToolDenyShortCircuitsAsToolFailure asserts that a
+// TestLoop_PreToolDeny_ShortCircuitsAsToolFailure asserts that a
 // PhasePreTool deny yields a tool_result with IsError=true containing
 // the "guardrail blocked tool call" prefix. The PreTurn phase allows
 // (otherwise a turn-0 PreTurn deny would abort the run before any
 // tool call could be dispatched) and PostTurn denies, so the outcome
 // is "guardrail_blocked" while still proving PreTool fired.
-func TestLoop_PreToolDenyShortCircuitsAsToolFailure(t *testing.T) {
-
+func TestLoop_PreToolDeny_ShortCircuitsAsToolFailure(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	scripted := &scriptedProvider{
 		turns: [][]types.StreamEvent{
 			{
@@ -208,25 +187,10 @@ func TestLoop_PreToolDenyShortCircuitsAsToolFailure(t *testing.T) {
 	config.MaxTurns = 4
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
+	must.NoError(err)
 
-	seen := g.seen
-	foundPreTool := false
-	for _, p := range seen {
-		if p == guard.PhasePreTool {
-			foundPreTool = true
-			break
-		}
-	}
-	if !foundPreTool {
-		t.Errorf("expected fake guard to see pre_tool, got %v", seen)
-	}
-
-	if runTrace.Outcome != "guardrail_blocked" {
-		t.Errorf("expected outcome 'guardrail_blocked' (post_turn deny on turn 1), got %q", runTrace.Outcome)
-	}
+	check.Contains(g.seen, guard.PhasePreTool)
+	check.Equal("guardrail_blocked", runTrace.Outcome, "post_turn deny on turn 1")
 }
 
 // scriptedProvider returns a different event sequence per Stream call.
@@ -255,22 +219,21 @@ func (s *scriptedProvider) Stream(_ context.Context, _ types.StreamParams) (<-ch
 	return ch, nil
 }
 
-// TestLoop_PreTurnDenyScrubsToolResults asserts that on a turn N>0,
+// TestLoop_PreTurnDeny_ScrubsToolResults asserts that on a turn N>0,
 // when PhasePreTurn returns VerdictDeny against the just-arrived
 // tool_result blocks, those blocks are rewritten with the placeholder
 // before being sent to the model. The run continues to completion.
 // Turn 0 PreTurn allows, since a turn-0 deny aborts the run instead
 // (the user prompt can't be scrubbed in place).
-func TestLoop_PreTurnDenyScrubsToolResults(t *testing.T) {
+func TestLoop_PreTurnDeny_ScrubsToolResults(t *testing.T) {
+	must := require.New(t)
 	scripted := &scriptedProvider{
 		turns: [][]types.StreamEvent{
 			{
-
 				{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: map[string]any{}},
 				{Type: "message_complete", StopReason: "tool_use"},
 			},
 			{
-
 				{Type: "text_delta", Text: "done"},
 				{Type: "message_complete", StopReason: "end_turn"},
 			},
@@ -285,19 +248,15 @@ func TestLoop_PreTurnDenyScrubsToolResults(t *testing.T) {
 	config.MaxTurns = 4
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Errorf("expected outcome 'success' (PreTurn deny is content-level), got %q", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome, "PreTurn deny is content-level")
 }
 
 // turnAwarePreTurnGuard allows the first PreTurn call (turn 0) and
 // denies every subsequent PreTurn call. Other phases always allow.
 // This exercises the post-turn-0 PreTurn scrub branch — the turn-0
 // abort path is covered separately by
-// TestLoop_PreTurnDenyTurn0ReturnsGuardrailBlocked.
+// TestLoop_PreTurnDenyOnTurnZero_ReturnsGuardrailBlocked.
 type turnAwarePreTurnGuard struct {
 	mu           sync.Mutex
 	preTurnCalls int
@@ -335,14 +294,16 @@ func (p *phaseAwareFakeGuard) Check(_ context.Context, in guard.Input) (*guard.D
 	return &guard.Decision{Verdict: v, GuardID: "phase-aware-fake"}, nil
 }
 
-// TestLoop_PreToolDenyReasonNotEchoedToModel asserts the tool result
+// TestLoop_PreToolDeny_ReasonNotEchoedToModel asserts the tool result
 // content surfaced to the main model after a PhasePreTool deny is
 // exactly the fixed string "guardrail blocked tool call" — with no
 // portion of the guard's Reason text. The reason originates from the
 // classifier (cloud-judge in particular runs untrusted content
 // through an LLM whose JSON reason field is part of its output), so
 // echoing it back would re-introduce the injection we just blocked.
-func TestLoop_PreToolDenyReasonNotEchoedToModel(t *testing.T) {
+func TestLoop_PreToolDeny_ReasonNotEchoedToModel(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	scripted := &scriptedProvider{
 		turns: [][]types.StreamEvent{
 			{
@@ -374,20 +335,13 @@ func TestLoop_PreToolDenyReasonNotEchoedToModel(t *testing.T) {
 	config := buildTestConfig()
 	config.MaxTurns = 4
 
-	if _, err := loop.Run(context.Background(), config); err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
+	_, err := loop.Run(context.Background(), config)
+	must.NoError(err)
 
 	out := transportBuf.String()
-	if !strings.Contains(out, `"content":"guardrail blocked tool call"`) {
-		t.Errorf("expected fixed tool-error content in transport output, got: %s", out)
-	}
-	if strings.Contains(out, evilReason) {
-		t.Errorf("guard reason leaked to model context via transport: %s", out)
-	}
-	if strings.Contains(out, "ignore previous instructions") {
-		t.Errorf("guard reason leaked to model context via transport: %s", out)
-	}
+	check.Contains(out, `"content":"guardrail blocked tool call"`)
+	check.NotContains(out, evilReason)
+	check.NotContains(out, "ignore previous instructions")
 }
 
 // phaseAwareFakeGuardWithReason returns a configured Reason on every
@@ -408,12 +362,14 @@ func (p *phaseAwareFakeGuardWithReason) Check(_ context.Context, in guard.Input)
 	return &guard.Decision{Verdict: v, GuardID: "evil-fake", Reason: p.reason}, nil
 }
 
-// TestLoop_PreTurnSkipDoesNotEmitGuardAllowed asserts that when the
+// TestLoop_PreTurnSkip_DoesNotEmitGuardAllowed asserts that when the
 // guard returns Reason==ReasonSkippedMinChunk, the loop emits a
 // guard_skipped security event and not guard_allowed. This is the
 // observability contract for the granite-guardian min-chunk-chars
 // optimisation.
-func TestLoop_PreTurnSkipDoesNotEmitGuardAllowed(t *testing.T) {
+func TestLoop_PreTurnSkip_DoesNotEmitGuardAllowed(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "hi"},
@@ -427,30 +383,21 @@ func TestLoop_PreTurnSkipDoesNotEmitGuardAllowed(t *testing.T) {
 	config := buildTestConfig()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Errorf("expected outcome 'success', got %q", runTrace.Outcome)
-	}
+	must.NoError(err)
+	check.Equal("success", runTrace.Outcome)
 
 	out := secBuf.String()
 
-	if !strings.Contains(out, `"event":"guard_skipped"`) {
-		t.Errorf("expected guard_skipped event, got: %s", out)
-	}
+	check.Contains(out, `"event":"guard_skipped"`)
 	// Skip is a distinct decision class: pre_turn must not be
 	// downgraded to guard_allowed (other phases may still log it).
-	preTurnAllow := false
+	var preTurnAllowLines []string
 	for _, line := range strings.Split(out, "\n") {
 		if strings.Contains(line, `"event":"guard_allowed"`) && strings.Contains(line, `"phase":"pre_turn"`) {
-			preTurnAllow = true
-			break
+			preTurnAllowLines = append(preTurnAllowLines, line)
 		}
 	}
-	if preTurnAllow {
-		t.Errorf("pre_turn skip was logged as guard_allowed; got: %s", out)
-	}
+	check.Empty(preTurnAllowLines, "pre_turn skip was logged as guard_allowed; got: %s", out)
 }
 
 type skipOnPreTurnGuard struct{}
@@ -466,11 +413,13 @@ func (skipOnPreTurnGuard) Check(_ context.Context, in guard.Input) (*guard.Decis
 	return &guard.Decision{Verdict: guard.VerdictAllow, GuardID: "skip-fake"}, nil
 }
 
-// TestLoop_GuardErrorFailOpenAllowsRun asserts that with
+// TestLoop_GuardError_FailOpenAllowsRun asserts that with
 // guardFailOpen=true configured on the RunConfig, a guard returning a
 // non-nil error converts to allow + a guard_error security event
 // rather than aborting the run.
-func TestLoop_GuardErrorFailOpenAllowsRun(t *testing.T) {
+func TestLoop_GuardError_FailOpenAllowsRun(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "ok"},
@@ -485,20 +434,16 @@ func TestLoop_GuardErrorFailOpenAllowsRun(t *testing.T) {
 	config.GuardRail = &types.GuardRailConfig{Type: "granite-guardian", FailOpen: true}
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Errorf("expected outcome 'success' with fail-open, got %q", runTrace.Outcome)
-	}
-	if !strings.Contains(secBuf.String(), `"event":"guard_error"`) {
-		t.Errorf("expected guard_error event, got: %s", secBuf.String())
-	}
+	must.NoError(err)
+	check.Equal("success", runTrace.Outcome, "fail-open should let the run complete")
+	check.Contains(secBuf.String(), `"event":"guard_error"`)
 }
 
-// TestLoop_GuardErrorNamesAdapter asserts the guard_error security
+// TestLoop_GuardError_NamesAdapter asserts the guard_error security
 // event labels a failing adapter by its own GuardID rather than "unknown".
-func TestLoop_GuardErrorNamesAdapter(t *testing.T) {
+func TestLoop_GuardError_NamesAdapter(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "ok"},
@@ -511,16 +456,11 @@ func TestLoop_GuardErrorNamesAdapter(t *testing.T) {
 	config := buildTestConfig()
 	config.GuardRail = &types.GuardRailConfig{Type: "shieldstral", FailOpen: true}
 
-	if _, err := loop.Run(context.Background(), config); err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
+	_, err := loop.Run(context.Background(), config)
+	must.NoError(err)
 	out := secBuf.String()
-	if !strings.Contains(out, `"guardId":"shieldstral"`) {
-		t.Errorf("guard_error should name the adapter, got: %s", out)
-	}
-	if strings.Contains(out, `"guardId":"unknown"`) {
-		t.Errorf("guard_error fell back to unknown: %s", out)
-	}
+	check.Contains(out, `"guardId":"shieldstral"`)
+	check.NotContains(out, `"guardId":"unknown"`)
 }
 
 type errorGuard struct{ err error }
@@ -529,11 +469,13 @@ func (e *errorGuard) Check(_ context.Context, _ guard.Input) (*guard.Decision, e
 	return nil, e.err
 }
 
-// TestLoop_GuardErrorFailClosedDoesNotPanic asserts that when
+// TestLoop_GuardError_FailClosedDoesNotPanic asserts that when
 // FailOpen is not set, a guard error on PreTurn turn 0 aborts the run
 // with "guardrail_blocked" and emits a guard_error security event
 // without panicking: an unreachable guardrail is treated as a deny.
-func TestLoop_GuardErrorFailClosedDoesNotPanic(t *testing.T) {
+func TestLoop_GuardError_FailClosedDoesNotPanic(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "ok"},
@@ -548,15 +490,9 @@ func TestLoop_GuardErrorFailClosedDoesNotPanic(t *testing.T) {
 	config := buildTestConfig()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "guardrail_blocked" {
-		t.Errorf("expected outcome 'guardrail_blocked' (turn-0 PreTurn fail-closed aborts), got %q", runTrace.Outcome)
-	}
-	if !strings.Contains(secBuf.String(), `"event":"guard_error"`) {
-		t.Errorf("expected guard_error event, got: %s", secBuf.String())
-	}
+	must.NoError(err)
+	check.Equal("guardrail_blocked", runTrace.Outcome, "turn-0 PreTurn fail-closed aborts")
+	check.Contains(secBuf.String(), `"event":"guard_error"`)
 }
 
 type flakyGuard struct {
@@ -578,6 +514,8 @@ func (f *flakyGuard) Check(_ context.Context, _ guard.Input) (*guard.Decision, e
 // its contract by returning (nil, nil) is a guard error, so under the
 // default failOpen=false the run is blocked rather than allowed.
 func TestGuardCheck_NilNilDecisionBlocksRun(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "ok"},
@@ -590,15 +528,9 @@ func TestGuardCheck_NilNilDecisionBlocksRun(t *testing.T) {
 	config := buildTestConfig()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "guardrail_blocked" {
-		t.Errorf("outcome = %q, want guardrail_blocked", runTrace.Outcome)
-	}
-	if !strings.Contains(secBuf.String(), `"guard_error"`) {
-		t.Errorf("no guard_error security event: %s", secBuf.String())
-	}
+	must.NoError(err)
+	check.Equal("guardrail_blocked", runTrace.Outcome)
+	check.Contains(secBuf.String(), `"guard_error"`)
 }
 
 // scriptedGuard returns a fixed (decision, err) pair, including results
@@ -632,50 +564,47 @@ func TestGuardCheck_OnlyKnownVerdictsAllow(t *testing.T) {
 		{"unknown verdict", scriptedGuard{decision: &guard.Decision{Verdict: "bogus", GuardID: "g"}}, true, false},
 	}
 	for _, tc := range cases {
-		for _, failOpen := range []bool{false, true} {
-			name := tc.name + "/failOpen=false"
-			if failOpen {
-				name = tc.name + "/failOpen=true"
-			}
-			t.Run(name, func(t *testing.T) {
-				handlerCalls := 0
-				tl := trivialTool()
-				tl.Handler = func(_ context.Context, _ json.RawMessage) (string, error) {
-					handlerCalls++
-					return "ok", nil
+		t.Run(tc.name, func(t *testing.T) {
+			for _, failOpen := range []bool{false, true} {
+				mode := "fail closed"
+				if failOpen {
+					mode = "fail open"
 				}
-				loop, reader := buildMetricsHarness(t, []*tool.Tool{tl}, nil, tc.guard, nil)
-				var secBuf bytes.Buffer
-				loop.Security = security.NewSecurityLogger(&secBuf, "test-run")
-				config := configWithMaxParallel(1)
-				config.GuardRail = &types.GuardRailConfig{FailOpen: failOpen}
-
-				wantAllow := tc.wantAllow || (tc.guardErr && failOpen)
-				allow, decision, _ := loop.guardCheck(context.Background(), guard.Input{Phase: guard.PhasePreTool, Content: "{}"}, failOpen)
-				if allow != wantAllow {
-					t.Fatalf("guardCheck allow = %v, want %v (decision %+v)", allow, wantAllow, decision)
-				}
-				if tc.guardErr && failOpen && (decision == nil || !strings.HasPrefix(decision.Reason, "fail_open: ")) {
-					t.Errorf("fail-open decision = %+v, want a fail_open: reason", decision)
-				}
-
-				secBuf.Reset()
-				results, _, _ := loop.planAndDispatch(context.Background(), config,
-					[]types.ToolCall{{ID: "tc", Name: "trivial", Input: json.RawMessage(`{}`)}}, &stallDetector{}, "", "")
-				if ran := handlerCalls == 1; ran != wantAllow {
-					t.Fatalf("handler ran %d times, want allow=%v; results %+v", handlerCalls, wantAllow, results)
-				}
-				if !wantAllow {
-					failures := collectFailures(t, reader)
-					if len(failures) != 1 || failures[0].category != observability.ToolFailureGuardrailDenied.String() {
-						t.Errorf("tool_failures = %+v, want one guardrail_denied", failures)
+				t.Run(mode, func(t *testing.T) {
+					must := require.New(t)
+					handlerCalls := 0
+					tl := trivialTool()
+					tl.Handler = func(_ context.Context, _ json.RawMessage) (string, error) {
+						handlerCalls++
+						return "ok", nil
 					}
-				}
-				if hasErrEvent := strings.Contains(secBuf.String(), `"guard_error"`); hasErrEvent != tc.guardErr {
-					t.Errorf("guard_error event present = %v, want %v: %s", hasErrEvent, tc.guardErr, secBuf.String())
-				}
-			})
-		}
+					loop, reader := buildMetricsHarness(t, []*tool.Tool{tl}, nil, tc.guard, nil)
+					var secBuf bytes.Buffer
+					loop.Security = security.NewSecurityLogger(&secBuf, "test-run")
+					config := configWithMaxParallel(1)
+					config.GuardRail = &types.GuardRailConfig{FailOpen: failOpen}
+
+					wantAllow := tc.wantAllow || (tc.guardErr && failOpen)
+					allow, decision, _ := loop.guardCheck(context.Background(), guard.Input{Phase: guard.PhasePreTool, Content: "{}"}, failOpen)
+					must.Equal(wantAllow, allow, "decision %+v", decision)
+					if tc.guardErr && failOpen {
+						must.NotNil(decision)
+						must.True(strings.HasPrefix(decision.Reason, "fail_open: "), "fail-open decision = %+v, want a fail_open: reason", decision)
+					}
+
+					secBuf.Reset()
+					results, _, _ := loop.planAndDispatch(context.Background(), config,
+						[]types.ToolCall{{ID: "tc", Name: "trivial", Input: json.RawMessage(`{}`)}}, &stallDetector{}, "", "")
+					must.Equal(wantAllow, handlerCalls == 1, "handler ran %d times; results %+v", handlerCalls, results)
+					if !wantAllow {
+						failures := collectFailures(t, reader)
+						must.Len(failures, 1, "want one guardrail_denied tool failure")
+						must.Equal(observability.ToolFailureGuardrailDenied.String(), failures[0].category)
+					}
+					must.Equal(tc.guardErr, strings.Contains(secBuf.String(), `"guard_error"`), "guard_error event in security log: %s", secBuf.String())
+				})
+			}
+		})
 	}
 }
 
@@ -685,20 +614,20 @@ func TestGuardCheck_OnlyKnownVerdictsAllow(t *testing.T) {
 // secret resolution and provider construction.
 func TestBuildGuardRail_NoneReturnsNoop(t *testing.T) {
 	ctx := context.Background()
-	g, err := buildGuardRail(ctx, nil, nil, nil, nil, nil)
-	if err != nil {
-		t.Fatalf("buildGuardRail(nil): %v", err)
+	cases := []struct {
+		name string
+		cfg  *types.GuardRailConfig
+	}{
+		{name: "nil config", cfg: nil},
+		{name: "type none", cfg: &types.GuardRailConfig{Type: "none"}},
 	}
-	if _, ok := g.(guard.Noop); !ok {
-		t.Errorf("expected Noop, got %T", g)
-	}
-
-	g, err = buildGuardRail(ctx, &types.GuardRailConfig{Type: "none"}, nil, nil, nil, nil)
-	if err != nil {
-		t.Fatalf("buildGuardRail(none): %v", err)
-	}
-	if _, ok := g.(guard.Noop); !ok {
-		t.Errorf("expected Noop for type 'none', got %T", g)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			g, err := buildGuardRail(ctx, tc.cfg, nil, nil, nil, nil)
+			must.NoError(err)
+			must.IsType(guard.Noop{}, g)
+		})
 	}
 }
 
@@ -707,26 +636,23 @@ func TestBuildGuardRail_NoneReturnsNoop(t *testing.T) {
 // Endpoint is a localhost URL so no network call happens at
 // construction time.
 func TestBuildGuardRail_GraniteGuardianBuildsAdapter(t *testing.T) {
+	must := require.New(t)
 	ctx := context.Background()
 	cfg := &types.GuardRailConfig{
 		Type:     "granite-guardian",
 		Endpoint: "http://localhost:9999",
 	}
 	g, err := buildGuardRail(ctx, cfg, nil, nil, nil, nil)
-	if err != nil {
-		t.Fatalf("buildGuardRail: %v", err)
-	}
-	if g == nil {
-		t.Fatal("expected non-nil GuardRail")
-	}
-	if _, isNoop := g.(guard.Noop); isNoop {
-		t.Error("expected non-Noop GuardRail")
-	}
+	must.NoError(err)
+	must.NotNil(g)
+	_, isNoop := g.(guard.Noop)
+	must.False(isNoop, "expected non-Noop GuardRail")
 }
 
 // TestBuildGuardRail_PhasesWrapsWithPhaseGated asserts that a non-empty
 // Phases slice produces a PhaseGated wrapper around the inner adapter.
-func TestBuildGuardRail_PhasesWrapsWithPhaseGated(t *testing.T) {
+func TestBuildGuardRail_PhasesWrapWithPhaseGated(t *testing.T) {
+	must := require.New(t)
 	ctx := context.Background()
 	cfg := &types.GuardRailConfig{
 		Type:     "granite-guardian",
@@ -734,16 +660,10 @@ func TestBuildGuardRail_PhasesWrapsWithPhaseGated(t *testing.T) {
 		Phases:   []string{"post_turn"},
 	}
 	g, err := buildGuardRail(ctx, cfg, nil, nil, nil, nil)
-	if err != nil {
-		t.Fatalf("buildGuardRail: %v", err)
-	}
+	must.NoError(err)
 	pg, ok := g.(*guard.PhaseGated)
-	if !ok {
-		t.Fatalf("expected *PhaseGated, got %T", g)
-	}
-	if len(pg.Phases) != 1 || pg.Phases[0] != guard.PhasePostTurn {
-		t.Errorf("expected PhaseGated.Phases=[post_turn], got %v", pg.Phases)
-	}
+	must.True(ok, "expected *PhaseGated, got %T", g)
+	must.Equal([]guard.Phase{guard.PhasePostTurn}, pg.Phases)
 }
 
 // TestBuildGuardRail_UnknownTypeIsError asserts that buildGuardRail
@@ -752,14 +672,10 @@ func TestBuildGuardRail_PhasesWrapsWithPhaseGated(t *testing.T) {
 // validation is the canonical gate, but defence-in-depth at the
 // constructor catches any bypass.
 func TestBuildGuardRail_UnknownTypeIsError(t *testing.T) {
+	must := require.New(t)
 	ctx := context.Background()
 	_, err := buildGuardRail(ctx, &types.GuardRailConfig{Type: "future-thing"}, nil, nil, nil, nil)
-	if err == nil {
-		t.Fatal("expected error for unknown type, got nil")
-	}
-	if !strings.Contains(err.Error(), "unsupported") {
-		t.Errorf("expected error to mention 'unsupported', got: %v", err)
-	}
+	must.ErrorContains(err, "unsupported")
 }
 
 // stubProvider is a no-op ProviderAdapter used solely as a marker for
@@ -774,11 +690,12 @@ func (stubProvider) Stream(_ context.Context, _ types.StreamParams) (<-chan type
 	return ch, nil
 }
 
-// TestBuildGuardRail_Shieldstral asserts that Shieldstral is correctly constructed
-// by buildGuardRailNode.
-func TestBuildGuardRail_Shieldstral(t *testing.T) {
+// TestBuildGuardRail_Shieldstral_Construction asserts that Shieldstral is
+// correctly constructed by buildGuardRailNode.
+func TestBuildGuardRail_Shieldstral_Construction(t *testing.T) {
 	ctx := context.Background()
 	t.Run("without apiKeyRef", func(t *testing.T) {
+		must := require.New(t)
 		cfg := &types.GuardRailConfig{
 			Type:      "shieldstral",
 			Endpoint:  "http://127.0.0.1:8000",
@@ -786,18 +703,13 @@ func TestBuildGuardRail_Shieldstral(t *testing.T) {
 			TimeoutMs: 1500,
 		}
 		g, err := buildGuardRail(ctx, cfg, nil, nil, nil, nil)
-		if err != nil {
-			t.Fatalf("buildGuardRail: %v", err)
-		}
-		if g == nil {
-			t.Fatal("expected non-nil GuardRail")
-		}
-		if _, ok := unwrapPhaseGated(g).(*guard.Shieldstral); !ok {
-			t.Errorf("expected *guard.Shieldstral, got %T", g)
-		}
+		must.NoError(err)
+		must.NotNil(g)
+		must.IsType((*guard.Shieldstral)(nil), unwrapPhaseGated(g))
 	})
 
 	t.Run("with resolved apiKeyRef", func(t *testing.T) {
+		must := require.New(t)
 		t.Setenv("TEST_MISTRAL_KEY", "mistral-secret-key-123")
 		secrets := security.NewEnvSecretStore()
 		cfg := &types.GuardRailConfig{
@@ -807,27 +719,19 @@ func TestBuildGuardRail_Shieldstral(t *testing.T) {
 			Model:     "mistralai/Shieldstral-1.0-3B",
 		}
 		g, err := buildGuardRail(ctx, cfg, nil, nil, secrets, nil)
-		if err != nil {
-			t.Fatalf("buildGuardRail: %v", err)
-		}
-		if _, ok := unwrapPhaseGated(g).(*guard.Shieldstral); !ok {
-			t.Errorf("expected *guard.Shieldstral, got %T", g)
-		}
+		must.NoError(err)
+		must.IsType((*guard.Shieldstral)(nil), unwrapPhaseGated(g))
 	})
 
 	t.Run("with apiKeyRef but nil secret store", func(t *testing.T) {
+		must := require.New(t)
 		cfg := &types.GuardRailConfig{
 			Type:      "shieldstral",
 			Endpoint:  "https://api.mistral.ai",
 			APIKeyRef: "secret://SOME_KEY",
 		}
 		_, err := buildGuardRail(ctx, cfg, nil, nil, nil, nil)
-		if err == nil {
-			t.Fatal("expected error when secrets is nil and apiKeyRef is set, got nil")
-		}
-		if !strings.Contains(err.Error(), "secret store is required") {
-			t.Errorf("expected error to mention secret store, got: %v", err)
-		}
+		must.ErrorContains(err, "secret store is required")
 	})
 }
 
@@ -890,33 +794,27 @@ func TestBuildGuardRail_ShieldstralPhaseDefault(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			for _, phase := range phases {
 				srv, calls := newShieldstralCountingServer(t)
 				g, err := buildGuardRail(ctx, tc.cfg(srv.URL), nil, nil, nil, nil)
-				if err != nil {
-					t.Fatalf("buildGuardRail: %v", err)
-				}
+				must.NoError(err)
 				d, err := g.Check(ctx, guard.Input{Phase: phase, Content: strings.Repeat("some content ", 20)})
-				if err != nil {
-					t.Fatalf("Check(%s): %v", phase, err)
-				}
-				if d.Verdict != guard.VerdictAllow {
-					t.Errorf("Check(%s) verdict = %q, want allow", phase, d.Verdict)
-				}
-				if got := calls.Load(); got != tc.wantCalls[phase] {
-					t.Errorf("classifier calls at %s = %d, want %d", phase, got, tc.wantCalls[phase])
-				}
+				must.NoError(err, "phase %s", phase)
+				must.Equal(guard.VerdictAllow, d.Verdict, "phase %s", phase)
+				must.Equal(tc.wantCalls[phase], calls.Load(), "classifier calls at phase %s", phase)
 			}
 		})
 	}
 }
 
-// TestBuildGuardRail_CloudJudge asserts that the cloud-judge arm of
-// buildGuardRailNode constructs a *guard.CloudJudge backed by the
+// TestBuildGuardRail_CloudJudge_BuildsJudge asserts that the cloud-judge
+// arm of buildGuardRailNode constructs a *guard.CloudJudge backed by the
 // supplied default provider. Without coverage here, a regression
 // could silently substitute a Noop or a wrong provider — both of
 // which would weaken the guard without surfacing an error.
-func TestBuildGuardRail_CloudJudge(t *testing.T) {
+func TestBuildGuardRail_CloudJudge_BuildsJudge(t *testing.T) {
+	must := require.New(t)
 	ctx := context.Background()
 	cfg := &types.GuardRailConfig{
 		Type:      "cloud-judge",
@@ -924,34 +822,29 @@ func TestBuildGuardRail_CloudJudge(t *testing.T) {
 		TimeoutMs: 1500,
 	}
 	g, err := buildGuardRail(ctx, cfg, nil, stubProvider{}, nil, nil)
-	if err != nil {
-		t.Fatalf("buildGuardRail: %v", err)
-	}
-	if g == nil {
-		t.Fatal("expected non-nil GuardRail")
-	}
-	if _, ok := g.(*guard.CloudJudge); !ok {
-		t.Errorf("expected *guard.CloudJudge, got %T", g)
-	}
+	must.NoError(err)
+	must.NotNil(g)
+	must.IsType(&guard.CloudJudge{}, g)
 }
 
 // TestBuildGuardRail_CloudJudge_NilProviderIsError asserts the
 // adapter constructor's "Provider is required" guard surfaces as a
 // build error rather than producing a nil-deref guardrail at runtime.
 func TestBuildGuardRail_CloudJudge_NilProviderIsError(t *testing.T) {
+	must := require.New(t)
 	ctx := context.Background()
 	cfg := &types.GuardRailConfig{Type: "cloud-judge"}
 	_, err := buildGuardRail(ctx, cfg, nil, nil, nil, nil)
-	if err == nil {
-		t.Fatal("expected error when default provider is nil")
-	}
+	must.Error(err)
 }
 
-// TestBuildGuardRail_Composite asserts that the composite arm wires
-// stages into a Sequential composite, with each non-composite stage
+// TestBuildGuardRail_Composite_WiresStagesInOrder asserts that the composite
+// arm wires stages into a Sequential composite, with each non-composite stage
 // constructed via its own arm. Coverage here protects against a
 // regression that silently dropped a stage or substituted Noops.
-func TestBuildGuardRail_Composite(t *testing.T) {
+func TestBuildGuardRail_Composite_WiresStagesInOrder(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	ctx := context.Background()
 	cfg := &types.GuardRailConfig{
 		Type: "composite",
@@ -962,32 +855,21 @@ func TestBuildGuardRail_Composite(t *testing.T) {
 		},
 	}
 	g, err := buildGuardRail(ctx, cfg, nil, stubProvider{}, nil, nil)
-	if err != nil {
-		t.Fatalf("buildGuardRail: %v", err)
-	}
+	must.NoError(err)
 	seq, ok := g.(*guard.Sequential)
-	if !ok {
-		t.Fatalf("expected *guard.Sequential, got %T", g)
-	}
-	if len(seq.Guards) != 3 {
-		t.Fatalf("expected 3 stages, got %d", len(seq.Guards))
-	}
-	if _, ok := seq.Guards[0].(*guard.GraniteGuardian); !ok {
-		t.Errorf("Guards[0]: expected *guard.GraniteGuardian, got %T", seq.Guards[0])
-	}
-	if _, ok := unwrapPhaseGated(seq.Guards[1]).(*guard.Shieldstral); !ok {
-		t.Errorf("Guards[1]: expected *guard.Shieldstral, got %T", seq.Guards[1])
-	}
-	if _, ok := seq.Guards[2].(*guard.CloudJudge); !ok {
-		t.Errorf("Guards[2]: expected *guard.CloudJudge, got %T", seq.Guards[2])
-	}
+	must.True(ok, "expected *guard.Sequential, got %T", g)
+	must.Len(seq.Guards, 3)
+	check.IsType(&guard.GraniteGuardian{}, seq.Guards[0], "Guards[0]")
+	check.IsType((*guard.Shieldstral)(nil), unwrapPhaseGated(seq.Guards[1]), "Guards[1]")
+	check.IsType(&guard.CloudJudge{}, seq.Guards[2], "Guards[2]")
 }
 
-// TestBuildGuardRail_CompositeWithPhasesWraps asserts that a composite
-// configured with restricted Phases is wrapped in a PhaseGated whose
+// TestBuildGuardRail_CompositeWithPhases_WrapsSequential asserts that a
+// composite configured with restricted Phases is wrapped in a PhaseGated whose
 // inner is the Sequential composite — so the phase restriction
 // applies to the composite as a whole, not to each stage individually.
-func TestBuildGuardRail_CompositeWithPhasesWraps(t *testing.T) {
+func TestBuildGuardRail_CompositeWithPhases_WrapsSequential(t *testing.T) {
+	must := require.New(t)
 	ctx := context.Background()
 	cfg := &types.GuardRailConfig{
 		Type:   "composite",
@@ -997,42 +879,29 @@ func TestBuildGuardRail_CompositeWithPhasesWraps(t *testing.T) {
 		},
 	}
 	g, err := buildGuardRail(ctx, cfg, nil, stubProvider{}, nil, nil)
-	if err != nil {
-		t.Fatalf("buildGuardRail: %v", err)
-	}
+	must.NoError(err)
 	pg, ok := g.(*guard.PhaseGated)
-	if !ok {
-		t.Fatalf("expected *guard.PhaseGated, got %T", g)
-	}
-	if _, ok := pg.Inner.(*guard.Sequential); !ok {
-		t.Errorf("PhaseGated.Inner: expected *guard.Sequential, got %T", pg.Inner)
-	}
+	must.True(ok, "expected *guard.PhaseGated, got %T", g)
+	must.IsType(&guard.Sequential{}, pg.Inner, "PhaseGated.Inner")
 }
 
 // TestTurnZeroGuardChunks_ScrubsPromptThenContext asserts that the turn-0
 // guard copy holds the prompt and then the context values in order, each
 // with the log scrubber applied, and counts the matches replaced.
 func TestTurnZeroGuardChunks_ScrubsPromptThenContext(t *testing.T) {
+	check := assert.New(t)
 	loop := buildTestLoop(nil)
 	loop.GuardRail = &inputRecordingGuard{}
 	chunks, spans := loop.preTurnGuardCopy(turnZeroChunks("user prompt "+fakeAnthropicKey, []string{"first", "second ghp_abcdefghijklmnop"}))
 	want := []string{"user prompt [REDACTED]", "first", "second [REDACTED]"}
-	if len(chunks) != len(want) {
-		t.Fatalf("expected %d chunks, got %d: %v", len(want), len(chunks), chunks)
-	}
-	for i, w := range want {
-		if chunks[i] != w {
-			t.Errorf("chunk[%d]: want %q, got %q", i, w, chunks[i])
-		}
-	}
-	if spans != 2 {
-		t.Errorf("spans = %d, want 2", spans)
-	}
+	check.Equal(want, chunks)
+	check.Equal(2, spans)
 }
 
 // TestArrivedUntrustedChunks_ExtractsToolResults asserts that the helper
 // extracts every tool_result block's Content from the last user message.
 func TestArrivedUntrustedChunks_ExtractsToolResults(t *testing.T) {
+	must := require.New(t)
 	messages := []types.Message{
 		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "ignored"}}},
 		{Role: "assistant", Content: []types.ContentBlock{{Type: "text", Text: "calling tools"}}},
@@ -1042,27 +911,18 @@ func TestArrivedUntrustedChunks_ExtractsToolResults(t *testing.T) {
 		}},
 	}
 	chunks := arrivedUntrustedChunks(messages)
-	if len(chunks) != 2 {
-		t.Fatalf("expected 2 chunks, got %d: %v", len(chunks), chunks)
-	}
-	if chunks[0] != "result one" || chunks[1] != "result two" {
-		t.Errorf("unexpected chunks: %v", chunks)
-	}
+	must.Equal([]string{"result one", "result two"}, chunks)
 }
 
 // TestBatchUntrustedChunks_DelimiterFormat asserts the batched chunks
 // envelope uses the documented "--- chunk i ---" header format.
 func TestBatchUntrustedChunks_DelimiterFormat(t *testing.T) {
+	check := assert.New(t)
 	out := batchUntrustedChunks([]string{"alpha", "beta"})
-	if !strings.Contains(out, "--- chunk 0 ---") {
-		t.Errorf("expected '--- chunk 0 ---' header, got: %q", out)
-	}
-	if !strings.Contains(out, "--- chunk 1 ---") {
-		t.Errorf("expected '--- chunk 1 ---' header, got: %q", out)
-	}
-	if !strings.Contains(out, "alpha") || !strings.Contains(out, "beta") {
-		t.Errorf("expected both chunk bodies, got: %q", out)
-	}
+	check.Contains(out, "--- chunk 0 ---")
+	check.Contains(out, "--- chunk 1 ---")
+	check.Contains(out, "alpha")
+	check.Contains(out, "beta")
 }
 
 // TestReplaceUntrustedChunks_LeavesPromptText asserts that
@@ -1070,18 +930,18 @@ func TestBatchUntrustedChunks_DelimiterFormat(t *testing.T) {
 // prompt ends the run, since rewriting it would produce an opaque
 // user-facing failure.
 func TestReplaceUntrustedChunks_LeavesPromptText(t *testing.T) {
+	must := require.New(t)
 	messages := []types.Message{
 		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "original"}}},
 	}
 	replaceUntrustedChunks(messages, "[blocked]")
-	if messages[0].Content[0].Text != "original" {
-		t.Errorf("expected the prompt text untouched, got %q", messages[0].Content[0].Text)
-	}
+	must.Equal("original", messages[0].Content[0].Text)
 }
 
 // TestSpotlightUntrustedChunks_RewrapsToolResults asserts spotlight
 // rewrap fires on turn N>0 against tool_result blocks.
 func TestSpotlightUntrustedChunks_RewrapsToolResults(t *testing.T) {
+	must := require.New(t)
 	messages := []types.Message{
 		{Role: "user", Content: []types.ContentBlock{
 			{Type: "tool_result", ToolUseID: "tc_1", Content: "raw payload"},
@@ -1089,22 +949,18 @@ func TestSpotlightUntrustedChunks_RewrapsToolResults(t *testing.T) {
 	}
 	spotlightUntrustedChunks(messages)
 	got := messages[0].Content[0].Content
-	if !strings.HasPrefix(got, guard.SpotlightOpenTag) || !strings.HasSuffix(got, guard.SpotlightCloseTag) {
-		t.Errorf("expected spotlight wrapping, got: %q", got)
-	}
+	must.True(strings.HasPrefix(got, guard.SpotlightOpenTag), "got %q", got)
+	must.True(strings.HasSuffix(got, guard.SpotlightCloseTag), "got %q", got)
 }
 
 // TestLastAssistantText_ConcatenatesTextBlocks asserts text blocks are
 // joined and tool_use blocks are skipped.
 func TestLastAssistantText_ConcatenatesTextBlocks(t *testing.T) {
+	must := require.New(t)
 	blocks := []types.ContentBlock{
 		{Type: "text", Text: "line one"},
 		{Type: "tool_use", ID: "tc_1", Name: "irrelevant"},
 		{Type: "text", Text: "line two"},
 	}
-	got := lastAssistantText(blocks)
-	want := "line one\nline two"
-	if got != want {
-		t.Errorf("want %q, got %q", want, got)
-	}
+	must.Equal("line one\nline two", lastAssistantText(blocks))
 }

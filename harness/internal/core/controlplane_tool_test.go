@@ -4,12 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"net"
-	"slices"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
@@ -88,9 +87,11 @@ func controlPlaneToolsConfig() types.ToolsConfig {
 // covers registration, schema validation, dispatch, and the wire.
 func startControlPlaneLoop(t *testing.T, cp *fakeControlPlane) *AgenticLoop {
 	t.Helper()
+	must := require.New(t)
 
 	lis := bufconn.Listen(1 << 20)
 	srv := grpc.NewServer()
+	t.Cleanup(srv.Stop)
 	pb.RegisterHarnessServiceServer(srv, cp)
 	go func() { _ = srv.Serve(lis) }()
 
@@ -102,14 +103,8 @@ func startControlPlaneLoop(t *testing.T, cp *fakeControlPlane) *AgenticLoop {
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 		),
 	)
-	if err != nil {
-		srv.Stop()
-		t.Fatalf("NewGRPCTransport: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = tr.Close()
-		srv.Stop()
-	})
+	must.NoError(err, "NewGRPCTransport")
+	t.Cleanup(func() { _ = tr.Close() })
 
 	registry := buildToolRegistry(executor.NewNoneExecutor(), edit.NewWholeFileStrategy(), controlPlaneToolsConfig(), nil)
 	loop := buildAsyncTestLoop(t, tr, asyncEchoTool())
@@ -118,6 +113,7 @@ func startControlPlaneLoop(t *testing.T, cp *fakeControlPlane) *AgenticLoop {
 }
 
 func TestControlPlaneTool_RoundTripOverGRPC(t *testing.T) {
+	must := require.New(t)
 	cp := &fakeControlPlane{
 		respond: func(req *pb.HarnessEvent) *pb.ControlEvent {
 			return &pb.ControlEvent{
@@ -135,9 +131,7 @@ func TestControlPlaneTool_RoundTripOverGRPC(t *testing.T) {
 		names = append(names, d.Name)
 	}
 	for _, want := range []string{"web_fetch", "search_memory", "save_memory"} {
-		if !slices.Contains(names, want) {
-			t.Fatalf("registry missing %q: %v", want, names)
-		}
+		must.Contains(names, want)
 	}
 
 	output, success := loop.dispatchToolCall(context.Background(), types.ToolCall{
@@ -145,31 +139,24 @@ func TestControlPlaneTool_RoundTripOverGRPC(t *testing.T) {
 		Name:  "search_memory",
 		Input: json.RawMessage(`{"query":"lunch","limit":3}`),
 	})
-	if !success {
-		t.Fatalf("expected success, got failure: %q", output)
-	}
-	if output != `{"memories":[{"content":"remembered"}]}` {
-		t.Fatalf("content not delivered verbatim: %q", output)
-	}
+	must.True(success, "expected success, got failure: %q", output)
+	must.Equal(`{"memories":[{"content":"remembered"}]}`, output, "content not delivered verbatim") //nolint:testifylint // byte-exact comparison is the point
 
 	reqs := cp.seen()
-	if len(reqs) != 1 {
-		t.Fatalf("control plane saw %d requests, want 1", len(reqs))
-	}
+	must.Len(reqs, 1)
 	req := reqs[0]
-	if req.ToolName != "search_memory" || req.ToolUseId != "tc_cp_1" || req.RequestId == "" {
-		t.Fatalf("request fields = name %q, tool_use_id %q, request_id %q", req.ToolName, req.ToolUseId, req.RequestId)
-	}
+	must.Equal("search_memory", req.ToolName)
+	must.Equal("tc_cp_1", req.ToolUseId)
+	must.NotEmpty(req.RequestId)
+
 	var input map[string]any
-	if err := json.Unmarshal(req.Input, &input); err != nil {
-		t.Fatalf("request input is not JSON: %v (%s)", err, req.Input)
-	}
-	if input["query"] != "lunch" || input["limit"] != float64(3) {
-		t.Fatalf("request input = %s", req.Input)
-	}
+	must.NoError(json.Unmarshal(req.Input, &input), "request input is not JSON: %s", req.Input)
+	must.Equal("lunch", input["query"])
+	must.InDelta(float64(3), input["limit"], 0)
 }
 
 func TestControlPlaneTool_IsErrorSurfacesAsToolFailure(t *testing.T) {
+	must := require.New(t)
 	cp := &fakeControlPlane{
 		respond: func(req *pb.HarnessEvent) *pb.ControlEvent {
 			return &pb.ControlEvent{
@@ -187,15 +174,13 @@ func TestControlPlaneTool_IsErrorSurfacesAsToolFailure(t *testing.T) {
 		Name:  "search_memory",
 		Input: json.RawMessage(`{"query":"x"}`),
 	})
-	if success {
-		t.Fatalf("expected failure, got success: %q", output)
-	}
-	if !strings.Contains(output, "upstream_error") || !strings.Contains(output, "billet unavailable") {
-		t.Fatalf("unexpected failure text: %q", output)
-	}
+	must.False(success, "expected failure, got success: %q", output)
+	must.Contains(output, "upstream_error")
+	must.Contains(output, "billet unavailable")
 }
 
 func TestControlPlaneTool_InputValidatedBeforeRequest(t *testing.T) {
+	must := require.New(t)
 	cp := &fakeControlPlane{}
 	loop := startControlPlaneLoop(t, cp)
 
@@ -204,19 +189,15 @@ func TestControlPlaneTool_InputValidatedBeforeRequest(t *testing.T) {
 		Name:  "search_memory",
 		Input: json.RawMessage(`{"limit":"three"}`),
 	})
-	if success {
-		t.Fatalf("expected schema rejection, got success: %q", output)
-	}
-	if !strings.Contains(output, "Invalid input") {
-		t.Fatalf("unexpected failure text: %q", output)
-	}
+	must.False(success, "expected schema rejection, got success: %q", output)
+	must.Contains(output, "Invalid input")
+
 	time.Sleep(50 * time.Millisecond)
-	if n := len(cp.seen()); n != 0 {
-		t.Fatalf("control plane should not see a request for invalid input, saw %d", n)
-	}
+	must.Empty(cp.seen(), "control plane should not see a request for invalid input")
 }
 
 func TestControlPlaneTool_TimeoutSecondsBoundsTheWait(t *testing.T) {
+	must := require.New(t)
 	cp := &fakeControlPlane{} // never answers
 	loop := startControlPlaneLoop(t, cp)
 
@@ -227,16 +208,10 @@ func TestControlPlaneTool_TimeoutSecondsBoundsTheWait(t *testing.T) {
 		Input: json.RawMessage(`{"content":"note"}`),
 	})
 	elapsed := time.Since(start)
-	if success {
-		t.Fatalf("expected timeout failure, got success: %q", output)
-	}
-	if !strings.Contains(output, "timeout") {
-		t.Fatalf("unexpected failure text: %q", output)
-	}
-	if elapsed < time.Second || elapsed > 10*time.Second {
-		t.Fatalf("elapsed %v, want the configured 1s timeout rather than the 60s default", elapsed)
-	}
-	if n := len(cp.seen()); n != 1 {
-		t.Fatalf("control plane saw %d requests, want 1", n)
-	}
+
+	must.False(success, "expected timeout failure, got success: %q", output)
+	must.Contains(output, "timeout")
+	must.GreaterOrEqual(elapsed, time.Second, "wait ended before the configured 1s timeout")
+	must.LessOrEqual(elapsed, 10*time.Second, "wait ran past the bound, so the 60s default may apply")
+	must.Len(cp.seen(), 1)
 }

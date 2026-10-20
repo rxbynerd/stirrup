@@ -3,9 +3,10 @@ package core
 import (
 	"context"
 	"encoding/base64"
-	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/types"
@@ -65,21 +66,16 @@ func TestLoop_TerminalTurnCommitsOnlyAValidAssistantMessage(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			h := newOutputLimitHarness(tc.events)
 			config := buildTestConfig()
 			config.MaxTurns = 1
 			config.FollowUpHistory = types.FollowUpHistoryContinue
 
 			rt, err := h.loop.Run(context.Background(), config)
-			if err != nil {
-				t.Fatalf("Run: %v", err)
-			}
-			if rt.Outcome != tc.wantOutcome {
-				t.Fatalf("outcome = %q, want %q", rt.Outcome, tc.wantOutcome)
-			}
-			if w := h.writtenPaths(); len(w) != 0 {
-				t.Errorf("a tool ran for a turn that was not dispatched: %v", w)
-			}
+			must.NoError(err)
+			must.Equal(tc.wantOutcome, rt.Outcome)
+			must.Empty(h.writtenPaths(), "a tool ran for a turn that was not dispatched")
 
 			kept := h.loop.carried.messages
 			var assistants []types.Message
@@ -89,45 +85,33 @@ func TestLoop_TerminalTurnCommitsOnlyAValidAssistantMessage(t *testing.T) {
 				}
 			}
 			commits := eventsOfTypeIn(h.transport.Events(), "turn_committed")
-			if len(commits) != len(assistants) {
-				t.Fatalf("turn_committed events = %d, assistant messages in history = %d; the stream and history disagree", len(commits), len(assistants))
-			}
+			must.Len(commits, len(assistants), "turn_committed events and assistant messages in history disagree")
 			if tc.wantText == nil {
-				if len(assistants) != 0 {
-					t.Errorf("history kept an assistant message: %+v", assistants)
-				}
+				must.Empty(assistants, "history kept an assistant message")
 				return
 			}
-			if len(assistants) != 1 {
-				t.Fatalf("assistant messages = %d, want 1", len(assistants))
-			}
-			if got := blockTypes(assistants[0]); !reflect.DeepEqual(got, []string{"text"}) {
-				t.Errorf("assistant blocks = %v, want the text alone", got)
-			}
-			if got := textBlocks(assistants[0]); !reflect.DeepEqual(got, tc.wantText) {
-				t.Errorf("assistant text = %q, want %q", got, tc.wantText)
-			}
-			if c := commits[0]; c.StopReason != tc.events[len(tc.events)-1].StopReason || c.ToolResultCount != 0 {
-				t.Errorf("turn_committed = stop %q results %d", c.StopReason, c.ToolResultCount)
-			}
+			must.Len(assistants, 1)
+			must.Equal([]string{"text"}, blockTypes(assistants[0]), "assistant message should hold only a text block")
+			must.Equal(tc.wantText, textBlocks(assistants[0]))
+			commit := commits[0]
+			must.Equal(tc.events[len(tc.events)-1].StopReason, commit.StopReason, "turn_committed stop reason")
+			must.Zero(commit.ToolResultCount, "turn_committed tool result count")
 		})
 	}
 }
 
 func TestLoop_RefusalTurnCommitsWithStopReason(t *testing.T) {
+	must := require.New(t)
 	h := newOutputLimitHarness([]types.StreamEvent{{Type: "text_delta", Text: "I can't help with that."}, stopWith("refusal")})
 
 	rt, err := h.loop.Run(context.Background(), buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if rt.Outcome != "refusal" {
-		t.Fatalf("outcome = %q, want refusal", rt.Outcome)
-	}
+	must.NoError(err)
+	must.Equal("refusal", rt.Outcome)
 	commits := eventsOfTypeIn(h.transport.Events(), "turn_committed")
-	if len(commits) != 1 || *commits[0].Turn != 0 || commits[0].StopReason != "refusal" {
-		t.Errorf("turn_committed events = %+v, want turn 0 with stop reason refusal", commits)
-	}
+	must.Len(commits, 1)
+	must.NotNil(commits[0].Turn)
+	must.Equal(0, *commits[0].Turn, "turn_committed turn number")
+	must.Equal("refusal", commits[0].StopReason)
 }
 
 // TestRunFollowUpLoop_ContinueAfterTerminalOutputLimitSendsAValidHistory
@@ -135,6 +119,7 @@ func TestLoop_RefusalTurnCommitsWithStopReason(t *testing.T) {
 // the output limit mid tool call sends neither an empty assistant
 // message nor an unanswered tool call.
 func TestRunFollowUpLoop_ContinueAfterTerminalOutputLimitSendsAValidHistory(t *testing.T) {
+	must := require.New(t)
 	h := newOutputLimitHarness(
 		[]types.StreamEvent{writeFileCall("tc_1", "a.go"), stopWith("max_tokens")},
 		scriptEndTurn,
@@ -145,19 +130,18 @@ func TestRunFollowUpLoop_ContinueAfterTerminalOutputLimitSendsAValidHistory(t *t
 	config.FollowUpHistory = types.FollowUpHistoryContinue
 
 	traces := followUpSession(t, h.loop, h.transport, config, "carry on")
-	if traces[0].Outcome != "max_tokens" || traces[1].Outcome != "success" {
-		t.Fatalf("outcomes = %q, %q, want max_tokens then success", traces[0].Outcome, traces[1].Outcome)
-	}
+	must.Equal("max_tokens", traces[0].Outcome, "first run outcome")
+	must.Equal("success", traces[1].Outcome, "follow-up run outcome")
 	calls := h.provider.params()
-	if len(calls) != 2 {
-		t.Fatalf("provider calls = %d, want 2", len(calls))
-	}
+	must.Len(calls, 2)
 	followUp := calls[1].Messages
+	var emptyAssistants []int
 	for i, m := range followUp {
 		if m.Role == "assistant" && len(m.Content) == 0 {
-			t.Errorf("follow-up message %d is an assistant message with no content", i)
+			emptyAssistants = append(emptyAssistants, i)
 		}
 	}
+	must.Empty(emptyAssistants, "indexes of assistant messages with no content in the follow-up request")
 	assertToolUsePaired(t, "follow-up request", followUp)
 }
 
@@ -173,10 +157,9 @@ func eventsOfTypeIn(events []types.HarnessEvent, typ string) []types.HarnessEven
 
 func assertRolesAlternate(t *testing.T, label string, msgs []types.Message) {
 	t.Helper()
+	must := require.New(t)
 	for i := 1; i < len(msgs); i++ {
-		if msgs[i].Role == msgs[i-1].Role {
-			t.Errorf("%s: messages %d and %d are both %s: %v", label, i-1, i, msgs[i].Role, rolesOf(msgs))
-		}
+		must.NotEqual(msgs[i-1].Role, msgs[i].Role, "%s: messages %d and %d are both %s: %v", label, i-1, i, msgs[i].Role, rolesOf(msgs))
 	}
 }
 
@@ -190,6 +173,7 @@ func TestRun_FeedbackAfterNoFinalAnswerMergesIntoTheTrailingUserMessage(t *testi
 	toolOnly := []types.StreamEvent{{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: map[string]any{}}, stopWith("end_turn")}
 	for name, first := range map[string][]types.StreamEvent{"empty end_turn": empty, "end_turn with only a tool call": toolOnly} {
 		t.Run("verifier feedback after "+name, func(t *testing.T) {
+			must := require.New(t)
 			prov := &recordingScriptProvider{script: [][]types.StreamEvent{first, scriptEndTurn}}
 			loop, _ := buildUserInputTestLoop(prov)
 			loop.Verifier = &feedbackVerifier{feedback: "tests fail in parser_test.go", failures: 1}
@@ -197,50 +181,36 @@ func TestRun_FeedbackAfterNoFinalAnswerMergesIntoTheTrailingUserMessage(t *testi
 			loop.GuardRail = g
 
 			rt, err := loop.Run(context.Background(), buildTestConfig())
-			if err != nil {
-				t.Fatalf("Run: %v", err)
-			}
-			if rt.Outcome != "success" {
-				t.Fatalf("outcome = %q, want success", rt.Outcome)
-			}
+			must.NoError(err)
+			must.Equal("success", rt.Outcome)
 			calls := prov.params()
-			if len(calls) != 2 {
-				t.Fatalf("provider calls = %d, want 2", len(calls))
-			}
+			must.Len(calls, 2)
 			retry := calls[1].Messages
 			assertRolesAlternate(t, "retry request", retry)
 			text := strings.Join(textBlocks(retry[len(retry)-1]), "\n")
 			wrapped := base64.StdEncoding.EncodeToString([]byte("tests fail in parser_test.go"))
-			if !strings.HasPrefix(text, buildTestConfig().Prompt) || strings.Count(text, wrapped) != 1 || strings.Count(text, guard.SpotlightOpenTag) != 1 {
-				t.Errorf("retry's last message = %q, want the prompt then the feedback, spotlighted once", text)
-			}
-			if n := len(g.feedbackChecks()); n != 1 {
-				t.Errorf("feedback screened %d times, want 1", n)
-			}
+			must.True(strings.HasPrefix(text, buildTestConfig().Prompt), "retry's last message should start with the prompt; got %q", text)
+			must.Equal(1, strings.Count(text, wrapped), "feedback should appear once in the retry's last message")
+			must.Equal(1, strings.Count(text, guard.SpotlightOpenTag), "feedback should be spotlighted once")
+			must.Len(g.feedbackChecks(), 1, "merged feedback should be screened once")
 			blocks := retry[len(retry)-1].Content
-			if feedback := blocks[len(blocks)-1]; feedback.Type != "text" || feedback.Origin != types.MessageOriginVerifierFeedback {
-				t.Errorf("merged feedback block = %+v, want a text block carrying the verifier_feedback origin", feedback)
-			}
+			feedback := blocks[len(blocks)-1]
+			must.Equal("text", feedback.Type, "merged feedback block type")
+			must.Equal(types.MessageOriginVerifierFeedback, feedback.Origin, "merged feedback block origin")
 		})
 	}
 
 	t.Run("schema correction after an empty end_turn", func(t *testing.T) {
+		must := require.New(t)
 		loop, prov, _ := structuredTestLoop("", `{"title":"Fix login","labels":["bug"]}`)
 
 		rt, err := loop.Run(context.Background(), structuredTestConfig())
-		if err != nil {
-			t.Fatalf("Run: %v", err)
-		}
-		if rt.Outcome != "success" {
-			t.Fatalf("outcome = %q, want success (error %q)", rt.Outcome, rt.Error)
-		}
+		must.NoError(err)
+		must.Equal("success", rt.Outcome, "run error: %q", rt.Error)
 		retry := prov.requests[1]
-		if len(retry) != 1 {
-			t.Fatalf("correction request roles = %v, want the correction merged into the prompt", rolesOf(retry))
-		}
-		if text := strings.Join(textBlocks(retry[len(retry)-1]), "\n"); !strings.Contains(text, "has no text") {
-			t.Errorf("correction request's last message = %q, want the missing-answer correction", text)
-		}
+		must.Len(retry, 1, "correction should be merged into the prompt; roles %v", rolesOf(retry))
+		text := strings.Join(textBlocks(retry[len(retry)-1]), "\n")
+		must.Contains(text, "has no text", "correction request's last message")
 	})
 }
 
@@ -258,6 +228,7 @@ func (p turnPromptPolicy) Decide(in EscalationInput) EscalationDecision {
 // an escalation prompt merged into verifier feedback that was already
 // screened does not send that feedback through screening again.
 func TestRun_HarnessTextMergedIntoScreenedFeedbackIsNotRescreened(t *testing.T) {
+	must := require.New(t)
 	prov := &recordingScriptProvider{script: [][]types.StreamEvent{
 		scriptEndTurn,
 		{stopWith("end_turn")},
@@ -269,25 +240,20 @@ func TestRun_HarnessTextMergedIntoScreenedFeedbackIsNotRescreened(t *testing.T) 
 	g := &feedbackVerdictGuard{verdict: guard.VerdictAllowSpot}
 	loop.GuardRail = g
 
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), buildTestConfig())
+	must.NoError(err)
 	calls := prov.params()
-	if len(calls) != 3 {
-		t.Fatalf("provider calls = %d, want 3", len(calls))
-	}
-	if n := len(g.feedbackChecks()); n != 1 {
-		t.Errorf("feedback screened %d times, want 1", n)
-	}
+	must.Len(calls, 3)
+	must.Len(g.feedbackChecks(), 1, "merged feedback should be screened once")
 	last := calls[2].Messages[len(calls[2].Messages)-1]
 	text := strings.Join(textBlocks(last), "\n")
-	if strings.Count(text, guard.SpotlightOpenTag) != 1 || !strings.Contains(text, "Call a tool now.") {
-		t.Errorf("third request's last message = %q, want the feedback spotlighted once and the escalation prompt merged", text)
-	}
+	must.Equal(1, strings.Count(text, guard.SpotlightOpenTag), "feedback should be spotlighted once in the third request")
+	must.Contains(text, "Call a tool now.", "escalation prompt should be merged into the third request's last message")
 	assertRolesAlternate(t, "third request", calls[2].Messages)
 }
 
 func TestRun_HarnessTextMergedIntoScreenedToolResultsIsNotRescreened(t *testing.T) {
+	must := require.New(t)
 	prov := &recordingScriptProvider{script: [][]types.StreamEvent{
 		emitToolScript[0],
 		{stopWith("end_turn")},
@@ -299,18 +265,12 @@ func TestRun_HarnessTextMergedIntoScreenedToolResultsIsNotRescreened(t *testing.
 	g := &markerGuard{markers: []string{"SPOT-MARKER", guard.SpotlightOpenTag}, verdict: guard.VerdictAllowSpot}
 	loop.GuardRail = g
 
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), buildTestConfig())
+	must.NoError(err)
 	calls := prov.params()
-	if len(calls) != 3 {
-		t.Fatalf("provider calls = %d, want 3", len(calls))
-	}
-	if g.matches() != 1 {
-		t.Errorf("tool result screened %d times, want 1", g.matches())
-	}
+	must.Len(calls, 3)
+	must.Equal(1, g.matches(), "tool result should be screened once")
 	results := toolResultContents(calls[2].Messages)
-	if len(results) != 1 || strings.Count(results[0], guard.SpotlightOpenTag) != 1 {
-		t.Errorf("third request's tool result = %q, want it spotlighted once", results)
-	}
+	must.Len(results, 1)
+	must.Equal(1, strings.Count(results[0], guard.SpotlightOpenTag), "third request's tool result should be spotlighted once; got %q", results[0])
 }

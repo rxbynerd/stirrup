@@ -1,8 +1,12 @@
 package guard
 
-import "testing"
+import (
+	"testing"
 
-func TestValidPhase(t *testing.T) {
+	"github.com/stretchr/testify/require"
+)
+
+func TestValidPhase_AcceptsOnlyKnownPhases(t *testing.T) {
 	tests := []struct {
 		name string
 		p    Phase
@@ -17,14 +21,13 @@ func TestValidPhase(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ValidPhase(tc.p); got != tc.want {
-				t.Fatalf("ValidPhase(%q) = %v, want %v", tc.p, got, tc.want)
-			}
+			must := require.New(t)
+			must.Equal(tc.want, ValidPhase(tc.p), "ValidPhase(%q)", tc.p)
 		})
 	}
 }
 
-func TestIsValidVerdict(t *testing.T) {
+func TestIsValidVerdict_AcceptsOnlyKnownVerdicts(t *testing.T) {
 	tests := []struct {
 		name string
 		v    Verdict
@@ -38,9 +41,8 @@ func TestIsValidVerdict(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := IsValidVerdict(tc.v); got != tc.want {
-				t.Fatalf("IsValidVerdict(%q) = %v, want %v", tc.v, got, tc.want)
-			}
+			must := require.New(t)
+			must.Equal(tc.want, IsValidVerdict(tc.v), "IsValidVerdict(%q)", tc.v)
 		})
 	}
 }

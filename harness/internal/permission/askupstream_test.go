@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -65,21 +67,38 @@ func sideEffectingSet() map[string]bool {
 	}
 }
 
+// respondToNextRequest answers the next permission_request the policy emits
+// with the given decision. It runs on a background goroutine and must not
+// call require.
+func respondToNextRequest(mt *mockTransport, allowed bool, reason string) {
+	go func() {
+		for {
+			time.Sleep(5 * time.Millisecond)
+			e := mt.lastEmitted()
+			if e != nil && e.Type == "permission_request" {
+				mt.simulateControlEvent(types.ControlEvent{
+					Type:      "permission_response",
+					RequestID: e.RequestID,
+					Allowed:   &allowed,
+					Reason:    reason,
+				})
+				return
+			}
+		}
+	}()
+}
+
 func TestAskUpstream_AutoAllowsReadOnlyTools(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	mt := &mockTransport{}
 	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
 
 	tool := types.ToolDefinition{Name: "read_file"}
 	result, err := policy.Check(context.Background(), tool, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Allowed {
-		t.Error("read-only tool should be auto-allowed")
-	}
-	if mt.lastEmitted() != nil {
-		t.Error("should not emit any event for read-only tools")
-	}
+	must.NoError(err)
+	check.True(result.Allowed, "read-only tool should be auto-allowed")
+	check.Nil(mt.lastEmitted(), "should not emit any event for read-only tools")
 }
 
 // TestAskUpstream_MCPPrefixRequiresApprovalWhenAbsentFromSnapshot: an
@@ -89,162 +108,84 @@ func TestAskUpstream_AutoAllowsReadOnlyTools(t *testing.T) {
 // auto-allow, bypassing the upstream approval the rule-of-two gate routes
 // it here to obtain.
 func TestAskUpstream_MCPPrefixRequiresApprovalWhenAbsentFromSnapshot(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	mt := &mockTransport{}
 	// Snapshot deliberately omits the MCP tool.
 	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
 
 	tool := types.ToolDefinition{Name: "mcp_newserver_tool"}
 
-	// Approve asynchronously; if the prefix fallback is missing, Check
-	// returns Allowed immediately without ever emitting a request and the
-	// goroutine's response is dropped (caught by the lastEmitted assertion).
-	go func() {
-		for {
-			time.Sleep(5 * time.Millisecond)
-			e := mt.lastEmitted()
-			if e != nil && e.Type == "permission_request" {
-				allowed := true
-				mt.simulateControlEvent(types.ControlEvent{
-					Type:      "permission_response",
-					RequestID: e.RequestID,
-					Allowed:   &allowed,
-				})
-				return
-			}
-		}
-	}()
+	// If the prefix fallback is missing, Check returns Allowed immediately
+	// without emitting a request, and the approval below is dropped (caught
+	// by the lastEmitted check).
+	respondToNextRequest(mt, true, "")
 
 	result, err := policy.Check(context.Background(), tool, json.RawMessage(`{}`))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Allowed {
-		t.Error("expected allow after upstream approval")
-	}
+	must.NoError(err)
+	check.True(result.Allowed, "expected allow after upstream approval")
+
 	e := mt.lastEmitted()
-	if e == nil || e.Type != "permission_request" {
-		t.Fatalf("mcp_-prefixed tool must emit a permission_request, not auto-allow; got %+v", e)
-	}
-	if e.ToolName != "mcp_newserver_tool" {
-		t.Errorf("permission_request tool = %q, want mcp_newserver_tool", e.ToolName)
-	}
+	must.NotNil(e, "mcp_-prefixed tool must emit a permission_request, not auto-allow")
+	must.Equal("permission_request", e.Type, "mcp_-prefixed tool must emit a permission_request, not auto-allow")
+	check.Equal("mcp_newserver_tool", e.ToolName)
 }
 
 func TestAskUpstream_EmitsRequestForSideEffectingTool(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	mt := &mockTransport{}
 	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
 
 	tool := types.ToolDefinition{Name: "write_file"}
 	input := json.RawMessage(`{"path":"/tmp/test","content":"hello"}`)
 
-	// Respond with approval asynchronously.
-	go func() {
-		// Wait for the event to be emitted.
-		for {
-			time.Sleep(5 * time.Millisecond)
-			e := mt.lastEmitted()
-			if e != nil && e.Type == "permission_request" {
-				allowed := true
-				mt.simulateControlEvent(types.ControlEvent{
-					Type:      "permission_response",
-					RequestID: e.RequestID,
-					Allowed:   &allowed,
-				})
-				return
-			}
-		}
-	}()
+	respondToNextRequest(mt, true, "")
 
 	result, err := policy.Check(context.Background(), tool, input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Allowed {
-		t.Error("should be allowed after upstream approval")
-	}
+	must.NoError(err)
+	check.True(result.Allowed, "should be allowed after upstream approval")
 
 	e := mt.lastEmitted()
-	if e == nil {
-		t.Fatal("expected a permission_request event to be emitted")
-	}
-	if e.Type != "permission_request" {
-		t.Errorf("expected type permission_request, got %q", e.Type)
-	}
-	if e.ToolName != "write_file" {
-		t.Errorf("expected tool name write_file, got %q", e.ToolName)
-	}
-	if e.RequestID == "" {
-		t.Error("expected non-empty request ID")
-	}
+	must.NotNil(e, "expected a permission_request event to be emitted")
+	check.Equal("permission_request", e.Type)
+	check.Equal("write_file", e.ToolName)
+	check.NotEmpty(e.RequestID, "expected non-empty request ID")
 }
 
-func TestAskUpstream_ApprovalResponse(t *testing.T) {
+func TestAskUpstream_ApprovalResponseAllowsTool(t *testing.T) {
+	must := require.New(t)
 	mt := &mockTransport{}
 	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
 
 	tool := types.ToolDefinition{Name: "run_shell_command"}
 
-	go func() {
-		for {
-			time.Sleep(5 * time.Millisecond)
-			e := mt.lastEmitted()
-			if e != nil && e.Type == "permission_request" {
-				allowed := true
-				mt.simulateControlEvent(types.ControlEvent{
-					Type:      "permission_response",
-					RequestID: e.RequestID,
-					Allowed:   &allowed,
-				})
-				return
-			}
-		}
-	}()
+	respondToNextRequest(mt, true, "")
 
 	result, err := policy.Check(context.Background(), tool, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Allowed {
-		t.Error("expected allowed after approval")
-	}
+	must.NoError(err)
+	must.True(result.Allowed)
 }
 
-func TestAskUpstream_DenialResponse(t *testing.T) {
+func TestAskUpstream_DenialResponseDeniesTool(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	mt := &mockTransport{}
 	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
 
 	tool := types.ToolDefinition{Name: "write_file"}
 
-	go func() {
-		for {
-			time.Sleep(5 * time.Millisecond)
-			e := mt.lastEmitted()
-			if e != nil && e.Type == "permission_request" {
-				allowed := false
-				mt.simulateControlEvent(types.ControlEvent{
-					Type:      "permission_response",
-					RequestID: e.RequestID,
-					Allowed:   &allowed,
-					Reason:    "user denied the operation",
-				})
-				return
-			}
-		}
-	}()
+	respondToNextRequest(mt, false, "user denied the operation")
 
 	result, err := policy.Check(context.Background(), tool, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.Allowed {
-		t.Error("expected denied after denial response")
-	}
-	if result.Reason != "user denied the operation" {
-		t.Errorf("expected denial reason, got %q", result.Reason)
-	}
+	must.NoError(err)
+	check.False(result.Allowed)
+	check.Equal("user denied the operation", result.Reason)
 }
 
-func TestAskUpstream_ContextCancellation(t *testing.T) {
+func TestAskUpstream_ContextCancelReturnsCanceledError(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	mt := &mockTransport{}
 	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
 
@@ -264,43 +205,31 @@ func TestAskUpstream_ContextCancellation(t *testing.T) {
 	}()
 
 	result, err := policy.Check(ctx, tool, nil)
-	if err == nil {
-		t.Fatal("expected error from cancelled context")
-	}
-	if result != nil {
-		t.Error("expected nil result on cancellation")
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("expected context.Canceled in error chain, got: %v", err)
-	}
+	must.ErrorIs(err, context.Canceled)
+	check.Nil(result)
 
-	// Verify that the pending request was cleaned up.
-	if pendingCount := policy.correlator.PendingCount(); pendingCount != 0 {
-		t.Errorf("expected 0 pending requests after cancellation, got %d", pendingCount)
-	}
+	// The pending request must be removed once Check returns.
+	check.Zero(policy.correlator.PendingCount(), "pending requests after cancellation")
 }
 
-func TestAskUpstream_EmitError(t *testing.T) {
+func TestAskUpstream_EmitFailureReturnsError(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	mt := &mockTransport{emitErr: errors.New("transport broken")}
 	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
 
 	tool := types.ToolDefinition{Name: "write_file"}
 
 	result, err := policy.Check(context.Background(), tool, nil)
-	if err == nil {
-		t.Fatal("expected error when emit fails")
-	}
-	if result != nil {
-		t.Error("expected nil result on emit error")
-	}
+	must.Error(err)
+	check.Nil(result)
 
-	// Verify pending map is cleaned up.
-	if pendingCount := policy.correlator.PendingCount(); pendingCount != 0 {
-		t.Errorf("expected 0 pending requests after emit error, got %d", pendingCount)
-	}
+	// The pending map must be cleaned up.
+	check.Zero(policy.correlator.PendingCount(), "pending requests after emit error")
 }
 
 func TestAskUpstream_IgnoresUnrelatedControlEvents(t *testing.T) {
+	must := require.New(t)
 	mt := &mockTransport{}
 	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
 
@@ -335,45 +264,33 @@ func TestAskUpstream_IgnoresUnrelatedControlEvents(t *testing.T) {
 	}()
 
 	result, err := policy.Check(context.Background(), tool, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Allowed {
-		t.Error("expected allowed after correct response arrives")
-	}
+	must.NoError(err)
+	must.True(result.Allowed, "expected allowed after correct response arrives")
 }
 
-func TestAskUpstream_Timeout(t *testing.T) {
+func TestAskUpstream_TimeoutReturnsError(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	mt := &mockTransport{}
 	// Use a very short timeout so the test completes quickly.
 	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 50*time.Millisecond)
 
 	tool := types.ToolDefinition{Name: "write_file"}
 
-	// Do not send any response — let it time out.
+	// No response is sent, so the request times out.
 	result, err := policy.Check(context.Background(), tool, nil)
-	if err == nil {
-		t.Fatal("expected error from timeout")
-	}
-	if result != nil {
-		t.Error("expected nil result on timeout")
-	}
-	if !strings.Contains(err.Error(), "timed out") {
-		t.Errorf("expected timeout error message, got: %v", err)
-	}
+	must.ErrorContains(err, "timed out")
+	check.Nil(result)
 
-	// Verify that the pending request was cleaned up.
-	if pendingCount := policy.correlator.PendingCount(); pendingCount != 0 {
-		t.Errorf("expected 0 pending requests after timeout, got %d", pendingCount)
-	}
+	// The pending request must be removed once Check returns.
+	check.Zero(policy.correlator.PendingCount(), "pending requests after timeout")
 }
 
-func TestAskUpstream_DefaultTimeout(t *testing.T) {
+func TestAskUpstream_ZeroTimeoutUsesDefault(t *testing.T) {
+	must := require.New(t)
 	mt := &mockTransport{}
 	// Pass 0 to get the default timeout.
 	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
 
-	if policy.Timeout != DefaultAskUpstreamTimeout {
-		t.Errorf("expected default timeout %v, got %v", DefaultAskUpstreamTimeout, policy.Timeout)
-	}
+	must.Equal(DefaultAskUpstreamTimeout, policy.Timeout)
 }

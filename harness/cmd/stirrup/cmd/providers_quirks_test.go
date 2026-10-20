@@ -3,11 +3,11 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 )
@@ -28,45 +28,31 @@ func newTestProvidersQuirksCommand() *cobra.Command {
 // provider type since every first-party provider now carries a base
 // rule matching every model.
 func TestProvidersQuirks_EmptyRegistryEmitsValidJSON(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestProvidersQuirksCommand()
-	if err := cmd.ParseFlags([]string{"--provider", "no-such-provider", "--model", "gpt-4o"}); err != nil {
-		t.Fatalf("ParseFlags: %v", err)
-	}
+	must.NoError(cmd.ParseFlags([]string{"--provider", "no-such-provider", "--model", "gpt-4o"}))
 	var buf bytes.Buffer
-	if err := runProvidersQuirksWithIO(cmd, &buf); err != nil {
-		t.Fatalf("runProvidersQuirksWithIO: %v", err)
-	}
+	must.NoError(runProvidersQuirksWithIO(cmd, &buf))
 
 	var got quirksCLIOutput
-	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
-		t.Fatalf("output is not valid JSON: %v\n%s", err, buf.String())
-	}
+	must.NoError(json.Unmarshal(buf.Bytes(), &got), "output is not valid JSON:\n%s", buf.String())
 
-	if got.Provider != "no-such-provider" {
-		t.Errorf("Provider = %q, want no-such-provider", got.Provider)
-	}
-	if got.Model != "gpt-4o" {
-		t.Errorf("Model = %q, want gpt-4o", got.Model)
-	}
-	if got.AppliedRules == nil {
-		t.Error("AppliedRules must be a non-nil slice (empty array, not null)")
-	}
-	if len(got.AppliedRules) != 0 {
-		t.Errorf("AppliedRules = %+v, want empty", got.AppliedRules)
-	}
-	// Assert the literal shape too, so downstream scripts relying on it
-	// without unmarshalling are covered.
-	if !strings.Contains(buf.String(), `"appliedRules": []`) {
-		t.Errorf("output missing literal `\"appliedRules\": []`:\n%s", buf.String())
-	}
+	must.Equal("no-such-provider", got.Provider)
+	must.Equal("gpt-4o", got.Model)
+	must.NotNil(got.AppliedRules, "appliedRules must be an empty array, not null")
+	must.Empty(got.AppliedRules)
+
+	// Scripts that read the output without unmarshalling depend on the literal shape.
+	must.Contains(buf.String(), `"appliedRules": []`)
 }
 
-// TestProvidersQuirks_RequiredFlags pins the MarkFlagRequired wiring on
-// the registered cobra command: missing --provider or --model must
-// produce a non-nil error.
-func TestProvidersQuirks_RequiredFlags(t *testing.T) {
+// TestProvidersQuirks_MissingRequiredFlagIsError pins the MarkFlagRequired
+// wiring on the registered cobra command: missing --provider or --model
+// must produce an error naming the missing flag.
+func TestProvidersQuirks_MissingRequiredFlagIsError(t *testing.T) {
 	for _, name := range []string{"provider", "model"} {
-		t.Run("missing-"+name, func(t *testing.T) {
+		t.Run("missing "+name, func(t *testing.T) {
+			must := require.New(t)
 			// cobra surfaces MarkFlagRequired through Execute, not
 			// ParseFlags, so drive a fresh root command instead of the
 			// process-global one.
@@ -89,37 +75,25 @@ func TestProvidersQuirks_RequiredFlags(t *testing.T) {
 			root.SetArgs(args)
 			root.SetOut(&bytes.Buffer{})
 			root.SetErr(&bytes.Buffer{})
-			err := root.Execute()
-			if err == nil {
-				t.Fatalf("expected required-flag error for missing --%s, got nil", name)
-			}
-			if !strings.Contains(err.Error(), name) {
-				t.Errorf("error %q must mention the missing flag --%s", err.Error(), name)
-			}
+			must.ErrorContains(root.Execute(), name)
 		})
 	}
 }
 
-// TestProvidersQuirks_OutputIsValidJSON asserts the emitted document
+// TestProvidersQuirks_OutputHasTopLevelKeys asserts the emitted document
 // decodes against a generic map, not just the typed struct — catches a
 // field with no JSON tag producing unexpected casing.
-func TestProvidersQuirks_OutputIsValidJSON(t *testing.T) {
+func TestProvidersQuirks_OutputHasTopLevelKeys(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestProvidersQuirksCommand()
-	if err := cmd.ParseFlags([]string{"--provider", "gemini", "--model", "gemini-3.1-pro-preview"}); err != nil {
-		t.Fatalf("ParseFlags: %v", err)
-	}
+	must.NoError(cmd.ParseFlags([]string{"--provider", "gemini", "--model", "gemini-3.1-pro-preview"}))
 	var buf bytes.Buffer
-	if err := runProvidersQuirksWithIO(cmd, &buf); err != nil {
-		t.Fatalf("runProvidersQuirksWithIO: %v", err)
-	}
+	must.NoError(runProvidersQuirksWithIO(cmd, &buf))
+
 	var raw map[string]any
-	if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
-		t.Fatalf("output is not valid JSON: %v\n%s", err, buf.String())
-	}
+	must.NoError(json.Unmarshal(buf.Bytes(), &raw), "output is not valid JSON:\n%s", buf.String())
 	for _, key := range []string{"provider", "model", "quirks", "appliedRules"} {
-		if _, ok := raw[key]; !ok {
-			t.Errorf("missing top-level key %q in output: %s", key, buf.String())
-		}
+		must.Contains(raw, key, "output:\n%s", buf.String())
 	}
 }
 
@@ -134,6 +108,7 @@ func TestProvidersQuirks_OutputIsValidJSON(t *testing.T) {
 //   - Apply == nil guard (skipped; mirrors Resolve)
 //   - specificity ordering (longer ModelMatch glob runs last and wins)
 func TestCollectAppliedRules_FiltersAndFlagsCorrectly(t *testing.T) {
+	must := require.New(t)
 	noop := func(*quirks.ProviderQuirks) {}
 	stale := time.Now().Add(-365 * 24 * time.Hour) // 1y ago, well past 180d
 	fresh := time.Now().Add(-30 * 24 * time.Hour)  // 30d ago, fresh
@@ -200,44 +175,25 @@ func TestCollectAppliedRules_FiltersAndFlagsCorrectly(t *testing.T) {
 		"stale gpt-4 rule",
 		"zero-LastVerified gpt-4o rule",
 	}
-	if len(got) != len(wantDescriptions) {
-		t.Fatalf("got %d applied rules, want %d: %+v", len(got), len(wantDescriptions), got)
-	}
+	must.Len(got, len(wantDescriptions), "applied rules: %+v", got)
 	for i, want := range wantDescriptions {
-		if got[i].Description != want {
-			t.Errorf("applied[%d].Description = %q, want %q", i, got[i].Description, want)
-		}
+		must.Equal(want, got[i].Description, "applied[%d]", i)
 	}
 
 	// Stale flag and lastVerified rendering by index in the sorted output.
-	if got[0].Stale {
-		t.Errorf("applied[0] (fresh wildcard) Stale = true, want false")
-	}
-	if got[0].LastVerified != fresh.Format("2006-01-02") {
-		t.Errorf("applied[0].LastVerified = %q, want %q", got[0].LastVerified, fresh.Format("2006-01-02"))
-	}
-	if !got[1].Stale {
-		t.Errorf("applied[1] (stale) Stale = false, want true")
-	}
-	if got[1].LastVerified != stale.Format("2006-01-02") {
-		t.Errorf("applied[1].LastVerified = %q, want %q", got[1].LastVerified, stale.Format("2006-01-02"))
-	}
-	if got[2].Stale {
-		t.Errorf("applied[2] (zero-LastVerified) Stale = true, want false (zero time is not flagged)")
-	}
-	if got[2].LastVerified != "" {
-		t.Errorf("applied[2].LastVerified = %q, want empty string for zero time", got[2].LastVerified)
-	}
+	must.False(got[0].Stale, "applied[0] (fresh wildcard) must not be stale")
+	must.Equal(fresh.Format("2006-01-02"), got[0].LastVerified)
+	must.True(got[1].Stale, "applied[1] (stale gpt-4 rule) must be stale")
+	must.Equal(stale.Format("2006-01-02"), got[1].LastVerified)
+	must.False(got[2].Stale, "applied[2] (zero-LastVerified) must not be stale: zero time is not flagged")
+	must.Empty(got[2].LastVerified, "a zero LastVerified renders as an empty string")
 }
 
-// TestCollectAppliedRules_EmptyRules pins that an empty rule slice
-// returns a non-nil empty slice so the encoded JSON is `[]`, not `null`.
-func TestCollectAppliedRules_EmptyRules(t *testing.T) {
+// TestCollectAppliedRules_EmptyInputReturnsEmptySlice pins that an empty rule
+// slice returns a non-nil empty slice so the encoded JSON is `[]`, not `null`.
+func TestCollectAppliedRules_EmptyInputReturnsEmptySlice(t *testing.T) {
+	must := require.New(t)
 	got := formatAppliedRules(nil)
-	if got == nil {
-		t.Fatal("formatAppliedRules(nil) returned nil; want non-nil empty slice")
-	}
-	if len(got) != 0 {
-		t.Errorf("formatAppliedRules(nil) = %+v, want empty", got)
-	}
+	must.NotNil(got, "formatAppliedRules(nil) must return a non-nil slice so JSON encodes []")
+	must.Empty(got)
 }

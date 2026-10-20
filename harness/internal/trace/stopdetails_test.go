@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
@@ -41,14 +42,13 @@ func stopDetailsEmitterBuilders(t *testing.T) map[string]func(t *testing.T) stop
 			return NewOTelTraceEmitterForTest(tp)
 		},
 		"gcs": func(t *testing.T) stopDetailsEmitter {
+			must := require.New(t)
 			e, err := NewGCSTraceEmitter(context.Background(), GCSTraceEmitterOptions{
 				Bucket:           "b",
 				CredentialSource: &staticBearerSource{token: "t"},
 				EndpointBaseURL:  gcsSrv.URL,
 			})
-			if err != nil {
-				t.Fatalf("NewGCSTraceEmitter: %v", err)
-			}
+			must.NoError(err, "NewGCSTraceEmitter")
 			return e
 		},
 	}
@@ -58,27 +58,21 @@ func TestEmitters_RecordStopDetailsReachesRunTrace(t *testing.T) {
 	want := types.StopDetails{Type: "refusal", Category: "cyber", Explanation: "declined"}
 	for name, build := range stopDetailsEmitterBuilders(t) {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			e := build(t)
 
 			e.Start("run-1", &types.RunConfig{RunID: "run-1"})
 			details := want
 			e.RecordStopDetails(&details)
 			got, err := e.Finish(context.Background(), "refusal")
-			if err != nil {
-				t.Fatalf("Finish: %v", err)
-			}
-			if got.StopDetails == nil || *got.StopDetails != want {
-				t.Errorf("StopDetails = %+v, want %+v", got.StopDetails, want)
-			}
+			must.NoError(err)
+			must.NotNil(got.StopDetails)
+			must.Equal(want, *got.StopDetails)
 
 			e.Start("run-2", &types.RunConfig{RunID: "run-2"})
 			got, err = e.Finish(context.Background(), "success")
-			if err != nil {
-				t.Fatalf("Finish: %v", err)
-			}
-			if got.StopDetails != nil {
-				t.Errorf("StopDetails after restart = %+v, want nil", got.StopDetails)
-			}
+			must.NoError(err)
+			must.Nil(got.StopDetails, "after restart")
 		})
 	}
 }
@@ -86,17 +80,14 @@ func TestEmitters_RecordStopDetailsReachesRunTrace(t *testing.T) {
 func TestEmitters_RecordStopDetailsNilClearsPriorValue(t *testing.T) {
 	for name, build := range stopDetailsEmitterBuilders(t) {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			e := build(t)
 			e.Start("run-1", &types.RunConfig{RunID: "run-1"})
 			e.RecordStopDetails(&types.StopDetails{Type: "refusal"})
 			e.RecordStopDetails(nil)
 			got, err := e.Finish(context.Background(), "refusal")
-			if err != nil {
-				t.Fatalf("Finish: %v", err)
-			}
-			if got.StopDetails != nil {
-				t.Errorf("StopDetails = %+v, want nil after RecordStopDetails(nil)", got.StopDetails)
-			}
+			must.NoError(err)
+			must.Nil(got.StopDetails, "after RecordStopDetails(nil)")
 		})
 	}
 }
@@ -106,6 +97,7 @@ func TestEmitters_RecordStopDetailsNilClearsPriorValue(t *testing.T) {
 func TestEmitters_RecordStopDetailsConcurrentWithFinish(t *testing.T) {
 	for name, build := range stopDetailsEmitterBuilders(t) {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			e := build(t)
 			e.Start("run-1", &types.RunConfig{RunID: "run-1"})
 
@@ -117,15 +109,15 @@ func TestEmitters_RecordStopDetailsConcurrentWithFinish(t *testing.T) {
 					e.RecordStopDetails(&types.StopDetails{Type: "refusal"})
 				}
 			}()
-			if _, err := e.Finish(context.Background(), "refusal"); err != nil {
-				t.Errorf("Finish: %v", err)
-			}
+			_, err := e.Finish(context.Background(), "refusal")
 			wg.Wait()
+			must.NoError(err)
 		})
 	}
 }
 
 func TestGCSTraceEmitter_UploadedObjectCarriesStopDetails(t *testing.T) {
+	must := require.New(t)
 	srv := newGCSCaptureServer()
 	httpSrv := httptest.NewServer(srv.handler())
 	defer httpSrv.Close()
@@ -135,45 +127,36 @@ func TestGCSTraceEmitter_UploadedObjectCarriesStopDetails(t *testing.T) {
 		CredentialSource: &staticBearerSource{token: "t"},
 		EndpointBaseURL:  httpSrv.URL,
 	})
-	if err != nil {
-		t.Fatalf("NewGCSTraceEmitter: %v", err)
-	}
+	must.NoError(err)
 	want := types.StopDetails{Type: "refusal", Category: "bio", Explanation: "declined"}
 	emitter.Start("run-gcs", &types.RunConfig{RunID: "run-gcs"})
 	details := want
 	emitter.RecordStopDetails(&details)
-	if _, err := emitter.Finish(context.Background(), "refusal"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
+	_, err = emitter.Finish(context.Background(), "refusal")
+	must.NoError(err)
 
 	var uploaded types.RunTrace
 	body := strings.TrimRight(string(srv.last().Body), "\n")
-	if err := json.Unmarshal([]byte(body), &uploaded); err != nil {
-		t.Fatalf("unmarshal uploaded body: %v\nbody=%q", err, body)
-	}
-	if uploaded.Outcome != "refusal" || uploaded.StopDetails == nil || *uploaded.StopDetails != want {
-		t.Errorf("uploaded trace outcome=%q StopDetails=%+v, want refusal with %+v", uploaded.Outcome, uploaded.StopDetails, want)
-	}
+	must.NoError(json.Unmarshal([]byte(body), &uploaded), "body=%q", body)
+	must.Equal("refusal", uploaded.Outcome)
+	must.NotNil(uploaded.StopDetails)
+	must.Equal(want, *uploaded.StopDetails)
 }
 
 func TestNestedJSONLEmitter_StopDetailsNotForwardedToParent(t *testing.T) {
+	must := require.New(t)
 	parent := NewJSONLTraceEmitter(&bytes.Buffer{}, false)
 	parent.Start("parent-run", &types.RunConfig{RunID: "parent-run"})
 
 	child := NewNestedJSONLEmitter(parent, "parent-run", context.Background())
 	child.Start("child-run", &types.RunConfig{RunID: "child-run"})
 	child.RecordStopDetails(&types.StopDetails{Type: "refusal"})
-	if _, err := child.Finish(context.Background(), "refusal"); err != nil {
-		t.Fatalf("child Finish: %v", err)
-	}
+	_, err := child.Finish(context.Background(), "refusal")
+	must.NoError(err, "child Finish")
 
 	got, err := parent.Finish(context.Background(), "success")
-	if err != nil {
-		t.Fatalf("parent Finish: %v", err)
-	}
-	if got.StopDetails != nil {
-		t.Errorf("parent StopDetails = %+v, want nil", got.StopDetails)
-	}
+	must.NoError(err, "parent Finish")
+	must.Nil(got.StopDetails)
 }
 
 // degradedCapabilitiesEmitter is a TraceEmitter that also records degraded
@@ -191,24 +174,17 @@ func TestEmitters_RecordDegradedCapabilitiesReachesRunTrace(t *testing.T) {
 			continue // the nested child emitter carries no degraded capabilities
 		}
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			e.Start("run-1", &types.RunConfig{RunID: "run-1"})
 			e.RecordDegradedCapabilities(want)
 			got, err := e.Finish(context.Background(), "success")
-			if err != nil {
-				t.Fatalf("Finish: %v", err)
-			}
-			if len(got.DegradedCapabilities) != 1 || got.DegradedCapabilities[0] != want[0] {
-				t.Errorf("DegradedCapabilities = %+v, want %+v", got.DegradedCapabilities, want)
-			}
+			must.NoError(err)
+			must.Equal(want, got.DegradedCapabilities)
 
 			e.Start("run-2", &types.RunConfig{RunID: "run-2"})
 			got, err = e.Finish(context.Background(), "success")
-			if err != nil {
-				t.Fatalf("Finish: %v", err)
-			}
-			if len(got.DegradedCapabilities) != 0 {
-				t.Errorf("DegradedCapabilities after restart = %+v, want none", got.DegradedCapabilities)
-			}
+			must.NoError(err)
+			must.Empty(got.DegradedCapabilities, "after restart")
 		})
 	}
 }

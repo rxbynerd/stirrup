@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
@@ -38,6 +40,17 @@ func spansNamed(spans tracetest.SpanStubs, name string) []tracetest.SpanStub {
 	return out
 }
 
+// chatSpansAtTurn returns the chat spans whose turn.number attribute equals turn.
+func chatSpansAtTurn(spans tracetest.SpanStubs, turn string) []tracetest.SpanStub {
+	var out []tracetest.SpanStub
+	for _, s := range spansNamed(spans, "chat claude-sonnet-4-6") {
+		if got, _ := spanAttr(s, "turn.number"); got == turn {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func spanAttr(s tracetest.SpanStub, key string) (string, bool) {
 	for _, kv := range s.Attributes {
 		if string(kv.Key) == key {
@@ -49,12 +62,13 @@ func spanAttr(s tracetest.SpanStub, key string) (string, bool) {
 
 func requireParent(t *testing.T, child, parent tracetest.SpanStub) {
 	t.Helper()
-	if child.Parent.SpanID() != parent.SpanContext.SpanID() {
-		t.Errorf("%s: parent span ID = %s, want %s (%s)", child.Name, child.Parent.SpanID(), parent.SpanContext.SpanID(), parent.Name)
-	}
+	must := require.New(t)
+	must.Equal(parent.SpanContext.SpanID(), child.Parent.SpanID(), "%s: parent span ID (want the %s span)", child.Name, parent.Name)
 }
 
 func TestLoop_OTelChatSpanPerRequest(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop, exporter := otelLoop(t, nil)
 	loop.Provider = &scriptedProvider{turns: [][]types.StreamEvent{
 		{
@@ -66,57 +80,40 @@ func TestLoop_OTelChatSpanPerRequest(t *testing.T) {
 			{Type: "message_complete", StopReason: "end_turn", InputTokens: 12, OutputTokens: 1},
 		},
 	}}
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), buildTestConfig())
+	must.NoError(err)
 
 	spans := exporter.GetSpans()
-	if n := len(spansNamed(spans, "run")); n != 0 {
-		t.Errorf("found %d legacy run spans", n)
-	}
+	check.Empty(spansNamed(spans, "run"), "legacy run spans")
 	root := spansNamed(spans, "invoke_agent stirrup")
-	if len(root) != 1 {
-		t.Fatalf("found %d root spans, want 1", len(root))
-	}
+	must.Len(root, 1, "invoke_agent stirrup spans")
 	chats := spansNamed(spans, "chat claude-sonnet-4-6")
-	if len(chats) != 2 {
-		t.Fatalf("found %d chat spans, want 2", len(chats))
-	}
+	must.Len(chats, 2, "chat spans")
 	streams := spansNamed(spans, "provider.stream")
-	if len(streams) != 2 {
-		t.Fatalf("found %d provider.stream spans, want 2", len(streams))
-	}
+	must.Len(streams, 2, "provider.stream spans")
 	for i, chat := range chats {
-		if chat.SpanKind != oteltrace.SpanKindClient {
-			t.Errorf("chat %d kind = %v, want client", i, chat.SpanKind)
-		}
+		check.Equal(oteltrace.SpanKindClient, chat.SpanKind, "chat %d span kind", i)
 		requireParent(t, chat, root[0])
 		requireParent(t, streams[i], chat)
-		if got, _ := spanAttr(chat, "turn.number"); got != []string{"0", "1"}[i] {
-			t.Errorf("chat %d turn.number = %s", i, got)
-		}
+		turnNumber, _ := spanAttr(chat, "turn.number")
+		check.Equal([]string{"0", "1"}[i], turnNumber, "chat %d turn.number", i)
 	}
-	if got, _ := spanAttr(chats[0], "turn.tool_calls"); got != "1" {
-		t.Errorf("turn.tool_calls = %s, want 1", got)
-	}
+	toolCalls, _ := spanAttr(chats[0], "turn.tool_calls")
+	check.Equal("1", toolCalls, "turn.tool_calls")
 	tools := spansNamed(spans, "execute_tool test_tool")
-	if len(tools) != 1 {
-		t.Fatalf("found %d execute_tool spans, want 1", len(tools))
-	}
-	if got, _ := spanAttr(tools[0], "turn.number"); got != "0" {
-		t.Errorf("tool span turn.number = %s, want the emitting chat span's 0", got)
-	}
-	if got, _ := spanAttr(chats[1], "gen_ai.usage.input_tokens"); got != "12" {
-		t.Errorf("second chat input tokens = %s, want 12", got)
-	}
+	must.Len(tools, 1, "execute_tool spans")
+	toolTurn, _ := spanAttr(tools[0], "turn.number")
+	check.Equal("0", toolTurn, "tool span turn.number (the emitting chat span's turn)")
+	inputTokens, _ := spanAttr(chats[1], "gen_ai.usage.input_tokens")
+	check.Equal("12", inputTokens, "second chat gen_ai.usage.input_tokens")
 	for _, s := range spans {
-		if len(s.Name) > 4 && s.Name[:5] == "turn[" {
-			t.Errorf("legacy turn span %q exported", s.Name)
-		}
+		check.False(strings.HasPrefix(s.Name, "turn["), "legacy turn span %q exported", s.Name)
 	}
 }
 
 func TestLoop_OTelOverflowRetryGetsItsOwnChatSpan(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop, prov, _, _ := buildOverflowLoop(t, overflowStep{err: promptTooLong()})
 	emitter, exporter := newInMemoryOTelEmitter(t)
 	loop.Trace = emitter
@@ -125,31 +122,21 @@ func TestLoop_OTelOverflowRetryGetsItsOwnChatSpan(t *testing.T) {
 	config.ContextStrategy.MaxTokens = 200_000
 
 	result, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if result.Outcome != "success" || len(prov.requests) != 5 {
-		t.Fatalf("prerequisite: outcome %q after %d requests, want success after 5", result.Outcome, len(prov.requests))
-	}
+	must.NoError(err)
+	must.Equal("success", result.Outcome, "prerequisite: run outcome")
+	must.Len(prov.requests, 5, "prerequisite: provider requests")
 
-	var turn3 []tracetest.SpanStub
-	for _, s := range spansNamed(exporter.GetSpans(), "chat claude-sonnet-4-6") {
-		if got, _ := spanAttr(s, "turn.number"); got == "3" {
-			turn3 = append(turn3, s)
-		}
-	}
-	if len(turn3) != 2 {
-		t.Fatalf("turn 3 has %d chat spans, want 2 (rejected request and retry)", len(turn3))
-	}
-	if got, _ := spanAttr(turn3[0], "error.type"); got != "context_overflow" {
-		t.Errorf("rejected request error.type = %q, want context_overflow", got)
-	}
-	if _, ok := spanAttr(turn3[1], "error.type"); ok {
-		t.Error("successful retry carries error.type")
-	}
+	turn3 := chatSpansAtTurn(exporter.GetSpans(), "3")
+	must.Len(turn3, 2, "turn 3 chat spans (rejected request and retry)")
+	rejectedErrType, _ := spanAttr(turn3[0], "error.type")
+	check.Equal("context_overflow", rejectedErrType, "rejected request error.type")
+	_, retryHasErr := spanAttr(turn3[1], "error.type")
+	check.False(retryHasErr, "successful retry carries error.type")
 }
 
 func TestLoop_OTelWindowFillingResponseEndsItsChatSpan(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop, prov, _, _ := buildOverflowLoop(t, overflowStepsByKind()["context window stop"])
 	emitter, exporter := newInMemoryOTelEmitter(t)
 	loop.Trace = emitter
@@ -158,38 +145,26 @@ func TestLoop_OTelWindowFillingResponseEndsItsChatSpan(t *testing.T) {
 	config.ContextStrategy.MaxTokens = 200_000
 
 	result, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if result.Outcome != "success" || len(prov.requests) != 5 {
-		t.Fatalf("prerequisite: outcome %q after %d requests, want success after 5", result.Outcome, len(prov.requests))
-	}
+	must.NoError(err)
+	must.Equal("success", result.Outcome, "prerequisite: run outcome")
+	must.Len(prov.requests, 5, "prerequisite: provider requests")
 
-	var turn3 []tracetest.SpanStub
-	for _, s := range spansNamed(exporter.GetSpans(), "chat claude-sonnet-4-6") {
-		if got, _ := spanAttr(s, "turn.number"); got == "3" {
-			turn3 = append(turn3, s)
-		}
-	}
-	if len(turn3) != 2 {
-		t.Fatalf("turn 3 has %d chat spans, want 2 (window-filling response and retry)", len(turn3))
-	}
+	turn3 := chatSpansAtTurn(exporter.GetSpans(), "3")
+	must.Len(turn3, 2, "turn 3 chat spans (window-filling response and retry)")
 	filled := turn3[0]
-	if got, _ := spanAttr(filled, "error.type"); got != "context_overflow" {
-		t.Errorf("window-filling request error.type = %q, want context_overflow", got)
-	}
-	if _, ok := spanAttr(filled, "stirrup.span.abandoned"); ok {
-		t.Error("window-filling request span was abandoned rather than ended by the loop")
-	}
-	if got, _ := spanAttr(filled, "gen_ai.usage.output_tokens"); got != "40" {
-		t.Errorf("window-filling request output tokens = %q, want 40", got)
-	}
-	if _, ok := spanAttr(turn3[1], "error.type"); ok {
-		t.Error("successful retry carries error.type")
-	}
+	filledErrType, _ := spanAttr(filled, "error.type")
+	check.Equal("context_overflow", filledErrType, "window-filling request error.type")
+	_, abandoned := spanAttr(filled, "stirrup.span.abandoned")
+	check.False(abandoned, "window-filling request span was abandoned rather than ended by the loop")
+	outputTokens, _ := spanAttr(filled, "gen_ai.usage.output_tokens")
+	check.Equal("40", outputTokens, "window-filling request gen_ai.usage.output_tokens")
+	_, retryHasErr := spanAttr(turn3[1], "error.type")
+	check.False(retryHasErr, "successful retry carries error.type")
 }
 
 func TestLoop_OTelOneToolSpanPerCall(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop, exporter := otelLoop(t, nil)
 	loop.Permissions = permission.NewAllowAll()
 	loop.Tools.(*tool.Registry).Register(&tool.Tool{
@@ -213,38 +188,34 @@ func TestLoop_OTelOneToolSpanPerCall(t *testing.T) {
 			{Type: "message_complete", StopReason: "end_turn"},
 		},
 	}}
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), buildTestConfig())
+	must.NoError(err)
 
 	spans := exporter.GetSpans()
-	root := spansNamed(spans, "invoke_agent stirrup")[0]
+	roots := spansNamed(spans, "invoke_agent stirrup")
+	must.Len(roots, 1, "invoke_agent stirrup spans")
+	root := roots[0]
 	slow := spansNamed(spans, "execute_tool slow_mutating_tool")
 	fast := spansNamed(spans, "execute_tool test_tool")
-	if len(slow) != 1 || len(fast) != 1 {
-		t.Fatalf("found %d and %d execute_tool spans, want one per call", len(slow), len(fast))
-	}
+	must.Len(slow, 1, "execute_tool slow_mutating_tool spans")
+	must.Len(fast, 1, "execute_tool test_tool spans")
 	for _, s := range spans {
-		if strings.HasPrefix(s.Name, "tool.") {
-			t.Errorf("legacy tool span %q exported", s.Name)
-		}
+		check.False(strings.HasPrefix(s.Name, "tool."), "legacy tool span %q exported", s.Name)
 	}
 	requireParent(t, slow[0], root)
 	requireParent(t, fast[0], root)
 	perm := spansNamed(spans, "permission.check")
-	if len(perm) != 1 {
-		t.Fatalf("found %d permission.check spans, want 1", len(perm))
-	}
+	must.Len(perm, 1, "permission.check spans")
 	requireParent(t, perm[0], slow[0])
-	if slow[0].EndTime.After(fast[0].StartTime) {
-		t.Errorf("first call's span ends at %v, after the second call's span starts at %v", slow[0].EndTime, fast[0].StartTime)
-	}
-	if got, _ := spanAttr(slow[0], "gen_ai.tool.call.id"); got != "tc_0" {
-		t.Errorf("gen_ai.tool.call.id = %q", got)
-	}
+	check.False(slow[0].EndTime.After(fast[0].StartTime),
+		"first call's span ends at %v, after the second call's span starts at %v", slow[0].EndTime, fast[0].StartTime)
+	callID, _ := spanAttr(slow[0], "gen_ai.tool.call.id")
+	check.Equal("tc_0", callID, "gen_ai.tool.call.id")
 }
 
 func TestLoop_ToolDurationExcludesLaterCalls(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	var traceBuf bytes.Buffer
 	loop := buildTestLoop(nil)
 	loop.Trace = trace.NewJSONLTraceEmitter(&traceBuf, false)
@@ -269,40 +240,31 @@ func TestLoop_ToolDurationExcludesLaterCalls(t *testing.T) {
 		},
 	}}
 	runTrace, err := loop.Run(context.Background(), buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	must.NoError(err)
 	durations := map[string]int64{}
 	for _, call := range runTrace.ToolCalls {
 		durations[call.ID] = call.DurationMs
 	}
-	if durations["tc_slow"] < 60 {
-		t.Fatalf("prerequisite: slow call took %dms, want at least 60ms", durations["tc_slow"])
-	}
-	if durations["tc_fast"] >= 60 {
-		t.Errorf("fast call recorded %dms, which includes the slow call after it", durations["tc_fast"])
-	}
+	must.GreaterOrEqual(durations["tc_slow"], int64(60), "prerequisite: slow call duration in ms")
+	check.Less(durations["tc_fast"], int64(60), "fast call duration in ms excludes the slow call after it")
 }
 
 func TestLoop_OTelChatSpanCarriesProviderEndpoint(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop, exporter := otelLoop(t, nil)
 	loop.Provider = endpointProvider{&scriptedTurnProvider{scripts: []turnScript{{events: []types.StreamEvent{
 		{Type: "text_delta", Text: "done"},
 		{Type: "message_complete", StopReason: "end_turn"},
 	}}}}}
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), buildTestConfig())
+	must.NoError(err)
 	chats := spansNamed(exporter.GetSpans(), "chat claude-sonnet-4-6")
-	if len(chats) != 1 {
-		t.Fatalf("found %d chat spans, want 1", len(chats))
-	}
-	if got, _ := spanAttr(chats[0], "server.address"); got != "api.anthropic.com" {
-		t.Errorf("server.address = %q", got)
-	}
-	if got, _ := spanAttr(chats[0], "server.port"); got != "443" {
-		t.Errorf("server.port = %q", got)
-	}
+	must.Len(chats, 1, "chat spans")
+	address, _ := spanAttr(chats[0], "server.address")
+	check.Equal("api.anthropic.com", address, "server.address")
+	port, _ := spanAttr(chats[0], "server.port")
+	check.Equal("443", port, "server.port")
 }
 
 // ctxBlockingProvider blocks each Stream until its context is done, then
@@ -320,6 +282,8 @@ func (p *ctxBlockingProvider) Stream(ctx context.Context, _ types.StreamParams) 
 }
 
 func TestLoop_OTelProviderRequestCancelledWithRun(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop, exporter := otelLoop(t, nil)
 	prov := &ctxBlockingProvider{entered: make(chan struct{}), done: make(chan error, 1)}
 	loop.Provider = prov
@@ -336,23 +300,16 @@ func TestLoop_OTelProviderRequestCancelledWithRun(t *testing.T) {
 	cancel()
 	select {
 	case err := <-prov.done:
-		if err == nil {
-			t.Error("provider context finished without an error")
-		}
+		must.Error(err, "provider context finished without an error")
 	case <-time.After(5 * time.Second):
-		t.Fatal("provider request was not cancelled with the run")
+		must.FailNow("provider request was not cancelled with the run")
 	}
 	rt := <-result
-	if rt.Outcome != "cancelled" {
-		t.Errorf("outcome = %q, want cancelled", rt.Outcome)
-	}
+	check.Equal("cancelled", rt.Outcome, "run outcome")
 	chats := spansNamed(exporter.GetSpans(), "chat claude-sonnet-4-6")
-	if len(chats) != 1 {
-		t.Fatalf("found %d chat spans, want 1", len(chats))
-	}
-	if got, _ := spanAttr(chats[0], "error.type"); got != "cancelled" {
-		t.Errorf("chat error.type = %q, want cancelled", got)
-	}
+	must.Len(chats, 1, "chat spans")
+	errType, _ := spanAttr(chats[0], "error.type")
+	check.Equal("cancelled", errType, "chat error.type")
 }
 
 func TestLoop_OTelChatSpanTemperatureOnlyWhenSet(t *testing.T) {
@@ -365,6 +322,8 @@ func TestLoop_OTelChatSpanTemperatureOnlyWhenSet(t *testing.T) {
 		{name: "operator set", temp: types.Float64Ptr(0.7), want: "0.7"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
 			loop, exporter := otelLoop(t, nil)
 			loop.Provider = &scriptedProvider{turns: [][]types.StreamEvent{{
 				{Type: "text_delta", Text: "done"},
@@ -372,38 +331,29 @@ func TestLoop_OTelChatSpanTemperatureOnlyWhenSet(t *testing.T) {
 			}}}
 			config := buildTestConfig()
 			config.Temperature = tc.temp
-			if _, err := loop.Run(context.Background(), config); err != nil {
-				t.Fatalf("Run: %v", err)
-			}
+			_, err := loop.Run(context.Background(), config)
+			must.NoError(err)
 			chats := spansNamed(exporter.GetSpans(), "chat claude-sonnet-4-6")
-			if len(chats) != 1 {
-				t.Fatalf("found %d chat spans, want 1", len(chats))
-			}
+			must.Len(chats, 1, "chat spans")
 			got, _ := spanAttr(chats[0], "gen_ai.request.temperature")
-			if got != tc.want {
-				t.Errorf("gen_ai.request.temperature = %q, want %q", got, tc.want)
-			}
+			check.Equal(tc.want, got, "gen_ai.request.temperature")
 		})
 	}
 }
 
 func TestLoop_OTelProviderRequestPastDeadlineIsTimeout(t *testing.T) {
+	must := require.New(t)
 	loop, exporter := otelLoop(t, nil)
 	loop.Provider = &ctxBlockingProvider{entered: make(chan struct{}), done: make(chan error, 1)}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
 	rt, _ := loop.Run(ctx, buildTestConfig())
-	if rt.Outcome != "timeout" {
-		t.Fatalf("prerequisite: outcome = %q, want timeout", rt.Outcome)
-	}
+	must.Equal("timeout", rt.Outcome, "prerequisite: run outcome")
 	chats := spansNamed(exporter.GetSpans(), "chat claude-sonnet-4-6")
-	if len(chats) != 1 {
-		t.Fatalf("found %d chat spans, want 1", len(chats))
-	}
-	if got, _ := spanAttr(chats[0], "error.type"); got != "timeout" {
-		t.Errorf("chat error.type = %q, want timeout", got)
-	}
+	must.Len(chats, 1, "chat spans")
+	errType, _ := spanAttr(chats[0], "error.type")
+	must.Equal("timeout", errType, "chat error.type")
 }
 
 func eventsOfType(tp *recordingTransport, typ string) []types.HarnessEvent {
@@ -419,6 +369,8 @@ func eventsOfType(tp *recordingTransport, typ string) []types.HarnessEvent {
 }
 
 func TestLoop_RunStartedCarriesRunSpanReference(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop, exporter := otelLoop(t, &mockProvider{events: []types.StreamEvent{
 		{Type: "text_delta", Text: "done"},
 		{Type: "message_complete", StopReason: "end_turn"},
@@ -429,14 +381,10 @@ func TestLoop_RunStartedCarriesRunSpanReference(t *testing.T) {
 	config := buildTestConfig()
 
 	rt, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	must.NoError(err)
 
 	root := spansNamed(exporter.GetSpans(), "invoke_agent stirrup")
-	if len(root) != 1 {
-		t.Fatalf("found %d root spans, want 1", len(root))
-	}
+	must.Len(root, 1, "invoke_agent stirrup spans")
 	want := types.TraceReference{
 		TraceID:   root[0].SpanContext.TraceID().String(),
 		RunSpanID: root[0].SpanContext.SpanID().String(),
@@ -460,32 +408,26 @@ func TestLoop_RunStartedCarriesRunSpanReference(t *testing.T) {
 			}
 		}
 	}
-	if len(started) != 1 {
-		t.Fatalf("got %d run_started events, want 1", len(started))
-	}
-	if readyAt < 0 || startedAt <= readyAt || firstModelAt <= startedAt {
-		t.Errorf("event order ready=%d run_started=%d first model event=%d, want ready before run_started before the first model event", readyAt, startedAt, firstModelAt)
-	}
-	if started[0].ID != config.RunID {
-		t.Errorf("run_started ID = %q, want the run ID %q", started[0].ID, config.RunID)
-	}
-	if got := started[0].TraceReference; got == nil || *got != want {
-		t.Errorf("run_started reference = %+v, want the exported root span %+v", got, want)
-	}
-	if rt.TraceReference == nil || *rt.TraceReference != want {
-		t.Errorf("RunTrace.TraceReference = %+v, want %+v", rt.TraceReference, want)
-	}
+	must.Len(started, 1, "run_started events")
+	check.GreaterOrEqual(readyAt, 0, "ready event is emitted")
+	check.Greater(startedAt, readyAt, "run_started follows ready")
+	check.Greater(firstModelAt, startedAt, "first model event follows run_started")
+	check.Equal(config.RunID, started[0].ID, "run_started ID")
+	must.NotNil(started[0].TraceReference, "run_started reference")
+	check.Equal(want, *started[0].TraceReference, "run_started reference")
+	must.NotNil(rt.TraceReference, "RunTrace.TraceReference")
+	check.Equal(want, *rt.TraceReference, "RunTrace.TraceReference")
 
 	done := eventsOfType(tp, "done")
-	if len(done) != 1 || done[0].Trace == nil {
-		t.Fatalf("got %d done events, want 1 with a summary", len(done))
-	}
-	if got := done[0].Trace.TraceReference; got == nil || *got != want {
-		t.Errorf("done summary reference = %+v, want %+v", got, want)
-	}
+	must.Len(done, 1, "done events")
+	must.NotNil(done[0].Trace, "done summary")
+	must.NotNil(done[0].Trace.TraceReference, "done summary reference")
+	check.Equal(want, *done[0].Trace.TraceReference, "done summary reference")
 }
 
 func TestLoop_RunStartedWithoutOTelSpanCarriesNoReference(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop := buildTestLoop(&mockProvider{events: []types.StreamEvent{
 		{Type: "text_delta", Text: "done"},
 		{Type: "message_complete", StopReason: "end_turn"},
@@ -495,27 +437,23 @@ func TestLoop_RunStartedWithoutOTelSpanCarriesNoReference(t *testing.T) {
 	config := buildTestConfig()
 
 	rt, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	must.NoError(err)
 	started := eventsOfType(tp, "run_started")
-	if len(started) != 1 || started[0].ID != config.RunID {
-		t.Fatalf("run_started events = %+v, want one for run %q", started, config.RunID)
-	}
-	if tp.events[0].Type != "run_started" {
-		t.Errorf("first event = %s, want run_started", tp.events[0].Type)
-	}
-	if rt.TraceReference != nil {
-		t.Errorf("RunTrace.TraceReference = %+v, want nil", rt.TraceReference)
-	}
+	must.Len(started, 1, "run_started events")
+	check.Equal(config.RunID, started[0].ID, "run_started ID")
+	check.Equal("run_started", tp.events[0].Type, "first event type")
+	check.Nil(rt.TraceReference, "RunTrace.TraceReference")
 	for _, e := range tp.events {
-		if e.TraceReference != nil || (e.Trace != nil && e.Trace.TraceReference != nil) {
-			t.Errorf("%s event carries a trace reference without an OTel span", e.Type)
+		check.Nil(e.TraceReference, "%s event reference", e.Type)
+		if e.Trace != nil {
+			check.Nil(e.Trace.TraceReference, "%s event summary reference", e.Type)
 		}
 	}
 }
 
 func TestLoop_RunStartedIsFirstEventWithoutLoopReady(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop, _ := otelLoop(t, &mockProvider{events: []types.StreamEvent{
 		{Type: "text_delta", Text: "done"},
 		{Type: "message_complete", StopReason: "end_turn"},
@@ -525,15 +463,13 @@ func TestLoop_RunStartedIsFirstEventWithoutLoopReady(t *testing.T) {
 	loop.emitReady = false
 	config := buildTestConfig()
 
-	if _, err := loop.Run(context.Background(), config); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if len(tp.events) == 0 {
-		t.Fatal("loop emitted no events")
-	}
-	if first := tp.events[0]; first.Type != "run_started" || first.ID != config.RunID || first.TraceReference == nil {
-		t.Errorf("first event = %s (id %q, reference %+v), want run_started for %q with a reference", first.Type, first.ID, first.TraceReference, config.RunID)
-	}
+	_, err := loop.Run(context.Background(), config)
+	must.NoError(err)
+	must.NotEmpty(tp.events, "loop emitted events")
+	first := tp.events[0]
+	check.Equal("run_started", first.Type, "first event type")
+	check.Equal(config.RunID, first.ID, "first event ID")
+	check.NotNil(first.TraceReference, "first event reference")
 }
 
 // recordingControlTransport records emitted events and lets the test fire
@@ -546,6 +482,8 @@ type recordingControlTransport struct {
 func (t *recordingControlTransport) Emit(e types.HarnessEvent) error { return t.rec.Emit(e) }
 
 func TestRunFollowUpLoop_EachRunStartsWithItsOwnReference(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop, _ := otelLoop(t, &mockProvider{events: []types.StreamEvent{
 		{Type: "text_delta", Text: "done"},
 		{Type: "message_complete", StopReason: "end_turn"},
@@ -555,9 +493,8 @@ func TestRunFollowUpLoop_EachRunStartsWithItsOwnReference(t *testing.T) {
 	loop.ensureControlRouting()
 	config := buildTestConfig()
 
-	if _, err := loop.Run(context.Background(), config); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), config)
+	must.NoError(err)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -574,22 +511,17 @@ func TestRunFollowUpLoop_EachRunStartsWithItsOwnReference(t *testing.T) {
 	select {
 	case followUpRunID = <-ran:
 	case <-time.After(3 * time.Second):
-		t.Fatal("follow-up run did not complete")
+		must.FailNow("follow-up run did not complete")
 	}
 	cancel()
 	<-done
 
 	started := eventsOfType(&tp.rec, "run_started")
-	if len(started) != 2 {
-		t.Fatalf("got %d run_started events, want one per run", len(started))
-	}
-	if started[0].ID != "test-run-1" || started[1].ID != followUpRunID {
-		t.Errorf("run_started IDs = %q, %q, want test-run-1, %q", started[0].ID, started[1].ID, followUpRunID)
-	}
-	if started[0].TraceReference == nil || started[1].TraceReference == nil {
-		t.Fatalf("run_started references = %+v, %+v, want both set", started[0].TraceReference, started[1].TraceReference)
-	}
-	if started[0].TraceReference.TraceID == started[1].TraceReference.TraceID {
-		t.Errorf("follow-up run reused trace ID %s", started[1].TraceReference.TraceID)
-	}
+	must.Len(started, 2, "run_started events, one per run")
+	check.Equal("test-run-1", started[0].ID, "first run_started ID")
+	check.Equal(followUpRunID, started[1].ID, "follow-up run_started ID")
+	must.NotNil(started[0].TraceReference, "first run_started reference")
+	must.NotNil(started[1].TraceReference, "follow-up run_started reference")
+	check.NotEqual(started[0].TraceReference.TraceID, started[1].TraceReference.TraceID,
+		"follow-up run should start its own trace")
 }

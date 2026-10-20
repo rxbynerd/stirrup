@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func validPostEditCheck() PostEditCheckConfig {
@@ -11,40 +13,42 @@ func validPostEditCheck() PostEditCheckConfig {
 }
 
 func TestValidateRunConfig_PostEdit_AcceptedInExecutionMode(t *testing.T) {
-	for _, executorType := range []string{"", "local", "container"} {
-		c := validConfig()
-		c.Executor = ExecutorConfig{Type: executorType}
-		c.Tools.PostEdit = []PostEditCheckConfig{
-			validPostEditCheck(),
-			{Glob: "cmd/*.go", Command: "go vet ./cmd/...", TimeoutSeconds: MaxPostEditTimeoutSeconds},
-			{Glob: "*.go", Command: `test -f "{path}" && sh -c 'gofmt -l {path}'`},
-		}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Errorf("executor %q: valid postEdit rejected: %v", executorType, err)
-		}
+	cases := []struct {
+		name         string
+		executorType string
+	}{
+		{"unset executor type", ""},
+		{"local executor", "local"},
+		{"container executor", "container"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			c := validConfig()
+			c.Executor = ExecutorConfig{Type: tc.executorType}
+			c.Tools.PostEdit = []PostEditCheckConfig{
+				validPostEditCheck(),
+				{Glob: "cmd/*.go", Command: "go vet ./cmd/...", TimeoutSeconds: MaxPostEditTimeoutSeconds},
+				{Glob: "*.go", Command: `test -f "{path}" && sh -c 'gofmt -l {path}'`},
+			}
+			must.NoError(ValidateRunConfig(c), "valid postEdit must be accepted")
+		})
 	}
 }
 
 func TestValidateRunConfig_PostEdit_RejectedInReadOnlyModes(t *testing.T) {
 	for _, mode := range []string{"planning", "review", "research", "toil"} {
 		t.Run(mode, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Mode = mode
 			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
 			c.Tools.BuiltIn = []string{"read_file"}
 			c.Tools.PostEdit = []PostEditCheckConfig{validPostEditCheck()}
-			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("postEdit in read-only mode %q must fail validation", mode)
-			}
-			if !strings.Contains(err.Error(), "tools.postEdit is not allowed in read-only mode") {
-				t.Errorf("unexpected error: %v", err)
-			}
+			must.ErrorContains(ValidateRunConfig(c), "tools.postEdit is not allowed in read-only mode")
 
 			c.Tools.PostEdit = nil
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("baseline read-only config must validate without postEdit: %v", err)
-			}
+			must.NoError(ValidateRunConfig(c), "baseline read-only config without postEdit must validate")
 		})
 	}
 }
@@ -52,16 +56,11 @@ func TestValidateRunConfig_PostEdit_RejectedInReadOnlyModes(t *testing.T) {
 func TestValidateRunConfig_PostEdit_RejectedForExecutorsWithoutExec(t *testing.T) {
 	for _, executorType := range []string{"api", "none"} {
 		t.Run(executorType, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Executor = ExecutorConfig{Type: executorType}
 			c.Tools.PostEdit = []PostEditCheckConfig{validPostEditCheck()}
-			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("postEdit with executor %q must fail validation", executorType)
-			}
-			if !strings.Contains(err.Error(), "tools.postEdit requires an exec-capable executor") {
-				t.Errorf("unexpected error: %v", err)
-			}
+			must.ErrorContains(ValidateRunConfig(c), "tools.postEdit requires an exec-capable executor")
 		})
 	}
 }
@@ -84,60 +83,59 @@ func TestValidateRunConfig_PostEdit_EntryRules(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Tools.PostEdit = []PostEditCheckConfig{tc.check}
-			err := ValidateRunConfig(c)
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("error = %v, want it to contain %q", err, tc.want)
-			}
+			must.ErrorContains(ValidateRunConfig(c), tc.want)
 		})
 	}
 }
 
 func TestValidateRunConfig_PostEdit_EntryCountCapped(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
-	for i := 0; i <= maxPostEditChecks; i++ {
+	for range maxPostEditChecks + 1 {
 		c.Tools.PostEdit = append(c.Tools.PostEdit, validPostEditCheck())
 	}
-	err := ValidateRunConfig(c)
-	if err == nil || !strings.Contains(err.Error(), "tools.postEdit must have <=") {
-		t.Fatalf("error = %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "tools.postEdit must have <=")
 }
 
-func TestEffectivePostEditTimeout(t *testing.T) {
-	if got := EffectivePostEditTimeout(PostEditCheckConfig{}); got != DefaultPostEditTimeoutSeconds {
-		t.Errorf("zero timeout resolved to %d", got)
-	}
-	if got := EffectivePostEditTimeout(PostEditCheckConfig{TimeoutSeconds: 7}); got != 7 {
-		t.Errorf("explicit timeout resolved to %d", got)
-	}
+func TestEffectivePostEditTimeout_DefaultAndExplicit(t *testing.T) {
+	t.Run("zero timeout uses default", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(DefaultPostEditTimeoutSeconds, EffectivePostEditTimeout(PostEditCheckConfig{}))
+	})
+	t.Run("explicit timeout is kept", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(7, EffectivePostEditTimeout(PostEditCheckConfig{TimeoutSeconds: 7}))
+	})
 }
 
-func TestToolsConfig_PostEditJSONShape(t *testing.T) {
+func TestToolsConfig_PostEdit_DecodesJSONShape(t *testing.T) {
+	must := require.New(t)
 	var tc ToolsConfig
 	raw := `{"postEdit":[{"glob":"*.go","command":"gofmt -l {path}","timeoutSeconds":30}]}`
-	if err := json.Unmarshal([]byte(raw), &tc); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(json.Unmarshal([]byte(raw), &tc))
+
 	want := PostEditCheckConfig{Glob: "*.go", Command: "gofmt -l {path}", TimeoutSeconds: 30}
-	if len(tc.PostEdit) != 1 || tc.PostEdit[0] != want {
-		t.Fatalf("decoded %+v", tc.PostEdit)
-	}
+	must.Len(tc.PostEdit, 1)
+	must.Equal(want, tc.PostEdit[0])
 }
 
 func TestPostEditCheckRecord_Failed(t *testing.T) {
 	cases := []struct {
+		name string
 		rec  PostEditCheckRecord
 		want bool
 	}{
-		{PostEditCheckRecord{}, false},
-		{PostEditCheckRecord{ExitCode: 1}, true},
-		{PostEditCheckRecord{Error: "timed out", TimedOut: true}, true},
+		{"zero record is not failed", PostEditCheckRecord{}, false},
+		{"non-zero exit code is failed", PostEditCheckRecord{ExitCode: 1}, true},
+		{"timed out record is failed", PostEditCheckRecord{Error: "timed out", TimedOut: true}, true},
 	}
 	for _, tc := range cases {
-		if got := tc.rec.Failed(); got != tc.want {
-			t.Errorf("%+v.Failed() = %v, want %v", tc.rec, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, tc.rec.Failed())
+		})
 	}
 }

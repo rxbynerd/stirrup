@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 const scrubTestKey = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
@@ -17,6 +19,7 @@ const scrubTestKey = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 // persistent hook and checks that a package-level slog call afterwards is
 // scrubbed, whichever value kind carries the key.
 func TestRootPersistentPreRun_ScrubsDefaultLogger(t *testing.T) {
+	must := require.New(t)
 	prev := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
@@ -24,9 +27,7 @@ func TestRootPersistentPreRun_ScrubsDefaultLogger(t *testing.T) {
 	rootCmd.SetErr(&errBuf)
 	t.Cleanup(func() { rootCmd.SetErr(nil) })
 
-	if rootCmd.PersistentPreRun == nil {
-		t.Fatal("rootCmd has no PersistentPreRun")
-	}
+	must.NotNil(rootCmd.PersistentPreRun, "rootCmd has no PersistentPreRun")
 	rootCmd.PersistentPreRun(rootCmd, nil)
 
 	slog.Warn("upload failed: "+scrubTestKey,
@@ -35,15 +36,15 @@ func TestRootPersistentPreRun_ScrubsDefaultLogger(t *testing.T) {
 	)
 
 	out := errBuf.String()
-	if out == "" {
-		t.Fatal("default logger wrote nothing to the command's stderr")
-	}
-	if strings.Contains(out, scrubTestKey) {
-		t.Errorf("key leaked through the default logger: %s", out)
-	}
-	if !strings.Contains(out, "[REDACTED]") {
-		t.Errorf("expected [REDACTED] in default logger output: %s", out)
-	}
+	must.NotEmpty(out, "default logger wrote nothing to the command's stderr")
+	t.Run("omits the key", func(t *testing.T) {
+		must := require.New(t)
+		must.NotContains(out, scrubTestKey, "key leaked through the default logger")
+	})
+	t.Run("contains the redaction marker", func(t *testing.T) {
+		must := require.New(t)
+		must.Contains(out, "[REDACTED]")
+	})
 }
 
 type errString string
@@ -53,6 +54,7 @@ func (e errString) Error() string { return string(e) }
 // TestEgressProxy_LoggerScrubsSecrets sends a CONNECT whose host carries a
 // key-shaped token; the proxy's "egress blocked" log line must not echo it.
 func TestEgressProxy_LoggerScrubsSecrets(t *testing.T) {
+	must := require.New(t)
 	listener := boundLoopbackListener(t)
 	addr := listener.Addr().String()
 
@@ -70,32 +72,23 @@ func TestEgressProxy_LoggerScrubsSecrets(t *testing.T) {
 		cancel()
 		select {
 		case err := <-done:
-			if err != nil {
-				t.Errorf("serveEgressProxy returned %v on shutdown, want nil", err)
-			}
+			must.NoError(err, "serveEgressProxy returned an error on shutdown")
 		case <-time.After(10 * time.Second):
-			t.Error("serveEgressProxy did not shut down within 10s")
+			must.Fail("serveEgressProxy did not shut down within 10s")
 		}
 	})
 
 	conn, err := net.Dial("tcp", addr)
-	if err != nil {
-		t.Fatalf("dial proxy: %v", err)
-	}
+	must.NoError(err, "dial proxy")
 	defer func() { _ = conn.Close() }()
 
 	host := scrubTestKey + ".example.com"
 	line := "CONNECT " + host + ":443 HTTP/1.1\r\nHost: " + host + ":443\r\n\r\n"
-	if _, err := conn.Write([]byte(line)); err != nil {
-		t.Fatalf("write CONNECT: %v", err)
-	}
+	_, err = conn.Write([]byte(line))
+	must.NoError(err, "write CONNECT")
 	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
-	if err != nil {
-		t.Fatalf("read CONNECT response: %v", err)
-	}
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", resp.StatusCode)
-	}
+	must.NoError(err, "read CONNECT response")
+	must.Equal(http.StatusForbidden, resp.StatusCode)
 
 	var blocked string
 	deadline := time.Now().Add(5 * time.Second)
@@ -107,13 +100,14 @@ func TestEgressProxy_LoggerScrubsSecrets(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if blocked == "" {
-		t.Fatalf("no \"egress blocked\" log line within 5s: %s", logBuf.String())
-	}
-	if strings.Contains(blocked, scrubTestKey) {
-		t.Errorf("key leaked through the egress proxy logger: %s", blocked)
-	}
-	if !strings.Contains(blocked, "[REDACTED]") {
-		t.Errorf("expected [REDACTED] in egress proxy log line: %s", blocked)
-	}
+	must.NotEmpty(blocked, "no \"egress blocked\" log line within 5s: %s", logBuf.String())
+
+	t.Run("omits the key", func(t *testing.T) {
+		must := require.New(t)
+		must.NotContains(blocked, scrubTestKey, "key leaked through the egress proxy logger")
+	})
+	t.Run("contains the redaction marker", func(t *testing.T) {
+		must := require.New(t)
+		must.Contains(blocked, "[REDACTED]")
+	})
 }

@@ -9,58 +9,48 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/types"
 )
 
 func TestBoundToolResult_WithinBudgetUnchanged(t *testing.T) {
+	must := require.New(t)
 	out := strings.Repeat("a", 1024)
 	got, cut := boundToolResult(out, 1024, "read_file")
-	if cut || got != out {
-		t.Fatalf("output at the budget must pass through unchanged (cut=%v, len=%d)", cut, len(got))
-	}
+	must.False(cut, "output at the budget must not be cut")
+	must.Equal(out, got, "output at the budget must pass through unchanged")
 }
 
 func TestBoundToolResult_CutsHeadWithinBudget(t *testing.T) {
+	must := require.New(t)
 	// Three-byte runes force the cut to back off to a rune boundary.
 	out := strings.Repeat("€", 10_000)
 	const budget = 4096
 	got, cut := boundToolResult(out, budget, "grep_files")
-	if !cut {
-		t.Fatal("expected a cut")
-	}
-	if len(got) > budget {
-		t.Fatalf("bounded result is %d bytes, want <= %d", len(got), budget)
-	}
-	if !utf8.ValidString(got) {
-		t.Fatal("bounded result split a UTF-8 rune")
-	}
+	must.True(cut, "expected a cut")
+	must.LessOrEqual(len(got), budget, "bounded result must fit the budget")
+	must.True(utf8.ValidString(got), "bounded result split a UTF-8 rune")
+
 	head, marker, ok := strings.Cut(got, "\n[tool result truncated: ")
-	if !ok {
-		t.Fatalf("missing truncation marker: %q", got[len(got)-200:])
-	}
-	if !strings.HasPrefix(out, head) {
-		t.Fatal("bounded result must keep the head of the original output")
-	}
+	must.True(ok, "missing truncation marker: %q", got[len(got)-200:])
+	must.True(strings.HasPrefix(out, head), "bounded result must keep the head of the original output")
+
 	wantCounts := fmt.Sprintf("showing the first %d of %d bytes; the omitted part starts at byte offset %d.", len(head), len(out), len(head))
-	if !strings.HasPrefix(marker, wantCounts) {
-		t.Fatalf("marker %q does not start with %q", marker, wantCounts)
-	}
-	if !strings.Contains(marker, "Narrow the request") {
-		t.Fatalf("generic marker must carry the generic hint: %q", marker)
-	}
+	must.True(strings.HasPrefix(marker, wantCounts), "marker %q does not start with %q", marker, wantCounts)
+	must.Contains(marker, "Narrow the request", "generic marker must carry the generic hint")
 
 	again, cutAgain := boundToolResult(got, budget, "grep_files")
-	if cutAgain || again != got {
-		t.Fatal("re-bounding an already bounded result must be a no-op")
-	}
+	must.False(cutAgain, "re-bounding an already bounded result must not cut again")
+	must.Equal(got, again, "re-bounding an already bounded result must be a no-op")
 }
 
 func TestBoundToolResult_ReadFileHint(t *testing.T) {
+	must := require.New(t)
 	got, _ := boundToolResult(strings.Repeat("x\n", 4096), 2048, "read_file")
-	if !strings.Contains(got, "read_file, setting start_line") {
-		t.Fatalf("read_file marker must say how to read on: %q", got[len(got)-250:])
-	}
+	must.Contains(got, "read_file, setting start_line", "read_file marker must say how to read on")
 }
 
 // bigResultTool returns a structured tool whose text is size bytes and
@@ -82,6 +72,7 @@ func bigResultTool(name string, size int, selfBounded bool) *tool.Tool {
 
 func dispatchOne(t *testing.T, loop *AgenticLoop, config *types.RunConfig, name string) (types.ToolResult, types.ToolCallRecord) {
 	t.Helper()
+	must := require.New(t)
 	results, records, stall := loop.planAndDispatch(
 		context.Background(),
 		config,
@@ -90,81 +81,77 @@ func dispatchOne(t *testing.T, loop *AgenticLoop, config *types.RunConfig, name 
 		"anthropic",
 		"claude-sonnet-4-6",
 	)
-	if stall != "" {
-		t.Fatalf("unexpected stall outcome %q", stall)
-	}
-	if len(results) != 1 || len(records) != 1 {
-		t.Fatalf("expected 1 result/record, got %d/%d", len(results), len(records))
-	}
+	must.Empty(stall, "unexpected stall outcome")
+	must.Len(results, 1, "one tool result per call")
+	must.Len(records, 1, "one tool call record per call")
 	return results[0], records[0]
 }
 
 func toolResultEventContent(t *testing.T, tr *asyncTestTransport) string {
 	t.Helper()
+	must := require.New(t)
 	for _, ev := range tr.Events() {
 		if ev.Type == "tool_result" {
 			return ev.Content
 		}
 	}
-	t.Fatal("no tool_result event emitted")
+	must.Fail("no tool_result event emitted")
 	return ""
 }
 
 func TestPlanAndDispatch_TruncatesOversizedResultAndDropsEnvelope(t *testing.T) {
+	must := require.New(t)
 	tr := newAsyncTestTransport()
 	loop := buildAsyncTestLoop(t, tr, bigResultTool("big", 3<<20, false))
 
 	result, record := dispatchOne(t, loop, &types.RunConfig{Mode: "execution"}, "big")
-	if len(result.Content) > types.DefaultToolMaxResultBytes {
-		t.Fatalf("result is %d bytes, want <= %d", len(result.Content), types.DefaultToolMaxResultBytes)
-	}
-	if !strings.Contains(result.Content, fmt.Sprintf("of %d bytes", 3<<20)) {
-		t.Fatal("marker must name the original byte count")
-	}
-	if result.Structured != nil || result.Kind != "" {
-		t.Fatalf("truncated result must carry no structured envelope (kind %q, %d bytes)", result.Kind, len(result.Structured))
-	}
-	if record.Output != result.Content || record.Structured != nil || record.Kind != "" {
-		t.Fatal("the turn record must carry the same bounded, envelope-free result")
-	}
-	if got := toolResultEventContent(t, tr); got != result.Content {
-		t.Fatalf("tool_result event carries %d bytes, want the %d-byte bounded text", len(got), len(result.Content))
-	}
+	must.LessOrEqual(len(result.Content), types.DefaultToolMaxResultBytes, "bounded result must fit the default budget")
+	must.Contains(result.Content, fmt.Sprintf("of %d bytes", 3<<20), "marker must name the original byte count")
+	must.Nil(result.Structured, "truncated result must carry no structured envelope")
+	must.Empty(result.Kind, "truncated result must carry no kind")
+
+	must.Equal(result.Content, record.Output, "the turn record must carry the same bounded result")
+	must.Nil(record.Structured, "the turn record must carry no structured envelope")
+	must.Empty(record.Kind, "the turn record must carry no kind")
+
+	must.Equal(result.Content, toolResultEventContent(t, tr), "tool_result event must carry the bounded text")
 }
 
 func TestPlanAndDispatch_HonoursConfiguredMaxResultBytes(t *testing.T) {
+	must := require.New(t)
+	const maxResultBytes = 4096
 	tr := newAsyncTestTransport()
 	loop := buildAsyncTestLoop(t, tr, bigResultTool("big", 64<<10, false))
 
-	config := &types.RunConfig{Mode: "execution", Tools: types.ToolsConfig{MaxResultBytes: 4096}}
+	config := &types.RunConfig{Mode: "execution", Tools: types.ToolsConfig{MaxResultBytes: maxResultBytes}}
 	result, _ := dispatchOne(t, loop, config, "big")
-	if len(result.Content) > 4096 {
-		t.Fatalf("result is %d bytes, want <= 4096", len(result.Content))
-	}
+	must.LessOrEqual(len(result.Content), maxResultBytes, "result must fit the configured budget")
 }
 
 func TestPlanAndDispatch_ResultWithinBudgetKeepsEnvelope(t *testing.T) {
+	must := require.New(t)
 	tr := newAsyncTestTransport()
 	loop := buildAsyncTestLoop(t, tr, bigResultTool("small", 1024, false))
 
 	result, _ := dispatchOne(t, loop, &types.RunConfig{Mode: "execution"}, "small")
-	if len(result.Content) != 1024 || result.Structured == nil || result.Kind != "file_excerpt" {
-		t.Fatalf("a result within budget must be delivered unchanged (len %d, kind %q)", len(result.Content), result.Kind)
-	}
+	must.Len(result.Content, 1024, "a result within budget must be delivered unchanged")
+	must.NotNil(result.Structured, "a result within budget must keep its envelope")
+	must.Equal("file_excerpt", result.Kind)
 }
 
 func TestPlanAndDispatch_SelfBoundedResultPassesThrough(t *testing.T) {
+	must := require.New(t)
 	tr := newAsyncTestTransport()
 	loop := buildAsyncTestLoop(t, tr, bigResultTool("self_bounded", 8192, true))
 
 	config := &types.RunConfig{Mode: "execution", Tools: types.ToolsConfig{MaxResultBytes: 4096}}
 	result, _ := dispatchOne(t, loop, config, "self_bounded")
-	if len(result.Content) != 8192 || result.Structured == nil {
-		t.Fatalf("a self-bounded result must not be altered (len %d)", len(result.Content))
-	}
+	must.Len(result.Content, 8192, "a self-bounded result must not be altered")
+	must.NotNil(result.Structured, "a self-bounded result must keep its envelope")
 }
 
 func TestPlanAndDispatch_TruncatesOversizedErrorResult(t *testing.T) {
+	must := require.New(t)
 	failing := &tool.Tool{
 		Name:        "failing",
 		Description: "test tool returning a large error",
@@ -177,18 +164,17 @@ func TestPlanAndDispatch_TruncatesOversizedErrorResult(t *testing.T) {
 	loop := buildAsyncTestLoop(t, tr, failing)
 
 	result, _ := dispatchOne(t, loop, &types.RunConfig{Mode: "execution"}, "failing")
-	if !result.IsError {
-		t.Fatal("expected an error result")
-	}
-	if len(result.Content) > types.DefaultToolMaxResultBytes {
-		t.Fatalf("error result is %d bytes, want <= %d", len(result.Content), types.DefaultToolMaxResultBytes)
-	}
+	must.True(result.IsError, "expected an error result")
+	must.LessOrEqual(len(result.Content), types.DefaultToolMaxResultBytes, "error result must fit the default budget")
 }
 
 func TestPlanAndDispatch_TruncatesOversizedAsyncResult(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	tr := newAsyncTestTransport()
 	loop := buildAsyncTestLoop(t, tr, asyncEchoTool())
 
+	// Runs off the test goroutine, so it reports with assert rather than require.
 	go func() {
 		deadline := time.Now().Add(2 * time.Second)
 		for time.Now().Before(deadline) {
@@ -202,17 +188,11 @@ func TestPlanAndDispatch_TruncatesOversizedAsyncResult(t *testing.T) {
 			}
 			time.Sleep(time.Millisecond)
 		}
-		t.Errorf("tool_result_request was never emitted")
+		check.Fail("tool_result_request was never emitted")
 	}()
 
 	result, _ := dispatchOne(t, loop, &types.RunConfig{Mode: "execution"}, "async_echo")
-	if result.IsError {
-		t.Fatalf("unexpected error result: %.200s", result.Content)
-	}
-	if len(result.Content) > types.DefaultToolMaxResultBytes {
-		t.Fatalf("async result is %d bytes, want <= %d", len(result.Content), types.DefaultToolMaxResultBytes)
-	}
-	if !strings.Contains(result.Content, fmt.Sprintf("of %d bytes", 512<<10)) {
-		t.Fatal("async marker must name the original byte count")
-	}
+	must.False(result.IsError, "unexpected error result: %.200s", result.Content)
+	must.LessOrEqual(len(result.Content), types.DefaultToolMaxResultBytes, "async result must fit the default budget")
+	must.Contains(result.Content, fmt.Sprintf("of %d bytes", 512<<10), "async marker must name the original byte count")
 }

@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -26,26 +29,19 @@ func emptyHostPath(t *testing.T) {
 }
 
 func TestDeterministic_EveryCommandGoesThroughExecutor(t *testing.T) {
+	must := require.New(t)
 	emptyHostPath(t)
 	repo := &fakeRepo{root: "/workspace", toplevel: "/workspace", sha: testSHA1, branch: "stirrup/run-1", staged: true}
 	exec := newScriptedExecutor(repo.respond)
 	gs := NewDeterministicGitStrategy(exec)
 	ctx := context.Background()
 
-	if err := gs.Setup(ctx, "/ignored/host/path", "run-1"); err != nil {
-		t.Fatalf("Setup: %v", err)
-	}
-	if err := gs.Checkpoint(ctx, "Turn 1: 2 tool calls"); err != nil {
-		t.Fatalf("Checkpoint: %v", err)
-	}
+	must.NoError(gs.Setup(ctx, "/ignored/host/path", "run-1"))
+	must.NoError(gs.Checkpoint(ctx, "Turn 1: 2 tool calls"))
 	result, err := gs.Finalise(ctx, "success")
-	if err != nil {
-		t.Fatalf("Finalise: %v", err)
-	}
+	must.NoError(err)
 	want := types.GitHandoff{Branch: "stirrup/run-1", SHA: testSHA1, BaseSHA: testSHA1}
-	if *result != want {
-		t.Errorf("Finalise = %+v, want %+v", *result, want)
-	}
+	must.Equal(want, *result)
 
 	wantSequence := [][]string{
 		{"pwd -P"},
@@ -62,77 +58,63 @@ func TestDeterministic_EveryCommandGoesThroughExecutor(t *testing.T) {
 		{"rev-parse", "--abbrev-ref", "HEAD"},
 		{"status", "--porcelain"},
 	}
-	if len(exec.calls) != len(wantSequence) {
-		t.Fatalf("executor saw %d commands, want %d:\n%s", len(exec.calls), len(wantSequence), strings.Join(exec.calls, "\n"))
-	}
+	must.Len(exec.calls, len(wantSequence), "executor commands:\n%s", strings.Join(exec.calls, "\n"))
 	for i, want := range wantSequence {
-		got := exec.calls[i]
-		if i == 0 {
-			if got != want[0] {
-				t.Errorf("call[0] = %q, want %q", got, want[0])
+		t.Run(fmt.Sprintf("%d %s", i, strings.Join(want, " ")), func(t *testing.T) {
+			must := require.New(t)
+			got := exec.calls[i]
+			if i == 0 {
+				must.Equal(want[0], got)
+				return
 			}
-			continue
-		}
-		if !strings.HasPrefix(got, "git ") {
-			t.Errorf("call[%d] = %q, want a git command", i, got)
-		}
-		if !hasArgs(got, want...) {
-			t.Errorf("call[%d] = %q, want arguments %q", i, got, want)
-		}
-		for j := 0; j < len(HardeningFlags); j += 2 {
-			if !hasArgs(got, HardeningFlags[j], HardeningFlags[j+1]) {
-				t.Errorf("call[%d] lacks hardening flag %s %s: %q", i, HardeningFlags[j], HardeningFlags[j+1], got)
+			must.True(strings.HasPrefix(got, "git "), "not a git command: %q", got)
+			must.True(hasArgs(got, want...), "call %q lacks arguments %q", got, want)
+			for j := 0; j < len(HardeningFlags); j += 2 {
+				must.True(hasArgs(got, HardeningFlags[j], HardeningFlags[j+1]),
+					"call lacks hardening flag %s %s: %q", HardeningFlags[j], HardeningFlags[j+1], got)
 			}
-		}
-		if !hasArgs(got, "-c", "user.name="+HarnessIdentityName) || !hasArgs(got, "-c", "user.email="+HarnessIdentityEmail) {
-			t.Errorf("call[%d] lacks the harness identity: %q", i, got)
-		}
-		if !hasArgs(got, "-c", "safe.directory=/workspace") {
-			t.Errorf("call[%d] lacks safe.directory for the workspace root: %q", i, got)
-		}
+			must.True(hasArgs(got, "-c", "user.name="+HarnessIdentityName), "call lacks the harness author name: %q", got)
+			must.True(hasArgs(got, "-c", "user.email="+HarnessIdentityEmail), "call lacks the harness author email: %q", got)
+			must.True(hasArgs(got, "-c", "safe.directory=/workspace"), "call lacks safe.directory for the workspace root: %q", got)
+		})
 	}
 }
 
 func TestSetup_RejectsEnclosingRepository(t *testing.T) {
+	must := require.New(t)
 	emptyHostPath(t)
 	repo := &fakeRepo{root: "/parent/ws", toplevel: "/parent"}
 	exec := newScriptedExecutor(repo.respond)
 	gs := NewDeterministicGitStrategy(exec)
 
 	err := gs.Setup(context.Background(), "", "run-2")
-	if err == nil {
-		t.Fatal("Setup succeeded inside an enclosing repository")
-	}
-	if !strings.Contains(err.Error(), "/parent/ws is inside repository /parent") {
-		t.Errorf("error = %v, want it to name both roots", err)
-	}
+	must.ErrorContains(err, "/parent/ws is inside repository /parent")
+
+	var mutations []string
 	for _, call := range exec.calls {
 		for _, mutating := range []string{"checkout", "init", "add", "commit"} {
 			if hasArgs(call, mutating) {
-				t.Errorf("Setup issued a mutating command after detecting the enclosing repository: %q", call)
+				mutations = append(mutations, call)
 			}
 		}
 	}
-	if err := gs.Checkpoint(context.Background(), "x"); err == nil {
-		t.Error("Checkpoint succeeded after a failed Setup")
-	}
-	if _, err := gs.Finalise(context.Background(), "success"); err == nil || !strings.Contains(err.Error(), "has not run") {
-		t.Errorf("Finalise after a failed Setup error = %v, want the setup-has-not-run error", err)
-	}
+	must.Empty(mutations, "Setup issued mutating commands after detecting the enclosing repository")
+
+	must.Error(gs.Checkpoint(context.Background(), "x"), "Checkpoint succeeded after a failed Setup")
+	_, err = gs.Finalise(context.Background(), "success")
+	must.ErrorContains(err, "has not run")
 }
 
 func TestSetup_InitialisesNonRepository(t *testing.T) {
+	must := require.New(t)
 	emptyHostPath(t)
 	repo := &fakeRepo{root: "/workspace", notRepo: true, sha: testSHA1, branch: "stirrup/run-3"}
 	exec := newScriptedExecutor(repo.respond)
 	gs := NewDeterministicGitStrategy(exec)
 
-	if err := gs.Setup(context.Background(), "", "run-3"); err != nil {
-		t.Fatalf("Setup: %v", err)
-	}
-	if !containsCall(exec.calls, "test -e .git || test -L .git") {
-		t.Errorf("Setup initialised without checking for a .git entry:\n%s", strings.Join(exec.calls, "\n"))
-	}
+	must.NoError(gs.Setup(context.Background(), "", "run-3"))
+	must.True(containsCall(exec.calls, "test -e .git || test -L .git"),
+		"Setup initialised without checking for a .git entry:\n%s", strings.Join(exec.calls, "\n"))
 	want := [][]string{
 		{"rev-parse", "--show-toplevel"},
 		{"init", "--quiet"},
@@ -143,17 +125,17 @@ func TestSetup_InitialisesNonRepository(t *testing.T) {
 		{"rev-parse", "--verify", "--quiet", "HEAD"},
 	}
 	gitCalls := gitCommands(exec.calls)
-	if len(gitCalls) != len(want) {
-		t.Fatalf("git commands = %d, want %d:\n%s", len(gitCalls), len(want), strings.Join(gitCalls, "\n"))
-	}
+	must.Len(gitCalls, len(want), "git commands:\n%s", strings.Join(gitCalls, "\n"))
 	for i, args := range want {
-		if !hasArgs(gitCalls[i], args...) {
-			t.Errorf("git call[%d] = %q, want %q", i, gitCalls[i], args)
-		}
+		t.Run(fmt.Sprintf("%d %s", i, strings.Join(args, " ")), func(t *testing.T) {
+			must := require.New(t)
+			must.True(hasArgs(gitCalls[i], args...), "got %q", gitCalls[i])
+		})
 	}
 }
 
 func TestSetup_RefusesUnresolvableGitEntry(t *testing.T) {
+	must := require.New(t)
 	emptyHostPath(t)
 	repo := &fakeRepo{
 		root:          "/workspace",
@@ -165,19 +147,19 @@ func TestSetup_RefusesUnresolvableGitEntry(t *testing.T) {
 	gs := NewDeterministicGitStrategy(exec)
 
 	err := gs.Setup(context.Background(), "", "run-3b")
-	if err == nil || !strings.Contains(err.Error(), "self-contained repository") {
-		t.Fatalf("Setup error = %v, want the unresolvable .git entry message", err)
-	}
+	must.ErrorContains(err, "self-contained repository")
+
+	var mutations []string
 	for _, call := range exec.calls {
 		for _, mutating := range []string{"init", "checkout", "add", "commit"} {
 			if hasArgs(call, mutating) {
-				t.Errorf("Setup issued %q despite an unresolvable .git entry", call)
+				mutations = append(mutations, call)
 			}
 		}
 	}
-	if err := gs.Checkpoint(context.Background(), "x"); err == nil {
-		t.Error("Checkpoint succeeded after a failed Setup")
-	}
+	must.Empty(mutations, "Setup issued mutating commands despite an unresolvable .git entry")
+
+	must.Error(gs.Checkpoint(context.Background(), "x"), "Checkpoint succeeded after a failed Setup")
 }
 
 func TestSetup_KeepsTrailingSpaceInWorkspaceRoot(t *testing.T) {
@@ -187,92 +169,84 @@ func TestSetup_KeepsTrailingSpaceInWorkspaceRoot(t *testing.T) {
 		"initialised":         {root: "/work space ", notRepo: true},
 	} {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			gs := NewDeterministicGitStrategy(newScriptedExecutor(repo.respond))
-			if err := gs.Setup(context.Background(), "", "run-3c"); err != nil {
-				t.Fatalf("Setup: %v", err)
-			}
+			must.NoError(gs.Setup(context.Background(), "", "run-3c"))
 		})
 	}
 }
 
 func TestSetup_ReportsMissingGit(t *testing.T) {
+	must := require.New(t)
 	emptyHostPath(t)
 	repo := &fakeRepo{root: "/workspace", gitMissing: true}
 	gs := NewDeterministicGitStrategy(newScriptedExecutor(repo.respond))
 
 	err := gs.Setup(context.Background(), "", "run-4")
-	if err == nil || !strings.Contains(err.Error(), "git is not available in the sandbox") {
-		t.Fatalf("Setup error = %v, want the missing-git message", err)
-	}
+	must.ErrorContains(err, "git is not available in the sandbox")
 }
 
 func TestSetup_RejectsExecutorWithoutExec(t *testing.T) {
+	must := require.New(t)
 	exec := newScriptedExecutor(func(string) (*executor.ExecResult, error) {
 		return nil, fmt.Errorf("must not be called")
 	})
 	exec.caps.CanExec = false
 	gs := NewDeterministicGitStrategy(exec)
-	if err := gs.Setup(context.Background(), "", "run-5"); err == nil {
-		t.Fatal("Setup succeeded on an executor that cannot run commands")
-	}
-	if len(exec.calls) != 0 {
-		t.Errorf("executor was called %d times", len(exec.calls))
-	}
-	if err := NewDeterministicGitStrategy(nil).Setup(context.Background(), "", "run-5"); err == nil {
-		t.Fatal("Setup succeeded with a nil executor")
-	}
+	must.Error(gs.Setup(context.Background(), "", "run-5"), "Setup succeeded on an executor that cannot run commands")
+	must.Empty(exec.calls, "executor must not be called")
+	must.Error(NewDeterministicGitStrategy(nil).Setup(context.Background(), "", "run-5"), "Setup succeeded with a nil executor")
 }
 
 func TestSetup_RejectsUnusableWorkspaceRoot(t *testing.T) {
 	for _, pwd := range []string{"", "relative/path\n", "/ws\nextra\n"} {
-		exec := newScriptedExecutor(func(command string) (*executor.ExecResult, error) {
-			if command == "pwd -P" {
-				return &executor.ExecResult{Stdout: pwd}, nil
-			}
-			return &executor.ExecResult{}, nil
+		t.Run(fmt.Sprintf("pwd %q", pwd), func(t *testing.T) {
+			must := require.New(t)
+			exec := newScriptedExecutor(func(command string) (*executor.ExecResult, error) {
+				if command == "pwd -P" {
+					return &executor.ExecResult{Stdout: pwd}, nil
+				}
+				return &executor.ExecResult{}, nil
+			})
+			gs := NewDeterministicGitStrategy(exec)
+			must.Error(gs.Setup(context.Background(), "", "run-6"))
+			must.Len(exec.calls, 1, "only the pwd command should run")
 		})
-		gs := NewDeterministicGitStrategy(exec)
-		if err := gs.Setup(context.Background(), "", "run-6"); err == nil {
-			t.Errorf("Setup accepted pwd output %q", pwd)
-		}
-		if len(exec.calls) != 1 {
-			t.Errorf("pwd output %q: %d commands issued, want only pwd", pwd, len(exec.calls))
-		}
 	}
 }
 
 func TestSetup_RejectsTaskIDThatIsNotABranchName(t *testing.T) {
+	must := require.New(t)
 	exec := newScriptedExecutor(func(string) (*executor.ExecResult, error) {
 		return nil, fmt.Errorf("must not be called")
 	})
 	gs := NewDeterministicGitStrategy(exec)
 	for _, id := range []string{"", "a..b", "x y", "lock.lock", "a\nb"} {
-		if err := gs.Setup(context.Background(), "", id); err == nil {
-			t.Errorf("Setup accepted task id %q", id)
-		}
+		t.Run(fmt.Sprintf("task id %q", id), func(t *testing.T) {
+			must := require.New(t)
+			must.Error(gs.Setup(context.Background(), "", id))
+		})
 	}
-	if len(exec.calls) != 0 {
-		t.Errorf("executor was called %d times", len(exec.calls))
-	}
+	must.Empty(exec.calls, "executor must not be called")
 }
 
 func TestCheckpoint_NoChanges_IssuesNoCommit(t *testing.T) {
+	must := require.New(t)
 	emptyHostPath(t)
 	repo := &fakeRepo{root: "/workspace", toplevel: "/workspace"}
 	exec := newScriptedExecutor(repo.respond)
 	gs := NewDeterministicGitStrategy(exec)
 	ctx := context.Background()
-	if err := gs.Setup(ctx, "", "run-7"); err != nil {
-		t.Fatalf("Setup: %v", err)
-	}
-	if err := gs.Checkpoint(ctx, "nothing"); err != nil {
-		t.Fatalf("Checkpoint: %v", err)
-	}
+	must.NoError(gs.Setup(ctx, "", "run-7"))
+	must.NoError(gs.Checkpoint(ctx, "nothing"))
+
+	var commits []string
 	for _, call := range exec.calls {
 		if hasArgs(call, "commit") {
-			t.Errorf("Checkpoint committed with nothing staged: %q", call)
+			commits = append(commits, call)
 		}
 	}
+	must.Empty(commits, "Checkpoint committed with nothing staged")
 }
 
 func TestFinalise_RejectsHostileOutput(t *testing.T) {
@@ -294,47 +268,37 @@ func TestFinalise_RejectsHostileOutput(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			repo := &fakeRepo{root: "/workspace", toplevel: "/workspace", sha: tc.sha, branch: tc.branch}
 			gs := NewDeterministicGitStrategy(newScriptedExecutor(repo.respond))
 			ctx := context.Background()
-			if err := gs.Setup(ctx, "", "run-8"); err != nil {
-				t.Fatalf("Setup: %v", err)
-			}
-			if result, err := gs.Finalise(ctx, "success"); err == nil {
-				t.Fatalf("Finalise accepted %+v", result)
-			}
+			must.NoError(gs.Setup(ctx, "", "run-8"))
+			result, err := gs.Finalise(ctx, "success")
+			must.Error(err, "Finalise accepted %+v", result)
 		})
 	}
 }
 
 func TestFinalise_AcceptsSHA256(t *testing.T) {
+	must := require.New(t)
 	repo := &fakeRepo{root: "/workspace", toplevel: "/workspace", sha: testSHA256, branch: "stirrup/run-9"}
 	gs := NewDeterministicGitStrategy(newScriptedExecutor(repo.respond))
 	ctx := context.Background()
-	if err := gs.Setup(ctx, "", "run-9"); err != nil {
-		t.Fatalf("Setup: %v", err)
-	}
+	must.NoError(gs.Setup(ctx, "", "run-9"))
 	result, err := gs.Finalise(ctx, "success")
-	if err != nil {
-		t.Fatalf("Finalise: %v", err)
-	}
-	if result.SHA != testSHA256 {
-		t.Errorf("SHA = %q, want %q", result.SHA, testSHA256)
-	}
+	must.NoError(err)
+	must.Equal(testSHA256, result.SHA)
 }
 
 func TestFinalise_BeforeSetupFails(t *testing.T) {
+	must := require.New(t)
 	gs := NewDeterministicGitStrategy(newScriptedExecutor((&fakeRepo{}).respond))
 	handoff, err := gs.Finalise(context.Background(), "success")
-	if err == nil {
-		t.Fatal("Finalise succeeded before Setup")
-	}
-	if handoff == nil {
-		t.Fatal("Finalise before Setup returned a nil handoff")
-	}
+	must.Error(err, "Finalise succeeded before Setup")
+	must.NotNil(handoff, "Finalise before Setup returned a nil handoff")
 }
 
-func TestProbe(t *testing.T) {
+func TestProbe_ReportsGitAvailability(t *testing.T) {
 	cases := []struct {
 		name    string
 		res     *executor.ExecResult
@@ -346,32 +310,32 @@ func TestProbe(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			var issued []string
 			exec := newScriptedExecutor(func(command string) (*executor.ExecResult, error) {
-				if !hasArgs(command, "--version") {
-					t.Errorf("Probe issued %q, want git --version", command)
-				}
+				issued = append(issued, command)
 				return tc.res, nil
 			})
 			err := NewDeterministicGitStrategy(exec).Probe(context.Background())
+			for _, command := range issued {
+				must.True(hasArgs(command, "--version"), "Probe issued %q, want git --version", command)
+			}
 			if tc.wantErr == "" {
-				if err != nil {
-					t.Fatalf("Probe: %v", err)
-				}
+				must.NoError(err)
 				return
 			}
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("Probe error = %v, want %q", err, tc.wantErr)
-			}
+			must.ErrorContains(err, tc.wantErr)
 		})
 	}
 }
 
-func TestValidBranchName(t *testing.T) {
+func TestValidBranchName_AcceptsValidAndRejectsInvalid(t *testing.T) {
 	valid := []string{"main", "stirrup/run-1", "feature/a.b", "a/b/c", "HEAD", "v1.0"}
 	for _, name := range valid {
-		if !ValidBranchName(name) {
-			t.Errorf("ValidBranchName(%q) = false, want true", name)
-		}
+		t.Run(fmt.Sprintf("accepts %q", name), func(t *testing.T) {
+			must := require.New(t)
+			must.True(ValidBranchName(name))
+		})
 	}
 	invalid := []string{
 		"", "@", "-x", "/x", "x/", "x.", ".x", "a/.b", "a..b", "a//b", "a@{b", "a.lock", "a.lock/b",
@@ -379,23 +343,27 @@ func TestValidBranchName(t *testing.T) {
 		strings.Repeat("x", maxBranchNameLen+1),
 	}
 	for _, name := range invalid {
-		if ValidBranchName(name) {
-			t.Errorf("ValidBranchName(%q) = true, want false", name)
-		}
+		t.Run(fmt.Sprintf("rejects %q", name), func(t *testing.T) {
+			must := require.New(t)
+			must.False(ValidBranchName(name))
+		})
 	}
 }
 
 func TestCommandLine_QuotesEveryArgument(t *testing.T) {
 	line := CommandLine("commit", "-m", "it's; rm -rf /")
-	if !strings.HasPrefix(line, "git '-c' 'core.hooksPath=/dev/null'") {
-		t.Errorf("CommandLine = %q, want it to begin with the hardening flags", line)
-	}
-	if !strings.HasSuffix(line, `'commit' '-m' 'it'\''s; rm -rf /'`) {
-		t.Errorf("CommandLine = %q, want quoted trailing arguments", line)
-	}
-	if strings.Count(line, ";") != 1 {
-		t.Errorf("CommandLine = %q, want the only `;` inside quotes", line)
-	}
+	t.Run("begins with hardening flags", func(t *testing.T) {
+		must := require.New(t)
+		must.True(strings.HasPrefix(line, "git '-c' 'core.hooksPath=/dev/null'"), "CommandLine = %q", line)
+	})
+	t.Run("quotes trailing arguments", func(t *testing.T) {
+		must := require.New(t)
+		must.True(strings.HasSuffix(line, `'commit' '-m' 'it'\''s; rm -rf /'`), "CommandLine = %q", line)
+	})
+	t.Run("keeps the semicolon inside quotes", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(1, strings.Count(line, ";"), "CommandLine = %q", line)
+	})
 }
 
 // The tests below drive the strategy through a LocalExecutor against real
@@ -404,12 +372,11 @@ func TestCommandLine_QuotesEveryArgument(t *testing.T) {
 
 func hostGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
+	must := require.New(t)
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
-	}
+	must.NoError(err, "git %v\n%s", args, out)
 	return strings.TrimSpace(string(out))
 }
 
@@ -423,66 +390,47 @@ func initHostRepo(t *testing.T, dir string) {
 
 func localStrategy(t *testing.T, dir string) *DeterministicGitStrategy {
 	t.Helper()
+	must := require.New(t)
 	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
+	must.NoError(err)
 	return NewDeterministicGitStrategy(exec)
 }
 
 func commitCount(t *testing.T, dir string) int {
 	t.Helper()
+	must := require.New(t)
 	var n int
-	if _, err := fmt.Sscanf(hostGit(t, dir, "rev-list", "--count", "HEAD"), "%d", &n); err != nil {
-		t.Fatalf("parse count: %v", err)
-	}
+	_, err := fmt.Sscanf(hostGit(t, dir, "rev-list", "--count", "HEAD"), "%d", &n)
+	must.NoError(err, "parse commit count")
 	return n
 }
 
-func TestLocal_SetupCheckpointFinalise(t *testing.T) {
+func TestLocal_SetupCheckpointFinalise_CommitsToTaskBranch(t *testing.T) {
+	must := require.New(t)
 	repo := t.TempDir()
 	initHostRepo(t, repo)
 	gs := localStrategy(t, repo)
 	ctx := context.Background()
 
-	if err := gs.Setup(ctx, repo, "task-42"); err != nil {
-		t.Fatalf("Setup: %v", err)
-	}
-	if got := hostGit(t, repo, "rev-parse", "--abbrev-ref", "HEAD"); got != "stirrup/task-42" {
-		t.Errorf("branch = %q, want stirrup/task-42", got)
-	}
+	must.NoError(gs.Setup(ctx, repo, "task-42"))
+	must.Equal("stirrup/task-42", hostGit(t, repo, "rev-parse", "--abbrev-ref", "HEAD"))
 
 	before := commitCount(t, repo)
-	if err := gs.Checkpoint(ctx, "nothing"); err != nil {
-		t.Fatalf("Checkpoint (no changes): %v", err)
-	}
-	if after := commitCount(t, repo); after != before {
-		t.Errorf("commit count changed from %d to %d with no changes", before, after)
-	}
+	must.NoError(gs.Checkpoint(ctx, "nothing"))
+	must.Equal(before, commitCount(t, repo), "checkpoint with no changes must not commit")
 
-	if err := os.WriteFile(filepath.Join(repo, "hello.txt"), []byte("hello"), 0o644); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
-	if err := gs.Checkpoint(ctx, "add hello"); err != nil {
-		t.Fatalf("Checkpoint: %v", err)
-	}
-	if got := hostGit(t, repo, "log", "-1", "--format=%s"); got != "add hello" {
-		t.Errorf("commit message = %q, want %q", got, "add hello")
-	}
+	must.NoError(os.WriteFile(filepath.Join(repo, "hello.txt"), []byte("hello"), 0o644))
+	must.NoError(gs.Checkpoint(ctx, "add hello"))
+	must.Equal("add hello", hostGit(t, repo, "log", "-1", "--format=%s"))
 
 	result, err := gs.Finalise(ctx, "success")
-	if err != nil {
-		t.Fatalf("Finalise: %v", err)
-	}
-	if result.Branch != "stirrup/task-42" {
-		t.Errorf("Finalise branch = %q", result.Branch)
-	}
-	if want := hostGit(t, repo, "rev-parse", "HEAD"); result.SHA != want {
-		t.Errorf("Finalise SHA = %q, want %q", result.SHA, want)
-	}
+	must.NoError(err)
+	must.Equal("stirrup/task-42", result.Branch)
+	must.Equal(hostGit(t, repo, "rev-parse", "HEAD"), result.SHA)
 }
 
 func TestLocal_CommitsWithHarnessIdentityWhenNoneConfigured(t *testing.T) {
+	must := require.New(t)
 	// An empty HOME and XDG_CONFIG_HOME leave git with no global identity;
 	// the local executor forwards both to the child.
 	t.Setenv("HOME", t.TempDir())
@@ -493,28 +441,19 @@ func TestLocal_CommitsWithHarnessIdentityWhenNoneConfigured(t *testing.T) {
 
 	gs := localStrategy(t, repo)
 	ctx := context.Background()
-	if err := gs.Setup(ctx, repo, "identity"); err != nil {
-		t.Fatalf("Setup: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, "f.txt"), []byte("data"), 0o644); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
-	if err := gs.Checkpoint(ctx, "checkpoint"); err != nil {
-		t.Fatalf("Checkpoint: %v", err)
-	}
+	must.NoError(gs.Setup(ctx, repo, "identity"))
+	must.NoError(os.WriteFile(filepath.Join(repo, "f.txt"), []byte("data"), 0o644))
+	must.NoError(gs.Checkpoint(ctx, "checkpoint"))
 	want := HarnessIdentityName + " <" + HarnessIdentityEmail + ">"
-	if got := hostGit(t, repo, "log", "-1", "--format=%an <%ae>"); got != want {
-		t.Errorf("author = %q, want %q", got, want)
-	}
-	if got := hostGit(t, repo, "log", "-1", "--format=%cn <%ce>"); got != want {
-		t.Errorf("committer = %q, want %q", got, want)
-	}
+	must.Equal(want, hostGit(t, repo, "log", "-1", "--format=%an <%ae>"), "author")
+	must.Equal(want, hostGit(t, repo, "log", "-1", "--format=%cn <%ce>"), "committer")
 }
 
 // TestLocal_PlantedRepositoryConfigDoesNotExecute protects the hardening
 // flags: hooks, core.hooksPath, core.fsmonitor and commit signing planted in
 // the repository must not run during a checkpoint.
 func TestLocal_PlantedRepositoryConfigDoesNotExecute(t *testing.T) {
+	must := require.New(t)
 	repo := t.TempDir()
 	initHostRepo(t, repo)
 	markers := t.TempDir()
@@ -523,21 +462,13 @@ func TestLocal_PlantedRepositoryConfigDoesNotExecute(t *testing.T) {
 	hook := "#!/bin/sh\ntouch " + marker("hook") + "\n"
 	hooksDir := filepath.Join(repo, ".git", "hooks")
 	for _, name := range []string{"pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "post-index-change", "reference-transaction"} {
-		if err := os.WriteFile(filepath.Join(hooksDir, name), []byte(hook), 0o755); err != nil {
-			t.Fatalf("write hook: %v", err)
-		}
+		must.NoError(os.WriteFile(filepath.Join(hooksDir, name), []byte(hook), 0o755))
 	}
 	plantedHooks := filepath.Join(repo, "planted-hooks")
-	if err := os.MkdirAll(plantedHooks, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(plantedHooks, "pre-commit"), []byte("#!/bin/sh\ntouch "+marker("hookspath")+"\n"), 0o755); err != nil {
-		t.Fatalf("write planted hook: %v", err)
-	}
+	must.NoError(os.MkdirAll(plantedHooks, 0o755))
+	must.NoError(os.WriteFile(filepath.Join(plantedHooks, "pre-commit"), []byte("#!/bin/sh\ntouch "+marker("hookspath")+"\n"), 0o755))
 	fakeGPG := filepath.Join(repo, "fake-gpg")
-	if err := os.WriteFile(fakeGPG, []byte("#!/bin/sh\ntouch "+marker("gpg")+"\nexit 1\n"), 0o755); err != nil {
-		t.Fatalf("write fake gpg: %v", err)
-	}
+	must.NoError(os.WriteFile(fakeGPG, []byte("#!/bin/sh\ntouch "+marker("gpg")+"\nexit 1\n"), 0o755))
 	hostGit(t, repo, "config", "core.hooksPath", plantedHooks)
 	hostGit(t, repo, "config", "core.fsmonitor", "touch "+marker("fsmonitor")+"; echo /")
 	hostGit(t, repo, "config", "commit.gpgsign", "true")
@@ -546,116 +477,75 @@ func TestLocal_PlantedRepositoryConfigDoesNotExecute(t *testing.T) {
 	// Control: an unhardened commit must trigger the planted hook, or the
 	// absence of markers below would prove nothing.
 	hostGit(t, repo, "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "control")
-	if _, err := os.Stat(marker("hookspath")); err != nil {
-		t.Fatalf("control commit did not run the planted core.hooksPath hook: %v", err)
-	}
-	if err := os.RemoveAll(markers); err != nil {
-		t.Fatalf("reset markers: %v", err)
-	}
-	if err := os.MkdirAll(markers, 0o755); err != nil {
-		t.Fatalf("recreate markers: %v", err)
-	}
+	_, err := os.Stat(marker("hookspath"))
+	must.NoError(err, "control commit did not run the planted core.hooksPath hook")
+	must.NoError(os.RemoveAll(markers))
+	must.NoError(os.MkdirAll(markers, 0o755))
 
 	gs := localStrategy(t, repo)
 	ctx := context.Background()
-	if err := gs.Setup(ctx, repo, "planted"); err != nil {
-		t.Fatalf("Setup: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, "change.txt"), []byte("x"), 0o644); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
-	if err := gs.Checkpoint(ctx, "checkpoint"); err != nil {
-		t.Fatalf("Checkpoint: %v", err)
-	}
-	if _, err := gs.Finalise(ctx, "success"); err != nil {
-		t.Fatalf("Finalise: %v", err)
-	}
+	must.NoError(gs.Setup(ctx, repo, "planted"))
+	must.NoError(os.WriteFile(filepath.Join(repo, "change.txt"), []byte("x"), 0o644))
+	must.NoError(gs.Checkpoint(ctx, "checkpoint"))
+	_, err = gs.Finalise(ctx, "success")
+	must.NoError(err)
 
 	entries, err := os.ReadDir(markers)
-	if err != nil {
-		t.Fatalf("ReadDir: %v", err)
-	}
+	must.NoError(err)
+	var executed []string
 	for _, e := range entries {
-		t.Errorf("planted %s payload executed during the checkpoint", e.Name())
+		executed = append(executed, e.Name())
 	}
+	must.Empty(executed, "planted payloads executed during the checkpoint")
 }
 
 func TestLocal_SetupRejectsWorkspaceInsideRepository(t *testing.T) {
+	must := require.New(t)
 	parent := t.TempDir()
 	initHostRepo(t, parent)
 	ws := filepath.Join(parent, "ws")
-	if err := os.MkdirAll(ws, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(parent, "unrelated.txt"), []byte("operator work"), 0o644); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
+	must.NoError(os.MkdirAll(ws, 0o755))
+	must.NoError(os.WriteFile(filepath.Join(parent, "unrelated.txt"), []byte("operator work"), 0o644))
 	branchBefore := hostGit(t, parent, "rev-parse", "--abbrev-ref", "HEAD")
 	commitsBefore := commitCount(t, parent)
 
 	gs := localStrategy(t, ws)
 	err := gs.Setup(context.Background(), ws, "nested")
-	if err == nil {
-		t.Fatal("Setup succeeded for a workspace inside another repository")
-	}
-	if !strings.Contains(err.Error(), "inside repository") {
-		t.Errorf("error = %v, want the enclosing-repository message", err)
-	}
-	if got := hostGit(t, parent, "rev-parse", "--abbrev-ref", "HEAD"); got != branchBefore {
-		t.Errorf("enclosing repository branch changed from %q to %q", branchBefore, got)
-	}
-	if got := commitCount(t, parent); got != commitsBefore {
-		t.Errorf("enclosing repository commit count changed from %d to %d", commitsBefore, got)
-	}
-	if status := hostGit(t, parent, "status", "--porcelain"); !strings.Contains(status, "unrelated.txt") {
-		t.Errorf("enclosing repository's uncommitted work was staged or committed; status = %q", status)
-	}
-	if _, err := os.Stat(filepath.Join(ws, ".git")); !os.IsNotExist(err) {
-		t.Errorf("Setup created a repository inside the nested workspace (stat err = %v)", err)
-	}
+	must.ErrorContains(err, "inside repository")
+	must.Equal(branchBefore, hostGit(t, parent, "rev-parse", "--abbrev-ref", "HEAD"), "enclosing repository branch changed")
+	must.Equal(commitsBefore, commitCount(t, parent), "enclosing repository commit count changed")
+	must.Contains(hostGit(t, parent, "status", "--porcelain"), "unrelated.txt",
+		"enclosing repository's uncommitted work was staged or committed")
+	_, err = os.Stat(filepath.Join(ws, ".git"))
+	must.ErrorIs(err, os.ErrNotExist, "Setup created a repository inside the nested workspace")
 }
 
 func TestLocal_SetupRefusesWorktreeWithUnreachableGitdir(t *testing.T) {
+	must := require.New(t)
 	ws := t.TempDir()
 	gitFile := filepath.Join(ws, ".git")
 	const pointer = "gitdir: /nonexistent/host/repo/.git/worktrees/feature\n"
-	if err := os.WriteFile(gitFile, []byte(pointer), 0o644); err != nil {
-		t.Fatalf("write .git file: %v", err)
-	}
+	must.NoError(os.WriteFile(gitFile, []byte(pointer), 0o644))
 	gs := localStrategy(t, ws)
 	err := gs.Setup(context.Background(), ws, "worktree")
-	if err == nil || !strings.Contains(err.Error(), "self-contained repository") {
-		t.Fatalf("Setup error = %v, want the unresolvable .git entry message", err)
-	}
+	must.ErrorContains(err, "self-contained repository")
 	got, err := os.ReadFile(gitFile)
-	if err != nil || string(got) != pointer {
-		t.Errorf(".git file changed: content %q, err %v", got, err)
-	}
+	must.NoError(err)
+	must.Equal(pointer, string(got), ".git file changed")
 }
 
 func TestLocal_SetupInitialisesPlainDirectory(t *testing.T) {
+	must := require.New(t)
 	ws := t.TempDir()
-	if err := os.WriteFile(filepath.Join(ws, "seed.txt"), []byte("seed"), 0o644); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
+	must.NoError(os.WriteFile(filepath.Join(ws, "seed.txt"), []byte("seed"), 0o644))
 	gs := localStrategy(t, ws)
 	ctx := context.Background()
-	if err := gs.Setup(ctx, ws, "fresh"); err != nil {
-		t.Fatalf("Setup: %v", err)
-	}
-	if got := hostGit(t, ws, "rev-parse", "--abbrev-ref", "HEAD"); got != "stirrup/fresh" {
-		t.Errorf("branch = %q, want stirrup/fresh", got)
-	}
-	if got := hostGit(t, ws, "ls-files"); got != "seed.txt" {
-		t.Errorf("base commit tracks %q, want seed.txt", got)
-	}
+	must.NoError(gs.Setup(ctx, ws, "fresh"))
+	must.Equal("stirrup/fresh", hostGit(t, ws, "rev-parse", "--abbrev-ref", "HEAD"))
+	must.Equal("seed.txt", hostGit(t, ws, "ls-files"), "base commit tracked files")
 	result, err := gs.Finalise(ctx, "success")
-	if err != nil {
-		t.Fatalf("Finalise: %v", err)
-	}
-	if !ValidSHA(result.SHA) {
-		t.Errorf("Finalise SHA = %q", result.SHA)
-	}
+	must.NoError(err)
+	must.True(ValidSHA(result.SHA), "Finalise SHA = %q", result.SHA)
 }
 
 func gitCommands(calls []string) []string {
@@ -677,215 +567,154 @@ func containsCall(calls []string, want string) bool {
 	return false
 }
 
-func TestLocal_FinaliseCommitsOutstandingWork(t *testing.T) {
+func TestLocal_Finalise_CommitsOutstandingWork(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	repo := t.TempDir()
 	initHostRepo(t, repo)
 	ctx := context.Background()
 	base := hostGit(t, repo, "rev-parse", "HEAD")
 
 	gs := localStrategy(t, repo)
-	if err := gs.Setup(ctx, repo, "task-final"); err != nil {
-		t.Fatalf("Setup: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, "partial.txt"), []byte("partial"), 0o644); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
+	must.NoError(gs.Setup(ctx, repo, "task-final"))
+	must.NoError(os.WriteFile(filepath.Join(repo, "partial.txt"), []byte("partial"), 0o644))
 
 	handoff, err := gs.Finalise(ctx, "budget_exceeded")
-	if err != nil {
-		t.Fatalf("Finalise: %v", err)
-	}
+	must.NoError(err)
 
 	head := hostGit(t, repo, "rev-parse", "HEAD")
-	if head == base {
-		t.Fatal("HEAD did not move; outstanding work was not committed")
-	}
-	if got := hostGit(t, repo, "log", "-1", "--format=%s"); got != "Final checkpoint (outcome: budget_exceeded)" {
-		t.Errorf("commit message = %q", got)
-	}
-	if got := hostGit(t, repo, "ls-tree", "--name-only", "HEAD", "partial.txt"); got != "partial.txt" {
-		t.Errorf("partial.txt not in HEAD tree (ls-tree = %q)", got)
-	}
-	want := types.GitHandoff{Branch: "stirrup/task-final", SHA: head, BaseSHA: base}
-	if *handoff != want {
-		t.Errorf("handoff = %+v, want %+v", *handoff, want)
-	}
+	must.NotEqual(base, head, "HEAD did not move; outstanding work was not committed")
+	check.Equal("Final checkpoint (outcome: budget_exceeded)", hostGit(t, repo, "log", "-1", "--format=%s"))
+	check.Equal("partial.txt", hostGit(t, repo, "ls-tree", "--name-only", "HEAD", "partial.txt"), "partial.txt in HEAD tree")
+	check.Equal(types.GitHandoff{Branch: "stirrup/task-final", SHA: head, BaseSHA: base}, *handoff)
 }
 
-func TestLocal_FinaliseNothingOutstandingReportsHEADWithoutCommit(t *testing.T) {
+func TestLocal_Finalise_CleanTreeReportsHEADWithoutCommit(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	repo := t.TempDir()
 	initHostRepo(t, repo)
 	ctx := context.Background()
 
 	gs := localStrategy(t, repo)
-	if err := gs.Setup(ctx, repo, "task-clean"); err != nil {
-		t.Fatalf("Setup: %v", err)
-	}
+	must.NoError(gs.Setup(ctx, repo, "task-clean"))
 	before := commitCount(t, repo)
 
 	handoff, err := gs.Finalise(ctx, "success")
-	if err != nil {
-		t.Fatalf("Finalise: %v", err)
-	}
-	if after := commitCount(t, repo); after != before {
-		t.Errorf("commit count changed from %d to %d on a clean tree", before, after)
-	}
-	if handoff.SHA != handoff.BaseSHA || handoff.SHA == "" {
-		t.Errorf("handoff = %+v, want SHA equal to a non-empty BaseSHA", *handoff)
-	}
-	if handoff.Dirty {
-		t.Error("Dirty = true on a clean tree")
-	}
+	must.NoError(err)
+	check.Equal(before, commitCount(t, repo), "commit count on a clean tree")
+	check.Equal(handoff.BaseSHA, handoff.SHA, "SHA is the base commit")
+	check.NotEmpty(handoff.SHA)
+	check.False(handoff.Dirty, "Dirty on a clean tree")
 }
 
-func TestLocal_NoConfiguredIdentityCommitsAsHarness(t *testing.T) {
+func TestLocal_Identity_NoneConfiguredCommitsAsHarness(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	isolateGitConfig(t)
 	dir := t.TempDir()
 	hostGit(t, dir, "init", "-q")
 	hostGit(t, dir, "config", "user.useConfigOnly", "true")
 	hostGit(t, dir, "-c", "user.name=seed", "-c", "user.email=seed@example.com", "commit", "--allow-empty", "-q", "-m", "initial")
 
-	if err := os.WriteFile(filepath.Join(dir, "probe.txt"), []byte("x"), 0o644); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
+	must.NoError(os.WriteFile(filepath.Join(dir, "probe.txt"), []byte("x"), 0o644))
 	hostGit(t, dir, "add", "probe.txt")
 	probe := exec.Command("git", "commit", "-m", "probe")
 	probe.Dir = dir
-	if out, err := probe.CombinedOutput(); err == nil {
-		t.Fatalf("precondition: plain git commit succeeded without an identity:\n%s", out)
-	}
+	out, err := probe.CombinedOutput()
+	must.Error(err, "precondition: plain git commit succeeded without an identity:\n%s", out)
 
 	ctx := context.Background()
 	gs := localStrategy(t, dir)
-	if err := gs.Setup(ctx, dir, "task-noid"); err != nil {
-		t.Fatalf("Setup: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "work.txt"), []byte("work"), 0o644); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
-	if err := gs.Checkpoint(ctx, "turn"); err != nil {
-		t.Fatalf("Checkpoint: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "more.txt"), []byte("more"), 0o644); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
+	must.NoError(gs.Setup(ctx, dir, "task-noid"))
+	must.NoError(os.WriteFile(filepath.Join(dir, "work.txt"), []byte("work"), 0o644))
+	must.NoError(gs.Checkpoint(ctx, "turn"))
+	must.NoError(os.WriteFile(filepath.Join(dir, "more.txt"), []byte("more"), 0o644))
 	handoff, err := gs.Finalise(ctx, "success")
-	if err != nil {
-		t.Fatalf("Finalise: %v", err)
-	}
-	if handoff.Dirty {
-		t.Errorf("Dirty = true after the final checkpoint")
-	}
+	must.NoError(err)
+	check.False(handoff.Dirty, "Dirty after the final checkpoint")
+
 	want := HarnessIdentityName + " <" + HarnessIdentityEmail + ">"
 	for _, rev := range []string{"HEAD", "HEAD~1"} {
-		if got := hostGit(t, dir, "log", "-1", "--format=%an <%ae>|%cn <%ce>", rev); got != want+"|"+want {
-			t.Errorf("%s author|committer = %q, want %q for both", rev, got, want)
-		}
+		t.Run(rev, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(want+"|"+want, hostGit(t, dir, "log", "-1", "--format=%an <%ae>|%cn <%ce>", rev), "author|committer")
+		})
 	}
 }
 
-func TestLocal_FinaliseCommitFailureReturnsErrorWithState(t *testing.T) {
+func TestLocal_Finalise_CommitFailureReturnsErrorWithState(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	repo := t.TempDir()
 	initHostRepo(t, repo)
 	ctx := context.Background()
 	base := hostGit(t, repo, "rev-parse", "HEAD")
 
 	gs := localStrategy(t, repo)
-	if err := gs.Setup(ctx, repo, "task-fail"); err != nil {
-		t.Fatalf("Setup: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, "stuck.txt"), []byte("stuck"), 0o644); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
+	must.NoError(gs.Setup(ctx, repo, "task-fail"))
+	must.NoError(os.WriteFile(filepath.Join(repo, "stuck.txt"), []byte("stuck"), 0o644))
 	// A held index lock makes staging fail the way a concurrent git
 	// process would.
-	if err := os.WriteFile(filepath.Join(repo, ".git", "index.lock"), nil, 0o644); err != nil {
-		t.Fatalf("write index.lock: %v", err)
-	}
+	must.NoError(os.WriteFile(filepath.Join(repo, ".git", "index.lock"), nil, 0o644))
 
 	handoff, err := gs.Finalise(ctx, "success")
-	if err == nil {
-		t.Fatal("Finalise returned nil error with the index locked")
-	}
-	if !strings.Contains(err.Error(), "final checkpoint") {
-		t.Errorf("error = %q, want it to name the final checkpoint", err)
-	}
-	if handoff == nil {
-		t.Fatal("Finalise returned a nil handoff alongside its error")
-	}
-	if handoff.SHA != base || handoff.BaseSHA != base || handoff.Branch != "stirrup/task-fail" {
-		t.Errorf("handoff = %+v, want branch stirrup/task-fail at base %s", *handoff, base)
-	}
-	if !handoff.Dirty {
-		t.Error("Dirty = false with an uncommitted file")
-	}
+	must.ErrorContains(err, "final checkpoint", "Finalise must fail with the index locked")
+	must.NotNil(handoff, "Finalise returned a nil handoff alongside its error")
+	check.Equal(base, handoff.SHA, "SHA stays at the base commit")
+	check.Equal(base, handoff.BaseSHA, "BaseSHA is the base commit")
+	check.Equal("stirrup/task-fail", handoff.Branch)
+	check.True(handoff.Dirty, "Dirty with an uncommitted file")
 }
 
-func TestLocal_FinaliseEmbeddedRepositoryChangesReportDirty(t *testing.T) {
+func TestLocal_Finalise_EmbeddedRepositoryReportsDirty(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	repo := t.TempDir()
 	initHostRepo(t, repo)
 	ctx := context.Background()
 
 	gs := localStrategy(t, repo)
-	if err := gs.Setup(ctx, repo, "task-dirty"); err != nil {
-		t.Fatalf("Setup: %v", err)
-	}
+	must.NoError(gs.Setup(ctx, repo, "task-dirty"))
 	nested := filepath.Join(repo, "nested")
-	if err := os.Mkdir(nested, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
+	must.NoError(os.Mkdir(nested, 0o755))
 	hostGit(t, nested, "init", "-q")
 	hostGit(t, nested, "-c", "user.name=n", "-c", "user.email=n@example.com", "commit", "--allow-empty", "-q", "-m", "nested")
-	if err := os.WriteFile(filepath.Join(nested, "inner.txt"), []byte("inner"), 0o644); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
+	must.NoError(os.WriteFile(filepath.Join(nested, "inner.txt"), []byte("inner"), 0o644))
 
 	handoff, err := gs.Finalise(ctx, "success")
-	if err != nil {
-		t.Fatalf("Finalise: %v", err)
-	}
-	if !handoff.Dirty {
-		t.Error("Dirty = false although the embedded repository has uncommitted content")
-	}
-	if handoff.SHA == handoff.BaseSHA {
-		t.Error("final checkpoint made no commit for the embedded repository")
-	}
+	must.NoError(err)
+	check.True(handoff.Dirty, "embedded repository has uncommitted content")
+	check.NotEqual(handoff.BaseSHA, handoff.SHA, "final checkpoint made no commit for the embedded repository")
 }
 
-func TestLocal_FinaliseUnbornBranchCommitsWithEmptyBase(t *testing.T) {
+func TestLocal_Finalise_UnbornBranchCommitsWithEmptyBase(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	dir := t.TempDir()
 	hostGit(t, dir, "init", "-q")
 	ctx := context.Background()
 
 	gs := localStrategy(t, dir)
-	if err := gs.Setup(ctx, dir, "task-unborn"); err != nil {
-		t.Fatalf("Setup: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "first.txt"), []byte("first"), 0o644); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
+	must.NoError(gs.Setup(ctx, dir, "task-unborn"))
+	must.NoError(os.WriteFile(filepath.Join(dir, "first.txt"), []byte("first"), 0o644))
+
 	handoff, err := gs.Finalise(ctx, "max_turns")
-	if err != nil {
-		t.Fatalf("Finalise: %v", err)
-	}
-	if handoff.BaseSHA != "" {
-		t.Errorf("BaseSHA = %q, want empty for an unborn branch", handoff.BaseSHA)
-	}
-	if handoff.SHA != hostGit(t, dir, "rev-parse", "HEAD") || handoff.Branch != "stirrup/task-unborn" {
-		t.Errorf("handoff = %+v, want the new HEAD on stirrup/task-unborn", *handoff)
-	}
+	must.NoError(err)
+	check.Empty(handoff.BaseSHA, "BaseSHA for an unborn branch")
+	check.Equal(hostGit(t, dir, "rev-parse", "HEAD"), handoff.SHA, "SHA is the new HEAD")
+	check.Equal("stirrup/task-unborn", handoff.Branch)
 }
 
 // isolateGitConfig hides the user's and the system's git configuration, and
 // any identity in the environment, from git commands the test runs.
 func isolateGitConfig(t *testing.T) {
 	t.Helper()
+	must := require.New(t)
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	for _, name := range []string{"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL"} {
 		t.Setenv(name, "")
-		if err := os.Unsetenv(name); err != nil {
-			t.Fatalf("unset %s: %v", name, err)
-		}
+		must.NoError(os.Unsetenv(name), "unset %s", name)
 	}
 }

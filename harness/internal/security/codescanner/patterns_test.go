@@ -6,188 +6,122 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestPatternScanner_BlocksOnPlantedAnthropicKey(t *testing.T) {
-	s := NewPatternScanner()
-	content := []byte("config = {\n  apiKey: 'sk-ant-1234567890abcdef'\n}\n")
+// scanContent runs the pattern scanner over content as if it were the file at path.
+func scanContent(t *testing.T, path string, content []byte) *ScanResult {
+	t.Helper()
+	must := require.New(t)
+	res, err := NewPatternScanner().Scan(context.Background(), path, content)
+	must.NoError(err, "Scan(%q)", path)
+	return res
+}
 
-	res, err := s.Scan(context.Background(), "config.js", content)
-	if err != nil {
-		t.Fatalf("Scan: %v", err)
-	}
-	if !res.HasBlocking() {
-		t.Fatalf("expected at least one block finding, got: %+v", res.Findings)
-	}
-
-	var found bool
-	for _, f := range res.Findings {
-		if strings.HasPrefix(f.Rule, "secret/anthropic_api_key") {
-			if f.Severity != SeverityBlock {
-				t.Errorf("expected severity %q, got %q", SeverityBlock, f.Severity)
-			}
-			if f.Line != 2 {
-				t.Errorf("expected line 2, got %d", f.Line)
-			}
-			found = true
+// findingsWithRule returns the findings whose rule is exactly rule.
+func findingsWithRule(findings []Finding, rule string) []Finding {
+	var matched []Finding
+	for _, f := range findings {
+		if f.Rule == rule {
+			matched = append(matched, f)
 		}
 	}
-	if !found {
-		t.Errorf("expected anthropic_api_key finding, got: %+v", res.Findings)
-	}
-}
-
-func TestPatternScanner_BlocksOnAWSKey(t *testing.T) {
-	s := NewPatternScanner()
-	content := []byte("AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\n")
-
-	res, err := s.Scan(context.Background(), ".env", content)
-	if err != nil {
-		t.Fatalf("Scan: %v", err)
-	}
-	if !res.HasBlocking() {
-		t.Fatalf("expected blocking finding, got: %+v", res.Findings)
-	}
-}
-
-// TestPatternScanner_BlocksOnNextLineYAMLValue pins that a key/value
-// secret whose value sits on the next, indented YAML line blocks the write.
-func TestPatternScanner_BlocksOnNextLineYAMLValue(t *testing.T) {
-	s := NewPatternScanner()
-	content := []byte("aws:\n  aws_secret_access_key:\n    " + strings.Repeat("Ab1/", 10) + "\n")
-
-	res, err := s.Scan(context.Background(), "values.yaml", content)
-	if err != nil {
-		t.Fatalf("Scan: %v", err)
-	}
-	if !res.HasBlocking() {
-		t.Fatalf("expected blocking finding, got: %+v", res.Findings)
-	}
-}
-
-func TestPatternScanner_WarnsOnDynamicEvalSink(t *testing.T) {
-	s := NewPatternScanner()
-	content := []byte("def run(expr):\n    return eval(expr)\n")
-
-	res, err := s.Scan(context.Background(), "run.py", content)
-	if err != nil {
-		t.Fatalf("Scan: %v", err)
-	}
-	if res.HasBlocking() {
-		t.Errorf("eval() alone should warn, not block: %+v", res.Findings)
-	}
-
-	var found bool
-	for _, f := range res.Findings {
-		if f.Rule == "sink/dynamic_eval" {
-			if f.Severity != SeverityWarn {
-				t.Errorf("expected severity %q, got %q", SeverityWarn, f.Severity)
-			}
-			if f.Line != 2 {
-				t.Errorf("expected line 2, got %d", f.Line)
-			}
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("expected dynamic_eval finding, got: %+v", res.Findings)
-	}
-}
-
-func TestPatternScanner_WarnsOnSubprocessShellTrue(t *testing.T) {
-	s := NewPatternScanner()
-	content := []byte("subprocess.run(cmd, shell=True)\n")
-
-	res, err := s.Scan(context.Background(), "x.py", content)
-	if err != nil {
-		t.Fatalf("Scan: %v", err)
-	}
-	var found bool
-	for _, f := range res.Findings {
-		if f.Rule == "sink/python_subprocess_shell_true" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected subprocess_shell_true finding, got: %+v", res.Findings)
-	}
-}
-
-func TestPatternScanner_WarnsOnFunctionConstructor(t *testing.T) {
-	s := NewPatternScanner()
-	content := []byte("const fn = new Function('return 1');\n")
-
-	res, err := s.Scan(context.Background(), "x.js", content)
-	if err != nil {
-		t.Fatalf("Scan: %v", err)
-	}
-	var found bool
-	for _, f := range res.Findings {
-		if f.Rule == "sink/js_function_constructor" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected js_function_constructor finding, got: %+v", res.Findings)
-	}
-}
-
-func TestPatternScanner_DoesNotMatchMethodCallNamedEval(t *testing.T) {
-	// `obj.eval(...)` should not match — the pattern requires a token
-	// boundary that is not `.` so member calls are excluded.
-	s := NewPatternScanner()
-	content := []byte("result = obj.eval(thing)\n")
-
-	res, err := s.Scan(context.Background(), "x.py", content)
-	if err != nil {
-		t.Fatalf("Scan: %v", err)
-	}
-	for _, f := range res.Findings {
-		if f.Rule == "sink/dynamic_eval" {
-			t.Errorf("obj.eval should not match dynamic_eval rule: %+v", f)
-		}
-	}
-}
-
-func TestPatternScanner_EmptyContent(t *testing.T) {
-	s := NewPatternScanner()
-	res, err := s.Scan(context.Background(), "empty.txt", nil)
-	if err != nil {
-		t.Fatalf("Scan: %v", err)
-	}
-	if len(res.Findings) != 0 {
-		t.Errorf("empty content must yield no findings, got: %+v", res.Findings)
-	}
-}
-
-func TestPatternScanner_CleanContent(t *testing.T) {
-	s := NewPatternScanner()
-	content := []byte("package main\n\nfunc main() {\n\tprintln(\"hello\")\n}\n")
-	res, err := s.Scan(context.Background(), "main.go", content)
-	if err != nil {
-		t.Fatalf("Scan: %v", err)
-	}
-	if len(res.Findings) != 0 {
-		t.Errorf("clean content must yield no findings, got: %+v", res.Findings)
-	}
+	return matched
 }
 
 // countRule returns how many findings the scan produced for rule.
 func countRule(t *testing.T, path string, content string, rule string) int {
 	t.Helper()
-	res, err := NewPatternScanner().Scan(context.Background(), path, []byte(content))
-	if err != nil {
-		t.Fatalf("Scan(%q): %v", path, err)
-	}
-	var n int
+	return len(findingsWithRule(scanContent(t, path, []byte(content)).Findings, rule))
+}
+
+func TestPatternScanner_BlocksOnPlantedAnthropicKey(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	content := []byte("config = {\n  apiKey: 'sk-ant-1234567890abcdef'\n}\n")
+
+	res := scanContent(t, "config.js", content)
+	must.True(res.HasBlocking(), "expected at least one block finding, got: %+v", res.Findings)
+
+	var found bool
 	for _, f := range res.Findings {
-		if f.Rule == rule {
-			n++
+		if strings.HasPrefix(f.Rule, "secret/anthropic_api_key") {
+			check.Equal(SeverityBlock, f.Severity)
+			check.Equal(2, f.Line)
+			found = true
 		}
 	}
-	return n
+	must.True(found, "expected anthropic_api_key finding, got: %+v", res.Findings)
+}
+
+func TestPatternScanner_BlocksOnAWSKey(t *testing.T) {
+	must := require.New(t)
+	res := scanContent(t, ".env", []byte("AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\n"))
+	must.True(res.HasBlocking(), "expected blocking finding, got: %+v", res.Findings)
+}
+
+// TestPatternScanner_BlocksOnNextLineYAMLValue pins that a key/value
+// secret whose value sits on the next, indented YAML line blocks the write.
+func TestPatternScanner_BlocksOnNextLineYAMLValue(t *testing.T) {
+	must := require.New(t)
+	content := []byte("aws:\n  aws_secret_access_key:\n    " + strings.Repeat("Ab1/", 10) + "\n")
+
+	res := scanContent(t, "values.yaml", content)
+	must.True(res.HasBlocking(), "expected blocking finding, got: %+v", res.Findings)
+}
+
+func TestPatternScanner_WarnsOnDynamicEvalSink(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	res := scanContent(t, "run.py", []byte("def run(expr):\n    return eval(expr)\n"))
+	check.False(res.HasBlocking(), "eval() alone should warn, not block: %+v", res.Findings)
+
+	var found bool
+	for _, f := range res.Findings {
+		if f.Rule == "sink/dynamic_eval" {
+			check.Equal(SeverityWarn, f.Severity)
+			check.Equal(2, f.Line)
+			found = true
+		}
+	}
+	must.True(found, "expected dynamic_eval finding, got: %+v", res.Findings)
+}
+
+func TestPatternScanner_WarnsOnSubprocessShellTrue(t *testing.T) {
+	must := require.New(t)
+	res := scanContent(t, "x.py", []byte("subprocess.run(cmd, shell=True)\n"))
+	must.NotEmpty(findingsWithRule(res.Findings, "sink/python_subprocess_shell_true"),
+		"expected subprocess_shell_true finding, got: %+v", res.Findings)
+}
+
+func TestPatternScanner_WarnsOnFunctionConstructor(t *testing.T) {
+	must := require.New(t)
+	res := scanContent(t, "x.js", []byte("const fn = new Function('return 1');\n"))
+	must.NotEmpty(findingsWithRule(res.Findings, "sink/js_function_constructor"),
+		"expected js_function_constructor finding, got: %+v", res.Findings)
+}
+
+func TestPatternScanner_DoesNotMatchMethodCallNamedEval(t *testing.T) {
+	must := require.New(t)
+	// `obj.eval(...)` should not match — the pattern requires a token
+	// boundary that is not `.` so member calls are excluded.
+	res := scanContent(t, "x.py", []byte("result = obj.eval(thing)\n"))
+	must.Empty(findingsWithRule(res.Findings, "sink/dynamic_eval"),
+		"obj.eval should not match dynamic_eval rule")
+}
+
+func TestPatternScanner_EmptyContentYieldsNoFindings(t *testing.T) {
+	must := require.New(t)
+	res := scanContent(t, "empty.txt", nil)
+	must.Empty(res.Findings)
+}
+
+func TestPatternScanner_CleanContentYieldsNoFindings(t *testing.T) {
+	must := require.New(t)
+	res := scanContent(t, "main.go", []byte("package main\n\nfunc main() {\n\tprintln(\"hello\")\n}\n"))
+	must.Empty(res.Findings)
 }
 
 func TestPatternScanner_ShellBacktickScope(t *testing.T) {
@@ -221,9 +155,8 @@ func TestPatternScanner_ShellBacktickScope(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := countRule(t, tc.path, tc.content, "sink/shell_backtick"); got != tc.want {
-				t.Errorf("sink/shell_backtick findings = %d, want %d", got, tc.want)
-			}
+			must := require.New(t)
+			must.Equal(tc.want, countRule(t, tc.path, tc.content, "sink/shell_backtick"))
 		})
 	}
 }
@@ -247,9 +180,8 @@ func TestPatternScanner_PythonSinkScope(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := countRule(t, tc.path, tc.content, "sink/python_os_system"); got != tc.want {
-				t.Errorf("sink/python_os_system findings = %d, want %d", got, tc.want)
-			}
+			must := require.New(t)
+			must.Equal(tc.want, countRule(t, tc.path, tc.content, "sink/python_os_system"))
 		})
 	}
 }
@@ -268,39 +200,40 @@ func TestPatternScanner_DynamicEvalScope(t *testing.T) {
 	}
 	for _, path := range fires {
 		t.Run("fires/"+path, func(t *testing.T) {
+			must := require.New(t)
 			content := evalCall
 			if filepath.Ext(path) == "" {
 				content = "#!/usr/bin/env ruby\n" + content
 			}
-			if got := countRule(t, path, content, "sink/dynamic_eval"); got != 1 {
-				t.Errorf("sink/dynamic_eval findings = %d, want 1", got)
-			}
+			must.Equal(1, countRule(t, path, content, "sink/dynamic_eval"))
 		})
 	}
 
 	quiet := []string{"notes.md", "notes.txt", "main.go", "data.json", "deploy.sh"}
 	for _, path := range quiet {
 		t.Run("quiet/"+path, func(t *testing.T) {
-			if got := countRule(t, path, evalCall, "sink/dynamic_eval"); got != 0 {
-				t.Errorf("sink/dynamic_eval findings = %d, want 0", got)
-			}
+			must := require.New(t)
+			must.Equal(0, countRule(t, path, evalCall, "sink/dynamic_eval"))
 		})
 	}
 
-	if got := countRule(t, "legacy.php", "exec($cmd);\n", "sink/dynamic_exec"); got != 1 {
-		t.Errorf("sink/dynamic_exec findings on .php = %d, want 1", got)
-	}
+	t.Run("exec fires on php", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(1, countRule(t, "legacy.php", "exec($cmd);\n", "sink/dynamic_exec"))
+	})
 }
 
 func TestPatternScanner_FunctionConstructorScope(t *testing.T) {
 	const fnCtor = "const fn = new Function('return 1');\n"
 
-	if got := countRule(t, "app.mjs", fnCtor, "sink/js_function_constructor"); got != 1 {
-		t.Errorf(".mjs findings = %d, want 1", got)
-	}
-	if got := countRule(t, "notes.md", fnCtor, "sink/js_function_constructor"); got != 0 {
-		t.Errorf(".md findings = %d, want 0", got)
-	}
+	t.Run("fires on mjs", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(1, countRule(t, "app.mjs", fnCtor, "sink/js_function_constructor"))
+	})
+	t.Run("quiet on md", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(0, countRule(t, "notes.md", fnCtor, "sink/js_function_constructor"))
+	})
 }
 
 // Secret rules carry no scope: a hardcoded credential is a finding in
@@ -310,13 +243,9 @@ func TestPatternScanner_SecretRulesIgnoreFileType(t *testing.T) {
 
 	for _, path := range []string{"vault.unknownext", "LICENSE", "config.js", ".env", "a.b.c.qqq"} {
 		t.Run(path, func(t *testing.T) {
-			res, err := NewPatternScanner().Scan(context.Background(), path, []byte(key))
-			if err != nil {
-				t.Fatalf("Scan: %v", err)
-			}
-			if !res.HasBlocking() {
-				t.Errorf("expected a blocking secret finding for %q, got: %+v", path, res.Findings)
-			}
+			must := require.New(t)
+			res := scanContent(t, path, []byte(key))
+			must.True(res.HasBlocking(), "expected a blocking secret finding, got: %+v", res.Findings)
 		})
 	}
 }
@@ -325,93 +254,89 @@ func TestPatternScanner_SecretRulesIgnoreFileType(t *testing.T) {
 // extension and a lower-cased basename, so an entry written any other
 // way silently stops its rule from ever firing. This pins the shape of
 // every entry, and pins secret rules as unscoped.
-func TestRuleScopeInvariants(t *testing.T) {
+func TestRuleScope_SinksScopedSecretsUnscoped(t *testing.T) {
+	check := assert.New(t)
 	for _, r := range NewPatternScanner().rules {
 		scoped := len(r.scope.exts)+len(r.scope.basenames)+len(r.scope.interpreters) > 0
-		if strings.HasPrefix(r.id, "secret/") && scoped {
-			t.Errorf("%s: secret rules must stay unscoped", r.id)
+		if strings.HasPrefix(r.id, "secret/") {
+			check.False(scoped, "%s: secret rules must stay unscoped", r.id)
 		}
-		if strings.HasPrefix(r.id, "sink/") && !scoped {
-			t.Errorf("%s: sink rules must declare a scope", r.id)
+		if strings.HasPrefix(r.id, "sink/") {
+			check.True(scoped, "%s: sink rules must declare a scope", r.id)
 		}
 		for _, e := range r.scope.exts {
-			if !strings.HasPrefix(e, ".") || e != strings.ToLower(e) {
-				t.Errorf("%s: ext %q must be lower-case and dot-prefixed", r.id, e)
-			}
+			check.True(strings.HasPrefix(e, ".") && e == strings.ToLower(e),
+				"%s: ext %q must be lower-case and dot-prefixed", r.id, e)
 		}
 		for _, n := range slices.Concat(r.scope.basenames, r.scope.interpreters) {
-			if n != strings.ToLower(n) {
-				t.Errorf("%s: %q must be lower-case", r.id, n)
-			}
+			check.Equal(strings.ToLower(n), n, "%s: %q must be lower-case", r.id, n)
 		}
 	}
 }
 
-func TestShebangInterpreter(t *testing.T) {
+func TestShebangInterpreter_ReadsProgramName(t *testing.T) {
 	cases := []struct {
+		name    string
 		content string
 		want    string
 	}{
-		{"#!/bin/bash\n", "bash"},
-		{"#!/usr/bin/env bash\n", "bash"},
-		{"#!/usr/bin/env -S python3 -u\n", "python3"},
-		{"#!/usr/bin/env --split-string=bash -e\n", "bash"},
-		{"#!/usr/bin/env FOO=1 node\n", "node"},
-		{"#!/bin/sh -e\n", "sh"},
-		{"#!/usr/bin/env\n", ""},
-		{"#!", ""},
-		{"echo hi\n", ""},
-		{"", ""},
+		{"bin path", "#!/bin/bash\n", "bash"},
+		{"env lookup", "#!/usr/bin/env bash\n", "bash"},
+		{"env with split flag", "#!/usr/bin/env -S python3 -u\n", "python3"},
+		{"env with split-string option", "#!/usr/bin/env --split-string=bash -e\n", "bash"},
+		{"env with assignment before program", "#!/usr/bin/env FOO=1 node\n", "node"},
+		{"bin path with flag", "#!/bin/sh -e\n", "sh"},
+		{"env without program", "#!/usr/bin/env\n", ""},
+		{"bare hashbang", "#!", ""},
+		{"no hashbang", "echo hi\n", ""},
+		{"empty content", "", ""},
 	}
 
 	for _, tc := range cases {
-		if got := shebangInterpreter([]byte(tc.content)); got != tc.want {
-			t.Errorf("shebangInterpreter(%q) = %q, want %q", tc.content, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, shebangInterpreter([]byte(tc.content)))
+		})
 	}
 }
 
-func TestMatchesInterpreter(t *testing.T) {
+func TestMatchesInterpreter_NameAndVersionSuffixOnly(t *testing.T) {
 	names := []string{"sh", "bash", "python"}
 	cases := []struct {
+		name   string
 		interp string
 		want   bool
 	}{
-		{"sh", true},
-		{"bash", true},
-		{"python3", true},
-		{"python3.12", true},
-		{"shellcheck", false},
-		{"pythonista", false},
-		{"node", false},
+		{"exact name", "sh", true},
+		{"bash name", "bash", true},
+		{"python with major version", "python3", true},
+		{"python with minor version", "python3.12", true},
+		{"listed name only as a prefix of another word", "shellcheck", false},
+		{"python only as a prefix of another word", "pythonista", false},
+		{"unlisted program", "node", false},
 	}
 
 	for _, tc := range cases {
-		if got := matchesInterpreter(tc.interp, names); got != tc.want {
-			t.Errorf("matchesInterpreter(%q) = %v, want %v", tc.interp, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, matchesInterpreter(tc.interp, names))
+		})
 	}
 }
 
 // TestPatternScanner_PEMKeyIsOneFindingOnItsBeginLine pins that the
-// multi-line PEM pattern still reports a key once, at its BEGIN line.
+// multi-line PEM pattern reports a key once, at its BEGIN line.
 func TestPatternScanner_PEMKeyIsOneFindingOnItsBeginLine(t *testing.T) {
-	s := NewPatternScanner()
+	must := require.New(t)
 	key := "-----BEGIN EC PRIVATE KEY-----\n" +
 		"MHcCAQEEIBkg4LVWM9nuwNSk3yByxZpYRTBnVJk5oWp1Mzs8Kjp2oAoGCCqGSM49\n" +
 		"AwEHoUQDQgAEjzN8ZWbE0Z2Lm1hH3u6h5n6f3QK8m1o8w6m7u9S2Hn2b6eL0kV0b\n" +
 		"-----END EC PRIVATE KEY-----\n"
-	res, err := s.Scan(context.Background(), "deploy/key.pem", []byte("# test key\n"+key))
-	if err != nil {
-		t.Fatalf("Scan: %v", err)
-	}
+	res := scanContent(t, "deploy/key.pem", []byte("# test key\n"+key))
+
 	var lines []int
-	for _, f := range res.Findings {
-		if f.Rule == "secret/pem_private_key" {
-			lines = append(lines, f.Line)
-		}
+	for _, f := range findingsWithRule(res.Findings, "secret/pem_private_key") {
+		lines = append(lines, f.Line)
 	}
-	if !slices.Equal(lines, []int{2}) {
-		t.Errorf("pem_private_key findings on lines %v, want one on line 2; all findings: %+v", lines, res.Findings)
-	}
+	must.Equal([]int{2}, lines, "all findings: %+v", res.Findings)
 }

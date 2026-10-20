@@ -4,8 +4,9 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/eval/lakehouse"
 	"github.com/rxbynerd/stirrup/types"
@@ -16,6 +17,7 @@ import (
 // interrupted-run summary counts only the parent's turns, the children
 // are kept in SubRuns, and no child is stored as a run of its own.
 func TestIngestFile_SubRunsStayInsideParentRecording(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	turn := func(runID, parentRunID string, n int) string {
 		ev := map[string]any{"kind": "turn_record", "runId": runID, "turn": n, "modelOutput": []types.ContentBlock{{Type: "text", Text: runID}}}
@@ -35,51 +37,48 @@ func TestIngestFile_SubRunsStayInsideParentRecording(t *testing.T) {
 
 	storeDir := t.TempDir()
 	store, err := lakehouse.NewFileStore(storeDir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	must.NoError(err)
 	defer func() { _ = store.Close() }()
 
 	traces, recordings, skipped, err := ingestFile(context.Background(), store, tracePath, false)
-	if err != nil {
-		t.Fatalf("ingestFile: %v", err)
-	}
-	if traces != 1 || recordings != 1 || skipped != 0 {
-		t.Errorf("counts: traces=%d recordings=%d skipped=%d; want 1/1/0", traces, recordings, skipped)
-	}
+	must.NoError(err)
+	must.Equal(1, traces, "ingested traces")
+	must.Equal(1, recordings, "ingested recordings")
+	must.Equal(0, skipped, "skipped lines")
+
 	for _, sub := range []string{"traces", "recordings"} {
-		entries, err := os.ReadDir(filepath.Join(storeDir, sub))
-		if err != nil {
-			t.Fatalf("read %s: %v", sub, err)
-		}
-		if len(entries) != 1 || entries[0].Name() != "run-p.json" {
-			t.Errorf("%s entries = %v, want only run-p.json", sub, entries)
-		}
+		t.Run(sub, func(t *testing.T) {
+			must := require.New(t)
+			entries, err := os.ReadDir(filepath.Join(storeDir, sub))
+			must.NoError(err)
+			must.Len(entries, 1)
+			must.Equal("run-p.json", entries[0].Name())
+		})
 	}
 
 	gotTraces, err := store.QueryTraces(context.Background(), types.TraceFilter{})
-	if err != nil {
-		t.Fatalf("QueryTraces: %v", err)
-	}
-	if len(gotTraces) != 1 || gotTraces[0].Turns != 1 || gotTraces[0].Outcome != "interrupted" {
-		t.Errorf("traces = %+v, want one interrupted run with 1 parent turn", gotTraces)
-	}
+	must.NoError(err)
+	must.Len(gotTraces, 1, "traces = %+v", gotTraces)
+	must.Equal(1, gotTraces[0].Turns, "parent turns in summary")
+	must.Equal("interrupted", gotTraces[0].Outcome)
+
 	recs, err := store.QueryRecordings(context.Background(), types.TraceFilter{})
-	if err != nil {
-		t.Fatalf("QueryRecordings: %v", err)
-	}
-	if len(recs) != 1 || len(recs[0].Turns) != 1 || len(recs[0].SubRuns) != 1 {
-		t.Fatalf("recordings = %+v, want one with 1 turn and 1 sub-run", recs)
-	}
-	if sub := recs[0].SubRuns[0]; sub.RunID != "run-p/sub-1" || len(sub.Turns) != 2 || sub.Summary == nil {
-		t.Errorf("sub-run = %+v, want run-p/sub-1 with 2 turns and a summary", sub)
-	}
+	must.NoError(err)
+	must.Len(recs, 1, "recordings = %+v", recs)
+	must.Len(recs[0].Turns, 1, "parent turns in recording")
+	must.Len(recs[0].SubRuns, 1, "sub-runs in recording")
+
+	sub := recs[0].SubRuns[0]
+	must.Equal("run-p/sub-1", sub.RunID, "sub-run = %+v", sub)
+	must.Len(sub.Turns, 2, "sub-run turns")
+	must.NotNil(sub.Summary, "sub-run summary")
 }
 
 // TestSummariseFailingTurn_UsesParentsLastTurn pins that the mined
 // task description quotes the parent's last turn even when a sub-run
 // recorded later turns.
 func TestSummariseFailingTurn_UsesParentsLastTurn(t *testing.T) {
+	must := require.New(t)
 	rec := types.RunRecording{
 		RunID: "run-p",
 		Turns: []types.TurnRecord{
@@ -93,11 +92,8 @@ func TestSummariseFailingTurn_UsesParentsLastTurn(t *testing.T) {
 			},
 		}},
 	}
-	got := summariseFailingTurn(rec)
-	if !strings.Contains(got, "last turn: 4") || !strings.Contains(got, "parent gave up") {
-		t.Errorf("summary = %q, want the parent's last turn", got)
-	}
-	if strings.Contains(got, "child text") {
-		t.Errorf("summary = %q, quotes a sub-run turn", got)
-	}
+	summary := summariseFailingTurn(rec)
+	must.Contains(summary, "last turn: 4")
+	must.Contains(summary, "parent gave up")
+	must.NotContains(summary, "child text", "summary quotes a sub-run turn")
 }

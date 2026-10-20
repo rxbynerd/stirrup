@@ -5,29 +5,34 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
-func TestStreamsThinking(t *testing.T) {
+func TestStreamsThinking_FollowsReasoningSummary(t *testing.T) {
 	for _, tc := range []struct {
+		name    string
 		summary string
 		want    bool
 	}{
-		{"", true},
-		{types.ReasoningSummaryAuto, true},
-		{types.ReasoningSummaryOff, false},
+		{"empty summary streams thinking", "", true},
+		{"auto summary streams thinking", types.ReasoningSummaryAuto, true},
+		{"off summary suppresses thinking", types.ReasoningSummaryOff, false},
 	} {
-		if got := streamsThinking(&types.RunConfig{ReasoningSummary: tc.summary}); got != tc.want {
-			t.Errorf("streamsThinking(reasoningSummary=%q) = %v, want %v", tc.summary, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			got := streamsThinking(&types.RunConfig{ReasoningSummary: tc.summary})
+			must.Equal(tc.want, got)
+		})
 	}
 }
 
-// TestLoop_ReasoningSummaryGatesThinkingDelta pins that the run's
+// TestLoop_ReasoningSummary_GatesThinkingDelta pins that the run's
 // reasoningSummary decides whether the loop forwards reasoning: "off"
 // suppresses both streamed fragments and whole-block fallbacks, and the
 // default forwards both.
-func TestLoop_ReasoningSummaryGatesThinkingDelta(t *testing.T) {
+func TestLoop_ReasoningSummary_GatesThinkingDelta(t *testing.T) {
 	turn := []types.StreamEvent{
 		{Type: "thinking_delta", Text: "streamed"},
 		{Type: "thinking", Text: "streamed", ThoughtSignature: "sig-A"},
@@ -36,24 +41,25 @@ func TestLoop_ReasoningSummaryGatesThinkingDelta(t *testing.T) {
 		{Type: "message_complete", StopReason: "end_turn"},
 	}
 	for _, tc := range []struct {
+		name    string
 		summary string
 		want    string
 	}{
-		{"", "[streamed whole]"},
-		{types.ReasoningSummaryOff, "[]"},
+		{"default forwards streamed and whole-block reasoning", "", "[streamed whole]"},
+		{"off suppresses all reasoning", types.ReasoningSummaryOff, "[]"},
 	} {
-		loop := buildTestLoop(nil)
-		loop.Provider = &scriptedProvider{turns: [][]types.StreamEvent{turn}}
-		tp := &recordingTransport{}
-		loop.Transport = tp
-		cfg := buildTestConfig()
-		cfg.ReasoningSummary = tc.summary
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			loop := buildTestLoop(nil)
+			loop.Provider = &scriptedProvider{turns: [][]types.StreamEvent{turn}}
+			tp := &recordingTransport{}
+			loop.Transport = tp
+			cfg := buildTestConfig()
+			cfg.ReasoningSummary = tc.summary
 
-		if _, err := loop.Run(context.Background(), cfg); err != nil {
-			t.Fatalf("reasoningSummary=%q: Run: %v", tc.summary, err)
-		}
-		if got := thinkingDeltaTexts(tp.events); fmt.Sprint(got) != tc.want {
-			t.Errorf("reasoningSummary=%q: thinking_delta texts = %q, want %s", tc.summary, got, tc.want)
-		}
+			_, err := loop.Run(context.Background(), cfg)
+			must.NoError(err)
+			must.Equal(tc.want, fmt.Sprint(thinkingDeltaTexts(tp.events)))
+		})
 	}
 }

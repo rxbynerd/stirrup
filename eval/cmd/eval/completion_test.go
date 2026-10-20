@@ -3,13 +3,14 @@ package main
 import (
 	"bytes"
 	"os/exec"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// TestRun_CompletionSubcommandValidShells pins the four hand-rolled
+// TestRun_CompletionSubcommand_ScriptsPassShellSyntaxCheck pins the four hand-rolled
 // completion scripts against each shell's syntax checker. The script is
 // generated through the run() dispatcher (matching how a real operator
 // reaches it) and piped to bash -n / zsh -n / fish -n. A shell missing
@@ -22,7 +23,7 @@ import (
 // not on the default macOS / GHA runners). Presence and non-emptiness
 // are asserted instead so a regression that drops the powershell case
 // arm still fails the test.
-func TestRun_CompletionSubcommandValidShells(t *testing.T) {
+func TestRun_CompletionSubcommand_ScriptsPassShellSyntaxCheck(t *testing.T) {
 	for _, tc := range []struct {
 		shell   string
 		checker []string
@@ -33,14 +34,11 @@ func TestRun_CompletionSubcommandValidShells(t *testing.T) {
 		{shell: "powershell"},
 	} {
 		t.Run(tc.shell, func(t *testing.T) {
+			must := require.New(t)
 			var stdout bytes.Buffer
 			code := run([]string{"completion", tc.shell}, &stdout)
-			if code != 0 {
-				t.Fatalf("run(completion %s) exit code = %d", tc.shell, code)
-			}
-			if stdout.Len() == 0 {
-				t.Fatalf("completion %s emitted empty script", tc.shell)
-			}
+			must.Zero(code, "run exit code")
+			must.NotEmpty(stdout.String(), "completion script")
 			if len(tc.checker) == 0 {
 				return
 			}
@@ -50,34 +48,30 @@ func TestRun_CompletionSubcommandValidShells(t *testing.T) {
 			cmd := exec.Command(tc.checker[0], tc.checker[1:]...) //nolint:gosec // hard-coded checker list, no user input
 			cmd.Stdin = &stdout
 			out, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("%s syntax check failed: %v\noutput:\n%s", tc.shell, err, out)
-			}
+			must.NoError(err, "syntax check output:\n%s", out)
 		})
 	}
 }
 
-// TestRun_CompletionSubcommandMissingShell pins the dispatcher guard:
+// TestRun_CompletionSubcommand_RequiresShellArg pins the dispatcher guard:
 // `eval completion` (no shell arg) must return a non-zero exit code
 // rather than silently writing nothing.
-func TestRun_CompletionSubcommandMissingShell(t *testing.T) {
+func TestRun_CompletionSubcommand_RequiresShellArg(t *testing.T) {
+	must := require.New(t)
 	var stdout bytes.Buffer
 	code := run([]string{"completion"}, &stdout)
-	if code == 0 {
-		t.Fatal("run(completion) exit code = 0, want non-zero")
-	}
+	must.NotZero(code, "run(completion) exit code")
 }
 
-// TestRun_CompletionSubcommandUnknownShell pins the emitter guard:
+// TestRun_CompletionSubcommand_RejectsUnknownShell pins the emitter guard:
 // `eval completion ksh` must return a non-zero exit code and surface
 // the unsupported-shell error on stderr (cannot be asserted directly
 // here because run() does not thread stderr).
-func TestRun_CompletionSubcommandUnknownShell(t *testing.T) {
+func TestRun_CompletionSubcommand_RejectsUnknownShell(t *testing.T) {
+	must := require.New(t)
 	var stdout bytes.Buffer
 	code := run([]string{"completion", "ksh"}, &stdout)
-	if code == 0 {
-		t.Fatal("run(completion ksh) exit code = 0, want non-zero")
-	}
+	must.NotZero(code, "run(completion ksh) exit code")
 }
 
 // TestEvalCompletionScripts_MentionEverySubcommand pins the rendered
@@ -89,20 +83,22 @@ func TestRun_CompletionSubcommandUnknownShell(t *testing.T) {
 func TestEvalCompletionScripts_MentionEverySubcommand(t *testing.T) {
 	for _, shell := range []string{"bash", "zsh", "fish", "powershell"} {
 		t.Run(shell, func(t *testing.T) {
+			must := require.New(t)
 			var buf bytes.Buffer
-			if err := emitEvalCompletion(shell, &buf); err != nil {
-				t.Fatalf("emit %s: %v", shell, err)
-			}
+			must.NoError(emitEvalCompletion(shell, &buf), "emit %s", shell)
 			body := buf.String()
+
 			for _, sub := range evalCompletionSubcommands {
-				if !strings.Contains(body, sub) {
-					t.Errorf("%s script missing subcommand %q", shell, sub)
-				}
+				t.Run("subcommand "+sub, func(t *testing.T) {
+					must := require.New(t)
+					must.Contains(body, sub)
+				})
 			}
 			for _, mode := range types.ValidRunModeValues() {
-				if !strings.Contains(body, mode) {
-					t.Errorf("%s script missing mode %q", shell, mode)
-				}
+				t.Run("mode "+mode, func(t *testing.T) {
+					must := require.New(t)
+					must.Contains(body, mode)
+				})
 			}
 			// The completion subcommand routes its shell-name suggestions
 			// through evalCompletionFlags rather than a positional-argument
@@ -111,9 +107,10 @@ func TestEvalCompletionScripts_MentionEverySubcommand(t *testing.T) {
 			// entry from evalCompletionFlags would silently revert
 			// `stirrup-eval completion <TAB>` to producing no suggestions.
 			for _, sh := range evalCompletionFlags["completion"] {
-				if !strings.Contains(body, sh) {
-					t.Errorf("%s script missing shell name %q for completion subcommand", shell, sh)
-				}
+				t.Run("completion shell "+sh, func(t *testing.T) {
+					must := require.New(t)
+					must.Contains(body, sh)
+				})
 			}
 		})
 	}
@@ -124,22 +121,24 @@ func TestEvalCompletionScripts_MentionEverySubcommand(t *testing.T) {
 // wrapped in single quotes, or a future value containing a space or
 // fish-special character could break the generated script.
 func TestEvalCompletionFishScript_QuotesValues(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
-	if err := emitEvalCompletion("fish", &buf); err != nil {
-		t.Fatalf("emit fish: %v", err)
-	}
+	must.NoError(emitEvalCompletion("fish", &buf), "emit fish")
 	body := buf.String()
+
 	for _, sub := range evalCompletionSubcommands {
 		needle := "complete -c stirrup-eval -n __stirrup_eval_no_subcommand -a '" + sub + "'"
-		if !strings.Contains(body, needle) {
-			t.Errorf("fish script missing single-quoted subcommand line for %q (looking for %q)", sub, needle)
-		}
+		t.Run("subcommand "+sub, func(t *testing.T) {
+			must := require.New(t)
+			must.Contains(body, needle)
+		})
 	}
 	for _, m := range types.ValidRunModeValues() {
 		needle := "-l mode -a '" + m + "'"
-		if !strings.Contains(body, needle) {
-			t.Errorf("fish script missing single-quoted mode line for %q (looking for %q)", m, needle)
-		}
+		t.Run("mode "+m, func(t *testing.T) {
+			must := require.New(t)
+			must.Contains(body, needle)
+		})
 	}
 }
 
@@ -149,19 +148,18 @@ func TestEvalCompletionFishScript_QuotesValues(t *testing.T) {
 // no flag completion; the test fails loudly so the regression cannot
 // reach a release.
 func TestEvalCompletionFlagMap_TracksDispatcher(t *testing.T) {
+	must := require.New(t)
 	dispatcherSubs := []string{
 		"run", "compare", "compare-to-production",
 		"baseline", "mine-failures", "drift", "ingest", "replay", "convert",
 		"judge-calibrate",
 		"completion",
 	}
-	if len(evalCompletionSubcommands) != len(dispatcherSubs) {
-		t.Fatalf("len(evalCompletionSubcommands) = %d, dispatcher has %d",
-			len(evalCompletionSubcommands), len(dispatcherSubs))
-	}
+	must.Len(evalCompletionSubcommands, len(dispatcherSubs), "dispatcher and evalCompletionSubcommands differ")
 	for _, sub := range dispatcherSubs {
-		if _, ok := evalCompletionFlags[sub]; !ok {
-			t.Errorf("subcommand %q dispatched by run() but missing from evalCompletionFlags", sub)
-		}
+		t.Run(sub, func(t *testing.T) {
+			must := require.New(t)
+			must.Contains(evalCompletionFlags, sub, "dispatched by run() but missing from evalCompletionFlags")
+		})
 	}
 }

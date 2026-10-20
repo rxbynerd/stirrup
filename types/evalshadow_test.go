@@ -2,11 +2,12 @@ package types
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
-func TestEvalJudgeValidateShadow(t *testing.T) {
+func TestEvalJudge_ValidateShadow(t *testing.T) {
 	leaf := EvalJudge{Type: "file-exists", Paths: []string{"a"}}
 	shadowLeaf := leaf
 	shadowLeaf.Shadow = true
@@ -52,42 +53,38 @@ func TestEvalJudgeValidateShadow(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			err := tc.judge.ValidateShadow(tc.topLevel)
-			switch {
-			case tc.wantErr == "" && err != nil:
-				t.Fatalf("ValidateShadow: %v", err)
-			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
-				t.Fatalf("ValidateShadow error = %v, want it to contain %q", err, tc.wantErr)
+			if tc.wantErr == "" {
+				must.NoError(err)
+				return
 			}
+			must.ErrorContains(err, tc.wantErr)
 		})
 	}
 }
 
-func TestEvalJudgeShadowWireShape(t *testing.T) {
-	var j EvalJudge
-	if err := json.Unmarshal([]byte(`{"type":"composite","judges":[{"type":"file-exists","paths":["a"]},{"type":"file-exists","paths":["b"],"shadow":true}]}`), &j); err != nil {
-		t.Fatal(err)
-	}
-	if j.Judges[0].Shadow || !j.Judges[1].Shadow {
-		t.Fatalf("decoded shadow flags = %v, %v; want false, true", j.Judges[0].Shadow, j.Judges[1].Shadow)
-	}
-	if err := j.ValidateShadow(true); err != nil {
-		t.Errorf("ValidateShadow: %v", err)
-	}
+func TestEvalJudge_ShadowJSON(t *testing.T) {
+	t.Run("decodes the shadow flag per sub-judge", func(t *testing.T) {
+		must := require.New(t)
+		var j EvalJudge
+		must.NoError(json.Unmarshal([]byte(`{"type":"composite","judges":[{"type":"file-exists","paths":["a"]},{"type":"file-exists","paths":["b"],"shadow":true}]}`), &j))
+		must.False(j.Judges[0].Shadow, "first sub-judge should not be a shadow")
+		must.True(j.Judges[1].Shadow, "second sub-judge should be a shadow")
+		must.NoError(j.ValidateShadow(true))
+	})
 
-	var deciding EvalJudge
-	if err := json.Unmarshal([]byte(`{"type":"composite","judges":[{"type":"file-exists","paths":["a"]},{"type":"diff-review","criteria":"c","llm":{"provider":"decision","model":"jev-latest"}}]}`), &deciding); err != nil {
-		t.Fatal(err)
-	}
-	if err := deciding.ValidateShadow(true); err == nil || !strings.Contains(err.Error(), "usable only on a shadow judge") {
-		t.Errorf("JSON judge with a deciding decision sub-judge: ValidateShadow = %v", err)
-	}
+	t.Run("rejects a decoded deciding decision sub-judge", func(t *testing.T) {
+		must := require.New(t)
+		var deciding EvalJudge
+		must.NoError(json.Unmarshal([]byte(`{"type":"composite","judges":[{"type":"file-exists","paths":["a"]},{"type":"diff-review","criteria":"c","llm":{"provider":"decision","model":"jev-latest"}}]}`), &deciding))
+		must.ErrorContains(deciding.ValidateShadow(true), "usable only on a shadow judge")
+	})
 
-	data, err := json.Marshal(EvalJudge{Type: "file-exists"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), `"shadow"`) {
-		t.Errorf("a judge that is not a shadow serialises the flag: %s", data)
-	}
+	t.Run("omits the shadow flag when unset", func(t *testing.T) {
+		must := require.New(t)
+		data, err := json.Marshal(EvalJudge{Type: "file-exists"})
+		must.NoError(err)
+		must.NotContains(string(data), `"shadow"`)
+	})
 }

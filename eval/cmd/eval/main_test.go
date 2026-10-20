@@ -6,14 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"path/filepath"
-	"reflect"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/eval"
 	"github.com/rxbynerd/stirrup/eval/lakehouse"
@@ -22,26 +22,21 @@ import (
 
 // --- run() dispatch tests ---
 
-// TestRun_Version exercises the --version short-circuit through run() so we
-// don't need to shell out to a built binary or fight global state. Each
+// TestRun_VersionFlagPrintsVersion exercises the --version short-circuit
+// through run(), so it needs neither a built binary nor global state. Each
 // accepted spelling (--version / -v / version) must exit 0 and print to
 // stdout.
-func TestRun_Version(t *testing.T) {
+func TestRun_VersionFlagPrintsVersion(t *testing.T) {
 	for _, arg := range []string{"--version", "-v", "version"} {
 		t.Run(arg, func(t *testing.T) {
+			must := require.New(t)
 			var stdout bytes.Buffer
 			code := run([]string{arg}, &stdout)
-			if code != 0 {
-				t.Fatalf("run(%q) exit code = %d, want 0", arg, code)
-			}
+			must.Equal(0, code)
 			out := stdout.String()
-			if !strings.HasPrefix(out, "stirrup-eval version ") {
-				t.Fatalf("stdout = %q, want prefix %q", out, "stirrup-eval version ")
-			}
-			// Default link-time version when no -ldflags injected.
-			if !strings.Contains(out, "dev") {
-				t.Fatalf("stdout = %q, want it to contain default version %q", out, "dev")
-			}
+			must.Regexp("^stirrup-eval version ", out)
+			// The default link-time version applies when no -ldflags is injected.
+			must.Contains(out, "dev")
 		})
 	}
 }
@@ -51,27 +46,23 @@ func TestRun_Version(t *testing.T) {
 // Windows.
 func writeFakeHarness(t *testing.T, body string) string {
 	t.Helper()
+	must := require.New(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("fake harness uses /bin/sh; skipped on Windows")
 	}
 	harnessDir := t.TempDir()
 	path := filepath.Join(harnessDir, "fake-harness")
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.WriteFile(path, []byte(body), 0o755))
 	return path
 }
 
-// TestCmdRun_DualWrite pins the backward-compatibility guarantee that a
-// live `eval run` writes result.json in two places: <outputDir>/result.json
-// (the legacy location existing CI workflows read) and
-// <outputDir>/<suiteID>/result.json (the per-suite canonical location
-// that lives alongside per-task artifact directories). Both must exist
-// after a run, and the two files must be byte-identical so neither
-// reader sees a stale snapshot. A regression that, for example, dropped
-// the top-level write would silently break downstream tooling without
-// any test catching it.
-func TestCmdRun_DualWrite(t *testing.T) {
+// TestCmdRun_WritesIdenticalResultToBothPaths pins that a live run writes
+// result.json to both <outputDir>/result.json (the legacy path CI reads) and
+// <outputDir>/<suiteID>/result.json (the per-suite path). The two copies must
+// be byte-identical and parse as a SuiteResult with the right SuiteID.
+func TestCmdRun_WritesIdenticalResultToBothPaths(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	harnessPath := writeFakeHarness(t, `#!/bin/sh
 shift
 TRACE=""
@@ -90,7 +81,7 @@ fi
 	suitePath := filepath.Join(dir, "dual-write.hcl")
 	hclSrc := `
 suite "dual-write-suite" {
-  description = "fixture for TestCmdRun_DualWrite"
+  description = "fixture for TestCmdRun_WritesIdenticalResultToBothPaths"
 
   task "task-a" {
     prompt = "do task a"
@@ -109,61 +100,33 @@ suite "dual-write-suite" {
   }
 }
 `
-	if err := os.WriteFile(suitePath, []byte(hclSrc), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.WriteFile(suitePath, []byte(hclSrc), 0o644))
 
 	outputDir := filepath.Join(dir, "out")
-	// Note: cmdRun uses log.Fatalf on error, which would os.Exit the
-	// test binary. The success path does not hit that branch, so we can
-	// exercise it from inside a test. If this ever regresses to call
-	// log.Fatalf on the happy path, the test process will die loudly —
-	// which is itself a useful signal.
+	// cmdRun calls log.Fatalf on error, which exits the test binary, so only
+	// the success path runs here.
 	exitCode := run([]string{
 		"run",
 		"--suite", suitePath,
 		"--harness", harnessPath,
 		"--output", outputDir,
 	}, io.Discard)
-	if exitCode != 0 {
-		t.Fatalf("run() exit code = %d, want 0", exitCode)
-	}
+	must.Equal(0, exitCode)
 
 	topLevel := filepath.Join(outputDir, "result.json")
 	perSuite := filepath.Join(outputDir, "dual-write-suite", "result.json")
 
 	topLevelData, err := os.ReadFile(topLevel)
-	if err != nil {
-		t.Fatalf("reading top-level result.json: %v", err)
-	}
+	must.NoError(err, "reading top-level result.json")
 	perSuiteData, err := os.ReadFile(perSuite)
-	if err != nil {
-		t.Fatalf("reading per-suite result.json: %v", err)
-	}
+	must.NoError(err, "reading per-suite result.json")
+	check.Equal(string(topLevelData), string(perSuiteData))
 
-	// Both files must contain identical bytes — neither is a partial
-	// snapshot or a different serialisation.
-	if !bytes.Equal(topLevelData, perSuiteData) {
-		t.Errorf("top-level and per-suite result.json differ:\n  top-level:\n%s\n  per-suite:\n%s",
-			topLevelData, perSuiteData)
-	}
-
-	// And both must parse as a SuiteResult with the right SuiteID, so a
-	// regression that wrote an empty file or a different schema would
-	// surface here.
 	var top, per eval.SuiteResult
-	if err := json.Unmarshal(topLevelData, &top); err != nil {
-		t.Fatalf("unmarshal top-level: %v", err)
-	}
-	if err := json.Unmarshal(perSuiteData, &per); err != nil {
-		t.Fatalf("unmarshal per-suite: %v", err)
-	}
-	if top.SuiteID != "dual-write-suite" {
-		t.Errorf("top-level SuiteID = %q, want %q", top.SuiteID, "dual-write-suite")
-	}
-	if per.SuiteID != "dual-write-suite" {
-		t.Errorf("per-suite SuiteID = %q, want %q", per.SuiteID, "dual-write-suite")
-	}
+	must.NoError(json.Unmarshal(topLevelData, &top), "unmarshal top-level")
+	must.NoError(json.Unmarshal(perSuiteData, &per), "unmarshal per-suite")
+	check.Equal("dual-write-suite", top.SuiteID)
+	check.Equal("dual-write-suite", per.SuiteID)
 }
 
 // TestCmdRun_DryRunWritesNoArtifacts pins that `eval run --dry-run`
@@ -171,6 +134,7 @@ suite "dual-write-suite" {
 // anywhere, in particular not in the process's working directory. The
 // test runs from a temp cwd and asserts it stays empty.
 func TestCmdRun_DryRunWritesNoArtifacts(t *testing.T) {
+	must := require.New(t)
 	cwd := t.TempDir()
 	suiteDir := t.TempDir()
 	suitePath := filepath.Join(suiteDir, "dry-run.hcl")
@@ -187,52 +151,39 @@ suite "dry-run-suite" {
   }
 }
 `
-	if err := os.WriteFile(suitePath, []byte(hclSrc), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.WriteFile(suitePath, []byte(hclSrc), 0o644))
 
 	origWD, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chdir(cwd); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
+	must.NoError(os.Chdir(cwd))
 	defer func() {
-		if err := os.Chdir(origWD); err != nil {
-			t.Fatal(err)
-		}
+		must.NoError(os.Chdir(origWD))
 	}()
 
 	// cmdRun's summary output goes to the real os.Stdout (only --version
-	// writes through the injected io.Writer), so this test asserts on
+	// writes through the injected io.Writer), so this test asserts on the
 	// exit code and filesystem side effects rather than captured output.
 	exitCode := run([]string{
 		"run",
 		"--suite", suitePath,
 		"--dry-run",
 	}, io.Discard)
-	if exitCode != 0 {
-		t.Fatalf("run() exit code = %d, want 0", exitCode)
-	}
+	must.Equal(0, exitCode)
 
 	entries, err := os.ReadDir(cwd)
-	if err != nil {
-		t.Fatalf("reading cwd: %v", err)
+	must.NoError(err, "reading cwd")
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
 	}
-	if len(entries) != 0 {
-		names := make([]string, len(entries))
-		for i, e := range entries {
-			names[i] = e.Name()
-		}
-		t.Errorf("cwd is not empty after --dry-run: %v", names)
-	}
+	must.Empty(names, "working directory must stay empty after --dry-run")
 }
 
 // TestCmdRun_DryRunIgnoresExplicitOutput pins that --dry-run writes no
 // artifacts even when --output is passed explicitly, rather than only
 // suppressing the implicit cwd default.
 func TestCmdRun_DryRunIgnoresExplicitOutput(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	suitePath := filepath.Join(dir, "dry-run.hcl")
 	hclSrc := `
@@ -248,9 +199,7 @@ suite "dry-run-suite" {
   }
 }
 `
-	if err := os.WriteFile(suitePath, []byte(hclSrc), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.WriteFile(suitePath, []byte(hclSrc), 0o644))
 
 	outputDir := filepath.Join(dir, "out")
 	exitCode := run([]string{
@@ -259,56 +208,48 @@ suite "dry-run-suite" {
 		"--output", outputDir,
 		"--dry-run",
 	}, io.Discard)
-	if exitCode != 0 {
-		t.Fatalf("run() exit code = %d, want 0", exitCode)
-	}
+	must.Equal(0, exitCode)
 
-	if _, err := os.Stat(outputDir); !os.IsNotExist(err) {
-		t.Errorf("--output directory %q should not be created under --dry-run, stat err = %v", outputDir, err)
-	}
+	_, err := os.Stat(outputDir)
+	must.ErrorIs(err, os.ErrNotExist, "--output directory must not be created under --dry-run")
 }
 
-// TestRun_NoArgs documents the empty-args contract: usage goes to stderr,
-// stdout stays untouched, exit code is 1.
-func TestRun_NoArgs(t *testing.T) {
+// TestRun_NoArgsExitsWithUsageError pins the empty-args contract: usage goes
+// to stderr, stdout stays empty, and the exit code is 1.
+func TestRun_NoArgsExitsWithUsageError(t *testing.T) {
+	must := require.New(t)
 	var stdout bytes.Buffer
 	code := run(nil, &stdout)
-	if code != 1 {
-		t.Fatalf("run(nil) exit code = %d, want 1", code)
-	}
-	if stdout.Len() != 0 {
-		t.Fatalf("stdout should be empty for usage error, got %q", stdout.String())
-	}
+	must.Equal(1, code)
+	must.Empty(stdout.String())
 }
 
-// TestLoadSuite_Missing exercises the underlying os error surface
+// TestLoadSuite_MissingFileErrors exercises the underlying os error surface
 // when the suite path does not exist.
-func TestLoadSuite_Missing(t *testing.T) {
+func TestLoadSuite_MissingFileErrors(t *testing.T) {
+	must := require.New(t)
 	_, err := loadSuite("/nonexistent/suite.hcl")
-	if err == nil {
-		t.Fatal("expected error for missing file")
-	}
+	must.Error(err)
 }
 
-// TestLoadSuite_InvalidHCL pins error propagation: if loadSuite ever
+// TestLoadSuite_InvalidHCLErrors pins error propagation: if loadSuite ever
 // stopped returning the diagnostic from spec.LoadSuiteHCL, this test
 // would catch it.
-func TestLoadSuite_InvalidHCL(t *testing.T) {
+func TestLoadSuite_InvalidHCLErrors(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.hcl")
-	if err := os.WriteFile(path, []byte("suite \"x\" { {{{"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.WriteFile(path, []byte("suite \"x\" { {{{"), 0o644))
 
 	_, err := loadSuite(path)
-	if err == nil {
-		t.Fatal("expected error for invalid HCL")
-	}
+	must.Error(err)
 }
 
-// TestLoadSuite_HCL exercises the happy path: the loader must accept
-// a .hcl file and produce the canonical EvalSuite shape.
-func TestLoadSuite_HCL(t *testing.T) {
+// TestLoadSuite_AcceptsHCLSuite exercises the happy path: the loader must
+// accept a .hcl file and produce the canonical EvalSuite shape.
+func TestLoadSuite_AcceptsHCLSuite(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "suite.hcl")
 	src := `
@@ -327,26 +268,14 @@ suite "hcl-suite" {
   }
 }
 `
-	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.WriteFile(path, []byte(src), 0o644))
 
 	got, err := loadSuite(path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got.ID != "hcl-suite" {
-		t.Errorf("ID = %q, want %q", got.ID, "hcl-suite")
-	}
-	if len(got.Tasks) != 1 {
-		t.Fatalf("got %d tasks, want 1", len(got.Tasks))
-	}
-	if got.Tasks[0].ID != "t1" {
-		t.Errorf("Tasks[0].ID = %q, want %q", got.Tasks[0].ID, "t1")
-	}
-	if got.Tasks[0].Judge.Type != "test-command" {
-		t.Errorf("Tasks[0].Judge.Type = %q, want %q", got.Tasks[0].Judge.Type, "test-command")
-	}
+	must.NoError(err)
+	check.Equal("hcl-suite", got.ID)
+	must.Len(got.Tasks, 1)
+	check.Equal("t1", got.Tasks[0].ID)
+	check.Equal("test-command", got.Tasks[0].Judge.Type)
 }
 
 // TestLoadSuite_UnsupportedExtension documents the dispatcher contract
@@ -359,28 +288,24 @@ func TestLoadSuite_UnsupportedExtension(t *testing.T) {
 		ext  string
 	}{
 		{name: "yaml", ext: ".yaml"},
-		{name: "json (legacy format removed)", ext: ".json"},
+		{name: "legacy json", ext: ".json"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			dir := t.TempDir()
 			path := filepath.Join(dir, "suite"+tc.ext)
-			if err := os.WriteFile(path, []byte("anything"), 0o644); err != nil {
-				t.Fatal(err)
-			}
+			must.NoError(os.WriteFile(path, []byte("anything"), 0o644))
 
 			_, err := loadSuite(path)
-			if err == nil {
-				t.Fatal("expected error for unsupported extension")
-			}
-			if !strings.Contains(err.Error(), ".hcl") {
-				t.Fatalf("error = %q, want it to mention .hcl", err.Error())
-			}
+			must.ErrorContains(err, ".hcl")
 		})
 	}
 }
 
-func TestLoadResult_Valid(t *testing.T) {
+func TestLoadResult_ReadsValidFile(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	dir := t.TempDir()
 	result := eval.SuiteResult{
 		SuiteID:  "s1",
@@ -395,25 +320,20 @@ func TestLoadResult_Valid(t *testing.T) {
 	writeJSONFile(t, path, result)
 
 	got, err := loadResult(path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got.RunID != "r1" {
-		t.Errorf("RunID = %q, want %q", got.RunID, "r1")
-	}
-	if len(got.Tasks) != 2 {
-		t.Errorf("got %d tasks, want 2", len(got.Tasks))
-	}
+	must.NoError(err)
+	check.Equal("r1", got.RunID)
+	check.Len(got.Tasks, 2)
 }
 
-func TestLoadResult_Missing(t *testing.T) {
+func TestLoadResult_MissingFileErrors(t *testing.T) {
+	must := require.New(t)
 	_, err := loadResult("/nonexistent/result.json")
-	if err == nil {
-		t.Fatal("expected error for missing file")
-	}
+	must.Error(err)
 }
 
-func TestWriteJSON_RoundTrip(t *testing.T) {
+func TestWriteJSON_RoundTripsThroughLoadResult(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "out.json")
 
@@ -423,127 +343,100 @@ func TestWriteJSON_RoundTrip(t *testing.T) {
 		PassRate: 0.75,
 	}
 
-	if err := writeJSON(path, original); err != nil {
-		t.Fatalf("writeJSON error: %v", err)
-	}
+	must.NoError(writeJSON(path, original))
 
 	got, err := loadResult(path)
-	if err != nil {
-		t.Fatalf("loadResult error: %v", err)
-	}
+	must.NoError(err)
 
-	if got.SuiteID != original.SuiteID || got.RunID != original.RunID {
-		t.Errorf("round-trip mismatch: got %+v", got)
-	}
+	check.Equal(original.SuiteID, got.SuiteID)
+	check.Equal(original.RunID, got.RunID)
 }
 
 func writeJSONFile(t *testing.T, path string, v any) {
 	t.Helper()
+	must := require.New(t)
 	data, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
+	must.NoError(os.WriteFile(path, data, 0o644))
 }
 
 // --- parseDate tests ---
 
-func TestParseDate_RFC3339(t *testing.T) {
+func TestParseDate_AcceptsRFC3339(t *testing.T) {
+	must := require.New(t)
 	got, err := parseDate("2025-03-15T10:30:00Z")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	must.NoError(err)
 	want := time.Date(2025, 3, 15, 10, 30, 0, 0, time.UTC)
-	if !got.Equal(want) {
-		t.Errorf("parseDate(RFC3339) = %v, want %v", got, want)
-	}
+	must.True(got.Equal(want), "parseDate = %v, want %v", got, want)
 }
 
-func TestParseDate_DateOnly(t *testing.T) {
+func TestParseDate_AcceptsDateOnly(t *testing.T) {
+	must := require.New(t)
 	got, err := parseDate("2025-03-15")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	must.NoError(err)
 	want := time.Date(2025, 3, 15, 0, 0, 0, 0, time.UTC)
-	if !got.Equal(want) {
-		t.Errorf("parseDate(date-only) = %v, want %v", got, want)
-	}
+	must.True(got.Equal(want), "parseDate = %v, want %v", got, want)
 }
 
-func TestParseDate_Invalid(t *testing.T) {
+func TestParseDate_RejectsInvalidInput(t *testing.T) {
+	must := require.New(t)
 	_, err := parseDate("not-a-date")
-	if err == nil {
-		t.Fatal("expected error for invalid date")
-	}
+	must.Error(err)
 }
 
-func TestParseDate_EmptyString(t *testing.T) {
+func TestParseDate_RejectsEmptyString(t *testing.T) {
+	must := require.New(t)
 	_, err := parseDate("")
-	if err == nil {
-		t.Fatal("expected error for empty string")
-	}
+	must.Error(err)
 }
 
 // --- parseDuration tests ---
 
-func TestParseDuration_GoFormat(t *testing.T) {
+func TestParseDuration_AcceptsGoFormat(t *testing.T) {
 	cases := []struct {
+		name  string
 		input string
 		want  time.Duration
 	}{
-		{"24h", 24 * time.Hour},
-		{"30m", 30 * time.Minute},
-		{"1h30m", 90 * time.Minute},
-		{"500ms", 500 * time.Millisecond},
+		{name: "hours", input: "24h", want: 24 * time.Hour},
+		{name: "minutes", input: "30m", want: 30 * time.Minute},
+		{name: "hours and minutes", input: "1h30m", want: 90 * time.Minute},
+		{name: "milliseconds", input: "500ms", want: 500 * time.Millisecond},
 	}
 	for _, tc := range cases {
-		got, err := parseDuration(tc.input)
-		if err != nil {
-			t.Errorf("parseDuration(%q): unexpected error: %v", tc.input, err)
-			continue
-		}
-		if got != tc.want {
-			t.Errorf("parseDuration(%q) = %v, want %v", tc.input, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			got, err := parseDuration(tc.input)
+			must.NoError(err)
+			must.Equal(tc.want, got)
+		})
 	}
 }
 
-func TestParseDuration_Days(t *testing.T) {
+func TestParseDuration_AcceptsDaySuffix(t *testing.T) {
+	must := require.New(t)
 	got, err := parseDuration("7d")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	want := 7 * 24 * time.Hour
-	if got != want {
-		t.Errorf("parseDuration(7d) = %v, want %v", got, want)
-	}
+	must.NoError(err)
+	must.Equal(7*24*time.Hour, got)
 }
 
-func TestParseDuration_FractionalDays(t *testing.T) {
+func TestParseDuration_AcceptsFractionalDays(t *testing.T) {
+	must := require.New(t)
 	got, err := parseDuration("0.5d")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	want := 12 * time.Hour
-	if got != want {
-		t.Errorf("parseDuration(0.5d) = %v, want %v", got, want)
-	}
+	must.NoError(err)
+	must.Equal(12*time.Hour, got)
 }
 
-func TestParseDuration_Invalid(t *testing.T) {
+func TestParseDuration_RejectsInvalidInput(t *testing.T) {
+	must := require.New(t)
 	_, err := parseDuration("notaduration")
-	if err == nil {
-		t.Fatal("expected error for invalid duration")
-	}
+	must.Error(err)
 }
 
-func TestParseDuration_BadDays(t *testing.T) {
+func TestParseDuration_RejectsNonNumericDays(t *testing.T) {
+	must := require.New(t)
 	_, err := parseDuration("abcd")
-	if err == nil {
-		t.Fatal("expected error for non-numeric days suffix")
-	}
+	must.Error(err)
 }
 
 // --- mineFailureTasks tests ---
@@ -589,37 +482,30 @@ func TestMineFailureTasks_FiltersByEvalOutcome(t *testing.T) {
 		},
 	}
 
-	// Default: only the EvalFailed trace is mined.
-	tasks := mineFailureTasksFiltered(recordings, 0, false, false)
-	if len(tasks) != 1 {
-		t.Fatalf("got %d tasks, want 1 (default mines only failed)", len(tasks))
-	}
-	if tasks[0].Prompt != "fix bug B" {
-		t.Errorf("task[0].Prompt = %q, want %q", tasks[0].Prompt, "fix bug B")
-	}
-	if tasks[0].Judge.Type != "test-command" {
-		t.Errorf("task[0].Judge.Type = %q, want %q", tasks[0].Judge.Type, "test-command")
-	}
-	if tasks[0].Judge.Command != "go test ./..." {
-		t.Errorf("task[0].Judge.Command = %q, want %q", tasks[0].Judge.Command, "go test ./...")
-	}
+	t.Run("default mines only failed traces", func(t *testing.T) {
+		check := assert.New(t)
+		must := require.New(t)
+		tasks := mineFailureTasksFiltered(recordings, 0, false, false)
+		must.Len(tasks, 1)
+		check.Equal("fix bug B", tasks[0].Prompt)
+		check.Equal("test-command", tasks[0].Judge.Type)
+		check.Equal("go test ./...", tasks[0].Judge.Command)
+	})
 
-	// With --include-inconclusive: max_turns is also mined.
-	tasksWithInconclusive := mineFailureTasksFiltered(recordings, 0, false, true)
-	if len(tasksWithInconclusive) != 2 {
-		t.Fatalf("got %d tasks, want 2 (failed + inconclusive)", len(tasksWithInconclusive))
-	}
-	if tasksWithInconclusive[1].Prompt != "fix bug C" {
-		t.Errorf("task[1].Prompt = %q, want %q", tasksWithInconclusive[1].Prompt, "fix bug C")
-	}
+	t.Run("include inconclusive also mines max_turns", func(t *testing.T) {
+		must := require.New(t)
+		check := assert.New(t)
+		tasks := mineFailureTasksFiltered(recordings, 0, false, true)
+		must.Len(tasks, 2)
+		check.Equal("fix bug C", tasks[1].Prompt)
+	})
 }
 
 // TestMineFailureTasks_SuccessWithFailingVerifierMined pins that a
 // run that terminated with Outcome=="success" but where the verifier
 // disagreed is classified EvalFailed and therefore mined by default.
-// The old `Outcome != "success"` filter would have excluded these,
-// silently dropping a genuine quality failure.
 func TestMineFailureTasks_SuccessWithFailingVerifierMined(t *testing.T) {
+	must := require.New(t)
 	recordings := []types.RunRecording{
 		{
 			RunID:  "r1",
@@ -634,15 +520,12 @@ func TestMineFailureTasks_SuccessWithFailingVerifierMined(t *testing.T) {
 		},
 	}
 	tasks := mineFailureTasksFiltered(recordings, 0, false, false)
-	if len(tasks) != 1 {
-		t.Fatalf("got %d tasks, want 1 (success+failed-verifier is EvalFailed)", len(tasks))
-	}
-	if tasks[0].Prompt != "fix bug A" {
-		t.Errorf("task[0].Prompt = %q, want %q", tasks[0].Prompt, "fix bug A")
-	}
+	must.Len(tasks, 1)
+	must.Equal("fix bug A", tasks[0].Prompt)
 }
 
 func TestMineFailureTasks_RespectsLimit(t *testing.T) {
+	must := require.New(t)
 	recordings := []types.RunRecording{
 		{RunID: "r1", Config: types.RunConfig{Prompt: "a"}, FinalOutcome: types.RunTrace{Outcome: "error"}},
 		{RunID: "r2", Config: types.RunConfig{Prompt: "b"}, FinalOutcome: types.RunTrace{Outcome: "max_turns"}},
@@ -650,20 +533,17 @@ func TestMineFailureTasks_RespectsLimit(t *testing.T) {
 	}
 
 	tasks := mineFailureTasksFiltered(recordings, 2, false, false)
-	if len(tasks) != 2 {
-		t.Fatalf("got %d tasks, want 2", len(tasks))
-	}
+	must.Len(tasks, 2)
 }
 
 func TestMineFailureTasks_NoFailures(t *testing.T) {
+	must := require.New(t)
 	recordings := []types.RunRecording{
 		{RunID: "r1", Config: types.RunConfig{Prompt: "a"}, FinalOutcome: types.RunTrace{Outcome: "success"}},
 	}
 
 	tasks := mineFailureTasksFiltered(recordings, 0, false, false)
-	if len(tasks) != 0 {
-		t.Fatalf("got %d tasks, want 0", len(tasks))
-	}
+	must.Empty(tasks)
 }
 
 // makeBatchRecording builds a recording whose RunConfig.Provider has
@@ -693,6 +573,7 @@ func makeBatchRecording(runID, outcome, prompt string) types.RunRecording {
 // default behaviour of --include-batch=false: batch failures stay
 // out of the mined suite.
 func TestMineFailureTasksFiltered_ExcludesBatchByDefault(t *testing.T) {
+	must := require.New(t)
 	recordings := []types.RunRecording{
 		{
 			RunID:        "stream-fail",
@@ -703,12 +584,8 @@ func TestMineFailureTasksFiltered_ExcludesBatchByDefault(t *testing.T) {
 	}
 
 	tasks := mineFailureTasksFiltered(recordings, 0, false, false)
-	if len(tasks) != 1 {
-		t.Fatalf("got %d tasks, want 1 (batch failure must be excluded)", len(tasks))
-	}
-	if tasks[0].Prompt != "streaming failure" {
-		t.Errorf("task[0].Prompt = %q, want streaming failure", tasks[0].Prompt)
-	}
+	must.Len(tasks, 1, "batch failure must be excluded")
+	must.Equal("streaming failure", tasks[0].Prompt)
 }
 
 // TestMineFailureTasksFiltered_IncludesBatchWhenRequested covers the
@@ -716,6 +593,7 @@ func TestMineFailureTasksFiltered_ExcludesBatchByDefault(t *testing.T) {
 // specific failure modes (e.g. timeout taxonomies, provider-side
 // rejection patterns) need to be able to opt into the wider window.
 func TestMineFailureTasksFiltered_IncludesBatchWhenRequested(t *testing.T) {
+	must := require.New(t)
 	recordings := []types.RunRecording{
 		{
 			RunID:        "stream-fail",
@@ -726,9 +604,7 @@ func TestMineFailureTasksFiltered_IncludesBatchWhenRequested(t *testing.T) {
 	}
 
 	tasks := mineFailureTasksFiltered(recordings, 0, true, false)
-	if len(tasks) != 2 {
-		t.Fatalf("got %d tasks, want 2 (both failures included)", len(tasks))
-	}
+	must.Len(tasks, 2)
 }
 
 // writeMineFailuresFixture stores one streaming and one batch failure
@@ -738,10 +614,9 @@ func TestMineFailureTasksFiltered_IncludesBatchWhenRequested(t *testing.T) {
 // attributable to the flag, not the fixture.
 func writeMineFailuresFixture(t *testing.T, dir string) {
 	t.Helper()
+	must := require.New(t)
 	store, err := lakehouse.NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	must.NoError(err)
 	t.Cleanup(func() { _ = store.Close() })
 
 	recordings := []types.RunRecording{
@@ -763,14 +638,10 @@ func writeMineFailuresFixture(t *testing.T, dir string) {
 		makeBatchRecording("batch-fail", "error", "batch failure prompt"),
 	}
 	for _, rec := range recordings {
-		if err := store.StoreRecording(context.Background(), rec); err != nil {
-			t.Fatalf("StoreRecording %s: %v", rec.RunID, err)
-		}
+		must.NoError(store.StoreRecording(context.Background(), rec), "StoreRecording %s", rec.RunID)
 		// mine-failures reads QueryTraces first and hydrates
 		// recordings opportunistically, so the fixture seeds both.
-		if err := store.StoreTrace(context.Background(), rec.FinalOutcome); err != nil {
-			t.Fatalf("StoreTrace %s: %v", rec.RunID, err)
-		}
+		must.NoError(store.StoreTrace(context.Background(), rec.FinalOutcome), "StoreTrace %s", rec.RunID)
 	}
 }
 
@@ -778,6 +649,7 @@ func writeMineFailuresFixture(t *testing.T, dir string) {
 // the dispatch layer: invoking `eval mine-failures` without
 // --include-batch must drop batch failures from the emitted suite.
 func TestRun_MineFailures_DefaultExcludesBatch(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	writeMineFailuresFixture(t, dir)
 	outPath := filepath.Join(dir, "mined.hcl")
@@ -787,26 +659,19 @@ func TestRun_MineFailures_DefaultExcludesBatch(t *testing.T) {
 		"--lakehouse", dir,
 		"--output", outPath,
 	}, io.Discard)
-	if code != 0 {
-		t.Fatalf("run() exit code = %d, want 0", code)
-	}
+	must.Equal(0, code)
 
 	got, err := loadSuite(outPath)
-	if err != nil {
-		t.Fatalf("loadSuite: %v", err)
-	}
-	if len(got.Tasks) != 1 {
-		t.Fatalf("default suite has %d tasks, want 1 (batch must be excluded)", len(got.Tasks))
-	}
-	if got.Tasks[0].Prompt != "streaming failure prompt" {
-		t.Errorf("task[0].Prompt = %q, want %q", got.Tasks[0].Prompt, "streaming failure prompt")
-	}
+	must.NoError(err)
+	must.Len(got.Tasks, 1, "batch failure must be excluded by default")
+	must.Equal("streaming failure prompt", got.Tasks[0].Prompt)
 }
 
 // TestRun_MineFailures_IncludeBatchFlag pins the --include-batch
 // escape hatch at the dispatch layer: the flag must opt batch
 // failures back into the emitted suite alongside streaming ones.
 func TestRun_MineFailures_IncludeBatchFlag(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	writeMineFailuresFixture(t, dir)
 	outPath := filepath.Join(dir, "mined.hcl")
@@ -817,57 +682,47 @@ func TestRun_MineFailures_IncludeBatchFlag(t *testing.T) {
 		"--output", outPath,
 		"--include-batch",
 	}, io.Discard)
-	if code != 0 {
-		t.Fatalf("run() exit code = %d, want 0", code)
-	}
+	must.Equal(0, code)
 
 	got, err := loadSuite(outPath)
-	if err != nil {
-		t.Fatalf("loadSuite: %v", err)
-	}
-	if len(got.Tasks) != 2 {
-		t.Fatalf("--include-batch suite has %d tasks, want 2 (both failures included)", len(got.Tasks))
-	}
+	must.NoError(err)
+	must.Len(got.Tasks, 2)
 	// Both prompts must be present; recording-iteration order in
 	// QueryRecordings is StartedAt-descending (zero-time here, so
 	// implementation-defined), so assert on set membership rather
 	// than ordering.
-	prompts := map[string]bool{}
+	prompts := make([]string, 0, len(got.Tasks))
 	for _, task := range got.Tasks {
-		prompts[task.Prompt] = true
+		prompts = append(prompts, task.Prompt)
 	}
-	for _, want := range []string{"streaming failure prompt", "batch failure prompt"} {
-		if !prompts[want] {
-			t.Errorf("--include-batch suite missing prompt %q (got %v)", want, prompts)
-		}
-	}
+	must.ElementsMatch([]string{"streaming failure prompt", "batch failure prompt"}, prompts)
 }
 
-// TestIsBatchRecording pins the classifier so a future refactor of
-// the predicate fails this test rather than silently shifting the
-// mine-failures default-include surface. Mirrors
-// lakehouse.TestIsBatchRun — both must move together.
-func TestIsBatchRecording(t *testing.T) {
+// TestIsBatchRecording_RequiresEnabledBatchConfig pins the classifier so a
+// future refactor of the predicate fails this test rather than silently
+// shifting the mine-failures default-include surface. Mirrors
+// lakehouse.TestIsBatchRun_ClassifiesByBatchEnabledFlag — both must move together.
+func TestIsBatchRecording_RequiresEnabledBatchConfig(t *testing.T) {
 	cases := []struct {
 		name string
 		rec  types.RunRecording
 		want bool
 	}{
-		{"no-provider", types.RunRecording{}, false},
+		{"no provider", types.RunRecording{}, false},
 		{
-			"provider-without-batch",
+			"provider without batch",
 			types.RunRecording{Config: types.RunConfig{Provider: types.ProviderConfig{Type: "anthropic"}}},
 			false,
 		},
 		{
-			"batch-disabled",
+			"batch disabled",
 			types.RunRecording{Config: types.RunConfig{Provider: types.ProviderConfig{
 				Batch: &types.BatchProviderConfig{Enabled: false},
 			}}},
 			false,
 		},
 		{
-			"batch-enabled",
+			"batch enabled",
 			types.RunRecording{Config: types.RunConfig{Provider: types.ProviderConfig{
 				Batch: &types.BatchProviderConfig{Enabled: true},
 			}}},
@@ -876,9 +731,8 @@ func TestIsBatchRecording(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isBatchRecording(tc.rec); got != tc.want {
-				t.Errorf("isBatchRecording = %v, want %v", got, tc.want)
-			}
+			must := require.New(t)
+			must.Equal(tc.want, isBatchRecording(tc.rec))
 		})
 	}
 }
@@ -890,6 +744,7 @@ func TestIsBatchRecording(t *testing.T) {
 // would silently regress to a non-loadable format the moment the
 // emitter and loader drift.
 func TestWriteSuiteHCL_RoundTrip(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mined.hcl")
 
@@ -925,72 +780,59 @@ func TestWriteSuiteHCL_RoundTrip(t *testing.T) {
 		},
 	}
 
-	if err := writeSuiteHCL(path, original); err != nil {
-		t.Fatalf("writeSuiteHCL: %v", err)
-	}
+	must.NoError(writeSuiteHCL(path, original))
 
 	got, err := loadSuite(path)
-	if err != nil {
-		t.Fatalf("loadSuite after writeSuiteHCL: %v", err)
-	}
+	must.NoError(err)
 
-	if got.ID != original.ID || got.Description != original.Description {
-		t.Errorf("suite metadata mismatch: got %+v want %+v", got, original)
-	}
-	if len(got.Tasks) != len(original.Tasks) {
-		t.Fatalf("got %d tasks, want %d", len(got.Tasks), len(original.Tasks))
-	}
+	must.Equal(original.ID, got.ID)
+	must.Equal(original.Description, got.Description)
+	must.Len(got.Tasks, len(original.Tasks))
 	for i, want := range original.Tasks {
-		if got.Tasks[i].ID != want.ID ||
-			got.Tasks[i].Mode != want.Mode ||
-			got.Tasks[i].Prompt != want.Prompt {
-			t.Errorf("task[%d] mismatch: got %+v want %+v", i, got.Tasks[i], want)
-		}
-		if got.Tasks[i].Judge.Type != want.Judge.Type {
-			t.Errorf("task[%d].Judge.Type = %q, want %q", i, got.Tasks[i].Judge.Type, want.Judge.Type)
-		}
+		t.Run(want.ID, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(want.ID, got.Tasks[i].ID)
+			must.Equal(want.Mode, got.Tasks[i].Mode)
+			must.Equal(want.Prompt, got.Tasks[i].Prompt)
+			must.Equal(want.Judge.Type, got.Tasks[i].Judge.Type)
+		})
 	}
-	if got.Tasks[1].Judge.Require != "all" {
-		t.Errorf("composite Require = %q, want %q", got.Tasks[1].Judge.Require, "all")
-	}
-	if len(got.Tasks[1].Judge.Judges) != 2 {
-		t.Errorf("composite has %d sub-judges, want 2", len(got.Tasks[1].Judge.Judges))
-	}
+	must.Equal("all", got.Tasks[1].Judge.Require)
+	must.Len(got.Tasks[1].Judge.Judges, 2)
 }
 
 func TestWriteSuiteHCL_LLMBlockRoundTrip(t *testing.T) {
+	must := require.New(t)
 	zero, warm := 0.0, 0.7
-	judges := []types.EvalJudge{
-		{Type: "diff-review", Criteria: "adds a test", LLM: &types.JudgeLLMConfig{
+	cases := []struct {
+		name  string
+		judge types.EvalJudge
+	}{
+		{"llm block with all fields", types.EvalJudge{Type: "diff-review", Criteria: "adds a test", LLM: &types.JudgeLLMConfig{
 			Provider: "openai-compatible", Model: "openai/gpt-6-luna", BaseURL: "https://openrouter.ai/api/v1",
 			APIKeyRef: "secret://OPENROUTER_API_KEY", TimeoutSeconds: 60, MaxInputBytes: 4096, Temperature: &zero,
 			MaxTokens: 2048, StructuredOutput: types.JudgeStructuredPromptOnly, AllowTruncated: true,
-		}},
-		{Type: "diff-review", Criteria: "minimal", LLM: &types.JudgeLLMConfig{Model: "claude-x"}},
-		{Type: "diff-review", Criteria: "no block"},
-		{Type: "composite", Require: "any", Judges: []types.EvalJudge{
+		}}},
+		{"llm block with model only", types.EvalJudge{Type: "diff-review", Criteria: "minimal", LLM: &types.JudgeLLMConfig{Model: "claude-x"}}},
+		{"no llm block", types.EvalJudge{Type: "diff-review", Criteria: "no block"}},
+		{"composite with nested llm block", types.EvalJudge{Type: "composite", Require: "any", Judges: []types.EvalJudge{
 			{Type: "file-exists", Paths: []string{"a.txt"}},
 			{Type: "diff-review", Criteria: "nested", LLM: &types.JudgeLLMConfig{Model: "claude-y", Temperature: &warm}},
-		}},
+		}}},
 	}
 	original := types.EvalSuite{ID: "llm-suite"}
-	for i, j := range judges {
-		original.Tasks = append(original.Tasks, types.EvalTask{ID: fmt.Sprintf("t%d", i), Prompt: "p", Judge: j})
+	for i, tc := range cases {
+		original.Tasks = append(original.Tasks, types.EvalTask{ID: fmt.Sprintf("t%d", i), Prompt: "p", Judge: tc.judge})
 	}
 	path := filepath.Join(t.TempDir(), "llm.hcl")
-	if err := writeSuiteHCL(path, original); err != nil {
-		t.Fatalf("writeSuiteHCL: %v", err)
-	}
+	must.NoError(writeSuiteHCL(path, original))
 	got, err := loadSuite(path)
-	if err != nil {
-		t.Fatalf("loadSuite after writeSuiteHCL: %v", err)
-	}
-	for i, want := range judges {
-		if !reflect.DeepEqual(got.Tasks[i].Judge, want) {
-			gotJSON, _ := json.Marshal(got.Tasks[i].Judge)
-			wantJSON, _ := json.Marshal(want)
-			t.Errorf("task %d judge = %s, want %s", i, gotJSON, wantJSON)
-		}
+	must.NoError(err)
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.judge, got.Tasks[i].Judge)
+		})
 	}
 }
 
@@ -998,6 +840,7 @@ func TestWriteSuiteHCL_LLMBlockRoundTrip(t *testing.T) {
 // QuarantineFlags survives HCL serialise + parse with the same flags
 // in the same order.
 func TestWriteSuiteHCL_QuarantineFlagsRoundTrip(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "quarantined.hcl")
 
@@ -1017,16 +860,10 @@ func TestWriteSuiteHCL_QuarantineFlagsRoundTrip(t *testing.T) {
 		},
 	}
 
-	if err := writeSuiteHCL(path, original); err != nil {
-		t.Fatalf("writeSuiteHCL: %v", err)
-	}
+	must.NoError(writeSuiteHCL(path, original))
 	got, err := loadSuite(path)
-	if err != nil {
-		t.Fatalf("loadSuite: %v", err)
-	}
-	if len(got.QuarantineFlags) != 1 || got.QuarantineFlags[0] != types.QuarantineLargePayload {
-		t.Errorf("QuarantineFlags = %v, want [%s]", got.QuarantineFlags, types.QuarantineLargePayload)
-	}
+	must.NoError(err)
+	must.Equal([]types.QuarantineFlag{types.QuarantineLargePayload}, got.QuarantineFlags)
 }
 
 // TestWriteSuiteHCL_EscapesInterpolation ensures hclwrite is escaping
@@ -1035,6 +872,7 @@ func TestWriteSuiteHCL_QuarantineFlagsRoundTrip(t *testing.T) {
 // preserved verbatim through the round trip rather than re-interpreted
 // by the loader.
 func TestWriteSuiteHCL_EscapesInterpolation(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mined.hcl")
 
@@ -1053,24 +891,17 @@ func TestWriteSuiteHCL_EscapesInterpolation(t *testing.T) {
 		},
 	}
 
-	if err := writeSuiteHCL(path, original); err != nil {
-		t.Fatalf("writeSuiteHCL: %v", err)
-	}
+	must.NoError(writeSuiteHCL(path, original))
 	got, err := loadSuite(path)
-	if err != nil {
-		t.Fatalf("loadSuite: %v", err)
-	}
-	if got.Tasks[0].Prompt != dangerous {
-		t.Errorf("Prompt = %q, want %q", got.Tasks[0].Prompt, dangerous)
-	}
-	if got.Tasks[0].Judge.Command != `go test ${PKG}` {
-		t.Errorf("Command = %q, want %q", got.Tasks[0].Judge.Command, `go test ${PKG}`)
-	}
+	must.NoError(err)
+	must.Equal(dangerous, got.Tasks[0].Prompt)
+	must.Equal(`go test ${PKG}`, got.Tasks[0].Judge.Command)
 }
 
 // --- buildLabVsProductionReport tests ---
 
 func TestBuildLabVsProductionReport_Basic(t *testing.T) {
+	must := require.New(t)
 	prodMetrics := types.TraceMetrics{
 		Count:     100,
 		PassRate:  0.85,
@@ -1090,39 +921,24 @@ func TestBuildLabVsProductionReport_Basic(t *testing.T) {
 
 	report := buildLabVsProductionReport("exp-1", prodMetrics, result)
 
-	if report.ExperimentID != "exp-1" {
-		t.Errorf("ExperimentID = %q, want %q", report.ExperimentID, "exp-1")
-	}
+	must.Equal("exp-1", report.ExperimentID)
 
 	// Production baseline
-	if report.Production.SampleSize != 100 {
-		t.Errorf("Production.SampleSize = %d, want 100", report.Production.SampleSize)
-	}
-	if math.Abs(report.Production.PassRate-0.85) > 0.001 {
-		t.Errorf("Production.PassRate = %f, want 0.85", report.Production.PassRate)
-	}
-	if math.Abs(report.Production.MeanTurns-4.2) > 0.001 {
-		t.Errorf("Production.MeanTurns = %f, want 4.2", report.Production.MeanTurns)
-	}
+	must.Equal(100, report.Production.SampleSize)
+	must.InDelta(0.85, report.Production.PassRate, 0.001)
+	must.InDelta(4.2, report.Production.MeanTurns, 0.001)
 
 	// Variant
-	if len(report.Variants) != 1 {
-		t.Fatalf("got %d variants, want 1", len(report.Variants))
-	}
+	must.Len(report.Variants, 1)
 	v := report.Variants[0]
-	if v.Name != "test-suite" {
-		t.Errorf("Variant.Name = %q, want %q", v.Name, "test-suite")
-	}
-	if math.Abs(v.Results.PassRate-0.90) > 0.001 {
-		t.Errorf("Variant.PassRate = %f, want 0.90", v.Results.PassRate)
-	}
+	must.Equal("test-suite", v.Name)
+	must.InDelta(0.90, v.Results.PassRate, 0.001)
 	// Mean turns = (3 + 4 + 5) / 3 = 4.0 => MedianTurns = 4
-	if v.Results.MedianTurns != 4 {
-		t.Errorf("Variant.MedianTurns = %d, want 4", v.Results.MedianTurns)
-	}
+	must.Equal(4, v.Results.MedianTurns)
 }
 
 func TestBuildLabVsProductionReport_NoTraces(t *testing.T) {
+	must := require.New(t)
 	prodMetrics := types.TraceMetrics{
 		Count:    50,
 		PassRate: 0.70,
@@ -1139,17 +955,14 @@ func TestBuildLabVsProductionReport_NoTraces(t *testing.T) {
 
 	report := buildLabVsProductionReport("exp-2", prodMetrics, result)
 
-	if len(report.Variants) != 1 {
-		t.Fatalf("got %d variants, want 1", len(report.Variants))
-	}
+	must.Len(report.Variants, 1)
 	v := report.Variants[0]
 	// With no traces, turns should be zero.
-	if v.Results.MedianTurns != 0 {
-		t.Errorf("Variant.MedianTurns = %d, want 0", v.Results.MedianTurns)
-	}
+	must.Equal(0, v.Results.MedianTurns)
 }
 
 func TestBuildLabVsProductionReport_MixedTraces(t *testing.T) {
+	must := require.New(t)
 	prodMetrics := types.TraceMetrics{Count: 10, PassRate: 0.80}
 
 	result := eval.SuiteResult{
@@ -1166,12 +979,11 @@ func TestBuildLabVsProductionReport_MixedTraces(t *testing.T) {
 	v := report.Variants[0]
 
 	// Mean turns = (2 + 6) / 2 = 4
-	if v.Results.MedianTurns != 4 {
-		t.Errorf("Variant.MedianTurns = %d, want 4", v.Results.MedianTurns)
-	}
+	must.Equal(4, v.Results.MedianTurns)
 }
 
 func TestPrintComparisonSummary_DoesNotPanic(t *testing.T) {
+	must := require.New(t)
 	report := types.LabVsProductionReport{
 		ExperimentID: "smoke-test",
 		Production: types.BaselineMetrics{
@@ -1190,12 +1002,12 @@ func TestPrintComparisonSummary_DoesNotPanic(t *testing.T) {
 		},
 	}
 
-	// Should not panic. Using io.Discard avoids the global os.Stderr
-	// mutation pattern, which is unsafe under -race / -parallel.
-	printComparisonSummary(io.Discard, report)
+	// io.Discard avoids mutating the global os.Stderr, which is unsafe under -race and -parallel.
+	must.NotPanics(func() { printComparisonSummary(io.Discard, report) })
 }
 
 func TestPrintComparisonSummary_EmptyVariants(t *testing.T) {
+	must := require.New(t)
 	report := types.LabVsProductionReport{
 		ExperimentID: "empty",
 		Production: types.BaselineMetrics{
@@ -1204,13 +1016,13 @@ func TestPrintComparisonSummary_EmptyVariants(t *testing.T) {
 		},
 	}
 
-	// Should not panic with zero variants.
-	printComparisonSummary(io.Discard, report)
+	must.NotPanics(func() { printComparisonSummary(io.Discard, report) })
 }
 
 // --- buildDriftReport tests ---
 
 func TestBuildDriftReport_ComputesDeltas(t *testing.T) {
+	must := require.New(t)
 	current := types.TraceMetrics{
 		Count:            10,
 		PassRate:         0.80,
@@ -1234,40 +1046,22 @@ func TestBuildDriftReport_ComputesDeltas(t *testing.T) {
 
 	report := buildDriftReport(current, baseline)
 
-	if math.Abs(report.Deltas.PassRateDelta-(-0.10)) > 0.001 {
-		t.Errorf("PassRateDelta = %f, want -0.10", report.Deltas.PassRateDelta)
-	}
-	if math.Abs(report.Deltas.MeanTurnsDelta-1.0) > 0.001 {
-		t.Errorf("MeanTurnsDelta = %f, want 1.0", report.Deltas.MeanTurnsDelta)
-	}
-	// Pin the full delta surface: a sign-flip bug (baseline - current
-	// rather than current - baseline) would not be caught by the
-	// pass-rate or mean-turns assertions alone.
-	if math.Abs(report.Deltas.MeanTokensDelta-100) > 0.001 {
-		t.Errorf("MeanTokensDelta = %f, want 100", report.Deltas.MeanTokensDelta)
-	}
-	if math.Abs(report.Deltas.P50DurationDelta-20) > 0.001 {
-		t.Errorf("P50DurationDelta = %f, want 20", report.Deltas.P50DurationDelta)
-	}
-	if math.Abs(report.Deltas.P95DurationDelta-50) > 0.001 {
-		t.Errorf("P95DurationDelta = %f, want 50", report.Deltas.P95DurationDelta)
-	}
-	if math.Abs(report.Deltas.BatchP50DurationDelta-3000) > 0.001 {
-		t.Errorf("BatchP50DurationDelta = %f, want 3000", report.Deltas.BatchP50DurationDelta)
-	}
-	if math.Abs(report.Deltas.BatchP95DurationDelta-6000) > 0.001 {
-		t.Errorf("BatchP95DurationDelta = %f, want 6000", report.Deltas.BatchP95DurationDelta)
-	}
+	// Each delta is current minus baseline. Every field is pinned so a sign
+	// flip in any one of them fails.
+	must.InDelta(-0.10, report.Deltas.PassRateDelta, 0.001)
+	must.InDelta(1.0, report.Deltas.MeanTurnsDelta, 0.001)
+	must.InDelta(100, report.Deltas.MeanTokensDelta, 0.001)
+	must.InDelta(20, report.Deltas.P50DurationDelta, 0.001)
+	must.InDelta(50, report.Deltas.P95DurationDelta, 0.001)
+	must.InDelta(3000, report.Deltas.BatchP50DurationDelta, 0.001)
+	must.InDelta(6000, report.Deltas.BatchP95DurationDelta, 0.001)
 }
 
 // TestCmdRun_DryRunAcceptanceSuite pins that the shipped acceptance suite
 // passes `eval run --dry-run` without a credential or a network.
 func TestCmdRun_DryRunAcceptanceSuite(t *testing.T) {
+	must := require.New(t)
 	suitePath, err := filepath.Abs("../../suites/acceptance.hcl")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if exitCode := run([]string{"run", "--suite", suitePath, "--dry-run"}, io.Discard); exitCode != 0 {
-		t.Fatalf("run() exit code = %d, want 0", exitCode)
-	}
+	must.NoError(err)
+	must.Equal(0, run([]string{"run", "--suite", suitePath, "--dry-run"}, io.Discard))
 }

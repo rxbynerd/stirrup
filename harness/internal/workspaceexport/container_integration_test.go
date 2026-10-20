@@ -7,16 +7,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// TestGCSExporter_ContainerExecutor_LiveEngine exports a real container's
-// workspace end to end: tar runs in the sandbox, the stream is repacked,
-// and the upload holds exactly what the sandbox wrote. Gated on
+// TestGCSExporter_ContainerExecutor_UploadsSandboxWorkspace exports a real
+// container's workspace end to end: tar runs in the sandbox, the stream is
+// repacked, and the upload holds exactly what the sandbox wrote. Gated on
 // STIRRUP_TEST_CONTAINER_SOCKET; STIRRUP_TEST_CONTAINER_IMAGE (default
 // busybox:latest) must already be present locally.
-func TestGCSExporter_ContainerExecutor_LiveEngine(t *testing.T) {
+func TestGCSExporter_ContainerExecutor_UploadsSandboxWorkspace(t *testing.T) {
+	must := require.New(t)
 	sock := os.Getenv("STIRRUP_TEST_CONTAINER_SOCKET")
 	if sock == "" {
 		t.Skip("STIRRUP_TEST_CONTAINER_SOCKET not set; skipping live container engine test")
@@ -29,49 +32,52 @@ func TestGCSExporter_ContainerExecutor_LiveEngine(t *testing.T) {
 	defer cancel()
 
 	hostDir := t.TempDir()
-	if err := os.Chmod(hostDir, 0o777); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.Chmod(hostDir, 0o777))
 	exec, err := executor.NewContainerExecutorWithContext(ctx, executor.ContainerExecutorConfig{
 		Image:      image,
 		HostDir:    hostDir,
 		SocketPath: sock,
 		Network:    &types.NetworkConfig{Mode: "none"},
 	})
-	if err != nil {
-		t.Fatalf("NewContainerExecutorWithContext: %v", err)
-	}
+	must.NoError(err)
 	t.Cleanup(func() { _ = exec.Close() })
 
 	res, err := exec.Exec(ctx, "mkdir -p sub && printf top > top.txt && printf nested > sub/nested.txt && ln -s top.txt alias && ln top.txt hard && ln -s ../alias sub/via", 30*time.Second)
-	if err != nil || res.ExitCode != 0 {
-		t.Fatalf("seed workspace: err %v, result %+v", err, res)
-	}
+	must.NoError(err, "seed workspace")
+	must.Equal(0, res.ExitCode, "seed workspace result %+v", res)
 
 	srv := &captureUploadServer{}
 	exp := newTestExporter(t, srv)
 	receipt, err := exp.Export(ctx, exec, "gs://b/runs/r1/workspace.tar.gz")
-	if err != nil {
-		t.Fatalf("Export: %v", err)
-	}
-	if receipt.Status != types.ExportStatusUploaded || receipt.Files != 5 {
-		t.Errorf("receipt = %+v, want uploaded with 5 files", receipt)
-	}
+	must.NoError(err)
+
+	t.Run("receipt reports uploaded with five files", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(types.ExportStatusUploaded, receipt.Status, "receipt %+v", receipt)
+		must.Equal(5, receipt.Files, "receipt %+v", receipt)
+	})
+
 	got := map[string]string{}
 	kinds := map[string]byte{}
 	for _, h := range readUploaded(t, srv.last().Body) {
 		got[h.Name] = h.Linkname
 		kinds[h.Name] = h.Typeflag
 	}
-	for _, name := range []string{"top.txt", "sub/", "sub/nested.txt", "alias", "hard", "sub/via"} {
-		if _, ok := got[name]; !ok {
-			t.Errorf("upload is missing %q (entries %v)", name, got)
+
+	t.Run("upload contains every seeded entry", func(t *testing.T) {
+		must := require.New(t)
+		for _, name := range []string{"top.txt", "sub/", "sub/nested.txt", "alias", "hard", "sub/via"} {
+			must.Contains(got, name)
 		}
-	}
-	if got["alias"] != "top.txt" {
-		t.Errorf("alias link target = %q, want top.txt", got["alias"])
-	}
-	if kinds["hard"] != tar.TypeLink && kinds["top.txt"] != tar.TypeLink {
-		t.Errorf("neither hard nor top.txt is a hard link entry (kinds %v)", kinds)
-	}
+	})
+
+	t.Run("alias links to top.txt", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("top.txt", got["alias"])
+	})
+
+	t.Run("hard link is stored as a hard link entry", func(t *testing.T) {
+		must := require.New(t)
+		must.True(kinds["hard"] == tar.TypeLink || kinds["top.txt"] == tar.TypeLink, "kinds %v", kinds)
+	})
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // fakeScanner returns a fixed result regardless of input. Used so
@@ -21,55 +23,43 @@ func (f fakeScanner) Scan(ctx context.Context, path string, content []byte) (*Sc
 }
 
 func TestCompositeScanner_UnionsFindings(t *testing.T) {
+	must := require.New(t)
 	a := fakeScanner{findings: []Finding{{Severity: SeverityBlock, Rule: "a/1", Line: 1, Message: "from-a"}}}
 	b := fakeScanner{findings: []Finding{{Severity: SeverityWarn, Rule: "b/2", Line: 5, Message: "from-b"}}}
 
 	c := NewCompositeScanner(a, b)
 	res, err := c.Scan(context.Background(), "x.go", []byte("content"))
-	if err != nil {
-		t.Fatalf("Scan: %v", err)
-	}
-	if len(res.Findings) != 2 {
-		t.Fatalf("expected 2 findings (union), got %d", len(res.Findings))
-	}
-	if res.Findings[0].Rule != "a/1" || res.Findings[1].Rule != "b/2" {
-		t.Errorf("unexpected ordering: %+v", res.Findings)
-	}
+	must.NoError(err)
+	must.Len(res.Findings, 2)
+	must.Equal("a/1", res.Findings[0].Rule)
+	must.Equal("b/2", res.Findings[1].Rule)
 }
 
 func TestCompositeScanner_PropagatesErrors(t *testing.T) {
+	must := require.New(t)
 	want := errors.New("boom")
 	c := NewCompositeScanner(fakeScanner{err: want})
 	_, err := c.Scan(context.Background(), "x.go", []byte("y"))
-	if !errors.Is(err, want) {
-		t.Errorf("expected error to wrap boom, got %v", err)
-	}
+	must.ErrorIs(err, want)
 }
 
 func TestNewComposite_RejectsEmpty(t *testing.T) {
+	must := require.New(t)
 	_, err := newComposite(nil, "")
-	if err == nil {
-		t.Fatal("expected error for empty scanners list")
-	}
+	must.Error(err)
 }
 
 func TestNewComposite_RejectsUnknownChild(t *testing.T) {
+	must := require.New(t)
 	_, err := newComposite([]string{"patterns", "nope"}, "")
-	if err == nil {
-		t.Fatal("expected error for unknown child name")
-	}
+	must.Error(err)
 }
 
 func TestNewComposite_BuildsKnownChildren(t *testing.T) {
+	must := require.New(t)
 	c, err := newComposite([]string{"patterns", "none"}, "")
-	if err != nil {
-		t.Fatalf("newComposite: %v", err)
-	}
+	must.NoError(err)
 	cc, ok := c.(*CompositeScanner)
-	if !ok {
-		t.Fatalf("expected *CompositeScanner, got %T", c)
-	}
-	if len(cc.scanners) != 2 {
-		t.Errorf("expected 2 children, got %d", len(cc.scanners))
-	}
+	must.True(ok, "expected *CompositeScanner, got %T", c)
+	must.Len(cc.scanners, 2)
 }

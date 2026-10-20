@@ -10,6 +10,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
@@ -101,6 +104,7 @@ func (u promptCacheUsage) cost() float64 {
 // no executor, under strategy and a 16k-token window.
 func runCacheScript(t *testing.T, strategy contextpkg.ContextStrategy) (*cacheScriptProvider, *recordingStrategy) {
 	t.Helper()
+	must := require.New(t)
 	const toolTurns = 40
 	prov := &cacheScriptProvider{toolTurns: toolTurns}
 	rec := &recordingStrategy{inner: strategy}
@@ -116,15 +120,9 @@ func runCacheScript(t *testing.T, strategy contextpkg.ContextStrategy) (*cacheSc
 	cfg.MaxTurns = toolTurns + 5
 	cfg.ContextStrategy.MaxTokens = 16_000
 	runTrace, err := loop.Run(context.Background(), cfg)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("outcome = %q, want success", runTrace.Outcome)
-	}
-	if len(prov.requests) != toolTurns+1 {
-		t.Fatalf("provider saw %d requests, want %d", len(prov.requests), toolTurns+1)
-	}
+	must.NoError(err, "Run")
+	must.Equal("success", runTrace.Outcome, "run outcome")
+	must.Len(prov.requests, toolTurns+1, "provider requests")
 	return prov, rec
 }
 
@@ -135,6 +133,8 @@ func runCacheScript(t *testing.T, strategy contextpkg.ContextStrategy) (*cacheSc
 // stripped from the first batch onward. It also logs the prompt-cache
 // usage this gives against the sliding window over the same script.
 func TestLoop_ClearToolResultsKeepsRequestsStableBetweenBatches(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov, rec := runCacheScript(t, contextpkg.NewClearToolResultsStrategy(contextpkg.ClearToolResultsConfig{Keep: contextpkg.DefaultClearKeep}))
 
 	batches, firstBatch := 0, -1
@@ -146,28 +146,20 @@ func TestLoop_ClearToolResultsKeepsRequestsStableBetweenBatches(t *testing.T) {
 			}
 		}
 	}
-	if batches < 2 {
-		t.Fatalf("%d clearing batches in the run; the script must cross at least two", batches)
-	}
+	must.GreaterOrEqual(batches, 2, "the script must cross at least two clearing batches")
 	for k, req := range prov.requests {
 		joined := strings.Join(req, "\n")
-		if strings.Contains(joined, "[...truncated") {
-			t.Fatalf("request %d was truncated by the fit check", k)
-		}
+		must.NotContains(joined, "[...truncated", "request %d was truncated by the fit check", k)
 		if !rec.compacted[k] && k > 0 {
 			prev := prov.requests[k-1]
-			if len(req) != len(prev)+2 {
-				t.Fatalf("request %d has %d messages, want the previous %d plus one exchange", k, len(req), len(prev))
-			}
+			must.Len(req, len(prev)+2, "request %d: want the previous request plus one exchange", k)
 			for i := range prev {
-				if req[i] != prev[i] {
-					t.Fatalf("request %d changed message %d of the previous request between batches", k, i)
-				}
+				must.Equal(prev[i], req[i], "request %d changed message %d of the previous request between batches", k, i)
 			}
 		}
-		if hasThinking := strings.Contains(joined, `"type":"thinking"`); hasThinking != (k > 0 && k < firstBatch) {
-			t.Errorf("request %d: thinking present = %v, first batch at request %d", k, hasThinking, firstBatch)
-		}
+		wantThinking := k > 0 && k < firstBatch
+		check.Equal(wantThinking, strings.Contains(joined, `"type":"thinking"`),
+			"request %d: thinking present (first clearing batch at request %d)", k, firstBatch)
 	}
 
 	clearing := simulatePromptCache(prov.requests)
@@ -177,25 +169,20 @@ func TestLoop_ClearToolResultsKeepsRequestsStableBetweenBatches(t *testing.T) {
 		batches, clearing.read, clearing.written, 100*clearing.readShare(), clearing.missedTurns, clearing.cost())
 	t.Logf("sliding-window:     cache read %d, written %d (%.0f%% read), %d turns missed the cache, cost %.0f",
 		sliding.read, sliding.written, 100*sliding.readShare(), sliding.missedTurns, sliding.cost())
-	if clearing.missedTurns != batches {
-		t.Errorf("%d requests missed the cache, want one per batch (%d)", clearing.missedTurns, batches)
-	}
-	if clearing.cost() >= sliding.cost() {
-		t.Errorf("clear-tool-results input cost %.0f is not below the sliding window's %.0f", clearing.cost(), sliding.cost())
-	}
+	check.Equal(batches, clearing.missedTurns, "requests that missed the cache, want one per clearing batch")
+	check.Less(clearing.cost(), sliding.cost(), "clear-tool-results input cost should be below the sliding window's")
 }
 
-func TestBuildContextStrategy_ClearToolResults(t *testing.T) {
+func TestBuildContextStrategy_BuildsClearToolResults(t *testing.T) {
+	must := require.New(t)
 	keep, clearAtLeast := 0, 500
 	cs := buildContextStrategy(types.ContextStrategyConfig{
 		Type: "clear-tool-results", Keep: &keep, ClearAtLeast: &clearAtLeast, ExcludeTools: []string{"run_command"},
 	}, nil, "", 0, nil, nil)
-	if _, ok := cs.(*contextpkg.ClearToolResultsStrategy); !ok {
-		t.Fatalf("expected ClearToolResultsStrategy, got %T", cs)
-	}
-	if cs := buildContextStrategy(types.ContextStrategyConfig{Type: "clear-tool-results"}, nil, "", 0, nil, nil); cs == nil {
-		t.Fatal("clear-tool-results with default settings built no strategy")
-	}
+	must.IsType(&contextpkg.ClearToolResultsStrategy{}, cs, "configured clear-tool-results strategy")
+
+	defaults := buildContextStrategy(types.ContextStrategyConfig{Type: "clear-tool-results"}, nil, "", 0, nil, nil)
+	must.NotNil(defaults, "clear-tool-results with default settings built no strategy")
 }
 
 // TestBuildContextStrategy_ClearAtLeastReachesStrategy pins that a
@@ -203,6 +190,7 @@ func TestBuildContextStrategy_ClearToolResults(t *testing.T) {
 // batch can reach falls back to dropping exchanges, while the default
 // clears results from the same history.
 func TestBuildContextStrategy_ClearAtLeastReachesStrategy(t *testing.T) {
+	must := require.New(t)
 	history := []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "task"}}}}
 	for i := range 10 {
 		id := fmt.Sprintf("call_%d", i)
@@ -215,44 +203,43 @@ func TestBuildContextStrategy_ClearAtLeastReachesStrategy(t *testing.T) {
 	prepare := func(cfg types.ContextStrategyConfig) ([]types.Message, *contextpkg.CompactionEvent) {
 		cs := buildContextStrategy(cfg, nil, "", 0, nil, nil)
 		out, err := cs.Prepare(context.Background(), history, budget)
-		if err != nil {
-			t.Fatalf("Prepare: %v", err)
-		}
+		must.NoError(err, "Prepare")
 		return out, cs.LastCompaction()
 	}
 
 	clearAtLeast := 1_000_000
 	out, ev := prepare(types.ContextStrategyConfig{Type: "clear-tool-results", ClearAtLeast: &clearAtLeast})
-	if ev == nil || ev.ToolResultsCleared != 0 || len(ev.Warnings) != 1 || len(out) >= len(history) {
-		t.Fatalf("clearAtLeast=%d: event %+v with %d of %d messages, want the fallback warning and dropped exchanges", clearAtLeast, ev, len(out), len(history))
-	}
+	must.NotNil(ev, "clearAtLeast=%d: no compaction event", clearAtLeast)
+	must.Zero(ev.ToolResultsCleared, "clearAtLeast=%d: unreachable minimum cleared results", clearAtLeast)
+	must.Len(ev.Warnings, 1, "clearAtLeast=%d: fallback warning", clearAtLeast)
+	must.Less(len(out), len(history), "clearAtLeast=%d: fallback should drop exchanges", clearAtLeast)
 
 	out, ev = prepare(types.ContextStrategyConfig{Type: "clear-tool-results"})
-	if ev == nil || ev.ToolResultsCleared == 0 || len(ev.Warnings) != 0 || len(out) != len(history) {
-		t.Fatalf("default minimum: event %+v with %d of %d messages, want results cleared and nothing dropped", ev, len(out), len(history))
-	}
+	must.NotNil(ev, "default minimum: no compaction event")
+	must.NotZero(ev.ToolResultsCleared, "default minimum: results should be cleared")
+	must.Empty(ev.Warnings, "default minimum: no warnings expected")
+	must.Len(out, len(history), "default minimum: nothing should be dropped")
 }
 
-func TestWarnUnknownExcludedTools(t *testing.T) {
+func TestWarnUnknownExcludedTools_WarnsOnlyForUnknownNames(t *testing.T) {
+	must := require.New(t)
 	registry := tool.NewRegistry()
 	registry.Register(&tool.Tool{Name: "run_command", InputSchema: json.RawMessage(`{"type":"object"}`)})
 	profile, _ := tool.ProfileFor("coding-classic")
 	presenter, err := tool.NewPresenter(registry, profile)
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err, "NewPresenter")
 	var logs bytes.Buffer
 	warnUnknownExcludedTools([]string{"run_command", "bash", "no_such_tool"}, presenter, slog.New(slog.NewTextHandler(&logs, nil)))
 	out := logs.String()
-	if strings.Count(out, "level=WARN") != 1 || !strings.Contains(out, "tool=no_such_tool") {
-		t.Errorf("want one warning naming no_such_tool, got:\n%s", out)
-	}
+	must.Equal(1, strings.Count(out, "level=WARN"), "want exactly one warning, got:\n%s", out)
+	must.Contains(out, "tool=no_such_tool", "warning should name the unknown tool")
 }
 
 // TestBuildLoop_ClearToolResultsInReadOnlyModeWithoutWritableExecutor pins
 // that a read-only run on an executor that cannot write accepts the
 // strategy end to end through validation and the factory.
 func TestBuildLoop_ClearToolResultsInReadOnlyModeWithoutWritableExecutor(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("TEST_ANTHROPIC_KEY", "test-key")
 	keep := 2
 	config := buildTestConfig()
@@ -265,24 +252,20 @@ func TestBuildLoop_ClearToolResultsInReadOnlyModeWithoutWritableExecutor(t *test
 	config.ContextStrategy = types.ContextStrategyConfig{
 		Type: "clear-tool-results", MaxTokens: 100_000, Keep: &keep, ExcludeTools: []string{"web_fetch"},
 	}
-	if err := types.ValidateRunConfig(config); err != nil {
-		t.Fatalf("ValidateRunConfig: %v", err)
-	}
+	must.NoError(types.ValidateRunConfig(config), "ValidateRunConfig")
 	loop, err := BuildLoopWithTransport(context.Background(), config, transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}))
-	if err != nil {
-		t.Fatalf("BuildLoopWithTransport: %v", err)
-	}
+	must.NoError(err, "BuildLoopWithTransport")
 	defer func() { _ = loop.Close() }()
-	if _, err := loop.Context.Prepare(context.Background(), []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "task"}}}},
-		contextpkg.TokenBudget{MaxTokens: 100_000, CurrentTokens: 10, ReserveForResponse: 1000}); err != nil {
-		t.Fatalf("Prepare: %v", err)
-	}
+	_, err = loop.Context.Prepare(context.Background(), []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "task"}}}},
+		contextpkg.TokenBudget{MaxTokens: 100_000, CurrentTokens: 10, ReserveForResponse: 1000})
+	must.NoError(err, "Prepare")
 }
 
 // TestBuildLoop_ClearToolResultsResolvesProfileAliases pins that the
 // factory-built strategy matches excludeTools against the presented alias
 // a tool_use block records under a toolset profile.
 func TestBuildLoop_ClearToolResultsResolvesProfileAliases(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("TEST_ANTHROPIC_KEY", "test-key")
 	keep := 0
 	config := buildTestConfig()
@@ -293,13 +276,9 @@ func TestBuildLoop_ClearToolResultsResolvesProfileAliases(t *testing.T) {
 	config.ContextStrategy = types.ContextStrategyConfig{
 		Type: "clear-tool-results", MaxTokens: 100_000, Keep: &keep, ExcludeTools: []string{"run_command"},
 	}
-	if err := types.ValidateRunConfig(config); err != nil {
-		t.Fatalf("ValidateRunConfig: %v", err)
-	}
+	must.NoError(types.ValidateRunConfig(config), "ValidateRunConfig")
 	loop, err := BuildLoopWithTransport(context.Background(), config, transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}))
-	if err != nil {
-		t.Fatalf("BuildLoopWithTransport: %v", err)
-	}
+	must.NoError(err, "BuildLoopWithTransport")
 	defer func() { _ = loop.Close() }()
 
 	result := strings.Repeat("output\n", 400)
@@ -317,11 +296,7 @@ func TestBuildLoop_ClearToolResultsResolvesProfileAliases(t *testing.T) {
 	out, err := loop.Context.Prepare(context.Background(), messages, contextpkg.TokenBudget{
 		MaxTokens: reserve + trigger*100/90 + 1, CurrentTokens: current, ReserveForResponse: reserve,
 	})
-	if err != nil {
-		t.Fatalf("Prepare: %v", err)
-	}
-	if out[2].Content[0].Content != result || out[4].Content[0].Content != contextpkg.ClearedToolResultPlaceholder {
-		t.Errorf("want the bash result kept and the read_file result cleared, got %.20q and %.20q",
-			out[2].Content[0].Content, out[4].Content[0].Content)
-	}
+	must.NoError(err, "Prepare")
+	must.Equal(result, out[2].Content[0].Content, "bash result should be kept")
+	must.Equal(contextpkg.ClearedToolResultPlaceholder, out[4].Content[0].Content, "read_file result should be cleared")
 }

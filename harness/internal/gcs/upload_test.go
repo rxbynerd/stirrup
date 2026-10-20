@@ -6,8 +6,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // staticBearer returns a fixed token. The bearer closure is the GCS
@@ -17,11 +19,12 @@ func staticBearer(token string) func(ctx context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) { return token, nil }
 }
 
-// TestUploadObject_Success confirms a 200-class response is the happy
-// path: no error returned, request carries the expected headers and
-// query-string contract, response body is drained so the underlying
-// HTTP transport can reuse the connection.
-func TestUploadObject_Success(t *testing.T) {
+// TestUploadObject_SendsMediaUploadRequest confirms a 200-class response is
+// the happy path: no error returned, request carries the expected method,
+// path, headers and query-string contract, and the body is sent intact.
+func TestUploadObject_SendsMediaUploadRequest(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var (
 		gotPath   string
 		gotQuery  string
@@ -50,37 +53,24 @@ func TestUploadObject_Success(t *testing.T) {
 		Bearer:          staticBearer("test-token"),
 		EndpointBaseURL: srv.URL,
 	})
-	if err != nil {
-		t.Fatalf("UploadObject returned %v, want nil", err)
-	}
-	if gotMethod != http.MethodPost {
-		t.Errorf("method = %q, want POST", gotMethod)
-	}
-	if want := "/upload/storage/v1/b/stirrup-results/o"; gotPath != want {
-		t.Errorf("path = %q, want %q", gotPath, want)
-	}
-	if !strings.Contains(gotQuery, "uploadType=media") {
-		t.Errorf("query missing uploadType=media: %q", gotQuery)
-	}
-	if !strings.Contains(gotQuery, "name=traces/run-1.jsonl") {
-		t.Errorf("query missing name=traces/run-1.jsonl: %q", gotQuery)
-	}
-	if gotAuth != "Bearer test-token" {
-		t.Errorf("Authorization = %q, want \"Bearer test-token\"", gotAuth)
-	}
-	if gotCT != "application/x-ndjson" {
-		t.Errorf("Content-Type = %q, want application/x-ndjson", gotCT)
-	}
-	if string(gotBody) != "hello\n" {
-		t.Errorf("body = %q, want %q", gotBody, "hello\n")
-	}
+	must.NoError(err)
+
+	// The request checks are independent, so all mismatches are reported together.
+	check.Equal(http.MethodPost, gotMethod)
+	check.Equal("/upload/storage/v1/b/stirrup-results/o", gotPath)
+	check.Contains(gotQuery, "uploadType=media")
+	check.Contains(gotQuery, "name=traces/run-1.jsonl")
+	check.Equal("Bearer test-token", gotAuth)
+	check.Equal("application/x-ndjson", gotCT)
+	check.Equal("hello\n", string(gotBody))
 }
 
-// TestUploadObject_ContentTypeDefault pins the documented default:
-// empty ContentType resolves to application/octet-stream rather than
-// passing an empty header that an intermediary might interpret
+// TestUploadObject_DefaultsContentTypeToOctetStream pins the documented
+// default: empty ContentType resolves to application/octet-stream rather
+// than passing an empty header that an intermediary might interpret
 // differently from the GCS REST API.
-func TestUploadObject_ContentTypeDefault(t *testing.T) {
+func TestUploadObject_DefaultsContentTypeToOctetStream(t *testing.T) {
+	must := require.New(t)
 	var gotCT string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotCT = r.Header.Get("Content-Type")
@@ -95,18 +85,14 @@ func TestUploadObject_ContentTypeDefault(t *testing.T) {
 		Bearer:          staticBearer("t"),
 		EndpointBaseURL: srv.URL,
 	})
-	if err != nil {
-		t.Fatalf("UploadObject returned %v, want nil", err)
-	}
-	if gotCT != "application/octet-stream" {
-		t.Errorf("Content-Type = %q, want application/octet-stream", gotCT)
-	}
+	must.NoError(err)
+	must.Equal("application/octet-stream", gotCT)
 }
 
-// TestUploadObject_Non2xxError covers the family of HTTP failures.
-// Each non-2xx response should produce an error containing the status
-// code so log-based diagnosis is unambiguous.
-func TestUploadObject_Non2xxError(t *testing.T) {
+// TestUploadObject_Non2xxStatusReturnsError covers the family of HTTP
+// failures. Each non-2xx response should produce an error that names HTTP
+// and surfaces the response body, so log-based diagnosis is unambiguous.
+func TestUploadObject_Non2xxStatusReturnsError(t *testing.T) {
 	cases := []struct {
 		name string
 		code int
@@ -118,6 +104,7 @@ func TestUploadObject_Non2xxError(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(tc.code)
 				_, _ = w.Write([]byte(tc.body))
@@ -131,23 +118,18 @@ func TestUploadObject_Non2xxError(t *testing.T) {
 				Bearer:          staticBearer("t"),
 				EndpointBaseURL: srv.URL,
 			})
-			if err == nil {
-				t.Fatal("UploadObject returned nil, want error for non-2xx status")
-			}
-			if !strings.Contains(err.Error(), "HTTP") {
-				t.Errorf("error %v does not mention HTTP", err)
-			}
-			if !strings.Contains(err.Error(), tc.body) {
-				t.Errorf("error %v does not surface response body %q", err, tc.body)
-			}
+			must.Error(err)
+			must.ErrorContains(err, "HTTP")
+			must.ErrorContains(err, tc.body)
 		})
 	}
 }
 
-// TestUploadObject_BearerError pins propagation of the credential
-// closure's failure: a metadata-server hiccup that produces no token
-// must surface as an error, not as an unauthenticated request.
-func TestUploadObject_BearerError(t *testing.T) {
+// TestUploadObject_BearerFailureSkipsRequest pins propagation of the
+// credential closure's failure: a metadata-server hiccup that produces no
+// token must surface as an error, not as an unauthenticated request.
+func TestUploadObject_BearerFailureSkipsRequest(t *testing.T) {
+	must := require.New(t)
 	sentinel := errors.New("simulated metadata server failure")
 	called := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -165,21 +147,15 @@ func TestUploadObject_BearerError(t *testing.T) {
 		},
 		EndpointBaseURL: srv.URL,
 	})
-	if err == nil {
-		t.Fatal("UploadObject returned nil, want error from bearer closure")
-	}
-	if !errors.Is(err, sentinel) {
-		t.Errorf("error chain does not wrap sentinel: %v", err)
-	}
-	if called {
-		t.Error("HTTP server was called despite bearer-acquisition failure")
-	}
+	must.Error(err)
+	must.ErrorIs(err, sentinel)
+	must.False(called, "server must not receive a request without a token")
 }
 
-// TestUploadObject_RequiredFieldsRejected pins the four cheap shape
-// checks at the top of UploadObject. Each missing field produces a
-// distinguishable error so an operator can tell which axis is wrong
-// without reading the code path.
+// TestUploadObject_RequiredFieldsRejected pins the four cheap shape checks
+// at the top of UploadObject. Each missing field produces a distinguishable
+// error so an operator can tell which axis is wrong without reading the
+// code path.
 func TestUploadObject_RequiredFieldsRejected(t *testing.T) {
 	cases := []struct {
 		name string
@@ -192,42 +168,36 @@ func TestUploadObject_RequiredFieldsRejected(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			err := UploadObject(context.Background(), &http.Client{}, tc.opts)
-			if err == nil {
-				t.Fatalf("UploadObject returned nil, want error containing %q", tc.want)
-			}
-			if !strings.Contains(err.Error(), tc.want) {
-				t.Errorf("error = %v, want substring %q", err, tc.want)
-			}
+			must.Error(err)
+			must.ErrorContains(err, tc.want)
 		})
 	}
 }
 
-// TestUploadObject_NilClientRejected pins the explicit nil-client
-// guard. Falling back to http.DefaultClient would silently violate
-// the project's HTTP-discipline policy (CLAUDE.md), so the function
-// must refuse to run without an explicit, timeout-bearing client.
+// TestUploadObject_NilClientRejected pins the explicit nil-client guard.
+// Falling back to http.DefaultClient would silently violate the project's
+// HTTP-discipline policy (CLAUDE.md), so the function must refuse to run
+// without an explicit, timeout-bearing client.
 func TestUploadObject_NilClientRejected(t *testing.T) {
+	must := require.New(t)
 	err := UploadObject(context.Background(), nil, UploadOptions{
 		Bucket: "b",
 		Object: "o",
 		Body:   []byte("x"),
 		Bearer: staticBearer("t"),
 	})
-	if err == nil || !strings.Contains(err.Error(), "http client is required") {
-		t.Errorf("error = %v, want \"http client is required\"", err)
-	}
+	must.ErrorContains(err, "http client is required")
 }
 
-// TestURLPathEscape is the table-driven pinning the brief calls out.
-// The function is the defence-in-depth layer for object-name
-// injection: alphanumerics, the four unreserved punctuation chars,
-// and '/' pass through unchanged, while every other byte is
-// percent-encoded with uppercase hex. A regression that started
-// encoding '/' would silently break the gcsObjectName contract; one
-// that stopped encoding bytes like ':' or '@' would let a malicious
-// runID rewrite the URL.
-func TestURLPathEscape(t *testing.T) {
+// TestURLPathEscape_EncodesAllButUnreservedAndSlash covers the defence-in-depth
+// layer against object-name injection. Alphanumerics, the unreserved
+// punctuation characters and '/' pass through unchanged; every other byte is
+// percent-encoded with uppercase hex. Keeping '/' unencoded preserves the
+// gcsObjectName contract, and encoding ':' and '@' stops a crafted run ID
+// from rewriting the URL.
+func TestURLPathEscape_EncodesAllButUnreservedAndSlash(t *testing.T) {
 	cases := []struct {
 		name string
 		in   string
@@ -249,9 +219,8 @@ func TestURLPathEscape(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := urlPathEscape(tc.in); got != tc.want {
-				t.Errorf("urlPathEscape(%q) = %q, want %q", tc.in, got, tc.want)
-			}
+			must := require.New(t)
+			must.Equal(tc.want, urlPathEscape(tc.in))
 		})
 	}
 }

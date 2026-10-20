@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/types"
@@ -87,22 +89,23 @@ func (e *ctxProbeEmitter) observed() ctxObservation {
 	return e.finish
 }
 
+// assertLiveDetached checks that a post-run step ran on a context that has
+// not ended and carries a deadline within budget of start. Callers run on
+// the test goroutine.
 func assertLiveDetached(t *testing.T, step string, obs ctxObservation, budget time.Duration, start time.Time) {
 	t.Helper()
-	if !obs.called {
-		t.Fatalf("%s was not called", step)
-	}
-	if obs.err != nil {
-		t.Errorf("%s ctx.Err() = %v, want nil (post-run work must not inherit the ended run context)", step, obs.err)
-	}
-	if !obs.hasDeadline {
-		t.Errorf("%s ctx has no deadline, want a bounded budget", step)
-	} else if obs.deadline.After(start.Add(budget + time.Second)) {
-		t.Errorf("%s ctx deadline %v exceeds the %v budget", step, obs.deadline.Sub(start), budget)
+	must := require.New(t)
+	check := assert.New(t)
+	must.True(obs.called, "%s was not called", step)
+	must.NoError(obs.err, "%s ctx must not inherit the ended run context", step)
+	if check.True(obs.hasDeadline, "%s ctx has no deadline, want a bounded budget", step) {
+		check.False(obs.deadline.After(start.Add(budget+time.Second)),
+			"%s ctx deadline %v exceeds the %v budget", step, obs.deadline.Sub(start), budget)
 	}
 }
 
 func TestRun_FinaliseAndTraceFinishSurviveRunDeadline(t *testing.T) {
+	must := require.New(t)
 	loop := buildTestLoop(nil)
 	loop.Provider = &fireAndCloseProvider{
 		onStream: func() { time.Sleep(150 * time.Millisecond) },
@@ -117,17 +120,15 @@ func TestRun_FinaliseAndTraceFinishSurviveRunDeadline(t *testing.T) {
 
 	start := time.Now()
 	runTrace, err := loop.Run(ctx, buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace == nil || runTrace.Outcome != "timeout" {
-		t.Fatalf("trace = %+v, want outcome timeout", runTrace)
-	}
+	must.NoError(err)
+	must.NotNil(runTrace)
+	must.Equal("timeout", runTrace.Outcome)
 	assertLiveDetached(t, "Git.Finalise", probeGit.observed(), gitFinaliseBudget, start)
 	assertLiveDetached(t, "Trace.Finish", emitter.observed(), traceFinishBudget, start)
 }
 
 func TestRun_FinaliseAndTraceFinishSurviveParentCancel(t *testing.T) {
+	must := require.New(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -140,17 +141,16 @@ func TestRun_FinaliseAndTraceFinishSurviveParentCancel(t *testing.T) {
 
 	start := time.Now()
 	runTrace, err := loop.Run(ctx, buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace == nil || runTrace.Outcome != "cancelled" {
-		t.Fatalf("trace = %+v, want outcome cancelled", runTrace)
-	}
+	must.NoError(err)
+	must.NotNil(runTrace)
+	must.Equal("cancelled", runTrace.Outcome)
 	assertLiveDetached(t, "Git.Finalise", probeGit.observed(), gitFinaliseBudget, start)
 	assertLiveDetached(t, "Trace.Finish", emitter.observed(), traceFinishBudget, start)
 }
 
 func TestRun_ShutdownCancelsDetachedPostRunWork(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop := buildTestLoop(simpleSuccessProvider())
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	defer shutdownCancel()
@@ -174,50 +174,39 @@ func TestRun_ShutdownCancelsDetachedPostRunWork(t *testing.T) {
 	start := time.Now()
 	runTrace, err := loop.Run(context.Background(), buildTestConfig())
 	elapsed := time.Since(start)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace == nil || runTrace.Outcome != "success" {
-		t.Fatalf("trace = %+v, want outcome success", runTrace)
-	}
+	must.NoError(err)
+	must.NotNil(runTrace)
+	must.Equal("success", runTrace.Outcome)
 	select {
 	case <-finaliseCancelled:
 	default:
-		t.Fatal("Git.Finalise ctx was never cancelled by the shutdown signal")
+		must.Fail("Git.Finalise ctx was never cancelled by the shutdown signal")
 	}
-	if elapsed > 2*time.Second {
-		t.Errorf("Run() took %v, want well under the %v finalise budget", elapsed, gitFinaliseBudget)
-	}
-	if got := probeGit.observed().err; !errors.Is(got, context.Canceled) {
-		t.Errorf("Git.Finalise ctx.Err() = %v, want context.Canceled", got)
-	}
-	if got := emitter.observed().err; !errors.Is(got, context.Canceled) {
-		t.Errorf("Trace.Finish ctx.Err() = %v, want context.Canceled once Shutdown is done", got)
-	}
+	check.LessOrEqual(elapsed, 2*time.Second,
+		"Run() took %v, want well under the %v finalise budget", elapsed, gitFinaliseBudget)
+	must.ErrorIs(probeGit.observed().err, context.Canceled, "Git.Finalise ctx.Err()")
+	check.ErrorIs(emitter.observed().err, context.Canceled,
+		"Trace.Finish ctx should be cancelled once Shutdown is done")
 }
 
 func TestRun_TraceFinishFailureStillReturnsTrace(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop := buildTestLoop(simpleSuccessProvider())
 	emitter := newCtxProbeEmitter()
 	emitter.finishErr = errors.New("upload trace: HTTP 503")
 	loop.Trace = emitter
 
 	runTrace, err := loop.Run(context.Background(), buildTestConfig())
-	if err == nil {
-		t.Fatal("Run() error = nil, want the trace finish failure")
-	}
-	if !strings.Contains(err.Error(), "finish trace") || !strings.Contains(err.Error(), "HTTP 503") {
-		t.Errorf("Run() error = %v, want it to name the trace finish failure", err)
-	}
-	if runTrace == nil {
-		t.Fatal("Run() trace = nil, want the assembled trace")
-	}
-	if runTrace.Outcome != "success" {
-		t.Errorf("Outcome = %q, want success (a trace finish failure does not change the outcome)", runTrace.Outcome)
-	}
+	must.Error(err, "Run() should return the trace finish failure")
+	must.ErrorContains(err, "finish trace")
+	must.ErrorContains(err, "HTTP 503")
+	must.NotNil(runTrace, "Run() should return the assembled trace")
+	check.Equal("success", runTrace.Outcome, "a trace finish failure does not change the outcome")
 }
 
 func TestFinishWithOutcome_FinishesTraceOnDetachedContext(t *testing.T) {
+	must := require.New(t)
 	loop := buildTestLoop(nil)
 	emitter := newCtxProbeEmitter()
 	emitter.Start("run", &types.RunConfig{})
@@ -229,11 +218,8 @@ func TestFinishWithOutcome_FinishesTraceOnDetachedContext(t *testing.T) {
 	start := time.Now()
 	primary := errors.New("preRun hook failed")
 	runTrace, err := loop.finishWithOutcome(ctx, &types.RunConfig{}, "setup_failed", primary, func() {})
-	if !errors.Is(err, primary) {
-		t.Errorf("finishWithOutcome error = %v, want the primary error", err)
-	}
-	if runTrace == nil || runTrace.Outcome != "setup_failed" {
-		t.Fatalf("trace = %+v, want outcome setup_failed", runTrace)
-	}
+	must.ErrorIs(err, primary, "finishWithOutcome should return the primary error")
+	must.NotNil(runTrace)
+	must.Equal("setup_failed", runTrace.Outcome)
 	assertLiveDetached(t, "Trace.Finish", emitter.observed(), traceFinishBudget, start)
 }

@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -66,13 +68,13 @@ func (c *gcsCaptureServer) handler() http.Handler {
 			Body:        body,
 		})
 		status := c.statusCode
-		body2 := c.respondWith
+		respBody := c.respondWith
 		c.mu.Unlock()
 		if status == 0 {
 			status = http.StatusOK
 		}
 		w.WriteHeader(status)
-		_, _ = io.WriteString(w, body2)
+		_, _ = io.WriteString(w, respBody)
 	})
 }
 
@@ -85,7 +87,8 @@ func (c *gcsCaptureServer) last() gcsCapturedRequest {
 	return c.requests[len(c.requests)-1]
 }
 
-func TestGCSTraceEmitter_Success(t *testing.T) {
+func TestGCSTraceEmitter_FinishUploadsRunSummary(t *testing.T) {
+	must := require.New(t)
 	srv := newGCSCaptureServer()
 	httpSrv := httptest.NewServer(srv.handler())
 	defer httpSrv.Close()
@@ -96,9 +99,7 @@ func TestGCSTraceEmitter_Success(t *testing.T) {
 		CredentialSource: &staticBearerSource{token: "test-token"},
 		EndpointBaseURL:  httpSrv.URL,
 	})
-	if err != nil {
-		t.Fatalf("NewGCSTraceEmitter: %v", err)
-	}
+	must.NoError(err)
 
 	timeout := 60
 	emitter.Start("run-abc", &types.RunConfig{
@@ -110,64 +111,35 @@ func TestGCSTraceEmitter_Success(t *testing.T) {
 	emitter.RecordTurn(types.TurnTrace{Turn: 1, Tokens: types.TokenUsage{Input: 50, Output: 25, CacheRead: 40, CacheWrite: 5, Reasoning: 3}})
 
 	tr, err := emitter.Finish(context.Background(), "success")
-	if err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-	if want := (types.TokenUsage{Input: 50, Output: 25, CacheRead: 40, CacheWrite: 5, Reasoning: 3}); tr.TokenUsage != want {
-		t.Errorf("returned trace TokenUsage: got %+v, want %+v", tr.TokenUsage, want)
-	}
-	if tr.ID != "run-abc" {
-		t.Errorf("returned trace ID: got %q, want run-abc", tr.ID)
-	}
-	if tr.Turns != 1 {
-		t.Errorf("returned trace Turns: got %d, want 1", tr.Turns)
-	}
+	must.NoError(err)
+	must.Equal(types.TokenUsage{Input: 50, Output: 25, CacheRead: 40, CacheWrite: 5, Reasoning: 3}, tr.TokenUsage)
+	must.Equal("run-abc", tr.ID)
+	must.Equal(1, tr.Turns)
 
 	got := srv.last()
-	if got.Method != http.MethodPost {
-		t.Errorf("method: got %q, want POST", got.Method)
-	}
-	if got.Auth != "Bearer test-token" {
-		t.Errorf("auth header: got %q, want Bearer test-token", got.Auth)
-	}
-	if got.ContentType != "application/x-ndjson" {
-		t.Errorf("content-type: got %q, want application/x-ndjson", got.ContentType)
-	}
-	if !strings.Contains(got.URL, "/upload/storage/v1/b/my-bucket/o") {
-		t.Errorf("URL missing upload path: %q", got.URL)
-	}
-	if !strings.Contains(got.URL, "uploadType=media") {
-		t.Errorf("URL missing uploadType=media: %q", got.URL)
-	}
-	if !strings.Contains(got.URL, "name=traces/run-abc.jsonl") {
-		t.Errorf("URL missing expected name=traces/run-abc.jsonl: %q", got.URL)
-	}
+	must.Equal(http.MethodPost, got.Method)
+	must.Equal("Bearer test-token", got.Auth)
+	must.Equal("application/x-ndjson", got.ContentType)
+	must.Contains(got.URL, "/upload/storage/v1/b/my-bucket/o")
+	must.Contains(got.URL, "uploadType=media")
+	must.Contains(got.URL, "name=traces/run-abc.jsonl")
 
 	// Body must be a single valid JSON line that decodes back to a
 	// RunTrace with the same ID.
 	body := strings.TrimRight(string(got.Body), "\n")
-	if body == "" {
-		t.Fatal("uploaded body is empty")
-	}
+	must.NotEmpty(body, "uploaded body is empty")
 	var decoded types.RunTrace
-	if err := json.Unmarshal([]byte(body), &decoded); err != nil {
-		t.Fatalf("unmarshal uploaded body: %v\nbody=%q", err, body)
-	}
-	if decoded.ID != "run-abc" {
-		t.Errorf("decoded trace ID: got %q, want run-abc", decoded.ID)
-	}
-	if !strings.Contains(body, `"tokenUsage":{"input":50,"output":25,"cacheRead":40,"cacheWrite":5,"reasoning":3}`) {
-		t.Errorf("uploaded body missing the token usage breakdown: %s", body)
-	}
-	if decoded.Config.Provider.APIKeyRef != "secret://[REDACTED]" {
-		t.Errorf("APIKeyRef should be redacted, got %q", decoded.Config.Provider.APIKeyRef)
-	}
+	must.NoError(json.Unmarshal([]byte(body), &decoded), "body=%q", body)
+	must.Equal("run-abc", decoded.ID)
+	must.Contains(body, `"tokenUsage":{"input":50,"output":25,"cacheRead":40,"cacheWrite":5,"reasoning":3}`)
+	must.Equal("secret://[REDACTED]", decoded.Config.Provider.APIKeyRef)
 }
 
 // TestGCSTraceEmitter_TurnRecordContentNotUploaded pins that the GCS
 // emitter persists the run summary only: thinking text, signatures and
 // redacted data recorded on a turn never reach the uploaded object.
 func TestGCSTraceEmitter_TurnRecordContentNotUploaded(t *testing.T) {
+	must := require.New(t)
 	srv := newGCSCaptureServer()
 	httpSrv := httptest.NewServer(srv.handler())
 	defer httpSrv.Close()
@@ -177,9 +149,7 @@ func TestGCSTraceEmitter_TurnRecordContentNotUploaded(t *testing.T) {
 		CredentialSource: &staticBearerSource{token: "test-token"},
 		EndpointBaseURL:  httpSrv.URL,
 	})
-	if err != nil {
-		t.Fatalf("NewGCSTraceEmitter: %v", err)
-	}
+	must.NoError(err)
 
 	const thinkingText = "gcs-thinking-text-not-uploaded"
 	const signature = "gcs-thinking-signature-not-uploaded"
@@ -195,22 +165,31 @@ func TestGCSTraceEmitter_TurnRecordContentNotUploaded(t *testing.T) {
 		ModelOutput: thinking,
 	})
 	emitter.RecordTurn(types.TurnTrace{Turn: 1})
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
+	_, err = emitter.Finish(context.Background(), "success")
+	must.NoError(err)
 
 	body := string(srv.last().Body)
-	if body == "" {
-		t.Fatal("uploaded body is empty")
+	must.NotEmpty(body, "uploaded body is empty")
+
+	leaks := []struct {
+		name  string
+		value string
+	}{
+		{"thinking text", thinkingText},
+		{"thinking signature", signature},
+		{"redacted data", redacted},
+		{"thinking block type", "thinking"},
 	}
-	for _, leaked := range []string{thinkingText, signature, redacted, "thinking"} {
-		if strings.Contains(body, leaked) {
-			t.Errorf("uploaded trace carries %q:\n%s", leaked, body)
-		}
+	for _, tc := range leaks {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.NotContains(body, tc.value)
+		})
 	}
 }
 
 func TestGCSTraceEmitter_PrefixWithoutTrailingSlash(t *testing.T) {
+	must := require.New(t)
 	srv := newGCSCaptureServer()
 	httpSrv := httptest.NewServer(srv.handler())
 	defer httpSrv.Close()
@@ -221,19 +200,15 @@ func TestGCSTraceEmitter_PrefixWithoutTrailingSlash(t *testing.T) {
 		CredentialSource: &staticBearerSource{token: "t"},
 		EndpointBaseURL:  httpSrv.URL,
 	})
-	if err != nil {
-		t.Fatalf("NewGCSTraceEmitter: %v", err)
-	}
+	must.NoError(err)
 	emitter.Start("r", nil)
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-	if !strings.Contains(srv.last().URL, "name=traces/r.jsonl") {
-		t.Errorf("expected name=traces/r.jsonl in URL, got %q", srv.last().URL)
-	}
+	_, err = emitter.Finish(context.Background(), "success")
+	must.NoError(err)
+	must.Contains(srv.last().URL, "name=traces/r.jsonl")
 }
 
 func TestGCSTraceEmitter_EmptyPrefix(t *testing.T) {
+	must := require.New(t)
 	srv := newGCSCaptureServer()
 	httpSrv := httptest.NewServer(srv.handler())
 	defer httpSrv.Close()
@@ -244,19 +219,15 @@ func TestGCSTraceEmitter_EmptyPrefix(t *testing.T) {
 		CredentialSource: &staticBearerSource{token: "t"},
 		EndpointBaseURL:  httpSrv.URL,
 	})
-	if err != nil {
-		t.Fatalf("NewGCSTraceEmitter: %v", err)
-	}
+	must.NoError(err)
 	emitter.Start("only-run", nil)
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-	if !strings.Contains(srv.last().URL, "name=only-run.jsonl") {
-		t.Errorf("expected name=only-run.jsonl in URL, got %q", srv.last().URL)
-	}
+	_, err = emitter.Finish(context.Background(), "success")
+	must.NoError(err)
+	must.Contains(srv.last().URL, "name=only-run.jsonl")
 }
 
-func TestGCSTraceEmitter_ServerError(t *testing.T) {
+func TestGCSTraceEmitter_ServerErrorReturnsTraceWithUploadError(t *testing.T) {
+	must := require.New(t)
 	srv := newGCSCaptureServer()
 	srv.statusCode = http.StatusForbidden
 	srv.respondWith = `{"error":{"code":403,"message":"forbidden"}}`
@@ -268,49 +239,34 @@ func TestGCSTraceEmitter_ServerError(t *testing.T) {
 		CredentialSource: &staticBearerSource{token: "t"},
 		EndpointBaseURL:  httpSrv.URL,
 	})
-	if err != nil {
-		t.Fatalf("NewGCSTraceEmitter: %v", err)
-	}
+	must.NoError(err)
 	emitter.Start("r", nil)
 	tr, err := emitter.Finish(context.Background(), "success")
-	if err == nil {
-		t.Fatal("Finish: want error, got nil")
-	}
-	if !strings.Contains(err.Error(), "HTTP 403") {
-		t.Errorf("error should mention HTTP 403, got %v", err)
-	}
-	if tr == nil {
-		t.Fatal("Finish: want the assembled trace alongside the upload error, got nil")
-	}
-	if tr.ID != "r" || tr.Outcome != "success" {
-		t.Errorf("trace = {ID:%q Outcome:%q}, want {ID:\"r\" Outcome:\"success\"}", tr.ID, tr.Outcome)
-	}
+	must.ErrorContains(err, "HTTP 403")
+	must.NotNil(tr, "Finish should return the assembled trace alongside the upload error")
+	must.Equal("r", tr.ID)
+	must.Equal("success", tr.Outcome)
 }
 
 func TestGCSTraceEmitter_MissingBucketRejectedAtConstruction(t *testing.T) {
+	must := require.New(t)
 	_, err := NewGCSTraceEmitter(context.Background(), GCSTraceEmitterOptions{
 		Bucket:           "",
 		CredentialSource: &staticBearerSource{token: "t"},
 	})
-	if err == nil {
-		t.Fatal("want error for empty bucket")
-	}
-	if !strings.Contains(err.Error(), "bucket is required") {
-		t.Errorf("error should mention bucket, got %v", err)
-	}
+	must.ErrorContains(err, "bucket is required")
 }
 
 func TestGCSTraceEmitter_MissingCredentialRejectedAtConstruction(t *testing.T) {
+	must := require.New(t)
 	_, err := NewGCSTraceEmitter(context.Background(), GCSTraceEmitterOptions{
 		Bucket:           "b",
 		CredentialSource: nil,
 	})
-	if err == nil {
-		t.Fatal("want error for nil credential source")
-	}
+	must.Error(err)
 }
 
-func TestGCSObjectName(t *testing.T) {
+func TestGCSObjectName_JoinsPrefixAndRunID(t *testing.T) {
 	cases := []struct {
 		name   string
 		prefix string
@@ -324,9 +280,8 @@ func TestGCSObjectName(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := gcsObjectName(tc.prefix, tc.runID); got != tc.want {
-				t.Errorf("gcsObjectName(%q, %q) = %q, want %q", tc.prefix, tc.runID, got, tc.want)
-			}
+			must := require.New(t)
+			must.Equal(tc.want, gcsObjectName(tc.prefix, tc.runID))
 		})
 	}
 }

@@ -2,36 +2,46 @@ package calibrate
 
 import (
 	"math"
-	"slices"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
 
 func near(a, b float64) bool { return math.Abs(a-b) < 5e-5 }
 
-func TestWilson(t *testing.T) {
+func TestWilson_ScoreInterval(t *testing.T) {
 	cases := []struct {
-		k, n            int
-		value, low, hig float64
+		name             string
+		k, n             int
+		value, low, high float64
 	}{
-		{8, 10, 0.8, 0.49016, 0.94331},
-		{0, 10, 0, 0, 0.27753},
-		{10, 10, 1, 0.72247, 1},
-		{1, 2, 0.5, 0.09453, 0.90547},
+		{"eight of ten", 8, 10, 0.8, 0.49016, 0.94331},
+		{"none of ten", 0, 10, 0, 0, 0.27753},
+		{"all of ten", 10, 10, 1, 0.72247, 1},
+		{"one of two", 1, 2, 0.5, 0.09453, 0.90547},
 	}
 	for _, tc := range cases {
-		r := wilson(tc.k, tc.n)
-		if r == nil || r.K != tc.k || r.N != tc.n || !near(r.Value, tc.value) || !near(r.Low, tc.low) || !near(r.High, tc.hig) {
-			t.Errorf("wilson(%d, %d) = %+v, want %.5f [%.5f, %.5f]", tc.k, tc.n, r, tc.value, tc.low, tc.hig)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			r := wilson(tc.k, tc.n)
+			must.NotNil(r)
+			must.Equal(tc.k, r.K)
+			must.Equal(tc.n, r.N)
+			must.True(near(r.Value, tc.value), "value = %v, want %v", r.Value, tc.value)
+			must.True(near(r.Low, tc.low), "low = %v, want %v", r.Low, tc.low)
+			must.True(near(r.High, tc.high), "high = %v, want %v", r.High, tc.high)
+		})
 	}
-	if r := wilson(0, 0); r != nil {
-		t.Errorf("wilson(0, 0) = %+v, want nil", r)
-	}
+
+	t.Run("no trials", func(t *testing.T) {
+		must := require.New(t)
+		must.Nil(wilson(0, 0))
+	})
 }
 
-func TestKappa(t *testing.T) {
+func TestConfusion_Kappa(t *testing.T) {
 	cases := []struct {
 		name string
 		c    Confusion
@@ -45,13 +55,16 @@ func TestKappa(t *testing.T) {
 		{"no judgments", Confusion{}, nil},
 	}
 	for _, tc := range cases {
-		got := tc.c.kappa()
-		switch {
-		case tc.want == nil && got != nil:
-			t.Errorf("%s: kappa = %v, want undefined", tc.name, *got)
-		case tc.want != nil && (got == nil || !near(*got, *tc.want)):
-			t.Errorf("%s: kappa = %v, want %v", tc.name, got, *tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			got := tc.c.kappa()
+			if tc.want == nil {
+				must.Nil(got, "kappa should be undefined")
+				return
+			}
+			must.NotNil(got)
+			must.True(near(*got, *tc.want), "kappa = %v, want %v", *got, *tc.want)
+		})
 	}
 }
 
@@ -61,7 +74,7 @@ func rec(latency int64, cache string) *types.JudgeRecord {
 	return &types.JudgeRecord{InputTokens: 100, OutputTokens: 10, LatencyMs: latency, CacheStatus: cache}
 }
 
-func TestSummarize(t *testing.T) {
+func TestSummarize_CountsRatesAndCost(t *testing.T) {
 	adv := func(j Judgment) Judgment {
 		j.Adversarial = true
 		j.InjectionTarget = types.JudgeStatusPass
@@ -86,71 +99,111 @@ func TestSummarize(t *testing.T) {
 	}
 	m := Summarize(js, &Prices{InputPerMTok: 1, OutputPerMTok: 5})
 
-	if m.Judgments != 12 || m.Decided != 10 || m.Errors != 2 || m.AdversarialErrors != 1 || m.CacheHits != 1 {
-		t.Errorf("counts = %d judgments, %d decided, %d errors, %d adversarial errors, %d hits", m.Judgments, m.Decided, m.Errors, m.AdversarialErrors, m.CacheHits)
-	}
-	if want := (Confusion{TruePositive: 4, FalseNegative: 1, TrueNegative: 3, FalsePositive: 2}); m.Confusion != want {
-		t.Errorf("confusion = %+v, want %+v", m.Confusion, want)
-	}
-	for name, got := range map[string]struct {
+	t.Run("counts", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(12, m.Judgments)
+		must.Equal(10, m.Decided)
+		must.Equal(2, m.Errors)
+		must.Equal(1, m.AdversarialErrors)
+		must.Equal(1, m.CacheHits)
+	})
+
+	t.Run("confusion", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(Confusion{TruePositive: 4, FalseNegative: 1, TrueNegative: 3, FalsePositive: 2}, m.Confusion)
+	})
+
+	rates := []struct {
+		name string
 		r    *Rate
 		k, n int
 	}{
-		"tpr":        {m.TPR, 4, 5},
-		"tnr":        {m.TNR, 3, 5},
-		"accuracy":   {m.Accuracy, 7, 10},
-		"error rate": {m.ErrorRate, 2, 12},
-		"flip rate":  {m.AdversarialFlipRate, 1, 3},
-	} {
-		if got.r == nil || got.r.K != got.k || got.r.N != got.n {
-			t.Errorf("%s = %+v, want %d/%d", name, got.r, got.k, got.n)
-		}
+		{"tpr", m.TPR, 4, 5},
+		{"tnr", m.TNR, 3, 5},
+		{"accuracy", m.Accuracy, 7, 10},
+		{"error rate", m.ErrorRate, 2, 12},
+		{"flip rate", m.AdversarialFlipRate, 1, 3},
 	}
-	if m.Kappa == nil || !near(*m.Kappa, 0.4) {
-		t.Errorf("kappa = %v, want 0.4", m.Kappa)
+	for _, tc := range rates {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.NotNil(tc.r)
+			must.Equal(tc.k, tc.r.K)
+			must.Equal(tc.n, tc.r.N)
+		})
 	}
-	if m.Latency == nil || m.Latency.Calls != 9 || !near(m.Latency.MeanMs, 500) || m.Latency.P95Ms != 900 {
-		t.Errorf("latency = %+v, want 9 calls, mean 500, p95 900", m.Latency)
-	}
-	if m.Tokens != (Tokens{Input: 1200, Output: 120}) {
-		t.Errorf("tokens = %+v", m.Tokens)
-	}
-	if m.Cost == nil || !near(m.Cost.InputUSD, 0.0012) || !near(m.Cost.OutputUSD, 0.0006) || !near(m.Cost.TotalUSD, 0.0018) {
-		t.Errorf("cost = %+v", m.Cost)
-	}
-	if Summarize(js, nil).Cost != nil {
-		t.Error("a cost was estimated without prices")
-	}
+
+	t.Run("kappa", func(t *testing.T) {
+		must := require.New(t)
+		must.NotNil(m.Kappa)
+		must.True(near(*m.Kappa, 0.4), "kappa = %v, want 0.4", *m.Kappa)
+	})
+
+	t.Run("latency", func(t *testing.T) {
+		must := require.New(t)
+		must.NotNil(m.Latency)
+		must.Equal(9, m.Latency.Calls)
+		must.True(near(m.Latency.MeanMs, 500), "mean = %v, want 500", m.Latency.MeanMs)
+		must.Equal(int64(900), m.Latency.P95Ms)
+	})
+
+	t.Run("tokens", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(Tokens{Input: 1200, Output: 120}, m.Tokens)
+	})
+
+	t.Run("cost", func(t *testing.T) {
+		must := require.New(t)
+		must.NotNil(m.Cost)
+		must.True(near(m.Cost.InputUSD, 0.0012), "input cost = %v, want 0.0012", m.Cost.InputUSD)
+		must.True(near(m.Cost.OutputUSD, 0.0006), "output cost = %v, want 0.0006", m.Cost.OutputUSD)
+		must.True(near(m.Cost.TotalUSD, 0.0018), "total cost = %v, want 0.0018", m.Cost.TotalUSD)
+	})
+
+	t.Run("no prices means no cost", func(t *testing.T) {
+		must := require.New(t)
+		must.Nil(Summarize(js, nil).Cost)
+	})
 }
 
 func TestSummarize_NoJudgments(t *testing.T) {
+	must := require.New(t)
 	m := Summarize(nil, nil)
-	if m.TPR != nil || m.TNR != nil || m.Accuracy != nil || m.Kappa != nil || m.ErrorRate != nil || m.AdversarialFlipRate != nil || m.Latency != nil {
-		t.Errorf("metrics of no judgments = %+v, want every rate undefined", m)
-	}
+	must.Nil(m.TPR)
+	must.Nil(m.TNR)
+	must.Nil(m.Accuracy)
+	must.Nil(m.Kappa)
+	must.Nil(m.ErrorRate)
+	must.Nil(m.AdversarialFlipRate)
+	must.Nil(m.Latency)
 }
 
-func TestSummarizeLatency_P95(t *testing.T) {
-	ms := make([]int64, 20)
-	for i := range ms {
-		ms[i] = int64(20 - i)
-	}
-	if l := summarizeLatency(ms); l.P95Ms != 19 || !near(l.MeanMs, 10.5) {
-		t.Errorf("latency = %+v, want p95 19 and mean 10.5", l)
-	}
-	if l := summarizeLatency([]int64{42}); l.P95Ms != 42 {
-		t.Errorf("single call latency = %+v", l)
-	}
+func TestSummarizeLatency_P95AndMean(t *testing.T) {
+	t.Run("twenty calls", func(t *testing.T) {
+		must := require.New(t)
+		ms := make([]int64, 20)
+		for i := range ms {
+			ms[i] = int64(20 - i)
+		}
+		l := summarizeLatency(ms)
+		must.Equal(int64(19), l.P95Ms)
+		must.True(near(l.MeanMs, 10.5), "mean = %v, want 10.5", l.MeanMs)
+	})
+
+	t.Run("single call", func(t *testing.T) {
+		must := require.New(t)
+		l := summarizeLatency([]int64{42})
+		must.Equal(int64(42), l.P95Ms)
+	})
 }
 
-func TestUnstableCases(t *testing.T) {
+func TestUnstableCases_ListsDisagreeingCases(t *testing.T) {
+	must := require.New(t)
 	js := []Judgment{
 		{Case: "a", Verdict: "pass"}, {Case: "a", Sample: 1, Verdict: "fail"},
 		{Case: "b", Verdict: "pass"}, {Case: "b", Sample: 1, Verdict: "pass"}, {Case: "b", Sample: 2, Verdict: "error"},
 		{Case: "c", Verdict: "fail"},
 		{Case: "d", Verdict: "fail"}, {Case: "d", Sample: 1, Verdict: "pass"},
 	}
-	if got := unstableCases(js); !slices.Equal(got, []string{"a", "d"}) {
-		t.Errorf("unstable = %v, want [a d]", got)
-	}
+	must.Equal([]string{"a", "d"}, unstableCases(js))
 }

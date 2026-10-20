@@ -15,6 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
@@ -24,6 +27,7 @@ import (
 )
 
 func TestBuildLoop_UsesSelectedProviderAlias(t *testing.T) {
+	must := require.New(t)
 	var defaultHits atomic.Int32
 	defaultServer := newOpenAIServer(t, &defaultHits, []string{
 		openAIChunk(`{"id":"default","choices":[{"index":0,"delta":{"content":"default"},"finish_reason":null}]}`) +
@@ -56,33 +60,23 @@ func TestBuildLoop_UsesSelectedProviderAlias(t *testing.T) {
 
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 	loop, err := BuildLoopWithTransport(context.Background(), config, transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}))
-	if err != nil {
-		t.Fatalf("BuildLoopWithTransport() error: %v", err)
-	}
+	must.NoError(err)
 	defer func() { _ = loop.Close() }()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
+	must.NoError(err)
 
-	if runTrace.Outcome != "success" {
-		t.Fatalf("expected success, got %q", runTrace.Outcome)
-	}
-	if defaultHits.Load() != 0 {
-		t.Fatalf("default provider was called %d times; expected 0", defaultHits.Load())
-	}
-	if alternateHits.Load() != 1 {
-		t.Fatalf("alternate provider was called %d times; expected 1", alternateHits.Load())
-	}
+	must.Equal("success", runTrace.Outcome)
+	must.Zero(defaultHits.Load(), "default provider should not receive requests")
+	must.Equal(int32(1), alternateHits.Load(), "alternate provider should receive one request")
 }
 
 func TestBuildLoop_HonorsEditStrategyAndBuiltInSelection(t *testing.T) {
+	must := require.New(t)
 	workspace := t.TempDir()
 	targetPath := filepath.Join(workspace, "target.txt")
-	if err := os.WriteFile(targetPath, []byte("hello old world\n"), 0o644); err != nil {
-		t.Fatalf("write target file: %v", err)
-	}
+	err := os.WriteFile(targetPath, []byte("hello old world\n"), 0o644)
+	must.NoError(err, "write target file")
 
 	var requestBodies []string
 	server := newOpenAIServer(t, nil, []string{
@@ -121,48 +115,28 @@ func TestBuildLoop_HonorsEditStrategyAndBuiltInSelection(t *testing.T) {
 
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 	loop, err := BuildLoopWithTransport(context.Background(), config, transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}))
-	if err != nil {
-		t.Fatalf("BuildLoopWithTransport() error: %v", err)
-	}
+	must.NoError(err)
 	defer func() { _ = loop.Close() }()
 
-	if loop.Tools.Resolve("search_replace") == nil {
-		t.Fatal("expected search_replace tool to be registered")
-	}
-	if loop.Tools.Resolve("write_file") != nil {
-		t.Fatal("did not expect write_file tool when search-replace strategy is active")
-	}
-	if loop.Tools.Resolve("run_command") != nil {
-		t.Fatal("did not expect run_command tool when it is omitted from tools.builtIn")
-	}
+	must.NotNil(loop.Tools.Resolve("search_replace"), "expected search_replace tool to be registered")
+	must.Nil(loop.Tools.Resolve("write_file"), "did not expect write_file tool when search-replace strategy is active")
+	must.Nil(loop.Tools.Resolve("run_command"), "did not expect run_command tool when it is omitted from tools.builtIn")
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("expected success, got %q", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
 
 	content, err := os.ReadFile(targetPath)
-	if err != nil {
-		t.Fatalf("read target file: %v", err)
-	}
-	if string(content) != "hello new world\n" {
-		t.Fatalf("unexpected file content: %q", string(content))
-	}
-	if len(requestBodies) == 0 {
-		t.Fatal("expected at least one provider request")
-	}
-	if !strings.Contains(requestBodies[0], `"search_replace"`) {
-		t.Fatalf("expected search_replace tool definition in provider request, got %s", requestBodies[0])
-	}
-	if strings.Contains(requestBodies[0], `"write_file"`) {
-		t.Fatalf("did not expect write_file tool definition in provider request, got %s", requestBodies[0])
-	}
+	must.NoError(err, "read target file")
+	must.Equal("hello new world\n", string(content))
+
+	must.NotEmpty(requestBodies, "expected at least one provider request")
+	must.Contains(requestBodies[0], `"search_replace"`, "expected search_replace tool definition in provider request")
+	must.NotContains(requestBodies[0], `"write_file"`, "did not expect write_file tool definition in provider request")
 }
 
 func TestBuildToolRegistry_RespectsExecutorCapabilities(t *testing.T) {
+	must := require.New(t)
 	exec := &registryExecutor{
 		caps: executor.ExecutorCapabilities{
 			CanRead:  true,
@@ -173,27 +147,15 @@ func TestBuildToolRegistry_RespectsExecutorCapabilities(t *testing.T) {
 
 	registry := buildToolRegistry(exec, edit.NewWholeFileStrategy(), types.ToolsConfig{}, nil)
 
-	if registry.Resolve("read_file") == nil {
-		t.Fatal("expected read_file to be registered")
-	}
-	if registry.Resolve("run_command") != nil {
-		t.Fatal("did not expect run_command without exec capability")
-	}
+	must.NotNil(registry.Resolve("read_file"), "expected read_file to be registered")
+	must.Nil(registry.Resolve("run_command"), "did not expect run_command without exec capability")
 	// grep_files's rg fast path gates on CanExec internally and falls back
 	// to the native walker, so a CanRead-only executor must still get both
 	// grep_files and find_files.
-	if registry.Resolve("grep_files") == nil {
-		t.Fatal("expected grep_files to register on a CanRead-only executor")
-	}
-	if registry.Resolve("find_files") == nil {
-		t.Fatal("expected find_files to register on a CanRead-only executor")
-	}
-	if registry.Resolve("search_files") != nil {
-		t.Fatal("search_files must not be registered (split into grep_files/find_files)")
-	}
-	if registry.Resolve("write_file") != nil {
-		t.Fatal("did not expect write_file without write capability")
-	}
+	must.NotNil(registry.Resolve("grep_files"), "expected grep_files to register on a CanRead-only executor")
+	must.NotNil(registry.Resolve("find_files"), "expected find_files to register on a CanRead-only executor")
+	must.Nil(registry.Resolve("search_files"), "search_files must not be registered (split into grep_files/find_files)")
+	must.Nil(registry.Resolve("write_file"), "did not expect write_file without write capability")
 }
 
 type registryExecutor struct {
@@ -244,8 +206,12 @@ func buildOpenAIConfig(t *testing.T, baseURL string) *types.RunConfig {
 	return config
 }
 
+// newOpenAIServer serves one canned SSE response per request, in order. The
+// handler runs on the server's goroutine, so it reports failures with assert
+// and returns instead of calling require.
 func newOpenAIServer(t *testing.T, hits *atomic.Int32, responses []string, requestBodies *[]string) *httptest.Server {
 	t.Helper()
+	check := assert.New(t)
 	var requestIndex atomic.Int32
 
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -253,16 +219,16 @@ func newOpenAIServer(t *testing.T, hits *atomic.Int32, responses []string, reque
 			hits.Add(1)
 		}
 		bodyBytes, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read request body: %v", err)
+		if !check.NoError(err, "read request body") {
+			return
 		}
 		if requestBodies != nil {
 			*requestBodies = append(*requestBodies, string(bodyBytes))
 		}
 
 		idx := int(requestIndex.Add(1) - 1)
-		if idx >= len(responses) {
-			t.Fatalf("received unexpected provider request %d", idx)
+		if !check.Less(idx, len(responses), "received unexpected provider request %d", idx) {
+			return
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -280,6 +246,7 @@ func openAIChunk(payload string) string {
 // with a stub so the test needs no network access; the permission gate
 // runs before the handler, so the policy path is still exercised.
 func TestBuildLoop_ResearchModeWebFetchEndToEnd(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 
 	server := newOpenAIServer(t, nil, []string{
@@ -321,26 +288,18 @@ func TestBuildLoop_ResearchModeWebFetchEndToEnd(t *testing.T) {
 
 	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
 	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
-	if err != nil {
-		t.Fatalf("BuildLoopWithTransport() error: %v", err)
-	}
+	must.NoError(err)
 	defer func() { _ = loop.Close() }()
 
 	// loop.Tools is the profile Presenter; unwrap to the underlying
 	// registry to swap the handler. web_fetch is unaliased under the
 	// default profile, so the presented name is unchanged.
 	presenter, ok := loop.Tools.(*tool.Presenter)
-	if !ok {
-		t.Fatalf("expected *tool.Presenter, got %T", loop.Tools)
-	}
+	must.True(ok, "expected *tool.Presenter, got %T", loop.Tools)
 	registry, ok := presenter.Unwrap().(*tool.Registry)
-	if !ok {
-		t.Fatalf("expected *tool.Registry under presenter, got %T", presenter.Unwrap())
-	}
+	must.True(ok, "expected *tool.Registry under presenter, got %T", presenter.Unwrap())
 	original := registry.Resolve("web_fetch")
-	if original == nil {
-		t.Fatal("expected web_fetch tool to be registered in research mode")
-	}
+	must.NotNil(original, "expected web_fetch tool to be registered in research mode")
 	registry.Register(&tool.Tool{
 		Name:              original.Name,
 		Description:       original.Description,
@@ -353,25 +312,21 @@ func TestBuildLoop_ResearchModeWebFetchEndToEnd(t *testing.T) {
 	})
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
 
-	if runTrace.Outcome != "success" {
-		t.Fatalf("expected research run to succeed, got outcome %q", runTrace.Outcome)
-	}
 	var sawWebFetch bool
+	var denied []string
 	for _, call := range runTrace.ToolCalls {
 		if call.Name == "web_fetch" {
 			sawWebFetch = true
 		}
 		if !call.Success && strings.Contains(call.ErrorReason, "Permission denied") {
-			t.Errorf("tool call %q was denied by permission policy: %s", call.Name, call.ErrorReason)
+			denied = append(denied, fmt.Sprintf("%s: %s", call.Name, call.ErrorReason))
 		}
 	}
-	if !sawWebFetch {
-		t.Fatal("expected at least one web_fetch call in run trace")
-	}
+	must.Empty(denied, "tool calls must not be denied by the permission policy")
+	must.True(sawWebFetch, "expected at least one web_fetch call in run trace")
 }
 
 // TestLoop_ReplayProvider_CancelledAfterFirstTurn drives the agentic loop
@@ -379,6 +334,8 @@ func TestBuildLoop_ResearchModeWebFetchEndToEnd(t *testing.T) {
 // the transport after the first turn completes. The next turn should be
 // aborted and RunTrace.Outcome should be "cancelled".
 func TestLoop_ReplayProvider_CancelledAfterFirstTurn(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	// Two-turn recording: turn 0 calls a read-only tool, turn 1 ends the
 	// run; a cancel is injected between them.
 	turns := []types.TurnRecord{
@@ -408,20 +365,14 @@ func TestLoop_ReplayProvider_CancelledAfterFirstTurn(t *testing.T) {
 	loop.Provider = rp
 	loop.Transport = tr
 
-	// The stock "test_tool" in buildTestLoop returns "tool result". Hook the
-	// tool handler so that after it runs, we fire the cancel ControlEvent —
-	// this causes the outer turn-boundary ctx check to trip on the next
-	// iteration.
-	originalRegistry := loop.Tools
-	_ = originalRegistry
-	fireCancel := func() {
-		tr.FireControl(types.ControlEvent{Type: "cancel"})
-	}
-	if tool := loop.Tools.Resolve("test_tool"); tool != nil {
-		prev := tool.Handler
-		tool.Handler = func(ctx context.Context, input json.RawMessage) (string, error) {
+	// The stock "test_tool" in buildTestLoop returns "tool result". Wrap its
+	// handler so the cancel ControlEvent fires once the tool has run, which
+	// trips the turn-boundary context check on the next iteration.
+	if testTool := loop.Tools.Resolve("test_tool"); testTool != nil {
+		prev := testTool.Handler
+		testTool.Handler = func(ctx context.Context, input json.RawMessage) (string, error) {
 			out, err := prev(ctx, input)
-			fireCancel()
+			tr.FireControl(types.ControlEvent{Type: "cancel"})
 			return out, err
 		}
 	}
@@ -429,15 +380,9 @@ func TestLoop_ReplayProvider_CancelledAfterFirstTurn(t *testing.T) {
 	config := buildTestConfig()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() returned error: %v", err)
-	}
-	if runTrace == nil {
-		t.Fatal("expected non-nil RunTrace")
-	}
-	if runTrace.Outcome != "cancelled" {
-		t.Errorf("expected outcome 'cancelled', got %q", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.NotNil(runTrace, "expected non-nil RunTrace")
+	check.Equal("cancelled", runTrace.Outcome)
 
 	var doneEvents []types.HarnessEvent
 	for _, ev := range tr.Events() {
@@ -445,14 +390,8 @@ func TestLoop_ReplayProvider_CancelledAfterFirstTurn(t *testing.T) {
 			doneEvents = append(doneEvents, ev)
 		}
 	}
-	if len(doneEvents) != 1 {
-		t.Fatalf("expected exactly one 'done' event, got %d", len(doneEvents))
-	}
-	if doneEvents[0].StopReason != "cancelled" {
-		t.Errorf("expected done.stop_reason 'cancelled', got %q", doneEvents[0].StopReason)
-	}
+	must.Len(doneEvents, 1, "expected exactly one done event")
+	check.Equal("cancelled", doneEvents[0].StopReason)
 
-	if runTrace.Turns > 1 {
-		t.Errorf("expected at most 1 recorded turn, got %d", runTrace.Turns)
-	}
+	check.LessOrEqual(runTrace.Turns, 1, "expected at most one recorded turn")
 }

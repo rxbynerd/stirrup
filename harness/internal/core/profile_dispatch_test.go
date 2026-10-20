@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/trace/noop"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
@@ -44,10 +46,9 @@ func grepFilesTestTool(ran *bool) *tool.Tool {
 // assert the trace shape.
 func buildProfileDispatchLoop(t *testing.T, reg *tool.Registry, profile *tool.Profile, rec *recordingTraceEmitter) *AgenticLoop {
 	t.Helper()
+	must := require.New(t)
 	presenter, err := tool.NewPresenter(reg, profile)
-	if err != nil {
-		t.Fatalf("NewPresenter: %v", err)
-	}
+	must.NoError(err, "NewPresenter")
 	return &AgenticLoop{
 		Router:       router.NewStaticRouter("anthropic", "claude-sonnet-4-6"),
 		Prompt:       prompt.NewDefaultPromptBuilder(),
@@ -71,6 +72,8 @@ func buildProfileDispatchLoop(t *testing.T, reg *tool.Registry, profile *tool.Pr
 // resolves the alias to the internal tool, executes it, and the trace
 // records BOTH the model-facing alias and the internal tool identity.
 func TestProfileDispatch_AliasResolvesAndTraceRecordsBothNames(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var ran bool
 	reg := tool.NewRegistry()
 	reg.Register(grepFilesTestTool(&ran))
@@ -81,53 +84,34 @@ func TestProfileDispatch_AliasResolvesAndTraceRecordsBothNames(t *testing.T) {
 	cfg := &types.RunConfig{Mode: "execution", RunID: "profile-dispatch"}
 	stall := &stallDetector{}
 
-	// The model calls "grep" — the coding-classic alias for grep_files.
+	// The model calls "grep", the coding-classic alias for grep_files.
 	results, records, outcome := loop.planAndDispatch(
 		context.Background(), cfg,
 		[]types.ToolCall{{ID: "tc1", Name: "grep", Input: json.RawMessage(`{}`)}},
 		stall, "anthropic", "claude-sonnet-4-6",
 	)
-	if outcome != "" {
-		t.Fatalf("unexpected stall outcome: %q", outcome)
-	}
-	if !ran {
-		t.Fatal("grep_files handler did not run — alias did not resolve to the internal tool")
-	}
-	if len(results) != 1 || results[0].IsError {
-		t.Fatalf("expected one successful result, got %+v", results)
-	}
-	if results[0].Content != "grep_files ran" {
-		t.Errorf("result content %q, want %q", results[0].Content, "grep_files ran")
-	}
+	must.Empty(outcome, "unexpected stall outcome")
+	must.True(ran, "grep_files handler did not run; alias did not resolve to the internal tool")
+	must.Len(results, 1)
+	must.False(results[0].IsError, "expected a successful result, got %+v", results[0])
+	check.Equal("grep_files ran", results[0].Content)
 
-	// Trace: ToolCallTrace must carry the alias as Name and the internal ID
-	// as InternalName.
+	// The trace carries the alias as Name and the internal ID as InternalName.
 	_, calls := rec.snapshot()
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 recorded tool call, got %d", len(calls))
-	}
-	if calls[0].Name != "grep" {
-		t.Errorf("trace Name = %q, want alias %q", calls[0].Name, "grep")
-	}
-	if calls[0].InternalName != "grep_files" {
-		t.Errorf("trace InternalName = %q, want %q", calls[0].InternalName, "grep_files")
-	}
+	must.Len(calls, 1)
+	check.Equal("grep", calls[0].Name)
+	check.Equal("grep_files", calls[0].InternalName)
 
-	// The full record carries both names too.
-	if len(records) != 1 {
-		t.Fatalf("expected 1 tool record, got %d", len(records))
-	}
-	if records[0].Name != "grep" || records[0].InternalName != "grep_files" {
-		t.Errorf("record names: Name=%q InternalName=%q, want grep/grep_files",
-			records[0].Name, records[0].InternalName)
-	}
+	must.Len(records, 1)
+	check.Equal("grep", records[0].Name)
+	check.Equal("grep_files", records[0].InternalName)
 }
 
-// Existing configs that name tools by their internal IDs keep working:
-// under the default profile, calling grep_files by its internal name
-// dispatches and the trace omits InternalName (alias == internal), so the
-// trace wire shape is byte-identical to the pre-profile behaviour.
-func TestProfileDispatch_DefaultProfileInternalNameStillWorks(t *testing.T) {
+// Under the default profile, a call by internal tool name dispatches, and the
+// trace omits InternalName because the alias and the internal name match.
+func TestProfileDispatch_DefaultProfileAcceptsInternalName(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var ran bool
 	reg := tool.NewRegistry()
 	reg.Register(grepFilesTestTool(&ran))
@@ -143,31 +127,22 @@ func TestProfileDispatch_DefaultProfileInternalNameStillWorks(t *testing.T) {
 		[]types.ToolCall{{ID: "tc1", Name: "grep_files", Input: json.RawMessage(`{}`)}},
 		stall, "anthropic", "claude-sonnet-4-6",
 	)
-	if outcome != "" {
-		t.Fatalf("unexpected stall outcome: %q", outcome)
-	}
-	if !ran || len(results) != 1 || results[0].IsError {
-		t.Fatalf("default profile + internal name should dispatch: ran=%v results=%+v", ran, results)
-	}
+	must.Empty(outcome, "unexpected stall outcome")
+	must.True(ran, "default profile should dispatch the internal tool name")
+	must.Len(results, 1)
+	must.False(results[0].IsError, "expected a successful result, got %+v", results[0])
 
 	_, calls := rec.snapshot()
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 recorded tool call, got %d", len(calls))
-	}
-	if calls[0].Name != "grep_files" {
-		t.Errorf("trace Name = %q, want %q", calls[0].Name, "grep_files")
-	}
-	if calls[0].InternalName != "" {
-		t.Errorf("default profile must omit InternalName (alias == internal), got %q", calls[0].InternalName)
-	}
+	must.Len(calls, 1)
+	check.Equal("grep_files", calls[0].Name)
+	check.Empty(calls[0].InternalName, "default profile must omit InternalName (alias == internal)")
 }
 
 func mustProfile(t *testing.T, name string) *tool.Profile {
 	t.Helper()
+	must := require.New(t)
 	p, ok := tool.ProfileFor(name)
-	if !ok {
-		t.Fatalf("ProfileFor(%q) not found", name)
-	}
+	must.True(ok, "ProfileFor(%q) not found", name)
 	return p
 }
 
@@ -187,11 +162,12 @@ func (g *toolNameCapturingGuard) Check(_ context.Context, in guard.Input) (*guar
 	return &guard.Decision{Verdict: guard.VerdictAllow, GuardID: "capture"}, nil
 }
 
-// The PhasePreTool guardrail must see the INTERNAL tool ID, not the alias
-// (issue #234 B1b): a guardrail rule written against an internal name has
-// to fire under any toolset profile. The model calls "grep"; the guard
-// must observe "grep_files".
+// The PhasePreTool guardrail must see the internal tool ID, not the alias, so
+// a guardrail rule written against an internal name fires under any toolset
+// profile. The model calls "grep"; the guard must observe "grep_files".
 func TestProfileDispatch_GuardrailSeesInternalToolName(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var ran bool
 	reg := tool.NewRegistry()
 	reg.Register(grepFilesTestTool(&ran))
@@ -207,16 +183,10 @@ func TestProfileDispatch_GuardrailSeesInternalToolName(t *testing.T) {
 		[]types.ToolCall{{ID: "tc1", Name: "grep", Input: json.RawMessage(`{}`)}},
 		&stallDetector{}, "anthropic", "claude-sonnet-4-6",
 	)
-	if outcome != "" {
-		t.Fatalf("unexpected stall outcome: %q", outcome)
-	}
+	must.Empty(outcome, "unexpected stall outcome")
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if len(g.toolNames) != 1 {
-		t.Fatalf("expected 1 PhasePreTool check, got %d", len(g.toolNames))
-	}
-	if g.toolNames[0] != "grep_files" {
-		t.Errorf("guardrail saw ToolName %q, want internal id %q", g.toolNames[0], "grep_files")
-	}
+	must.Len(g.toolNames, 1)
+	check.Equal("grep_files", g.toolNames[0])
 }

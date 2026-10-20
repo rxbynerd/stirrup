@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
@@ -104,13 +106,12 @@ type retryHarness struct {
 
 func newRetryHarness(t *testing.T, prov provider.ProviderAdapter) *retryHarness {
 	t.Helper()
+	must := require.New(t)
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
 	metrics, err := observability.NewMetricsForTesting(mp)
-	if err != nil {
-		t.Fatalf("NewMetricsForTesting: %v", err)
-	}
+	must.NoError(err, "NewMetricsForTesting")
 	h := &retryHarness{
 		trace:     &usageTraceEmitter{agg: trace.NewJSONLTraceEmitter(&bytes.Buffer{}, false)},
 		transport: &bytes.Buffer{},
@@ -164,10 +165,10 @@ func (h *retryHarness) retryWarnings() []string {
 // turnRetryOutcomes sums scope=turn provider_retry_outcomes by outcome.
 func (h *retryHarness) turnRetryOutcomes(t *testing.T) map[string]int64 {
 	t.Helper()
+	must := require.New(t)
 	var rm metricdata.ResourceMetrics
-	if err := h.reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
+	err := h.reader.Collect(context.Background(), &rm)
+	must.NoError(err, "collect metrics")
 	out := make(map[string]int64)
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
@@ -191,54 +192,39 @@ func (h *retryHarness) turnRetryOutcomes(t *testing.T) map[string]int64 {
 }
 
 func TestLoop_TurnRetry_OverloadedMidStreamThenSuccess(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	prov := &scriptedTurnProvider{scripts: []turnScript{toolCallScript(), overloadedMidStream(), answerScript()}}
 	h := newRetryHarness(t, prov)
 
 	runTrace, err := h.loop.Run(context.Background(), retryConfig(3))
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("Outcome = %q, want success", runTrace.Outcome)
-	}
-	if n := prov.callCount(); n != 3 {
-		t.Errorf("Stream calls = %d, want 3", n)
-	}
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
+	check.Equal(3, prov.callCount())
 
 	turns := h.turns()
-	if len(turns) != 2 {
-		t.Fatalf("recorded %d turns, want 2: a retried attempt must not add a turn", len(turns))
-	}
-	if turns[0].Retries != 0 || turns[1].Retries != 1 {
-		t.Errorf("turn retries = [%d %d], want [0 1]", turns[0].Retries, turns[1].Retries)
-	}
-	if turns[1].StopReason != "end_turn" {
-		t.Errorf("retried turn StopReason = %q, want end_turn", turns[1].StopReason)
-	}
+	must.Len(turns, 2, "a retried attempt must not add a turn")
+	check.Equal(0, turns[0].Retries)
+	check.Equal(1, turns[1].Retries)
+	check.Equal("end_turn", turns[1].StopReason)
 
 	records := h.turnRecords()
-	if len(records) != 2 {
-		t.Fatalf("recorded %d turn records, want 2", len(records))
-	}
+	must.Len(records, 2)
 	for _, block := range records[1].ModelOutput {
-		if strings.Contains(block.Text, "discarded partial") {
-			t.Errorf("retried turn kept output from the discarded attempt: %+v", records[1].ModelOutput)
-		}
+		check.NotContains(block.Text, "discarded partial", "retried turn kept output from the discarded attempt")
 	}
 
 	warnings := h.retryWarnings()
-	if len(warnings) != 1 {
-		t.Fatalf("retry warnings = %d, want 1:\n%s", len(warnings), h.transport.String())
-	}
-	if !strings.Contains(warnings[0], "turn 1 attempt 1") || !strings.Contains(warnings[0], "overloaded_error") {
-		t.Errorf("warning does not name the discarded attempt and its error: %s", warnings[0])
-	}
-	if got := h.turnRetryOutcomes(t); got[turnRetryOutcomeSucceeded] != 1 || len(got) != 1 {
-		t.Errorf("turn retry outcomes = %v, want exactly one succeeded", got)
-	}
+	must.Len(warnings, 1, "transport output:\n%s", h.transport.String())
+	check.Contains(warnings[0], "turn 1 attempt 1", "warning names the discarded attempt")
+	check.Contains(warnings[0], "overloaded_error", "warning names the error")
+
+	check.Equal(map[string]int64{turnRetryOutcomeSucceeded: 1}, h.turnRetryOutcomes(t))
 }
 
 func TestLoop_TurnRetry_PreStreamRetryableErrorThenSuccess(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &scriptedTurnProvider{scripts: []turnScript{
 		{err: types.MarkRetryable(errors.New("anthropic API returned status 529"))},
 		answerScript(),
@@ -246,19 +232,13 @@ func TestLoop_TurnRetry_PreStreamRetryableErrorThenSuccess(t *testing.T) {
 	h := newRetryHarness(t, prov)
 
 	runTrace, err := h.loop.Run(context.Background(), retryConfig(3))
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("Outcome = %q, want success", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
+
 	turns := h.turns()
-	if len(turns) != 1 || turns[0].Retries != 1 {
-		t.Fatalf("turns = %+v, want one turn with Retries 1", turns)
-	}
-	if len(h.retryWarnings()) != 1 {
-		t.Errorf("retry warnings = %d, want 1", len(h.retryWarnings()))
-	}
+	must.Len(turns, 1)
+	must.Equal(1, turns[0].Retries)
+	check.Len(h.retryWarnings(), 1)
 }
 
 func TestLoop_TurnRetry_NonRetryableErrorEndsRunOnFirstFailure(t *testing.T) {
@@ -268,30 +248,21 @@ func TestLoop_TurnRetry_NonRetryableErrorEndsRunOnFirstFailure(t *testing.T) {
 	}{
 		{"401 before the stream", turnScript{err: errors.New("anthropic API returned status 401: invalid x-api-key")}},
 		{"400 before the stream", turnScript{err: errors.New("anthropic API returned status 400: prompt is too long")}},
-		{"insufficient_quota 429 before the stream", turnScript{err: errors.New("openai API returned status 429: You exceeded your current quota")}},
+		{"insufficient quota 429 before the stream", turnScript{err: errors.New("openai API returned status 429: You exceeded your current quota")}},
 		{"unclassified stream error", turnScript{events: []types.StreamEvent{{Type: "error", Error: errors.New("parse tool input JSON: unexpected end")}}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			prov := &scriptedTurnProvider{scripts: []turnScript{tc.script, answerScript()}}
 			h := newRetryHarness(t, prov)
 
 			runTrace, err := h.loop.Run(context.Background(), retryConfig(3))
-			if err != nil {
-				t.Fatalf("Run() error: %v", err)
-			}
-			if runTrace.Outcome != "error" {
-				t.Errorf("Outcome = %q, want error", runTrace.Outcome)
-			}
-			if n := prov.callCount(); n != 1 {
-				t.Errorf("Stream calls = %d, want 1", n)
-			}
-			if w := h.retryWarnings(); len(w) != 0 {
-				t.Errorf("unexpected retry warnings: %v", w)
-			}
-			if got := h.turnRetryOutcomes(t); len(got) != 0 {
-				t.Errorf("turn retry outcomes = %v, want none for a turn that never hit a retryable failure", got)
-			}
+			must.NoError(err)
+			must.Equal("error", runTrace.Outcome)
+			must.Equal(1, prov.callCount(), "stream calls")
+			must.Empty(h.retryWarnings(), "no retry warning for a non-retryable failure")
+			must.Empty(h.turnRetryOutcomes(t), "no turn retry outcome for a turn that never hit a retryable failure")
 		})
 	}
 }
@@ -302,56 +273,47 @@ func TestLoop_TurnRetry_StopsAtAttemptCount(t *testing.T) {
 		maxAttempts int
 		wantCalls   int
 	}{
-		{"maxAttempts 2 allows one retry", 2, 2},
-		{"maxAttempts 3 allows two retries", 3, 3},
-		{"maxAttempts 5 is capped at two retries", 5, 3},
+		{"max attempts 2 allows one retry", 2, 2},
+		{"max attempts 3 allows two retries", 3, 3},
+		{"max attempts 5 is capped at two retries", 5, 3},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			prov := &scriptedTurnProvider{scripts: []turnScript{overloadedMidStream()}}
 			h := newRetryHarness(t, prov)
 
 			runTrace, err := h.loop.Run(context.Background(), retryConfig(tc.maxAttempts))
-			if err != nil {
-				t.Fatalf("Run() error: %v", err)
-			}
-			if runTrace.Outcome != "error" {
-				t.Errorf("Outcome = %q, want error", runTrace.Outcome)
-			}
-			if n := prov.callCount(); n != tc.wantCalls {
-				t.Errorf("Stream calls = %d, want %d", n, tc.wantCalls)
-			}
+			must.NoError(err)
+			must.Equal("error", runTrace.Outcome)
+			must.Equal(tc.wantCalls, prov.callCount(), "stream calls")
+
 			turns := h.turns()
-			if len(turns) != 1 || turns[0].StopReason != "error" || turns[0].Retries != tc.wantCalls-1 {
-				t.Errorf("turns = %+v, want one error turn with Retries %d", turns, tc.wantCalls-1)
-			}
-			if w := h.retryWarnings(); len(w) != tc.wantCalls-1 {
-				t.Errorf("retry warnings = %d, want %d", len(w), tc.wantCalls-1)
-			}
-			if got := h.turnRetryOutcomes(t); got[turnRetryOutcomeExhausted] != 1 || len(got) != 1 {
-				t.Errorf("turn retry outcomes = %v, want exactly one exhausted", got)
-			}
+			must.Len(turns, 1)
+			must.Equal("error", turns[0].StopReason)
+			must.Equal(tc.wantCalls-1, turns[0].Retries)
+			must.Len(h.retryWarnings(), tc.wantCalls-1)
+			must.Equal(map[string]int64{turnRetryOutcomeExhausted: 1}, h.turnRetryOutcomes(t))
 		})
 	}
 }
 
 func TestLoop_TurnRetry_DisabledWhenMaxAttemptsIsOne(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &scriptedTurnProvider{scripts: []turnScript{overloadedMidStream(), answerScript()}}
 	h := newRetryHarness(t, prov)
 
 	runTrace, err := h.loop.Run(context.Background(), retryConfig(1))
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "error" || prov.callCount() != 1 {
-		t.Errorf("Outcome = %q after %d calls, want error after 1", runTrace.Outcome, prov.callCount())
-	}
-	if got := h.turnRetryOutcomes(t); len(got) != 0 {
-		t.Errorf("turn retry outcomes = %v, want none when turn retry is disabled", got)
-	}
+	must.NoError(err)
+	check.Equal("error", runTrace.Outcome)
+	check.Equal(1, prov.callCount(), "stream calls")
+	check.Empty(h.turnRetryOutcomes(t), "turn retry is disabled")
 }
 
 func TestLoop_TurnRetry_StopsAtWallClockBudget(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	// Each attempt takes 50 ms and every backoff is under 10 ms, so the
 	// first retry fits a 25 ms budget measured from the first failure and
 	// the second does not.
@@ -365,21 +327,15 @@ func TestLoop_TurnRetry_StopsAtWallClockBudget(t *testing.T) {
 	config.Provider.Retry.WallClockBudgetMs = 25
 
 	runTrace, err := h.loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "error" {
-		t.Errorf("Outcome = %q, want error", runTrace.Outcome)
-	}
-	if n := prov.callCount(); n != 2 {
-		t.Errorf("Stream calls = %d, want 2", n)
-	}
-	if got := h.turnRetryOutcomes(t); got[turnRetryOutcomeBudgetExhausted] != 1 || len(got) != 1 {
-		t.Errorf("turn retry outcomes = %v, want exactly one budget_exhausted", got)
-	}
+	must.NoError(err)
+	check.Equal("error", runTrace.Outcome)
+	check.Equal(2, prov.callCount(), "stream calls")
+	check.Equal(map[string]int64{turnRetryOutcomeBudgetExhausted: 1}, h.turnRetryOutcomes(t))
 }
 
 func TestLoop_TurnRetry_RunDeadlineWinsDuringBackoff(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	prov := &scriptedTurnProvider{scripts: []turnScript{overloadedMidStream(), answerScript()}}
 	h := newRetryHarness(t, prov)
 	config := retryConfig(3)
@@ -392,42 +348,26 @@ func TestLoop_TurnRetry_RunDeadlineWinsDuringBackoff(t *testing.T) {
 	defer cancel()
 	start := time.Now()
 	runTrace, err := h.loop.Run(ctx, config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if elapsed := time.Since(start); elapsed > 10*time.Second {
-		t.Fatalf("Run took %v; the run deadline did not interrupt the backoff", elapsed)
-	}
-	if runTrace.Outcome != "timeout" {
-		t.Errorf("Outcome = %q, want timeout", runTrace.Outcome)
-	}
-	if n := prov.callCount(); n != 1 {
-		t.Errorf("Stream calls = %d, want 1", n)
-	}
-	if got := h.turnRetryOutcomes(t); got[turnRetryOutcomeContextDone] != 1 || len(got) != 1 {
-		t.Errorf("turn retry outcomes = %v, want exactly one context_done", got)
-	}
+	must.NoError(err)
+	must.LessOrEqual(time.Since(start), 10*time.Second, "the run deadline must interrupt the backoff")
+	check.Equal("timeout", runTrace.Outcome)
+	check.Equal(1, prov.callCount(), "stream calls")
+	check.Equal(map[string]int64{turnRetryOutcomeContextDone: 1}, h.turnRetryOutcomes(t))
 }
 
 func TestLoop_TurnRetry_CancelledRunIsNotRetried(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	prov := &cancelThenRetryableProvider{cancel: cancel}
 	h := newRetryHarness(t, prov)
 
 	runTrace, err := h.loop.Run(ctx, retryConfig(3))
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "cancelled" {
-		t.Errorf("Outcome = %q, want cancelled", runTrace.Outcome)
-	}
-	if n := prov.calls.Load(); n != 1 {
-		t.Errorf("Stream calls = %d, want 1", n)
-	}
-	if got := h.turnRetryOutcomes(t); len(got) != 0 {
-		t.Errorf("turn retry outcomes = %v, want none", got)
-	}
+	must.NoError(err)
+	check.Equal("cancelled", runTrace.Outcome)
+	check.EqualValues(1, prov.calls.Load(), "stream calls")
+	check.Empty(h.turnRetryOutcomes(t))
 }
 
 // cancelThenRetryableProvider cancels the run and then fails with an error that
@@ -444,6 +384,8 @@ func (p *cancelThenRetryableProvider) Stream(context.Context, types.StreamParams
 }
 
 func TestLoop_TurnRetry_ChargesUsageReportedByDiscardedAttempt(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	failing := turnScript{events: []types.StreamEvent{
 		{Type: "message_complete", InputTokens: 40, OutputTokens: 4},
 		{Type: "error", Error: types.MarkRetryable(errors.New("read SSE stream: connection reset by peer"))},
@@ -452,22 +394,15 @@ func TestLoop_TurnRetry_ChargesUsageReportedByDiscardedAttempt(t *testing.T) {
 	h := newRetryHarness(t, prov)
 
 	runTrace, err := h.loop.Run(context.Background(), retryConfig(3))
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("Outcome = %q, want success", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
+
 	turns := h.turns()
-	if len(turns) != 1 {
-		t.Fatalf("recorded %d turns, want 1", len(turns))
-	}
-	if turns[0].Tokens.Input != 140 || turns[0].Tokens.Output != 14 {
-		t.Errorf("turn tokens = %+v, want input 140 and output 14 including the discarded attempt", turns[0].Tokens)
-	}
-	if runTrace.TokenUsage.Input != 140 || runTrace.TokenUsage.Output != 14 {
-		t.Errorf("run tokens = %+v, want input 140 and output 14", runTrace.TokenUsage)
-	}
+	must.Len(turns, 1)
+	check.Equal(140, turns[0].Tokens.Input, "turn input tokens include the discarded attempt")
+	check.Equal(14, turns[0].Tokens.Output, "turn output tokens include the discarded attempt")
+	check.Equal(140, runTrace.TokenUsage.Input, "run input tokens")
+	check.Equal(14, runTrace.TokenUsage.Output, "run output tokens")
 }
 
 func TestLoop_TurnRetry_UsesSelectedProviderPolicy(t *testing.T) {
@@ -476,52 +411,64 @@ func TestLoop_TurnRetry_UsesSelectedProviderPolicy(t *testing.T) {
 		"secondary": {Type: "openai-compatible", Retry: &types.ProviderRetryConfig{MaxAttempts: 2, InitialDelayMs: 7, MaxDelayMs: 7}},
 		"bare":      {Type: "openai-compatible"},
 	}
-	if got := turnRetryPolicyFor(config, "secondary"); got.maxRetries != 1 || got.initialDelay != 7*time.Millisecond {
-		t.Errorf("secondary policy = %+v, want its own retry block", got)
-	}
-	if got := turnRetryPolicyFor(config, "bare"); got.maxRetries != 2 || got.initialDelay != time.Millisecond {
-		t.Errorf("bare policy = %+v, want the default provider's retry block", got)
-	}
-	if got := turnRetryPolicyFor(config, "anthropic"); got.maxRetries != 2 {
-		t.Errorf("default provider policy = %+v, want two retries", got)
-	}
-	config.Provider.Retry = nil
-	if got := turnRetryPolicyFor(config, "anthropic"); got != (turnRetryPolicy{}) {
-		t.Errorf("nil retry block policy = %+v, want turn retry disabled", got)
-	}
+
+	t.Run("selected provider uses its own retry block", func(t *testing.T) {
+		must := require.New(t)
+		got := turnRetryPolicyFor(config, "secondary")
+		must.Equal(1, got.maxRetries)
+		must.Equal(7*time.Millisecond, got.initialDelay)
+	})
+	t.Run("provider without a retry block uses the default provider's block", func(t *testing.T) {
+		must := require.New(t)
+		got := turnRetryPolicyFor(config, "bare")
+		must.Equal(2, got.maxRetries)
+		must.Equal(time.Millisecond, got.initialDelay)
+	})
+	t.Run("default provider uses the top-level retry block", func(t *testing.T) {
+		must := require.New(t)
+		got := turnRetryPolicyFor(config, "anthropic")
+		must.Equal(2, got.maxRetries)
+	})
+	t.Run("nil retry block disables turn retry", func(t *testing.T) {
+		must := require.New(t)
+		config.Provider.Retry = nil
+		must.Equal(turnRetryPolicy{}, turnRetryPolicyFor(config, "anthropic"))
+	})
 }
 
 func TestTurnRetryPolicyFor_ZeroDelaysFallBackToDefaults(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	config := buildTestConfig()
 	config.Provider.Retry = &types.ProviderRetryConfig{MaxAttempts: 3}
 	got := turnRetryPolicyFor(config, "anthropic")
-	if got.initialDelay != turnRetryInitialDelayFallback || got.maxDelay != turnRetryMaxDelayFallback {
-		t.Fatalf("policy = %+v, want initial %v and max %v", got, turnRetryInitialDelayFallback, turnRetryMaxDelayFallback)
-	}
-	if d := got.delay(0); d < turnRetryInitialDelayFallback/2 {
-		t.Errorf("delay(0) = %v, want at least %v so retries are not back to back", d, turnRetryInitialDelayFallback/2)
-	}
+	must.Equal(turnRetryInitialDelayFallback, got.initialDelay)
+	must.Equal(turnRetryMaxDelayFallback, got.maxDelay)
+	check.GreaterOrEqual(got.delay(0), turnRetryInitialDelayFallback/2, "first retry must not be back to back")
 }
 
 func TestTurnRetryPolicy_DelayUsesEqualJitter(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	p := turnRetryPolicy{maxRetries: 2, initialDelay: 100 * time.Millisecond, maxDelay: 300 * time.Millisecond}
 	for range 200 {
-		if d := p.delay(0); d < 50*time.Millisecond || d >= 100*time.Millisecond {
-			t.Fatalf("delay(0) = %v, want within [50ms, 100ms)", d)
-		}
-		if d := p.delay(2); d < 150*time.Millisecond || d >= 300*time.Millisecond {
-			t.Fatalf("delay(2) = %v, want within [150ms, 300ms) after the maxDelay cap", d)
-		}
+		first := p.delay(0)
+		must.GreaterOrEqual(first, 50*time.Millisecond, "delay(0) is at least half the initial delay")
+		must.Less(first, 100*time.Millisecond, "delay(0) is below the initial delay")
+
+		capped := p.delay(2)
+		must.GreaterOrEqual(capped, 150*time.Millisecond, "delay(2) is at least half the capped delay")
+		must.Less(capped, 300*time.Millisecond, "delay(2) is below the capped delay")
 	}
-	if d := (turnRetryPolicy{initialDelay: time.Second}).delay(0); d != 0 {
-		t.Errorf("delay with zero maxDelay = %v, want 0", d)
-	}
+	check.Zero((turnRetryPolicy{initialDelay: time.Second}).delay(0), "delay with zero maxDelay")
 }
 
 // TestLoop_TurnRetry_DroppedConnectionWithRealAdapter drives the loop
 // against the openai-compatible adapter: the first response drops the
 // connection mid-stream and the second completes.
 func TestLoop_TurnRetry_DroppedConnectionWithRealAdapter(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -530,11 +477,9 @@ func TestLoop_TurnRetry_DroppedConnectionWithRealAdapter(t *testing.T) {
 			_, _ = fmt.Fprint(w, `data: {"id":"c","choices":[{"index":0,"delta":{"content":"discarded partial"},"finish_reason":null}]}`+"\n\n")
 			w.(http.Flusher).Flush()
 			conn, _, err := w.(http.Hijacker).Hijack()
-			if err != nil {
-				t.Errorf("Hijack: %v", err)
-				return
+			if check.NoError(err, "hijack the connection") {
+				_ = conn.Close()
 			}
-			_ = conn.Close()
 			return
 		}
 		_, _ = fmt.Fprint(w,
@@ -549,18 +494,13 @@ func TestLoop_TurnRetry_DroppedConnectionWithRealAdapter(t *testing.T) {
 	h := newRetryHarness(t, adapter)
 
 	runTrace, err := h.loop.Run(context.Background(), retryConfig(3))
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("Outcome = %q, want success", runTrace.Outcome)
-	}
-	if n := hits.Load(); n != 2 {
-		t.Errorf("server saw %d requests, want 2", n)
-	}
-	if turns := h.turns(); len(turns) != 1 || turns[0].Retries != 1 {
-		t.Errorf("turns = %+v, want one turn with Retries 1", turns)
-	}
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
+	check.EqualValues(2, hits.Load(), "server requests")
+
+	turns := h.turns()
+	must.Len(turns, 1)
+	check.Equal(1, turns[0].Retries)
 }
 
 // TestLoop_TurnRetry_TerminalStatusWithRealAdapter pins that a 401, a 400
@@ -574,10 +514,11 @@ func TestLoop_TurnRetry_TerminalStatusWithRealAdapter(t *testing.T) {
 	}{
 		{"401", http.StatusUnauthorized, `{"error":{"message":"Incorrect API key provided"}}`},
 		{"400", http.StatusBadRequest, `{"error":{"message":"Unknown parameter: foo","type":"invalid_request_error"}}`},
-		{"insufficient_quota 429", http.StatusTooManyRequests, `{"error":{"message":"You exceeded your current quota","type":"insufficient_quota","code":"insufficient_quota"}}`},
+		{"insufficient quota 429", http.StatusTooManyRequests, `{"error":{"message":"You exceeded your current quota","type":"insufficient_quota","code":"insufficient_quota"}}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var hits atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				hits.Add(1)
@@ -592,15 +533,9 @@ func TestLoop_TurnRetry_TerminalStatusWithRealAdapter(t *testing.T) {
 			h := newRetryHarness(t, adapter)
 
 			runTrace, err := h.loop.Run(context.Background(), retryConfig(3))
-			if err != nil {
-				t.Fatalf("Run() error: %v", err)
-			}
-			if runTrace.Outcome != "error" {
-				t.Errorf("Outcome = %q, want error", runTrace.Outcome)
-			}
-			if n := hits.Load(); n != 1 {
-				t.Errorf("server saw %d requests, want 1", n)
-			}
+			must.NoError(err)
+			must.Equal("error", runTrace.Outcome)
+			must.EqualValues(1, hits.Load(), "server requests")
 		})
 	}
 }
@@ -614,17 +549,13 @@ type batchTurnProvider struct {
 func (p *batchTurnProvider) LastBatchID() string { return "msgbatch_test" }
 
 func TestLoop_TurnRetry_SkipsBatchTurns(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &batchTurnProvider{scriptedTurnProvider{scripts: []turnScript{overloadedMidStream(), answerScript()}}}
 	h := newRetryHarness(t, prov)
 
 	runTrace, err := h.loop.Run(context.Background(), retryConfig(3))
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "error" {
-		t.Errorf("Outcome = %q, want error", runTrace.Outcome)
-	}
-	if n := prov.callCount(); n != 1 {
-		t.Errorf("Stream calls = %d, want 1: a batch turn must not be resubmitted", n)
-	}
+	must.NoError(err)
+	check.Equal("error", runTrace.Outcome)
+	check.Equal(1, prov.callCount(), "a batch turn must not be resubmitted")
 }

@@ -2,7 +2,11 @@
 
 package cmd
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 // TestValidateDebugBuildFlags_AcceptsDebugOnDebugBuild is the companion
 // to harness_debug_disabled_test.go's
@@ -12,13 +16,10 @@ import "testing"
 func TestValidateDebugBuildFlags_AcceptsDebugOnDebugBuild(t *testing.T) {
 	for _, flagName := range debugBuildOnlyFlags {
 		t.Run(flagName, func(t *testing.T) {
+			must := require.New(t)
 			cmd := newTestHarnessCommand()
-			if err := cmd.Flags().Set(flagName, "true"); err != nil {
-				t.Fatalf("set %s: %v", flagName, err)
-			}
-			if err := validateDebugBuildFlags(cmd, nil); err != nil {
-				t.Errorf("expected --%s to be accepted on a debug build, got: %v", flagName, err)
-			}
+			must.NoError(cmd.Flags().Set(flagName, "true"))
+			must.NoError(validateDebugBuildFlags(cmd, nil))
 		})
 	}
 }

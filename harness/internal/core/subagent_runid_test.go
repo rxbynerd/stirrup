@@ -3,20 +3,31 @@ package core
 import (
 	"bytes"
 	"context"
-	"slices"
+	"fmt"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/types"
 	tracereader "github.com/rxbynerd/stirrup/types/trace"
 )
 
-func TestSubAgentRunID(t *testing.T) {
-	if got := subAgentRunID("run-p", 3); got != "run-p/sub-3" {
-		t.Errorf("subAgentRunID(run-p, 3) = %q, want run-p/sub-3", got)
+func TestSubAgentRunID_FormatsParentAndIndex(t *testing.T) {
+	tests := []struct {
+		name     string
+		parentID string
+		index    int64
+		want     string
+	}{
+		{name: "with parent run", parentID: "run-p", index: 3, want: "run-p/sub-3"},
+		{name: "without parent run", parentID: "", index: 1, want: "sub-1"},
 	}
-	if got := subAgentRunID("", 1); got != "sub-1" {
-		t.Errorf("subAgentRunID(\"\", 1) = %q, want sub-1", got)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, subAgentRunID(tc.parentID, tc.index))
+		})
 	}
 }
 
@@ -24,6 +35,7 @@ func TestSubAgentRunID(t *testing.T) {
 // within a run gets the next "<parent>/sub-<n>" ID, and that a new run
 // on the same loop numbers its spawns from 1 again.
 func TestSpawnSubAgent_ChildRunIDsCountSpawnsPerRun(t *testing.T) {
+	must := require.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "done"},
@@ -37,15 +49,13 @@ func TestSpawnSubAgent_ChildRunIDsCountSpawnsPerRun(t *testing.T) {
 
 	spawn := func() {
 		t.Helper()
-		if _, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{Prompt: "subtask"}); err != nil {
-			t.Fatalf("SpawnSubAgent: %v", err)
-		}
+		_, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{Prompt: "subtask"})
+		must.NoError(err, "SpawnSubAgent")
 	}
 	spawn()
 	spawn()
-	if _, err := parentLoop.Run(context.Background(), parentConfig); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := parentLoop.Run(context.Background(), parentConfig)
+	must.NoError(err, "Run")
 	spawn()
 
 	turns, _ := parentEmitter.snapshot()
@@ -56,9 +66,7 @@ func TestSpawnSubAgent_ChildRunIDsCountSpawnsPerRun(t *testing.T) {
 		}
 	}
 	want := []string{"test-run-1/sub-1", "test-run-1/sub-2", "test-run-1/sub-1"}
-	if !slices.Equal(childIDs, want) {
-		t.Errorf("child run IDs = %v, want %v", childIDs, want)
-	}
+	must.Equal(want, childIDs)
 }
 
 // TestSpawnSubAgent_JSONLTraceGroupsChildren runs two sub-agents
@@ -66,6 +74,7 @@ func TestSpawnSubAgent_ChildRunIDsCountSpawnsPerRun(t *testing.T) {
 // turn_record lines carry its own run ID and the parent's, and the
 // reader groups them into separate sub-runs with their outcomes.
 func TestSpawnSubAgent_JSONLTraceGroupsChildren(t *testing.T) {
+	must := require.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "child reply"},
@@ -80,43 +89,34 @@ func TestSpawnSubAgent_JSONLTraceGroupsChildren(t *testing.T) {
 	emitter.Start(parentConfig.RunID, parentConfig)
 
 	for range 2 {
-		if _, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{Prompt: "subtask"}); err != nil {
-			t.Fatalf("SpawnSubAgent: %v", err)
-		}
+		_, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{Prompt: "subtask"})
+		must.NoError(err, "SpawnSubAgent")
 	}
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
+	_, err := emitter.Finish(context.Background(), "success")
+	must.NoError(err, "Finish")
 
 	rec, err := tracereader.NewReader(bytes.NewReader(buf.Bytes())).ReadRecording()
-	if err != nil {
-		t.Fatalf("ReadRecording: %v", err)
-	}
-	if len(rec.Turns) != 0 {
-		t.Errorf("parent Turns = %d, want 0: child turns leaked into the parent history", len(rec.Turns))
-	}
-	if len(rec.SubRuns) != 2 {
-		t.Fatalf("SubRuns = %d, want 2", len(rec.SubRuns))
-	}
+	must.NoError(err, "ReadRecording")
+	must.Empty(rec.Turns, "child turns leaked into the parent history")
+	must.Len(rec.SubRuns, 2)
 	for i, sub := range rec.SubRuns {
-		wantID := subAgentRunID(parentConfig.RunID, int64(i+1))
-		if sub.RunID != wantID || sub.ParentRunID != parentConfig.RunID {
-			t.Errorf("SubRuns[%d] ids = (%q, %q), want (%q, %q)", i, sub.RunID, sub.ParentRunID, wantID, parentConfig.RunID)
-		}
-		if sub.Config.RunID != wantID || sub.Config.Prompt != "subtask" {
-			t.Errorf("SubRuns[%d].Config = (%q, %q), want the child's config", i, sub.Config.RunID, sub.Config.Prompt)
-		}
-		if sub.Config.Provider.APIKeyRef == "secret://TEST" {
-			t.Errorf("SubRuns[%d].Config carries the unredacted key reference", i)
-		}
-		if len(sub.Turns) != 1 {
-			t.Fatalf("SubRuns[%d].Turns = %d, want 1", i, len(sub.Turns))
-		}
-		if turn := sub.Turns[0]; turn.RunID != wantID || turn.ParentRunID != parentConfig.RunID {
-			t.Errorf("SubRuns[%d] turn tags = (%q, %q)", i, turn.RunID, turn.ParentRunID)
-		}
-		if sub.Summary == nil || sub.Summary.Outcome != "success" || sub.Summary.Turns != 1 {
-			t.Errorf("SubRuns[%d].Summary = %+v, want a one-turn success", i, sub.Summary)
-		}
+		t.Run(fmt.Sprintf("sub-run %d", i+1), func(t *testing.T) {
+			must := require.New(t)
+			wantID := subAgentRunID(parentConfig.RunID, int64(i+1))
+			must.Equal(wantID, sub.RunID, "sub-run run ID")
+			must.Equal(parentConfig.RunID, sub.ParentRunID, "sub-run parent run ID")
+			must.Equal(wantID, sub.Config.RunID, "child config run ID")
+			must.Equal("subtask", sub.Config.Prompt, "child config prompt")
+			must.NotEqual("secret://TEST", sub.Config.Provider.APIKeyRef, "child config carries the unredacted key reference")
+
+			must.Len(sub.Turns, 1)
+			turn := sub.Turns[0]
+			must.Equal(wantID, turn.RunID, "turn run ID")
+			must.Equal(parentConfig.RunID, turn.ParentRunID, "turn parent run ID")
+
+			must.NotNil(sub.Summary)
+			must.Equal("success", sub.Summary.Outcome)
+			must.Equal(1, sub.Summary.Turns)
+		})
 	}
 }

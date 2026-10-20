@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // testdata/datafence_vectors.json is a byte-identical copy of
@@ -40,89 +42,68 @@ type fenceVectors struct {
 }
 
 func TestDataFence_GoldenVectors(t *testing.T) {
+	must := require.New(t)
 	raw, err := os.ReadFile(filepath.Join("testdata", "datafence_vectors.json"))
-	if err != nil {
-		t.Fatalf("read vectors: %v", err)
-	}
+	must.NoError(err, "read vectors")
 	var v fenceVectors
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&v); err != nil {
-		t.Fatalf("decode vectors: %v", err)
-	}
-	if len(v.Fences) == 0 || len(v.Neutralise) == 0 {
-		t.Fatal("vectors file has no fence or neutralise cases")
-	}
+	must.NoError(dec.Decode(&v), "decode vectors")
+	must.NotEmpty(v.Fences, "vectors file has no fence cases")
+	must.NotEmpty(v.Neutralise, "vectors file has no neutralise cases")
 
 	for _, fv := range v.Fences {
 		t.Run(fv.Name, func(t *testing.T) {
+			must := require.New(t)
 			entropy, err := hex.DecodeString(fv.Entropy)
-			if err != nil {
-				t.Fatalf("entropy %q: %v", fv.Entropy, err)
-			}
+			must.NoError(err, "entropy %q", fv.Entropy)
 			f, err := newDataFence(bytes.NewReader(entropy))
-			if err != nil {
-				t.Fatalf("newDataFence: %v", err)
-			}
-			if f.nonce != fv.Nonce {
-				t.Errorf("nonce = %q, want %q", f.nonce, fv.Nonce)
-			}
+			must.NoError(err)
+			must.Equal(fv.Nonce, f.nonce)
 			for _, m := range fv.Markers {
-				if got := f.open(m.Label); got != m.Open {
-					t.Errorf("open(%s) = %q, want %q", m.Label, got, m.Open)
-				}
-				if got := f.close(m.Label); got != m.Close {
-					t.Errorf("close(%s) = %q, want %q", m.Label, got, m.Close)
-				}
-				if got := f.notice(m.Label); got != m.Notice {
-					t.Errorf("notice(%s) = %q, want %q", m.Label, got, m.Notice)
-				}
+				must.Equal(m.Open, f.open(m.Label), "open(%s)", m.Label)
+				must.Equal(m.Close, f.close(m.Label), "close(%s)", m.Label)
+				must.Equal(m.Notice, f.notice(m.Label), "notice(%s)", m.Label)
 			}
 			for _, w := range fv.Wrap {
-				if got := f.wrap(w.Label, w.Content); got != w.Wrapped {
-					t.Errorf("wrap(%s, %q) = %q, want %q", w.Label, w.Content, got, w.Wrapped)
-				}
+				must.Equal(w.Wrapped, f.wrap(w.Label, w.Content), "wrap(%s, %q)", w.Label, w.Content)
 			}
 		})
 	}
 
-	for _, n := range v.Neutralise {
-		if got := neutraliseFenceMarkers(n.Input); got != n.Output {
-			t.Errorf("neutraliseFenceMarkers(%q) = %q, want %q", n.Input, got, n.Output)
-		}
-		if strings.Contains(n.Output, "<<<") {
-			t.Errorf("vector output %q still contains <<<", n.Output)
-		}
+	for i, n := range v.Neutralise {
+		t.Run(fmt.Sprintf("neutralise vector %d", i), func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(n.Output, neutraliseFenceMarkers(n.Input), "input %q", n.Input)
+			must.NotContains(n.Output, "<<<")
+		})
 	}
 }
 
-func TestDataFence_NoncesDiffer(t *testing.T) {
+func TestDataFence_NoncesDifferAndHaveFixedLength(t *testing.T) {
+	must := require.New(t)
 	a, err := newDataFence(rand.Reader)
-	if err != nil {
-		t.Fatalf("newDataFence: %v", err)
-	}
+	must.NoError(err)
 	b, err := newDataFence(rand.Reader)
-	if err != nil {
-		t.Fatalf("newDataFence: %v", err)
-	}
-	if a.nonce == b.nonce {
-		t.Fatalf("two fences share a nonce: %q", a.nonce)
-	}
-	if len(a.nonce) != 2*fenceNonceBytes {
-		t.Fatalf("nonce %q is not %d hex characters", a.nonce, 2*fenceNonceBytes)
-	}
+	must.NoError(err)
+	must.NotEqual(a.nonce, b.nonce, "two fences share a nonce")
+	must.Len(a.nonce, 2*fenceNonceBytes)
 }
 
 type errReader struct{ err error }
 
 func (r errReader) Read([]byte) (int, error) { return 0, r.err }
 
-func TestDataFence_EntropyFailure(t *testing.T) {
-	if _, err := newDataFence(bytes.NewReader(nil)); err == nil {
-		t.Fatal("expected an error when entropy is exhausted")
-	}
-	sentinel := errors.New("no entropy")
-	if _, err := newDataFence(errReader{sentinel}); !errors.Is(err, sentinel) {
-		t.Fatalf("error = %v, want wrapped sentinel", err)
-	}
+func TestDataFence_EntropyFailureReturnsError(t *testing.T) {
+	t.Run("exhausted reader", func(t *testing.T) {
+		must := require.New(t)
+		_, err := newDataFence(bytes.NewReader(nil))
+		must.Error(err)
+	})
+	t.Run("reader error is wrapped", func(t *testing.T) {
+		must := require.New(t)
+		sentinel := errors.New("no entropy")
+		_, err := newDataFence(errReader{sentinel})
+		must.ErrorIs(err, sentinel)
+	})
 }

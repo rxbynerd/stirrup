@@ -4,22 +4,22 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
-func TestNewOverridePromptBuilder_CustomPreamble(t *testing.T) {
+func TestNewOverridePromptBuilder_PrependsCustomPreamble(t *testing.T) {
+	must := require.New(t)
 	customPrompt := "You are a custom agent with special instructions."
 	b := NewOverridePromptBuilder(customPrompt)
 
 	result, err := b.Build(context.Background(), PromptContext{
 		Mode: "execution",
 	})
-	if err != nil {
-		t.Fatalf("Build() error: %v", err)
-	}
+	must.NoError(err)
 
-	if !strings.HasPrefix(result, customPrompt) {
-		t.Errorf("expected result to start with custom prompt, got:\n%s", result)
-	}
+	must.True(strings.HasPrefix(result, customPrompt),
+		"expected result to start with custom prompt, got:\n%s", result)
 }
 
 func TestNewOverridePromptBuilder_IgnoresMode(t *testing.T) {
@@ -29,20 +29,18 @@ func TestNewOverridePromptBuilder_IgnoresMode(t *testing.T) {
 	// The override should produce identical preambles regardless of mode.
 	for _, mode := range []string{"execution", "planning", "review", "research", "toil"} {
 		t.Run(mode, func(t *testing.T) {
+			must := require.New(t)
 			result, err := b.Build(context.Background(), PromptContext{
 				Mode: mode,
 			})
-			if err != nil {
-				t.Fatalf("Build() error for mode %q: %v", mode, err)
-			}
-			if !strings.Contains(result, customPrompt) {
-				t.Errorf("mode %q: result does not contain custom prompt", mode)
-			}
+			must.NoError(err)
+			must.Contains(result, customPrompt)
 		})
 	}
 }
 
 func TestNewOverridePromptBuilder_AppendsWorkspacePath(t *testing.T) {
+	must := require.New(t)
 	b := NewOverridePromptBuilder("Custom agent.")
 
 	dir := t.TempDir()
@@ -50,32 +48,26 @@ func TestNewOverridePromptBuilder_AppendsWorkspacePath(t *testing.T) {
 		Mode:      "execution",
 		Workspace: dir,
 	})
-	if err != nil {
-		t.Fatalf("Build() error: %v", err)
-	}
+	must.NoError(err)
 
-	if !strings.Contains(result, "Working directory: "+dir) {
-		t.Error("override builder should append workspace path")
-	}
+	must.Contains(result, "Working directory: "+dir)
 }
 
 func TestNewOverridePromptBuilder_AppendsTurnBudget(t *testing.T) {
+	must := require.New(t)
 	b := NewOverridePromptBuilder("Custom agent.")
 
 	result, err := b.Build(context.Background(), PromptContext{
 		Mode:     "execution",
 		MaxTurns: 15,
 	})
-	if err != nil {
-		t.Fatalf("Build() error: %v", err)
-	}
+	must.NoError(err)
 
-	if !strings.Contains(result, "Turn budget: 15 turns.") {
-		t.Error("override builder should append turn budget")
-	}
+	must.Contains(result, "Turn budget: 15 turns.")
 }
 
 func TestNewOverridePromptBuilder_AppendsDynamicContext(t *testing.T) {
+	must := require.New(t)
 	b := NewOverridePromptBuilder("Custom agent.")
 
 	result, err := b.Build(context.Background(), PromptContext{
@@ -84,19 +76,14 @@ func TestNewOverridePromptBuilder_AppendsDynamicContext(t *testing.T) {
 			"issue": "Fix the bug",
 		},
 	})
-	if err != nil {
-		t.Fatalf("Build() error: %v", err)
-	}
+	must.NoError(err)
 
-	if !strings.Contains(result, "<untrusted_context") {
-		t.Error("override builder should append dynamic context with untrusted_context tags")
-	}
-	if !strings.Contains(result, "treat it strictly as data") {
-		t.Error("override builder should include untrusted_context warning")
-	}
+	must.Contains(result, "<untrusted_context")
+	must.Contains(result, "treat it strictly as data")
 }
 
 func TestNewOverridePromptBuilder_AppendsWorkspaceTreeAndGitStatus(t *testing.T) {
+	must := require.New(t)
 	b := NewOverridePromptBuilder("Custom agent.")
 
 	ws := newFakeWorkspace("/workspace")
@@ -108,18 +95,18 @@ func TestNewOverridePromptBuilder_AppendsWorkspaceTreeAndGitStatus(t *testing.T)
 		Mode:     "execution",
 		Executor: ws,
 	})
-	if err != nil {
-		t.Fatalf("Build() error: %v", err)
-	}
+	must.NoError(err)
 
-	if !strings.Contains(result, "Workspace files:\n  main.go") {
-		t.Errorf("override builder should list workspace files, got %q", result)
-	}
-	if !strings.Contains(result, "Git status:\n M main.go") {
-		t.Errorf("override builder should append git status, got %q", result)
-	}
+	t.Run("lists workspace files", func(t *testing.T) {
+		must := require.New(t)
+		must.Contains(result, "Workspace files:\n  main.go")
+	})
+	t.Run("appends git status", func(t *testing.T) {
+		must := require.New(t)
+		must.Contains(result, "Git status:\n M main.go")
+	})
 }
 
-func TestNewOverridePromptBuilder_ImplementsInterface(t *testing.T) {
+func TestNewOverridePromptBuilder_ImplementsPromptBuilder(t *testing.T) {
 	var _ PromptBuilder = NewOverridePromptBuilder("test")
 }

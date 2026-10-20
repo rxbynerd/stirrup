@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
@@ -54,9 +55,9 @@ func (p *fireAndCloseProvider) Stream(_ context.Context, _ types.StreamParams) (
 
 // newInMemoryOTelEmitter wires an OTelTraceEmitter to an in-memory span
 // exporter so tests can assert on emitted span attributes without touching
-// the network. The returned exporter captures spans as they are ended; the
-// root "invoke_agent stirrup" span is ended inside Finish, so GetSpans() after Run returns
-// includes the root span and its attributes.
+// the network. The returned exporter captures spans as they are ended. The
+// root "invoke_agent stirrup" span is ended inside Finish, so GetSpans()
+// after Run returns includes the root span and its attributes.
 func newInMemoryOTelEmitter(t *testing.T) (*trace.OTelTraceEmitter, *tracetest.InMemoryExporter) {
 	t.Helper()
 	exporter := tracetest.NewInMemoryExporter()
@@ -81,12 +82,23 @@ func findRootRunSpanAttribute(spans []tracetest.SpanStub, key string) (string, b
 	return "", false
 }
 
+// requireRootCancelledBy asserts that the root run span carries
+// run.cancelled_by with the value want.
+func requireRootCancelledBy(t *testing.T, exporter *tracetest.InMemoryExporter, want string) {
+	t.Helper()
+	must := require.New(t)
+	got, ok := findRootRunSpanAttribute(exporter.GetSpans(), "run.cancelled_by")
+	must.True(ok, "expected run.cancelled_by attribute on root span")
+	must.Equal(want, got, "run.cancelled_by")
+}
+
 // TestLoop_CancelAttribute_ControlPlane covers the OTel
 // run.cancelled_by="control_plane" branch of setRootCancelAttribute. A
 // "cancel" ControlEvent fires between turns so context.Cause(runCtx) is
 // ErrCancelledByControlPlane; the attribute must therefore be
 // "control_plane".
 func TestLoop_CancelAttribute_ControlPlane(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := newInMemoryOTelEmitter(t)
 
 	tr := &cancellableTransport{}
@@ -102,20 +114,10 @@ func TestLoop_CancelAttribute_ControlPlane(t *testing.T) {
 
 	config := buildTestConfig()
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() returned error: %v", err)
-	}
-	if runTrace.Outcome != "cancelled" {
-		t.Fatalf("prerequisite: expected outcome 'cancelled', got %q", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.Equal("cancelled", runTrace.Outcome, "prerequisite: run outcome")
 
-	got, ok := findRootRunSpanAttribute(exporter.GetSpans(), "run.cancelled_by")
-	if !ok {
-		t.Fatal("expected run.cancelled_by attribute on root span, none found")
-	}
-	if got != "control_plane" {
-		t.Errorf("run.cancelled_by: got %q, want %q", got, "control_plane")
-	}
+	requireRootCancelledBy(t, exporter, "control_plane")
 }
 
 // TestLoop_CancelAttribute_Deadline covers the OTel
@@ -124,6 +126,7 @@ func TestLoop_CancelAttribute_ControlPlane(t *testing.T) {
 // The provider emits a normal turn; deadline expiry is detected at the
 // next turn boundary ctx check.
 func TestLoop_CancelAttribute_Deadline(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := newInMemoryOTelEmitter(t)
 
 	tr := &cancellableTransport{}
@@ -145,20 +148,10 @@ func TestLoop_CancelAttribute_Deadline(t *testing.T) {
 	defer cancel()
 
 	runTrace, err := loop.Run(ctx, config)
-	if err != nil {
-		t.Fatalf("Run() returned error: %v", err)
-	}
-	if runTrace.Outcome != "timeout" {
-		t.Fatalf("prerequisite: expected outcome 'timeout', got %q", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.Equal("timeout", runTrace.Outcome, "prerequisite: run outcome")
 
-	got, ok := findRootRunSpanAttribute(exporter.GetSpans(), "run.cancelled_by")
-	if !ok {
-		t.Fatal("expected run.cancelled_by attribute on root span, none found")
-	}
-	if got != "deadline" {
-		t.Errorf("run.cancelled_by: got %q, want %q", got, "deadline")
-	}
+	requireRootCancelledBy(t, exporter, "deadline")
 }
 
 // TestSetRootCancelAttribute_NoStartedRunSpan covers the defensive
@@ -167,6 +160,7 @@ func TestLoop_CancelAttribute_Deadline(t *testing.T) {
 // a safe no-op. Cannot happen on the Run() path; the guard is defence in
 // depth.
 func TestSetRootCancelAttribute_NoStartedRunSpan(t *testing.T) {
+	must := require.New(t)
 	exporter := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 	emitter := trace.NewOTelTraceEmitterForTest(tp)
@@ -179,13 +173,15 @@ func TestSetRootCancelAttribute_NoStartedRunSpan(t *testing.T) {
 	// attribute (there is no root span to set it on).
 	loop.setRootCancelAttribute(ErrCancelledByControlPlane)
 
+	var spansWithCancelledBy []string
 	for _, s := range exporter.GetSpans() {
 		for _, attr := range s.Attributes {
 			if string(attr.Key) == "run.cancelled_by" {
-				t.Errorf("did not expect run.cancelled_by attribute on span %q", s.Name)
+				spansWithCancelledBy = append(spansWithCancelledBy, s.Name)
 			}
 		}
 	}
+	must.Empty(spansWithCancelledBy, "no span should carry run.cancelled_by")
 }
 
 // TestLoop_CancelAttribute_UnrecognisedCause covers the default return
@@ -193,6 +189,7 @@ func TestSetRootCancelAttribute_NoStartedRunSpan(t *testing.T) {
 // a recognised cancel sentinel nor a deadline, outcome classifies as
 // "error" and NO run.cancelled_by attribute is set on the root span.
 func TestLoop_CancelAttribute_UnrecognisedCause(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := newInMemoryOTelEmitter(t)
 
 	tr := &cancellableTransport{}
@@ -203,27 +200,21 @@ func TestLoop_CancelAttribute_UnrecognisedCause(t *testing.T) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	defer cancel(nil)
 
-	customCause := errCustomCancelSentinel
 	loop.Provider = &fireAndCloseProvider{
 		onStream: func() {
-			cancel(customCause)
+			cancel(errCustomCancelSentinel)
 		},
 	}
 
 	config := buildTestConfig()
 	runTrace, err := loop.Run(ctx, config)
-	if err != nil {
-		t.Fatalf("Run() returned error: %v", err)
-	}
-	if runTrace.Outcome != "error" {
-		t.Fatalf("prerequisite: expected outcome 'error' for unrecognised cause, got %q", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.Equal("error", runTrace.Outcome, "prerequisite: run outcome for unrecognised cause")
 
 	// The default branch of setRootCancelAttribute returns without
 	// setting the attribute, so it must be absent from the root span.
-	if _, ok := findRootRunSpanAttribute(exporter.GetSpans(), "run.cancelled_by"); ok {
-		t.Error("expected no run.cancelled_by attribute for unrecognised cause")
-	}
+	_, ok := findRootRunSpanAttribute(exporter.GetSpans(), "run.cancelled_by")
+	must.False(ok, "expected no run.cancelled_by attribute for unrecognised cause")
 }
 
 // TestLoop_CancelAttribute_Signal covers the OTel
@@ -231,6 +222,7 @@ func TestLoop_CancelAttribute_UnrecognisedCause(t *testing.T) {
 // propagates context.Canceled as the cause of our WithCancelCause child —
 // the same path SIGINT/SIGTERM takes via the root cobra signal handler.
 func TestLoop_CancelAttribute_Signal(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := newInMemoryOTelEmitter(t)
 
 	tr := &cancellableTransport{}
@@ -252,26 +244,17 @@ func TestLoop_CancelAttribute_Signal(t *testing.T) {
 
 	config := buildTestConfig()
 	runTrace, err := loop.Run(ctx, config)
-	if err != nil {
-		t.Fatalf("Run() returned error: %v", err)
-	}
-	if runTrace.Outcome != "cancelled" {
-		t.Fatalf("prerequisite: expected outcome 'cancelled', got %q", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.Equal("cancelled", runTrace.Outcome, "prerequisite: run outcome")
 
-	got, ok := findRootRunSpanAttribute(exporter.GetSpans(), "run.cancelled_by")
-	if !ok {
-		t.Fatal("expected run.cancelled_by attribute on root span, none found")
-	}
-	if got != "signal" {
-		t.Errorf("run.cancelled_by: got %q, want %q", got, "signal")
-	}
+	requireRootCancelledBy(t, exporter, "signal")
 }
 
 // TestLoop_CancelAttribute_ControlStream covers the
 // run.cancelled_by="control_stream" branch: a run cancelled because its
 // control stream ended.
 func TestLoop_CancelAttribute_ControlStream(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := newInMemoryOTelEmitter(t)
 
 	tr := &cancellableTransport{}
@@ -283,18 +266,8 @@ func TestLoop_CancelAttribute_ControlStream(t *testing.T) {
 	}
 
 	runTrace, err := loop.Run(context.Background(), buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run() returned error: %v", err)
-	}
-	if runTrace.Outcome != "control_stream_lost" {
-		t.Fatalf("prerequisite: expected outcome 'control_stream_lost', got %q", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.Equal("control_stream_lost", runTrace.Outcome, "prerequisite: run outcome")
 
-	got, ok := findRootRunSpanAttribute(exporter.GetSpans(), "run.cancelled_by")
-	if !ok {
-		t.Fatal("expected run.cancelled_by attribute on root span, none found")
-	}
-	if got != "control_stream" {
-		t.Errorf("run.cancelled_by: got %q, want %q", got, "control_stream")
-	}
+	requireRootCancelledBy(t, exporter, "control_stream")
 }

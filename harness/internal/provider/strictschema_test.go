@@ -2,11 +2,21 @@ package provider
 
 import (
 	"encoding/json"
-	"errors"
-	"reflect"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// decodeSchema unmarshals a normalised schema into a generic map so tests
+// can inspect individual keys.
+func decodeSchema(t *testing.T, raw []byte) map[string]any {
+	t.Helper()
+	must := require.New(t)
+	var got map[string]any
+	must.NoError(json.Unmarshal(raw, &got), "normalised schema is not valid JSON")
+	return got
+}
 
 // TestNormalizeStrictSchema_AllPropertiesRequiredAndNullable pins the
 // core strict-mode rewrite contract: every property ends up in the
@@ -14,6 +24,8 @@ import (
 // nullable-wrapped via ["type","null"], and additionalProperties is set
 // to false at every object level.
 func TestNormalizeStrictSchema_AllPropertiesRequiredAndNullable(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	// read_file's actual schema (path required, start_line + limit optional).
 	in := json.RawMessage(`{
 		"type": "object",
@@ -27,59 +39,39 @@ func TestNormalizeStrictSchema_AllPropertiesRequiredAndNullable(t *testing.T) {
 	}`)
 
 	out, err := NormalizeStrictSchema("read_file", in)
-	if err != nil {
-		t.Fatalf("NormalizeStrictSchema: %v", err)
-	}
-	var got map[string]any
-	if uerr := json.Unmarshal(out, &got); uerr != nil {
-		t.Fatalf("re-unmarshal: %v", uerr)
-	}
+	must.NoError(err)
+	got := decodeSchema(t, out)
 
 	// required is the sorted full property name list.
-	wantReq := []any{"limit", "path", "start_line"}
-	if !reflect.DeepEqual(got["required"], wantReq) {
-		t.Errorf("required = %v, want %v", got["required"], wantReq)
-	}
-
-	// additionalProperties at the top level.
-	if got["additionalProperties"] != false {
-		t.Errorf("additionalProperties = %v, want false", got["additionalProperties"])
-	}
+	check.Equal([]any{"limit", "path", "start_line"}, got["required"])
+	check.Equal(false, got["additionalProperties"])
 
 	props := got["properties"].(map[string]any)
 
-	// path was required → not nullable-wrapped.
+	// path was required, so it is not nullable-wrapped.
 	pathSchema := props["path"].(map[string]any)
-	if s, ok := pathSchema["type"].(string); !ok || s != "string" {
-		t.Errorf("path.type = %v, want string", pathSchema["type"])
-	}
+	check.Equal("string", pathSchema["type"])
 
-	// start_line was optional → nullable-wrapped.
-	startSchema := props["start_line"].(map[string]any)
-	startType, _ := startSchema["type"].([]any)
-	if !containsString(startType, "integer") || !containsString(startType, "null") {
-		t.Errorf("start_line.type = %v, want [integer,null]", startSchema["type"])
-	}
+	// start_line was optional, so it is nullable-wrapped.
+	startType, _ := props["start_line"].(map[string]any)["type"].([]any)
+	check.Contains(startType, "integer")
+	check.Contains(startType, "null")
 
-	// limit was optional → nullable-wrapped, and minimum/maximum preserved.
+	// limit was optional, so it is nullable-wrapped; minimum and maximum survive.
 	limitSchema := props["limit"].(map[string]any)
 	limitType, _ := limitSchema["type"].([]any)
-	if !containsString(limitType, "integer") || !containsString(limitType, "null") {
-		t.Errorf("limit.type = %v, want [integer,null]", limitSchema["type"])
-	}
-	if _, has := limitSchema["minimum"]; !has {
-		t.Errorf("limit.minimum dropped: %v", limitSchema)
-	}
-	if _, has := limitSchema["maximum"]; !has {
-		t.Errorf("limit.maximum dropped: %v", limitSchema)
-	}
+	check.Contains(limitType, "integer")
+	check.Contains(limitType, "null")
+	check.Contains(limitSchema, "minimum")
+	check.Contains(limitSchema, "maximum")
 }
 
-// TestNormalizeStrictSchema_NestedObjects pins the recursive rewrite:
-// nested objects also get additionalProperties=false and their own
-// properties expand into a sorted full-required list. The brief calls
-// out "nested objects" as an explicit test case.
-func TestNormalizeStrictSchema_NestedObjects(t *testing.T) {
+// TestNormalizeStrictSchema_RewritesNestedObjects pins the recursive
+// rewrite: nested objects also get additionalProperties=false, and their
+// properties expand into a sorted full-required list.
+func TestNormalizeStrictSchema_RewritesNestedObjects(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	in := json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -96,33 +88,23 @@ func TestNormalizeStrictSchema_NestedObjects(t *testing.T) {
 	}`)
 
 	out, err := NormalizeStrictSchema("nested_tool", in)
-	if err != nil {
-		t.Fatalf("normalize: %v", err)
-	}
-	var got map[string]any
-	if uerr := json.Unmarshal(out, &got); uerr != nil {
-		t.Fatalf("re-unmarshal: %v", uerr)
-	}
+	must.NoError(err)
+	got := decodeSchema(t, out)
+
 	outer := got["properties"].(map[string]any)["outer"].(map[string]any)
-	if outer["additionalProperties"] != false {
-		t.Errorf("nested additionalProperties = %v, want false", outer["additionalProperties"])
-	}
-	outerReq := outer["required"].([]any)
-	wantOuterReq := []any{"inner_opt", "inner_req"}
-	if !reflect.DeepEqual(outerReq, wantOuterReq) {
-		t.Errorf("nested required = %v, want %v", outerReq, wantOuterReq)
-	}
-	innerOpt := outer["properties"].(map[string]any)["inner_opt"].(map[string]any)
-	innerOptType := innerOpt["type"].([]any)
-	if !containsString(innerOptType, "null") {
-		t.Errorf("nested inner_opt should be nullable, got %v", innerOpt["type"])
-	}
+	check.Equal(false, outer["additionalProperties"])
+	check.Equal([]any{"inner_opt", "inner_req"}, outer["required"])
+
+	innerOptType, _ := outer["properties"].(map[string]any)["inner_opt"].(map[string]any)["type"].([]any)
+	check.Contains(innerOptType, "null", "nested optional property should be nullable")
 }
 
-// TestNormalizeStrictSchema_ArraysOfObjects pins that array items
-// schemas are normalised too: an array's items.type = object expands
-// just like a top-level object.
-func TestNormalizeStrictSchema_ArraysOfObjects(t *testing.T) {
+// TestNormalizeStrictSchema_RewritesArrayItemObjects pins that array items
+// schemas are normalised too: an array's items of type object expand just
+// like a top-level object.
+func TestNormalizeStrictSchema_RewritesArrayItemObjects(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	in := json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -142,29 +124,21 @@ func TestNormalizeStrictSchema_ArraysOfObjects(t *testing.T) {
 	}`)
 
 	out, err := NormalizeStrictSchema("events_tool", in)
-	if err != nil {
-		t.Fatalf("normalize: %v", err)
-	}
-	var got map[string]any
-	_ = json.Unmarshal(out, &got)
-	events := got["properties"].(map[string]any)["events"].(map[string]any)
-	items := events["items"].(map[string]any)
-	if items["additionalProperties"] != false {
-		t.Errorf("items.additionalProperties = %v, want false", items["additionalProperties"])
-	}
-	itemsReq := items["required"].([]any)
-	wantReq := []any{"count", "name"}
-	if !reflect.DeepEqual(itemsReq, wantReq) {
-		t.Errorf("items.required = %v, want %v", itemsReq, wantReq)
-	}
+	must.NoError(err)
+	got := decodeSchema(t, out)
+
+	items := got["properties"].(map[string]any)["events"].(map[string]any)["items"].(map[string]any)
+	check.Equal(false, items["additionalProperties"])
+	check.Equal([]any{"count", "name"}, items["required"])
 }
 
 // TestNormalizeStrictSchema_PreservesEnumAndDescription pins the
 // no-field-deletion contract: enum and description on each property
-// survive the rewrite verbatim. Operations like multiSchema's enum on
-// the `operation` property carry the strict-mode validation semantic
-// the model relies on.
+// survive the rewrite verbatim. An enum such as edit_file's operation
+// property carries the strict-mode validation semantic the model relies on.
 func TestNormalizeStrictSchema_PreservesEnumAndDescription(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	in := json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -177,19 +151,15 @@ func TestNormalizeStrictSchema_PreservesEnumAndDescription(t *testing.T) {
 		"required": ["op"]
 	}`)
 	out, err := NormalizeStrictSchema("enum_tool", in)
-	if err != nil {
-		t.Fatalf("normalize: %v", err)
-	}
-	var got map[string]any
-	_ = json.Unmarshal(out, &got)
+	must.NoError(err)
+	got := decodeSchema(t, out)
+
 	op := got["properties"].(map[string]any)["op"].(map[string]any)
-	if op["description"] != "Pick one." {
-		t.Errorf("description not preserved: %v", op)
-	}
-	enums := op["enum"].([]any)
-	if len(enums) != 3 || enums[0] != "a" {
-		t.Errorf("enum not preserved: %v", op["enum"])
-	}
+	check.Equal("Pick one.", op["description"])
+
+	enums, _ := op["enum"].([]any)
+	must.Len(enums, 3)
+	check.Equal("a", enums[0])
 }
 
 // TestNormalizeStrictSchema_RejectsUnsupportedKeywords pins the
@@ -237,23 +207,15 @@ func TestNormalizeStrictSchema_RejectsUnsupportedKeywords(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
 			_, err := NormalizeStrictSchema("test_tool", json.RawMessage(tc.schema))
-			if err == nil {
-				t.Fatalf("expected error, got nil")
-			}
+			must.Error(err)
 			var schemaErr *strictSchemaError
-			if !errors.As(err, &schemaErr) {
-				t.Fatalf("expected *strictSchemaError, got %T: %v", err, err)
-			}
-			if schemaErr.tool != "test_tool" {
-				t.Errorf("tool = %q, want %q", schemaErr.tool, "test_tool")
-			}
-			if !strings.Contains(err.Error(), tc.wantKeyword) {
-				t.Errorf("error %q does not name the offending keyword %q", err, tc.wantKeyword)
-			}
-			if !strings.Contains(err.Error(), tc.wantPath) {
-				t.Errorf("error %q does not name the offending path %q", err, tc.wantPath)
-			}
+			must.ErrorAs(err, &schemaErr)
+			check.Equal("test_tool", schemaErr.tool)
+			must.ErrorContains(err, tc.wantKeyword)
+			must.ErrorContains(err, tc.wantPath)
 		})
 	}
 }
@@ -262,6 +224,8 @@ func TestNormalizeStrictSchema_RejectsUnsupportedKeywords(t *testing.T) {
 // with no type (e.g. an enum-only property) is rejected when optional:
 // strict mode cannot represent a nullable schema without a concrete type.
 func TestNormalizeStrictSchema_RejectsTypelessProperty(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	in := json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -269,20 +233,15 @@ func TestNormalizeStrictSchema_RejectsTypelessProperty(t *testing.T) {
 		}
 	}`)
 	_, err := NormalizeStrictSchema("typeless_tool", in)
-	if err == nil {
-		t.Fatalf("expected error, got nil")
-	}
-	if !strings.Contains(err.Error(), "no type") {
-		t.Errorf("error %q does not name the typeless-property reason", err)
-	}
-	if !strings.Contains(err.Error(), "properties.x") {
-		t.Errorf("error %q does not name the offending property path", err)
-	}
+	must.Error(err)
+	must.ErrorContains(err, "no type")
+	check.ErrorContains(err, "properties.x")
 }
 
 // TestNormalizeStrictSchema_RejectsTupleItems pins the rejection of
 // items-as-array (tuple validation), which strict mode does not model.
 func TestNormalizeStrictSchema_RejectsTupleItems(t *testing.T) {
+	must := require.New(t)
 	in := json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -293,47 +252,42 @@ func TestNormalizeStrictSchema_RejectsTupleItems(t *testing.T) {
 		}
 	}`)
 	_, err := NormalizeStrictSchema("tuple_tool", in)
-	if err == nil {
-		t.Fatalf("expected error, got nil")
+	must.ErrorContains(err, "tuple")
+}
+
+// TestNormalizeStrictSchema_EmptyInputBecomesEmptyObject pins the
+// empty-input shortcut: an empty string or "{}" yields a well-formed empty
+// object schema so a no-arg tool serialises cleanly under strict mode.
+func TestNormalizeStrictSchema_EmptyInputBecomesEmptyObject(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+	}{
+		{name: "empty string", in: ""},
+		{name: "empty object", in: "{}"},
 	}
-	if !strings.Contains(err.Error(), "tuple") {
-		t.Errorf("error %q should mention tuple-form items", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
+			out, err := NormalizeStrictSchema("noarg_tool", json.RawMessage(tc.in))
+			must.NoError(err)
+			got := decodeSchema(t, out)
+
+			check.Equal("object", got["type"])
+			check.Equal(false, got["additionalProperties"])
+			check.Contains(got, "required")
+		})
 	}
 }
 
-// TestNormalizeStrictSchema_EmptySchema pins the empty-input shortcut:
-// an empty string or "{}" yields a well-formed empty object schema so
-// a no-arg tool serialises cleanly under strict mode.
-func TestNormalizeStrictSchema_EmptySchema(t *testing.T) {
-	for _, in := range []string{"", "{}"} {
-		out, err := NormalizeStrictSchema("noarg_tool", json.RawMessage(in))
-		if err != nil {
-			t.Errorf("empty schema %q: unexpected error %v", in, err)
-			continue
-		}
-		var got map[string]any
-		if uerr := json.Unmarshal(out, &got); uerr != nil {
-			t.Errorf("re-unmarshal: %v", uerr)
-			continue
-		}
-		if got["type"] != "object" {
-			t.Errorf("empty schema %q: type=%v, want object", in, got["type"])
-		}
-		if got["additionalProperties"] != false {
-			t.Errorf("empty schema %q: additionalProperties=%v, want false", in, got["additionalProperties"])
-		}
-		if _, has := got["required"]; !has {
-			t.Errorf("empty schema %q: required missing", in)
-		}
-	}
-}
-
-// TestNormalizeStrictSchema_GrepFilesActualSchema is the integration
-// canary: the real grep_files schema must round-trip through the
-// strict-mode normaliser without error, and its optional fields (path,
-// include, exclude, max_results) must all become nullable in the
-// output.
-func TestNormalizeStrictSchema_GrepFilesActualSchema(t *testing.T) {
+// TestNormalizeStrictSchema_GrepFilesSchemaMakesOptionalsNullable is the
+// integration canary: the real grep_files schema must round-trip through
+// the strict-mode normaliser without error, and its optional fields (path,
+// include, exclude, max_results) must all become nullable in the output.
+func TestNormalizeStrictSchema_GrepFilesSchemaMakesOptionalsNullable(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	in := json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -347,38 +301,32 @@ func TestNormalizeStrictSchema_GrepFilesActualSchema(t *testing.T) {
 		"additionalProperties": false
 	}`)
 	out, err := NormalizeStrictSchema("grep_files", in)
-	if err != nil {
-		t.Fatalf("grep_files schema rejected: %v", err)
-	}
-	var got map[string]any
-	_ = json.Unmarshal(out, &got)
+	must.NoError(err)
+	got := decodeSchema(t, out)
 	props := got["properties"].(map[string]any)
 
-	// pattern is required → not nullable.
-	if _, isArr := props["pattern"].(map[string]any)["type"].([]any); isArr {
-		t.Errorf("pattern should not be nullable (required)")
-	}
+	// pattern is required, so it is not nullable.
+	_, patternNullable := props["pattern"].(map[string]any)["type"].([]any)
+	check.False(patternNullable, "pattern is required and must not be nullable")
 
-	// every other property must be nullable.
 	for _, k := range []string{"path", "include", "exclude", "max_results"} {
-		typ := props[k].(map[string]any)["type"]
-		arr, ok := typ.([]any)
-		if !ok || !containsString(arr, "null") {
-			t.Errorf("property %q should be nullable, got type=%v", k, typ)
-		}
+		t.Run(k+" is nullable", func(t *testing.T) {
+			must := require.New(t)
+			typ := props[k].(map[string]any)["type"]
+			must.Contains(typ, "null")
+		})
 	}
 
 	// required carries every property name in sorted order.
-	wantReq := []any{"exclude", "include", "max_results", "path", "pattern"}
-	if !reflect.DeepEqual(got["required"], wantReq) {
-		t.Errorf("required = %v, want %v", got["required"], wantReq)
-	}
+	check.Equal([]any{"exclude", "include", "max_results", "path", "pattern"}, got["required"])
 }
 
-// TestNormalizeStrictSchema_EditFileActualSchema mirrors the grep_files
-// canary for the edit_file (multi.go) schema, a more adversarial input
-// that carries an explicit operation enum. Strict mode must accept it.
-func TestNormalizeStrictSchema_EditFileActualSchema(t *testing.T) {
+// TestNormalizeStrictSchema_EditFileSchemaKeepsEnumAndRequiresAll covers
+// the edit_file schema, which carries an explicit operation enum and a
+// required list naming every property. Strict mode must accept it.
+func TestNormalizeStrictSchema_EditFileSchemaKeepsEnumAndRequiresAll(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	in := json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -393,34 +341,26 @@ func TestNormalizeStrictSchema_EditFileActualSchema(t *testing.T) {
 		"additionalProperties": false
 	}`)
 	out, err := NormalizeStrictSchema("edit_file", in)
-	if err != nil {
-		t.Fatalf("edit_file schema rejected: %v", err)
-	}
-	var got map[string]any
-	_ = json.Unmarshal(out, &got)
+	must.NoError(err)
+	got := decodeSchema(t, out)
 	props := got["properties"].(map[string]any)
 
-	// operation's enum survives the rewrite.
 	op := props["operation"].(map[string]any)
-	enums := op["enum"].([]any)
-	if len(enums) != 4 {
-		t.Errorf("operation.enum = %v, want 4 values", enums)
-	}
+	check.Len(op["enum"], 4)
 
-	// required = [content, diff, new_string, old_string, operation, path].
+	// required lists every property: content, diff, new_string, old_string, operation, path.
 	if reqArr, ok := got["required"].([]any); ok {
-		if len(reqArr) != 6 {
-			t.Errorf("required length = %d, want 6 (every property): %v", len(reqArr), reqArr)
-		}
+		check.Len(reqArr, 6, "required should name every property")
 	}
 }
 
 // TestNormalizeStrictSchema_DoesNotMutateInput pins that the rewrite
-// produces a fresh document rather than aliasing the caller's map. The
-// registry seeds tool schemas as json.RawMessage shared across turns —
-// a mutation here would silently change the canonical schema seen by
-// every subsequent request, including non-strict providers.
+// produces a fresh document rather than aliasing the caller's bytes. The
+// registry seeds tool schemas as json.RawMessage shared across turns, so a
+// mutation here would change the canonical schema seen by every later
+// request, including non-strict providers.
 func TestNormalizeStrictSchema_DoesNotMutateInput(t *testing.T) {
+	must := require.New(t)
 	original := `{
 		"type": "object",
 		"properties": {
@@ -431,31 +371,17 @@ func TestNormalizeStrictSchema_DoesNotMutateInput(t *testing.T) {
 	}`
 	in := json.RawMessage(original)
 	_, err := NormalizeStrictSchema("noalias", in)
-	if err != nil {
-		t.Fatalf("normalize: %v", err)
-	}
-	// in is a []byte alias of original — the rewrite happens on a
-	// parsed copy, not on the bytes, so the bytes should match.
-	if string(in) != original {
-		t.Errorf("input bytes mutated; got %q", string(in))
-	}
+	must.NoError(err)
+	must.Equal(original, string(in))
 }
 
-// TestNormalizeStrictSchema_Idempotent pins that the normaliser is
-// stable under repeated application: feeding the rewritten output back
-// through NormalizeStrictSchema produces byte-identical bytes. This
-// guards two regressions:
-//
-//   - A rewrite that wraps an already-nullable property's type with a
-//     second "null" entry (caught by makeNullable's "already null"
-//     branch — currently the only path through that branch).
-//   - A rewrite that re-sorts `required` differently on a schema that
-//     already lists every property in sorted order.
-//
-// Idempotency also lets the cache stay correct under a hypothetical
-// retry path: feeding cached bytes back through the normaliser must
-// yield the same bytes.
-func TestNormalizeStrictSchema_Idempotent(t *testing.T) {
+// TestNormalizeStrictSchema_IsIdempotent pins that normalising a schema
+// twice yields byte-identical output. It guards against a second "null"
+// being added to an already-nullable type, and against reordering a
+// required list that is already sorted. Cached output must also survive a
+// second pass through the normaliser unchanged.
+func TestNormalizeStrictSchema_IsIdempotent(t *testing.T) {
+	must := require.New(t)
 	in := json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -474,61 +400,37 @@ func TestNormalizeStrictSchema_Idempotent(t *testing.T) {
 		"required": ["req"]
 	}`)
 	first, err := NormalizeStrictSchema("idempotent_tool", in)
-	if err != nil {
-		t.Fatalf("first pass: %v", err)
-	}
+	must.NoError(err)
 	second, err := NormalizeStrictSchema("idempotent_tool", first)
-	if err != nil {
-		t.Fatalf("second pass: %v", err)
-	}
-	if string(first) != string(second) {
-		t.Errorf("normaliser is not idempotent\n first:  %s\n second: %s", first, second)
-	}
+	must.NoError(err)
+	must.Equal(string(first), string(second))
 }
 
-// TestNormalizeStrictSchema_ObjectWithNoProperties pins the early-
-// return path in normalizeStrictObject when a node has `type: object`
-// but no `properties` key. The output must still carry the canonical
-// strict-mode shape (additionalProperties=false, an empty properties
-// object, and an empty required array) so the wire body is well-formed
-// even for a no-arg tool that uses an explicit `type: object`.
-func TestNormalizeStrictSchema_ObjectWithNoProperties(t *testing.T) {
+// TestNormalizeStrictSchema_ObjectWithoutPropertiesIsEmpty pins the output
+// for an object node that has no properties key. The result must still
+// carry the strict-mode shape (additionalProperties=false, an empty
+// properties object and an empty required array) so the wire body is
+// well-formed for a no-arg tool that declares type object explicitly.
+func TestNormalizeStrictSchema_ObjectWithoutPropertiesIsEmpty(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	out, err := NormalizeStrictSchema("noargs_tool", json.RawMessage(`{"type":"object"}`))
-	if err != nil {
-		t.Fatalf("normalize: %v", err)
-	}
-	var got map[string]any
-	if uerr := json.Unmarshal(out, &got); uerr != nil {
-		t.Fatalf("re-unmarshal: %v", uerr)
-	}
-	if got["type"] != "object" {
-		t.Errorf("type = %v, want object", got["type"])
-	}
-	if got["additionalProperties"] != false {
-		t.Errorf("additionalProperties = %v, want false", got["additionalProperties"])
-	}
-	props, ok := got["properties"].(map[string]any)
-	if !ok {
-		t.Errorf("properties = %v, want empty object", got["properties"])
-	} else if len(props) != 0 {
-		t.Errorf("properties = %v, want empty", props)
-	}
-	req, ok := got["required"].([]any)
-	if !ok {
-		t.Errorf("required = %v, want empty array", got["required"])
-	} else if len(req) != 0 {
-		t.Errorf("required = %v, want empty", req)
-	}
+	must.NoError(err)
+	got := decodeSchema(t, out)
+
+	check.Equal("object", got["type"])
+	check.Equal(false, got["additionalProperties"])
+	check.Equal(map[string]any{}, got["properties"])
+	check.Equal([]any{}, got["required"])
 }
 
-// TestNormalizeStrictSchema_ArrayWithNoItems pins the early-return
-// path in normalizeStrictArray when a node has `type: array` but no
-// `items` key. The schema must round-trip without error — the
-// canonical built-in schemas always declare items, but a permissive
-// MCP-imported schema might not, and the normaliser should not reject
-// it as long as the surrounding strict-mode invariants hold for the
-// parent object.
-func TestNormalizeStrictSchema_ArrayWithNoItems(t *testing.T) {
+// TestNormalizeStrictSchema_ArrayWithoutItemsPassesThrough pins that an
+// array node with no items key round-trips without error and is left
+// untouched. Built-in schemas always declare items, but a permissive
+// imported schema might not, and the normaliser must not reject it.
+func TestNormalizeStrictSchema_ArrayWithoutItemsPassesThrough(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	in := json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -537,27 +439,10 @@ func TestNormalizeStrictSchema_ArrayWithNoItems(t *testing.T) {
 		"required": ["tags"]
 	}`)
 	out, err := NormalizeStrictSchema("array_noitems_tool", in)
-	if err != nil {
-		t.Fatalf("normalize: %v", err)
-	}
-	var got map[string]any
-	_ = json.Unmarshal(out, &got)
-	tags := got["properties"].(map[string]any)["tags"].(map[string]any)
-	if tags["type"] != "array" {
-		t.Errorf("tags.type = %v, want array (untouched, no items present)", tags["type"])
-	}
-	if _, has := tags["items"]; has {
-		t.Errorf("tags.items unexpectedly present: %v", tags["items"])
-	}
-}
+	must.NoError(err)
+	got := decodeSchema(t, out)
 
-// containsString reports whether the supplied []any contains a string
-// equal to s. Used in tests that check the type-array form for null.
-func containsString(arr []any, s string) bool {
-	for _, v := range arr {
-		if str, ok := v.(string); ok && str == s {
-			return true
-		}
-	}
-	return false
+	tags := got["properties"].(map[string]any)["tags"].(map[string]any)
+	check.Equal("array", tags["type"])
+	check.NotContains(tags, "items")
 }

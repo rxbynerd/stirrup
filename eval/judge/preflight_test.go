@@ -2,13 +2,14 @@ package judge
 
 import (
 	"context"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
 
-func TestValidateLLMBlock(t *testing.T) {
+func TestValidateLLMBlock_ChecksJudgeTypeAndModel(t *testing.T) {
 	cases := []struct {
 		name    string
 		judge   types.EvalJudge
@@ -20,17 +21,19 @@ func TestValidateLLMBlock(t *testing.T) {
 		{name: "invalid block", judge: types.EvalJudge{Type: "diff-review", LLM: &types.JudgeLLMConfig{}}, wantErr: "llm block: model is required"},
 	}
 	for _, tc := range cases {
-		err := ValidateLLMBlock(tc.judge)
-		switch {
-		case tc.wantErr == "" && err != nil:
-			t.Errorf("%s: %v", tc.name, err)
-		case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
-			t.Errorf("%s: err = %v, want one containing %q", tc.name, err, tc.wantErr)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			err := ValidateLLMBlock(tc.judge)
+			if tc.wantErr == "" {
+				must.NoError(err)
+				return
+			}
+			must.ErrorContains(err, tc.wantErr)
+		})
 	}
 }
 
-func TestPreflightSuite(t *testing.T) {
+func TestPreflightSuite_ValidatesJudgeConfigPerTask(t *testing.T) {
 	requireGit(t)
 	t.Setenv("PREFLIGHT_KEY", "sk-preflight-0123456789")
 	t.Setenv("PREFLIGHT_UNSET_KEY", "")
@@ -77,66 +80,76 @@ func TestPreflightSuite(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			err := PreflightSuite(context.Background(), tc.tasks, tc.opts)
 			if len(tc.wantErr) == 0 {
-				if err != nil {
-					t.Fatal(err)
-				}
+				must.NoError(err)
 				return
 			}
-			if err == nil {
-				t.Fatal("expected an error")
-			}
+			must.Error(err)
 			for _, want := range tc.wantErr {
-				if !strings.Contains(err.Error(), want) {
-					t.Errorf("err = %v, want it to contain %q", err, want)
-				}
+				must.ErrorContains(err, want)
 			}
-			if strings.Contains(err.Error(), "sk-preflight") {
-				t.Errorf("err carries a key value: %v", err)
-			}
+			must.NotContains(err.Error(), "sk-preflight")
 		})
 	}
 }
 
-func TestPreflightLLMConfig(t *testing.T) {
+func TestPreflightLLMConfig_ChecksKeysEndpointsAndCacheMode(t *testing.T) {
 	requireGit(t)
 	t.Setenv("PREFLIGHT_KEY", "sk-preflight-0123456789")
 	t.Setenv("PREFLIGHT_UNSET_KEY", "")
 	cfg := func(ref string) types.JudgeLLMConfig {
 		return types.JudgeLLMConfig{Provider: types.JudgeProviderDecision, Model: "jev-latest", BaseURL: "http://127.0.0.1:9", APIKeyRef: ref}
 	}
-	if err := PreflightLLMConfig(context.Background(), cfg("secret://PREFLIGHT_KEY"), CacheLive); err != nil {
-		t.Errorf("resolvable decision config: %v", err)
-	}
-	err := PreflightLLMConfig(context.Background(), cfg("secret://PREFLIGHT_UNSET_KEY"), CacheReadThrough)
-	if err == nil || !strings.Contains(err.Error(), "secret://PREFLIGHT_UNSET_KEY") || strings.Contains(err.Error(), "sk-preflight") {
-		t.Errorf("missing key: err = %v, want the reference named", err)
-	}
-	if err := PreflightLLMConfig(context.Background(), cfg("secret://PREFLIGHT_UNSET_KEY"), CacheReplayStrict); err != nil {
-		t.Errorf("replay-strict needs no key: %v", err)
-	}
-	refused := types.JudgeLLMConfig{Provider: "openai-compatible", Model: "m", BaseURL: "https://169.254.169.254/v1"}
-	if err := PreflightLLMConfig(context.Background(), refused, CacheLive); err == nil || !strings.Contains(err.Error(), "link-local") {
-		t.Errorf("refused endpoint: err = %v", err)
-	}
-	if err := PreflightLLMConfig(context.Background(), types.JudgeLLMConfig{}, CacheLive); err == nil || !strings.Contains(err.Error(), "model is required") {
-		t.Errorf("invalid config: err = %v", err)
-	}
-	if err := PreflightLLMConfig(context.Background(), cfg(""), "bogus"); err == nil || !strings.Contains(err.Error(), "bogus") {
-		t.Errorf("invalid cache mode: err = %v", err)
-	}
+
+	t.Run("resolvable decision config", func(t *testing.T) {
+		must := require.New(t)
+		err := PreflightLLMConfig(context.Background(), cfg("secret://PREFLIGHT_KEY"), CacheLive)
+		must.NoError(err)
+	})
+	t.Run("missing key names the reference", func(t *testing.T) {
+		must := require.New(t)
+		err := PreflightLLMConfig(context.Background(), cfg("secret://PREFLIGHT_UNSET_KEY"), CacheReadThrough)
+		must.ErrorContains(err, "secret://PREFLIGHT_UNSET_KEY")
+		must.NotContains(err.Error(), "sk-preflight")
+	})
+	t.Run("replay-strict needs no key", func(t *testing.T) {
+		must := require.New(t)
+		err := PreflightLLMConfig(context.Background(), cfg("secret://PREFLIGHT_UNSET_KEY"), CacheReplayStrict)
+		must.NoError(err)
+	})
+	t.Run("refused endpoint", func(t *testing.T) {
+		must := require.New(t)
+		refused := types.JudgeLLMConfig{Provider: "openai-compatible", Model: "m", BaseURL: "https://169.254.169.254/v1"}
+		err := PreflightLLMConfig(context.Background(), refused, CacheLive)
+		must.ErrorContains(err, "link-local")
+	})
+	t.Run("invalid config", func(t *testing.T) {
+		must := require.New(t)
+		err := PreflightLLMConfig(context.Background(), types.JudgeLLMConfig{}, CacheLive)
+		must.ErrorContains(err, "model is required")
+	})
+	t.Run("invalid cache mode", func(t *testing.T) {
+		must := require.New(t)
+		err := PreflightLLMConfig(context.Background(), cfg(""), "bogus")
+		must.ErrorContains(err, "bogus")
+	})
 }
 
 func TestPreflightSuite_RequiresGitOnlyForDiffReview(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	t.Setenv("PREFLIGHT_KEY", "k")
-	if err := PreflightSuite(context.Background(), []types.EvalTask{{ID: "a", Judge: types.EvalJudge{Type: "file-exists"}}}, Options{}); err != nil {
-		t.Errorf("suite without diff-review judges: %v", err)
-	}
-	review := types.EvalJudge{Type: "diff-review", Criteria: "c", LLM: &types.JudgeLLMConfig{Model: "m", APIKeyRef: "secret://PREFLIGHT_KEY"}}
-	err := PreflightSuite(context.Background(), []types.EvalTask{{ID: "a", Judge: review}}, Options{})
-	if err == nil || !strings.Contains(err.Error(), "git on PATH") {
-		t.Errorf("err = %v, want a missing-git error", err)
-	}
+
+	t.Run("suite without diff-review judges needs no git", func(t *testing.T) {
+		must := require.New(t)
+		err := PreflightSuite(context.Background(), []types.EvalTask{{ID: "a", Judge: types.EvalJudge{Type: "file-exists"}}}, Options{})
+		must.NoError(err)
+	})
+	t.Run("diff-review judge needs git on PATH", func(t *testing.T) {
+		must := require.New(t)
+		review := types.EvalJudge{Type: "diff-review", Criteria: "c", LLM: &types.JudgeLLMConfig{Model: "m", APIKeyRef: "secret://PREFLIGHT_KEY"}}
+		err := PreflightSuite(context.Background(), []types.EvalTask{{ID: "a", Judge: review}}, Options{})
+		must.ErrorContains(err, "git on PATH")
+	})
 }

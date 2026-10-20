@@ -3,10 +3,12 @@ package types
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestToolResultWireEnvelope_LeanViewPerKind(t *testing.T) {
-	tests := []struct {
+	cases := []struct {
 		name       string
 		kind       string
 		structured string
@@ -79,22 +81,19 @@ func TestToolResultWireEnvelope_LeanViewPerKind(t *testing.T) {
 			want:       `{"ref":"HEAD","truncated":false}`,
 		},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			b := ContentBlock{Type: "tool_result", Content: "text rendering", Kind: tt.kind, Structured: json.RawMessage(tt.structured)}
-			got := ToolResultWireEnvelope(b)
-			if string(got) != tt.want {
-				t.Errorf("wire envelope\n got: %s\nwant: %s", got, tt.want)
-			}
-			if string(b.Structured) != tt.structured {
-				t.Errorf("block's envelope was modified: %s", b.Structured)
-			}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			block := ContentBlock{Type: "tool_result", Content: "text rendering", Kind: tc.kind, Structured: json.RawMessage(tc.structured)}
+			got := ToolResultWireEnvelope(block)
+			must.Equal(tc.want, string(got))
+			must.Equal(tc.structured, string(block.Structured), "block's structured payload was modified")
 		})
 	}
 }
 
 func TestToolResultWireEnvelope_PassThroughAndEmpty(t *testing.T) {
-	tests := []struct {
+	cases := []struct {
 		name       string
 		kind       string
 		content    string
@@ -108,16 +107,15 @@ func TestToolResultWireEnvelope_PassThroughAndEmpty(t *testing.T) {
 		{name: "known kind with a non-object payload is unchanged", kind: ToolResultKindFileExcerpt, content: "ok", structured: `"redacted"`, want: `"redacted"`},
 		{name: "known kind with a mistyped field is unchanged", kind: ToolResultKindFileExcerpt, content: "ok", structured: `{"path":7}`, want: `{"path":7}`},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var structured json.RawMessage
-			if tt.structured != "" {
-				structured = json.RawMessage(tt.structured)
+			if tc.structured != "" {
+				structured = json.RawMessage(tc.structured)
 			}
-			got := ToolResultWireEnvelope(ContentBlock{Type: "tool_result", Content: tt.content, Kind: tt.kind, Structured: structured})
-			if string(got) != tt.want {
-				t.Errorf("wire envelope\n got: %s\nwant: %s", got, tt.want)
-			}
+			got := ToolResultWireEnvelope(ContentBlock{Type: "tool_result", Content: tc.content, Kind: tc.kind, Structured: structured})
+			must.Equal(tc.want, string(got))
 		})
 	}
 }

@@ -5,44 +5,39 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"maps"
 	"math"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRedact_ProviderAPIKey(t *testing.T) {
+	check := assert.New(t)
 	rc := RunConfig{
 		Provider: ProviderConfig{APIKeyRef: "secret://my-key"},
 	}
 	redacted := rc.Redact()
-	if redacted.Provider.APIKeyRef != "secret://[REDACTED]" {
-		t.Errorf("Provider.APIKeyRef = %q, want secret://[REDACTED]", redacted.Provider.APIKeyRef)
-	}
-	// Original unchanged.
-	if rc.Provider.APIKeyRef != "secret://my-key" {
-		t.Error("Redact mutated original")
-	}
+	check.Equal("secret://[REDACTED]", redacted.Provider.APIKeyRef)
+	check.Equal("secret://my-key", rc.Provider.APIKeyRef, "Redact must not mutate the original config")
 }
 
 func TestRedact_VcsBackendAPIKey(t *testing.T) {
+	check := assert.New(t)
 	rc := RunConfig{
 		Executor: ExecutorConfig{
 			VcsBackend: &VcsBackendConfig{APIKeyRef: "secret://github-token"},
 		},
 	}
 	redacted := rc.Redact()
-	if redacted.Executor.VcsBackend.APIKeyRef != "secret://[REDACTED]" {
-		t.Errorf("VcsBackend.APIKeyRef = %q, want secret://[REDACTED]", redacted.Executor.VcsBackend.APIKeyRef)
-	}
-	// Original unchanged.
-	if rc.Executor.VcsBackend.APIKeyRef != "secret://github-token" {
-		t.Error("Redact mutated original VcsBackend")
-	}
+	check.Equal("secret://[REDACTED]", redacted.Executor.VcsBackend.APIKeyRef)
+	check.Equal("secret://github-token", rc.Executor.VcsBackend.APIKeyRef, "Redact must not mutate the original VcsBackend")
 }
 
 func TestRedact_ProvidersAPIKeys(t *testing.T) {
+	check := assert.New(t)
 	rc := RunConfig{
 		Providers: map[string]ProviderConfig{
 			"backup": {Type: "openai-compatible", APIKeyRef: "secret://backup-key"},
@@ -50,18 +45,13 @@ func TestRedact_ProvidersAPIKeys(t *testing.T) {
 		},
 	}
 	redacted := rc.Redact()
-	if redacted.Providers["backup"].APIKeyRef != "secret://[REDACTED]" {
-		t.Errorf("Providers[backup].APIKeyRef = %q, want redacted", redacted.Providers["backup"].APIKeyRef)
-	}
-	if redacted.Providers["public"].APIKeyRef != "" {
-		t.Errorf("Providers[public].APIKeyRef = %q, want empty", redacted.Providers["public"].APIKeyRef)
-	}
-	if rc.Providers["backup"].APIKeyRef != "secret://backup-key" {
-		t.Error("Redact mutated original Providers map")
-	}
+	check.Equal("secret://[REDACTED]", redacted.Providers["backup"].APIKeyRef)
+	check.Empty(redacted.Providers["public"].APIKeyRef)
+	check.Equal("secret://backup-key", rc.Providers["backup"].APIKeyRef, "Redact must not mutate the original Providers map")
 }
 
 func TestRedact_ProviderConnectionFields(t *testing.T) {
+	check := assert.New(t)
 	rc := RunConfig{
 		Provider: ProviderConfig{
 			Type:         "openai-compatible",
@@ -88,49 +78,26 @@ func TestRedact_ProviderConnectionFields(t *testing.T) {
 
 	redacted := rc.Redact()
 
-	if got := redacted.Provider.BaseURL; got != "https://llm-gateway.internal.corp" {
-		t.Errorf("Provider.BaseURL = %q, want origin only", got)
-	}
-	if got := redacted.Provider.APIKeyHeader; got != "[REDACTED]" {
-		t.Errorf("Provider.APIKeyHeader = %q, want [REDACTED]", got)
-	}
-	if got := redacted.Provider.QueryParams["api-version"]; got != "2024-10-21" {
-		t.Errorf("Provider.QueryParams[api-version] = %q, want preserved allowlisted value", got)
-	}
-	if got := redacted.Provider.QueryParams["api-key"]; got != "[REDACTED]" {
-		t.Errorf("Provider.QueryParams[api-key] = %q, want [REDACTED]", got)
-	}
-	if got := redacted.Provider.QueryParams["tenant"]; got != "[REDACTED]" {
-		t.Errorf("Provider.QueryParams[tenant] = %q, want [REDACTED]", got)
-	}
+	check.Equal("https://llm-gateway.internal.corp", redacted.Provider.BaseURL, "Provider.BaseURL keeps the origin only")
+	check.Equal("[REDACTED]", redacted.Provider.APIKeyHeader, "Provider.APIKeyHeader")
+	check.Equal("2024-10-21", redacted.Provider.QueryParams["api-version"], "allowlisted query parameter")
+	check.Equal("[REDACTED]", redacted.Provider.QueryParams["api-key"], "Provider.QueryParams[api-key]")
+	check.Equal("[REDACTED]", redacted.Provider.QueryParams["tenant"], "Provider.QueryParams[tenant]")
 
 	backup := redacted.Providers["backup"]
-	if got := backup.BaseURL; got != "https://backup.internal.example" {
-		t.Errorf("Providers[backup].BaseURL = %q, want origin only", got)
-	}
-	if got := backup.APIKeyHeader; got != "[REDACTED]" {
-		t.Errorf("Providers[backup].APIKeyHeader = %q, want [REDACTED]", got)
-	}
-	if got := backup.QueryParams["api-version"]; got != "preview" {
-		t.Errorf("Providers[backup].QueryParams[api-version] = %q, want preserved allowlisted value", got)
-	}
-	if got := backup.QueryParams["token"]; got != "[REDACTED]" {
-		t.Errorf("Providers[backup].QueryParams[token] = %q, want [REDACTED]", got)
-	}
+	check.Equal("https://backup.internal.example", backup.BaseURL, "Providers[backup].BaseURL keeps the origin only")
+	check.Equal("[REDACTED]", backup.APIKeyHeader, "Providers[backup].APIKeyHeader")
+	check.Equal("preview", backup.QueryParams["api-version"], "allowlisted query parameter")
+	check.Equal("[REDACTED]", backup.QueryParams["token"], "Providers[backup].QueryParams[token]")
 
 	redacted.Provider.QueryParams["tenant"] = "mutated"
-	if got := rc.Provider.BaseURL; got != "https://user:pass@llm-gateway.internal.corp/openai/v1?api-key=raw" {
-		t.Errorf("Redact mutated original Provider.BaseURL: %q", got)
-	}
-	if got := rc.Provider.APIKeyHeader; got != "x-api-key" {
-		t.Errorf("Redact mutated original Provider.APIKeyHeader: %q", got)
-	}
-	if got := rc.Provider.QueryParams["tenant"]; got != "internal-team" {
-		t.Errorf("Redact mutated original Provider.QueryParams: %q", got)
-	}
+	check.Equal("https://user:pass@llm-gateway.internal.corp/openai/v1?api-key=raw", rc.Provider.BaseURL, "Redact must not mutate the original Provider.BaseURL")
+	check.Equal("x-api-key", rc.Provider.APIKeyHeader, "Redact must not mutate the original Provider.APIKeyHeader")
+	check.Equal("internal-team", rc.Provider.QueryParams["tenant"], "Redact must not mutate the original Provider.QueryParams")
 }
 
 func TestRedact_MCPServersAPIKeys(t *testing.T) {
+	check := assert.New(t)
 	rc := RunConfig{
 		Tools: ToolsConfig{
 			MCPServers: []MCPServerConfig{
@@ -141,58 +108,41 @@ func TestRedact_MCPServersAPIKeys(t *testing.T) {
 		},
 	}
 	redacted := rc.Redact()
-	if redacted.Tools.MCPServers[0].URI != "https://mcp-a.internal.example" {
-		t.Errorf("MCPServers[0].URI = %q, want origin only", redacted.Tools.MCPServers[0].URI)
-	}
-	if redacted.Tools.MCPServers[0].APIKeyRef != "secret://[REDACTED]" {
-		t.Errorf("MCPServers[0].APIKeyRef = %q, want redacted", redacted.Tools.MCPServers[0].APIKeyRef)
-	}
-	if redacted.Tools.MCPServers[1].URI != "http://b" {
-		t.Errorf("MCPServers[1].URI = %q, want unchanged origin", redacted.Tools.MCPServers[1].URI)
-	}
-	if redacted.Tools.MCPServers[1].APIKeyRef != "" {
-		t.Errorf("MCPServers[1].APIKeyRef = %q, want empty", redacted.Tools.MCPServers[1].APIKeyRef)
-	}
-	if redacted.Tools.MCPServers[2].URI != "http://c" {
-		t.Errorf("MCPServers[2].URI = %q, want origin only", redacted.Tools.MCPServers[2].URI)
-	}
-	if redacted.Tools.MCPServers[2].APIKeyRef != "secret://[REDACTED]" {
-		t.Errorf("MCPServers[2].APIKeyRef = %q, want redacted", redacted.Tools.MCPServers[2].APIKeyRef)
-	}
-	// Original unchanged.
-	if rc.Tools.MCPServers[0].APIKeyRef != "secret://key1" {
-		t.Error("Redact mutated original MCPServers")
-	}
-	if rc.Tools.MCPServers[0].URI != "https://user:pass@mcp-a.internal.example/mcp?api_key=raw" {
-		t.Error("Redact mutated original MCPServers URI")
-	}
+	check.Equal("https://mcp-a.internal.example", redacted.Tools.MCPServers[0].URI, "MCPServers[0].URI keeps the origin only")
+	check.Equal("secret://[REDACTED]", redacted.Tools.MCPServers[0].APIKeyRef, "MCPServers[0].APIKeyRef")
+	check.Equal("http://b", redacted.Tools.MCPServers[1].URI, "MCPServers[1].URI")
+	check.Empty(redacted.Tools.MCPServers[1].APIKeyRef, "MCPServers[1].APIKeyRef")
+	check.Equal("http://c", redacted.Tools.MCPServers[2].URI, "MCPServers[2].URI keeps the origin only")
+	check.Equal("secret://[REDACTED]", redacted.Tools.MCPServers[2].APIKeyRef, "MCPServers[2].APIKeyRef")
+
+	check.Equal("secret://key1", rc.Tools.MCPServers[0].APIKeyRef, "Redact must not mutate the original MCPServers APIKeyRef")
+	check.Equal("https://user:pass@mcp-a.internal.example/mcp?api_key=raw", rc.Tools.MCPServers[0].URI, "Redact must not mutate the original MCPServers URI")
 }
 
 // TestRedact_SessionNamePreserved pins that SessionName survives Redact(): it is
 // an operator label, not a secret, and must persist in traces for cross-referencing.
 func TestRedact_SessionNamePreserved(t *testing.T) {
+	must := require.New(t)
 	rc := RunConfig{
 		SessionName: "nightly-eval",
 		Provider:    ProviderConfig{APIKeyRef: "secret://k"},
 	}
 	redacted := rc.Redact()
-	if redacted.SessionName != "nightly-eval" {
-		t.Errorf("SessionName should be preserved, got %q", redacted.SessionName)
-	}
+	must.Equal("nightly-eval", redacted.SessionName)
 }
 
-func TestRedact_EmptyConfig(t *testing.T) {
+func TestRedact_EmptyConfig_LeavesAPIKeyEmpty(t *testing.T) {
+	must := require.New(t)
 	rc := RunConfig{}
 	redacted := rc.Redact()
-	if redacted.Provider.APIKeyRef != "" {
-		t.Error("empty APIKeyRef should stay empty")
-	}
+	must.Empty(redacted.Provider.APIKeyRef)
 }
 
 // TestRedact_TraceEmitterHeaders pins that a "secret://" trace-emitter header value
 // is rewritten to "secret://[REDACTED]" by Redact() while plaintext headers pass
 // through unchanged; the resolved bearer must never reach a persisted trace.
 func TestRedact_TraceEmitterHeaders(t *testing.T) {
+	check := assert.New(t)
 	rc := RunConfig{
 		TraceEmitter: TraceEmitterConfig{
 			Type: "otel",
@@ -204,23 +154,17 @@ func TestRedact_TraceEmitterHeaders(t *testing.T) {
 	}
 	redacted := rc.Redact()
 
-	if got := redacted.TraceEmitter.Headers["Authorization"]; got != "secret://[REDACTED]" {
-		t.Errorf("Authorization header = %q, want secret://[REDACTED]", got)
-	}
-	if got := redacted.TraceEmitter.Headers["X-Tenant"]; got != "team-a" {
-		t.Errorf("X-Tenant plaintext header = %q, want team-a (plaintext should pass through)", got)
-	}
+	check.Equal("secret://[REDACTED]", redacted.TraceEmitter.Headers["Authorization"])
+	check.Equal("team-a", redacted.TraceEmitter.Headers["X-Tenant"], "plaintext headers pass through")
 
-	// Original unchanged.
-	if rc.TraceEmitter.Headers["Authorization"] != "secret://GRAFANA_CLOUD_AUTH" {
-		t.Error("Redact mutated original TraceEmitter.Headers")
-	}
+	check.Equal("secret://GRAFANA_CLOUD_AUTH", rc.TraceEmitter.Headers["Authorization"], "Redact must not mutate the original TraceEmitter.Headers")
 }
 
 // TestRedact_TraceEmitterPlatformOptionsUnchanged pins that Redact() leaves
 // the platform and its options untouched: options are validated never to be
 // secrets, so a persisted trace shows exactly what the operator declared.
 func TestRedact_TraceEmitterPlatformOptionsUnchanged(t *testing.T) {
+	must := require.New(t)
 	rc := RunConfig{
 		TraceEmitter: TraceEmitterConfig{
 			Type:            "otel",
@@ -229,18 +173,15 @@ func TestRedact_TraceEmitterPlatformOptionsUnchanged(t *testing.T) {
 		},
 	}
 	redacted := rc.Redact()
-	if redacted.TraceEmitter.Platform != "cloudwatch" {
-		t.Errorf("Platform = %q, want cloudwatch", redacted.TraceEmitter.Platform)
-	}
-	if !maps.Equal(redacted.TraceEmitter.PlatformOptions, rc.TraceEmitter.PlatformOptions) {
-		t.Errorf("PlatformOptions = %v, want %v", redacted.TraceEmitter.PlatformOptions, rc.TraceEmitter.PlatformOptions)
-	}
+	must.Equal("cloudwatch", redacted.TraceEmitter.Platform)
+	must.Equal(rc.TraceEmitter.PlatformOptions, redacted.TraceEmitter.PlatformOptions)
 }
 
 // TestRedact_ProviderRetryNotAliased pins that Redact() deep-copies
 // ProviderConfig.Retry on both the top-level Provider and every Providers entry,
 // so mutating the redacted config's Retry cannot reach the live one.
 func TestRedact_ProviderRetryNotAliased(t *testing.T) {
+	must := require.New(t)
 	rc := RunConfig{
 		Provider: ProviderConfig{
 			Type:  "openai-compatible",
@@ -255,29 +196,17 @@ func TestRedact_ProviderRetryNotAliased(t *testing.T) {
 	}
 	redacted := rc.Redact()
 
-	if redacted.Provider.Retry == nil {
-		t.Fatal("top-level Retry dropped by Redact")
-	}
-	if redacted.Provider.Retry == rc.Provider.Retry {
-		t.Fatal("top-level Retry pointer aliased — Redact must deep-copy")
-	}
+	must.NotNil(redacted.Provider.Retry, "top-level Retry dropped by Redact")
+	must.NotSame(rc.Provider.Retry, redacted.Provider.Retry, "top-level Retry must be deep-copied")
 	redacted.Provider.Retry.MaxAttempts = 99
-	if rc.Provider.Retry.MaxAttempts != 3 {
-		t.Errorf("mutating redacted Provider.Retry leaked to original: got %d, want 3", rc.Provider.Retry.MaxAttempts)
-	}
+	must.Equal(3, rc.Provider.Retry.MaxAttempts, "mutating redacted Provider.Retry must not reach the original")
 
 	redactedSecondary := redacted.Providers["secondary"]
 	originalSecondary := rc.Providers["secondary"]
-	if redactedSecondary.Retry == nil {
-		t.Fatal("named-provider Retry dropped by Redact")
-	}
-	if redactedSecondary.Retry == originalSecondary.Retry {
-		t.Fatal("named-provider Retry pointer aliased — Redact must deep-copy")
-	}
+	must.NotNil(redactedSecondary.Retry, "named-provider Retry dropped by Redact")
+	must.NotSame(originalSecondary.Retry, redactedSecondary.Retry, "named-provider Retry must be deep-copied")
 	redactedSecondary.Retry.MaxAttempts = 88
-	if rc.Providers["secondary"].Retry.MaxAttempts != 4 {
-		t.Errorf("mutating redacted named-provider Retry leaked to original: got %d, want 4", rc.Providers["secondary"].Retry.MaxAttempts)
-	}
+	must.Equal(4, rc.Providers["secondary"].Retry.MaxAttempts, "mutating redacted named-provider Retry must not reach the original")
 }
 
 // --- ValidateRunConfig tests ---
@@ -293,38 +222,33 @@ func validConfig() *RunConfig {
 	}
 }
 
-func TestValidateRunConfig_Valid(t *testing.T) {
-	if err := ValidateRunConfig(validConfig()); err != nil {
-		t.Fatalf("expected nil error for valid config, got: %v", err)
-	}
+func TestValidateRunConfig_AcceptsValidConfig(t *testing.T) {
+	must := require.New(t)
+	must.NoError(ValidateRunConfig(validConfig()))
 }
 
 func TestValidateRunConfig_ReadOnlyModeWithAllowAll(t *testing.T) {
 	readOnlyModes := []string{"planning", "review", "research", "toil"}
 	for _, mode := range readOnlyModes {
 		t.Run(mode, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Mode = mode
 			c.PermissionPolicy = PermissionPolicyConfig{Type: "allow-all"}
 			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("expected error for %s with allow-all, got nil", mode)
-			}
-			if !strings.Contains(err.Error(), mode) {
-				t.Errorf("expected error to mention mode %q, got: %v", mode, err)
-			}
+			must.Error(err)
+			must.ErrorContains(err, mode)
 		})
 	}
 }
 
 func TestValidateRunConfig_ReadOnlyModeWithDenySideEffects(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Mode = "review"
 	c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
 	c.Tools = ToolsConfig{BuiltIn: []string{"read_file", "list_directory", "grep_files", "find_files"}}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("deny-side-effects should be accepted for read-only mode, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c), "deny-side-effects should be accepted for read-only mode")
 }
 
 // TestValidateRunConfig_ReadOnlyModeDefaultsPermissionPolicy pins that an
@@ -333,16 +257,13 @@ func TestValidateRunConfig_ReadOnlyModeWithDenySideEffects(t *testing.T) {
 func TestValidateRunConfig_ReadOnlyModeDefaultsPermissionPolicy(t *testing.T) {
 	for _, mode := range []string{"planning", "review", "research", "toil"} {
 		t.Run(mode, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Mode = mode
 			c.PermissionPolicy = PermissionPolicyConfig{}
 			c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("read-only mode without a policy should validate, got: %v", err)
-			}
-			if c.PermissionPolicy.Type != "deny-side-effects" {
-				t.Errorf("permissionPolicy.type = %q, want %q", c.PermissionPolicy.Type, "deny-side-effects")
-			}
+			must.NoError(ValidateRunConfig(c))
+			must.Equal("deny-side-effects", c.PermissionPolicy.Type)
 		})
 	}
 }
@@ -350,16 +271,13 @@ func TestValidateRunConfig_ReadOnlyModeDefaultsPermissionPolicy(t *testing.T) {
 // TestValidateRunConfig_ReadOnlyModeDefaultRespectsExplicitPolicy confirms
 // the default never overwrites a caller's stricter choice.
 func TestValidateRunConfig_ReadOnlyModeDefaultRespectsExplicitPolicy(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Mode = "planning"
 	c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-all"}
 	c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("deny-all should be accepted for a read-only mode, got: %v", err)
-	}
-	if c.PermissionPolicy.Type != "deny-all" {
-		t.Errorf("permissionPolicy.type = %q, want the explicit %q", c.PermissionPolicy.Type, "deny-all")
-	}
+	must.NoError(ValidateRunConfig(c), "deny-all should be accepted for a read-only mode")
+	must.Equal("deny-all", c.PermissionPolicy.Type)
 }
 
 // TestValidateRunConfig_EditableModeRequiresPermissionPolicy pins that an
@@ -367,58 +285,51 @@ func TestValidateRunConfig_ReadOnlyModeDefaultRespectsExplicitPolicy(t *testing.
 // The only default an editable run could take is allow-all, which must be
 // an explicit choice rather than something inferred from a missing field.
 func TestValidateRunConfig_EditableModeRequiresPermissionPolicy(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.PermissionPolicy = PermissionPolicyConfig{}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected an error for execution mode without a permission policy")
-	}
-	if !strings.Contains(err.Error(), "permissionPolicy.type is required") {
-		t.Errorf("expected the required-field error, got: %v", err)
-	}
+	must.ErrorContains(err, "permissionPolicy.type is required")
 	for _, name := range []string{"allow-all", "deny-all", "deny-side-effects", "ask-upstream", "policy-engine"} {
-		if !strings.Contains(err.Error(), name) {
-			t.Errorf("expected the error to name %q as a valid value, got: %v", name, err)
-		}
+		must.ErrorContains(err, name, "valid value %q should be named in the error", name)
 	}
-	if c.PermissionPolicy.Type != "" {
-		t.Errorf("permissionPolicy.type = %q, want it left empty rather than defaulted", c.PermissionPolicy.Type)
-	}
+	must.Empty(c.PermissionPolicy.Type, "permissionPolicy.type should stay empty, not be defaulted")
 }
 
 // TestValidateRunConfig_UnknownModeSkipsPermissionPolicyRequirement keeps
 // the required-policy error off configs whose mode is itself invalid, so
 // the reported cause stays the mode.
 func TestValidateRunConfig_UnknownModeSkipsPermissionPolicyRequirement(t *testing.T) {
-	for _, mode := range []string{"", "excution"} {
-		t.Run(mode, func(t *testing.T) {
+	cases := []struct {
+		name string
+		mode string
+	}{
+		{name: "empty mode", mode: ""},
+		{name: "misspelled mode", mode: "excution"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
-			c.Mode = mode
+			c.Mode = tc.mode
 			c.PermissionPolicy = PermissionPolicyConfig{}
 			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatal("expected an error for an invalid mode")
-			}
-			if strings.Contains(err.Error(), "permissionPolicy.type is required") {
-				t.Errorf("invalid mode should not also report a missing permission policy, got: %v", err)
-			}
+			must.Error(err)
+			must.NotContains(err.Error(), "permissionPolicy.type is required")
 		})
 	}
 }
 
 func TestValidateRunConfig_UnknownPermissionPolicy(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effect"}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for unknown permission policy type")
-	}
-	if !strings.Contains(err.Error(), "permissionPolicy") {
-		t.Errorf("expected error to mention permissionPolicy, got: %v", err)
-	}
+	must.ErrorContains(err, "permissionPolicy")
 }
 
 func TestValidateRunConfig_UnknownRouterProvider(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.ModelRouter = ModelRouterConfig{
 		Type:     "static",
@@ -426,27 +337,18 @@ func TestValidateRunConfig_UnknownRouterProvider(t *testing.T) {
 		Model:    "claude-sonnet-4-6",
 	}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for unknown router provider")
-	}
-	if !strings.Contains(err.Error(), "unknown provider") {
-		t.Errorf("expected error to mention unknown provider, got: %v", err)
-	}
+	must.ErrorContains(err, "unknown provider")
 }
 
 func TestValidateRunConfig_InvalidBuiltInTool(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Tools = ToolsConfig{BuiltIn: []string{"delete_everything"}}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for invalid builtin tool")
-	}
-	if !strings.Contains(err.Error(), "tools.builtIn") {
-		t.Errorf("expected error to mention tools.builtIn, got: %v", err)
-	}
+	must.ErrorContains(err, "tools.builtIn")
 }
 
-func TestValidateRunConfig_MCPServers(t *testing.T) {
+func TestValidateRunConfig_MCPServerValidation(t *testing.T) {
 	cases := []struct {
 		name    string
 		server  MCPServerConfig
@@ -515,47 +417,43 @@ func TestValidateRunConfig_MCPServers(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Tools = ToolsConfig{MCPServers: []MCPServerConfig{tc.server}}
 			err := ValidateRunConfig(c)
 			if tc.wantErr == "" {
-				if err != nil {
-					t.Fatalf("expected valid config, got: %v", err)
-				}
+				must.NoError(err)
 				return
 			}
-			if err == nil {
-				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
-			}
-			if !strings.Contains(err.Error(), tc.wantErr) {
-				t.Errorf("error = %v, want it to contain %q", err, tc.wantErr)
-			}
+			must.ErrorContains(err, tc.wantErr)
 		})
 	}
 }
 
 func TestValidateRunConfig_UnknownToolsProfile(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Tools.Profile = "provider-native-but-unimplemented"
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for unknown tools.profile")
-	}
-	if !strings.Contains(err.Error(), "tools.profile") {
-		t.Errorf("expected error to mention tools.profile, got: %v", err)
-	}
+	must.ErrorContains(err, "tools.profile")
 }
 
 func TestValidateRunConfig_KnownToolsProfilesAccepted(t *testing.T) {
-	// Empty (default), explicit "default", and the one shipped alternate
-	// all validate. The empty value is the byte-identical-to-today path.
-	for _, profile := range []string{"", "default", "coding-classic"} {
-		t.Run(profile, func(t *testing.T) {
+	// The empty profile is the default path and must keep validating.
+	cases := []struct {
+		name    string
+		profile string
+	}{
+		{name: "empty", profile: ""},
+		{name: "default", profile: "default"},
+		{name: "coding-classic", profile: "coding-classic"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
-			c.Tools.Profile = profile
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("profile %q should validate, got: %v", profile, err)
-			}
+			c.Tools.Profile = tc.profile
+			must.NoError(ValidateRunConfig(c))
 		})
 	}
 }
@@ -564,162 +462,116 @@ func TestValidateRunConfig_KnownToolsProfilesAccepted(t *testing.T) {
 // the wire (so pre-profile configs round-trip byte-identically), and a set Profile
 // appears on the wire.
 func TestToolsConfig_ProfileOmittedOnWire(t *testing.T) {
+	must := require.New(t)
 	b, err := json.Marshal(ToolsConfig{BuiltIn: []string{"read_file"}})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if strings.Contains(string(b), "profile") {
-		t.Errorf("empty Profile must be omitted from ToolsConfig, got: %s", b)
-	}
+	must.NoError(err)
+	must.NotContains(string(b), "profile", "empty Profile must be omitted from ToolsConfig")
 
 	withProfile, err := json.Marshal(ToolsConfig{Profile: "coding-classic"})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if !strings.Contains(string(withProfile), `"profile":"coding-classic"`) {
-		t.Errorf("a set Profile must appear on the wire, got: %s", withProfile)
-	}
+	must.NoError(err)
+	must.Contains(string(withProfile), `"profile":"coding-classic"`)
 }
 
 func TestValidateRunConfig_MaxTurnsExceedsLimit(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.MaxTurns = 101
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for maxTurns > 100")
-	}
-	if !strings.Contains(err.Error(), "maxTurns") {
-		t.Errorf("expected error to mention maxTurns, got: %v", err)
-	}
+	must.ErrorContains(err, "maxTurns")
 }
 
 func TestValidateRunConfig_MaxTurnsZero(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.MaxTurns = 0
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for maxTurns=0")
-	}
-	if !strings.Contains(err.Error(), "maxTurns") {
-		t.Errorf("expected error to mention maxTurns, got: %v", err)
-	}
+	must.ErrorContains(err, "maxTurns")
 }
 
 func TestValidateRunConfig_MaxTurnsNegative(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.MaxTurns = -1
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for maxTurns=-1")
-	}
-	if !strings.Contains(err.Error(), "maxTurns") {
-		t.Errorf("expected error to mention maxTurns, got: %v", err)
-	}
+	must.ErrorContains(err, "maxTurns")
 }
 
 func TestValidateRunConfig_NilTimeout(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Timeout = nil
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for nil timeout")
-	}
-	if !strings.Contains(err.Error(), "timeout") {
-		t.Errorf("expected error to mention timeout, got: %v", err)
-	}
+	must.ErrorContains(err, "timeout")
 }
 
 func TestValidateRunConfig_TimeoutExceedsMax(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	timeout := 3601
 	c.Timeout = &timeout
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for timeout > 3600")
-	}
-	if !strings.Contains(err.Error(), "timeout") {
-		t.Errorf("expected error to mention timeout, got: %v", err)
-	}
+	must.ErrorContains(err, "timeout")
 }
 
 func TestValidateRunConfig_TimeoutMustBePositive(t *testing.T) {
 	for _, timeout := range []int{0, -1} {
 		t.Run(fmt.Sprintf("timeout_%d", timeout), func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Timeout = &timeout
 			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatal("expected error for non-positive timeout")
-			}
-			if !strings.Contains(err.Error(), "timeout") {
-				t.Errorf("expected error to mention timeout, got: %v", err)
-			}
+			must.ErrorContains(err, "timeout")
 		})
 	}
 }
 
-func TestValidateRunConfig_MultipleErrors(t *testing.T) {
+func TestValidateRunConfig_ReportsEveryViolation(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Mode = "planning"
 	c.PermissionPolicy = PermissionPolicyConfig{Type: "allow-all"}
 	c.MaxTurns = 200
 	c.Timeout = nil
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for multiple violations")
-	}
-	errStr := err.Error()
+	must.Error(err)
 
-	if !strings.Contains(errStr, "planning") {
-		t.Error("expected error to mention planning mode violation")
-	}
-	if !strings.Contains(errStr, "maxTurns") {
-		t.Error("expected error to mention maxTurns violation")
-	}
-	if !strings.Contains(errStr, "timeout") {
-		t.Error("expected error to mention timeout violation")
-	}
+	must.ErrorContains(err, "planning")
+	must.ErrorContains(err, "maxTurns")
+	must.ErrorContains(err, "timeout")
 }
 
 func TestValidateRunConfig_ReadOnlyModeWithWriteToolInList(t *testing.T) {
 	writeTools := []string{"write_file", "run_command", "edit_file", "search_replace", "apply_diff"}
 	for _, mode := range []string{"planning", "review", "research", "toil"} {
-		for _, tool := range writeTools {
-			t.Run(fmt.Sprintf("%s/%s", mode, tool), func(t *testing.T) {
-				c := validConfig()
-				c.Mode = mode
-				c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
-				c.Tools = ToolsConfig{BuiltIn: []string{"read_file", tool}}
-				err := ValidateRunConfig(c)
-				if err == nil {
-					t.Fatalf("expected error for %s mode with %s tool", mode, tool)
-				}
-				errStr := err.Error()
-				if !strings.Contains(errStr, "read-only mode") || !strings.Contains(errStr, tool) {
-					t.Errorf("expected error mentioning read-only mode and %q, got: %v", tool, err)
-				}
-			})
-		}
+		t.Run(mode, func(t *testing.T) {
+			for _, tool := range writeTools {
+				t.Run(tool, func(t *testing.T) {
+					must := require.New(t)
+					c := validConfig()
+					c.Mode = mode
+					c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
+					c.Tools = ToolsConfig{BuiltIn: []string{"read_file", tool}}
+					err := ValidateRunConfig(c)
+					must.ErrorContains(err, "read-only mode")
+					must.ErrorContains(err, tool)
+				})
+			}
+		})
 	}
 }
 
 func TestValidateRunConfig_ReadOnlyModeRejectsOffloadToFile(t *testing.T) {
 	for _, mode := range []string{"planning", "review", "research", "toil"} {
 		t.Run(mode, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Mode = mode
 			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
 			c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
 			c.ContextStrategy = ContextStrategyConfig{Type: "offload-to-file"}
 			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("expected %s mode to reject offload-to-file", mode)
-			}
-			for _, want := range []string{mode, "offload-to-file"} {
-				if !strings.Contains(err.Error(), want) {
-					t.Errorf("expected error to mention %q, got: %v", want, err)
-				}
-			}
+			must.ErrorContains(err, mode)
+			must.ErrorContains(err, "offload-to-file")
 		})
 	}
 }
@@ -728,26 +580,24 @@ func TestValidateRunConfig_ReadOnlyModeAcceptsNonWritingStrategies(t *testing.T)
 	for _, mode := range []string{"planning", "review", "research", "toil"} {
 		for _, strategy := range []string{"", "sliding-window", "summarise", "clear-tool-results"} {
 			t.Run(mode+"/"+strategy, func(t *testing.T) {
+				must := require.New(t)
 				c := validConfig()
 				c.Mode = mode
 				c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
 				c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
 				c.ContextStrategy = ContextStrategyConfig{Type: strategy}
-				if err := ValidateRunConfig(c); err != nil {
-					t.Fatalf("read-only mode %s with contextStrategy %q should validate: %v", mode, strategy, err)
-				}
+				must.NoError(ValidateRunConfig(c))
 			})
 		}
 	}
 }
 
 func TestValidateRunConfig_ExecutionModeAcceptsOffloadToFile(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Mode = "execution"
 	c.ContextStrategy = ContextStrategyConfig{Type: "offload-to-file"}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("execution mode with offload-to-file should validate: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 // A toolset profile must not loosen the read-only-mode write-tool exclusion: a
@@ -755,6 +605,7 @@ func TestValidateRunConfig_ExecutionModeAcceptsOffloadToFile(t *testing.T) {
 func TestValidateRunConfig_ReadOnlyModeProfileDoesNotBypassWriteExclusion(t *testing.T) {
 	for _, profile := range []string{"default", "coding-classic"} {
 		t.Run(profile, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Mode = "research"
 			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
@@ -763,12 +614,8 @@ func TestValidateRunConfig_ReadOnlyModeProfileDoesNotBypassWriteExclusion(t *tes
 				Profile: profile,
 			}
 			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("profile %q must not let a write tool into read-only mode", profile)
-			}
-			if !strings.Contains(err.Error(), "read-only mode") || !strings.Contains(err.Error(), "run_command") {
-				t.Errorf("expected read-only-mode rejection mentioning run_command, got: %v", err)
-			}
+			must.ErrorContains(err, "read-only mode")
+			must.ErrorContains(err, "run_command")
 		})
 	}
 }
@@ -776,17 +623,13 @@ func TestValidateRunConfig_ReadOnlyModeProfileDoesNotBypassWriteExclusion(t *tes
 func TestValidateRunConfig_ReadOnlyModeWithNoExplicitToolList(t *testing.T) {
 	for _, mode := range []string{"planning", "review", "research", "toil"} {
 		t.Run(mode, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Mode = mode
 			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
 			// Tools.BuiltIn left nil (default: all tools enabled)
 			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("expected error for %s mode with no explicit tool list", mode)
-			}
-			if !strings.Contains(err.Error(), "requires an explicit tools.builtIn list") {
-				t.Errorf("expected error about explicit tools.builtIn list, got: %v", err)
-			}
+			must.ErrorContains(err, "requires an explicit tools.builtIn list")
 		})
 	}
 }
@@ -794,13 +637,12 @@ func TestValidateRunConfig_ReadOnlyModeWithNoExplicitToolList(t *testing.T) {
 func TestValidateRunConfig_ReadOnlyModeWithOnlyReadTools(t *testing.T) {
 	for _, mode := range []string{"planning", "review", "research", "toil"} {
 		t.Run(mode, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Mode = mode
 			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
 			c.Tools = ToolsConfig{BuiltIn: []string{"read_file", "list_directory", "grep_files", "find_files"}}
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("expected no error for %s mode with read-only tools, got: %v", mode, err)
-			}
+			must.NoError(ValidateRunConfig(c))
 		})
 	}
 }
@@ -811,27 +653,25 @@ func TestValidateRunConfig_ReadOnlyModeWithOnlyReadTools(t *testing.T) {
 func TestValidateRunConfig_ReadOnlyModeAcceptsGitTools(t *testing.T) {
 	gitTools := []string{"git_status", "git_changed_files", "git_diff", "git_show"}
 	for _, mode := range []string{"planning", "review", "research", "toil"} {
-		t.Run(mode+"/accept", func(t *testing.T) {
-			c := validConfig()
-			c.Mode = mode
-			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
-			c.Tools = ToolsConfig{BuiltIn: append([]string{"read_file"}, gitTools...)}
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("read-only mode %q should accept git tools, got: %v", mode, err)
-			}
-		})
-		t.Run(mode+"/reject_with_write", func(t *testing.T) {
-			c := validConfig()
-			c.Mode = mode
-			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
-			c.Tools = ToolsConfig{BuiltIn: append(append([]string{"read_file"}, gitTools...), "run_command")}
-			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("read-only mode %q must still reject run_command alongside git tools", mode)
-			}
-			if !strings.Contains(err.Error(), "read-only mode") || !strings.Contains(err.Error(), "run_command") {
-				t.Errorf("expected rejection mentioning run_command, got: %v", err)
-			}
+		t.Run(mode, func(t *testing.T) {
+			t.Run("accepts git tools", func(t *testing.T) {
+				must := require.New(t)
+				c := validConfig()
+				c.Mode = mode
+				c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
+				c.Tools = ToolsConfig{BuiltIn: append([]string{"read_file"}, gitTools...)}
+				must.NoError(ValidateRunConfig(c))
+			})
+			t.Run("rejects write tool alongside git tools", func(t *testing.T) {
+				must := require.New(t)
+				c := validConfig()
+				c.Mode = mode
+				c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
+				c.Tools = ToolsConfig{BuiltIn: append(append([]string{"read_file"}, gitTools...), "run_command")}
+				err := ValidateRunConfig(c)
+				must.ErrorContains(err, "read-only mode")
+				must.ErrorContains(err, "run_command")
+			})
 		})
 	}
 }
@@ -841,148 +681,134 @@ func TestValidateRunConfig_ReadOnlyModeAcceptsGitTools(t *testing.T) {
 // read-only mode, so adding a mode or a mutating tool without updating the
 // defaults fails loudly here rather than at runtime.
 func TestDefaultReadOnlyBuiltInTools_PassesValidation(t *testing.T) {
+	must := require.New(t)
 	defaults := DefaultReadOnlyBuiltInTools()
-	if len(defaults) == 0 {
-		t.Fatal("DefaultReadOnlyBuiltInTools returned an empty list")
-	}
+	must.NotEmpty(defaults)
 
 	for _, tool := range defaults {
-		if mutatingTools[tool] {
-			t.Errorf("DefaultReadOnlyBuiltInTools contains mutating tool %q", tool)
-		}
-		if !validBuiltInToolNames[tool] {
-			t.Errorf("DefaultReadOnlyBuiltInTools contains unknown tool %q", tool)
-		}
+		t.Run("tool "+tool, func(t *testing.T) {
+			must := require.New(t)
+			must.False(mutatingTools[tool], "default read-only tool must not be mutating")
+			must.True(validBuiltInToolNames[tool], "default read-only tool must be a known built-in")
+		})
 	}
 
 	// Iterate over the actual readOnlyModes map so adding a new read-only mode
 	// without updating the defaults (or vice versa) fails loudly.
 	for mode := range readOnlyModes {
 		t.Run(mode, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Mode = mode
 			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
 			c.Tools = ToolsConfig{BuiltIn: DefaultReadOnlyBuiltInTools()}
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("DefaultReadOnlyBuiltInTools should pass validation for mode %q, got: %v", mode, err)
-			}
+			must.NoError(ValidateRunConfig(c))
 		})
 	}
 }
 
-func TestIsReadOnlyMode(t *testing.T) {
-	readOnly := []string{"planning", "review", "research", "toil"}
-	for _, m := range readOnly {
-		if !IsReadOnlyMode(m) {
-			t.Errorf("IsReadOnlyMode(%q) = false, want true", m)
-		}
+func TestIsReadOnlyMode_ClassifiesModes(t *testing.T) {
+	cases := map[string]bool{
+		"planning": true, "review": true, "research": true, "toil": true,
+		"execution": false, "": false, "unknown": false,
 	}
-	for _, m := range []string{"execution", "", "unknown"} {
-		if IsReadOnlyMode(m) {
-			t.Errorf("IsReadOnlyMode(%q) = true, want false", m)
-		}
+	for mode, want := range cases {
+		t.Run(fmt.Sprintf("%q", mode), func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(want, IsReadOnlyMode(mode))
+		})
 	}
 }
 
-func TestIsBuiltInTool(t *testing.T) {
-	for _, name := range []string{"read_file", "write_file", "run_command", "spawn_agent", "git_show"} {
-		if !IsBuiltInTool(name) {
-			t.Errorf("IsBuiltInTool(%q) = false, want true", name)
-		}
+func TestIsBuiltInTool_ClassifiesNames(t *testing.T) {
+	cases := map[string]bool{
+		"read_file": true, "write_file": true, "run_command": true, "spawn_agent": true, "git_show": true,
+		"": false, "mcp_docs_update": false, "ticket_lookup": false, "search_files": false,
 	}
-	for _, name := range []string{"", "mcp_docs_update", "ticket_lookup", "search_files"} {
-		if IsBuiltInTool(name) {
-			t.Errorf("IsBuiltInTool(%q) = true, want false", name)
-		}
+	for name, want := range cases {
+		t.Run(fmt.Sprintf("%q", name), func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(want, IsBuiltInTool(name))
+		})
 	}
 }
 
 func TestValidateRunConfig_ExecutionModeWithWriteTools(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Mode = "execution"
 	c.Tools = ToolsConfig{BuiltIn: []string{"read_file", "write_file", "run_command"}}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("expected no error for execution mode with write tools, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 func TestValidateRunConfig_FollowUpGraceBound(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	grace := 3601
 	c.FollowUpGrace = &grace
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for followUpGrace > 3600")
-	}
-	if !strings.Contains(err.Error(), "followUpGrace") {
-		t.Errorf("expected error to mention followUpGrace, got: %v", err)
-	}
+	must.ErrorContains(err, "followUpGrace")
 
 	// At the boundary should pass.
 	grace = 3600
 	c.FollowUpGrace = &grace
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("expected no error for followUpGrace=3600, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 func TestValidateRunConfig_FollowUpHistory(t *testing.T) {
 	for _, value := range []string{"", FollowUpHistoryReset, FollowUpHistoryContinue} {
-		c := validConfig()
-		c.FollowUpHistory = value
-		if err := ValidateRunConfig(c); err != nil {
-			t.Errorf("followUpHistory %q: unexpected error: %v", value, err)
-		}
+		t.Run(fmt.Sprintf("accepts %q", value), func(t *testing.T) {
+			must := require.New(t)
+			c := validConfig()
+			c.FollowUpHistory = value
+			must.NoError(ValidateRunConfig(c))
+		})
 	}
 
-	c := validConfig()
-	c.FollowUpHistory = "resume"
-	err := ValidateRunConfig(c)
-	if err == nil || !strings.Contains(err.Error(), `followUpHistory "resume"`) {
-		t.Fatalf("expected an unknown followUpHistory to be rejected, got: %v", err)
-	}
+	t.Run("rejects unknown value", func(t *testing.T) {
+		must := require.New(t)
+		c := validConfig()
+		c.FollowUpHistory = "resume"
+		err := ValidateRunConfig(c)
+		must.ErrorContains(err, `followUpHistory "resume"`)
+	})
 }
 
 func TestValidateRunConfig_FollowUpHistoryWithoutGraceIsAccepted(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.FollowUpGrace = nil
 	c.FollowUpHistory = FollowUpHistoryContinue
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("followUpHistory without a follow-up window must be accepted, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 func TestRunConfig_ContinuesFollowUpHistory(t *testing.T) {
 	cases := map[string]bool{"": false, FollowUpHistoryReset: false, FollowUpHistoryContinue: true}
 	for value, want := range cases {
-		if got := (&RunConfig{FollowUpHistory: value}).ContinuesFollowUpHistory(); got != want {
-			t.Errorf("followUpHistory %q: ContinuesFollowUpHistory() = %v, want %v", value, got, want)
-		}
+		t.Run(fmt.Sprintf("followUpHistory %q", value), func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(want, (&RunConfig{FollowUpHistory: value}).ContinuesFollowUpHistory())
+		})
 	}
-	var nilConfig *RunConfig
-	if nilConfig.ContinuesFollowUpHistory() {
-		t.Error("a nil RunConfig must not continue history")
-	}
+	t.Run("nil config does not continue history", func(t *testing.T) {
+		must := require.New(t)
+		var nilConfig *RunConfig
+		must.False(nilConfig.ContinuesFollowUpHistory())
+	})
 }
 
 func TestValidateRunConfig_TokenBudgetBound(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	tokens := 50_000_001
 	c.MaxTokenBudget = &tokens
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for maxTokenBudget > 50_000_000")
-	}
-	if !strings.Contains(err.Error(), "maxTokenBudget") {
-		t.Errorf("expected error to mention maxTokenBudget, got: %v", err)
-	}
+	must.ErrorContains(err, "maxTokenBudget")
 
 	// At the boundary should pass.
 	tokens = 50_000_000
 	c.MaxTokenBudget = &tokens
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("expected no error for maxTokenBudget=50_000_000, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 // TestValidateRunConfig_CostBudgetBoundAndWarning pins both halves of the
@@ -997,12 +823,13 @@ func TestValidateRunConfig_CostBudgetBoundAndWarning(t *testing.T) {
 		budget  float64
 		wantErr bool
 	}{
-		{"unset_no_warn", false, 0, false},
-		{"within_cap_warns", true, 10, false},
-		{"at_cap_warns", true, 100, false},
-		{"above_cap_errors_and_warns", true, 100.01, true},
+		{"unset does not warn", false, 0, false},
+		{"within cap warns", true, 10, false},
+		{"at cap warns", true, 100, false},
+		{"above cap errors and warns", true, 100.01, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var logBuf bytes.Buffer
 			originalLogger := slog.Default()
 			t.Cleanup(func() { slog.SetDefault(originalLogger) })
@@ -1016,42 +843,29 @@ func TestValidateRunConfig_CostBudgetBoundAndWarning(t *testing.T) {
 
 			err := ValidateRunConfig(c)
 			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected error for maxCostBudget=%v", tc.budget)
-				}
-				if !strings.Contains(err.Error(), "maxCostBudget") {
-					t.Errorf("expected error to mention maxCostBudget, got: %v", err)
-				}
-			} else if err != nil {
-				t.Fatalf("expected no error for maxCostBudget=%v, got: %v", tc.budget, err)
+				must.ErrorContains(err, "maxCostBudget")
+			} else {
+				must.NoError(err)
 			}
 
 			logs := logBuf.String()
 			if tc.set {
-				if !strings.Contains(logs, "level=WARN") {
-					t.Errorf("expected slog WARN, got: %s", logs)
-				}
-				if !strings.Contains(logs, wantMsg) {
-					t.Errorf("expected static warning message %q, got: %s", wantMsg, logs)
-				}
-				wantAttr := fmt.Sprintf("maxCostBudget=%v", tc.budget)
-				if !strings.Contains(logs, wantAttr) {
-					t.Errorf("expected %q attr in warning, got: %s", wantAttr, logs)
-				}
-			} else if strings.Contains(logs, wantMsg) {
-				t.Errorf("did not expect unenforced-budget warning, got: %s", logs)
+				must.Contains(logs, "level=WARN")
+				must.Contains(logs, wantMsg)
+				must.Contains(logs, fmt.Sprintf("maxCostBudget=%v", tc.budget))
+			} else {
+				must.NotContains(logs, wantMsg)
 			}
 		})
 	}
 }
 
 func TestValidateRunConfig_NilBudgetsPass(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.FollowUpGrace = nil
 	c.MaxTokenBudget = nil
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("expected no error for nil budget fields, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 // TestValidateRunConfig_ContextStrategyMaxTokens pins a deliberately wide
@@ -1076,18 +890,15 @@ func TestValidateRunConfig_ContextStrategyMaxTokens(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.ContextStrategy = ContextStrategyConfig{Type: "sliding-window", MaxTokens: tt.maxTokens}
 			err := ValidateRunConfig(c)
-			if tt.wantErr && err == nil {
-				t.Fatalf("ValidateRunConfig(maxTokens=%d) = nil, want error", tt.maxTokens)
+			if tt.wantErr {
+				must.ErrorContains(err, "contextStrategy.maxTokens")
+				return
 			}
-			if !tt.wantErr && err != nil {
-				t.Fatalf("ValidateRunConfig(maxTokens=%d) = %v, want nil", tt.maxTokens, err)
-			}
-			if tt.wantErr && !strings.Contains(err.Error(), "contextStrategy.maxTokens") {
-				t.Errorf("expected error to mention contextStrategy.maxTokens, got: %v", err)
-			}
+			must.NoError(err)
 		})
 	}
 }
@@ -1115,86 +926,62 @@ func TestValidateRunConfig_ClearToolResultsFields(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Mode = "execution"
 			c.ContextStrategy = tt.cfg
 			err := ValidateRunConfig(c)
 			if tt.wantErr == "" {
-				if err != nil {
-					t.Fatalf("ValidateRunConfig(%+v) = %v, want nil", tt.cfg, err)
-				}
+				must.NoError(err)
 				return
 			}
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("ValidateRunConfig(%+v) = %v, want an error containing %q", tt.cfg, err, tt.wantErr)
-			}
+			must.ErrorContains(err, tt.wantErr)
 		})
 	}
 }
 
 func TestValidateRunConfig_TemperatureBounds(t *testing.T) {
-	// Out-of-range: negative.
-	c := validConfig()
-	neg := -0.01
-	c.Temperature = &neg
-	err := ValidateRunConfig(c)
-	if err == nil || !strings.Contains(err.Error(), "temperature") {
-		t.Fatalf("expected temperature error for negative value, got: %v", err)
-	}
-
-	// Out-of-range: above ceiling.
-	high := 2.01
-	c.Temperature = &high
-	err = ValidateRunConfig(c)
-	if err == nil || !strings.Contains(err.Error(), "temperature") {
-		t.Fatalf("expected temperature error for value > 2.0, got: %v", err)
-	}
-
 	// Non-finite values must be rejected explicitly: IEEE 754 NaN compares false
 	// against both bounds, so without a finite-number guard "--temperature=NaN"
 	// would slip past the range checks and reach the provider.
-	nan := math.NaN()
-	c.Temperature = &nan
-	err = ValidateRunConfig(c)
-	if err == nil || !strings.Contains(err.Error(), "finite") {
-		t.Fatalf("expected finite-number temperature error for NaN, got: %v", err)
+	tests := []struct {
+		name        string
+		temperature float64
+		wantErr     string
+	}{
+		{"negative rejected", -0.01, "temperature"},
+		{"above 2.0 rejected", 2.01, "temperature"},
+		{"NaN rejected", math.NaN(), "finite"},
+		{"positive infinity rejected", math.Inf(1), "finite"},
+		{"negative infinity rejected", math.Inf(-1), "finite"},
+		// 0.0 is the greedy-decoding case; 1.0 is the Anthropic ceiling;
+		// 2.0 is the OpenAI/Gemini ceiling.
+		{"0.0 accepted", 0.0, ""},
+		{"1.0 accepted", 1.0, ""},
+		{"2.0 accepted", 2.0, ""},
 	}
-
-	posInf := math.Inf(1)
-	c.Temperature = &posInf
-	err = ValidateRunConfig(c)
-	if err == nil || !strings.Contains(err.Error(), "finite") {
-		t.Fatalf("expected finite-number temperature error for +Inf, got: %v", err)
-	}
-
-	negInf := math.Inf(-1)
-	c.Temperature = &negInf
-	err = ValidateRunConfig(c)
-	if err == nil || !strings.Contains(err.Error(), "finite") {
-		t.Fatalf("expected finite-number temperature error for -Inf, got: %v", err)
-	}
-
-	// In-range and boundary values must validate cleanly. 0.0 is the
-	// greedy-decoding case the spec calls out explicitly; 1.0 is the
-	// Anthropic ceiling; 2.0 is the OpenAI/Gemini ceiling.
-	for _, v := range []float64{0.0, 1.0, 2.0} {
-		t.Run(fmt.Sprintf("v=%v", v), func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
-			x := v
-			c.Temperature = &x
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("expected no error for temperature=%v, got: %v", v, err)
+			temperature := tt.temperature
+			c.Temperature = &temperature
+			err := ValidateRunConfig(c)
+			if tt.wantErr == "" {
+				must.NoError(err)
+				return
 			}
+			must.ErrorContains(err, tt.wantErr)
 		})
 	}
 
-	// Nil temperature falls back to the harness default and must
-	// validate cleanly. The "no temperature override" baseline.
-	c = validConfig()
-	c.Temperature = nil
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("expected no error for nil temperature, got: %v", err)
-	}
+	// Nil temperature falls back to the harness default and must validate cleanly.
+	t.Run("nil temperature accepted", func(t *testing.T) {
+		must := require.New(t)
+		c := validConfig()
+		c.Temperature = nil
+		must.NoError(ValidateRunConfig(c))
+	})
 }
 
 // TestValidateRunConfig_ReasoningEffort pins the closed enum on the
@@ -1204,86 +991,80 @@ func TestValidateRunConfig_TemperatureBounds(t *testing.T) {
 // never has to guess which dialect a config was written in.
 func TestValidateRunConfig_ReasoningEffort(t *testing.T) {
 	for _, v := range []string{"", "minimal", "low", "medium", "high", "xhigh", "max"} {
-		t.Run("accepts/"+v, func(t *testing.T) {
+		t.Run(fmt.Sprintf("accepts %q", v), func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.ReasoningEffort = v
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("expected no error for reasoningEffort=%q, got: %v", v, err)
-			}
+			must.NoError(ValidateRunConfig(c))
 		})
 	}
 	for _, v := range []string{"THINKING_LEVEL_HIGH", "maximum", "High"} {
-		t.Run("rejects/"+v, func(t *testing.T) {
+		t.Run(fmt.Sprintf("rejects %q", v), func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.ReasoningEffort = v
 			err := ValidateRunConfig(c)
-			if err == nil || !strings.Contains(err.Error(), "reasoningEffort") {
-				t.Fatalf("expected reasoningEffort error for %q, got: %v", v, err)
-			}
+			must.ErrorContains(err, "reasoningEffort")
 		})
 	}
 }
 
 func TestValidateRunConfig_ReasoningSummary(t *testing.T) {
 	for _, v := range []string{"", "auto", "off"} {
-		t.Run("accepts/"+v, func(t *testing.T) {
+		t.Run(fmt.Sprintf("accepts %q", v), func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.ReasoningSummary = v
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("expected no error for reasoningSummary=%q, got: %v", v, err)
-			}
+			must.NoError(ValidateRunConfig(c))
 		})
 	}
 	for _, v := range []string{"Auto", "none", "detailed", "concise"} {
-		t.Run("rejects/"+v, func(t *testing.T) {
+		t.Run(fmt.Sprintf("rejects %q", v), func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.ReasoningSummary = v
 			err := ValidateRunConfig(c)
-			if err == nil || !strings.Contains(err.Error(), "reasoningSummary") {
-				t.Fatalf("expected reasoningSummary error for %q, got: %v", v, err)
-			}
+			must.ErrorContains(err, "reasoningSummary")
 		})
 	}
 }
 
-func TestValidateRunConfig_SessionNameEmpty(t *testing.T) {
+func TestValidateRunConfig_EmptySessionNamePasses(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.SessionName = ""
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("empty SessionName should pass validation, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
-func TestValidateRunConfig_SessionNameValid(t *testing.T) {
-	cases := []string{
-		"nightly-eval",
-		"PR #123 sweep",
-		"café-run",              // unicode letter with diacritic
-		"文字列-test",              // CJK characters are printable
-		"emoji-ok-\xe2\x9c\x85", // U+2705 white heavy check mark (valid printable symbol)
-		strings.Repeat("a", 255),
+func TestValidateRunConfig_SessionNameAcceptsPrintableText(t *testing.T) {
+	cases := []struct {
+		name        string
+		sessionName string
+	}{
+		{"ascii with hyphens", "nightly-eval"},
+		{"spaces and symbols", "PR #123 sweep"},
+		{"diacritics", "café-run"},
+		{"CJK characters", "文字列-test"},
+		{"symbol emoji", "emoji-ok-\xe2\x9c\x85"}, // U+2705 white heavy check mark
+		{"maximum length", strings.Repeat("a", 255)},
 	}
-	for _, name := range cases {
-		t.Run(name, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
-			c.SessionName = name
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("SessionName %q should pass validation, got: %v", name, err)
-			}
+			c.SessionName = tc.sessionName
+			must.NoError(ValidateRunConfig(c))
 		})
 	}
 }
 
-func TestValidateRunConfig_SessionNameTooLong(t *testing.T) {
+func TestValidateRunConfig_SessionNameOver255BytesRejected(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.SessionName = strings.Repeat("a", 256)
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for SessionName > 255 bytes")
-	}
-	if !strings.Contains(err.Error(), "sessionName") || !strings.Contains(err.Error(), "255") {
-		t.Errorf("error should describe the limit, got: %v", err)
-	}
+	must.ErrorContains(err, "sessionName")
+	must.ErrorContains(err, "255")
 }
 
 func TestValidateRunConfig_SessionNameRejectsControlChars(t *testing.T) {
@@ -1298,85 +1079,66 @@ func TestValidateRunConfig_SessionNameRejectsControlChars(t *testing.T) {
 	}
 	for name, value := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.SessionName = value
-			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("expected error for SessionName containing %s", name)
-			}
-			if !strings.Contains(err.Error(), "sessionName") {
-				t.Errorf("error should mention sessionName, got: %v", err)
-			}
+			must.ErrorContains(ValidateRunConfig(c), "sessionName")
 		})
 	}
 }
 
 func TestValidateRunConfig_SessionNameRejectsInvalidUTF8(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	// 0xff is never valid as a leading UTF-8 byte.
 	c.SessionName = "bad\xffname"
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for invalid UTF-8 in SessionName")
-	}
-	if !strings.Contains(err.Error(), "sessionName") {
-		t.Errorf("error should mention sessionName, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "sessionName")
 }
 
 func TestValidateRunConfig_OpenAIResponsesProvider(t *testing.T) {
-	// The openai-responses provider type must be accepted by validation.
-	//
+	must := require.New(t)
 	// Tools.BuiltIn is pinned to a side-effect-free set so this test stays focused on
 	// provider-type validation instead of also tripping Rule of Two.
 	c := validConfig()
 	c.Provider = ProviderConfig{Type: "openai-responses", APIKeyRef: "secret://OPENAI_KEY"}
 	c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("expected openai-responses to be accepted, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 func TestValidateRunConfig_CredentialNilPassesValidation(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider.Credential = nil
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("nil credential should pass validation, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 func TestValidateRunConfig_CredentialStaticPasses(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider.Credential = &CredentialConfig{Type: "static"}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("static credential should pass validation, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 func TestValidateRunConfig_CredentialAWSDefaultPasses(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider = ProviderConfig{
 		Type:       "bedrock",
 		Credential: &CredentialConfig{Type: "aws-default"},
 	}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("aws-default credential should pass validation, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 func TestValidateRunConfig_CredentialUnsupportedType(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider.Credential = &CredentialConfig{Type: "kerberos"}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for unsupported credential type")
-	}
-	if !strings.Contains(err.Error(), "kerberos") {
-		t.Errorf("error should mention unsupported type: %v", err)
-	}
+	must.ErrorContains(err, "kerberos")
 }
 
 func TestValidateRunConfig_WebIdentityValid(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider = ProviderConfig{
 		Type:   "bedrock",
@@ -1390,12 +1152,11 @@ func TestValidateRunConfig_WebIdentityValid(t *testing.T) {
 			},
 		},
 	}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("valid web-identity config should pass, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 func TestValidateRunConfig_WebIdentityMissingRoleARN(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider = ProviderConfig{
 		Type: "bedrock",
@@ -1407,16 +1168,11 @@ func TestValidateRunConfig_WebIdentityMissingRoleARN(t *testing.T) {
 			},
 		},
 	}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for missing roleArn")
-	}
-	if !strings.Contains(err.Error(), "roleArn") {
-		t.Errorf("error should mention roleArn: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "roleArn")
 }
 
 func TestValidateRunConfig_WebIdentityMissingTokenSource(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider = ProviderConfig{
 		Type: "bedrock",
@@ -1425,16 +1181,11 @@ func TestValidateRunConfig_WebIdentityMissingTokenSource(t *testing.T) {
 			RoleARN: "arn:aws:iam::123456789012:role/test",
 		},
 	}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for missing tokenSource")
-	}
-	if !strings.Contains(err.Error(), "tokenSource") {
-		t.Errorf("error should mention tokenSource: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "tokenSource")
 }
 
 func TestValidateRunConfig_GKEMetadataMissingAudience(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider = ProviderConfig{
 		Type: "bedrock",
@@ -1446,16 +1197,11 @@ func TestValidateRunConfig_GKEMetadataMissingAudience(t *testing.T) {
 			},
 		},
 	}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for missing audience")
-	}
-	if !strings.Contains(err.Error(), "audience") {
-		t.Errorf("error should mention audience: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "audience")
 }
 
 func TestValidateRunConfig_FileTokenSourceMissingPath(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider = ProviderConfig{
 		Type: "bedrock",
@@ -1467,16 +1213,11 @@ func TestValidateRunConfig_FileTokenSourceMissingPath(t *testing.T) {
 			},
 		},
 	}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for missing path")
-	}
-	if !strings.Contains(err.Error(), "path") {
-		t.Errorf("error should mention path: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "path")
 }
 
 func TestValidateRunConfig_EnvTokenSourceMissingEnvVar(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider = ProviderConfig{
 		Type: "bedrock",
@@ -1488,16 +1229,11 @@ func TestValidateRunConfig_EnvTokenSourceMissingEnvVar(t *testing.T) {
 			},
 		},
 	}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for missing envVar")
-	}
-	if !strings.Contains(err.Error(), "envVar") {
-		t.Errorf("error should mention envVar: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "envVar")
 }
 
 func TestValidateRunConfig_AWSIRSATokenSourceValid(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider = ProviderConfig{
 		Type:   "bedrock",
@@ -1510,12 +1246,11 @@ func TestValidateRunConfig_AWSIRSATokenSourceValid(t *testing.T) {
 			},
 		},
 	}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("aws-irsa should validate without extra fields, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 func TestValidateRunConfig_AzureIMDSTokenSourceValid(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider = ProviderConfig{
 		Type:   "bedrock",
@@ -1529,12 +1264,11 @@ func TestValidateRunConfig_AzureIMDSTokenSourceValid(t *testing.T) {
 			},
 		},
 	}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("azure-imds with resource should validate, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 func TestValidateRunConfig_AzureIMDSTokenSourceMissingResource(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider = ProviderConfig{
 		Type: "bedrock",
@@ -1546,16 +1280,11 @@ func TestValidateRunConfig_AzureIMDSTokenSourceMissingResource(t *testing.T) {
 			},
 		},
 	}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for missing resource")
-	}
-	if !strings.Contains(err.Error(), "resource") {
-		t.Errorf("error should mention resource: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "resource")
 }
 
 func TestValidateRunConfig_GitHubActionsOIDCTokenSourceValid(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider = ProviderConfig{
 		Type:   "bedrock",
@@ -1569,12 +1298,11 @@ func TestValidateRunConfig_GitHubActionsOIDCTokenSourceValid(t *testing.T) {
 			},
 		},
 	}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("github-actions-oidc with audience should validate, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 func TestValidateRunConfig_GitHubActionsOIDCTokenSourceMissingAudience(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider = ProviderConfig{
 		Type: "bedrock",
@@ -1586,16 +1314,11 @@ func TestValidateRunConfig_GitHubActionsOIDCTokenSourceMissingAudience(t *testin
 			},
 		},
 	}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for missing audience")
-	}
-	if !strings.Contains(err.Error(), "audience") {
-		t.Errorf("error should mention audience: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "audience")
 }
 
 func TestValidateRunConfig_CredentialInProvidersMap(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Providers = map[string]ProviderConfig{
 		"fallback": {
@@ -1606,16 +1329,12 @@ func TestValidateRunConfig_CredentialInProvidersMap(t *testing.T) {
 			},
 		},
 	}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for invalid credential in providers map")
-	}
-	if !strings.Contains(err.Error(), "providers[fallback].credential") {
-		t.Errorf("error should reference providers[fallback].credential path: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "providers[fallback].credential")
 }
 
 func TestRedact_CredentialConfigPreserved(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	rc := RunConfig{
 		Provider: ProviderConfig{
 			Type:      "bedrock",
@@ -1633,25 +1352,19 @@ func TestRedact_CredentialConfigPreserved(t *testing.T) {
 	}
 	redacted := rc.Redact()
 
-	if redacted.Provider.APIKeyRef != "secret://[REDACTED]" {
-		t.Errorf("APIKeyRef should be redacted, got %q", redacted.Provider.APIKeyRef)
-	}
+	check.Equal("secret://[REDACTED]", redacted.Provider.APIKeyRef)
 	// Not sensitive, so Redact() must leave the credential config untouched.
-	if redacted.Provider.Credential == nil {
-		t.Fatal("Credential should not be nil after redaction")
-	}
-	if redacted.Provider.Credential.RoleARN != "arn:aws:iam::123456789012:role/test" {
-		t.Error("RoleARN should be preserved after redaction")
-	}
-	if redacted.Provider.Credential.TokenSource.Audience != "sts.amazonaws.com" {
-		t.Error("TokenSource.Audience should be preserved after redaction")
-	}
+	must.NotNil(redacted.Provider.Credential)
+	check.Equal("arn:aws:iam::123456789012:role/test", redacted.Provider.Credential.RoleARN)
+	check.Equal("sts.amazonaws.com", redacted.Provider.Credential.TokenSource.Audience)
 }
 
 // TestRedact_AnthropicWIFFieldsPreserved verifies the four Anthropic federation
 // identifiers ride through Redact() unchanged: they are non-secret values safe to
 // commit to source control, and redacting them would hide debugging information.
 func TestRedact_AnthropicWIFFieldsPreserved(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	rc := RunConfig{
 		Provider: ProviderConfig{
 			Type: "anthropic",
@@ -1670,21 +1383,11 @@ func TestRedact_AnthropicWIFFieldsPreserved(t *testing.T) {
 	}
 	redacted := rc.Redact()
 	cred := redacted.Provider.Credential
-	if cred == nil {
-		t.Fatal("Credential should not be nil after redaction")
-	}
-	if cred.FederationRuleID != "fdrl_abc123" {
-		t.Errorf("FederationRuleID should be preserved, got %q", cred.FederationRuleID)
-	}
-	if cred.OrganizationID != "550e8400-e29b-41d4-a716-446655440000" {
-		t.Errorf("OrganizationID should be preserved, got %q", cred.OrganizationID)
-	}
-	if cred.ServiceAccountID != "svac_xyz789" {
-		t.Errorf("ServiceAccountID should be preserved, got %q", cred.ServiceAccountID)
-	}
-	if cred.WorkspaceID != "wrkspc_def456" {
-		t.Errorf("WorkspaceID should be preserved, got %q", cred.WorkspaceID)
-	}
+	must.NotNil(cred)
+	check.Equal("fdrl_abc123", cred.FederationRuleID)
+	check.Equal("550e8400-e29b-41d4-a716-446655440000", cred.OrganizationID)
+	check.Equal("svac_xyz789", cred.ServiceAccountID)
+	check.Equal("wrkspc_def456", cred.WorkspaceID)
 }
 
 // validAnthropicWIFCredential builds a credential config that satisfies
@@ -1703,7 +1406,7 @@ func validAnthropicWIFCredential() *CredentialConfig {
 	}
 }
 
-func TestValidateRunConfig_AnthropicWIF(t *testing.T) {
+func TestValidateRunConfig_AnthropicWIFCredentialRules(t *testing.T) {
 	cases := []struct {
 		name      string
 		mutate    func(c *RunConfig)
@@ -1970,21 +1673,15 @@ func TestValidateRunConfig_AnthropicWIF(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			tc.mutate(c)
 			err := ValidateRunConfig(c)
 			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected error containing %q, got nil", tc.errSubstr)
-				}
-				if tc.errSubstr != "" && !strings.Contains(err.Error(), tc.errSubstr) {
-					t.Errorf("expected error to contain %q, got: %v", tc.errSubstr, err)
-				}
+				must.ErrorContains(err, tc.errSubstr)
 				return
 			}
-			if err != nil {
-				t.Fatalf("expected no error, got: %v", err)
-			}
+			must.NoError(err)
 		})
 	}
 }
@@ -2015,7 +1712,7 @@ func validOpenAIWIFProvider() ProviderConfig {
 	}
 }
 
-func TestValidateRunConfig_OpenAIWIF(t *testing.T) {
+func TestValidateRunConfig_OpenAIWIFCredentialRules(t *testing.T) {
 	cases := []struct {
 		name      string
 		mutate    func(c *RunConfig)
@@ -2233,21 +1930,18 @@ func TestValidateRunConfig_OpenAIWIF(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			tc.mutate(c)
 			err := ValidateRunConfig(c)
 			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected error containing %q, got nil", tc.errSubstr)
-				}
-				if tc.errSubstr != "" && !strings.Contains(err.Error(), tc.errSubstr) {
-					t.Errorf("expected error to contain %q, got: %v", tc.errSubstr, err)
+				must.Error(err)
+				if tc.errSubstr != "" {
+					must.ErrorContains(err, tc.errSubstr)
 				}
 				return
 			}
-			if err != nil {
-				t.Fatalf("expected no error, got: %v", err)
-			}
+			must.NoError(err)
 		})
 	}
 }
@@ -2258,11 +1952,10 @@ func TestValidateRunConfig_APIKeyHeader_Valid(t *testing.T) {
 	cases := []string{"", "api-key", "x-api-key", "Ocp-Apim-Subscription-Key", "Authorization"}
 	for _, header := range cases {
 		t.Run(header, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Provider = ProviderConfig{Type: "openai-responses", APIKeyHeader: header}
-			if err := ValidateRunConfig(c); err != nil {
-				t.Errorf("expected nil error for valid header %q, got %v", header, err)
-			}
+			must.NoError(ValidateRunConfig(c))
 		})
 	}
 }
@@ -2276,11 +1969,10 @@ func TestValidateRunConfig_APIKeyHeader_Valid(t *testing.T) {
 func TestValidateRunConfig_ExecutorRuntimeAcceptsClosedSet(t *testing.T) {
 	for _, runtime := range []string{"", "runc", "runsc", "kata", "kata-qemu", "kata-fc", "kata-clh"} {
 		t.Run(fmt.Sprintf("runtime_%s", runtime), func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Executor = ExecutorConfig{Type: "container", Runtime: runtime}
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("expected runtime %q to validate, got: %v", runtime, err)
-			}
+			must.NoError(ValidateRunConfig(c))
 		})
 	}
 }
@@ -2314,6 +2006,7 @@ func TestValidateRunConfig_RuntimeSetIsPerType(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Executor = ExecutorConfig{
 				Type:         tc.execType,
@@ -2324,17 +2017,13 @@ func TestValidateRunConfig_RuntimeSetIsPerType(t *testing.T) {
 			}
 			err := ValidateRunConfig(c)
 			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected error for %s/%s, got nil", tc.execType, tc.runtime)
-				}
-				if tc.errContains != "" && !strings.Contains(err.Error(), tc.errContains) {
-					t.Errorf("expected error to mention %q, got: %v", tc.errContains, err)
+				must.Error(err)
+				if tc.errContains != "" {
+					must.ErrorContains(err, tc.errContains)
 				}
 				return
 			}
-			if err != nil {
-				t.Fatalf("expected %s/%s to validate, got: %v", tc.execType, tc.runtime, err)
-			}
+			must.NoError(err)
 		})
 	}
 }
@@ -2440,21 +2129,18 @@ func TestValidateRunConfig_K8sExecutorFields(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Executor = tc.exec
 			err := ValidateRunConfig(c)
 			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected error, got nil")
-				}
-				if tc.errContains != "" && !strings.Contains(err.Error(), tc.errContains) {
-					t.Errorf("expected error to mention %q, got: %v", tc.errContains, err)
+				must.Error(err)
+				if tc.errContains != "" {
+					must.ErrorContains(err, tc.errContains)
 				}
 				return
 			}
-			if err != nil {
-				t.Fatalf("expected config to validate, got: %v", err)
-			}
+			must.NoError(err)
 		})
 	}
 }
@@ -2562,21 +2248,18 @@ func TestValidateRunConfig_K8sSandboxExecutorFields(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Executor = tc.exec
 			err := ValidateRunConfig(c)
 			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected error, got nil")
-				}
-				if tc.errContains != "" && !strings.Contains(err.Error(), tc.errContains) {
-					t.Errorf("expected error to mention %q, got: %v", tc.errContains, err)
+				must.Error(err)
+				if tc.errContains != "" {
+					must.ErrorContains(err, tc.errContains)
 				}
 				return
 			}
-			if err != nil {
-				t.Fatalf("expected config to validate, got: %v", err)
-			}
+			must.NoError(err)
 		})
 	}
 }
@@ -2650,6 +2333,7 @@ func TestValidateRunConfig_ResourceLimits(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Executor = ExecutorConfig{
 				Type:         tc.execType,
@@ -2659,17 +2343,13 @@ func TestValidateRunConfig_ResourceLimits(t *testing.T) {
 			}
 			err := ValidateRunConfig(c)
 			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected error, got nil")
-				}
-				if tc.errContains != "" && !strings.Contains(err.Error(), tc.errContains) {
-					t.Errorf("expected error to mention %q, got: %v", tc.errContains, err)
+				must.Error(err)
+				if tc.errContains != "" {
+					must.ErrorContains(err, tc.errContains)
 				}
 				return
 			}
-			if err != nil {
-				t.Fatalf("expected config to validate, got: %v", err)
-			}
+			must.NoError(err)
 		})
 	}
 }
@@ -2686,44 +2366,39 @@ func TestValidateRunConfig_APIKeyHeader_Rejected(t *testing.T) {
 	}
 	for name, header := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Provider = ProviderConfig{Type: "openai-responses", APIKeyHeader: header}
 			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("expected error for invalid header %q, got nil", header)
-			}
-			if !strings.Contains(err.Error(), "apiKeyHeader") {
-				t.Errorf("error should mention apiKeyHeader, got: %v", err)
-			}
+			must.Error(err)
+			must.ErrorContains(err, "apiKeyHeader")
 		})
 	}
 }
 
 func TestValidateRunConfig_ExecutorRuntimeRejectsUnknown(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Executor = ExecutorConfig{Type: "container", Runtime: "foo"}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for unknown executor.runtime")
-	}
-	if !strings.Contains(err.Error(), "executor.runtime") || !strings.Contains(err.Error(), "foo") {
-		t.Errorf("expected error to mention executor.runtime and the bad value, got: %v", err)
-	}
+	must.Error(err)
+	must.ErrorContains(err, "executor.runtime")
+	must.ErrorContains(err, "foo")
 }
 
 func TestValidateRunConfig_RegistryAllowlistAcceptsValidGlobs(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Executor = ExecutorConfig{
 		Type:              "container",
 		Image:             "ghcr.io/stirrup/base:latest",
 		RegistryAllowlist: []string{"ghcr.io/stirrup/*", "docker.io/library/*", "registry.internal:5000/team/*"},
 	}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("expected valid registry allowlist to validate, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 func TestValidateRunConfig_RegistryAllowlistRejectsBadGlob(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Executor = ExecutorConfig{
 		Type:              "container",
@@ -2731,15 +2406,11 @@ func TestValidateRunConfig_RegistryAllowlistRejectsBadGlob(t *testing.T) {
 		RegistryAllowlist: []string{"ghcr.io/stirrup/["},
 	}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for malformed registry allowlist glob")
-	}
-	if !strings.Contains(err.Error(), "registryAllowlist") {
-		t.Errorf("expected error to mention registryAllowlist, got: %v", err)
-	}
+	must.ErrorContains(err, "registryAllowlist")
 }
 
 func TestValidateRunConfig_RegistryAllowlistRejectsEmptyEntry(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Executor = ExecutorConfig{
 		Type:              "container",
@@ -2747,55 +2418,43 @@ func TestValidateRunConfig_RegistryAllowlistRejectsEmptyEntry(t *testing.T) {
 		RegistryAllowlist: []string{""},
 	}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for empty registry allowlist entry")
-	}
-	if !strings.Contains(err.Error(), "registryAllowlist") {
-		t.Errorf("expected error to mention registryAllowlist, got: %v", err)
-	}
+	must.ErrorContains(err, "registryAllowlist")
 }
 
 func TestValidateRunConfig_RegistryAllowlistRequiresContainerExecutor(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Executor = ExecutorConfig{
 		Type:              "local",
 		RegistryAllowlist: []string{"ghcr.io/stirrup/*"},
 	}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for registryAllowlist on non-container executor")
-	}
-	if !strings.Contains(err.Error(), "registryAllowlist") || !strings.Contains(err.Error(), "container") {
-		t.Errorf("expected error to mention registryAllowlist and container, got: %v", err)
-	}
+	must.ErrorContains(err, "registryAllowlist")
+	must.ErrorContains(err, "container")
 }
 
 // --- PermissionPolicyConfig.Type policy-engine ---
 
 func TestValidateRunConfig_PolicyEngineRequiresPolicyFile(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.PermissionPolicy = PermissionPolicyConfig{Type: "policy-engine"}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for policy-engine without policyFile")
-	}
-	if !strings.Contains(err.Error(), "policyFile") {
-		t.Errorf("expected error to mention policyFile, got: %v", err)
-	}
+	must.ErrorContains(err, "policyFile")
 }
 
 func TestValidateRunConfig_PolicyEngineWithPolicyFilePasses(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.PermissionPolicy = PermissionPolicyConfig{Type: "policy-engine", PolicyFile: "/policies/main.cedar"}
 	c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}} // skirt the Rule-of-Two trip
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("expected policy-engine + policyFile to validate, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 func TestValidateRunConfig_FallbackAcceptsNonEngineTypes(t *testing.T) {
 	for _, fallback := range []string{"allow-all", "deny-all", "deny-side-effects", "ask-upstream"} {
 		t.Run(fallback, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.PermissionPolicy = PermissionPolicyConfig{
 				Type:       "policy-engine",
@@ -2803,14 +2462,13 @@ func TestValidateRunConfig_FallbackAcceptsNonEngineTypes(t *testing.T) {
 				Fallback:   fallback,
 			}
 			c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("expected fallback %q to validate, got: %v", fallback, err)
-			}
+			must.NoError(ValidateRunConfig(c))
 		})
 	}
 }
 
 func TestValidateRunConfig_FallbackRejectsPolicyEngine(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.PermissionPolicy = PermissionPolicyConfig{
 		Type:       "policy-engine",
@@ -2819,15 +2477,11 @@ func TestValidateRunConfig_FallbackRejectsPolicyEngine(t *testing.T) {
 	}
 	c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for fallback=policy-engine")
-	}
-	if !strings.Contains(err.Error(), "fallback") {
-		t.Errorf("expected error to mention fallback, got: %v", err)
-	}
+	must.ErrorContains(err, "fallback")
 }
 
 func TestValidateRunConfig_FallbackRejectsUnknown(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.PermissionPolicy = PermissionPolicyConfig{
 		Type:       "policy-engine",
@@ -2836,12 +2490,8 @@ func TestValidateRunConfig_FallbackRejectsUnknown(t *testing.T) {
 	}
 	c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for unknown fallback")
-	}
-	if !strings.Contains(err.Error(), "fallback") || !strings.Contains(err.Error(), "lasso") {
-		t.Errorf("expected error to mention fallback and the bad value, got: %v", err)
-	}
+	must.ErrorContains(err, "fallback")
+	must.ErrorContains(err, "lasso")
 }
 
 // TestValidateRunConfig_ReadOnlyModeRejectsAllowAllFallback pins that the
@@ -2849,6 +2499,7 @@ func TestValidateRunConfig_FallbackRejectsUnknown(t *testing.T) {
 // empty policy file with fallback allow-all is exactly allow-all, so
 // permitting the combination would hollow out the invariant.
 func TestValidateRunConfig_ReadOnlyModeRejectsAllowAllFallback(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Mode = "planning"
 	c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
@@ -2858,18 +2509,11 @@ func TestValidateRunConfig_ReadOnlyModeRejectsAllowAllFallback(t *testing.T) {
 		Fallback:   "allow-all",
 	}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for read-only mode with allow-all fallback")
-	}
-	if !strings.Contains(err.Error(), "restrictive permission policy") {
-		t.Errorf("expected error to mention restrictive permission policy, got: %v", err)
-	}
+	must.ErrorContains(err, "restrictive permission policy")
 
 	// The same config with a deny-all fallback validates.
 	c.PermissionPolicy.Fallback = "deny-all"
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("expected deny-all fallback to validate in read-only mode, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 // TestValidateRunConfig_PolicyFile_PathTraversalRejected pins that a forged
@@ -2883,16 +2527,12 @@ func TestValidateRunConfig_PolicyFile_PathTraversalRejected(t *testing.T) {
 	}
 	for _, p := range cases {
 		t.Run(p, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.PermissionPolicy = PermissionPolicyConfig{Type: "policy-engine", PolicyFile: p}
 			c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
 			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("expected error for traversal path %q", p)
-			}
-			if !strings.Contains(err.Error(), "policyFile") {
-				t.Errorf("expected error to mention policyFile, got: %v", err)
-			}
+			must.ErrorContains(err, "policyFile")
 		})
 	}
 }
@@ -2901,33 +2541,29 @@ func TestValidateRunConfig_PolicyFile_PathTraversalRejected(t *testing.T) {
 // without traversal segments still validate — the shipped example RunConfig uses
 // one (examples/policies/destructive-shell.cedar).
 func TestValidateRunConfig_PolicyFile_RelativePathAllowed(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.PermissionPolicy = PermissionPolicyConfig{
 		Type:       "policy-engine",
 		PolicyFile: "examples/policies/destructive-shell.cedar",
 	}
 	c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("expected workspace-relative policyFile to validate, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 // TestValidateRunConfig_PolicyFile_IgnoredWithWrongTypeIsError pins that a
 // policyFile set with a non-policy-engine type is rejected rather than silently
 // dropped, which would leave an operator believing a Cedar policy applies.
 func TestValidateRunConfig_PolicyFile_IgnoredWithWrongTypeIsError(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.PermissionPolicy = PermissionPolicyConfig{
 		Type:       "deny-side-effects",
 		PolicyFile: "/policies/main.cedar",
 	}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for policyFile set with deny-side-effects")
-	}
-	if !strings.Contains(err.Error(), "policyFile") || !strings.Contains(err.Error(), "policy-engine") {
-		t.Errorf("expected error to mention policyFile and policy-engine, got: %v", err)
-	}
+	must.ErrorContains(err, "policyFile")
+	must.ErrorContains(err, "policy-engine")
 }
 
 // TestValidateRunConfig_RuntimeRequiresContainerExecutor pins that executor.runtime
@@ -2937,6 +2573,7 @@ func TestValidateRunConfig_RuntimeRequiresContainerExecutor(t *testing.T) {
 	cases := []string{"local", "api"}
 	for _, execType := range cases {
 		t.Run(execType, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Executor = ExecutorConfig{Type: execType, Runtime: "runsc"}
 			if execType == "api" {
@@ -2948,21 +2585,17 @@ func TestValidateRunConfig_RuntimeRequiresContainerExecutor(t *testing.T) {
 				c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
 			}
 			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("expected error for runtime=runsc with executor.type=%q", execType)
-			}
-			if !strings.Contains(err.Error(), "executor.runtime") || !strings.Contains(err.Error(), "container") {
-				t.Errorf("expected error to mention executor.runtime and container, got: %v", err)
-			}
+			must.ErrorContains(err, "executor.runtime")
+			must.ErrorContains(err, "container")
 		})
 	}
 }
 
-// TestValidateRunConfig_VcsBackendType pins the closed set of forges the api
-// executor dispatches to. The type decides which API the executor reads
+// TestValidateRunConfig_VcsBackendTypeIsClosedSet pins the closed set of forges
+// the api executor dispatches to. The type decides which API the executor reads
 // from, so an unset or unrecognised value has to fail at config load rather
 // than resolve to whichever forge happens to be the default.
-func TestValidateRunConfig_VcsBackendType(t *testing.T) {
+func TestValidateRunConfig_VcsBackendTypeIsClosedSet(t *testing.T) {
 	tests := []struct {
 		name        string
 		backendType string
@@ -2978,6 +2611,7 @@ func TestValidateRunConfig_VcsBackendType(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Mode = "research"
 			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
@@ -2994,17 +2628,10 @@ func TestValidateRunConfig_VcsBackendType(t *testing.T) {
 
 			err := ValidateRunConfig(c)
 			if tt.wantErr == "" {
-				if err != nil {
-					t.Fatalf("unexpected error: %v", err)
-				}
+				must.NoError(err)
 				return
 			}
-			if err == nil {
-				t.Fatalf("expected error containing %q", tt.wantErr)
-			}
-			if !strings.Contains(err.Error(), tt.wantErr) {
-				t.Errorf("error = %q, want it to contain %q", err.Error(), tt.wantErr)
-			}
+			must.ErrorContains(err, tt.wantErr)
 		})
 	}
 }
@@ -3014,109 +2641,84 @@ func TestValidateRunConfig_VcsBackendType(t *testing.T) {
 func TestValidateRunConfig_CodeScannerAcceptsClosedSet(t *testing.T) {
 	for _, scanner := range []string{"none", "patterns", "semgrep"} {
 		t.Run(scanner, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.CodeScanner = &CodeScannerConfig{Type: scanner}
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("expected scanner %q to validate, got: %v", scanner, err)
-			}
+			must.NoError(ValidateRunConfig(c))
 		})
 	}
 }
 
 func TestValidateRunConfig_CodeScannerCompositeRequiresScanners(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.CodeScanner = &CodeScannerConfig{Type: "composite"} // no scanners set
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for composite scanner with no scanners list")
-	}
-	if !strings.Contains(err.Error(), "composite") || !strings.Contains(err.Error(), "scanners") {
-		t.Errorf("expected error to mention composite and scanners, got: %v", err)
-	}
+	must.ErrorContains(err, "composite")
+	must.ErrorContains(err, "scanners")
 }
 
 func TestValidateRunConfig_CodeScannerCompositeAcceptsKnownScanners(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.CodeScanner = &CodeScannerConfig{
 		Type:     "composite",
 		Scanners: []string{"patterns", "semgrep"},
 	}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("expected composite scanner with patterns+semgrep to validate, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 func TestValidateRunConfig_CodeScannerCompositeRejectsRecursive(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.CodeScanner = &CodeScannerConfig{
 		Type:     "composite",
 		Scanners: []string{"composite"},
 	}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for composite scanner referencing composite")
-	}
-	if !strings.Contains(err.Error(), "scanners") {
-		t.Errorf("expected error to mention scanners, got: %v", err)
-	}
+	must.ErrorContains(err, "scanners")
 }
 
 func TestValidateRunConfig_CodeScannerRejectsUnknown(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.CodeScanner = &CodeScannerConfig{Type: "magic"}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for unknown scanner type")
-	}
-	if !strings.Contains(err.Error(), "codeScanner.type") || !strings.Contains(err.Error(), "magic") {
-		t.Errorf("expected error to mention codeScanner.type and the bad value, got: %v", err)
-	}
+	must.ErrorContains(err, "codeScanner.type")
+	must.ErrorContains(err, "magic")
 }
 
 func TestValidateRunConfig_CodeScannerDefaultsExecutionToPatterns(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.CodeScanner = nil
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("validation failed: %v", err)
-	}
-	if c.CodeScanner == nil {
-		t.Fatal("expected ValidateRunConfig to populate a default CodeScanner for execution mode")
-	}
-	if c.CodeScanner.Type != "patterns" {
-		t.Errorf("expected execution-mode default %q, got %q", "patterns", c.CodeScanner.Type)
-	}
+	must.NoError(ValidateRunConfig(c))
+	must.NotNil(c.CodeScanner, "expected a default CodeScanner for execution mode")
+	must.Equal("patterns", c.CodeScanner.Type)
 }
 
 func TestValidateRunConfig_CodeScannerDefaultsReadOnlyToNone(t *testing.T) {
 	for _, mode := range []string{"planning", "review", "research", "toil"} {
 		t.Run(mode, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Mode = mode
 			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
 			c.Tools = ToolsConfig{BuiltIn: []string{"read_file", "list_directory"}}
 			c.CodeScanner = nil
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("validation failed for mode %q: %v", mode, err)
-			}
-			if c.CodeScanner == nil {
-				t.Fatalf("expected ValidateRunConfig to populate a default CodeScanner for mode %q", mode)
-			}
-			if c.CodeScanner.Type != "none" {
-				t.Errorf("expected read-only-mode default %q for mode %q, got %q", "none", mode, c.CodeScanner.Type)
-			}
+			must.NoError(ValidateRunConfig(c))
+			must.NotNil(c.CodeScanner, "expected a default CodeScanner for read-only mode")
+			must.Equal("none", c.CodeScanner.Type)
 		})
 	}
 }
 
 func TestValidateRunConfig_CodeScannerExplicitOverridesDefault(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.CodeScanner = &CodeScannerConfig{Type: "none"} // explicitly opt out
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("validation failed: %v", err)
-	}
-	if c.CodeScanner.Type != "none" {
-		t.Errorf("expected explicit none to be preserved, got %q", c.CodeScanner.Type)
-	}
+	must.NoError(ValidateRunConfig(c))
+	must.Equal("none", c.CodeScanner.Type)
 }
 
 // --- EditStrategy default ---
@@ -3125,13 +2727,10 @@ func TestValidateRunConfig_CodeScannerExplicitOverridesDefault(t *testing.T) {
 // RunConfig with an empty EditStrategy.Type lands on "multi" after validation,
 // matching the CLI and gRPC entrypoints.
 func TestValidateRunConfig_EditStrategyDefaultsToMulti(t *testing.T) {
+	must := require.New(t)
 	c := validConfig() // EditStrategy.Type deliberately left empty
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("validation failed: %v", err)
-	}
-	if c.EditStrategy.Type != "multi" {
-		t.Errorf("expected EditStrategy.Type to default to %q, got %q", "multi", c.EditStrategy.Type)
-	}
+	must.NoError(ValidateRunConfig(c))
+	must.Equal("multi", c.EditStrategy.Type)
 }
 
 // TestValidateRunConfig_EditStrategyExplicitPreserved confirms that an
@@ -3140,70 +2739,56 @@ func TestValidateRunConfig_EditStrategyDefaultsToMulti(t *testing.T) {
 func TestValidateRunConfig_EditStrategyExplicitPreserved(t *testing.T) {
 	for _, strategy := range []string{"whole-file", "search-replace", "udiff", "multi"} {
 		t.Run(strategy, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.EditStrategy = EditStrategyConfig{Type: strategy}
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("validation failed: %v", err)
-			}
-			if c.EditStrategy.Type != strategy {
-				t.Errorf("expected explicit %q to be preserved, got %q", strategy, c.EditStrategy.Type)
-			}
+			must.NoError(ValidateRunConfig(c))
+			must.Equal(strategy, c.EditStrategy.Type)
 		})
 	}
 }
 
-// TestValidateRunConfig_FuzzyThresholdBounds pins fuzzyThreshold <= 0 to a
-// validation error instead of a runtime panic: harness/internal/edit/udiff.go's
-// fuzzy-match fallback compares similarity to the threshold with `>=`, so a
-// threshold <= 0 makes that comparison trivially true even with no match, and the
-// strategy splices at a sentinel index of -1. Legal range is (0, 1].
+// TestValidateRunConfig_FuzzyThresholdBounds pins that a fuzzyThreshold outside
+// (0, 1] fails validation. At zero or below, the udiff fuzzy fallback accepts
+// every candidate and splices at a -1 sentinel index.
 func TestValidateRunConfig_FuzzyThresholdBounds(t *testing.T) {
-
-	c := validConfig()
-	zero := 0.0
-	c.EditStrategy = EditStrategyConfig{Type: "udiff", FuzzyThreshold: &zero}
-	err := ValidateRunConfig(c)
-	if err == nil || !strings.Contains(err.Error(), "fuzzyThreshold") {
-		t.Fatalf("expected fuzzyThreshold error for 0, got: %v", err)
+	rejected := []struct {
+		name      string
+		threshold float64
+	}{
+		{name: "zero", threshold: 0},
+		{name: "negative", threshold: -0.5},
+		{name: "above one", threshold: 1.01},
 	}
-
-	neg := -0.5
-	c = validConfig()
-	c.EditStrategy = EditStrategyConfig{Type: "udiff", FuzzyThreshold: &neg}
-	err = ValidateRunConfig(c)
-	if err == nil || !strings.Contains(err.Error(), "fuzzyThreshold") {
-		t.Fatalf("expected fuzzyThreshold error for negative value, got: %v", err)
-	}
-
-	aboveMax := 1.01
-	c = validConfig()
-	c.EditStrategy = EditStrategyConfig{Type: "udiff", FuzzyThreshold: &aboveMax}
-	err = ValidateRunConfig(c)
-	if err == nil || !strings.Contains(err.Error(), "fuzzyThreshold") {
-		t.Fatalf("expected fuzzyThreshold error for value > 1, got: %v", err)
+	for _, tt := range rejected {
+		t.Run("rejects "+tt.name, func(t *testing.T) {
+			must := require.New(t)
+			c := validConfig()
+			threshold := tt.threshold
+			c.EditStrategy = EditStrategyConfig{Type: "udiff", FuzzyThreshold: &threshold}
+			must.ErrorContains(ValidateRunConfig(c), "fuzzyThreshold")
+		})
 	}
 
 	// Boundary and mid-range values must validate cleanly. 1.0 is the
 	// documented ceiling (exact-only fuzzy matches); 0.80 is the
 	// documented default; a value just above 0 is the open lower bound.
 	for _, v := range []float64{0.001, 0.5, 0.80, 1.0} {
-		t.Run(fmt.Sprintf("v=%v", v), func(t *testing.T) {
+		t.Run(fmt.Sprintf("accepts %v", v), func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
-			x := v
-			c.EditStrategy = EditStrategyConfig{Type: "udiff", FuzzyThreshold: &x}
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("expected no error for fuzzyThreshold=%v, got: %v", v, err)
-			}
+			c.EditStrategy = EditStrategyConfig{Type: "udiff", FuzzyThreshold: &v}
+			must.NoError(ValidateRunConfig(c))
 		})
 	}
 
-	// Nil (unset) falls back to the harness default and must validate
-	// cleanly.
-	c = validConfig()
-	c.EditStrategy = EditStrategyConfig{Type: "udiff", FuzzyThreshold: nil}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("expected no error for nil fuzzyThreshold, got: %v", err)
-	}
+	t.Run("accepts unset", func(t *testing.T) {
+		must := require.New(t)
+		// An unset threshold falls back to the harness default.
+		c := validConfig()
+		c.EditStrategy = EditStrategyConfig{Type: "udiff", FuzzyThreshold: nil}
+		must.NoError(ValidateRunConfig(c))
+	})
 }
 
 // --- Rule of Two ---
@@ -3213,11 +2798,10 @@ func TestValidateRunConfig_FuzzyThresholdBounds(t *testing.T) {
 // pollute the table-driven tests below.
 func boolRef(b bool) *bool { return &b }
 
-// ruleOfTwoConfig builds a RunConfig that exercises each Rule-of-Two leg
-// independently: holdsUntrusted via DynamicContext, holdsSensitive via
-// RunConfig.SensitiveData (operational secret refs deliberately do not trip this
-// leg), and canCommExternal via a non-"none" NetworkConfig. The default tool list
-// is constrained so isolated leg-flips don't trigger extra capabilities.
+// ruleOfTwoConfig sets each Rule-of-Two leg independently: untrusted via
+// DynamicContext, sensitive via SensitiveData (operational secret refs do not
+// set it), and external via a non-"none" network. The tool list is read_file
+// only, so no other capability trips.
 func ruleOfTwoConfig(untrusted, sensitive, external bool, policy string) *RunConfig {
 	timeout := 60
 	c := &RunConfig{
@@ -3243,28 +2827,19 @@ func ruleOfTwoConfig(untrusted, sensitive, external bool, policy string) *RunCon
 func TestValidateRunConfig_RuleOfTwo_AllThreeWithoutAskUpstreamRejected(t *testing.T) {
 	for _, policy := range []string{"allow-all", "deny-side-effects"} {
 		t.Run(policy, func(t *testing.T) {
+			must := require.New(t)
 			c := ruleOfTwoConfig(true, true, true, policy)
 			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("expected Rule-of-Two rejection for policy %q with all three flags", policy)
-			}
-			if !strings.Contains(err.Error(), "Rule of Two") {
-				t.Errorf("expected error to mention Rule of Two, got: %v", err)
-			}
-			if !strings.Contains(err.Error(), "untrusted-input") {
-				t.Errorf("expected error to mention untrusted-input, got: %v", err)
-			}
-			if !strings.Contains(err.Error(), "sensitive-data") {
-				t.Errorf("expected error to mention sensitive-data, got: %v", err)
-			}
-			if !strings.Contains(err.Error(), "external-communication") {
-				t.Errorf("expected error to mention external-communication, got: %v", err)
-			}
+			must.ErrorContains(err, "Rule of Two")
+			must.ErrorContains(err, "untrusted-input")
+			must.ErrorContains(err, "sensitive-data")
+			must.ErrorContains(err, "external-communication")
 		})
 	}
 }
 
 func TestValidateRunConfig_QueryParams_Valid(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider = ProviderConfig{
 		Type: "openai-responses",
@@ -3274,42 +2849,33 @@ func TestValidateRunConfig_QueryParams_Valid(t *testing.T) {
 			"flag":          "value with spaces are fine in values",
 		},
 	}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Errorf("expected nil error for valid query params, got %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 func TestValidateRunConfig_QueryParams_RejectsBadKeyChars(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider = ProviderConfig{
 		Type:        "openai-responses",
 		QueryParams: map[string]string{"api version": "preview"},
 	}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for key with spaces, got nil")
-	}
-	if !strings.Contains(err.Error(), "queryParams") {
-		t.Errorf("error should mention queryParams, got: %v", err)
-	}
+	must.ErrorContains(err, "queryParams")
 }
 
 func TestValidateRunConfig_QueryParams_RejectsCRLFInValue(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider = ProviderConfig{
 		Type:        "openai-responses",
 		QueryParams: map[string]string{"api-version": "preview\r\nset-cookie: foo=bar"},
 	}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for CRLF in value, got nil")
-	}
-	if !strings.Contains(err.Error(), "CR/LF") {
-		t.Errorf("error should mention CR/LF, got: %v", err)
-	}
+	must.ErrorContains(err, "CR/LF")
 }
 
 func TestValidateRunConfig_QueryParams_RejectsOversize(t *testing.T) {
+	must := require.New(t)
 	// Build a value just over the 2048-byte cap so the encoded form trips it.
 	huge := strings.Repeat("x", 2050)
 	c := validConfig()
@@ -3318,80 +2884,61 @@ func TestValidateRunConfig_QueryParams_RejectsOversize(t *testing.T) {
 		QueryParams: map[string]string{"k": huge},
 	}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for oversize query string, got nil")
-	}
-	if !strings.Contains(err.Error(), "byte cap") {
-		t.Errorf("error should mention byte cap, got: %v", err)
-	}
+	must.ErrorContains(err, "byte cap")
 }
 
 func TestValidateRunConfig_QueryParams_RejectsEmptyKey(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider = ProviderConfig{
 		Type:        "openai-responses",
 		QueryParams: map[string]string{"": "value"},
 	}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for empty key, got nil")
-	}
-	if !strings.Contains(err.Error(), "empty key") {
-		t.Errorf("error should mention empty key, got: %v", err)
-	}
+	must.ErrorContains(err, "empty key")
 }
 
-// TestValidateRunConfig_AzureFieldsOnNonOpenAIProviderShapeStillEnforced pins that
-// shape validation is universal: even fields the runtime will ignore (non-OpenAI
-// provider) must still be well-formed. Forward compatibility means "ignore at
-// runtime", not "skip validation".
-func TestValidateRunConfig_AzureFieldsOnNonOpenAIProviderShapeStillEnforced(t *testing.T) {
+// TestValidateRunConfig_NonOpenAIProviderMalformedHeaderRejected pins that shape
+// validation applies to every provider: a malformed header on anthropic fails
+// even though the runtime ignores it. Forward compatibility means ignored at
+// runtime, not unvalidated.
+func TestValidateRunConfig_NonOpenAIProviderMalformedHeaderRejected(t *testing.T) {
+	must := require.New(t)
 	c := validConfig() // Provider.Type == "anthropic"
 	c.Provider.APIKeyHeader = "bad: header"
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error even on anthropic with malformed header, got nil")
-	}
+	must.Error(ValidateRunConfig(c))
 }
 
-// TestValidateRunConfig_AzureFieldsOnNonOpenAIProviderValidShape verifies
-// the inverse of the above: well-formed APIKeyHeader / QueryParams on a
-// non-OpenAI provider are tolerated (anthropic and bedrock will simply
-// ignore them at runtime). This is forward compatibility.
-func TestValidateRunConfig_AzureFieldsOnNonOpenAIProviderValidShape(t *testing.T) {
+// TestValidateRunConfig_NonOpenAIProviderForwardCompatibleFieldsAccepted pins that
+// well-formed APIKeyHeader and QueryParams are accepted on a non-OpenAI provider,
+// which ignores them at runtime.
+func TestValidateRunConfig_NonOpenAIProviderForwardCompatibleFieldsAccepted(t *testing.T) {
+	must := require.New(t)
 	c := validConfig() // Provider.Type == "anthropic"
 	c.Provider.APIKeyHeader = "x-api-key"
 	c.Provider.QueryParams = map[string]string{"hint": "future"}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Errorf("expected nil error for forward-compatible fields on anthropic, got %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 func TestValidateRunConfig_RuleOfTwo_AskUpstreamPasses(t *testing.T) {
+	must := require.New(t)
 	c := ruleOfTwoConfig(true, true, true, "ask-upstream")
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("ask-upstream should bypass Rule-of-Two rejection, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 func TestValidateRunConfig_RuleOfTwo_OverridePasses(t *testing.T) {
+	must := require.New(t)
 	c := ruleOfTwoConfig(true, true, true, "deny-side-effects")
 	c.RuleOfTwo = &RuleOfTwoConfig{Enforce: boolRef(false)}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("explicit RuleOfTwo.Enforce: false should bypass rejection, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 func TestValidateRunConfig_RuleOfTwo_ExplicitTrueStillEnforces(t *testing.T) {
+	must := require.New(t)
 	c := ruleOfTwoConfig(true, true, true, "deny-side-effects")
 	c.RuleOfTwo = &RuleOfTwoConfig{Enforce: boolRef(true)}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("RuleOfTwo.Enforce: true must not bypass the invariant")
-	}
-	if !strings.Contains(err.Error(), "Rule of Two") {
-		t.Errorf("expected Rule-of-Two error, got: %v", err)
-	}
+	must.ErrorContains(err, "Rule of Two", "RuleOfTwo.Enforce: true must not bypass the invariant")
 }
 
 func TestValidateRunConfig_RuleOfTwo_TwoOfThreePasses(t *testing.T) {
@@ -3407,10 +2954,9 @@ func TestValidateRunConfig_RuleOfTwo_TwoOfThreePasses(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := ruleOfTwoConfig(tc.untrusted, tc.sensitive, tc.external, "deny-side-effects")
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("two-of-three should pass, got: %v", err)
-			}
+			must.NoError(ValidateRunConfig(c))
 		})
 	}
 }
@@ -3433,13 +2979,12 @@ func TestRuleOfTwoState_MatchesValidator(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := ruleOfTwoConfig(tc.untrusted, tc.sensitive, tc.external, "deny-side-effects")
-			gotU, gotS, gotE := RuleOfTwoState(c)
-			if gotU != tc.wantUntrusted || gotS != tc.wantSensitive || gotE != tc.wantCanCommExternal {
-				t.Errorf("RuleOfTwoState = (%v, %v, %v), want (%v, %v, %v)",
-					gotU, gotS, gotE,
-					tc.wantUntrusted, tc.wantSensitive, tc.wantCanCommExternal)
-			}
+			gotUntrusted, gotSensitive, gotExternal := RuleOfTwoState(c)
+			must.Equal(tc.wantUntrusted, gotUntrusted, "untrusted flag")
+			must.Equal(tc.wantSensitive, gotSensitive, "sensitive flag")
+			must.Equal(tc.wantCanCommExternal, gotExternal, "canCommunicateExternally flag")
 		})
 	}
 }
@@ -3448,10 +2993,11 @@ func TestRuleOfTwoState_MatchesValidator(t *testing.T) {
 // returns the all-false state rather than panicking. Factory wiring
 // relies on this for defensive emission paths.
 func TestRuleOfTwoState_NilSafe(t *testing.T) {
-	u, s, e := RuleOfTwoState(nil)
-	if u || s || e {
-		t.Errorf("nil config should return (false, false, false), got (%v, %v, %v)", u, s, e)
-	}
+	must := require.New(t)
+	untrusted, sensitive, external := RuleOfTwoState(nil)
+	must.False(untrusted, "untrusted flag for nil config")
+	must.False(sensitive, "sensitive flag for nil config")
+	must.False(external, "canCommunicateExternally flag for nil config")
 }
 
 func TestValidateRunConfig_RuleOfTwo_OneOrZeroPasses(t *testing.T) {
@@ -3468,10 +3014,9 @@ func TestValidateRunConfig_RuleOfTwo_OneOrZeroPasses(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := ruleOfTwoConfig(tc.untrusted, tc.sensitive, tc.external, "deny-side-effects")
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("one-or-zero flags should pass, got: %v", err)
-			}
+			must.NoError(ValidateRunConfig(c))
 		})
 	}
 }
@@ -3492,6 +3037,7 @@ func TestValidateRunConfig_RuleOfTwo_OperationalSecretRefDoesNotTrigger(t *testi
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := &RunConfig{
 				Mode:             "execution",
 				Provider:         ProviderConfig{Type: "anthropic", APIKeyRef: tc.apiKeyRef},
@@ -3501,9 +3047,7 @@ func TestValidateRunConfig_RuleOfTwo_OperationalSecretRefDoesNotTrigger(t *testi
 				DynamicContext:   map[string]DynamicContextValue{"x": {Value: "y"}}, // untrusted
 				Tools:            ToolsConfig{BuiltIn: []string{"web_fetch"}},       // external
 			}
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("operational secret reference must not trip the sensitive-data leg, got: %v", err)
-			}
+			must.NoError(ValidateRunConfig(c), "operational secret reference must not trip the sensitive-data leg")
 		})
 	}
 }
@@ -3513,6 +3057,7 @@ func TestValidateRunConfig_RuleOfTwo_OperationalSecretRefDoesNotTrigger(t *testi
 // Combined with DynamicContext (untrusted) and web_fetch (external),
 // this should produce the all-three rejection.
 func TestValidateRunConfig_RuleOfTwo_ExplicitSensitiveDataTriggers(t *testing.T) {
+	must := require.New(t)
 	timeout := 60
 	c := &RunConfig{
 		Mode:             "execution",
@@ -3525,12 +3070,7 @@ func TestValidateRunConfig_RuleOfTwo_ExplicitSensitiveDataTriggers(t *testing.T)
 		SensitiveData:    boolRef(true),                                     // explicit
 	}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("explicit SensitiveData must trip the Rule-of-Two rejection alongside untrusted+external")
-	}
-	if !strings.Contains(err.Error(), "Rule of Two") {
-		t.Errorf("expected Rule-of-Two error, got: %v", err)
-	}
+	must.ErrorContains(err, "Rule of Two", "explicit SensitiveData must trip the Rule-of-Two rejection alongside untrusted+external")
 }
 
 // TestValidateRunConfig_RuleOfTwo_SensitiveDynamicContextEntryTriggers
@@ -3539,6 +3079,7 @@ func TestValidateRunConfig_RuleOfTwo_ExplicitSensitiveDataTriggers(t *testing.T)
 // customer record block that's marked sensitive while other entries
 // (issue body, repo metadata) remain non-sensitive.
 func TestValidateRunConfig_RuleOfTwo_SensitiveDynamicContextEntryTriggers(t *testing.T) {
+	must := require.New(t)
 	timeout := 60
 	c := &RunConfig{
 		Mode:             "execution",
@@ -3553,12 +3094,7 @@ func TestValidateRunConfig_RuleOfTwo_SensitiveDynamicContextEntryTriggers(t *tes
 		Tools: ToolsConfig{BuiltIn: []string{"web_fetch"}},
 	}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("a single sensitive DynamicContext entry must trip the Rule-of-Two rejection alongside untrusted+external")
-	}
-	if !strings.Contains(err.Error(), "Rule of Two") {
-		t.Errorf("expected Rule-of-Two error, got: %v", err)
-	}
+	must.ErrorContains(err, "Rule of Two", "a single sensitive DynamicContext entry must trip the Rule-of-Two rejection alongside untrusted+external")
 }
 
 // TestValidateRunConfig_RuleOfTwo_DefaultIsNotSensitive pins the out-of-the-box
@@ -3566,6 +3102,7 @@ func TestValidateRunConfig_RuleOfTwo_SensitiveDynamicContextEntryTriggers(t *tes
 // config with untrusted + external input (a bare `stirrup harness --prompt "x"`)
 // validates cleanly.
 func TestValidateRunConfig_RuleOfTwo_DefaultIsNotSensitive(t *testing.T) {
+	must := require.New(t)
 	timeout := 60
 	c := &RunConfig{
 		Mode:             "execution",
@@ -3576,15 +3113,14 @@ func TestValidateRunConfig_RuleOfTwo_DefaultIsNotSensitive(t *testing.T) {
 		DynamicContext:   map[string]DynamicContextValue{"issue_body": {Value: "y"}}, // untrusted
 		Tools:            ToolsConfig{BuiltIn: []string{"web_fetch", "run_command"}}, // external
 	}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("default (no SensitiveData, no sensitive entry) must not trip the leg, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c), "default (no SensitiveData, no sensitive entry) must not trip the leg")
 }
 
 // TestValidateRunConfig_RuleOfTwo_ToolListReflectsActualBuiltIn pins that
 // tool-enabled checks reflect the actual tools.builtIn list: a run-command-disabled
 // config is not flagged as canCommunicateExternally on that leg alone.
 func TestValidateRunConfig_RuleOfTwo_ToolListReflectsActualBuiltIn(t *testing.T) {
+	must := require.New(t)
 	timeout := 60
 	c := &RunConfig{
 		Mode:             "execution",
@@ -3598,9 +3134,7 @@ func TestValidateRunConfig_RuleOfTwo_ToolListReflectsActualBuiltIn(t *testing.T)
 		// executor has no network config — no external-communication leg.
 		Tools: ToolsConfig{BuiltIn: []string{"read_file", "list_directory"}},
 	}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("config with two flags only should pass, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c), "config with two flags only should pass")
 }
 
 // --- RuleOfTwoRuntimeConfig ---
@@ -3619,21 +3153,15 @@ func TestValidateRunConfig_RuleOfTwoRuntime_ClassifierClosedSet(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.RuleOfTwo = &RuleOfTwoConfig{Runtime: &RuleOfTwoRuntimeConfig{Classifier: tc.classifier}}
 			err := ValidateRunConfig(c)
 			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected rejection for classifier %q, got nil", tc.classifier)
-				}
-				if !strings.Contains(err.Error(), "ruleOfTwo.runtime.classifier") {
-					t.Errorf("error should name ruleOfTwo.runtime.classifier, got: %v", err)
-				}
+				must.ErrorContains(err, "ruleOfTwo.runtime.classifier")
 				return
 			}
-			if err != nil {
-				t.Fatalf("classifier %q should pass, got: %v", tc.classifier, err)
-			}
+			must.NoError(err)
 		})
 	}
 }
@@ -3656,22 +3184,16 @@ func TestValidateRunConfig_RuleOfTwoRuntime_OnDetectClosedSet(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Transport = TransportConfig{Type: tc.transport}
 			c.RuleOfTwo = &RuleOfTwoConfig{Runtime: &RuleOfTwoRuntimeConfig{OnDetect: tc.onDetect}}
 			err := ValidateRunConfig(c)
 			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected rejection for onDetect %q, got nil", tc.onDetect)
-				}
-				if !strings.Contains(err.Error(), "ruleOfTwo.runtime.onDetect") {
-					t.Errorf("error should name ruleOfTwo.runtime.onDetect, got: %v", err)
-				}
+				must.ErrorContains(err, "ruleOfTwo.runtime.onDetect")
 				return
 			}
-			if err != nil {
-				t.Fatalf("onDetect %q should pass, got: %v", tc.onDetect, err)
-			}
+			must.NoError(err)
 		})
 	}
 }
@@ -3682,22 +3204,17 @@ func TestValidateRunConfig_RuleOfTwoRuntime_OnDetectClosedSet(t *testing.T) {
 // — an operator who sets it believing they have a safety net has none.
 func TestValidateRunConfig_RuleOfTwoRuntime_NoneClassifierCrossField(t *testing.T) {
 	t.Run("none with onDetect rejected", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.RuleOfTwo = &RuleOfTwoConfig{Runtime: &RuleOfTwoRuntimeConfig{Classifier: "none", OnDetect: "abort"}}
 		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("expected rejection for classifier=none with onDetect=abort, got nil")
-		}
-		if !strings.Contains(err.Error(), "has no effect") {
-			t.Errorf("error should mention has no effect, got: %v", err)
-		}
+		must.ErrorContains(err, "has no effect")
 	})
 	t.Run("none with empty onDetect passes", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.RuleOfTwo = &RuleOfTwoConfig{Runtime: &RuleOfTwoRuntimeConfig{Classifier: "none"}}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Fatalf("classifier=none alone should pass, got: %v", err)
-		}
+		must.NoError(ValidateRunConfig(c))
 	})
 }
 
@@ -3707,6 +3224,7 @@ func TestValidateRunConfig_RuleOfTwoRuntime_NoneClassifierCrossField(t *testing.
 // scan, so the abort would silently never happen.
 func TestValidateRunConfig_RuleOfTwoRuntime_AbortWithStaticSensitiveCrossField(t *testing.T) {
 	t.Run("abort with sensitiveData rejected", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		// Only the sensitive leg holds (read-only tools, no untrusted
 		// ingress) so the static all-three check stays silent and this
@@ -3715,42 +3233,32 @@ func TestValidateRunConfig_RuleOfTwoRuntime_AbortWithStaticSensitiveCrossField(t
 		c.SensitiveData = boolRef(true)
 		c.RuleOfTwo = &RuleOfTwoConfig{Runtime: &RuleOfTwoRuntimeConfig{OnDetect: "abort"}}
 		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("expected rejection for onDetect=abort with sensitiveData:true, got nil")
-		}
-		if !strings.Contains(err.Error(), "abort") || !strings.Contains(err.Error(), "sensitiveData") {
-			t.Errorf("error should name abort and sensitiveData, got: %v", err)
-		}
+		must.ErrorContains(err, "abort")
+		must.ErrorContains(err, "sensitiveData")
 	})
 	t.Run("abort with sensitive dynamicContext entry rejected", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
 		c.DynamicContext = map[string]DynamicContextValue{"record": {Value: "x", Sensitive: true}}
 		c.RuleOfTwo = &RuleOfTwoConfig{Runtime: &RuleOfTwoRuntimeConfig{OnDetect: "abort"}}
 		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("expected rejection for onDetect=abort with a Sensitive dynamicContext entry, got nil")
-		}
-		if !strings.Contains(err.Error(), "abort") {
-			t.Errorf("error should name abort, got: %v", err)
-		}
+		must.ErrorContains(err, "abort")
 	})
 	t.Run("block-external with sensitiveData passes", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
 		c.SensitiveData = boolRef(true)
 		c.RuleOfTwo = &RuleOfTwoConfig{Runtime: &RuleOfTwoRuntimeConfig{OnDetect: "block-external"}}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Fatalf("block-external on a statically-sensitive run should pass, got: %v", err)
-		}
+		must.NoError(ValidateRunConfig(c))
 	})
 	t.Run("abort without static sensitivity passes", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
 		c.RuleOfTwo = &RuleOfTwoConfig{Runtime: &RuleOfTwoRuntimeConfig{OnDetect: "abort"}}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Fatalf("abort on a non-statically-sensitive run should pass, got: %v", err)
-		}
+		must.NoError(ValidateRunConfig(c))
 	})
 }
 
@@ -3772,22 +3280,16 @@ func TestValidateRunConfig_RuleOfTwoRuntime_AskUpstreamRequiresGRPC(t *testing.T
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Transport = TransportConfig{Type: tc.transport}
 			c.RuleOfTwo = &RuleOfTwoConfig{Runtime: &RuleOfTwoRuntimeConfig{OnDetect: "ask-upstream"}}
 			err := ValidateRunConfig(c)
 			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected rejection for ask-upstream with transport %q, got nil", tc.transport)
-				}
-				if !strings.Contains(err.Error(), "requires transport=grpc") {
-					t.Errorf("error should mention requires transport=grpc, got: %v", err)
-				}
+				must.ErrorContains(err, "requires transport=grpc")
 				return
 			}
-			if err != nil {
-				t.Fatalf("ask-upstream with grpc transport should pass, got: %v", err)
-			}
+			must.NoError(err)
 		})
 	}
 }
@@ -3807,21 +3309,15 @@ func TestValidateRunConfig_RuleOfTwoRuntime_GuardCriteriaPattern(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.RuleOfTwo = &RuleOfTwoConfig{Runtime: &RuleOfTwoRuntimeConfig{GuardCriteria: tc.criteria}}
 			err := ValidateRunConfig(c)
 			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected rejection for guardCriteria %v, got nil", tc.criteria)
-				}
-				if !strings.Contains(err.Error(), "ruleOfTwo.runtime.guardCriteria") {
-					t.Errorf("error should name ruleOfTwo.runtime.guardCriteria, got: %v", err)
-				}
+				must.ErrorContains(err, "ruleOfTwo.runtime.guardCriteria")
 				return
 			}
-			if err != nil {
-				t.Fatalf("guardCriteria %v should pass, got: %v", tc.criteria, err)
-			}
+			must.NoError(err)
 		})
 	}
 }
@@ -3834,27 +3330,22 @@ func TestValidateRunConfig_RuleOfTwoRuntime_GuardCriteriaPattern(t *testing.T) {
 // applyCodeScannerDefault, which deliberately does mutate).
 func TestValidateRunConfig_RuleOfTwoRuntime_NilPassthrough(t *testing.T) {
 	t.Run("nil RuleOfTwo", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
-		if err := ValidateRunConfig(c); err != nil {
-			t.Fatalf("nil RuleOfTwo should pass, got: %v", err)
-		}
-		if c.RuleOfTwo != nil {
-			t.Fatalf("validation must not inject a RuleOfTwo block, got: %+v", c.RuleOfTwo)
-		}
+		must.NoError(ValidateRunConfig(c))
+		must.Nil(c.RuleOfTwo, "validation must not inject a RuleOfTwo block")
 	})
 	t.Run("nil Runtime", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.RuleOfTwo = &RuleOfTwoConfig{Enforce: boolRef(true)}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Fatalf("nil Runtime should pass, got: %v", err)
-		}
-		if c.RuleOfTwo.Runtime != nil {
-			t.Fatalf("validation must not inject a Runtime block, got: %+v", c.RuleOfTwo.Runtime)
-		}
+		must.NoError(ValidateRunConfig(c))
+		must.Nil(c.RuleOfTwo.Runtime, "validation must not inject a Runtime block")
 	})
 }
 
 func TestValidateRunConfig_RuleOfTwoRuntime_ValidFullBlockPasses(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Transport = TransportConfig{Type: "grpc"}
 	c.RuleOfTwo = &RuleOfTwoConfig{
@@ -3865,19 +3356,17 @@ func TestValidateRunConfig_RuleOfTwoRuntime_ValidFullBlockPasses(t *testing.T) {
 			GuardCriteria: []string{"sensitive_data", "pii"},
 		},
 	}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("fully-populated valid runtime block should pass, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 // --- GuardRailConfig ---
 
-// TestValidateGuardRailConfig is a table-driven exercise of every
+// TestValidateRunConfig_GuardRailRules is a table-driven exercise of every
 // invariant validateGuardRailConfig enforces. Each case wraps a
 // GuardRailConfig in an otherwise-valid RunConfig so the closed-set,
 // range, and cross-field checks fire exactly as they would in
 // production.
-func TestValidateGuardRailConfig(t *testing.T) {
+func TestValidateRunConfig_GuardRailRules(t *testing.T) {
 	think := true
 	cases := []struct {
 		name      string
@@ -4226,20 +3715,17 @@ func TestValidateGuardRailConfig(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.GuardRail = tc.guard
 			err := ValidateRunConfig(c)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected error containing %q, got nil", tc.errSubstr)
-				}
-				if tc.errSubstr != "" && !strings.Contains(err.Error(), tc.errSubstr) {
-					t.Errorf("expected error to contain %q, got: %v", tc.errSubstr, err)
-				}
+			if !tc.wantErr {
+				must.NoError(err)
 				return
 			}
-			if err != nil {
-				t.Fatalf("expected no error, got: %v", err)
+			must.Error(err)
+			if tc.errSubstr != "" {
+				must.ErrorContains(err, tc.errSubstr)
 			}
 		})
 	}
@@ -4604,30 +4090,25 @@ func TestValidateRunConfig_GeminiProvider(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := geminiValidConfig()
 			tc.mutate(c)
 			err := ValidateRunConfig(c)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected error containing %q, got nil", tc.errSubstr)
-				}
-				if tc.errSubstr != "" && !strings.Contains(err.Error(), tc.errSubstr) {
-					t.Errorf("expected error to contain %q, got: %v", tc.errSubstr, err)
-				}
+			if !tc.wantErr {
+				must.NoError(err)
 				return
 			}
-			if err != nil {
-				t.Fatalf("expected no error, got: %v", err)
-			}
+			must.Error(err, "expected error containing %q", tc.errSubstr)
+			must.ErrorContains(err, tc.errSubstr)
 		})
 	}
 }
 
-// TestValidateRunConfig_AzureWorkloadIdentity covers the Azure WIF credential
+// TestValidateRunConfig_AzureWorkloadIdentityCredentialRules covers the Azure WIF credential
 // type's field-level rules (UUID tenant/client, required token source, HTTPS-only
 // scope) and the cross-field invariants: apiKeyRef and apiKeyHeader="api-key" are
 // mutually exclusive with WIF since the bearer travels on Authorization: Bearer.
-func TestValidateRunConfig_AzureWorkloadIdentity(t *testing.T) {
+func TestValidateRunConfig_AzureWorkloadIdentityCredentialRules(t *testing.T) {
 	const (
 		validTenant = "11111111-2222-3333-4444-555555555555"
 		validClient = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
@@ -4756,7 +4237,7 @@ func TestValidateRunConfig_AzureWorkloadIdentity(t *testing.T) {
 			errSubstr: "azureTenantId",
 		},
 		{
-			name: "uppercase azureTenantId rejected (canonical lowercase only)",
+			name: "uppercase azureClientId rejected (canonical lowercase only)",
 			mutate: func(c *RunConfig) {
 				c.Provider.Credential = &CredentialConfig{
 					Type:          "azure-workload-identity",
@@ -4953,29 +4434,25 @@ func TestValidateRunConfig_AzureWorkloadIdentity(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			tc.mutate(c)
 			err := ValidateRunConfig(c)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected error containing %q, got nil", tc.errSubstr)
-				}
-				if tc.errSubstr != "" && !strings.Contains(err.Error(), tc.errSubstr) {
-					t.Errorf("expected error to contain %q, got: %v", tc.errSubstr, err)
-				}
+			if !tc.wantErr {
+				must.NoError(err)
 				return
 			}
-			if err != nil {
-				t.Fatalf("expected no error, got: %v", err)
-			}
+			must.ErrorContains(err, tc.errSubstr)
 		})
 	}
 }
 
-// TestValidateRunConfig_AzureWIFIncompatibleProvider is a focused regression
-// check: a credential block of type azure-workload-identity must not pair with a
-// non-OpenAI provider type, and the error must name both.
-func TestValidateRunConfig_AzureWIFIncompatibleProvider(t *testing.T) {
+// TestValidateRunConfig_AzureWIFRejectsAnthropicProvider checks that an
+// azure-workload-identity credential cannot pair with the anthropic provider
+// type, and that the error names both the credential type and the accepted
+// provider types.
+func TestValidateRunConfig_AzureWIFRejectsAnthropicProvider(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider = ProviderConfig{
 		Type: "anthropic",
@@ -4996,16 +4473,9 @@ func TestValidateRunConfig_AzureWIFIncompatibleProvider(t *testing.T) {
 	}
 
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected validation error, got nil")
-	}
-	msg := err.Error()
-	if !strings.Contains(msg, "azure-workload-identity") {
-		t.Errorf("error should name azure-workload-identity, got: %v", err)
-	}
-	if !strings.Contains(msg, "openai-compatible") {
-		t.Errorf("error should name openai-compatible as accepted type, got: %v", err)
-	}
+	must.Error(err)
+	must.ErrorContains(err, "azure-workload-identity", "error should name the credential type")
+	must.ErrorContains(err, "openai-compatible", "error should name the accepted provider type")
 }
 
 // TestValidateRunConfig_GeminiModelNameWithSlash pins that a Vertex model name
@@ -5068,15 +4538,11 @@ func TestValidateRunConfig_GeminiModelNameWithSlash(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := geminiValidConfig()
 			tc.mutate(c)
 			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("expected validation error containing %q, got nil", tc.errSubstr)
-			}
-			if !strings.Contains(err.Error(), tc.errSubstr) {
-				t.Errorf("expected error to contain %q, got: %v", tc.errSubstr, err)
-			}
+			must.ErrorContains(err, tc.errSubstr)
 		})
 	}
 }
@@ -5087,15 +4553,14 @@ func TestValidateRunConfig_GeminiModelNameWithSlash(t *testing.T) {
 func TestValidateRunConfig_GeminiModelNameValid(t *testing.T) {
 	for _, model := range []string{"gemini-2.5-pro", "gemini-2.0-flash", "gemini-1.5-pro_001"} {
 		t.Run(model, func(t *testing.T) {
+			must := require.New(t)
 			c := geminiValidConfig()
 			c.ModelRouter = ModelRouterConfig{
 				Type:     "static",
 				Provider: "gemini",
 				Model:    model,
 			}
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("expected no error for valid model %q, got: %v", model, err)
-			}
+			must.NoError(ValidateRunConfig(c))
 		})
 	}
 }
@@ -5104,30 +4569,34 @@ func TestValidateRunConfig_GeminiModelNameValid(t *testing.T) {
 // model name cannot be paired with the gemini provider, for the default
 // model and for a per-mode override, and that non-claude names still pass.
 func TestValidateRunConfig_GeminiRejectsClaudeModel(t *testing.T) {
-	c := geminiValidConfig()
-	c.ModelRouter = ModelRouterConfig{Type: "static", Provider: "gemini", Model: "claude-sonnet-4-6"}
-	err := ValidateRunConfig(c)
-	if err == nil || !strings.Contains(err.Error(), "modelRouter.model") || !strings.Contains(err.Error(), "Anthropic model name") {
-		t.Fatalf("expected the claude- rejection on modelRouter.model, got: %v", err)
-	}
+	t.Run("default model", func(t *testing.T) {
+		must := require.New(t)
+		c := geminiValidConfig()
+		c.ModelRouter = ModelRouterConfig{Type: "static", Provider: "gemini", Model: "claude-sonnet-4-6"}
+		err := ValidateRunConfig(c)
+		must.ErrorContains(err, "modelRouter.model")
+		must.ErrorContains(err, "Anthropic model name")
+	})
 
-	c = geminiValidConfig()
-	c.ModelRouter = ModelRouterConfig{
-		Type:       "per-mode",
-		Provider:   "gemini",
-		Model:      "gemini-2.5-pro",
-		ModeModels: map[string]string{"planning": "gemini/claude-opus-4-7"},
-	}
-	err = ValidateRunConfig(c)
-	if err == nil || !strings.Contains(err.Error(), "modelRouter.modeModels[planning]") {
-		t.Fatalf("expected the claude- rejection on the mode override, got: %v", err)
-	}
+	t.Run("per-mode override", func(t *testing.T) {
+		must := require.New(t)
+		c := geminiValidConfig()
+		c.ModelRouter = ModelRouterConfig{
+			Type:       "per-mode",
+			Provider:   "gemini",
+			Model:      "gemini-2.5-pro",
+			ModeModels: map[string]string{"planning": "gemini/claude-opus-4-7"},
+		}
+		err := ValidateRunConfig(c)
+		must.ErrorContains(err, "modelRouter.modeModels[planning]")
+	})
 
-	c = geminiValidConfig()
-	c.ModelRouter = ModelRouterConfig{Type: "static", Provider: "gemini", Model: "gemini-claude-lookalike"}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("a model merely containing claude must pass, got: %v", err)
-	}
+	t.Run("name merely containing claude passes", func(t *testing.T) {
+		must := require.New(t)
+		c := geminiValidConfig()
+		c.ModelRouter = ModelRouterConfig{Type: "static", Provider: "gemini", Model: "gemini-claude-lookalike"}
+		must.NoError(ValidateRunConfig(c))
+	})
 }
 
 // TestValidateRunConfig_GeminiFieldsLeakRejected verifies that the four
@@ -5169,38 +4638,29 @@ func TestValidateRunConfig_GeminiFieldsLeakRejected(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run("default/"+tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			tc.mutate(&c.Provider)
 			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("expected error containing %q, got nil", tc.errSubstr)
-			}
-			if !strings.Contains(err.Error(), tc.errSubstr) {
-				t.Errorf("expected error to contain %q, got: %v", tc.errSubstr, err)
-			}
+			must.ErrorContains(err, tc.errSubstr)
 		})
 		t.Run("map/"+tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			named := ProviderConfig{Type: "anthropic"}
 			tc.mutate(&named)
 			c.Providers = map[string]ProviderConfig{"alt": named}
 			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("expected error containing %q, got nil", tc.errSubstr)
-			}
-			if !strings.Contains(err.Error(), tc.errSubstr) {
-				t.Errorf("expected error to contain %q, got: %v", tc.errSubstr, err)
-			}
+			must.ErrorContains(err, tc.errSubstr)
 		})
 	}
 }
 
-// TestValidateRunConfig_GeminiInProvidersMap pins that the gemini
-// validation runs on the Providers map entries too, not just on the
-// default Provider. Without this coverage a future refactor that
-// touched validateProviderConfigs could silently skip the gemini
-// gate for named providers.
-func TestValidateRunConfig_GeminiInProvidersMap(t *testing.T) {
+// TestValidateRunConfig_GeminiValidationAppliesToProvidersMap pins that the
+// gemini validation runs on the Providers map entries too, not just on the
+// default Provider.
+func TestValidateRunConfig_GeminiValidationAppliesToProvidersMap(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Providers = map[string]ProviderConfig{
 		"vertex": {
@@ -5210,12 +4670,7 @@ func TestValidateRunConfig_GeminiInProvidersMap(t *testing.T) {
 		},
 	}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for gemini provider in map missing gcpProject")
-	}
-	if !strings.Contains(err.Error(), "providers[vertex].gcpProject") {
-		t.Errorf("expected error path providers[vertex].gcpProject, got: %v", err)
-	}
+	must.ErrorContains(err, "providers[vertex].gcpProject")
 }
 
 // TestValidateRunConfig_ObservabilityValid pins that the typical
@@ -5235,11 +4690,10 @@ func TestValidateRunConfig_ObservabilityValid(t *testing.T) {
 	}
 	for _, obs := range cases {
 		t.Run(fmt.Sprintf("name=%q env=%q ns=%q", obs.ServiceName, obs.Environment, obs.ServiceNamespace), func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Observability = obs
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("expected nil error, got: %v", err)
-			}
+			must.NoError(ValidateRunConfig(c))
 		})
 	}
 }
@@ -5265,15 +4719,11 @@ func TestValidateRunConfig_ObservabilityRejectsBadShape(t *testing.T) {
 	}
 	for name, obs := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Observability = obs
 			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("expected error for %s", name)
-			}
-			if !strings.Contains(err.Error(), "observability.") {
-				t.Errorf("expected error to mention observability.*, got: %v", err)
-			}
+			must.ErrorContains(err, "observability.")
 		})
 	}
 }
@@ -5286,15 +4736,11 @@ func TestValidateRunConfig_ObservabilityRejectsBadShape(t *testing.T) {
 func TestValidateRunConfig_LogsExportTypeRejectsUnknown(t *testing.T) {
 	for _, bad := range []string{"otel", "loki", "grpc", "stdout"} {
 		t.Run(bad, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Observability = ObservabilityConfig{LogsExport: LogsExportConfig{Type: bad}}
 			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("expected error for logsExport.type %q", bad)
-			}
-			if !strings.Contains(err.Error(), "observability.logsExport.type") {
-				t.Errorf("expected error to mention observability.logsExport.type, got: %v", err)
-			}
+			must.ErrorContains(err, "observability.logsExport.type")
 		})
 	}
 }
@@ -5306,15 +4752,11 @@ func TestValidateRunConfig_LogsExportTypeRejectsUnknown(t *testing.T) {
 // this coverage the closed-set check is invisible to the test suite —
 // a regression that whitelisted "http" would pass every existing test.
 func TestValidateRunConfig_InvalidTraceEmitterProtocol(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.TraceEmitter = TraceEmitterConfig{Type: "otel", Protocol: "http"}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for unsupported protocol value")
-	}
-	if !strings.Contains(err.Error(), "unsupported traceEmitter.protocol") {
-		t.Errorf("expected error to call out the bad protocol, got: %v", err)
-	}
+	must.ErrorContains(err, "unsupported traceEmitter.protocol")
 }
 
 // TestValidateRunConfig_ProtocolOnNonOTelEmitter pins the cross-field
@@ -5323,15 +4765,10 @@ func TestValidateRunConfig_InvalidTraceEmitterProtocol(t *testing.T) {
 // must fail loudly. Without this test, dropping the type guard from
 // validateTraceEmitterProtocolAndHeaders would go unnoticed.
 func TestValidateRunConfig_ProtocolOnNonOTelEmitter(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.TraceEmitter = TraceEmitterConfig{Type: "jsonl", Protocol: "grpc"}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for protocol on non-otel emitter")
-	}
-	if !strings.Contains(err.Error(), "only valid when traceEmitter.type is \"otel\"") {
-		t.Errorf("expected error to call out the type mismatch, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), `only valid when traceEmitter.type is "otel"`)
 }
 
 // TestValidateRunConfig_HeadersOnNonOTelEmitter is the headers-side
@@ -5340,18 +4777,13 @@ func TestValidateRunConfig_ProtocolOnNonOTelEmitter(t *testing.T) {
 // loudly so an operator does not assume their auth header is being
 // honoured when it's silently dropped.
 func TestValidateRunConfig_HeadersOnNonOTelEmitter(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.TraceEmitter = TraceEmitterConfig{
 		Type:    "jsonl",
 		Headers: map[string]string{"X-Tenant": "team-a"},
 	}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for headers on non-otel emitter")
-	}
-	if !strings.Contains(err.Error(), "traceEmitter.headers is only valid") {
-		t.Errorf("expected error to call out the type mismatch, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "traceEmitter.headers is only valid")
 }
 
 // TestValidateRunConfig_CaptureContentOnNonOTelEmitter is the
@@ -5361,18 +4793,13 @@ func TestValidateRunConfig_HeadersOnNonOTelEmitter(t *testing.T) {
 // the toggle on a non-otel emitter is a stale-config artifact and must
 // fail loudly rather than silently meaning nothing.
 func TestValidateRunConfig_CaptureContentOnNonOTelEmitter(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.TraceEmitter = TraceEmitterConfig{
 		Type:           "jsonl",
 		CaptureContent: true,
 	}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for captureContent on non-otel emitter")
-	}
-	if !strings.Contains(err.Error(), "traceEmitter.captureContent is only valid") {
-		t.Errorf("expected error to call out the type mismatch, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "traceEmitter.captureContent is only valid")
 }
 
 // TestValidateRunConfig_CaptureContentOnOTelEmitter pins the accept
@@ -5380,16 +4807,25 @@ func TestValidateRunConfig_CaptureContentOnNonOTelEmitter(t *testing.T) {
 // protocols. Without this, an overzealous future rejection (e.g.
 // coupling the toggle to a protocol) would go unnoticed.
 func TestValidateRunConfig_CaptureContentOnOTelEmitter(t *testing.T) {
-	for _, protocol := range []string{"", "grpc", "http/protobuf"} {
-		c := validConfig()
-		c.TraceEmitter = TraceEmitterConfig{
-			Type:           "otel",
-			Protocol:       protocol,
-			CaptureContent: true,
-		}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Errorf("captureContent on otel emitter (protocol %q) must be valid: %v", protocol, err)
-		}
+	tests := []struct {
+		name     string
+		protocol string
+	}{
+		{name: "default protocol", protocol: ""},
+		{name: "grpc", protocol: "grpc"},
+		{name: "http/protobuf", protocol: "http/protobuf"},
+	}
+	for _, tc := range tests {
+		t.Run("accepts "+tc.name, func(t *testing.T) {
+			must := require.New(t)
+			c := validConfig()
+			c.TraceEmitter = TraceEmitterConfig{
+				Type:           "otel",
+				Protocol:       tc.protocol,
+				CaptureContent: true,
+			}
+			must.NoError(ValidateRunConfig(c))
+		})
 	}
 }
 
@@ -5408,12 +4844,11 @@ func TestValidateRunConfig_TraceEmitterPlatform(t *testing.T) {
 		"empty value":   {Type: "otel", Platform: "phoenix", PlatformOptions: map[string]string{"project": ""}},
 	}
 	for name, te := range valid {
-		t.Run("valid/"+name, func(t *testing.T) {
+		t.Run("accepts "+name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.TraceEmitter = te
-			if err := ValidateRunConfig(c); err != nil {
-				t.Errorf("expected valid, got: %v", err)
-			}
+			must.NoError(ValidateRunConfig(c))
 		})
 	}
 
@@ -5439,13 +4874,11 @@ func TestValidateRunConfig_TraceEmitterPlatform(t *testing.T) {
 		"headers on a platform without a required protocol": {TraceEmitterConfig{Type: "otel", Platform: "phoenix", Headers: map[string]string{"Authorization": "secret://PHOENIX_AUTH"}}, "traceEmitter.headers requires protocol=http/protobuf"},
 	}
 	for name, tc := range invalid {
-		t.Run("invalid/"+name, func(t *testing.T) {
+		t.Run("rejects "+name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.TraceEmitter = tc.te
-			err := ValidateRunConfig(c)
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Errorf("expected error containing %q, got: %v", tc.want, err)
-			}
+			must.ErrorContains(ValidateRunConfig(c), tc.want)
 		})
 	}
 }
@@ -5453,27 +4886,28 @@ func TestValidateRunConfig_TraceEmitterPlatform(t *testing.T) {
 // TestValidateRunConfig_MetricsTemporality pins the closed set of
 // traceEmitter.metricsTemporality values and its otel-only scope.
 func TestValidateRunConfig_MetricsTemporality(t *testing.T) {
-	for _, temporality := range []string{"", "cumulative", "delta"} {
-		c := validConfig()
-		c.TraceEmitter = TraceEmitterConfig{Type: "otel", MetricsTemporality: temporality}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Errorf("metricsTemporality %q on otel must be valid: %v", temporality, err)
+	t.Run("accepts supported values on otel", func(t *testing.T) {
+		must := require.New(t)
+		for _, temporality := range []string{"", "cumulative", "delta"} {
+			c := validConfig()
+			c.TraceEmitter = TraceEmitterConfig{Type: "otel", MetricsTemporality: temporality}
+			must.NoErrorf(ValidateRunConfig(c), "metricsTemporality %q", temporality)
 		}
-	}
+	})
 
-	c := validConfig()
-	c.TraceEmitter = TraceEmitterConfig{Type: "otel", MetricsTemporality: "lowmemory"}
-	err := ValidateRunConfig(c)
-	if err == nil || !strings.Contains(err.Error(), "unsupported traceEmitter.metricsTemporality") {
-		t.Errorf("expected an unsupported metricsTemporality error, got: %v", err)
-	}
+	t.Run("rejects an unsupported value", func(t *testing.T) {
+		must := require.New(t)
+		c := validConfig()
+		c.TraceEmitter = TraceEmitterConfig{Type: "otel", MetricsTemporality: "lowmemory"}
+		must.ErrorContains(ValidateRunConfig(c), "unsupported traceEmitter.metricsTemporality")
+	})
 
-	c = validConfig()
-	c.TraceEmitter = TraceEmitterConfig{Type: "jsonl", MetricsTemporality: "delta"}
-	err = ValidateRunConfig(c)
-	if err == nil || !strings.Contains(err.Error(), "traceEmitter.metricsTemporality is only valid") {
-		t.Errorf("expected an otel-only metricsTemporality error, got: %v", err)
-	}
+	t.Run("rejects a value on a non-otel emitter", func(t *testing.T) {
+		must := require.New(t)
+		c := validConfig()
+		c.TraceEmitter = TraceEmitterConfig{Type: "jsonl", MetricsTemporality: "delta"}
+		must.ErrorContains(ValidateRunConfig(c), "traceEmitter.metricsTemporality is only valid")
+	})
 }
 
 // TestValidateRunConfig_OTLPEndpoints pins the endpoint forms accepted on
@@ -5501,27 +4935,28 @@ func TestValidateRunConfig_OTLPEndpoints(t *testing.T) {
 		"http://collector/%zzSEKRIT":          "must be host:port or an http(s) URL",
 	}
 	for field, apply := range set {
-		for _, v := range valid {
-			c := validConfig()
-			c.TraceEmitter.Type = "otel"
-			apply(c, v)
-			if err := ValidateRunConfig(c); err != nil {
-				t.Errorf("%s %q must be valid: %v", field, v, err)
+		t.Run(field, func(t *testing.T) {
+			for _, v := range valid {
+				t.Run("accepts "+v, func(t *testing.T) {
+					must := require.New(t)
+					c := validConfig()
+					c.TraceEmitter.Type = "otel"
+					apply(c, v)
+					must.NoError(ValidateRunConfig(c))
+				})
 			}
-		}
-		for v, want := range invalid {
-			c := validConfig()
-			c.TraceEmitter.Type = "otel"
-			apply(c, v)
-			err := ValidateRunConfig(c)
-			if err == nil || !strings.Contains(err.Error(), field+" "+want) {
-				t.Errorf("%s %q: want an error containing %q, got: %v", field, v, want, err)
-				continue
+			for v, want := range invalid {
+				t.Run("rejects "+v, func(t *testing.T) {
+					must := require.New(t)
+					c := validConfig()
+					c.TraceEmitter.Type = "otel"
+					apply(c, v)
+					err := ValidateRunConfig(c)
+					must.ErrorContains(err, field+" "+want)
+					must.NotContains(err.Error(), "SEKRIT", "error must not echo the value")
+				})
 			}
-			if strings.Contains(err.Error(), "SEKRIT") {
-				t.Errorf("%s %q: error echoes the value: %v", field, v, err)
-			}
-		}
+		})
 	}
 }
 
@@ -5529,44 +4964,44 @@ func TestValidateRunConfig_OTLPEndpoints(t *testing.T) {
 // its dependency on captureContent.
 func TestValidateRunConfig_CaptureContentMaxBytes(t *testing.T) {
 	for _, maxBytes := range []int{0, MinCaptureContentMaxBytes, 2048} {
-		c := validConfig()
-		c.TraceEmitter = TraceEmitterConfig{Type: "otel", CaptureContent: true, CaptureContentMaxBytes: maxBytes}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Errorf("captureContentMaxBytes %d must be valid: %v", maxBytes, err)
-		}
+		t.Run(fmt.Sprintf("accepts %d", maxBytes), func(t *testing.T) {
+			must := require.New(t)
+			c := validConfig()
+			c.TraceEmitter = TraceEmitterConfig{Type: "otel", CaptureContent: true, CaptureContentMaxBytes: maxBytes}
+			must.NoError(ValidateRunConfig(c))
+		})
 	}
 
 	for _, maxBytes := range []int{-1, 1, MinCaptureContentMaxBytes - 1} {
-		c := validConfig()
-		c.TraceEmitter = TraceEmitterConfig{Type: "otel", CaptureContent: true, CaptureContentMaxBytes: maxBytes}
-		err := ValidateRunConfig(c)
-		if err == nil || !strings.Contains(err.Error(), "captureContentMaxBytes must be 0 (no cap) or at least") {
-			t.Errorf("captureContentMaxBytes %d: expected a range error, got: %v", maxBytes, err)
-		}
+		t.Run(fmt.Sprintf("rejects %d", maxBytes), func(t *testing.T) {
+			must := require.New(t)
+			c := validConfig()
+			c.TraceEmitter = TraceEmitterConfig{Type: "otel", CaptureContent: true, CaptureContentMaxBytes: maxBytes}
+			must.ErrorContains(ValidateRunConfig(c), "captureContentMaxBytes must be 0 (no cap) or at least")
+		})
 	}
 
-	c := validConfig()
-	c.TraceEmitter = TraceEmitterConfig{Type: "otel", CaptureContentMaxBytes: 2048}
-	err := ValidateRunConfig(c)
-	if err == nil || !strings.Contains(err.Error(), "captureContentMaxBytes is only valid when traceEmitter.captureContent is true") {
-		t.Errorf("expected a captureContent-required error, got: %v", err)
-	}
+	t.Run("requires captureContent to be true", func(t *testing.T) {
+		must := require.New(t)
+		c := validConfig()
+		c.TraceEmitter = TraceEmitterConfig{Type: "otel", CaptureContentMaxBytes: 2048}
+		must.ErrorContains(ValidateRunConfig(c), "captureContentMaxBytes is only valid when traceEmitter.captureContent is true")
+	})
 
 	// A non-otel emitter names the emitter type as the cause, not
 	// captureContent, so fixing the first error does not surface a second.
 	for _, emitterType := range []string{"jsonl", "gcs"} {
-		c := validConfig()
-		c.TraceEmitter = TraceEmitterConfig{Type: emitterType, Bucket: "trace-bucket", CaptureContentMaxBytes: 2048}
-		if emitterType == "jsonl" {
-			c.TraceEmitter.Bucket = ""
-		}
-		err := ValidateRunConfig(c)
-		if err == nil || !strings.Contains(err.Error(), `traceEmitter.captureContentMaxBytes is only valid when traceEmitter.type is "otel"`) {
-			t.Errorf("%s: expected an otel-only captureContentMaxBytes error, got: %v", emitterType, err)
-		}
-		if err != nil && strings.Contains(err.Error(), "captureContent is true") {
-			t.Errorf("%s: unexpected captureContent-required error: %v", emitterType, err)
-		}
+		t.Run("rejects on "+emitterType+" emitter", func(t *testing.T) {
+			must := require.New(t)
+			c := validConfig()
+			c.TraceEmitter = TraceEmitterConfig{Type: emitterType, Bucket: "trace-bucket", CaptureContentMaxBytes: 2048}
+			if emitterType == "jsonl" {
+				c.TraceEmitter.Bucket = ""
+			}
+			err := ValidateRunConfig(c)
+			must.ErrorContains(err, `traceEmitter.captureContentMaxBytes is only valid when traceEmitter.type is "otel"`)
+			must.NotContains(err.Error(), "captureContent is true")
+		})
 	}
 }
 
@@ -5577,55 +5012,43 @@ func TestValidateRunConfig_CaptureContentMaxBytes(t *testing.T) {
 // `""` and `"grpc"`.
 func TestValidateRunConfig_HeadersOnGRPCProtocolRejected(t *testing.T) {
 	t.Run("empty protocol with headers rejected", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.TraceEmitter = TraceEmitterConfig{
 			Type:     "otel",
 			Protocol: "",
 			Headers:  map[string]string{"Authorization": "Basic abc"},
 		}
-		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("expected error for headers on default-gRPC protocol")
-		}
-		if !strings.Contains(err.Error(), "headers requires protocol=http/protobuf") {
-			t.Errorf("expected error to call out the gRPC plaintext footgun, got: %v", err)
-		}
+		must.ErrorContains(ValidateRunConfig(c), "headers requires protocol=http/protobuf")
 	})
 
 	t.Run("explicit grpc protocol with headers rejected", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.TraceEmitter = TraceEmitterConfig{
 			Type:     "otel",
 			Protocol: "grpc",
 			Headers:  map[string]string{"Authorization": "Bearer abc"},
 		}
-		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("expected error for headers on gRPC protocol")
-		}
-		if !strings.Contains(err.Error(), "plaintext") {
-			t.Errorf("expected error to mention the plaintext gRPC path, got: %v", err)
-		}
+		must.ErrorContains(ValidateRunConfig(c), "plaintext")
 	})
 
 	t.Run("grpc with empty headers accepted", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.TraceEmitter = TraceEmitterConfig{Type: "otel", Protocol: "grpc"}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Fatalf("gRPC with no headers must remain valid (the local-collector flow): %v", err)
-		}
+		must.NoError(ValidateRunConfig(c), "gRPC with no headers must remain valid (the local-collector flow)")
 	})
 
 	t.Run("http/protobuf with headers accepted", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.TraceEmitter = TraceEmitterConfig{
 			Type:     "otel",
 			Protocol: "http/protobuf",
 			Headers:  map[string]string{"Authorization": "Basic xxx"},
 		}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Fatalf("http/protobuf with headers must remain valid (the Grafana Cloud flow): %v", err)
-		}
+		must.NoError(ValidateRunConfig(c), "http/protobuf with headers must remain valid (the Grafana Cloud flow)")
 	})
 }
 
@@ -5635,51 +5058,40 @@ func TestValidateRunConfig_HeadersOnGRPCProtocolRejected(t *testing.T) {
 // a config error.
 func TestValidateRunConfig_TraceEmitterHeaders_CRLFRejected(t *testing.T) {
 	t.Run("CR in header name rejected", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.TraceEmitter = TraceEmitterConfig{
 			Type:     "otel",
 			Protocol: "http/protobuf",
 			Headers:  map[string]string{"X-Inj\rected": "v"},
 		}
-		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("expected error for CR in header name")
-		}
-		if !strings.Contains(err.Error(), "alphanumeric") {
-			t.Errorf("expected error to describe accepted character set, got: %v", err)
-		}
+		must.ErrorContains(ValidateRunConfig(c), "alphanumeric")
 	})
 
 	t.Run("LF in header name rejected", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.TraceEmitter = TraceEmitterConfig{
 			Type:     "otel",
 			Protocol: "http/protobuf",
 			Headers:  map[string]string{"X-Inj\nected": "v"},
 		}
-		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("expected error for LF in header name")
-		}
+		must.Error(ValidateRunConfig(c))
 	})
 
 	t.Run("CRLF in header value rejected", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.TraceEmitter = TraceEmitterConfig{
 			Type:     "otel",
 			Protocol: "http/protobuf",
 			Headers:  map[string]string{"Authorization": "Bearer foo\r\nX-Injected: evil"},
 		}
-		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("expected error for CRLF in header value")
-		}
-		if !strings.Contains(err.Error(), "must not contain CRLF") {
-			t.Errorf("expected error to mention CRLF in value, got: %v", err)
-		}
+		must.ErrorContains(ValidateRunConfig(c), "must not contain CRLF")
 	})
 
 	t.Run("colon in header name rejected", func(t *testing.T) {
+		must := require.New(t)
 		// Colon is the header separator; allowing it in the name
 		// would let an operator concatenate two headers into one
 		// validator-passing entry.
@@ -5689,114 +5101,75 @@ func TestValidateRunConfig_TraceEmitterHeaders_CRLFRejected(t *testing.T) {
 			Protocol: "http/protobuf",
 			Headers:  map[string]string{"X-Foo: X-Bar": "v"},
 		}
-		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("expected error for colon in header name")
-		}
+		must.Error(ValidateRunConfig(c))
 	})
 }
 
 // --- ProviderRetryConfig tests ---
 
 func TestValidateRunConfig_ProviderRetryDefaultsWhenNil(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	c := validConfig()
 	c.Provider.Retry = nil
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("expected nil error, got: %v", err)
-	}
-	if c.Provider.Retry == nil {
-		t.Fatal("expected Provider.Retry to be populated after validation")
-	}
+	must.NoError(ValidateRunConfig(c))
+	must.NotNil(c.Provider.Retry, "Provider.Retry must be populated after validation")
 	got := c.Provider.Retry
-	if got.MaxAttempts != defaultProviderRetryMaxAttempts {
-		t.Errorf("MaxAttempts = %d, want %d", got.MaxAttempts, defaultProviderRetryMaxAttempts)
-	}
-	if got.InitialDelayMs != defaultProviderRetryInitialDelayMs {
-		t.Errorf("InitialDelayMs = %d, want %d", got.InitialDelayMs, defaultProviderRetryInitialDelayMs)
-	}
-	if got.MaxDelayMs != defaultProviderRetryMaxDelayMs {
-		t.Errorf("MaxDelayMs = %d, want %d", got.MaxDelayMs, defaultProviderRetryMaxDelayMs)
-	}
-	if got.WallClockBudgetMs != defaultProviderRetryWallClockBudgetMs {
-		t.Errorf("WallClockBudgetMs = %d, want %d", got.WallClockBudgetMs, defaultProviderRetryWallClockBudgetMs)
-	}
+	check.Equal(defaultProviderRetryMaxAttempts, got.MaxAttempts, "MaxAttempts")
+	check.Equal(defaultProviderRetryInitialDelayMs, got.InitialDelayMs, "InitialDelayMs")
+	check.Equal(defaultProviderRetryMaxDelayMs, got.MaxDelayMs, "MaxDelayMs")
+	check.Equal(defaultProviderRetryWallClockBudgetMs, got.WallClockBudgetMs, "WallClockBudgetMs")
 }
 
 func TestValidateRunConfig_ProviderRetryPartialDefaulting(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	c := validConfig()
 	c.Provider.Retry = &ProviderRetryConfig{MaxAttempts: 2}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("expected nil error, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 	got := c.Provider.Retry
-	if got.MaxAttempts != 2 {
-		t.Errorf("MaxAttempts = %d, want 2 (caller-supplied)", got.MaxAttempts)
-	}
-	if got.InitialDelayMs != defaultProviderRetryInitialDelayMs {
-		t.Errorf("InitialDelayMs = %d, want %d (default)", got.InitialDelayMs, defaultProviderRetryInitialDelayMs)
-	}
-	if got.MaxDelayMs != defaultProviderRetryMaxDelayMs {
-		t.Errorf("MaxDelayMs = %d, want %d (default)", got.MaxDelayMs, defaultProviderRetryMaxDelayMs)
-	}
-	if got.WallClockBudgetMs != defaultProviderRetryWallClockBudgetMs {
-		t.Errorf("WallClockBudgetMs = %d, want %d (default)", got.WallClockBudgetMs, defaultProviderRetryWallClockBudgetMs)
-	}
+	check.Equal(2, got.MaxAttempts, "MaxAttempts (caller-supplied)")
+	check.Equal(defaultProviderRetryInitialDelayMs, got.InitialDelayMs, "InitialDelayMs (default)")
+	check.Equal(defaultProviderRetryMaxDelayMs, got.MaxDelayMs, "MaxDelayMs (default)")
+	check.Equal(defaultProviderRetryWallClockBudgetMs, got.WallClockBudgetMs, "WallClockBudgetMs (default)")
 }
 
 // TestValidateRunConfig_ProviderRetryZeroMaxAttemptsTreatedAsUnset pins
 // that callers who leave MaxAttempts zero (the JSON-omitempty default)
 // receive the documented default, not a validation error.
 func TestValidateRunConfig_ProviderRetryZeroMaxAttemptsTreatedAsUnset(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider.Retry = &ProviderRetryConfig{MaxAttempts: 0}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("expected zero MaxAttempts to be defaulted, got: %v", err)
-	}
-	if c.Provider.Retry.MaxAttempts != defaultProviderRetryMaxAttempts {
-		t.Errorf("MaxAttempts = %d, want %d (default after zero)", c.Provider.Retry.MaxAttempts, defaultProviderRetryMaxAttempts)
-	}
+	must.NoError(ValidateRunConfig(c))
+	must.Equal(defaultProviderRetryMaxAttempts, c.Provider.Retry.MaxAttempts)
 }
 
 func TestValidateRunConfig_ProviderRetryMaxAttemptsTooHigh(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider.Retry = &ProviderRetryConfig{MaxAttempts: maxProviderRetryMaxAttempts + 1}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for MaxAttempts above ceiling")
-	}
-	if !strings.Contains(err.Error(), "provider.retry") {
-		t.Errorf("expected error to mention provider.retry path, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "maxAttempts") {
-		t.Errorf("expected error to mention maxAttempts, got: %v", err)
-	}
+	must.ErrorContains(err, "provider.retry")
+	must.ErrorContains(err, "maxAttempts")
 }
 
 func TestValidateRunConfig_ProviderRetryMaxDelayTooHigh(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider.Retry = &ProviderRetryConfig{MaxDelayMs: maxProviderRetryMaxDelayMs + 1}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for MaxDelayMs above ceiling")
-	}
-	if !strings.Contains(err.Error(), "maxDelayMs") {
-		t.Errorf("expected error to mention maxDelayMs, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "maxDelayMs")
 }
 
 func TestValidateRunConfig_ProviderRetryWallClockBudgetTooHigh(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider.Retry = &ProviderRetryConfig{WallClockBudgetMs: maxProviderRetryWallClockBudgetMs + 1}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for WallClockBudgetMs above ceiling")
-	}
-	if !strings.Contains(err.Error(), "wallClockBudgetMs") {
-		t.Errorf("expected error to mention wallClockBudgetMs, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "wallClockBudgetMs")
 }
 
 func TestValidateRunConfig_ProviderRetryInitialDelayExceedsMaxDelay(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	// Caller pins InitialDelay > MaxDelay (both inside individual
 	// ceilings). The cross-field check is what should reject this.
@@ -5804,13 +5177,7 @@ func TestValidateRunConfig_ProviderRetryInitialDelayExceedsMaxDelay(t *testing.T
 		InitialDelayMs: 5000,
 		MaxDelayMs:     1000,
 	}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for InitialDelayMs > MaxDelayMs")
-	}
-	if !strings.Contains(err.Error(), "initialDelayMs") {
-		t.Errorf("expected error to mention initialDelayMs, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "initialDelayMs")
 }
 
 // TestValidateRunConfig_ProviderRetryDefaultedInitialDelayAnnotated pins the UX
@@ -5819,34 +5186,21 @@ func TestValidateRunConfig_ProviderRetryInitialDelayExceedsMaxDelay(t *testing.T
 // cross-field check runs, so the error must annotate it as "(default)" rather
 // than naming a value the caller never wrote.
 func TestValidateRunConfig_ProviderRetryDefaultedInitialDelayAnnotated(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider.Retry = &ProviderRetryConfig{
 		MaxDelayMs: 100,
 	}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error: defaulted initialDelayMs (500) exceeds caller-supplied maxDelayMs (100)")
-	}
-	msg := err.Error()
-	if !strings.Contains(msg, "initialDelayMs") {
-		t.Errorf("expected error to mention initialDelayMs, got: %v", err)
-	}
-	if !strings.Contains(msg, "default") {
-		t.Errorf("expected error to annotate the defaulted initialDelayMs value with 'default'; got: %v", err)
-	}
-	if !strings.Contains(msg, "500") {
-		t.Errorf("expected error to show the defaulted value 500; got: %v", err)
-	}
-	// The caller-supplied maxDelayMs should NOT be annotated as a default.
-	// Match the exact substring the error renderer produces for a
-	// caller-supplied value so a regression that flips the flag (and
-	// labels maxDelayMs as a default) is caught.
-	if !strings.Contains(msg, "maxDelayMs (100)") {
-		t.Errorf("expected error to show caller-supplied maxDelayMs without 'default' annotation; got: %v", err)
-	}
+	must.ErrorContains(err, "initialDelayMs")
+	must.ErrorContains(err, "default")
+	must.ErrorContains(err, "500")
+	// The caller-supplied maxDelayMs must render without a "default" annotation.
+	must.ErrorContains(err, "maxDelayMs (100)")
 }
 
 func TestValidateRunConfig_ProviderRetryWallClockBudgetBelowMaxDelay(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	// WallClockBudget below MaxDelay would not give a single attempt
 	// room to consume its backoff; reject at validation time.
@@ -5854,87 +5208,60 @@ func TestValidateRunConfig_ProviderRetryWallClockBudgetBelowMaxDelay(t *testing.
 		MaxDelayMs:        20000,
 		WallClockBudgetMs: 10000,
 	}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for WallClockBudgetMs < MaxDelayMs")
-	}
-	if !strings.Contains(err.Error(), "wallClockBudgetMs") {
-		t.Errorf("expected error to mention wallClockBudgetMs, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "wallClockBudgetMs")
 }
 
 // TestValidateRunConfig_ProviderRetryNegativeMaxAttempts pins that a negative
 // MaxAttempts is rejected: the defaulter only fills on `== 0`, so a negative
 // value reaches the validator unchanged.
 func TestValidateRunConfig_ProviderRetryNegativeMaxAttempts(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider.Retry = &ProviderRetryConfig{MaxAttempts: -1}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for negative MaxAttempts")
-	}
-	if !strings.Contains(err.Error(), "maxAttempts") {
-		t.Errorf("expected error to mention maxAttempts, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "maxAttempts")
 }
 
 // TestValidateRunConfig_ProviderRetryNegativeInitialDelay pins the
 // `cfg.InitialDelayMs < 0` branch: the defaulter only fills the field when it is
 // exactly zero, so an explicit -1 passes through to validation.
 func TestValidateRunConfig_ProviderRetryNegativeInitialDelay(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider.Retry = &ProviderRetryConfig{InitialDelayMs: -1}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for negative InitialDelayMs")
-	}
-	if !strings.Contains(err.Error(), "initialDelayMs") {
-		t.Errorf("expected error to mention initialDelayMs, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "initialDelayMs")
 }
 
 // TestValidateRunConfig_ProviderRetryNegativeMaxDelay pins the range
 // check `cfg.MaxDelayMs <= 0` against negative input. See the docstring
 // on the MaxAttempts test above for context.
 func TestValidateRunConfig_ProviderRetryNegativeMaxDelay(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider.Retry = &ProviderRetryConfig{MaxDelayMs: -1}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for negative MaxDelayMs")
-	}
-	if !strings.Contains(err.Error(), "maxDelayMs") {
-		t.Errorf("expected error to mention maxDelayMs, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "maxDelayMs")
 }
 
 // TestValidateRunConfig_ProviderRetryNegativeWallClockBudget pins the
 // range check `cfg.WallClockBudgetMs <= 0` against negative input. See
 // the docstring on the MaxAttempts test above for context.
 func TestValidateRunConfig_ProviderRetryNegativeWallClockBudget(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider.Retry = &ProviderRetryConfig{WallClockBudgetMs: -1}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for negative WallClockBudgetMs")
-	}
-	if !strings.Contains(err.Error(), "wallClockBudgetMs") {
-		t.Errorf("expected error to mention wallClockBudgetMs, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "wallClockBudgetMs")
 }
 
 // TestValidateRunConfig_ProviderRetryWallClockBudgetEqualsMaxDelay pins the
 // strict-less-than boundary: equality is intentionally valid, since a single
 // attempt may consume the entire wall-clock budget on its backoff.
 func TestValidateRunConfig_ProviderRetryWallClockBudgetEqualsMaxDelay(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Provider.Retry = &ProviderRetryConfig{
 		MaxDelayMs:        16000,
 		WallClockBudgetMs: 16000,
 	}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("expected WallClockBudgetMs == MaxDelayMs to be accepted, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 // TestValidateProviderRetryConfig_NilIsNoop exercises the `cfg == nil` guard
@@ -5942,17 +5269,17 @@ func TestValidateRunConfig_ProviderRetryWallClockBudgetEqualsMaxDelay(t *testing
 // applyProviderRetryDefaults first, which allocates a non-nil config, so the nil
 // guard is structurally unreachable through the public API.
 func TestValidateProviderRetryConfig_NilIsNoop(t *testing.T) {
+	must := require.New(t)
 	var errs []string
 	validateProviderRetryConfig("provider.retry", nil, providerRetryDefaulted{}, &errs)
-	if len(errs) != 0 {
-		t.Errorf("expected nil ProviderRetryConfig to be a no-op, got errors: %v", errs)
-	}
+	must.Empty(errs, "nil ProviderRetryConfig must not add errors")
 }
 
 // TestValidateRunConfig_ProviderRetryNamedProviderRejected pins the
 // "providers[<name>].retry" path string used in the named-provider rejection
 // error, so a refactor of the format string can't silently regress it.
 func TestValidateRunConfig_ProviderRetryNamedProviderRejected(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Providers = map[string]ProviderConfig{
 		"secondary": {
@@ -5963,15 +5290,8 @@ func TestValidateRunConfig_ProviderRetryNamedProviderRejected(t *testing.T) {
 		},
 	}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for named-provider MaxAttempts above ceiling")
-	}
-	if !strings.Contains(err.Error(), "providers[secondary].retry") {
-		t.Errorf("expected error to mention providers[secondary].retry path, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "maxAttempts") {
-		t.Errorf("expected error to mention maxAttempts, got: %v", err)
-	}
+	must.ErrorContains(err, "providers[secondary].retry")
+	must.ErrorContains(err, "maxAttempts")
 }
 
 // TestValidateRunConfig_ProviderRetryNamedProviderNilRetryBlock pins the
@@ -5979,6 +5299,8 @@ func TestValidateRunConfig_ProviderRetryNamedProviderRejected(t *testing.T) {
 // distinct from the partial-block "fill missing fields" branches covered
 // elsewhere.
 func TestValidateRunConfig_ProviderRetryNamedProviderNilRetryBlock(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	c := validConfig()
 	c.Providers = map[string]ProviderConfig{
 		"secondary": {
@@ -5988,28 +5310,17 @@ func TestValidateRunConfig_ProviderRetryNamedProviderNilRetryBlock(t *testing.T)
 			Retry:     nil,
 		},
 	}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("expected nil error, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 	got := c.Providers["secondary"].Retry
-	if got == nil {
-		t.Fatal("expected named-provider Retry to be allocated from nil")
-	}
-	if got.MaxAttempts != defaultProviderRetryMaxAttempts {
-		t.Errorf("named-provider MaxAttempts = %d, want %d (default)", got.MaxAttempts, defaultProviderRetryMaxAttempts)
-	}
-	if got.InitialDelayMs != defaultProviderRetryInitialDelayMs {
-		t.Errorf("named-provider InitialDelayMs = %d, want %d (default)", got.InitialDelayMs, defaultProviderRetryInitialDelayMs)
-	}
-	if got.MaxDelayMs != defaultProviderRetryMaxDelayMs {
-		t.Errorf("named-provider MaxDelayMs = %d, want %d (default)", got.MaxDelayMs, defaultProviderRetryMaxDelayMs)
-	}
-	if got.WallClockBudgetMs != defaultProviderRetryWallClockBudgetMs {
-		t.Errorf("named-provider WallClockBudgetMs = %d, want %d (default)", got.WallClockBudgetMs, defaultProviderRetryWallClockBudgetMs)
-	}
+	must.NotNil(got, "named-provider Retry must be allocated from nil")
+	check.Equal(defaultProviderRetryMaxAttempts, got.MaxAttempts, "named-provider MaxAttempts (default)")
+	check.Equal(defaultProviderRetryInitialDelayMs, got.InitialDelayMs, "named-provider InitialDelayMs (default)")
+	check.Equal(defaultProviderRetryMaxDelayMs, got.MaxDelayMs, "named-provider MaxDelayMs (default)")
+	check.Equal(defaultProviderRetryWallClockBudgetMs, got.WallClockBudgetMs, "named-provider WallClockBudgetMs (default)")
 }
 
 func TestValidateRunConfig_ProviderRetryNamedProviderDefaultsIndependently(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Providers = map[string]ProviderConfig{
 		"secondary": {
@@ -6019,30 +5330,23 @@ func TestValidateRunConfig_ProviderRetryNamedProviderDefaultsIndependently(t *te
 			Retry:     &ProviderRetryConfig{MaxAttempts: 4},
 		},
 	}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("expected nil error, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 	got := c.Providers["secondary"].Retry
-	if got == nil {
-		t.Fatal("expected secondary provider Retry to be populated")
-	}
-	if got.MaxAttempts != 4 {
-		t.Errorf("secondary MaxAttempts = %d, want 4 (caller-supplied)", got.MaxAttempts)
-	}
-	if got.InitialDelayMs != defaultProviderRetryInitialDelayMs ||
-		got.MaxDelayMs != defaultProviderRetryMaxDelayMs ||
-		got.WallClockBudgetMs != defaultProviderRetryWallClockBudgetMs {
-		t.Errorf("secondary provider should inherit defaults for unset fields; got %+v", got)
-	}
+	must.NotNil(got, "secondary provider Retry should be populated")
+	must.Equal(4, got.MaxAttempts, "caller-supplied MaxAttempts")
+	must.Equal(defaultProviderRetryInitialDelayMs, got.InitialDelayMs, "unset InitialDelayMs inherits the default")
+	must.Equal(defaultProviderRetryMaxDelayMs, got.MaxDelayMs, "unset MaxDelayMs inherits the default")
+	must.Equal(defaultProviderRetryWallClockBudgetMs, got.WallClockBudgetMs, "unset WallClockBudgetMs inherits the default")
+
 	// Top-level provider continues to default independently.
-	if c.Provider.Retry == nil || c.Provider.Retry.MaxAttempts != defaultProviderRetryMaxAttempts {
-		t.Errorf("top-level provider Retry not defaulted independently; got %+v", c.Provider.Retry)
-	}
+	must.NotNil(c.Provider.Retry)
+	must.Equal(defaultProviderRetryMaxAttempts, c.Provider.Retry.MaxAttempts, "top-level MaxAttempts defaults independently")
 }
 
 // --- traceEmitter type=gcs ---
 
 func TestValidateRunConfig_TraceEmitterGCS_Valid(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.TraceEmitter = TraceEmitterConfig{
 		Type:         "gcs",
@@ -6050,97 +5354,96 @@ func TestValidateRunConfig_TraceEmitterGCS_Valid(t *testing.T) {
 		ObjectPrefix: "traces/",
 		Credential:   &CredentialConfig{Type: "gcp-workload-identity"},
 	}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("expected valid gcs trace emitter, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
-func TestCommandOutputConfigDefaultsAndHardCaps(t *testing.T) {
+func TestCommandOutput_DefaultsAndHardCaps(t *testing.T) {
+	must := require.New(t)
 	got := (ToolsConfig{}).EffectiveCommandOutput()
-	if got.InlineMaxBytes != 32<<10 || got.PreviewBytesPerStream != 4<<10 || got.MaxBytesPerStream != 50<<20 || got.MaxBytesPerRun != 500<<20 {
-		t.Fatalf("defaults=%+v", got)
-	}
+	must.EqualValues(32<<10, got.InlineMaxBytes, "inline max bytes default")
+	must.EqualValues(4<<10, got.PreviewBytesPerStream, "preview bytes per stream default")
+	must.EqualValues(50<<20, got.MaxBytesPerStream, "max bytes per stream default")
+	must.EqualValues(500<<20, got.MaxBytesPerRun, "max bytes per run default")
+
 	c := validConfig()
 	c.Tools.CommandOutput.MaxBytesPerStream = MaxCommandOutputBytesPerStream + 1
-	if err := ValidateRunConfig(c); err == nil || !strings.Contains(err.Error(), "maxBytesPerStream") {
-		t.Fatalf("expected stream hard-cap error, got %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "maxBytesPerStream")
 }
 
-func TestCommandOutputCaptureEnabled(t *testing.T) {
-	if !(ToolsConfig{}).CommandOutputCaptureEnabled() {
-		t.Fatal("unset enabled must default to capture on")
-	}
+func TestCommandOutput_CaptureEnabled(t *testing.T) {
 	on, off := true, false
-	if !(ToolsConfig{CommandOutput: CommandOutputConfig{Enabled: &on}}).CommandOutputCaptureEnabled() {
-		t.Fatal("explicit true must enable capture")
-	}
-	if (ToolsConfig{CommandOutput: CommandOutputConfig{Enabled: &off}}).CommandOutputCaptureEnabled() {
-		t.Fatal("explicit false must disable capture")
-	}
 
-	c := validConfig()
-	c.Tools.BuiltIn = []string{"run_command", "read_command_output"}
-	c.Tools.CommandOutput.Enabled = &off
-	if err := ValidateRunConfig(c); err == nil || !strings.Contains(err.Error(), "read_command_output") {
-		t.Fatalf("expected contradiction error for reader without capture, got %v", err)
-	}
-	c.Tools.CommandOutput.Enabled = &on
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("reader with capture enabled should validate: %v", err)
-	}
+	t.Run("unset enabled defaults to capture on", func(t *testing.T) {
+		must := require.New(t)
+		must.True((ToolsConfig{}).CommandOutputCaptureEnabled())
+	})
+	t.Run("explicit true enables capture", func(t *testing.T) {
+		must := require.New(t)
+		must.True((ToolsConfig{CommandOutput: CommandOutputConfig{Enabled: &on}}).CommandOutputCaptureEnabled())
+	})
+	t.Run("explicit false disables capture", func(t *testing.T) {
+		must := require.New(t)
+		must.False((ToolsConfig{CommandOutput: CommandOutputConfig{Enabled: &off}}).CommandOutputCaptureEnabled())
+	})
+	t.Run("reader without capture is rejected", func(t *testing.T) {
+		must := require.New(t)
+		c := validConfig()
+		c.Tools.BuiltIn = []string{"run_command", "read_command_output"}
+		c.Tools.CommandOutput.Enabled = &off
+		must.ErrorContains(ValidateRunConfig(c), "read_command_output")
+	})
+	t.Run("reader with capture validates", func(t *testing.T) {
+		must := require.New(t)
+		c := validConfig()
+		c.Tools.BuiltIn = []string{"run_command", "read_command_output"}
+		c.Tools.CommandOutput.Enabled = &on
+		must.NoError(ValidateRunConfig(c))
+	})
 }
 
-func TestCommandOutputFailurePostureValidation(t *testing.T) {
-	if got := (ToolsConfig{}).EffectiveCommandOutput().FailurePosture; got != CommandOutputPostureStrict {
-		t.Fatalf("default posture=%q, want strict", got)
-	}
+func TestCommandOutput_FailurePostureValidation(t *testing.T) {
+	must := require.New(t)
+	must.Equal(CommandOutputPostureStrict, (ToolsConfig{}).EffectiveCommandOutput().FailurePosture, "default posture")
+
 	for _, valid := range []string{"", CommandOutputPostureStrict, CommandOutputPostureBestEffort} {
 		c := validConfig()
 		c.Tools.CommandOutput.FailurePosture = valid
-		if err := ValidateRunConfig(c); err != nil {
-			t.Fatalf("posture %q should validate: %v", valid, err)
-		}
+		must.NoError(ValidateRunConfig(c), "posture %q should validate", valid)
 	}
+
 	c := validConfig()
 	c.Tools.CommandOutput.FailurePosture = "lenient"
-	if err := ValidateRunConfig(c); err == nil || !strings.Contains(err.Error(), "failurePosture") {
-		t.Fatalf("expected closed-set error, got %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "failurePosture")
 }
 
-func TestValidateRunConfig_TraceArchive(t *testing.T) {
-	c := validConfig()
-	c.TraceEmitter.Archive = &TraceArchiveConfig{Type: "local", FilePath: "/tmp/run.command-output.tar.gz"}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("valid local archive: %v", err)
-	}
-	c = validConfig()
-	c.TraceEmitter.Archive = &TraceArchiveConfig{Type: "gcs"}
-	if err := ValidateRunConfig(c); err == nil || !strings.Contains(err.Error(), "archive.bucket") {
-		t.Fatalf("expected bucket error, got %v", err)
-	}
-
-	c = validConfig()
-	c.TraceEmitter.Archive = &TraceArchiveConfig{Type: "gcs", Bucket: "stirrup-archives", ObjectPrefix: "runs"}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("valid gcs archive: %v", err)
-	}
-	if c.TraceEmitter.Archive.ObjectPrefix != "runs" {
-		t.Fatalf("validation mutated objectPrefix to %q; the uploader owns slash normalisation", c.TraceEmitter.Archive.ObjectPrefix)
-	}
+func TestValidateRunConfig_TraceArchive_RequiresBucketAndKeepsPrefix(t *testing.T) {
+	t.Run("local archive validates", func(t *testing.T) {
+		must := require.New(t)
+		c := validConfig()
+		c.TraceEmitter.Archive = &TraceArchiveConfig{Type: "local", FilePath: "/tmp/run.command-output.tar.gz"}
+		must.NoError(ValidateRunConfig(c))
+	})
+	t.Run("gcs archive requires bucket", func(t *testing.T) {
+		must := require.New(t)
+		c := validConfig()
+		c.TraceEmitter.Archive = &TraceArchiveConfig{Type: "gcs"}
+		must.ErrorContains(ValidateRunConfig(c), "archive.bucket")
+	})
+	t.Run("gcs archive keeps objectPrefix", func(t *testing.T) {
+		must := require.New(t)
+		c := validConfig()
+		c.TraceEmitter.Archive = &TraceArchiveConfig{Type: "gcs", Bucket: "stirrup-archives", ObjectPrefix: "runs"}
+		must.NoError(ValidateRunConfig(c))
+		// The uploader owns slash normalisation, so validation must not rewrite the prefix.
+		must.Equal("runs", c.TraceEmitter.Archive.ObjectPrefix)
+	})
 }
 
 func TestValidateRunConfig_TraceEmitterGCS_BucketRequired(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.TraceEmitter = TraceEmitterConfig{Type: "gcs"}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for gcs trace emitter without bucket")
-	}
-	if !strings.Contains(err.Error(), "requires bucket") {
-		t.Errorf("expected error to mention bucket is required, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "requires bucket")
 }
 
 func TestValidateRunConfig_TraceEmitterGCS_InvalidBucketName(t *testing.T) {
@@ -6155,15 +5458,10 @@ func TestValidateRunConfig_TraceEmitterGCS_InvalidBucketName(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.TraceEmitter = TraceEmitterConfig{Type: "gcs", Bucket: tc.bucket}
-			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("expected error for invalid bucket %q", tc.bucket)
-			}
-			if !strings.Contains(err.Error(), "traceEmitter.bucket") {
-				t.Errorf("expected error to mention traceEmitter.bucket, got: %v", err)
-			}
+			must.ErrorContains(ValidateRunConfig(c), "traceEmitter.bucket")
 		})
 	}
 }
@@ -6172,27 +5470,25 @@ func TestValidateRunConfig_TraceEmitterGCS_InvalidBucketName(t *testing.T) {
 // traceEmitter.objectPrefix rejects ".." segments so it cannot rewrite the
 // produced GCS object path.
 func TestValidateRunConfig_TraceEmitter_ObjectPrefixDotDotRejected(t *testing.T) {
-	cases := []string{
-		"../escape/",
-		"traces/../escape/",
-		"../../prod-traces/",
-		"..",
+	cases := []struct {
+		name   string
+		prefix string
+	}{
+		{"leading dot-dot segment", "../escape/"},
+		{"dot-dot segment in the middle", "traces/../escape/"},
+		{"multiple dot-dot segments", "../../prod-traces/"},
+		{"bare dot-dot", ".."},
 	}
-	for _, prefix := range cases {
-		t.Run(prefix, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.TraceEmitter = TraceEmitterConfig{
 				Type:         "gcs",
 				Bucket:       "stirrup-results",
-				ObjectPrefix: prefix,
+				ObjectPrefix: tc.prefix,
 			}
-			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("expected error for objectPrefix %q", prefix)
-			}
-			if !strings.Contains(err.Error(), `must not contain ".." path segments`) {
-				t.Errorf("expected dot-dot rejection error, got: %v", err)
-			}
+			must.ErrorContains(ValidateRunConfig(c), `must not contain ".." path segments`)
 		})
 	}
 }
@@ -6213,18 +5509,15 @@ func TestValidateRunConfig_TraceEmitter_ObjectPrefixTrailingSlashNormalised(t *t
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.TraceEmitter = TraceEmitterConfig{
 				Type:         "gcs",
 				Bucket:       "stirrup-results",
 				ObjectPrefix: tc.in,
 			}
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("expected valid config, got: %v", err)
-			}
-			if got := c.TraceEmitter.ObjectPrefix; got != tc.want {
-				t.Errorf("ObjectPrefix = %q, want %q", got, tc.want)
-			}
+			must.NoError(ValidateRunConfig(c))
+			must.Equal(tc.want, c.TraceEmitter.ObjectPrefix)
 		})
 	}
 }
@@ -6234,66 +5527,52 @@ func TestValidateRunConfig_TraceEmitter_ObjectPrefixTrailingSlashNormalised(t *t
 // byte, or path-traversal segment at config-load time.
 func TestValidateRunConfig_RunID_PatternEnforced(t *testing.T) {
 	t.Run("slash rejected", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.RunID = "tenant-a/run-1"
-		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("expected error for runId containing a slash")
-		}
-		if !strings.Contains(err.Error(), "runId") {
-			t.Errorf("expected error to mention runId, got: %v", err)
-		}
+		must.ErrorContains(ValidateRunConfig(c), "runId")
 	})
 	t.Run("dotdot rejected", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.RunID = ".."
-		if err := ValidateRunConfig(c); err == nil {
-			t.Fatal("expected error for runId \"..\"")
-		}
+		must.Error(ValidateRunConfig(c))
 	})
 	t.Run("empty allowed", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.RunID = ""
-		if err := ValidateRunConfig(c); err != nil {
-			t.Fatalf("expected empty runId to pass, got: %v", err)
-		}
+		must.NoError(ValidateRunConfig(c))
 	})
 	t.Run("uuid accepted", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.RunID = "0ff0-4d1b-9c4e-1234567890ab"
-		if err := ValidateRunConfig(c); err != nil {
-			t.Fatalf("expected uuid-like runId to pass, got: %v", err)
-		}
+		must.NoError(ValidateRunConfig(c))
 	})
 }
 
 func TestValidateRunConfig_TraceEmitterGCS_FieldsRejectedOnNonGCS(t *testing.T) {
 	t.Run("bucket on jsonl", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.TraceEmitter = TraceEmitterConfig{Type: "jsonl", Bucket: "leftover"}
-		err := ValidateRunConfig(c)
-		if err == nil || !strings.Contains(err.Error(), "traceEmitter.bucket is only valid") {
-			t.Errorf("expected bucket-only-for-gcs error, got: %v", err)
-		}
+		must.ErrorContains(ValidateRunConfig(c), "traceEmitter.bucket is only valid")
 	})
 	t.Run("objectPrefix on otel", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.TraceEmitter = TraceEmitterConfig{Type: "otel", ObjectPrefix: "traces/"}
-		err := ValidateRunConfig(c)
-		if err == nil || !strings.Contains(err.Error(), "traceEmitter.objectPrefix is only valid") {
-			t.Errorf("expected objectPrefix-only-for-gcs error, got: %v", err)
-		}
+		must.ErrorContains(ValidateRunConfig(c), "traceEmitter.objectPrefix is only valid")
 	})
 	t.Run("credential on jsonl", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.TraceEmitter = TraceEmitterConfig{
 			Type:       "jsonl",
 			Credential: &CredentialConfig{Type: "gcp-workload-identity"},
 		}
-		err := ValidateRunConfig(c)
-		if err == nil || !strings.Contains(err.Error(), "traceEmitter.credential is only valid") {
-			t.Errorf("expected credential-only-for-gcs error, got: %v", err)
-		}
+		must.ErrorContains(ValidateRunConfig(c), "traceEmitter.credential is only valid")
 	})
 }
 
@@ -6301,53 +5580,40 @@ func TestValidateRunConfig_TraceEmitterGCS_FieldsRejectedOnNonGCS(t *testing.T) 
 
 func TestValidateRunConfig_ResultSink_NoneAndStdoutJSON(t *testing.T) {
 	t.Run("none", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.ResultSink = &ResultSinkConfig{Type: "none"}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Fatalf("expected resultSink=none to pass, got: %v", err)
-		}
+		must.NoError(ValidateRunConfig(c))
 	})
 	t.Run("stdout-json", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.ResultSink = &ResultSinkConfig{Type: "stdout-json"}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Fatalf("expected resultSink=stdout-json to pass, got: %v", err)
-		}
+		must.NoError(ValidateRunConfig(c))
 	})
 	t.Run("nil sink ok", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.ResultSink = nil
-		if err := ValidateRunConfig(c); err != nil {
-			t.Fatalf("expected nil resultSink to pass, got: %v", err)
-		}
+		must.NoError(ValidateRunConfig(c))
 	})
 }
 
 func TestValidateRunConfig_ResultSink_GCPPubsubReserved(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.ResultSink = &ResultSinkConfig{Type: "gcp-pubsub", Topic: "stirrup-results"}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for reserved resultSink type gcp-pubsub")
-	}
-	if !strings.Contains(err.Error(), "reserved but not yet implemented") {
-		t.Errorf("expected reserved-but-not-implemented error, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "reserved but not yet implemented")
 }
 
 // TestValidateRunConfig_ResultSink_BarePubsubRejected pins that the bare
-// "pubsub" string is not in validResultSinkTypes; it has never shipped in a
-// released binary so no deprecation cycle is needed.
+// "pubsub" string is not a valid resultSink type; only "gcp-pubsub" names the
+// Pub/Sub adapter.
 func TestValidateRunConfig_ResultSink_BarePubsubRejected(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.ResultSink = &ResultSinkConfig{Type: "pubsub"}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for unrecognised resultSink type pubsub")
-	}
-	if !strings.Contains(err.Error(), "unsupported resultSink type") {
-		t.Errorf("expected unsupported-resultSink-type error, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "unsupported resultSink type")
 }
 
 // TestValidateRunConfig_ResultSink_TopicRejectedForNonPubSub pins that
@@ -6355,48 +5621,34 @@ func TestValidateRunConfig_ResultSink_BarePubsubRejected(t *testing.T) {
 // a stdout-json sink fails loudly rather than being silently ignored.
 func TestValidateRunConfig_ResultSink_TopicRejectedForNonPubSub(t *testing.T) {
 	t.Run("topic on stdout-json", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.ResultSink = &ResultSinkConfig{Type: "stdout-json", Topic: "leftover"}
-		err := ValidateRunConfig(c)
-		if err == nil || !strings.Contains(err.Error(), "resultSink.topic is only valid") {
-			t.Errorf("expected topic-only-for-gcp-pubsub error, got: %v", err)
-		}
+		must.ErrorContains(ValidateRunConfig(c), "resultSink.topic is only valid")
 	})
 	t.Run("attributes on stdout-json", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.ResultSink = &ResultSinkConfig{
 			Type:       "stdout-json",
 			Attributes: map[string]string{"env": "prod"},
 		}
-		err := ValidateRunConfig(c)
-		if err == nil || !strings.Contains(err.Error(), "resultSink.attributes is only valid") {
-			t.Errorf("expected attributes-only-for-gcp-pubsub error, got: %v", err)
-		}
+		must.ErrorContains(ValidateRunConfig(c), "resultSink.attributes is only valid")
 	})
 }
 
 func TestValidateRunConfig_ResultSink_GCSReserved(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.ResultSink = &ResultSinkConfig{Type: "gcs"}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for reserved resultSink type gcs")
-	}
-	if !strings.Contains(err.Error(), "reserved but not yet implemented") {
-		t.Errorf("expected reserved-but-not-implemented error, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "reserved but not yet implemented")
 }
 
 func TestValidateRunConfig_ResultSink_InvalidType(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.ResultSink = &ResultSinkConfig{Type: "carrier-pigeon"}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for unknown resultSink type")
-	}
-	if !strings.Contains(err.Error(), "unsupported resultSink type") {
-		t.Errorf("expected unsupported-resultSink-type error, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "unsupported resultSink type")
 }
 
 // TestValidateRunConfig_ResultSink_MaxFinalAssistantTextBytes pins that zero (the
@@ -6405,82 +5657,73 @@ func TestValidateRunConfig_ResultSink_InvalidType(t *testing.T) {
 // implemented sink type since it bounds the RunResult field itself.
 func TestValidateRunConfig_ResultSink_MaxFinalAssistantTextBytes(t *testing.T) {
 	t.Run("zero is the default sentinel and passes", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.ResultSink = &ResultSinkConfig{Type: "stdout-json", MaxFinalAssistantTextBytes: 0}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Fatalf("expected zero MaxFinalAssistantTextBytes to pass, got: %v", err)
-		}
+		must.NoError(ValidateRunConfig(c))
 	})
 	t.Run("positive override passes", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.ResultSink = &ResultSinkConfig{Type: "stdout-json", MaxFinalAssistantTextBytes: 4096}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Fatalf("expected positive MaxFinalAssistantTextBytes to pass, got: %v", err)
-		}
+		must.NoError(ValidateRunConfig(c))
 	})
 	t.Run("negative is rejected", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.ResultSink = &ResultSinkConfig{Type: "stdout-json", MaxFinalAssistantTextBytes: -1}
-		err := ValidateRunConfig(c)
-		if err == nil || !strings.Contains(err.Error(), "resultSink.maxFinalAssistantTextBytes must be non-negative") {
-			t.Errorf("expected maxFinalAssistantTextBytes-non-negative error, got: %v", err)
-		}
+		must.ErrorContains(ValidateRunConfig(c), "resultSink.maxFinalAssistantTextBytes must be non-negative")
 	})
 	t.Run("positive override passes on type=none too", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.ResultSink = &ResultSinkConfig{Type: "none", MaxFinalAssistantTextBytes: 4096}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Fatalf("expected MaxFinalAssistantTextBytes on type=none to pass (bounds RunResult, not a sink wire detail), got: %v", err)
-		}
+		must.NoError(ValidateRunConfig(c))
 	})
 }
 
 // --- executor.workspaceExportTo ---
 
 func TestValidateRunConfig_WorkspaceExportTo_ValidGS(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Executor = ExecutorConfig{
 		Type:              "local",
 		WorkspaceExportTo: "gs://stirrup-results/runs/run-1/workspace.tar.gz",
 	}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("expected valid gs:// workspaceExportTo, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 func TestValidateRunConfig_WorkspaceExportTo_RejectsNonGSScheme(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Executor = ExecutorConfig{
 		Type:              "local",
 		WorkspaceExportTo: "https://example.com/results.tar.gz",
 	}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for non-gs:// workspaceExportTo")
-	}
-	if !strings.Contains(err.Error(), "gs://") {
-		t.Errorf("expected error to mention gs:// scheme, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "gs://")
 }
 
 func TestValidateRunConfig_WorkspaceExportTo_RejectsEmptyBucketPath(t *testing.T) {
-	cases := []string{"gs://", "gs:///object"}
-	for _, val := range cases {
-		t.Run(val, func(t *testing.T) {
+	cases := []struct {
+		name string
+		uri  string
+	}{
+		{"bare scheme", "gs://"},
+		{"empty bucket with object", "gs:///object"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
-			c.Executor = ExecutorConfig{Type: "local", WorkspaceExportTo: val}
-			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("expected error for %q", val)
-			}
-			if !strings.Contains(err.Error(), "non-empty bucket path") {
-				t.Errorf("expected non-empty-bucket-path error, got: %v", err)
-			}
+			c.Executor = ExecutorConfig{Type: "local", WorkspaceExportTo: tc.uri}
+			must.ErrorContains(ValidateRunConfig(c), "non-empty bucket path")
 		})
 	}
 }
 
 func TestValidateRunConfig_WorkspaceExportTo_RejectsAPIExecutor(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Executor = ExecutorConfig{
 		Type:              "api",
@@ -6489,13 +5732,7 @@ func TestValidateRunConfig_WorkspaceExportTo_RejectsAPIExecutor(t *testing.T) {
 	// The api executor needs a VcsBackend to validate; supply one
 	// so the test isolates the workspaceExportTo failure.
 	c.Executor.VcsBackend = &VcsBackendConfig{Type: "github", Repo: "owner/repo", Ref: "main"}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for workspaceExportTo with executor.type=api")
-	}
-	if !strings.Contains(err.Error(), "not valid for executor.type=\"api\"") {
-		t.Errorf("expected error to mention api executor, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), `not valid for executor.type="api"`)
 }
 
 // TestValidateExecutorWorkspaceExportTo_ArchiverTable pins that the export
@@ -6504,64 +5741,54 @@ func TestValidateRunConfig_WorkspaceExportTo_RejectsAPIExecutor(t *testing.T) {
 // and then export nothing.
 func TestValidateExecutorWorkspaceExportTo_ArchiverTable(t *testing.T) {
 	for typ := range validExecutorTypes {
-		if _, ok := executorWorkspaceArchiver[typ]; !ok {
-			t.Errorf("executor type %q has no executorWorkspaceArchiver entry", typ)
-		}
 		t.Run(typ, func(t *testing.T) {
+			must := require.New(t)
+			must.Contains(executorWorkspaceArchiver, typ, "executor type needs an executorWorkspaceArchiver entry")
+
 			var errs []string
 			validateExecutorWorkspaceExportTo(ExecutorConfig{Type: typ, WorkspaceExportTo: "gs://bucket/path"}, &errs)
-			want := ExecutorCanArchiveWorkspace(typ)
-			if want && len(errs) != 0 {
-				t.Errorf("archiver executor %q rejected: %v", typ, errs)
+			if ExecutorCanArchiveWorkspace(typ) {
+				must.Empty(errs, "archiver executor should accept workspaceExportTo")
+				return
 			}
-			if !want {
-				if len(errs) != 1 || !strings.Contains(errs[0], "cannot archive its workspace") {
-					t.Errorf("non-archiver executor %q: errs = %v, want one cannot-archive rejection", typ, errs)
-				}
-			}
+			must.Len(errs, 1, "non-archiver executor should get one rejection")
+			must.Contains(errs[0], "cannot archive its workspace")
 		})
 	}
 	for _, typ := range []string{"local", "container", "k8s", "k8s-sandbox"} {
-		if !ExecutorCanArchiveWorkspace(typ) {
-			t.Errorf("ExecutorCanArchiveWorkspace(%q) = false, want true", typ)
-		}
+		t.Run("archives "+typ, func(t *testing.T) {
+			must := require.New(t)
+			must.True(ExecutorCanArchiveWorkspace(typ))
+		})
 	}
 }
 
 func TestValidateRunConfig_WorkspaceExportTo_RequiresExplicitExecutorType(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
-	// validConfig sets no Executor; assign just WorkspaceExportTo.
 	c.Executor = ExecutorConfig{WorkspaceExportTo: "gs://bucket/path"}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for workspaceExportTo with empty executor.type")
-	}
-	if !strings.Contains(err.Error(), "requires an explicit executor.type") {
-		t.Errorf("expected error to mention explicit executor.type, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "requires an explicit executor.type")
 }
 
 func TestValidateRunConfig_WorkspaceExportRequired_RejectedWithoutDestination(t *testing.T) {
 	for _, v := range []bool{true, false} {
-		c := validConfig()
-		c.Executor = ExecutorConfig{Type: "local", WorkspaceExportRequired: &v}
-		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatalf("workspaceExportRequired=%v without workspaceExportTo: expected error", v)
-		}
-		if !strings.Contains(err.Error(), "executor.workspaceExportRequired requires executor.workspaceExportTo") {
-			t.Errorf("workspaceExportRequired=%v: unexpected error: %v", v, err)
-		}
+		t.Run(fmt.Sprintf("required %t", v), func(t *testing.T) {
+			must := require.New(t)
+			c := validConfig()
+			c.Executor = ExecutorConfig{Type: "local", WorkspaceExportRequired: &v}
+			must.ErrorContains(ValidateRunConfig(c), "executor.workspaceExportRequired requires executor.workspaceExportTo")
+		})
 	}
 }
 
 func TestValidateRunConfig_WorkspaceExportRequired_AcceptedWithDestination(t *testing.T) {
 	for _, v := range []bool{true, false} {
-		c := validConfig()
-		c.Executor = ExecutorConfig{Type: "local", WorkspaceExportTo: "gs://bucket/path", WorkspaceExportRequired: &v}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Fatalf("workspaceExportRequired=%v with a destination: %v", v, err)
-		}
+		t.Run(fmt.Sprintf("required %t", v), func(t *testing.T) {
+			must := require.New(t)
+			c := validConfig()
+			c.Executor = ExecutorConfig{Type: "local", WorkspaceExportTo: "gs://bucket/path", WorkspaceExportRequired: &v}
+			must.NoError(ValidateRunConfig(c))
+		})
 	}
 }
 
@@ -6579,29 +5806,33 @@ func TestExecutorConfig_ExportRequired(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.cfg.ExportRequired(); got != tc.want {
-				t.Errorf("ExportRequired() = %v, want %v", got, tc.want)
-			}
+			must := require.New(t)
+			must.Equal(tc.want, tc.cfg.ExportRequired())
 		})
 	}
 }
 
-func TestExecutorConfig_WorkspaceExportRequiredJSONTriState(t *testing.T) {
-	cases := map[string]*bool{
-		`{"type":"local"}`: nil,
-		`{"type":"local","workspaceExportRequired":false}`: new(bool),
+func TestExecutorConfig_WorkspaceExportRequired_JSONTriState(t *testing.T) {
+	cases := []struct {
+		name string
+		doc  string
+		want *bool
+	}{
+		{"omitted stays nil", `{"type":"local"}`, nil},
+		{"false is kept", `{"type":"local","workspaceExportRequired":false}`, new(bool)},
 	}
-	for doc, want := range cases {
-		var ec ExecutorConfig
-		if err := json.Unmarshal([]byte(doc), &ec); err != nil {
-			t.Fatalf("unmarshal %s: %v", doc, err)
-		}
-		switch {
-		case want == nil && ec.WorkspaceExportRequired != nil:
-			t.Errorf("%s: got %v, want nil", doc, *ec.WorkspaceExportRequired)
-		case want != nil && (ec.WorkspaceExportRequired == nil || *ec.WorkspaceExportRequired != *want):
-			t.Errorf("%s: got %v, want %v", doc, ec.WorkspaceExportRequired, *want)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			var ec ExecutorConfig
+			must.NoError(json.Unmarshal([]byte(tc.doc), &ec))
+			if tc.want == nil {
+				must.Nil(ec.WorkspaceExportRequired)
+				return
+			}
+			must.NotNil(ec.WorkspaceExportRequired)
+			must.Equal(*tc.want, *ec.WorkspaceExportRequired)
+		})
 	}
 }
 
@@ -6626,35 +5857,28 @@ func TestRedact_GuardRailAPIKeyRef(t *testing.T) {
 			},
 		},
 	}
-	redacted := rc.Redact()
-	if redacted.GuardRail == nil {
-		t.Fatal("GuardRail should not be nil after redact")
-	}
-	if len(redacted.GuardRail.Stages) != 2 {
-		t.Fatalf("Stages count = %d, want 2", len(redacted.GuardRail.Stages))
-	}
-	if redacted.GuardRail.Stages[0].APIKeyRef != "secret://[REDACTED]" {
-		t.Errorf("Stages[0].APIKeyRef = %q, want secret://[REDACTED]", redacted.GuardRail.Stages[0].APIKeyRef)
-	}
-	if rc.GuardRail.Stages[0].APIKeyRef != "secret://MISTRAL_API_KEY" {
-		t.Error("Redact mutated original GuardRail.Stages[0].APIKeyRef")
-	}
+	t.Run("composite stage keys are redacted", func(t *testing.T) {
+		must := require.New(t)
+		redacted := rc.Redact()
+		must.NotNil(redacted.GuardRail, "GuardRail should not be nil after redact")
+		must.Len(redacted.GuardRail.Stages, 2)
+		must.Equal("secret://[REDACTED]", redacted.GuardRail.Stages[0].APIKeyRef)
+		must.Equal("secret://MISTRAL_API_KEY", rc.GuardRail.Stages[0].APIKeyRef, "Redact must not mutate the original")
+	})
 
-	// Single top-level shieldstral guard
-	singleRC := RunConfig{
-		GuardRail: &GuardRailConfig{
-			Type:      "shieldstral",
-			Endpoint:  "https://api.mistral.ai",
-			APIKeyRef: "secret://MISTRAL_KEY",
-		},
-	}
-	singleRedacted := singleRC.Redact()
-	if singleRedacted.GuardRail.APIKeyRef != "secret://[REDACTED]" {
-		t.Errorf("GuardRail.APIKeyRef = %q, want secret://[REDACTED]", singleRedacted.GuardRail.APIKeyRef)
-	}
-	if singleRC.GuardRail.APIKeyRef != "secret://MISTRAL_KEY" {
-		t.Error("Redact mutated original singleRC GuardRail.APIKeyRef")
-	}
+	t.Run("top-level guard key is redacted", func(t *testing.T) {
+		must := require.New(t)
+		singleRC := RunConfig{
+			GuardRail: &GuardRailConfig{
+				Type:      "shieldstral",
+				Endpoint:  "https://api.mistral.ai",
+				APIKeyRef: "secret://MISTRAL_KEY",
+			},
+		}
+		redacted := singleRC.Redact()
+		must.Equal("secret://[REDACTED]", redacted.GuardRail.APIKeyRef)
+		must.Equal("secret://MISTRAL_KEY", singleRC.GuardRail.APIKeyRef, "Redact must not mutate the original")
+	})
 }
 
 func TestRedact_ResultSinkAttributes(t *testing.T) {
@@ -6670,19 +5894,19 @@ func TestRedact_ResultSinkAttributes(t *testing.T) {
 	}
 	redacted := rc.Redact()
 
-	if got := redacted.ResultSink.Attributes["auth-token"]; got != "secret://[REDACTED]" {
-		t.Errorf("auth-token attribute = %q, want secret://[REDACTED]", got)
-	}
-	if got := redacted.ResultSink.Attributes["another-secret"]; got != "secret://[REDACTED]" {
-		t.Errorf("another-secret attribute = %q, want secret://[REDACTED]", got)
-	}
-	if got := redacted.ResultSink.Attributes["workload"]; got != "classification" {
-		t.Errorf("plaintext attribute mutated: got %q", got)
-	}
-	// Original unchanged.
-	if rc.ResultSink.Attributes["auth-token"] != "secret://PUBSUB_TOKEN" {
-		t.Error("Redact mutated original ResultSink.Attributes")
-	}
+	t.Run("secret attributes are redacted", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("secret://[REDACTED]", redacted.ResultSink.Attributes["auth-token"])
+		must.Equal("secret://[REDACTED]", redacted.ResultSink.Attributes["another-secret"])
+	})
+	t.Run("plaintext attributes are kept", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("classification", redacted.ResultSink.Attributes["workload"])
+	})
+	t.Run("original config is not mutated", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("secret://PUBSUB_TOKEN", rc.ResultSink.Attributes["auth-token"])
+	})
 }
 
 // TestValidateRunConfig_BedrockModelIDShape pins the fail-fast guard: the CLI's
@@ -6690,6 +5914,17 @@ func TestRedact_ResultSinkAttributes(t *testing.T) {
 // IAM/SigV4 setup and a network round-trip, so the validator catches the shape
 // before any provider call.
 func TestValidateRunConfig_BedrockModelIDShape(t *testing.T) {
+	bedrockWithModel := func(model string) *RunConfig {
+		c := validConfig()
+		c.Provider = ProviderConfig{
+			Type:       "bedrock",
+			Region:     "us-east-1",
+			Credential: &CredentialConfig{Type: "aws-default"},
+		}
+		c.ModelRouter = ModelRouterConfig{Type: "static", Provider: "bedrock", Model: model}
+		return c
+	}
+
 	t.Run("valid_model_ids", func(t *testing.T) {
 		cases := []string{
 			"anthropic.claude-sonnet-4-6",
@@ -6702,16 +5937,8 @@ func TestValidateRunConfig_BedrockModelIDShape(t *testing.T) {
 		}
 		for _, model := range cases {
 			t.Run(model, func(t *testing.T) {
-				c := validConfig()
-				c.Provider = ProviderConfig{
-					Type:       "bedrock",
-					Region:     "us-east-1",
-					Credential: &CredentialConfig{Type: "aws-default"},
-				}
-				c.ModelRouter = ModelRouterConfig{Type: "static", Provider: "bedrock", Model: model}
-				if err := ValidateRunConfig(c); err != nil {
-					t.Fatalf("expected %q to be accepted on bedrock, got: %v", model, err)
-				}
+				must := require.New(t)
+				must.NoError(ValidateRunConfig(bedrockWithModel(model)))
 			})
 		}
 	})
@@ -6725,68 +5952,41 @@ func TestValidateRunConfig_BedrockModelIDShape(t *testing.T) {
 		}
 		for _, model := range cases {
 			t.Run(model, func(t *testing.T) {
-				c := validConfig()
-				c.Provider = ProviderConfig{
-					Type:       "bedrock",
-					Region:     "us-east-1",
-					Credential: &CredentialConfig{Type: "aws-default"},
-				}
-				c.ModelRouter = ModelRouterConfig{Type: "static", Provider: "bedrock", Model: model}
-				err := ValidateRunConfig(c)
-				if err == nil {
-					t.Fatalf("expected %q to be rejected on bedrock, got nil", model)
-				}
-				errStr := err.Error()
-				// The error names the bedrock provider type and the
-				// inference-profile remediation path. Two anchors so
-				// the wording can evolve without losing coverage of
-				// the actionable parts.
-				if !strings.Contains(errStr, "bedrock") {
-					t.Errorf("expected error to mention bedrock, got: %v", err)
-				}
-				if !strings.Contains(errStr, "inference-profile") &&
-					!strings.Contains(errStr, "inference profile") &&
-					!strings.Contains(errStr, "list-inference-profiles") {
-					t.Errorf("expected error to point at the inference-profile remediation path, got: %v", err)
-				}
+				must := require.New(t)
+				err := ValidateRunConfig(bedrockWithModel(model))
+				must.ErrorContains(err, "bedrock")
+				// Several anchors so the wording can change without losing the remediation hint.
+				msg := err.Error()
+				must.True(strings.Contains(msg, "inference-profile") ||
+					strings.Contains(msg, "inference profile") ||
+					strings.Contains(msg, "list-inference-profiles"),
+					"error should point at the inference-profile remediation path, got: %v", err)
 			})
 		}
 	})
 
 	t.Run("empty_model_defers_to_required_field_handling", func(t *testing.T) {
-		// An empty Model on a bedrock provider must not trip the new
-		// shape check — the operator should see whatever required-
-		// field complaint the rest of the validator emits for the
-		// router type they chose. ModelRouter.Type="static" with an
-		// empty Model produces no error today; that's accepted and
-		// we are only asserting that the bedrock shape check does
-		// not synthesise a spurious one.
-		c := validConfig()
-		c.Provider = ProviderConfig{
-			Type:       "bedrock",
-			Region:     "us-east-1",
-			Credential: &CredentialConfig{Type: "aws-default"},
-		}
-		c.ModelRouter = ModelRouterConfig{Type: "static", Provider: "bedrock", Model: ""}
-		err := ValidateRunConfig(c)
-		if err != nil && strings.Contains(err.Error(), "Bedrock requires either") {
-			t.Fatalf("empty model should not trip the bedrock shape check, got: %v", err)
+		must := require.New(t)
+		// An empty model is left to the router's required-field checks;
+		// the bedrock shape check must not add its own error.
+		err := ValidateRunConfig(bedrockWithModel(""))
+		if err != nil {
+			must.NotContains(err.Error(), "Bedrock requires either")
 		}
 	})
 
 	t.Run("anthropic_provider_with_alias_still_valid", func(t *testing.T) {
-		// Regression guard: the bedrock-scoped check must not bleed
-		// into the anthropic path. "claude-sonnet-4-6" is the CLI
-		// default and the canonical Anthropic-API alias.
+		must := require.New(t)
+		// The bedrock-scoped check must not bleed into the anthropic path.
+		// "claude-sonnet-4-6" is the CLI default and the canonical Anthropic-API alias.
 		c := validConfig()
 		c.Provider = ProviderConfig{Type: "anthropic"}
 		c.ModelRouter = ModelRouterConfig{Type: "static", Provider: "anthropic", Model: "claude-sonnet-4-6"}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Fatalf("anthropic provider with alias should be accepted, got: %v", err)
-		}
+		must.NoError(ValidateRunConfig(c))
 	})
 
 	t.Run("named_bedrock_provider_via_mode_models", func(t *testing.T) {
+		must := require.New(t)
 		// The check resolves through Providers[name] entries too, so
 		// a per-mode override that points at a bedrock-typed named
 		// provider with an Anthropic-shaped alias is rejected.
@@ -6805,22 +6005,16 @@ func TestValidateRunConfig_BedrockModelIDShape(t *testing.T) {
 			Model:      "claude-sonnet-4-6",
 			ModeModels: map[string]string{"execution": "bdrk/claude-sonnet-4-6"},
 		}
-		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("expected per-mode bedrock override with anthropic alias to be rejected")
-		}
-		if !strings.Contains(err.Error(), "bedrock") {
-			t.Errorf("expected error to mention bedrock, got: %v", err)
-		}
+		must.ErrorContains(ValidateRunConfig(c), "bedrock")
 	})
 }
 
-// TestValidateRunConfig_ProviderModelLabelBound pins the cardinality guard: the
+// TestValidateRunConfig_ProviderModelLabel_IsBounded pins the cardinality guard: the
 // router-resolved model string rides on the provider.model OTel metric label, so
 // for anthropic, openai-compatible, and openai-responses it must match
 // modelLabelPattern (^[A-Za-z0-9./_-]{1,64}$), which allows forward slashes for
 // OpenRouter-style "provider/model" naming.
-func TestValidateRunConfig_ProviderModelLabelBound(t *testing.T) {
+func TestValidateRunConfig_ProviderModelLabel_IsBounded(t *testing.T) {
 	// A 65-char model string overruns the 64-char label cap.
 	tooLong := strings.Repeat("a", 65)
 
@@ -6838,19 +6032,13 @@ func TestValidateRunConfig_ProviderModelLabelBound(t *testing.T) {
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
+				must := require.New(t)
 				c := validConfig()
 				c.Provider = ProviderConfig{Type: tc.provider}
 				c.ModelRouter = ModelRouterConfig{Type: "static", Provider: tc.provider, Model: tc.model}
 				err := ValidateRunConfig(c)
-				if err == nil {
-					t.Fatalf("expected %q on %s to be rejected, got nil", tc.model, tc.provider)
-				}
-				if !strings.Contains(err.Error(), "modelRouter.model") {
-					t.Errorf("expected error to name modelRouter.model, got: %v", err)
-				}
-				if !strings.Contains(err.Error(), "provider.model") {
-					t.Errorf("expected error to explain the provider.model label rationale, got: %v", err)
-				}
+				must.ErrorContains(err, "modelRouter.model")
+				must.ErrorContains(err, "provider.model")
 			})
 		}
 	})
@@ -6872,17 +6060,17 @@ func TestValidateRunConfig_ProviderModelLabelBound(t *testing.T) {
 		}
 		for _, tc := range cases {
 			t.Run(tc.provider+"/"+tc.model, func(t *testing.T) {
+				must := require.New(t)
 				c := validConfig()
 				c.Provider = ProviderConfig{Type: tc.provider}
 				c.ModelRouter = ModelRouterConfig{Type: "static", Provider: tc.provider, Model: tc.model}
-				if err := ValidateRunConfig(c); err != nil {
-					t.Fatalf("expected %q on %s to be accepted, got: %v", tc.model, tc.provider, err)
-				}
+				must.NoError(ValidateRunConfig(c))
 			})
 		}
 	})
 
 	t.Run("per_mode_override_bound", func(t *testing.T) {
+		must := require.New(t)
 		// The label-bound check resolves through ModeModels "provider/model"
 		// entries too, mirroring the gemini and bedrock validators.
 		c := validConfig()
@@ -6893,13 +6081,7 @@ func TestValidateRunConfig_ProviderModelLabelBound(t *testing.T) {
 			Model:      "claude-sonnet-4-6",
 			ModeModels: map[string]string{"execution": "anthropic/claude is bad"},
 		}
-		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("expected per-mode override with an invalid model label to be rejected")
-		}
-		if !strings.Contains(err.Error(), "modelRouter.modeModels[execution]") {
-			t.Errorf("expected error to name the offending mode entry, got: %v", err)
-		}
+		must.ErrorContains(ValidateRunConfig(c), "modelRouter.modeModels[execution]")
 	})
 
 	t.Run("bedrock_colon_and_arn_exempt_from_strict_class", func(t *testing.T) {
@@ -6914,6 +6096,7 @@ func TestValidateRunConfig_ProviderModelLabelBound(t *testing.T) {
 		}
 		for _, model := range valid {
 			t.Run(model, func(t *testing.T) {
+				must := require.New(t)
 				c := validConfig()
 				c.Provider = ProviderConfig{
 					Type:       "bedrock",
@@ -6921,17 +6104,15 @@ func TestValidateRunConfig_ProviderModelLabelBound(t *testing.T) {
 					Credential: &CredentialConfig{Type: "aws-default"},
 				}
 				c.ModelRouter = ModelRouterConfig{Type: "static", Provider: "bedrock", Model: model}
-				if err := ValidateRunConfig(c); err != nil {
-					t.Fatalf("expected bedrock model %q to be accepted, got: %v", model, err)
-				}
+				must.NoError(ValidateRunConfig(c))
 			})
 		}
 	})
 
 	t.Run("bedrock_non_printable_rejected", func(t *testing.T) {
+		must := require.New(t)
 		// The bedrock branch drops the strict character class but still
-		// rejects a non-printable byte — the actual cardinality / label-
-		// corruption vector the issue targets.
+		// rejects non-printable bytes, which would corrupt the metric label.
 		c := validConfig()
 		c.Provider = ProviderConfig{
 			Type:       "bedrock",
@@ -6939,13 +6120,7 @@ func TestValidateRunConfig_ProviderModelLabelBound(t *testing.T) {
 			Credential: &CredentialConfig{Type: "aws-default"},
 		}
 		c.ModelRouter = ModelRouterConfig{Type: "static", Provider: "bedrock", Model: "anthropic.claude\x00sonnet"}
-		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("expected bedrock model with a NUL byte to be rejected")
-		}
-		if !strings.Contains(err.Error(), "non-printable") {
-			t.Errorf("expected error to mention non-printable, got: %v", err)
-		}
+		must.ErrorContains(ValidateRunConfig(c), "non-printable")
 	})
 }
 
@@ -6957,81 +6132,56 @@ func TestValidateRunConfig_ProviderModelLabelBound(t *testing.T) {
 // generic "no such secret" error.
 func TestValidateRunConfig_APIKeyRefMustBeSecretReference(t *testing.T) {
 	t.Run("provider.apiKeyRef literal rejected", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.Provider = ProviderConfig{Type: "anthropic", APIKeyRef: "sk-ant-literal-key"}
 		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("expected error for literal provider.apiKeyRef")
-		}
-		if !strings.Contains(err.Error(), "secret://") {
-			t.Errorf("error = %q, want substring %q", err.Error(), "secret://")
-		}
-		if !strings.Contains(err.Error(), "provider.apiKeyRef") {
-			t.Errorf("error = %q, want it to name the offending field", err.Error())
-		}
+		must.ErrorContains(err, "secret://")
+		must.ErrorContains(err, "provider.apiKeyRef")
 	})
 
 	t.Run("provider.apiKeyRef secret reference accepted", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.Provider = ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_KEY"}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Fatalf("expected nil error, got %v", err)
-		}
+		must.NoError(ValidateRunConfig(c))
 	})
 
 	t.Run("provider.apiKeyRef empty accepted", func(t *testing.T) {
+		must := require.New(t)
 		// Empty is the unset form — credential federation may leave
 		// apiKeyRef blank and resolve auth via Credential instead.
 		c := validConfig()
 		c.Provider = ProviderConfig{Type: "anthropic"}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Fatalf("expected nil error, got %v", err)
-		}
+		must.NoError(ValidateRunConfig(c))
 	})
 
 	t.Run("executor.vcsBackend.apiKeyRef literal rejected", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.Executor.VcsBackend = &VcsBackendConfig{Type: "github", APIKeyRef: "ghp_literal"}
-		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("expected error for literal vcsBackend.apiKeyRef")
-		}
-		if !strings.Contains(err.Error(), "executor.vcsBackend.apiKeyRef") {
-			t.Errorf("error = %q, want it to name the offending field", err.Error())
-		}
+		must.ErrorContains(ValidateRunConfig(c), "executor.vcsBackend.apiKeyRef")
 	})
 
 	t.Run("tools.mcpServers literal rejected", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.Tools.MCPServers = []MCPServerConfig{{Name: "x", URI: "http://localhost", APIKeyRef: "literal-token"}}
-		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("expected error for literal mcpServers apiKeyRef")
-		}
-		if !strings.Contains(err.Error(), "tools.mcpServers[0].apiKeyRef") {
-			t.Errorf("error = %q, want it to name the offending field index", err.Error())
-		}
+		must.ErrorContains(ValidateRunConfig(c), "tools.mcpServers[0].apiKeyRef")
 	})
 }
 
 func TestValidateRunConfig_ToolDispatchRejectsOutOfRange(t *testing.T) {
 	for _, n := range []int{-1, MaxToolDispatchMaxParallel + 1, 17_000} {
 		t.Run(fmt.Sprintf("max_parallel=%d", n), func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.ToolDispatch = &ToolDispatchConfig{MaxParallel: n}
 			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("expected error for toolDispatch.maxParallel=%d", n)
-			}
-			if !strings.Contains(err.Error(), "toolDispatch.maxParallel") {
-				t.Errorf("expected error to mention toolDispatch.maxParallel, got: %v", err)
-			}
-			// The "0 (use default)" sentinel must appear in the
-			// message so an operator knows zero is a legal value
-			// rather than another rejected boundary.
-			if !strings.Contains(err.Error(), "0 (use default)") {
-				t.Errorf("expected error to call out the accepted zero sentinel '0 (use default)', got: %v", err)
-			}
+			must.ErrorContains(err, "toolDispatch.maxParallel")
+			// The message must name zero as the accepted default sentinel
+			// so an operator knows it is a legal value.
+			must.ErrorContains(err, "0 (use default)")
 		})
 	}
 }
@@ -7043,18 +6193,12 @@ func TestValidateRunConfig_ToolDispatchRejectsOutOfRange(t *testing.T) {
 func TestValidateRunConfig_ToolChoiceEscalationRejectsOutOfRange(t *testing.T) {
 	for _, n := range []int{-1, MaxToolChoiceEscalationMaxRetries + 1, 9_000} {
 		t.Run(fmt.Sprintf("max_retries=%d", n), func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.ToolChoiceEscalation = &ToolChoiceEscalationConfig{Enabled: true, MaxRetries: n}
 			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("expected error for toolChoiceEscalation.maxRetries=%d", n)
-			}
-			if !strings.Contains(err.Error(), "toolChoiceEscalation.maxRetries") {
-				t.Errorf("expected error to mention toolChoiceEscalation.maxRetries, got: %v", err)
-			}
-			if !strings.Contains(err.Error(), "0 (use default)") {
-				t.Errorf("expected error to call out the accepted zero sentinel, got: %v", err)
-			}
+			must.ErrorContains(err, "toolChoiceEscalation.maxRetries")
+			must.ErrorContains(err, "0 (use default)")
 		})
 	}
 }
@@ -7065,47 +6209,33 @@ func TestValidateRunConfig_ToolChoiceEscalationRejectsOutOfRange(t *testing.T) {
 // each to the documented value.
 func TestValidateRunConfig_ToolChoiceEscalationAcceptsValid(t *testing.T) {
 	t.Run("nil_disabled", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.ToolChoiceEscalation = nil
-		if err := ValidateRunConfig(c); err != nil {
-			t.Fatalf("nil escalation must validate: %v", err)
-		}
-		if got := c.EffectiveToolChoiceEscalationMaxRetries(); got != 0 {
-			t.Errorf("nil config effective retries = %d, want 0 (disabled)", got)
-		}
+		must.NoError(ValidateRunConfig(c))
+		must.Equal(0, c.EffectiveToolChoiceEscalationMaxRetries())
 	})
 	t.Run("enabled_default", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.ToolChoiceEscalation = &ToolChoiceEscalationConfig{Enabled: true}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Fatalf("enabled escalation with zero retries must validate: %v", err)
-		}
-		if got := c.EffectiveToolChoiceEscalationMaxRetries(); got != DefaultToolChoiceEscalationMaxRetries {
-			t.Errorf("enabled+zero effective retries = %d, want %d", got, DefaultToolChoiceEscalationMaxRetries)
-		}
+		must.NoError(ValidateRunConfig(c))
+		must.Equal(DefaultToolChoiceEscalationMaxRetries, c.EffectiveToolChoiceEscalationMaxRetries())
 	})
 	t.Run("disabled_with_retries_stays_disabled", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.ToolChoiceEscalation = &ToolChoiceEscalationConfig{Enabled: false, MaxRetries: 2}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Fatalf("disabled escalation must validate: %v", err)
-		}
-		if got := c.EffectiveToolChoiceEscalationMaxRetries(); got != 0 {
-			t.Errorf("disabled effective retries = %d, want 0", got)
-		}
+		must.NoError(ValidateRunConfig(c))
+		must.Equal(0, c.EffectiveToolChoiceEscalationMaxRetries())
 	})
 	t.Run("explicit_cap_2", func(t *testing.T) {
-		// Exercises the third return branch of
-		// EffectiveToolChoiceEscalationMaxRetries (Enabled && MaxRetries > 0
-		// → return the configured value verbatim).
+		must := require.New(t)
+		// An explicit positive cap is returned verbatim.
 		c := validConfig()
 		c.ToolChoiceEscalation = &ToolChoiceEscalationConfig{Enabled: true, MaxRetries: 2}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Fatalf("enabled escalation with explicit cap must validate: %v", err)
-		}
-		if got := c.EffectiveToolChoiceEscalationMaxRetries(); got != 2 {
-			t.Errorf("explicit cap effective retries = %d, want 2", got)
-		}
+		must.NoError(ValidateRunConfig(c))
+		must.Equal(2, c.EffectiveToolChoiceEscalationMaxRetries())
 	})
 }
 
@@ -7130,13 +6260,10 @@ func batchValidConfig() *RunConfig {
 }
 
 func TestValidateRunConfig_Batch_NilLeavesConfigUntouched(t *testing.T) {
+	must := require.New(t)
 	c := batchValidConfig()
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("baseline batch config must validate, got: %v", err)
-	}
-	if c.Provider.Batch != nil {
-		t.Errorf("nil Batch must not be materialised by validation, got %+v", c.Provider.Batch)
-	}
+	must.NoError(ValidateRunConfig(c))
+	must.Nil(c.Provider.Batch, "validation must not materialise a nil Batch")
 }
 
 func TestValidateRunConfig_Batch_UnsupportedProviderType(t *testing.T) {
@@ -7151,6 +6278,7 @@ func TestValidateRunConfig_Batch_UnsupportedProviderType(t *testing.T) {
 		{"gemini", true},
 	} {
 		t.Run(tc.providerType, func(t *testing.T) {
+			must := require.New(t)
 			c := batchValidConfig()
 			c.Provider.Type = tc.providerType
 			// Bedrock and gemini need extra fields to clear unrelated
@@ -7167,22 +6295,16 @@ func TestValidateRunConfig_Batch_UnsupportedProviderType(t *testing.T) {
 			c.Provider.Batch = &BatchProviderConfig{Enabled: true, HarnessSidePolling: true}
 			err := ValidateRunConfig(c)
 			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected error for batch with provider type %q", tc.providerType)
-				}
-				if !strings.Contains(err.Error(), "batch is not supported for provider type") {
-					t.Errorf("error should mention unsupported batch provider type, got: %v", err)
-				}
+				must.ErrorContains(err, "batch is not supported for provider type")
 			} else {
-				if err != nil {
-					t.Fatalf("provider %q must accept batch, got: %v", tc.providerType, err)
-				}
+				must.NoError(err)
 			}
 		})
 	}
 }
 
 func TestValidateRunConfig_Batch_RejectsExecutionMode(t *testing.T) {
+	must := require.New(t)
 	c := batchValidConfig()
 	c.Mode = "execution"
 	c.PermissionPolicy = PermissionPolicyConfig{Type: "allow-all"}
@@ -7191,31 +6313,21 @@ func TestValidateRunConfig_Batch_RejectsExecutionMode(t *testing.T) {
 		HarnessSidePolling:    true,
 		AllowInteractiveModes: true, // must not bypass the execution check
 	}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for batch with mode=execution")
-	}
-	if !strings.Contains(err.Error(), "batch cannot be used with mode=execution") {
-		t.Errorf("error should mention mode=execution rejection, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "batch cannot be used with mode=execution")
 }
 
 func TestValidateRunConfig_Batch_InteractiveModesRequireOptIn(t *testing.T) {
 	for _, mode := range []string{"planning", "review"} {
 		t.Run(mode+"_without_opt_in", func(t *testing.T) {
+			must := require.New(t)
 			c := batchValidConfig()
 			c.Mode = mode
 			c.Provider.Batch = &BatchProviderConfig{Enabled: true, HarnessSidePolling: true}
-			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("expected error for batch in mode=%s without allowInteractiveModes", mode)
-			}
-			want := fmt.Sprintf("batch requires allowInteractiveModes=true for mode=%s", mode)
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("error should mention %q, got: %v", want, err)
-			}
+			must.ErrorContains(ValidateRunConfig(c),
+				"batch requires allowInteractiveModes=true for mode="+mode)
 		})
 		t.Run(mode+"_with_opt_in_passes", func(t *testing.T) {
+			must := require.New(t)
 			c := batchValidConfig()
 			c.Mode = mode
 			c.Provider.Batch = &BatchProviderConfig{
@@ -7223,84 +6335,61 @@ func TestValidateRunConfig_Batch_InteractiveModesRequireOptIn(t *testing.T) {
 				HarnessSidePolling:    true,
 				AllowInteractiveModes: true,
 			}
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("batch with allowInteractiveModes=true must accept mode=%s, got: %v", mode, err)
-			}
+			must.NoError(ValidateRunConfig(c))
 		})
 	}
 	t.Run("research_does_not_require_opt_in", func(t *testing.T) {
+		must := require.New(t)
 		// Sanity check: the opt-in only gates "planning" and "review".
 		// Other read-only modes ("research", "toil") accept batch without it.
 		c := batchValidConfig()
 		c.Mode = "research"
 		c.Provider.Batch = &BatchProviderConfig{Enabled: true, HarnessSidePolling: true}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Fatalf("mode=research must accept batch without allowInteractiveModes, got: %v", err)
-		}
+		must.NoError(ValidateRunConfig(c))
 	})
 }
 
 func TestValidateRunConfig_Batch_StdioRequiresHarnessSidePolling(t *testing.T) {
+	must := require.New(t)
 	c := batchValidConfig()
 	c.Transport = TransportConfig{Type: "stdio"}
 	c.Provider.Batch = &BatchProviderConfig{Enabled: true, HarnessSidePolling: false}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for batch with transport=stdio and HarnessSidePolling=false")
-	}
-	if !strings.Contains(err.Error(), "batch with transport=stdio requires harnessSidePolling=true") {
-		t.Errorf("error should mention stdio + harnessSidePolling, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "batch with transport=stdio requires harnessSidePolling=true")
 }
 
 func TestValidateRunConfig_Batch_HarnessSidePollingRejectedWithGRPC(t *testing.T) {
+	must := require.New(t)
 	c := batchValidConfig()
 	c.Transport = TransportConfig{Type: "grpc"}
 	// HarnessSidePolling is rejected with grpc transport even when
 	// Batch.Enabled is false — a stale flag combination must not be
 	// silently retained.
 	c.Provider.Batch = &BatchProviderConfig{Enabled: false, HarnessSidePolling: true}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for batch.harnessSidePolling with transport=grpc")
-	}
-	if !strings.Contains(err.Error(), "batch.harnessSidePolling must not be set with transport=grpc") {
-		t.Errorf("error should mention harnessSidePolling + grpc, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "batch.harnessSidePolling must not be set with transport=grpc")
 }
 
 func TestValidateRunConfig_Batch_HarnessSidePollingRejectsAnthropicWIF(t *testing.T) {
+	must := require.New(t)
 	// harnessPollingBatchClient pins x-api-key auth; the anthropic-wif
 	// credential type instead requires Authorization: Bearer (see the
-	// AuthMode switch in anthropic.go). The combination is unreachable
-	// in v1 and the validator must surface that explicitly.
+	// AuthMode switch in anthropic.go). The combination is unsupported,
+	// so the validator must reject it explicitly.
 	c := batchValidConfig()
 	c.Transport = TransportConfig{Type: "stdio"}
 	c.Provider.Credential = validAnthropicWIFCredential()
 	c.Provider.APIKeyRef = "" // mutually exclusive with anthropic-wif
 	c.Provider.Batch = &BatchProviderConfig{Enabled: true, HarnessSidePolling: true}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for batch.harnessSidePolling with anthropic-wif credentials")
-	}
-	if !strings.Contains(err.Error(), "harnessSidePolling does not support anthropic-wif") {
-		t.Errorf("error should mention harnessSidePolling + anthropic-wif, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "harnessSidePolling does not support anthropic-wif")
 }
 
 func TestValidateRunConfig_Batch_CancelBundleRejectedWithStdio(t *testing.T) {
+	must := require.New(t)
 	c := batchValidConfig()
 	c.Transport = TransportConfig{Type: "stdio"}
 	// As with HarnessSidePolling, CancelBundleOnRunCancel is rejected
 	// even when Batch.Enabled is false.
 	c.Provider.Batch = &BatchProviderConfig{Enabled: false, CancelBundleOnRunCancel: true}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for batch.cancelBundleOnRunCancel with transport=stdio")
-	}
-	if !strings.Contains(err.Error(), "batch.cancelBundleOnRunCancel requires transport=grpc") {
-		t.Errorf("error should mention cancelBundleOnRunCancel + grpc, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "batch.cancelBundleOnRunCancel requires transport=grpc")
 }
 
 // TestValidateRunConfig_Batch_MaxWaitSecondsRange pins the batch wait to
@@ -7320,6 +6409,7 @@ func TestValidateRunConfig_Batch_MaxWaitSecondsRange(t *testing.T) {
 		{"negative_fails", -1, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := batchValidConfig()
 			seconds := tc.seconds
 			c.Provider.Batch = &BatchProviderConfig{
@@ -7329,42 +6419,28 @@ func TestValidateRunConfig_Batch_MaxWaitSecondsRange(t *testing.T) {
 			}
 			err := ValidateRunConfig(c)
 			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected error for maxWaitSeconds=%d", tc.seconds)
-				}
-				if !strings.Contains(err.Error(), "batch.maxWaitSeconds must be in range (0, 60]") {
-					t.Errorf("error should mention the timeout-derived range, got: %v", err)
-				}
+				must.ErrorContains(err, "batch.maxWaitSeconds must be in range (0, 60]")
 				// The diagnostic must name both contradicting values.
-				if !strings.Contains(err.Error(), "the run timeout of 60 seconds") ||
-					!strings.Contains(err.Error(), fmt.Sprintf("got %d", tc.seconds)) {
-					t.Errorf("error should name both the timeout and the requested wait, got: %v", err)
-				}
+				must.ErrorContains(err, "the run timeout of 60 seconds")
+				must.ErrorContains(err, fmt.Sprintf("got %d", tc.seconds))
 			} else {
-				if err != nil {
-					t.Fatalf("maxWaitSeconds=%d should validate, got: %v", tc.seconds, err)
-				}
+				must.NoError(err)
 			}
 		})
 	}
 }
 
-func TestValidateRunConfig_Batch_MaxWaitSecondsNilApplyDefault(t *testing.T) {
+func TestValidateRunConfig_Batch_MaxWaitSecondsDefaultsWhenNil(t *testing.T) {
+	must := require.New(t)
 	c := batchValidConfig()
 	c.Provider.Batch = &BatchProviderConfig{
 		Enabled:            true,
 		HarnessSidePolling: true,
 		// MaxWaitSeconds intentionally nil.
 	}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("batch default-apply path must validate, got: %v", err)
-	}
-	if c.Provider.Batch.MaxWaitSeconds == nil {
-		t.Fatal("ValidateRunConfig should populate Batch.MaxWaitSeconds when nil and Enabled")
-	}
-	if got := *c.Provider.Batch.MaxWaitSeconds; got != *c.Timeout {
-		t.Errorf("default MaxWaitSeconds = %d, want the run timeout %d", got, *c.Timeout)
-	}
+	must.NoError(ValidateRunConfig(c))
+	must.NotNil(c.Provider.Batch.MaxWaitSeconds, "validation should populate MaxWaitSeconds when nil and enabled")
+	must.Equal(*c.Timeout, *c.Provider.Batch.MaxWaitSeconds)
 }
 
 // TestValidateRunConfig_Batch_MaxWaitSecondsTracksTimeout pins that the
@@ -7372,16 +6448,13 @@ func TestValidateRunConfig_Batch_MaxWaitSecondsNilApplyDefault(t *testing.T) {
 func TestValidateRunConfig_Batch_MaxWaitSecondsTracksTimeout(t *testing.T) {
 	for _, timeout := range []int{1, 600, MaxRunTimeoutSeconds} {
 		t.Run(fmt.Sprintf("timeout_%d", timeout), func(t *testing.T) {
+			must := require.New(t)
 			c := batchValidConfig()
 			seconds := timeout
 			c.Timeout = &seconds
 			c.Provider.Batch = &BatchProviderConfig{Enabled: true, HarnessSidePolling: true}
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("batch default-apply path must validate, got: %v", err)
-			}
-			if got := *c.Provider.Batch.MaxWaitSeconds; got != timeout {
-				t.Errorf("default MaxWaitSeconds = %d, want %d", got, timeout)
-			}
+			must.NoError(ValidateRunConfig(c))
+			must.Equal(timeout, *c.Provider.Batch.MaxWaitSeconds)
 		})
 	}
 }
@@ -7390,22 +6463,15 @@ func TestValidateRunConfig_Batch_MaxWaitSecondsTracksTimeout(t *testing.T) {
 // pins that an unusable timeout leaves MaxWaitSeconds alone: the timeout
 // error is the root cause and a derived default would be meaningless.
 func TestValidateRunConfig_Batch_MaxWaitSecondsNotDefaultedWithInvalidTimeout(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	c := batchValidConfig()
 	c.Timeout = nil
 	c.Provider.Batch = &BatchProviderConfig{Enabled: true, HarnessSidePolling: true}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected a validation error for a nil timeout")
-	}
-	if !strings.Contains(err.Error(), "timeout is required") {
-		t.Errorf("expected the timeout error to be reported, got: %v", err)
-	}
-	if strings.Contains(err.Error(), "batch.maxWaitSeconds") {
-		t.Errorf("a missing timeout must not produce a secondary batch error, got: %v", err)
-	}
-	if c.Provider.Batch.MaxWaitSeconds != nil {
-		t.Errorf("MaxWaitSeconds must stay nil without a usable timeout, got %d", *c.Provider.Batch.MaxWaitSeconds)
-	}
+	must.ErrorContains(err, "timeout is required")
+	check.NotContains(err.Error(), "batch.maxWaitSeconds", "a missing timeout must not produce a secondary batch error")
+	check.Nil(c.Provider.Batch.MaxWaitSeconds, "MaxWaitSeconds must stay nil without a usable timeout")
 }
 
 // TestValidateRunConfig_Batch_MaxWaitSecondsRangeIgnoresEnabled pins that
@@ -7413,19 +6479,15 @@ func TestValidateRunConfig_Batch_MaxWaitSecondsNotDefaultedWithInvalidTimeout(t 
 // block too, so the contradiction surfaces at authoring time rather than
 // the first run that passes --batch.
 func TestValidateRunConfig_Batch_MaxWaitSecondsRangeIgnoresEnabled(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	c := batchValidConfig()
 	overLimit := 7200
 	c.Provider.Batch = &BatchProviderConfig{Enabled: false, MaxWaitSeconds: &overLimit}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected an out-of-range maxWaitSeconds to be rejected with enabled=false")
-	}
-	if !strings.Contains(err.Error(), "batch.maxWaitSeconds must be in range (0, 60]") {
-		t.Errorf("error should report the timeout-derived range, got: %v", err)
-	}
-	if c.Provider.Batch.MaxWaitSeconds == nil || *c.Provider.Batch.MaxWaitSeconds != overLimit {
-		t.Error("validation must not rewrite an explicit maxWaitSeconds on a disabled block")
-	}
+	must.ErrorContains(err, "batch.maxWaitSeconds must be in range (0, 60]")
+	must.NotNil(c.Provider.Batch.MaxWaitSeconds, "validation must not clear an explicit maxWaitSeconds on a disabled block")
+	check.Equal(overLimit, *c.Provider.Batch.MaxWaitSeconds, "validation must not rewrite an explicit maxWaitSeconds on a disabled block")
 }
 
 // TestValidateRunConfig_Batch_FallbackOnTimeoutNeedsHeadroom pins that
@@ -7442,13 +6504,14 @@ func TestValidateRunConfig_Batch_FallbackOnTimeoutNeedsHeadroom(t *testing.T) {
 		fallback bool
 		wantErr  bool
 	}{
-		{"unset_defaults_to_timeout_fails", false, 0, true, true},
-		{"explicitly_equal_fails", true, 60, true, true},
-		{"strictly_below_passes", true, 59, true, false},
-		{"equal_without_fallback_passes", true, 60, false, false},
-		{"unset_without_fallback_passes", false, 0, false, false},
+		{"unset defaults to timeout fails", false, 0, true, true},
+		{"explicitly equal fails", true, 60, true, true},
+		{"strictly below passes", true, 59, true, false},
+		{"equal without fallback passes", true, 60, false, false},
+		{"unset without fallback passes", false, 0, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := batchValidConfig()
 			c.Provider.Batch = &BatchProviderConfig{
 				Enabled:            true,
@@ -7461,40 +6524,28 @@ func TestValidateRunConfig_Batch_FallbackOnTimeoutNeedsHeadroom(t *testing.T) {
 			}
 			err := ValidateRunConfig(c)
 			if !tc.wantErr {
-				if err != nil {
-					t.Fatalf("config must validate, got: %v", err)
-				}
+				must.NoError(err)
 				return
 			}
-			if err == nil {
-				t.Fatal("expected an unreachable-fallback error")
-			}
-			if !strings.Contains(err.Error(), wantErr) {
-				t.Errorf("error should name the unreachable fallback, got: %v", err)
-			}
+			must.ErrorContains(err, wantErr)
 			// The diagnostic must name both contradicting values and the
 			// budget an operator has to leave room for.
 			for _, want := range []string{"maxWaitSeconds=60", "timeout=60", "90000 ms", "120 s"} {
-				if !strings.Contains(err.Error(), want) {
-					t.Errorf("error missing %q, got: %v", want, err)
-				}
+				must.ErrorContains(err, want)
 			}
 		})
 	}
 }
 
 func TestValidateRunConfig_Batch_MaxWaitSecondsNotDefaultedWhenDisabled(t *testing.T) {
+	must := require.New(t)
 	// The default applies only to Enabled=true configs; a disabled batch block keeps
 	// MaxWaitSeconds nil so callers can still distinguish "operator did not set
 	// this" from "default applied".
 	c := batchValidConfig()
 	c.Provider.Batch = &BatchProviderConfig{Enabled: false}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("disabled batch must validate, got: %v", err)
-	}
-	if c.Provider.Batch.MaxWaitSeconds != nil {
-		t.Errorf("MaxWaitSeconds must not be populated when Enabled=false, got %v", *c.Provider.Batch.MaxWaitSeconds)
-	}
+	must.NoError(ValidateRunConfig(c))
+	must.Nil(c.Provider.Batch.MaxWaitSeconds, "MaxWaitSeconds must not be populated when Enabled=false")
 }
 
 func TestValidateRunConfig_Batch_MaxTurnsLatencyWarning(t *testing.T) {
@@ -7510,11 +6561,12 @@ func TestValidateRunConfig_Batch_MaxTurnsLatencyWarning(t *testing.T) {
 		maxTurns int
 		wantWarn bool
 	}{
-		{"at_threshold_no_warn", 5, false},
-		{"above_threshold_warns", 6, true},
-		{"well_above_threshold_warns", 50, true},
+		{"at threshold no warn", 5, false},
+		{"above threshold warns", 6, true},
+		{"well above threshold warns", 50, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var logBuf bytes.Buffer
 			originalLogger := slog.Default()
 			t.Cleanup(func() { slog.SetDefault(originalLogger) })
@@ -7523,42 +6575,26 @@ func TestValidateRunConfig_Batch_MaxTurnsLatencyWarning(t *testing.T) {
 			c := batchValidConfig()
 			c.MaxTurns = tc.maxTurns
 			c.Provider.Batch = &BatchProviderConfig{Enabled: true, HarnessSidePolling: true}
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("batch warning path must not produce a hard error, got: %v", err)
-			}
+			must.NoError(ValidateRunConfig(c), "batch warning path must not produce a hard error")
 
 			logs := logBuf.String()
-			if tc.wantWarn {
-				if !strings.Contains(logs, "level=WARN") {
-					t.Errorf("expected slog WARN, got: %s", logs)
-				}
-				if !strings.Contains(logs, wantMsg) {
-					t.Errorf("expected static warning message %q, got: %s", wantMsg, logs)
-				}
-				wantMaxTurns := fmt.Sprintf("maxTurns=%d", tc.maxTurns)
-				if !strings.Contains(logs, wantMaxTurns) {
-					t.Errorf("expected %q attr in warning, got: %s", wantMaxTurns, logs)
-				}
-				wantThreshold := fmt.Sprintf("thresholdTurns=%d", batchTurnsLatencyWarnThreshold)
-				if !strings.Contains(logs, wantThreshold) {
-					t.Errorf("expected %q attr in warning, got: %s", wantThreshold, logs)
-				}
-				wantWait := fmt.Sprintf("maxWaitSeconds=%d", *c.Timeout)
-				if !strings.Contains(logs, wantWait) {
-					t.Errorf("expected %q attr in warning, got: %s", wantWait, logs)
-				}
-				wantWorstCase := fmt.Sprintf("worstCaseSeconds=%d", tc.maxTurns**c.Timeout)
-				if !strings.Contains(logs, wantWorstCase) {
-					t.Errorf("expected %q attr in warning, got: %s", wantWorstCase, logs)
-				}
-			} else if strings.Contains(logs, wantMsg) {
-				t.Errorf("did not expect warning at maxTurns=%d, got: %s", tc.maxTurns, logs)
+			if !tc.wantWarn {
+				must.NotContains(logs, wantMsg)
+				return
 			}
+			must.Contains(logs, "level=WARN")
+			must.Contains(logs, wantMsg)
+			must.Contains(logs, fmt.Sprintf("maxTurns=%d", tc.maxTurns))
+			must.Contains(logs, fmt.Sprintf("thresholdTurns=%d", batchTurnsLatencyWarnThreshold))
+			must.Contains(logs, fmt.Sprintf("maxWaitSeconds=%d", *c.Timeout))
+			must.Contains(logs, fmt.Sprintf("worstCaseSeconds=%d", tc.maxTurns**c.Timeout))
 		})
 	}
 }
 
 func TestValidateRunConfig_Batch_HappyPathAllFieldsSet(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	// Exercise every BatchProviderConfig field at a non-zero value to
 	// pin that the happy-path combination validates cleanly. Uses gRPC
 	// transport so HarnessSidePolling stays false and
@@ -7577,12 +6613,9 @@ func TestValidateRunConfig_Batch_HappyPathAllFieldsSet(t *testing.T) {
 		CancelBundleOnRunCancel: true,
 		AllowInteractiveModes:   true,
 	}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("fully-populated batch config must validate, got: %v", err)
-	}
-	if got := *c.Provider.Batch.MaxWaitSeconds; got != 3000 {
-		t.Errorf("MaxWaitSeconds must not be overwritten when caller supplied a value, got %d", got)
-	}
+	must.NoError(ValidateRunConfig(c))
+	must.NotNil(c.Provider.Batch.MaxWaitSeconds)
+	check.Equal(3000, *c.Provider.Batch.MaxWaitSeconds, "a caller-supplied MaxWaitSeconds must not be overwritten")
 }
 
 // TestValidateRunConfig_Batch_ProvidersMapRejected pins that ValidateRunConfig
@@ -7590,6 +6623,7 @@ func TestValidateRunConfig_Batch_HappyPathAllFieldsSet(t *testing.T) {
 // top-level-only concept in v1 and is otherwise silently ignored at runtime.
 func TestValidateRunConfig_Batch_ProvidersMapRejected(t *testing.T) {
 	t.Run("enabled_batch_on_named_entry_fails", func(t *testing.T) {
+		must := require.New(t)
 		c := batchValidConfig()
 		c.Providers = map[string]ProviderConfig{
 			"secondary": {
@@ -7598,15 +6632,11 @@ func TestValidateRunConfig_Batch_ProvidersMapRejected(t *testing.T) {
 			},
 		}
 		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("expected error for providers[secondary].batch")
-		}
 		want := `providers[secondary].batch is not supported in v1; batch applies only to the top-level provider`
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error should mention providers map rejection, got: %v", err)
-		}
+		must.ErrorContains(err, want)
 	})
 	t.Run("disabled_but_present_batch_on_named_entry_also_fails", func(t *testing.T) {
+		must := require.New(t)
 		// The strict rule rejects any non-nil Batch (not just
 		// Enabled=true). An operator who adds a batch block with
 		// enabled=false has still tripped the foot-gun: they expect
@@ -7620,12 +6650,7 @@ func TestValidateRunConfig_Batch_ProvidersMapRejected(t *testing.T) {
 			},
 		}
 		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("expected error for providers[secondary].batch with Enabled=false")
-		}
-		if !strings.Contains(err.Error(), "providers[secondary].batch is not supported in v1") {
-			t.Errorf("error should mention providers map rejection, got: %v", err)
-		}
+		must.ErrorContains(err, "providers[secondary].batch is not supported in v1")
 	})
 }
 
@@ -7633,19 +6658,14 @@ func TestValidateRunConfig_Batch_ProvidersMapRejected(t *testing.T) {
 // when batch is enabled but the provider type is empty, only the "provider type
 // is required" error surfaces, not also a misleading batch-compatibility error.
 func TestValidateRunConfig_Batch_EmptyProviderTypeSuppressesBatchTypeError(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	c := batchValidConfig()
 	c.Provider.Type = ""
 	c.Provider.Batch = &BatchProviderConfig{Enabled: true, HarnessSidePolling: true}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for empty provider type")
-	}
-	if !strings.Contains(err.Error(), "provider type is required") {
-		t.Errorf("error should mention required provider type, got: %v", err)
-	}
-	if strings.Contains(err.Error(), "batch is not supported for provider type") {
-		t.Errorf("batch-type error should be suppressed when provider type is invalid, got: %v", err)
-	}
+	must.ErrorContains(err, "provider type is required")
+	check.NotContains(err.Error(), "batch is not supported for provider type", "batch-type error should be suppressed when provider type is invalid")
 }
 
 // TestBatchProviderConfig_JSONRoundTrip pins the *int with omitempty invariant on
@@ -7653,54 +6673,29 @@ func TestValidateRunConfig_Batch_EmptyProviderTypeSuppressesBatchTypeError(t *te
 // to tell "not configured" from "default applied", so a marshal+unmarshal cycle
 // must preserve both states, including a present-but-disabled block.
 func TestBatchProviderConfig_JSONRoundTrip(t *testing.T) {
-	t.Run("enabled_with_max_wait_seconds_round_trips", func(t *testing.T) {
+	t.Run("enabled with max wait seconds round trips", func(t *testing.T) {
+		must := require.New(t)
 		maxWait := 3600
-		pc := ProviderConfig{
-			Type: "anthropic",
-			Batch: &BatchProviderConfig{
-				Enabled:                 true,
-				MaxWaitSeconds:          &maxWait,
-				HarnessSidePolling:      true,
-				FallbackOnTimeout:       true,
-				CancelBundleOnRunCancel: false,
-				AllowInteractiveModes:   true,
-			},
+		want := BatchProviderConfig{
+			Enabled:                 true,
+			MaxWaitSeconds:          &maxWait,
+			HarnessSidePolling:      true,
+			FallbackOnTimeout:       true,
+			CancelBundleOnRunCancel: false,
+			AllowInteractiveModes:   true,
 		}
+		pc := ProviderConfig{Type: "anthropic", Batch: &want}
 		data, err := json.Marshal(pc)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
+		must.NoError(err, "marshal")
 		var got ProviderConfig
-		if err := json.Unmarshal(data, &got); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if got.Batch == nil {
-			t.Fatal("Batch must survive JSON round-trip as non-nil")
-		}
-		if !got.Batch.Enabled {
-			t.Errorf("Batch.Enabled: got false, want true")
-		}
-		if got.Batch.MaxWaitSeconds == nil {
-			t.Fatal("MaxWaitSeconds must survive as non-nil pointer")
-		}
-		if *got.Batch.MaxWaitSeconds != 3600 {
-			t.Errorf("MaxWaitSeconds: got %d, want 3600", *got.Batch.MaxWaitSeconds)
-		}
-		if !got.Batch.HarnessSidePolling {
-			t.Errorf("HarnessSidePolling: got false, want true")
-		}
-		if !got.Batch.FallbackOnTimeout {
-			t.Errorf("FallbackOnTimeout: got false, want true")
-		}
-		if got.Batch.CancelBundleOnRunCancel {
-			t.Errorf("CancelBundleOnRunCancel: got true, want false")
-		}
-		if !got.Batch.AllowInteractiveModes {
-			t.Errorf("AllowInteractiveModes: got false, want true")
-		}
+		must.NoError(json.Unmarshal(data, &got), "unmarshal")
+		must.NotNil(got.Batch, "Batch must survive JSON round-trip as non-nil")
+		must.Equal(want, *got.Batch)
 	})
 
-	t.Run("disabled_but_present_block_survives_round_trip", func(t *testing.T) {
+	t.Run("disabled but present block survives round trip", func(t *testing.T) {
+		check := assert.New(t)
+		must := require.New(t)
 		// `omitempty` is on ProviderConfig.Batch (the *pointer), not on the inner
 		// BatchProviderConfig fields: marshaling a non-nil pointer to a zero-valued
 		// struct must still emit a "batch" key so callers can distinguish "no batch key"
@@ -7710,45 +6705,26 @@ func TestBatchProviderConfig_JSONRoundTrip(t *testing.T) {
 			Batch: &BatchProviderConfig{Enabled: false},
 		}
 		data, err := json.Marshal(pc)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		if !strings.Contains(string(data), `"batch"`) {
-			t.Errorf("expected batch key in JSON, got: %s", data)
-		}
+		must.NoError(err, "marshal")
+		must.Contains(string(data), `"batch"`)
 		var got ProviderConfig
-		if err := json.Unmarshal(data, &got); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if got.Batch == nil {
-			t.Fatal("disabled-but-present batch must survive as non-nil pointer")
-		}
-		if got.Batch.Enabled {
-			t.Errorf("Enabled: got true, want false")
-		}
-		if got.Batch.MaxWaitSeconds != nil {
-			t.Errorf("MaxWaitSeconds: got %v, want nil", *got.Batch.MaxWaitSeconds)
-		}
+		must.NoError(json.Unmarshal(data, &got), "unmarshal")
+		must.NotNil(got.Batch, "disabled-but-present batch must survive as non-nil pointer")
+		check.False(got.Batch.Enabled)
+		check.Nil(got.Batch.MaxWaitSeconds)
 	})
 
-	t.Run("absent_batch_unmarshals_as_nil", func(t *testing.T) {
+	t.Run("absent batch unmarshals as nil", func(t *testing.T) {
+		must := require.New(t)
 		// Cross-check: the omitempty pointer on a nil Batch must drop the key entirely
 		// on marshal, and an absent key must unmarshal to nil.
 		pc := ProviderConfig{Type: "anthropic"}
 		data, err := json.Marshal(pc)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		if strings.Contains(string(data), `"batch"`) {
-			t.Errorf("expected no batch key when Batch is nil, got: %s", data)
-		}
+		must.NoError(err, "marshal")
+		must.NotContains(string(data), `"batch"`)
 		var got ProviderConfig
-		if err := json.Unmarshal(data, &got); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if got.Batch != nil {
-			t.Errorf("expected nil Batch when JSON has no batch key, got: %+v", got.Batch)
-		}
+		must.NoError(json.Unmarshal(data, &got), "unmarshal")
+		must.Nil(got.Batch)
 	})
 }
 
@@ -7757,6 +6733,8 @@ func TestBatchProviderConfig_JSONRoundTrip(t *testing.T) {
 // shared pointer would let a later default-apply write reach the redacted
 // snapshot through it. The same risk applies to entries in the Providers map.
 func TestRedact_ProviderBatchNotAliased(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	maxWait := 3600
 	otherMaxWait := 1800
 	rc := RunConfig{
@@ -7773,64 +6751,45 @@ func TestRedact_ProviderBatchNotAliased(t *testing.T) {
 	}
 	redacted := rc.Redact()
 
-	if redacted.Provider.Batch == nil {
-		t.Fatal("top-level Batch dropped by Redact")
-	}
-	if redacted.Provider.Batch == rc.Provider.Batch {
-		t.Fatal("top-level Batch pointer aliased — Redact must deep-copy")
-	}
+	must.NotNil(redacted.Provider.Batch, "top-level Batch dropped by Redact")
+	must.NotSame(rc.Provider.Batch, redacted.Provider.Batch, "top-level Batch pointer aliased; Redact must deep-copy")
 	redacted.Provider.Batch.Enabled = false
-	if !rc.Provider.Batch.Enabled {
-		t.Error("mutating redacted Provider.Batch.Enabled leaked to original")
-	}
+	check.True(rc.Provider.Batch.Enabled, "mutating redacted Provider.Batch.Enabled leaked to original")
 
 	redactedSecondary := redacted.Providers["secondary"]
 	originalSecondary := rc.Providers["secondary"]
-	if redactedSecondary.Batch == nil {
-		t.Fatal("named-provider Batch dropped by Redact")
-	}
-	if redactedSecondary.Batch == originalSecondary.Batch {
-		t.Fatal("named-provider Batch pointer aliased — Redact must deep-copy")
-	}
+	must.NotNil(redactedSecondary.Batch, "named-provider Batch dropped by Redact")
+	must.NotSame(originalSecondary.Batch, redactedSecondary.Batch, "named-provider Batch pointer aliased; Redact must deep-copy")
 	redactedSecondary.Batch.Enabled = false
-	if !rc.Providers["secondary"].Batch.Enabled {
-		t.Error("mutating redacted named-provider Batch.Enabled leaked to original")
-	}
+	check.True(rc.Providers["secondary"].Batch.Enabled, "mutating redacted named-provider Batch.Enabled leaked to original")
 }
 
-// TestValidateRunConfig_CompatProfile pins the closed-enum behaviour for
+// TestValidateRunConfig_CompatProfile_ClosedEnum pins the closed-enum behaviour for
 // ProviderConfig.CompatProfile: empty and "zai-glm" validate; any other value
 // fails at startup with an error mentioning the field path.
-func TestValidateRunConfig_CompatProfile(t *testing.T) {
-	t.Run("empty-accepted", func(t *testing.T) {
+func TestValidateRunConfig_CompatProfile_ClosedEnum(t *testing.T) {
+	t.Run("empty accepted", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.Provider.CompatProfile = ""
-		if err := ValidateRunConfig(c); err != nil {
-			t.Errorf("empty CompatProfile must validate, got: %v", err)
-		}
+		must.NoError(ValidateRunConfig(c))
 	})
-	t.Run("zai-glm-accepted", func(t *testing.T) {
+	t.Run("zai glm accepted", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.Provider.CompatProfile = "zai-glm"
-		if err := ValidateRunConfig(c); err != nil {
-			t.Errorf("CompatProfile=zai-glm must validate, got: %v", err)
-		}
+		must.NoError(ValidateRunConfig(c))
 	})
-	t.Run("unknown-rejected", func(t *testing.T) {
+	t.Run("unknown rejected", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.Provider.CompatProfile = "unknown"
 		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("CompatProfile=unknown must fail validation")
-		}
-		if !strings.Contains(err.Error(), "compatProfile") {
-			t.Errorf("error must mention compatProfile, got: %v", err)
-		}
-		if !strings.Contains(err.Error(), `"unknown"`) {
-			t.Errorf("error must surface the offending value, got: %v", err)
-		}
+		must.ErrorContains(err, "compatProfile")
+		must.ErrorContains(err, `"unknown"`)
 	})
-	t.Run("named-provider-validates", func(t *testing.T) {
+	t.Run("named provider rejected", func(t *testing.T) {
+		must := require.New(t)
 		// The named-provider loop runs the same validator; pin it so a
 		// future refactor that drops the per-entry call surfaces here.
 		c := validConfig()
@@ -7838,12 +6797,7 @@ func TestValidateRunConfig_CompatProfile(t *testing.T) {
 			"secondary": {Type: "openai-compatible", CompatProfile: "not-real"},
 		}
 		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("named-provider CompatProfile=not-real must fail validation")
-		}
-		if !strings.Contains(err.Error(), "providers[secondary].compatProfile") {
-			t.Errorf("error must mention providers[secondary].compatProfile, got: %v", err)
-		}
+		must.ErrorContains(err, "providers[secondary].compatProfile")
 	})
 }
 
@@ -7854,35 +6808,29 @@ func validHookConfig() HookConfig {
 }
 
 func TestValidateRunConfig_Hooks_NilIsValid(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Hooks = nil
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("nil Hooks must validate, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 func TestValidateRunConfig_Hooks_MinimalAccepted(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Hooks = &HooksConfig{
 		PreRun:  []HookConfig{{Command: "git clone https://example.com/repo ."}},
 		PostRun: []HookConfig{{Command: "test -f marker", RunOn: "success"}},
 	}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("minimal valid HooksConfig must validate, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 func TestValidateRunConfig_Hooks_RejectsAPIExecutorWithHooks(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Executor = ExecutorConfig{Type: "api"}
 	c.Hooks = &HooksConfig{PreRun: []HookConfig{validHookConfig()}}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("hooks with executor.type=api must fail validation")
-	}
-	if !strings.Contains(err.Error(), "exec-capable executor") {
-		t.Errorf("error must mention exec-capable executor, got: %v", err)
-	}
+	must.ErrorContains(err, "exec-capable executor")
 }
 
 // TestValidateRunConfig_Hooks_RejectsNoneExecutorWithHooks closes the same
@@ -7891,80 +6839,66 @@ func TestValidateRunConfig_Hooks_RejectsAPIExecutorWithHooks(t *testing.T) {
 // like api, so hooks.preRun/postRun must be rejected for it too rather
 // than passing validation and failing mid-run.
 func TestValidateRunConfig_Hooks_RejectsNoneExecutorWithHooks(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Executor = ExecutorConfig{Type: "none"}
 	c.Hooks = &HooksConfig{PostRun: []HookConfig{validHookConfig()}}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("hooks with executor.type=none must fail validation")
-	}
-	if !strings.Contains(err.Error(), "exec-capable executor") {
-		t.Errorf("error must mention exec-capable executor, got: %v", err)
-	}
+	must.ErrorContains(err, "exec-capable executor")
 }
 
 func TestValidateRunConfig_Hooks_EmptyHooksConfigAllowsAPIExecutor(t *testing.T) {
+	must := require.New(t)
 	// An explicit-but-empty HooksConfig{} (e.g. an unmarshalled wire
 	// payload with an empty "hooks" sub-message) schedules nothing, so
 	// it must not trip the exec-capable-executor requirement.
 	c := validConfig()
 	c.Executor = ExecutorConfig{Type: "api"}
 	c.Hooks = &HooksConfig{}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("empty HooksConfig with executor.type=api must validate, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 func TestValidateRunConfig_Hooks_CommandRequired(t *testing.T) {
 	for _, cmd := range []string{"", "   ", "\t\n"} {
-		t.Run(fmt.Sprintf("command=%q", cmd), func(t *testing.T) {
+		t.Run(fmt.Sprintf("blank command %q", cmd), func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Hooks = &HooksConfig{PreRun: []HookConfig{{Command: cmd}}}
 			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatal("empty/whitespace command must fail validation")
-			}
-			if !strings.Contains(err.Error(), "hooks.preRun[0].command is required") {
-				t.Errorf("error must mention hooks.preRun[0].command is required, got: %v", err)
-			}
+			must.ErrorContains(err, "hooks.preRun[0].command is required")
 		})
 	}
 }
 
 func TestValidateRunConfig_Hooks_CommandMaxLength(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Hooks = &HooksConfig{PreRun: []HookConfig{{Command: strings.Repeat("a", maxHookCommandBytes+1)}}}
 	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("oversized command must fail validation")
-	}
-	if !strings.Contains(err.Error(), "hooks.preRun[0].command must be <=") {
-		t.Errorf("error must mention the command length bound, got: %v", err)
-	}
+	must.ErrorContains(err, "hooks.preRun[0].command must be <=")
 }
 
 func TestValidateRunConfig_Hooks_CommandRejectsSecretRef(t *testing.T) {
-	cases := []string{
-		"secret://API_KEY",
-		"curl -H \"Authorization: Bearer $(cat secret://API_KEY)\"",
-		"echo secret://ANYWHERE_IN_STRING",
+	cases := []struct {
+		name    string
+		command string
+	}{
+		{"bare reference", "secret://API_KEY"},
+		{"inside command substitution", "curl -H \"Authorization: Bearer $(cat secret://API_KEY)\""},
+		{"mid string", "echo secret://ANYWHERE_IN_STRING"},
 		// Case-insensitive: a shell reads "secret://" and "SECRET://"
 		// identically, so the rejection must too.
-		"SECRET://API_KEY",
-		"Secret://API_KEY",
-		"echo sEcReT://mixed_case",
+		{"upper case scheme", "SECRET://API_KEY"},
+		{"title case scheme", "Secret://API_KEY"},
+		{"mixed case scheme", "echo sEcReT://mixed_case"},
 	}
-	for _, cmd := range cases {
-		t.Run(cmd, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
-			c.Hooks = &HooksConfig{PreRun: []HookConfig{{Command: cmd}}}
+			c.Hooks = &HooksConfig{PreRun: []HookConfig{{Command: tc.command}}}
 			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("command containing secret:// must fail validation: %q", cmd)
-			}
-			if !strings.Contains(err.Error(), "secret://") {
-				t.Errorf("error must mention secret://, got: %v", err)
-			}
+			must.ErrorContains(err, "secret://")
 		})
 	}
 }
@@ -7977,6 +6911,7 @@ func TestValidateRunConfig_Hooks_AcceptedInReadOnlyMode(t *testing.T) {
 	readOnlyModes := []string{"planning", "review", "research", "toil"}
 	for _, mode := range readOnlyModes {
 		t.Run(mode, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Mode = mode
 			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
@@ -7985,9 +6920,7 @@ func TestValidateRunConfig_Hooks_AcceptedInReadOnlyMode(t *testing.T) {
 				PreRun:  []HookConfig{{Name: "clone", Command: "git clone https://example.com/repo ."}},
 				PostRun: []HookConfig{{Name: "push", Command: "git push", RunOn: "success"}},
 			}
-			if err := ValidateRunConfig(c); err != nil {
-				t.Errorf("hooks in read-only mode %q must validate, got: %v", mode, err)
-			}
+			must.NoError(ValidateRunConfig(c))
 		})
 	}
 }
@@ -7997,6 +6930,8 @@ func TestValidateRunConfig_Hooks_AcceptedInReadOnlyMode(t *testing.T) {
 // configs differing only in Hooks. The base config already trips all three legs
 // so the comparison is meaningful rather than trivially false==false.
 func TestRuleOfTwoState_HooksNeverAffectLegs(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	base := validConfig()
 	base.DynamicContext = map[string]DynamicContextValue{
 		"issue": {Value: "untrusted issue body", Sensitive: true},
@@ -8012,42 +6947,34 @@ func TestRuleOfTwoState_HooksNeverAffectLegs(t *testing.T) {
 	}
 
 	baseUntrusted, baseSensitive, baseExternal := RuleOfTwoState(base)
-	if !baseUntrusted || !baseSensitive || !baseExternal {
-		t.Fatalf("prerequisite: base config must trip all three legs, got (%v, %v, %v)", baseUntrusted, baseSensitive, baseExternal)
-	}
+	must.True(baseUntrusted && baseSensitive && baseExternal,
+		"prerequisite: base config must trip all three legs, got (%v, %v, %v)", baseUntrusted, baseSensitive, baseExternal)
 
 	hooksUntrusted, hooksSensitive, hooksExternal := RuleOfTwoState(&withHooks)
-	if hooksUntrusted != baseUntrusted || hooksSensitive != baseSensitive || hooksExternal != baseExternal {
-		t.Errorf("RuleOfTwoState changed when only Hooks was populated: base=(%v,%v,%v) withHooks=(%v,%v,%v)",
-			baseUntrusted, baseSensitive, baseExternal, hooksUntrusted, hooksSensitive, hooksExternal)
-	}
+	check.Equal(baseUntrusted, hooksUntrusted, "untrusted leg changed when only Hooks was populated")
+	check.Equal(baseSensitive, hooksSensitive, "sensitive leg changed when only Hooks was populated")
+	check.Equal(baseExternal, hooksExternal, "external-communication leg changed when only Hooks was populated")
 }
 
-func TestValidateRunConfig_Hooks_TypeClosedSet(t *testing.T) {
-	t.Run("empty-accepted", func(t *testing.T) {
+func TestValidateRunConfig_Hooks_TypeAllowlist(t *testing.T) {
+	t.Run("empty accepted", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.Hooks = &HooksConfig{PreRun: []HookConfig{{Type: "", Command: "true"}}}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Errorf("type=\"\" must validate, got: %v", err)
-		}
+		must.NoError(ValidateRunConfig(c))
 	})
-	t.Run("command-accepted", func(t *testing.T) {
+	t.Run("command accepted", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.Hooks = &HooksConfig{PreRun: []HookConfig{{Type: "command", Command: "true"}}}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Errorf("type=command must validate, got: %v", err)
-		}
+		must.NoError(ValidateRunConfig(c))
 	})
-	t.Run("unknown-rejected", func(t *testing.T) {
+	t.Run("unknown rejected", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.Hooks = &HooksConfig{PreRun: []HookConfig{{Type: "gitSource", Command: "true"}}}
 		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("unknown hook type must fail validation")
-		}
-		if !strings.Contains(err.Error(), `unsupported hooks.preRun[0] type "gitSource"`) {
-			t.Errorf("error must name the offending type, got: %v", err)
-		}
+		must.ErrorContains(err, `unsupported hooks.preRun[0] type "gitSource"`)
 	})
 }
 
@@ -8057,97 +6984,75 @@ func TestValidateRunConfig_Hooks_TimeoutBounds(t *testing.T) {
 		seconds int
 		wantErr bool
 	}{
-		{"zero_uses_default", 0, false},
-		{"one_second", 1, false},
-		{"max_1800", MaxHookTimeoutSeconds, false},
-		{"over_max_rejected", MaxHookTimeoutSeconds + 1, true},
-		{"negative_rejected", -1, true},
+		{"zero uses default", 0, false},
+		{"one second", 1, false},
+		{"max 1800", MaxHookTimeoutSeconds, false},
+		{"over max rejected", MaxHookTimeoutSeconds + 1, true},
+		{"negative rejected", -1, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Hooks = &HooksConfig{PreRun: []HookConfig{{Command: "true", TimeoutSeconds: tc.seconds}}}
 			err := ValidateRunConfig(c)
-			if tc.wantErr && err == nil {
-				t.Fatalf("timeoutSeconds=%d must fail validation", tc.seconds)
-			}
-			if !tc.wantErr && err != nil {
-				t.Fatalf("timeoutSeconds=%d must validate, got: %v", tc.seconds, err)
+			if tc.wantErr {
+				must.Error(err, "timeoutSeconds=%d must fail validation", tc.seconds)
+			} else {
+				must.NoError(err, "timeoutSeconds=%d must validate", tc.seconds)
 			}
 		})
 	}
 }
 
 func TestValidateRunConfig_Hooks_NameBounds(t *testing.T) {
-	t.Run("within_bound_accepted", func(t *testing.T) {
+	t.Run("within bound accepted", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.Hooks = &HooksConfig{PreRun: []HookConfig{{Command: "true", Name: strings.Repeat("a", maxHookNameBytes)}}}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Errorf("64-byte name must validate, got: %v", err)
-		}
+		must.NoError(ValidateRunConfig(c), "64-byte name must validate")
 	})
-	t.Run("over_bound_rejected", func(t *testing.T) {
+	t.Run("over bound rejected", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.Hooks = &HooksConfig{PreRun: []HookConfig{{Command: "true", Name: strings.Repeat("a", maxHookNameBytes+1)}}}
-		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("65-byte name must fail validation")
-		}
-		if !strings.Contains(err.Error(), "hooks.preRun[0].name must be <=") {
-			t.Errorf("error must mention the name length bound, got: %v", err)
-		}
+		must.ErrorContains(ValidateRunConfig(c), "hooks.preRun[0].name must be <=")
 	})
-	t.Run("control_byte_rejected", func(t *testing.T) {
+	t.Run("control byte rejected", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.Hooks = &HooksConfig{PreRun: []HookConfig{{Command: "true", Name: "clone\x00repo"}}}
-		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("control byte in name must fail validation")
-		}
-		if !strings.Contains(err.Error(), "non-printable character") {
-			t.Errorf("error must mention non-printable character, got: %v", err)
-		}
+		must.ErrorContains(ValidateRunConfig(c), "non-printable character")
 	})
 }
 
 func TestValidateRunConfig_Hooks_RunOnPreRunRejected(t *testing.T) {
 	for _, runOn := range []string{"always", "success", "failure"} {
 		t.Run(runOn, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Hooks = &HooksConfig{PreRun: []HookConfig{{Command: "true", RunOn: runOn}}}
-			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("runOn=%q on a preRun hook must fail validation", runOn)
-			}
-			if !strings.Contains(err.Error(), "hooks.preRun[0].runOn must be empty on a preRun hook") {
-				t.Errorf("error must mention preRun runOn, got: %v", err)
-			}
+			must.ErrorContains(ValidateRunConfig(c), "hooks.preRun[0].runOn must be empty on a preRun hook")
 		})
 	}
 }
 
 func TestValidateRunConfig_Hooks_RunOnPostRunClosedSet(t *testing.T) {
-	t.Run("valid_values_accepted", func(t *testing.T) {
+	t.Run("valid values accepted", func(t *testing.T) {
 		for _, runOn := range []string{"", "always", "success", "failure"} {
 			t.Run(runOn, func(t *testing.T) {
+				must := require.New(t)
 				c := validConfig()
 				c.Hooks = &HooksConfig{PostRun: []HookConfig{{Command: "true", RunOn: runOn}}}
-				if err := ValidateRunConfig(c); err != nil {
-					t.Errorf("runOn=%q on a postRun hook must validate, got: %v", runOn, err)
-				}
+				must.NoError(ValidateRunConfig(c), "runOn=%q on a postRun hook must validate", runOn)
 			})
 		}
 	})
-	t.Run("unknown_rejected", func(t *testing.T) {
+	t.Run("unknown rejected", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.Hooks = &HooksConfig{PostRun: []HookConfig{{Command: "true", RunOn: "sometimes"}}}
-		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("runOn=sometimes must fail validation")
-		}
-		if !strings.Contains(err.Error(), "hooks.postRun[0].runOn") {
-			t.Errorf("error must mention hooks.postRun[0].runOn, got: %v", err)
-		}
+		must.ErrorContains(ValidateRunConfig(c), "hooks.postRun[0].runOn")
 	})
 }
 
@@ -8159,38 +7064,28 @@ func TestValidateRunConfig_Hooks_MaxHooksPerPhase(t *testing.T) {
 		}
 		return hooks
 	}
-	t.Run("at_limit_accepted", func(t *testing.T) {
+	t.Run("at limit accepted", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.Hooks = &HooksConfig{PreRun: makeHooks(maxHooksPerPhase)}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Errorf("%d preRun hooks must validate, got: %v", maxHooksPerPhase, err)
-		}
+		must.NoError(ValidateRunConfig(c))
 	})
-	t.Run("over_limit_rejected", func(t *testing.T) {
+	t.Run("over limit rejected", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.Hooks = &HooksConfig{PreRun: makeHooks(maxHooksPerPhase + 1)}
-		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatalf("%d preRun hooks must fail validation", maxHooksPerPhase+1)
-		}
-		if !strings.Contains(err.Error(), "hooks.preRun must have <=") {
-			t.Errorf("error must mention the per-phase hook count bound, got: %v", err)
-		}
+		must.ErrorContains(ValidateRunConfig(c), "hooks.preRun must have <=")
 	})
-	t.Run("postRun_bounded_independently", func(t *testing.T) {
+	t.Run("postRun bounded independently", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.Hooks = &HooksConfig{PostRun: makeHooks(maxHooksPerPhase + 1)}
-		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("oversized postRun list must fail validation")
-		}
-		if !strings.Contains(err.Error(), "hooks.postRun must have <=") {
-			t.Errorf("error must mention hooks.postRun, got: %v", err)
-		}
+		must.ErrorContains(ValidateRunConfig(c), "hooks.postRun must have <=")
 	})
 }
 
 func TestValidateRunConfig_Hooks_PostRunTimeoutSumBounded(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Hooks = &HooksConfig{
 		PostRun: []HookConfig{
@@ -8198,69 +7093,58 @@ func TestValidateRunConfig_Hooks_PostRunTimeoutSumBounded(t *testing.T) {
 			{Command: "true", TimeoutSeconds: 900},
 		},
 	}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("postRun timeout sum > MaxHookTimeoutSeconds must fail validation")
-	}
-	if !strings.Contains(err.Error(), "sum of hooks.postRun effective timeouts") {
-		t.Errorf("error must mention the postRun timeout sum bound, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "sum of hooks.postRun effective timeouts")
 }
 
 func TestValidateRunConfig_Hooks_PostRunTimeoutSumAtBoundAccepted(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Hooks = &HooksConfig{
 		PostRun: []HookConfig{
 			{Command: "true", TimeoutSeconds: MaxHookTimeoutSeconds},
 		},
 	}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("postRun timeout sum == MaxHookTimeoutSeconds must validate, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
-// TestValidateRunConfig_Hooks_PreRunTimeoutSumWarnsOnly pins that a
-// preRun timeout sum exceeding the run's wall-clock Timeout is a
-// slog.Warn, not a hard validation error — the run is very likely to
-// blow the timeout, but that is a runtime concern, not a config-shape
-// error the harness should refuse to start.
+// The preRun timeout sum is only checked against the run's wall-clock
+// Timeout with a slog.Warn, not a validation error. A run that will
+// exceed its timeout is a runtime concern, not a config shape the
+// harness should refuse to start.
 func TestValidateRunConfig_Hooks_PreRunTimeoutSumWarnsOnly(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	timeout := 60
 	c.Timeout = &timeout
 	c.Hooks = &HooksConfig{
 		PreRun: []HookConfig{{Command: "true", TimeoutSeconds: 300}},
 	}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("preRun timeout sum > timeout must only warn, not fail validation: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
-func TestEffectiveHookTimeout(t *testing.T) {
+func TestEffectiveHookTimeout_DefaultsZeroAndKeepsExplicitValues(t *testing.T) {
 	cases := []struct {
 		name string
 		cfg  HookConfig
 		want int
 	}{
-		{"zero_resolves_to_default", HookConfig{TimeoutSeconds: 0}, DefaultHookTimeoutSeconds},
-		{"explicit_value_verbatim", HookConfig{TimeoutSeconds: 120}, 120},
-		{"max_value_verbatim", HookConfig{TimeoutSeconds: MaxHookTimeoutSeconds}, MaxHookTimeoutSeconds},
+		{"zero resolves to default", HookConfig{TimeoutSeconds: 0}, DefaultHookTimeoutSeconds},
+		{"explicit value verbatim", HookConfig{TimeoutSeconds: 120}, 120},
+		{"max value verbatim", HookConfig{TimeoutSeconds: MaxHookTimeoutSeconds}, MaxHookTimeoutSeconds},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := EffectiveHookTimeout(tc.cfg); got != tc.want {
-				t.Errorf("EffectiveHookTimeout(%+v) = %d, want %d", tc.cfg, got, tc.want)
-			}
+			must := require.New(t)
+			must.Equal(tc.want, EffectiveHookTimeout(tc.cfg))
 		})
 	}
 }
 
-// TestRedact_HooksPassThrough pins that hook commands are operator
-// config like VerifierConfig.Command/Prompt, so Redact()
-// must leave HooksConfig completely untouched — there is nothing to
-// redact because validateHooksConfig structurally forbids "secret://"
-// in a hook Command.
+// Hook commands are operator config, like VerifierConfig.Command, so
+// Redact leaves HooksConfig untouched. validateHooksConfig rejects
+// "secret://" in a hook Command, so there is nothing to strip.
 func TestRedact_HooksPassThrough(t *testing.T) {
+	must := require.New(t)
 	rc := RunConfig{
 		Hooks: &HooksConfig{
 			PreRun: []HookConfig{
@@ -8273,27 +7157,19 @@ func TestRedact_HooksPassThrough(t *testing.T) {
 	}
 	redacted := rc.Redact()
 
-	if redacted.Hooks == nil {
-		t.Fatal("Redact must not drop Hooks")
-	}
-	if len(redacted.Hooks.PreRun) != 1 || redacted.Hooks.PreRun[0].Command != "git clone https://example.com/repo ." {
-		t.Errorf("PreRun must pass through unchanged, got: %+v", redacted.Hooks.PreRun)
-	}
-	if len(redacted.Hooks.PostRun) != 1 || redacted.Hooks.PostRun[0].Command != "curl -X POST https://example.com/artifacts" {
-		t.Errorf("PostRun must pass through unchanged, got: %+v", redacted.Hooks.PostRun)
-	}
-	if !redacted.Hooks.PostRun[0].ContinueOnError {
-		t.Error("ContinueOnError must pass through unchanged")
-	}
+	must.NotNil(redacted.Hooks, "Redact must not drop Hooks")
+	must.Len(redacted.Hooks.PreRun, 1)
+	must.Equal("git clone https://example.com/repo .", redacted.Hooks.PreRun[0].Command, "PreRun must pass through unchanged")
+	must.Len(redacted.Hooks.PostRun, 1)
+	must.Equal("curl -X POST https://example.com/artifacts", redacted.Hooks.PostRun[0].Command, "PostRun must pass through unchanged")
+	must.True(redacted.Hooks.PostRun[0].ContinueOnError, "ContinueOnError must pass through unchanged")
 }
 
-// TestRedact_SandboxIdentityAndGitProxyPassThrough pins the issue #516
-// invariant that the sandbox identity token itself never enters
-// RunConfig: every field on SandboxIdentityConfig and GitProxyConfig is
-// non-secret operator configuration (there is no "secret://"-style
-// reference in either block for Redact to strip), so Redact() must leave
-// both blocks byte-for-byte unchanged.
+// Redact must leave the sandbox identity and git proxy blocks unchanged.
+// Neither block holds a "secret://" reference, so there is nothing to
+// strip, and the identity token itself never appears in RunConfig.
 func TestRedact_SandboxIdentityAndGitProxyPassThrough(t *testing.T) {
+	must := require.New(t)
 	rc := RunConfig{
 		Executor: ExecutorConfig{
 			SandboxIdentity: &SandboxIdentityConfig{
@@ -8311,32 +7187,18 @@ func TestRedact_SandboxIdentityAndGitProxyPassThrough(t *testing.T) {
 	}
 	redacted := rc.Redact()
 
-	if redacted.Executor.SandboxIdentity == nil {
-		t.Fatal("Redact must not drop SandboxIdentity")
-	}
-	if *redacted.Executor.SandboxIdentity != *rc.Executor.SandboxIdentity {
-		t.Errorf("SandboxIdentity must pass through unchanged, got: %+v, want: %+v",
-			redacted.Executor.SandboxIdentity, rc.Executor.SandboxIdentity)
-	}
+	must.NotNil(redacted.Executor.SandboxIdentity, "Redact must not drop SandboxIdentity")
+	must.Equal(*rc.Executor.SandboxIdentity, *redacted.Executor.SandboxIdentity, "SandboxIdentity must pass through unchanged")
 
-	if redacted.Executor.GitProxy == nil {
-		t.Fatal("Redact must not drop GitProxy")
-	}
-	if redacted.Executor.GitProxy.URL != rc.Executor.GitProxy.URL {
-		t.Errorf("GitProxy.URL = %q, want unchanged %q", redacted.Executor.GitProxy.URL, rc.Executor.GitProxy.URL)
-	}
-	if redacted.Executor.GitProxy.RewriteSsh != rc.Executor.GitProxy.RewriteSsh {
-		t.Error("GitProxy.RewriteSsh must pass through unchanged")
-	}
-	if redacted.Executor.GitProxy.TokenEnvVar != rc.Executor.GitProxy.TokenEnvVar {
-		t.Errorf("GitProxy.TokenEnvVar = %q, want unchanged %q", redacted.Executor.GitProxy.TokenEnvVar, rc.Executor.GitProxy.TokenEnvVar)
-	}
-	if len(redacted.Executor.GitProxy.Hosts) != 1 || redacted.Executor.GitProxy.Hosts[0] != "github.com" {
-		t.Errorf("GitProxy.Hosts must pass through unchanged, got: %v", redacted.Executor.GitProxy.Hosts)
-	}
+	must.NotNil(redacted.Executor.GitProxy, "Redact must not drop GitProxy")
+	must.Equal(rc.Executor.GitProxy.URL, redacted.Executor.GitProxy.URL)
+	must.Equal(rc.Executor.GitProxy.RewriteSsh, redacted.Executor.GitProxy.RewriteSsh)
+	must.Equal(rc.Executor.GitProxy.TokenEnvVar, redacted.Executor.GitProxy.TokenEnvVar)
+	must.Equal([]string{"github.com"}, redacted.Executor.GitProxy.Hosts)
 }
 
 func TestHooksConfig_JSONRoundTrip(t *testing.T) {
+	must := require.New(t)
 	rc := RunConfig{
 		Hooks: &HooksConfig{
 			PreRun:  []HookConfig{{Command: "true"}},
@@ -8344,33 +7206,21 @@ func TestHooksConfig_JSONRoundTrip(t *testing.T) {
 		},
 	}
 	data, err := json.Marshal(rc)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	must.NoError(err)
 	var got RunConfig
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got.Hooks == nil {
-		t.Fatal("Hooks must survive JSON round-trip as non-nil")
-	}
-	if len(got.Hooks.PreRun) != 1 || got.Hooks.PreRun[0].Command != "true" {
-		t.Errorf("PreRun round-trip: got %+v", got.Hooks.PreRun)
-	}
-	if len(got.Hooks.PostRun) != 1 || got.Hooks.PostRun[0].RunOn != "failure" {
-		t.Errorf("PostRun round-trip: got %+v", got.Hooks.PostRun)
-	}
+	must.NoError(json.Unmarshal(data, &got))
+	must.NotNil(got.Hooks, "Hooks must survive JSON round-trip as non-nil")
+	must.Len(got.Hooks.PreRun, 1)
+	must.Equal("true", got.Hooks.PreRun[0].Command)
+	must.Len(got.Hooks.PostRun, 1)
+	must.Equal("failure", got.Hooks.PostRun[0].RunOn)
 }
 
 func TestRunConfig_HooksOmittedWhenNil(t *testing.T) {
-	rc := RunConfig{}
-	data, err := json.Marshal(rc)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if strings.Contains(string(data), `"hooks"`) {
-		t.Errorf("expected no hooks key when Hooks is nil, got: %s", data)
-	}
+	must := require.New(t)
+	data, err := json.Marshal(RunConfig{})
+	must.NoError(err)
+	must.NotContains(string(data), `"hooks"`)
 }
 
 // TestBuiltInToolCapabilitySets_CoverCanonicalList guards against drift between
@@ -8380,6 +7230,7 @@ func TestRunConfig_HooksOmittedWhenNil(t *testing.T) {
 // validBuiltInToolNames exactly, or a new tool could silently escape the
 // none-executor fail-fast and the read-only-defaults filter.
 func TestBuiltInToolCapabilitySets_CoverCanonicalList(t *testing.T) {
+	check := assert.New(t)
 	// Tools factory.go's buildToolRegistry registers without ever gating
 	// on the executor's Capabilities() — see readCapabilityBuiltInTools's
 	// doc comment. Kept in sync by hand alongside it.
@@ -8388,9 +7239,7 @@ func TestBuiltInToolCapabilitySets_CoverCanonicalList(t *testing.T) {
 	union := make(map[string]bool)
 	addAll := func(set map[string]bool) {
 		for name := range set {
-			if union[name] {
-				t.Errorf("tool %q appears in more than one of readCapabilityBuiltInTools/mutatingTools/the ungated list", name)
-			}
+			check.False(union[name], "tool %q appears in more than one of readCapabilityBuiltInTools/mutatingTools/the ungated list", name)
 			union[name] = true
 		}
 	}
@@ -8400,14 +7249,10 @@ func TestBuiltInToolCapabilitySets_CoverCanonicalList(t *testing.T) {
 	addAll(ungated)
 
 	for name := range validBuiltInToolNames {
-		if !union[name] {
-			t.Errorf("validBuiltInToolNames contains %q but none of readCapabilityBuiltInTools/mutatingTools/execCapabilityBuiltInTools/the ungated list accounts for it", name)
-		}
+		check.True(union[name], "validBuiltInToolNames contains %q but none of readCapabilityBuiltInTools/mutatingTools/execCapabilityBuiltInTools/the ungated list accounts for it", name)
 	}
 	for name := range union {
-		if !validBuiltInToolNames[name] {
-			t.Errorf("capability sets contain %q, which is not in validBuiltInToolNames", name)
-		}
+		check.True(validBuiltInToolNames[name], "capability sets contain %q, which is not in validBuiltInToolNames", name)
 	}
 }
 
@@ -8415,28 +7260,18 @@ func TestBuiltInToolCapabilitySets_CoverCanonicalList(t *testing.T) {
 // capability-ungated subset the "none" branch returns, and proves it passes
 // ValidateRunConfig for every read-only mode paired with executor.type="none".
 func TestDefaultReadOnlyBuiltInToolsForExecutor_None(t *testing.T) {
-	got := DefaultReadOnlyBuiltInToolsForExecutor("none")
-	want := []string{"web_fetch", "spawn_agent"}
-	if len(got) != len(want) {
-		t.Fatalf("expected %v, got %v", want, got)
-	}
-	for i, name := range want {
-		if got[i] != name {
-			t.Errorf("expected %v, got %v", want, got)
-			break
-		}
-	}
+	must := require.New(t)
+	must.Equal([]string{"web_fetch", "spawn_agent"}, DefaultReadOnlyBuiltInToolsForExecutor("none"))
 
 	for mode := range readOnlyModes {
 		t.Run(mode, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Mode = mode
 			c.Executor = ExecutorConfig{Type: "none"}
 			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
 			c.Tools = ToolsConfig{BuiltIn: DefaultReadOnlyBuiltInToolsForExecutor("none")}
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("DefaultReadOnlyBuiltInToolsForExecutor(\"none\") should pass validation for mode %q, got: %v", mode, err)
-			}
+			must.NoError(ValidateRunConfig(c))
 		})
 	}
 }
@@ -8448,17 +7283,8 @@ func TestDefaultReadOnlyBuiltInToolsForExecutor_None(t *testing.T) {
 func TestDefaultReadOnlyBuiltInToolsForExecutor_OtherTypesUnchanged(t *testing.T) {
 	for _, executorType := range []string{"", "local", "container", "k8s", "k8s-sandbox", "api"} {
 		t.Run(executorType, func(t *testing.T) {
-			got := DefaultReadOnlyBuiltInToolsForExecutor(executorType)
-			want := DefaultReadOnlyBuiltInTools()
-			if len(got) != len(want) {
-				t.Fatalf("expected unfiltered default list %v, got %v", want, got)
-			}
-			for i := range want {
-				if got[i] != want[i] {
-					t.Errorf("expected unfiltered default list %v, got %v", want, got)
-					break
-				}
-			}
+			must := require.New(t)
+			must.Equal(DefaultReadOnlyBuiltInTools(), DefaultReadOnlyBuiltInToolsForExecutor(executorType))
 		})
 	}
 }
@@ -8466,38 +7292,31 @@ func TestDefaultReadOnlyBuiltInToolsForExecutor_OtherTypesUnchanged(t *testing.T
 // --- executor.type="none" ---
 
 func TestValidateRunConfig_NoneExecutorAcceptedInExecutionMode(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Mode = "execution"
 	c.Executor = ExecutorConfig{Type: "none"}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("expected none executor to validate in execution mode, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 func TestValidateRunConfig_NoneExecutorAcceptedInReadOnlyMode(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Mode = "planning"
 	c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
 	c.Executor = ExecutorConfig{Type: "none"}
 	c.Tools = ToolsConfig{BuiltIn: []string{"web_fetch"}}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("expected none executor to validate in read-only mode, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 func TestValidateRunConfig_NoneExecutorRejectsWorkspaceExportTo(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Executor = ExecutorConfig{Type: "none", WorkspaceExportTo: "gs://bucket/path"}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for workspaceExportTo with executor.type=none")
-	}
-	if !strings.Contains(err.Error(), `not valid for executor.type="none"`) {
-		t.Errorf("expected error to mention none executor, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), `not valid for executor.type="none"`)
 }
 
-// TestValidateRunConfig_NoneExecutorFields exercises the per-field
+// TestValidateRunConfig_NoneExecutorRejectsExecutionOnlyFields exercises the per-field
 // rejection validateNoneExecutor enforces: every container/k8s/api-only
 // field on ExecutorConfig is rejected outright when Type == "none", since
 // the none executor has no execution surface to apply any of them to.
@@ -8505,34 +7324,32 @@ func TestValidateRunConfig_NoneExecutorRejectsWorkspaceExportTo(t *testing.T) {
 // are covered by TestValidateRunConfig_NoneExecutorRuntimeAndRegistryAllowlistRejectedOnce,
 // which pins that validateExecutorRuntime/validateExecutorRegistryAllowlist
 // (not validateNoneExecutor) reject them for "none", exactly once each.
-func TestValidateRunConfig_NoneExecutorFields(t *testing.T) {
+func TestValidateRunConfig_NoneExecutorRejectsExecutionOnlyFields(t *testing.T) {
 	cases := []struct {
-		name string
-		exec ExecutorConfig
+		name  string
+		field string
+		exec  ExecutorConfig
 	}{
-		{name: "workspace", exec: ExecutorConfig{Type: "none", Workspace: "/ws"}},
-		{name: "image", exec: ExecutorConfig{Type: "none", Image: "img"}},
-		{name: "vcsBackend", exec: ExecutorConfig{Type: "none", VcsBackend: &VcsBackendConfig{Type: "github", Repo: "owner/repo"}}},
-		{name: "network", exec: ExecutorConfig{Type: "none", Network: &NetworkConfig{Mode: "none"}}},
-		{name: "resources", exec: ExecutorConfig{Type: "none", Resources: &ResourceLimits{CPUs: 1}}},
-		{name: "k8sNamespace", exec: ExecutorConfig{Type: "none", K8sNamespace: "ns"}},
-		{name: "k8sKubeconfig", exec: ExecutorConfig{Type: "none", K8sKubeconfig: "/home/u/.kube/config"}},
-		{name: "k8sNodeSelector", exec: ExecutorConfig{Type: "none", K8sNodeSelector: map[string]string{"disktype": "ssd"}}},
-		{name: "k8sServiceAccount", exec: ExecutorConfig{Type: "none", K8sServiceAccount: "agent-sa"}},
-		{name: "k8sEgressProxyUrl", exec: ExecutorConfig{Type: "none", K8sEgressProxyURL: "http://stirrup-egress-proxy.ns.svc:8080"}},
+		{name: "workspace", field: "workspace", exec: ExecutorConfig{Type: "none", Workspace: "/ws"}},
+		{name: "image", field: "image", exec: ExecutorConfig{Type: "none", Image: "img"}},
+		{name: "vcs backend", field: "vcsBackend", exec: ExecutorConfig{Type: "none", VcsBackend: &VcsBackendConfig{Type: "github", Repo: "owner/repo"}}},
+		{name: "network", field: "network", exec: ExecutorConfig{Type: "none", Network: &NetworkConfig{Mode: "none"}}},
+		{name: "resources", field: "resources", exec: ExecutorConfig{Type: "none", Resources: &ResourceLimits{CPUs: 1}}},
+		{name: "k8s namespace", field: "k8sNamespace", exec: ExecutorConfig{Type: "none", K8sNamespace: "ns"}},
+		{name: "k8s kubeconfig", field: "k8sKubeconfig", exec: ExecutorConfig{Type: "none", K8sKubeconfig: "/home/u/.kube/config"}},
+		{name: "k8s node selector", field: "k8sNodeSelector", exec: ExecutorConfig{Type: "none", K8sNodeSelector: map[string]string{"disktype": "ssd"}}},
+		{name: "k8s service account", field: "k8sServiceAccount", exec: ExecutorConfig{Type: "none", K8sServiceAccount: "agent-sa"}},
+		{name: "k8s egress proxy url", field: "k8sEgressProxyUrl", exec: ExecutorConfig{Type: "none", K8sEgressProxyURL: "http://stirrup-egress-proxy.ns.svc:8080"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Executor = tc.exec
 			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("expected error, got nil")
-			}
-			field := fmt.Sprintf("executor.%s is not valid for executor.type=\"none\"", tc.name)
-			if got := strings.Count(err.Error(), field); got != 1 {
-				t.Errorf("expected exactly one %q error, got %d in: %v", field, got, err)
-			}
+			must.Error(err)
+			want := fmt.Sprintf("executor.%s is not valid for executor.type=\"none\"", tc.field)
+			must.Equal(1, strings.Count(err.Error(), want), "error: %v", err)
 		})
 	}
 }
@@ -8543,48 +7360,33 @@ func TestValidateRunConfig_NoneExecutorFields(t *testing.T) {
 // not validateNoneExecutor — so setting either produces exactly one error, not two.
 func TestValidateRunConfig_NoneExecutorRuntimeAndRegistryAllowlistRejectedOnce(t *testing.T) {
 	t.Run("runtime", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.Executor = ExecutorConfig{Type: "none", Runtime: "runc"}
 		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("expected error for runtime set with executor.type=none")
-		}
+		must.Error(err)
 		want := `executor.runtime is only valid when executor.type is "container", "k8s", or "k8s-sandbox"`
-		if got := strings.Count(err.Error(), want); got != 1 {
-			t.Errorf("expected exactly one %q error, got %d in: %v", want, got, err)
-		}
-		if strings.Contains(err.Error(), `executor.runtime is not valid for executor.type="none"`) {
-			t.Errorf("expected only the generic runtime error, not a duplicate none-specific one: %v", err)
-		}
+		must.Equal(1, strings.Count(err.Error(), want), "error: %v", err)
+		must.NotContains(err.Error(), `executor.runtime is not valid for executor.type="none"`, "no duplicate none-specific error")
 	})
 	t.Run("registryAllowlist", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.Executor = ExecutorConfig{Type: "none", RegistryAllowlist: []string{"ghcr.io/*"}}
 		err := ValidateRunConfig(c)
-		if err == nil {
-			t.Fatal("expected error for registryAllowlist set with executor.type=none")
-		}
+		must.Error(err)
 		want := `executor.registryAllowlist is only valid when executor.type is "container"`
-		if got := strings.Count(err.Error(), want); got != 1 {
-			t.Errorf("expected exactly one %q error, got %d in: %v", want, got, err)
-		}
-		if strings.Contains(err.Error(), `executor.registryAllowlist is not valid for executor.type="none"`) {
-			t.Errorf("expected only the generic registryAllowlist error, not a duplicate none-specific one: %v", err)
-		}
+		must.Equal(1, strings.Count(err.Error(), want), "error: %v", err)
+		must.NotContains(err.Error(), `executor.registryAllowlist is not valid for executor.type="none"`, "no duplicate none-specific error")
 	})
 }
 
 func TestValidateRunConfig_NoneExecutorRejectsDeterministicGit(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Executor = ExecutorConfig{Type: "none"}
 	c.GitStrategy = GitStrategyConfig{Type: "deterministic"}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for gitStrategy=deterministic with executor.type=none")
-	}
-	if !strings.Contains(err.Error(), `gitStrategy.type="deterministic" is not valid with executor.type="none"`) {
-		t.Errorf("expected deterministic-git/none cross-field error, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), `gitStrategy.type="deterministic" is not valid with executor.type="none"`)
 }
 
 // TestValidateRunConfig_DeterministicGitRequiresExecCapableExecutor pins
@@ -8606,31 +7408,26 @@ func TestValidateRunConfig_DeterministicGitRequiresExecCapableExecutor(t *testin
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Executor = tc.exec
 			c.GitStrategy = GitStrategyConfig{Type: "deterministic"}
 			err := ValidateRunConfig(c)
-			want := fmt.Sprintf(`gitStrategy.type="deterministic" is not valid with executor.type=%q`, tc.exec.Type)
 			if tc.reject {
-				if err == nil || !strings.Contains(err.Error(), want) {
-					t.Fatalf("expected %q, got: %v", want, err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("expected deterministic git to validate with executor.type=%q, got: %v", tc.exec.Type, err)
+				must.ErrorContains(err, fmt.Sprintf(`gitStrategy.type="deterministic" is not valid with executor.type=%q`, tc.exec.Type))
+			} else {
+				must.NoError(err)
 			}
 		})
 	}
 }
 
 func TestValidateRunConfig_NoneExecutorAllowsNoneGitStrategy(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Executor = ExecutorConfig{Type: "none"}
 	c.GitStrategy = GitStrategyConfig{Type: "none"}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("expected gitStrategy=none with executor.type=none to validate, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 // TestValidateRunConfig_NoneExecutorBuiltInToolFailFast exercises
@@ -8651,21 +7448,15 @@ func TestValidateRunConfig_NoneExecutorBuiltInToolFailFast(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.tool, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Executor = ExecutorConfig{Type: "none"}
 			c.Tools = ToolsConfig{BuiltIn: []string{tc.tool}}
 			err := ValidateRunConfig(c)
 			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected error for tool %q", tc.tool)
-				}
-				if !strings.Contains(err.Error(), fmt.Sprintf("tools.builtIn entry %q requires an execution capability", tc.tool)) {
-					t.Errorf("expected capability fail-fast error, got: %v", err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("expected tool %q to validate cleanly, got: %v", tc.tool, err)
+				must.ErrorContains(err, fmt.Sprintf("tools.builtIn entry %q requires an execution capability", tc.tool))
+			} else {
+				must.NoError(err)
 			}
 		})
 	}
@@ -8697,40 +7488,26 @@ func sandboxIdentityValidConfig() *RunConfig {
 	return c
 }
 
-// TestValidateRunConfig_SandboxIdentityDefaultConfigStillValid pins the
-// "defaulting-layer trap" the issue brief calls out explicitly: a bare
-// RunConfig has neither SandboxIdentity nor GitProxy set, so none of the
-// new rules may fire regardless of Transport or Executor.Type, and no
-// default-injection layer may populate the blocks.
+// A RunConfig without SandboxIdentity or GitProxy must validate for any
+// Transport or Executor.Type, and validation must not populate either block.
 func TestValidateRunConfig_SandboxIdentityDefaultConfigStillValid(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Transport = TransportConfig{Type: "grpc"}
 	c.Executor = ExecutorConfig{Type: "container"}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("default container+grpc config with no sandboxIdentity/gitProxy must validate cleanly, got: %v", err)
-	}
-	if c.Executor.SandboxIdentity != nil {
-		t.Error("ValidateRunConfig must not inject a SandboxIdentity block")
-	}
-	if c.Executor.GitProxy != nil {
-		t.Error("ValidateRunConfig must not inject a GitProxy block")
-	}
+	must.NoError(ValidateRunConfig(c))
+	must.Nil(c.Executor.SandboxIdentity, "ValidateRunConfig must not inject a SandboxIdentity block")
+	must.Nil(c.Executor.GitProxy, "ValidateRunConfig must not inject a GitProxy block")
 
-	// Also confirm the plain default RunConfig (stdio transport, unset
-	// executor.type) still validates cleanly — the rules must never
-	// fire purely on the absence of an explicit transport/executor.
-	if err := ValidateRunConfig(validConfig()); err != nil {
-		t.Fatalf("bare default config must validate cleanly, got: %v", err)
-	}
+	// The bare default config (stdio transport, unset executor type) must
+	// also validate, so the rules never fire on a missing transport or executor.
+	must.NoError(ValidateRunConfig(validConfig()))
 }
 
-// TestValidateRunConfig_SandboxIdentityAloneStillValid pins the
-// simplest legal shape: SandboxIdentity set, GitProxy nil.
-// validateSandboxIdentity does not require GitProxy, so this must
-// validate cleanly — the missing counterpart to
-// TestValidateRunConfig_SandboxIdentityDefaultConfigStillValid, which
-// only proves the bare-default (neither block set) case.
+// A SandboxIdentity block without a GitProxy block is a valid shape,
+// because the sandbox identity rules do not require GitProxy.
 func TestValidateRunConfig_SandboxIdentityAloneStillValid(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Transport = TransportConfig{Type: "grpc"}
 	c.Executor = ExecutorConfig{
@@ -8739,9 +7516,7 @@ func TestValidateRunConfig_SandboxIdentityAloneStillValid(t *testing.T) {
 			Source: "control-plane",
 		},
 	}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("sandboxIdentity alone (no gitProxy) must validate cleanly, got: %v", err)
-	}
+	must.NoError(ValidateRunConfig(c))
 }
 
 func TestValidateRunConfig_SandboxIdentityRequiresGRPC(t *testing.T) {
@@ -8750,50 +7525,37 @@ func TestValidateRunConfig_SandboxIdentityRequiresGRPC(t *testing.T) {
 		transport string
 		wantErr   bool
 	}{
-		{"grpc_passes", "grpc", false},
-		{"stdio_fails", "stdio", true},
-		{"empty_transport_fails", "", true},
+		{"grpc passes", "grpc", false},
+		{"stdio fails", "stdio", true},
+		{"empty transport fails", "", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := sandboxIdentityValidConfig()
 			c.Transport = TransportConfig{Type: tc.transport}
 			err := ValidateRunConfig(c)
 			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected rejection for sandboxIdentity with transport %q, got nil", tc.transport)
-				}
-				if !strings.Contains(err.Error(), "requires transport=grpc") {
-					t.Errorf("expected error to mention requires transport=grpc, got: %v", err)
-				}
+				must.ErrorContains(err, "requires transport=grpc")
 				return
 			}
-			if err != nil {
-				t.Fatalf("sandboxIdentity with grpc transport should pass, got: %v", err)
-			}
+			must.NoError(err)
 		})
 	}
 }
 
-// TestValidateRunConfig_SandboxIdentityRequiresGRPC_GitProxyOnly confirms
-// the grpc-only rule fires from a GitProxy block alone (no
-// SandboxIdentity) — the issue brief calls this out explicitly as "(or
-// gitProxy)". GitProxy without SandboxIdentity also trips its own
-// cross-field rule, so this only checks the transport error is present.
-func TestValidateRunConfig_SandboxIdentityRequiresGRPC_GitProxyOnly(t *testing.T) {
+// TestValidateRunConfig_GitProxyRequiresGRPC checks that a gitProxy block
+// without sandboxIdentity still requires transport=grpc. Only the transport
+// error is asserted, because the sandboxIdentity rule also fails here.
+func TestValidateRunConfig_GitProxyRequiresGRPC(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Transport = TransportConfig{Type: "stdio"}
 	c.Executor = ExecutorConfig{
 		Type:     "container",
 		GitProxy: &GitProxyConfig{URL: "http://haybale.internal:8466", TokenEnvVar: "HAYBALE_TOKEN"},
 	}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected rejection for gitProxy with stdio transport, got nil")
-	}
-	if !strings.Contains(err.Error(), "requires transport=grpc") {
-		t.Errorf("expected error to mention requires transport=grpc, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "requires transport=grpc")
 }
 
 func TestValidateRunConfig_SandboxIdentityExecutorTypeGating(t *testing.T) {
@@ -8803,12 +7565,12 @@ func TestValidateRunConfig_SandboxIdentityExecutorTypeGating(t *testing.T) {
 		wantErr  bool
 	}{
 		{
-			name:     "container_passes",
+			name:     "container passes",
 			executor: ExecutorConfig{Type: "container"},
 			wantErr:  false,
 		},
 		{
-			name: "k8s_passes",
+			name: "k8s passes",
 			executor: ExecutorConfig{
 				Type:         "k8s",
 				Image:        "ghcr.io/rxbynerd/stirrup:latest",
@@ -8818,7 +7580,7 @@ func TestValidateRunConfig_SandboxIdentityExecutorTypeGating(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "k8s_sandbox_passes",
+			name: "k8s-sandbox passes",
 			executor: ExecutorConfig{
 				Type:         "k8s-sandbox",
 				Image:        "ghcr.io/rxbynerd/stirrup:latest",
@@ -8828,28 +7590,29 @@ func TestValidateRunConfig_SandboxIdentityExecutorTypeGating(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:     "local_deferred_fails",
+			name:     "local deferred fails",
 			executor: ExecutorConfig{Type: "local"},
 			wantErr:  true,
 		},
 		{
-			name:     "unset_type_fails",
+			name:     "unset type fails",
 			executor: ExecutorConfig{},
 			wantErr:  true,
 		},
 		{
-			name:     "api_fails",
+			name:     "api fails",
 			executor: ExecutorConfig{Type: "api", VcsBackend: &VcsBackendConfig{Type: "github", Repo: "rxbynerd/stirrup"}},
 			wantErr:  true,
 		},
 		{
-			name:     "none_fails",
+			name:     "none fails",
 			executor: ExecutorConfig{Type: "none"},
 			wantErr:  true,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Transport = TransportConfig{Type: "grpc"}
 			tc.executor.SandboxIdentity = &SandboxIdentityConfig{Source: "control-plane", EnvVar: "HAYBALE_TOKEN"}
@@ -8857,17 +7620,10 @@ func TestValidateRunConfig_SandboxIdentityExecutorTypeGating(t *testing.T) {
 			c.Executor = tc.executor
 			err := ValidateRunConfig(c)
 			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected rejection for executor.type %q, got nil", tc.executor.Type)
-				}
-				if !strings.Contains(err.Error(), "is only valid for executor.type \"container\", \"k8s\", or \"k8s-sandbox\"") {
-					t.Errorf("expected executor-type gating error, got: %v", err)
-				}
+				must.ErrorContains(err, `is only valid for executor.type "container", "k8s", or "k8s-sandbox"`)
 				return
 			}
-			if err != nil {
-				t.Fatalf("executor.type %q should pass, got: %v", tc.executor.Type, err)
-			}
+			must.NoError(err)
 		})
 	}
 }
@@ -8878,37 +7634,30 @@ func TestValidateRunConfig_SandboxIdentitySourceClosedSet(t *testing.T) {
 		source  string
 		wantErr bool
 	}{
-		{"control_plane_passes", "control-plane", false},
-		{"empty_fails", "", true},
-		{"unknown_fails", "self-signed", true},
+		{"control plane passes", "control-plane", false},
+		{"empty fails", "", true},
+		{"unknown fails", "self-signed", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := sandboxIdentityValidConfig()
 			c.Executor.SandboxIdentity.Source = tc.source
 			err := ValidateRunConfig(c)
 			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected rejection for source %q, got nil", tc.source)
-				}
-				if !strings.Contains(err.Error(), "unsupported executor.sandboxIdentity.source") {
-					t.Errorf("expected unsupported-source error, got: %v", err)
-				}
+				must.ErrorContains(err, "unsupported executor.sandboxIdentity.source")
 				return
 			}
-			if err != nil {
-				t.Fatalf("source %q should pass, got: %v", tc.source, err)
-			}
+			must.NoError(err)
 		})
 	}
 }
 
-// TestValidateRunConfig_SandboxIdentityEnvVarShape pins the
-// injection-shape guard on SandboxIdentityConfig.EnvVar: PR C
-// interpolates the name (not the token value) into a double-quoted
-// shell credential-helper string, so a non-empty EnvVar must match
-// posixEnvVarNamePattern. This is a charset check only — it does not
-// deny semantically-risky-but-valid names like PATH.
+// TestValidateRunConfig_SandboxIdentityEnvVarShape pins the injection-shape
+// guard on SandboxIdentityConfig.EnvVar. The name, not the token value, is
+// interpolated into a double-quoted shell credential-helper string, so a
+// non-empty EnvVar must match posixEnvVarNamePattern. This is a charset check
+// only; it does not reject valid but risky names such as PATH.
 func TestValidateRunConfig_SandboxIdentityEnvVarShape(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -8916,54 +7665,42 @@ func TestValidateRunConfig_SandboxIdentityEnvVarShape(t *testing.T) {
 		wantErr bool
 	}{
 		{"valid", "HAYBALE_TOKEN", false},
-		{"empty_uses_default", "", false},
+		{"empty uses default", "", false},
 		{"space", "HAYBALE TOKEN", true},
-		{"equals_sign", "TOKEN=x", true},
-		{"leading_digit", "1TOKEN", true},
-		{"shell_metacharacter", `HAYBALE"; rm -rf /; echo "`, true},
+		{"equals sign", "TOKEN=x", true},
+		{"leading digit", "1TOKEN", true},
+		{"shell metacharacter", `HAYBALE"; rm -rf /; echo "`, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := sandboxIdentityValidConfig()
 			c.Executor.GitProxy = nil
 			c.Executor.SandboxIdentity.EnvVar = tc.envVar
 			err := ValidateRunConfig(c)
 			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected rejection for envVar %q, got nil", tc.envVar)
-				}
-				if !strings.Contains(err.Error(), "executor.sandboxIdentity.envVar") ||
-					!strings.Contains(err.Error(), "must be a valid POSIX environment variable name") {
-					t.Errorf("expected POSIX envVar shape error, got: %v", err)
-				}
+				must.ErrorContains(err, "executor.sandboxIdentity.envVar")
+				must.ErrorContains(err, "must be a valid POSIX environment variable name")
 				return
 			}
-			if err != nil {
-				t.Fatalf("envVar %q should pass, got: %v", tc.envVar, err)
-			}
+			must.NoError(err)
 		})
 	}
 }
 
-// TestValidateRunConfig_GitProxyRequiresSandboxIdentity pins the
-// cross-field decision documented on GitProxyConfig: v1's only token
-// source is control-plane issuance via SandboxIdentity, so a GitProxy
-// block with no SandboxIdentity references an env var that would never
-// be populated. Treated as a configuration error, not a silent no-op.
+// TestValidateRunConfig_GitProxyRequiresSandboxIdentity pins the cross-field
+// rule documented on GitProxyConfig. The only token source is control-plane
+// issuance through SandboxIdentity, so a gitProxy block without it would name
+// an env var that is never populated. Such configs are rejected, not ignored.
 func TestValidateRunConfig_GitProxyRequiresSandboxIdentity(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Transport = TransportConfig{Type: "grpc"}
 	c.Executor = ExecutorConfig{
 		Type:     "container",
 		GitProxy: &GitProxyConfig{URL: "http://haybale.internal:8466", TokenEnvVar: "HAYBALE_TOKEN"},
 	}
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected rejection for gitProxy without sandboxIdentity, got nil")
-	}
-	if !strings.Contains(err.Error(), "executor.gitProxy requires executor.sandboxIdentity to be set") {
-		t.Errorf("expected gitProxy-requires-sandboxIdentity error, got: %v", err)
-	}
+	must.ErrorContains(ValidateRunConfig(c), "executor.gitProxy requires executor.sandboxIdentity to be set")
 }
 
 func TestValidateRunConfig_GitProxyTokenEnvVarConsistency(t *testing.T) {
@@ -8973,75 +7710,61 @@ func TestValidateRunConfig_GitProxyTokenEnvVarConsistency(t *testing.T) {
 		gitProxyEnv string
 		wantErr     bool
 	}{
-		{"explicit_match", "HAYBALE_TOKEN", "HAYBALE_TOKEN", false},
-		{"both_default_match", "", "", false},
-		{"identity_explicit_gitproxy_default_mismatch", "CUSTOM_TOKEN", "", true},
-		{"explicit_mismatch", "HAYBALE_TOKEN", "OTHER_TOKEN", true},
-		{"identity_default_gitproxy_explicit_match", "", "HAYBALE_TOKEN", false},
+		{"explicit match", "HAYBALE_TOKEN", "HAYBALE_TOKEN", false},
+		{"both default match", "", "", false},
+		{"identity explicit gitproxy default mismatch", "CUSTOM_TOKEN", "", true},
+		{"explicit mismatch", "HAYBALE_TOKEN", "OTHER_TOKEN", true},
+		{"identity default gitproxy explicit match", "", "HAYBALE_TOKEN", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := sandboxIdentityValidConfig()
 			c.Executor.SandboxIdentity.EnvVar = tc.identityEnv
 			c.Executor.GitProxy.TokenEnvVar = tc.gitProxyEnv
 			err := ValidateRunConfig(c)
 			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected rejection for identityEnv=%q gitProxyEnv=%q, got nil", tc.identityEnv, tc.gitProxyEnv)
-				}
-				if !strings.Contains(err.Error(), "must match the effective executor.sandboxIdentity.envVar") {
-					t.Errorf("expected envVar-consistency error, got: %v", err)
-				}
+				must.ErrorContains(err, "must match the effective executor.sandboxIdentity.envVar")
 				return
 			}
-			if err != nil {
-				t.Fatalf("identityEnv=%q gitProxyEnv=%q should pass, got: %v", tc.identityEnv, tc.gitProxyEnv, err)
-			}
+			must.NoError(err)
 		})
 	}
 }
 
-// TestValidateRunConfig_GitProxyURLValidation pins the requirement,
-// documented but previously unvalidated, that gitProxy.url is required
-// and must be an absolute http(s) URL with a host — mirrors
-// validateGuardRailEndpoint's shape check on GuardRailConfig.Endpoint.
+// TestValidateRunConfig_GitProxyURLValidation pins that gitProxy.url is
+// required and must be an absolute http(s) URL with a host. The shape check
+// mirrors validateGuardRailEndpoint for GuardRailConfig.Endpoint.
 func TestValidateRunConfig_GitProxyURLValidation(t *testing.T) {
 	cases := []struct {
 		name    string
 		url     string
 		wantErr string // substring; empty means the URL should pass
 	}{
-		{"empty_url_required", "", "executor.gitProxy.url is required when executor.gitProxy is set"},
-		{"malformed_no_scheme_or_host", "not-a-url", "must use scheme http or https"},
-		{"malformed_missing_protocol_scheme", "://bad", "must be a valid URL"},
-		{"non_http_scheme", "ftp://host:21", "must use scheme http or https"},
-		{"valid_url", "http://haybale.internal:8466", ""},
+		{"empty url required", "", "executor.gitProxy.url is required when executor.gitProxy is set"},
+		{"no scheme", "not-a-url", "must use scheme http or https"},
+		{"unparseable url", "://bad", "must be a valid URL"},
+		{"non http scheme", "ftp://host:21", "must use scheme http or https"},
+		{"valid url", "http://haybale.internal:8466", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := sandboxIdentityValidConfig()
 			c.Executor.GitProxy.URL = tc.url
 			err := ValidateRunConfig(c)
 			if tc.wantErr == "" {
-				if err != nil {
-					t.Fatalf("url %q should pass, got: %v", tc.url, err)
-				}
+				must.NoError(err)
 				return
 			}
-			if err == nil {
-				t.Fatalf("expected rejection for url %q, got nil", tc.url)
-			}
-			if !strings.Contains(err.Error(), tc.wantErr) {
-				t.Errorf("expected error to mention %q, got: %v", tc.wantErr, err)
-			}
+			must.ErrorContains(err, tc.wantErr)
 		})
 	}
 }
 
-// TestValidateRunConfig_GitProxyTokenEnvVarShape pins the
-// injection-shape guard on GitProxyConfig.TokenEnvVar — the
-// gitProxy.tokenEnvVar equivalent of
-// TestValidateRunConfig_SandboxIdentityEnvVarShape.
+// TestValidateRunConfig_GitProxyTokenEnvVarShape applies the POSIX env var
+// name guard from TestValidateRunConfig_SandboxIdentityEnvVarShape to
+// GitProxyConfig.TokenEnvVar.
 func TestValidateRunConfig_GitProxyTokenEnvVarShape(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -9049,58 +7772,45 @@ func TestValidateRunConfig_GitProxyTokenEnvVarShape(t *testing.T) {
 		wantErr     bool
 	}{
 		{"valid", "HAYBALE_TOKEN", false},
-		{"empty_uses_default", "", false},
+		{"empty uses default", "", false},
 		{"space", "HAYBALE TOKEN", true},
-		{"equals_sign", "TOKEN=x", true},
-		{"leading_digit", "1TOKEN", true},
-		{"shell_metacharacter", `HAYBALE"; rm -rf /; echo "`, true},
+		{"equals sign", "TOKEN=x", true},
+		{"leading digit", "1TOKEN", true},
+		{"shell metacharacter", `HAYBALE"; rm -rf /; echo "`, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := sandboxIdentityValidConfig()
 			c.Executor.GitProxy.TokenEnvVar = tc.tokenEnvVar
 			err := ValidateRunConfig(c)
 			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected rejection for tokenEnvVar %q, got nil", tc.tokenEnvVar)
-				}
-				if !strings.Contains(err.Error(), "executor.gitProxy.tokenEnvVar") ||
-					!strings.Contains(err.Error(), "must be a valid POSIX environment variable name") {
-					t.Errorf("expected POSIX tokenEnvVar shape error, got: %v", err)
-				}
+				must.ErrorContains(err, "executor.gitProxy.tokenEnvVar")
+				must.ErrorContains(err, "must be a valid POSIX environment variable name")
 				return
 			}
-			if err != nil {
-				t.Fatalf("tokenEnvVar %q should pass, got: %v", tc.tokenEnvVar, err)
-			}
+			must.NoError(err)
 		})
 	}
 }
 
-// TestValidateRunConfig_GitProxyHostsRequired pins the requirement that
-// a configured gitProxy block names at least one host to rewrite —
-// Hosts is what drives how many proxy rewrite rules get composed, so an
-// empty list would leave the block validating cleanly while silently
-// doing nothing.
+// TestValidateRunConfig_GitProxyHostsRequired pins that a configured gitProxy
+// block names at least one host. Hosts drives how many rewrite rules are
+// composed, so an empty list would validate cleanly while doing nothing.
 func TestValidateRunConfig_GitProxyHostsRequired(t *testing.T) {
 	cases := []struct {
 		name  string
 		hosts []string
 	}{
-		{"nil_hosts", nil},
-		{"empty_hosts", []string{}},
+		{"nil hosts", nil},
+		{"empty hosts", []string{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := sandboxIdentityValidConfig()
 			c.Executor.GitProxy.Hosts = tc.hosts
-			err := ValidateRunConfig(c)
-			if err == nil {
-				t.Fatalf("expected rejection for hosts %v, got nil", tc.hosts)
-			}
-			if !strings.Contains(err.Error(), "executor.gitProxy.hosts must contain at least one host when executor.gitProxy is set") {
-				t.Errorf("expected gitProxy.hosts-required error, got: %v", err)
-			}
+			must.ErrorContains(ValidateRunConfig(c), "executor.gitProxy.hosts must contain at least one host when executor.gitProxy is set")
 		})
 	}
 }
@@ -9111,31 +7821,23 @@ func TestValidateRunConfig_GitProxyAllowlistWarning(t *testing.T) {
 		name      string
 		mode      string
 		allowlist []string
-		// url overrides sandboxIdentityValidConfig's default gitProxy.url
-		// ("http://haybale.internal:8466") when non-empty, to exercise
-		// warnGitProxyAllowlistGap's port-defaulting branches.
+		// url overrides the default gitProxy.url from sandboxIdentityValidConfig
+		// when non-empty, to exercise the port-defaulting branches.
 		url      string
 		wantWarn bool
 	}{
-		{"exact_hostport_present_no_warn", "allowlist", []string{"haybale.internal:8466"}, "", false},
-		{"missing_from_allowlist_warns", "allowlist", []string{"other.example.com:8466"}, "", true},
-		{"empty_allowlist_warns", "allowlist", nil, "", true},
-		{"none_mode_no_warn", "none", nil, "", false},
-		// (a) no explicit port on an http:// URL hits the implicit
-		// port-80 default (types/runconfig.go's "case u.Scheme ==
-		// http" branch); the allowlist entry matches that default
-		// exactly, so no warning.
-		{"http_no_port_defaults_to_80_no_warn", "allowlist", []string{"haybale.internal:80"}, "http://haybale.internal", false},
-		// (b) no explicit port on an https:// URL falls through to the
-		// gitProxyAllowlistDefaultPort (443) default; a bare-hostname
-		// allowlist entry (no ":port" suffix) matches it via the
-		// "convenience match" shortcut the GitProxyConfig.URL doc
-		// comment describes, so no warning even though the entry has
-		// no explicit port.
-		{"default_port_bare_host_allowlist_shortcut_no_warn", "allowlist", []string{"haybale.internal"}, "https://haybale.internal", false},
+		{"exact host and port no warning", "allowlist", []string{"haybale.internal:8466"}, "", false},
+		{"missing from allowlist warns", "allowlist", []string{"other.example.com:8466"}, "", true},
+		{"empty allowlist warns", "allowlist", nil, "", true},
+		{"none mode no warning", "none", nil, "", false},
+		// An http:// URL without a port defaults to port 80, which the allowlist entry matches.
+		{"http default port matches port 80", "allowlist", []string{"haybale.internal:80"}, "http://haybale.internal", false},
+		// An https:// URL without a port defaults to 443. A bare-host allowlist entry matches it.
+		{"https default port matches bare host entry", "allowlist", []string{"haybale.internal"}, "https://haybale.internal", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var logBuf bytes.Buffer
 			originalLogger := slog.Default()
 			t.Cleanup(func() { slog.SetDefault(originalLogger) })
@@ -9146,27 +7848,24 @@ func TestValidateRunConfig_GitProxyAllowlistWarning(t *testing.T) {
 				c.Executor.GitProxy.URL = tc.url
 			}
 			c.Executor.Network = &NetworkConfig{Mode: tc.mode, Allowlist: tc.allowlist}
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("allowlist warning path must not produce a hard error, got: %v", err)
-			}
+			must.NoError(ValidateRunConfig(c), "allowlist warning path must not produce a hard error")
 
 			logs := logBuf.String()
 			if tc.wantWarn {
-				if !strings.Contains(logs, "level=WARN") || !strings.Contains(logs, wantMsg) {
-					t.Errorf("expected allowlist-gap warning, got: %s", logs)
-				}
-			} else if strings.Contains(logs, wantMsg) {
-				t.Errorf("did not expect allowlist-gap warning, got: %s", logs)
+				must.Contains(logs, "level=WARN")
+				must.Contains(logs, wantMsg)
+				return
 			}
+			must.NotContains(logs, wantMsg)
 		})
 	}
 }
 
-// TestSandboxIdentityAndGitProxyConfig_JSONRoundTrip mirrors
-// TestHooksConfig_JSONRoundTrip: pins that every field on
-// SandboxIdentityConfig and GitProxyConfig survives a JSON round trip
-// unchanged when populated.
+// TestSandboxIdentityAndGitProxyConfig_JSONRoundTrip pins that every field of
+// SandboxIdentityConfig and GitProxyConfig survives a JSON round trip when
+// populated.
 func TestSandboxIdentityAndGitProxyConfig_JSONRoundTrip(t *testing.T) {
+	must := require.New(t)
 	rc := RunConfig{
 		Executor: ExecutorConfig{
 			SandboxIdentity: &SandboxIdentityConfig{
@@ -9183,34 +7882,26 @@ func TestSandboxIdentityAndGitProxyConfig_JSONRoundTrip(t *testing.T) {
 		},
 	}
 	data, err := json.Marshal(rc)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	must.NoError(err)
 	var got RunConfig
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got.Executor.SandboxIdentity == nil || *got.Executor.SandboxIdentity != *rc.Executor.SandboxIdentity {
-		t.Errorf("SandboxIdentity round-trip: got %+v, want %+v", got.Executor.SandboxIdentity, rc.Executor.SandboxIdentity)
-	}
-	if got.Executor.GitProxy == nil {
-		t.Fatal("GitProxy must survive JSON round-trip as non-nil")
-	}
-	if got.Executor.GitProxy.URL != rc.Executor.GitProxy.URL ||
-		len(got.Executor.GitProxy.Hosts) != 1 || got.Executor.GitProxy.Hosts[0] != "github.com" ||
-		got.Executor.GitProxy.RewriteSsh != rc.Executor.GitProxy.RewriteSsh ||
-		got.Executor.GitProxy.TokenEnvVar != rc.Executor.GitProxy.TokenEnvVar {
-		t.Errorf("GitProxy round-trip: got %+v, want %+v", got.Executor.GitProxy, rc.Executor.GitProxy)
-	}
+	must.NoError(json.Unmarshal(data, &got))
+
+	must.NotNil(got.Executor.SandboxIdentity)
+	must.Equal(*rc.Executor.SandboxIdentity, *got.Executor.SandboxIdentity)
+
+	must.NotNil(got.Executor.GitProxy)
+	must.Equal(rc.Executor.GitProxy.URL, got.Executor.GitProxy.URL)
+	must.Equal(rc.Executor.GitProxy.Hosts, got.Executor.GitProxy.Hosts)
+	must.Equal(rc.Executor.GitProxy.RewriteSsh, got.Executor.GitProxy.RewriteSsh)
+	must.Equal(rc.Executor.GitProxy.TokenEnvVar, got.Executor.GitProxy.TokenEnvVar)
 }
 
-// TestRunConfig_SandboxIdentityGitProxyOmitEmptyFields mirrors
-// TestRunConfig_HooksOmittedWhenNil: pins the omitempty JSON tags on
-// SandboxIdentityConfig.Audience/EnvVar and
-// GitProxyConfig.Hosts/RewriteSsh/TokenEnvVar (omitted when left at
-// their zero value), and confirms Source and URL — which carry no
-// omitempty tag — instead round-trip as present, empty-string keys.
+// TestRunConfig_SandboxIdentityGitProxyOmitEmptyFields pins the omitempty JSON
+// tags on SandboxIdentityConfig.Audience and EnvVar and on GitProxyConfig.Hosts,
+// RewriteSsh and TokenEnvVar. Source and URL have no omitempty tag, so they
+// round-trip as empty-string keys.
 func TestRunConfig_SandboxIdentityGitProxyOmitEmptyFields(t *testing.T) {
+	must := require.New(t)
 	rc := RunConfig{
 		Executor: ExecutorConfig{
 			SandboxIdentity: &SandboxIdentityConfig{},
@@ -9218,52 +7909,38 @@ func TestRunConfig_SandboxIdentityGitProxyOmitEmptyFields(t *testing.T) {
 		},
 	}
 	data, err := json.Marshal(rc)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	must.NoError(err)
 	s := string(data)
 	for _, absentKey := range []string{`"audience"`, `"envVar"`, `"hosts"`, `"rewriteSsh"`, `"tokenEnvVar"`} {
-		if strings.Contains(s, absentKey) {
-			t.Errorf("expected no %s key when unset, got: %s", absentKey, s)
-		}
+		must.NotContains(s, absentKey)
 	}
-	if !strings.Contains(s, `"source":""`) {
-		t.Errorf("expected source key present as empty string, got: %s", s)
-	}
-	if !strings.Contains(s, `"url":""`) {
-		t.Errorf("expected url key present as empty string, got: %s", s)
-	}
+	must.Contains(s, `"source":""`)
+	must.Contains(s, `"url":""`)
 
 	var got RunConfig
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got.Executor.SandboxIdentity == nil || got.Executor.SandboxIdentity.Source != "" {
-		t.Errorf("expected SandboxIdentity.Source to round-trip as empty string, got: %+v", got.Executor.SandboxIdentity)
-	}
-	if got.Executor.GitProxy == nil || got.Executor.GitProxy.URL != "" {
-		t.Errorf("expected GitProxy.URL to round-trip as empty string, got: %+v", got.Executor.GitProxy)
-	}
+	must.NoError(json.Unmarshal(data, &got))
+	must.NotNil(got.Executor.SandboxIdentity)
+	must.Empty(got.Executor.SandboxIdentity.Source)
+	must.NotNil(got.Executor.GitProxy)
+	must.Empty(got.Executor.GitProxy.URL)
 }
 
-// TestSandboxIdentityConfig_EffectiveEnvVar_NilReceiver pins the
-// documented contract on EffectiveEnvVar: "a nil cfg returns the
-// default so callers need not nil-check first."
+// TestSandboxIdentityConfig_EffectiveEnvVar_NilReceiver pins the documented
+// contract on EffectiveEnvVar: a nil cfg returns the default so callers need
+// not nil-check first.
 func TestSandboxIdentityConfig_EffectiveEnvVar_NilReceiver(t *testing.T) {
+	must := require.New(t)
 	var cfg *SandboxIdentityConfig
-	if got := cfg.EffectiveEnvVar(); got != DefaultSandboxIdentityEnvVar {
-		t.Errorf("nil *SandboxIdentityConfig.EffectiveEnvVar() = %q, want %q", got, DefaultSandboxIdentityEnvVar)
-	}
+	must.Equal(DefaultSandboxIdentityEnvVar, cfg.EffectiveEnvVar())
 }
 
-// TestGitProxyConfig_EffectiveTokenEnvVar_NilReceiver pins the
-// documented contract on EffectiveTokenEnvVar: "a nil cfg returns the
-// default so callers need not nil-check first."
+// TestGitProxyConfig_EffectiveTokenEnvVar_NilReceiver pins the documented
+// contract on EffectiveTokenEnvVar: a nil cfg returns the default so callers
+// need not nil-check first.
 func TestGitProxyConfig_EffectiveTokenEnvVar_NilReceiver(t *testing.T) {
+	must := require.New(t)
 	var cfg *GitProxyConfig
-	if got := cfg.EffectiveTokenEnvVar(); got != DefaultSandboxIdentityEnvVar {
-		t.Errorf("nil *GitProxyConfig.EffectiveTokenEnvVar() = %q, want %q", got, DefaultSandboxIdentityEnvVar)
-	}
+	must.Equal(DefaultSandboxIdentityEnvVar, cfg.EffectiveTokenEnvVar())
 }
 
 // debugStyleTokens are the substrings a "debug"/"trace-wire"-shaped
@@ -9274,22 +7951,18 @@ func TestGitProxyConfig_EffectiveTokenEnvVar_NilReceiver(t *testing.T) {
 var debugStyleTokens = []string{"debug", "tracewire", "trace_wire", "trace-wire"}
 
 // TestRunConfig_DoesNotExposeDebugFields guards the CLI-only posture of
-// --debug and --trace-wire (issues #219, #220): a RunConfig — the one
-// wire shape a control-plane submission can construct — must never carry
-// a field that could request either behaviour. Both flags are registered
-// directly on harnessCmd.Flags() (see harness/cmd/stirrup/cmd/harness.go),
-// deliberately bypassing addRunConfigFlags/applyOverrides/BuildRunConfig,
-// so this test is a structural regression guard against a future edit
-// that adds a matching RunConfig field by mistake.
+// --debug and --trace-wire. A RunConfig is the wire shape a control-plane
+// submission can construct, so it must never carry a field that requests
+// either behaviour. The flags are registered on harnessCmd.Flags() outside
+// BuildRunConfig, so this test catches a matching field added by mistake.
 //
-// Two independent checks: a reflect walk over every exported field name
-// in the RunConfig type graph (catches a field before it is ever
-// marshalled, including one added deep in a nested config struct), and a
-// JSON-marshal substring check over a representative populated instance
-// (catches a field whose json tag diverges from its Go name).
+// Two checks run: a reflect walk over every exported field in the RunConfig
+// type graph, and a JSON substring check over a populated instance.
 func TestRunConfig_DoesNotExposeDebugFields(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	visited := map[reflect.Type]bool{}
-	var walk func(t reflect.Type, path string)
+	var walk func(reflect.Type, string)
 	walk = func(rt reflect.Type, path string) {
 		for rt.Kind() == reflect.Pointer || rt.Kind() == reflect.Slice || rt.Kind() == reflect.Array {
 			rt = rt.Elem()
@@ -9314,32 +7987,24 @@ func TestRunConfig_DoesNotExposeDebugFields(t *testing.T) {
 			fieldPath := path + "." + f.Name
 			lower := strings.ToLower(f.Name)
 			for _, tok := range debugStyleTokens {
-				if strings.Contains(lower, tok) {
-					t.Errorf("RunConfig field %s looks debug-related (%q); --debug/--trace-wire must stay CLI-only, never a RunConfig field", fieldPath, f.Name)
-				}
+				check.NotContains(lower, tok, "RunConfig field %s looks debug-related; --debug and --trace-wire must stay CLI-only", fieldPath)
 			}
 			walk(f.Type, fieldPath)
 		}
 	}
 	walk(reflect.TypeOf(RunConfig{}), "RunConfig")
 
-	// Belt-and-braces: marshal a representative instance and check the
-	// wire JSON directly, in case a field's json tag were ever hand-set
-	// to something reflect-over-Go-names would miss.
+	// Catches a json tag set to a name the reflect walk would not match.
 	rc := RunConfig{
 		Mode:     "execution",
 		Prompt:   "test",
 		Provider: ProviderConfig{Type: "anthropic"},
 	}
 	data, err := json.Marshal(rc)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	must.NoError(err)
 	lowerJSON := strings.ToLower(string(data))
 	for _, tok := range debugStyleTokens {
-		if strings.Contains(lowerJSON, `"`+tok) {
-			t.Errorf("marshalled RunConfig JSON contains a %q-shaped key: %s", tok, data)
-		}
+		check.NotContains(lowerJSON, `"`+tok, "marshalled RunConfig JSON has a %q-shaped key", tok)
 	}
 }
 
@@ -9357,25 +8022,22 @@ func TestValidateRunConfig_ControlPlaneTools_RequiresGRPC(t *testing.T) {
 		transport string
 		wantErr   bool
 	}{
-		{"grpc_passes", "grpc", false},
-		{"stdio_fails", "stdio", true},
-		{"empty_transport_fails", "", true},
+		{"grpc passes", "grpc", false},
+		{"stdio fails", "stdio", true},
+		{"empty transport fails", "", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Transport = TransportConfig{Type: tc.transport}
 			c.Tools.ControlPlane = []ControlPlaneToolConfig{controlPlaneToolFixture("search_memory")}
 			err := ValidateRunConfig(c)
 			if tc.wantErr {
-				if err == nil || !strings.Contains(err.Error(), "tools.controlPlane requires transport=grpc") {
-					t.Fatalf("expected transport rejection, got: %v", err)
-				}
+				must.ErrorContains(err, "tools.controlPlane requires transport=grpc")
 				return
 			}
-			if err != nil {
-				t.Fatalf("expected pass on grpc, got: %v", err)
-			}
+			must.NoError(err)
 		})
 	}
 }
@@ -9383,6 +8045,7 @@ func TestValidateRunConfig_ControlPlaneTools_RequiresGRPC(t *testing.T) {
 func TestValidateRunConfig_ControlPlaneTools_ReadOnlyModesAdmit(t *testing.T) {
 	for _, mode := range []string{"planning", "review", "research", "toil"} {
 		t.Run(mode, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Mode = mode
 			c.Transport = TransportConfig{Type: "grpc"}
@@ -9391,9 +8054,7 @@ func TestValidateRunConfig_ControlPlaneTools_ReadOnlyModesAdmit(t *testing.T) {
 				BuiltIn:      []string{"read_file"},
 				ControlPlane: []ControlPlaneToolConfig{controlPlaneToolFixture("save_memory")},
 			}
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("read-only mode %s should admit control-plane tools, got: %v", mode, err)
-			}
+			must.NoError(ValidateRunConfig(c))
 		})
 	}
 }
@@ -9404,48 +8065,47 @@ func TestValidateRunConfig_ControlPlaneTools_EntryRules(t *testing.T) {
 		mutate  func(*ControlPlaneToolConfig)
 		wantErr string
 	}{
-		{"missing_name", func(ct *ControlPlaneToolConfig) { ct.Name = "" }, "tools.controlPlane[0].name is required"},
-		{"bad_name_chars", func(ct *ControlPlaneToolConfig) { ct.Name = "has space" }, "must match"},
-		{"leading_digit", func(ct *ControlPlaneToolConfig) { ct.Name = "1tool" }, "must match"},
-		{"too_long", func(ct *ControlPlaneToolConfig) { ct.Name = strings.Repeat("a", 65) }, "must match"},
-		{"builtin_collision", func(ct *ControlPlaneToolConfig) { ct.Name = "read_file" }, "collides with a built-in tool"},
-		{"mcp_prefix", func(ct *ControlPlaneToolConfig) { ct.Name = "mcp_search_lookup" }, "mcp_ prefix"},
-		{"missing_description", func(ct *ControlPlaneToolConfig) { ct.Description = "  " }, "description is required"},
-		{"missing_schema", func(ct *ControlPlaneToolConfig) { ct.InputSchema = nil }, "inputSchema is required"},
-		{"schema_not_object", func(ct *ControlPlaneToolConfig) { ct.InputSchema = json.RawMessage(`["x"]`) }, "must be a JSON Schema object"},
-		{"schema_invalid_json", func(ct *ControlPlaneToolConfig) { ct.InputSchema = json.RawMessage(`{`) }, "must be a JSON Schema object"},
-		{"schema_wrong_type", func(ct *ControlPlaneToolConfig) { ct.InputSchema = json.RawMessage(`{"type":"string"}`) }, `must declare "type": "object"`},
-		{"negative_timeout", func(ct *ControlPlaneToolConfig) { ct.TimeoutSeconds = -1 }, "timeoutSeconds must be between 0 and 3600"},
-		{"timeout_over_cap", func(ct *ControlPlaneToolConfig) { ct.TimeoutSeconds = 3601 }, "timeoutSeconds must be between 0 and 3600"},
+		{"missing name", func(ct *ControlPlaneToolConfig) { ct.Name = "" }, "tools.controlPlane[0].name is required"},
+		{"bad name chars", func(ct *ControlPlaneToolConfig) { ct.Name = "has space" }, "must match"},
+		{"leading digit", func(ct *ControlPlaneToolConfig) { ct.Name = "1tool" }, "must match"},
+		{"too long", func(ct *ControlPlaneToolConfig) { ct.Name = strings.Repeat("a", 65) }, "must match"},
+		{"builtin collision", func(ct *ControlPlaneToolConfig) { ct.Name = "read_file" }, "collides with a built-in tool"},
+		{"mcp prefix", func(ct *ControlPlaneToolConfig) { ct.Name = "mcp_search_lookup" }, "mcp_ prefix"},
+		{"missing description", func(ct *ControlPlaneToolConfig) { ct.Description = "  " }, "description is required"},
+		{"missing schema", func(ct *ControlPlaneToolConfig) { ct.InputSchema = nil }, "inputSchema is required"},
+		{"schema not object", func(ct *ControlPlaneToolConfig) { ct.InputSchema = json.RawMessage(`["x"]`) }, "must be a JSON Schema object"},
+		{"schema invalid json", func(ct *ControlPlaneToolConfig) { ct.InputSchema = json.RawMessage(`{`) }, "must be a JSON Schema object"},
+		{"schema wrong type", func(ct *ControlPlaneToolConfig) { ct.InputSchema = json.RawMessage(`{"type":"string"}`) }, `must declare "type": "object"`},
+		{"negative timeout", func(ct *ControlPlaneToolConfig) { ct.TimeoutSeconds = -1 }, "timeoutSeconds must be between 0 and 3600"},
+		{"timeout over cap", func(ct *ControlPlaneToolConfig) { ct.TimeoutSeconds = 3601 }, "timeoutSeconds must be between 0 and 3600"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Transport = TransportConfig{Type: "grpc"}
 			ct := controlPlaneToolFixture("search_memory")
 			tc.mutate(&ct)
 			c.Tools.ControlPlane = []ControlPlaneToolConfig{ct}
 			err := ValidateRunConfig(c)
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("expected error containing %q, got: %v", tc.wantErr, err)
-			}
+			must.ErrorContains(err, tc.wantErr)
 		})
 	}
 
-	t.Run("valid_entries_pass", func(t *testing.T) {
+	t.Run("valid entries pass", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.Transport = TransportConfig{Type: "grpc"}
 		full := controlPlaneToolFixture("save-memory_v2")
 		full.TimeoutSeconds = 3600
 		full.RequiresApproval = true
 		c.Tools.ControlPlane = []ControlPlaneToolConfig{controlPlaneToolFixture("_search"), full}
-		if err := ValidateRunConfig(c); err != nil {
-			t.Fatalf("expected pass, got: %v", err)
-		}
+		must.NoError(ValidateRunConfig(c))
 	})
 }
 
 func TestValidateRunConfig_ControlPlaneTools_DuplicateNames(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Transport = TransportConfig{Type: "grpc"}
 	c.Tools.ControlPlane = []ControlPlaneToolConfig{
@@ -9453,40 +8113,34 @@ func TestValidateRunConfig_ControlPlaneTools_DuplicateNames(t *testing.T) {
 		controlPlaneToolFixture("search_memory"),
 	}
 	err := ValidateRunConfig(c)
-	if err == nil || !strings.Contains(err.Error(), `tools.controlPlane[1].name "search_memory" duplicates tools.controlPlane[0]`) {
-		t.Fatalf("expected duplicate rejection, got: %v", err)
-	}
+	must.ErrorContains(err, `tools.controlPlane[1].name "search_memory" duplicates tools.controlPlane[0]`)
 }
 
-func TestRunConfig_ControlPlaneToolsJSONRoundTrip(t *testing.T) {
+func TestRunConfig_ControlPlaneTools_JSONRoundTrip(t *testing.T) {
+	must := require.New(t)
 	raw := `{"tools":{"builtIn":["read_file"],"controlPlane":[{"name":"search_memory","description":"d","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]},"timeoutSeconds":30,"requiresApproval":true}]}}`
 	var c RunConfig
-	if err := json.Unmarshal([]byte(raw), &c); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if len(c.Tools.ControlPlane) != 1 {
-		t.Fatalf("got %d entries", len(c.Tools.ControlPlane))
-	}
+	must.NoError(json.Unmarshal([]byte(raw), &c))
+	must.Len(c.Tools.ControlPlane, 1)
 	ct := c.Tools.ControlPlane[0]
-	if ct.Name != "search_memory" || ct.TimeoutSeconds != 30 || !ct.RequiresApproval {
-		t.Fatalf("entry = %+v", ct)
-	}
+	must.Equal("search_memory", ct.Name)
+	must.Equal(30, ct.TimeoutSeconds)
+	must.True(ct.RequiresApproval)
 	out, err := json.Marshal(c.Tools)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if !strings.Contains(string(out), `"inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`) {
-		t.Fatalf("inputSchema not preserved verbatim: %s", out)
-	}
+	must.NoError(err)
+	must.Contains(string(out), `"inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`,
+		"inputSchema must round-trip verbatim")
 }
 
-func TestToolsEffectiveMaxResultBytes(t *testing.T) {
-	if got := (ToolsConfig{}).EffectiveMaxResultBytes(); got != 100<<10 {
-		t.Fatalf("default = %d, want %d", got, 100<<10)
-	}
-	if got := (ToolsConfig{MaxResultBytes: 4096}).EffectiveMaxResultBytes(); got != 4096 {
-		t.Fatalf("explicit = %d, want 4096", got)
-	}
+func TestToolsConfig_EffectiveMaxResultBytes(t *testing.T) {
+	t.Run("unset uses the default", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(100<<10, (ToolsConfig{}).EffectiveMaxResultBytes())
+	})
+	t.Run("explicit value is returned", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(4096, (ToolsConfig{MaxResultBytes: 4096}).EffectiveMaxResultBytes())
+	})
 }
 
 func TestValidateRunConfig_ToolsMaxResultBytes(t *testing.T) {
@@ -9504,23 +8158,21 @@ func TestValidateRunConfig_ToolsMaxResultBytes(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Tools.MaxResultBytes = tt.value
 			err := ValidateRunConfig(c)
 			if tt.wantErr == "" {
-				if err != nil {
-					t.Fatalf("expected valid, got %v", err)
-				}
+				must.NoError(err)
 				return
 			}
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
-			}
+			must.ErrorContains(err, tt.wantErr)
 		})
 	}
 }
 
 func TestRedact_MCPServerOptionalPreserved(t *testing.T) {
+	must := require.New(t)
 	rc := RunConfig{
 		Tools: ToolsConfig{
 			MCPServers: []MCPServerConfig{
@@ -9530,32 +8182,27 @@ func TestRedact_MCPServerOptionalPreserved(t *testing.T) {
 		},
 	}
 	redacted := rc.Redact()
-	if !redacted.Tools.MCPServers[0].Optional || redacted.Tools.MCPServers[1].Optional {
-		t.Errorf("Redact changed Optional: %+v", redacted.Tools.MCPServers)
-	}
+	must.Equal([]bool{true, false}, []bool{
+		redacted.Tools.MCPServers[0].Optional,
+		redacted.Tools.MCPServers[1].Optional,
+	})
 }
 
 func TestMCPServerConfig_OptionalJSON(t *testing.T) {
+	must := require.New(t)
 	raw, err := json.Marshal(MCPServerConfig{Name: "a", URI: "http://a"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(raw), "optional") {
-		t.Errorf("a required server must omit the optional key, got %s", raw)
-	}
+	must.NoError(err)
+	must.NotContains(string(raw), "optional", "a required server must omit the optional key")
+
 	var decoded MCPServerConfig
-	if err := json.Unmarshal([]byte(`{"name":"a","uri":"http://a","optional":true}`), &decoded); err != nil {
-		t.Fatal(err)
-	}
-	if !decoded.Optional {
-		t.Error("optional:true did not decode")
-	}
+	must.NoError(json.Unmarshal([]byte(`{"name":"a","uri":"http://a","optional":true}`), &decoded))
+	must.True(decoded.Optional, "optional:true must decode")
 }
 
-// TestRunConfig_WindDown pins the windDown block's wire shape and the
-// WindDownEnabled accessor: absent and enabled:false are both off, and an
-// enabled block validates.
-func TestRunConfig_WindDown(t *testing.T) {
+// TestRunConfig_WindDown_WireShapeAndAccessor pins the windDown block's wire
+// shape and the WindDownEnabled accessor: absent and enabled:false are both
+// off, and an enabled block validates.
+func TestRunConfig_WindDown_WireShapeAndAccessor(t *testing.T) {
 	cases := []struct {
 		name string
 		json string
@@ -9568,48 +8215,53 @@ func TestRunConfig_WindDown(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var rc RunConfig
-			if err := json.Unmarshal([]byte(tc.json), &rc); err != nil {
-				t.Fatalf("unmarshal: %v", err)
-			}
-			if got := rc.WindDownEnabled(); got != tc.want {
-				t.Errorf("WindDownEnabled() = %v, want %v", got, tc.want)
-			}
+			must.NoError(json.Unmarshal([]byte(tc.json), &rc))
+			must.Equal(tc.want, rc.WindDownEnabled())
 		})
 	}
 
-	if (*RunConfig)(nil).WindDownEnabled() {
-		t.Error("nil RunConfig must report wind-down off")
-	}
+	t.Run("nil config is off", func(t *testing.T) {
+		must := require.New(t)
+		must.False((*RunConfig)(nil).WindDownEnabled())
+	})
 
-	c := validConfig()
-	c.WindDown = &WindDownConfig{Enabled: true}
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("enabled windDown must validate: %v", err)
-	}
+	t.Run("enabled block validates", func(t *testing.T) {
+		must := require.New(t)
+		c := validConfig()
+		c.WindDown = &WindDownConfig{Enabled: true}
+		must.NoError(ValidateRunConfig(c))
+	})
 
-	c.WindDown = nil
-	data, err := json.Marshal(c)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if strings.Contains(string(data), "windDown") {
-		t.Errorf("nil WindDown must be omitted from JSON, got %s", data)
-	}
+	t.Run("nil block is omitted from JSON", func(t *testing.T) {
+		must := require.New(t)
+		c := validConfig()
+		c.WindDown = nil
+		data, err := json.Marshal(c)
+		must.NoError(err)
+		must.NotContains(string(data), "windDown")
+	})
 }
 
-func TestResolveReasoningSummary(t *testing.T) {
-	cases := []struct{ providerType, configured, want string }{
-		{"anthropic", "", ReasoningSummaryAuto},
-		{"gemini", "", ReasoningSummaryAuto},
-		{"openai-compatible", "", ReasoningSummaryAuto},
-		{"openai-responses", "", ReasoningSummaryOff},
-		{"openai-responses", ReasoningSummaryAuto, ReasoningSummaryAuto},
-		{"anthropic", ReasoningSummaryOff, ReasoningSummaryOff},
+func TestResolveReasoningSummary_DefaultsPerProvider(t *testing.T) {
+	cases := []struct {
+		name         string
+		providerType string
+		configured   string
+		want         string
+	}{
+		{"anthropic defaults to auto", "anthropic", "", ReasoningSummaryAuto},
+		{"gemini defaults to auto", "gemini", "", ReasoningSummaryAuto},
+		{"openai-compatible defaults to auto", "openai-compatible", "", ReasoningSummaryAuto},
+		{"openai-responses defaults to off", "openai-responses", "", ReasoningSummaryOff},
+		{"openai-responses keeps configured auto", "openai-responses", ReasoningSummaryAuto, ReasoningSummaryAuto},
+		{"anthropic keeps configured off", "anthropic", ReasoningSummaryOff, ReasoningSummaryOff},
 	}
 	for _, tc := range cases {
-		if got := ResolveReasoningSummary(tc.providerType, tc.configured); got != tc.want {
-			t.Errorf("ResolveReasoningSummary(%q, %q) = %q, want %q", tc.providerType, tc.configured, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, ResolveReasoningSummary(tc.providerType, tc.configured))
+		})
 	}
 }

@@ -1,24 +1,34 @@
 package spec
 
 import (
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
 
-func TestLoadJudgeLLMConfig(t *testing.T) {
-	want := types.JudgeLLMConfig{Provider: "openai-compatible", Model: "m", BaseURL: "https://gw.example/v1", APIKeyRef: "secret://K", MaxTokens: 512, AllowTruncated: true}
-	cases := map[string]string{
-		"attrs.hcl": `
+func TestLoadJudgeLLMConfig_ReadsEveryFormat(t *testing.T) {
+	want := types.JudgeLLMConfig{
+		Provider:       "openai-compatible",
+		Model:          "m",
+		BaseURL:        "https://gw.example/v1",
+		APIKeyRef:      "secret://K",
+		MaxTokens:      512,
+		AllowTruncated: true,
+	}
+	cases := []struct {
+		name, file, src string
+	}{
+		{"top-level attributes", "attrs.hcl", `
 provider        = "openai-compatible"
 model           = "m"
 base_url        = "https://gw.example/v1"
 api_key_ref     = "secret://K"
 max_tokens      = 512
 allow_truncated = true
-`,
-		"block.hcl": `
+`},
+		{"llm block", "block.hcl", `
 llm {
   provider        = "openai-compatible"
   model           = "m"
@@ -27,24 +37,25 @@ llm {
   max_tokens      = 512
   allow_truncated = true
 }
-`,
-		"config.json": `{"provider":"openai-compatible","model":"m","baseUrl":"https://gw.example/v1","apiKeyRef":"secret://K","maxTokens":512,"allowTruncated":true}`,
+`},
+		{"json object", "config.json", `{"provider":"openai-compatible","model":"m","baseUrl":"https://gw.example/v1","apiKeyRef":"secret://K","maxTokens":512,"allowTruncated":true}`},
 	}
-	for name, src := range cases {
-		t.Run(name, func(t *testing.T) {
-			got, err := LoadJudgeLLMConfig(writeTemp(t, name, src))
-			if err != nil {
-				t.Fatalf("LoadJudgeLLMConfig: %v", err)
-			}
-			if got.Provider != want.Provider || got.Model != want.Model || got.BaseURL != want.BaseURL ||
-				got.APIKeyRef != want.APIKeyRef || got.MaxTokens != want.MaxTokens || got.AllowTruncated != want.AllowTruncated {
-				t.Errorf("config = %+v, want %+v", got, want)
-			}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			got, err := LoadJudgeLLMConfig(writeTemp(t, tc.file, tc.src))
+			must.NoError(err)
+			must.Equal(want.Provider, got.Provider)
+			must.Equal(want.Model, got.Model)
+			must.Equal(want.BaseURL, got.BaseURL)
+			must.Equal(want.APIKeyRef, got.APIKeyRef)
+			must.Equal(want.MaxTokens, got.MaxTokens)
+			must.Equal(want.AllowTruncated, got.AllowTruncated)
 		})
 	}
 }
 
-func TestLoadJudgeLLMConfig_Rejects(t *testing.T) {
+func TestLoadJudgeLLMConfig_RejectsInvalidInput(t *testing.T) {
 	cases := map[string]struct{ name, src, want string }{
 		"unknown hcl attribute": {"a.hcl", `modle = "m"`, "modle"},
 		"attributes and block":  {"b.hcl", "model = \"m\"\nllm {\n  model = \"m\"\n}\n", "not both"},
@@ -56,10 +67,9 @@ func TestLoadJudgeLLMConfig_Rejects(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			_, err := LoadJudgeLLMConfig(writeTemp(t, tc.name, tc.src))
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("LoadJudgeLLMConfig error = %v, want it to contain %q", err, tc.want)
-			}
+			must.ErrorContains(err, tc.want)
 		})
 	}
 }
@@ -74,14 +84,11 @@ func TestLoadJudgeLLMConfig_ErrorsDoNotQuoteTheSource(t *testing.T) {
 	}
 	for name, src := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			path := writeTemp(t, "judge.hcl", src)
 			_, err := LoadJudgeLLMConfig(path)
-			if err == nil || !strings.Contains(err.Error(), path) {
-				t.Fatalf("LoadJudgeLLMConfig error = %v, want a positioned error", err)
-			}
-			if strings.Contains(err.Error(), "SECRETVALUE") {
-				t.Errorf("error quotes the key: %v", err)
-			}
+			must.ErrorContains(err, path)
+			must.NotContains(err.Error(), "SECRETVALUE", "error quotes the key")
 		})
 	}
 }

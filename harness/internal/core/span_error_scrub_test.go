@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -67,12 +69,13 @@ func newSpanProbeLoop(prov *mockProvider) (*AgenticLoop, *tracetest.InMemoryExpo
 
 func spanByName(t *testing.T, exporter *tracetest.InMemoryExporter, name string) tracetest.SpanStub {
 	t.Helper()
+	must := require.New(t)
 	for _, s := range exporter.GetSpans() {
 		if s.Name == name {
 			return s
 		}
 	}
-	t.Fatalf("no %q span exported", name)
+	must.FailNowf("span not exported", "no %q span exported", name)
 	return tracetest.SpanStub{}
 }
 
@@ -80,31 +83,24 @@ func spanByName(t *testing.T, exporter *tracetest.InMemoryExporter, name string)
 // recorded without the probe credential in its events or status.
 func assertSpanErrorScrubbed(t *testing.T, span tracetest.SpanStub, wantStatus bool) {
 	t.Helper()
+	must := require.New(t)
+	check := assert.New(t)
 	if wantStatus {
-		if span.Status.Code != codes.Error {
-			t.Errorf("status code = %v, want Error", span.Status.Code)
-		}
-		if strings.Contains(span.Status.Description, spanProbeKey) {
-			t.Errorf("status description leaks the probe: %q", span.Status.Description)
-		}
-		if !strings.Contains(span.Status.Description, "upstream echoed key") {
-			t.Errorf("status description = %q, want the readable error text", span.Status.Description)
-		}
+		must.Equal(codes.Error, span.Status.Code)
+		must.NotContains(span.Status.Description, spanProbeKey)
+		must.Contains(span.Status.Description, "upstream echoed key")
 	}
 	var message string
 	for _, ev := range span.Events {
 		for _, attr := range ev.Attributes {
-			if strings.Contains(attr.Value.String(), spanProbeKey) {
-				t.Errorf("event %q attribute %s leaks the probe: %q", ev.Name, attr.Key, attr.Value.String())
-			}
+			check.NotContains(attr.Value.String(), spanProbeKey, "event %q attribute %s", ev.Name, attr.Key)
 			if ev.Name == "exception" && attr.Key == "exception.message" {
 				message = attr.Value.AsString()
 			}
 		}
 	}
-	if !strings.Contains(message, "upstream echoed key") || !strings.Contains(message, "[REDACTED]") {
-		t.Errorf("exception.message = %q, want readable scrubbed text", message)
-	}
+	must.Contains(message, "upstream echoed key")
+	must.Contains(message, "[REDACTED]")
 }
 
 func TestLoop_SpanErrorsAreScrubbed(t *testing.T) {
@@ -197,38 +193,33 @@ func TestLoop_SpanErrorsAreScrubbed(t *testing.T) {
 }
 
 func TestLoop_OTelChatSpanCarriesScrubbedProviderFailure(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop, exporter := otelLoop(t, nil)
 	loop.Provider = &errorProvider{err: errSpanProbe}
 	_, _ = loop.Run(context.Background(), buildTestConfig())
 
 	spans := exporter.GetSpans()
 	chats := spansNamed(spans, "chat claude-sonnet-4-6")
-	if len(chats) != 1 {
-		t.Fatalf("found %d chat spans, want 1", len(chats))
-	}
+	must.Len(chats, 1)
 	chat := chats[0]
-	if got, _ := spanAttr(chat, "error.type"); got != "provider_request_failed" {
-		t.Errorf("chat error.type = %q, want provider_request_failed", got)
-	}
-	if chat.Status.Code != codes.Error || !strings.Contains(chat.Status.Description, "upstream echoed key") {
-		t.Errorf("chat status = %v %q, want Error with the readable error text", chat.Status.Code, chat.Status.Description)
-	}
+	chatErrorType, _ := spanAttr(chat, "error.type")
+	check.Equal("provider_request_failed", chatErrorType, "chat error.type")
+	check.Equal(codes.Error, chat.Status.Code, "chat status code")
+	check.Contains(chat.Status.Description, "upstream echoed key", "chat status description")
+
 	assertSpanErrorScrubbed(t, spanByName(t, exporter, "provider.stream"), true)
+
 	root := spanByName(t, exporter, "invoke_agent stirrup")
-	if got, _ := spanAttr(root, "error.type"); got != "provider_request_failed" {
-		t.Errorf("root error.type = %q, want provider_request_failed", got)
-	}
-	if root.Status.Code != codes.Error || !strings.Contains(root.Status.Description, "upstream echoed key") {
-		t.Errorf("root status = %v %q, want Error with the readable error text", root.Status.Code, root.Status.Description)
-	}
+	rootErrorType, _ := spanAttr(root, "error.type")
+	check.Equal("provider_request_failed", rootErrorType, "root error.type")
+	check.Equal(codes.Error, root.Status.Code, "root status code")
+	check.Contains(root.Status.Description, "upstream echoed key", "root status description")
+
 	for _, s := range spans {
-		if strings.Contains(s.Status.Description, spanProbeKey) {
-			t.Errorf("%s status description leaks the probe: %q", s.Name, s.Status.Description)
-		}
+		check.NotContains(s.Status.Description, spanProbeKey, "%s status description", s.Name)
 		for _, attr := range s.Attributes {
-			if strings.Contains(attr.Value.String(), spanProbeKey) {
-				t.Errorf("%s attribute %s leaks the probe", s.Name, attr.Key)
-			}
+			check.NotContains(attr.Value.String(), spanProbeKey, "%s attribute %s", s.Name, attr.Key)
 		}
 	}
 }
@@ -274,6 +265,7 @@ func TestRecordSpanError_PreservesExceptionType(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			exporter := tracetest.NewInMemoryExporter()
 			tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 			_, span := tp.Tracer("test").Start(context.Background(), "probe")
@@ -290,22 +282,20 @@ func TestRecordSpanError_PreservesExceptionType(t *testing.T) {
 					}
 				}
 			}
-			if got != tc.want {
-				t.Errorf("exception.type = %q, want %q", got, tc.want)
-			}
+			must.Equal(tc.want, got, "exception.type")
 		})
 	}
 }
 
-// TestCoreSpanErrorsGoThroughScrubbingHelpers fails when core code records
+// TestCoreSpanErrors_GoThroughScrubbingHelpers fails when core code records
 // an error on a span without the scrubbing helpers in spanerror.go: any
 // RecordError call, or a SetStatus(codes.Error, ...) whose description is
 // not a string literal.
-func TestCoreSpanErrorsGoThroughScrubbingHelpers(t *testing.T) {
+func TestCoreSpanErrors_GoThroughScrubbingHelpers(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	fset := token.NewFileSet()
 	scanned := map[string]bool{}
 	for _, name := range files {
@@ -314,13 +304,9 @@ func TestCoreSpanErrorsGoThroughScrubbingHelpers(t *testing.T) {
 		}
 		scanned[name] = true
 		src, err := os.ReadFile(name)
-		if err != nil {
-			t.Fatal(err)
-		}
+		must.NoError(err)
 		f, err := parser.ParseFile(fset, name, src, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
+		must.NoError(err)
 		ast.Inspect(f, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
 			if !ok {
@@ -332,7 +318,8 @@ func TestCoreSpanErrorsGoThroughScrubbingHelpers(t *testing.T) {
 			}
 			switch sel.Sel.Name {
 			case "RecordError":
-				t.Errorf("%s: RecordError must go through recordSpanError or recordSpanException", fset.Position(call.Pos()))
+				check.Failf("span error bypasses scrubbing helpers",
+					"%s: RecordError must go through recordSpanError or recordSpanException", fset.Position(call.Pos()))
 			case "SetStatus":
 				if len(call.Args) != 2 {
 					return true
@@ -342,15 +329,14 @@ func TestCoreSpanErrorsGoThroughScrubbingHelpers(t *testing.T) {
 					return true
 				}
 				if lit, ok := call.Args[1].(*ast.BasicLit); !ok || lit.Kind != token.STRING {
-					t.Errorf("%s: SetStatus(codes.Error, ...) needs a literal description or recordSpanError", fset.Position(call.Pos()))
+					check.Failf("span error description is not a literal",
+						"%s: SetStatus(codes.Error, ...) needs a literal description or recordSpanError", fset.Position(call.Pos()))
 				}
 			}
 			return true
 		})
 	}
 	for _, name := range []string{"loop.go", "types.go"} {
-		if !scanned[name] {
-			t.Errorf("scan did not cover %s; the glob must run from the core package directory", name)
-		}
+		check.True(scanned[name], "scan did not cover %s; the glob must run from the core package directory", name)
 	}
 }

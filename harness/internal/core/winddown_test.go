@@ -3,11 +3,12 @@ package core
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -69,63 +70,58 @@ func windDownWarnings(h *outputLimitHarness) []string {
 // exactly want[i] times.
 func assertWindDownCounts(t *testing.T, calls []types.StreamParams, want []int) {
 	t.Helper()
-	if len(calls) != len(want) {
-		t.Fatalf("provider calls = %d, want %d", len(calls), len(want))
-	}
+	must := require.New(t)
+	must.Len(calls, len(want), "provider calls")
 	for i, c := range calls {
-		if got := windDownCount(c.Messages); got != want[i] {
-			t.Errorf("request %d carries %d wind-down messages, want %d", i, got, want[i])
-		}
+		t.Run(fmt.Sprintf("request %d", i), func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(want[i], windDownCount(c.Messages), "wind-down messages")
+		})
 	}
 }
 
 func assertNoConsecutiveUserMessages(t *testing.T, calls []types.StreamParams) {
 	t.Helper()
 	for i, c := range calls {
-		for j := 1; j < len(c.Messages); j++ {
-			if c.Messages[j].Role == "user" && c.Messages[j-1].Role == "user" {
-				t.Errorf("request %d has consecutive user messages at %d and %d", i, j-1, j)
+		t.Run(fmt.Sprintf("request %d", i), func(t *testing.T) {
+			must := require.New(t)
+			for j := 1; j < len(c.Messages); j++ {
+				consecutive := c.Messages[j-1].Role == "user" && c.Messages[j].Role == "user"
+				must.False(consecutive, "messages %d and %d are both user messages", j-1, j)
 			}
-		}
+		})
 	}
 }
 
 func assertTriggers(t *testing.T, e *turnCapturingEmitter, want []string) {
 	t.Helper()
+	must := require.New(t)
 	turns, records := windDownTriggers(e)
-	if !reflect.DeepEqual(turns, want) {
-		t.Errorf("TurnTrace windDown = %q, want %q", turns, want)
-	}
-	if !reflect.DeepEqual(records, want) {
-		t.Errorf("TurnRecord windDown = %q, want %q", records, want)
-	}
+	must.Equal(want, turns, "TurnTrace windDown")
+	must.Equal(want, records, "TurnRecord windDown")
 }
 
-func TestLoop_WindDown_TurnThresholdSendsOnceTwoTurnsBeforeTheEnd(t *testing.T) {
+func TestLoop_WindDown_TurnThreshold_SendsOnceTwoTurnsBeforeEnd(t *testing.T) {
+	must := require.New(t)
 	h, reader := newStallHarness(t,
 		distinctToolTurn(0), distinctToolTurn(1), distinctToolTurn(2), distinctToolTurn(3), distinctToolTurn(4))
 
 	runTrace, err := h.loop.Run(context.Background(), windDownConfig(5))
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.Outcome != "max_turns" {
-		t.Fatalf("Outcome = %q, want max_turns", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.Equal("max_turns", runTrace.Outcome)
 	calls := h.provider.params()
 	assertWindDownCounts(t, calls, []int{0, 0, 0, 1, 1})
 	assertNudgeJoinsToolResults(t, calls[3].Messages, windDownText, "tc_2")
 	assertNoConsecutiveUserMessages(t, calls)
 	assertTriggers(t, h.emitter, []string{"", "", "", windDownTriggerTurns, ""})
-	if got := counterTotal(t, reader, "stirrup.harness.wind_downs"); got != 1 {
-		t.Errorf("wind_downs = %d, want 1", got)
-	}
-	if w := windDownWarnings(h); len(w) != 1 || !strings.Contains(w[0], "turns budget") {
-		t.Errorf("wind-down warnings = %q, want one naming the turns budget", w)
-	}
+	must.EqualValues(1, counterTotal(t, reader, "stirrup.harness.wind_downs"), "wind_downs")
+	warnings := windDownWarnings(h)
+	must.Len(warnings, 1, "wind-down warnings")
+	must.Contains(warnings[0], "turns budget")
 }
 
-func TestLoop_WindDown_TokenThresholdSendsOnce(t *testing.T) {
+func TestLoop_WindDown_TokenThreshold_SendsOnce(t *testing.T) {
+	must := require.New(t)
 	budget := 1000
 	h, reader := newStallHarness(t,
 		distinctToolTurn(0, types.StreamEvent{Type: "message_complete", StopReason: "tool_use", InputTokens: 500, OutputTokens: 400}),
@@ -138,23 +134,18 @@ func TestLoop_WindDown_TokenThresholdSendsOnce(t *testing.T) {
 	cfg.MaxTokenBudget = &budget
 
 	runTrace, err := h.loop.Run(context.Background(), cfg)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("Outcome = %q, want success", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
 	calls := h.provider.params()
 	// Turn 2 also crosses the turn threshold; one instruction per run.
 	assertWindDownCounts(t, calls, []int{0, 1, 1, 1})
 	assertNudgeJoinsToolResults(t, calls[1].Messages, windDownText, "tc_0")
 	assertTriggers(t, h.emitter, []string{"", windDownTriggerTokens, "", ""})
-	if got := counterTotal(t, reader, "stirrup.harness.wind_downs"); got != 1 {
-		t.Errorf("wind_downs = %d, want 1", got)
-	}
+	must.EqualValues(1, counterTotal(t, reader, "stirrup.harness.wind_downs"), "wind_downs")
 }
 
-func TestLoop_WindDown_TimeThresholdSendsOnce(t *testing.T) {
+func TestLoop_WindDown_TimeThreshold_SendsOnce(t *testing.T) {
+	must := require.New(t)
 	h, reader := newStallHarness(t,
 		distinctToolTurn(0), distinctToolTurn(1), distinctToolTurn(2), distinctToolTurn(3), scriptEndTurn)
 	base := time.Now()
@@ -165,62 +156,50 @@ func TestLoop_WindDown_TimeThresholdSendsOnce(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), base.Add(100*time.Second))
 	defer cancel()
 	runTrace, err := h.loop.Run(ctx, windDownConfig(20))
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("Outcome = %q, want success", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
 	calls := h.provider.params()
 	// 31 s per turn of a 100 s window: turn 3 starts at 93 s elapsed.
 	assertWindDownCounts(t, calls, []int{0, 0, 0, 1, 1})
 	assertTriggers(t, h.emitter, []string{"", "", "", windDownTriggerTime, ""})
-	if got := counterTotal(t, reader, "stirrup.harness.wind_downs"); got != 1 {
-		t.Errorf("wind_downs = %d, want 1", got)
-	}
+	must.EqualValues(1, counterTotal(t, reader, "stirrup.harness.wind_downs"), "wind_downs")
 }
 
-func TestLoop_WindDown_ReadOnlyModeGetsSummaryOnlyVariant(t *testing.T) {
+func TestLoop_WindDown_ReadOnlyMode_SendsSummaryOnlyVariant(t *testing.T) {
+	must := require.New(t)
 	h, _ := newStallHarness(t, distinctToolTurn(0), distinctToolTurn(1), scriptEndTurn)
 	cfg := windDownConfig(3)
 	cfg.Mode = "planning"
 
-	if _, err := h.loop.Run(context.Background(), cfg); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := h.loop.Run(context.Background(), cfg)
+	must.NoError(err)
 	calls := h.provider.params()
 	assertWindDownCounts(t, calls, []int{0, 1, 1})
 	assertNudgeJoinsToolResults(t, calls[1].Messages, windDownReadOnlyText, "tc_0")
 }
 
-func TestLoop_WindDown_FollowsStallNudgeInOneUserMessage(t *testing.T) {
+func TestLoop_WindDown_FollowsStallNudge_SharesUserMessage(t *testing.T) {
+	must := require.New(t)
 	h, _ := newStallHarness(t,
 		testToolTurn("tc_0"), testToolTurn("tc_1"), testToolTurn("tc_2"), distinctToolTurn(3), scriptEndTurn)
 
 	runTrace, err := h.loop.Run(context.Background(), windDownConfig(5))
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("Outcome = %q, want success", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
 	calls := h.provider.params()
 	want := fmt.Sprintf(stallNudgeText, stallRepeats) + "\n\n" + windDownText
 	assertNudgeJoinsToolResults(t, calls[3].Messages, want, "tc_2")
 	assertNoConsecutiveUserMessages(t, calls)
 }
 
-func TestLoop_WindDown_OncePerRunAcrossVerificationRetries(t *testing.T) {
+func TestLoop_WindDown_OncePerRun_AcrossVerificationRetries(t *testing.T) {
+	must := require.New(t)
 	h, _ := newStallHarness(t, distinctToolTurn(0), scriptEndTurn, distinctToolTurn(2), scriptEndTurn)
 	h.loop.Verifier = &scriptedVerifier{passes: []bool{false, true}}
 
 	runTrace, err := h.loop.Run(context.Background(), windDownConfig(4))
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("Outcome = %q, want success", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
 	calls := h.provider.params()
 	assertWindDownCounts(t, calls, []int{0, 0, 1, 1})
 	assertNoConsecutiveUserMessages(t, calls)
@@ -228,30 +207,33 @@ func TestLoop_WindDown_OncePerRunAcrossVerificationRetries(t *testing.T) {
 }
 
 func TestLoop_WindDown_ResetsPerRun(t *testing.T) {
+	must := require.New(t)
 	h, reader := newStallHarness(t, distinctToolTurn(0), scriptEndTurn)
 	cfg := windDownConfig(2)
 
 	for run := 0; run < 2; run++ {
-		h.provider.calls = nil
-		if _, err := h.loop.Run(context.Background(), cfg); err != nil {
-			t.Fatalf("run %d: %v", run, err)
-		}
-		assertWindDownCounts(t, h.provider.params(), []int{0, 1})
+		t.Run(fmt.Sprintf("run %d", run), func(t *testing.T) {
+			must := require.New(t)
+			h.provider.calls = nil
+			_, err := h.loop.Run(context.Background(), cfg)
+			must.NoError(err)
+			assertWindDownCounts(t, h.provider.params(), []int{0, 1})
+		})
 	}
-	if got := counterTotal(t, reader, "stirrup.harness.wind_downs"); got != 2 {
-		t.Errorf("wind_downs = %d, want 2 (one per run)", got)
-	}
+	must.EqualValues(2, counterTotal(t, reader, "stirrup.harness.wind_downs"), "wind_downs (one per run)")
 }
 
-func TestLoop_WindDown_OffLeavesRequestsUnchanged(t *testing.T) {
+func TestLoop_WindDown_Off_LeavesRequestsUnchanged(t *testing.T) {
+	must := require.New(t)
 	budget := 1000
 	script := [][]types.StreamEvent{
 		distinctToolTurn(0, types.StreamEvent{Type: "message_complete", StopReason: "tool_use", InputTokens: 950, OutputTokens: 1}),
 		distinctToolTurn(1, types.StreamEvent{Type: "message_complete", StopReason: "tool_use", InputTokens: 1, OutputTokens: 1}),
 		distinctToolTurn(2, types.StreamEvent{Type: "message_complete", StopReason: "tool_use", InputTokens: 1, OutputTokens: 1}),
 	}
-	run := func(wd *types.WindDownConfig) ([]types.StreamParams, *outputLimitHarness, int64) {
+	run := func(t *testing.T, wd *types.WindDownConfig) ([]types.StreamParams, *outputLimitHarness, int64) {
 		t.Helper()
+		must := require.New(t)
 		h, reader := newStallHarness(t, script...)
 		base := time.Now()
 		h.loop.clock = func() time.Time { return base.Add(time.Hour) }
@@ -262,46 +244,41 @@ func TestLoop_WindDown_OffLeavesRequestsUnchanged(t *testing.T) {
 		cfg.MaxTokenBudget = &budget
 		cfg.WindDown = wd
 		runTrace, err := h.loop.Run(ctx, cfg)
-		if err != nil {
-			t.Fatalf("Run: %v", err)
-		}
-		if runTrace.Outcome != "max_turns" {
-			t.Fatalf("Outcome = %q, want max_turns", runTrace.Outcome)
-		}
+		must.NoError(err)
+		must.Equal("max_turns", runTrace.Outcome)
 		return h.provider.params(), h, counterTotal(t, reader, "stirrup.harness.wind_downs")
 	}
 
-	baseline, _, _ := run(nil)
-	for _, wd := range []*types.WindDownConfig{nil, {}, {Enabled: false}} {
-		calls, h, metric := run(wd)
-		if len(calls) != len(baseline) {
-			t.Fatalf("windDown=%+v: provider calls = %d, want %d", wd, len(calls), len(baseline))
-		}
-		for i := range calls {
-			if !reflect.DeepEqual(calls[i].Messages, baseline[i].Messages) {
-				t.Errorf("windDown=%+v: request %d differs from the baseline", wd, i)
+	baseline, _, _ := run(t, nil)
+	cases := []struct {
+		name string
+		wd   *types.WindDownConfig
+	}{
+		{name: "nil config", wd: nil},
+		{name: "zero config", wd: &types.WindDownConfig{}},
+		{name: "disabled config", wd: &types.WindDownConfig{Enabled: false}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			calls, h, metric := run(t, tc.wd)
+			must.Len(calls, len(baseline), "provider calls")
+			for i := range calls {
+				must.Equal(baseline[i].Messages, calls[i].Messages, "request %d differs from the baseline", i)
+				must.Zero(windDownCount(calls[i].Messages), "request %d carries a wind-down message", i)
 			}
-			if windDownCount(calls[i].Messages) != 0 {
-				t.Errorf("windDown=%+v: request %d carries a wind-down message", wd, i)
-			}
-		}
-		assertTriggers(t, h.emitter, []string{"", "", ""})
-		if metric != 0 {
-			t.Errorf("windDown=%+v: wind_downs = %d, want 0", wd, metric)
-		}
-		if w := windDownWarnings(h); len(w) != 0 {
-			t.Errorf("windDown=%+v: warnings = %q, want none", wd, w)
-		}
+			assertTriggers(t, h.emitter, []string{"", "", ""})
+			must.Zero(metric, "wind_downs")
+			must.Empty(windDownWarnings(h), "wind-down warnings")
+		})
 	}
 
 	// The same run with the flag on crosses every threshold.
-	calls, _, _ := run(&types.WindDownConfig{Enabled: true})
-	if windDownCount(calls[1].Messages) != 1 {
-		t.Error("enabled control run did not send a wind-down message")
-	}
+	calls, _, _ := run(t, &types.WindDownConfig{Enabled: true})
+	must.Equal(1, windDownCount(calls[1].Messages), "enabled control run: wind-down messages in request 1")
 }
 
-func TestWindDownTrigger(t *testing.T) {
+func TestWindDownTrigger_ReportsCrossedThreshold(t *testing.T) {
 	budget := 1000
 	zero := 0
 	base := time.Now()
@@ -338,13 +315,12 @@ func TestWindDownTrigger(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			l := &AgenticLoop{windDown: windDownState{start: tc.start}}
 			l.clock = func() time.Time { return base.Add(tc.elapsed) }
 			cfg := &types.RunConfig{MaxTurns: tc.maxTurns, MaxTokenBudget: tc.budget}
 			got := l.windDownTrigger(tc.ctx, cfg, tc.turn, types.TokenUsage{Input: tc.tokens})
-			if got != tc.want {
-				t.Errorf("windDownTrigger = %q, want %q", got, tc.want)
-			}
+			must.Equal(tc.want, got)
 		})
 	}
 }

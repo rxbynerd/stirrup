@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -73,60 +76,47 @@ func toolUseProvider() *mockProvider {
 
 func doneEvent(t *testing.T, events []types.HarnessEvent) types.HarnessEvent {
 	t.Helper()
+	must := require.New(t)
 	var dones []types.HarnessEvent
 	for _, e := range events {
 		if e.Type == "done" {
 			dones = append(dones, e)
 		}
 	}
-	if len(dones) != 1 {
-		t.Fatalf("got %d done events, want exactly 1: %+v", len(dones), events)
-	}
+	must.Len(dones, 1, "want exactly one done event in %+v", events)
 	return dones[0]
 }
 
 func TestRun_RequiredExportFailureYieldsHandoffFailed(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop := buildTestLoop(endTurnProvider())
 	tr := &cancellableTransport{}
 	loop.Transport = tr
 	loop.Handoff = &fakeHandoff{err: errors.New("upload refused")}
 
 	runTrace, err := loop.Run(context.Background(), exportConfig(nil))
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "handoff_failed" {
-		t.Fatalf("Outcome = %q, want handoff_failed", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.Equal("handoff_failed", runTrace.Outcome)
 	want := types.ExportReceipt{
 		URI:      "gs://bucket/runs/test-run-1/workspace.tar.gz",
 		Status:   types.ExportStatusFailed,
 		Required: true,
 		Error:    "upload refused",
 	}
-	if runTrace.WorkspaceExport == nil || *runTrace.WorkspaceExport != want {
-		t.Errorf("WorkspaceExport = %+v, want %+v", runTrace.WorkspaceExport, want)
-	}
-	if runTrace.Error != "workspace export: upload refused" {
-		t.Errorf("Error = %q, want the export failure", runTrace.Error)
-	}
+	check.Equal(&want, runTrace.WorkspaceExport)
+	check.Equal("workspace export: upload refused", runTrace.Error)
 
 	done := doneEvent(t, tr.Events())
-	if done.StopReason != "handoff_failed" {
-		t.Errorf("done StopReason = %q, want handoff_failed", done.StopReason)
-	}
-	if done.Trace == nil {
-		t.Fatal("done carries no trace summary")
-	}
-	if done.Trace.Outcome != "handoff_failed" || done.Trace.Error != runTrace.Error {
-		t.Errorf("done trace outcome/error = %q/%q, want handoff_failed/%q", done.Trace.Outcome, done.Trace.Error, runTrace.Error)
-	}
-	if done.Trace.WorkspaceExport == nil || *done.Trace.WorkspaceExport != want {
-		t.Errorf("done trace WorkspaceExport = %+v, want %+v", done.Trace.WorkspaceExport, want)
-	}
+	check.Equal("handoff_failed", done.StopReason)
+	must.NotNil(done.Trace, "done event carries a trace summary")
+	check.Equal("handoff_failed", done.Trace.Outcome)
+	check.Equal(runTrace.Error, done.Trace.Error)
+	check.Equal(&want, done.Trace.WorkspaceExport)
 }
 
 func TestRun_ExportErrorIsScrubbedAndCapped(t *testing.T) {
+	must := require.New(t)
 	loop := buildTestLoop(endTurnProvider())
 	tr := &cancellableTransport{}
 	loop.Transport = tr
@@ -134,88 +124,97 @@ func TestRun_ExportErrorIsScrubbedAndCapped(t *testing.T) {
 	loop.Handoff = &fakeHandoff{err: errors.New(long)}
 
 	runTrace, err := loop.Run(context.Background(), exportConfig(nil))
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.WorkspaceExport == nil {
-		t.Fatal("WorkspaceExport = nil, want a failed receipt")
-	}
+	must.NoError(err)
+	must.NotNil(runTrace.WorkspaceExport, "want a failed receipt")
 	done := doneEvent(t, tr.Events())
-	if done.Trace == nil || done.Trace.WorkspaceExport == nil {
-		t.Fatal("done carries no workspace export receipt")
-	}
+	must.NotNil(done.Trace, "done event carries a trace summary")
+	must.NotNil(done.Trace.WorkspaceExport, "done trace carries the export receipt")
+
 	maxLen := maxFailureTextBytes + len("... [truncated by harness]")
-	for name, text := range map[string]string{
-		"RunTrace.WorkspaceExport.Error":   runTrace.WorkspaceExport.Error,
-		"RunTrace.Error":                   runTrace.Error,
-		"done Trace.WorkspaceExport.Error": done.Trace.WorkspaceExport.Error,
-	} {
-		if strings.Contains(text, spanProbeKey) {
-			t.Errorf("%s carries the unscrubbed key", name)
-		}
-		if text == "" || len(text) > maxLen {
-			t.Errorf("%s is %d bytes, want non-empty and capped near %d", name, len(text), maxFailureTextBytes)
-		}
+	texts := []struct {
+		name string
+		text string
+	}{
+		{name: "run trace export error", text: runTrace.WorkspaceExport.Error},
+		{name: "run trace error", text: runTrace.Error},
+		{name: "done trace export error", text: done.Trace.WorkspaceExport.Error},
+	}
+	for _, tc := range texts {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.NotContains(tc.text, spanProbeKey, "text carries the unscrubbed key")
+			must.NotEmpty(tc.text)
+			must.LessOrEqual(len(tc.text), maxLen, "text is capped near %d bytes", maxFailureTextBytes)
+		})
 	}
 }
 
 func TestRun_EmptyRequiredExportIsDeliveredSuccess(t *testing.T) {
+	must := require.New(t)
 	loop := buildTestLoop(endTurnProvider())
 	tr := &cancellableTransport{}
 	loop.Transport = tr
 	loop.Handoff = &fakeHandoff{status: types.ExportStatusEmpty}
 
 	runTrace, err := loop.Run(context.Background(), exportConfig(nil))
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("Outcome = %q, want success for an empty archive that reached the destination", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome, "an empty archive that reached the destination is a success")
+
 	done := doneEvent(t, tr.Events())
-	for name, r := range map[string]*types.ExportReceipt{"RunTrace": runTrace.WorkspaceExport, "done trace": done.Trace.WorkspaceExport} {
-		if r == nil || r.Status != types.ExportStatusEmpty || !r.Delivered() || !r.Required || r.Error != "" {
-			t.Errorf("%s WorkspaceExport = %+v, want a required, delivered empty receipt with no error", name, r)
-		}
+	must.NotNil(done.Trace, "done event carries a trace summary")
+	receipts := []struct {
+		name    string
+		receipt *types.ExportReceipt
+	}{
+		{name: "run trace", receipt: runTrace.WorkspaceExport},
+		{name: "done trace", receipt: done.Trace.WorkspaceExport},
+	}
+	for _, tc := range receipts {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.NotNil(tc.receipt)
+			must.Equal(types.ExportStatusEmpty, tc.receipt.Status)
+			must.True(tc.receipt.Delivered())
+			must.True(tc.receipt.Required)
+			must.Empty(tc.receipt.Error)
+		})
 	}
 }
 
 func TestRun_OptionalExportFailureKeepsSuccess(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop := buildTestLoop(endTurnProvider())
 	loop.Handoff = &fakeHandoff{err: errors.New("upload refused")}
 	optional := false
 
 	runTrace, err := loop.Run(context.Background(), exportConfig(&optional))
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("Outcome = %q, want success", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
 	r := runTrace.WorkspaceExport
-	if r == nil || r.Status != types.ExportStatusFailed || r.Required || r.Error != "upload refused" {
-		t.Errorf("WorkspaceExport = %+v, want an optional failed receipt carrying the error", r)
-	}
-	if runTrace.Error != "" {
-		t.Errorf("Error = %q, want empty for a successful run", runTrace.Error)
-	}
+	must.NotNil(r, "an optional failed receipt is recorded")
+	check.Equal(types.ExportStatusFailed, r.Status)
+	check.False(r.Required)
+	check.Equal("upload refused", r.Error)
+	check.Empty(runTrace.Error, "a successful run has no error")
 }
 
 func TestRun_SuccessfulExportRecordsReceipt(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop := buildTestLoop(endTurnProvider())
 	loop.Handoff = &fakeHandoff{}
 
 	runTrace, err := loop.Run(context.Background(), exportConfig(nil))
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
+	must.NoError(err)
 	want := types.ExportReceipt{URI: "gs://bucket/runs/test-run-1/workspace.tar.gz", Status: types.ExportStatusUploaded, Required: true}
-	if runTrace.Outcome != "success" || runTrace.WorkspaceExport == nil || *runTrace.WorkspaceExport != want {
-		t.Errorf("outcome %q, WorkspaceExport %+v; want success and %+v", runTrace.Outcome, runTrace.WorkspaceExport, want)
-	}
+	check.Equal("success", runTrace.Outcome)
+	check.Equal(&want, runTrace.WorkspaceExport)
 }
 
 func TestRun_ExportFailureNeverReplacesEarlierFailure(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop := buildTestLoop(toolUseProvider())
 	handoff := &fakeHandoff{err: errors.New("upload refused")}
 	loop.Handoff = handoff
@@ -223,48 +222,39 @@ func TestRun_ExportFailureNeverReplacesEarlierFailure(t *testing.T) {
 	config.MaxTurns = 1
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "max_turns" {
-		t.Fatalf("Outcome = %q, want max_turns", runTrace.Outcome)
-	}
-	if calls, _ := handoff.observed(); calls != 1 {
-		t.Errorf("handoff calls = %d, want 1: a failed run still exports its workspace", calls)
-	}
-	if r := runTrace.WorkspaceExport; r == nil || r.Status != types.ExportStatusFailed || r.Error != "upload refused" {
-		t.Errorf("WorkspaceExport = %+v, want the failed receipt recorded", r)
-	}
-	if runTrace.Error != "reached the turn limit (maxTurns 1)" {
-		t.Errorf("Error = %q, want the earliest failure (the turn limit)", runTrace.Error)
-	}
+	must.NoError(err)
+	must.Equal("max_turns", runTrace.Outcome)
+	calls, _ := handoff.observed()
+	check.Equal(1, calls, "a failed run still exports its workspace")
+	r := runTrace.WorkspaceExport
+	must.NotNil(r, "the failed receipt is recorded")
+	check.Equal(types.ExportStatusFailed, r.Status)
+	check.Equal("upload refused", r.Error)
+	check.Equal("reached the turn limit (maxTurns 1)", runTrace.Error, "the earliest failure (the turn limit) is kept")
 }
 
 func TestRun_HandoffSkippedWithoutWorkspaceOrDestination(t *testing.T) {
 	t.Run("executor none", func(t *testing.T) {
+		must := require.New(t)
 		loop := buildTestLoop(endTurnProvider())
 		handoff := &fakeHandoff{}
 		loop.Handoff = handoff
 		config := exportConfig(nil)
 		config.Executor.Type = "none"
 		runTrace, err := loop.Run(context.Background(), config)
-		if err != nil {
-			t.Fatalf("Run() error: %v", err)
-		}
-		if calls, _ := handoff.observed(); calls != 0 || runTrace.WorkspaceExport != nil {
-			t.Errorf("calls = %d, WorkspaceExport = %+v; want no handoff for an executor without a workspace", calls, runTrace.WorkspaceExport)
-		}
+		must.NoError(err)
+		calls, _ := handoff.observed()
+		must.Zero(calls, "an executor without a workspace is not handed off")
+		must.Nil(runTrace.WorkspaceExport)
 	})
 	t.Run("no destination", func(t *testing.T) {
+		must := require.New(t)
 		loop := buildTestLoop(endTurnProvider())
 		loop.Handoff = &fakeHandoff{noExport: true}
 		runTrace, err := loop.Run(context.Background(), buildTestConfig())
-		if err != nil {
-			t.Fatalf("Run() error: %v", err)
-		}
-		if runTrace.Outcome != "success" || runTrace.WorkspaceExport != nil {
-			t.Errorf("outcome %q, WorkspaceExport %+v; want success with no receipt", runTrace.Outcome, runTrace.WorkspaceExport)
-		}
+		must.NoError(err)
+		must.Equal("success", runTrace.Outcome)
+		must.Nil(runTrace.WorkspaceExport)
 	})
 }
 
@@ -309,8 +299,16 @@ func (t *orderedTransport) Emit(event types.HarnessEvent) error {
 }
 
 func TestRun_HandoffAndTraceFinishPrecedeDone(t *testing.T) {
-	for name, earlyFailure := range map[string]bool{"normal path": false, "early failure path": true} {
-		t.Run(name, func(t *testing.T) {
+	cases := []struct {
+		name         string
+		earlyFailure bool
+	}{
+		{name: "normal path"},
+		{name: "early failure path", earlyFailure: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			log := &orderLog{}
 			loop := buildTestLoop(endTurnProvider())
 			loop.Transport = &orderedTransport{log: log}
@@ -319,22 +317,22 @@ func TestRun_HandoffAndTraceFinishPrecedeDone(t *testing.T) {
 				time.Sleep(20 * time.Millisecond)
 				log.add("handoff")
 			}}
-			if earlyFailure {
+			if tc.earlyFailure {
 				loop.Hooks = &fakeHookRunner{preErr: errors.New("clone failed")}
 			}
 
-			if _, err := loop.Run(context.Background(), exportConfig(nil)); err != nil && !earlyFailure {
-				t.Fatalf("Run() error: %v", err)
+			_, err := loop.Run(context.Background(), exportConfig(nil))
+			if !tc.earlyFailure {
+				must.NoError(err)
 			}
-			got := strings.Join(log.snapshot(), ",")
-			if got != "handoff,trace_finish,done" {
-				t.Errorf("terminal order = %s, want handoff,trace_finish,done", got)
-			}
+			must.Equal([]string{"handoff", "trace_finish", "done"}, log.snapshot(), "terminal steps run in this order")
 		})
 	}
 }
 
 func TestRun_EarlyFailureStillExportsAndReportsError(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop := buildTestLoop(endTurnProvider())
 	tr := &cancellableTransport{}
 	loop.Transport = tr
@@ -343,25 +341,21 @@ func TestRun_EarlyFailureStillExportsAndReportsError(t *testing.T) {
 	loop.Hooks = &fakeHookRunner{preErr: errors.New("clone failed")}
 
 	runTrace, err := loop.Run(context.Background(), exportConfig(nil))
-	if err == nil {
-		t.Fatal("Run() returned no error for a fatal pre-run hook")
-	}
-	if runTrace.Outcome != "setup_failed" {
-		t.Fatalf("Outcome = %q, want setup_failed kept over the export failure", runTrace.Outcome)
-	}
-	if calls, _ := handoff.observed(); calls != 1 {
-		t.Errorf("handoff calls = %d, want 1", calls)
-	}
-	if runTrace.Error != "pre-run hooks: clone failed" {
-		t.Errorf("Error = %q, want the pre-run hook failure", runTrace.Error)
-	}
+	must.Error(err, "a fatal pre-run hook fails the run")
+	must.Equal("setup_failed", runTrace.Outcome, "setup_failed is kept over the export failure")
+	calls, _ := handoff.observed()
+	check.Equal(1, calls, "the workspace is still handed off")
+	check.Equal("pre-run hooks: clone failed", runTrace.Error)
+
 	done := doneEvent(t, tr.Events())
-	if done.Trace == nil || done.Trace.Outcome != "setup_failed" || done.Trace.WorkspaceExport == nil {
-		t.Errorf("done trace = %+v, want the setup_failed summary with the export receipt", done.Trace)
-	}
+	must.NotNil(done.Trace, "done event carries a trace summary")
+	check.Equal("setup_failed", done.Trace.Outcome)
+	check.NotNil(done.Trace.WorkspaceExport, "done trace carries the export receipt")
 }
 
 func TestRun_ControlPlaneCancelDuringHandoffDoesNotInterruptIt(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	tr := &cancellableTransport{}
 	loop := buildTestLoop(endTurnProvider())
 	loop.Transport = tr
@@ -377,25 +371,19 @@ func TestRun_ControlPlaneCancelDuringHandoffDoesNotInterruptIt(t *testing.T) {
 	loop.Handoff = handoff
 
 	runTrace, err := loop.Run(context.Background(), exportConfig(nil))
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
+	must.NoError(err)
 	_, obs := handoff.observed()
-	if obs.err != nil {
-		t.Errorf("handoff ctx.Err() = %v after a cancel, want nil", obs.err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Errorf("Outcome = %q, want success (the run had finished before the cancel)", runTrace.Outcome)
-	}
-	if r := runTrace.WorkspaceExport; r == nil || r.Status != types.ExportStatusUploaded {
-		t.Errorf("WorkspaceExport = %+v, want the completed upload", r)
-	}
-	if !loop.sessionCancelled.Load() {
-		t.Error("cancel during the handoff did not end the session")
-	}
+	must.NoError(obs.err, "the handoff context stays live after a cancel")
+	check.Equal("success", runTrace.Outcome, "the run had finished before the cancel")
+	r := runTrace.WorkspaceExport
+	must.NotNil(r, "the completed upload is recorded")
+	check.Equal(types.ExportStatusUploaded, r.Status)
+	check.True(loop.sessionCancelled.Load(), "a cancel during the handoff ends the session")
 }
 
 func TestRun_HandoffSurvivesRunDeadline(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop := buildTestLoop(nil)
 	loop.Provider = &fireAndCloseProvider{
 		onStream: func() { time.Sleep(150 * time.Millisecond) },
@@ -407,17 +395,16 @@ func TestRun_HandoffSurvivesRunDeadline(t *testing.T) {
 	defer cancel()
 	start := time.Now()
 	runTrace, err := loop.Run(ctx, exportConfig(nil))
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "timeout" || runTrace.Error != "reached the run timeout" {
-		t.Errorf("outcome/error = %q/%q, want timeout/%q", runTrace.Outcome, runTrace.Error, "reached the run timeout")
-	}
+	must.NoError(err)
+	check.Equal("timeout", runTrace.Outcome)
+	check.Equal("reached the run timeout", runTrace.Error)
 	_, obs := handoff.observed()
 	assertLiveDetached(t, "Handoff", obs, handoffBudget, start)
 }
 
 func TestRun_HandoffAbandonedOnShutdown(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop := buildTestLoop(endTurnProvider())
 	shutdown, shutdownCancel := context.WithCancel(context.Background())
 	shutdownCancel()
@@ -425,15 +412,15 @@ func TestRun_HandoffAbandonedOnShutdown(t *testing.T) {
 	handoff := &fakeHandoff{}
 	loop.Handoff = handoff
 
-	if _, err := loop.Run(context.Background(), exportConfig(nil)); err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if _, obs := handoff.observed(); !errors.Is(obs.err, context.Canceled) {
-		t.Errorf("handoff ctx.Err() = %v, want context.Canceled once Shutdown fired", obs.err)
-	}
+	_, err := loop.Run(context.Background(), exportConfig(nil))
+	must.NoError(err)
+	_, obs := handoff.observed()
+	check.ErrorIs(obs.err, context.Canceled, "the handoff context is cancelled once Shutdown fires")
 }
 
 func TestRun_TraceFinishFailureReportedInErrorNotOutcome(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop := buildTestLoop(endTurnProvider())
 	tr := &cancellableTransport{}
 	loop.Transport = tr
@@ -442,101 +429,95 @@ func TestRun_TraceFinishFailureReportedInErrorNotOutcome(t *testing.T) {
 	loop.Trace = emitter
 
 	runTrace, err := loop.Run(context.Background(), buildTestConfig())
-	if err == nil || !strings.Contains(err.Error(), "finish trace") {
-		t.Fatalf("Run() error = %v, want the trace finish failure", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Errorf("Outcome = %q, want success: a trace upload failure never yields handoff_failed", runTrace.Outcome)
-	}
-	if runTrace.Error != "finish trace: gcs upload: 503" {
-		t.Errorf("Error = %q, want the trace finish failure", runTrace.Error)
-	}
-	if done := doneEvent(t, tr.Events()); done.Trace == nil || done.Trace.Error != runTrace.Error {
-		t.Errorf("done trace = %+v, want it to carry the trace finish failure", done.Trace)
-	}
+	must.ErrorContains(err, "finish trace", "Run() reports the trace finish failure")
+	check.Equal("success", runTrace.Outcome, "a trace upload failure never yields handoff_failed")
+	check.Equal("finish trace: gcs upload: 503", runTrace.Error)
+
+	done := doneEvent(t, tr.Events())
+	must.NotNil(done.Trace, "done event carries a trace summary")
+	check.Equal(runTrace.Error, done.Trace.Error, "the done trace carries the trace finish failure")
 }
 
 func TestRun_ErrorTextNamesTheFailureForEveryCoveredOutcome(t *testing.T) {
-	t.Run("verification_error", func(t *testing.T) {
+	t.Run("verification error", func(t *testing.T) {
+		must := require.New(t)
 		loop := buildTestLoop(endTurnProvider())
 		loop.Verifier = &errorVerifier{}
 		runTrace, _ := loop.Run(context.Background(), buildTestConfig())
-		if runTrace.Outcome != "verification_error" || runTrace.Error != "verifier: verifier transport failed" {
-			t.Errorf("outcome/error = %q/%q, want verification_error/verifier: verifier transport failed", runTrace.Outcome, runTrace.Error)
-		}
+		must.Equal("verification_error", runTrace.Outcome)
+		must.Equal("verifier: verifier transport failed", runTrace.Error)
 	})
-	t.Run("verification_failed", func(t *testing.T) {
+	t.Run("verification failed", func(t *testing.T) {
+		must := require.New(t)
 		loop := buildTestLoop(endTurnProvider())
 		loop.Verifier = &failingVerifier{}
 		runTrace, _ := loop.Run(context.Background(), buildTestConfig())
-		if runTrace.Outcome != "verification_failed" || runTrace.Error != "verification failed after the final retry" {
-			t.Errorf("outcome/error = %q/%q, want verification_failed with its description", runTrace.Outcome, runTrace.Error)
-		}
+		must.Equal("verification_failed", runTrace.Outcome)
+		must.Equal("verification failed after the final retry", runTrace.Error)
 	})
-	t.Run("hook_failed", func(t *testing.T) {
+	t.Run("hook failed", func(t *testing.T) {
+		must := require.New(t)
 		loop := buildTestLoop(endTurnProvider())
 		loop.Hooks = &fakeHookRunner{postErr: errors.New("notify failed")}
 		runTrace, _ := loop.Run(context.Background(), buildTestConfig())
-		if runTrace.Outcome != "hook_failed" || runTrace.Error != "post-run hooks: notify failed" {
-			t.Errorf("outcome/error = %q/%q, want hook_failed/post-run hooks: notify failed", runTrace.Outcome, runTrace.Error)
-		}
+		must.Equal("hook_failed", runTrace.Outcome)
+		must.Equal("post-run hooks: notify failed", runTrace.Error)
 	})
 	t.Run("provider error", func(t *testing.T) {
+		must := require.New(t)
 		loop := buildTestLoop(nil)
 		loop.Provider = &errorProvider{err: errors.New("HTTP 500")}
 		runTrace, _ := loop.Run(context.Background(), buildTestConfig())
-		if runTrace.Outcome != "error" || !strings.Contains(runTrace.Error, "HTTP 500") {
-			t.Errorf("outcome/error = %q/%q, want error naming the provider failure", runTrace.Outcome, runTrace.Error)
-		}
+		must.Equal("error", runTrace.Outcome)
+		must.Contains(runTrace.Error, "HTTP 500")
 	})
 	t.Run("build system prompt", func(t *testing.T) {
+		must := require.New(t)
 		loop := buildTestLoop(endTurnProvider())
 		loop.Prompt = &failingPromptBuilder{err: errors.New("template missing")}
 		runTrace, _ := loop.Run(context.Background(), buildTestConfig())
-		if runTrace.Outcome != "error" || runTrace.Error != "build system prompt: template missing" {
-			t.Errorf("outcome/error = %q/%q, want error naming the prompt build failure", runTrace.Outcome, runTrace.Error)
-		}
+		must.Equal("error", runTrace.Outcome)
+		must.Equal("build system prompt: template missing", runTrace.Error)
 	})
 }
 
-func TestRunErrorText(t *testing.T) {
+func TestRunErrorText_ForOutcome(t *testing.T) {
+	check := assert.New(t)
 	config := &types.RunConfig{MaxTurns: 7}
 	loop := &AgenticLoop{}
 
-	if got := loop.runErrorText(config, "success"); got != "" {
-		t.Errorf("success: got %q, want empty", got)
-	}
-	if got := loop.runErrorText(config, "refusal"); got != `run ended with outcome "refusal"` {
-		t.Errorf("unlisted outcome: got %q", got)
-	}
+	check.Empty(loop.runErrorText(config, "success"), "a successful run has no error text")
+	check.Equal(`run ended with outcome "refusal"`, loop.runErrorText(config, "refusal"), "an outcome without a description")
 
 	loop.noteFailure("verification_error", "verifier: boom")
-	if got := loop.runErrorText(config, "cancelled"); got != "cancelled before the run completed" {
-		t.Errorf("reclassified outcome: got %q, want the cancellation description", got)
-	}
+	check.Equal("cancelled before the run completed", loop.runErrorText(config, "cancelled"), "a cancellation after a recorded failure")
 
 	const awsKey = "AKIAIOSFODNN7EXAMPLE"
+	const truncationMarker = "... [truncated by harness]"
 	loop.noteFailure("error", "provider: key "+awsKey+" "+strings.Repeat("x", 2*maxFailureTextBytes))
 	got := loop.runErrorText(config, "error")
-	if strings.Contains(got, awsKey) {
-		t.Errorf("error text leaks a secret-shaped token: %q", got[:80])
-	}
-	if !strings.HasSuffix(got, "... [truncated by harness]") || len(got) > maxFailureTextBytes+len("... [truncated by harness]") {
-		t.Errorf("error text length %d, want it capped at %d bytes plus the marker", len(got), maxFailureTextBytes)
-	}
+	check.NotContains(got, awsKey, "error text must not leak a secret-shaped token")
+	check.True(strings.HasSuffix(got, truncationMarker), "over-long error text ends with the truncation marker")
+	check.LessOrEqual(len(got), maxFailureTextBytes+len(truncationMarker), "error text is capped at %d bytes plus the marker", maxFailureTextBytes)
 }
 
 func TestDoneSummary_CarriesTraceReference(t *testing.T) {
-	ref := &types.TraceReference{TraceID: "4bf92f3577b34da6a3ce929d0e0e4736", RunSpanID: "00f067aa0ba902b7", Sampled: true}
-	if got := doneSummary(&types.RunTrace{Outcome: "success", TraceReference: ref}); got.TraceReference != ref {
-		t.Errorf("done summary TraceReference = %+v, want %+v", got.TraceReference, ref)
-	}
-	if got := doneSummary(&types.RunTrace{Outcome: "success"}); got.TraceReference != nil {
-		t.Errorf("done summary TraceReference = %+v, want nil", got.TraceReference)
-	}
+	t.Run("passes the trace reference through", func(t *testing.T) {
+		must := require.New(t)
+		ref := &types.TraceReference{TraceID: "4bf92f3577b34da6a3ce929d0e0e4736", RunSpanID: "00f067aa0ba902b7", Sampled: true}
+		got := doneSummary(&types.RunTrace{Outcome: "success", TraceReference: ref})
+		must.Same(ref, got.TraceReference)
+	})
+	t.Run("leaves the reference nil when the trace has none", func(t *testing.T) {
+		must := require.New(t)
+		got := doneSummary(&types.RunTrace{Outcome: "success"})
+		must.Nil(got.TraceReference)
+	})
 }
 
 func TestRun_SetupFailureReportsReferenceOnlyOnDone(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop, _ := otelLoop(t, endTurnProvider())
 	tr := &cancellableTransport{}
 	loop.Transport = tr
@@ -544,19 +525,12 @@ func TestRun_SetupFailureReportsReferenceOnlyOnDone(t *testing.T) {
 	loop.Hooks = &fakeHookRunner{preErr: errors.New("clone failed")}
 
 	runTrace, err := loop.Run(context.Background(), buildTestConfig())
-	if err == nil {
-		t.Fatal("Run() returned no error for a fatal pre-run hook")
-	}
+	must.Error(err, "a fatal pre-run hook fails the run")
 	for _, e := range tr.Events() {
-		if e.Type == "run_started" {
-			t.Errorf("run_started sent for a run that failed setup")
-		}
+		check.NotEqual("run_started", e.Type, "run_started is not sent for a run that failed setup")
 	}
-	if runTrace.TraceReference == nil {
-		t.Fatal("RunTrace.TraceReference = nil, want the run span started before setup")
-	}
+	must.NotNil(runTrace.TraceReference, "the run span starts before setup")
 	done := doneEvent(t, tr.Events())
-	if done.Trace == nil || done.Trace.TraceReference == nil || *done.Trace.TraceReference != *runTrace.TraceReference {
-		t.Errorf("done trace reference = %+v, want %+v", done.Trace, runTrace.TraceReference)
-	}
+	must.NotNil(done.Trace, "done event carries a trace summary")
+	check.Equal(runTrace.TraceReference, done.Trace.TraceReference)
 }

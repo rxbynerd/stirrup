@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
@@ -53,6 +54,7 @@ func (p *multiCallProviderForOTel) Stream(_ context.Context, _ types.StreamParam
 // provider.stream spans nest beneath it rather than under the parent
 // root.
 func TestSpawnSubAgent_OTelSpansNestUnderToolSpan(t *testing.T) {
+	must := require.New(t)
 	exporter := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
@@ -147,14 +149,11 @@ func TestSpawnSubAgent_OTelSpansNestUnderToolSpan(t *testing.T) {
 		return string(out), nil
 	}
 
-	if _, err := parentLoop.Run(context.Background(), parentConfig); err != nil {
-		t.Fatalf("parent Run: %v", err)
-	}
+	_, err := parentLoop.Run(context.Background(), parentConfig)
+	must.NoError(err, "parent Run")
 
 	spans := exporter.GetSpans()
-	if len(spans) == 0 {
-		t.Fatal("expected at least one OTel span, got none")
-	}
+	must.NotEmpty(spans, "expected at least one OTel span")
 
 	one := func(name string) tracetest.SpanStub {
 		t.Helper()
@@ -163,8 +162,8 @@ func TestSpawnSubAgent_OTelSpansNestUnderToolSpan(t *testing.T) {
 			for _, s := range spans {
 				t.Logf("  %-32s parent=%s span=%s", s.Name, s.Parent.SpanID(), s.SpanContext.SpanID())
 			}
-			t.Fatalf("found %d %q spans, want 1", len(found), name)
 		}
+		must.Len(found, 1, "spans named %q", name)
 		return found[0]
 	}
 	root := one("invoke_agent stirrup")
@@ -174,82 +173,82 @@ func TestSpawnSubAgent_OTelSpansNestUnderToolSpan(t *testing.T) {
 	requireParent(t, sub, spawn)
 
 	started := eventsOfType(parentTp, "run_started")
-	if len(started) != 1 {
-		t.Fatalf("parent transport received %d run_started events, want only the parent run's", len(started))
-	}
-	if started[0].TraceReference == nil {
-		t.Fatal("parent run_started carries no trace reference")
-	}
-	if got := started[0]; got.ID != "parent-run-otel" || got.TraceReference.RunSpanID != root.SpanContext.SpanID().String() {
-		t.Errorf("run_started = id %q span %s, want the parent run and its root span %s", got.ID, got.TraceReference.RunSpanID, root.SpanContext.SpanID())
-	}
+	must.Len(started, 1, "only the parent run should emit run_started")
+	must.NotNil(started[0].TraceReference, "parent run_started trace reference")
+	must.Equal("parent-run-otel", started[0].ID, "run_started id")
+	must.Equal(root.SpanContext.SpanID().String(), started[0].TraceReference.RunSpanID, "run_started root span id")
 
 	chats := spansNamed(spans, "chat claude-sonnet-4-6")
-	if len(chats) != 3 {
-		t.Fatalf("found %d chat spans, want 3 (two parent requests, one child)", len(chats))
-	}
-	var childChats int
-	for _, chat := range chats {
-		agent, _ := spanAttr(chat, "gen_ai.agent.name")
-		switch chat.Parent.SpanID() {
-		case sub.SpanContext.SpanID():
-			childChats++
-			if agent != "stirrup.subagent" {
-				t.Errorf("child chat gen_ai.agent.name = %q", agent)
-			}
-		case root.SpanContext.SpanID():
-			if agent != "stirrup" {
-				t.Errorf("parent chat gen_ai.agent.name = %q", agent)
-			}
-		default:
-			t.Errorf("chat span parented on %s, neither run span", chat.Parent.SpanID())
-		}
-	}
-	if childChats != 1 {
-		t.Errorf("found %d chat spans under the sub-agent span, want 1", childChats)
-	}
-	for _, stream := range spansNamed(spans, "provider.stream") {
-		parentIsChat := false
+	must.Len(chats, 3, "two parent requests and one child request")
+
+	t.Run("chat spans parent on their run span", func(t *testing.T) {
+		must := require.New(t)
+		var childChats int
 		for _, chat := range chats {
-			if stream.Parent.SpanID() == chat.SpanContext.SpanID() {
-				parentIsChat = true
+			agent, _ := spanAttr(chat, "gen_ai.agent.name")
+			switch chat.Parent.SpanID() {
+			case sub.SpanContext.SpanID():
+				childChats++
+				must.Equal("stirrup.subagent", agent, "child chat gen_ai.agent.name")
+			case root.SpanContext.SpanID():
+				must.Equal("stirrup", agent, "parent chat gen_ai.agent.name")
+			default:
+				must.Failf("unexpected chat parent", "chat span parented on %s, neither run span", chat.Parent.SpanID())
 			}
 		}
-		if !parentIsChat {
-			t.Errorf("provider.stream %s is not a child of a chat span", stream.SpanContext.SpanID())
+		must.Equal(1, childChats, "chat spans under the sub-agent span")
+	})
+
+	t.Run("provider stream spans nest under chat spans", func(t *testing.T) {
+		must := require.New(t)
+		for _, stream := range spansNamed(spans, "provider.stream") {
+			parentIsChat := false
+			for _, chat := range chats {
+				if stream.Parent.SpanID() == chat.SpanContext.SpanID() {
+					parentIsChat = true
+				}
+			}
+			must.True(parentIsChat, "provider.stream %s is not a child of a chat span", stream.SpanContext.SpanID())
 		}
-	}
-	for _, s := range spans {
-		if strings.HasPrefix(s.Name, "turn[") || strings.HasPrefix(s.Name, "tool.") || s.Name == "run" {
-			t.Errorf("legacy span %q exported", s.Name)
-		}
-		if s.Parent.SpanID() == root.SpanContext.SpanID() {
-			if runID, _ := spanAttr(s, "run.parent_id"); runID != "" {
-				t.Errorf("sub-agent span %q attached to the parent root", s.Name)
+	})
+
+	t.Run("no legacy span names and no sub-agent span on the parent root", func(t *testing.T) {
+		must := require.New(t)
+		for _, s := range spans {
+			legacy := strings.HasPrefix(s.Name, "turn[") || strings.HasPrefix(s.Name, "tool.") || s.Name == "run"
+			must.False(legacy, "legacy span %q exported", s.Name)
+			if s.Parent.SpanID() == root.SpanContext.SpanID() {
+				runID, _ := spanAttr(s, "run.parent_id")
+				must.Empty(runID, "sub-agent span %q attached to the parent root", s.Name)
 			}
 		}
-	}
-	if got, _ := spanAttr(sub, "run.parent_id"); got != "parent-run-otel" {
-		t.Errorf("sub-agent run.parent_id = %q", got)
-	}
-	if got, _ := spanAttr(sub, "run.outcome"); got != "success" {
-		t.Errorf("sub-agent run.outcome = %q", got)
-	}
+	})
+
+	t.Run("sub-agent span records run attributes", func(t *testing.T) {
+		must := require.New(t)
+		runParentID, _ := spanAttr(sub, "run.parent_id")
+		must.Equal("parent-run-otel", runParentID, "run.parent_id")
+		outcome, _ := spanAttr(sub, "run.outcome")
+		must.Equal("success", outcome, "run.outcome")
+	})
+
 	// The child's run context descends from the spawn tool call's
 	// context, but its turn-level guard spans belong to the child run.
 	for _, name := range []string{"guard.pre_turn", "guard.post_turn"} {
-		var underSub, underSpawn int
-		for _, g := range spansNamed(spans, name) {
-			switch g.Parent.SpanID() {
-			case sub.SpanContext.SpanID():
-				underSub++
-			case spawn.SpanContext.SpanID():
-				underSpawn++
+		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
+			var underSub, underSpawn int
+			for _, g := range spansNamed(spans, name) {
+				switch g.Parent.SpanID() {
+				case sub.SpanContext.SpanID():
+					underSub++
+				case spawn.SpanContext.SpanID():
+					underSpawn++
+				}
 			}
-		}
-		if underSub != 1 || underSpawn != 0 {
-			t.Errorf("%s: %d under the sub-agent span and %d under the spawn tool span, want 1 and 0", name, underSub, underSpawn)
-		}
+			must.Equal(1, underSub, "%s spans under the sub-agent span", name)
+			must.Zero(underSpawn, "%s spans under the spawn tool span", name)
+		})
 	}
 }
 
@@ -258,6 +257,7 @@ func TestSpawnSubAgent_OTelSpansNestUnderToolSpan(t *testing.T) {
 // the run root, so traces show "tool dispatch -> guard pre-tool denied"
 // as a nested operation.
 func TestLoop_PreToolGuardSpanNestsUnderToolSpan(t *testing.T) {
+	must := require.New(t)
 	exporter := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
@@ -306,9 +306,8 @@ func TestLoop_PreToolGuardSpanNestsUnderToolSpan(t *testing.T) {
 	}
 
 	config := buildTestConfig()
-	if _, err := loop.Run(context.Background(), config); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), config)
+	must.NoError(err, "Run")
 
 	spans := exporter.GetSpans()
 
@@ -321,21 +320,16 @@ func TestLoop_PreToolGuardSpanNestsUnderToolSpan(t *testing.T) {
 			guardSpan = s
 		}
 	}
-	if toolSpan.Name == "" {
-		t.Fatal("no execute_tool test_tool span found in exported spans")
-	}
-	if guardSpan.Name == "" {
-		t.Fatal("no guard.pre_tool span found in exported spans")
-	}
+	must.NotEmpty(toolSpan.Name, "no execute_tool test_tool span exported")
+	must.NotEmpty(guardSpan.Name, "no guard.pre_tool span exported")
 
 	if guardSpan.Parent.SpanID() != toolSpan.SpanContext.SpanID() {
-		t.Errorf("guard.pre_tool.Parent.SpanID = %s, want execute_tool test_tool SpanID %s",
-			guardSpan.Parent.SpanID(), toolSpan.SpanContext.SpanID())
 		t.Log("emitted spans (name -> parent.SpanID -> span.SpanID):")
 		for _, s := range spans {
 			t.Logf("  %-24s  parent=%s  span=%s", s.Name, s.Parent.SpanID(), s.SpanContext.SpanID())
 		}
 	}
+	must.Equal(toolSpan.SpanContext.SpanID(), guardSpan.Parent.SpanID(), "guard.pre_tool parent span")
 }
 
 // phaseSpecificDenyGuard denies a specific guard phase and allows all

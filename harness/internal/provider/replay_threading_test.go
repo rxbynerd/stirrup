@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -18,41 +20,37 @@ import (
 // the cross-provider leakage guards that keep the state from reaching a
 // provider that does not own it.
 
-// TestFlattenReplayCapture pins the flattening rule documented on
-// types.StreamEvent.ReplayFields: all-string captures concatenate in
-// arrival order; anything else snapshots the last value.
-func TestFlattenReplayCapture(t *testing.T) {
+// TestFlattenReplayCapture_ConcatenatesStringsOtherwiseSnapshots pins the
+// flattening rule documented on types.StreamEvent.ReplayFields: all-string
+// captures concatenate in arrival order; anything else snapshots the last
+// value.
+func TestFlattenReplayCapture_ConcatenatesStringsOtherwiseSnapshots(t *testing.T) {
 	t.Run("string pieces concatenate in arrival order", func(t *testing.T) {
+		must := require.New(t)
 		got := flattenReplayCapture(map[string][]any{
 			"reasoning_content": {"", "Let me think. ", "The answer is 4."},
 		})
-		want := `"Let me think. The answer is 4."`
-		if string(got["reasoning_content"]) != want {
-			t.Errorf("reasoning_content = %s, want %s", got["reasoning_content"], want)
-		}
+		must.Equal(`"Let me think. The answer is 4."`, string(got["reasoning_content"]))
 	})
 	t.Run("non-string values snapshot the last capture", func(t *testing.T) {
+		must := require.New(t)
 		got := flattenReplayCapture(map[string][]any{
 			"thinking": {
 				map[string]any{"step": float64(1)},
 				map[string]any{"step": float64(2)},
 			},
 		})
-		want := `{"step":2}`
-		if string(got["thinking"]) != want {
-			t.Errorf("thinking = %s, want %s", got["thinking"], want)
-		}
+		must.Equal(`{"step":2}`, string(got["thinking"]))
 	})
 	t.Run("mixed types snapshot the last capture", func(t *testing.T) {
+		must := require.New(t)
 		got := flattenReplayCapture(map[string][]any{
 			"field": {map[string]any{"a": "b"}, "tail"},
 		})
-		want := `"tail"`
-		if string(got["field"]) != want {
-			t.Errorf("field = %s, want %s", got["field"], want)
-		}
+		must.Equal(`"tail"`, string(got["field"]))
 	})
 	t.Run("nil first chunk then strings concatenates", func(t *testing.T) {
+		must := require.New(t)
 		// A provider that opens the stream with `"reasoning_content":
 		// null` decodes to a Go nil. The nil must be stripped before
 		// the all-strings check — otherwise the last-value snapshot
@@ -60,23 +58,23 @@ func TestFlattenReplayCapture(t *testing.T) {
 		got := flattenReplayCapture(map[string][]any{
 			"reasoning_content": {nil, "a", "b"},
 		})
-		if string(got["reasoning_content"]) != `"ab"` {
-			t.Errorf("reasoning_content = %s, want \"ab\"", got["reasoning_content"])
-		}
+		must.Equal(`"ab"`, string(got["reasoning_content"]))
 	})
-	t.Run("empty capture returns nil", func(t *testing.T) {
-		if got := flattenReplayCapture(nil); got != nil {
-			t.Errorf("nil capture: got %v, want nil", got)
-		}
-		if got := flattenReplayCapture(map[string][]any{}); got != nil {
-			t.Errorf("empty capture: got %v, want nil", got)
-		}
-		if got := flattenReplayCapture(map[string][]any{"p": {}}); got != nil {
-			t.Errorf("empty value slice: got %v, want nil", got)
-		}
-		if got := flattenReplayCapture(map[string][]any{"p": {nil, nil}}); got != nil {
-			t.Errorf("all-nil value slice: got %v, want nil", got)
-		}
+	t.Run("nil capture returns nil", func(t *testing.T) {
+		must := require.New(t)
+		must.Nil(flattenReplayCapture(nil))
+	})
+	t.Run("empty capture map returns nil", func(t *testing.T) {
+		must := require.New(t)
+		must.Nil(flattenReplayCapture(map[string][]any{}))
+	})
+	t.Run("empty value slice returns nil", func(t *testing.T) {
+		must := require.New(t)
+		must.Nil(flattenReplayCapture(map[string][]any{"p": {}}))
+	})
+	t.Run("all-nil value slice returns nil", func(t *testing.T) {
+		must := require.New(t)
+		must.Nil(flattenReplayCapture(map[string][]any{"p": {nil, nil}}))
 	})
 }
 
@@ -86,6 +84,7 @@ func TestFlattenReplayCapture(t *testing.T) {
 // defence-in-depth error arms for collisions and invalid payloads.
 func TestOpenAIMessage_MarshalJSON_MergesReplayFields(t *testing.T) {
 	t.Run("appends replay entries after canonical fields", func(t *testing.T) {
+		must := require.New(t)
 		m := openaiMessage{
 			Role:    "assistant",
 			Content: "done",
@@ -94,15 +93,11 @@ func TestOpenAIMessage_MarshalJSON_MergesReplayFields(t *testing.T) {
 			},
 		}
 		out, err := json.Marshal(m)
-		if err != nil {
-			t.Fatalf("Marshal: %v", err)
-		}
-		want := `{"role":"assistant","content":"done","reasoning_content":"thinking..."}`
-		if string(out) != want {
-			t.Errorf("Marshal = %s, want %s", out, want)
-		}
+		must.NoError(err)
+		must.Equal(`{"role":"assistant","content":"done","reasoning_content":"thinking..."}`, string(out)) //nolint:testifylint // key order is the contract
 	})
 	t.Run("multiple entries emit in sorted key order", func(t *testing.T) {
+		must := require.New(t)
 		m := openaiMessage{
 			Role: "assistant",
 			ReplayFields: map[string]json.RawMessage{
@@ -111,76 +106,64 @@ func TestOpenAIMessage_MarshalJSON_MergesReplayFields(t *testing.T) {
 			},
 		}
 		out, err := json.Marshal(m)
-		if err != nil {
-			t.Fatalf("Marshal: %v", err)
-		}
-		want := `{"role":"assistant","alpha_field":"a","zeta_field":"z"}`
-		if string(out) != want {
-			t.Errorf("Marshal = %s, want %s", out, want)
-		}
+		must.NoError(err)
+		must.Equal(`{"role":"assistant","alpha_field":"a","zeta_field":"z"}`, string(out)) //nolint:testifylint // key order is the contract
 	})
 	t.Run("no replay fields is byte-identical to the plain shape", func(t *testing.T) {
+		must := require.New(t)
 		m := openaiMessage{Role: "tool", Content: "ok", ToolCallID: "call_1"}
 		out, err := json.Marshal(m)
-		if err != nil {
-			t.Fatalf("Marshal: %v", err)
-		}
-		want := `{"role":"tool","content":"ok","tool_call_id":"call_1"}`
-		if string(out) != want {
-			t.Errorf("Marshal = %s, want %s", out, want)
-		}
+		must.NoError(err)
+		must.Equal(`{"role":"tool","content":"ok","tool_call_id":"call_1"}`, string(out)) //nolint:testifylint // exact bytes are the contract
 	})
 	t.Run("canonical key collision errors", func(t *testing.T) {
+		must := require.New(t)
 		m := openaiMessage{
 			Role:         "assistant",
 			ReplayFields: map[string]json.RawMessage{"content": json.RawMessage(`"evil"`)},
 		}
 		_, err := json.Marshal(m)
-		if err == nil {
-			t.Fatal("expected collision error, got nil")
-		}
-		if !strings.Contains(err.Error(), "collides with canonical message field") {
-			t.Errorf("error = %q, want collision message", err.Error())
-		}
+		must.Error(err)
+		must.ErrorContains(err, "collides with canonical message field")
 	})
 	t.Run("invalid JSON payload errors", func(t *testing.T) {
+		must := require.New(t)
 		m := openaiMessage{
 			Role:         "assistant",
 			ReplayFields: map[string]json.RawMessage{"reasoning_content": json.RawMessage(`{not json`)},
 		}
 		_, err := json.Marshal(m)
-		if err == nil {
-			t.Fatal("expected invalid-JSON error, got nil")
-		}
-		if !strings.Contains(err.Error(), "invalid JSON") {
-			t.Errorf("error = %q, want invalid-JSON message", err.Error())
-		}
+		must.Error(err)
+		must.ErrorContains(err, "invalid JSON")
 	})
 }
 
-// TestThreadableOpenAIReplayPath pins which path shapes qualify for
-// outbound emission: single-segment, non-array, non-canonical only.
-func TestThreadableOpenAIReplayPath(t *testing.T) {
+// TestThreadableOpenAIReplayPath_SelectsSingleSegmentKeys pins which path
+// shapes qualify for outbound emission: single-segment, non-array,
+// non-canonical only.
+func TestThreadableOpenAIReplayPath_SelectsSingleSegmentKeys(t *testing.T) {
 	cases := []struct {
+		name string
 		path string
 		want bool
 	}{
-		{"reasoning_content", true},
-		{"thinking", true},
-		{"delta.reasoning_content", false},                       // multi-segment
-		{"candidates[].content.parts[].thoughtSignature", false}, // array iteration
-		{"role", false},                                          // canonical message key
-		{"content", false},                                       // canonical message key
-		{"tool_calls", false},                                    // canonical message key
-		{"tool_call_id", false},                                  // canonical message key
-		{"name", false},                                          // canonical (documented optional key)
-		{"a..b", false},                                          // malformed
-		{"", false},                                              // malformed
+		{"accepts reasoning_content", "reasoning_content", true},
+		{"accepts thinking", "thinking", true},
+		{"rejects nested path", "delta.reasoning_content", false},
+		{"rejects array iteration", "candidates[].content.parts[].thoughtSignature", false},
+		{"rejects canonical role key", "role", false},
+		{"rejects canonical content key", "content", false},
+		{"rejects canonical tool_calls key", "tool_calls", false},
+		{"rejects canonical tool_call_id key", "tool_call_id", false},
+		{"rejects canonical name key", "name", false},
+		{"rejects empty segment", "a..b", false},
+		{"rejects empty path", "", false},
 	}
 	for _, tc := range cases {
-		if got := threadableOpenAIReplayPath(tc.path); got != tc.want {
-			t.Errorf("threadableOpenAIReplayPath(%q) = %v, want %v", tc.path, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, threadableOpenAIReplayPath(tc.path))
+		})
 	}
 }
 
@@ -199,33 +182,24 @@ func TestTranslateMessages_ThreadsQualifyingReplayFields(t *testing.T) {
 	}
 
 	t.Run("qualifying path is emitted", func(t *testing.T) {
+		must := require.New(t)
 		out := translateMessages("", []types.Message{assistant}, []string{"reasoning_content"})
-		if len(out) != 1 {
-			t.Fatalf("expected 1 message, got %d", len(out))
-		}
-		if string(out[0].ReplayFields["reasoning_content"]) != `"thinking"` {
-			t.Errorf("ReplayFields = %v, want reasoning_content threaded", out[0].ReplayFields)
-		}
-		if _, leaked := out[0].ReplayFields["stale_field"]; leaked {
-			t.Errorf("stale_field not in resolved paths must not leak: %v", out[0].ReplayFields)
-		}
+		must.Len(out, 1)
+		must.Equal(`"thinking"`, string(out[0].ReplayFields["reasoning_content"]))
+		must.NotContains(out[0].ReplayFields, "stale_field", "fields outside the resolved paths must not leak")
 	})
 
-	t.Run("no resolved paths emits nothing (registry is the source of truth)", func(t *testing.T) {
+	t.Run("no resolved paths emits nothing", func(t *testing.T) {
+		must := require.New(t)
 		out := translateMessages("", []types.Message{assistant}, nil)
-		if out[0].ReplayFields != nil {
-			t.Errorf("expected no replay fields without resolved paths, got %v", out[0].ReplayFields)
-		}
+		must.Nil(out[0].ReplayFields)
 		body, err := json.Marshal(out[0])
-		if err != nil {
-			t.Fatalf("Marshal: %v", err)
-		}
-		if strings.Contains(string(body), "reasoning_content") {
-			t.Errorf("wire message leaked reasoning_content with no resolved rule: %s", body)
-		}
+		must.NoError(err)
+		must.NotContains(string(body), "reasoning_content")
 	})
 
 	t.Run("multi-segment and colliding paths are skipped", func(t *testing.T) {
+		must := require.New(t)
 		msg := types.Message{
 			Role:    "assistant",
 			Content: []types.ContentBlock{{Type: "text", Text: "done"}},
@@ -237,27 +211,23 @@ func TestTranslateMessages_ThreadsQualifyingReplayFields(t *testing.T) {
 		}
 		paths := []string{"delta.reasoning_content", "role", "reasoning_content"}
 		out := translateMessages("", []types.Message{msg}, paths)
-		if len(out[0].ReplayFields) != 1 {
-			t.Fatalf("ReplayFields = %v, want only reasoning_content", out[0].ReplayFields)
-		}
-		if string(out[0].ReplayFields["reasoning_content"]) != `"ok"` {
-			t.Errorf("reasoning_content = %s, want \"ok\"", out[0].ReplayFields["reasoning_content"])
-		}
+		must.Len(out[0].ReplayFields, 1, "only reasoning_content should be threaded")
+		must.Equal(`"ok"`, string(out[0].ReplayFields["reasoning_content"]))
 	})
 
 	t.Run("empty payload is skipped", func(t *testing.T) {
+		must := require.New(t)
 		msg := types.Message{
 			Role:         "assistant",
 			Content:      []types.ContentBlock{{Type: "text", Text: "done"}},
 			ReplayFields: map[string]json.RawMessage{"reasoning_content": nil},
 		}
 		out := translateMessages("", []types.Message{msg}, []string{"reasoning_content"})
-		if out[0].ReplayFields != nil {
-			t.Errorf("expected empty payload skipped, got %v", out[0].ReplayFields)
-		}
+		must.Nil(out[0].ReplayFields)
 	})
 
 	t.Run("user and tool messages never carry replay fields", func(t *testing.T) {
+		must := require.New(t)
 		msgs := []types.Message{
 			{
 				Role:    "user",
@@ -269,9 +239,7 @@ func TestTranslateMessages_ThreadsQualifyingReplayFields(t *testing.T) {
 		}
 		out := translateMessages("", msgs, []string{"reasoning_content"})
 		for i, m := range out {
-			if m.ReplayFields != nil {
-				t.Errorf("message %d (%s) carries replay fields: %v", i, m.Role, m.ReplayFields)
-			}
+			must.Nil(m.ReplayFields, "message %d (%s)", i, m.Role)
 		}
 	})
 }
@@ -282,6 +250,7 @@ func TestTranslateMessages_ThreadsQualifyingReplayFields(t *testing.T) {
 // concatenation of every reasoning_content piece — the parse-side half
 // of the round-trip the loop persists onto the assistant Message.
 func TestReplayFields_DeepSeekV4_MessageCompleteCarriesFlattenedValue(t *testing.T) {
+	must := require.New(t)
 	srv := sseStubServer(t, streamFixtureSSE(t, "testdata/quirks/openai-compatible/deepseek-v4/response.sse"))
 	defer srv.Close()
 
@@ -294,9 +263,7 @@ func TestReplayFields_DeepSeekV4_MessageCompleteCarriesFlattenedValue(t *testing
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
 	})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	must.NoError(err)
 	events := drainStream(t, ch)
 
 	var complete *types.StreamEvent
@@ -305,16 +272,12 @@ func TestReplayFields_DeepSeekV4_MessageCompleteCarriesFlattenedValue(t *testing
 			complete = &events[i]
 		}
 	}
-	if complete == nil {
-		t.Fatalf("no message_complete event in %v", events)
-	}
+	must.NotNil(complete, "no message_complete event in %v", events)
 	// The fixture streams reasoning_content as "" then "Considering the
 	// request carefully." — the flattened value is the in-order
 	// concatenation, marshalled as a JSON string.
 	want := `"Considering the request carefully."`
-	if got := string(complete.ReplayFields["reasoning_content"]); got != want {
-		t.Errorf("message_complete ReplayFields[reasoning_content] = %s, want %s", got, want)
-	}
+	must.Equal(want, string(complete.ReplayFields["reasoning_content"]))
 }
 
 // TestReplayFields_NoRule_MessageCompleteCarriesNothing pins the
@@ -322,6 +285,7 @@ func TestReplayFields_DeepSeekV4_MessageCompleteCarriesFlattenedValue(t *testing
 // produces a message_complete with a nil ReplayFields map, keeping the
 // event byte-identical to the pre-threading shape.
 func TestReplayFields_NoRule_MessageCompleteCarriesNothing(t *testing.T) {
+	must := require.New(t)
 	srv := sseStubServer(t, streamFixtureSSE(t, "testdata/quirks/openai-compatible/o1-mini/response.sse"))
 	defer srv.Close()
 
@@ -334,12 +298,10 @@ func TestReplayFields_NoRule_MessageCompleteCarriesNothing(t *testing.T) {
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
 	})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	must.NoError(err)
 	for _, ev := range drainStream(t, ch) {
-		if ev.Type == "message_complete" && ev.ReplayFields != nil {
-			t.Errorf("message_complete carries ReplayFields with no rule: %v", ev.ReplayFields)
+		if ev.Type == "message_complete" {
+			must.Nil(ev.ReplayFields, "message_complete carries ReplayFields with no rule")
 		}
 	}
 }
@@ -354,6 +316,7 @@ func TestReplayFields_NoRule_MessageCompleteCarriesNothing(t *testing.T) {
 // real stop reason in streamEventsToResult's last-write-wins merge).
 func TestReplayFields_DoneOnlyTermination_EmitsMessageComplete(t *testing.T) {
 	t.Run("bare DONE emits synthetic message_complete", func(t *testing.T) {
+		must := require.New(t)
 		sse := "data: {\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"part one \"},\"finish_reason\":null}]}\n\n" +
 			"data: {\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"part two\"},\"finish_reason\":null}]}\n\n" +
 			"data: [DONE]\n\n"
@@ -368,27 +331,20 @@ func TestReplayFields_DoneOnlyTermination_EmitsMessageComplete(t *testing.T) {
 				{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 			},
 		})
-		if err != nil {
-			t.Fatalf("Stream: %v", err)
-		}
+		must.NoError(err)
 		var completes []types.StreamEvent
 		for _, ev := range drainStream(t, ch) {
 			if ev.Type == "message_complete" {
 				completes = append(completes, ev)
 			}
 		}
-		if len(completes) != 1 {
-			t.Fatalf("expected exactly 1 message_complete, got %d", len(completes))
-		}
-		if got := string(completes[0].ReplayFields["reasoning_content"]); got != `"part one part two"` {
-			t.Errorf("ReplayFields[reasoning_content] = %s, want \"part one part two\"", got)
-		}
-		if completes[0].StopReason != "end_turn" {
-			t.Errorf("StopReason = %q, want end_turn (canonical mapping of the synthetic stop)", completes[0].StopReason)
-		}
+		must.Len(completes, 1, "expected exactly one message_complete")
+		must.Equal(`"part one part two"`, string(completes[0].ReplayFields["reasoning_content"]))
+		must.Equal("end_turn", completes[0].StopReason, "the synthetic stop maps to end_turn")
 	})
 
 	t.Run("normal finish_reason stream emits exactly one message_complete", func(t *testing.T) {
+		must := require.New(t)
 		srv := sseStubServer(t, streamFixtureSSE(t, "testdata/quirks/openai-compatible/deepseek-v4/response.sse"))
 		defer srv.Close()
 
@@ -400,23 +356,15 @@ func TestReplayFields_DoneOnlyTermination_EmitsMessageComplete(t *testing.T) {
 				{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 			},
 		})
-		if err != nil {
-			t.Fatalf("Stream: %v", err)
-		}
-		count := 0
-		var last types.StreamEvent
+		must.NoError(err)
+		var completes []types.StreamEvent
 		for _, ev := range drainStream(t, ch) {
 			if ev.Type == "message_complete" {
-				count++
-				last = ev
+				completes = append(completes, ev)
 			}
 		}
-		if count != 1 {
-			t.Fatalf("expected exactly 1 message_complete, got %d (the [DONE] fallback must not double-emit)", count)
-		}
-		if last.StopReason != "end_turn" {
-			t.Errorf("StopReason = %q, want end_turn from the finish_reason chunk", last.StopReason)
-		}
+		must.Len(completes, 1, "the [DONE] fallback must not double-emit")
+		must.Equal("end_turn", completes[0].StopReason, "the stop reason comes from the finish_reason chunk")
 	})
 }
 
@@ -426,6 +374,7 @@ func TestReplayFields_DoneOnlyTermination_EmitsMessageComplete(t *testing.T) {
 // stream must complete normally, and one WARN must name the cap. 600
 // chunks of 1 kB exceed the 512 kB budget by ~17%.
 func TestReplayFields_CapBoundsAccumulator(t *testing.T) {
+	must := require.New(t)
 	piece := strings.Repeat("a", 1024)
 	var sse strings.Builder
 	for i := 0; i < 600; i++ {
@@ -451,9 +400,7 @@ func TestReplayFields_CapBoundsAccumulator(t *testing.T) {
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
 	})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	must.NoError(err)
 	var complete *types.StreamEvent
 	for _, ev := range drainStream(t, ch) {
 		if ev.Type == "message_complete" {
@@ -461,29 +408,23 @@ func TestReplayFields_CapBoundsAccumulator(t *testing.T) {
 			complete = &evCopy
 		}
 	}
-	if complete == nil {
-		t.Fatal("no message_complete event")
-	}
+	must.NotNil(complete)
 	got := complete.ReplayFields["reasoning_content"]
-	if len(got) == 0 {
-		t.Fatal("truncation must keep the accumulated prefix, not drop the field")
-	}
+	must.NotEmpty(got, "truncation must keep the accumulated prefix, not drop the field")
 	// The flattened value is a JSON string: content bytes plus two
 	// quotes (the fixture content needs no escaping).
-	if len(got) > maxReplayFieldBytes+2 {
-		t.Errorf("flattened value is %d bytes, want <= %d (cap not enforced)", len(got), maxReplayFieldBytes+2)
-	}
+	must.LessOrEqual(len(got), maxReplayFieldBytes+2, "the flattened value must respect the cap")
 
 	logOutput := buf.String()
-	if !strings.Contains(logOutput, "replay field accumulator cap reached, truncating") {
-		t.Errorf("missing cap WARN log; log:\n%.2000s", logOutput)
-	}
-	if !strings.Contains(logOutput, `"level":"WARN"`) {
-		t.Errorf("cap log entry must be WARN level; log:\n%.2000s", logOutput)
-	}
-	if strings.Contains(logOutput, piece) {
-		t.Errorf("cap WARN leaked captured content into the log")
-	}
+	t.Run("logs a WARN naming the cap", func(t *testing.T) {
+		must := require.New(t)
+		must.Contains(logOutput, "replay field accumulator cap reached, truncating")
+		must.Contains(logOutput, `"level":"WARN"`)
+	})
+	t.Run("cap log omits captured content", func(t *testing.T) {
+		must := require.New(t)
+		must.NotContains(logOutput, piece)
+	})
 }
 
 // TestReplayFields_SpanAttributesRecordCaptureSummary pins the OTel
@@ -493,6 +434,7 @@ func TestReplayFields_CapBoundsAccumulator(t *testing.T) {
 // never reach the trace). The stub-server tests never carried a span,
 // leaving summarizeReplayCaptures unexercised.
 func TestReplayFields_SpanAttributesRecordCaptureSummary(t *testing.T) {
+	must := require.New(t)
 	srv := sseStubServer(t, streamFixtureSSE(t, "testdata/quirks/openai-compatible/deepseek-v4/response.sse"))
 	defer srv.Close()
 
@@ -507,9 +449,7 @@ func TestReplayFields_SpanAttributesRecordCaptureSummary(t *testing.T) {
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
 	})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	must.NoError(err)
 	_ = drainStream(t, ch)
 	span.End()
 
@@ -526,54 +466,48 @@ func TestReplayFields_SpanAttributesRecordCaptureSummary(t *testing.T) {
 			}
 		}
 	}
-	if !found {
-		t.Fatalf("replay_fields_captured.* attributes missing from recorded spans")
-	}
+	must.True(found, "replay_fields_captured.* attributes missing from recorded spans")
 	// The deepseek-v4 fixture streams two reasoning_content pieces
 	// ("" + "Considering the request carefully.").
-	if count != 2 {
-		t.Errorf("replay_fields_captured.count = %d, want 2", count)
-	}
-	if totalLen != int64(len("Considering the request carefully.")) {
-		t.Errorf("replay_fields_captured.total_len = %d, want %d", totalLen, len("Considering the request carefully."))
-	}
+	must.Equal(int64(2), count, "replay_fields_captured.count")
+	must.Equal(int64(len("Considering the request carefully.")), totalLen, "replay_fields_captured.total_len")
 }
 
-// TestSummarizeReplayCaptures pins both arms of the length proxy
+// TestSummarizeReplayCaptures_LengthProxy pins both arms of the length proxy
 // directly: raw length for strings, JSON-encoded length for anything
 // else (the arm no streaming fixture reaches, since the current rules
 // only capture string fields).
-func TestSummarizeReplayCaptures(t *testing.T) {
+func TestSummarizeReplayCaptures_LengthProxy(t *testing.T) {
 	t.Run("string values use raw length", func(t *testing.T) {
+		must := require.New(t)
 		count, totalLen := summarizeReplayCaptures(map[string][]any{
 			"reasoning_content": {"ab", "cde"},
 		})
-		if count != 2 || totalLen != 5 {
-			t.Errorf("got (count=%d, totalLen=%d), want (2, 5)", count, totalLen)
-		}
+		must.Equal(2, count)
+		must.Equal(5, totalLen)
 	})
 	t.Run("non-string values use JSON-encoded length", func(t *testing.T) {
+		must := require.New(t)
 		count, totalLen := summarizeReplayCaptures(map[string][]any{
 			"x": {map[string]any{"step": 1}},
 		})
 		// json.Marshal(map[string]any{"step": 1}) = `{"step":1}` (10 bytes).
-		if count != 1 || totalLen != 10 {
-			t.Errorf("got (count=%d, totalLen=%d), want (1, 10)", count, totalLen)
-		}
+		must.Equal(1, count)
+		must.Equal(10, totalLen)
 	})
-	t.Run("cap accounting helper agrees with the summary proxy", func(t *testing.T) {
-		if got := replayCaptureByteLen("abc"); got != 3 {
-			t.Errorf("string: got %d, want 3", got)
-		}
-		if got := replayCaptureByteLen(map[string]any{"step": 1}); got != 10 {
-			t.Errorf("object: got %d, want 10 (JSON-encoded length)", got)
-		}
-		// Unmarshalable values degrade to zero rather than failing —
-		// the accumulator only ever holds decoded JSON, so this is the
-		// defensive arm.
-		if got := replayCaptureByteLen(func() {}); got != 0 {
-			t.Errorf("unmarshalable: got %d, want 0", got)
-		}
+	t.Run("byte length of a string is its raw length", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(3, replayCaptureByteLen("abc"))
+	})
+	t.Run("byte length of an object is its JSON length", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(10, replayCaptureByteLen(map[string]any{"step": 1}))
+	})
+	// Unmarshalable values degrade to zero rather than failing — the
+	// accumulator only ever holds decoded JSON, so this is the defensive arm.
+	t.Run("byte length of an unmarshalable value is zero", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(0, replayCaptureByteLen(func() {}))
 	})
 }
 
@@ -584,6 +518,7 @@ func TestSummarizeReplayCaptures(t *testing.T) {
 // built from that history must carry reasoning_content as a top-level
 // key on the assistant wire message — the shape whose absence 400s.
 func TestReplayFields_TwoTurnRoundTrip(t *testing.T) {
+	must := require.New(t)
 	srv := sseStubServer(t, streamFixtureSSE(t, "testdata/quirks/openai-compatible/deepseek-v4-flash/response.sse"))
 	defer srv.Close()
 
@@ -602,9 +537,7 @@ func TestReplayFields_TwoTurnRoundTrip(t *testing.T) {
 		MaxTokens: 1024,
 		Messages:  history,
 	})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	must.NoError(err)
 	var text strings.Builder
 	var replay map[string]json.RawMessage
 	for _, ev := range drainStream(t, ch) {
@@ -615,9 +548,7 @@ func TestReplayFields_TwoTurnRoundTrip(t *testing.T) {
 			replay = ev.ReplayFields
 		}
 	}
-	if replay == nil {
-		t.Fatal("turn 1 produced no ReplayFields")
-	}
+	must.NotNil(replay, "turn 1 produced no ReplayFields")
 	history = append(history, types.Message{
 		Role:         "assistant",
 		Content:      []types.ContentBlock{{Type: "text", Text: text.String()}},
@@ -636,17 +567,11 @@ func TestReplayFields_TwoTurnRoundTrip(t *testing.T) {
 		MaxTokens: 1024,
 		Messages:  history,
 	}, true, q, nil)
-	if err != nil {
-		t.Fatalf("build turn-2 request: %v", err)
-	}
+	must.NoError(err, "build turn-2 request")
 	body, err := json.Marshal(req)
-	if err != nil {
-		t.Fatalf("marshal turn-2 request: %v", err)
-	}
+	must.NoError(err, "marshal turn-2 request")
 	want := `"reasoning_content":"Scanning the request. Choosing an answer."`
-	if !strings.Contains(string(body), want) {
-		t.Errorf("turn-2 wire body missing replayed reasoning_content:\nwant substring: %s\nbody: %s", want, body)
-	}
+	must.Contains(string(body), want, "turn-2 wire body must replay reasoning_content")
 }
 
 // replayLeakageMessages is the shared history for the cross-provider
@@ -679,20 +604,13 @@ func replayLeakageMessages(withReplay bool) []types.Message {
 // anthropicContentBlock already enforces for the block-level
 // ThoughtSignature.
 func TestTranslateMessagesAnthropic_IgnoresMessageReplayFields(t *testing.T) {
+	must := require.New(t)
 	without, err := json.Marshal(translateMessagesAnthropic(replayLeakageMessages(false), quirks.StructuredToolResultCapability{}))
-	if err != nil {
-		t.Fatalf("marshal without: %v", err)
-	}
+	must.NoError(err, "marshal without replay fields")
 	with, err := json.Marshal(translateMessagesAnthropic(replayLeakageMessages(true), quirks.StructuredToolResultCapability{}))
-	if err != nil {
-		t.Fatalf("marshal with: %v", err)
-	}
-	if !bytes.Equal(without, with) {
-		t.Errorf("anthropic wire bytes diverge when Message.ReplayFields is set:\nwithout: %s\nwith:    %s", without, with)
-	}
-	if bytes.Contains(with, []byte("reasoning_content")) {
-		t.Errorf("anthropic wire body leaked reasoning_content: %s", with)
-	}
+	must.NoError(err, "marshal with replay fields")
+	must.Equal(string(without), string(with), "anthropic wire bytes diverge when Message.ReplayFields is set")
+	must.NotContains(string(with), "reasoning_content", "anthropic wire body leaked reasoning_content")
 }
 
 // TestTranslateMessagesGemini_IgnoresMessageReplayFields mirrors the
@@ -700,26 +618,15 @@ func TestTranslateMessagesAnthropic_IgnoresMessageReplayFields(t *testing.T) {
 // the typed block-level ThoughtSignature, never the message-level
 // ReplayFields map.
 func TestTranslateMessagesGemini_IgnoresMessageReplayFields(t *testing.T) {
+	must := require.New(t)
 	contentsWithout, _, err := translateMessagesGemini("sys", replayLeakageMessages(false), quirks.StructuredToolResultCapability{}, "function")
-	if err != nil {
-		t.Fatalf("translate without: %v", err)
-	}
+	must.NoError(err, "translate without replay fields")
 	contentsWith, _, err := translateMessagesGemini("sys", replayLeakageMessages(true), quirks.StructuredToolResultCapability{}, "function")
-	if err != nil {
-		t.Fatalf("translate with: %v", err)
-	}
+	must.NoError(err, "translate with replay fields")
 	without, err := json.Marshal(contentsWithout)
-	if err != nil {
-		t.Fatalf("marshal without: %v", err)
-	}
+	must.NoError(err, "marshal without replay fields")
 	with, err := json.Marshal(contentsWith)
-	if err != nil {
-		t.Fatalf("marshal with: %v", err)
-	}
-	if !bytes.Equal(without, with) {
-		t.Errorf("gemini wire bytes diverge when Message.ReplayFields is set:\nwithout: %s\nwith:    %s", without, with)
-	}
-	if bytes.Contains(with, []byte("reasoning_content")) {
-		t.Errorf("gemini wire body leaked reasoning_content: %s", with)
-	}
+	must.NoError(err, "marshal with replay fields")
+	must.Equal(string(without), string(with), "gemini wire bytes diverge when Message.ReplayFields is set")
+	must.NotContains(string(with), "reasoning_content", "gemini wire body leaked reasoning_content")
 }

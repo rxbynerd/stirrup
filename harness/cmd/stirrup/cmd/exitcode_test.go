@@ -9,73 +9,86 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
-// TestClassifyExitCode pins the mapping Execute() relies on: a nil
+// TestClassifyExitCode_MapsErrorClasses pins the mapping Execute() relies on: a nil
 // error is success (0), an *exitError carries its class code even
 // through a wrapping fmt.Errorf chain, and any other error defaults
 // to 1.
-func TestClassifyExitCode(t *testing.T) {
+func TestClassifyExitCode_MapsErrorClasses(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		err  error
 		want int
 	}{
 		{name: "nil is success", err: nil, want: 0},
-		{name: "validation", err: validationError(errors.New("bad config")), want: exitValidation},
-		{name: "parse", err: parseError(errors.New("bad json")), want: exitParse},
-		{name: "io", err: ioError(errors.New("no such file")), want: exitIO},
+		{name: "validation error", err: validationError(errors.New("bad config")), want: exitValidation},
+		{name: "parse error", err: parseError(errors.New("bad json")), want: exitParse},
+		{name: "io error", err: ioError(errors.New("no such file")), want: exitIO},
 		{
-			name: "wrapped exitError still classified",
+			name: "re-stringed exitError loses its class",
 			err:  errors.New("outer: " + parseError(errors.New("inner")).Error()),
-			want: 1, // a plain re-string loses the wrapper; default applies
+			want: 1,
 		},
 		{
-			name: "errors.Join wrapping preserves the class",
+			name: "errors.Join preserves the class",
+			err:  errors.Join(errors.New("context"), ioError(errors.New("disk full"))),
 			want: exitIO,
-			err: func() error {
-				return errors.Join(errors.New("context"), ioError(errors.New("disk full")))
-			}(),
 		},
 		{
-			name: "fmt.Errorf %w preserves the class",
-			want: exitIO,
+			name: "fmt.Errorf wrapping preserves the class",
 			err:  fmt.Errorf("context: %w", ioError(errors.New("disk full"))),
+			want: exitIO,
 		},
 		{name: "untyped error defaults to 1", err: errors.New("something else"), want: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := classifyExitCode(tc.err); got != tc.want {
-				t.Errorf("classifyExitCode(%v) = %d, want %d", tc.err, got, tc.want)
-			}
+			must := require.New(t)
+			must.Equal(tc.want, classifyExitCode(tc.err), "err=%v", tc.err)
 		})
 	}
 }
 
-// TestExitErrorWrappersAreTransparent pins that the wrapper does not
+// TestExitErrorWrapper_PreservesMessageAndErrorsIs pins that the wrapper does not
 // change the operator-facing message or break errors.Is on the wrapped
-// sentinel. Only the carried exit code is new behaviour.
-func TestExitErrorWrappersAreTransparent(t *testing.T) {
-	sentinel := errors.New("the underlying failure")
-	for _, wrap := range []func(error) error{parseError, ioError, validationError} {
-		got := wrap(sentinel)
-		if got.Error() != sentinel.Error() {
-			t.Errorf("wrapped Error() = %q, want %q", got.Error(), sentinel.Error())
-		}
-		if !errors.Is(got, sentinel) {
-			t.Errorf("errors.Is should match the wrapped sentinel through the exitError")
-		}
+// sentinel.
+func TestExitErrorWrapper_PreservesMessageAndErrorsIs(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		wrap func(error) error
+	}{
+		{name: "parseError", wrap: parseError},
+		{name: "ioError", wrap: ioError},
+		{name: "validationError", wrap: validationError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			sentinel := errors.New("the underlying failure")
+			got := tc.wrap(sentinel)
+			must.EqualError(got, sentinel.Error())
+			must.ErrorIs(got, sentinel)
+		})
 	}
 }
 
-// TestExitErrorWrappersNilPassthrough pins that wrapping a nil error
-// returns nil rather than a non-nil exitError around nothing, so a call
-// site can wrap unconditionally without inventing a phantom failure.
-func TestExitErrorWrappersNilPassthrough(t *testing.T) {
-	for _, wrap := range []func(error) error{parseError, ioError, validationError} {
-		if got := wrap(nil); got != nil {
-			t.Errorf("wrap(nil) = %v, want nil", got)
-		}
+// TestExitErrorWrapper_NilReturnsNil pins that wrapping a nil error returns nil
+// rather than a non-nil exitError around nothing, so a call site can wrap
+// unconditionally without inventing a phantom failure.
+func TestExitErrorWrapper_NilReturnsNil(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		wrap func(error) error
+	}{
+		{name: "parseError", wrap: parseError},
+		{name: "ioError", wrap: ioError},
+		{name: "validationError", wrap: validationError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.NoError(tc.wrap(nil))
+		})
 	}
 }
 
@@ -84,58 +97,39 @@ func TestExitErrorWrappersNilPassthrough(t *testing.T) {
 // a parse error (exit 2). The class is asserted via classifyExitCode so
 // the test follows the same path Execute() does.
 func TestLoadRunConfigFile_ExitClasses(t *testing.T) {
-	t.Run("missing file is I/O", func(t *testing.T) {
+	t.Run("missing file classifies as io", func(t *testing.T) {
+		must := require.New(t)
 		_, err := loadRunConfigFile(filepath.Join(t.TempDir(), "absent.json"))
-		if got := classifyExitCode(err); got != exitIO {
-			t.Errorf("classifyExitCode = %d, want %d (I/O); err=%v", got, exitIO, err)
-		}
+		must.Equal(exitIO, classifyExitCode(err), "err=%v", err)
 	})
-	t.Run("malformed JSON is parse", func(t *testing.T) {
+	t.Run("malformed json classifies as parse", func(t *testing.T) {
+		must := require.New(t)
 		path := filepath.Join(t.TempDir(), "bad.json")
-		if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
-			t.Fatalf("write: %v", err)
-		}
+		writeFile(t, path, "{not json")
 		_, err := loadRunConfigFile(path)
-		if got := classifyExitCode(err); got != exitParse {
-			t.Errorf("classifyExitCode = %d, want %d (parse); err=%v", got, exitParse, err)
-		}
+		must.Equal(exitParse, classifyExitCode(err), "err=%v", err)
 	})
-	t.Run("empty file is I/O", func(t *testing.T) {
+	t.Run("empty file classifies as io", func(t *testing.T) {
+		must := require.New(t)
 		path := filepath.Join(t.TempDir(), "empty.json")
-		if err := os.WriteFile(path, nil, 0o600); err != nil {
-			t.Fatalf("write: %v", err)
-		}
+		writeFile(t, path, "")
 		_, err := loadRunConfigFile(path)
-		if got := classifyExitCode(err); got != exitIO {
-			t.Errorf("classifyExitCode = %d, want %d (I/O); err=%v", got, exitIO, err)
-		}
+		must.Equal(exitIO, classifyExitCode(err), "err=%v", err)
 	})
-	t.Run("directory path is I/O", func(t *testing.T) {
+	t.Run("directory path classifies as io", func(t *testing.T) {
+		must := require.New(t)
 		_, err := loadRunConfigFile(t.TempDir())
-		if got := classifyExitCode(err); got != exitIO {
-			t.Errorf("classifyExitCode = %d, want %d (I/O); err=%v", got, exitIO, err)
-		}
+		must.Equal(exitIO, classifyExitCode(err), "err=%v", err)
 	})
-	t.Run("oversize file is I/O", func(t *testing.T) {
+	t.Run("oversize file classifies as io", func(t *testing.T) {
+		must := require.New(t)
 		path := filepath.Join(t.TempDir(), "big.json")
-		f, err := os.Create(path)
-		if err != nil {
-			t.Fatalf("create: %v", err)
-		}
+		writeFile(t, path, "")
 		// A sparse file one byte over the cap trips the size guard without
-		// writing a megabyte to disk: Truncate extends the file to the
-		// length, which os.Stat reports as Size() > maxConfigFileBytes.
-		if err := f.Truncate(maxConfigFileBytes + 1); err != nil {
-			_ = f.Close()
-			t.Fatalf("truncate: %v", err)
-		}
-		if err := f.Close(); err != nil {
-			t.Fatalf("close: %v", err)
-		}
-		_, err = loadRunConfigFile(path)
-		if got := classifyExitCode(err); got != exitIO {
-			t.Errorf("classifyExitCode = %d, want %d (I/O); err=%v", got, exitIO, err)
-		}
+		// writing a megabyte to disk.
+		must.NoError(os.Truncate(path, maxConfigFileBytes+1))
+		_, err := loadRunConfigFile(path)
+		must.Equal(exitIO, classifyExitCode(err), "err=%v", err)
 	})
 }
 
@@ -144,25 +138,22 @@ func TestLoadRunConfigFile_ExitClasses(t *testing.T) {
 // empty stream is an I/O error (exit 3). A non-*os.File reader forces
 // the piped path without a real pipe (see isStdinPiped).
 func TestReadRunConfigFromReader_ExitClasses(t *testing.T) {
-	t.Run("malformed piped JSON is parse", func(t *testing.T) {
+	t.Run("malformed piped json classifies as parse", func(t *testing.T) {
+		must := require.New(t)
 		_, err := readRunConfigFromReader(strings.NewReader("{bad"), "<stdin>")
-		if got := classifyExitCode(err); got != exitParse {
-			t.Errorf("classifyExitCode = %d, want %d (parse); err=%v", got, exitParse, err)
-		}
+		must.Equal(exitParse, classifyExitCode(err), "err=%v", err)
 	})
-	t.Run("empty stream is I/O", func(t *testing.T) {
+	t.Run("empty stream classifies as io", func(t *testing.T) {
+		must := require.New(t)
 		_, err := readRunConfigFromReader(strings.NewReader(""), "<stdin>")
-		if got := classifyExitCode(err); got != exitIO {
-			t.Errorf("classifyExitCode = %d, want %d (I/O); err=%v", got, exitIO, err)
-		}
+		must.Equal(exitIO, classifyExitCode(err), "err=%v", err)
 	})
-	t.Run("read failure is I/O", func(t *testing.T) {
+	t.Run("read failure classifies as io", func(t *testing.T) {
+		must := require.New(t)
 		// The io.ReadAll-failure branch is unreachable via strings.Reader
 		// (it never errors), so inject a reader that fails on first Read.
 		_, err := readRunConfigFromReader(&errReader{err: errors.New("broken pipe")}, "<stdin>")
-		if got := classifyExitCode(err); got != exitIO {
-			t.Errorf("classifyExitCode = %d, want %d (I/O); err=%v", got, exitIO, err)
-		}
+		must.Equal(exitIO, classifyExitCode(err), "err=%v", err)
 	})
 }
 
@@ -182,21 +173,17 @@ func (r *errReader) Read([]byte) (int, error) {
 // classifies as I/O (exit 3): the file is plain text so no path can be a
 // JSON parse failure.
 func TestReadPromptFile_ExitClassIsIO(t *testing.T) {
-	t.Run("missing file", func(t *testing.T) {
+	t.Run("missing file classifies as io", func(t *testing.T) {
+		must := require.New(t)
 		_, err := readPromptFile(filepath.Join(t.TempDir(), "absent.txt"))
-		if got := classifyExitCode(err); got != exitIO {
-			t.Errorf("classifyExitCode = %d, want %d (I/O); err=%v", got, exitIO, err)
-		}
+		must.Equal(exitIO, classifyExitCode(err), "err=%v", err)
 	})
-	t.Run("empty file", func(t *testing.T) {
+	t.Run("empty file classifies as io", func(t *testing.T) {
+		must := require.New(t)
 		path := filepath.Join(t.TempDir(), "empty.txt")
-		if err := os.WriteFile(path, []byte("\n"), 0o600); err != nil {
-			t.Fatalf("write: %v", err)
-		}
+		writeFile(t, path, "\n")
 		_, err := readPromptFile(path)
-		if got := classifyExitCode(err); got != exitIO {
-			t.Errorf("classifyExitCode = %d, want %d (I/O); err=%v", got, exitIO, err)
-		}
+		must.Equal(exitIO, classifyExitCode(err), "err=%v", err)
 	})
 }
 
@@ -207,22 +194,17 @@ func TestReadPromptFile_ExitClassIsIO(t *testing.T) {
 // default by a stray wrapper anywhere on that chain. ResolveAll is used
 // because resolvePromptForRun only runs on the loop-ready path.
 func TestBuildRunConfig_MissingPromptFileExitClass(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	missing := filepath.Join(t.TempDir(), "absent-brief.txt")
-	if err := cmd.Flags().Set("prompt-file", missing); err != nil {
-		t.Fatalf("set --prompt-file: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("prompt-file", missing))
 
 	_, err := BuildRunConfig(RunConfigSources{
 		Cmd:     cmd,
 		Resolve: ResolveAll,
 	})
-	if err == nil {
-		t.Fatal("expected an error for a missing --prompt-file, got nil")
-	}
-	if got := classifyExitCode(err); got != exitIO {
-		t.Errorf("classifyExitCode = %d, want %d (I/O); err=%v", got, exitIO, err)
-	}
+	must.Error(err)
+	must.Equal(exitIO, classifyExitCode(err), "err=%v", err)
 }
 
 // TestBuildRunConfig_ValidationExitClass pins that a read-only mode with
@@ -230,8 +212,8 @@ func TestBuildRunConfig_MissingPromptFileExitClass(t *testing.T) {
 // ValidateRunConfig — classifies as validation (exit 1) when resolved
 // through the ResolveAll path the harness uses.
 func TestBuildRunConfig_ValidationExitClass(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
+	must := require.New(t)
+	path := filepath.Join(t.TempDir(), "config.json")
 	// planning is read-only; allow-all on a read-only mode is the hard
 	// invariant ValidateRunConfig rejects (see CLAUDE.md). The prompt is
 	// present so resolution reaches the validator rather than the
@@ -241,9 +223,7 @@ func TestBuildRunConfig_ValidationExitClass(t *testing.T) {
 		`"permissionPolicy":{"type":"allow-all"},` +
 		`"provider":{"type":"anthropic","apiKeyRef":"secret://ANTHROPIC_API_KEY"},` +
 		`"modelRouter":{"type":"static","provider":"anthropic","model":"claude-x"}}`
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	writeFile(t, path, body)
 
 	cmd := newTestHarnessCommand()
 	_, err := BuildRunConfig(RunConfigSources{
@@ -251,19 +231,16 @@ func TestBuildRunConfig_ValidationExitClass(t *testing.T) {
 		Cmd:        cmd,
 		Resolve:    ResolveAll,
 	})
-	if err == nil {
-		t.Fatal("expected validation error, got nil")
-	}
-	if got := classifyExitCode(err); got != exitValidation {
-		t.Errorf("classifyExitCode = %d, want %d (validation); err=%v", got, exitValidation, err)
-	}
+	must.Error(err)
+	must.Equal(exitValidation, classifyExitCode(err), "err=%v", err)
 }
 
-// TestRunRunConfig_PromptRequiredExitClass pins that `run-config
+// TestRunConfigCommand_PromptRequired_ExitClassIsValidation pins that `run-config
 // --validate` with no prompt on a non-TTY surface classifies as
 // validation (exit 1). The stderrIsInteractive seam is pinned to false
 // so the test does not depend on whether the test runner has a TTY.
-func TestRunRunConfig_PromptRequiredExitClass(t *testing.T) {
+func TestRunConfigCommand_PromptRequired_ExitClassIsValidation(t *testing.T) {
+	must := require.New(t)
 	orig := stderrIsInteractive
 	stderrIsInteractive = func() bool { return false }
 	defer func() { stderrIsInteractive = orig }()
@@ -276,15 +253,8 @@ func TestRunRunConfig_PromptRequiredExitClass(t *testing.T) {
 	// error before resolution reaches the prompt-required gate.
 	var out bytes.Buffer
 	err := runRunConfigWithIO(cmd, nil, nil, &out)
-	if err == nil {
-		t.Fatal("expected prompt-required error, got nil")
-	}
-	if !errors.Is(err, errPromptRequired) {
-		t.Errorf("error should wrap errPromptRequired, got: %v", err)
-	}
-	if got := classifyExitCode(err); got != exitValidation {
-		t.Errorf("classifyExitCode = %d, want %d (validation); err=%v", got, exitValidation, err)
-	}
+	must.ErrorIs(err, errPromptRequired)
+	must.Equal(exitValidation, classifyExitCode(err), "err=%v", err)
 }
 
 // TestCLIExitCodes_EndToEnd pins the real os.Exit codes the built binary
@@ -364,10 +334,9 @@ func TestCLIExitCodes_EndToEnd(t *testing.T) {
 			want: 0,
 		},
 		{
-			// Cheap regression guard for the harness success path; the
-			// only other e2e zero-case is run-config above. dry-run via
-			// --output-runconfig=- so the loop never starts (no provider
-			// call, no network) yet Execute() still returns nil → exit 0.
+			// --output-runconfig=- prints the resolved config and returns
+			// before the loop starts, so no provider call or network access
+			// happens, yet Execute() still returns nil.
 			name: "harness valid succeeds",
 			args: []string{"harness", "--config", validConfig, "--output-runconfig", "-"},
 			want: 0,
@@ -378,7 +347,7 @@ func TestCLIExitCodes_EndToEnd(t *testing.T) {
 			want: exitValidation,
 		},
 		{
-			name: "run-config malformed JSON",
+			name: "run-config malformed json",
 			args: []string{"run-config", "--config", malformedConfig},
 			want: exitParse,
 		},
@@ -393,7 +362,7 @@ func TestCLIExitCodes_EndToEnd(t *testing.T) {
 			want: exitValidation,
 		},
 		{
-			name: "harness malformed JSON",
+			name: "harness malformed json",
 			args: []string{"harness", "--config", malformedConfig},
 			want: exitParse,
 		},
@@ -403,11 +372,10 @@ func TestCLIExitCodes_EndToEnd(t *testing.T) {
 			want: exitIO,
 		},
 		{
-			// Longest I/O chain: a valid no-prompt config + a missing
-			// --prompt-file. readPromptFile fails before validation runs,
-			// so the failure must surface as I/O (3), not the validation
-			// default — a stray validationError wrapper anywhere on the
-			// chain would flip this to 1 and only this case would catch it.
+			// readPromptFile fails before validation runs, so the failure
+			// must surface as I/O (3), not the validation default. A stray
+			// validationError wrapper anywhere on the chain would flip this
+			// to 1, and only this case would catch it.
 			name: "harness missing prompt-file",
 			args: []string{"harness", "--config", noPromptConfig, "--prompt-file", missingPromptFile},
 			want: exitIO,
@@ -439,10 +407,9 @@ func TestCLIExitCodes_EndToEnd(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got := runExit(t, bin, tc.args, tc.env...)
-			if got != tc.want {
-				t.Errorf("exit code = %d, want %d (args: %v)", got, tc.want, tc.args)
-			}
+			must.Equal(tc.want, got, "args: %v", tc.args)
 		})
 	}
 }
@@ -452,13 +419,12 @@ func TestCLIExitCodes_EndToEnd(t *testing.T) {
 // prompt exits non-zero under the non-TTY `go test` subprocess; its
 // interactive hint exit-0 path needs a PTY and is not covered here.)
 func TestCLIExitCodes_BareInvocationsStayZero(t *testing.T) {
+	must := require.New(t)
 	if testing.Short() {
 		t.Skip("skipping binary build + exec in -short mode")
 	}
 	bin := buildStirrupBinary(t)
-	if got := runExit(t, bin, []string{}); got != 0 {
-		t.Errorf("bare `stirrup` exit code = %d, want 0", got)
-	}
+	must.Equal(0, runExit(t, bin, []string{}))
 }
 
 // buildStirrupBinary compiles the stirrup CLI into the test's temp dir
@@ -466,11 +432,11 @@ func TestCLIExitCodes_BareInvocationsStayZero(t *testing.T) {
 // exec hermetic (no dependency on a stale ./stirrup in the worktree).
 func buildStirrupBinary(t *testing.T) string {
 	t.Helper()
+	must := require.New(t)
 	bin := filepath.Join(t.TempDir(), "stirrup-exitcode-test")
 	cmd := exec.Command("go", "build", "-o", bin, "github.com/rxbynerd/stirrup/harness/cmd/stirrup")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("go build failed: %v\n%s", err, out)
-	}
+	out, err := cmd.CombinedOutput()
+	must.NoError(err, "go build failed:\n%s", out)
 	return bin
 }
 
@@ -480,16 +446,13 @@ func buildStirrupBinary(t *testing.T) string {
 // as ambiguous against a phantom piped base.
 func runExit(t *testing.T, bin string, args []string, extraEnv ...string) int {
 	t.Helper()
+	must := require.New(t)
 	devNull, err := os.Open(os.DevNull)
-	if err != nil {
-		t.Fatalf("open %s: %v", os.DevNull, err)
-	}
+	must.NoError(err)
 	defer func() { _ = devNull.Close() }()
 
 	cmd := exec.Command(bin, args...) //nolint:gosec // bin is the test-built binary, args are test-controlled
 	cmd.Stdin = devNull
-	cmd.Stdout = nil
-	cmd.Stderr = nil
 	if len(extraEnv) > 0 {
 		cmd.Env = append(os.Environ(), extraEnv...)
 	}
@@ -497,17 +460,13 @@ func runExit(t *testing.T, bin string, args []string, extraEnv ...string) int {
 	if runErr == nil {
 		return 0
 	}
-	var ee *exec.ExitError
-	if errors.As(runErr, &ee) {
-		return ee.ExitCode()
-	}
-	t.Fatalf("running %s %v: non-exit error: %v", bin, args, runErr)
-	return -1
+	var exitErr *exec.ExitError
+	must.ErrorAs(runErr, &exitErr, "running %s %v", bin, args)
+	return exitErr.ExitCode()
 }
 
 func writeFile(t *testing.T, path, body string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatalf("write %s: %v", path, err)
-	}
+	must := require.New(t)
+	must.NoError(os.WriteFile(path, []byte(body), 0o600))
 }

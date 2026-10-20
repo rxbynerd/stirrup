@@ -2,15 +2,17 @@ package provider
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
-// TestConvertSchema_Cases exercises the JSON Schema → Gemini Schema converter
-// across all supported and rejected shapes. Each case either pins an expected
-// JSON shape on the converted output (decoded into a generic map for ordered-
-// independent comparison) or expects a specific error substring.
-func TestConvertSchema_Cases(t *testing.T) {
+// TestConvertSchema_SupportedAndRejectedShapes exercises the JSON Schema to
+// Gemini Schema converter across all supported and rejected shapes. Each case
+// either pins an expected JSON shape on the converted output (compared as
+// decoded JSON, so field order does not matter) or expects a specific error
+// substring.
+func TestConvertSchema_SupportedAndRejectedShapes(t *testing.T) {
 	tests := []struct {
 		name      string
 		in        string
@@ -168,30 +170,26 @@ func TestConvertSchema_Cases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			got, err := ConvertSchema(json.RawMessage(tt.in))
 			if tt.expectErr != "" {
-				if err == nil {
-					t.Fatalf("expected error containing %q, got nil (output=%s)", tt.expectErr, got)
-				}
-				if !strings.Contains(err.Error(), tt.expectErr) {
-					t.Fatalf("error %q does not contain %q", err.Error(), tt.expectErr)
-				}
+				must.Error(err, "output=%s", got)
+				must.ErrorContains(err, tt.expectErr)
 				return
 			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			must.NoError(err)
 			assertJSONEqual(t, got, tt.want)
 		})
 	}
 }
 
-// TestConvertSchema_RealisticToolSchema exercises the converter on a shape
-// representative of the harness's built-in tool schemas: an object with
-// optional fields, an array of strings, and pass-through validation
+// TestConvertSchema_BuiltinToolShapeWithOptionalFields exercises the converter
+// on a shape representative of the harness's built-in tool schemas: an object
+// with optional fields, an array of strings, and pass-through validation
 // keywords. This guards against regressions caused by reshuffling the
 // internal walking order.
-func TestConvertSchema_RealisticToolSchema(t *testing.T) {
+func TestConvertSchema_BuiltinToolShapeWithOptionalFields(t *testing.T) {
+	must := require.New(t)
 	in := `{
 		"type":"object",
 		"properties":{
@@ -203,9 +201,7 @@ func TestConvertSchema_RealisticToolSchema(t *testing.T) {
 		"additionalProperties":false
 	}`
 	got, err := ConvertSchema(json.RawMessage(in))
-	if err != nil {
-		t.Fatalf("ConvertSchema returned error: %v", err)
-	}
+	must.NoError(err)
 	want := `{
 		"type":"OBJECT",
 		"properties":{
@@ -218,11 +214,12 @@ func TestConvertSchema_RealisticToolSchema(t *testing.T) {
 	assertJSONEqual(t, got, want)
 }
 
-// TestConvertSchema_NullableNestedProperty asserts that nullability is
+// TestConvertSchema_NullableAppliesAtLeafProperty asserts that nullability is
 // applied at the leaf level rather than bubbling up to the parent schema —
 // a common failure mode when the type-array translation accidentally writes
 // to the wrong node.
-func TestConvertSchema_NullableNestedProperty(t *testing.T) {
+func TestConvertSchema_NullableAppliesAtLeafProperty(t *testing.T) {
+	must := require.New(t)
 	in := `{
 		"type":"object",
 		"properties":{
@@ -230,33 +227,15 @@ func TestConvertSchema_NullableNestedProperty(t *testing.T) {
 		}
 	}`
 	got, err := ConvertSchema(json.RawMessage(in))
-	if err != nil {
-		t.Fatalf("ConvertSchema returned error: %v", err)
-	}
+	must.NoError(err)
 	want := `{"type":"OBJECT","properties":{"label":{"type":"STRING","nullable":true}}}`
 	assertJSONEqual(t, got, want)
 }
 
-// assertJSONEqual decodes both the actual and expected JSON into generic
-// values and compares them, eliminating any field-ordering differences.
+// assertJSONEqual compares the actual JSON against the expected JSON document,
+// ignoring field ordering. It is also used by other test files in this package.
 func assertJSONEqual(t *testing.T, got json.RawMessage, want string) {
 	t.Helper()
-	var gotV, wantV any
-	if err := json.Unmarshal(got, &gotV); err != nil {
-		t.Fatalf("decode got: %v\nbody=%s", err, got)
-	}
-	if err := json.Unmarshal([]byte(want), &wantV); err != nil {
-		t.Fatalf("decode want: %v\nbody=%s", err, want)
-	}
-	gotCanon, err := json.Marshal(gotV)
-	if err != nil {
-		t.Fatalf("re-marshal got: %v", err)
-	}
-	wantCanon, err := json.Marshal(wantV)
-	if err != nil {
-		t.Fatalf("re-marshal want: %v", err)
-	}
-	if string(gotCanon) != string(wantCanon) {
-		t.Errorf("schema mismatch:\n got: %s\nwant: %s", gotCanon, wantCanon)
-	}
+	must := require.New(t)
+	must.JSONEq(want, string(got))
 }

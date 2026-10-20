@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"strings"
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
@@ -33,9 +34,7 @@ func TestResolveRuleOfTwoArming_Matrix(t *testing.T) {
 	sensitive := true
 	enforceFalse := false
 
-	// Base config shapes. u = DynamicContext present; e = run_command
-	// enabled; s = SensitiveData declared.
-	uAndE := func() *types.RunConfig {
+	dynamicContextAndCommand := func() *types.RunConfig {
 		return &types.RunConfig{
 			Mode:             "execution",
 			PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
@@ -43,14 +42,14 @@ func TestResolveRuleOfTwoArming_Matrix(t *testing.T) {
 			DynamicContext:   map[string]types.DynamicContextValue{"x": {Value: "y"}},
 		}
 	}
-	eOnly := func() *types.RunConfig {
+	commandOnly := func() *types.RunConfig {
 		return &types.RunConfig{
 			Mode:             "execution",
 			PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
 			Tools:            types.ToolsConfig{BuiltIn: []string{"run_command"}},
 		}
 	}
-	uOnly := func() *types.RunConfig {
+	dynamicContextOnly := func() *types.RunConfig {
 		return &types.RunConfig{
 			Mode:             "execution",
 			PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
@@ -69,26 +68,26 @@ func TestResolveRuleOfTwoArming_Matrix(t *testing.T) {
 		wantStatic    bool
 	}{
 		{
-			name: "classifier none disarms even with u&&e",
+			name: "classifier none disarms even with dynamic context and run_command",
 			cfg: func() *types.RunConfig {
-				c := uAndE()
+				c := dynamicContextAndCommand()
 				c.RuleOfTwo = &types.RuleOfTwoConfig{Runtime: &types.RuleOfTwoRuntimeConfig{Classifier: "none"}}
 				return c
 			}(),
 			wantArmed: false,
 		},
 		{
-			name:          "u&&e&&!s default policy arms enforcing with block-external",
-			cfg:           uAndE(),
+			name:          "default policy arms enforcing with block-external",
+			cfg:           dynamicContextAndCommand(),
 			wantArmed:     true,
 			wantEnforcing: true,
 			wantAction:    "block-external",
 			wantCriteria:  []string{"sensitive_data", "pii"},
 		},
 		{
-			name: "u&&e&&!s with onDetect abort arms enforcing abort",
+			name: "on-detect abort arms enforcing abort",
 			cfg: func() *types.RunConfig {
-				c := uAndE()
+				c := dynamicContextAndCommand()
 				c.RuleOfTwo = &types.RuleOfTwoConfig{Runtime: &types.RuleOfTwoRuntimeConfig{OnDetect: "abort"}}
 				return c
 			}(),
@@ -98,9 +97,9 @@ func TestResolveRuleOfTwoArming_Matrix(t *testing.T) {
 			wantCriteria:  []string{"sensitive_data", "pii"},
 		},
 		{
-			name: "u&&e with ask-upstream arms observe-only",
+			name: "ask-upstream policy arms observe-only",
 			cfg: func() *types.RunConfig {
-				c := uAndE()
+				c := dynamicContextAndCommand()
 				c.PermissionPolicy = types.PermissionPolicyConfig{Type: "ask-upstream"}
 				return c
 			}(),
@@ -110,9 +109,9 @@ func TestResolveRuleOfTwoArming_Matrix(t *testing.T) {
 			wantCriteria:  []string{"sensitive_data", "pii"},
 		},
 		{
-			name: "u&&e with enforce:false arms observe-only",
+			name: "enforce false arms observe-only",
 			cfg: func() *types.RunConfig {
-				c := uAndE()
+				c := dynamicContextAndCommand()
 				c.RuleOfTwo = &types.RuleOfTwoConfig{Enforce: &enforceFalse}
 				return c
 			}(),
@@ -122,9 +121,9 @@ func TestResolveRuleOfTwoArming_Matrix(t *testing.T) {
 			wantCriteria:  []string{"sensitive_data", "pii"},
 		},
 		{
-			name: "u&&e&&s arms observe-only with pre-tripped latch",
+			name: "declared sensitive data arms observe-only with a pre-tripped latch",
 			cfg: func() *types.RunConfig {
-				c := uAndE()
+				c := dynamicContextAndCommand()
 				c.SensitiveData = &sensitive
 				return c
 			}(),
@@ -135,19 +134,19 @@ func TestResolveRuleOfTwoArming_Matrix(t *testing.T) {
 			wantStatic:    true,
 		},
 		{
-			name:      "e without u stays unarmed",
-			cfg:       eOnly(),
+			name:      "run_command without dynamic context stays unarmed",
+			cfg:       commandOnly(),
 			wantArmed: false,
 		},
 		{
-			name:      "u without e stays unarmed",
-			cfg:       uOnly(),
+			name:      "dynamic context without run_command stays unarmed",
+			cfg:       dynamicContextOnly(),
 			wantArmed: false,
 		},
 		{
-			name: "explicit patterns classifier arms observe-only without u",
+			name: "patterns classifier arms observe-only without dynamic context",
 			cfg: func() *types.RunConfig {
-				c := eOnly()
+				c := commandOnly()
 				c.RuleOfTwo = &types.RuleOfTwoConfig{Runtime: &types.RuleOfTwoRuntimeConfig{Classifier: "patterns"}}
 				return c
 			}(),
@@ -157,9 +156,9 @@ func TestResolveRuleOfTwoArming_Matrix(t *testing.T) {
 			wantCriteria:  []string{"sensitive_data", "pii"},
 		},
 		{
-			name: "custom guardCriteria override the default set",
+			name: "custom guard criteria override the default set",
 			cfg: func() *types.RunConfig {
-				c := uAndE()
+				c := dynamicContextAndCommand()
 				c.RuleOfTwo = &types.RuleOfTwoConfig{Runtime: &types.RuleOfTwoRuntimeConfig{GuardCriteria: []string{"custom_pii"}}}
 				return c
 			}(),
@@ -172,52 +171,35 @@ func TestResolveRuleOfTwoArming_Matrix(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			arming := resolveRuleOfTwoArming(tc.cfg)
-			if arming.armed != tc.wantArmed {
-				t.Fatalf("armed = %v, want %v", arming.armed, tc.wantArmed)
-			}
+			must.Equal(tc.wantArmed, arming.armed)
+
 			monitor := buildRuleOfTwoMonitor(arming)
 			if !tc.wantArmed {
-				if _, ok := monitor.(ruleoftwo.Noop); !ok {
-					t.Fatalf("expected Noop monitor, got %T", monitor)
-				}
+				must.IsType(ruleoftwo.Noop{}, monitor)
 				return
 			}
-			if _, ok := monitor.(*ruleoftwo.PatternMonitor); !ok {
-				t.Fatalf("expected *PatternMonitor, got %T", monitor)
-			}
-			if arming.enforcing != tc.wantEnforcing {
-				t.Errorf("enforcing = %v, want %v", arming.enforcing, tc.wantEnforcing)
-			}
-			if monitor.Enforcing() != tc.wantEnforcing {
-				t.Errorf("monitor.Enforcing() = %v, want %v", monitor.Enforcing(), tc.wantEnforcing)
-			}
-			if arming.action != tc.wantAction {
-				t.Errorf("action = %q, want %q", arming.action, tc.wantAction)
-			}
+			must.IsType(&ruleoftwo.PatternMonitor{}, monitor)
+
+			must.Equal(tc.wantEnforcing, arming.enforcing)
+			must.Equal(tc.wantEnforcing, monitor.Enforcing())
+			must.Equal(tc.wantAction, arming.action)
+
 			wantEffective := tc.wantAction
 			if !tc.wantEnforcing {
 				wantEffective = "warn"
 			}
-			if got := monitor.Action(); got != wantEffective {
-				t.Errorf("monitor.Action() = %q, want %q", got, wantEffective)
-			}
-			if len(arming.criteria) != len(tc.wantCriteria) {
-				t.Fatalf("criteria = %v, want %v", arming.criteria, tc.wantCriteria)
-			}
-			for i, c := range tc.wantCriteria {
-				if arming.criteria[i] != c {
-					t.Errorf("criteria[%d] = %q, want %q", i, arming.criteria[i], c)
-				}
-			}
-			if monitor.Tripped() != tc.wantStatic {
-				t.Errorf("monitor.Tripped() = %v, want %v (staticSensitive pre-trip)", monitor.Tripped(), tc.wantStatic)
-			}
+			must.Equal(wantEffective, monitor.Action())
+			must.Equal(tc.wantCriteria, arming.criteria)
+			must.Equal(tc.wantStatic, monitor.Tripped(), "latch must start tripped only when sensitive data is declared")
 		})
 	}
 }
 
 func TestEmitRuleOfTwoEvents_RuntimeArmedEvent(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cfg := &types.RunConfig{
 		Mode:             "execution",
 		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
@@ -227,21 +209,15 @@ func TestEmitRuleOfTwoEvents_RuntimeArmedEvent(t *testing.T) {
 	sec, buf := captureSecLogger(t)
 	emitRuleOfTwoEvents(cfg, sec, resolveRuleOfTwoArming(cfg))
 	out := buf.String()
-	if !strings.Contains(out, `"event":"rule_of_two_runtime_armed"`) {
-		t.Fatalf("expected rule_of_two_runtime_armed event, got: %s", out)
-	}
-	if !strings.Contains(out, `"classifier":"patterns"`) {
-		t.Errorf("expected classifier patterns, got: %s", out)
-	}
-	if !strings.Contains(out, `"onDetect":"block-external"`) {
-		t.Errorf("expected onDetect block-external, got: %s", out)
-	}
-	if !strings.Contains(out, `"enforcing":true`) {
-		t.Errorf("expected enforcing true, got: %s", out)
-	}
+
+	must.Contains(out, `"event":"rule_of_two_runtime_armed"`)
+	check.Contains(out, `"classifier":"patterns"`)
+	check.Contains(out, `"onDetect":"block-external"`)
+	check.Contains(out, `"enforcing":true`)
 }
 
 func TestEmitRuleOfTwoEvents_UnarmedEmitsNoRuntimeEvent(t *testing.T) {
+	check := assert.New(t)
 	cfg := &types.RunConfig{
 		Mode:             "execution",
 		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
@@ -249,9 +225,8 @@ func TestEmitRuleOfTwoEvents_UnarmedEmitsNoRuntimeEvent(t *testing.T) {
 	}
 	sec, buf := captureSecLogger(t)
 	emitRuleOfTwoEvents(cfg, sec, resolveRuleOfTwoArming(cfg))
-	if strings.Contains(buf.String(), "rule_of_two_runtime_armed") {
-		t.Errorf("unarmed run must not emit rule_of_two_runtime_armed, got: %s", buf.String())
-	}
+
+	check.NotContains(buf.String(), "rule_of_two_runtime_armed")
 }
 
 // --- loop wiring ---
@@ -260,10 +235,9 @@ func TestEmitRuleOfTwoEvents_UnarmedEmitsNoRuntimeEvent(t *testing.T) {
 // key, simulating an agent reading credentials from a workspace file.
 func registerLeakyTool(t *testing.T, loop *AgenticLoop) {
 	t.Helper()
+	must := require.New(t)
 	registry, ok := loop.Tools.(*tool.Registry)
-	if !ok {
-		t.Fatalf("test loop Tools is %T, want *tool.Registry", loop.Tools)
-	}
+	must.True(ok, "test loop Tools is %T, want *tool.Registry", loop.Tools)
 	registry.Register(&tool.Tool{
 		Name:        "leaky_tool",
 		Description: "returns sensitive content",
@@ -294,6 +268,8 @@ func leakyToolProvider() *scriptedProvider {
 // sensitive_data_detected + rule_of_two_triggered events while the run
 // completes with the same outcome and turn count as an unmonitored run.
 func TestLoop_RuleOfTwoDetectsSensitiveToolResult(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	var secBuf bytes.Buffer
 	loop := buildTestLoopWithSecurity(nil, &secBuf)
 	loop.Provider = leakyToolProvider()
@@ -304,41 +280,19 @@ func TestLoop_RuleOfTwoDetectsSensitiveToolResult(t *testing.T) {
 	config.MaxTurns = 4
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if !monitor.Tripped() {
-		t.Fatal("monitor must latch on the key-bearing tool result")
-	}
+	must.NoError(err)
+	must.True(monitor.Tripped(), "monitor must latch on the key-bearing tool result")
 
 	out := secBuf.String()
-	if !strings.Contains(out, `"event":"sensitive_data_detected"`) {
-		t.Errorf("expected sensitive_data_detected event, got: %s", out)
-	}
-	if !strings.Contains(out, `"source":"tool_result"`) {
-		t.Errorf("expected source tool_result, got: %s", out)
-	}
-	if !strings.Contains(out, `"secret/aws_access_key_id"`) {
-		t.Errorf("expected the pattern name in the event, got: %s", out)
-	}
-	if strings.Contains(out, fakeLiveAWSKey) {
-		t.Errorf("matched content leaked into the security event stream: %s", out)
-	}
-	if !strings.Contains(out, `"event":"rule_of_two_triggered"`) {
-		t.Errorf("expected rule_of_two_triggered event, got: %s", out)
-	}
-	if !strings.Contains(out, `"sensitiveData":true`) {
-		t.Errorf("expected sensitiveData:true in trigger payload, got: %s", out)
-	}
-	if !strings.Contains(out, `"action":"block-external"`) {
-		t.Errorf("expected action block-external, got: %s", out)
-	}
-	if !strings.Contains(out, `"transition":true`) {
-		t.Errorf("expected transition:true on the latching detection, got: %s", out)
-	}
-	if !strings.Contains(out, `"scanning_suspended":true`) {
-		t.Errorf("expected scanning_suspended:true on the trigger event (soak data ends at the latch), got: %s", out)
-	}
+	check.Contains(out, `"event":"sensitive_data_detected"`)
+	check.Contains(out, `"source":"tool_result"`)
+	check.Contains(out, `"secret/aws_access_key_id"`)
+	check.NotContains(out, fakeLiveAWSKey, "matched content must not reach the security event stream")
+	check.Contains(out, `"event":"rule_of_two_triggered"`)
+	check.Contains(out, `"sensitiveData":true`)
+	check.Contains(out, `"action":"block-external"`)
+	check.Contains(out, `"transition":true`)
+	check.Contains(out, `"scanning_suspended":true`, "soak data ends at the latch, so the trigger event suspends scanning")
 
 	// Dark-ship pin: an identical run with the Noop monitor must end the
 	// same way — outcome and turn count unchanged by detection.
@@ -347,15 +301,9 @@ func TestLoop_RuleOfTwoDetectsSensitiveToolResult(t *testing.T) {
 	registerLeakyTool(t, baseline)
 	baseline.RuleOfTwo = ruleoftwo.NewNoop()
 	baselineTrace, err := baseline.Run(context.Background(), buildTestConfigWithMaxTurns(4))
-	if err != nil {
-		t.Fatalf("baseline Run() error: %v", err)
-	}
-	if runTrace.Outcome != baselineTrace.Outcome {
-		t.Errorf("outcome diverged: monitored %q vs baseline %q", runTrace.Outcome, baselineTrace.Outcome)
-	}
-	if runTrace.Turns != baselineTrace.Turns {
-		t.Errorf("turns diverged: monitored %d vs baseline %d", runTrace.Turns, baselineTrace.Turns)
-	}
+	must.NoError(err)
+	check.Equal(baselineTrace.Outcome, runTrace.Outcome, "outcome must match an unmonitored run")
+	check.Equal(baselineTrace.Turns, runTrace.Turns, "turn count must match an unmonitored run")
 }
 
 func buildTestConfigWithMaxTurns(maxTurns int) *types.RunConfig {
@@ -370,6 +318,8 @@ func buildTestConfigWithMaxTurns(maxTurns int) *types.RunConfig {
 // credential present only in the structured payload latches even when
 // the text Content is benign.
 func TestLoop_RuleOfTwoDetectsStructuredToolResult(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var secBuf bytes.Buffer
 	loop := buildTestLoopWithSecurity(nil, &secBuf)
 	loop.Provider = &scriptedProvider{
@@ -385,9 +335,7 @@ func TestLoop_RuleOfTwoDetectsStructuredToolResult(t *testing.T) {
 		},
 	}
 	registry, ok := loop.Tools.(*tool.Registry)
-	if !ok {
-		t.Fatalf("test loop Tools is %T, want *tool.Registry", loop.Tools)
-	}
+	must.True(ok, "test loop Tools is %T, want *tool.Registry", loop.Tools)
 	registry.Register(&tool.Tool{
 		Name:        "structured_tool",
 		Description: "returns a structured payload carrying a credential",
@@ -406,25 +354,14 @@ func TestLoop_RuleOfTwoDetectsStructuredToolResult(t *testing.T) {
 	config.MaxTurns = 4
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Errorf("outcome = %q, want success (observe-only)", runTrace.Outcome)
-	}
-	if !monitor.Tripped() {
-		t.Fatal("monitor must latch on a credential present only in the structured payload")
-	}
+	must.NoError(err)
+	check.Equal("success", runTrace.Outcome, "observe-only run must not change the outcome")
+	must.True(monitor.Tripped(), "monitor must latch on a credential present only in the structured payload")
+
 	out := secBuf.String()
-	if !strings.Contains(out, `"event":"sensitive_data_detected"`) {
-		t.Errorf("expected sensitive_data_detected event, got: %s", out)
-	}
-	if !strings.Contains(out, `"source":"tool_result"`) {
-		t.Errorf("expected source tool_result, got: %s", out)
-	}
-	if !strings.Contains(out, `"secret/aws_access_key_id"`) {
-		t.Errorf("expected the pattern name in the event, got: %s", out)
-	}
+	check.Contains(out, `"event":"sensitive_data_detected"`)
+	check.Contains(out, `"source":"tool_result"`)
+	check.Contains(out, `"secret/aws_access_key_id"`)
 }
 
 // trippedAtStreamProvider snapshots the monitor's latch state at the
@@ -454,6 +391,8 @@ func (p *trippedAtStreamProvider) Stream(_ context.Context, _ types.StreamParams
 }
 
 func TestLoop_RuleOfTwoLatchesOnDynamicContextBeforeFirstProviderCall(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var secBuf bytes.Buffer
 	loop := buildTestLoopWithSecurity(nil, &secBuf)
 	monitor := defaultRuleOfTwoTestMonitor()
@@ -474,29 +413,15 @@ func TestLoop_RuleOfTwoLatchesOnDynamicContextBeforeFirstProviderCall(t *testing
 	}
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Errorf("outcome = %q, want success (observe-only)", runTrace.Outcome)
-	}
-	if !prov.called {
-		t.Fatal("provider was never contacted")
-	}
-	if !prov.trippedAtCall {
-		t.Fatal("latch must trip before the first provider call (turn-0 scan precedes Prompt.Build)")
-	}
+	must.NoError(err)
+	check.Equal("success", runTrace.Outcome, "observe-only run must not change the outcome")
+	must.True(prov.called, "provider was never contacted")
+	must.True(prov.trippedAtCall, "latch must trip before the first provider call (turn-0 scan precedes Prompt.Build)")
 
 	out := secBuf.String()
-	if !strings.Contains(out, `"source":"dynamic_context"`) {
-		t.Errorf("expected source dynamic_context, got: %s", out)
-	}
-	if !strings.Contains(out, `"pii/credit_card"`) {
-		t.Errorf("expected pii/credit_card pattern, got: %s", out)
-	}
-	if !strings.Contains(out, `"event":"rule_of_two_triggered"`) {
-		t.Errorf("expected rule_of_two_triggered event, got: %s", out)
-	}
+	check.Contains(out, `"source":"dynamic_context"`)
+	check.Contains(out, `"pii/credit_card"`)
+	check.Contains(out, `"event":"rule_of_two_triggered"`)
 }
 
 // criterionGuard allows everything but tags each decision with a fixed
@@ -510,6 +435,8 @@ func (g *criterionGuard) Check(_ context.Context, _ guard.Input) (*guard.Decisio
 }
 
 func TestLoop_RuleOfTwoGuardCriterionRatchetTrips(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	var secBuf bytes.Buffer
 	prov := &mockProvider{
 		events: []types.StreamEvent{
@@ -524,51 +451,34 @@ func TestLoop_RuleOfTwoGuardCriterionRatchetTrips(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	metrics, err := observability.NewMetricsForTesting(mp)
-	if err != nil {
-		t.Fatalf("NewMetricsForTesting: %v", err)
-	}
+	must.NoError(err)
 	loop.Metrics = metrics
 	config := buildTestConfig()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Errorf("outcome = %q, want success", runTrace.Outcome)
-	}
-	if !monitor.Tripped() {
-		t.Fatal("matching guard criterion must trip the ratchet")
-	}
+	must.NoError(err)
+	check.Equal("success", runTrace.Outcome)
+	must.True(monitor.Tripped(), "matching guard criterion must trip the ratchet")
+
 	out := secBuf.String()
-	if !strings.Contains(out, `"source":"guard:stub"`) {
-		t.Errorf("expected source guard:stub, got: %s", out)
-	}
+	check.Contains(out, `"source":"guard:stub"`)
 	// Provenance namespacing: the guard's criterion must land in the
 	// patterns field prefixed "guard:" so it can never impersonate a
 	// deterministic detector name.
-	if !strings.Contains(out, `"patterns":["guard:sensitive_data"]`) {
-		t.Errorf("expected patterns [guard:sensitive_data], got: %s", out)
-	}
-	if !strings.Contains(out, `"event":"rule_of_two_triggered"`) {
-		t.Errorf("expected rule_of_two_triggered event, got: %s", out)
-	}
-	if got := ruleOfTwoDetectionPatternCount(t, reader, "guard:sensitive_data"); got != 1 {
-		t.Errorf("rule-of-two detections with pattern=guard:sensitive_data = %d, want 1", got)
-	}
-	if got := ruleOfTwoDetectionPatternCount(t, reader, "sensitive_data"); got != 0 {
-		t.Errorf("unprefixed criterion leaked into the pattern label: count = %d, want 0", got)
-	}
+	check.Contains(out, `"patterns":["guard:sensitive_data"]`)
+	check.Contains(out, `"event":"rule_of_two_triggered"`)
+	check.Equal(int64(1), ruleOfTwoDetectionPatternCount(t, reader, "guard:sensitive_data"), "detections labelled with the guard-prefixed pattern")
+	check.Equal(int64(0), ruleOfTwoDetectionPatternCount(t, reader, "sensitive_data"), "unprefixed criterion must not appear as a pattern label")
 }
 
 // ruleOfTwoDetectionPatternCount sums stirrup.ruleoftwo.detections data
 // points whose pattern attribute equals pattern.
 func ruleOfTwoDetectionPatternCount(t *testing.T, reader *sdkmetric.ManualReader, pattern string) int64 {
 	t.Helper()
+	must := require.New(t)
 	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
+	err := reader.Collect(context.Background(), &rm)
+	must.NoError(err)
 	var total int64
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
@@ -592,6 +502,7 @@ func ruleOfTwoDetectionPatternCount(t *testing.T, reader *sdkmetric.ManualReader
 }
 
 func TestLoop_RuleOfTwoGuardNonMatchingCriterionDoesNotTrip(t *testing.T) {
+	must := require.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "ok"},
@@ -603,15 +514,14 @@ func TestLoop_RuleOfTwoGuardNonMatchingCriterionDoesNotTrip(t *testing.T) {
 	monitor := defaultRuleOfTwoTestMonitor()
 	loop.RuleOfTwo = monitor
 
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if monitor.Tripped() {
-		t.Fatal("non-matching criterion must not trip the ratchet")
-	}
+	_, err := loop.Run(context.Background(), buildTestConfig())
+	must.NoError(err)
+	must.False(monitor.Tripped(), "non-matching criterion must not trip the ratchet")
 }
 
 func TestLoop_RuleOfTwoNoopEmitsNoEvents(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var secBuf bytes.Buffer
 	loop := buildTestLoopWithSecurity(nil, &secBuf)
 	loop.Provider = leakyToolProvider()
@@ -621,24 +531,19 @@ func TestLoop_RuleOfTwoNoopEmitsNoEvents(t *testing.T) {
 	config.MaxTurns = 4
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Errorf("outcome = %q, want success", runTrace.Outcome)
-	}
+	must.NoError(err)
+	check.Equal("success", runTrace.Outcome)
+
 	out := secBuf.String()
-	if strings.Contains(out, "sensitive_data_detected") {
-		t.Errorf("Noop monitor must not emit sensitive_data_detected, got: %s", out)
-	}
-	if strings.Contains(out, "rule_of_two_triggered") {
-		t.Errorf("Noop monitor must not emit rule_of_two_triggered, got: %s", out)
-	}
+	check.NotContains(out, "sensitive_data_detected")
+	check.NotContains(out, "rule_of_two_triggered")
 }
 
 // --- sub-agent sharing ---
 
 func TestSpawnSubAgent_SharesRuleOfTwoMonitor(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "sub output"},
@@ -656,13 +561,7 @@ func TestSpawnSubAgent_SharesRuleOfTwoMonitor(t *testing.T) {
 	result, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
 		Prompt: "inspect this credential: " + fakeLiveAWSKey,
 	})
-	if err != nil {
-		t.Fatalf("SpawnSubAgent() error: %v", err)
-	}
-	if result.Outcome != "success" {
-		t.Errorf("outcome = %q, want success (observe-only)", result.Outcome)
-	}
-	if !monitor.Tripped() {
-		t.Fatal("child observation must trip the shared parent monitor")
-	}
+	must.NoError(err)
+	check.Equal("success", result.Outcome, "observe-only run must not change the outcome")
+	must.True(monitor.Tripped(), "child observation must trip the shared parent monitor")
 }

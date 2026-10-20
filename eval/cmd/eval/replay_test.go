@@ -6,8 +6,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/eval/judge"
 	"github.com/rxbynerd/stirrup/eval/lakehouse"
@@ -20,11 +21,10 @@ import (
 // target.
 func seedRecordings(t *testing.T, runIDs []string, outcomes []string) string {
 	t.Helper()
+	must := require.New(t)
 	dir := t.TempDir()
 	store, err := lakehouse.NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
+	must.NoError(err, "NewFileStore")
 	defer func() { _ = store.Close() }()
 	for i, id := range runIDs {
 		rec := types.RunRecording{
@@ -35,85 +35,65 @@ func seedRecordings(t *testing.T, runIDs []string, outcomes []string) string {
 				Outcome: outcomes[i],
 			},
 		}
-		if err := store.StoreRecording(context.Background(), rec); err != nil {
-			t.Fatalf("StoreRecording %s: %v", id, err)
-		}
-		if err := store.StoreTrace(context.Background(), rec.FinalOutcome); err != nil {
-			t.Fatalf("StoreTrace %s: %v", id, err)
-		}
+		must.NoError(store.StoreRecording(context.Background(), rec), "StoreRecording %s", id)
+		must.NoError(store.StoreTrace(context.Background(), rec.FinalOutcome), "StoreTrace %s", id)
 	}
 	return dir
 }
 
-// TestSelectRecordings_ByID pins that explicit --recording selection
-// preserves input order.
-func TestSelectRecordings_ByID(t *testing.T) {
+// TestSelectRecordings_ByIDPreservesInputOrder pins that explicit --recording
+// selection preserves input order.
+func TestSelectRecordings_ByIDPreservesInputOrder(t *testing.T) {
+	must := require.New(t)
 	dir := seedRecordings(t,
 		[]string{"r1", "r2", "r3"},
 		[]string{"success", "error", "max_turns"},
 	)
 	store, err := lakehouse.NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
-	defer func() { _ = store.Close() }()
+	must.NoError(err)
+	t.Cleanup(func() { _ = store.Close() })
 
 	got, err := selectRecordings(context.Background(), store, []string{"r2", "r1"}, "")
-	if err != nil {
-		t.Fatalf("selectRecordings: %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("got %d recordings, want 2", len(got))
-	}
-	if got[0].RunID != "r2" || got[1].RunID != "r1" {
-		t.Errorf("order: got [%s, %s], want [r2, r1]", got[0].RunID, got[1].RunID)
-	}
+	must.NoError(err)
+	must.Len(got, 2)
+	must.Equal("r2", got[0].RunID)
+	must.Equal("r1", got[1].RunID)
 }
 
 // TestSelectRecordings_MissingIDIsError pins that a missing ID is fatal,
 // not silently skipped.
 func TestSelectRecordings_MissingIDIsError(t *testing.T) {
+	must := require.New(t)
 	dir := seedRecordings(t,
 		[]string{"r1"},
 		[]string{"success"},
 	)
 	store, err := lakehouse.NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
-	defer func() { _ = store.Close() }()
+	must.NoError(err)
+	t.Cleanup(func() { _ = store.Close() })
 
 	_, err = selectRecordings(context.Background(), store, []string{"nonexistent"}, "")
-	if err == nil {
-		t.Fatal("expected error for missing recording ID; got nil")
-	}
+	must.Error(err)
 }
 
 // TestSelectRecordings_OutcomeFilter pins that with no explicit IDs and a
 // non-empty outcome filter, the returned set matches every recording whose
 // Outcome equals the filter.
 func TestSelectRecordings_OutcomeFilter(t *testing.T) {
+	must := require.New(t)
 	dir := seedRecordings(t,
 		[]string{"r1", "r2", "r3"},
 		[]string{"success", "error", "error"},
 	)
 	store, err := lakehouse.NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
-	defer func() { _ = store.Close() }()
+	must.NoError(err)
+	t.Cleanup(func() { _ = store.Close() })
 
 	got, err := selectRecordings(context.Background(), store, nil, "error")
-	if err != nil {
-		t.Fatalf("selectRecordings: %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("got %d recordings, want 2", len(got))
-	}
+	must.NoError(err)
+	must.Len(got, 2)
 	for _, rec := range got {
-		if rec.FinalOutcome.Outcome != "error" {
-			t.Errorf("rec %q outcome = %q, want error", rec.RunID, rec.FinalOutcome.Outcome)
-		}
+		must.Equal("error", rec.FinalOutcome.Outcome, "recording %s", rec.RunID)
 	}
 }
 
@@ -122,44 +102,28 @@ func TestSelectRecordings_OutcomeFilter(t *testing.T) {
 // surfaces their flags.
 func TestCompletion_ReplayAndIngestFlagsRegistered(t *testing.T) {
 	for _, sub := range []string{"replay", "ingest"} {
-		flags, ok := evalCompletionFlags[sub]
-		if !ok {
-			t.Errorf("%s missing from evalCompletionFlags", sub)
-			continue
-		}
-		if len(flags) == 0 {
-			t.Errorf("%s has no completion flags", sub)
-		}
-	}
-	for _, sub := range []string{"replay", "ingest"} {
-		found := false
-		for _, s := range evalCompletionSubcommands {
-			if s == sub {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("%s missing from evalCompletionSubcommands", sub)
-		}
+		t.Run(sub, func(t *testing.T) {
+			must := require.New(t)
+			flags, ok := evalCompletionFlags[sub]
+			must.True(ok, "%s missing from evalCompletionFlags", sub)
+			must.NotEmpty(flags, "%s has no completion flags", sub)
+			must.Contains(evalCompletionSubcommands, sub)
+		})
 	}
 }
 
-// TestReplay_WorkspaceCaveat pins that with an empty --workspace flag and a
-// file-exists judge referencing a concrete path, the judge fails
-// informatively rather than crashing.
-func TestReplay_WorkspaceCaveat(t *testing.T) {
+// TestReplay_FileExistsJudgeFailsOnEmptyWorkspace pins that with an empty
+// --workspace flag and a file-exists judge referencing a concrete path, the
+// judge fails informatively rather than crashing.
+func TestReplay_FileExistsJudgeFailsOnEmptyWorkspace(t *testing.T) {
+	must := require.New(t)
 	dir := seedRecordings(t, []string{"r1"}, []string{"success"})
 	store, err := lakehouse.NewFileStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileStore: %v", err)
-	}
-	defer func() { _ = store.Close() }()
+	must.NoError(err)
+	t.Cleanup(func() { _ = store.Close() })
 
 	recordings, err := selectRecordings(context.Background(), store, []string{"r1"}, "")
-	if err != nil {
-		t.Fatalf("selectRecordings: %v", err)
-	}
+	must.NoError(err)
 
 	task := types.EvalTask{
 		ID: "task-1",
@@ -171,26 +135,20 @@ func TestReplay_WorkspaceCaveat(t *testing.T) {
 
 	emptyDir := t.TempDir()
 	_, err = os.Stat(filepath.Join(emptyDir, "output.txt"))
-	if !os.IsNotExist(err) {
-		t.Fatalf("test setup: empty workspace unexpectedly has output.txt")
-	}
+	must.ErrorIs(err, os.ErrNotExist, "test setup: empty workspace unexpectedly has output.txt")
+
 	res, err := runner.ReplayRecording(context.Background(), recordings[0], task, emptyDir, judge.Options{}, "")
-	if err != nil {
-		t.Fatalf("ReplayRecording: %v", err)
-	}
-	if res.Outcome == "pass" {
-		t.Errorf("file-exists with absent file: outcome = pass, want fail")
-	}
+	must.NoError(err)
+	must.NotEqual("pass", res.Outcome, "file-exists with absent file must not pass")
 }
 
 // TestReplay_LogsErrorVerdictReason pins that a composite judge that could
 // not rule, which returns no error, is still reported on stderr.
 func TestReplay_LogsErrorVerdictReason(t *testing.T) {
+	must := require.New(t)
 	lakehouseDir := seedRecordings(t, []string{"r1"}, []string{"success"})
 	workspace := t.TempDir()
-	if err := os.Mkdir(filepath.Join(workspace, "dir"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.Mkdir(filepath.Join(workspace, "dir"), 0o755))
 	suitePath := filepath.Join(t.TempDir(), "suite.hcl")
 	suite := `suite "s" {
   task "t" {
@@ -211,16 +169,13 @@ func TestReplay_LogsErrorVerdictReason(t *testing.T) {
   }
 }
 `
-	if err := os.WriteFile(suitePath, []byte(suite), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.WriteFile(suitePath, []byte(suite), 0o644))
 	var logs bytes.Buffer
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 
 	cmdReplay([]string{"-lakehouse", lakehouseDir, "-suite", suitePath, "-workspace", workspace})
 
-	if want := "replay r1: sub-judge 1 of 2 (file-contains) errored (require all); 1 skipped: "; !strings.Contains(logs.String(), want) {
-		t.Errorf("log = %q, want it to contain %q", logs.String(), want)
-	}
+	const want = "replay r1: sub-judge 1 of 2 (file-contains) errored (require all); 1 skipped: "
+	must.Contains(logs.String(), want)
 }

@@ -8,6 +8,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -37,33 +39,45 @@ func startLiveRun(t *testing.T, capture bool) (*OTelTraceEmitter, *tracetest.InM
 
 func finishLiveRun(t *testing.T, emitter *OTelTraceEmitter) {
 	t.Helper()
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
+	finishLiveRunWithOutcome(t, emitter, "success")
+}
+
+func finishLiveRunWithOutcome(t *testing.T, emitter *OTelTraceEmitter, outcome string) {
+	t.Helper()
+	must := require.New(t)
+	_, err := emitter.Finish(context.Background(), outcome)
+	must.NoError(err)
+}
+
+// lookupAttr returns the value of key on span and whether the span carries it.
+func lookupAttr(span tracetest.SpanStub, key string) (attribute.Value, bool) {
+	for _, attr := range span.Attributes {
+		if string(attr.Key) == key {
+			return attr.Value, true
+		}
 	}
+	return attribute.Value{}, false
 }
 
 func intAttr(t *testing.T, span tracetest.SpanStub, key string) int64 {
 	t.Helper()
-	for _, attr := range span.Attributes {
-		if string(attr.Key) == key {
-			return attr.Value.AsInt64()
-		}
-	}
-	t.Errorf("attribute %q not found on span %q", key, span.Name)
-	return 0
+	must := require.New(t)
+	v, ok := lookupAttr(span, key)
+	must.True(ok, "attribute %q not found on span %q", key, span.Name)
+	return v.AsInt64()
 }
 
 func TestStartChatSpan_NilBeforeStart(t *testing.T) {
+	must := require.New(t)
 	emitter, _ := newTestOTelEmitter()
-	if h := emitter.StartChatSpan(context.Background(), ChatSpanStart{Model: "m"}); h != nil {
-		t.Error("StartChatSpan before Start returned a handle")
-	}
-	if h := emitter.StartToolSpan(context.Background(), ToolSpanStart{Name: "read_file", Known: true}); h != nil {
-		t.Error("StartToolSpan before Start returned a handle")
-	}
+	must.Nil(emitter.StartChatSpan(context.Background(), ChatSpanStart{Model: "m"}),
+		"StartChatSpan before Start returned a handle")
+	must.Nil(emitter.StartToolSpan(context.Background(), ToolSpanStart{Name: "read_file", Known: true}),
+		"StartToolSpan before Start returned a handle")
 }
 
 func TestChatSpan_StartAttributesAndKind(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := startLiveRun(t, false)
 	temp := 0.2
 	chat := emitter.StartChatSpan(emitter.RootContext(), ChatSpanStart{
@@ -75,26 +89,16 @@ func TestChatSpan_StartAttributesAndKind(t *testing.T) {
 	finishLiveRun(t, emitter)
 
 	span := findSpan(t, exporter, "chat claude-haiku-4-5")
-	if span.SpanKind != oteltrace.SpanKindClient {
-		t.Errorf("kind = %v, want client", span.SpanKind)
-	}
+	must.Equal(oteltrace.SpanKindClient, span.SpanKind)
 	root := findSpan(t, exporter, "invoke_agent stirrup")
-	if span.Parent.SpanID() != root.SpanContext.SpanID() {
-		t.Error("chat span is not a child of the run span")
-	}
+	must.Equal(root.SpanContext.SpanID(), span.Parent.SpanID(), "chat span should be a child of the run span")
 	assertAttribute(t, span, genAIOperationNameKey, "chat")
 	assertAttribute(t, span, genAIProviderNameKey, "aws.bedrock")
 	assertAttribute(t, span, genAIRequestModelKey, "claude-haiku-4-5")
 	assertAttribute(t, span, serverAddressKey, "bedrock-runtime.us-east-1.amazonaws.com")
-	if got := intAttr(t, span, serverPortKey); got != 443 {
-		t.Errorf("server.port = %d", got)
-	}
-	if got := intAttr(t, span, "turn.number"); got != 3 {
-		t.Errorf("turn.number = %d", got)
-	}
-	if got := intAttr(t, span, genAIRequestMaxTokensKey); got != 8192 {
-		t.Errorf("max_tokens = %d", got)
-	}
+	must.Equal(int64(443), intAttr(t, span, serverPortKey))
+	must.Equal(int64(3), intAttr(t, span, "turn.number"))
+	must.Equal(int64(8192), intAttr(t, span, genAIRequestMaxTokensKey))
 }
 
 func TestChatSpan_NameFallsBackToRunModel(t *testing.T) {
@@ -111,7 +115,8 @@ func TestChatSpan_NameFallsBackToRunModel(t *testing.T) {
 	assertAttributesAbsent(t, findSpan(t, bareExporter, "chat"), genAIRequestModelKey, genAIProviderNameKey)
 }
 
-func TestChatSpan_EndAttributes(t *testing.T) {
+func TestChatSpan_EndRecordsUsageAndFinishReason(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := startLiveRun(t, false)
 	emitter.StartChatSpan(emitter.RootContext(), ChatSpanStart{Model: "m"}).End(ChatSpanEnd{
 		Summary: &types.TurnTrace{
@@ -128,36 +133,36 @@ func TestChatSpan_EndAttributes(t *testing.T) {
 	finishLiveRun(t, emitter)
 
 	span := findSpan(t, exporter, "chat m")
-	for key, want := range map[string]int64{
-		genAIUsageInputTokens:           100,
-		genAIUsageOutputTokens:          20,
-		genAIUsageCacheReadInputTokens:  50,
-		genAIUsageReasoningOutputTokens: 7,
-		"turn.tool_calls":               3,
-		"turn.duration_ms":              1234,
-		"turn.retries":                  2,
+	for _, tc := range []struct {
+		name string
+		key  string
+		want int64
+	}{
+		{"input tokens", genAIUsageInputTokens, 100},
+		{"output tokens", genAIUsageOutputTokens, 20},
+		{"cache read tokens", genAIUsageCacheReadInputTokens, 50},
+		{"reasoning tokens", genAIUsageReasoningOutputTokens, 7},
+		{"tool calls", "turn.tool_calls", 3},
+		{"duration", "turn.duration_ms", 1234},
+		{"retries", "turn.retries", 2},
 	} {
-		if got := intAttr(t, span, key); got != want {
-			t.Errorf("%s = %d, want %d", key, got, want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, intAttr(t, span, tc.key))
+		})
 	}
 	assertAttribute(t, span, genAIResponseModelKey, "m-2026")
 	assertAttributesAbsent(t, span, genAIUsageCacheCreationInputTokens, errorTypeKey)
-	for _, attr := range span.Attributes {
-		if string(attr.Key) == genAIFinishReasonsKey {
-			if got := attr.Value.AsStringSlice(); len(got) != 1 || got[0] != "tool_use" {
-				t.Errorf("finish_reasons = %v", got)
-			}
-		}
-	}
-	if span.Status.Code != codes.Unset {
-		t.Errorf("status = %v, want Unset", span.Status.Code)
-	}
+	reasons, ok := lookupAttr(span, genAIFinishReasonsKey)
+	must.True(ok, "finish_reasons missing")
+	must.Equal([]string{"tool_use"}, reasons.AsStringSlice())
+	must.Equal(codes.Unset, span.Status.Code)
 }
 
 // TestChatSpan_OutputLimitRecoveryAttribute pins that only a turn the
 // loop continued past an output-limit stop carries the recovery attribute.
 func TestChatSpan_OutputLimitRecoveryAttribute(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := startLiveRun(t, false)
 	emitter.StartChatSpan(emitter.RootContext(), ChatSpanStart{Model: "a"}).End(ChatSpanEnd{
 		Summary: &types.TurnTrace{StopReason: "max_tokens", OutputLimitRecovery: true},
@@ -167,16 +172,8 @@ func TestChatSpan_OutputLimitRecoveryAttribute(t *testing.T) {
 	})
 	finishLiveRun(t, emitter)
 
-	recovered := findSpan(t, exporter, "chat a")
-	var got bool
-	for _, attr := range recovered.Attributes {
-		if string(attr.Key) == "turn.output_limit_recovery" {
-			got = attr.Value.AsBool()
-		}
-	}
-	if !got {
-		t.Error("turn.output_limit_recovery = false or absent on the recovered turn, want true")
-	}
+	recovered, ok := lookupAttr(findSpan(t, exporter, "chat a"), "turn.output_limit_recovery")
+	must.True(ok && recovered.AsBool(), "turn.output_limit_recovery should be true on the recovered turn")
 	assertAttributesAbsent(t, findSpan(t, exporter, "chat b"), "turn.output_limit_recovery")
 }
 
@@ -197,6 +194,7 @@ func TestChatSpan_WindDownAttribute(t *testing.T) {
 }
 
 func TestChatSpan_ErrorScrubbed(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := startLiveRun(t, false)
 	emitter.StartChatSpan(emitter.RootContext(), ChatSpanStart{Model: "m"}).End(ChatSpanEnd{
 		Summary:   &types.TurnTrace{StopReason: "error"},
@@ -207,12 +205,9 @@ func TestChatSpan_ErrorScrubbed(t *testing.T) {
 
 	span := findSpan(t, exporter, "chat m")
 	assertAttribute(t, span, errorTypeKey, "provider_stream_failed")
-	if span.Status.Code != codes.Error {
-		t.Errorf("status = %v, want Error", span.Status.Code)
-	}
-	if strings.Contains(span.Status.Description, liveSecret) || !strings.Contains(span.Status.Description, "stream reset") {
-		t.Errorf("status description = %q, want scrubbed readable text", span.Status.Description)
-	}
+	must.Equal(codes.Error, span.Status.Code)
+	must.NotContains(span.Status.Description, liveSecret, "status description leaks the secret")
+	must.Contains(span.Status.Description, "stream reset")
 }
 
 func TestChatSpan_FailedRequestWithoutUsage(t *testing.T) {
@@ -230,6 +225,7 @@ func TestChatSpan_FailedRequestWithoutUsage(t *testing.T) {
 }
 
 func TestChatSpan_FailedRequestKeepsDiscardedUsage(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := startLiveRun(t, false)
 	emitter.StartChatSpan(emitter.RootContext(), ChatSpanStart{Model: "m"}).End(ChatSpanEnd{
 		Summary:   &types.TurnTrace{StopReason: "error", Tokens: types.TokenUsage{Input: 90, Output: 12}},
@@ -238,16 +234,13 @@ func TestChatSpan_FailedRequestKeepsDiscardedUsage(t *testing.T) {
 	finishLiveRun(t, emitter)
 
 	span := findSpan(t, exporter, "chat m")
-	if got := intAttr(t, span, genAIUsageInputTokens); got != 90 {
-		t.Errorf("input tokens = %d, want 90", got)
-	}
-	if got := intAttr(t, span, genAIUsageOutputTokens); got != 12 {
-		t.Errorf("output tokens = %d, want 12", got)
-	}
+	must.Equal(int64(90), intAttr(t, span, genAIUsageInputTokens))
+	must.Equal(int64(12), intAttr(t, span, genAIUsageOutputTokens))
 	assertAttributesAbsent(t, span, genAIFinishReasonsKey)
 }
 
 func TestChatSpan_FailedRequestCarriesScrubbedInputOnly(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := startLiveRun(t, true)
 	record := captureTurnRecord()
 	record.ModelInput.Messages[0].Content[0].Text = "list files, key " + liveSecret
@@ -261,16 +254,14 @@ func TestChatSpan_FailedRequestCarriesScrubbedInputOnly(t *testing.T) {
 
 	span := findSpan(t, exporter, "chat m")
 	input, ok := spanAttrString(span, genAIInputMessagesKey)
-	if !ok || !strings.Contains(input, "list files") {
-		t.Errorf("input messages = %q, want the request that failed", input)
-	}
-	if strings.Contains(input, liveSecret) {
-		t.Error("input messages leak the secret")
-	}
+	must.True(ok, "input messages missing")
+	must.Contains(input, "list files", "input messages should hold the request that failed")
+	must.NotContains(input, liveSecret, "input messages leak the secret")
 	assertAttributesAbsent(t, span, genAIOutputMessagesKey)
 }
 
-func TestChatSpan_ContentCapture(t *testing.T) {
+func TestChatSpan_ContentCaptureRecordsScrubbedMessages(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := startLiveRun(t, true)
 	emitter.RecordSystemInstructions("system prompt with " + liveSecret)
 	record := captureTurnRecord()
@@ -288,30 +279,22 @@ func TestChatSpan_ContentCapture(t *testing.T) {
 
 	parent := findSpan(t, exporter, "chat m")
 	input, ok := spanAttrString(parent, genAIInputMessagesKey)
-	if !ok || !strings.Contains(input, "list files") {
-		t.Errorf("input messages = %q", input)
-	}
+	must.True(ok, "input messages missing")
+	must.Contains(input, "list files")
 	output, _ := spanAttrString(parent, genAIOutputMessagesKey)
-	if !strings.Contains(output, `"finish_reason":"tool_use"`) {
-		t.Errorf("output messages = %q, want the summary's finish reason", output)
-	}
-	if _, ok := spanAttrString(parent, genAISystemInstructionsKey); !ok {
-		t.Error("top-level chat span is missing system instructions")
-	}
+	must.Contains(output, `"finish_reason":"tool_use"`, "output messages should carry the summary's finish reason")
+	_, ok = spanAttrString(parent, genAISystemInstructionsKey)
+	must.True(ok, "top-level chat span is missing system instructions")
 	assertAttributesAbsent(t, findSpan(t, exporter, "chat child"), genAISystemInstructionsKey)
 	for _, s := range exporter.GetSpans() {
 		for _, attr := range s.Attributes {
-			if strings.Contains(attr.Value.String(), liveSecret) {
-				t.Errorf("%s: %s leaks the secret", s.Name, attr.Key)
-			}
+			must.NotContains(attr.Value.String(), liveSecret, "%s: %s leaks the secret", s.Name, attr.Key)
 		}
 	}
 
 	root := findSpan(t, exporter, "invoke_agent stirrup")
 	rootInput, _ := spanAttrString(root, genAIInputMessagesKey)
-	if !strings.Contains(rootInput, "list files") {
-		t.Errorf("root input = %q, want the top-level run's seed prompt", rootInput)
-	}
+	must.Contains(rootInput, "list files", "root input should hold the top-level run's seed prompt")
 }
 
 func TestChatSpan_NoContentWithoutCapture(t *testing.T) {
@@ -328,7 +311,8 @@ func TestChatSpan_NoContentWithoutCapture(t *testing.T) {
 	}
 }
 
-func TestToolSpan_Attributes(t *testing.T) {
+func TestToolSpan_RecordsAttributesAndEndTime(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := startLiveRun(t, false)
 	start := time.Now()
 	tool := emitter.StartToolSpan(emitter.RootContext(), ToolSpanStart{CallID: "tu-1", Name: "read_file", Known: true, InputSize: 17, Turn: 2})
@@ -344,22 +328,15 @@ func TestToolSpan_Attributes(t *testing.T) {
 	assertAttribute(t, span, genAIToolNameKey, "read_file")
 	assertAttribute(t, span, genAIToolCallIDKey, "tu-1")
 	assertAttribute(t, span, genAIToolTypeKey, "function")
-	if got := intAttr(t, span, "tool.input_size"); got != 17 {
-		t.Errorf("tool.input_size = %d", got)
-	}
-	if got := intAttr(t, span, "turn.number"); got != 2 {
-		t.Errorf("turn.number = %d, want 2", got)
-	}
-	if got := intAttr(t, span, "tool.output_size"); got != 40 {
-		t.Errorf("tool.output_size = %d", got)
-	}
-	if !span.EndTime.Equal(endAt) {
-		t.Errorf("end time = %v, want %v", span.EndTime, endAt)
-	}
+	must.Equal(int64(17), intAttr(t, span, "tool.input_size"))
+	must.Equal(int64(2), intAttr(t, span, "turn.number"))
+	must.Equal(int64(40), intAttr(t, span, "tool.output_size"))
+	must.True(span.EndTime.Equal(endAt), "end time = %v, want %v", span.EndTime, endAt)
 	assertAttributesAbsent(t, span, "tool.name", "tool.failure_category", "tool.queue_ms", genAIToolCallArgumentsKey, genAIToolCallResultKey)
 }
 
-func TestToolSpan_QueueTime(t *testing.T) {
+func TestToolSpan_RecordsQueueTime(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := startLiveRun(t, false)
 	emitter.StartToolSpan(emitter.RootContext(), ToolSpanStart{Name: "control_plane_tool", Known: true}).End(ToolSpanEnd{
 		Summary: &types.ToolCallTrace{Name: "control_plane_tool", Success: true, DurationMs: 5},
@@ -367,12 +344,10 @@ func TestToolSpan_QueueTime(t *testing.T) {
 	})
 	finishLiveRun(t, emitter)
 	span := findSpan(t, exporter, "execute_tool control_plane_tool")
-	if got := intAttr(t, span, "tool.queue_ms"); got != 42 {
-		t.Errorf("tool.queue_ms = %d, want 42", got)
-	}
+	must.Equal(int64(42), intAttr(t, span, "tool.queue_ms"))
 }
 
-func TestToolSpan_UnknownToolNameBounded(t *testing.T) {
+func TestToolSpan_ShortUnknownToolNameRecorded(t *testing.T) {
 	emitter, exporter := startLiveRun(t, false)
 	emitter.StartToolSpan(emitter.RootContext(), ToolSpanStart{CallID: "tu-x", Name: "model_invented_name"}).End(ToolSpanEnd{
 		Summary: &types.ToolCallTrace{Name: "model_invented_name", ErrorCategory: "unknown_tool"},
@@ -384,6 +359,7 @@ func TestToolSpan_UnknownToolNameBounded(t *testing.T) {
 }
 
 func TestToolSpan_UnknownToolNameScrubbedAndCut(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := startLiveRun(t, false)
 	name := liveSecret + strings.Repeat("é", 200)
 	emitter.StartToolSpan(emitter.RootContext(), ToolSpanStart{Name: name}).End(ToolSpanEnd{
@@ -391,21 +367,15 @@ func TestToolSpan_UnknownToolNameScrubbedAndCut(t *testing.T) {
 	})
 	finishLiveRun(t, emitter)
 	span := findSpan(t, exporter, "execute_tool")
-	var got string
-	for _, attr := range span.Attributes {
-		if attr.Key == genAIToolNameKey {
-			got = attr.Value.AsString()
-		}
-	}
-	if strings.Contains(got, liveSecret) {
-		t.Errorf("gen_ai.tool.name carries the secret: %q", got)
-	}
-	if len(got) > maxUnknownToolNameBytes || !utf8.ValidString(got) {
-		t.Errorf("gen_ai.tool.name is %d bytes (valid UTF-8: %v), want at most %d valid bytes", len(got), utf8.ValidString(got), maxUnknownToolNameBytes)
-	}
+	got, ok := spanAttrString(span, genAIToolNameKey)
+	must.True(ok, "gen_ai.tool.name missing")
+	must.NotContains(got, liveSecret, "gen_ai.tool.name carries the secret")
+	must.LessOrEqual(len(got), maxUnknownToolNameBytes)
+	must.True(utf8.ValidString(got), "gen_ai.tool.name is not valid UTF-8")
 }
 
 func TestToolSpan_FailureScrubbed(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := startLiveRun(t, false)
 	emitter.StartToolSpan(emitter.RootContext(), ToolSpanStart{Name: "run_command", Known: true}).End(ToolSpanEnd{
 		Summary: &types.ToolCallTrace{Name: "run_command", ErrorCategory: "handler_error", ErrorReason: "exit 1: " + liveSecret},
@@ -417,16 +387,15 @@ func TestToolSpan_FailureScrubbed(t *testing.T) {
 
 	span := findSpan(t, exporter, "execute_tool run_command")
 	assertAttribute(t, span, errorTypeKey, "handler_error")
-	if span.Status.Code != codes.Error || strings.Contains(span.Status.Description, liveSecret) || !strings.Contains(span.Status.Description, "exit 1") {
-		t.Errorf("status = %v %q, want scrubbed Error", span.Status.Code, span.Status.Description)
-	}
+	must.Equal(codes.Error, span.Status.Code)
+	must.NotContains(span.Status.Description, liveSecret, "status description leaks the secret")
+	must.Contains(span.Status.Description, "exit 1")
 	bare := findSpan(t, exporter, "execute_tool write_file")
-	if bare.Status.Description != "tool call failed" {
-		t.Errorf("status description = %q, want the literal fallback", bare.Status.Description)
-	}
+	must.Equal("tool call failed", bare.Status.Description, "status description should be the literal fallback")
 }
 
 func TestToolSpan_ContentCaptureScrubbed(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := startLiveRun(t, true)
 	emitter.StartToolSpan(emitter.RootContext(), ToolSpanStart{CallID: "tu-1", Name: "read_file", Known: true}).End(ToolSpanEnd{
 		Summary: &types.ToolCallTrace{Name: "read_file", Success: true},
@@ -441,16 +410,17 @@ func TestToolSpan_ContentCaptureScrubbed(t *testing.T) {
 
 	span := findSpan(t, exporter, "execute_tool read_file")
 	args, ok := spanAttrString(span, genAIToolCallArgumentsKey)
-	if !ok || strings.Contains(args, liveSecret) || !json.Valid([]byte(args)) {
-		t.Errorf("arguments = %q, want scrubbed JSON", args)
-	}
+	must.True(ok, "tool call arguments missing")
+	must.NotContains(args, liveSecret, "arguments leak the secret")
+	must.True(json.Valid([]byte(args)), "arguments = %q, want JSON", args)
 	result, ok := spanAttrString(span, genAIToolCallResultKey)
-	if !ok || strings.Contains(result, liveSecret) || !strings.Contains(result, "contents") {
-		t.Errorf("result = %q, want scrubbed text", result)
-	}
+	must.True(ok, "tool call result missing")
+	must.NotContains(result, liveSecret, "result leaks the secret")
+	must.Contains(result, "contents")
 }
 
 func TestLiveSpan_EndIsIdempotent(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := startLiveRun(t, false)
 	chat := emitter.StartChatSpan(emitter.RootContext(), ChatSpanStart{Model: "m"})
 	chat.End(ChatSpanEnd{Summary: &types.TurnTrace{StopReason: "end_turn"}})
@@ -460,9 +430,7 @@ func TestLiveSpan_EndIsIdempotent(t *testing.T) {
 	tool.End(ToolSpanEnd{})
 	finishLiveRun(t, emitter)
 
-	if n := len(exporter.GetSpans()); n != 3 {
-		t.Fatalf("exported %d spans, want 3", n)
-	}
+	must.Len(exporter.GetSpans(), 3)
 	assertAttributesAbsent(t, findSpan(t, exporter, "chat m"), errorTypeKey)
 }
 
@@ -473,19 +441,13 @@ func TestFinish_EndsAbandonedHandles(t *testing.T) {
 	finishLiveRun(t, emitter)
 
 	for _, name := range []string{"chat m", "execute_tool read_file"} {
-		span := findSpan(t, exporter, name)
-		found := false
-		for _, attr := range span.Attributes {
-			if string(attr.Key) == spanAbandonedKey && attr.Value.AsBool() {
-				found = true
-			}
-		}
-		if !found {
-			t.Errorf("%s: missing %s=true", name, spanAbandonedKey)
-		}
-		if span.Status.Code != codes.Error {
-			t.Errorf("%s: status = %v, want Error", name, span.Status.Code)
-		}
+		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
+			span := findSpan(t, exporter, name)
+			abandoned, ok := lookupAttr(span, spanAbandonedKey)
+			must.True(ok && abandoned.AsBool(), "missing %s=true", spanAbandonedKey)
+			must.Equal(codes.Error, span.Status.Code)
+		})
 	}
 }
 
@@ -497,25 +459,22 @@ func failChat(emitter *OTelTraceEmitter, errorType string) {
 }
 
 func TestRootSpan_FailedRunNamesFailingRequestAndReason(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := startLiveRun(t, false)
 	failChat(emitter, "provider_request_failed")
 	emitter.RecordRunError("provider anthropic (m): connection refused, key " + liveSecret)
-	if _, err := emitter.Finish(context.Background(), "error"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
+	finishLiveRunWithOutcome(t, emitter, "error")
 
 	root := findSpan(t, exporter, "invoke_agent stirrup")
 	assertAttribute(t, root, errorTypeKey, "provider_request_failed")
 	assertAttribute(t, root, "run.outcome", "error")
-	if root.Status.Code != codes.Error {
-		t.Errorf("status = %v, want Error", root.Status.Code)
-	}
-	if strings.Contains(root.Status.Description, liveSecret) || !strings.Contains(root.Status.Description, "connection refused") {
-		t.Errorf("status description = %q, want scrubbed readable text", root.Status.Description)
-	}
+	must.Equal(codes.Error, root.Status.Code)
+	must.NotContains(root.Status.Description, liveSecret, "status description leaks the secret")
+	must.Contains(root.Status.Description, "connection refused")
 }
 
 func TestRootSpan_ErrorTypeIgnoresEarlierRecoveredAndSubAgentFailures(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := startLiveRun(t, false)
 	failChat(emitter, "context_overflow")
 	emitter.StartChatSpan(emitter.RootContext(), ChatSpanStart{Model: "m"}).End(ChatSpanEnd{
@@ -525,28 +484,21 @@ func TestRootSpan_ErrorTypeIgnoresEarlierRecoveredAndSubAgentFailures(t *testing
 		Summary:   &types.TurnTrace{StopReason: "error"},
 		ErrorType: "provider_stream_failed",
 	})
-	if _, err := emitter.Finish(context.Background(), "error"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
+	finishLiveRunWithOutcome(t, emitter, "error")
 
 	root := findSpan(t, exporter, "invoke_agent stirrup")
 	assertAttribute(t, root, errorTypeKey, "error")
-	if root.Status.Description != "error" {
-		t.Errorf("status description = %q, want the outcome when no run error was recorded", root.Status.Description)
-	}
+	must.Equal("error", root.Status.Description, "status description should be the outcome when no run error was recorded")
 }
 
 func TestRootSpan_OtherOutcomesKeepOutcomeAsErrorType(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := startLiveRun(t, false)
 	failChat(emitter, "provider_stream_failed")
 	emitter.RecordRunError("reached the turn limit (maxTurns 5)")
-	if _, err := emitter.Finish(context.Background(), "max_turns"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
+	finishLiveRunWithOutcome(t, emitter, "max_turns")
 
 	root := findSpan(t, exporter, "invoke_agent stirrup")
 	assertAttribute(t, root, errorTypeKey, "max_turns")
-	if root.Status.Description != "reached the turn limit (maxTurns 5)" {
-		t.Errorf("status description = %q", root.Status.Description)
-	}
+	must.Equal("reached the turn limit (maxTurns 5)", root.Status.Description)
 }

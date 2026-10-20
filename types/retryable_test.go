@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 type notRetryable struct{}
@@ -11,7 +13,7 @@ type notRetryable struct{}
 func (notRetryable) Error() string   { return "auth" }
 func (notRetryable) Retryable() bool { return false }
 
-func TestIsRetryable(t *testing.T) {
+func TestIsRetryable_ReportsOnlyMarkedErrors(t *testing.T) {
 	base := errors.New("overloaded")
 	cases := []struct {
 		name string
@@ -26,9 +28,8 @@ func TestIsRetryable(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := IsRetryable(tc.err); got != tc.want {
-				t.Errorf("IsRetryable(%v) = %v, want %v", tc.err, got, tc.want)
-			}
+			must := require.New(t)
+			must.Equal(tc.want, IsRetryable(tc.err), "IsRetryable(%v)", tc.err)
 		})
 	}
 }
@@ -36,13 +37,17 @@ func TestIsRetryable(t *testing.T) {
 func TestMarkRetryable_PreservesMessageAndChain(t *testing.T) {
 	base := errors.New("connection reset")
 	marked := MarkRetryable(base)
-	if marked.Error() != base.Error() {
-		t.Errorf("message = %q, want %q", marked.Error(), base.Error())
-	}
-	if !errors.Is(marked, base) {
-		t.Error("marked error does not unwrap to the original")
-	}
-	if MarkRetryable(nil) != nil {
-		t.Error("MarkRetryable(nil) should return nil")
-	}
+
+	t.Run("keeps message", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(base.Error(), marked.Error())
+	})
+	t.Run("unwraps to original", func(t *testing.T) {
+		must := require.New(t)
+		must.ErrorIs(marked, base)
+	})
+	t.Run("nil returns nil", func(t *testing.T) {
+		must := require.New(t)
+		must.NoError(MarkRetryable(nil))
+	})
 }

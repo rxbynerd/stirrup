@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestRegistry_RegisterAndResolve(t *testing.T) {
+	must := require.New(t)
 	r := NewRegistry()
 	tool := &Tool{
 		Name:        "test_tool",
@@ -20,22 +23,18 @@ func TestRegistry_RegisterAndResolve(t *testing.T) {
 	r.Register(tool)
 
 	resolved := r.Resolve("test_tool")
-	if resolved == nil {
-		t.Fatal("expected to resolve registered tool")
-	}
-	if resolved.Name != "test_tool" {
-		t.Errorf("got name %q, want %q", resolved.Name, "test_tool")
-	}
+	must.NotNil(resolved, "registered tool should resolve")
+	must.Equal("test_tool", resolved.Name)
 }
 
-func TestRegistry_ResolveUnknown(t *testing.T) {
+func TestRegistry_ResolveUnknown_ReturnsNil(t *testing.T) {
+	must := require.New(t)
 	r := NewRegistry()
-	if r.Resolve("nonexistent") != nil {
-		t.Error("expected nil for unregistered tool")
-	}
+	must.Nil(r.Resolve("nonexistent"), "unregistered tool should not resolve")
 }
 
-func TestRegistry_List(t *testing.T) {
+func TestRegistry_List_ReturnsRegisteredDefinitions(t *testing.T) {
+	must := require.New(t)
 	r := NewRegistry()
 	r.Register(&Tool{
 		Name:        "alpha",
@@ -49,18 +48,13 @@ func TestRegistry_List(t *testing.T) {
 	})
 
 	defs := r.List()
-	if len(defs) != 2 {
-		t.Fatalf("expected 2 definitions, got %d", len(defs))
-	}
-	if defs[0].Name != "alpha" {
-		t.Errorf("first tool: got %q, want %q", defs[0].Name, "alpha")
-	}
-	if defs[1].Name != "beta" {
-		t.Errorf("second tool: got %q, want %q", defs[1].Name, "beta")
-	}
+	must.Len(defs, 2)
+	must.Equal("alpha", defs[0].Name)
+	must.Equal("beta", defs[1].Name)
 }
 
-func TestRegistry_ListPreservesOrder(t *testing.T) {
+func TestRegistry_List_PreservesRegistrationOrder(t *testing.T) {
+	must := require.New(t)
 	r := NewRegistry()
 	names := []string{"charlie", "alpha", "bravo"}
 	for _, n := range names {
@@ -71,15 +65,15 @@ func TestRegistry_ListPreservesOrder(t *testing.T) {
 		})
 	}
 
-	defs := r.List()
-	for i, def := range defs {
-		if def.Name != names[i] {
-			t.Errorf("position %d: got %q, want %q", i, def.Name, names[i])
-		}
+	got := make([]string, 0, len(names))
+	for _, def := range r.List() {
+		got = append(got, def.Name)
 	}
+	must.Equal(names, got)
 }
 
-func TestRegistry_ReplaceExisting(t *testing.T) {
+func TestRegistry_RegisterReplacesExistingName(t *testing.T) {
+	must := require.New(t)
 	r := NewRegistry()
 	r.Register(&Tool{
 		Name:        "tool",
@@ -93,15 +87,12 @@ func TestRegistry_ReplaceExisting(t *testing.T) {
 	})
 
 	defs := r.List()
-	if len(defs) != 1 {
-		t.Fatalf("expected 1 definition after replacement, got %d", len(defs))
-	}
-	if defs[0].Description != "replaced" {
-		t.Errorf("got description %q, want %q", defs[0].Description, "replaced")
-	}
+	must.Len(defs, 1)
+	must.Equal("replaced", defs[0].Description)
 }
 
-func TestTool_Definition(t *testing.T) {
+func TestTool_Definition_CopiesNameDescriptionAndSchema(t *testing.T) {
+	must := require.New(t)
 	tool := &Tool{
 		Name:              "my_tool",
 		Description:       "My tool description",
@@ -111,13 +102,7 @@ func TestTool_Definition(t *testing.T) {
 	}
 
 	def := tool.Definition()
-	if def.Name != "my_tool" {
-		t.Errorf("name: got %q, want %q", def.Name, "my_tool")
-	}
-	if def.Description != "My tool description" {
-		t.Errorf("description mismatch")
-	}
-	if string(def.InputSchema) != `{"type": "object", "properties": {}}` {
-		t.Errorf("schema mismatch")
-	}
+	must.Equal("my_tool", def.Name)
+	must.Equal("My tool description", def.Description)
+	must.JSONEq(`{"type": "object", "properties": {}}`, string(def.InputSchema))
 }

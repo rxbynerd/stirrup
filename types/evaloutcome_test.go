@@ -1,10 +1,14 @@
 package types
 
-import "testing"
+import (
+	"testing"
 
-// TestEvalOutcomeFor walks the (Outcome, VerificationResults) →
+	"github.com/stretchr/testify/require"
+)
+
+// TestEvalOutcomeFor_MapsRunOutcomes walks the (Outcome, VerificationResults) →
 // EvalOutcome mapping documented in docs/eval.md.
-func TestEvalOutcomeFor(t *testing.T) {
+func TestEvalOutcomeFor_MapsRunOutcomes(t *testing.T) {
 	cases := []struct {
 		name  string
 		trace RunTrace
@@ -118,68 +122,74 @@ func TestEvalOutcomeFor(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := EvalOutcomeFor(tc.trace)
-			if got != tc.want {
-				t.Errorf("EvalOutcomeFor(%+v) = %q, want %q", tc.trace.Outcome, got, tc.want)
-			}
+			must := require.New(t)
+			must.Equal(tc.want, EvalOutcomeFor(tc.trace))
 		})
 	}
 }
 
-func TestRunHealthFor(t *testing.T) {
+func TestRunHealthFor_MapsRunOutcomes(t *testing.T) {
 	cases := []struct {
+		name    string
 		outcome string
 		want    RunHealth
 	}{
-		{"success", RunHealthy},
-		{"error", RunFailed},
-		{"tool_failures", RunFailed},
-		{"verification_failed", RunFailed},
-		{"verification_error", RunFailed},
-		{"setup_failed", RunFailed},
-		{"hook_failed", RunFailed},
-		{"structured_output_failed", RunFailed},
-		{"max_turns", RunDegraded},
-		{"timeout", RunDegraded},
-		{"max_tokens", RunDegraded},
-		{"budget_exceeded", RunDegraded},
-		{"stalled", RunDegraded},
-		{"cancelled", RunDegraded},
-		{"refusal", RunDegraded},
-		{"some_future_outcome", RunDegraded},
-		{"", RunDegraded},
+		{name: "success", outcome: "success", want: RunHealthy},
+		{name: "error", outcome: "error", want: RunFailed},
+		{name: "tool_failures", outcome: "tool_failures", want: RunFailed},
+		{name: "verification_failed", outcome: "verification_failed", want: RunFailed},
+		{name: "verification_error", outcome: "verification_error", want: RunFailed},
+		{name: "setup_failed", outcome: "setup_failed", want: RunFailed},
+		{name: "hook_failed", outcome: "hook_failed", want: RunFailed},
+		{name: "structured_output_failed", outcome: "structured_output_failed", want: RunFailed},
+		{name: "max_turns", outcome: "max_turns", want: RunDegraded},
+		{name: "timeout", outcome: "timeout", want: RunDegraded},
+		{name: "max_tokens", outcome: "max_tokens", want: RunDegraded},
+		{name: "budget_exceeded", outcome: "budget_exceeded", want: RunDegraded},
+		{name: "stalled", outcome: "stalled", want: RunDegraded},
+		{name: "cancelled", outcome: "cancelled", want: RunDegraded},
+		{name: "refusal", outcome: "refusal", want: RunDegraded},
+		{name: "unknown future outcome", outcome: "some_future_outcome", want: RunDegraded},
+		{name: "empty outcome", outcome: "", want: RunDegraded},
 	}
 	for _, tc := range cases {
-		t.Run(tc.outcome, func(t *testing.T) {
-			if got := RunHealthFor(&RunTrace{Outcome: tc.outcome}, false); got != tc.want {
-				t.Errorf("RunHealthFor(%q, false) = %q, want %q", tc.outcome, got, tc.want)
-			}
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, RunHealthFor(&RunTrace{Outcome: tc.outcome}, false))
 		})
 	}
 }
 
 func TestRunHealthFor_HarnessFailureAndMissingTrace(t *testing.T) {
 	for _, outcome := range []string{"success", "max_turns", "error"} {
-		if got := RunHealthFor(&RunTrace{Outcome: outcome}, true); got != RunFailed {
-			t.Errorf("a non-zero exit with outcome %q = %q, want %q", outcome, got, RunFailed)
-		}
+		t.Run("non-zero exit with outcome "+outcome, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(RunFailed, RunHealthFor(&RunTrace{Outcome: outcome}, true),
+				"a non-zero exit fails the run regardless of the outcome")
+		})
 	}
-	if got := RunHealthFor(nil, false); got != RunFailed {
-		t.Errorf("a nil trace = %q, want %q", got, RunFailed)
-	}
+	t.Run("nil trace", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(RunFailed, RunHealthFor(nil, false))
+	})
 }
 
 func TestRunHealthFor_SuccessWithFailedVerifierStaysHealthy(t *testing.T) {
 	trace := &RunTrace{Outcome: "success", VerificationResults: []VerificationResult{{Passed: false}}}
-	if got := RunHealthFor(trace, false); got != RunHealthy {
-		t.Errorf("health = %q, want %q (the verifier verdict is reported separately)", got, RunHealthy)
-	}
-	if got := EvalOutcomeFor(*trace); got != EvalFailed {
-		t.Errorf("EvalOutcomeFor = %q, want %q (unchanged)", got, EvalFailed)
-	}
+
+	t.Run("health", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(RunHealthy, RunHealthFor(trace, false),
+			"the verifier verdict is reported separately")
+	})
+	t.Run("eval outcome", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(EvalFailed, EvalOutcomeFor(*trace),
+			"the eval outcome still counts the failed verifier")
+	})
 }
 
-func TestLastVerification(t *testing.T) {
+func TestLastVerification_ReturnsLatestResultStatus(t *testing.T) {
 	pass, fail := VerificationResult{Passed: true}, VerificationResult{Passed: false}
 	cases := []struct {
 		name  string
@@ -195,9 +205,8 @@ func TestLastVerification(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := LastVerification(tc.trace); got != tc.want {
-				t.Errorf("LastVerification = %q, want %q", got, tc.want)
-			}
+			must := require.New(t)
+			must.Equal(tc.want, LastVerification(tc.trace))
 		})
 	}
 }

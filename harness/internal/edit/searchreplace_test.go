@@ -6,32 +6,41 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 )
 
+func newSearchReplaceExecutor(t *testing.T) *executor.LocalExecutor {
+	t.Helper()
+	must := require.New(t)
+	exec, err := executor.NewLocalExecutor(t.TempDir())
+	must.NoError(err)
+	return exec
+}
+
+func writeSearchReplaceFixture(t *testing.T, exec *executor.LocalExecutor, path, content string) {
+	t.Helper()
+	must := require.New(t)
+	must.NoError(exec.WriteFile(context.Background(), path, content))
+}
+
 func TestSearchReplaceStrategy_ToolDefinition(t *testing.T) {
+	check := assert.New(t)
 	s := NewSearchReplaceStrategy()
 	def := s.ToolDefinition()
 
-	if def.Name != "search_replace" {
-		t.Errorf("name: got %q, want %q", def.Name, "search_replace")
-	}
-	if len(def.InputSchema) == 0 {
-		t.Error("input schema should not be empty")
-	}
+	check.Equal("search_replace", def.Name)
+	check.NotEmpty(def.InputSchema)
 }
 
-func TestSearchReplaceStrategy_BasicReplacement(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
-
-	// Create an initial file.
-	if err := exec.WriteFile(context.Background(), "main.go", "package main\n\nfunc hello() {\n\treturn\n}\n"); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+func TestSearchReplaceStrategy_ReplacesUniqueMatch(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
+	ctx := context.Background()
+	exec := newSearchReplaceExecutor(t)
+	writeSearchReplaceFixture(t, exec, "main.go", "package main\n\nfunc hello() {\n\treturn\n}\n")
 
 	s := NewSearchReplaceStrategy()
 	input := json.RawMessage(`{
@@ -40,54 +49,28 @@ func TestSearchReplaceStrategy_BasicReplacement(t *testing.T) {
 		"new_string": "func hello() {\n\tfmt.Println(\"hello\")\n}"
 	}`)
 
-	result, err := s.Apply(context.Background(), input, exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if !result.Applied {
-		t.Fatalf("expected Applied=true; error: %s", result.Error)
-	}
-	if result.Path != "main.go" {
-		t.Errorf("path: got %q, want %q", result.Path, "main.go")
-	}
+	result, err := s.Apply(ctx, input, exec)
+	must.NoError(err)
+	must.True(result.Applied, "error: %s", result.Error)
+	check.Equal("main.go", result.Path)
 
-	// Verify the file was updated.
-	content, err := exec.ReadFile(context.Background(), "main.go")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if !strings.Contains(content, "fmt.Println") {
-		t.Errorf("expected replacement text in file; got: %s", content)
-	}
-	if strings.Contains(content, "return") {
-		t.Errorf("expected old text to be removed; got: %s", content)
-	}
+	content, err := exec.ReadFile(ctx, "main.go")
+	must.NoError(err)
+	check.Contains(content, "fmt.Println")
+	check.NotContains(content, "return")
 
-	// Verify diff output.
-	if result.Diff == "" {
-		t.Error("expected non-empty diff")
-	}
-	if !strings.Contains(result.Diff, "---") {
-		t.Error("diff should contain unified diff header")
-	}
-	if !strings.Contains(result.Diff, "-\treturn") {
-		t.Errorf("diff should show removed line; got:\n%s", result.Diff)
-	}
-	if !strings.Contains(result.Diff, "+\tfmt.Println") {
-		t.Errorf("diff should show added line; got:\n%s", result.Diff)
-	}
+	check.NotEmpty(result.Diff)
+	check.Contains(result.Diff, "---")
+	check.Contains(result.Diff, "-\treturn")
+	check.Contains(result.Diff, "+\tfmt.Println")
 }
 
-func TestSearchReplaceStrategy_NoMatch(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
-
-	if err := exec.WriteFile(context.Background(), "file.txt", "hello world\n"); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+func TestSearchReplaceStrategy_NoMatchReportsNotFound(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	ctx := context.Background()
+	exec := newSearchReplaceExecutor(t)
+	writeSearchReplaceFixture(t, exec, "file.txt", "hello world\n")
 
 	s := NewSearchReplaceStrategy()
 	input := json.RawMessage(`{
@@ -96,28 +79,18 @@ func TestSearchReplaceStrategy_NoMatch(t *testing.T) {
 		"new_string": "replacement"
 	}`)
 
-	result, err := s.Apply(context.Background(), input, exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied {
-		t.Error("expected Applied=false for no match")
-	}
-	if !strings.Contains(result.Error, "not found") {
-		t.Errorf("expected 'not found' error; got: %s", result.Error)
-	}
+	result, err := s.Apply(ctx, input, exec)
+	must.NoError(err)
+	check.False(result.Applied)
+	check.Contains(result.Error, "not found")
 }
 
-func TestSearchReplaceStrategy_MultipleMatches(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
-
-	if err := exec.WriteFile(context.Background(), "file.txt", "foo\nbar\nfoo\nbaz\n"); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+func TestSearchReplaceStrategy_MultipleMatchesRejected(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
+	ctx := context.Background()
+	exec := newSearchReplaceExecutor(t)
+	writeSearchReplaceFixture(t, exec, "file.txt", "foo\nbar\nfoo\nbaz\n")
 
 	s := NewSearchReplaceStrategy()
 	input := json.RawMessage(`{
@@ -126,33 +99,21 @@ func TestSearchReplaceStrategy_MultipleMatches(t *testing.T) {
 		"new_string": "qux"
 	}`)
 
-	result, err := s.Apply(context.Background(), input, exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied {
-		t.Error("expected Applied=false for multiple matches")
-	}
-	if !strings.Contains(result.Error, "2 locations") {
-		t.Errorf("expected error mentioning 2 locations; got: %s", result.Error)
-	}
+	result, err := s.Apply(ctx, input, exec)
+	must.NoError(err)
+	check.False(result.Applied)
+	check.Contains(result.Error, "2 locations")
 
-	// Verify the file was not modified.
-	content, err := exec.ReadFile(context.Background(), "file.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if strings.Contains(content, "qux") {
-		t.Error("file should not have been modified")
-	}
+	content, err := exec.ReadFile(ctx, "file.txt")
+	must.NoError(err)
+	check.NotContains(content, "qux", "file should not have been modified")
 }
 
-func TestSearchReplaceStrategy_FileCreation(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
+func TestSearchReplaceStrategy_EmptyOldStringCreatesFile(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	ctx := context.Background()
+	exec := newSearchReplaceExecutor(t)
 
 	s := NewSearchReplaceStrategy()
 	input := json.RawMessage(`{
@@ -161,39 +122,23 @@ func TestSearchReplaceStrategy_FileCreation(t *testing.T) {
 		"new_string": "brand new content\n"
 	}`)
 
-	result, err := s.Apply(context.Background(), input, exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if !result.Applied {
-		t.Fatalf("expected Applied=true; error: %s", result.Error)
-	}
+	result, err := s.Apply(ctx, input, exec)
+	must.NoError(err)
+	must.True(result.Applied, "error: %s", result.Error)
 
-	// Verify the file was created.
-	content, err := exec.ReadFile(context.Background(), "new_file.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if content != "brand new content\n" {
-		t.Errorf("content: got %q, want %q", content, "brand new content\n")
-	}
+	content, err := exec.ReadFile(ctx, "new_file.txt")
+	must.NoError(err)
+	check.Equal("brand new content\n", content)
 
-	// Verify diff shows all lines as additions.
-	if !strings.Contains(result.Diff, "+brand new content") {
-		t.Errorf("diff should show added line; got:\n%s", result.Diff)
-	}
+	check.Contains(result.Diff, "+brand new content")
 }
 
-func TestSearchReplaceStrategy_FileCreation_ExistingFile(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
-
-	if err := exec.WriteFile(context.Background(), "existing.txt", "already here\n"); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+func TestSearchReplaceStrategy_EmptyOldStringRejectsExistingFile(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
+	ctx := context.Background()
+	exec := newSearchReplaceExecutor(t)
+	writeSearchReplaceFixture(t, exec, "existing.txt", "already here\n")
 
 	s := NewSearchReplaceStrategy()
 	input := json.RawMessage(`{
@@ -202,62 +147,41 @@ func TestSearchReplaceStrategy_FileCreation_ExistingFile(t *testing.T) {
 		"new_string": "overwrite"
 	}`)
 
-	result, err := s.Apply(context.Background(), input, exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied {
-		t.Error("expected Applied=false when old_string is empty and file exists")
-	}
-	if !strings.Contains(result.Error, "already exists") {
-		t.Errorf("expected 'already exists' error; got: %s", result.Error)
-	}
+	result, err := s.Apply(ctx, input, exec)
+	must.NoError(err)
+	check.False(result.Applied)
+	check.Contains(result.Error, "already exists")
 }
 
 func TestSearchReplaceStrategy_MissingPath(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
+	must := require.New(t)
+	check := assert.New(t)
+	exec := newSearchReplaceExecutor(t)
 
 	s := NewSearchReplaceStrategy()
 	input := json.RawMessage(`{"old_string": "x", "new_string": "y"}`)
 
 	result, err := s.Apply(context.Background(), input, exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied {
-		t.Error("expected Applied=false for missing path")
-	}
-	if result.Error == "" {
-		t.Error("expected an error message")
-	}
+	must.NoError(err)
+	check.False(result.Applied)
+	check.NotEmpty(result.Error, "expected an error message for missing path")
 }
 
-func TestSearchReplaceStrategy_InvalidJSON(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
+func TestSearchReplaceStrategy_InvalidJSONReturnsError(t *testing.T) {
+	must := require.New(t)
+	exec := newSearchReplaceExecutor(t)
 
 	s := NewSearchReplaceStrategy()
 	input := json.RawMessage(`{invalid`)
 
-	_, err = s.Apply(context.Background(), input, exec)
-	if err == nil {
-		t.Fatal("expected error for invalid JSON")
-	}
+	_, err := s.Apply(context.Background(), input, exec)
+	must.Error(err)
 }
 
-func TestSearchReplaceStrategy_NonexistentFile(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
+func TestSearchReplaceStrategy_MissingFileReportsReadError(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	exec := newSearchReplaceExecutor(t)
 
 	s := NewSearchReplaceStrategy()
 	input := json.RawMessage(`{
@@ -267,28 +191,17 @@ func TestSearchReplaceStrategy_NonexistentFile(t *testing.T) {
 	}`)
 
 	result, err := s.Apply(context.Background(), input, exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if result.Applied {
-		t.Error("expected Applied=false for nonexistent file")
-	}
-	if !strings.Contains(result.Error, "read file") {
-		t.Errorf("expected read file error; got: %s", result.Error)
-	}
+	must.NoError(err)
+	check.False(result.Applied)
+	check.Contains(result.Error, "read file")
 }
 
-func TestSearchReplaceStrategy_DiffOutput(t *testing.T) {
-	dir := t.TempDir()
-	exec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatalf("NewLocalExecutor: %v", err)
-	}
-
-	original := "line 1\nline 2\nline 3\nline 4\nline 5\n"
-	if err := exec.WriteFile(context.Background(), "diff.txt", original); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+func TestSearchReplaceStrategy_DiffShowsChangedLine(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	ctx := context.Background()
+	exec := newSearchReplaceExecutor(t)
+	writeSearchReplaceFixture(t, exec, "diff.txt", "line 1\nline 2\nline 3\nline 4\nline 5\n")
 
 	s := NewSearchReplaceStrategy()
 	input := json.RawMessage(`{
@@ -297,23 +210,12 @@ func TestSearchReplaceStrategy_DiffOutput(t *testing.T) {
 		"new_string": "line THREE"
 	}`)
 
-	result, err := s.Apply(context.Background(), input, exec)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if !result.Applied {
-		t.Fatalf("expected Applied=true; error: %s", result.Error)
-	}
+	result, err := s.Apply(ctx, input, exec)
+	must.NoError(err)
+	must.True(result.Applied, "error: %s", result.Error)
 
-	// Diff should have unified diff headers.
-	if !strings.HasPrefix(result.Diff, "--- a/diff.txt\n+++ b/diff.txt\n") {
-		t.Errorf("diff should start with file headers; got:\n%s", result.Diff)
-	}
-	// Diff should show the specific change.
-	if !strings.Contains(result.Diff, "-line 3") {
-		t.Errorf("diff should show removed line; got:\n%s", result.Diff)
-	}
-	if !strings.Contains(result.Diff, "+line THREE") {
-		t.Errorf("diff should show added line; got:\n%s", result.Diff)
-	}
+	check.True(strings.HasPrefix(result.Diff, "--- a/diff.txt\n+++ b/diff.txt\n"),
+		"diff should start with file headers; got:\n%s", result.Diff)
+	check.Contains(result.Diff, "-line 3")
+	check.Contains(result.Diff, "+line THREE")
 }

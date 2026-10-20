@@ -3,9 +3,12 @@ package codescanner
 import (
 	"context"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewSemgrepScanner_NoopWhenBinaryMissing(t *testing.T) {
+	must := require.New(t)
 	// Force the lookup to a name that cannot exist on PATH so we
 	// exercise the no-op fallback regardless of the test host.
 	prev := semgrepBinary
@@ -13,20 +16,15 @@ func TestNewSemgrepScanner_NoopWhenBinaryMissing(t *testing.T) {
 	t.Cleanup(func() { semgrepBinary = prev })
 
 	s := NewSemgrepScanner("")
-	if _, ok := s.(NoopSemgrepScanner); !ok {
-		t.Fatalf("expected NoopSemgrepScanner, got %T", s)
-	}
+	must.IsType(NoopSemgrepScanner{}, s)
 
 	res, err := s.Scan(context.Background(), "x.py", []byte("eval('boom')"))
-	if err != nil {
-		t.Fatalf("Scan: %v", err)
-	}
-	if len(res.Findings) != 0 {
-		t.Errorf("noop must yield no findings, got: %+v", res.Findings)
-	}
+	must.NoError(err)
+	must.Empty(res.Findings, "noop scanner must yield no findings")
 }
 
 func TestParseSemgrepOutput_MapsSeverities(t *testing.T) {
+	must := require.New(t)
 	raw := []byte(`{
 		"results": [
 			{
@@ -52,58 +50,49 @@ func TestParseSemgrepOutput_MapsSeverities(t *testing.T) {
 		]
 	}`)
 	res, err := parseSemgrepOutput(raw)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if len(res.Findings) != 4 {
-		t.Fatalf("expected 4 findings, got %d", len(res.Findings))
-	}
+	must.NoError(err)
+	must.Len(res.Findings, 4)
+
 	expected := []struct {
-		rule, severity string
+		name, rule, severity string
 	}{
-		{"rule/error", SeverityBlock},
-		{"rule/warning", SeverityWarn},
-		{"rule/info", SeverityWarn},
-		{"rule/unknown", SeverityWarn},
+		{"error maps to block", "rule/error", SeverityBlock},
+		{"warning maps to warn", "rule/warning", SeverityWarn},
+		{"info maps to warn", "rule/info", SeverityWarn},
+		{"unknown severity maps to warn", "rule/unknown", SeverityWarn},
 	}
 	for i, exp := range expected {
-		if res.Findings[i].Rule != exp.rule {
-			t.Errorf("[%d] rule: got %q want %q", i, res.Findings[i].Rule, exp.rule)
-		}
-		if res.Findings[i].Severity != exp.severity {
-			t.Errorf("[%d] severity: got %q want %q", i, res.Findings[i].Severity, exp.severity)
-		}
+		t.Run(exp.name, func(t *testing.T) {
+			must := require.New(t)
+			finding := res.Findings[i]
+			must.Equal(exp.rule, finding.Rule)
+			must.Equal(exp.severity, finding.Severity)
+		})
 	}
 }
 
 func TestParseSemgrepOutput_EmptyResults(t *testing.T) {
+	must := require.New(t)
 	res, err := parseSemgrepOutput([]byte(`{"results": []}`))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if len(res.Findings) != 0 {
-		t.Errorf("expected 0 findings, got %d", len(res.Findings))
-	}
+	must.NoError(err)
+	must.Empty(res.Findings)
 }
 
 func TestParseSemgrepOutput_EmptyBytes(t *testing.T) {
+	must := require.New(t)
 	res, err := parseSemgrepOutput(nil)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if len(res.Findings) != 0 {
-		t.Errorf("expected 0 findings, got %d", len(res.Findings))
-	}
+	must.NoError(err)
+	must.Empty(res.Findings)
 }
 
 func TestParseSemgrepOutput_BadJSON(t *testing.T) {
+	must := require.New(t)
 	_, err := parseSemgrepOutput([]byte(`not json`))
-	if err == nil {
-		t.Fatal("expected parse error, got nil")
-	}
+	must.Error(err)
 }
 
 func TestSemgrepScanner_RunFnHookIsHonoured(t *testing.T) {
+	must := require.New(t)
 	canned := []byte(`{"results":[{"check_id":"fake/rule","start":{"line":3},"extra":{"severity":"ERROR","message":"hi"}}]}`)
 	s := &SemgrepScanner{
 		path: "/fake/semgrep",
@@ -112,20 +101,16 @@ func TestSemgrepScanner_RunFnHookIsHonoured(t *testing.T) {
 		},
 	}
 	res, err := s.Scan(context.Background(), "x.py", []byte("anything"))
-	if err != nil {
-		t.Fatalf("Scan: %v", err)
-	}
-	if len(res.Findings) != 1 || res.Findings[0].Rule != "fake/rule" {
-		t.Fatalf("unexpected findings: %+v", res.Findings)
-	}
-	if res.Findings[0].Severity != SeverityBlock {
-		t.Errorf("expected block severity, got %q", res.Findings[0].Severity)
-	}
+	must.NoError(err)
+	must.Len(res.Findings, 1)
+	must.Equal("fake/rule", res.Findings[0].Rule)
+	must.Equal(SeverityBlock, res.Findings[0].Severity)
 }
 
 // TestSemgrepScanner_ConfigPathUsed verifies a non-empty ConfigPath
 // flows into the runFn argv as the value of --config.
 func TestSemgrepScanner_ConfigPathUsed(t *testing.T) {
+	must := require.New(t)
 	var captured string
 	s := &SemgrepScanner{
 		path:       "/fake/semgrep",
@@ -135,17 +120,15 @@ func TestSemgrepScanner_ConfigPathUsed(t *testing.T) {
 			return []byte(`{"results":[]}`), nil
 		},
 	}
-	if _, err := s.Scan(context.Background(), "x.py", []byte("ok")); err != nil {
-		t.Fatalf("Scan: %v", err)
-	}
-	if want := "/etc/stirrup/semgrep-rules"; captured != want {
-		t.Errorf("configArg: got %q, want %q", captured, want)
-	}
+	_, err := s.Scan(context.Background(), "x.py", []byte("ok"))
+	must.NoError(err)
+	must.Equal("/etc/stirrup/semgrep-rules", captured)
 }
 
 // TestSemgrepScanner_DefaultConfigIsAuto ensures ConfigPath defaults to
 // "auto" when left empty.
 func TestSemgrepScanner_DefaultConfigIsAuto(t *testing.T) {
+	must := require.New(t)
 	var captured string
 	s := &SemgrepScanner{
 		path: "/fake/semgrep",
@@ -154,29 +137,29 @@ func TestSemgrepScanner_DefaultConfigIsAuto(t *testing.T) {
 			return []byte(`{"results":[]}`), nil
 		},
 	}
-	if _, err := s.Scan(context.Background(), "x.py", []byte("ok")); err != nil {
-		t.Fatalf("Scan: %v", err)
-	}
-	if captured != "auto" {
-		t.Errorf("configArg: got %q, want auto", captured)
-	}
+	_, err := s.Scan(context.Background(), "x.py", []byte("ok"))
+	must.NoError(err)
+	must.Equal("auto", captured)
 }
 
-func TestLanguageFromPath(t *testing.T) {
-	cases := map[string]string{
-		"x.py":      "python",
-		"x.js":      "javascript",
-		"x.ts":      "typescript",
-		"x.tsx":     "tsx",
-		"x.go":      "go",
-		"x.sh":      "bash",
-		"unknown":   "",
-		"noext.":    "",
-		"a.unknown": "",
+func TestLanguageFromPath_MapsExtensions(t *testing.T) {
+	cases := []struct {
+		name, path, want string
+	}{
+		{"python source", "x.py", "python"},
+		{"javascript source", "x.js", "javascript"},
+		{"typescript source", "x.ts", "typescript"},
+		{"tsx source", "x.tsx", "tsx"},
+		{"go source", "x.go", "go"},
+		{"shell script", "x.sh", "bash"},
+		{"no extension", "unknown", ""},
+		{"trailing dot", "noext.", ""},
+		{"unknown extension", "a.unknown", ""},
 	}
-	for in, want := range cases {
-		if got := languageFromPath(in); got != want {
-			t.Errorf("languageFromPath(%q) = %q, want %q", in, got, want)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, languageFromPath(tc.path))
+		})
 	}
 }

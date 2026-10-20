@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestScrubFenced_ScrubsFencePayloads(t *testing.T) {
@@ -27,18 +29,16 @@ func TestScrubFenced_ScrubsFencePayloads(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			got := ScrubFenced(tc.in)
-			if got != tc.want {
-				t.Errorf("ScrubFenced = %q, want %q", got, tc.want)
-			}
-			if strings.Contains(got, base64.StdEncoding.EncodeToString([]byte(key))) {
-				t.Errorf("base64 of the key survived: %q", got)
-			}
+			must.Equal(tc.want, got)
+			must.NotContains(got, base64.StdEncoding.EncodeToString([]byte(key)),
+				"base64 of the key survived")
 		})
 	}
 }
 
-func TestDecodeFences(t *testing.T) {
+func TestDecodeFences_DecodesWellFormedAndRejectsMalformed(t *testing.T) {
 	cases := map[string]struct {
 		in, want string
 		ok       bool
@@ -51,9 +51,12 @@ func TestDecodeFences(t *testing.T) {
 		"close before one": {SpotlightCloseTag + Spotlight("x"), "", false},
 	}
 	for name, tc := range cases {
-		if got, ok := DecodeFences(tc.in); got != tc.want || ok != tc.ok {
-			t.Errorf("%s: DecodeFences = %q, %v; want %q, %v", name, got, ok, tc.want, tc.ok)
-		}
+		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
+			got, ok := DecodeFences(tc.in)
+			must.Equal(tc.want, got)
+			must.Equal(tc.ok, ok)
+		})
 	}
 }
 
@@ -85,17 +88,17 @@ func FuzzScrubFenced(f *testing.F) {
 	f.Add(SpotlightOpenTag+"QUJD", "Bearer abc.def "+key)
 	f.Add(SpotlightCloseTag+SpotlightOpenTag, "x "+key+" y secret://ref")
 	f.Fuzz(func(t *testing.T, prefix, value string) {
+		must := require.New(t)
 		fenced, secrets := spotlightRanges(value)
 		out := ScrubFenced(prefix + fenced)
 		for _, s := range secrets {
 			if len(s) < 8 {
 				continue
 			}
-			if strings.Contains(out, base64.StdEncoding.EncodeToString([]byte(s))) {
-				t.Fatalf("base64 of fenced secret %q persisted: %q", s, out)
-			}
-			if strings.Count(prefix+value, s) == 1 && strings.Contains(out, s) {
-				t.Fatalf("fenced secret %q persisted raw: %q", s, out)
+			must.NotContains(out, base64.StdEncoding.EncodeToString([]byte(s)),
+				"base64 of fenced secret %q persisted", s)
+			if strings.Count(prefix+value, s) == 1 {
+				must.NotContains(out, s, "fenced secret %q persisted raw", s)
 			}
 		}
 	})

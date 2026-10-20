@@ -10,8 +10,9 @@ import (
 	"os"
 	osexec "os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -20,11 +21,10 @@ import (
 // report. Returns the symlink-resolved path, which is what the executor sees.
 func initGitRepo(t *testing.T, dir string) string {
 	t.Helper()
+	must := require.New(t)
 
 	resolved, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		t.Fatalf("eval symlinks: %v", err)
-	}
+	must.NoError(err, "resolving symlinks for %s", dir)
 
 	for _, args := range [][]string{
 		{"init", "-q"},
@@ -37,9 +37,8 @@ func initGitRepo(t *testing.T, dir string) string {
 			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
 			"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com",
 		)
-		if out, err := c.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		out, err := c.CombinedOutput()
+		must.NoError(err, "git %v\n%s", args, out)
 	}
 	return resolved
 }
@@ -48,6 +47,7 @@ func initGitRepo(t *testing.T, dir string) string {
 // git_status call through validation and back onto the wire. The tool must
 // run, and the replayed assistant turn must carry an object rather than null.
 func TestZeroArgumentToolCall_ExecutesAndReplaysAsObject(t *testing.T) {
+	must := require.New(t)
 	if _, err := osexec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
@@ -93,58 +93,57 @@ func TestZeroArgumentToolCall_ExecutesAndReplaysAsObject(t *testing.T) {
 
 	events := &recordingTransport{}
 	loop, err := BuildLoopWithTransport(context.Background(), config, events)
-	if err != nil {
-		t.Fatalf("BuildLoopWithTransport: %v", err)
-	}
+	must.NoError(err)
 	defer server.Close()
 	defer func() { _ = loop.Close() }()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("loop.Run: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("expected success, got %q", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
 
-	// Half one: the schema gate accepted the call and the handler ran.
-	total, failed := countCalls(runTrace, "git_status")
-	if total != 1 || failed != 0 {
-		t.Fatalf("git_status calls: total=%d failed=%d, want 1/0", total, failed)
-	}
-	var sawResult bool
-	for _, e := range events.events {
-		switch e.Type {
-		case "tool_call":
-			if got := string(types.NormalizeToolInput(e.Input)); got != "{}" {
-				t.Errorf("emitted tool_call input = %q, want {}", e.Input)
-			}
-		case "tool_result":
-			sawResult = true
-			if strings.Contains(e.Content, "Invalid input") {
-				t.Fatalf("git_status was schema-rejected: %s", e.Content)
-			}
-			if !strings.Contains(e.Content, "working tree clean") {
-				t.Errorf("git_status result = %q, want a clean working tree report", e.Content)
+	t.Run("git_status runs without schema rejection", func(t *testing.T) {
+		must := require.New(t)
+		total, failed := countCalls(runTrace, "git_status")
+		must.Equal(1, total, "git_status calls")
+		must.Zero(failed, "failed git_status calls")
+
+		var sawResult bool
+		for _, e := range events.events {
+			switch e.Type {
+			case "tool_call":
+				must.Equal("{}", string(types.NormalizeToolInput(e.Input)),
+					"emitted tool_call input %q", e.Input)
+			case "tool_result":
+				sawResult = true
+				must.NotContains(e.Content, "Invalid input",
+					"git_status was schema-rejected: %s", e.Content)
+				must.Contains(e.Content, "working tree clean")
 			}
 		}
-	}
-	if !sawResult {
-		t.Error("no tool_result event emitted")
-	}
+		must.True(sawResult, "no tool_result event emitted")
+	})
 
-	// Half two: the replayed assistant turn must not carry a null input.
-	// A null there is what draws the fatal 400 on the next request.
-	if len(requestBodies) < 2 {
-		t.Fatalf("expected 2 provider requests, got %d", len(requestBodies))
-	}
+	must.GreaterOrEqual(len(requestBodies), 2, "provider requests")
 	replay := requestBodies[1]
-	if !strings.Contains(replay, `"arguments":"{}"`) {
-		t.Errorf("replayed turn missing empty-object arguments:\n%s", replay)
+
+	t.Run("replayed turn carries empty object arguments", func(t *testing.T) {
+		must := require.New(t)
+		must.Contains(replay, `"arguments":"{}"`, "replayed turn:\n%s", replay)
+	})
+
+	// A null input in the replayed turn is what draws the fatal 400 on the next request.
+	nullForms := []struct {
+		name  string
+		token string
+	}{
+		{name: "no quoted null arguments", token: `"arguments":"null"`},
+		{name: "no bare null arguments", token: `"arguments":null`},
+		{name: "no null input", token: `"input":null`},
 	}
-	for _, poison := range []string{`"arguments":"null"`, `"arguments":null`, `"input":null`} {
-		if strings.Contains(replay, poison) {
-			t.Errorf("replayed turn carries %s:\n%s", poison, replay)
-		}
+	for _, tc := range nullForms {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.NotContains(replay, tc.token, "replayed turn:\n%s", replay)
+		})
 	}
 }

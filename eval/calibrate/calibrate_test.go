@@ -3,7 +3,6 @@ package calibrate
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/eval/golden"
 	"github.com/rxbynerd/stirrup/eval/judge"
@@ -68,10 +69,9 @@ func requireGit(t *testing.T) {
 
 func loadSeed(t *testing.T) *golden.Set {
 	t.Helper()
+	must := require.New(t)
 	s, err := golden.Load(seedPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	return s
 }
 
@@ -92,94 +92,101 @@ func testJudge() types.JudgeLLMConfig {
 }
 
 func TestRun_OracleJudgeOverTheSeedSet(t *testing.T) {
+	must := require.New(t)
 	requireGit(t)
 	t.Setenv("CALIBRATE_TEST_KEY", "k")
 	set := loadSeed(t)
 	oracle := &scriptedClient{script: labels(set, 2)}
 	cache, err := judge.NewFileCache(t.TempDir(), judge.FileCacheOptions{Mode: judge.CacheReadThrough})
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	cfg := Config{Judge: testJudge(), Repeats: 2, Options: judge.Options{Cache: cache, CacheMode: judge.CacheReadThrough, ClientFactory: oracle.factory()}}
 
 	js, err := Run(context.Background(), set, cfg)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if len(js) != 48 || oracle.calls() != 48 {
-		t.Fatalf("%d judgments from %d model calls, want 48 of each", len(js), oracle.calls())
-	}
+	must.NoError(err)
+	must.Len(js, 48)
+	must.Equal(48, oracle.calls())
+
 	m := Summarize(js, nil)
-	if m.Accuracy == nil || m.Accuracy.K != 48 || m.Kappa == nil || !near(*m.Kappa, 1) || m.AdversarialFlipRate.K != 0 || m.AdversarialFlipRate.N != 16 || m.Errors != 0 {
-		t.Errorf("oracle metrics = %+v", m)
-	}
+	must.NotNil(m.Accuracy)
+	must.Equal(48, m.Accuracy.K)
+	must.NotNil(m.Kappa)
+	must.True(near(*m.Kappa, 1), "kappa = %v, want 1", *m.Kappa)
+	must.Equal(0, m.AdversarialFlipRate.K)
+	must.Equal(16, m.AdversarialFlipRate.N)
+	must.Equal(0, m.Errors)
+
 	for i, j := range js {
-		if j.Sample != i%2 || j.Record == nil || j.Record.CacheStatus != types.JudgeCacheStored {
-			t.Fatalf("judgment %d = %+v, want sample %d stored in the cache", i, j, i%2)
-		}
+		must.Equal(i%2, j.Sample, "judgment %d sample", i)
+		must.NotNil(j.Record, "judgment %d record", i)
+		must.Equal(types.JudgeCacheStored, j.Record.CacheStatus, "judgment %d cache status", i)
 	}
 
 	replayed := &scriptedClient{script: []string{"fail"}}
 	cfg.Options.ClientFactory = replayed.factory()
 	again, err := Run(context.Background(), set, cfg)
-	if err != nil {
-		t.Fatalf("second Run: %v", err)
-	}
-	if replayed.calls() != 0 || Summarize(again, nil).CacheHits != 48 {
-		t.Errorf("repeat run made %d model calls and %d cache hits, want 0 and 48", replayed.calls(), Summarize(again, nil).CacheHits)
-	}
+	must.NoError(err)
+	must.Zero(replayed.calls(), "model calls on the repeat run")
+	must.Equal(48, Summarize(again, nil).CacheHits, "cache hits on the repeat run")
 	for i := range again {
-		if again[i].Verdict != js[i].Verdict {
-			t.Fatalf("replayed judgment %d = %s, recorded %s", i, again[i].Verdict, js[i].Verdict)
-		}
+		must.Equal(js[i].Verdict, again[i].Verdict, "replayed judgment %d", i)
 	}
 }
 
 func TestRun_AlwaysPassJudgeOverTheSeedSet(t *testing.T) {
+	must := require.New(t)
 	requireGit(t)
 	t.Setenv("CALIBRATE_TEST_KEY", "k")
 	set := loadSeed(t)
 	js, err := Run(context.Background(), set, Config{Judge: testJudge(), Options: judge.Options{ClientFactory: (&scriptedClient{script: []string{"pass"}}).factory()}})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	must.NoError(err)
 	m := Summarize(js, nil)
-	if m.TPR.K != 12 || m.TPR.N != 12 || m.TNR.K != 0 || m.TNR.N != 12 {
-		t.Errorf("TPR %+v TNR %+v, want 12/12 and 0/12", m.TPR, m.TNR)
-	}
-	if m.Kappa == nil || !near(*m.Kappa, 0) {
-		t.Errorf("kappa = %v, want 0 for a judge that always passes", m.Kappa)
-	}
-	if m.AdversarialFlipRate.K != 6 || m.AdversarialFlipRate.N != 8 {
-		t.Errorf("flip rate = %+v, want 6/8: six adversarial cases target pass", m.AdversarialFlipRate)
-	}
+
+	t.Run("true positive and negative rates", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(12, m.TPR.K)
+		must.Equal(12, m.TPR.N)
+		must.Equal(0, m.TNR.K)
+		must.Equal(12, m.TNR.N)
+	})
+
+	t.Run("kappa", func(t *testing.T) {
+		must := require.New(t)
+		must.NotNil(m.Kappa)
+		must.True(near(*m.Kappa, 0), "kappa = %v, want 0 for a judge that always passes", *m.Kappa)
+	})
+
+	t.Run("adversarial flip rate", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(6, m.AdversarialFlipRate.K, "six adversarial cases target pass")
+		must.Equal(8, m.AdversarialFlipRate.N)
+	})
 }
 
 func TestRun_ReconstructsEveryChangeForTheJudge(t *testing.T) {
+	must := require.New(t)
 	requireGit(t)
 	t.Setenv("CALIBRATE_TEST_KEY", "k")
 	set := loadSeed(t)
 	client := &scriptedClient{script: []string{"pass"}}
-	if _, err := Run(context.Background(), set, Config{Judge: testJudge(), Options: judge.Options{ClientFactory: client.factory()}}); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := Run(context.Background(), set, Config{Judge: testJudge(), Options: judge.Options{ClientFactory: client.factory()}})
+	must.NoError(err)
+
 	for i, c := range set.Cases {
-		prompt := client.prompts[i]
-		if !strings.Contains(prompt, c.Criteria) {
-			t.Errorf("%s: prompt does not carry the criteria", c.ID)
-		}
-		for _, line := range strings.Split(c.Diff, "\n") {
-			changed := (strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++ ")) || (strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "--- "))
-			if !changed {
-				continue
+		t.Run(c.ID, func(t *testing.T) {
+			must := require.New(t)
+			prompt := client.prompts[i]
+			must.Contains(prompt, c.Criteria)
+			for _, line := range strings.Split(c.Diff, "\n") {
+				changed := (strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++ ")) || (strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "--- "))
+				if !changed {
+					continue
+				}
+				must.Contains(prompt, "\n"+neutralised(line)+"\n", "the judge's diff is missing %q", neutralised(line))
+				if strings.Contains(line, "<<<") {
+					must.NotContains(prompt, line, "the planted fence marker reached the judge unneutralised")
+				}
 			}
-			if !strings.Contains(prompt, "\n"+neutralised(line)+"\n") {
-				t.Errorf("%s: the judge's diff is missing %q", c.ID, neutralised(line))
-			}
-			if strings.Contains(line, "<<<") && strings.Contains(prompt, line) {
-				t.Errorf("%s: the planted fence marker %q reached the judge unneutralised", c.ID, line)
-			}
-		}
+		})
 	}
 }
 
@@ -204,6 +211,7 @@ func neutralised(s string) string {
 }
 
 func TestRun_MaterialisesCreatesDeletesAndFixtures(t *testing.T) {
+	must := require.New(t)
 	requireGit(t)
 	t.Setenv("CALIBRATE_TEST_KEY", "k")
 	dir := t.TempDir()
@@ -217,59 +225,63 @@ func TestRun_MaterialisesCreatesDeletesAndFixtures(t *testing.T) {
 	  {"id":"fixture","criteria":"c2","label":"fail","workspace":"ws"},
 	  {"id":"delete-all","criteria":"c3","label":"pass","workspace":"gone"}]}`
 	set, err := golden.Parse([]byte(src), dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
+
 	client := &scriptedClient{script: []string{"pass", "fail", "pass"}}
 	js, err := Run(context.Background(), set, Config{Judge: testJudge(), Options: judge.Options{ClientFactory: client.factory()}})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
+	must.NoError(err)
+	must.Len(js, 3)
+	must.Equal("pass", js[0].Verdict)
+	must.Equal("fail", js[1].Verdict)
+	must.Equal("pass", js[2].Verdict)
+
+	cases := []struct {
+		name  string
+		wants []string
+	}{
+		{"diff", []string{"+created line", "-deleted line", "deleted file mode"}},
+		{"fixture", []string{"+fixture addition", "-remove me", "nested/new.txt"}},
+		{"delete-all", []string{"-only line", "deleted file mode"}},
 	}
-	if len(js) != 3 || js[0].Verdict != "pass" || js[1].Verdict != "fail" || js[2].Verdict != "pass" {
-		t.Fatalf("judgments = %+v", js)
-	}
-	for i, wants := range [][]string{
-		{"+created line", "-deleted line", "deleted file mode"},
-		{"+fixture addition", "-remove me", "nested/new.txt"},
-		{"-only line", "deleted file mode"},
-	} {
-		for _, want := range wants {
-			if !strings.Contains(client.prompts[i], want) {
-				t.Errorf("case %d prompt is missing %q", i+1, want)
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			for _, want := range tc.wants {
+				must.Contains(client.prompts[i], want)
 			}
-		}
+		})
 	}
-	if strings.Contains(client.prompts[1], "kept.txt") {
-		t.Error("an unchanged fixture file appears in the judge's diff")
-	}
+	must.NotContains(client.prompts[1], "kept.txt", "an unchanged fixture file appears in the judge's diff")
 }
 
 func TestRun_RecordsJudgeErrorsAndContinues(t *testing.T) {
+	must := require.New(t)
 	requireGit(t)
 	t.Setenv("CALIBRATE_TEST_KEY", "k")
 	set := loadSeed(t)
 	client := &scriptedClient{script: []string{"malformed", "pass"}}
 	js, err := Run(context.Background(), set, Config{Judge: testJudge(), Options: judge.Options{ClientFactory: client.factory()}})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if len(js) != 24 || js[0].Verdict != types.JudgeStatusError || js[0].Reason == "" || js[1].Verdict != types.JudgeStatusPass {
-		t.Fatalf("judgments = %+v, want an error then passes", js[:2])
-	}
-	if m := Summarize(js, nil); m.Errors != 1 || m.Decided != 23 || m.ErrorRate.K != 1 {
-		t.Errorf("metrics = %+v", m)
-	}
+	must.NoError(err)
+	must.Len(js, 24)
+	must.Equal(types.JudgeStatusError, js[0].Verdict)
+	must.NotEmpty(js[0].Reason)
+	must.Equal(types.JudgeStatusPass, js[1].Verdict)
+
+	m := Summarize(js, nil)
+	must.Equal(1, m.Errors)
+	must.Equal(23, m.Decided)
+	must.Equal(1, m.ErrorRate.K)
 }
 
 func TestRun_StopsWhenCancelled(t *testing.T) {
+	must := require.New(t)
 	requireGit(t)
 	t.Setenv("CALIBRATE_TEST_KEY", "k")
 	ctx, cancel := context.WithCancel(context.Background())
 	client := &cancellingClient{cancel: cancel, after: 3}
 	js, err := Run(ctx, loadSeed(t), Config{Judge: testJudge(), Options: judge.Options{ClientFactory: func(types.JudgeLLMConfig, string) (judge.JudgeClient, error) { return client, nil }}})
-	if !errors.Is(err, context.Canceled) || len(js) != 3 {
-		t.Fatalf("Run = %d judgments, err %v; want 3 and context.Canceled", len(js), err)
-	}
+	must.ErrorIs(err, context.Canceled)
+	must.Len(js, 3)
 }
 
 // cancellingClient passes every case and cancels the run after a number
@@ -294,6 +306,7 @@ func (c *cancellingClient) Complete(ctx context.Context, req judge.JudgeRequest)
 }
 
 func TestRun_DecisionJudgeOverTheSeedSet(t *testing.T) {
+	must := require.New(t)
 	requireGit(t)
 	var mu sync.Mutex
 	var states []string
@@ -312,38 +325,36 @@ func TestRun_DecisionJudgeOverTheSeedSet(t *testing.T) {
 	cfg := types.JudgeLLMConfig{Provider: types.JudgeProviderDecision, Model: "jev-latest", BaseURL: srv.URL}
 
 	js, err := Run(context.Background(), loadSeed(t), Config{Judge: cfg})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if len(js) != 24 || len(states) != 24 {
-		t.Fatalf("%d judgments from %d requests, want 24", len(js), len(states))
-	}
+	must.NoError(err)
+	must.Len(js, 24)
+	must.Len(states, 24)
 	for i, j := range js {
-		if j.Verdict != types.JudgeStatusPass || j.Record == nil || j.Record.Provider != types.JudgeProviderDecision || j.Record.ServedModel != "jev-stub" {
-			t.Fatalf("judgment %d = %+v", i, j)
-		}
-		if !fenceNonce.MatchString(states[i]) {
-			t.Errorf("request %d state is not fenced: %q", i, states[i])
-		}
+		must.Equal(types.JudgeStatusPass, j.Verdict, "judgment %d verdict", i)
+		must.NotNil(j.Record, "judgment %d record", i)
+		must.Equal(types.JudgeProviderDecision, j.Record.Provider, "judgment %d provider", i)
+		must.Equal("jev-stub", j.Record.ServedModel, "judgment %d served model", i)
+		must.Regexp(fenceNonce, states[i], "request %d state is not fenced", i)
 	}
-	if m := Summarize(js, nil); m.Tokens.Input != 24*300 || m.TNR.K != 0 {
-		t.Errorf("metrics = %+v", m)
-	}
+
+	m := Summarize(js, nil)
+	must.Equal(24*300, m.Tokens.Input)
+	must.Equal(0, m.TNR.K)
 }
 
 func TestRun_CancelledDuringTheLastJudgmentFails(t *testing.T) {
+	must := require.New(t)
 	requireGit(t)
 	t.Setenv("CALIBRATE_TEST_KEY", "k")
 	set := loadSeed(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	client := &cancellingClient{cancel: cancel, after: len(set.Cases), failOnCancel: true}
 	js, err := Run(ctx, set, Config{Judge: testJudge(), Options: judge.Options{ClientFactory: func(types.JudgeLLMConfig, string) (judge.JudgeClient, error) { return client, nil }}})
-	if !errors.Is(err, context.Canceled) || len(js) != len(set.Cases)-1 {
-		t.Fatalf("Run = %d judgments, err %v; want %d and context.Canceled without the interrupted judgment", len(js), err, len(set.Cases)-1)
-	}
+	must.ErrorIs(err, context.Canceled)
+	must.Len(js, len(set.Cases)-1, "the interrupted judgment is not recorded")
 }
 
 func TestRun_FailsWhenACaseCannotBeMaterialised(t *testing.T) {
+	must := require.New(t)
 	requireGit(t)
 	t.Setenv("CALIBRATE_TEST_KEY", "k")
 	dir := t.TempDir()
@@ -353,27 +364,24 @@ func TestRun_FailsWhenACaseCannotBeMaterialised(t *testing.T) {
 	  {"id":"first","criteria":"c","label":"pass","diff":"--- a/f\n+++ b/f\n@@ -1 +1 @@\n-x\n+y\n"},
 	  {"id":"fixture","criteria":"c","label":"pass","workspace":"ws"}]}`
 	set, err := golden.Parse([]byte(src), dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.RemoveAll(filepath.Join(dir, "ws")); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
+	must.NoError(os.RemoveAll(filepath.Join(dir, "ws")))
 
 	js, err := Run(context.Background(), set, Config{Judge: testJudge(), Options: judge.Options{ClientFactory: (&scriptedClient{script: []string{"pass"}}).factory()}})
 
-	if err == nil || !strings.HasPrefix(err.Error(), "case fixture: workspace") || len(js) != 1 || js[0].Case != "first" {
-		t.Fatalf("Run = %+v, err %v; want the first judgment and an error naming the fixture case", js, err)
-	}
+	must.Error(err)
+	must.True(strings.HasPrefix(err.Error(), "case fixture: workspace"), "error = %v", err)
+	must.Len(js, 1)
+	must.Equal("first", js[0].Case)
 }
 
 func TestRun_FailsWhenTheWorkDirIsUnusable(t *testing.T) {
+	must := require.New(t)
 	notADir := filepath.Join(t.TempDir(), "file")
 	writeFixture(t, notADir, "x")
 
 	js, err := Run(context.Background(), loadSeed(t), Config{Judge: testJudge(), WorkDir: notADir})
 
-	if err == nil || !strings.Contains(err.Error(), "creating workspace") || len(js) != 0 {
-		t.Fatalf("Run = %d judgments, err %v; want a workspace creation error before any judgment", len(js), err)
-	}
+	must.ErrorContains(err, "creating workspace")
+	must.Empty(js)
 }

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/verifier"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -100,6 +102,7 @@ func (p *slowProvider) Stream(ctx context.Context, _ types.StreamParams) (<-chan
 }
 
 func TestLoop_CancelControlEvent_Cancelled(t *testing.T) {
+	must := require.New(t)
 	tr := &cancellableTransport{}
 	provider := &cancellingProvider{tr: tr}
 
@@ -110,31 +113,14 @@ func TestLoop_CancelControlEvent_Cancelled(t *testing.T) {
 	config := buildTestConfig()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() returned error: %v", err)
-	}
-	if runTrace == nil {
-		t.Fatal("expected non-nil RunTrace")
-	}
-	if runTrace.Outcome != "cancelled" {
-		t.Errorf("expected outcome 'cancelled', got %q", runTrace.Outcome)
-	}
-
-	var doneEvents []types.HarnessEvent
-	for _, ev := range tr.Events() {
-		if ev.Type == "done" {
-			doneEvents = append(doneEvents, ev)
-		}
-	}
-	if len(doneEvents) != 1 {
-		t.Fatalf("expected exactly one 'done' event, got %d", len(doneEvents))
-	}
-	if doneEvents[0].StopReason != "cancelled" {
-		t.Errorf("expected done.stop_reason 'cancelled', got %q", doneEvents[0].StopReason)
-	}
+	must.NoError(err)
+	must.NotNil(runTrace)
+	must.Equal("cancelled", runTrace.Outcome)
+	assertDoneStopReason(t, tr, "cancelled")
 }
 
 func TestLoop_DeadlineExceeded_Timeout(t *testing.T) {
+	must := require.New(t)
 	tr := &cancellableTransport{}
 	loop := buildTestLoop(nil)
 	loop.Provider = &slowProvider{}
@@ -146,15 +132,9 @@ func TestLoop_DeadlineExceeded_Timeout(t *testing.T) {
 	defer cancel()
 
 	runTrace, err := loop.Run(ctx, config)
-	if err != nil {
-		t.Fatalf("Run() returned error: %v", err)
-	}
-	if runTrace == nil {
-		t.Fatal("expected non-nil RunTrace")
-	}
-	if runTrace.Outcome != "timeout" {
-		t.Errorf("expected outcome 'timeout', got %q", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.NotNil(runTrace)
+	must.Equal("timeout", runTrace.Outcome)
 
 	var gotStopReason string
 	for _, ev := range tr.Events() {
@@ -162,9 +142,7 @@ func TestLoop_DeadlineExceeded_Timeout(t *testing.T) {
 			gotStopReason = ev.StopReason
 		}
 	}
-	if gotStopReason != "timeout" {
-		t.Errorf("expected done.stop_reason 'timeout', got %q", gotStopReason)
-	}
+	must.Equal("timeout", gotStopReason)
 }
 
 // cancellingProviderOnStream fires the given callback on every Stream call
@@ -193,6 +171,7 @@ func (p *cancellingProviderOnStream) Stream(ctx context.Context, _ types.StreamP
 // "cancelled". The cancel fires from inside Stream so the test
 // deterministically hits the mid-stream cancel path.
 func TestLoop_CallerCancel_Cancelled(t *testing.T) {
+	must := require.New(t)
 	tr := &cancellableTransport{}
 	loop := buildTestLoop(nil)
 	loop.Transport = tr
@@ -211,15 +190,9 @@ func TestLoop_CallerCancel_Cancelled(t *testing.T) {
 	}
 
 	runTrace, err := loop.Run(ctx, config)
-	if err != nil {
-		t.Fatalf("Run() returned error: %v", err)
-	}
-	if runTrace == nil {
-		t.Fatal("expected non-nil RunTrace")
-	}
-	if runTrace.Outcome != "cancelled" {
-		t.Errorf("expected outcome 'cancelled' for caller cancellation, got %q", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.NotNil(runTrace)
+	must.Equal("cancelled", runTrace.Outcome)
 
 	assertDoneStopReason(t, tr, "cancelled")
 }
@@ -229,6 +202,7 @@ func TestLoop_CallerCancel_Cancelled(t *testing.T) {
 // outcome="error": an unrecognised cause cannot be attributed to a known
 // cancel/timeout reason.
 func TestLoop_CallerCancelWithCause_Error(t *testing.T) {
+	must := require.New(t)
 	tr := &cancellableTransport{}
 	loop := buildTestLoop(nil)
 	loop.Transport = tr
@@ -247,19 +221,14 @@ func TestLoop_CallerCancelWithCause_Error(t *testing.T) {
 	}
 
 	runTrace, err := loop.Run(ctx, config)
-	if err != nil {
-		t.Fatalf("Run() returned error: %v", err)
-	}
-	if runTrace == nil {
-		t.Fatal("expected non-nil RunTrace")
-	}
-	if runTrace.Outcome != "error" {
-		t.Errorf("expected outcome 'error' for non-nil unrecognised cause, got %q", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.NotNil(runTrace)
+	must.Equal("error", runTrace.Outcome)
 	assertDoneStopReason(t, tr, "error")
 }
 
 func TestLoop_PreExistingCancelledContext_Cancelled(t *testing.T) {
+	must := require.New(t)
 	tr := &cancellableTransport{}
 	loop := buildTestLoop(&mockProvider{
 		events: []types.StreamEvent{
@@ -275,12 +244,8 @@ func TestLoop_PreExistingCancelledContext_Cancelled(t *testing.T) {
 	cancel()
 
 	runTrace, err := loop.Run(ctx, config)
-	if err != nil {
-		t.Fatalf("Run() returned error: %v", err)
-	}
-	if runTrace.Outcome != "cancelled" {
-		t.Errorf("expected outcome 'cancelled', got %q", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.Equal("cancelled", runTrace.Outcome)
 	assertDoneStopReason(t, tr, "cancelled")
 }
 
@@ -288,18 +253,15 @@ func TestLoop_PreExistingCancelledContext_Cancelled(t *testing.T) {
 // cancellableTransport and checks its StopReason matches want.
 func assertDoneStopReason(t *testing.T, tr *cancellableTransport, want string) {
 	t.Helper()
+	must := require.New(t)
 	var doneEvents []types.HarnessEvent
 	for _, ev := range tr.Events() {
 		if ev.Type == "done" {
 			doneEvents = append(doneEvents, ev)
 		}
 	}
-	if len(doneEvents) != 1 {
-		t.Fatalf("expected exactly one 'done' event, got %d", len(doneEvents))
-	}
-	if doneEvents[0].StopReason != want {
-		t.Errorf("expected done.stop_reason %q, got %q", want, doneEvents[0].StopReason)
-	}
+	must.Len(doneEvents, 1, "expected exactly one done event")
+	must.Equal(want, doneEvents[0].StopReason)
 }
 
 // cancelOnVerifyVerifier fires a cancel ControlEvent the first time Verify
@@ -327,6 +289,7 @@ func (v *cancelOnVerifyVerifier) Verify(ctx context.Context, _ verifier.VerifyCo
 // that a cancel ControlEvent arriving while Verify is running produces
 // outcome "cancelled", not "verification_error".
 func TestLoop_CancelDuringVerify_CancelledWinsOverVerificationError(t *testing.T) {
+	must := require.New(t)
 	tr := &cancellableTransport{}
 
 	prov := &mockProvider{
@@ -343,46 +306,38 @@ func TestLoop_CancelDuringVerify_CancelledWinsOverVerificationError(t *testing.T
 	config := buildTestConfig()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run() returned error: %v", err)
-	}
-	if runTrace == nil {
-		t.Fatal("expected non-nil RunTrace")
-	}
-	if runTrace.Outcome != "cancelled" {
-		t.Errorf("expected outcome 'cancelled' (cancel wins over verifier error), got %q", runTrace.Outcome)
-	}
+	must.NoError(err)
+	must.NotNil(runTrace)
+	must.Equal("cancelled", runTrace.Outcome)
 	assertDoneStopReason(t, tr, "cancelled")
 }
 
-func TestClassifyCtxOutcome(t *testing.T) {
+func TestClassifyCtxOutcome_MapsCauseToOutcome(t *testing.T) {
 	cases := []struct {
 		name  string
 		cause error
 		want  string
 	}{
-		{"control_plane", ErrCancelledByControlPlane, "cancelled"},
-		{"wrapped_control_plane", fmt.Errorf("wrap: %w", ErrCancelledByControlPlane), "cancelled"},
-		{"control_stream_lost", ErrControlStreamLost, "control_stream_lost"},
-		{"wrapped_control_stream_lost", fmt.Errorf("%w: %w", ErrControlStreamLost, errors.New("EOF")), "control_stream_lost"},
+		{"control plane", ErrCancelledByControlPlane, "cancelled"},
+		{"wrapped control plane", fmt.Errorf("wrap: %w", ErrCancelledByControlPlane), "cancelled"},
+		{"control stream lost", ErrControlStreamLost, "control_stream_lost"},
+		{"wrapped control stream lost", fmt.Errorf("%w: %w", ErrControlStreamLost, errors.New("EOF")), "control_stream_lost"},
 		{"deadline", context.DeadlineExceeded, "timeout"},
-		{"caller_canceled_as_cause", context.Canceled, "cancelled"},
-		{"wrapped_caller_canceled", fmt.Errorf("wrap: %w", context.Canceled), "cancelled"},
-		{"nil", nil, "cancelled"},
-		{"other", errors.New("something else"), "error"},
+		{"caller canceled as cause", context.Canceled, "cancelled"},
+		{"wrapped caller canceled", fmt.Errorf("wrap: %w", context.Canceled), "cancelled"},
+		{"nil cause", nil, "cancelled"},
+		{"other cause", errors.New("something else"), "error"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := classifyCtxOutcome(tc.cause); got != tc.want {
-				t.Errorf("classifyCtxOutcome(%v) = %q, want %q", tc.cause, got, tc.want)
-			}
+			must := require.New(t)
+			must.Equal(tc.want, classifyCtxOutcome(tc.cause))
 		})
 	}
 }
 
-func TestErrCancelledByControlPlane_IsMatchable(t *testing.T) {
+func TestErrCancelledByControlPlane_MatchesWrapped(t *testing.T) {
+	must := require.New(t)
 	wrapped := fmt.Errorf("outer: %w", ErrCancelledByControlPlane)
-	if !errors.Is(wrapped, ErrCancelledByControlPlane) {
-		t.Error("errors.Is should match wrapped ErrCancelledByControlPlane")
-	}
+	must.ErrorIs(wrapped, ErrCancelledByControlPlane)
 }

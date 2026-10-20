@@ -3,15 +3,29 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"slices"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
+
+// replayEvents streams the next turn from rp and returns every event it emits.
+func replayEvents(t *testing.T, rp *ReplayProvider) []types.StreamEvent {
+	t.Helper()
+	must := require.New(t)
+	ch, err := rp.Stream(context.Background(), types.StreamParams{})
+	must.NoError(err)
+	return collectEvents(t, ch)
+}
 
 // TestReplayProvider_ThinkingBlocks pins that recorded thinking and
 // redacted_thinking blocks replay as their own events in recorded order,
 // so a replayed turn rebuilds the same block sequence.
 func TestReplayProvider_ThinkingBlocks(t *testing.T) {
+	must := require.New(t)
 	turns := []types.TurnRecord{{
 		Turn: 1,
 		ModelOutput: []types.ContentBlock{
@@ -22,33 +36,23 @@ func TestReplayProvider_ThinkingBlocks(t *testing.T) {
 		},
 	}}
 
-	ch, err := NewReplayProvider(turns).Stream(context.Background(), types.StreamParams{})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
-	events := collectEvents(t, ch)
+	events := replayEvents(t, NewReplayProvider(turns))
 
+	gotTypes := make([]string, 0, len(events))
+	for _, ev := range events {
+		gotTypes = append(gotTypes, ev.Type)
+	}
 	wantTypes := []string{"thinking", "text_delta", "redacted_thinking", "tool_call", "message_complete"}
-	if len(events) != len(wantTypes) {
-		t.Fatalf("got %d events, want %d: %+v", len(events), len(wantTypes), events)
-	}
-	for i, want := range wantTypes {
-		if events[i].Type != want {
-			t.Errorf("event[%d].Type = %q, want %q", i, events[i].Type, want)
-		}
-	}
-	if events[0].Text != "plan" || events[0].ThoughtSignature != "sig-A" {
-		t.Errorf("thinking event = %+v, want text plan and signature sig-A", events[0])
-	}
-	if events[2].ThoughtSignature != "data-B" {
-		t.Errorf("redacted_thinking data = %q, want data-B", events[2].ThoughtSignature)
-	}
-	if events[4].StopReason != "tool_use" {
-		t.Errorf("StopReason = %q, want tool_use", events[4].StopReason)
-	}
+	must.Equal(wantTypes, gotTypes)
+
+	must.Equal("plan", events[0].Text)
+	must.Equal("sig-A", events[0].ThoughtSignature)
+	must.Equal("data-B", events[2].ThoughtSignature)
+	must.Equal("tool_use", events[4].StopReason)
 }
 
 func TestReplayProvider_TextOnly(t *testing.T) {
+	must := require.New(t)
 	turns := []types.TurnRecord{
 		{
 			Turn: 1,
@@ -58,32 +62,18 @@ func TestReplayProvider_TextOnly(t *testing.T) {
 		},
 	}
 
-	rp := NewReplayProvider(turns)
-	ch, err := rp.Stream(context.Background(), types.StreamParams{})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	events := replayEvents(t, NewReplayProvider(turns))
 
-	events := collectEvents(t, ch)
-
-	if len(events) != 2 {
-		t.Fatalf("expected 2 events, got %d: %+v", len(events), events)
-	}
-	if events[0].Type != "text_delta" || events[0].Text != "Hello, world!" {
-		t.Errorf("event[0] = %+v, want text_delta/Hello, world!", events[0])
-	}
-	if events[1].Type != "message_complete" {
-		t.Errorf("event[1].Type = %q, want message_complete", events[1].Type)
-	}
-	if events[1].StopReason != "end_turn" {
-		t.Errorf("StopReason = %q, want end_turn", events[1].StopReason)
-	}
-	if events[1].OutputTokens <= 0 {
-		t.Errorf("OutputTokens = %d, want > 0", events[1].OutputTokens)
-	}
+	must.Len(events, 2, "events: %+v", events)
+	must.Equal("text_delta", events[0].Type)
+	must.Equal("Hello, world!", events[0].Text)
+	must.Equal("message_complete", events[1].Type)
+	must.Equal("end_turn", events[1].StopReason)
+	must.Positive(events[1].OutputTokens)
 }
 
 func TestReplayProvider_ToolUseBlocks(t *testing.T) {
+	must := require.New(t)
 	turns := []types.TurnRecord{
 		{
 			Turn: 1,
@@ -99,41 +89,18 @@ func TestReplayProvider_ToolUseBlocks(t *testing.T) {
 		},
 	}
 
-	rp := NewReplayProvider(turns)
-	ch, err := rp.Stream(context.Background(), types.StreamParams{})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	events := replayEvents(t, NewReplayProvider(turns))
 
-	events := collectEvents(t, ch)
+	must.Len(events, 3, "events: %+v", events)
+	must.Equal("text_delta", events[0].Type)
 
-	if len(events) != 3 {
-		t.Fatalf("expected 3 events, got %d: %+v", len(events), events)
-	}
+	must.Equal("tool_call", events[1].Type)
+	must.Equal("toolu_abc", events[1].ID)
+	must.Equal("read_file", events[1].Name)
+	must.Equal("main.go", events[1].Input["path"])
 
-	if events[0].Type != "text_delta" {
-		t.Errorf("event[0].Type = %q, want text_delta", events[0].Type)
-	}
-
-	if events[1].Type != "tool_call" {
-		t.Fatalf("event[1].Type = %q, want tool_call", events[1].Type)
-	}
-	if events[1].ID != "toolu_abc" {
-		t.Errorf("event[1].ID = %q, want toolu_abc", events[1].ID)
-	}
-	if events[1].Name != "read_file" {
-		t.Errorf("event[1].Name = %q, want read_file", events[1].Name)
-	}
-	if events[1].Input["path"] != "main.go" {
-		t.Errorf("event[1].Input[path] = %v, want main.go", events[1].Input["path"])
-	}
-
-	if events[2].Type != "message_complete" {
-		t.Errorf("event[2].Type = %q, want message_complete", events[2].Type)
-	}
-	if events[2].StopReason != "tool_use" {
-		t.Errorf("StopReason = %q, want tool_use", events[2].StopReason)
-	}
+	must.Equal("message_complete", events[2].Type)
+	must.Equal("tool_use", events[2].StopReason)
 }
 
 func TestReplayProvider_MultipleTurns(t *testing.T) {
@@ -155,41 +122,30 @@ func TestReplayProvider_MultipleTurns(t *testing.T) {
 	rp := NewReplayProvider(turns)
 
 	for i, want := range []string{"First turn.", "Second turn.", "Third turn."} {
-		ch, err := rp.Stream(context.Background(), types.StreamParams{})
-		if err != nil {
-			t.Fatalf("Stream() turn %d error: %v", i+1, err)
-		}
-		events := collectEvents(t, ch)
-		if len(events) < 1 {
-			t.Fatalf("turn %d: expected at least 1 event", i+1)
-		}
-		if events[0].Text != want {
-			t.Errorf("turn %d: text = %q, want %q", i+1, events[0].Text, want)
-		}
+		t.Run(fmt.Sprintf("turn %d", i+1), func(t *testing.T) {
+			must := require.New(t)
+			events := replayEvents(t, rp)
+			must.NotEmpty(events)
+			must.Equal(want, events[0].Text)
+		})
 	}
 }
 
-func TestReplayProvider_TurnsExhausted(t *testing.T) {
+func TestReplayProvider_StreamErrorsWhenTurnsExhausted(t *testing.T) {
+	must := require.New(t)
 	turns := []types.TurnRecord{
 		{Turn: 1, ModelOutput: []types.ContentBlock{{Type: "text", Text: "Only turn."}}},
 	}
 
 	rp := NewReplayProvider(turns)
+	replayEvents(t, rp)
 
-	ch, err := rp.Stream(context.Background(), types.StreamParams{})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
-	for range ch {
-	}
-
-	_, err = rp.Stream(context.Background(), types.StreamParams{})
-	if err == nil {
-		t.Fatal("expected error when turns exhausted, got nil")
-	}
+	_, err := rp.Stream(context.Background(), types.StreamParams{})
+	must.Error(err)
 }
 
-func TestReplayProvider_ContextCancellation(t *testing.T) {
+func TestReplayProvider_CancelledContextEmitsError(t *testing.T) {
+	must := require.New(t)
 	turns := []types.TurnRecord{
 		{
 			Turn: 1,
@@ -206,45 +162,26 @@ func TestReplayProvider_ContextCancellation(t *testing.T) {
 	cancel()
 
 	ch, err := rp.Stream(ctx, types.StreamParams{})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
 
-	foundError := false
-	for _, ev := range events {
-		if ev.Type == "error" && ev.Error != nil {
-			foundError = true
-		}
-	}
-	if !foundError {
-		t.Error("expected an error event from context cancellation")
-	}
+	must.True(slices.ContainsFunc(events, func(ev types.StreamEvent) bool {
+		return ev.Type == "error" && ev.Error != nil
+	}), "expected an error event from context cancellation")
 }
 
 func TestReplayProvider_EmptyModelOutput(t *testing.T) {
+	must := require.New(t)
 	turns := []types.TurnRecord{
 		{Turn: 1, ModelOutput: nil},
 	}
 
-	rp := NewReplayProvider(turns)
-	ch, err := rp.Stream(context.Background(), types.StreamParams{})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	events := replayEvents(t, NewReplayProvider(turns))
 
-	events := collectEvents(t, ch)
-
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
-	}
-	if events[0].Type != "message_complete" {
-		t.Errorf("event[0].Type = %q, want message_complete", events[0].Type)
-	}
-	if events[0].StopReason != "end_turn" {
-		t.Errorf("StopReason = %q, want end_turn", events[0].StopReason)
-	}
+	must.Len(events, 1, "events: %+v", events)
+	must.Equal("message_complete", events[0].Type)
+	must.Equal("end_turn", events[0].StopReason)
 }
 
 // TestReplayProvider_ForwardsThoughtSignature pins that a tool_use
@@ -252,6 +189,7 @@ func TestReplayProvider_EmptyModelOutput(t *testing.T) {
 // StreamEvent — load-bearing for live-continuation replay into a real
 // provider, where dropping it would degrade cross-turn reasoning.
 func TestReplayProvider_ForwardsThoughtSignature(t *testing.T) {
+	must := require.New(t)
 	const sig = "REPLAYED-SIG=="
 	turns := []types.TurnRecord{
 		{
@@ -268,23 +206,14 @@ func TestReplayProvider_ForwardsThoughtSignature(t *testing.T) {
 		},
 	}
 
-	rp := NewReplayProvider(turns)
-	ch, err := rp.Stream(context.Background(), types.StreamParams{})
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	events := replayEvents(t, NewReplayProvider(turns))
 
-	events := collectEvents(t, ch)
 	var toolCall *types.StreamEvent
 	for i := range events {
 		if events[i].Type == "tool_call" {
 			toolCall = &events[i]
 		}
 	}
-	if toolCall == nil {
-		t.Fatal("expected a tool_call event")
-	}
-	if toolCall.ThoughtSignature != sig {
-		t.Errorf("tool_call.ThoughtSignature = %q, want %q", toolCall.ThoughtSignature, sig)
-	}
+	must.NotNil(toolCall, "expected a tool_call event")
+	must.Equal(sig, toolCall.ThoughtSignature)
 }

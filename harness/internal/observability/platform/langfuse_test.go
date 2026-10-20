@@ -2,15 +2,14 @@ package platform
 
 import (
 	"context"
-	"maps"
 	"net/http"
 	"net/http/httptest"
-	"slices"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 	sdkresource "go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -24,49 +23,37 @@ import (
 	"github.com/rxbynerd/stirrup/types/version"
 )
 
-func TestLangfuse_Profile(t *testing.T) {
+func TestLangfuse_Profile_SetsTraceDefaults(t *testing.T) {
+	must := require.New(t)
 	p, err := Resolve(context.Background(), "langfuse", map[string]string{"host": "https://langfuse.example.com/"}, Deps{})
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if p.RequiredProtocol != otlp.ProtocolHTTPProtobuf {
-		t.Errorf("RequiredProtocol = %q, want %q", p.RequiredProtocol, otlp.ProtocolHTTPProtobuf)
-	}
+	must.NoError(err, "Resolve")
+	must.Equal(otlp.ProtocolHTTPProtobuf, p.RequiredProtocol)
+
 	traces := p.Signals[otlp.SignalTraces]
-	if traces.Endpoint != "https://langfuse.example.com/api/public/otel" {
-		t.Errorf("traces endpoint = %q", traces.Endpoint)
-	}
-	if want := map[string]string{"x-langfuse-ingestion-version": "4"}; !maps.Equal(traces.Headers, want) {
-		t.Errorf("traces headers = %v, want %v", traces.Headers, want)
-	}
-	if _, ok := p.Signals[otlp.SignalMetrics]; ok {
-		t.Error("the profile must leave metric export alone")
-	}
-	if _, ok := p.Signals[otlp.SignalLogs]; ok {
-		t.Error("the profile must leave log export alone")
-	}
-	if p.WrapTransport != nil || p.ResourceAttrs != nil {
-		t.Errorf("langfuse neither signs requests nor adds resource attributes, got %+v", p)
-	}
-	if p.WrapSpanExporter == nil {
-		t.Fatal("langfuse must decorate spans")
-	}
+	must.Equal("https://langfuse.example.com/api/public/otel", traces.Endpoint)
+	must.Equal(map[string]string{"x-langfuse-ingestion-version": "4"}, traces.Headers)
+	must.NotContains(p.Signals, otlp.SignalMetrics, "the profile must leave metric export alone")
+	must.NotContains(p.Signals, otlp.SignalLogs, "the profile must leave log export alone")
+	must.Nil(p.WrapTransport, "langfuse does not sign requests")
+	must.Nil(p.ResourceAttrs, "langfuse adds no resource attributes")
+	must.NotNil(p.WrapSpanExporter, "langfuse must decorate spans")
 
-	prefixed, err := Resolve(context.Background(), "langfuse", map[string]string{"host": "https://proxy.example.com/langfuse"}, Deps{})
-	if err != nil {
-		t.Fatalf("Resolve with a path prefix: %v", err)
-	}
-	if got := prefixed.Signals[otlp.SignalTraces].Endpoint; got != "https://proxy.example.com/langfuse/api/public/otel" {
-		t.Errorf("a host path prefix must be kept, got %q", got)
-	}
+	t.Run("keeps a host path prefix", func(t *testing.T) {
+		must := require.New(t)
+		prefixed, err := Resolve(context.Background(), "langfuse", map[string]string{"host": "https://proxy.example.com/langfuse"}, Deps{})
+		must.NoError(err, "Resolve with a path prefix")
+		must.Equal("https://proxy.example.com/langfuse/api/public/otel", prefixed.Signals[otlp.SignalTraces].Endpoint,
+			"a host path prefix must be kept")
+	})
 
-	noHost, err := Resolve(context.Background(), "langfuse", nil, Deps{})
-	if err != nil {
-		t.Fatalf("Resolve without options: %v", err)
-	}
-	if got := noHost.Signals[otlp.SignalTraces]; got.Endpoint != "" || got.Headers[langfuseIngestionVersionHeader] != "4" {
-		t.Errorf("without host the profile must set the header but no endpoint, got %+v", got)
-	}
+	t.Run("without a host sets the header but no endpoint", func(t *testing.T) {
+		must := require.New(t)
+		noHost, err := Resolve(context.Background(), "langfuse", nil, Deps{})
+		must.NoError(err, "Resolve without options")
+		got := noHost.Signals[otlp.SignalTraces]
+		must.Empty(got.Endpoint, "without host the profile must set no endpoint")
+		must.Equal("4", got.Headers[langfuseIngestionVersionHeader], "without host the profile must set the header")
+	})
 }
 
 func TestLangfuse_RejectsBadHost(t *testing.T) {
@@ -83,13 +70,10 @@ func TestLangfuse_RejectsBadHost(t *testing.T) {
 	}
 	for name, host := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			_, err := Resolve(context.Background(), "langfuse", map[string]string{"host": host}, Deps{})
-			if err == nil {
-				t.Fatalf("host %q must be rejected", host)
-			}
-			if strings.Contains(err.Error(), "sk-secret") {
-				t.Errorf("the error must not echo the host: %v", err)
-			}
+			must.Error(err)
+			must.NotContains(err.Error(), "sk-secret", "the error must not echo the host")
 		})
 	}
 }
@@ -99,52 +83,41 @@ func TestLangfuse_RejectsBadHost(t *testing.T) {
 // beside the operator's Authorization, that metrics stay off, and that
 // gRPC is rejected.
 func TestLangfuse_ApplyRoutesTracesToTheHost(t *testing.T) {
+	must := require.New(t)
 	p, err := Resolve(context.Background(), "langfuse", map[string]string{"host": "https://langfuse.example.com"}, Deps{})
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
+	must.NoError(err, "Resolve")
+
 	got, err := Apply(Input{
 		TraceEmitter: types.TraceEmitterConfig{Type: "otel"},
 		Headers:      map[string]string{"Authorization": "Basic cGs6c2s="},
 		Getenv:       noEnv,
 	}, p)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if got.Traces.Protocol != otlp.ProtocolHTTPProtobuf || got.Traces.Endpoint != "https://langfuse.example.com/api/public/otel" {
-		t.Errorf("traces = %+v", got.Traces)
-	}
-	wantHeaders := map[string]string{"Authorization": "Basic cGs6c2s=", "x-langfuse-ingestion-version": "4"}
-	if !maps.Equal(got.Traces.Headers, wantHeaders) {
-		t.Errorf("trace headers = %v, want %v", got.Traces.Headers, wantHeaders)
-	}
-	if got.Metrics.Endpoint != "" {
-		t.Errorf("metrics endpoint = %q, want metric export disabled", got.Metrics.Endpoint)
-	}
+	must.NoError(err, "Apply")
+	must.Equal(otlp.ProtocolHTTPProtobuf, got.Traces.Protocol)
+	must.Equal("https://langfuse.example.com/api/public/otel", got.Traces.Endpoint)
+	must.Equal(map[string]string{
+		"Authorization":                "Basic cGs6c2s=",
+		"x-langfuse-ingestion-version": "4",
+	}, got.Traces.Headers, "trace headers")
+	must.Empty(got.Metrics.Endpoint, "metric export must stay disabled")
 
 	_, err = Apply(Input{TraceEmitter: types.TraceEmitterConfig{Type: "otel", Protocol: otlp.ProtocolGRPC}, Getenv: noEnv}, p)
-	if err == nil || !strings.Contains(err.Error(), `platform "langfuse" requires protocol http/protobuf`) {
-		t.Errorf("protocol grpc with platform langfuse: got %v", err)
-	}
+	must.ErrorContains(err, `platform "langfuse" requires protocol http/protobuf`)
 }
 
-func TestLangfuse_ApplyWithoutHost(t *testing.T) {
+func TestLangfuse_ApplyWithoutHost_RequiresTraceEndpoint(t *testing.T) {
+	must := require.New(t)
 	p, err := Resolve(context.Background(), "langfuse", nil, Deps{})
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
+	must.NoError(err, "Resolve")
+
 	_, err = Apply(Input{TraceEmitter: types.TraceEmitterConfig{Type: "otel"}, Getenv: noEnv}, p)
-	if err == nil || !strings.Contains(err.Error(), "has no trace endpoint") {
-		t.Errorf("no host and no endpoint must fail instead of exporting to the default gRPC address, got %v", err)
-	}
+	must.ErrorContains(err, "has no trace endpoint",
+		"no host and no endpoint must fail instead of exporting to the default gRPC address")
 
 	got, err := Apply(Input{TraceEmitter: types.TraceEmitterConfig{Type: "otel", Endpoint: "https://gateway.example.com/api/public/otel"}, Getenv: noEnv}, p)
-	if err != nil {
-		t.Fatalf("Apply with an explicit endpoint: %v", err)
-	}
-	if got.Traces.Endpoint != "https://gateway.example.com/api/public/otel" || got.Traces.Headers[langfuseIngestionVersionHeader] != "4" {
-		t.Errorf("traces = %+v, want the explicit endpoint with the ingestion header", got.Traces)
-	}
+	must.NoError(err, "Apply with an explicit endpoint")
+	must.Equal("https://gateway.example.com/api/public/otel", got.Traces.Endpoint)
+	must.Equal("4", got.Traces.Headers[langfuseIngestionVersionHeader])
 }
 
 // exportThroughLangfuse records the spans built by fn through the langfuse
@@ -152,10 +125,10 @@ func TestLangfuse_ApplyWithoutHost(t *testing.T) {
 // the downstream exporter.
 func exportThroughLangfuse(t *testing.T, res []attribute.KeyValue, fn func(tracer oteltrace.Tracer)) map[string]map[attribute.Key]attribute.Value {
 	t.Helper()
+	check := assert.New(t)
+	must := require.New(t)
 	p, err := Resolve(context.Background(), "langfuse", nil, Deps{})
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
+	must.NoError(err, "Resolve")
 	sink := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithSyncer(p.WrapSpanExporter(sink)),
@@ -163,16 +136,13 @@ func exportThroughLangfuse(t *testing.T, res []attribute.KeyValue, fn func(trace
 	)
 	fn(tp.Tracer("test"))
 	exported := sink.GetSpans()
-	if err := tp.Shutdown(context.Background()); err != nil {
-		t.Fatalf("shutdown: %v", err)
-	}
+	must.NoError(tp.Shutdown(context.Background()), "shut down the tracer provider")
+
 	out := map[string]map[attribute.Key]attribute.Value{}
 	for _, s := range exported {
 		attrs := map[attribute.Key]attribute.Value{}
 		for _, kv := range s.Attributes {
-			if _, dup := attrs[kv.Key]; dup {
-				t.Errorf("span %q carries %s twice", s.Name, kv.Key)
-			}
+			check.NotContains(attrs, kv.Key, "span %q carries %s twice", s.Name, kv.Key)
 			attrs[kv.Key] = kv.Value
 		}
 		out[s.Name] = attrs
@@ -226,25 +196,21 @@ func TestLangfuse_TraceAttributesOnEverySpan(t *testing.T) {
 		"langfuse.release":                             "v1.2.3",
 	}
 	for _, name := range []string{"invoke_agent stirrup", "chat model"} {
-		attrs := spans[name]
-		for key, value := range want {
-			if got := attrs[key].AsString(); got != value {
-				t.Errorf("%s: %s = %q, want %q", name, key, got, value)
+		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
+			attrs := spans[name]
+			for key, value := range want {
+				must.Equal(value, attrs[key].AsString(), "%s", key)
 			}
-		}
-		if got := attrs["langfuse.trace.tags"].AsStringSlice(); !slices.Equal(got, []string{"stirrup", "execution"}) {
-			t.Errorf("%s: langfuse.trace.tags = %v", name, got)
-		}
-		if got := attrs["stirrup.task.id"].AsString(); got != "task-7" {
-			t.Errorf("%s: the original attributes must reach the exporter unchanged, stirrup.task.id = %q", name, got)
-		}
-		if _, ok := attrs["langfuse.observation.type"]; ok {
-			t.Errorf("%s: GenAI spans keep Langfuse's own typing", name)
-		}
+			must.Equal([]string{"stirrup", "execution"}, attrs["langfuse.trace.tags"].AsStringSlice(), "langfuse.trace.tags")
+			must.Equal("task-7", attrs["stirrup.task.id"].AsString(), "the original attributes must reach the exporter unchanged")
+			must.NotContains(attrs, attribute.Key("langfuse.observation.type"), "GenAI spans keep Langfuse's own typing")
+		})
 	}
 }
 
 func TestLangfuse_TraceNameOnTheRunSpanOnly(t *testing.T) {
+	must := require.New(t)
 	spans := exportThroughLangfuse(t, langfuseTestResource, func(tr oteltrace.Tracer) {
 		// An upstream parent stands in for a control plane's span.
 		upstream, parent := tr.Start(context.Background(), "upstream task")
@@ -262,17 +228,17 @@ func TestLangfuse_TraceNameOnTheRunSpanOnly(t *testing.T) {
 		root.End()
 		parent.End()
 	})
-	if got := spans["invoke_agent stirrup"]["langfuse.trace.name"].AsString(); got != "stirrup execution" {
-		t.Errorf("run span trace name = %q, want %q", got, "stirrup execution")
-	}
+	must.Equal("stirrup execution", spans["invoke_agent stirrup"]["langfuse.trace.name"].AsString(), "run span trace name")
 	for _, name := range []string{"upstream task", "invoke_agent stirrup.subagent", "chat model"} {
-		if v, ok := spans[name]["langfuse.trace.name"]; ok {
-			t.Errorf("%s must not name the trace, got %q", name, v.AsString())
-		}
+		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
+			must.NotContains(spans[name], attribute.Key("langfuse.trace.name"), "must not name the trace")
+		})
 	}
 }
 
 func TestLangfuse_ModeFallsBackToTheRunSpan(t *testing.T) {
+	must := require.New(t)
 	spans := exportThroughLangfuse(t, nil, func(tr oteltrace.Tracer) {
 		ctx, root := tr.Start(context.Background(), "invoke_agent stirrup", oteltrace.WithAttributes(runSpanAttributes()...))
 		_, guard := tr.Start(ctx, "guard.pre_tool")
@@ -280,28 +246,20 @@ func TestLangfuse_ModeFallsBackToTheRunSpan(t *testing.T) {
 		root.End()
 	})
 	root := spans["invoke_agent stirrup"]
-	if got := root["langfuse.trace.name"].AsString(); got != "stirrup execution" {
-		t.Errorf("trace name = %q", got)
-	}
-	if got := root["langfuse.trace.metadata.run_mode"].AsString(); got != "execution" {
-		t.Errorf("run_mode = %q", got)
-	}
-	if _, ok := root["langfuse.release"]; ok {
-		t.Error("no service.version resource attribute must set no release")
-	}
+	must.Equal("stirrup execution", root["langfuse.trace.name"].AsString(), "trace name")
+	must.Equal("execution", root["langfuse.trace.metadata.run_mode"].AsString(), "run_mode")
+	must.NotContains(root, attribute.Key("langfuse.release"), "no service.version resource attribute must set no release")
+
 	guard := spans["guard.pre_tool"]
-	if got := guard["langfuse.trace.tags"].AsStringSlice(); !slices.Equal(got, []string{"stirrup"}) {
-		t.Errorf("a span without a run mode is tagged %v, want [stirrup]", got)
-	}
+	must.Equal([]string{"stirrup"}, guard["langfuse.trace.tags"].AsStringSlice(),
+		"a span without a run mode is tagged [stirrup]")
 	for _, key := range []attribute.Key{"langfuse.trace.metadata.run_mode", "langfuse.trace.metadata.task_id", "langfuse.trace.name"} {
-		if _, ok := guard[key]; ok {
-			t.Errorf("guard span must not carry %s without a source value", key)
-		}
+		must.NotContains(guard, key, "guard span must not carry %s without a source value", key)
 	}
 }
 
-// TestLangfuse_ObservationTypes uses the span names the harness emits.
-func TestLangfuse_ObservationTypes(t *testing.T) {
+// TestLangfuse_ObservationTypes_MapsHarnessSpans uses the span names the harness emits.
+func TestLangfuse_ObservationTypes_MapsHarnessSpans(t *testing.T) {
 	names := []string{
 		"guard.pre_turn", "guard.pre_tool", "guard.post_turn", "verifier.verify", "context.prepare",
 		"hooks.pre_run", "hooks.post_run", "git.setup", "git.checkpoint", "git.finalise", "workspace.handoff",
@@ -326,21 +284,22 @@ func TestLangfuse_ObservationTypes(t *testing.T) {
 		"git.finalise":      "chain",
 		"workspace.handoff": "chain",
 	}
+	observationType := attribute.Key("langfuse.observation.type")
 	for _, name := range names {
-		got, ok := spans[name]["langfuse.observation.type"]
-		if want[name] == "" {
-			if ok {
-				t.Errorf("%s must keep Langfuse's own typing, got %q", name, got.AsString())
+		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
+			wantType, mapped := want[name]
+			if !mapped {
+				must.NotContains(spans[name], observationType, "must keep Langfuse's own typing")
+				return
 			}
-			continue
-		}
-		if got.AsString() != want[name] {
-			t.Errorf("%s observation type = %q, want %q", name, got.AsString(), want[name])
-		}
+			must.Equal(wantType, spans[name][observationType].AsString(), "observation type")
+		})
 	}
 }
 
-func TestLangfuse_PresetAttributesWin(t *testing.T) {
+func TestLangfuse_PresetAttributes_TakePrecedence(t *testing.T) {
+	must := require.New(t)
 	spans := exportThroughLangfuse(t, langfuseTestResource, func(tr oteltrace.Tracer) {
 		attrs := append(runSpanAttributes(),
 			attribute.String("stirrup.task.id", "task-7"),
@@ -364,31 +323,29 @@ func TestLangfuse_PresetAttributesWin(t *testing.T) {
 		"langfuse.trace.metadata.task_id":       "task-7",
 		"langfuse.observation.metadata.task_id": "from-label",
 	} {
-		if got := root[key].AsString(); got != want {
-			t.Errorf("%s = %q, want %q", key, got, want)
-		}
+		must.Equal(want, root[key].AsString(), "%s", key)
 	}
-	if got := root["langfuse.trace.tags"].AsStringSlice(); !slices.Equal(got, []string{"operator"}) {
-		t.Errorf("tags = %v, want the operator's", got)
-	}
-	if got := spans["guard.pre_tool"]["langfuse.observation.type"].AsString(); got != "span" {
-		t.Errorf("observation type = %q, want the operator's", got)
-	}
+	must.Equal([]string{"operator"}, root["langfuse.trace.tags"].AsStringSlice(), "tags must be the operator's")
+	must.Equal("span", spans["guard.pre_tool"]["langfuse.observation.type"].AsString(), "observation type must be the operator's")
 }
 
-func TestLangfuse_SpanWithNothingToAddIsUnchanged(t *testing.T) {
+func TestLangfuse_SpanWithNothingToAdd_IsReturnedAsIs(t *testing.T) {
+	must := require.New(t)
 	span := tracetest.SpanStub{Name: "provider.stream", Attributes: []attribute.KeyValue{
 		attribute.StringSlice("langfuse.trace.tags", []string{"operator"}),
 	}}.Snapshot()
-	if got, wrapped := withLangfuse(span).(langfuseSpan); wrapped {
-		t.Errorf("a span with nothing to add must be returned as is, got attributes %v", got.Attributes())
-	}
+
+	decorated := withLangfuse(span)
+	_, wrapped := decorated.(langfuseSpan)
+	must.False(wrapped, "a span with nothing to add must be returned as is, got attributes %v", decorated.Attributes())
 }
 
-// TestLangfuse_DecorationCopiesTheAttributeSlice pins that decoration never
+// TestLangfuse_Decoration_CopiesAttributeSlice pins that decoration never
 // writes into spare capacity of a span's attribute slice, which the SDK
 // shares with every other span processor and exporter.
-func TestLangfuse_DecorationCopiesTheAttributeSlice(t *testing.T) {
+func TestLangfuse_Decoration_CopiesAttributeSlice(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	sentinel := attribute.String("sentinel", "untouched")
 	backing := make([]attribute.KeyValue, 1, 4)
 	backing[0] = attribute.String("a", "b")
@@ -400,16 +357,11 @@ func TestLangfuse_DecorationCopiesTheAttributeSlice(t *testing.T) {
 
 	decorated := withLangfuse(span).Attributes()
 
-	if len(decorated) < 2 || decorated[0] != backing[0] {
-		t.Fatalf("decorated attributes = %v, want the original followed by the added ones", decorated)
-	}
-	if &decorated[0] == &backing[0] {
-		t.Error("the decorated slice must not share the span's backing array")
-	}
+	must.GreaterOrEqual(len(decorated), 2, "decorated attributes = %v, want the original followed by the added ones", decorated)
+	must.Equal(backing[0], decorated[0], "decorated attributes must start with the original")
+	must.NotSame(&backing[0], &decorated[0], "the decorated slice must not share the span's backing array")
 	for i, kv := range spare[1:] {
-		if kv != sentinel {
-			t.Errorf("spare slot %d of the span's attributes = %v, want it untouched", i+1, kv)
-		}
+		check.Equal(sentinel, kv, "spare slot %d of the span's attributes must stay untouched", i+1)
 	}
 }
 
@@ -434,18 +386,18 @@ func (r *spanRecorder) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnl
 	return r.SpanExporter.ExportSpans(ctx, spans)
 }
 
-// TestLangfuse_MapsTheTraceEmittersAttributes pins the profile against the
+// TestLangfuse_MapsTraceEmitterAttributes pins the profile against the
 // attribute names the trace emitter, its run-scope processor and the
 // resource builder actually stamp.
-func TestLangfuse_MapsTheTraceEmittersAttributes(t *testing.T) {
+func TestLangfuse_MapsTraceEmitterAttributes(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 	p, err := Resolve(context.Background(), "langfuse", nil, Deps{})
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
+	must.NoError(err, "Resolve")
+
 	rec := &spanRecorder{spans: map[string]map[attribute.Key]attribute.Value{}}
 	emitter, err := trace.NewOTelTraceEmitter(context.Background(), trace.OTelTraceEmitterOptions{
 		Exporter: otlp.Settings{Endpoint: srv.URL, Protocol: otlp.ProtocolHTTPProtobuf},
@@ -455,9 +407,8 @@ func TestLangfuse_MapsTheTraceEmittersAttributes(t *testing.T) {
 			return p.WrapSpanExporter(rec)
 		},
 	})
-	if err != nil {
-		t.Fatalf("NewOTelTraceEmitter: %v", err)
-	}
+	must.NoError(err, "NewOTelTraceEmitter")
+
 	config := &types.RunConfig{
 		RunID: "run-1",
 		Mode:  "execution",
@@ -471,32 +422,23 @@ func TestLangfuse_MapsTheTraceEmittersAttributes(t *testing.T) {
 	emitter.Start("run-1", config)
 	rootCtx := emitter.RootContext()
 	chat := emitter.StartChatSpan(rootCtx, trace.ChatSpanStart{Turn: 1, ProviderType: "anthropic", Model: "model-a"})
-	if chat == nil {
-		t.Fatal("StartChatSpan returned nil")
-	}
+	must.NotNil(chat, "StartChatSpan")
 	chat.End(trace.ChatSpanEnd{})
 	sub := emitter.StartSubAgentSpan(rootCtx, trace.SubAgentSpanStart{RunID: "run-1-sub", ParentRunID: "run-1", Config: config})
-	if sub == nil {
-		t.Fatal("StartSubAgentSpan returned nil")
-	}
+	must.NotNil(sub, "StartSubAgentSpan")
 	sub.End(trace.AgentSpanEnd{Outcome: "success"})
 	_, handoff := emitter.Tracer().Start(rootCtx, "workspace.handoff")
 	handoff.End()
 	flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := emitter.Finish(flushCtx, "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-	if err := emitter.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+	_, err = emitter.Finish(flushCtx, "success")
+	must.NoError(err, "Finish")
+	must.NoError(emitter.Close(), "Close")
 
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
-	root, ok := rec.spans["invoke_agent stirrup"]
-	if !ok {
-		t.Fatalf("no run span exported; got %v", slices.Collect(maps.Keys(rec.spans)))
-	}
+	must.Contains(rec.spans, "invoke_agent stirrup", "no run span exported")
+	root := rec.spans["invoke_agent stirrup"]
 	for key, want := range map[attribute.Key]string{
 		"langfuse.trace.name":                         "stirrup execution",
 		"langfuse.trace.metadata.control_plane_url":   "https://cp.example.com/runs/1",
@@ -507,31 +449,19 @@ func TestLangfuse_MapsTheTraceEmittersAttributes(t *testing.T) {
 		"langfuse.observation.metadata.agent_profile": "triage-v3",
 		"langfuse.release":                            version.Version(),
 	} {
-		if got := root[key].AsString(); got != want {
-			t.Errorf("%s = %q, want %q", key, got, want)
-		}
+		must.Equal(want, root[key].AsString(), "%s", key)
 	}
-	if got := root["langfuse.trace.tags"].AsStringSlice(); !slices.Equal(got, []string{"stirrup", "execution"}) {
-		t.Errorf("langfuse.trace.tags = %v", got)
-	}
+	must.Equal([]string{"stirrup", "execution"}, root["langfuse.trace.tags"].AsStringSlice(), "langfuse.trace.tags")
 
 	for _, name := range []string{"chat model-a", "invoke_agent stirrup.subagent", "workspace.handoff"} {
-		attrs, ok := rec.spans[name]
-		if !ok {
-			t.Errorf("no %q span exported; got %v", name, slices.Collect(maps.Keys(rec.spans)))
-			continue
-		}
-		if v, named := attrs["langfuse.trace.name"]; named {
-			t.Errorf("%s must not name the trace, got %q", name, v.AsString())
-		}
-		if got := attrs["langfuse.trace.metadata.task_id"].AsString(); got != "task-7" {
-			t.Errorf("%s: langfuse.trace.metadata.task_id = %q, want task-7", name, got)
-		}
+		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
+			must.Contains(rec.spans, name, "no span exported under this name")
+			attrs := rec.spans[name]
+			must.NotContains(attrs, attribute.Key("langfuse.trace.name"), "must not name the trace")
+			must.Equal("task-7", attrs["langfuse.trace.metadata.task_id"].AsString(), "langfuse.trace.metadata.task_id")
+		})
 	}
-	if got := rec.spans["workspace.handoff"]["langfuse.observation.type"].AsString(); got != "chain" {
-		t.Errorf("workspace.handoff observation type = %q, want chain", got)
-	}
-	if _, typed := rec.spans["chat model-a"]["langfuse.observation.type"]; typed {
-		t.Error("chat spans keep Langfuse's own typing")
-	}
+	must.Equal("chain", rec.spans["workspace.handoff"]["langfuse.observation.type"].AsString(), "workspace.handoff observation type")
+	must.NotContains(rec.spans["chat model-a"], attribute.Key("langfuse.observation.type"), "chat spans keep Langfuse's own typing")
 }

@@ -9,12 +9,16 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestProxy_CONNECT_SNIAbsent_IsDropped: a client that CONNECTs to an
 // allowlisted host but suppresses the SNI extension on the inner
 // ClientHello must be dropped, not allowed through.
 func TestProxy_CONNECT_SNIAbsent_IsDropped(t *testing.T) {
+	must := require.New(t)
 	upstream := startEchoTCPServer(t)
 	upstreamHost, upstreamPort := splitHostPort(t, upstream.Addr().String())
 
@@ -22,16 +26,7 @@ func TestProxy_CONNECT_SNIAbsent_IsDropped(t *testing.T) {
 	allowEntry := fmt.Sprintf("%s:%d", upstreamHost, upstreamPort)
 	p := startTestProxy(t, []string{allowEntry}, emitter)
 
-	conn, err := net.Dial("tcp", p.Addr())
-	if err != nil {
-		t.Fatalf("dial proxy: %v", err)
-	}
-	defer func() { _ = conn.Close() }()
-
-	connectLine := fmt.Sprintf("CONNECT %s:%d HTTP/1.1\r\nHost: %s:%d\r\n\r\n", upstreamHost, upstreamPort, upstreamHost, upstreamPort)
-	if _, err := conn.Write([]byte(connectLine)); err != nil {
-		t.Fatalf("write CONNECT: %v", err)
-	}
+	conn := dialConnectTunnel(t, p.Addr(), upstreamHost, upstreamPort)
 
 	// Inner ClientHello has no SNI extension — the proxy must deny.
 	hello := minimalClientHelloNoSNI()
@@ -48,13 +43,9 @@ func TestProxy_CONNECT_SNIAbsent_IsDropped(t *testing.T) {
 
 	// The proxy must drop the connection rather than splice it to an upstream;
 	// after draining the optional 200 the read hits EOF (no echoed bytes).
-	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-		t.Fatalf("SetReadDeadline: %v", err)
-	}
+	must.NoError(conn.SetReadDeadline(time.Now().Add(2*time.Second)), "set read deadline")
 	got := readAllUntilEOF(t, conn)
-	if bytes.Contains(got, hello) {
-		t.Errorf("absent-SNI tunnel echoed client bytes back — upstream was reached: %q", string(got))
-	}
+	must.NotContains(string(got), string(hello), "absent-SNI tunnel echoed client bytes back, so the upstream was reached")
 }
 
 // TestProxy_CONNECT_CompliantClient_Succeeds: an RFC 7231 §4.3.6 client
@@ -62,6 +53,8 @@ func TestProxy_CONNECT_SNIAbsent_IsDropped(t *testing.T) {
 // browsers, Go net/http, git all do this), so the proxy must write the
 // 200 before peeking the ClientHello.
 func TestProxy_CONNECT_CompliantClient_Succeeds(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	upstream := startEchoTCPServer(t)
 	upstreamHost, upstreamPort := splitHostPort(t, upstream.Addr().String())
 
@@ -69,52 +62,30 @@ func TestProxy_CONNECT_CompliantClient_Succeeds(t *testing.T) {
 	allowEntry := fmt.Sprintf("%s:%d", upstreamHost, upstreamPort)
 	p := startTestProxy(t, []string{allowEntry}, emitter)
 
-	conn, err := net.Dial("tcp", p.Addr())
-	if err != nil {
-		t.Fatalf("dial proxy: %v", err)
-	}
-	defer func() { _ = conn.Close() }()
-	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
-		t.Fatalf("SetDeadline: %v", err)
-	}
-
-	connectLine := fmt.Sprintf("CONNECT %s:%d HTTP/1.1\r\nHost: %s:%d\r\n\r\n", upstreamHost, upstreamPort, upstreamHost, upstreamPort)
-	if _, err := conn.Write([]byte(connectLine)); err != nil {
-		t.Fatalf("write CONNECT: %v", err)
-	}
+	conn := dialConnectTunnel(t, p.Addr(), upstreamHost, upstreamPort)
+	must.NoError(conn.SetDeadline(time.Now().Add(5*time.Second)), "set deadline")
 
 	// Compliant ordering: read the CONNECT response first, only then send
 	// the ClientHello.
 	r := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(r, &http.Request{Method: http.MethodConnect})
-	if err != nil {
-		t.Fatalf("read CONNECT response (deadlocked under the pre-fix ordering?): %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("CONNECT status: got %d, want 200", resp.StatusCode)
-	}
+	must.NoError(err, "read CONNECT response")
+	must.Equal(http.StatusOK, resp.StatusCode)
 
 	hello := clientHelloWithSNI(upstreamHost)
-	if _, err := conn.Write(hello); err != nil {
-		t.Fatalf("write hello after 200: %v", err)
-	}
+	_, err = conn.Write(hello)
+	must.NoError(err, "write hello after 200")
 
 	// The proxy replays the ClientHello to the echo upstream, which echoes it
 	// back through the spliced tunnel — proof the tunnel is live end to end.
 	got := make([]byte, len(hello))
-	if _, err := io.ReadFull(r, got); err != nil {
-		t.Fatalf("read echoed bytes through tunnel: %v", err)
-	}
-	if !bytes.Equal(got, hello) {
-		t.Error("upstream echo mismatch through compliant-client tunnel")
-	}
+	_, err = io.ReadFull(r, got)
+	must.NoError(err, "read echoed bytes through tunnel")
+	check.Equal(hello, got, "upstream echo mismatch through compliant-client tunnel")
 
-	for i := 0; i < 50 && !emitter.hasEvent("egress_allowed"); i++ {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if !emitter.hasEvent("egress_allowed") {
-		t.Error("expected egress_allowed event for the compliant CONNECT")
-	}
+	check.Eventually(func() bool {
+		return emitter.hasEvent("egress_allowed")
+	}, time.Second, 20*time.Millisecond, "expected egress_allowed event for the compliant CONNECT")
 }
 
 // TestProxy_TLSParseFailed_DropsConnection: a non-handshake first byte
@@ -128,16 +99,7 @@ func TestProxy_TLSParseFailed_DropsConnection(t *testing.T) {
 	allowEntry := fmt.Sprintf("%s:%d", upstreamHost, upstreamPort)
 	p := startTestProxy(t, []string{allowEntry}, emitter)
 
-	conn, err := net.Dial("tcp", p.Addr())
-	if err != nil {
-		t.Fatalf("dial proxy: %v", err)
-	}
-	defer func() { _ = conn.Close() }()
-
-	connectLine := fmt.Sprintf("CONNECT %s:%d HTTP/1.1\r\nHost: %s:%d\r\n\r\n", upstreamHost, upstreamPort, upstreamHost, upstreamPort)
-	if _, err := conn.Write([]byte(connectLine)); err != nil {
-		t.Fatalf("write CONNECT: %v", err)
-	}
+	conn := dialConnectTunnel(t, p.Addr(), upstreamHost, upstreamPort)
 
 	// Write a 5-byte TLS record header announcing application_data
 	// (type 0x17) plus a few bytes of body. This is well-formed at
@@ -161,16 +123,7 @@ func TestProxy_OversizedClientHello_Rejected(t *testing.T) {
 	allowEntry := fmt.Sprintf("%s:%d", upstreamHost, upstreamPort)
 	p := startTestProxy(t, []string{allowEntry}, emitter)
 
-	conn, err := net.Dial("tcp", p.Addr())
-	if err != nil {
-		t.Fatalf("dial proxy: %v", err)
-	}
-	defer func() { _ = conn.Close() }()
-
-	connectLine := fmt.Sprintf("CONNECT %s:%d HTTP/1.1\r\nHost: %s:%d\r\n\r\n", upstreamHost, upstreamPort, upstreamHost, upstreamPort)
-	if _, err := conn.Write([]byte(connectLine)); err != nil {
-		t.Fatalf("write CONNECT: %v", err)
-	}
+	conn := dialConnectTunnel(t, p.Addr(), upstreamHost, upstreamPort)
 
 	// Record header for type=handshake, length=0xFFFF (65535) which
 	// is well over the 16640-byte cap.
@@ -182,10 +135,8 @@ func TestProxy_OversizedClientHello_Rejected(t *testing.T) {
 	awaitDeny(t, emitter, "tls_parse_failed")
 }
 
-// TestParseSNIFromHandshake_MalformedInputs is a table-driven unit test
-// covering the truncation/overrun paths inside parseSNIFromHandshake.
-// Each branch was hand-counted from the parser; together they cover
-// every "len(body) < ...; return err" return in sni.go.
+// TestParseSNIFromHandshake_MalformedInputs covers each truncation and
+// overrun return in parseSNIFromHandshake (sni.go). Every case must fail.
 func TestParseSNIFromHandshake_MalformedInputs(t *testing.T) {
 	cases := []struct {
 		name string
@@ -208,157 +159,102 @@ func TestParseSNIFromHandshake_MalformedInputs(t *testing.T) {
 			body: append([]byte{0x01, 0x00, 0x00, 0x00}, make([]byte, 30)...),
 		},
 		{
+			// session_id length 255 with no bytes following.
 			name: "session_id length present, bytes overrun",
-			body: func() []byte {
-				b := []byte{0x01, 0x00, 0x00, 0x00}
-				b = append(b, []byte{0x03, 0x03}...)  // version
-				b = append(b, make([]byte, 32)...)    // random
-				b = append(b, 0xff /* sid len 255 */) // truncated sid
-				return b
-			}(),
+			body: append(clientHelloHead(), 0xff),
 		},
 		{
+			// Empty session_id, and only one byte of the 2-byte cipher_suites length.
 			name: "cipher_suites length truncated",
-			body: func() []byte {
-				b := []byte{0x01, 0x00, 0x00, 0x00}
-				b = append(b, []byte{0x03, 0x03}...)
-				b = append(b, make([]byte, 32)...)
-				b = append(b, 0x00) // empty sid
-				// cipher_suites: only one byte present, length is 2
-				b = append(b, 0x00)
-				return b
-			}(),
+			body: append(clientHelloHead(), 0x00, 0x00),
 		},
 		{
+			// Empty session_id, cipher_suites length 65535 with no bytes following.
 			name: "cipher_suites overrun",
-			body: func() []byte {
-				b := []byte{0x01, 0x00, 0x00, 0x00}
-				b = append(b, []byte{0x03, 0x03}...)
-				b = append(b, make([]byte, 32)...)
-				b = append(b, 0x00)
-				b = append(b, 0xff, 0xff) // 65535-byte cs claim, body has none
-				return b
-			}(),
+			body: append(clientHelloHead(), 0x00, 0xff, 0xff),
 		},
 		{
+			// Empty session_id and cipher_suites, no compression_methods length.
 			name: "compression_methods length missing",
-			body: func() []byte {
-				b := []byte{0x01, 0x00, 0x00, 0x00}
-				b = append(b, []byte{0x03, 0x03}...)
-				b = append(b, make([]byte, 32)...)
-				b = append(b, 0x00)
-				b = append(b, 0x00, 0x00) // empty cs
-				// no compression_methods length byte
-				return b
-			}(),
+			body: append(clientHelloHead(), 0x00, 0x00, 0x00),
 		},
 		{
+			// compression_methods length 255 with no bytes following.
 			name: "compression_methods overrun",
-			body: func() []byte {
-				b := []byte{0x01, 0x00, 0x00, 0x00}
-				b = append(b, []byte{0x03, 0x03}...)
-				b = append(b, make([]byte, 32)...)
-				b = append(b, 0x00)
-				b = append(b, 0x00, 0x00)
-				b = append(b, 0xff) // 255-byte cm claim, body has none
-				return b
-			}(),
+			body: append(clientHelloHead(), 0x00, 0x00, 0x00, 0xff),
 		},
 		{
+			// Only one byte of the 2-byte extensions length.
 			name: "extensions length truncated",
-			body: func() []byte {
-				b := []byte{0x01, 0x00, 0x00, 0x00}
-				b = append(b, []byte{0x03, 0x03}...)
-				b = append(b, make([]byte, 32)...)
-				b = append(b, 0x00)
-				b = append(b, 0x00, 0x00)
-				b = append(b, 0x01, 0x00) // cm len 1, value 0
-				b = append(b, 0x00)       // only one byte of the 2-byte ext length
-				return b
-			}(),
+			body: append(helloBeforeExtensions(), 0x00),
 		},
 		{
+			// extensions length 65535 with no bytes following.
 			name: "extensions overrun",
-			body: func() []byte {
-				b := []byte{0x01, 0x00, 0x00, 0x00}
-				b = append(b, []byte{0x03, 0x03}...)
-				b = append(b, make([]byte, 32)...)
-				b = append(b, 0x00)
-				b = append(b, 0x00, 0x00)
-				b = append(b, 0x01, 0x00)
-				b = append(b, 0xff, 0xff) // 65535-byte ext claim, body has none
-				return b
-			}(),
+			body: append(helloBeforeExtensions(), 0xff, 0xff),
 		},
 		{
+			// The extensions block holds 4 bytes: an extension header claiming
+			// server_name with length 65535.
 			name: "extension length overrun",
-			body: func() []byte {
-				b := []byte{0x01, 0x00, 0x00, 0x00}
-				b = append(b, []byte{0x03, 0x03}...)
-				b = append(b, make([]byte, 32)...)
-				b = append(b, 0x00)
-				b = append(b, 0x00, 0x00)
-				b = append(b, 0x01, 0x00)
-				// extensions block of 4 bytes total: ext type+claimed len exceeding
-				b = append(b, 0x00, 0x04)             // outer ext block length 4
-				b = append(b, 0x00, 0x00, 0xff, 0xff) // ext_type=server_name, ext_len=65535
-				return b
-			}(),
+			body: append(helloBeforeExtensions(), 0x00, 0x04, 0x00, 0x00, 0xff, 0xff),
 		},
 		{
+			// server_name list length 65535 inside a 2-byte extension body.
 			name: "server_name list overrun",
-			body: func() []byte {
-				b := []byte{0x01, 0x00, 0x00, 0x00}
-				b = append(b, []byte{0x03, 0x03}...)
-				b = append(b, make([]byte, 32)...)
-				b = append(b, 0x00)
-				b = append(b, 0x00, 0x00)
-				b = append(b, 0x01, 0x00)
-				// outer ext block: 4 byte hdr + 2 byte body
-				b = append(b, 0x00, 0x06)
-				b = append(b, 0x00, 0x00) // ext type
-				b = append(b, 0x00, 0x02) // ext length = 2 (just listLen)
-				b = append(b, 0xff, 0xff) // listLen 65535 — overrun
-				return b
-			}(),
+			body: append(helloBeforeExtensions(), 0x00, 0x06, 0x00, 0x00, 0x00, 0x02, 0xff, 0xff),
 		},
 		{
+			// The server_name list claims 4 bytes, but its single host_name
+			// entry claims a 1024-byte name with only one byte present.
 			name: "server_name entry overrun",
-			body: func() []byte {
-				// listLen says 6 but the entry inside claims a 1024-byte name.
-				b := []byte{0x01, 0x00, 0x00, 0x00}
-				b = append(b, []byte{0x03, 0x03}...)
-				b = append(b, make([]byte, 32)...)
-				b = append(b, 0x00)
-				b = append(b, 0x00, 0x00)
-				b = append(b, 0x01, 0x00)
-				b = append(b, 0x00, 0x0a) // outer ext block: 10 bytes
-				b = append(b, 0x00, 0x00) // ext type = server_name
-				b = append(b, 0x00, 0x06) // ext len = 6
-				b = append(b, 0x00, 0x04) // listLen 4
-				b = append(b, 0x00)       // name_type = host_name
-				b = append(b, 0x04, 0x00) // name length 1024 — overrun
-				b = append(b, 0x00)       // one byte of "name"
-				return b
-			}(),
+			body: append(helloBeforeExtensions(), 0x00, 0x0a, 0x00, 0x00, 0x00, 0x06, 0x00, 0x04, 0x00, 0x04, 0x00, 0x00),
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			_, err := parseSNIFromHandshake(tc.body)
-			if err == nil {
-				t.Fatalf("expected error for %s, got nil", tc.name)
-			}
+			must.Error(err)
 		})
 	}
 }
 
+// clientHelloHead returns a handshake message header, a TLS 1.2 version and
+// 32 bytes of random. Malformed cases extend it to reach one parser branch.
+func clientHelloHead() []byte {
+	head := []byte{0x01, 0x00, 0x00, 0x00, 0x03, 0x03}
+	return append(head, make([]byte, 32)...)
+}
+
+// helloBeforeExtensions extends clientHelloHead with an empty session_id,
+// empty cipher_suites and a single null compression method, so the next
+// bytes are the extensions length.
+func helloBeforeExtensions() []byte {
+	return append(clientHelloHead(), 0x00, 0x00, 0x00, 0x01, 0x00)
+}
+
+// dialConnectTunnel dials the proxy and sends a CONNECT for
+// upstreamHost:upstreamPort. The connection is closed when the test ends.
+func dialConnectTunnel(t *testing.T, proxyAddr, upstreamHost string, upstreamPort int) net.Conn {
+	t.Helper()
+	must := require.New(t)
+	conn, err := net.Dial("tcp", proxyAddr)
+	must.NoError(err, "dial proxy")
+	t.Cleanup(func() { _ = conn.Close() })
+
+	connectLine := fmt.Sprintf("CONNECT %s:%d HTTP/1.1\r\nHost: %s:%d\r\n\r\n", upstreamHost, upstreamPort, upstreamHost, upstreamPort)
+	_, err = conn.Write([]byte(connectLine))
+	must.NoError(err, "write CONNECT")
+	return conn
+}
+
 // awaitDeny polls the emitter for an egress_blocked event with the
-// given reason. Replaces the busy-wait loops inline in the older tests
-// so future readers see one canonical pattern.
+// given reason.
 func awaitDeny(t *testing.T, emitter *fakeEmitter, reason string) {
 	t.Helper()
+	must := require.New(t)
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		for _, ev := range emitter.snapshot() {
@@ -370,7 +266,7 @@ func awaitDeny(t *testing.T, emitter *fakeEmitter, reason string) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("egress_blocked with reason %q not observed; events: %+v", reason, emitter.snapshot())
+	must.Failf("egress_blocked event not observed", "reason %q; events: %+v", reason, emitter.snapshot())
 }
 
 // readAllUntilEOF reads from conn until EOF or the existing read

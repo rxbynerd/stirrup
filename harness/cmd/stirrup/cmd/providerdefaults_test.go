@@ -4,15 +4,16 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
 func resolveProviderDefaults(t *testing.T, base string, args ...string) (*types.RunConfig, error) {
 	t.Helper()
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
-	if err := cmd.ParseFlags(args); err != nil {
-		t.Fatalf("ParseFlags: %v", err)
-	}
+	must.NoError(cmd.ParseFlags(args))
 	sources := RunConfigSources{Cmd: cmd, Resolve: ResolveBase}
 	if base != "" {
 		sources.Stdin = strings.NewReader(base)
@@ -20,7 +21,7 @@ func resolveProviderDefaults(t *testing.T, base string, args ...string) (*types.
 	return BuildRunConfig(sources)
 }
 
-func TestProviderDefaults_FlagOnly(t *testing.T) {
+func TestProviderDefaults_FlagOnlyKeyRefAndModel(t *testing.T) {
 	tests := []struct {
 		name       string
 		args       []string
@@ -39,16 +40,11 @@ func TestProviderDefaults_FlagOnly(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			cfg, err := resolveProviderDefaults(t, "", tc.args...)
-			if err != nil {
-				t.Fatalf("BuildRunConfig: %v", err)
-			}
-			if cfg.Provider.APIKeyRef != tc.wantKeyRef {
-				t.Errorf("Provider.APIKeyRef = %q, want %q", cfg.Provider.APIKeyRef, tc.wantKeyRef)
-			}
-			if cfg.ModelRouter.Model != tc.wantModel {
-				t.Errorf("ModelRouter.Model = %q, want %q", cfg.ModelRouter.Model, tc.wantModel)
-			}
+			must.NoError(err)
+			must.Equal(tc.wantKeyRef, cfg.Provider.APIKeyRef)
+			must.Equal(tc.wantModel, cfg.ModelRouter.Model)
 		})
 	}
 }
@@ -56,18 +52,12 @@ func TestProviderDefaults_FlagOnly(t *testing.T) {
 func TestProviderDefaults_MissingModelNamesProviderAndFlag(t *testing.T) {
 	for _, provider := range []string{"openai-responses", "openai-compatible", "bedrock", "gemini"} {
 		t.Run(provider, func(t *testing.T) {
+			must := require.New(t)
 			_, err := resolveProviderDefaults(t, "", "--provider", provider)
-			if err == nil {
-				t.Fatal("expected an error for a missing --model")
-			}
-			for _, want := range []string{"--model", "--provider=" + provider} {
-				if !strings.Contains(err.Error(), want) {
-					t.Errorf("error %q should contain %q", err, want)
-				}
-			}
-			if code := classifyExitCode(err); code != exitValidation {
-				t.Errorf("exit code = %d, want %d", code, exitValidation)
-			}
+			must.Error(err)
+			must.ErrorContains(err, "--model")
+			must.ErrorContains(err, "--provider="+provider)
+			must.Equal(exitValidation, classifyExitCode(err))
 		})
 	}
 }
@@ -75,61 +65,52 @@ func TestProviderDefaults_MissingModelNamesProviderAndFlag(t *testing.T) {
 func TestProviderDefaults_ConfigFileValuesWin(t *testing.T) {
 	// The file base is anthropic with an explicit key and model; neither
 	// default may replace them, with or without a provider flag.
-	cfg, err := resolveProviderDefaults(t, minimalRunConfigJSON(t))
-	if err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
-	if cfg.Provider.APIKeyRef != "secret://FILE_KEY" || cfg.ModelRouter.Model != "claude-sonnet-4-6" {
-		t.Errorf("file values changed: keyRef=%q model=%q", cfg.Provider.APIKeyRef, cfg.ModelRouter.Model)
-	}
+	t.Run("file values are kept", func(t *testing.T) {
+		must := require.New(t)
+		cfg, err := resolveProviderDefaults(t, minimalRunConfigJSON(t))
+		must.NoError(err)
+		must.Equal("secret://FILE_KEY", cfg.Provider.APIKeyRef)
+		must.Equal("claude-sonnet-4-6", cfg.ModelRouter.Model)
+	})
 
-	cfg, err = resolveProviderDefaults(t, minimalRunConfigJSON(t), "--model", "claude-opus-4-7", "--api-key-ref", "secret://FLAG_KEY")
-	if err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
-	if cfg.Provider.APIKeyRef != "secret://FLAG_KEY" || cfg.ModelRouter.Model != "claude-opus-4-7" {
-		t.Errorf("flags did not win: keyRef=%q model=%q", cfg.Provider.APIKeyRef, cfg.ModelRouter.Model)
-	}
+	t.Run("flags override file values", func(t *testing.T) {
+		must := require.New(t)
+		cfg, err := resolveProviderDefaults(t, minimalRunConfigJSON(t),
+			"--model", "claude-opus-4-7", "--api-key-ref", "secret://FLAG_KEY")
+		must.NoError(err)
+		must.Equal("secret://FLAG_KEY", cfg.Provider.APIKeyRef)
+		must.Equal("claude-opus-4-7", cfg.ModelRouter.Model)
+	})
 }
 
 func TestProviderDefaults_FileProviderDrivesDefaults(t *testing.T) {
+	must := require.New(t)
 	base := `{"provider":{"type":"openai-responses"},"modelRouter":{"type":"static","provider":"openai-responses"}}`
 
 	cfg, err := resolveProviderDefaults(t, base, "--model", "gpt-5.4-nano")
-	if err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
-	if cfg.Provider.APIKeyRef != "secret://OPENAI_API_KEY" {
-		t.Errorf("Provider.APIKeyRef = %q, want secret://OPENAI_API_KEY", cfg.Provider.APIKeyRef)
-	}
+	must.NoError(err)
+	must.Equal("secret://OPENAI_API_KEY", cfg.Provider.APIKeyRef)
 
-	if _, err := resolveProviderDefaults(t, base); err == nil || !strings.Contains(err.Error(), "--provider=openai-responses") {
-		t.Errorf("expected a missing-model error naming the file's provider, got %v", err)
-	}
+	_, err = resolveProviderDefaults(t, base)
+	must.ErrorContains(err, "--provider=openai-responses")
 }
 
 func TestProviderDefaults_EmptyKeyFlagOptsOutOnFileBase(t *testing.T) {
+	must := require.New(t)
 	base := `{"provider":{"type":"openai-responses"},"modelRouter":{"type":"static","model":"gpt-5.4-nano"}}`
 	cfg, err := resolveProviderDefaults(t, base, "--api-key-ref=")
-	if err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
-	if cfg.Provider.APIKeyRef != "" {
-		t.Errorf("Provider.APIKeyRef = %q, want empty", cfg.Provider.APIKeyRef)
-	}
+	must.NoError(err)
+	must.Empty(cfg.Provider.APIKeyRef)
 }
 
 func TestProviderDefaults_KeylessDocumentGatewayGetsNoKeyDefault(t *testing.T) {
 	for _, providerType := range []string{"openai-compatible", "openai-responses"} {
 		t.Run(providerType, func(t *testing.T) {
+			must := require.New(t)
 			base := `{"provider":{"type":"` + providerType + `","baseUrl":"http://localhost:1234/v1"},"modelRouter":{"type":"static","model":"qwen"}}`
 			cfg, err := resolveProviderDefaults(t, base)
-			if err != nil {
-				t.Fatalf("BuildRunConfig: %v", err)
-			}
-			if cfg.Provider.APIKeyRef != "" {
-				t.Errorf("Provider.APIKeyRef = %q, want empty for a keyless gateway document", cfg.Provider.APIKeyRef)
-			}
+			must.NoError(err)
+			must.Empty(cfg.Provider.APIKeyRef, "a keyless gateway document must not get a key default")
 		})
 	}
 }
@@ -168,61 +149,46 @@ func TestProviderDefaults_DocumentKeyDefaultKeptWithoutGateway(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			cfg, err := resolveProviderDefaults(t, tc.base, tc.args...)
-			if err != nil {
-				t.Fatalf("BuildRunConfig: %v", err)
-			}
-			if cfg.Provider.APIKeyRef != tc.want {
-				t.Errorf("Provider.APIKeyRef = %q, want %q", cfg.Provider.APIKeyRef, tc.want)
-			}
+			must.NoError(err)
+			must.Equal(tc.want, cfg.Provider.APIKeyRef)
 		})
 	}
 }
 
 func TestProviderDefaults_FlagBuiltGatewayKeepsKeyDefault(t *testing.T) {
+	must := require.New(t)
 	cfg, err := resolveProviderDefaults(t, "",
 		"--provider", "openai-compatible", "--model", "qwen", "--base-url", "http://localhost:1234/v1")
-	if err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
-	if cfg.Provider.APIKeyRef != "secret://OPENAI_API_KEY" {
-		t.Errorf("Provider.APIKeyRef = %q, want secret://OPENAI_API_KEY for a flag-built config", cfg.Provider.APIKeyRef)
-	}
+	must.NoError(err)
+	must.Equal("secret://OPENAI_API_KEY", cfg.Provider.APIKeyRef)
 }
 
 func TestProviderDefaults_CredentialBlockSuppressesKeyDefault(t *testing.T) {
+	must := require.New(t)
 	cfg, err := resolveProviderDefaults(t, "",
 		"--provider", "openai-responses", "--model", "m",
 		"--openai-identity-provider-id", "idp_1", "--openai-service-account-id", "sa_1")
-	if err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
-	if cfg.Provider.APIKeyRef != "" {
-		t.Errorf("Provider.APIKeyRef = %q, want empty under WIF", cfg.Provider.APIKeyRef)
-	}
+	must.NoError(err)
+	must.Empty(cfg.Provider.APIKeyRef, "no key default applies under workload identity federation")
 }
 
 func TestProviderDefaults_NonStaticRouterLeftToValidation(t *testing.T) {
+	must := require.New(t)
 	base := `{"provider":{"type":"openai-compatible"},"modelRouter":{"type":"dynamic","cheapModel":"a","expensiveModel":"b"}}`
 	cfg, err := resolveProviderDefaults(t, base)
-	if err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
-	if cfg.ModelRouter.Model != "" {
-		t.Errorf("ModelRouter.Model = %q, want it untouched", cfg.ModelRouter.Model)
-	}
+	must.NoError(err)
+	must.Empty(cfg.ModelRouter.Model)
 }
 
 func TestProviderDefaults_GeminiRejectsClaudeModel(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
-	if err := cmd.ParseFlags([]string{
+	must.NoError(cmd.ParseFlags([]string{
 		"--provider", "gemini", "--model", "claude-sonnet-4-6",
 		"--gcp-project", "p", "--prompt", "x",
-	}); err != nil {
-		t.Fatalf("ParseFlags: %v", err)
-	}
+	}))
 	_, err := BuildRunConfig(RunConfigSources{Cmd: cmd, Resolve: ResolveAll})
-	if err == nil || !strings.Contains(err.Error(), "Anthropic model name") {
-		t.Fatalf("expected the claude- rejection, got %v", err)
-	}
+	must.ErrorContains(err, "Anthropic model name")
 }

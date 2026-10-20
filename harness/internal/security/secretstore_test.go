@@ -5,9 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestEnvSecretStore_ResolveEnvVar(t *testing.T) {
+	must := require.New(t)
 	store := NewEnvSecretStore()
 	ctx := context.Background()
 
@@ -15,86 +18,70 @@ func TestEnvSecretStore_ResolveEnvVar(t *testing.T) {
 	t.Setenv(key, "my-secret-value")
 
 	val, err := store.Resolve(ctx, "secret://"+key)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if val != "my-secret-value" {
-		t.Errorf("got %q, want %q", val, "my-secret-value")
-	}
+	must.NoError(err)
+	must.Equal("my-secret-value", val)
 }
 
-func TestEnvSecretStore_ResolveEnvVarEmpty(t *testing.T) {
+func TestEnvSecretStore_ResolveUnsetEnvVarErrors(t *testing.T) {
+	must := require.New(t)
 	store := NewEnvSecretStore()
 	ctx := context.Background()
 
-	// Use a variable name that is extremely unlikely to be set.
+	// The name is chosen so that it is practically never set in a developer or CI environment.
 	_, err := store.Resolve(ctx, "secret://STIRRUP_DEFINITELY_NOT_SET_12345")
-	if err == nil {
-		t.Fatal("expected error for unset env var, got nil")
-	}
+	must.Error(err)
 }
 
 func TestEnvSecretStore_ResolveFile(t *testing.T) {
+	must := require.New(t)
 	store := NewEnvSecretStore()
 	ctx := context.Background()
 
 	dir := t.TempDir()
 	secretFile := filepath.Join(dir, "api_key")
-	if err := os.WriteFile(secretFile, []byte("  file-secret-value\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.WriteFile(secretFile, []byte("  file-secret-value\n"), 0o600))
 
 	val, err := store.Resolve(ctx, "secret://file://"+secretFile)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if val != "file-secret-value" {
-		t.Errorf("got %q, want %q", val, "file-secret-value")
-	}
+	must.NoError(err)
+	must.Equal("file-secret-value", val)
 }
 
-func TestEnvSecretStore_ResolveFileNotFound(t *testing.T) {
+func TestEnvSecretStore_ResolveMissingFileErrors(t *testing.T) {
+	must := require.New(t)
 	store := NewEnvSecretStore()
 	ctx := context.Background()
 
 	_, err := store.Resolve(ctx, "secret://file:///nonexistent/path/secret")
-	if err == nil {
-		t.Fatal("expected error for missing file, got nil")
-	}
+	must.Error(err)
 }
 
-func TestEnvSecretStore_ResolveFileEmpty(t *testing.T) {
+func TestEnvSecretStore_ResolveBlankFileErrors(t *testing.T) {
+	must := require.New(t)
 	store := NewEnvSecretStore()
 	ctx := context.Background()
 
 	dir := t.TempDir()
 	secretFile := filepath.Join(dir, "empty")
-	if err := os.WriteFile(secretFile, []byte("  \n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.WriteFile(secretFile, []byte("  \n"), 0o600))
 
 	_, err := store.Resolve(ctx, "secret://file://"+secretFile)
-	if err == nil {
-		t.Fatal("expected error for empty file, got nil")
-	}
+	must.Error(err)
 }
 
-func TestEnvSecretStore_ResolveUnknownScheme(t *testing.T) {
+func TestEnvSecretStore_ResolveUnknownSchemeErrors(t *testing.T) {
+	must := require.New(t)
 	store := NewEnvSecretStore()
 	ctx := context.Background()
 
 	_, err := store.Resolve(ctx, "vault://my-secret")
-	if err == nil {
-		t.Fatal("expected error for unknown scheme, got nil")
-	}
+	must.Error(err)
 }
 
-func TestEnvSecretStore_ResolveEmptyEnvName(t *testing.T) {
+func TestEnvSecretStore_ResolveEmptyEnvNameErrors(t *testing.T) {
+	must := require.New(t)
 	store := NewEnvSecretStore()
 	ctx := context.Background()
 
 	_, err := store.Resolve(ctx, "secret://")
-	if err == nil {
-		t.Fatal("expected error for empty env var name, got nil")
-	}
+	must.Error(err)
 }

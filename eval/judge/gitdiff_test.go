@@ -4,52 +4,47 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
 func TestCaptureWorkspaceDiff_IncludesUntrackedModifiedAndDeleted(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	ws, base := changedWorkspace(t)
 
 	got := capture(t, ws, base, 1<<20)
 	for _, want := range []string{"+two", "new.txt", "+brand new", "gone.txt", "-bye", "--- a/a.txt", "+++ b/a.txt"} {
-		if !strings.Contains(got.Head, want) {
-			t.Errorf("diff missing %q:\n%s", want, got.Head)
-		}
+		check.Contains(got.Head, want)
 	}
 	for _, file := range []string{"a.txt", "new.txt", "gone.txt"} {
-		if !strings.Contains(got.Stat, file) {
-			t.Errorf("stat missing %q:\n%s", file, got.Stat)
-		}
+		check.Contains(got.Stat, file)
 	}
-	if got.Truncated {
-		t.Error("small diff reported as truncated")
-	}
-	if got.Size != len(got.Head) {
-		t.Errorf("Size = %d, want len(Head) = %d", got.Size, len(got.Head))
-	}
+	must.False(got.Truncated, "small diff reported as truncated")
+	must.Equal(len(got.Head), got.Size)
 	sum := sha256.Sum256([]byte(got.Head))
-	if got.SHA256 != hex.EncodeToString(sum[:]) {
-		t.Errorf("SHA256 = %s, want hash of the untruncated diff", got.SHA256)
-	}
+	must.Equal(hex.EncodeToString(sum[:]), got.SHA256, "SHA256 should hash the untruncated diff")
 }
 
 func TestCaptureWorkspaceDiff_FilesOnlyWorkspaceGetsNoGitDir(t *testing.T) {
+	must := require.New(t)
 	ws, base := changedWorkspace(t)
 
 	capture(t, ws, base, 1<<20)
-	if fileExists(filepath.Join(ws, ".git")) {
-		t.Error("baseline or capture created a .git inside the workspace")
-	}
+	must.False(fileExists(filepath.Join(ws, ".git")), "baseline or capture created a .git inside the workspace")
 }
 
 func TestCaptureWorkspaceDiff_LeavesWorkspaceRepositoryUntouched(t *testing.T) {
+	check := assert.New(t)
 	ws := gitRepoWorkspace(t, map[string]string{"a.txt": "one\n"})
 	base := baselineOf(t, ws)
 	writeFiles(t, ws, map[string]string{"a.txt": "one\ntwo\n", "new.txt": "brand new\n"})
@@ -58,24 +53,17 @@ func TestCaptureWorkspaceDiff_LeavesWorkspaceRepositoryUntouched(t *testing.T) {
 
 	got := capture(t, ws, base, 1<<20)
 
-	if !strings.Contains(got.Head, "+brand new") || !strings.Contains(got.Head, "+two") {
-		t.Errorf("diff missing the change:\n%s", got.Head)
-	}
-	if after := gitCmd(t, ws, "status", "--porcelain"); after != statusBefore {
-		t.Errorf("workspace git status changed:\nbefore:\n%s\nafter:\n%s", statusBefore, after)
-	}
-	if staged := gitCmd(t, ws, "diff", "--cached", "--name-only"); staged != "" {
-		t.Errorf("workspace index has staged changes: %q", staged)
-	}
-	if after := countObjects(t, filepath.Join(ws, ".git")); after != objectsBefore {
-		t.Errorf("workspace object store grew from %d to %d files", objectsBefore, after)
-	}
-	if strings.Contains(got.Head, "upstream") || strings.Contains(got.Stat, ".git") {
-		t.Errorf("diff reflects the workspace's own repository:\n%s", got.Head)
-	}
+	check.Contains(got.Head, "+brand new")
+	check.Contains(got.Head, "+two")
+	check.Equal(statusBefore, gitCmd(t, ws, "status", "--porcelain"), "workspace git status changed")
+	check.Empty(gitCmd(t, ws, "diff", "--cached", "--name-only"), "workspace index has staged changes")
+	check.Equal(objectsBefore, countObjects(t, filepath.Join(ws, ".git")), "workspace object store changed")
+	check.NotContains(got.Head, "upstream", "diff reflects the workspace's own repository")
+	check.NotContains(got.Stat, ".git", "diff reflects the workspace's own repository")
 }
 
 func TestCaptureWorkspaceDiff_IncludesIgnoredFiles(t *testing.T) {
+	check := assert.New(t)
 	ws := gitRepoWorkspace(t, map[string]string{".gitignore": "*.log\n", "a.txt": "one\n"})
 	base := baselineOf(t, ws)
 	writeFiles(t, ws, map[string]string{
@@ -88,30 +76,31 @@ func TestCaptureWorkspaceDiff_IncludesIgnoredFiles(t *testing.T) {
 
 	got := capture(t, ws, base, 1<<20)
 	for _, want := range []string{"+log line", "+package hidden", "+package excluded"} {
-		if !strings.Contains(got.Head, want) {
-			t.Errorf("ignored file content %q missing from the diff:\n%s", want, got.Head)
-		}
+		check.Contains(got.Head, want, "ignored file content missing from the diff")
 	}
 }
 
 func TestCreateBaseline_IncludesIgnoredSeeds(t *testing.T) {
+	must := require.New(t)
 	ws, base := newWorkspace(t, map[string]string{".gitignore": "*.log\n", "seed.log": "seeded\n"})
 
-	if got := capture(t, ws, base, 1<<20); got.Size != 0 {
-		t.Errorf("an ignored seed file is attributed to the agent:\n%s", got.Head)
-	}
+	got := capture(t, ws, base, 1<<20)
+	must.Zero(got.Size, "an ignored seed file is attributed to the agent:\n%s", got.Head)
 }
 
 func TestCaptureWorkspaceDiff_NoChanges(t *testing.T) {
+	check := assert.New(t)
 	ws, base := newWorkspace(t, map[string]string{"a.txt": "one\n"})
 
 	got := capture(t, ws, base, 1<<20)
-	if got.Head != "" || got.Size != 0 || got.Truncated || got.Stat != "" {
-		t.Errorf("unchanged workspace produced a diff: %+v", got)
-	}
+	check.Empty(got.Head, "unchanged workspace produced a diff: %+v", got)
+	check.Zero(got.Size)
+	check.False(got.Truncated)
+	check.Empty(got.Stat)
 }
 
 func TestCaptureWorkspaceDiff_ScrubsInheritedRepositoryEnv(t *testing.T) {
+	check := assert.New(t)
 	other := gitRepoWorkspace(t, map[string]string{"other.txt": "other\n"})
 	ws, base := changedWorkspace(t)
 	t.Setenv("GIT_DIR", filepath.Join(other, ".git"))
@@ -123,15 +112,14 @@ func TestCaptureWorkspaceDiff_ScrubsInheritedRepositoryEnv(t *testing.T) {
 	t.Setenv("GIT_DIFF_OPTS", "--unified=0")
 
 	got := capture(t, ws, base, 1<<20)
-	if !strings.Contains(got.Head, "+brand new") || strings.Contains(got.Head, "other") {
-		t.Errorf("diff came from the wrong repository:\n%s", got.Head)
-	}
-	if !strings.Contains(got.Head, "--- a/a.txt") || !strings.Contains(got.Head, " one\n") {
-		t.Errorf("inherited diff configuration reshaped the patch:\n%s", got.Head)
-	}
+	check.Contains(got.Head, "+brand new")
+	check.NotContains(got.Head, "other", "diff came from the wrong repository")
+	check.Contains(got.Head, "--- a/a.txt")
+	check.Contains(got.Head, " one\n", "inherited diff configuration reshaped the patch")
 }
 
 func TestCaptureWorkspaceDiff_IndependentOfHostGitConfig(t *testing.T) {
+	check := assert.New(t)
 	ws, base := changedWorkspace(t)
 	clean := capture(t, ws, base, 1<<20)
 
@@ -149,48 +137,42 @@ func TestCaptureWorkspaceDiff_IndependentOfHostGitConfig(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", home)
 
 	hostile := capture(t, ws, base, 1<<20)
-	if hostile.SHA256 != clean.SHA256 || hostile.Head != clean.Head {
-		t.Errorf("host git config changed the capture:\nclean:\n%s\nwith host config:\n%s", clean.Head, hostile.Head)
-	}
-	if again := baselineOf(t, ws); capture(t, ws, again, 1<<20).Size != 0 {
-		t.Error("host excludesFile kept files out of the baseline")
-	}
+	check.Equal(clean.Head, hostile.Head, "host git config changed the capture")
+	check.Equal(clean.SHA256, hostile.SHA256, "host git config changed the capture")
+
+	again := baselineOf(t, ws)
+	check.Zero(capture(t, ws, again, 1<<20).Size, "host excludesFile kept files out of the baseline")
 }
 
 func TestCaptureWorkspaceDiff_TruncatesHeadButHashesWholeDiff(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	ws, base := newWorkspace(t, map[string]string{"a.txt": "one\n"})
 	writeFiles(t, ws, map[string]string{"big.txt": strings.Repeat("line of text\n", 2000)})
 
 	full := capture(t, ws, base, 1<<20)
 	cut := capture(t, ws, base, 500)
 
-	if !cut.Truncated {
-		t.Fatal("expected truncation")
-	}
-	if len(cut.Head) > 500 {
-		t.Errorf("Head is %d bytes, want <= 500", len(cut.Head))
-	}
-	if !strings.HasPrefix(full.Head, cut.Head) {
-		t.Error("truncated head is not a prefix of the full diff")
-	}
-	if cut.Size != full.Size || cut.SHA256 != full.SHA256 {
-		t.Errorf("truncated capture identity (%d, %s) differs from full diff (%d, %s)", cut.Size, cut.SHA256, full.Size, full.SHA256)
-	}
+	must.True(cut.Truncated, "expected truncation")
+	check.LessOrEqual(len(cut.Head), 500)
+	check.True(strings.HasPrefix(full.Head, cut.Head), "truncated head is not a prefix of the full diff")
+	check.Equal(full.Size, cut.Size, "truncated capture size differs from the full diff")
+	check.Equal(full.SHA256, cut.SHA256, "truncated capture hash differs from the full diff")
 }
 
 func TestCaptureWorkspaceDiff_TruncationBoundary(t *testing.T) {
+	check := assert.New(t)
 	ws, base := newWorkspace(t, map[string]string{"a.txt": "one\n"})
 	writeFiles(t, ws, map[string]string{"a.txt": "one\ntwo\n"})
 	full := capture(t, ws, base, 1<<20)
 
 	exact := capture(t, ws, base, full.Size)
-	if exact.Truncated || exact.Head != full.Head {
-		t.Errorf("a diff of exactly max bytes was truncated: %+v", exact)
-	}
+	check.False(exact.Truncated, "a diff of exactly max bytes was truncated")
+	check.Equal(full.Head, exact.Head, "a diff of exactly max bytes changed")
+
 	over := capture(t, ws, base, full.Size-1)
-	if !over.Truncated || len(over.Head) != full.Size-1 {
-		t.Errorf("a diff one byte over max bytes was not truncated: truncated=%v head=%d", over.Truncated, len(over.Head))
-	}
+	check.True(over.Truncated, "a diff one byte over max bytes was not truncated")
+	check.Len(over.Head, full.Size-1)
 }
 
 func TestCaptureWorkspaceDiff_CutsOnRuneBoundary(t *testing.T) {
@@ -198,22 +180,22 @@ func TestCaptureWorkspaceDiff_CutsOnRuneBoundary(t *testing.T) {
 	writeFiles(t, ws, map[string]string{"u.txt": strings.Repeat("é", 400) + "\n"})
 
 	for limit := 120; limit < 126; limit++ {
-		got := capture(t, ws, base, limit)
-		if !utf8.ValidString(got.Head) {
-			t.Errorf("limit %d: head is not valid UTF-8: %q", limit, got.Head[len(got.Head)-3:])
-		}
-		if !got.Truncated {
-			t.Errorf("limit %d: expected truncation", limit)
-		}
+		t.Run(fmt.Sprintf("limit %d", limit), func(t *testing.T) {
+			must := require.New(t)
+			got := capture(t, ws, base, limit)
+			must.True(utf8.ValidString(got.Head), "head is not valid UTF-8: %q", got.Head)
+			must.True(got.Truncated, "expected truncation")
+		})
 	}
 }
 
 func TestCaptureWorkspaceDiff_RejectsMalformedRevision(t *testing.T) {
+	must := require.New(t)
 	ws, base := newWorkspace(t, nil)
 	base.Rev = "--output=/tmp/x"
-	if _, err := captureWorkspaceDiff(context.Background(), ws, base, 1<<20); err == nil {
-		t.Fatal("expected an error for a revision that is not an object name")
-	}
+
+	_, err := captureWorkspaceDiff(context.Background(), ws, base, 1<<20)
+	must.Error(err, "expected an error for a revision that is not an object name")
 }
 
 // hostileVector is an agent action taken after the baseline that must
@@ -282,31 +264,28 @@ func TestCaptureWorkspaceDiff_IgnoresAgentGitConfiguration(t *testing.T) {
 
 func runHostileVector(t *testing.T, ws string, base Baseline, v hostileVector) {
 	t.Helper()
+	must := require.New(t)
 	marker := filepath.Join(tempDir(t), "marker")
 	hooks := tempDir(t)
 	shIn(t, ws, strings.NewReplacer("MARKER", marker, "HOOKS", hooks).Replace(v.script))
 
 	got := capture(t, ws, base, 1<<20)
-	if fileExists(marker) {
-		t.Errorf("agent-written git configuration ran a command on the eval host")
-	}
+	must.False(fileExists(marker), "agent-written git configuration ran a command on the eval host")
 	for _, want := range v.want {
-		if !strings.Contains(got.Head, want) {
-			t.Errorf("diff missing %q:\n%s", want, got.Head)
-		}
+		must.Contains(got.Head, want)
 	}
 }
 
 func TestCaptureWorkspaceDiff_HardeningOverridesJudgeRepositoryConfig(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	ws, base := newWorkspace(t, map[string]string{"a.txt": "base\n"})
 	marker := filepath.Join(tempDir(t), "marker")
 	writeFiles(t, ws, map[string]string{".gitattributes": "* diff=x\n", "a.txt": "changed\n"})
 	writeFiles(t, base.GitDir, map[string]string{
 		"hooks/post-index-change": "#!/bin/sh\ntouch " + marker + "-hook\n",
 	})
-	if err := os.Chmod(filepath.Join(base.GitDir, "hooks", "post-index-change"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.Chmod(filepath.Join(base.GitDir, "hooks", "post-index-change"), 0o755))
 	replaceBaselineWithWorkspace(t, ws, base)
 	for _, kv := range [][2]string{
 		{"core.hooksPath", filepath.Join(base.GitDir, "hooks")},
@@ -321,14 +300,15 @@ func TestCaptureWorkspaceDiff_HardeningOverridesJudgeRepositoryConfig(t *testing
 	}
 
 	got := capture(t, ws, base, 1<<20)
-	for _, suffix := range []string{"-hook", "-fsmonitor", "-external", "-command", "-textconv"} {
-		if fileExists(marker + suffix) {
-			t.Errorf("judge repository configuration ran %s", strings.TrimPrefix(suffix, "-"))
-		}
+	for _, name := range []string{"hook", "fsmonitor", "external", "command", "textconv"} {
+		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
+			must.False(fileExists(marker+"-"+name), "judge repository configuration ran %s", name)
+		})
 	}
-	if !strings.Contains(got.Head, "--- a/a.txt") || !strings.Contains(got.Head, "-base") || !strings.Contains(got.Head, "+changed") {
-		t.Errorf("diff missing the change or reshaped by judge repository config:\n%s", got.Head)
-	}
+	check.Contains(got.Head, "--- a/a.txt", "diff missing the change or reshaped by judge repository config")
+	check.Contains(got.Head, "-base", "diff missing the change or reshaped by judge repository config")
+	check.Contains(got.Head, "+changed", "diff missing the change or reshaped by judge repository config")
 }
 
 // replaceBaselineWithWorkspace plants a replace ref in the judge-owned
@@ -336,6 +316,7 @@ func TestCaptureWorkspaceDiff_HardeningOverridesJudgeRepositoryConfig(t *testing
 // baseline commit.
 func replaceBaselineWithWorkspace(t *testing.T, ws string, base Baseline) {
 	t.Helper()
+	must := require.New(t)
 	index := filepath.Join(tempDir(t), "index")
 	git := func(args ...string) string {
 		return strings.TrimSpace(gitCmd(t, ws, append([]string{"--git-dir", base.GitDir, "--work-tree", ws}, args...)...))
@@ -343,9 +324,7 @@ func replaceBaselineWithWorkspace(t *testing.T, ws string, base Baseline) {
 	t.Setenv("GIT_INDEX_FILE", index)
 	git("add", "-A", "-f")
 	tree := git("write-tree")
-	if err := os.Unsetenv("GIT_INDEX_FILE"); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.Unsetenv("GIT_INDEX_FILE"))
 	replacement := git("commit-tree", tree, "-m", "replacement")
 	git("replace", base.Rev, replacement)
 }
@@ -359,69 +338,74 @@ func TestCaptureWorkspaceDiff_AgentHistoryDoesNotMoveBaseline(t *testing.T) {
 	}
 	for name, script := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			ws := gitRepoWorkspace(t, map[string]string{"a.txt": "base\n"})
 			base := baselineOf(t, ws)
 			shIn(t, ws, script)
 
 			got := capture(t, ws, base, 1<<20)
-			if !strings.Contains(got.Head, "-base") || !strings.Contains(got.Head, "+evil") {
-				t.Errorf("diff does not show the agent's change against the recorded baseline:\n%s", got.Head)
-			}
+			must.Contains(got.Head, "-base", "diff does not show the agent's change against the recorded baseline")
+			must.Contains(got.Head, "+evil")
 		})
 	}
 }
 
 func TestCaptureWorkspaceDiff_AttributesCannotHideContent(t *testing.T) {
 	for name, attrs := range map[string]string{
-		"-diff":  "* -diff\n",
-		"binary": "a.txt binary\n",
+		"negated diff attribute": "* -diff\n",
+		"binary attribute":       "a.txt binary\n",
 	} {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			ws, base := newWorkspace(t, map[string]string{"a.txt": "base\n"})
 			writeFiles(t, ws, map[string]string{".gitattributes": attrs, "a.txt": "rm -rf / evil\n"})
 
 			got := capture(t, ws, base, 1<<20)
-			if !strings.Contains(got.Head, "+rm -rf / evil") || strings.Contains(got.Head, "Binary files") {
-				t.Errorf("attribute hid the change from the judge:\n%s", got.Head)
-			}
+			must.Contains(got.Head, "+rm -rf / evil", "attribute hid the change from the judge")
+			must.NotContains(got.Head, "Binary files", "attribute hid the change from the judge")
 		})
 	}
 }
 
 func TestCaptureWorkspaceDiff_NestedRepositoryIsAnError(t *testing.T) {
+	must := require.New(t)
 	ws, base := newWorkspace(t, map[string]string{"a.txt": "base\n"})
 	shIn(t, ws, `mkdir sub && cd sub && git init -q && echo payload > e.txt && git add -A && git commit -q -m x`)
 
 	_, err := captureWorkspaceDiff(context.Background(), ws, base, 1<<20)
-	if !errors.Is(err, errGitlink) {
-		t.Fatalf("err = %v, want errGitlink", err)
+	must.ErrorIs(err, errGitlink)
+}
+
+func TestGitlinkScanner_DetectsGitlinkEntries(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{name: "regular file entry", raw: ":100644 100644 aaaaaaa bbbbbbb M\ta.txt\n", want: false},
+		{name: "added gitlink", raw: ":000000 160000 0000000 bbbbbbb A\tsub\n", want: true},
+		{name: "removed gitlink", raw: ":160000 000000 aaaaaaa 0000000 D\tsub\n", want: true},
+		{name: "quoted path resembling a gitlink entry", raw: ":100644 100644 a b M\t\"odd\\n:160000 160000 x\"\n", want: false},
+		{name: "gitlink after a regular entry", raw: ":000000 100644 0000000 bbbbbbb A\tx\n:000000 160000 0 b A", want: true},
+		{name: "empty output", raw: "", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			for _, chunk := range []int{1, 7, len(tc.raw) + 1} {
+				s := &gitlinkScanner{}
+				for i := 0; i < len(tc.raw); i += chunk {
+					_, _ = s.Write([]byte(tc.raw[i:min(i+chunk, len(tc.raw))]))
+				}
+				must.Equal(tc.want, s.found(), "chunk size %d", chunk)
+			}
+		})
 	}
 }
 
-func TestGitlinkScanner(t *testing.T) {
-	cases := map[string]bool{
-		":100644 100644 aaaaaaa bbbbbbb M\ta.txt\n":                 false,
-		":000000 160000 0000000 bbbbbbb A\tsub\n":                   true,
-		":160000 000000 aaaaaaa 0000000 D\tsub\n":                   true,
-		":100644 100644 a b M\t\"odd\\n:160000 160000 x\"\n":        false,
-		":000000 100644 0000000 bbbbbbb A\tx\n:000000 160000 0 b A": true,
-		"": false,
-	}
-	for raw, want := range cases {
-		for _, chunk := range []int{1, 7, len(raw) + 1} {
-			s := &gitlinkScanner{}
-			for i := 0; i < len(raw); i += chunk {
-				_, _ = s.Write([]byte(raw[i:min(i+chunk, len(raw))]))
-			}
-			if got := s.found(); got != want {
-				t.Errorf("found(%q, chunk %d) = %v, want %v", raw, chunk, got, want)
-			}
-		}
-	}
-}
-
-func TestWorkspaceHeadBaseline(t *testing.T) {
+func TestWorkspaceHeadBaseline_UsesHeadOfRepositoryRoot(t *testing.T) {
 	t.Run("diffs against HEAD without running workspace configuration", func(t *testing.T) {
+		must := require.New(t)
 		ws := gitRepoWorkspace(t, map[string]string{"a.txt": "base\n"})
 		marker := filepath.Join(tempDir(t), "marker")
 		shIn(t, ws, `printf '#!/bin/sh\ntouch `+marker+`\n' > .git/hooks/post-index-change && chmod +x .git/hooks/post-index-change && `+
@@ -430,70 +414,56 @@ func TestWorkspaceHeadBaseline(t *testing.T) {
 		objectsBefore := countObjects(t, filepath.Join(ws, ".git"))
 
 		base, err := workspaceHeadBaseline(context.Background(), ws, filepath.Join(tempDir(t), "judge.git"))
-		if err != nil {
-			t.Fatalf("workspaceHeadBaseline: %v", err)
-		}
-		if base.Source != types.JudgeBaselineWorkspaceHead || base.recorded() {
-			t.Errorf("baseline = %+v", base)
-		}
+		must.NoError(err)
+		must.Equal(types.JudgeBaselineWorkspaceHead, base.Source, "baseline = %+v", base)
+		must.False(base.recorded(), "baseline = %+v", base)
 		got := capture(t, ws, base, 1<<20)
 
-		if fileExists(marker) {
-			t.Error("resolving the workspace HEAD ran agent-written configuration")
-		}
-		if !strings.Contains(got.Head, "+changed") {
-			t.Errorf("diff missing the change:\n%s", got.Head)
-		}
-		if after := countObjects(t, filepath.Join(ws, ".git")); after != objectsBefore {
-			t.Errorf("workspace object store grew from %d to %d files", objectsBefore, after)
-		}
+		must.False(fileExists(marker), "resolving the workspace HEAD ran agent-written configuration")
+		must.Contains(got.Head, "+changed")
+		must.Equal(objectsBefore, countObjects(t, filepath.Join(ws, ".git")), "workspace object store changed")
 	})
 
 	t.Run("not a repository", func(t *testing.T) {
+		must := require.New(t)
 		requireGit(t)
 		_, err := workspaceHeadBaseline(context.Background(), tempDir(t), filepath.Join(tempDir(t), "judge.git"))
-		if !errors.Is(err, errNotGitRepo) {
-			t.Fatalf("err = %v, want errNotGitRepo", err)
-		}
+		must.ErrorIs(err, errNotGitRepo)
 	})
 
 	t.Run("subdirectory of a repository", func(t *testing.T) {
+		must := require.New(t)
 		ws := gitRepoWorkspace(t, map[string]string{"sub/a.txt": "one\n"})
 		_, err := workspaceHeadBaseline(context.Background(), filepath.Join(ws, "sub"), filepath.Join(tempDir(t), "judge.git"))
-		if !errors.Is(err, errNotGitRepo) {
-			t.Fatalf("err = %v, want errNotGitRepo", err)
-		}
+		must.ErrorIs(err, errNotGitRepo)
 	})
 
 	t.Run("repository without commits", func(t *testing.T) {
+		must := require.New(t)
 		requireGit(t)
 		ws := tempDir(t)
 		gitCmd(t, ws, "init", "-q")
 		_, err := workspaceHeadBaseline(context.Background(), ws, filepath.Join(tempDir(t), "judge.git"))
-		if !errors.Is(err, errNoCommits) {
-			t.Fatalf("err = %v, want errNoCommits", err)
-		}
+		must.ErrorIs(err, errNoCommits)
 	})
 }
 
 func TestBaselineSidecar_RoundTrip(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	ws, base := changedWorkspace(t)
 	want := capture(t, ws, base, 1<<20)
 	artifacts := tempDir(t)
 
-	if err := WriteBaselineSidecar(context.Background(), base, artifacts); err != nil {
-		t.Fatalf("WriteBaselineSidecar: %v", err)
-	}
+	must.NoError(WriteBaselineSidecar(context.Background(), base, artifacts))
 	restored, err := LoadBaselineSidecar(context.Background(), filepath.Join(artifacts, BaselineSidecarName), filepath.Join(tempDir(t), "judge.git"))
-	if err != nil {
-		t.Fatalf("LoadBaselineSidecar: %v", err)
-	}
-	if restored.Rev != base.Rev || restored.Source != types.JudgeBaselineSidecar || !restored.recorded() {
-		t.Errorf("restored = %+v, want rev %s from the sidecar", restored, base.Rev)
-	}
-	if got := capture(t, ws, restored, 1<<20); got.SHA256 != want.SHA256 {
-		t.Errorf("restored baseline produced a different diff:\n%s\nwant:\n%s", got.Head, want.Head)
-	}
+	must.NoError(err)
+	check.Equal(base.Rev, restored.Rev, "restored = %+v", restored)
+	check.Equal(types.JudgeBaselineSidecar, restored.Source, "restored = %+v", restored)
+	check.True(restored.recorded(), "restored = %+v", restored)
+
+	got := capture(t, ws, restored, 1<<20)
+	check.Equal(want.SHA256, got.SHA256, "restored baseline produced a different diff:\n%s", got.Head)
 }
 
 func TestLoadBaselineSidecar_RejectsMalformedSidecars(t *testing.T) {
@@ -508,11 +478,11 @@ func TestLoadBaselineSidecar_RejectsMalformedSidecars(t *testing.T) {
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			dir := tempDir(t)
 			writeFiles(t, dir, map[string]string{BaselineSidecarName: body})
-			if _, err := LoadBaselineSidecar(context.Background(), filepath.Join(dir, BaselineSidecarName), filepath.Join(tempDir(t), "judge.git")); err == nil {
-				t.Fatal("expected an error")
-			}
+			_, err := LoadBaselineSidecar(context.Background(), filepath.Join(dir, BaselineSidecarName), filepath.Join(tempDir(t), "judge.git"))
+			must.Error(err)
 		})
 	}
 }

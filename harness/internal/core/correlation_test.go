@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -73,17 +74,17 @@ func (p *recordingProvider) Stream(_ context.Context, params types.StreamParams)
 }
 
 func TestLoop_CorrelationNeverReachesModelRequest(t *testing.T) {
+	must := require.New(t)
 	modes := make([]string, 0, len(prompt.ModePrompts()))
 	for mode := range prompt.ModePrompts() {
 		modes = append(modes, mode)
 	}
 	sort.Strings(modes)
-	if len(modes) == 0 {
-		t.Fatal("no mode prompts registered")
-	}
+	must.NotEmpty(modes, "no mode prompts registered")
 
 	for _, mode := range modes {
 		t.Run(mode, func(t *testing.T) {
+			must := require.New(t)
 			exporter := tracetest.NewInMemoryExporter()
 			tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 			t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
@@ -100,22 +101,16 @@ func TestLoop_CorrelationNeverReachesModelRequest(t *testing.T) {
 			cfg.SessionName = "corr-session-name-1a2b"
 			cfg.Correlation = correlationFixture()
 
-			if _, err := loop.Run(context.Background(), cfg); err != nil {
-				t.Fatalf("Run: %v", err)
-			}
-			if len(prov.params) < 2 {
-				t.Fatalf("expected a tool turn and a final turn, got %d requests", len(prov.params))
-			}
+			_, err := loop.Run(context.Background(), cfg)
+			must.NoError(err)
+			must.GreaterOrEqual(len(prov.params), 2, "expected a tool turn and a final turn")
 
+			forbidden := append(correlationValues(cfg.Correlation), cfg.SessionName)
 			for i, params := range prov.params {
 				raw, err := json.Marshal(params)
-				if err != nil {
-					t.Fatalf("marshal request %d: %v", i, err)
-				}
-				for _, v := range append(correlationValues(cfg.Correlation), cfg.SessionName) {
-					if strings.Contains(string(raw), v) {
-						t.Errorf("request %d carries correlation value %q", i, v)
-					}
+				must.NoError(err, "marshal request %d", i)
+				for _, v := range forbidden {
+					must.NotContains(string(raw), v, "request %d carries correlation value", i)
 				}
 			}
 
@@ -127,21 +122,18 @@ func TestLoop_CorrelationNeverReachesModelRequest(t *testing.T) {
 					}
 				}
 			}
-			if !stamped {
-				t.Error("no span carries user.id; the run did not see the correlation block")
-			}
+			must.True(stamped, "no span carries user.id; the run did not see the correlation block")
 		})
 	}
 }
 
 func TestLoop_CorrelationNeverBecomesMetricLabel(t *testing.T) {
+	must := require.New(t)
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
 	metrics, err := observability.NewMetricsForTesting(mp)
-	if err != nil {
-		t.Fatalf("NewMetricsForTesting: %v", err)
-	}
+	must.NoError(err)
 
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(tracetest.NewInMemoryExporter()))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
@@ -156,14 +148,11 @@ func TestLoop_CorrelationNeverBecomesMetricLabel(t *testing.T) {
 	cfg := buildTestConfig()
 	cfg.SessionName = "corr-session-name-1a2b"
 	cfg.Correlation = correlationFixture()
-	if _, err := loop.Run(context.Background(), cfg); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err = loop.Run(context.Background(), cfg)
+	must.NoError(err)
 
 	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
+	must.NoError(reader.Collect(context.Background(), &rm))
 	values := map[string]bool{cfg.SessionName: true}
 	for _, v := range correlationValues(cfg.Correlation) {
 		values[v] = true
@@ -171,20 +160,21 @@ func TestLoop_CorrelationNeverBecomesMetricLabel(t *testing.T) {
 	observed := 0
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
-			for _, set := range metricAttributeSets(m.Data) {
-				observed++
-				for _, kv := range set.ToSlice() {
-					key := string(kv.Key)
-					if isCorrelationKey(key) || values[kv.Value.String()] {
-						t.Errorf("metric %s carries correlation attribute %s=%s", m.Name, key, kv.Value.String())
+			t.Run(m.Name, func(t *testing.T) {
+				must := require.New(t)
+				for _, set := range metricAttributeSets(m.Data) {
+					observed++
+					for _, kv := range set.ToSlice() {
+						key := string(kv.Key)
+						value := kv.Value.String()
+						must.False(isCorrelationKey(key) || values[value],
+							"carries correlation attribute %s=%s", key, value)
 					}
 				}
-			}
+			})
 		}
 	}
-	if observed == 0 {
-		t.Fatal("the run recorded no metric data points")
-	}
+	must.NotZero(observed, "the run recorded no metric data points")
 }
 
 func isCorrelationKey(key string) bool {

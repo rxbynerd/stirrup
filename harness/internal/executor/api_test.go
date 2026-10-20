@@ -3,13 +3,15 @@ package executor
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func newTestAPIExecutor(serverURL string) *APIExecutor {
@@ -19,23 +21,15 @@ func newTestAPIExecutor(serverURL string) *APIExecutor {
 }
 
 func TestAPIExecutor_ReadFile_Success(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	content := "package main\n\nfunc main() {}\n"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			t.Errorf("expected GET, got %s", r.Method)
-		}
-		if !strings.HasSuffix(r.URL.Path, "/contents/main.go") {
-			t.Errorf("unexpected path: %s", r.URL.Path)
-		}
-		if r.URL.Query().Get("ref") != "main" {
-			t.Errorf("expected ref=main, got %q", r.URL.Query().Get("ref"))
-		}
-		if r.Header.Get("Authorization") != "Bearer test-token" {
-			t.Errorf("unexpected auth header: %s", r.Header.Get("Authorization"))
-		}
-		if r.Header.Get("Accept") != "application/vnd.github.v3.raw" {
-			t.Errorf("unexpected accept header: %s", r.Header.Get("Accept"))
-		}
+		check.Equal(http.MethodGet, r.Method)
+		check.True(strings.HasSuffix(r.URL.Path, "/contents/main.go"), "unexpected path: %s", r.URL.Path)
+		check.Equal("main", r.URL.Query().Get("ref"))
+		check.Equal("Bearer test-token", r.Header.Get("Authorization"))
+		check.Equal("application/vnd.github.v3.raw", r.Header.Get("Accept"))
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(content))
 	}))
@@ -43,15 +37,12 @@ func TestAPIExecutor_ReadFile_Success(t *testing.T) {
 
 	e := newTestAPIExecutor(server.URL)
 	got, err := e.ReadFile(context.Background(), "main.go")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != content {
-		t.Errorf("expected %q, got %q", content, got)
-	}
+	must.NoError(err)
+	must.Equal(content, got)
 }
 
 func TestAPIExecutor_ReadFile_NotFound(t *testing.T) {
+	must := require.New(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"message": "Not Found"}`))
@@ -60,27 +51,21 @@ func TestAPIExecutor_ReadFile_NotFound(t *testing.T) {
 
 	e := newTestAPIExecutor(server.URL)
 	_, err := e.ReadFile(context.Background(), "nonexistent.go")
-	if err == nil {
-		t.Fatal("expected error for 404")
-	}
-	if !strings.Contains(err.Error(), "HTTP 404") {
-		t.Errorf("error should mention HTTP 404, got %q", err.Error())
-	}
-	if !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("404 read error should wrap fs.ErrNotExist, got %v", err)
-	}
+	must.Error(err)
+	must.ErrorContains(err, "HTTP 404")
+	must.ErrorIs(err, fs.ErrNotExist)
 }
 
 func TestAPIExecutor_ListDirectory_Success(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	entries := []githubContentEntry{
 		{Name: "README.md"},
 		{Name: "main.go"},
 		{Name: "go.mod"},
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Accept") != "application/vnd.github.v3+json" {
-			t.Errorf("unexpected accept header: %s", r.Header.Get("Accept"))
-		}
+		check.Equal("application/vnd.github.v3+json", r.Header.Get("Accept"))
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(entries)
 	}))
@@ -88,21 +73,12 @@ func TestAPIExecutor_ListDirectory_Success(t *testing.T) {
 
 	e := newTestAPIExecutor(server.URL)
 	names, err := e.ListDirectory(context.Background(), ".")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(names) != 3 {
-		t.Fatalf("expected 3 entries, got %d", len(names))
-	}
-	expected := []string{"README.md", "main.go", "go.mod"}
-	for i, name := range names {
-		if name != expected[i] {
-			t.Errorf("entry %d: expected %q, got %q", i, expected[i], name)
-		}
-	}
+	must.NoError(err)
+	must.Equal([]string{"README.md", "main.go", "go.mod"}, names)
 }
 
 func TestAPIExecutor_ListDirectory_MarksDirectoriesWithTrailingSlash(t *testing.T) {
+	must := require.New(t)
 	entries := []githubContentEntry{
 		{Name: "docs", Type: "dir"},
 		{Name: "go.work", Type: "file"},
@@ -117,22 +93,13 @@ func TestAPIExecutor_ListDirectory_MarksDirectoriesWithTrailingSlash(t *testing.
 
 	e := newTestAPIExecutor(server.URL)
 	names, err := e.ListDirectory(context.Background(), ".")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	want := []string{"docs/", "go.work", "link", "vendored"}
-	if len(names) != len(want) {
-		t.Fatalf("got %d entries (%v), want %d", len(names), names, len(want))
-	}
-	for i, name := range names {
-		if name != want[i] {
-			t.Errorf("entry %d: got %q, want %q", i, name, want[i])
-		}
-	}
+	must.NoError(err)
+	must.Equal([]string{"docs/", "go.work", "link", "vendored"}, names)
 }
 
 func TestAPIExecutor_ListDirectory_Empty(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	must := require.New(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte("[]"))
 	}))
@@ -140,90 +107,77 @@ func TestAPIExecutor_ListDirectory_Empty(t *testing.T) {
 
 	e := newTestAPIExecutor(server.URL)
 	names, err := e.ListDirectory(context.Background(), "empty-dir")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(names) != 0 {
-		t.Errorf("expected empty list, got %d entries", len(names))
-	}
+	must.NoError(err)
+	must.Empty(names)
 }
 
 func TestAPIExecutor_WriteFile_Unsupported(t *testing.T) {
+	must := require.New(t)
 	e := NewAPIExecutor("token", "owner", "repo", "ref")
 	err := e.WriteFile(context.Background(), "file.txt", "content")
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !strings.Contains(err.Error(), "write operations not supported") {
-		t.Errorf("unexpected error: %q", err.Error())
-	}
+	must.Error(err)
+	must.ErrorContains(err, "write operations not supported")
 }
 
 func TestAPIExecutor_Exec_Unsupported(t *testing.T) {
+	must := require.New(t)
 	e := NewAPIExecutor("token", "owner", "repo", "ref")
 	_, err := e.Exec(context.Background(), "ls", time.Second)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !strings.Contains(err.Error(), "command execution not supported") {
-		t.Errorf("unexpected error: %q", err.Error())
-	}
+	must.Error(err)
+	must.ErrorContains(err, "command execution not supported")
 }
 
 func TestAPIExecutor_ResolvePath(t *testing.T) {
+	must := require.New(t)
 	e := NewAPIExecutor("token", "owner", "repo", "ref")
 	got, err := e.ResolvePath("some/path")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != "some/path" {
-		t.Errorf("expected %q, got %q", "some/path", got)
-	}
+	must.NoError(err)
+	must.Equal("some/path", got)
 }
 
 func TestAPIExecutor_Capabilities(t *testing.T) {
 	e := NewAPIExecutor("token", "owner", "repo", "ref")
 	caps := e.Capabilities()
 
-	if !caps.CanRead {
-		t.Error("expected CanRead to be true")
+	tests := []struct {
+		name string
+		got  bool
+		want bool
+	}{
+		{name: "can read", got: caps.CanRead, want: true},
+		{name: "can write", got: caps.CanWrite, want: false},
+		{name: "can exec", got: caps.CanExec, want: false},
+		{name: "can network", got: caps.CanNetwork, want: true},
 	}
-	if caps.CanWrite {
-		t.Error("expected CanWrite to be false")
-	}
-	if caps.CanExec {
-		t.Error("expected CanExec to be false")
-	}
-	if !caps.CanNetwork {
-		t.Error("expected CanNetwork to be true")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, tc.got)
+		})
 	}
 }
 
-func TestAPIExecutor_ReadFile_NoRef(t *testing.T) {
+func TestAPIExecutor_ReadFile_OmitsRefWhenUnset(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("ref") != "" {
-			t.Errorf("expected no ref query param, got %q", r.URL.Query().Get("ref"))
-		}
+		check.Empty(r.URL.Query().Get("ref"))
 		_, _ = w.Write([]byte("content"))
 	}))
 	defer server.Close()
 
 	e := newTestAPIExecutor(server.URL)
-	e.ref = "" // clear ref
+	e.ref = ""
 	_, err := e.ReadFile(context.Background(), "file.txt")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	must.NoError(err)
 }
 
 func TestAPIExecutor_EncodesPathAndRef(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.URL.EscapedPath(); !strings.Contains(got, "/contents/dir%20with%20spaces/file%23name.go") {
-			t.Fatalf("unexpected escaped path: %s", got)
-		}
-		if got := r.URL.Query().Get("ref"); got != "feature/bugfix?one=1" {
-			t.Fatalf("unexpected ref query: %q", got)
-		}
+		check.Contains(r.URL.EscapedPath(), "/contents/dir%20with%20spaces/file%23name.go")
+		check.Equal("feature/bugfix?one=1", r.URL.Query().Get("ref"))
 		_, _ = w.Write([]byte("content"))
 	}))
 	defer server.Close()
@@ -232,16 +186,14 @@ func TestAPIExecutor_EncodesPathAndRef(t *testing.T) {
 	e.ref = "feature/bugfix?one=1"
 
 	_, err := e.ReadFile(context.Background(), "dir with spaces/file#name.go")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	must.NoError(err)
 }
 
 func TestAPIExecutor_EmptyToken_OmitsAuthHeader(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if auth := r.Header.Get("Authorization"); auth != "" {
-			t.Errorf("expected no Authorization header for empty token, got %q", auth)
-		}
+		check.Empty(r.Header.Get("Authorization"))
 		_, _ = w.Write([]byte("public content"))
 	}))
 	defer server.Close()
@@ -249,22 +201,17 @@ func TestAPIExecutor_EmptyToken_OmitsAuthHeader(t *testing.T) {
 	e := newTestAPIExecutor(server.URL)
 	e.token = ""
 
-	// Test ReadFile path.
 	content, err := e.ReadFile(context.Background(), "file.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if content != "public content" {
-		t.Errorf("ReadFile content = %q, want %q", content, "public content")
-	}
+	must.NoError(err)
+	must.Equal("public content", content)
 }
 
 func TestAPIExecutor_EmptyToken_ListDirectory_OmitsAuthHeader(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	entries := []githubContentEntry{{Name: "file.txt"}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if auth := r.Header.Get("Authorization"); auth != "" {
-			t.Errorf("expected no Authorization header for empty token, got %q", auth)
-		}
+		check.Empty(r.Header.Get("Authorization"))
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(entries)
 	}))
@@ -274,12 +221,8 @@ func TestAPIExecutor_EmptyToken_ListDirectory_OmitsAuthHeader(t *testing.T) {
 	e.token = ""
 
 	names, err := e.ListDirectory(context.Background(), ".")
-	if err != nil {
-		t.Fatalf("ListDirectory: %v", err)
-	}
-	if len(names) != 1 || names[0] != "file.txt" {
-		t.Errorf("ListDirectory names = %v, want [file.txt]", names)
-	}
+	must.NoError(err)
+	must.Equal([]string{"file.txt"}, names)
 }
 
 const testTreeResponse = `{
@@ -297,44 +240,29 @@ const testTreeResponse = `{
 }`
 
 func TestAPIExecutor_ListTree_ReturnsBlobsOnly(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/git/trees/main") {
-			t.Errorf("unexpected path: %s", r.URL.Path)
-		}
-		if r.URL.Query().Get("recursive") != "1" {
-			t.Errorf("expected recursive=1, got %q", r.URL.Query().Get("recursive"))
-		}
-		if r.Header.Get("Authorization") != "Bearer test-token" {
-			t.Errorf("unexpected auth header: %s", r.Header.Get("Authorization"))
-		}
+		check.True(strings.HasSuffix(r.URL.Path, "/git/trees/main"), "unexpected path: %s", r.URL.Path)
+		check.Equal("1", r.URL.Query().Get("recursive"))
+		check.Equal("Bearer test-token", r.Header.Get("Authorization"))
 		_, _ = w.Write([]byte(testTreeResponse))
 	}))
 	defer server.Close()
 
 	e := newTestAPIExecutor(server.URL)
 	listing, err := e.ListTree(context.Background(), ".")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if listing.Truncated {
-		t.Error("expected Truncated to be false")
-	}
-	want := []TreeEntry{
+	must.NoError(err)
+	must.False(listing.Truncated)
+	must.Equal([]TreeEntry{
 		{Path: "docs/guide.md", Size: 42},
 		{Path: "harness/main.go", Size: 128},
 		{Path: "harness/internal/api.go", Size: 256},
-	}
-	if len(listing.Entries) != len(want) {
-		t.Fatalf("got %d entries (%v), want %d", len(listing.Entries), listing.Entries, len(want))
-	}
-	for i, entry := range listing.Entries {
-		if entry != want[i] {
-			t.Errorf("entry %d: got %+v, want %+v", i, entry, want[i])
-		}
-	}
+	}, listing.Entries)
 }
 
 func TestAPIExecutor_ListTree_ScopesToRootAndStripsPrefix(t *testing.T) {
+	must := require.New(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(testTreeResponse))
 	}))
@@ -342,25 +270,17 @@ func TestAPIExecutor_ListTree_ScopesToRootAndStripsPrefix(t *testing.T) {
 
 	e := newTestAPIExecutor(server.URL)
 	listing, err := e.ListTree(context.Background(), "harness")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	want := []string{"main.go", "internal/api.go"}
+	must.NoError(err)
+
 	got := make([]string, len(listing.Entries))
 	for i, entry := range listing.Entries {
 		got[i] = entry.Path
 	}
-	if len(got) != len(want) {
-		t.Fatalf("got %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("entry %d: got %q, want %q", i, got[i], want[i])
-		}
-	}
+	must.Equal([]string{"main.go", "internal/api.go"}, got)
 }
 
 func TestAPIExecutor_ListTree_ReportsUpstreamTruncation(t *testing.T) {
+	must := require.New(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"tree": [{"path": "a.go", "type": "blob", "size": 1}], "truncated": true}`))
 	}))
@@ -368,50 +288,43 @@ func TestAPIExecutor_ListTree_ReportsUpstreamTruncation(t *testing.T) {
 
 	e := newTestAPIExecutor(server.URL)
 	listing, err := e.ListTree(context.Background(), ".")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !listing.Truncated {
-		t.Error("expected Truncated to be true when GitHub caps the tree")
-	}
+	must.NoError(err)
+	must.True(listing.Truncated, "expected Truncated to be true when GitHub caps the tree")
 }
 
 func TestAPIExecutor_ListTree_UnsetRefUsesHEAD(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/git/trees/HEAD") {
-			t.Errorf("expected HEAD tree-ish, got path %s", r.URL.Path)
-		}
+		check.True(strings.HasSuffix(r.URL.Path, "/git/trees/HEAD"), "expected HEAD tree-ish, got path %s", r.URL.Path)
 		_, _ = w.Write([]byte(`{"tree": [], "truncated": false}`))
 	}))
 	defer server.Close()
 
 	e := newTestAPIExecutor(server.URL)
 	e.ref = ""
-	if _, err := e.ListTree(context.Background(), "."); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	_, err := e.ListTree(context.Background(), ".")
+	must.NoError(err)
 }
 
 func TestAPIExecutor_ListTree_SlashedRefKeepsSeparators(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/git/trees/docs/api guide") {
-			t.Errorf("unexpected path: %s", r.URL.Path)
-		}
-		if !strings.HasSuffix(r.URL.EscapedPath(), "/git/trees/docs/api%20guide") {
-			t.Errorf("unexpected escaped path: %s", r.URL.EscapedPath())
-		}
+		check.True(strings.HasSuffix(r.URL.Path, "/git/trees/docs/api guide"), "unexpected path: %s", r.URL.Path)
+		check.True(strings.HasSuffix(r.URL.EscapedPath(), "/git/trees/docs/api%20guide"), "unexpected escaped path: %s", r.URL.EscapedPath())
 		_, _ = w.Write([]byte(`{"tree": [], "truncated": false}`))
 	}))
 	defer server.Close()
 
 	e := newTestAPIExecutor(server.URL)
 	e.ref = "docs/api guide"
-	if _, err := e.ListTree(context.Background(), "."); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	_, err := e.ListTree(context.Background(), ".")
+	must.NoError(err)
 }
 
 func TestAPIExecutor_ListTree_HTTPError(t *testing.T) {
+	must := require.New(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 	}))
@@ -419,12 +332,8 @@ func TestAPIExecutor_ListTree_HTTPError(t *testing.T) {
 
 	e := newTestAPIExecutor(server.URL)
 	_, err := e.ListTree(context.Background(), ".")
-	if err == nil {
-		t.Fatal("expected error for HTTP 403")
-	}
-	if !strings.Contains(err.Error(), "HTTP 403") {
-		t.Errorf("error should mention HTTP 403, got %q", err.Error())
-	}
+	must.Error(err)
+	must.ErrorContains(err, "HTTP 403")
 }
 
 // Verify that APIExecutor satisfies the Executor interface.

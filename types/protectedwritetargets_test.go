@@ -2,60 +2,61 @@ package types
 
 import (
 	"fmt"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
-func TestValidateRunConfig_ProtectedWriteTargetsAcceptsValid(t *testing.T) {
-	cases := map[string][]string{
-		"unset":       nil,
-		"file":        {"AGENTS.md"},
-		"nested_file": {"docs/AGENTS.md"},
-		"directory":   {".agents/", "config/policies/"},
-		"dot_prefix":  {"./CLAUDE.md"},
-		"backslash":   {`config\policy.cedar`},
-		"dotdot_name": {"notes..md"},
-		"at_cap":      manyProtectedTargets(MaxProtectedWriteTargets),
+func TestValidateRunConfig_ProtectedWriteTargets_AcceptsValid(t *testing.T) {
+	cases := []struct {
+		name    string
+		targets []string
+	}{
+		{"unset", nil},
+		{"file", []string{"AGENTS.md"}},
+		{"nested file", []string{"docs/AGENTS.md"}},
+		{"directory", []string{".agents/", "config/policies/"}},
+		{"dot prefix", []string{"./CLAUDE.md"}},
+		{"backslash", []string{`config\policy.cedar`}},
+		{"dotdot in name", []string{"notes..md"}},
+		{"at cap", manyProtectedTargets(MaxProtectedWriteTargets)},
 	}
-	for name, targets := range cases {
-		t.Run(name, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
-			c.Tools.ProtectedWriteTargets = targets
-			if err := ValidateRunConfig(c); err != nil {
-				t.Fatalf("expected valid config, got: %v", err)
-			}
+			c.Tools.ProtectedWriteTargets = tc.targets
+			must.NoError(ValidateRunConfig(c))
 		})
 	}
 }
 
-func TestValidateRunConfig_ProtectedWriteTargetsRejects(t *testing.T) {
+func TestValidateRunConfig_ProtectedWriteTargets_RejectsInvalid(t *testing.T) {
 	cases := []struct {
 		name    string
 		targets []string
-		want    string
+		wantErr string
 	}{
 		{"empty", []string{""}, "must not be empty"},
 		{"whitespace", []string{"AGENTS.md "}, "whitespace"},
 		{"absolute", []string{"/etc/passwd"}, "must be relative"},
-		{"absolute_backslash", []string{`\workspace\AGENTS.md`}, "must be relative"},
-		{"drive_letter", []string{`C:\repo\AGENTS.md`}, "must be relative"},
+		{"absolute backslash", []string{`\workspace\AGENTS.md`}, "must be relative"},
+		{"drive letter", []string{`C:\repo\AGENTS.md`}, "must be relative"},
 		{"traversal", []string{"../AGENTS.md"}, `".." segments`},
-		{"inner_traversal", []string{"docs/../../AGENTS.md"}, `".." segments`},
-		{"backslash_traversal", []string{`docs\..\AGENTS.md`}, `".." segments`},
-		{"root_dot", []string{"."}, "not the workspace root"},
-		{"root_dot_slash", []string{"./"}, "not the workspace root"},
+		{"inner traversal", []string{"docs/../../AGENTS.md"}, `".." segments`},
+		{"backslash traversal", []string{`docs\..\AGENTS.md`}, `".." segments`},
+		{"root dot", []string{"."}, "not the workspace root"},
+		{"root dot slash", []string{"./"}, "not the workspace root"},
 		{"glob", []string{"docs/*.md"}, "globbing is not supported"},
-		{"control", []string{"AGENTS\x00.md"}, "control characters"},
-		{"too_many", manyProtectedTargets(MaxProtectedWriteTargets + 1), "tools.protectedWriteTargets must have <="},
+		{"control character", []string{"AGENTS\x00.md"}, "control characters"},
+		{"too many", manyProtectedTargets(MaxProtectedWriteTargets + 1), "tools.protectedWriteTargets must have <="},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Tools.ProtectedWriteTargets = tc.targets
-			err := ValidateRunConfig(c)
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("expected error containing %q, got: %v", tc.want, err)
-			}
+			must.ErrorContains(ValidateRunConfig(c), tc.wantErr)
 		})
 	}
 }

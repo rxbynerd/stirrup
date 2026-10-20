@@ -2,34 +2,30 @@ package cmd
 
 import (
 	"encoding/json"
-	"reflect"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
 
 func setFlags(t *testing.T, cmdFlags interface{ Set(string, string) error }, kvs [][2]string) {
 	t.Helper()
+	must := require.New(t)
 	for _, kv := range kvs {
-		if err := cmdFlags.Set(kv[0], kv[1]); err != nil {
-			t.Fatalf("set --%s: %v", kv[0], err)
-		}
+		must.NoError(cmdFlags.Set(kv[0], kv[1]), "set --%s", kv[0])
 	}
 }
 
 func TestApplyOverrides_CorrelationDefaultLeavesBlockNil(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
-	if cfg.Correlation != nil {
-		t.Errorf("Correlation must stay nil without the flags, got %+v", cfg.Correlation)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
+	must.Nil(cfg.Correlation)
 }
 
-func TestApplyOverrides_CorrelationFlags(t *testing.T) {
+func TestApplyOverrides_CorrelationFlagsMergeWithFile(t *testing.T) {
 	fileBlock := &types.CorrelationConfig{
 		SessionID: "file-session",
 		TaskID:    "file-task",
@@ -124,6 +120,7 @@ func TestApplyOverrides_CorrelationFlags(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			cmd := newTestHarnessCommand()
 			cfg := baseFileConfig()
 			if tc.file != nil {
@@ -135,75 +132,75 @@ func TestApplyOverrides_CorrelationFlags(t *testing.T) {
 				cfg.Correlation = &copied
 			}
 			setFlags(t, cmd.Flags(), tc.flags)
-			if err := applyOverrides(cmd, cfg, nil); err != nil {
-				t.Fatalf("applyOverrides: %v", err)
-			}
-			if !reflect.DeepEqual(cfg.Correlation, tc.want) {
-				t.Errorf("Correlation = %+v, want %+v", cfg.Correlation, tc.want)
-			}
+			must.NoError(applyOverrides(cmd, cfg, nil))
+			must.Equal(tc.want, cfg.Correlation)
 		})
 	}
 }
 
 func TestApplyOverrides_CorrelationLabelRejectsMalformedPair(t *testing.T) {
-	for _, entry := range []string{"agent_profile", "=value", "", "agent_profile="} {
-		t.Run(entry, func(t *testing.T) {
+	cases := []struct {
+		name  string
+		entry string
+	}{
+		{name: "missing equals sign", entry: "agent_profile"},
+		{name: "empty key", entry: "=value"},
+		{name: "empty entry", entry: ""},
+		{name: "empty value", entry: "agent_profile="},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			cmd := newTestHarnessCommand()
-			setFlags(t, cmd.Flags(), [][2]string{{"correlation-label", entry}})
+			setFlags(t, cmd.Flags(), [][2]string{{"correlation-label", tc.entry}})
 			err := applyOverrides(cmd, baseFileConfig(), nil)
-			if err == nil || !strings.Contains(err.Error(), "--correlation-label") {
-				t.Fatalf("applyOverrides error = %v, want a --correlation-label parse error", err)
-			}
+			must.ErrorContains(err, "--correlation-label")
 		})
 	}
 }
 
 func TestBuildRunConfig_CorrelationFlagsValidate(t *testing.T) {
-	cmd := newTestHarnessCommand()
-	setFlags(t, cmd.Flags(), [][2]string{
-		{"prompt", "do the thing"},
-		{"correlation-session-id", "s1"},
-		{"correlation-label", "Bad-Key=v"},
+	t.Run("rejects an invalid label key", func(t *testing.T) {
+		must := require.New(t)
+		cmd := newTestHarnessCommand()
+		setFlags(t, cmd.Flags(), [][2]string{
+			{"prompt", "do the thing"},
+			{"correlation-session-id", "s1"},
+			{"correlation-label", "Bad-Key=v"},
+		})
+		_, err := BuildRunConfig(RunConfigSources{Cmd: cmd, Resolve: ResolveAll})
+		must.ErrorContains(err, "correlation.labels key")
 	})
-	_, err := BuildRunConfig(RunConfigSources{Cmd: cmd, Resolve: ResolveAll})
-	if err == nil || !strings.Contains(err.Error(), "correlation.labels key") {
-		t.Fatalf("BuildRunConfig error = %v, want the label key validation error", err)
-	}
 
-	cmd = newTestHarnessCommand()
-	setFlags(t, cmd.Flags(), [][2]string{
-		{"prompt", "do the thing"},
-		{"correlation-session-id", "s1"},
-		{"correlation-label", "agent_profile=reviewer"},
+	t.Run("builds the block from valid flags", func(t *testing.T) {
+		must := require.New(t)
+		cmd := newTestHarnessCommand()
+		setFlags(t, cmd.Flags(), [][2]string{
+			{"prompt", "do the thing"},
+			{"correlation-session-id", "s1"},
+			{"correlation-label", "agent_profile=reviewer"},
+		})
+		cfg, err := BuildRunConfig(RunConfigSources{Cmd: cmd, Resolve: ResolveAll})
+		must.NoError(err)
+		want := &types.CorrelationConfig{SessionID: "s1", Labels: map[string]string{"agent_profile": "reviewer"}}
+		must.Equal(want, cfg.Correlation)
 	})
-	cfg, err := BuildRunConfig(RunConfigSources{Cmd: cmd, Resolve: ResolveAll})
-	if err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
-	want := &types.CorrelationConfig{SessionID: "s1", Labels: map[string]string{"agent_profile": "reviewer"}}
-	if !reflect.DeepEqual(cfg.Correlation, want) {
-		t.Errorf("Correlation = %+v, want %+v", cfg.Correlation, want)
-	}
 }
 
 func TestRunRunConfig_CorrelationFlagsEmitBlock(t *testing.T) {
+	must := require.New(t)
 	out, err := runRunConfigForTest(t, []string{
 		"--correlation-session-id", "s1",
 		"--correlation-label", "agent_profile=reviewer",
 	}, `{"correlation":{"taskId":"from-stdin","sessionId":"stdin-session"}}`)
-	if err != nil {
-		t.Fatalf("runRunConfig: %v", err)
-	}
+	must.NoError(err)
+
 	var cfg types.RunConfig
-	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-		t.Fatalf("emitted output is not parseable JSON: %v\n%s", err, out)
-	}
+	must.NoError(json.Unmarshal([]byte(out), &cfg), "emitted output must be valid JSON:\n%s", out)
 	want := &types.CorrelationConfig{
 		SessionID: "s1",
 		TaskID:    "from-stdin",
 		Labels:    map[string]string{"agent_profile": "reviewer"},
 	}
-	if !reflect.DeepEqual(cfg.Correlation, want) {
-		t.Errorf("Correlation = %+v, want %+v", cfg.Correlation, want)
-	}
+	must.Equal(want, cfg.Correlation)
 }

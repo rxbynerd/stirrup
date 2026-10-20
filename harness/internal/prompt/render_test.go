@@ -3,6 +3,8 @@ package prompt
 import (
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // Representative model IDs, one per tier plus the boundary cases.
@@ -27,10 +29,9 @@ You can read files, write files, search the codebase, and run shell commands.`
 
 func renderMode(t *testing.T, mode, model string) string {
 	t.Helper()
+	must := require.New(t)
 	got, err := RenderModePrompt(mode, PromptContext{Mode: mode, Model: model})
-	if err != nil {
-		t.Fatalf("RenderModePrompt(%q, model %q) error: %v", mode, model, err)
-	}
+	must.NoError(err, "RenderModePrompt(%q, model %q)", mode, model)
 	return got
 }
 
@@ -38,24 +39,22 @@ func renderMode(t *testing.T, mode, model string) string {
 // tier: no leftover template syntax, and the default-tier text is always
 // a prefix of the output because tier blocks are additive.
 func TestRenderModePrompt_Matrix(t *testing.T) {
+	must := require.New(t)
 	for mode := range ModePrompts() {
 		base := renderMode(t, mode, "")
-		if base == "" {
-			t.Fatalf("mode %q: empty base render", mode)
-		}
+		must.NotEmpty(base, "mode %q: empty base render", mode)
 		for _, model := range renderMatrixModels {
 			name := mode + "/" + model
 			if model == "" {
 				name = mode + "/(empty)"
 			}
 			t.Run(name, func(t *testing.T) {
+				must := require.New(t)
 				got := renderMode(t, mode, model)
-				if strings.Contains(got, "{{") || strings.Contains(got, "}}") {
-					t.Errorf("rendered prompt contains unrendered template syntax:\n%s", got)
-				}
-				if !strings.HasPrefix(got, base) {
-					t.Errorf("rendered prompt for model %q does not start with the default-tier text", model)
-				}
+				must.NotContains(got, "{{", "rendered prompt contains unrendered template syntax")
+				must.NotContains(got, "}}", "rendered prompt contains unrendered template syntax")
+				must.True(strings.HasPrefix(got, base),
+					"rendered prompt for model %q does not start with the default-tier text", model)
 			})
 		}
 	}
@@ -63,73 +62,64 @@ func TestRenderModePrompt_Matrix(t *testing.T) {
 
 // A model outside both tier tables renders exactly the default-tier
 // text, and for the execution mode that text is byte-identical to the
-// pre-templating prompt.
+// pinned execution prompt.
 func TestRenderModePrompt_UnknownModelFallsThrough(t *testing.T) {
+	must := require.New(t)
 	for mode := range ModePrompts() {
 		base := renderMode(t, mode, "")
 		for _, model := range []string{"some-brand-new-model", "claude-haiku-4-5-20251001"} {
-			if got := renderMode(t, mode, model); got != base {
-				t.Errorf("mode %q, model %q: rendered prompt differs from the default-tier text\ngot:\n%s\nwant:\n%s", mode, model, got, base)
-			}
+			t.Run(mode+"/"+model, func(t *testing.T) {
+				must := require.New(t)
+				must.Equal(base, renderMode(t, mode, model))
+			})
 		}
 	}
-	if got := renderMode(t, "execution", "some-brand-new-model"); got != executionBasePrompt {
-		t.Errorf("execution fall-through drifted from the pinned pre-#492 prompt\ngot:\n%s", got)
-	}
+
+	got := renderMode(t, "execution", "some-brand-new-model")
+	must.Equal(executionBasePrompt, got, "execution fall-through drifted from the pinned prompt")
 }
 
 // Each tier's block must actually render for its models and stay out of
 // the other tier's output.
 func TestRenderModePrompt_TierBlocksRender(t *testing.T) {
+	must := require.New(t)
 	for mode := range ModePrompts() {
-		base := renderMode(t, mode, "")
-		frontier := renderMode(t, mode, "claude-fable-5")
-		openWeight := renderMode(t, mode, "gemma-4")
+		t.Run(mode, func(t *testing.T) {
+			must := require.New(t)
+			base := renderMode(t, mode, "")
+			frontier := renderMode(t, mode, "claude-fable-5")
+			openWeight := renderMode(t, mode, "gemma-4")
 
-		if frontier == base {
-			t.Errorf("mode %q: frontier render is identical to base — frontier block missing", mode)
-		}
-		if openWeight == base {
-			t.Errorf("mode %q: open-weight render is identical to base — open-weight block missing", mode)
-		}
-		if frontier == openWeight {
-			t.Errorf("mode %q: frontier and open-weight renders are identical", mode)
-		}
+			must.NotEqual(base, frontier, "frontier block missing")
+			must.NotEqual(base, openWeight, "open-weight block missing")
+			must.NotEqual(frontier, openWeight, "frontier and open-weight renders are identical")
+		})
 	}
 
 	// Spot-check one distinctive phrase per tier on the execution mode.
-	if got := renderMode(t, "execution", "claude-fable-5"); !strings.Contains(got, "When you have enough information to act, act.") {
-		t.Errorf("execution frontier block missing its guidance:\n%s", got)
-	}
-	if got := renderMode(t, "execution", "glm-5.2"); !strings.Contains(got, "Never describe an edit or command in prose") {
-		t.Errorf("execution open-weight block missing its guidance:\n%s", got)
-	}
+	frontierExecution := renderMode(t, "execution", "claude-fable-5")
+	must.Contains(frontierExecution, "When you have enough information to act, act.", "execution frontier block")
+
+	openWeightExecution := renderMode(t, "execution", "glm-5.2")
+	must.Contains(openWeightExecution, "Never describe an edit or command in prose", "execution open-weight block")
 }
 
-func TestRenderModePrompt_UnknownMode(t *testing.T) {
+func TestRenderModePrompt_UnknownMode_ErrorNamesMode(t *testing.T) {
+	must := require.New(t)
 	_, err := RenderModePrompt("no-such-mode", PromptContext{Mode: "no-such-mode"})
-	if err == nil {
-		t.Fatal("expected error for unknown mode")
-	}
-	if !strings.Contains(err.Error(), "no-such-mode") {
-		t.Errorf("expected error to name the mode, got: %v", err)
-	}
+	must.ErrorContains(err, "no-such-mode")
 }
 
 // DefaultPromptBuilder and the composed ModeTemplateFragment must agree
 // with RenderModePrompt so the "default" and "composed" builder types
 // produce the same preamble.
 func TestModeTemplateFragment_MatchesRenderModePrompt(t *testing.T) {
+	must := require.New(t)
 	pc := PromptContext{Mode: "execution", Model: "claude-fable-5"}
 	want, err := RenderModePrompt("execution", pc)
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
+
 	got, err := ModeTemplateFragment().Render(t.Context(), pc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != want {
-		t.Errorf("fragment output differs from RenderModePrompt")
-	}
+	must.NoError(err)
+	must.Equal(want, got)
 }

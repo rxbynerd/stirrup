@@ -7,9 +7,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
 	"github.com/rxbynerd/stirrup/harness/internal/provider/compat/zai"
@@ -17,157 +19,7 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// staticBearer mirrors the harness-internal helper of the same name;
-// compat/zai lives outside package provider so it can't reach it directly.
-func staticBearer(s string) func(context.Context) (string, error) {
-	return func(_ context.Context) (string, error) {
-		return s, nil
-	}
-}
-
-func hasReplayField(q quirks.ProviderQuirks, path string) bool {
-	for _, p := range q.ReplayFields {
-		if p == path {
-			return true
-		}
-	}
-	return false
-}
-
-// TestZAICompatRules_AppliesTokenFieldAndExtraBody pins the base
-// Z.ai compat rule: legacy "max_tokens" field and "tool_stream": true.
-func TestZAICompatRules_AppliesTokenFieldAndExtraBody(t *testing.T) {
-	captured := make(chan []byte, 1)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("read body: %v", err)
-			return
-		}
-		captured <- b
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
-	}))
-	defer srv.Close()
-
-	adapter := provider.NewOpenAICompatibleAdapter(
-		staticBearer("test-key"),
-		srv.URL,
-		provider.OpenAIAuthConfig{},
-		provider.RetryPolicy{},
-	)
-	rules := append(quirks.BuiltinRules(), zai.CompatRules()...)
-	adapter.Registry = quirks.NewRegistry(rules)
-
-	ch, err := adapter.Stream(context.Background(), types.StreamParams{
-		Model:     "glm-4-plus",
-		MaxTokens: 4096,
-		Messages: []types.Message{
-			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
-		},
-	})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	for range ch {
-	}
-	body := <-captured
-
-	var got map[string]any
-	if err := json.Unmarshal(body, &got); err != nil {
-		t.Fatalf("unmarshal: %v\nbody: %s", err, body)
-	}
-
-	// Legacy token field present (with the caller's value), modern key absent.
-	if v, ok := got["max_tokens"]; !ok {
-		t.Errorf("Z.ai body missing 'max_tokens' (legacy field required): %s", body)
-	} else if n, isNum := v.(float64); !isNum || n != 4096 {
-		t.Errorf("Z.ai 'max_tokens' = %v (type %T), want 4096", v, v)
-	}
-	if _, ok := got["max_completion_tokens"]; ok {
-		t.Errorf("Z.ai body contains 'max_completion_tokens' (rule failed to switch field): %s", body)
-	}
-	// tool_stream extra body field present and true.
-	v, ok := got["tool_stream"]
-	if !ok {
-		t.Errorf("Z.ai body missing 'tool_stream' extension: %s", body)
-	}
-	if b, isBool := v.(bool); !isBool || !b {
-		t.Errorf("Z.ai 'tool_stream' = %v (type %T), want true (bool)", v, v)
-	}
-}
-
-// TestZAICompatRules_GLM47AppliesThinkingFamilyBody pins the
-// thinking-family request shape: base quirks plus a top-level
-// "thinking" object for a glm-4.7 request.
-func TestZAICompatRules_GLM47AppliesThinkingFamilyBody(t *testing.T) {
-	captured := make(chan []byte, 1)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("read body: %v", err)
-			return
-		}
-		captured <- b
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
-	}))
-	defer srv.Close()
-
-	adapter := provider.NewOpenAICompatibleAdapter(
-		staticBearer("test-key"),
-		srv.URL,
-		provider.OpenAIAuthConfig{},
-		provider.RetryPolicy{},
-	)
-	rules := append(quirks.BuiltinRules(), zai.CompatRules()...)
-	adapter.Registry = quirks.NewRegistry(rules)
-
-	ch, err := adapter.Stream(context.Background(), types.StreamParams{
-		Model:     "glm-4.7",
-		MaxTokens: 4096,
-		Messages: []types.Message{
-			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
-		},
-	})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	for range ch {
-	}
-	body := <-captured
-
-	var got map[string]any
-	if err := json.Unmarshal(body, &got); err != nil {
-		t.Fatalf("unmarshal: %v\nbody: %s", err, body)
-	}
-
-	// Base rule still contributes (glm-* matches glm-4.7 too).
-	if v, ok := got["max_tokens"]; !ok {
-		t.Errorf("glm-4.7 body missing 'max_tokens' (base rule must still fire): %s", body)
-	} else if n, isNum := v.(float64); !isNum || n != 4096 {
-		t.Errorf("glm-4.7 'max_tokens' = %v (type %T), want 4096", v, v)
-	}
-	if v, ok := got["tool_stream"]; !ok {
-		t.Errorf("glm-4.7 body missing 'tool_stream': %s", body)
-	} else if b, isBool := v.(bool); !isBool || !b {
-		t.Errorf("glm-4.7 'tool_stream' = %v (type %T), want true", v, v)
-	}
-	// Thinking-family rule contribution: top-level thinking object.
-	thinking, ok := got["thinking"]
-	if !ok {
-		t.Fatalf("glm-4.7 body missing 'thinking' object: %s", body)
-	}
-	tm, ok := thinking.(map[string]any)
-	if !ok {
-		t.Fatalf("glm-4.7 'thinking' = %v (type %T), want object", thinking, thinking)
-	}
-	if tm["type"] != "enabled" {
-		t.Errorf("glm-4.7 thinking.type = %v, want \"enabled\": %s", tm["type"], body)
-	}
-}
+const doneSSE = "data: [DONE]\n\n"
 
 // glm47ReasoningSSE is a synthetic GLM-4.7 stream with
 // reasoning_content as a sibling of content on each assistant delta;
@@ -179,8 +31,21 @@ const glm47ReasoningSSE = "data: {\"id\":\"glm-test\",\"object\":\"chat.completi
 	"data: {\"id\":\"glm-test\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens\":8}}\n\n" +
 	"data: [DONE]\n\n"
 
-// zaiTestAdapter builds an adapter with a registry assembled exactly
-// as core/factory.go does for compatProfile=zai-glm.
+// staticBearer mirrors the harness-internal helper of the same name;
+// compat/zai lives outside package provider so it can't reach it directly.
+func staticBearer(s string) func(context.Context) (string, error) {
+	return func(_ context.Context) (string, error) {
+		return s, nil
+	}
+}
+
+// zaiRegistry assembles the quirks registry exactly as core/factory.go
+// does for compatProfile=zai-glm.
+func zaiRegistry() *quirks.Registry {
+	return quirks.NewRegistry(append(quirks.BuiltinRules(), zai.CompatRules()...))
+}
+
+// zaiTestAdapter builds an adapter that uses zaiRegistry.
 func zaiTestAdapter(srvURL string) *provider.OpenAICompatibleAdapter {
 	adapter := provider.NewOpenAICompatibleAdapter(
 		staticBearer("test-key"),
@@ -188,341 +53,60 @@ func zaiTestAdapter(srvURL string) *provider.OpenAICompatibleAdapter {
 		provider.OpenAIAuthConfig{},
 		provider.RetryPolicy{},
 	)
-	adapter.Registry = quirks.NewRegistry(append(quirks.BuiltinRules(), zai.CompatRules()...))
+	adapter.Registry = zaiRegistry()
 	return adapter
 }
 
-// TestZAICompatRules_GLM47CapturesReasoningContent pins that the zai
-// compat rule registers the reasoning_content path for a GLM model,
-// so message_complete.ReplayFields accumulates the concatenated pieces.
-func TestZAICompatRules_GLM47CapturesReasoningContent(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+// newSSEServer answers every request with the sse stream. When bodies is
+// non-nil, each request body is sent on it. The handler runs on the server's
+// goroutine, so it reports failures through assert rather than require.
+func newSSEServer(t *testing.T, sse string, bodies chan<- []byte) *httptest.Server {
+	t.Helper()
+	check := assert.New(t)
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if bodies != nil {
+			b, err := io.ReadAll(r.Body)
+			if !check.NoError(err, "read body") {
+				return
+			}
+			bodies <- b
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprint(w, glm47ReasoningSSE)
+		_, _ = fmt.Fprint(w, sse)
 	}))
+}
+
+// captureRequestBody streams one user turn for model through the Z.ai
+// adapter and returns the request body the server received.
+func captureRequestBody(t *testing.T, model string, maxTokens int) []byte {
+	t.Helper()
+	must := require.New(t)
+	bodies := make(chan []byte, 1)
+	srv := newSSEServer(t, doneSSE, bodies)
 	defer srv.Close()
 
-	adapter := zaiTestAdapter(srv.URL)
-	ch, err := adapter.Stream(context.Background(), types.StreamParams{
-		Model:     "glm-4.7",
-		MaxTokens: 1024,
-		Messages: []types.Message{
-			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
-		},
+	ch, err := zaiTestAdapter(srv.URL).Stream(context.Background(), types.StreamParams{
+		Model:     model,
+		MaxTokens: maxTokens,
+		Messages:  []types.Message{userText("hi")},
 	})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
+	must.NoError(err, "Stream")
+	for range ch {
 	}
-
-	var complete *types.StreamEvent
-	for ev := range ch {
-		if ev.Type == "message_complete" {
-			e := ev
-			complete = &e
-		}
-	}
-	if complete == nil {
-		t.Fatal("no message_complete event; GLM stream did not complete")
-	}
-	want := `"Scanning the request. Choosing an answer."`
-	if got := string(complete.ReplayFields["reasoning_content"]); got != want {
-		t.Errorf("message_complete ReplayFields[reasoning_content] = %s, want %s "+
-			"(zai compat rule must register the reasoning_content path for glm-4.7)", got, want)
-	}
+	return <-bodies
 }
 
-// TestZAICompatRules_GLM47TwoTurnRoundTrip pins that the zai
-// compat-injected reasoning_content path (not just DeepSeek's builtin
-// one) closes the loop: turn-1 reasoning_content is captured onto the
-// assistant message and threaded back as a top-level key on turn 2.
-func TestZAICompatRules_GLM47TwoTurnRoundTrip(t *testing.T) {
-	bodies := make(chan []byte, 2)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("read body: %v", err)
-			return
-		}
-		bodies <- b
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprint(w, glm47ReasoningSSE)
-	}))
-	defer srv.Close()
-
-	adapter := zaiTestAdapter(srv.URL)
-
-	history := []types.Message{
-		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
-	}
-
-	ch, err := adapter.Stream(context.Background(), types.StreamParams{
-		Model:     "glm-4.7",
-		MaxTokens: 1024,
-		Messages:  history,
-	})
-	if err != nil {
-		t.Fatalf("turn-1 Stream: %v", err)
-	}
-	var text strings.Builder
-	var replay map[string]json.RawMessage
-	for ev := range ch {
-		switch ev.Type {
-		case "text_delta":
-			text.WriteString(ev.Text)
-		case "message_complete":
-			replay = ev.ReplayFields
-		}
-	}
-	if replay == nil {
-		t.Fatal("turn 1 produced no ReplayFields; capture path did not run for glm-4.7")
-	}
-	<-bodies // discard the turn-1 request body
-
-	history = append(history,
-		types.Message{
-			Role:         "assistant",
-			Content:      []types.ContentBlock{{Type: "text", Text: text.String()}},
-			ReplayFields: replay,
-		},
-		types.Message{
-			Role:    "user",
-			Content: []types.ContentBlock{{Type: "text", Text: "and now?"}},
-		},
-	)
-
-	ch2, err := adapter.Stream(context.Background(), types.StreamParams{
-		Model:     "glm-4.7",
-		MaxTokens: 1024,
-		Messages:  history,
-	})
-	if err != nil {
-		t.Fatalf("turn-2 Stream: %v", err)
-	}
-	for range ch2 {
-	}
-	turn2Body := <-bodies
-
-	want := `"reasoning_content":"Scanning the request. Choosing an answer."`
-	if !strings.Contains(string(turn2Body), want) {
-		t.Errorf("turn-2 wire body missing threaded reasoning_content:\nwant substring: %s\nbody: %s", want, turn2Body)
-	}
+func decodeBody(t *testing.T, body []byte) map[string]any {
+	t.Helper()
+	must := require.New(t)
+	var got map[string]any
+	must.NoError(json.Unmarshal(body, &got), "body: %s", body)
+	return got
 }
 
-// TestZAICompatRules_ThinkingFamilyResolution pins resolved quirks for
-// both thinking-family globs (glm-4.[5-9]* and glm-5*), which share
-// applyThinkingFamily.
-func TestZAICompatRules_ThinkingFamilyResolution(t *testing.T) {
-	reg := quirks.NewRegistry(append(quirks.BuiltinRules(), zai.CompatRules()...))
-
-	for _, model := range []string{"glm-4.7", "glm-4.5-air", "glm-5", "glm-5.1", "glm-5.3", "glm-5.3-flash"} {
-		t.Run(model, func(t *testing.T) {
-			q := reg.Resolve("openai-compatible", model)
-
-			// Base quirks still resolve.
-			if q.BehaviourFlags.OpenAI.TokenField != quirks.TokenFieldMaxTokens {
-				t.Errorf("%s: TokenField = %v, want max_tokens", model, q.BehaviourFlags.OpenAI.TokenField)
-			}
-			if v, ok := q.BehaviourFlags.OpenAI.ExtraBodyFields["tool_stream"]; !ok {
-				t.Errorf("%s: tool_stream missing from ExtraBodyFields", model)
-			} else if b, isBool := v.(bool); !isBool || !b {
-				t.Errorf("%s: tool_stream = %v (type %T), want true", model, v, v)
-			}
-
-			// Thinking-family quirks: reasoning_content replay + thinking object.
-			if !hasReplayField(q, "reasoning_content") {
-				t.Errorf("%s: reasoning_content not in ReplayFields %v", model, q.ReplayFields)
-			}
-			thinking, ok := q.BehaviourFlags.OpenAI.ExtraBodyFields["thinking"]
-			if !ok {
-				t.Fatalf("%s: thinking missing from ExtraBodyFields", model)
-			}
-			if !reflect.DeepEqual(thinking, map[string]any{"type": "enabled"}) {
-				t.Errorf("%s: thinking = %#v, want map[string]any{\"type\":\"enabled\"}", model, thinking)
-			}
-		})
-	}
-}
-
-// TestZAICompatRules_GLM53ReasoningEffort pins the GLM-5.3 effort
-// allow-list. GLM-5.3 maps any unlisted value to max, so "medium" must be
-// rejected up front rather than forwarded; earlier GLM-5 releases have no
-// probed effort control and send nothing.
-func TestZAICompatRules_GLM53ReasoningEffort(t *testing.T) {
-	reg := quirks.NewRegistry(append(quirks.BuiltinRules(), zai.CompatRules()...))
-	cases := map[string][]string{
-		"glm-5.3":        {"low", "high", "max"},
-		"glm-5.3-flash":  {"low", "high", "max"},
-		"glm-5.3-flashx": {"low", "high", "max"},
-		"glm-5.1":        {},
-		"glm-4.7":        {},
-	}
-	for model, want := range cases {
-		t.Run(model, func(t *testing.T) {
-			got := reg.Resolve("openai-compatible", model).BehaviourFlags.OpenAI.ReasoningEffortLevels
-			if !reflect.DeepEqual(got, want) {
-				t.Errorf("ReasoningEffortLevels = %v, want %v", got, want)
-			}
-		})
-	}
-}
-
-// TestZAICompatRules_LegacyLineHasNoThinking pins that hyphenated
-// legacy GLM ids (glm-4-plus, glm-4-flash, glm-4-air) receive only
-// the base quirks, never the thinking-family additions.
-func TestZAICompatRules_LegacyLineHasNoThinking(t *testing.T) {
-	reg := quirks.NewRegistry(append(quirks.BuiltinRules(), zai.CompatRules()...))
-
-	for _, model := range []string{"glm-4-plus", "glm-4-flash", "glm-4-air"} {
-		t.Run(model, func(t *testing.T) {
-			q := reg.Resolve("openai-compatible", model)
-
-			// Base quirks present.
-			if q.BehaviourFlags.OpenAI.TokenField != quirks.TokenFieldMaxTokens {
-				t.Errorf("%s: TokenField = %v, want max_tokens", model, q.BehaviourFlags.OpenAI.TokenField)
-			}
-			if _, ok := q.BehaviourFlags.OpenAI.ExtraBodyFields["tool_stream"]; !ok {
-				t.Errorf("%s: tool_stream missing; base rule should fire", model)
-			}
-
-			// Thinking quirks ABSENT — the 4.5+ scoping must not leak down.
-			if hasReplayField(q, "reasoning_content") {
-				t.Errorf("%s: reasoning_content leaked into ReplayFields %v (legacy line has no thinking mode)", model, q.ReplayFields)
-			}
-			if _, ok := q.BehaviourFlags.OpenAI.ExtraBodyFields["thinking"]; ok {
-				t.Errorf("%s: thinking leaked into ExtraBodyFields (legacy line has no thinking mode)", model)
-			}
-		})
-	}
-}
-
-// TestZAICompatRules_GLM410IsAKnownGap pins a known gap: the
-// glm-4.[5-9]* char class stops at 9, so a hypothetical glm-4.10
-// receives only the base quirks, no thinking.
-func TestZAICompatRules_GLM410IsAKnownGap(t *testing.T) {
-	reg := quirks.NewRegistry(append(quirks.BuiltinRules(), zai.CompatRules()...))
-	q := reg.Resolve("openai-compatible", "glm-4.10")
-
-	// Base rule still fires (glm-* matches glm-4.10).
-	if q.BehaviourFlags.OpenAI.TokenField != quirks.TokenFieldMaxTokens {
-		t.Errorf("glm-4.10: TokenField = %v, want max_tokens (base rule)", q.BehaviourFlags.OpenAI.TokenField)
-	}
-	// Thinking quirks ABSENT — the [5-9] class does not reach 10.
-	if hasReplayField(q, "reasoning_content") {
-		t.Errorf("glm-4.10: reasoning_content present in %v — the [5-9] glob now matches double-digit minors; update the zai.go Rule B comment and this test", q.ReplayFields)
-	}
-	if _, ok := q.BehaviourFlags.OpenAI.ExtraBodyFields["thinking"]; ok {
-		t.Errorf("glm-4.10: thinking present — the [5-9] glob now matches double-digit minors; update the zai.go Rule B comment and this test")
-	}
-}
-
-// TestZAICompatRules_GatewayPrefixResolution pins the OpenRouter
-// gateway rule (z-ai/glm-*): legacy max_tokens and reasoning_content
-// replay, but tool_stream and thinking absent (vendor extras
-// unverified through gateways).
-func TestZAICompatRules_GatewayPrefixResolution(t *testing.T) {
-	reg := quirks.NewRegistry(append(quirks.BuiltinRules(), zai.CompatRules()...))
-	q := reg.Resolve("openai-compatible", "z-ai/glm-4.7")
-
-	if q.BehaviourFlags.OpenAI.TokenField != quirks.TokenFieldMaxTokens {
-		t.Errorf("z-ai/glm-4.7: TokenField = %v, want max_tokens", q.BehaviourFlags.OpenAI.TokenField)
-	}
-	if !hasReplayField(q, "reasoning_content") {
-		t.Errorf("z-ai/glm-4.7: reasoning_content not in ReplayFields %v", q.ReplayFields)
-	}
-	// tool_stream and thinking must NOT be present for gateway ids.
-	if _, ok := q.BehaviourFlags.OpenAI.ExtraBodyFields["tool_stream"]; ok {
-		t.Errorf("z-ai/glm-4.7: tool_stream leaked (vendor extra unverified through gateways)")
-	}
-	if _, ok := q.BehaviourFlags.OpenAI.ExtraBodyFields["thinking"]; ok {
-		t.Errorf("z-ai/glm-4.7: thinking leaked (vendor extra unverified through gateways)")
-	}
-}
-
-// TestZAICompatRules_DoesNotAffectNonGLMModels guards against the
-// rules' ModelMatch leaking to non-GLM models on the same registry.
-func TestZAICompatRules_DoesNotAffectNonGLMModels(t *testing.T) {
-	rules := append(quirks.BuiltinRules(), zai.CompatRules()...)
-	reg := quirks.NewRegistry(rules)
-
-	// gpt-4o is not a glm-* model; the rule should not fire.
-	q := reg.Resolve("openai-compatible", "gpt-4o")
-	if q.BehaviourFlags.OpenAI.TokenField != quirks.TokenFieldMaxCompletionTokens {
-		t.Errorf("gpt-4o under zai-registered registry: TokenField = %v, want max_completion_tokens", q.BehaviourFlags.OpenAI.TokenField)
-	}
-	if _, ok := q.BehaviourFlags.OpenAI.ExtraBodyFields["tool_stream"]; ok {
-		t.Errorf("gpt-4o under zai-registered registry: tool_stream leaked into ExtraBodyFields")
-	}
-
-	// Sanity-check the rule actually fires for the GLM model.
-	q = reg.Resolve("openai-compatible", "glm-4-plus")
-	if q.BehaviourFlags.OpenAI.TokenField != quirks.TokenFieldMaxTokens {
-		t.Errorf("glm-4-plus: TokenField = %v, want max_tokens (rule should fire)", q.BehaviourFlags.OpenAI.TokenField)
-	}
-}
-
-// TestCompatRulesReplayFieldsSuffix mirrors
-// quirks.TestBuiltinRulesReplayFieldsSuffix for CompatRules(), which
-// that test cannot reach: every rule registering a ReplayFields path
-// must end its Description with "(threaded)" and use a threadable
-// single-segment path.
-func TestCompatRulesReplayFieldsSuffix(t *testing.T) {
-	const threadedSuffix = "(threaded)"
-	for i, rule := range zai.CompatRules() {
-		if rule.Apply == nil {
-			continue
-		}
-		q := quirks.ProviderQuirks{
-			FieldRenames:   map[string]string{},
-			OmitFields:     []string{},
-			ValueOverrides: map[string]quirks.Value{},
-			EnumCoercions:  map[string]map[string]string{},
-			ReplayFields:   []string{},
-			BehaviourFlags: quirks.ProviderBehaviourFlags{OpenAI: quirks.OpenAIBehaviourFlags{ExtraBodyFields: map[string]any{}}},
-		}
-		rule.Apply(&q)
-		if len(q.ReplayFields) == 0 {
-			continue
-		}
-		if rule.ProviderType != "openai-compatible" {
-			t.Errorf("CompatRules()[%d] (%q): unexpected ProviderType %q for a ReplayFields rule", i, rule.Description, rule.ProviderType)
-			continue
-		}
-		if !strings.HasSuffix(rule.Description, threadedSuffix) {
-			t.Errorf("CompatRules()[%d] (%q): openai-compatible ReplayFields rule description must end with %q", i, rule.Description, threadedSuffix)
-		}
-		for _, path := range q.ReplayFields {
-			segments, err := quirks.ParseReplayPath(path)
-			if err != nil {
-				t.Errorf("CompatRules()[%d] (%q): ReplayFields path %q is invalid: %v", i, rule.Description, path, err)
-				continue
-			}
-			if len(segments) != 1 || segments[0].IsArray {
-				t.Errorf("CompatRules()[%d] (%q): ReplayFields path %q is not threadable (must be a single non-array segment)", i, rule.Description, path)
-			}
-		}
-	}
-}
-
-// TestCompatRulesValidate mirrors quirks.TestBuiltinRulesValidate for
-// CompatRules(): every rule must carry a non-empty Description, a
-// non-zero LastVerified, and a non-nil Apply.
-func TestCompatRulesValidate(t *testing.T) {
-	for i, rule := range zai.CompatRules() {
-		if rule.Description == "" {
-			t.Errorf("CompatRules()[%d]: Description is required", i)
-		}
-		if rule.LastVerified.IsZero() {
-			t.Errorf("CompatRules()[%d] (%q): LastVerified is required", i, rule.Description)
-		}
-		if rule.Apply == nil {
-			t.Errorf("CompatRules()[%d] (%q): Apply is required", i, rule.Description)
-		}
-		if rule.ProviderType != "openai-compatible" {
-			t.Errorf("CompatRules()[%d] (%q): ProviderType = %q, want openai-compatible (Z.ai is a compat profile on that adapter)", i, rule.Description, rule.ProviderType)
-		}
-	}
+func userText(text string) types.Message {
+	return types.Message{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: text}}}
 }
 
 // scanForSecretRefs walks v recursively (maps and slices) and reports
@@ -549,25 +133,316 @@ func scanForSecretRefs(v any) string {
 	return ""
 }
 
-// TestCompatRuleExtraBodyFieldsNoSecrets mirrors
+// TestZAICompatRules_AppliesTokenFieldAndExtraBody pins the base Z.ai
+// rule: the legacy "max_tokens" field and "tool_stream": true.
+func TestZAICompatRules_AppliesTokenFieldAndExtraBody(t *testing.T) {
+	must := require.New(t)
+	body := captureRequestBody(t, "glm-4-plus", 4096)
+	got := decodeBody(t, body)
+
+	must.InDelta(4096, got["max_tokens"], 0.5, "legacy max_tokens must carry the caller's value: %s", body)
+	must.NotContains(got, "max_completion_tokens", "rule must switch the token field: %s", body)
+	must.Contains(got, "tool_stream", "body: %s", body)
+	must.Equal(true, got["tool_stream"], "body: %s", body)
+}
+
+// TestZAICompatRules_GLM47AppliesThinkingFamilyBody pins the
+// thinking-family request shape: base quirks plus a top-level
+// "thinking" object for a glm-4.7 request.
+func TestZAICompatRules_GLM47AppliesThinkingFamilyBody(t *testing.T) {
+	must := require.New(t)
+	body := captureRequestBody(t, "glm-4.7", 4096)
+	got := decodeBody(t, body)
+
+	// The base rule still applies because glm-* also matches glm-4.7.
+	must.InDelta(4096, got["max_tokens"], 0.5, "base rule must still set max_tokens: %s", body)
+	must.Contains(got, "tool_stream", "body: %s", body)
+	must.Equal(true, got["tool_stream"], "body: %s", body)
+
+	must.Contains(got, "thinking", "missing thinking object: %s", body)
+	thinking, ok := got["thinking"].(map[string]any)
+	must.True(ok, "thinking must be an object, got %v", got["thinking"])
+	must.Equal("enabled", thinking["type"], "thinking.type: %s", body)
+}
+
+// TestZAICompatRules_GLM47CapturesReasoningContent pins that the zai
+// compat rule registers the reasoning_content path for a GLM model,
+// so message_complete.ReplayFields accumulates the concatenated pieces.
+func TestZAICompatRules_GLM47CapturesReasoningContent(t *testing.T) {
+	must := require.New(t)
+	srv := newSSEServer(t, glm47ReasoningSSE, nil)
+	defer srv.Close()
+
+	ch, err := zaiTestAdapter(srv.URL).Stream(context.Background(), types.StreamParams{
+		Model:     "glm-4.7",
+		MaxTokens: 1024,
+		Messages:  []types.Message{userText("hi")},
+	})
+	must.NoError(err, "Stream")
+
+	var complete *types.StreamEvent
+	for ev := range ch {
+		if ev.Type == "message_complete" {
+			e := ev
+			complete = &e
+		}
+	}
+	must.NotNil(complete, "no message_complete event; GLM stream did not complete")
+	want := `"Scanning the request. Choosing an answer."`
+	must.Equal(want, string(complete.ReplayFields["reasoning_content"]),
+		"zai compat rule must register the reasoning_content path for glm-4.7")
+}
+
+// TestZAICompatRules_GLM47TwoTurnRoundTrip pins that the zai
+// compat-injected reasoning_content path (not just DeepSeek's builtin
+// one) closes the loop: turn-1 reasoning_content is captured onto the
+// assistant message and threaded back as a top-level key on turn 2.
+func TestZAICompatRules_GLM47TwoTurnRoundTrip(t *testing.T) {
+	must := require.New(t)
+	bodies := make(chan []byte, 2)
+	srv := newSSEServer(t, glm47ReasoningSSE, bodies)
+	defer srv.Close()
+
+	adapter := zaiTestAdapter(srv.URL)
+	history := []types.Message{userText("hi")}
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "glm-4.7",
+		MaxTokens: 1024,
+		Messages:  history,
+	})
+	must.NoError(err, "turn-1 Stream")
+	var text strings.Builder
+	var replay map[string]json.RawMessage
+	for ev := range ch {
+		switch ev.Type {
+		case "text_delta":
+			text.WriteString(ev.Text)
+		case "message_complete":
+			replay = ev.ReplayFields
+		}
+	}
+	must.NotNil(replay, "turn 1 produced no ReplayFields; capture path did not run for glm-4.7")
+	<-bodies // discard the turn-1 request body
+
+	history = append(history,
+		types.Message{
+			Role:         "assistant",
+			Content:      []types.ContentBlock{{Type: "text", Text: text.String()}},
+			ReplayFields: replay,
+		},
+		userText("and now?"),
+	)
+
+	ch2, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "glm-4.7",
+		MaxTokens: 1024,
+		Messages:  history,
+	})
+	must.NoError(err, "turn-2 Stream")
+	for range ch2 {
+	}
+	turn2Body := <-bodies
+
+	want := `"reasoning_content":"Scanning the request. Choosing an answer."`
+	must.Contains(string(turn2Body), want, "turn-2 wire body must thread reasoning_content back: %s", turn2Body)
+}
+
+// TestZAICompatRules_ThinkingFamilyResolution pins resolved quirks for
+// both thinking-family globs (glm-4.[5-9]* and glm-5*), which share
+// applyThinkingFamily.
+func TestZAICompatRules_ThinkingFamilyResolution(t *testing.T) {
+	reg := zaiRegistry()
+
+	for _, model := range []string{"glm-4.7", "glm-4.5-air", "glm-5", "glm-5.1", "glm-5.3", "glm-5.3-flash"} {
+		t.Run(model, func(t *testing.T) {
+			must := require.New(t)
+			q := reg.Resolve("openai-compatible", model)
+			openAI := q.BehaviourFlags.OpenAI
+
+			// Base quirks still resolve.
+			must.Equal(quirks.TokenFieldMaxTokens, openAI.TokenField)
+			must.Contains(openAI.ExtraBodyFields, "tool_stream")
+			must.Equal(true, openAI.ExtraBodyFields["tool_stream"])
+
+			// Thinking-family quirks: reasoning_content replay and the thinking object.
+			must.Contains(q.ReplayFields, "reasoning_content")
+			must.Contains(openAI.ExtraBodyFields, "thinking")
+			must.Equal(map[string]any{"type": "enabled"}, openAI.ExtraBodyFields["thinking"])
+		})
+	}
+}
+
+// TestZAICompatRules_GLM53ReasoningEffort pins the GLM-5.3 effort
+// allow-list. GLM-5.3 maps any unlisted value to max, so "medium" must be
+// rejected up front rather than forwarded; earlier GLM-5 releases have no
+// probed effort control and send nothing.
+func TestZAICompatRules_GLM53ReasoningEffort(t *testing.T) {
+	reg := zaiRegistry()
+	cases := map[string][]string{
+		"glm-5.3":        {"low", "high", "max"},
+		"glm-5.3-flash":  {"low", "high", "max"},
+		"glm-5.3-flashx": {"low", "high", "max"},
+		"glm-5.1":        {},
+		"glm-4.7":        {},
+	}
+	for model, want := range cases {
+		t.Run(model, func(t *testing.T) {
+			must := require.New(t)
+			got := reg.Resolve("openai-compatible", model).BehaviourFlags.OpenAI.ReasoningEffortLevels
+			must.Equal(want, got)
+		})
+	}
+}
+
+// TestZAICompatRules_LegacyLineHasNoThinking pins that hyphenated
+// legacy GLM ids (glm-4-plus, glm-4-flash, glm-4-air) receive only
+// the base quirks, never the thinking-family additions.
+func TestZAICompatRules_LegacyLineHasNoThinking(t *testing.T) {
+	reg := zaiRegistry()
+
+	for _, model := range []string{"glm-4-plus", "glm-4-flash", "glm-4-air"} {
+		t.Run(model, func(t *testing.T) {
+			must := require.New(t)
+			q := reg.Resolve("openai-compatible", model)
+			openAI := q.BehaviourFlags.OpenAI
+
+			// Base quirks present.
+			must.Equal(quirks.TokenFieldMaxTokens, openAI.TokenField)
+			must.Contains(openAI.ExtraBodyFields, "tool_stream", "base rule should fire")
+
+			// The 4.5+ thinking scoping must not leak down to the legacy line.
+			must.NotContains(q.ReplayFields, "reasoning_content", "legacy line has no thinking mode")
+			must.NotContains(openAI.ExtraBodyFields, "thinking", "legacy line has no thinking mode")
+		})
+	}
+}
+
+// TestZAICompatRules_GLM410IsAKnownGap pins a known gap: the
+// glm-4.[5-9]* char class stops at 9, so a hypothetical glm-4.10
+// receives only the base quirks, no thinking.
+func TestZAICompatRules_GLM410IsAKnownGap(t *testing.T) {
+	must := require.New(t)
+	q := zaiRegistry().Resolve("openai-compatible", "glm-4.10")
+	openAI := q.BehaviourFlags.OpenAI
+
+	// Base rule still fires (glm-* matches glm-4.10).
+	must.Equal(quirks.TokenFieldMaxTokens, openAI.TokenField, "base rule must still fire for glm-4.10")
+
+	// The [5-9] class does not reach 10.
+	const gapMsg = "the [5-9] glob now matches double-digit minors; update the zai.go Rule B comment and this test"
+	must.NotContains(q.ReplayFields, "reasoning_content", gapMsg)
+	must.NotContains(openAI.ExtraBodyFields, "thinking", gapMsg)
+}
+
+// TestZAICompatRules_GatewayPrefixResolution pins the OpenRouter
+// gateway rule (z-ai/glm-*): legacy max_tokens and reasoning_content
+// replay, but tool_stream and thinking absent (vendor extras
+// unverified through gateways).
+func TestZAICompatRules_GatewayPrefixResolution(t *testing.T) {
+	must := require.New(t)
+	q := zaiRegistry().Resolve("openai-compatible", "z-ai/glm-4.7")
+	openAI := q.BehaviourFlags.OpenAI
+
+	must.Equal(quirks.TokenFieldMaxTokens, openAI.TokenField)
+	must.Contains(q.ReplayFields, "reasoning_content")
+
+	// Vendor extras are unverified through gateways, so they must not be sent.
+	must.NotContains(openAI.ExtraBodyFields, "tool_stream")
+	must.NotContains(openAI.ExtraBodyFields, "thinking")
+}
+
+// TestZAICompatRules_DoesNotAffectNonGLMModels guards against the
+// rules' ModelMatch leaking to non-GLM models on the same registry.
+func TestZAICompatRules_DoesNotAffectNonGLMModels(t *testing.T) {
+	reg := zaiRegistry()
+
+	t.Run("gpt-4o is unaffected", func(t *testing.T) {
+		must := require.New(t)
+		q := reg.Resolve("openai-compatible", "gpt-4o")
+		must.Equal(quirks.TokenFieldMaxCompletionTokens, q.BehaviourFlags.OpenAI.TokenField)
+		must.NotContains(q.BehaviourFlags.OpenAI.ExtraBodyFields, "tool_stream")
+	})
+
+	t.Run("glm-4-plus gets the rule", func(t *testing.T) {
+		must := require.New(t)
+		q := reg.Resolve("openai-compatible", "glm-4-plus")
+		must.Equal(quirks.TokenFieldMaxTokens, q.BehaviourFlags.OpenAI.TokenField)
+	})
+}
+
+// TestCompatRules_ReplayFieldsAreThreadable mirrors
+// quirks.TestBuiltinRulesReplayFieldsSuffix for CompatRules(), which
+// that test cannot reach: every rule registering a ReplayFields path
+// must end its Description with "(threaded)" and use a threadable
+// single-segment path.
+func TestCompatRules_ReplayFieldsAreThreadable(t *testing.T) {
+	const threadedSuffix = "(threaded)"
+	for _, rule := range zai.CompatRules() {
+		t.Run(rule.Description, func(t *testing.T) {
+			must := require.New(t)
+			if rule.Apply == nil {
+				return
+			}
+			q := quirks.ProviderQuirks{
+				FieldRenames:   map[string]string{},
+				OmitFields:     []string{},
+				ValueOverrides: map[string]quirks.Value{},
+				EnumCoercions:  map[string]map[string]string{},
+				ReplayFields:   []string{},
+				BehaviourFlags: quirks.ProviderBehaviourFlags{OpenAI: quirks.OpenAIBehaviourFlags{ExtraBodyFields: map[string]any{}}},
+			}
+			rule.Apply(&q)
+			if len(q.ReplayFields) == 0 {
+				return
+			}
+
+			must.Equal("openai-compatible", rule.ProviderType, "ReplayFields rules must target the openai-compatible adapter")
+			must.True(strings.HasSuffix(rule.Description, threadedSuffix), "description must end with %q", threadedSuffix)
+			for _, path := range q.ReplayFields {
+				segments, err := quirks.ParseReplayPath(path)
+				must.NoError(err, "ReplayFields path %q", path)
+				must.Len(segments, 1, "ReplayFields path %q must be a single segment", path)
+				must.False(segments[0].IsArray, "ReplayFields path %q must not be an array segment", path)
+			}
+		})
+	}
+}
+
+// TestCompatRules_RulesHaveRequiredMetadata mirrors
+// quirks.TestBuiltinRulesValidate for CompatRules(): every rule must carry
+// a non-empty Description, a non-zero LastVerified, and a non-nil Apply.
+func TestCompatRules_RulesHaveRequiredMetadata(t *testing.T) {
+	for _, rule := range zai.CompatRules() {
+		t.Run(rule.Description, func(t *testing.T) {
+			must := require.New(t)
+			must.NotEmpty(rule.Description, "Description is required")
+			must.False(rule.LastVerified.IsZero(), "LastVerified is required")
+			must.NotNil(rule.Apply, "Apply is required")
+			must.Equal("openai-compatible", rule.ProviderType, "Z.ai is a compat profile on the openai-compatible adapter")
+		})
+	}
+}
+
+// TestCompatRules_ExtraBodyFieldsHaveNoSecretRefs mirrors
 // quirks.TestBuiltinRulesExtraBodyFieldsNoSecrets for CompatRules():
 // ExtraBodyFields is serialised verbatim and RunConfig.Redact() never
 // reaches inside a quirks rule, so no value may contain a secret:// ref.
-func TestCompatRuleExtraBodyFieldsNoSecrets(t *testing.T) {
+func TestCompatRules_ExtraBodyFieldsHaveNoSecretRefs(t *testing.T) {
+	must := require.New(t)
 	// Representative model id per rule, in declaration order, so
 	// Resolve materialises each rule's Apply.
 	models := []string{"glm-4-plus", "glm-4.7", "glm-5", "glm-5.3", "z-ai/glm-4.7"}
 	rules := zai.CompatRules()
-	if len(models) != len(rules) {
-		t.Fatalf("models slice (%d) out of sync with CompatRules() (%d); add a representative model for the new rule", len(models), len(rules))
-	}
+	must.Len(models, len(rules), "add a representative model for each new CompatRules() entry")
 	for i, rule := range rules {
-		q := quirks.NewRegistry([]quirks.Rule{rule}).Resolve("openai-compatible", models[i])
-		for k, v := range q.BehaviourFlags.OpenAI.ExtraBodyFields {
-			if hit := scanForSecretRefs(v); hit != "" {
-				t.Errorf("Z.ai CompatRules()[%d] (%q) ExtraBodyFields[%q] contains a secret:// reference (%q); "+
-					"compat rule values are serialised verbatim and bypass RunConfig.Redact()", i, rule.Description, k, hit)
+		t.Run(rule.Description, func(t *testing.T) {
+			must := require.New(t)
+			q := quirks.NewRegistry([]quirks.Rule{rule}).Resolve("openai-compatible", models[i])
+			for k, v := range q.BehaviourFlags.OpenAI.ExtraBodyFields {
+				must.Empty(scanForSecretRefs(v),
+					"ExtraBodyFields[%q] contains a secret:// reference; compat rule values are serialised verbatim and bypass RunConfig.Redact()", k)
 			}
-		}
+		})
 	}
 }

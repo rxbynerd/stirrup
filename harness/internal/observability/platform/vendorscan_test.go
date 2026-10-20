@@ -1,12 +1,16 @@
 package platform
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // vendorNamePattern matches the platform-specific names that must stay in
@@ -14,19 +18,26 @@ import (
 // generated from the proto that documents it.
 var vendorNamePattern = regexp.MustCompile(`(?i:cloudwatch|phoenix|openinference|sigv4|aws\.service\.type|x-langfuse-)|\blangfuse\.(trace|observation|release|session|user|version|environment)\b|"langfuse"`)
 
-func TestVendorNamePattern(t *testing.T) {
-	for line, want := range map[string]bool{
-		`attribute.String("langfuse.trace.name", v)`:         true,
-		`"langfuse.observation.metadata." + k`:               true,
-		`key := "x-langfuse-ingestion-version"`:              true,
-		`registry["langfuse"]`:                               true,
-		`// so the trace name reaches Langfuse.`:             false,
-		`// Langfuse.Whatever is prose, not a key.`:          false,
-		`--otel-header Authorization=secret://LANGFUSE_AUTH`: false,
-	} {
-		if got := vendorNamePattern.MatchString(line); got != want {
-			t.Errorf("vendorNamePattern.MatchString(%q) = %v, want %v", line, got, want)
-		}
+func TestVendorNamePattern_MatchesCodeNotProse(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{name: "langfuse trace attribute key", line: `attribute.String("langfuse.trace.name", v)`, want: true},
+		{name: "langfuse observation key prefix", line: `"langfuse.observation.metadata." + k`, want: true},
+		{name: "langfuse ingestion version header", line: `key := "x-langfuse-ingestion-version"`, want: true},
+		{name: "langfuse registry key", line: `registry["langfuse"]`, want: true},
+		{name: "prose mention in comment", line: `// so the trace name reaches Langfuse.`, want: false},
+		{name: "prose sentence starting with the vendor name", line: `// Langfuse.Whatever is prose, not a key.`, want: false},
+		{name: "env var name in cli flag", line: `--otel-header Authorization=secret://LANGFUSE_AUTH`, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			got := vendorNamePattern.MatchString(tc.line)
+			must.Equal(tc.want, got, "vendorNamePattern.MatchString(%q)", tc.line)
+		})
 	}
 }
 
@@ -34,6 +45,8 @@ func TestVendorNamePattern(t *testing.T) {
 // Go code inside this package, so the rest of the harness stays
 // platform-neutral.
 func TestVendorNamesStayInPlatformPackage(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	root := workspaceRoot(t)
 	allowed := []string{
 		filepath.Join(root, "harness", "internal", "observability", "platform") + string(filepath.Separator),
@@ -41,6 +54,7 @@ func TestVendorNamesStayInPlatformPackage(t *testing.T) {
 		filepath.Join(root, "gen") + string(filepath.Separator),
 	}
 	scanned := 0
+	var violations []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -67,33 +81,29 @@ func TestVendorNamesStayInPlatformPackage(t *testing.T) {
 		for i, line := range strings.Split(string(data), "\n") {
 			if m := vendorNamePattern.FindString(line); m != "" {
 				rel, _ := filepath.Rel(root, path)
-				t.Errorf("%s:%d mentions %q; vendor-specific names belong in harness/internal/observability/platform", rel, i+1, m)
+				violations = append(violations, fmt.Sprintf("%s:%d mentions %q", rel, i+1, m))
 			}
 		}
 		return nil
 	})
-	if err != nil {
-		t.Fatalf("walk %s: %v", root, err)
-	}
-	if scanned < 100 {
-		t.Fatalf("scanned only %d Go files under %s; the workspace root was not found correctly", scanned, root)
-	}
+	must.NoError(err, "walk %s", root)
+	check.Empty(violations, "vendor-specific names belong in harness/internal/observability/platform")
+	must.GreaterOrEqual(scanned, 100, "scanned Go files under %s; the workspace root was not found correctly", root)
 }
 
 // workspaceRoot returns the directory holding go.work, above this package.
 func workspaceRoot(t *testing.T) string {
 	t.Helper()
+	must := require.New(t)
 	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	for {
 		if _, err := os.Stat(filepath.Join(dir, "go.work")); err == nil {
 			return dir
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			t.Fatal("go.work not found above the test directory")
+			must.Fail("go.work not found above the test directory")
 		}
 		dir = parent
 	}

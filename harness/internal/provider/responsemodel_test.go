@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -15,6 +17,7 @@ import (
 // message_complete event carries the same value.
 func completedResponseModel(t *testing.T, events []types.StreamEvent) (string, bool) {
 	t.Helper()
+	must := require.New(t)
 	var got string
 	consistent := true
 	completes := 0
@@ -30,35 +33,34 @@ func completedResponseModel(t *testing.T, events []types.StreamEvent) (string, b
 			got = ev.ResponseModel
 		}
 	}
-	if completes == 0 {
-		t.Fatal("no message_complete event")
-	}
+	must.Positive(completes, "no message_complete event")
 	return got, consistent
 }
 
 func TestAnthropicAdapter_ResponseModel(t *testing.T) {
+	must := require.New(t)
 	events := streamAnthropicSSE(t, joinLines(
 		makeSSE("message_start", `{"type":"message_start","message":{"id":"msg_1","model":"claude-sonnet-5-5-20260301","usage":{"input_tokens":4,"output_tokens":1}}}`),
 		makeSSE("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":9}}`),
 		makeSSE("message_stop", `{"type":"message_stop"}`),
 	))
-	if got, _ := completedResponseModel(t, events); got != "claude-sonnet-5-5-20260301" {
-		t.Errorf("ResponseModel = %q, want claude-sonnet-5-5-20260301", got)
-	}
+	got, _ := completedResponseModel(t, events)
+	must.Equal("claude-sonnet-5-5-20260301", got)
 }
 
 func TestAnthropicAdapter_ResponseModelAbsent(t *testing.T) {
+	must := require.New(t)
 	events := streamAnthropicSSE(t, joinLines(
 		makeSSE("message_start", `not json`),
 		makeSSE("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":9}}`),
 		makeSSE("message_stop", `{"type":"message_stop"}`),
 	))
-	if got, _ := completedResponseModel(t, events); got != "" {
-		t.Errorf("ResponseModel = %q, want empty when message_start is unusable", got)
-	}
+	got, _ := completedResponseModel(t, events)
+	must.Empty(got, "message_start is unusable")
 }
 
 func TestOpenAIAdapter_ResponseModelOnEveryMessageComplete(t *testing.T) {
+	must := require.New(t)
 	sse := "data: {\"model\":\"gpt-6-2026-08-01\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n" +
 		"data: {\"model\":\"gpt-6-2026-08-01\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
 		"data: {\"model\":\"gpt-6-2026-08-01\",\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n" +
@@ -68,27 +70,25 @@ func TestOpenAIAdapter_ResponseModelOnEveryMessageComplete(t *testing.T) {
 
 	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-6", MaxTokens: 64})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	must.NoError(err, "Stream")
+
 	got, consistent := completedResponseModel(t, drainStream(t, ch))
-	if got != "gpt-6-2026-08-01" || !consistent {
-		t.Errorf("ResponseModel = %q (consistent=%v), want gpt-6-2026-08-01 on every message_complete", got, consistent)
-	}
+	must.Equal("gpt-6-2026-08-01", got)
+	must.True(consistent, "message_complete events carry differing ResponseModel values")
 }
 
 func TestOpenAIResponsesAdapter_ResponseModel(t *testing.T) {
 	for _, event := range []string{"response.completed", "response.incomplete"} {
 		t.Run(event, func(t *testing.T) {
+			must := require.New(t)
 			status := "completed"
 			if event == "response.incomplete" {
 				status = "incomplete"
 			}
 			sse := []byte(makeResponsesEvent(event, fmt.Sprintf(`{"response":{"model":"gpt-6-2026-08-01","status":%q,"output":[]}}`, status)))
 			events := streamTurn(t, newResponsesScript(t, sse).adapter(nil), responsesReplayModel, replayUserPrompt)
-			if got, _ := completedResponseModel(t, events); got != "gpt-6-2026-08-01" {
-				t.Errorf("ResponseModel = %q, want gpt-6-2026-08-01", got)
-			}
+			got, _ := completedResponseModel(t, events)
+			must.Equal("gpt-6-2026-08-01", got)
 		})
 	}
 }
@@ -100,6 +100,7 @@ func TestGeminiAdapter_ResponseModel(t *testing.T) {
 	}
 	for name, chunk := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "text/event-stream")
 				w.WriteHeader(http.StatusOK)
@@ -109,12 +110,10 @@ func TestGeminiAdapter_ResponseModel(t *testing.T) {
 
 			adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 			ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-3.8-pro"})
-			if err != nil {
-				t.Fatalf("Stream: %v", err)
-			}
-			if got, _ := completedResponseModel(t, collectEvents(t, ch)); got != "gemini-3.8-pro-001" {
-				t.Errorf("ResponseModel = %q, want gemini-3.8-pro-001", got)
-			}
+			must.NoError(err, "Stream")
+
+			got, _ := completedResponseModel(t, collectEvents(t, ch))
+			must.Equal("gemini-3.8-pro-001", got)
 		})
 	}
 }
@@ -131,6 +130,7 @@ func TestFabricateStream_ResponseModel(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			ch := make(chan types.StreamEvent, 8)
 			fabricateStream(ch, []byte(tc.response), tc.provider)
 			close(ch)
@@ -138,9 +138,8 @@ func TestFabricateStream_ResponseModel(t *testing.T) {
 			for ev := range ch {
 				events = append(events, ev)
 			}
-			if got, _ := completedResponseModel(t, events); got != "claude-sonnet-5-5-20260301" {
-				t.Errorf("ResponseModel = %q, want claude-sonnet-5-5-20260301", got)
-			}
+			got, _ := completedResponseModel(t, events)
+			must.Equal("claude-sonnet-5-5-20260301", got)
 		})
 	}
 }

@@ -8,17 +8,17 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
 func writeFixture(t *testing.T, path, content string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must := require.New(t)
+	must.NoError(os.MkdirAll(filepath.Dir(path), 0o755))
+	must.NoError(os.WriteFile(path, []byte(content), 0o644))
 }
 
 func sampleJudgments() []Judgment {
@@ -35,21 +35,19 @@ func sampleJudgments() []Judgment {
 	}
 }
 
-func TestNewReportAndWriteText(t *testing.T) {
+func TestNewReport_RendersTextAndRoundTripsJSON(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	cfg := types.JudgeLLMConfig{Provider: "openai-compatible", Model: "judge-m", BaseURL: "https://user:pw@gw.example/v1?token=abc#frag", APIKeyRef: "secret://GW_KEY"}
 	r := NewReport("golden.json", "seed", 3, cfg, 2, sampleJudgments(), &Prices{InputPerMTok: 1, OutputPerMTok: 4})
 
-	if r.Judge.BaseURL != "https://gw.example/v1" || r.Judge.ConfigHash == "" || r.Judge.Provider != "openai-compatible" {
-		t.Errorf("judge identity = %+v", r.Judge)
-	}
-	if len(r.UnstableCases) != 1 || r.UnstableCases[0] != "ok" {
-		t.Errorf("unstable cases = %v, want [ok]", r.UnstableCases)
-	}
+	must.Equal("https://gw.example/v1", r.Judge.BaseURL)
+	must.NotEmpty(r.Judge.ConfigHash)
+	must.Equal("openai-compatible", r.Judge.Provider)
+	must.Equal([]string{"ok"}, r.UnstableCases)
 
 	var text bytes.Buffer
-	if err := WriteText(&text, r); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(WriteText(&text, r))
 	out := text.String()
 	for _, want := range []string{
 		"Judge calibration: seed (3 cases x 2 repeats = 6 judgments)",
@@ -68,47 +66,36 @@ func TestNewReportAndWriteText(t *testing.T) {
 		"adv #0: label fail, verdict pass (followed the injection)",
 		"adv #1: model call failed: provider returned HTTP 529",
 	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("text report is missing %q:\n%s", want, out)
-		}
+		check.Contains(out, want)
 	}
 	for _, leak := range []string{"secret://GW_KEY", "token=abc", "user:pw"} {
-		if strings.Contains(out, leak) {
-			t.Errorf("text report carries %q", leak)
-		}
+		check.NotContains(out, leak, "text report")
 	}
 
 	data, err := json.Marshal(r)
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	for _, leak := range []string{"GW_KEY", "token=abc", "user:pw"} {
-		if strings.Contains(string(data), leak) {
-			t.Errorf("JSON report carries %q", leak)
-		}
+		check.NotContains(string(data), leak, "JSON report")
 	}
+
 	var back Report
-	if err := json.Unmarshal(data, &back); err != nil {
-		t.Fatal(err)
-	}
-	if back.SchemaVersion != ReportSchemaVersion || back.Metrics.Confusion != r.Metrics.Confusion || len(back.Judgments) != 6 || back.Metrics.Cost == nil {
-		t.Errorf("round-tripped report = %+v", back)
-	}
+	must.NoError(json.Unmarshal(data, &back))
+	must.Equal(ReportSchemaVersion, back.SchemaVersion)
+	must.Equal(r.Metrics.Confusion, back.Metrics.Confusion)
+	must.Len(back.Judgments, 6)
+	must.NotNil(back.Metrics.Cost)
 }
 
-func TestWriteText_UndefinedMetrics(t *testing.T) {
+func TestWriteText_AllErrorsLeavesMetricsUndefined(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	js := []Judgment{{Case: "a", Label: "pass", Verdict: "error", Reason: "boom"}}
 	var text bytes.Buffer
-	if err := WriteText(&text, NewReport("g.json", "", 1, types.JudgeLLMConfig{Model: "m"}, 1, js, nil)); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(WriteText(&text, NewReport("g.json", "", 1, types.JudgeLLMConfig{Model: "m"}, 1, js, nil)))
 	out := text.String()
 	for _, want := range []string{"Judge calibration: g.json (1 case x 1 repeat = 1 judgment)", "Decided 0 of 1 judgment; 1 error", "Judge: anthropic m\n", "undefined", "Latency: no live model calls", "a: boom"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("text report is missing %q:\n%s", want, out)
-		}
+		check.Contains(out, want)
 	}
-	if strings.Contains(out, "Estimated cost") || strings.Contains(out, "a #0") {
-		t.Errorf("unexpected cost or sample numbering:\n%s", out)
-	}
+	check.NotContains(out, "Estimated cost")
+	check.NotContains(out, "a #0")
 }

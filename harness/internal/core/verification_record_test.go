@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/harness/internal/verifier"
@@ -60,49 +62,58 @@ func verifierConfig(verifierType string) *types.RunConfig {
 	return cfg
 }
 
+// requireCappedRepeat asserts that got keeps the first verificationTextMaxBytes
+// bytes of a run of c that was n bytes long, and nothing more.
+func requireCappedRepeat(t *testing.T, got, c string, n int) {
+	t.Helper()
+	must := require.New(t)
+	must.Less(len(got), n)
+	must.True(strings.HasPrefix(got, strings.Repeat(c, verificationTextMaxBytes)),
+		"got %d bytes, want a %d-byte prefix", len(got), verificationTextMaxBytes)
+	must.False(strings.HasPrefix(got, strings.Repeat(c, verificationTextMaxBytes+1)))
+}
+
 func TestRun_VerifierErrorIsScrubbedOnEventsTraceAndLog(t *testing.T) {
+	must := require.New(t)
 	const marker = "VERIFIER-INFRA-MARKER-662"
 	loop, events, traceBuf, logBuf := verificationTestLoop(&erroringVerifier{
 		err: fmt.Errorf("exec failed: %s token=%s", marker, fakeVerificationSecret),
 	})
 
 	rt, err := loop.Run(context.Background(), verifierConfig("test-runner"))
-	if err != nil {
-		t.Fatalf("Run: %v", err)
+	must.NoError(err)
+	must.Equal("verification_error", rt.Outcome)
+
+	outputs := []struct {
+		name string
+		out  string
+	}{
+		{name: "stdio events", out: events.String()},
+		{name: "jsonl trace", out: traceBuf.String()},
+		{name: "log", out: logBuf.String()},
 	}
-	if rt.Outcome != "verification_error" {
-		t.Fatalf("outcome = %q, want verification_error", rt.Outcome)
+	for _, o := range outputs {
+		t.Run(o.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Contains(o.out, marker)
+			must.NotContains(o.out, fakeVerificationSecret)
+		})
 	}
 
-	for name, out := range map[string]string{
-		"stdio events": events.String(),
-		"jsonl trace":  traceBuf.String(),
-		"log":          logBuf.String(),
-	} {
-		if !strings.Contains(out, marker) {
-			t.Errorf("%s lacks the verifier error marker:\n%s", name, out)
-		}
-		if strings.Contains(out, fakeVerificationSecret) {
-			t.Errorf("%s carries the unscrubbed secret", name)
-		}
-	}
-	if !strings.Contains(events.String(), `"type":"warning"`) {
-		t.Errorf("no warning event emitted:\n%s", events.String())
-	}
-	if !strings.Contains(logBuf.String(), "verifier error") || !strings.Contains(logBuf.String(), "level=WARN") {
-		t.Errorf("no warn-level verifier error log:\n%s", logBuf.String())
-	}
+	must.Contains(events.String(), `"type":"warning"`)
+	must.Contains(logBuf.String(), "verifier error")
+	must.Contains(logBuf.String(), "level=WARN")
 
-	if len(rt.VerificationResults) != 1 {
-		t.Fatalf("VerificationResults = %+v, want one entry", rt.VerificationResults)
-	}
+	must.Len(rt.VerificationResults, 1)
 	got := rt.VerificationResults[0]
-	if got.Attempt != 1 || got.Passed || !strings.Contains(got.Error, marker) || !strings.Contains(got.Error, "[REDACTED]") {
-		t.Errorf("recorded attempt = %+v, want attempt 1, failed, scrubbed error with marker", got)
-	}
+	must.Equal(1, got.Attempt)
+	must.False(got.Passed)
+	must.Contains(got.Error, marker)
+	must.Contains(got.Error, "[REDACTED]")
 }
 
 func TestRun_ExhaustedRetriesRecordEveryAttemptIncludingTheLast(t *testing.T) {
+	must := require.New(t)
 	var script []types.VerificationResult
 	for i := 1; i <= maxVerificationRetries+1; i++ {
 		script = append(script, types.VerificationResult{Feedback: fmt.Sprintf("attempt-%d failure", i)})
@@ -110,27 +121,25 @@ func TestRun_ExhaustedRetriesRecordEveryAttemptIncludingTheLast(t *testing.T) {
 	loop, _, traceBuf, _ := verificationTestLoop(&resultScriptVerifier{results: script})
 
 	rt, err := loop.Run(context.Background(), verifierConfig("test-runner"))
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if rt.Outcome != "verification_failed" {
-		t.Fatalf("outcome = %q, want verification_failed", rt.Outcome)
-	}
-	if len(rt.VerificationResults) != len(script) {
-		t.Fatalf("recorded %d attempts, want %d: %+v", len(rt.VerificationResults), len(script), rt.VerificationResults)
-	}
+	must.NoError(err)
+	must.Equal("verification_failed", rt.Outcome)
+	must.Len(rt.VerificationResults, len(script))
+
 	for i, r := range rt.VerificationResults {
-		if r.Attempt != i+1 || r.Passed || r.Feedback != script[i].Feedback {
-			t.Errorf("attempt %d = %+v, want attempt %d with feedback %q", i, r, i+1, script[i].Feedback)
-		}
+		t.Run(fmt.Sprintf("attempt %d", i+1), func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(i+1, r.Attempt)
+			must.False(r.Passed)
+			must.Equal(script[i].Feedback, r.Feedback)
+		})
 	}
+
 	last := script[len(script)-1].Feedback
-	if !strings.Contains(traceBuf.String(), last) {
-		t.Errorf("JSONL trace lacks the deciding attempt's feedback %q", last)
-	}
+	must.Contains(traceBuf.String(), last)
 }
 
 func TestRun_PassingVerifierRecordsScrubbedCappedDetails(t *testing.T) {
+	must := require.New(t)
 	long := strings.Repeat("x", 3*verificationTextMaxBytes)
 	loop, _, _, _ := verificationTestLoop(&resultScriptVerifier{results: []types.VerificationResult{{
 		Passed: true,
@@ -145,32 +154,27 @@ func TestRun_PassingVerifierRecordsScrubbedCappedDetails(t *testing.T) {
 	}}})
 
 	rt, err := loop.Run(context.Background(), verifierConfig("test-runner"))
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if rt.Outcome != "success" || len(rt.VerificationResults) != 1 {
-		t.Fatalf("outcome=%q results=%+v, want success with one result", rt.Outcome, rt.VerificationResults)
-	}
+	must.NoError(err)
+	must.Equal("success", rt.Outcome)
+	must.Len(rt.VerificationResults, 1)
+
 	got := rt.VerificationResults[0]
-	if !got.Passed || got.Attempt != 1 {
-		t.Errorf("result = %+v, want attempt 1 passed", got)
-	}
-	if strings.Contains(fmt.Sprintf("%v", got.Details), fakeVerificationSecret) {
-		t.Error("Details carry the unscrubbed secret")
-	}
-	if cmd, _ := got.Details["command"].(string); !strings.HasPrefix(cmd, "go test ./...") || !strings.Contains(cmd, "[REDACTED]") {
-		t.Errorf("command detail = %q, want the scrubbed command", cmd)
-	}
-	if got.Details["exitCode"] != 0 {
-		t.Errorf("exitCode detail = %v, want 0", got.Details["exitCode"])
-	}
+	must.True(got.Passed)
+	must.Equal(1, got.Attempt)
+	must.NotContains(fmt.Sprintf("%v", got.Details), fakeVerificationSecret)
+
+	cmd, _ := got.Details["command"].(string)
+	must.True(strings.HasPrefix(cmd, "go test ./..."), "command detail is %q", cmd)
+	must.Contains(cmd, "[REDACTED]")
+
+	must.Equal(0, got.Details["exitCode"])
+
 	out, _ := got.Details["output"].(string)
-	if len(out) >= len(long) || !strings.HasPrefix(out, strings.Repeat("x", verificationTextMaxBytes)) || strings.HasPrefix(out, strings.Repeat("x", verificationTextMaxBytes+1)) {
-		t.Errorf("output detail is %d bytes, want a %d-byte prefix plus the truncation marker", len(out), verificationTextMaxBytes)
-	}
+	requireCappedRepeat(t, out, "x", len(long))
 }
 
 func TestRun_VerifierFeedbackIsCappedPerAttempt(t *testing.T) {
+	must := require.New(t)
 	long := strings.Repeat("y", 3*verificationTextMaxBytes)
 	loop, _, _, _ := verificationTestLoop(&resultScriptVerifier{results: []types.VerificationResult{
 		{Feedback: long},
@@ -178,64 +182,62 @@ func TestRun_VerifierFeedbackIsCappedPerAttempt(t *testing.T) {
 	}})
 
 	rt, err := loop.Run(context.Background(), verifierConfig("test-runner"))
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if len(rt.VerificationResults) != 2 {
-		t.Fatalf("VerificationResults = %+v, want two entries", rt.VerificationResults)
-	}
-	fb := rt.VerificationResults[0].Feedback
-	if len(fb) >= len(long) || !strings.HasPrefix(fb, strings.Repeat("y", verificationTextMaxBytes)) || strings.HasPrefix(fb, strings.Repeat("y", verificationTextMaxBytes+1)) {
-		t.Errorf("recorded feedback is %d bytes, want a %d-byte prefix plus the truncation marker", len(fb), verificationTextMaxBytes)
-	}
+	must.NoError(err)
+	must.Len(rt.VerificationResults, 2)
+
+	requireCappedRepeat(t, rt.VerificationResults[0].Feedback, "y", len(long))
 }
 
 func TestRun_FailThenPassIsEvalPassed(t *testing.T) {
+	must := require.New(t)
 	loop, _, _, _ := verificationTestLoop(&passAfterVerifier{failures: 1})
 
 	rt, err := loop.Run(context.Background(), verifierConfig("test-runner"))
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if rt.Outcome != "success" {
-		t.Fatalf("outcome = %q, want success", rt.Outcome)
-	}
-	if len(rt.VerificationResults) != 2 || rt.VerificationResults[0].Passed || !rt.VerificationResults[1].Passed {
-		t.Fatalf("VerificationResults = %+v, want a failed then a passing attempt", rt.VerificationResults)
-	}
-	if got := types.EvalOutcomeFor(*rt); got != types.EvalPassed {
-		t.Errorf("EvalOutcomeFor = %q, want passed", got)
-	}
+	must.NoError(err)
+	must.Equal("success", rt.Outcome)
+
+	must.Len(rt.VerificationResults, 2)
+	must.False(rt.VerificationResults[0].Passed)
+	must.True(rt.VerificationResults[1].Passed)
+	must.Equal(types.EvalPassed, types.EvalOutcomeFor(*rt))
 }
 
 func TestRun_NoneVerifierRecordsNothing(t *testing.T) {
-	for _, verifierType := range []string{"none", ""} {
-		t.Run("type="+verifierType, func(t *testing.T) {
+	cases := []struct {
+		name         string
+		verifierType string
+	}{
+		{name: "none type", verifierType: "none"},
+		{name: "empty type", verifierType: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			loop, _, _, _ := verificationTestLoop(verifier.NewNoneVerifier())
 
-			rt, err := loop.Run(context.Background(), verifierConfig(verifierType))
-			if err != nil {
-				t.Fatalf("Run: %v", err)
-			}
-			if rt.Outcome != "success" {
-				t.Fatalf("outcome = %q, want success", rt.Outcome)
-			}
-			if len(rt.VerificationResults) != 0 {
-				t.Errorf("VerificationResults = %+v, want empty for the none verifier", rt.VerificationResults)
-			}
+			rt, err := loop.Run(context.Background(), verifierConfig(tc.verifierType))
+			must.NoError(err)
+			must.Equal("success", rt.Outcome)
+			must.Empty(rt.VerificationResults)
 		})
 	}
 }
 
 func TestBoundVerificationValue_NonJSONNativeValues(t *testing.T) {
-	got := boundVerificationValue(func() {})
-	if s, ok := got.(string); !ok || !strings.HasPrefix(s, "[unrecordable ") {
-		t.Errorf("boundVerificationValue(func) = %#v, want an unrecordable placeholder", got)
-	}
+	t.Run("func becomes placeholder", func(t *testing.T) {
+		must := require.New(t)
+		got := boundVerificationValue(func() {})
+		s, ok := got.(string)
+		must.True(ok, "got %#v, want a string placeholder", got)
+		must.True(strings.HasPrefix(s, "[unrecordable "), "got %q", s)
+	})
 
-	type report struct{ Token string }
-	normalised, ok := boundVerificationValue(report{Token: fakeVerificationSecret}).(map[string]any)
-	if !ok || normalised["Token"] != "[REDACTED]" {
-		t.Errorf("boundVerificationValue(struct) = %#v, want a map with the token scrubbed", normalised)
-	}
+	t.Run("struct token is scrubbed", func(t *testing.T) {
+		must := require.New(t)
+		type report struct{ Token string }
+		got := boundVerificationValue(report{Token: fakeVerificationSecret})
+		normalised, ok := got.(map[string]any)
+		must.True(ok, "got %#v, want a map", got)
+		must.Equal("[REDACTED]", normalised["Token"])
+	})
 }

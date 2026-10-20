@@ -12,6 +12,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -101,6 +104,26 @@ func openaiBuilderCases() []struct {
 	}
 }
 
+// buildOpenAIBody builds the request for params with streaming enabled and
+// returns its JSON body. It calls require, so it must run on the test goroutine.
+func buildOpenAIBody(t *testing.T, params types.StreamParams, q quirks.ProviderQuirks) string {
+	t.Helper()
+	must := require.New(t)
+	req, err := buildOpenAIRequest(params, true, q, nil)
+	must.NoError(err, "build request")
+	return marshalBody(t, req)
+}
+
+// marshalBody returns the JSON encoding of v. It calls require, so it must
+// run on the test goroutine.
+func marshalBody(t *testing.T, v any) string {
+	t.Helper()
+	must := require.New(t)
+	body, err := json.Marshal(v)
+	must.NoError(err, "marshal request")
+	return string(body)
+}
+
 // TestBuildOpenAIRequest_MatchesStream pins the invariant that
 // buildOpenAIRequest produces the same wire body the Stream method would
 // emit. The batch path reuses the builder and must be byte-identical to
@@ -108,11 +131,14 @@ func openaiBuilderCases() []struct {
 func TestBuildOpenAIRequest_MatchesStream(t *testing.T) {
 	for _, tc := range openaiBuilderCases() {
 		t.Run(tc.name, func(t *testing.T) {
+			check := assert.New(t)
+			must := require.New(t)
 			capturedCh := make(chan []byte, 1)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// The handler runs on the server goroutine, so it reports with assert.
 				b, err := io.ReadAll(r.Body)
-				if err != nil {
-					t.Errorf("read body: %v", err)
+				if !check.NoError(err, "read request body") {
+					capturedCh <- nil
 					return
 				}
 				capturedCh <- b
@@ -130,33 +156,20 @@ func TestBuildOpenAIRequest_MatchesStream(t *testing.T) {
 			adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 
 			ch, err := adapter.Stream(context.Background(), tc.params)
-			if err != nil {
-				t.Fatalf("Stream() error: %v", err)
-			}
+			must.NoError(err, "Stream()")
 			for range ch {
 			}
 			captured := <-capturedCh
 
 			q := quirks.DefaultRegistry().Resolve("openai-compatible", tc.params.Model)
-			built, err := buildOpenAIRequest(tc.params, true, q, nil)
-			if err != nil {
-				t.Fatalf("build request: %v", err)
-			}
-			builtBytes, err := json.Marshal(built)
-			if err != nil {
-				t.Fatalf("marshal builder output: %v", err)
-			}
-
-			if string(builtBytes) != string(captured) {
-				t.Errorf("builder vs Stream body mismatch\n builder: %s\n stream:  %s", builtBytes, captured)
-			}
+			must.Equal(string(captured), buildOpenAIBody(t, tc.params, q))
 		})
 	}
 }
 
-// TestBuildOpenAIRequest_ToolChoice pins the tool_choice projection gated
-// on the resolved capability. OpenAI's base rule advertises every mode,
-// so:
+// TestBuildOpenAIRequest_ToolChoice_ProjectsEachMode pins the tool_choice
+// projection gated on the resolved capability. OpenAI's base rule advertises
+// every mode, so:
 //   - ToolChoiceAuto (zero) emits no tool_choice field;
 //   - ToolChoiceRequired emits "tool_choice":"required";
 //   - ToolChoiceNone emits "tool_choice":"none";
@@ -164,7 +177,7 @@ func TestBuildOpenAIRequest_MatchesStream(t *testing.T) {
 //     order: "type" before "function");
 //   - ToolChoiceTool with no name, an invalid name, or an over-length
 //     name degrades to auto (no field).
-func TestBuildOpenAIRequest_ToolChoice(t *testing.T) {
+func TestBuildOpenAIRequest_ToolChoice_ProjectsEachMode(t *testing.T) {
 	base := types.StreamParams{
 		Model:     "gpt-4o",
 		MaxTokens: 256,
@@ -193,37 +206,27 @@ func TestBuildOpenAIRequest_ToolChoice(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			params := base
 			params.ToolChoice = tc.choice
 			params.ToolChoiceName = tc.toolName
-			req, err := buildOpenAIRequest(params, true, q, nil)
-			if err != nil {
-				t.Fatalf("build: %v", err)
-			}
-			body, err := json.Marshal(req)
-			if err != nil {
-				t.Fatalf("marshal: %v", err)
-			}
+			body := buildOpenAIBody(t, params, q)
 			if tc.wantSubstr == "" {
-				if strings.Contains(string(body), "tool_choice") {
-					t.Errorf("expected no tool_choice field, got body: %s", body)
-				}
+				must.NotContains(body, "tool_choice")
 				return
 			}
-			if !strings.Contains(string(body), tc.wantSubstr) {
-				t.Errorf("expected %s in body, got: %s", tc.wantSubstr, body)
-			}
+			must.Contains(body, tc.wantSubstr)
 		})
 	}
 }
 
 // TestBuildOpenAIRequest_ToolChoice_DeterministicKeyOrder pins that the
-// named-tool object is a typed struct, not a map[string]any, so its JSON
-// key order is identical on every run. The map form produced
-// process-dependent ordering (Go's randomised map hash seed), which made
-// the fixture pin flaky. Marshalling the same request many times must
-// yield byte-identical output.
+// named-tool object is a typed struct, so its JSON key order is the same on
+// every run. encoding/json sorts map keys, which would put "function" before
+// "type". Marshalling the same request repeatedly must yield byte-identical
+// output.
 func TestBuildOpenAIRequest_ToolChoice_DeterministicKeyOrder(t *testing.T) {
+	must := require.New(t)
 	params := types.StreamParams{
 		Model:          "gpt-4o",
 		MaxTokens:      256,
@@ -234,23 +237,9 @@ func TestBuildOpenAIRequest_ToolChoice_DeterministicKeyOrder(t *testing.T) {
 	}
 	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
 
-	var first string
-	for i := 0; i < 20; i++ {
-		req, err := buildOpenAIRequest(params, true, q, nil)
-		if err != nil {
-			t.Fatalf("build (iter %d): %v", i, err)
-		}
-		body, err := json.Marshal(req)
-		if err != nil {
-			t.Fatalf("marshal (iter %d): %v", i, err)
-		}
-		if i == 0 {
-			first = string(body)
-			continue
-		}
-		if string(body) != first {
-			t.Fatalf("non-deterministic body on iter %d:\n first: %s\n now:   %s", i, first, body)
-		}
+	first := buildOpenAIBody(t, params, q)
+	for i := 1; i < 20; i++ {
+		must.Equal(first, buildOpenAIBody(t, params, q), "iteration %d", i)
 	}
 }
 
@@ -261,6 +250,7 @@ func TestBuildOpenAIRequest_ToolChoice_DeterministicKeyOrder(t *testing.T) {
 // disallowed mode on the wire.
 func TestBuildOpenAIRequest_ToolChoice_PartialCapability(t *testing.T) {
 	t.Run("required disabled", func(t *testing.T) {
+		must := require.New(t)
 		params := types.StreamParams{
 			Model:      "gpt-4o",
 			MaxTokens:  256,
@@ -268,9 +258,10 @@ func TestBuildOpenAIRequest_ToolChoice_PartialCapability(t *testing.T) {
 			Messages:   []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
 		}
 		q := quirks.ProviderQuirks{ToolChoice: quirks.ToolChoiceCapability{Supported: true, Required: false}}
-		assertNoToolChoice(t, params, q)
+		must.NotContains(buildOpenAIBody(t, params, q), "tool_choice")
 	})
 	t.Run("none disabled", func(t *testing.T) {
+		must := require.New(t)
 		params := types.StreamParams{
 			Model:      "gpt-4o",
 			MaxTokens:  256,
@@ -278,17 +269,18 @@ func TestBuildOpenAIRequest_ToolChoice_PartialCapability(t *testing.T) {
 			Messages:   []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
 		}
 		q := quirks.ProviderQuirks{ToolChoice: quirks.ToolChoiceCapability{Supported: true, None: false}}
-		assertNoToolChoice(t, params, q)
+		must.NotContains(buildOpenAIBody(t, params, q), "tool_choice")
 	})
 }
 
-// TestToolChoiceName_InvalidEmitsWarn pins the observability half: an
-// invalid named-tool name degrades to auto AND emits a slog.Warn that
+// TestToolChoiceName_Invalid_WarnsWithoutOffendingName pins the observability
+// half: an invalid named-tool name degrades to auto AND emits a slog.Warn that
 // carries the grammar but NOT the offending name (which could carry
 // log-injection bytes). The shared warnInvalidToolChoiceName helper is
 // exercised through the openai projection; a single test covers the
 // helper for all three adapters since they call the same function.
-func TestToolChoiceName_InvalidEmitsWarn(t *testing.T) {
+func TestToolChoiceName_Invalid_WarnsWithoutOffendingName(t *testing.T) {
+	must := require.New(t)
 	prevDefault := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(prevDefault) })
 	var buf bytes.Buffer
@@ -304,115 +296,54 @@ func TestToolChoiceName_InvalidEmitsWarn(t *testing.T) {
 		Tools:          []types.ToolDefinition{{Name: "read_file", Description: "read", InputSchema: json.RawMessage(`{"type":"object"}`)}},
 	}
 	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
-	req, err := buildOpenAIRequest(params, true, q, nil)
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
-	body, err := json.Marshal(req)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if strings.Contains(string(body), "tool_choice") {
-		t.Errorf("invalid name must degrade to auto, got: %s", body)
-	}
+	must.NotContains(buildOpenAIBody(t, params, q), "tool_choice", "invalid name must degrade to auto")
 
 	logged := buf.String()
-	if !strings.Contains(logged, "failed validation") {
-		t.Errorf("expected a validation warn, got log: %s", logged)
-	}
-	// The raw name must NOT appear in the log line — only its length and
-	// the grammar are safe to surface.
-	if strings.Contains(logged, "bad name!") || strings.Contains(logged, "injected") {
-		t.Errorf("warn leaked the offending name into the log: %s", logged)
-	}
-	if !strings.Contains(logged, `"grammar"`) {
-		t.Errorf("warn missing the grammar attribute: %s", logged)
-	}
+	must.Contains(logged, "failed validation")
+	// Only the name's length and the grammar are safe to surface in the log.
+	must.NotContains(logged, "bad name!", "warn leaked the offending name")
+	must.NotContains(logged, "injected", "warn leaked the offending name")
+	must.Contains(logged, `"grammar"`)
 }
 
-// assertNoToolChoice builds the request and fails if the marshalled body
-// carries a tool_choice field.
-func assertNoToolChoice(t *testing.T, params types.StreamParams, q quirks.ProviderQuirks) {
-	t.Helper()
-	req, err := buildOpenAIRequest(params, true, q, nil)
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
-	body, err := json.Marshal(req)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if strings.Contains(string(body), "tool_choice") {
-		t.Errorf("expected no tool_choice field, got body: %s", body)
-	}
-}
-
-// TestBuildOpenAIRequest_ToolChoiceUnsupportedCapability pins the
-// graceful no-op: a zero-value capability emits no tool_choice field
-// even for a ToolChoiceRequired request.
-func TestBuildOpenAIRequest_ToolChoiceUnsupportedCapability(t *testing.T) {
+// TestBuildOpenAIRequest_ToolChoice_UnsupportedCapabilityOmitsField pins the
+// graceful no-op: a zero-value capability emits no tool_choice field even for
+// a ToolChoiceRequired request.
+func TestBuildOpenAIRequest_ToolChoice_UnsupportedCapabilityOmitsField(t *testing.T) {
+	must := require.New(t)
 	params := types.StreamParams{
 		Model:      "gpt-4o",
 		MaxTokens:  256,
 		ToolChoice: types.ToolChoiceRequired,
 		Messages:   []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
 	}
-	req, err := buildOpenAIRequest(params, true, quirks.ProviderQuirks{}, nil)
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
-	body, err := json.Marshal(req)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if strings.Contains(string(body), "tool_choice") {
-		t.Errorf("zero-value capability must emit no tool_choice field, got: %s", body)
-	}
+	must.NotContains(buildOpenAIBody(t, params, quirks.ProviderQuirks{}), "tool_choice",
+		"zero-value capability must emit no tool_choice field")
 }
 
 // TestBuildOpenAIRequest_StreamFlag verifies the stream argument drives
-// the wire field, so a future batch caller passing false produces a body
-// with "stream":false. Pinning this here prevents the helper from
-// regressing to a hard-coded true once the batch path lands.
+// the wire field: stream=false must serialise as "stream":false.
 //
-// The marshalled-body assertions catch the failure mode the struct-level
-// checks miss: if openaiRequest.Stream were tagged omitempty, the struct
-// check would still pass while "stream":false silently disappeared from
-// the wire body. OpenAI's tag intentionally lacks omitempty, so false
-// must serialise as "stream":false — pin both.
+// The marshalled-body checks guard against openaiRequest.Stream being tagged
+// omitempty, which the struct-level checks would not catch. OpenAI's tag
+// intentionally lacks omitempty, so false must appear on the wire.
 func TestBuildOpenAIRequest_StreamFlag(t *testing.T) {
+	must := require.New(t)
 	params := types.StreamParams{
 		Model:     "gpt-4o",
 		MaxTokens: 1024,
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
 	}
 	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
+
 	reqTrue, err := buildOpenAIRequest(params, true, q, nil)
-	if err != nil {
-		t.Fatalf("build stream=true: %v", err)
-	}
-	if reqTrue.Stream != true {
-		t.Errorf("stream=true argument: got Stream=%v, want true", reqTrue.Stream)
-	}
+	must.NoError(err, "build stream=true")
+	must.True(reqTrue.Stream)
+
 	reqFalse, err := buildOpenAIRequest(params, false, q, nil)
-	if err != nil {
-		t.Fatalf("build stream=false: %v", err)
-	}
-	if reqFalse.Stream != false {
-		t.Errorf("stream=false argument: got Stream=%v, want false", reqFalse.Stream)
-	}
-	trueBody, err := json.Marshal(reqTrue)
-	if err != nil {
-		t.Fatalf("marshal stream=true body: %v", err)
-	}
-	if !strings.Contains(string(trueBody), `"stream":true`) {
-		t.Errorf(`expected "stream":true in stream=true body: %s`, trueBody)
-	}
-	falseBody, err := json.Marshal(reqFalse)
-	if err != nil {
-		t.Fatalf("marshal stream=false body: %v", err)
-	}
-	if !strings.Contains(string(falseBody), `"stream":false`) {
-		t.Errorf(`expected "stream":false in stream=false body: %s`, falseBody)
-	}
+	must.NoError(err, "build stream=false")
+	must.False(reqFalse.Stream)
+
+	must.Contains(marshalBody(t, reqTrue), `"stream":true`)
+	must.Contains(marshalBody(t, reqFalse), `"stream":false`)
 }

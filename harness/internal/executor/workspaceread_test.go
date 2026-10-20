@@ -5,29 +5,37 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io/fs"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // singleFileTar builds the archive a workspace read streams back for one
 // regular file.
 func singleFileTar(t *testing.T, name, content string) []byte {
 	t.Helper()
+	return tarWithEntry(t, &tar.Header{Name: name, Size: int64(len(content)), Mode: 0o644}, []byte(content))
+}
+
+// tarWithEntry returns an archive holding one entry with the given header
+// and body.
+func tarWithEntry(t *testing.T, hdr *tar.Header, body []byte) []byte {
+	t.Helper()
+	must := require.New(t)
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
-	if err := tw.WriteHeader(&tar.Header{Name: name, Size: int64(len(content)), Mode: 0o644}); err != nil {
-		t.Fatalf("write tar header: %v", err)
+	must.NoError(tw.WriteHeader(hdr), "write tar header")
+	if len(body) > 0 {
+		_, err := tw.Write(body)
+		must.NoError(err, "write tar content")
 	}
-	if _, err := tw.Write([]byte(content)); err != nil {
-		t.Fatalf("write tar content: %v", err)
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatalf("close tar: %v", err)
-	}
+	must.NoError(tw.Close(), "close tar")
 	return buf.Bytes()
 }
 
@@ -77,16 +85,19 @@ func readExecHandlers(capture *readExecCapture, stdout []byte, stderr string, ex
 	}
 }
 
-// TestWorkspaceReadCommand_Shape pins the properties the read guard rests
-// on: the real path is resolved before tar runs, an escape and a missing
-// readlink each exit with their reserved status, tar receives the resolved
-// path, and the workspace root and requested path travel as arguments
-// rather than being interpolated.
-func TestWorkspaceReadCommand_Shape(t *testing.T) {
+// TestWorkspaceReadCommand_GuardScriptAndArguments pins the properties the
+// read guard rests on: the real path is resolved before tar runs, an escape
+// and a missing readlink each exit with their reserved status, tar receives
+// the resolved path, and the workspace root and requested path travel as
+// arguments rather than being interpolated.
+func TestWorkspaceReadCommand_GuardScriptAndArguments(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	cmd := workspaceReadCommand("/workspace", "/workspace/notes.md")
-	if len(cmd) != 6 || cmd[0] != "sh" || cmd[1] != "-c" || cmd[3] != "sh" || cmd[4] != "/workspace" || cmd[5] != "/workspace/notes.md" {
-		t.Fatalf("unexpected argv shape: %q", cmd)
-	}
+	must.Len(cmd, 6)
+	must.Equal([]string{"sh", "-c"}, cmd[:2])
+	must.Equal([]string{"sh", "/workspace", "/workspace/notes.md"}, cmd[3:])
+
 	script := cmd[2]
 	for _, want := range []string{
 		"command -v readlink",
@@ -97,70 +108,65 @@ func TestWorkspaceReadCommand_Shape(t *testing.T) {
 		"exit 113",
 		`exec tar -C / -cf - -- "${t#/}"`,
 	} {
-		if !strings.Contains(script, want) {
-			t.Errorf("read script missing %q:\n%s", want, script)
-		}
+		check.Contains(script, want)
 	}
-	if strings.Contains(script, "/workspace/notes.md") {
-		t.Error("the requested path must reach the script as an argument, not by interpolation")
-	}
+	must.NotContains(script, "/workspace/notes.md",
+		"the requested path must reach the script as an argument, not by interpolation")
 }
 
-func TestClassifyWorkspaceReadExit(t *testing.T) {
+// TestClassifyWorkspaceReadExit_EscapeReadlinkAndNotFound shares one
+// emitter across the calls: only the escape exit may emit PathTraversalBlocked.
+func TestClassifyWorkspaceReadExit_EscapeReadlinkAndNotFound(t *testing.T) {
+	must := require.New(t)
 	emitter := &mockSecurityEmitter{}
 
 	err := classifyWorkspaceReadExit(workspaceReadEscapeExit, "path escapes workspace: link\n", "link", "/workspace", emitter)
-	if err == nil || !strings.Contains(err.Error(), "escapes workspace") {
-		t.Errorf("escape exit: got %v, want a workspace-escape error", err)
-	}
-	if emitter.pathTraversalCount != 1 {
-		t.Errorf("escape exit: PathTraversalBlocked emitted %d times, want 1", emitter.pathTraversalCount)
-	}
+	must.ErrorContains(err, "escapes workspace")
+	must.Equal(1, emitter.pathTraversalCount, "escape exit must emit PathTraversalBlocked")
 
 	err = classifyWorkspaceReadExit(workspaceReadNoReadlinkExit, "readlink is required for workspace reads\n", "a.txt", "/workspace", emitter)
-	if err == nil || !strings.Contains(err.Error(), "readlink") {
-		t.Errorf("missing readlink: got %v, want an error naming readlink", err)
-	}
+	must.ErrorContains(err, "readlink")
 
 	err = classifyWorkspaceReadExit(2, "tar: workspace/missing.txt: No such file or directory\n", "missing.txt", "/workspace", emitter)
-	if !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("tar not-found: got %v, want fs.ErrNotExist", err)
-	}
-	if emitter.pathTraversalCount != 1 {
-		t.Errorf("non-escape exits must not emit PathTraversalBlocked, count now %d", emitter.pathTraversalCount)
-	}
+	must.ErrorIs(err, fs.ErrNotExist)
+	must.Equal(1, emitter.pathTraversalCount, "non-escape exits must not emit PathTraversalBlocked")
 }
 
-func TestDecodeSingleFileArchive(t *testing.T) {
-	content, size, err := decodeSingleFileArchive(singleFileTar(t, "workspace/a.txt", "hello"), 1024)
-	if err != nil || content != "hello" || size != 5 {
-		t.Errorf("regular file: got (%q, %d, %v)", content, size, err)
-	}
+func TestDecodeSingleFileArchive_ClassifiesEntries(t *testing.T) {
+	t.Run("regular file returns its content and size", func(t *testing.T) {
+		must := require.New(t)
+		content, size, err := decodeSingleFileArchive(singleFileTar(t, "workspace/a.txt", "hello"), 1024)
+		must.NoError(err)
+		must.Equal("hello", content)
+		must.Equal(int64(5), size)
+	})
 
-	if _, _, err := decodeSingleFileArchive(nil, 1024); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("empty archive: got %v, want fs.ErrNotExist", err)
-	}
+	t.Run("empty archive is not found", func(t *testing.T) {
+		must := require.New(t)
+		_, _, err := decodeSingleFileArchive(nil, 1024)
+		must.ErrorIs(err, fs.ErrNotExist)
+	})
 
-	var dir bytes.Buffer
-	tw := tar.NewWriter(&dir)
-	_ = tw.WriteHeader(&tar.Header{Name: "workspace/sub/", Typeflag: tar.TypeDir, Mode: 0o755})
-	_ = tw.Close()
-	if _, _, err := decodeSingleFileArchive(dir.Bytes(), 1024); !errors.Is(err, errArchiveEntryIsDir) {
-		t.Errorf("directory: got %v, want errArchiveEntryIsDir", err)
-	}
+	t.Run("directory entry is rejected", func(t *testing.T) {
+		must := require.New(t)
+		archive := tarWithEntry(t, &tar.Header{Name: "workspace/sub/", Typeflag: tar.TypeDir, Mode: 0o755}, nil)
+		_, _, err := decodeSingleFileArchive(archive, 1024)
+		must.ErrorIs(err, errArchiveEntryIsDir)
+	})
 
-	var link bytes.Buffer
-	tw = tar.NewWriter(&link)
-	_ = tw.WriteHeader(&tar.Header{Name: "workspace/dangling", Typeflag: tar.TypeSymlink, Linkname: "gone", Mode: 0o777})
-	_ = tw.Close()
-	if _, _, err := decodeSingleFileArchive(link.Bytes(), 1024); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("dangling symlink: got %v, want fs.ErrNotExist", err)
-	}
+	t.Run("dangling symlink is not found", func(t *testing.T) {
+		must := require.New(t)
+		archive := tarWithEntry(t, &tar.Header{Name: "workspace/dangling", Typeflag: tar.TypeSymlink, Linkname: "gone", Mode: 0o777}, nil)
+		_, _, err := decodeSingleFileArchive(archive, 1024)
+		must.ErrorIs(err, fs.ErrNotExist)
+	})
 
-	_, size, err = decodeSingleFileArchive(singleFileTar(t, "workspace/big", strings.Repeat("x", 2048)), 1024)
-	if !errors.Is(err, errArchiveEntryTooLarge) || size != 2048 {
-		t.Errorf("oversized: got (size %d, %v), want errArchiveEntryTooLarge with size 2048", size, err)
-	}
+	t.Run("entry over the limit reports its size", func(t *testing.T) {
+		must := require.New(t)
+		_, size, err := decodeSingleFileArchive(singleFileTar(t, "workspace/big", strings.Repeat("x", 2048)), 1024)
+		must.ErrorIs(err, errArchiveEntryTooLarge)
+		must.Equal(int64(2048), size)
+	})
 }
 
 // TestContainerExecutor_ReadFile_EscapeReportedAndBlocked drives a read
@@ -168,6 +174,7 @@ func TestDecodeSingleFileArchive(t *testing.T) {
 // must surface as a workspace-escape error, emit PathTraversalBlocked, and
 // return no content.
 func TestContainerExecutor_ReadFile_EscapeReportedAndBlocked(t *testing.T) {
+	must := require.New(t)
 	capture := &readExecCapture{}
 	exec, cleanup := newMockContainerExecutor(t, readExecHandlers(capture, nil, "path escapes workspace: /workspace/link\n", workspaceReadEscapeExit))
 	defer cleanup()
@@ -175,42 +182,31 @@ func TestContainerExecutor_ReadFile_EscapeReportedAndBlocked(t *testing.T) {
 	exec.Security = emitter
 
 	content, err := exec.ReadFile(context.Background(), "link")
-	if err == nil || !strings.Contains(err.Error(), "escapes workspace") {
-		t.Fatalf("ReadFile(link) = (%q, %v), want a workspace-escape error", content, err)
-	}
-	if content != "" {
-		t.Errorf("content must be empty on an escape, got %q", content)
-	}
-	if emitter.pathTraversalCount != 1 {
-		t.Errorf("PathTraversalBlocked emitted %d times, want 1", emitter.pathTraversalCount)
-	}
+	must.ErrorContains(err, "escapes workspace", "ReadFile(link) returned content %q", content)
+	must.Empty(content, "content must be empty on an escape")
+	must.Equal(1, emitter.pathTraversalCount, "PathTraversalBlocked emissions")
+
 	argv := capture.last()
-	if len(argv) != 6 || argv[4] != containerWorkspace || argv[5] != "/workspace/link" {
-		t.Errorf("read ran with argv %q, want the guarded read command for /workspace/link", argv)
-	}
+	must.Len(argv, 6, "read ran with argv %q", argv)
+	must.Equal([]string{containerWorkspace, "/workspace/link"}, argv[4:], "guarded read targets /workspace/link")
 }
 
 // TestContainerExecutor_ReadFile_UsesExecNotArchive pins that a container
 // read never touches the engine's archive endpoint, which dereferences
 // symlinks.
 func TestContainerExecutor_ReadFile_UsesExecNotArchive(t *testing.T) {
+	must := require.New(t)
 	handlers := readExecHandlers(nil, singleFileTar(t, "workspace/a.txt", "via exec"), "", 0)
-	archiveHits := 0
+	var archiveHits atomic.Int32
 	handlers["GET /containers/*/archive"] = func(w http.ResponseWriter, r *http.Request) {
-		archiveHits++
+		archiveHits.Add(1)
 		http.Error(w, "archive reads are not permitted", http.StatusForbidden)
 	}
 	exec, cleanup := newMockContainerExecutor(t, handlers)
 	defer cleanup()
 
 	got, err := exec.ReadFile(context.Background(), "a.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if got != "via exec" {
-		t.Errorf("got %q, want %q", got, "via exec")
-	}
-	if archiveHits != 0 {
-		t.Errorf("archive endpoint hit %d times, want 0", archiveHits)
-	}
+	must.NoError(err)
+	must.Equal("via exec", got)
+	must.Zero(archiveHits.Load(), "archive endpoint must not be hit")
 }

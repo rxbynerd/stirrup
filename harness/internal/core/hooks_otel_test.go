@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
@@ -15,6 +17,8 @@ import (
 // each parenting one hook span per execution, with a continueOnError
 // failure marking only its own hook span as an error.
 func TestLoop_Hooks_OTelPhaseAndHookSpans(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	emitter, exporter := newInMemoryOTelEmitter(t)
 
 	loop := buildTestLoop(simpleSuccessProvider())
@@ -31,15 +35,9 @@ func TestLoop_Hooks_OTelPhaseAndHookSpans(t *testing.T) {
 	}
 
 	runTrace, err := loop.Run(context.Background(), buildTestConfig())
-	if err != nil {
-		t.Fatalf("Run() returned error: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("Outcome = %q, want success", runTrace.Outcome)
-	}
-	if len(runTrace.HookResults) != 3 {
-		t.Errorf("HookResults = %+v, want 3 entries", runTrace.HookResults)
-	}
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
+	check.Len(runTrace.HookResults, 3, "HookResults = %+v", runTrace.HookResults)
 
 	spans := exporter.GetSpans()
 	byID := map[string]tracetest.SpanStub{}
@@ -56,20 +54,13 @@ func TestLoop_Hooks_OTelPhaseAndHookSpans(t *testing.T) {
 		if s.Name != "hooks.preRun" && s.Name != "hooks.postRun" {
 			continue
 		}
-		if _, dup := phases[s.Name]; dup {
-			t.Errorf("more than one %s span", s.Name)
-		}
+		check.NotContains(phases, s.Name, "more than one %s span", s.Name)
 		phases[s.Name] = s
-		if s.Parent.SpanID() != root.SpanContext.SpanID() {
-			t.Errorf("%s parent = %s, want the root span", s.Name, s.Parent.SpanID())
-		}
-		if s.Status.Code == codes.Error {
-			t.Errorf("%s has error status %q; a continueOnError failure must not fail the phase", s.Name, s.Status.Description)
-		}
+		check.Equal(root.SpanContext.SpanID(), s.Parent.SpanID(), "%s parent should be the root span", s.Name)
+		check.NotEqual(codes.Error, s.Status.Code,
+			"%s has error status %q; a continueOnError failure must not fail the phase", s.Name, s.Status.Description)
 	}
-	if len(phases) != 2 {
-		t.Fatalf("phase spans = %v, want hooks.preRun and hooks.postRun", phases)
-	}
+	must.Len(phases, 2, "phase spans = %v, want hooks.preRun and hooks.postRun", phases)
 
 	perPhase := map[string]int{}
 	for _, s := range spans {
@@ -84,11 +75,10 @@ func TestLoop_Hooks_OTelPhaseAndHookSpans(t *testing.T) {
 				exitCode = kv.Value.AsInt64()
 			}
 		}
-		if (exitCode != 0) != (s.Status.Code == codes.Error) {
-			t.Errorf("hook span under %s: status %v does not match exit code %d", parent.Name, s.Status.Code, exitCode)
-		}
+		wantError := exitCode != 0
+		isError := s.Status.Code == codes.Error
+		check.Equal(wantError, isError, "error status of hook span under %s (exit code %d)", parent.Name, exitCode)
 	}
-	if perPhase["hooks.preRun"] != 1 || perPhase["hooks.postRun"] != 2 {
-		t.Errorf("hook spans per phase = %v, want 1 under hooks.preRun and 2 under hooks.postRun", perPhase)
-	}
+	check.Equal(1, perPhase["hooks.preRun"], "hook spans per phase = %v", perPhase)
+	check.Equal(2, perPhase["hooks.postRun"], "hook spans per phase = %v", perPhase)
 }

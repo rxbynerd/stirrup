@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -15,15 +17,12 @@ import (
 func TestDenyAll_DeniesEverything(t *testing.T) {
 	p := NewDenyAll()
 	for _, name := range []string{"write_file", "run_command", "read_file", "web_fetch", "spawn_agent"} {
-		result, err := p.Check(context.Background(), types.ToolDefinition{Name: name}, json.RawMessage(`{}`))
-		if err != nil {
-			t.Fatalf("Check(%s): %v", name, err)
-		}
-		if result.Allowed {
-			t.Errorf("deny-all allowed %s", name)
-		}
-		if result.Reason == "" {
-			t.Errorf("deny-all denial of %s carries no reason", name)
-		}
+		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
+			result, err := p.Check(context.Background(), types.ToolDefinition{Name: name}, json.RawMessage(`{}`))
+			must.NoError(err)
+			must.False(result.Allowed, "deny-all allowed the tool")
+			must.NotEmpty(result.Reason, "deny-all denial carries no reason")
+		})
 	}
 }

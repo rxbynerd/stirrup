@@ -3,12 +3,12 @@ package transport
 import (
 	"context"
 	"errors"
-	"fmt"
 	"runtime"
-	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -47,7 +47,8 @@ func extractByType(wantType string) PayloadExtractor {
 	}
 }
 
-func TestCorrelator_HappyPath(t *testing.T) {
+func TestCorrelator_Await_ReturnsMatchingResponse(t *testing.T) {
+	must := require.New(t)
 	t.Parallel()
 	fc := &fakeOnControl{}
 	c := NewCorrelator("perm")
@@ -66,28 +67,21 @@ func TestCorrelator_HappyPath(t *testing.T) {
 		})
 	}()
 
+	// Await calls emit synchronously on this goroutine, so require is safe inside it.
 	got, err := c.Await(context.Background(), time.Second, func(id string) error {
-		if id != "perm-1" {
-			t.Errorf("expected first id 'perm-1', got %q", id)
-		}
+		must.Equal("perm-1", id)
 		return nil
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	ev, ok := got.(types.ControlEvent)
-	if !ok {
-		t.Fatalf("expected ControlEvent payload, got %T", got)
-	}
-	if ev.Allowed == nil || !*ev.Allowed {
-		t.Errorf("expected allowed=true, got %v", ev.Allowed)
-	}
-	if c.PendingCount() != 0 {
-		t.Errorf("expected pending=0 after happy path, got %d", c.PendingCount())
-	}
+	must.NoError(err)
+	must.IsType(types.ControlEvent{}, got)
+	ev := got.(types.ControlEvent)
+	must.NotNil(ev.Allowed)
+	must.True(*ev.Allowed)
+	must.Zero(c.PendingCount())
 }
 
-func TestCorrelator_Timeout(t *testing.T) {
+func TestCorrelator_Await_TimesOutWithoutResponse(t *testing.T) {
+	must := require.New(t)
 	t.Parallel()
 	c := NewCorrelator("perm")
 	// No attach: no extractor will ever resolve this.
@@ -95,18 +89,12 @@ func TestCorrelator_Timeout(t *testing.T) {
 	_, err := c.Await(context.Background(), 25*time.Millisecond, func(_ string) error {
 		return nil
 	})
-	if err == nil {
-		t.Fatal("expected timeout error")
-	}
-	if !strings.Contains(err.Error(), "timed out") {
-		t.Errorf("expected 'timed out' in error, got: %v", err)
-	}
-	if c.PendingCount() != 0 {
-		t.Errorf("expected pending=0 after timeout, got %d", c.PendingCount())
-	}
+	must.ErrorContains(err, "timed out")
+	must.Zero(c.PendingCount())
 }
 
-func TestCorrelator_ContextCancellation(t *testing.T) {
+func TestCorrelator_Await_CancelledContextReturnsCanceled(t *testing.T) {
+	must := require.New(t)
 	t.Parallel()
 	c := NewCorrelator("perm")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -121,18 +109,12 @@ func TestCorrelator_ContextCancellation(t *testing.T) {
 	_, err := c.Await(ctx, time.Second, func(_ string) error {
 		return nil
 	})
-	if err == nil {
-		t.Fatal("expected cancellation error")
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("expected context.Canceled in chain, got: %v", err)
-	}
-	if c.PendingCount() != 0 {
-		t.Errorf("expected pending=0 after cancellation, got %d", c.PendingCount())
-	}
+	must.ErrorIs(err, context.Canceled)
+	must.Zero(c.PendingCount())
 }
 
-func TestCorrelator_EmitFailureCleansUp(t *testing.T) {
+func TestCorrelator_Await_EmitFailureClearsPending(t *testing.T) {
+	must := require.New(t)
 	t.Parallel()
 	c := NewCorrelator("perm")
 
@@ -140,18 +122,12 @@ func TestCorrelator_EmitFailureCleansUp(t *testing.T) {
 	_, err := c.Await(context.Background(), time.Second, func(_ string) error {
 		return emitErr
 	})
-	if err == nil {
-		t.Fatal("expected emit error")
-	}
-	if !errors.Is(err, emitErr) {
-		t.Errorf("expected emit error in chain, got: %v", err)
-	}
-	if c.PendingCount() != 0 {
-		t.Errorf("expected pending=0 after emit failure, got %d", c.PendingCount())
-	}
+	must.ErrorIs(err, emitErr)
+	must.Zero(c.PendingCount())
 }
 
-func TestCorrelator_OutOfOrderResolution(t *testing.T) {
+func TestCorrelator_Await_ResolvesOutOfOrder(t *testing.T) {
+	must := require.New(t)
 	t.Parallel()
 	fc := &fakeOnControl{}
 	c := NewCorrelator("req")
@@ -179,13 +155,8 @@ func TestCorrelator_OutOfOrderResolution(t *testing.T) {
 	}
 
 	// Wait for both Awaits to register pending entries.
-	deadline := time.Now().Add(time.Second)
-	for c.PendingCount() < 2 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if c.PendingCount() != 2 {
-		t.Fatalf("expected 2 pending, got %d", c.PendingCount())
-	}
+	must.Eventually(func() bool { return c.PendingCount() >= 2 }, time.Second, time.Millisecond)
+	must.Equal(2, c.PendingCount())
 
 	// Resolve "req-2" first, then "req-1". Both must surface the right
 	// payload regardless of which goroutine got which id.
@@ -200,38 +171,23 @@ func TestCorrelator_OutOfOrderResolution(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		select {
 		case r := <-results:
-			if r.err != nil {
-				t.Errorf("await id=%s: unexpected error: %v", r.id, r.err)
-				continue
-			}
-			ev, ok := r.payload.(types.ControlEvent)
-			if !ok {
-				t.Errorf("await id=%s: expected ControlEvent payload, got %T", r.id, r.payload)
-				continue
-			}
-			want, known := wantReasonByID[r.id]
-			if !known {
-				t.Errorf("unexpected request id %q", r.id)
-				continue
-			}
-			if seen[r.id] {
-				t.Errorf("duplicate result for id %q", r.id)
-			}
+			must.NoError(r.err, "await id=%s", r.id)
+			must.IsType(types.ControlEvent{}, r.payload, "await id=%s", r.id)
+			ev := r.payload.(types.ControlEvent)
+			must.Contains(wantReasonByID, r.id)
+			must.False(seen[r.id], "duplicate result for id %q", r.id)
 			seen[r.id] = true
-			if ev.Reason != want {
-				t.Errorf("await id=%s: got reason %q, want %q", r.id, ev.Reason, want)
-			}
+			must.Equal(wantReasonByID[r.id], ev.Reason, "await id=%s", r.id)
 		case <-time.After(2 * time.Second):
-			t.Errorf("await %d: timed out waiting for resolution", i)
+			must.Fail("timed out waiting for resolution", "await %d", i)
 		}
 	}
 
-	if c.PendingCount() != 0 {
-		t.Errorf("expected pending=0 after both resolved, got %d", c.PendingCount())
-	}
+	must.Zero(c.PendingCount())
 }
 
-func TestCorrelator_LateResponseDoesNotPanic(t *testing.T) {
+func TestCorrelator_Await_LateResponseAfterTimeoutIsIgnored(t *testing.T) {
+	must := require.New(t)
 	t.Parallel()
 	fc := &fakeOnControl{}
 	c := NewCorrelator("perm")
@@ -242,9 +198,7 @@ func TestCorrelator_LateResponseDoesNotPanic(t *testing.T) {
 	_, err := c.Await(context.Background(), 25*time.Millisecond, func(_ string) error {
 		return nil
 	})
-	if err == nil {
-		t.Fatal("expected timeout error")
-	}
+	must.Error(err)
 
 	// Now deliver a late response with the (now stale) id. Must not panic.
 	// Because the Correlator increments monotonically, the id used was
@@ -254,21 +208,18 @@ func TestCorrelator_LateResponseDoesNotPanic(t *testing.T) {
 		RequestID: "perm-1",
 	})
 
-	if c.PendingCount() != 0 {
-		t.Errorf("expected pending=0 after late response, got %d", c.PendingCount())
-	}
+	must.Zero(c.PendingCount())
 
 	// Allow the runtime a moment to reap the goroutine that ran Await.
 	time.Sleep(20 * time.Millisecond)
 	goroutinesAfter := runtime.NumGoroutine()
 	// Tolerance for unrelated runtime goroutines, but we should not be
 	// strictly higher than before by more than a small slack.
-	if goroutinesAfter > goroutinesBefore+2 {
-		t.Errorf("possible goroutine leak: before=%d after=%d", goroutinesBefore, goroutinesAfter)
-	}
+	must.LessOrEqual(goroutinesAfter, goroutinesBefore+2, "possible goroutine leak")
 }
 
 func TestCorrelator_IgnoresUnrelatedEvents(t *testing.T) {
+	must := require.New(t)
 	t.Parallel()
 	fc := &fakeOnControl{}
 	c := NewCorrelator("perm")
@@ -294,16 +245,15 @@ func TestCorrelator_IgnoresUnrelatedEvents(t *testing.T) {
 	got, err := c.Await(context.Background(), time.Second, func(_ string) error {
 		return nil
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	must.NoError(err)
+	must.IsType(types.ControlEvent{}, got)
 	ev := got.(types.ControlEvent)
-	if ev.Allowed == nil || !*ev.Allowed {
-		t.Errorf("expected matching allowed event, got %+v", ev)
-	}
+	must.NotNil(ev.Allowed, "expected matching allowed event, got %+v", ev)
+	must.True(*ev.Allowed, "expected matching allowed event, got %+v", ev)
 }
 
-func TestCorrelator_RequestIDFormat(t *testing.T) {
+func TestCorrelator_AssignsSequentialRequestIDs(t *testing.T) {
+	must := require.New(t)
 	t.Parallel()
 	c := NewCorrelator("perm")
 
@@ -315,15 +265,11 @@ func TestCorrelator_RequestIDFormat(t *testing.T) {
 		})
 	}
 
-	want := []string{"perm-1", "perm-2", "perm-3"}
-	for i, w := range want {
-		if ids[i] != w {
-			t.Errorf("ids[%d] = %q, want %q", i, ids[i], w)
-		}
-	}
+	must.Equal([]string{"perm-1", "perm-2", "perm-3"}, ids)
 }
 
-func TestCorrelator_DefaultPrefix(t *testing.T) {
+func TestCorrelator_EmptyPrefixDefaultsToReq(t *testing.T) {
+	must := require.New(t)
 	t.Parallel()
 	c := NewCorrelator("")
 
@@ -332,23 +278,21 @@ func TestCorrelator_DefaultPrefix(t *testing.T) {
 		got = id
 		return errors.New("stop")
 	})
-	if got != "req-1" {
-		t.Errorf("expected 'req-1' default-prefixed id, got %q", got)
-	}
+	must.Equal("req-1", got)
 }
 
-func TestCorrelator_NilEmit(t *testing.T) {
+func TestCorrelator_Await_NilEmitReturnsError(t *testing.T) {
+	must := require.New(t)
 	t.Parallel()
 	c := NewCorrelator("perm")
 	_, err := c.Await(context.Background(), time.Second, nil)
-	if err == nil {
-		t.Fatal("expected error for nil emit")
-	}
+	must.Error(err)
 }
 
-// TestCorrelator_DefaultTimeoutWhenZero verifies the per-await timeout falls
+// TestCorrelator_Await_ZeroTimeoutUsesDefault verifies the per-await timeout falls
 // back to DefaultCorrelatorTimeout when the caller passes zero.
-func TestCorrelator_DefaultTimeoutWhenZero(t *testing.T) {
+func TestCorrelator_Await_ZeroTimeoutUsesDefault(t *testing.T) {
+	must := require.New(t)
 	t.Parallel()
 	c := NewCorrelator("perm")
 
@@ -363,15 +307,8 @@ func TestCorrelator_DefaultTimeoutWhenZero(t *testing.T) {
 
 	_, err := c.Await(ctx, 0, func(_ string) error { return nil })
 	elapsed := time.Since(start)
-	if err == nil {
-		t.Fatal("expected ctx error")
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("expected context.Canceled, got %v", err)
-	}
-	if elapsed < 15*time.Millisecond {
-		t.Errorf("returned too quickly (%s) — zero timeout may have fired immediately", elapsed)
-	}
+	must.ErrorIs(err, context.Canceled)
+	must.GreaterOrEqual(elapsed, 15*time.Millisecond, "zero timeout may have fired immediately")
 }
 
 // Compile-time interface satisfaction check: Transport implementations all
@@ -385,14 +322,9 @@ var (
 // TestCorrelator_NewIsEmpty verifies NewCorrelator returns a non-nil
 // instance with PendingCount starting at zero.
 func TestCorrelator_NewIsEmpty(t *testing.T) {
+	must := require.New(t)
 	t.Parallel()
 	c := NewCorrelator("x")
-	if c == nil {
-		t.Fatal("NewCorrelator returned nil")
-	}
-	if c.PendingCount() != 0 {
-		t.Errorf("expected empty correlator, got pending=%d", c.PendingCount())
-	}
-	// Avoid unused-import lint on fmt by referencing it in a tiny check.
-	_ = fmt.Sprintf("ok-%d", c.PendingCount())
+	must.NotNil(c)
+	must.Zero(c.PendingCount())
 }

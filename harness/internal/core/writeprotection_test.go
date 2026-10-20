@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
@@ -23,14 +26,11 @@ const guardRejectionText = "Tool call rejected by security guard"
 // tool_calls finish.
 func toolCallChunk(t *testing.T, id, name string, args map[string]string) string {
 	t.Helper()
+	must := require.New(t)
 	argJSON, err := json.Marshal(args)
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	quoted, err := json.Marshal(string(argJSON))
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	return openAIChunk(`{"id":"`+id+`","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"`+name+`","arguments":`+string(quoted)+`}}]},"finish_reason":null}]}`) +
 		openAIChunk(`{"id":"`+id+`","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`) +
 		"data: [DONE]\n\n"
@@ -90,18 +90,13 @@ func TestBuildLoop_ProtectedWriteTargets(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			workspace, err := filepath.EvalSymlinks(t.TempDir())
-			if err != nil {
-				t.Fatal(err)
-			}
+			must.NoError(err)
 			for _, name := range []string{"AGENTS.md", "CLAUDE.md", "docs/AGENTS.md", "docs/guide.md"} {
 				p := filepath.Join(workspace, name)
-				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(p, []byte(original), 0o644); err != nil {
-					t.Fatal(err)
-				}
+				must.NoError(os.MkdirAll(filepath.Dir(p), 0o755))
+				must.NoError(os.WriteFile(p, []byte(original), 0o644))
 			}
 
 			var bodies []string
@@ -119,32 +114,22 @@ func TestBuildLoop_ProtectedWriteTargets(t *testing.T) {
 			if tc.configure != nil {
 				tc.configure(config)
 			}
-			if err := types.ValidateRunConfig(config); err != nil {
-				t.Fatalf("ValidateRunConfig: %v", err)
-			}
+			must.NoError(types.ValidateRunConfig(config), "ValidateRunConfig")
 
 			loop, _ := buildGuidanceLoop(t, config)
-			if _, err := loop.Run(context.Background(), config); err != nil {
-				t.Fatalf("Run: %v", err)
-			}
-			if len(bodies) != 2 {
-				t.Fatalf("provider requests = %d, want 2", len(bodies))
-			}
-			rejected := strings.Contains(bodies[1], guardRejectionText)
-			if rejected != tc.wantRejected {
-				t.Errorf("guard rejection = %v, want %v; tool result request: %s", rejected, tc.wantRejected, bodies[1])
-			}
+			_, err = loop.Run(context.Background(), config)
+			must.NoError(err, "Run")
+			must.Len(bodies, 2)
+			must.Equal(tc.wantRejected, strings.Contains(bodies[1], guardRejectionText),
+				"tool result request: %s", bodies[1])
+
 			got, err := os.ReadFile(filepath.Join(workspace, tc.file))
-			if err != nil {
-				t.Fatalf("read %s: %v", tc.file, err)
-			}
+			must.NoError(err)
 			wantContent := rewritten
 			if tc.wantRejected {
 				wantContent = original
 			}
-			if string(got) != wantContent {
-				t.Errorf("%s content = %q, want %q", tc.file, got, wantContent)
-			}
+			must.Equal(wantContent, string(got))
 		})
 	}
 }
@@ -179,35 +164,31 @@ func newProtectedGuidanceLoop(t *testing.T, prov provider.ProviderAdapter) (*Age
 }
 
 func TestLoop_ProtectedWriteTargets_ResetBetweenRuns(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop, _ := newProtectedGuidanceLoop(t, simpleSuccessProvider())
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	_, err := loop.Run(context.Background(), buildTestConfig())
+	must.NoError(err, "Run")
 	for _, p := range []string{"AGENTS.md", "config/app.yaml"} {
-		if !loop.writeProtection.Matches(p) {
-			t.Errorf("after a guidance run, %q must be protected", p)
-		}
+		check.True(loop.writeProtection.Matches(p), "after a guidance run, %q must be protected", p)
 	}
 
 	loop.Guidance = nil
-	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
-		t.Fatalf("second Run: %v", err)
-	}
-	if loop.writeProtection.Matches("AGENTS.md") {
-		t.Error("a run without guidance must not keep the previous run's guidance protection")
-	}
-	if !loop.writeProtection.Matches("config/app.yaml") {
-		t.Error("operator targets must stay protected on every run")
-	}
+	_, err = loop.Run(context.Background(), buildTestConfig())
+	must.NoError(err, "second Run")
+	check.False(loop.writeProtection.Matches("AGENTS.md"),
+		"a run without guidance must not keep the previous run's guidance protection")
+	check.True(loop.writeProtection.Matches("config/app.yaml"),
+		"operator targets must stay protected on every run")
 }
 
 func TestSpawnSubAgent_InheritsProtectedWriteTargets(t *testing.T) {
+	must := require.New(t)
 	parent, writes := newProtectedGuidanceLoop(t, simpleSuccessProvider())
 	config := buildTestConfig()
 	config.RepositoryGuidance = &types.RepositoryGuidanceConfig{Files: []string{"AGENTS.md"}}
-	if _, err := parent.Run(context.Background(), config); err != nil {
-		t.Fatalf("parent Run: %v", err)
-	}
+	_, err := parent.Run(context.Background(), config)
+	must.NoError(err, "parent Run")
 
 	parent.Provider = &multiCallProvider{calls: [][]types.StreamEvent{
 		{
@@ -221,26 +202,18 @@ func TestSpawnSubAgent_InheritsProtectedWriteTargets(t *testing.T) {
 			{Type: "message_complete", StopReason: "end_turn"},
 		},
 	}}
-	if _, err := SpawnSubAgent(context.Background(), parent, config, SubAgentConfig{Prompt: "child task"}); err != nil {
-		t.Fatalf("SpawnSubAgent: %v", err)
-	}
-	if len(*writes) != 1 || (*writes)[0] != "notes.md" {
-		t.Errorf("sub-agent writes = %v, want only notes.md", *writes)
-	}
+	_, err = SpawnSubAgent(context.Background(), parent, config, SubAgentConfig{Prompt: "child task"})
+	must.NoError(err, "SpawnSubAgent")
+	must.Equal([]string{"notes.md"}, *writes)
 }
 
 func TestLoop_ProtectedWriteTargets_EscapingSymlinkReportsTraversalOnce(t *testing.T) {
+	must := require.New(t)
 	workspace, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(t.TempDir(), filepath.Join(workspace, "escape_link")); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
+	must.NoError(os.Symlink(t.TempDir(), filepath.Join(workspace, "escape_link")))
 	local, err := executor.NewLocalExecutor(workspace)
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 
 	var secBuf bytes.Buffer
 	loop := buildTestLoopWithSecurity(nil, &secBuf)
@@ -261,10 +234,8 @@ func TestLoop_ProtectedWriteTargets_EscapingSymlinkReportsTraversalOnce(t *testi
 
 	config := buildTestConfig()
 	config.Executor.Workspace = workspace
-	if _, err := loop.Run(context.Background(), config); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if n := strings.Count(secBuf.String(), `"event":"path_traversal_blocked"`); n != 1 {
-		t.Errorf("path_traversal_blocked events = %d, want exactly 1 for one escaping write:\n%s", n, secBuf.String())
-	}
+	_, err = loop.Run(context.Background(), config)
+	must.NoError(err, "Run")
+	must.Equal(1, strings.Count(secBuf.String(), `"event":"path_traversal_blocked"`),
+		"path_traversal_blocked events for one escaping write:\n%s", secBuf.String())
 }

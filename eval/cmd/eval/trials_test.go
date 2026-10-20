@@ -6,8 +6,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/eval"
 )
@@ -24,7 +25,8 @@ done
 [ -n "$TRACE" ] && echo '{"id":"run-1","turns":1,"cost":0.0,"outcome":"success"}' > "$TRACE"
 `
 
-func TestCmdRun_TrialsFlag(t *testing.T) {
+func TestCmdRun_TrialsFlagOverridesSuiteAttribute(t *testing.T) {
+	must := require.New(t)
 	harnessPath := writeFakeHarness(t, traceWritingHarness)
 	dir := t.TempDir()
 	suitePath := filepath.Join(dir, "trials.hcl")
@@ -41,100 +43,82 @@ suite "trials-suite" {
   }
 }
 `
-	if err := os.WriteFile(suitePath, []byte(src), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.WriteFile(suitePath, []byte(src), 0o644))
 
 	outputDir := filepath.Join(dir, "out")
 	code := run([]string{"run", "--suite", suitePath, "--harness", harnessPath, "--output", outputDir, "--trials", "3"}, io.Discard)
-	if code != 0 {
-		t.Fatalf("run() exit code = %d, want 0", code)
-	}
+	must.Equal(0, code)
 
 	data, err := os.ReadFile(filepath.Join(outputDir, "result.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	var result eval.SuiteResult
-	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Trials != 3 {
-		t.Errorf("result trials = %d, want 3 (--trials overrides the suite attribute)", result.Trials)
-	}
-	if got := len(result.Tasks[0].Trials); got != 3 {
-		t.Errorf("task trials = %d, want 3", got)
-	}
+	must.NoError(json.Unmarshal(data, &result))
+	must.Equal(3, result.Trials, "--trials overrides the suite attribute")
+	must.Len(result.Tasks[0].Trials, 3)
+
 	for _, trial := range []string{"trial-1", "trial-2", "trial-3"} {
-		if _, err := os.Stat(filepath.Join(outputDir, "trials-suite", "task-a", trial, "trace.jsonl")); err != nil {
-			t.Errorf("missing per-trial artifact: %v", err)
-		}
+		t.Run(trial, func(t *testing.T) {
+			must := require.New(t)
+			_, err := os.Stat(filepath.Join(outputDir, "trials-suite", "task-a", trial, "trace.jsonl"))
+			must.NoError(err, "per-trial artifact")
+		})
 	}
 }
 
-func TestPrintSummary(t *testing.T) {
+func TestPrintSummary_ReportsTrialsAndDryRun(t *testing.T) {
 	single := eval.SuiteResult{SuiteID: "s", RunID: "r", Trials: 1, PassRate: 0.5, Tasks: []eval.TaskResult{
 		{TaskID: "a", Outcome: "pass"}, {TaskID: "b", Outcome: "fail"},
 	}}
-	var b bytes.Buffer
-	printSummary(&b, single, false)
-	want := "Suite: s (run: r)\nTasks: 2 total, 1 passed, 1 failed, 0 errors\nPass rate: 50.0%\n"
-	if b.String() != want {
-		t.Errorf("single-trial summary =\n%s\nwant\n%s", b.String(), want)
-	}
-
 	multi := single
 	multi.Trials = 3
-	b.Reset()
-	printSummary(&b, multi, false)
-	for _, s := range []string{"Trials: 3 per task (6 harness runs)", "(majority of trials)", "Pass rate: 50.0% (mean per-task pass fraction)"} {
-		if !strings.Contains(b.String(), s) {
-			t.Errorf("multi-trial summary missing %q:\n%s", s, b.String())
-		}
-	}
 
-	b.Reset()
-	printSummary(&b, multi, true)
-	if !strings.Contains(b.String(), "6 harness runs planned; the dry run validates each task once") {
-		t.Errorf("dry-run summary should state the planned runs:\n%s", b.String())
-	}
-	if strings.Contains(b.String(), "majority of trials") {
-		t.Errorf("dry-run summary describes majority outcomes although each task ran once:\n%s", b.String())
-	}
+	t.Run("single trial", func(t *testing.T) {
+		must := require.New(t)
+		var b bytes.Buffer
+		printSummary(&b, single, false)
+		must.Equal("Suite: s (run: r)\nTasks: 2 total, 1 passed, 1 failed, 0 errors\nPass rate: 50.0%\n", b.String())
+	})
+
+	t.Run("multiple trials", func(t *testing.T) {
+		must := require.New(t)
+		var b bytes.Buffer
+		printSummary(&b, multi, false)
+		must.Contains(b.String(), "Trials: 3 per task (6 harness runs)")
+		must.Contains(b.String(), "(majority of trials)")
+		must.Contains(b.String(), "Pass rate: 50.0% (mean per-task pass fraction)")
+	})
+
+	t.Run("dry run", func(t *testing.T) {
+		must := require.New(t)
+		var b bytes.Buffer
+		printSummary(&b, multi, true)
+		must.Contains(b.String(), "6 harness runs planned; the dry run validates each task once")
+		must.NotContains(b.String(), "majority of trials", "dry-run summary describes majority outcomes although each task ran once")
+	})
 }
 
 func TestCmdRun_SingleRunResultAlwaysCarriesTrialsAndPassFraction(t *testing.T) {
+	must := require.New(t)
 	harnessPath := writeFakeHarness(t, traceWritingHarness)
 	suitePath := writeTwoTaskSuite(t, "")
 	outputDir := filepath.Join(t.TempDir(), "out")
 
-	if code := run([]string{"run", "--suite", suitePath, "--harness", harnessPath, "--output", outputDir}, io.Discard); code != 0 {
-		t.Fatalf("run() exit code = %d, want 0", code)
-	}
+	code := run([]string{"run", "--suite", suitePath, "--harness", harnessPath, "--output", outputDir}, io.Discard)
+	must.Equal(0, code)
 
 	data, err := os.ReadFile(filepath.Join(outputDir, "result.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	var doc struct {
 		Trials int `json:"trials"`
 		Tasks  []map[string]any
 	}
-	if err := json.Unmarshal(data, &doc); err != nil {
-		t.Fatal(err)
-	}
-	if doc.Trials != 1 {
-		t.Errorf("suite trials = %d, want 1 in %s", doc.Trials, data)
-	}
-	if len(doc.Tasks) != 2 {
-		t.Fatalf("tasks = %d, want 2", len(doc.Tasks))
-	}
+	must.NoError(json.Unmarshal(data, &doc))
+	must.Equal(1, doc.Trials, "suite trials in %s", data)
+	must.Len(doc.Tasks, 2)
 	for _, task := range doc.Tasks {
-		if got, ok := task["passFraction"]; !ok || got != 1.0 {
-			t.Errorf("task %v: passFraction = %v (present %v), want 1", task["taskId"], got, ok)
-		}
-		if _, ok := task["trials"]; ok {
-			t.Errorf("task %v: single-run result lists per-trial entries", task["taskId"])
-		}
+		got, ok := task["passFraction"]
+		must.True(ok, "task %v: passFraction is missing", task["taskId"])
+		must.InDelta(1.0, got, 1e-9, "task %v: passFraction", task["taskId"])
+		must.NotContains(task, "trials", "task %v: single-run result lists per-trial entries", task["taskId"])
 	}
 }

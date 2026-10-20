@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -74,11 +77,8 @@ func responsesBuilderCases() []struct {
 			},
 		},
 		{
-			// Pins the "Error: " prefix injection in
-			// translateMessagesResponses at the builder level. Covered by
-			// openai_responses_test.go through Stream, but the batch path
-			// will call the builder directly; the MatchesStream harness
-			// extends that coverage here automatically.
+			// Pins the "Error: " prefix that translateMessagesResponses adds to
+			// error tool results, checked at the builder level.
 			name: "is_error_tool_result",
 			params: types.StreamParams{
 				Model:     "gpt-4o",
@@ -121,11 +121,12 @@ func responsesBuilderCases() []struct {
 func TestBuildResponsesRequest_MatchesStream(t *testing.T) {
 	for _, tc := range responsesBuilderCases() {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
 			capturedCh := make(chan []byte, 1)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				b, err := io.ReadAll(r.Body)
-				if err != nil {
-					t.Errorf("read body: %v", err)
+				if !check.NoError(err, "read request body") {
 					return
 				}
 				capturedCh <- b
@@ -143,27 +144,19 @@ func TestBuildResponsesRequest_MatchesStream(t *testing.T) {
 			adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 
 			ch, err := adapter.Stream(context.Background(), tc.params)
-			if err != nil {
-				t.Fatalf("Stream() error: %v", err)
-			}
+			must.NoError(err)
 			for range ch {
 			}
 			captured := <-capturedCh
 
 			q := quirks.DefaultRegistry().Resolve("openai-responses", tc.params.Model)
 			built, err := buildResponsesRequest(tc.params, q, nil, "")
-			if err != nil {
-				t.Fatalf("build request: %v", err)
-			}
+			must.NoError(err)
 			built.Stream = true
 			builtBytes, err := json.Marshal(built)
-			if err != nil {
-				t.Fatalf("marshal builder output: %v", err)
-			}
+			must.NoError(err)
 
-			if string(builtBytes) != string(captured) {
-				t.Errorf("builder vs Stream body mismatch\n builder: %s\n stream:  %s", builtBytes, captured)
-			}
+			must.Equal(string(captured), string(builtBytes), "builder body should match the Stream wire body")
 		})
 	}
 }
@@ -180,6 +173,8 @@ func TestBuildResponsesRequest_MatchesStream(t *testing.T) {
 // of the Responses wire entry (flat `name` + `parameters` + `strict`)
 // is what differs and is what this test pins.
 func TestResponsesStrictMode_WireBodyShape(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	q := quirks.NewRegistry([]quirks.Rule{
 		{
 			ProviderType: "openai-responses",
@@ -214,44 +209,23 @@ func TestResponsesStrictMode_WireBodyShape(t *testing.T) {
 		},
 	}
 	got, err := buildResponsesRequest(params, q, nil, "")
-	if err != nil {
-		t.Fatalf("buildResponsesRequest: %v", err)
-	}
-	if len(got.Tools) != 1 {
-		t.Fatalf("got %d tools, want 1", len(got.Tools))
-	}
+	must.NoError(err)
+	must.Len(got.Tools, 1)
 	tool := got.Tools[0]
-	if tool.Strict == nil || !*tool.Strict {
-		t.Errorf("tool.Strict = %v, want true", tool.Strict)
-	}
+	must.NotNil(tool.Strict, "tool should set strict")
+	must.True(*tool.Strict, "tool should be strict")
 
 	var params2 map[string]any
-	if uerr := json.Unmarshal(tool.Parameters, &params2); uerr != nil {
-		t.Fatalf("unmarshal tool.Parameters: %v", uerr)
-	}
-	if params2["additionalProperties"] != false {
-		t.Errorf("parameters.additionalProperties = %v, want false", params2["additionalProperties"])
-	}
-	required, ok := params2["required"].([]any)
-	if !ok || len(required) != 2 {
-		t.Errorf("parameters.required = %v, want both properties listed", params2["required"])
-	}
+	must.NoError(json.Unmarshal(tool.Parameters, &params2))
+	check.Equal(false, params2["additionalProperties"])
+	required, _ := params2["required"].([]any)
+	check.Len(required, 2, "required should list both properties")
 	props := params2["properties"].(map[string]any)
 	// limit was optional → nullable-wrapped.
-	limitType, ok := props["limit"].(map[string]any)["type"].([]any)
-	if !ok {
-		t.Errorf("limit.type = %v, want array form", props["limit"].(map[string]any)["type"])
-	} else {
-		hasNull := false
-		for _, v := range limitType {
-			if s, ok := v.(string); ok && s == "null" {
-				hasNull = true
-			}
-		}
-		if !hasNull {
-			t.Errorf("limit.type = %v, want it to contain 'null'", limitType)
-		}
-	}
+	limit := props["limit"].(map[string]any)
+	limitType, ok := limit["type"].([]any)
+	must.True(ok, "limit.type should be in array form")
+	check.Contains(limitType, "null", "optional limit should be nullable")
 }
 
 // TestResponsesStrictMode_BuiltinRules pins which first-party models get an
@@ -276,21 +250,17 @@ func TestResponsesStrictMode_BuiltinRules(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.model, func(t *testing.T) {
+			must := require.New(t)
 			params := effortParams(tc.model, "", true)
 			q := quirks.DefaultRegistry().Resolve("openai-responses", tc.model)
 			req, err := buildResponsesRequest(params, q, nil, "")
-			if err != nil {
-				t.Fatalf("buildResponsesRequest: %v", err)
-			}
+			must.NoError(err)
 			body, err := json.Marshal(req)
-			if err != nil {
-				t.Fatalf("marshal: %v", err)
-			}
-			if got := strings.Contains(string(body), `"strict":true`); got != tc.wantStrict {
-				t.Errorf("strict emitted = %v, want %v: %s", got, tc.wantStrict, body)
-			}
-			if tc.wantStrict && !strings.Contains(string(body), `"additionalProperties":false`) {
-				t.Errorf("strict tool schema not normalised: %s", body)
+			must.NoError(err)
+			must.Equal(tc.wantStrict, strings.Contains(string(body), `"strict":true`),
+				"strict emitted in body: %s", body)
+			if tc.wantStrict {
+				must.Contains(string(body), `"additionalProperties":false`, "strict tool schema should be normalised")
 			}
 		})
 	}
@@ -317,33 +287,26 @@ func TestResponsesRequest_IncludeEncryptedReasoning(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.model, func(t *testing.T) {
+			must := require.New(t)
 			q := quirks.DefaultRegistry().Resolve("openai-responses", tc.model)
 			req, err := buildResponsesRequest(effortParams(tc.model, "", false), q, nil, "")
-			if err != nil {
-				t.Fatalf("buildResponsesRequest: %v", err)
-			}
+			must.NoError(err)
 			body, err := json.Marshal(req)
-			if err != nil {
-				t.Fatalf("marshal: %v", err)
-			}
-			if got := strings.Contains(string(body), include); got != tc.want {
-				t.Errorf("include emitted = %v, want %v: %s", got, tc.want, body)
-			}
+			must.NoError(err)
+			must.Equal(tc.want, strings.Contains(string(body), include),
+				"include emitted in body: %s", body)
+
 			var back responsesRequest
-			if err := json.Unmarshal(body, &back); err != nil {
-				t.Fatalf("unmarshal: %v", err)
-			}
-			if back.IncludeEncryptedReasoning != tc.want {
-				t.Errorf("round-trip IncludeEncryptedReasoning = %v, want %v", back.IncludeEncryptedReasoning, tc.want)
-			}
+			must.NoError(json.Unmarshal(body, &back))
+			must.Equal(tc.want, back.IncludeEncryptedReasoning)
 		})
 	}
 }
 
-// TestResponsesRequestUnmarshal_Include pins the test-side decode of the
+// TestResponsesRequest_UnmarshalInclude pins the test-side decode of the
 // include key: only an array naming reasoning.encrypted_content sets the
 // flag, and a non-array or non-string value is an error.
-func TestResponsesRequestUnmarshal_Include(t *testing.T) {
+func TestResponsesRequest_UnmarshalInclude(t *testing.T) {
 	cases := []struct {
 		name    string
 		body    string
@@ -360,14 +323,15 @@ func TestResponsesRequestUnmarshal_Include(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var r responsesRequest
 			err := json.Unmarshal([]byte(tc.body), &r)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("Unmarshal error = %v, wantErr %v", err, tc.wantErr)
+			if tc.wantErr {
+				must.Error(err)
+				return
 			}
-			if err == nil && r.IncludeEncryptedReasoning != tc.want {
-				t.Errorf("IncludeEncryptedReasoning = %v, want %v", r.IncludeEncryptedReasoning, tc.want)
-			}
+			must.NoError(err)
+			must.Equal(tc.want, r.IncludeEncryptedReasoning)
 		})
 	}
 }
@@ -376,6 +340,8 @@ func TestResponsesRequestUnmarshal_Include(t *testing.T) {
 // shape through Stream on gpt-5.6: strict:true on the tool and the schema
 // rewritten for strict mode.
 func TestResponsesStrictMode_StreamSendsNormalisedSchema(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	params := effortParams("gpt-5.6-sol", "", false)
 	params.Tools = []types.ToolDefinition{{
 		Name:        "search",
@@ -384,9 +350,7 @@ func TestResponsesStrictMode_StreamSendsNormalisedSchema(t *testing.T) {
 	}}
 	script := newResponsesScript(t)
 	ch, err := script.adapter(nil).Stream(context.Background(), params)
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
-	}
+	must.NoError(err)
 	collectEvents(t, ch)
 	var req struct {
 		Tools []struct {
@@ -394,23 +358,18 @@ func TestResponsesStrictMode_StreamSendsNormalisedSchema(t *testing.T) {
 			Parameters map[string]any `json:"parameters"`
 		} `json:"tools"`
 	}
-	if err := json.Unmarshal(script.lastBody(t), &req); err != nil {
-		t.Fatalf("decode body: %v", err)
-	}
-	if len(req.Tools) != 1 || !req.Tools[0].Strict {
-		t.Fatalf("tools = %+v, want one strict tool", req.Tools)
-	}
+	must.NoError(json.Unmarshal(script.lastBody(t), &req))
+	must.Len(req.Tools, 1)
+	must.True(req.Tools[0].Strict, "tool should be strict")
+
 	schema := req.Tools[0].Parameters
-	if schema["additionalProperties"] != false {
-		t.Errorf("additionalProperties = %v, want false", schema["additionalProperties"])
-	}
-	if required, _ := schema["required"].([]any); len(required) != 2 {
-		t.Errorf("required = %v, want both properties", schema["required"])
-	}
+	check.Equal(false, schema["additionalProperties"])
+	required, _ := schema["required"].([]any)
+	check.Len(required, 2, "required should list both properties")
 	limit, _ := schema["properties"].(map[string]any)["limit"].(map[string]any)
-	if limitTypes, ok := limit["type"].([]any); !ok || len(limitTypes) != 2 {
-		t.Errorf("limit.type = %v, want the optional property made nullable", limit["type"])
-	}
+	limitTypes, ok := limit["type"].([]any)
+	must.True(ok, "limit.type should be in array form")
+	check.Len(limitTypes, 2, "optional limit should be made nullable")
 }
 
 // TestStrictMode_FailsClosedAlikeOnBothSurfaces pins that a tool schema
@@ -418,6 +377,9 @@ func TestResponsesStrictMode_StreamSendsNormalisedSchema(t *testing.T) {
 // supply) stops a strict-mode request before any bytes are sent, with the
 // same lint error on Chat Completions gpt-5 and Responses gpt-5.x.
 func TestStrictMode_FailsClosedAlikeOnBothSurfaces(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	const lintFailure = "strict-mode schema lint failed"
 	params := func(model string) types.StreamParams {
 		p := effortParams(model, "", false)
 		p.Tools = []types.ToolDefinition{{
@@ -445,28 +407,18 @@ func TestStrictMode_FailsClosedAlikeOnBothSurfaces(t *testing.T) {
 	var lintErrs []string
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			srv, hits := countingServer(t)
 			_, err := tc.new(srv.URL).Stream(context.Background(), params(tc.model))
-			if err == nil {
-				t.Fatal("Stream() succeeded, want strict-mode lint failure")
-			}
-			i := strings.Index(err.Error(), "strict-mode schema lint failed")
-			if i < 0 {
-				t.Fatalf("Stream() error = %v, want strict-mode lint failure", err)
-			}
-			lintErrs = append(lintErrs, err.Error()[i:])
-			if hits.Load() != 0 {
-				t.Errorf("server received %d requests, want 0", hits.Load())
-			}
+			must.ErrorContains(err, lintFailure)
+			msg := err.Error()
+			lintErrs = append(lintErrs, msg[strings.Index(msg, lintFailure):])
+			must.Zero(hits.Load(), "server should receive no requests")
 		})
 	}
-	if len(lintErrs) != len(cases) {
-		t.Fatalf("collected %d lint errors, want %d", len(lintErrs), len(cases))
-	}
+	must.Len(lintErrs, len(cases))
 	for _, e := range lintErrs[1:] {
-		if e != lintErrs[0] {
-			t.Errorf("lint errors differ across surfaces: %q vs %q", e, lintErrs[0])
-		}
+		check.Equal(lintErrs[0], e, "lint errors should match across surfaces")
 	}
 }
 
@@ -478,6 +430,7 @@ func TestStrictMode_FailsClosedAlikeOnBothSurfaces(t *testing.T) {
 // rejects the field outright; the Responses batch endpoint contract
 // is unverified, and omission is the safer default.
 func TestBuildResponsesRequest_StreamDefaultFalse(t *testing.T) {
+	must := require.New(t)
 	params := types.StreamParams{
 		Model:     "gpt-4o",
 		MaxTokens: 1024,
@@ -485,22 +438,13 @@ func TestBuildResponsesRequest_StreamDefaultFalse(t *testing.T) {
 	}
 	q := quirks.DefaultRegistry().Resolve("openai-responses", params.Model)
 	got, err := buildResponsesRequest(params, q, nil, "")
-	if err != nil {
-		t.Fatalf("buildResponsesRequest: %v", err)
-	}
-	if got.Stream != false {
-		t.Errorf("builder default: Stream = %v, want false", got.Stream)
-	}
-	if got.StoreMode != quirks.StoreFalse {
-		t.Errorf("builder default: StoreMode = %v, want StoreFalse", got.StoreMode)
-	}
+	must.NoError(err)
+	must.False(got.Stream, "builder should leave Stream unset")
+	must.Equal(quirks.StoreFalse, got.StoreMode, "builder should default StoreMode to StoreFalse")
+
 	body, err := json.Marshal(got)
-	if err != nil {
-		t.Fatalf("marshal builder output: %v", err)
-	}
-	if strings.Contains(string(body), `"stream"`) {
-		t.Errorf(`expected "stream" key to be omitted from builder output: %s`, body)
-	}
+	must.NoError(err)
+	must.NotContains(string(body), `"stream"`, "builder output should omit the stream key")
 }
 
 // TestBuildResponsesRequest_PromptCacheKey pins the prompt_cache_key
@@ -521,14 +465,11 @@ func TestBuildResponsesRequest_PromptCacheKey(t *testing.T) {
 
 	marshal := func(t *testing.T, params types.StreamParams, q quirks.ProviderQuirks) []byte {
 		t.Helper()
+		must := require.New(t)
 		req, err := buildResponsesRequest(params, q, nil, "")
-		if err != nil {
-			t.Fatalf("build: %v", err)
-		}
+		must.NoError(err)
 		body, err := json.Marshal(req)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
+		must.NoError(err)
 		return body
 	}
 	flagOn := quirks.DefaultRegistry().Resolve("openai-responses", base.Model)
@@ -536,42 +477,32 @@ func TestBuildResponsesRequest_PromptCacheKey(t *testing.T) {
 	noKey := marshal(t, base, flagOn)
 
 	t.Run("flag on with key appends prompt_cache_key", func(t *testing.T) {
+		must := require.New(t)
 		body := marshal(t, withKey, flagOn)
 		want := strings.TrimSuffix(string(noKey), "}") + `,"prompt_cache_key":"` + key + `"}`
-		if string(body) != want {
-			t.Errorf("body mismatch\n got:  %s\n want: %s", body, want)
-		}
+		must.Equal(want, string(body))
+
 		var back responsesRequest
-		if err := json.Unmarshal(body, &back); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if back.PromptCacheKey != key {
-			t.Errorf("round-trip PromptCacheKey = %q, want %q", back.PromptCacheKey, key)
-		}
+		must.NoError(json.Unmarshal(body, &back))
+		must.Equal(key, back.PromptCacheKey)
 	})
 	t.Run("flag on without key omits it", func(t *testing.T) {
-		if strings.Contains(string(noKey), "prompt_cache_key") {
-			t.Errorf("unexpected prompt_cache_key in %s", noKey)
-		}
+		must := require.New(t)
+		must.NotContains(string(noKey), "prompt_cache_key")
 	})
 	t.Run("flag off with key omits it", func(t *testing.T) {
+		must := require.New(t)
 		body := marshal(t, withKey, flagOff)
-		if want := marshal(t, base, flagOff); string(body) != string(want) {
-			t.Errorf("flag-off body changed by CacheKey\n got:  %s\n want: %s", body, want)
-		}
+		must.Equal(marshal(t, base, flagOff), body, "flag-off body should ignore CacheKey")
 	})
 	t.Run("chat completions never sends it", func(t *testing.T) {
+		must := require.New(t)
 		q := quirks.DefaultRegistry().Resolve("openai-compatible", withKey.Model)
 		req, err := buildOpenAIRequest(withKey, true, q, nil)
-		if err != nil {
-			t.Fatalf("build: %v", err)
-		}
+		must.NoError(err)
 		body, err := json.Marshal(req)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		if strings.Contains(string(body), "prompt_cache_key") || strings.Contains(string(body), key) {
-			t.Errorf("chat completions body carries the cache key: %s", body)
-		}
+		must.NoError(err)
+		must.NotContains(string(body), "prompt_cache_key")
+		must.NotContains(string(body), key)
 	})
 }

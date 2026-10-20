@@ -3,11 +3,12 @@ package types
 import (
 	"encoding/json"
 	"net/netip"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
-func TestJudgeLLMConfigValidate(t *testing.T) {
+func TestJudgeLLMConfig_Validate(t *testing.T) {
 	temp := func(v float64) *float64 { return &v }
 	valid := JudgeLLMConfig{Model: "claude-haiku-5-5"}
 
@@ -102,136 +103,163 @@ func TestJudgeLLMConfigValidate(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := valid
 			tc.mutate(&c)
 			err := c.Validate()
 			if tc.wantErr == "" {
-				if err != nil {
-					t.Fatalf("Validate() = %v, want nil", err)
-				}
+				must.NoError(err)
 				return
 			}
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("Validate() = %v, want error containing %q", err, tc.wantErr)
-			}
+			must.ErrorContains(err, tc.wantErr)
 		})
 	}
 }
 
-func TestCheckJudgeEndpointAddr(t *testing.T) {
+func TestCheckJudgeEndpointAddr_ClassifiesAddresses(t *testing.T) {
+	must := require.New(t)
 	cases := []struct {
+		name        string
 		addr        string
 		keyOverHTTP bool
 		wantErr     string
 	}{
-		{addr: "127.0.0.1"},
-		{addr: "::1", keyOverHTTP: true},
-		{addr: "10.0.0.5", keyOverHTTP: true},
-		{addr: "192.168.1.20", keyOverHTTP: true},
-		{addr: "172.16.0.1", keyOverHTTP: true},
-		{addr: "fd12::1", keyOverHTTP: true},
-		{addr: "93.184.216.34"},
-		{addr: "93.184.216.34", keyOverHTTP: true, wantErr: "use https"},
-		{addr: "2606:4700::1", keyOverHTTP: true, wantErr: "use https"},
-		{addr: "169.254.169.254", wantErr: "link-local"},
-		{addr: "::ffff:169.254.169.254", wantErr: "link-local"},
-		{addr: "169.254.0.1", wantErr: "link-local"},
-		{addr: "fe80::1%en0", wantErr: "link-local"},
-		{addr: "fd00:ec2::254", wantErr: "metadata"},
-		{addr: "0.0.0.0", wantErr: "unspecified"},
-		{addr: "::", wantErr: "unspecified"},
-		{addr: "ff02::1", wantErr: "multicast"},
-		{addr: "239.1.1.1", wantErr: "multicast"},
+		{name: "ipv4 loopback", addr: "127.0.0.1"},
+		{name: "ipv6 loopback with key over http", addr: "::1", keyOverHTTP: true},
+		{name: "10/8 private with key over http", addr: "10.0.0.5", keyOverHTTP: true},
+		{name: "192.168/16 private with key over http", addr: "192.168.1.20", keyOverHTTP: true},
+		{name: "172.16/12 private with key over http", addr: "172.16.0.1", keyOverHTTP: true},
+		{name: "ipv6 unique local with key over http", addr: "fd12::1", keyOverHTTP: true},
+		{name: "public ipv4", addr: "93.184.216.34"},
+		{name: "public ipv4 with key over http", addr: "93.184.216.34", keyOverHTTP: true, wantErr: "use https"},
+		{name: "public ipv6 with key over http", addr: "2606:4700::1", keyOverHTTP: true, wantErr: "use https"},
+		{name: "metadata address", addr: "169.254.169.254", wantErr: "link-local"},
+		{name: "ipv4-mapped metadata address", addr: "::ffff:169.254.169.254", wantErr: "link-local"},
+		{name: "ipv4 link-local address", addr: "169.254.0.1", wantErr: "link-local"},
+		{name: "ipv6 link-local address with zone", addr: "fe80::1%en0", wantErr: "link-local"},
+		{name: "ipv6 metadata address", addr: "fd00:ec2::254", wantErr: "metadata"},
+		{name: "ipv4 unspecified address", addr: "0.0.0.0", wantErr: "unspecified"},
+		{name: "ipv6 unspecified address", addr: "::", wantErr: "unspecified"},
+		{name: "ipv6 multicast address", addr: "ff02::1", wantErr: "multicast"},
+		{name: "ipv4 multicast address", addr: "239.1.1.1", wantErr: "multicast"},
 	}
 	for _, tc := range cases {
-		err := CheckJudgeEndpointAddr(netip.MustParseAddr(tc.addr), tc.keyOverHTTP)
-		switch {
-		case tc.wantErr == "" && err != nil:
-			t.Errorf("%s (keyOverHTTP=%v): %v, want accepted", tc.addr, tc.keyOverHTTP, err)
-		case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
-			t.Errorf("%s (keyOverHTTP=%v): %v, want error containing %q", tc.addr, tc.keyOverHTTP, err, tc.wantErr)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			err := CheckJudgeEndpointAddr(netip.MustParseAddr(tc.addr), tc.keyOverHTTP)
+			if tc.wantErr == "" {
+				must.NoError(err)
+				return
+			}
+			must.ErrorContains(err, tc.wantErr)
+		})
 	}
-	if err := CheckJudgeEndpointAddr(netip.Addr{}, false); err == nil {
-		t.Error("the zero address was accepted")
+	must.Error(CheckJudgeEndpointAddr(netip.Addr{}, false), "the zero address was accepted")
+}
+
+func TestJudgeLLMConfig_Validate_DoesNotEchoKeyRef(t *testing.T) {
+	rejected := []struct{ name, ref string }{
+		{name: "raw key", ref: "sk-ant-api03-REALKEYMATERIAL"},
+		{name: "secret reference naming a raw key", ref: "secret://sk-ant-api03-REALKEYMATERIAL"},
+		{name: "secret reference with spaces", ref: "secret://REAL KEY MATERIAL"},
+	}
+	for _, tc := range rejected {
+		t.Run("rejects "+tc.name, func(t *testing.T) {
+			must := require.New(t)
+			err := JudgeLLMConfig{Model: "m", APIKeyRef: tc.ref}.Validate()
+			must.Error(err)
+			must.NotContains(err.Error(), "REAL", "error echoes the reference")
+		})
+	}
+
+	accepted := []struct{ name, ref string }{
+		{name: "environment variable name", ref: "secret://ANTHROPIC_API_KEY"},
+		{name: "environment variable name with leading underscore", ref: "secret://_K2"},
+		{name: "file secret", ref: "secret://file:///run/secrets/key"},
+	}
+	for _, tc := range accepted {
+		t.Run("accepts "+tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.NoError(JudgeLLMConfig{Model: "m", APIKeyRef: tc.ref}.Validate())
+		})
 	}
 }
 
-func TestJudgeLLMConfigValidateDoesNotEchoKeyRef(t *testing.T) {
-	for _, ref := range []string{"sk-ant-api03-REALKEYMATERIAL", "secret://sk-ant-api03-REALKEYMATERIAL", "secret://REAL KEY MATERIAL"} {
-		err := JudgeLLMConfig{Model: "m", APIKeyRef: ref}.Validate()
-		if err == nil {
-			t.Fatalf("api_key_ref %q accepted", ref)
-		}
-		if strings.Contains(err.Error(), "REAL") {
-			t.Errorf("error echoes the reference: %v", err)
-		}
+func TestJudgeLLMConfig_Validate_DoesNotEchoBaseURL(t *testing.T) {
+	cases := []struct{ name, raw string }{
+		{name: "credentials in url", raw: "https://user:hunter2@example.com"},
+		{name: "malformed url", raw: "ht!tp://a b:hunter2"},
 	}
-	for _, ref := range []string{"secret://ANTHROPIC_API_KEY", "secret://_K2", "secret://file:///run/secrets/key"} {
-		if err := (JudgeLLMConfig{Model: "m", APIKeyRef: ref}).Validate(); err != nil {
-			t.Errorf("api_key_ref %q rejected: %v", ref, err)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			err := JudgeLLMConfig{Model: "m", BaseURL: tc.raw}.Validate()
+			must.Error(err)
+			must.NotContains(err.Error(), "hunter2", "error leaks the base URL credential")
+		})
 	}
 }
 
-func TestJudgeLLMConfigValidateDoesNotEchoBaseURL(t *testing.T) {
-	for _, raw := range []string{"https://user:hunter2@example.com", "ht!tp://a b:hunter2"} {
-		err := JudgeLLMConfig{Model: "m", BaseURL: raw}.Validate()
-		if err == nil {
-			t.Fatalf("base url %q accepted", raw)
-		}
-		if strings.Contains(err.Error(), "hunter2") {
-			t.Errorf("error leaks the base URL credential: %v", err)
-		}
-	}
+func TestJudgeLLMConfig_EffectiveDefaults(t *testing.T) {
+	var zero JudgeLLMConfig
+
+	t.Run("zero value provider is anthropic", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(JudgeProviderAnthropic, zero.EffectiveProvider())
+	})
+	t.Run("zero value timeout is 30 seconds", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(30, zero.EffectiveTimeoutSeconds())
+	})
+	t.Run("zero value input cap is 64 KiB", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(65536, zero.EffectiveMaxInputBytes())
+	})
+	t.Run("zero value max tokens is 1024", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(1024, zero.EffectiveMaxTokens())
+	})
+	t.Run("zero value structured output is json schema", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(JudgeStructuredJSONSchema, zero.EffectiveStructuredOutput()) //nolint:testifylint // enum constant, not an encoded payload
+	})
+
+	t.Run("explicit values are preserved", func(t *testing.T) {
+		must := require.New(t)
+		c := JudgeLLMConfig{Provider: JudgeProviderOpenAICompatible, TimeoutSeconds: 5, MaxInputBytes: 10, MaxTokens: 7, StructuredOutput: JudgeStructuredPromptOnly}
+		must.Equal(JudgeProviderOpenAICompatible, c.EffectiveProvider())
+		must.Equal(5, c.EffectiveTimeoutSeconds())
+		must.Equal(10, c.EffectiveMaxInputBytes())
+		must.Equal(7, c.EffectiveMaxTokens())
+		must.Equal(JudgeStructuredPromptOnly, c.EffectiveStructuredOutput())
+	})
 }
 
-func TestJudgeLLMConfigEffectiveDefaults(t *testing.T) {
-	var c JudgeLLMConfig
-	if got := c.EffectiveProvider(); got != JudgeProviderAnthropic {
-		t.Errorf("EffectiveProvider() = %q", got)
-	}
-	if got := c.EffectiveTimeoutSeconds(); got != 30 {
-		t.Errorf("EffectiveTimeoutSeconds() = %d, want 30", got)
-	}
-	if got := c.EffectiveMaxInputBytes(); got != 65536 {
-		t.Errorf("EffectiveMaxInputBytes() = %d, want 65536", got)
-	}
-	if got := c.EffectiveMaxTokens(); got != 1024 {
-		t.Errorf("EffectiveMaxTokens() = %d, want 1024", got)
-	}
-	if got := c.EffectiveStructuredOutput(); got != JudgeStructuredJSONSchema {
-		t.Errorf("EffectiveStructuredOutput() = %q", got)
-	}
-
-	c = JudgeLLMConfig{Provider: JudgeProviderOpenAICompatible, TimeoutSeconds: 5, MaxInputBytes: 10, MaxTokens: 7, StructuredOutput: JudgeStructuredPromptOnly}
-	if c.EffectiveProvider() != JudgeProviderOpenAICompatible || c.EffectiveTimeoutSeconds() != 5 ||
-		c.EffectiveMaxInputBytes() != 10 || c.EffectiveMaxTokens() != 7 || c.EffectiveStructuredOutput() != JudgeStructuredPromptOnly {
-		t.Errorf("explicit values not preserved: %+v", c)
-	}
-}
-
-func TestEvalJudgeLLMWireShape(t *testing.T) {
+func TestEvalJudge_LLMWireShape(t *testing.T) {
+	must := require.New(t)
 	temp := 0.0
 	j := EvalJudge{Type: "diff-review", Criteria: "c", LLM: &JudgeLLMConfig{
 		Provider: JudgeProviderOpenAICompatible, Model: "m", BaseURL: "https://x/v1", APIKeyRef: "secret://K",
 		Temperature: &temp, AllowTruncated: true,
 	}}
 	data, err := json.Marshal(j)
-	if err != nil {
-		t.Fatal(err)
+	must.NoError(err)
+
+	wantFields := []struct{ name, want string }{
+		{name: "llm key", want: `"llm":`},
+		{name: "base url key", want: `"baseUrl":`},
+		{name: "api key ref key", want: `"apiKeyRef":`},
+		{name: "explicit zero temperature", want: `"temperature":0`},
+		{name: "allow truncated flag", want: `"allowTruncated":true`},
 	}
-	for _, want := range []string{`"llm":`, `"baseUrl":`, `"apiKeyRef":`, `"temperature":0`, `"allowTruncated":true`} {
-		if !strings.Contains(string(data), want) {
-			t.Errorf("wire form missing %s: %s", want, data)
-		}
+	for _, tc := range wantFields {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Contains(string(data), tc.want)
+		})
 	}
 
 	data, err = json.Marshal(EvalJudge{Type: "file-exists"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), `"llm"`) {
-		t.Errorf("non-LLM judge serialises an llm key: %s", data)
-	}
+	must.NoError(err)
+	must.NotContains(string(data), `"llm"`, "non-LLM judge serialises an llm key")
 }

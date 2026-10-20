@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -39,28 +42,25 @@ func replayTurns() []types.TurnRecord {
 	}
 }
 
-func TestReplayExecutor_ReadFile(t *testing.T) {
+func TestReplayExecutor_ReadFile_ReturnsRecordedOutput(t *testing.T) {
+	must := require.New(t)
 	re := NewReplayExecutor("/workspace", replayTurns())
 
 	content, err := re.ReadFile(context.Background(), "main.go")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if content != "package main\n\nfunc main() {}\n" {
-		t.Errorf("content = %q, want package main source", content)
-	}
+	must.NoError(err)
+	must.Equal("package main\n\nfunc main() {}\n", content)
 }
 
-func TestReplayExecutor_ReadFile_NoMatch(t *testing.T) {
+func TestReplayExecutor_ReadFile_UnrecordedPathErrors(t *testing.T) {
+	must := require.New(t)
 	re := NewReplayExecutor("/workspace", replayTurns())
 
 	_, err := re.ReadFile(context.Background(), "nonexistent.go")
-	if err == nil {
-		t.Fatal("expected error for unrecorded path, got nil")
-	}
+	must.Error(err)
 }
 
-func TestReplayExecutor_ReadFile_FailedRecording(t *testing.T) {
+func TestReplayExecutor_ReadFile_FailedRecordingErrors(t *testing.T) {
+	must := require.New(t)
 	turns := []types.TurnRecord{
 		{
 			Turn: 1,
@@ -77,81 +77,63 @@ func TestReplayExecutor_ReadFile_FailedRecording(t *testing.T) {
 	re := NewReplayExecutor("/workspace", turns)
 
 	_, err := re.ReadFile(context.Background(), "missing.txt")
-	if err == nil {
-		t.Fatal("expected error for failed recording, got nil")
-	}
+	must.Error(err)
 }
 
-func TestReplayExecutor_WriteFile(t *testing.T) {
+func TestReplayExecutor_WriteFile_CapturesWrite(t *testing.T) {
+	must := require.New(t)
 	re := NewReplayExecutor("/workspace", nil)
 
 	err := re.WriteFile(context.Background(), "out.txt", "hello")
-	if err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	must.NoError(err)
 
 	writes := re.Writes()
-	if len(writes) != 1 {
-		t.Fatalf("expected 1 write, got %d", len(writes))
-	}
-	if writes[0].Path != "out.txt" || writes[0].Content != "hello" {
-		t.Errorf("write = %+v, want {out.txt, hello}", writes[0])
-	}
+	must.Len(writes, 1)
+	must.Equal(writeRecord{Path: "out.txt", Content: "hello"}, writes[0])
 }
 
-func TestReplayExecutor_ListDirectory(t *testing.T) {
+func TestReplayExecutor_ListDirectory_ReturnsRecordedEntries(t *testing.T) {
+	must := require.New(t)
 	re := NewReplayExecutor("/workspace", replayTurns())
 
 	entries, err := re.ListDirectory(context.Background(), ".")
-	if err != nil {
-		t.Fatalf("ListDirectory: %v", err)
-	}
+	must.NoError(err)
 
-	want := map[string]bool{"main.go": true, "go.mod": true, "README.md": true}
-	if len(entries) != len(want) {
-		t.Fatalf("expected %d entries, got %d: %v", len(want), len(entries), entries)
-	}
+	want := []string{"main.go", "go.mod", "README.md"}
+	must.Len(entries, len(want))
 	for _, e := range entries {
-		if !want[e] {
-			t.Errorf("unexpected entry %q", e)
-		}
+		must.Contains(want, e)
 	}
 }
 
-func TestReplayExecutor_ListDirectory_NoMatch(t *testing.T) {
+func TestReplayExecutor_ListDirectory_UnrecordedDirectoryErrors(t *testing.T) {
+	must := require.New(t)
 	re := NewReplayExecutor("/workspace", replayTurns())
 
 	_, err := re.ListDirectory(context.Background(), "nonexistent")
-	if err == nil {
-		t.Fatal("expected error for unrecorded directory, got nil")
-	}
+	must.Error(err)
 }
 
-func TestReplayExecutor_Exec(t *testing.T) {
+func TestReplayExecutor_Exec_ReturnsRecordedOutput(t *testing.T) {
+	must := require.New(t)
 	re := NewReplayExecutor("/workspace", replayTurns())
 
 	result, err := re.Exec(context.Background(), "go test ./...", 0)
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if result.ExitCode != 0 {
-		t.Errorf("ExitCode = %d, want 0", result.ExitCode)
-	}
-	if result.Stdout != "ok  example.com/pkg 0.003s\n" {
-		t.Errorf("Stdout = %q, want test output", result.Stdout)
-	}
+	must.NoError(err)
+	must.Equal(0, result.ExitCode)
+	must.Equal("ok  example.com/pkg 0.003s\n", result.Stdout)
 }
 
-func TestReplayExecutor_Exec_NoMatch(t *testing.T) {
+func TestReplayExecutor_Exec_UnrecordedCommandErrors(t *testing.T) {
+	must := require.New(t)
 	re := NewReplayExecutor("/workspace", replayTurns())
 
 	_, err := re.Exec(context.Background(), "unknown-command", 0)
-	if err == nil {
-		t.Fatal("expected error for unrecorded command, got nil")
-	}
+	must.Error(err)
 }
 
-func TestReplayExecutor_Exec_FailedRecording(t *testing.T) {
+func TestReplayExecutor_Exec_FailedRecordingReturnsNonZeroExit(t *testing.T) {
+	must := require.New(t)
 	turns := []types.TurnRecord{
 		{
 			Turn: 1,
@@ -168,47 +150,33 @@ func TestReplayExecutor_Exec_FailedRecording(t *testing.T) {
 	re := NewReplayExecutor("/workspace", turns)
 
 	result, err := re.Exec(context.Background(), "go test ./...", 0)
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if result.ExitCode == 0 {
-		t.Error("expected non-zero exit code for failed recording")
-	}
+	must.NoError(err)
+	must.NotZero(result.ExitCode)
 }
 
-func TestReplayExecutor_ResolvePath(t *testing.T) {
+func TestReplayExecutor_ResolvePath_JoinsWorkspace(t *testing.T) {
+	must := require.New(t)
 	re := NewReplayExecutor("/workspace", nil)
 
 	resolved, err := re.ResolvePath("src/main.go")
-	if err != nil {
-		t.Fatalf("ResolvePath: %v", err)
-	}
-	if resolved != "/workspace/src/main.go" {
-		t.Errorf("resolved = %q, want /workspace/src/main.go", resolved)
-	}
+	must.NoError(err)
+	must.Equal("/workspace/src/main.go", resolved)
 }
 
-func TestReplayExecutor_Capabilities(t *testing.T) {
+func TestReplayExecutor_Capabilities_ReadWriteExecWithoutNetwork(t *testing.T) {
+	check := assert.New(t)
 	re := NewReplayExecutor("/workspace", nil)
 	caps := re.Capabilities()
 
-	if !caps.CanRead {
-		t.Error("expected CanRead = true")
-	}
-	if !caps.CanWrite {
-		t.Error("expected CanWrite = true")
-	}
-	if !caps.CanExec {
-		t.Error("expected CanExec = true")
-	}
-	if caps.CanNetwork {
-		t.Error("expected CanNetwork = false")
-	}
+	check.True(caps.CanRead, "CanRead")
+	check.True(caps.CanWrite, "CanWrite")
+	check.True(caps.CanExec, "CanExec")
+	check.False(caps.CanNetwork, "CanNetwork")
 }
 
-func TestReplayExecutor_InputWhitespaceNormalization(t *testing.T) {
-	// The recording has compact JSON but the lookup constructs it with
-	// potentially different whitespace. Verify normalization works.
+func TestReplayExecutor_ReadFile_MatchesInputIgnoringJSONWhitespace(t *testing.T) {
+	must := require.New(t)
+	// Recorded input uses spacing that differs from the compact form the lookup builds.
 	turns := []types.TurnRecord{
 		{
 			Turn: 1,
@@ -225,10 +193,6 @@ func TestReplayExecutor_InputWhitespaceNormalization(t *testing.T) {
 	re := NewReplayExecutor("/workspace", turns)
 
 	content, err := re.ReadFile(context.Background(), "spaced.go")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if content != "content" {
-		t.Errorf("content = %q, want %q", content, "content")
-	}
+	must.NoError(err)
+	must.Equal("content", content)
 }

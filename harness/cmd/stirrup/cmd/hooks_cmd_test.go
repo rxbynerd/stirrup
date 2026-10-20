@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -47,15 +49,14 @@ func fatalPreRunHookConfig(t *testing.T) *types.RunConfig {
 // emits a STIRRUP_RESULT line despite loop.Run() returning a non-nil
 // error, while runWithConfig itself still returns that error.
 func TestRunWithConfig_FatalPreRunHookFailure_StillEmitsRunResult(t *testing.T) {
+	must := require.New(t)
 	config := fatalPreRunHookConfig(t)
 
 	stdoutDone := captureStdout(t)
 	runErr := runWithConfig(config, runOptions{outputMode: "json"})
 	stdout := stdoutDone()
 
-	if runErr == nil {
-		t.Fatal("expected a non-nil error from a fatal preRun hook failure")
-	}
+	must.Error(runErr)
 
 	// stdout also carries the default stdio transport's own JSON event
 	// stream, so the STIRRUP_RESULT line is not necessarily the first
@@ -67,18 +68,11 @@ func TestRunWithConfig_FatalPreRunHookFailure_StillEmitsRunResult(t *testing.T) 
 			break
 		}
 	}
-	if resultLine == "" {
-		t.Fatalf("expected a STIRRUP_RESULT line despite the fatal error, got stdout: %q", stdout)
-	}
+	must.NotEmpty(resultLine, "no STIRRUP_RESULT line despite the fatal error; stdout: %q", stdout)
+
 	payload := strings.TrimPrefix(resultLine, "STIRRUP_RESULT ")
 	var result types.RunResult
-	if err := json.Unmarshal([]byte(payload), &result); err != nil {
-		t.Fatalf("STIRRUP_RESULT payload should parse as RunResult: %v\npayload: %s", err, payload)
-	}
-	if result.Outcome != "setup_failed" {
-		t.Errorf("RunResult.Outcome = %q, want setup_failed", result.Outcome)
-	}
-	if result.HookFailures == 0 {
-		t.Error("RunResult.HookFailures = 0, want non-zero")
-	}
+	must.NoError(json.Unmarshal([]byte(payload), &result), "payload: %s", payload)
+	must.Equal("setup_failed", result.Outcome)
+	must.NotZero(result.HookFailures)
 }

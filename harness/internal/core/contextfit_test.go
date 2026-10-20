@@ -11,6 +11,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
@@ -81,6 +84,8 @@ func requestTokens(params types.StreamParams) int {
 // the limit, the result is sent with its head, tail and a marker right
 // after the call it answers, and the stored history keeps it whole.
 func TestLoop_OversizedToolResultIsTruncatedToFit(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	big := "HEAD:" + strings.Repeat("x", 39_990) + ":TAIL"
 	prov := &requestRecordingProvider{calls: [][]types.StreamEvent{
 		fitToolCallTurn("tc_big", "big_tool"),
@@ -102,46 +107,40 @@ func TestLoop_OversizedToolResultIsTruncatedToFit(t *testing.T) {
 	config.ContextStrategy.MaxTokens = 2000
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("outcome = %q, want success", runTrace.Outcome)
-	}
-	if len(prov.requests) != 3 {
-		t.Fatalf("provider saw %d requests, want 3", len(prov.requests))
-	}
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
+	must.Len(prov.requests, 3)
 
 	limit := contextpkg.FitLimit(contextpkg.TokenBudget{MaxTokens: 2000, ReserveForResponse: effectiveReserveForResponse(2000)})
 	for i, req := range prov.requests {
-		if got := requestTokens(req); got > limit {
-			t.Errorf("request %d estimates %d tokens, over the fit limit of %d", i+1, got, limit)
-		}
+		t.Run(fmt.Sprintf("request %d fits the limit", i+1), func(t *testing.T) {
+			must := require.New(t)
+			must.LessOrEqual(requestTokens(req), limit, "estimated tokens exceed the fit limit")
+		})
 	}
+
 	msgs := prov.requests[1].Messages
 	call, result := msgs[1].Content[0], msgs[2].Content[0]
-	if call.Type != "tool_use" || call.ID != "tc_big" {
-		t.Fatalf("message 1 is not the big_tool call: %+v", call)
-	}
-	if result.Type != "tool_result" || result.ToolUseID != "tc_big" {
-		t.Fatalf("message 2 is not the big_tool result: %+v", result)
-	}
-	if !strings.HasPrefix(result.Content, "HEAD:") || !strings.HasSuffix(result.Content, ":TAIL") ||
-		!strings.Contains(result.Content, "[...truncated ") || len(result.Content) >= len(big) {
-		t.Errorf("result was not sent truncated with head, tail and marker (%d bytes)", len(result.Content))
-	}
+	must.Equal("tool_use", call.Type, "message 1 is not a tool call: %+v", call)
+	must.Equal("tc_big", call.ID, "message 1 is not the big_tool call: %+v", call)
+	must.Equal("tool_result", result.Type, "message 2 is not a tool result: %+v", result)
+	must.Equal("tc_big", result.ToolUseID, "message 2 is not the big_tool result: %+v", result)
+
+	check.True(strings.HasPrefix(result.Content, "HEAD:"), "sent result lacks its head")
+	check.True(strings.HasSuffix(result.Content, ":TAIL"), "sent result lacks its tail")
+	check.Contains(result.Content, "[...truncated ", "sent result lacks the truncation marker")
+	check.Less(len(result.Content), len(big), "sent result was not truncated")
 
 	// The next turn's Prepare receives the stored history.
 	stored := capture.history[2]
-	if got := stored[2].Content[0].Content; got != big {
-		t.Errorf("stored history holds %d bytes of the result, want the full %d", len(got), len(big))
-	}
+	check.Equal(big, stored[2].Content[0].Content, "stored history should keep the full tool result")
 }
 
 // TestLoop_FitTruncationStripsThinkingBlocks pins that a request whose
 // tool results the fit postcondition truncated, with no compaction by the
 // strategy, carries no thinking blocks, nor does any later request.
 func TestLoop_FitTruncationStripsThinkingBlocks(t *testing.T) {
+	must := require.New(t)
 	thinkingToolTurn := func(n int, name string) []types.StreamEvent {
 		return []types.StreamEvent{
 			{Type: "thinking", Text: "plan", ThoughtSignature: fmt.Sprintf("sig-%d", n)},
@@ -169,25 +168,16 @@ func TestLoop_FitTruncationStripsThinkingBlocks(t *testing.T) {
 	config.ContextStrategy.MaxTokens = 2000
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("outcome = %q, want success", runTrace.Outcome)
-	}
-	if len(prov.requests) != 4 {
-		t.Fatalf("provider saw %d requests, want 4", len(prov.requests))
-	}
-	if sigs := thinkingSignatures(prov.requests[1].Messages); len(sigs) == 0 {
-		t.Fatal("request 2 carries no thinking blocks before any truncation")
-	}
-	if !strings.Contains(prov.requests[2].Messages[4].Content[0].Content, "[...truncated ") {
-		t.Fatal("request 3 did not truncate the big_tool result")
-	}
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
+	must.Len(prov.requests, 4)
+	must.NotEmpty(thinkingSignatures(prov.requests[1].Messages), "request 2 carries no thinking blocks before any truncation")
+	must.Contains(prov.requests[2].Messages[4].Content[0].Content, "[...truncated ", "request 3 did not truncate the big_tool result")
 	for i := 2; i < len(prov.requests); i++ {
-		if sigs := thinkingSignatures(prov.requests[i].Messages); len(sigs) != 0 {
-			t.Errorf("request %d replays thinking blocks %v after a fit truncation", i+1, sigs)
-		}
+		t.Run(fmt.Sprintf("request %d has no thinking blocks", i+1), func(t *testing.T) {
+			must := require.New(t)
+			must.Empty(thinkingSignatures(prov.requests[i].Messages), "thinking blocks replayed after a fit truncation")
+		})
 	}
 }
 
@@ -195,6 +185,7 @@ func TestLoop_FitTruncationStripsThinkingBlocks(t *testing.T) {
 // system prompt and tool definitions alone exceed ends the run as
 // context_exhausted without a provider call, naming the sizes involved.
 func TestLoop_ContextExhaustedBeforeAnyProviderCall(t *testing.T) {
+	must := require.New(t)
 	prov := &requestRecordingProvider{}
 	loop := buildTestLoop(nil)
 	loop.Provider = prov
@@ -204,20 +195,26 @@ func TestLoop_ContextExhaustedBeforeAnyProviderCall(t *testing.T) {
 	config.ContextStrategy.MaxTokens = 100
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.Outcome != "context_exhausted" {
-		t.Fatalf("outcome = %q, want context_exhausted", runTrace.Outcome)
-	}
-	if len(prov.requests) != 0 {
-		t.Fatalf("provider saw %d requests, want none", len(prov.requests))
-	}
+	must.NoError(err)
+	must.Equal("context_exhausted", runTrace.Outcome)
+	must.Empty(prov.requests, "provider should not receive a request")
+
 	out := events.String()
-	for _, want := range []string{"context budget exhausted", "system prompt ", "tool definitions ", "contextStrategy.maxTokens=100", `"stopReason":"context_exhausted"`} {
-		if !strings.Contains(out, want) {
-			t.Errorf("transport events do not mention %q:\n%s", want, out)
-		}
+	cases := []struct {
+		name string
+		want string
+	}{
+		{name: "budget message", want: "context budget exhausted"},
+		{name: "system prompt size", want: "system prompt "},
+		{name: "tool definitions size", want: "tool definitions "},
+		{name: "config hint", want: "contextStrategy.maxTokens=100"},
+		{name: "stop reason", want: `"stopReason":"context_exhausted"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Contains(out, tc.want)
+		})
 	}
 }
 
@@ -225,6 +222,7 @@ func TestLoop_ContextExhaustedBeforeAnyProviderCall(t *testing.T) {
 // still over the limit after every tool result is truncated, here because
 // of an oversized assistant turn, is never sent.
 func TestLoop_ContextExhaustedWhenTruncationCannotFit(t *testing.T) {
+	must := require.New(t)
 	prov := &requestRecordingProvider{calls: [][]types.StreamEvent{{
 		{Type: "text_delta", Text: strings.Repeat("a", 40_000)},
 		{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: map[string]any{}},
@@ -236,21 +234,17 @@ func TestLoop_ContextExhaustedWhenTruncationCannotFit(t *testing.T) {
 	config.ContextStrategy.MaxTokens = 2000
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.Outcome != "context_exhausted" {
-		t.Fatalf("outcome = %q, want context_exhausted", runTrace.Outcome)
-	}
-	if len(prov.requests) != 1 {
-		t.Fatalf("provider saw %d requests, want only the first", len(prov.requests))
-	}
+	must.NoError(err)
+	must.Equal("context_exhausted", runTrace.Outcome)
+	must.Len(prov.requests, 1, "provider should see only the first request")
 }
 
 // TestLoop_SlidingWindowCompactionNeedsNoFitTruncation pins that the
 // sliding window compacts a history of small exchanges to the fit limit,
 // so the fit postcondition never truncates a tool result or warns.
 func TestLoop_SlidingWindowCompactionNeedsNoFitTruncation(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	const turns = 16
 	var calls [][]types.StreamEvent
 	for i := range turns {
@@ -276,28 +270,16 @@ func TestLoop_SlidingWindowCompactionNeedsNoFitTruncation(t *testing.T) {
 	config.ContextStrategy.MaxTokens = 2400
 
 	runTrace, err := loop.Run(context.Background(), config)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if runTrace.Outcome != "success" {
-		t.Fatalf("outcome = %q, want success", runTrace.Outcome)
-	}
-	if len(prov.requests) != turns+1 {
-		t.Fatalf("provider saw %d requests, want %d", len(prov.requests), turns+1)
-	}
-	if got, want := len(prov.requests[turns].Messages), 1+2*turns; got >= want {
-		t.Fatalf("final request carries %d of %d messages; the budget never forced a compaction", got, want)
-	}
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
+	must.Len(prov.requests, turns+1)
+	must.Less(len(prov.requests[turns].Messages), 1+2*turns, "the budget never forced a compaction")
 	for i, req := range prov.requests {
 		for _, msg := range req.Messages {
 			for _, block := range msg.Content {
-				if strings.Contains(block.Content, "[...truncated ") {
-					t.Fatalf("request %d sent a truncated tool result", i+1)
-				}
+				must.NotContains(block.Content, "[...truncated ", "request %d sent a truncated tool result", i+1)
 			}
 		}
 	}
-	if strings.Contains(logs.String(), "tool results truncated") {
-		t.Errorf("the fit postcondition truncated tool results after a compaction:\n%s", logs.String())
-	}
+	check.NotContains(logs.String(), "tool results truncated", "the fit postcondition truncated tool results after a compaction")
 }

@@ -12,6 +12,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -52,7 +54,9 @@ func permissionRequest(id string) *harnessv1.HarnessEvent {
 	return &harnessv1.HarnessEvent{Type: "permission_request", RequestId: id, ToolName: "run_command", Input: []byte(`{"command":"ls"}`)}
 }
 
-func TestHandleAssignsTaskAndReportsSuccess(t *testing.T) {
+func TestHandle_AssignsTaskAndReportsSuccess(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv, out, _ := testServer(t, permissionDeny, "")
 	stream := &fakeStream{events: []*harnessv1.HarnessEvent{
 		{Type: "ready", HarnessVersion: "v1"},
@@ -63,21 +67,17 @@ func TestHandleAssignsTaskAndReportsSuccess(t *testing.T) {
 	}}
 
 	res, err := srv.handle(context.Background(), stream)
-	if err != nil {
-		t.Fatalf("handle: %v", err)
-	}
-	if !res.Succeeded() {
-		t.Errorf("Succeeded() = false for outcome %q", res.Outcome)
-	}
-	if len(stream.sent) != 1 || stream.sent[0].GetType() != "task_assignment" || stream.sent[0].GetTask().GetRunId() != "run-1" {
-		t.Errorf("sent = %v, want a single task_assignment for run-1", stream.sent)
-	}
-	if got := out.String(); got != "hello world" {
-		t.Errorf("stdout = %q, want the concatenated text deltas", got)
-	}
+	must.NoError(err)
+	check.True(res.Succeeded(), "outcome %q", res.Outcome)
+	must.Len(stream.sent, 1)
+	check.Equal("task_assignment", stream.sent[0].GetType())
+	check.Equal("run-1", stream.sent[0].GetTask().GetRunId())
+	check.Equal("hello world", out.String(), "stdout should be the concatenated text deltas")
 }
 
-func TestHandleRendersLiveTranscriptEvents(t *testing.T) {
+func TestHandle_RendersLiveTranscriptEvents(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv, out, errOut := testServer(t, permissionDeny, "")
 	turn := int32(0)
 	stream := &fakeStream{events: []*harnessv1.HarnessEvent{
@@ -94,12 +94,9 @@ func TestHandleRendersLiveTranscriptEvents(t *testing.T) {
 		{Type: "done", StopReason: "success"},
 	}}
 
-	if _, err := srv.handle(context.Background(), stream); err != nil {
-		t.Fatalf("handle: %v", err)
-	}
-	if got := out.String(); got != "answer" {
-		t.Errorf("stdout = %q, want only the model's text", got)
-	}
+	_, err := srv.handle(context.Background(), stream)
+	must.NoError(err)
+	check.Equal("answer", out.String(), "stdout should hold only the model's text")
 	for _, want := range []string{
 		"[run_started] run-1",
 		"[user_message] initial_prompt: do it",
@@ -108,16 +105,12 @@ func TestHandleRendersLiveTranscriptEvents(t *testing.T) {
 		"[tool_result] read_file error 12ms no such file",
 		"[turn_committed] 0 tool_use in=100 out=5",
 	} {
-		if !strings.Contains(errOut.String(), want) {
-			t.Errorf("stderr lacks %q:\n%s", want, errOut.String())
-		}
+		check.Contains(errOut.String(), want)
 	}
-	if strings.Contains(errOut.String(), "not handled") {
-		t.Errorf("a live transcript event was reported as unhandled:\n%s", errOut.String())
-	}
+	check.NotContains(errOut.String(), "not handled", "a live transcript event was reported as unhandled")
 }
 
-func TestHandleDoneOutcome(t *testing.T) {
+func TestHandle_DoneOutcomeDecidesSuccess(t *testing.T) {
 	tests := []struct {
 		name string
 		done *harnessv1.HarnessEvent
@@ -132,27 +125,23 @@ func TestHandleDoneOutcome(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			srv, _, _ := testServer(t, permissionDeny, "")
 			res, err := srv.handle(context.Background(), &fakeStream{events: []*harnessv1.HarnessEvent{tc.done}})
-			if err != nil {
-				t.Fatalf("handle: %v", err)
-			}
-			if res.Succeeded() != tc.want {
-				t.Errorf("Succeeded() = %v, want %v (outcome %q)", res.Succeeded(), tc.want, res.Outcome)
-			}
+			must.NoError(err)
+			must.Equal(tc.want, res.Succeeded(), "outcome %q", res.Outcome)
 		})
 	}
 }
 
-func TestHandleStreamClosedBeforeDone(t *testing.T) {
+func TestHandle_StreamClosedBeforeDoneIsError(t *testing.T) {
+	must := require.New(t)
 	srv, _, _ := testServer(t, permissionDeny, "")
 	_, err := srv.handle(context.Background(), &fakeStream{events: []*harnessv1.HarnessEvent{{Type: "ready"}}})
-	if err == nil || !strings.Contains(err.Error(), "before the done event") {
-		t.Fatalf("err = %v, want a closed-before-done error", err)
-	}
+	must.ErrorContains(err, "before the done event")
 }
 
-func TestHandlePermissionModes(t *testing.T) {
+func TestHandle_PermissionModesGateRequests(t *testing.T) {
 	tests := []struct {
 		name  string
 		mode  permissionMode
@@ -169,188 +158,171 @@ func TestHandlePermissionModes(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			srv, _, _ := testServer(t, tc.mode, tc.stdin)
 			stream := &fakeStream{events: []*harnessv1.HarnessEvent{
 				permissionRequest("req-7"),
 				{Type: "done", StopReason: "success"},
 			}}
-			if _, err := srv.handle(context.Background(), stream); err != nil {
-				t.Fatalf("handle: %v", err)
-			}
-			if len(stream.sent) != 1 {
-				t.Fatalf("sent %d events, want 1 permission_response", len(stream.sent))
-			}
+			_, err := srv.handle(context.Background(), stream)
+			must.NoError(err)
+			must.Len(stream.sent, 1, "want one permission_response")
 			resp := stream.sent[0]
-			if resp.GetType() != "permission_response" || resp.GetRequestId() != "req-7" {
-				t.Errorf("response = %v, want permission_response echoing req-7", resp)
-			}
-			if resp.GetAllowed() == nil || resp.GetAllowed().GetValue() != tc.want {
-				t.Errorf("allowed = %v, want %v", resp.GetAllowed(), tc.want)
-			}
-			if !tc.want && resp.GetReason() == "" {
-				t.Error("a denial carries no reason for the model")
+			must.Equal("permission_response", resp.GetType())
+			must.Equal("req-7", resp.GetRequestId())
+			must.NotNil(resp.GetAllowed())
+			must.Equal(tc.want, resp.GetAllowed().GetValue())
+			if !tc.want {
+				must.NotEmpty(resp.GetReason(), "a denial carries no reason for the model")
 			}
 		})
 	}
 }
 
-func TestAskTerminalDeniesWhenContextCancelled(t *testing.T) {
+func TestAskTerminal_DeniesWhenContextCancelled(t *testing.T) {
+	must := require.New(t)
 	srv, _, _ := testServer(t, permissionAsk, "")
 	pr, pw := io.Pipe()
 	defer func() { _ = pw.Close() }()
 	srv.stdin.Reset(pr)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if srv.askTerminal(ctx, permissionRequest("r")) {
-		t.Error("askTerminal allowed a request after its context was cancelled")
-	}
+	must.False(srv.askTerminal(ctx, permissionRequest("r")),
+		"askTerminal allowed a request after its context was cancelled")
 }
 
-func TestParsePermissionMode(t *testing.T) {
-	for _, ok := range []string{"allow", "deny", "ask"} {
-		if _, err := parsePermissionMode(ok); err != nil {
-			t.Errorf("parsePermissionMode(%q): %v", ok, err)
-		}
+func TestParsePermissionMode_AcceptsKnownAndRejectsUnknown(t *testing.T) {
+	for _, name := range []string{"allow", "deny", "ask"} {
+		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
+			_, err := parsePermissionMode(name)
+			must.NoError(err)
+		})
 	}
-	if _, err := parsePermissionMode("always"); err == nil {
-		t.Error("parsePermissionMode accepted an unknown mode")
-	}
+	t.Run("unknown mode", func(t *testing.T) {
+		must := require.New(t)
+		_, err := parsePermissionMode("always")
+		must.Error(err)
+	})
 }
 
-func TestLoadRunConfig(t *testing.T) {
+func TestLoadRunConfig_ParsesAndRejectsBadFiles(t *testing.T) {
 	write := func(t *testing.T, body string) string {
 		t.Helper()
+		must := require.New(t)
 		path := filepath.Join(t.TempDir(), "runconfig.json")
-		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		must.NoError(os.WriteFile(path, []byte(body), 0o600))
 		return path
 	}
 
 	t.Run("drops the transport key", func(t *testing.T) {
+		must := require.New(t)
 		cfg, err := loadRunConfig(write(t, `{"runId":"r","mode":"planning","prompt":"p","transport":{"type":"stdio"},"maxTurns":3}`))
-		if err != nil {
-			t.Fatalf("loadRunConfig: %v", err)
-		}
-		if cfg.GetRunId() != "r" || cfg.GetMaxTurns() != 3 {
-			t.Errorf("cfg = %v, want runId r and maxTurns 3", cfg)
-		}
+		must.NoError(err)
+		must.Equal("r", cfg.GetRunId())
+		must.EqualValues(3, cfg.GetMaxTurns())
 	})
 	t.Run("rejects other unknown fields", func(t *testing.T) {
-		if _, err := loadRunConfig(write(t, `{"runId":"r","promt":"typo"}`)); err == nil {
-			t.Error("loadRunConfig accepted a misspelt field")
-		}
+		must := require.New(t)
+		_, err := loadRunConfig(write(t, `{"runId":"r","promt":"typo"}`))
+		must.Error(err)
 	})
 	t.Run("rejects malformed JSON", func(t *testing.T) {
-		if _, err := loadRunConfig(write(t, `{`)); err == nil {
-			t.Error("loadRunConfig accepted malformed JSON")
-		}
+		must := require.New(t)
+		_, err := loadRunConfig(write(t, `{`))
+		must.Error(err)
 	})
 	t.Run("rejects a missing file", func(t *testing.T) {
-		if _, err := loadRunConfig(filepath.Join(t.TempDir(), "absent.json")); err == nil {
-			t.Error("loadRunConfig accepted a missing file")
-		}
+		must := require.New(t)
+		_, err := loadRunConfig(filepath.Join(t.TempDir(), "absent.json"))
+		must.Error(err)
 	})
 }
 
 // Every shipped example RunConfig must be assignable, so that any of them can
 // be passed to -config.
-func TestLoadRunConfigAcceptsShippedExamples(t *testing.T) {
+func TestLoadRunConfig_AcceptsShippedExamples(t *testing.T) {
+	must := require.New(t)
 	paths, err := filepath.Glob(filepath.Join("..", "runconfig", "*.json"))
-	if err != nil || len(paths) == 0 {
-		t.Fatalf("glob examples: %v (%d files)", err, len(paths))
-	}
+	must.NoError(err)
+	must.NotEmpty(paths, "no example RunConfigs matched ../runconfig/*.json")
 	for _, path := range paths {
-		if _, err := loadRunConfig(path); err != nil {
-			t.Errorf("%s: %v", filepath.Base(path), err)
-		}
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			must := require.New(t)
+			_, err := loadRunConfig(path)
+			must.NoError(err)
+		})
 	}
 }
 
-func TestSmokeRunConfigIsAssignable(t *testing.T) {
-	if _, err := loadRunConfig("smoke-runconfig.json"); err != nil {
-		t.Fatal(err)
-	}
+func TestLoadRunConfig_AcceptsSmokeRunConfig(t *testing.T) {
+	must := require.New(t)
+	_, err := loadRunConfig("smoke-runconfig.json")
+	must.NoError(err)
 }
 
 // startServer serves srv on a loopback listener and returns a client.
 func startServer(t *testing.T, srv *server) harnessv1.HarnessServiceClient {
 	t.Helper()
+	must := require.New(t)
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	gs := grpc.NewServer()
 	harnessv1.RegisterHarnessServiceServer(gs, srv)
 	go func() { _ = gs.Serve(lis) }()
 	t.Cleanup(gs.Stop)
 
 	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	t.Cleanup(func() { _ = conn.Close() })
 	return harnessv1.NewHarnessServiceClient(conn)
 }
 
-func TestRunTaskOverGRPC(t *testing.T) {
+func TestRunTask_OverGRPCCompletesRun(t *testing.T) {
+	must := require.New(t)
 	srv, _, _ := testServer(t, permissionAllow, "")
 	client := startServer(t, srv)
 
 	stream, err := client.RunTask(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := stream.Send(&harnessv1.HarnessEvent{Type: "ready"}); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
+	must.NoError(stream.Send(&harnessv1.HarnessEvent{Type: "ready"}))
+
 	assign, err := stream.Recv()
-	if err != nil || assign.GetType() != "task_assignment" || assign.GetTask().GetPrompt() != "do it" {
-		t.Fatalf("assignment = %v, %v; want task_assignment carrying the prompt", assign, err)
-	}
-	if err := stream.Send(permissionRequest("req-1")); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
+	must.Equal("task_assignment", assign.GetType())
+	must.Equal("do it", assign.GetTask().GetPrompt())
+
+	must.NoError(stream.Send(permissionRequest("req-1")))
 	resp, err := stream.Recv()
-	if err != nil || resp.GetType() != "permission_response" || !resp.GetAllowed().GetValue() {
-		t.Fatalf("response = %v, %v; want an allow", resp, err)
-	}
-	if err := stream.Send(&harnessv1.HarnessEvent{Type: "done", StopReason: "success"}); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
+	must.Equal("permission_response", resp.GetType())
+	must.True(resp.GetAllowed().GetValue(), "want an allow")
+
+	must.NoError(stream.Send(&harnessv1.HarnessEvent{Type: "done", StopReason: "success"}))
 
 	out := <-srv.results
-	if out.err != nil || !out.result.Succeeded() {
-		t.Errorf("outcome = %+v, want success", out)
-	}
+	must.NoError(out.err)
+	must.True(out.result.Succeeded(), "outcome = %+v", out)
 }
 
-func TestRunTaskRefusesSecondStream(t *testing.T) {
+func TestRunTask_RefusesSecondStream(t *testing.T) {
+	must := require.New(t)
 	srv, _, _ := testServer(t, permissionDeny, "")
 	client := startServer(t, srv)
 
 	first, err := client.RunTask(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := first.Send(&harnessv1.HarnessEvent{Type: "ready"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := first.Recv(); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
+	must.NoError(first.Send(&harnessv1.HarnessEvent{Type: "ready"}))
+	_, err = first.Recv()
+	must.NoError(err)
 
 	second, err := client.RunTask(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	_, err = second.Recv()
-	if status.Code(err) != codes.FailedPrecondition {
-		t.Errorf("second stream error = %v, want FailedPrecondition", err)
-	}
+	must.Equal(codes.FailedPrecondition, status.Code(err), "second stream error = %v", err)
 }
 
-func TestServeExitStatus(t *testing.T) {
+func TestServe_ExitStatusFollowsRunOutcome(t *testing.T) {
 	tests := []struct {
 		name string
 		send []*harnessv1.HarnessEvent
@@ -362,15 +334,12 @@ func TestServeExitStatus(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			srv, _, _ := testServer(t, permissionDeny, "")
 			lis, err := net.Listen("tcp", "127.0.0.1:0")
-			if err != nil {
-				t.Fatal(err)
-			}
+			must.NoError(err)
 			conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
-			if err != nil {
-				t.Fatal(err)
-			}
+			must.NoError(err)
 			defer func() { _ = conn.Close() }()
 			go func() {
 				stream, err := harnessv1.NewHarnessServiceClient(conn).RunTask(context.Background())
@@ -390,18 +359,15 @@ func TestServeExitStatus(t *testing.T) {
 				}
 			}()
 
-			if got := serve(lis, srv, io.Discard); got != tc.want {
-				t.Errorf("serve = %d, want %d", got, tc.want)
-			}
+			must.Equal(tc.want, serve(lis, srv, io.Discard))
 		})
 	}
 }
 
-func TestRunUsageErrors(t *testing.T) {
+func TestRun_UsageErrorsExitWithUsageCode(t *testing.T) {
+	must := require.New(t)
 	cfg := filepath.Join(t.TempDir(), "runconfig.json")
-	if err := os.WriteFile(cfg, []byte(`{"runId":"r"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.WriteFile(cfg, []byte(`{"runId":"r"}`), 0o600))
 	tests := []struct {
 		name string
 		args []string
@@ -416,20 +382,19 @@ func TestRunUsageErrors(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var stderr bytes.Buffer
-			if got := run(tc.args, strings.NewReader(""), io.Discard, &stderr); got != exitUsage {
-				t.Errorf("run = %d, want %d (stderr: %s)", got, exitUsage, stderr.String())
-			}
+			got := run(tc.args, strings.NewReader(""), io.Discard, &stderr)
+			must.Equal(exitUsage, got, "stderr: %s", stderr.String())
 		})
 	}
 }
 
-func TestHandleSurfacesReceiveError(t *testing.T) {
+func TestHandle_SurfacesReceiveError(t *testing.T) {
+	must := require.New(t)
 	srv, _, _ := testServer(t, permissionDeny, "")
 	_, err := srv.handle(context.Background(), errStream{})
-	if err == nil || !strings.Contains(err.Error(), "boom") {
-		t.Errorf("err = %v, want the receive error", err)
-	}
+	must.ErrorContains(err, "boom")
 }
 
 type errStream struct{}
@@ -437,7 +402,8 @@ type errStream struct{}
 func (errStream) Recv() (*harnessv1.HarnessEvent, error) { return nil, errors.New("boom") }
 func (errStream) Send(*harnessv1.ControlEvent) error     { return nil }
 
-func TestHandleRendersTurnAbandoned(t *testing.T) {
+func TestHandle_RendersTurnAbandoned(t *testing.T) {
+	must := require.New(t)
 	srv, _, errOut := testServer(t, permissionDeny, "")
 	turn := int32(2)
 	stream := &fakeStream{events: []*harnessv1.HarnessEvent{
@@ -447,15 +413,14 @@ func TestHandleRendersTurnAbandoned(t *testing.T) {
 		{Type: "done", StopReason: "success"},
 	}}
 
-	if _, err := srv.handle(context.Background(), stream); err != nil {
-		t.Fatalf("handle: %v", err)
-	}
-	if !strings.Contains(errOut.String(), "[turn_abandoned] 2 empty_response") {
-		t.Errorf("stderr lacks the abandoned turn:\n%s", errOut.String())
-	}
+	_, err := srv.handle(context.Background(), stream)
+	must.NoError(err)
+	must.Contains(errOut.String(), "[turn_abandoned] 2 empty_response")
 }
 
-func TestHandleSendsFollowUpsAfterEachDone(t *testing.T) {
+func TestHandle_SendsFollowUpsAfterEachDone(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	srv, _, errOut := testServer(t, permissionDeny, "")
 	srv.followUps = []string{"second", "third"}
 	stream := &fakeStream{events: []*harnessv1.HarnessEvent{
@@ -469,28 +434,26 @@ func TestHandleSendsFollowUpsAfterEachDone(t *testing.T) {
 	}}
 
 	res, err := srv.handle(context.Background(), stream)
-	if err != nil {
-		t.Fatalf("handle: %v", err)
-	}
-	if res.Succeeded() || res.Outcome != "max_turns" || strings.Join(res.Outcomes, ",") != "success,success,max_turns" {
-		t.Errorf("result = %+v, want three runs ending max_turns and not succeeded", res)
-	}
-	if len(stream.events) != 1 {
-		t.Errorf("handle read past the last run's done: %d events left", len(stream.events))
-	}
+	must.NoError(err)
+	check.False(res.Succeeded(), "a run ending in max_turns is not a success")
+	check.Equal("max_turns", res.Outcome)
+	check.Equal([]string{"success", "success", "max_turns"}, res.Outcomes)
+	check.Len(stream.events, 1, "handle read past the last run's done")
+
 	var got []string
 	for _, ev := range stream.sent {
 		got = append(got, ev.GetType()+":"+ev.GetUserResponse()+":"+ev.GetRequestId())
 	}
-	if want := "task_assignment::,user_response:second:followup-1,user_response:third:followup-2"; strings.Join(got, ",") != want {
-		t.Errorf("sent = %v, want %s", got, want)
-	}
-	if !strings.Contains(errOut.String(), "[followup] followup-1: second") {
-		t.Errorf("stderr lacks the follow-up:\n%s", errOut.String())
-	}
+	check.Equal([]string{
+		"task_assignment::",
+		"user_response:second:followup-1",
+		"user_response:third:followup-2",
+	}, got)
+	check.Contains(errOut.String(), "[followup] followup-1: second")
 }
 
-func TestHandleFailsWhenStreamClosesBeforeFollowUpRun(t *testing.T) {
+func TestHandle_FailsWhenStreamClosesBeforeFollowUpRun(t *testing.T) {
+	must := require.New(t)
 	srv, _, _ := testServer(t, permissionDeny, "")
 	srv.followUps = []string{"second"}
 	stream := &fakeStream{events: []*harnessv1.HarnessEvent{
@@ -498,12 +461,13 @@ func TestHandleFailsWhenStreamClosesBeforeFollowUpRun(t *testing.T) {
 		{Type: "done", StopReason: "success"},
 	}}
 
-	if _, err := srv.handle(context.Background(), stream); err == nil {
-		t.Fatal("handle: want an error when the stream closes before the follow-up run's done")
-	}
+	_, err := srv.handle(context.Background(), stream)
+	must.Error(err, "the stream closed before the follow-up run's done")
 }
 
-func TestHandleEscapesTerminalControls(t *testing.T) {
+func TestHandle_EscapesTerminalControls(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv, out, errOut := testServer(t, permissionDeny, "")
 	stream := &fakeStream{events: []*harnessv1.HarnessEvent{
 		{Type: "ready", HarnessVersion: "v1\x1b]0;pwned\a"},
@@ -515,12 +479,11 @@ func TestHandleEscapesTerminalControls(t *testing.T) {
 		{Type: "done", StopReason: "success"},
 	}}
 
-	if _, err := srv.handle(context.Background(), stream); err != nil {
-		t.Fatalf("handle: %v", err)
-	}
-	if want := `red \x1b[31mtext\x1b[0m` + "\nnext\tline" + `\r`; out.String() != want {
-		t.Errorf("stdout = %q, want %q", out.String(), want)
-	}
+	_, err := srv.handle(context.Background(), stream)
+	must.NoError(err)
+
+	wantStdout := `red \x1b[31mtext\x1b[0m` + "\nnext\tline" + `\r`
+	check.Equal(wantStdout, out.String())
 	for _, want := range []string{
 		`v1\x1b]0;pwned\x07`,
 		`\u202eevil\u200bhidden\ue0041`,
@@ -528,36 +491,39 @@ func TestHandleEscapesTerminalControls(t *testing.T) {
 		`line1\nline2\x1b[1A\xff`,
 		`careful\x9b31m`,
 	} {
-		if !strings.Contains(errOut.String(), want) {
-			t.Errorf("stderr lacks %q:\n%s", want, errOut.String())
-		}
+		check.Contains(errOut.String(), want)
 	}
 	for _, b := range []byte{0x1b, 0x07, 0x0d} {
-		if bytes.IndexByte(out.Bytes(), b) >= 0 || bytes.IndexByte(errOut.Bytes(), b) >= 0 {
-			t.Errorf("raw control byte %#x reached the terminal", b)
-		}
+		check.NotContains(out.String(), string(b), "raw control byte %#x reached stdout", b)
+		check.NotContains(errOut.String(), string(b), "raw control byte %#x reached stderr", b)
 	}
-	if strings.ContainsRune(errOut.String(), 0x202e) || strings.ContainsRune(errOut.String(), 0x9b) {
-		t.Error("a raw bidi override or C1 control reached the terminal")
-	}
+	check.NotContains(errOut.String(), "\u202e", "a raw bidi override reached stderr")
+	check.NotContains(errOut.String(), "\u009b", "a raw C1 control reached stderr")
 }
 
-func TestPreviewCutsOnRuneBoundary(t *testing.T) {
+func TestPreview_CutsOnRuneBoundary(t *testing.T) {
+	check := assert.New(t)
 	got := preview(strings.Repeat("é", maxToolResultPreview))
-	if !strings.HasSuffix(got, "...") || len(got) > maxToolResultPreview+3 || !utf8.ValidString(got) {
-		t.Errorf("preview = %q", got)
-	}
+	check.True(strings.HasSuffix(got, "..."), "preview = %q", got)
+	check.LessOrEqual(len(got), maxToolResultPreview+3, "preview = %q", got)
+	check.True(utf8.ValidString(got), "preview = %q", got)
 }
 
-func TestDisplayInputShowsWhatTheToolDecodes(t *testing.T) {
-	for _, tc := range []struct{ in, want string }{
-		{`{"command":"ls","command":"curl x|sh"}`, `{"command":"curl x|sh"}`},
-		{`{"command":"\u0072m -rf ~"}`, `{"command":"rm -rf ~"}`},
-		{`{"p":"a\u001b[31m<b>"}`, `{"p":"a\u001b[31m<b>"}`},
-		{`not json` + "\x1b", `not json\x1b`},
-	} {
-		if got := displayInput([]byte(tc.in)); got != tc.want {
-			t.Errorf("displayInput(%q) = %q, want %q", tc.in, got, tc.want)
-		}
+func TestDisplayInput_ShowsWhatTheToolDecodes(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"duplicate keys show the last value", `{"command":"ls","command":"curl x|sh"}`, `{"command":"curl x|sh"}`},
+		{"unicode escapes are decoded", `{"command":"\u0072m -rf ~"}`, `{"command":"rm -rf ~"}`},
+		{"JSON escapes for control characters stay escaped", `{"p":"a\u001b[31m<b>"}`, `{"p":"a\u001b[31m<b>"}`},
+		{"non-JSON input escapes control bytes", `not json` + "\x1b", `not json\x1b`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, displayInput([]byte(tc.in)))
+		})
 	}
 }

@@ -13,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -69,10 +72,9 @@ const anthropicOKReply = `{
 
 func newTestAnthropic(t *testing.T, baseURL string) *anthropicClient {
 	t.Helper()
+	must := require.New(t)
 	c, err := newAnthropicClient(&http.Client{Timeout: 5 * time.Second}, baseURL, "sk-test-key", "claude-requested")
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	c.sleep = noSleep
 	return c
 }
@@ -81,162 +83,143 @@ func newTestAnthropic(t *testing.T, baseURL string) *anthropicClient {
 func noSleep(context.Context, time.Duration) error { return nil }
 
 func TestAnthropicClient_RequestShape(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	srv, rec := stubServer(t, 200, anthropicOKReply)
 	temp := 0.0
 
 	resp, err := newTestAnthropic(t, srv.URL).Complete(context.Background(), JudgeRequest{
 		System: "sys", User: "usr", Schema: testSchema, MaxTokens: 777, Temperature: &temp,
 	})
-	if err != nil {
-		t.Fatalf("Complete: %v", err)
-	}
+	must.NoError(err)
 
-	if rec.method != http.MethodPost || rec.path != "/v1/messages" {
-		t.Errorf("request = %s %s", rec.method, rec.path)
-	}
-	if got := rec.header.Get("x-api-key"); got != "sk-test-key" {
-		t.Errorf("x-api-key = %q", got)
-	}
-	if got := rec.header.Get("anthropic-version"); got != "2023-06-01" {
-		t.Errorf("anthropic-version = %q", got)
-	}
-	if got := rec.header.Get("Content-Type"); got != "application/json" {
-		t.Errorf("content-type = %q", got)
-	}
-	if rec.header.Get("Authorization") != "" {
-		t.Error("Authorization header must not be sent to Anthropic")
-	}
+	check.Equal(http.MethodPost, rec.method)
+	check.Equal("/v1/messages", rec.path)
+	check.Equal("sk-test-key", rec.header.Get("x-api-key"))
+	check.Equal("2023-06-01", rec.header.Get("anthropic-version"))
+	check.Equal("application/json", rec.header.Get("Content-Type"))
+	check.Empty(rec.header.Get("Authorization"), "Authorization must not be sent to Anthropic")
 
-	if rec.body["model"] != "claude-requested" || rec.body["system"] != "sys" || rec.body["max_tokens"] != float64(777) {
-		t.Errorf("body = %v", rec.body)
-	}
+	check.Equal("claude-requested", rec.body["model"])
+	check.Equal("sys", rec.body["system"])
+	check.InDelta(777, rec.body["max_tokens"], 0)
+
 	msgs, _ := rec.body["messages"].([]any)
-	if len(msgs) != 1 || msgs[0].(map[string]any)["role"] != "user" || msgs[0].(map[string]any)["content"] != "usr" {
-		t.Errorf("messages = %v", rec.body["messages"])
-	}
-	if v, present := rec.body["temperature"]; !present || v != float64(0) {
-		t.Errorf("temperature = %v (present %v), want an explicit 0", v, present)
-	}
+	must.Len(msgs, 1)
+	msg, _ := msgs[0].(map[string]any)
+	check.Equal("user", msg["role"])
+	check.Equal("usr", msg["content"])
+
+	check.InDelta(0, rec.body["temperature"], 0, "an explicit zero temperature is sent")
+
 	cfg, _ := rec.body["output_config"].(map[string]any)
 	format, _ := cfg["format"].(map[string]any)
-	if format["type"] != "json_schema" {
-		t.Errorf("output_config.format = %v", cfg["format"])
-	}
-	var wantSchema any
-	_ = json.Unmarshal(testSchema, &wantSchema)
-	if !jsonEqual(t, wantSchema, format["schema"]) {
-		t.Errorf("schema = %v", format["schema"])
-	}
+	check.Equal("json_schema", format["type"])
+	schemaJSON, err := json.Marshal(format["schema"])
+	must.NoError(err)
+	check.JSONEq(string(testSchema), string(schemaJSON))
 
-	if resp.Text != `{"verdict":"pass"}` || resp.Model != "claude-served-1" || resp.StopReason != "end_turn" ||
-		resp.InputTokens != 321 || resp.OutputTokens != 17 {
-		t.Errorf("response = %+v", resp)
-	}
+	check.JSONEq(`{"verdict":"pass"}`, resp.Text)
+	check.Equal("claude-served-1", resp.Model)
+	check.Equal("end_turn", resp.StopReason)
+	check.Equal(321, resp.InputTokens)
+	check.Equal(17, resp.OutputTokens)
 }
 
 func TestAnthropicClient_OmitsTemperatureAndSchemaWhenUnset(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv, rec := stubServer(t, 200, anthropicOKReply)
 
-	if _, err := newTestAnthropic(t, srv.URL).Complete(context.Background(), JudgeRequest{System: "s", User: "u", MaxTokens: 10}); err != nil {
-		t.Fatal(err)
-	}
-	for _, key := range []string{"temperature", "output_config"} {
-		if _, present := rec.body[key]; present {
-			t.Errorf("%s sent although unset: %v", key, rec.body[key])
-		}
-	}
+	_, err := newTestAnthropic(t, srv.URL).Complete(context.Background(), JudgeRequest{System: "s", User: "u", MaxTokens: 10})
+	must.NoError(err)
+	check.NotContains(rec.body, "temperature", "temperature is sent only when set")
+	check.NotContains(rec.body, "output_config", "output_config is sent only when a schema is set")
 }
 
 func TestAnthropicClient_DefaultBaseURL(t *testing.T) {
+	must := require.New(t)
 	c, err := newAnthropicClient(&http.Client{Timeout: time.Second}, "", "k", "m")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.endpoint != "https://api.anthropic.com/v1/messages" {
-		t.Errorf("endpoint = %q", c.endpoint)
-	}
+	must.NoError(err)
+	must.Equal("https://api.anthropic.com/v1/messages", c.endpoint)
 }
 
 func TestAnthropicClient_PreservesBasePathAndQuery(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	srv, rec := stubServer(t, 200, anthropicOKReply)
 
-	if _, err := newTestAnthropic(t, srv.URL+"/proxy/?route=judge").Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1}); err != nil {
-		t.Fatal(err)
-	}
-	if rec.path != "/proxy/v1/messages" || rec.query != "route=judge" {
-		t.Errorf("request = %s?%s", rec.path, rec.query)
-	}
+	_, err := newTestAnthropic(t, srv.URL+"/proxy/?route=judge").Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
+	must.NoError(err)
+	check.Equal("/proxy/v1/messages", rec.path)
+	check.Equal("route=judge", rec.query)
 }
 
 func TestAnthropicClient_PassesStopReasonsThrough(t *testing.T) {
 	for _, reason := range []string{"max_tokens", "refusal"} {
-		srv, _ := stubServer(t, 200, `{"model":"m","content":[],"stop_reason":"`+reason+`","usage":{}}`)
-		resp, err := newTestAnthropic(t, srv.URL).Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.StopReason != reason {
-			t.Errorf("stop reason = %q, want %q", resp.StopReason, reason)
-		}
+		t.Run(reason, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
+			srv, _ := stubServer(t, 200, `{"model":"m","content":[],"stop_reason":"`+reason+`","usage":{}}`)
+			resp, err := newTestAnthropic(t, srv.URL).Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
+			must.NoError(err)
+			check.Equal(reason, resp.StopReason)
+		})
 	}
 }
 
 func TestAnthropicClient_HTTPErrors(t *testing.T) {
 	for _, status := range []int{400, 401, 429, 500, 529} {
-		srv, _ := stubServer(t, status, `{"type":"error","error":{"type":"x","message":"boom"}}`)
-		_, err := newTestAnthropic(t, srv.URL).Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-		if err == nil || !strings.Contains(err.Error(), "HTTP "+strconv.Itoa(status)) || !strings.Contains(err.Error(), "boom") {
-			t.Errorf("status %d: err = %v", status, err)
-		}
+		t.Run("http "+strconv.Itoa(status), func(t *testing.T) {
+			must := require.New(t)
+			srv, _ := stubServer(t, status, `{"type":"error","error":{"type":"x","message":"boom"}}`)
+			_, err := newTestAnthropic(t, srv.URL).Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
+			must.ErrorContains(err, "HTTP "+strconv.Itoa(status))
+			must.ErrorContains(err, "boom")
+		})
 	}
 }
 
 func TestAnthropicClient_BoundsErrorBody(t *testing.T) {
+	must := require.New(t)
 	srv, _ := stubServer(t, 500, strings.Repeat("x", 100_000))
 
 	_, err := newTestAnthropic(t, srv.URL).Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-	if err == nil || len(err.Error()) > 2*maxErrorBodyBytes {
-		t.Errorf("error body not bounded: %d bytes", len(err.Error()))
-	}
+	must.Error(err)
+	must.LessOrEqual(len(err.Error()), 2*maxErrorBodyBytes, "error body not bounded")
 }
 
 func TestAnthropicClient_MalformedSuccessBody(t *testing.T) {
+	must := require.New(t)
 	srv, _ := stubServer(t, 200, `<html>gateway</html>`)
 
 	_, err := newTestAnthropic(t, srv.URL).Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-	if err == nil || !strings.Contains(err.Error(), "decode response") {
-		t.Errorf("err = %v", err)
-	}
+	must.ErrorContains(err, "decode response")
 }
 
 func TestAnthropicClient_Timeout(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv := hangingServer(t)
 	c, err := newAnthropicClient(&http.Client{Timeout: 50 * time.Millisecond}, srv.URL+"?key=hunter2", "k", "m")
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 
 	start := time.Now()
 	_, err = c.Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-	if err == nil {
-		t.Fatal("expected a timeout error")
-	}
-	if time.Since(start) > 3*time.Second {
-		t.Errorf("timeout not honoured: %v", time.Since(start))
-	}
-	if strings.Contains(err.Error(), "hunter2") || strings.Contains(err.Error(), srv.URL) {
-		t.Errorf("error leaks the request URL: %v", err)
-	}
+	must.Error(err, "expected a timeout error")
+	check.Less(time.Since(start), 3*time.Second, "timeout not honoured")
+	check.NotContains(err.Error(), "hunter2", "error leaks the request URL")
+	check.NotContains(err.Error(), srv.URL, "error leaks the request URL")
 }
 
 func TestAnthropicClient_ContextCancellation(t *testing.T) {
+	must := require.New(t)
 	srv := hangingServer(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(50*time.Millisecond, cancel)
 
-	if _, err := newTestAnthropic(t, srv.URL).Complete(ctx, JudgeRequest{User: "u", MaxTokens: 1}); err == nil {
-		t.Fatal("expected a cancellation error")
-	}
+	_, err := newTestAnthropic(t, srv.URL).Complete(ctx, JudgeRequest{User: "u", MaxTokens: 1})
+	must.Error(err, "expected a cancellation error")
 }
 
 const openaiOKReply = `{
@@ -247,136 +230,119 @@ const openaiOKReply = `{
 
 func newTestOpenAI(t *testing.T, baseURL, key string) *openaiClient {
 	t.Helper()
+	must := require.New(t)
 	c, err := newOpenAIClient(&http.Client{Timeout: 5 * time.Second}, baseURL, key, "gpt-requested")
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	c.sleep = noSleep
 	return c
 }
 
 func TestOpenAIClient_RequestShape(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	srv, rec := stubServer(t, 200, openaiOKReply)
 	temp := 0.3
 
 	resp, err := newTestOpenAI(t, srv.URL+"/v1", "or-key").Complete(context.Background(), JudgeRequest{
 		System: "sys", User: "usr", Schema: testSchema, MaxTokens: 555, Temperature: &temp,
 	})
-	if err != nil {
-		t.Fatalf("Complete: %v", err)
-	}
+	must.NoError(err)
 
-	if rec.method != http.MethodPost || rec.path != "/v1/chat/completions" {
-		t.Errorf("request = %s %s", rec.method, rec.path)
-	}
-	if got := rec.header.Get("Authorization"); got != "Bearer or-key" {
-		t.Errorf("Authorization = %q", got)
-	}
-	if rec.header.Get("x-api-key") != "" {
-		t.Error("x-api-key must not be sent to an OpenAI-compatible endpoint")
-	}
+	check.Equal(http.MethodPost, rec.method)
+	check.Equal("/v1/chat/completions", rec.path)
+	check.Equal("Bearer or-key", rec.header.Get("Authorization"))
+	check.Empty(rec.header.Get("x-api-key"), "x-api-key must not be sent to an OpenAI-compatible endpoint")
 
-	if rec.body["model"] != "gpt-requested" {
-		t.Errorf("model = %v", rec.body["model"])
-	}
-	if rec.body["max_completion_tokens"] != float64(555) {
-		t.Errorf("max_completion_tokens = %v", rec.body["max_completion_tokens"])
-	}
-	if _, legacy := rec.body["max_tokens"]; legacy {
-		t.Error("legacy max_tokens must not be sent")
-	}
-	if rec.body["temperature"] != 0.3 {
-		t.Errorf("temperature = %v", rec.body["temperature"])
-	}
+	check.Equal("gpt-requested", rec.body["model"])
+	check.InDelta(555, rec.body["max_completion_tokens"], 0)
+	check.NotContains(rec.body, "max_tokens", "legacy max_tokens must not be sent")
+	check.InDelta(0.3, rec.body["temperature"], 1e-9)
+
 	msgs, _ := rec.body["messages"].([]any)
-	if len(msgs) != 2 ||
-		msgs[0].(map[string]any)["role"] != "system" || msgs[0].(map[string]any)["content"] != "sys" ||
-		msgs[1].(map[string]any)["role"] != "user" || msgs[1].(map[string]any)["content"] != "usr" {
-		t.Errorf("messages = %v", rec.body["messages"])
-	}
+	must.Len(msgs, 2)
+	system, _ := msgs[0].(map[string]any)
+	user, _ := msgs[1].(map[string]any)
+	check.Equal("system", system["role"])
+	check.Equal("sys", system["content"])
+	check.Equal("user", user["role"])
+	check.Equal("usr", user["content"])
+
 	rf, _ := rec.body["response_format"].(map[string]any)
 	js, _ := rf["json_schema"].(map[string]any)
-	if rf["type"] != "json_schema" || js["name"] != "verdict" || js["strict"] != true {
-		t.Errorf("response_format = %v", rec.body["response_format"])
-	}
-	var want any
-	_ = json.Unmarshal(testSchema, &want)
-	if !jsonEqual(t, want, js["schema"]) {
-		t.Errorf("schema = %v", js["schema"])
-	}
+	check.Equal("json_schema", rf["type"])
+	check.Equal("verdict", js["name"])
+	strict, _ := js["strict"].(bool)
+	check.True(strict, "json_schema must be strict")
+	schemaJSON, err := json.Marshal(js["schema"])
+	must.NoError(err)
+	check.JSONEq(string(testSchema), string(schemaJSON))
 
-	if resp.Text != `{"verdict":"fail"}` || resp.Model != "gpt-served-1" || resp.StopReason != "end_turn" ||
-		resp.InputTokens != 210 || resp.OutputTokens != 9 {
-		t.Errorf("response = %+v", resp)
-	}
+	check.JSONEq(`{"verdict":"fail"}`, resp.Text)
+	check.Equal("gpt-served-1", resp.Model)
+	check.Equal("end_turn", resp.StopReason)
+	check.Equal(210, resp.InputTokens)
+	check.Equal(9, resp.OutputTokens)
 }
 
 func TestOpenAIClient_OmitsTemperatureAndSchemaWhenUnset(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	srv, rec := stubServer(t, 200, openaiOKReply)
 
-	if _, err := newTestOpenAI(t, srv.URL, "k").Complete(context.Background(), JudgeRequest{System: "s", User: "u", MaxTokens: 10}); err != nil {
-		t.Fatal(err)
-	}
-	for _, key := range []string{"temperature", "response_format"} {
-		if _, present := rec.body[key]; present {
-			t.Errorf("%s sent although unset: %v", key, rec.body[key])
-		}
-	}
+	_, err := newTestOpenAI(t, srv.URL, "k").Complete(context.Background(), JudgeRequest{System: "s", User: "u", MaxTokens: 10})
+	must.NoError(err)
+	check.NotContains(rec.body, "temperature", "temperature is sent only when set")
+	check.NotContains(rec.body, "response_format", "response_format is sent only when a schema is set")
 }
 
 func TestOpenAIClient_SendsZeroTemperatureWhenExplicit(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv, rec := stubServer(t, 200, openaiOKReply)
 	zero := 0.0
 
-	if _, err := newTestOpenAI(t, srv.URL, "k").Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 10, Temperature: &zero}); err != nil {
-		t.Fatal(err)
-	}
-	if v, present := rec.body["temperature"]; !present || v != float64(0) {
-		t.Errorf("temperature = %v (present %v), want an explicit 0", v, present)
-	}
+	_, err := newTestOpenAI(t, srv.URL, "k").Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 10, Temperature: &zero})
+	must.NoError(err)
+	check.InDelta(0, rec.body["temperature"], 0, "an explicit zero temperature is sent")
 }
 
 func TestOpenAIClient_NoAuthorizationHeaderWithoutKey(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	srv, rec := stubServer(t, 200, openaiOKReply)
 
-	if _, err := newTestOpenAI(t, srv.URL, "").Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 10}); err != nil {
-		t.Fatal(err)
-	}
-	if got := rec.header.Get("Authorization"); got != "" {
-		t.Errorf("Authorization = %q, want none", got)
-	}
+	_, err := newTestOpenAI(t, srv.URL, "").Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 10})
+	must.NoError(err)
+	check.Empty(rec.header.Get("Authorization"), "no Authorization header without a key")
 }
 
 func TestOpenAIClient_RequiresBaseURL(t *testing.T) {
-	if _, err := newOpenAIClient(&http.Client{Timeout: time.Second}, "", "k", "m"); err == nil {
-		t.Error("expected an error for an empty base URL")
-	}
+	must := require.New(t)
+	_, err := newOpenAIClient(&http.Client{Timeout: time.Second}, "", "k", "m")
+	must.Error(err, "expected an error for an empty base URL")
 }
 
 func TestOpenAIClient_MapsFinishReasons(t *testing.T) {
 	cases := map[string]string{"stop": "end_turn", "length": "max_tokens", "content_filter": "refusal", "tool_calls": "tool_calls"}
 	for finish, want := range cases {
-		srv, _ := stubServer(t, 200, `{"model":"m","choices":[{"message":{"content":"x"},"finish_reason":"`+finish+`"}],"usage":{}}`)
-		resp, err := newTestOpenAI(t, srv.URL, "k").Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.StopReason != want {
-			t.Errorf("finish_reason %q -> %q, want %q", finish, resp.StopReason, want)
-		}
+		t.Run(finish, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
+			srv, _ := stubServer(t, 200, `{"model":"m","choices":[{"message":{"content":"x"},"finish_reason":"`+finish+`"}],"usage":{}}`)
+			resp, err := newTestOpenAI(t, srv.URL, "k").Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
+			must.NoError(err)
+			check.Equal(want, resp.StopReason)
+		})
 	}
 }
 
 func TestOpenAIClient_RefusalFieldOverridesFinishReason(t *testing.T) {
+	must := require.New(t)
 	srv, _ := stubServer(t, 200, `{"model":"m","choices":[{"message":{"content":null,"refusal":"I cannot help with that."},"finish_reason":"stop"}],"usage":{}}`)
 
 	resp, err := newTestOpenAI(t, srv.URL, "k").Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.StopReason != "refusal" {
-		t.Errorf("stop reason = %q, want refusal", resp.StopReason)
-	}
+	must.NoError(err)
+	must.Equal("refusal", resp.StopReason)
 }
 
 func TestOpenAIClient_ErrorsInSuccessfulResponses(t *testing.T) {
@@ -387,48 +353,37 @@ func TestOpenAIClient_ErrorsInSuccessfulResponses(t *testing.T) {
 	}
 	for name, reply := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			srv, _ := stubServer(t, 200, reply)
-			if _, err := newTestOpenAI(t, srv.URL, "k").Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1}); err == nil {
-				t.Error("expected an error")
-			}
+			_, err := newTestOpenAI(t, srv.URL, "k").Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
+			must.Error(err)
 		})
 	}
 }
 
 func TestOpenAIClient_HTTPErrors(t *testing.T) {
 	for _, status := range []int{400, 401, 429, 500} {
-		srv, _ := stubServer(t, status, `{"error":{"message":"boom"}}`)
-		_, err := newTestOpenAI(t, srv.URL, "k").Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-		if err == nil || !strings.Contains(err.Error(), "HTTP "+strconv.Itoa(status)) || !strings.Contains(err.Error(), "boom") {
-			t.Errorf("status %d: err = %v", status, err)
-		}
+		t.Run("http "+strconv.Itoa(status), func(t *testing.T) {
+			must := require.New(t)
+			srv, _ := stubServer(t, status, `{"error":{"message":"boom"}}`)
+			_, err := newTestOpenAI(t, srv.URL, "k").Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
+			must.ErrorContains(err, "HTTP "+strconv.Itoa(status))
+			must.ErrorContains(err, "boom")
+		})
 	}
 }
 
 func TestOpenAIClient_Timeout(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv := hangingServer(t)
 	c, err := newOpenAIClient(&http.Client{Timeout: 50 * time.Millisecond}, srv.URL+"/v1?api-key=hunter2", "k", "m")
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 
 	_, err = c.Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-	if err == nil {
-		t.Fatal("expected a timeout error")
-	}
-	if strings.Contains(err.Error(), "hunter2") || strings.Contains(err.Error(), srv.URL) {
-		t.Errorf("error leaks the request URL: %v", err)
-	}
-}
-
-func jsonEqual(t *testing.T, a, b any) bool {
-	t.Helper()
-	x, err1 := json.Marshal(a)
-	y, err2 := json.Marshal(b)
-	if err1 != nil || err2 != nil {
-		t.Fatalf("marshal: %v %v", err1, err2)
-	}
-	return string(x) == string(y)
+	must.Error(err, "expected a timeout error")
+	check.NotContains(err.Error(), "hunter2", "error leaks the request URL")
+	check.NotContains(err.Error(), srv.URL, "error leaks the request URL")
 }
 
 func TestClients_RedactTheKeyFromProviderText(t *testing.T) {
@@ -463,31 +418,26 @@ func TestClients_RedactTheKeyFromProviderText(t *testing.T) {
 				continue
 			}
 			t.Run(name+"/"+client, func(t *testing.T) {
+				must := require.New(t)
+				check := assert.New(t)
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.WriteHeader(tc.status)
 					_, _ = io.WriteString(w, tc.reply(r))
 				}))
 				t.Cleanup(srv.Close)
 				_, err := build(srv.URL).Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-				if err == nil {
-					t.Fatal("expected an error")
-				}
+				must.Error(err)
 				msg := err.Error()
-				if strings.Contains(msg, key[:8]) {
-					t.Errorf("error carries key material: %q", msg)
-				}
-				if strings.ContainsAny(msg, "\r\n") {
-					t.Errorf("error spans several lines: %q", msg)
-				}
-				if len(msg) > maxErrorBodyBytes+64 {
-					t.Errorf("error is %d bytes, want it bounded near %d", len(msg), maxErrorBodyBytes)
-				}
+				check.NotContains(msg, key[:8], "error carries key material")
+				check.NotContains(msg, "\n", "error spans several lines")
+				check.NotContains(msg, "\r", "error spans several lines")
+				check.LessOrEqual(len(msg), maxErrorBodyBytes+64, "error is not bounded near maxErrorBodyBytes")
 			})
 		}
 	}
 }
 
-func TestRedactSecret(t *testing.T) {
+func TestRedactSecret_MasksRawAndEscapedOccurrences(t *testing.T) {
 	const key = `sk-te"st\0123456789`
 	cases := map[string]struct {
 		in, secret, want string
@@ -501,15 +451,18 @@ func TestRedactSecret(t *testing.T) {
 		"absent":       {"nothing here", key, "nothing here"},
 	}
 	for name, tc := range cases {
-		if got := redactSecret(tc.in, tc.secret); got != tc.want {
-			t.Errorf("%s: redactSecret(%q) = %q, want %q", name, tc.in, got, tc.want)
-		}
+		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, redactSecret(tc.in, tc.secret))
+		})
 	}
 }
 
 func TestNewClient_DoesNotFollowRedirects(t *testing.T) {
 	for _, provider := range []string{types.JudgeProviderAnthropic, types.JudgeProviderOpenAICompatible} {
 		t.Run(provider, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
 			var forwarded atomic.Int32
 			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				forwarded.Add(1)
@@ -523,19 +476,12 @@ func TestNewClient_DoesNotFollowRedirects(t *testing.T) {
 			t.Cleanup(redirector.Close)
 
 			c, err := NewClient(types.JudgeLLMConfig{Provider: provider, Model: "m", BaseURL: redirector.URL}, "sk-test-0123456789abcdef")
-			if err != nil {
-				t.Fatal(err)
-			}
+			must.NoError(err)
 			_, err = c.Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-			if err == nil || !strings.Contains(err.Error(), "HTTP 307") {
-				t.Fatalf("err = %v, want an HTTP 307 error", err)
-			}
-			if strings.Contains(err.Error(), target.URL) || strings.Contains(err.Error(), "stolen") {
-				t.Errorf("error names the redirect target: %v", err)
-			}
-			if n := forwarded.Load(); n != 0 {
-				t.Errorf("redirect target received %d requests, want 0", n)
-			}
+			must.ErrorContains(err, "HTTP 307")
+			check.NotContains(err.Error(), target.URL, "error names the redirect target")
+			check.NotContains(err.Error(), "stolen", "error names the redirect target")
+			check.Equal(int32(0), forwarded.Load(), "redirect target received requests")
 		})
 	}
 }
@@ -583,18 +529,16 @@ func TestClients_RetryTransientFailures(t *testing.T) {
 		build build
 	}{
 		"anthropic": {anthropicOKReply, func(t *testing.T, url string, sleep *recordingSleep, timeout time.Duration) JudgeClient {
+			must := require.New(t)
 			c, err := newAnthropicClient(&http.Client{Timeout: timeout}, url, "k", "m")
-			if err != nil {
-				t.Fatal(err)
-			}
+			must.NoError(err)
 			c.sleep = sleep.sleep
 			return c
 		}},
 		"openai": {openaiOKReply, func(t *testing.T, url string, sleep *recordingSleep, timeout time.Duration) JudgeClient {
+			must := require.New(t)
 			c, err := newOpenAIClient(&http.Client{Timeout: timeout}, url, "k", "m")
-			if err != nil {
-				t.Fatal(err)
-			}
+			must.NoError(err)
 			c.sleep = sleep.sleep
 			return c
 		}},
@@ -613,26 +557,32 @@ func TestClients_RetryTransientFailures(t *testing.T) {
 		{
 			name: "overloaded twice then ok", statuses: []int{529, 529, 200}, wantRequests: 3,
 			checkWaits: func(t *testing.T, waits []time.Duration) {
-				if len(waits) != 2 || waits[0] < 250*time.Millisecond || waits[0] > 500*time.Millisecond ||
-					waits[1] < 500*time.Millisecond || waits[1] > time.Second {
-					t.Errorf("waits = %v, want jittered 250-500ms then 500ms-1s", waits)
-				}
+				must := require.New(t)
+				check := assert.New(t)
+				must.Len(waits, 2)
+				check.GreaterOrEqual(waits[0], 250*time.Millisecond, "first wait is jittered between 250ms and 500ms")
+				check.LessOrEqual(waits[0], 500*time.Millisecond, "first wait is jittered between 250ms and 500ms")
+				check.GreaterOrEqual(waits[1], 500*time.Millisecond, "second wait is jittered between 500ms and 1s")
+				check.LessOrEqual(waits[1], time.Second, "second wait is jittered between 500ms and 1s")
 			},
 		},
 		{
 			name: "rate limited with retry-after seconds", statuses: []int{429, 200}, header: retryAfter("1"), wantRequests: 2,
 			checkWaits: func(t *testing.T, waits []time.Duration) {
-				if len(waits) != 1 || waits[0] != time.Second {
-					t.Errorf("waits = %v, want [1s]", waits)
-				}
+				check := assert.New(t)
+				must := require.New(t)
+				must.Len(waits, 1)
+				check.Equal(time.Second, waits[0])
 			},
 		},
 		{
 			name: "retry-after http date", statuses: []int{503, 200}, header: retryAfter(time.Now().Add(3 * time.Second).UTC().Format(http.TimeFormat)), wantRequests: 2,
 			checkWaits: func(t *testing.T, waits []time.Duration) {
-				if len(waits) != 1 || waits[0] < time.Second || waits[0] > 3*time.Second {
-					t.Errorf("waits = %v, want one wait of about 2-3s", waits)
-				}
+				must := require.New(t)
+				check := assert.New(t)
+				must.Len(waits, 1)
+				check.GreaterOrEqual(waits[0], time.Second, "wait follows the Retry-After date")
+				check.LessOrEqual(waits[0], 3*time.Second, "wait follows the Retry-After date")
 			},
 		},
 		{name: "bad request is not retried", statuses: []int{400}, wantRequests: 1, wantErr: "HTTP 400"},
@@ -644,6 +594,8 @@ func TestClients_RetryTransientFailures(t *testing.T) {
 	for name, client := range clients {
 		for _, tc := range cases {
 			t.Run(name+"/"+tc.name, func(t *testing.T) {
+				check := assert.New(t)
+				must := require.New(t)
 				srv, requests := sequenceServer(t, client.ok, tc.header, tc.statuses...)
 				sleep := &recordingSleep{err: tc.sleepErr}
 				timeout := tc.timeout
@@ -651,15 +603,12 @@ func TestClients_RetryTransientFailures(t *testing.T) {
 					timeout = 10 * time.Second
 				}
 				_, err := client.build(t, srv.URL, sleep, timeout).Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-				if tc.wantErr == "" && err != nil {
-					t.Fatalf("Complete: %v", err)
+				if tc.wantErr == "" {
+					must.NoError(err)
+				} else {
+					must.ErrorContains(err, tc.wantErr)
 				}
-				if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
-					t.Fatalf("err = %v, want one containing %q", err, tc.wantErr)
-				}
-				if got := requests.Load(); got != tc.wantRequests {
-					t.Errorf("server saw %d requests, want %d", got, tc.wantRequests)
-				}
+				check.Equal(tc.wantRequests, requests.Load())
 				if tc.checkWaits != nil {
 					tc.checkWaits(t, sleep.waits)
 				}
@@ -669,80 +618,88 @@ func TestClients_RetryTransientFailures(t *testing.T) {
 }
 
 func TestPostJSON_DeadlineBoundsAllAttempts(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv, requests := sequenceServer(t, anthropicOKReply, nil, 503)
 	c, err := newAnthropicClient(&http.Client{Timeout: 700 * time.Millisecond}, srv.URL, "k", "m")
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	start := time.Now()
 	_, err = c.Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-	if err == nil {
-		t.Fatal("expected an error")
-	}
-	if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
-		t.Errorf("retries ran %s past a 700ms timeout", elapsed)
-	}
-	if n := requests.Load(); n < 1 || n > 2 {
-		t.Errorf("server saw %d requests, want the deadline to stop retries before the attempt cap", n)
-	}
+	must.Error(err)
+	check.LessOrEqual(time.Since(start), 1500*time.Millisecond, "retries ran past a 700ms timeout")
+	n := requests.Load()
+	check.GreaterOrEqual(n, int32(1))
+	check.LessOrEqual(n, int32(2), "the deadline stops retries before the attempt cap")
 }
 
-func TestParseRetryAfter(t *testing.T) {
+func TestParseRetryAfter_SecondsAndHTTPDates(t *testing.T) {
 	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
-	cases := map[string]time.Duration{
-		"":                              0,
-		"2":                             2 * time.Second,
-		" 5 ":                           5 * time.Second,
-		"0":                             0,
-		"-3":                            0,
-		"soon":                          0,
-		"99999999999999":                time.Hour,
-		"Thu, 01 Oct 2026 12:00:10 GMT": 10 * time.Second,
-		"Thu, 01 Oct 2026 11:59:00 GMT": 0,
+	cases := []struct {
+		name  string
+		input string
+		want  time.Duration
+	}{
+		{name: "empty header", input: "", want: 0},
+		{name: "delta seconds", input: "2", want: 2 * time.Second},
+		{name: "delta seconds with surrounding spaces", input: " 5 ", want: 5 * time.Second},
+		{name: "zero seconds", input: "0", want: 0},
+		{name: "negative seconds", input: "-3", want: 0},
+		{name: "non-numeric value", input: "soon", want: 0},
+		{name: "huge delta seconds capped at an hour", input: "99999999999999", want: time.Hour},
+		{name: "future http date", input: "Thu, 01 Oct 2026 12:00:10 GMT", want: 10 * time.Second},
+		{name: "past http date", input: "Thu, 01 Oct 2026 11:59:00 GMT", want: 0},
 	}
-	for in, want := range cases {
-		if got := parseRetryAfter(in, now); got != want {
-			t.Errorf("parseRetryAfter(%q) = %s, want %s", in, got, want)
-		}
-	}
-}
-
-func TestBackoffIsJitteredExponential(t *testing.T) {
-	for attempt, bounds := range map[int][2]time.Duration{1: {250 * time.Millisecond, 500 * time.Millisecond}, 2: {500 * time.Millisecond, time.Second}} {
-		seen := map[time.Duration]bool{}
-		for range 200 {
-			d := backoff(attempt)
-			if d < bounds[0] || d > bounds[1] {
-				t.Fatalf("backoff(%d) = %s, outside [%s, %s]", attempt, d, bounds[0], bounds[1])
-			}
-			seen[d] = true
-		}
-		if len(seen) < 2 {
-			t.Errorf("backoff(%d) is not jittered", attempt)
-		}
-	}
-}
-
-func TestClients_RejectOversizedResponses(t *testing.T) {
-	huge := strings.Repeat("x", maxResponseBytes)
-	for name, build := range map[string]func(url string) JudgeClient{
-		"anthropic": func(url string) JudgeClient { return newTestAnthropic(t, url) },
-		"openai":    func(url string) JudgeClient { return newTestOpenAI(t, url, "k") },
-	} {
-		t.Run(name, func(t *testing.T) {
-			srv, _ := stubServer(t, 200, `{"model":"m","pad":"`+huge+`"}`)
-			_, err := build(srv.URL).Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-			if err == nil || !strings.Contains(err.Error(), "provider response exceeds") {
-				t.Fatalf("err = %v, want the response-size error", err)
-			}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, parseRetryAfter(tc.input, now))
 		})
 	}
-	t.Run("exactly at the cap", func(t *testing.T) {
+}
+
+func TestBackoff_JitteredWithinExponentialBounds(t *testing.T) {
+	cases := []struct {
+		attempt  int
+		min, max time.Duration
+	}{
+		{attempt: 1, min: 250 * time.Millisecond, max: 500 * time.Millisecond},
+		{attempt: 2, min: 500 * time.Millisecond, max: time.Second},
+	}
+	for _, tc := range cases {
+		t.Run("attempt "+strconv.Itoa(tc.attempt), func(t *testing.T) {
+			must := require.New(t)
+			seen := map[time.Duration]bool{}
+			for range 200 {
+				d := backoff(tc.attempt)
+				must.GreaterOrEqual(d, tc.min)
+				must.LessOrEqual(d, tc.max)
+				seen[d] = true
+			}
+			must.Greater(len(seen), 1, "backoff is not jittered")
+		})
+	}
+}
+
+func TestClients_EnforcesResponseSizeLimit(t *testing.T) {
+	huge := strings.Repeat("x", maxResponseBytes)
+	builders := map[string]func(t *testing.T, url string) JudgeClient{
+		"anthropic": func(t *testing.T, url string) JudgeClient { return newTestAnthropic(t, url) },
+		"openai":    func(t *testing.T, url string) JudgeClient { return newTestOpenAI(t, url, "k") },
+	}
+	for name, build := range builders {
+		t.Run(name+" rejects an oversized response", func(t *testing.T) {
+			must := require.New(t)
+			srv, _ := stubServer(t, 200, `{"model":"m","pad":"`+huge+`"}`)
+			_, err := build(t, srv.URL).Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
+			must.ErrorContains(err, "provider response exceeds")
+		})
+	}
+	t.Run("accepts a response exactly at the cap", func(t *testing.T) {
+		must := require.New(t)
 		body := `{"model":"m","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{},"pad":"`
 		body += strings.Repeat("x", maxResponseBytes-len(body)-2) + `"}`
 		srv, _ := stubServer(t, 200, body)
-		if _, err := newTestAnthropic(t, srv.URL).Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1}); err != nil {
-			t.Fatalf("a %d-byte response was rejected: %v", len(body), err)
-		}
+		_, err := newTestAnthropic(t, srv.URL).Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
+		must.NoError(err, "a %d-byte response was rejected", len(body))
 	})
 }

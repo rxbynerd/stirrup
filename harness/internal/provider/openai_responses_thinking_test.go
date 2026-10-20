@@ -7,11 +7,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/types"
 )
 
-func TestResponsesRequest_ReasoningSummary(t *testing.T) {
+func TestResponsesRequest_ReasoningObjectSummary(t *testing.T) {
 	cases := []struct {
 		name, model, effort, summary string
 		want                         string // "" means no reasoning object
@@ -24,39 +26,28 @@ func TestResponsesRequest_ReasoningSummary(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			params := effortParams(tc.model, tc.effort, false)
 			params.ReasoningSummary = tc.summary
 			q := quirks.DefaultRegistry().Resolve("openai-responses", tc.model)
 			req, err := buildResponsesRequest(params, q, nil, "")
-			if err != nil {
-				t.Fatalf("build: %v", err)
-			}
+			must.NoError(err, "build request")
 			body, err := json.Marshal(req)
-			if err != nil {
-				t.Fatalf("marshal: %v", err)
-			}
+			must.NoError(err, "marshal request")
 			var fields map[string]json.RawMessage
-			if err := json.Unmarshal(body, &fields); err != nil {
-				t.Fatalf("decode: %v", err)
-			}
+			must.NoError(json.Unmarshal(body, &fields), "decode request")
+
 			got, ok := fields["reasoning"]
 			if tc.want == "" {
-				if ok {
-					t.Errorf("reasoning = %s, want absent", got)
-				}
+				must.False(ok, "reasoning = %s, want absent", got)
 				return
 			}
-			if !ok || !jsonValuesEqual(t, got, []byte(tc.want)) {
-				t.Errorf("reasoning = %s, want %s", got, tc.want)
-			}
+			must.True(ok, "reasoning is absent, want %s", tc.want)
+			must.JSONEq(tc.want, string(got))
 
 			var round responsesRequest
-			if err := json.Unmarshal(body, &round); err != nil {
-				t.Fatalf("round trip: %v", err)
-			}
-			if round.ReasoningSummary != req.ReasoningSummary {
-				t.Errorf("round-tripped ReasoningSummary = %q, want %q", round.ReasoningSummary, req.ReasoningSummary)
-			}
+			must.NoError(json.Unmarshal(body, &round), "round trip")
+			must.Equal(req.ReasoningSummary, round.ReasoningSummary, "round-tripped ReasoningSummary")
 		})
 	}
 }
@@ -84,61 +75,50 @@ func responsesSummaryTurn() []byte {
 
 // Summary deltas stream as thinking_delta only, and the reasoning item
 // that carries the summary is replayed verbatim on the next turn.
-func TestOpenAIResponsesAdapter_ReasoningSummaryStreamsAndReplays(t *testing.T) {
+func TestOpenAIResponsesAdapter_ReasoningSummary_StreamsAndReplays(t *testing.T) {
+	must := require.New(t)
 	script := newResponsesScript(t, responsesSummaryTurn())
 	adapter := script.adapter(nil)
 
 	params := effortParams(responsesReplayModel, "high", true)
 	params.ReasoningSummary = types.ReasoningSummaryAuto
 	ch, err := adapter.Stream(context.Background(), params)
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
+	must.NoError(err, "Stream")
 	events := drainStream(t, ch)
 
 	thinking, text := splitDeltas(events)
-	if got, want := strings.Join(thinking, "|"), "**Plan**\n\n|Read a.go first."; got != want {
-		t.Errorf("thinking_delta fragments = %q, want %q", got, want)
-	}
-	if text != "" {
-		t.Errorf("answer text = %q, want none", text)
-	}
+	must.Equal("**Plan**\n\n|Read a.go first.", strings.Join(thinking, "|"), "thinking_delta fragments")
+	must.Empty(text, "answer text")
 	for _, ev := range events {
-		if ev.Type == "tool_call" && strings.Contains(string(mustJSON(t, ev.Input)), "Plan") {
-			t.Errorf("summary text leaked into tool input: %v", ev.Input)
+		if ev.Type == "tool_call" {
+			must.NotContains(string(mustJSON(t, ev.Input)), "Plan", "summary text leaked into tool input")
 		}
 	}
-	if body := string(script.lastBody(t)); !strings.Contains(body, `"reasoning":{"effort":"high","summary":"auto"}`) {
-		t.Errorf("first request does not ask for a summary: %s", body)
-	}
+	body := string(script.lastBody(t))
+	must.Contains(body, `"reasoning":{"effort":"high","summary":"auto"}`, "first request does not ask for a summary")
 
 	stored := storedReplayItems(t, messageComplete(t, events))
-	if len(stored) != 2 || !strings.Contains(string(stored[0]), `"summary_text"`) {
-		t.Fatalf("stored items = %s, want the reasoning item with its summary first", stored)
-	}
+	must.Len(stored, 2, "stored items")
+	must.Contains(string(stored[0]), `"summary_text"`, "the stored reasoning item should carry its summary")
 
 	assistant := assistantFromEvents(events)
 	results := types.Message{Role: "user", Content: []types.ContentBlock{{Type: "tool_result", ToolUseID: "call_s1", Content: "package a"}}}
 	params.Messages = append(params.Messages, assistant, results)
 	ch, err = adapter.Stream(context.Background(), params)
-	if err != nil {
-		t.Fatalf("second Stream: %v", err)
-	}
+	must.NoError(err, "second Stream")
 	drainStream(t, ch)
 
 	input := requestInput(t, script.lastBody(t))
-	if len(input) < 3 || !jsonValuesEqual(t, input[1], stored[0]) {
-		t.Fatalf("second request input = %s, want the stored reasoning item replayed at index 1", input)
-	}
+	must.GreaterOrEqual(len(input), 3, "second request input = %s", input)
+	must.JSONEq(string(stored[0]), string(input[1]), "second request should replay the stored reasoning item at index 1")
 	assertCallsPaired(t, input)
 }
 
 func mustJSON(t *testing.T, v any) []byte {
 	t.Helper()
+	must := require.New(t)
 	b, err := json.Marshal(v)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	must.NoError(err, "marshal")
 	return b
 }
 
@@ -158,7 +138,7 @@ func responsesSummaryDeltas(payloads ...string) []byte {
 	return []byte(strings.Join(events, ""))
 }
 
-func TestOpenAIResponsesAdapter_ReasoningSummaryParts(t *testing.T) {
+func TestOpenAIResponsesAdapter_ReasoningSummary_PartsAreParagraphs(t *testing.T) {
 	delta := func(item string, index int, text string) string {
 		return fmt.Sprintf(`{"item_id":%q,"output_index":0,"summary_index":%d,"delta":%s}`, item, index, mustJSON(t, text))
 	}
@@ -190,26 +170,19 @@ func TestOpenAIResponsesAdapter_ReasoningSummaryParts(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			script := newResponsesScript(t, responsesSummaryDeltas(tc.payloads...))
 			params := effortParams(responsesReplayModel, "high", true)
 			params.ReasoningSummary = types.ReasoningSummaryAuto
 			ch, err := script.adapter(nil).Stream(context.Background(), params)
-			if err != nil {
-				t.Fatalf("Stream: %v", err)
-			}
+			must.NoError(err, "Stream")
 			events := drainStream(t, ch)
 			for _, ev := range events {
-				if ev.Type == "error" {
-					t.Fatalf("stream failed: %v", ev.Error)
-				}
+				must.NotEqual("error", ev.Type, "stream failed: %v", ev.Error)
 			}
 			thinking, text := splitDeltas(events)
-			if strings.Join(thinking, "|") != strings.Join(tc.want, "|") {
-				t.Errorf("thinking_delta fragments = %q, want %q", thinking, tc.want)
-			}
-			if text != "done" {
-				t.Errorf("answer text = %q, want done", text)
-			}
+			must.Equal(strings.Join(tc.want, "|"), strings.Join(thinking, "|"), "thinking_delta fragments")
+			must.Equal("done", text, "answer text")
 		})
 	}
 }

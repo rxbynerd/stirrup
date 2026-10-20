@@ -1,8 +1,10 @@
 package cmd
 
 import (
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -12,6 +14,8 @@ import (
 // other field at its zero value; operators reach for --config to set
 // the rest.
 func TestBuildHarnessRunConfig_BatchFlagEnabledOnly(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "research",
@@ -26,30 +30,16 @@ func TestBuildHarnessRunConfig_BatchFlagEnabledOnly(t *testing.T) {
 		LogLevel:      "info",
 		Batch:         true,
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
-	if cfg.Provider.Batch == nil {
-		t.Fatal("expected non-nil Provider.Batch when --batch is set")
-	}
-	if !cfg.Provider.Batch.Enabled {
-		t.Errorf("Provider.Batch.Enabled = false, want true")
-	}
-	if cfg.Provider.Batch.MaxWaitSeconds != nil {
-		t.Errorf("Provider.Batch.MaxWaitSeconds = %v, want nil (defaulted by ValidateRunConfig)", *cfg.Provider.Batch.MaxWaitSeconds)
-	}
-	if cfg.Provider.Batch.HarnessSidePolling {
-		t.Errorf("Provider.Batch.HarnessSidePolling = true, want false (operators set this via --config)")
-	}
-	if cfg.Provider.Batch.FallbackOnTimeout {
-		t.Errorf("Provider.Batch.FallbackOnTimeout = true, want false")
-	}
-	if cfg.Provider.Batch.CancelBundleOnRunCancel {
-		t.Errorf("Provider.Batch.CancelBundleOnRunCancel = true, want false")
-	}
-	if cfg.Provider.Batch.AllowInteractiveModes {
-		t.Errorf("Provider.Batch.AllowInteractiveModes = true, want false")
-	}
+	must.NoError(err)
+
+	batch := cfg.Provider.Batch
+	must.NotNil(batch, "expected non-nil Provider.Batch when --batch is set")
+	check.True(batch.Enabled, "Provider.Batch.Enabled")
+	check.Nil(batch.MaxWaitSeconds, "Provider.Batch.MaxWaitSeconds is defaulted by ValidateRunConfig")
+	check.False(batch.HarnessSidePolling, "Provider.Batch.HarnessSidePolling is set via --config")
+	check.False(batch.FallbackOnTimeout, "Provider.Batch.FallbackOnTimeout")
+	check.False(batch.CancelBundleOnRunCancel, "Provider.Batch.CancelBundleOnRunCancel")
+	check.False(batch.AllowInteractiveModes, "Provider.Batch.AllowInteractiveModes")
 }
 
 // TestBuildHarnessRunConfig_BatchFlagUnsetLeavesNil verifies the
@@ -57,6 +47,7 @@ func TestBuildHarnessRunConfig_BatchFlagEnabledOnly(t *testing.T) {
 // nil so the validator's MaxWaitSeconds default does not fire and the
 // factory routes through the streaming adapter.
 func TestBuildHarnessRunConfig_BatchFlagUnsetLeavesNil(t *testing.T) {
+	must := require.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "research",
@@ -69,12 +60,8 @@ func TestBuildHarnessRunConfig_BatchFlagUnsetLeavesNil(t *testing.T) {
 		TransportType: "stdio",
 		LogLevel:      "info",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
-	if cfg.Provider.Batch != nil {
-		t.Errorf("expected Provider.Batch to be nil without --batch, got %+v", cfg.Provider.Batch)
-	}
+	must.NoError(err)
+	must.Nil(cfg.Provider.Batch, "Provider.Batch without --batch")
 }
 
 // TestApplyOverrides_BatchFlagMergesWithFile pins the merge semantics
@@ -82,6 +69,8 @@ func TestBuildHarnessRunConfig_BatchFlagUnsetLeavesNil(t *testing.T) {
 // setting --batch on top must flip Enabled to true without disturbing
 // the file's other fields.
 func TestApplyOverrides_BatchFlagMergesWithFile(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Provider.Batch = &types.BatchProviderConfig{
@@ -89,53 +78,38 @@ func TestApplyOverrides_BatchFlagMergesWithFile(t *testing.T) {
 		HarnessSidePolling: true,
 	}
 
-	if err := cmd.Flags().Set("batch", "true"); err != nil {
-		t.Fatalf("set --batch: %v", err)
-	}
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("batch", "true"), "set --batch")
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.Provider.Batch == nil {
-		t.Fatal("expected Provider.Batch to remain non-nil after override")
-	}
-	if !cfg.Provider.Batch.Enabled {
-		t.Errorf("Provider.Batch.Enabled: --batch override failed, got false")
-	}
-	if !cfg.Provider.Batch.HarnessSidePolling {
-		t.Errorf("Provider.Batch.HarnessSidePolling: file value should survive, got false")
-	}
+	batch := cfg.Provider.Batch
+	must.NotNil(batch, "Provider.Batch should remain non-nil after override")
+	check.True(batch.Enabled, "--batch override should set Provider.Batch.Enabled")
+	check.True(batch.HarnessSidePolling, "file value should survive for Provider.Batch.HarnessSidePolling")
 }
 
 // TestApplyOverrides_BatchFlagAllocatesWhenFileOmits covers the path
 // where the --config file omits the Batch block entirely. The flag
 // alone must allocate a fresh BatchProviderConfig with Enabled=true.
 func TestApplyOverrides_BatchFlagAllocatesWhenFileOmits(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
-	if cfg.Provider.Batch != nil {
-		t.Fatalf("baseFileConfig should not set Batch; got %+v", cfg.Provider.Batch)
-	}
+	must.Nil(cfg.Provider.Batch, "baseFileConfig should not set Batch")
 
-	if err := cmd.Flags().Set("batch", "true"); err != nil {
-		t.Fatalf("set --batch: %v", err)
-	}
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("batch", "true"), "set --batch")
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.Provider.Batch == nil {
-		t.Fatal("expected Provider.Batch to be allocated when --batch flips on an empty slot")
-	}
-	if !cfg.Provider.Batch.Enabled {
-		t.Errorf("Provider.Batch.Enabled = false, want true")
-	}
+	must.NotNil(cfg.Provider.Batch, "expected Provider.Batch to be allocated when --batch flips on an empty slot")
+	check.True(cfg.Provider.Batch.Enabled, "Provider.Batch.Enabled")
 }
 
 // TestApplyOverrides_BatchFlagUnsetPreservesFile pins the precedence
 // rule: an unset --batch flag must not clobber a Batch block the file
 // supplied.
 func TestApplyOverrides_BatchFlagUnsetPreservesFile(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Provider.Batch = &types.BatchProviderConfig{
@@ -143,19 +117,12 @@ func TestApplyOverrides_BatchFlagUnsetPreservesFile(t *testing.T) {
 		HarnessSidePolling: true,
 	}
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.Provider.Batch == nil {
-		t.Fatal("expected Provider.Batch to survive when --batch is unset")
-	}
-	if !cfg.Provider.Batch.Enabled {
-		t.Errorf("Provider.Batch.Enabled: file value should survive, got false")
-	}
-	if !cfg.Provider.Batch.HarnessSidePolling {
-		t.Errorf("Provider.Batch.HarnessSidePolling: file value should survive, got false")
-	}
+	batch := cfg.Provider.Batch
+	must.NotNil(batch, "expected Provider.Batch to survive when --batch is unset")
+	check.True(batch.Enabled, "file value should survive for Provider.Batch.Enabled")
+	check.True(batch.HarnessSidePolling, "file value should survive for Provider.Batch.HarnessSidePolling")
 }
 
 // TestHarnessCmd_BatchFlagHelpText pins the operator-facing flag
@@ -163,10 +130,10 @@ func TestApplyOverrides_BatchFlagUnsetPreservesFile(t *testing.T) {
 // cost/latency tradeoff statement or the doc link that operators rely
 // on to find the cross-field invariants.
 func TestHarnessCmd_BatchFlagHelpText(t *testing.T) {
+	must := require.New(t)
 	flag := harnessCmd.Flags().Lookup("batch")
-	if flag == nil {
-		t.Fatal("expected --batch flag to be registered on harnessCmd")
-	}
+	must.NotNil(flag, "expected --batch flag to be registered on harnessCmd")
+
 	usage := flag.Usage
 	wantSubstrings := []string{
 		"async batch submission",
@@ -178,13 +145,12 @@ func TestHarnessCmd_BatchFlagHelpText(t *testing.T) {
 		"docs/batch.md",
 	}
 	for _, want := range wantSubstrings {
-		if !strings.Contains(usage, want) {
-			t.Errorf("--batch usage text missing %q; got: %s", want, usage)
-		}
+		t.Run("mentions "+want, func(t *testing.T) {
+			must := require.New(t)
+			must.Contains(usage, want)
+		})
 	}
-	if flag.DefValue != "false" {
-		t.Errorf("--batch default = %q, want \"false\"", flag.DefValue)
-	}
+	must.Equal("false", flag.DefValue, "--batch default")
 }
 
 // TestApplyOverrides_BatchFlagExplicitFalseClears pins that
@@ -192,6 +158,8 @@ func TestHarnessCmd_BatchFlagHelpText(t *testing.T) {
 // Batch.Enabled=true flips Enabled to false while the rest of the
 // struct (e.g. HarnessSidePolling) survives.
 func TestApplyOverrides_BatchFlagExplicitFalseClears(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Provider.Batch = &types.BatchProviderConfig{
@@ -199,20 +167,11 @@ func TestApplyOverrides_BatchFlagExplicitFalseClears(t *testing.T) {
 		HarnessSidePolling: true,
 	}
 
-	if err := cmd.Flags().Set("batch", "false"); err != nil {
-		t.Fatalf("set --batch=false: %v", err)
-	}
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("batch", "false"), "set --batch=false")
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.Provider.Batch == nil {
-		t.Fatal("expected Provider.Batch to remain non-nil after --batch=false")
-	}
-	if cfg.Provider.Batch.Enabled {
-		t.Errorf("Provider.Batch.Enabled = true, want false after --batch=false")
-	}
-	if !cfg.Provider.Batch.HarnessSidePolling {
-		t.Errorf("Provider.Batch.HarnessSidePolling: file value should survive --batch=false, got false")
-	}
+	batch := cfg.Provider.Batch
+	must.NotNil(batch, "expected Provider.Batch to remain non-nil after --batch=false")
+	check.False(batch.Enabled, "--batch=false should clear Provider.Batch.Enabled")
+	check.True(batch.HarnessSidePolling, "file value should survive --batch=false for Provider.Batch.HarnessSidePolling")
 }

@@ -10,9 +10,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/types"
@@ -52,6 +53,7 @@ func (endlessArchiver) ArchiveWorkspace(ctx context.Context, w io.Writer, _ int6
 
 func tarStream(t *testing.T, headers ...*tar.Header) []byte {
 	t.Helper()
+	must := require.New(t)
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	for _, h := range headers {
@@ -60,27 +62,21 @@ func tarStream(t *testing.T, headers ...*tar.Header) []byte {
 			body = "content of " + h.Name
 			h.Size = int64(len(body))
 		}
-		if err := tw.WriteHeader(h); err != nil {
-			t.Fatalf("WriteHeader %q: %v", h.Name, err)
-		}
+		must.NoError(tw.WriteHeader(h), "WriteHeader %q", h.Name)
 		if body != "" {
-			if _, err := tw.Write([]byte(body)); err != nil {
-				t.Fatalf("write %q: %v", h.Name, err)
-			}
+			_, err := tw.Write([]byte(body))
+			must.NoError(err, "write %q", h.Name)
 		}
 	}
-	if err := tw.Close(); err != nil {
-		t.Fatalf("close tar: %v", err)
-	}
+	must.NoError(tw.Close())
 	return buf.Bytes()
 }
 
 func readUploaded(t *testing.T, body []byte) []*tar.Header {
 	t.Helper()
+	must := require.New(t)
 	gzr, err := gzip.NewReader(bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("gzip.NewReader: %v", err)
-	}
+	must.NoError(err)
 	tr := tar.NewReader(gzr)
 	var out []*tar.Header
 	for {
@@ -88,9 +84,7 @@ func readUploaded(t *testing.T, body []byte) []*tar.Header {
 		if err == io.EOF {
 			return out
 		}
-		if err != nil {
-			t.Fatalf("tar.Next: %v", err)
-		}
+		must.NoError(err)
 		out = append(out, h)
 	}
 }
@@ -105,50 +99,41 @@ func TestGCSExporter_EmptyWorkspaceUploadsEmptyArchive(t *testing.T) {
 	}
 	for name, src := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			srv := &captureUploadServer{}
 			exp := newTestExporter(t, srv)
 			receipt, err := exp.Export(context.Background(), src, "gs://b/o.tar.gz")
-			if err != nil {
-				t.Fatalf("Export: %v", err)
-			}
-			if receipt.Status != types.ExportStatusEmpty || receipt.Files != 0 || !receipt.Delivered() {
-				t.Errorf("receipt = %+v, want a delivered empty receipt", receipt)
-			}
-			if len(srv.requests) != 1 {
-				t.Fatalf("uploads = %d, want 1", len(srv.requests))
-			}
-			if got := readUploaded(t, srv.last().Body); len(got) != 0 {
-				t.Errorf("empty archive has %d entries", len(got))
-			}
+			must.NoError(err)
+			must.Equal(types.ExportStatusEmpty, receipt.Status)
+			must.Zero(receipt.Files)
+			must.True(receipt.Delivered(), "receipt = %+v, want a delivered empty receipt", receipt)
+			must.Len(srv.requests, 1)
+			must.Empty(readUploaded(t, srv.last().Body))
 		})
 	}
 }
 
-// TestGCSExporter_MissingWorkspaceRoot pins that a missing root fails the
-// export with nothing uploaded, for the host walker and a sandbox stream.
-func TestGCSExporter_MissingWorkspaceRoot(t *testing.T) {
+// TestGCSExporter_MissingWorkspaceRoot_FailsWithoutUpload pins that a missing
+// root fails the export with nothing uploaded, for the host walker and a
+// sandbox stream.
+func TestGCSExporter_MissingWorkspaceRoot_FailsWithoutUpload(t *testing.T) {
+	must := require.New(t)
 	gone := localArchiver(t, t.TempDir())
-	if err := os.Remove(gone.HostWorkspaceRoot()); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.Remove(gone.HostWorkspaceRoot()))
 	cases := map[string]executor.WorkspaceArchiver{
 		"local executor": gone,
 		"sandbox":        streamArchiver{err: fmt.Errorf("archive workspace /workspace: %w", executor.ErrWorkspaceRootMissing)},
 	}
 	for name, src := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			srv := &captureUploadServer{}
 			exp := newTestExporter(t, srv)
 			receipt, err := exp.Export(context.Background(), src, "gs://b/o.tar.gz")
-			if !errors.Is(err, executor.ErrWorkspaceRootMissing) {
-				t.Fatalf("Export error = %v, want ErrWorkspaceRootMissing", err)
-			}
-			if receipt.Status != types.ExportStatusFailed || receipt.Delivered() {
-				t.Errorf("receipt = %+v, want failed", receipt)
-			}
-			if len(srv.requests) != 0 {
-				t.Errorf("uploads = %d, want 0", len(srv.requests))
-			}
+			must.ErrorIs(err, executor.ErrWorkspaceRootMissing)
+			must.Equal(types.ExportStatusFailed, receipt.Status)
+			must.False(receipt.Delivered())
+			must.Empty(srv.requests)
 		})
 	}
 }
@@ -158,6 +143,7 @@ func TestGCSExporter_MissingWorkspaceRoot(t *testing.T) {
 // in-root symlinks and hard links kept unfollowed, devices and FIFOs
 // skipped.
 func TestGCSExporter_RepacksSandboxStream(t *testing.T) {
+	must := require.New(t)
 	mtime := time.Unix(1_700_000_000, 0)
 	stream := tarStream(t,
 		&tar.Header{Name: "./", Typeflag: tar.TypeDir, Mode: 0o755},
@@ -172,12 +158,9 @@ func TestGCSExporter_RepacksSandboxStream(t *testing.T) {
 	srv := &captureUploadServer{}
 	exp := newTestExporter(t, srv)
 	receipt, err := exp.Export(context.Background(), streamArchiver{stream: stream}, "gs://b/o.tar.gz")
-	if err != nil {
-		t.Fatalf("Export: %v", err)
-	}
-	if receipt.Status != types.ExportStatusUploaded || receipt.Files != 4 {
-		t.Errorf("receipt = %+v, want uploaded with 4 files", receipt)
-	}
+	must.NoError(err)
+	must.Equal(types.ExportStatusUploaded, receipt.Status)
+	must.Equal(4, receipt.Files)
 
 	got := map[string]*tar.Header{}
 	var names []string
@@ -185,23 +168,23 @@ func TestGCSExporter_RepacksSandboxStream(t *testing.T) {
 		got[h.Name] = h
 		names = append(names, h.Name)
 	}
-	want := []string{"src/", "src/main.go", "src/alias.go", "src/up", "hard"}
-	if strings.Join(names, ",") != strings.Join(want, ",") {
-		t.Fatalf("entries = %v, want %v", names, want)
-	}
+	must.Equal([]string{"src/", "src/main.go", "src/alias.go", "src/up", "hard"}, names)
+
 	main := got["src/main.go"]
-	if main.Uid != 0 || main.Gid != 0 || main.Uname != "" || main.Gname != "" {
-		t.Errorf("ownership kept: uid=%d gid=%d uname=%q gname=%q", main.Uid, main.Gid, main.Uname, main.Gname)
-	}
-	if main.Mode != 0o755 || !main.ModTime.Equal(mtime) {
-		t.Errorf("main.go mode=%o mtime=%v, want 0755 and %v", main.Mode, main.ModTime, mtime)
-	}
-	if got["src/alias.go"].Typeflag != tar.TypeSymlink || got["src/alias.go"].Linkname != "main.go" {
-		t.Errorf("alias.go = %+v, want an unfollowed symlink", got["src/alias.go"])
-	}
-	if got["hard"].Typeflag != tar.TypeLink || got["hard"].Linkname != "src/main.go" {
-		t.Errorf("hard = %+v, want a hard link to src/main.go", got["hard"])
-	}
+	must.Zero(main.Uid, "uid kept")
+	must.Zero(main.Gid, "gid kept")
+	must.Empty(main.Uname, "uname kept")
+	must.Empty(main.Gname, "gname kept")
+	must.EqualValues(0o755, main.Mode)
+	must.True(main.ModTime.Equal(mtime), "main.go mtime = %v, want %v", main.ModTime, mtime)
+
+	alias := got["src/alias.go"]
+	must.Equal(byte(tar.TypeSymlink), alias.Typeflag, "alias.go should stay a symlink")
+	must.Equal("main.go", alias.Linkname)
+
+	hard := got["hard"]
+	must.Equal(byte(tar.TypeLink), hard.Typeflag, "hard should stay a hard link")
+	must.Equal("src/main.go", hard.Linkname)
 }
 
 // TestGCSExporter_RefusesHostileSandboxStream pins that entries which could
@@ -268,18 +251,13 @@ func TestGCSExporter_RefusesHostileSandboxStream(t *testing.T) {
 	}
 	for name, headers := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			srv := &captureUploadServer{}
 			exp := newTestExporter(t, srv)
 			receipt, err := exp.Export(context.Background(), streamArchiver{stream: tarStream(t, headers...)}, "gs://b/o.tar.gz")
-			if err == nil || !strings.Contains(err.Error(), "refusing archive entry") {
-				t.Fatalf("Export error = %v, want a refusal", err)
-			}
-			if receipt.Status != types.ExportStatusFailed {
-				t.Errorf("receipt status = %q, want failed", receipt.Status)
-			}
-			if len(srv.requests) != 0 {
-				t.Errorf("uploads = %d, want 0", len(srv.requests))
-			}
+			must.ErrorContains(err, "refusing archive entry")
+			must.Equal(types.ExportStatusFailed, receipt.Status)
+			must.Empty(srv.requests)
 		})
 	}
 }
@@ -287,6 +265,7 @@ func TestGCSExporter_RefusesHostileSandboxStream(t *testing.T) {
 // TestRepackArchive_KeepsInRootLinkChains pins that symlinks resolving
 // through other symlinks are kept when every resolution stays in the root.
 func TestRepackArchive_KeepsInRootLinkChains(t *testing.T) {
+	must := require.New(t)
 	stream := tarStream(t,
 		&tar.Header{Name: "./t", Typeflag: tar.TypeSymlink, Linkname: "s/a/c/file"},
 		&tar.Header{Name: "./s", Typeflag: tar.TypeSymlink, Linkname: "."},
@@ -300,24 +279,22 @@ func TestRepackArchive_KeepsInRootLinkChains(t *testing.T) {
 		&tar.Header{Name: "./h", Typeflag: tar.TypeLink, Linkname: "a/c/file"},
 	)
 	packed, err := repackArchive(bytes.NewReader(stream), 1<<20)
-	if err != nil {
-		t.Fatalf("repackArchive: %v", err)
-	}
-	if packed.files != 8 {
-		t.Errorf("files = %d, want 8", packed.files)
-	}
+	must.NoError(err)
+	must.Equal(8, packed.files)
 }
 
 // TestArchiveWorkspace_EnforcesCap pins that a stream past the cap fails
 // even when the producer ignores the cap it was given.
 func TestArchiveWorkspace_EnforcesCap(t *testing.T) {
+	must := require.New(t)
 	big := tarStream(t, &tar.Header{Name: "big", Typeflag: tar.TypeReg})
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	payload := bytes.Repeat([]byte("z"), 256<<10)
-	_ = tw.WriteHeader(&tar.Header{Name: "big", Typeflag: tar.TypeReg, Size: int64(len(payload)), Mode: 0o644})
-	_, _ = tw.Write(payload)
-	_ = tw.Close()
+	must.NoError(tw.WriteHeader(&tar.Header{Name: "big", Typeflag: tar.TypeReg, Size: int64(len(payload)), Mode: 0o644}))
+	_, err := tw.Write(payload)
+	must.NoError(err)
+	must.NoError(tw.Close())
 
 	cases := map[string]executor.WorkspaceArchiver{
 		"oversized entry":   streamArchiver{stream: buf.Bytes()},
@@ -326,10 +303,9 @@ func TestArchiveWorkspace_EnforcesCap(t *testing.T) {
 	}
 	for name, src := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			_, err := archiveWorkspace(context.Background(), src, 64<<10)
-			if !errors.Is(err, executor.ErrArchiveTooLarge) {
-				t.Fatalf("archiveWorkspace error = %v, want ErrArchiveTooLarge", err)
-			}
+			must.ErrorIs(err, executor.ErrArchiveTooLarge)
 		})
 	}
 }
@@ -338,33 +314,28 @@ func TestArchiveWorkspace_EnforcesCap(t *testing.T) {
 // writes a complete archive but then fails (tar exiting non-zero) fails
 // the export.
 func TestArchiveWorkspace_ProducerErrorAfterStream(t *testing.T) {
+	must := require.New(t)
 	tarFailed := errors.New("archive workspace /workspace: tar exited with status 2")
 	src := streamArchiver{stream: tarStream(t, &tar.Header{Name: "./a", Typeflag: tar.TypeReg}), err: tarFailed}
-	if _, err := archiveWorkspace(context.Background(), src, 1<<20); !errors.Is(err, tarFailed) {
-		t.Fatalf("archiveWorkspace error = %v, want the producer's error", err)
-	}
+	_, err := archiveWorkspace(context.Background(), src, 1<<20)
+	must.ErrorIs(err, tarFailed)
 }
 
 // TestGCSExporter_LocalArchiveMatchesHostTree exports a host tree through
 // the local executor and checks the upload against it.
 func TestGCSExporter_LocalArchiveMatchesHostTree(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "a.txt"), "a")
 	writeFile(t, filepath.Join(dir, "deep/b.txt"), "b")
 	srv := &captureUploadServer{}
 	exp := newTestExporter(t, srv)
 	receipt, err := exp.Export(context.Background(), localArchiver(t, dir), "gs://b/o.tar.gz")
-	if err != nil {
-		t.Fatalf("Export: %v", err)
-	}
-	if receipt.Files != 2 {
-		t.Errorf("receipt.Files = %d, want 2", receipt.Files)
-	}
+	must.NoError(err)
+	must.Equal(2, receipt.Files)
 	var names []string
 	for _, h := range readUploaded(t, srv.last().Body) {
 		names = append(names, h.Name)
 	}
-	if strings.Join(names, ",") != "a.txt,deep/,deep/b.txt" {
-		t.Errorf("entries = %v", names)
-	}
+	must.Equal([]string{"a.txt", "deep/", "deep/b.txt"}, names)
 }

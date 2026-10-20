@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"log/slog"
-	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -16,6 +14,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/core"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
@@ -45,24 +45,16 @@ func TestBuildHarnessRunConfig_AllModesValidate(t *testing.T) {
 
 	for _, mode := range modes {
 		t.Run(mode, func(t *testing.T) {
+			must := require.New(t)
 			opts := baseOpts
 			opts.Mode = mode
 			cfg, err := buildHarnessRunConfig(opts)
-			if err != nil {
-				t.Fatalf("buildHarnessRunConfig: %v", err)
-			}
-
-			if err := types.ValidateRunConfig(cfg); err != nil {
-				t.Fatalf("buildHarnessRunConfig produced an invalid RunConfig for --mode %q: %v", mode, err)
-			}
+			must.NoError(err)
+			must.NoError(types.ValidateRunConfig(cfg))
 
 			if types.IsReadOnlyMode(mode) {
-				if cfg.PermissionPolicy.Type != "deny-side-effects" {
-					t.Errorf("read-only mode %q should use deny-side-effects, got %q", mode, cfg.PermissionPolicy.Type)
-				}
-				if len(cfg.Tools.BuiltIn) == 0 {
-					t.Errorf("read-only mode %q should have a non-empty Tools.BuiltIn list", mode)
-				}
+				must.Equal("deny-side-effects", cfg.PermissionPolicy.Type)
+				must.NotEmpty(cfg.Tools.BuiltIn)
 			}
 		})
 	}
@@ -71,19 +63,18 @@ func TestBuildHarnessRunConfig_AllModesValidate(t *testing.T) {
 // TestHarnessCmd_DefaultModeIsPlanning pins that harnessCmd's --mode flag
 // defaults to the read-only "planning" mode, not "execution".
 func TestHarnessCmd_DefaultModeIsPlanning(t *testing.T) {
-	flag := harnessCmd.Flags().Lookup("mode")
-	if flag == nil {
-		t.Fatal("--mode flag is not registered on harnessCmd")
-	}
-	if flag.DefValue != "planning" {
-		t.Errorf("default --mode = %q, want %q (safe-by-default per #74)", flag.DefValue, "planning")
-	}
+	must := require.New(t)
+	modeFlag := harnessCmd.Flags().Lookup("mode")
+	must.NotNil(modeFlag, "--mode flag is not registered on harnessCmd")
+	must.Equal("planning", modeFlag.DefValue)
 }
 
 // TestBuildHarnessRunConfig_BareInvocationValidatesAsPlanning proves that a
 // flag-only invocation with no --mode override lands in "planning" and
 // passes ValidateRunConfig, including the read-only-mode invariants.
 func TestBuildHarnessRunConfig_BareInvocationValidatesAsPlanning(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	defaultMode := harnessCmd.Flags().Lookup("mode").DefValue
 
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
@@ -98,32 +89,22 @@ func TestBuildHarnessRunConfig_BareInvocationValidatesAsPlanning(t *testing.T) {
 		TransportType: "stdio",
 		LogLevel:      "info",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
-	if cfg.Mode != "planning" {
-		t.Errorf("bare invocation should land in planning mode, got %q", cfg.Mode)
-	}
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Fatalf("bare invocation must validate cleanly: %v", err)
-	}
-	if cfg.PermissionPolicy.Type != "deny-side-effects" {
-		t.Errorf("planning mode should default to deny-side-effects, got %q", cfg.PermissionPolicy.Type)
-	}
-	if len(cfg.Tools.BuiltIn) == 0 {
-		t.Fatal("planning mode should populate a non-empty Tools.BuiltIn list")
-	}
-	for _, tool := range cfg.Tools.BuiltIn {
-		if tool == "write_file" || tool == "edit_file" || tool == "run_command" {
-			t.Errorf("planning mode must not enable write tool %q in the default list", tool)
-		}
+	must.NoError(err)
+	check.Equal("planning", cfg.Mode, "bare invocation should land in planning mode")
+	must.NoError(types.ValidateRunConfig(cfg), "bare invocation must validate cleanly")
+	check.Equal("deny-side-effects", cfg.PermissionPolicy.Type, "planning mode should default to deny-side-effects")
+	must.NotEmpty(cfg.Tools.BuiltIn, "planning mode should populate the default tool list")
+	for _, writeTool := range []string{"write_file", "edit_file", "run_command"} {
+		check.NotContains(cfg.Tools.BuiltIn, writeTool, "planning mode must not enable a write tool by default")
 	}
 }
 
-// TestBuildHarnessRunConfig_OpenAIResponsesProvider verifies that the
+// TestBuildHarnessRunConfig_AcceptsOpenAIResponsesProvider verifies that the
 // openai-responses provider type is accepted by both the CLI option-to-
 // RunConfig path and ValidateRunConfig.
-func TestBuildHarnessRunConfig_OpenAIResponsesProvider(t *testing.T) {
+func TestBuildHarnessRunConfig_AcceptsOpenAIResponsesProvider(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
@@ -136,25 +117,19 @@ func TestBuildHarnessRunConfig_OpenAIResponsesProvider(t *testing.T) {
 		TransportType: "stdio",
 		LogLevel:      "info",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
+	must.NoError(err)
 
-	if cfg.Provider.Type != "openai-responses" {
-		t.Errorf("Provider.Type = %q, want openai-responses", cfg.Provider.Type)
-	}
-	if cfg.ModelRouter.Provider != "openai-responses" {
-		t.Errorf("ModelRouter.Provider = %q, want openai-responses", cfg.ModelRouter.Provider)
-	}
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Fatalf("ValidateRunConfig rejected openai-responses: %v", err)
-	}
+	check.Equal("openai-responses", cfg.Provider.Type, "provider type")
+	check.Equal("openai-responses", cfg.ModelRouter.Provider, "model router provider")
+	must.NoError(types.ValidateRunConfig(cfg))
 }
 
 // TestBuildHarnessRunConfig_BedrockDefaultModelFailsValidation pins that
 // ValidateRunConfig (not the provider) rejects the Anthropic-API model
 // alias on Bedrock, before any network round-trip.
 func TestBuildHarnessRunConfig_BedrockDefaultModelFailsValidation(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
@@ -167,32 +142,24 @@ func TestBuildHarnessRunConfig_BedrockDefaultModelFailsValidation(t *testing.T) 
 		TransportType: "stdio",
 		LogLevel:      "info",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
+	must.NoError(err)
 
 	verr := types.ValidateRunConfig(cfg)
-	if verr == nil {
-		t.Fatal("expected ValidateRunConfig to reject --provider bedrock with CLI-default --model")
-	}
+	must.Error(verr, "ValidateRunConfig should reject --provider bedrock with the CLI-default --model")
 	errStr := verr.Error()
-	if !strings.Contains(errStr, "bedrock") {
-		t.Errorf("expected error to mention bedrock, got: %v", verr)
-	}
-	if !strings.Contains(errStr, "inference-profile") &&
-		!strings.Contains(errStr, "inference profile") &&
-		!strings.Contains(errStr, "list-inference-profiles") {
-		t.Errorf("expected error to point at the inference-profile remediation path, got: %v", verr)
-	}
-	if !strings.Contains(errStr, "claude-sonnet-4-6") {
-		t.Errorf("expected error to name the offending model id, got: %v", verr)
-	}
+	check.Contains(errStr, "bedrock")
+	check.True(strings.Contains(errStr, "inference-profile") ||
+		strings.Contains(errStr, "inference profile") ||
+		strings.Contains(errStr, "list-inference-profiles"),
+		"error should point at the inference-profile remediation path, got: %v", verr)
+	check.Contains(errStr, "claude-sonnet-4-6", "error should name the offending model id")
 }
 
 // TestBuildHarnessRunConfig_BedrockInferenceProfileValidates is the
 // positive complement: with a properly-shaped inference profile id,
 // the flag-only path produces a config that passes validation.
 func TestBuildHarnessRunConfig_BedrockInferenceProfileValidates(t *testing.T) {
+	must := require.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
@@ -205,18 +172,15 @@ func TestBuildHarnessRunConfig_BedrockInferenceProfileValidates(t *testing.T) {
 		TransportType: "stdio",
 		LogLevel:      "info",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Fatalf("ValidateRunConfig rejected eu.anthropic.claude-sonnet-4-6 on bedrock: %v", err)
-	}
+	must.NoError(err)
+	must.NoError(types.ValidateRunConfig(cfg), "eu.anthropic.claude-sonnet-4-6 should validate on bedrock")
 }
 
 // TestBuildHarnessRunConfig_FillsDefaultReadOnlyToolList verifies that
 // when no explicit Tools.BuiltIn list is supplied, read-only modes get
 // the documented default list rather than passing validation by accident.
 func TestBuildHarnessRunConfig_FillsDefaultReadOnlyToolList(t *testing.T) {
+	must := require.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "research",
@@ -229,14 +193,10 @@ func TestBuildHarnessRunConfig_FillsDefaultReadOnlyToolList(t *testing.T) {
 		TransportType: "stdio",
 		LogLevel:      "info",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
+	must.NoError(err)
 
 	want := types.DefaultReadOnlyBuiltInTools()
-	if len(cfg.Tools.BuiltIn) != len(want) {
-		t.Fatalf("expected default read-only tool list of length %d, got %d: %v", len(want), len(cfg.Tools.BuiltIn), cfg.Tools.BuiltIn)
-	}
+	must.Len(cfg.Tools.BuiltIn, len(want), "read-only mode should fill the default tool list")
 }
 
 // TestBuildHarnessRunConfig_NoneExecutorReadOnlyDefaultsToUngatedTools pins
@@ -244,6 +204,7 @@ func TestBuildHarnessRunConfig_FillsDefaultReadOnlyToolList(t *testing.T) {
 // exactly the capability-ungated subset, and the result passes
 // ValidateRunConfig.
 func TestBuildHarnessRunConfig_NoneExecutorReadOnlyDefaultsToUngatedTools(t *testing.T) {
+	must := require.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "planning",
@@ -257,44 +218,22 @@ func TestBuildHarnessRunConfig_NoneExecutorReadOnlyDefaultsToUngatedTools(t *tes
 		TransportType: "stdio",
 		LogLevel:      "info",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
+	must.NoError(err)
 
-	want := []string{"web_fetch", "spawn_agent"}
-	if len(cfg.Tools.BuiltIn) != len(want) {
-		t.Fatalf("expected default tool list %v, got %v", want, cfg.Tools.BuiltIn)
-	}
-	for i, name := range want {
-		if cfg.Tools.BuiltIn[i] != name {
-			t.Errorf("expected default tool list %v, got %v", want, cfg.Tools.BuiltIn)
-			break
-		}
-	}
-
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Fatalf("mode-injected default should pass validation for executor.type=none, got: %v", err)
-	}
+	must.Equal([]string{"web_fetch", "spawn_agent"}, cfg.Tools.BuiltIn)
+	must.NoError(types.ValidateRunConfig(cfg), "mode-injected default should pass validation for executor.type=none")
 }
 
 // TestApplyModeDefaults_NoneExecutorPopulatesUngatedTools pins the exact
 // tool list applyModeDefaults produces for executor.type=none.
 func TestApplyModeDefaults_NoneExecutorPopulatesUngatedTools(t *testing.T) {
+	must := require.New(t)
 	cfg := &types.RunConfig{
 		Mode:     "planning",
 		Executor: types.ExecutorConfig{Type: "none"},
 	}
 	applyModeDefaults(cfg)
-	want := []string{"web_fetch", "spawn_agent"}
-	if len(cfg.Tools.BuiltIn) != len(want) {
-		t.Fatalf("expected %v, got %v", want, cfg.Tools.BuiltIn)
-	}
-	for i, name := range want {
-		if cfg.Tools.BuiltIn[i] != name {
-			t.Errorf("expected %v, got %v", want, cfg.Tools.BuiltIn)
-			break
-		}
-	}
+	must.Equal([]string{"web_fetch", "spawn_agent"}, cfg.Tools.BuiltIn)
 }
 
 // TestApplyModeDefaults_ExecutionModeNoneExecutorLeavesToolsEmpty confirms
@@ -302,6 +241,8 @@ func TestApplyModeDefaults_NoneExecutorPopulatesUngatedTools(t *testing.T) {
 // read-only mode: an empty Tools.BuiltIn in execution mode means "all
 // built-ins" and must stay empty.
 func TestApplyModeDefaults_ExecutionModeNoneExecutorLeavesToolsEmpty(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	timeout := 600
 	cfg := &types.RunConfig{
 		Mode:     "execution",
@@ -311,12 +252,8 @@ func TestApplyModeDefaults_ExecutionModeNoneExecutorLeavesToolsEmpty(t *testing.
 		Executor: types.ExecutorConfig{Type: "none"},
 	}
 	applyModeDefaults(cfg)
-	if len(cfg.Tools.BuiltIn) != 0 {
-		t.Errorf("expected no default tool list in execution mode, got %v", cfg.Tools.BuiltIn)
-	}
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Fatalf("execution mode + none executor + empty builtIn should validate, got: %v", err)
-	}
+	check.Empty(cfg.Tools.BuiltIn, "execution mode should not apply a default tool list")
+	must.NoError(types.ValidateRunConfig(cfg), "execution mode with executor.type=none and no tools should validate")
 }
 
 // TestApplyModeDefaults_NoneExecutorExplicitToolStillRejected pins that
@@ -324,6 +261,7 @@ func TestApplyModeDefaults_ExecutionModeNoneExecutorLeavesToolsEmpty(t *testing.
 // operator's explicit tools.builtIn entry: planning + none + an explicit
 // ["read_file"] must still fail ValidateRunConfig's fail-fast.
 func TestApplyModeDefaults_NoneExecutorExplicitToolStillRejected(t *testing.T) {
+	must := require.New(t)
 	cfg := &types.RunConfig{
 		Mode:             "planning",
 		Executor:         types.ExecutorConfig{Type: "none"},
@@ -331,49 +269,43 @@ func TestApplyModeDefaults_NoneExecutorExplicitToolStillRejected(t *testing.T) {
 		Tools:            types.ToolsConfig{BuiltIn: []string{"read_file"}},
 	}
 	applyModeDefaults(cfg)
-	if len(cfg.Tools.BuiltIn) != 1 || cfg.Tools.BuiltIn[0] != "read_file" {
-		t.Fatalf("explicit tool list should survive applyModeDefaults unchanged, got %v", cfg.Tools.BuiltIn)
-	}
+	must.Equal([]string{"read_file"}, cfg.Tools.BuiltIn, "explicit tool list should survive applyModeDefaults")
+
 	err := types.ValidateRunConfig(cfg)
-	if err == nil {
-		t.Fatal("expected explicit read_file with executor.type=none to still fail validation")
-	}
-	if !strings.Contains(err.Error(), `tools.builtIn entry "read_file" requires an execution capability`) {
-		t.Errorf("expected none-executor fail-fast error, got: %v", err)
-	}
+	must.ErrorContains(err, `tools.builtIn entry "read_file" requires an execution capability`)
 }
 
 // TestApplyModeDefaults_RespectsExplicitTools pins that applyModeDefaults
 // must not clobber an explicit Tools.BuiltIn list with the read-only
 // defaults.
 func TestApplyModeDefaults_RespectsExplicitTools(t *testing.T) {
+	must := require.New(t)
 	cfg := &types.RunConfig{
 		Mode:  "research",
 		Tools: types.ToolsConfig{BuiltIn: []string{"read_file"}},
 	}
 	applyModeDefaults(cfg)
-	if len(cfg.Tools.BuiltIn) != 1 || cfg.Tools.BuiltIn[0] != "read_file" {
-		t.Errorf("explicit tool list should survive, got %v", cfg.Tools.BuiltIn)
-	}
+	must.Equal([]string{"read_file"}, cfg.Tools.BuiltIn)
 }
 
 // TestApplyModeDefaults_RespectsExplicitPolicy verifies that an explicit
 // PermissionPolicy survives applyModeDefaults, even one that will later
 // fail validation: applyModeDefaults never rewrites an operator's choice.
 func TestApplyModeDefaults_RespectsExplicitPolicy(t *testing.T) {
+	must := require.New(t)
 	cfg := &types.RunConfig{
 		Mode:             "research",
 		PermissionPolicy: types.PermissionPolicyConfig{Type: "ask-upstream"},
 	}
 	applyModeDefaults(cfg)
-	if cfg.PermissionPolicy.Type != "ask-upstream" {
-		t.Errorf("explicit policy should survive, got %q", cfg.PermissionPolicy.Type)
-	}
+	must.Equal("ask-upstream", cfg.PermissionPolicy.Type)
 }
 
-// TestBuildHarnessRunConfig_ComponentSelections verifies that the new
-// component-selection escape-hatch fields propagate correctly.
-func TestBuildHarnessRunConfig_ComponentSelections(t *testing.T) {
+// TestBuildHarnessRunConfig_PropagatesComponentSelections verifies that the
+// component-selection escape-hatch fields reach the RunConfig.
+func TestBuildHarnessRunConfig_PropagatesComponentSelections(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:            "test-run",
 		Mode:             "execution",
@@ -391,46 +323,28 @@ func TestBuildHarnessRunConfig_ComponentSelections(t *testing.T) {
 		GitStrategyType:  "deterministic",
 		TraceEmitterType: "otel",
 		OTelEndpoint:     "localhost:4317",
-
-		OTelProtocol: "http/protobuf",
+		OTelProtocol:     "http/protobuf",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
+	must.NoError(err)
 
-	if cfg.Executor.Type != "container" {
-		t.Errorf("expected executor type 'container', got %q", cfg.Executor.Type)
-	}
-	if cfg.EditStrategy.Type != "multi" {
-		t.Errorf("expected edit strategy 'multi', got %q", cfg.EditStrategy.Type)
-	}
-	if cfg.Verifier.Type != "test-runner" {
-		t.Errorf("expected verifier 'test-runner', got %q", cfg.Verifier.Type)
-	}
-	if cfg.GitStrategy.Type != "deterministic" {
-		t.Errorf("expected git strategy 'deterministic', got %q", cfg.GitStrategy.Type)
-	}
-	if cfg.TraceEmitter.Type != "otel" {
-		t.Errorf("expected trace emitter 'otel', got %q", cfg.TraceEmitter.Type)
-	}
-	if cfg.TraceEmitter.Endpoint != "localhost:4317" {
-		t.Errorf("expected otel endpoint 'localhost:4317', got %q", cfg.TraceEmitter.Endpoint)
-	}
-	if cfg.TraceEmitter.Protocol != "http/protobuf" {
-		t.Errorf("expected otel protocol 'http/protobuf', got %q", cfg.TraceEmitter.Protocol)
-	}
-
-	if cfg.TraceEmitter.FilePath != "" {
-		t.Errorf("expected empty FilePath for otel emitter, got %q", cfg.TraceEmitter.FilePath)
-	}
+	check.Equal("container", cfg.Executor.Type, "executor type")
+	check.Equal("multi", cfg.EditStrategy.Type, "edit strategy type")
+	check.Equal("test-runner", cfg.Verifier.Type, "verifier type")
+	check.Equal("deterministic", cfg.GitStrategy.Type, "git strategy type")
+	check.Equal("otel", cfg.TraceEmitter.Type, "trace emitter type")
+	check.Equal("localhost:4317", cfg.TraceEmitter.Endpoint, "otel endpoint")
+	check.Equal("http/protobuf", cfg.TraceEmitter.Protocol, "otel protocol")
+	check.Empty(cfg.TraceEmitter.FilePath, "file path should stay empty for the otel emitter")
 }
 
-// TestBuildHarnessRunConfig_EmptyComponentDefaults pins the fallback
+// TestBuildHarnessRunConfig_EmptyComponentsUseDefaults pins the fallback
 // values buildHarnessRunConfig applies for empty component-selection
 // fields. EditStrategy.Type is not asserted here: it is defaulted by
 // types.ValidateRunConfig, not by this layer (see
 // TestBuildRunConfig_EmptyEditStrategyResolvesToMulti).
-func TestBuildHarnessRunConfig_EmptyComponentDefaults(t *testing.T) {
+func TestBuildHarnessRunConfig_EmptyComponentsUseDefaults(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
@@ -443,27 +357,19 @@ func TestBuildHarnessRunConfig_EmptyComponentDefaults(t *testing.T) {
 		TransportType: "stdio",
 		LogLevel:      "info",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
-	if cfg.Executor.Type != "local" {
-		t.Errorf("default executor should be 'local', got %q", cfg.Executor.Type)
-	}
-	if cfg.Verifier.Type != "none" {
-		t.Errorf("default verifier should be 'none', got %q", cfg.Verifier.Type)
-	}
-	if cfg.GitStrategy.Type != "none" {
-		t.Errorf("default git strategy should be 'none', got %q", cfg.GitStrategy.Type)
-	}
-	if cfg.TraceEmitter.Type != "jsonl" {
-		t.Errorf("default trace emitter should be 'jsonl', got %q", cfg.TraceEmitter.Type)
-	}
+	must.NoError(err)
+	check.Equal("local", cfg.Executor.Type, "default executor type")
+	check.Equal("none", cfg.Verifier.Type, "default verifier type")
+	check.Equal("none", cfg.GitStrategy.Type, "default git strategy type")
+	check.Equal("jsonl", cfg.TraceEmitter.Type, "default trace emitter type")
 }
 
 // TestBuildHarnessRunConfig_ObservabilityFallsBackToEnv pins that
 // buildHarnessRunConfig leaves Observability empty when no flag is set,
 // so observability.BuildResource's env-var fallback chain applies.
 func TestBuildHarnessRunConfig_ObservabilityFallsBackToEnv(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	t.Setenv("OTEL_DEPLOYMENT_ENVIRONMENT", "production-eu")
 	t.Setenv("OTEL_SERVICE_NAMESPACE", "")
 
@@ -479,13 +385,9 @@ func TestBuildHarnessRunConfig_ObservabilityFallsBackToEnv(t *testing.T) {
 		TransportType: "stdio",
 		LogLevel:      "info",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
+	must.NoError(err)
 
-	if cfg.Observability.Environment != "" {
-		t.Errorf("Observability.Environment should remain empty when flag is unset; got %q", cfg.Observability.Environment)
-	}
+	check.Empty(cfg.Observability.Environment, "Observability.Environment should stay empty when the flag is unset")
 
 	res := observability.BuildResource(observability.ResourceOptions{
 		Environment:      cfg.Observability.Environment,
@@ -496,17 +398,16 @@ func TestBuildHarnessRunConfig_ObservabilityFallsBackToEnv(t *testing.T) {
 	for _, kv := range res.Attributes() {
 		got[string(kv.Key)] = kv.Value.AsString()
 	}
-	if got["deployment.environment.name"] != "production-eu" {
-		t.Errorf("deployment.environment.name should fall through to env var; got %q want production-eu", got["deployment.environment.name"])
-	}
+	check.Equal("production-eu", got["deployment.environment.name"], "deployment.environment.name should fall through to the env var")
 }
 
 // TestLoadRunConfigFile_RoundTrip writes a minimal RunConfig JSON to a
 // tempfile, loads it through loadRunConfigFile, and asserts the parsed
 // fields match. This is the core happy-path for the --config loader.
 func TestLoadRunConfigFile_RoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
+	must := require.New(t)
+	check := assert.New(t)
+	path := filepath.Join(t.TempDir(), "config.json")
 
 	timeout := 300
 	original := types.RunConfig{
@@ -541,78 +442,50 @@ func TestLoadRunConfigFile_RoundTrip(t *testing.T) {
 		LogLevel: "info",
 	}
 	data, err := json.MarshalIndent(original, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	must.NoError(err)
+	must.NoError(os.WriteFile(path, data, 0o600))
 
 	loaded, err := loadRunConfigFile(path)
-	if err != nil {
-		t.Fatalf("loadRunConfigFile: %v", err)
-	}
-	if loaded.RunID != "from-file" {
-		t.Errorf("RunID: got %q, want %q", loaded.RunID, "from-file")
-	}
-	if loaded.Mode != "planning" {
-		t.Errorf("Mode: got %q, want %q", loaded.Mode, "planning")
-	}
-	if loaded.Prompt != "prompt-from-file" {
-		t.Errorf("Prompt: got %q, want %q", loaded.Prompt, "prompt-from-file")
-	}
-	if loaded.EditStrategy.Type != "multi" {
-		t.Errorf("EditStrategy.Type: got %q, want %q", loaded.EditStrategy.Type, "multi")
-	}
-	if err := types.ValidateRunConfig(loaded); err != nil {
-		t.Fatalf("loaded config should validate: %v", err)
-	}
+	must.NoError(err)
+	check.Equal("from-file", loaded.RunID, "RunID")
+	check.Equal("planning", loaded.Mode, "Mode")
+	check.Equal("prompt-from-file", loaded.Prompt, "Prompt")
+	check.Equal("multi", loaded.EditStrategy.Type, "EditStrategy.Type")
+	must.NoError(types.ValidateRunConfig(loaded))
 }
 
-// TestLoadRunConfigFile_InvalidPath verifies the error path for a missing
-// file: the error must mention the path, not just bubble up a generic
-// "no such file" without context.
-func TestLoadRunConfigFile_InvalidPath(t *testing.T) {
-	_, err := loadRunConfigFile("/this/path/does/not/exist.json")
-	if err == nil {
-		t.Fatal("expected error for missing file, got nil")
-	}
-	if !strings.Contains(err.Error(), "/this/path/does/not/exist.json") {
-		t.Errorf("error should mention the path, got: %v", err)
-	}
+// TestLoadRunConfigFile_MissingFileErrorNamesPath verifies the error path for
+// a missing file: the error must mention the path, not just bubble up a
+// generic "no such file" without context.
+func TestLoadRunConfigFile_MissingFileErrorNamesPath(t *testing.T) {
+	must := require.New(t)
+	const missing = "/this/path/does/not/exist.json"
+	_, err := loadRunConfigFile(missing)
+	must.ErrorContains(err, missing)
 }
 
 // TestLoadRunConfigFile_RejectsUnknownFields ensures typos in the config
 // file surface as errors rather than being silently dropped, which is a
 // classic source of "I configured X but it didn't take effect" bugs.
 func TestLoadRunConfigFile_RejectsUnknownFields(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
+	must := require.New(t)
+	path := filepath.Join(t.TempDir(), "config.json")
 	body := `{"runId":"x","mode":"execution","unknownField":42}`
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	must.NoError(os.WriteFile(path, []byte(body), 0o600))
+
 	_, err := loadRunConfigFile(path)
-	if err == nil {
-		t.Fatal("expected error for unknown field, got nil")
-	}
+	must.Error(err)
 }
 
-// TestLoadRunConfigFile_InvalidJSON pins the error path for malformed
-// JSON.
-func TestLoadRunConfigFile_InvalidJSON(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+// TestLoadRunConfigFile_RejectsMalformedJSON pins the error path for
+// malformed JSON.
+func TestLoadRunConfigFile_RejectsMalformedJSON(t *testing.T) {
+	must := require.New(t)
+	path := filepath.Join(t.TempDir(), "config.json")
+	must.NoError(os.WriteFile(path, []byte("not json"), 0o600))
+
 	_, err := loadRunConfigFile(path)
-	if err == nil {
-		t.Fatal("expected parse error, got nil")
-	}
-	if !strings.Contains(err.Error(), "parsing config file") {
-		t.Errorf("error should describe parse failure, got: %v", err)
-	}
+	must.ErrorContains(err, "parsing config file")
 }
 
 // newTestHarnessCommand builds a cobra command with the same flag surface
@@ -637,9 +510,8 @@ func newTestHarnessCommand() *cobra.Command {
 	f.Bool("no-probe-egress", false, "")
 	f.Bool("no-probe-executor", false, "")
 	f.Duration("dry-run-timeout", core.DefaultPreflightTimeout, "")
-	// Debug-build-only flags (issues #219, #220). Mirrors the
-	// registration in harness.go init() so flag-combination tests can
-	// exercise validateDebugBuildFlags.
+	// Debug-build-only flags. Mirrors the registration in harness.go init()
+	// so flag-combination tests can exercise validateDebugBuildFlags.
 	f.Bool("debug", false, "")
 	f.Bool("trace-wire", false, "")
 	addTransportTLSFlags(f)
@@ -689,142 +561,171 @@ func baseFileConfig() *types.RunConfig {
 // the user did not pass it) MUST NOT clobber the file-provided value.
 // This is what cmd.Flags().Changed("name") guards.
 func TestApplyOverrides_DefaultFlagsDoNotOverride(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.Mode != "planning" {
-		t.Errorf("Mode: file value should survive, got %q", cfg.Mode)
-	}
-	if cfg.Prompt != "prompt-from-file" {
-		t.Errorf("Prompt: file value should survive, got %q", cfg.Prompt)
-	}
-	if cfg.MaxTurns != 10 {
-		t.Errorf("MaxTurns: file value should survive, got %d", cfg.MaxTurns)
-	}
-	if cfg.Timeout == nil || *cfg.Timeout != 300 {
-		t.Errorf("Timeout: file value should survive, got %v", cfg.Timeout)
-	}
-	if cfg.Provider.APIKeyRef != "secret://FILE_KEY" {
-		t.Errorf("APIKeyRef: file value should survive, got %q", cfg.Provider.APIKeyRef)
-	}
-	if cfg.Executor.Workspace != "/file/workspace" {
-		t.Errorf("Workspace: file value should survive, got %q", cfg.Executor.Workspace)
-	}
-	if cfg.ModelRouter.Model != "claude-sonnet-4-6-from-file" {
-		t.Errorf("Model: file value should survive, got %q", cfg.ModelRouter.Model)
-	}
-	if cfg.EditStrategy.Type != "multi" {
-		t.Errorf("EditStrategy.Type: file value should survive, got %q", cfg.EditStrategy.Type)
-	}
-	if cfg.Executor.Type != "local" {
-		t.Errorf("Executor.Type: file value should survive, got %q", cfg.Executor.Type)
-	}
-	if cfg.Verifier.Type != "none" {
-		t.Errorf("Verifier.Type: file value should survive, got %q", cfg.Verifier.Type)
-	}
+	t.Run("mode", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("planning", cfg.Mode)
+	})
+	t.Run("prompt", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("prompt-from-file", cfg.Prompt)
+	})
+	t.Run("max turns", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(10, cfg.MaxTurns)
+	})
+	t.Run("timeout", func(t *testing.T) {
+		must := require.New(t)
+		must.NotNil(cfg.Timeout)
+		must.Equal(300, *cfg.Timeout)
+	})
+	t.Run("api key ref", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("secret://FILE_KEY", cfg.Provider.APIKeyRef)
+	})
+	t.Run("workspace", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("/file/workspace", cfg.Executor.Workspace)
+	})
+	t.Run("model", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("claude-sonnet-4-6-from-file", cfg.ModelRouter.Model)
+	})
+	t.Run("edit strategy", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("multi", cfg.EditStrategy.Type)
+	})
+	t.Run("executor type", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("local", cfg.Executor.Type)
+	})
+	t.Run("verifier type", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("none", cfg.Verifier.Type)
+	})
 }
 
 // TestApplyOverrides_ExplicitFlagsOverride verifies that a flag set on
 // the command line clobbers the file-provided value, for every override
 // flag.
 func TestApplyOverrides_ExplicitFlagsOverride(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 
-	must := func(name, value string) {
-		if err := cmd.Flags().Set(name, value); err != nil {
-			t.Fatalf("set %s: %v", name, err)
-		}
+	setFlag := func(name, value string) {
+		must.NoError(cmd.Flags().Set(name, value), "set %s", name)
 	}
-	must("mode", "execution")
-	must("prompt", "prompt-from-flag")
-	must("max-turns", "5")
-	must("timeout", "60")
-	must("trace", "/flag/trace.jsonl")
-	must("workspace", "/flag/workspace")
-	must("transport", "grpc")
-	must("transport-addr", "1.2.3.4:5")
-	must("followup-grace", "30")
-	must("log-level", "debug")
-	must("provider", "openai-compatible")
-	must("model", "gpt-flag")
-	must("api-key-ref", "secret://FLAG_KEY")
-	must("executor", "container")
-	must("edit-strategy", "udiff")
-	must("verifier", "test-runner")
-	must("git-strategy", "deterministic")
-	must("trace-emitter", "otel")
-	must("otel-endpoint", "otel.flag:4317")
-	must("otel-protocol", "http/protobuf")
+	setFlag("mode", "execution")
+	setFlag("prompt", "prompt-from-flag")
+	setFlag("max-turns", "5")
+	setFlag("timeout", "60")
+	setFlag("trace", "/flag/trace.jsonl")
+	setFlag("workspace", "/flag/workspace")
+	setFlag("transport", "grpc")
+	setFlag("transport-addr", "1.2.3.4:5")
+	setFlag("followup-grace", "30")
+	setFlag("log-level", "debug")
+	setFlag("provider", "openai-compatible")
+	setFlag("model", "gpt-flag")
+	setFlag("api-key-ref", "secret://FLAG_KEY")
+	setFlag("executor", "container")
+	setFlag("edit-strategy", "udiff")
+	setFlag("verifier", "test-runner")
+	setFlag("git-strategy", "deterministic")
+	setFlag("trace-emitter", "otel")
+	setFlag("otel-endpoint", "otel.flag:4317")
+	setFlag("otel-protocol", "http/protobuf")
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.Mode != "execution" {
-		t.Errorf("Mode override failed: %q", cfg.Mode)
-	}
-	if cfg.Prompt != "prompt-from-flag" {
-		t.Errorf("Prompt override failed: %q", cfg.Prompt)
-	}
-	if cfg.MaxTurns != 5 {
-		t.Errorf("MaxTurns override failed: %d", cfg.MaxTurns)
-	}
-	if cfg.Timeout == nil || *cfg.Timeout != 60 {
-		t.Errorf("Timeout override failed: %v", cfg.Timeout)
-	}
-	if cfg.TraceEmitter.FilePath != "/flag/trace.jsonl" {
-		t.Errorf("Trace path override failed: %q", cfg.TraceEmitter.FilePath)
-	}
-	if cfg.Executor.Workspace != "/flag/workspace" {
-		t.Errorf("Workspace override failed: %q", cfg.Executor.Workspace)
-	}
-	if cfg.Transport.Type != "grpc" {
-		t.Errorf("Transport type override failed: %q", cfg.Transport.Type)
-	}
-	if cfg.Transport.Address != "1.2.3.4:5" {
-		t.Errorf("Transport address override failed: %q", cfg.Transport.Address)
-	}
-	if cfg.FollowUpGrace == nil || *cfg.FollowUpGrace != 30 {
-		t.Errorf("FollowUpGrace override failed: %v", cfg.FollowUpGrace)
-	}
-	if cfg.LogLevel != "debug" {
-		t.Errorf("LogLevel override failed: %q", cfg.LogLevel)
-	}
-	if cfg.Provider.Type != "openai-compatible" {
-		t.Errorf("Provider type override failed: %q", cfg.Provider.Type)
-	}
-	if cfg.ModelRouter.Model != "gpt-flag" {
-		t.Errorf("Model override failed: %q", cfg.ModelRouter.Model)
-	}
-	if cfg.Provider.APIKeyRef != "secret://FLAG_KEY" {
-		t.Errorf("APIKeyRef override failed: %q", cfg.Provider.APIKeyRef)
-	}
-	if cfg.Executor.Type != "container" {
-		t.Errorf("Executor type override failed: %q", cfg.Executor.Type)
-	}
-	if cfg.EditStrategy.Type != "udiff" {
-		t.Errorf("EditStrategy override failed: %q", cfg.EditStrategy.Type)
-	}
-	if cfg.Verifier.Type != "test-runner" {
-		t.Errorf("Verifier override failed: %q", cfg.Verifier.Type)
-	}
-	if cfg.GitStrategy.Type != "deterministic" {
-		t.Errorf("GitStrategy override failed: %q", cfg.GitStrategy.Type)
-	}
-	if cfg.TraceEmitter.Type != "otel" {
-		t.Errorf("TraceEmitter type override failed: %q", cfg.TraceEmitter.Type)
-	}
-	if cfg.TraceEmitter.Endpoint != "otel.flag:4317" {
-		t.Errorf("OTel endpoint override failed: %q", cfg.TraceEmitter.Endpoint)
-	}
-	if cfg.TraceEmitter.Protocol != "http/protobuf" {
-		t.Errorf("OTel protocol override failed: %q", cfg.TraceEmitter.Protocol)
-	}
+	t.Run("mode", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("execution", cfg.Mode)
+	})
+	t.Run("prompt", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("prompt-from-flag", cfg.Prompt)
+	})
+	t.Run("max turns", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(5, cfg.MaxTurns)
+	})
+	t.Run("timeout", func(t *testing.T) {
+		must := require.New(t)
+		must.NotNil(cfg.Timeout)
+		must.Equal(60, *cfg.Timeout)
+	})
+	t.Run("trace path", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("/flag/trace.jsonl", cfg.TraceEmitter.FilePath)
+	})
+	t.Run("workspace", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("/flag/workspace", cfg.Executor.Workspace)
+	})
+	t.Run("transport type", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("grpc", cfg.Transport.Type)
+	})
+	t.Run("transport address", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("1.2.3.4:5", cfg.Transport.Address)
+	})
+	t.Run("followup grace", func(t *testing.T) {
+		must := require.New(t)
+		must.NotNil(cfg.FollowUpGrace)
+		must.Equal(30, *cfg.FollowUpGrace)
+	})
+	t.Run("log level", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("debug", cfg.LogLevel)
+	})
+	t.Run("provider type", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("openai-compatible", cfg.Provider.Type)
+	})
+	t.Run("model", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("gpt-flag", cfg.ModelRouter.Model)
+	})
+	t.Run("api key ref", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("secret://FLAG_KEY", cfg.Provider.APIKeyRef)
+	})
+	t.Run("executor type", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("container", cfg.Executor.Type)
+	})
+	t.Run("edit strategy", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("udiff", cfg.EditStrategy.Type)
+	})
+	t.Run("verifier type", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("test-runner", cfg.Verifier.Type)
+	})
+	t.Run("git strategy", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("deterministic", cfg.GitStrategy.Type)
+	})
+	t.Run("trace emitter type", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("otel", cfg.TraceEmitter.Type)
+	})
+	t.Run("otel endpoint", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("otel.flag:4317", cfg.TraceEmitter.Endpoint)
+	})
+	t.Run("otel protocol", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("http/protobuf", cfg.TraceEmitter.Protocol)
+	})
 }
 
 // TestApplyOverrides_OTelProtocolFilePreserved pins that an unset
@@ -832,6 +733,7 @@ func TestApplyOverrides_ExplicitFlagsOverride(t *testing.T) {
 // Protocol value supplied by --config. This is the same precedence
 // rule that already applies to every other override flag.
 func TestApplyOverrides_OTelProtocolFilePreserved(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.TraceEmitter = types.TraceEmitterConfig{
@@ -840,13 +742,9 @@ func TestApplyOverrides_OTelProtocolFilePreserved(t *testing.T) {
 		Protocol: "http/protobuf",
 	}
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.TraceEmitter.Protocol != "http/protobuf" {
-		t.Errorf("Protocol from file should survive default flag, got %q", cfg.TraceEmitter.Protocol)
-	}
+	must.Equal("http/protobuf", cfg.TraceEmitter.Protocol)
 }
 
 // TestApplyOverrides_OTelHeaderReplacesFileHeaders pins the replace-not-
@@ -855,6 +753,7 @@ func TestApplyOverrides_OTelProtocolFilePreserved(t *testing.T) {
 // and values keep everything after the first '=' so a Basic credential's
 // base64 padding survives.
 func TestApplyOverrides_OTelHeaderReplacesFileHeaders(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.TraceEmitter = types.TraceEmitterConfig{
@@ -867,23 +766,13 @@ func TestApplyOverrides_OTelHeaderReplacesFileHeaders(t *testing.T) {
 		"Authorization=secret://LANGFUSE_AUTH",
 		"X-Tenant=team=a", // '=' in the value must survive the split
 	} {
-		if err := cmd.Flags().Set("otel-header", entry); err != nil {
-			t.Fatalf("set otel-header: %v", err)
-		}
+		must.NoError(cmd.Flags().Set("otel-header", entry))
 	}
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if _, ok := cfg.TraceEmitter.Headers["X-Stale"]; ok {
-		t.Error("explicit --otel-header should clear file headers, X-Stale survived")
-	}
-	if got := cfg.TraceEmitter.Headers["Authorization"]; got != "secret://LANGFUSE_AUTH" {
-		t.Errorf("Authorization header: got %q, want the secret reference", got)
-	}
-	if got := cfg.TraceEmitter.Headers["X-Tenant"]; got != "team=a" {
-		t.Errorf("X-Tenant header: got %q, want %q (value split must be first-'=' only)", got, "team=a")
-	}
+	must.NotContains(cfg.TraceEmitter.Headers, "X-Stale", "explicit --otel-header should clear file headers")
+	must.Equal("secret://LANGFUSE_AUTH", cfg.TraceEmitter.Headers["Authorization"])
+	must.Equal("team=a", cfg.TraceEmitter.Headers["X-Tenant"], "value split must be first '=' only")
 }
 
 // TestApplyOverrides_OTelHeaderMalformedRejected pins the hard-fail on a
@@ -891,19 +780,13 @@ func TestApplyOverrides_OTelHeaderReplacesFileHeaders(t *testing.T) {
 // run proceed and surface as an opaque 401 from the OTLP gateway at
 // first export, mirroring the --query-param rationale.
 func TestApplyOverrides_OTelHeaderMalformedRejected(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 
-	if err := cmd.Flags().Set("otel-header", "no-equals-sign"); err != nil {
-		t.Fatalf("set otel-header: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("otel-header", "no-equals-sign"))
 	err := applyOverrides(cmd, cfg, nil)
-	if err == nil {
-		t.Fatal("expected error for malformed --otel-header entry")
-	}
-	if !strings.Contains(err.Error(), "--otel-header") {
-		t.Errorf("error should name the offending flag, got: %v", err)
-	}
+	must.ErrorContains(err, "--otel-header")
 }
 
 // TestApplyOverrides_OTelPlatformFlags pins that --otel-platform overrides
@@ -913,6 +796,7 @@ func TestApplyOverrides_OTelPlatformFlags(t *testing.T) {
 	platform := types.ValidTraceEmitterPlatformValues()[0]
 
 	t.Run("flags replace file values", func(t *testing.T) {
+		must := require.New(t)
 		cmd := newTestHarnessCommand()
 		cfg := baseFileConfig()
 		cfg.TraceEmitter = types.TraceEmitterConfig{
@@ -920,27 +804,18 @@ func TestApplyOverrides_OTelPlatformFlags(t *testing.T) {
 			Platform:        "from-file",
 			PlatformOptions: map[string]string{"stale": "from-file"},
 		}
-		if err := cmd.Flags().Set("otel-platform", platform); err != nil {
-			t.Fatalf("set otel-platform: %v", err)
-		}
+		must.NoError(cmd.Flags().Set("otel-platform", platform))
 		for _, entry := range []string{"region=us-east-1", "logGroup=/a=b"} {
-			if err := cmd.Flags().Set("otel-platform-option", entry); err != nil {
-				t.Fatalf("set otel-platform-option: %v", err)
-			}
+			must.NoError(cmd.Flags().Set("otel-platform-option", entry))
 		}
-		if err := applyOverrides(cmd, cfg, nil); err != nil {
-			t.Fatalf("applyOverrides: %v", err)
-		}
-		if cfg.TraceEmitter.Platform != platform {
-			t.Errorf("Platform: got %q, want %q", cfg.TraceEmitter.Platform, platform)
-		}
-		want := map[string]string{"region": "us-east-1", "logGroup": "/a=b"}
-		if !maps.Equal(cfg.TraceEmitter.PlatformOptions, want) {
-			t.Errorf("PlatformOptions: got %v, want %v", cfg.TraceEmitter.PlatformOptions, want)
-		}
+		must.NoError(applyOverrides(cmd, cfg, nil))
+
+		must.Equal(platform, cfg.TraceEmitter.Platform)
+		must.Equal(map[string]string{"region": "us-east-1", "logGroup": "/a=b"}, cfg.TraceEmitter.PlatformOptions)
 	})
 
 	t.Run("file values survive unset flags", func(t *testing.T) {
+		must := require.New(t)
 		cmd := newTestHarnessCommand()
 		cfg := baseFileConfig()
 		cfg.TraceEmitter = types.TraceEmitterConfig{
@@ -948,30 +823,28 @@ func TestApplyOverrides_OTelPlatformFlags(t *testing.T) {
 			Platform:        platform,
 			PlatformOptions: map[string]string{"project": "agents"},
 		}
-		if err := applyOverrides(cmd, cfg, nil); err != nil {
-			t.Fatalf("applyOverrides: %v", err)
-		}
-		if cfg.TraceEmitter.Platform != platform || cfg.TraceEmitter.PlatformOptions["project"] != "agents" {
-			t.Errorf("file platform settings should survive, got %+v", cfg.TraceEmitter)
-		}
+
+		must.NoError(applyOverrides(cmd, cfg, nil))
+
+		must.Equal(platform, cfg.TraceEmitter.Platform)
+		must.Equal("agents", cfg.TraceEmitter.PlatformOptions["project"])
 	})
 
 	t.Run("malformed option rejected", func(t *testing.T) {
+		must := require.New(t)
 		cmd := newTestHarnessCommand()
 		cfg := baseFileConfig()
-		if err := cmd.Flags().Set("otel-platform-option", "no-equals-sign"); err != nil {
-			t.Fatalf("set otel-platform-option: %v", err)
-		}
+		must.NoError(cmd.Flags().Set("otel-platform-option", "no-equals-sign"))
+
 		err := applyOverrides(cmd, cfg, nil)
-		if err == nil || !strings.Contains(err.Error(), "--otel-platform-option") {
-			t.Errorf("expected an error naming --otel-platform-option, got: %v", err)
-		}
+		must.ErrorContains(err, "--otel-platform-option")
 	})
 }
 
-// TestBuildFlagOnlyRunConfig_OTelPlatform pins that the flag-only builder
-// parses --otel-platform-option entries onto the otel emitter.
-func TestBuildFlagOnlyRunConfig_OTelPlatform(t *testing.T) {
+// TestBuildFlagOnlyRunConfig_OTelPlatformOptions pins that the flag-only
+// builder parses --otel-platform-option entries onto the otel emitter.
+func TestBuildFlagOnlyRunConfig_OTelPlatformOptions(t *testing.T) {
+	must := require.New(t)
 	platform := types.ValidTraceEmitterPlatformValues()[0]
 	cmd := newTestHarnessCommand()
 	for k, v := range map[string]string{
@@ -981,34 +854,25 @@ func TestBuildFlagOnlyRunConfig_OTelPlatform(t *testing.T) {
 		"otel-protocol": "http/protobuf", "otel-platform": platform,
 		"otel-platform-option": "project=agents",
 	} {
-		if err := cmd.Flags().Set(k, v); err != nil {
-			t.Fatalf("set %s: %v", k, err)
-		}
-	}
-	cfg, err := buildFlagOnlyRunConfig(cmd, nil)
-	if err != nil {
-		t.Fatalf("buildFlagOnlyRunConfig: %v", err)
-	}
-	if cfg.TraceEmitter.Platform != platform {
-		t.Errorf("Platform: got %q, want %q", cfg.TraceEmitter.Platform, platform)
-	}
-	if got := cfg.TraceEmitter.PlatformOptions["project"]; got != "agents" {
-		t.Errorf("PlatformOptions[project]: got %q, want agents", got)
+		must.NoError(cmd.Flags().Set(k, v), "set %s", k)
 	}
 
+	cfg, err := buildFlagOnlyRunConfig(cmd, nil)
+	must.NoError(err)
+	must.Equal(platform, cfg.TraceEmitter.Platform)
+	must.Equal("agents", cfg.TraceEmitter.PlatformOptions["project"])
+
 	malformed := newTestHarnessCommand()
-	if err := malformed.Flags().Set("otel-platform-option", "no-equals-sign"); err != nil {
-		t.Fatalf("set otel-platform-option: %v", err)
-	}
-	if _, err := buildFlagOnlyRunConfig(malformed, nil); err == nil || !strings.Contains(err.Error(), "--otel-platform-option") {
-		t.Errorf("expected an error naming --otel-platform-option, got: %v", err)
-	}
+	must.NoError(malformed.Flags().Set("otel-platform-option", "no-equals-sign"))
+	_, err = buildFlagOnlyRunConfig(malformed, nil)
+	must.ErrorContains(err, "--otel-platform-option")
 }
 
 // TestApplyOverrides_OTelHeaderFilePreserved guards the precedence rule:
 // when --otel-header is not passed, headers loaded from --config survive
 // applyOverrides intact.
 func TestApplyOverrides_OTelHeaderFilePreserved(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.TraceEmitter = types.TraceEmitterConfig{
@@ -1017,13 +881,9 @@ func TestApplyOverrides_OTelHeaderFilePreserved(t *testing.T) {
 		Headers:  map[string]string{"Authorization": "secret://GRAFANA_CLOUD_AUTH"},
 	}
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if got := cfg.TraceEmitter.Headers["Authorization"]; got != "secret://GRAFANA_CLOUD_AUTH" {
-		t.Errorf("headers from file should survive default flag, got %q", got)
-	}
+	must.Equal("secret://GRAFANA_CLOUD_AUTH", cfg.TraceEmitter.Headers["Authorization"])
 }
 
 // TestApplyOverrides_OTelCaptureContentAndMetricsEndpoint pins the
@@ -1031,40 +891,24 @@ func TestApplyOverrides_OTelHeaderFilePreserved(t *testing.T) {
 // clobbers the file value, and the unset default does not.
 func TestApplyOverrides_OTelCaptureContentAndMetricsEndpoint(t *testing.T) {
 	t.Run("explicit flags override", func(t *testing.T) {
+		must := require.New(t)
 		cmd := newTestHarnessCommand()
 		cfg := baseFileConfig()
 
-		if err := cmd.Flags().Set("otel-capture-content", "true"); err != nil {
-			t.Fatalf("set otel-capture-content: %v", err)
-		}
-		if err := cmd.Flags().Set("otel-metrics-endpoint", "https://metrics.example/otlp"); err != nil {
-			t.Fatalf("set otel-metrics-endpoint: %v", err)
-		}
-		if err := cmd.Flags().Set("otel-metrics-temporality", "delta"); err != nil {
-			t.Fatalf("set otel-metrics-temporality: %v", err)
-		}
-		if err := cmd.Flags().Set("otel-capture-content-max-bytes", "2048"); err != nil {
-			t.Fatalf("set otel-capture-content-max-bytes: %v", err)
-		}
-		if err := applyOverrides(cmd, cfg, nil); err != nil {
-			t.Fatalf("applyOverrides: %v", err)
-		}
-		if cfg.TraceEmitter.MetricsTemporality != "delta" {
-			t.Errorf("MetricsTemporality override failed: %q", cfg.TraceEmitter.MetricsTemporality)
-		}
-		if cfg.TraceEmitter.CaptureContentMaxBytes != 2048 {
-			t.Errorf("CaptureContentMaxBytes override failed: %d", cfg.TraceEmitter.CaptureContentMaxBytes)
-		}
+		must.NoError(cmd.Flags().Set("otel-capture-content", "true"))
+		must.NoError(cmd.Flags().Set("otel-metrics-endpoint", "https://metrics.example/otlp"))
+		must.NoError(cmd.Flags().Set("otel-metrics-temporality", "delta"))
+		must.NoError(cmd.Flags().Set("otel-capture-content-max-bytes", "2048"))
+		must.NoError(applyOverrides(cmd, cfg, nil))
 
-		if !cfg.TraceEmitter.CaptureContent {
-			t.Error("CaptureContent override failed")
-		}
-		if cfg.TraceEmitter.MetricsEndpoint != "https://metrics.example/otlp" {
-			t.Errorf("MetricsEndpoint override failed: %q", cfg.TraceEmitter.MetricsEndpoint)
-		}
+		must.Equal("delta", cfg.TraceEmitter.MetricsTemporality)
+		must.Equal(2048, cfg.TraceEmitter.CaptureContentMaxBytes)
+		must.True(cfg.TraceEmitter.CaptureContent)
+		must.Equal("https://metrics.example/otlp", cfg.TraceEmitter.MetricsEndpoint)
 	})
 
 	t.Run("file values preserved when flags unset", func(t *testing.T) {
+		must := require.New(t)
 		cmd := newTestHarnessCommand()
 		cfg := baseFileConfig()
 		cfg.TraceEmitter = types.TraceEmitterConfig{
@@ -1075,22 +919,12 @@ func TestApplyOverrides_OTelCaptureContentAndMetricsEndpoint(t *testing.T) {
 			CaptureContentMaxBytes: 4096,
 		}
 
-		if err := applyOverrides(cmd, cfg, nil); err != nil {
-			t.Fatalf("applyOverrides: %v", err)
-		}
-		if cfg.TraceEmitter.CaptureContentMaxBytes != 4096 {
-			t.Errorf("CaptureContentMaxBytes from file should survive, got %d", cfg.TraceEmitter.CaptureContentMaxBytes)
-		}
-		if cfg.TraceEmitter.MetricsTemporality != "cumulative" {
-			t.Errorf("MetricsTemporality from file should survive, got %q", cfg.TraceEmitter.MetricsTemporality)
-		}
+		must.NoError(applyOverrides(cmd, cfg, nil))
 
-		if !cfg.TraceEmitter.CaptureContent {
-			t.Error("CaptureContent from file should survive default flag")
-		}
-		if cfg.TraceEmitter.MetricsEndpoint != "https://metrics.from-file/otlp" {
-			t.Errorf("MetricsEndpoint from file should survive, got %q", cfg.TraceEmitter.MetricsEndpoint)
-		}
+		must.Equal(4096, cfg.TraceEmitter.CaptureContentMaxBytes)
+		must.Equal("cumulative", cfg.TraceEmitter.MetricsTemporality)
+		must.True(cfg.TraceEmitter.CaptureContent)
+		must.Equal("https://metrics.from-file/otlp", cfg.TraceEmitter.MetricsEndpoint)
 	})
 }
 
@@ -1099,6 +933,7 @@ func TestApplyOverrides_OTelCaptureContentAndMetricsEndpoint(t *testing.T) {
 // TraceEmitter when the emitter type is otel, and are scoped away from
 // the jsonl emitter (matching how OTelEndpoint is already scoped).
 func TestBuildHarnessRunConfig_OTelHeadersPropagate(t *testing.T) {
+	must := require.New(t)
 	base := harnessCLIOptions{
 		RunID:                      "test-run",
 		Mode:                       "execution",
@@ -1121,54 +956,41 @@ func TestBuildHarnessRunConfig_OTelHeadersPropagate(t *testing.T) {
 	}
 
 	cfg, err := buildHarnessRunConfig(base)
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
-	if got := cfg.TraceEmitter.Headers["Authorization"]; got != "secret://LANGFUSE_AUTH" {
-		t.Errorf("Headers should propagate on otel emitter, got %q", got)
-	}
-	if cfg.TraceEmitter.MetricsEndpoint != "https://gw.example/otlp" {
-		t.Errorf("MetricsEndpoint should propagate, got %q", cfg.TraceEmitter.MetricsEndpoint)
-	}
-	if !cfg.TraceEmitter.CaptureContent {
-		t.Error("CaptureContent should propagate on otel emitter")
-	}
-	if cfg.TraceEmitter.MetricsTemporality != "delta" {
-		t.Errorf("MetricsTemporality should propagate, got %q", cfg.TraceEmitter.MetricsTemporality)
-	}
-	if cfg.TraceEmitter.CaptureContentMaxBytes != 2048 {
-		t.Errorf("CaptureContentMaxBytes should propagate, got %d", cfg.TraceEmitter.CaptureContentMaxBytes)
-	}
+	must.NoError(err)
+	must.Equal("secret://LANGFUSE_AUTH", cfg.TraceEmitter.Headers["Authorization"])
+	must.Equal("https://gw.example/otlp", cfg.TraceEmitter.MetricsEndpoint)
+	must.True(cfg.TraceEmitter.CaptureContent)
+	must.Equal("delta", cfg.TraceEmitter.MetricsTemporality)
+	must.Equal(2048, cfg.TraceEmitter.CaptureContentMaxBytes)
 
-	jsonlOpts := base
-	jsonlOpts.TraceEmitterType = "jsonl"
-	cfg, err = buildHarnessRunConfig(jsonlOpts)
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig (jsonl): %v", err)
-	}
-	if len(cfg.TraceEmitter.Headers) != 0 || cfg.TraceEmitter.CaptureContent || cfg.TraceEmitter.MetricsEndpoint != "" || cfg.TraceEmitter.MetricsTemporality != "" || cfg.TraceEmitter.CaptureContentMaxBytes != 0 {
-		t.Errorf("otel-only fields must not leak onto the jsonl emitter, got %+v", cfg.TraceEmitter)
-	}
+	t.Run("jsonl emitter drops otel-only fields", func(t *testing.T) {
+		must := require.New(t)
+		jsonlOpts := base
+		jsonlOpts.TraceEmitterType = "jsonl"
+		cfg, err := buildHarnessRunConfig(jsonlOpts)
+		must.NoError(err)
+
+		must.Empty(cfg.TraceEmitter.Headers)
+		must.False(cfg.TraceEmitter.CaptureContent)
+		must.Empty(cfg.TraceEmitter.MetricsEndpoint)
+		must.Empty(cfg.TraceEmitter.MetricsTemporality)
+		must.Zero(cfg.TraceEmitter.CaptureContentMaxBytes)
+	})
 }
 
 // TestApplyOverrides_SessionNameExplicit verifies that --name is wired
 // through applyOverrides: when set on the command line, the flag value
 // must overwrite the file's SessionName.
 func TestApplyOverrides_SessionNameExplicit(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.SessionName = "from-file"
 
-	if err := cmd.Flags().Set("name", "from-flag"); err != nil {
-		t.Fatalf("set name: %v", err)
-	}
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("name", "from-flag"))
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.SessionName != "from-flag" {
-		t.Errorf("explicit --name should win, got %q", cfg.SessionName)
-	}
+	must.Equal("from-flag", cfg.SessionName)
 }
 
 // TestApplyOverrides_SessionNameFilePreserved guards the precedence rule
@@ -1176,23 +998,21 @@ func TestApplyOverrides_SessionNameExplicit(t *testing.T) {
 // from --config must survive applyOverrides intact. This is the central
 // "default flag does not clobber file value" invariant for the new flag.
 func TestApplyOverrides_SessionNameFilePreserved(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.SessionName = "from-file"
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.SessionName != "from-file" {
-		t.Errorf("SessionName from file should survive, got %q", cfg.SessionName)
-	}
+	must.Equal("from-file", cfg.SessionName)
 }
 
 // TestBuildHarnessRunConfig_SessionNamePropagates verifies the flag-only
 // build path: a SessionName provided in harnessCLIOptions must end up on
 // the constructed RunConfig.
 func TestBuildHarnessRunConfig_SessionNamePropagates(t *testing.T) {
+	must := require.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
@@ -1206,22 +1026,17 @@ func TestBuildHarnessRunConfig_SessionNamePropagates(t *testing.T) {
 		TransportType: "stdio",
 		LogLevel:      "info",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
+	must.NoError(err)
 
-	if cfg.SessionName != "nightly-eval" {
-		t.Errorf("SessionName: got %q, want %q", cfg.SessionName, "nightly-eval")
-	}
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Fatalf("ValidateRunConfig: %v", err)
-	}
+	must.Equal("nightly-eval", cfg.SessionName)
+	must.NoError(types.ValidateRunConfig(cfg))
 }
 
 // TestBuildHarnessRunConfig_ObservabilityPropagates pins that the
 // --deployment-environment / --service-namespace flags propagate into
 // RunConfig.Observability without further translation.
 func TestBuildHarnessRunConfig_ObservabilityPropagates(t *testing.T) {
+	must := require.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:                 "test-run",
 		Mode:                  "execution",
@@ -1237,31 +1052,19 @@ func TestBuildHarnessRunConfig_ObservabilityPropagates(t *testing.T) {
 		DeploymentEnvironment: "production",
 		ServiceNamespace:      "stirrup-eval",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
+	must.NoError(err)
 
-	if cfg.Observability.ServiceName != "triage-agent" {
-		t.Errorf("Observability.ServiceName: got %q, want %q", cfg.Observability.ServiceName, "triage-agent")
-	}
-
-	if cfg.Observability.Environment != "production" {
-		t.Errorf("Observability.Environment: got %q, want %q", cfg.Observability.Environment, "production")
-	}
-	if cfg.Observability.ServiceNamespace != "stirrup-eval" {
-		t.Errorf("Observability.ServiceNamespace: got %q, want %q", cfg.Observability.ServiceNamespace, "stirrup-eval")
-	}
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Fatalf("ValidateRunConfig: %v", err)
-	}
+	must.Equal("triage-agent", cfg.Observability.ServiceName)
+	must.Equal("production", cfg.Observability.Environment)
+	must.Equal("stirrup-eval", cfg.Observability.ServiceNamespace)
+	must.NoError(types.ValidateRunConfig(cfg))
 }
 
-// TestApplyOverrides_ObservabilityFlags pins the file -> flag override
-// chain for the new observability flags. An explicit flag must clobber
-// the file's value; a flag at its default (empty string) must leave the
-// file value alone — that's the same precedence convention every other
-// override flag follows.
-func TestApplyOverrides_ObservabilityFlags(t *testing.T) {
+// TestApplyOverrides_DeploymentEnvironmentFlag pins the file -> flag
+// override chain for --deployment-environment. An explicit flag must
+// clobber the file's value; an unset flag must leave the file value alone.
+func TestApplyOverrides_DeploymentEnvironmentFlag(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Observability = types.ObservabilityConfig{
@@ -1269,28 +1072,19 @@ func TestApplyOverrides_ObservabilityFlags(t *testing.T) {
 		ServiceNamespace: "from-file-ns",
 	}
 
-	if err := cmd.Flags().Set("deployment-environment", "from-flag-env"); err != nil {
-		t.Fatalf("set deployment-environment: %v", err)
-	}
-	// service-namespace deliberately not set — file value should survive.
+	must.NoError(cmd.Flags().Set("deployment-environment", "from-flag-env"))
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.Observability.Environment != "from-flag-env" {
-		t.Errorf("Observability.Environment: explicit flag should win, got %q", cfg.Observability.Environment)
-	}
-	if cfg.Observability.ServiceNamespace != "from-file-ns" {
-		t.Errorf("Observability.ServiceNamespace: file value should survive when flag unset, got %q", cfg.Observability.ServiceNamespace)
-	}
+	must.Equal("from-flag-env", cfg.Observability.Environment)
+	must.Equal("from-file-ns", cfg.Observability.ServiceNamespace)
 }
 
-// TestApplyOverrides_ObservabilityServiceNamespaceFlag pins the
-// service-namespace branch of applyOverrides for the observability flags,
-// complementing TestApplyOverrides_ObservabilityFlags which only exercises
-// deployment-environment.
-func TestApplyOverrides_ObservabilityServiceNamespaceFlag(t *testing.T) {
+// TestApplyOverrides_ServiceNameAndNamespaceFlags pins that --service-name
+// and --service-namespace override the file's observability values, and
+// that an unset --deployment-environment keeps the file value.
+func TestApplyOverrides_ServiceNameAndNamespaceFlags(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Observability = types.ObservabilityConfig{
@@ -1299,27 +1093,14 @@ func TestApplyOverrides_ObservabilityServiceNamespaceFlag(t *testing.T) {
 		ServiceNamespace: "from-file-ns",
 	}
 
-	if err := cmd.Flags().Set("service-namespace", "from-flag-ns"); err != nil {
-		t.Fatalf("set service-namespace: %v", err)
-	}
-	if err := cmd.Flags().Set("service-name", "from-flag-name"); err != nil {
-		t.Fatalf("set service-name: %v", err)
-	}
-	// deployment-environment deliberately not set — file value should survive.
+	must.NoError(cmd.Flags().Set("service-namespace", "from-flag-ns"))
+	must.NoError(cmd.Flags().Set("service-name", "from-flag-name"))
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.Observability.ServiceNamespace != "from-flag-ns" {
-		t.Errorf("Observability.ServiceNamespace: explicit flag should win, got %q", cfg.Observability.ServiceNamespace)
-	}
-	if cfg.Observability.ServiceName != "from-flag-name" {
-		t.Errorf("Observability.ServiceName: explicit flag should win, got %q", cfg.Observability.ServiceName)
-	}
-	if cfg.Observability.Environment != "from-file-env" {
-		t.Errorf("Observability.Environment: file value should survive when flag unset, got %q", cfg.Observability.Environment)
-	}
+	must.Equal("from-flag-ns", cfg.Observability.ServiceNamespace)
+	must.Equal("from-flag-name", cfg.Observability.ServiceName)
+	must.Equal("from-file-env", cfg.Observability.Environment)
 }
 
 // TestBuildHarnessRunConfig_LogExportPropagates pins that --log-export otlp
@@ -1327,6 +1108,7 @@ func TestApplyOverrides_ObservabilityServiceNamespaceFlag(t *testing.T) {
 // and validates. The empty Endpoint is intentional: the factory falls back
 // to the trace emitter's endpoint when it is unset.
 func TestBuildHarnessRunConfig_LogExportPropagates(t *testing.T) {
+	must := require.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
@@ -1340,18 +1122,11 @@ func TestBuildHarnessRunConfig_LogExportPropagates(t *testing.T) {
 		LogLevel:      "info",
 		LogExport:     "otlp",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
-	if cfg.Observability.LogsExport.Type != "otlp" {
-		t.Errorf("LogsExport.Type: got %q, want otlp", cfg.Observability.LogsExport.Type)
-	}
-	if cfg.Observability.LogsExport.Endpoint != "" {
-		t.Errorf("LogsExport.Endpoint: got %q, want empty (factory falls back to trace endpoint)", cfg.Observability.LogsExport.Endpoint)
-	}
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Fatalf("ValidateRunConfig: %v", err)
-	}
+	must.NoError(err)
+
+	must.Equal("otlp", cfg.Observability.LogsExport.Type)
+	must.Empty(cfg.Observability.LogsExport.Endpoint, "factory falls back to the trace emitter endpoint")
+	must.NoError(types.ValidateRunConfig(cfg))
 }
 
 // TestBuildHarnessRunConfig_LogExportNoneStaysStderrOnly pins that the
@@ -1359,6 +1134,7 @@ func TestBuildHarnessRunConfig_LogExportPropagates(t *testing.T) {
 // stderr-only behaviour is the zero value, and the factory only opts in on
 // Type=="otlp".
 func TestBuildHarnessRunConfig_LogExportNoneStaysStderrOnly(t *testing.T) {
+	must := require.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
@@ -1372,45 +1148,34 @@ func TestBuildHarnessRunConfig_LogExportNoneStaysStderrOnly(t *testing.T) {
 		LogLevel:      "info",
 		LogExport:     "none",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
-	if cfg.Observability.LogsExport.Type != "" {
-		t.Errorf("LogsExport.Type: got %q, want empty for --log-export none", cfg.Observability.LogsExport.Type)
-	}
+	must.NoError(err)
+
+	must.Empty(cfg.Observability.LogsExport.Type)
 }
 
 // TestApplyOverrides_LogExportFlag pins the file -> flag override chain for
-// --log-export: an explicit "otlp" must clobber the file value, and an
+// --log-export: an explicit "otlp" must clobber the file value, and a
 // explicit "none" must clear a file's "otlp" back to stderr-only.
 func TestApplyOverrides_LogExportFlag(t *testing.T) {
 	t.Run("otlp overrides file", func(t *testing.T) {
+		must := require.New(t)
 		cmd := newTestHarnessCommand()
 		cfg := baseFileConfig()
-		if err := cmd.Flags().Set("log-export", "otlp"); err != nil {
-			t.Fatalf("set log-export: %v", err)
-		}
-		if err := applyOverrides(cmd, cfg, nil); err != nil {
-			t.Fatalf("applyOverrides: %v", err)
-		}
-		if cfg.Observability.LogsExport.Type != "otlp" {
-			t.Errorf("LogsExport.Type: explicit flag should win, got %q", cfg.Observability.LogsExport.Type)
-		}
+		must.NoError(cmd.Flags().Set("log-export", "otlp"))
+
+		must.NoError(applyOverrides(cmd, cfg, nil))
+		must.Equal("otlp", cfg.Observability.LogsExport.Type, "explicit flag should win")
 	})
 
 	t.Run("none clears file otlp", func(t *testing.T) {
+		must := require.New(t)
 		cmd := newTestHarnessCommand()
 		cfg := baseFileConfig()
 		cfg.Observability.LogsExport = types.LogsExportConfig{Type: "otlp", Endpoint: "localhost:4317"}
-		if err := cmd.Flags().Set("log-export", "none"); err != nil {
-			t.Fatalf("set log-export: %v", err)
-		}
-		if err := applyOverrides(cmd, cfg, nil); err != nil {
-			t.Fatalf("applyOverrides: %v", err)
-		}
-		if cfg.Observability.LogsExport.Type != "" {
-			t.Errorf("LogsExport.Type: --log-export none should clear to stderr-only, got %q", cfg.Observability.LogsExport.Type)
-		}
+		must.NoError(cmd.Flags().Set("log-export", "none"))
+
+		must.NoError(applyOverrides(cmd, cfg, nil))
+		must.Empty(cfg.Observability.LogsExport.Type, "--log-export none should clear to stderr-only")
 	})
 }
 
@@ -1419,49 +1184,38 @@ func TestApplyOverrides_LogExportFlag(t *testing.T) {
 // override path regardless of the file value — the per-signal env override
 // the OTel SDK honours.
 func TestApplyOverrides_LogExportEndpointEnvVar(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "logs-collector:4317")
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Observability.LogsExport = types.LogsExportConfig{Type: "otlp", Endpoint: "from-file:4317"}
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
-	if cfg.Observability.LogsExport.Endpoint != "logs-collector:4317" {
-		t.Errorf("LogsExport.Endpoint: env var should pin the endpoint, got %q", cfg.Observability.LogsExport.Endpoint)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
+	must.Equal("logs-collector:4317", cfg.Observability.LogsExport.Endpoint, "env var should pin the endpoint")
 }
 
 // TestBuildHarnessRunConfig_LogExportEndpointFromEnv pins that the builder
 // path reads OTEL_EXPORTER_OTLP_LOGS_ENDPOINT into LogsExport.Endpoint so a
 // flag-only run (no --config) can still pin a distinct logs endpoint.
 func TestBuildHarnessRunConfig_LogExportEndpointFromEnv(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "logs-collector:4317")
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("log-export", "otlp"); err != nil {
-		t.Fatalf("set log-export: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("log-export", "otlp"))
 	// Minimum flags so the builder produces a valid config.
 	for k, v := range map[string]string{
 		"mode": "execution", "prompt": "test", "provider": "anthropic",
 		"api-key-ref": "secret://ANTHROPIC_API_KEY", "model": "claude-sonnet-4-6",
 		"transport": "stdio", "log-level": "info",
 	} {
-		if err := cmd.Flags().Set(k, v); err != nil {
-			t.Fatalf("set %s: %v", k, err)
-		}
+		must.NoError(cmd.Flags().Set(k, v), "set %s", k)
 	}
 
 	cfg, err := buildFlagOnlyRunConfig(cmd, nil)
-	if err != nil {
-		t.Fatalf("buildFlagOnlyRunConfig: %v", err)
-	}
-	if cfg.Observability.LogsExport.Type != "otlp" {
-		t.Errorf("LogsExport.Type: got %q, want otlp", cfg.Observability.LogsExport.Type)
-	}
-	if cfg.Observability.LogsExport.Endpoint != "logs-collector:4317" {
-		t.Errorf("LogsExport.Endpoint: got %q, want logs-collector:4317", cfg.Observability.LogsExport.Endpoint)
-	}
+	must.NoError(err)
+	check.Equal("otlp", cfg.Observability.LogsExport.Type)
+	check.Equal("logs-collector:4317", cfg.Observability.LogsExport.Endpoint)
 }
 
 // TestApplyOverrides_PositionalPromptFillsFileGap covers the precedence
@@ -1469,52 +1223,38 @@ func TestBuildHarnessRunConfig_LogExportEndpointFromEnv(t *testing.T) {
 // positional argument (no --prompt flag). The positional should fill the
 // gap rather than triggering the "prompt required" error.
 func TestApplyOverrides_PositionalPromptFillsFileGap(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Prompt = "" // simulate file with no prompt
 
-	if err := applyOverrides(cmd, cfg, []string{"positional prompt"}); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
-
-	if cfg.Prompt != "positional prompt" {
-		t.Errorf("expected positional prompt to fill the gap, got %q", cfg.Prompt)
-	}
+	must.NoError(applyOverrides(cmd, cfg, []string{"positional prompt"}))
+	must.Equal("positional prompt", cfg.Prompt, "positional prompt should fill the gap")
 }
 
 // TestApplyOverrides_FilePromptBeatsPositional verifies that a positional
 // arg does NOT clobber a prompt set in the config file. The positional
 // is a fallback, not an override (use --prompt for that).
 func TestApplyOverrides_FilePromptBeatsPositional(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig() // Prompt = "prompt-from-file"
 
-	if err := applyOverrides(cmd, cfg, []string{"positional"}); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
-
-	if cfg.Prompt != "prompt-from-file" {
-		t.Errorf("file prompt should win over positional, got %q", cfg.Prompt)
-	}
+	must.NoError(applyOverrides(cmd, cfg, []string{"positional"}))
+	must.Equal("prompt-from-file", cfg.Prompt, "file prompt should win over positional")
 }
 
 // TestApplyOverrides_ExplicitFlagBeatsPositional pins the precedence:
 // --prompt > positional > file.
 func TestApplyOverrides_ExplicitFlagBeatsPositional(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Prompt = "" // file has no prompt
-	if err := cmd.Flags().Set("prompt", "from-flag"); err != nil {
-		t.Fatalf("set prompt: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("prompt", "from-flag"))
 
-	if err := applyOverrides(cmd, cfg, []string{"positional"}); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
-
-	if cfg.Prompt != "from-flag" {
-		t.Errorf("explicit --prompt should win, got %q", cfg.Prompt)
-	}
+	must.NoError(applyOverrides(cmd, cfg, []string{"positional"}))
+	must.Equal("from-flag", cfg.Prompt, "explicit --prompt should win")
 }
 
 // repoRootForTests returns the absolute repo root by walking up from this
@@ -1522,137 +1262,87 @@ func TestApplyOverrides_ExplicitFlagBeatsPositional(t *testing.T) {
 // directory.
 func repoRootForTests(t *testing.T) string {
 	t.Helper()
+	must := require.New(t)
 	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller(0) failed")
-	}
+	must.True(ok, "runtime.Caller(0) failed")
 	// thisFile is .../harness/cmd/stirrup/cmd/harness_test.go; walk up four
 	// levels to reach the repo root.
 	return filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", "..", "..", ".."))
 }
 
-// TestExampleFullJSONLoadsAndValidates pins that examples/runconfig/full.json
-// round-trips through loadRunConfigFile and passes ValidateRunConfig
-// unmodified.
-func TestExampleFullJSONLoadsAndValidates(t *testing.T) {
-	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "full.json")
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("examples/runconfig/full.json not found at %q: %v", path, err)
-	}
-
+// loadExampleRunConfig loads a shipped fixture from examples/runconfig and
+// requires that it validates.
+func loadExampleRunConfig(t *testing.T, name string) *types.RunConfig {
+	t.Helper()
+	must := require.New(t)
+	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", name)
+	must.FileExists(path)
 	cfg, err := loadRunConfigFile(path)
-	if err != nil {
-		t.Fatalf("loadRunConfigFile %q: %v", path, err)
-	}
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Fatalf("examples/runconfig/full.json fails ValidateRunConfig: %v", err)
-	}
-	if cfg.EditStrategy.Type != "multi" {
-		t.Errorf("example should demonstrate multi edit strategy, got %q", cfg.EditStrategy.Type)
-	}
-	if cfg.Executor.Type != "container" {
-		t.Errorf("example should demonstrate container executor, got %q", cfg.Executor.Type)
-	}
-	if cfg.TraceEmitter.Type != "otel" {
-		t.Errorf("example should demonstrate otel trace emitter, got %q", cfg.TraceEmitter.Type)
-	}
-
-	if cfg.ModelRouter.Type != "dynamic" {
-		t.Errorf("example should demonstrate dynamic model router, got %q", cfg.ModelRouter.Type)
-	}
-	if cfg.ModelRouter.CheapModel == "" {
-		t.Errorf("example should set modelRouter.cheapModel")
-	}
-	if cfg.Executor.Resources == nil || cfg.Executor.Resources.CPUs == 0 {
-		t.Errorf("example should set executor.resources.cpus")
-	}
-	if len(cfg.Tools.MCPServers) != 1 || cfg.Tools.MCPServers[0].Name == "" {
-		t.Errorf("example should configure exactly one named MCP server, got %+v", cfg.Tools.MCPServers)
-	}
+	must.NoError(err, "loadRunConfigFile %q", path)
+	must.NoError(types.ValidateRunConfig(cfg), "%s fails ValidateRunConfig", name)
+	return cfg
 }
 
-// TestExampleNoneMCPOnlyJSONLoadsAndValidates pins the shipped
+// TestExampleRunConfig_LoadsAndValidates_Full pins that examples/runconfig/full.json
+// round-trips through loadRunConfigFile and passes ValidateRunConfig
+// unmodified.
+func TestExampleRunConfig_LoadsAndValidates_Full(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	cfg := loadExampleRunConfig(t, "full.json")
+
+	check.Equal("multi", cfg.EditStrategy.Type, "example should demonstrate multi edit strategy")
+	check.Equal("container", cfg.Executor.Type, "example should demonstrate container executor")
+	check.Equal("otel", cfg.TraceEmitter.Type, "example should demonstrate otel trace emitter")
+	check.Equal("dynamic", cfg.ModelRouter.Type, "example should demonstrate dynamic model router")
+	check.NotEmpty(cfg.ModelRouter.CheapModel, "example should set modelRouter.cheapModel")
+	must.NotNil(cfg.Executor.Resources, "example should set executor.resources")
+	check.NotZero(cfg.Executor.Resources.CPUs, "example should set executor.resources.cpus")
+	must.Len(cfg.Tools.MCPServers, 1, "example should configure exactly one named MCP server")
+	check.NotEmpty(cfg.Tools.MCPServers[0].Name, "example MCP server should be named")
+}
+
+// TestExampleRunConfig_LoadsAndValidates_NoneMCPOnly pins the shipped
 // none-mcp-only.json fixture: the MCP-only, no-execution-surface use case
 // executor.type="none" exists for, pairing a read-only mode with an MCP
 // server and only the capability-ungated web_fetch built-in tool.
-func TestExampleNoneMCPOnlyJSONLoadsAndValidates(t *testing.T) {
-	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "none-mcp-only.json")
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("examples/runconfig/none-mcp-only.json not found at %q: %v", path, err)
-	}
-	cfg, err := loadRunConfigFile(path)
-	if err != nil {
-		t.Fatalf("loadRunConfigFile %q: %v", path, err)
-	}
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Fatalf("examples/runconfig/none-mcp-only.json fails ValidateRunConfig: %v", err)
-	}
-	if cfg.Executor.Type != "none" {
-		t.Errorf("example should demonstrate the none executor, got %q", cfg.Executor.Type)
-	}
-	if !types.IsReadOnlyMode(cfg.Mode) {
-		t.Errorf("example should demonstrate a read-only mode, got %q", cfg.Mode)
-	}
-	if len(cfg.Tools.BuiltIn) != 1 || cfg.Tools.BuiltIn[0] != "web_fetch" {
-		t.Errorf("example should enable only web_fetch, got %v", cfg.Tools.BuiltIn)
-	}
-	if len(cfg.Tools.MCPServers) != 1 || cfg.Tools.MCPServers[0].Name == "" {
-		t.Errorf("example should configure exactly one named MCP server, got %+v", cfg.Tools.MCPServers)
-	}
+func TestExampleRunConfig_LoadsAndValidates_NoneMCPOnly(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
+	cfg := loadExampleRunConfig(t, "none-mcp-only.json")
+
+	check.Equal("none", cfg.Executor.Type, "example should demonstrate the none executor")
+	check.True(types.IsReadOnlyMode(cfg.Mode), "example should demonstrate a read-only mode")
+	check.Equal([]string{"web_fetch"}, cfg.Tools.BuiltIn, "example should enable only web_fetch")
+	must.Len(cfg.Tools.MCPServers, 1, "example should configure exactly one named MCP server")
+	check.NotEmpty(cfg.Tools.MCPServers[0].Name, "example MCP server should be named")
 }
 
-// TestExampleAzureOpenAIJSONLoadsAndValidates pins the shipped Azure
+// TestExampleRunConfig_LoadsAndValidates_AzureOpenAI pins the shipped Azure
 // OpenAI fixture: it must round-trip and validate, demonstrating
 // apiKeyHeader, queryParams, and the Azure-shaped baseUrl.
-func TestExampleAzureOpenAIJSONLoadsAndValidates(t *testing.T) {
-	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "azure-openai.json")
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("examples/runconfig/azure-openai.json not found at %q: %v", path, err)
-	}
-	cfg, err := loadRunConfigFile(path)
-	if err != nil {
-		t.Fatalf("loadRunConfigFile %q: %v", path, err)
-	}
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Fatalf("examples/runconfig/azure-openai.json fails ValidateRunConfig: %v", err)
-	}
-	if cfg.Provider.Type != "openai-responses" {
-		t.Errorf("Provider.Type = %q, want openai-responses", cfg.Provider.Type)
-	}
-	if cfg.Provider.APIKeyHeader != "api-key" {
-		t.Errorf("Provider.APIKeyHeader = %q, want api-key", cfg.Provider.APIKeyHeader)
-	}
-	if cfg.Provider.QueryParams["api-version"] != "preview" {
-		t.Errorf("Provider.QueryParams[api-version] = %q, want preview", cfg.Provider.QueryParams["api-version"])
-	}
-	if !strings.Contains(cfg.Provider.BaseURL, "openai.azure.com") {
-		t.Errorf("Provider.BaseURL should target Azure, got %q", cfg.Provider.BaseURL)
-	}
+func TestExampleRunConfig_LoadsAndValidates_AzureOpenAI(t *testing.T) {
+	check := assert.New(t)
+	cfg := loadExampleRunConfig(t, "azure-openai.json")
+
+	check.Equal("openai-responses", cfg.Provider.Type)
+	check.Equal("api-key", cfg.Provider.APIKeyHeader)
+	check.Equal("preview", cfg.Provider.QueryParams["api-version"])
+	check.Contains(cfg.Provider.BaseURL, "openai.azure.com", "Provider.BaseURL should target Azure")
 }
 
-// TestExampleVertexGeminiJSONLoadsAndValidates pins the shipped Vertex AI
+// TestExampleRunConfig_LoadsAndValidates_VertexGemini pins the shipped Vertex AI
 // fixture: it must round-trip and validate, and its permissionPolicy /
 // built-in tool combination must be execution-mode-consistent — a
 // deny-side-effects policy paired with a side-effecting tool would pass
 // validation but silently block the example at runtime.
-func TestExampleVertexGeminiJSONLoadsAndValidates(t *testing.T) {
-	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "vertex-gemini.json")
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("examples/runconfig/vertex-gemini.json not found at %q: %v", path, err)
-	}
-	cfg, err := loadRunConfigFile(path)
-	if err != nil {
-		t.Fatalf("loadRunConfigFile %q: %v", path, err)
-	}
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Fatalf("examples/runconfig/vertex-gemini.json fails ValidateRunConfig: %v", err)
-	}
-	if cfg.Provider.Type != "gemini" {
-		t.Errorf("Provider.Type = %q, want gemini", cfg.Provider.Type)
-	}
-	if cfg.Provider.GCPProject == "" || cfg.Provider.GCPLocation == "" {
-		t.Errorf("Provider must set gcpProject and gcpLocation, got %+v", cfg.Provider)
-	}
+func TestExampleRunConfig_LoadsAndValidates_VertexGemini(t *testing.T) {
+	check := assert.New(t)
+	cfg := loadExampleRunConfig(t, "vertex-gemini.json")
+
+	check.Equal("gemini", cfg.Provider.Type)
+	check.NotEmpty(cfg.Provider.GCPProject, "Provider must set gcpProject")
+	check.NotEmpty(cfg.Provider.GCPLocation, "Provider must set gcpLocation")
 
 	if cfg.Mode == "execution" {
 		hasSideEffectTool := false
@@ -1662,298 +1352,171 @@ func TestExampleVertexGeminiJSONLoadsAndValidates(t *testing.T) {
 				break
 			}
 		}
-		if hasSideEffectTool && cfg.PermissionPolicy.Type == "deny-side-effects" {
-			t.Errorf("execution-mode example with side-effecting tools must not use deny-side-effects (got %q + %v)",
-				cfg.PermissionPolicy.Type, cfg.Tools.BuiltIn)
-		}
+		check.False(hasSideEffectTool && cfg.PermissionPolicy.Type == "deny-side-effects",
+			"execution-mode example with side-effecting tools must not use deny-side-effects (got %q + %v)",
+			cfg.PermissionPolicy.Type, cfg.Tools.BuiltIn)
 	}
 }
 
-// TestExampleAzureOpenAIWIFAKSJSONLoadsAndValidates pins the shipped AKS
+// TestExampleRunConfig_LoadsAndValidates_AzureOpenAIWIFAKS pins the shipped AKS
 // Azure-WIF fixture: it must round-trip and validate, demonstrating the
 // azure-workload-identity credential type with a file-projected token
 // source.
-func TestExampleAzureOpenAIWIFAKSJSONLoadsAndValidates(t *testing.T) {
-	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "azure-openai-wif-aks.json")
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("examples/runconfig/azure-openai-wif-aks.json not found at %q: %v", path, err)
-	}
-	cfg, err := loadRunConfigFile(path)
-	if err != nil {
-		t.Fatalf("loadRunConfigFile %q: %v", path, err)
-	}
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Fatalf("examples/runconfig/azure-openai-wif-aks.json fails ValidateRunConfig: %v", err)
-	}
-	if cfg.Provider.Credential == nil {
-		t.Fatal("expected Provider.Credential block")
-	}
-	if cfg.Provider.Credential.Type != "azure-workload-identity" {
-		t.Errorf("Credential.Type = %q, want azure-workload-identity", cfg.Provider.Credential.Type)
-	}
-	if cfg.Provider.Credential.TokenSource == nil || cfg.Provider.Credential.TokenSource.Type != "file" {
-		t.Errorf("expected file token source, got %+v", cfg.Provider.Credential.TokenSource)
-	}
+func TestExampleRunConfig_LoadsAndValidates_AzureOpenAIWIFAKS(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	cfg := loadExampleRunConfig(t, "azure-openai-wif-aks.json")
+
+	cred := cfg.Provider.Credential
+	must.NotNil(cred, "expected Provider.Credential block")
+	check.Equal("azure-workload-identity", cred.Type)
+	must.NotNil(cred.TokenSource, "expected a token source")
+	check.Equal("file", cred.TokenSource.Type)
 }
 
-// TestExampleAzureOpenAIWIFGitHubActionsJSONLoadsAndValidates pins the
+// TestExampleRunConfig_LoadsAndValidates_AzureOpenAIWIFGitHubActions pins the
 // shipped GitHub-Actions Azure-WIF fixture: same shape as the AKS test
 // above but with a github-actions-oidc token source.
-func TestExampleAzureOpenAIWIFGitHubActionsJSONLoadsAndValidates(t *testing.T) {
-	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "azure-openai-wif-github-actions.json")
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("examples/runconfig/azure-openai-wif-github-actions.json not found at %q: %v", path, err)
-	}
-	cfg, err := loadRunConfigFile(path)
-	if err != nil {
-		t.Fatalf("loadRunConfigFile %q: %v", path, err)
-	}
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Fatalf("examples/runconfig/azure-openai-wif-github-actions.json fails ValidateRunConfig: %v", err)
-	}
-	if cfg.Provider.Credential == nil {
-		t.Fatal("expected Provider.Credential block")
-	}
-	if cfg.Provider.Credential.Type != "azure-workload-identity" {
-		t.Errorf("Credential.Type = %q, want azure-workload-identity", cfg.Provider.Credential.Type)
-	}
-	if cfg.Provider.Credential.TokenSource == nil || cfg.Provider.Credential.TokenSource.Type != "github-actions-oidc" {
-		t.Errorf("expected github-actions-oidc token source, got %+v", cfg.Provider.Credential.TokenSource)
-	}
-	if cfg.Provider.Credential.TokenSource.Audience != "api://AzureADTokenExchange" {
-		t.Errorf("audience = %q, want api://AzureADTokenExchange", cfg.Provider.Credential.TokenSource.Audience)
-	}
+func TestExampleRunConfig_LoadsAndValidates_AzureOpenAIWIFGitHubActions(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	cfg := loadExampleRunConfig(t, "azure-openai-wif-github-actions.json")
+
+	cred := cfg.Provider.Credential
+	must.NotNil(cred, "expected Provider.Credential block")
+	check.Equal("azure-workload-identity", cred.Type)
+	must.NotNil(cred.TokenSource, "expected a token source")
+	check.Equal("github-actions-oidc", cred.TokenSource.Type)
+	check.Equal("api://AzureADTokenExchange", cred.TokenSource.Audience)
 }
 
-// TestExampleAzureOpenAIWIFSmokeJSONLoadsAndValidates pins the pre-wired
+// TestExampleRunConfig_LoadsAndValidates_AzureOpenAIWIFSmoke pins the pre-wired
 // smoke-test fixture consumed by .github/workflows/smoke-azure-openai.yml,
 // which hardcodes the stirrup test tenant's IDs and the AI Foundry
 // (cognitiveservices.azure.com) host.
-func TestExampleAzureOpenAIWIFSmokeJSONLoadsAndValidates(t *testing.T) {
-	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "azure-openai-wif-smoke.json")
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("examples/runconfig/azure-openai-wif-smoke.json not found at %q: %v", path, err)
-	}
-	cfg, err := loadRunConfigFile(path)
-	if err != nil {
-		t.Fatalf("loadRunConfigFile %q: %v", path, err)
-	}
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Fatalf("examples/runconfig/azure-openai-wif-smoke.json fails ValidateRunConfig: %v", err)
-	}
-	if cfg.Provider.Type != "openai-responses" {
-		t.Errorf("Provider.Type = %q, want openai-responses", cfg.Provider.Type)
-	}
-	if cfg.Provider.Credential == nil {
-		t.Fatal("expected Provider.Credential block")
-	}
-	if cfg.Provider.Credential.Type != "azure-workload-identity" {
-		t.Errorf("Credential.Type = %q, want azure-workload-identity", cfg.Provider.Credential.Type)
-	}
-	if cfg.Provider.Credential.TokenSource == nil || cfg.Provider.Credential.TokenSource.Type != "github-actions-oidc" {
-		t.Errorf("expected github-actions-oidc token source, got %+v", cfg.Provider.Credential.TokenSource)
-	}
-	if cfg.Provider.Credential.TokenSource.Audience != "api://AzureADTokenExchange" {
-		t.Errorf("audience = %q, want api://AzureADTokenExchange", cfg.Provider.Credential.TokenSource.Audience)
-	}
-	if cfg.Provider.BaseURL != "https://stirrup-eval-resource.cognitiveservices.azure.com/openai/v1" {
-		t.Errorf("Provider.BaseURL = %q, want the stirrup test tenant cognitiveservices.azure.com host", cfg.Provider.BaseURL)
-	}
-	if cfg.ModelRouter.Model != "gpt-5.4-nano" {
-		t.Errorf("ModelRouter.Model = %q, want gpt-5.4-nano", cfg.ModelRouter.Model)
-	}
+func TestExampleRunConfig_LoadsAndValidates_AzureOpenAIWIFSmoke(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	cfg := loadExampleRunConfig(t, "azure-openai-wif-smoke.json")
+
+	check.Equal("openai-responses", cfg.Provider.Type)
+	cred := cfg.Provider.Credential
+	must.NotNil(cred, "expected Provider.Credential block")
+	check.Equal("azure-workload-identity", cred.Type)
+	must.NotNil(cred.TokenSource, "expected a token source")
+	check.Equal("github-actions-oidc", cred.TokenSource.Type)
+	check.Equal("api://AzureADTokenExchange", cred.TokenSource.Audience)
+	check.Equal("https://stirrup-eval-resource.cognitiveservices.azure.com/openai/v1", cfg.Provider.BaseURL,
+		"smoke fixture should target the stirrup test tenant AI Foundry host")
+	check.Equal("gpt-5.4-nano", cfg.ModelRouter.Model)
 }
 
-// TestExampleOpenAIWIFGitHubActionsJSONLoadsAndValidates pins the shipped
+// TestExampleRunConfig_LoadsAndValidates_OpenAIWIFGitHubActions pins the shipped
 // OpenAI-WIF GitHub-Actions fixture, demonstrating the openai-wif
 // credential type with a github-actions-oidc token source carrying the
 // OpenAI API audience.
-func TestExampleOpenAIWIFGitHubActionsJSONLoadsAndValidates(t *testing.T) {
-	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "openai-wif-github-actions.json")
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("examples/runconfig/openai-wif-github-actions.json not found at %q: %v", path, err)
-	}
-	cfg, err := loadRunConfigFile(path)
-	if err != nil {
-		t.Fatalf("loadRunConfigFile %q: %v", path, err)
-	}
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Fatalf("examples/runconfig/openai-wif-github-actions.json fails ValidateRunConfig: %v", err)
-	}
-	if cfg.Provider.Credential == nil {
-		t.Fatal("expected Provider.Credential block")
-	}
-	if cfg.Provider.Credential.Type != "openai-wif" {
-		t.Errorf("Credential.Type = %q, want openai-wif", cfg.Provider.Credential.Type)
-	}
-	if cfg.Provider.Credential.TokenSource == nil || cfg.Provider.Credential.TokenSource.Type != "github-actions-oidc" {
-		t.Errorf("expected github-actions-oidc token source, got %+v", cfg.Provider.Credential.TokenSource)
-	}
-	if cfg.Provider.Credential.TokenSource.Audience != "https://api.openai.com/v1" {
-		t.Errorf("audience = %q, want https://api.openai.com/v1", cfg.Provider.Credential.TokenSource.Audience)
-	}
+func TestExampleRunConfig_LoadsAndValidates_OpenAIWIFGitHubActions(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
+	cfg := loadExampleRunConfig(t, "openai-wif-github-actions.json")
+
+	cred := cfg.Provider.Credential
+	must.NotNil(cred, "expected Provider.Credential block")
+	check.Equal("openai-wif", cred.Type)
+	must.NotNil(cred.TokenSource, "expected a token source")
+	check.Equal("github-actions-oidc", cred.TokenSource.Type)
+	check.Equal("https://api.openai.com/v1", cred.TokenSource.Audience)
 }
 
-// TestExampleOpenAIWIFEKSIRSAJSONLoadsAndValidates pins the shipped
+// TestExampleRunConfig_LoadsAndValidates_OpenAIWIFEKSIRSA pins the shipped
 // OpenAI-WIF EKS/IRSA fixture: same shape as the GitHub-Actions test above
 // but on an openai-compatible provider with an aws-irsa token source.
-func TestExampleOpenAIWIFEKSIRSAJSONLoadsAndValidates(t *testing.T) {
-	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "openai-wif-eks-irsa.json")
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("examples/runconfig/openai-wif-eks-irsa.json not found at %q: %v", path, err)
-	}
-	cfg, err := loadRunConfigFile(path)
-	if err != nil {
-		t.Fatalf("loadRunConfigFile %q: %v", path, err)
-	}
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Fatalf("examples/runconfig/openai-wif-eks-irsa.json fails ValidateRunConfig: %v", err)
-	}
-	if cfg.Provider.Credential == nil {
-		t.Fatal("expected Provider.Credential block")
-	}
-	if cfg.Provider.Credential.Type != "openai-wif" {
-		t.Errorf("Credential.Type = %q, want openai-wif", cfg.Provider.Credential.Type)
-	}
-	if cfg.Provider.Credential.TokenSource == nil || cfg.Provider.Credential.TokenSource.Type != "aws-irsa" {
-		t.Errorf("expected aws-irsa token source, got %+v", cfg.Provider.Credential.TokenSource)
-	}
+func TestExampleRunConfig_LoadsAndValidates_OpenAIWIFEKSIRSA(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	cfg := loadExampleRunConfig(t, "openai-wif-eks-irsa.json")
+
+	cred := cfg.Provider.Credential
+	must.NotNil(cred, "expected Provider.Credential block")
+	check.Equal("openai-wif", cred.Type)
+	must.NotNil(cred.TokenSource, "expected a token source")
+	check.Equal("aws-irsa", cred.TokenSource.Type)
 }
 
-// TestExampleBedrockWIFSmokeJSONLoadsAndValidates pins the pre-wired
+// TestExampleRunConfig_LoadsAndValidates_BedrockWIFSmoke pins the pre-wired
 // smoke-test fixture consumed by .github/workflows/smoke-bedrock.yml,
 // which hardcodes the stirrup sandbox AWS account's role ARN and the
 // us-west-2 source region for the Haiku 4.5 cross-region inference
 // profile.
-func TestExampleBedrockWIFSmokeJSONLoadsAndValidates(t *testing.T) {
-	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "bedrock-wif-smoke.json")
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("examples/runconfig/bedrock-wif-smoke.json not found at %q: %v", path, err)
-	}
-	cfg, err := loadRunConfigFile(path)
-	if err != nil {
-		t.Fatalf("loadRunConfigFile %q: %v", path, err)
-	}
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Fatalf("examples/runconfig/bedrock-wif-smoke.json fails ValidateRunConfig: %v", err)
-	}
-	if cfg.Provider.Type != "bedrock" {
-		t.Errorf("Provider.Type = %q, want bedrock", cfg.Provider.Type)
-	}
-	if cfg.Provider.Region != "us-west-2" {
-		t.Errorf("Provider.Region = %q, want us-west-2", cfg.Provider.Region)
-	}
-	if cfg.Provider.Credential == nil {
-		t.Fatal("expected Provider.Credential block")
-	}
-	if cfg.Provider.Credential.Type != "web-identity" {
-		t.Errorf("Credential.Type = %q, want web-identity", cfg.Provider.Credential.Type)
-	}
-	if cfg.Provider.Credential.RoleARN != "arn:aws:iam::786874932855:role/stirrup-smoke-bedrock" {
-		t.Errorf("Credential.RoleARN = %q, want the stirrup sandbox role ARN", cfg.Provider.Credential.RoleARN)
-	}
-	if cfg.Provider.Credential.TokenSource == nil || cfg.Provider.Credential.TokenSource.Type != "github-actions-oidc" {
-		t.Errorf("expected github-actions-oidc token source, got %+v", cfg.Provider.Credential.TokenSource)
-	}
-	if cfg.Provider.Credential.TokenSource.Audience != "sts.amazonaws.com" {
-		t.Errorf("audience = %q, want sts.amazonaws.com", cfg.Provider.Credential.TokenSource.Audience)
-	}
-	if cfg.ModelRouter.Model != "us.anthropic.claude-haiku-4-5-20251001-v1:0" {
-		t.Errorf("ModelRouter.Model = %q, want the Haiku 4.5 us. cross-region inference profile", cfg.ModelRouter.Model)
-	}
+func TestExampleRunConfig_LoadsAndValidates_BedrockWIFSmoke(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
+	cfg := loadExampleRunConfig(t, "bedrock-wif-smoke.json")
+
+	check.Equal("bedrock", cfg.Provider.Type)
+	check.Equal("us-west-2", cfg.Provider.Region)
+	cred := cfg.Provider.Credential
+	must.NotNil(cred, "expected Provider.Credential block")
+	check.Equal("web-identity", cred.Type)
+	check.Equal("arn:aws:iam::786874932855:role/stirrup-smoke-bedrock", cred.RoleARN, "stirrup sandbox role ARN")
+	must.NotNil(cred.TokenSource, "expected a token source")
+	check.Equal("github-actions-oidc", cred.TokenSource.Type)
+	check.Equal("sts.amazonaws.com", cred.TokenSource.Audience)
+	check.Equal("us.anthropic.claude-haiku-4-5-20251001-v1:0", cfg.ModelRouter.Model,
+		"Haiku 4.5 cross-region inference profile")
 }
 
-// TestExampleVertexGeminiWIFSmokeJSONLoadsAndValidates pins the pre-wired
+// TestExampleRunConfig_LoadsAndValidates_VertexGeminiWIFSmoke pins the pre-wired
 // smoke-test fixture consumed by .github/workflows/smoke-vertex-gemini.yml,
 // which hardcodes the rubynerd-net project, the shared stirrup-gha WIF
 // pool's double-slash audience, and the stirrup-testing SA. The
 // Credential.Audience and TokenSource.Audience must match, since the GHA
 // OIDC `aud` claim must equal the WIF provider's expected audience.
-func TestExampleVertexGeminiWIFSmokeJSONLoadsAndValidates(t *testing.T) {
-	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "vertex-gemini-wif-smoke.json")
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("examples/runconfig/vertex-gemini-wif-smoke.json not found at %q: %v", path, err)
-	}
-	cfg, err := loadRunConfigFile(path)
-	if err != nil {
-		t.Fatalf("loadRunConfigFile %q: %v", path, err)
-	}
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Fatalf("examples/runconfig/vertex-gemini-wif-smoke.json fails ValidateRunConfig: %v", err)
-	}
-	if cfg.Provider.Type != "gemini" {
-		t.Errorf("Provider.Type = %q, want gemini", cfg.Provider.Type)
-	}
-	if cfg.Provider.GCPProject != "rubynerd-net" {
-		t.Errorf("Provider.GCPProject = %q, want rubynerd-net", cfg.Provider.GCPProject)
-	}
-	if cfg.Provider.GCPLocation != "global" {
-		t.Errorf("Provider.GCPLocation = %q, want global", cfg.Provider.GCPLocation)
-	}
-	if cfg.Provider.Credential == nil {
-		t.Fatal("expected Provider.Credential block")
-	}
-	if cfg.Provider.Credential.Type != "gcp-workload-identity-federation" {
-		t.Errorf("Credential.Type = %q, want gcp-workload-identity-federation", cfg.Provider.Credential.Type)
-	}
+func TestExampleRunConfig_LoadsAndValidates_VertexGeminiWIFSmoke(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	cfg := loadExampleRunConfig(t, "vertex-gemini-wif-smoke.json")
+
 	const wantAudience = "//iam.googleapis.com/projects/163317929648/locations/global/workloadIdentityPools/stirrup-gha/providers/stirrup-gha-provider"
-	if cfg.Provider.Credential.Audience != wantAudience {
-		t.Errorf("Credential.Audience = %q, want the stirrup-gha provider audience", cfg.Provider.Credential.Audience)
-	}
-	if cfg.Provider.Credential.ServiceAccount != "stirrup-testing@rubynerd-net.iam.gserviceaccount.com" {
-		t.Errorf("Credential.ServiceAccount = %q, want the stirrup-testing SA", cfg.Provider.Credential.ServiceAccount)
-	}
-	if cfg.Provider.Credential.TokenSource == nil || cfg.Provider.Credential.TokenSource.Type != "github-actions-oidc" {
-		t.Errorf("expected github-actions-oidc token source, got %+v", cfg.Provider.Credential.TokenSource)
-	}
-	if cfg.Provider.Credential.TokenSource.Audience != wantAudience {
-		t.Errorf("TokenSource.Audience = %q, want the same WIF audience as Credential.Audience (GHA aud claim must match provider expectation)", cfg.Provider.Credential.TokenSource.Audience)
-	}
-	if cfg.ModelRouter.Model != "gemini-2.5-flash-lite" {
-		t.Errorf("ModelRouter.Model = %q, want gemini-2.5-flash-lite", cfg.ModelRouter.Model)
-	}
+	check.Equal("gemini", cfg.Provider.Type)
+	check.Equal("rubynerd-net", cfg.Provider.GCPProject)
+	check.Equal("global", cfg.Provider.GCPLocation)
+	cred := cfg.Provider.Credential
+	must.NotNil(cred, "expected Provider.Credential block")
+	check.Equal("gcp-workload-identity-federation", cred.Type)
+	check.Equal(wantAudience, cred.Audience, "Credential.Audience should be the stirrup-gha provider audience")
+	check.Equal("stirrup-testing@rubynerd-net.iam.gserviceaccount.com", cred.ServiceAccount)
+	must.NotNil(cred.TokenSource, "expected a token source")
+	check.Equal("github-actions-oidc", cred.TokenSource.Type)
+	check.Equal(wantAudience, cred.TokenSource.Audience,
+		"GHA aud claim must match the WIF provider audience, so it must equal Credential.Audience")
+	check.Equal("gemini-2.5-flash-lite", cfg.ModelRouter.Model)
 }
 
-// TestExampleCloudRunVertexGeminiJSONLoadsAndValidates pins the shipped
+// TestExampleRunConfig_LoadsAndValidates_CloudRunVertexGemini pins the shipped
 // Cloud Run fixture: it must round-trip and validate, exercising
 // resultSink.type=stdout-json, traceEmitter.type=gcs, and
 // executor.workspaceExportTo on a gs:// URI.
-func TestExampleCloudRunVertexGeminiJSONLoadsAndValidates(t *testing.T) {
-	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "cloud-run-vertex-gemini.json")
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("examples/runconfig/cloud-run-vertex-gemini.json not found at %q: %v", path, err)
-	}
-	cfg, err := loadRunConfigFile(path)
-	if err != nil {
-		t.Fatalf("loadRunConfigFile %q: %v", path, err)
-	}
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Fatalf("examples/runconfig/cloud-run-vertex-gemini.json fails ValidateRunConfig: %v", err)
-	}
-	if cfg.Provider.Type != "gemini" {
-		t.Errorf("Provider.Type = %q, want gemini", cfg.Provider.Type)
-	}
-	if cfg.Provider.Credential == nil || cfg.Provider.Credential.Type != "gcp-workload-identity" {
-		t.Errorf("Provider.Credential = %+v, want type=gcp-workload-identity", cfg.Provider.Credential)
-	}
-	if cfg.ResultSink == nil || cfg.ResultSink.Type != "stdout-json" {
-		t.Errorf("ResultSink = %+v, want type=stdout-json", cfg.ResultSink)
-	}
-	if cfg.TraceEmitter.Type != "gcs" {
-		t.Errorf("TraceEmitter.Type = %q, want gcs", cfg.TraceEmitter.Type)
-	}
-	if cfg.TraceEmitter.Bucket == "" {
-		t.Error("TraceEmitter.Bucket must be set when TraceEmitter.Type is \"gcs\"")
-	}
-	if cfg.Executor.WorkspaceExportTo == "" {
-		t.Error("Executor.WorkspaceExportTo must be set in the Cloud Run fixture")
-	}
+func TestExampleRunConfig_LoadsAndValidates_CloudRunVertexGemini(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
+	cfg := loadExampleRunConfig(t, "cloud-run-vertex-gemini.json")
+
+	check.Equal("gemini", cfg.Provider.Type)
+	must.NotNil(cfg.Provider.Credential, "expected Provider.Credential block")
+	check.Equal("gcp-workload-identity", cfg.Provider.Credential.Type)
+	must.NotNil(cfg.ResultSink, "expected ResultSink block")
+	check.Equal("stdout-json", cfg.ResultSink.Type)
+	check.Equal("gcs", cfg.TraceEmitter.Type)
+	check.NotEmpty(cfg.TraceEmitter.Bucket, "TraceEmitter.Bucket must be set when TraceEmitter.Type is gcs")
+	check.NotEmpty(cfg.Executor.WorkspaceExportTo, "Executor.WorkspaceExportTo must be set in the Cloud Run fixture")
 }
 
-// TestBuildHarnessRunConfig_SafetyRingFlags verifies that the safety-ring
-// flags propagate to the matching RunConfig fields, independently
-// exercised.
+// TestBuildHarnessRunConfig_SafetyRingFlags verifies that each safety-ring
+// flag propagates to its matching RunConfig field.
 func TestBuildHarnessRunConfig_SafetyRingFlags(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:                "test-run",
 		Mode:                 "execution",
@@ -1969,64 +1532,44 @@ func TestBuildHarnessRunConfig_SafetyRingFlags(t *testing.T) {
 		PermissionPolicyFile: "/tmp/policy.cedar",
 		CodeScannerType:      "patterns",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
+	must.NoError(err)
 
-	if cfg.Executor.Runtime != "runsc" {
-		t.Errorf("Executor.Runtime = %q, want runsc", cfg.Executor.Runtime)
-	}
-	if cfg.PermissionPolicy.PolicyFile != "/tmp/policy.cedar" {
-		t.Errorf("PermissionPolicy.PolicyFile = %q, want /tmp/policy.cedar", cfg.PermissionPolicy.PolicyFile)
-	}
+	check.Equal("runsc", cfg.Executor.Runtime)
+	check.Equal("/tmp/policy.cedar", cfg.PermissionPolicy.PolicyFile)
 	// The convenience shortcut auto-sets type=policy-engine when the
 	// caller didn't pick a type elsewhere.
-	if cfg.PermissionPolicy.Type != "policy-engine" {
-		t.Errorf("PermissionPolicy.Type = %q, want policy-engine", cfg.PermissionPolicy.Type)
-	}
-	if cfg.CodeScanner == nil || cfg.CodeScanner.Type != "patterns" {
-		t.Errorf("CodeScanner = %+v, want type=patterns", cfg.CodeScanner)
-	}
+	check.Equal("policy-engine", cfg.PermissionPolicy.Type)
+	must.NotNil(cfg.CodeScanner, "expected CodeScanner block")
+	check.Equal("patterns", cfg.CodeScanner.Type)
 }
 
 // TestApplyOverrides_SafetyRingFlagsOverride verifies the override path:
-// safety-ring flags set on the command line clobber file-provided
-// values. Mirror of TestApplyOverrides_ExplicitFlagsOverride for the
-// new flags.
+// safety-ring flags set on the command line clobber file-provided values.
 func TestApplyOverrides_SafetyRingFlagsOverride(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Executor.Runtime = "runc"
 	cfg.PermissionPolicy = types.PermissionPolicyConfig{Type: "deny-side-effects"}
 	cfg.CodeScanner = &types.CodeScannerConfig{Type: "none"}
 
-	must := func(name, value string) {
-		if err := cmd.Flags().Set(name, value); err != nil {
-			t.Fatalf("set %s: %v", name, err)
-		}
+	setFlag := func(name, value string) {
+		must.NoError(cmd.Flags().Set(name, value), "set %s", name)
 	}
-	must("container-runtime", "runsc")
-	must("permission-policy-file", "/tmp/p.cedar")
-	must("code-scanner", "patterns")
+	setFlag("container-runtime", "runsc")
+	setFlag("permission-policy-file", "/tmp/p.cedar")
+	setFlag("code-scanner", "patterns")
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.Executor.Runtime != "runsc" {
-		t.Errorf("Executor.Runtime override failed: %q", cfg.Executor.Runtime)
-	}
-	if cfg.PermissionPolicy.PolicyFile != "/tmp/p.cedar" {
-		t.Errorf("PermissionPolicy.PolicyFile override failed: %q", cfg.PermissionPolicy.PolicyFile)
-	}
+	check.Equal("runsc", cfg.Executor.Runtime, "container-runtime should override the file value")
+	check.Equal("/tmp/p.cedar", cfg.PermissionPolicy.PolicyFile, "permission-policy-file should override the file value")
 	// File set type=deny-side-effects so --permission-policy-file
 	// should NOT switch the type — only the path.
-	if cfg.PermissionPolicy.Type != "deny-side-effects" {
-		t.Errorf("PermissionPolicy.Type should survive when file set it, got %q", cfg.PermissionPolicy.Type)
-	}
-	if cfg.CodeScanner == nil || cfg.CodeScanner.Type != "patterns" {
-		t.Errorf("CodeScanner override failed: %+v", cfg.CodeScanner)
-	}
+	check.Equal("deny-side-effects", cfg.PermissionPolicy.Type, "file type should survive when the file set it")
+	must.NotNil(cfg.CodeScanner, "expected CodeScanner block")
+	check.Equal("patterns", cfg.CodeScanner.Type, "code-scanner should override the file value")
 }
 
 // TestApplyOverrides_PermissionPolicyFileImpliesPolicyEngine verifies
@@ -2035,29 +1578,25 @@ func TestApplyOverrides_SafetyRingFlagsOverride(t *testing.T) {
 // to "policy-engine" so the single flag is enough to use the new
 // policy implementation.
 func TestApplyOverrides_PermissionPolicyFileImpliesPolicyEngine(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.PermissionPolicy = types.PermissionPolicyConfig{} // file did not set type
 
-	if err := cmd.Flags().Set("permission-policy-file", "/tmp/p.cedar"); err != nil {
-		t.Fatalf("set: %v", err)
-	}
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("permission-policy-file", "/tmp/p.cedar"))
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.PermissionPolicy.Type != "policy-engine" {
-		t.Errorf("expected type=policy-engine when file omitted type, got %q", cfg.PermissionPolicy.Type)
-	}
-	if cfg.PermissionPolicy.PolicyFile != "/tmp/p.cedar" {
-		t.Errorf("PolicyFile = %q, want /tmp/p.cedar", cfg.PermissionPolicy.PolicyFile)
-	}
+	check.Equal("policy-engine", cfg.PermissionPolicy.Type, "type should be implied when the file omits it")
+	check.Equal("/tmp/p.cedar", cfg.PermissionPolicy.PolicyFile)
 }
 
 // TestApplyOverrides_DefaultSafetyRingFlagsDoNotOverride pins the
 // precedence rule for the new flags: a flag left at its default
 // (empty string) MUST NOT clobber a file-provided value.
 func TestApplyOverrides_DefaultSafetyRingFlagsDoNotOverride(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Executor.Runtime = "kata"
@@ -2067,25 +1606,19 @@ func TestApplyOverrides_DefaultSafetyRingFlagsDoNotOverride(t *testing.T) {
 	}
 	cfg.CodeScanner = &types.CodeScannerConfig{Type: "semgrep"}
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.Executor.Runtime != "kata" {
-		t.Errorf("Runtime: file value should survive, got %q", cfg.Executor.Runtime)
-	}
-	if cfg.PermissionPolicy.PolicyFile != "/file/policy.cedar" {
-		t.Errorf("PolicyFile: file value should survive, got %q", cfg.PermissionPolicy.PolicyFile)
-	}
-	if cfg.CodeScanner == nil || cfg.CodeScanner.Type != "semgrep" {
-		t.Errorf("CodeScanner: file value should survive, got %+v", cfg.CodeScanner)
-	}
+	check.Equal("kata", cfg.Executor.Runtime, "Runtime: file value should survive")
+	check.Equal("/file/policy.cedar", cfg.PermissionPolicy.PolicyFile, "PolicyFile: file value should survive")
+	must.NotNil(cfg.CodeScanner, "CodeScanner: file value should survive")
+	check.Equal("semgrep", cfg.CodeScanner.Type, "CodeScanner: file value should survive")
 }
 
 // TestRunHarness_ConfigValidationFailurePropagates writes a config that
 // fails ValidateRunConfig (read-only mode + write tool) and asserts the
 // CLI surfaces the error clearly.
 func TestRunHarness_ConfigValidationFailurePropagates(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.json")
 
@@ -2115,25 +1648,14 @@ func TestRunHarness_ConfigValidationFailurePropagates(t *testing.T) {
 		Timeout:  &timeout,
 	}
 	data, err := json.MarshalIndent(bad, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	must.NoError(err)
+	must.NoError(os.WriteFile(path, data, 0o600))
 
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("config", path); err != nil {
-		t.Fatalf("set config: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("config", path))
 
 	err = runHarness(cmd, nil)
-	if err == nil {
-		t.Fatal("expected validation error, got nil")
-	}
-	if !strings.Contains(err.Error(), "invalid config") {
-		t.Errorf("error should mention 'invalid config', got: %v", err)
-	}
+	must.ErrorContains(err, "invalid config")
 }
 
 // TestLoadRunConfigFile_EmptyFile pins the error path for an empty (zero-
@@ -2143,51 +1665,36 @@ func TestRunHarness_ConfigValidationFailurePropagates(t *testing.T) {
 // "parsing"): an empty file never reached the decoder, so the wording
 // matches its I/O exit class (3).
 func TestLoadRunConfigFile_EmptyFile(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "empty.json")
-	if err := os.WriteFile(path, nil, 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	must.NoError(os.WriteFile(path, nil, 0o600))
 	_, err := loadRunConfigFile(path)
-	if err == nil {
-		t.Fatal("expected error for empty file, got nil")
-	}
-	if !strings.Contains(err.Error(), "reading config file") || !strings.Contains(err.Error(), "empty") {
-		t.Errorf("error should describe empty file, got: %v", err)
-	}
+	must.ErrorContains(err, "reading config file")
+	must.ErrorContains(err, "empty")
 }
 
 // TestLoadRunConfigFile_DirectoryArg verifies that pointing --config at
 // a directory yields a clear error rather than a confusing read failure
 // further down the stack.
 func TestLoadRunConfigFile_DirectoryArg(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	_, err := loadRunConfigFile(dir)
-	if err == nil {
-		t.Fatal("expected error for directory path, got nil")
-	}
-	if !strings.Contains(err.Error(), "is a directory") {
-		t.Errorf("error should mention directory, got: %v", err)
-	}
+	must.ErrorContains(err, "is a directory")
 }
 
 // TestLoadRunConfigFile_OversizeRejected ensures the size guard kicks in
 // before the file is loaded into memory. The cap is sized for genuine
 // configs (a few KB); a multi-MB file is almost always wrong.
 func TestLoadRunConfigFile_OversizeRejected(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "big.json")
-	// 2 MiB of newlines is far past the 1 MiB cap.
-	if err := os.WriteFile(path, make([]byte, 2*1024*1024), 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	// 2 MiB of zero bytes is far past the 1 MiB cap.
+	must.NoError(os.WriteFile(path, make([]byte, 2*1024*1024), 0o600))
 	_, err := loadRunConfigFile(path)
-	if err == nil {
-		t.Fatal("expected size-cap error, got nil")
-	}
-	if !strings.Contains(err.Error(), "byte cap") {
-		t.Errorf("error should mention size cap, got: %v", err)
-	}
+	must.ErrorContains(err, "byte cap")
 }
 
 // TestApplyOverrides_TraceCoercesEmitterToJSONL verifies that passing
@@ -2196,45 +1703,32 @@ func TestLoadRunConfigFile_OversizeRejected(t *testing.T) {
 // "user's intent stands" behaviour: --trace is a JSONL flag, and the
 // user reaching for it is reaching for JSONL output.
 func TestApplyOverrides_TraceCoercesEmitterToJSONL(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.TraceEmitter = types.TraceEmitterConfig{Type: "otel", Endpoint: "localhost:4317"}
 
-	if err := cmd.Flags().Set("trace", "/tmp/out.jsonl"); err != nil {
-		t.Fatalf("set trace: %v", err)
-	}
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("trace", "/tmp/out.jsonl"))
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.TraceEmitter.Type != "jsonl" {
-		t.Errorf("emitter type should be coerced to jsonl when --trace is set, got %q", cfg.TraceEmitter.Type)
-	}
-	if cfg.TraceEmitter.FilePath != "/tmp/out.jsonl" {
-		t.Errorf("trace path should be set, got %q", cfg.TraceEmitter.FilePath)
-	}
+	check.Equal("jsonl", cfg.TraceEmitter.Type, "emitter type should be coerced to jsonl when --trace is set")
+	check.Equal("/tmp/out.jsonl", cfg.TraceEmitter.FilePath, "trace path should be set")
 }
 
 // TestApplyOverrides_TraceRespectsExplicitEmitter verifies the inverse:
 // when both --trace and --trace-emitter are explicitly set, the user's
 // explicit emitter choice wins (even if the FilePath becomes ignored).
 func TestApplyOverrides_TraceRespectsExplicitEmitter(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 
-	if err := cmd.Flags().Set("trace", "/tmp/out.jsonl"); err != nil {
-		t.Fatalf("set trace: %v", err)
-	}
-	if err := cmd.Flags().Set("trace-emitter", "otel"); err != nil {
-		t.Fatalf("set trace-emitter: %v", err)
-	}
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("trace", "/tmp/out.jsonl"))
+	must.NoError(cmd.Flags().Set("trace-emitter", "otel"))
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.TraceEmitter.Type != "otel" {
-		t.Errorf("explicit --trace-emitter=otel should win over coercion, got %q", cfg.TraceEmitter.Type)
-	}
+	must.Equal("otel", cfg.TraceEmitter.Type, "explicit --trace-emitter=otel should win over coercion")
 }
 
 // TestApplyOverrides_FollowupGraceZeroClears verifies that explicitly
@@ -2242,51 +1736,38 @@ func TestApplyOverrides_TraceRespectsExplicitEmitter(t *testing.T) {
 // file. This is the "I want to disable follow-ups" intent that the
 // `g > 0` else-branch at applyOverrides supports.
 func TestApplyOverrides_FollowupGraceZeroClears(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	g := 120
 	cfg.FollowUpGrace = &g
 
-	if err := cmd.Flags().Set("followup-grace", "0"); err != nil {
-		t.Fatalf("set followup-grace: %v", err)
-	}
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("followup-grace", "0"))
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.FollowUpGrace != nil {
-		t.Errorf("explicit --followup-grace=0 should clear FollowUpGrace, got %v", *cfg.FollowUpGrace)
-	}
+	must.Nil(cfg.FollowUpGrace, "explicit --followup-grace=0 should clear FollowUpGrace")
 }
 
 // TestApplyOverrides_FollowupHistoryChangedGated pins that a file's
 // followUpHistory survives an invocation that does not pass
 // --followup-history, and that an explicit flag replaces it.
 func TestApplyOverrides_FollowupHistoryChangedGated(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.FollowUpHistory = types.FollowUpHistoryContinue
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
-	if cfg.FollowUpHistory != types.FollowUpHistoryContinue {
-		t.Errorf("unset --followup-history rewrote the file value to %q", cfg.FollowUpHistory)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
+	must.Equal(types.FollowUpHistoryContinue, cfg.FollowUpHistory, "unset --followup-history must keep the file value")
 
-	if err := cmd.Flags().Set("followup-history", types.FollowUpHistoryReset); err != nil {
-		t.Fatalf("set followup-history: %v", err)
-	}
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
-	if cfg.FollowUpHistory != types.FollowUpHistoryReset {
-		t.Errorf("explicit --followup-history=reset: got %q", cfg.FollowUpHistory)
-	}
+	must.NoError(cmd.Flags().Set("followup-history", types.FollowUpHistoryReset))
+	must.NoError(applyOverrides(cmd, cfg, nil))
+	must.Equal(types.FollowUpHistoryReset, cfg.FollowUpHistory)
 }
 
 // TestBuildFlagOnlyRunConfig_FollowupHistory pins the flag-only path for
 // --followup-history onto the top-level RunConfig field.
 func TestBuildFlagOnlyRunConfig_FollowupHistory(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	for k, v := range map[string]string{
 		"mode": "execution", "prompt": "test", "provider": "anthropic",
@@ -2294,22 +1775,17 @@ func TestBuildFlagOnlyRunConfig_FollowupHistory(t *testing.T) {
 		"transport": "stdio", "log-level": "info",
 		"followup-grace": "30", "followup-history": types.FollowUpHistoryContinue,
 	} {
-		if err := cmd.Flags().Set(k, v); err != nil {
-			t.Fatalf("set %s: %v", k, err)
-		}
+		must.NoError(cmd.Flags().Set(k, v), "set %s", k)
 	}
 	cfg, err := buildFlagOnlyRunConfig(cmd, nil)
-	if err != nil {
-		t.Fatalf("buildFlagOnlyRunConfig: %v", err)
-	}
-	if cfg.FollowUpHistory != types.FollowUpHistoryContinue {
-		t.Errorf("FollowUpHistory = %q, want %q", cfg.FollowUpHistory, types.FollowUpHistoryContinue)
-	}
+	must.NoError(err)
+	must.Equal(types.FollowUpHistoryContinue, cfg.FollowUpHistory)
 }
 
 // TestBuildFlagOnlyRunConfig_ReasoningSummary pins the flag-only path for
 // --reasoning-summary onto the top-level RunConfig field.
 func TestBuildFlagOnlyRunConfig_ReasoningSummary(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	for k, v := range map[string]string{
 		"mode": "execution", "prompt": "test", "provider": "anthropic",
@@ -2317,17 +1793,11 @@ func TestBuildFlagOnlyRunConfig_ReasoningSummary(t *testing.T) {
 		"transport": "stdio", "log-level": "info",
 		"reasoning-summary": types.ReasoningSummaryOff,
 	} {
-		if err := cmd.Flags().Set(k, v); err != nil {
-			t.Fatalf("set %s: %v", k, err)
-		}
+		must.NoError(cmd.Flags().Set(k, v), "set %s", k)
 	}
 	cfg, err := buildFlagOnlyRunConfig(cmd, nil)
-	if err != nil {
-		t.Fatalf("buildFlagOnlyRunConfig: %v", err)
-	}
-	if cfg.ReasoningSummary != types.ReasoningSummaryOff {
-		t.Errorf("ReasoningSummary = %q, want %q", cfg.ReasoningSummary, types.ReasoningSummaryOff)
-	}
+	must.NoError(err)
+	must.Equal(types.ReasoningSummaryOff, cfg.ReasoningSummary)
 }
 
 // TestApplyOverrides_PromptModelChangedGated pins that --prompt-model
@@ -2336,32 +1806,24 @@ func TestBuildFlagOnlyRunConfig_ReasoningSummary(t *testing.T) {
 // explicit flag overrides it.
 func TestApplyOverrides_PromptModelChangedGated(t *testing.T) {
 	t.Run("unset leaves file value alone", func(t *testing.T) {
+		must := require.New(t)
 		cmd := newTestHarnessCommand()
 		cfg := baseFileConfig()
 		cfg.PromptBuilder.PromptModel = "claude-fable-5"
 
-		if err := applyOverrides(cmd, cfg, nil); err != nil {
-			t.Fatalf("applyOverrides: %v", err)
-		}
-		if cfg.PromptBuilder.PromptModel != "claude-fable-5" {
-			t.Errorf("unset --prompt-model must preserve file value, got %q", cfg.PromptBuilder.PromptModel)
-		}
+		must.NoError(applyOverrides(cmd, cfg, nil))
+		must.Equal("claude-fable-5", cfg.PromptBuilder.PromptModel)
 	})
 
 	t.Run("explicit flag overrides file value", func(t *testing.T) {
+		must := require.New(t)
 		cmd := newTestHarnessCommand()
 		cfg := baseFileConfig()
 		cfg.PromptBuilder.PromptModel = "claude-fable-5"
 
-		if err := cmd.Flags().Set("prompt-model", "claude-fable-6"); err != nil {
-			t.Fatalf("set prompt-model: %v", err)
-		}
-		if err := applyOverrides(cmd, cfg, nil); err != nil {
-			t.Fatalf("applyOverrides: %v", err)
-		}
-		if cfg.PromptBuilder.PromptModel != "claude-fable-6" {
-			t.Errorf("--prompt-model override failed, got %q", cfg.PromptBuilder.PromptModel)
-		}
+		must.NoError(cmd.Flags().Set("prompt-model", "claude-fable-6"))
+		must.NoError(applyOverrides(cmd, cfg, nil))
+		must.Equal("claude-fable-6", cfg.PromptBuilder.PromptModel)
 	})
 }
 
@@ -2371,55 +1833,41 @@ func TestApplyOverrides_PromptModelChangedGated(t *testing.T) {
 // on flags.Changed() instead.
 func TestApplyOverrides_TemperatureChangedDisambiguatesZero(t *testing.T) {
 	t.Run("unset leaves file value alone", func(t *testing.T) {
+		must := require.New(t)
 		cmd := newTestHarnessCommand()
 		cfg := baseFileConfig()
-		want := 0.5
-		cfg.Temperature = &want
-		// Do NOT set --temperature on the command line.
+		fileTemp := 0.5
+		cfg.Temperature = &fileTemp
 
-		if err := applyOverrides(cmd, cfg, nil); err != nil {
-			t.Fatalf("applyOverrides: %v", err)
-		}
-		if cfg.Temperature == nil || *cfg.Temperature != want {
-			t.Errorf("unset --temperature must preserve file value 0.5, got %v", cfg.Temperature)
-		}
+		must.NoError(applyOverrides(cmd, cfg, nil))
+		must.NotNil(cfg.Temperature)
+		must.InDelta(0.5, *cfg.Temperature, 0)
 	})
 
 	t.Run("explicit zero is greedy override", func(t *testing.T) {
+		must := require.New(t)
 		cmd := newTestHarnessCommand()
 		cfg := baseFileConfig()
-		filed := 0.5
-		cfg.Temperature = &filed
+		fileTemp := 0.5
+		cfg.Temperature = &fileTemp
 
-		if err := cmd.Flags().Set("temperature", "0"); err != nil {
-			t.Fatalf("set temperature: %v", err)
-		}
-		if err := applyOverrides(cmd, cfg, nil); err != nil {
-			t.Fatalf("applyOverrides: %v", err)
-		}
-		if cfg.Temperature == nil {
-			t.Fatalf("explicit --temperature=0 should set greedy decoding, got nil")
-		}
-		if *cfg.Temperature != 0 {
-			t.Errorf("--temperature=0 should set 0.0, got %v", *cfg.Temperature)
-		}
+		must.NoError(cmd.Flags().Set("temperature", "0"))
+		must.NoError(applyOverrides(cmd, cfg, nil))
+		must.NotNil(cfg.Temperature, "explicit --temperature=0 should set greedy decoding")
+		must.InDelta(0.0, *cfg.Temperature, 0)
 	})
 
 	t.Run("explicit non-zero overrides file value", func(t *testing.T) {
+		must := require.New(t)
 		cmd := newTestHarnessCommand()
 		cfg := baseFileConfig()
-		filed := 0.5
-		cfg.Temperature = &filed
+		fileTemp := 0.5
+		cfg.Temperature = &fileTemp
 
-		if err := cmd.Flags().Set("temperature", "1.2"); err != nil {
-			t.Fatalf("set temperature: %v", err)
-		}
-		if err := applyOverrides(cmd, cfg, nil); err != nil {
-			t.Fatalf("applyOverrides: %v", err)
-		}
-		if cfg.Temperature == nil || *cfg.Temperature != 1.2 {
-			t.Errorf("--temperature=1.2 override failed, got %v", cfg.Temperature)
-		}
+		must.NoError(cmd.Flags().Set("temperature", "1.2"))
+		must.NoError(applyOverrides(cmd, cfg, nil))
+		must.NotNil(cfg.Temperature)
+		must.InDelta(1.2, *cfg.Temperature, 0)
 	})
 }
 
@@ -2443,59 +1891,44 @@ func TestBuildHarnessRunConfig_Temperature(t *testing.T) {
 	}
 
 	t.Run("nil opts.Temperature stays nil on the config", func(t *testing.T) {
+		must := require.New(t)
 		opts := base()
 		opts.Temperature = nil
 		cfg, err := buildHarnessRunConfig(opts)
-		if err != nil {
-			t.Fatalf("buildHarnessRunConfig: %v", err)
-		}
-		if cfg.Temperature != nil {
-			t.Errorf("nil opts.Temperature must yield nil cfg.Temperature, got %v", *cfg.Temperature)
-		}
+		must.NoError(err)
+		must.Nil(cfg.Temperature)
 	})
 
 	t.Run("explicit zero propagates as *0.0", func(t *testing.T) {
+		must := require.New(t)
 		opts := base()
 		opts.Temperature = types.Float64Ptr(0.0)
 		cfg, err := buildHarnessRunConfig(opts)
-		if err != nil {
-			t.Fatalf("buildHarnessRunConfig: %v", err)
-		}
-		if cfg.Temperature == nil {
-			t.Fatalf("explicit *float64(0.0) must yield non-nil cfg.Temperature")
-		}
-		if *cfg.Temperature != 0.0 {
-			t.Errorf("cfg.Temperature: got %v, want 0.0", *cfg.Temperature)
-		}
+		must.NoError(err)
+		must.NotNil(cfg.Temperature)
+		must.InDelta(0.0, *cfg.Temperature, 0)
 	})
 
 	t.Run("non-zero value propagates", func(t *testing.T) {
+		must := require.New(t)
 		opts := base()
 		opts.Temperature = types.Float64Ptr(0.7)
 		cfg, err := buildHarnessRunConfig(opts)
-		if err != nil {
-			t.Fatalf("buildHarnessRunConfig: %v", err)
-		}
-		if cfg.Temperature == nil {
-			t.Fatalf("non-nil opts.Temperature must yield non-nil cfg.Temperature")
-		}
-		if *cfg.Temperature != 0.7 {
-			t.Errorf("cfg.Temperature: got %v, want 0.7", *cfg.Temperature)
-		}
+		must.NoError(err)
+		must.NotNil(cfg.Temperature)
+		must.InDelta(0.7, *cfg.Temperature, 0)
 	})
 
 	t.Run("opts.Temperature is copied, not aliased", func(t *testing.T) {
+		must := require.New(t)
 		opts := base()
 		opts.Temperature = types.Float64Ptr(0.4)
 		cfg, err := buildHarnessRunConfig(opts)
-		if err != nil {
-			t.Fatalf("buildHarnessRunConfig: %v", err)
-		}
+		must.NoError(err)
 
 		*opts.Temperature = 1.5
-		if cfg.Temperature == nil || *cfg.Temperature != 0.4 {
-			t.Errorf("cfg.Temperature should be a copy snapshot of 0.4, got %v", cfg.Temperature)
-		}
+		must.NotNil(cfg.Temperature)
+		must.InDelta(0.4, *cfg.Temperature, 0, "cfg.Temperature should be a copy snapshot")
 	})
 }
 
@@ -2505,6 +1938,7 @@ func TestBuildHarnessRunConfig_Temperature(t *testing.T) {
 // ResolveAll branch rather than the resolution logic reimplemented
 // inline.
 func TestRunHarness_ConfigPathFollowupGraceFromEnv(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	timeout := 60
@@ -2528,12 +1962,8 @@ func TestRunHarness_ConfigPathFollowupGraceFromEnv(t *testing.T) {
 		// FollowUpGrace deliberately nil — env var must fill the gap.
 	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	must.NoError(err)
+	must.NoError(os.WriteFile(path, data, 0o600))
 
 	t.Setenv("STIRRUP_FOLLOWUP_GRACE", "45")
 
@@ -2543,12 +1973,9 @@ func TestRunHarness_ConfigPathFollowupGraceFromEnv(t *testing.T) {
 		Cmd:        cmd,
 		Resolve:    ResolveAll,
 	})
-	if err != nil {
-		t.Fatalf("BuildRunConfig: %v", err)
-	}
-	if resolved.FollowUpGrace == nil || *resolved.FollowUpGrace != 45 {
-		t.Errorf("STIRRUP_FOLLOWUP_GRACE should fill FollowUpGrace when file omits it, got %v", resolved.FollowUpGrace)
-	}
+	must.NoError(err)
+	must.NotNil(resolved.FollowUpGrace, "STIRRUP_FOLLOWUP_GRACE should fill FollowUpGrace when file omits it")
+	must.Equal(45, *resolved.FollowUpGrace)
 }
 
 // TestApplyModeDefaults_FillsAfterModeOverride pins that when --config
@@ -2556,6 +1983,8 @@ func TestRunHarness_ConfigPathFollowupGraceFromEnv(t *testing.T) {
 // overridden, the post-override defaulting step fills in the new mode's
 // defaults.
 func TestApplyModeDefaults_FillsAfterModeOverride(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := &types.RunConfig{
 		RunID:           "x",
@@ -2577,26 +2006,14 @@ func TestApplyModeDefaults_FillsAfterModeOverride(t *testing.T) {
 		LogLevel: "info",
 	}
 
-	if err := cmd.Flags().Set("mode", "planning"); err != nil {
-		t.Fatalf("set mode: %v", err)
-	}
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("mode", "planning"))
+	must.NoError(applyOverrides(cmd, cfg, nil))
 	applyModeDefaults(cfg)
 
-	if cfg.Mode != "planning" {
-		t.Fatalf("Mode override failed: %q", cfg.Mode)
-	}
-	if len(cfg.Tools.BuiltIn) == 0 {
-		t.Errorf("read-only mode should default Tools.BuiltIn to a non-empty list")
-	}
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Errorf("post-defaulted config should validate, got: %v", err)
-	}
-	if cfg.PermissionPolicy.Type != "deny-side-effects" {
-		t.Errorf("read-only mode should resolve to deny-side-effects, got %q", cfg.PermissionPolicy.Type)
-	}
+	must.Equal("planning", cfg.Mode)
+	check.NotEmpty(cfg.Tools.BuiltIn, "read-only mode should default Tools.BuiltIn to a non-empty list")
+	must.NoError(types.ValidateRunConfig(cfg), "post-defaulted config should validate")
+	check.Equal("deny-side-effects", cfg.PermissionPolicy.Type, "read-only mode should resolve to deny-side-effects")
 }
 
 // intPtr is a small helper to take the address of an int literal.
@@ -2609,63 +2026,48 @@ func intPtr(n int) *int { return &n }
 // who reach for --query-param to override a stale file entry get the
 // expected behaviour.
 func TestApplyOverrides_AzureProviderFlags(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Provider.BaseURL = "https://file-base-url.example/v1"
 	cfg.Provider.APIKeyHeader = "x-stale-header"
 	cfg.Provider.QueryParams = map[string]string{"api-version": "stale", "deployment-id": "stale"}
 
-	must := func(name, value string) {
-		if err := cmd.Flags().Set(name, value); err != nil {
-			t.Fatalf("set %s: %v", name, err)
-		}
+	setFlag := func(name, value string) {
+		t.Helper()
+		must.NoError(cmd.Flags().Set(name, value), "set %s", name)
 	}
-	must("base-url", "https://example.openai.azure.com/openai/v1")
-	must("api-key-header", "api-key")
-	must("query-param", "api-version=preview")
-	must("query-param", "deployment-id=gpt4-prod")
+	setFlag("base-url", "https://example.openai.azure.com/openai/v1")
+	setFlag("api-key-header", "api-key")
+	setFlag("query-param", "api-version=preview")
+	setFlag("query-param", "deployment-id=gpt4-prod")
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if got, want := cfg.Provider.BaseURL, "https://example.openai.azure.com/openai/v1"; got != want {
-		t.Errorf("Provider.BaseURL = %q, want %q", got, want)
-	}
-	if got, want := cfg.Provider.APIKeyHeader, "api-key"; got != want {
-		t.Errorf("Provider.APIKeyHeader = %q, want %q", got, want)
-	}
-	if got, want := cfg.Provider.QueryParams["api-version"], "preview"; got != want {
-		t.Errorf("QueryParams[api-version] = %q, want %q", got, want)
-	}
-	if got, want := cfg.Provider.QueryParams["deployment-id"], "gpt4-prod"; got != want {
-		t.Errorf("QueryParams[deployment-id] = %q, want %q", got, want)
-	}
+	check.Equal("https://example.openai.azure.com/openai/v1", cfg.Provider.BaseURL, "Provider.BaseURL")
+	check.Equal("api-key", cfg.Provider.APIKeyHeader, "Provider.APIKeyHeader")
+	check.Equal("preview", cfg.Provider.QueryParams["api-version"], "QueryParams[api-version]")
+	check.Equal("gpt4-prod", cfg.Provider.QueryParams["deployment-id"], "QueryParams[deployment-id]")
 }
 
 // TestApplyOverrides_AzureFlagsDoNotOverrideWhenUnset verifies the
 // precedence rule for the new flags: a flag that the user did not pass
 // MUST NOT clobber a file-provided value.
 func TestApplyOverrides_AzureFlagsDoNotOverrideWhenUnset(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Provider.BaseURL = "https://file-base-url.example/v1"
 	cfg.Provider.APIKeyHeader = "api-key"
 	cfg.Provider.QueryParams = map[string]string{"api-version": "preview"}
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if got, want := cfg.Provider.BaseURL, "https://file-base-url.example/v1"; got != want {
-		t.Errorf("Provider.BaseURL: file value should survive, got %q", got)
-	}
-	if got, want := cfg.Provider.APIKeyHeader, "api-key"; got != want {
-		t.Errorf("Provider.APIKeyHeader: file value should survive, got %q", got)
-	}
-	if got, want := cfg.Provider.QueryParams["api-version"], "preview"; got != want {
-		t.Errorf("QueryParams: file value should survive, got %q", got)
-	}
+	check.Equal("https://file-base-url.example/v1", cfg.Provider.BaseURL, "Provider.BaseURL: file value should survive")
+	check.Equal("api-key", cfg.Provider.APIKeyHeader, "Provider.APIKeyHeader: file value should survive")
+	check.Equal("preview", cfg.Provider.QueryParams["api-version"], "QueryParams: file value should survive")
 }
 
 // TestApplyOverrides_QueryParamMalformedReturnsError pins that a
@@ -2682,19 +2084,13 @@ func TestApplyOverrides_QueryParamMalformedReturnsError(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			cmd := newTestHarnessCommand()
 			cfg := baseFileConfig()
-			if err := cmd.Flags().Set("query-param", tc.entry); err != nil {
-				t.Fatalf("set query-param: %v", err)
-			}
+			must.NoError(cmd.Flags().Set("query-param", tc.entry))
 
 			err := applyOverrides(cmd, cfg, nil)
-			if err == nil {
-				t.Fatalf("expected error for malformed --query-param %q, got nil", tc.entry)
-			}
-			if !strings.Contains(err.Error(), "--query-param") {
-				t.Errorf("error should reference the offending flag, got: %v", err)
-			}
+			must.ErrorContains(err, "--query-param")
 		})
 	}
 }
@@ -2705,41 +2101,40 @@ func TestApplyOverrides_QueryParamMalformedReturnsError(t *testing.T) {
 // owns the syntax.
 func TestParseQueryParam_ValidAndInvalid(t *testing.T) {
 	cases := []struct {
+		name    string
 		entry   string
 		wantK   string
 		wantV   string
 		wantErr bool
 	}{
-		{"api-version=preview", "api-version", "preview", false},
-		{"empty-value=", "empty-value", "", false},
-		{"with=equals=in=value", "with", "equals=in=value", false},
-		{"=missing-key", "", "", true},
-		{"no-equals", "", "", true},
-		{"", "", "", true},
+		{"key and value", "api-version=preview", "api-version", "preview", false},
+		{"empty value", "empty-value=", "empty-value", "", false},
+		{"value containing equals", "with=equals=in=value", "with", "equals=in=value", false},
+		{"missing key", "=missing-key", "", "", true},
+		{"missing equals", "no-equals", "", "", true},
+		{"empty entry", "", "", "", true},
 	}
 	for _, tc := range cases {
-		t.Run(tc.entry, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			k, v, err := parseQueryParam(tc.entry)
 			if tc.wantErr {
-				if err == nil {
-					t.Errorf("expected error for %q, got nil", tc.entry)
-				}
+				must.Error(err)
 				return
 			}
-			if err != nil {
-				t.Fatalf("parseQueryParam(%q) error: %v", tc.entry, err)
-			}
-			if k != tc.wantK || v != tc.wantV {
-				t.Errorf("parseQueryParam(%q) = (%q, %q), want (%q, %q)", tc.entry, k, v, tc.wantK, tc.wantV)
-			}
+			must.NoError(err)
+			must.Equal(tc.wantK, k)
+			must.Equal(tc.wantV, v)
 		})
 	}
 }
 
-// TestBuildHarnessRunConfig_AzureProviderFields verifies that the new
-// CLI options propagate from harnessCLIOptions into the generated
-// ProviderConfig.
+// TestBuildHarnessRunConfig_AzureProviderFields verifies that the Azure
+// OpenAI connection options (base URL, API key header, query parameters)
+// propagate from harnessCLIOptions into the generated ProviderConfig.
 func TestBuildHarnessRunConfig_AzureProviderFields(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
@@ -2755,28 +2150,20 @@ func TestBuildHarnessRunConfig_AzureProviderFields(t *testing.T) {
 		TransportType: "stdio",
 		LogLevel:      "info",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
+	must.NoError(err)
 
-	if got, want := cfg.Provider.BaseURL, "https://example.openai.azure.com/openai/v1"; got != want {
-		t.Errorf("Provider.BaseURL = %q, want %q", got, want)
-	}
-	if got, want := cfg.Provider.APIKeyHeader, "api-key"; got != want {
-		t.Errorf("Provider.APIKeyHeader = %q, want %q", got, want)
-	}
-	if got, want := cfg.Provider.QueryParams["api-version"], "preview"; got != want {
-		t.Errorf("Provider.QueryParams[api-version] = %q, want %q", got, want)
-	}
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Fatalf("ValidateRunConfig: %v", err)
-	}
+	check.Equal("https://example.openai.azure.com/openai/v1", cfg.Provider.BaseURL)
+	check.Equal("api-key", cfg.Provider.APIKeyHeader)
+	check.Equal("preview", cfg.Provider.QueryParams["api-version"])
+	must.NoError(types.ValidateRunConfig(cfg))
 }
 
 // TestBuildHarnessRunConfig_GuardRailFlags verifies that the GuardRail
 // flags propagate from harnessCLIOptions into RunConfig.GuardRail, which
 // is only constructed when at least one flag is non-zero.
 func TestBuildHarnessRunConfig_GuardRailFlags(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:             "test-run",
 		Mode:              "execution",
@@ -2791,27 +2178,19 @@ func TestBuildHarnessRunConfig_GuardRailFlags(t *testing.T) {
 		GuardRailType:     "granite-guardian",
 		GuardRailEndpoint: "http://localhost:8000",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
+	must.NoError(err)
 
-	if cfg.GuardRail == nil {
-		t.Fatalf("expected non-nil GuardRail config, got nil")
-	}
-	if cfg.GuardRail.Type != "granite-guardian" {
-		t.Errorf("GuardRail.Type = %q, want granite-guardian", cfg.GuardRail.Type)
-	}
-	if cfg.GuardRail.Endpoint != "http://localhost:8000" {
-		t.Errorf("GuardRail.Endpoint = %q, want http://localhost:8000", cfg.GuardRail.Endpoint)
-	}
-	if cfg.GuardRail.FailOpen {
-		t.Errorf("GuardRail.FailOpen = true, want false (default)")
-	}
+	must.NotNil(cfg.GuardRail)
+	check.Equal("granite-guardian", cfg.GuardRail.Type)
+	check.Equal("http://localhost:8000", cfg.GuardRail.Endpoint)
+	check.False(cfg.GuardRail.FailOpen, "fail-open should default to false")
 }
 
 // TestBuildHarnessRunConfig_ShieldstralFlags verifies that Shieldstral
 // flags (including APIKeyRef) propagate from harnessCLIOptions into RunConfig.GuardRail.
 func TestBuildHarnessRunConfig_ShieldstralFlags(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:              "test-run",
 		Mode:               "execution",
@@ -2828,31 +2207,20 @@ func TestBuildHarnessRunConfig_ShieldstralFlags(t *testing.T) {
 		GuardRailAPIKeyRef: "secret://MISTRAL_API_KEY",
 		GuardRailModel:     "mistralai/Shieldstral-1.0-3B",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
+	must.NoError(err)
 
-	if cfg.GuardRail == nil {
-		t.Fatalf("expected non-nil GuardRail config, got nil")
-	}
-	if cfg.GuardRail.Type != "shieldstral" {
-		t.Errorf("GuardRail.Type = %q, want shieldstral", cfg.GuardRail.Type)
-	}
-	if cfg.GuardRail.Endpoint != "https://api.mistral.ai" {
-		t.Errorf("GuardRail.Endpoint = %q, want https://api.mistral.ai", cfg.GuardRail.Endpoint)
-	}
-	if cfg.GuardRail.APIKeyRef != "secret://MISTRAL_API_KEY" {
-		t.Errorf("GuardRail.APIKeyRef = %q, want secret://MISTRAL_API_KEY", cfg.GuardRail.APIKeyRef)
-	}
-	if cfg.GuardRail.Model != "mistralai/Shieldstral-1.0-3B" {
-		t.Errorf("GuardRail.Model = %q, want mistralai/Shieldstral-1.0-3B", cfg.GuardRail.Model)
-	}
+	must.NotNil(cfg.GuardRail)
+	check.Equal("shieldstral", cfg.GuardRail.Type)
+	check.Equal("https://api.mistral.ai", cfg.GuardRail.Endpoint)
+	check.Equal("secret://MISTRAL_API_KEY", cfg.GuardRail.APIKeyRef)
+	check.Equal("mistralai/Shieldstral-1.0-3B", cfg.GuardRail.Model)
 }
 
 // TestBuildHarnessRunConfig_GuardRailDefaultNil verifies that the
 // flag-only build path leaves config.GuardRail nil when no GuardRail
 // flags are set, so the factory installs the no-op "none" guard.
 func TestBuildHarnessRunConfig_GuardRailDefaultNil(t *testing.T) {
+	must := require.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
@@ -2865,18 +2233,15 @@ func TestBuildHarnessRunConfig_GuardRailDefaultNil(t *testing.T) {
 		TransportType: "stdio",
 		LogLevel:      "info",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
-	if cfg.GuardRail != nil {
-		t.Errorf("expected GuardRail to be nil when no flags are set, got %+v", cfg.GuardRail)
-	}
+	must.NoError(err)
+	must.Nil(cfg.GuardRail, "GuardRail should be nil when no flags are set")
 }
 
 // TestBuildHarnessRunConfig_GuardRailFailOpenFlipsBoolean pins that
 // --guardrail-fail-open alone is enough to materialise a GuardRail
 // config, without requiring the other flags.
 func TestBuildHarnessRunConfig_GuardRailFailOpenFlipsBoolean(t *testing.T) {
+	must := require.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:             "test-run",
 		Mode:              "execution",
@@ -2890,21 +2255,17 @@ func TestBuildHarnessRunConfig_GuardRailFailOpenFlipsBoolean(t *testing.T) {
 		LogLevel:          "info",
 		GuardRailFailOpen: true,
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
-	if cfg.GuardRail == nil {
-		t.Fatalf("expected non-nil GuardRail when fail-open flag is set")
-	}
-	if !cfg.GuardRail.FailOpen {
-		t.Errorf("GuardRail.FailOpen = false, want true")
-	}
+	must.NoError(err)
+	must.NotNil(cfg.GuardRail)
+	must.True(cfg.GuardRail.FailOpen)
 }
 
 // TestApplyOverrides_GuardRailFlagsOverride verifies the override path
 // for the GuardRail flags: each component is exercised independently
 // since GuardRailConfig has multiple fields.
 func TestApplyOverrides_GuardRailFlagsOverride(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.GuardRail = &types.GuardRailConfig{
@@ -2913,38 +2274,26 @@ func TestApplyOverrides_GuardRailFlagsOverride(t *testing.T) {
 		FailOpen: false,
 	}
 
-	must := func(name, value string) {
-		if err := cmd.Flags().Set(name, value); err != nil {
-			t.Fatalf("set %s: %v", name, err)
-		}
+	setFlag := func(name, value string) {
+		must.NoError(cmd.Flags().Set(name, value), "set %s", name)
 	}
-	must("guardrail-endpoint", "http://flag-endpoint:1234")
-	must("guardrail-fail-open", "true")
-	must("guardrail-api-key-ref", "secret://FLAG_KEY")
+	setFlag("guardrail-endpoint", "http://flag-endpoint:1234")
+	setFlag("guardrail-fail-open", "true")
+	setFlag("guardrail-api-key-ref", "secret://FLAG_KEY")
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
-	if cfg.GuardRail == nil {
-		t.Fatalf("GuardRail should remain non-nil after override")
-	}
-	if cfg.GuardRail.Type != "granite-guardian" {
-		t.Errorf("GuardRail.Type: file value should survive when --guardrail not set, got %q", cfg.GuardRail.Type)
-	}
-	if cfg.GuardRail.Endpoint != "http://flag-endpoint:1234" {
-		t.Errorf("GuardRail.Endpoint override failed: %q", cfg.GuardRail.Endpoint)
-	}
-	if cfg.GuardRail.APIKeyRef != "secret://FLAG_KEY" {
-		t.Errorf("GuardRail.APIKeyRef override failed: %q", cfg.GuardRail.APIKeyRef)
-	}
-	if !cfg.GuardRail.FailOpen {
-		t.Errorf("GuardRail.FailOpen override failed: got false")
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
+	must.NotNil(cfg.GuardRail, "GuardRail should remain non-nil after override")
+	check.Equal("granite-guardian", cfg.GuardRail.Type, "file type should survive when --guardrail is not set")
+	check.Equal("http://flag-endpoint:1234", cfg.GuardRail.Endpoint)
+	check.Equal("secret://FLAG_KEY", cfg.GuardRail.APIKeyRef)
+	check.True(cfg.GuardRail.FailOpen, "--guardrail-fail-open should override the file value")
 }
 
 // TestApplyOverrides_GuardRailEndpointPreservesStages verifies that
 // overriding only the endpoint leaves a composite stage list intact.
 func TestApplyOverrides_GuardRailEndpointPreservesStages(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.GuardRail = &types.GuardRailConfig{
@@ -2955,31 +2304,21 @@ func TestApplyOverrides_GuardRailEndpointPreservesStages(t *testing.T) {
 		},
 	}
 
-	if err := cmd.Flags().Set("guardrail-endpoint", "http://flag-endpoint:1234"); err != nil {
-		t.Fatalf("set: %v", err)
-	}
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("guardrail-endpoint", "http://flag-endpoint:1234"))
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.GuardRail == nil {
-		t.Fatalf("GuardRail should remain non-nil")
-	}
-	if cfg.GuardRail.Type != "composite" {
-		t.Errorf("composite type should survive, got %q", cfg.GuardRail.Type)
-	}
-	if len(cfg.GuardRail.Stages) != 2 {
-		t.Errorf("composite stages should survive, got %d entries", len(cfg.GuardRail.Stages))
-	}
-	if cfg.GuardRail.Endpoint != "http://flag-endpoint:1234" {
-		t.Errorf("Endpoint override failed: %q", cfg.GuardRail.Endpoint)
-	}
+	must.NotNil(cfg.GuardRail)
+	check.Equal("composite", cfg.GuardRail.Type, "composite type should survive")
+	check.Len(cfg.GuardRail.Stages, 2, "composite stages should survive")
+	check.Equal("http://flag-endpoint:1234", cfg.GuardRail.Endpoint)
 }
 
 // TestApplyOverrides_GuardRailModelOverride verifies that
 // --guardrail-model overrides a file-provided model without disturbing
 // other GuardRail fields.
 func TestApplyOverrides_GuardRailModelOverride(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.GuardRail = &types.GuardRailConfig{
@@ -2989,35 +2328,22 @@ func TestApplyOverrides_GuardRailModelOverride(t *testing.T) {
 		FailOpen: true,
 	}
 
-	if err := cmd.Flags().Set("guardrail-model", "anthropic.claude-haiku-5-5"); err != nil {
-		t.Fatalf("set: %v", err)
-	}
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("guardrail-model", "anthropic.claude-haiku-5-5"))
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.GuardRail == nil {
-		t.Fatalf("GuardRail should remain non-nil")
-	}
-	if cfg.GuardRail.Model != "anthropic.claude-haiku-5-5" {
-		t.Errorf("Model override failed: got %q", cfg.GuardRail.Model)
-	}
-	// Other fields must survive untouched.
-	if cfg.GuardRail.Type != "cloud-judge" {
-		t.Errorf("Type: file value should survive, got %q", cfg.GuardRail.Type)
-	}
-	if cfg.GuardRail.Endpoint != "http://file-endpoint:8000" {
-		t.Errorf("Endpoint: file value should survive, got %q", cfg.GuardRail.Endpoint)
-	}
-	if !cfg.GuardRail.FailOpen {
-		t.Errorf("FailOpen: file value should survive, got false")
-	}
+	must.NotNil(cfg.GuardRail, "GuardRail should remain non-nil")
+	check.Equal("anthropic.claude-haiku-5-5", cfg.GuardRail.Model)
+	check.Equal("cloud-judge", cfg.GuardRail.Type, "file type should survive the model override")
+	check.Equal("http://file-endpoint:8000", cfg.GuardRail.Endpoint, "file endpoint should survive the model override")
+	check.True(cfg.GuardRail.FailOpen, "file fail-open should survive the model override")
 }
 
 // TestApplyOverrides_GuardRailDefaultFlagsDoNotOverride pins the
 // precedence rule for the GuardRail flags: if the user did not pass
 // any of them, a file-provided GuardRail block must survive intact.
 func TestApplyOverrides_GuardRailDefaultFlagsDoNotOverride(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.GuardRail = &types.GuardRailConfig{
@@ -3026,22 +2352,12 @@ func TestApplyOverrides_GuardRailDefaultFlagsDoNotOverride(t *testing.T) {
 		FailOpen: true,
 	}
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.GuardRail == nil {
-		t.Fatalf("GuardRail should remain non-nil")
-	}
-	if cfg.GuardRail.Type != "granite-guardian" {
-		t.Errorf("Type: file value should survive, got %q", cfg.GuardRail.Type)
-	}
-	if cfg.GuardRail.Endpoint != "http://file-endpoint:8000" {
-		t.Errorf("Endpoint: file value should survive, got %q", cfg.GuardRail.Endpoint)
-	}
-	if !cfg.GuardRail.FailOpen {
-		t.Errorf("FailOpen: file value should survive, got false")
-	}
+	must.NotNil(cfg.GuardRail, "GuardRail should remain non-nil")
+	check.Equal("granite-guardian", cfg.GuardRail.Type, "file type should survive")
+	check.Equal("http://file-endpoint:8000", cfg.GuardRail.Endpoint, "file endpoint should survive")
+	check.True(cfg.GuardRail.FailOpen, "file fail-open should survive")
 }
 
 // TestApplyOverrides_GuardRailEmptyTypeClears verifies the
@@ -3050,6 +2366,7 @@ func TestApplyOverrides_GuardRailDefaultFlagsDoNotOverride(t *testing.T) {
 // guardrail block declared in a shared --config file without having
 // to maintain a separate file.
 func TestApplyOverrides_GuardRailEmptyTypeClears(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.GuardRail = &types.GuardRailConfig{
@@ -3057,22 +2374,18 @@ func TestApplyOverrides_GuardRailEmptyTypeClears(t *testing.T) {
 		Endpoint: "http://file-endpoint:8000",
 	}
 
-	if err := cmd.Flags().Set("guardrail", ""); err != nil {
-		t.Fatalf("set: %v", err)
-	}
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
-	if cfg.GuardRail != nil {
-		t.Errorf("expected GuardRail to be cleared by --guardrail='', got %+v", cfg.GuardRail)
-	}
+	must.NoError(cmd.Flags().Set("guardrail", ""))
+	must.NoError(applyOverrides(cmd, cfg, nil))
+	must.Nil(cfg.GuardRail, "--guardrail='' should clear the GuardRail block")
 }
 
-// TestBuildHarnessRunConfig_GeminiProvider verifies that the Vertex AI
+// TestBuildHarnessRunConfig_GeminiProviderFields verifies that the Vertex AI
 // Gemini provider type passes through the flag-only path: GCPProject
 // and GCPLocation flow into ProviderConfig, the resulting RunConfig
 // validates, and ModelRouter.Provider is wired to "gemini".
-func TestBuildHarnessRunConfig_GeminiProvider(t *testing.T) {
+func TestBuildHarnessRunConfig_GeminiProviderFields(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
@@ -3086,31 +2399,21 @@ func TestBuildHarnessRunConfig_GeminiProvider(t *testing.T) {
 		GCPProject:    "my-project",
 		GCPLocation:   "us-central1",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
+	must.NoError(err)
 
-	if cfg.Provider.Type != "gemini" {
-		t.Errorf("Provider.Type = %q, want gemini", cfg.Provider.Type)
-	}
-	if cfg.Provider.GCPProject != "my-project" {
-		t.Errorf("GCPProject = %q, want my-project", cfg.Provider.GCPProject)
-	}
-	if cfg.Provider.GCPLocation != "us-central1" {
-		t.Errorf("GCPLocation = %q, want us-central1", cfg.Provider.GCPLocation)
-	}
-	if cfg.ModelRouter.Provider != "gemini" {
-		t.Errorf("ModelRouter.Provider = %q, want gemini", cfg.ModelRouter.Provider)
-	}
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Fatalf("ValidateRunConfig rejected gemini config: %v", err)
-	}
+	check.Equal("gemini", cfg.Provider.Type)
+	check.Equal("my-project", cfg.Provider.GCPProject)
+	check.Equal("us-central1", cfg.Provider.GCPLocation)
+	check.Equal("gemini", cfg.ModelRouter.Provider)
+	must.NoError(types.ValidateRunConfig(cfg), "ValidateRunConfig should accept the gemini config")
 }
 
 // TestBuildHarnessRunConfig_GeminiSuppressesAPIKeyRef ensures the
 // flag-only path drops APIKeyRef when the provider is gemini, since the
 // validator forbids apiKeyRef on gemini runs.
 func TestBuildHarnessRunConfig_GeminiSuppressesAPIKeyRef(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
@@ -3125,16 +2428,10 @@ func TestBuildHarnessRunConfig_GeminiSuppressesAPIKeyRef(t *testing.T) {
 		GCPProject:    "my-project",
 		GCPLocation:   "global",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
+	must.NoError(err)
 
-	if cfg.Provider.APIKeyRef != "" {
-		t.Errorf("APIKeyRef should be cleared for gemini, got %q", cfg.Provider.APIKeyRef)
-	}
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Fatalf("ValidateRunConfig rejected gemini-with-suppressed-apikeyref config: %v", err)
-	}
+	check.Empty(cfg.Provider.APIKeyRef, "APIKeyRef should be cleared for gemini")
+	must.NoError(types.ValidateRunConfig(cfg), "ValidateRunConfig should accept gemini without apiKeyRef")
 }
 
 // TestBuildHarnessRunConfig_GeminiCredentialsFileImpliesType verifies
@@ -3142,6 +2439,8 @@ func TestBuildHarnessRunConfig_GeminiSuppressesAPIKeyRef(t *testing.T) {
 // in the flag-only path, mirroring how --permission-policy-file implies
 // type=policy-engine.
 func TestBuildHarnessRunConfig_GeminiCredentialsFileImpliesType(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:              "test-run",
 		Mode:               "execution",
@@ -3156,25 +2455,19 @@ func TestBuildHarnessRunConfig_GeminiCredentialsFileImpliesType(t *testing.T) {
 		GCPLocation:        "global",
 		GCPCredentialsFile: "/tmp/sa.json",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
+	must.NoError(err)
 
-	if cfg.Provider.GCPCredentialsFile != "/tmp/sa.json" {
-		t.Errorf("GCPCredentialsFile = %q, want /tmp/sa.json", cfg.Provider.GCPCredentialsFile)
-	}
-	if cfg.Provider.Credential == nil {
-		t.Fatal("expected Credential to be inferred from --gcp-credentials-file")
-	}
-	if cfg.Provider.Credential.Type != "gcp-service-account" {
-		t.Errorf("Credential.Type = %q, want gcp-service-account", cfg.Provider.Credential.Type)
-	}
+	check.Equal("/tmp/sa.json", cfg.Provider.GCPCredentialsFile)
+	must.NotNil(cfg.Provider.Credential, "credential should be inferred from --gcp-credentials-file")
+	check.Equal("gcp-service-account", cfg.Provider.Credential.Type)
 }
 
 // TestBuildHarnessRunConfig_GeminiFieldsScopedToProviderType pins that
 // GCP fields supplied while --provider is not gemini must not leak into
 // the resulting RunConfig.
 func TestBuildHarnessRunConfig_GeminiFieldsScopedToProviderType(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
@@ -3190,23 +2483,18 @@ func TestBuildHarnessRunConfig_GeminiFieldsScopedToProviderType(t *testing.T) {
 		GCPProject:  "leaked-project",
 		GCPLocation: "global",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
+	must.NoError(err)
 
-	if cfg.Provider.GCPProject != "" {
-		t.Errorf("GCPProject leaked onto anthropic provider: %q", cfg.Provider.GCPProject)
-	}
-	if cfg.Provider.GCPLocation != "" {
-		t.Errorf("GCPLocation leaked onto anthropic provider: %q", cfg.Provider.GCPLocation)
-	}
+	check.Empty(cfg.Provider.GCPProject, "GCPProject leaked onto anthropic provider")
+	check.Empty(cfg.Provider.GCPLocation, "GCPLocation leaked onto anthropic provider")
 }
 
-// TestBuildHarnessRunConfig_ReasoningEffort pins the flag-only path for
-// --reasoning-effort: the value lands on the top-level RunConfig field
-// (not any provider entry), in the short lowercase form the config
+// TestBuildHarnessRunConfig_ReasoningEffortPassesThrough pins the flag-only
+// path for --reasoning-effort: the value lands on the top-level RunConfig
+// field (not any provider entry), in the short lowercase form the config
 // schema validates, rather than any provider's wire spelling.
-func TestBuildHarnessRunConfig_ReasoningEffort(t *testing.T) {
+func TestBuildHarnessRunConfig_ReasoningEffortPassesThrough(t *testing.T) {
+	must := require.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:           "test-run",
 		Mode:            "execution",
@@ -3221,22 +2509,15 @@ func TestBuildHarnessRunConfig_ReasoningEffort(t *testing.T) {
 		GCPLocation:     "global",
 		ReasoningEffort: "high",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
-	if cfg.ReasoningEffort != "high" {
-		t.Errorf("ReasoningEffort = %q, want %q", cfg.ReasoningEffort, "high")
-	}
+	must.NoError(err)
+	must.Equal("high", cfg.ReasoningEffort)
 }
 
-// TestBuildHarnessRunConfig_ReasoningEffortInvalid confirms a value the
-// flag accepts but the schema does not is rejected before the run
-// starts. The builder itself does not validate, so the assertion is
-// against ValidateRunConfig on the config it produced — the same path
-// the harness command takes. The Gemini adapter's per-model allow-list
-// is a second, narrower gate; this one exists so a typo never reaches
-// the model-specific check disguised as an unprobed level.
+// TestBuildHarnessRunConfig_ReasoningEffortInvalid confirms that a value the
+// flag accepts but the schema rejects fails ValidateRunConfig on the built
+// config, so an unknown level never reaches the Gemini per-model allow-list.
 func TestBuildHarnessRunConfig_ReasoningEffortInvalid(t *testing.T) {
+	must := require.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:           "test-run",
 		Mode:            "execution",
@@ -3251,19 +2532,14 @@ func TestBuildHarnessRunConfig_ReasoningEffortInvalid(t *testing.T) {
 		GCPLocation:     "global",
 		ReasoningEffort: "THINKING_LEVEL_HIGH",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
-	err = types.ValidateRunConfig(cfg)
-	if err == nil {
-		t.Fatal("expected rejection of a wire-enum-spelled reasoning effort")
-	}
-	if !strings.Contains(err.Error(), "reasoningEffort") {
-		t.Errorf("error must name the offending field: %v", err)
-	}
+	must.NoError(err)
+	must.ErrorContains(types.ValidateRunConfig(cfg), "reasoningEffort")
 }
 
-func TestBuildHarnessRunConfig_ReasoningSummary(t *testing.T) {
+// TestBuildHarnessRunConfig_ReasoningSummaryPassesThrough verifies that
+// --reasoning-summary lands on the top-level RunConfig field.
+func TestBuildHarnessRunConfig_ReasoningSummaryPassesThrough(t *testing.T) {
+	must := require.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:            "test-run",
 		Mode:             "execution",
@@ -3276,17 +2552,14 @@ func TestBuildHarnessRunConfig_ReasoningSummary(t *testing.T) {
 		LogLevel:         "info",
 		ReasoningSummary: "off",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
-	if cfg.ReasoningSummary != "off" {
-		t.Errorf("ReasoningSummary = %q, want %q", cfg.ReasoningSummary, "off")
-	}
+	must.NoError(err)
+	must.Equal("off", cfg.ReasoningSummary)
 }
 
 // TestBuildHarnessRunConfig_ReasoningSummaryInvalid confirms a value the
 // flag accepts but the schema does not is rejected before the run starts.
 func TestBuildHarnessRunConfig_ReasoningSummaryInvalid(t *testing.T) {
+	must := require.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:            "test-run",
 		Mode:             "execution",
@@ -3299,51 +2572,37 @@ func TestBuildHarnessRunConfig_ReasoningSummaryInvalid(t *testing.T) {
 		LogLevel:         "info",
 		ReasoningSummary: "detailed",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
-	err = types.ValidateRunConfig(cfg)
-	if err == nil {
-		t.Fatal("expected rejection of an unknown reasoningSummary value")
-	}
-	if !strings.Contains(err.Error(), "reasoningSummary") {
-		t.Errorf("error must name the offending field: %v", err)
-	}
+	must.NoError(err)
+	must.ErrorContains(types.ValidateRunConfig(cfg), "reasoningSummary")
 }
 
-func TestApplyOverrides_ReasoningSummary(t *testing.T) {
+func TestApplyOverrides_ReasoningSummaryFlagPrecedence(t *testing.T) {
 	t.Run("flag overrides file", func(t *testing.T) {
+		must := require.New(t)
 		cmd := newTestHarnessCommand()
 		cfg := baseFileConfig()
 		cfg.ReasoningSummary = "auto"
-		if err := cmd.Flags().Set("reasoning-summary", "off"); err != nil {
-			t.Fatalf("set reasoning-summary: %v", err)
-		}
-		if err := applyOverrides(cmd, cfg, nil); err != nil {
-			t.Fatalf("applyOverrides: %v", err)
-		}
-		if cfg.ReasoningSummary != "off" {
-			t.Errorf("ReasoningSummary = %q, want off", cfg.ReasoningSummary)
-		}
+		must.NoError(cmd.Flags().Set("reasoning-summary", "off"))
+		must.NoError(applyOverrides(cmd, cfg, nil))
+		must.Equal("off", cfg.ReasoningSummary)
 	})
 	t.Run("unset flag keeps file value", func(t *testing.T) {
+		must := require.New(t)
 		cmd := newTestHarnessCommand()
 		cfg := baseFileConfig()
 		cfg.ReasoningSummary = "off"
-		if err := applyOverrides(cmd, cfg, nil); err != nil {
-			t.Fatalf("applyOverrides: %v", err)
-		}
-		if cfg.ReasoningSummary != "off" {
-			t.Errorf("ReasoningSummary = %q, want off", cfg.ReasoningSummary)
-		}
+		must.NoError(applyOverrides(cmd, cfg, nil))
+		must.Equal("off", cfg.ReasoningSummary)
 	})
 }
 
-// TestApplyOverrides_GeminiFlags exercises the --gcp-project,
+// TestApplyOverrides_GeminiFlagsReplaceFileValues exercises the --gcp-project,
 // --gcp-location, and --gcp-credentials-file overrides on the --config
 // path. Explicitly-set flags must clobber the file's values, and the
 // credentials-file flag must imply a Credential.Type when none is set.
-func TestApplyOverrides_GeminiFlags(t *testing.T) {
+func TestApplyOverrides_GeminiFlagsReplaceFileValues(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Provider = types.ProviderConfig{
@@ -3354,39 +2613,23 @@ func TestApplyOverrides_GeminiFlags(t *testing.T) {
 	cfg.ModelRouter.Provider = "gemini"
 	cfg.ModelRouter.Model = "gemini-2.5-pro"
 
-	must := func(name, value string) {
-		if err := cmd.Flags().Set(name, value); err != nil {
-			t.Fatalf("set %s: %v", name, err)
-		}
+	setFlag := func(name, value string) {
+		must.NoError(cmd.Flags().Set(name, value), "set %s", name)
 	}
-	must("provider", "gemini")
-	must("gcp-project", "from-flag")
-	must("gcp-location", "us-central1")
-	must("gcp-credentials-file", "/tmp/sa.json")
-	must("reasoning-effort", "low")
+	setFlag("provider", "gemini")
+	setFlag("gcp-project", "from-flag")
+	setFlag("gcp-location", "us-central1")
+	setFlag("gcp-credentials-file", "/tmp/sa.json")
+	setFlag("reasoning-effort", "low")
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.ReasoningEffort != "low" {
-		t.Errorf("ReasoningEffort override failed: %q", cfg.ReasoningEffort)
-	}
-	if cfg.Provider.GCPProject != "from-flag" {
-		t.Errorf("GCPProject override failed: %q", cfg.Provider.GCPProject)
-	}
-	if cfg.Provider.GCPLocation != "us-central1" {
-		t.Errorf("GCPLocation override failed: %q", cfg.Provider.GCPLocation)
-	}
-	if cfg.Provider.GCPCredentialsFile != "/tmp/sa.json" {
-		t.Errorf("GCPCredentialsFile override failed: %q", cfg.Provider.GCPCredentialsFile)
-	}
-	if cfg.Provider.Credential == nil {
-		t.Fatal("expected Credential to be inferred from --gcp-credentials-file")
-	}
-	if cfg.Provider.Credential.Type != "gcp-service-account" {
-		t.Errorf("Credential.Type = %q, want gcp-service-account", cfg.Provider.Credential.Type)
-	}
+	check.Equal("low", cfg.ReasoningEffort)
+	check.Equal("from-flag", cfg.Provider.GCPProject)
+	check.Equal("us-central1", cfg.Provider.GCPLocation)
+	check.Equal("/tmp/sa.json", cfg.Provider.GCPCredentialsFile)
+	must.NotNil(cfg.Provider.Credential, "credential should be inferred from --gcp-credentials-file")
+	check.Equal("gcp-service-account", cfg.Provider.Credential.Type)
 }
 
 // TestApplyOverrides_GeminiClearsAPIKeyRefFromConfigFile verifies that
@@ -3394,6 +2637,8 @@ func TestApplyOverrides_GeminiFlags(t *testing.T) {
 // config file inherited from a previous (non-gemini) configuration,
 // matching the flag-only path's behaviour.
 func TestApplyOverrides_GeminiClearsAPIKeyRefFromConfigFile(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 
@@ -3404,24 +2649,16 @@ func TestApplyOverrides_GeminiClearsAPIKeyRefFromConfigFile(t *testing.T) {
 	cfg.ModelRouter.Provider = "anthropic"
 	cfg.ModelRouter.Model = "claude-sonnet-4-6"
 
-	must := func(name, value string) {
-		if err := cmd.Flags().Set(name, value); err != nil {
-			t.Fatalf("set %s: %v", name, err)
-		}
+	setFlag := func(name, value string) {
+		must.NoError(cmd.Flags().Set(name, value), "set %s", name)
 	}
-	must("provider", "gemini")
-	must("gcp-project", "my-proj")
+	setFlag("provider", "gemini")
+	setFlag("gcp-project", "my-proj")
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.Provider.Type != "gemini" {
-		t.Errorf("Provider.Type = %q, want gemini", cfg.Provider.Type)
-	}
-	if cfg.Provider.APIKeyRef != "" {
-		t.Errorf("APIKeyRef should be cleared on gemini switch, got %q", cfg.Provider.APIKeyRef)
-	}
+	check.Equal("gemini", cfg.Provider.Type)
+	check.Empty(cfg.Provider.APIKeyRef, "APIKeyRef should be cleared on gemini switch")
 }
 
 // TestApplyOverrides_GeminiPreservesExplicitAPIKeyRef pins that an
@@ -3429,33 +2666,26 @@ func TestApplyOverrides_GeminiClearsAPIKeyRefFromConfigFile(t *testing.T) {
 // wins: the CLI layer must not silently drop an explicit choice, even
 // though the validator later rejects the combination.
 func TestApplyOverrides_GeminiPreservesExplicitAPIKeyRef(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Provider = types.ProviderConfig{Type: "anthropic"}
 	cfg.ModelRouter.Provider = "anthropic"
 	cfg.ModelRouter.Model = "claude-sonnet-4-6"
 
-	must := func(name, value string) {
-		if err := cmd.Flags().Set(name, value); err != nil {
-			t.Fatalf("set %s: %v", name, err)
-		}
-	}
-	must("provider", "gemini")
-	must("api-key-ref", "secret://EXPLICIT")
+	must.NoError(cmd.Flags().Set("provider", "gemini"))
+	must.NoError(cmd.Flags().Set("api-key-ref", "secret://EXPLICIT"))
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.Provider.APIKeyRef != "secret://EXPLICIT" {
-		t.Errorf("explicit --api-key-ref dropped: %q", cfg.Provider.APIKeyRef)
-	}
+	must.Equal("secret://EXPLICIT", cfg.Provider.APIKeyRef, "explicit --api-key-ref dropped")
 }
 
 // TestApplyOverrides_GeminiDefaultLocationFallback verifies that a
 // config file that omits gcpLocation, with no --gcp-location passed,
 // falls back to the documented default ("global") on the --config path.
 func TestApplyOverrides_GeminiDefaultLocationFallback(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Provider = types.ProviderConfig{
@@ -3466,13 +2696,9 @@ func TestApplyOverrides_GeminiDefaultLocationFallback(t *testing.T) {
 	cfg.ModelRouter.Provider = "gemini"
 	cfg.ModelRouter.Model = "gemini-2.5-pro"
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.Provider.GCPLocation != "global" {
-		t.Errorf("GCPLocation = %q, want fallback default \"global\"", cfg.Provider.GCPLocation)
-	}
+	must.Equal("global", cfg.Provider.GCPLocation, "empty gcpLocation should fall back to the default")
 }
 
 // TestApplyOverrides_GeminiDefaultFlagsDoNotOverride pins that the
@@ -3481,6 +2707,8 @@ func TestApplyOverrides_GeminiDefaultLocationFallback(t *testing.T) {
 // silently overwritten when the CLI invocation leaves the flags at
 // their defaults.
 func TestApplyOverrides_GeminiDefaultFlagsDoNotOverride(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Provider = types.ProviderConfig{
@@ -3493,22 +2721,18 @@ func TestApplyOverrides_GeminiDefaultFlagsDoNotOverride(t *testing.T) {
 
 	// gcp-* flags stay at their cobra-registered defaults; the fallback
 	// only applies when GCPLocation is empty, so "us-central1" survives.
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.Provider.GCPProject != "from-file" {
-		t.Errorf("GCPProject silently overridden: %q", cfg.Provider.GCPProject)
-	}
-	if cfg.Provider.GCPLocation != "us-central1" {
-		t.Errorf("GCPLocation silently overridden: %q", cfg.Provider.GCPLocation)
-	}
+	check.Equal("from-file", cfg.Provider.GCPProject, "config file gcpProject was overridden")
+	check.Equal("us-central1", cfg.Provider.GCPLocation, "config file gcpLocation was overridden")
 }
 
 // TestApplyOverrides_GeminiCredentialsFileRespectsExplicitCredential
 // verifies that --gcp-credentials-file does NOT clobber a Credential
 // type that the --config file already set explicitly.
 func TestApplyOverrides_GeminiCredentialsFileRespectsExplicitCredential(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Provider = types.ProviderConfig{
@@ -3521,22 +2745,12 @@ func TestApplyOverrides_GeminiCredentialsFileRespectsExplicitCredential(t *testi
 	cfg.ModelRouter.Provider = "gemini"
 	cfg.ModelRouter.Model = "gemini-2.5-pro"
 
-	if err := cmd.Flags().Set("gcp-credentials-file", "/tmp/sa.json"); err != nil {
-		t.Fatalf("set: %v", err)
-	}
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("gcp-credentials-file", "/tmp/sa.json"))
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.Provider.GCPCredentialsFile != "/tmp/sa.json" {
-		t.Errorf("GCPCredentialsFile override failed: %q", cfg.Provider.GCPCredentialsFile)
-	}
-	if cfg.Provider.Credential == nil {
-		t.Fatal("Credential cleared unexpectedly")
-	}
-	if cfg.Provider.Credential.Type != "gcp-workload-identity" {
-		t.Errorf("Credential.Type clobbered: got %q, want gcp-workload-identity", cfg.Provider.Credential.Type)
-	}
+	check.Equal("/tmp/sa.json", cfg.Provider.GCPCredentialsFile, "gcp-credentials-file override failed")
+	must.NotNil(cfg.Provider.Credential, "Credential cleared unexpectedly")
+	check.Equal("gcp-workload-identity", cfg.Provider.Credential.Type, "Credential.Type clobbered")
 }
 
 // --- Anthropic Workload Identity Federation ---
@@ -3578,6 +2792,8 @@ func clearAnthropicWIFEnv(t *testing.T) {
 // vars fill in the four federation fields when no flag is set, and that
 // the inferred credential type is anthropic-wif.
 func TestApplyAnthropicWIF_EnvVarFallback(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	clearAnthropicWIFEnv(t)
 	t.Setenv("ANTHROPIC_FEDERATION_RULE_ID", "fdrl_envrule")
 	t.Setenv("ANTHROPIC_ORGANIZATION_ID", "11111111-1111-1111-1111-111111111111")
@@ -3588,69 +2804,42 @@ func TestApplyAnthropicWIF_EnvVarFallback(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := anthropicWIFBaseConfig()
 
-	if err := applyAnthropicWIFOverrides(cmd, cfg); err != nil {
-		t.Fatalf("applyAnthropicWIFOverrides: %v", err)
-	}
+	must.NoError(applyAnthropicWIFOverrides(cmd, cfg))
 
 	cred := cfg.Provider.Credential
-	if cred == nil {
-		t.Fatal("expected Credential to be inferred from env vars")
-	}
-	if cred.Type != "anthropic-wif" {
-		t.Errorf("Credential.Type = %q, want anthropic-wif", cred.Type)
-	}
-	if cred.FederationRuleID != "fdrl_envrule" {
-		t.Errorf("FederationRuleID = %q, want fdrl_envrule", cred.FederationRuleID)
-	}
-	if cred.OrganizationID != "11111111-1111-1111-1111-111111111111" {
-		t.Errorf("OrganizationID = %q", cred.OrganizationID)
-	}
-	if cred.ServiceAccountID != "svac_envsa" {
-		t.Errorf("ServiceAccountID = %q", cred.ServiceAccountID)
-	}
-	if cred.WorkspaceID != "default" {
-		t.Errorf("WorkspaceID = %q", cred.WorkspaceID)
-	}
-	if cred.TokenSource == nil {
-		t.Fatal("expected TokenSource to be inferred from ANTHROPIC_IDENTITY_TOKEN_FILE")
-	}
-	if cred.TokenSource.Type != "file" {
-		t.Errorf("TokenSource.Type = %q, want file", cred.TokenSource.Type)
-	}
-	if cred.TokenSource.Path != "/var/run/secrets/idp/jwt" {
-		t.Errorf("TokenSource.Path = %q", cred.TokenSource.Path)
-	}
+	must.NotNil(cred, "expected Credential to be inferred from env vars")
+	check.Equal("anthropic-wif", cred.Type)
+	check.Equal("fdrl_envrule", cred.FederationRuleID)
+	check.Equal("11111111-1111-1111-1111-111111111111", cred.OrganizationID)
+	check.Equal("svac_envsa", cred.ServiceAccountID)
+	check.Equal("default", cred.WorkspaceID)
+
+	must.NotNil(cred.TokenSource, "expected TokenSource to be inferred from ANTHROPIC_IDENTITY_TOKEN_FILE")
+	check.Equal("file", cred.TokenSource.Type)
+	check.Equal("/var/run/secrets/idp/jwt", cred.TokenSource.Path)
+
 	// Default APIKeyRef must be cleared because no operator intent.
-	if cfg.Provider.APIKeyRef != "" {
-		t.Errorf("APIKeyRef should be cleared under WIF, got %q", cfg.Provider.APIKeyRef)
-	}
+	check.Empty(cfg.Provider.APIKeyRef, "APIKeyRef should be cleared under WIF")
 }
 
 // TestApplyAnthropicWIF_ExplicitFlagBeatsEnv pins the precedence rule:
 // when both flag and env var are set, the explicit flag wins.
 func TestApplyAnthropicWIF_ExplicitFlagBeatsEnv(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	clearAnthropicWIFEnv(t)
 	t.Setenv("ANTHROPIC_FEDERATION_RULE_ID", "fdrl_envrule")
 
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("anthropic-federation-rule-id", "fdrl_flagrule"); err != nil {
-		t.Fatalf("set: %v", err)
-	}
-	if err := cmd.Flags().Set("anthropic-organization-id", "22222222-2222-2222-2222-222222222222"); err != nil {
-		t.Fatalf("set: %v", err)
-	}
-	if err := cmd.Flags().Set("anthropic-service-account-id", "svac_flagsa"); err != nil {
-		t.Fatalf("set: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("anthropic-federation-rule-id", "fdrl_flagrule"))
+	must.NoError(cmd.Flags().Set("anthropic-organization-id", "22222222-2222-2222-2222-222222222222"))
+	must.NoError(cmd.Flags().Set("anthropic-service-account-id", "svac_flagsa"))
 
 	cfg := anthropicWIFBaseConfig()
-	if err := applyAnthropicWIFOverrides(cmd, cfg); err != nil {
-		t.Fatalf("applyAnthropicWIFOverrides: %v", err)
-	}
+	must.NoError(applyAnthropicWIFOverrides(cmd, cfg))
 
-	if cfg.Provider.Credential == nil || cfg.Provider.Credential.FederationRuleID != "fdrl_flagrule" {
-		t.Errorf("explicit flag should beat env, got %+v", cfg.Provider.Credential)
-	}
+	must.NotNil(cfg.Provider.Credential)
+	check.Equal("fdrl_flagrule", cfg.Provider.Credential.FederationRuleID, "explicit flag should beat env")
 }
 
 // TestApplyAnthropicWIF_FromGitHubActionsSelectsTokenSource pins the
@@ -3658,37 +2847,27 @@ func TestApplyAnthropicWIF_ExplicitFlagBeatsEnv(t *testing.T) {
 // inferred token source is github-actions-oidc with the Anthropic
 // audience, regardless of any env vars present.
 func TestApplyAnthropicWIF_FromGitHubActionsSelectsTokenSource(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	clearAnthropicWIFEnv(t)
 
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://example.actions.githubusercontent.com/token")
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "tok")
 
 	cmd := newTestHarnessCommand()
-	mustSet := func(name, val string) {
-		if err := cmd.Flags().Set(name, val); err != nil {
-			t.Fatalf("set %s: %v", name, err)
-		}
-	}
-	mustSet("anthropic-federation-rule-id", "fdrl_flagrule")
-	mustSet("anthropic-organization-id", "33333333-3333-3333-3333-333333333333")
-	mustSet("anthropic-service-account-id", "svac_flagsa")
-	mustSet("anthropic-from-github-actions", "true")
+	must.NoError(cmd.Flags().Set("anthropic-federation-rule-id", "fdrl_flagrule"))
+	must.NoError(cmd.Flags().Set("anthropic-organization-id", "33333333-3333-3333-3333-333333333333"))
+	must.NoError(cmd.Flags().Set("anthropic-service-account-id", "svac_flagsa"))
+	must.NoError(cmd.Flags().Set("anthropic-from-github-actions", "true"))
 
 	cfg := anthropicWIFBaseConfig()
-	if err := applyAnthropicWIFOverrides(cmd, cfg); err != nil {
-		t.Fatalf("applyAnthropicWIFOverrides: %v", err)
-	}
+	must.NoError(applyAnthropicWIFOverrides(cmd, cfg))
 
 	cred := cfg.Provider.Credential
-	if cred == nil || cred.TokenSource == nil {
-		t.Fatalf("expected TokenSource set, got %+v", cred)
-	}
-	if cred.TokenSource.Type != "github-actions-oidc" {
-		t.Errorf("TokenSource.Type = %q, want github-actions-oidc", cred.TokenSource.Type)
-	}
-	if cred.TokenSource.Audience != "https://api.anthropic.com" {
-		t.Errorf("TokenSource.Audience = %q, want https://api.anthropic.com", cred.TokenSource.Audience)
-	}
+	must.NotNil(cred)
+	must.NotNil(cred.TokenSource, "expected TokenSource set")
+	check.Equal("github-actions-oidc", cred.TokenSource.Type)
+	check.Equal("https://api.anthropic.com", cred.TokenSource.Audience)
 }
 
 // TestApplyAnthropicWIF_GHAEnvAloneDoesNotInferTokenSource pins that
@@ -3696,67 +2875,47 @@ func TestApplyAnthropicWIF_FromGitHubActionsSelectsTokenSource(t *testing.T) {
 // github-actions-oidc; the operator must explicitly opt in via
 // --anthropic-from-github-actions.
 func TestApplyAnthropicWIF_GHAEnvAloneDoesNotInferTokenSource(t *testing.T) {
+	must := require.New(t)
 	clearAnthropicWIFEnv(t)
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://example.actions.githubusercontent.com/token")
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "tok")
 
 	cmd := newTestHarnessCommand()
-	mustSet := func(name, val string) {
-		if err := cmd.Flags().Set(name, val); err != nil {
-			t.Fatalf("set %s: %v", name, err)
-		}
-	}
-	mustSet("anthropic-federation-rule-id", "fdrl_flagrule")
-	mustSet("anthropic-organization-id", "44444444-4444-4444-4444-444444444444")
-	mustSet("anthropic-service-account-id", "svac_flagsa")
+	must.NoError(cmd.Flags().Set("anthropic-federation-rule-id", "fdrl_flagrule"))
+	must.NoError(cmd.Flags().Set("anthropic-organization-id", "44444444-4444-4444-4444-444444444444"))
+	must.NoError(cmd.Flags().Set("anthropic-service-account-id", "svac_flagsa"))
 	// Deliberately NOT setting --anthropic-from-github-actions.
 
 	cfg := anthropicWIFBaseConfig()
-	if err := applyAnthropicWIFOverrides(cmd, cfg); err != nil {
-		t.Fatalf("applyAnthropicWIFOverrides: %v", err)
-	}
+	must.NoError(applyAnthropicWIFOverrides(cmd, cfg))
 
 	cred := cfg.Provider.Credential
-	if cred == nil {
-		t.Fatal("expected Credential to be inferred from federation flags")
-	}
-	if cred.TokenSource != nil {
-		t.Errorf("TokenSource should NOT be inferred from bare GHA env, got %+v", cred.TokenSource)
-	}
+	must.NotNil(cred, "expected Credential to be inferred from federation flags")
+	must.Nil(cred.TokenSource, "TokenSource should not be inferred from bare GHA env")
 }
 
 // TestApplyAnthropicWIF_IdentityTokenEnvVarSelectsEnvSource pins the
 // fallback for ANTHROPIC_IDENTITY_TOKEN: a literal token in the env
 // implies tokenSource={type:env, envVar:ANTHROPIC_IDENTITY_TOKEN}.
 func TestApplyAnthropicWIF_IdentityTokenEnvVarSelectsEnvSource(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	clearAnthropicWIFEnv(t)
 	t.Setenv("ANTHROPIC_IDENTITY_TOKEN", "eyJ.fake.jwt")
 
 	cmd := newTestHarnessCommand()
-	mustSet := func(name, val string) {
-		if err := cmd.Flags().Set(name, val); err != nil {
-			t.Fatalf("set %s: %v", name, err)
-		}
-	}
-	mustSet("anthropic-federation-rule-id", "fdrl_flagrule")
-	mustSet("anthropic-organization-id", "55555555-5555-5555-5555-555555555555")
-	mustSet("anthropic-service-account-id", "svac_flagsa")
+	must.NoError(cmd.Flags().Set("anthropic-federation-rule-id", "fdrl_flagrule"))
+	must.NoError(cmd.Flags().Set("anthropic-organization-id", "55555555-5555-5555-5555-555555555555"))
+	must.NoError(cmd.Flags().Set("anthropic-service-account-id", "svac_flagsa"))
 
 	cfg := anthropicWIFBaseConfig()
-	if err := applyAnthropicWIFOverrides(cmd, cfg); err != nil {
-		t.Fatalf("applyAnthropicWIFOverrides: %v", err)
-	}
+	must.NoError(applyAnthropicWIFOverrides(cmd, cfg))
 
 	cred := cfg.Provider.Credential
-	if cred == nil || cred.TokenSource == nil {
-		t.Fatalf("expected TokenSource set, got %+v", cred)
-	}
-	if cred.TokenSource.Type != "env" {
-		t.Errorf("TokenSource.Type = %q, want env", cred.TokenSource.Type)
-	}
-	if cred.TokenSource.EnvVar != "ANTHROPIC_IDENTITY_TOKEN" {
-		t.Errorf("TokenSource.EnvVar = %q, want ANTHROPIC_IDENTITY_TOKEN", cred.TokenSource.EnvVar)
-	}
+	must.NotNil(cred)
+	must.NotNil(cred.TokenSource, "expected TokenSource set")
+	check.Equal("env", cred.TokenSource.Type)
+	check.Equal("ANTHROPIC_IDENTITY_TOKEN", cred.TokenSource.EnvVar)
 }
 
 // TestApplyAnthropicWIF_ExplicitAPIKeyRefRejected pins that when
@@ -3764,29 +2923,20 @@ func TestApplyAnthropicWIF_IdentityTokenEnvVarSelectsEnvSource(t *testing.T) {
 // override layer hard-fails rather than silently dropping one or the
 // other.
 func TestApplyAnthropicWIF_ExplicitAPIKeyRefRejected(t *testing.T) {
+	must := require.New(t)
 	clearAnthropicWIFEnv(t)
 
 	cmd := newTestHarnessCommand()
-	mustSet := func(name, val string) {
-		if err := cmd.Flags().Set(name, val); err != nil {
-			t.Fatalf("set %s: %v", name, err)
-		}
-	}
-	mustSet("anthropic-federation-rule-id", "fdrl_flagrule")
-	mustSet("anthropic-organization-id", "66666666-6666-6666-6666-666666666666")
-	mustSet("anthropic-service-account-id", "svac_flagsa")
-	mustSet("api-key-ref", "secret://OPERATOR_KEY")
+	must.NoError(cmd.Flags().Set("anthropic-federation-rule-id", "fdrl_flagrule"))
+	must.NoError(cmd.Flags().Set("anthropic-organization-id", "66666666-6666-6666-6666-666666666666"))
+	must.NoError(cmd.Flags().Set("anthropic-service-account-id", "svac_flagsa"))
+	must.NoError(cmd.Flags().Set("api-key-ref", "secret://OPERATOR_KEY"))
 
 	cfg := anthropicWIFBaseConfig()
 	cfg.Provider.APIKeyRef = "secret://OPERATOR_KEY"
 
 	err := applyAnthropicWIFOverrides(cmd, cfg)
-	if err == nil {
-		t.Fatal("expected error when --api-key-ref is set with WIF flags")
-	}
-	if !strings.Contains(err.Error(), "api-key-ref") {
-		t.Errorf("error should mention api-key-ref, got: %v", err)
-	}
+	must.ErrorContains(err, "api-key-ref")
 }
 
 // TestApplyAnthropicWIF_DefaultAPIKeyRefSilentlyCleared documents the
@@ -3794,51 +2944,39 @@ func TestApplyAnthropicWIF_ExplicitAPIKeyRefRejected(t *testing.T) {
 // "secret://ANTHROPIC_API_KEY" carries no operator intent under WIF, so
 // the override layer clears it silently rather than failing loudly.
 func TestApplyAnthropicWIF_DefaultAPIKeyRefSilentlyCleared(t *testing.T) {
+	must := require.New(t)
 	clearAnthropicWIFEnv(t)
 
 	cmd := newTestHarnessCommand()
-	mustSet := func(name, val string) {
-		if err := cmd.Flags().Set(name, val); err != nil {
-			t.Fatalf("set %s: %v", name, err)
-		}
-	}
-	mustSet("anthropic-federation-rule-id", "fdrl_flagrule")
-	mustSet("anthropic-organization-id", "77777777-7777-7777-7777-777777777777")
-	mustSet("anthropic-service-account-id", "svac_flagsa")
+	must.NoError(cmd.Flags().Set("anthropic-federation-rule-id", "fdrl_flagrule"))
+	must.NoError(cmd.Flags().Set("anthropic-organization-id", "77777777-7777-7777-7777-777777777777"))
+	must.NoError(cmd.Flags().Set("anthropic-service-account-id", "svac_flagsa"))
 	// Deliberately NOT setting --api-key-ref. cfg carries the default.
 
 	cfg := anthropicWIFBaseConfig()
 	// The default-from-flag path: APIKeyRef holds the registered default.
 	cfg.Provider.APIKeyRef = "secret://ANTHROPIC_API_KEY"
 
-	if err := applyAnthropicWIFOverrides(cmd, cfg); err != nil {
-		t.Fatalf("applyAnthropicWIFOverrides: %v", err)
-	}
+	must.NoError(applyAnthropicWIFOverrides(cmd, cfg))
 
-	if cfg.Provider.APIKeyRef != "" {
-		t.Errorf("default APIKeyRef should be cleared under WIF, got %q", cfg.Provider.APIKeyRef)
-	}
+	must.Empty(cfg.Provider.APIKeyRef, "default APIKeyRef should be cleared under WIF")
 }
 
-// TestApplyAnthropicWIF_NoIntentNoOp guards the no-op early return: with
-// no WIF flags, env vars, or an existing anthropic-wif credential, the
-// helper leaves the config untouched.
-func TestApplyAnthropicWIF_NoIntentNoOp(t *testing.T) {
+// TestApplyAnthropicWIF_NoIntentLeavesConfigUnchanged verifies that with no
+// WIF flags, env vars, or existing anthropic-wif credential, the config is
+// left untouched.
+func TestApplyAnthropicWIF_NoIntentLeavesConfigUnchanged(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	clearAnthropicWIFEnv(t)
 
 	cmd := newTestHarnessCommand()
 	cfg := anthropicWIFBaseConfig()
 
-	if err := applyAnthropicWIFOverrides(cmd, cfg); err != nil {
-		t.Fatalf("applyAnthropicWIFOverrides: %v", err)
-	}
+	must.NoError(applyAnthropicWIFOverrides(cmd, cfg))
 
-	if cfg.Provider.Credential != nil {
-		t.Errorf("Credential should be nil with no WIF intent, got %+v", cfg.Provider.Credential)
-	}
-	if cfg.Provider.APIKeyRef != "secret://ANTHROPIC_API_KEY" {
-		t.Errorf("APIKeyRef should be untouched without WIF intent, got %q", cfg.Provider.APIKeyRef)
-	}
+	check.Nil(cfg.Provider.Credential, "Credential should be nil with no WIF intent")
+	check.Equal("secret://ANTHROPIC_API_KEY", cfg.Provider.APIKeyRef, "APIKeyRef should be untouched without WIF intent")
 }
 
 // TestApplyAnthropicWIF_ConflictingExplicitTypeRejected covers the
@@ -3847,23 +2985,17 @@ func TestApplyAnthropicWIF_NoIntentNoOp(t *testing.T) {
 // federation flags on top, the helper must fail loudly rather than
 // silently rewriting the operator's choice.
 func TestApplyAnthropicWIF_ConflictingExplicitTypeRejected(t *testing.T) {
+	must := require.New(t)
 	clearAnthropicWIFEnv(t)
 
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("anthropic-federation-rule-id", "fdrl_flagrule"); err != nil {
-		t.Fatalf("set: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("anthropic-federation-rule-id", "fdrl_flagrule"))
 
 	cfg := anthropicWIFBaseConfig()
 	cfg.Provider.Credential = &types.CredentialConfig{Type: "aws-default"}
 
 	err := applyAnthropicWIFOverrides(cmd, cfg)
-	if err == nil {
-		t.Fatal("expected error when WIF flags conflict with explicit non-WIF type")
-	}
-	if !strings.Contains(err.Error(), "anthropic-wif") {
-		t.Errorf("error should mention anthropic-wif, got: %v", err)
-	}
+	must.ErrorContains(err, "anthropic-wif")
 }
 
 // TestApplyAnthropicWIF_ExistingStaticTypePromoted pins that when a
@@ -3871,31 +3003,22 @@ func TestApplyAnthropicWIF_ConflictingExplicitTypeRejected(t *testing.T) {
 // WIF flags on top, applyAnthropicWIFOverrides promotes the type to
 // anthropic-wif rather than rejecting the run as a conflict.
 func TestApplyAnthropicWIF_ExistingStaticTypePromoted(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	clearAnthropicWIFEnv(t)
 
 	cmd := newTestHarnessCommand()
-	mustSet := func(name, val string) {
-		if err := cmd.Flags().Set(name, val); err != nil {
-			t.Fatalf("set %s: %v", name, err)
-		}
-	}
-	mustSet("anthropic-federation-rule-id", "fdrl_flagrule")
-	mustSet("anthropic-organization-id", "99999999-9999-9999-9999-999999999999")
-	mustSet("anthropic-service-account-id", "svac_flagsa")
+	must.NoError(cmd.Flags().Set("anthropic-federation-rule-id", "fdrl_flagrule"))
+	must.NoError(cmd.Flags().Set("anthropic-organization-id", "99999999-9999-9999-9999-999999999999"))
+	must.NoError(cmd.Flags().Set("anthropic-service-account-id", "svac_flagsa"))
 
 	cfg := anthropicWIFBaseConfig()
 	cfg.Provider.Credential = &types.CredentialConfig{Type: "static"}
 
-	if err := applyAnthropicWIFOverrides(cmd, cfg); err != nil {
-		t.Fatalf("applyAnthropicWIFOverrides: %v", err)
-	}
+	must.NoError(applyAnthropicWIFOverrides(cmd, cfg))
 
-	if cfg.Provider.Credential.Type != "anthropic-wif" {
-		t.Errorf("Credential.Type = %q, want anthropic-wif (static must be promoted)", cfg.Provider.Credential.Type)
-	}
-	if cfg.Provider.Credential.FederationRuleID != "fdrl_flagrule" {
-		t.Errorf("FederationRuleID = %q, want fdrl_flagrule", cfg.Provider.Credential.FederationRuleID)
-	}
+	check.Equal("anthropic-wif", cfg.Provider.Credential.Type, "static credential must be promoted")
+	check.Equal("fdrl_flagrule", cfg.Provider.Credential.FederationRuleID)
 }
 
 // TestApplyAnthropicWIF_ExistingTokenSourcePreserved guards the rule
@@ -3903,12 +3026,12 @@ func TestApplyAnthropicWIF_ExistingStaticTypePromoted(t *testing.T) {
 // --anthropic-from-github-actions is set, an existing TokenSource must
 // not be silently overwritten.
 func TestApplyAnthropicWIF_ExistingTokenSourcePreserved(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	clearAnthropicWIFEnv(t)
 
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("anthropic-from-github-actions", "true"); err != nil {
-		t.Fatalf("set: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("anthropic-from-github-actions", "true"))
 
 	cfg := anthropicWIFBaseConfig()
 	cfg.Provider.Credential = &types.CredentialConfig{
@@ -3922,16 +3045,10 @@ func TestApplyAnthropicWIF_ExistingTokenSourcePreserved(t *testing.T) {
 		},
 	}
 
-	if err := applyAnthropicWIFOverrides(cmd, cfg); err != nil {
-		t.Fatalf("applyAnthropicWIFOverrides: %v", err)
-	}
+	must.NoError(applyAnthropicWIFOverrides(cmd, cfg))
 
-	if cfg.Provider.Credential.TokenSource.Type != "file" {
-		t.Errorf("file-provided TokenSource overwritten: got %q", cfg.Provider.Credential.TokenSource.Type)
-	}
-	if cfg.Provider.Credential.TokenSource.Path != "/var/run/file/jwt" {
-		t.Errorf("file-provided TokenSource.Path overwritten: got %q", cfg.Provider.Credential.TokenSource.Path)
-	}
+	check.Equal("file", cfg.Provider.Credential.TokenSource.Type, "file-provided TokenSource overwritten")
+	check.Equal("/var/run/file/jwt", cfg.Provider.Credential.TokenSource.Path, "file-provided TokenSource.Path overwritten")
 }
 
 // openAIWIFBaseConfig is the OpenAI counterpart of anthropicWIFBaseConfig:
@@ -3969,6 +3086,8 @@ func clearOpenAIWIFEnv(t *testing.T) {
 // TestApplyOpenAIWIF_EnvVarFallback verifies the OPENAI_* env vars fill in
 // the identifiers when no flag is set and the inferred type is openai-wif.
 func TestApplyOpenAIWIF_EnvVarFallback(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	clearOpenAIWIFEnv(t)
 	t.Setenv("OPENAI_IDENTITY_PROVIDER_ID", "idp_env")
 	t.Setenv("OPENAI_SERVICE_ACCOUNT_ID", "sa_env")
@@ -3977,92 +3096,70 @@ func TestApplyOpenAIWIF_EnvVarFallback(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := openAIWIFBaseConfig()
 
-	if err := applyOpenAIWIFOverrides(cmd, cfg); err != nil {
-		t.Fatalf("applyOpenAIWIFOverrides: %v", err)
-	}
+	must.NoError(applyOpenAIWIFOverrides(cmd, cfg))
 
 	cred := cfg.Provider.Credential
-	if cred == nil {
-		t.Fatal("expected Credential to be inferred from env vars")
-	}
-	if cred.Type != "openai-wif" {
-		t.Errorf("Credential.Type = %q, want openai-wif", cred.Type)
-	}
-	if cred.OpenAIIdentityProviderID != "idp_env" {
-		t.Errorf("OpenAIIdentityProviderID = %q, want idp_env", cred.OpenAIIdentityProviderID)
-	}
-	if cred.OpenAIServiceAccountID != "sa_env" {
-		t.Errorf("OpenAIServiceAccountID = %q, want sa_env", cred.OpenAIServiceAccountID)
-	}
-	if cred.TokenSource == nil || cred.TokenSource.Type != "file" || cred.TokenSource.Path != "/var/run/secrets/idp/jwt" {
-		t.Errorf("expected file token source from OPENAI_IDENTITY_TOKEN_FILE, got %+v", cred.TokenSource)
-	}
-	if cfg.Provider.APIKeyRef != "" {
-		t.Errorf("APIKeyRef should be cleared under WIF, got %q", cfg.Provider.APIKeyRef)
-	}
+	must.NotNil(cred, "expected Credential to be inferred from env vars")
+	check.Equal("openai-wif", cred.Type)
+	check.Equal("idp_env", cred.OpenAIIdentityProviderID)
+	check.Equal("sa_env", cred.OpenAIServiceAccountID)
+
+	must.NotNil(cred.TokenSource, "expected file token source from OPENAI_IDENTITY_TOKEN_FILE")
+	check.Equal("file", cred.TokenSource.Type)
+	check.Equal("/var/run/secrets/idp/jwt", cred.TokenSource.Path)
+
+	check.Empty(cfg.Provider.APIKeyRef, "APIKeyRef should be cleared under WIF")
 }
 
 // TestApplyOpenAIWIF_ExplicitFlagBeatsEnv pins flag > env precedence.
 func TestApplyOpenAIWIF_ExplicitFlagBeatsEnv(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	clearOpenAIWIFEnv(t)
 	t.Setenv("OPENAI_IDENTITY_PROVIDER_ID", "idp_env")
 
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("openai-identity-provider-id", "idp_flag"); err != nil {
-		t.Fatalf("set: %v", err)
-	}
-	if err := cmd.Flags().Set("openai-service-account-id", "sa_flag"); err != nil {
-		t.Fatalf("set: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("openai-identity-provider-id", "idp_flag"))
+	must.NoError(cmd.Flags().Set("openai-service-account-id", "sa_flag"))
 
 	cfg := openAIWIFBaseConfig()
-	if err := applyOpenAIWIFOverrides(cmd, cfg); err != nil {
-		t.Fatalf("applyOpenAIWIFOverrides: %v", err)
-	}
-	if cfg.Provider.Credential == nil || cfg.Provider.Credential.OpenAIIdentityProviderID != "idp_flag" {
-		t.Errorf("explicit flag should beat env, got %+v", cfg.Provider.Credential)
-	}
+	must.NoError(applyOpenAIWIFOverrides(cmd, cfg))
+
+	must.NotNil(cfg.Provider.Credential)
+	check.Equal("idp_flag", cfg.Provider.Credential.OpenAIIdentityProviderID, "explicit flag should beat env")
 }
 
 // TestApplyOpenAIWIF_FromGitHubActionsSelectsTokenSource pins the GHA opt-in:
 // the inferred token source is github-actions-oidc with the OpenAI API
 // audience.
 func TestApplyOpenAIWIF_FromGitHubActionsSelectsTokenSource(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	clearOpenAIWIFEnv(t)
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://example.actions.githubusercontent.com/token")
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "tok")
 
 	cmd := newTestHarnessCommand()
-	mustSet := func(name, val string) {
-		if err := cmd.Flags().Set(name, val); err != nil {
-			t.Fatalf("set %s: %v", name, err)
-		}
-	}
-	mustSet("openai-identity-provider-id", "idp_flag")
-	mustSet("openai-service-account-id", "sa_flag")
-	mustSet("openai-from-github-actions", "true")
+	must.NoError(cmd.Flags().Set("openai-identity-provider-id", "idp_flag"))
+	must.NoError(cmd.Flags().Set("openai-service-account-id", "sa_flag"))
+	must.NoError(cmd.Flags().Set("openai-from-github-actions", "true"))
 
 	cfg := openAIWIFBaseConfig()
-	if err := applyOpenAIWIFOverrides(cmd, cfg); err != nil {
-		t.Fatalf("applyOpenAIWIFOverrides: %v", err)
-	}
+	must.NoError(applyOpenAIWIFOverrides(cmd, cfg))
 
 	cred := cfg.Provider.Credential
-	if cred == nil || cred.TokenSource == nil {
-		t.Fatalf("expected TokenSource set, got %+v", cred)
-	}
-	if cred.TokenSource.Type != "github-actions-oidc" {
-		t.Errorf("TokenSource.Type = %q, want github-actions-oidc", cred.TokenSource.Type)
-	}
-	if cred.TokenSource.Audience != "https://api.openai.com/v1" {
-		t.Errorf("TokenSource.Audience = %q, want https://api.openai.com/v1", cred.TokenSource.Audience)
-	}
+	must.NotNil(cred)
+	must.NotNil(cred.TokenSource, "expected TokenSource set")
+	check.Equal("github-actions-oidc", cred.TokenSource.Type)
+	check.Equal("https://api.openai.com/v1", cred.TokenSource.Audience)
 }
 
 // TestApplyOpenAIWIF_GHAEnvAloneDoesNotInferTokenSource is the negative test
 // for silent IdP selection: bare ACTIONS_ID_TOKEN_REQUEST_URL must not
 // auto-select github-actions-oidc.
 func TestApplyOpenAIWIF_GHAEnvAloneDoesNotInferTokenSource(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	clearOpenAIWIFEnv(t)
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://example.actions.githubusercontent.com/token")
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "tok")
@@ -4071,17 +3168,17 @@ func TestApplyOpenAIWIF_GHAEnvAloneDoesNotInferTokenSource(t *testing.T) {
 
 	cmd := newTestHarnessCommand()
 	cfg := openAIWIFBaseConfig()
-	if err := applyOpenAIWIFOverrides(cmd, cfg); err != nil {
-		t.Fatalf("applyOpenAIWIFOverrides: %v", err)
-	}
-	if cfg.Provider.Credential != nil && cfg.Provider.Credential.TokenSource != nil {
-		t.Errorf("token source must not be inferred from bare GHA env, got %+v", cfg.Provider.Credential.TokenSource)
+	must.NoError(applyOpenAIWIFOverrides(cmd, cfg))
+	if cfg.Provider.Credential != nil {
+		check.Nil(cfg.Provider.Credential.TokenSource, "token source must not be inferred from bare GHA env")
 	}
 }
 
 // TestApplyOpenAIWIF_IdentityTokenEnvVarSelectsEnvSource pins the env-source
 // inference from OPENAI_IDENTITY_TOKEN.
 func TestApplyOpenAIWIF_IdentityTokenEnvVarSelectsEnvSource(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	clearOpenAIWIFEnv(t)
 	t.Setenv("OPENAI_IDENTITY_PROVIDER_ID", "idp_env")
 	t.Setenv("OPENAI_SERVICE_ACCOUNT_ID", "sa_env")
@@ -4089,112 +3186,80 @@ func TestApplyOpenAIWIF_IdentityTokenEnvVarSelectsEnvSource(t *testing.T) {
 
 	cmd := newTestHarnessCommand()
 	cfg := openAIWIFBaseConfig()
-	if err := applyOpenAIWIFOverrides(cmd, cfg); err != nil {
-		t.Fatalf("applyOpenAIWIFOverrides: %v", err)
-	}
+	must.NoError(applyOpenAIWIFOverrides(cmd, cfg))
+
 	ts := cfg.Provider.Credential.TokenSource
-	if ts == nil || ts.Type != "env" || ts.EnvVar != "OPENAI_IDENTITY_TOKEN" {
-		t.Errorf("expected env token source, got %+v", ts)
-	}
+	must.NotNil(ts, "expected env token source")
+	check.Equal("env", ts.Type)
+	check.Equal("OPENAI_IDENTITY_TOKEN", ts.EnvVar)
 }
 
 // TestApplyOpenAIWIF_ExplicitAPIKeyRefRejected pins the apiKeyRef guard: an
 // explicit --api-key-ref alongside openai-wif flags is a hard error.
 func TestApplyOpenAIWIF_ExplicitAPIKeyRefRejected(t *testing.T) {
+	must := require.New(t)
 	clearOpenAIWIFEnv(t)
 	cmd := newTestHarnessCommand()
-	mustSet := func(name, val string) {
-		if err := cmd.Flags().Set(name, val); err != nil {
-			t.Fatalf("set %s: %v", name, err)
-		}
-	}
-	mustSet("openai-identity-provider-id", "idp_flag")
-	mustSet("openai-service-account-id", "sa_flag")
-	mustSet("api-key-ref", "secret://OPENAI_KEY")
+	must.NoError(cmd.Flags().Set("openai-identity-provider-id", "idp_flag"))
+	must.NoError(cmd.Flags().Set("openai-service-account-id", "sa_flag"))
+	must.NoError(cmd.Flags().Set("api-key-ref", "secret://OPENAI_KEY"))
 
 	cfg := openAIWIFBaseConfig()
 	err := applyOpenAIWIFOverrides(cmd, cfg)
-	if err == nil {
-		t.Fatal("expected error for explicit --api-key-ref alongside WIF flags")
-	}
-	if !strings.Contains(err.Error(), "api-key-ref must not be set") {
-		t.Errorf("error should mention the apiKeyRef conflict, got: %v", err)
-	}
+	must.ErrorContains(err, "api-key-ref must not be set")
 }
 
 // TestApplyOpenAIWIF_DefaultAPIKeyRefSilentlyCleared pins that the cobra
 // default api-key-ref is cleared (not error) when WIF intent is expressed.
 func TestApplyOpenAIWIF_DefaultAPIKeyRefSilentlyCleared(t *testing.T) {
+	must := require.New(t)
 	clearOpenAIWIFEnv(t)
 	cmd := newTestHarnessCommand()
-	mustSet := func(name, val string) {
-		if err := cmd.Flags().Set(name, val); err != nil {
-			t.Fatalf("set %s: %v", name, err)
-		}
-	}
-	mustSet("openai-identity-provider-id", "idp_flag")
-	mustSet("openai-service-account-id", "sa_flag")
+	must.NoError(cmd.Flags().Set("openai-identity-provider-id", "idp_flag"))
+	must.NoError(cmd.Flags().Set("openai-service-account-id", "sa_flag"))
 
 	cfg := openAIWIFBaseConfig() // APIKeyRef = default ANTHROPIC ref, not changed
-	if err := applyOpenAIWIFOverrides(cmd, cfg); err != nil {
-		t.Fatalf("applyOpenAIWIFOverrides: %v", err)
-	}
-	if cfg.Provider.APIKeyRef != "" {
-		t.Errorf("default APIKeyRef should be cleared under WIF, got %q", cfg.Provider.APIKeyRef)
-	}
+	must.NoError(applyOpenAIWIFOverrides(cmd, cfg))
+	must.Empty(cfg.Provider.APIKeyRef, "default APIKeyRef should be cleared under WIF")
 }
 
 // TestApplyOpenAIWIF_NoIntentNoOp pins that the helper does nothing when no
 // WIF intent is expressed — a plain openai-compatible run keeps its key.
 func TestApplyOpenAIWIF_NoIntentNoOp(t *testing.T) {
+	must := require.New(t)
 	clearOpenAIWIFEnv(t)
 	cmd := newTestHarnessCommand()
 	cfg := openAIWIFBaseConfig()
-	if err := applyOpenAIWIFOverrides(cmd, cfg); err != nil {
-		t.Fatalf("applyOpenAIWIFOverrides: %v", err)
-	}
-	if cfg.Provider.Credential != nil {
-		t.Errorf("no WIF intent should leave Credential nil, got %+v", cfg.Provider.Credential)
-	}
-	if cfg.Provider.APIKeyRef != "secret://ANTHROPIC_API_KEY" {
-		t.Errorf("APIKeyRef should be untouched without WIF intent, got %q", cfg.Provider.APIKeyRef)
-	}
+	must.NoError(applyOpenAIWIFOverrides(cmd, cfg))
+	must.Nil(cfg.Provider.Credential, "no WIF intent should leave Credential nil")
+	must.Equal("secret://ANTHROPIC_API_KEY", cfg.Provider.APIKeyRef,
+		"APIKeyRef should be untouched without WIF intent")
 }
 
 // TestApplyOpenAIWIF_ConflictingExplicitTypeRejected pins that layering
 // --openai-* flags on a config that already names a different credential
 // type is a hard error rather than a silent rewrite.
 func TestApplyOpenAIWIF_ConflictingExplicitTypeRejected(t *testing.T) {
+	must := require.New(t)
 	clearOpenAIWIFEnv(t)
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("openai-identity-provider-id", "idp_flag"); err != nil {
-		t.Fatalf("set: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("openai-identity-provider-id", "idp_flag"))
 
 	cfg := openAIWIFBaseConfig()
 	cfg.Provider.Credential = &types.CredentialConfig{Type: "azure-workload-identity"}
 	err := applyOpenAIWIFOverrides(cmd, cfg)
-	if err == nil {
-		t.Fatal("expected error for conflicting explicit credential type")
-	}
-	if !strings.Contains(err.Error(), "conflicting type") {
-		t.Errorf("error should mention the conflicting type, got: %v", err)
-	}
+	must.ErrorContains(err, "conflicting type")
 }
 
 // TestApplyOpenAIWIF_StaticCredentialTypePromoted pins that an existing
 // type=static credential block is promoted to openai-wif when WIF flags are
 // present, rather than being treated as a conflicting type.
 func TestApplyOpenAIWIF_StaticCredentialTypePromoted(t *testing.T) {
+	must := require.New(t)
 	clearOpenAIWIFEnv(t)
 	cmd := newTestHarnessCommand()
-	mustSet := func(name, val string) {
-		if err := cmd.Flags().Set(name, val); err != nil {
-			t.Fatalf("set %s: %v", name, err)
-		}
-	}
-	mustSet("openai-identity-provider-id", "idp_flag")
-	mustSet("openai-service-account-id", "sa_flag")
+	must.NoError(cmd.Flags().Set("openai-identity-provider-id", "idp_flag"))
+	must.NoError(cmd.Flags().Set("openai-service-account-id", "sa_flag"))
 
 	cfg := openAIWIFBaseConfig()
 	cfg.Provider.Credential = &types.CredentialConfig{
@@ -4204,21 +3269,16 @@ func TestApplyOpenAIWIF_StaticCredentialTypePromoted(t *testing.T) {
 			Path: "/var/run/file/jwt",
 		},
 	}
-	if err := applyOpenAIWIFOverrides(cmd, cfg); err != nil {
-		t.Fatalf("applyOpenAIWIFOverrides: %v", err)
-	}
-	if cfg.Provider.Credential.Type != "openai-wif" {
-		t.Errorf("static credential should be promoted to openai-wif, got %q", cfg.Provider.Credential.Type)
-	}
-	if cfg.Provider.Credential.OpenAIIdentityProviderID != "idp_flag" {
-		t.Errorf("OpenAIIdentityProviderID = %q, want idp_flag", cfg.Provider.Credential.OpenAIIdentityProviderID)
-	}
+	must.NoError(applyOpenAIWIFOverrides(cmd, cfg))
+	must.Equal("openai-wif", cfg.Provider.Credential.Type, "static credential should be promoted")
+	must.Equal("idp_flag", cfg.Provider.Credential.OpenAIIdentityProviderID)
 }
 
 // TestApplyOpenAIWIF_SubjectTokenTypeApplied pins that the
 // OPENAI_SUBJECT_TOKEN_TYPE env var (and the flag) is written onto the
 // credential once the WIF flow is established by a required ID.
 func TestApplyOpenAIWIF_SubjectTokenTypeApplied(t *testing.T) {
+	must := require.New(t)
 	clearOpenAIWIFEnv(t)
 	t.Setenv("OPENAI_IDENTITY_PROVIDER_ID", "idp_env")
 	t.Setenv("OPENAI_SERVICE_ACCOUNT_ID", "sa_env")
@@ -4226,13 +3286,9 @@ func TestApplyOpenAIWIF_SubjectTokenTypeApplied(t *testing.T) {
 
 	cmd := newTestHarnessCommand()
 	cfg := openAIWIFBaseConfig()
-	if err := applyOpenAIWIFOverrides(cmd, cfg); err != nil {
-		t.Fatalf("applyOpenAIWIFOverrides: %v", err)
-	}
-	if cfg.Provider.Credential == nil ||
-		cfg.Provider.Credential.OpenAISubjectTokenType != "urn:ietf:params:oauth:token-type:id_token" {
-		t.Errorf("subject token type not applied, got %+v", cfg.Provider.Credential)
-	}
+	must.NoError(applyOpenAIWIFOverrides(cmd, cfg))
+	must.NotNil(cfg.Provider.Credential, "subject token type should be applied to a WIF credential")
+	must.Equal("urn:ietf:params:oauth:token-type:id_token", cfg.Provider.Credential.OpenAISubjectTokenType)
 }
 
 // TestApplyOpenAIWIF_SubjectTokenTypeAloneNoOp pins that a lone
@@ -4240,31 +3296,26 @@ func TestApplyOpenAIWIF_SubjectTokenTypeApplied(t *testing.T) {
 // flip a plain openai-compatible run into the WIF path: the optional
 // modifier is not a WIF discriminator.
 func TestApplyOpenAIWIF_SubjectTokenTypeAloneNoOp(t *testing.T) {
+	must := require.New(t)
 	clearOpenAIWIFEnv(t)
 	t.Setenv("OPENAI_SUBJECT_TOKEN_TYPE", "urn:ietf:params:oauth:token-type:id_token")
 
 	cmd := newTestHarnessCommand()
 	cfg := openAIWIFBaseConfig()
-	if err := applyOpenAIWIFOverrides(cmd, cfg); err != nil {
-		t.Fatalf("applyOpenAIWIFOverrides: %v", err)
-	}
-	if cfg.Provider.Credential != nil {
-		t.Errorf("subject-token-type alone must not infer WIF, got %+v", cfg.Provider.Credential)
-	}
-	if cfg.Provider.APIKeyRef != "secret://ANTHROPIC_API_KEY" {
-		t.Errorf("APIKeyRef should be untouched without WIF intent, got %q", cfg.Provider.APIKeyRef)
-	}
+	must.NoError(applyOpenAIWIFOverrides(cmd, cfg))
+	must.Nil(cfg.Provider.Credential, "subject-token-type alone must not infer WIF")
+	must.Equal("secret://ANTHROPIC_API_KEY", cfg.Provider.APIKeyRef,
+		"APIKeyRef should be untouched without WIF intent")
 }
 
 // TestApplyOpenAIWIF_FromGHAIgnoredWhenTokenSourceSet pins that
 // --openai-from-github-actions does not overwrite a config-file-supplied
 // token source (the config source always wins).
 func TestApplyOpenAIWIF_FromGHAIgnoredWhenTokenSourceSet(t *testing.T) {
+	must := require.New(t)
 	clearOpenAIWIFEnv(t)
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("openai-from-github-actions", "true"); err != nil {
-		t.Fatalf("set: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("openai-from-github-actions", "true"))
 
 	cfg := openAIWIFBaseConfig()
 	cfg.Provider.Credential = &types.CredentialConfig{
@@ -4276,15 +3327,11 @@ func TestApplyOpenAIWIF_FromGHAIgnoredWhenTokenSourceSet(t *testing.T) {
 			Path: "/var/run/file/jwt",
 		},
 	}
-	if err := applyOpenAIWIFOverrides(cmd, cfg); err != nil {
-		t.Fatalf("applyOpenAIWIFOverrides: %v", err)
-	}
-	if cfg.Provider.Credential.TokenSource.Type != "file" {
-		t.Errorf("config-file TokenSource overwritten by GHA flag: got %q", cfg.Provider.Credential.TokenSource.Type)
-	}
-	if cfg.Provider.Credential.TokenSource.Path != "/var/run/file/jwt" {
-		t.Errorf("config-file TokenSource.Path overwritten: got %q", cfg.Provider.Credential.TokenSource.Path)
-	}
+	must.NoError(applyOpenAIWIFOverrides(cmd, cfg))
+	must.Equal("file", cfg.Provider.Credential.TokenSource.Type,
+		"config-file TokenSource should not be overwritten by the GHA flag")
+	must.Equal("/var/run/file/jwt", cfg.Provider.Credential.TokenSource.Path,
+		"config-file TokenSource.Path should not be overwritten")
 }
 
 // TestBuildHarnessRunConfig_AzureWIFFlagsImplyCredential verifies that
@@ -4293,6 +3340,7 @@ func TestApplyOpenAIWIF_FromGHAIgnoredWhenTokenSourceSet(t *testing.T) {
 // type=azure-workload-identity. Mirrors the --gcp-credentials-file
 // shortcut: the flag is the discriminator.
 func TestBuildHarnessRunConfig_AzureWIFFlagsImplyCredential(t *testing.T) {
+	must := require.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
@@ -4309,35 +3357,22 @@ func TestBuildHarnessRunConfig_AzureWIFFlagsImplyCredential(t *testing.T) {
 		AzureClientID: "22222222-2222-2222-2222-222222222222",
 		AzureScope:    "https://cognitiveservices.azure.com/.default",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
+	must.NoError(err)
 
-	if cfg.Provider.Credential == nil {
-		t.Fatal("expected Credential to be inferred from --azure-tenant-id")
-	}
-	if cfg.Provider.Credential.Type != "azure-workload-identity" {
-		t.Errorf("Credential.Type = %q, want azure-workload-identity", cfg.Provider.Credential.Type)
-	}
-	if cfg.Provider.Credential.AzureTenantID != "11111111-1111-1111-1111-111111111111" {
-		t.Errorf("AzureTenantID = %q", cfg.Provider.Credential.AzureTenantID)
-	}
-	if cfg.Provider.Credential.AzureClientID != "22222222-2222-2222-2222-222222222222" {
-		t.Errorf("AzureClientID = %q", cfg.Provider.Credential.AzureClientID)
-	}
-	if cfg.Provider.Credential.AzureScope != "https://cognitiveservices.azure.com/.default" {
-		t.Errorf("AzureScope = %q", cfg.Provider.Credential.AzureScope)
-	}
+	must.NotNil(cfg.Provider.Credential, "Credential should be inferred from --azure-tenant-id")
+	must.Equal("azure-workload-identity", cfg.Provider.Credential.Type)
+	must.Equal("11111111-1111-1111-1111-111111111111", cfg.Provider.Credential.AzureTenantID)
+	must.Equal("22222222-2222-2222-2222-222222222222", cfg.Provider.Credential.AzureClientID)
+	must.Equal("https://cognitiveservices.azure.com/.default", cfg.Provider.Credential.AzureScope)
 
-	if cfg.Provider.APIKeyRef != "" {
-		t.Errorf("APIKeyRef should be cleared for Azure WIF, got %q", cfg.Provider.APIKeyRef)
-	}
+	must.Empty(cfg.Provider.APIKeyRef, "APIKeyRef should be cleared for Azure WIF")
 }
 
 // TestBuildHarnessRunConfig_AzureWIFPassesValidation pins that an Azure
 // WIF flag-only run (tenant + client + tokenSource) is accepted by
 // types.ValidateRunConfig end-to-end.
 func TestBuildHarnessRunConfig_AzureWIFPassesValidation(t *testing.T) {
+	must := require.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
@@ -4354,22 +3389,16 @@ func TestBuildHarnessRunConfig_AzureWIFPassesValidation(t *testing.T) {
 		AzureClientID: "22222222-2222-2222-2222-222222222222",
 		AzureScope:    "https://cognitiveservices.azure.com/.default",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
+	must.NoError(err)
 	// buildHarnessRunConfig only assembles the flag-implied Credential
 	// shell; wire a TokenSource by hand so validation runs end-to-end.
-	if cfg.Provider.Credential == nil {
-		t.Fatal("expected Credential to be inferred from --azure-tenant-id")
-	}
+	must.NotNil(cfg.Provider.Credential, "Credential should be inferred from --azure-tenant-id")
 	cfg.Provider.Credential.TokenSource = &types.TokenSourceConfig{
 		Type: "file",
 		Path: "/var/run/secrets/azure/token",
 	}
 
-	if err := types.ValidateRunConfig(cfg); err != nil {
-		t.Fatalf("ValidateRunConfig should accept Azure WIF flag-only run, got: %v", err)
-	}
+	must.NoError(types.ValidateRunConfig(cfg), "ValidateRunConfig should accept Azure WIF flag-only run")
 }
 
 // TestBuildHarnessRunConfig_AzureWIFTenantWithoutClient verifies that a
@@ -4379,6 +3408,7 @@ func TestBuildHarnessRunConfig_AzureWIFPassesValidation(t *testing.T) {
 // azureClientId" error — the flag mapping itself is mechanical and must
 // not silently drop a partial spec.
 func TestBuildHarnessRunConfig_AzureWIFTenantWithoutClient(t *testing.T) {
+	must := require.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
@@ -4393,35 +3423,17 @@ func TestBuildHarnessRunConfig_AzureWIFTenantWithoutClient(t *testing.T) {
 		AzureTenantID: "11111111-1111-1111-1111-111111111111",
 		// AzureClientID intentionally empty; validator's job to reject.
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
+	must.NoError(err)
 
-	if cfg.Provider.Credential == nil {
-		t.Fatal("expected Credential to be inferred from --azure-tenant-id alone")
-	}
-	if cfg.Provider.Credential.Type != "azure-workload-identity" {
-		t.Errorf("Credential.Type = %q, want azure-workload-identity", cfg.Provider.Credential.Type)
-	}
-	if cfg.Provider.Credential.AzureTenantID != "11111111-1111-1111-1111-111111111111" {
-		t.Errorf("AzureTenantID = %q", cfg.Provider.Credential.AzureTenantID)
-	}
-	if cfg.Provider.Credential.AzureClientID != "" {
-		t.Errorf("AzureClientID should be empty, got %q", cfg.Provider.Credential.AzureClientID)
-	}
+	must.NotNil(cfg.Provider.Credential, "Credential should be inferred from --azure-tenant-id alone")
+	must.Equal("azure-workload-identity", cfg.Provider.Credential.Type)
+	must.Equal("11111111-1111-1111-1111-111111111111", cfg.Provider.Credential.AzureTenantID)
+	must.Empty(cfg.Provider.Credential.AzureClientID)
 }
 
-// TestBuildHarnessRunConfig_AzureWIFRespectsExplicitCredential verifies
-// that --azure-tenant-id does NOT clobber an explicit Credential block
-// that the caller has already constructed (e.g. via --config). This
-// mirrors how --gcp-credentials-file behaves.
-//
-// Build path is exercised via the higher-level applyOverrides test
-// below (TestApplyOverrides_AzureWIFRespectsExplicitCredential); this
-// flag-only test cannot exercise the path because buildHarnessRunConfig
-// itself constructs the config from scratch (no pre-existing
-// Credential to preserve).
+// buildHarnessRunConfig infers no Credential when no --azure-* flag is set.
 func TestBuildHarnessRunConfig_AzureWIFNotSetLeavesCredentialNil(t *testing.T) {
+	must := require.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
@@ -4435,13 +3447,8 @@ func TestBuildHarnessRunConfig_AzureWIFNotSetLeavesCredentialNil(t *testing.T) {
 		TransportType: "stdio",
 		LogLevel:      "info",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
-
-	if cfg.Provider.Credential != nil {
-		t.Errorf("Credential should remain nil when no Azure WIF flags are set, got %+v", cfg.Provider.Credential)
-	}
+	must.NoError(err)
+	must.Nil(cfg.Provider.Credential, "Credential should remain nil when no Azure WIF flags are set")
 }
 
 // TestApplyOverrides_AzureWIFFlags exercises the --azure-* overrides on
@@ -4450,6 +3457,7 @@ func TestBuildHarnessRunConfig_AzureWIFNotSetLeavesCredentialNil(t *testing.T) {
 //   - Populate AzureTenantID / AzureClientID / AzureScope on the
 //     resulting Credential.
 func TestApplyOverrides_AzureWIFFlags(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Provider = types.ProviderConfig{
@@ -4459,35 +3467,18 @@ func TestApplyOverrides_AzureWIFFlags(t *testing.T) {
 	cfg.ModelRouter.Provider = "openai-compatible"
 	cfg.ModelRouter.Model = "gpt-4o"
 
-	must := func(name, value string) {
-		if err := cmd.Flags().Set(name, value); err != nil {
-			t.Fatalf("set %s: %v", name, err)
-		}
-	}
-	must("provider", "openai-compatible")
-	must("azure-tenant-id", "11111111-1111-1111-1111-111111111111")
-	must("azure-client-id", "22222222-2222-2222-2222-222222222222")
-	must("azure-scope", "https://cognitiveservices.azure.com/.default")
+	must.NoError(cmd.Flags().Set("provider", "openai-compatible"))
+	must.NoError(cmd.Flags().Set("azure-tenant-id", "11111111-1111-1111-1111-111111111111"))
+	must.NoError(cmd.Flags().Set("azure-client-id", "22222222-2222-2222-2222-222222222222"))
+	must.NoError(cmd.Flags().Set("azure-scope", "https://cognitiveservices.azure.com/.default"))
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.Provider.Credential == nil {
-		t.Fatal("expected Credential to be inferred from --azure-tenant-id")
-	}
-	if cfg.Provider.Credential.Type != "azure-workload-identity" {
-		t.Errorf("Credential.Type = %q, want azure-workload-identity", cfg.Provider.Credential.Type)
-	}
-	if cfg.Provider.Credential.AzureTenantID != "11111111-1111-1111-1111-111111111111" {
-		t.Errorf("AzureTenantID override failed: %q", cfg.Provider.Credential.AzureTenantID)
-	}
-	if cfg.Provider.Credential.AzureClientID != "22222222-2222-2222-2222-222222222222" {
-		t.Errorf("AzureClientID override failed: %q", cfg.Provider.Credential.AzureClientID)
-	}
-	if cfg.Provider.Credential.AzureScope != "https://cognitiveservices.azure.com/.default" {
-		t.Errorf("AzureScope override failed: %q", cfg.Provider.Credential.AzureScope)
-	}
+	must.NotNil(cfg.Provider.Credential, "Credential should be inferred from --azure-tenant-id")
+	must.Equal("azure-workload-identity", cfg.Provider.Credential.Type)
+	must.Equal("11111111-1111-1111-1111-111111111111", cfg.Provider.Credential.AzureTenantID)
+	must.Equal("22222222-2222-2222-2222-222222222222", cfg.Provider.Credential.AzureClientID)
+	must.Equal("https://cognitiveservices.azure.com/.default", cfg.Provider.Credential.AzureScope)
 }
 
 // TestApplyOverrides_AzureWIFRespectsExplicitCredential pins that an
@@ -4496,6 +3487,7 @@ func TestApplyOverrides_AzureWIFFlags(t *testing.T) {
 // --azure-tenant-id flag; the Azure-named fields are still filled in on
 // the existing block, but the type is preserved.
 func TestApplyOverrides_AzureWIFRespectsExplicitCredential(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Provider = types.ProviderConfig{
@@ -4509,23 +3501,13 @@ func TestApplyOverrides_AzureWIFRespectsExplicitCredential(t *testing.T) {
 	cfg.ModelRouter.Provider = "openai-compatible"
 	cfg.ModelRouter.Model = "gpt-4o"
 
-	if err := cmd.Flags().Set("azure-tenant-id", "11111111-1111-1111-1111-111111111111"); err != nil {
-		t.Fatalf("set: %v", err)
-	}
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("azure-tenant-id", "11111111-1111-1111-1111-111111111111"))
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.Provider.Credential == nil {
-		t.Fatal("Credential cleared unexpectedly")
-	}
-	if cfg.Provider.Credential.Type != "static" {
-		t.Errorf("Credential.Type silently upgraded: got %q, want static", cfg.Provider.Credential.Type)
-	}
-
-	if cfg.Provider.Credential.AzureTenantID != "11111111-1111-1111-1111-111111111111" {
-		t.Errorf("AzureTenantID not propagated to existing Credential: %q", cfg.Provider.Credential.AzureTenantID)
-	}
+	must.NotNil(cfg.Provider.Credential, "Credential should not be cleared")
+	must.Equal("static", cfg.Provider.Credential.Type, "Credential type should not be upgraded")
+	must.Equal("11111111-1111-1111-1111-111111111111", cfg.Provider.Credential.AzureTenantID,
+		"AzureTenantID should be propagated to the existing Credential")
 }
 
 // TestApplyOverrides_AzureWIFClientIDAloneDoesNotCreateCredential pins
@@ -4533,6 +3515,7 @@ func TestApplyOverrides_AzureWIFRespectsExplicitCredential(t *testing.T) {
 // untouched: only --azure-tenant-id is the discriminator that
 // materialises an azure-workload-identity Credential block.
 func TestApplyOverrides_AzureWIFClientIDAloneDoesNotCreateCredential(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Provider = types.ProviderConfig{
@@ -4541,22 +3524,16 @@ func TestApplyOverrides_AzureWIFClientIDAloneDoesNotCreateCredential(t *testing.
 		APIKeyRef: "secret://OPENAI_KEY",
 	}
 
-	if err := cmd.Flags().Set("azure-client-id", "22222222-2222-2222-2222-222222222222"); err != nil {
-		t.Fatalf("set: %v", err)
-	}
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
-
-	if cfg.Provider.Credential != nil {
-		t.Errorf("--azure-client-id alone must not create a Credential block, got %+v", cfg.Provider.Credential)
-	}
+	must.NoError(cmd.Flags().Set("azure-client-id", "22222222-2222-2222-2222-222222222222"))
+	must.NoError(applyOverrides(cmd, cfg, nil))
+	must.Nil(cfg.Provider.Credential, "--azure-client-id alone must not create a Credential block")
 }
 
 // TestApplyOverrides_AzureWIFScopeAloneDoesNotCreateCredential is the
 // companion to the client-id test above. --azure-scope without
 // --azure-tenant-id must not produce an orphan Credential block.
 func TestApplyOverrides_AzureWIFScopeAloneDoesNotCreateCredential(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Provider = types.ProviderConfig{
@@ -4565,22 +3542,16 @@ func TestApplyOverrides_AzureWIFScopeAloneDoesNotCreateCredential(t *testing.T) 
 		APIKeyRef: "secret://OPENAI_KEY",
 	}
 
-	if err := cmd.Flags().Set("azure-scope", "https://cognitiveservices.azure.com/.default"); err != nil {
-		t.Fatalf("set: %v", err)
-	}
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
-
-	if cfg.Provider.Credential != nil {
-		t.Errorf("--azure-scope alone must not create a Credential block, got %+v", cfg.Provider.Credential)
-	}
+	must.NoError(cmd.Flags().Set("azure-scope", "https://cognitiveservices.azure.com/.default"))
+	must.NoError(applyOverrides(cmd, cfg, nil))
+	must.Nil(cfg.Provider.Credential, "--azure-scope alone must not create a Credential block")
 }
 
 // TestApplyOverrides_AzureWIFDefaultFlagsDoNotOverride pins that when
 // none of the --azure-* flags is passed, an existing Credential block
 // from --config survives untouched.
 func TestApplyOverrides_AzureWIFDefaultFlagsDoNotOverride(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Provider = types.ProviderConfig{
@@ -4594,22 +3565,12 @@ func TestApplyOverrides_AzureWIFDefaultFlagsDoNotOverride(t *testing.T) {
 		},
 	}
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.Provider.Credential == nil {
-		t.Fatal("file-provided Credential cleared unexpectedly")
-	}
-	if cfg.Provider.Credential.AzureTenantID != "33333333-3333-3333-3333-333333333333" {
-		t.Errorf("AzureTenantID overwritten by default: %q", cfg.Provider.Credential.AzureTenantID)
-	}
-	if cfg.Provider.Credential.AzureClientID != "44444444-4444-4444-4444-444444444444" {
-		t.Errorf("AzureClientID overwritten by default: %q", cfg.Provider.Credential.AzureClientID)
-	}
-	if cfg.Provider.Credential.AzureScope != "https://existing.example.com/.default" {
-		t.Errorf("AzureScope overwritten by default: %q", cfg.Provider.Credential.AzureScope)
-	}
+	must.NotNil(cfg.Provider.Credential, "file-provided Credential should not be cleared")
+	must.Equal("33333333-3333-3333-3333-333333333333", cfg.Provider.Credential.AzureTenantID)
+	must.Equal("44444444-4444-4444-4444-444444444444", cfg.Provider.Credential.AzureClientID)
+	must.Equal("https://existing.example.com/.default", cfg.Provider.Credential.AzureScope)
 }
 
 // writePromptResolutionConfig writes a JSON RunConfig with an empty
@@ -4618,6 +3579,7 @@ func TestApplyOverrides_AzureWIFDefaultFlagsDoNotOverride(t *testing.T) {
 // deterministic "maxTurns exceeds maximum" validation failure (it did).
 func writePromptResolutionConfig(t *testing.T) string {
 	t.Helper()
+	must := require.New(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	timeout := 60
@@ -4640,12 +3602,8 @@ func writePromptResolutionConfig(t *testing.T) string {
 		Timeout:          &timeout,
 	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	must.NoError(err)
+	must.NoError(os.WriteFile(path, data, 0o600))
 	return path
 }
 
@@ -4653,24 +3611,17 @@ func writePromptResolutionConfig(t *testing.T) string {
 // no higher-priority source is set, the env var must populate
 // cfg.Prompt, observed via the downstream maxTurns validation error.
 func TestRunHarness_PromptFromEnvVar(t *testing.T) {
+	must := require.New(t)
 	path := writePromptResolutionConfig(t)
 	t.Setenv("STIRRUP_PROMPT", "hello from env")
 
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("config", path); err != nil {
-		t.Fatalf("set config: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("config", path))
 
 	err := runHarness(cmd, nil)
-	if err == nil {
-		t.Fatal("expected validation error after prompt resolution, got nil")
-	}
-	if strings.Contains(err.Error(), "prompt is required") {
-		t.Errorf("STIRRUP_PROMPT was not consulted; got prompt-required error: %v", err)
-	}
-	if !strings.Contains(err.Error(), "maxTurns") {
-		t.Errorf("expected validator to reject maxTurns after prompt was resolved, got: %v", err)
-	}
+	must.Error(err, "expected validation error after prompt resolution")
+	must.NotContains(err.Error(), "prompt is required", "STIRRUP_PROMPT should be consulted")
+	must.ErrorContains(err, "maxTurns")
 }
 
 // TestRunHarness_PromptFromPromptFile pins the --prompt-file source:
@@ -4679,46 +3630,26 @@ func TestRunHarness_PromptFromEnvVar(t *testing.T) {
 // rejection means we got past the prompt-required check, which means
 // the file was read and applied.
 func TestRunHarness_PromptFromPromptFile(t *testing.T) {
+	must := require.New(t)
 	path := writePromptResolutionConfig(t)
 
 	promptDir := t.TempDir()
 	promptPath := filepath.Join(promptDir, "brief.txt")
-	// Embed a trailing \n to exercise the TrimRight contract — the
-	// trim must happen, otherwise downstream prompt comparisons would
-	// silently include a newline a `printf 'p\n'` author did not
-	// intend. (We cannot read cfg.Prompt back through runHarness, so
-	// the trim contract is asserted directly against readPromptFile
-	// below; this test only confirms the file reached the chain.)
-	if err := os.WriteFile(promptPath, []byte("hello from file\n"), 0o600); err != nil {
-		t.Fatalf("write prompt file: %v", err)
-	}
+	// The trailing newline must be trimmed; readPromptFile is checked below.
+	must.NoError(os.WriteFile(promptPath, []byte("hello from file\n"), 0o600))
 
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("config", path); err != nil {
-		t.Fatalf("set config: %v", err)
-	}
-	if err := cmd.Flags().Set("prompt-file", promptPath); err != nil {
-		t.Fatalf("set prompt-file: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("config", path))
+	must.NoError(cmd.Flags().Set("prompt-file", promptPath))
 
 	err := runHarness(cmd, nil)
-	if err == nil {
-		t.Fatal("expected validation error after prompt resolution, got nil")
-	}
-	if strings.Contains(err.Error(), "prompt is required") {
-		t.Errorf("--prompt-file was not consulted; got prompt-required error: %v", err)
-	}
-	if !strings.Contains(err.Error(), "maxTurns") {
-		t.Errorf("expected validator to reject maxTurns after prompt was resolved, got: %v", err)
-	}
+	must.Error(err, "expected validation error after prompt resolution")
+	must.NotContains(err.Error(), "prompt is required", "--prompt-file should be consulted")
+	must.ErrorContains(err, "maxTurns")
 
 	got, err := readPromptFile(promptPath)
-	if err != nil {
-		t.Fatalf("readPromptFile: %v", err)
-	}
-	if got != "hello from file" {
-		t.Errorf("readPromptFile did not trim trailing newline, got %q", got)
-	}
+	must.NoError(err)
+	must.Equal("hello from file", got, "readPromptFile should trim the trailing newline")
 }
 
 // TestRunHarness_PromptFlagBeatsLowerPrecedence pins the prompt-source
@@ -4726,189 +3657,125 @@ func TestRunHarness_PromptFromPromptFile(t *testing.T) {
 // runHarness must reach validation without ever reading the file (set
 // to a nonexistent path) or consulting the env.
 func TestRunHarness_PromptFlagBeatsLowerPrecedence(t *testing.T) {
+	must := require.New(t)
 	path := writePromptResolutionConfig(t)
 	t.Setenv("STIRRUP_PROMPT", "from env (should lose)")
 
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("config", path); err != nil {
-		t.Fatalf("set config: %v", err)
-	}
-	if err := cmd.Flags().Set("prompt", "from flag (should win)"); err != nil {
-		t.Fatalf("set prompt: %v", err)
-	}
-	if err := cmd.Flags().Set("prompt-file", "/does/not/exist/brief.txt"); err != nil {
-		t.Fatalf("set prompt-file: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("config", path))
+	must.NoError(cmd.Flags().Set("prompt", "from flag (should win)"))
+	must.NoError(cmd.Flags().Set("prompt-file", "/does/not/exist/brief.txt"))
 
 	err := runHarness(cmd, nil)
-	if err == nil {
-		t.Fatal("expected validation error after prompt resolution, got nil")
-	}
-	if strings.Contains(err.Error(), "reading --prompt-file") {
-		t.Errorf("--prompt flag did not short-circuit --prompt-file; chain leaked: %v", err)
-	}
-	if strings.Contains(err.Error(), "prompt is required") {
-		t.Errorf("--prompt flag was ignored entirely; chain produced: %v", err)
-	}
-	if !strings.Contains(err.Error(), "maxTurns") {
-		t.Errorf("expected validator to reject maxTurns after --prompt resolved, got: %v", err)
-	}
+	must.Error(err, "expected validation error after prompt resolution")
+	must.NotContains(err.Error(), "reading --prompt-file", "--prompt should short-circuit --prompt-file")
+	must.NotContains(err.Error(), "prompt is required", "--prompt should be used")
+	must.ErrorContains(err, "maxTurns")
 }
 
-// TestReadPromptFile_Nonexistent verifies the explicit error surface
+// TestReadPromptFile_MissingFileNamesPath verifies the explicit error surface
 // for a missing file: the path name must appear in the message so the
 // operator can find the typo without re-running with --log-level=debug.
-func TestReadPromptFile_Nonexistent(t *testing.T) {
+func TestReadPromptFile_MissingFileNamesPath(t *testing.T) {
+	must := require.New(t)
 	_, err := readPromptFile("/does/not/exist/brief.txt")
-	if err == nil {
-		t.Fatal("expected error for nonexistent file, got nil")
-	}
-	if !strings.Contains(err.Error(), "/does/not/exist/brief.txt") {
-		t.Errorf("error should mention the path, got: %v", err)
-	}
+	must.ErrorContains(err, "/does/not/exist/brief.txt")
 }
 
-// TestReadPromptFile_Empty verifies the zero-byte file is a hard error
-// rather than a silent "" that would later surface as the generic
-// "prompt is required" message — that would be deeply confusing
-// because the operator DID set --prompt-file.
-func TestReadPromptFile_Empty(t *testing.T) {
+// TestReadPromptFile_EmptyFileIsError pins that a zero-byte prompt file is
+// reported as an error, not as an empty prompt that later fails with
+// "prompt is required".
+func TestReadPromptFile_EmptyFileIsError(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "empty.txt")
-	if err := os.WriteFile(path, nil, 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	must.NoError(os.WriteFile(path, nil, 0o600))
 	_, err := readPromptFile(path)
-	if err == nil {
-		t.Fatal("expected error for empty file, got nil")
-	}
-	if !strings.Contains(err.Error(), "is empty") {
-		t.Errorf("error should mention empty, got: %v", err)
-	}
+	must.ErrorContains(err, "is empty")
 }
 
-// TestReadPromptFile_Directory pins the IsDir() guard: a directory path
+// TestReadPromptFile_DirectoryIsError pins the IsDir() guard: a directory path
 // surfaces a clear "is a directory" error with the path baked in,
 // rather than the opaque error os.ReadFile would return.
-func TestReadPromptFile_Directory(t *testing.T) {
+func TestReadPromptFile_DirectoryIsError(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	_, err := readPromptFile(dir)
-	if err == nil {
-		t.Fatal("expected error for directory, got nil")
-	}
-	if !strings.Contains(err.Error(), "is a directory") {
-		t.Errorf("expected directory error, got: %v", err)
-	}
+	must.ErrorContains(err, "is a directory")
 }
 
 // TestReadPromptFile_OversizeRejected pins the maxPromptFileBytes cap,
 // which guards both the stat-time check and the post-read
 // io.LimitReader check.
 func TestReadPromptFile_OversizeRejected(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "big.txt")
 	data := make([]byte, maxPromptFileBytes+1)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	must.NoError(os.WriteFile(path, data, 0o600))
 	_, err := readPromptFile(path)
-	if err == nil {
-		t.Fatal("expected cap error, got nil")
-	}
-	if !strings.Contains(err.Error(), "exceeds") {
-		t.Errorf("expected cap error, got: %v", err)
-	}
+	must.ErrorContains(err, "exceeds")
 }
 
-// newPath2HarnessCommand mirrors newTestHarnessCommand but for Path 2
-// (flag-only) tests: --config is left unset so runHarness enters the
-// buildHarnessRunConfig branch, and --max-turns is pre-deformed to 9999
-// so a successful prompt resolution surfaces a deterministic
-// "maxTurns exceeds maximum" validator error.
-func newPath2HarnessCommand(t *testing.T) *cobra.Command {
+// newFlagOnlyHarnessCommand builds a command for flag-only tests (no
+// --config), so runHarness enters the buildHarnessRunConfig branch.
+// --max-turns is set to 9999 so a successful prompt resolution surfaces
+// a deterministic "maxTurns exceeds maximum" validator error.
+func newFlagOnlyHarnessCommand(t *testing.T) *cobra.Command {
 	t.Helper()
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("max-turns", "9999"); err != nil {
-		t.Fatalf("set max-turns: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("max-turns", "9999"))
 
-	t.Setenv("STIRRUP_PATH2_TEST_KEY", "x")
-	if err := cmd.Flags().Set("api-key-ref", "env://STIRRUP_PATH2_TEST_KEY"); err != nil {
-		t.Fatalf("set api-key-ref: %v", err)
-	}
+	t.Setenv("STIRRUP_FLAG_ONLY_TEST_KEY", "x")
+	must.NoError(cmd.Flags().Set("api-key-ref", "env://STIRRUP_FLAG_ONLY_TEST_KEY"))
 	return cmd
 }
 
-// TestRunHarness_Path2_PromptFromEnvVar covers the flag-only path's
-// STIRRUP_PROMPT fallback.
-func TestRunHarness_Path2_PromptFromEnvVar(t *testing.T) {
+// TestRunHarness_FlagOnly_PromptFromEnvVar covers the STIRRUP_PROMPT
+// fallback on the flag-only path.
+func TestRunHarness_FlagOnly_PromptFromEnvVar(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("STIRRUP_PROMPT", "hello from env")
 
-	cmd := newPath2HarnessCommand(t)
-	err := runHarness(cmd, nil)
-	if err == nil {
-		t.Fatal("expected validation error after prompt resolution, got nil")
-	}
-	if strings.Contains(err.Error(), "prompt is required") {
-		t.Errorf("STIRRUP_PROMPT was not consulted on Path 2; got prompt-required error: %v", err)
-	}
-	if !strings.Contains(err.Error(), "maxTurns") {
-		t.Errorf("expected validator to reject maxTurns after prompt was resolved, got: %v", err)
-	}
+	err := runHarness(newFlagOnlyHarnessCommand(t), nil)
+	must.Error(err, "validation should fail after the prompt is resolved")
+	must.NotContains(err.Error(), "prompt is required", "STIRRUP_PROMPT should be consulted")
+	must.ErrorContains(err, "maxTurns")
 }
 
-// TestRunHarness_Path2_PromptFromPromptFile is the --prompt-file
-// counterpart on Path 2. The trailing newline trim contract is
-// already pinned by TestRunHarness_PromptFromPromptFile against
-// readPromptFile directly; this test only confirms the file reached
-// the resolution chain in the flag-only path.
-func TestRunHarness_Path2_PromptFromPromptFile(t *testing.T) {
-
+// TestRunHarness_FlagOnly_PromptFromPromptFile is the --prompt-file
+// counterpart on the flag-only path. The trailing newline trim contract
+// is pinned by TestRunHarness_PromptFromPromptFile against readPromptFile
+// directly; this test only confirms the file reaches the resolution chain.
+func TestRunHarness_FlagOnly_PromptFromPromptFile(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("STIRRUP_PROMPT", "")
 
-	promptDir := t.TempDir()
-	promptPath := filepath.Join(promptDir, "brief.txt")
-	if err := os.WriteFile(promptPath, []byte("hello from file\n"), 0o600); err != nil {
-		t.Fatalf("write prompt file: %v", err)
-	}
+	promptPath := filepath.Join(t.TempDir(), "brief.txt")
+	must.NoError(os.WriteFile(promptPath, []byte("hello from file\n"), 0o600))
 
-	cmd := newPath2HarnessCommand(t)
-	if err := cmd.Flags().Set("prompt-file", promptPath); err != nil {
-		t.Fatalf("set prompt-file: %v", err)
-	}
+	cmd := newFlagOnlyHarnessCommand(t)
+	must.NoError(cmd.Flags().Set("prompt-file", promptPath))
 
 	err := runHarness(cmd, nil)
-	if err == nil {
-		t.Fatal("expected validation error after prompt resolution, got nil")
-	}
-	if strings.Contains(err.Error(), "prompt is required") {
-		t.Errorf("--prompt-file was not consulted on Path 2; got prompt-required error: %v", err)
-	}
-	if !strings.Contains(err.Error(), "maxTurns") {
-		t.Errorf("expected validator to reject maxTurns after prompt was resolved, got: %v", err)
-	}
+	must.Error(err, "validation should fail after the prompt is resolved")
+	must.NotContains(err.Error(), "prompt is required", "--prompt-file should be consulted")
+	must.ErrorContains(err, "maxTurns")
 }
 
-// TestRunHarness_Path2_AllSourcesEmpty asserts that the "prompt is
-// required" error on Path 2 names every prompt source so an operator
-// hitting this error sees the full chain without grepping the source.
-func TestRunHarness_Path2_AllSourcesEmpty(t *testing.T) {
+// TestRunHarness_FlagOnly_AllSourcesEmpty asserts that the "prompt is
+// required" error on the flag-only path names every prompt source, so an
+// operator sees the full chain without grepping the source.
+func TestRunHarness_FlagOnly_AllSourcesEmpty(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	t.Setenv("STIRRUP_PROMPT", "")
 
-	cmd := newPath2HarnessCommand(t)
-	err := runHarness(cmd, nil)
-	if err == nil {
-		t.Fatal("expected prompt-required error, got nil")
-	}
-	msg := err.Error()
-	for _, want := range []string{
-		"--prompt-file",
-		"STIRRUP_PROMPT",
-		"positional argument",
-	} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("error should mention %q, got: %v", want, err)
-		}
+	err := runHarness(newFlagOnlyHarnessCommand(t), nil)
+	must.Error(err, "prompt-required error")
+	for _, source := range []string{"--prompt-file", "STIRRUP_PROMPT", "positional argument"} {
+		check.ErrorContains(err, source, "prompt-required error should name every source")
 	}
 }
 
@@ -4941,17 +3808,12 @@ func TestApplyProviderRetryOverrides_SubMillisecondRejected(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			pc := &types.ProviderConfig{}
 			err := applyProviderRetryOverrides(pc, tc.opts)
-			if err == nil {
-				t.Fatalf("expected sub-ms rejection error, got nil; pc.Retry=%+v", pc.Retry)
-			}
-			if !strings.Contains(err.Error(), tc.expect) {
-				t.Errorf("error should mention %q, got: %v", tc.expect, err)
-			}
-			if !strings.Contains(err.Error(), "minimum resolution is 1ms") {
-				t.Errorf("error should mention the resolution limit, got: %v", err)
-			}
+			must.Error(err, "sub-millisecond duration should be rejected")
+			must.ErrorContains(err, tc.expect)
+			must.ErrorContains(err, "minimum resolution is 1ms")
 		})
 	}
 }
@@ -4970,21 +3832,14 @@ func TestApplyProviderRetryFlagOverrides_SubMillisecondRejected(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			cmd := newTestHarnessCommand()
-			if err := cmd.Flags().Set(tc.flag, tc.value); err != nil {
-				t.Fatalf("set %s=%s: %v", tc.flag, tc.value, err)
-			}
+			must.NoError(cmd.Flags().Set(tc.flag, tc.value))
 			pc := &types.ProviderConfig{}
 			err := applyProviderRetryFlagOverrides(cmd, pc)
-			if err == nil {
-				t.Fatalf("expected sub-ms rejection error, got nil; pc.Retry=%+v", pc.Retry)
-			}
-			if !strings.Contains(err.Error(), "--"+tc.flag) {
-				t.Errorf("error should mention --%s, got: %v", tc.flag, err)
-			}
-			if !strings.Contains(err.Error(), "minimum resolution is 1ms") {
-				t.Errorf("error should mention the resolution limit, got: %v", err)
-			}
+			must.Error(err, "sub-millisecond duration should be rejected")
+			must.ErrorContains(err, "--"+tc.flag)
+			must.ErrorContains(err, "minimum resolution is 1ms")
 		})
 	}
 }
@@ -4993,6 +3848,7 @@ func TestApplyProviderRetryFlagOverrides_SubMillisecondRejected(t *testing.T) {
 // flags lands on its corresponding ProviderRetryConfig field with the
 // duration→ms conversion applied.
 func TestApplyProviderRetryOverrides_AllFlagsSet(t *testing.T) {
+	must := require.New(t)
 	pc := &types.ProviderConfig{}
 	opts := harnessCLIOptions{
 		ProviderRetryMaxAttempts:     4,
@@ -5000,24 +3856,14 @@ func TestApplyProviderRetryOverrides_AllFlagsSet(t *testing.T) {
 		ProviderRetryMaxDelay:        10 * time.Second,
 		ProviderRetryWallClockBudget: 45 * time.Second,
 	}
-	if err := applyProviderRetryOverrides(pc, opts); err != nil {
-		t.Fatalf("applyProviderRetryOverrides: %v", err)
-	}
-	if pc.Retry == nil {
-		t.Fatal("Retry should have been allocated")
-	}
-	if got, want := pc.Retry.MaxAttempts, 4; got != want {
-		t.Errorf("MaxAttempts = %d, want %d", got, want)
-	}
-	if got, want := pc.Retry.InitialDelayMs, 250; got != want {
-		t.Errorf("InitialDelayMs = %d, want %d", got, want)
-	}
-	if got, want := pc.Retry.MaxDelayMs, 10000; got != want {
-		t.Errorf("MaxDelayMs = %d, want %d", got, want)
-	}
-	if got, want := pc.Retry.WallClockBudgetMs, 45000; got != want {
-		t.Errorf("WallClockBudgetMs = %d, want %d", got, want)
-	}
+	must.NoError(applyProviderRetryOverrides(pc, opts))
+	must.NotNil(pc.Retry, "retry block should be allocated")
+	must.Equal(types.ProviderRetryConfig{
+		MaxAttempts:       4,
+		InitialDelayMs:    250,
+		MaxDelayMs:        10000,
+		WallClockBudgetMs: 45000,
+	}, *pc.Retry)
 }
 
 // TestApplyProviderRetryOverrides_SingleFlagPartialOverride asserts that
@@ -5025,33 +3871,22 @@ func TestApplyProviderRetryOverrides_AllFlagsSet(t *testing.T) {
 // per-field defaulter in ValidateRunConfig still fills in the remaining
 // fields downstream.
 func TestApplyProviderRetryOverrides_SingleFlagPartialOverride(t *testing.T) {
+	must := require.New(t)
 	pc := &types.ProviderConfig{}
 	opts := harnessCLIOptions{ProviderRetryMaxAttempts: 5}
-	if err := applyProviderRetryOverrides(pc, opts); err != nil {
-		t.Fatalf("applyProviderRetryOverrides: %v", err)
-	}
-	if pc.Retry == nil {
-		t.Fatal("Retry should have been allocated for the single-flag case")
-	}
-	if pc.Retry.MaxAttempts != 5 {
-		t.Errorf("MaxAttempts = %d, want 5", pc.Retry.MaxAttempts)
-	}
-	if pc.Retry.InitialDelayMs != 0 || pc.Retry.MaxDelayMs != 0 || pc.Retry.WallClockBudgetMs != 0 {
-		t.Errorf("unflagged slots should remain zero, got %+v", pc.Retry)
-	}
+	must.NoError(applyProviderRetryOverrides(pc, opts))
+	must.NotNil(pc.Retry, "retry block should be allocated for a single flag")
+	must.Equal(types.ProviderRetryConfig{MaxAttempts: 5}, *pc.Retry)
 }
 
 // TestApplyProviderRetryOverrides_AllZeroIsNoop asserts that an entirely-
 // untouched flag surface leaves pc.Retry nil, preserving the documented
 // "no override" path (ValidateRunConfig then fills in all defaults).
 func TestApplyProviderRetryOverrides_AllZeroIsNoop(t *testing.T) {
+	must := require.New(t)
 	pc := &types.ProviderConfig{}
-	if err := applyProviderRetryOverrides(pc, harnessCLIOptions{}); err != nil {
-		t.Fatalf("applyProviderRetryOverrides: %v", err)
-	}
-	if pc.Retry != nil {
-		t.Errorf("Retry should remain nil for the all-zero case, got %+v", pc.Retry)
-	}
+	must.NoError(applyProviderRetryOverrides(pc, harnessCLIOptions{}))
+	must.Nil(pc.Retry)
 }
 
 // TestApplyOverrides_ProviderRetryFlagOverridesFile asserts that a
@@ -5059,10 +3894,9 @@ func TestApplyProviderRetryOverrides_AllZeroIsNoop(t *testing.T) {
 // leaving the other file-supplied retry values untouched. This is the
 // "operator pins one knob" contract for the --config + flag combo.
 func TestApplyOverrides_ProviderRetryFlagOverridesFile(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("provider-retry-wall-clock", "120s"); err != nil {
-		t.Fatalf("set provider-retry-wall-clock: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("provider-retry-wall-clock", "120s"))
 	cfg := baseFileConfig()
 	cfg.Provider.Retry = &types.ProviderRetryConfig{
 		MaxAttempts:       2,
@@ -5070,24 +3904,14 @@ func TestApplyOverrides_ProviderRetryFlagOverridesFile(t *testing.T) {
 		MaxDelayMs:        20000,
 		WallClockBudgetMs: 60000,
 	}
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
-	if cfg.Provider.Retry == nil {
-		t.Fatal("Retry must not be cleared")
-	}
-	if cfg.Provider.Retry.MaxAttempts != 2 {
-		t.Errorf("MaxAttempts: file value should survive, got %d", cfg.Provider.Retry.MaxAttempts)
-	}
-	if cfg.Provider.Retry.InitialDelayMs != 750 {
-		t.Errorf("InitialDelayMs: file value should survive, got %d", cfg.Provider.Retry.InitialDelayMs)
-	}
-	if cfg.Provider.Retry.MaxDelayMs != 20000 {
-		t.Errorf("MaxDelayMs: file value should survive, got %d", cfg.Provider.Retry.MaxDelayMs)
-	}
-	if cfg.Provider.Retry.WallClockBudgetMs != 120000 {
-		t.Errorf("WallClockBudgetMs: flag should override file, got %d, want 120000", cfg.Provider.Retry.WallClockBudgetMs)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
+	must.NotNil(cfg.Provider.Retry, "retry must not be cleared")
+	must.Equal(types.ProviderRetryConfig{
+		MaxAttempts:       2,
+		InitialDelayMs:    750,
+		MaxDelayMs:        20000,
+		WallClockBudgetMs: 120000,
+	}, *cfg.Provider.Retry)
 }
 
 // TestApplyOverrides_ProviderRetryFlagAllocatesNilRetry asserts that
@@ -5095,24 +3919,14 @@ func TestApplyOverrides_ProviderRetryFlagOverridesFile(t *testing.T) {
 // allocates the struct and writes the field; the rest of the slots stay
 // zero so ValidateRunConfig fills them with the documented defaults.
 func TestApplyOverrides_ProviderRetryFlagAllocatesNilRetry(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("provider-retry-max-attempts", "5"); err != nil {
-		t.Fatalf("set provider-retry-max-attempts: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("provider-retry-max-attempts", "5"))
 	cfg := baseFileConfig()
 	cfg.Provider.Retry = nil
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
-	if cfg.Provider.Retry == nil {
-		t.Fatal("Retry should have been allocated")
-	}
-	if cfg.Provider.Retry.MaxAttempts != 5 {
-		t.Errorf("MaxAttempts = %d, want 5", cfg.Provider.Retry.MaxAttempts)
-	}
-	if cfg.Provider.Retry.InitialDelayMs != 0 || cfg.Provider.Retry.MaxDelayMs != 0 || cfg.Provider.Retry.WallClockBudgetMs != 0 {
-		t.Errorf("unflagged slots should remain zero, got %+v", cfg.Provider.Retry)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
+	must.NotNil(cfg.Provider.Retry, "retry block should be allocated")
+	must.Equal(types.ProviderRetryConfig{MaxAttempts: 5}, *cfg.Provider.Retry)
 }
 
 // TestApplyOverrides_ProviderRetryNoFlagsChangedDoesNotClobberFile is
@@ -5120,6 +3934,7 @@ func TestApplyOverrides_ProviderRetryFlagAllocatesNilRetry(t *testing.T) {
 // fully-populated file retry block must survive an applyOverrides call
 // where none of the four retry flags were touched.
 func TestApplyOverrides_ProviderRetryNoFlagsChangedDoesNotClobberFile(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Provider.Retry = &types.ProviderRetryConfig{
@@ -5128,40 +3943,28 @@ func TestApplyOverrides_ProviderRetryNoFlagsChangedDoesNotClobberFile(t *testing
 		MaxDelayMs:        20000,
 		WallClockBudgetMs: 60000,
 	}
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
-	if cfg.Provider.Retry == nil {
-		t.Fatal("Retry should not have been cleared")
-	}
-	want := types.ProviderRetryConfig{
+	must.NoError(applyOverrides(cmd, cfg, nil))
+	must.NotNil(cfg.Provider.Retry, "retry must not be cleared")
+	must.Equal(types.ProviderRetryConfig{
 		MaxAttempts:       2,
 		InitialDelayMs:    750,
 		MaxDelayMs:        20000,
 		WallClockBudgetMs: 60000,
-	}
-	if *cfg.Provider.Retry != want {
-		t.Errorf("Retry mutated: got %+v, want %+v", *cfg.Provider.Retry, want)
-	}
+	}, *cfg.Provider.Retry, "file retry block should not be mutated")
 }
 
 // TestApplyOverrides_WorkspaceExportToFlowsThrough pins that
 // --export-workspace-to lands on ExecutorConfig.WorkspaceExportTo so
 // the end-of-run exporter wiring in runWithConfig sees it.
 func TestApplyOverrides_WorkspaceExportToFlowsThrough(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Executor.WorkspaceExportTo = "gs://from-file/runs/old.tar.gz"
 
-	if err := cmd.Flags().Set("export-workspace-to", "gs://from-flag/runs/new.tar.gz"); err != nil {
-		t.Fatalf("set: %v", err)
-	}
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
-	if cfg.Executor.WorkspaceExportTo != "gs://from-flag/runs/new.tar.gz" {
-		t.Errorf("flag should override file: got %q", cfg.Executor.WorkspaceExportTo)
-	}
+	must.NoError(cmd.Flags().Set("export-workspace-to", "gs://from-flag/runs/new.tar.gz"))
+	must.NoError(applyOverrides(cmd, cfg, nil))
+	must.Equal("gs://from-flag/runs/new.tar.gz", cfg.Executor.WorkspaceExportTo, "flag should override file")
 }
 
 // TestApplyOverrides_WorkspaceExportToDefaultPreservesFile mirrors the
@@ -5169,22 +3972,20 @@ func TestApplyOverrides_WorkspaceExportToFlowsThrough(t *testing.T) {
 // file's value (the central precedence rule that the rest of
 // applyOverrides tests pin).
 func TestApplyOverrides_WorkspaceExportToDefaultPreservesFile(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.Executor.WorkspaceExportTo = "gs://from-file/runs/keep.tar.gz"
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
-	if cfg.Executor.WorkspaceExportTo != "gs://from-file/runs/keep.tar.gz" {
-		t.Errorf("unset flag should preserve file value, got %q", cfg.Executor.WorkspaceExportTo)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
+	must.Equal("gs://from-file/runs/keep.tar.gz", cfg.Executor.WorkspaceExportTo, "unset flag should preserve file value")
 }
 
 // TestBuildHarnessRunConfig_WorkspaceExportToFlowsThrough pins that
 // buildHarnessRunConfig threads WorkspaceExportTo onto ExecutorConfig
 // on the flag-only path.
 func TestBuildHarnessRunConfig_WorkspaceExportToFlowsThrough(t *testing.T) {
+	must := require.New(t)
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:             "test-run",
 		Mode:              "execution",
@@ -5198,176 +3999,125 @@ func TestBuildHarnessRunConfig_WorkspaceExportToFlowsThrough(t *testing.T) {
 		LogLevel:          "info",
 		WorkspaceExportTo: "gs://my-bucket/runs/abc/workspace.tar.gz",
 	})
-	if err != nil {
-		t.Fatalf("buildHarnessRunConfig: %v", err)
-	}
-	if cfg.Executor.WorkspaceExportTo != "gs://my-bucket/runs/abc/workspace.tar.gz" {
-		t.Errorf("WorkspaceExportTo did not flow through to Executor: got %q", cfg.Executor.WorkspaceExportTo)
-	}
+	must.NoError(err)
+	must.Equal("gs://my-bucket/runs/abc/workspace.tar.gz", cfg.Executor.WorkspaceExportTo)
 }
 
 // TestApplyOverrides_ToolDispatchMaxParallelSetsField pins that
 // --max-tool-parallel=N (with N > 0) populates cfg.ToolDispatch to
 // {MaxParallel: N}.
 func TestApplyOverrides_ToolDispatchMaxParallelSetsField(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
-	if err := cmd.Flags().Set("max-tool-parallel", "8"); err != nil {
-		t.Fatalf("set max-tool-parallel: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("max-tool-parallel", "8"))
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.ToolDispatch == nil {
-		t.Fatal("--max-tool-parallel=8 should populate cfg.ToolDispatch, got nil")
-	}
-	if cfg.ToolDispatch.MaxParallel != 8 {
-		t.Errorf("cfg.ToolDispatch.MaxParallel = %d, want 8", cfg.ToolDispatch.MaxParallel)
-	}
+	must.NotNil(cfg.ToolDispatch, "--max-tool-parallel=8 should populate ToolDispatch")
+	must.Equal(8, cfg.ToolDispatch.MaxParallel)
 }
 
 // TestApplyOverrides_ToolDispatchMaxParallelDefaultDoesNotOverride pins
 // that a config-file ToolDispatch value survives when the user has not
 // passed --max-tool-parallel.
 func TestApplyOverrides_ToolDispatchMaxParallelDefaultDoesNotOverride(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 	cfg.ToolDispatch = &types.ToolDispatchConfig{MaxParallel: 8}
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.ToolDispatch == nil {
-		t.Fatal("ToolDispatch from file should survive default flag, got nil")
-	}
-	if cfg.ToolDispatch.MaxParallel != 8 {
-		t.Errorf("file ToolDispatch.MaxParallel should survive default flag, got %d, want 8",
-			cfg.ToolDispatch.MaxParallel)
-	}
+	must.NotNil(cfg.ToolDispatch, "ToolDispatch from file should survive default flag")
+	must.Equal(8, cfg.ToolDispatch.MaxParallel)
 }
 
 // TestApplyOverrides_EscalateToolChoiceEnables pins that
 // --escalate-tool-choice flips Enabled on cfg.ToolChoiceEscalation,
 // allocating the sub-config when the file omitted it.
 func TestApplyOverrides_EscalateToolChoiceEnables(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
-	if err := cmd.Flags().Set("escalate-tool-choice", "true"); err != nil {
-		t.Fatalf("set escalate-tool-choice: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("escalate-tool-choice", "true"))
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.ToolChoiceEscalation == nil || !cfg.ToolChoiceEscalation.Enabled {
-		t.Fatalf("--escalate-tool-choice should enable escalation, got %+v", cfg.ToolChoiceEscalation)
-	}
+	must.NotNil(cfg.ToolChoiceEscalation, "--escalate-tool-choice should allocate escalation")
+	must.True(cfg.ToolChoiceEscalation.Enabled)
 }
 
 // TestApplyOverrides_EscalateToolChoiceDefaultDoesNotEnable pins the
 // OFF-by-default safety: without the flag, no escalation sub-config is
 // synthesised so a bare run stays inert.
 func TestApplyOverrides_EscalateToolChoiceDefaultDoesNotEnable(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.ToolChoiceEscalation != nil {
-		t.Errorf("escalation must stay nil without the flag, got %+v", cfg.ToolChoiceEscalation)
-	}
+	must.Nil(cfg.ToolChoiceEscalation, "escalation must stay nil without the flag")
 }
 
 // TestApplyOverrides_EscalateToolChoiceMaxRetries pins that the retry-cap
 // flag lands on cfg.ToolChoiceEscalation.MaxRetries, allocating the
 // sub-config when needed.
 func TestApplyOverrides_EscalateToolChoiceMaxRetries(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
-	if err := cmd.Flags().Set("escalate-tool-choice", "true"); err != nil {
-		t.Fatalf("set escalate-tool-choice: %v", err)
-	}
-	if err := cmd.Flags().Set("escalate-tool-choice-max-retries", "2"); err != nil {
-		t.Fatalf("set escalate-tool-choice-max-retries: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("escalate-tool-choice", "true"))
+	must.NoError(cmd.Flags().Set("escalate-tool-choice-max-retries", "2"))
 
-	if err := applyOverrides(cmd, cfg, nil); err != nil {
-		t.Fatalf("applyOverrides: %v", err)
-	}
+	must.NoError(applyOverrides(cmd, cfg, nil))
 
-	if cfg.ToolChoiceEscalation == nil {
-		t.Fatal("escalation sub-config should be populated")
-	}
-	if cfg.ToolChoiceEscalation.MaxRetries != 2 {
-		t.Errorf("MaxRetries = %d, want 2", cfg.ToolChoiceEscalation.MaxRetries)
-	}
+	must.NotNil(cfg.ToolChoiceEscalation, "escalation sub-config should be populated")
+	must.Equal(2, cfg.ToolChoiceEscalation.MaxRetries)
 }
 
 // TestRunHarness_OutputRunConfigWritesFile pins the dry-run capture
 // surface: --output-runconfig writes the resolved RunConfig to disk, the
 // loop is not invoked, and the process exits cleanly.
 func TestRunHarness_OutputRunConfigWritesFile(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	outPath := filepath.Join(dir, "out.json")
 
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("output-runconfig", outPath); err != nil {
-		t.Fatalf("set output-runconfig: %v", err)
-	}
-	if err := cmd.Flags().Set("prompt", "test prompt"); err != nil {
-		t.Fatalf("set prompt: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("output-runconfig", outPath))
+	must.NoError(cmd.Flags().Set("prompt", "test prompt"))
 
-	if err := runHarness(cmd, nil); err != nil {
-		t.Fatalf("runHarness with --output-runconfig should exit cleanly, got: %v", err)
-	}
+	must.NoError(runHarness(cmd, nil), "--output-runconfig should exit cleanly")
 
 	info, err := os.Stat(outPath)
-	if err != nil {
-		t.Fatalf("stat output: %v", err)
-	}
+	must.NoError(err)
 	// 0600 is the documented contract: captured configs may carry
 	// secret:// references whose names are operationally sensitive even
 	// though the references themselves are not secrets.
-	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
-		t.Errorf("output file should be 0600, got %v", info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		must.Equal(os.FileMode(0o600), info.Mode().Perm())
 	}
 
 	cfg, err := loadRunConfigFile(outPath)
-	if err != nil {
-		t.Fatalf("captured config should round-trip through loadRunConfigFile: %v", err)
-	}
-	if cfg.Prompt != "test prompt" {
-		t.Errorf("captured Prompt = %q, want %q", cfg.Prompt, "test prompt")
-	}
-	if cfg.RunID == "" {
-		t.Errorf("captured config should have a RunID (ResolveAll mints one)")
-	}
+	must.NoError(err, "captured config should round-trip through loadRunConfigFile")
+	must.Equal("test prompt", cfg.Prompt)
+	must.NotEmpty(cfg.RunID, "ResolveAll should mint a RunID")
 }
 
 // TestRunHarness_OutputRunConfigToStdout pins the "-" sentinel: a
 // captured config can flow straight back into another `stirrup
 // run-config` or `stirrup harness --config -` without a temp file hop.
 func TestRunHarness_OutputRunConfigToStdout(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("output-runconfig", "-"); err != nil {
-		t.Fatalf("set output-runconfig: %v", err)
-	}
-	if err := cmd.Flags().Set("prompt", "test prompt"); err != nil {
-		t.Fatalf("set prompt: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("output-runconfig", "-"))
+	must.NoError(cmd.Flags().Set("prompt", "test prompt"))
 
 	origStdout := os.Stdout
 	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
+	must.NoError(err)
 	os.Stdout = w
 	defer func() {
 		os.Stdout = origStdout
@@ -5385,42 +4135,27 @@ func TestRunHarness_OutputRunConfigToStdout(t *testing.T) {
 	_ = w.Close()
 	out := <-done
 
-	if runErr != nil {
-		t.Fatalf("runHarness with --output-runconfig=-: %v", runErr)
-	}
+	must.NoError(runErr, "--output-runconfig=- should exit cleanly")
 	var cfg types.RunConfig
-	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-		t.Fatalf("stdout should be parseable JSON: %v\n%s", err, out)
-	}
-	if cfg.Prompt != "test prompt" {
-		t.Errorf("captured Prompt = %q, want %q", cfg.Prompt, "test prompt")
-	}
+	must.NoError(json.Unmarshal([]byte(out), &cfg), "stdout should be parseable JSON:\n%s", out)
+	must.Equal("test prompt", cfg.Prompt)
 }
 
 // TestRunHarness_OutputRunConfigDoesNotWriteOnValidationFailure pins the
 // "never writes on validation failure" contract for --output-runconfig.
 func TestRunHarness_OutputRunConfigDoesNotWriteOnValidationFailure(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	outPath := filepath.Join(dir, "out.json")
 
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("output-runconfig", outPath); err != nil {
-		t.Fatalf("set output-runconfig: %v", err)
-	}
-	if err := cmd.Flags().Set("prompt", "test prompt"); err != nil {
-		t.Fatalf("set prompt: %v", err)
-	}
-	if err := cmd.Flags().Set("provider", "bedrock"); err != nil {
-		t.Fatalf("set provider: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("output-runconfig", outPath))
+	must.NoError(cmd.Flags().Set("prompt", "test prompt"))
+	must.NoError(cmd.Flags().Set("provider", "bedrock"))
 
-	err := runHarness(cmd, nil)
-	if err == nil {
-		t.Fatal("expected validator to reject bedrock + sonnet-4-6 alias")
-	}
-	if _, statErr := os.Stat(outPath); !os.IsNotExist(statErr) {
-		t.Errorf("output file should not exist on validation failure, got stat err: %v", statErr)
-	}
+	must.Error(runHarness(cmd, nil), "validator should reject bedrock with the sonnet-4-6 alias")
+	_, statErr := os.Stat(outPath)
+	must.ErrorIs(statErr, os.ErrNotExist, "output file should not exist on validation failure")
 }
 
 // TestRunHarness_OutputRunConfigReplaysIdentically pins the "save and
@@ -5428,50 +4163,29 @@ func TestRunHarness_OutputRunConfigDoesNotWriteOnValidationFailure(t *testing.T)
 // into `stirrup harness --config <path>`, produces an equivalent
 // resolved config (RunID excepted, since a fresh run mints a new one).
 func TestRunHarness_OutputRunConfigReplaysIdentically(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	outPath := filepath.Join(dir, "captured.json")
 
 	cmd1 := newTestHarnessCommand()
-	if err := cmd1.Flags().Set("output-runconfig", outPath); err != nil {
-		t.Fatalf("set output-runconfig: %v", err)
-	}
-	if err := cmd1.Flags().Set("prompt", "captured prompt"); err != nil {
-		t.Fatalf("set prompt: %v", err)
-	}
-	if err := cmd1.Flags().Set("mode", "execution"); err != nil {
-		t.Fatalf("set mode: %v", err)
-	}
-	if err := runHarness(cmd1, nil); err != nil {
-		t.Fatalf("first run capture: %v", err)
-	}
+	must.NoError(cmd1.Flags().Set("output-runconfig", outPath))
+	must.NoError(cmd1.Flags().Set("prompt", "captured prompt"))
+	must.NoError(cmd1.Flags().Set("mode", "execution"))
+	must.NoError(runHarness(cmd1, nil), "first run capture")
 
 	captured, err := loadRunConfigFile(outPath)
-	if err != nil {
-		t.Fatalf("load captured: %v", err)
-	}
+	must.NoError(err)
 
 	replayPath := filepath.Join(dir, "replay.json")
 	cmd2 := newTestHarnessCommand()
-	if err := cmd2.Flags().Set("config", outPath); err != nil {
-		t.Fatalf("set config: %v", err)
-	}
-	if err := cmd2.Flags().Set("output-runconfig", replayPath); err != nil {
-		t.Fatalf("set output-runconfig (replay): %v", err)
-	}
-	if err := runHarness(cmd2, nil); err != nil {
-		t.Fatalf("second run capture: %v", err)
-	}
+	must.NoError(cmd2.Flags().Set("config", outPath))
+	must.NoError(cmd2.Flags().Set("output-runconfig", replayPath))
+	must.NoError(runHarness(cmd2, nil), "second run capture")
 	replayed, err := loadRunConfigFile(replayPath)
-	if err != nil {
-		t.Fatalf("load replay: %v", err)
-	}
+	must.NoError(err)
 
-	if captured.Prompt != replayed.Prompt {
-		t.Errorf("Prompt drifted: captured=%q replay=%q", captured.Prompt, replayed.Prompt)
-	}
-	if captured.Mode != replayed.Mode {
-		t.Errorf("Mode drifted: captured=%q replay=%q", captured.Mode, replayed.Mode)
-	}
+	must.Equal(captured.Prompt, replayed.Prompt, "Prompt drifted on replay")
+	must.Equal(captured.Mode, replayed.Mode, "Mode drifted on replay")
 
 	if captured.RunID == replayed.RunID {
 		t.Logf("RunIDs happen to match (clock resolution); harmless")
@@ -5483,23 +4197,19 @@ func TestRunHarness_OutputRunConfigReplaysIdentically(t *testing.T) {
 // with t.Cleanup.
 func withPipedStdin(t *testing.T, content string) {
 	t.Helper()
+	must := require.New(t)
 	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
+	must.NoError(err, "create pipe")
 	orig := os.Stdin
 	os.Stdin = r
 	t.Cleanup(func() {
 		os.Stdin = orig
 		_ = r.Close()
 	})
-	if _, err := w.Write([]byte(content)); err != nil {
-		_ = w.Close()
-		t.Fatalf("write to pipe: %v", err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("close pipe writer: %v", err)
-	}
+	_, writeErr := w.Write([]byte(content))
+	closeErr := w.Close()
+	must.NoError(writeErr, "write to pipe")
+	must.NoError(closeErr, "close pipe writer")
 }
 
 // captureStdout swaps os.Stdout for a pipe and returns a function the
@@ -5507,10 +4217,9 @@ func withPipedStdin(t *testing.T, content string) {
 // captured bytes.
 func captureStdout(t *testing.T) func() string {
 	t.Helper()
+	must := require.New(t)
 	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
+	must.NoError(err, "create pipe")
 	orig := os.Stdout
 	os.Stdout = w
 	done := make(chan string, 1)
@@ -5534,6 +4243,7 @@ func captureStdout(t *testing.T) func() string {
 // must be set.
 func minimalStdinRunConfig(t *testing.T) string {
 	t.Helper()
+	must := require.New(t)
 	timeout := 300
 	cfg := types.RunConfig{
 		RunID:  "from-stdin",
@@ -5563,127 +4273,98 @@ func minimalStdinRunConfig(t *testing.T) string {
 		LogLevel: "info",
 	}
 	body, err := json.Marshal(cfg)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	must.NoError(err, "marshal stdin RunConfig")
 	return string(body)
+}
+
+// writeConfigFile writes body to a new file in a temp directory and
+// returns its path.
+func writeConfigFile(t *testing.T, body string) string {
+	t.Helper()
+	must := require.New(t)
+	path := filepath.Join(t.TempDir(), "cfg.json")
+	must.NoError(os.WriteFile(path, []byte(body), 0o600), "write config file")
+	return path
 }
 
 // TestRunHarness_StdinExplicitDashReadsConfig pins that
 // `stirrup harness --config -` consumes a piped RunConfig from
 // os.Stdin and resolves through ResolveAll into a writable capture.
 func TestRunHarness_StdinExplicitDashReadsConfig(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	withPipedStdin(t, minimalStdinRunConfig(t))
 	getOut := captureStdout(t)
 
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("config", "-"); err != nil {
-		t.Fatalf("set config: %v", err)
-	}
-	if err := cmd.Flags().Set("output-runconfig", "-"); err != nil {
-		t.Fatalf("set output-runconfig: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("config", "-"))
+	must.NoError(cmd.Flags().Set("output-runconfig", "-"))
 
 	runErr := runHarness(cmd, nil)
 	out := getOut()
 
-	if runErr != nil {
-		t.Fatalf("runHarness with --config -: %v\nstdout: %s", runErr, out)
-	}
+	must.NoError(runErr, "runHarness with --config - (stdout: %s)", out)
 
 	var cfg types.RunConfig
-	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-		t.Fatalf("captured output should be parseable JSON: %v\n%s", err, out)
-	}
-	if cfg.Prompt != "prompt from stdin" {
-		t.Errorf("Prompt = %q, want %q", cfg.Prompt, "prompt from stdin")
-	}
-	if cfg.Provider.APIKeyRef != "secret://STDIN_KEY" {
-		t.Errorf("APIKeyRef = %q, want secret://STDIN_KEY", cfg.Provider.APIKeyRef)
-	}
+	must.NoError(json.Unmarshal([]byte(out), &cfg), "captured output should be parseable JSON:\n%s", out)
+	check.Equal("prompt from stdin", cfg.Prompt)
+	check.Equal("secret://STDIN_KEY", cfg.Provider.APIKeyRef)
 }
 
 // TestRunHarness_StdinAutoDetectsPipe pins that a piped stdin (no
 // --config flag) is auto-detected and treated as the base RunConfig,
 // mirroring the canonical `run-config | harness` pipeline.
 func TestRunHarness_StdinAutoDetectsPipe(t *testing.T) {
+	must := require.New(t)
 	withPipedStdin(t, minimalStdinRunConfig(t))
 	getOut := captureStdout(t)
 
 	cmd := newTestHarnessCommand()
-
-	if err := cmd.Flags().Set("output-runconfig", "-"); err != nil {
-		t.Fatalf("set output-runconfig: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("output-runconfig", "-"))
 
 	runErr := runHarness(cmd, nil)
 	out := getOut()
 
-	if runErr != nil {
-		t.Fatalf("runHarness with auto-stdin: %v\nstdout: %s", runErr, out)
-	}
+	must.NoError(runErr, "runHarness with auto-stdin (stdout: %s)", out)
 
 	var cfg types.RunConfig
-	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-		t.Fatalf("captured output should be parseable JSON: %v\n%s", err, out)
-	}
-	if cfg.Prompt != "prompt from stdin" {
-		t.Errorf("auto-detected stdin Prompt = %q, want %q", cfg.Prompt, "prompt from stdin")
-	}
+	must.NoError(json.Unmarshal([]byte(out), &cfg), "captured output should be parseable JSON:\n%s", out)
+	must.Equal("prompt from stdin", cfg.Prompt, "auto-detected stdin Prompt")
 }
 
 // TestRunHarness_StdinAndConfigFileAreAmbiguous pins that
 // `--config <path>` alongside a non-TTY stdin fails loudly rather than
 // silently picking a precedence.
 func TestRunHarness_StdinAndConfigFileAreAmbiguous(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "cfg.json")
-	if err := os.WriteFile(path, []byte(minimalStdinRunConfig(t)), 0o600); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
+	must := require.New(t)
+	check := assert.New(t)
+	path := writeConfigFile(t, minimalStdinRunConfig(t))
 
 	withPipedStdin(t, minimalStdinRunConfig(t))
 
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("config", path); err != nil {
-		t.Fatalf("set config: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("config", path))
 
 	err := runHarness(cmd, nil)
-	if err == nil {
-		t.Fatal("expected runHarness to reject --config <path> + piped stdin")
-	}
-	if !strings.Contains(err.Error(), "ambiguous") {
-		t.Errorf("error should describe ambiguity, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), path) {
-		t.Errorf("error should mention config path, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "stdin") {
-		t.Errorf("error should mention stdin, got: %v", err)
-	}
+	must.Error(err, "expected runHarness to reject --config <path> + piped stdin")
+	must.ErrorContains(err, "ambiguous")
+	must.ErrorContains(err, path)
+	check.ErrorContains(err, "stdin")
 }
 
 // TestRunHarness_StdinDashWithoutPipeErrors pins that `--config -` with
 // no piped stdin (the TTY / `go test` char-device shape) returns a
 // non-nil error rather than blocking on a phantom read.
 func TestRunHarness_StdinDashWithoutPipeErrors(t *testing.T) {
-
+	check := assert.New(t)
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("config", "-"); err != nil {
-		t.Fatalf("set config: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("config", "-"))
 
 	err := runHarness(cmd, nil)
-	if err == nil {
-		t.Fatal("expected runHarness to reject --config - with no piped stdin")
-	}
-	if !strings.Contains(err.Error(), "--config -") {
-		t.Errorf("error should cite --config -, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "terminal") && !strings.Contains(err.Error(), "piped") {
-		t.Errorf("error should explain the missing pipe, got: %v", err)
-	}
+	must.Error(err, "expected runHarness to reject --config - with no piped stdin")
+	must.ErrorContains(err, "--config -")
+	check.Regexp("terminal|piped", err.Error(), "error should explain the missing pipe")
 }
 
 // TestRunHarness_EmptyAutoDetectedStdinFallsThroughToFlags pins that an
@@ -5692,32 +4373,22 @@ func TestRunHarness_StdinDashWithoutPipeErrors(t *testing.T) {
 // without -i) is treated as "no piped config", letting the flag-only
 // base build proceed instead of aborting with "input is empty".
 func TestRunHarness_EmptyAutoDetectedStdinFallsThroughToFlags(t *testing.T) {
+	must := require.New(t)
 	withPipedStdin(t, "")
 	getOut := captureStdout(t)
 
 	cmd := newTestHarnessCommand()
-
-	if err := cmd.Flags().Set("prompt", "prompt from flags"); err != nil {
-		t.Fatalf("set prompt: %v", err)
-	}
-	if err := cmd.Flags().Set("output-runconfig", "-"); err != nil {
-		t.Fatalf("set output-runconfig: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("prompt", "prompt from flags"))
+	must.NoError(cmd.Flags().Set("output-runconfig", "-"))
 
 	runErr := runHarness(cmd, nil)
 	out := getOut()
 
-	if runErr != nil {
-		t.Fatalf("empty auto-detected stdin must fall through to flags, got: %v\nstdout: %s", runErr, out)
-	}
+	must.NoError(runErr, "empty auto-detected stdin must fall through to flags (stdout: %s)", out)
 
 	var cfg types.RunConfig
-	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-		t.Fatalf("captured output should be parseable JSON: %v\n%s", err, out)
-	}
-	if cfg.Prompt != "prompt from flags" {
-		t.Errorf("Prompt = %q, want it sourced from the flag (not stdin)", cfg.Prompt)
-	}
+	must.NoError(json.Unmarshal([]byte(out), &cfg), "captured output should be parseable JSON:\n%s", out)
+	must.Equal("prompt from flags", cfg.Prompt, "Prompt should come from the flag, not stdin")
 }
 
 // TestRunHarness_EmptyStdinWithConfigFileIsNotAmbiguous pins that an
@@ -5725,37 +4396,24 @@ func TestRunHarness_EmptyAutoDetectedStdinFallsThroughToFlags(t *testing.T) {
 // alongside it succeeds rather than tripping the ambiguous-sources
 // guard.
 func TestRunHarness_EmptyStdinWithConfigFileIsNotAmbiguous(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "cfg.json")
-	if err := os.WriteFile(path, []byte(minimalStdinRunConfig(t)), 0o600); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
+	must := require.New(t)
+	path := writeConfigFile(t, minimalStdinRunConfig(t))
 
 	withPipedStdin(t, "")
 	getOut := captureStdout(t)
 
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("config", path); err != nil {
-		t.Fatalf("set config: %v", err)
-	}
-	if err := cmd.Flags().Set("output-runconfig", "-"); err != nil {
-		t.Fatalf("set output-runconfig: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("config", path))
+	must.NoError(cmd.Flags().Set("output-runconfig", "-"))
 
 	runErr := runHarness(cmd, nil)
 	out := getOut()
 
-	if runErr != nil {
-		t.Fatalf("empty stdin must not make --config ambiguous, got: %v\nstdout: %s", runErr, out)
-	}
+	must.NoError(runErr, "empty stdin must not make --config ambiguous (stdout: %s)", out)
 
 	var cfg types.RunConfig
-	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-		t.Fatalf("captured output should be parseable JSON: %v\n%s", err, out)
-	}
-	if cfg.Prompt != "prompt from stdin" {
-		t.Errorf("Prompt = %q, want the --config file's value", cfg.Prompt)
-	}
+	must.NoError(json.Unmarshal([]byte(out), &cfg), "captured output should be parseable JSON:\n%s", out)
+	must.Equal("prompt from stdin", cfg.Prompt, "Prompt should come from the --config file")
 }
 
 // TestRunHarness_ExplicitDashWithEmptyPipeStillErrors guards that the
@@ -5763,46 +4421,33 @@ func TestRunHarness_EmptyStdinWithConfigFileIsNotAmbiguous(t *testing.T) {
 // explicitly names stdin via --config -, an empty pipe stays a hard
 // "input is empty" error.
 func TestRunHarness_ExplicitDashWithEmptyPipeStillErrors(t *testing.T) {
+	must := require.New(t)
 	withPipedStdin(t, "")
 
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("config", "-"); err != nil {
-		t.Fatalf("set config: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("config", "-"))
 
 	err := runHarness(cmd, nil)
-	if err == nil {
-		t.Fatal("expected --config - against an empty pipe to error")
-	}
-	if !strings.Contains(err.Error(), "input is empty") {
-		t.Errorf("error should report the empty input, got: %v", err)
-	}
+	must.Error(err, "expected --config - against an empty pipe to error")
+	must.ErrorContains(err, "input is empty")
 }
 
 // TestRunHarness_OutputRunConfigBadPathErrors pins that an
 // --output-runconfig path whose parent directory does not exist
 // surfaces as a non-nil error mentioning the path.
 func TestRunHarness_OutputRunConfigBadPathErrors(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	badPath := filepath.Join(t.TempDir(), "does-not-exist", "out.json")
 
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("output-runconfig", badPath); err != nil {
-		t.Fatalf("set output-runconfig: %v", err)
-	}
-	if err := cmd.Flags().Set("prompt", "test prompt"); err != nil {
-		t.Fatalf("set prompt: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("output-runconfig", badPath))
+	must.NoError(cmd.Flags().Set("prompt", "test prompt"))
 
 	err := runHarness(cmd, nil)
-	if err == nil {
-		t.Fatal("expected OpenFile error for missing parent directory")
-	}
-	if !strings.Contains(err.Error(), badPath) {
-		t.Errorf("error should mention the bad path %q, got: %v", badPath, err)
-	}
-	if !strings.Contains(err.Error(), "opening") {
-		t.Errorf("error should mention the open failure, got: %v", err)
-	}
+	must.Error(err, "expected OpenFile error for missing parent directory")
+	must.ErrorContains(err, badPath)
+	check.ErrorContains(err, "opening")
 }
 
 // failCloseWriter writes successfully but its Close returns the
@@ -5816,10 +4461,10 @@ type failCloseWriter struct {
 
 func (f *failCloseWriter) Close() error { return f.closeErr }
 
-// TestWriteOutputRunConfig_CloseError pins that a Close error from the
-// captured-config writer (e.g. ENOSPC manifesting only at kernel flush
+// TestWriteOutputRunConfig_PropagatesCloseError pins that a Close error from
+// the captured-config writer (e.g. ENOSPC manifesting only at kernel flush
 // time) propagates as a non-nil error wrapping the underlying cause.
-func TestWriteOutputRunConfig_CloseError(t *testing.T) {
+func TestWriteOutputRunConfig_PropagatesCloseError(t *testing.T) {
 	cfg := &types.RunConfig{
 		RunID:        "x",
 		Mode:         "planning",
@@ -5832,29 +4477,20 @@ func TestWriteOutputRunConfig_CloseError(t *testing.T) {
 	}
 
 	t.Run("close error surfaces", func(t *testing.T) {
+		must := require.New(t)
 		w := &failCloseWriter{closeErr: io.ErrClosedPipe}
 		err := writeAndCloseRunConfig(w, "/tmp/captured.json", cfg)
-		if err == nil {
-			t.Fatal("expected close error to propagate")
-		}
-		if !errors.Is(err, io.ErrClosedPipe) {
-			t.Errorf("error should wrap io.ErrClosedPipe, got: %v", err)
-		}
-		if !strings.Contains(err.Error(), "/tmp/captured.json") {
-			t.Errorf("error should mention path, got: %v", err)
-		}
+		must.Error(err, "expected close error to propagate")
+		must.ErrorIs(err, io.ErrClosedPipe)
+		must.ErrorContains(err, "/tmp/captured.json")
 	})
 
 	t.Run("write error wins over close error", func(t *testing.T) {
-
+		must := require.New(t)
 		w := &failWriteCloseWriter{closeErr: io.ErrClosedPipe, writeErr: io.ErrShortWrite}
 		err := writeAndCloseRunConfig(w, "/tmp/captured.json", cfg)
-		if err == nil {
-			t.Fatal("expected write error to propagate")
-		}
-		if !errors.Is(err, io.ErrShortWrite) {
-			t.Errorf("write error should take precedence over close error, got: %v", err)
-		}
+		must.Error(err, "expected write error to propagate")
+		must.ErrorIs(err, io.ErrShortWrite, "write error should take precedence over close error")
 	})
 }
 
@@ -5874,8 +4510,8 @@ func (f *failWriteCloseWriter) Close() error                { return f.closeErr 
 // through runHarness -> BuildRunConfig -> os.Getenv and consumed as the
 // base RunConfig.
 func TestRunHarness_EnvVarConfigLoadsBase(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "env-config.json")
+	check := assert.New(t)
+	must := require.New(t)
 	envCfg := types.RunConfig{
 		RunID:  "from-env-integration",
 		Mode:   "planning",
@@ -5905,46 +4541,30 @@ func TestRunHarness_EnvVarConfigLoadsBase(t *testing.T) {
 	timeout := 300
 	envCfg.Timeout = &timeout
 	body, err := json.Marshal(envCfg)
-	if err != nil {
-		t.Fatalf("marshal env cfg: %v", err)
-	}
-	if err := os.WriteFile(path, body, 0o600); err != nil {
-		t.Fatalf("write env config: %v", err)
-	}
-	t.Setenv("STIRRUP_CONFIG", path)
+	must.NoError(err, "marshal env cfg")
+	t.Setenv("STIRRUP_CONFIG", writeConfigFile(t, string(body)))
 
 	getOut := captureStdout(t)
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("output-runconfig", "-"); err != nil {
-		t.Fatalf("set output-runconfig: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("output-runconfig", "-"))
 
 	runErr := runHarness(cmd, nil)
 	out := getOut()
 
-	if runErr != nil {
-		t.Fatalf("runHarness with STIRRUP_CONFIG: %v\nstdout: %s", runErr, out)
-	}
+	must.NoError(runErr, "runHarness with STIRRUP_CONFIG (stdout: %s)", out)
 
 	var captured types.RunConfig
-	if err := json.Unmarshal([]byte(out), &captured); err != nil {
-		t.Fatalf("captured output should be parseable JSON: %v\n%s", err, out)
-	}
-	if captured.Prompt != "prompt from STIRRUP_CONFIG" {
-		t.Errorf("Prompt = %q, want %q (env-var base should load)", captured.Prompt, "prompt from STIRRUP_CONFIG")
-	}
-	if captured.Provider.APIKeyRef != "secret://ENV_INTEGRATION_KEY" {
-		t.Errorf("APIKeyRef = %q, want secret://ENV_INTEGRATION_KEY", captured.Provider.APIKeyRef)
-	}
+	must.NoError(json.Unmarshal([]byte(out), &captured), "captured output should be parseable JSON:\n%s", out)
+	check.Equal("prompt from STIRRUP_CONFIG", captured.Prompt, "env-var base should load")
+	check.Equal("secret://ENV_INTEGRATION_KEY", captured.Provider.APIKeyRef)
 }
 
 // captureStderr mirrors captureStdout for fd 2.
 func captureStderr(t *testing.T) func() string {
 	t.Helper()
+	must := require.New(t)
 	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
+	must.NoError(err, "create pipe")
 	orig := os.Stderr
 	os.Stderr = w
 	done := make(chan string, 1)
@@ -5982,6 +4602,7 @@ func outputModeRunTrace() *types.RunTrace {
 // --output=text prints the stderr summary and emits nothing on stdout
 // when the default (nil) resultSink is configured.
 func TestEmitRunOutput_TextDefaultMatchesLegacyBehaviour(t *testing.T) {
+	check := assert.New(t)
 	rt := outputModeRunTrace()
 	cfg := &types.RunConfig{} // ResultSink nil ≡ NoneSink
 
@@ -5991,21 +4612,17 @@ func TestEmitRunOutput_TextDefaultMatchesLegacyBehaviour(t *testing.T) {
 	stdout := stdoutDone()
 	stderr := stderrDone()
 
-	if !strings.Contains(stderr, "--- Run complete ---") {
-		t.Errorf("stderr should contain the legacy summary header, got: %q", stderr)
-	}
-	if !strings.Contains(stderr, "Outcome: success") {
-		t.Errorf("stderr should contain Outcome line, got: %q", stderr)
-	}
-	if strings.Contains(stdout, "STIRRUP_RESULT") {
-		t.Errorf("stdout should be empty (no stdout-json sink configured), got: %q", stdout)
-	}
+	check.Contains(stderr, "--- Run complete ---", "stderr should contain the legacy summary header")
+	check.Contains(stderr, "Outcome: success", "stderr should contain the Outcome line")
+	check.NotContains(stdout, "STIRRUP_RESULT", "stdout should be empty when no stdout-json sink is configured")
 }
 
 // TestEmitRunOutput_JSONEmitsSingleStdoutLine pins that --output=json
 // writes exactly one STIRRUP_RESULT line on stdout, parseable as
 // RunResult, and prints nothing on stderr.
 func TestEmitRunOutput_JSONEmitsSingleStdoutLine(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	rt := outputModeRunTrace()
 	cfg := &types.RunConfig{} // ResultSink nil ≡ NoneSink
 
@@ -6015,35 +4632,22 @@ func TestEmitRunOutput_JSONEmitsSingleStdoutLine(t *testing.T) {
 	stdout := stdoutDone()
 	stderr := stderrDone()
 
-	if strings.Contains(stderr, "--- Run complete ---") {
-		t.Errorf("stderr should NOT contain the legacy summary when --output=json, got: %q", stderr)
-	}
-	if !strings.HasPrefix(stdout, "STIRRUP_RESULT ") {
-		t.Fatalf("stdout should start with STIRRUP_RESULT sentinel, got: %q", stdout)
-	}
-	if strings.Count(stdout, "STIRRUP_RESULT ") != 1 {
-		t.Errorf("expected exactly one STIRRUP_RESULT line, got: %q", stdout)
-	}
+	check.NotContains(stderr, "--- Run complete ---", "--output=json should not print the legacy summary")
+	must.True(strings.HasPrefix(stdout, "STIRRUP_RESULT "), "stdout should start with STIRRUP_RESULT sentinel, got: %q", stdout)
+	check.Equal(1, strings.Count(stdout, "STIRRUP_RESULT "), "expected exactly one STIRRUP_RESULT line, got: %q", stdout)
 
 	payload := strings.TrimSpace(strings.TrimPrefix(stdout, "STIRRUP_RESULT "))
 	var got types.RunResult
-	if err := json.Unmarshal([]byte(payload), &got); err != nil {
-		t.Fatalf("STIRRUP_RESULT payload should parse as RunResult: %v\npayload: %s", err, payload)
-	}
-	if got.RunID != "run-output-test" {
-		t.Errorf("RunResult.RunID = %q, want run-output-test", got.RunID)
-	}
-	if got.Outcome != "success" {
-		t.Errorf("RunResult.Outcome = %q, want success", got.Outcome)
-	}
-	if got.Turns != 4 {
-		t.Errorf("RunResult.Turns = %d, want 4", got.Turns)
-	}
+	must.NoError(json.Unmarshal([]byte(payload), &got), "STIRRUP_RESULT payload should parse as RunResult:\n%s", payload)
+	check.Equal("run-output-test", got.RunID)
+	check.Equal("success", got.Outcome)
+	check.Equal(4, got.Turns)
 }
 
 // TestEmitRunOutput_NoneSuppressesBoth pins that --output=none produces
 // no post-run summary on either stream.
 func TestEmitRunOutput_NoneSuppressesBoth(t *testing.T) {
+	check := assert.New(t)
 	rt := outputModeRunTrace()
 	cfg := &types.RunConfig{}
 
@@ -6053,18 +4657,15 @@ func TestEmitRunOutput_NoneSuppressesBoth(t *testing.T) {
 	stdout := stdoutDone()
 	stderr := stderrDone()
 
-	if stderr != "" {
-		t.Errorf("stderr should be empty when --output=none, got: %q", stderr)
-	}
-	if stdout != "" {
-		t.Errorf("stdout should be empty when --output=none, got: %q", stdout)
-	}
+	check.Empty(stderr, "stderr should be empty when --output=none")
+	check.Empty(stdout, "stdout should be empty when --output=none")
 }
 
 // TestEmitRunOutput_JSONWithStdoutJSONSinkEmitsOnce pins the
 // deduplication rule: --output=json and resultSink.type=stdout-json
 // together must produce exactly one STIRRUP_RESULT line, not two.
 func TestEmitRunOutput_JSONWithStdoutJSONSinkEmitsOnce(t *testing.T) {
+	check := assert.New(t)
 	rt := outputModeRunTrace()
 	cfg := &types.RunConfig{
 		ResultSink: &types.ResultSinkConfig{Type: "stdout-json"},
@@ -6076,12 +4677,8 @@ func TestEmitRunOutput_JSONWithStdoutJSONSinkEmitsOnce(t *testing.T) {
 	stdout := stdoutDone()
 	stderr := stderrDone()
 
-	if strings.Contains(stderr, "--- Run complete ---") {
-		t.Errorf("stderr should NOT contain the legacy summary, got: %q", stderr)
-	}
-	if got := strings.Count(stdout, "STIRRUP_RESULT "); got != 1 {
-		t.Errorf("expected exactly one STIRRUP_RESULT line, got %d: %q", got, stdout)
-	}
+	check.NotContains(stderr, "--- Run complete ---", "dedup case should not print the legacy summary")
+	check.Equal(1, strings.Count(stdout, "STIRRUP_RESULT "), "expected exactly one STIRRUP_RESULT line, got: %q", stdout)
 }
 
 // TestEmitRunOutput_TextWithStdoutJSONSinkUnchanged pins that when
@@ -6089,6 +4686,7 @@ func TestEmitRunOutput_JSONWithStdoutJSONSinkEmitsOnce(t *testing.T) {
 // configured, the stderr summary prints and the configured sink still
 // emits its STIRRUP_RESULT line.
 func TestEmitRunOutput_TextWithStdoutJSONSinkUnchanged(t *testing.T) {
+	check := assert.New(t)
 	rt := outputModeRunTrace()
 	cfg := &types.RunConfig{
 		ResultSink: &types.ResultSinkConfig{Type: "stdout-json"},
@@ -6100,18 +4698,16 @@ func TestEmitRunOutput_TextWithStdoutJSONSinkUnchanged(t *testing.T) {
 	stdout := stdoutDone()
 	stderr := stderrDone()
 
-	if !strings.Contains(stderr, "--- Run complete ---") {
-		t.Errorf("stderr should contain the legacy summary on --output=text, got: %q", stderr)
-	}
-	if got := strings.Count(stdout, "STIRRUP_RESULT "); got != 1 {
-		t.Errorf("expected exactly one STIRRUP_RESULT line from configured sink, got %d: %q", got, stdout)
-	}
+	check.Contains(stderr, "--- Run complete ---", "stderr should contain the legacy summary on --output=text")
+	check.Equal(1, strings.Count(stdout, "STIRRUP_RESULT "), "expected exactly one STIRRUP_RESULT line from the configured sink, got: %q", stdout)
 }
 
 // TestEmitRunOutput_JSONPartialTraceEmitsCancellationOutcome pins that a
 // run cancelled mid-flight produces a partial RunResult with the
 // cancellation outcome rather than nothing.
 func TestEmitRunOutput_JSONPartialTraceEmitsCancellationOutcome(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	started := time.Now()
 	rt := &types.RunTrace{
 		ID:          "run-cancelled",
@@ -6126,23 +4722,18 @@ func TestEmitRunOutput_JSONPartialTraceEmitsCancellationOutcome(t *testing.T) {
 	emitRunOutput(context.Background(), cfg, rt, "json")
 	stdout := stdoutDone()
 
-	if !strings.HasPrefix(stdout, "STIRRUP_RESULT ") {
-		t.Fatalf("stdout should start with STIRRUP_RESULT sentinel even on cancellation, got: %q", stdout)
-	}
+	must.True(strings.HasPrefix(stdout, "STIRRUP_RESULT "), "stdout should start with STIRRUP_RESULT sentinel even on cancellation, got: %q", stdout)
 	payload := strings.TrimSpace(strings.TrimPrefix(stdout, "STIRRUP_RESULT "))
 	var got types.RunResult
-	if err := json.Unmarshal([]byte(payload), &got); err != nil {
-		t.Fatalf("STIRRUP_RESULT payload should parse as RunResult on cancellation: %v\npayload: %s", err, payload)
-	}
-	if got.Outcome != "cancelled" {
-		t.Errorf("RunResult.Outcome = %q, want cancelled", got.Outcome)
-	}
+	must.NoError(json.Unmarshal([]byte(payload), &got), "STIRRUP_RESULT payload should parse as RunResult on cancellation:\n%s", payload)
+	check.Equal("cancelled", got.Outcome)
 }
 
 // TestEmitRunOutput_EmptyModeMatchesText pins that the runJob
 // entry-point's outputMode="" (it never threads --output) falls through
 // to the "print summary + emit configured sink" text behaviour.
 func TestEmitRunOutput_EmptyModeMatchesText(t *testing.T) {
+	check := assert.New(t)
 	rt := outputModeRunTrace()
 	cfg := &types.RunConfig{}
 
@@ -6150,32 +4741,25 @@ func TestEmitRunOutput_EmptyModeMatchesText(t *testing.T) {
 	emitRunOutput(context.Background(), cfg, rt, "")
 	stderr := stderrDone()
 
-	if !strings.Contains(stderr, "--- Run complete ---") {
-		t.Errorf("empty outputMode should default to text behaviour, got stderr: %q", stderr)
-	}
+	check.Contains(stderr, "--- Run complete ---", "empty outputMode should default to text behaviour")
 }
 
 // TestPrintRunSummary_NilTraceDoesNotPanic pins the nil guard: a nil
 // RunTrace would otherwise dereference at the Outcome field and crash
 // the process before any structured output is emitted.
 func TestPrintRunSummary_NilTraceDoesNotPanic(t *testing.T) {
+	must := require.New(t)
 	stderrDone := captureStderr(t)
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("printRunSummary(nil) panicked: %v", r)
-		}
-	}()
-	printRunSummary(nil)
+	must.NotPanics(func() { printRunSummary(nil) })
 	stderr := stderrDone()
-	if !strings.Contains(stderr, "no trace") {
-		t.Errorf("stderr should describe the nil-trace condition, got: %q", stderr)
-	}
+	must.Contains(stderr, "no trace", "stderr should describe the nil-trace condition")
 }
 
 // TestPrintRunSummary_HooksLinePrintedWhenPresent pins that the summary
 // counts only executed (non-Skipped) HookResults entries, treating only
 // those with a non-empty Error as failures.
 func TestPrintRunSummary_HooksLinePrintedWhenPresent(t *testing.T) {
+	must := require.New(t)
 	rt := outputModeRunTrace()
 	rt.HookResults = []types.HookExecution{
 		{Phase: "preRun", Index: 0, Command: "true"},
@@ -6187,39 +4771,42 @@ func TestPrintRunSummary_HooksLinePrintedWhenPresent(t *testing.T) {
 	printRunSummary(rt)
 	stderr := stderrDone()
 
-	if !strings.Contains(stderr, "Hooks: 2 run, 1 failed") {
-		t.Errorf("stderr should report \"Hooks: 2 run, 1 failed\", got: %q", stderr)
-	}
+	must.Contains(stderr, "Hooks: 2 run, 1 failed")
 }
 
-func TestPrintRunSummary_TokenBreakdown(t *testing.T) {
-	rt := outputModeRunTrace()
-	stderrDone := captureStderr(t)
-	printRunSummary(rt)
-	if stderr := stderrDone(); !strings.Contains(stderr, "Tokens: 1234 in / 567 out\n") {
-		t.Errorf("a run without breakdown must print bare counts, got: %q", stderr)
-	}
+func TestPrintRunSummary_TokenBreakdownShownWhenReported(t *testing.T) {
+	t.Run("bare counts without breakdown", func(t *testing.T) {
+		must := require.New(t)
+		stderrDone := captureStderr(t)
+		printRunSummary(outputModeRunTrace())
+		stderr := stderrDone()
 
-	rt.TokenUsage = types.TokenUsage{Input: 1234, Output: 567, CacheRead: 1000, CacheWrite: 20, Reasoning: 12}
-	stderrDone = captureStderr(t)
-	printRunSummary(rt)
-	if want, stderr := "Tokens: 1234 in (cache read 1000, cache write 20) / 567 out (reasoning 12)\n", stderrDone(); !strings.Contains(stderr, want) {
-		t.Errorf("stderr missing %q, got: %q", want, stderr)
-	}
+		must.Contains(stderr, "Tokens: 1234 in / 567 out\n")
+	})
+
+	t.Run("breakdown when cache or reasoning tokens are reported", func(t *testing.T) {
+		must := require.New(t)
+		rt := outputModeRunTrace()
+		rt.TokenUsage = types.TokenUsage{Input: 1234, Output: 567, CacheRead: 1000, CacheWrite: 20, Reasoning: 12}
+		stderrDone := captureStderr(t)
+		printRunSummary(rt)
+		stderr := stderrDone()
+
+		must.Contains(stderr, "Tokens: 1234 in (cache read 1000, cache write 20) / 567 out (reasoning 12)\n")
+	})
 }
 
 // TestPrintRunSummary_HooksLineOmittedWhenAbsent pins that a hookless
 // run's summary carries no "Hooks:" line at all.
 func TestPrintRunSummary_HooksLineOmittedWhenAbsent(t *testing.T) {
+	must := require.New(t)
 	rt := outputModeRunTrace()
 
 	stderrDone := captureStderr(t)
 	printRunSummary(rt)
 	stderr := stderrDone()
 
-	if strings.Contains(stderr, "Hooks:") {
-		t.Errorf("stderr should have no Hooks: line for a hookless run, got: %q", stderr)
-	}
+	must.NotContains(stderr, "Hooks:")
 }
 
 // TestEmitRunOutput_CancelledContextStillEmits pins that emitRunOutput
@@ -6227,6 +4814,7 @@ func TestPrintRunSummary_HooksLineOmittedWhenAbsent(t *testing.T) {
 // passed a pre-cancelled context, guarding a future remote sink that
 // might honour ctx and otherwise drop signal-cancelled runs silently.
 func TestEmitRunOutput_CancelledContextStillEmits(t *testing.T) {
+	must := require.New(t)
 	rt := outputModeRunTrace()
 	cfg := &types.RunConfig{}
 
@@ -6237,9 +4825,7 @@ func TestEmitRunOutput_CancelledContextStillEmits(t *testing.T) {
 	emitRunOutput(ctx, cfg, rt, "json")
 	stdout := stdoutDone()
 
-	if !strings.HasPrefix(stdout, "STIRRUP_RESULT ") {
-		t.Fatalf("stdout should start with STIRRUP_RESULT even with cancelled ctx (StdoutJSONSink does not honour ctx), got: %q", stdout)
-	}
+	must.Truef(strings.HasPrefix(stdout, "STIRRUP_RESULT "), "stdout should start with STIRRUP_RESULT, got: %q", stdout)
 }
 
 // TestEmitRunOutput_TextWithNilTracePrintsNoTrace pins the
@@ -6247,18 +4833,16 @@ func TestEmitRunOutput_CancelledContextStillEmits(t *testing.T) {
 // produced no trace at all. The text branch must surface the nil-trace
 // diagnostic on stderr rather than panicking.
 func TestEmitRunOutput_TextWithNilTracePrintsNoTrace(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	cfg := &types.RunConfig{}
 	stderrDone := captureStderr(t)
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("emitRunOutput with nil trace panicked: %v", r)
-		}
-	}()
-	emitRunOutput(context.Background(), cfg, nil, "text")
+	check.NotPanics(func() {
+		emitRunOutput(context.Background(), cfg, nil, "text")
+	})
 	stderr := stderrDone()
-	if !strings.Contains(stderr, "no trace") {
-		t.Errorf("stderr should describe nil-trace condition, got: %q", stderr)
-	}
+
+	must.Contains(stderr, "no trace", "stderr should describe nil-trace condition")
 }
 
 // TestEmitRunOutput_JSONWithNilTraceLogsWarning pins that a nil trace
@@ -6266,6 +4850,8 @@ func TestEmitRunOutput_TextWithNilTracePrintsNoTrace(t *testing.T) {
 // with Outcome="internal-error", and that emitRunOutput's slog.Warn
 // surfaces the diagnostic in process logs.
 func TestEmitRunOutput_JSONWithNilTraceLogsWarning(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	prevDefault := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(prevDefault) })
 	var logBuf bytes.Buffer
@@ -6276,21 +4862,12 @@ func TestEmitRunOutput_JSONWithNilTraceLogsWarning(t *testing.T) {
 	emitRunOutput(context.Background(), cfg, nil, "json")
 	stdout := stdoutDone()
 
-	if !strings.HasPrefix(stdout, "STIRRUP_RESULT ") {
-		t.Fatalf("stdout should start with STIRRUP_RESULT sentinel even on nil trace, got: %q", stdout)
-	}
+	must.Truef(strings.HasPrefix(stdout, "STIRRUP_RESULT "), "stdout should start with STIRRUP_RESULT, got: %q", stdout)
 	payload := strings.TrimSpace(strings.TrimPrefix(stdout, "STIRRUP_RESULT "))
 	var got types.RunResult
-	if err := json.Unmarshal([]byte(payload), &got); err != nil {
-		t.Fatalf("STIRRUP_RESULT payload should parse as RunResult: %v\npayload: %s", err, payload)
-	}
-	if got.Outcome != "internal-error" {
-		t.Errorf("Outcome = %q, want internal-error", got.Outcome)
-	}
-	logs := logBuf.String()
-	if !strings.Contains(logs, "nil RunTrace") {
-		t.Errorf("expected slog.Warn about nil RunTrace, got: %q", logs)
-	}
+	must.NoError(json.Unmarshal([]byte(payload), &got), "payload: %s", payload)
+	check.Equal("internal-error", got.Outcome)
+	check.Contains(logBuf.String(), "nil RunTrace", "expected slog.Warn about nil RunTrace")
 }
 
 // stubResultSink records every Emit invocation so tests can assert that
@@ -6325,6 +4902,8 @@ type resultsinkInterface = resultsink.ResultSink
 // under --output=json: the flag's STIRRUP_RESULT line goes to stdout,
 // and the configured sink also fires.
 func TestEmitRunOutput_JSONWithNonStdoutSinkAlsoFires(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	stub := &stubResultSink{}
 	installStubResultSink(t, stub)
 
@@ -6336,21 +4915,17 @@ func TestEmitRunOutput_JSONWithNonStdoutSinkAlsoFires(t *testing.T) {
 	emitRunOutput(context.Background(), cfg, rt, "json")
 	stdout := stdoutDone()
 
-	if !strings.HasPrefix(stdout, "STIRRUP_RESULT ") {
-		t.Errorf("stdout should still carry STIRRUP_RESULT under --output=json, got: %q", stdout)
-	}
-	if len(stub.calls) != 1 {
-		t.Fatalf("expected configured sink to fire exactly once, got %d calls", len(stub.calls))
-	}
-	if stub.calls[0].RunID != rt.ID {
-		t.Errorf("sink received RunID %q, want %q", stub.calls[0].RunID, rt.ID)
-	}
+	check.Truef(strings.HasPrefix(stdout, "STIRRUP_RESULT "), "stdout should still carry STIRRUP_RESULT under --output=json, got: %q", stdout)
+	must.Len(stub.calls, 1, "configured sink should fire exactly once")
+	check.Equal(rt.ID, stub.calls[0].RunID)
 }
 
 // TestEmitRunOutput_NoneWithNonStdoutSinkStillFires pins that under
 // --output=none, the stderr summary and stdout STIRRUP_RESULT are both
 // suppressed, but a sink targeting a non-stdout destination still fires.
 func TestEmitRunOutput_NoneWithNonStdoutSinkStillFires(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	stub := &stubResultSink{}
 	installStubResultSink(t, stub)
 
@@ -6363,18 +4938,10 @@ func TestEmitRunOutput_NoneWithNonStdoutSinkStillFires(t *testing.T) {
 	stdout := stdoutDone()
 	stderr := stderrDone()
 
-	if stdout != "" {
-		t.Errorf("stdout should be empty under --output=none, got: %q", stdout)
-	}
-	if stderr != "" {
-		t.Errorf("stderr should be empty under --output=none, got: %q", stderr)
-	}
-	if len(stub.calls) != 1 {
-		t.Fatalf("expected configured sink to fire exactly once, got %d calls", len(stub.calls))
-	}
-	if stub.calls[0].RunID != rt.ID {
-		t.Errorf("sink received RunID %q, want %q", stub.calls[0].RunID, rt.ID)
-	}
+	check.Empty(stdout, "stdout should be empty under --output=none")
+	check.Empty(stderr, "stderr should be empty under --output=none")
+	must.Len(stub.calls, 1, "configured sink should fire exactly once")
+	check.Equal(rt.ID, stub.calls[0].RunID)
 }
 
 // TestEmitRunOutput_UnrecognisedModeLogsAndDefaultsToText pins that an
@@ -6382,6 +4949,7 @@ func TestEmitRunOutput_NoneWithNonStdoutSinkStillFires(t *testing.T) {
 // falls through to the text behaviour rather than silently dropping the
 // summary.
 func TestEmitRunOutput_UnrecognisedModeLogsAndDefaultsToText(t *testing.T) {
+	check := assert.New(t)
 	prevDefault := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(prevDefault) })
 	var logBuf bytes.Buffer
@@ -6394,22 +4962,18 @@ func TestEmitRunOutput_UnrecognisedModeLogsAndDefaultsToText(t *testing.T) {
 	emitRunOutput(context.Background(), cfg, rt, "yaml")
 	stderr := stderrDone()
 
-	if !strings.Contains(stderr, "--- Run complete ---") {
-		t.Errorf("unrecognised mode should fall through to text, stderr: %q", stderr)
-	}
-	logs := logBuf.String()
-	if !strings.Contains(logs, "unrecognised mode") {
-		t.Errorf("expected slog.Warn about unrecognised mode, got: %q", logs)
-	}
+	check.Contains(stderr, "--- Run complete ---", "unrecognised mode should fall through to text")
+	check.Contains(logBuf.String(), "unrecognised mode", "expected slog.Warn about unrecognised mode")
 }
 
 // TestValidateOutputMode_AcceptsClosedSet pins the closed three-value
 // set surfaced via --output.
 func TestValidateOutputMode_AcceptsClosedSet(t *testing.T) {
 	for _, mode := range []string{"text", "json", "none"} {
-		if err := validateOutputMode(mode); err != nil {
-			t.Errorf("validateOutputMode(%q) = %v, want nil", mode, err)
-		}
+		t.Run(mode, func(t *testing.T) {
+			must := require.New(t)
+			must.NoError(validateOutputMode(mode))
+		})
 	}
 }
 
@@ -6417,11 +4981,21 @@ func TestValidateOutputMode_AcceptsClosedSet(t *testing.T) {
 // failure mode: a typo at the CLI surfaces as a clear error rather
 // than being silently swallowed and ignored at the dispatch site.
 func TestValidateOutputMode_RejectsUnsupported(t *testing.T) {
-	cases := []string{"", "json5", "yaml", "TEXT", "jsonl"}
-	for _, mode := range cases {
-		if err := validateOutputMode(mode); err == nil {
-			t.Errorf("validateOutputMode(%q) returned nil, want error", mode)
-		}
+	cases := []struct {
+		name string
+		mode string
+	}{
+		{name: "empty", mode: ""},
+		{name: "json5", mode: "json5"},
+		{name: "yaml", mode: "yaml"},
+		{name: "uppercase text", mode: "TEXT"},
+		{name: "jsonl", mode: "jsonl"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Error(validateOutputMode(tc.mode))
+		})
 	}
 }
 
@@ -6430,21 +5004,13 @@ func TestValidateOutputMode_RejectsUnsupported(t *testing.T) {
 // value must surface as an error from runHarness rather than being
 // silently dropped.
 func TestRunHarness_OutputFlagRejectsInvalidValue(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("prompt", "test prompt"); err != nil {
-		t.Fatalf("set prompt: %v", err)
-	}
-	if err := cmd.Flags().Set("output", "yaml"); err != nil {
-		t.Fatalf("set output: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("prompt", "test prompt"), "set prompt")
+	must.NoError(cmd.Flags().Set("output", "yaml"), "set output")
 
 	err := runHarness(cmd, nil)
-	if err == nil {
-		t.Fatal("runHarness should reject --output=yaml")
-	}
-	if !strings.Contains(err.Error(), "--output") {
-		t.Errorf("error should name --output, got: %v", err)
-	}
+	must.ErrorContains(err, "--output")
 }
 
 // TestRunHarness_OutputFlagRejectsInvalidValueBeforeOutputRunconfig pins
@@ -6452,32 +5018,22 @@ func TestRunHarness_OutputFlagRejectsInvalidValue(t *testing.T) {
 // branch exits, so `--output-runconfig=- --output=yaml` cannot return 0
 // and capture a config the operator cannot replay.
 func TestRunHarness_OutputFlagRejectsInvalidValueBeforeOutputRunconfig(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cmd := newTestHarnessCommand()
-	if err := cmd.Flags().Set("prompt", "test prompt"); err != nil {
-		t.Fatalf("set prompt: %v", err)
-	}
-	if err := cmd.Flags().Set("output", "yaml"); err != nil {
-		t.Fatalf("set output: %v", err)
-	}
-	if err := cmd.Flags().Set("output-runconfig", "-"); err != nil {
-		t.Fatalf("set output-runconfig: %v", err)
-	}
+	must.NoError(cmd.Flags().Set("prompt", "test prompt"), "set prompt")
+	must.NoError(cmd.Flags().Set("output", "yaml"), "set output")
+	must.NoError(cmd.Flags().Set("output-runconfig", "-"), "set output-runconfig")
 
-	// Capture stdout so a regression that lets the dry-run branch fire
-	// surfaces as a captured config rather than a silently dropped
-	// failure.
+	// Stdout is captured so that a dry-run config written before the
+	// --output check fails the Empty assertion below.
 	getOut := captureStdout(t)
 	err := runHarness(cmd, nil)
 	stdout := getOut()
-	if err == nil {
-		t.Fatal("runHarness should reject --output=yaml even with --output-runconfig=-")
-	}
-	if !strings.Contains(err.Error(), "--output") {
-		t.Errorf("error should name --output, got: %v", err)
-	}
-	if stdout != "" {
-		t.Errorf("--output-runconfig=- should not have written to stdout when --output is invalid, got: %q", stdout)
-	}
+
+	must.Error(err, "runHarness should reject --output=yaml even with --output-runconfig=-")
+	must.ErrorContains(err, "--output")
+	check.Empty(stdout, "--output-runconfig=- should not write to stdout when --output is invalid")
 }
 
 // TestPrintHarnessUsageHint_ColorEmitsAnsi pins that the grouped hint
@@ -6485,19 +5041,14 @@ func TestRunHarness_OutputFlagRejectsInvalidValueBeforeOutputRunconfig(t *testin
 // Mirrors TestTraceShow_AlwaysEmitsAnsi: the renderer takes an explicit
 // color bool so the test pins the formatting path without a PTY.
 func TestPrintHarnessUsageHint_ColorEmitsAnsi(t *testing.T) {
+	check := assert.New(t)
 	var buf bytes.Buffer
 	printHarnessUsageHint(&buf, true)
 	out := buf.String()
-	if !strings.Contains(out, "\x1b[") {
-		t.Errorf("colour-enabled hint must contain ANSI escapes\n--- output ---\n%s", out)
-	}
-	if !strings.Contains(out, ansiBold) {
-		t.Errorf("colour-enabled hint must bold its headings\n--- output ---\n%s", out)
-	}
+	check.Contains(out, "\x1b[", "colour-enabled hint must contain ANSI escapes")
+	check.Contains(out, ansiBold, "colour-enabled hint must bold its headings")
 	for _, want := range []string{"USAGE", "REQUIRED", "RUN SHAPE", "PROVIDER", "CONFIGURATION", "EXAMPLES", "--prompt", "--mode"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("hint missing group/flag %q\n--- output ---\n%s", want, out)
-		}
+		check.Contains(out, want)
 	}
 }
 
@@ -6505,16 +5056,13 @@ func TestPrintHarnessUsageHint_ColorEmitsAnsi(t *testing.T) {
 // colour disabled (non-TTY, NO_COLOR, or a piped 2>&1 | cat) the hint
 // carries no ANSI escapes but keeps the same grouped headings.
 func TestPrintHarnessUsageHint_PlainStripsAnsi(t *testing.T) {
+	check := assert.New(t)
 	var buf bytes.Buffer
 	printHarnessUsageHint(&buf, false)
 	out := buf.String()
-	if strings.Contains(out, "\x1b[") {
-		t.Errorf("colour-disabled hint must not contain ANSI escapes\n--- output ---\n%s", out)
-	}
+	check.NotContains(out, "\x1b[", "colour-disabled hint must not contain ANSI escapes")
 	for _, want := range []string{"USAGE", "REQUIRED", "RUN SHAPE", "PROVIDER", "CONFIGURATION", "EXAMPLES"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("plain hint missing group %q\n--- output ---\n%s", want, out)
-		}
+		check.Contains(out, want)
 	}
 }
 
@@ -6524,6 +5072,7 @@ func TestPrintHarnessUsageHint_PlainStripsAnsi(t *testing.T) {
 // errPromptHintRequested so runHarness can show the grouped hint and
 // exit 0.
 func TestResolvePromptForRun_InteractiveReturnsHintSentinel(t *testing.T) {
+	must := require.New(t)
 	orig := stderrIsInteractive
 	stderrIsInteractive = func() bool { return true }
 	defer func() { stderrIsInteractive = orig }()
@@ -6531,9 +5080,7 @@ func TestResolvePromptForRun_InteractiveReturnsHintSentinel(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := &types.RunConfig{}
 	err := resolvePromptForRun(cmd, cfg)
-	if !errors.Is(err, errPromptHintRequested) {
-		t.Fatalf("resolvePromptForRun on a TTY = %v, want errPromptHintRequested", err)
-	}
+	must.ErrorIs(err, errPromptHintRequested)
 }
 
 // TestResolvePromptForRun_NonInteractiveReturnsOpaqueError pins the
@@ -6541,6 +5088,7 @@ func TestResolvePromptForRun_InteractiveReturnsHintSentinel(t *testing.T) {
 // required" error and a non-zero exit so log aggregators are not
 // flooded with the multi-line hint.
 func TestResolvePromptForRun_NonInteractiveReturnsOpaqueError(t *testing.T) {
+	must := require.New(t)
 	orig := stderrIsInteractive
 	stderrIsInteractive = func() bool { return false }
 	defer func() { stderrIsInteractive = orig }()
@@ -6548,15 +5096,9 @@ func TestResolvePromptForRun_NonInteractiveReturnsOpaqueError(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := &types.RunConfig{}
 	err := resolvePromptForRun(cmd, cfg)
-	if err == nil {
-		t.Fatal("resolvePromptForRun without a prompt = nil, want the prompt-required error")
-	}
-	if errors.Is(err, errPromptHintRequested) {
-		t.Fatalf("non-TTY caller got the interactive hint sentinel: %v", err)
-	}
-	if !strings.Contains(err.Error(), "prompt is required") {
-		t.Errorf("error = %q, want the opaque prompt-required message", err.Error())
-	}
+	must.Error(err)
+	must.NotErrorIs(err, errPromptHintRequested, "non-TTY caller must not get the hint sentinel")
+	must.ErrorContains(err, "prompt is required")
 }
 
 // TestResolvePromptForRun_InteractiveWithStirrupPromptNoHint pins that
@@ -6564,6 +5106,7 @@ func TestResolvePromptForRun_NonInteractiveReturnsOpaqueError(t *testing.T) {
 // before the hint gate: STIRRUP_PROMPT fills cfg.Prompt and the hint
 // sentinel must not fire.
 func TestResolvePromptForRun_InteractiveWithStirrupPromptNoHint(t *testing.T) {
+	must := require.New(t)
 	orig := stderrIsInteractive
 	stderrIsInteractive = func() bool { return true }
 	defer func() { stderrIsInteractive = orig }()
@@ -6572,18 +5115,15 @@ func TestResolvePromptForRun_InteractiveWithStirrupPromptNoHint(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := &types.RunConfig{}
 	err := resolvePromptForRun(cmd, cfg)
-	if err != nil {
-		t.Fatalf("resolvePromptForRun with STIRRUP_PROMPT on a TTY = %v, want nil (no hint)", err)
-	}
-	if cfg.Prompt != "task from env" {
-		t.Errorf("cfg.Prompt = %q, want the STIRRUP_PROMPT value", cfg.Prompt)
-	}
+	must.NoError(err, "STIRRUP_PROMPT on a TTY should not trigger the hint")
+	must.Equal("task from env", cfg.Prompt)
 }
 
 // TestResolvePromptForRun_InteractiveWithConfigPromptNoHint pins that the
 // hint sentinel must not fire on an interactive terminal when a prompt
 // supplied by a --config file's `prompt` field is already on cfg.Prompt.
 func TestResolvePromptForRun_InteractiveWithConfigPromptNoHint(t *testing.T) {
+	must := require.New(t)
 	orig := stderrIsInteractive
 	stderrIsInteractive = func() bool { return true }
 	defer func() { stderrIsInteractive = orig }()
@@ -6593,18 +5133,16 @@ func TestResolvePromptForRun_InteractiveWithConfigPromptNoHint(t *testing.T) {
 
 	cfg := &types.RunConfig{Prompt: "prompt-from-config"}
 	err := resolvePromptForRun(cmd, cfg)
-	if err != nil {
-		t.Fatalf("resolvePromptForRun with a config-supplied prompt on a TTY = %v, want nil (no hint)", err)
-	}
-	if cfg.Prompt != "prompt-from-config" {
-		t.Errorf("cfg.Prompt = %q, want the config value preserved", cfg.Prompt)
-	}
+	must.NoError(err, "a config-supplied prompt on a TTY should not trigger the hint")
+	must.Equal("prompt-from-config", cfg.Prompt)
 }
 
 // TestRunHarness_BareInteractivePrintsHintAndExitsZero drives the full
 // runHarness path on a TTY with no prompt: it must print the grouped
 // hint to the command's stderr and return nil (exit 0).
 func TestRunHarness_BareInteractivePrintsHintAndExitsZero(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	orig := stderrIsInteractive
 	stderrIsInteractive = func() bool { return true }
 	defer func() { stderrIsInteractive = orig }()
@@ -6612,36 +5150,29 @@ func TestRunHarness_BareInteractivePrintsHintAndExitsZero(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	var errBuf bytes.Buffer
 	cmd.SetErr(&errBuf)
-	// runHarness now decides colour against cmd.ErrOrStderr() — the
-	// injected *bytes.Buffer is not an *os.File, so shouldColor returns
-	// false and the captured text is plain regardless of the host's TTY /
-	// NO_COLOR state. (The colour branch is pinned by
-	// TestPrintHarnessUsageHint_ColorEmitsAnsi.)
+	// runHarness decides colour from cmd.ErrOrStderr(). The injected buffer
+	// is not an *os.File, so the hint is plain regardless of the host's TTY
+	// or NO_COLOR state. The colour branch is covered by
+	// TestPrintHarnessUsageHint_ColorEmitsAnsi.
 
 	getOut := captureStdout(t)
 	err := runHarness(cmd, nil)
 	stdout := getOut()
-	if err != nil {
-		t.Fatalf("runHarness on a TTY with no prompt = %v, want nil (exit 0)", err)
-	}
+
+	must.NoError(err, "runHarness on a TTY with no prompt should exit 0")
 	hint := errBuf.String()
-	if !strings.Contains(hint, "stirrup harness") || !strings.Contains(hint, "USAGE") {
-		t.Errorf("expected grouped hint on stderr, got: %q", hint)
-	}
-	// A non-*os.File destination must never receive ANSI: deciding colour
-	// off the same writer is the writer-consistency fix this asserts.
-	if strings.Contains(hint, "\x1b[") {
-		t.Errorf("hint written to a non-TTY buffer must not contain ANSI escapes, got: %q", hint)
-	}
-	if stdout != "" {
-		t.Errorf("grouped hint must go to stderr, not stdout; stdout = %q", stdout)
-	}
+	check.Contains(hint, "stirrup harness")
+	check.Contains(hint, "USAGE")
+	check.NotContains(hint, "\x1b[", "a non-*os.File writer must never receive ANSI escapes")
+	check.Empty(stdout, "grouped hint must go to stderr, not stdout")
 }
 
 // TestRunHarness_BareNonInteractiveKeepsError pins the scripted path
 // end-to-end: with a non-TTY stderr and no prompt, runHarness returns
 // the opaque prompt-required error (non-zero exit) and prints no hint.
 func TestRunHarness_BareNonInteractiveKeepsError(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	orig := stderrIsInteractive
 	stderrIsInteractive = func() bool { return false }
 	defer func() { stderrIsInteractive = orig }()
@@ -6651,13 +5182,7 @@ func TestRunHarness_BareNonInteractiveKeepsError(t *testing.T) {
 	cmd.SetErr(&errBuf)
 
 	err := runHarness(cmd, nil)
-	if err == nil {
-		t.Fatal("runHarness with no prompt on a non-TTY = nil, want the prompt-required error")
-	}
-	if !strings.Contains(err.Error(), "prompt is required") {
-		t.Errorf("error = %q, want the opaque prompt-required message", err.Error())
-	}
-	if strings.Contains(errBuf.String(), "USAGE") {
-		t.Errorf("non-TTY path must not print the grouped hint, got: %q", errBuf.String())
-	}
+	must.Error(err)
+	must.ErrorContains(err, "prompt is required")
+	check.NotContains(errBuf.String(), "USAGE", "non-TTY path must not print the grouped hint")
 }

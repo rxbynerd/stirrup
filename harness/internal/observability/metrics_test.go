@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -11,15 +12,14 @@ import (
 )
 
 func TestMetricsRecording_Counters(t *testing.T) {
+	must := require.New(t)
 	ctx := context.Background()
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	meter := provider.Meter("test")
 
 	m, err := newMetricsFromMeter(meter, provider)
-	if err != nil {
-		t.Fatalf("newMetricsFromMeter() error: %v", err)
-	}
+	must.NoError(err)
 
 	m.Runs.Add(ctx, 1, metric.WithAttributes(attribute.String("run.mode", "execution")))
 	m.Turns.Add(ctx, 3)
@@ -103,59 +103,68 @@ func TestMetricsRecording_Counters(t *testing.T) {
 	))
 
 	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(ctx, &rm); err != nil {
-		t.Fatalf("Collect() error: %v", err)
+	must.NoError(reader.Collect(ctx, &rm))
+
+	sums := extractInt64Sums(rm)
+
+	for _, tc := range []struct {
+		name string
+		want int64
+	}{
+		{"stirrup.harness.runs", 1},
+		{"stirrup.harness.turns", 3},
+		{"stirrup.harness.tokens.input", 1500},
+		{"stirrup.harness.tokens.output", 200},
+		{"stirrup.harness.tokens.cache_read", 1200},
+		{"stirrup.harness.tokens.cache_write", 250},
+		{"stirrup.harness.tool_calls", 5},
+		{"stirrup.harness.tool_errors", 1},
+		{"stirrup.harness.provider_requests", 3},
+		{"stirrup.harness.provider_errors", 0},
+		{"stirrup.harness.provider_retry_outcomes", 2},
+		{"stirrup.harness.verification_attempts", 2},
+		{"stirrup.harness.stalls", 1},
+		{"stirrup.harness.stall_nudges", 2},
+		{"stirrup.harness.wind_downs", 1},
+		{"stirrup.harness.context_compactions", 2},
+		{"stirrup.harness.security_events", 4},
+		{"stirrup.guard.checks", 7},
+		{"stirrup.guard.errors", 2},
+		{"stirrup.guard.skips", 4},
+		{"stirrup.guard.spotlights", 3},
+
+		// Component-level counters.
+		{"stirrup.subagent.spawns", 2},
+		{"stirrup.subagent.tokens.input", 800},
+		{"stirrup.subagent.tokens.output", 120},
+		{"stirrup.subagent.tokens.cache_read", 600},
+		{"stirrup.subagent.tokens.cache_write", 90},
+		{"stirrup.mcp.calls", 6},
+		{"stirrup.edit.attempts", 4},
+		{"stirrup.verifier.runs", 3},
+		{"stirrup.codescanner.scans", 5},
+		{"stirrup.codescanner.findings", 1},
+		{"stirrup.permission.decisions", 9},
+		{"stirrup.context.strategy_runs", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			got, ok := sums[tc.name]
+			must.True(ok, "metric not collected")
+			must.Equal(tc.want, got)
+		})
 	}
-
-	sums := extractInt64Sums(t, rm)
-
-	assertInt64Sum(t, sums, "stirrup.harness.runs", 1)
-	assertInt64Sum(t, sums, "stirrup.harness.turns", 3)
-	assertInt64Sum(t, sums, "stirrup.harness.tokens.input", 1500)
-	assertInt64Sum(t, sums, "stirrup.harness.tokens.output", 200)
-	assertInt64Sum(t, sums, "stirrup.harness.tokens.cache_read", 1200)
-	assertInt64Sum(t, sums, "stirrup.harness.tokens.cache_write", 250)
-	assertInt64Sum(t, sums, "stirrup.harness.tool_calls", 5)
-	assertInt64Sum(t, sums, "stirrup.harness.tool_errors", 1)
-	assertInt64Sum(t, sums, "stirrup.harness.provider_requests", 3)
-	assertInt64Sum(t, sums, "stirrup.harness.provider_errors", 0)
-	assertInt64Sum(t, sums, "stirrup.harness.provider_retry_outcomes", 2)
-	assertInt64Sum(t, sums, "stirrup.harness.verification_attempts", 2)
-	assertInt64Sum(t, sums, "stirrup.harness.stalls", 1)
-	assertInt64Sum(t, sums, "stirrup.harness.stall_nudges", 2)
-	assertInt64Sum(t, sums, "stirrup.harness.wind_downs", 1)
-	assertInt64Sum(t, sums, "stirrup.harness.context_compactions", 2)
-	assertInt64Sum(t, sums, "stirrup.harness.security_events", 4)
-	assertInt64Sum(t, sums, "stirrup.guard.checks", 7)
-	assertInt64Sum(t, sums, "stirrup.guard.errors", 2)
-	assertInt64Sum(t, sums, "stirrup.guard.skips", 4)
-	assertInt64Sum(t, sums, "stirrup.guard.spotlights", 3)
-
-	// Component-level counters.
-	assertInt64Sum(t, sums, "stirrup.subagent.spawns", 2)
-	assertInt64Sum(t, sums, "stirrup.subagent.tokens.input", 800)
-	assertInt64Sum(t, sums, "stirrup.subagent.tokens.output", 120)
-	assertInt64Sum(t, sums, "stirrup.subagent.tokens.cache_read", 600)
-	assertInt64Sum(t, sums, "stirrup.subagent.tokens.cache_write", 90)
-	assertInt64Sum(t, sums, "stirrup.mcp.calls", 6)
-	assertInt64Sum(t, sums, "stirrup.edit.attempts", 4)
-	assertInt64Sum(t, sums, "stirrup.verifier.runs", 3)
-	assertInt64Sum(t, sums, "stirrup.codescanner.scans", 5)
-	assertInt64Sum(t, sums, "stirrup.codescanner.findings", 1)
-	assertInt64Sum(t, sums, "stirrup.permission.decisions", 9)
-	assertInt64Sum(t, sums, "stirrup.context.strategy_runs", 2)
 }
 
 func TestMetricsRecording_Histograms(t *testing.T) {
+	must := require.New(t)
 	ctx := context.Background()
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	meter := provider.Meter("test")
 
 	m, err := newMetricsFromMeter(meter, provider)
-	if err != nil {
-		t.Fatalf("newMetricsFromMeter() error: %v", err)
-	}
+	must.NoError(err)
 
 	m.RunDuration.Record(ctx, 1500.0, metric.WithAttributes(
 		attribute.String("run.mode", "execution"),
@@ -184,28 +193,65 @@ func TestMetricsRecording_Histograms(t *testing.T) {
 	))
 
 	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(ctx, &rm); err != nil {
-		t.Fatalf("Collect() error: %v", err)
-	}
+	must.NoError(reader.Collect(ctx, &rm))
 
-	histograms := extractFloat64Histograms(t, rm)
+	histograms := extractFloat64Histograms(rm)
 
-	assertFloat64HistogramCount(t, histograms, "stirrup.harness.run_duration", 1)
-	assertFloat64HistogramSum(t, histograms, "stirrup.harness.run_duration", 1500.0)
-	assertFloat64HistogramCount(t, histograms, "stirrup.harness.turn_duration", 1)
-	assertFloat64HistogramCount(t, histograms, "stirrup.harness.tool_call_duration", 1)
-	assertFloat64HistogramCount(t, histograms, "stirrup.guard.duration", 1)
-	assertFloat64HistogramSum(t, histograms, "stirrup.guard.duration", 42.0)
+	t.Run("count", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			want uint64
+		}{
+			{"stirrup.harness.run_duration", 1},
+			{"stirrup.harness.turn_duration", 1},
+			{"stirrup.harness.tool_call_duration", 1},
+			{"stirrup.guard.duration", 1},
 
-	// Component-level histograms.
-	assertFloat64HistogramCount(t, histograms, "stirrup.subagent.duration", 1)
-	assertFloat64HistogramSum(t, histograms, "stirrup.subagent.duration", 1200.0)
-	assertFloat64HistogramCount(t, histograms, "stirrup.mcp.duration", 1)
-	assertFloat64HistogramSum(t, histograms, "stirrup.mcp.duration", 75.0)
-	assertFloat64HistogramCount(t, histograms, "stirrup.edit.duration", 1)
-	assertFloat64HistogramSum(t, histograms, "stirrup.edit.duration", 18.0)
-	assertFloat64HistogramCount(t, histograms, "stirrup.verifier.duration", 1)
-	assertFloat64HistogramSum(t, histograms, "stirrup.verifier.duration", 350.0)
+			// Component-level histograms.
+			{"stirrup.subagent.duration", 1},
+			{"stirrup.mcp.duration", 1},
+			{"stirrup.edit.duration", 1},
+			{"stirrup.verifier.duration", 1},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				must := require.New(t)
+				h, ok := histograms[tc.name]
+				must.True(ok, "histogram not collected")
+				var total uint64
+				for _, dp := range h.DataPoints {
+					total += dp.Count
+				}
+				must.Equal(tc.want, total)
+			})
+		}
+	})
+
+	t.Run("sum", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			want float64
+		}{
+			{"stirrup.harness.run_duration", 1500.0},
+			{"stirrup.guard.duration", 42.0},
+
+			// Component-level histograms.
+			{"stirrup.subagent.duration", 1200.0},
+			{"stirrup.mcp.duration", 75.0},
+			{"stirrup.edit.duration", 18.0},
+			{"stirrup.verifier.duration", 350.0},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				must := require.New(t)
+				h, ok := histograms[tc.name]
+				must.True(ok, "histogram not collected")
+				var total float64
+				for _, dp := range h.DataPoints {
+					total += dp.Sum
+				}
+				must.InDelta(tc.want, total, 1e-9)
+			})
+		}
+	})
 }
 
 // TestMetricsRecording_Resource pins that the resource attached to the
@@ -213,8 +259,9 @@ func TestMetricsRecording_Histograms(t *testing.T) {
 // service.namespace defaults, so metrics don't fall back to
 // "unknown_service:stirrup" or lose their Grafana group-by labels. The
 // explicit-options path is exercised by
-// TestMetricsRecording_ResourceWithExplicitOptions.
+// TestMetricsRecording_Resource_ExplicitOptions.
 func TestMetricsRecording_Resource(t *testing.T) {
+	must := require.New(t)
 	t.Setenv(envServiceName, "")
 
 	t.Setenv(envEnvironment, "")
@@ -229,43 +276,44 @@ func TestMetricsRecording_Resource(t *testing.T) {
 	meter := provider.Meter("test")
 
 	m, err := newMetricsFromMeter(meter, provider)
-	if err != nil {
-		t.Fatalf("newMetricsFromMeter() error: %v", err)
-	}
+	must.NoError(err)
 	m.Runs.Add(ctx, 1)
 
 	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(ctx, &rm); err != nil {
-		t.Fatalf("Collect() error: %v", err)
-	}
+	must.NoError(reader.Collect(ctx, &rm))
 
-	if rm.Resource == nil {
-		t.Fatal("ResourceMetrics.Resource is nil — MeterProvider was constructed without WithResource")
-	}
+	must.NotNil(rm.Resource, "MeterProvider was constructed without WithResource")
 	got := make(map[string]string)
 	for _, kv := range rm.Resource.Attributes() {
 		got[string(kv.Key)] = kv.Value.AsString()
 	}
-	if got["service.name"] != DefaultServiceName {
-		t.Errorf("service.name=%q, want %q", got["service.name"], DefaultServiceName)
-	}
-	if got["service.version"] == "" {
-		t.Errorf("service.version missing from metrics resource")
-	}
-	if got["service.instance.id"] == "" {
-		t.Errorf("service.instance.id missing from metrics resource")
-	}
-	if got["deployment.environment.name"] != DefaultEnvironment {
-		t.Errorf("deployment.environment.name=%q, want %q", got["deployment.environment.name"], DefaultEnvironment)
-	}
-	if got["service.namespace"] != DefaultServiceNamespace {
-		t.Errorf("service.namespace=%q, want %q", got["service.namespace"], DefaultServiceNamespace)
-	}
+
+	t.Run("service.name", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(DefaultServiceName, got["service.name"])
+	})
+	t.Run("service.version", func(t *testing.T) {
+		must := require.New(t)
+		must.NotEmpty(got["service.version"])
+	})
+	t.Run("service.instance.id", func(t *testing.T) {
+		must := require.New(t)
+		must.NotEmpty(got["service.instance.id"])
+	})
+	t.Run("deployment.environment.name", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(DefaultEnvironment, got["deployment.environment.name"])
+	})
+	t.Run("service.namespace", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(DefaultServiceNamespace, got["service.namespace"])
+	})
 }
 
-// TestMetricsRecording_ResourceWithExplicitOptions pins that
+// TestMetricsRecording_Resource_ExplicitOptions pins that
 // operator-supplied ResourceOptions reach the metric resource end-to-end.
-func TestMetricsRecording_ResourceWithExplicitOptions(t *testing.T) {
+func TestMetricsRecording_Resource_ExplicitOptions(t *testing.T) {
+	must := require.New(t)
 	ctx := context.Background()
 	reader := sdkmetric.NewManualReader()
 	resOpts := ResourceOptions{
@@ -280,35 +328,34 @@ func TestMetricsRecording_ResourceWithExplicitOptions(t *testing.T) {
 	meter := provider.Meter("test")
 
 	m, err := newMetricsFromMeter(meter, provider)
-	if err != nil {
-		t.Fatalf("newMetricsFromMeter() error: %v", err)
-	}
+	must.NoError(err)
 	m.Runs.Add(ctx, 1)
 
 	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(ctx, &rm); err != nil {
-		t.Fatalf("Collect() error: %v", err)
-	}
-	if rm.Resource == nil {
-		t.Fatal("ResourceMetrics.Resource is nil")
-	}
+	must.NoError(reader.Collect(ctx, &rm))
+	must.NotNil(rm.Resource)
 
 	got := make(map[string]string)
 	for _, kv := range rm.Resource.Attributes() {
 		got[string(kv.Key)] = kv.Value.AsString()
 	}
-	if got["deployment.environment.name"] != "staging" {
-		t.Errorf("deployment.environment.name=%q, want staging", got["deployment.environment.name"])
-	}
-	if got["service.namespace"] != "stirrup-eval" {
-		t.Errorf("service.namespace=%q, want stirrup-eval", got["service.namespace"])
-	}
-	if got["harness.run.mode"] != "execution" {
-		t.Errorf("harness.run.mode=%q, want execution", got["harness.run.mode"])
-	}
+
+	t.Run("deployment.environment.name", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("staging", got["deployment.environment.name"])
+	})
+	t.Run("service.namespace", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("stirrup-eval", got["service.namespace"])
+	})
+	t.Run("harness.run.mode", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("execution", got["harness.run.mode"])
+	})
 }
 
 func TestNoopMetrics_NoPanic(t *testing.T) {
+	must := require.New(t)
 	ctx := context.Background()
 	m := NewNoopMetrics()
 
@@ -364,42 +411,33 @@ func TestNoopMetrics_NoPanic(t *testing.T) {
 	unregister, err := m.RegisterContextTokensCallback(func() (int64, []attribute.KeyValue) {
 		return 0, nil
 	})
-	if err != nil {
-		t.Fatalf("RegisterContextTokensCallback on noop: %v", err)
-	}
+	must.NoError(err)
 	unregister()
 }
 
 func TestNoopMetrics_CloseIsNoop(t *testing.T) {
+	must := require.New(t)
 	m := NewNoopMetrics()
-	if err := m.Close(); err != nil {
-		t.Fatalf("Close() on noop metrics returned error: %v", err)
-	}
+	must.NoError(m.Close())
 }
 
-func TestMetrics_CloseShutdownsProvider(t *testing.T) {
+func TestMetrics_Close_ShutsDownProvider(t *testing.T) {
+	must := require.New(t)
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	meter := provider.Meter("test")
 
 	m, err := newMetricsFromMeter(meter, provider)
-	if err != nil {
-		t.Fatalf("newMetricsFromMeter() error: %v", err)
-	}
+	must.NoError(err)
 
-	if err := m.Close(); err != nil {
-		t.Fatalf("Close() error: %v", err)
-	}
+	must.NoError(m.Close())
 
 	// After shutdown, collecting should fail.
 	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err == nil {
-		t.Fatal("expected error collecting after shutdown, got nil")
-	}
+	must.Error(reader.Collect(context.Background(), &rm))
 }
 
-func extractInt64Sums(t *testing.T, rm metricdata.ResourceMetrics) map[string]int64 {
-	t.Helper()
+func extractInt64Sums(rm metricdata.ResourceMetrics) map[string]int64 {
 	sums := make(map[string]int64)
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
@@ -415,8 +453,7 @@ func extractInt64Sums(t *testing.T, rm metricdata.ResourceMetrics) map[string]in
 	return sums
 }
 
-func extractFloat64Histograms(t *testing.T, rm metricdata.ResourceMetrics) map[string]metricdata.Histogram[float64] {
-	t.Helper()
+func extractFloat64Histograms(rm metricdata.ResourceMetrics) map[string]metricdata.Histogram[float64] {
 	histograms := make(map[string]metricdata.Histogram[float64])
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
@@ -426,48 +463,4 @@ func extractFloat64Histograms(t *testing.T, rm metricdata.ResourceMetrics) map[s
 		}
 	}
 	return histograms
-}
-
-func assertInt64Sum(t *testing.T, sums map[string]int64, name string, expected int64) {
-	t.Helper()
-	got, ok := sums[name]
-	if !ok {
-		t.Errorf("metric %q not found in collected sums", name)
-		return
-	}
-	if got != expected {
-		t.Errorf("metric %q: got %d, want %d", name, got, expected)
-	}
-}
-
-func assertFloat64HistogramCount(t *testing.T, histograms map[string]metricdata.Histogram[float64], name string, expectedCount uint64) {
-	t.Helper()
-	h, ok := histograms[name]
-	if !ok {
-		t.Errorf("histogram %q not found", name)
-		return
-	}
-	var totalCount uint64
-	for _, dp := range h.DataPoints {
-		totalCount += dp.Count
-	}
-	if totalCount != expectedCount {
-		t.Errorf("histogram %q count: got %d, want %d", name, totalCount, expectedCount)
-	}
-}
-
-func assertFloat64HistogramSum(t *testing.T, histograms map[string]metricdata.Histogram[float64], name string, expectedSum float64) {
-	t.Helper()
-	h, ok := histograms[name]
-	if !ok {
-		t.Errorf("histogram %q not found", name)
-		return
-	}
-	var totalSum float64
-	for _, dp := range h.DataPoints {
-		totalSum += dp.Sum
-	}
-	if totalSum != expectedSum {
-		t.Errorf("histogram %q sum: got %f, want %f", name, totalSum, expectedSum)
-	}
 }

@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bytes"
 	"encoding/hex"
 	"io"
 	"net/http"
@@ -11,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	collectortrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	otlptrace "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/proto"
@@ -80,6 +80,7 @@ const (
 // The sampler env var is cleared so the SDK's parent-based default applies.
 func runParentedJob(t *testing.T, task *pb.RunConfig, traceparent string) (*recordingControlPlane, *otlpSpanReceiver, error) {
 	t.Helper()
+	must := require.New(t)
 	useTempMarkerPaths(t)
 	t.Setenv("OTEL_TRACES_SAMPLER", "")
 	receiver := &otlpSpanReceiver{}
@@ -98,70 +99,83 @@ func runParentedJob(t *testing.T, task *pb.RunConfig, traceparent string) (*reco
 	case runErr := <-errCh:
 		return srv, receiver, runErr
 	case <-time.After(terminalWaitBudget):
-		t.Fatalf("runJob did not return; control plane saw %v", srv.events())
+		must.Failf("runJob did not return", "control plane saw %v", srv.events())
 		return nil, nil, nil
 	}
 }
 
 func TestRunJob_TaskAssignmentTraceContextParentsRunSpan(t *testing.T) {
+	must := require.New(t)
 	srv, receiver, runErr := runParentedJob(t, fatalPreRunHookJobConfig(t),
 		"00-"+upstreamTraceID+"-"+upstreamSpanID+"-01")
-	if runErr == nil {
-		t.Error("runJob returned nil, want the fatal preRun hook to fail the process")
-	}
 
-	done := srv.findEvent("done")
-	if done == nil || done.GetTrace().GetTraceReference() == nil {
-		t.Fatalf("done event = %v, want a summary with a trace reference", done)
-	}
-	if got := done.GetTrace().GetTraceReference().GetTraceId(); got != upstreamTraceID {
-		t.Errorf("done trace_reference.trace_id = %s, want the assignment's %s", got, upstreamTraceID)
-	}
+	t.Run("run fails on the fatal preRun hook", func(t *testing.T) {
+		must := require.New(t)
+		must.Error(runErr, "the fatal preRun hook should fail the process")
+	})
+
+	t.Run("done event references the assignment trace", func(t *testing.T) {
+		must := require.New(t)
+		done := srv.findEvent("done")
+		must.NotNil(done.GetTrace().GetTraceReference(),
+			"done event %v should carry a trace reference", done)
+		must.Equal(upstreamTraceID, done.GetTrace().GetTraceReference().GetTraceId(),
+			"done trace_reference.trace_id should be the assignment's trace")
+	})
 
 	root, seen := receiver.span("invoke_agent stirrup")
-	if root == nil {
-		t.Fatalf("no exported invoke_agent stirrup span; received %s", strings.Join(seen, ", "))
-	}
-	wantTrace, _ := hex.DecodeString(upstreamTraceID)
-	wantParent, _ := hex.DecodeString(upstreamSpanID)
-	if !bytes.Equal(root.GetTraceId(), wantTrace) {
-		t.Errorf("exported run span trace ID = %x, want %s", root.GetTraceId(), upstreamTraceID)
-	}
-	if !bytes.Equal(root.GetParentSpanId(), wantParent) {
-		t.Errorf("exported run span parent = %x, want the assignment's span %s", root.GetParentSpanId(), upstreamSpanID)
-	}
+	must.NotNil(root, "no exported invoke_agent stirrup span; received %s", strings.Join(seen, ", "))
+
+	t.Run("run span joins the assignment trace", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(upstreamTraceID, hex.EncodeToString(root.GetTraceId()),
+			"exported run span trace ID should be the assignment's trace")
+	})
+
+	t.Run("run span is a child of the assignment span", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(upstreamSpanID, hex.EncodeToString(root.GetParentSpanId()),
+			"exported run span parent should be the assignment's span")
+	})
 }
 
 func TestRunJob_UnsampledTaskAssignmentExportsNothing(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 	provider, requests := startOpenAIStub(t)
 	task := followUpJobConfig(t, provider.URL, 30, 0)
 	task.FollowUpGrace = nil
 
 	srv, receiver, runErr := runParentedJob(t, task, "00-"+upstreamTraceID+"-"+upstreamSpanID+"-00")
-	if runErr != nil {
-		t.Fatalf("runJob: %v", runErr)
-	}
-	if requests.Load() == 0 {
-		t.Fatal("the run never reached the provider")
-	}
+	must.NoError(runErr, "runJob")
+	must.NotZero(requests.Load(), "the run never reached the provider")
 
 	started := srv.findEvent("run_started")
-	if started == nil || started.GetTraceReference() == nil {
-		t.Fatalf("no run_started with a trace reference; got %v", srv.events())
-	}
+	must.NotNil(started.GetTraceReference(),
+		"no run_started with a trace reference; got %v", srv.events())
 	ref := started.GetTraceReference()
-	if ref.GetSampled() {
-		t.Error("run_started reports sampled: true under an unsampled parent")
-	}
-	if ref.GetTraceId() != upstreamTraceID {
-		t.Errorf("run_started trace_id = %s, want the assignment's %s", ref.GetTraceId(), upstreamTraceID)
-	}
-	if done := srv.findEvent("done"); done == nil || done.GetStopReason() != "success" {
-		t.Errorf("done = %v, want stop_reason success", done)
-	}
-	if n := receiver.count(); n != 0 {
+
+	t.Run("run_started is not sampled", func(t *testing.T) {
+		must := require.New(t)
+		must.False(ref.GetSampled(),
+			"run_started should not report sampled under an unsampled parent")
+	})
+
+	t.Run("run_started keeps the assignment trace ID", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal(upstreamTraceID, ref.GetTraceId(), "run_started trace_id")
+	})
+
+	t.Run("done event reports success", func(t *testing.T) {
+		must := require.New(t)
+		done := srv.findEvent("done")
+		must.Equal("success", done.GetStopReason(), "done event %v", done)
+	})
+
+	t.Run("no spans are exported", func(t *testing.T) {
+		must := require.New(t)
 		_, names := receiver.span("")
-		t.Errorf("OTLP receiver got %d spans under an unsampled parent, want none: %v", n, names)
-	}
+		must.Zero(receiver.count(),
+			"OTLP receiver got spans under an unsampled parent: %v", names)
+	})
 }

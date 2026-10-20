@@ -12,6 +12,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/rxbynerd/stirrup/harness/internal/commandoutput"
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
@@ -27,16 +30,13 @@ import (
 // matching lines, and (when git is available) a large diff and commit.
 func budgetWorkspace(t *testing.T) (string, bool) {
 	t.Helper()
+	must := require.New(t)
 	dir := t.TempDir()
 	write := func(rel, content string) {
 		t.Helper()
 		path := filepath.Join(dir, rel)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		must.NoError(os.MkdirAll(filepath.Dir(path), 0o755))
+		must.NoError(os.WriteFile(path, []byte(content), 0o644))
 	}
 	write("bundle.min.js", strings.Repeat("x", 3<<20))
 	write("lines.txt", strings.Repeat(strings.Repeat("l", 300)+"\n", 5000))
@@ -52,9 +52,8 @@ func budgetWorkspace(t *testing.T) (string, bool) {
 		t.Helper()
 		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"}, args...)...)
 		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		out, err := cmd.CombinedOutput()
+		must.NoError(err, "git %v\n%s", args, out)
 	}
 	git("init", "-q")
 	write("tracked.txt", "small\n")
@@ -111,20 +110,18 @@ func bigMCPServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
-// TestToolResultBudget_EveryBuiltinAndMCP drives every built-in tool and
-// the MCP bridge through planAndDispatch with inputs that make the tool
-// produce as much as it can, and checks no model-visible result exceeds
-// the default budget and no cut result keeps a structured envelope.
-func TestToolResultBudget_EveryBuiltinAndMCP(t *testing.T) {
+// TestToolResultBudget_BuiltinAndMCPResultsStayWithinBudget drives every
+// built-in tool and the MCP bridge through planAndDispatch with inputs that
+// make the tool produce as much as it can, and checks no model-visible result
+// exceeds the default budget and no cut result keeps a structured envelope.
+func TestToolResultBudget_BuiltinAndMCPResultsStayWithinBudget(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	dir, haveGit := budgetWorkspace(t)
 	localExec, err := executor.NewLocalExecutor(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	store, err := commandoutput.New(commandoutput.Options{RunID: "run", ArchivePath: filepath.Join(t.TempDir(), "archive.tar.gz")})
-	if err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(err)
 	t.Cleanup(func() { _ = store.Close() })
 
 	registry := buildToolRegistry(localExec, edit.NewMultiStrategy(0.8), types.ToolsConfig{}, store)
@@ -136,9 +133,8 @@ func TestToolResultBudget_EveryBuiltinAndMCP(t *testing.T) {
 		return childResult, nil
 	}))
 	srv := bigMCPServer(t)
-	if err := mcp.NewClient(registry, srv.Client()).Connect(context.Background(), types.MCPServerConfig{Name: "big", URI: srv.URL}, &stubSecretStore{}); err != nil {
-		t.Fatalf("connect MCP server: %v", err)
-	}
+	err = mcp.NewClient(registry, srv.Client()).Connect(context.Background(), types.MCPServerConfig{Name: "big", URI: srv.URL}, &stubSecretStore{})
+	must.NoError(err, "connect MCP server")
 
 	tr := newAsyncTestTransport()
 	loop := buildAsyncTestLoop(t, tr, plainEchoTool())
@@ -149,20 +145,17 @@ func TestToolResultBudget_EveryBuiltinAndMCP(t *testing.T) {
 
 	dispatch := func(t *testing.T, id, name string, input any) types.ToolResult {
 		t.Helper()
+		must := require.New(t)
 		raw, err := json.Marshal(input)
-		if err != nil {
-			t.Fatal(err)
-		}
+		must.NoError(err)
 		results, _, stall := loop.planAndDispatch(ctx, config, []types.ToolCall{{ID: id, Name: name, Input: raw}}, &stallDetector{}, "anthropic", "claude-sonnet-4-6")
-		if stall != "" || len(results) != 1 {
-			t.Fatalf("unexpected dispatch outcome: stall %q, %d results", stall, len(results))
-		}
+		must.Empty(stall, "unexpected stall")
+		must.Len(results, 1)
 		result := results[0]
-		if len(result.Content) > budget {
-			t.Fatalf("%s result is %d bytes, want <= %d", name, len(result.Content), budget)
-		}
-		if strings.Contains(result.Content, "[tool result truncated: ") && (result.Structured != nil || result.Kind != "") {
-			t.Fatalf("%s: truncated result kept its structured envelope", name)
+		must.LessOrEqual(len(result.Content), budget, "%s result size in bytes", name)
+		if strings.Contains(result.Content, "[tool result truncated: ") {
+			must.Nil(result.Structured, "%s: truncated result kept its structured envelope", name)
+			must.Empty(result.Kind, "%s: truncated result kept its kind", name)
 		}
 		return result
 	}
@@ -203,67 +196,55 @@ func TestToolResultBudget_EveryBuiltinAndMCP(t *testing.T) {
 	for _, tc := range cases {
 		covered[tc.name] = true
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			if tc.needsGit && !haveGit {
 				t.Skip("git is not installed")
 			}
-			if !registered[tc.name] {
-				t.Fatalf("tool %q is not registered", tc.name)
-			}
+			must.True(registered[tc.name], "tool %q is not registered", tc.name)
 			result := dispatch(t, "tc_"+tc.name, tc.name, tc.input)
-			if tc.wantTrunc && !strings.Contains(result.Content, "[tool result truncated: ") {
-				t.Fatalf("expected %s to hit the budget, got %d bytes", tc.name, len(result.Content))
+			if tc.wantTrunc {
+				must.Contains(result.Content, "[tool result truncated: ", "expected the result to hit the budget, got %d bytes", len(result.Content))
 			}
 		})
 	}
 
 	t.Run("read_command_output", func(t *testing.T) {
+		must := require.New(t)
 		run := dispatch(t, "tc_spill", "run_command", map[string]any{"command": "head -c 3000000 /dev/zero | tr '\\0' 'r'"})
 		var spilled struct {
 			StdoutRef string `json:"stdout_ref"`
 		}
-		if err := json.Unmarshal(run.Structured, &spilled); err != nil || spilled.StdoutRef == "" {
-			t.Fatalf("run_command did not spill to a reference: %v", err)
-		}
+		must.NoError(json.Unmarshal(run.Structured, &spilled), "run_command structured result")
+		must.NotEmpty(spilled.StdoutRef, "run_command did not spill to a reference")
 		dispatch(t, "tc_read", "read_command_output", map[string]any{"ref": spilled.StdoutRef, "limit": commandoutput.ReadMaxBytes})
 	})
 
 	t.Run("read_file single long line", func(t *testing.T) {
+		must := require.New(t)
 		result := dispatch(t, "tc_minified", "read_file", map[string]any{"path": "bundle.min.js"})
-		if !strings.Contains(result.Content, " [line truncated: ") || !strings.Contains(result.Content, " of 3145728 bytes shown]") {
-			t.Fatalf("expected a per-line marker naming the 3 MiB line, got %d bytes", len(result.Content))
-		}
+		must.Contains(result.Content, " [line truncated: ", "expected a per-line marker, got %d bytes", len(result.Content))
+		must.Contains(result.Content, " of 3145728 bytes shown]", "expected the marker to name the 3 MiB line")
 	})
 
 	t.Run("edit_file mismatch hint", func(t *testing.T) {
-		if err := os.WriteFile(filepath.Join(dir, "tabs.go"), []byte("func a() {\n\tx := 1\n\ty := 2\n}\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		must := require.New(t)
+		must.NoError(os.WriteFile(filepath.Join(dir, "tabs.go"), []byte("func a() {\n\tx := 1\n\ty := 2\n}\n"), 0o644))
 		result := dispatch(t, "tc_hint", "edit_file", map[string]any{"path": "tabs.go", "operation": "replace", "old_string": "    x := 1\n    y := 2", "new_string": "z := 3"})
-		if !result.IsError {
-			t.Fatalf("expected an error result, got %q", result.Content)
-		}
-		for _, want := range []string{"lines 2-3", "the file indents with tabs"} {
-			if !strings.Contains(result.Content, want) {
-				t.Errorf("model-visible result missing %q: %s", want, result.Content)
-			}
-		}
+		must.True(result.IsError, "expected an error result, got %q", result.Content)
+		must.Contains(result.Content, "lines 2-3")
+		must.Contains(result.Content, "the file indents with tabs")
 	})
 
 	t.Run("run_command without capture", func(t *testing.T) {
+		must := require.New(t)
 		loop.Tools = buildToolRegistry(localExec, edit.NewMultiStrategy(0.8), types.ToolsConfig{}, nil)
 		t.Cleanup(func() { loop.Tools = registry })
 		result := dispatch(t, "tc_uncaptured", "run_command", map[string]any{"command": "head -c 3000000 /dev/zero | tr '\\0' 'r'; echo build failed >&2; exit 1"})
-		if !strings.Contains(result.Content, "[run_command stdout truncated: ") {
-			t.Fatalf("expected a truncation marker in %d bytes", len(result.Content))
-		}
-		if !strings.HasSuffix(result.Content, "\nSTDERR:\nbuild failed\n\n[exit code: 1]") {
-			t.Fatalf("stderr or exit code lost; result ends %q", result.Content[len(result.Content)-80:])
-		}
+		must.Contains(result.Content, "[run_command stdout truncated: ", "expected a truncation marker, got %d bytes", len(result.Content))
+		must.True(strings.HasSuffix(result.Content, "\nSTDERR:\nbuild failed\n\n[exit code: 1]"), "stderr or exit code lost from the result tail")
 	})
 
 	for name := range registered {
-		if !covered[name] {
-			t.Errorf("registered tool %q has no budget case", name)
-		}
+		check.True(covered[name], "registered tool %q has no budget case", name)
 	}
 }

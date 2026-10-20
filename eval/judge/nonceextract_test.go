@@ -3,12 +3,13 @@ package judge
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // testdata/nonce_extraction_vectors.json is a byte-identical copy of
@@ -31,46 +32,33 @@ var vectorErrors = map[string]error{
 	"conflict":    errConflictingNonceObjects,
 }
 
-func TestFindNonceObject_Vectors(t *testing.T) {
+func TestFindNonceObject_MatchesSharedVectors(t *testing.T) {
+	must := require.New(t)
 	raw, err := os.ReadFile(filepath.Join("testdata", "nonce_extraction_vectors.json"))
-	if err != nil {
-		t.Fatalf("read vectors: %v", err)
-	}
+	must.NoError(err, "read vectors")
 	var v extractionVectors
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&v); err != nil {
-		t.Fatalf("decode vectors: %v", err)
-	}
-	if len(v.Cases) == 0 {
-		t.Fatal("vectors file has no cases")
-	}
+	must.NoError(dec.Decode(&v), "decode vectors")
+	must.NotEmpty(v.Cases, "vectors file has no cases")
+
 	for _, tc := range v.Cases {
 		t.Run(tc.Name, func(t *testing.T) {
-			if (tc.Error == "") == (len(tc.Members) == 0) {
-				t.Fatalf("case must set exactly one of members and error")
-			}
+			must := require.New(t)
+			must.NotEqual(tc.Error != "", len(tc.Members) > 0, "case must set exactly one of members and error")
+
 			found, err := findNonceObject(tc.Input, tc.Nonce)
 			if tc.Error != "" {
 				want, ok := vectorErrors[tc.Error]
-				if !ok {
-					t.Fatalf("unknown error name %q", tc.Error)
-				}
-				if !errors.Is(err, want) {
-					t.Fatalf("findNonceObject = %v, %v; want error %v", found.members, err, want)
-				}
+				must.True(ok, "unknown error name %q", tc.Error)
+				must.ErrorIs(err, want)
 				return
 			}
-			if err != nil {
-				t.Fatalf("findNonceObject: %v", err)
-			}
+			must.NoError(err)
+
 			got, err := json.Marshal(found.members)
-			if err != nil {
-				t.Fatalf("marshal members: %v", err)
-			}
-			if !sameJSON(string(got), string(tc.Members)) {
-				t.Fatalf("members = %s, want %s", got, tc.Members)
-			}
+			must.NoError(err, "marshal members")
+			must.True(sameJSON(string(got), string(tc.Members)), "members = %s, want %s", got, tc.Members)
 		})
 	}
 }
@@ -83,14 +71,11 @@ func TestFindNonceObject_ScanBudgetFailsClosed(t *testing.T) {
 		"braces after match":  verdict + strings.Repeat("{", 200_000),
 	} {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			start := time.Now()
-			found, err := findNonceObject(in, nonce)
-			if !errors.Is(err, errNonceScanBudget) {
-				t.Fatalf("findNonceObject = %v, %v; want the scan budget error", found.members, err)
-			}
-			if elapsed := time.Since(start); elapsed > 5*time.Second {
-				t.Fatalf("extraction took %s; the scan budget is not bounding work", elapsed)
-			}
+			_, err := findNonceObject(in, nonce)
+			must.ErrorIs(err, errNonceScanBudget)
+			must.LessOrEqual(time.Since(start), 5*time.Second, "the scan budget is not bounding work")
 		})
 	}
 }
@@ -99,23 +84,26 @@ func TestFindNonceObject_CountsCandidatesAndMatches(t *testing.T) {
 	const nonce = "0123456789abcdef0123456789abcdef"
 	match := `{"nonce":"` + nonce + `","verdict":"fail"}`
 	cases := []struct {
+		name                string
 		in                  string
 		candidates, matches int
 	}{
-		{in: "prose { never closed", candidates: 0},
-		{in: `{"a":1} {bad json}`, candidates: 2},
-		{in: match, candidates: 1, matches: 1},
-		{in: match + ` {"x":1} ` + match, candidates: 3, matches: 2},
+		{name: "unclosed brace is not a candidate", in: "prose { never closed", candidates: 0},
+		{name: "candidates without a match", in: `{"a":1} {bad json}`, candidates: 2},
+		{name: "single matching object", in: match, candidates: 1, matches: 1},
+		{name: "matches among other candidates", in: match + ` {"x":1} ` + match, candidates: 3, matches: 2},
 	}
 	for _, tc := range cases {
-		found, _ := findNonceObject(tc.in, nonce)
-		if found.candidates != tc.candidates || found.matches != tc.matches {
-			t.Errorf("findNonceObject(%q): %d candidates, %d matches; want %d, %d", tc.in, found.candidates, found.matches, tc.candidates, tc.matches)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			found, _ := findNonceObject(tc.in, nonce)
+			must.Equal(tc.candidates, found.candidates)
+			must.Equal(tc.matches, found.matches)
+		})
 	}
 }
 
-func TestMatchBrace(t *testing.T) {
+func TestMatchBrace_FindsObjectEnd(t *testing.T) {
 	cases := []struct {
 		name string
 		text string
@@ -131,19 +119,23 @@ func TestMatchBrace(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			end, scanned := matchBrace(tc.text, 0, nonceScanBudget)
 			if tc.want == "" {
-				if end != -1 || scanned != len(tc.text) {
-					t.Fatalf("matchBrace = %d, %d; want -1, %d", end, scanned, len(tc.text))
-				}
+				must.Equal(-1, end)
+				must.Equal(len(tc.text), scanned)
 				return
 			}
-			if end < 0 || tc.text[:end+1] != tc.want || scanned != end+1 {
-				t.Fatalf("matchBrace = %d, %d; want the object %q", end, scanned, tc.want)
-			}
+			must.GreaterOrEqual(end, 0, "no closing brace found")
+			must.Equal(tc.want, tc.text[:end+1])
+			must.Equal(end+1, scanned)
 		})
 	}
-	if end, scanned := matchBrace(`{"a":1}`, 0, 3); end != -1 || scanned != 3 {
-		t.Errorf("matchBrace past its budget = %d, %d; want -1, 3", end, scanned)
-	}
+}
+
+func TestMatchBrace_StopsAtBudget(t *testing.T) {
+	must := require.New(t)
+	end, scanned := matchBrace(`{"a":1}`, 0, 3)
+	must.Equal(-1, end)
+	must.Equal(3, scanned)
 }

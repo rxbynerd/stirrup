@@ -12,80 +12,75 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 )
 
-func TestResolveLLMConfig(t *testing.T) {
+func TestResolveLLMConfig_DefaultsAndExplicitBlocks(t *testing.T) {
 	temp := 0.1
 
 	t.Run("built-in default", func(t *testing.T) {
+		must := require.New(t)
 		cfg, err := ResolveLLMConfig(nil, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if cfg.Provider != "anthropic" || cfg.Model != "claude-haiku-5-5" || cfg.APIKeyRef != "secret://ANTHROPIC_API_KEY" {
-			t.Errorf("cfg = %+v", cfg)
-		}
+		must.NoError(err)
+		must.Equal("anthropic", cfg.Provider)
+		must.Equal("claude-haiku-5-5", cfg.Model)
+		must.Equal("secret://ANTHROPIC_API_KEY", cfg.APIKeyRef)
 	})
 
 	t.Run("anthropic defaults fill only missing fields", func(t *testing.T) {
+		must := require.New(t)
 		cfg, err := ResolveLLMConfig(nil, &types.JudgeLLMConfig{Model: "claude-other"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if cfg.Model != "claude-other" || cfg.APIKeyRef != "secret://ANTHROPIC_API_KEY" {
-			t.Errorf("cfg = %+v", cfg)
-		}
+		must.NoError(err)
+		must.Equal("claude-other", cfg.Model)
+		must.Equal("secret://ANTHROPIC_API_KEY", cfg.APIKeyRef)
 	})
 
 	t.Run("explicit block ignores defaults", func(t *testing.T) {
+		must := require.New(t)
 		explicit := &types.JudgeLLMConfig{Model: "explicit", Temperature: &temp}
 		defaults := &types.JudgeLLMConfig{Provider: "openai-compatible", Model: "default", BaseURL: "https://gw.example/v1"}
 		cfg, err := ResolveLLMConfig(explicit, defaults)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if cfg.Provider != "anthropic" || cfg.Model != "explicit" || cfg.BaseURL != "" || cfg.Temperature == nil {
-			t.Errorf("cfg = %+v", cfg)
-		}
+		must.NoError(err)
+		must.Equal("anthropic", cfg.Provider)
+		must.Equal("explicit", cfg.Model)
+		must.Empty(cfg.BaseURL)
+		must.NotNil(cfg.Temperature)
 	})
 
 	t.Run("explicit block must name a model", func(t *testing.T) {
-		if _, err := ResolveLLMConfig(&types.JudgeLLMConfig{Provider: "anthropic"}, nil); err == nil {
-			t.Error("expected an error: an explicit block does not inherit the built-in model")
-		}
+		must := require.New(t)
+		_, err := ResolveLLMConfig(&types.JudgeLLMConfig{Provider: "anthropic"}, nil)
+		must.Error(err, "an explicit block does not inherit the built-in model")
 	})
 
 	t.Run("anthropic key is never defaulted for another provider", func(t *testing.T) {
+		must := require.New(t)
 		cfg, err := ResolveLLMConfig(nil, &types.JudgeLLMConfig{Provider: "openai-compatible", Model: "m", BaseURL: "https://gw.example/v1"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if cfg.APIKeyRef != "" {
-			t.Errorf("APIKeyRef = %q, want empty so no Anthropic key reaches another endpoint", cfg.APIKeyRef)
-		}
+		must.NoError(err)
+		must.Empty(cfg.APIKeyRef, "no Anthropic key may reach another endpoint")
 	})
 
 	t.Run("anthropic model is never defaulted for another provider", func(t *testing.T) {
+		must := require.New(t)
 		_, err := ResolveLLMConfig(nil, &types.JudgeLLMConfig{Provider: "openai-compatible", BaseURL: "https://gw.example/v1"})
-		if err == nil || !strings.Contains(err.Error(), "model is required") {
-			t.Errorf("err = %v", err)
-		}
+		must.ErrorContains(err, "model is required")
 	})
 
 	t.Run("openai-compatible requires a base URL", func(t *testing.T) {
+		must := require.New(t)
 		_, err := ResolveLLMConfig(nil, &types.JudgeLLMConfig{Provider: "openai-compatible", Model: "m"})
-		if err == nil || !strings.Contains(err.Error(), "base_url") {
-			t.Errorf("err = %v", err)
-		}
+		must.ErrorContains(err, "base_url")
 	})
 
 	t.Run("invalid defaults are rejected", func(t *testing.T) {
+		must := require.New(t)
 		_, err := ResolveLLMConfig(nil, &types.JudgeLLMConfig{APIKeyRef: "sk-raw-key"})
-		if err == nil || !strings.Contains(err.Error(), "secret://") {
-			t.Errorf("err = %v", err)
-		}
+		must.ErrorContains(err, "secret://")
 	})
 }
 
@@ -108,31 +103,25 @@ func TestResolveLLMConfig_EndpointPolicy(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			cfg, err := ResolveLLMConfig(&tc.cfg, nil)
 			if tc.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-					t.Fatalf("err = %v, want one containing %q", err, tc.wantErr)
-				}
+				must.ErrorContains(err, tc.wantErr)
 				return
 			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if cfg.APIKeyRef != tc.wantRef {
-				t.Errorf("APIKeyRef = %q, want %q", cfg.APIKeyRef, tc.wantRef)
-			}
+			must.NoError(err)
+			must.Equal(tc.wantRef, cfg.APIKeyRef)
 		})
 	}
 
 	t.Run("invocation defaults follow the same rule", func(t *testing.T) {
+		must := require.New(t)
 		_, err := ResolveLLMConfig(nil, &types.JudgeLLMConfig{BaseURL: "https://gw.example/v1"})
-		if err == nil || !strings.Contains(err.Error(), "api_key_ref is required") {
-			t.Fatalf("err = %v", err)
-		}
+		must.ErrorContains(err, "api_key_ref is required")
 	})
 }
 
-func TestCheckEndpoint(t *testing.T) {
+func TestCheckEndpoint_LookupPolicy(t *testing.T) {
 	resolvesTo := func(addrs ...string) func(context.Context, string, string) ([]netip.Addr, error) {
 		return func(context.Context, string, string) ([]netip.Addr, error) {
 			var out []netip.Addr
@@ -166,20 +155,21 @@ func TestCheckEndpoint(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			check := assert.New(t)
+			must := require.New(t)
 			lookup := tc.lookup
 			if lookup == nil {
 				lookup = func(context.Context, string, string) ([]netip.Addr, error) {
-					t.Error("lookup called")
+					check.Fail("lookup must not run for an address literal or the default endpoint")
 					return nil, errors.New("unexpected lookup")
 				}
 			}
 			err := checkEndpoint(context.Background(), tc.cfg, lookup)
-			switch {
-			case tc.wantErr == "" && err != nil:
-				t.Fatalf("err = %v, want accepted", err)
-			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
-				t.Fatalf("err = %v, want one containing %q", err, tc.wantErr)
+			if tc.wantErr != "" {
+				must.ErrorContains(err, tc.wantErr)
+				return
 			}
+			must.NoError(err)
 		})
 	}
 }
@@ -203,139 +193,162 @@ func TestNewClient_RefusesForbiddenAddressesAtDialTime(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c, err := NewClient(types.JudgeLLMConfig{Provider: "anthropic", Model: "m", BaseURL: tc.baseURL, TimeoutSeconds: 5}, tc.key)
-			if err != nil {
-				t.Fatal(err)
-			}
+			must.NoError(err)
 			_, err = c.Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-			switch {
-			case tc.wantErr == "" && err != nil:
-				t.Fatalf("err = %v, want the call to reach the server", err)
-			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
-				t.Fatalf("err = %v, want one containing %q", err, tc.wantErr)
+			if tc.wantErr != "" {
+				must.ErrorContains(err, tc.wantErr)
+				return
 			}
+			must.NoError(err, "the call should reach the server")
 		})
 	}
 }
 
-func TestCheckDialAddress(t *testing.T) {
-	for _, address := range []string{"169.254.169.254:80", "[fe80::1%lo0]:443", "[fd00:ec2::254]:80", "0.0.0.0:443", "no-port", "host.example:443"} {
-		if err := checkDialAddress(address, false); err == nil {
-			t.Errorf("checkDialAddress(%q) accepted", address)
-		}
-	}
-	for _, address := range []string{"127.0.0.1:443", "[::1]:80", "10.0.0.2:8000", "93.184.216.34:443"} {
-		if err := checkDialAddress(address, false); err != nil {
-			t.Errorf("checkDialAddress(%q) = %v", address, err)
-		}
-	}
-	if err := checkDialAddress("93.184.216.34:80", true); err == nil {
-		t.Error("cleartext key to a public address accepted")
-	}
-}
-
-func TestJoinEndpoint(t *testing.T) {
-	cases := []struct{ base, path, want string }{
-		{"https://api.anthropic.com", "/v1/messages", "https://api.anthropic.com/v1/messages"},
-		{"https://api.anthropic.com/", "/v1/messages", "https://api.anthropic.com/v1/messages"},
-		{"https://openrouter.ai/api/v1", "/chat/completions", "https://openrouter.ai/api/v1/chat/completions"},
-		{"http://localhost:8001/v1/", "/chat/completions", "http://localhost:8001/v1/chat/completions"},
-		{"https://gw.example/v1?api-version=2", "/chat/completions", "https://gw.example/v1/chat/completions?api-version=2"},
+func TestCheckDialAddress_IPPolicy(t *testing.T) {
+	cases := []struct {
+		name        string
+		address     string
+		keyOverHTTP bool
+		wantErr     bool
+	}{
+		{name: "metadata IPv4 address", address: "169.254.169.254:80", wantErr: true},
+		{name: "link-local IPv6 address", address: "[fe80::1%lo0]:443", wantErr: true},
+		{name: "metadata IPv6 address", address: "[fd00:ec2::254]:80", wantErr: true},
+		{name: "unspecified IPv4 address", address: "0.0.0.0:443", wantErr: true},
+		{name: "address without port", address: "no-port", wantErr: true},
+		{name: "host name", address: "host.example:443", wantErr: true},
+		{name: "loopback IPv4 address", address: "127.0.0.1:443"},
+		{name: "loopback IPv6 address", address: "[::1]:80"},
+		{name: "private IPv4 address", address: "10.0.0.2:8000"},
+		{name: "public IPv4 address", address: "93.184.216.34:443"},
+		{name: "cleartext key to public address", address: "93.184.216.34:80", keyOverHTTP: true, wantErr: true},
 	}
 	for _, tc := range cases {
-		got, err := joinEndpoint(tc.base, tc.path)
-		if err != nil || got != tc.want {
-			t.Errorf("joinEndpoint(%q, %q) = %q, %v; want %q", tc.base, tc.path, got, err, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			err := checkDialAddress(tc.address, tc.keyOverHTTP)
+			if tc.wantErr {
+				must.Error(err)
+				return
+			}
+			must.NoError(err)
+		})
 	}
 }
 
-func TestNewClientDispatchesOnProvider(t *testing.T) {
-	anth, err := NewClient(types.JudgeLLMConfig{Provider: "anthropic", Model: "m"}, "k")
-	if err != nil {
-		t.Fatal(err)
+func TestJoinEndpoint_JoinsBaseAndPath(t *testing.T) {
+	cases := []struct{ name, base, path, want string }{
+		{name: "bare host", base: "https://api.anthropic.com", path: "/v1/messages", want: "https://api.anthropic.com/v1/messages"},
+		{name: "trailing slash on base", base: "https://api.anthropic.com/", path: "/v1/messages", want: "https://api.anthropic.com/v1/messages"},
+		{name: "base with path prefix", base: "https://openrouter.ai/api/v1", path: "/chat/completions", want: "https://openrouter.ai/api/v1/chat/completions"},
+		{name: "local endpoint with trailing slash", base: "http://localhost:8001/v1/", path: "/chat/completions", want: "http://localhost:8001/v1/chat/completions"},
+		{name: "query string stays after the path", base: "https://gw.example/v1?api-version=2", path: "/chat/completions", want: "https://gw.example/v1/chat/completions?api-version=2"},
 	}
-	if _, ok := anth.(*anthropicClient); !ok {
-		t.Errorf("anthropic provider built %T", anth)
-	}
-
-	oa, err := NewClient(types.JudgeLLMConfig{Provider: "openai-compatible", Model: "m", BaseURL: "https://gw.example/v1"}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := oa.(*openaiClient); !ok {
-		t.Errorf("openai-compatible provider built %T", oa)
-	}
-
-	if _, err := NewClient(types.JudgeLLMConfig{Provider: "bedrock", Model: "m"}, "k"); err == nil {
-		t.Error("expected an error for an unsupported provider")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			got, err := joinEndpoint(tc.base, tc.path)
+			must.NoError(err)
+			must.Equal(tc.want, got)
+		})
 	}
 }
 
-func TestNewClientAppliesConfiguredTimeout(t *testing.T) {
-	c, err := NewClient(types.JudgeLLMConfig{Provider: "anthropic", Model: "m", TimeoutSeconds: 7}, "k")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := c.(*anthropicClient).http.Timeout.Seconds(); got != 7 {
-		t.Errorf("timeout = %vs, want 7s", got)
-	}
+func TestNewClient_DispatchesOnProvider(t *testing.T) {
+	t.Run("anthropic", func(t *testing.T) {
+		must := require.New(t)
+		client, err := NewClient(types.JudgeLLMConfig{Provider: "anthropic", Model: "m"}, "k")
+		must.NoError(err)
+		must.IsType((*anthropicClient)(nil), client)
+	})
 
-	c, err = NewClient(types.JudgeLLMConfig{Provider: "anthropic", Model: "m"}, "k")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := c.(*anthropicClient).http.Timeout.Seconds(); got != 30 {
-		t.Errorf("default timeout = %vs, want 30s", got)
-	}
+	t.Run("openai-compatible", func(t *testing.T) {
+		must := require.New(t)
+		client, err := NewClient(types.JudgeLLMConfig{Provider: "openai-compatible", Model: "m", BaseURL: "https://gw.example/v1"}, "")
+		must.NoError(err)
+		must.IsType((*openaiClient)(nil), client)
+	})
+
+	t.Run("unsupported provider", func(t *testing.T) {
+		must := require.New(t)
+		_, err := NewClient(types.JudgeLLMConfig{Provider: "bedrock", Model: "m"}, "k")
+		must.Error(err)
+	})
 }
 
-func TestResolveSecretRef(t *testing.T) {
+func TestNewClient_AppliesConfiguredTimeout(t *testing.T) {
+	t.Run("configured timeout", func(t *testing.T) {
+		must := require.New(t)
+		c, err := NewClient(types.JudgeLLMConfig{Provider: "anthropic", Model: "m", TimeoutSeconds: 7}, "k")
+		must.NoError(err)
+		must.Equal(7*time.Second, c.(*anthropicClient).http.Timeout)
+	})
+
+	t.Run("default timeout", func(t *testing.T) {
+		must := require.New(t)
+		c, err := NewClient(types.JudgeLLMConfig{Provider: "anthropic", Model: "m"}, "k")
+		must.NoError(err)
+		must.Equal(30*time.Second, c.(*anthropicClient).http.Timeout)
+	})
+}
+
+func TestResolveSecretRef_ReadsEnvAndFileRefs(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("JUDGE_TEST_KEY", "  env-secret\n")
-	t.Setenv("JUDGE_EMPTY_KEY", "")
 	keyFile := filepath.Join(t.TempDir(), "key")
-	if err := os.WriteFile(keyFile, []byte("file-secret\n"), 0o600); err != nil {
-		t.Fatal(err)
+	must.NoError(os.WriteFile(keyFile, []byte("file-secret\n"), 0o600))
+
+	cases := []struct{ name, ref, want string }{
+		{name: "environment variable", ref: "secret://JUDGE_TEST_KEY", want: "env-secret"},
+		{name: "file", ref: "secret://file://" + keyFile, want: "file-secret"},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			got, err := resolveSecretRef(tc.ref)
+			must.NoError(err)
+			must.Equal(tc.want, got)
+		})
+	}
+}
+
+func TestResolveSecretRef_RejectsMalformedAndRawRefs(t *testing.T) {
+	must := require.New(t)
+	t.Setenv("JUDGE_EMPTY_KEY", "")
 	emptyFile := filepath.Join(t.TempDir(), "empty")
-	if err := os.WriteFile(emptyFile, []byte(" \n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	must.NoError(os.WriteFile(emptyFile, []byte(" \n"), 0o600))
 
-	good := map[string]string{
-		"secret://JUDGE_TEST_KEY":    "env-secret",
-		"secret://file://" + keyFile: "file-secret",
+	cases := []struct {
+		name    string
+		ref     string
+		wantMsg string
+	}{
+		{name: "empty environment variable", ref: "secret://JUDGE_EMPTY_KEY", wantMsg: "JUDGE_EMPTY_KEY"},
+		{name: "unset environment variable", ref: "secret://JUDGE_UNSET_KEY_XYZ", wantMsg: "JUDGE_UNSET_KEY_XYZ"},
+		{name: "empty name", ref: "secret://", wantMsg: "names no secret"},
+		{name: "empty file path", ref: "secret://file://", wantMsg: "names no file"},
+		{name: "empty file", ref: "secret://file://" + emptyFile, wantMsg: "is empty"},
+		{name: "missing file", ref: "secret://file:///no/such/file", wantMsg: "reading secret file"},
+		{name: "unsupported scheme", ref: "secret://ssm:///prod/judge-key", wantMsg: "not supported"},
+		{name: "key material as environment variable name", ref: "secret://sk-ant-api03-REALKEYMATERIAL", wantMsg: "environment variable name"},
+		{name: "environment variable name starting with a digit", ref: "secret://9STARTS_WITH_DIGIT", wantMsg: "environment variable name"},
+		{name: "environment variable name with a space", ref: "secret://HAS SPACE", wantMsg: "environment variable name"},
+		{name: "raw literal key", ref: "sk-literal-key", wantMsg: "raw credentials are not permitted"},
+		{name: "vault URI", ref: "vault://prod/judge", wantMsg: "raw credentials are not permitted"},
+		{name: "https URL", ref: "https://example.com/secret-key-material1", wantMsg: "raw credentials are not permitted"},
 	}
-	for ref, want := range good {
-		got, err := resolveSecretRef(ref)
-		if err != nil || got != want {
-			t.Errorf("resolveSecretRef(%q) = %q, %v; want %q", ref, got, err, want)
-		}
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			_, err := resolveSecretRef(tc.ref)
+			must.ErrorContains(err, tc.wantMsg)
 
-	bad := map[string]string{
-		"secret://JUDGE_EMPTY_KEY":                 "JUDGE_EMPTY_KEY",
-		"secret://JUDGE_UNSET_KEY_XYZ":             "JUDGE_UNSET_KEY_XYZ",
-		"secret://":                                "names no secret",
-		"secret://file://":                         "names no file",
-		"secret://file://" + emptyFile:             "is empty",
-		"secret://file:///no/such/file":            "reading secret file",
-		"secret://ssm:///prod/judge-key":           "not supported",
-		"secret://sk-ant-api03-REALKEYMATERIAL":    "environment variable name",
-		"secret://9STARTS_WITH_DIGIT":              "environment variable name",
-		"secret://HAS SPACE":                       "environment variable name",
-		"sk-literal-key":                           "raw credentials are not permitted",
-		"vault://prod/judge":                       "raw credentials are not permitted",
-		"https://example.com/secret-key-material1": "raw credentials are not permitted",
-	}
-	for ref, wantMsg := range bad {
-		got, err := resolveSecretRef(ref)
-		if err == nil || !strings.Contains(err.Error(), wantMsg) {
-			t.Errorf("resolveSecretRef(%q) = %q, %v; want error containing %q", ref, got, err, wantMsg)
-			continue
-		}
-		if name := strings.TrimPrefix(ref, "secret://"); len(name) > 0 && !strings.HasPrefix(name, "JUDGE_") && !strings.HasPrefix(name, "file://") && strings.Contains(err.Error(), name) {
-			t.Errorf("resolveSecretRef(%q) echoes the reference: %v", ref, err)
-		}
+			name := strings.TrimPrefix(tc.ref, "secret://")
+			if name != "" && !strings.HasPrefix(name, "JUDGE_") && !strings.HasPrefix(name, "file://") {
+				must.NotContains(err.Error(), name, "the error must not echo the reference")
+			}
+		})
 	}
 }

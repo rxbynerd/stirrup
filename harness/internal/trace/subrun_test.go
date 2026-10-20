@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
 	tracereader "github.com/rxbynerd/stirrup/types/trace"
@@ -52,6 +53,7 @@ func eventsOfKind(events []Event, kind EventKind) []Event {
 }
 
 func TestJSONLTraceEmitter_TagsPerRunRecords(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 	emitter.Start("run-p", nil)
@@ -62,33 +64,29 @@ func TestJSONLTraceEmitter_TagsPerRunRecords(t *testing.T) {
 	emitter.RecordToolCall(types.ToolCallTrace{ID: "fwd", Name: "read_file", RunID: "run-p/sub-1", ParentRunID: "run-p"})
 	emitter.RecordHookExecution(context.Background(), types.HookExecution{Phase: "preRun"})
 	emitter.RecordCommandOutput(types.CommandOutputRecord{RunID: "run-p/sub-1", ParentRunID: "run-p", ToolUseID: "fwd"})
-	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
+	_, err := emitter.Finish(context.Background(), "success")
+	must.NoError(err)
 
 	events := readEvents(t, buf.Bytes())
 	type tags struct{ runID, parentRunID string }
-	check := func(kind EventKind, want []tags) {
+	assertTags := func(kind EventKind, want []tags) {
 		t.Helper()
 		got := eventsOfKind(events, kind)
-		if len(got) != len(want) {
-			t.Fatalf("%s: got %d events, want %d", kind, len(got), len(want))
-		}
+		must.Len(got, len(want), "%s events", kind)
 		for i, ev := range got {
-			if ev.RunID != want[i].runID || ev.ParentRunID != want[i].parentRunID {
-				t.Errorf("%s[%d] tags = (%q, %q), want (%q, %q)", kind, i, ev.RunID, ev.ParentRunID, want[i].runID, want[i].parentRunID)
-			}
+			gotTags := tags{ev.RunID, ev.ParentRunID}
+			must.Equal(want[i], gotTags, "%s[%d]", kind, i)
 		}
 	}
 	own := tags{"run-p", ""}
 	child := tags{"run-p/sub-1", "run-p"}
-	check(EventKindTurnRecord, []tags{own, child})
-	check(EventKindToolCallRecord, []tags{own, child})
-	check(EventKindHookRecord, []tags{own})
-	check(EventKindCommandOutputRecord, []tags{child})
+	assertTags(EventKindTurnRecord, []tags{own, child})
+	assertTags(EventKindToolCallRecord, []tags{own, child})
+	assertTags(EventKindHookRecord, []tags{own})
+	assertTags(EventKindCommandOutputRecord, []tags{child})
 }
 
-func TestJSONLTraceEmitter_SubRunLines(t *testing.T) {
+func TestJSONLTraceEmitter_SubRunEvents_ShapeAndRedaction(t *testing.T) {
 	childConfig := &types.RunConfig{
 		RunID:    "run-p/sub-1",
 		Mode:     "research",
@@ -115,41 +113,37 @@ func TestJSONLTraceEmitter_SubRunLines(t *testing.T) {
 		{"debug build", true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var buf bytes.Buffer
 			emitter := NewJSONLTraceEmitter(&buf, tc.redactionDisabled)
 			emitter.Start("run-p", nil)
 			emitter.RecordSubRunStarted("run-p/sub-1", "run-p", startedAt, childConfig)
 			emitter.RecordSubRunFinished(summary)
 
-			if got := strings.Contains(buf.String(), "secret://CHILD_KEY"); got != tc.wantRawKey {
-				t.Errorf("raw child key on disk = %v, want %v:\n%s", got, tc.wantRawKey, buf.String())
-			}
+			must.Equal(tc.wantRawKey, strings.Contains(buf.String(), "secret://CHILD_KEY"),
+				"raw child key on disk:\n%s", buf.String())
+
 			events := readEvents(t, buf.Bytes())
 			started := pickEvent(t, events, EventKindSubRunStarted)
-			if started.RunID != "run-p/sub-1" || started.ParentRunID != "run-p" {
-				t.Errorf("subrun_started ids = (%q, %q)", started.RunID, started.ParentRunID)
-			}
-			if started.Config == nil || started.Config.Mode != "research" {
-				t.Errorf("subrun_started config = %+v, want the child's config", started.Config)
-			}
-			if started.StartedAt == nil || !started.StartedAt.Equal(startedAt) {
-				t.Errorf("subrun_started startedAt = %v, want %v", started.StartedAt, startedAt)
-			}
+			must.Equal("run-p/sub-1", started.RunID)
+			must.Equal("run-p", started.ParentRunID)
+			must.NotNil(started.Config, "subrun_started should carry the child's config")
+			must.Equal("research", started.Config.Mode)
+			must.NotNil(started.StartedAt)
+			must.True(started.StartedAt.Equal(startedAt), "subrun_started startedAt = %v, want %v", *started.StartedAt, startedAt)
+
 			finished := pickEvent(t, events, EventKindSubRunFinished)
-			if finished.RunID != "run-p/sub-1" || finished.ParentRunID != "run-p" {
-				t.Errorf("subrun_finished ids = (%q, %q)", finished.RunID, finished.ParentRunID)
-			}
-			if finished.SubRun == nil || *finished.SubRun != summary {
-				t.Errorf("subrun_finished summary = %+v, want %+v", finished.SubRun, summary)
-			}
-			if finished.Trace != nil {
-				t.Errorf("subrun_finished carries a full trace; want the summary only")
-			}
+			must.Equal("run-p/sub-1", finished.RunID)
+			must.Equal("run-p", finished.ParentRunID)
+			must.NotNil(finished.SubRun)
+			must.Equal(summary, *finished.SubRun)
+			must.Nil(finished.Trace, "subrun_finished should carry the summary only")
 		})
 	}
 }
 
 func TestNestedJSONLEmitter_ReportsSubRunLifecycle(t *testing.T) {
+	must := require.New(t)
 	root := &subRunRecordingEmitter{}
 	child := NewNestedJSONLEmitter(root, "run-p", context.Background())
 	config := &types.RunConfig{Mode: "research"}
@@ -159,35 +153,27 @@ func TestNestedJSONLEmitter_ReportsSubRunLifecycle(t *testing.T) {
 
 	grandchild := NewNestedJSONLEmitter(child, "run-p/sub-1", context.Background())
 	grandchild.Start("run-p/sub-1/sub-1", nil)
-	if _, err := grandchild.Finish(context.Background(), "error"); err != nil {
-		t.Fatalf("grandchild Finish: %v", err)
-	}
+	_, err := grandchild.Finish(context.Background(), "error")
+	must.NoError(err, "grandchild Finish")
 	runTrace, err := child.Finish(context.Background(), "success")
-	if err != nil {
-		t.Fatalf("child Finish: %v", err)
-	}
+	must.NoError(err, "child Finish")
 
-	if len(root.starts) != 0 || len(root.finishes) != 0 {
-		t.Errorf("parent Start/Finish called: starts=%d finishes=%d", len(root.starts), len(root.finishes))
-	}
-	wantStarts := []string{"run-p/sub-1|run-p", "run-p/sub-1/sub-1|run-p/sub-1"}
+	must.Empty(root.starts, "parent Start should not be called")
+	must.Empty(root.finishes, "parent Finish should not be called")
+
 	var gotStarts []string
 	for _, s := range root.subStarts {
 		gotStarts = append(gotStarts, s.runID+"|"+s.parentRunID)
 	}
-	if !slices.Equal(gotStarts, wantStarts) {
-		t.Errorf("sub-run starts = %v, want %v", gotStarts, wantStarts)
-	}
-	if root.subStarts[0].config != config {
-		t.Errorf("sub-run start config not forwarded")
-	}
-	if len(root.subFinishes) != 2 {
-		t.Fatalf("sub-run finishes = %d, want 2", len(root.subFinishes))
-	}
-	if g := root.subFinishes[0]; g.RunID != "run-p/sub-1/sub-1" || g.ParentRunID != "run-p/sub-1" || g.Outcome != "error" {
-		t.Errorf("grandchild summary = %+v", g)
-	}
-	got := root.subFinishes[1]
+	must.Equal([]string{"run-p/sub-1|run-p", "run-p/sub-1/sub-1|run-p/sub-1"}, gotStarts)
+	must.Same(config, root.subStarts[0].config, "sub-run start should forward the child config")
+
+	must.Len(root.subFinishes, 2)
+	grandchildSummary := root.subFinishes[0]
+	must.Equal("run-p/sub-1/sub-1", grandchildSummary.RunID)
+	must.Equal("run-p/sub-1", grandchildSummary.ParentRunID)
+	must.Equal("error", grandchildSummary.Outcome)
+
 	want := types.SubRunSummary{
 		RunID:       "run-p/sub-1",
 		ParentRunID: "run-p",
@@ -198,9 +184,7 @@ func TestNestedJSONLEmitter_ReportsSubRunLifecycle(t *testing.T) {
 		CompletedAt: runTrace.CompletedAt,
 		DurationMs:  runTrace.CompletedAt.Sub(runTrace.StartedAt).Milliseconds(),
 	}
-	if got != want {
-		t.Errorf("child summary = %+v, want %+v", got, want)
-	}
+	must.Equal(want, root.subFinishes[1], "child summary")
 }
 
 // TestNestedJSONLEmitter_InterleavedChildrenRoundTrip drives a parent
@@ -208,6 +192,7 @@ func TestNestedJSONLEmitter_ReportsSubRunLifecycle(t *testing.T) {
 // and reader, and checks that every per-run line is tagged and that the
 // reader rebuilds three distinct histories.
 func TestNestedJSONLEmitter_InterleavedChildrenRoundTrip(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	parent := NewJSONLTraceEmitter(&buf, false)
 	parent.Start("run-p", &types.RunConfig{RunID: "run-p", Mode: "execution"})
@@ -229,41 +214,34 @@ func TestNestedJSONLEmitter_InterleavedChildrenRoundTrip(t *testing.T) {
 	childB.Start("run-p/sub-2", &types.RunConfig{RunID: "run-p/sub-2", Mode: "review"})
 	turn(childB, 0, "b0", "b-call-0")
 	turn(childA, 1, "a1", "a-call-1")
-	if _, err := childA.Finish(context.Background(), "success"); err != nil {
-		t.Fatal(err)
-	}
+	_, err := childA.Finish(context.Background(), "success")
+	must.NoError(err)
 	turn(parent, 0, "p0", "p-call-0")
 	turn(childB, 1, "b1", "b-call-1")
-	if _, err := childB.Finish(context.Background(), "max_turns"); err != nil {
-		t.Fatal(err)
-	}
+	_, err = childB.Finish(context.Background(), "max_turns")
+	must.NoError(err)
 	turn(parent, 1, "p1", "p-call-1")
-	if _, err := parent.Finish(context.Background(), "success"); err != nil {
-		t.Fatal(err)
-	}
+	_, err = parent.Finish(context.Background(), "success")
+	must.NoError(err)
 
 	events := readEvents(t, buf.Bytes())
-	if v := pickEvent(t, events, EventKindRunStarted).SchemaVersion; v != "2" {
-		t.Errorf("schemaVersion = %q, want 2", v)
-	}
+	must.Equal("2", pickEvent(t, events, EventKindRunStarted).SchemaVersion)
 	for _, kind := range []EventKind{EventKindTurnRecord, EventKindToolCallRecord} {
 		for _, ev := range eventsOfKind(events, kind) {
-			if ev.RunID == "" {
-				t.Errorf("%s line without runId: %+v", kind, ev)
-			}
-			if (ev.RunID == "run-p") != (ev.ParentRunID == "") {
-				t.Errorf("%s tags = (%q, %q): only the parent's lines may omit parentRunId", kind, ev.RunID, ev.ParentRunID)
+			must.NotEmpty(ev.RunID, "%s line without runId: %+v", kind, ev)
+			if ev.RunID == "run-p" {
+				must.Empty(ev.ParentRunID, "parent %s line should omit parentRunId", kind)
+			} else {
+				must.NotEmpty(ev.ParentRunID, "sub-run %s line should carry parentRunId", kind)
 			}
 		}
 	}
 
 	rec, err := tracereader.NewReader(bytes.NewReader(buf.Bytes())).ReadRecording()
-	if err != nil {
-		t.Fatalf("ReadRecording: %v", err)
-	}
-	if rec.RunID != "run-p" || rec.FinalOutcome.Outcome != "success" {
-		t.Errorf("recording = (%q, %q), want (run-p, success)", rec.RunID, rec.FinalOutcome.Outcome)
-	}
+	must.NoError(err)
+	must.Equal("run-p", rec.RunID)
+	must.Equal("success", rec.FinalOutcome.Outcome)
+
 	history := func(turns []types.TurnRecord) (texts, calls []string) {
 		for _, tr := range turns {
 			texts = append(texts, tr.ModelOutput[0].Text)
@@ -274,44 +252,47 @@ func TestNestedJSONLEmitter_InterleavedChildrenRoundTrip(t *testing.T) {
 		return texts, calls
 	}
 	texts, calls := history(rec.Turns)
-	if !slices.Equal(texts, []string{"p0", "p1"}) || !slices.Equal(calls, []string{"p-call-0", "p-call-1"}) {
-		t.Errorf("parent history = %v %v", texts, calls)
-	}
-	if len(rec.SubRuns) != 2 {
-		t.Fatalf("SubRuns = %d, want 2", len(rec.SubRuns))
-	}
+	must.Equal([]string{"p0", "p1"}, texts, "parent turn texts")
+	must.Equal([]string{"p-call-0", "p-call-1"}, calls, "parent tool call ids")
+
+	must.Len(rec.SubRuns, 2)
 	for i, want := range []struct {
-		runID, mode, outcome string
-		texts, calls         []string
+		name, runID, mode, outcome string
+		texts, calls               []string
 	}{
-		{"run-p/sub-1", "research", "success", []string{"a0", "a1"}, []string{"a-call-0", "a-call-1"}},
-		{"run-p/sub-2", "review", "max_turns", []string{"b0", "b1"}, []string{"b-call-0", "b-call-1"}},
+		{"research sub-run", "run-p/sub-1", "research", "success", []string{"a0", "a1"}, []string{"a-call-0", "a-call-1"}},
+		{"review sub-run", "run-p/sub-2", "review", "max_turns", []string{"b0", "b1"}, []string{"b-call-0", "b-call-1"}},
 	} {
-		sub := rec.SubRuns[i]
-		texts, calls := history(sub.Turns)
-		if sub.RunID != want.runID || sub.ParentRunID != "run-p" || sub.Config.Mode != want.mode {
-			t.Errorf("SubRuns[%d] = (%q, %q, %q), want (%q, run-p, %q)", i, sub.RunID, sub.ParentRunID, sub.Config.Mode, want.runID, want.mode)
-		}
-		if !slices.Equal(texts, want.texts) || !slices.Equal(calls, want.calls) {
-			t.Errorf("SubRuns[%d] history = %v %v, want %v %v", i, texts, calls, want.texts, want.calls)
-		}
-		if sub.Summary == nil || sub.Summary.Outcome != want.outcome || sub.Summary.Turns != 2 || sub.Summary.TokenUsage.Input != 20 {
-			t.Errorf("SubRuns[%d].Summary = %+v, want outcome %q, 2 turns, 20 input tokens", i, sub.Summary, want.outcome)
-		}
+		t.Run(want.name, func(t *testing.T) {
+			must := require.New(t)
+			sub := rec.SubRuns[i]
+			must.Equal(want.runID, sub.RunID)
+			must.Equal("run-p", sub.ParentRunID)
+			must.NotNil(sub.Config)
+			must.Equal(want.mode, sub.Config.Mode)
+
+			subTexts, subCalls := history(sub.Turns)
+			must.Equal(want.texts, subTexts)
+			must.Equal(want.calls, subCalls)
+
+			must.NotNil(sub.Summary)
+			must.Equal(want.outcome, sub.Summary.Outcome)
+			must.Equal(2, sub.Summary.Turns)
+			must.Equal(20, sub.Summary.TokenUsage.Input)
+		})
 	}
 
 	raw, err := json.Marshal(rec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(raw), `"subRuns":[`) {
-		t.Errorf("recording JSON has no subRuns field: %s", raw)
-	}
+	must.NoError(err)
+	must.Contains(string(raw), `"subRuns":[`, "recording JSON has no subRuns field: %s", raw)
 }
 
 func TestJSONLTraceEmitter_ConfigPromptIsScrubbed(t *testing.T) {
-	const secret = "sk-ant-api03-promptleak0123456789abcdef"
-	config := &types.RunConfig{Mode: "research", Prompt: "summarise the file; it said key " + secret}
+	const (
+		secret = "sk-ant-api03-promptleak0123456789abcdef"
+		prompt = "summarise the file; it said key "
+	)
+	config := &types.RunConfig{Mode: "research", Prompt: prompt + secret}
 
 	for _, tc := range []struct {
 		name              string
@@ -322,24 +303,24 @@ func TestJSONLTraceEmitter_ConfigPromptIsScrubbed(t *testing.T) {
 		{"debug build", true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var buf bytes.Buffer
 			parent := NewJSONLTraceEmitter(&buf, tc.redactionDisabled)
 			parent.Start("run-p", config)
 			child := NewNestedJSONLEmitter(parent, "run-p", context.Background())
 			child.Start("run-p/sub-1", config)
-			if _, err := child.Finish(context.Background(), "success"); err != nil {
-				t.Fatalf("child Finish: %v", err)
-			}
+			_, err := child.Finish(context.Background(), "success")
+			must.NoError(err, "child Finish")
 
-			if got := strings.Contains(buf.String(), secret); got != tc.wantSecret {
-				t.Errorf("secret on disk = %v, want %v:\n%s", got, tc.wantSecret, buf.String())
-			}
+			must.Equal(tc.wantSecret, strings.Contains(buf.String(), secret),
+				"secret on disk:\n%s", buf.String())
+
 			events := readEvents(t, buf.Bytes())
 			for _, kind := range []EventKind{EventKindRunStarted, EventKindSubRunStarted} {
 				started := pickEvent(t, events, kind)
-				if started.Config == nil || !strings.HasPrefix(started.Config.Prompt, "summarise the file; it said key ") {
-					t.Errorf("%s config = %+v, want the prompt kept apart from the secret", kind, started.Config)
-				}
+				must.NotNil(started.Config, "%s config", kind)
+				must.True(strings.HasPrefix(started.Config.Prompt, prompt),
+					"%s prompt should keep its text apart from the secret, got %q", kind, started.Config.Prompt)
 			}
 		})
 	}

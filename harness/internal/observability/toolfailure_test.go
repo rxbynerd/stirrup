@@ -1,6 +1,10 @@
 package observability
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 // TestToolFailureCategory_KnownValuesAreValid pins the closed-enum
 // invariant: every exported ToolFailure* constant must be present in
@@ -12,6 +16,7 @@ import "testing"
 // new constant is added, this list and the map both need updates;
 // missing either ends with a failing test, which is the goal.
 func TestToolFailureCategory_KnownValuesAreValid(t *testing.T) {
+	must := require.New(t)
 	known := []ToolFailureCategory{
 		ToolFailureUnknownTool,
 		ToolFailureInvalidArguments,
@@ -36,21 +41,16 @@ func TestToolFailureCategory_KnownValuesAreValid(t *testing.T) {
 		ToolFailureNoToolWhenRequired,
 	}
 	for _, c := range known {
-		if !c.IsValid() {
-			t.Errorf("category %q not registered in allToolFailureCategories", c)
-		}
-		if c.String() == "" {
-			t.Errorf("category %v has empty wire string", c)
-		}
+		t.Run(string(c), func(t *testing.T) {
+			must := require.New(t)
+			must.True(c.IsValid(), "category is not registered in allToolFailureCategories")
+			must.NotEmpty(c.String(), "category has an empty wire string")
+		})
 	}
-	// Cross-check: every entry in the registry maps to one of the
-	// known constants. A typo in the map (e.g. duplicated key or
-	// orphaned entry) would surface here without needing per-key
-	// assertions.
-	if len(allToolFailureCategories) != len(known) {
-		t.Errorf("registry size = %d, known constants = %d (entries diverge)",
-			len(allToolFailureCategories), len(known))
-	}
+
+	// A typo in the registry (an orphaned entry, or a known constant
+	// left out of it) changes the count, so the sizes must match.
+	must.Len(allToolFailureCategories, len(known), "registry entries diverge from known constants")
 }
 
 // TestToolFailureCategory_BogusValuesRejected pins the other half of
@@ -58,27 +58,30 @@ func TestToolFailureCategory_KnownValuesAreValid(t *testing.T) {
 // Metric emission sites should reject these so free-form strings
 // cannot widen the cardinality of the tool_failures series.
 func TestToolFailureCategory_BogusValuesRejected(t *testing.T) {
-	for _, s := range []string{
-		"",
-		"UNKNOWN_TOOL",
-		"permission denied",
-		"PermissionDenied",
-		"handler_err",
-		"unknown_tool ",
-		"\x00",
-	} {
-		if ToolFailureCategory(s).IsValid() {
-			t.Errorf("bogus value %q must not validate", s)
-		}
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "empty", value: ""},
+		{name: "upper-case constant name", value: "UNKNOWN_TOOL"},
+		{name: "spaced words", value: "permission denied"},
+		{name: "camel case", value: "PermissionDenied"},
+		{name: "truncated wire value", value: "handler_err"},
+		{name: "trailing space", value: "unknown_tool "},
+		{name: "nul byte", value: "\x00"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
+			must.False(ToolFailureCategory(tt.value).IsValid(), "value %q must not validate", tt.value)
+		})
 	}
 }
 
-// TestToolFailureCategory_StringRoundTrip confirms String() returns
+// TestToolFailureCategory_StringReturnsWireValue confirms String() returns
 // the underlying wire form unchanged so reflective consumers (tests,
 // dashboards) read the same value they would see on the OTLP wire.
-func TestToolFailureCategory_StringRoundTrip(t *testing.T) {
-	c := ToolFailureHandlerError
-	if got := c.String(); got != "handler_error" {
-		t.Errorf("String() = %q, want handler_error", got)
-	}
+func TestToolFailureCategory_StringReturnsWireValue(t *testing.T) {
+	must := require.New(t)
+	must.Equal("handler_error", ToolFailureHandlerError.String())
 }

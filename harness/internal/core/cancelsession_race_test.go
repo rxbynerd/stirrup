@@ -2,15 +2,17 @@ package core
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestCancelSession_ConcurrentWithRunStartAlwaysCancelsRun races a
 // session cancel against a run registering itself. Whichever wins the
 // lock, the run's context must end with the session's cause.
 func TestCancelSession_ConcurrentWithRunStartAlwaysCancelsRun(t *testing.T) {
+	must := require.New(t)
 	const iterations = 5000
 	for i := range iterations {
 		loop := buildTestLoop(&mockProvider{})
@@ -35,9 +37,7 @@ func TestCancelSession_ConcurrentWithRunStartAlwaysCancelsRun(t *testing.T) {
 		close(start)
 		wg.Wait()
 
-		if !errors.Is(context.Cause(runCtx), ErrControlStreamLost) {
-			t.Fatalf("iteration %d: run cause = %v, want ErrControlStreamLost", i, context.Cause(runCtx))
-		}
+		must.ErrorIs(context.Cause(runCtx), ErrControlStreamLost, "iteration %d", i)
 		cancelRun(nil)
 		loop.stopControlRouting()
 	}
