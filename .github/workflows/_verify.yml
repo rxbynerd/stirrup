@@ -137,13 +137,26 @@ jobs:
       # exits zero on failed tasks (gating is the compare subcommand's
       # job), so the pass rate is checked here. See eval/suites/README.md.
       - name: Run the replayed tool-use suite
+        id: tooluse-replay
+        env:
+          STIRRUP: ${{ github.workspace }}/harness/stirrup
+          OUT: ${{ runner.temp }}/tooluse-replay
         run: |
           set -euo pipefail
           ./stirrup-eval run --suite eval/suites/tooluse.hcl \
-            --harness "${{ github.workspace }}/harness/stirrup" \
-            --output "${RUNNER_TEMP}/tooluse-replay"
-          jq -e '.passRate == 1 and .healthyPassRate == 1' \
-            "${RUNNER_TEMP}/tooluse-replay/result.json" > /dev/null
+            --harness "${STIRRUP}" --output "${OUT}"
+          if ! jq -e '.passRate == 1 and .healthyPassRate == 1' "${OUT}/result.json" > /dev/null; then
+            echo "::error::replayed tool-use suite did not pass every task"
+            jq '.tasks[] | select(.outcome != "pass") | {taskId, outcome, error, judgeVerdict}' "${OUT}/result.json"
+            exit 1
+          fi
+
+      - name: Upload replayed tool-use suite artifacts
+        if: failure() && steps.tooluse-replay.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: tooluse-replay
+          path: ${{ runner.temp }}/tooluse-replay/
 
       # Drives tasks through the example control plane, a scripted
       # provider and the binary built above (a run, a follow-up run and an
