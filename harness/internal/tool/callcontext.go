@@ -12,6 +12,9 @@ type CallContext struct {
 	ParentRunID string
 	Turn        int
 	ToolUseID   string
+	// Lazy is the calling loop's lazy tool loader, nil when lazy tool
+	// loading is off. The tool_search tool loads the tools it finds here.
+	Lazy *LazyLoader
 }
 
 type callContextKey struct{}
