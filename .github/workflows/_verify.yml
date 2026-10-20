@@ -132,6 +132,19 @@ jobs:
             -ldflags="-X github.com/rxbynerd/stirrup/types/version.version=${VERSION_LABEL} -X github.com/rxbynerd/stirrup/types/version.commit=${COMMIT_SHA}" \
             -o stirrup-eval ./eval/cmd/eval
 
+      # Runs the tool-use suite through the binaries built above from its
+      # recordings: no provider credential, no network. `stirrup-eval run`
+      # exits zero on failed tasks (gating is the compare subcommand's
+      # job), so the pass rate is checked here. See eval/suites/README.md.
+      - name: Run the replayed tool-use suite
+        run: |
+          set -euo pipefail
+          ./stirrup-eval run --suite eval/suites/tooluse.hcl \
+            --harness "${{ github.workspace }}/harness/stirrup" \
+            --output "${RUNNER_TEMP}/tooluse-replay"
+          jq -e '.passRate == 1 and .healthyPassRate == 1' \
+            "${RUNNER_TEMP}/tooluse-replay/result.json" > /dev/null
+
       # Drives tasks through the example control plane, a scripted
       # provider and the binary built above (a run, a follow-up run and an
       # abandoned turn), then checks that a provider failure turns into a
