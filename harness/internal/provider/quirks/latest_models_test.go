@@ -15,20 +15,22 @@ func TestGPT6_ChatCompletionsRules(t *testing.T) {
 	levels := []string{"low", "medium", "high", "xhigh", "max"}
 	for _, model := range []string{"gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"} {
 		t.Run(model, func(t *testing.T) {
+			must := require.New(t)
 			o := DefaultRegistry().Resolve("openai-compatible", model).BehaviourFlags.OpenAI
-			require.True(t, o.OmitSamplingParams, "reasoning-class flags not applied: %+v", o)
-			require.Equal(t, TokenFieldMaxCompletionTokens, o.TokenField)
-			require.True(t, o.StrictMode)
-			require.True(t, o.ToolsRequireResponses)
-			require.Equal(t, levels, o.ReasoningEffortLevels)
+			must.True(o.OmitSamplingParams, "reasoning-class flags not applied: %+v", o)
+			must.Equal(TokenFieldMaxCompletionTokens, o.TokenField)
+			must.True(o.StrictMode)
+			must.True(o.ToolsRequireResponses)
+			must.Equal(levels, o.ReasoningEffortLevels)
 		})
 	}
 	for _, model := range []string{"openai/gpt-6-luna", "openai/gpt-6.1-sol"} {
 		t.Run(model, func(t *testing.T) {
+			must := require.New(t)
 			o := DefaultRegistry().Resolve("openai-compatible", model).BehaviourFlags.OpenAI
-			require.True(t, o.OmitSamplingParams)
-			require.False(t, o.ToolsRequireResponses, "first-party-only flags leaked onto gateway id: %+v", o)
-			require.Empty(t, o.ReasoningEffortLevels, "first-party-only flags leaked onto gateway id: %+v", o)
+			must.True(o.OmitSamplingParams)
+			must.False(o.ToolsRequireResponses, "first-party-only flags leaked onto gateway id: %+v", o)
+			must.Empty(o.ReasoningEffortLevels, "first-party-only flags leaked onto gateway id: %+v", o)
 		})
 	}
 }
@@ -39,16 +41,18 @@ func TestGPT6_ResponsesRules(t *testing.T) {
 	levels := []string{"low", "medium", "high", "xhigh", "max"}
 	for _, model := range []string{"gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna"} {
 		t.Run(model, func(t *testing.T) {
+			must := require.New(t)
 			r := DefaultRegistry().Resolve("openai-responses", model).BehaviourFlags.OpenAIResponses
-			require.True(t, r.OmitSamplingParams)
-			require.Equal(t, levels, r.ReasoningEffortLevels)
+			must.True(r.OmitSamplingParams)
+			must.Equal(levels, r.ReasoningEffortLevels)
 		})
 	}
 	for _, model := range []string{"gpt-5", "gpt-5-mini", "o3"} {
 		t.Run(model, func(t *testing.T) {
+			must := require.New(t)
 			r := DefaultRegistry().Resolve("openai-responses", model).BehaviourFlags.OpenAIResponses
-			require.False(t, r.OmitSamplingParams, "picked up GPT-5.4+ Responses flags: %+v", r)
-			require.Empty(t, r.ReasoningEffortLevels, "picked up GPT-5.4+ Responses flags: %+v", r)
+			must.False(r.OmitSamplingParams, "picked up GPT-5.4+ Responses flags: %+v", r)
+			must.Empty(r.ReasoningEffortLevels, "picked up GPT-5.4+ Responses flags: %+v", r)
 		})
 	}
 }
@@ -76,9 +80,10 @@ func TestGPT5_ResponsesEffortRules(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			r := DefaultRegistry().Resolve("openai-responses", tc.model).BehaviourFlags.OpenAIResponses
-			require.Equal(t, tc.levels, r.ReasoningEffortLevels)
-			require.Equal(t, tc.omitSample, r.OmitSamplingParams)
+			must.Equal(tc.levels, r.ReasoningEffortLevels)
+			must.Equal(tc.omitSample, r.OmitSamplingParams)
 		})
 	}
 }
@@ -105,8 +110,9 @@ func TestResponses_StrictModeRules(t *testing.T) {
 	}
 	for model, want := range cases {
 		t.Run(model, func(t *testing.T) {
+			must := require.New(t)
 			q := DefaultRegistry().Resolve("openai-responses", model)
-			require.Equal(t, want, q.BehaviourFlags.OpenAI.StrictMode)
+			must.Equal(want, q.BehaviourFlags.OpenAI.StrictMode)
 		})
 	}
 }
@@ -130,13 +136,15 @@ func TestResponses_IncludeEncryptedReasoningRules(t *testing.T) {
 	}
 	for model, want := range cases {
 		t.Run(model, func(t *testing.T) {
+			must := require.New(t)
 			q := DefaultRegistry().Resolve("openai-responses", model)
-			require.Equal(t, want, q.BehaviourFlags.OpenAIResponses.IncludeEncryptedReasoning)
+			must.Equal(want, q.BehaviourFlags.OpenAIResponses.IncludeEncryptedReasoning)
 		})
 	}
 	t.Run("gpt-5-chat-latest keeps strict tools", func(t *testing.T) {
+		must := require.New(t)
 		q := DefaultRegistry().Resolve("openai-responses", "gpt-5-chat-latest")
-		require.True(t, q.BehaviourFlags.OpenAI.StrictMode)
+		must.True(q.BehaviourFlags.OpenAI.StrictMode)
 	})
 }
 
@@ -161,9 +169,10 @@ func TestResponses_ReplayOutputItemsRules(t *testing.T) {
 	}
 	for model, want := range cases {
 		t.Run(model, func(t *testing.T) {
+			must := require.New(t)
 			flags := DefaultRegistry().Resolve("openai-responses", model).BehaviourFlags.OpenAIResponses
-			require.Equal(t, want, flags.ReplayOutputItems)
-			require.Equal(t, flags.IncludeEncryptedReasoning, flags.ReplayOutputItems,
+			must.Equal(want, flags.ReplayOutputItems)
+			must.Equal(flags.IncludeEncryptedReasoning, flags.ReplayOutputItems,
 				"ReplayOutputItems and IncludeEncryptedReasoning must be set together")
 		})
 	}
@@ -176,17 +185,19 @@ func TestDeepSeekFlash_ReplayAndThinkingRules(t *testing.T) {
 	levels := []string{"minimal", "low", "medium", "high", "xhigh", "max"}
 	for _, model := range []string{"deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash"} {
 		t.Run(model, func(t *testing.T) {
+			must := require.New(t)
 			q := DefaultRegistry().Resolve("openai-compatible", model)
-			require.Equal(t, []string{"reasoning_content"}, q.ReplayFields)
+			must.Equal([]string{"reasoning_content"}, q.ReplayFields)
 			o := q.BehaviourFlags.OpenAI
-			require.True(t, o.OmitSamplingParams)
-			require.Equal(t, TokenFieldMaxTokens, o.TokenField)
-			require.Equal(t, levels, o.ReasoningEffortLevels)
+			must.True(o.OmitSamplingParams)
+			must.Equal(TokenFieldMaxTokens, o.TokenField)
+			must.Equal(levels, o.ReasoningEffortLevels)
 		})
 	}
 	t.Run("gateway deepseek-flash gets no thinking efforts", func(t *testing.T) {
+		must := require.New(t)
 		q := DefaultRegistry().Resolve("openai-compatible", "deepseek/deepseek-flash")
-		require.Equal(t, []string{"reasoning_content"}, q.ReplayFields)
-		require.Empty(t, q.BehaviourFlags.OpenAI.ReasoningEffortLevels)
+		must.Equal([]string{"reasoning_content"}, q.ReplayFields)
+		must.Empty(q.BehaviourFlags.OpenAI.ReasoningEffortLevels)
 	})
 }

@@ -48,25 +48,28 @@ func (f *fakeBatchAdapter) LastBatchID() string { return f.batchID }
 // TestTurnModeInfo_StreamingDefault: a vanilla ProviderAdapter (no
 // LastBatchID method) resolves to (TurnModeStreaming, "").
 func TestTurnModeInfo_StreamingDefault(t *testing.T) {
+	check := assert.New(t)
 	mode, batchID := turnModeInfo(&mockProvider{})
-	assert.Equal(t, types.TurnModeStreaming, mode, "mode")
-	assert.Empty(t, batchID, "batchID")
+	check.Equal(types.TurnModeStreaming, mode, "mode")
+	check.Empty(batchID, "batchID")
 }
 
 // TestTurnModeInfo_BatchAdapterPopulatesBatchID: any adapter implementing
 // LastBatchID() yields mode=batch and the surfaced identifier.
 func TestTurnModeInfo_BatchAdapterPopulatesBatchID(t *testing.T) {
+	check := assert.New(t)
 	mode, batchID := turnModeInfo(&fakeBatchAdapter{batchID: "msgbatch_xyz"})
-	assert.Equal(t, types.TurnModeBatch, mode, "mode")
-	assert.Equal(t, "msgbatch_xyz", batchID, "batchID")
+	check.Equal(types.TurnModeBatch, mode, "mode")
+	check.Equal("msgbatch_xyz", batchID, "batchID")
 }
 
 // TestTurnModeInfo_NilSelectedProvider: turnModeInfo(nil) returns the
 // streaming defaults rather than panicking.
 func TestTurnModeInfo_NilSelectedProvider(t *testing.T) {
+	check := assert.New(t)
 	mode, batchID := turnModeInfo(nil)
-	assert.Equal(t, types.TurnModeStreaming, mode, "mode")
-	assert.Empty(t, batchID, "batchID")
+	check.Equal(types.TurnModeStreaming, mode, "mode")
+	check.Empty(batchID, "batchID")
 }
 
 // buildBatchTestLoop is buildTestLoop's twin, taking a *fakeBatchAdapter
@@ -108,6 +111,8 @@ func buildBatchTestLoop(prov *fakeBatchAdapter, recorder *recordingTraceEmitter)
 // implements LastBatchID(), the emitted TurnTrace carries Mode="batch"
 // and the batch identifier.
 func TestLoop_BatchAdapter_RecordsBatchMode(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &fakeBatchAdapter{
 		batchID: "msgbatch_test123",
 		events: []types.StreamEvent{
@@ -119,17 +124,19 @@ func TestLoop_BatchAdapter_RecordsBatchMode(t *testing.T) {
 	loop := buildBatchTestLoop(prov, recorder)
 
 	_, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
+	must.NoError(err)
 
 	turns, _ := recorder.snapshot()
-	require.Len(t, turns, 1)
-	assert.Equal(t, types.TurnModeBatch, turns[0].Mode, "turn[0].Mode")
-	assert.Equal(t, "msgbatch_test123", turns[0].BatchID, "turn[0].BatchID")
+	must.Len(turns, 1)
+	check.Equal(types.TurnModeBatch, turns[0].Mode, "turn[0].Mode")
+	check.Equal("msgbatch_test123", turns[0].BatchID, "turn[0].BatchID")
 }
 
 // TestLoop_StreamingProvider_RecordsStreamingMode: a vanilla mockProvider
 // produces TurnTrace.Mode="streaming" on every successful turn.
 func TestLoop_StreamingProvider_RecordsStreamingMode(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "ok"},
@@ -141,12 +148,12 @@ func TestLoop_StreamingProvider_RecordsStreamingMode(t *testing.T) {
 	loop.Trace = recorder
 
 	_, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
+	must.NoError(err)
 
 	turns, _ := recorder.snapshot()
-	require.Len(t, turns, 1)
-	assert.Equal(t, types.TurnModeStreaming, turns[0].Mode, "turn[0].Mode")
-	assert.Empty(t, turns[0].BatchID, "turn[0].BatchID")
+	must.Len(turns, 1)
+	check.Equal(types.TurnModeStreaming, turns[0].Mode, "turn[0].Mode")
+	check.Empty(turns[0].BatchID, "turn[0].BatchID")
 }
 
 // failingBatchAdapter returns a stream-time error so the loop hits the
@@ -167,6 +174,8 @@ func (f *failingBatchAdapter) LastBatchID() string { return f.batchID }
 // (router selects a provider absent from l.Providers) must record
 // Mode="", not Mode="streaming".
 func TestLoop_ProviderNotFound_RecordsEmptyMode(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	recorder := &recordingTraceEmitter{}
 	loop := &AgenticLoop{
 		// l.Provider is intentionally nil; Providers has no "anthropic"
@@ -191,15 +200,17 @@ func TestLoop_ProviderNotFound_RecordsEmptyMode(t *testing.T) {
 	}
 
 	_, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
+	must.NoError(err)
 
 	turns, _ := recorder.snapshot()
-	require.Len(t, turns, 1)
-	assert.Equal(t, "error", turns[0].StopReason, "turn[0].StopReason")
-	assert.Empty(t, turns[0].Mode, "pre-resolution error records no mode")
+	must.Len(turns, 1)
+	check.Equal("error", turns[0].StopReason, "turn[0].StopReason")
+	check.Empty(turns[0].Mode, "pre-resolution error records no mode")
 }
 
 func TestLoop_BatchAdapter_StreamError_StillRecordsBatchID(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &failingBatchAdapter{batchID: "msgbatch_failed_run"}
 	recorder := &recordingTraceEmitter{}
 	loop := &AgenticLoop{
@@ -221,11 +232,11 @@ func TestLoop_BatchAdapter_StreamError_StillRecordsBatchID(t *testing.T) {
 	}
 
 	_, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
+	must.NoError(err)
 
 	turns, _ := recorder.snapshot()
-	require.Len(t, turns, 1)
-	assert.Equal(t, "error", turns[0].StopReason, "turn[0].StopReason")
-	assert.Equal(t, types.TurnModeBatch, turns[0].Mode, "turn[0].Mode")
-	assert.Equal(t, "msgbatch_failed_run", turns[0].BatchID, "failure paths must retain the batch id")
+	must.Len(turns, 1)
+	check.Equal("error", turns[0].StopReason, "turn[0].StopReason")
+	check.Equal(types.TurnModeBatch, turns[0].Mode, "turn[0].Mode")
+	check.Equal("msgbatch_failed_run", turns[0].BatchID, "failure paths must retain the batch id")
 }

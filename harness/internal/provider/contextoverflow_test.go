@@ -42,8 +42,9 @@ func errorServer(t *testing.T, status int, body string) *httptest.Server {
 
 func requireContextOverflow(t *testing.T, err error, want bool) {
 	t.Helper()
-	require.Error(t, err, "Stream returned no error")
-	require.Equal(t, want, types.IsContextOverflow(err), "IsContextOverflow(%q)", err)
+	must := require.New(t)
+	must.Error(err, "Stream returned no error")
+	must.Equal(want, types.IsContextOverflow(err), "IsContextOverflow(%q)", err)
 }
 
 func TestAnthropicAdapter_ClassifiesContextOverflow(t *testing.T) {
@@ -109,10 +110,11 @@ func TestOpenAIResponsesAdapter_ClassifiesStreamedContextOverflow(t *testing.T) 
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			last := streamResponsesLastEvent(t, makeResponsesEvent(tc.event, tc.data))
-			require.Equal(t, "error", last.Type, "last event = %+v", last)
-			require.Error(t, last.Error, "last event = %+v", last)
-			require.Equal(t, tc.want, types.IsContextOverflow(last.Error), "IsContextOverflow(%q)", last.Error)
+			must.Equal("error", last.Type, "last event = %+v", last)
+			must.Error(last.Error, "last event = %+v", last)
+			must.Equal(tc.want, types.IsContextOverflow(last.Error), "IsContextOverflow(%q)", last.Error)
 		})
 	}
 }
@@ -152,13 +154,14 @@ func TestBedrockAdapter_ClassifiesContextOverflow(t *testing.T) {
 	}
 
 	t.Run("in-stream validation error", func(t *testing.T) {
+		must := require.New(t)
 		ch := make(chan types.StreamEvent, 8)
 		reader := newMockEventReader(nil, &brtypes.ValidationException{Message: aws.String("Input is too long for requested model.")})
 		go consumeBedrockStream(context.Background(), reader, ch)
 		events := collectEvents(t, ch)
-		require.NotEmpty(t, events, "stream produced no events")
+		must.NotEmpty(events, "stream produced no events")
 		last := events[len(events)-1]
-		require.Equal(t, "error", last.Type, "last event = %+v", last)
-		require.True(t, types.IsContextOverflow(last.Error), "last event = %+v", last)
+		must.Equal("error", last.Type, "last event = %+v", last)
+		must.True(types.IsContextOverflow(last.Error), "last event = %+v", last)
 	})
 }

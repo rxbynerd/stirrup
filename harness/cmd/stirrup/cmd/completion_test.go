@@ -26,8 +26,9 @@ func TestCompletionCmd_GeneratesValidShellScripts(t *testing.T) {
 		{shell: "powershell"}, // no in-tree syntax check; presence test only
 	} {
 		t.Run(tc.shell, func(t *testing.T) {
+			must := require.New(t)
 			buf := runCompletion(t, tc.shell)
-			require.NotEmpty(t, buf.String(), "completion %s emitted empty script", tc.shell)
+			must.NotEmpty(buf.String(), "completion %s emitted empty script", tc.shell)
 			if len(tc.checker) == 0 {
 				return
 			}
@@ -37,7 +38,7 @@ func TestCompletionCmd_GeneratesValidShellScripts(t *testing.T) {
 			cmd := exec.Command(tc.checker[0], tc.checker[1:]...) //nolint:gosec // hard-coded checker list, no user input
 			cmd.Stdin = buf
 			out, err := cmd.CombinedOutput()
-			require.NoError(t, err, "%s syntax check failed; output:\n%s", tc.shell, out)
+			must.NoError(err, "%s syntax check failed; output:\n%s", tc.shell, out)
 		})
 	}
 }
@@ -65,8 +66,9 @@ func executeRootCmd(t *testing.T, args []string) (*bytes.Buffer, error) {
 // negative-path tests use executeRootCmd directly).
 func runCompletion(t *testing.T, shell string) *bytes.Buffer {
 	t.Helper()
+	must := require.New(t)
 	buf, err := executeRootCmd(t, []string{"completion", shell})
-	require.NoError(t, err, "completion %s", shell)
+	must.NoError(err, "completion %s", shell)
 	return buf
 }
 
@@ -74,8 +76,9 @@ func runCompletion(t *testing.T, shell string) *bytes.Buffer {
 // guard so an operator typing `stirrup completion ksh` sees a clear
 // error rather than an empty stdout and a zero exit code.
 func TestCompletionCmd_RejectsUnknownShell(t *testing.T) {
+	must := require.New(t)
 	_, err := executeRootCmd(t, []string{"completion", "ksh"})
-	require.ErrorContains(t, err, "ksh")
+	must.ErrorContains(err, "ksh")
 }
 
 // TestFlagCompletion_EnumValues pins the closed-set value completion for
@@ -108,9 +111,10 @@ func TestFlagCompletion_EnumValues(t *testing.T) {
 		{flag: "output", want: []string{"json", "none", "text"}, harnessCmdOnly: true},
 	} {
 		t.Run(tc.flag, func(t *testing.T) {
+			must := require.New(t)
 			got, directive := runFlagCompletion(t, harnessCmd, tc.flag)
-			require.Equal(t, cobra.ShellCompDirectiveNoFileComp, directive)
-			require.ElementsMatch(t, tc.want, got)
+			must.Equal(cobra.ShellCompDirectiveNoFileComp, directive)
+			must.ElementsMatch(tc.want, got)
 
 			if tc.harnessCmdOnly {
 				return
@@ -119,8 +123,8 @@ func TestFlagCompletion_EnumValues(t *testing.T) {
 			// run-config re-registers the same flags via addRunConfigFlags,
 			// so it must return the identical completion surface.
 			gotRC, directiveRC := runFlagCompletion(t, runConfigCmd, tc.flag)
-			require.Equal(t, cobra.ShellCompDirectiveNoFileComp, directiveRC, "run-config directive")
-			require.ElementsMatch(t, tc.want, gotRC)
+			must.Equal(cobra.ShellCompDirectiveNoFileComp, directiveRC, "run-config directive")
+			must.ElementsMatch(tc.want, gotRC)
 		})
 	}
 }
@@ -151,24 +155,25 @@ func TestFlagCompletion_FileAnnotations(t *testing.T) {
 		{flag: "export-workspace-to", wantNone: true, onCommands: []*cobra.Command{harnessCmd, runConfigCmd}},
 	} {
 		t.Run(tc.flag, func(t *testing.T) {
+			must := require.New(t)
 			for _, cmd := range tc.onCommands {
 				fl := cmd.Flags().Lookup(tc.flag)
-				require.NotNil(t, fl, "flag %s missing on %s", tc.flag, cmd.Use)
+				must.NotNil(fl, "flag %s missing on %s", tc.flag, cmd.Use)
 				if tc.wantNone {
-					require.NotContains(t, fl.Annotations, cobra.BashCompFilenameExt,
+					must.NotContains(fl.Annotations, cobra.BashCompFilenameExt,
 						"flag %s on %s takes a gs:// URI, not a local path", tc.flag, cmd.Use)
-					require.NotContains(t, fl.Annotations, cobra.BashCompSubdirsInDir,
+					must.NotContains(fl.Annotations, cobra.BashCompSubdirsInDir,
 						"flag %s on %s takes a gs:// URI, not a local path", tc.flag, cmd.Use)
 					continue
 				}
 				if tc.wantDir {
-					require.Contains(t, fl.Annotations, cobra.BashCompSubdirsInDir,
+					must.Contains(fl.Annotations, cobra.BashCompSubdirsInDir,
 						"flag %s on %s", tc.flag, cmd.Use)
 					return
 				}
-				require.Contains(t, fl.Annotations, cobra.BashCompFilenameExt,
+				must.Contains(fl.Annotations, cobra.BashCompFilenameExt,
 					"flag %s on %s", tc.flag, cmd.Use)
-				require.ElementsMatch(t, tc.wantExt, fl.Annotations[cobra.BashCompFilenameExt])
+				must.ElementsMatch(tc.wantExt, fl.Annotations[cobra.BashCompFilenameExt])
 			}
 		})
 	}
@@ -178,8 +183,9 @@ func TestFlagCompletion_FileAnnotations(t *testing.T) {
 // for the named flag and returns the (values, directive) pair.
 func runFlagCompletion(t *testing.T, cmd *cobra.Command, flagName string) ([]string, cobra.ShellCompDirective) {
 	t.Helper()
+	must := require.New(t)
 	fn, exists := flagCompletionFunc(cmd, flagName)
-	require.True(t, exists, "no completion function registered for --%s on %s", flagName, cmd.Use)
+	must.True(exists, "no completion function registered for --%s on %s", flagName, cmd.Use)
 	values, directive := fn(cmd, nil, "")
 	return values, directive
 }
@@ -194,7 +200,8 @@ func flagCompletionFunc(cmd *cobra.Command, name string) (func(*cobra.Command, [
 // `stirrup completion` (no shell argument) fails with a clear
 // "accepts 1 arg(s)" message rather than silently writing nothing.
 func TestCompletionCmd_RequiresShellArg(t *testing.T) {
+	must := require.New(t)
 	_, err := executeRootCmd(t, []string{"completion"})
 	// cobra phrases the error as "accepts 1 arg(s), received 0".
-	require.ErrorContains(t, err, "arg")
+	must.ErrorContains(err, "arg")
 }

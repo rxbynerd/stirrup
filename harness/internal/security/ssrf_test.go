@@ -26,11 +26,12 @@ func TestValidatePublicHost_ClassifiesHosts(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			err := ValidatePublicHost(tc.host)
 			if tc.wantErr {
-				require.Error(t, err)
+				must.Error(err)
 			} else {
-				require.NoError(t, err)
+				must.NoError(err)
 			}
 		})
 	}
@@ -50,7 +51,8 @@ func TestIsPublicIP_ClassifiesAddresses(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, IsPublicIP(net.ParseIP(tc.ip)))
+			must := require.New(t)
+			must.Equal(tc.want, IsPublicIP(net.ParseIP(tc.ip)))
 		})
 	}
 }
@@ -72,7 +74,8 @@ func TestIsLoopbackHost_ClassifiesHosts(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, IsLoopbackHost(tc.host))
+			must := require.New(t)
+			must.Equal(tc.want, IsLoopbackHost(tc.host))
 		})
 	}
 }
@@ -83,23 +86,26 @@ func TestIsLoopbackHost_ClassifiesHosts(t *testing.T) {
 // port so a connection error is expected, but it must be a dial error, never
 // the "private host" rejection.
 func TestLoopbackAwareDialContext_AdmitsLoopbackName(t *testing.T) {
+	must := require.New(t)
 	dial := LoopbackAwareDialContext(0)
 	_, err := dial(t.Context(), "tcp", "localhost:1")
 	if err != nil {
-		require.NotContains(t, err.Error(), "private host", "loopback name must not be SSRF-rejected")
+		must.NotContains(err.Error(), "private host", "loopback name must not be SSRF-rejected")
 	}
 }
 
 func TestSafeDialContext_BlocksPrivate(t *testing.T) {
+	must := require.New(t)
 	dial := SafeDialContext(false, 0)
 	_, err := dial(t.Context(), "tcp", "10.0.0.1:443")
-	require.ErrorContains(t, err, "private host")
+	must.ErrorContains(err, "private host")
 }
 
 func TestLoopbackAwareDialContext_BlocksNonLoopbackPrivate(t *testing.T) {
+	must := require.New(t)
 	dial := LoopbackAwareDialContext(0)
 	// A non-loopback private address (e.g. a rebind to the metadata endpoint)
 	// must still be refused.
 	_, err := dial(t.Context(), "tcp", "169.254.169.254:443")
-	require.ErrorContains(t, err, "private host")
+	must.ErrorContains(err, "private host")
 }

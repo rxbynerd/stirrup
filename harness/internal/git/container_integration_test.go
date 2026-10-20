@@ -23,6 +23,7 @@ import (
 // built from Dockerfile.sandbox).
 func liveSandbox(t *testing.T, ctx context.Context, hostDir string) *executor.ContainerExecutor {
 	t.Helper()
+	must := require.New(t)
 	sock := os.Getenv("STIRRUP_TEST_CONTAINER_SOCKET")
 	if sock == "" {
 		t.Skip("STIRRUP_TEST_CONTAINER_SOCKET not set; skipping live container engine test")
@@ -38,7 +39,7 @@ func liveSandbox(t *testing.T, ctx context.Context, hostDir string) *executor.Co
 		Network:           &types.NetworkConfig{Mode: "none"},
 		RegistryAllowlist: []string{"localhost/*", "docker.io/library/*", "ghcr.io/rxbynerd/*"},
 	})
-	require.NoError(t, err, "NewContainerExecutorWithContext")
+	must.NoError(err, "NewContainerExecutorWithContext")
 	t.Cleanup(func() { _ = exec.Close() })
 	return exec
 }
@@ -48,49 +49,51 @@ func liveSandbox(t *testing.T, ctx context.Context, hostDir string) *executor.Co
 // driver with .gitattributes, and a pre-commit hook, each of which would
 // write a marker into a host-only directory if it ran on the host.
 func TestContainer_PlantedRepositoryConfigNeverReachesHost(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
 	hostDir := t.TempDir()
-	require.NoError(t, os.Chmod(hostDir, 0o777), "chmod workspace")
+	must.NoError(os.Chmod(hostDir, 0o777), "chmod workspace")
 	// Never mounted into the sandbox: a payload can only create a file here
 	// by running on the host.
 	hostMarkers := t.TempDir()
-	require.NoError(t, os.Chmod(hostMarkers, 0o777), "chmod markers")
+	must.NoError(os.Chmod(hostMarkers, 0o777), "chmod markers")
 	marker := func(name string) string { return filepath.Join(hostMarkers, name) }
 
 	sandboxExec := liveSandbox(t, ctx, hostDir)
 	inSandbox := func(command string) string {
 		t.Helper()
 		res, err := sandboxExec.Exec(ctx, command, time.Minute)
-		require.NoError(t, err, "sandbox %q", command)
-		require.Equal(t, 0, res.ExitCode, "sandbox %q\nstdout: %s\nstderr: %s", command, res.Stdout, res.Stderr)
+		must.NoError(err, "sandbox %q", command)
+		must.Equal(0, res.ExitCode, "sandbox %q\nstdout: %s\nstderr: %s", command, res.Stdout, res.Stderr)
 		return strings.TrimSpace(res.Stdout)
 	}
 
 	inSandbox("git init -q && git -c user.name=agent -c user.email=agent@example.com commit -q --allow-empty -m seed")
 	inSandbox("git config core.fsmonitor " + shellQuote("touch "+marker("fsmonitor")+"; echo /"))
 	inSandbox("git config filter.pwn.clean " + shellQuote("touch "+marker("filter")+"; cat"))
-	require.NoError(t, sandboxExec.WriteFile(ctx, ".gitattributes", "* filter=pwn\n"), "write .gitattributes")
-	require.NoError(t, sandboxExec.WriteFile(ctx, ".git/hooks/pre-commit", "#!/bin/sh\ntouch "+marker("hook")+"\n"), "write pre-commit hook")
+	must.NoError(sandboxExec.WriteFile(ctx, ".gitattributes", "* filter=pwn\n"), "write .gitattributes")
+	must.NoError(sandboxExec.WriteFile(ctx, ".git/hooks/pre-commit", "#!/bin/sh\ntouch "+marker("hook")+"\n"), "write pre-commit hook")
 	inSandbox("chmod +x .git/hooks/pre-commit")
 
 	gs := NewDeterministicGitStrategy(sandboxExec)
-	require.NoError(t, gs.Setup(ctx, hostDir, "container-run"), "Setup")
-	require.NoError(t, sandboxExec.WriteFile(ctx, "change.txt", "agent output\n"), "write change")
-	require.NoError(t, gs.Checkpoint(ctx, "Turn 1: 1 tool calls"), "Checkpoint")
+	must.NoError(gs.Setup(ctx, hostDir, "container-run"), "Setup")
+	must.NoError(sandboxExec.WriteFile(ctx, "change.txt", "agent output\n"), "write change")
+	must.NoError(gs.Checkpoint(ctx, "Turn 1: 1 tool calls"), "Checkpoint")
 	result, err := gs.Finalise(ctx, "success")
-	require.NoError(t, err, "Finalise")
-	assert.Equal(t, "stirrup/container-run", result.Branch, "Finalise result: %+v", result)
-	assert.True(t, ValidSHA(result.SHA), "Finalise result: %+v", result)
+	must.NoError(err, "Finalise")
+	check.Equal("stirrup/container-run", result.Branch, "Finalise result: %+v", result)
+	check.True(ValidSHA(result.SHA), "Finalise result: %+v", result)
 
 	entries, err := os.ReadDir(hostMarkers)
-	require.NoError(t, err, "ReadDir markers")
+	must.NoError(err, "ReadDir markers")
 	planted := make([]string, 0, len(entries))
 	for _, e := range entries {
 		planted = append(planted, e.Name())
 	}
-	assert.Empty(t, planted, "planted payloads ran on the host")
-	assert.Equal(t, HarnessIdentityName, inSandbox("git log -1 --format=%an"), "sandbox commit author")
-	assert.Equal(t, result.SHA, inSandbox("git rev-parse HEAD"), "sandbox HEAD")
+	check.Empty(planted, "planted payloads ran on the host")
+	check.Equal(HarnessIdentityName, inSandbox("git log -1 --format=%an"), "sandbox commit author")
+	check.Equal(result.SHA, inSandbox("git rev-parse HEAD"), "sandbox HEAD")
 }

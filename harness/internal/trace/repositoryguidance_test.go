@@ -22,20 +22,21 @@ func TestEmitters_RecordRepositoryGuidanceReachesRunTrace(t *testing.T) {
 			continue
 		}
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			e := build(t)
 			recorder, ok := e.(RepositoryGuidanceRecorder)
-			require.True(t, ok, "emitter does not implement RepositoryGuidanceRecorder")
+			must.True(ok, "emitter does not implement RepositoryGuidanceRecorder")
 
 			e.Start("run-1", &types.RunConfig{RunID: "run-1"})
 			recorder.RecordRepositoryGuidance(testGuidanceRecords())
 			got, err := e.Finish(context.Background(), "success")
-			require.NoError(t, err)
-			require.Equal(t, testGuidanceRecords(), got.RepositoryGuidance)
+			must.NoError(err)
+			must.Equal(testGuidanceRecords(), got.RepositoryGuidance)
 
 			e.Start("run-2", &types.RunConfig{RunID: "run-2"})
 			got, err = e.Finish(context.Background(), "success")
-			require.NoError(t, err)
-			require.Nil(t, got.RepositoryGuidance, "guidance after restart")
+			must.NoError(err)
+			must.Nil(got.RepositoryGuidance, "guidance after restart")
 		})
 	}
 }
@@ -43,11 +44,12 @@ func TestEmitters_RecordRepositoryGuidanceReachesRunTrace(t *testing.T) {
 // Guidance metadata carries no content, so it lands on the root span with
 // content capture off (the test emitter's default).
 func TestOTelTraceEmitter_RecordRepositoryGuidanceSetsRootAttributes(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := newTestOTelEmitter()
 	emitter.Start("run-guidance", nil)
 	emitter.RecordRepositoryGuidance(testGuidanceRecords())
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 	root := findSpanByName(t, exporter.GetSpans(), "invoke_agent stirrup")
 	attrs := spanAttrs(root)
 
@@ -62,16 +64,18 @@ func TestOTelTraceEmitter_RecordRepositoryGuidanceSetsRootAttributes(t *testing.
 	}
 	for key, wantVal := range want {
 		t.Run(key, func(t *testing.T) {
+			must := require.New(t)
 			got, ok := attrs[key]
-			require.True(t, ok, "attribute not found on root span")
-			require.Equal(t, wantVal, got)
+			must.True(ok, "attribute not found on root span")
+			must.Equal(wantVal, got)
 		})
 	}
 }
 
 func TestOTelTraceEmitter_RecordRepositoryGuidanceBeforeStart(t *testing.T) {
+	must := require.New(t)
 	emitter, _ := newTestOTelEmitter()
-	require.NotPanics(t, func() {
+	must.NotPanics(func() {
 		emitter.RecordRepositoryGuidance(testGuidanceRecords())
 	})
 }

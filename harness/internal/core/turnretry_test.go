@@ -106,11 +106,12 @@ type retryHarness struct {
 
 func newRetryHarness(t *testing.T, prov provider.ProviderAdapter) *retryHarness {
 	t.Helper()
+	must := require.New(t)
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
 	metrics, err := observability.NewMetricsForTesting(mp)
-	require.NoError(t, err, "NewMetricsForTesting")
+	must.NoError(err, "NewMetricsForTesting")
 	h := &retryHarness{
 		trace:     &usageTraceEmitter{agg: trace.NewJSONLTraceEmitter(&bytes.Buffer{}, false)},
 		transport: &bytes.Buffer{},
@@ -164,9 +165,10 @@ func (h *retryHarness) retryWarnings() []string {
 // turnRetryOutcomes sums scope=turn provider_retry_outcomes by outcome.
 func (h *retryHarness) turnRetryOutcomes(t *testing.T) map[string]int64 {
 	t.Helper()
+	must := require.New(t)
 	var rm metricdata.ResourceMetrics
 	err := h.reader.Collect(context.Background(), &rm)
-	require.NoError(t, err, "collect metrics")
+	must.NoError(err, "collect metrics")
 	out := make(map[string]int64)
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
@@ -190,35 +192,39 @@ func (h *retryHarness) turnRetryOutcomes(t *testing.T) map[string]int64 {
 }
 
 func TestLoop_TurnRetry_OverloadedMidStreamThenSuccess(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	prov := &scriptedTurnProvider{scripts: []turnScript{toolCallScript(), overloadedMidStream(), answerScript()}}
 	h := newRetryHarness(t, prov)
 
 	runTrace, err := h.loop.Run(context.Background(), retryConfig(3))
-	require.NoError(t, err)
-	require.Equal(t, "success", runTrace.Outcome)
-	assert.Equal(t, 3, prov.callCount())
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
+	check.Equal(3, prov.callCount())
 
 	turns := h.turns()
-	require.Len(t, turns, 2, "a retried attempt must not add a turn")
-	assert.Equal(t, 0, turns[0].Retries)
-	assert.Equal(t, 1, turns[1].Retries)
-	assert.Equal(t, "end_turn", turns[1].StopReason)
+	must.Len(turns, 2, "a retried attempt must not add a turn")
+	check.Equal(0, turns[0].Retries)
+	check.Equal(1, turns[1].Retries)
+	check.Equal("end_turn", turns[1].StopReason)
 
 	records := h.turnRecords()
-	require.Len(t, records, 2)
+	must.Len(records, 2)
 	for _, block := range records[1].ModelOutput {
-		assert.NotContains(t, block.Text, "discarded partial", "retried turn kept output from the discarded attempt")
+		check.NotContains(block.Text, "discarded partial", "retried turn kept output from the discarded attempt")
 	}
 
 	warnings := h.retryWarnings()
-	require.Len(t, warnings, 1, "transport output:\n%s", h.transport.String())
-	assert.Contains(t, warnings[0], "turn 1 attempt 1", "warning names the discarded attempt")
-	assert.Contains(t, warnings[0], "overloaded_error", "warning names the error")
+	must.Len(warnings, 1, "transport output:\n%s", h.transport.String())
+	check.Contains(warnings[0], "turn 1 attempt 1", "warning names the discarded attempt")
+	check.Contains(warnings[0], "overloaded_error", "warning names the error")
 
-	assert.Equal(t, map[string]int64{turnRetryOutcomeSucceeded: 1}, h.turnRetryOutcomes(t))
+	check.Equal(map[string]int64{turnRetryOutcomeSucceeded: 1}, h.turnRetryOutcomes(t))
 }
 
 func TestLoop_TurnRetry_PreStreamRetryableErrorThenSuccess(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &scriptedTurnProvider{scripts: []turnScript{
 		{err: types.MarkRetryable(errors.New("anthropic API returned status 529"))},
 		answerScript(),
@@ -226,13 +232,13 @@ func TestLoop_TurnRetry_PreStreamRetryableErrorThenSuccess(t *testing.T) {
 	h := newRetryHarness(t, prov)
 
 	runTrace, err := h.loop.Run(context.Background(), retryConfig(3))
-	require.NoError(t, err)
-	require.Equal(t, "success", runTrace.Outcome)
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
 
 	turns := h.turns()
-	require.Len(t, turns, 1)
-	require.Equal(t, 1, turns[0].Retries)
-	assert.Len(t, h.retryWarnings(), 1)
+	must.Len(turns, 1)
+	must.Equal(1, turns[0].Retries)
+	check.Len(h.retryWarnings(), 1)
 }
 
 func TestLoop_TurnRetry_NonRetryableErrorEndsRunOnFirstFailure(t *testing.T) {
@@ -247,15 +253,16 @@ func TestLoop_TurnRetry_NonRetryableErrorEndsRunOnFirstFailure(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			prov := &scriptedTurnProvider{scripts: []turnScript{tc.script, answerScript()}}
 			h := newRetryHarness(t, prov)
 
 			runTrace, err := h.loop.Run(context.Background(), retryConfig(3))
-			require.NoError(t, err)
-			require.Equal(t, "error", runTrace.Outcome)
-			require.Equal(t, 1, prov.callCount(), "stream calls")
-			require.Empty(t, h.retryWarnings(), "no retry warning for a non-retryable failure")
-			require.Empty(t, h.turnRetryOutcomes(t), "no turn retry outcome for a turn that never hit a retryable failure")
+			must.NoError(err)
+			must.Equal("error", runTrace.Outcome)
+			must.Equal(1, prov.callCount(), "stream calls")
+			must.Empty(h.retryWarnings(), "no retry warning for a non-retryable failure")
+			must.Empty(h.turnRetryOutcomes(t), "no turn retry outcome for a turn that never hit a retryable failure")
 		})
 	}
 }
@@ -272,36 +279,41 @@ func TestLoop_TurnRetry_StopsAtAttemptCount(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			prov := &scriptedTurnProvider{scripts: []turnScript{overloadedMidStream()}}
 			h := newRetryHarness(t, prov)
 
 			runTrace, err := h.loop.Run(context.Background(), retryConfig(tc.maxAttempts))
-			require.NoError(t, err)
-			require.Equal(t, "error", runTrace.Outcome)
-			require.Equal(t, tc.wantCalls, prov.callCount(), "stream calls")
+			must.NoError(err)
+			must.Equal("error", runTrace.Outcome)
+			must.Equal(tc.wantCalls, prov.callCount(), "stream calls")
 
 			turns := h.turns()
-			require.Len(t, turns, 1)
-			require.Equal(t, "error", turns[0].StopReason)
-			require.Equal(t, tc.wantCalls-1, turns[0].Retries)
-			require.Len(t, h.retryWarnings(), tc.wantCalls-1)
-			require.Equal(t, map[string]int64{turnRetryOutcomeExhausted: 1}, h.turnRetryOutcomes(t))
+			must.Len(turns, 1)
+			must.Equal("error", turns[0].StopReason)
+			must.Equal(tc.wantCalls-1, turns[0].Retries)
+			must.Len(h.retryWarnings(), tc.wantCalls-1)
+			must.Equal(map[string]int64{turnRetryOutcomeExhausted: 1}, h.turnRetryOutcomes(t))
 		})
 	}
 }
 
 func TestLoop_TurnRetry_DisabledWhenMaxAttemptsIsOne(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &scriptedTurnProvider{scripts: []turnScript{overloadedMidStream(), answerScript()}}
 	h := newRetryHarness(t, prov)
 
 	runTrace, err := h.loop.Run(context.Background(), retryConfig(1))
-	require.NoError(t, err)
-	assert.Equal(t, "error", runTrace.Outcome)
-	assert.Equal(t, 1, prov.callCount(), "stream calls")
-	assert.Empty(t, h.turnRetryOutcomes(t), "turn retry is disabled")
+	must.NoError(err)
+	check.Equal("error", runTrace.Outcome)
+	check.Equal(1, prov.callCount(), "stream calls")
+	check.Empty(h.turnRetryOutcomes(t), "turn retry is disabled")
 }
 
 func TestLoop_TurnRetry_StopsAtWallClockBudget(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	// Each attempt takes 50 ms and every backoff is under 10 ms, so the
 	// first retry fits a 25 ms budget measured from the first failure and
 	// the second does not.
@@ -315,13 +327,15 @@ func TestLoop_TurnRetry_StopsAtWallClockBudget(t *testing.T) {
 	config.Provider.Retry.WallClockBudgetMs = 25
 
 	runTrace, err := h.loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	assert.Equal(t, "error", runTrace.Outcome)
-	assert.Equal(t, 2, prov.callCount(), "stream calls")
-	assert.Equal(t, map[string]int64{turnRetryOutcomeBudgetExhausted: 1}, h.turnRetryOutcomes(t))
+	must.NoError(err)
+	check.Equal("error", runTrace.Outcome)
+	check.Equal(2, prov.callCount(), "stream calls")
+	check.Equal(map[string]int64{turnRetryOutcomeBudgetExhausted: 1}, h.turnRetryOutcomes(t))
 }
 
 func TestLoop_TurnRetry_RunDeadlineWinsDuringBackoff(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	prov := &scriptedTurnProvider{scripts: []turnScript{overloadedMidStream(), answerScript()}}
 	h := newRetryHarness(t, prov)
 	config := retryConfig(3)
@@ -334,24 +348,26 @@ func TestLoop_TurnRetry_RunDeadlineWinsDuringBackoff(t *testing.T) {
 	defer cancel()
 	start := time.Now()
 	runTrace, err := h.loop.Run(ctx, config)
-	require.NoError(t, err)
-	require.LessOrEqual(t, time.Since(start), 10*time.Second, "the run deadline must interrupt the backoff")
-	assert.Equal(t, "timeout", runTrace.Outcome)
-	assert.Equal(t, 1, prov.callCount(), "stream calls")
-	assert.Equal(t, map[string]int64{turnRetryOutcomeContextDone: 1}, h.turnRetryOutcomes(t))
+	must.NoError(err)
+	must.LessOrEqual(time.Since(start), 10*time.Second, "the run deadline must interrupt the backoff")
+	check.Equal("timeout", runTrace.Outcome)
+	check.Equal(1, prov.callCount(), "stream calls")
+	check.Equal(map[string]int64{turnRetryOutcomeContextDone: 1}, h.turnRetryOutcomes(t))
 }
 
 func TestLoop_TurnRetry_CancelledRunIsNotRetried(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	prov := &cancelThenRetryableProvider{cancel: cancel}
 	h := newRetryHarness(t, prov)
 
 	runTrace, err := h.loop.Run(ctx, retryConfig(3))
-	require.NoError(t, err)
-	assert.Equal(t, "cancelled", runTrace.Outcome)
-	assert.EqualValues(t, 1, prov.calls.Load(), "stream calls")
-	assert.Empty(t, h.turnRetryOutcomes(t))
+	must.NoError(err)
+	check.Equal("cancelled", runTrace.Outcome)
+	check.EqualValues(1, prov.calls.Load(), "stream calls")
+	check.Empty(h.turnRetryOutcomes(t))
 }
 
 // cancelThenRetryableProvider cancels the run and then fails with an error that
@@ -368,6 +384,8 @@ func (p *cancelThenRetryableProvider) Stream(context.Context, types.StreamParams
 }
 
 func TestLoop_TurnRetry_ChargesUsageReportedByDiscardedAttempt(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	failing := turnScript{events: []types.StreamEvent{
 		{Type: "message_complete", InputTokens: 40, OutputTokens: 4},
 		{Type: "error", Error: types.MarkRetryable(errors.New("read SSE stream: connection reset by peer"))},
@@ -376,15 +394,15 @@ func TestLoop_TurnRetry_ChargesUsageReportedByDiscardedAttempt(t *testing.T) {
 	h := newRetryHarness(t, prov)
 
 	runTrace, err := h.loop.Run(context.Background(), retryConfig(3))
-	require.NoError(t, err)
-	require.Equal(t, "success", runTrace.Outcome)
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
 
 	turns := h.turns()
-	require.Len(t, turns, 1)
-	assert.Equal(t, 140, turns[0].Tokens.Input, "turn input tokens include the discarded attempt")
-	assert.Equal(t, 14, turns[0].Tokens.Output, "turn output tokens include the discarded attempt")
-	assert.Equal(t, 140, runTrace.TokenUsage.Input, "run input tokens")
-	assert.Equal(t, 14, runTrace.TokenUsage.Output, "run output tokens")
+	must.Len(turns, 1)
+	check.Equal(140, turns[0].Tokens.Input, "turn input tokens include the discarded attempt")
+	check.Equal(14, turns[0].Tokens.Output, "turn output tokens include the discarded attempt")
+	check.Equal(140, runTrace.TokenUsage.Input, "run input tokens")
+	check.Equal(14, runTrace.TokenUsage.Output, "run output tokens")
 }
 
 func TestLoop_TurnRetry_UsesSelectedProviderPolicy(t *testing.T) {
@@ -395,52 +413,62 @@ func TestLoop_TurnRetry_UsesSelectedProviderPolicy(t *testing.T) {
 	}
 
 	t.Run("selected provider uses its own retry block", func(t *testing.T) {
+		must := require.New(t)
 		got := turnRetryPolicyFor(config, "secondary")
-		require.Equal(t, 1, got.maxRetries)
-		require.Equal(t, 7*time.Millisecond, got.initialDelay)
+		must.Equal(1, got.maxRetries)
+		must.Equal(7*time.Millisecond, got.initialDelay)
 	})
 	t.Run("provider without a retry block uses the default provider's block", func(t *testing.T) {
+		must := require.New(t)
 		got := turnRetryPolicyFor(config, "bare")
-		require.Equal(t, 2, got.maxRetries)
-		require.Equal(t, time.Millisecond, got.initialDelay)
+		must.Equal(2, got.maxRetries)
+		must.Equal(time.Millisecond, got.initialDelay)
 	})
 	t.Run("default provider uses the top-level retry block", func(t *testing.T) {
+		must := require.New(t)
 		got := turnRetryPolicyFor(config, "anthropic")
-		require.Equal(t, 2, got.maxRetries)
+		must.Equal(2, got.maxRetries)
 	})
 	t.Run("nil retry block disables turn retry", func(t *testing.T) {
+		must := require.New(t)
 		config.Provider.Retry = nil
-		require.Equal(t, turnRetryPolicy{}, turnRetryPolicyFor(config, "anthropic"))
+		must.Equal(turnRetryPolicy{}, turnRetryPolicyFor(config, "anthropic"))
 	})
 }
 
 func TestTurnRetryPolicyFor_ZeroDelaysFallBackToDefaults(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	config := buildTestConfig()
 	config.Provider.Retry = &types.ProviderRetryConfig{MaxAttempts: 3}
 	got := turnRetryPolicyFor(config, "anthropic")
-	require.Equal(t, turnRetryInitialDelayFallback, got.initialDelay)
-	require.Equal(t, turnRetryMaxDelayFallback, got.maxDelay)
-	assert.GreaterOrEqual(t, got.delay(0), turnRetryInitialDelayFallback/2, "first retry must not be back to back")
+	must.Equal(turnRetryInitialDelayFallback, got.initialDelay)
+	must.Equal(turnRetryMaxDelayFallback, got.maxDelay)
+	check.GreaterOrEqual(got.delay(0), turnRetryInitialDelayFallback/2, "first retry must not be back to back")
 }
 
 func TestTurnRetryPolicy_DelayUsesEqualJitter(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	p := turnRetryPolicy{maxRetries: 2, initialDelay: 100 * time.Millisecond, maxDelay: 300 * time.Millisecond}
 	for range 200 {
 		first := p.delay(0)
-		require.GreaterOrEqual(t, first, 50*time.Millisecond, "delay(0) is at least half the initial delay")
-		require.Less(t, first, 100*time.Millisecond, "delay(0) is below the initial delay")
+		must.GreaterOrEqual(first, 50*time.Millisecond, "delay(0) is at least half the initial delay")
+		must.Less(first, 100*time.Millisecond, "delay(0) is below the initial delay")
 
 		capped := p.delay(2)
-		require.GreaterOrEqual(t, capped, 150*time.Millisecond, "delay(2) is at least half the capped delay")
-		require.Less(t, capped, 300*time.Millisecond, "delay(2) is below the capped delay")
+		must.GreaterOrEqual(capped, 150*time.Millisecond, "delay(2) is at least half the capped delay")
+		must.Less(capped, 300*time.Millisecond, "delay(2) is below the capped delay")
 	}
-	assert.Zero(t, (turnRetryPolicy{initialDelay: time.Second}).delay(0), "delay with zero maxDelay")
+	check.Zero((turnRetryPolicy{initialDelay: time.Second}).delay(0), "delay with zero maxDelay")
 }
 
 // TestLoop_TurnRetry_DroppedConnectionWithRealAdapter drives the loop
 // against the openai-compatible adapter: the first response drops the
 // connection mid-stream and the second completes.
 func TestLoop_TurnRetry_DroppedConnectionWithRealAdapter(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -449,7 +477,7 @@ func TestLoop_TurnRetry_DroppedConnectionWithRealAdapter(t *testing.T) {
 			_, _ = fmt.Fprint(w, `data: {"id":"c","choices":[{"index":0,"delta":{"content":"discarded partial"},"finish_reason":null}]}`+"\n\n")
 			w.(http.Flusher).Flush()
 			conn, _, err := w.(http.Hijacker).Hijack()
-			if assert.NoError(t, err, "hijack the connection") {
+			if check.NoError(err, "hijack the connection") {
 				_ = conn.Close()
 			}
 			return
@@ -466,13 +494,13 @@ func TestLoop_TurnRetry_DroppedConnectionWithRealAdapter(t *testing.T) {
 	h := newRetryHarness(t, adapter)
 
 	runTrace, err := h.loop.Run(context.Background(), retryConfig(3))
-	require.NoError(t, err)
-	require.Equal(t, "success", runTrace.Outcome)
-	assert.EqualValues(t, 2, hits.Load(), "server requests")
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
+	check.EqualValues(2, hits.Load(), "server requests")
 
 	turns := h.turns()
-	require.Len(t, turns, 1)
-	assert.Equal(t, 1, turns[0].Retries)
+	must.Len(turns, 1)
+	check.Equal(1, turns[0].Retries)
 }
 
 // TestLoop_TurnRetry_TerminalStatusWithRealAdapter pins that a 401, a 400
@@ -490,6 +518,7 @@ func TestLoop_TurnRetry_TerminalStatusWithRealAdapter(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var hits atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				hits.Add(1)
@@ -504,9 +533,9 @@ func TestLoop_TurnRetry_TerminalStatusWithRealAdapter(t *testing.T) {
 			h := newRetryHarness(t, adapter)
 
 			runTrace, err := h.loop.Run(context.Background(), retryConfig(3))
-			require.NoError(t, err)
-			require.Equal(t, "error", runTrace.Outcome)
-			require.EqualValues(t, 1, hits.Load(), "server requests")
+			must.NoError(err)
+			must.Equal("error", runTrace.Outcome)
+			must.EqualValues(1, hits.Load(), "server requests")
 		})
 	}
 }
@@ -520,11 +549,13 @@ type batchTurnProvider struct {
 func (p *batchTurnProvider) LastBatchID() string { return "msgbatch_test" }
 
 func TestLoop_TurnRetry_SkipsBatchTurns(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &batchTurnProvider{scriptedTurnProvider{scripts: []turnScript{overloadedMidStream(), answerScript()}}}
 	h := newRetryHarness(t, prov)
 
 	runTrace, err := h.loop.Run(context.Background(), retryConfig(3))
-	require.NoError(t, err)
-	assert.Equal(t, "error", runTrace.Outcome)
-	assert.Equal(t, 1, prov.callCount(), "a batch turn must not be resubmitted")
+	must.NoError(err)
+	check.Equal("error", runTrace.Outcome)
+	check.Equal(1, prov.callCount(), "a batch turn must not be resubmitted")
 }

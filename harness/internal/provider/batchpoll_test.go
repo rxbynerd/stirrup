@@ -87,24 +87,26 @@ func anthropicSubmitEntries(customID string) []BatchEntry {
 }
 
 func TestHarnessPollingBatch_Submit_HappyPath(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Assertions here run on the server goroutine, so they use assert.
-		assert.Equal(t, http.MethodPost, r.Method, "method")
-		assert.Equal(t, "/v1/messages/batches", r.URL.Path, "path")
-		assert.Equal(t, "sk-ant-test", r.Header.Get("x-api-key"), "x-api-key")
-		assert.Equal(t, anthropicAPIVersion, r.Header.Get("anthropic-version"), "anthropic-version")
+		check.Equal(http.MethodPost, r.Method, "method")
+		check.Equal("/v1/messages/batches", r.URL.Path, "path")
+		check.Equal("sk-ant-test", r.Header.Get("x-api-key"), "x-api-key")
+		check.Equal(anthropicAPIVersion, r.Header.Get("anthropic-version"), "anthropic-version")
 
 		// Confirm the wire body shape: a single "requests" entry with
 		// the supplied custom_id and a passthrough params blob.
 		var body anthropicBatchSubmitRequest
-		if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&body), "decode submit body") {
+		if !check.NoError(json.NewDecoder(r.Body).Decode(&body), "decode submit body") {
 			return
 		}
-		if !assert.Len(t, body.Requests, 1) {
+		if !check.Len(body.Requests, 1) {
 			return
 		}
-		assert.Equal(t, "stirrup-run-1-turn-1", body.Requests[0].CustomID, "custom_id")
+		check.Equal("stirrup-run-1-turn-1", body.Requests[0].CustomID, "custom_id")
 
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, `{"id":"batch_abc","processing_status":"in_progress"}`)
@@ -115,11 +117,12 @@ func TestHarnessPollingBatch_Submit_HappyPath(t *testing.T) {
 	defer teardown()
 
 	id, err := c.Submit(context.Background(), anthropicSubmitEntries("stirrup-run-1-turn-1"))
-	require.NoError(t, err)
-	require.Equal(t, "batch_abc", id)
+	must.NoError(err)
+	must.Equal("batch_abc", id)
 }
 
 func TestHarnessPollingBatch_Submit_ErrorResponse(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
@@ -131,13 +134,15 @@ func TestHarnessPollingBatch_Submit_ErrorResponse(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Submit(context.Background(), anthropicSubmitEntries("stirrup-run-1-turn-1"))
-	require.ErrorContains(t, err, "400")
+	must.ErrorContains(err, "400")
 }
 
 func TestHarnessPollingBatch_Submit_RejectsMultiEntry(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		assert.Fail(t, "server should not be hit on validation failure")
+		check.Fail("server should not be hit on validation failure")
 	}))
 	defer srv.Close()
 
@@ -148,10 +153,11 @@ func TestHarnessPollingBatch_Submit_RejectsMultiEntry(t *testing.T) {
 		{CustomID: "a", Provider: "anthropic", Body: json.RawMessage(`{}`)},
 		{CustomID: "b", Provider: "anthropic", Body: json.RawMessage(`{}`)},
 	})
-	require.ErrorContains(t, err, "exactly 1")
+	must.ErrorContains(err, "exactly 1")
 }
 
 func TestHarnessPollingBatch_Submit_MissingID(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -163,7 +169,7 @@ func TestHarnessPollingBatch_Submit_MissingID(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Submit(context.Background(), anthropicSubmitEntries("stirrup-run-1-turn-1"))
-	require.ErrorContains(t, err, "missing id")
+	must.ErrorContains(err, "missing id")
 }
 
 // pollServer is a stateful test fixture: it serves a configurable
@@ -207,7 +213,8 @@ func (ps *pollServer) resultCount() int {
 // after Result returns.
 func (ps *pollServer) waitForCancelCount(t *testing.T, want int, timeout time.Duration) {
 	t.Helper()
-	require.Eventually(t, func() bool { return ps.cancelCount() >= want }, timeout, 5*time.Millisecond)
+	must := require.New(t)
+	must.Eventually(func() bool { return ps.cancelCount() >= want }, timeout, 5*time.Millisecond)
 }
 
 func newPollServer(t *testing.T, polls []string, resultsBody string) *pollServer {
@@ -248,6 +255,7 @@ func newPollServer(t *testing.T, polls []string, resultsBody string) *pollServer
 }
 
 func TestHarnessPollingBatch_Result_Eventually(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 	polls := []string{
 		`{"id":"batch_xyz","processing_status":"in_progress"}`,
@@ -266,17 +274,18 @@ func TestHarnessPollingBatch_Result_Eventually(t *testing.T) {
 	defer teardown()
 
 	results, err := c.Result(context.Background(), "batch_xyz")
-	require.NoError(t, err)
-	require.Contains(t, results, "stirrup-run-1-turn-1")
+	must.NoError(err)
+	must.Contains(results, "stirrup-run-1-turn-1")
 	entry := results["stirrup-run-1-turn-1"]
-	require.Nil(t, entry.Err, "entry error")
-	require.Contains(t, string(entry.Response), `"text":"ok"`)
-	require.GreaterOrEqual(t, ps.pollCount(), 3, "pollCalls")
-	require.Equal(t, 1, ps.resultCount(), "resultCalls")
-	require.Zero(t, ps.cancelCount(), "cancelCalls on happy path")
+	must.Nil(entry.Err, "entry error")
+	must.Contains(string(entry.Response), `"text":"ok"`)
+	must.GreaterOrEqual(ps.pollCount(), 3, "pollCalls")
+	must.Equal(1, ps.resultCount(), "resultCalls")
+	must.Zero(ps.cancelCount(), "cancelCalls on happy path")
 }
 
 func TestHarnessPollingBatch_Result_Timeout(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 	polls := []string{`{"id":"batch_xyz","processing_status":"in_progress"}`}
 	ps := newPollServer(t, polls, "")
@@ -288,11 +297,11 @@ func TestHarnessPollingBatch_Result_Timeout(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	require.ErrorIs(t, err, errBatchExpired, "timeout must wrap errBatchExpired")
+	must.ErrorIs(err, errBatchExpired, "timeout must wrap errBatchExpired")
 	// bestEffortCancel is detached into a goroutine, so wait for the
 	// side-effect rather than reading the counter immediately.
 	ps.waitForCancelCount(t, 1, time.Second)
-	require.Equal(t, 1, ps.cancelCount(), "cancelCalls on timeout")
+	must.Equal(1, ps.cancelCount(), "cancelCalls on timeout")
 }
 
 // TestHarnessPollingBatch_Result_DeadlineRacesCap gives the polling client
@@ -302,6 +311,7 @@ func TestHarnessPollingBatch_Result_Timeout(t *testing.T) {
 // batch-expired sentinel, which would route into FallbackOnTimeout and
 // retry on the same dead context.
 func TestHarnessPollingBatch_Result_DeadlineRacesCap(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 	polls := []string{`{"id":"batch_xyz","processing_status":"in_progress"}`}
 	ps := newPollServer(t, polls, "")
@@ -321,14 +331,15 @@ func TestHarnessPollingBatch_Result_DeadlineRacesCap(t *testing.T) {
 
 	select {
 	case err := <-done:
-		require.ErrorIs(t, err, context.DeadlineExceeded)
-		require.NotErrorIs(t, err, errBatchExpired, "a run past its deadline must not surface the batch-expired sentinel")
+		must.ErrorIs(err, context.DeadlineExceeded)
+		must.NotErrorIs(err, errBatchExpired, "a run past its deadline must not surface the batch-expired sentinel")
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "Result did not return once both deadlines had passed")
+		must.FailNow("Result did not return once both deadlines had passed")
 	}
 }
 
 func TestHarnessPollingBatch_Result_CtxCancel(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 	polls := []string{`{"id":"batch_xyz","processing_status":"in_progress"}`}
 	ps := newPollServer(t, polls, "")
@@ -352,18 +363,19 @@ func TestHarnessPollingBatch_Result_CtxCancel(t *testing.T) {
 
 	select {
 	case err := <-done:
-		require.ErrorIs(t, err, context.Canceled)
+		must.ErrorIs(err, context.Canceled)
 	case <-time.After(500 * time.Millisecond):
-		require.FailNow(t, "Result did not return promptly after ctx cancel")
+		must.FailNow("Result did not return promptly after ctx cancel")
 	}
 
 	// bestEffortCancel runs in a detached goroutine; wait on the
 	// side-effect rather than a sleep-and-pray window.
 	ps.waitForCancelCount(t, 1, time.Second)
-	require.Equal(t, 1, ps.cancelCount(), "cancelCalls on ctx cancel")
+	must.Equal(1, ps.cancelCount(), "cancelCalls on ctx cancel")
 }
 
 func TestHarnessPollingBatch_Credential_ResolvedPerPoll(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 	polls := []string{
 		`{"id":"batch_xyz","processing_status":"in_progress"}`,
@@ -379,16 +391,17 @@ func TestHarnessPollingBatch_Credential_ResolvedPerPoll(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	// Three poll calls + one results GET = at least four resolves.
-	require.GreaterOrEqual(t, src.resolveCalls.Load(), int64(4), "Resolve should be called per HTTP request")
+	must.GreaterOrEqual(src.resolveCalls.Load(), int64(4), "Resolve should be called per HTTP request")
 }
 
 // TestHarnessPollingBatch_ResultsURL_NonOKStatus confirms a 500 from
 // results_url is propagated up rather than silently converted into
 // errBatchExpired, which would mask a real upstream failure.
 func TestHarnessPollingBatch_ResultsURL_NonOKStatus(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 
 	// resultsURL is populated after the httptest.Server starts so the
@@ -414,14 +427,15 @@ func TestHarnessPollingBatch_ResultsURL_NonOKStatus(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	require.ErrorContains(t, err, "500")
-	require.NotErrorIs(t, err, errBatchExpired, "non-200 results_url must not be classified as batch_expired")
+	must.ErrorContains(err, "500")
+	must.NotErrorIs(err, errBatchExpired, "non-200 results_url must not be classified as batch_expired")
 }
 
 // TestHarnessPollingBatch_PollOnce_NonOKStatus confirms a 503 on the
 // first poll is surfaced as an HTTP error, not silently converted to
 // errBatchExpired.
 func TestHarnessPollingBatch_PollOnce_NonOKStatus(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -443,8 +457,8 @@ func TestHarnessPollingBatch_PollOnce_NonOKStatus(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	require.ErrorContains(t, err, "503")
-	require.NotErrorIs(t, err, errBatchExpired, "non-200 poll status must not be classified as batch_expired")
+	must.ErrorContains(err, "503")
+	must.NotErrorIs(err, errBatchExpired, "non-200 poll status must not be classified as batch_expired")
 }
 
 // TestHarnessPollingBatch_BestEffortCancel_HangsForCancelTimeout asserts
@@ -452,6 +466,7 @@ func TestHarnessPollingBatch_PollOnce_NonOKStatus(t *testing.T) {
 // than batchCancelTimeout, Result must still return promptly because
 // bestEffortCancel runs in a detached goroutine.
 func TestHarnessPollingBatch_BestEffortCancel_HangsForCancelTimeout(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 
 	// Use a chan to release the hanging cancel handler when the test ends,
@@ -493,10 +508,10 @@ func TestHarnessPollingBatch_BestEffortCancel_HangsForCancelTimeout(t *testing.T
 	_, err := c.Result(context.Background(), "batch_xyz")
 	elapsed := time.Since(start)
 
-	require.ErrorIs(t, err, errBatchExpired)
+	must.ErrorIs(err, errBatchExpired)
 	// The cancel handler is still blocked. The 2s bound is well under
 	// batchCancelTimeout (10s).
-	require.LessOrEqual(t, elapsed, 2*time.Second, "Result must not block on bestEffortCancel")
+	must.LessOrEqual(elapsed, 2*time.Second, "Result must not block on bestEffortCancel")
 }
 
 // TestHarnessPollingBatch_CtxCancel_DuringPoll covers the
@@ -504,6 +519,7 @@ func TestHarnessPollingBatch_BestEffortCancel_HangsForCancelTimeout(t *testing.T
 // handler has accepted the request but before it writes a response,
 // forcing the request context to be cancelled mid-flight.
 func TestHarnessPollingBatch_CtxCancel_DuringPoll(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -548,7 +564,7 @@ func TestHarnessPollingBatch_CtxCancel_DuringPoll(t *testing.T) {
 	select {
 	case <-pollEntered:
 	case <-time.After(time.Second):
-		require.FailNow(t, "poll handler never entered")
+		must.FailNow("poll handler never entered")
 	}
 
 	// Cancel the parent context mid-flight so the in-flight request
@@ -558,16 +574,16 @@ func TestHarnessPollingBatch_CtxCancel_DuringPoll(t *testing.T) {
 
 	select {
 	case err := <-done:
-		require.ErrorIs(t, err, context.Canceled)
+		must.ErrorIs(err, context.Canceled)
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "Result did not return after ctx cancel during poll")
+		must.FailNow("Result did not return after ctx cancel during poll")
 	}
 
 	// bestEffortCancel runs in a detached goroutine with
 	// context.Background(), so it should reach the server even though
 	// the parent ctx is now cancelled. Wait briefly for it to land.
-	require.Eventually(t, func() bool { return cancelHits.Load() > 0 }, 2*time.Second, 5*time.Millisecond)
-	require.EqualValues(t, 1, cancelHits.Load(), "cancel hits")
+	must.Eventually(func() bool { return cancelHits.Load() > 0 }, 2*time.Second, 5*time.Millisecond)
+	must.EqualValues(1, cancelHits.Load(), "cancel hits")
 }
 
 func TestHarnessPollingBatch_ResultTypeMapping(t *testing.T) {
@@ -606,24 +622,27 @@ func TestHarnessPollingBatch_ResultTypeMapping(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var line anthropicBatchResultLine
-			require.NoError(t, json.Unmarshal([]byte(`{"custom_id":"id","result":`+tc.resultJSON+`}`), &line), "unmarshal fixture")
+			must.NoError(json.Unmarshal([]byte(`{"custom_id":"id","result":`+tc.resultJSON+`}`), &line), "unmarshal fixture")
 			got := mapBatchResultLine(line)
 			if tc.wantSucc {
-				require.Nil(t, got.Err, "expected success")
-				require.NotNil(t, got.Response, "expected non-nil Response")
+				must.Nil(got.Err, "expected success")
+				must.NotNil(got.Response, "expected non-nil Response")
 				return
 			}
-			require.NotNil(t, got.Err, "expected an error result")
-			require.Equal(t, tc.wantErrTy, got.Err.Type)
+			must.NotNil(got.Err, "expected an error result")
+			must.Equal(tc.wantErrTy, got.Err.Type)
 		})
 	}
 }
 
 func TestHarnessPollingBatch_CredentialResolveFails(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	src := &fakeCredentialSource{resolveErr: errors.New("vault down")}
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		assert.Fail(t, "server should not be hit when credential resolve fails")
+		check.Fail("server should not be hit when credential resolve fails")
 	}))
 	defer srv.Close()
 
@@ -631,13 +650,15 @@ func TestHarnessPollingBatch_CredentialResolveFails(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Submit(context.Background(), anthropicSubmitEntries("id"))
-	require.ErrorContains(t, err, "vault down")
+	must.ErrorContains(err, "vault down")
 }
 
 func TestHarnessPollingBatch_CredentialNilBearer(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	src := &fakeCredentialSource{nilBearer: true}
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		assert.Fail(t, "server should not be hit when no bearer token is produced")
+		check.Fail("server should not be hit when no bearer token is produced")
 	}))
 	defer srv.Close()
 
@@ -645,10 +666,11 @@ func TestHarnessPollingBatch_CredentialNilBearer(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Submit(context.Background(), anthropicSubmitEntries("id"))
-	require.ErrorContains(t, err, "no bearer token")
+	must.ErrorContains(err, "no bearer token")
 }
 
 func TestHarnessPollingBatch_ResultsMissingCustomID(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 	polls := []string{`{"id":"batch_xyz","processing_status":"ended","results_url":"REPLACE"}`}
 	// Empty JSONL — well-formed HTTP 200 but no lines.
@@ -660,10 +682,11 @@ func TestHarnessPollingBatch_ResultsMissingCustomID(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	require.ErrorContains(t, err, "empty")
+	must.ErrorContains(err, "empty")
 }
 
 func TestHarnessPollingBatch_ResultsURLMissing(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 	polls := []string{`{"id":"batch_xyz","processing_status":"ended"}`}
 	ps := newPollServer(t, polls, "")
@@ -673,10 +696,11 @@ func TestHarnessPollingBatch_ResultsURLMissing(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	require.ErrorContains(t, err, "results_url")
+	must.ErrorContains(err, "results_url")
 }
 
 func TestHarnessPollingBatch_JitterStaysWithinBounds(t *testing.T) {
+	must := require.New(t)
 	// Enable jitter for this test only.
 	prev := setBatchPollJitterDisabled(false)
 	defer setBatchPollJitterDisabled(prev)
@@ -686,8 +710,8 @@ func TestHarnessPollingBatch_JitterStaysWithinBounds(t *testing.T) {
 	high := d + d/5
 	for i := 0; i < 200; i++ {
 		got := jitter(d)
-		require.GreaterOrEqual(t, got, low, "iter %d: below lower bound", i)
-		require.LessOrEqual(t, got, high, "iter %d: above upper bound", i)
+		must.GreaterOrEqual(got, low, "iter %d: below lower bound", i)
+		must.LessOrEqual(got, high, "iter %d: above upper bound", i)
 	}
 }
 
@@ -695,6 +719,7 @@ func TestHarnessPollingBatch_JitterStaysWithinBounds(t *testing.T) {
 // whose results_url points off-domain is rejected before fetchResults
 // would send the credential.
 func TestHarnessPollingBatch_ResultsURLBadOrigin(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 
 	var exfilHits atomic.Int64
@@ -719,14 +744,15 @@ func TestHarnessPollingBatch_ResultsURLBadOrigin(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	require.ErrorContains(t, err, "results_url host")
-	require.Zero(t, exfilHits.Load(), "validation must fire before the GET")
+	must.ErrorContains(err, "results_url host")
+	must.Zero(exfilHits.Load(), "validation must fire before the GET")
 }
 
 // TestHarnessPollingBatch_ResultsURLNonHTTPS confirms an http:// scheme
 // (even on anthropic.com) is rejected — the credential is bearer-class
 // and must not be sent in cleartext.
 func TestHarnessPollingBatch_ResultsURLNonHTTPS(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 
 	polls := []string{
@@ -739,7 +765,7 @@ func TestHarnessPollingBatch_ResultsURLNonHTTPS(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	require.ErrorContains(t, err, "scheme")
+	must.ErrorContains(err, "scheme")
 }
 
 // TestHarnessPollingBatch_ResultsURLAnthropicHostAccepted checks
@@ -756,7 +782,8 @@ func TestHarnessPollingBatch_ResultsURLAnthropicHostAccepted(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.NoError(t, validateResultsURL(tc.url, "https://api.anthropic.com"), "expected acceptance")
+			must := require.New(t)
+			must.NoError(validateResultsURL(tc.url, "https://api.anthropic.com"), "expected acceptance")
 		})
 	}
 }
@@ -767,6 +794,8 @@ func TestHarnessPollingBatch_ResultsURLAnthropicHostAccepted(t *testing.T) {
 // would let an attacker-supplied (or upstream-mangled) batchID navigate
 // to an unintended endpoint.
 func TestHarnessPollingBatch_BatchIDPathEscaped(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 
 	const sneakyID = "batch_../etc/passwd?x=1"
@@ -794,7 +823,7 @@ func TestHarnessPollingBatch_BatchIDPathEscaped(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, `{}`)
 		default:
-			assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.EscapedPath())
+			check.Failf("unexpected request", "%s %s", r.Method, r.URL.EscapedPath())
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
@@ -804,18 +833,20 @@ func TestHarnessPollingBatch_BatchIDPathEscaped(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), sneakyID)
-	require.Error(t, err, "expected results_url-missing error")
+	must.Error(err, "expected results_url-missing error")
 
 	obs.mu.Lock()
 	defer obs.mu.Unlock()
-	require.NotEmpty(t, obs.pollPaths, "expected at least one poll request")
+	must.NotEmpty(obs.pollPaths, "expected at least one poll request")
 	wantPath := "/v1/messages/batches/" + wantPathSegment
-	require.Equal(t, wantPath, obs.pollPaths[0], "poll path")
+	must.Equal(wantPath, obs.pollPaths[0], "poll path")
 }
 
 // TestHarnessPollingBatch_CancelURLEscaped confirms the cancel POST also
 // escapes batchID into a single path segment.
 func TestHarnessPollingBatch_CancelURLEscaped(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 
 	const sneakyID = "batch_inject/cancel?x=y"
@@ -838,7 +869,7 @@ func TestHarnessPollingBatch_CancelURLEscaped(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, `{}`)
 		default:
-			assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.EscapedPath())
+			check.Failf("unexpected request", "%s %s", r.Method, r.URL.EscapedPath())
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
@@ -848,10 +879,10 @@ func TestHarnessPollingBatch_CancelURLEscaped(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), sneakyID)
-	require.Error(t, err, "expected timeout error")
+	must.Error(err, "expected timeout error")
 
 	// bestEffortCancel runs asynchronously, so the cancel request may land after Result returns.
-	require.Eventually(t, func() bool {
+	must.Eventually(func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(cancelPaths) > 0
@@ -859,7 +890,7 @@ func TestHarnessPollingBatch_CancelURLEscaped(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	require.Equal(t, wantCancelPath, cancelPaths[0], "cancel path")
+	must.Equal(wantCancelPath, cancelPaths[0], "cancel path")
 }
 
 // TestHarnessPollingBatch_SubmitTransportError covers the path where the
@@ -868,9 +899,11 @@ func TestHarnessPollingBatch_CancelURLEscaped(t *testing.T) {
 // rather than returning a bare "" batchID or panicking on the nil
 // response.
 func TestHarnessPollingBatch_SubmitTransportError(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		assert.Fail(t, "server should not receive a request after Close()")
+		check.Fail("server should not receive a request after Close()")
 	}))
 	// Close immediately so the client's first connection attempt fails.
 	srv.Close()
@@ -879,7 +912,7 @@ func TestHarnessPollingBatch_SubmitTransportError(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Submit(context.Background(), anthropicSubmitEntries("id"))
-	require.ErrorContains(t, err, "submit batch")
+	must.ErrorContains(err, "submit batch")
 }
 
 // TestHarnessPollingBatch_MalformedJSONLLine confirms a non-JSON line in
@@ -888,6 +921,7 @@ func TestHarnessPollingBatch_SubmitTransportError(t *testing.T) {
 // signal that the upstream document has been truncated or framed
 // incorrectly.
 func TestHarnessPollingBatch_MalformedJSONLLine(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 
 	resultsBody := `{"custom_id":"stirrup-run-1-turn-1","result":{"type":"succeeded","message":{}}}` + "\n" +
@@ -902,7 +936,7 @@ func TestHarnessPollingBatch_MalformedJSONLLine(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	require.ErrorContains(t, err, "decode batch result line")
+	must.ErrorContains(err, "decode batch result line")
 }
 
 // TestHarnessPollingBatch_BackoffCapped exercises the interval-doubling
@@ -911,6 +945,8 @@ func TestHarnessPollingBatch_MalformedJSONLLine(t *testing.T) {
 // the loop must clamp it. We observe by spacing between successive poll
 // requests on the test server.
 func TestHarnessPollingBatch_BackoffCapped(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 
 	var (
@@ -954,13 +990,13 @@ func TestHarnessPollingBatch_BackoffCapped(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	require.GreaterOrEqual(t, len(callTimes), 4, "poll calls within the 40ms budget")
+	must.GreaterOrEqual(len(callTimes), 4, "poll calls within the 40ms budget")
 	// From the third sleep onwards each interval should be <= cap + slack.
 	// Slack covers scheduler jitter on busy CI runners.
 	const slack = 20 * time.Millisecond
 	for i := 2; i < len(callTimes); i++ {
 		gap := callTimes[i].Sub(callTimes[i-1])
-		assert.LessOrEqual(t, gap, 5*time.Millisecond+slack, "poll interval %d exceeded cap+slack", i)
+		check.LessOrEqual(gap, 5*time.Millisecond+slack, "poll interval %d exceeded cap+slack", i)
 	}
 }
 
@@ -970,6 +1006,7 @@ func TestHarnessPollingBatch_BackoffCapped(t *testing.T) {
 // remaining budget; the loop must clamp it and fire the timeout on the
 // documented cap rather than one full interval past it.
 func TestHarnessPollingBatch_TimeoutFiringAlignedToDeadline(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-ant-test"}
 
 	polls := []string{`{"id":"batch_xyz","processing_status":"in_progress"}`}
@@ -994,11 +1031,11 @@ func TestHarnessPollingBatch_TimeoutFiringAlignedToDeadline(t *testing.T) {
 	_, err := c.Result(context.Background(), "batch_xyz")
 	elapsed := time.Since(start)
 
-	require.ErrorIs(t, err, errBatchExpired)
+	must.ErrorIs(err, errBatchExpired)
 	// The deadline should fire within ~maxWait + scheduler slack. A
 	// generous 50 ms slack tolerates loaded CI runners without hiding a
 	// genuine regression (which would overshoot by a full interval +).
-	require.LessOrEqual(t, elapsed, maxWait+50*time.Millisecond, "timeout fired %s past maxWait", elapsed-maxWait)
+	must.LessOrEqual(elapsed, maxWait+50*time.Millisecond, "timeout fired %s past maxWait", elapsed-maxWait)
 }
 
 // keysOf is a small map-introspection helper that keeps the table-
@@ -1076,6 +1113,7 @@ func (f *openaiBatchFixture) snapshot() (int, int, int, int, int) {
 
 func newOpenAIBatchFixture(t *testing.T, polls []string, outputBody, errorBody string) *openaiBatchFixture {
 	t.Helper()
+	check := assert.New(t)
 	f := &openaiBatchFixture{
 		pollResponses: polls,
 		outputBody:    outputBody,
@@ -1090,7 +1128,7 @@ func newOpenAIBatchFixture(t *testing.T, polls []string, outputBody, errorBody s
 			f.uploadedFiles = append(f.uploadedFiles, body)
 			f.mu.Unlock()
 			ct := r.Header.Get("Content-Type")
-			assert.True(t, strings.HasPrefix(ct, "multipart/form-data"), "upload Content-Type: got %q, want multipart/form-data", ct)
+			check.True(strings.HasPrefix(ct, "multipart/form-data"), "upload Content-Type: got %q, want multipart/form-data", ct)
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, `{"id":"file_abc","object":"file"}`)
 		case r.Method == http.MethodPost && r.URL.Path == "/batches":
@@ -1134,7 +1172,7 @@ func newOpenAIBatchFixture(t *testing.T, polls []string, outputBody, errorBody s
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, body)
 		default:
-			assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.Path)
+			check.Failf("unexpected request", "%s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
@@ -1142,6 +1180,7 @@ func newOpenAIBatchFixture(t *testing.T, polls []string, outputBody, errorBody s
 }
 
 func TestHarnessPollingBatch_OpenAISubmit_HappyPath(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 	f := newOpenAIBatchFixture(t, nil, "", "")
 	defer f.Close()
@@ -1150,12 +1189,12 @@ func TestHarnessPollingBatch_OpenAISubmit_HappyPath(t *testing.T) {
 	defer teardown()
 
 	id, err := c.Submit(context.Background(), openaiSubmitEntries("stirrup-run-1-turn-1", "openai-compatible"))
-	require.NoError(t, err)
-	require.Equal(t, "batch_xyz", id)
+	must.NoError(err)
+	must.Equal("batch_xyz", id)
 
 	uploads, creates, _, _, _ := f.snapshot()
-	require.Equal(t, 1, uploads, "upload calls")
-	require.Equal(t, 1, creates, "create calls")
+	must.Equal(1, uploads, "upload calls")
+	must.Equal(1, creates, "create calls")
 
 	f.mu.Lock()
 	rawUpload := f.uploadedFiles[0]
@@ -1164,23 +1203,26 @@ func TestHarnessPollingBatch_OpenAISubmit_HappyPath(t *testing.T) {
 	uploaded := string(rawUpload)
 
 	t.Run("upload jsonl line carries custom_id, endpoint and method", func(t *testing.T) {
-		require.Contains(t, uploaded, `"custom_id":"stirrup-run-1-turn-1"`)
-		require.Contains(t, uploaded, `"url":"/v1/chat/completions"`)
-		require.Contains(t, uploaded, `"method":"POST"`)
+		must := require.New(t)
+		must.Contains(uploaded, `"custom_id":"stirrup-run-1-turn-1"`)
+		must.Contains(uploaded, `"url":"/v1/chat/completions"`)
+		must.Contains(uploaded, `"method":"POST"`)
 	})
 
 	t.Run("create body references the upload and the chat endpoint", func(t *testing.T) {
-		require.Contains(t, createBody, `"input_file_id":"file_abc"`)
-		require.Contains(t, createBody, `"endpoint":"/v1/chat/completions"`)
-		require.Contains(t, createBody, `"completion_window":"24h"`)
+		must := require.New(t)
+		must.Contains(createBody, `"input_file_id":"file_abc"`)
+		must.Contains(createBody, `"endpoint":"/v1/chat/completions"`)
+		must.Contains(createBody, `"completion_window":"24h"`)
 	})
 
 	// The upload is multipart. Its boundary is re-derived from the body's
 	// opening bytes because the request Content-Type is not captured.
 	t.Run("multipart upload has batch purpose and batch.jsonl file part", func(t *testing.T) {
-		require.True(t, bytes.HasPrefix(rawUpload, []byte("--")), "uploaded body does not start with multipart boundary marker: %q", rawUpload)
+		must := require.New(t)
+		must.True(bytes.HasPrefix(rawUpload, []byte("--")), "uploaded body does not start with multipart boundary marker: %q", rawUpload)
 		end := bytes.Index(rawUpload, []byte("\r\n"))
-		require.GreaterOrEqual(t, end, 0, "uploaded body has no CRLF after boundary marker")
+		must.GreaterOrEqual(end, 0, "uploaded body has no CRLF after boundary marker")
 		boundary := string(rawUpload[2:end])
 
 		reader := multipart.NewReader(bytes.NewReader(rawUpload), boundary)
@@ -1190,24 +1232,25 @@ func TestHarnessPollingBatch_OpenAISubmit_HappyPath(t *testing.T) {
 			if err == io.EOF {
 				break
 			}
-			require.NoError(t, err, "multipart NextPart")
+			must.NoError(err, "multipart NextPart")
 			switch part.FormName() {
 			case "purpose":
 				val, _ := io.ReadAll(part)
-				require.Equal(t, "batch", string(val), "purpose field")
+				must.Equal("batch", string(val), "purpose field")
 				sawPurpose = true
 			case "file":
-				require.Equal(t, "batch.jsonl", part.FileName(), "file part filename")
+				must.Equal("batch.jsonl", part.FileName(), "file part filename")
 				sawFile = true
 			}
 			_ = part.Close()
 		}
-		require.True(t, sawPurpose, "multipart missing purpose field")
-		require.True(t, sawFile, "multipart missing file part")
+		must.True(sawPurpose, "multipart missing purpose field")
+		must.True(sawFile, "multipart missing file part")
 	})
 }
 
 func TestHarnessPollingBatch_OpenAIResponses_Submit_HappyPath(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 	f := newOpenAIBatchFixture(t, nil, "", "")
 	defer f.Close()
@@ -1216,18 +1259,19 @@ func TestHarnessPollingBatch_OpenAIResponses_Submit_HappyPath(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Submit(context.Background(), openaiSubmitEntries("stirrup-run-1-turn-1", "openai-responses"))
-	require.NoError(t, err)
+	must.NoError(err)
 
 	f.mu.Lock()
 	uploaded := string(f.uploadedFiles[0])
 	createBody := string(f.createBodies[0])
 	f.mu.Unlock()
 
-	require.Contains(t, uploaded, `"url":"/v1/responses"`)
-	require.Contains(t, createBody, `"endpoint":"/v1/responses"`)
+	must.Contains(uploaded, `"url":"/v1/responses"`)
+	must.Contains(createBody, `"endpoint":"/v1/responses"`)
 }
 
 func TestHarnessPollingBatch_OpenAIResult_Completed(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 	polls := []string{
 		`{"id":"batch_xyz","status":"validating"}`,
@@ -1243,19 +1287,20 @@ func TestHarnessPollingBatch_OpenAIResult_Completed(t *testing.T) {
 	defer teardown()
 
 	results, err := c.Result(context.Background(), "batch_xyz")
-	require.NoError(t, err)
+	must.NoError(err)
 	entry, ok := results["stirrup-run-1-turn-1"]
-	require.True(t, ok, "missing entry; got keys %v", keysOf(results))
-	require.Nil(t, entry.Err)
-	require.Contains(t, string(entry.Response), `"content":"hi"`)
+	must.True(ok, "missing entry; got keys %v", keysOf(results))
+	must.Nil(entry.Err)
+	must.Contains(string(entry.Response), `"content":"hi"`)
 
 	_, _, polled, cancels, downloads := f.snapshot()
-	require.GreaterOrEqual(t, polled, 4, "polls")
-	require.Equal(t, 1, downloads, "downloads")
-	require.Equal(t, 0, cancels, "cancels")
+	must.GreaterOrEqual(polled, 4, "polls")
+	must.Equal(1, downloads, "downloads")
+	must.Equal(0, cancels, "cancels")
 }
 
 func TestHarnessPollingBatch_OpenAIResult_Failed_WithErrorFile(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 	polls := []string{
 		`{"id":"batch_xyz","status":"in_progress"}`,
@@ -1269,15 +1314,16 @@ func TestHarnessPollingBatch_OpenAIResult_Failed_WithErrorFile(t *testing.T) {
 	defer teardown()
 
 	results, err := c.Result(context.Background(), "batch_xyz")
-	require.NoError(t, err)
+	must.NoError(err)
 	entry, ok := results["stirrup-run-1-turn-1"]
-	require.True(t, ok, "missing entry; got keys %v", keysOf(results))
-	require.NotNil(t, entry.Err)
-	require.Equal(t, "server_error", entry.Err.Type)
-	require.Contains(t, entry.Err.Message, "upstream meltdown")
+	must.True(ok, "missing entry; got keys %v", keysOf(results))
+	must.NotNil(entry.Err)
+	must.Equal("server_error", entry.Err.Type)
+	must.Contains(entry.Err.Message, "upstream meltdown")
 }
 
 func TestHarnessPollingBatch_OpenAIResult_Expired(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 	polls := []string{`{"id":"batch_xyz","status":"expired"}`}
 	f := newOpenAIBatchFixture(t, polls, "", "")
@@ -1287,10 +1333,11 @@ func TestHarnessPollingBatch_OpenAIResult_Expired(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	require.ErrorIs(t, err, errBatchExpired)
+	must.ErrorIs(err, errBatchExpired)
 }
 
 func TestHarnessPollingBatch_OpenAIResult_Cancelled(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 	polls := []string{`{"id":"batch_xyz","status":"cancelled"}`}
 	f := newOpenAIBatchFixture(t, polls, "", "")
@@ -1301,16 +1348,16 @@ func TestHarnessPollingBatch_OpenAIResult_Cancelled(t *testing.T) {
 
 	const customID = "stirrup-run-1-turn-1"
 	_, err := c.Submit(context.Background(), openaiSubmitEntries(customID, "openai-compatible"))
-	require.NoError(t, err)
+	must.NoError(err)
 	results, err := c.Result(context.Background(), "batch_xyz")
-	require.NoError(t, err)
+	must.NoError(err)
 	// synthesizeOpenAIFailure keys the entry under the originating
 	// customID so the BatchAdapter's customID lookup surfaces the
 	// typed BatchResultError rather than an opaque "missing entry".
 	entry, ok := results[customID]
-	require.True(t, ok, "expected synthesised entry keyed by customID, got %v", keysOf(results))
-	require.NotNil(t, entry.Err)
-	require.Equal(t, "batch_cancelled", entry.Err.Type)
+	must.True(ok, "expected synthesised entry keyed by customID, got %v", keysOf(results))
+	must.NotNil(entry.Err)
+	must.Equal("batch_cancelled", entry.Err.Type)
 }
 
 // TestHarnessPollingBatch_OpenAIAuthMode_APIKeyHeader confirms that
@@ -1318,6 +1365,8 @@ func TestHarnessPollingBatch_OpenAIResult_Cancelled(t *testing.T) {
 // uses the custom header for every HTTP request (upload, create, poll,
 // cancel, download) instead of Authorization: Bearer.
 func TestHarnessPollingBatch_OpenAIAuthMode_APIKeyHeader(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	src := &fakeCredentialSource{token: "azure-key"}
 
 	var (
@@ -1345,7 +1394,7 @@ func TestHarnessPollingBatch_OpenAIAuthMode_APIKeyHeader(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, `{"id":"batch_xyz","status":"validating"}`)
 		default:
-			assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.Path)
+			check.Failf("unexpected request", "%s %s", r.Method, r.URL.Path)
 		}
 	}))
 	defer srv.Close()
@@ -1365,13 +1414,13 @@ func TestHarnessPollingBatch_OpenAIAuthMode_APIKeyHeader(t *testing.T) {
 	})
 
 	_, err := c.Submit(context.Background(), openaiSubmitEntries("id1", "openai-compatible"))
-	require.NoError(t, err)
+	must.NoError(err)
 
 	mu.Lock()
 	defer mu.Unlock()
-	require.False(t, bearerSeen, "expected no Authorization header when APIKeyHeader is set")
-	require.True(t, seenAPIKey, "expected api-key header to be set")
-	require.Equal(t, "azure-key", apiKeyHeader, "api-key header value")
+	must.False(bearerSeen, "expected no Authorization header when APIKeyHeader is set")
+	must.True(seenAPIKey, "expected api-key header to be set")
+	must.Equal("azure-key", apiKeyHeader, "api-key header value")
 }
 
 // TestHarnessPollingBatch_OpenAIAuthMode_APIKeyHeader_OnDownload pins
@@ -1379,6 +1428,8 @@ func TestHarnessPollingBatch_OpenAIAuthMode_APIKeyHeader(t *testing.T) {
 // regression that bypassed applyAuthHeaders on download does not ship
 // unnoticed.
 func TestHarnessPollingBatch_OpenAIAuthMode_APIKeyHeader_OnDownload(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "azure-key"}
 
 	var (
@@ -1405,7 +1456,7 @@ func TestHarnessPollingBatch_OpenAIAuthMode_APIKeyHeader_OnDownload(t *testing.T
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, `{"custom_id":"id1","response":{"status_code":200,"body":{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}}}`+"\n")
 		default:
-			assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.Path)
+			check.Failf("unexpected request", "%s %s", r.Method, r.URL.Path)
 		}
 	}))
 	defer srv.Close()
@@ -1425,20 +1476,22 @@ func TestHarnessPollingBatch_OpenAIAuthMode_APIKeyHeader_OnDownload(t *testing.T
 	})
 
 	_, err := c.Submit(context.Background(), openaiSubmitEntries("id1", "openai-compatible"))
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = c.Result(context.Background(), "batch_xyz")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	mu.Lock()
 	defer mu.Unlock()
-	require.Empty(t, downloadAuthHdr, "download must not carry Authorization header when APIKeyHeader set")
-	require.Equal(t, "azure-key", downloadAPIKey, "download api-key header value")
+	must.Empty(downloadAuthHdr, "download must not carry Authorization header when APIKeyHeader set")
+	must.Equal("azure-key", downloadAPIKey, "download api-key header value")
 }
 
 // TestHarnessPollingBatch_OpenAIAuthMode_DefaultBearer confirms the
 // inverse: when APIKeyHeader is empty (the default), the client falls
 // back to Authorization: Bearer.
 func TestHarnessPollingBatch_OpenAIAuthMode_DefaultBearer(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 
 	var (
@@ -1460,7 +1513,7 @@ func TestHarnessPollingBatch_OpenAIAuthMode_DefaultBearer(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, `{"id":"batch_xyz","status":"validating"}`)
 		default:
-			assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.Path)
+			check.Failf("unexpected request", "%s %s", r.Method, r.URL.Path)
 		}
 	}))
 	defer srv.Close()
@@ -1474,11 +1527,11 @@ func TestHarnessPollingBatch_OpenAIAuthMode_DefaultBearer(t *testing.T) {
 	})
 
 	_, err := c.Submit(context.Background(), openaiSubmitEntries("id1", "openai-compatible"))
-	require.NoError(t, err)
+	must.NoError(err)
 
 	mu.Lock()
 	defer mu.Unlock()
-	require.Equal(t, "Bearer sk-test", authHdr)
+	must.Equal("Bearer sk-test", authHdr)
 }
 
 // TestHarnessPollingBatch_OpenAIResult_Failed_NoErrorFile confirms a
@@ -1488,6 +1541,7 @@ func TestHarnessPollingBatch_OpenAIAuthMode_DefaultBearer(t *testing.T) {
 // surfaces the typed entry. The top-level errors.data message is used
 // when present.
 func TestHarnessPollingBatch_OpenAIResult_Failed_NoErrorFile(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 	polls := []string{
 		`{"id":"batch_xyz","status":"failed","errors":{"data":[{"code":"bad_input","message":"malformed input file"}]}}`,
@@ -1500,14 +1554,14 @@ func TestHarnessPollingBatch_OpenAIResult_Failed_NoErrorFile(t *testing.T) {
 
 	const customID = "stirrup-run-1-turn-1"
 	_, err := c.Submit(context.Background(), openaiSubmitEntries(customID, "openai-compatible"))
-	require.NoError(t, err)
+	must.NoError(err)
 	results, err := c.Result(context.Background(), "batch_xyz")
-	require.NoError(t, err)
+	must.NoError(err)
 	entry, ok := results[customID]
-	require.True(t, ok, "expected synthesised entry keyed by customID, got %v", keysOf(results))
-	require.NotNil(t, entry.Err)
-	require.Equal(t, "server_error", entry.Err.Type)
-	require.Contains(t, entry.Err.Message, "malformed input file")
+	must.True(ok, "expected synthesised entry keyed by customID, got %v", keysOf(results))
+	must.NotNil(entry.Err)
+	must.Equal("server_error", entry.Err.Type)
+	must.Contains(entry.Err.Message, "malformed input file")
 }
 
 // TestHarnessPollingBatch_OpenAIBatchCreate_ScrubsErrorBody pins the
@@ -1516,6 +1570,8 @@ func TestHarnessPollingBatch_OpenAIResult_Failed_NoErrorFile(t *testing.T) {
 // secret in the returned error rather than letting the raw bytes flow
 // to OTel spans / transport warnings.
 func TestHarnessPollingBatch_OpenAIBatchCreate_ScrubsErrorBody(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 	const secret = "sk-ant-abc123_DEF-456"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1527,7 +1583,7 @@ func TestHarnessPollingBatch_OpenAIBatchCreate_ScrubsErrorBody(t *testing.T) {
 			w.WriteHeader(http.StatusUnprocessableEntity)
 			_, _ = fmt.Fprintf(w, `{"error":{"message":"bad: %s"}}`, secret)
 		default:
-			assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.Path)
+			check.Failf("unexpected request", "%s %s", r.Method, r.URL.Path)
 		}
 	}))
 	defer srv.Close()
@@ -1536,9 +1592,9 @@ func TestHarnessPollingBatch_OpenAIBatchCreate_ScrubsErrorBody(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Submit(context.Background(), openaiSubmitEntries("id1", "openai-compatible"))
-	require.Error(t, err, "expected error from 422 response")
-	require.NotContains(t, err.Error(), secret, "error must not contain raw secret")
-	require.Contains(t, err.Error(), "[REDACTED]", "error must contain [REDACTED] sentinel")
+	must.Error(err, "expected error from 422 response")
+	must.NotContains(err.Error(), secret, "error must not contain raw secret")
+	must.Contains(err.Error(), "[REDACTED]", "error must contain [REDACTED] sentinel")
 }
 
 // TestMapOpenAIOutputLine_ClassifiesEachBranch pins the mapOpenAIOutputLine
@@ -1594,14 +1650,15 @@ func TestMapOpenAIOutputLine_ClassifiesEachBranch(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got := mapOpenAIOutputLine(tc.line)
 			if tc.wantErr == "" {
-				require.Nil(t, got.Err)
-				require.NotNil(t, got.Response)
+				must.Nil(got.Err)
+				must.NotNil(got.Response)
 				return
 			}
-			require.NotNil(t, got.Err)
-			require.Equal(t, tc.wantErr, got.Err.Type)
+			must.NotNil(got.Err)
+			must.Equal(tc.wantErr, got.Err.Type)
 		})
 	}
 }
@@ -1610,6 +1667,7 @@ func TestMapOpenAIOutputLine_ClassifiesEachBranch(t *testing.T) {
 // nil-CredSource guard: the constructor must panic with a clear message
 // rather than defer a nil-pointer dereference to the first HTTP request.
 func TestNewHarnessPollingBatchClient_NilCredSource_Panics(t *testing.T) {
+	must := require.New(t)
 	recovered := func() (r any) {
 		defer func() { r = recover() }()
 		_ = NewHarnessPollingBatchClient(HarnessBatchClientOptions{
@@ -1619,16 +1677,17 @@ func TestNewHarnessPollingBatchClient_NilCredSource_Panics(t *testing.T) {
 		})
 		return nil
 	}()
-	require.NotNil(t, recovered, "expected panic on nil CredSource")
+	must.NotNil(recovered, "expected panic on nil CredSource")
 	msg, ok := recovered.(string)
-	require.True(t, ok, "expected string panic value, got %T: %v", recovered, recovered)
-	require.Contains(t, msg, "CredSource", "panic message must mention CredSource")
+	must.True(ok, "expected string panic value, got %T: %v", recovered, recovered)
+	must.Contains(msg, "CredSource", "panic message must mention CredSource")
 }
 
 // TestNewHarnessPollingBatchClient_ZeroMaxWait_DefaultsToRunTimeout pins
 // that a zero MaxWait is replaced with types.MaxRunTimeoutSeconds at
 // constructor time, not later deferred to an already-passed deadline.
 func TestNewHarnessPollingBatchClient_ZeroMaxWait_DefaultsToRunTimeout(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 	c := NewHarnessPollingBatchClient(HarnessBatchClientOptions{
 		ProviderType: "anthropic",
@@ -1637,7 +1696,7 @@ func TestNewHarnessPollingBatchClient_ZeroMaxWait_DefaultsToRunTimeout(t *testin
 		MaxWait:      0,
 	})
 	want := time.Duration(types.MaxRunTimeoutSeconds) * time.Second
-	require.Equal(t, want, c.maxWait)
+	must.Equal(want, c.maxWait)
 }
 
 // TestNewHarnessPollingBatchClient_BaseURL_DefaultsByProvider pins the
@@ -1656,22 +1715,24 @@ func TestNewHarnessPollingBatchClient_BaseURL_DefaultsByProvider(t *testing.T) {
 		{name: "empty provider type", providerType: "", want: anthropicBatchAPIBaseURL},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := NewHarnessPollingBatchClient(HarnessBatchClientOptions{
 				ProviderType: tc.providerType,
 				CredSource:   src,
 				MaxWait:      time.Second,
 			})
-			require.Equal(t, tc.want, c.baseURL)
+			must.Equal(tc.want, c.baseURL)
 		})
 	}
 	t.Run("trims trailing slash", func(t *testing.T) {
+		must := require.New(t)
 		c := NewHarnessPollingBatchClient(HarnessBatchClientOptions{
 			ProviderType: "openai-compatible",
 			CredSource:   src,
 			BaseURL:      "https://gateway.example.com/v1/",
 			MaxWait:      time.Second,
 		})
-		require.Equal(t, "https://gateway.example.com/v1", c.baseURL)
+		must.Equal("https://gateway.example.com/v1", c.baseURL)
 	})
 }
 
@@ -1679,6 +1740,7 @@ func TestNewHarnessPollingBatchClient_BaseURL_DefaultsByProvider(t *testing.T) {
 // supplied via options replaces slog.Default on the constructed client
 // so cancel-path warnings flow through the run-scoped logger.
 func TestNewHarnessPollingBatchClient_CustomLogger_IsUsed(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil)).With("runID", "test-run")
 	c := NewHarnessPollingBatchClient(HarnessBatchClientOptions{
@@ -1688,7 +1750,7 @@ func TestNewHarnessPollingBatchClient_CustomLogger_IsUsed(t *testing.T) {
 		MaxWait:      time.Second,
 		Logger:       logger,
 	})
-	require.Same(t, logger, c.logger)
+	must.Same(logger, c.logger)
 }
 
 // openAIBatchStreamErrors streams one request through BatchAdapter against
@@ -1696,6 +1758,7 @@ func TestNewHarnessPollingBatchClient_CustomLogger_IsUsed(t *testing.T) {
 // message of every error StreamEvent and fails the test when there is none.
 func openAIBatchStreamErrors(t *testing.T, pollBody string) []string {
 	t.Helper()
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 	f := newOpenAIBatchFixture(t, []string{pollBody}, "", "")
 	defer f.Close()
@@ -1711,7 +1774,7 @@ func openAIBatchStreamErrors(t *testing.T, pollBody string) []string {
 		MaxTokens: 256,
 	}
 	ch, err := adapter.Stream(context.Background(), params)
-	require.NoError(t, err)
+	must.NoError(err)
 	events := drain(t, ch)
 
 	var msgs []string
@@ -1720,7 +1783,7 @@ func openAIBatchStreamErrors(t *testing.T, pollBody string) []string {
 			msgs = append(msgs, ev.Error.Error())
 		}
 	}
-	require.NotEmpty(t, msgs, "expected an error StreamEvent; got %d events: %+v", len(events), events)
+	must.NotEmpty(msgs, "expected an error StreamEvent; got %d events: %+v", len(events), events)
 	return msgs
 }
 
@@ -1728,17 +1791,19 @@ func openAIBatchStreamErrors(t *testing.T, pollBody string) []string {
 // "missing entry" error would mean the customID and batchID keys did not
 // match.
 func TestBatchAdapter_OpenAI_CancelledStatusSurfacesBatchCancelled(t *testing.T) {
+	must := require.New(t)
 	for _, msg := range openAIBatchStreamErrors(t, `{"id":"batch_xyz","status":"cancelled"}`) {
-		require.Contains(t, msg, "batch_cancelled")
-		require.NotContains(t, msg, "missing entry", "customID/batchID key mismatch")
+		must.Contains(msg, "batch_cancelled")
+		must.NotContains(msg, "missing entry", "customID/batchID key mismatch")
 	}
 }
 
 // The "cancelling" intermediate status shares the cancelled arm of the poll
 // switch. This test keeps the two arms behaving the same.
 func TestBatchAdapter_OpenAI_CancellingStatusSurfacesBatchCancelled(t *testing.T) {
+	must := require.New(t)
 	for _, msg := range openAIBatchStreamErrors(t, `{"id":"batch_xyz","status":"cancelling"}`) {
-		require.Contains(t, msg, "batch_cancelled")
+		must.Contains(msg, "batch_cancelled")
 	}
 }
 
@@ -1746,6 +1811,8 @@ func TestBatchAdapter_OpenAI_CancellingStatusSurfacesBatchCancelled(t *testing.T
 // non-2xx surface on /files: a 429 must produce an error mentioning
 // the status code rather than returning a bogus file id.
 func TestHarnessPollingBatch_OpenAIFileUpload_NonOKStatus(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/files" {
@@ -1753,7 +1820,7 @@ func TestHarnessPollingBatch_OpenAIFileUpload_NonOKStatus(t *testing.T) {
 			_, _ = io.WriteString(w, `{"error":"slow down"}`)
 			return
 		}
-		assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.Path)
+		check.Failf("unexpected request", "%s %s", r.Method, r.URL.Path)
 	}))
 	defer srv.Close()
 
@@ -1761,13 +1828,15 @@ func TestHarnessPollingBatch_OpenAIFileUpload_NonOKStatus(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Submit(context.Background(), openaiSubmitEntries("id1", "openai-compatible"))
-	require.ErrorContains(t, err, "429")
+	must.ErrorContains(err, "429")
 }
 
 // TestHarnessPollingBatch_OpenAIFileUpload_MissingID pins the
 // "missing id" branch: a 200 with a body that does not carry an id
 // field must produce an error rather than passing an empty id forward.
 func TestHarnessPollingBatch_OpenAIFileUpload_MissingID(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/files" {
@@ -1775,7 +1844,7 @@ func TestHarnessPollingBatch_OpenAIFileUpload_MissingID(t *testing.T) {
 			_, _ = io.WriteString(w, `{"object":"file"}`)
 			return
 		}
-		assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.Path)
+		check.Failf("unexpected request", "%s %s", r.Method, r.URL.Path)
 	}))
 	defer srv.Close()
 
@@ -1783,12 +1852,14 @@ func TestHarnessPollingBatch_OpenAIFileUpload_MissingID(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Submit(context.Background(), openaiSubmitEntries("id1", "openai-compatible"))
-	require.ErrorContains(t, err, "missing id")
+	must.ErrorContains(err, "missing id")
 }
 
 // TestHarnessPollingBatch_OpenAIBatchCreate_NonOKStatus pins the
 // non-2xx surface on /batches after a successful file upload.
 func TestHarnessPollingBatch_OpenAIBatchCreate_NonOKStatus(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -1799,7 +1870,7 @@ func TestHarnessPollingBatch_OpenAIBatchCreate_NonOKStatus(t *testing.T) {
 			w.WriteHeader(http.StatusUnprocessableEntity)
 			_, _ = io.WriteString(w, `{"error":"validation"}`)
 		default:
-			assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.Path)
+			check.Failf("unexpected request", "%s %s", r.Method, r.URL.Path)
 		}
 	}))
 	defer srv.Close()
@@ -1808,12 +1879,14 @@ func TestHarnessPollingBatch_OpenAIBatchCreate_NonOKStatus(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Submit(context.Background(), openaiSubmitEntries("id1", "openai-compatible"))
-	require.ErrorContains(t, err, "422")
+	must.ErrorContains(err, "422")
 }
 
 // TestHarnessPollingBatch_OpenAIBatchCreate_MissingID pins the
 // "missing id" branch on /batches.
 func TestHarnessPollingBatch_OpenAIBatchCreate_MissingID(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -1824,7 +1897,7 @@ func TestHarnessPollingBatch_OpenAIBatchCreate_MissingID(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, `{"status":"validating"}`)
 		default:
-			assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.Path)
+			check.Failf("unexpected request", "%s %s", r.Method, r.URL.Path)
 		}
 	}))
 	defer srv.Close()
@@ -1833,12 +1906,14 @@ func TestHarnessPollingBatch_OpenAIBatchCreate_MissingID(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Submit(context.Background(), openaiSubmitEntries("id1", "openai-compatible"))
-	require.ErrorContains(t, err, "missing id")
+	must.ErrorContains(err, "missing id")
 }
 
 // TestHarnessPollingBatch_OpenAIFileDownload_NonOKStatus pins the
 // non-2xx surface on /files/{id}/content during result retrieval.
 func TestHarnessPollingBatch_OpenAIFileDownload_NonOKStatus(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -1849,7 +1924,7 @@ func TestHarnessPollingBatch_OpenAIFileDownload_NonOKStatus(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = io.WriteString(w, `{"error":"file gone"}`)
 		default:
-			assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.Path)
+			check.Failf("unexpected request", "%s %s", r.Method, r.URL.Path)
 		}
 	}))
 	defer srv.Close()
@@ -1858,13 +1933,14 @@ func TestHarnessPollingBatch_OpenAIFileDownload_NonOKStatus(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	require.ErrorContains(t, err, "404")
+	must.ErrorContains(err, "404")
 }
 
 // TestHarnessPollingBatch_OpenAIPollOnce_NonOKStatus pins the non-2xx
 // surface on the polling GET — a 503 must surface as a hard error
 // (not silently retry / not get conflated with errBatchExpired).
 func TestHarnessPollingBatch_OpenAIPollOnce_NonOKStatus(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -1876,8 +1952,8 @@ func TestHarnessPollingBatch_OpenAIPollOnce_NonOKStatus(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	require.ErrorContains(t, err, "503")
-	require.NotErrorIs(t, err, errBatchExpired, "503 must not be conflated with errBatchExpired")
+	must.ErrorContains(err, "503")
+	must.NotErrorIs(err, errBatchExpired, "503 must not be conflated with errBatchExpired")
 }
 
 // TestHarnessPollingBatch_OpenAIResult_EmptyOutputFile pins the empty
@@ -1885,6 +1961,7 @@ func TestHarnessPollingBatch_OpenAIPollOnce_NonOKStatus(t *testing.T) {
 // lines must produce an "empty" error rather than a panic / silent
 // success.
 func TestHarnessPollingBatch_OpenAIResult_EmptyOutputFile(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 	polls := []string{`{"id":"batch_xyz","status":"completed","output_file_id":"file_out"}`}
 	f := newOpenAIBatchFixture(t, polls, "\n\n", "")
@@ -1894,13 +1971,14 @@ func TestHarnessPollingBatch_OpenAIResult_EmptyOutputFile(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	require.ErrorContains(t, err, "empty")
+	must.ErrorContains(err, "empty")
 }
 
 // TestHarnessPollingBatch_OpenAIResult_MalformedOutputJSONL pins the
 // JSON decode error path on the output JSONL: a non-JSON second line
 // must surface as a decode error rather than silently skipping.
 func TestHarnessPollingBatch_OpenAIResult_MalformedOutputJSONL(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 	polls := []string{`{"id":"batch_xyz","status":"completed","output_file_id":"file_out"}`}
 	// first line is valid JSON; second is junk
@@ -1912,7 +1990,7 @@ func TestHarnessPollingBatch_OpenAIResult_MalformedOutputJSONL(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	require.ErrorContains(t, err, "decode openai batch output line")
+	must.ErrorContains(err, "decode openai batch output line")
 }
 
 // TestHarnessPollingBatch_OpenAIResult_Failed_EmptyErrorFile pins the
@@ -1920,6 +1998,7 @@ func TestHarnessPollingBatch_OpenAIResult_MalformedOutputJSONL(t *testing.T) {
 // errors.data fallback. The surface is a typed BatchResultError keyed
 // by the originating customID, not a bare error.
 func TestHarnessPollingBatch_OpenAIResult_Failed_EmptyErrorFile(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 	polls := []string{
 		`{"id":"batch_xyz","status":"failed","error_file_id":"errfile_1","errors":{"data":[{"message":"top-level fallback"}]}}`,
@@ -1932,14 +2011,14 @@ func TestHarnessPollingBatch_OpenAIResult_Failed_EmptyErrorFile(t *testing.T) {
 
 	const customID = "stirrup-run-1-turn-1"
 	_, err := c.Submit(context.Background(), openaiSubmitEntries(customID, "openai-compatible"))
-	require.NoError(t, err)
+	must.NoError(err)
 	results, err := c.Result(context.Background(), "batch_xyz")
-	require.NoError(t, err)
-	require.Contains(t, results, customID, "got keys %v", keysOf(results))
+	must.NoError(err)
+	must.Contains(results, customID, "got keys %v", keysOf(results))
 	entry := results[customID]
-	require.NotNil(t, entry.Err)
-	require.Equal(t, "server_error", entry.Err.Type)
-	require.Contains(t, entry.Err.Message, "top-level fallback")
+	must.NotNil(entry.Err)
+	must.Equal("server_error", entry.Err.Type)
+	must.Contains(entry.Err.Message, "top-level fallback")
 }
 
 // waitForOpenAICancelCount blocks (up to timeout) until cancelCalls
@@ -1965,6 +2044,7 @@ func waitForOpenAICancelCount(t *testing.T, f *openaiBatchFixture, want int, tim
 // remaining budget. The loop must clamp it and fire errBatchExpired
 // within slack of the documented cap rather than one interval past it.
 func TestHarnessPollingBatch_OpenAIResult_TimeoutFiringAlignedToDeadline(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 	polls := []string{`{"id":"batch_xyz","status":"in_progress"}`}
 	f := newOpenAIBatchFixture(t, polls, "", "")
@@ -1988,20 +2068,22 @@ func TestHarnessPollingBatch_OpenAIResult_TimeoutFiringAlignedToDeadline(t *test
 	_, err := c.Result(context.Background(), "batch_xyz")
 	elapsed := time.Since(start)
 
-	require.ErrorIs(t, err, errBatchExpired)
-	require.LessOrEqual(t, elapsed, maxWait+50*time.Millisecond, "timeout fired %s past maxWait", elapsed-maxWait)
+	must.ErrorIs(err, errBatchExpired)
+	must.LessOrEqual(elapsed, maxWait+50*time.Millisecond, "timeout fired %s past maxWait", elapsed-maxWait)
 	// best-effort cancel must hit the OpenAI cancel URL shape, not the
 	// Anthropic one.
 	waitForOpenAICancelCount(t, f, 1, time.Second)
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	require.Equal(t, 1, f.cancelCalls, "cancelCalls on timeout")
+	must.Equal(1, f.cancelCalls, "cancelCalls on timeout")
 }
 
 // TestHarnessPollingBatch_OpenAIBackoffCapped covers the cap-clamp
 // after the second doubling: with initialInterval > cap/2, the second
 // doubling would exceed the cap and must be clamped.
 func TestHarnessPollingBatch_OpenAIBackoffCapped(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 
 	var (
@@ -2046,11 +2128,11 @@ func TestHarnessPollingBatch_OpenAIBackoffCapped(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	require.GreaterOrEqual(t, len(callTimes), 4, "poll calls within the 40ms budget")
+	must.GreaterOrEqual(len(callTimes), 4, "poll calls within the 40ms budget")
 	const slack = 20 * time.Millisecond
 	for i := 2; i < len(callTimes); i++ {
 		gap := callTimes[i].Sub(callTimes[i-1])
-		assert.LessOrEqual(t, gap, 5*time.Millisecond+slack, "poll interval %d exceeded cap+slack", i)
+		check.LessOrEqual(gap, 5*time.Millisecond+slack, "poll interval %d exceeded cap+slack", i)
 	}
 }
 
@@ -2062,6 +2144,8 @@ func TestHarnessPollingBatch_OpenAIBackoffCapped(t *testing.T) {
 // context.Canceled and the detached bestEffortCancel must reach the
 // OpenAI cancel URL (not the Anthropic one).
 func TestHarnessPollingBatch_OpenAIResult_CtxCancelledDuringPoll(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2088,7 +2172,7 @@ func TestHarnessPollingBatch_OpenAIResult_CtxCancelledDuringPoll(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, `{}`)
 		default:
-			assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.Path)
+			check.Failf("unexpected request", "%s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
@@ -2106,21 +2190,21 @@ func TestHarnessPollingBatch_OpenAIResult_CtxCancelledDuringPoll(t *testing.T) {
 	select {
 	case <-pollEntered:
 	case <-time.After(time.Second):
-		require.Fail(t, "poll handler never entered")
+		must.Fail("poll handler never entered")
 	}
 
 	cancel()
 
 	select {
 	case err := <-done:
-		require.ErrorIs(t, err, context.Canceled)
+		must.ErrorIs(err, context.Canceled)
 	case <-time.After(2 * time.Second):
-		require.Fail(t, "Result did not return after ctx cancel during poll")
+		must.Fail("Result did not return after ctx cancel during poll")
 	}
 
 	// bestEffortCancel detaches via context.Background, so the cancel hit
 	// arrives after Result returns.
-	require.Eventually(t, func() bool {
+	must.Eventually(func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(cancelPaths) > 0
@@ -2128,8 +2212,8 @@ func TestHarnessPollingBatch_OpenAIResult_CtxCancelledDuringPoll(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	require.Len(t, cancelPaths, 1, "cancel hits")
-	require.True(t, strings.HasPrefix(cancelPaths[0], "/batches/"),
+	must.Len(cancelPaths, 1, "cancel hits")
+	must.True(strings.HasPrefix(cancelPaths[0], "/batches/"),
 		"OpenAI cancel must hit /batches/{id}/cancel, got %q", cancelPaths[0])
 }
 
@@ -2138,6 +2222,8 @@ func TestHarnessPollingBatch_OpenAIResult_CtxCancelledDuringPoll(t *testing.T) {
 // the Anthropic one — mirrors the Anthropic CancelURLEscaped test for
 // the OpenAI path.
 func TestHarnessPollingBatch_OpenAIResult_TimeoutFiresOpenAICancelURL(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 
 	var (
@@ -2157,7 +2243,7 @@ func TestHarnessPollingBatch_OpenAIResult_TimeoutFiresOpenAICancelURL(t *testing
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, `{}`)
 		default:
-			assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.Path)
+			check.Failf("unexpected request", "%s %s", r.Method, r.URL.Path)
 		}
 	}))
 	defer srv.Close()
@@ -2166,9 +2252,9 @@ func TestHarnessPollingBatch_OpenAIResult_TimeoutFiresOpenAICancelURL(t *testing
 	defer teardown()
 
 	_, err := c.Result(context.Background(), "batch_xyz")
-	require.ErrorIs(t, err, errBatchExpired)
+	must.ErrorIs(err, errBatchExpired)
 
-	require.Eventually(t, func() bool {
+	must.Eventually(func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(cancelPaths) > 0
@@ -2177,15 +2263,16 @@ func TestHarnessPollingBatch_OpenAIResult_TimeoutFiresOpenAICancelURL(t *testing
 	mu.Lock()
 	defer mu.Unlock()
 	cancelPath := cancelPaths[0]
-	require.True(t, strings.HasPrefix(cancelPath, "/batches/") && strings.HasSuffix(cancelPath, "/cancel"),
+	must.True(strings.HasPrefix(cancelPath, "/batches/") && strings.HasSuffix(cancelPath, "/cancel"),
 		"OpenAI cancel must address /batches/{id}/cancel, got %q", cancelPath)
-	require.NotContains(t, cancelPath, "/v1/messages/", "cancel URL must not use the Anthropic path prefix")
+	must.NotContains(cancelPath, "/v1/messages/", "cancel URL must not use the Anthropic path prefix")
 }
 
 // TestHarnessPollingBatch_OpenAIResult_UnknownStatus pins the default
 // arm in resultOpenAI: a status string not in the documented vocabulary
 // must not exit the loop. The poll continues until the deadline fires.
 func TestHarnessPollingBatch_OpenAIResult_UnknownStatus(t *testing.T) {
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 	polls := []string{`{"id":"batch_xyz","status":"unicorn"}`}
 	f := newOpenAIBatchFixture(t, polls, "", "")
@@ -2198,10 +2285,10 @@ func TestHarnessPollingBatch_OpenAIResult_UnknownStatus(t *testing.T) {
 	// Unknown status continues to poll; the loop must exit via the
 	// wall-clock deadline (errBatchExpired) rather than a typed error
 	// on the first unrecognised status.
-	require.ErrorIs(t, err, errBatchExpired)
+	must.ErrorIs(err, errBatchExpired)
 	// At least one poll must reach the default arm before the deadline.
 	_, _, pollCount, _, _ := f.snapshot()
-	require.GreaterOrEqual(t, pollCount, 1, "poll count on unknown status")
+	must.GreaterOrEqual(pollCount, 1, "poll count on unknown status")
 }
 
 // TestHarnessPollingBatch_OpenAIBatchIDPathEscaped confirms a batchID
@@ -2209,6 +2296,8 @@ func TestHarnessPollingBatch_OpenAIResult_UnknownStatus(t *testing.T) {
 // segment in both the poll and the cancel URL — mirrors the Anthropic
 // path-escaping defence.
 func TestHarnessPollingBatch_OpenAIBatchIDPathEscaped(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	src := &fakeCredentialSource{token: "sk-test"}
 
 	const sneakyID = "batch_../etc/passwd?x=1"
@@ -2228,7 +2317,7 @@ func TestHarnessPollingBatch_OpenAIBatchIDPathEscaped(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = fmt.Fprintf(w, `{"id":%q,"status":"completed"}`, sneakyID)
 		default:
-			assert.Failf(t, "unexpected request", "%s %s", r.Method, r.URL.EscapedPath())
+			check.Failf("unexpected request", "%s %s", r.Method, r.URL.EscapedPath())
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
@@ -2238,11 +2327,11 @@ func TestHarnessPollingBatch_OpenAIBatchIDPathEscaped(t *testing.T) {
 	defer teardown()
 
 	_, err := c.Result(context.Background(), sneakyID)
-	require.Error(t, err, "expected output_file_id-missing error")
+	must.Error(err, "expected output_file_id-missing error")
 
 	mu.Lock()
 	defer mu.Unlock()
-	require.NotEmpty(t, pollPaths, "expected at least one poll request")
+	must.NotEmpty(pollPaths, "expected at least one poll request")
 	wantPath := "/batches/" + wantSegment
-	require.Equal(t, wantPath, pollPaths[0], "poll path")
+	must.Equal(wantPath, pollPaths[0], "poll path")
 }

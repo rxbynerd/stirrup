@@ -89,8 +89,9 @@ func invokeText(ctx context.Context, tl *tool.Tool, input json.RawMessage) (stri
 // --- shellQuote tests ---
 
 func TestShellQuote_EmbeddedSingleQuote(t *testing.T) {
+	must := require.New(t)
 	// A single quote in the input must not terminate the quoted word.
-	require.Equal(t, `'a'\''b'`, shellQuote("a'b"))
+	must.Equal(`'a'\''b'`, shellQuote("a'b"))
 }
 
 // --- WebFetchTool tests ---
@@ -110,25 +111,27 @@ func TestWebFetchTool_SchemeRejection(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			input, _ := json.Marshal(map[string]string{"url": tc.url})
 			_, err := fetchTool.Handler(context.Background(), input)
-			require.Error(t, err)
-			require.True(t,
-				strings.Contains(err.Error(), "http://") || strings.Contains(err.Error(), "https://"),
+			must.Error(err)
+			must.True(strings.Contains(err.Error(), "http://") || strings.Contains(err.Error(), "https://"),
 				"error should mention allowed schemes, got: %v", err)
 		})
 	}
 }
 
 func TestWebFetchTool_PrivateHostRejection(t *testing.T) {
+	must := require.New(t)
 	fetchTool := WebFetchTool()
 	input, _ := json.Marshal(map[string]string{"url": "http://127.0.0.1/secret"})
 
 	_, err := fetchTool.Handler(context.Background(), input)
-	require.ErrorContains(t, err, "private host")
+	must.ErrorContains(err, "private host")
 }
 
 func TestWebFetchTool_ReportsHTTPErrorStatus(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 	}))
@@ -141,10 +144,12 @@ func TestWebFetchTool_ReportsHTTPErrorStatus(t *testing.T) {
 	input, _ := json.Marshal(map[string]string{"url": srv.URL})
 
 	_, err := fetchTool.Handler(context.Background(), input)
-	require.ErrorContains(t, err, "403")
+	must.ErrorContains(err, "403")
 }
 
 func TestWebFetchTool_TruncatesLargeBody(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	// Return a body larger than maxFetchSize (100 KB).
 	bigBody := strings.Repeat("A", 120*1024)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -161,24 +166,26 @@ func TestWebFetchTool_TruncatesLargeBody(t *testing.T) {
 	input, _ := json.Marshal(map[string]string{"url": srv.URL})
 
 	result, err := fetchTool.Handler(context.Background(), input)
-	require.NoError(t, err)
-	assert.Contains(t, result, truncatedNotice)
+	must.NoError(err)
+	check.Contains(result, truncatedNotice)
 	maxExpected := maxFetchSize + len(truncatedNotice)
-	assert.LessOrEqual(t, len(result), maxExpected)
+	check.LessOrEqual(len(result), maxExpected)
 }
 
 // --- ReadFileTool tests ---
 
 func TestReadFileTool_RejectsEmptyPath(t *testing.T) {
+	must := require.New(t)
 	mock := &mockExecutor{}
 	readTool := ReadFileTool(mock)
 
 	input, _ := json.Marshal(map[string]string{"path": ""})
 	_, err := invokeText(context.Background(), readTool, input)
-	require.ErrorContains(t, err, "path is required")
+	must.ErrorContains(err, "path is required")
 }
 
 func TestReadFileTool_LineNumberedOutput(t *testing.T) {
+	must := require.New(t)
 	mock := &mockExecutor{
 		readFileFunc: func(ctx context.Context, path string) (string, error) {
 			return "alpha\nbeta\ngamma\n", nil
@@ -188,11 +195,12 @@ func TestReadFileTool_LineNumberedOutput(t *testing.T) {
 
 	input, _ := json.Marshal(map[string]any{"path": "file.txt"})
 	result, err := invokeText(context.Background(), readTool, input)
-	require.NoError(t, err)
-	require.Equal(t, "1\talpha\n2\tbeta\n3\tgamma", result)
+	must.NoError(err)
+	must.Equal("1\talpha\n2\tbeta\n3\tgamma", result)
 }
 
 func TestReadFileTool_LineRange(t *testing.T) {
+	must := require.New(t)
 	mock := &mockExecutor{
 		readFileFunc: func(ctx context.Context, path string) (string, error) {
 			return "one\ntwo\nthree\nfour\nfive\n", nil
@@ -206,11 +214,12 @@ func TestReadFileTool_LineRange(t *testing.T) {
 		"limit":      2,
 	})
 	result, err := invokeText(context.Background(), readTool, input)
-	require.NoError(t, err)
-	require.Equal(t, "2\ttwo\n3\tthree", result)
+	must.NoError(err)
+	must.Equal("2\ttwo\n3\tthree", result)
 }
 
 func TestReadFileTool_StartLinePastEOF(t *testing.T) {
+	must := require.New(t)
 	mock := &mockExecutor{
 		readFileFunc: func(ctx context.Context, path string) (string, error) {
 			return "only one line\n", nil
@@ -223,11 +232,12 @@ func TestReadFileTool_StartLinePastEOF(t *testing.T) {
 		"start_line": 500,
 	})
 	result, err := invokeText(context.Background(), readTool, input)
-	require.NoError(t, err, "start_line past EOF should not be an error")
-	require.Contains(t, result, "past end of file")
+	must.NoError(err, "start_line past EOF should not be an error")
+	must.Contains(result, "past end of file")
 }
 
 func TestReadFileTool_RejectsLimitAboveMax(t *testing.T) {
+	must := require.New(t)
 	mock := &mockExecutor{}
 	readTool := ReadFileTool(mock)
 
@@ -236,10 +246,12 @@ func TestReadFileTool_RejectsLimitAboveMax(t *testing.T) {
 		"limit": 100000,
 	})
 	_, err := invokeText(context.Background(), readTool, input)
-	require.ErrorContains(t, err, "limit must be <=")
+	must.ErrorContains(err, "limit must be <=")
 }
 
 func TestReadFileTool_PaddingAlignsColumns(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	// A 12-line range crosses single→double digit boundaries; line numbers
 	// must be right-aligned to a width of 2 so columns line up.
 	lines := make([]string, 12)
@@ -255,14 +267,15 @@ func TestReadFileTool_PaddingAlignsColumns(t *testing.T) {
 
 	input, _ := json.Marshal(map[string]any{"path": "file.txt"})
 	result, err := invokeText(context.Background(), readTool, input)
-	require.NoError(t, err)
-	assert.Contains(t, result, " 1\tx", "line 1 should be right-aligned")
-	assert.Contains(t, result, "12\tx", "line 12 should be unpadded")
+	must.NoError(err)
+	check.Contains(result, " 1\tx", "line 1 should be right-aligned")
+	check.Contains(result, "12\tx", "line 12 should be unpadded")
 }
 
 // --- ListDirectoryTool tests ---
 
 func TestListDirectoryTool_FlatByDefault(t *testing.T) {
+	must := require.New(t)
 	mock := &mockExecutor{
 		listDirectoryFunc: func(ctx context.Context, path string) ([]string, error) {
 			return []string{"file.go", "sub/"}, nil
@@ -272,11 +285,12 @@ func TestListDirectoryTool_FlatByDefault(t *testing.T) {
 
 	input, _ := json.Marshal(map[string]any{"path": "."})
 	result, err := listTool.Handler(context.Background(), input)
-	require.NoError(t, err)
-	require.Equal(t, "file.go\nsub/", result)
+	must.NoError(err)
+	must.Equal("file.go\nsub/", result)
 }
 
 func TestListDirectoryTool_Recursive(t *testing.T) {
+	must := require.New(t)
 	mock := &mockExecutor{
 		listDirectoryFunc: func(ctx context.Context, path string) ([]string, error) {
 			switch path {
@@ -298,15 +312,18 @@ func TestListDirectoryTool_Recursive(t *testing.T) {
 		"max_depth": 5,
 	})
 	result, err := listTool.Handler(context.Background(), input)
-	require.NoError(t, err)
+	must.NoError(err)
 	for _, want := range []string{"a.go", "sub/", "sub/b.go", "sub/nested/", "sub/nested/c.go"} {
 		t.Run(want, func(t *testing.T) {
-			require.Contains(t, result, want)
+			must := require.New(t)
+			must.Contains(result, want)
 		})
 	}
 }
 
 func TestListDirectoryTool_RecursiveDepthLimit(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	mock := &mockExecutor{
 		listDirectoryFunc: func(ctx context.Context, path string) ([]string, error) {
 			switch path {
@@ -329,13 +346,14 @@ func TestListDirectoryTool_RecursiveDepthLimit(t *testing.T) {
 		"max_depth": 1,
 	})
 	result, err := listTool.Handler(context.Background(), input)
-	require.NoError(t, err)
-	assert.Contains(t, result, "sub/")
-	assert.Contains(t, result, "sub/deeper/", "max_depth=1 should list the directory at depth 1")
-	assert.NotContains(t, result, "file.go", "max_depth=1 should not list files below depth 1")
+	must.NoError(err)
+	check.Contains(result, "sub/")
+	check.Contains(result, "sub/deeper/", "max_depth=1 should list the directory at depth 1")
+	check.NotContains(result, "file.go", "max_depth=1 should not list files below depth 1")
 }
 
 func TestListDirectoryTool_MaxEntriesTruncation(t *testing.T) {
+	must := require.New(t)
 	mock := &mockExecutor{
 		listDirectoryFunc: func(ctx context.Context, path string) ([]string, error) {
 			return []string{"a", "b", "c", "d", "e"}, nil
@@ -348,17 +366,18 @@ func TestListDirectoryTool_MaxEntriesTruncation(t *testing.T) {
 		"max_entries": 3,
 	})
 	result, err := listTool.Handler(context.Background(), input)
-	require.NoError(t, err)
-	require.Contains(t, result, "[truncated")
+	must.NoError(err)
+	must.Contains(result, "[truncated")
 }
 
 func TestListDirectoryTool_RejectsEmptyPath(t *testing.T) {
+	must := require.New(t)
 	mock := &mockExecutor{}
 	listTool := ListDirectoryTool(mock)
 
 	input, _ := json.Marshal(map[string]any{"path": ""})
 	_, err := listTool.Handler(context.Background(), input)
-	require.ErrorContains(t, err, "path is required")
+	must.ErrorContains(err, "path is required")
 }
 
 func TestListDirectoryTool_RejectsOutOfRangeMaxEntries(t *testing.T) {
@@ -376,14 +395,16 @@ func TestListDirectoryTool_RejectsOutOfRangeMaxEntries(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			input, _ := json.Marshal(map[string]any{"path": ".", "max_entries": tc.maxEntries})
 			_, err := listTool.Handler(context.Background(), input)
-			require.ErrorContains(t, err, tc.wantErr)
+			must.ErrorContains(err, tc.wantErr)
 		})
 	}
 }
 
 func TestListDirectoryTool_RecursiveFailsWhenRootInaccessible(t *testing.T) {
+	must := require.New(t)
 	mock := &mockExecutor{
 		listDirectoryFunc: func(ctx context.Context, path string) ([]string, error) {
 			return nil, fmt.Errorf("root inaccessible")
@@ -393,10 +414,11 @@ func TestListDirectoryTool_RecursiveFailsWhenRootInaccessible(t *testing.T) {
 
 	input, _ := json.Marshal(map[string]any{"path": ".", "recursive": true})
 	_, err := listTool.Handler(context.Background(), input)
-	require.Error(t, err)
+	must.Error(err)
 }
 
 func TestReadFileTool_RejectsStartLineBelowOne(t *testing.T) {
+	must := require.New(t)
 	mock := &mockExecutor{}
 	readTool := ReadFileTool(mock)
 
@@ -405,10 +427,11 @@ func TestReadFileTool_RejectsStartLineBelowOne(t *testing.T) {
 		"start_line": 0,
 	})
 	_, err := invokeText(context.Background(), readTool, input)
-	require.ErrorContains(t, err, "start_line must be >=")
+	must.ErrorContains(err, "start_line must be >=")
 }
 
 func TestReadFileTool_RejectsLimitBelowOne(t *testing.T) {
+	must := require.New(t)
 	mock := &mockExecutor{}
 	readTool := ReadFileTool(mock)
 
@@ -417,10 +440,11 @@ func TestReadFileTool_RejectsLimitBelowOne(t *testing.T) {
 		"limit": 0,
 	})
 	_, err := invokeText(context.Background(), readTool, input)
-	require.ErrorContains(t, err, "limit must be >=")
+	must.ErrorContains(err, "limit must be >=")
 }
 
 func TestReadFileTool_PropagatesReadError(t *testing.T) {
+	must := require.New(t)
 	mock := &mockExecutor{
 		readFileFunc: func(ctx context.Context, path string) (string, error) {
 			return "", fmt.Errorf("file not found")
@@ -430,10 +454,11 @@ func TestReadFileTool_PropagatesReadError(t *testing.T) {
 
 	input, _ := json.Marshal(map[string]any{"path": "missing.txt"})
 	_, err := invokeText(context.Background(), readTool, input)
-	require.ErrorContains(t, err, "file not found")
+	must.ErrorContains(err, "file not found")
 }
 
 func TestListDirectoryTool_RejectsMaxDepthAboveLimit(t *testing.T) {
+	must := require.New(t)
 	mock := &mockExecutor{}
 	listTool := ListDirectoryTool(mock)
 
@@ -443,12 +468,14 @@ func TestListDirectoryTool_RejectsMaxDepthAboveLimit(t *testing.T) {
 		"max_depth": 11,
 	})
 	_, err := listTool.Handler(context.Background(), input)
-	require.ErrorContains(t, err, "max_depth must be <=")
+	must.ErrorContains(err, "max_depth must be <=")
 }
 
 // --- WriteFileTool tests ---
 
 func TestWriteFileTool_WritesContentAndReportsBytes(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var writtenPath, writtenContent string
 	mock := &mockExecutor{
 		writeFileFunc: func(ctx context.Context, path string, content string) error {
@@ -465,17 +492,19 @@ func TestWriteFileTool_WritesContentAndReportsBytes(t *testing.T) {
 	})
 
 	result, err := writeTool.Handler(context.Background(), input)
-	require.NoError(t, err)
+	must.NoError(err)
 
-	assert.Equal(t, "src/main.go", writtenPath)
-	assert.Equal(t, "package main", writtenContent)
-	assert.Contains(t, result, "12 bytes")
-	assert.Contains(t, result, "src/main.go")
+	check.Equal("src/main.go", writtenPath)
+	check.Equal("package main", writtenContent)
+	check.Contains(result, "12 bytes")
+	check.Contains(result, "src/main.go")
 }
 
 // --- RunCommandTool tests ---
 
 func TestRunCommandTool_NonZeroExitCode(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	mock := &mockExecutor{
 		execFunc: func(ctx context.Context, command string, timeout time.Duration) (*executor.ExecResult, error) {
 			return &executor.ExecResult{
@@ -490,24 +519,26 @@ func TestRunCommandTool_NonZeroExitCode(t *testing.T) {
 	input, _ := json.Marshal(map[string]string{"command": "false"})
 
 	result, err := invokeText(context.Background(), runTool, input)
-	require.NoError(t, err)
-	assert.Contains(t, result, "[exit code: 1]")
-	assert.Contains(t, result, "some output")
-	assert.Contains(t, result, "STDERR:")
+	must.NoError(err)
+	check.Contains(result, "[exit code: 1]")
+	check.Contains(result, "some output")
+	check.Contains(result, "STDERR:")
 }
 
 func TestRunCommandTool_RejectsEmptyCommand(t *testing.T) {
+	must := require.New(t)
 	mock := &mockExecutor{}
 	runTool := RunCommandTool(mock)
 
 	input, _ := json.Marshal(map[string]string{"command": ""})
 	_, err := invokeText(context.Background(), runTool, input)
-	require.ErrorContains(t, err, "command is required")
+	must.ErrorContains(err, "command is required")
 }
 
 // --- registerAllForTest tests ---
 
 func TestRegisterAll_RegistersExpectedTools(t *testing.T) {
+	must := require.New(t)
 	mock := &mockExecutor{}
 	registry := tool.NewRegistry()
 	registerAllForTest(registry, mock)
@@ -527,7 +558,7 @@ func TestRegisterAll_RegistersExpectedTools(t *testing.T) {
 	}
 
 	defs := registry.List()
-	require.Len(t, defs, len(expectedTools))
+	must.Len(defs, len(expectedTools))
 
 	registered := make(map[string]bool, len(defs))
 	for _, def := range defs {
@@ -536,11 +567,12 @@ func TestRegisterAll_RegistersExpectedTools(t *testing.T) {
 
 	for _, name := range expectedTools {
 		t.Run(name, func(t *testing.T) {
-			require.True(t, registered[name], "tool %q should be registered", name)
+			must := require.New(t)
+			must.True(registered[name], "tool %q should be registered", name)
 		})
 	}
 
-	require.False(t, registered["search_files"],
+	must.False(registered["search_files"],
 		"search_files must not be registered (split into grep_files and find_files)")
 }
 
@@ -646,16 +678,17 @@ func TestBuiltinDescriptions_HaveWhenToUseAndExample(t *testing.T) {
 
 	for _, def := range registry.List() {
 		t.Run(def.Name, func(t *testing.T) {
-			require.LessOrEqual(t, len(def.Description), maxToolDescriptionLen)
+			must := require.New(t)
+			must.LessOrEqual(len(def.Description), maxToolDescriptionLen)
 			// "Use this" is the canonical when-to-use opener across enriched
 			// descriptions; asserting on it forces future tools to adopt the
 			// same convention.
-			require.True(t, hasPositiveUseThis(def.Description),
+			must.True(hasPositiveUseThis(def.Description),
 				"description needs a non-negated \"Use this\" when-to-use clause")
 			example, ok := extractJSONExample(def.Description)
-			require.True(t, ok, "description missing JSON example after \"Example\" marker; got: %s", def.Description)
+			must.True(ok, "description missing JSON example after \"Example\" marker; got: %s", def.Description)
 			var probe map[string]any
-			require.NoError(t, json.Unmarshal([]byte(example), &probe), "example is not valid JSON: %s", example)
+			must.NoError(json.Unmarshal([]byte(example), &probe), "example is not valid JSON: %s", example)
 		})
 	}
 }
@@ -689,15 +722,16 @@ func TestBuiltinInputExamples_MatchDescription(t *testing.T) {
 	}
 	for _, tl := range tools {
 		t.Run(tl.Name, func(t *testing.T) {
+			must := require.New(t)
 			want, ok := extractJSONExample(tl.Description)
-			require.True(t, ok, "description has no Example marker to mirror")
+			must.True(ok, "description has no Example marker to mirror")
 			def := tl.Definition()
-			require.NotNil(t, def.Presentation, "Definition() must set Presentation")
-			require.Len(t, def.Presentation.InputExamples, 1, "want exactly one InputExample")
+			must.NotNil(def.Presentation, "Definition() must set Presentation")
+			must.Len(def.Presentation.InputExamples, 1, "want exactly one InputExample")
 			got := string(def.Presentation.InputExamples[0])
-			require.Equal(t, want, got, "InputExamples[0] drifted from description")
+			must.Equal(want, got, "InputExamples[0] drifted from description")
 			var probe map[string]any
-			require.NoError(t, json.Unmarshal(def.Presentation.InputExamples[0], &probe), "InputExamples[0] is not valid JSON")
+			must.NoError(json.Unmarshal(def.Presentation.InputExamples[0], &probe), "InputExamples[0] is not valid JSON")
 		})
 	}
 }
@@ -708,6 +742,7 @@ func TestBuiltinInputExamples_MatchDescription(t *testing.T) {
 // schema, and a model imitating an invalid example would have its call
 // rejected at dispatch.
 func TestBuiltinInputExamples_PassDispatchValidation(t *testing.T) {
+	must := require.New(t)
 	registry := tool.NewRegistry()
 	registerAllForTest(registry, &mockExecutor{})
 	defs := append(registry.List(), SpawnAgentTool(nil).Definition())
@@ -718,14 +753,15 @@ func TestBuiltinInputExamples_PassDispatchValidation(t *testing.T) {
 			continue
 		}
 		t.Run(def.Name, func(t *testing.T) {
+			must := require.New(t)
 			for i, example := range def.Presentation.InputExamples {
-				require.NoError(t, security.ValidateJSONSchema(example, def.InputSchema),
+				must.NoError(security.ValidateJSONSchema(example, def.InputSchema),
 					"InputExamples[%d] fails its InputSchema; example: %s", i, example)
 				validated++
 			}
 		})
 	}
-	require.NotZero(t, validated, "no built-in input examples were validated")
+	must.NotZero(validated, "no built-in input examples were validated")
 }
 
 // TestHasPositiveUseThis_DetectsNonNegatedClause confirms the tightened
@@ -773,7 +809,8 @@ func TestHasPositiveUseThis_DetectsNonNegatedClause(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, hasPositiveUseThis(tc.desc))
+			must := require.New(t)
+			must.Equal(tc.want, hasPositiveUseThis(tc.desc))
 		})
 	}
 }
@@ -815,9 +852,10 @@ func TestExtractJSONExample_ParsesObjectAfterMarker(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got, ok := extractJSONExample(tc.input)
-			require.Equal(t, tc.wantOK, ok)
-			require.Equal(t, tc.want, got)
+			must.Equal(tc.wantOK, ok)
+			must.Equal(tc.want, got)
 		})
 	}
 }
@@ -827,17 +865,19 @@ func TestExtractJSONExample_ParsesObjectAfterMarker(t *testing.T) {
 // registerAllForTest (the factory injects a real spawner closure). A trivial
 // spawner suffices because only the static tool definition is under test.
 func TestSpawnAgentTool_DescriptionHasWhenToUseAndExample(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	noopSpawner := func(ctx context.Context, prompt, mode string, maxTurns int) (json.RawMessage, error) {
 		return json.RawMessage("{}"), nil
 	}
 	def := SpawnAgentTool(noopSpawner)
-	assert.LessOrEqual(t, len(def.Description), maxToolDescriptionLen)
-	assert.True(t, hasPositiveUseThis(def.Description),
+	check.LessOrEqual(len(def.Description), maxToolDescriptionLen)
+	check.True(hasPositiveUseThis(def.Description),
 		"description needs a non-negated \"Use this\" when-to-use clause")
 	example, ok := extractJSONExample(def.Description)
-	require.True(t, ok, "description missing JSON example after \"Example\" marker")
+	must.True(ok, "description missing JSON example after \"Example\" marker")
 	var probe map[string]any
-	require.NoError(t, json.Unmarshal([]byte(example), &probe), "example is not valid JSON: %s", example)
+	must.NoError(json.Unmarshal([]byte(example), &probe), "example is not valid JSON: %s", example)
 }
 
 // TestSpawnAgentTool_DescriptionStatesReadOnlyRule pins that the model is
@@ -851,7 +891,8 @@ func TestSpawnAgentTool_DescriptionStatesReadOnlyRule(t *testing.T) {
 		"requesting execution mode returns an error",
 	} {
 		t.Run(want, func(t *testing.T) {
-			require.Contains(t, desc, want)
+			must := require.New(t)
+			must.Contains(desc, want)
 		})
 	}
 }

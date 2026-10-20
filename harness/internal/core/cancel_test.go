@@ -102,6 +102,7 @@ func (p *slowProvider) Stream(ctx context.Context, _ types.StreamParams) (<-chan
 }
 
 func TestLoop_CancelControlEvent_Cancelled(t *testing.T) {
+	must := require.New(t)
 	tr := &cancellableTransport{}
 	provider := &cancellingProvider{tr: tr}
 
@@ -112,13 +113,14 @@ func TestLoop_CancelControlEvent_Cancelled(t *testing.T) {
 	config := buildTestConfig()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	require.NotNil(t, runTrace)
-	require.Equal(t, "cancelled", runTrace.Outcome)
+	must.NoError(err)
+	must.NotNil(runTrace)
+	must.Equal("cancelled", runTrace.Outcome)
 	assertDoneStopReason(t, tr, "cancelled")
 }
 
 func TestLoop_DeadlineExceeded_Timeout(t *testing.T) {
+	must := require.New(t)
 	tr := &cancellableTransport{}
 	loop := buildTestLoop(nil)
 	loop.Provider = &slowProvider{}
@@ -130,9 +132,9 @@ func TestLoop_DeadlineExceeded_Timeout(t *testing.T) {
 	defer cancel()
 
 	runTrace, err := loop.Run(ctx, config)
-	require.NoError(t, err)
-	require.NotNil(t, runTrace)
-	require.Equal(t, "timeout", runTrace.Outcome)
+	must.NoError(err)
+	must.NotNil(runTrace)
+	must.Equal("timeout", runTrace.Outcome)
 
 	var gotStopReason string
 	for _, ev := range tr.Events() {
@@ -140,7 +142,7 @@ func TestLoop_DeadlineExceeded_Timeout(t *testing.T) {
 			gotStopReason = ev.StopReason
 		}
 	}
-	require.Equal(t, "timeout", gotStopReason)
+	must.Equal("timeout", gotStopReason)
 }
 
 // cancellingProviderOnStream fires the given callback on every Stream call
@@ -169,6 +171,7 @@ func (p *cancellingProviderOnStream) Stream(ctx context.Context, _ types.StreamP
 // "cancelled". The cancel fires from inside Stream so the test
 // deterministically hits the mid-stream cancel path.
 func TestLoop_CallerCancel_Cancelled(t *testing.T) {
+	must := require.New(t)
 	tr := &cancellableTransport{}
 	loop := buildTestLoop(nil)
 	loop.Transport = tr
@@ -187,9 +190,9 @@ func TestLoop_CallerCancel_Cancelled(t *testing.T) {
 	}
 
 	runTrace, err := loop.Run(ctx, config)
-	require.NoError(t, err)
-	require.NotNil(t, runTrace)
-	require.Equal(t, "cancelled", runTrace.Outcome)
+	must.NoError(err)
+	must.NotNil(runTrace)
+	must.Equal("cancelled", runTrace.Outcome)
 
 	assertDoneStopReason(t, tr, "cancelled")
 }
@@ -199,6 +202,7 @@ func TestLoop_CallerCancel_Cancelled(t *testing.T) {
 // outcome="error": an unrecognised cause cannot be attributed to a known
 // cancel/timeout reason.
 func TestLoop_CallerCancelWithCause_Error(t *testing.T) {
+	must := require.New(t)
 	tr := &cancellableTransport{}
 	loop := buildTestLoop(nil)
 	loop.Transport = tr
@@ -217,13 +221,14 @@ func TestLoop_CallerCancelWithCause_Error(t *testing.T) {
 	}
 
 	runTrace, err := loop.Run(ctx, config)
-	require.NoError(t, err)
-	require.NotNil(t, runTrace)
-	require.Equal(t, "error", runTrace.Outcome)
+	must.NoError(err)
+	must.NotNil(runTrace)
+	must.Equal("error", runTrace.Outcome)
 	assertDoneStopReason(t, tr, "error")
 }
 
 func TestLoop_PreExistingCancelledContext_Cancelled(t *testing.T) {
+	must := require.New(t)
 	tr := &cancellableTransport{}
 	loop := buildTestLoop(&mockProvider{
 		events: []types.StreamEvent{
@@ -239,8 +244,8 @@ func TestLoop_PreExistingCancelledContext_Cancelled(t *testing.T) {
 	cancel()
 
 	runTrace, err := loop.Run(ctx, config)
-	require.NoError(t, err)
-	require.Equal(t, "cancelled", runTrace.Outcome)
+	must.NoError(err)
+	must.Equal("cancelled", runTrace.Outcome)
 	assertDoneStopReason(t, tr, "cancelled")
 }
 
@@ -248,14 +253,15 @@ func TestLoop_PreExistingCancelledContext_Cancelled(t *testing.T) {
 // cancellableTransport and checks its StopReason matches want.
 func assertDoneStopReason(t *testing.T, tr *cancellableTransport, want string) {
 	t.Helper()
+	must := require.New(t)
 	var doneEvents []types.HarnessEvent
 	for _, ev := range tr.Events() {
 		if ev.Type == "done" {
 			doneEvents = append(doneEvents, ev)
 		}
 	}
-	require.Len(t, doneEvents, 1, "expected exactly one done event")
-	require.Equal(t, want, doneEvents[0].StopReason)
+	must.Len(doneEvents, 1, "expected exactly one done event")
+	must.Equal(want, doneEvents[0].StopReason)
 }
 
 // cancelOnVerifyVerifier fires a cancel ControlEvent the first time Verify
@@ -283,6 +289,7 @@ func (v *cancelOnVerifyVerifier) Verify(ctx context.Context, _ verifier.VerifyCo
 // that a cancel ControlEvent arriving while Verify is running produces
 // outcome "cancelled", not "verification_error".
 func TestLoop_CancelDuringVerify_CancelledWinsOverVerificationError(t *testing.T) {
+	must := require.New(t)
 	tr := &cancellableTransport{}
 
 	prov := &mockProvider{
@@ -299,9 +306,9 @@ func TestLoop_CancelDuringVerify_CancelledWinsOverVerificationError(t *testing.T
 	config := buildTestConfig()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	require.NotNil(t, runTrace)
-	require.Equal(t, "cancelled", runTrace.Outcome)
+	must.NoError(err)
+	must.NotNil(runTrace)
+	must.Equal("cancelled", runTrace.Outcome)
 	assertDoneStopReason(t, tr, "cancelled")
 }
 
@@ -323,12 +330,14 @@ func TestClassifyCtxOutcome_MapsCauseToOutcome(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, classifyCtxOutcome(tc.cause))
+			must := require.New(t)
+			must.Equal(tc.want, classifyCtxOutcome(tc.cause))
 		})
 	}
 }
 
 func TestErrCancelledByControlPlane_MatchesWrapped(t *testing.T) {
+	must := require.New(t)
 	wrapped := fmt.Errorf("outer: %w", ErrCancelledByControlPlane)
-	require.ErrorIs(t, wrapped, ErrCancelledByControlPlane)
+	must.ErrorIs(wrapped, ErrCancelledByControlPlane)
 }

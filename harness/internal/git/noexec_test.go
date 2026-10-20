@@ -16,8 +16,9 @@ import (
 // injected executor. Test files are excluded because they build fixtures
 // with the host's git.
 func TestPackage_DoesNotImportOSExec(t *testing.T) {
+	must := require.New(t)
 	entries, err := os.ReadDir(".")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	checked := 0
 	fset := token.NewFileSet()
@@ -28,15 +29,16 @@ func TestPackage_DoesNotImportOSExec(t *testing.T) {
 		}
 		checked++
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			file, err := parser.ParseFile(fset, name, nil, parser.ImportsOnly)
-			require.NoError(t, err)
+			must.NoError(err)
 			for _, imp := range file.Imports {
 				path, err := strconv.Unquote(imp.Path.Value)
-				require.NoError(t, err, "unquote import %s", imp.Path.Value)
-				require.NotEqual(t, "os/exec", path,
+				must.NoError(err, "unquote import %s", imp.Path.Value)
+				must.NotEqual("os/exec", path,
 					"git must run through the executor, never on the harness host")
 			}
 		})
 	}
-	require.NotZero(t, checked, "no production files checked; the import guard would be vacuous")
+	must.NotZero(checked, "no production files checked; the import guard would be vacuous")
 }

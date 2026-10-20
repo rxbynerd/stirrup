@@ -28,6 +28,8 @@ const (
 // guarantee, because every in-process path runs the completion cleanup, which
 // makes a scrubbed spool indistinguishable from a deleted one.
 func TestSpool_SurvivesSIGKILLWithoutSecrets(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	if os.Getenv(spoolKillChildEnv) == "1" {
 		spoolKillChild()
 		return
@@ -38,15 +40,15 @@ func TestSpool_SurvivesSIGKILLWithoutSecrets(t *testing.T) {
 	child.Env = append(os.Environ(), spoolKillChildEnv+"=1", spoolKillSecretEnv+"="+secret, "TMPDIR="+tmp)
 	child.Stderr = os.Stderr
 	stdout, err := child.StdoutPipe()
-	require.NoError(t, err)
-	require.NoError(t, child.Start())
+	must.NoError(err)
+	must.NoError(child.Start())
 	defer func() { _ = child.Wait() }()
 
 	ready := bufio.NewScanner(stdout)
 	for ready.Scan() && ready.Text() != "ready" {
 	}
-	require.NoError(t, ready.Err(), "child never reported a live spool")
-	require.NoError(t, child.Process.Kill())
+	must.NoError(ready.Err(), "child never reported a live spool")
+	must.NoError(child.Process.Kill())
 	_ = child.Wait()
 
 	spooled, redacted := 0, false
@@ -62,13 +64,13 @@ func TestSpool_SurvivesSIGKILLWithoutSecrets(t *testing.T) {
 			return nil
 		}
 		spooled++
-		assert.NotContains(t, string(content), secret, "killed run left an unscrubbed secret in %s", path)
+		check.NotContains(string(content), secret, "killed run left an unscrubbed secret in %s", path)
 		redacted = redacted || strings.Contains(string(content), "[REDACTED]")
 		return nil
 	})
-	require.NoError(t, err)
-	require.NotZero(t, spooled, "the crash window was not exercised: no spool file survived")
-	require.True(t, redacted, "the crash window was not exercised: no [REDACTED] marker survived")
+	must.NoError(err)
+	must.NotZero(spooled, "the crash window was not exercised: no spool file survived")
+	must.True(redacted, "the crash window was not exercised: no [REDACTED] marker survived")
 }
 
 // spoolKillChild starts a capture, drives enough output through it to force a

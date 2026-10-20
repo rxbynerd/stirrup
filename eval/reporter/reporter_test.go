@@ -117,16 +117,19 @@ func TestCompare_CountsRegressionsAndImprovements(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			report := Compare(tt.baseline, tt.current, DefaultOptions())
 
-			require.Len(t, report.Regressions, tt.wantRegressions, "regressions")
-			require.Len(t, report.Improvements, tt.wantImprovements, "improvements")
-			require.Equal(t, tt.wantHasRegress, report.Summary.HasRegressions, "HasRegressions")
+			must.Len(report.Regressions, tt.wantRegressions, "regressions")
+			must.Len(report.Improvements, tt.wantImprovements, "improvements")
+			must.Equal(tt.wantHasRegress, report.Summary.HasRegressions, "HasRegressions")
 		})
 	}
 }
 
 func TestCompare_ReportsTurnDeltas(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	baseline := suite("base",
 		task("a", "pass", trace(5)),
 		task("b", "fail", trace(3)),
@@ -138,28 +141,30 @@ func TestCompare_ReportsTurnDeltas(t *testing.T) {
 
 	report := Compare(baseline, current, DefaultOptions())
 
-	require.Len(t, report.Regressions, 1)
+	must.Len(report.Regressions, 1)
 	reg := report.Regressions[0]
-	assert.Equal(t, "a", reg.TaskID, "regression TaskID")
-	assert.Equal(t, 3, reg.TurnsDelta, "regression TurnsDelta")
+	check.Equal("a", reg.TaskID, "regression TaskID")
+	check.Equal(3, reg.TurnsDelta, "regression TurnsDelta")
 
-	require.Len(t, report.Improvements, 1)
+	must.Len(report.Improvements, 1)
 	imp := report.Improvements[0]
-	assert.Equal(t, "b", imp.TaskID, "improvement TaskID")
-	assert.Equal(t, -1, imp.TurnsDelta, "improvement TurnsDelta")
+	check.Equal("b", imp.TaskID, "improvement TaskID")
+	check.Equal(-1, imp.TurnsDelta, "improvement TurnsDelta")
 }
 
 func TestCompare_NilBaselineTraceZeroTurnsDelta(t *testing.T) {
+	must := require.New(t)
 	baseline := suite("base", task("a", "pass", nil))
 	current := suite("curr", task("a", "fail", trace(5)))
 
 	report := Compare(baseline, current, DefaultOptions())
 
-	require.Len(t, report.Regressions, 1)
-	require.Equal(t, 0, report.Regressions[0].TurnsDelta, "nil baseline trace should give a zero turns delta")
+	must.Len(report.Regressions, 1)
+	must.Equal(0, report.Regressions[0].TurnsDelta, "nil baseline trace should give a zero turns delta")
 }
 
 func TestCompare_SummaryPassRates(t *testing.T) {
+	check := assert.New(t)
 	baseline := suite("base",
 		task("a", "pass", trace(5)),
 		task("b", "fail", trace(3)),
@@ -173,13 +178,14 @@ func TestCompare_SummaryPassRates(t *testing.T) {
 	s := report.Summary
 
 	// Baseline: 1/2 pass = 0.5, Current: 2/2 pass = 1.0
-	assert.InDelta(t, 0.5, s.BaselinePassRate, epsilon, "BaselinePassRate")
-	assert.InDelta(t, 1.0, s.CurrentPassRate, epsilon, "CurrentPassRate")
-	assert.InDelta(t, 0.5, s.PassRateDelta, epsilon, "PassRateDelta")
-	assert.False(t, s.HasRegressions, "HasRegressions should be false when there are no regressions")
+	check.InDelta(0.5, s.BaselinePassRate, epsilon, "BaselinePassRate")
+	check.InDelta(1.0, s.CurrentPassRate, epsilon, "CurrentPassRate")
+	check.InDelta(0.5, s.PassRateDelta, epsilon, "PassRateDelta")
+	check.False(s.HasRegressions, "HasRegressions should be false when there are no regressions")
 }
 
 func TestFormatText_NoRegressions(t *testing.T) {
+	check := assert.New(t)
 	report := eval.ComparisonReport{
 		CurrentID:  "run-2",
 		BaselineID: "run-1",
@@ -196,13 +202,14 @@ func TestFormatText_NoRegressions(t *testing.T) {
 
 	got := FormatText(report)
 
-	assert.Contains(t, got, "Eval Comparison: run-2 vs run-1")
-	assert.Contains(t, got, "No regressions found.", "should show 'No regressions found.' when there are none")
-	assert.Contains(t, got, "Improvements (1):")
-	assert.Contains(t, got, "task-bar: fail → pass")
+	check.Contains(got, "Eval Comparison: run-2 vs run-1")
+	check.Contains(got, "No regressions found.", "should show 'No regressions found.' when there are none")
+	check.Contains(got, "Improvements (1):")
+	check.Contains(got, "task-bar: fail → pass")
 }
 
 func TestFormatText_WithRegressions(t *testing.T) {
+	check := assert.New(t)
 	report := eval.ComparisonReport{
 		CurrentID:  "run-2",
 		BaselineID: "run-1",
@@ -219,7 +226,7 @@ func TestFormatText_WithRegressions(t *testing.T) {
 
 	got := FormatText(report)
 
-	assert.Contains(t, got, "Regressions (1):")
-	assert.Contains(t, got, "task-foo: pass → fail")
-	assert.NotContains(t, got, "No regressions found.", "should not show 'No regressions found.' when there are regressions")
+	check.Contains(got, "Regressions (1):")
+	check.Contains(got, "task-foo: pass → fail")
+	check.NotContains(got, "No regressions found.", "should not show 'No regressions found.' when there are regressions")
 }

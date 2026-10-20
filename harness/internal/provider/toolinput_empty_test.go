@@ -38,6 +38,8 @@ func sseTestServer(t *testing.T, body string) *httptest.Server {
 // the named tool, carrying no arguments and no error event.
 func requireEmptyToolCall(t *testing.T, events []types.StreamEvent, wantName string) {
 	t.Helper()
+	must := require.New(t)
+	check := assert.New(t)
 
 	var calls []types.StreamEvent
 	for i := range events {
@@ -45,23 +47,24 @@ func requireEmptyToolCall(t *testing.T, events []types.StreamEvent, wantName str
 		case "tool_call":
 			calls = append(calls, events[i])
 		case "error":
-			require.Failf(t, "unexpected error event", "%v", events[i].Error)
+			must.Failf("unexpected error event", "%v", events[i].Error)
 		}
 	}
-	require.Len(t, calls, 1, "tool_call events: %+v", calls)
-	assert.Equal(t, wantName, calls[0].Name)
-	assert.Empty(t, calls[0].Input, "tool_call should carry no arguments")
+	must.Len(calls, 1, "tool_call events: %+v", calls)
+	check.Equal(wantName, calls[0].Name)
+	check.Empty(calls[0].Input, "tool_call should carry no arguments")
 
 	// The loop marshals Input into the stored tool_use block. A nil map
 	// marshals to null, so the adapter's output must normalize to an object.
 	raw, err := json.Marshal(calls[0].Input)
-	require.NoError(t, err, "marshal tool input")
-	assert.Equal(t, "{}", string(types.NormalizeToolInput(raw)))
+	must.NoError(err, "marshal tool input")
+	check.Equal("{}", string(types.NormalizeToolInput(raw)))
 }
 
 // Anthropic sends a tool_use content_block_start with no input_json_delta
 // events at all for a parameterless call.
 func TestAnthropicAdapter_ZeroArgumentToolCall(t *testing.T) {
+	must := require.New(t)
 	srv := sseTestServer(t, joinLines(
 		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"tool_use","id":"toolu_empty","name":"git_status"}}`),
 		makeSSE("content_block_stop", `{"index":0}`),
@@ -73,13 +76,14 @@ func TestAnthropicAdapter_ZeroArgumentToolCall(t *testing.T) {
 	adapter.baseURL = srv.URL
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "claude-sonnet-4-6", MaxTokens: 1024})
-	require.NoError(t, err)
+	must.NoError(err)
 	requireEmptyToolCall(t, collectEvents(t, ch), "git_status")
 }
 
 // OpenAI opens the call with an empty arguments string and never sends a
 // delta for it.
 func TestOpenAIAdapter_ZeroArgumentToolCall(t *testing.T) {
+	must := require.New(t)
 	srv := sseTestServer(t, strings.Join([]string{
 		makeOpenAIChunk(`{"id":"c1","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_empty","type":"function","function":{"name":"git_status","arguments":""}}]},"finish_reason":null}]}`),
 		makeOpenAIChunk(`{"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`),
@@ -89,13 +93,14 @@ func TestOpenAIAdapter_ZeroArgumentToolCall(t *testing.T) {
 	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
-	require.NoError(t, err)
+	must.NoError(err)
 	requireEmptyToolCall(t, collectEvents(t, ch), "git_status")
 }
 
 // The Responses API reports the finished call with an empty arguments
 // string and emits no arguments.delta events.
 func TestOpenAIResponsesAdapter_ZeroArgumentToolCall(t *testing.T) {
+	must := require.New(t)
 	srv := sseTestServer(t, strings.Join([]string{
 		makeResponsesEvent("response.output_item.added", `{"output_index":0,"item":{"type":"function_call","id":"fc_empty","call_id":"call_empty","name":"git_status"}}`),
 		makeResponsesEvent("response.function_call_arguments.done", `{"item_id":"fc_empty","output_index":0,"arguments":""}`),
@@ -105,18 +110,19 @@ func TestOpenAIResponsesAdapter_ZeroArgumentToolCall(t *testing.T) {
 	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-5", MaxTokens: 1024})
-	require.NoError(t, err)
+	must.NoError(err)
 	requireEmptyToolCall(t, collectEvents(t, ch), "git_status")
 }
 
 // Gemini omits the args field entirely on a parameterless functionCall.
 func TestGeminiAdapter_ZeroArgumentToolCall(t *testing.T) {
+	must := require.New(t)
 	srv := sseTestServer(t, makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"git_status"}}]},"finishReason":"STOP"}]}`))
 
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-3.1-pro-preview"})
-	require.NoError(t, err)
+	must.NoError(err)
 	requireEmptyToolCall(t, collectEvents(t, ch), "git_status")
 }
 
@@ -125,6 +131,8 @@ func TestGeminiAdapter_ZeroArgumentToolCall(t *testing.T) {
 // back. Anthropic rejects the whole conversation when a replayed tool input
 // is null, so the replayed request must carry an object.
 func TestAnthropicAdapter_ZeroArgumentToolCallRoundTrip(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	turns := []string{
 		joinLines(
 			makeSSE("content_block_start", `{"index":0,"content_block":{"type":"tool_use","id":"toolu_empty","name":"git_status"}}`),
@@ -145,12 +153,12 @@ func TestAnthropicAdapter_ZeroArgumentToolCallRoundTrip(t *testing.T) {
 	var requestBodies []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		if !assert.NoError(t, err, "read request body") {
+		if !check.NoError(err, "read request body") {
 			return
 		}
 		idx := len(requestBodies)
 		requestBodies = append(requestBodies, string(body))
-		if !assert.Less(t, idx, len(turns), "unexpected request %d", idx) {
+		if !check.Less(idx, len(turns), "unexpected request %d", idx) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -172,7 +180,7 @@ func TestAnthropicAdapter_ZeroArgumentToolCallRoundTrip(t *testing.T) {
 		MaxTokens: 1024,
 		Messages:  messages,
 	})
-	require.NoError(t, err, "stream turn 1")
+	must.NoError(err, "stream turn 1")
 
 	// Store the tool call's input unnormalized — a nil map marshals to null.
 	// The adapter is the last line of defence for history it did not build
@@ -183,9 +191,9 @@ func TestAnthropicAdapter_ZeroArgumentToolCallRoundTrip(t *testing.T) {
 			call = ev
 		}
 	}
-	require.Equal(t, "git_status", call.Name, "turn 1 produced no git_status call: %+v", call)
+	must.Equal("git_status", call.Name, "turn 1 produced no git_status call: %+v", call)
 	inputBytes, err := json.Marshal(call.Input)
-	require.NoError(t, err, "marshal tool input")
+	must.NoError(err, "marshal tool input")
 
 	messages = append(messages,
 		types.Message{Role: "assistant", Content: []types.ContentBlock{{
@@ -206,13 +214,13 @@ func TestAnthropicAdapter_ZeroArgumentToolCallRoundTrip(t *testing.T) {
 		MaxTokens: 1024,
 		Messages:  messages,
 	})
-	require.NoError(t, err, "stream turn 2")
+	must.NoError(err, "stream turn 2")
 	collectEvents(t, ch)
 
-	require.GreaterOrEqual(t, len(requestBodies), 2, "expected 2 requests")
+	must.GreaterOrEqual(len(requestBodies), 2, "expected 2 requests")
 	replay := requestBodies[1]
-	assert.NotContains(t, replay, `"input":null`, "replayed turn carries a null tool input")
-	assert.Contains(t, replay, `"input":{}`, "replayed turn missing an empty tool input object")
+	check.NotContains(replay, `"input":null`, "replayed turn carries a null tool input")
+	check.Contains(replay, `"input":{}`, "replayed turn missing an empty tool input object")
 }
 
 // emptyToolInputForms are the shapes a stored tool_use block can carry for a
@@ -240,12 +248,13 @@ func zeroArgAssistantTurn(input json.RawMessage) []types.Message {
 func TestTranslateMessagesAnthropic_EmptyToolInputBecomesObject(t *testing.T) {
 	for name, form := range emptyToolInputForms {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			out := translateMessagesAnthropic(zeroArgAssistantTurn(form), quirks.StructuredToolResultCapability{})
 
 			wire, err := json.Marshal(out)
-			require.NoError(t, err, "marshal request messages")
-			require.NotContains(t, string(wire), `"input":null`)
-			require.Contains(t, string(wire), `"input":{}`)
+			must.NoError(err, "marshal request messages")
+			must.NotContains(string(wire), `"input":null`)
+			must.Contains(string(wire), `"input":{}`)
 		})
 	}
 }
@@ -253,19 +262,21 @@ func TestTranslateMessagesAnthropic_EmptyToolInputBecomesObject(t *testing.T) {
 // The `input` key belongs to tool_use blocks alone; normalizing must not
 // graft an empty object onto text or tool_result blocks.
 func TestTranslateMessagesAnthropic_NonToolBlocksOmitInput(t *testing.T) {
+	must := require.New(t)
 	messages := []types.Message{
 		{Role: "assistant", Content: []types.ContentBlock{{Type: "text", Text: "hello"}}},
 		{Role: "user", Content: []types.ContentBlock{{Type: "tool_result", ToolUseID: "toolu_empty", Content: "clean"}}},
 	}
 
 	wire, err := json.Marshal(translateMessagesAnthropic(messages, quirks.StructuredToolResultCapability{}))
-	require.NoError(t, err, "marshal request messages")
-	require.NotContains(t, string(wire), `"input"`, "non-tool_use block carries an input key")
+	must.NoError(err, "marshal request messages")
+	must.NotContains(string(wire), `"input"`, "non-tool_use block carries an input key")
 }
 
 func TestTranslateMessages_EmptyToolInputBecomesObjectArguments(t *testing.T) {
 	for name, form := range emptyToolInputForms {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			out := translateMessages("", zeroArgAssistantTurn(form), nil)
 
 			var args string
@@ -274,7 +285,7 @@ func TestTranslateMessages_EmptyToolInputBecomesObjectArguments(t *testing.T) {
 					args = tc.Function.Arguments
 				}
 			}
-			require.Equal(t, "{}", args)
+			must.Equal("{}", args)
 		})
 	}
 }
@@ -282,13 +293,14 @@ func TestTranslateMessages_EmptyToolInputBecomesObjectArguments(t *testing.T) {
 func TestTranslateMessagesResponses_EmptyToolInputBecomesObjectArguments(t *testing.T) {
 	for name, form := range emptyToolInputForms {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			var args string
 			for _, item := range translateMessagesResponses(zeroArgAssistantTurn(form), "") {
 				if item.Type == "function_call" {
 					args = item.Arguments
 				}
 			}
-			require.Equal(t, "{}", args)
+			must.Equal("{}", args)
 		})
 	}
 }
@@ -296,8 +308,9 @@ func TestTranslateMessagesResponses_EmptyToolInputBecomesObjectArguments(t *test
 func TestTranslateMessagesGemini_EmptyToolInputBecomesObjectArgs(t *testing.T) {
 	for name, form := range emptyToolInputForms {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			contents, _, err := translateMessagesGemini("", zeroArgAssistantTurn(form), quirks.StructuredToolResultCapability{}, "function")
-			require.NoError(t, err, "translateMessagesGemini")
+			must.NoError(err, "translateMessagesGemini")
 
 			var args string
 			for _, c := range contents {
@@ -307,7 +320,7 @@ func TestTranslateMessagesGemini_EmptyToolInputBecomesObjectArgs(t *testing.T) {
 					}
 				}
 			}
-			require.Equal(t, "{}", args)
+			must.Equal("{}", args)
 		})
 	}
 }
@@ -315,8 +328,9 @@ func TestTranslateMessagesGemini_EmptyToolInputBecomesObjectArgs(t *testing.T) {
 func TestBedrockTranslateContentBlocks_EmptyToolInputBecomesObject(t *testing.T) {
 	for name, form := range emptyToolInputForms {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			blocks, err := bedrockTranslateContentBlocks(zeroArgAssistantTurn(form)[0].Content)
-			require.NoError(t, err, "bedrockTranslateContentBlocks")
+			must.NoError(err, "bedrockTranslateContentBlocks")
 
 			var uses []*brtypes.ContentBlockMemberToolUse
 			for _, b := range blocks {
@@ -324,12 +338,12 @@ func TestBedrockTranslateContentBlocks_EmptyToolInputBecomesObject(t *testing.T)
 					uses = append(uses, use)
 				}
 			}
-			require.NotEmpty(t, uses, "no toolUse block produced")
+			must.NotEmpty(uses, "no toolUse block produced")
 
 			for _, use := range uses {
 				raw, err := use.Value.Input.MarshalSmithyDocument()
-				require.NoError(t, err, "marshal tool use document")
-				require.Equal(t, "{}", string(raw))
+				must.NoError(err, "marshal tool use document")
+				must.Equal("{}", string(raw))
 			}
 		})
 	}

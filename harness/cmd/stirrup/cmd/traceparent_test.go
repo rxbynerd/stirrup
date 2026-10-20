@@ -23,16 +23,18 @@ import (
 )
 
 func TestRunConfigCommand_RejectsTraceParentFlags(t *testing.T) {
+	must := require.New(t)
 	for _, name := range []string{"traceparent", "tracestate"} {
 		t.Run(name, func(t *testing.T) {
-			require.Nil(t, runConfigCmd.Flags().Lookup(name), "run-config must not register --%s; it stays harness-only", name)
-			require.NotNil(t, harnessCmd.Flags().Lookup(name), "harness must register --%s", name)
+			must := require.New(t)
+			must.Nil(runConfigCmd.Flags().Lookup(name), "run-config must not register --%s; it stays harness-only", name)
+			must.NotNil(harnessCmd.Flags().Lookup(name), "harness must register --%s", name)
 		})
 	}
 
 	cmd := newTestRunConfigCommand()
 	err := cmd.ParseFlags([]string{"--traceparent", cliTraceparent})
-	require.ErrorContains(t, err, "unknown flag: --traceparent")
+	must.ErrorContains(err, "unknown flag: --traceparent")
 }
 
 const (
@@ -53,15 +55,16 @@ func upstreamContext(t *testing.T, base context.Context, flags [][2]string) cont
 }
 
 func TestTraceParentFlags_ProduceRemoteSpanContext(t *testing.T) {
+	must := require.New(t)
 	ctx := upstreamContext(t, context.Background(), [][2]string{
 		{"traceparent", cliTraceparent},
 		{"tracestate", "vendor=value"},
 	})
 	sc := oteltrace.SpanContextFromContext(ctx)
-	require.True(t, sc.IsValid() && sc.IsRemote() && sc.IsSampled(), "span context = %+v, want a valid, remote, sampled context", sc)
-	require.Equal(t, cliTraceID, sc.TraceID().String(), "trace ID")
-	require.Equal(t, cliSpanID, sc.SpanID().String(), "span ID")
-	require.Equal(t, "vendor=value", sc.TraceState().String(), "tracestate")
+	must.True(sc.IsValid() && sc.IsRemote() && sc.IsSampled(), "span context = %+v, want a valid, remote, sampled context", sc)
+	must.Equal(cliTraceID, sc.TraceID().String(), "trace ID")
+	must.Equal(cliSpanID, sc.SpanID().String(), "span ID")
+	must.Equal("vendor=value", sc.TraceState().String(), "tracestate")
 }
 
 func TestTraceParentFlags_LeaveContextUnchangedWhenInvalid(t *testing.T) {
@@ -73,10 +76,11 @@ func TestTraceParentFlags_LeaveContextUnchangedWhenInvalid(t *testing.T) {
 	}
 	for name, flags := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			base := context.Background()
 			ctx := upstreamContext(t, base, flags)
-			require.Equal(t, base, ctx, "context was replaced")
-			require.False(t, oteltrace.SpanContextFromContext(ctx).IsValid(), "span context became valid")
+			must.Equal(base, ctx, "context was replaced")
+			must.False(oteltrace.SpanContextFromContext(ctx).IsValid(), "span context became valid")
 		})
 	}
 }
@@ -86,8 +90,9 @@ func TestTraceParentFlags_LeaveContextUnchangedWhenInvalid(t *testing.T) {
 // OTEL_TRACES_SAMPLER as an unsupported sampler.
 func unsetEnv(t *testing.T, key string) {
 	t.Helper()
+	must := require.New(t)
 	t.Setenv(key, "")
-	require.NoError(t, os.Unsetenv(key), "unset %s", key)
+	must.NoError(os.Unsetenv(key), "unset %s", key)
 }
 
 // captureSlog routes the default slog logger to a buffer for the test.
@@ -135,67 +140,71 @@ func traceParentCommand(t *testing.T, flags [][2]string) (*cobra.Command, *otlpS
 // STIRRUP_RESULT payload.
 func runHarnessWithTraceParent(t *testing.T, flags [][2]string) (types.RunResult, *otlpSpanReceiver) {
 	t.Helper()
+	must := require.New(t)
 	cmd, receiver := traceParentCommand(t, flags)
 
 	stdoutDone := captureStdout(t)
 	runErr := runHarness(cmd, nil)
 	stdout := stdoutDone()
-	require.NoError(t, runErr, "runHarness stdout: %s", stdout)
+	must.NoError(runErr, "runHarness stdout: %s", stdout)
 	for _, line := range strings.Split(stdout, "\n") {
 		payload, ok := strings.CutPrefix(line, "STIRRUP_RESULT ")
 		if !ok {
 			continue
 		}
 		var result types.RunResult
-		require.NoError(t, json.Unmarshal([]byte(payload), &result), "STIRRUP_RESULT does not parse: %s", payload)
+		must.NoError(json.Unmarshal([]byte(payload), &result), "STIRRUP_RESULT does not parse: %s", payload)
 		return result, receiver
 	}
-	require.FailNow(t, "no STIRRUP_RESULT line in stdout", "stdout: %q", stdout)
+	must.FailNow("no STIRRUP_RESULT line in stdout", "stdout: %q", stdout)
 	return types.RunResult{}, nil
 }
 
 func TestRunHarness_TraceParentParentsExportedRunSpan(t *testing.T) {
+	must := require.New(t)
 	result, receiver := runHarnessWithTraceParent(t, [][2]string{
 		{"traceparent", cliTraceparent},
 		{"tracestate", "vendor=value"},
 	})
 
-	require.NotNil(t, result.TraceReference, "RunResult.traceReference")
-	require.Equal(t, cliTraceID, result.TraceReference.TraceID, "traceReference.traceID")
-	require.True(t, result.TraceReference.Sampled, "traceReference.sampled under a sampled parent")
+	must.NotNil(result.TraceReference, "RunResult.traceReference")
+	must.Equal(cliTraceID, result.TraceReference.TraceID, "traceReference.traceID")
+	must.True(result.TraceReference.Sampled, "traceReference.sampled under a sampled parent")
 
 	root, seen := receiver.span("invoke_agent stirrup")
-	require.NotNil(t, root, "no exported invoke_agent stirrup span; received %s", strings.Join(seen, ", "))
-	require.Equal(t, cliTraceID, hex.EncodeToString(root.GetTraceId()), "run span trace ID")
-	require.Equal(t, cliSpanID, hex.EncodeToString(root.GetParentSpanId()), "run span parent, the flag's span")
-	require.Equal(t, hex.EncodeToString(root.GetSpanId()), result.TraceReference.RunSpanID, "traceReference.runSpanId")
+	must.NotNil(root, "no exported invoke_agent stirrup span; received %s", strings.Join(seen, ", "))
+	must.Equal(cliTraceID, hex.EncodeToString(root.GetTraceId()), "run span trace ID")
+	must.Equal(cliSpanID, hex.EncodeToString(root.GetParentSpanId()), "run span parent, the flag's span")
+	must.Equal(hex.EncodeToString(root.GetSpanId()), result.TraceReference.RunSpanID, "traceReference.runSpanId")
 }
 
 func TestRunHarness_InvalidTraceParentStartsNewRoot(t *testing.T) {
+	must := require.New(t)
 	result, receiver := runHarnessWithTraceParent(t, [][2]string{
 		{"traceparent", "ff-" + cliTraceID + "-" + cliSpanID + "-01"},
 	})
 
 	root, seen := receiver.span("invoke_agent stirrup")
-	require.NotNil(t, root, "no exported invoke_agent stirrup span; received %s", strings.Join(seen, ", "))
-	require.Empty(t, root.GetParentSpanId(), "run span should be a new root")
-	require.NotEqual(t, cliTraceID, hex.EncodeToString(root.GetTraceId()), "run span joined the invalid traceparent's trace")
-	require.NotNil(t, result.TraceReference, "RunResult.traceReference")
-	require.NotEmpty(t, result.TraceReference.TraceID, "freshly minted trace ID")
-	require.NotEqual(t, cliTraceID, result.TraceReference.TraceID, "freshly minted trace ID")
+	must.NotNil(root, "no exported invoke_agent stirrup span; received %s", strings.Join(seen, ", "))
+	must.Empty(root.GetParentSpanId(), "run span should be a new root")
+	must.NotEqual(cliTraceID, hex.EncodeToString(root.GetTraceId()), "run span joined the invalid traceparent's trace")
+	must.NotNil(result.TraceReference, "RunResult.traceReference")
+	must.NotEmpty(result.TraceReference.TraceID, "freshly minted trace ID")
+	must.NotEqual(cliTraceID, result.TraceReference.TraceID, "freshly minted trace ID")
 }
 
 func TestRunHarness_UnsampledTraceParentExportsNothing(t *testing.T) {
+	must := require.New(t)
 	result, receiver := runHarnessWithTraceParent(t, [][2]string{
 		{"traceparent", "00-" + cliTraceID + "-" + cliSpanID + "-00"},
 	})
 
-	require.NotNil(t, result.TraceReference, "RunResult.traceReference")
-	require.Equal(t, cliTraceID, result.TraceReference.TraceID, "traceReference.traceID")
-	require.False(t, result.TraceReference.Sampled, "traceReference.sampled under an unsampled parent")
+	must.NotNil(result.TraceReference, "RunResult.traceReference")
+	must.Equal(cliTraceID, result.TraceReference.TraceID, "traceReference.traceID")
+	must.False(result.TraceReference.Sampled, "traceReference.sampled under an unsampled parent")
 	if n := receiver.count(); n != 0 {
 		_, names := receiver.span("")
-		require.Equal(t, 0, n, "OTLP receiver spans under an unsampled parent: %v", names)
+		must.Equal(0, n, "OTLP receiver spans under an unsampled parent: %v", names)
 	}
 }
 
@@ -216,25 +225,28 @@ func TestWarnIgnoredTraceParent_LogsOnlyWhenFlagsIgnored(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			logs := captureSlog(t)
 			warnIgnoredTraceParent(tc.cfg, tc.traceParent, tc.traceState)
 			got := logs.String()
 			if tc.wantWarning == "" {
-				require.Empty(t, got, "unexpected log output")
+				must.Empty(got, "unexpected log output")
 			} else {
-				require.Contains(t, got, tc.wantWarning, "log output")
+				must.Contains(got, tc.wantWarning, "log output")
 			}
 		})
 	}
 }
 
 func TestRunHarness_InvalidTraceParentLogsWarning(t *testing.T) {
+	must := require.New(t)
 	logs := captureSlog(t)
 	runHarnessWithTraceParent(t, [][2]string{{"traceparent", "not-a-traceparent"}})
-	require.Contains(t, logs.String(), "--traceparent ignored", "log output should carry the ignored-traceparent warning")
+	must.Contains(logs.String(), "--traceparent ignored", "log output should carry the ignored-traceparent warning")
 }
 
 func TestRunHarness_OutputRunConfigIgnoresTraceParentSilently(t *testing.T) {
+	must := require.New(t)
 	logs := captureSlog(t)
 	cmd := newTestHarnessCommand()
 	setFlags(t, cmd.Flags(), [][2]string{
@@ -242,11 +254,12 @@ func TestRunHarness_OutputRunConfigIgnoresTraceParentSilently(t *testing.T) {
 		{"traceparent", "not-a-traceparent"},
 		{"output-runconfig", t.TempDir() + "/rc.json"},
 	})
-	require.NoError(t, runHarness(cmd, nil))
-	require.NotContains(t, logs.String(), "traceparent", "--output-runconfig should not log a trace parent warning")
+	must.NoError(runHarness(cmd, nil))
+	must.NotContains(logs.String(), "traceparent", "--output-runconfig should not log a trace parent warning")
 }
 
 func TestRunHarness_FollowUpAfterTraceParentStartsNewTrace(t *testing.T) {
+	must := require.New(t)
 	srv := newScriptedControlPlane(&pb.RunConfig{}, func(n int) *pb.ControlEvent {
 		if n == 0 {
 			return &pb.ControlEvent{Type: "user_response", UserResponse: "And again."}
@@ -267,14 +280,14 @@ func TestRunHarness_FollowUpAfterTraceParentStartsNewTrace(t *testing.T) {
 
 	for _, what := range []string{"primary run", "follow-up run"} {
 		sr := srv.waitDone(t, what)
-		require.Equal(t, "success", sr, "%s stop_reason", what)
+		must.Equal("success", sr, "%s stop_reason", what)
 	}
 	select {
 	case err := <-errCh:
 		_ = stdoutDone()
-		require.NoError(t, err, "runHarness")
+		must.NoError(err, "runHarness")
 	case <-time.After(15 * time.Second):
-		require.FailNow(t, "runHarness did not return after cancel")
+		must.FailNow("runHarness did not return after cancel")
 	}
 
 	receiver.mu.Lock()
@@ -285,18 +298,18 @@ func TestRunHarness_FollowUpAfterTraceParentStartsNewTrace(t *testing.T) {
 			roots = append(roots, sp)
 		}
 	}
-	require.Len(t, roots, 2, "run spans exported for the primary and follow-up runs")
+	must.Len(roots, 2, "run spans exported for the primary and follow-up runs")
 	byTrace := map[string]*otlptrace.Span{}
 	for _, sp := range roots {
 		byTrace[hex.EncodeToString(sp.GetTraceId())] = sp
 	}
-	require.Len(t, byTrace, 2, "primary and follow-up share a trace; trace IDs = %v", byTrace)
+	must.Len(byTrace, 2, "primary and follow-up share a trace; trace IDs = %v", byTrace)
 	primary := byTrace[cliTraceID]
-	require.NotNil(t, primary, "no run span on the flag's trace %s", cliTraceID)
-	require.Equal(t, cliSpanID, hex.EncodeToString(primary.GetParentSpanId()), "primary run span parent, the flag's span")
+	must.NotNil(primary, "no run span on the flag's trace %s", cliTraceID)
+	must.Equal(cliSpanID, hex.EncodeToString(primary.GetParentSpanId()), "primary run span parent, the flag's span")
 	for id, sp := range byTrace {
 		if id != cliTraceID {
-			require.Empty(t, sp.GetParentSpanId(), "follow-up run span parent for trace %s, want a new root", id)
+			must.Empty(sp.GetParentSpanId(), "follow-up run span parent for trace %s, want a new root", id)
 		}
 	}
 }

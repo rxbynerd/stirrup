@@ -38,6 +38,7 @@ func replayTexts(t *testing.T, rp *ReplayProvider) []string {
 }
 
 func TestReplayProvider_SkipsSubAgentTurns(t *testing.T) {
+	must := require.New(t)
 	turns := []types.TurnRecord{
 		textTurn("run-p/sub-1", "run-p", "child 0"),
 		textTurn("run-p", "", "parent 0"),
@@ -46,20 +47,22 @@ func TestReplayProvider_SkipsSubAgentTurns(t *testing.T) {
 	}
 	got := replayTexts(t, NewReplayProvider(turns))
 	want := []string{"parent 0", "parent 1"}
-	require.Equal(t, want, got)
+	must.Equal(want, got)
 }
 
 func TestReplayProvider_ReplaysOneSubRunsTurns(t *testing.T) {
+	must := require.New(t)
 	turns := []types.TurnRecord{
 		textTurn("run-p/sub-1", "run-p", "child 0"),
 		textTurn("run-p/sub-1", "run-p", "child 1"),
 	}
 	got := replayTexts(t, NewReplayProvider(turns))
 	want := []string{"child 0", "child 1"}
-	require.Equal(t, want, got)
+	must.Equal(want, got)
 }
 
 func TestReplayProvider_ReplaysEveryTopLevelRun(t *testing.T) {
+	must := require.New(t)
 	turns := []types.TurnRecord{
 		textTurn("run-a", "", "a0"),
 		textTurn("run-a/sub-1", "run-a", "child"),
@@ -68,17 +71,18 @@ func TestReplayProvider_ReplaysEveryTopLevelRun(t *testing.T) {
 	}
 	got := replayTexts(t, NewReplayProvider(turns))
 	want := []string{"a0", "a1", "b0"}
-	require.Equal(t, want, got)
+	must.Equal(want, got)
 }
 
 func TestReplayProvider_UntaggedTurnsReplayInOrder(t *testing.T) {
+	must := require.New(t)
 	turns := []types.TurnRecord{
 		textTurn("", "", "first"),
 		textTurn("", "", "second"),
 	}
 	got := replayTexts(t, NewReplayProvider(turns))
 	want := []string{"first", "second"}
-	require.Equal(t, want, got)
+	must.Equal(want, got)
 }
 
 // TestReplayProvider_RecordingWithSubAgentsReplaysParentOnly writes a
@@ -86,6 +90,7 @@ func TestReplayProvider_UntaggedTurnsReplayInOrder(t *testing.T) {
 // the recording back, and replays its Turns: only the parent's outputs
 // may come back.
 func TestReplayProvider_RecordingWithSubAgentsReplaysParentOnly(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	parent := trace.NewJSONLTraceEmitter(&buf, false)
 	parent.Start("run-p", nil)
@@ -99,14 +104,14 @@ func TestReplayProvider_RecordingWithSubAgentsReplaysParentOnly(t *testing.T) {
 	record(parent, 0, "parent 0")
 	record(child, 1, "child 1")
 	_, err := child.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 	record(parent, 1, "parent 1")
 	_, err = parent.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	rec, err := tracereader.NewReader(bytes.NewReader(buf.Bytes())).ReadRecording()
-	require.NoError(t, err, "ReadRecording")
+	must.NoError(err, "ReadRecording")
 	got := replayTexts(t, NewReplayProvider(rec.Turns))
 	want := []string{"parent 0", "parent 1"}
-	require.Equal(t, want, got)
+	must.Equal(want, got)
 }

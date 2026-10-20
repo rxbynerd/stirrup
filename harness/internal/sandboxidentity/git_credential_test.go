@@ -55,6 +55,7 @@ func TestComposeEnv_GitCredentialHelper_PresentsTokenFileContent(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var (
 				mu           sync.Mutex
 				sawNoAuth    bool
@@ -99,13 +100,13 @@ func TestComposeEnv_GitCredentialHelper_PresentsTokenFileContent(t *testing.T) {
 			// tokenPathPattern accepts; the file stands in for the
 			// executor-delivered SandboxIdentityTokenPath.
 			tokenPath := filepath.Join(t.TempDir(), "token")
-			require.NoError(t, os.WriteFile(tokenPath, []byte(wantToken), 0o600), "write token file")
+			must.NoError(os.WriteFile(tokenPath, []byte(wantToken), 0o600), "write token file")
 
 			env, err := ComposeEnv("HAYBALE_TOKEN", composedToken, tokenPath, gp)
-			require.NoError(t, err, "ComposeEnv()")
+			must.NoError(err, "ComposeEnv()")
 
 			path, ok := os.LookupEnv("PATH")
-			require.True(t, ok, "PATH is not set in the test process environment")
+			must.True(ok, "PATH is not set in the test process environment")
 			envStrings := []string{
 				"PATH=" + path,
 				"HOME=" + t.TempDir(),
@@ -137,11 +138,11 @@ func TestComposeEnv_GitCredentialHelper_PresentsTokenFileContent(t *testing.T) {
 			mu.Lock()
 			defer mu.Unlock()
 
-			require.True(t, sawNoAuth, "expected an initial unauthenticated request (git should probe before invoking the credential helper)")
-			require.True(t, sawAuth, "expected a follow-up request carrying Basic auth from the composed credential helper")
-			require.Equal(t, "x-access-token", capturedUser)
-			require.Equal(t, wantToken, capturedPass, "Basic-auth password should be the token file's content")
-			require.NotEqual(t, composedToken, capturedPass, "git presented the env var's token rather than reading the token file")
+			must.True(sawNoAuth, "expected an initial unauthenticated request (git should probe before invoking the credential helper)")
+			must.True(sawAuth, "expected a follow-up request carrying Basic auth from the composed credential helper")
+			must.Equal("x-access-token", capturedUser)
+			must.Equal(wantToken, capturedPass, "Basic-auth password should be the token file's content")
+			must.NotEqual(composedToken, capturedPass, "git presented the env var's token rather than reading the token file")
 		})
 	}
 }

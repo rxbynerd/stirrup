@@ -141,7 +141,8 @@ func TestSandboxReady_RequiresReadyTrueCondition(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, sandboxReady(tt.obj))
+			must := require.New(t)
+			must.Equal(tt.want, sandboxReady(tt.obj))
 		})
 	}
 }
@@ -185,7 +186,8 @@ func TestResolveSandboxPodName_PrefersNonEmptyAnnotation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, resolveSandboxPodName(tt.obj))
+			must := require.New(t)
+			must.Equal(tt.want, resolveSandboxPodName(tt.obj))
 		})
 	}
 }

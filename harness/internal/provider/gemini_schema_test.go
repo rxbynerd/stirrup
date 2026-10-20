@@ -170,13 +170,14 @@ func TestConvertSchema_SupportedAndRejectedShapes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			got, err := ConvertSchema(json.RawMessage(tt.in))
 			if tt.expectErr != "" {
-				require.Error(t, err, "output=%s", got)
-				require.ErrorContains(t, err, tt.expectErr)
+				must.Error(err, "output=%s", got)
+				must.ErrorContains(err, tt.expectErr)
 				return
 			}
-			require.NoError(t, err)
+			must.NoError(err)
 			assertJSONEqual(t, got, tt.want)
 		})
 	}
@@ -188,6 +189,7 @@ func TestConvertSchema_SupportedAndRejectedShapes(t *testing.T) {
 // keywords. This guards against regressions caused by reshuffling the
 // internal walking order.
 func TestConvertSchema_BuiltinToolShapeWithOptionalFields(t *testing.T) {
+	must := require.New(t)
 	in := `{
 		"type":"object",
 		"properties":{
@@ -199,7 +201,7 @@ func TestConvertSchema_BuiltinToolShapeWithOptionalFields(t *testing.T) {
 		"additionalProperties":false
 	}`
 	got, err := ConvertSchema(json.RawMessage(in))
-	require.NoError(t, err)
+	must.NoError(err)
 	want := `{
 		"type":"OBJECT",
 		"properties":{
@@ -217,6 +219,7 @@ func TestConvertSchema_BuiltinToolShapeWithOptionalFields(t *testing.T) {
 // a common failure mode when the type-array translation accidentally writes
 // to the wrong node.
 func TestConvertSchema_NullableAppliesAtLeafProperty(t *testing.T) {
+	must := require.New(t)
 	in := `{
 		"type":"object",
 		"properties":{
@@ -224,7 +227,7 @@ func TestConvertSchema_NullableAppliesAtLeafProperty(t *testing.T) {
 		}
 	}`
 	got, err := ConvertSchema(json.RawMessage(in))
-	require.NoError(t, err)
+	must.NoError(err)
 	want := `{"type":"OBJECT","properties":{"label":{"type":"STRING","nullable":true}}}`
 	assertJSONEqual(t, got, want)
 }
@@ -233,5 +236,6 @@ func TestConvertSchema_NullableAppliesAtLeafProperty(t *testing.T) {
 // ignoring field ordering. It is also used by other test files in this package.
 func assertJSONEqual(t *testing.T, got json.RawMessage, want string) {
 	t.Helper()
-	require.JSONEq(t, want, string(got))
+	must := require.New(t)
+	must.JSONEq(want, string(got))
 }

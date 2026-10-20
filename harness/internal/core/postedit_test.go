@@ -35,56 +35,59 @@ func TestAttachPostEditChecks_EveryEditToolRunsChecks(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			workspace := t.TempDir()
-			require.NoError(t, os.WriteFile(filepath.Join(workspace, "f.go"), []byte("package p\n"), 0o644))
+			must.NoError(os.WriteFile(filepath.Join(workspace, "f.go"), []byte("package p\n"), 0o644))
 			exec, err := executor.NewLocalExecutor(workspace)
-			require.NoError(t, err)
+			must.NoError(err)
 
 			registry := buildToolRegistry(exec, tc.strategy, types.ToolsConfig{}, nil)
 			checker := attachPostEditChecks(registry, tc.strategy.ToolDefinition().Name, exec, []types.PostEditCheckConfig{
 				{Glob: "*.go", Command: "echo checked {path} >> checks.log; echo diagnostic-line; exit 3"},
 			}, slog.New(slog.DiscardHandler))
-			require.NotNil(t, checker, "attachPostEditChecks should return a checker")
+			must.NotNil(checker, "attachPostEditChecks should return a checker")
 
 			editTool := registry.Resolve(tc.name)
-			require.NotNil(t, editTool, "edit tool should be registered")
+			must.NotNil(editTool, "edit tool should be registered")
 
 			out, err := editTool.Handler(context.Background(), json.RawMessage(tc.input))
-			require.NoError(t, err)
-			require.Contains(t, out, "exited with code 3", "tool result lacks check diagnostics:\n%s", out)
-			require.Contains(t, out, "diagnostic-line", "tool result lacks check diagnostics:\n%s", out)
+			must.NoError(err)
+			must.Contains(out, "exited with code 3", "tool result lacks check diagnostics:\n%s", out)
+			must.Contains(out, "diagnostic-line", "tool result lacks check diagnostics:\n%s", out)
 
 			_, err = editTool.Handler(context.Background(), json.RawMessage(tc.bad))
-			require.Error(t, err)
+			must.Error(err)
 
 			log, err := os.ReadFile(filepath.Join(workspace, "checks.log"))
-			require.NoError(t, err)
-			require.Equal(t, "checked f.go\n", string(log), "checks should run once, for the successful edit only")
+			must.NoError(err)
+			must.Equal("checked f.go\n", string(log), "checks should run once, for the successful edit only")
 		})
 	}
 }
 
 func TestAttachPostEditChecks_NoChecksLeavesHandlerUntouched(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	exec, err := executor.NewLocalExecutor(t.TempDir())
-	require.NoError(t, err)
+	must.NoError(err)
 	es := edit.NewWholeFileStrategy()
 	registry := buildToolRegistry(exec, es, types.ToolsConfig{}, nil)
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
 
 	checker := attachPostEditChecks(registry, es.ToolDefinition().Name, exec, nil, logger)
-	require.Nil(t, checker, "no checker should be attached without checks")
+	must.Nil(checker, "no checker should be attached without checks")
 
 	out, err := registry.Resolve("write_file").Handler(context.Background(), json.RawMessage(`{"path":"a.go","content":"x"}`))
-	require.NoError(t, err)
-	require.Equal(t, "Successfully edited a.go", out)
+	must.NoError(err)
+	must.Equal("Successfully edited a.go", out)
 
 	noEdit := buildToolRegistry(exec, es, types.ToolsConfig{BuiltIn: []string{"read_file"}}, nil)
-	assert.Empty(t, logs.String(), "unconfigured checks should not log")
+	check.Empty(logs.String(), "unconfigured checks should not log")
 
 	checker = attachPostEditChecks(noEdit, es.ToolDefinition().Name, exec, []types.PostEditCheckConfig{{Glob: "*", Command: "true"}}, logger)
-	require.Nil(t, checker, "no checker should be attached when no edit tool is registered")
-	require.Contains(t, logs.String(), "no edit tool is registered", "missing warning for inert tools.postEdit; logs: %s", logs.String())
+	must.Nil(checker, "no checker should be attached when no edit tool is registered")
+	must.Contains(logs.String(), "no edit tool is registered", "missing warning for inert tools.postEdit; logs: %s", logs.String())
 }
 
 // TestBuildLoop_PostEditDiagnosticsReachModelAndTrace drives a full run:
@@ -92,6 +95,7 @@ func TestAttachPostEditChecks_NoChecksLeavesHandlerUntouched(t *testing.T) {
 // sent back to the model in the next request, and the run trace records
 // the execution.
 func TestBuildLoop_PostEditDiagnosticsReachModelAndTrace(t *testing.T) {
+	must := require.New(t)
 	workspace := t.TempDir()
 	var requestBodies []string
 	server := newOpenAIServer(t, nil, []string{
@@ -114,15 +118,15 @@ func TestBuildLoop_PostEditDiagnosticsReachModelAndTrace(t *testing.T) {
 
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 	loop, err := BuildLoopWithTransport(context.Background(), config, transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}))
-	require.NoError(t, err)
+	must.NoError(err)
 	defer func() { _ = loop.Close() }()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	require.Equal(t, "success", runTrace.Outcome)
-	require.FileExists(t, filepath.Join(workspace, "main.go"), "edit should be applied")
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
+	must.FileExists(filepath.Join(workspace, "main.go"), "edit should be applied")
 
-	require.Len(t, requestBodies, 2)
+	must.Len(requestBodies, 2)
 	followUp := requestBodies[1]
 	for _, tc := range []struct {
 		name string
@@ -133,15 +137,16 @@ func TestBuildLoop_PostEditDiagnosticsReachModelAndTrace(t *testing.T) {
 		{"includes check exit code", "exited with code 1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Contains(t, followUp, tc.want)
+			must := require.New(t)
+			must.Contains(followUp, tc.want)
 		})
 	}
-	require.NotContains(t, followUp, "AKIAABCDEFGHIJKLMNOP", "unscrubbed secret reached the model")
+	must.NotContains(followUp, "AKIAABCDEFGHIJKLMNOP", "unscrubbed secret reached the model")
 
-	require.Len(t, runTrace.PostEditChecks, 1)
+	must.Len(runTrace.PostEditChecks, 1)
 	rec := runTrace.PostEditChecks[0]
-	require.Equal(t, "write_file", rec.Tool)
-	require.Equal(t, "main.go", rec.Path)
-	require.Equal(t, 1, rec.ExitCode)
-	require.Equal(t, "call_1", rec.ToolUseID)
+	must.Equal("write_file", rec.Tool)
+	must.Equal("main.go", rec.Path)
+	must.Equal(1, rec.ExitCode)
+	must.Equal("call_1", rec.ToolUseID)
 }

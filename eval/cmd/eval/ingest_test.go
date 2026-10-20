@@ -22,19 +22,21 @@ import (
 // package's own emitter (an internal boundary per CLAUDE.md).
 func writeTraceFile(t *testing.T, dir, name string, lines []string) string {
 	t.Helper()
+	must := require.New(t)
 	path := filepath.Join(dir, name)
 	content := ""
 	for _, line := range lines {
 		content += line + "\n"
 	}
-	require.NoError(t, os.WriteFile(path, []byte(content), 0o644), "write %s", path)
+	must.NoError(os.WriteFile(path, []byte(content), 0o644), "write %s", path)
 	return path
 }
 
 func mustMarshal(t *testing.T, v any) string {
 	t.Helper()
+	must := require.New(t)
 	b, err := json.Marshal(v)
-	require.NoError(t, err)
+	must.NoError(err)
 	return string(b)
 }
 
@@ -42,6 +44,7 @@ func mustMarshal(t *testing.T, v any) string {
 // turn_records + run_finished file lands one traces/<id>.json plus one
 // recordings/<id>.json on disk.
 func TestIngestFile_StreamingFullRun(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	tracePath := writeTraceFile(t, dir, "run-1.jsonl", []string{
 		mustMarshal(t, map[string]any{
@@ -64,29 +67,30 @@ func TestIngestFile_StreamingFullRun(t *testing.T) {
 
 	storeDir := t.TempDir()
 	store, err := lakehouse.NewFileStore(storeDir)
-	require.NoError(t, err)
+	must.NoError(err)
 	defer func() { _ = store.Close() }()
 
 	traces, recordings, skipped, err := ingestFile(context.Background(), store, tracePath, false)
-	require.NoError(t, err)
-	require.Equal(t, 1, traces, "trace count")
-	require.Equal(t, 1, recordings, "recording count")
-	require.Equal(t, 0, skipped, "skipped count")
+	must.NoError(err)
+	must.Equal(1, traces, "trace count")
+	must.Equal(1, recordings, "recording count")
+	must.Equal(0, skipped, "skipped count")
 
-	require.FileExists(t, filepath.Join(storeDir, "traces", "run-1.json"))
-	require.FileExists(t, filepath.Join(storeDir, "recordings", "run-1.json"))
+	must.FileExists(filepath.Join(storeDir, "traces", "run-1.json"))
+	must.FileExists(filepath.Join(storeDir, "recordings", "run-1.json"))
 
 	gotTraces, err := store.QueryTraces(context.Background(), types.TraceFilter{})
-	require.NoError(t, err)
-	require.Len(t, gotTraces, 1)
-	require.Equal(t, "run-1", gotTraces[0].ID)
-	require.Equal(t, "success", gotTraces[0].Outcome)
+	must.NoError(err)
+	must.Len(gotTraces, 1)
+	must.Equal("run-1", gotTraces[0].ID)
+	must.Equal("success", gotTraces[0].Outcome)
 }
 
 // TestIngestFile_LegacySingleBlob pins that a legacy JSONL trace file (one
 // RunTrace per line, no kind discriminator) ingests as traces only — no
 // recordings/ entry, since the legacy shape has no transcript content.
 func TestIngestFile_LegacySingleBlob(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	tracePath := writeTraceFile(t, dir, "legacy.jsonl", []string{
 		mustMarshal(t, types.RunTrace{ID: "old-1", Outcome: "success", Turns: 3}),
@@ -94,18 +98,18 @@ func TestIngestFile_LegacySingleBlob(t *testing.T) {
 	})
 
 	store, err := lakehouse.NewFileStore(t.TempDir())
-	require.NoError(t, err)
+	must.NoError(err)
 	defer func() { _ = store.Close() }()
 
 	traces, recordings, skipped, err := ingestFile(context.Background(), store, tracePath, false)
-	require.NoError(t, err)
-	require.Equal(t, 2, traces, "trace count")
-	require.Equal(t, 0, recordings, "recording count")
-	require.Equal(t, 0, skipped, "skipped count")
+	must.NoError(err)
+	must.Equal(2, traces, "trace count")
+	must.Equal(0, recordings, "recording count")
+	must.Equal(0, skipped, "skipped count")
 
 	gotTraces, err := store.QueryTraces(context.Background(), types.TraceFilter{})
-	require.NoError(t, err)
-	require.Len(t, gotTraces, 2)
+	must.NoError(err)
+	must.Len(gotTraces, 2)
 }
 
 // TestIngestFile_PartialStream pins that a streaming trace missing its
@@ -129,32 +133,34 @@ func TestIngestFile_PartialStream(t *testing.T) {
 	})
 
 	t.Run("default keeps the run as interrupted", func(t *testing.T) {
+		must := require.New(t)
 		store, err := lakehouse.NewFileStore(t.TempDir())
-		require.NoError(t, err)
+		must.NoError(err)
 		defer func() { _ = store.Close() }()
 
 		traces, recordings, skipped, err := ingestFile(context.Background(), store, tracePath, false)
-		require.NoError(t, err)
-		require.Equal(t, 1, traces, "trace count")
-		require.Equal(t, 1, recordings, "recording count")
-		require.Equal(t, 0, skipped, "skipped count")
+		must.NoError(err)
+		must.Equal(1, traces, "trace count")
+		must.Equal(1, recordings, "recording count")
+		must.Equal(0, skipped, "skipped count")
 
 		gotTraces, err := store.QueryTraces(context.Background(), types.TraceFilter{})
-		require.NoError(t, err)
-		require.Len(t, gotTraces, 1)
-		require.Equal(t, "interrupted", gotTraces[0].Outcome)
+		must.NoError(err)
+		must.Len(gotTraces, 1)
+		must.Equal("interrupted", gotTraces[0].Outcome)
 	})
 
 	t.Run("skip-partial drops the run", func(t *testing.T) {
+		must := require.New(t)
 		store, err := lakehouse.NewFileStore(t.TempDir())
-		require.NoError(t, err)
+		must.NoError(err)
 		defer func() { _ = store.Close() }()
 
 		traces, recordings, skipped, err := ingestFile(context.Background(), store, tracePath, true)
-		require.NoError(t, err)
-		require.Equal(t, 0, traces, "trace count")
-		require.Equal(t, 0, recordings, "recording count")
-		require.Equal(t, 1, skipped, "skipped count")
+		must.NoError(err)
+		must.Equal(0, traces, "trace count")
+		must.Equal(0, recordings, "recording count")
+		must.Equal(1, skipped, "skipped count")
 	})
 }
 
@@ -162,6 +168,7 @@ func TestIngestFile_PartialStream(t *testing.T) {
 // in net effect: the resulting on-disk state is identical to a single
 // ingest.
 func TestIngestFile_Idempotent(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	tracePath := writeTraceFile(t, dir, "run-i.jsonl", []string{
 		mustMarshal(t, map[string]any{
@@ -177,18 +184,18 @@ func TestIngestFile_Idempotent(t *testing.T) {
 	})
 
 	store, err := lakehouse.NewFileStore(t.TempDir())
-	require.NoError(t, err)
+	must.NoError(err)
 	defer func() { _ = store.Close() }()
 
 	for i := range 3 {
 		_, _, _, err := ingestFile(context.Background(), store, tracePath, false)
-		require.NoError(t, err, "ingest iteration %d", i)
+		must.NoError(err, "ingest iteration %d", i)
 	}
 
 	gotTraces, err := store.QueryTraces(context.Background(), types.TraceFilter{})
-	require.NoError(t, err)
-	require.Len(t, gotTraces, 1, "re-ingest should leave one trace (last write wins)")
-	require.Equal(t, "run-i", gotTraces[0].ID)
+	must.NoError(err)
+	must.Len(gotTraces, 1, "re-ingest should leave one trace (last write wins)")
+	must.Equal("run-i", gotTraces[0].ID)
 }
 
 // TestDetectFormat_ClassifiesStreamingLegacyAndEmpty covers the three cases
@@ -216,9 +223,10 @@ func TestDetectFormat_ClassifiesStreamingLegacyAndEmpty(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			_, got, err := detectFormat(tc.path)
-			require.NoError(t, err)
-			require.Equal(t, tc.want, got)
+			must.NoError(err)
+			must.Equal(tc.want, got)
 		})
 	}
 }
@@ -227,6 +235,7 @@ func TestDetectFormat_ClassifiesStreamingLegacyAndEmpty(t *testing.T) {
 // when oversized lines were dropped, and still stores the recording read
 // around them.
 func TestIngestFile_ReportsSkippedLines(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	oversized := mustMarshal(t, map[string]any{
 		"kind":        "turn_record",
@@ -245,11 +254,11 @@ func TestIngestFile_ReportsSkippedLines(t *testing.T) {
 	})
 
 	store, err := lakehouse.NewFileStore(t.TempDir())
-	require.NoError(t, err)
+	must.NoError(err)
 	defer func() { _ = store.Close() }()
 
 	pr, pw, err := os.Pipe()
-	require.NoError(t, err)
+	must.NoError(err)
 	origStderr := os.Stderr
 	os.Stderr = pw
 	traces, recordings, _, ingestErr := ingestFile(context.Background(), store, tracePath, false)
@@ -258,8 +267,8 @@ func TestIngestFile_ReportsSkippedLines(t *testing.T) {
 	stderr, _ := io.ReadAll(pr)
 	_ = pr.Close()
 
-	require.NoError(t, ingestErr)
-	require.Equal(t, 1, traces, "trace count")
-	require.Equal(t, 1, recordings, "recording count")
-	require.Contains(t, string(stderr), "big-run is a partial recording: skipped 1 line(s)")
+	must.NoError(ingestErr)
+	must.Equal(1, traces, "trace count")
+	must.Equal(1, recordings, "recording count")
+	must.Contains(string(stderr), "big-run is a partial recording: skipped 1 line(s)")
 }

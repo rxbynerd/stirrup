@@ -150,7 +150,8 @@ func buildRepairTestLoop(prov *attemptProvider) (*AgenticLoop, *[]int) {
 
 func assertStrictlyIncreasing(t *testing.T, label string, got []int) {
 	t.Helper()
-	require.IsIncreasingf(t, got, "%s not strictly increasing", label)
+	must := require.New(t)
+	must.IsIncreasingf(got, "%s not strictly increasing", label)
 }
 
 func TestLoop_VerificationRepairsShareMaxTurns(t *testing.T) {
@@ -168,6 +169,7 @@ func TestLoop_VerificationRepairsShareMaxTurns(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			prov := &attemptProvider{turnsPerAttempt: tc.turnsPerAttempt}
 			loop, _ := buildRepairTestLoop(prov)
 			loop.Verifier = &failingVerifier{}
@@ -175,15 +177,16 @@ func TestLoop_VerificationRepairsShareMaxTurns(t *testing.T) {
 			config.MaxTurns = tc.maxTurns
 
 			runTrace, err := loop.Run(context.Background(), config)
-			require.NoError(t, err)
-			require.Equal(t, tc.wantCalls, prov.callCount(), "provider calls")
-			require.Equal(t, tc.wantOutcome, runTrace.Outcome)
-			require.Equal(t, tc.wantCalls, runTrace.Turns, "RunTrace.Turns")
+			must.NoError(err)
+			must.Equal(tc.wantCalls, prov.callCount(), "provider calls")
+			must.Equal(tc.wantOutcome, runTrace.Outcome)
+			must.Equal(tc.wantCalls, runTrace.Turns, "RunTrace.Turns")
 		})
 	}
 }
 
 func TestLoop_VerificationRepairPassesWithinMaxTurns(t *testing.T) {
+	must := require.New(t)
 	prov := &attemptProvider{turnsPerAttempt: 2}
 	loop, _ := buildRepairTestLoop(prov)
 	loop.Verifier = &passAfterVerifier{failures: 1}
@@ -191,17 +194,20 @@ func TestLoop_VerificationRepairPassesWithinMaxTurns(t *testing.T) {
 	config.MaxTurns = 4
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	t.Run("outcome", func(t *testing.T) {
-		require.Equal(t, "success", runTrace.Outcome)
+		must := require.New(t)
+		must.Equal("success", runTrace.Outcome)
 	})
 	t.Run("provider calls", func(t *testing.T) {
-		require.Equal(t, 4, prov.callCount())
+		must := require.New(t)
+		must.Equal(4, prov.callCount())
 	})
 }
 
 func TestLoop_TurnNumbersIncreaseAcrossVerificationRepairs(t *testing.T) {
+	must := require.New(t)
 	prov := &attemptProvider{turnsPerAttempt: 2}
 	loop, callTurns := buildRepairTestLoop(prov)
 	loop.Verifier = &failingVerifier{}
@@ -213,7 +219,7 @@ func TestLoop_TurnNumbersIncreaseAcrossVerificationRepairs(t *testing.T) {
 	config.MaxTurns = 6
 
 	_, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	rec.mu.Lock()
 	var traceTurns, recordTurns []int
@@ -227,20 +233,24 @@ func TestLoop_TurnNumbersIncreaseAcrossVerificationRepairs(t *testing.T) {
 
 	wantTurns := []int{0, 1, 2, 3, 4, 5}
 	t.Run("turn trace", func(t *testing.T) {
-		require.Equal(t, wantTurns, traceTurns)
+		must := require.New(t)
+		must.Equal(wantTurns, traceTurns)
 		assertStrictlyIncreasing(t, "turn trace", traceTurns)
 	})
 	t.Run("turn record", func(t *testing.T) {
-		require.Equal(t, wantTurns, recordTurns)
+		must := require.New(t)
+		must.Equal(wantTurns, recordTurns)
 		assertStrictlyIncreasing(t, "turn record", recordTurns)
 	})
 	// Tool turns are 0, 2 and 4; CallContext.Turn is one-based.
 	t.Run("call context", func(t *testing.T) {
-		require.Equal(t, []int{1, 3, 5}, *callTurns)
+		must := require.New(t)
+		must.Equal([]int{1, 3, 5}, *callTurns)
 		assertStrictlyIncreasing(t, "call context", *callTurns)
 	})
 	t.Run("checkpoints", func(t *testing.T) {
-		require.Equal(t, []string{
+		must := require.New(t)
+		must.Equal([]string{
 			"Turn 0: 1 tool calls",
 			"Turn 2: 1 tool calls",
 			"Turn 4: 1 tool calls",
@@ -249,6 +259,7 @@ func TestLoop_TurnNumbersIncreaseAcrossVerificationRepairs(t *testing.T) {
 }
 
 func TestLoop_PreTurnPromptScanRunsOncePerRunAcrossRepairs(t *testing.T) {
+	must := require.New(t)
 	prov := &attemptProvider{turnsPerAttempt: 1}
 	loop, _ := buildRepairTestLoop(prov)
 	loop.Verifier = &failingVerifier{}
@@ -260,9 +271,9 @@ func TestLoop_PreTurnPromptScanRunsOncePerRunAcrossRepairs(t *testing.T) {
 	loop.GuardRail = g
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	require.Equal(t, "verification_failed", runTrace.Outcome)
-	require.Equal(t, 1+maxVerificationRetries, prov.callCount(), "provider calls")
+	must.NoError(err)
+	must.Equal("verification_failed", runTrace.Outcome)
+	must.Equal(1+maxVerificationRetries, prov.callCount(), "provider calls")
 
 	g.mu.Lock()
 	promptScans, dynamicScans := g.promptScans, g.dynamicScans
@@ -270,14 +281,17 @@ func TestLoop_PreTurnPromptScanRunsOncePerRunAcrossRepairs(t *testing.T) {
 	g.mu.Unlock()
 
 	t.Run("prompt scanned once", func(t *testing.T) {
-		require.Equal(t, 1, promptScans, "pre-turn sources %v", preTurnSources)
+		must := require.New(t)
+		must.Equal(1, promptScans, "pre-turn sources %v", preTurnSources)
 	})
 	t.Run("dynamic context scanned once", func(t *testing.T) {
-		require.Equal(t, 1, dynamicScans)
+		must := require.New(t)
+		must.Equal(1, dynamicScans)
 	})
 }
 
 func TestLoop_RouterTurnsNonDecreasingAcrossRepairs(t *testing.T) {
+	must := require.New(t)
 	prov := &attemptProvider{turnsPerAttempt: 1}
 	loop, _ := buildRepairTestLoop(prov)
 	loop.Verifier = &failingVerifier{}
@@ -290,7 +304,7 @@ func TestLoop_RouterTurnsNonDecreasingAcrossRepairs(t *testing.T) {
 	config := buildTestConfig()
 
 	_, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	rr.mu.Lock()
 	turns := append([]int(nil), rr.turns...)
@@ -301,12 +315,15 @@ func TestLoop_RouterTurnsNonDecreasingAcrossRepairs(t *testing.T) {
 	prov.mu.Unlock()
 
 	t.Run("turns non-decreasing", func(t *testing.T) {
-		require.IsNonDecreasing(t, turns)
+		must := require.New(t)
+		must.IsNonDecreasing(turns)
 	})
 	t.Run("turn numbers", func(t *testing.T) {
-		require.Equal(t, []int{0, 1, 2, 3}, turns)
+		must := require.New(t)
+		must.Equal([]int{0, 1, 2, 3}, turns)
 	})
 	t.Run("models per call", func(t *testing.T) {
-		require.Equal(t, []string{"default-model", "default-model", "expensive-model", "expensive-model"}, models)
+		must := require.New(t)
+		must.Equal([]string{"default-model", "default-model", "expensive-model", "expensive-model"}, models)
 	})
 }

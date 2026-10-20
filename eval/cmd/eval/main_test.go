@@ -29,13 +29,14 @@ import (
 func TestRun_VersionFlagPrintsVersion(t *testing.T) {
 	for _, arg := range []string{"--version", "-v", "version"} {
 		t.Run(arg, func(t *testing.T) {
+			must := require.New(t)
 			var stdout bytes.Buffer
 			code := run([]string{arg}, &stdout)
-			require.Equal(t, 0, code)
+			must.Equal(0, code)
 			out := stdout.String()
-			require.Regexp(t, "^stirrup-eval version ", out)
+			must.Regexp("^stirrup-eval version ", out)
 			// The default link-time version applies when no -ldflags is injected.
-			require.Contains(t, out, "dev")
+			must.Contains(out, "dev")
 		})
 	}
 }
@@ -45,12 +46,13 @@ func TestRun_VersionFlagPrintsVersion(t *testing.T) {
 // Windows.
 func writeFakeHarness(t *testing.T, body string) string {
 	t.Helper()
+	must := require.New(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("fake harness uses /bin/sh; skipped on Windows")
 	}
 	harnessDir := t.TempDir()
 	path := filepath.Join(harnessDir, "fake-harness")
-	require.NoError(t, os.WriteFile(path, []byte(body), 0o755))
+	must.NoError(os.WriteFile(path, []byte(body), 0o755))
 	return path
 }
 
@@ -59,6 +61,8 @@ func writeFakeHarness(t *testing.T, body string) string {
 // <outputDir>/<suiteID>/result.json (the per-suite path). The two copies must
 // be byte-identical and parse as a SuiteResult with the right SuiteID.
 func TestCmdRun_WritesIdenticalResultToBothPaths(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	harnessPath := writeFakeHarness(t, `#!/bin/sh
 shift
 TRACE=""
@@ -96,7 +100,7 @@ suite "dual-write-suite" {
   }
 }
 `
-	require.NoError(t, os.WriteFile(suitePath, []byte(hclSrc), 0o644))
+	must.NoError(os.WriteFile(suitePath, []byte(hclSrc), 0o644))
 
 	outputDir := filepath.Join(dir, "out")
 	// cmdRun calls log.Fatalf on error, which exits the test binary, so only
@@ -107,22 +111,22 @@ suite "dual-write-suite" {
 		"--harness", harnessPath,
 		"--output", outputDir,
 	}, io.Discard)
-	require.Equal(t, 0, exitCode)
+	must.Equal(0, exitCode)
 
 	topLevel := filepath.Join(outputDir, "result.json")
 	perSuite := filepath.Join(outputDir, "dual-write-suite", "result.json")
 
 	topLevelData, err := os.ReadFile(topLevel)
-	require.NoError(t, err, "reading top-level result.json")
+	must.NoError(err, "reading top-level result.json")
 	perSuiteData, err := os.ReadFile(perSuite)
-	require.NoError(t, err, "reading per-suite result.json")
-	assert.Equal(t, string(topLevelData), string(perSuiteData))
+	must.NoError(err, "reading per-suite result.json")
+	check.Equal(string(topLevelData), string(perSuiteData))
 
 	var top, per eval.SuiteResult
-	require.NoError(t, json.Unmarshal(topLevelData, &top), "unmarshal top-level")
-	require.NoError(t, json.Unmarshal(perSuiteData, &per), "unmarshal per-suite")
-	assert.Equal(t, "dual-write-suite", top.SuiteID)
-	assert.Equal(t, "dual-write-suite", per.SuiteID)
+	must.NoError(json.Unmarshal(topLevelData, &top), "unmarshal top-level")
+	must.NoError(json.Unmarshal(perSuiteData, &per), "unmarshal per-suite")
+	check.Equal("dual-write-suite", top.SuiteID)
+	check.Equal("dual-write-suite", per.SuiteID)
 }
 
 // TestCmdRun_DryRunWritesNoArtifacts pins that `eval run --dry-run`
@@ -130,6 +134,7 @@ suite "dual-write-suite" {
 // anywhere, in particular not in the process's working directory. The
 // test runs from a temp cwd and asserts it stays empty.
 func TestCmdRun_DryRunWritesNoArtifacts(t *testing.T) {
+	must := require.New(t)
 	cwd := t.TempDir()
 	suiteDir := t.TempDir()
 	suitePath := filepath.Join(suiteDir, "dry-run.hcl")
@@ -146,13 +151,13 @@ suite "dry-run-suite" {
   }
 }
 `
-	require.NoError(t, os.WriteFile(suitePath, []byte(hclSrc), 0o644))
+	must.NoError(os.WriteFile(suitePath, []byte(hclSrc), 0o644))
 
 	origWD, err := os.Getwd()
-	require.NoError(t, err)
-	require.NoError(t, os.Chdir(cwd))
+	must.NoError(err)
+	must.NoError(os.Chdir(cwd))
 	defer func() {
-		require.NoError(t, os.Chdir(origWD))
+		must.NoError(os.Chdir(origWD))
 	}()
 
 	// cmdRun's summary output goes to the real os.Stdout (only --version
@@ -163,21 +168,22 @@ suite "dry-run-suite" {
 		"--suite", suitePath,
 		"--dry-run",
 	}, io.Discard)
-	require.Equal(t, 0, exitCode)
+	must.Equal(0, exitCode)
 
 	entries, err := os.ReadDir(cwd)
-	require.NoError(t, err, "reading cwd")
+	must.NoError(err, "reading cwd")
 	names := make([]string, 0, len(entries))
 	for _, e := range entries {
 		names = append(names, e.Name())
 	}
-	require.Empty(t, names, "working directory must stay empty after --dry-run")
+	must.Empty(names, "working directory must stay empty after --dry-run")
 }
 
 // TestCmdRun_DryRunIgnoresExplicitOutput pins that --dry-run writes no
 // artifacts even when --output is passed explicitly, rather than only
 // suppressing the implicit cwd default.
 func TestCmdRun_DryRunIgnoresExplicitOutput(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	suitePath := filepath.Join(dir, "dry-run.hcl")
 	hclSrc := `
@@ -193,7 +199,7 @@ suite "dry-run-suite" {
   }
 }
 `
-	require.NoError(t, os.WriteFile(suitePath, []byte(hclSrc), 0o644))
+	must.NoError(os.WriteFile(suitePath, []byte(hclSrc), 0o644))
 
 	outputDir := filepath.Join(dir, "out")
 	exitCode := run([]string{
@@ -202,43 +208,48 @@ suite "dry-run-suite" {
 		"--output", outputDir,
 		"--dry-run",
 	}, io.Discard)
-	require.Equal(t, 0, exitCode)
+	must.Equal(0, exitCode)
 
 	_, err := os.Stat(outputDir)
-	require.ErrorIs(t, err, os.ErrNotExist, "--output directory must not be created under --dry-run")
+	must.ErrorIs(err, os.ErrNotExist, "--output directory must not be created under --dry-run")
 }
 
 // TestRun_NoArgsExitsWithUsageError pins the empty-args contract: usage goes
 // to stderr, stdout stays empty, and the exit code is 1.
 func TestRun_NoArgsExitsWithUsageError(t *testing.T) {
+	must := require.New(t)
 	var stdout bytes.Buffer
 	code := run(nil, &stdout)
-	require.Equal(t, 1, code)
-	require.Empty(t, stdout.String())
+	must.Equal(1, code)
+	must.Empty(stdout.String())
 }
 
 // TestLoadSuite_MissingFileErrors exercises the underlying os error surface
 // when the suite path does not exist.
 func TestLoadSuite_MissingFileErrors(t *testing.T) {
+	must := require.New(t)
 	_, err := loadSuite("/nonexistent/suite.hcl")
-	require.Error(t, err)
+	must.Error(err)
 }
 
 // TestLoadSuite_InvalidHCLErrors pins error propagation: if loadSuite ever
 // stopped returning the diagnostic from spec.LoadSuiteHCL, this test
 // would catch it.
 func TestLoadSuite_InvalidHCLErrors(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.hcl")
-	require.NoError(t, os.WriteFile(path, []byte("suite \"x\" { {{{"), 0o644))
+	must.NoError(os.WriteFile(path, []byte("suite \"x\" { {{{"), 0o644))
 
 	_, err := loadSuite(path)
-	require.Error(t, err)
+	must.Error(err)
 }
 
 // TestLoadSuite_AcceptsHCLSuite exercises the happy path: the loader must
 // accept a .hcl file and produce the canonical EvalSuite shape.
 func TestLoadSuite_AcceptsHCLSuite(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "suite.hcl")
 	src := `
@@ -257,14 +268,14 @@ suite "hcl-suite" {
   }
 }
 `
-	require.NoError(t, os.WriteFile(path, []byte(src), 0o644))
+	must.NoError(os.WriteFile(path, []byte(src), 0o644))
 
 	got, err := loadSuite(path)
-	require.NoError(t, err)
-	assert.Equal(t, "hcl-suite", got.ID)
-	require.Len(t, got.Tasks, 1)
-	assert.Equal(t, "t1", got.Tasks[0].ID)
-	assert.Equal(t, "test-command", got.Tasks[0].Judge.Type)
+	must.NoError(err)
+	check.Equal("hcl-suite", got.ID)
+	must.Len(got.Tasks, 1)
+	check.Equal("t1", got.Tasks[0].ID)
+	check.Equal("test-command", got.Tasks[0].Judge.Type)
 }
 
 // TestLoadSuite_UnsupportedExtension documents the dispatcher contract
@@ -281,17 +292,20 @@ func TestLoadSuite_UnsupportedExtension(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			dir := t.TempDir()
 			path := filepath.Join(dir, "suite"+tc.ext)
-			require.NoError(t, os.WriteFile(path, []byte("anything"), 0o644))
+			must.NoError(os.WriteFile(path, []byte("anything"), 0o644))
 
 			_, err := loadSuite(path)
-			require.ErrorContains(t, err, ".hcl")
+			must.ErrorContains(err, ".hcl")
 		})
 	}
 }
 
 func TestLoadResult_ReadsValidFile(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	dir := t.TempDir()
 	result := eval.SuiteResult{
 		SuiteID:  "s1",
@@ -306,17 +320,20 @@ func TestLoadResult_ReadsValidFile(t *testing.T) {
 	writeJSONFile(t, path, result)
 
 	got, err := loadResult(path)
-	require.NoError(t, err)
-	assert.Equal(t, "r1", got.RunID)
-	assert.Len(t, got.Tasks, 2)
+	must.NoError(err)
+	check.Equal("r1", got.RunID)
+	check.Len(got.Tasks, 2)
 }
 
 func TestLoadResult_MissingFileErrors(t *testing.T) {
+	must := require.New(t)
 	_, err := loadResult("/nonexistent/result.json")
-	require.Error(t, err)
+	must.Error(err)
 }
 
 func TestWriteJSON_RoundTripsThroughLoadResult(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "out.json")
 
@@ -326,46 +343,51 @@ func TestWriteJSON_RoundTripsThroughLoadResult(t *testing.T) {
 		PassRate: 0.75,
 	}
 
-	require.NoError(t, writeJSON(path, original))
+	must.NoError(writeJSON(path, original))
 
 	got, err := loadResult(path)
-	require.NoError(t, err)
+	must.NoError(err)
 
-	assert.Equal(t, original.SuiteID, got.SuiteID)
-	assert.Equal(t, original.RunID, got.RunID)
+	check.Equal(original.SuiteID, got.SuiteID)
+	check.Equal(original.RunID, got.RunID)
 }
 
 func writeJSONFile(t *testing.T, path string, v any) {
 	t.Helper()
+	must := require.New(t)
 	data, err := json.MarshalIndent(v, "", "  ")
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(path, data, 0o644))
+	must.NoError(err)
+	must.NoError(os.WriteFile(path, data, 0o644))
 }
 
 // --- parseDate tests ---
 
 func TestParseDate_AcceptsRFC3339(t *testing.T) {
+	must := require.New(t)
 	got, err := parseDate("2025-03-15T10:30:00Z")
-	require.NoError(t, err)
+	must.NoError(err)
 	want := time.Date(2025, 3, 15, 10, 30, 0, 0, time.UTC)
-	require.True(t, got.Equal(want), "parseDate = %v, want %v", got, want)
+	must.True(got.Equal(want), "parseDate = %v, want %v", got, want)
 }
 
 func TestParseDate_AcceptsDateOnly(t *testing.T) {
+	must := require.New(t)
 	got, err := parseDate("2025-03-15")
-	require.NoError(t, err)
+	must.NoError(err)
 	want := time.Date(2025, 3, 15, 0, 0, 0, 0, time.UTC)
-	require.True(t, got.Equal(want), "parseDate = %v, want %v", got, want)
+	must.True(got.Equal(want), "parseDate = %v, want %v", got, want)
 }
 
 func TestParseDate_RejectsInvalidInput(t *testing.T) {
+	must := require.New(t)
 	_, err := parseDate("not-a-date")
-	require.Error(t, err)
+	must.Error(err)
 }
 
 func TestParseDate_RejectsEmptyString(t *testing.T) {
+	must := require.New(t)
 	_, err := parseDate("")
-	require.Error(t, err)
+	must.Error(err)
 }
 
 // --- parseDuration tests ---
@@ -383,33 +405,38 @@ func TestParseDuration_AcceptsGoFormat(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got, err := parseDuration(tc.input)
-			require.NoError(t, err)
-			require.Equal(t, tc.want, got)
+			must.NoError(err)
+			must.Equal(tc.want, got)
 		})
 	}
 }
 
 func TestParseDuration_AcceptsDaySuffix(t *testing.T) {
+	must := require.New(t)
 	got, err := parseDuration("7d")
-	require.NoError(t, err)
-	require.Equal(t, 7*24*time.Hour, got)
+	must.NoError(err)
+	must.Equal(7*24*time.Hour, got)
 }
 
 func TestParseDuration_AcceptsFractionalDays(t *testing.T) {
+	must := require.New(t)
 	got, err := parseDuration("0.5d")
-	require.NoError(t, err)
-	require.Equal(t, 12*time.Hour, got)
+	must.NoError(err)
+	must.Equal(12*time.Hour, got)
 }
 
 func TestParseDuration_RejectsInvalidInput(t *testing.T) {
+	must := require.New(t)
 	_, err := parseDuration("notaduration")
-	require.Error(t, err)
+	must.Error(err)
 }
 
 func TestParseDuration_RejectsNonNumericDays(t *testing.T) {
+	must := require.New(t)
 	_, err := parseDuration("abcd")
-	require.Error(t, err)
+	must.Error(err)
 }
 
 // --- mineFailureTasks tests ---
@@ -456,17 +483,21 @@ func TestMineFailureTasks_FiltersByEvalOutcome(t *testing.T) {
 	}
 
 	t.Run("default mines only failed traces", func(t *testing.T) {
+		check := assert.New(t)
+		must := require.New(t)
 		tasks := mineFailureTasksFiltered(recordings, 0, false, false)
-		require.Len(t, tasks, 1)
-		assert.Equal(t, "fix bug B", tasks[0].Prompt)
-		assert.Equal(t, "test-command", tasks[0].Judge.Type)
-		assert.Equal(t, "go test ./...", tasks[0].Judge.Command)
+		must.Len(tasks, 1)
+		check.Equal("fix bug B", tasks[0].Prompt)
+		check.Equal("test-command", tasks[0].Judge.Type)
+		check.Equal("go test ./...", tasks[0].Judge.Command)
 	})
 
 	t.Run("include inconclusive also mines max_turns", func(t *testing.T) {
+		must := require.New(t)
+		check := assert.New(t)
 		tasks := mineFailureTasksFiltered(recordings, 0, false, true)
-		require.Len(t, tasks, 2)
-		assert.Equal(t, "fix bug C", tasks[1].Prompt)
+		must.Len(tasks, 2)
+		check.Equal("fix bug C", tasks[1].Prompt)
 	})
 }
 
@@ -474,6 +505,7 @@ func TestMineFailureTasks_FiltersByEvalOutcome(t *testing.T) {
 // run that terminated with Outcome=="success" but where the verifier
 // disagreed is classified EvalFailed and therefore mined by default.
 func TestMineFailureTasks_SuccessWithFailingVerifierMined(t *testing.T) {
+	must := require.New(t)
 	recordings := []types.RunRecording{
 		{
 			RunID:  "r1",
@@ -488,11 +520,12 @@ func TestMineFailureTasks_SuccessWithFailingVerifierMined(t *testing.T) {
 		},
 	}
 	tasks := mineFailureTasksFiltered(recordings, 0, false, false)
-	require.Len(t, tasks, 1)
-	require.Equal(t, "fix bug A", tasks[0].Prompt)
+	must.Len(tasks, 1)
+	must.Equal("fix bug A", tasks[0].Prompt)
 }
 
 func TestMineFailureTasks_RespectsLimit(t *testing.T) {
+	must := require.New(t)
 	recordings := []types.RunRecording{
 		{RunID: "r1", Config: types.RunConfig{Prompt: "a"}, FinalOutcome: types.RunTrace{Outcome: "error"}},
 		{RunID: "r2", Config: types.RunConfig{Prompt: "b"}, FinalOutcome: types.RunTrace{Outcome: "max_turns"}},
@@ -500,16 +533,17 @@ func TestMineFailureTasks_RespectsLimit(t *testing.T) {
 	}
 
 	tasks := mineFailureTasksFiltered(recordings, 2, false, false)
-	require.Len(t, tasks, 2)
+	must.Len(tasks, 2)
 }
 
 func TestMineFailureTasks_NoFailures(t *testing.T) {
+	must := require.New(t)
 	recordings := []types.RunRecording{
 		{RunID: "r1", Config: types.RunConfig{Prompt: "a"}, FinalOutcome: types.RunTrace{Outcome: "success"}},
 	}
 
 	tasks := mineFailureTasksFiltered(recordings, 0, false, false)
-	require.Empty(t, tasks)
+	must.Empty(tasks)
 }
 
 // makeBatchRecording builds a recording whose RunConfig.Provider has
@@ -539,6 +573,7 @@ func makeBatchRecording(runID, outcome, prompt string) types.RunRecording {
 // default behaviour of --include-batch=false: batch failures stay
 // out of the mined suite.
 func TestMineFailureTasksFiltered_ExcludesBatchByDefault(t *testing.T) {
+	must := require.New(t)
 	recordings := []types.RunRecording{
 		{
 			RunID:        "stream-fail",
@@ -549,8 +584,8 @@ func TestMineFailureTasksFiltered_ExcludesBatchByDefault(t *testing.T) {
 	}
 
 	tasks := mineFailureTasksFiltered(recordings, 0, false, false)
-	require.Len(t, tasks, 1, "batch failure must be excluded")
-	require.Equal(t, "streaming failure", tasks[0].Prompt)
+	must.Len(tasks, 1, "batch failure must be excluded")
+	must.Equal("streaming failure", tasks[0].Prompt)
 }
 
 // TestMineFailureTasksFiltered_IncludesBatchWhenRequested covers the
@@ -558,6 +593,7 @@ func TestMineFailureTasksFiltered_ExcludesBatchByDefault(t *testing.T) {
 // specific failure modes (e.g. timeout taxonomies, provider-side
 // rejection patterns) need to be able to opt into the wider window.
 func TestMineFailureTasksFiltered_IncludesBatchWhenRequested(t *testing.T) {
+	must := require.New(t)
 	recordings := []types.RunRecording{
 		{
 			RunID:        "stream-fail",
@@ -568,7 +604,7 @@ func TestMineFailureTasksFiltered_IncludesBatchWhenRequested(t *testing.T) {
 	}
 
 	tasks := mineFailureTasksFiltered(recordings, 0, true, false)
-	require.Len(t, tasks, 2)
+	must.Len(tasks, 2)
 }
 
 // writeMineFailuresFixture stores one streaming and one batch failure
@@ -578,8 +614,9 @@ func TestMineFailureTasksFiltered_IncludesBatchWhenRequested(t *testing.T) {
 // attributable to the flag, not the fixture.
 func writeMineFailuresFixture(t *testing.T, dir string) {
 	t.Helper()
+	must := require.New(t)
 	store, err := lakehouse.NewFileStore(dir)
-	require.NoError(t, err)
+	must.NoError(err)
 	t.Cleanup(func() { _ = store.Close() })
 
 	recordings := []types.RunRecording{
@@ -601,10 +638,10 @@ func writeMineFailuresFixture(t *testing.T, dir string) {
 		makeBatchRecording("batch-fail", "error", "batch failure prompt"),
 	}
 	for _, rec := range recordings {
-		require.NoError(t, store.StoreRecording(context.Background(), rec), "StoreRecording %s", rec.RunID)
+		must.NoError(store.StoreRecording(context.Background(), rec), "StoreRecording %s", rec.RunID)
 		// mine-failures reads QueryTraces first and hydrates
 		// recordings opportunistically, so the fixture seeds both.
-		require.NoError(t, store.StoreTrace(context.Background(), rec.FinalOutcome), "StoreTrace %s", rec.RunID)
+		must.NoError(store.StoreTrace(context.Background(), rec.FinalOutcome), "StoreTrace %s", rec.RunID)
 	}
 }
 
@@ -612,6 +649,7 @@ func writeMineFailuresFixture(t *testing.T, dir string) {
 // the dispatch layer: invoking `eval mine-failures` without
 // --include-batch must drop batch failures from the emitted suite.
 func TestRun_MineFailures_DefaultExcludesBatch(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	writeMineFailuresFixture(t, dir)
 	outPath := filepath.Join(dir, "mined.hcl")
@@ -621,18 +659,19 @@ func TestRun_MineFailures_DefaultExcludesBatch(t *testing.T) {
 		"--lakehouse", dir,
 		"--output", outPath,
 	}, io.Discard)
-	require.Equal(t, 0, code)
+	must.Equal(0, code)
 
 	got, err := loadSuite(outPath)
-	require.NoError(t, err)
-	require.Len(t, got.Tasks, 1, "batch failure must be excluded by default")
-	require.Equal(t, "streaming failure prompt", got.Tasks[0].Prompt)
+	must.NoError(err)
+	must.Len(got.Tasks, 1, "batch failure must be excluded by default")
+	must.Equal("streaming failure prompt", got.Tasks[0].Prompt)
 }
 
 // TestRun_MineFailures_IncludeBatchFlag pins the --include-batch
 // escape hatch at the dispatch layer: the flag must opt batch
 // failures back into the emitted suite alongside streaming ones.
 func TestRun_MineFailures_IncludeBatchFlag(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	writeMineFailuresFixture(t, dir)
 	outPath := filepath.Join(dir, "mined.hcl")
@@ -643,11 +682,11 @@ func TestRun_MineFailures_IncludeBatchFlag(t *testing.T) {
 		"--output", outPath,
 		"--include-batch",
 	}, io.Discard)
-	require.Equal(t, 0, code)
+	must.Equal(0, code)
 
 	got, err := loadSuite(outPath)
-	require.NoError(t, err)
-	require.Len(t, got.Tasks, 2)
+	must.NoError(err)
+	must.Len(got.Tasks, 2)
 	// Both prompts must be present; recording-iteration order in
 	// QueryRecordings is StartedAt-descending (zero-time here, so
 	// implementation-defined), so assert on set membership rather
@@ -656,7 +695,7 @@ func TestRun_MineFailures_IncludeBatchFlag(t *testing.T) {
 	for _, task := range got.Tasks {
 		prompts = append(prompts, task.Prompt)
 	}
-	require.ElementsMatch(t, []string{"streaming failure prompt", "batch failure prompt"}, prompts)
+	must.ElementsMatch([]string{"streaming failure prompt", "batch failure prompt"}, prompts)
 }
 
 // TestIsBatchRecording_RequiresEnabledBatchConfig pins the classifier so a
@@ -692,7 +731,8 @@ func TestIsBatchRecording_RequiresEnabledBatchConfig(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, isBatchRecording(tc.rec))
+			must := require.New(t)
+			must.Equal(tc.want, isBatchRecording(tc.rec))
 		})
 	}
 }
@@ -704,6 +744,7 @@ func TestIsBatchRecording_RequiresEnabledBatchConfig(t *testing.T) {
 // would silently regress to a non-loadable format the moment the
 // emitter and loader drift.
 func TestWriteSuiteHCL_RoundTrip(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mined.hcl")
 
@@ -739,27 +780,29 @@ func TestWriteSuiteHCL_RoundTrip(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, writeSuiteHCL(path, original))
+	must.NoError(writeSuiteHCL(path, original))
 
 	got, err := loadSuite(path)
-	require.NoError(t, err)
+	must.NoError(err)
 
-	require.Equal(t, original.ID, got.ID)
-	require.Equal(t, original.Description, got.Description)
-	require.Len(t, got.Tasks, len(original.Tasks))
+	must.Equal(original.ID, got.ID)
+	must.Equal(original.Description, got.Description)
+	must.Len(got.Tasks, len(original.Tasks))
 	for i, want := range original.Tasks {
 		t.Run(want.ID, func(t *testing.T) {
-			require.Equal(t, want.ID, got.Tasks[i].ID)
-			require.Equal(t, want.Mode, got.Tasks[i].Mode)
-			require.Equal(t, want.Prompt, got.Tasks[i].Prompt)
-			require.Equal(t, want.Judge.Type, got.Tasks[i].Judge.Type)
+			must := require.New(t)
+			must.Equal(want.ID, got.Tasks[i].ID)
+			must.Equal(want.Mode, got.Tasks[i].Mode)
+			must.Equal(want.Prompt, got.Tasks[i].Prompt)
+			must.Equal(want.Judge.Type, got.Tasks[i].Judge.Type)
 		})
 	}
-	require.Equal(t, "all", got.Tasks[1].Judge.Require)
-	require.Len(t, got.Tasks[1].Judge.Judges, 2)
+	must.Equal("all", got.Tasks[1].Judge.Require)
+	must.Len(got.Tasks[1].Judge.Judges, 2)
 }
 
 func TestWriteSuiteHCL_LLMBlockRoundTrip(t *testing.T) {
+	must := require.New(t)
 	zero, warm := 0.0, 0.7
 	cases := []struct {
 		name  string
@@ -782,12 +825,13 @@ func TestWriteSuiteHCL_LLMBlockRoundTrip(t *testing.T) {
 		original.Tasks = append(original.Tasks, types.EvalTask{ID: fmt.Sprintf("t%d", i), Prompt: "p", Judge: tc.judge})
 	}
 	path := filepath.Join(t.TempDir(), "llm.hcl")
-	require.NoError(t, writeSuiteHCL(path, original))
+	must.NoError(writeSuiteHCL(path, original))
 	got, err := loadSuite(path)
-	require.NoError(t, err)
+	must.NoError(err)
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.judge, got.Tasks[i].Judge)
+			must := require.New(t)
+			must.Equal(tc.judge, got.Tasks[i].Judge)
 		})
 	}
 }
@@ -796,6 +840,7 @@ func TestWriteSuiteHCL_LLMBlockRoundTrip(t *testing.T) {
 // QuarantineFlags survives HCL serialise + parse with the same flags
 // in the same order.
 func TestWriteSuiteHCL_QuarantineFlagsRoundTrip(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "quarantined.hcl")
 
@@ -815,10 +860,10 @@ func TestWriteSuiteHCL_QuarantineFlagsRoundTrip(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, writeSuiteHCL(path, original))
+	must.NoError(writeSuiteHCL(path, original))
 	got, err := loadSuite(path)
-	require.NoError(t, err)
-	require.Equal(t, []types.QuarantineFlag{types.QuarantineLargePayload}, got.QuarantineFlags)
+	must.NoError(err)
+	must.Equal([]types.QuarantineFlag{types.QuarantineLargePayload}, got.QuarantineFlags)
 }
 
 // TestWriteSuiteHCL_EscapesInterpolation ensures hclwrite is escaping
@@ -827,6 +872,7 @@ func TestWriteSuiteHCL_QuarantineFlagsRoundTrip(t *testing.T) {
 // preserved verbatim through the round trip rather than re-interpreted
 // by the loader.
 func TestWriteSuiteHCL_EscapesInterpolation(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mined.hcl")
 
@@ -845,16 +891,17 @@ func TestWriteSuiteHCL_EscapesInterpolation(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, writeSuiteHCL(path, original))
+	must.NoError(writeSuiteHCL(path, original))
 	got, err := loadSuite(path)
-	require.NoError(t, err)
-	require.Equal(t, dangerous, got.Tasks[0].Prompt)
-	require.Equal(t, `go test ${PKG}`, got.Tasks[0].Judge.Command)
+	must.NoError(err)
+	must.Equal(dangerous, got.Tasks[0].Prompt)
+	must.Equal(`go test ${PKG}`, got.Tasks[0].Judge.Command)
 }
 
 // --- buildLabVsProductionReport tests ---
 
 func TestBuildLabVsProductionReport_Basic(t *testing.T) {
+	must := require.New(t)
 	prodMetrics := types.TraceMetrics{
 		Count:     100,
 		PassRate:  0.85,
@@ -874,23 +921,24 @@ func TestBuildLabVsProductionReport_Basic(t *testing.T) {
 
 	report := buildLabVsProductionReport("exp-1", prodMetrics, result)
 
-	require.Equal(t, "exp-1", report.ExperimentID)
+	must.Equal("exp-1", report.ExperimentID)
 
 	// Production baseline
-	require.Equal(t, 100, report.Production.SampleSize)
-	require.InDelta(t, 0.85, report.Production.PassRate, 0.001)
-	require.InDelta(t, 4.2, report.Production.MeanTurns, 0.001)
+	must.Equal(100, report.Production.SampleSize)
+	must.InDelta(0.85, report.Production.PassRate, 0.001)
+	must.InDelta(4.2, report.Production.MeanTurns, 0.001)
 
 	// Variant
-	require.Len(t, report.Variants, 1)
+	must.Len(report.Variants, 1)
 	v := report.Variants[0]
-	require.Equal(t, "test-suite", v.Name)
-	require.InDelta(t, 0.90, v.Results.PassRate, 0.001)
+	must.Equal("test-suite", v.Name)
+	must.InDelta(0.90, v.Results.PassRate, 0.001)
 	// Mean turns = (3 + 4 + 5) / 3 = 4.0 => MedianTurns = 4
-	require.Equal(t, 4, v.Results.MedianTurns)
+	must.Equal(4, v.Results.MedianTurns)
 }
 
 func TestBuildLabVsProductionReport_NoTraces(t *testing.T) {
+	must := require.New(t)
 	prodMetrics := types.TraceMetrics{
 		Count:    50,
 		PassRate: 0.70,
@@ -907,13 +955,14 @@ func TestBuildLabVsProductionReport_NoTraces(t *testing.T) {
 
 	report := buildLabVsProductionReport("exp-2", prodMetrics, result)
 
-	require.Len(t, report.Variants, 1)
+	must.Len(report.Variants, 1)
 	v := report.Variants[0]
 	// With no traces, turns should be zero.
-	require.Equal(t, 0, v.Results.MedianTurns)
+	must.Equal(0, v.Results.MedianTurns)
 }
 
 func TestBuildLabVsProductionReport_MixedTraces(t *testing.T) {
+	must := require.New(t)
 	prodMetrics := types.TraceMetrics{Count: 10, PassRate: 0.80}
 
 	result := eval.SuiteResult{
@@ -930,10 +979,11 @@ func TestBuildLabVsProductionReport_MixedTraces(t *testing.T) {
 	v := report.Variants[0]
 
 	// Mean turns = (2 + 6) / 2 = 4
-	require.Equal(t, 4, v.Results.MedianTurns)
+	must.Equal(4, v.Results.MedianTurns)
 }
 
 func TestPrintComparisonSummary_DoesNotPanic(t *testing.T) {
+	must := require.New(t)
 	report := types.LabVsProductionReport{
 		ExperimentID: "smoke-test",
 		Production: types.BaselineMetrics{
@@ -953,10 +1003,11 @@ func TestPrintComparisonSummary_DoesNotPanic(t *testing.T) {
 	}
 
 	// io.Discard avoids mutating the global os.Stderr, which is unsafe under -race and -parallel.
-	require.NotPanics(t, func() { printComparisonSummary(io.Discard, report) })
+	must.NotPanics(func() { printComparisonSummary(io.Discard, report) })
 }
 
 func TestPrintComparisonSummary_EmptyVariants(t *testing.T) {
+	must := require.New(t)
 	report := types.LabVsProductionReport{
 		ExperimentID: "empty",
 		Production: types.BaselineMetrics{
@@ -965,12 +1016,13 @@ func TestPrintComparisonSummary_EmptyVariants(t *testing.T) {
 		},
 	}
 
-	require.NotPanics(t, func() { printComparisonSummary(io.Discard, report) })
+	must.NotPanics(func() { printComparisonSummary(io.Discard, report) })
 }
 
 // --- buildDriftReport tests ---
 
 func TestBuildDriftReport_ComputesDeltas(t *testing.T) {
+	must := require.New(t)
 	current := types.TraceMetrics{
 		Count:            10,
 		PassRate:         0.80,
@@ -996,19 +1048,20 @@ func TestBuildDriftReport_ComputesDeltas(t *testing.T) {
 
 	// Each delta is current minus baseline. Every field is pinned so a sign
 	// flip in any one of them fails.
-	require.InDelta(t, -0.10, report.Deltas.PassRateDelta, 0.001)
-	require.InDelta(t, 1.0, report.Deltas.MeanTurnsDelta, 0.001)
-	require.InDelta(t, 100, report.Deltas.MeanTokensDelta, 0.001)
-	require.InDelta(t, 20, report.Deltas.P50DurationDelta, 0.001)
-	require.InDelta(t, 50, report.Deltas.P95DurationDelta, 0.001)
-	require.InDelta(t, 3000, report.Deltas.BatchP50DurationDelta, 0.001)
-	require.InDelta(t, 6000, report.Deltas.BatchP95DurationDelta, 0.001)
+	must.InDelta(-0.10, report.Deltas.PassRateDelta, 0.001)
+	must.InDelta(1.0, report.Deltas.MeanTurnsDelta, 0.001)
+	must.InDelta(100, report.Deltas.MeanTokensDelta, 0.001)
+	must.InDelta(20, report.Deltas.P50DurationDelta, 0.001)
+	must.InDelta(50, report.Deltas.P95DurationDelta, 0.001)
+	must.InDelta(3000, report.Deltas.BatchP50DurationDelta, 0.001)
+	must.InDelta(6000, report.Deltas.BatchP95DurationDelta, 0.001)
 }
 
 // TestCmdRun_DryRunAcceptanceSuite pins that the shipped acceptance suite
 // passes `eval run --dry-run` without a credential or a network.
 func TestCmdRun_DryRunAcceptanceSuite(t *testing.T) {
+	must := require.New(t)
 	suitePath, err := filepath.Abs("../../suites/acceptance.hcl")
-	require.NoError(t, err)
-	require.Equal(t, 0, run([]string{"run", "--suite", suitePath, "--dry-run"}, io.Discard))
+	must.NoError(err)
+	must.Equal(0, run([]string{"run", "--suite", suitePath, "--dry-run"}, io.Discard))
 }

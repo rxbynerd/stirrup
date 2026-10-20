@@ -26,18 +26,19 @@ func (w *writeRecorder) WriteFile(ctx context.Context, path, content string) err
 
 func applySearchReplace(t *testing.T, path, content, oldString string) (string, *writeRecorder) {
 	t.Helper()
+	must := require.New(t)
 	dir := t.TempDir()
 	writeTestFile(t, dir, path, content)
 	rec := &writeRecorder{Executor: newTestExecutor(t, dir)}
 
 	input, err := json.Marshal(map[string]string{"path": path, "old_string": oldString, "new_string": "replacement"})
-	require.NoError(t, err)
+	must.NoError(err)
 	result, err := NewSearchReplaceStrategy().Apply(context.Background(), input, rec)
-	require.NoError(t, err)
-	require.False(t, result.Applied, "expected Applied=false")
+	must.NoError(err)
+	must.False(result.Applied, "expected Applied=false")
 
 	after, _ := rec.ReadFile(context.Background(), path)
-	require.Equal(t, content, after, "file modified")
+	must.Equal(content, after, "file modified")
 	return result.Error, rec
 }
 
@@ -127,52 +128,57 @@ func TestSearchReplace_MismatchHint(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			msg, rec := applySearchReplace(t, "f.txt", tt.content, tt.oldString)
 			for _, w := range tt.want {
-				require.Contains(t, msg, w)
+				must.Contains(msg, w)
 			}
 			for _, w := range tt.wantNot {
-				require.NotContains(t, msg, w)
+				must.NotContains(msg, w)
 			}
-			require.Zero(t, rec.writes, "hint-only failure must not write the file")
+			must.Zero(rec.writes, "hint-only failure must not write the file")
 		})
 	}
 }
 
 func TestSearchReplace_NoSimilarRegion(t *testing.T) {
+	must := require.New(t)
 	msg, _ := applySearchReplace(t, "f.go",
 		"package main\n\nfunc main() {\n\tprintln(\"hi\")\n}\n",
 		"zebra giraffe\nantelope wildebeest")
 
-	require.Contains(t, msg, "no similar region")
-	require.Contains(t, msg, "Read the file again")
+	must.Contains(msg, "no similar region")
+	must.Contains(msg, "Read the file again")
 	for _, leaked := range []string{"package main", "println", "func main"} {
-		require.NotContains(t, msg, leaked, "message quotes unrelated file text")
+		must.NotContains(msg, leaked, "message quotes unrelated file text")
 	}
 }
 
 func TestSearchReplace_ClosestRegionQuoteBounds(t *testing.T) {
+	must := require.New(t)
 	long := strings.Repeat("w", 400)
 	content := "a1 a2 a3 " + long + "\nb1 b2 b3 b4\nc1 c2 c3 c4\nd1 d2 d3 d4\ne1 e2 e3 e4\n"
 	msg, _ := applySearchReplace(t, "f.txt", content,
 		"a1 a2 a3 "+long+"X\nb1 b2 b3 b4\nc1 c2 c3 c4\nd1 d2 d3 d4\ne1 e2 e3 e4")
 
-	require.LessOrEqual(t, strings.Count(msg, "\n"), maxQuotedLines+1, "message quotes too many lines:\n%s", msg)
-	require.LessOrEqual(t, len(msg), maxMismatchHintBytes, "message exceeds size bound:\n%s", msg)
+	must.LessOrEqual(strings.Count(msg, "\n"), maxQuotedLines+1, "message quotes too many lines:\n%s", msg)
+	must.LessOrEqual(len(msg), maxMismatchHintBytes, "message exceeds size bound:\n%s", msg)
 }
 
 func TestSearchReplace_CredentialPathWithholdsQuote(t *testing.T) {
+	must := require.New(t)
 	content := "API_ENDPOINT=https://example.test/v1\nAPI_TOKEN=supersecretvalue\nREGION=eu\n"
 	old := "API_ENDPOINT=https://example.test/v1\nAPI_TOKEN=differentvalue\nREGION=eu"
 
 	plain, _ := applySearchReplace(t, "settings.txt", content, old)
-	require.Contains(t, plain, "supersecretvalue", "control: non-credential path should quote file text")
+	must.Contains(plain, "supersecretvalue", "control: non-credential path should quote file text")
 
 	for _, path := range []string{".env", "deploy/.env", ".ssh/config", "keys/server.pem"} {
 		t.Run(path, func(t *testing.T) {
+			must := require.New(t)
 			msg, _ := applySearchReplace(t, path, content, old)
-			require.NotContains(t, msg, "supersecretvalue", "credential path should not quote file text")
-			require.Contains(t, msg, "closest region is lines 1-3")
+			must.NotContains(msg, "supersecretvalue", "credential path should not quote file text")
+			must.Contains(msg, "closest region is lines 1-3")
 		})
 	}
 }
@@ -195,26 +201,30 @@ func TestSearchReplace_MismatchHintBoundedForLargeFile(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			msg, _ := applySearchReplace(t, "big.go", content, tt.old)
-			require.LessOrEqual(t, len(msg), maxMismatchHintBytes)
-			require.True(t, strings.HasPrefix(msg, notFoundPrefix), "message lost its prefix: %.80s", msg)
+			must.LessOrEqual(len(msg), maxMismatchHintBytes)
+			must.True(strings.HasPrefix(msg, notFoundPrefix), "message lost its prefix: %.80s", msg)
 		})
 	}
 }
 
 func TestBoundMessage_TruncatesOnRuneBoundary(t *testing.T) {
+	must := require.New(t)
 	msg := boundMessage(strings.Repeat("é", maxMismatchHintBytes))
-	require.LessOrEqual(t, len(msg), maxMismatchHintBytes)
-	require.True(t, strings.HasSuffix(msg, "..."), "expected truncation marker, got suffix %q", msg[max(0, len(msg)-6):])
-	require.NotContains(t, msg, "�", "truncation split a multi-byte rune")
+	must.LessOrEqual(len(msg), maxMismatchHintBytes)
+	must.True(strings.HasSuffix(msg, "..."), "expected truncation marker, got suffix %q", msg[max(0, len(msg)-6):])
+	must.NotContains(msg, "�", "truncation split a multi-byte rune")
 }
 
 func TestSearchReplace_WhitespaceOnlyOldStringHasNoHint(t *testing.T) {
+	must := require.New(t)
 	msg, _ := applySearchReplace(t, "f.txt", "a\nb\n", "   \n  ")
-	require.Equal(t, notFoundPrefix, msg)
+	must.Equal(notFoundPrefix, msg)
 }
 
 func TestMultiStrategy_ReplaceCarriesMismatchHint(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	writeTestFile(t, dir, "f.go", "func a() {\n\tx := 1\n\ty := 2\n}\n")
 	rec := &writeRecorder{Executor: newTestExecutor(t, dir)}
@@ -227,10 +237,10 @@ func TestMultiStrategy_ReplaceCarriesMismatchHint(t *testing.T) {
 		"new_string": "z := 3"
 	}`)
 	result, err := m.Apply(context.Background(), input, rec)
-	require.NoError(t, err)
-	require.False(t, result.Applied, "expected Applied=false")
+	must.NoError(err)
+	must.False(result.Applied, "expected Applied=false")
 	for _, want := range []string{"all strategies failed", "lines 2-3", "the file indents with tabs"} {
-		require.Contains(t, result.Error, want)
+		must.Contains(result.Error, want)
 	}
-	require.Zero(t, rec.writes, "hint-only failure must not write the file")
+	must.Zero(rec.writes, "hint-only failure must not write the file")
 }

@@ -59,53 +59,58 @@ func (c *collector) snapshot() []capturedRequest {
 // every request has been sent when it returns.
 func exportOneSpan(t *testing.T, exp sdktrace.SpanExporter) {
 	t.Helper()
+	must := require.New(t)
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
 	_, span := tp.Tracer("otlp-test").Start(context.Background(), "span")
 	span.End()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	require.NoError(t, tp.Shutdown(ctx))
+	must.NoError(tp.Shutdown(ctx))
 }
 
 // exportOneMetric records a counter through exp and shuts the provider
 // down, which collects and exports synchronously.
 func exportOneMetric(t *testing.T, exp sdkmetric.Exporter) {
 	t.Helper()
+	must := require.New(t)
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp)))
 	counter, err := mp.Meter("otlp-test").Int64Counter("otlp.test.count")
-	require.NoError(t, err)
+	must.NoError(err)
 	counter.Add(context.Background(), 1)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	require.NoError(t, mp.Shutdown(ctx))
+	must.NoError(mp.Shutdown(ctx))
 }
 
 // exportOneLog emits a log record through exp and shuts the provider
 // down, which flushes the batch synchronously.
 func exportOneLog(t *testing.T, exp sdklog.Exporter) {
 	t.Helper()
+	must := require.New(t)
 	lp := sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(exp)))
 	var rec otellog.Record
 	rec.SetBody(attribute.StringValue("hello"))
 	lp.Logger("otlp-test").Emit(context.Background(), rec)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	require.NoError(t, lp.Shutdown(ctx))
+	must.NoError(lp.Shutdown(ctx))
 }
 
 // assertOneRequest checks the first captured POST. The field checks are
 // independent, so each reports on its own.
 func assertOneRequest(t *testing.T, c *collector, wantPath string, wantHeaders map[string]string) {
 	t.Helper()
+	must := require.New(t)
+	check := assert.New(t)
 	requests := c.snapshot()
-	require.NotEmpty(t, requests, "expected at least one OTLP/HTTP POST")
+	must.NotEmpty(requests, "expected at least one OTLP/HTTP POST")
 	got := requests[0]
-	assert.Equal(t, wantPath, got.path)
-	assert.Equal(t, "application/x-protobuf", got.contentType)
+	check.Equal(wantPath, got.path)
+	check.Equal("application/x-protobuf", got.contentType)
 	for k, v := range wantHeaders {
-		assert.Equal(t, v, got.headers.Get(k), "header %s", k)
+		check.Equal(v, got.headers.Get(k), "header %s", k)
 	}
-	assert.NotZero(t, got.bodyLen, "expected a non-empty protobuf body")
+	check.NotZero(got.bodyLen, "expected a non-empty protobuf body")
 }
 
 func TestParseEndpoint_AcceptsSupportedForms(t *testing.T) {
@@ -124,9 +129,10 @@ func TestParseEndpoint_AcceptsSupportedForms(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got, err := parseEndpoint(tc.raw)
-			require.NoError(t, err)
-			require.Equal(t, tc.want, got)
+			must.NoError(err)
+			must.Equal(tc.want, got)
 		})
 	}
 }
@@ -146,9 +152,10 @@ func TestParseEndpoint_RejectsWithoutEchoingInput(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			_, err := parseEndpoint(tc.raw)
-			require.Error(t, err)
-			require.NotContains(t, err.Error(), "SEKRIT", "error echoes the input")
+			must.Error(err)
+			must.NotContains(err.Error(), "SEKRIT", "error echoes the input")
 		})
 	}
 }
@@ -163,7 +170,8 @@ func TestConstructors_RejectInvalidEndpoint(t *testing.T) {
 			_, logErr := NewLogExporter(ctx, s)
 			for name, err := range map[string]error{"trace": traceErr, "metric": metricErr, "log": logErr} {
 				t.Run(name, func(t *testing.T) {
-					require.ErrorContains(t, err, "scheme must be http or https")
+					must := require.New(t)
+					must.ErrorContains(err, "scheme must be http or https")
 				})
 			}
 		})
@@ -186,12 +194,14 @@ func TestSignal_URLPath(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, tc.sig.urlPath(tc.base))
+			must := require.New(t)
+			must.Equal(tc.want, tc.sig.urlPath(tc.base))
 		})
 	}
 }
 
 func TestNewTraceExporter_HTTPRoutesToV1TracesWithHeaders(t *testing.T) {
+	must := require.New(t)
 	c := &collector{}
 	srv := httptest.NewServer(c.handler())
 	defer srv.Close()
@@ -201,12 +211,13 @@ func TestNewTraceExporter_HTTPRoutesToV1TracesWithHeaders(t *testing.T) {
 		Endpoint: srv.URL,
 		Headers:  map[string]string{"Authorization": "Basic dGVzdA=="},
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	exportOneSpan(t, exp)
 	assertOneRequest(t, c, "/v1/traces", map[string]string{"Authorization": "Basic dGVzdA=="})
 }
 
 func TestNewMetricExporter_HTTPRoutesToV1MetricsWithHeaders(t *testing.T) {
+	must := require.New(t)
 	c := &collector{}
 	srv := httptest.NewServer(c.handler())
 	defer srv.Close()
@@ -216,12 +227,13 @@ func TestNewMetricExporter_HTTPRoutesToV1MetricsWithHeaders(t *testing.T) {
 		Endpoint: srv.URL,
 		Headers:  map[string]string{"Authorization": "Basic dGVzdA=="},
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	exportOneMetric(t, exp)
 	assertOneRequest(t, c, "/v1/metrics", map[string]string{"Authorization": "Basic dGVzdA=="})
 }
 
 func TestNewLogExporter_HTTPRoutesToV1LogsWithHeaders(t *testing.T) {
+	must := require.New(t)
 	c := &collector{}
 	srv := httptest.NewServer(c.handler())
 	defer srv.Close()
@@ -231,7 +243,7 @@ func TestNewLogExporter_HTTPRoutesToV1LogsWithHeaders(t *testing.T) {
 		Endpoint: srv.URL,
 		Headers:  map[string]string{"Authorization": "Basic dGVzdA=="},
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	exportOneLog(t, exp)
 	assertOneRequest(t, c, "/v1/logs", map[string]string{"Authorization": "Basic dGVzdA=="})
 }
@@ -239,6 +251,7 @@ func TestNewLogExporter_HTTPRoutesToV1LogsWithHeaders(t *testing.T) {
 // A per-signal URL, the form OTEL_EXPORTER_OTLP_LOGS_ENDPOINT carries, is
 // posted to as given rather than gaining a second signal segment.
 func TestNewLogExporter_HTTPPerSignalURLUsedAsGiven(t *testing.T) {
+	must := require.New(t)
 	c := &collector{}
 	srv := httptest.NewServer(c.handler())
 	defer srv.Close()
@@ -247,7 +260,7 @@ func TestNewLogExporter_HTTPPerSignalURLUsedAsGiven(t *testing.T) {
 		Protocol: ProtocolHTTPProtobuf,
 		Endpoint: srv.URL + "/otlp/v1/logs",
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	exportOneLog(t, exp)
 	assertOneRequest(t, c, "/otlp/v1/logs", nil)
 }
@@ -255,6 +268,7 @@ func TestNewLogExporter_HTTPPerSignalURLUsedAsGiven(t *testing.T) {
 // An https:// gateway URL keeps its path prefix and is reached over TLS:
 // the TLS test server rejects plaintext, so a downgrade fails the export.
 func TestHTTPExporters_HTTPSGatewayKeepsPrefixAndTLS(t *testing.T) {
+	must := require.New(t)
 	c := &collector{}
 	srv := httptest.NewTLSServer(c.handler())
 	defer srv.Close()
@@ -268,25 +282,26 @@ func TestHTTPExporters_HTTPSGatewayKeepsPrefixAndTLS(t *testing.T) {
 	}
 
 	traceExp, err := NewTraceExporter(context.Background(), settings)
-	require.NoError(t, err)
+	must.NoError(err)
 	exportOneSpan(t, traceExp)
 
 	metricExp, err := NewMetricExporter(context.Background(), settings)
-	require.NoError(t, err)
+	must.NoError(err)
 	exportOneMetric(t, metricExp)
 
 	logExp, err := NewLogExporter(context.Background(), settings)
-	require.NoError(t, err)
+	must.NoError(err)
 	exportOneLog(t, logExp)
 
 	var paths []string
 	for _, r := range c.snapshot() {
 		paths = append(paths, r.path)
 	}
-	require.Equal(t, []string{"/otlp/v1/traces", "/otlp/v1/metrics", "/otlp/v1/logs"}, paths)
+	must.Equal([]string{"/otlp/v1/traces", "/otlp/v1/metrics", "/otlp/v1/logs"}, paths)
 }
 
 func TestHTTPExporters_UseSuppliedHTTPClient(t *testing.T) {
+	must := require.New(t)
 	c := &collector{}
 	srv := httptest.NewServer(c.handler())
 	defer srv.Close()
@@ -297,9 +312,9 @@ func TestHTTPExporters_UseSuppliedHTTPClient(t *testing.T) {
 		Endpoint:   srv.URL,
 		HTTPClient: &http.Client{Transport: rt, Timeout: 5 * time.Second},
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	exportOneSpan(t, exp)
-	require.NotZero(t, rt.count(), "supplied HTTP client was not used for the export")
+	must.NotZero(rt.count(), "supplied HTTP client was not used for the export")
 }
 
 type countingTransport struct {
@@ -338,15 +353,16 @@ func TestNewMetricExporter_Temporality(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, protocol := range []string{ProtocolGRPC, ProtocolHTTPProtobuf} {
 				t.Run(protocol, func(t *testing.T) {
+					must := require.New(t)
 					t.Setenv("OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE", tc.env)
 					exp, err := NewMetricExporter(ctx, Settings{
 						Protocol:    protocol,
 						Endpoint:    "127.0.0.1:1",
 						Temporality: tc.temporality,
 					})
-					require.NoError(t, err)
+					must.NoError(err)
 					defer func() { _ = exp.Shutdown(ctx) }()
-					require.Equal(t, tc.want, exp.Temporality(sdkmetric.InstrumentKindCounter))
+					must.Equal(tc.want, exp.Temporality(sdkmetric.InstrumentKindCounter))
 				})
 			}
 		})
@@ -354,8 +370,9 @@ func TestNewMetricExporter_Temporality(t *testing.T) {
 }
 
 func TestNewMetricExporter_RejectsUnknownTemporality(t *testing.T) {
+	must := require.New(t)
 	_, err := NewMetricExporter(context.Background(), Settings{Endpoint: "127.0.0.1:1", Temporality: "lowmemory"})
-	require.ErrorContains(t, err, "unsupported metrics temporality")
+	must.ErrorContains(err, "unsupported metrics temporality")
 }
 
 func TestConstructors_RejectUnknownProtocol(t *testing.T) {
@@ -366,7 +383,8 @@ func TestConstructors_RejectUnknownProtocol(t *testing.T) {
 	_, logErr := NewLogExporter(ctx, s)
 	for name, err := range map[string]error{"trace": traceErr, "metric": metricErr, "log": logErr} {
 		t.Run(name, func(t *testing.T) {
-			require.ErrorContains(t, err, "unsupported OTLP protocol")
+			must := require.New(t)
+			must.ErrorContains(err, "unsupported OTLP protocol")
 		})
 	}
 }
@@ -379,7 +397,8 @@ func TestConstructors_RejectHTTPClientOnGRPC(t *testing.T) {
 	_, logErr := NewLogExporter(ctx, s)
 	for name, err := range map[string]error{"trace": traceErr, "metric": metricErr, "log": logErr} {
 		t.Run(name, func(t *testing.T) {
-			require.ErrorContains(t, err, "requires protocol http/protobuf")
+			must := require.New(t)
+			must.ErrorContains(err, "requires protocol http/protobuf")
 		})
 	}
 }
@@ -387,14 +406,15 @@ func TestConstructors_RejectHTTPClientOnGRPC(t *testing.T) {
 // gRPC exporters dial lazily, so construction with headers succeeds
 // without a collector and proves the header option is accepted.
 func TestGRPCConstructors_AcceptHeaders(t *testing.T) {
+	must := require.New(t)
 	ctx := context.Background()
 	s := Settings{Endpoint: "127.0.0.1:1", Headers: map[string]string{"X-Tenant": "team-a"}}
 	traceExp, err := NewTraceExporter(ctx, s)
-	require.NoError(t, err)
+	must.NoError(err)
 	metricExp, err := NewMetricExporter(ctx, s)
-	require.NoError(t, err)
+	must.NoError(err)
 	logExp, err := NewLogExporter(ctx, s)
-	require.NoError(t, err)
+	must.NoError(err)
 	shutdownCtx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	_ = traceExp.Shutdown(shutdownCtx)

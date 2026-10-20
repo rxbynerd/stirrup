@@ -79,6 +79,7 @@ func envOr(key, fallback string) string {
 // STIRRUP_TEST_KUBECONFIG so the default `just test` run never touches a
 // real cluster.
 func TestK8sExecutor_Lifecycle(t *testing.T) {
+	must := require.New(t)
 	cfg := testK8sEnv(t)
 	namespace := cfg.namespace
 
@@ -92,7 +93,7 @@ func TestK8sExecutor_Lifecycle(t *testing.T) {
 		RuntimeClassName: cfg.runtimeClass,
 		Network:          &types.NetworkConfig{Mode: "none"},
 	})
-	require.NoError(t, err, "NewK8sExecutor")
+	must.NoError(err, "NewK8sExecutor")
 
 	closed := false
 	t.Cleanup(func() {
@@ -102,24 +103,25 @@ func TestK8sExecutor_Lifecycle(t *testing.T) {
 		_ = exec.Close()
 	})
 
-	require.NoError(t, exec.Close(), "Close")
+	must.NoError(exec.Close(), "Close")
 	closed = true
 
 	clientset, err := kubeClientFromConfig(t, cfg.kubeconfig)
-	require.NoError(t, err, "build verification clientset")
+	must.NoError(err, "build verification clientset")
 
-	require.EventuallyWithT(t, func(c *assert.CollectT) {
+	must.EventuallyWithT(func(c *assert.CollectT) {
 		_, getErr := clientset.CoreV1().Pods(namespace).Get(context.Background(), exec.podName, metav1.GetOptions{})
 		assert.True(c, apierrors.IsNotFound(getErr), "last get err: %v", getErr)
 	}, 5*time.Second, 200*time.Millisecond, "pod %s still present 5s after Close", exec.podName)
 
-	require.NoError(t, exec.Close(), "second Close should be idempotent")
+	must.NoError(exec.Close(), "second Close should be idempotent")
 }
 
 // TestK8sExecutor_CloseIdempotent verifies the standalone idempotency
 // guarantee: calling Close twice on an executor whose Pod is already gone
 // must return nil from the second call.
 func TestK8sExecutor_CloseIdempotent(t *testing.T) {
+	must := require.New(t)
 	cfg := testK8sEnv(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -132,10 +134,10 @@ func TestK8sExecutor_CloseIdempotent(t *testing.T) {
 		RuntimeClassName: cfg.runtimeClass,
 		Network:          &types.NetworkConfig{Mode: "none"},
 	})
-	require.NoError(t, err, "NewK8sExecutor")
+	must.NoError(err, "NewK8sExecutor")
 
-	require.NoError(t, exec.Close(), "first Close")
-	require.NoError(t, exec.Close(), "second Close should be nil")
+	must.NoError(exec.Close(), "first Close")
+	must.NoError(exec.Close(), "second Close should be nil")
 }
 
 func kubeClientFromConfig(t *testing.T, kubeconfig string) (kubernetes.Interface, error) {
@@ -153,6 +155,7 @@ func kubeClientFromConfig(t *testing.T, kubeconfig string) (kubernetes.Interface
 // torn down on test cleanup.
 func newTestK8sExecutor(t *testing.T) *K8sExecutor {
 	t.Helper()
+	must := require.New(t)
 	cfg := testK8sEnv(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -165,7 +168,7 @@ func newTestK8sExecutor(t *testing.T) *K8sExecutor {
 		RuntimeClassName: cfg.runtimeClass,
 		Network:          &types.NetworkConfig{Mode: "none"},
 	})
-	require.NoError(t, err, "NewK8sExecutor")
+	must.NoError(err, "NewK8sExecutor")
 	t.Cleanup(func() { _ = exec.Close() })
 	return exec
 }
@@ -173,25 +176,29 @@ func newTestK8sExecutor(t *testing.T) *K8sExecutor {
 // TestK8sExec_Success exercises a clean exit: echo writes to stdout and the
 // process exits 0.
 func TestK8sExec_Success(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	exec := newTestK8sExecutor(t)
 	ctx := context.Background()
 
 	res, err := exec.Exec(ctx, "echo hello", 10*time.Second)
-	require.NoError(t, err, "Exec")
-	assert.Equal(t, 0, res.ExitCode)
-	assert.Equal(t, "hello\n", res.Stdout)
+	must.NoError(err, "Exec")
+	check.Equal(0, res.ExitCode)
+	check.Equal("hello\n", res.Stdout)
 }
 
 // TestK8sExec_NonZeroExit verifies that a command writing to stderr and
 // exiting non-zero surfaces both the exit code and stderr.
 func TestK8sExec_NonZeroExit(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	exec := newTestK8sExecutor(t)
 	ctx := context.Background()
 
 	res, err := exec.Exec(ctx, "echo err 1>&2; exit 7", 10*time.Second)
-	require.NoError(t, err, "Exec")
-	assert.Equal(t, 7, res.ExitCode)
-	assert.Contains(t, res.Stderr, "err")
+	must.NoError(err, "Exec")
+	check.Equal(7, res.ExitCode)
+	check.Contains(res.Stderr, "err")
 }
 
 // TestK8sExec_Timeout verifies that a command exceeding the timeout is
@@ -200,6 +207,8 @@ func TestK8sExec_NonZeroExit(t *testing.T) {
 // at roughly the timeout boundary, not after the full sleep. Also asserts
 // the partial output captured before the deadline is preserved.
 func TestK8sExec_Timeout(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	exec := newTestK8sExecutor(t)
 	ctx := context.Background()
 
@@ -207,11 +216,11 @@ func TestK8sExec_Timeout(t *testing.T) {
 	result, err := exec.Exec(ctx, "echo partial; sleep 5", 1*time.Second)
 	elapsed := time.Since(start)
 
-	require.ErrorIs(t, err, ErrTimeout)
-	require.ErrorIs(t, err, context.DeadlineExceeded)
-	assert.LessOrEqual(t, elapsed, 3*time.Second, "timeout not honoured, expected about 1s")
-	require.NotNil(t, result, "Exec should return a result on timeout")
-	assert.Contains(t, result.Stdout, "partial", "output captured before the timeout")
+	must.ErrorIs(err, ErrTimeout)
+	must.ErrorIs(err, context.DeadlineExceeded)
+	check.LessOrEqual(elapsed, 3*time.Second, "timeout not honoured, expected about 1s")
+	must.NotNil(result, "Exec should return a result on timeout")
+	check.Contains(result.Stdout, "partial", "output captured before the timeout")
 }
 
 // TestK8sExec_Cancelled verifies that a parent-context cancellation (not a
@@ -219,6 +228,8 @@ func TestK8sExec_Timeout(t *testing.T) {
 // errors.Is(err, context.Canceled) but NOT errors.Is(err, ErrTimeout), even
 // though a large configured timeout is in play.
 func TestK8sExec_Cancelled(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	exec := newTestK8sExecutor(t)
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -228,10 +239,10 @@ func TestK8sExec_Cancelled(t *testing.T) {
 	}()
 
 	result, err := exec.Exec(ctx, "echo partial; sleep 30", 60*time.Second)
-	require.ErrorIs(t, err, context.Canceled)
-	require.NotErrorIs(t, err, ErrTimeout, "cancelled at 500ms with a 60s timeout configured")
-	require.NotNil(t, result, "Exec should return a result on cancel")
-	assert.Contains(t, result.Stdout, "partial", "output captured before the cancel")
+	must.ErrorIs(err, context.Canceled)
+	must.NotErrorIs(err, ErrTimeout, "cancelled at 500ms with a 60s timeout configured")
+	must.NotNil(result, "Exec should return a result on cancel")
+	check.Contains(result.Stdout, "partial", "output captured before the cancel")
 }
 
 // podCommandRunner is the exec surface shared by the k8s and k8s-sandbox
@@ -246,9 +257,10 @@ type podCommandRunner interface {
 // parent never reaps it stays as a zombie, which counts as gone.
 func podProcessGone(t *testing.T, ctx context.Context, exec podCommandRunner, pidFile string) bool {
 	t.Helper()
+	must := require.New(t)
 	probe := `pid=$(cat ` + pidFile + `); [ -e /proc/$pid/stat ] || exit 0; read -r l </proc/$pid/stat; case "${l##*) }" in Z*) exit 0 ;; esac; exit 1`
 	res, err := exec.Exec(ctx, probe, 30*time.Second)
-	require.NoError(t, err, "probe %s", pidFile)
+	must.NoError(err, "probe %s", pidFile)
 	return res.ExitCode == 0
 }
 
@@ -258,6 +270,8 @@ func podProcessGone(t *testing.T, ctx context.Context, exec podCommandRunner, pi
 // command finishing before its deadline keeps its exit code and output.
 func assertTimeoutKillsProcessTree(t *testing.T, ctx context.Context, exec podCommandRunner) {
 	t.Helper()
+	must := require.New(t)
+	check := assert.New(t)
 	for _, name := range []string{"exec", "stream"} {
 		sleeperPID := "/tmp/" + name + "-sleeper.pid"
 		marker := "/tmp/" + name + "-after-timeout"
@@ -269,19 +283,19 @@ func assertTimeoutKillsProcessTree(t *testing.T, ctx context.Context, exec podCo
 		} else {
 			_, err = exec.ExecStream(ctx, command, time.Second, io.Discard, io.Discard)
 		}
-		require.ErrorIs(t, err, ErrTimeout, "%s: expected ErrTimeout", name)
-		assert.True(t, podProcessGone(t, ctx, exec, sleeperPID), "%s: sleep 600 survived the timeout", name)
+		must.ErrorIs(err, ErrTimeout, "%s: expected ErrTimeout", name)
+		check.True(podProcessGone(t, ctx, exec, sleeperPID), "%s: sleep 600 survived the timeout", name)
 		time.Sleep(4 * time.Second)
 		res, err := exec.Exec(ctx, "test ! -e "+marker, 30*time.Second)
-		require.NoError(t, err, "%s: probe marker", name)
-		assert.Equal(t, 0, res.ExitCode, "%s: detached grandchild survived the timeout and wrote its marker", name)
+		must.NoError(err, "%s: probe marker", name)
+		check.Equal(0, res.ExitCode, "%s: detached grandchild survived the timeout and wrote its marker", name)
 	}
 
 	res, err := exec.Exec(ctx, "echo out; echo err >&2; exit 7", 30*time.Second)
-	require.NoError(t, err, "Exec")
-	assert.Equal(t, 7, res.ExitCode)
-	assert.Equal(t, "out\n", res.Stdout)
-	assert.Equal(t, "err\n", res.Stderr)
+	must.NoError(err, "Exec")
+	check.Equal(7, res.ExitCode)
+	check.Equal("out\n", res.Stdout)
+	check.Equal("err\n", res.Stderr)
 }
 
 func TestK8sExec_TimeoutKillsProcessTree(t *testing.T) {
@@ -292,13 +306,14 @@ func TestK8sExec_TimeoutKillsProcessTree(t *testing.T) {
 // TestK8sExec_OutputCap verifies the 10 MB output cap fires when a command
 // emits more than the limit.
 func TestK8sExec_OutputCap(t *testing.T) {
+	must := require.New(t)
 	exec := newTestK8sExecutor(t)
 	ctx := context.Background()
 
 	// Emit ~11 MB to stdout. `yes` + head produces a deterministic stream;
 	// 11*1024*1024 bytes of "x\n" comfortably exceeds the 10 MB cap.
 	_, err := exec.Exec(ctx, "yes x | head -c 11534336", 30*time.Second)
-	require.ErrorIs(t, err, errK8sOutputCap)
+	must.ErrorIs(err, errK8sOutputCap)
 }
 
 // TestK8sFileIO_RoundTrip writes and reads back several payloads, including
@@ -317,10 +332,11 @@ func TestK8sFileIO_RoundTrip(t *testing.T) {
 
 	for name, content := range cases {
 		t.Run(name, func(t *testing.T) {
-			require.NoError(t, exec.WriteFile(ctx, name, content), "WriteFile")
+			must := require.New(t)
+			must.NoError(exec.WriteFile(ctx, name, content), "WriteFile")
 			got, err := exec.ReadFile(ctx, name)
-			require.NoError(t, err, "ReadFile")
-			require.Equal(t, content, got)
+			must.NoError(err, "ReadFile")
+			must.Equal(content, got)
 		})
 	}
 }
@@ -328,46 +344,51 @@ func TestK8sFileIO_RoundTrip(t *testing.T) {
 // TestK8sReadFile_Missing verifies a missing path maps to fs.ErrNotExist so
 // callers can branch with errors.Is.
 func TestK8sReadFile_Missing(t *testing.T) {
+	must := require.New(t)
 	exec := newTestK8sExecutor(t)
 	ctx := context.Background()
 
 	_, err := exec.ReadFile(ctx, "does-not-exist.txt")
-	require.ErrorIs(t, err, fs.ErrNotExist)
+	must.ErrorIs(err, fs.ErrNotExist)
 }
 
 // TestK8sReadFile_Directory verifies that reading a directory is rejected
 // with an "is a directory" error rather than returning archive bytes.
 func TestK8sReadFile_Directory(t *testing.T) {
+	must := require.New(t)
 	exec := newTestK8sExecutor(t)
 	ctx := context.Background()
 
-	require.NoError(t, exec.WriteFile(ctx, "adir/keep.txt", "x"), "WriteFile")
+	must.NoError(exec.WriteFile(ctx, "adir/keep.txt", "x"), "WriteFile")
 	_, err := exec.ReadFile(ctx, "adir")
-	require.ErrorContains(t, err, "is a directory")
+	must.ErrorContains(err, "is a directory")
 }
 
 // TestK8sExecutor_ListDirectory_ReturnsWrittenEntries lists a directory seeded via WriteFile and confirms
 // the written entry appears (and that "." / ".." are excluded).
 func TestK8sExecutor_ListDirectory_ReturnsWrittenEntries(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	exec := newTestK8sExecutor(t)
 	ctx := context.Background()
 
-	require.NoError(t, exec.WriteFile(ctx, "listdir/one.txt", "1"), "WriteFile")
+	must.NoError(exec.WriteFile(ctx, "listdir/one.txt", "1"), "WriteFile")
 	entries, err := exec.ListDirectory(ctx, "listdir")
-	require.NoError(t, err, "ListDirectory")
-	assert.NotContains(t, entries, ".")
-	assert.NotContains(t, entries, "..")
-	assert.Contains(t, entries, "one.txt")
+	must.NoError(err, "ListDirectory")
+	check.NotContains(entries, ".")
+	check.NotContains(entries, "..")
+	check.Contains(entries, "one.txt")
 }
 
 // TestK8sListDirectory_Missing verifies a missing directory maps to
 // fs.ErrNotExist.
 func TestK8sListDirectory_Missing(t *testing.T) {
+	must := require.New(t)
 	exec := newTestK8sExecutor(t)
 	ctx := context.Background()
 
 	_, err := exec.ListDirectory(ctx, "no-such-dir")
-	require.ErrorIs(t, err, fs.ErrNotExist)
+	must.ErrorIs(err, fs.ErrNotExist)
 }
 
 // TestK8sListDirectory_WorkspaceRoot verifies that listing the workspace
@@ -375,13 +396,14 @@ func TestK8sListDirectory_Missing(t *testing.T) {
 // WriteFile reject the root via resolveFilePath, but enumerating it is a
 // legitimate listing operation — this pins that asymmetry against a cluster.
 func TestK8sListDirectory_WorkspaceRoot(t *testing.T) {
+	must := require.New(t)
 	exec := newTestK8sExecutor(t)
 	ctx := context.Background()
 
-	require.NoError(t, exec.WriteFile(ctx, "rootfile.txt", "x"), "WriteFile")
+	must.NoError(exec.WriteFile(ctx, "rootfile.txt", "x"), "WriteFile")
 	entries, err := exec.ListDirectory(ctx, "")
-	require.NoError(t, err, "ListDirectory of the workspace root")
-	require.Contains(t, entries, "rootfile.txt")
+	must.NoError(err, "ListDirectory of the workspace root")
+	must.Contains(entries, "rootfile.txt")
 }
 
 // TestK8sWriteFile_RejectsWorkspaceRoot verifies against a cluster that a
@@ -401,7 +423,8 @@ func TestK8sWriteFile_RejectsWorkspaceRoot(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Error(t, exec.WriteFile(ctx, tc.path, "data"), "expected workspace-root rejection")
+			must := require.New(t)
+			must.Error(exec.WriteFile(ctx, tc.path, "data"), "expected workspace-root rejection")
 		})
 	}
 }
@@ -432,6 +455,7 @@ func TestK8sRuntimeClass_Admitted(t *testing.T) {
 			name = "cluster-default"
 		}
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 			defer cancel()
 
@@ -447,12 +471,12 @@ func TestK8sRuntimeClass_Admitted(t *testing.T) {
 			if err != nil && runtimeClass != "" && strings.Contains(err.Error(), "RuntimeClass") {
 				t.Skipf("RuntimeClass %q not registered on this cluster: %v", runtimeClass, err)
 			}
-			require.NoError(t, err, "NewK8sExecutor")
+			must.NoError(err, "NewK8sExecutor")
 			t.Cleanup(func() { _ = exec.Close() })
 
 			res, err := exec.Exec(ctx, "echo ok", 10*time.Second)
-			require.NoError(t, err, "Exec")
-			require.Equal(t, "ok", strings.TrimSpace(res.Stdout))
+			must.NoError(err, "Exec")
+			must.Equal("ok", strings.TrimSpace(res.Stdout))
 
 			// Two independent gVisor signals: the dmesg boot banner (robust,
 			// stable across releases) and the synthetic uname -r kernel
@@ -460,11 +484,11 @@ func TestK8sRuntimeClass_Admitted(t *testing.T) {
 			// build).
 			if runtimeClass == "gvisor" {
 				dmesgRes, dmesgErr := exec.Exec(ctx, "dmesg 2>/dev/null | head -n 50", 10*time.Second)
-				require.NoError(t, dmesgErr, "dmesg under gvisor")
-				require.Contains(t, strings.ToLower(dmesgRes.Stdout), "gvisor",
+				must.NoError(dmesgErr, "dmesg under gvisor")
+				must.Contains(strings.ToLower(dmesgRes.Stdout), "gvisor",
 					"no gVisor banner in dmesg; sandbox may not be active")
 				unameRes, unameErr := exec.Exec(ctx, "uname -r", 10*time.Second)
-				require.NoError(t, unameErr, "uname under gvisor")
+				must.NoError(unameErr, "uname under gvisor")
 				t.Logf("gvisor in force: uname -r = %q, dmesg banner present", strings.TrimSpace(unameRes.Stdout))
 			}
 		})
@@ -480,11 +504,12 @@ func TestK8sRuntimeClass_Admitted(t *testing.T) {
 func TestK8sRuntimeClass_KataValidatedAsString(t *testing.T) {
 	for _, runtimeClass := range []string{"kata-qemu", "kata-fc", "kata-clh"} {
 		t.Run(runtimeClass, func(t *testing.T) {
+			must := require.New(t)
 			// The RuntimeClassName flows verbatim into the Pod spec via
 			// optionalRuntimeClassName; that pure mapping is asserted here.
 			got := optionalRuntimeClassName(runtimeClass)
-			require.NotNil(t, got, "optionalRuntimeClassName(%q)", runtimeClass)
-			require.Equal(t, runtimeClass, *got)
+			must.NotNil(got, "optionalRuntimeClassName(%q)", runtimeClass)
+			must.Equal(runtimeClass, *got)
 			t.Skip("kind cannot host Kata Containers (needs nested virtualisation); skipping the live Pod-creation half")
 		})
 	}
@@ -499,6 +524,8 @@ func TestK8sRuntimeClass_KataValidatedAsString(t *testing.T) {
 // enforce it. This test proves the object is created with the right shape,
 // not that egress is actually denied — see docs/executors/k8s.md.
 func TestK8sEgress_NoneInstallsDenyAllPolicy(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cfg := testK8sEnv(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -511,16 +538,16 @@ func TestK8sEgress_NoneInstallsDenyAllPolicy(t *testing.T) {
 		RuntimeClassName: cfg.runtimeClass,
 		Network:          &types.NetworkConfig{Mode: "none"},
 	})
-	require.NoError(t, err, "NewK8sExecutor")
+	must.NoError(err, "NewK8sExecutor")
 	t.Cleanup(func() { _ = exec.Close() })
 
 	clientset, err := kubeClientFromConfig(t, cfg.kubeconfig)
-	require.NoError(t, err, "build verification clientset")
+	must.NoError(err, "build verification clientset")
 
 	// The Pod carries the sandbox marker label.
 	pod, err := clientset.CoreV1().Pods(cfg.namespace).Get(ctx, exec.podName, metav1.GetOptions{})
-	require.NoError(t, err, "get pod")
-	assert.Equal(t, "true", pod.Labels[k8sSandboxLabel], "pod label %s", k8sSandboxLabel)
+	must.NoError(err, "get pod")
+	check.Equal("true", pod.Labels[k8sSandboxLabel], "pod label %s", k8sSandboxLabel)
 
 	// Mode=="none" injects no proxy env.
 	var proxyEnv []string
@@ -530,17 +557,17 @@ func TestK8sEgress_NoneInstallsDenyAllPolicy(t *testing.T) {
 			proxyEnv = append(proxyEnv, e.Name+"="+e.Value)
 		}
 	}
-	assert.Empty(t, proxyEnv, "Mode==none should inject no proxy env")
+	check.Empty(proxyEnv, "Mode==none should inject no proxy env")
 
 	np, err := clientset.NetworkingV1().NetworkPolicies(cfg.namespace).Get(ctx, networkPolicyName(exec.podName), metav1.GetOptions{})
-	require.NoError(t, err, "get networkpolicy")
-	assert.Equal(t, exec.podName, np.Spec.PodSelector.MatchLabels[k8sPodNameLabel], "policy should select the pod by %s", k8sPodNameLabel)
-	assert.Equal(t, []networkingv1.PolicyType{networkingv1.PolicyTypeEgress}, np.Spec.PolicyTypes)
-	assert.Empty(t, np.Spec.Egress, "deny-all policy must have no egress rules")
+	must.NoError(err, "get networkpolicy")
+	check.Equal(exec.podName, np.Spec.PodSelector.MatchLabels[k8sPodNameLabel], "policy should select the pod by %s", k8sPodNameLabel)
+	check.Equal([]networkingv1.PolicyType{networkingv1.PolicyTypeEgress}, np.Spec.PolicyTypes)
+	check.Empty(np.Spec.Egress, "deny-all policy must have no egress rules")
 
 	// Close removes the policy.
-	require.NoError(t, exec.Close(), "Close")
-	require.EventuallyWithT(t, func(c *assert.CollectT) {
+	must.NoError(exec.Close(), "Close")
+	must.EventuallyWithT(func(c *assert.CollectT) {
 		_, getErr := clientset.NetworkingV1().NetworkPolicies(cfg.namespace).Get(context.Background(), networkPolicyName(exec.podName), metav1.GetOptions{})
 		assert.True(c, apierrors.IsNotFound(getErr), "last get err: %v", getErr)
 	}, 5*time.Second, 200*time.Millisecond, "networkpolicy %s still present 5s after Close", networkPolicyName(exec.podName))
@@ -554,6 +581,7 @@ func TestK8sEgress_NoneInstallsDenyAllPolicy(t *testing.T) {
 // MANIFEST-SHAPE ONLY: kindnet does not enforce NetworkPolicy, so this proves
 // the object/env shape, not that egress is actually confined to the proxy.
 func TestK8sEgress_AllowlistInstallsPolicyAndInjectsProxy(t *testing.T) {
+	must := require.New(t)
 	cfg := testK8sEnv(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -568,39 +596,41 @@ func TestK8sEgress_AllowlistInstallsPolicyAndInjectsProxy(t *testing.T) {
 		Network:          &types.NetworkConfig{Mode: "allowlist", Allowlist: []string{"api.example.com"}},
 		EgressProxyURL:   proxyURL,
 	})
-	require.NoError(t, err, "NewK8sExecutor")
+	must.NoError(err, "NewK8sExecutor")
 	t.Cleanup(func() { _ = exec.Close() })
 
 	clientset, err := kubeClientFromConfig(t, cfg.kubeconfig)
-	require.NoError(t, err, "build verification clientset")
+	must.NoError(err, "build verification clientset")
 
 	pod, err := clientset.CoreV1().Pods(cfg.namespace).Get(ctx, exec.podName, metav1.GetOptions{})
-	require.NoError(t, err, "get pod")
+	must.NoError(err, "get pod")
 	env := map[string]string{}
 	for _, e := range pod.Spec.Containers[0].Env {
 		env[e.Name] = e.Value
 	}
 	for _, name := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"} {
 		t.Run(name, func(t *testing.T) {
-			require.Equal(t, proxyURL, env[name], "env = %v", env)
+			must := require.New(t)
+			must.Equal(proxyURL, env[name], "env = %v", env)
 		})
 	}
 	for _, name := range []string{"NO_PROXY", "no_proxy"} {
 		t.Run(name, func(t *testing.T) {
-			require.NotEmpty(t, env[name], "should be set in allowlist mode, env = %v", env)
+			must := require.New(t)
+			must.NotEmpty(env[name], "should be set in allowlist mode, env = %v", env)
 		})
 	}
 
 	np, err := clientset.NetworkingV1().NetworkPolicies(cfg.namespace).Get(ctx, networkPolicyName(exec.podName), metav1.GetOptions{})
-	require.NoError(t, err, "get networkpolicy")
-	require.Len(t, np.Spec.Egress, 2, "allowlist policy should have a dns rule and a proxy rule")
+	must.NoError(err, "get networkpolicy")
+	must.Len(np.Spec.Egress, 2, "allowlist policy should have a dns rule and a proxy rule")
 
 	// The proxy egress rule must be port-confined to the proxy's listen port,
 	// not open to every port on the proxy Pod.
 	proxyRule := np.Spec.Egress[1]
-	require.Len(t, proxyRule.Ports, 1, "proxy egress rule ports = %v", proxyRule.Ports)
-	require.NotNil(t, proxyRule.Ports[0].Port, "proxy egress rule ports = %v", proxyRule.Ports)
-	require.Equal(t, k8sEgressProxyPort, proxyRule.Ports[0].Port.IntValue(), "proxy egress rule should allow only the proxy listen port")
+	must.Len(proxyRule.Ports, 1, "proxy egress rule ports = %v", proxyRule.Ports)
+	must.NotNil(proxyRule.Ports[0].Port, "proxy egress rule ports = %v", proxyRule.Ports)
+	must.Equal(k8sEgressProxyPort, proxyRule.Ports[0].Port.IntValue(), "proxy egress rule should allow only the proxy listen port")
 }
 
 // TestK8sEgress_AllowlistRequiresProxyURL verifies the construction guard
@@ -608,13 +638,14 @@ func TestK8sEgress_AllowlistInstallsPolicyAndInjectsProxy(t *testing.T) {
 // runs without a cluster — the guard fires before any cluster I/O — so it is
 // not skipped on a missing kubeconfig.
 func TestK8sEgress_AllowlistRequiresProxyURL(t *testing.T) {
+	must := require.New(t)
 	_, err := NewK8sExecutor(context.Background(), K8sExecutorConfig{
 		Image:     "busybox:latest",
 		Namespace: "default",
 		Network:   &types.NetworkConfig{Mode: "allowlist", Allowlist: []string{"api.example.com"}},
 	})
-	require.Error(t, err, "allowlist mode without an egress proxy URL must fail closed")
-	require.ErrorContains(t, err, "proxy")
+	must.Error(err, "allowlist mode without an egress proxy URL must fail closed")
+	must.ErrorContains(err, "proxy")
 }
 
 // TestK8sEgress_NoneEnforced verifies ACTUAL egress enforcement, not just
@@ -633,6 +664,7 @@ func TestK8sEgress_AllowlistRequiresProxyURL(t *testing.T) {
 // wrapper reports a non-zero status; an unconfined Pod connects and prints
 // rc=0.
 func TestK8sEgress_NoneEnforced(t *testing.T) {
+	must := require.New(t)
 	cfg := testK8sEnv(t)
 	if os.Getenv("STIRRUP_TEST_ENFORCE_EGRESS") == "" {
 		t.Skip("STIRRUP_TEST_ENFORCE_EGRESS not set; skipping egress-enforcement test (requires a NetworkPolicy-enforcing CNI)")
@@ -648,7 +680,7 @@ func TestK8sEgress_NoneEnforced(t *testing.T) {
 		RuntimeClassName: cfg.runtimeClass,
 		Network:          &types.NetworkConfig{Mode: "none"},
 	})
-	require.NoError(t, err, "NewK8sExecutor")
+	must.NoError(err, "NewK8sExecutor")
 	t.Cleanup(func() { _ = exec.Close() })
 
 	// `nc` ships with busybox; the guard turns a missing tool into an explicit
@@ -656,15 +688,15 @@ func TestK8sEgress_NoneEnforced(t *testing.T) {
 	const probe = "command -v nc >/dev/null 2>&1 || { echo NONC; exit 0; }; " +
 		"timeout 8 nc -w 6 1.1.1.1 443 </dev/null >/dev/null 2>&1; echo rc=$?"
 	res, err := exec.Exec(ctx, probe, 30*time.Second)
-	require.NoError(t, err, "egress probe exec")
+	must.NoError(err, "egress probe exec")
 	out := strings.TrimSpace(res.Stdout)
 	t.Logf("deny-all egress probe output: %q (stderr=%q)", out, strings.TrimSpace(res.Stderr))
 	if out == "NONC" {
 		t.Skip("sandbox image has no `nc`; cannot probe egress enforcement")
 	}
-	require.NotEqual(t, "rc=0", out, "Mode==none sandbox reached 1.1.1.1:443; deny-all egress is NOT enforced by this CNI")
+	must.NotEqual("rc=0", out, "Mode==none sandbox reached 1.1.1.1:443; deny-all egress is NOT enforced by this CNI")
 	// A non-zero rc means the connect was blocked.
-	require.True(t, strings.HasPrefix(out, "rc="), "unexpected probe output %q (want rc=<nonzero>)", out)
+	must.True(strings.HasPrefix(out, "rc="), "unexpected probe output %q (want rc=<nonzero>)", out)
 }
 
 // TestK8sEgress_AllowlistEnforced verifies ACTUAL allowlist enforcement on a
@@ -682,6 +714,7 @@ func TestK8sEgress_NoneEnforced(t *testing.T) {
 // STIRRUP_TEST_EGRESS_PROXY_URL points at it. DNS is permitted in allowlist
 // mode, so the proxy is addressed by its Service name. Probes use busybox nc.
 func TestK8sEgress_AllowlistEnforced(t *testing.T) {
+	must := require.New(t)
 	cfg := testK8sEnv(t)
 	if os.Getenv("STIRRUP_TEST_ENFORCE_EGRESS") == "" {
 		t.Skip("STIRRUP_TEST_ENFORCE_EGRESS not set; skipping egress-enforcement test (requires a NetworkPolicy-enforcing CNI)")
@@ -691,15 +724,15 @@ func TestK8sEgress_AllowlistEnforced(t *testing.T) {
 	defer cancel()
 
 	clientset, err := kubeClientFromConfig(t, cfg.kubeconfig)
-	require.NoError(t, err, "build verification clientset")
+	must.NoError(err, "build verification clientset")
 	peers, err := clientset.CoreV1().Pods(cfg.namespace).List(ctx, metav1.ListOptions{LabelSelector: "app=" + k8sEgressProxyLabel})
-	require.NoError(t, err, "list egress proxy peers")
+	must.NoError(err, "list egress proxy peers")
 	if len(peers.Items) == 0 {
 		t.Skipf("no egress proxy peer (app=%s) in namespace %q; deploy one to run this test", k8sEgressProxyLabel, cfg.namespace)
 	}
 
 	proxyAddr, err := url.Parse(cfg.proxyURL)
-	require.NoError(t, err, "parse proxy URL %q", cfg.proxyURL)
+	must.NoError(err, "parse proxy URL %q", cfg.proxyURL)
 	proxyHost, proxyPort := proxyAddr.Hostname(), proxyAddr.Port()
 	if proxyPort == "" {
 		proxyPort = "8080"
@@ -713,30 +746,32 @@ func TestK8sEgress_AllowlistEnforced(t *testing.T) {
 		Network:          &types.NetworkConfig{Mode: "allowlist", Allowlist: []string{"github.com"}},
 		EgressProxyURL:   cfg.proxyURL,
 	})
-	require.NoError(t, err, "NewK8sExecutor")
+	must.NoError(err, "NewK8sExecutor")
 	t.Cleanup(func() { _ = exec.Close() })
 
 	// Direct egress to a DNS-free literal IP must be blocked by the allowlist
 	// NetworkPolicy, which permits only DNS and the proxy peer.
 	direct, err := exec.Exec(ctx, "command -v nc >/dev/null 2>&1 || { echo NONC; exit 0; }; timeout 8 nc -w 6 1.1.1.1 443 </dev/null >/dev/null 2>&1; echo rc=$?", 30*time.Second)
-	require.NoError(t, err, "direct-egress probe exec")
+	must.NoError(err, "direct-egress probe exec")
 	directOut := strings.TrimSpace(direct.Stdout)
 	t.Logf("direct-egress probe: %q", directOut)
 	if directOut == "NONC" {
 		t.Skip("sandbox image has no `nc`; cannot probe egress enforcement")
 	}
 	t.Run("direct egress is blocked", func(t *testing.T) {
-		require.NotEqual(t, "rc=0", directOut, "allowlist sandbox reached 1.1.1.1:443 directly; NetworkPolicy is not confining egress to the proxy")
+		must := require.New(t)
+		must.NotEqual("rc=0", directOut, "allowlist sandbox reached 1.1.1.1:443 directly; NetworkPolicy is not confining egress to the proxy")
 	})
 
 	// The egress proxy peer must be reachable on its listen port, which the
 	// NetworkPolicy permits; nc connecting then closing yields rc=0.
 	peer, err := exec.Exec(ctx, fmt.Sprintf("timeout 8 nc -w 6 %s %s </dev/null >/dev/null 2>&1; echo rc=$?", proxyHost, proxyPort), 30*time.Second)
-	require.NoError(t, err, "proxy-peer probe exec")
+	must.NoError(err, "proxy-peer probe exec")
 	peerOut := strings.TrimSpace(peer.Stdout)
 	t.Logf("proxy-peer reach probe (%s:%s): %q", proxyHost, proxyPort, peerOut)
 	t.Run("proxy peer is reachable", func(t *testing.T) {
-		require.Equal(t, "rc=0", peerOut, "egress proxy peer %s:%s not reachable; the allowlist NetworkPolicy should permit it", proxyHost, proxyPort)
+		must := require.New(t)
+		must.Equal("rc=0", peerOut, "egress proxy peer %s:%s not reachable; the allowlist NetworkPolicy should permit it", proxyHost, proxyPort)
 	})
 
 	// The proxy's FQDN allowlist is verified with a real TLS client. The
@@ -748,7 +783,7 @@ func TestK8sEgress_AllowlistEnforced(t *testing.T) {
 	// NetworkPolicy assertions above already passed. Run with
 	// STIRRUP_TEST_IMAGE=curlimages/curl to exercise the full chain.
 	haveCurl, err := exec.Exec(ctx, "command -v curl >/dev/null 2>&1 && echo yes || echo no", 10*time.Second)
-	require.NoError(t, err, "curl detection exec")
+	must.NoError(err, "curl detection exec")
 	if strings.TrimSpace(haveCurl.Stdout) != "yes" {
 		t.Skipf("sandbox image %q has no curl; executor NetworkPolicy assertions passed. Set STIRRUP_TEST_IMAGE to a curl-capable image to exercise the proxy TLS allowlist.", cfg.image)
 	}
@@ -756,21 +791,23 @@ func TestK8sEgress_AllowlistEnforced(t *testing.T) {
 	httpCode := func(host string) string {
 		cmd := fmt.Sprintf("curl -sS -o /dev/null -w '%%{http_code}' --max-time 15 -x %s https://%s/ 2>/dev/null; echo", cfg.proxyURL, host)
 		res, execErr := exec.Exec(ctx, cmd, 30*time.Second)
-		require.NoError(t, execErr, "curl %s probe exec", host)
+		must.NoError(execErr, "curl %s probe exec", host)
 		return strings.TrimSpace(res.Stdout)
 	}
 
 	allowed := httpCode("github.com")
 	t.Logf("HTTPS via proxy to github.com (allowlisted) → http_code %q", allowed)
 	t.Run("allowlisted host completes TLS through the proxy", func(t *testing.T) {
-		require.Regexp(t, "^[23]", allowed, "allowlisted github.com via proxy returned http_code %q, want 2xx/3xx", allowed)
+		must := require.New(t)
+		must.Regexp("^[23]", allowed, "allowlisted github.com via proxy returned http_code %q, want 2xx/3xx", allowed)
 	})
 
 	// curl reports http_code 000 after the proxy's 403, so any 2xx or 3xx is a leak.
 	denied := httpCode("example.com")
 	t.Logf("HTTPS via proxy to example.com (not allowlisted) → http_code %q", denied)
 	t.Run("non-allowlisted host is refused by the proxy", func(t *testing.T) {
-		require.NotRegexp(t, "^[23]", denied, "non-allowlisted example.com via proxy returned http_code %q, want a failure (proxy 403)", denied)
+		must := require.New(t)
+		must.NotRegexp("^[23]", denied, "non-allowlisted example.com via proxy returned http_code %q, want a failure (proxy 403)", denied)
 	})
 }
 
@@ -787,6 +824,7 @@ const (
 // the Pod name, and then waits to be killed. It does nothing in the normal
 // suite.
 func TestK8sExecutor_OrphanHelperProcess(t *testing.T) {
+	must := require.New(t)
 	if os.Getenv(k8sOrphanHelperEnv) == "" {
 		t.Skip("helper process for TestK8sExecutor_OrphanBoundedAfterHarnessKill")
 	}
@@ -799,7 +837,7 @@ func TestK8sExecutor_OrphanHelperProcess(t *testing.T) {
 		Network:          &types.NetworkConfig{Mode: "none"},
 		Lifecycle:        Lifecycle{RunID: "orphan-test", MaxLifetime: k8sOrphanLifetime},
 	})
-	require.NoError(t, err, "NewK8sExecutor")
+	must.NoError(err, "NewK8sExecutor")
 	fmt.Println(k8sOrphanReadyTag + sandbox.podName)
 	time.Sleep(10 * time.Minute)
 }
@@ -809,15 +847,16 @@ func TestK8sExecutor_OrphanHelperProcess(t *testing.T) {
 // own once the lifetime passes. The Pod and its NetworkPolicy carry the run ID
 // label until an operator deletes them.
 func TestK8sExecutor_OrphanBoundedAfterHarnessKill(t *testing.T) {
+	must := require.New(t)
 	cfg := testK8sEnv(t)
 	clientset, err := kubeClientFromConfig(t, cfg.kubeconfig)
-	require.NoError(t, err, "build verification clientset")
+	must.NoError(err, "build verification clientset")
 
 	cmd := exec.Command(os.Args[0], "-test.run=^TestK8sExecutor_OrphanHelperProcess$", "-test.v")
 	cmd.Env = append(os.Environ(), k8sOrphanHelperEnv+"=1")
 	stdout, err := cmd.StdoutPipe()
-	require.NoError(t, err, "stdout pipe")
-	require.NoError(t, cmd.Start(), "start helper")
+	must.NoError(err, "stdout pipe")
+	must.NoError(cmd.Start(), "start helper")
 	killed := false
 	var podName string
 	t.Cleanup(func() {
@@ -846,29 +885,32 @@ func TestK8sExecutor_OrphanBoundedAfterHarnessKill(t *testing.T) {
 	select {
 	case podName = <-ready:
 	case <-time.After(2 * time.Minute):
-		require.FailNow(t, "helper did not report a Pod name")
+		must.FailNow("helper did not report a Pod name")
 	}
 
 	const runID = "orphan-test"
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	pod, err := clientset.CoreV1().Pods(cfg.namespace).Get(ctx, podName, metav1.GetOptions{})
-	require.NoError(t, err, "get sandbox pod")
+	must.NoError(err, "get sandbox pod")
 	t.Run("sandbox pod has the lifetime as its active deadline", func(t *testing.T) {
-		require.NotNil(t, pod.Spec.ActiveDeadlineSeconds)
-		require.Equal(t, int64(k8sOrphanLifetime/time.Second), *pod.Spec.ActiveDeadlineSeconds)
+		must := require.New(t)
+		must.NotNil(pod.Spec.ActiveDeadlineSeconds)
+		must.Equal(int64(k8sOrphanLifetime/time.Second), *pod.Spec.ActiveDeadlineSeconds)
 	})
 	t.Run("sandbox pod is labeled with the run ID", func(t *testing.T) {
-		require.Equal(t, runID, pod.Labels[k8sRunIDLabel], "pod labels = %v", pod.Labels)
+		must := require.New(t)
+		must.Equal(runID, pod.Labels[k8sRunIDLabel], "pod labels = %v", pod.Labels)
 	})
 
 	policy, err := clientset.NetworkingV1().NetworkPolicies(cfg.namespace).Get(ctx, networkPolicyName(podName), metav1.GetOptions{})
-	require.NoError(t, err, "get egress policy")
+	must.NoError(err, "get egress policy")
 	t.Run("egress policy is labeled with the run ID", func(t *testing.T) {
-		require.Equal(t, runID, policy.Labels[k8sRunIDLabel], "policy labels = %v", policy.Labels)
+		must := require.New(t)
+		must.Equal(runID, policy.Labels[k8sRunIDLabel], "policy labels = %v", policy.Labels)
 	})
 
-	require.NoError(t, cmd.Process.Kill(), "SIGKILL helper")
+	must.NoError(cmd.Process.Kill(), "SIGKILL helper")
 	killed = true
 	_ = cmd.Wait()
 
@@ -879,12 +921,12 @@ func TestK8sExecutor_OrphanBoundedAfterHarnessKill(t *testing.T) {
 		if apierrors.IsNotFound(getErr) {
 			return
 		}
-		require.NoError(t, getErr, "get pod after kill")
+		must.NoError(getErr, "get pod after kill")
 		if got.Status.Phase == corev1.PodFailed && got.Status.Reason == "DeadlineExceeded" {
 			return
 		}
 		if time.Now().After(deadline) {
-			require.FailNowf(t, "sandbox pod outlived the harness", "pod %s still %s %v after the harness was killed", podName, got.Status.Phase, wait)
+			must.FailNowf("sandbox pod outlived the harness", "pod %s still %s %v after the harness was killed", podName, got.Status.Phase, wait)
 		}
 		time.Sleep(time.Second)
 	}
@@ -894,9 +936,10 @@ func TestK8sExecutor_OrphanBoundedAfterHarnessKill(t *testing.T) {
 // as the sandbox's owner and verifies the cluster garbage-collects the sandbox
 // Pod. A bare Pod stands in for the harness pod.
 func TestK8sExecutor_SandboxGarbageCollectedWithHarnessPod(t *testing.T) {
+	must := require.New(t)
 	cfg := testK8sEnv(t)
 	clientset, err := kubeClientFromConfig(t, cfg.kubeconfig)
-	require.NoError(t, err, "build verification clientset")
+	must.NoError(err, "build verification clientset")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
@@ -913,7 +956,7 @@ func TestK8sExecutor_SandboxGarbageCollectedWithHarnessPod(t *testing.T) {
 			}},
 		},
 	}, metav1.CreateOptions{})
-	require.NoError(t, err, "create stand-in harness pod")
+	must.NoError(err, "create stand-in harness pod")
 	t.Cleanup(func() {
 		_ = clientset.CoreV1().Pods(cfg.namespace).Delete(context.Background(), owner.Name, metav1.DeleteOptions{GracePeriodSeconds: ptr.To(int64(0))})
 	})
@@ -926,11 +969,11 @@ func TestK8sExecutor_SandboxGarbageCollectedWithHarnessPod(t *testing.T) {
 		Network:          &types.NetworkConfig{Mode: "none"},
 		HarnessPod:       &HarnessPod{Namespace: cfg.namespace, Name: owner.Name, UID: string(owner.UID)},
 	})
-	require.NoError(t, err, "NewK8sExecutor")
+	must.NoError(err, "NewK8sExecutor")
 	t.Cleanup(func() { _ = sandbox.Close() })
 
 	err = clientset.CoreV1().Pods(cfg.namespace).Delete(ctx, owner.Name, metav1.DeleteOptions{GracePeriodSeconds: ptr.To(int64(0))})
-	require.NoError(t, err, "delete stand-in harness pod")
+	must.NoError(err, "delete stand-in harness pod")
 
 	deadline := time.Now().Add(90 * time.Second)
 	for {
@@ -939,7 +982,7 @@ func TestK8sExecutor_SandboxGarbageCollectedWithHarnessPod(t *testing.T) {
 			return
 		}
 		if time.Now().After(deadline) {
-			require.FailNowf(t, "sandbox pod outlived its owner", "sandbox pod %s still present 90s after its owner was deleted (last get err: %v)", sandbox.podName, getErr)
+			must.FailNowf("sandbox pod outlived its owner", "sandbox pod %s still present 90s after its owner was deleted (last get err: %v)", sandbox.podName, getErr)
 		}
 		time.Sleep(time.Second)
 	}

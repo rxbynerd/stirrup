@@ -25,8 +25,9 @@ func TestNormalizeToolInput_NormalizesEmptyAndKeepsObjects(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			got := string(NormalizeToolInput(tt.in))
-			require.Equal(t, tt.want, got)
+			must.Equal(tt.want, got)
 		})
 	}
 }
@@ -35,11 +36,12 @@ func TestNormalizeToolInput_NormalizesEmptyAndKeepsObjects(t *testing.T) {
 // null. Normalizing the marshalled bytes is what keeps the stored tool_use
 // block a valid object.
 func TestNormalizeToolInput_NilMapMarshalsToObject(t *testing.T) {
+	must := require.New(t)
 	var input map[string]any
 	raw, err := json.Marshal(input)
-	require.NoError(t, err)
-	require.Equal(t, "null", string(raw), "precondition: nil map marshals to null")
+	must.NoError(err)
+	must.Equal("null", string(raw), "precondition: nil map marshals to null")
 
 	got := string(NormalizeToolInput(raw))
-	require.Equal(t, "{}", got)
+	must.Equal("{}", got)
 }

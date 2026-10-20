@@ -23,6 +23,7 @@ func TestValidateRunConfig_PostEdit_AcceptedInExecutionMode(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Executor = ExecutorConfig{Type: tc.executorType}
 			c.Tools.PostEdit = []PostEditCheckConfig{
@@ -30,7 +31,7 @@ func TestValidateRunConfig_PostEdit_AcceptedInExecutionMode(t *testing.T) {
 				{Glob: "cmd/*.go", Command: "go vet ./cmd/...", TimeoutSeconds: MaxPostEditTimeoutSeconds},
 				{Glob: "*.go", Command: `test -f "{path}" && sh -c 'gofmt -l {path}'`},
 			}
-			require.NoError(t, ValidateRunConfig(c), "valid postEdit must be accepted")
+			must.NoError(ValidateRunConfig(c), "valid postEdit must be accepted")
 		})
 	}
 }
@@ -38,15 +39,16 @@ func TestValidateRunConfig_PostEdit_AcceptedInExecutionMode(t *testing.T) {
 func TestValidateRunConfig_PostEdit_RejectedInReadOnlyModes(t *testing.T) {
 	for _, mode := range []string{"planning", "review", "research", "toil"} {
 		t.Run(mode, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Mode = mode
 			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
 			c.Tools.BuiltIn = []string{"read_file"}
 			c.Tools.PostEdit = []PostEditCheckConfig{validPostEditCheck()}
-			require.ErrorContains(t, ValidateRunConfig(c), "tools.postEdit is not allowed in read-only mode")
+			must.ErrorContains(ValidateRunConfig(c), "tools.postEdit is not allowed in read-only mode")
 
 			c.Tools.PostEdit = nil
-			require.NoError(t, ValidateRunConfig(c), "baseline read-only config without postEdit must validate")
+			must.NoError(ValidateRunConfig(c), "baseline read-only config without postEdit must validate")
 		})
 	}
 }
@@ -54,10 +56,11 @@ func TestValidateRunConfig_PostEdit_RejectedInReadOnlyModes(t *testing.T) {
 func TestValidateRunConfig_PostEdit_RejectedForExecutorsWithoutExec(t *testing.T) {
 	for _, executorType := range []string{"api", "none"} {
 		t.Run(executorType, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Executor = ExecutorConfig{Type: executorType}
 			c.Tools.PostEdit = []PostEditCheckConfig{validPostEditCheck()}
-			require.ErrorContains(t, ValidateRunConfig(c), "tools.postEdit requires an exec-capable executor")
+			must.ErrorContains(ValidateRunConfig(c), "tools.postEdit requires an exec-capable executor")
 		})
 	}
 }
@@ -80,38 +83,43 @@ func TestValidateRunConfig_PostEdit_EntryRules(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Tools.PostEdit = []PostEditCheckConfig{tc.check}
-			require.ErrorContains(t, ValidateRunConfig(c), tc.want)
+			must.ErrorContains(ValidateRunConfig(c), tc.want)
 		})
 	}
 }
 
 func TestValidateRunConfig_PostEdit_EntryCountCapped(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	for range maxPostEditChecks + 1 {
 		c.Tools.PostEdit = append(c.Tools.PostEdit, validPostEditCheck())
 	}
-	require.ErrorContains(t, ValidateRunConfig(c), "tools.postEdit must have <=")
+	must.ErrorContains(ValidateRunConfig(c), "tools.postEdit must have <=")
 }
 
 func TestEffectivePostEditTimeout_DefaultAndExplicit(t *testing.T) {
 	t.Run("zero timeout uses default", func(t *testing.T) {
-		require.Equal(t, DefaultPostEditTimeoutSeconds, EffectivePostEditTimeout(PostEditCheckConfig{}))
+		must := require.New(t)
+		must.Equal(DefaultPostEditTimeoutSeconds, EffectivePostEditTimeout(PostEditCheckConfig{}))
 	})
 	t.Run("explicit timeout is kept", func(t *testing.T) {
-		require.Equal(t, 7, EffectivePostEditTimeout(PostEditCheckConfig{TimeoutSeconds: 7}))
+		must := require.New(t)
+		must.Equal(7, EffectivePostEditTimeout(PostEditCheckConfig{TimeoutSeconds: 7}))
 	})
 }
 
 func TestToolsConfig_PostEdit_DecodesJSONShape(t *testing.T) {
+	must := require.New(t)
 	var tc ToolsConfig
 	raw := `{"postEdit":[{"glob":"*.go","command":"gofmt -l {path}","timeoutSeconds":30}]}`
-	require.NoError(t, json.Unmarshal([]byte(raw), &tc))
+	must.NoError(json.Unmarshal([]byte(raw), &tc))
 
 	want := PostEditCheckConfig{Glob: "*.go", Command: "gofmt -l {path}", TimeoutSeconds: 30}
-	require.Len(t, tc.PostEdit, 1)
-	require.Equal(t, want, tc.PostEdit[0])
+	must.Len(tc.PostEdit, 1)
+	must.Equal(want, tc.PostEdit[0])
 }
 
 func TestPostEditCheckRecord_Failed(t *testing.T) {
@@ -126,7 +134,8 @@ func TestPostEditCheckRecord_Failed(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, tc.rec.Failed())
+			must := require.New(t)
+			must.Equal(tc.want, tc.rec.Failed())
 		})
 	}
 }

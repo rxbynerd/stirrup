@@ -14,19 +14,22 @@ import (
 // shipped suite, so a suite whose merged RunConfig fails ValidateRunConfig
 // is caught before an operator runs it.
 func TestShippedSuites_DryRunValidates(t *testing.T) {
+	must := require.New(t)
 	paths, err := filepath.Glob(filepath.Join("..", "suites", "*.hcl"))
-	require.NoError(t, err)
-	require.NotEmpty(t, paths, "no shipped suites found")
+	must.NoError(err)
+	must.NotEmpty(paths, "no shipped suites found")
 	for _, path := range paths {
 		t.Run(filepath.Base(path), func(t *testing.T) {
+			must := require.New(t)
 			suite, err := spec.LoadSuiteHCL(path)
-			require.NoError(t, err, "LoadSuiteHCL")
+			must.NoError(err, "LoadSuiteHCL")
 			result, err := RunSuite(context.Background(), suite, RunConfig{DryRun: true})
-			require.NoError(t, err, "RunSuite")
-			require.NotEmpty(t, result.Tasks, "suite has no tasks")
+			must.NoError(err, "RunSuite")
+			must.NotEmpty(result.Tasks, "suite has no tasks")
 			for _, task := range result.Tasks {
 				t.Run(task.TaskID, func(t *testing.T) {
-					require.Equal(t, "pass", task.Outcome, "task error %q", task.Error)
+					must := require.New(t)
+					must.Equal("pass", task.Outcome, "task error %q", task.Error)
 				})
 			}
 		})

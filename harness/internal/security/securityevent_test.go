@@ -32,16 +32,18 @@ func (f *fakeCounter) Add(_ context.Context, incr int64, _ ...metric.AddOption) 
 }
 
 func TestSecurityLogger_Emit_WritesEventWithoutCounter(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	sl := NewSecurityLogger(&buf, "run-1")
 
 	sl.PathTraversalBlocked("../etc/passwd", "/workspace")
 
 	// Emit writes a JSON line and does not panic when no counter is wired.
-	require.Contains(t, buf.String(), `"event":"path_traversal_blocked"`)
+	must.Contains(buf.String(), `"event":"path_traversal_blocked"`)
 }
 
 func TestSecurityLogger_Emit_IncrementsCounterPerEvent(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	sl := NewSecurityLogger(&buf, "run-1")
 
@@ -52,13 +54,14 @@ func TestSecurityLogger_Emit_IncrementsCounterPerEvent(t *testing.T) {
 	sl.PrototypePollutionBlocked("read_file", []string{"__proto__"})
 	sl.SecretRedactedInOutput("anthropic_api_key", "transport.stdio.event.text")
 
-	require.Len(t, c.calls, 3)
+	must.Len(c.calls, 3)
 	for i, call := range c.calls {
-		require.Equal(t, int64(1), call.incr, "calls[%d].incr", i)
+		must.Equal(int64(1), call.incr, "calls[%d].incr", i)
 	}
 }
 
 func TestSecurityLogger_Emit_IncrementsOTelCounter(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	sl := NewSecurityLogger(&buf, "run-1")
 
@@ -66,25 +69,26 @@ func TestSecurityLogger_Emit_IncrementsOTelCounter(t *testing.T) {
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 	counter, err := provider.Meter("test").Int64Counter("stirrup.harness.security_events")
-	require.NoError(t, err)
+	must.NoError(err)
 	sl.SetEventCounter(counter)
 
 	sl.PathTraversalBlocked("a", "b")
 	sl.ToolInputRejected("read_file", []string{"err"})
 
 	total, events := collectSecurityEventCounts(t, reader)
-	require.Equal(t, int64(2), total)
-	require.Contains(t, events, "path_traversal_blocked")
-	require.Contains(t, events, "tool_input_rejected")
+	must.Equal(int64(2), total)
+	must.Contains(events, "path_traversal_blocked")
+	must.Contains(events, "tool_input_rejected")
 }
 
 // collectSecurityEventCounts sums the security_events counter across its data
 // points and returns the "event" attribute of each data point.
 func collectSecurityEventCounts(t *testing.T, reader *sdkmetric.ManualReader) (int64, []string) {
 	t.Helper()
+	must := require.New(t)
 
 	var rm metricdata.ResourceMetrics
-	require.NoError(t, reader.Collect(context.Background(), &rm))
+	must.NoError(reader.Collect(context.Background(), &rm))
 
 	var total int64
 	var events []string
@@ -94,7 +98,7 @@ func collectSecurityEventCounts(t *testing.T, reader *sdkmetric.ManualReader) (i
 				continue
 			}
 			sum, ok := m.Data.(metricdata.Sum[int64])
-			require.True(t, ok, "unexpected data type %T", m.Data)
+			must.True(ok, "unexpected data type %T", m.Data)
 			for _, dp := range sum.DataPoints {
 				total += dp.Value
 				if v, ok := dp.Attributes.Value("event"); ok {
@@ -203,14 +207,15 @@ func TestSecurityLogger_Guard_EmitsEventAndFields(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var buf bytes.Buffer
 			sl := NewSecurityLogger(&buf, "run-1")
 			tc.fire(sl)
 			var got SecurityEvent
-			require.NoError(t, json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &got), "output=%q", buf.String())
-			require.Equal(t, tc.event, got.Event)
+			must.NoError(json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &got), "output=%q", buf.String())
+			must.Equal(tc.event, got.Event)
 			for k, want := range tc.wantData {
-				require.Equal(t, want, got.Data[k], "Data[%q]", k)
+				must.Equal(want, got.Data[k], "Data[%q]", k)
 			}
 		})
 	}
@@ -219,14 +224,15 @@ func TestSecurityLogger_Guard_EmitsEventAndFields(t *testing.T) {
 // TestSecurityLogger_Emit_JSONShapeWithCounter confirms that Emit still
 // produces the expected JSON output when a counter is wired.
 func TestSecurityLogger_Emit_JSONShapeWithCounter(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	sl := NewSecurityLogger(&buf, "run-1")
 	sl.SetEventCounter(&fakeCounter{})
 	sl.SecretRedactedInOutput("anthropic_api_key", "transport.grpc.event.text")
 
 	var got SecurityEvent
-	require.NoError(t, json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &got))
-	require.Equal(t, "secret_redacted_in_output", got.Event)
-	require.Equal(t, "anthropic_api_key", got.Data["pattern"])
-	require.Equal(t, "transport.grpc.event.text", got.Data["location"])
+	must.NoError(json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &got))
+	must.Equal("secret_redacted_in_output", got.Event)
+	must.Equal("anthropic_api_key", got.Data["pattern"])
+	must.Equal("transport.grpc.event.text", got.Data["location"])
 }

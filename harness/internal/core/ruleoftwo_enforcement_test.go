@@ -37,11 +37,13 @@ func TestExternalCommToolSet_ReturnsOnlyEgressTools(t *testing.T) {
 	set := externalCommToolSet(registry)
 	for _, name := range []string{"run_command", "web_fetch", "mcp_github_create_issue"} {
 		t.Run("includes "+name, func(t *testing.T) {
-			require.True(t, set[name])
+			must := require.New(t)
+			must.True(set[name])
 		})
 	}
 	t.Run("excludes read_file", func(t *testing.T) {
-		require.False(t, set["read_file"])
+		must := require.New(t)
+		must.False(set["read_file"])
 	})
 }
 
@@ -65,13 +67,14 @@ func TestWrapRuleOfTwoGate_WrapsOnlyGateActions(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			monitor := buildRuleOfTwoMonitor(tc.arming)
 			tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
 			pp := wrapRuleOfTwoGate(inner, monitor, tc.arming, registry, cfg, tp, metrics)
 			gated := pp != permission.PermissionPolicy(inner)
-			require.Equal(t, tc.wantGate, gated, "policy type %T", pp)
+			must.Equal(tc.wantGate, gated, "policy type %T", pp)
 			if tc.wantGate {
-				require.Same(t, inner, permission.Unwrap(pp), "Unwrap of a gated policy must reach the inner policy")
+				must.Same(inner, permission.Unwrap(pp), "Unwrap of a gated policy must reach the inner policy")
 			}
 		})
 	}
@@ -82,6 +85,7 @@ func TestWrapRuleOfTwoGate_WrapsOnlyGateActions(t *testing.T) {
 // yields observe-only arming whose monitor is not pre-tripped, so
 // detection telemetry keeps flowing.
 func TestResolveRuleOfTwoArming_ExplicitPatternsWithSensitiveNotPreTripped(t *testing.T) {
+	must := require.New(t)
 	sensitive := true
 	cfg := &types.RunConfig{
 		Mode:             "execution",
@@ -91,17 +95,19 @@ func TestResolveRuleOfTwoArming_ExplicitPatternsWithSensitiveNotPreTripped(t *te
 		RuleOfTwo:        &types.RuleOfTwoConfig{Runtime: &types.RuleOfTwoRuntimeConfig{Classifier: "patterns"}},
 	}
 	arming := resolveRuleOfTwoArming(cfg)
-	require.True(t, arming.armed, "explicit patterns must arm the monitor")
-	require.False(t, arming.enforcing, "explicit patterns must observe without enforcing")
-	require.False(t, arming.staticSensitive, "observe-only monitor must not start pre-tripped (telemetry loss)")
+	must.True(arming.armed, "explicit patterns must arm the monitor")
+	must.False(arming.enforcing, "explicit patterns must observe without enforcing")
+	must.False(arming.staticSensitive, "observe-only monitor must not start pre-tripped (telemetry loss)")
 	monitor := buildRuleOfTwoMonitor(arming)
-	require.False(t, monitor.Tripped(), "the first scan should be live")
+	must.False(monitor.Tripped(), "the first scan should be live")
 }
 
 // TestBuildLoop_EnforceFalseObservesOnly pins that ruleOfTwo.enforce:false
 // arms observe-only: detections still emit, but the gate is absent, so
 // external-comm tools keep working after sensitive data is seen.
 func TestBuildLoop_EnforceFalseObservesOnly(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 
 	server := newOpenAIServer(t, nil, []string{
@@ -141,7 +147,7 @@ func TestBuildLoop_EnforceFalseObservesOnly(t *testing.T) {
 
 	var secBuf bytes.Buffer
 	loop, err := BuildLoopWithTransport(context.Background(), config, transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}))
-	require.NoError(t, err)
+	must.NoError(err)
 	defer func() { _ = loop.Close() }()
 	loop.Security = security.NewSecurityLogger(&secBuf, config.RunID)
 
@@ -162,22 +168,22 @@ func TestBuildLoop_EnforceFalseObservesOnly(t *testing.T) {
 	})
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	assert.Equal(t, "success", runTrace.Outcome)
+	must.NoError(err)
+	check.Equal("success", runTrace.Outcome)
 	// Both web_fetch calls run: enforce:false means no gate, so egress
 	// is never revoked despite the key entering the conversation.
-	assert.EqualValues(t, 2, fetchCalls.Load(), "egress must stay intact under enforce:false")
+	check.EqualValues(2, fetchCalls.Load(), "egress must stay intact under enforce:false")
 	var gatedFetches []string
 	for _, call := range runTrace.ToolCalls {
 		if call.Name == "web_fetch" && !call.Success && strings.Contains(call.ErrorReason, "rule_of_two:") {
 			gatedFetches = append(gatedFetches, call.ErrorReason)
 		}
 	}
-	assert.Empty(t, gatedFetches, "enforce:false must not deny egress")
+	check.Empty(gatedFetches, "enforce:false must not deny egress")
 	// Detection telemetry still flows — the override is auditable.
 	out := secBuf.String()
-	assert.Contains(t, out, `"event":"sensitive_data_detected"`)
-	assert.Contains(t, out, `"action":"warn"`)
+	check.Contains(out, `"event":"sensitive_data_detected"`)
+	check.Contains(out, `"action":"warn"`)
 }
 
 // TestBuildLoop_EnvExfilDeniedEndToEnd is the canonical Rule-of-Two
@@ -188,11 +194,13 @@ func TestBuildLoop_EnforceFalseObservesOnly(t *testing.T) {
 // Neither the seeded file name nor the command trips GuardToolCall, so
 // the denial demonstrably comes from the Rule-of-Two gate.
 func TestBuildLoop_EnvExfilDeniedEndToEnd(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 
 	workspace := t.TempDir()
 	secretFile := filepath.Join(workspace, "deploy-notes.txt")
-	require.NoError(t, os.WriteFile(secretFile, []byte("the staging key is AWS_ACCESS_KEY_ID="+fakeLiveAWSKey+"\n"), 0o600))
+	must.NoError(os.WriteFile(secretFile, []byte("the staging key is AWS_ACCESS_KEY_ID="+fakeLiveAWSKey+"\n"), 0o600))
 
 	server := newOpenAIServer(t, nil, []string{
 
@@ -237,28 +245,28 @@ func TestBuildLoop_EnvExfilDeniedEndToEnd(t *testing.T) {
 
 	var secBuf bytes.Buffer
 	loop, err := BuildLoopWithTransport(context.Background(), config, transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}))
-	require.NoError(t, err)
+	must.NoError(err)
 	defer func() { _ = loop.Close() }()
 	loop.Security = security.NewSecurityLogger(&secBuf, config.RunID)
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	assert.Equal(t, "success", runTrace.Outcome, "block-external is non-fatal")
+	must.NoError(err)
+	check.Equal("success", runTrace.Outcome, "block-external is non-fatal")
 	var sawRead, runCommandDenied bool
 	for _, call := range runTrace.ToolCalls {
 		if call.Name == "read_file" && call.Success {
 			sawRead = true
 		}
 		if call.Name == "run_command" {
-			assert.False(t, call.Success, "run_command must be denied after the .env read trips the latch")
+			check.False(call.Success, "run_command must be denied after the .env read trips the latch")
 			if strings.Contains(call.ErrorReason, "rule_of_two:") {
 				runCommandDenied = true
 			}
 		}
 	}
-	require.True(t, sawRead, "expected the read_file call to succeed and surface the key")
-	assert.True(t, runCommandDenied, "expected run_command denied with the rule_of_two reason; trace: %+v", runTrace.ToolCalls)
-	assert.Contains(t, secBuf.String(), `"event":"permission_denied"`)
+	must.True(sawRead, "expected the read_file call to succeed and surface the key")
+	check.True(runCommandDenied, "expected run_command denied with the rule_of_two reason; trace: %+v", runTrace.ToolCalls)
+	check.Contains(secBuf.String(), `"event":"permission_denied"`)
 }
 
 // childParentRunIDForbid is a Cedar policy that denies run_command for
@@ -273,14 +281,15 @@ const childParentRunIDForbid = `forbid (
 
 func buildWrappedPolicyEngine(t *testing.T, monitor ruleoftwo.Monitor) permission.PermissionPolicy {
 	t.Helper()
+	must := require.New(t)
 	policyPath := filepath.Join(t.TempDir(), "policy.cedar")
-	require.NoError(t, os.WriteFile(policyPath, []byte(childParentRunIDForbid), 0o644))
+	must.NoError(os.WriteFile(policyPath, []byte(childParentRunIDForbid), 0o644))
 	pe, err := permission.New(
 		types.PermissionPolicyConfig{Type: "policy-engine", PolicyFile: policyPath, Fallback: "allow-all"},
 		permission.PolicyEngineEnv{RunID: "run-parent-1", Mode: "execution"},
 		func(string) (permission.PermissionPolicy, error) { return permission.NewAllowAll(), nil },
 	)
-	require.NoError(t, err)
+	must.NoError(err)
 	gate := permission.NewRuleOfTwoGate(pe, monitor, map[string]bool{"run_command": true, "web_fetch": true}, nil, nil)
 	return permission.NewMetricRecorder(gate, observability.NewNoopMetrics(), "policy-engine")
 }
@@ -290,8 +299,9 @@ func buildWrappedPolicyEngine(t *testing.T, monitor ruleoftwo.Monitor) permissio
 // dispatch.
 func registerStubRunCommand(t *testing.T, loop *AgenticLoop, ran *atomic.Int32) {
 	t.Helper()
+	must := require.New(t)
 	registry, ok := loop.Tools.(*tool.Registry)
-	require.True(t, ok, "test loop Tools is %T, want *tool.Registry", loop.Tools)
+	must.True(ok, "test loop Tools is %T, want *tool.Registry", loop.Tools)
 	registry.Register(&tool.Tool{
 		Name:              "run_command",
 		Description:       "stub shell",
@@ -325,6 +335,8 @@ func childRunCommandScript() *scriptedProvider {
 // policy engine wrapped in the rule-of-two gate and the metric recorder,
 // the child still gets a parentRunId-populated Cedar clone.
 func TestSpawnSubAgent_ForChildRunSurvivesWrapperChain(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &mockProvider{}
 	parentLoop := buildSubAgentTestLoop(prov)
 	parentLoop.Provider = childRunCommandScript()
@@ -345,12 +357,12 @@ func TestSpawnSubAgent_ForChildRunSurvivesWrapperChain(t *testing.T) {
 	result, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
 		Prompt: "do a subtask with the shell",
 	})
-	require.NoError(t, err)
-	assert.Equal(t, "success", result.Outcome, "denial is per-call, not terminal")
-	require.Zero(t, ran.Load(), "the Cedar forbid must deny run_command before dispatch")
+	must.NoError(err)
+	check.Equal("success", result.Outcome, "denial is per-call, not terminal")
+	must.Zero(ran.Load(), "the Cedar forbid must deny run_command before dispatch")
 	out := secBuf.String()
-	require.Contains(t, out, `"event":"permission_denied"`, "child run_command attempt")
-	assert.NotContains(t, out, "rule_of_two:", "denial must come from the Cedar clone, not the (untripped) gate")
+	must.Contains(out, `"event":"permission_denied"`, "child run_command attempt")
+	check.NotContains(out, "rule_of_two:", "denial must come from the Cedar clone, not the (untripped) gate")
 }
 
 // redactToolProvider scripts a tool call whose result carries a
@@ -373,10 +385,12 @@ func redactToolProvider() *scriptedProvider {
 }
 
 func TestLoop_RuleOfTwoRedactRewritesContentAndStructured(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop := buildTestLoop(nil)
 	loop.Provider = redactToolProvider()
 	registry, ok := loop.Tools.(*tool.Registry)
-	require.True(t, ok, "test loop Tools is %T, want *tool.Registry", loop.Tools)
+	must.True(ok, "test loop Tools is %T, want *tool.Registry", loop.Tools)
 	registry.Register(&tool.Tool{
 		Name:        "leaky_struct_tool",
 		Description: "leaks a key in text and structured payload",
@@ -401,8 +415,8 @@ func TestLoop_RuleOfTwoRedactRewritesContentAndStructured(t *testing.T) {
 	}
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	assert.Equal(t, "success", runTrace.Outcome, "redact keeps the run alive")
+	must.NoError(err)
+	check.Equal("success", runTrace.Outcome, "redact keeps the run alive")
 
 	// The second provider call must have seen the redacted tool result:
 	// no key in either Content or Structured, surrounding text intact.
@@ -414,13 +428,13 @@ func TestLoop_RuleOfTwoRedactRewritesContentAndStructured(t *testing.T) {
 			}
 		}
 	}
-	require.NotNil(t, toolResult, "no tool_result block reached the provider on the second turn")
-	assert.NotContains(t, toolResult.Content, fakeLiveAWSKey, "key survived redaction in Content")
-	assert.Contains(t, toolResult.Content, "keep this line", "surrounding text lost in Content")
-	assert.Contains(t, toolResult.Content, ruleoftwo.RedactionPlaceholder, "placeholder missing from Content")
-	assert.NotContains(t, string(toolResult.Structured), fakeLiveAWSKey, "key survived redaction in Structured")
-	assert.True(t, json.Valid(toolResult.Structured), "redacted Structured is not valid JSON")
-	assert.Contains(t, string(toolResult.Structured), "surrounding", "surrounding structured field lost")
+	must.NotNil(toolResult, "no tool_result block reached the provider on the second turn")
+	check.NotContains(toolResult.Content, fakeLiveAWSKey, "key survived redaction in Content")
+	check.Contains(toolResult.Content, "keep this line", "surrounding text lost in Content")
+	check.Contains(toolResult.Content, ruleoftwo.RedactionPlaceholder, "placeholder missing from Content")
+	check.NotContains(string(toolResult.Structured), fakeLiveAWSKey, "key survived redaction in Structured")
+	check.True(json.Valid(toolResult.Structured), "redacted Structured is not valid JSON")
+	check.Contains(string(toolResult.Structured), "surrounding", "surrounding structured field lost")
 }
 
 // TestLoop_RuleOfTwoRedactStructuredInvalidJSONFallback drives the
@@ -430,6 +444,8 @@ func TestLoop_RuleOfTwoRedactRewritesContentAndStructured(t *testing.T) {
 // placeholder rather than emitting malformed JSON. json.Marshal keeps
 // the output valid regardless of the placeholder's contents.
 func TestLoop_RuleOfTwoRedactStructuredInvalidJSONFallback(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop := buildTestLoop(nil)
 	loop.RuleOfTwo = ruleoftwo.NewPatternMonitor(true, "redact", []string{"sensitive_data"}, false)
 
@@ -441,13 +457,13 @@ func TestLoop_RuleOfTwoRedactStructuredInvalidJSONFallback(t *testing.T) {
 		}},
 	}
 	n := loop.redactSensitiveSpans(messages)
-	require.NotZero(t, n, "expected the latch-tier secret to be redacted")
+	must.NotZero(n, "expected the latch-tier secret to be redacted")
 	got := messages[1].Content[0].Structured
-	assert.True(t, json.Valid(got), "fallback must keep Structured valid JSON, got: %q", got)
-	assert.NotContains(t, string(got), hex, "secret survived the fallback")
+	check.True(json.Valid(got), "fallback must keep Structured valid JSON, got: %q", got)
+	check.NotContains(string(got), hex, "secret survived the fallback")
 	want, err := json.Marshal(ruleoftwo.RedactionPlaceholder)
-	require.NoError(t, err)
-	assert.Equal(t, string(want), string(got), "fallback Structured must be the marshalled placeholder")
+	must.NoError(err)
+	check.Equal(string(want), string(got), "fallback Structured must be the marshalled placeholder")
 }
 
 // messageCapturingProvider records the message slice of the LAST Stream
@@ -463,11 +479,13 @@ func (p *messageCapturingProvider) Stream(ctx context.Context, params types.Stre
 }
 
 func TestLoop_RuleOfTwoAbortTerminatesOnToolResult(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	var secBuf bytes.Buffer
 	loop := buildTestLoopWithSecurity(nil, &secBuf)
 	loop.Provider = childRunCommandScript() // tool call then end_turn
 	registry, ok := loop.Tools.(*tool.Registry)
-	require.True(t, ok, "test loop Tools is %T, want *tool.Registry", loop.Tools)
+	must.True(ok, "test loop Tools is %T, want *tool.Registry", loop.Tools)
 	registry.Register(&tool.Tool{
 		Name:        "run_command",
 		Description: "leaks a key",
@@ -482,15 +500,17 @@ func TestLoop_RuleOfTwoAbortTerminatesOnToolResult(t *testing.T) {
 	config.MaxTurns = 4
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	assert.Equal(t, "rule_of_two_violation", runTrace.Outcome)
+	must.NoError(err)
+	check.Equal("rule_of_two_violation", runTrace.Outcome)
 	// The abort fires on turn 1's tool_result scan, so exactly one turn
 	// (turn 0) completed before termination.
-	assert.Equal(t, 1, runTrace.Turns, "abort on the first sensitive tool result")
-	assert.Contains(t, secBuf.String(), `"event":"rule_of_two_triggered"`, "expected rule_of_two_triggered before abort")
+	check.Equal(1, runTrace.Turns, "abort on the first sensitive tool result")
+	check.Contains(secBuf.String(), `"event":"rule_of_two_triggered"`, "expected rule_of_two_triggered before abort")
 }
 
 func TestLoop_RuleOfTwoAbortTurnZeroBeforeProviderCall(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &countingProvider{}
 	loop := buildTestLoop(nil)
 	loop.Provider = prov
@@ -502,10 +522,10 @@ func TestLoop_RuleOfTwoAbortTurnZeroBeforeProviderCall(t *testing.T) {
 	}
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	assert.Equal(t, "rule_of_two_violation", runTrace.Outcome)
-	assert.Zero(t, prov.calls, "a turn-0 abort must precede the first provider call")
-	assert.Zero(t, runTrace.Turns)
+	must.NoError(err)
+	check.Equal("rule_of_two_violation", runTrace.Outcome)
+	check.Zero(prov.calls, "a turn-0 abort must precede the first provider call")
+	check.Zero(runTrace.Turns)
 }
 
 // TestLoop_RuleOfTwoAbortPreTrippedLatchDoesNotAbort documents why the
@@ -514,6 +534,8 @@ func TestLoop_RuleOfTwoAbortTurnZeroBeforeProviderCall(t *testing.T) {
 // false→true transition and a pre-tripped latch can never transition —
 // the provider is still reached and the run completes normally.
 func TestLoop_RuleOfTwoAbortPreTrippedLatchDoesNotAbort(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "ok"},
@@ -525,10 +547,10 @@ func TestLoop_RuleOfTwoAbortPreTrippedLatchDoesNotAbort(t *testing.T) {
 	loop.RuleOfTwo = ruleoftwo.NewPatternMonitor(true, "abort", []string{"sensitive_data"}, true)
 
 	runTrace, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	assert.NotEqual(t, "rule_of_two_violation", runTrace.Outcome, "a pre-tripped abort latch must not abort; the validator is what prevents this config")
-	assert.Equal(t, "success", runTrace.Outcome, "the loop cannot abort a pre-tripped run")
-	assert.True(t, loop.RuleOfTwo.Tripped(), "monitor should be pre-tripped")
+	must.NoError(err)
+	check.NotEqual("rule_of_two_violation", runTrace.Outcome, "a pre-tripped abort latch must not abort; the validator is what prevents this config")
+	check.Equal("success", runTrace.Outcome, "the loop cannot abort a pre-tripped run")
+	check.True(loop.RuleOfTwo.Tripped(), "monitor should be pre-tripped")
 }
 
 // TestBuildLoop_DefaultArmedEnforcesBlockExternal pins that a
@@ -536,6 +558,8 @@ func TestLoop_RuleOfTwoAbortPreTrippedLatchDoesNotAbort(t *testing.T) {
 // (web_fetch) denies egress once sensitive data is observed under the
 // default policy.
 func TestBuildLoop_DefaultArmedEnforcesBlockExternal(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 
 	server := newOpenAIServer(t, nil, []string{
@@ -577,7 +601,7 @@ func TestBuildLoop_DefaultArmedEnforcesBlockExternal(t *testing.T) {
 	var secBuf bytes.Buffer
 	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
 	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
-	require.NoError(t, err)
+	must.NoError(err)
 	defer func() { _ = loop.Close() }()
 
 	// Capture security events from the loop's own logger (the factory
@@ -587,11 +611,11 @@ func TestBuildLoop_DefaultArmedEnforcesBlockExternal(t *testing.T) {
 	// Stub web_fetch so its FIRST call returns a sensitive body, tripping
 	// the latch; the gate then denies the SECOND call.
 	presenter, ok := loop.Tools.(*tool.Presenter)
-	require.True(t, ok, "expected *tool.Presenter, got %T", loop.Tools)
+	must.True(ok, "expected *tool.Presenter, got %T", loop.Tools)
 	registry, ok := presenter.Unwrap().(*tool.Registry)
-	require.True(t, ok, "expected *tool.Registry under presenter, got %T", presenter.Unwrap())
+	must.True(ok, "expected *tool.Registry under presenter, got %T", presenter.Unwrap())
 	original := registry.Resolve("web_fetch")
-	require.NotNil(t, original, "web_fetch must be registered in research mode")
+	must.NotNil(original, "web_fetch must be registered in research mode")
 	var fetchCalls atomic.Int32
 	registry.Register(&tool.Tool{
 		Name:              original.Name,
@@ -606,25 +630,27 @@ func TestBuildLoop_DefaultArmedEnforcesBlockExternal(t *testing.T) {
 	})
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	assert.Equal(t, "success", runTrace.Outcome, "block-external keeps the run alive locally")
+	must.NoError(err)
+	check.Equal("success", runTrace.Outcome, "block-external keeps the run alive locally")
 	// Exactly one web_fetch handler execution: the first call runs and
 	// trips the latch; the second is denied by the gate before dispatch.
-	assert.Equal(t, int32(1), fetchCalls.Load(), "second web_fetch call must be gated")
+	check.Equal(int32(1), fetchCalls.Load(), "second web_fetch call must be gated")
 	var denied bool
 	for _, call := range runTrace.ToolCalls {
 		if call.Name == "web_fetch" && !call.Success && strings.Contains(call.ErrorReason, "rule_of_two:") {
 			denied = true
 		}
 	}
-	assert.True(t, denied, "expected a web_fetch call denied with the rule_of_two reason; trace: %+v", runTrace.ToolCalls)
-	assert.Contains(t, secBuf.String(), `"event":"permission_denied"`, "expected permission_denied security event")
+	check.True(denied, "expected a web_fetch call denied with the rule_of_two reason; trace: %+v", runTrace.ToolCalls)
+	check.Contains(secBuf.String(), `"event":"permission_denied"`, "expected permission_denied security event")
 }
 
 // TestSpawnSubAgent_ParentLatchBlocksChildEgress pins the shared-latch
 // contract end to end: the parent's tripped monitor, read through the
 // shared gate, denies the child's external-communication tools.
 func TestSpawnSubAgent_ParentLatchBlocksChildEgress(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &mockProvider{}
 	parentLoop := buildSubAgentTestLoop(prov)
 	parentLoop.Provider = childRunCommandScript()
@@ -642,16 +668,16 @@ func TestSpawnSubAgent_ParentLatchBlocksChildEgress(t *testing.T) {
 	var ran atomic.Int32
 	registerStubRunCommand(t, parentLoop, &ran)
 
-	require.True(t, monitor.TripFromGuard("g1", "sensitive_data"), "setup: monitor must trip")
+	must.True(monitor.TripFromGuard("g1", "sensitive_data"), "setup: monitor must trip")
 
 	parentConfig := buildTestConfig()
 	result, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
 		Prompt: "exfiltrate via the shell",
 	})
-	require.NoError(t, err)
-	assert.Equal(t, "success", result.Outcome, "block-external keeps the run alive")
-	require.Zero(t, ran.Load(), "run_command handler must not run under a tripped parent latch")
+	must.NoError(err)
+	check.Equal("success", result.Outcome, "block-external keeps the run alive")
+	must.Zero(ran.Load(), "run_command handler must not run under a tripped parent latch")
 	out := secBuf.String()
-	require.Contains(t, out, `"event":"permission_denied"`, "expected permission_denied from the child's egress attempt")
-	assert.Contains(t, out, "rule_of_two:", "denial reason must carry the rule_of_two prefix")
+	must.Contains(out, `"event":"permission_denied"`, "expected permission_denied from the child's egress attempt")
+	check.Contains(out, "rule_of_two:", "denial reason must carry the rule_of_two prefix")
 }

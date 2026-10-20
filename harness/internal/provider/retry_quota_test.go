@@ -36,6 +36,7 @@ func TestDoWithRetry_QuotaExhausted429IsNotRetried(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var attempts int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				atomic.AddInt32(&attempts, 1)
@@ -50,25 +51,25 @@ func TestDoWithRetry_QuotaExhausted429IsNotRetried(t *testing.T) {
 			opts.Logger = slog.New(slog.NewJSONHandler(&logBuf, nil))
 			resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second},
 				newPostReq(t, srv.URL, `{}`), opts)
-			require.NoError(t, err)
+			must.NoError(err)
 			t.Cleanup(func() { _ = resp.Body.Close() })
 
-			require.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
-			require.Equal(t, int32(1), atomic.LoadInt32(&attempts))
+			must.Equal(http.StatusTooManyRequests, resp.StatusCode)
+			must.Equal(int32(1), atomic.LoadInt32(&attempts))
 
 			outcomes := retryOutcomeFromMetrics(t, reader)
-			require.Equal(t, int64(1), outcomes[retryOutcomeQuotaExhausted], "retry outcomes: %+v", outcomes)
-			require.Zero(t, outcomes[retryOutcomeNonRetryable], "retry outcomes: %+v", outcomes)
+			must.Equal(int64(1), outcomes[retryOutcomeQuotaExhausted], "retry outcomes: %+v", outcomes)
+			must.Zero(outcomes[retryOutcomeNonRetryable], "retry outcomes: %+v", outcomes)
 
 			var warn map[string]any
-			require.NoError(t, json.Unmarshal(logBuf.Bytes(), &warn), "quota log line: %q", logBuf.String())
-			require.Equal(t, "provider_quota_exhausted", warn["msg"], "quota log: %v", warn)
-			require.Equal(t, "WARN", warn["level"], "quota log: %v", warn)
-			require.Equal(t, tc.wantCode, warn["code"], "quota log: %v", warn)
+			must.NoError(json.Unmarshal(logBuf.Bytes(), &warn), "quota log line: %q", logBuf.String())
+			must.Equal("provider_quota_exhausted", warn["msg"], "quota log: %v", warn)
+			must.Equal("WARN", warn["level"], "quota log: %v", warn)
+			must.Equal(tc.wantCode, warn["code"], "quota log: %v", warn)
 
 			got, err := io.ReadAll(resp.Body)
-			require.NoError(t, err)
-			require.Equal(t, tc.body, string(got))
+			must.NoError(err)
+			must.Equal(tc.body, string(got))
 		})
 	}
 }
@@ -94,6 +95,7 @@ func TestDoWithRetry_NonQuota429sAreRetried(t *testing.T) {
 	}
 	for _, tc := range bodies {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var attempts int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				atomic.AddInt32(&attempts, 1)
@@ -107,22 +109,23 @@ func TestDoWithRetry_NonQuota429sAreRetried(t *testing.T) {
 			m, reader := newTestMetrics(t)
 			resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second},
 				newPostReq(t, srv.URL, `{}`), testOpts(policy, m))
-			require.NoError(t, err)
+			must.NoError(err)
 			t.Cleanup(func() { _ = resp.Body.Close() })
 
-			require.Equal(t, int32(2), atomic.LoadInt32(&attempts))
+			must.Equal(int32(2), atomic.LoadInt32(&attempts))
 
 			outcomes := retryOutcomeFromMetrics(t, reader)
-			require.Equal(t, int64(1), outcomes[retryOutcomeExhausted], "retry outcomes: %+v", outcomes)
+			must.Equal(int64(1), outcomes[retryOutcomeExhausted], "retry outcomes: %+v", outcomes)
 
 			got, err := io.ReadAll(resp.Body)
-			require.NoError(t, err)
-			require.Equal(t, tc.body, string(got))
+			must.NoError(err)
+			must.Equal(tc.body, string(got))
 		})
 	}
 }
 
 func TestDoWithRetry_403IsNotRetried(t *testing.T) {
+	must := require.New(t)
 	var attempts int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&attempts, 1)
@@ -133,11 +136,11 @@ func TestDoWithRetry_403IsNotRetried(t *testing.T) {
 
 	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second},
 		newPostReq(t, srv.URL, `{}`), testOpts(defaultTestPolicy(), nil))
-	require.NoError(t, err)
+	must.NoError(err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
-	require.Equal(t, http.StatusForbidden, resp.StatusCode)
-	require.Equal(t, int32(1), atomic.LoadInt32(&attempts))
+	must.Equal(http.StatusForbidden, resp.StatusCode)
+	must.Equal(int32(1), atomic.LoadInt32(&attempts))
 }
 
 func TestClassifyRetryable_ConsumedShouldRetryWinsOverQuota(t *testing.T) {
@@ -150,25 +153,27 @@ func TestClassifyRetryable_ConsumedShouldRetryWinsOverQuota(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			body := io.NopCloser(strings.NewReader(`{"error":{"code":"insufficient_quota"}}`))
 			resp := &http.Response{StatusCode: http.StatusTooManyRequests, Body: body}
 			shouldRetry := func(*http.Response) (bool, bool) { return tc.verdict, true }
 
 			retryable, quotaCode := classifyRetryable(resp, shouldRetry)
-			require.Equal(t, tc.verdict, retryable)
-			require.Empty(t, quotaCode)
-			require.True(t, resp.Body == body, "classifyRetryable replaced the body despite a consumed ShouldRetry") //nolint:testifylint // identity comparison; Equal would compare by value
+			must.Equal(tc.verdict, retryable)
+			must.Empty(quotaCode)
+			must.True(resp.Body == body, "classifyRetryable replaced the body despite a consumed ShouldRetry") //nolint:testifylint // identity comparison; Equal would compare by value
 		})
 	}
 }
 
 func TestPeekQuotaExhausted_LeavesNon429BodyUntouched(t *testing.T) {
+	must := require.New(t)
 	body := io.NopCloser(strings.NewReader(`{"error":{"code":"insufficient_quota"}}`))
 	resp := &http.Response{StatusCode: http.StatusInternalServerError, Body: body}
 
 	_, exhausted := peekQuotaExhausted(resp)
-	require.False(t, exhausted, "a 500 response must not report quota exhaustion")
-	require.True(t, resp.Body == body, "peekQuotaExhausted replaced the body of a non-429 response") //nolint:testifylint // identity comparison; Equal would compare by value
+	must.False(exhausted, "a 500 response must not report quota exhaustion")
+	must.True(resp.Body == body, "peekQuotaExhausted replaced the body of a non-429 response") //nolint:testifylint // identity comparison; Equal would compare by value
 }
 
 // oneShotErrReader returns data, then err once, then io.EOF, so a caller
@@ -193,6 +198,7 @@ func (r *oneShotErrReader) Read(p []byte) (int, error) {
 }
 
 func TestPeekQuotaExhausted_ReadErrorReachesCaller(t *testing.T) {
+	must := require.New(t)
 	errBoom := errors.New("connection reset mid-body")
 	partial := `{"error":{"code":"insuff`
 	resp := &http.Response{
@@ -201,9 +207,9 @@ func TestPeekQuotaExhausted_ReadErrorReachesCaller(t *testing.T) {
 	}
 
 	code, exhausted := peekQuotaExhausted(resp)
-	require.False(t, exhausted, "partial body reported quota code %q", code)
+	must.False(exhausted, "partial body reported quota code %q", code)
 
 	got, err := io.ReadAll(resp.Body)
-	require.Equal(t, partial, string(got), "peeked bytes must be replayed to the caller")
-	require.ErrorIs(t, err, errBoom)
+	must.Equal(partial, string(got), "peeked bytes must be replayed to the caller")
+	must.ErrorIs(err, errBoom)
 }

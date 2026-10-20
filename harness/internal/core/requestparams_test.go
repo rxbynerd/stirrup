@@ -48,6 +48,7 @@ func (p *paramCapturingProvider) Stream(_ context.Context, params types.StreamPa
 }
 
 func TestRun_RecordsRequestParamsSentToProvider(t *testing.T) {
+	must := require.New(t)
 	temperature := 0.35
 	prov := &paramCapturingProvider{scripts: [][]types.StreamEvent{
 		{
@@ -67,20 +68,21 @@ func TestRun_RecordsRequestParamsSentToProvider(t *testing.T) {
 	config.ReasoningEffort = "high"
 	config.ReasoningSummary = "off"
 	_, err := loop.Run(context.Background(), config)
-	require.NoError(t, err, "Run")
+	must.NoError(err, "Run")
 
 	rec.mu.Lock()
 	records := append([]types.TurnRecord(nil), rec.turnRecords...)
 	turns := append([]types.TurnTrace(nil), rec.turns...)
 	rec.mu.Unlock()
-	require.GreaterOrEqual(t, len(records), 2, "turn records")
-	require.GreaterOrEqual(t, len(prov.params), 2, "provider requests")
+	must.GreaterOrEqual(len(records), 2, "turn records")
+	must.GreaterOrEqual(len(prov.params), 2, "provider requests")
 
 	for i, record := range records {
 		t.Run(fmt.Sprintf("turn %d", i), func(t *testing.T) {
+			must := require.New(t)
 			sent := prov.params[i]
 			got := record.ModelInput.Request
-			require.NotNil(t, got, "ModelInput.Request")
+			must.NotNil(got, "ModelInput.Request")
 			want := types.RequestParams{
 				Temperature:      sent.Temperature,
 				MaxTokens:        sent.MaxTokens,
@@ -89,30 +91,31 @@ func TestRun_RecordsRequestParamsSentToProvider(t *testing.T) {
 				ToolChoice:       sent.ToolChoice,
 				CacheKey:         sent.CacheKey,
 			}
-			require.Equal(t, want, *got, "recorded params match the params sent")
-			require.NotZero(t, got.MaxTokens, "maxTokens")
-			require.NotEmpty(t, got.CacheKey, "cacheKey")
-			require.NotNil(t, got.Temperature, "temperature")
-			require.InDelta(t, temperature, *got.Temperature, 0, "temperature")
-			require.Equal(t, "high", got.ReasoningEffort, "reasoningEffort")
-			require.Equal(t, "off", got.ReasoningSummary, "reasoningSummary")
+			must.Equal(want, *got, "recorded params match the params sent")
+			must.NotZero(got.MaxTokens, "maxTokens")
+			must.NotEmpty(got.CacheKey, "cacheKey")
+			must.NotNil(got.Temperature, "temperature")
+			must.InDelta(temperature, *got.Temperature, 0, "temperature")
+			must.Equal("high", got.ReasoningEffort, "reasoningEffort")
+			must.Equal("off", got.ReasoningSummary, "reasoningSummary")
 		})
 	}
 
-	require.Equal(t, types.ToolChoiceAuto, records[0].ModelInput.Request.ToolChoice, "first turn toolChoice")
-	require.Equal(t, types.ToolChoiceRequired, records[1].ModelInput.Request.ToolChoice, "escalated turn toolChoice")
+	must.Equal(types.ToolChoiceAuto, records[0].ModelInput.Request.ToolChoice, "first turn toolChoice")
+	must.Equal(types.ToolChoiceRequired, records[1].ModelInput.Request.ToolChoice, "escalated turn toolChoice")
 
-	require.Equal(t, "claude-sonnet-4-6-20260101", records[0].ResponseModel, "first TurnRecord.ResponseModel")
-	require.Empty(t, records[1].ResponseModel, "second TurnRecord.ResponseModel")
+	must.Equal("claude-sonnet-4-6-20260101", records[0].ResponseModel, "first TurnRecord.ResponseModel")
+	must.Empty(records[1].ResponseModel, "second TurnRecord.ResponseModel")
 
-	require.NotEmpty(t, turns, "turn traces")
-	require.Equal(t, "claude-sonnet-4-6-20260101", turns[0].ResponseModel, "first TurnTrace.ResponseModel")
+	must.NotEmpty(turns, "turn traces")
+	must.Equal("claude-sonnet-4-6-20260101", turns[0].ResponseModel, "first TurnTrace.ResponseModel")
 	if len(turns) > 1 {
-		require.Empty(t, turns[1].ResponseModel, "second TurnTrace.ResponseModel")
+		must.Empty(turns[1].ResponseModel, "second TurnTrace.ResponseModel")
 	}
 }
 
 func TestRun_DefaultsTemperatureInRecordedRequest(t *testing.T) {
+	must := require.New(t)
 	prov := &paramCapturingProvider{scripts: [][]types.StreamEvent{
 		{{Type: "text_delta", Text: "hi"}, {Type: "message_complete", StopReason: "end_turn"}},
 	}}
@@ -122,18 +125,19 @@ func TestRun_DefaultsTemperatureInRecordedRequest(t *testing.T) {
 	loop.Trace = rec
 
 	_, err := loop.Run(context.Background(), escalationConfig("planning"))
-	require.NoError(t, err, "Run")
+	must.NoError(err, "Run")
 
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
-	require.NotEmpty(t, rec.turnRecords, "turn records")
+	must.NotEmpty(rec.turnRecords, "turn records")
 	got := rec.turnRecords[0].ModelInput.Request
-	require.NotNil(t, got, "recorded request")
-	require.NotNil(t, got.Temperature, "recorded temperature")
-	require.InDelta(t, defaultTemperature, *got.Temperature, 0, "defaulted temperature")
+	must.NotNil(got, "recorded request")
+	must.NotNil(got.Temperature, "recorded temperature")
+	must.InDelta(defaultTemperature, *got.Temperature, 0, "defaulted temperature")
 }
 
 func TestRun_JSONLRecordingHoldsPromptVersionAndRequest(t *testing.T) {
+	must := require.New(t)
 	answer := noToolAnswer()
 	answer[1].ResponseModel = "claude-sonnet-4-6-20260101"
 	prov := &paramCapturingProvider{scripts: [][]types.StreamEvent{answer}}
@@ -143,30 +147,31 @@ func TestRun_JSONLRecordingHoldsPromptVersionAndRequest(t *testing.T) {
 	loop.Trace = trace.NewJSONLTraceEmitter(&buf, false)
 
 	_, err := loop.Run(context.Background(), escalationConfig("planning"))
-	require.NoError(t, err, "Run")
+	must.NoError(err, "Run")
 
 	recording, err := tracereader.NewReader(&buf).ReadRecording()
-	require.NoError(t, err, "ReadRecording")
-	require.Len(t, prov.params, 1, "provider requests")
+	must.NoError(err, "ReadRecording")
+	must.Len(prov.params, 1, "provider requests")
 	sent := prov.params[0]
-	require.Equal(t, sent.System, recording.SystemPrompt, "recorded system prompt")
+	must.Equal(sent.System, recording.SystemPrompt, "recorded system prompt")
 	sum := sha256.Sum256([]byte(sent.System))
-	require.Equal(t, hex.EncodeToString(sum[:]), recording.SystemPromptSHA256, "system prompt digest")
-	require.Equal(t, version.Full(), recording.HarnessVersion, "harness version")
-	require.Len(t, recording.Turns, 1, "recorded turns")
-	require.NotNil(t, recording.Turns[0].ModelInput.Request, "recorded turn request params")
-	require.Equal(t, "claude-sonnet-4-6-20260101", recording.Turns[0].ResponseModel, "recorded response model")
-	require.Equal(t, sent.MaxTokens, recording.Turns[0].ModelInput.Request.MaxTokens, "recorded maxTokens")
+	must.Equal(hex.EncodeToString(sum[:]), recording.SystemPromptSHA256, "system prompt digest")
+	must.Equal(version.Full(), recording.HarnessVersion, "harness version")
+	must.Len(recording.Turns, 1, "recorded turns")
+	must.NotNil(recording.Turns[0].ModelInput.Request, "recorded turn request params")
+	must.Equal("claude-sonnet-4-6-20260101", recording.Turns[0].ResponseModel, "recorded response model")
+	must.Equal(sent.MaxTokens, recording.Turns[0].ModelInput.Request.MaxTokens, "recorded maxTokens")
 }
 
 func TestRequestParamsOf_NilTemperatureIsOmitted(t *testing.T) {
+	must := require.New(t)
 	got := requestParamsOf(types.StreamParams{MaxTokens: 1000})
-	require.Nil(t, got.Temperature, "temperature must be omitted rather than recorded as 0")
-	require.Equal(t, 1000, got.MaxTokens, "maxTokens")
+	must.Nil(got.Temperature, "temperature must be omitted rather than recorded as 0")
+	must.Equal(1000, got.MaxTokens, "maxTokens")
 
 	line, err := json.Marshal(got)
-	require.NoError(t, err)
-	require.NotContains(t, string(line), "temperature", "recorded request params %s", line)
+	must.NoError(err)
+	must.NotContains(string(line), "temperature", "recorded request params %s", line)
 }
 
 func TestStreamEventsToResult_BoundsAndScrubsResponseModel(t *testing.T) {
@@ -179,30 +184,36 @@ func TestStreamEventsToResult_BoundsAndScrubsResponseModel(t *testing.T) {
 		check func(t *testing.T, got string)
 	}{
 		{"ordinary id is unchanged", "claude-sonnet-4-6-20260101", func(t *testing.T, got string) {
-			require.Equal(t, "claude-sonnet-4-6-20260101", got)
+			must := require.New(t)
+			must.Equal("claude-sonnet-4-6-20260101", got)
 		}},
 		{"oversized value is capped", strings.Repeat("m", 10*maxResponseModelBytes), func(t *testing.T, got string) {
-			require.Len(t, got, maxResponseModelBytes)
+			must := require.New(t)
+			must.Len(got, maxResponseModelBytes)
 		}},
 		{"cap falls on a rune boundary", multibyte, func(t *testing.T, got string) {
-			require.LessOrEqual(t, len(got), maxResponseModelBytes)
-			require.True(t, utf8.ValidString(got), "capped value is valid UTF-8")
+			must := require.New(t)
+			must.LessOrEqual(len(got), maxResponseModelBytes)
+			must.True(utf8.ValidString(got), "capped value is valid UTF-8")
 		}},
 		{"secret-shaped value is scrubbed", "model-" + secret, func(t *testing.T, got string) {
-			require.NotContains(t, got, secret)
-			require.True(t, strings.HasPrefix(got, "model-"), "non-secret prefix is kept")
+			must := require.New(t)
+			must.NotContains(got, secret)
+			must.True(strings.HasPrefix(got, "model-"), "non-secret prefix is kept")
 		}},
 		{"secret straddling the cap is scrubbed", strings.Repeat("m", maxResponseModelBytes-10) + "-" + secret, func(t *testing.T, got string) {
-			require.NotContains(t, got, "sk-ant")
-			require.LessOrEqual(t, len(got), maxResponseModelBytes)
+			must := require.New(t)
+			must.NotContains(got, "sk-ant")
+			must.LessOrEqual(len(got), maxResponseModelBytes)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			ch := make(chan types.StreamEvent, 2)
 			ch <- types.StreamEvent{Type: "message_complete", StopReason: "end_turn", ResponseModel: tc.model}
 			close(ch)
 			result, err := streamEventsToResult(context.Background(), ch, transport.NewNullTransport(), true, ignoreEmitFailure, nil)
-			require.NoError(t, err, "streamEventsToResult")
+			must.NoError(err, "streamEventsToResult")
 			tc.check(t, result.ResponseModel)
 		})
 	}
@@ -222,6 +233,7 @@ func TestRun_RecordsResolvedReasoningSummary(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			prov := &paramCapturingProvider{scripts: [][]types.StreamEvent{
 				{{Type: "text_delta", Text: "hi"}, {Type: "message_complete", StopReason: "end_turn"}},
 			}}
@@ -235,14 +247,14 @@ func TestRun_RecordsResolvedReasoningSummary(t *testing.T) {
 			config.ReasoningSummary = tc.configured
 
 			_, err := loop.Run(context.Background(), config)
-			require.NoError(t, err, "Run")
+			must.NoError(err, "Run")
 
 			rec.mu.Lock()
 			defer rec.mu.Unlock()
-			require.NotEmpty(t, rec.turnRecords, "turn records")
+			must.NotEmpty(rec.turnRecords, "turn records")
 			got := rec.turnRecords[0].ModelInput.Request
-			require.NotNil(t, got, "recorded request")
-			require.Equal(t, tc.want, got.ReasoningSummary, "recorded reasoningSummary")
+			must.NotNil(got, "recorded request")
+			must.Equal(tc.want, got.ReasoningSummary, "recorded reasoningSummary")
 		})
 	}
 }

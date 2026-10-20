@@ -53,34 +53,38 @@ func TestEvalJudge_ValidateShadow(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			err := tc.judge.ValidateShadow(tc.topLevel)
 			if tc.wantErr == "" {
-				require.NoError(t, err)
+				must.NoError(err)
 				return
 			}
-			require.ErrorContains(t, err, tc.wantErr)
+			must.ErrorContains(err, tc.wantErr)
 		})
 	}
 }
 
 func TestEvalJudge_ShadowJSON(t *testing.T) {
 	t.Run("decodes the shadow flag per sub-judge", func(t *testing.T) {
+		must := require.New(t)
 		var j EvalJudge
-		require.NoError(t, json.Unmarshal([]byte(`{"type":"composite","judges":[{"type":"file-exists","paths":["a"]},{"type":"file-exists","paths":["b"],"shadow":true}]}`), &j))
-		require.False(t, j.Judges[0].Shadow, "first sub-judge should not be a shadow")
-		require.True(t, j.Judges[1].Shadow, "second sub-judge should be a shadow")
-		require.NoError(t, j.ValidateShadow(true))
+		must.NoError(json.Unmarshal([]byte(`{"type":"composite","judges":[{"type":"file-exists","paths":["a"]},{"type":"file-exists","paths":["b"],"shadow":true}]}`), &j))
+		must.False(j.Judges[0].Shadow, "first sub-judge should not be a shadow")
+		must.True(j.Judges[1].Shadow, "second sub-judge should be a shadow")
+		must.NoError(j.ValidateShadow(true))
 	})
 
 	t.Run("rejects a decoded deciding decision sub-judge", func(t *testing.T) {
+		must := require.New(t)
 		var deciding EvalJudge
-		require.NoError(t, json.Unmarshal([]byte(`{"type":"composite","judges":[{"type":"file-exists","paths":["a"]},{"type":"diff-review","criteria":"c","llm":{"provider":"decision","model":"jev-latest"}}]}`), &deciding))
-		require.ErrorContains(t, deciding.ValidateShadow(true), "usable only on a shadow judge")
+		must.NoError(json.Unmarshal([]byte(`{"type":"composite","judges":[{"type":"file-exists","paths":["a"]},{"type":"diff-review","criteria":"c","llm":{"provider":"decision","model":"jev-latest"}}]}`), &deciding))
+		must.ErrorContains(deciding.ValidateShadow(true), "usable only on a shadow judge")
 	})
 
 	t.Run("omits the shadow flag when unset", func(t *testing.T) {
+		must := require.New(t)
 		data, err := json.Marshal(EvalJudge{Type: "file-exists"})
-		require.NoError(t, err)
-		require.NotContains(t, string(data), `"shadow"`)
+		must.NoError(err)
+		must.NotContains(string(data), `"shadow"`)
 	})
 }

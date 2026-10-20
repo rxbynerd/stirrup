@@ -14,11 +14,13 @@ import (
 // future change that accidentally inverts the two files' return values
 // is caught under either build configuration.
 func TestDebugBuild_EnabledUnderTag(t *testing.T) {
-	require.True(t, DebugBuildEnabled(), "DebugBuildEnabled() in a build with -tags stirrupdebug")
+	must := require.New(t)
+	must.True(DebugBuildEnabled(), "DebugBuildEnabled() in a build with -tags stirrupdebug")
 }
 
 // TestVersionSuffix_MarksDebugBuild guards the --version marker: a debug
 // build must never present as a plain release version string.
 func TestVersionSuffix_MarksDebugBuild(t *testing.T) {
-	require.Equal(t, "+debug", VersionSuffix(), "VersionSuffix() in a build with -tags stirrupdebug")
+	must := require.New(t)
+	must.Equal("+debug", VersionSuffix(), "VersionSuffix() in a build with -tags stirrupdebug")
 }

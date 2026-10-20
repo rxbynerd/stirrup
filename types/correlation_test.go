@@ -42,9 +42,10 @@ func TestValidateRunConfig_Correlation_AcceptsValidBlocks(t *testing.T) {
 	}
 	for name, corr := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Correlation = corr
-			require.NoError(t, ValidateRunConfig(c))
+			must.NoError(ValidateRunConfig(c))
 		})
 	}
 }
@@ -86,63 +87,71 @@ func TestValidateRunConfig_Correlation_RejectsInvalidBlocks(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			corr := tc.corr
 			c.Correlation = &corr
 			err := ValidateRunConfig(c)
-			require.ErrorContains(t, err, tc.want)
+			must.ErrorContains(err, tc.want)
 		})
 	}
 }
 
 func TestValidateRunConfig_Correlation_URLErrorOmitsUserinfo(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.Correlation = &CorrelationConfig{URL: "https://alice:hunter2@cp.example.com/runs/42"}
 	err := ValidateRunConfig(c)
-	require.Error(t, err)
-	require.NotContains(t, err.Error(), "hunter2", "error must not echo the URL's credentials")
+	must.Error(err)
+	must.NotContains(err.Error(), "hunter2", "error must not echo the URL's credentials")
 }
 
 func TestValidateRunConfig_Correlation_LabelKeyEchoIsCapped(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	long := "Bad" + strings.Repeat("x", 500)
 	c.Correlation = &CorrelationConfig{Labels: map[string]string{long: "v"}}
 	err := ValidateRunConfig(c)
-	require.Error(t, err)
+	must.Error(err)
 	t.Run("does not echo more than 64 bytes of the key", func(t *testing.T) {
-		require.NotContains(t, err.Error(), long[:100])
+		must := require.New(t)
+		must.NotContains(err.Error(), long[:100])
 	})
 	t.Run("echoes the first 64 bytes of the key and an ellipsis", func(t *testing.T) {
-		require.Contains(t, err.Error(), long[:64]+`"…`)
+		must := require.New(t)
+		must.Contains(err.Error(), long[:64]+`"…`)
 	})
 }
 
 func TestRedact_Correlation_PreservedAsDeepCopy(t *testing.T) {
+	must := require.New(t)
 	rc := RunConfig{
 		Provider:    ProviderConfig{APIKeyRef: "secret://k"},
 		Correlation: fullCorrelation(),
 	}
 	redacted := rc.Redact()
-	require.Equal(t, fullCorrelation(), redacted.Correlation, "Correlation should survive Redact unchanged")
+	must.Equal(fullCorrelation(), redacted.Correlation, "Correlation should survive Redact unchanged")
 	redacted.Correlation.URL = "mutated"
 	redacted.Correlation.Labels["agent_profile"] = "mutated"
-	require.Equal(t, fullCorrelation(), rc.Correlation, "mutating the redacted copy reached the live config")
+	must.Equal(fullCorrelation(), rc.Correlation, "mutating the redacted copy reached the live config")
 }
 
 func TestCorrelationConfig_JSON_FieldNames(t *testing.T) {
+	must := require.New(t)
 	raw, err := json.Marshal(RunConfig{Correlation: fullCorrelation()})
-	require.NoError(t, err)
+	must.NoError(err)
 	var decoded struct {
 		Correlation map[string]json.RawMessage `json:"correlation"`
 	}
-	require.NoError(t, json.Unmarshal(raw, &decoded))
+	must.NoError(json.Unmarshal(raw, &decoded))
 	for _, key := range []string{"sessionId", "taskId", "attemptId", "userId", "url", "labels"} {
 		t.Run(key, func(t *testing.T) {
-			require.Contains(t, decoded.Correlation, key, "correlation JSON: %s", raw)
+			must := require.New(t)
+			must.Contains(decoded.Correlation, key, "correlation JSON: %s", raw)
 		})
 	}
 
 	bare, err := json.Marshal(RunConfig{})
-	require.NoError(t, err)
-	require.NotContains(t, string(bare), `"correlation"`, "an absent block must be omitted: %s", bare)
+	must.NoError(err)
+	must.NotContains(string(bare), `"correlation"`, "an absent block must be omitted: %s", bare)
 }

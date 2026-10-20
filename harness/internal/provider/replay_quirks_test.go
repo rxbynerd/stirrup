@@ -26,10 +26,11 @@ import (
 // so JSON.Unmarshal succeeds on synthetic fixtures.
 func loadReplayFixture(t *testing.T, path string) map[string][]any {
 	t.Helper()
+	must := require.New(t)
 	raw, err := quirkstest.LoadFixture(path)
-	require.NoError(t, err, "load replay fixture %s", path)
+	must.NoError(err, "load replay fixture %s", path)
 	var doc map[string]any
-	require.NoError(t, json.Unmarshal(raw, &doc), "parse replay fixture %s, body: %s", path, raw)
+	must.NoError(json.Unmarshal(raw, &doc), "parse replay fixture %s, body: %s", path, raw)
 	out := map[string][]any{}
 	for k, v := range doc {
 		if arr, ok := v.([]any); ok {
@@ -45,8 +46,9 @@ func loadReplayFixture(t *testing.T, path string) map[string][]any {
 // and returns the wire-equivalent bytes verbatim for a test server to write.
 func streamFixtureSSE(t *testing.T, path string) []byte {
 	t.Helper()
+	must := require.New(t)
 	raw, err := os.ReadFile(path)
-	require.NoError(t, err, "read sse fixture %s", path)
+	must.NoError(err, "read sse fixture %s", path)
 
 	if bytes.HasPrefix(raw, []byte("# synthetic:")) {
 		if idx := bytes.IndexByte(raw, '\n'); idx >= 0 {
@@ -62,14 +64,15 @@ func streamFixtureSSE(t *testing.T, path string) []byte {
 // SSE bytes verbatim, so a test can drive the real adapter Stream path.
 func sseStubServer(t *testing.T, sse []byte) *httptest.Server {
 	t.Helper()
+	check := assert.New(t)
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The handler runs on the server's goroutine, where require must not be used.
 		_, err := io.ReadAll(r.Body)
-		assert.NoError(t, err, "read request body")
+		check.NoError(err, "read request body")
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, err = w.Write(sse)
-		assert.NoError(t, err, "write sse")
+		check.NoError(err, "write sse")
 	}))
 }
 
@@ -77,10 +80,11 @@ func sseStubServer(t *testing.T, sse []byte) *httptest.Server {
 // is a "type=error" event, and returns the slice for inspection.
 func drainStream(t *testing.T, ch <-chan types.StreamEvent) []types.StreamEvent {
 	t.Helper()
+	check := assert.New(t)
 	var events []types.StreamEvent
 	for ev := range ch {
 		// The channel is read to close even after an error event, so the producer never blocks.
-		assert.NotEqual(t, "error", ev.Type, "stream emitted error event: %v", ev.Error)
+		check.NotEqual("error", ev.Type, "stream emitted error event: %v", ev.Error)
 		events = append(events, ev)
 	}
 	return events
@@ -91,15 +95,16 @@ func drainStream(t *testing.T, ch <-chan types.StreamEvent) []types.StreamEvent 
 // Returns nil if the log line was not emitted.
 func extractReplayFieldsLog(t *testing.T, logOutput string) map[string]int {
 	t.Helper()
+	must := require.New(t)
 
 	for _, line := range strings.Split(logOutput, "\n") {
 		if !strings.Contains(line, "quirks replay fields captured") {
 			continue
 		}
 		var record map[string]any
-		require.NoError(t, json.Unmarshal([]byte(line), &record), "parse log line: %s", line)
+		must.NoError(json.Unmarshal([]byte(line), &record), "parse log line: %s", line)
 		raw, ok := record["replay_fields_captured"].(map[string]any)
-		require.True(t, ok, "replay_fields_captured missing or not a map in: %s", line)
+		must.True(ok, "replay_fields_captured missing or not a map in: %s", line)
 		out := map[string]int{}
 		for path, summary := range raw {
 			s, ok := summary.(map[string]any)
@@ -119,6 +124,7 @@ func extractReplayFieldsLog(t *testing.T, logOutput string) map[string]int {
 // debug-level log output.
 func streamOpenAICompatibleWithDebugLog(t *testing.T, ssePath, model string) ([]types.StreamEvent, string) {
 	t.Helper()
+	must := require.New(t)
 	srv := sseStubServer(t, streamFixtureSSE(t, ssePath))
 	t.Cleanup(srv.Close)
 
@@ -135,7 +141,7 @@ func streamOpenAICompatibleWithDebugLog(t *testing.T, ssePath, model string) ([]
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	events := drainStream(t, ch)
 	return events, buf.String()
 }
@@ -144,6 +150,7 @@ func streamOpenAICompatibleWithDebugLog(t *testing.T, ssePath, model string) ([]
 // for model and returns the debug-level log output.
 func streamGeminiWithDebugLog(t *testing.T, ssePath, model string, tools []types.ToolDefinition) string {
 	t.Helper()
+	must := require.New(t)
 	srv := sseStubServer(t, streamFixtureSSE(t, ssePath))
 	t.Cleanup(srv.Close)
 
@@ -162,7 +169,7 @@ func streamGeminiWithDebugLog(t *testing.T, ssePath, model string, tools []types
 		},
 		Tools: tools,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	drainStream(t, ch)
 	return buf.String()
 }
@@ -171,13 +178,15 @@ func streamGeminiWithDebugLog(t *testing.T, ssePath, model string, tools []types
 // want, each captured once per value in the fixture.
 func requireReplayCaptureCounts(t *testing.T, want map[string][]any, logOutput string) {
 	t.Helper()
+	must := require.New(t)
 	got := extractReplayFieldsLog(t, logOutput)
-	require.NotNil(t, got, "debug log missing 'quirks replay fields captured' record; log:\n%s", logOutput)
+	must.NotNil(got, "debug log missing 'quirks replay fields captured' record; log:\n%s", logOutput)
 	for path, wantPieces := range want {
 		t.Run(path, func(t *testing.T) {
+			must := require.New(t)
 			gotCount, ok := got[path]
-			require.True(t, ok, "path not captured; got summary %v", got)
-			require.Equal(t, len(wantPieces), gotCount)
+			must.True(ok, "path not captured; got summary %v", got)
+			must.Equal(len(wantPieces), gotCount)
 		})
 	}
 }
@@ -214,6 +223,7 @@ func TestReplayFields_DeepSeekV4_PreservesReasoningContent(t *testing.T) {
 // production Stream path; the gateway sibling rule must fire since the
 // bare deepseek-v4* glob cannot match across the slash.
 func TestReplayFields_DeepSeekV4Gateway_PreservesReasoningContent(t *testing.T) {
+	must := require.New(t)
 	const ssePath = "testdata/quirks/openai-compatible/deepseek/deepseek-v4-flash/response.sse"
 	const replayPath = "testdata/quirks/openai-compatible/deepseek/deepseek-v4-flash/replay.json"
 
@@ -229,9 +239,9 @@ func TestReplayFields_DeepSeekV4Gateway_PreservesReasoningContent(t *testing.T) 
 			complete = &events[i]
 		}
 	}
-	require.NotNil(t, complete, "no message_complete event in %v", events)
+	must.NotNil(complete, "no message_complete event in %v", events)
 	wantFlat := `"Weighing the options before answering."`
-	require.Equal(t, wantFlat, string(complete.ReplayFields["reasoning_content"]))
+	must.Equal(wantFlat, string(complete.ReplayFields["reasoning_content"]))
 }
 
 // TestReplayFields_Gemini3_PreservesThoughtSignature drives the
@@ -255,20 +265,22 @@ func TestReplayFields_Gemini3_PreservesThoughtSignature(t *testing.T) {
 // TestReplayFields_GPT4o_NoCaptureWhenNoRuleFires pins the negative case:
 // a model with no ReplayFields rule produces no debug summary line.
 func TestReplayFields_GPT4o_NoCaptureWhenNoRuleFires(t *testing.T) {
+	must := require.New(t)
 	// Reuses the o1-mini fixture: gpt-4o has no dedicated SSE fixture, and
 	// only the *absence* of the debug line is under test here.
 	_, logOutput := streamOpenAICompatibleWithDebugLog(t, "testdata/quirks/openai-compatible/o1-mini/response.sse", "gpt-4o")
 
-	require.NotContains(t, logOutput, "quirks replay fields captured",
+	must.NotContains(logOutput, "quirks replay fields captured",
 		"replay-fields debug line surfaced when no rule fired; log:\n%s", logOutput)
 }
 
 // TestReplayFields_Gemini25_NoCaptureWhenNoRuleFires mirrors the gpt-4o
 // negative test: a 2.5 stream must not fire the gemini-3* rule.
 func TestReplayFields_Gemini25_NoCaptureWhenNoRuleFires(t *testing.T) {
+	must := require.New(t)
 	logOutput := streamGeminiWithDebugLog(t, "testdata/quirks/gemini/gemini-2.5-pro/response.sse", "gemini-2.5-pro", nil)
 
-	require.NotContains(t, logOutput, "quirks replay fields captured",
+	must.NotContains(logOutput, "quirks replay fields captured",
 		"replay-fields debug line surfaced when no rule fired; log:\n%s", logOutput)
 }
 
@@ -276,11 +288,12 @@ func TestReplayFields_Gemini25_NoCaptureWhenNoRuleFires(t *testing.T) {
 // records only the captured length, never the verbatim reasoning_content
 // value.
 func TestReplayFields_DeepSeekReasoner_LogIsLengthOnly(t *testing.T) {
+	must := require.New(t)
 	const ssePath = "testdata/quirks/openai-compatible/deepseek-reasoner/response.sse"
 
 	_, logOutput := streamOpenAICompatibleWithDebugLog(t, ssePath, "deepseek-reasoner")
 
-	require.Contains(t, logOutput, "quirks replay fields captured",
+	must.Contains(logOutput, "quirks replay fields captured",
 		"debug log missing 'quirks replay fields captured' record; log:\n%s", logOutput)
 
 	for _, tc := range []struct {
@@ -291,7 +304,8 @@ func TestReplayFields_DeepSeekReasoner_LogIsLengthOnly(t *testing.T) {
 		{"arithmetic reasoning", "The user asked for 2+2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			require.NotContains(t, logOutput, tc.leaked, "debug log leaked reasoning_content: %s", logOutput)
+			must := require.New(t)
+			must.NotContains(logOutput, tc.leaked, "debug log leaked reasoning_content: %s", logOutput)
 		})
 	}
 }
@@ -300,6 +314,7 @@ func TestReplayFields_DeepSeekReasoner_LogIsLengthOnly(t *testing.T) {
 // value arriving across multiple chunks accumulates in order, rather
 // than being overwritten by the last chunk's piece.
 func TestReplayFieldsCapture_AcrossCallChunks_AccumulatesInOrder(t *testing.T) {
+	must := require.New(t)
 	const ssePath = "testdata/quirks/openai-compatible/deepseek-reasoner/response.sse"
 
 	_, logOutput := streamOpenAICompatibleWithDebugLog(t, ssePath, "deepseek-reasoner")
@@ -308,7 +323,7 @@ func TestReplayFieldsCapture_AcrossCallChunks_AccumulatesInOrder(t *testing.T) {
 	// Fixture has 3 reasoning_content chunks: an empty initial role chunk
 	// plus two real pieces; the walker captures every non-nil value.
 	wantCount := 3
-	require.Equal(t, wantCount, got["reasoning_content"], "captured pieces; got %v", got)
+	must.Equal(wantCount, got["reasoning_content"], "captured pieces; got %v", got)
 }
 
 // TestQuirksRegistry_Resolve_SetsReplayFields asserts the registry resolves
@@ -326,8 +341,9 @@ func TestQuirksRegistry_Resolve_SetsReplayFields(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			q := quirks.DefaultRegistry().Resolve(tc.providerType, tc.model)
-			require.Equal(t, tc.wantPaths, q.ReplayFields)
+			must.Equal(tc.wantPaths, q.ReplayFields)
 		})
 	}
 }

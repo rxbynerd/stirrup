@@ -21,8 +21,9 @@ import (
 
 func mustMarshal(t *testing.T, v any) []byte {
 	t.Helper()
+	must := require.New(t)
 	data, err := json.Marshal(v)
-	require.NoError(t, err)
+	must.NoError(err)
 	return data
 }
 
@@ -31,6 +32,7 @@ func discardLogger() *slog.Logger {
 }
 
 func TestReader_AllAndLast_ReturnRecordsInOrder(t *testing.T) {
+	must := require.New(t)
 	traces := []types.RunTrace{
 		{ID: "first", Turns: 1},
 		{ID: "second", Turns: 5},
@@ -44,17 +46,18 @@ func TestReader_AllAndLast_ReturnRecordsInOrder(t *testing.T) {
 	body := buf.Bytes()
 
 	got, err := NewReader(bytes.NewReader(body), WithLogger(discardLogger())).All()
-	require.NoError(t, err)
-	require.Len(t, got, 2)
-	require.Equal(t, "first", got[0].ID)
-	require.Equal(t, "second", got[1].ID)
+	must.NoError(err)
+	must.Len(got, 2)
+	must.Equal("first", got[0].ID)
+	must.Equal("second", got[1].ID)
 
 	last, err := NewReader(bytes.NewReader(body), WithLogger(discardLogger())).Last()
-	require.NoError(t, err)
-	require.Equal(t, "second", last.ID)
+	must.NoError(err)
+	must.Equal("second", last.ID)
 }
 
 func TestReader_SkipMalformed(t *testing.T) {
+	must := require.New(t)
 	good := mustMarshal(t, types.RunTrace{ID: "ok", Turns: 2})
 
 	var buf bytes.Buffer
@@ -65,24 +68,26 @@ func TestReader_SkipMalformed(t *testing.T) {
 	buf.WriteString("{still bad\n")
 
 	got, err := NewReader(&buf, WithLogger(discardLogger())).All()
-	require.NoError(t, err)
-	require.Len(t, got, 1)
-	require.Equal(t, "ok", got[0].ID)
+	must.NoError(err)
+	must.Len(got, 1)
+	must.Equal("ok", got[0].ID)
 }
 
 func TestReader_EmptyFile(t *testing.T) {
+	must := require.New(t)
 	path := filepath.Join(t.TempDir(), "empty.jsonl")
-	require.NoError(t, os.WriteFile(path, nil, 0o644))
+	must.NoError(os.WriteFile(path, nil, 0o644))
 
 	r, err := Open(path, WithLogger(discardLogger()))
-	require.NoError(t, err)
+	must.NoError(err)
 	defer func() { _ = r.Close() }()
 
 	_, err = r.Last()
-	require.Error(t, err, "Last on an empty file must fail")
+	must.Error(err, "Last on an empty file must fail")
 }
 
 func TestReader_OversizedLineSkipped(t *testing.T) {
+	must := require.New(t)
 	good := mustMarshal(t, types.RunTrace{ID: "ok"})
 	oversized := bytes.Repeat([]byte("x"), MaxLineBytes+8)
 
@@ -93,45 +98,49 @@ func TestReader_OversizedLineSkipped(t *testing.T) {
 	buf.WriteByte('\n')
 
 	got, err := NewReader(&buf, WithLogger(discardLogger())).All()
-	require.NoError(t, err)
-	require.Len(t, got, 1)
-	require.Equal(t, "ok", got[0].ID)
+	must.NoError(err)
+	must.Len(got, 1)
+	must.Equal("ok", got[0].ID)
 }
 
 func TestReader_Next_ReturnsEOFOnEmptyInput(t *testing.T) {
+	must := require.New(t)
 	_, err := NewReader(strings.NewReader(""), WithLogger(discardLogger())).Next()
-	require.ErrorIs(t, err, io.EOF)
+	must.ErrorIs(err, io.EOF)
 }
 
 func TestOpen_StdinSentinel_DoesNotOwnStdin(t *testing.T) {
+	must := require.New(t)
 	r, err := Open("-", WithLogger(discardLogger()))
-	require.NoError(t, err)
+	must.NoError(err)
 	defer func() { _ = r.Close() }()
-	require.Nil(t, r.closer, "Open(\"-\") must not own stdin")
+	must.Nil(r.closer, "Open(\"-\") must not own stdin")
 }
 
 func TestTail_OneShot_ConsumesAllRecordsInOrder(t *testing.T) {
+	must := require.New(t)
 	path := filepath.Join(t.TempDir(), "trace.jsonl")
 	var buf bytes.Buffer
 	for i, id := range []string{"a", "b", "c"} {
 		buf.Write(mustMarshal(t, types.RunTrace{ID: id, Turns: i + 1}))
 		buf.WriteByte('\n')
 	}
-	require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o644))
+	must.NoError(os.WriteFile(path, buf.Bytes(), 0o644))
 
 	var seen []string
 	err := Tail(context.Background(), path, TailOptions{Logger: discardLogger()}, func(tr *types.RunTrace) error {
 		seen = append(seen, tr.ID)
 		return nil
 	})
-	require.NoError(t, err)
-	require.Equal(t, []string{"a", "b", "c"}, seen)
+	must.NoError(err)
+	must.Equal([]string{"a", "b", "c"}, seen)
 }
 
 func TestTail_Follow_StreamsAppendedRecords(t *testing.T) {
+	must := require.New(t)
 	path := filepath.Join(t.TempDir(), "live.jsonl")
 	initial := mustMarshal(t, types.RunTrace{ID: "first"})
-	require.NoError(t, os.WriteFile(path, append(initial, '\n'), 0o644))
+	must.NoError(os.WriteFile(path, append(initial, '\n'), 0o644))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -153,9 +162,9 @@ func TestTail_Follow_StreamsAppendedRecords(t *testing.T) {
 		t.Helper()
 		select {
 		case got := <-seenCh:
-			require.Equal(t, want, got)
+			must.Equal(want, got)
 		case <-time.After(2 * time.Second):
-			require.FailNow(t, "timeout waiting for record", "record %q", want)
+			must.FailNow("timeout waiting for record", "record %q", want)
 		}
 	}
 
@@ -163,9 +172,9 @@ func TestTail_Follow_StreamsAppendedRecords(t *testing.T) {
 
 	// Append a second record while Tail is following.
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = f.Write(append(mustMarshal(t, types.RunTrace{ID: "second"}), '\n'))
-	require.NoError(t, err)
+	must.NoError(err)
 	_ = f.Close()
 
 	expectID("second")
@@ -173,21 +182,22 @@ func TestTail_Follow_StreamsAppendedRecords(t *testing.T) {
 	cancel()
 	select {
 	case err := <-doneCh:
-		require.NoError(t, err)
+		must.NoError(err)
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "Tail did not exit after cancel")
+		must.FailNow("Tail did not exit after cancel")
 	}
 }
 
 func TestTail_HandlerError_AbortsTail(t *testing.T) {
+	must := require.New(t)
 	path := filepath.Join(t.TempDir(), "trace.jsonl")
-	require.NoError(t, os.WriteFile(path, append(mustMarshal(t, types.RunTrace{ID: "x"}), '\n'), 0o644))
+	must.NoError(os.WriteFile(path, append(mustMarshal(t, types.RunTrace{ID: "x"}), '\n'), 0o644))
 
 	stop := errors.New("stop")
 	err := Tail(context.Background(), path, TailOptions{Logger: discardLogger()}, func(*types.RunTrace) error {
 		return stop
 	})
-	require.ErrorIs(t, err, stop)
+	must.ErrorIs(err, stop)
 }
 
 // streamingTrace renders a synthetic streaming-event JSONL file: one
@@ -241,6 +251,7 @@ func streamingTrace(t *testing.T, runID string, config types.RunConfig, turns []
 // the streaming wire shape, Reader.Next surfaces the trace embedded
 // in the run_finished event and skips the other event kinds.
 func TestReader_StreamingFormat_NextYieldsRunFinishedTrace(t *testing.T) {
+	must := require.New(t)
 	body := streamingTrace(t,
 		"run-stream",
 		types.RunConfig{RunID: "run-stream", Mode: "execution"},
@@ -250,16 +261,18 @@ func TestReader_StreamingFormat_NextYieldsRunFinishedTrace(t *testing.T) {
 		types.RunTrace{ID: "run-stream", Turns: 1, Outcome: "success"},
 	)
 	got, err := NewReader(bytes.NewReader(body), WithLogger(discardLogger())).All()
-	require.NoError(t, err)
-	require.Len(t, got, 1)
-	require.Equal(t, "run-stream", got[0].ID)
-	require.Equal(t, "success", got[0].Outcome)
+	must.NoError(err)
+	must.Len(got, 1)
+	must.Equal("run-stream", got[0].ID)
+	must.Equal("success", got[0].Outcome)
 }
 
 // TestReader_LegacyAndStreaming_ParseEquivalent pins that a legacy
 // single-blob trace and a streaming trace describing the same run
 // surface identical *types.RunTrace values via Reader.Next.
 func TestReader_LegacyAndStreaming_ParseEquivalent(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	finalOutcome := types.RunTrace{
 		ID:      "run-shared",
 		Turns:   2,
@@ -279,21 +292,22 @@ func TestReader_LegacyAndStreaming_ParseEquivalent(t *testing.T) {
 	)
 
 	gotLegacy, err := NewReader(bytes.NewReader(legacy), WithLogger(discardLogger())).All()
-	require.NoError(t, err, "legacy All")
+	must.NoError(err, "legacy All")
 	gotStreaming, err := NewReader(bytes.NewReader(streaming), WithLogger(discardLogger())).All()
-	require.NoError(t, err, "streaming All")
-	require.Len(t, gotLegacy, 1)
-	require.Len(t, gotStreaming, 1)
+	must.NoError(err, "streaming All")
+	must.Len(gotLegacy, 1)
+	must.Len(gotStreaming, 1)
 
-	assert.Equal(t, gotLegacy[0].ID, gotStreaming[0].ID, "ID differs between legacy and streaming")
-	assert.Equal(t, gotLegacy[0].Outcome, gotStreaming[0].Outcome, "Outcome differs between legacy and streaming")
-	assert.Equal(t, gotLegacy[0].Turns, gotStreaming[0].Turns, "Turns differs between legacy and streaming")
+	check.Equal(gotLegacy[0].ID, gotStreaming[0].ID, "ID differs between legacy and streaming")
+	check.Equal(gotLegacy[0].Outcome, gotStreaming[0].Outcome, "Outcome differs between legacy and streaming")
+	check.Equal(gotLegacy[0].Turns, gotStreaming[0].Turns, "Turns differs between legacy and streaming")
 }
 
 // TestReadRecording_StreamingFormat pins that ReadRecording walks
 // run_started + turn_record* + run_finished and returns a complete
 // *types.RunRecording with transcripts in order.
 func TestReadRecording_StreamingFormat(t *testing.T) {
+	must := require.New(t)
 	turns := []types.TurnRecord{
 		{
 			Turn:        1,
@@ -313,18 +327,19 @@ func TestReadRecording_StreamingFormat(t *testing.T) {
 	)
 
 	rec, err := NewReader(bytes.NewReader(body), WithLogger(discardLogger())).ReadRecording()
-	require.NoError(t, err)
-	require.Equal(t, "run-rec", rec.RunID)
-	require.Equal(t, "execution", rec.Config.Mode)
-	require.Len(t, rec.Turns, 2)
-	require.Equal(t, 1, rec.Turns[0].Turn)
-	require.Equal(t, 2, rec.Turns[1].Turn)
-	require.Equal(t, "success", rec.FinalOutcome.Outcome)
+	must.NoError(err)
+	must.Equal("run-rec", rec.RunID)
+	must.Equal("execution", rec.Config.Mode)
+	must.Len(rec.Turns, 2)
+	must.Equal(1, rec.Turns[0].Turn)
+	must.Equal(2, rec.Turns[1].Turn)
+	must.Equal("success", rec.FinalOutcome.Outcome)
 }
 
 // TestReadRecording_PreservesOutputLimitRecovery pins that the per-turn
 // output-limit recovery flag survives the turn_record round trip.
 func TestReadRecording_PreservesOutputLimitRecovery(t *testing.T) {
+	must := require.New(t)
 	turns := []types.TurnRecord{
 		{Turn: 0, OutputLimitRecovery: true},
 		{Turn: 1},
@@ -333,15 +348,16 @@ func TestReadRecording_PreservesOutputLimitRecovery(t *testing.T) {
 		types.RunTrace{ID: "run-olr", Turns: 2, Outcome: "success"})
 
 	rec, err := NewReader(bytes.NewReader(body), WithLogger(discardLogger())).ReadRecording()
-	require.NoError(t, err)
-	require.Len(t, rec.Turns, 2)
-	require.True(t, rec.Turns[0].OutputLimitRecovery)
-	require.False(t, rec.Turns[1].OutputLimitRecovery)
+	must.NoError(err)
+	must.Len(rec.Turns, 2)
+	must.True(rec.Turns[0].OutputLimitRecovery)
+	must.False(rec.Turns[1].OutputLimitRecovery)
 }
 
 // TestReadRecording_PreservesStallNudge pins that the per-turn stall
 // nudge flag survives the turn_record round trip.
 func TestReadRecording_PreservesStallNudge(t *testing.T) {
+	must := require.New(t)
 	turns := []types.TurnRecord{
 		{Turn: 0},
 		{Turn: 1, StallNudge: true},
@@ -350,15 +366,16 @@ func TestReadRecording_PreservesStallNudge(t *testing.T) {
 		types.RunTrace{ID: "run-nudge", Turns: 2, Outcome: "success"})
 
 	rec, err := NewReader(bytes.NewReader(body), WithLogger(discardLogger())).ReadRecording()
-	require.NoError(t, err)
-	require.Len(t, rec.Turns, 2)
-	require.False(t, rec.Turns[0].StallNudge)
-	require.True(t, rec.Turns[1].StallNudge)
+	must.NoError(err)
+	must.Len(rec.Turns, 2)
+	must.False(rec.Turns[0].StallNudge)
+	must.True(rec.Turns[1].StallNudge)
 }
 
 // TestReadRecording_PreservesWindDown pins that the per-turn wind-down
 // trigger survives the turn_record round trip.
 func TestReadRecording_PreservesWindDown(t *testing.T) {
+	must := require.New(t)
 	turns := []types.TurnRecord{
 		{Turn: 0},
 		{Turn: 1, WindDown: "turns"},
@@ -367,10 +384,10 @@ func TestReadRecording_PreservesWindDown(t *testing.T) {
 		types.RunTrace{ID: "run-wind-down", Turns: 2, Outcome: "success"})
 
 	rec, err := NewReader(bytes.NewReader(body), WithLogger(discardLogger())).ReadRecording()
-	require.NoError(t, err)
-	require.Len(t, rec.Turns, 2)
-	require.Empty(t, rec.Turns[0].WindDown)
-	require.Equal(t, "turns", rec.Turns[1].WindDown)
+	must.NoError(err)
+	must.Len(rec.Turns, 2)
+	must.Empty(rec.Turns[0].WindDown)
+	must.Equal("turns", rec.Turns[1].WindDown)
 }
 
 // TestReadRecording_PartialStream pins that a stream interrupted
@@ -378,6 +395,7 @@ func TestReadRecording_PreservesWindDown(t *testing.T) {
 // turns it observed; FinalOutcome.ID stays empty so callers can
 // detect the truncation.
 func TestReadRecording_PartialStream(t *testing.T) {
+	must := require.New(t)
 	body := streamingTrace(t,
 		"run-partial",
 		types.RunConfig{RunID: "run-partial"},
@@ -387,10 +405,10 @@ func TestReadRecording_PartialStream(t *testing.T) {
 		types.RunTrace{}, // no final outcome — streamingTrace skips emit
 	)
 	rec, err := NewReader(bytes.NewReader(body), WithLogger(discardLogger())).ReadRecording()
-	require.NoError(t, err)
-	require.Equal(t, "run-partial", rec.RunID)
-	require.Len(t, rec.Turns, 1)
-	require.Empty(t, rec.FinalOutcome.ID, "a truncated stream has no final outcome")
+	must.NoError(err)
+	must.Equal("run-partial", rec.RunID)
+	must.Len(rec.Turns, 1)
+	must.Empty(rec.FinalOutcome.ID, "a truncated stream has no final outcome")
 }
 
 // TestReadRecording_LegacyFormat pins that a legacy single-blob trace
@@ -398,13 +416,14 @@ func TestReadRecording_PartialStream(t *testing.T) {
 // FinalOutcome and Turns nil. This lets a single consumer accept
 // both wire shapes.
 func TestReadRecording_LegacyFormat(t *testing.T) {
+	must := require.New(t)
 	finalOutcome := types.RunTrace{ID: "run-legacy", Turns: 3, Outcome: "success"}
 	body := append(mustMarshal(t, finalOutcome), '\n')
 	rec, err := NewReader(bytes.NewReader(body), WithLogger(discardLogger())).ReadRecording()
-	require.NoError(t, err)
-	require.Equal(t, "run-legacy", rec.RunID)
-	require.Empty(t, rec.Turns, "legacy trace has no transcript")
-	require.Equal(t, "run-legacy", rec.FinalOutcome.ID)
+	must.NoError(err)
+	must.Equal("run-legacy", rec.RunID)
+	must.Empty(rec.Turns, "legacy trace has no transcript")
+	must.Equal("run-legacy", rec.FinalOutcome.ID)
 }
 
 // oversizedEvent returns a turn_record line longer than MaxLineBytes.
@@ -490,20 +509,21 @@ func TestReadRecording_OversizedLineKeepsRecording(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			r := NewReader(bytes.NewReader(tc.input), WithLogger(discardLogger()))
 			rec, err := r.ReadRecording()
-			require.NoError(t, err)
-			require.Equal(t, "run-big", rec.RunID, "run_started lost")
-			require.Equal(t, "execution", rec.Config.Mode, "run_started lost")
+			must.NoError(err)
+			must.Equal("run-big", rec.RunID, "run_started lost")
+			must.Equal("execution", rec.Config.Mode, "run_started lost")
 
 			var gotTurns []int
 			for _, tr := range rec.Turns {
 				gotTurns = append(gotTurns, tr.Turn)
 			}
-			require.Equal(t, tc.wantTurns, gotTurns)
-			require.Equal(t, tc.wantSkips, rec.SkippedLines)
-			require.Equal(t, tc.wantSkips, r.SkippedLines(), "Reader.SkippedLines")
-			require.Equal(t, tc.wantDone, rec.FinalOutcome.ID != "", "run_finished seen")
+			must.Equal(tc.wantTurns, gotTurns)
+			must.Equal(tc.wantSkips, rec.SkippedLines)
+			must.Equal(tc.wantSkips, r.SkippedLines(), "Reader.SkippedLines")
+			must.Equal(tc.wantDone, rec.FinalOutcome.ID != "", "run_finished seen")
 		})
 	}
 }
@@ -511,34 +531,37 @@ func TestReadRecording_OversizedLineKeepsRecording(t *testing.T) {
 // TestReadRecording_OversizedLineWarns pins that a non-zero skipped
 // count is logged at warn level with the count.
 func TestReadRecording_OversizedLineWarns(t *testing.T) {
+	must := require.New(t)
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	input := joinLines(true, turnEvent(t, 0), oversizedEvent(t, 1))
 
 	_, err := NewReader(bytes.NewReader(input), WithLogger(logger)).ReadRecording()
-	require.NoError(t, err)
+	must.NoError(err)
 	out := logs.String()
-	require.Contains(t, out, "level=WARN")
-	require.Contains(t, out, "skippedLines=1")
+	must.Contains(out, "level=WARN")
+	must.Contains(out, "skippedLines=1")
 }
 
 // TestReadRecording_CleanFile_NoWarnNoSkippedLines pins that a clean file
 // neither warns nor sets SkippedLines, which stays out of the serialised
 // recording.
 func TestReadRecording_CleanFile_NoWarnNoSkippedLines(t *testing.T) {
+	must := require.New(t)
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	rec, err := NewReader(bytes.NewReader(joinLines(true, turnEvent(t, 0))), WithLogger(logger)).ReadRecording()
-	require.NoError(t, err)
-	require.Empty(t, logs.String(), "clean file must not log")
-	require.Zero(t, rec.SkippedLines)
-	require.NotContains(t, string(mustMarshal(t, rec)), "skippedLines", "skippedLines serialised for a complete recording")
+	must.NoError(err)
+	must.Empty(logs.String(), "clean file must not log")
+	must.Zero(rec.SkippedLines)
+	must.NotContains(string(mustMarshal(t, rec)), "skippedLines", "skippedLines serialised for a complete recording")
 }
 
 // TestReader_OversizedTailIsNotReadAsRecord pins that the bytes of an
 // oversized line past the cap are discarded rather than parsed as a
 // record: the tail here is itself a valid trace record.
 func TestReader_OversizedTailIsNotReadAsRecord(t *testing.T) {
+	must := require.New(t)
 	tail := mustMarshal(t, types.RunTrace{ID: "tail-fragment"})
 	var line bytes.Buffer
 	line.Write(bytes.Repeat([]byte(" "), MaxLineBytes+16))
@@ -547,29 +570,32 @@ func TestReader_OversizedTailIsNotReadAsRecord(t *testing.T) {
 
 	r := NewReader(bytes.NewReader(joinLines(true, line.Bytes(), good)), WithLogger(discardLogger()))
 	got, err := r.All()
-	require.NoError(t, err)
-	require.Len(t, got, 1, "only the record after the oversized line is read")
-	require.Equal(t, "after", got[0].ID)
-	require.Equal(t, 1, r.SkippedLines())
+	must.NoError(err)
+	must.Len(got, 1, "only the record after the oversized line is read")
+	must.Equal("after", got[0].ID)
+	must.Equal(1, r.SkippedLines())
 }
 
 // TestReader_LineAtCapIsKept pins the boundary: a line of
 // MaxLineBytes-1 bytes plus its newline is read, not skipped.
 func TestReader_LineAtCapIsKept(t *testing.T) {
+	must := require.New(t)
 	base := mustMarshal(t, types.RunTrace{ID: "edge"})
 	pad := bytes.Repeat([]byte(" "), MaxLineBytes-1-len(base))
 	line := append(append([]byte{}, base...), pad...)
-	require.Len(t, line, MaxLineBytes-1, "test line length")
+	must.Len(line, MaxLineBytes-1, "test line length")
 
 	r := NewReader(bytes.NewReader(joinLines(true, line)), WithLogger(discardLogger()))
 	got, err := r.All()
-	require.NoError(t, err)
-	require.Len(t, got, 1)
-	require.Equal(t, "edge", got[0].ID)
-	require.Zero(t, r.SkippedLines(), "a line at the cap must not be skipped")
+	must.NoError(err)
+	must.Len(got, 1)
+	must.Equal("edge", got[0].ID)
+	must.Zero(r.SkippedLines(), "a line at the cap must not be skipped")
 }
 
 func TestReadRecording_ReadsRequestMetadata(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	lines := strings.Join([]string{
 		`{"kind":"run_started","schemaVersion":"2","runId":"r1","harnessVersion":"v1.2.3 (abc1234)"}`,
 		`{"kind":"system_prompt","runId":"r1","systemPrompt":"be helpful","systemPromptSha256":"deadbeef"}`,
@@ -578,25 +604,27 @@ func TestReadRecording_ReadsRequestMetadata(t *testing.T) {
 	}, "\n") + "\n"
 
 	rec, err := NewReader(strings.NewReader(lines), WithLogger(discardLogger())).ReadRecording()
-	require.NoError(t, err)
-	assert.Equal(t, "v1.2.3 (abc1234)", rec.HarnessVersion)
-	assert.Equal(t, "be helpful", rec.SystemPrompt)
-	assert.Equal(t, "deadbeef", rec.SystemPromptSHA256)
+	must.NoError(err)
+	check.Equal("v1.2.3 (abc1234)", rec.HarnessVersion)
+	check.Equal("be helpful", rec.SystemPrompt)
+	check.Equal("deadbeef", rec.SystemPromptSHA256)
 
-	require.Len(t, rec.Turns, 1)
-	assert.Equal(t, "m-20260101", rec.Turns[0].ResponseModel)
+	must.Len(rec.Turns, 1)
+	check.Equal("m-20260101", rec.Turns[0].ResponseModel)
 
 	req := rec.Turns[0].ModelInput.Request
-	require.NotNil(t, req, "request params not read")
-	require.NotNil(t, req.Temperature)
-	assert.InDelta(t, 0.2, *req.Temperature, 1e-9)
-	assert.Equal(t, 8000, req.MaxTokens)
-	assert.Equal(t, "low", req.ReasoningEffort)
-	assert.Equal(t, types.ToolChoiceRequired, req.ToolChoice)
-	assert.Equal(t, "k", req.CacheKey)
+	must.NotNil(req, "request params not read")
+	must.NotNil(req.Temperature)
+	check.InDelta(0.2, *req.Temperature, 1e-9)
+	check.Equal(8000, req.MaxTokens)
+	check.Equal("low", req.ReasoningEffort)
+	check.Equal(types.ToolChoiceRequired, req.ToolChoice)
+	check.Equal("k", req.CacheKey)
 }
 
 func TestReadRecording_TracesWithoutRequestMetadataStillParse(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	lines := strings.Join([]string{
 		`{"kind":"run_started","schemaVersion":"1","runId":"old"}`,
 		`{"kind":"turn_record","turn":0,"modelInput":{"messages":[],"tools":[],"model":"m"}}`,
@@ -604,15 +632,16 @@ func TestReadRecording_TracesWithoutRequestMetadataStillParse(t *testing.T) {
 	}, "\n") + "\n"
 
 	rec, err := NewReader(strings.NewReader(lines), WithLogger(discardLogger())).ReadRecording()
-	require.NoError(t, err)
-	require.Len(t, rec.Turns, 1)
-	require.Nil(t, rec.Turns[0].ModelInput.Request, "legacy turn has no request params")
-	assert.Empty(t, rec.HarnessVersion, "legacy trace gained a harness version")
-	assert.Empty(t, rec.SystemPrompt, "legacy trace gained a system prompt")
-	assert.Empty(t, rec.SystemPromptSHA256, "legacy trace gained a system prompt hash")
+	must.NoError(err)
+	must.Len(rec.Turns, 1)
+	must.Nil(rec.Turns[0].ModelInput.Request, "legacy turn has no request params")
+	check.Empty(rec.HarnessVersion, "legacy trace gained a harness version")
+	check.Empty(rec.SystemPrompt, "legacy trace gained a system prompt")
+	check.Empty(rec.SystemPromptSHA256, "legacy trace gained a system prompt hash")
 }
 
 func TestReadRecording_SubRunSystemPromptDoesNotReplaceParents(t *testing.T) {
+	must := require.New(t)
 	lines := strings.Join([]string{
 		`{"kind":"run_started","runId":"p"}`,
 		`{"kind":"system_prompt","runId":"p","systemPrompt":"parent prompt"}`,
@@ -620,6 +649,6 @@ func TestReadRecording_SubRunSystemPromptDoesNotReplaceParents(t *testing.T) {
 	}, "\n") + "\n"
 
 	rec, err := NewReader(strings.NewReader(lines), WithLogger(discardLogger())).ReadRecording()
-	require.NoError(t, err)
-	require.Equal(t, "parent prompt", rec.SystemPrompt, "a sub-run prompt must not replace the parent's")
+	must.NoError(err)
+	must.Equal("parent prompt", rec.SystemPrompt, "a sub-run prompt must not replace the parent's")
 }

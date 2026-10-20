@@ -9,14 +9,15 @@ import (
 )
 
 func TestMarkContextOverflow_KeepsMessageAndDetection(t *testing.T) {
+	must := require.New(t)
 	base := errors.New("prompt is too long")
 	marked := MarkContextOverflow(base)
 
-	require.True(t, IsContextOverflow(marked), "marked error must be detected as an overflow")
-	require.Equal(t, base.Error(), marked.Error())
-	require.ErrorIs(t, marked, base)
-	require.True(t, IsContextOverflow(fmt.Errorf("execute request: %w", marked)), "mark must be found under a wrapping error")
-	require.False(t, IsContextOverflow(base), "unmarked error must not be detected as an overflow")
-	require.False(t, IsContextOverflow(nil))
-	require.NoError(t, MarkContextOverflow(nil))
+	must.True(IsContextOverflow(marked), "marked error must be detected as an overflow")
+	must.Equal(base.Error(), marked.Error())
+	must.ErrorIs(marked, base)
+	must.True(IsContextOverflow(fmt.Errorf("execute request: %w", marked)), "mark must be found under a wrapping error")
+	must.False(IsContextOverflow(base), "unmarked error must not be detected as an overflow")
+	must.False(IsContextOverflow(nil))
+	must.NoError(MarkContextOverflow(nil))
 }

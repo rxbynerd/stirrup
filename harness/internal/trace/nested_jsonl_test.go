@@ -73,6 +73,8 @@ func (r *recordingEmitter) Finish(ctx context.Context, outcome string) (*types.R
 }
 
 func TestNestedJSONLEmitter_ForwardsTurnsAndToolCalls(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	parent := &recordingEmitter{}
 	child := NewNestedJSONLEmitter(parent, "parent-run-1", context.Background())
 
@@ -91,36 +93,40 @@ func TestNestedJSONLEmitter_ForwardsTurnsAndToolCalls(t *testing.T) {
 	})
 	child.RecordPermissionDenial()
 
-	require.Len(t, parent.turns, 1, "forwarded turns")
-	require.Len(t, parent.toolCalls, 1, "forwarded tool calls")
-	require.Equal(t, 1, parent.permissionDenials, "forwarded permission denials")
+	must.Len(parent.turns, 1, "forwarded turns")
+	must.Len(parent.toolCalls, 1, "forwarded tool calls")
+	must.Equal(1, parent.permissionDenials, "forwarded permission denials")
 
 	turn := parent.turns[0]
-	assert.Equal(t, "sub-run-1", turn.RunID, "forwarded turn RunID")
-	assert.Equal(t, "parent-run-1", turn.ParentRunID, "forwarded turn ParentRunID")
-	assert.Equal(t, "sub-run-1", parent.toolCalls[0].RunID, "forwarded tool call RunID")
-	assert.Equal(t, "parent-run-1", parent.toolCalls[0].ParentRunID, "forwarded tool call ParentRunID")
+	check.Equal("sub-run-1", turn.RunID, "forwarded turn RunID")
+	check.Equal("parent-run-1", turn.ParentRunID, "forwarded turn ParentRunID")
+	check.Equal("sub-run-1", parent.toolCalls[0].RunID, "forwarded tool call RunID")
+	check.Equal("parent-run-1", parent.toolCalls[0].ParentRunID, "forwarded tool call ParentRunID")
 	// Original turn fields must round-trip unchanged.
-	assert.Equal(t, 100, turn.Tokens.Input, "forwarded turn input tokens")
-	assert.Equal(t, 50, turn.Tokens.Output, "forwarded turn output tokens")
-	assert.Equal(t, "end_turn", turn.StopReason, "forwarded turn StopReason")
+	check.Equal(100, turn.Tokens.Input, "forwarded turn input tokens")
+	check.Equal(50, turn.Tokens.Output, "forwarded turn output tokens")
+	check.Equal("end_turn", turn.StopReason, "forwarded turn StopReason")
 }
 
 func TestNestedJSONLEmitter_DoesNotCallParentStartOrFinish(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	parent := &recordingEmitter{}
 	child := NewNestedJSONLEmitter(parent, "parent-run-1", context.Background())
 
 	child.Start("sub-run-1", &types.RunConfig{Mode: "execution"})
 
-	assert.Empty(t, parent.starts, "NestedJSONLEmitter.Start must not call parent.Start")
+	check.Empty(parent.starts, "NestedJSONLEmitter.Start must not call parent.Start")
 
 	_, err := child.Finish(context.Background(), "success")
-	require.NoError(t, err, "child Finish")
+	must.NoError(err, "child Finish")
 
-	assert.Empty(t, parent.finishes, "NestedJSONLEmitter.Finish must not call parent.Finish")
+	check.Empty(parent.finishes, "NestedJSONLEmitter.Finish must not call parent.Finish")
 }
 
 func TestNestedJSONLEmitter_FinishReturnsLocalRunTrace(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	parent := &recordingEmitter{}
 	child := NewNestedJSONLEmitter(parent, "parent-run-1", context.Background())
 
@@ -155,31 +161,31 @@ func TestNestedJSONLEmitter_FinishReturnsLocalRunTrace(t *testing.T) {
 	child.RecordPermissionDenial()
 
 	rt, err := child.Finish(context.Background(), "success")
-	require.NoError(t, err, "child Finish")
-	require.NotNil(t, rt)
+	must.NoError(err, "child Finish")
+	must.NotNil(rt)
 
-	assert.Equal(t, "sub-run-1", rt.ID, "RunTrace.ID")
-	assert.Equal(t, 2, rt.Turns, "RunTrace.Turns")
+	check.Equal("sub-run-1", rt.ID, "RunTrace.ID")
+	check.Equal(2, rt.Turns, "RunTrace.Turns")
 	wantTokens := types.TokenUsage{Input: 40, Output: 60, CacheRead: 10, CacheWrite: 2, Reasoning: 3}
-	assert.Equal(t, wantTokens, rt.TokenUsage, "RunTrace.TokenUsage")
-	assert.Len(t, rt.ToolCalls, 1, "RunTrace.ToolCalls")
-	assert.Equal(t, 2, rt.PermissionDenials, "RunTrace.PermissionDenials")
-	assert.Equal(t, "success", rt.Outcome, "RunTrace.Outcome")
-	assert.Equal(t, "secret://[REDACTED]", rt.Config.Provider.APIKeyRef, "APIKeyRef redacted in returned RunTrace")
+	check.Equal(wantTokens, rt.TokenUsage, "RunTrace.TokenUsage")
+	check.Len(rt.ToolCalls, 1, "RunTrace.ToolCalls")
+	check.Equal(2, rt.PermissionDenials, "RunTrace.PermissionDenials")
+	check.Equal("success", rt.Outcome, "RunTrace.Outcome")
+	check.Equal("secret://[REDACTED]", rt.Config.Provider.APIKeyRef, "APIKeyRef redacted in returned RunTrace")
 
 	encoded, err := json.Marshal(rt)
-	require.NoError(t, err, "marshal RunTrace")
-	assert.Contains(t, string(encoded),
+	must.NoError(err, "marshal RunTrace")
+	check.Contains(string(encoded),
 		`"tokenUsage":{"input":40,"output":60,"cacheRead":10,"cacheWrite":2,"reasoning":3}`,
 		"encoded RunTrace token usage breakdown")
 
 	parent.mu.Lock()
 	forwarded := append([]types.TurnTrace(nil), parent.turns...)
 	parent.mu.Unlock()
-	require.Len(t, forwarded, 2, "forwarded turns")
-	assert.Equal(t, types.TokenUsage{Input: 30, Output: 40, CacheRead: 6, CacheWrite: 2, Reasoning: 3},
+	must.Len(forwarded, 2, "forwarded turns")
+	check.Equal(types.TokenUsage{Input: 30, Output: 40, CacheRead: 6, CacheWrite: 2, Reasoning: 3},
 		forwarded[1].Tokens, "forwarded turn usage breakdown")
-	assert.True(t, forwarded[1].InputReported, "forwarded turn InputReported")
+	check.True(forwarded[1].InputReported, "forwarded turn InputReported")
 }
 
 // TestNestedJSONLEmitter_ThinkingBlocksScrubbedOnParentFile pins that a
@@ -187,6 +193,7 @@ func TestNestedJSONLEmitter_FinishReturnsLocalRunTrace(t *testing.T) {
 // rules as the parent's own: the signature and redacted data never persist,
 // and a secret in the thinking text is redacted.
 func TestNestedJSONLEmitter_ThinkingBlocksScrubbedOnParentFile(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	parent := NewJSONLTraceEmitter(&buf, false)
 	parent.Start("parent-run-1", nil)
@@ -212,12 +219,12 @@ func TestNestedJSONLEmitter_ThinkingBlocksScrubbedOnParentFile(t *testing.T) {
 	})
 
 	_, err := child.Finish(context.Background(), "success")
-	require.NoError(t, err, "child Finish")
+	must.NoError(err, "child Finish")
 	_, err = parent.Finish(context.Background(), "success")
-	require.NoError(t, err, "parent Finish")
+	must.NoError(err, "parent Finish")
 
 	onDisk := buf.String()
-	require.Contains(t, onDisk, `"kind":"turn_record"`, "child turn record on the parent file")
+	must.Contains(onDisk, `"kind":"turn_record"`, "child turn record on the parent file")
 
 	for _, tc := range []struct {
 		name   string
@@ -228,15 +235,17 @@ func TestNestedJSONLEmitter_ThinkingBlocksScrubbedOnParentFile(t *testing.T) {
 		{name: "secret is not persisted", leaked: secret},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			require.NotContains(t, onDisk, tc.leaked)
+			must := require.New(t)
+			must.NotContains(onDisk, tc.leaked)
 		})
 	}
 
-	require.Contains(t, onDisk, `"type":"thinking","text":"the key is [REDACTED]`,
+	must.Contains(onDisk, `"type":"thinking","text":"the key is [REDACTED]`,
 		"thinking text should persist scrubbed")
 }
 
 func TestNestedJSONLEmitter_NilParentIsSafe(t *testing.T) {
+	must := require.New(t)
 	// A nil parent must not panic. This protects against accidental
 	// construction paths in tests or future callers.
 	child := NewNestedJSONLEmitter(nil, "parent-run-1", context.Background())
@@ -246,5 +255,5 @@ func TestNestedJSONLEmitter_NilParentIsSafe(t *testing.T) {
 	child.RecordPermissionDenial()
 
 	_, err := child.Finish(context.Background(), "success")
-	require.NoError(t, err, "Finish with nil parent")
+	must.NoError(err, "Finish with nil parent")
 }

@@ -30,6 +30,8 @@ func makeOpenAIChunk(data string) string {
 }
 
 func TestOpenAIAdapter_StreamTextDelta(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	body := strings.Join([]string{
 		makeOpenAIChunk(`{"id":"chatcmpl-1","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`),
 		makeOpenAIChunk(`{"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}`),
@@ -39,8 +41,8 @@ func TestOpenAIAdapter_StreamTextDelta(t *testing.T) {
 	}, "")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
-		assert.True(t, strings.HasSuffix(r.URL.Path, "/chat/completions"), "path %q", r.URL.Path)
+		check.Equal("Bearer test-key", r.Header.Get("Authorization"))
+		check.True(strings.HasSuffix(r.URL.Path, "/chat/completions"), "path %q", r.URL.Path)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, body)
@@ -53,18 +55,18 @@ func TestOpenAIAdapter_StreamTextDelta(t *testing.T) {
 		Model:     "gpt-4o",
 		MaxTokens: 1024,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
-	require.Len(t, events, 3, "events: %+v", events)
+	must.Len(events, 3, "events: %+v", events)
 
-	assert.Equal(t, "text_delta", events[0].Type)
-	assert.Equal(t, "Hello", events[0].Text)
-	assert.Equal(t, "text_delta", events[1].Type)
-	assert.Equal(t, " world", events[1].Text)
-	assert.Equal(t, "message_complete", events[2].Type)
-	assert.Equal(t, "end_turn", events[2].StopReason)
-	assert.Equal(t, 5, events[2].OutputTokens)
+	check.Equal("text_delta", events[0].Type)
+	check.Equal("Hello", events[0].Text)
+	check.Equal("text_delta", events[1].Type)
+	check.Equal(" world", events[1].Text)
+	check.Equal("message_complete", events[2].Type)
+	check.Equal("end_turn", events[2].StopReason)
+	check.Equal(5, events[2].OutputTokens)
 }
 
 // TestOpenAIAdapter_StreamLongDataLine checks that one SSE data line larger
@@ -72,9 +74,11 @@ func TestOpenAIAdapter_StreamTextDelta(t *testing.T) {
 // than failing with bufio.ErrTooLong. The 200 KB payload is above that default
 // and below the 16 MiB maxSSEScannerBuffer cap.
 func TestOpenAIAdapter_StreamLongDataLine(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	longText := strings.Repeat("a", 200*1024)
 	encoded, err := json.Marshal(longText)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	body := strings.Join([]string{
 		makeOpenAIChunk(fmt.Sprintf(`{"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":%s},"finish_reason":null}]}`, encoded)),
@@ -95,18 +99,20 @@ func TestOpenAIAdapter_StreamLongDataLine(t *testing.T) {
 		Model:     "gpt-4o",
 		MaxTokens: 1024,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
-	require.Len(t, events, 2)
+	must.Len(events, 2)
 
-	assert.Equal(t, "text_delta", events[0].Type)
-	assert.Len(t, events[0].Text, len(longText))
-	assert.Equal(t, "message_complete", events[1].Type)
-	assert.Equal(t, "end_turn", events[1].StopReason)
+	check.Equal("text_delta", events[0].Type)
+	check.Len(events[0].Text, len(longText))
+	check.Equal("message_complete", events[1].Type)
+	check.Equal("end_turn", events[1].StopReason)
 }
 
 func TestOpenAIAdapter_StreamToolCall(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	body := strings.Join([]string{
 		makeOpenAIChunk(`{"id":"chatcmpl-2","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"read_file","arguments":""}}]},"finish_reason":null}]}`),
 		makeOpenAIChunk(`{"id":"chatcmpl-2","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":"}}]},"finish_reason":null}]}`),
@@ -128,21 +134,23 @@ func TestOpenAIAdapter_StreamToolCall(t *testing.T) {
 		Model:     "gpt-4o",
 		MaxTokens: 1024,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
-	require.Len(t, events, 2, "events: %+v", events)
+	must.Len(events, 2, "events: %+v", events)
 
-	require.Equal(t, "tool_call", events[0].Type)
-	assert.Equal(t, "call_abc", events[0].ID)
-	assert.Equal(t, "read_file", events[0].Name)
-	assert.Equal(t, "main.go", events[0].Input["path"])
+	must.Equal("tool_call", events[0].Type)
+	check.Equal("call_abc", events[0].ID)
+	check.Equal("read_file", events[0].Name)
+	check.Equal("main.go", events[0].Input["path"])
 
-	assert.Equal(t, "message_complete", events[1].Type)
-	assert.Equal(t, "tool_use", events[1].StopReason)
+	check.Equal("message_complete", events[1].Type)
+	check.Equal("tool_use", events[1].StopReason)
 }
 
 func TestOpenAIAdapter_MultipleToolCalls(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	body := strings.Join([]string{
 		// Two tool calls started in the same chunk.
 		makeOpenAIChunk(`{"id":"chatcmpl-3","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_aaa","type":"function","function":{"name":"read_file","arguments":""}},{"index":1,"id":"call_bbb","type":"function","function":{"name":"write_file","arguments":""}}]},"finish_reason":null}]}`),
@@ -165,30 +173,31 @@ func TestOpenAIAdapter_MultipleToolCalls(t *testing.T) {
 		Model:     "gpt-4o",
 		MaxTokens: 1024,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
 
 	var toolCalls []types.StreamEvent
 	for _, ev := range events {
-		require.NotEqual(t, "error", ev.Type, "unexpected error event: %v", ev.Error)
+		must.NotEqual("error", ev.Type, "unexpected error event: %v", ev.Error)
 		if ev.Type == "tool_call" {
 			toolCalls = append(toolCalls, ev)
 		}
 	}
 
-	require.Len(t, toolCalls, 2)
+	must.Len(toolCalls, 2)
 
-	assert.Equal(t, "call_aaa", toolCalls[0].ID)
-	assert.Equal(t, "read_file", toolCalls[0].Name)
-	assert.Equal(t, "a.go", toolCalls[0].Input["path"])
+	check.Equal("call_aaa", toolCalls[0].ID)
+	check.Equal("read_file", toolCalls[0].Name)
+	check.Equal("a.go", toolCalls[0].Input["path"])
 
-	assert.Equal(t, "call_bbb", toolCalls[1].ID)
-	assert.Equal(t, "write_file", toolCalls[1].Name)
-	assert.Equal(t, "b.go", toolCalls[1].Input["path"])
+	check.Equal("call_bbb", toolCalls[1].ID)
+	check.Equal("write_file", toolCalls[1].Name)
+	check.Equal("b.go", toolCalls[1].Input["path"])
 }
 
 func TestOpenAIAdapter_HTTPError(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
@@ -202,11 +211,12 @@ func TestOpenAIAdapter_HTTPError(t *testing.T) {
 		Model:     "gpt-4o",
 		MaxTokens: 1024,
 	})
-	require.Error(t, err)
-	require.ErrorContains(t, err, "Invalid API key")
+	must.Error(err)
+	must.ErrorContains(err, "Invalid API key")
 }
 
 func TestOpenAIAdapter_HTTPErrorNoBody(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -218,11 +228,12 @@ func TestOpenAIAdapter_HTTPErrorNoBody(t *testing.T) {
 		Model:     "gpt-4o",
 		MaxTokens: 1024,
 	})
-	require.Error(t, err)
-	require.ErrorContains(t, err, "500")
+	must.Error(err)
+	must.ErrorContains(err, "500")
 }
 
 func TestOpenAIAdapter_HTTPErrorLargeBody(t *testing.T) {
+	must := require.New(t)
 	// Error JSON larger than 4096 bytes should be safely handled by the
 	// LimitReader without consuming unbounded memory.
 	largeMsg := strings.Repeat("x", 8192)
@@ -239,18 +250,20 @@ func TestOpenAIAdapter_HTTPErrorLargeBody(t *testing.T) {
 		Model:     "gpt-4o",
 		MaxTokens: 1024,
 	})
-	require.Error(t, err)
+	must.Error(err)
 	// With a 4096-byte limit on the body, the JSON won't fully decode,
 	// so we should fall back to the generic status-code-only error.
-	require.ErrorContains(t, err, "400")
+	must.ErrorContains(err, "400")
 }
 
 func TestOpenAIAdapter_RequestBody(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	var received openaiRequest
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		err := json.NewDecoder(r.Body).Decode(&received)
-		assert.NoError(t, err, "decode request body")
+		check.NoError(err, "decode request body")
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
@@ -282,25 +295,25 @@ func TestOpenAIAdapter_RequestBody(t *testing.T) {
 			},
 		},
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	for range ch {
 	}
 
-	assert.True(t, received.Stream, "stream flag")
-	assert.Equal(t, "gpt-4o", received.Model)
-	assert.Equal(t, 4096, received.MaxTokens)
-	assert.Equal(t, quirks.TokenFieldMaxCompletionTokens, received.TokenField, "default token field")
-	require.NotNil(t, received.Temperature)
-	assert.InDelta(t, 0.5, *received.Temperature, 1e-9)
+	check.True(received.Stream, "stream flag")
+	check.Equal("gpt-4o", received.Model)
+	check.Equal(4096, received.MaxTokens)
+	check.Equal(quirks.TokenFieldMaxCompletionTokens, received.TokenField, "default token field")
+	must.NotNil(received.Temperature)
+	check.InDelta(0.5, *received.Temperature, 1e-9)
 
 	// The system prompt is sent as the first message, followed by the user turn.
-	require.GreaterOrEqual(t, len(received.Messages), 2)
-	assert.Equal(t, "system", received.Messages[0].Role)
-	assert.Equal(t, "user", received.Messages[1].Role)
+	must.GreaterOrEqual(len(received.Messages), 2)
+	check.Equal("system", received.Messages[0].Role)
+	check.Equal("user", received.Messages[1].Role)
 
-	require.Len(t, received.Tools, 1)
-	assert.Equal(t, "function", received.Tools[0].Type)
-	assert.Equal(t, "read_file", received.Tools[0].Function.Name)
+	must.Len(received.Tools, 1)
+	check.Equal("function", received.Tools[0].Type)
+	check.Equal("read_file", received.Tools[0].Function.Name)
 }
 
 // TestOpenAIAdapter_RawBodyShape captures the raw JSON request body and
@@ -346,13 +359,15 @@ func TestOpenAIAdapter_RawBodyShape(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
 			// rawBody is set by the handler before the response is sent, and the
 			// stream is drained before it is read.
 			var rawBody []byte
 
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				b, err := io.ReadAll(r.Body)
-				assert.NoError(t, err, "read body")
+				check.NoError(err, "read body")
 				rawBody = b
 				w.Header().Set("Content-Type", "text/event-stream")
 				w.WriteHeader(http.StatusOK)
@@ -370,31 +385,32 @@ func TestOpenAIAdapter_RawBodyShape(t *testing.T) {
 				MaxTokens:   tc.maxTokens,
 				Temperature: tc.temperature,
 			})
-			require.NoError(t, err)
+			must.NoError(err)
 			for range ch {
 			}
 
 			body := string(rawBody)
 
-			assert.Contains(t, body, `"max_completion_tokens"`)
+			check.Contains(body, `"max_completion_tokens"`)
 			// Match the bare legacy key, not the new field which contains it
 			// as a substring.
-			assert.NotContains(t, body, `"max_tokens"`)
+			check.NotContains(body, `"max_tokens"`)
 			// MaxCompletionTokens has no omitempty, so a zero value must
 			// appear on the wire, unlike a nil Temperature.
 			if tc.maxTokens == 0 {
-				assert.Contains(t, body, `"max_completion_tokens":0`)
+				check.Contains(body, `"max_completion_tokens":0`)
 			}
 
-			assert.Equal(t, tc.wantTemperature, strings.Contains(body, `"temperature"`), "temperature key presence")
+			check.Equal(tc.wantTemperature, strings.Contains(body, `"temperature"`), "temperature key presence")
 			if tc.wantTempSubstring != "" {
-				assert.Contains(t, body, tc.wantTempSubstring)
+				check.Contains(body, tc.wantTempSubstring)
 			}
 		})
 	}
 }
 
 func TestOpenAIAdapter_ContextCancellation(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -414,16 +430,18 @@ func TestOpenAIAdapter_ContextCancellation(t *testing.T) {
 		Model:     "gpt-4o",
 		MaxTokens: 1024,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	cancel()
 
 	events := collectEvents(t, ch)
-	require.NotEmpty(t, events, "expected at least one event after cancellation")
-	require.Equal(t, "error", events[len(events)-1].Type)
+	must.NotEmpty(events, "expected at least one event after cancellation")
+	must.Equal("error", events[len(events)-1].Type)
 }
 
 func TestOpenAIAdapter_MalformedChunk(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	body := strings.Join([]string{
 		"data: {not valid json}\n\n",
 		"data: [DONE]\n\n",
@@ -442,7 +460,7 @@ func TestOpenAIAdapter_MalformedChunk(t *testing.T) {
 		Model:     "gpt-4o",
 		MaxTokens: 1024,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
 
@@ -452,13 +470,14 @@ func TestOpenAIAdapter_MalformedChunk(t *testing.T) {
 			errorEvents = append(errorEvents, ev)
 		}
 	}
-	require.NotEmpty(t, errorEvents, "expected an error event for malformed JSON chunk")
+	must.NotEmpty(errorEvents, "expected an error event for malformed JSON chunk")
 	for _, ev := range errorEvents {
-		assert.Error(t, ev.Error, "error event has nil Error field")
+		check.Error(ev.Error, "error event has nil Error field")
 	}
 }
 
 func TestOpenAIAdapter_MalformedToolArgumentsMarksToolCall(t *testing.T) {
+	must := require.New(t)
 	body := strings.Join([]string{
 		makeOpenAIChunk(`{"id":"chatcmpl-4","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_bad","type":"function","function":{"name":"read_file","arguments":""}}]},"finish_reason":null}]}`),
 		makeOpenAIChunk(`{"id":"chatcmpl-4","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":"}}]},"finish_reason":null}]}`),
@@ -480,7 +499,7 @@ func TestOpenAIAdapter_MalformedToolArgumentsMarksToolCall(t *testing.T) {
 		Model:     "gpt-4o",
 		MaxTokens: 1024,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
 	requireMarkedToolCall(t, events, "call_bad", "read_file", `{"path":INVALID`)
@@ -489,6 +508,8 @@ func TestOpenAIAdapter_MalformedToolArgumentsMarksToolCall(t *testing.T) {
 // TestOpenAIAdapter_TrailingCommaArgumentsMarkOnlyThatCall pins that a
 // malformed call does not stop the calls after it from being emitted.
 func TestOpenAIAdapter_TrailingCommaArgumentsMarkOnlyThatCall(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	body := strings.Join([]string{
 		makeOpenAIChunk(`{"id":"chatcmpl-5","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_bad","type":"function","function":{"name":"read_file","arguments":"{\"path\": \"main.go\",}"}},{"index":1,"id":"call_ok","type":"function","function":{"name":"list_directory","arguments":"{\"path\": \".\"}"}}]},"finish_reason":null}]}`),
 		makeOpenAIChunk(`{"id":"chatcmpl-5","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`),
@@ -504,38 +525,42 @@ func TestOpenAIAdapter_TrailingCommaArgumentsMarkOnlyThatCall(t *testing.T) {
 
 	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	var calls []types.StreamEvent
 	for _, ev := range collectEvents(t, ch) {
-		require.NotEqual(t, "error", ev.Type, "unexpected error event: %v", ev.Error)
+		must.NotEqual("error", ev.Type, "unexpected error event: %v", ev.Error)
 		if ev.Type == "tool_call" {
 			calls = append(calls, ev)
 		}
 	}
-	require.Len(t, calls, 2, "tool_call events: %+v", calls)
+	must.Len(calls, 2, "tool_call events: %+v", calls)
 
-	require.NotNil(t, calls[0].InvalidInput, "first call should carry its invalid arguments")
-	assert.Equal(t, `{"path": "main.go",}`, calls[0].InvalidInput.Raw) //nolint:testifylint // deliberately malformed JSON, compared byte-for-byte
+	must.NotNil(calls[0].InvalidInput, "first call should carry its invalid arguments")
+	check.Equal(`{"path": "main.go",}`, calls[0].InvalidInput.Raw) //nolint:testifylint // deliberately malformed JSON, compared byte-for-byte
 
-	assert.Nil(t, calls[1].InvalidInput)
-	assert.Equal(t, ".", calls[1].Input["path"])
+	check.Nil(calls[1].InvalidInput)
+	check.Equal(".", calls[1].Input["path"])
 }
 
 func TestOpenAIAdapter_DefaultBaseURL(t *testing.T) {
+	must := require.New(t)
 	adapter := NewOpenAICompatibleAdapter(staticBearer("key"), "", OpenAIAuthConfig{}, RetryPolicy{})
-	require.Equal(t, openaiDefaultBaseURL, adapter.baseURL)
+	must.Equal(openaiDefaultBaseURL, adapter.baseURL)
 }
 
 func TestOpenAIAdapter_TrailingSlashBaseURL(t *testing.T) {
+	must := require.New(t)
 	adapter := NewOpenAICompatibleAdapter(staticBearer("key"), "https://example.com/v1/", OpenAIAuthConfig{}, RetryPolicy{})
-	require.Equal(t, "https://example.com/v1", adapter.baseURL)
+	must.Equal("https://example.com/v1", adapter.baseURL)
 }
 
 func TestOpenAIAdapter_NoAPIKey(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	// Some local endpoints (Ollama, vLLM) don't require an API key.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Empty(t, r.Header.Get("Authorization"), "expected no Authorization header")
+		check.Empty(r.Header.Get("Authorization"), "expected no Authorization header")
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
@@ -548,12 +573,14 @@ func TestOpenAIAdapter_NoAPIKey(t *testing.T) {
 		Model:     "llama3",
 		MaxTokens: 1024,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	for range ch {
 	}
 }
 
 func TestTranslateMessages_MapsRolesAndToolCalls(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	messages := []types.Message{
 		{
 			Role: "user",
@@ -579,19 +606,21 @@ func TestTranslateMessages_MapsRolesAndToolCalls(t *testing.T) {
 	result := translateMessages("System prompt", messages, nil)
 
 	// system + user + assistant + tool = 4 messages.
-	require.Len(t, result, 4)
+	must.Len(result, 4)
 
-	assert.Equal(t, "system", result[0].Role)
-	assert.Equal(t, "user", result[1].Role)
-	assert.Equal(t, "assistant", result[2].Role)
-	require.Len(t, result[2].ToolCalls, 1)
-	assert.Equal(t, "call_1", result[2].ToolCalls[0].ID)
-	assert.Equal(t, "read_file", result[2].ToolCalls[0].Function.Name)
-	assert.Equal(t, "tool", result[3].Role)
-	assert.Equal(t, "call_1", result[3].ToolCallID)
+	check.Equal("system", result[0].Role)
+	check.Equal("user", result[1].Role)
+	check.Equal("assistant", result[2].Role)
+	must.Len(result[2].ToolCalls, 1)
+	check.Equal("call_1", result[2].ToolCalls[0].ID)
+	check.Equal("read_file", result[2].ToolCalls[0].Function.Name)
+	check.Equal("tool", result[3].Role)
+	check.Equal("call_1", result[3].ToolCallID)
 }
 
 func TestTranslateMessages_ErrorResultPrefixesContent(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	messages := []types.Message{
 		{
 			Role: "user",
@@ -603,11 +632,11 @@ func TestTranslateMessages_ErrorResultPrefixesContent(t *testing.T) {
 
 	result := translateMessages("", messages, nil)
 
-	require.Len(t, result, 1)
-	assert.Equal(t, "tool", result[0].Role)
+	must.Len(result, 1)
+	check.Equal("tool", result[0].Role)
 	content, ok := result[0].Content.(string)
-	require.True(t, ok, "result[0].Content type = %T", result[0].Content)
-	assert.True(t, strings.HasPrefix(content, "Error: "), "expected error-prefixed content, got %q", content)
+	must.True(ok, "result[0].Content type = %T", result[0].Content)
+	check.True(strings.HasPrefix(content, "Error: "), "expected error-prefixed content, got %q", content)
 }
 
 func TestMapFinishReason_TranslatesProviderValues(t *testing.T) {
@@ -623,12 +652,15 @@ func TestMapFinishReason_TranslatesProviderValues(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, mapFinishReason(tt.input))
+			must := require.New(t)
+			must.Equal(tt.want, mapFinishReason(tt.input))
 		})
 	}
 }
 
 func TestOpenAIAdapter_TextThenToolCall(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	// Model emits some text reasoning, then a tool call — a common pattern.
 	body := strings.Join([]string{
 		makeOpenAIChunk(`{"id":"chatcmpl-5","choices":[{"index":0,"delta":{"role":"assistant","content":"Let me read that file."},"finish_reason":null}]}`),
@@ -650,23 +682,25 @@ func TestOpenAIAdapter_TextThenToolCall(t *testing.T) {
 		Model:     "gpt-4o",
 		MaxTokens: 1024,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
 
 	// text_delta, tool_call, message_complete.
-	require.Len(t, events, 3, "events: %+v", events)
-	assert.Equal(t, "text_delta", events[0].Type)
-	assert.Equal(t, "tool_call", events[1].Type)
-	assert.Equal(t, "message_complete", events[2].Type)
+	must.Len(events, 3, "events: %+v", events)
+	check.Equal("text_delta", events[0].Type)
+	check.Equal("tool_call", events[1].Type)
+	check.Equal("message_complete", events[2].Type)
 }
 
 // A bearer closure error must surface from Stream without a network
 // round-trip. Otherwise a half-built request would mask the original
 // credential failure behind an HTTP error.
 func TestOpenAIAdapter_BearerClosureErrorFailsBeforeRequest(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		assert.Fail(t, "openai-compatible adapter should not hit the network when the bearer closure errors")
+		check.Fail("openai-compatible adapter should not hit the network when the bearer closure errors")
 	}))
 	defer srv.Close()
 
@@ -676,20 +710,24 @@ func TestOpenAIAdapter_BearerClosureErrorFailsBeforeRequest(t *testing.T) {
 		Model:     "gpt-4o",
 		MaxTokens: 16,
 	})
-	require.Error(t, err, "expected error from bearer closure failure")
-	assert.ErrorContains(t, err, "STS returned 401", "error should preserve closure cause")
+	must.Error(err, "expected error from bearer closure failure")
+	check.ErrorContains(err, "STS returned 401", "error should preserve closure cause")
 }
 
 func TestOpenAIAdapter_StreamingClientTimeouts(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), "", OpenAIAuthConfig{}, RetryPolicy{})
-	require.Zero(t, adapter.httpClient.Timeout, "a total deadline cuts long streams; idleTimeoutBody bounds them instead")
+	must.Zero(adapter.httpClient.Timeout, "a total deadline cuts long streams; idleTimeoutBody bounds them instead")
 	tr, ok := adapter.httpClient.Transport.(*http.Transport)
-	require.True(t, ok, "expected *http.Transport")
-	assert.NotZero(t, tr.TLSHandshakeTimeout)
-	assert.NotZero(t, tr.ResponseHeaderTimeout)
+	must.True(ok, "expected *http.Transport")
+	check.NotZero(tr.TLSHandshakeTimeout)
+	check.NotZero(tr.ResponseHeaderTimeout)
 }
 
 func TestOpenAIAdapter_RecordsLatencyAndTTFB(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	body := strings.Join([]string{
 		makeOpenAIChunk(`{"id":"x","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`),
 		makeOpenAIChunk(`{"id":"x","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}`),
@@ -708,7 +746,7 @@ func TestOpenAIAdapter_RecordsLatencyAndTTFB(t *testing.T) {
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 	metrics, err := observability.NewMetricsForTesting(provider)
-	require.NoError(t, err, "NewMetricsForTesting")
+	must.NoError(err, "NewMetricsForTesting")
 
 	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 	adapter.Metrics = metrics
@@ -717,27 +755,29 @@ func TestOpenAIAdapter_RecordsLatencyAndTTFB(t *testing.T) {
 		Model:     "gpt-4o",
 		MaxTokens: 1024,
 	})
-	require.NoError(t, err, "Stream")
+	must.NoError(err, "Stream")
 	for range ch {
 	}
 
-	assert.Equal(t, uint64(1), providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"), "provider_latency count")
-	assert.Equal(t, uint64(1), providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"), "provider_ttfb count")
+	check.Equal(uint64(1), providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"), "provider_latency count")
+	check.Equal(uint64(1), providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"), "provider_ttfb count")
 	assertFirstChunkSeries(t, reader, adapter, "openai-compatible", "gpt-4o")
 
 	h, ok := providerHistogramFinder(t, reader, "stirrup.harness.provider_latency")
-	require.True(t, ok, "expected provider_latency histogram")
-	require.NotEmpty(t, h.DataPoints, "expected provider_latency data point")
+	must.True(ok, "expected provider_latency histogram")
+	must.NotEmpty(h.DataPoints, "expected provider_latency data point")
 	attrs := h.DataPoints[0].Attributes
 	providerType, ok := attrs.Value("provider.type")
-	assert.True(t, ok, "provider.type attribute")
-	assert.Equal(t, "openai-compatible", providerType.AsString(), "provider.type")
+	check.True(ok, "provider.type attribute")
+	check.Equal("openai-compatible", providerType.AsString(), "provider.type")
 	providerModel, ok := attrs.Value("provider.model")
-	assert.True(t, ok, "provider.model attribute")
-	assert.Equal(t, "gpt-4o", providerModel.AsString(), "provider.model")
+	check.True(ok, "provider.model attribute")
+	check.Equal("gpt-4o", providerModel.AsString(), "provider.model")
 }
 
 func TestOpenAIAdapter_RecordsLatencyOnHTTPError(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = fmt.Fprint(w, `{"error":{"message":"bad"}}`)
@@ -748,15 +788,15 @@ func TestOpenAIAdapter_RecordsLatencyOnHTTPError(t *testing.T) {
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 	metrics, err := observability.NewMetricsForTesting(provider)
-	require.NoError(t, err, "NewMetricsForTesting")
+	must.NoError(err, "NewMetricsForTesting")
 
 	adapter := NewOpenAICompatibleAdapter(staticBearer("bad-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 	adapter.Metrics = metrics
 
 	_, err = adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
-	require.Error(t, err)
-	assert.Equal(t, uint64(1), providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"), "provider_latency count")
-	assert.Equal(t, uint64(0), providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"), "provider_ttfb count")
+	must.Error(err)
+	check.Equal(uint64(1), providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"), "provider_latency count")
+	check.Equal(uint64(0), providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"), "provider_ttfb count")
 }
 
 // TestOpenAIAdapter_AzureKeyHeaderAndQueryParam is the Azure OpenAI key-auth
@@ -768,6 +808,8 @@ func TestOpenAIAdapter_RecordsLatencyOnHTTPError(t *testing.T) {
 //   - carry header "api-key: <KEY>"; and
 //   - omit the "Authorization" header entirely (no fallback Bearer).
 func TestOpenAIAdapter_AzureKeyHeaderAndQueryParam(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	body := strings.Join([]string{
 		makeOpenAIChunk(`{"id":"x","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`),
 		makeOpenAIChunk(`{"id":"x","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`),
@@ -775,10 +817,10 @@ func TestOpenAIAdapter_AzureKeyHeaderAndQueryParam(t *testing.T) {
 	}, "")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/openai/v1/chat/completions", r.URL.Path)
-		assert.Equal(t, "preview", r.URL.Query().Get("api-version"))
-		assert.Equal(t, "AZURE-KEY", r.Header.Get("api-key"))
-		assert.Empty(t, r.Header.Get("Authorization"), "Authorization header should be omitted")
+		check.Equal("/openai/v1/chat/completions", r.URL.Path)
+		check.Equal("preview", r.URL.Query().Get("api-version"))
+		check.Equal("AZURE-KEY", r.Header.Get("api-key"))
+		check.Empty(r.Header.Get("Authorization"), "Authorization header should be omitted")
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, body)
@@ -794,7 +836,7 @@ func TestOpenAIAdapter_AzureKeyHeaderAndQueryParam(t *testing.T) {
 		Model:     "gpt-4o",
 		MaxTokens: 1024,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	for range ch { //nolint:revive // drain stream
 	}
 }
@@ -804,6 +846,8 @@ func TestOpenAIAdapter_AzureKeyHeaderAndQueryParam(t *testing.T) {
 // supply the same key, QueryParams wins. Other keys present in BaseURL are
 // preserved in the final URL.
 func TestOpenAIAdapter_QueryParamsOverrideBaseURL(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	body := strings.Join([]string{
 		makeOpenAIChunk(`{"id":"x","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`),
 		"data: [DONE]\n\n",
@@ -811,10 +855,10 @@ func TestOpenAIAdapter_QueryParamsOverrideBaseURL(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		assert.Equal(t, "preview", q.Get("api-version"), "QueryParams should override BaseURL")
-		assert.Equal(t, "gpt4-prod", q.Get("deployment-id"), "BaseURL key should survive")
+		check.Equal("preview", q.Get("api-version"), "QueryParams should override BaseURL")
+		check.Equal("gpt4-prod", q.Get("deployment-id"), "BaseURL key should survive")
 		// Exactly one value per key, with no duplicate-key trail.
-		assert.Len(t, q["api-version"], 1, "api-version values")
+		check.Len(q["api-version"], 1, "api-version values")
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, body)
@@ -825,7 +869,7 @@ func TestOpenAIAdapter_QueryParamsOverrideBaseURL(t *testing.T) {
 		QueryParams: map[string]string{"api-version": "preview"},
 	}, RetryPolicy{})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
-	require.NoError(t, err)
+	must.NoError(err)
 	for range ch { //nolint:revive // drain stream
 	}
 }
@@ -834,16 +878,18 @@ func TestOpenAIAdapter_QueryParamsOverrideBaseURL(t *testing.T) {
 // isolation: trailing slashes are trimmed, the path is appended, and
 // duplicate keys collapse to a single QueryParams-controlled value.
 func TestComposeOpenAIURL_TrimsAndAppends(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	got, err := composeOpenAIURL("https://api.example.com/openai/v1/", "/chat/completions", nil)
-	require.NoError(t, err)
-	assert.Equal(t, "https://api.example.com/openai/v1/chat/completions", got)
+	must.NoError(err)
+	check.Equal("https://api.example.com/openai/v1/chat/completions", got)
 
 	got, err = composeOpenAIURL("https://api.example.com/v1?api-version=stable", "/responses", map[string]string{"api-version": "preview"})
-	require.NoError(t, err)
+	must.NoError(err)
 	// QueryParams should override the BaseURL-encoded api-version.
-	assert.Contains(t, got, "api-version=preview")
-	assert.NotContains(t, got, "api-version=stable")
-	assert.Contains(t, got, "/v1/responses")
+	check.Contains(got, "api-version=preview")
+	check.NotContains(got, "api-version=stable")
+	check.Contains(got, "/v1/responses")
 }
 
 // TestOpenAIAdapter_HTTPDoErrorDoesNotContainURL asserts the *url.Error
@@ -851,16 +897,18 @@ func TestComposeOpenAIURL_TrimsAndAppends(t *testing.T) {
 // secret into QueryParams and asserts it is absent from the returned
 // error string, and that the error no longer wraps a *url.Error.
 func TestOpenAIAdapter_HTTPDoErrorDoesNotContainURL(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	// httptest.Server with a Hijack handler that closes the underlying
 	// TCP connection mid-request. http.Client.Do returns a *url.Error
 	// wrapping the transport-layer failure with the request URL.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hj, ok := w.(http.Hijacker)
-		if !assert.True(t, ok, "ResponseWriter does not support Hijack") {
+		if !check.True(ok, "ResponseWriter does not support Hijack") {
 			return
 		}
 		conn, _, err := hj.Hijack()
-		if !assert.NoError(t, err, "hijack") {
+		if !check.NoError(err, "hijack") {
 			return
 		}
 		_ = conn.Close()
@@ -884,14 +932,14 @@ func TestOpenAIAdapter_HTTPDoErrorDoesNotContainURL(t *testing.T) {
 		Model:     "gpt-4o",
 		MaxTokens: 1024,
 	})
-	require.Error(t, err, "expected an error from connection-close")
+	must.Error(err, "expected an error from connection-close")
 
 	// The credentialed URL must not survive into the error chain.
 	var urlErr *url.Error
-	require.NotErrorAs(t, err, &urlErr, "error still wraps *url.Error (URL leaks)")
+	must.NotErrorAs(err, &urlErr, "error still wraps *url.Error (URL leaks)")
 	rawMessage := err.Error()
-	assert.NotContains(t, rawMessage, sensitive, "error leaked the sig QueryParams secret")
-	assert.NotContains(t, rawMessage, "api-version=preview", "error still embeds the encoded request URL")
+	check.NotContains(rawMessage, sensitive, "error leaked the sig QueryParams secret")
+	check.NotContains(rawMessage, "api-version=preview", "error still embeds the encoded request URL")
 }
 
 // testRetryPolicy returns a RetryPolicy tuned for unit tests: small
@@ -911,6 +959,8 @@ func testRetryPolicy() RetryPolicy {
 // succeeds, and provider_retry_attempt fires once while rate_limited
 // does not fire (the final response was a 200).
 func TestOpenAIAdapter_RetriesOnce429ThenSucceeds(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	body := strings.Join([]string{
 		makeOpenAIChunk(`{"id":"x","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`),
 		makeOpenAIChunk(`{"id":"x","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}`),
@@ -943,19 +993,19 @@ func TestOpenAIAdapter_RetriesOnce429ThenSucceeds(t *testing.T) {
 	ctx, span := tracer.Start(context.Background(), "test")
 
 	ch, err := adapter.Stream(ctx, types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
-	require.NoError(t, err, "Stream")
+	must.NoError(err, "Stream")
 	events := collectEvents(t, ch)
 	span.End()
 
-	assert.Equal(t, int32(2), calls.Load(), "server requests")
-	require.Len(t, events, 2, "expected text_delta and message_complete, got %+v", events)
-	assert.Equal(t, "text_delta", events[0].Type)
-	assert.Equal(t, "Hi", events[0].Text)
-	assert.Equal(t, "message_complete", events[1].Type)
-	assert.Equal(t, "end_turn", events[1].StopReason)
+	check.Equal(int32(2), calls.Load(), "server requests")
+	must.Len(events, 2, "expected text_delta and message_complete, got %+v", events)
+	check.Equal("text_delta", events[0].Type)
+	check.Equal("Hi", events[0].Text)
+	check.Equal("message_complete", events[1].Type)
+	check.Equal("end_turn", events[1].StopReason)
 
 	stubs := exporter.GetSpans()
-	require.NotEmpty(t, stubs, "expected at least one finished span")
+	must.NotEmpty(stubs, "expected at least one finished span")
 	var retryAttempts, rateLimited int
 	for _, s := range stubs {
 		for _, ev := range s.Events {
@@ -967,8 +1017,8 @@ func TestOpenAIAdapter_RetriesOnce429ThenSucceeds(t *testing.T) {
 			}
 		}
 	}
-	assert.Equal(t, 1, retryAttempts, "provider_retry_attempt events")
-	assert.Equal(t, 0, rateLimited, "rate_limited events on terminal success")
+	check.Equal(1, retryAttempts, "provider_retry_attempt events")
+	check.Equal(0, rateLimited, "rate_limited events on terminal success")
 }
 
 // TestOpenAIAdapter_429ExhaustedSurfacesTerminalError verifies that
@@ -977,6 +1027,8 @@ func TestOpenAIAdapter_RetriesOnce429ThenSucceeds(t *testing.T) {
 // only (kept off intermediate retries to avoid double-counting against
 // alerts keyed on it).
 func TestOpenAIAdapter_429ExhaustedSurfacesTerminalError(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
@@ -994,7 +1046,7 @@ func TestOpenAIAdapter_429ExhaustedSurfacesTerminalError(t *testing.T) {
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
 	metrics, err := observability.NewMetricsForTesting(mp)
-	require.NoError(t, err, "NewMetricsForTesting")
+	must.NoError(err, "NewMetricsForTesting")
 
 	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, testRetryPolicy())
 	adapter.Tracer = tracer
@@ -1004,16 +1056,16 @@ func TestOpenAIAdapter_429ExhaustedSurfacesTerminalError(t *testing.T) {
 
 	_, err = adapter.Stream(ctx, types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
 	span.End()
-	require.Error(t, err, "expected terminal error after retry exhaustion")
+	must.Error(err, "expected terminal error after retry exhaustion")
 	// Pin the full prefix so log scrapers that pattern-match on the
 	// error string break loudly if the wrap format changes. The message
 	// comes straight from the final 429 response, with no transport wrap.
 	wantPrefix := "openai API returned status 429: still rate limited"
-	assert.True(t, strings.HasPrefix(err.Error(), wantPrefix), "error = %q, want prefix %q", err.Error(), wantPrefix)
-	assert.Equal(t, int32(2), calls.Load(), "server requests with MaxAttempts=2")
+	check.True(strings.HasPrefix(err.Error(), wantPrefix), "error = %q, want prefix %q", err.Error(), wantPrefix)
+	check.Equal(int32(2), calls.Load(), "server requests with MaxAttempts=2")
 
 	stubs := exporter.GetSpans()
-	require.NotEmpty(t, stubs, "expected at least one finished span")
+	must.NotEmpty(stubs, "expected at least one finished span")
 	var retryAttempts, rateLimited int
 	for _, s := range stubs {
 		for _, ev := range s.Events {
@@ -1027,9 +1079,9 @@ func TestOpenAIAdapter_429ExhaustedSurfacesTerminalError(t *testing.T) {
 	}
 	// One intermediate retry event (attempt 1 → 2) and one terminal
 	// rate_limited event on the final 429.
-	assert.Equal(t, 1, retryAttempts, "provider_retry_attempt events")
-	assert.Equal(t, 1, rateLimited, "rate_limited events on terminal 429")
-	assert.GreaterOrEqual(t, providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"), uint64(1), "a terminal 429 must still record provider latency")
+	check.Equal(1, retryAttempts, "provider_retry_attempt events")
+	check.Equal(1, rateLimited, "rate_limited events on terminal 429")
+	check.GreaterOrEqual(providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"), uint64(1), "a terminal 429 must still record provider latency")
 }
 
 // TestOpenAIAdapter_429BudgetExhaustedSurfacesTerminalError covers the
@@ -1038,6 +1090,8 @@ func TestOpenAIAdapter_429ExhaustedSurfacesTerminalError(t *testing.T) {
 // (rather than backoff) so the delay reliably exceeds the budget
 // despite full-jitter randomness.
 func TestOpenAIAdapter_429BudgetExhaustedSurfacesTerminalError(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
@@ -1067,15 +1121,15 @@ func TestOpenAIAdapter_429BudgetExhaustedSurfacesTerminalError(t *testing.T) {
 	ctx, span := tracer.Start(context.Background(), "test")
 	_, err := adapter.Stream(ctx, types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
 	span.End()
-	require.Error(t, err, "expected terminal error after budget exhaustion")
-	require.ErrorContains(t, err, "openai API returned status 429")
+	must.Error(err, "expected terminal error after budget exhaustion")
+	must.ErrorContains(err, "openai API returned status 429")
 
 	// Budget exhaustion before any retry sleep means only the first
 	// attempt reaches the server.
-	assert.Equal(t, int32(1), calls.Load(), "server requests: budget should cut before retry")
+	check.Equal(int32(1), calls.Load(), "server requests: budget should cut before retry")
 
 	stubs := exporter.GetSpans()
-	require.NotEmpty(t, stubs, "expected at least one finished span")
+	must.NotEmpty(stubs, "expected at least one finished span")
 	var rateLimited int
 	for _, s := range stubs {
 		for _, ev := range s.Events {
@@ -1084,13 +1138,15 @@ func TestOpenAIAdapter_429BudgetExhaustedSurfacesTerminalError(t *testing.T) {
 			}
 		}
 	}
-	assert.Equal(t, 1, rateLimited, "rate_limited events on terminal 429 from budget exhaustion")
+	check.Equal(1, rateLimited, "rate_limited events on terminal 429 from budget exhaustion")
 }
 
 // TestOpenAIAdapter_TerminalNon429WithTracer_SetsStatusCode covers a
 // terminal non-429 error response with a tracer set. The span must carry
 // the response status in http.status_code, and rate_limited must not fire.
 func TestOpenAIAdapter_TerminalNon429WithTracer_SetsStatusCode(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = fmt.Fprint(w, `{"error":{"message":"bad key"}}`)
@@ -1107,10 +1163,10 @@ func TestOpenAIAdapter_TerminalNon429WithTracer_SetsStatusCode(t *testing.T) {
 	ctx, span := tracer.Start(context.Background(), "test")
 	_, err := adapter.Stream(ctx, types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
 	span.End()
-	require.Error(t, err, "expected error for 401")
+	must.Error(err, "expected error for 401")
 
 	stubs := exporter.GetSpans()
-	require.NotEmpty(t, stubs, "expected at least one finished span")
+	must.NotEmpty(stubs, "expected at least one finished span")
 	var statusCodes []int64
 	var eventNames []string
 	for _, s := range stubs {
@@ -1123,9 +1179,9 @@ func TestOpenAIAdapter_TerminalNon429WithTracer_SetsStatusCode(t *testing.T) {
 			eventNames = append(eventNames, ev.Name)
 		}
 	}
-	require.NotEmpty(t, statusCodes, "expected http.status_code attribute on the span")
+	must.NotEmpty(statusCodes, "expected http.status_code attribute on the span")
 	for _, code := range statusCodes {
-		assert.Equal(t, int64(http.StatusUnauthorized), code, "http.status_code")
+		check.Equal(int64(http.StatusUnauthorized), code, "http.status_code")
 	}
-	assert.NotContains(t, eventNames, "rate_limited", "rate_limited must not fire on a non-429 terminal status")
+	check.NotContains(eventNames, "rate_limited", "rate_limited must not fire on a non-429 terminal status")
 }

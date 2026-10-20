@@ -122,7 +122,8 @@ func TestEvalOutcomeFor_MapsRunOutcomes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, EvalOutcomeFor(tc.trace))
+			must := require.New(t)
+			must.Equal(tc.want, EvalOutcomeFor(tc.trace))
 		})
 	}
 }
@@ -153,7 +154,8 @@ func TestRunHealthFor_MapsRunOutcomes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, RunHealthFor(&RunTrace{Outcome: tc.outcome}, false))
+			must := require.New(t)
+			must.Equal(tc.want, RunHealthFor(&RunTrace{Outcome: tc.outcome}, false))
 		})
 	}
 }
@@ -161,12 +163,14 @@ func TestRunHealthFor_MapsRunOutcomes(t *testing.T) {
 func TestRunHealthFor_HarnessFailureAndMissingTrace(t *testing.T) {
 	for _, outcome := range []string{"success", "max_turns", "error"} {
 		t.Run("non-zero exit with outcome "+outcome, func(t *testing.T) {
-			require.Equal(t, RunFailed, RunHealthFor(&RunTrace{Outcome: outcome}, true),
+			must := require.New(t)
+			must.Equal(RunFailed, RunHealthFor(&RunTrace{Outcome: outcome}, true),
 				"a non-zero exit fails the run regardless of the outcome")
 		})
 	}
 	t.Run("nil trace", func(t *testing.T) {
-		require.Equal(t, RunFailed, RunHealthFor(nil, false))
+		must := require.New(t)
+		must.Equal(RunFailed, RunHealthFor(nil, false))
 	})
 }
 
@@ -174,11 +178,13 @@ func TestRunHealthFor_SuccessWithFailedVerifierStaysHealthy(t *testing.T) {
 	trace := &RunTrace{Outcome: "success", VerificationResults: []VerificationResult{{Passed: false}}}
 
 	t.Run("health", func(t *testing.T) {
-		require.Equal(t, RunHealthy, RunHealthFor(trace, false),
+		must := require.New(t)
+		must.Equal(RunHealthy, RunHealthFor(trace, false),
 			"the verifier verdict is reported separately")
 	})
 	t.Run("eval outcome", func(t *testing.T) {
-		require.Equal(t, EvalFailed, EvalOutcomeFor(*trace),
+		must := require.New(t)
+		must.Equal(EvalFailed, EvalOutcomeFor(*trace),
 			"the eval outcome still counts the failed verifier")
 	})
 }
@@ -199,7 +205,8 @@ func TestLastVerification_ReturnsLatestResultStatus(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, LastVerification(tc.trace))
+			must := require.New(t)
+			must.Equal(tc.want, LastVerification(tc.trace))
 		})
 	}
 }

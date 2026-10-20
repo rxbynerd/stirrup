@@ -31,33 +31,35 @@ var vectorErrors = map[string]error{
 }
 
 func TestObjectWithNonce_Vectors(t *testing.T) {
+	must := require.New(t)
 	raw, err := os.ReadFile(filepath.Join("testdata", "nonce_extraction_vectors.json"))
-	require.NoError(t, err, "read vectors")
+	must.NoError(err, "read vectors")
 
 	var v extractionVectors
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
-	require.NoError(t, dec.Decode(&v), "decode vectors")
-	require.NotEmpty(t, v.Cases, "vectors file has no cases")
+	must.NoError(dec.Decode(&v), "decode vectors")
+	must.NotEmpty(v.Cases, "vectors file has no cases")
 
 	for _, tc := range v.Cases {
 		t.Run(tc.Name, func(t *testing.T) {
+			must := require.New(t)
 			hasError := tc.Error != ""
 			hasMembers := len(tc.Members) > 0
-			require.NotEqual(t, hasError, hasMembers, "case must set exactly one of members and error")
+			must.NotEqual(hasError, hasMembers, "case must set exactly one of members and error")
 
 			members, err := ObjectWithNonce(tc.Input, tc.Nonce)
 			if hasError {
 				want, ok := vectorErrors[tc.Error]
-				require.True(t, ok, "unknown error name %q", tc.Error)
-				require.ErrorIs(t, err, want)
+				must.True(ok, "unknown error name %q", tc.Error)
+				must.ErrorIs(err, want)
 				return
 			}
 
-			require.NoError(t, err)
+			must.NoError(err)
 			got, err := json.Marshal(members)
-			require.NoError(t, err, "marshal members")
-			require.True(t, sameJSON(got, tc.Members), "members = %s, want %s", got, tc.Members)
+			must.NoError(err, "marshal members")
+			must.True(sameJSON(got, tc.Members), "members = %s, want %s", got, tc.Members)
 		})
 	}
 }
@@ -73,12 +75,13 @@ func TestObjectWithNonce_ScanBudgetFailsClosed(t *testing.T) {
 		"braces_after_match":  verdict + strings.Repeat("{", 200_000),
 	} {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			start := time.Now()
 			_, err := ObjectWithNonce(in, nonce)
-			require.ErrorIs(t, err, ErrScanBudget)
+			must.ErrorIs(err, ErrScanBudget)
 
 			elapsed := time.Since(start)
-			require.LessOrEqual(t, elapsed, 5*time.Second, "the scan budget is not bounding work")
+			must.LessOrEqual(elapsed, 5*time.Second, "the scan budget is not bounding work")
 		})
 	}
 }

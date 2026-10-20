@@ -14,7 +14,8 @@ import (
 // client metrics, so the series line up.
 func assertFirstChunkSeries(t *testing.T, reader *sdkmetric.ManualReader, adapter ProviderAdapter, wantProvider, wantModel string) {
 	t.Helper()
-	require.Equal(t, uint64(1), providerHistogramTotalCount(t, reader, "gen_ai.client.operation.time_to_first_chunk"))
+	must := require.New(t)
+	must.Equal(uint64(1), providerHistogramTotalCount(t, reader, "gen_ai.client.operation.time_to_first_chunk"))
 
 	h, _ := providerHistogramFinder(t, reader, "gen_ai.client.operation.time_to_first_chunk")
 	attrs := h.DataPoints[0].Attributes
@@ -26,16 +27,17 @@ func assertFirstChunkSeries(t *testing.T, reader *sdkmetric.ManualReader, adapte
 		"server.address":        wantHost,
 	} {
 		t.Run(key, func(t *testing.T) {
+			must := require.New(t)
 			v, ok := attrs.Value(attribute.Key(key))
-			require.True(t, ok, "attribute is missing")
-			require.Equal(t, want, v.AsString())
+			must.True(ok, "attribute is missing")
+			must.Equal(want, v.AsString())
 		})
 	}
 
 	port, ok := attrs.Value("server.port")
-	require.True(t, ok, "server.port attribute is missing")
-	require.EqualValues(t, wantPort, port.AsInt64())
-	require.Equal(t, 5, attrs.Len(), "attribute count")
+	must.True(ok, "server.port attribute is missing")
+	must.EqualValues(wantPort, port.AsInt64())
+	must.Equal(5, attrs.Len(), "attribute count")
 }
 
 func TestServerEndpointOf_ResolvesHostAndPort(t *testing.T) {
@@ -65,9 +67,10 @@ func TestServerEndpointOf_ResolvesHostAndPort(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			host, port := ServerEndpointOf(tc.adapter)
-			require.Equal(t, tc.wantHost, host)
-			require.Equal(t, tc.wantPort, port)
+			must.Equal(tc.wantHost, host)
+			must.Equal(tc.wantPort, port)
 		})
 	}
 }

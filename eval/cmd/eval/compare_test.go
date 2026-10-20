@@ -28,17 +28,19 @@ func trialResult(id string, outcomes ...string) eval.TaskResult {
 
 func writeResultFile(t *testing.T, dir, name string, r eval.SuiteResult) string {
 	t.Helper()
+	must := require.New(t)
 	path := filepath.Join(dir, name)
-	require.NoError(t, writeJSON(path, r))
+	must.NoError(writeJSON(path, r))
 	return path
 }
 
 func TestCmdCompare_ExitCodeFollowsGate(t *testing.T) {
+	must := require.New(t)
 	baseline := filepath.Join("..", "..", "baselines", "dogfood-seed.json")
 	data, err := os.ReadFile(baseline)
-	require.NoError(t, err)
+	must.NoError(err)
 	var base eval.SuiteResult
-	require.NoError(t, json.Unmarshal(data, &base))
+	must.NoError(json.Unmarshal(data, &base))
 	ids := make([]string, len(base.Tasks))
 	for i, task := range base.Tasks {
 		ids[i] = task.TaskID
@@ -137,6 +139,7 @@ func TestCmdCompare_ExitCodeFollowsGate(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			dir := t.TempDir()
 			currentPath := writeResultFile(t, dir, "current.json", tc.current)
 			reportPath := filepath.Join(dir, "report.json")
@@ -144,27 +147,28 @@ func TestCmdCompare_ExitCodeFollowsGate(t *testing.T) {
 
 			var out bytes.Buffer
 			code := run(args, &out)
-			require.Equal(t, tc.wantCode, code, "stdout:\n%s", out.String())
-			require.Contains(t, out.String(), tc.wantGate)
-			require.Contains(t, out.String(), fmt.Sprintf("n=%d tasks, K=1", len(ids)), "output should report the K=1 baseline")
+			must.Equal(tc.wantCode, code, "stdout:\n%s", out.String())
+			must.Contains(out.String(), tc.wantGate)
+			must.Contains(out.String(), fmt.Sprintf("n=%d tasks, K=1", len(ids)), "output should report the K=1 baseline")
 			for _, want := range tc.wantText {
-				require.Contains(t, out.String(), want)
+				must.Contains(out.String(), want)
 			}
 			for _, unwanted := range tc.notText {
-				require.NotContains(t, out.String(), unwanted)
+				must.NotContains(out.String(), unwanted)
 			}
 
 			raw, err := os.ReadFile(reportPath)
-			require.NoError(t, err, "reading --output report")
+			must.NoError(err, "reading --output report")
 			var report eval.ComparisonReport
-			require.NoError(t, json.Unmarshal(raw, &report), "parsing --output report")
+			must.NoError(json.Unmarshal(raw, &report), "parsing --output report")
 			wantSummaryGate := strings.ToLower(strings.TrimPrefix(tc.wantGate, "Gate: "))
-			require.Equal(t, wantSummaryGate, report.Summary.Gate)
+			must.Equal(wantSummaryGate, report.Summary.Gate)
 		})
 	}
 }
 
 func TestCmdCompare_ErrorsExitTwo(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	baseline := writeResultFile(t, dir, "baseline.json", eval.SuiteResult{
 		SuiteID: "s", RunID: "baseline",
@@ -175,7 +179,7 @@ func TestCmdCompare_ErrorsExitTwo(t *testing.T) {
 		Tasks: []eval.TaskResult{{TaskID: "a", Outcome: "pass"}, {TaskID: "b", Outcome: "pass"}, {TaskID: "c", Outcome: "pass"}},
 	})
 	corrupt := filepath.Join(dir, "corrupt.json")
-	require.NoError(t, os.WriteFile(corrupt, []byte("{not json"), 0o644))
+	must.NoError(os.WriteFile(corrupt, []byte("{not json"), 0o644))
 	missing := filepath.Join(dir, "missing.json")
 
 	cases := []struct {
@@ -195,15 +199,16 @@ func TestCmdCompare_ErrorsExitTwo(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var logged bytes.Buffer
 			log.SetOutput(&logged)
 			t.Cleanup(func() { log.SetOutput(os.Stderr) })
 
 			var out bytes.Buffer
 			code := run(append([]string{"compare"}, tc.args...), &out)
-			require.Equal(t, 2, code, "stdout: %s\nlog: %s", out.String(), logged.String())
-			require.Contains(t, logged.String(), tc.wantLog)
-			require.Empty(t, out.String(), "an errored compare printed a report")
+			must.Equal(2, code, "stdout: %s\nlog: %s", out.String(), logged.String())
+			must.Contains(logged.String(), tc.wantLog)
+			must.Empty(out.String(), "an errored compare printed a report")
 		})
 	}
 }

@@ -61,6 +61,8 @@ func (r *rotatingTokenSource) Token(_ context.Context) ([]byte, error) {
 }
 
 func TestAzureWIFSource_SuccessExchange(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	const jwt = "fake.oidc.jwt"
 	const accessToken = "azure-access-token"
 
@@ -68,14 +70,14 @@ func TestAzureWIFSource_SuccessExchange(t *testing.T) {
 	var capturedCT, capturedAccept string
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, http.MethodPost, r.Method)
+		check.Equal(http.MethodPost, r.Method)
 		capturedCT = r.Header.Get("Content-Type")
 		capturedAccept = r.Header.Get("Accept")
 
 		body, err := io.ReadAll(r.Body)
-		assert.NoError(t, err, "read request body")
+		check.NoError(err, "read request body")
 		parsed, err := parseForm(string(body))
-		assert.NoError(t, err, "parse form body")
+		check.NoError(err, "parse form body")
 		capturedForm = parsed
 
 		w.Header().Set("Content-Type", "application/json")
@@ -89,15 +91,15 @@ func TestAzureWIFSource_SuccessExchange(t *testing.T) {
 
 	src := newAzureSource(t, &stubTokenSource{token: []byte(jwt)}, "", srv.URL)
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
-	require.NotNil(t, cred.BearerToken, "Resolve should return a BearerToken closure")
+	must.NoError(err)
+	must.NotNil(cred.BearerToken, "Resolve should return a BearerToken closure")
 
 	got, err := cred.BearerToken(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, accessToken, got)
+	must.NoError(err)
+	must.Equal(accessToken, got)
 
-	require.Equal(t, "application/x-www-form-urlencoded", capturedCT)
-	require.Equal(t, "application/json", capturedAccept)
+	must.Equal("application/x-www-form-urlencoded", capturedCT)
+	must.Equal("application/json", capturedAccept)
 
 	wantForm := map[string]string{
 		"grant_type":            "client_credentials",
@@ -108,12 +110,14 @@ func TestAzureWIFSource_SuccessExchange(t *testing.T) {
 	}
 	for key, want := range wantForm {
 		t.Run(key, func(t *testing.T) {
-			require.Equal(t, want, capturedForm.Get(key))
+			must := require.New(t)
+			must.Equal(want, capturedForm.Get(key))
 		})
 	}
 }
 
 func TestAzureWIFSource_DefaultScope(t *testing.T) {
+	must := require.New(t)
 	var capturedScope string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -128,14 +132,15 @@ func TestAzureWIFSource_DefaultScope(t *testing.T) {
 
 	src := newAzureSource(t, &stubTokenSource{token: []byte("jwt")}, "", srv.URL)
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = cred.BearerToken(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 
-	require.Equal(t, azureDefaultScope, capturedScope)
+	must.Equal(azureDefaultScope, capturedScope)
 }
 
 func TestAzureWIFSource_CustomScope(t *testing.T) {
+	must := require.New(t)
 	const customScope = "https://management.azure.com/.default"
 	var capturedScope string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -151,15 +156,16 @@ func TestAzureWIFSource_CustomScope(t *testing.T) {
 
 	src := newAzureSource(t, &stubTokenSource{token: []byte("jwt")}, customScope, srv.URL)
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = cred.BearerToken(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 
-	require.Equal(t, customScope, capturedScope)
+	must.Equal(customScope, capturedScope)
 }
 
 // Verifies oauth2.ReuseTokenSource caches the access token until expiry.
 func TestAzureWIFSource_RefreshUsesCache(t *testing.T) {
+	must := require.New(t)
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&calls, 1)
@@ -172,18 +178,19 @@ func TestAzureWIFSource_RefreshUsesCache(t *testing.T) {
 
 	src := newAzureSource(t, &stubTokenSource{token: []byte("jwt")}, "", srv.URL)
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 
 	for i := 0; i < 5; i++ {
 		got, err := cred.BearerToken(context.Background())
-		require.NoError(t, err, "BearerToken call %d", i)
-		require.Equal(t, "cached", got, "BearerToken call %d", i)
+		must.NoError(err, "BearerToken call %d", i)
+		must.Equal("cached", got, "BearerToken call %d", i)
 	}
-	require.Equal(t, int32(1), atomic.LoadInt32(&calls), "cache should absorb repeated BearerToken calls")
+	must.Equal(int32(1), atomic.LoadInt32(&calls), "cache should absorb repeated BearerToken calls")
 }
 
 // Exercises the 1-hour fallback when expires_in is missing or zero.
 func TestAzureWIFSource_ZeroExpiresInFallback(t *testing.T) {
+	must := require.New(t)
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&calls, 1)
@@ -194,20 +201,21 @@ func TestAzureWIFSource_ZeroExpiresInFallback(t *testing.T) {
 
 	src := newAzureSource(t, &stubTokenSource{token: []byte("jwt")}, "", srv.URL)
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 
 	_, err = cred.BearerToken(context.Background())
-	require.NoError(t, err, "first BearerToken call")
+	must.NoError(err, "first BearerToken call")
 	_, err = cred.BearerToken(context.Background())
-	require.NoError(t, err, "second BearerToken call")
+	must.NoError(err, "second BearerToken call")
 
-	require.Equal(t, int32(1), atomic.LoadInt32(&calls), "1-hour fallback should absorb the second call")
+	must.Equal(int32(1), atomic.LoadInt32(&calls), "1-hour fallback should absorb the second call")
 }
 
 // Proves 10 concurrent BearerToken callers see exactly one Entra
 // exchange, guarding against a future refactor that drops
 // oauth2.ReuseTokenSource's serialisation.
 func TestAzureWIFSource_SingleFlightUnderConcurrency(t *testing.T) {
+	must := require.New(t)
 	var calls int32
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -221,7 +229,7 @@ func TestAzureWIFSource_SingleFlightUnderConcurrency(t *testing.T) {
 
 	src := newAzureSource(t, &stubTokenSource{token: []byte("jwt")}, "", srv.URL)
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 
 	const goroutines = 10
 	var wg sync.WaitGroup
@@ -241,16 +249,17 @@ func TestAzureWIFSource_SingleFlightUnderConcurrency(t *testing.T) {
 	wg.Wait()
 	close(errs)
 	for err := range errs {
-		require.NoError(t, err, "concurrent BearerToken")
+		must.NoError(err, "concurrent BearerToken")
 	}
 
-	require.Equal(t, int32(1), atomic.LoadInt32(&calls), "%d concurrent callers should share one Entra exchange", goroutines)
+	must.Equal(int32(1), atomic.LoadInt32(&calls), "%d concurrent callers should share one Entra exchange", goroutines)
 }
 
 // Proves the JWT is fetched fresh on each refresh: a fresh Resolve
 // forces a new exchange, which must use the second JWT the rotating
 // source yields.
 func TestAzureWIFSource_RereadsJWTBetweenExchanges(t *testing.T) {
+	must := require.New(t)
 	var capturedAssertions []string
 	var mu sync.Mutex
 
@@ -272,22 +281,23 @@ func TestAzureWIFSource_RereadsJWTBetweenExchanges(t *testing.T) {
 
 	src1 := newAzureSource(t, rot, "", srv.URL)
 	cred1, err := src1.Resolve(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = cred1.BearerToken(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 
 	src2 := newAzureSource(t, rot, "", srv.URL)
 	cred2, err := src2.Resolve(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = cred2.BearerToken(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 
 	mu.Lock()
 	defer mu.Unlock()
-	require.Equal(t, []string{"jwt-1", "jwt-2"}, capturedAssertions, "JWT must be re-read between exchanges")
+	must.Equal([]string{"jwt-1", "jwt-2"}, capturedAssertions, "JWT must be re-read between exchanges")
 }
 
 func TestAzureWIFSource_HTTPErrorSurfacesCorrelationID(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
@@ -297,16 +307,17 @@ func TestAzureWIFSource_HTTPErrorSurfacesCorrelationID(t *testing.T) {
 
 	src := newAzureSource(t, &stubTokenSource{token: []byte("jwt")}, "", srv.URL)
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = cred.BearerToken(context.Background())
-	require.ErrorContains(t, err, "401")
-	require.ErrorContains(t, err, "correlation_id=abc-123-def")
-	require.ErrorContains(t, err, "AADSTS70021")
-	require.NotContains(t, err.Error(), "jwt", "error must not leak the subject JWT")
+	must.ErrorContains(err, "401")
+	must.ErrorContains(err, "correlation_id=abc-123-def")
+	must.ErrorContains(err, "AADSTS70021")
+	must.NotContains(err.Error(), "jwt", "error must not leak the subject JWT")
 }
 
 // Covers the camelCase correlationId variant Microsoft sometimes returns.
 func TestAzureWIFSource_HTTPErrorCamelCaseCorrelationID(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -317,10 +328,11 @@ func TestAzureWIFSource_HTTPErrorCamelCaseCorrelationID(t *testing.T) {
 	src := newAzureSource(t, &stubTokenSource{token: []byte("jwt")}, "", srv.URL)
 	cred, _ := src.Resolve(context.Background())
 	_, err := cred.BearerToken(context.Background())
-	require.ErrorContains(t, err, "correlation_id=camel-cased-id")
+	must.ErrorContains(err, "correlation_id=camel-cased-id")
 }
 
 func TestAzureWIFSource_HTTPErrorOmitsAbsentCorrelationID(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -331,13 +343,14 @@ func TestAzureWIFSource_HTTPErrorOmitsAbsentCorrelationID(t *testing.T) {
 	src := newAzureSource(t, &stubTokenSource{token: []byte("jwt")}, "", srv.URL)
 	cred, _ := src.Resolve(context.Background())
 	_, err := cred.BearerToken(context.Background())
-	require.ErrorContains(t, err, "400")
-	require.ErrorContains(t, err, "invalid_request")
-	require.NotContains(t, err.Error(), "correlation_id=", "must not synthesise a correlation_id when absent")
+	must.ErrorContains(err, "400")
+	must.ErrorContains(err, "invalid_request")
+	must.NotContains(err.Error(), "correlation_id=", "must not synthesise a correlation_id when absent")
 }
 
 // Guards correlationIDSuffix against panicking on non-JSON bodies.
 func TestAzureWIFSource_HTTPErrorNonJSONBody(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -348,46 +361,52 @@ func TestAzureWIFSource_HTTPErrorNonJSONBody(t *testing.T) {
 	src := newAzureSource(t, &stubTokenSource{token: []byte("jwt")}, "", srv.URL)
 	cred, _ := src.Resolve(context.Background())
 	_, err := cred.BearerToken(context.Background())
-	require.ErrorContains(t, err, "503")
-	require.ErrorContains(t, err, "Service Unavailable")
-	require.NotContains(t, err.Error(), "correlation_id=", "non-JSON body must not surface a correlation_id")
+	must.ErrorContains(err, "503")
+	must.ErrorContains(err, "Service Unavailable")
+	must.NotContains(err.Error(), "correlation_id=", "non-JSON body must not surface a correlation_id")
 }
 
 func TestAzureWIFSource_NilTokenSource(t *testing.T) {
+	must := require.New(t)
 	src := NewAzureWorkloadIdentitySource(nil, testAzureTenantID, testAzureClientID, "")
 	_, err := src.Resolve(context.Background())
-	require.ErrorContains(t, err, "token source")
+	must.ErrorContains(err, "token source")
 }
 
 func TestAzureWIFSource_EmptyTenantID(t *testing.T) {
+	must := require.New(t)
 	src := NewAzureWorkloadIdentitySource(&stubTokenSource{token: []byte("jwt")}, "", testAzureClientID, "")
 	_, err := src.Resolve(context.Background())
-	require.ErrorContains(t, err, "tenantID")
+	must.ErrorContains(err, "tenantID")
 }
 
 func TestAzureWIFSource_EmptyClientID(t *testing.T) {
+	must := require.New(t)
 	src := NewAzureWorkloadIdentitySource(&stubTokenSource{token: []byte("jwt")}, testAzureTenantID, "", "")
 	_, err := src.Resolve(context.Background())
-	require.ErrorContains(t, err, "clientID")
+	must.ErrorContains(err, "clientID")
 }
 
 func TestAzureWIFSource_EmptySubjectTokenRejected(t *testing.T) {
+	must := require.New(t)
 	src := newAzureSource(t, &stubTokenSource{token: []byte{}}, "", "http://unused.invalid")
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = cred.BearerToken(context.Background())
-	require.ErrorContains(t, err, "empty subject token")
+	must.ErrorContains(err, "empty subject token")
 }
 
 func TestAzureWIFSource_TokenSourceErrorPropagates(t *testing.T) {
+	must := require.New(t)
 	src := newAzureSource(t, &stubTokenSource{err: errors.New("boom")}, "", "http://unused.invalid")
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = cred.BearerToken(context.Background())
-	require.ErrorContains(t, err, "boom", "error should wrap the underlying token source failure")
+	must.ErrorContains(err, "boom", "error should wrap the underlying token source failure")
 }
 
 func TestAzureWIFSource_MalformedJSONBodyFails(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{not json`))
@@ -397,10 +416,11 @@ func TestAzureWIFSource_MalformedJSONBodyFails(t *testing.T) {
 	src := newAzureSource(t, &stubTokenSource{token: []byte("jwt")}, "", srv.URL)
 	cred, _ := src.Resolve(context.Background())
 	_, err := cred.BearerToken(context.Background())
-	require.ErrorContains(t, err, "parse token response")
+	must.ErrorContains(err, "parse token response")
 }
 
 func TestAzureWIFSource_EmptyAccessToken(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"token_type":"Bearer","expires_in":3600}`))
@@ -410,11 +430,12 @@ func TestAzureWIFSource_EmptyAccessToken(t *testing.T) {
 	src := newAzureSource(t, &stubTokenSource{token: []byte("jwt")}, "", srv.URL)
 	cred, _ := src.Resolve(context.Background())
 	_, err := cred.BearerToken(context.Background())
-	require.ErrorContains(t, err, "empty access_token")
+	must.ErrorContains(err, "empty access_token")
 }
 
 // Exercises the shared truncateForError cap on the error path.
 func TestAzureWIFSource_ErrorBodyTruncated(t *testing.T) {
+	must := require.New(t)
 	bigBody := strings.Repeat("X", stsErrorBodyLimit*4)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
@@ -426,16 +447,17 @@ func TestAzureWIFSource_ErrorBodyTruncated(t *testing.T) {
 	src := newAzureSource(t, &stubTokenSource{token: []byte("jwt")}, "", srv.URL)
 	cred, _ := src.Resolve(context.Background())
 	_, err := cred.BearerToken(context.Background())
-	require.Error(t, err)
+	must.Error(err)
 	msg := err.Error()
-	require.Contains(t, msg, "…", "error excerpt should be truncated with an ellipsis")
-	require.NotContains(t, msg, bigBody, "error must not include the full %d-byte body verbatim", len(bigBody))
+	must.Contains(msg, "…", "error excerpt should be truncated with an ellipsis")
+	must.NotContains(msg, bigBody, "error must not include the full %d-byte body verbatim", len(bigBody))
 }
 
 // Exercises the LimitReader on the success path: a body larger than
 // stsResponseLimit is truncated mid-JSON, so json.Unmarshal must fail
 // rather than the parse silently succeeding with a truncated token.
 func TestAzureWIFSource_SuccessBodyLimitEnforced(t *testing.T) {
+	must := require.New(t)
 	huge := strings.Repeat("A", stsResponseLimit*4)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -446,12 +468,13 @@ func TestAzureWIFSource_SuccessBodyLimitEnforced(t *testing.T) {
 	src := newAzureSource(t, &stubTokenSource{token: []byte("jwt")}, "", srv.URL)
 	cred, _ := src.Resolve(context.Background())
 	_, err := cred.BearerToken(context.Background())
-	require.ErrorContains(t, err, "parse token response", "truncated oversized body should fail to parse")
+	must.ErrorContains(err, "parse token response", "truncated oversized body should fail to parse")
 }
 
 // Exercises the sovereign-cloud tokenURLOverride path: the exchange
 // must POST to the override, not the global-cloud authority.
 func TestAzureWIFSource_CustomTokenURL(t *testing.T) {
+	must := require.New(t)
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&calls, 1)
@@ -473,17 +496,18 @@ func TestAzureWIFSource_CustomTokenURL(t *testing.T) {
 	)
 
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = cred.BearerToken(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, int32(1), atomic.LoadInt32(&calls), "override URL hit count")
+	must.NoError(err)
+	must.Equal(int32(1), atomic.LoadInt32(&calls), "override URL hit count")
 
-	require.Equal(t, srv.URL, src.tokenURL, "override should win over the global default")
+	must.Equal(srv.URL, src.tokenURL, "override should win over the global default")
 }
 
 // Pins the variadic-arg semantics: an empty override means "use the
 // default", not "use the empty string".
 func TestAzureWIFSource_EmptyTokenURLOverrideFallsBack(t *testing.T) {
+	must := require.New(t)
 	src := NewAzureWorkloadIdentitySource(
 		&stubTokenSource{token: []byte("jwt")},
 		testAzureTenantID,
@@ -493,7 +517,7 @@ func TestAzureWIFSource_EmptyTokenURLOverrideFallsBack(t *testing.T) {
 	)
 
 	want := fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/token", testAzureTenantID)
-	require.Equal(t, want, src.tokenURL, "empty override must fall back to the global default")
+	must.Equal(want, src.tokenURL, "empty override must fall back to the global default")
 }
 
 // Guards correlationIDSuffix against a hostile endpoint returning a
@@ -501,6 +525,7 @@ func TestAzureWIFSource_EmptyTokenURLOverrideFallsBack(t *testing.T) {
 // payload — bounding it at the source before it reaches slog/OTel/terminal.
 func TestAzureWIFSource_CorrelationIDSanitised(t *testing.T) {
 	t.Run("ANSI escape and control bytes stripped", func(t *testing.T) {
+		must := require.New(t)
 		// json.Marshal (not a raw string literal) carries the 0x1b
 		// control byte through the JSON parser correctly.
 		raw := "abc\x1b[31m\rde\x00f"
@@ -508,23 +533,25 @@ func TestAzureWIFSource_CorrelationIDSanitised(t *testing.T) {
 			"error":          "x",
 			"correlation_id": raw,
 		})
-		require.NoError(t, err)
+		must.NoError(err)
 		got := correlationIDSuffix(jsonBody)
 		// Bytes < 0x20 (ESC, CR, NUL) are dropped; the printable "[31m"
 		// tail survives since only the ESC byte was the control sequence.
-		require.Equal(t, " (correlation_id=abc[31mdef)", got)
+		must.Equal(" (correlation_id=abc[31mdef)", got)
 	})
 
 	t.Run("oversized correlation_id truncated to 64 bytes", func(t *testing.T) {
+		must := require.New(t)
 		long := strings.Repeat("a", 200)
 		body := []byte(fmt.Sprintf(`{"correlation_id":%q}`, long))
 		got := correlationIDSuffix(body)
-		require.Equal(t, " (correlation_id="+strings.Repeat("a", 64)+")", got)
+		must.Equal(" (correlation_id="+strings.Repeat("a", 64)+")", got)
 	})
 
 	t.Run("normal UUID passes through unchanged", func(t *testing.T) {
+		must := require.New(t)
 		body := []byte(`{"correlation_id":"7c14b6a4-9d28-4a3a-b3a3-1234567890ab"}`)
 		got := correlationIDSuffix(body)
-		require.Equal(t, " (correlation_id=7c14b6a4-9d28-4a3a-b3a3-1234567890ab)", got)
+		must.Equal(" (correlation_id=7c14b6a4-9d28-4a3a-b3a3-1234567890ab)", got)
 	})
 }

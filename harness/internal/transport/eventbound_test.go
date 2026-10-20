@@ -20,48 +20,53 @@ func truncationMarkerSuffix(originalBytes int) string {
 }
 
 func TestCapEventText_TruncatesWithMarkerAndValidUTF8(t *testing.T) {
+	must := require.New(t)
 	small := strings.Repeat("a", maxEventFieldBytes)
-	require.Equal(t, small, capEventText(small), "text at the cap must pass through unchanged")
+	must.Equal(small, capEventText(small), "text at the cap must pass through unchanged")
 
 	big := strings.Repeat("é", maxEventFieldBytes)
 	got := capEventText(big)
-	require.LessOrEqual(t, len(got), maxEventFieldBytes)
-	require.True(t, utf8.ValidString(got), "capped text must be valid UTF-8")
-	require.True(t, strings.HasSuffix(got, truncationMarkerSuffix(len(big))), "marker must name the original size")
+	must.LessOrEqual(len(got), maxEventFieldBytes)
+	must.True(utf8.ValidString(got), "capped text must be valid UTF-8")
+	must.True(strings.HasSuffix(got, truncationMarkerSuffix(len(big))), "marker must name the original size")
 }
 
 func TestBoundEventFields_CapsUserMessageAndThinkingText(t *testing.T) {
+	must := require.New(t)
 	big := strings.Repeat("é", maxEventFieldBytes)
 
 	for _, typ := range []string{"user_message", "thinking_delta"} {
 		t.Run(typ, func(t *testing.T) {
+			must := require.New(t)
 			ev := types.HarnessEvent{Type: typ, Source: types.UserMessageSourceInitialPrompt, Text: big}
 			boundEventFields(&ev)
-			require.LessOrEqual(t, len(ev.Text), maxEventFieldBytes)
-			require.True(t, utf8.ValidString(ev.Text), "capped text must be valid UTF-8")
-			require.True(t, strings.HasSuffix(ev.Text, truncationMarkerSuffix(len(big))), "marker must name the original size")
+			must.LessOrEqual(len(ev.Text), maxEventFieldBytes)
+			must.True(utf8.ValidString(ev.Text), "capped text must be valid UTF-8")
+			must.True(strings.HasSuffix(ev.Text, truncationMarkerSuffix(len(big))), "marker must name the original size")
 		})
 	}
 
 	delta := types.HarnessEvent{Type: "text_delta", Text: big}
 	boundEventFields(&delta)
-	require.Equal(t, big, delta.Text, "text_delta text must not be capped")
+	must.Equal(big, delta.Text, "text_delta text must not be capped")
 }
 
 func TestCapEventInput_PassesSmallInputAndTruncatesLarge(t *testing.T) {
+	must := require.New(t)
 	small := json.RawMessage(`{"path":"a.go"}`)
-	require.Equal(t, small, capEventInput(small), "input under the cap must pass through unchanged")
+	must.Equal(small, capEventInput(small), "input under the cap must pass through unchanged")
 
 	for name, input := range map[string]json.RawMessage{
 		"plain":           json.RawMessage(`{"content":"` + strings.Repeat("x", 1<<20) + `"}`),
 		"escape expanded": json.RawMessage(`{"content":"` + strings.Repeat("<", 1<<20) + `"}`),
 	} {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			got := capEventInput(input)
-			require.LessOrEqual(t, len(got), maxEventFieldBytes)
+			must.LessOrEqual(len(got), maxEventFieldBytes)
 			var s string
-			require.NoError(t, json.Unmarshal(got, &s), "capped input must be a valid JSON string")
-			require.True(t, strings.HasSuffix(s, truncationMarkerSuffix(len(input))), "marker must name the original size")
+			must.NoError(json.Unmarshal(got, &s), "capped input must be a valid JSON string")
+			must.True(strings.HasSuffix(s, truncationMarkerSuffix(len(input))), "marker must name the original size")
 		})
 	}
 }
@@ -75,13 +80,14 @@ func TestCapEventInput_KeepsHeadOfEscapeHeavyInput(t *testing.T) {
 		"quotes": {body: strings.Repeat(`\"`, 1<<18), wantHead: `{"content":"\"\"`},
 	} {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			input := json.RawMessage(`{"content":"` + tc.body + `"}`)
 			got := capEventInput(input)
-			require.LessOrEqual(t, len(got), maxEventFieldBytes)
+			must.LessOrEqual(len(got), maxEventFieldBytes)
 			var s string
-			require.NoError(t, json.Unmarshal(got, &s), "capped input must be a valid JSON string")
-			require.True(t, strings.HasPrefix(s, tc.wantHead), "capped input must keep its head")
-			require.GreaterOrEqual(t, len(s), 32<<10, "capped input must keep at least 32 KiB")
+			must.NoError(json.Unmarshal(got, &s), "capped input must be a valid JSON string")
+			must.True(strings.HasPrefix(s, tc.wantHead), "capped input must keep its head")
+			must.GreaterOrEqual(len(s), 32<<10, "capped input must keep at least 32 KiB")
 		})
 	}
 }
@@ -91,32 +97,34 @@ func TestCapEventInput_KeepsHeadOfEscapeHeavyInput(t *testing.T) {
 // receive limit aborts the stream on an oversized message, and checks the
 // stream survives to deliver a later event.
 func TestGRPCTransport_OversizedToolResultDoesNotEndStream(t *testing.T) {
+	must := require.New(t)
 	srv := newTestServer()
 	tr, _, cleanup := setupTestTransport(t, srv)
 	defer cleanup()
 
 	const size = 6 << 20
-	require.NoError(t, tr.Emit(types.HarnessEvent{Type: "tool_result", ToolUseID: "tc1", Content: strings.Repeat("r", size)}), "emit oversized tool_result")
+	must.NoError(tr.Emit(types.HarnessEvent{Type: "tool_result", ToolUseID: "tc1", Content: strings.Repeat("r", size)}), "emit oversized tool_result")
 	bigInput := json.RawMessage(`{"content":"` + strings.Repeat("w", size) + `"}`)
-	require.NoError(t, tr.Emit(types.HarnessEvent{Type: "tool_call", ID: "tc2", Name: "write_file", Input: bigInput}), "emit oversized tool_call")
-	require.NoError(t, tr.Emit(types.HarnessEvent{Type: "text_delta", Text: "after"}), "emit event after oversized events")
+	must.NoError(tr.Emit(types.HarnessEvent{Type: "tool_call", ID: "tc2", Name: "write_file", Input: bigInput}), "emit oversized tool_call")
+	must.NoError(tr.Emit(types.HarnessEvent{Type: "text_delta", Text: "after"}), "emit event after oversized events")
 
 	_ = tr.stream.CloseSend()
-	require.Eventually(t, func() bool { return len(srv.getReceived()) >= 3 }, 5*time.Second, 10*time.Millisecond)
+	must.Eventually(func() bool { return len(srv.getReceived()) >= 3 }, 5*time.Second, 10*time.Millisecond)
 	received := srv.getReceived()
-	require.Len(t, received, 3)
+	must.Len(received, 3)
 
 	content := received[0].Content
-	require.LessOrEqual(t, len(content), maxEventFieldBytes)
-	require.True(t, strings.HasSuffix(content, truncationMarkerSuffix(size)), "tool_result content must carry the truncation marker")
+	must.LessOrEqual(len(content), maxEventFieldBytes)
+	must.True(strings.HasSuffix(content, truncationMarkerSuffix(size)), "tool_result content must carry the truncation marker")
 
-	require.LessOrEqual(t, len(received[1].Input), maxEventFieldBytes)
-	require.True(t, json.Valid(received[1].Input), "tool_call input must remain valid JSON")
+	must.LessOrEqual(len(received[1].Input), maxEventFieldBytes)
+	must.True(json.Valid(received[1].Input), "tool_call input must remain valid JSON")
 
-	require.Equal(t, "after", received[2].Text, "event after the oversized events must be delivered")
+	must.Equal("after", received[2].Text, "event after the oversized events must be delivered")
 }
 
 func TestBoundEventFields_CapsIdentifiers(t *testing.T) {
+	must := require.New(t)
 	big := strings.Repeat("é", maxEventIdentifierBytes)
 
 	for _, ev := range []types.HarnessEvent{
@@ -127,12 +135,13 @@ func TestBoundEventFields_CapsIdentifiers(t *testing.T) {
 		{Type: "permission_request", RequestID: big, ToolName: big},
 	} {
 		t.Run(ev.Type, func(t *testing.T) {
+			must := require.New(t)
 			boundEventFields(&ev)
 			for field, got := range map[string]string{
 				"id": ev.ID, "name": ev.Name, "tool_use_id": ev.ToolUseID, "request_id": ev.RequestID, "tool_name": ev.ToolName,
 			} {
-				require.LessOrEqual(t, len(got), maxEventIdentifierBytes, "%s is over the identifier cap", field)
-				require.True(t, utf8.ValidString(got), "%s must be valid UTF-8", field)
+				must.LessOrEqual(len(got), maxEventIdentifierBytes, "%s is over the identifier cap", field)
+				must.True(utf8.ValidString(got), "%s must be valid UTF-8", field)
 			}
 		})
 	}
@@ -141,25 +150,26 @@ func TestBoundEventFields_CapsIdentifiers(t *testing.T) {
 	result := types.HarnessEvent{Type: "tool_result", ToolUseID: big}
 	boundEventFields(&call)
 	boundEventFields(&result)
-	require.Equal(t, call.ID, result.ToolUseID, "capped tool_result tool_use_id must match capped tool_call id")
+	must.Equal(call.ID, result.ToolUseID, "capped tool_result tool_use_id must match capped tool_call id")
 
 	done := types.HarnessEvent{Type: "done", StopReason: big}
 	boundEventFields(&done)
-	require.LessOrEqual(t, len(done.StopReason), maxEventIdentifierBytes, "done stop_reason must be capped")
+	must.LessOrEqual(len(done.StopReason), maxEventIdentifierBytes, "done stop_reason must be capped")
 
 	bigMessage := strings.Repeat("m", 6<<20)
 	warning := types.HarnessEvent{Type: "warning", Message: bigMessage}
 	boundEventFields(&warning)
-	require.LessOrEqual(t, len(warning.Message), maxEventFieldBytes)
-	require.True(t, strings.HasSuffix(warning.Message, truncationMarkerSuffix(len(bigMessage))), "warning message must carry the truncation marker")
+	must.LessOrEqual(len(warning.Message), maxEventFieldBytes)
+	must.True(strings.HasSuffix(warning.Message, truncationMarkerSuffix(len(bigMessage))), "warning message must carry the truncation marker")
 
 	short := types.HarnessEvent{Type: "tool_call", ID: "tc1", Name: "read_file"}
 	boundEventFields(&short)
-	require.Equal(t, "tc1", short.ID, "identifier under the cap must not be altered")
-	require.Equal(t, "read_file", short.Name, "identifier under the cap must not be altered")
+	must.Equal("tc1", short.ID, "identifier under the cap must not be altered")
+	must.Equal("read_file", short.Name, "identifier under the cap must not be altered")
 }
 
 func TestGRPCTransport_OversizedIdentifiersDoNotEndStream(t *testing.T) {
+	must := require.New(t)
 	srv := newTestServer()
 	tr, _, cleanup := setupTestTransport(t, srv)
 	defer cleanup()
@@ -171,15 +181,15 @@ func TestGRPCTransport_OversizedIdentifiersDoNotEndStream(t *testing.T) {
 		{Type: "user_message", Source: types.UserMessageSourceUserResponse, Text: "hi", RequestID: big},
 		{Type: "text_delta", Text: "after"},
 	} {
-		require.NoError(t, tr.Emit(ev), "emit %s", ev.Type)
+		must.NoError(tr.Emit(ev), "emit %s", ev.Type)
 	}
 
 	_ = tr.stream.CloseSend()
-	require.Eventually(t, func() bool { return len(srv.getReceived()) >= 4 }, 5*time.Second, 10*time.Millisecond)
+	must.Eventually(func() bool { return len(srv.getReceived()) >= 4 }, 5*time.Second, 10*time.Millisecond)
 	received := srv.getReceived()
-	require.Len(t, received, 4)
-	require.Len(t, received[0].Name, maxEventIdentifierBytes, "tool_call name must be capped")
-	require.Len(t, received[1].Name, maxEventIdentifierBytes, "tool_result name must be capped")
-	require.Len(t, received[2].RequestId, maxEventIdentifierBytes, "request_id must be capped")
-	require.Equal(t, "after", received[3].Text, "event after the oversized identifiers must be delivered")
+	must.Len(received, 4)
+	must.Len(received[0].Name, maxEventIdentifierBytes, "tool_call name must be capped")
+	must.Len(received[1].Name, maxEventIdentifierBytes, "tool_result name must be capped")
+	must.Len(received[2].RequestId, maxEventIdentifierBytes, "request_id must be capped")
+	must.Equal("after", received[3].Text, "event after the oversized identifiers must be delivered")
 }

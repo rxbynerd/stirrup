@@ -58,6 +58,7 @@ func toolCallEvents(ch <-chan types.StreamEvent) []types.StreamEvent {
 }
 
 func TestNormalizingAdapter_OpenAIToolNamesUnchanged(t *testing.T) {
+	must := require.New(t)
 	inner := &fakeAdapter{}
 	w := NewNormalizingAdapter(inner, "openai-compatible")
 
@@ -68,19 +69,22 @@ func TestNormalizingAdapter_OpenAIToolNamesUnchanged(t *testing.T) {
 		},
 	}
 	_, err := w.Stream(context.Background(), params)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	tools := inner.receivedParams.Tools
 	t.Run("plain name unchanged", func(t *testing.T) {
-		require.Equal(t, "read_file", tools[0].Name)
+		must := require.New(t)
+		must.Equal("read_file", tools[0].Name)
 	})
 	// OpenAI allows hyphens, so the name passes through verbatim.
 	t.Run("hyphenated name unchanged", func(t *testing.T) {
-		require.Equal(t, "mcp_jira_create-issue", tools[1].Name)
+		must := require.New(t)
+		must.Equal("mcp_jira_create-issue", tools[1].Name)
 	})
 }
 
 func TestNormalizingAdapter_GeminiOutboundNamesSanitized(t *testing.T) {
+	must := require.New(t)
 	inner := &fakeAdapter{}
 	w := NewNormalizingAdapter(inner, "gemini")
 
@@ -91,17 +95,19 @@ func TestNormalizingAdapter_GeminiOutboundNamesSanitized(t *testing.T) {
 		},
 	}
 	_, err := w.Stream(context.Background(), params)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	for i, td := range inner.receivedParams.Tools {
 		t.Run(td.Name, func(t *testing.T) {
-			require.False(t, strings.ContainsAny(td.Name, "-."),
+			must := require.New(t)
+			must.False(strings.ContainsAny(td.Name, "-."),
 				"tool %d name %q still contains a character Gemini rejects", i, td.Name)
 		})
 	}
 }
 
 func TestNormalizingAdapter_InboundToolCallReverseTranslated(t *testing.T) {
+	must := require.New(t)
 	inner := &fakeAdapter{
 		scripted: []types.StreamEvent{
 			{Type: "text_delta", Text: "hello"},
@@ -117,19 +123,20 @@ func TestNormalizingAdapter_InboundToolCallReverseTranslated(t *testing.T) {
 		},
 	}
 	ch, err := w.Stream(context.Background(), params)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	// The provider saw the normalised name.
-	require.Equal(t, "mcp_jira_create_issue", inner.receivedParams.Tools[0].Name)
+	must.Equal("mcp_jira_create_issue", inner.receivedParams.Tools[0].Name)
 
 	calls := toolCallEvents(ch)
-	require.NotEmpty(t, calls, "expected to observe a tool_call event")
+	must.NotEmpty(calls, "expected to observe a tool_call event")
 	for _, ev := range calls {
-		require.Equal(t, "mcp_jira_create-issue", ev.Name)
+		must.Equal("mcp_jira_create-issue", ev.Name)
 	}
 }
 
 func TestNormalizingAdapter_MultipleToolCallsInBatchReverseTranslated(t *testing.T) {
+	must := require.New(t)
 	// Every tool_call in a parallel-tool turn is reverse-translated, not
 	// only the first. Gemini's policy is the strictest, so both MCP names
 	// need normalising on the outbound side.
@@ -150,16 +157,17 @@ func TestNormalizingAdapter_MultipleToolCallsInBatchReverseTranslated(t *testing
 		},
 	}
 	ch, err := w.Stream(context.Background(), params)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	var names []string
 	for _, ev := range toolCallEvents(ch) {
 		names = append(names, ev.Name)
 	}
-	require.Equal(t, []string{"mcp_jira_create-issue", "mcp_slack_post.message"}, names)
+	must.Equal([]string{"mcp_jira_create-issue", "mcp_slack_post.message"}, names)
 }
 
 func TestNormalizingAdapter_MessageHistoryToolUseNamesRewritten(t *testing.T) {
+	must := require.New(t)
 	// A tool_use block from an earlier assistant turn carries the internal
 	// name. The provider must receive the wire-facing name so the block
 	// correlates with its declared tool.
@@ -188,24 +196,28 @@ func TestNormalizingAdapter_MessageHistoryToolUseNamesRewritten(t *testing.T) {
 	}
 
 	_, err := w.Stream(context.Background(), params)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	messages := inner.receivedParams.Messages
 	toolUse := messages[0].Content[1]
-	require.Equal(t, "tool_use", toolUse.Type)
+	must.Equal("tool_use", toolUse.Type)
 
 	t.Run("tool_use name rewritten", func(t *testing.T) {
-		require.Equal(t, "mcp_jira_create_issue", toolUse.Name)
+		must := require.New(t)
+		must.Equal("mcp_jira_create_issue", toolUse.Name)
 	})
 	t.Run("text block unchanged", func(t *testing.T) {
-		require.Equal(t, "I'll create the issue.", messages[0].Content[0].Text)
+		must := require.New(t)
+		must.Equal("I'll create the issue.", messages[0].Content[0].Text)
 	})
 	t.Run("tool_result block unchanged", func(t *testing.T) {
-		require.Equal(t, "tool_result", messages[1].Content[0].Type)
+		must := require.New(t)
+		must.Equal("tool_result", messages[1].Content[0].Type)
 	})
 }
 
 func TestNormalizingAdapter_CallerParamsNotMutated(t *testing.T) {
+	must := require.New(t)
 	// The wrapper must not write through to the caller's StreamParams,
 	// because callers and the batch adapter retain those slices.
 	inner := &fakeAdapter{}
@@ -225,17 +237,20 @@ func TestNormalizingAdapter_CallerParamsNotMutated(t *testing.T) {
 	params := types.StreamParams{Tools: tools, Messages: messages}
 
 	_, err := w.Stream(context.Background(), params)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	t.Run("tools slice unchanged", func(t *testing.T) {
-		require.Equal(t, "mcp_jira_create-issue", tools[0].Name)
+		must := require.New(t)
+		must.Equal("mcp_jira_create-issue", tools[0].Name)
 	})
 	t.Run("messages slice unchanged", func(t *testing.T) {
-		require.Equal(t, "mcp_jira_create-issue", messages[0].Content[0].Name)
+		must := require.New(t)
+		must.Equal("mcp_jira_create-issue", messages[0].Content[0].Name)
 	})
 }
 
 func TestNormalizingAdapter_CollisionResolvedByDisambiguation(t *testing.T) {
+	must := require.New(t)
 	// Two distinct internal names that sanitize to the same Gemini name stay
 	// distinct after hash-suffix disambiguation. The fail-closed path is
 	// covered by TestNormalizingAdapter_IrresolvableCollisionFailsClosed.
@@ -249,12 +264,13 @@ func TestNormalizingAdapter_CollisionResolvedByDisambiguation(t *testing.T) {
 		},
 	}
 	_, err := w.Stream(context.Background(), params)
-	require.NoError(t, err)
+	must.NoError(err)
 
-	require.NotEqual(t, inner.receivedParams.Tools[0].Name, inner.receivedParams.Tools[1].Name)
+	must.NotEqual(inner.receivedParams.Tools[0].Name, inner.receivedParams.Tools[1].Name)
 }
 
 func TestNormalizingAdapter_IrresolvableCollisionFailsClosed(t *testing.T) {
+	must := require.New(t)
 	// A normalization failure must surface as an error without reaching the
 	// inner adapter. Build's duplicate-name guard is the reachable failure
 	// here, because every production policy has MaxLen=64. The stillCollides
@@ -269,41 +285,47 @@ func TestNormalizingAdapter_IrresolvableCollisionFailsClosed(t *testing.T) {
 		},
 	}
 	_, err := w.Stream(context.Background(), params)
-	require.ErrorContains(t, err, "tool name normalization")
+	must.ErrorContains(err, "tool name normalization")
 
 	t.Run("inner adapter not called", func(t *testing.T) {
-		require.Nil(t, inner.receivedParams.Tools)
-		require.Empty(t, inner.receivedParams.Model)
+		must := require.New(t)
+		must.Nil(inner.receivedParams.Tools)
+		must.Empty(inner.receivedParams.Model)
 	})
 }
 
 func TestNormalizingAdapter_InnerStreamError_Propagated(t *testing.T) {
+	must := require.New(t)
 	inner := &fakeAdapter{streamErr: errFake}
 	w := NewNormalizingAdapter(inner, "anthropic")
 	_, err := w.Stream(context.Background(), types.StreamParams{})
-	require.Error(t, err)
+	must.Error(err)
 }
 
 func TestNormalizingAdapter_LastBatchIDPassThrough(t *testing.T) {
+	must := require.New(t)
 	inner := &fakeBatchAdapter{}
 	inner.batchID = "batch-xyz"
 	w := NewNormalizingAdapter(inner, "anthropic")
-	require.Equal(t, "batch-xyz", w.LastBatchID())
+	must.Equal("batch-xyz", w.LastBatchID())
 }
 
 func TestNormalizingAdapter_LastBatchIDEmptyWhenInnerNotBatch(t *testing.T) {
+	must := require.New(t)
 	w := NewNormalizingAdapter(&fakeAdapter{}, "anthropic")
-	require.Empty(t, w.LastBatchID())
+	must.Empty(w.LastBatchID())
 }
 
 func TestNormalizingAdapter_UnwrapReturnsInner(t *testing.T) {
+	must := require.New(t)
 	// Pins Unwrap's pointer-identity contract directly.
 	inner := &fakeAdapter{}
 	w := NewNormalizingAdapter(inner, "anthropic")
-	require.Same(t, inner, w.Unwrap())
+	must.Same(inner, w.Unwrap())
 }
 
 func TestNormalizingAdapter_NonASCIINameRoundTrip_Gemini(t *testing.T) {
+	must := require.New(t)
 	// The adapter stack keeps a non-ASCII internal name off the wire, since
 	// Gemini rejects non-ASCII, and restores it on the inbound tool_call so
 	// dispatch still resolves the handler.
@@ -326,20 +348,21 @@ func TestNormalizingAdapter_NonASCIINameRoundTrip_Gemini(t *testing.T) {
 		},
 	}
 	ch, err := w.Stream(context.Background(), params)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	for _, r := range inner.receivedParams.Tools[0].Name {
-		require.LessOrEqual(t, r, rune(127), "outbound tool name contains a non-ASCII rune")
+		must.LessOrEqual(r, rune(127), "outbound tool name contains a non-ASCII rune")
 	}
 
 	calls := toolCallEvents(ch)
-	require.NotEmpty(t, calls, "expected to observe a tool_call event")
+	must.NotEmpty(calls, "expected to observe a tool_call event")
 	for _, ev := range calls {
-		require.Equal(t, internalName, ev.Name)
+		must.Equal(internalName, ev.Name)
 	}
 }
 
 func TestNormalizingAdapter_RoundTripDispatch_OpenAIResponses(t *testing.T) {
+	must := require.New(t)
 	// On a provider that permits hyphens, both directions keep the internal
 	// name unchanged so dispatch resolves the handler by its identifier.
 	inner := &fakeAdapter{
@@ -355,9 +378,9 @@ func TestNormalizingAdapter_RoundTripDispatch_OpenAIResponses(t *testing.T) {
 		},
 	}
 	ch, err := w.Stream(context.Background(), params)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	for _, ev := range toolCallEvents(ch) {
-		require.Equal(t, "mcp_jira_create-issue", ev.Name)
+		must.Equal("mcp_jira_create-issue", ev.Name)
 	}
 }

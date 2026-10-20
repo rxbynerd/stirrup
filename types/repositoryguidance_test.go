@@ -23,9 +23,10 @@ func TestValidateRunConfig_RepositoryGuidance_AcceptsValid(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.RepositoryGuidance = tc.cfg
-			require.NoError(t, ValidateRunConfig(c))
+			must.NoError(ValidateRunConfig(c))
 		})
 	}
 }
@@ -58,10 +59,11 @@ func TestValidateRunConfig_RepositoryGuidance_RejectsInvalid(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Executor.Type = tc.executor
 			c.RepositoryGuidance = tc.cfg
-			require.ErrorContains(t, ValidateRunConfig(c), tc.want)
+			must.ErrorContains(ValidateRunConfig(c), tc.want)
 		})
 	}
 }
@@ -78,7 +80,8 @@ func TestRepositoryGuidanceConfig_EffectiveMaxBytes_DefaultsAndExplicit(t *testi
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, tc.cfg.EffectiveMaxBytes())
+			must := require.New(t)
+			must.Equal(tc.want, tc.cfg.EffectiveMaxBytes())
 		})
 	}
 }
@@ -107,13 +110,14 @@ func TestRepositoryGuidance_DoesNotChangeRuleOfTwoLegs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Tools.BuiltIn = []string{"read_file", "run_command"}
 			c.RepositoryGuidance = tc.cfg
 			u, s, e := RuleOfTwoState(c)
-			require.Equal(t, wantU, u, "holdsUntrusted")
-			require.Equal(t, wantS, s, "holdsSensitive")
-			require.Equal(t, wantE, e, "canCommExternal")
+			must.Equal(wantU, u, "holdsUntrusted")
+			must.Equal(wantS, s, "holdsSensitive")
+			must.Equal(wantE, e, "canCommExternal")
 		})
 	}
 }

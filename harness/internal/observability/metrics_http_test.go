@@ -63,6 +63,7 @@ func (f *fakeOTLPMetricsServer) snapshot() []capturedMetricsRequest {
 // forcing a flush via Close() POSTs to /v1/metrics with the configured
 // header.
 func TestNewMetrics_HTTPProtocol_RoutesToV1Metrics(t *testing.T) {
+	must := require.New(t)
 	fake := &fakeOTLPMetricsServer{}
 	srv := httptest.NewServer(fake.handler())
 	defer srv.Close()
@@ -80,7 +81,7 @@ func TestNewMetrics_HTTPProtocol_RoutesToV1Metrics(t *testing.T) {
 		Endpoint: srv.URL,
 		Headers:  map[string]string{authHeader: authValue},
 	}, ResourceOptions{})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	// Without a measurement, the periodic reader's first export would be
 	// a no-op and the test would race against the first collection cycle.
@@ -89,22 +90,26 @@ func TestNewMetrics_HTTPProtocol_RoutesToV1Metrics(t *testing.T) {
 
 	// Close drives a final ForceFlush + Shutdown synchronously, so the
 	// test can assert on captured POSTs immediately after it returns.
-	require.NoError(t, m.Close())
+	must.NoError(m.Close())
 
 	requests := fake.snapshot()
-	require.NotEmpty(t, requests, "expected at least one OTLP/HTTP metrics POST")
+	must.NotEmpty(requests, "expected at least one OTLP/HTTP metrics POST")
 	got := requests[0]
 
 	t.Run("path ends in v1 metrics", func(t *testing.T) {
-		require.True(t, strings.HasSuffix(got.path, "/v1/metrics"), "got path %q", got.path)
+		must := require.New(t)
+		must.True(strings.HasSuffix(got.path, "/v1/metrics"), "got path %q", got.path)
 	})
 	t.Run("content type is protobuf", func(t *testing.T) {
-		require.Equal(t, "application/x-protobuf", got.contentType)
+		must := require.New(t)
+		must.Equal("application/x-protobuf", got.contentType)
 	})
 	t.Run("sends configured authorization header", func(t *testing.T) {
-		require.Equal(t, authValue, got.headers.Get(authHeader))
+		must := require.New(t)
+		must.Equal(authValue, got.headers.Get(authHeader))
 	})
 	t.Run("body is non-empty", func(t *testing.T) {
-		require.NotZero(t, got.bodyLen, "expected non-empty protobuf body")
+		must := require.New(t)
+		must.NotZero(got.bodyLen, "expected non-empty protobuf body")
 	})
 }

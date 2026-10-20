@@ -23,6 +23,7 @@ func makeMessage(role, text string) types.Message {
 }
 
 func TestSlidingWindow_NoTruncation(t *testing.T) {
+	must := require.New(t)
 	s := NewSlidingWindowStrategy()
 	msgs := []types.Message{
 		makeMessage("user", "hello"),
@@ -34,11 +35,12 @@ func TestSlidingWindow_NoTruncation(t *testing.T) {
 		CurrentTokens:      100,
 		ReserveForResponse: 2000,
 	})
-	require.NoError(t, err)
-	require.Len(t, result, 2)
+	must.NoError(err)
+	must.Len(result, 2)
 }
 
 func TestSlidingWindow_DropsOldestExchangesKeepingTask(t *testing.T) {
+	must := require.New(t)
 	s := NewSlidingWindowStrategy()
 	msgs := []types.Message{
 		makeMessage("user", strings.Repeat("a", 400)),      // ~100 tokens
@@ -53,15 +55,16 @@ func TestSlidingWindow_DropsOldestExchangesKeepingTask(t *testing.T) {
 		CurrentTokens:      estimateHistory(msgs),
 		ReserveForResponse: 100,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	// FitLimit is 360: dropping the first exchange after the task fits.
-	require.Len(t, result, 3)
-	require.Equal(t, strings.Repeat("a", 400), result[0].Content[0].Text, "keeps the task first")
-	require.Equal(t, strings.Repeat("d", 400), result[1].Content[0].Text, "retained tail starts at the second assistant turn")
-	require.Equal(t, estimateHistory(result), s.LastCompaction().TokensAfter)
+	must.Len(result, 3)
+	must.Equal(strings.Repeat("a", 400), result[0].Content[0].Text, "keeps the task first")
+	must.Equal(strings.Repeat("d", 400), result[1].Content[0].Text, "retained tail starts at the second assistant turn")
+	must.Equal(estimateHistory(result), s.LastCompaction().TokensAfter)
 }
 
 func TestSlidingWindow_PreservesTaskAndLastExchange(t *testing.T) {
+	must := require.New(t)
 	s := NewSlidingWindowStrategy()
 	msgs := []types.Message{
 		makeMessage("user", strings.Repeat("a", 4000)),
@@ -76,12 +79,13 @@ func TestSlidingWindow_PreservesTaskAndLastExchange(t *testing.T) {
 		CurrentTokens:      5000,
 		ReserveForResponse: 50,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	// Even though budget is tiny, the task and the last exchange survive.
-	require.Equal(t, []types.Message{msgs[0], msgs[3], msgs[4]}, result)
+	must.Equal([]types.Message{msgs[0], msgs[3], msgs[4]}, result)
 }
 
 func TestSlidingWindow_ZeroBudgetKeepsSingleExchange(t *testing.T) {
+	must := require.New(t)
 	s := NewSlidingWindowStrategy()
 	msgs := []types.Message{
 		makeMessage("user", "hello"),
@@ -94,12 +98,13 @@ func TestSlidingWindow_ZeroBudgetKeepsSingleExchange(t *testing.T) {
 		CurrentTokens:      200,
 		ReserveForResponse: 100,
 	})
-	require.NoError(t, err)
-	require.Len(t, result, 3, "keeps the task and its only exchange")
-	require.Nil(t, s.LastCompaction(), "no compaction when nothing can be dropped")
+	must.NoError(err)
+	must.Len(result, 3, "keeps the task and its only exchange")
+	must.Nil(s.LastCompaction(), "no compaction when nothing can be dropped")
 }
 
 func TestSlidingWindow_NegativeBudgetKeepsTaskAndLastExchange(t *testing.T) {
+	must := require.New(t)
 	s := NewSlidingWindowStrategy()
 	msgs := []types.Message{
 		makeMessage("user", "a"),
@@ -114,16 +119,17 @@ func TestSlidingWindow_NegativeBudgetKeepsTaskAndLastExchange(t *testing.T) {
 		CurrentTokens:      500,
 		ReserveForResponse: 100,
 	})
-	require.NoError(t, err)
-	require.Equal(t, []types.Message{msgs[0], msgs[3], msgs[4]}, result)
+	must.NoError(err)
+	must.Equal([]types.Message{msgs[0], msgs[3], msgs[4]}, result)
 
 	c := s.LastCompaction()
-	require.NotNil(t, c, "compaction event")
-	require.Equal(t, 5, c.MessagesBefore)
-	require.Equal(t, 3, c.MessagesAfter)
+	must.NotNil(c, "compaction event")
+	must.Equal(5, c.MessagesBefore)
+	must.Equal(3, c.MessagesAfter)
 }
 
 func TestSlidingWindow_SingleMessage(t *testing.T) {
+	must := require.New(t)
 	s := NewSlidingWindowStrategy()
 	msgs := []types.Message{
 		makeMessage("user", "only one"),
@@ -134,11 +140,12 @@ func TestSlidingWindow_SingleMessage(t *testing.T) {
 		CurrentTokens:      500,
 		ReserveForResponse: 5,
 	})
-	require.NoError(t, err)
-	require.Len(t, result, 1)
+	must.NoError(err)
+	must.Len(result, 1)
 }
 
 func TestSlidingWindow_ToolCallHistoryUnchangedWhenNoSafeCut(t *testing.T) {
+	must := require.New(t)
 	s := NewSlidingWindowStrategy()
 
 	toolInput, _ := json.Marshal(map[string]string{"path": "main.go"})
@@ -164,10 +171,10 @@ func TestSlidingWindow_ToolCallHistoryUnchangedWhenNoSafeCut(t *testing.T) {
 		CurrentTokens:      600,
 		ReserveForResponse: 100,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	// The only exchange is the last one, so nothing can be dropped
 	// without separating the tool_result from its tool_use.
-	require.Equal(t, msgs, result)
+	must.Equal(msgs, result)
 }
 
 // TestSlidingWindow_ParallelCallsNeverOrphanResults pins that a cut never
@@ -175,6 +182,7 @@ func TestSlidingWindow_ToolCallHistoryUnchangedWhenNoSafeCut(t *testing.T) {
 // message carrying their results: the window drops the whole exchange and
 // keeps the task in front.
 func TestSlidingWindow_ParallelCallsNeverOrphanResults(t *testing.T) {
+	must := require.New(t)
 	msgs := parallelCallHistory(0)
 	s := NewSlidingWindowStrategy()
 	result, err := s.Prepare(context.Background(), msgs, TokenBudget{
@@ -182,16 +190,17 @@ func TestSlidingWindow_ParallelCallsNeverOrphanResults(t *testing.T) {
 		CurrentTokens:      estimateHistory(msgs),
 		ReserveForResponse: 100,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	want := []types.Message{msgs[0], msgs[3], msgs[4]}
-	require.Equal(t, want, result, "keeps the task and the last exchange")
-	require.Equal(t, estimateHistory(want), s.LastCompaction().TokensAfter)
+	must.Equal(want, result, "keeps the task and the last exchange")
+	must.Equal(estimateHistory(want), s.LastCompaction().TokensAfter)
 }
 
 // TestSlidingWindow_DropsFewestExchanges pins over generated histories that
 // the window drops only as many exchanges as the budget requires, and that
 // it stops at the last exchange when even that does not fit.
 func TestSlidingWindow_DropsFewestExchanges(t *testing.T) {
+	must := require.New(t)
 	for seed := range uint64(100) {
 		r := rand.New(rand.NewPCG(seed, 2))
 		msgs := generateHistory(r, r.IntN(14))
@@ -201,7 +210,7 @@ func TestSlidingWindow_DropsFewestExchanges(t *testing.T) {
 			available := FitLimit(budget)
 			s := NewSlidingWindowStrategy()
 			result, err := s.Prepare(context.Background(), msgs, budget)
-			require.NoError(t, err, label)
+			must.NoError(err, label)
 			tokensWithCut := func(cut int) int {
 				total := budget.CurrentTokens
 				for _, msg := range msgs[1:cut] {
@@ -212,21 +221,21 @@ func TestSlidingWindow_DropsFewestExchanges(t *testing.T) {
 			last := lastExchangeStart(msgs)
 			c := s.LastCompaction()
 			if c == nil {
-				require.Len(t, result, len(msgs), "%s: messages dropped without a compaction event", label)
-				require.False(t, available > 0 && budget.CurrentTokens > available && last > 1,
+				must.Len(result, len(msgs), "%s: messages dropped without a compaction event", label)
+				must.False(available > 0 && budget.CurrentTokens > available && last > 1,
 					"%s: over budget with droppable exchanges but nothing dropped", label)
 				continue
 			}
 			cut := len(msgs) - len(result) + 1
 			if available <= 0 {
-				require.Equal(t, last, cut, "%s: no-room cut should be the last exchange", label)
+				must.Equal(last, cut, "%s: no-room cut should be the last exchange", label)
 				continue
 			}
-			require.Equal(t, tokensWithCut(cut), c.TokensAfter, "%s: TokensAfter", label)
-			require.False(t, c.TokensAfter > available && cut != last,
+			must.Equal(tokensWithCut(cut), c.TokensAfter, "%s: TokensAfter", label)
+			must.False(c.TokensAfter > available && cut != last,
 				"%s: still over budget at cut %d before the last exchange %d", label, cut, last)
 			for earlier := 1; earlier < cut; earlier++ {
-				require.False(t, msgs[earlier].Role == "assistant" && tokensWithCut(earlier) <= available,
+				must.False(msgs[earlier].Role == "assistant" && tokensWithCut(earlier) <= available,
 					"%s: cut %d drops more than needed; cut %d already fits", label, cut, earlier)
 			}
 		}
@@ -238,12 +247,13 @@ func TestSlidingWindow_DropsFewestExchanges(t *testing.T) {
 // signature does not: billing follows thinking tokens, and a signature is
 // several times longer than the text it attests.
 func TestSlidingWindow_EstimateCountsThinkingTextNotSignature(t *testing.T) {
+	must := require.New(t)
 	msg := types.Message{Role: "assistant", Content: []types.ContentBlock{
 		{Type: "thinking", Text: strings.Repeat("t", 400), ThoughtSignature: strings.Repeat("s", 4000)},
 		{Type: "redacted_thinking", ThoughtSignature: strings.Repeat("d", 4000)},
 	}}
 	// 4 (message) + 3 + 100 (thinking block and its text) + 3 (redacted block)
-	require.Equal(t, 110, estimateTokens(msg), "thinking text and block overhead only")
+	must.Equal(110, estimateTokens(msg), "thinking text and block overhead only")
 }
 
 func TestSlidingWindow_ImplementsContextStrategy(t *testing.T) {
@@ -254,11 +264,12 @@ func TestSlidingWindow_ImplementsContextStrategy(t *testing.T) {
 // message (a 40 KB stored Responses output array here) counts toward its
 // estimate, so the window drops it rather than overflowing the context.
 func TestSlidingWindow_CountsReplayFields(t *testing.T) {
+	must := require.New(t)
 	stored := `["` + strings.Repeat("A", 40*1024-4) + `"]`
 	plain := makeMessage("assistant", strings.Repeat("b", 400))
 	withReplay := makeMessage("assistant", strings.Repeat("b", 400))
 	withReplay.ReplayFields = map[string]json.RawMessage{"openai_responses.output": json.RawMessage(stored)}
-	require.Equal(t, estimateTokens(plain)+40*1024/4, estimateTokens(withReplay),
+	must.Equal(estimateTokens(plain)+40*1024/4, estimateTokens(withReplay),
 		"replay state adds one token per four bytes")
 
 	msgs := []types.Message{
@@ -275,13 +286,13 @@ func TestSlidingWindow_CountsReplayFields(t *testing.T) {
 		CurrentTokens:      estimateHistory(msgs),
 		ReserveForResponse: 100,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	// Dropping the first exchange after the task removes the replay state
 	// and fits the remaining four messages in the fit limit of 810.
-	require.Len(t, result, 4, "want the task and the last 3 messages")
-	require.Equal(t, strings.Repeat("a", 400), result[0].Content[0].Text, "keeps the task first")
-	require.Equal(t, strings.Repeat("d", 400), result[1].Content[0].Text, "retained tail starts at the second assistant turn")
-	require.Equal(t, estimateHistory(result), s.LastCompaction().TokensAfter)
+	must.Len(result, 4, "want the task and the last 3 messages")
+	must.Equal(strings.Repeat("a", 400), result[0].Content[0].Text, "keeps the task first")
+	must.Equal(strings.Repeat("d", 400), result[1].Content[0].Text, "retained tail starts at the second assistant turn")
+	must.Equal(estimateHistory(result), s.LastCompaction().TokensAfter)
 }
 
 // TestEstimateTokens_CountsEveryFieldSent pins that the estimate counts the
@@ -297,15 +308,18 @@ func TestEstimateTokens_CountsEveryFieldSent(t *testing.T) {
 	}}}
 
 	t.Run("tool use block", func(t *testing.T) {
+		must := require.New(t)
 		// 4 (message) + 3 (block) + 2 (ID) + 2 (name) + 10 (input)
-		require.Equal(t, 21, estimateTokens(call))
+		must.Equal(21, estimateTokens(call))
 	})
 	t.Run("tool result block", func(t *testing.T) {
+		must := require.New(t)
 		// 4 (message) + 3 (block) + 2 (tool use ID) + 100 (content) + 50 (structured)
-		require.Equal(t, 159, estimateTokens(result))
+		must.Equal(159, estimateTokens(result))
 	})
 	t.Run("history of both messages", func(t *testing.T) {
-		require.Equal(t, 180, EstimateHistoryTokens([]types.Message{call, result}))
+		must := require.New(t)
+		must.Equal(180, EstimateHistoryTokens([]types.Message{call, result}))
 	})
 }
 
@@ -332,6 +346,7 @@ func structuredToolHistory(exchanges int) []types.Message {
 // window credits each dropped message with its structured envelope, so it
 // keeps as many exchanges as fit the budget the loop computes.
 func TestSlidingWindow_StructuredResultsDropFewestExchanges(t *testing.T) {
+	must := require.New(t)
 	const overhead = 2000
 	msgs := structuredToolHistory(20)
 	budget := TokenBudget{
@@ -343,12 +358,12 @@ func TestSlidingWindow_StructuredResultsDropFewestExchanges(t *testing.T) {
 
 	s := NewSlidingWindowStrategy()
 	result, err := s.Prepare(context.Background(), msgs, budget)
-	require.NoError(t, err)
+	must.NoError(err)
 	kept := overhead + EstimateHistoryTokens(result)
-	require.Equal(t, kept, s.LastCompaction().TokensAfter)
-	require.LessOrEqual(t, kept, limit, "kept history exceeds the fit limit")
+	must.Equal(kept, s.LastCompaction().TokensAfter)
+	must.LessOrEqual(kept, limit, "kept history exceeds the fit limit")
 	cut := len(msgs) - len(result) + 1
-	require.GreaterOrEqual(t, cut, 3, "nothing was dropped from a history of %d tokens", budget.CurrentTokens)
+	must.GreaterOrEqual(cut, 3, "nothing was dropped from a history of %d tokens", budget.CurrentTokens)
 	oneMore := overhead + EstimateHistoryTokens(pinTask(msgs, cut-2))
-	require.Greater(t, oneMore, limit, "keeping one more exchange should exceed the fit limit")
+	must.Greater(oneMore, limit, "keeping one more exchange should exceed the fit limit")
 }

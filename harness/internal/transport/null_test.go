@@ -13,19 +13,22 @@ func TestNullTransport_ImplementsInterface(t *testing.T) {
 }
 
 func TestNullTransport_EmitReturnsNil(t *testing.T) {
+	must := require.New(t)
 	tp := NewNullTransport()
-	require.NoError(t, tp.Emit(types.HarnessEvent{Type: "text_delta", Text: "hello"}))
+	must.NoError(tp.Emit(types.HarnessEvent{Type: "text_delta", Text: "hello"}))
 }
 
 func TestNullTransport_CloseReturnsNil(t *testing.T) {
+	must := require.New(t)
 	tp := NewNullTransport()
-	require.NoError(t, tp.Close())
+	must.NoError(tp.Close())
 }
 
 func TestNullTransport_OnControlDoesNotPanic(t *testing.T) {
+	must := require.New(t)
 	tp := NewNullTransport()
 	// Should not panic even with a non-nil handler.
-	require.NotPanics(t, func() {
+	must.NotPanics(func() {
 		tp.OnControl(func(_ types.ControlEvent) {})
 	})
 }
@@ -47,28 +50,32 @@ type embedsNullTransport struct {
 }
 
 func TestIsNull_NilReturnsFalse(t *testing.T) {
+	must := require.New(t)
 	// IsNull(nil) is false by contract. Callers that pass a nil
 	// transport should fail their own nil-check separately; IsNull is
 	// strictly "is this a null-equivalent transport", not "is this a
 	// usable transport".
-	require.False(t, IsNull(nil))
+	must.False(IsNull(nil))
 }
 
 func TestIsNull_NullTransport(t *testing.T) {
-	require.True(t, IsNull(NewNullTransport()))
+	must := require.New(t)
+	must.True(IsNull(NewNullTransport()))
 }
 
 func TestIsNull_NonNullTransport(t *testing.T) {
+	must := require.New(t)
 	// A transport that exposes OnControl but does NOT implement
 	// NullCapable must be reported as non-null. This guards against a
 	// regression where IsNull's type assertion is loosened to a
 	// structural check that would mistakenly flag every Transport.
-	require.False(t, IsNull(onControlOnly{}))
+	must.False(IsNull(onControlOnly{}))
 }
 
 func TestIsNull_EmbeddedNullTransportPromoted(t *testing.T) {
+	must := require.New(t)
 	// Wrappers embedding *NullTransport inherit IsNullTransport by method
 	// promotion. Async tool dispatch on sub-agents relies on this.
 	wrapped := &embedsNullTransport{NullTransport: NewNullTransport()}
-	require.True(t, IsNull(wrapped))
+	must.True(IsNull(wrapped))
 }

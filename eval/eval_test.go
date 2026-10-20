@@ -37,19 +37,21 @@ func TestTrialCounts_MajorityOutcome(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := TaskResult{Trials: trials(tc.outcomes...)}.Counts()
-			require.Equal(t, len(tc.outcomes), c.Total())
-			require.Equal(t, tc.want, c.Outcome(), "counts %+v", c)
-			require.InDelta(t, tc.fraction, c.PassFraction(), 1e-9)
+			must.Equal(len(tc.outcomes), c.Total())
+			must.Equal(tc.want, c.Outcome(), "counts %+v", c)
+			must.InDelta(tc.fraction, c.PassFraction(), 1e-9)
 		})
 	}
 }
 
 func TestTrialCounts_Empty_ReportsError(t *testing.T) {
+	must := require.New(t)
 	var c TrialCounts
-	require.Equal(t, "error", c.Outcome())
-	require.Zero(t, c.PassFraction())
-	require.Zero(t, c.Total())
+	must.Equal("error", c.Outcome())
+	must.Zero(c.PassFraction())
+	must.Zero(c.Total())
 }
 
 // TestTaskResult_Counts_FallsBackToOutcome pins that a result without Trials
@@ -67,12 +69,14 @@ func TestTaskResult_Counts_FallsBackToOutcome(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, TaskResult{Outcome: tc.outcome}.Counts())
+			must := require.New(t)
+			must.Equal(tc.want, TaskResult{Outcome: tc.outcome}.Counts())
 		})
 	}
 }
 
 func TestTaskResult_Counts_PrefersTrials(t *testing.T) {
+	must := require.New(t)
 	r := TaskResult{Outcome: "pass", Trials: trials("fail", "fail", "pass")}
-	require.Equal(t, TrialCounts{Pass: 1, Fail: 2}, r.Counts(), "trials take precedence over Outcome")
+	must.Equal(TrialCounts{Pass: 1, Fail: 2}, r.Counts(), "trials take precedence over Outcome")
 }

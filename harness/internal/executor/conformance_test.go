@@ -96,74 +96,83 @@ func runExecutorConformance(t *testing.T, target conformanceTarget) {
 
 	if !target.capabilitiesOnly {
 		t.Run("list directory marks directories with a trailing slash", func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
 			names, err := exec.ListDirectory(context.Background(), ".")
-			require.NoError(t, err)
-			assert.Contains(t, names, "sub/", "directories are listed with a trailing slash")
-			assert.Contains(t, names, "top.txt", "files are listed without a trailing slash")
+			must.NoError(err)
+			check.Contains(names, "sub/", "directories are listed with a trailing slash")
+			check.Contains(names, "top.txt", "files are listed without a trailing slash")
 		})
 
 		t.Run("read file round-trips fixture content", func(t *testing.T) {
+			must := require.New(t)
 			got, err := exec.ReadFile(context.Background(), "top.txt")
-			require.NoError(t, err)
-			require.Equal(t, conformanceFixture["top.txt"], got)
+			must.NoError(err)
+			must.Equal(conformanceFixture["top.txt"], got)
 		})
 
 		t.Run("resolve path traversal", func(t *testing.T) {
+			must := require.New(t)
 			_, err := exec.ResolvePath("../escape")
 			if target.wantTraversalRejected {
-				require.Error(t, err, "traversal outside the workspace must be rejected")
+				must.Error(err, "traversal outside the workspace must be rejected")
 			} else {
-				require.NoError(t, err, "executor has no filesystem boundary to escape")
+				must.NoError(err, "executor has no filesystem boundary to escape")
 			}
 		})
 
 		if lister, ok := exec.(TreeLister); ok {
 			t.Run("list tree covers fixture tree", func(t *testing.T) {
+				must := require.New(t)
+				check := assert.New(t)
 				listing, err := lister.ListTree(context.Background(), ".")
-				require.NoError(t, err)
-				require.False(t, listing.Truncated, "a small fixture tree must not report truncated")
+				must.NoError(err)
+				must.False(listing.Truncated, "a small fixture tree must not report truncated")
 
 				seen := make(map[string]int64, len(listing.Entries))
 				for _, e := range listing.Entries {
-					assert.NotContains(t, e.Path, "\\", "entry path must be slash-separated")
-					assert.False(t, strings.HasPrefix(e.Path, "/"), "entry path must be root-relative: %q", e.Path)
-					assert.GreaterOrEqual(t, e.Size, int64(0), "entry size must be non-negative: %q", e.Path)
+					check.NotContains(e.Path, "\\", "entry path must be slash-separated")
+					check.False(strings.HasPrefix(e.Path, "/"), "entry path must be root-relative: %q", e.Path)
+					check.GreaterOrEqual(e.Size, int64(0), "entry size must be non-negative: %q", e.Path)
 					seen[e.Path] = e.Size
 				}
 				for path := range conformanceFixture {
-					assert.Contains(t, seen, path, "fixture file missing from tree listing")
+					check.Contains(seen, path, "fixture file missing from tree listing")
 				}
 			})
 		}
 	}
 
 	t.Run("capabilities", func(t *testing.T) {
-		assert.True(t, exec.Capabilities().CanRead)
+		check := assert.New(t)
+		must := require.New(t)
+		check.True(exec.Capabilities().CanRead)
 
 		hostPathWorkspace, hasHostPathWorkspace := exec.(HostPathWorkspace)
-		assert.Equal(t, target.wantHostPathWorkspace, hasHostPathWorkspace, "implements HostPathWorkspace")
+		check.Equal(target.wantHostPathWorkspace, hasHostPathWorkspace, "implements HostPathWorkspace")
 
 		// A declaring executor's HostWorkspaceRoot() must actually name its
 		// resolved workspace root, not just satisfy the interface shape —
 		// ResolvePath(".") is that root by construction for every executor.
 		if hasHostPathWorkspace && !target.capabilitiesOnly {
 			resolvedRoot, err := exec.ResolvePath(".")
-			require.NoError(t, err)
-			require.Equal(t, resolvedRoot, hostPathWorkspace.HostWorkspaceRoot())
+			must.NoError(err)
+			must.Equal(resolvedRoot, hostPathWorkspace.HostWorkspaceRoot())
 		}
 	})
 }
 
 func newConformanceLocalExecutor(t *testing.T) Executor {
 	t.Helper()
+	must := require.New(t)
 	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sub"), 0o755), "create fixture subdirectory")
+	must.NoError(os.MkdirAll(filepath.Join(dir, "sub"), 0o755), "create fixture subdirectory")
 	for relPath, content := range conformanceFixture {
 		full := filepath.Join(dir, filepath.FromSlash(relPath))
-		require.NoError(t, os.WriteFile(full, []byte(content), 0o644), "write fixture %s", relPath)
+		must.NoError(os.WriteFile(full, []byte(content), 0o644), "write fixture %s", relPath)
 	}
 	exec, err := NewLocalExecutor(dir)
-	require.NoError(t, err)
+	must.NoError(err)
 	return exec
 }
 

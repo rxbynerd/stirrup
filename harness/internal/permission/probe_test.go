@@ -11,6 +11,7 @@ import (
 )
 
 func TestPolicyEnginePolicy_Probe_SucceedsWithPermitPolicy(t *testing.T) {
+	must := require.New(t)
 	policy := `permit (
 		principal,
 		action == Action::"tool:web_fetch",
@@ -20,10 +21,11 @@ func TestPolicyEnginePolicy_Probe_SucceedsWithPermitPolicy(t *testing.T) {
 		PolicySet: mustParse(t, policy),
 		Fallback:  NewDenySideEffects(map[string]bool{"write_file": true}),
 	})
-	require.NoError(t, p.Probe(context.Background()))
+	must.NoError(p.Probe(context.Background()))
 }
 
 func TestPolicyEnginePolicy_Probe_DoesNotTriggerFallback(t *testing.T) {
+	must := require.New(t)
 	// The synthetic probe tool matches no policy, so a Check() would
 	// delegate to the fallback. Probe must NOT do that — it evaluates the
 	// Cedar set directly. Use a fallback that records whether it was
@@ -38,13 +40,14 @@ func TestPolicyEnginePolicy_Probe_DoesNotTriggerFallback(t *testing.T) {
 		PolicySet: mustParse(t, policy),
 		Fallback:  fb,
 	})
-	require.NoError(t, p.Probe(context.Background()))
-	require.False(t, fb.called, "Probe consulted the fallback policy; it must evaluate Cedar directly to avoid a live ask-upstream prompt")
+	must.NoError(p.Probe(context.Background()))
+	must.False(fb.called, "Probe consulted the fallback policy; it must evaluate Cedar directly to avoid a live ask-upstream prompt")
 }
 
 func TestPolicyEnginePolicy_Probe_NilPolicyReturnsError(t *testing.T) {
+	must := require.New(t)
 	var p *PolicyEnginePolicy
-	require.Error(t, p.Probe(context.Background()))
+	must.Error(p.Probe(context.Background()))
 }
 
 // recordingFallback records whether Check was called, standing in for a

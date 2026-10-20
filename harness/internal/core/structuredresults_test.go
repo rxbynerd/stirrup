@@ -16,6 +16,7 @@ import (
 
 func fileExcerptBlock(t *testing.T) types.ContentBlock {
 	t.Helper()
+	must := require.New(t)
 	lines := make([]string, 100)
 	for i := range lines {
 		lines[i] = strings.Repeat("y", 40)
@@ -27,7 +28,7 @@ func fileExcerptBlock(t *testing.T) types.ContentBlock {
 		Truncated bool     `json:"truncated"`
 		Lines     []string `json:"lines"`
 	}{Path: "a.go", StartLine: 1, EndLine: 100, Truncated: true, Lines: lines})
-	require.NoError(t, err, "marshal excerpt")
+	must.NoError(err, "marshal excerpt")
 	return types.ContentBlock{
 		Type:       "tool_result",
 		ToolUseID:  "tc_1",
@@ -52,13 +53,16 @@ func TestEstimateCurrentTokens_CountsWireEnvelope(t *testing.T) {
 	full := base + len(block.Structured)/tokenEstimationDivisor
 
 	t.Run("text-only provider counts no envelope", func(t *testing.T) {
-		require.Equal(t, base, estimateCurrentTokens(msgs, false))
+		must := require.New(t)
+		must.Equal(base, estimateCurrentTokens(msgs, false))
 	})
 	t.Run("structured provider counts the wire envelope", func(t *testing.T) {
-		require.Equal(t, want, estimateCurrentTokens(msgs, true), "wire envelope is %d bytes", len(wire))
+		must := require.New(t)
+		must.Equal(want, estimateCurrentTokens(msgs, true), "wire envelope is %d bytes", len(wire))
 	})
 	t.Run("structured estimate drops the duplicated body", func(t *testing.T) {
-		require.Less(t, want, full, "full envelope would give %d", full)
+		must := require.New(t)
+		must.Less(want, full, "full envelope would give %d", full)
 	})
 }
 
@@ -89,6 +93,7 @@ func (p *paramsRecordingProvider) Stream(_ context.Context, params types.StreamP
 
 func structuredToolRun(t *testing.T, result tool.StructuredResult, support StructuredResultSupport) (*paramsRecordingProvider, *budgetRecordingStrategy, *recordingTraceEmitter) {
 	t.Helper()
+	must := require.New(t)
 	prov := &paramsRecordingProvider{turns: [][]types.StreamEvent{
 		{
 			{Type: "tool_call", ID: "tc_1", Name: "structured_tool", Input: map[string]any{}},
@@ -107,7 +112,7 @@ func structuredToolRun(t *testing.T, result tool.StructuredResult, support Struc
 	loop.Trace = recorder
 	loop.StructuredResults = support
 	registry, ok := loop.Tools.(*tool.Registry)
-	require.Truef(t, ok, "test loop Tools is %T, want *tool.Registry", loop.Tools)
+	must.Truef(ok, "test loop Tools is %T, want *tool.Registry", loop.Tools)
 	registry.Register(&tool.Tool{
 		Name:        "structured_tool",
 		Description: "returns a structured payload",
@@ -119,8 +124,8 @@ func structuredToolRun(t *testing.T, result tool.StructuredResult, support Struc
 	config := buildTestConfig()
 	config.MaxTurns = 4
 	_, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	require.Len(t, prov.requests, 2, "expected a tool turn and a final turn")
+	must.NoError(err)
+	must.Len(prov.requests, 2, "expected a tool turn and a final turn")
 	return prov, strategy, recorder
 }
 
@@ -142,6 +147,7 @@ func TestLoop_EstimateFollowsStructuredResultSupport(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			var mu sync.Mutex
 			var asked []string
 			support := func(provider, model string) bool {
@@ -151,15 +157,15 @@ func TestLoop_EstimateFollowsStructuredResultSupport(t *testing.T) {
 				return tt.sends
 			}
 			_, strategy, _ := structuredToolRun(t, result, support)
-			require.GreaterOrEqual(t, len(strategy.budgets), 2, "expected at least 2 Prepare calls")
+			must.GreaterOrEqual(len(strategy.budgets), 2, "expected at least 2 Prepare calls")
 			afterTool := strategy.budgets[1].CurrentTokens
 			if tt.sends {
-				require.GreaterOrEqual(t, afterTool, 10000, "the 40 KB envelope should be counted")
+				must.GreaterOrEqual(afterTool, 10000, "the 40 KB envelope should be counted")
 			} else {
-				require.LessOrEqual(t, afterTool, 5000, "the envelope should be left out")
+				must.LessOrEqual(afterTool, 5000, "the envelope should be left out")
 			}
-			require.NotEmpty(t, asked, "StructuredResults was never asked")
-			require.Equal(t, "anthropic/claude-sonnet-4-6", asked[0], "asked about %v, want the router selection", asked)
+			must.NotEmpty(asked, "StructuredResults was never asked")
+			must.Equal("anthropic/claude-sonnet-4-6", asked[0], "asked about %v, want the router selection", asked)
 		})
 	}
 }
@@ -173,6 +179,7 @@ func TestLoop_FullEnvelopeKeptInHistoryAndTrace(t *testing.T) {
 	prov, _, recorder := structuredToolRun(t, result, nil)
 
 	t.Run("history keeps the full envelope", func(t *testing.T) {
+		must := require.New(t)
 		var inHistory json.RawMessage
 		for _, msg := range prov.requests[1] {
 			for _, b := range msg.Content {
@@ -181,10 +188,11 @@ func TestLoop_FullEnvelopeKeptInHistoryAndTrace(t *testing.T) {
 				}
 			}
 		}
-		require.Equal(t, string(block.Structured), string(inHistory), "history envelope differs from the tool's")
+		must.Equal(string(block.Structured), string(inHistory), "history envelope differs from the tool's")
 	})
 
 	t.Run("trace keeps the full envelope", func(t *testing.T) {
+		must := require.New(t)
 		recorder.mu.Lock()
 		defer recorder.mu.Unlock()
 		var traced json.RawMessage
@@ -193,7 +201,7 @@ func TestLoop_FullEnvelopeKeptInHistoryAndTrace(t *testing.T) {
 				traced = tc.Structured
 			}
 		}
-		require.Equal(t, string(block.Structured), string(traced), "trace envelope differs from the tool's")
+		must.Equal(string(block.Structured), string(traced), "trace envelope differs from the tool's")
 	})
 }
 
@@ -219,7 +227,8 @@ func TestBuildStructuredResultSupport_RoutesByProviderAndModel(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, support(tt.provider, tt.model))
+			must := require.New(t)
+			must.Equal(tt.want, support(tt.provider, tt.model))
 		})
 	}
 }
@@ -244,8 +253,9 @@ func TestBuildStructuredResultSupport_RequiresAWireShape(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			support := buildStructuredResultSupport(config, structuredCapsResolver(tt.caps))
-			require.Equal(t, tt.want, support("", "m"))
+			must.Equal(tt.want, support("", "m"))
 		})
 	}
 }

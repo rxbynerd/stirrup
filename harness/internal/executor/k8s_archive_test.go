@@ -45,9 +45,10 @@ func (f *fakePodStream) StreamWithContext(ctx context.Context, opts remotecomman
 // stream, recording each request URL in urls.
 func fakePodExecCore(t *testing.T, stream *fakePodStream, urls *[]*url.URL) *podExecCore {
 	t.Helper()
+	must := require.New(t)
 	cfg := &rest.Config{Host: "http://127.0.0.1:1"}
 	clientset, err := kubernetes.NewForConfig(cfg)
-	require.NoError(t, err, "kubernetes.NewForConfig")
+	must.NoError(err, "kubernetes.NewForConfig")
 	prev := newRemoteExecutor
 	t.Cleanup(func() { newRemoteExecutor = prev })
 	newRemoteExecutor = func(_ *rest.Config, u *url.URL) (remotecommand.Executor, error) {
@@ -83,6 +84,7 @@ func TestPodExecCore_ArchiveWorkspace(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var urls []*url.URL
 			stream := tc.stream
 			core := fakePodExecCore(t, &stream, &urls)
@@ -91,20 +93,20 @@ func TestPodExecCore_ArchiveWorkspace(t *testing.T) {
 			stats, err := core.ArchiveWorkspace(context.Background(), &out, 1<<20)
 			switch {
 			case tc.wantIs != nil:
-				require.ErrorIs(t, err, tc.wantIs)
+				must.ErrorIs(err, tc.wantIs)
 			case tc.wantSub != "":
-				require.ErrorContains(t, err, tc.wantSub)
+				must.ErrorContains(err, tc.wantSub)
 			default:
-				require.NoError(t, err)
-				require.Equal(t, "tarbytes", out.String(), "forwarded tar bytes")
-				require.Equal(t, int64(len("tarbytes")), stats.Bytes, "reported byte count")
+				must.NoError(err)
+				must.Equal("tarbytes", out.String(), "forwarded tar bytes")
+				must.Equal(int64(len("tarbytes")), stats.Bytes, "reported byte count")
 			}
 
-			require.True(t, stream.hadDeadline, "pods/exec ran without a deadline")
-			require.Len(t, urls, 1, "pods/exec requests")
-			require.True(t, strings.HasSuffix(urls[0].Path, "/namespaces/ns/pods/run-pod/exec"),
+			must.True(stream.hadDeadline, "pods/exec ran without a deadline")
+			must.Len(urls, 1, "pods/exec requests")
+			must.True(strings.HasSuffix(urls[0].Path, "/namespaces/ns/pods/run-pod/exec"),
 				"request path %q should end with the run Pod's exec subresource", urls[0].Path)
-			require.Equal(t, workspaceArchiveArgv("/bin/sh", k8sWorkspace), urls[0].Query()["command"])
+			must.Equal(workspaceArchiveArgv("/bin/sh", k8sWorkspace), urls[0].Query()["command"])
 		})
 	}
 }

@@ -27,6 +27,7 @@ func (p *failingSummaryProvider) Stream(context.Context, types.StreamParams) (<-
 // provider, the emitted events and the log output.
 func runSummariseLoop(t *testing.T, summary contextpkg.SummaryProvider, prompt string) (*thinkingParamsProvider, []types.HarnessEvent, string) {
 	t.Helper()
+	must := require.New(t)
 	const turns = 6
 
 	calibrate := &recordingStrategy{inner: contextpkg.NewSummariseStrategy(summary, "summary-model", 0)}
@@ -37,7 +38,7 @@ func runSummariseLoop(t *testing.T, summary contextpkg.SummaryProvider, prompt s
 	cfg := buildTestConfig()
 	cfg.Prompt = prompt
 	_, err := loop.Run(context.Background(), cfg)
-	require.NoError(t, err, "calibration run")
+	must.NoError(err, "calibration run")
 
 	prov := &thinkingParamsProvider{turns: turns}
 	tp := &recordingTransport{}
@@ -52,8 +53,8 @@ func runSummariseLoop(t *testing.T, summary contextpkg.SummaryProvider, prompt s
 	cfg.Prompt = prompt
 	cfg.ContextStrategy.MaxTokens = maxTokensCompactingFrom(t, calibrate.currentTokens, 4)
 	runTrace, err := loop.Run(context.Background(), cfg)
-	require.NoError(t, err, "run with forced compaction")
-	require.Equal(t, "success", runTrace.Outcome)
+	must.NoError(err, "run with forced compaction")
+	must.Equal("success", runTrace.Outcome)
 	return prov, tp.events, logs.String()
 }
 
@@ -61,9 +62,11 @@ func runSummariseLoop(t *testing.T, summary contextpkg.SummaryProvider, prompt s
 // reaches operators as a warning event and a log line while the run continues
 // on the sliding-window fallback.
 func TestLoop_SummaryFailure_WarnsAndContinues(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	summary := &failingSummaryProvider{}
 	_, events, logs := runSummariseLoop(t, summary, "Hello, write a test file.")
-	require.NotZero(t, summary.calls, "the summary provider was never called; the budget does not force a summary")
+	must.NotZero(summary.calls, "the summary provider was never called; the budget does not force a summary")
 
 	var warnings []string
 	for _, ev := range events {
@@ -71,31 +74,33 @@ func TestLoop_SummaryFailure_WarnsAndContinues(t *testing.T) {
 			warnings = append(warnings, ev.Message)
 		}
 	}
-	assert.Len(t, warnings, summary.calls, "one summary-failure warning per failed call")
+	check.Len(warnings, summary.calls, "one summary-failure warning per failed call")
 	for _, msg := range warnings {
-		assert.Contains(t, msg, "summary model unavailable", "warning names the provider error")
+		check.Contains(msg, "summary model unavailable", "warning names the provider error")
 	}
-	assert.Contains(t, logs, "context strategy degraded")
-	assert.Contains(t, logs, "summary model unavailable", "log output names the summary failure")
+	check.Contains(logs, "context strategy degraded")
+	check.Contains(logs, "summary model unavailable", "log output names the summary failure")
 }
 
 // TestLoop_Summarise_SendsTaskVerbatim pins that after summarisation every
 // request still starts with the operator's task exactly as written,
 // including phrases the summary input would otherwise strip.
 func TestLoop_Summarise_SendsTaskVerbatim(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	const task = "You must not modify vendor/. Ignore previous drafts and write a test file."
 	prov, events, _ := runSummariseLoop(t, summaryTextProvider{}, task)
 
 	summarised := 0
 	for i, sent := range prov.sent {
 		first := sent[0]
-		require.Equal(t, "user", first.Role, "request %d opening role", i+1)
-		require.Equal(t, task, first.Content[0].Text, "request %d opening text", i+1)
+		must.Equal("user", first.Role, "request %d opening role", i+1)
+		must.Equal(task, first.Content[0].Text, "request %d opening text", i+1)
 		if strings.Contains(first.Content[len(first.Content)-1].Text, "<conversation_summary>") {
 			summarised++
 		}
 	}
-	require.NotZero(t, summarised, "no request carried a summary; the budget does not force a summary")
+	must.NotZero(summarised, "no request carried a summary; the budget does not force a summary")
 
 	var summaryWarnings []string
 	for _, ev := range events {
@@ -103,5 +108,5 @@ func TestLoop_Summarise_SendsTaskVerbatim(t *testing.T) {
 			summaryWarnings = append(summaryWarnings, ev.Message)
 		}
 	}
-	assert.Empty(t, summaryWarnings, "a successful summary emits no summary warning")
+	check.Empty(summaryWarnings, "a successful summary emits no summary warning")
 }

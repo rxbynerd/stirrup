@@ -122,37 +122,42 @@ func (e *unreachableWorkspaceExecutor) Capabilities() executor.ExecutorCapabilit
 // shows up as a match.
 func plantHostCanary(t *testing.T) {
 	t.Helper()
+	must := require.New(t)
 	dir := t.TempDir()
 	err := os.WriteFile(filepath.Join(dir, "host_canary.txt"), []byte("HOSTFS_CANARY leaked-from-host-filesystem\n"), 0o644)
-	require.NoError(t, err, "write host canary")
+	must.NoError(err, "write host canary")
 	t.Chdir(dir)
 }
 
 func runSearchTool(t *testing.T, tl *tool.Tool, input map[string]any) tool.StructuredResult {
 	t.Helper()
+	must := require.New(t)
 	raw, err := json.Marshal(input)
-	require.NoError(t, err, "marshal input")
+	must.NoError(err, "marshal input")
 	res, err := tl.StructuredHandler(context.Background(), raw)
-	require.NoError(t, err, "%s: unexpected error", tl.Name)
+	must.NoError(err, "%s: unexpected error", tl.Name)
 	return res
 }
 
 func TestGrepFilesTool_TreeBackedExecutorNeverReadsHostWorkingDirectory(t *testing.T) {
+	must := require.New(t)
 	plantHostCanary(t)
 	exec := newTreeExecutor(map[string]string{
 		"harness/internal/executor/api.go": "func NewAPIExecutor(token string) *APIExecutor {\n",
 	})
 
 	res := runSearchTool(t, GrepFilesTool(exec), map[string]any{"pattern": "HOSTFS_CANARY"})
-	require.Equal(t, noMatchesText, res.Text, "host working-directory content reached the model")
-	require.NotContains(t, res.Text, "host_canary", "host path leaked into results")
+	must.Equal(noMatchesText, res.Text, "host working-directory content reached the model")
+	must.NotContains(res.Text, "host_canary", "host path leaked into results")
 
 	res = runSearchTool(t, GrepFilesTool(exec), map[string]any{"pattern": "func NewAPIExecutor"})
 	want := "harness/internal/executor/api.go:1:func NewAPIExecutor(token string) *APIExecutor {"
-	require.Equal(t, want, res.Text, "repository content not searched")
+	must.Equal(want, res.Text, "repository content not searched")
 }
 
 func TestFindFilesTool_TreeBackedExecutorNeverReadsHostWorkingDirectory(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	plantHostCanary(t)
 	exec := newTreeExecutor(map[string]string{
 		"harness/internal/executor/api.go": "package executor\n",
@@ -160,15 +165,16 @@ func TestFindFilesTool_TreeBackedExecutorNeverReadsHostWorkingDirectory(t *testi
 	})
 
 	res := runSearchTool(t, FindFilesTool(exec), map[string]any{"name": "*.txt"})
-	require.Equal(t, noMatchesText, res.Text, "host working-directory content reached the model")
+	must.Equal(noMatchesText, res.Text, "host working-directory content reached the model")
 
 	res = runSearchTool(t, FindFilesTool(exec), map[string]any{"name": "*.go"})
 	want := "harness/internal/executor/api.go\ntypes/runconfig.go"
-	assert.Equal(t, want, res.Text, "repository tree not searched")
-	assert.Zero(t, exec.reads.Load(), "name matching needs the tree only, not file contents")
+	check.Equal(want, res.Text, "repository tree not searched")
+	check.Zero(exec.reads.Load(), "name matching needs the tree only, not file contents")
 }
 
 func TestFindFilesTool_TreeBackedExecutorScopesResultsToSearchPath(t *testing.T) {
+	must := require.New(t)
 	exec := newTreeExecutor(map[string]string{
 		"harness/internal/api.go": "package internal\n",
 		"harness/main.go":         "package main\n",
@@ -176,19 +182,21 @@ func TestFindFilesTool_TreeBackedExecutorScopesResultsToSearchPath(t *testing.T)
 	})
 
 	res := runSearchTool(t, FindFilesTool(exec), map[string]any{"name": "*.go", "path": "harness"})
-	require.Equal(t, "internal/api.go\nmain.go", res.Text, "paths must be relative to the search root")
+	must.Equal("internal/api.go\nmain.go", res.Text, "paths must be relative to the search root")
 }
 
 func TestGrepFilesTool_TreeBackedExecutorReadsPathsRelativeToRepositoryRoot(t *testing.T) {
+	must := require.New(t)
 	exec := newTreeExecutor(map[string]string{
 		"harness/internal/api.go": "needle here\n",
 	})
 
 	res := runSearchTool(t, GrepFilesTool(exec), map[string]any{"pattern": "needle", "path": "harness"})
-	require.Equal(t, "internal/api.go:1:needle here", res.Text, "match path must be relative to the search root")
+	must.Equal("internal/api.go:1:needle here", res.Text, "match path must be relative to the search root")
 }
 
 func TestGrepFilesTool_TreeBackedExecutorAppliesIncludeAndExclude(t *testing.T) {
+	check := assert.New(t)
 	exec := newTreeExecutor(map[string]string{
 		"a.go":               "needle\n",
 		"b.md":               "needle\n",
@@ -200,21 +208,24 @@ func TestGrepFilesTool_TreeBackedExecutorAppliesIncludeAndExclude(t *testing.T) 
 		"include": []string{"*.go"},
 		"exclude": []string{"testdata/*"},
 	})
-	assert.Equal(t, "a.go:1:needle", res.Text, "filters not applied")
-	assert.EqualValues(t, 1, exec.reads.Load(), "filtered-out files must not be fetched")
+	check.Equal("a.go:1:needle", res.Text, "filters not applied")
+	check.EqualValues(1, exec.reads.Load(), "filtered-out files must not be fetched")
 }
 
 func TestGrepFilesTool_TreeBackedExecutorSkipsBinaryContent(t *testing.T) {
+	must := require.New(t)
 	exec := newTreeExecutor(map[string]string{
 		"blob.bin": "needle\x00binary\n",
 		"text.txt": "needle\n",
 	})
 
 	res := runSearchTool(t, GrepFilesTool(exec), map[string]any{"pattern": "needle"})
-	require.Equal(t, "text.txt:1:needle", res.Text, "binary content must be skipped")
+	must.Equal("text.txt:1:needle", res.Text, "binary content must be skipped")
 }
 
 func TestGrepFilesTool_TreeBackedExecutorBoundsFilesFetchedPerCall(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	files := map[string]string{}
 	for i := range treeSearchMaxFiles + 50 {
 		files[fmt.Sprintf("pkg/file%03d.go", i)] = "needle\n"
@@ -222,27 +233,29 @@ func TestGrepFilesTool_TreeBackedExecutorBoundsFilesFetchedPerCall(t *testing.T)
 	exec := newTreeExecutor(files)
 
 	res := runSearchTool(t, GrepFilesTool(exec), map[string]any{"pattern": "needle", "max_results": 1000})
-	assert.Equal(t, treeSearchMaxFiles, int(exec.reads.Load()), "a scan must stop at the file cap")
-	assert.True(t, strings.HasSuffix(res.Text, treeSearchIncompleteNotice),
+	check.Equal(treeSearchMaxFiles, int(exec.reads.Load()), "a scan must stop at the file cap")
+	check.True(strings.HasSuffix(res.Text, treeSearchIncompleteNotice),
 		"a capped scan must tell the model it was partial, got: %q", res.Text)
 
 	var got searchResult
-	require.NoError(t, json.Unmarshal(res.Structured, &got), "structured payload is not a searchResult")
-	assert.True(t, got.Truncated, "a capped scan must be reported as truncated")
+	must.NoError(json.Unmarshal(res.Structured, &got), "structured payload is not a searchResult")
+	check.True(got.Truncated, "a capped scan must be reported as truncated")
 }
 
 func TestGrepFilesTool_TreeBackedExecutorSkipsOversizedFiles(t *testing.T) {
+	check := assert.New(t)
 	exec := newTreeExecutor(map[string]string{
 		"big.json":  "needle" + strings.Repeat(" ", treeSearchMaxFileSize),
 		"small.txt": "needle\n",
 	})
 
 	res := runSearchTool(t, GrepFilesTool(exec), map[string]any{"pattern": "needle"})
-	assert.Equal(t, "small.txt:1:needle", res.Text, "oversized files must be skipped")
-	assert.EqualValues(t, 1, exec.reads.Load(), "oversized files must not be fetched")
+	check.Equal("small.txt:1:needle", res.Text, "oversized files must be skipped")
+	check.EqualValues(1, exec.reads.Load(), "oversized files must not be fetched")
 }
 
 func TestGrepFilesTool_TreeBackedExecutorReportsUnreadableFilesAsIncomplete(t *testing.T) {
+	check := assert.New(t)
 	exec := newTreeExecutor(map[string]string{
 		"a.go": "needle\n",
 		"b.go": "needle\n",
@@ -250,22 +263,24 @@ func TestGrepFilesTool_TreeBackedExecutorReportsUnreadableFilesAsIncomplete(t *t
 	exec.readErr["b.go"] = fmt.Errorf("HTTP 403")
 
 	res := runSearchTool(t, GrepFilesTool(exec), map[string]any{"pattern": "needle"})
-	assert.Contains(t, res.Text, "a.go:1:needle", "readable files must still produce matches")
-	assert.True(t, strings.HasSuffix(res.Text, treeSearchIncompleteNotice),
+	check.Contains(res.Text, "a.go:1:needle", "readable files must still produce matches")
+	check.True(strings.HasSuffix(res.Text, treeSearchIncompleteNotice),
 		"an unreadable file must mark the scan partial, got: %q", res.Text)
 }
 
 func TestFindFilesTool_TreeBackedExecutorReportsUpstreamTruncationAsIncomplete(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	exec := newTreeExecutor(map[string]string{"a.go": "package a\n"})
 	exec.truncated = true
 
 	res := runSearchTool(t, FindFilesTool(exec), map[string]any{"name": "*.go"})
-	assert.True(t, strings.HasSuffix(res.Text, treeSearchIncompleteNotice),
+	check.True(strings.HasSuffix(res.Text, treeSearchIncompleteNotice),
 		"a truncated tree must mark the enumeration partial, got: %q", res.Text)
 
 	var got findResult
-	require.NoError(t, json.Unmarshal(res.Structured, &got), "structured payload is not a findResult")
-	assert.True(t, got.Truncated, "a truncated tree must be reported as truncated")
+	must.NoError(json.Unmarshal(res.Structured, &got), "structured payload is not a findResult")
+	check.True(got.Truncated, "a truncated tree must be reported as truncated")
 }
 
 func TestSearchTools_ExecutorWithoutHostPathOrTreeFailsClosed(t *testing.T) {
@@ -281,11 +296,12 @@ func TestSearchTools_ExecutorWithoutHostPathOrTreeFailsClosed(t *testing.T) {
 		{"find files", FindFilesTool(exec), map[string]any{"name": "*.txt"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			raw, err := json.Marshal(tc.input)
-			require.NoError(t, err, "marshal input")
+			must.NoError(err, "marshal input")
 			res, err := tc.tl.StructuredHandler(context.Background(), raw)
-			require.Error(t, err, "expected an error rather than a host walk, got: %q", res.Text)
-			require.ErrorContains(t, err, "does not expose a searchable workspace",
+			must.Error(err, "expected an error rather than a host walk, got: %q", res.Text)
+			must.ErrorContains(err, "does not expose a searchable workspace",
 				"error should name the missing workspace")
 		})
 	}

@@ -19,14 +19,15 @@ import (
 func TestValidateDebugBuildFlags_RejectsDebugOnReleaseBuild(t *testing.T) {
 	for _, flagName := range debugBuildOnlyFlags {
 		t.Run(flagName, func(t *testing.T) {
+			must := require.New(t)
 			cmd := newTestHarnessCommand()
-			require.NoError(t, cmd.Flags().Set(flagName, "true"))
+			must.NoError(cmd.Flags().Set(flagName, "true"))
 
 			err := validateDebugBuildFlags(cmd, nil)
-			require.Error(t, err)
-			require.Equal(t, exitUsage, classifyExitCode(err))
-			require.ErrorContains(t, err, "--"+flagName)
-			require.ErrorContains(t, err, "stirrupdebug", "error should name the fix (-tags stirrupdebug)")
+			must.Error(err)
+			must.Equal(exitUsage, classifyExitCode(err))
+			must.ErrorContains(err, "--"+flagName)
+			must.ErrorContains(err, "stirrupdebug", "error should name the fix (-tags stirrupdebug)")
 		})
 	}
 }
@@ -36,8 +37,9 @@ func TestValidateDebugBuildFlags_RejectsDebugOnReleaseBuild(t *testing.T) {
 // only fires when a flag was explicitly Changed(), not merely because it
 // exists in the closed set.
 func TestValidateDebugBuildFlags_NoOpWhenFlagsUnset(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 
 	err := validateDebugBuildFlags(cmd, nil)
-	require.NoError(t, err, "--debug and --trace-wire are unset")
+	must.NoError(err, "--debug and --trace-wire are unset")
 }

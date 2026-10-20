@@ -52,56 +52,61 @@ func failReport() *core.PreflightReport {
 }
 
 func TestRunDryRun_TextToStderr(t *testing.T) {
+	must := require.New(t)
 	stubPreflight(t, okReport())
 	cmd, out, errBuf := dryRunTestCmd()
 
-	require.NoError(t, runDryRun(cmd, baseFileConfig(), core.PreflightOptions{}, "text", ""))
-	require.Contains(t, errBuf.String(), "config-validation", "text report should go to stderr")
-	require.Empty(t, out.String(), "stdout should be empty for text mode")
+	must.NoError(runDryRun(cmd, baseFileConfig(), core.PreflightOptions{}, "text", ""))
+	must.Contains(errBuf.String(), "config-validation", "text report should go to stderr")
+	must.Empty(out.String(), "stdout should be empty for text mode")
 }
 
 func TestRunDryRun_JSONToStdout(t *testing.T) {
+	must := require.New(t)
 	stubPreflight(t, okReport())
 	cmd, out, _ := dryRunTestCmd()
 
-	require.NoError(t, runDryRun(cmd, baseFileConfig(), core.PreflightOptions{}, "json", ""))
+	must.NoError(runDryRun(cmd, baseFileConfig(), core.PreflightOptions{}, "json", ""))
 	var decoded core.PreflightReport
-	require.NoError(t, json.Unmarshal(out.Bytes(), &decoded), "stdout should carry a PreflightReport JSON: %s", out.String())
-	require.True(t, decoded.OK, "decoded report should preserve OK=true")
+	must.NoError(json.Unmarshal(out.Bytes(), &decoded), "stdout should carry a PreflightReport JSON: %s", out.String())
+	must.True(decoded.OK, "decoded report should preserve OK=true")
 }
 
 func TestRunDryRun_FailedReportReturnsExitCode1(t *testing.T) {
+	must := require.New(t)
 	stubPreflight(t, failReport())
 	cmd, _, _ := dryRunTestCmd()
 
 	err := runDryRun(cmd, baseFileConfig(), core.PreflightOptions{}, "text", "")
-	require.Error(t, err, "a failing report must return a non-nil error")
-	require.Equal(t, 1, classifyExitCode(err), "probe failure is the untyped default exit code")
+	must.Error(err, "a failing report must return a non-nil error")
+	must.Equal(1, classifyExitCode(err), "probe failure is the untyped default exit code")
 }
 
 func TestRunDryRun_WithOutputRunConfig_RendersReportAndWritesConfig(t *testing.T) {
+	must := require.New(t)
 	stubPreflight(t, okReport())
 	cmd, _, errBuf := dryRunTestCmd()
 	outPath := filepath.Join(t.TempDir(), "captured.json")
 
-	require.NoError(t, runDryRun(cmd, baseFileConfig(), core.PreflightOptions{}, "text", outPath))
-	require.Contains(t, errBuf.String(), "Dry-run preflight", "report should be rendered to stderr")
+	must.NoError(runDryRun(cmd, baseFileConfig(), core.PreflightOptions{}, "text", outPath))
+	must.Contains(errBuf.String(), "Dry-run preflight", "report should be rendered to stderr")
 
 	data, err := os.ReadFile(outPath)
-	require.NoError(t, err, "captured config should be written")
+	must.NoError(err, "captured config should be written")
 	var captured types.RunConfig
-	require.NoError(t, json.Unmarshal(data, &captured), "captured file should be valid RunConfig JSON: %s", data)
-	require.Equal(t, "from-file", captured.RunID, "captured config should be the one that was probed")
+	must.NoError(json.Unmarshal(data, &captured), "captured file should be valid RunConfig JSON: %s", data)
+	must.Equal("from-file", captured.RunID, "captured config should be the one that was probed")
 }
 
 // TestUsageError_ClassifiesAsUsageAndPassesMessageThrough pins usageError to
 // exit code 4 and to a transparent error message.
 func TestUsageError_ClassifiesAsUsageAndPassesMessageThrough(t *testing.T) {
-	require.NoError(t, usageError(nil), "usageError should pass nil through")
+	must := require.New(t)
+	must.NoError(usageError(nil), "usageError should pass nil through")
 
 	err := usageError(errStub("bad combo"))
-	require.Equal(t, exitUsage, classifyExitCode(err))
-	require.EqualError(t, err, "bad combo")
+	must.Equal(exitUsage, classifyExitCode(err))
+	must.EqualError(err, "bad combo")
 }
 
 type errStub string
@@ -114,19 +119,21 @@ func (e errStub) Error() string { return string(e) }
 func TestValidateDryRunFlags_ProbeGatesNeedDryRun(t *testing.T) {
 	for _, gate := range dryRunProbeGates {
 		t.Run(gate+" without dry-run is a usage error", func(t *testing.T) {
+			must := require.New(t)
 			cmd := newTestHarnessCommand()
-			require.NoError(t, cmd.Flags().Set(gate, gateSetValue(gate)))
+			must.NoError(cmd.Flags().Set(gate, gateSetValue(gate)))
 
 			err := validateDryRunFlags(cmd.Flags(), false)
-			require.Error(t, err)
-			require.Equal(t, exitUsage, classifyExitCode(err))
-			require.ErrorContains(t, err, gate, "error should name the offending flag")
+			must.Error(err)
+			must.Equal(exitUsage, classifyExitCode(err))
+			must.ErrorContains(err, gate, "error should name the offending flag")
 		})
 		t.Run(gate+" with dry-run is accepted", func(t *testing.T) {
+			must := require.New(t)
 			cmd := newTestHarnessCommand()
-			require.NoError(t, cmd.Flags().Set(gate, gateSetValue(gate)))
+			must.NoError(cmd.Flags().Set(gate, gateSetValue(gate)))
 
-			require.NoError(t, validateDryRunFlags(cmd.Flags(), true))
+			must.NoError(validateDryRunFlags(cmd.Flags(), true))
 		})
 	}
 }
@@ -141,6 +148,7 @@ func gateSetValue(gate string) string {
 }
 
 func TestDryRunOptionsFromFlags_MapsSkipFlagsAndTimeout(t *testing.T) {
+	check := assert.New(t)
 	cmd := newTestHarnessCommand()
 	f := cmd.Flags()
 	_ = f.Set("no-probe-provider", "true")
@@ -149,14 +157,15 @@ func TestDryRunOptionsFromFlags_MapsSkipFlagsAndTimeout(t *testing.T) {
 	_ = f.Set("dry-run-timeout", "12s")
 
 	opts := dryRunOptionsFromFlags(f)
-	assert.True(t, opts.SkipProvider, "SkipProvider should be true")
-	assert.False(t, opts.SkipMCP, "SkipMCP should default to false")
-	assert.True(t, opts.SkipEgress, "SkipEgress should be true")
-	assert.True(t, opts.SkipExecutor, "SkipExecutor should be true")
-	assert.Equal(t, "12s", opts.Timeout.String())
+	check.True(opts.SkipProvider, "SkipProvider should be true")
+	check.False(opts.SkipMCP, "SkipMCP should default to false")
+	check.True(opts.SkipEgress, "SkipEgress should be true")
+	check.True(opts.SkipExecutor, "SkipExecutor should be true")
+	check.Equal("12s", opts.Timeout.String())
 }
 
 func TestWritePreflightJSON_RoundTripsReport(t *testing.T) {
+	must := require.New(t)
 	report := &core.PreflightReport{
 		Steps: []core.PreflightStep{
 			{Name: "config-validation", Status: core.PreflightOK, Detail: "ok"},
@@ -165,13 +174,13 @@ func TestWritePreflightJSON_RoundTripsReport(t *testing.T) {
 		OK: false,
 	}
 	var buf bytes.Buffer
-	require.NoError(t, writePreflightJSON(&buf, report))
+	must.NoError(writePreflightJSON(&buf, report))
 
 	var decoded core.PreflightReport
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &decoded), "emitted JSON should round-trip: %s", buf.String())
-	require.False(t, decoded.OK, "decoded report should preserve OK=false")
-	require.Len(t, decoded.Steps, 2)
-	require.Equal(t, "set the env var", decoded.Steps[1].Hint, "hint should survive the JSON round trip")
+	must.NoError(json.Unmarshal(buf.Bytes(), &decoded), "emitted JSON should round-trip: %s", buf.String())
+	must.False(decoded.OK, "decoded report should preserve OK=false")
+	must.Len(decoded.Steps, 2)
+	must.Equal("set the env var", decoded.Steps[1].Hint, "hint should survive the JSON round trip")
 }
 
 func TestWritePreflightText_RendersEveryStatus(t *testing.T) {
@@ -188,17 +197,21 @@ func TestWritePreflightText_RendersEveryStatus(t *testing.T) {
 	out := buf.String()
 
 	t.Run("warned step", func(t *testing.T) {
-		require.Contains(t, out, "WARN")
-		require.Contains(t, out, "optional server down")
+		must := require.New(t)
+		must.Contains(out, "WARN")
+		must.Contains(out, "optional server down")
 	})
 	t.Run("failed step", func(t *testing.T) {
-		require.Contains(t, out, "FAIL")
-		require.Contains(t, out, "credentials")
+		must := require.New(t)
+		must.Contains(out, "FAIL")
+		must.Contains(out, "credentials")
 	})
 	t.Run("hint", func(t *testing.T) {
-		require.Contains(t, out, "hint: set the env var")
+		must := require.New(t)
+		must.Contains(out, "hint: set the env var")
 	})
 	t.Run("skipped step", func(t *testing.T) {
-		require.Contains(t, out, "SKIP")
+		must := require.New(t)
+		must.Contains(out, "SKIP")
 	})
 }

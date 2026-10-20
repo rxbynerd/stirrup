@@ -9,6 +9,7 @@ import (
 )
 
 func TestRegistry_RegisterAndResolve(t *testing.T) {
+	must := require.New(t)
 	r := NewRegistry()
 	tool := &Tool{
 		Name:        "test_tool",
@@ -22,16 +23,18 @@ func TestRegistry_RegisterAndResolve(t *testing.T) {
 	r.Register(tool)
 
 	resolved := r.Resolve("test_tool")
-	require.NotNil(t, resolved, "registered tool should resolve")
-	require.Equal(t, "test_tool", resolved.Name)
+	must.NotNil(resolved, "registered tool should resolve")
+	must.Equal("test_tool", resolved.Name)
 }
 
 func TestRegistry_ResolveUnknown_ReturnsNil(t *testing.T) {
+	must := require.New(t)
 	r := NewRegistry()
-	require.Nil(t, r.Resolve("nonexistent"), "unregistered tool should not resolve")
+	must.Nil(r.Resolve("nonexistent"), "unregistered tool should not resolve")
 }
 
 func TestRegistry_List_ReturnsRegisteredDefinitions(t *testing.T) {
+	must := require.New(t)
 	r := NewRegistry()
 	r.Register(&Tool{
 		Name:        "alpha",
@@ -45,12 +48,13 @@ func TestRegistry_List_ReturnsRegisteredDefinitions(t *testing.T) {
 	})
 
 	defs := r.List()
-	require.Len(t, defs, 2)
-	require.Equal(t, "alpha", defs[0].Name)
-	require.Equal(t, "beta", defs[1].Name)
+	must.Len(defs, 2)
+	must.Equal("alpha", defs[0].Name)
+	must.Equal("beta", defs[1].Name)
 }
 
 func TestRegistry_List_PreservesRegistrationOrder(t *testing.T) {
+	must := require.New(t)
 	r := NewRegistry()
 	names := []string{"charlie", "alpha", "bravo"}
 	for _, n := range names {
@@ -65,10 +69,11 @@ func TestRegistry_List_PreservesRegistrationOrder(t *testing.T) {
 	for _, def := range r.List() {
 		got = append(got, def.Name)
 	}
-	require.Equal(t, names, got)
+	must.Equal(names, got)
 }
 
 func TestRegistry_RegisterReplacesExistingName(t *testing.T) {
+	must := require.New(t)
 	r := NewRegistry()
 	r.Register(&Tool{
 		Name:        "tool",
@@ -82,11 +87,12 @@ func TestRegistry_RegisterReplacesExistingName(t *testing.T) {
 	})
 
 	defs := r.List()
-	require.Len(t, defs, 1)
-	require.Equal(t, "replaced", defs[0].Description)
+	must.Len(defs, 1)
+	must.Equal("replaced", defs[0].Description)
 }
 
 func TestTool_Definition_CopiesNameDescriptionAndSchema(t *testing.T) {
+	must := require.New(t)
 	tool := &Tool{
 		Name:              "my_tool",
 		Description:       "My tool description",
@@ -96,7 +102,7 @@ func TestTool_Definition_CopiesNameDescriptionAndSchema(t *testing.T) {
 	}
 
 	def := tool.Definition()
-	require.Equal(t, "my_tool", def.Name)
-	require.Equal(t, "My tool description", def.Description)
-	require.JSONEq(t, `{"type": "object", "properties": {}}`, string(def.InputSchema))
+	must.Equal("my_tool", def.Name)
+	must.Equal("My tool description", def.Description)
+	must.JSONEq(`{"type": "object", "properties": {}}`, string(def.InputSchema))
 }

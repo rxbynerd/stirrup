@@ -20,7 +20,8 @@ import (
 // registerTestPlatform adds a platform to the registry for one test.
 func registerTestPlatform(t *testing.T, name string, def definition) {
 	t.Helper()
-	require.NotContains(t, registry, name, "test platform %q collides with a registered platform", name)
+	must := require.New(t)
+	must.NotContains(registry, name, "test platform %q collides with a registered platform", name)
 	registry[name] = def
 	t.Cleanup(func() { delete(registry, name) })
 }
@@ -32,30 +33,33 @@ func TestRequiredProtocol_MatchesRegisteredProfiles(t *testing.T) {
 	opts := map[string]map[string]string{"cloudwatch": {"logGroup": "/stirrup/agents"}}
 	for _, name := range sortedKeys(registry) {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			p, err := Resolve(context.Background(), name, opts[name], deps)
-			require.NoError(t, err, "resolve %q", name)
+			must.NoError(err, "resolve %q", name)
 			want := p.RequiredProtocol
 			got := types.RequiredTraceEmitterProtocol(name)
-			require.Equal(t, want, got, "types must require the profile's protocol for %q", name)
+			must.Equal(want, got, "types must require the profile's protocol for %q", name)
 		})
 	}
 }
 
 func TestResolve_EmptyPlatformIsZeroProfile(t *testing.T) {
+	must := require.New(t)
 	p, err := Resolve(context.Background(), "", nil, Deps{})
-	require.NoError(t, err)
-	require.Empty(t, p.name, "empty platform must resolve to the zero Profile, got %+v", p)
-	require.Empty(t, p.RequiredProtocol)
-	require.Nil(t, p.Signals)
-	require.Nil(t, p.ResourceAttrs)
-	require.Nil(t, p.WrapTransport)
-	require.Nil(t, p.WrapSpanExporter)
+	must.NoError(err)
+	must.Empty(p.name, "empty platform must resolve to the zero Profile, got %+v", p)
+	must.Empty(p.RequiredProtocol)
+	must.Nil(p.Signals)
+	must.Nil(p.ResourceAttrs)
+	must.Nil(p.WrapTransport)
+	must.Nil(p.WrapSpanExporter)
 
 	_, err = Resolve(context.Background(), "", map[string]string{"k": "v"}, Deps{})
-	require.Error(t, err, "options without a platform must be rejected")
+	must.Error(err, "options without a platform must be rejected")
 }
 
 func TestResolve_ValidatesOptions(t *testing.T) {
+	must := require.New(t)
 	var gotOpts map[string]string
 	registerTestPlatform(t, "test-platform", definition{
 		options: map[string]bool{"needed": true, "extra": false},
@@ -67,9 +71,9 @@ func TestResolve_ValidatesOptions(t *testing.T) {
 	ctx := context.Background()
 
 	p, err := Resolve(ctx, "test-platform", map[string]string{"needed": "x", "extra": "y"}, Deps{})
-	require.NoError(t, err)
-	require.Equal(t, "test-platform", p.name)
-	require.Equal(t, map[string]string{"needed": "x", "extra": "y"}, gotOpts, "builder must receive the options unchanged")
+	must.NoError(err)
+	must.Equal("test-platform", p.name)
+	must.Equal(map[string]string{"needed": "x", "extra": "y"}, gotOpts, "builder must receive the options unchanged")
 
 	cases := map[string]struct {
 		platform string
@@ -83,20 +87,22 @@ func TestResolve_ValidatesOptions(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			_, err := Resolve(ctx, tc.platform, tc.opts, Deps{})
-			require.ErrorContains(t, err, tc.want)
+			must.ErrorContains(err, tc.want)
 		})
 	}
 }
 
 func TestResolve_WrapsBuilderError(t *testing.T) {
+	must := require.New(t)
 	registerTestPlatform(t, "failing-platform", definition{
 		build: func(context.Context, map[string]string, Deps) (Profile, error) {
 			return Profile{}, errors.New("no region")
 		},
 	})
 	_, err := Resolve(context.Background(), "failing-platform", nil, Deps{})
-	require.EqualError(t, err, `platform "failing-platform": no region`)
+	must.EqualError(err, `platform "failing-platform": no region`)
 }
 
 func noEnv(string) string { return "" }
@@ -109,6 +115,7 @@ func envOf(vars map[string]string) func(string) string {
 func identityWrap(_ otlp.Signal, rt http.RoundTripper) http.RoundTripper { return rt }
 
 func TestApply_NoProfileKeepsExistingCascade(t *testing.T) {
+	must := require.New(t)
 	headers := map[string]string{"Authorization": "Bearer t"}
 	got, err := Apply(Input{
 		TraceEmitter: types.TraceEmitterConfig{
@@ -120,28 +127,30 @@ func TestApply_NoProfileKeepsExistingCascade(t *testing.T) {
 		Headers: headers,
 		Getenv:  noEnv,
 	}, Profile{})
-	require.NoError(t, err)
+	must.NoError(err)
 	for sig, s := range map[otlp.Signal]otlp.Settings{otlp.SignalTraces: got.Traces, otlp.SignalMetrics: got.Metrics, otlp.SignalLogs: got.Logs} {
 		t.Run(string(sig), func(t *testing.T) {
-			require.Equal(t, "https://gw.example/otlp", s.Endpoint, "endpoint must come from the trace endpoint")
-			require.Equal(t, otlp.ProtocolHTTPProtobuf, s.Protocol, "protocol must come from the trace protocol")
-			require.Equal(t, headers, s.Headers, "headers must come from the explicit headers")
-			require.Nil(t, s.HTTPClient, "no profile must add a transport")
+			must := require.New(t)
+			must.Equal("https://gw.example/otlp", s.Endpoint, "endpoint must come from the trace endpoint")
+			must.Equal(otlp.ProtocolHTTPProtobuf, s.Protocol, "protocol must come from the trace protocol")
+			must.Equal(headers, s.Headers, "headers must come from the explicit headers")
+			must.Nil(s.HTTPClient, "no profile must add a transport")
 		})
 	}
-	require.Equal(t, "delta", got.Metrics.Temporality, "temporality must reach the metric exporter")
-	require.Empty(t, got.Traces.Temporality, "temporality must not reach the trace exporter")
-	require.Empty(t, got.Platform)
-	require.Nil(t, got.ResourceAttrs)
-	require.Nil(t, got.WrapSpanExporter)
+	must.Equal("delta", got.Metrics.Temporality, "temporality must reach the metric exporter")
+	must.Empty(got.Traces.Temporality, "temporality must not reach the trace exporter")
+	must.Empty(got.Platform)
+	must.Nil(got.ResourceAttrs)
+	must.Nil(got.WrapSpanExporter)
 }
 
 func TestApply_DefaultsWithoutAnyEndpoint(t *testing.T) {
+	must := require.New(t)
 	got, err := Apply(Input{TraceEmitter: types.TraceEmitterConfig{Type: "otel"}, Getenv: noEnv}, Profile{})
-	require.NoError(t, err)
-	require.Equal(t, defaultTraceEndpoint, got.Traces.Endpoint)
-	require.Empty(t, got.Metrics.Endpoint, "metrics endpoint must stay unset")
-	require.Empty(t, got.Logs.Endpoint, "logs endpoint must stay unset")
+	must.NoError(err)
+	must.Equal(defaultTraceEndpoint, got.Traces.Endpoint)
+	must.Empty(got.Metrics.Endpoint, "metrics endpoint must stay unset")
+	must.Empty(got.Logs.Endpoint, "logs endpoint must stay unset")
 }
 
 func signalProfile() Profile {
@@ -245,39 +254,42 @@ func TestApply_Precedence(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			got, err := Apply(Input{
 				TraceEmitter: tc.cfg,
 				LogsEndpoint: tc.logsEndpoint,
 				Headers:      tc.explicitHeaders,
 				Getenv:       envOf(tc.env),
 			}, signalProfile())
-			require.NoError(t, err)
-			require.Equal(t, tc.traces, got.Traces.Endpoint, "traces endpoint")
-			require.Equal(t, tc.metrics, got.Metrics.Endpoint, "metrics endpoint")
-			require.Equal(t, tc.logs, got.Logs.Endpoint, "logs endpoint")
-			require.Equal(t, tc.protocol, got.Traces.Protocol, "traces protocol")
-			require.Equal(t, tc.protocol, got.Metrics.Protocol, "metrics protocol")
-			require.Equal(t, tc.protocol, got.Logs.Protocol, "logs protocol")
-			require.True(t, maps.Equal(tc.logHeaders, got.Logs.Headers), "log headers = %v, want %v", got.Logs.Headers, tc.logHeaders)
-			require.True(t, maps.Equal(tc.metricHdrs, got.Metrics.Headers), "metric headers = %v, want %v (profile log headers must not leak)", got.Metrics.Headers, tc.metricHdrs)
-			require.Equal(t, "test-platform", got.Platform, "platform name must pass through")
-			require.Len(t, got.ResourceAttrs, 1, "resource attributes must pass through")
+			must.NoError(err)
+			must.Equal(tc.traces, got.Traces.Endpoint, "traces endpoint")
+			must.Equal(tc.metrics, got.Metrics.Endpoint, "metrics endpoint")
+			must.Equal(tc.logs, got.Logs.Endpoint, "logs endpoint")
+			must.Equal(tc.protocol, got.Traces.Protocol, "traces protocol")
+			must.Equal(tc.protocol, got.Metrics.Protocol, "metrics protocol")
+			must.Equal(tc.protocol, got.Logs.Protocol, "logs protocol")
+			must.True(maps.Equal(tc.logHeaders, got.Logs.Headers), "log headers = %v, want %v", got.Logs.Headers, tc.logHeaders)
+			must.True(maps.Equal(tc.metricHdrs, got.Metrics.Headers), "metric headers = %v, want %v (profile log headers must not leak)", got.Metrics.Headers, tc.metricHdrs)
+			must.Equal("test-platform", got.Platform, "platform name must pass through")
+			must.Len(got.ResourceAttrs, 1, "resource attributes must pass through")
 		})
 	}
 }
 
 func TestApply_DoesNotMutateInputs(t *testing.T) {
+	must := require.New(t)
 	cfg := types.TraceEmitterConfig{Type: "otel", Headers: map[string]string{"X-Tenant": "a"}}
 	headers := map[string]string{"X-Tenant": "a"}
 	_, err := Apply(Input{TraceEmitter: cfg, Headers: headers, Getenv: noEnv}, signalProfile())
-	require.NoError(t, err)
-	require.Empty(t, cfg.Endpoint, "config must not be modified")
-	require.Empty(t, cfg.Protocol, "config must not be modified")
-	require.Empty(t, cfg.MetricsEndpoint, "config must not be modified")
-	require.Equal(t, map[string]string{"X-Tenant": "a"}, headers, "explicit headers must not be modified")
+	must.NoError(err)
+	must.Empty(cfg.Endpoint, "config must not be modified")
+	must.Empty(cfg.Protocol, "config must not be modified")
+	must.Empty(cfg.MetricsEndpoint, "config must not be modified")
+	must.Equal(map[string]string{"X-Tenant": "a"}, headers, "explicit headers must not be modified")
 }
 
 func TestApply_WrapTransportBuildsBoundedClients(t *testing.T) {
+	must := require.New(t)
 	var wrapped []otlp.Signal
 	p := Profile{
 		name:             "signing-platform",
@@ -288,16 +300,17 @@ func TestApply_WrapTransportBuildsBoundedClients(t *testing.T) {
 		},
 	}
 	got, err := Apply(Input{TraceEmitter: types.TraceEmitterConfig{Type: "otel", Endpoint: "https://backend.example"}, Getenv: noEnv}, p)
-	require.NoError(t, err)
+	must.NoError(err)
 	for _, s := range []otlp.Settings{got.Traces, got.Metrics, got.Logs} {
-		require.NotNil(t, s.HTTPClient, "signed signals need their own client")
-		require.Equal(t, exportRequestTimeout, s.HTTPClient.Timeout, "signed signals need a client with an explicit timeout")
-		require.NotSame(t, http.DefaultClient, s.HTTPClient, "http.DefaultClient must not be used")
+		must.NotNil(s.HTTPClient, "signed signals need their own client")
+		must.Equal(exportRequestTimeout, s.HTTPClient.Timeout, "signed signals need a client with an explicit timeout")
+		must.NotSame(http.DefaultClient, s.HTTPClient, "http.DefaultClient must not be used")
 	}
-	require.Len(t, wrapped, 3, "WrapTransport must run for each of the three signals, got %v", wrapped)
+	must.Len(wrapped, 3, "WrapTransport must run for each of the three signals, got %v", wrapped)
 }
 
 func TestApply_WrapTransportOnlyForTheProfilesEndpoints(t *testing.T) {
+	must := require.New(t)
 	p := signalProfile()
 	p.WrapTransport = identityWrap
 	got, err := Apply(Input{
@@ -305,14 +318,15 @@ func TestApply_WrapTransportOnlyForTheProfilesEndpoints(t *testing.T) {
 		Headers:      map[string]string{"X-Tenant": "a"},
 		Getenv:       envOf(map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "http://local:4318"}),
 	}, p)
-	require.NoError(t, err)
-	require.Nil(t, got.Traces.HTTPClient, "redirected traces must not use the profile's transport")
-	require.Nil(t, got.Logs.HTTPClient, "redirected logs must not use the profile's transport")
-	require.Equal(t, map[string]string{"X-Tenant": "a"}, got.Logs.Headers, "redirected log headers must be only the explicit headers")
-	require.NotNil(t, got.Metrics.HTTPClient, "metrics still go to the profile's endpoint and must use its transport")
+	must.NoError(err)
+	must.Nil(got.Traces.HTTPClient, "redirected traces must not use the profile's transport")
+	must.Nil(got.Logs.HTTPClient, "redirected logs must not use the profile's transport")
+	must.Equal(map[string]string{"X-Tenant": "a"}, got.Logs.Headers, "redirected log headers must be only the explicit headers")
+	must.NotNil(got.Metrics.HTTPClient, "metrics still go to the profile's endpoint and must use its transport")
 }
 
 func TestApply_WrappedClientDoesNotFollowRedirects(t *testing.T) {
+	must := require.New(t)
 	var elsewhere atomic.Int32
 	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		elsewhere.Add(1)
@@ -325,15 +339,16 @@ func TestApply_WrappedClientDoesNotFollowRedirects(t *testing.T) {
 
 	got, err := Apply(Input{TraceEmitter: types.TraceEmitterConfig{Type: "otel", Endpoint: origin.URL}, Getenv: noEnv},
 		Profile{name: "signing-platform", RequiredProtocol: otlp.ProtocolHTTPProtobuf, WrapTransport: identityWrap})
-	require.NoError(t, err)
+	must.NoError(err)
 	resp, err := got.Traces.HTTPClient.Post(origin.URL+"/v1/traces", "application/x-protobuf", strings.NewReader("payload"))
-	require.NoError(t, err, "POST to the redirecting origin")
+	must.NoError(err, "POST to the redirecting origin")
 	_ = resp.Body.Close()
-	require.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode, "the redirect must be returned, not followed")
-	require.Zero(t, elsewhere.Load(), "no request may reach the redirect target")
+	must.Equal(http.StatusTemporaryRedirect, resp.StatusCode, "the redirect must be returned, not followed")
+	must.Zero(elsewhere.Load(), "no request may reach the redirect target")
 }
 
 func TestApply_RejectsContradictions(t *testing.T) {
+	must := require.New(t)
 	headerProfile := Profile{name: "header-platform", Signals: map[otlp.Signal]SignalDefaults{
 		otlp.SignalLogs: {Headers: map[string]string{"x-h": "v"}},
 	}}
@@ -372,11 +387,12 @@ func TestApply_RejectsContradictions(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			_, err := Apply(Input{TraceEmitter: tc.cfg, Headers: tc.headers, Getenv: noEnv}, tc.profile)
-			require.ErrorContains(t, err, tc.want)
+			must.ErrorContains(err, tc.want)
 		})
 	}
 
 	_, err := Apply(Input{TraceEmitter: types.TraceEmitterConfig{Type: "otel"}, Getenv: noEnv}, Profile{name: "attr-only", ResourceAttrs: []attribute.KeyValue{attribute.String("a", "b")}})
-	require.NoError(t, err, "a profile that only adds attributes must work over grpc")
+	must.NoError(err, "a profile that only adds attributes must work over grpc")
 }

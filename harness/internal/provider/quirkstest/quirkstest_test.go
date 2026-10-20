@@ -50,8 +50,9 @@ func TestScrubFixture_RedactsSecretsAndProjectIDs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got := string(quirkstest.ScrubFixture([]byte(tc.in)))
-			require.Contains(t, got, tc.want)
+			must.Contains(got, tc.want)
 		})
 	}
 }
@@ -61,6 +62,8 @@ func TestScrubFixture_RedactsSecretsAndProjectIDs(t *testing.T) {
 // or other sensitive substring: it asserts ScrubFixture is a no-op against
 // every fixture's content.
 func TestFixturesScrubbed(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	fixtureRoot := filepath.Join("..", "testdata", "quirks")
 	if _, err := os.Stat(fixtureRoot); err != nil {
 		t.Skipf("fixture root %q unavailable: %v", fixtureRoot, err)
@@ -81,7 +84,7 @@ func TestFixturesScrubbed(t *testing.T) {
 		if !bytes.Equal(raw, scrubbed) {
 			diff := firstDiff(raw, scrubbed)
 			// Every rewritten fixture is reported, so failures are collected rather than fatal.
-			assert.Failf(t, "fixture contains a substring the scrubber would rewrite",
+			check.Failf("fixture contains a substring the scrubber would rewrite",
 				"%s: first divergence at offset %d: raw=%q scrubbed=%q. "+
 					"Commit the scrubbed form instead, or extend the scrubber list if the substring is benign.",
 				path, diff.offset, diff.rawSnippet, diff.scrubbedSnippet)
@@ -89,8 +92,8 @@ func TestFixturesScrubbed(t *testing.T) {
 		checked++
 		return nil
 	})
-	require.NoError(t, err, "walk fixtures")
-	require.Positive(t, checked,
+	must.NoError(err, "walk fixtures")
+	must.Positive(checked,
 		"walked %s and found zero fixtures; the gate is no longer enforcing anything", fixtureRoot)
 }
 

@@ -48,6 +48,7 @@ func extractByType(wantType string) PayloadExtractor {
 }
 
 func TestCorrelator_Await_ReturnsMatchingResponse(t *testing.T) {
+	must := require.New(t)
 	t.Parallel()
 	fc := &fakeOnControl{}
 	c := NewCorrelator("perm")
@@ -68,18 +69,19 @@ func TestCorrelator_Await_ReturnsMatchingResponse(t *testing.T) {
 
 	// Await calls emit synchronously on this goroutine, so require is safe inside it.
 	got, err := c.Await(context.Background(), time.Second, func(id string) error {
-		require.Equal(t, "perm-1", id)
+		must.Equal("perm-1", id)
 		return nil
 	})
-	require.NoError(t, err)
-	require.IsType(t, types.ControlEvent{}, got)
+	must.NoError(err)
+	must.IsType(types.ControlEvent{}, got)
 	ev := got.(types.ControlEvent)
-	require.NotNil(t, ev.Allowed)
-	require.True(t, *ev.Allowed)
-	require.Zero(t, c.PendingCount())
+	must.NotNil(ev.Allowed)
+	must.True(*ev.Allowed)
+	must.Zero(c.PendingCount())
 }
 
 func TestCorrelator_Await_TimesOutWithoutResponse(t *testing.T) {
+	must := require.New(t)
 	t.Parallel()
 	c := NewCorrelator("perm")
 	// No attach: no extractor will ever resolve this.
@@ -87,11 +89,12 @@ func TestCorrelator_Await_TimesOutWithoutResponse(t *testing.T) {
 	_, err := c.Await(context.Background(), 25*time.Millisecond, func(_ string) error {
 		return nil
 	})
-	require.ErrorContains(t, err, "timed out")
-	require.Zero(t, c.PendingCount())
+	must.ErrorContains(err, "timed out")
+	must.Zero(c.PendingCount())
 }
 
 func TestCorrelator_Await_CancelledContextReturnsCanceled(t *testing.T) {
+	must := require.New(t)
 	t.Parallel()
 	c := NewCorrelator("perm")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -106,11 +109,12 @@ func TestCorrelator_Await_CancelledContextReturnsCanceled(t *testing.T) {
 	_, err := c.Await(ctx, time.Second, func(_ string) error {
 		return nil
 	})
-	require.ErrorIs(t, err, context.Canceled)
-	require.Zero(t, c.PendingCount())
+	must.ErrorIs(err, context.Canceled)
+	must.Zero(c.PendingCount())
 }
 
 func TestCorrelator_Await_EmitFailureClearsPending(t *testing.T) {
+	must := require.New(t)
 	t.Parallel()
 	c := NewCorrelator("perm")
 
@@ -118,11 +122,12 @@ func TestCorrelator_Await_EmitFailureClearsPending(t *testing.T) {
 	_, err := c.Await(context.Background(), time.Second, func(_ string) error {
 		return emitErr
 	})
-	require.ErrorIs(t, err, emitErr)
-	require.Zero(t, c.PendingCount())
+	must.ErrorIs(err, emitErr)
+	must.Zero(c.PendingCount())
 }
 
 func TestCorrelator_Await_ResolvesOutOfOrder(t *testing.T) {
+	must := require.New(t)
 	t.Parallel()
 	fc := &fakeOnControl{}
 	c := NewCorrelator("req")
@@ -150,8 +155,8 @@ func TestCorrelator_Await_ResolvesOutOfOrder(t *testing.T) {
 	}
 
 	// Wait for both Awaits to register pending entries.
-	require.Eventually(t, func() bool { return c.PendingCount() >= 2 }, time.Second, time.Millisecond)
-	require.Equal(t, 2, c.PendingCount())
+	must.Eventually(func() bool { return c.PendingCount() >= 2 }, time.Second, time.Millisecond)
+	must.Equal(2, c.PendingCount())
 
 	// Resolve "req-2" first, then "req-1". Both must surface the right
 	// payload regardless of which goroutine got which id.
@@ -166,22 +171,23 @@ func TestCorrelator_Await_ResolvesOutOfOrder(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		select {
 		case r := <-results:
-			require.NoError(t, r.err, "await id=%s", r.id)
-			require.IsType(t, types.ControlEvent{}, r.payload, "await id=%s", r.id)
+			must.NoError(r.err, "await id=%s", r.id)
+			must.IsType(types.ControlEvent{}, r.payload, "await id=%s", r.id)
 			ev := r.payload.(types.ControlEvent)
-			require.Contains(t, wantReasonByID, r.id)
-			require.False(t, seen[r.id], "duplicate result for id %q", r.id)
+			must.Contains(wantReasonByID, r.id)
+			must.False(seen[r.id], "duplicate result for id %q", r.id)
 			seen[r.id] = true
-			require.Equal(t, wantReasonByID[r.id], ev.Reason, "await id=%s", r.id)
+			must.Equal(wantReasonByID[r.id], ev.Reason, "await id=%s", r.id)
 		case <-time.After(2 * time.Second):
-			require.Fail(t, "timed out waiting for resolution", "await %d", i)
+			must.Fail("timed out waiting for resolution", "await %d", i)
 		}
 	}
 
-	require.Zero(t, c.PendingCount())
+	must.Zero(c.PendingCount())
 }
 
 func TestCorrelator_Await_LateResponseAfterTimeoutIsIgnored(t *testing.T) {
+	must := require.New(t)
 	t.Parallel()
 	fc := &fakeOnControl{}
 	c := NewCorrelator("perm")
@@ -192,7 +198,7 @@ func TestCorrelator_Await_LateResponseAfterTimeoutIsIgnored(t *testing.T) {
 	_, err := c.Await(context.Background(), 25*time.Millisecond, func(_ string) error {
 		return nil
 	})
-	require.Error(t, err)
+	must.Error(err)
 
 	// Now deliver a late response with the (now stale) id. Must not panic.
 	// Because the Correlator increments monotonically, the id used was
@@ -202,17 +208,18 @@ func TestCorrelator_Await_LateResponseAfterTimeoutIsIgnored(t *testing.T) {
 		RequestID: "perm-1",
 	})
 
-	require.Zero(t, c.PendingCount())
+	must.Zero(c.PendingCount())
 
 	// Allow the runtime a moment to reap the goroutine that ran Await.
 	time.Sleep(20 * time.Millisecond)
 	goroutinesAfter := runtime.NumGoroutine()
 	// Tolerance for unrelated runtime goroutines, but we should not be
 	// strictly higher than before by more than a small slack.
-	require.LessOrEqual(t, goroutinesAfter, goroutinesBefore+2, "possible goroutine leak")
+	must.LessOrEqual(goroutinesAfter, goroutinesBefore+2, "possible goroutine leak")
 }
 
 func TestCorrelator_IgnoresUnrelatedEvents(t *testing.T) {
+	must := require.New(t)
 	t.Parallel()
 	fc := &fakeOnControl{}
 	c := NewCorrelator("perm")
@@ -238,14 +245,15 @@ func TestCorrelator_IgnoresUnrelatedEvents(t *testing.T) {
 	got, err := c.Await(context.Background(), time.Second, func(_ string) error {
 		return nil
 	})
-	require.NoError(t, err)
-	require.IsType(t, types.ControlEvent{}, got)
+	must.NoError(err)
+	must.IsType(types.ControlEvent{}, got)
 	ev := got.(types.ControlEvent)
-	require.NotNil(t, ev.Allowed, "expected matching allowed event, got %+v", ev)
-	require.True(t, *ev.Allowed, "expected matching allowed event, got %+v", ev)
+	must.NotNil(ev.Allowed, "expected matching allowed event, got %+v", ev)
+	must.True(*ev.Allowed, "expected matching allowed event, got %+v", ev)
 }
 
 func TestCorrelator_AssignsSequentialRequestIDs(t *testing.T) {
+	must := require.New(t)
 	t.Parallel()
 	c := NewCorrelator("perm")
 
@@ -257,10 +265,11 @@ func TestCorrelator_AssignsSequentialRequestIDs(t *testing.T) {
 		})
 	}
 
-	require.Equal(t, []string{"perm-1", "perm-2", "perm-3"}, ids)
+	must.Equal([]string{"perm-1", "perm-2", "perm-3"}, ids)
 }
 
 func TestCorrelator_EmptyPrefixDefaultsToReq(t *testing.T) {
+	must := require.New(t)
 	t.Parallel()
 	c := NewCorrelator("")
 
@@ -269,19 +278,21 @@ func TestCorrelator_EmptyPrefixDefaultsToReq(t *testing.T) {
 		got = id
 		return errors.New("stop")
 	})
-	require.Equal(t, "req-1", got)
+	must.Equal("req-1", got)
 }
 
 func TestCorrelator_Await_NilEmitReturnsError(t *testing.T) {
+	must := require.New(t)
 	t.Parallel()
 	c := NewCorrelator("perm")
 	_, err := c.Await(context.Background(), time.Second, nil)
-	require.Error(t, err)
+	must.Error(err)
 }
 
 // TestCorrelator_Await_ZeroTimeoutUsesDefault verifies the per-await timeout falls
 // back to DefaultCorrelatorTimeout when the caller passes zero.
 func TestCorrelator_Await_ZeroTimeoutUsesDefault(t *testing.T) {
+	must := require.New(t)
 	t.Parallel()
 	c := NewCorrelator("perm")
 
@@ -296,8 +307,8 @@ func TestCorrelator_Await_ZeroTimeoutUsesDefault(t *testing.T) {
 
 	_, err := c.Await(ctx, 0, func(_ string) error { return nil })
 	elapsed := time.Since(start)
-	require.ErrorIs(t, err, context.Canceled)
-	require.GreaterOrEqual(t, elapsed, 15*time.Millisecond, "zero timeout may have fired immediately")
+	must.ErrorIs(err, context.Canceled)
+	must.GreaterOrEqual(elapsed, 15*time.Millisecond, "zero timeout may have fired immediately")
 }
 
 // Compile-time interface satisfaction check: Transport implementations all
@@ -311,8 +322,9 @@ var (
 // TestCorrelator_NewIsEmpty verifies NewCorrelator returns a non-nil
 // instance with PendingCount starting at zero.
 func TestCorrelator_NewIsEmpty(t *testing.T) {
+	must := require.New(t)
 	t.Parallel()
 	c := NewCorrelator("x")
-	require.NotNil(t, c)
-	require.Zero(t, c.PendingCount())
+	must.NotNil(c)
+	must.Zero(c.PendingCount())
 }

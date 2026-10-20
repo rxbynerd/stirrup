@@ -58,10 +58,11 @@ func (errorPolicy) Check(_ context.Context, _ types.ToolDefinition, _ json.RawMe
 // async_preflight_error test currently needs this distinction).
 func buildMetricsHarness(t *testing.T, tools []*tool.Tool, perm permission.PermissionPolicy, gr guard.GuardRail, tr transport.Transport) (*AgenticLoop, *sdkmetric.ManualReader) {
 	t.Helper()
+	must := require.New(t)
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	metrics, err := observability.NewMetricsForTesting(mp)
-	require.NoError(t, err, "NewMetricsForTesting")
+	must.NoError(err, "NewMetricsForTesting")
 	registry := tool.NewRegistry()
 	for _, tl := range tools {
 		registry.Register(tl)
@@ -110,8 +111,9 @@ type failureDataPoint struct {
 // empty slice when the counter has no observations.
 func collectFailures(t *testing.T, reader *sdkmetric.ManualReader) []failureDataPoint {
 	t.Helper()
+	must := require.New(t)
 	var rm metricdata.ResourceMetrics
-	require.NoError(t, reader.Collect(context.Background(), &rm))
+	must.NoError(reader.Collect(context.Background(), &rm))
 	var out []failureDataPoint
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
@@ -119,7 +121,7 @@ func collectFailures(t *testing.T, reader *sdkmetric.ManualReader) []failureData
 				continue
 			}
 			sum, ok := m.Data.(metricdata.Sum[int64])
-			require.True(t, ok, "expected Sum[int64] for tool_failures, got %T", m.Data)
+			must.True(ok, "expected Sum[int64] for tool_failures, got %T", m.Data)
 			for _, dp := range sum.DataPoints {
 				fp := failureDataPoint{value: dp.Value}
 				for _, kv := range dp.Attributes.ToSlice() {
@@ -367,6 +369,7 @@ func TestToolFailureMetrics_EmitsOneObservationPerFailureCategory(t *testing.T) 
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			loop, reader := buildMetricsHarness(t, tc.tools, tc.perm, tc.guard, tc.transport)
 			cfg := &types.RunConfig{
 				RunID:        "test-run",
@@ -378,10 +381,10 @@ func TestToolFailureMetrics_EmitsOneObservationPerFailureCategory(t *testing.T) 
 				[]types.ToolCall{tc.call}, &stallDetector{},
 				wantProvider, wantModel,
 			)
-			require.Empty(t, outcome, "no stall outcome expected")
+			must.Empty(outcome, "no stall outcome expected")
 			failures := collectFailures(t, reader)
-			require.Len(t, failures, 1, "tool_failures observations: %+v", failures)
-			require.Equal(t, failureDataPoint{
+			must.Len(failures, 1, "tool_failures observations: %+v", failures)
+			must.Equal(failureDataPoint{
 				value:    1,
 				tool:     tc.wantTool,
 				category: tc.wantCategory.String(),
@@ -398,6 +401,7 @@ func TestToolFailureMetrics_EmitsOneObservationPerFailureCategory(t *testing.T) 
 // Without this guard, a regression that swapped the !success branch
 // for an unconditional emit would inflate the counter on every call.
 func TestToolFailureMetrics_NoEmissionOnSuccess(t *testing.T) {
+	must := require.New(t)
 	loop, reader := buildMetricsHarness(t, []*tool.Tool{trivialTool()}, nil, nil, nil)
 	cfg := &types.RunConfig{
 		RunID:        "test-run-ok",
@@ -409,8 +413,8 @@ func TestToolFailureMetrics_NoEmissionOnSuccess(t *testing.T) {
 		[]types.ToolCall{{ID: "tc_ok", Name: "trivial", Input: json.RawMessage(`{}`)}},
 		&stallDetector{}, "anthropic", "claude-sonnet-4-6",
 	)
-	require.Empty(t, outcome, "no stall outcome expected")
-	require.Empty(t, collectFailures(t, reader), "expected no tool_failures observations on success path")
+	must.Empty(outcome, "no stall outcome expected")
+	must.Empty(collectFailures(t, reader), "expected no tool_failures observations on success path")
 }
 
 // TestToolFailureMetrics_StallConsecutiveFailuresEmitsCategory verifies
@@ -419,6 +423,8 @@ func TestToolFailureMetrics_NoEmissionOnSuccess(t *testing.T) {
 // path; the metric emission must carry the stall_consecutive_failures
 // category alongside the per-call handler_error emissions.
 func TestToolFailureMetrics_StallConsecutiveFailuresEmitsCategory(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop, reader := buildMetricsHarness(t, []*tool.Tool{erroringTool()}, nil, nil, nil)
 	cfg := &types.RunConfig{
 		RunID:        "test-run-stall",
@@ -439,7 +445,7 @@ func TestToolFailureMetrics_StallConsecutiveFailuresEmitsCategory(t *testing.T) 
 		calls, &stallDetector{},
 		"anthropic", "claude-sonnet-4-6",
 	)
-	require.Equal(t, "tool_failures", outcome, "stall outcome")
+	must.Equal("tool_failures", outcome, "stall outcome")
 	failures := collectFailures(t, reader)
 	// We expect: 5 handler_error emissions (one per failed call) and
 	// exactly one stall_consecutive_failures emission tagged with the
@@ -456,8 +462,8 @@ func TestToolFailureMetrics_StallConsecutiveFailuresEmitsCategory(t *testing.T) 
 			stallCount += fp.value
 		}
 	}
-	assert.Equal(t, int64(5), handlerErrors, "handler_error count")
-	assert.Equal(t, int64(1), stallCount, "stall_consecutive_failures count")
+	check.Equal(int64(5), handlerErrors, "handler_error count")
+	check.Equal(int64(1), stallCount, "stall_consecutive_failures count")
 }
 
 // TestToolFailureCategory_BoundedCardinality is the cardinality guard:
@@ -466,6 +472,8 @@ func TestToolFailureMetrics_StallConsecutiveFailuresEmitsCategory(t *testing.T) 
 // the metric's label cardinality; this test pins the bound by asserting
 // every emission's category is recognised.
 func TestToolFailureCategory_BoundedCardinality(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	// Mix of categories from different dispatch sites so the assertion
 	// sweeps every emission path: unknown_tool, schema_validation_failed,
 	// handler_error, and the stall path.
@@ -492,12 +500,12 @@ func TestToolFailureCategory_BoundedCardinality(t *testing.T) {
 		"anthropic", "claude-sonnet-4-6",
 	)
 	failures := collectFailures(t, reader)
-	require.NotEmpty(t, failures, "expected at least one tool_failures observation")
+	must.NotEmpty(failures, "expected at least one tool_failures observation")
 	for _, fp := range failures {
-		if !assert.NotEmpty(t, fp.category, "emission with empty category: %+v", fp) {
+		if !check.NotEmpty(fp.category, "emission with empty category: %+v", fp) {
 			continue
 		}
-		assert.True(t, observability.ToolFailureCategory(fp.category).IsValid(),
+		check.True(observability.ToolFailureCategory(fp.category).IsValid(),
 			"emission carried unknown category %q: %+v", fp.category, fp)
 	}
 }
@@ -517,6 +525,7 @@ func TestToolFailureCategory_BoundedCardinality(t *testing.T) {
 // that swapped IsValid() for a weaker check (e.g. != "") would let this
 // observation through and fail the assertion.
 func TestToolFailureCategory_InvalidCategoryDropped(t *testing.T) {
+	must := require.New(t)
 	loop, reader := buildMetricsHarness(t, []*tool.Tool{trivialTool()}, nil, nil, nil)
 
 	// A failed call with a category that is not in the enum. IsValid()
@@ -530,18 +539,18 @@ func TestToolFailureCategory_InvalidCategoryDropped(t *testing.T) {
 	}
 	// Guard the test's own premise: if this string ever becomes a real
 	// enum member the test is no longer exercising the rejection branch.
-	require.False(t, bogus.failureCategory.IsValid(),
+	must.False(bogus.failureCategory.IsValid(),
 		"test premise broken: %q is now a valid category", bogus.failureCategory)
 
 	got := loop.emitToolCallMetrics(
 		context.Background(), bogus, 5*time.Millisecond,
 		"anthropic", "claude-sonnet-4-6", "execution",
 	)
-	require.Equal(t, "trivial", got,
+	must.Equal("trivial", got,
 		"metric tool name: no sentinel substitution for a non-unknown_tool category")
 
 	failures := collectFailures(t, reader)
-	require.Empty(t, failures, "expected no tool_failures observation for an invalid category")
+	must.Empty(failures, "expected no tool_failures observation for an invalid category")
 }
 
 // TestToolFailureCategory_IsValidAcceptsOnlyRegisteredConstants checks the
@@ -576,8 +585,9 @@ func TestToolFailureCategory_IsValidAcceptsOnlyRegisteredConstants(t *testing.T)
 	}
 	for _, c := range known {
 		t.Run(string(c), func(t *testing.T) {
-			require.True(t, c.IsValid(), "%q is not registered in allToolFailureCategories", c)
-			require.NotEmpty(t, c.String(), "wire string is empty")
+			must := require.New(t)
+			must.True(c.IsValid(), "%q is not registered in allToolFailureCategories", c)
+			must.NotEmpty(c.String(), "wire string is empty")
 		})
 	}
 
@@ -593,7 +603,8 @@ func TestToolFailureCategory_IsValidAcceptsOnlyRegisteredConstants(t *testing.T)
 	}
 	for _, tc := range bogusCategories {
 		t.Run(tc.name, func(t *testing.T) {
-			require.False(t, observability.ToolFailureCategory(tc.value).IsValid(),
+			must := require.New(t)
+			must.False(observability.ToolFailureCategory(tc.value).IsValid(),
 				"bogus category %q must not validate", tc.value)
 		})
 	}
@@ -647,10 +658,11 @@ func buildProviderFailureLoop(t *testing.T, prov interface {
 	Stream(context.Context, types.StreamParams) (<-chan types.StreamEvent, error)
 }) (*AgenticLoop, *sdkmetric.ManualReader, *types.RunConfig) {
 	t.Helper()
+	must := require.New(t)
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	metrics, err := observability.NewMetricsForTesting(mp)
-	require.NoError(t, err, "NewMetricsForTesting")
+	must.NoError(err, "NewMetricsForTesting")
 	registry := tool.NewRegistry()
 	registry.Register(trivialTool())
 	loop := &AgenticLoop{
@@ -694,15 +706,16 @@ func buildProviderFailureLoop(t *testing.T, prov interface {
 // before any events flow, the stirrup.harness.tool_failures counter
 // must increment with category=provider_request_failed.
 func TestToolFailureMetrics_ProviderRequestRejected(t *testing.T) {
+	must := require.New(t)
 	loop, reader, cfg := buildProviderFailureLoop(t, erroringProvider{})
 	_, _ = loop.Run(context.Background(), cfg)
 	failures := collectFailures(t, reader)
 	matching := failuresInCategory(failures, observability.ToolFailureProviderRequest.String())
-	require.NotEmpty(t, matching, "expected provider_request_failed observation, got %+v", failures)
+	must.NotEmpty(matching, "expected provider_request_failed observation, got %+v", failures)
 	for _, fp := range matching {
-		require.Equal(t, "anthropic", fp.provider, "provider.type label of %+v", fp)
-		require.Equal(t, "claude-sonnet-4-6", fp.model, "provider.model label of %+v", fp)
-		require.Equal(t, "execution", fp.mode, "run.mode label of %+v", fp)
+		must.Equal("anthropic", fp.provider, "provider.type label of %+v", fp)
+		must.Equal("claude-sonnet-4-6", fp.model, "provider.model label of %+v", fp)
+		must.Equal("execution", fp.mode, "run.mode label of %+v", fp)
 	}
 }
 
@@ -710,10 +723,11 @@ func TestToolFailureMetrics_ProviderRequestRejected(t *testing.T) {
 // mid-stream-failure path: a tool-bearing turn whose stream errors
 // after opening must emit category=provider_stream_failed.
 func TestToolFailureMetrics_ProviderStreamFailed(t *testing.T) {
+	must := require.New(t)
 	loop, reader, cfg := buildProviderFailureLoop(t, streamErroringProvider{})
 	_, _ = loop.Run(context.Background(), cfg)
 	failures := collectFailures(t, reader)
-	require.NotEmpty(t, failuresInCategory(failures, observability.ToolFailureProviderStream.String()),
+	must.NotEmpty(failuresInCategory(failures, observability.ToolFailureProviderStream.String()),
 		"expected provider_stream_failed observation, got %+v", failures)
 }
 
@@ -722,6 +736,7 @@ func TestToolFailureMetrics_ProviderStreamFailed(t *testing.T) {
 // same category that lands on stirrup.harness.tool_failures so JSONL
 // traces and metrics dashboards report the same taxonomy.
 func TestToolFailureMetrics_ErrorCategoryInTrace(t *testing.T) {
+	must := require.New(t)
 	loop, _ := buildMetricsHarness(t, []*tool.Tool{erroringTool()}, nil, nil, nil)
 	rec := &recordingTraceEmitter{}
 	loop.Trace = rec
@@ -737,9 +752,9 @@ func TestToolFailureMetrics_ErrorCategoryInTrace(t *testing.T) {
 		"anthropic", "claude-sonnet-4-6",
 	)
 	_, calls := rec.snapshot()
-	require.Len(t, calls, 1, "recorded tool calls")
-	require.False(t, calls[0].Success, "expected failed call")
-	require.Equal(t, observability.ToolFailureHandlerError.String(), calls[0].ErrorCategory)
+	must.Len(calls, 1, "recorded tool calls")
+	must.False(calls[0].Success, "expected failed call")
+	must.Equal(observability.ToolFailureHandlerError.String(), calls[0].ErrorCategory)
 }
 
 // TestToolFailureMetrics_StallRepeatedCallsTermination covers the
@@ -753,6 +768,7 @@ func TestToolFailureMetrics_ErrorCategoryInTrace(t *testing.T) {
 // stall_repeated_calls observation to stirrup.harness.tool_failures,
 // even though no per-call dispatch failed.
 func TestToolFailureMetrics_StallRepeatedCallsTermination(t *testing.T) {
+	must := require.New(t)
 	loop, reader := buildMetricsHarness(t, []*tool.Tool{trivialTool()}, nil, nil, nil)
 	cfg := &types.RunConfig{
 		RunID:        "test-run-stall-repeat",
@@ -772,11 +788,10 @@ func TestToolFailureMetrics_StallRepeatedCallsTermination(t *testing.T) {
 		calls, stall,
 		"anthropic", "claude-sonnet-4-6",
 	)
-	require.Empty(t, outcome, "first batch should nudge instead of stalling")
+	must.Empty(outcome, "first batch should nudge instead of stalling")
 	_, ok := stall.takeNudge()
-	require.True(t, ok, "first batch: no nudge")
-	require.Empty(t,
-		failuresInCategory(collectFailures(t, reader), observability.ToolFailureStallRepeated.String()),
+	must.True(ok, "first batch: no nudge")
+	must.Empty(failuresInCategory(collectFailures(t, reader), observability.ToolFailureStallRepeated.String()),
 		"stall_repeated_calls observed before any termination")
 
 	_, _, outcome = loop.planAndDispatch(
@@ -784,15 +799,15 @@ func TestToolFailureMetrics_StallRepeatedCallsTermination(t *testing.T) {
 		calls, stall,
 		"anthropic", "claude-sonnet-4-6",
 	)
-	require.Equal(t, "stalled", outcome)
+	must.Equal("stalled", outcome)
 	stallRepeated := failuresInCategory(collectFailures(t, reader), observability.ToolFailureStallRepeated.String())
 	for _, fp := range stallRepeated {
-		require.Equal(t, "trivial", fp.tool, "stall_repeated_calls tool.name")
-		require.Equal(t, "anthropic", fp.provider, "stall_repeated_calls provider.type label of %+v", fp)
-		require.Equal(t, "claude-sonnet-4-6", fp.model, "stall_repeated_calls provider.model label of %+v", fp)
-		require.Equal(t, "execution", fp.mode, "stall_repeated_calls run.mode label of %+v", fp)
+		must.Equal("trivial", fp.tool, "stall_repeated_calls tool.name")
+		must.Equal("anthropic", fp.provider, "stall_repeated_calls provider.type label of %+v", fp)
+		must.Equal("claude-sonnet-4-6", fp.model, "stall_repeated_calls provider.model label of %+v", fp)
+		must.Equal("execution", fp.mode, "stall_repeated_calls run.mode label of %+v", fp)
 	}
-	require.Equal(t, int64(1), sumFailureValues(stallRepeated), "stall_repeated_calls count")
+	must.Equal(int64(1), sumFailureValues(stallRepeated), "stall_repeated_calls count")
 }
 
 // TestToolFailureMetrics_AsyncDeadlineRoutesToTimeout pins the
@@ -802,6 +817,7 @@ func TestToolFailureMetrics_StallRepeatedCallsTermination(t *testing.T) {
 // async_cancelled to detect user-cancellation spikes, and a
 // deadline-bounded run polluting that series would defeat the alert.
 func TestToolFailureMetrics_AsyncDeadlineRoutesToTimeout(t *testing.T) {
+	must := require.New(t)
 	tr := newAsyncTestTransport()
 	loop, reader := buildMetricsHarness(t, []*tool.Tool{asyncEchoTool()}, nil, nil, tr)
 	cfg := &types.RunConfig{
@@ -822,12 +838,12 @@ func TestToolFailureMetrics_AsyncDeadlineRoutesToTimeout(t *testing.T) {
 		&stallDetector{},
 		"anthropic", "claude-sonnet-4-6",
 	)
-	require.Empty(t, outcome, "unexpected stall outcome")
+	must.Empty(outcome, "unexpected stall outcome")
 	failures := collectFailures(t, reader)
 	timeoutHits := sumFailureValues(failuresInCategory(failures, observability.ToolFailureAsyncTimeout.String()))
 	cancelledHits := sumFailureValues(failuresInCategory(failures, observability.ToolFailureAsyncCancelled.String()))
-	require.Equal(t, int64(1), timeoutHits, "async_timeout count; full failures = %+v", failures)
-	require.Equal(t, int64(0), cancelledHits,
+	must.Equal(int64(1), timeoutHits, "async_timeout count; full failures = %+v", failures)
+	must.Equal(int64(0), cancelledHits,
 		"async_cancelled count; a deadline must not route to cancelled; full failures = %+v", failures)
 }
 
@@ -838,6 +854,7 @@ func TestToolFailureMetrics_AsyncDeadlineRoutesToTimeout(t *testing.T) {
 // async_timeout — the operator-visible distinction the deadline split
 // preserves.
 func TestToolFailureMetrics_AsyncCancelled(t *testing.T) {
+	must := require.New(t)
 	tr := newAsyncTestTransport()
 	loop, reader := buildMetricsHarness(t, []*tool.Tool{asyncEchoTool()}, nil, nil, tr)
 	cfg := &types.RunConfig{
@@ -866,12 +883,12 @@ func TestToolFailureMetrics_AsyncCancelled(t *testing.T) {
 		&stallDetector{},
 		"anthropic", "claude-sonnet-4-6",
 	)
-	require.Empty(t, outcome, "unexpected stall outcome")
+	must.Empty(outcome, "unexpected stall outcome")
 	failures := collectFailures(t, reader)
 	cancelledHits := sumFailureValues(failuresInCategory(failures, observability.ToolFailureAsyncCancelled.String()))
 	timeoutHits := sumFailureValues(failuresInCategory(failures, observability.ToolFailureAsyncTimeout.String()))
-	require.Equal(t, int64(1), cancelledHits, "async_cancelled count; full failures = %+v", failures)
-	require.Equal(t, int64(0), timeoutHits,
+	must.Equal(int64(1), cancelledHits, "async_cancelled count; full failures = %+v", failures)
+	must.Equal(int64(0), timeoutHits,
 		"async_timeout count on explicit cancellation; full failures = %+v", failures)
 }
 
@@ -881,6 +898,7 @@ func TestToolFailureMetrics_AsyncCancelled(t *testing.T) {
 // async_upstream_error to keep upstream faults distinct from
 // harness-side faults on dashboards.
 func TestToolFailureMetrics_AsyncUpstreamError(t *testing.T) {
+	must := require.New(t)
 	tr := newAsyncTestTransport()
 	loop, reader := buildMetricsHarness(t, []*tool.Tool{asyncEchoTool()}, nil, nil, tr)
 	cfg := &types.RunConfig{
@@ -912,16 +930,16 @@ func TestToolFailureMetrics_AsyncUpstreamError(t *testing.T) {
 		&stallDetector{},
 		"anthropic", "claude-sonnet-4-6",
 	)
-	require.Empty(t, outcome, "unexpected stall outcome")
-	require.Len(t, results, 1)
-	require.True(t, results[0].IsError, "expected errored result, got %+v", results)
-	require.Contains(t, results[0].Content, "upstream_error:")
+	must.Empty(outcome, "unexpected stall outcome")
+	must.Len(results, 1)
+	must.True(results[0].IsError, "expected errored result, got %+v", results)
+	must.Contains(results[0].Content, "upstream_error:")
 	failures := collectFailures(t, reader)
 	upstream := failuresInCategory(failures, observability.ToolFailureAsyncUpstreamError.String())
 	for _, fp := range upstream {
-		require.Equal(t, "async_echo", fp.tool, "async_upstream_error tool.name")
+		must.Equal("async_echo", fp.tool, "async_upstream_error tool.name")
 	}
-	require.Equal(t, int64(1), sumFailureValues(upstream), "async_upstream_error count; full failures = %+v", failures)
+	must.Equal(int64(1), sumFailureValues(upstream), "async_upstream_error count; full failures = %+v", failures)
 }
 
 // TestToolFailureMetrics_AsyncPanic exercises the Phase 2 goroutine
@@ -931,6 +949,7 @@ func TestToolFailureMetrics_AsyncUpstreamError(t *testing.T) {
 // dispatch_parallel_test.go covers that invariant; this test focuses
 // on the metric emission specifically.
 func TestToolFailureMetrics_AsyncPanic(t *testing.T) {
+	must := require.New(t)
 	tr := newAsyncTestTransport()
 	panicTool := &tool.Tool{
 		Name:        "async_will_panic",
@@ -954,16 +973,16 @@ func TestToolFailureMetrics_AsyncPanic(t *testing.T) {
 		&stallDetector{},
 		"anthropic", "claude-sonnet-4-6",
 	)
-	require.Empty(t, outcome, "unexpected stall outcome")
-	require.Len(t, results, 1)
-	require.True(t, results[0].IsError, "expected errored result on panic, got %+v", results)
-	require.Contains(t, results[0].Content, "panic")
+	must.Empty(outcome, "unexpected stall outcome")
+	must.Len(results, 1)
+	must.True(results[0].IsError, "expected errored result on panic, got %+v", results)
+	must.Contains(results[0].Content, "panic")
 	failures := collectFailures(t, reader)
 	panics := failuresInCategory(failures, observability.ToolFailureAsyncPanic.String())
 	for _, fp := range panics {
-		require.Equal(t, "async_will_panic", fp.tool, "async_panic tool.name")
+		must.Equal("async_will_panic", fp.tool, "async_panic tool.name")
 	}
-	require.Equal(t, int64(1), sumFailureValues(panics), "async_panic count; full failures = %+v", failures)
+	must.Equal(int64(1), sumFailureValues(panics), "async_panic count; full failures = %+v", failures)
 }
 
 // TestToolFailureMetrics_AsyncInternalError exercises the defensive
@@ -978,6 +997,7 @@ func TestToolFailureMetrics_AsyncPanic(t *testing.T) {
 // ID — the override unblocks Await like the real extractor but delivers
 // the wrong concrete type, driving the fallthrough.
 func TestToolFailureMetrics_AsyncInternalError(t *testing.T) {
+	must := require.New(t)
 	tr := newAsyncTestTransport()
 	loop, reader := buildMetricsHarness(t, []*tool.Tool{asyncEchoTool()}, nil, nil, tr)
 	// Override the extractor BEFORE the first dispatch constructs the
@@ -1015,14 +1035,14 @@ func TestToolFailureMetrics_AsyncInternalError(t *testing.T) {
 		&stallDetector{},
 		"anthropic", "claude-sonnet-4-6",
 	)
-	require.Empty(t, outcome, "unexpected stall outcome")
-	require.Len(t, results, 1)
-	require.True(t, results[0].IsError, "expected errored result, got %+v", results)
-	require.Contains(t, results[0].Content, "internal error: unexpected payload type")
+	must.Empty(outcome, "unexpected stall outcome")
+	must.Len(results, 1)
+	must.True(results[0].IsError, "expected errored result, got %+v", results)
+	must.Contains(results[0].Content, "internal error: unexpected payload type")
 	failures := collectFailures(t, reader)
 	internal := failuresInCategory(failures, observability.ToolFailureAsyncInternal.String())
 	for _, fp := range internal {
-		require.Equal(t, "async_echo", fp.tool, "async_internal_error tool.name")
+		must.Equal("async_echo", fp.tool, "async_internal_error tool.name")
 	}
-	require.Equal(t, int64(1), sumFailureValues(internal), "async_internal_error count; full failures = %+v", failures)
+	must.Equal(int64(1), sumFailureValues(internal), "async_internal_error count; full failures = %+v", failures)
 }

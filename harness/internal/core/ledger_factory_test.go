@@ -42,9 +42,10 @@ var auxiliaryUsage = map[string]types.TokenUsage{
 }
 
 func (s *auxiliaryUsageServer) handler(t *testing.T) http.HandlerFunc {
+	check := assert.New(t)
 	return func(w http.ResponseWriter, r *http.Request) {
 		raw, err := io.ReadAll(r.Body)
-		if !assert.NoError(t, err, "read request") {
+		if !check.NoError(err, "read request") {
 			return
 		}
 		body := string(raw)
@@ -54,13 +55,13 @@ func (s *auxiliaryUsageServer) handler(t *testing.T) http.HandlerFunc {
 			category, content = "summary", "condensed history"
 		case strings.Contains(body, "You are a verification judge"):
 			m := judgeNonceRe.FindStringSubmatch(body)
-			if !assert.NotNil(t, m, "judge request carries no nonce instruction") {
+			if !check.NotNil(m, "judge request carries no nonce instruction") {
 				return
 			}
 			category, content = "judge", fmt.Sprintf(`{"reasoning":"ok","nonce":%q,"passed":true,"feedback":"meets criteria"}`, m[1])
 		case strings.Contains(body, "You are a safety classifier"):
 			m := guardNonceRe.FindStringSubmatch(body)
-			if !assert.NotNil(t, m, "guard request carries no nonce instruction") {
+			if !check.NotNil(m, "guard request carries no nonce instruction") {
 				return
 			}
 			category, content = "guard", fmt.Sprintf(`{"nonce":%q,"verdict":"allow","reason":"benign"}`, m[1])
@@ -113,6 +114,7 @@ func scaled(u types.TokenUsage, n int) types.TokenUsage {
 // calls are charged and reported as auxiliary usage; the granite usage is
 // reported only and never ends the run, even past maxTokenBudget.
 func TestBuildLoop_AuxiliaryCallsChargeTheRunLedger(t *testing.T) {
+	must := require.New(t)
 	// A first run with an ample window records the loop's context
 	// estimates, from which the second run's window is chosen so the
 	// summarise strategy first compacts on the fifth model call.
@@ -124,31 +126,31 @@ func TestBuildLoop_AuxiliaryCallsChargeTheRunLedger(t *testing.T) {
 			break
 		}
 	}
-	require.NotZero(t, maxTokens, "no maxTokens makes the summarise strategy first compact on the fifth call")
+	must.NotZero(maxTokens, "no maxTokens makes the summarise strategy first compact on the fifth call")
 
 	run := runAuxiliaryLedgerLoop(t, maxTokens, false)
 	turns := run.srv.count("turn")
 	summaries := run.srv.count("summary")
 	judges := run.srv.count("judge")
 	guards := run.srv.count("guard")
-	require.Positive(t, summaries, "summary calls")
-	require.Positive(t, judges, "judge calls")
-	require.Positive(t, guards, "guard calls")
+	must.Positive(summaries, "summary calls")
+	must.Positive(judges, "judge calls")
+	must.Positive(guards, "guard calls")
 
 	wantAux := scaled(auxiliaryUsage["summary"], summaries)
 	wantAux.Add(scaled(auxiliaryUsage["judge"], judges))
 	wantAux.Add(scaled(auxiliaryUsage["guard"], guards))
-	require.Equal(t, wantAux, run.trace.AuxiliaryTokens, "auxiliary usage: summary=%d judge=%d guard=%d", summaries, judges, guards)
+	must.Equal(wantAux, run.trace.AuxiliaryTokens, "auxiliary usage: summary=%d judge=%d guard=%d", summaries, judges, guards)
 
 	wantTotal := scaled(auxiliaryUsage["turn"], turns)
 	wantTotal.Add(wantAux)
-	require.Equal(t, wantTotal, run.trace.TokenUsage, "total usage: turns plus auxiliary")
+	must.Equal(wantTotal, run.trace.TokenUsage, "total usage: turns plus auxiliary")
 
 	wantExternal := types.TokenUsage{Input: 1000000 * run.graniteCalls, Output: run.graniteCalls}
-	require.NotZero(t, run.graniteCalls, "the granite-guardian stage was never called")
-	require.Equal(t, wantExternal, run.trace.ExternalGuardTokens)
+	must.NotZero(run.graniteCalls, "the granite-guardian stage was never called")
+	must.Equal(wantExternal, run.trace.ExternalGuardTokens)
 
-	require.Greater(t, run.trace.TokenUsage.Total()+wantExternal.Total(), run.budget,
+	must.Greater(run.trace.TokenUsage.Total()+wantExternal.Total(), run.budget,
 		"test setup: external usage must push the run past the token budget")
 }
 
@@ -166,11 +168,12 @@ type auxiliaryLedgerRun struct {
 // per-call context estimates.
 func runAuxiliaryLedgerLoop(t *testing.T, maxTokens int, recordEstimates bool) auxiliaryLedgerRun {
 	t.Helper()
+	must := require.New(t)
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 	workspace := t.TempDir()
 	for _, name := range []string{"a.txt", "b.txt", "c.txt", "d.txt", "e.txt"} {
 		content := []byte(strings.Repeat("file contents line\n", 150))
-		require.NoError(t, os.WriteFile(filepath.Join(workspace, name), content, 0o644), "seed %s", name)
+		must.NoError(os.WriteFile(filepath.Join(workspace, name), content, 0o644), "seed %s", name)
 	}
 
 	srv := &auxiliaryUsageServer{
@@ -223,7 +226,7 @@ func runAuxiliaryLedgerLoop(t *testing.T, maxTokens int, recordEstimates bool) a
 	}
 
 	loop, err := BuildLoopWithTransport(context.Background(), config, &recordingTransport{})
-	require.NoError(t, err, "BuildLoopWithTransport")
+	must.NoError(err, "BuildLoopWithTransport")
 	defer func() { _ = loop.Close() }()
 
 	var rec *recordingStrategy
@@ -233,8 +236,8 @@ func runAuxiliaryLedgerLoop(t *testing.T, maxTokens int, recordEstimates bool) a
 	}
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err, "loop.Run")
-	require.Equal(t, "success", runTrace.Outcome)
+	must.NoError(err, "loop.Run")
+	must.Equal("success", runTrace.Outcome)
 	graniteMu.Lock()
 	calls := graniteCalls
 	graniteMu.Unlock()

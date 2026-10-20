@@ -25,7 +25,8 @@ func TestSubAgentRunID_FormatsParentAndIndex(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, subAgentRunID(tc.parentID, tc.index))
+			must := require.New(t)
+			must.Equal(tc.want, subAgentRunID(tc.parentID, tc.index))
 		})
 	}
 }
@@ -34,6 +35,7 @@ func TestSubAgentRunID_FormatsParentAndIndex(t *testing.T) {
 // within a run gets the next "<parent>/sub-<n>" ID, and that a new run
 // on the same loop numbers its spawns from 1 again.
 func TestSpawnSubAgent_ChildRunIDsCountSpawnsPerRun(t *testing.T) {
+	must := require.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "done"},
@@ -48,12 +50,12 @@ func TestSpawnSubAgent_ChildRunIDsCountSpawnsPerRun(t *testing.T) {
 	spawn := func() {
 		t.Helper()
 		_, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{Prompt: "subtask"})
-		require.NoError(t, err, "SpawnSubAgent")
+		must.NoError(err, "SpawnSubAgent")
 	}
 	spawn()
 	spawn()
 	_, err := parentLoop.Run(context.Background(), parentConfig)
-	require.NoError(t, err, "Run")
+	must.NoError(err, "Run")
 	spawn()
 
 	turns, _ := parentEmitter.snapshot()
@@ -64,7 +66,7 @@ func TestSpawnSubAgent_ChildRunIDsCountSpawnsPerRun(t *testing.T) {
 		}
 	}
 	want := []string{"test-run-1/sub-1", "test-run-1/sub-2", "test-run-1/sub-1"}
-	require.Equal(t, want, childIDs)
+	must.Equal(want, childIDs)
 }
 
 // TestSpawnSubAgent_JSONLTraceGroupsChildren runs two sub-agents
@@ -72,6 +74,7 @@ func TestSpawnSubAgent_ChildRunIDsCountSpawnsPerRun(t *testing.T) {
 // turn_record lines carry its own run ID and the parent's, and the
 // reader groups them into separate sub-runs with their outcomes.
 func TestSpawnSubAgent_JSONLTraceGroupsChildren(t *testing.T) {
+	must := require.New(t)
 	prov := &mockProvider{
 		events: []types.StreamEvent{
 			{Type: "text_delta", Text: "child reply"},
@@ -87,32 +90,33 @@ func TestSpawnSubAgent_JSONLTraceGroupsChildren(t *testing.T) {
 
 	for range 2 {
 		_, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{Prompt: "subtask"})
-		require.NoError(t, err, "SpawnSubAgent")
+		must.NoError(err, "SpawnSubAgent")
 	}
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err, "Finish")
+	must.NoError(err, "Finish")
 
 	rec, err := tracereader.NewReader(bytes.NewReader(buf.Bytes())).ReadRecording()
-	require.NoError(t, err, "ReadRecording")
-	require.Empty(t, rec.Turns, "child turns leaked into the parent history")
-	require.Len(t, rec.SubRuns, 2)
+	must.NoError(err, "ReadRecording")
+	must.Empty(rec.Turns, "child turns leaked into the parent history")
+	must.Len(rec.SubRuns, 2)
 	for i, sub := range rec.SubRuns {
 		t.Run(fmt.Sprintf("sub-run %d", i+1), func(t *testing.T) {
+			must := require.New(t)
 			wantID := subAgentRunID(parentConfig.RunID, int64(i+1))
-			require.Equal(t, wantID, sub.RunID, "sub-run run ID")
-			require.Equal(t, parentConfig.RunID, sub.ParentRunID, "sub-run parent run ID")
-			require.Equal(t, wantID, sub.Config.RunID, "child config run ID")
-			require.Equal(t, "subtask", sub.Config.Prompt, "child config prompt")
-			require.NotEqual(t, "secret://TEST", sub.Config.Provider.APIKeyRef, "child config carries the unredacted key reference")
+			must.Equal(wantID, sub.RunID, "sub-run run ID")
+			must.Equal(parentConfig.RunID, sub.ParentRunID, "sub-run parent run ID")
+			must.Equal(wantID, sub.Config.RunID, "child config run ID")
+			must.Equal("subtask", sub.Config.Prompt, "child config prompt")
+			must.NotEqual("secret://TEST", sub.Config.Provider.APIKeyRef, "child config carries the unredacted key reference")
 
-			require.Len(t, sub.Turns, 1)
+			must.Len(sub.Turns, 1)
 			turn := sub.Turns[0]
-			require.Equal(t, wantID, turn.RunID, "turn run ID")
-			require.Equal(t, parentConfig.RunID, turn.ParentRunID, "turn parent run ID")
+			must.Equal(wantID, turn.RunID, "turn run ID")
+			must.Equal(parentConfig.RunID, turn.ParentRunID, "turn parent run ID")
 
-			require.NotNil(t, sub.Summary)
-			require.Equal(t, "success", sub.Summary.Outcome)
-			require.Equal(t, 1, sub.Summary.Turns)
+			must.NotNil(sub.Summary)
+			must.Equal("success", sub.Summary.Outcome)
+			must.Equal(1, sub.Summary.Turns)
 		})
 	}
 }

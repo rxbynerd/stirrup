@@ -147,8 +147,9 @@ func TestGrepFilesTool_SandboxExecRejectsShellInjection(t *testing.T) {
 
 	for _, p := range payloads {
 		t.Run(p.name, func(t *testing.T) {
+			must := require.New(t)
 			dir := t.TempDir()
-			require.NoError(t, os.WriteFile(filepath.Join(dir, "benign.txt"), []byte("needle\n"), 0o644), "write fixture")
+			must.NoError(os.WriteFile(filepath.Join(dir, "benign.txt"), []byte("needle\n"), 0o644), "write fixture")
 			fe := &injectionSandboxExecutor{dir: dir}
 
 			grep := GrepFilesTool(fe)
@@ -163,15 +164,15 @@ func TestGrepFilesTool_SandboxExecRejectsShellInjection(t *testing.T) {
 				args["exclude"] = p.exclude
 			}
 			input, err := json.Marshal(args)
-			require.NoError(t, err, "marshal input")
+			must.NoError(err, "marshal input")
 			// The tool call itself may legitimately error (a bad regex) or
 			// return no matches — the payload is search input, not shell
 			// syntax, either way. What must never happen is the canary
 			// side effect firing.
 			_, _ = invokeText(context.Background(), grep, input)
 
-			require.NoFileExists(t, filepath.Join(dir, p.canary), "shell injection fired: canary file %q was created", p.canary)
-			require.NotEmpty(t, fe.commands, "expected at least one Exec command to have been issued")
+			must.NoFileExists(filepath.Join(dir, p.canary), "shell injection fired: canary file %q was created", p.canary)
+			must.NotEmpty(fe.commands, "expected at least one Exec command to have been issued")
 		})
 	}
 }
@@ -214,8 +215,9 @@ func TestFindFilesTool_SandboxExecRejectsShellInjection(t *testing.T) {
 
 	for _, p := range payloads {
 		t.Run(p.name, func(t *testing.T) {
+			must := require.New(t)
 			dir := t.TempDir()
-			require.NoError(t, os.WriteFile(filepath.Join(dir, "benign.txt"), []byte("x"), 0o644), "write fixture")
+			must.NoError(os.WriteFile(filepath.Join(dir, "benign.txt"), []byte("x"), 0o644), "write fixture")
 			fe := &injectionSandboxExecutor{dir: dir}
 
 			find := FindFilesTool(fe)
@@ -230,10 +232,10 @@ func TestFindFilesTool_SandboxExecRejectsShellInjection(t *testing.T) {
 				args["exclude"] = p.exclude
 			}
 			input, err := json.Marshal(args)
-			require.NoError(t, err, "marshal input")
+			must.NoError(err, "marshal input")
 			_, _ = invokeText(context.Background(), find, input)
 
-			require.NoFileExists(t, filepath.Join(dir, p.canary), "shell injection fired: canary file %q was created", p.canary)
+			must.NoFileExists(filepath.Join(dir, p.canary), "shell injection fired: canary file %q was created", p.canary)
 		})
 	}
 }

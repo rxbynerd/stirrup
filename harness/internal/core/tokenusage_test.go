@@ -79,25 +79,27 @@ func TestStreamEventsToResult_MergesReportedUsage(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			ch := make(chan types.StreamEvent, len(tc.events))
 			for _, ev := range tc.events {
 				ch <- ev
 			}
 			close(ch)
 			result, err := streamEventsToResult(context.Background(), ch, transport.NewNullTransport(), true, ignoreEmitFailure, nil)
-			require.NoError(t, err)
-			require.Equal(t, tc.want, result.Usage)
+			must.NoError(err)
+			must.Equal(tc.want, result.Usage)
 		})
 	}
 }
 
 func TestTokenTracker_CheckBudgetSaturates(t *testing.T) {
+	must := require.New(t)
 	tt := &TokenTracker{}
 	tt.RecordTurn(types.TokenUsage{Input: math.MaxInt - 5})
 	tt.RecordTurn(types.TokenUsage{Input: 100, Output: 100})
 	budget := 1000
-	check := tt.CheckBudget(&budget)
-	require.False(t, check.WithinBudget, "saturated total %+v must exceed the budget", tt.Tokens())
+	budgetCheck := tt.CheckBudget(&budget)
+	must.False(budgetCheck.WithinBudget, "saturated total %+v must exceed the budget", tt.Tokens())
 }
 
 type usageObservation struct {
@@ -130,6 +132,7 @@ func (e *usageTraceEmitter) Finish(ctx context.Context, outcome string) (*types.
 
 func runWithUsageObservers(t *testing.T, prov provider.ProviderAdapter, config *types.RunConfig) usageObservation {
 	t.Helper()
+	must := require.New(t)
 	loop := buildTestLoop(nil)
 	loop.Provider = prov
 	rec := &usageTraceEmitter{agg: trace.NewJSONLTraceEmitter(&bytes.Buffer{}, false)}
@@ -143,14 +146,14 @@ func runWithUsageObservers(t *testing.T, prov provider.ProviderAdapter, config *
 
 	reader := sdkmetric.NewManualReader()
 	metrics, err := observability.NewMetricsForTesting(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
-	require.NoError(t, err)
+	must.NoError(err)
 	loop.Metrics = metrics
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	var rm metricdata.ResourceMetrics
-	require.NoError(t, reader.Collect(context.Background(), &rm))
+	must.NoError(reader.Collect(context.Background(), &rm))
 	sums := map[string]int64{}
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
@@ -168,21 +171,23 @@ func runWithUsageObservers(t *testing.T, prov provider.ProviderAdapter, config *
 
 func turnCompletedLogs(t *testing.T, logs string) []map[string]any {
 	t.Helper()
+	must := require.New(t)
 	var out []map[string]any
 	for _, line := range strings.Split(logs, "\n") {
 		if !strings.Contains(line, `"msg":"turn completed"`) {
 			continue
 		}
 		var rec map[string]any
-		require.NoError(t, json.Unmarshal([]byte(line), &rec), "decode log line %q", line)
+		must.NoError(json.Unmarshal([]byte(line), &rec), "decode log line %q", line)
 		out = append(out, rec)
 	}
-	require.NotEmpty(t, out, "no turn completed log line in:\n%s", logs)
+	must.NotEmpty(out, "no turn completed log line in:\n%s", logs)
 	return out
 }
 
 func providerSpanAttrs(t *testing.T, spans tracetest.SpanStubs) []map[attribute.Key]attribute.Value {
 	t.Helper()
+	must := require.New(t)
 	var out []map[attribute.Key]attribute.Value
 	for _, s := range spans {
 		if s.Name != "provider.stream" {
@@ -194,11 +199,12 @@ func providerSpanAttrs(t *testing.T, spans tracetest.SpanStubs) []map[attribute.
 		}
 		out = append(out, attrs)
 	}
-	require.NotEmpty(t, out, "no provider.stream span recorded")
+	must.NotEmpty(out, "no provider.stream span recorded")
 	return out
 }
 
 func TestLoop_ProviderReportedUsageReplacesEstimate(t *testing.T) {
+	must := require.New(t)
 	obs := runWithUsageObservers(t, &mockProvider{events: []types.StreamEvent{
 		{Type: "text_delta", Text: "done"},
 		{
@@ -213,16 +219,18 @@ func TestLoop_ProviderReportedUsageReplacesEstimate(t *testing.T) {
 	}}, buildTestConfig())
 
 	want := types.TokenUsage{Input: 5000, Output: 40, CacheRead: 3000, CacheWrite: 1500, Reasoning: 12}
-	require.Len(t, obs.turns, 1)
+	must.Len(obs.turns, 1)
 	turn := obs.turns[0]
 
 	t.Run("turn trace", func(t *testing.T) {
-		require.Equal(t, want, turn.Tokens)
-		require.True(t, turn.InputReported, "TurnTrace.InputReported")
+		must := require.New(t)
+		must.Equal(want, turn.Tokens)
+		must.True(turn.InputReported, "TurnTrace.InputReported")
 	})
 
 	t.Run("run trace", func(t *testing.T) {
-		require.Equal(t, want, obs.run.TokenUsage)
+		must := require.New(t)
+		must.Equal(want, obs.run.TokenUsage)
 	})
 
 	logRec := turnCompletedLogs(t, obs.logs)[0]
@@ -236,13 +244,15 @@ func TestLoop_ProviderReportedUsageReplacesEstimate(t *testing.T) {
 	}
 	for key, wantVal := range logWant {
 		t.Run("log "+key, func(t *testing.T) {
-			require.Equal(t, wantVal, logRec[key])
+			must := require.New(t)
+			must.Equal(wantVal, logRec[key])
 		})
 	}
 
 	attrs := providerSpanAttrs(t, obs.spans)[0]
 	t.Run("span input_reported", func(t *testing.T) {
-		require.True(t, attrs["tokens.input_reported"].AsBool())
+		must := require.New(t)
+		must.True(attrs["tokens.input_reported"].AsBool())
 	})
 	spanWant := map[attribute.Key]int64{
 		"tokens.input":       5000,
@@ -252,7 +262,8 @@ func TestLoop_ProviderReportedUsageReplacesEstimate(t *testing.T) {
 	}
 	for key, wantVal := range spanWant {
 		t.Run("span "+string(key), func(t *testing.T) {
-			require.Equal(t, wantVal, attrs[key].AsInt64())
+			must := require.New(t)
+			must.Equal(wantVal, attrs[key].AsInt64())
 		})
 	}
 
@@ -264,7 +275,8 @@ func TestLoop_ProviderReportedUsageReplacesEstimate(t *testing.T) {
 	}
 	for name, wantVal := range metricWant {
 		t.Run("metric "+name, func(t *testing.T) {
-			require.Equal(t, wantVal, obs.metrics[name])
+			must := require.New(t)
+			must.Equal(wantVal, obs.metrics[name])
 		})
 	}
 }
@@ -272,44 +284,50 @@ func TestLoop_ProviderReportedUsageReplacesEstimate(t *testing.T) {
 // TestLoop_UnreportedUsageFallsBackToEstimate pins the estimate path for
 // adapters that report no input figure.
 func TestLoop_UnreportedUsageFallsBackToEstimate(t *testing.T) {
+	must := require.New(t)
 	obs := runWithUsageObservers(t, &mockProvider{events: []types.StreamEvent{
 		{Type: "text_delta", Text: "done"},
 		{Type: "message_complete", StopReason: "end_turn", OutputTokens: 7},
 	}}, buildTestConfig())
 
-	require.Len(t, obs.turns, 1)
+	must.Len(obs.turns, 1)
 	turn := obs.turns[0]
 
 	t.Run("turn trace", func(t *testing.T) {
-		require.False(t, turn.InputReported, "TurnTrace.InputReported")
-		require.Positive(t, turn.Tokens.Input, "estimated input tokens")
-		require.Zero(t, turn.Tokens.CacheRead, "unreported breakdown: cache read")
-		require.Zero(t, turn.Tokens.CacheWrite, "unreported breakdown: cache write")
-		require.Zero(t, turn.Tokens.Reasoning, "unreported breakdown: reasoning")
+		must := require.New(t)
+		must.False(turn.InputReported, "TurnTrace.InputReported")
+		must.Positive(turn.Tokens.Input, "estimated input tokens")
+		must.Zero(turn.Tokens.CacheRead, "unreported breakdown: cache read")
+		must.Zero(turn.Tokens.CacheWrite, "unreported breakdown: cache write")
+		must.Zero(turn.Tokens.Reasoning, "unreported breakdown: reasoning")
 	})
 
 	t.Run("metrics", func(t *testing.T) {
-		require.Equal(t, int64(turn.Tokens.Input), obs.metrics["stirrup.harness.tokens.input"], "estimated input")
+		must := require.New(t)
+		must.Equal(int64(turn.Tokens.Input), obs.metrics["stirrup.harness.tokens.input"], "estimated input")
 		for _, name := range []string{"stirrup.harness.tokens.cache_read", "stirrup.harness.tokens.cache_write"} {
-			require.NotContains(t, obs.metrics, name, "no data point on the estimate path")
+			must.NotContains(obs.metrics, name, "no data point on the estimate path")
 		}
 	})
 
 	t.Run("turn completed log", func(t *testing.T) {
+		must := require.New(t)
 		logRec := turnCompletedLogs(t, obs.logs)[0]
-		require.Equal(t, false, logRec["tokens.input_reported"])
+		must.Equal(false, logRec["tokens.input_reported"])
 	})
 
 	t.Run("provider span", func(t *testing.T) {
+		must := require.New(t)
 		attrs := providerSpanAttrs(t, obs.spans)[0]
-		require.False(t, attrs["tokens.input_reported"].AsBool(), "tokens.input_reported")
+		must.False(attrs["tokens.input_reported"].AsBool(), "tokens.input_reported")
 		for _, key := range []attribute.Key{"tokens.cache_read", "tokens.cache_write", "tokens.reasoning"} {
-			require.NotContains(t, attrs, key, "breakdown absent on the estimate path")
+			must.NotContains(attrs, key, "breakdown absent on the estimate path")
 		}
 	})
 }
 
 func TestLoop_MixedReportedAndEstimatedTurns(t *testing.T) {
+	must := require.New(t)
 	obs := runWithUsageObservers(t, &multiCallProvider{calls: [][]types.StreamEvent{
 		{
 			{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: map[string]any{}},
@@ -321,38 +339,42 @@ func TestLoop_MixedReportedAndEstimatedTurns(t *testing.T) {
 		},
 	}}, buildTestConfig())
 
-	require.Len(t, obs.turns, 2)
+	must.Len(obs.turns, 2)
 	t.Run("input reporting per turn", func(t *testing.T) {
-		require.True(t, obs.turns[0].InputReported, "turn 0 reports input")
-		require.False(t, obs.turns[1].InputReported, "turn 1 estimates input")
-		require.Equal(t, 5000, obs.turns[0].Tokens.Input, "turn 0 input is the reported value")
+		must := require.New(t)
+		must.True(obs.turns[0].InputReported, "turn 0 reports input")
+		must.False(obs.turns[1].InputReported, "turn 1 estimates input")
+		must.Equal(5000, obs.turns[0].Tokens.Input, "turn 0 input is the reported value")
 	})
 	estimate := obs.turns[1].Tokens.Input
-	require.Positive(t, estimate, "turn 1 input estimate")
+	must.Positive(estimate, "turn 1 input estimate")
 
 	wantRun := types.TokenUsage{Input: 5000 + estimate, Output: 47, CacheRead: 3000}
-	require.Equal(t, wantRun, obs.run.TokenUsage)
+	must.Equal(wantRun, obs.run.TokenUsage)
 
 	spans := providerSpanAttrs(t, obs.spans)
-	require.Len(t, spans, 2)
+	must.Len(spans, 2)
 	t.Run("turn 1 provider span", func(t *testing.T) {
-		require.Equal(t, int64(estimate), spans[1]["tokens.input"].AsInt64())
-		require.False(t, spans[1]["tokens.input_reported"].AsBool(), "turn 1 tokens.input_reported")
+		must := require.New(t)
+		must.Equal(int64(estimate), spans[1]["tokens.input"].AsInt64())
+		must.False(spans[1]["tokens.input_reported"].AsBool(), "turn 1 tokens.input_reported")
 	})
 
 	logs := turnCompletedLogs(t, obs.logs)
-	require.Len(t, logs, 2)
-	require.InDelta(t, float64(estimate), logs[1]["tokens.input"], 0, "turn 1 log tokens.input")
+	must.Len(logs, 2)
+	must.InDelta(float64(estimate), logs[1]["tokens.input"], 0, "turn 1 log tokens.input")
 
 	t.Run("metrics", func(t *testing.T) {
-		require.Equal(t, int64(5000+estimate), obs.metrics["stirrup.harness.tokens.input"], "reported turn plus estimate")
-		require.Equal(t, int64(3000), obs.metrics["stirrup.harness.tokens.cache_read"], "reported turn only")
+		must := require.New(t)
+		must.Equal(int64(5000+estimate), obs.metrics["stirrup.harness.tokens.input"], "reported turn plus estimate")
+		must.Equal(int64(3000), obs.metrics["stirrup.harness.tokens.cache_read"], "reported turn only")
 	})
 }
 
 // The provider's input already includes its cache reads, so the budget
 // counts 1000 + 50 tokens, not 1000 + 800 + 50.
 func TestLoop_BudgetCountsCachedInputOnce(t *testing.T) {
+	must := require.New(t)
 	config := buildTestConfig()
 	budget := 1000
 	config.MaxTokenBudget = &budget
@@ -364,28 +386,30 @@ func TestLoop_BudgetCountsCachedInputOnce(t *testing.T) {
 		},
 	}}, config)
 
-	require.Equal(t, "budget_exceeded", obs.run.Outcome)
+	must.Equal("budget_exceeded", obs.run.Outcome)
 	want := types.TokenUsage{Input: 1000, Output: 50, CacheRead: 800}
-	require.Equal(t, want, obs.run.TokenUsage)
+	must.Equal(want, obs.run.TokenUsage)
 }
 
 func TestTokenTracker_CachedInputIsNotCountedTwice(t *testing.T) {
+	must := require.New(t)
 	tt := &TokenTracker{}
 	tt.RecordTurn(types.TokenUsage{Input: 1000, Output: 50, CacheRead: 800})
-	require.Equal(t, 1000, tt.Tokens().Input)
+	must.Equal(1000, tt.Tokens().Input)
 
 	within := 1050
-	check := tt.CheckBudget(&within)
-	require.True(t, check.WithinBudget, "1000 input + 50 output against a budget of 1050")
+	budgetCheck := tt.CheckBudget(&within)
+	must.True(budgetCheck.WithinBudget, "1000 input + 50 output against a budget of 1050")
 
 	below := 1049
-	check = tt.CheckBudget(&below)
-	require.False(t, check.WithinBudget, "1000 input + 50 output against a budget of 1049")
+	budgetCheck = tt.CheckBudget(&below)
+	must.False(budgetCheck.WithinBudget, "1000 input + 50 output against a budget of 1049")
 }
 
 // An openai-compatible server that ignores stream_options.include_usage
 // sends no usage; the turn's input falls back to the estimate.
 func TestLoop_ChatServerWithoutUsageFallsBackToEstimate(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = fmt.Fprint(w, "data: "+`{"id":"c1","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n")
@@ -395,9 +419,9 @@ func TestLoop_ChatServerWithoutUsageFallsBackToEstimate(t *testing.T) {
 	adapter := provider.NewOpenAICompatibleAdapter(bearer, srv.URL, provider.OpenAIAuthConfig{}, provider.RetryPolicy{})
 
 	obs := runWithUsageObservers(t, adapter, buildTestConfig())
-	require.Len(t, obs.turns, 1)
+	must.Len(obs.turns, 1)
 	turn := obs.turns[0]
-	require.Equal(t, "end_turn", turn.StopReason, "stop reason from the fake server")
-	require.False(t, turn.InputReported, "TurnTrace.InputReported")
-	require.Positive(t, turn.Tokens.Input, "estimated input tokens")
+	must.Equal("end_turn", turn.StopReason, "stop reason from the fake server")
+	must.False(turn.InputReported, "TurnTrace.InputReported")
+	must.Positive(turn.Tokens.Input, "estimated input tokens")
 }

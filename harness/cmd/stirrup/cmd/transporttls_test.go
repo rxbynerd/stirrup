@@ -29,8 +29,9 @@ import (
 // points CONTROL_PLANE_ADDR at it.
 func startTLSControlPlane(t *testing.T, srv pb.HarnessServiceServer, serverTLS *tls.Config) string {
 	t.Helper()
+	must := require.New(t)
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err, "listen on loopback")
+	must.NoError(err, "listen on loopback")
 	gs := grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)))
 	pb.RegisterHarnessServiceServer(gs, srv)
 	go func() { _ = gs.Serve(lis) }()
@@ -43,8 +44,9 @@ func startTLSControlPlane(t *testing.T, srv pb.HarnessServiceServer, serverTLS *
 // them, so a test can prove nothing dialled it.
 func countingListener(t *testing.T) (string, *atomic.Int32) {
 	t.Helper()
+	must := require.New(t)
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err, "listen on loopback")
+	must.NoError(err, "listen on loopback")
 	var accepted atomic.Int32
 	go func() {
 		for {
@@ -64,6 +66,7 @@ func countingListener(t *testing.T) (string, *atomic.Int32) {
 // unset; an empty field is "not requested", not "requested but empty".
 func setControlPlaneTLSEnv(t *testing.T, cfg transport.TLSConfig) {
 	t.Helper()
+	must := require.New(t)
 	for name, value := range map[string]string{
 		envControlPlaneTLSCAFile:     cfg.CAFile,
 		envControlPlaneTLSCertFile:   cfg.CertFile,
@@ -72,7 +75,7 @@ func setControlPlaneTLSEnv(t *testing.T, cfg transport.TLSConfig) {
 	} {
 		t.Setenv(name, value)
 		if value == "" {
-			require.NoError(t, os.Unsetenv(name), "unset %s", name)
+			must.NoError(os.Unsetenv(name), "unset %s", name)
 		}
 	}
 }
@@ -101,6 +104,7 @@ func TestRunJob_TLSSettingErrorsFailBeforeDial(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			useTempMarkerPaths(t)
 			addr, accepted := countingListener(t)
 			t.Setenv("CONTROL_PLANE_ADDR", addr)
@@ -108,12 +112,12 @@ func TestRunJob_TLSSettingErrorsFailBeforeDial(t *testing.T) {
 			stderr := captureJobStderr(t)
 
 			err := runJob(jobCmd, nil)
-			require.Error(t, err, "runJob should fail with a TLS configuration error")
-			require.ErrorContains(t, err, tc.wantErr)
-			require.ErrorContains(t, err, envControlPlaneTLSCAFile, "error should name the TLS variables")
+			must.Error(err, "runJob should fail with a TLS configuration error")
+			must.ErrorContains(err, tc.wantErr)
+			must.ErrorContains(err, envControlPlaneTLSCAFile, "error should name the TLS variables")
 			time.Sleep(50 * time.Millisecond)
-			require.Zero(t, accepted.Load(), "control plane should see no connection before the TLS settings load")
-			require.NotContains(t, stderr.String(), "control plane transport", "startup mode should not be logged")
+			must.Zero(accepted.Load(), "control plane should see no connection before the TLS settings load")
+			must.NotContains(stderr.String(), "control plane transport", "startup mode should not be logged")
 		})
 	}
 }
@@ -126,6 +130,7 @@ func TestRunJob_EmptyTLSVariableFailsBeforeDial(t *testing.T) {
 		envControlPlaneTLSServerName,
 	} {
 		t.Run("empty "+name, func(t *testing.T) {
+			must := require.New(t)
 			useTempMarkerPaths(t)
 			addr, accepted := countingListener(t)
 			t.Setenv("CONTROL_PLANE_ADDR", addr)
@@ -134,16 +139,17 @@ func TestRunJob_EmptyTLSVariableFailsBeforeDial(t *testing.T) {
 			stderr := captureJobStderr(t)
 
 			err := runJob(jobCmd, nil)
-			require.Error(t, err, "runJob should fail on an empty TLS variable")
-			require.ErrorContains(t, err, name)
+			must.Error(err, "runJob should fail on an empty TLS variable")
+			must.ErrorContains(err, name)
 			time.Sleep(50 * time.Millisecond)
-			require.Zero(t, accepted.Load(), "control plane should see no connection")
-			require.NotContains(t, stderr.String(), "control plane transport", "startup mode should not be logged")
+			must.Zero(accepted.Load(), "control plane should see no connection")
+			must.NotContains(stderr.String(), "control plane transport", "startup mode should not be logged")
 		})
 	}
 }
 
 func TestRunJob_MutualTLSReachesControlPlane(t *testing.T) {
+	must := require.New(t)
 	useTempMarkerPaths(t)
 	pki := tlstest.New(t)
 	srv := &fakeControlPlane{
@@ -164,18 +170,18 @@ func TestRunJob_MutualTLSReachesControlPlane(t *testing.T) {
 	select {
 	case <-srv.readyRecv:
 	case <-time.After(eventWaitBudget):
-		require.Fail(t, "control plane never received the ready event over mutual TLS")
+		must.Fail("control plane never received the ready event over mutual TLS")
 	}
 	select {
 	case err := <-errCh:
-		require.ErrorContains(t, err, "building harness", "runJob should fail on the assigned invalid RunConfig")
+		must.ErrorContains(err, "building harness", "runJob should fail on the assigned invalid RunConfig")
 	case <-time.After(eventWaitBudget):
-		require.Fail(t, "runJob did not return after the task assignment")
+		must.Fail("runJob did not return after the task assignment")
 	}
 
 	log := stderr.String()
-	require.Equal(t, 1, strings.Count(log, "control plane transport"), "stderr should have exactly one startup line")
-	require.Contains(t, log, "mode=mutual-tls")
+	must.Equal(1, strings.Count(log, "control plane transport"), "stderr should have exactly one startup line")
+	must.Contains(log, "mode=mutual-tls")
 	assertNoPEMMaterial(t, log, pki)
 }
 
@@ -208,6 +214,7 @@ func TestRunJob_TLSRefusesUntrustedControlPlanes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			useTempMarkerPaths(t)
 			srv := &fakeControlPlane{readyRecv: make(chan struct{}), task: &pb.RunConfig{Mode: "bogus-mode"}}
 			tc.start(t, srv)
@@ -215,12 +222,12 @@ func TestRunJob_TLSRefusesUntrustedControlPlanes(t *testing.T) {
 			_ = captureJobStderr(t)
 
 			err := runJob(jobCmd, nil)
-			require.Error(t, err, "runJob should refuse an untrusted control plane")
-			require.ErrorContains(t, err, "failed to connect to control plane")
-			require.ErrorContains(t, err, tc.wantErr)
+			must.Error(err, "runJob should refuse an untrusted control plane")
+			must.ErrorContains(err, "failed to connect to control plane")
+			must.ErrorContains(err, tc.wantErr)
 			select {
 			case <-srv.readyRecv:
-				require.Fail(t, "control plane received a ready event over a refused connection")
+				must.Fail("control plane received a ready event over a refused connection")
 			default:
 			}
 		})
@@ -228,6 +235,7 @@ func TestRunJob_TLSRefusesUntrustedControlPlanes(t *testing.T) {
 }
 
 func TestRunJob_PlaintextDefaultLogsMode(t *testing.T) {
+	must := require.New(t)
 	useTempMarkerPaths(t)
 	srv := &fakeControlPlane{readyRecv: make(chan struct{}), task: &pb.RunConfig{Mode: "bogus-mode"}}
 	startControlPlane(t, srv)
@@ -235,20 +243,21 @@ func TestRunJob_PlaintextDefaultLogsMode(t *testing.T) {
 	stderr := captureJobStderr(t)
 
 	err := runJob(jobCmd, nil)
-	require.ErrorContains(t, err, "building harness", "runJob should fail on the assigned invalid RunConfig")
-	require.Contains(t, stderr.String(), "control plane transport mode=plaintext")
+	must.ErrorContains(err, "building harness", "runJob should fail on the assigned invalid RunConfig")
+	must.Contains(stderr.String(), "control plane transport mode=plaintext")
 }
 
 func TestResolveTransportTLSFlags_PlaintextAndMutualTLS(t *testing.T) {
+	must := require.New(t)
 	pki := tlstest.New(t)
 
 	creds, err := resolveTransportTLSFlags(transport.TLSConfig{}, "stdio")
-	require.NoError(t, err)
-	require.Nil(t, creds, "plaintext should return no credentials")
+	must.NoError(err)
+	must.Nil(creds, "plaintext should return no credentials")
 
 	creds, err = resolveTransportTLSFlags(transport.TLSConfig{CAFile: pki.CAFile, CertFile: pki.ClientCertFile, KeyFile: pki.ClientKeyFile}, "grpc")
-	require.NoError(t, err)
-	require.NotNil(t, creds, "mutual TLS should return credentials")
+	must.NoError(err)
+	must.NotNil(creds, "mutual TLS should return credentials")
 }
 
 func TestResolveTransportTLSFlags_RejectsInvalidSettings(t *testing.T) {
@@ -270,10 +279,11 @@ func TestResolveTransportTLSFlags_RejectsInvalidSettings(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			_, err := resolveTransportTLSFlags(tc.cfg, tc.typ)
-			require.Error(t, err, "resolveTransportTLSFlags should fail")
-			require.Equal(t, tc.wantCode, classifyExitCode(err), "exit code for error: %v", err)
-			require.ErrorContains(t, err, tc.wantErr)
+			must.Error(err, "resolveTransportTLSFlags should fail")
+			must.Equal(tc.wantCode, classifyExitCode(err), "exit code for error: %v", err)
+			must.ErrorContains(err, tc.wantErr)
 		})
 	}
 }
@@ -282,52 +292,57 @@ func TestTransportTLSFromFlags_UnsetIsPlaintextEmptyIsUsageError(t *testing.T) {
 	names := []string{flagTransportTLSCAFile, flagTransportTLSCertFile, flagTransportTLSKeyFile, flagTransportTLSServerName}
 
 	t.Run("all unset is plaintext", func(t *testing.T) {
+		must := require.New(t)
 		f := newTestHarnessCommand().Flags()
 		cfg, err := transportTLSFromFlags(f)
-		require.NoError(t, err)
-		require.False(t, cfg.Enabled(), "all unset flags should disable TLS")
+		must.NoError(err)
+		must.False(cfg.Enabled(), "all unset flags should disable TLS")
 	})
 
 	for _, name := range names {
 		t.Run("empty "+name, func(t *testing.T) {
+			must := require.New(t)
 			f := newTestHarnessCommand().Flags()
-			require.NoError(t, f.Set(name, ""), "set --%s", name)
+			must.NoError(f.Set(name, ""), "set --%s", name)
 			_, err := transportTLSFromFlags(f)
-			require.ErrorContains(t, err, "--"+name)
-			require.Equal(t, exitUsage, classifyExitCode(err), "exit code")
+			must.ErrorContains(err, "--"+name)
+			must.Equal(exitUsage, classifyExitCode(err), "exit code")
 		})
 	}
 }
 
 func TestRunHarness_EmptyTransportTLSFlagIsRejected(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	mustSetFlags(t, cmd.Flags().Set, map[string]string{
 		"prompt":               "hello",
 		flagTransportTLSCAFile: "",
 	})
 	err := runHarness(cmd, nil)
-	require.ErrorContains(t, err, "--"+flagTransportTLSCAFile)
-	require.Equal(t, exitUsage, classifyExitCode(err), "exit code")
+	must.ErrorContains(err, "--"+flagTransportTLSCAFile)
+	must.Equal(exitUsage, classifyExitCode(err), "exit code")
 }
 
 func TestTransportTLSFlags_HarnessOnly(t *testing.T) {
 	for _, name := range []string{flagTransportTLSCAFile, flagTransportTLSCertFile, flagTransportTLSKeyFile, flagTransportTLSServerName} {
 		t.Run(name, func(t *testing.T) {
-			require.NotNil(t, harnessCmd.Flags().Lookup(name), "harness should register --%s", name)
-			require.Nil(t, runConfigCmd.Flags().Lookup(name), "run-config registers --%s, but TLS settings have no RunConfig field", name)
+			must := require.New(t)
+			must.NotNil(harnessCmd.Flags().Lookup(name), "harness should register --%s", name)
+			must.Nil(runConfigCmd.Flags().Lookup(name), "run-config registers --%s, but TLS settings have no RunConfig field", name)
 		})
 	}
 }
 
 func TestRunHarness_TransportTLSRequiresGRPC(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	mustSetFlags(t, cmd.Flags().Set, map[string]string{
 		"prompt":               "hello",
 		flagTransportTLSCAFile: "/nonexistent/ca.pem",
 	})
 	err := runHarness(cmd, nil)
-	require.ErrorContains(t, err, "require --transport grpc")
-	require.Equal(t, exitUsage, classifyExitCode(err), "exit code")
+	must.ErrorContains(err, "require --transport grpc")
+	must.Equal(exitUsage, classifyExitCode(err), "exit code")
 }
 
 // recordingTLSControlPlane records the type of every event a `stirrup
@@ -358,6 +373,7 @@ func (s *recordingTLSControlPlane) eventTypes() []string {
 }
 
 func TestRunHarness_MutualTLSTransport(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -393,39 +409,42 @@ func TestRunHarness_MutualTLSTransport(t *testing.T) {
 		flagTransportTLSKeyFile:  pki.ClientKeyFile,
 	})
 
-	require.NoError(t, runHarness(cmd, nil), "runHarness over mutual TLS")
+	must.NoError(runHarness(cmd, nil), "runHarness over mutual TLS")
 
-	require.EventuallyWithT(t, func(c *assert.CollectT) {
+	must.EventuallyWithT(func(c *assert.CollectT) {
 		assert.Contains(c, srv.eventTypes(), "done")
 	}, eventWaitBudget, 5*time.Millisecond)
 
 	log := stderr.String()
-	require.Equal(t, 1, strings.Count(log, "control plane transport"), "stderr should have exactly one startup line")
-	require.Contains(t, log, "mode=mutual-tls")
+	must.Equal(1, strings.Count(log, "control plane transport"), "stderr should have exactly one startup line")
+	must.Contains(log, "mode=mutual-tls")
 	assertNoPEMMaterial(t, log, pki)
 }
 
 func TestLogControlPlaneTransport_WritesStartupLine(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	logControlPlaneTransport(&buf, "cp:443", transport.TLSConfig{ServerName: "cp.internal"})
-	require.Equal(t, "stirrup: control plane transport mode=tls ca=system-roots server-name=cp.internal addr=cp:443\n", buf.String())
+	must.Equal("stirrup: control plane transport mode=tls ca=system-roots server-name=cp.internal addr=cp:443\n", buf.String())
 }
 
 func assertNoPEMMaterial(t *testing.T, log string, pki *tlstest.PKI) {
 	t.Helper()
-	require.NotContains(t, log, "-----BEGIN", "stderr should not contain PEM material")
+	must := require.New(t)
+	must.NotContains(log, "-----BEGIN", "stderr should not contain PEM material")
 	key, err := os.ReadFile(pki.ClientKeyFile)
-	require.NoError(t, err)
+	must.NoError(err)
 	for _, line := range strings.Split(string(key), "\n") {
 		if len(line) > 16 && !strings.HasPrefix(line, "-----") {
-			require.False(t, strings.Contains(log, line), "stderr should not contain client key material") //nolint:testifylint // NotContains would print the key line in the failure output
+			must.False(strings.Contains(log, line), "stderr should not contain client key material") //nolint:testifylint // NotContains would print the key line in the failure output
 		}
 	}
 }
 
 func mustSetFlags(t *testing.T, set func(name, value string) error, values map[string]string) {
 	t.Helper()
+	must := require.New(t)
 	for name, value := range values {
-		require.NoError(t, set(name, value), "set --%s", name)
+		must.NoError(set(name, value), "set --%s", name)
 	}
 }

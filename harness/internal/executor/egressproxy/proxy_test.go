@@ -77,13 +77,14 @@ func (f *fakeEmitter) blockedReasons() []string {
 // startTestProxy boots a proxy listening on an ephemeral local port.
 func startTestProxy(t *testing.T, allowlist []string, emitter *fakeEmitter) *Proxy {
 	t.Helper()
+	must := require.New(t)
 	p, err := Start(context.Background(), Config{
 		Allowlist:   allowlist,
 		Security:    emitter,
 		ReadTimeout: 5 * time.Second,
 		DialTimeout: 5 * time.Second,
 	})
-	require.NoError(t, err, "Start")
+	must.NoError(err, "Start")
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -93,6 +94,7 @@ func startTestProxy(t *testing.T, allowlist []string, emitter *fakeEmitter) *Pro
 }
 
 func TestProxy_PlainHTTP_Allowed(t *testing.T) {
+	must := require.New(t)
 	upstream := startUpstreamHTTP(t, "ok body")
 
 	emitter := &fakeEmitter{}
@@ -100,33 +102,35 @@ func TestProxy_PlainHTTP_Allowed(t *testing.T) {
 	p := startTestProxy(t, []string{fmt.Sprintf("%s:%d", upstreamHost, upstreamPort)}, emitter)
 
 	resp := doProxyHTTPGet(t, p.Addr(), upstream.URL)
-	require.Equal(t, http.StatusOK, resp.StatusCode)
+	must.Equal(http.StatusOK, resp.StatusCode)
 	body, err := io.ReadAll(resp.Body)
-	require.NoError(t, err, "read body")
-	require.Equal(t, "ok body", string(body))
+	must.NoError(err, "read body")
+	must.Equal("ok body", string(body))
 
-	require.True(t, emitter.hasEvent("egress_allowed"), "expected egress_allowed event")
-	require.False(t, emitter.hasEvent("egress_blocked"), "did not expect egress_blocked event for allowed request")
+	must.True(emitter.hasEvent("egress_allowed"), "expected egress_allowed event")
+	must.False(emitter.hasEvent("egress_blocked"), "did not expect egress_blocked event for allowed request")
 }
 
 func TestProxy_PlainHTTP_Denied(t *testing.T) {
+	must := require.New(t)
 	upstream := startUpstreamHTTP(t, "should-not-reach")
 
 	emitter := &fakeEmitter{}
 	p := startTestProxy(t, []string{"some-other-host.example:443"}, emitter)
 
 	resp := doProxyHTTPGet(t, p.Addr(), upstream.URL)
-	require.Equal(t, http.StatusForbidden, resp.StatusCode)
-	require.True(t, emitter.hasEvent("egress_blocked"), "expected egress_blocked event")
+	must.Equal(http.StatusForbidden, resp.StatusCode)
+	must.True(emitter.hasEvent("egress_blocked"), "expected egress_blocked event")
 
 	for _, ev := range emitter.snapshot() {
 		if ev.Event == "egress_blocked" {
-			require.Equal(t, "not_allowlisted", ev.Data["reason"])
+			must.Equal("not_allowlisted", ev.Data["reason"])
 		}
 	}
 }
 
 func TestProxy_CONNECT_AllowedSplices(t *testing.T) {
+	must := require.New(t)
 	// The upstream echoes bytes verbatim, so the test checks the splice in
 	// both directions without TLS. The client still sends a ClientHello-shaped
 	// record through CONNECT so the proxy's SNI check passes.
@@ -143,39 +147,41 @@ func TestProxy_CONNECT_AllowedSplices(t *testing.T) {
 	// before the response is read.
 	hello := clientHelloWithSNI(upstreamHost)
 	_, err := conn.Write(hello)
-	require.NoError(t, err, "write hello")
+	must.NoError(err, "write hello")
 
 	r := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(r, &http.Request{Method: http.MethodConnect})
-	require.NoError(t, err, "read CONNECT response")
-	require.Equal(t, http.StatusOK, resp.StatusCode)
+	must.NoError(err, "read CONNECT response")
+	must.Equal(http.StatusOK, resp.StatusCode)
 
 	got := make([]byte, len(hello))
 	_, err = io.ReadFull(r, got)
-	require.NoError(t, err, "read echoed bytes")
-	require.Equal(t, hello, got)
+	must.NoError(err, "read echoed bytes")
+	must.Equal(hello, got)
 
-	require.Eventually(t, func() bool {
+	must.Eventually(func() bool {
 		return emitter.hasEvent("egress_allowed")
 	}, time.Second, 20*time.Millisecond, "expected egress_allowed event for allowed CONNECT")
 }
 
 func TestProxy_CONNECT_Denied(t *testing.T) {
+	must := require.New(t)
 	emitter := &fakeEmitter{}
 	p := startTestProxy(t, []string{"allowed.example:443"}, emitter)
 
 	conn := dialConnect(t, p.Addr(), "denied.example:443")
 
 	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
-	require.NoError(t, err, "read CONNECT response")
-	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	must.NoError(err, "read CONNECT response")
+	must.Equal(http.StatusForbidden, resp.StatusCode)
 
 	reasons := emitter.blockedReasons()
-	require.NotEmpty(t, reasons, "expected egress_blocked event")
-	require.Equal(t, "not_allowlisted", reasons[len(reasons)-1])
+	must.NotEmpty(reasons, "expected egress_blocked event")
+	must.Equal("not_allowlisted", reasons[len(reasons)-1])
 }
 
 func TestProxy_CONNECT_SNIMismatch_DropsTunnel(t *testing.T) {
+	must := require.New(t)
 	upstream := startEchoTCPServer(t)
 	upstreamHost, upstreamPort := splitHostPort(t, upstream.Addr().String())
 	target := fmt.Sprintf("%s:%d", upstreamHost, upstreamPort)
@@ -194,41 +200,43 @@ func TestProxy_CONNECT_SNIMismatch_DropsTunnel(t *testing.T) {
 	}
 
 	// Draining yields the optional 200 but never the echoed ClientHello bytes.
-	require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)), "SetReadDeadline")
+	must.NoError(conn.SetReadDeadline(time.Now().Add(2*time.Second)), "SetReadDeadline")
 	got := readAllUntilEOF(t, conn)
-	require.False(t, bytes.Contains(got, hello),
+	must.False(bytes.Contains(got, hello),
 		"mismatched-SNI tunnel echoed client bytes back, so the upstream was reached: %q", string(got))
 
-	require.EventuallyWithT(t, func(c *assert.CollectT) {
+	must.EventuallyWithT(func(c *assert.CollectT) {
 		assert.Contains(c, emitter.blockedReasons(), "sni_mismatch")
 	}, time.Second, 20*time.Millisecond)
 }
 
 func TestProxy_Stop_IsIdempotent(t *testing.T) {
+	must := require.New(t)
 	p := startTestProxy(t, []string{"example.com"}, &fakeEmitter{})
 
-	require.NoError(t, p.Stop(context.Background()), "first Stop")
-	require.NoError(t, p.Stop(context.Background()), "second Stop")
+	must.NoError(p.Stop(context.Background()), "first Stop")
+	must.NoError(p.Stop(context.Background()), "second Stop")
 }
 
 // TestProxy_StopsOnContextCancel: the proxy goroutine must shut down when the
 // caller's ctx is cancelled, so a leaked listener cannot outlive the caller.
 func TestProxy_StopsOnContextCancel(t *testing.T) {
+	must := require.New(t)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	p, err := Start(ctx, Config{
 		Allowlist: []string{"example.com"},
 		Security:  &fakeEmitter{},
 	})
-	require.NoError(t, err, "Start")
+	must.NoError(err, "Start")
 
 	addr := p.Addr()
-	require.NotEmpty(t, addr, "expected listener addr")
+	must.NotEmpty(addr, "expected listener addr")
 
 	cancel()
 
 	// A dial fails with "connection refused" once the proxy has stopped.
-	require.Eventually(t, func() bool {
+	must.Eventually(func() bool {
 		c, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
 		if err != nil {
 			return true
@@ -239,6 +247,7 @@ func TestProxy_StopsOnContextCancel(t *testing.T) {
 }
 
 func TestProxy_PlainHTTP_RequiresAllowlistedPort(t *testing.T) {
+	must := require.New(t)
 	upstream := startUpstreamHTTP(t, "x")
 	emitter := &fakeEmitter{}
 	upstreamHost, upstreamPort := splitHostPort(t, upstream.Listener.Addr().String())
@@ -248,13 +257,13 @@ func TestProxy_PlainHTTP_RequiresAllowlistedPort(t *testing.T) {
 	// port suffix.
 	p := startTestProxy(t, []string{upstreamHost}, emitter)
 	resp := doProxyHTTPGet(t, p.Addr(), upstream.URL)
-	require.Equal(t, http.StatusForbidden, resp.StatusCode, "expected port-mismatch deny")
+	must.Equal(http.StatusForbidden, resp.StatusCode, "expected port-mismatch deny")
 
 	emitter2 := &fakeEmitter{}
 	p2 := startTestProxy(t, []string{fmt.Sprintf("%s:%d", upstreamHost, upstreamPort)}, emitter2)
 	resp = doProxyHTTPGet(t, p2.Addr(), upstream.URL)
-	require.Equal(t, http.StatusOK, resp.StatusCode, "expected allow")
-	require.True(t, emitter2.hasEvent("egress_allowed"), "expected egress_allowed")
+	must.Equal(http.StatusOK, resp.StatusCode, "expected allow")
+	must.True(emitter2.hasEvent("egress_allowed"), "expected egress_allowed")
 }
 
 type httpUpstream struct {
@@ -265,8 +274,9 @@ type httpUpstream struct {
 
 func startUpstreamHTTP(t *testing.T, body string) *httpUpstream {
 	t.Helper()
+	must := require.New(t)
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
-	require.NoError(t, err, "listen")
+	must.NoError(err, "listen")
 	srv := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte(body))
@@ -283,8 +293,9 @@ func startUpstreamHTTP(t *testing.T, body string) *httpUpstream {
 
 func startEchoTCPServer(t *testing.T) net.Listener {
 	t.Helper()
+	must := require.New(t)
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
-	require.NoError(t, err, "listen")
+	must.NoError(err, "listen")
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -305,12 +316,13 @@ func startEchoTCPServer(t *testing.T) net.Listener {
 // for target. The caller reads the response.
 func dialConnect(t *testing.T, proxyAddr, target string) net.Conn {
 	t.Helper()
+	must := require.New(t)
 	conn, err := net.Dial("tcp", proxyAddr)
-	require.NoError(t, err, "dial proxy")
+	must.NoError(err, "dial proxy")
 	t.Cleanup(func() { _ = conn.Close() })
 
 	_, err = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
-	require.NoError(t, err, "write CONNECT")
+	must.NoError(err, "write CONNECT")
 	return conn
 }
 
@@ -318,8 +330,9 @@ func dialConnect(t *testing.T, proxyAddr, target string) net.Conn {
 // the response. It is the test equivalent of `curl -x` for plain HTTP.
 func doProxyHTTPGet(t *testing.T, proxyAddr, target string) *http.Response {
 	t.Helper()
+	must := require.New(t)
 	proxyURL, err := url.Parse("http://" + proxyAddr)
-	require.NoError(t, err, "parse proxy URL")
+	must.NoError(err, "parse proxy URL")
 	client := &http.Client{
 		Timeout: 5 * time.Second,
 		Transport: &http.Transport{
@@ -328,18 +341,19 @@ func doProxyHTTPGet(t *testing.T, proxyAddr, target string) *http.Response {
 		},
 	}
 	resp, err := client.Get(target)
-	require.NoError(t, err, "client.Get")
+	must.NoError(err, "client.Get")
 	t.Cleanup(func() { _ = resp.Body.Close() })
 	return resp
 }
 
 func splitHostPort(t *testing.T, addr string) (string, int) {
 	t.Helper()
+	must := require.New(t)
 	host, portStr, err := net.SplitHostPort(addr)
-	require.NoError(t, err, "SplitHostPort %q", addr)
+	must.NoError(err, "SplitHostPort %q", addr)
 	port := 0
 	_, err = fmt.Sscanf(portStr, "%d", &port)
-	require.NoError(t, err, "parse port %q", portStr)
+	must.NoError(err, "parse port %q", portStr)
 	return host, port
 }
 
@@ -423,13 +437,15 @@ func buildClientHelloBody(sni string) []byte {
 
 func TestParseSNIFromHandshake_ExtractsSNIOrReportsAbsent(t *testing.T) {
 	t.Run("returns the server name when present", func(t *testing.T) {
+		must := require.New(t)
 		got, err := parseSNIFromHandshake(buildClientHelloBody("foo.example.com"))
-		require.NoError(t, err)
-		require.Equal(t, "foo.example.com", got)
+		must.NoError(err)
+		must.Equal("foo.example.com", got)
 	})
 
 	t.Run("reports absent SNI as errSNINotPresent", func(t *testing.T) {
+		must := require.New(t)
 		_, err := parseSNIFromHandshake(buildClientHelloBody(""))
-		require.ErrorIs(t, err, errSNINotPresent)
+		must.ErrorIs(err, errSNINotPresent)
 	})
 }

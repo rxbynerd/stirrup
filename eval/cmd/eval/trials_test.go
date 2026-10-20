@@ -26,6 +26,7 @@ done
 `
 
 func TestCmdRun_TrialsFlagOverridesSuiteAttribute(t *testing.T) {
+	must := require.New(t)
 	harnessPath := writeFakeHarness(t, traceWritingHarness)
 	dir := t.TempDir()
 	suitePath := filepath.Join(dir, "trials.hcl")
@@ -42,23 +43,24 @@ suite "trials-suite" {
   }
 }
 `
-	require.NoError(t, os.WriteFile(suitePath, []byte(src), 0o644))
+	must.NoError(os.WriteFile(suitePath, []byte(src), 0o644))
 
 	outputDir := filepath.Join(dir, "out")
 	code := run([]string{"run", "--suite", suitePath, "--harness", harnessPath, "--output", outputDir, "--trials", "3"}, io.Discard)
-	require.Equal(t, 0, code)
+	must.Equal(0, code)
 
 	data, err := os.ReadFile(filepath.Join(outputDir, "result.json"))
-	require.NoError(t, err)
+	must.NoError(err)
 	var result eval.SuiteResult
-	require.NoError(t, json.Unmarshal(data, &result))
-	require.Equal(t, 3, result.Trials, "--trials overrides the suite attribute")
-	require.Len(t, result.Tasks[0].Trials, 3)
+	must.NoError(json.Unmarshal(data, &result))
+	must.Equal(3, result.Trials, "--trials overrides the suite attribute")
+	must.Len(result.Tasks[0].Trials, 3)
 
 	for _, trial := range []string{"trial-1", "trial-2", "trial-3"} {
 		t.Run(trial, func(t *testing.T) {
+			must := require.New(t)
 			_, err := os.Stat(filepath.Join(outputDir, "trials-suite", "task-a", trial, "trace.jsonl"))
-			require.NoError(t, err, "per-trial artifact")
+			must.NoError(err, "per-trial artifact")
 		})
 	}
 }
@@ -71,48 +73,52 @@ func TestPrintSummary_ReportsTrialsAndDryRun(t *testing.T) {
 	multi.Trials = 3
 
 	t.Run("single trial", func(t *testing.T) {
+		must := require.New(t)
 		var b bytes.Buffer
 		printSummary(&b, single, false)
-		require.Equal(t, "Suite: s (run: r)\nTasks: 2 total, 1 passed, 1 failed, 0 errors\nPass rate: 50.0%\n", b.String())
+		must.Equal("Suite: s (run: r)\nTasks: 2 total, 1 passed, 1 failed, 0 errors\nPass rate: 50.0%\n", b.String())
 	})
 
 	t.Run("multiple trials", func(t *testing.T) {
+		must := require.New(t)
 		var b bytes.Buffer
 		printSummary(&b, multi, false)
-		require.Contains(t, b.String(), "Trials: 3 per task (6 harness runs)")
-		require.Contains(t, b.String(), "(majority of trials)")
-		require.Contains(t, b.String(), "Pass rate: 50.0% (mean per-task pass fraction)")
+		must.Contains(b.String(), "Trials: 3 per task (6 harness runs)")
+		must.Contains(b.String(), "(majority of trials)")
+		must.Contains(b.String(), "Pass rate: 50.0% (mean per-task pass fraction)")
 	})
 
 	t.Run("dry run", func(t *testing.T) {
+		must := require.New(t)
 		var b bytes.Buffer
 		printSummary(&b, multi, true)
-		require.Contains(t, b.String(), "6 harness runs planned; the dry run validates each task once")
-		require.NotContains(t, b.String(), "majority of trials", "dry-run summary describes majority outcomes although each task ran once")
+		must.Contains(b.String(), "6 harness runs planned; the dry run validates each task once")
+		must.NotContains(b.String(), "majority of trials", "dry-run summary describes majority outcomes although each task ran once")
 	})
 }
 
 func TestCmdRun_SingleRunResultAlwaysCarriesTrialsAndPassFraction(t *testing.T) {
+	must := require.New(t)
 	harnessPath := writeFakeHarness(t, traceWritingHarness)
 	suitePath := writeTwoTaskSuite(t, "")
 	outputDir := filepath.Join(t.TempDir(), "out")
 
 	code := run([]string{"run", "--suite", suitePath, "--harness", harnessPath, "--output", outputDir}, io.Discard)
-	require.Equal(t, 0, code)
+	must.Equal(0, code)
 
 	data, err := os.ReadFile(filepath.Join(outputDir, "result.json"))
-	require.NoError(t, err)
+	must.NoError(err)
 	var doc struct {
 		Trials int `json:"trials"`
 		Tasks  []map[string]any
 	}
-	require.NoError(t, json.Unmarshal(data, &doc))
-	require.Equal(t, 1, doc.Trials, "suite trials in %s", data)
-	require.Len(t, doc.Tasks, 2)
+	must.NoError(json.Unmarshal(data, &doc))
+	must.Equal(1, doc.Trials, "suite trials in %s", data)
+	must.Len(doc.Tasks, 2)
 	for _, task := range doc.Tasks {
 		got, ok := task["passFraction"]
-		require.True(t, ok, "task %v: passFraction is missing", task["taskId"])
-		require.InDelta(t, 1.0, got, 1e-9, "task %v: passFraction", task["taskId"])
-		require.NotContains(t, task, "trials", "task %v: single-run result lists per-trial entries", task["taskId"])
+		must.True(ok, "task %v: passFraction is missing", task["taskId"])
+		must.InDelta(1.0, got, 1e-9, "task %v: passFraction", task["taskId"])
+		must.NotContains(task, "trials", "task %v: single-run result lists per-trial entries", task["taskId"])
 	}
 }

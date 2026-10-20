@@ -38,6 +38,7 @@ func (m *mockSSMClient) GetParameter(_ context.Context, input *ssm.GetParameterI
 }
 
 func TestSSMSecretStore_Resolve_ReturnsParamValue(t *testing.T) {
+	must := require.New(t)
 	client := &mockSSMClient{
 		params: map[string]string{
 			"/prod/api-key": "super-secret-123",
@@ -47,11 +48,12 @@ func TestSSMSecretStore_Resolve_ReturnsParamValue(t *testing.T) {
 	ctx := context.Background()
 
 	val, err := store.Resolve(ctx, "secret://ssm:///prod/api-key")
-	require.NoError(t, err)
-	require.Equal(t, "super-secret-123", val)
+	must.NoError(err)
+	must.Equal("super-secret-123", val)
 }
 
 func TestSSMSecretStore_Resolve_PrependsLeadingSlash(t *testing.T) {
+	must := require.New(t)
 	// When the ref is "secret://ssm:///param" the param name is "param" (no leading slash),
 	// so the store should prepend one to form "/param".
 	client := &mockSSMClient{
@@ -63,47 +65,52 @@ func TestSSMSecretStore_Resolve_PrependsLeadingSlash(t *testing.T) {
 	ctx := context.Background()
 
 	val, err := store.Resolve(ctx, "secret://ssm:///my-param")
-	require.NoError(t, err)
-	require.Equal(t, "value-42", val)
+	must.NoError(err)
+	must.Equal("value-42", val)
 }
 
 func TestSSMSecretStore_Resolve_MissingParamErrors(t *testing.T) {
+	must := require.New(t)
 	client := &mockSSMClient{params: map[string]string{}}
 	store := newSSMSecretStoreWithClient(client)
 	ctx := context.Background()
 
 	_, err := store.Resolve(ctx, "secret://ssm:///nonexistent")
-	require.Error(t, err)
+	must.Error(err)
 }
 
 func TestSSMSecretStore_Resolve_PropagatesSSMError(t *testing.T) {
+	must := require.New(t)
 	client := &mockSSMClient{err: fmt.Errorf("AccessDeniedException: not authorised")}
 	store := newSSMSecretStoreWithClient(client)
 	ctx := context.Background()
 
 	_, err := store.Resolve(ctx, "secret://ssm:///some-param")
-	require.Error(t, err)
+	must.Error(err)
 }
 
 func TestSSMSecretStore_Resolve_EmptyParamNameErrors(t *testing.T) {
+	must := require.New(t)
 	client := &mockSSMClient{params: map[string]string{}}
 	store := newSSMSecretStoreWithClient(client)
 	ctx := context.Background()
 
 	_, err := store.Resolve(ctx, "secret://ssm://")
-	require.Error(t, err)
+	must.Error(err)
 }
 
 func TestSSMSecretStore_Resolve_RejectsNonSSMScheme(t *testing.T) {
+	must := require.New(t)
 	client := &mockSSMClient{params: map[string]string{}}
 	store := newSSMSecretStoreWithClient(client)
 	ctx := context.Background()
 
 	_, err := store.Resolve(ctx, "secret://SOME_ENV_VAR")
-	require.Error(t, err)
+	must.Error(err)
 }
 
 func TestSSMSecretStore_Resolve_RejectsBlankValue(t *testing.T) {
+	must := require.New(t)
 	client := &mockSSMClient{
 		params: map[string]string{
 			"/empty-param": "  \n  ",
@@ -113,12 +120,13 @@ func TestSSMSecretStore_Resolve_RejectsBlankValue(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := store.Resolve(ctx, "secret://ssm:///empty-param")
-	require.Error(t, err)
+	must.Error(err)
 }
 
 // --- AutoSecretStore tests ---
 
 func TestAutoSecretStore_RoutesToEnvStore(t *testing.T) {
+	must := require.New(t)
 	const key = "STIRRUP_AUTO_TEST_SECRET"
 	t.Setenv(key, "env-value")
 
@@ -129,11 +137,12 @@ func TestAutoSecretStore_RoutesToEnvStore(t *testing.T) {
 	ctx := context.Background()
 
 	val, err := store.Resolve(ctx, "secret://"+key)
-	require.NoError(t, err)
-	require.Equal(t, "env-value", val)
+	must.NoError(err)
+	must.Equal("env-value", val)
 }
 
 func TestAutoSecretStore_RoutesToSSMStore(t *testing.T) {
+	must := require.New(t)
 	client := &mockSSMClient{
 		params: map[string]string{
 			"/prod/api-key": "ssm-secret",
@@ -146,11 +155,12 @@ func TestAutoSecretStore_RoutesToSSMStore(t *testing.T) {
 	ctx := context.Background()
 
 	val, err := store.Resolve(ctx, "secret://ssm:///prod/api-key")
-	require.NoError(t, err)
-	require.Equal(t, "ssm-secret", val)
+	must.NoError(err)
+	must.Equal("ssm-secret", val)
 }
 
 func TestAutoSecretStore_SSMRefWithoutSSMStoreErrors(t *testing.T) {
+	must := require.New(t)
 	store := &AutoSecretStore{
 		env: NewEnvSecretStore(),
 		ssm: nil,
@@ -158,13 +168,14 @@ func TestAutoSecretStore_SSMRefWithoutSSMStoreErrors(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := store.Resolve(ctx, "secret://ssm:///some-param")
-	require.Error(t, err)
+	must.Error(err)
 }
 
 func TestAutoSecretStore_RoutesFileRef(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	path := dir + "/secret.txt"
-	require.NoError(t, os.WriteFile(path, []byte("file-secret"), 0o600))
+	must.NoError(os.WriteFile(path, []byte("file-secret"), 0o600))
 
 	store := &AutoSecretStore{
 		env: NewEnvSecretStore(),
@@ -173,8 +184,8 @@ func TestAutoSecretStore_RoutesFileRef(t *testing.T) {
 	ctx := context.Background()
 
 	val, err := store.Resolve(ctx, "secret://file://"+path)
-	require.NoError(t, err)
-	require.Equal(t, "file-secret", val)
+	must.NoError(err)
+	must.Equal("file-secret", val)
 }
 
 func TestNeedsSSM_DetectsSSMReferences(t *testing.T) {
@@ -258,7 +269,8 @@ func TestNeedsSSM_DetectsSSMReferences(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, needsSSM(tt.config))
+			must := require.New(t)
+			must.Equal(tt.want, needsSSM(tt.config))
 		})
 	}
 }

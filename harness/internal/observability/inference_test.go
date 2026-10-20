@@ -15,18 +15,20 @@ import (
 
 func newInferenceTestMetrics(t *testing.T) (*Metrics, *sdkmetric.ManualReader) {
 	t.Helper()
+	must := require.New(t)
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 	m, err := newMetricsFromMeter(provider.Meter("test"), provider)
-	require.NoError(t, err)
+	must.NoError(err)
 	return m, reader
 }
 
 func collectMetric(t *testing.T, reader *sdkmetric.ManualReader, name string) metricdata.Metrics {
 	t.Helper()
+	must := require.New(t)
 	var rm metricdata.ResourceMetrics
-	require.NoError(t, reader.Collect(context.Background(), &rm))
+	must.NoError(reader.Collect(context.Background(), &rm))
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
 			if m.Name == name {
@@ -34,7 +36,7 @@ func collectMetric(t *testing.T, reader *sdkmetric.ManualReader, name string) me
 			}
 		}
 	}
-	require.FailNowf(t, "metric not collected", "metric %q", name)
+	must.FailNowf("metric not collected", "metric %q", name)
 	return metricdata.Metrics{}
 }
 
@@ -68,29 +70,32 @@ func TestGenAIClientMetrics_InstrumentDefinitions(t *testing.T) {
 	durationBuckets := []float64{0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92}
 
 	t.Run("token usage", func(t *testing.T) {
+		must := require.New(t)
 		tokens := collectMetric(t, reader, "gen_ai.client.token.usage")
-		require.Equal(t, "{token}", tokens.Unit)
+		must.Equal("{token}", tokens.Unit)
 		th, ok := tokens.Data.(metricdata.Histogram[int64])
-		require.True(t, ok, "token usage data = %T, want Histogram[int64]", tokens.Data)
+		must.True(ok, "token usage data = %T, want Histogram[int64]", tokens.Data)
 		for _, dp := range th.DataPoints {
-			require.True(t, slices.Equal(tokenBuckets, dp.Bounds), "bounds = %v, want %v", dp.Bounds, tokenBuckets)
+			must.True(slices.Equal(tokenBuckets, dp.Bounds), "bounds = %v, want %v", dp.Bounds, tokenBuckets)
 		}
 	})
 
 	for _, name := range []string{"gen_ai.client.operation.duration", "gen_ai.client.operation.time_to_first_chunk"} {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			got := collectMetric(t, reader, name)
-			require.Equal(t, "s", got.Unit)
+			must.Equal("s", got.Unit)
 			h, ok := got.Data.(metricdata.Histogram[float64])
-			require.True(t, ok, "data = %T, want Histogram[float64]", got.Data)
+			must.True(ok, "data = %T, want Histogram[float64]", got.Data)
 			for _, dp := range h.DataPoints {
-				require.True(t, slices.Equal(durationBuckets, dp.Bounds), "bounds = %v, want %v", dp.Bounds, durationBuckets)
+				must.True(slices.Equal(durationBuckets, dp.Bounds), "bounds = %v, want %v", dp.Bounds, durationBuckets)
 			}
 		})
 	}
 }
 
 func TestRecordInferenceTokens_RecordsInputAndOutputPoints(t *testing.T) {
+	must := require.New(t)
 	m, reader := newInferenceTestMetrics(t)
 	m.RecordInferenceTokens(context.Background(), testInference(), 1200, 80)
 
@@ -101,7 +106,8 @@ func TestRecordInferenceTokens_RecordsInputAndOutputPoints(t *testing.T) {
 		tokenType := attrs["gen_ai.token.type"].AsString()
 		sums[tokenType] = dp.Sum
 		t.Run(tokenType, func(t *testing.T) {
-			require.Equal(t, uint64(1), dp.Count)
+			must := require.New(t)
+			must.Equal(uint64(1), dp.Count)
 			want := map[string]attribute.Value{
 				"gen_ai.operation.name": attribute.StringValue("chat"),
 				"gen_ai.provider.name":  attribute.StringValue("anthropic"),
@@ -111,13 +117,14 @@ func TestRecordInferenceTokens_RecordsInputAndOutputPoints(t *testing.T) {
 				"server.port":           attribute.IntValue(443),
 				"gen_ai.token.type":     attrs["gen_ai.token.type"],
 			}
-			require.Equal(t, want, attrs)
+			must.Equal(want, attrs)
 		})
 	}
-	require.Equal(t, map[string]int64{"input": 1200, "output": 80}, sums)
+	must.Equal(map[string]int64{"input": 1200, "output": 80}, sums)
 }
 
 func TestInferenceAttrs_OmitsUnknownFields(t *testing.T) {
+	must := require.New(t)
 	m, reader := newInferenceTestMetrics(t)
 	m.RecordInferenceDuration(context.Background(), InferenceAttrs{ProviderType: "bedrock", RequestModel: "m"}, time.Second, "")
 
@@ -132,55 +139,58 @@ func TestInferenceAttrs_OmitsUnknownFields(t *testing.T) {
 		"gen_ai.provider.name":  "aws.bedrock",
 		"gen_ai.request.model":  "m",
 	}
-	require.Equal(t, want, gotStrings)
+	must.Equal(want, gotStrings)
 }
 
 func TestRecordInferenceTokens_SkipsUnreportedCounts(t *testing.T) {
+	must := require.New(t)
 	m, reader := newInferenceTestMetrics(t)
 	m.RecordInferenceTokens(context.Background(), testInference(), 0, 80)
 
 	got := collectMetric(t, reader, "gen_ai.client.token.usage").Data.(metricdata.Histogram[int64])
-	require.Len(t, got.DataPoints, 1, "only the output point is recorded")
+	must.Len(got.DataPoints, 1, "only the output point is recorded")
 	attrs := inferenceAttrMap(got.DataPoints[0].Attributes)
-	require.Equal(t, "output", attrs["gen_ai.token.type"].AsString())
-	require.Equal(t, int64(80), got.DataPoints[0].Sum)
+	must.Equal("output", attrs["gen_ai.token.type"].AsString())
+	must.Equal(int64(80), got.DataPoints[0].Sum)
 }
 
 func TestRecordInferenceDuration_SetsErrorTypeOnlyOnFailure(t *testing.T) {
+	must := require.New(t)
 	m, reader := newInferenceTestMetrics(t)
 	ctx := context.Background()
 	m.RecordInferenceDuration(ctx, testInference(), 2*time.Second, "")
 	m.RecordInferenceDuration(ctx, testInference(), 500*time.Millisecond, "provider_request_failed")
 
 	got := collectMetric(t, reader, "gen_ai.client.operation.duration").Data.(metricdata.Histogram[float64])
-	require.Len(t, got.DataPoints, 2, "one data point per error.type value")
+	must.Len(got.DataPoints, 2, "one data point per error.type value")
 	for _, dp := range got.DataPoints {
 		errType, hasErr := inferenceAttrMap(dp.Attributes)["error.type"]
 		switch {
 		case hasErr && errType.AsString() == "provider_request_failed":
-			require.InDelta(t, 0.5, dp.Sum, 1e-9, "failed request duration in seconds")
+			must.InDelta(0.5, dp.Sum, 1e-9, "failed request duration in seconds")
 		case !hasErr:
-			require.InDelta(t, 2.0, dp.Sum, 1e-9, "successful request duration in seconds")
+			must.InDelta(2.0, dp.Sum, 1e-9, "successful request duration in seconds")
 		default:
-			require.Failf(t, "unexpected error.type", "error.type = %v", errType)
+			must.Failf("unexpected error.type", "error.type = %v", errType)
 		}
 	}
 }
 
 func TestRecordFirstChunk_FeedsLegacyAndGenAIHistograms(t *testing.T) {
+	must := require.New(t)
 	m, reader := newInferenceTestMetrics(t)
 	legacy := metric.WithAttributes(attribute.String("provider.type", "anthropic"))
 	m.RecordFirstChunk(context.Background(), legacy, testInference(), 1500*time.Millisecond)
 
 	ttfb := collectMetric(t, reader, "stirrup.harness.provider_ttfb").Data.(metricdata.Histogram[float64])
-	require.InDelta(t, 1500.0, ttfb.DataPoints[0].Sum, 1e-9, "legacy histogram sum in milliseconds")
+	must.InDelta(1500.0, ttfb.DataPoints[0].Sum, 1e-9, "legacy histogram sum in milliseconds")
 
 	ttfc := collectMetric(t, reader, "gen_ai.client.operation.time_to_first_chunk").Data.(metricdata.Histogram[float64])
-	require.InDelta(t, 1.5, ttfc.DataPoints[0].Sum, 1e-9, "GenAI histogram sum in seconds")
+	must.InDelta(1.5, ttfc.DataPoints[0].Sum, 1e-9, "GenAI histogram sum in seconds")
 	attrs := inferenceAttrMap(ttfc.DataPoints[0].Attributes)
-	require.Equal(t, "anthropic", attrs["gen_ai.provider.name"].AsString())
-	require.Equal(t, "claude-haiku-4-5", attrs["gen_ai.request.model"].AsString())
-	require.NotContains(t, attrs, "provider.type", "GenAI histogram carries the legacy attribute")
+	must.Equal("anthropic", attrs["gen_ai.provider.name"].AsString())
+	must.Equal("claude-haiku-4-5", attrs["gen_ai.request.model"].AsString())
+	must.NotContains(attrs, "provider.type", "GenAI histogram carries the legacy attribute")
 }
 
 func TestServerEndpointFromURL_ExtractsHostAndPort(t *testing.T) {
@@ -200,9 +210,10 @@ func TestServerEndpointFromURL_ExtractsHostAndPort(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			host, port := ServerEndpointFromURL(tc.url)
-			require.Equal(t, tc.wantHost, host)
-			require.Equal(t, tc.wantPort, port)
+			must.Equal(tc.wantHost, host)
+			must.Equal(tc.wantPort, port)
 		})
 	}
 }

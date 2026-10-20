@@ -68,16 +68,18 @@ func (c *captureUploadServer) last() capturedUpload {
 
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
-	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
-	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	must := require.New(t)
+	must.NoError(os.MkdirAll(filepath.Dir(path), 0o755))
+	must.NoError(os.WriteFile(path, []byte(content), 0o644))
 }
 
 // localArchiver returns a local executor rooted at dir, the archiver the
 // host-walk tests export through.
 func localArchiver(t *testing.T, dir string) *executor.LocalExecutor {
 	t.Helper()
+	must := require.New(t)
 	exec, err := executor.NewLocalExecutor(dir)
-	require.NoError(t, err)
+	must.NoError(err)
 	return exec
 }
 
@@ -85,22 +87,24 @@ func localArchiver(t *testing.T, dir string) *executor.LocalExecutor {
 // failed export always carries a failed receipt.
 func exportFrom(t *testing.T, exp *GCSExporter, dir, uri string) error {
 	t.Helper()
+	must := require.New(t)
 	receipt, err := exp.Export(context.Background(), localArchiver(t, dir), uri)
 	if err != nil {
-		require.Equal(t, types.ExportStatusFailed, receipt.Status, "receipt status on error %v", err)
+		must.Equal(types.ExportStatusFailed, receipt.Status, "receipt status on error %v", err)
 	}
 	return err
 }
 
 func newTestExporter(t *testing.T, srv *captureUploadServer) *GCSExporter {
 	t.Helper()
+	must := require.New(t)
 	httpSrv := httptest.NewServer(srv.handler())
 	t.Cleanup(httpSrv.Close)
 	exp, err := NewGCSExporter(GCSExporterOptions{
 		CredentialSource: &staticBearerSource{token: "tok"},
 		EndpointBaseURL:  httpSrv.URL,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	return exp
 }
 
@@ -108,8 +112,9 @@ func newTestExporter(t *testing.T, srv *captureUploadServer) *GCSExporter {
 // gzipped tar archive, keyed by entry name.
 func regularFileContents(t *testing.T, archive []byte) map[string]string {
 	t.Helper()
+	must := require.New(t)
 	gzr, err := gzip.NewReader(bytes.NewReader(archive))
-	require.NoError(t, err)
+	must.NoError(err)
 	tr := tar.NewReader(gzr)
 	files := map[string]string{}
 	for {
@@ -117,7 +122,7 @@ func regularFileContents(t *testing.T, archive []byte) map[string]string {
 		if err == io.EOF {
 			break
 		}
-		require.NoError(t, err)
+		must.NoError(err)
 		if h.Typeflag == tar.TypeReg {
 			data, _ := io.ReadAll(tr)
 			files[h.Name] = string(data)
@@ -127,6 +132,7 @@ func regularFileContents(t *testing.T, archive []byte) map[string]string {
 }
 
 func TestGCSExporter_UploadsArchiveWithReceipt(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "hello.txt"), "hello world")
 	writeFile(t, filepath.Join(dir, "subdir/nested.txt"), "nested content")
@@ -135,7 +141,7 @@ func TestGCSExporter_UploadsArchiveWithReceipt(t *testing.T) {
 	exp := newTestExporter(t, srv)
 
 	receipt, err := exp.Export(context.Background(), localArchiver(t, dir), "gs://my-bucket/runs/run-1/workspace.tar.gz")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	got := srv.last()
 	sum := sha256.Sum256(got.Body)
@@ -146,16 +152,17 @@ func TestGCSExporter_UploadsArchiveWithReceipt(t *testing.T) {
 		SHA256: hex.EncodeToString(sum[:]),
 		Files:  2,
 	}
-	require.Equal(t, want, receipt)
-	require.Contains(t, got.URL, "/upload/storage/v1/b/my-bucket/o")
-	require.Contains(t, got.URL, "name=runs/run-1/workspace.tar.gz")
+	must.Equal(want, receipt)
+	must.Contains(got.URL, "/upload/storage/v1/b/my-bucket/o")
+	must.Contains(got.URL, "name=runs/run-1/workspace.tar.gz")
 
 	files := regularFileContents(t, got.Body)
-	require.Equal(t, "hello world", files["hello.txt"], "hello.txt content")
-	require.Equal(t, "nested content", files["subdir/nested.txt"], "subdir/nested.txt content")
+	must.Equal("hello world", files["hello.txt"], "hello.txt content")
+	must.Equal("nested content", files["subdir/nested.txt"], "subdir/nested.txt content")
 }
 
 func TestGCSExporter_UploadServerErrorFailsExport(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "f.txt"), "x")
 
@@ -163,43 +170,45 @@ func TestGCSExporter_UploadServerErrorFailsExport(t *testing.T) {
 	exp := newTestExporter(t, srv)
 
 	err := exportFrom(t, exp, dir, "gs://b/o.tar.gz")
-	require.ErrorContains(t, err, "HTTP 503")
+	must.ErrorContains(err, "HTTP 503")
 }
 
 func TestGCSExporter_RefusesSymlinkEscape(t *testing.T) {
+	must := require.New(t)
 	parent := t.TempDir()
 	outside := filepath.Join(parent, "outside")
-	require.NoError(t, os.MkdirAll(outside, 0o755))
+	must.NoError(os.MkdirAll(outside, 0o755))
 	writeFile(t, filepath.Join(outside, "secret.txt"), "this should never be exported")
 
 	workspace := filepath.Join(parent, "workspace")
-	require.NoError(t, os.MkdirAll(workspace, 0o755))
-	require.NoError(t, os.Symlink(outside, filepath.Join(workspace, "escape")))
+	must.NoError(os.MkdirAll(workspace, 0o755))
+	must.NoError(os.Symlink(outside, filepath.Join(workspace, "escape")))
 	writeFile(t, filepath.Join(workspace, "innocent.txt"), "ok")
 
 	srv := &captureUploadServer{}
 	exp := newTestExporter(t, srv)
 
 	err := exportFrom(t, exp, workspace, "gs://b/o.tar.gz")
-	require.ErrorContains(t, err, "outside workspace root")
-	require.Empty(t, srv.requests, "refused export should produce no upload")
+	must.ErrorContains(err, "outside workspace root")
+	must.Empty(srv.requests, "refused export should produce no upload")
 }
 
 // Symlinks that stay inside the workspace are recorded as symlink entries,
 // not dereferenced.
 func TestGCSExporter_KeepsInternalSymlinkAsLink(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "real.txt"), "real")
-	require.NoError(t, os.Symlink("real.txt", filepath.Join(dir, "link.txt")))
+	must.NoError(os.Symlink("real.txt", filepath.Join(dir, "link.txt")))
 
 	srv := &captureUploadServer{}
 	exp := newTestExporter(t, srv)
 
 	err := exportFrom(t, exp, dir, "gs://b/o.tar.gz")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	gzr, err := gzip.NewReader(bytes.NewReader(srv.last().Body))
-	require.NoError(t, err)
+	must.NoError(err)
 	tr := tar.NewReader(gzr)
 	sawLink := false
 	for {
@@ -207,38 +216,40 @@ func TestGCSExporter_KeepsInternalSymlinkAsLink(t *testing.T) {
 		if err == io.EOF {
 			break
 		}
-		require.NoError(t, err)
+		must.NoError(err)
 		if h.Name == "link.txt" && h.Typeflag == tar.TypeSymlink {
 			sawLink = true
-			require.Equal(t, "real.txt", h.Linkname, "symlink target")
+			must.Equal("real.txt", h.Linkname, "symlink target")
 		}
 	}
-	require.True(t, sawLink, "internal symlink missing from archive or wrong type")
+	must.True(sawLink, "internal symlink missing from archive or wrong type")
 }
 
 // A symlink whose target does not exist must be refused at archive time.
 func TestGCSExporter_RefusesDanglingSymlink(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "innocent.txt"), "ok")
 	target := filepath.Join(dir, "definitely-does-not-exist", "secret")
-	require.NoError(t, os.Symlink(target, filepath.Join(dir, "dangling")))
+	must.NoError(os.Symlink(target, filepath.Join(dir, "dangling")))
 
 	srv := &captureUploadServer{}
 	exp := newTestExporter(t, srv)
 
 	err := exportFrom(t, exp, dir, "gs://b/o.tar.gz")
-	require.ErrorContains(t, err, "cannot resolve symlink target")
-	require.Empty(t, srv.requests, "refused export should produce no upload")
+	must.ErrorContains(err, "cannot resolve symlink target")
+	must.Empty(srv.requests, "refused export should produce no upload")
 }
 
 func TestGCSExporter_RefusesNonGCSURI(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "f.txt"), "x")
 
 	exp, err := NewGCSExporter(GCSExporterOptions{
 		CredentialSource: &staticBearerSource{token: "tok"},
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	cases := []struct {
 		name string
@@ -252,8 +263,9 @@ func TestGCSExporter_RefusesNonGCSURI(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			err := exportFrom(t, exp, dir, tc.uri)
-			require.Error(t, err)
+			must.Error(err)
 		})
 	}
 }
@@ -275,14 +287,15 @@ func TestParseGCSURI_AcceptsGCSAndRejectsMalformed(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			bucket, object, err := parseGCSURI(tc.uri)
 			if tc.wantErr {
-				require.Error(t, err)
+				must.Error(err)
 				return
 			}
-			require.NoError(t, err)
-			require.Equal(t, tc.bucket, bucket)
-			require.Equal(t, tc.object, object)
+			must.NoError(err)
+			must.Equal(tc.bucket, bucket)
+			must.Equal(tc.object, object)
 		})
 	}
 }

@@ -17,10 +17,12 @@ func TestLintGeminiSchema_EmptyUnsupportedIsNoOp(t *testing.T) {
 	schema := json.RawMessage(`{"type":"object","properties":{"x":{"type":"string","pattern":"^foo"}}}`)
 
 	t.Run("nil unsupported", func(t *testing.T) {
-		require.NoError(t, LintGeminiSchema("read_file", schema, nil))
+		must := require.New(t)
+		must.NoError(LintGeminiSchema("read_file", schema, nil))
 	})
 	t.Run("empty unsupported", func(t *testing.T) {
-		require.NoError(t, LintGeminiSchema("read_file", schema, []string{}))
+		must := require.New(t)
+		must.NoError(LintGeminiSchema("read_file", schema, []string{}))
 	})
 }
 
@@ -28,16 +30,18 @@ func TestLintGeminiSchema_EmptyUnsupportedIsNoOp(t *testing.T) {
 // keyword listed in `unsupported` triggers the rejection when it
 // appears at the root of the schema.
 func TestLintGeminiSchema_RejectsTopLevelKeyword(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	schema := json.RawMessage(`{"type":"string","pattern":"^foo"}`)
 
 	err := LintGeminiSchema("name_check", schema, []string{"pattern"})
-	require.Error(t, err)
+	must.Error(err)
 
 	var lintErr *geminiSchemaLintError
-	require.ErrorAs(t, err, &lintErr)
-	assert.Equal(t, "name_check", lintErr.tool)
-	assert.Equal(t, "pattern", lintErr.keyword)
-	assert.ErrorContains(t, err, "<root>")
+	must.ErrorAs(err, &lintErr)
+	check.Equal("name_check", lintErr.tool)
+	check.Equal("pattern", lintErr.keyword)
+	check.ErrorContains(err, "<root>")
 }
 
 // TestLintGeminiSchema_RejectsNestedKeyword pins recursive descent: a
@@ -45,6 +49,7 @@ func TestLintGeminiSchema_RejectsTopLevelKeyword(t *testing.T) {
 // The path on the error names the location so an operator can locate
 // the offending field without scrolling the entire schema.
 func TestLintGeminiSchema_RejectsNestedKeyword(t *testing.T) {
+	must := require.New(t)
 	schema := json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -53,7 +58,7 @@ func TestLintGeminiSchema_RejectsNestedKeyword(t *testing.T) {
 	}`)
 
 	err := LintGeminiSchema("tool_x", schema, []string{"pattern"})
-	require.ErrorContains(t, err, "properties.name")
+	must.ErrorContains(err, "properties.name")
 }
 
 // TestLintGeminiSchema_RejectsInArrayItems pins the items descent. A
@@ -62,29 +67,32 @@ func TestLintGeminiSchema_RejectsNestedKeyword(t *testing.T) {
 // inspected.
 func TestLintGeminiSchema_RejectsInArrayItems(t *testing.T) {
 	t.Run("items object", func(t *testing.T) {
+		must := require.New(t)
 		schema := json.RawMessage(`{
 			"type": "array",
 			"items": {"type": "string", "format": "uri"}
 		}`)
 
 		err := LintGeminiSchema("urls", schema, []string{"format"})
-		require.ErrorContains(t, err, "items")
+		must.ErrorContains(err, "items")
 	})
 
 	t.Run("items tuple", func(t *testing.T) {
+		must := require.New(t)
 		schema := json.RawMessage(`{
 			"type": "array",
 			"items": [{"type":"string"},{"type":"integer","format":"int32"}]
 		}`)
 
 		err := LintGeminiSchema("pair", schema, []string{"format"})
-		require.ErrorContains(t, err, "items[1]")
+		must.ErrorContains(err, "items[1]")
 	})
 }
 
 // TestLintGeminiSchema_PassesCleanSchema pins the no-op case: a
 // schema without any of the listed unsupported keywords returns nil.
 func TestLintGeminiSchema_PassesCleanSchema(t *testing.T) {
+	must := require.New(t)
 	schema := json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -94,7 +102,7 @@ func TestLintGeminiSchema_PassesCleanSchema(t *testing.T) {
 		"required": ["x"]
 	}`)
 
-	require.NoError(t, LintGeminiSchema("clean", schema, []string{"pattern", "format"}))
+	must.NoError(LintGeminiSchema("clean", schema, []string{"pattern", "format"}))
 }
 
 // TestLintGeminiSchema_DoesNotLeakDescriptionOrEnum pins the privacy
@@ -103,6 +111,7 @@ func TestLintGeminiSchema_PassesCleanSchema(t *testing.T) {
 // contain operator- or model-supplied prose; surfacing them at error
 // level would leak them into trace and log sinks.
 func TestLintGeminiSchema_DoesNotLeakDescriptionOrEnum(t *testing.T) {
+	must := require.New(t)
 	schema := json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -116,7 +125,7 @@ func TestLintGeminiSchema_DoesNotLeakDescriptionOrEnum(t *testing.T) {
 	}`)
 
 	err := LintGeminiSchema("leaky_tool", schema, []string{"pattern"})
-	require.Error(t, err)
+	must.Error(err)
 	msg := err.Error()
 
 	leaks := []struct {
@@ -129,7 +138,8 @@ func TestLintGeminiSchema_DoesNotLeakDescriptionOrEnum(t *testing.T) {
 	}
 	for _, leak := range leaks {
 		t.Run("omits "+leak.name, func(t *testing.T) {
-			require.NotContains(t, msg, leak.value)
+			must := require.New(t)
+			must.NotContains(msg, leak.value)
 		})
 	}
 }
@@ -138,7 +148,8 @@ func TestLintGeminiSchema_DoesNotLeakDescriptionOrEnum(t *testing.T) {
 // unparseable schema is left to ConvertSchema to reject — the linter
 // must not duplicate the parse error nor mask it.
 func TestLintGeminiSchema_UnparseableSchemaIsLintNoOp(t *testing.T) {
+	must := require.New(t)
 	schema := json.RawMessage(`{not valid json`)
 
-	require.NoError(t, LintGeminiSchema("broken", schema, []string{"pattern"}))
+	must.NoError(LintGeminiSchema("broken", schema, []string{"pattern"}))
 }

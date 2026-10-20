@@ -15,6 +15,8 @@ import (
 // message_complete, and no error event.
 func requireMarkedToolCall(t *testing.T, events []types.StreamEvent, wantID, wantName, wantRaw string) types.StreamEvent {
 	t.Helper()
+	check := assert.New(t)
+	must := require.New(t)
 	var (
 		calls       []types.StreamEvent
 		sawComplete bool
@@ -24,24 +26,24 @@ func requireMarkedToolCall(t *testing.T, events []types.StreamEvent, wantID, wan
 		case "tool_call":
 			calls = append(calls, ev)
 		case "message_complete":
-			assert.NotEmpty(t, calls, "message_complete should follow the tool_call")
+			check.NotEmpty(calls, "message_complete should follow the tool_call")
 			sawComplete = true
 		case "error":
-			assert.Fail(t, "unexpected error event", "%v", ev.Error)
+			check.Fail("unexpected error event", "%v", ev.Error)
 		}
 	}
-	require.Len(t, calls, 1, "tool_call events: %+v", calls)
-	assert.True(t, sawComplete, "a message_complete should follow the malformed tool call")
+	must.Len(calls, 1, "tool_call events: %+v", calls)
+	check.True(sawComplete, "a message_complete should follow the malformed tool call")
 
 	call := calls[0]
 	if wantID != "" {
-		assert.Equal(t, wantID, call.ID)
+		check.Equal(wantID, call.ID)
 	}
-	assert.Equal(t, wantName, call.Name)
-	assert.Nil(t, call.Input, "a marked tool_call should carry no input")
-	require.NotNil(t, call.InvalidInput, "the tool_call should carry the malformed-arguments marker")
-	assert.Equal(t, wantRaw, call.InvalidInput.Raw)
-	assert.NotEmpty(t, call.InvalidInput.Error, "the marker should carry the parse error")
+	check.Equal(wantName, call.Name)
+	check.Nil(call.Input, "a marked tool_call should carry no input")
+	must.NotNil(call.InvalidInput, "the tool_call should carry the malformed-arguments marker")
+	check.Equal(wantRaw, call.InvalidInput.Raw)
+	check.NotEmpty(call.InvalidInput.Error, "the marker should carry the parse error")
 	return call
 }
 
@@ -63,24 +65,25 @@ func TestToolCallEvent_ArgumentDecoding(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			ev := toolCallEvent("call_1", "read_file", tc.raw)
-			require.Equal(t, "tool_call", ev.Type)
-			require.Equal(t, "call_1", ev.ID)
-			require.Equal(t, "read_file", ev.Name)
+			must.Equal("tool_call", ev.Type)
+			must.Equal("call_1", ev.ID)
+			must.Equal("read_file", ev.Name)
 
 			if !tc.wantInvalid {
-				require.Nil(t, ev.InvalidInput, "valid arguments should not be marked")
-				require.Len(t, ev.Input, len(tc.wantInput))
+				must.Nil(ev.InvalidInput, "valid arguments should not be marked")
+				must.Len(ev.Input, len(tc.wantInput))
 				if tc.wantInput != nil {
-					require.Equal(t, tc.wantInput["path"], ev.Input["path"])
+					must.Equal(tc.wantInput["path"], ev.Input["path"])
 				}
 				return
 			}
 
-			require.NotNil(t, ev.InvalidInput, "malformed arguments should be marked")
-			require.Nil(t, ev.Input, "a marked tool_call should carry no input")
-			require.Equal(t, tc.raw, ev.InvalidInput.Raw)
-			require.Contains(t, ev.InvalidInput.Error, tc.wantErrPart)
+			must.NotNil(ev.InvalidInput, "malformed arguments should be marked")
+			must.Nil(ev.Input, "a marked tool_call should carry no input")
+			must.Equal(tc.raw, ev.InvalidInput.Raw)
+			must.Contains(ev.InvalidInput.Error, tc.wantErrPart)
 		})
 	}
 }

@@ -26,17 +26,19 @@ func baseSandboxCfg() K8sExecutorConfig {
 // want. Quantities are compared with Cmp, so "1" and "1000m" match.
 func requireQuantityAt(t *testing.T, list corev1.ResourceList, name corev1.ResourceName, want resource.Quantity, what string) {
 	t.Helper()
+	must := require.New(t)
 	got, ok := list[name]
-	require.True(t, ok, "%s is not set", what)
-	require.Zero(t, got.Cmp(want), "%s = %s, want %s", what, got.String(), want.String())
+	must.True(ok, "%s is not set", what)
+	must.Zero(got.Cmp(want), "%s = %s, want %s", what, got.String(), want.String())
 }
 
 // asObjectMap returns an unstructured value as a map, failing the test when it
 // has another type.
 func asObjectMap(t *testing.T, path string, v any) map[string]any {
 	t.Helper()
+	must := require.New(t)
 	m, ok := v.(map[string]any)
-	require.Truef(t, ok, "%s is %T, want a map", path, v)
+	must.Truef(ok, "%s is %T, want a map", path, v)
 	return m
 }
 
@@ -44,14 +46,16 @@ func asObjectMap(t *testing.T, path string, v any) map[string]any {
 // it has another type.
 func asObjectSlice(t *testing.T, path string, v any) []any {
 	t.Helper()
+	must := require.New(t)
 	s, ok := v.([]any)
-	require.Truef(t, ok, "%s is %T, want a slice", path, v)
+	must.Truef(ok, "%s is %T, want a slice", path, v)
 	return s
 }
 
 // TestBuildSandboxPodSpec_ProxyAndExtraEnvAdditive checks that buildSandboxPodSpec
 // keeps both the proxy env and the extra env, with the proxy entries first.
 func TestBuildSandboxPodSpec_ProxyAndExtraEnvAdditive(t *testing.T) {
+	must := require.New(t)
 	cfg := baseSandboxCfg()
 	proxyEnv := []corev1.EnvVar{
 		{Name: "HTTP_PROXY", Value: "http://proxy.internal:8080"},
@@ -64,27 +68,27 @@ func TestBuildSandboxPodSpec_ProxyAndExtraEnvAdditive(t *testing.T) {
 		Hosts:      []string{"github.com"},
 		RewriteSsh: true,
 	})
-	require.NoError(t, err, "ComposeEnv")
+	must.NoError(err, "ComposeEnv")
 	extraEnv := make([]EnvPair, len(composed))
 	for i, e := range composed {
 		extraEnv[i] = EnvPair{Name: e.Name, Value: e.Value}
 	}
-	require.NotEmpty(t, proxyEnv, "precondition: proxyEnv")
-	require.NotEmpty(t, extraEnv, "precondition: extraEnv")
+	must.NotEmpty(proxyEnv, "precondition: proxyEnv")
+	must.NotEmpty(extraEnv, "precondition: extraEnv")
 
 	spec := buildSandboxPodSpec(cfg, proxyEnv, extraEnv)
 
 	gotEnv := spec.Containers[0].Env
-	require.Len(t, gotEnv, len(proxyEnv)+len(extraEnv), "Containers[0].Env must hold proxyEnv and extraEnv")
+	must.Len(gotEnv, len(proxyEnv)+len(extraEnv), "Containers[0].Env must hold proxyEnv and extraEnv")
 
 	for i, want := range proxyEnv {
-		require.Equal(t, want.Name, gotEnv[i].Name, "Env[%d] name", i)
-		require.Equal(t, want.Value, gotEnv[i].Value, "Env[%d] value", i)
+		must.Equal(want.Name, gotEnv[i].Name, "Env[%d] name", i)
+		must.Equal(want.Value, gotEnv[i].Value, "Env[%d] value", i)
 	}
 	for i, want := range extraEnv {
 		idx := len(proxyEnv) + i
-		require.Equal(t, want.Name, gotEnv[idx].Name, "Env[%d] name", idx)
-		require.Equal(t, want.Value, gotEnv[idx].Value, "Env[%d] value", idx)
+		must.Equal(want.Name, gotEnv[idx].Name, "Env[%d] name", idx)
+		must.Equal(want.Value, gotEnv[idx].Value, "Env[%d] value", idx)
 	}
 }
 
@@ -94,20 +98,22 @@ func TestBuildSandboxPodSpec_ProxyAndExtraEnvAdditive(t *testing.T) {
 // which is added once even when the deltas are applied twice.
 func TestApplyAgentSandboxAdmissionDeltas_AppliesGVisorPolicy(t *testing.T) {
 	t.Run("forces gvisor even when runtime was empty", func(t *testing.T) {
+		must := require.New(t)
 		cfg := baseSandboxCfg() // Runtime is unset, so buildSandboxPodSpec leaves RuntimeClassName nil.
 		spec := buildSandboxPodSpec(cfg, nil, nil)
-		require.Nil(t, spec.RuntimeClassName, "precondition: base RuntimeClassName")
+		must.Nil(spec.RuntimeClassName, "precondition: base RuntimeClassName")
 
 		applyAgentSandboxAdmissionDeltas(&spec)
 
-		require.NotNil(t, spec.RuntimeClassName)
-		require.Equal(t, gkeSandboxRuntimeValue, *spec.RuntimeClassName)
+		must.NotNil(spec.RuntimeClassName)
+		must.Equal(gkeSandboxRuntimeValue, *spec.RuntimeClassName)
 	})
 
 	t.Run("fills default cpu+mem limits and requests when resources nil", func(t *testing.T) {
+		must := require.New(t)
 		cfg := baseSandboxCfg()
 		spec := buildSandboxPodSpec(cfg, nil, nil)
-		require.Empty(t, spec.Containers[0].Resources.Limits, "precondition: no limits without cfg.Resources")
+		must.Empty(spec.Containers[0].Resources.Limits, "precondition: no limits without cfg.Resources")
 
 		applyAgentSandboxAdmissionDeltas(&spec)
 
@@ -151,17 +157,19 @@ func TestApplyAgentSandboxAdmissionDeltas_AppliesGVisorPolicy(t *testing.T) {
 	})
 
 	t.Run("merges nodeSelector with a pre-existing entry", func(t *testing.T) {
+		must := require.New(t)
 		cfg := baseSandboxCfg()
 		cfg.NodeSelector = map[string]string{"disktype": "ssd"}
 		spec := buildSandboxPodSpec(cfg, nil, nil)
 
 		applyAgentSandboxAdmissionDeltas(&spec)
 
-		require.Equal(t, gkeSandboxRuntimeValue, spec.NodeSelector[gkeSandboxRuntimeKey], "nodeSelector[%s]", gkeSandboxRuntimeKey)
-		require.Equal(t, "ssd", spec.NodeSelector["disktype"], "pre-existing nodeSelector entry")
+		must.Equal(gkeSandboxRuntimeValue, spec.NodeSelector[gkeSandboxRuntimeKey], "nodeSelector[%s]", gkeSandboxRuntimeKey)
+		must.Equal("ssd", spec.NodeSelector["disktype"], "pre-existing nodeSelector entry")
 	})
 
 	t.Run("adds the gvisor toleration and is idempotent", func(t *testing.T) {
+		must := require.New(t)
 		cfg := baseSandboxCfg()
 		spec := buildSandboxPodSpec(cfg, nil, nil)
 
@@ -175,7 +183,7 @@ func TestApplyAgentSandboxAdmissionDeltas_AppliesGVisorPolicy(t *testing.T) {
 				count++
 			}
 		}
-		require.Equal(t, 1, count, "gvisor toleration count")
+		must.Equal(1, count, "gvisor toleration count")
 	})
 }
 
@@ -184,6 +192,7 @@ func TestApplyAgentSandboxAdmissionDeltas_AppliesGVisorPolicy(t *testing.T) {
 // the per-pod labels on the pod template, and the admission deltas and hardened
 // security fields that must survive the typed-to-unstructured conversion.
 func TestBuildSandboxObject_EmitsSandboxCR(t *testing.T) {
+	must := require.New(t)
 	const ns, name = "default", "stirrup-abc123"
 
 	cfg := baseSandboxCfg()
@@ -192,73 +201,80 @@ func TestBuildSandboxObject_EmitsSandboxCR(t *testing.T) {
 
 	before := time.Now()
 	obj, err := buildSandboxObject(ns, name, "", spec, before.Add(agentSandboxMaxTTL))
-	require.NoError(t, err, "buildSandboxObject")
+	must.NoError(err, "buildSandboxObject")
 
 	specMap := asObjectMap(t, "spec", obj.Object["spec"])
 	podTemplate := asObjectMap(t, "spec.podTemplate", specMap["podTemplate"])
 	ptSpec := asObjectMap(t, "spec.podTemplate.spec", podTemplate["spec"])
 	containers := asObjectSlice(t, "spec.podTemplate.spec.containers", ptSpec["containers"])
-	require.NotEmpty(t, containers, "spec.podTemplate.spec.containers")
+	must.NotEmpty(containers, "spec.podTemplate.spec.containers")
 	c0 := asObjectMap(t, "containers[0]", containers[0])
 
 	t.Run("identifies the sandbox kind", func(t *testing.T) {
-		require.Equal(t, "agents.x-k8s.io/v1alpha1", obj.Object["apiVersion"])
-		require.Equal(t, "Sandbox", obj.Object["kind"])
+		must := require.New(t)
+		must.Equal("agents.x-k8s.io/v1alpha1", obj.Object["apiVersion"])
+		must.Equal("Sandbox", obj.Object["kind"])
 	})
 
 	t.Run("sets the Delete shutdown policy and a 12h shutdown time", func(t *testing.T) {
-		require.Equal(t, "Delete", specMap["shutdownPolicy"])
+		must := require.New(t)
+		must.Equal("Delete", specMap["shutdownPolicy"])
 
 		shutdownStr, ok := specMap["shutdownTime"].(string)
-		require.Truef(t, ok, "spec.shutdownTime is %T, want a string", specMap["shutdownTime"])
+		must.Truef(ok, "spec.shutdownTime is %T, want a string", specMap["shutdownTime"])
 		shutdown, err := time.Parse(time.RFC3339, shutdownStr)
-		require.NoError(t, err, "spec.shutdownTime %q", shutdownStr)
+		must.NoError(err, "spec.shutdownTime %q", shutdownStr)
 		// The one-minute slack keeps the check stable while still catching a wrong TTL.
-		require.WithinDuration(t, before.Add(agentSandboxMaxTTL), shutdown, time.Minute, "spec.shutdownTime")
+		must.WithinDuration(before.Add(agentSandboxMaxTTL), shutdown, time.Minute, "spec.shutdownTime")
 	})
 
 	t.Run("labels the pod template", func(t *testing.T) {
+		must := require.New(t)
 		ptMeta := asObjectMap(t, "spec.podTemplate.metadata", podTemplate["metadata"])
 		ptLabels := asObjectMap(t, "spec.podTemplate.metadata.labels", ptMeta["labels"])
-		require.Equal(t, name, ptLabels[k8sPodNameLabel], "label %s", k8sPodNameLabel)
-		require.Equal(t, "true", ptLabels[k8sSandboxLabel], "label %s", k8sSandboxLabel)
+		must.Equal(name, ptLabels[k8sPodNameLabel], "label %s", k8sPodNameLabel)
+		must.Equal("true", ptLabels[k8sSandboxLabel], "label %s", k8sSandboxLabel)
 	})
 
 	t.Run("keeps the gvisor runtime and default resource limits", func(t *testing.T) {
-		require.Equal(t, gkeSandboxRuntimeValue, ptSpec["runtimeClassName"])
+		must := require.New(t)
+		must.Equal(gkeSandboxRuntimeValue, ptSpec["runtimeClassName"])
 
 		resources := asObjectMap(t, "containers[0].resources", c0["resources"])
 		limits := asObjectMap(t, "containers[0].resources.limits", resources["limits"])
-		require.Contains(t, limits, "cpu")
-		require.Contains(t, limits, "memory")
+		must.Contains(limits, "cpu")
+		must.Contains(limits, "memory")
 	})
 
 	t.Run("keeps the hardened pod security context", func(t *testing.T) {
-		require.Equal(t, false, ptSpec["automountServiceAccountToken"])
+		must := require.New(t)
+		must.Equal(false, ptSpec["automountServiceAccountToken"])
 
 		podSC := asObjectMap(t, "spec.podTemplate.spec.securityContext", ptSpec["securityContext"])
-		require.Equal(t, int64(k8sRunAsUserUID), podSC["fsGroup"])
+		must.Equal(int64(k8sRunAsUserUID), podSC["fsGroup"])
 	})
 
 	t.Run("keeps the hardened container security context", func(t *testing.T) {
+		must := require.New(t)
 		cSC := asObjectMap(t, "containers[0].securityContext", c0["securityContext"])
-		require.Equal(t, false, cSC["allowPrivilegeEscalation"])
-		require.Equal(t, true, cSC["runAsNonRoot"])
-		require.Equal(t, int64(k8sRunAsUserUID), cSC["runAsUser"])
+		must.Equal(false, cSC["allowPrivilegeEscalation"])
+		must.Equal(true, cSC["runAsNonRoot"])
+		must.Equal(int64(k8sRunAsUserUID), cSC["runAsUser"])
 
 		seccomp := asObjectMap(t, "containers[0].securityContext.seccompProfile", cSC["seccompProfile"])
-		require.Equal(t, "RuntimeDefault", seccomp["type"])
+		must.Equal("RuntimeDefault", seccomp["type"])
 
 		caps := asObjectMap(t, "containers[0].securityContext.capabilities", cSC["capabilities"])
-		require.Equal(t, []any{"ALL"}, caps["drop"])
+		must.Equal([]any{"ALL"}, caps["drop"])
 	})
 
 	t.Run("keeps the ephemeral workspace emptyDir volume", func(t *testing.T) {
+		must := require.New(t)
 		// Without this volume a non-root UID cannot write the workspace.
 		volumes := asObjectSlice(t, "spec.podTemplate.spec.volumes", ptSpec["volumes"])
-		require.NotEmpty(t, volumes, "spec.podTemplate.spec.volumes")
+		must.NotEmpty(volumes, "spec.podTemplate.spec.volumes")
 		v0 := asObjectMap(t, "volumes[0]", volumes[0])
-		require.Equal(t, k8sWorkspaceVolume, v0["name"])
-		require.Contains(t, v0, "emptyDir")
+		must.Equal(k8sWorkspaceVolume, v0["name"])
+		must.Contains(v0, "emptyDir")
 	})
 }

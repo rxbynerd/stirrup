@@ -72,6 +72,8 @@ func (f *fakeOTLPHTTPServer) snapshot() []capturedRequest {
 // header. We use httptest.NewServer (plain HTTP) and rely on the
 // exporter detecting the http:// scheme and selecting plaintext.
 func TestNewOTelTraceEmitter_HTTPProtocol_RoutesToV1Traces(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	fake := &fakeOTLPHTTPServer{}
 	srv := httptest.NewServer(fake.handler())
 	defer srv.Close()
@@ -88,7 +90,7 @@ func TestNewOTelTraceEmitter_HTTPProtocol_RoutesToV1Traces(t *testing.T) {
 			Headers:  map[string]string{authHeader: authValue},
 		},
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	t.Cleanup(func() { _ = emitter.Close() })
 
 	emitter.Start("run-http-1", &types.RunConfig{
@@ -109,23 +111,23 @@ func TestNewOTelTraceEmitter_HTTPProtocol_RoutesToV1Traces(t *testing.T) {
 	flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err = emitter.Finish(flushCtx, "success")
-	require.NoError(t, err, "Finish")
+	must.NoError(err, "Finish")
 	// Closing forces a Shutdown (final flush) so we can synchronously
 	// inspect the captured POSTs without polling.
-	require.NoError(t, emitter.Close(), "Close")
+	must.NoError(emitter.Close(), "Close")
 
 	requests := fake.snapshot()
-	require.NotEmpty(t, requests, "expected at least one OTLP/HTTP POST")
+	must.NotEmpty(requests, "expected at least one OTLP/HTTP POST")
 
 	// Path must end in /v1/traces — the SDK appends this segment to
 	// our base path, mirroring what Grafana Cloud's gateway expects
 	// (the configured URL ends in /otlp; the SDK appends the
 	// per-signal segment).
 	got := requests[0]
-	assert.True(t, strings.HasSuffix(got.path, "/v1/traces"), "path must end in /v1/traces, got %q", got.path)
-	assert.Equal(t, "application/x-protobuf", got.contentType, "content-type must be binary OTLP")
-	assert.Equal(t, authValue, got.headers.Get(authHeader), "the OTel SDK must forward configured headers verbatim")
-	assert.NotZero(t, got.bodyLen, "expected non-empty protobuf body")
+	check.True(strings.HasSuffix(got.path, "/v1/traces"), "path must end in /v1/traces, got %q", got.path)
+	check.Equal("application/x-protobuf", got.contentType, "content-type must be binary OTLP")
+	check.Equal(authValue, got.headers.Get(authHeader), "the OTel SDK must forward configured headers verbatim")
+	check.NotZero(got.bodyLen, "expected non-empty protobuf body")
 }
 
 // TestNewOTelTraceEmitter_HTTPProtocol_RejectsUnknownProtocol pins the
@@ -135,14 +137,15 @@ func TestNewOTelTraceEmitter_HTTPProtocol_RoutesToV1Traces(t *testing.T) {
 // "http/protobuf" should see the typo, not have the request silently
 // route to gRPC.
 func TestNewOTelTraceEmitter_HTTPProtocol_RejectsUnknownProtocol(t *testing.T) {
+	must := require.New(t)
 	_, err := NewOTelTraceEmitter(context.Background(), OTelTraceEmitterOptions{
 		Exporter: otlp.Settings{
 			Endpoint: "localhost:4318",
 			Protocol: "http", // not in the closed set
 		},
 	})
-	require.Error(t, err)
-	require.ErrorContains(t, err, "unsupported OTLP protocol")
+	must.Error(err)
+	must.ErrorContains(err, "unsupported OTLP protocol")
 }
 
 // TestNewOTelTraceEmitter_HTTPProtocol_HeaderValueDoesNotLeakToSlog is
@@ -155,6 +158,7 @@ func TestNewOTelTraceEmitter_HTTPProtocol_RejectsUnknownProtocol(t *testing.T) {
 // The exporter init path does not currently emit the headers map to
 // slog, so this assertion is "no leak" — not "must log".
 func TestNewOTelTraceEmitter_HTTPProtocol_HeaderValueDoesNotLeakToSlog(t *testing.T) {
+	must := require.New(t)
 	fake := &fakeOTLPHTTPServer{}
 	srv := httptest.NewServer(fake.handler())
 	defer srv.Close()
@@ -166,7 +170,7 @@ func TestNewOTelTraceEmitter_HTTPProtocol_HeaderValueDoesNotLeakToSlog(t *testin
 	resolved, err := observability.ResolveHeaders(context.Background(),
 		security.NewEnvSecretStore(),
 		map[string]string{"Authorization": "secret://STIRRUP_TEST_BEARER"})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	// Route slog through a buffer for the duration of the test.
 	var logBuf bytes.Buffer
@@ -182,7 +186,7 @@ func TestNewOTelTraceEmitter_HTTPProtocol_HeaderValueDoesNotLeakToSlog(t *testin
 			Headers:  resolved,
 		},
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	emitter.Start("run-leak-1", &types.RunConfig{
 		RunID:    "run-leak-1",
 		Mode:     "execution",
@@ -192,10 +196,10 @@ func TestNewOTelTraceEmitter_HTTPProtocol_HeaderValueDoesNotLeakToSlog(t *testin
 	flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err = emitter.Finish(flushCtx, "success")
-	require.NoError(t, err, "Finish")
+	must.NoError(err, "Finish")
 	_ = emitter.Close()
 
-	require.NotContains(t, logBuf.String(), "ultra-secret-bearer-zzy", "resolved bearer must not appear in slog output")
+	must.NotContains(logBuf.String(), "ultra-secret-bearer-zzy", "resolved bearer must not appear in slog output")
 }
 
 // recordingExporter is a span-exporter decorator that records the
@@ -224,6 +228,8 @@ func (r *recordingExporter) ExportSpans(ctx context.Context, spans []sdktrace.Re
 // attributes set on the root span after Start, and its output still
 // reaches the collector.
 func TestNewOTelTraceEmitter_WrapSpanExporterSeesFinalAttributes(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	fake := &fakeOTLPHTTPServer{}
 	srv := httptest.NewServer(fake.handler())
 	defer srv.Close()
@@ -236,17 +242,17 @@ func TestNewOTelTraceEmitter_WrapSpanExporterSeesFinalAttributes(t *testing.T) {
 			return rec
 		},
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	emitter.Start("run-wrap-1", &types.RunConfig{RunID: "run-wrap-1", Mode: "execution"})
 	flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err = emitter.Finish(flushCtx, "success")
-	require.NoError(t, err, "Finish")
-	require.NoError(t, emitter.Close(), "Close")
+	must.NoError(err, "Finish")
+	must.NoError(emitter.Close(), "Close")
 
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
-	require.NotEmpty(t, rec.names, "decorator must see spans")
-	assert.Equal(t, "success", rec.attrs["run.outcome"], "decorator must see the end-time run.outcome")
-	assert.NotEmpty(t, fake.snapshot(), "decorated exporter must reach the collector")
+	must.NotEmpty(rec.names, "decorator must see spans")
+	check.Equal("success", rec.attrs["run.outcome"], "decorator must see the end-time run.outcome")
+	check.NotEmpty(fake.snapshot(), "decorated exporter must reach the collector")
 }

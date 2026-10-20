@@ -47,6 +47,7 @@ func errorStub(err error) *stubVerifier {
 var _ Verifier = (*CompositeVerifier)(nil)
 
 func TestCompositeVerifier_PassesWhenAllVerifiersPass(t *testing.T) {
+	must := require.New(t)
 	v1 := passingStub(map[string]any{"tool": "lint"})
 	v2 := passingStub(map[string]any{"tool": "test"})
 	v3 := passingStub(map[string]any{"tool": "typecheck"})
@@ -54,32 +55,34 @@ func TestCompositeVerifier_PassesWhenAllVerifiersPass(t *testing.T) {
 	c := NewCompositeVerifier([]Verifier{v1, v2, v3})
 	result, err := c.Verify(context.Background(), VerifyContext{})
 
-	require.NoError(t, err)
-	require.True(t, result.Passed)
-	require.Empty(t, result.Feedback)
+	must.NoError(err)
+	must.True(result.Passed)
+	must.Empty(result.Feedback)
 	// Details from all three verifiers are kept, keyed by index.
-	require.Contains(t, result.Details, "verifier_0")
-	require.Contains(t, result.Details, "verifier_1")
-	require.Contains(t, result.Details, "verifier_2")
+	must.Contains(result.Details, "verifier_0")
+	must.Contains(result.Details, "verifier_1")
+	must.Contains(result.Details, "verifier_2")
 	for i, v := range []*stubVerifier{v1, v2, v3} {
-		require.True(t, v.called, "sub-verifier %d should be called", i)
+		must.True(v.called, "sub-verifier %d should be called", i)
 	}
 }
 
 func TestCompositeVerifier_StopsAtFirstFailure(t *testing.T) {
+	must := require.New(t)
 	v1 := failingStub("lint errors found", map[string]any{"tool": "lint"})
 	v2 := passingStub(map[string]any{"tool": "test"})
 
 	c := NewCompositeVerifier([]Verifier{v1, v2})
 	result, err := c.Verify(context.Background(), VerifyContext{})
 
-	require.NoError(t, err)
-	require.False(t, result.Passed)
-	require.Equal(t, "lint errors found", result.Feedback)
-	require.False(t, v2.called, "second verifier should be skipped after a failure")
+	must.NoError(err)
+	must.False(result.Passed)
+	must.Equal("lint errors found", result.Feedback)
+	must.False(v2.called, "second verifier should be skipped after a failure")
 }
 
 func TestCompositeVerifier_MiddleFailureKeepsDetailsAndStops(t *testing.T) {
+	must := require.New(t)
 	v1 := passingStub(map[string]any{"tool": "lint"})
 	v2 := failingStub("test failures", map[string]any{"tool": "test", "failures": 3})
 	v3 := passingStub(map[string]any{"tool": "typecheck"})
@@ -87,24 +90,26 @@ func TestCompositeVerifier_MiddleFailureKeepsDetailsAndStops(t *testing.T) {
 	c := NewCompositeVerifier([]Verifier{v1, v2, v3})
 	result, err := c.Verify(context.Background(), VerifyContext{})
 
-	require.NoError(t, err)
-	require.False(t, result.Passed)
-	require.Equal(t, "test failures", result.Feedback)
+	must.NoError(err)
+	must.False(result.Passed)
+	must.Equal("test failures", result.Feedback)
 	// Details from the passing first verifier and the failing second one are both kept.
-	require.Contains(t, result.Details, "verifier_0")
-	require.Contains(t, result.Details, "verifier_1")
-	require.False(t, v3.called, "third verifier should be skipped after a failure")
+	must.Contains(result.Details, "verifier_0")
+	must.Contains(result.Details, "verifier_1")
+	must.False(v3.called, "third verifier should be skipped after a failure")
 }
 
 func TestCompositeVerifier_EmptyListPasses(t *testing.T) {
+	must := require.New(t)
 	c := NewCompositeVerifier([]Verifier{})
 	result, err := c.Verify(context.Background(), VerifyContext{})
 
-	require.NoError(t, err)
-	require.True(t, result.Passed, "an empty composite passes vacuously")
+	must.NoError(err)
+	must.True(result.Passed, "an empty composite passes vacuously")
 }
 
 func TestCompositeVerifier_ErrorStopsAndPropagates(t *testing.T) {
+	must := require.New(t)
 	v1 := passingStub(map[string]any{"tool": "lint"})
 	v2 := errorStub(fmt.Errorf("network timeout"))
 	v3 := passingStub(nil)
@@ -112,34 +117,37 @@ func TestCompositeVerifier_ErrorStopsAndPropagates(t *testing.T) {
 	c := NewCompositeVerifier([]Verifier{v1, v2, v3})
 	_, err := c.Verify(context.Background(), VerifyContext{})
 
-	require.EqualError(t, err, "composite verifier [1]: network timeout")
-	require.False(t, v3.called, "third verifier should be skipped after an error")
+	must.EqualError(err, "composite verifier [1]: network timeout")
+	must.False(v3.called, "third verifier should be skipped after an error")
 }
 
 func TestCompositeVerifier_SinglePassingVerifierPasses(t *testing.T) {
+	must := require.New(t)
 	// A composite with one verifier should behave identically to that verifier.
 	inner := passingStub(map[string]any{"exitCode": 0})
 
 	c := NewCompositeVerifier([]Verifier{inner})
 	result, err := c.Verify(context.Background(), VerifyContext{})
 
-	require.NoError(t, err)
-	require.True(t, result.Passed)
-	require.Contains(t, result.Details, "verifier_0")
+	must.NoError(err)
+	must.True(result.Passed)
+	must.Contains(result.Details, "verifier_0")
 }
 
 func TestCompositeVerifier_SingleFailingVerifierFails(t *testing.T) {
+	must := require.New(t)
 	inner := failingStub("compilation failed", map[string]any{"exitCode": 1})
 
 	c := NewCompositeVerifier([]Verifier{inner})
 	result, err := c.Verify(context.Background(), VerifyContext{})
 
-	require.NoError(t, err)
-	require.False(t, result.Passed)
-	require.Equal(t, "compilation failed", result.Feedback)
+	must.NoError(err)
+	must.False(result.Passed)
+	must.Equal("compilation failed", result.Feedback)
 }
 
 func TestCompositeVerifier_CancelledContextReturnsError(t *testing.T) {
+	must := require.New(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -151,11 +159,12 @@ func TestCompositeVerifier_CancelledContextReturnsError(t *testing.T) {
 	c := NewCompositeVerifier([]Verifier{v1, v2})
 	_, err := c.Verify(ctx, VerifyContext{})
 
-	require.Error(t, err)
-	require.Error(t, ctx.Err(), "the context should be cancelled")
+	must.Error(err)
+	must.Error(ctx.Err(), "the context should be cancelled")
 }
 
 func TestCompositeVerifier_NilDetailsAddNoKey(t *testing.T) {
+	must := require.New(t)
 	// A verifier with nil details adds no key to the merged details.
 	v1 := passingStub(nil)
 	v2 := passingStub(map[string]any{"tool": "test"})
@@ -163,8 +172,8 @@ func TestCompositeVerifier_NilDetailsAddNoKey(t *testing.T) {
 	c := NewCompositeVerifier([]Verifier{v1, v2})
 	result, err := c.Verify(context.Background(), VerifyContext{})
 
-	require.NoError(t, err)
-	require.True(t, result.Passed)
-	require.NotContains(t, result.Details, "verifier_0")
-	require.Contains(t, result.Details, "verifier_1")
+	must.NoError(err)
+	must.True(result.Passed)
+	must.NotContains(result.Details, "verifier_0")
+	must.Contains(result.Details, "verifier_1")
 }

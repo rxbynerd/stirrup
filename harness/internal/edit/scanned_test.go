@@ -115,18 +115,21 @@ func codeScanWarnings(events []emittedEvent) []emittedEvent {
 }
 
 func TestNewScannedStrategy_NilScannerReturnsInner(t *testing.T) {
+	must := require.New(t)
 	inner := NewWholeFileStrategy()
 	got := NewScannedStrategy(inner, nil, nil, nil)
-	require.Same(t, inner, got, "nil scanner must return inner unchanged")
+	must.Same(inner, got, "nil scanner must return inner unchanged")
 }
 
 func TestNewScannedStrategy_NoneScannerReturnsInner(t *testing.T) {
+	must := require.New(t)
 	inner := NewWholeFileStrategy()
 	got := NewScannedStrategy(inner, codescanner.NoneScanner{}, nil, nil)
-	require.Same(t, inner, got, "NoneScanner must return inner unchanged")
+	must.Same(inner, got, "NoneScanner must return inner unchanged")
 }
 
 func TestScannedStrategy_BlockOnPlantedSecret_RestoresOriginal(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 	writeTestFile(t, dir, "config.js", "const x = 1;\n")
@@ -141,20 +144,21 @@ func TestScannedStrategy_BlockOnPlantedSecret_RestoresOriginal(t *testing.T) {
 	}`)
 
 	result, err := strat.Apply(context.Background(), input, exec)
-	require.NoError(t, err)
-	require.False(t, result.Applied, "block must not mark the edit applied")
-	require.Contains(t, result.Error, "code scan blocked edit")
-	require.Contains(t, result.Error, "secret/anthropic_api_key", "error must name the rule")
+	must.NoError(err)
+	must.False(result.Applied, "block must not mark the edit applied")
+	must.Contains(result.Error, "code scan blocked edit")
+	must.Contains(result.Error, "secret/anthropic_api_key", "error must name the rule")
 
 	// The secret-bearing content must not survive a block.
 	got, err := exec.ReadFile(context.Background(), "config.js")
-	require.NoError(t, err)
-	require.Equal(t, "const x = 1;\n", got, "rollback must restore the original file")
+	must.NoError(err)
+	must.Equal("const x = 1;\n", got, "rollback must restore the original file")
 
-	require.Empty(t, codeScanWarnings(emitter.snapshot()), "block path must not emit code_scan_warning")
+	must.Empty(codeScanWarnings(emitter.snapshot()), "block path must not emit code_scan_warning")
 }
 
 func TestScannedStrategy_BlockOnNewFile_ZerosFile(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -167,16 +171,17 @@ func TestScannedStrategy_BlockOnNewFile_ZerosFile(t *testing.T) {
 	}`)
 
 	result, err := strat.Apply(context.Background(), input, exec)
-	require.NoError(t, err)
-	require.False(t, result.Applied)
+	must.NoError(err)
+	must.False(result.Applied)
 
 	// The executor has no delete primitive, so a blocked new file is emptied.
 	got, err := exec.ReadFile(context.Background(), "secrets.txt")
-	require.NoError(t, err)
-	require.Empty(t, got, "blocked new file must be emptied on rollback")
+	must.NoError(err)
+	must.Empty(got, "blocked new file must be emptied on rollback")
 }
 
 func TestScannedStrategy_WarnOnEvalSink_AppliesAndEmits(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 	writeTestFile(t, dir, "run.py", "def run():\n    pass\n")
@@ -192,25 +197,26 @@ func TestScannedStrategy_WarnOnEvalSink_AppliesAndEmits(t *testing.T) {
 	}{Path: "run.py", Content: newContent})
 
 	result, err := strat.Apply(context.Background(), input, exec)
-	require.NoError(t, err)
-	require.True(t, result.Applied, "expected Applied=true on warn-only finding, got error: %s", result.Error)
+	must.NoError(err)
+	must.True(result.Applied, "expected Applied=true on warn-only finding, got error: %s", result.Error)
 
 	got, err := exec.ReadFile(context.Background(), "run.py")
-	require.NoError(t, err)
-	require.Equal(t, newContent, got, "warn must not roll back")
+	must.NoError(err)
+	must.Equal(newContent, got, "warn must not roll back")
 
 	events := emitter.snapshot()
 	warnings := codeScanWarnings(events)
-	require.NotEmpty(t, warnings, "expected at least one code_scan_warning event, got: %+v", events)
+	must.NotEmpty(warnings, "expected at least one code_scan_warning event, got: %+v", events)
 	for _, ev := range warnings {
-		require.Equal(t, "warn", ev.level)
-		require.Equal(t, "sink/dynamic_eval", ev.data["rule"])
+		must.Equal("warn", ev.level)
+		must.Equal("sink/dynamic_eval", ev.data["rule"])
 	}
 }
 
 // A JavaScript template literal is not shell command substitution, so
 // the edit pipeline must apply it without emitting a scan warning.
 func TestScannedStrategy_JavaScriptTemplateLiteral_NoWarning(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 	writeTestFile(t, dir, "springboard.js", "const x = 1;\n")
@@ -226,9 +232,9 @@ func TestScannedStrategy_JavaScriptTemplateLiteral_NoWarning(t *testing.T) {
 	}{Path: "springboard.js", Content: newContent})
 
 	result, err := strat.Apply(context.Background(), input, exec)
-	require.NoError(t, err)
-	require.True(t, result.Applied, "expected Applied=true, got error: %s", result.Error)
-	require.Empty(t, codeScanWarnings(emitter.snapshot()), "template literal must not emit code_scan_warning")
+	must.NoError(err)
+	must.True(result.Applied, "expected Applied=true, got error: %s", result.Error)
+	must.Empty(codeScanWarnings(emitter.snapshot()), "template literal must not emit code_scan_warning")
 }
 
 // The scanner sees the path the tool was given, while the executor
@@ -236,10 +242,11 @@ func TestScannedStrategy_JavaScriptTemplateLiteral_NoWarning(t *testing.T) {
 // under a name that says otherwise. Content carrying a shell shebang
 // must still be scanned as shell.
 func TestScannedStrategy_ShebangPayloadScannedUnderForeignExtension(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 	writeTestFile(t, dir, "deploy.sh", "echo hi\n")
-	require.NoError(t, os.Symlink(filepath.Join(dir, "deploy.sh"), filepath.Join(dir, "notes.txt")))
+	must.NoError(os.Symlink(filepath.Join(dir, "deploy.sh"), filepath.Join(dir, "notes.txt")))
 
 	scanner := codescanner.NewPatternScanner()
 	strat := NewScannedStrategy(NewWholeFileStrategy(), scanner,
@@ -251,16 +258,17 @@ func TestScannedStrategy_ShebangPayloadScannedUnderForeignExtension(t *testing.T
 	}{Path: "notes.txt", Content: "#!/bin/bash\nUSER=`whoami`\n"})
 
 	result, err := strat.Apply(context.Background(), input, exec)
-	require.NoError(t, err)
-	require.False(t, result.Applied, "expected the shell payload to be blocked")
-	require.Contains(t, result.Error, "sink/shell_backtick")
+	must.NoError(err)
+	must.False(result.Applied, "expected the shell payload to be blocked")
+	must.Contains(result.Error, "sink/shell_backtick")
 
 	got, err := exec.ReadFile(context.Background(), "deploy.sh")
-	require.NoError(t, err)
-	require.Equal(t, "echo hi\n", got, "symlink target must be restored")
+	must.NoError(err)
+	must.Equal("echo hi\n", got, "symlink target must be restored")
 }
 
 func TestScannedStrategy_BlockOnWarn_PromotesAndRollsBack(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 	writeTestFile(t, dir, "run.py", "x = 1\n")
@@ -279,14 +287,15 @@ func TestScannedStrategy_BlockOnWarn_PromotesAndRollsBack(t *testing.T) {
 	}`)
 
 	result, err := strat.Apply(context.Background(), input, exec)
-	require.NoError(t, err)
-	require.False(t, result.Applied, "BlockOnWarn must promote warn to block")
+	must.NoError(err)
+	must.False(result.Applied, "BlockOnWarn must promote warn to block")
 
 	got, _ := exec.ReadFile(context.Background(), "run.py")
-	require.Equal(t, "x = 1\n", got, "rollback must restore the original under BlockOnWarn")
+	must.Equal("x = 1\n", got, "rollback must restore the original under BlockOnWarn")
 }
 
 func TestScannedStrategy_CleanContent_NoEvents(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -300,9 +309,9 @@ func TestScannedStrategy_CleanContent_NoEvents(t *testing.T) {
 	}`)
 
 	result, err := strat.Apply(context.Background(), input, exec)
-	require.NoError(t, err)
-	require.True(t, result.Applied, "expected Applied=true: %s", result.Error)
-	require.Empty(t, emitter.snapshot(), "clean edit must not emit events")
+	must.NoError(err)
+	must.True(result.Applied, "expected Applied=true: %s", result.Error)
+	must.Empty(emitter.snapshot(), "clean edit must not emit events")
 }
 
 // TestScannedStrategy_InnerApplyError_PropagatesAndSkipsScanner asserts
@@ -310,6 +319,7 @@ func TestScannedStrategy_CleanContent_NoEvents(t *testing.T) {
 // scanner does not run (which would otherwise scan stale or nonexistent
 // content).
 func TestScannedStrategy_InnerApplyError_PropagatesAndSkipsScanner(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -319,14 +329,15 @@ func TestScannedStrategy_InnerApplyError_PropagatesAndSkipsScanner(t *testing.T)
 	strat := NewScannedStrategy(inner, scanner, &types.CodeScannerConfig{Type: "patterns"}, nil)
 
 	_, err := strat.Apply(context.Background(), json.RawMessage(`{"path":"x.go"}`), exec)
-	require.ErrorIs(t, err, innerErr)
-	require.Zero(t, scanner.calls, "scanner must not run after inner failure")
+	must.ErrorIs(err, innerErr)
+	must.Zero(scanner.calls, "scanner must not run after inner failure")
 }
 
 // TestScannedStrategy_ScannerError_Propagates asserts that a hard scanner
 // error surfaces as a hard error rather than a silent passthrough of the
 // inner result.
 func TestScannedStrategy_ScannerError_Propagates(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -341,13 +352,14 @@ func TestScannedStrategy_ScannerError_Propagates(t *testing.T) {
 	strat := NewScannedStrategy(inner, scanner, &types.CodeScannerConfig{Type: "patterns"}, nil)
 
 	_, err := strat.Apply(context.Background(), json.RawMessage(`{"path":"x.go"}`), exec)
-	require.ErrorIs(t, err, scanErr)
+	must.ErrorIs(err, scanErr)
 }
 
 // TestScannedStrategy_PostApplyReadError_FailsClosed asserts that if the
 // executor can no longer read the file just written, the wrapper fails
 // closed rather than skipping the scan.
 func TestScannedStrategy_PostApplyReadError_FailsClosed(t *testing.T) {
+	must := require.New(t)
 	inner := &fakeEditStrategy{
 		result: &EditResult{Path: "missing.go", Applied: true},
 	}
@@ -356,6 +368,6 @@ func TestScannedStrategy_PostApplyReadError_FailsClosed(t *testing.T) {
 	strat := NewScannedStrategy(inner, scanner, &types.CodeScannerConfig{Type: "patterns"}, nil)
 
 	_, err := strat.Apply(context.Background(), json.RawMessage(`{"path":"missing.go"}`), exec)
-	require.ErrorContains(t, err, "read", "expected error to mention the read failure")
-	require.Zero(t, scanner.calls, "scanner must not run when post-apply read fails")
+	must.ErrorContains(err, "read", "expected error to mention the read failure")
+	must.Zero(scanner.calls, "scanner must not run when post-apply read fails")
 }

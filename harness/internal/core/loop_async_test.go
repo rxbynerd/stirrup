@@ -134,6 +134,8 @@ func asyncEchoTool() *tool.Tool {
 }
 
 func TestAsyncDispatch_ReturnsControlPlaneOutput(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	tr := newAsyncTestTransport()
 	loop := buildAsyncTestLoop(t, tr, asyncEchoTool())
 
@@ -160,25 +162,26 @@ func TestAsyncDispatch_ReturnsControlPlaneOutput(t *testing.T) {
 			}
 			time.Sleep(time.Millisecond)
 		}
-		assert.Fail(t, "tool_result_request was never emitted")
+		check.Fail("tool_result_request was never emitted")
 	}()
 
 	output, success := loop.dispatchToolCall(context.Background(), call)
-	require.True(t, success, "output %q", output)
-	require.Equal(t, "async output ok", output)
+	must.True(success, "output %q", output)
+	must.Equal("async output ok", output)
 
 	events := tr.Events()
-	require.Len(t, events, 1)
+	must.Len(events, 1)
 	req := events[0]
-	require.Equal(t, "tool_result_request", req.Type)
-	require.Equal(t, "tc_async_1", req.ToolUseID)
-	require.Equal(t, "async_echo", req.ToolName)
-	require.NotEmpty(t, req.RequestID)
+	must.Equal("tool_result_request", req.Type)
+	must.Equal("tc_async_1", req.ToolUseID)
+	must.Equal("async_echo", req.ToolName)
+	must.NotEmpty(req.RequestID)
 
-	require.Zero(t, loop.asyncCorrelatorForTest().PendingCount())
+	must.Zero(loop.asyncCorrelatorForTest().PendingCount())
 }
 
 func TestAsyncDispatch_UpstreamErrorIsPrefixed(t *testing.T) {
+	must := require.New(t)
 	tr := newAsyncTestTransport()
 	loop := buildAsyncTestLoop(t, tr, asyncEchoTool())
 
@@ -206,16 +209,17 @@ func TestAsyncDispatch_UpstreamErrorIsPrefixed(t *testing.T) {
 	}()
 
 	output, success := loop.dispatchToolCall(context.Background(), call)
-	require.False(t, success, "output %q", output)
+	must.False(success, "output %q", output)
 	// The is_error path must wrap control-plane content with a structured
 	// prefix so the model can disambiguate upstream failures from
 	// harness-side failures (transport_disconnect, timeout, internal error).
-	require.Contains(t, output, "upstream_error:")
-	require.Contains(t, output, "async_echo")
-	require.Contains(t, output, "upstream said no")
+	must.Contains(output, "upstream_error:")
+	must.Contains(output, "async_echo")
+	must.Contains(output, "upstream said no")
 }
 
 func TestAsyncDispatch_UpstreamError_ScrubsSecrets(t *testing.T) {
+	must := require.New(t)
 	// The control plane is partially trusted: a misbehaving or
 	// compromised control plane could embed secret-shaped strings in the
 	// error payload, which reaches the JSONL trace via
@@ -249,13 +253,14 @@ func TestAsyncDispatch_UpstreamError_ScrubsSecrets(t *testing.T) {
 	}()
 
 	output, success := loop.dispatchToolCall(context.Background(), call)
-	require.False(t, success, "output %q", output)
-	require.NotContains(t, output, rawSecret)
-	require.Contains(t, output, "[REDACTED]")
-	require.Contains(t, output, "upstream_error:")
+	must.False(success, "output %q", output)
+	must.NotContains(output, rawSecret)
+	must.Contains(output, "[REDACTED]")
+	must.Contains(output, "upstream_error:")
 }
 
 func TestAsyncDispatch_TruncatesOversizeContent(t *testing.T) {
+	must := require.New(t)
 	// The control plane supplies tool result content as an unbounded
 	// string; the harness must cap it before the value flows into tool
 	// output, message history, or the wire — same discipline as the
@@ -288,18 +293,19 @@ func TestAsyncDispatch_TruncatesOversizeContent(t *testing.T) {
 	}()
 
 	output, success := loop.dispatchToolCall(context.Background(), call)
-	require.True(t, success, "output length %d", len(output))
+	must.True(success, "output length %d", len(output))
 
 	const suffix = "... [truncated by harness]"
 	tail := output
 	if len(tail) > len(suffix)+16 {
 		tail = tail[len(tail)-len(suffix)-16:]
 	}
-	require.True(t, strings.HasSuffix(output, suffix), "output tail %q", tail)
-	require.Len(t, output, maxResultBytes+len(suffix))
+	must.True(strings.HasSuffix(output, suffix), "output tail %q", tail)
+	must.Len(output, maxResultBytes+len(suffix))
 }
 
 func TestAsyncDispatch_TimeoutReturnsErrorAndClearsPending(t *testing.T) {
+	must := require.New(t)
 	tr := newAsyncTestTransport()
 	tl := asyncEchoTool()
 	tl.AsyncHandler = func(_ context.Context, _ json.RawMessage) (tool.AsyncDispatch, error) {
@@ -316,15 +322,16 @@ func TestAsyncDispatch_TimeoutReturnsErrorAndClearsPending(t *testing.T) {
 	start := time.Now()
 	output, success := loop.dispatchToolCall(context.Background(), call)
 	elapsed := time.Since(start)
-	require.False(t, success, "output %q", output)
-	require.Contains(t, output, "timeout")
-	require.Contains(t, output, "async_echo")
-	require.GreaterOrEqual(t, elapsed, 20*time.Millisecond, "timeout did not fire")
-	require.LessOrEqual(t, elapsed, 2*time.Second, "per-call timeout override was ignored")
-	require.Zero(t, loop.asyncCorrelatorForTest().PendingCount())
+	must.False(success, "output %q", output)
+	must.Contains(output, "timeout")
+	must.Contains(output, "async_echo")
+	must.GreaterOrEqual(elapsed, 20*time.Millisecond, "timeout did not fire")
+	must.LessOrEqual(elapsed, 2*time.Second, "per-call timeout override was ignored")
+	must.Zero(loop.asyncCorrelatorForTest().PendingCount())
 }
 
 func TestAsyncDispatch_ContextCancelReportsCancelled(t *testing.T) {
+	must := require.New(t)
 	tr := newAsyncTestTransport()
 	loop := buildAsyncTestLoop(t, tr, asyncEchoTool())
 
@@ -350,12 +357,13 @@ func TestAsyncDispatch_ContextCancelReportsCancelled(t *testing.T) {
 	}()
 
 	output, success := loop.dispatchToolCall(ctx, call)
-	require.False(t, success, "output %q", output)
-	require.Contains(t, output, "cancelled")
-	require.Zero(t, loop.asyncCorrelatorForTest().PendingCount())
+	must.False(success, "output %q", output)
+	must.Contains(output, "cancelled")
+	must.Zero(loop.asyncCorrelatorForTest().PendingCount())
 }
 
 func TestAsyncDispatch_EmitFailureReportsTransportDisconnect(t *testing.T) {
+	must := require.New(t)
 	tr := newAsyncTestTransport()
 	tr.emitErr = errors.New("simulated transport disconnect")
 	loop := buildAsyncTestLoop(t, tr, asyncEchoTool())
@@ -367,13 +375,14 @@ func TestAsyncDispatch_EmitFailureReportsTransportDisconnect(t *testing.T) {
 	}
 
 	output, success := loop.dispatchToolCall(context.Background(), call)
-	require.False(t, success, "output %q", output)
-	require.Contains(t, output, "transport_disconnect")
+	must.False(success, "output %q", output)
+	must.Contains(output, "transport_disconnect")
 	// The correlator must drop the pending entry when the emit fails.
-	require.Zero(t, loop.asyncCorrelatorForTest().PendingCount())
+	must.Zero(loop.asyncCorrelatorForTest().PendingCount())
 }
 
 func TestAsyncDispatch_OutOfOrderResolution(t *testing.T) {
+	must := require.New(t)
 	// The dispatch loop is sequential, so two async tool calls cannot be
 	// in flight simultaneously via the loop itself. This test exercises
 	// the correlator's out-of-order routing directly: register two
@@ -407,7 +416,7 @@ func TestAsyncDispatch_OutOfOrderResolution(t *testing.T) {
 	// both pending awaits being registered: reading loop.asyncCorrelator
 	// directly here would race with the dispatch goroutines writing it
 	// under sync.Once.
-	require.Eventually(t, func() bool {
+	must.Eventually(func() bool {
 		count := 0
 		for _, e := range tr.Events() {
 			if e.Type == "tool_result_request" {
@@ -418,8 +427,8 @@ func TestAsyncDispatch_OutOfOrderResolution(t *testing.T) {
 	}, 2*time.Second, time.Millisecond)
 
 	correlator := loop.ensureAsyncCorrelator()
-	require.NotNil(t, correlator, "async correlator should be constructed by now")
-	require.Equal(t, 2, correlator.PendingCount())
+	must.NotNil(correlator, "async correlator should be constructed by now")
+	must.Equal(2, correlator.PendingCount())
 
 	events := tr.Events()
 	idByToolUseID := map[string]string{}
@@ -429,9 +438,9 @@ func TestAsyncDispatch_OutOfOrderResolution(t *testing.T) {
 		}
 	}
 	id1, id2 := idByToolUseID["tc1"], idByToolUseID["tc2"]
-	require.NotEmpty(t, id1)
-	require.NotEmpty(t, id2)
-	require.NotEqual(t, id1, id2)
+	must.NotEmpty(id1)
+	must.NotEmpty(id2)
+	must.NotEqual(id1, id2)
 
 	// Resolve in reverse order: tc2 first, then tc1.
 	tr.FireControl(types.ControlEvent{
@@ -447,14 +456,15 @@ func TestAsyncDispatch_OutOfOrderResolution(t *testing.T) {
 
 	res1 := <-r1
 	res2 := <-r2
-	require.True(t, res1.success, "call1 output %q", res1.output)
-	require.Equal(t, "result-for-tc1", res1.output)
-	require.True(t, res2.success, "call2 output %q", res2.output)
-	require.Equal(t, "result-for-tc2", res2.output)
-	require.Zero(t, loop.asyncCorrelatorForTest().PendingCount())
+	must.True(res1.success, "call1 output %q", res1.output)
+	must.Equal("result-for-tc1", res1.output)
+	must.True(res2.success, "call2 output %q", res2.output)
+	must.Equal("result-for-tc2", res2.output)
+	must.Zero(loop.asyncCorrelatorForTest().PendingCount())
 }
 
 func TestAsyncDispatch_NullTransportFailsFast(t *testing.T) {
+	must := require.New(t)
 	// Sub-agents run with NullTransport. An async tool there must not
 	// block, must not register a pending entry, and must surface a
 	// recoverable error to the model.
@@ -469,13 +479,14 @@ func TestAsyncDispatch_NullTransportFailsFast(t *testing.T) {
 	start := time.Now()
 	output, success := loop.dispatchToolCall(context.Background(), call)
 	elapsed := time.Since(start)
-	require.False(t, success, "output %q", output)
-	require.Contains(t, output, "unavailable")
-	require.LessOrEqual(t, elapsed, 200*time.Millisecond, "dispatch should fail fast")
-	require.Nil(t, loop.asyncCorrelatorForTest(), "no correlator should be constructed for a NullTransport")
+	must.False(success, "output %q", output)
+	must.Contains(output, "unavailable")
+	must.LessOrEqual(elapsed, 200*time.Millisecond, "dispatch should fail fast")
+	must.Nil(loop.asyncCorrelatorForTest(), "no correlator should be constructed for a NullTransport")
 }
 
 func TestAsyncDispatch_PreflightErrorEmitsNothing(t *testing.T) {
+	must := require.New(t)
 	tr := newAsyncTestTransport()
 	tl := asyncEchoTool()
 	tl.AsyncHandler = func(_ context.Context, _ json.RawMessage) (tool.AsyncDispatch, error) {
@@ -489,15 +500,16 @@ func TestAsyncDispatch_PreflightErrorEmitsNothing(t *testing.T) {
 		Input: json.RawMessage(`{}`),
 	}
 	output, success := loop.dispatchToolCall(context.Background(), call)
-	require.False(t, success, "output %q", output)
-	require.Contains(t, output, "internal error")
-	require.Empty(t, tr.Events())
+	must.False(success, "output %q", output)
+	must.Contains(output, "internal error")
+	must.Empty(tr.Events())
 	if correlator := loop.asyncCorrelatorForTest(); correlator != nil {
-		require.Zero(t, correlator.PendingCount())
+		must.Zero(correlator.PendingCount())
 	}
 }
 
 func TestSyncToolDispatch_SkipsControlPlane(t *testing.T) {
+	must := require.New(t)
 	// A purely synchronous tool (no AsyncHandler) must still work. This
 	// guards the "async-handler-nil = sync" contract.
 	tr := newAsyncTestTransport()
@@ -517,15 +529,16 @@ func TestSyncToolDispatch_SkipsControlPlane(t *testing.T) {
 		Input: json.RawMessage(`{}`),
 	}
 	output, success := loop.dispatchToolCall(context.Background(), call)
-	require.True(t, success, "output %q", output)
-	require.Equal(t, "sync result", output)
+	must.True(success, "output %q", output)
+	must.Equal("sync result", output)
 	for _, e := range tr.Events() {
-		require.NotEqual(t, "tool_result_request", e.Type, "sync tool emitted %+v", e)
+		must.NotEqual("tool_result_request", e.Type, "sync tool emitted %+v", e)
 	}
-	require.Nil(t, loop.asyncCorrelatorForTest(), "no correlator should be constructed for a sync tool")
+	must.Nil(loop.asyncCorrelatorForTest(), "no correlator should be constructed for a sync tool")
 }
 
 func TestAsyncDispatch_RepeatedResolutionsTriggerStallNudge(t *testing.T) {
+	must := require.New(t)
 	// Three identical async resolutions should still trigger the
 	// stallDetector nudge — the dispatch path is still synchronous from
 	// the stall detector's point of view (one record per call).
@@ -568,10 +581,10 @@ func TestAsyncDispatch_RepeatedResolutionsTriggerStallNudge(t *testing.T) {
 			Input: input,
 		})
 		<-done
-		require.True(t, success, "turn %d: dispatch failed: %s", i, output)
+		must.True(success, "turn %d: dispatch failed: %s", i, output)
 		outcome := stall.recordToolCall("async_echo", input, output, success)
-		require.Empty(t, outcome, "turn %d: unexpected stall outcome", i)
+		must.Empty(outcome, "turn %d: unexpected stall outcome", i)
 		_, nudged := stall.takeNudge()
-		require.Equal(t, i == 2, nudged, "turn %d: nudge expected only on the third identical call", i)
+		must.Equal(i == 2, nudged, "turn %d: nudge expected only on the third identical call", i)
 	}
 }

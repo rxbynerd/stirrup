@@ -32,6 +32,7 @@ suite "dr" {
 }
 
 func TestLoadSuiteHCL_DiffReviewLLMBlock_MapsAllFields(t *testing.T) {
+	must := require.New(t)
 	src := diffReviewSuite(`
       llm {
         provider          = "openai-compatible"
@@ -47,7 +48,7 @@ func TestLoadSuiteHCL_DiffReviewLLMBlock_MapsAllFields(t *testing.T) {
       }
 `)
 	suite, err := LoadSuiteHCL(writeTemp(t, "llm.hcl", src))
-	require.NoError(t, err)
+	must.NoError(err)
 
 	zero := 0.0
 	want := &types.JudgeLLMConfig{
@@ -62,30 +63,33 @@ func TestLoadSuiteHCL_DiffReviewLLMBlock_MapsAllFields(t *testing.T) {
 		StructuredOutput: "prompt_only",
 		AllowTruncated:   true,
 	}
-	require.Equal(t, want, suite.Tasks[0].Judge.LLM)
+	must.Equal(want, suite.Tasks[0].Judge.LLM)
 }
 
 func TestLoadSuiteHCL_DiffReviewLLMBlock_OmittedIsNil(t *testing.T) {
+	must := require.New(t)
 	suite, err := LoadSuiteHCL(writeTemp(t, "nollm.hcl", diffReviewSuite("")))
-	require.NoError(t, err)
-	require.Nil(t, suite.Tasks[0].Judge.LLM)
+	must.NoError(err)
+	must.Nil(suite.Tasks[0].Judge.LLM)
 }
 
 func TestLoadSuiteHCL_DiffReviewLLMBlock_UnsetTemperatureIsNil(t *testing.T) {
+	must := require.New(t)
 	src := diffReviewSuite(`
       llm {
         model = "claude-haiku-5-5"
       }
 `)
 	suite, err := LoadSuiteHCL(writeTemp(t, "temp.hcl", src))
-	require.NoError(t, err)
+	must.NoError(err)
 
 	llm := suite.Tasks[0].Judge.LLM
-	require.NotNil(t, llm)
-	require.Nil(t, llm.Temperature, "temperature must stay nil so it is omitted on the wire")
+	must.NotNil(llm)
+	must.Nil(llm.Temperature, "temperature must stay nil so it is omitted on the wire")
 }
 
 func TestLoadSuiteHCL_DiffReviewLLMBlock_InsideComposite(t *testing.T) {
+	must := require.New(t)
 	src := `
 suite "dr" {
   task "t1" {
@@ -109,8 +113,8 @@ suite "dr" {
 }
 `
 	suite, err := LoadSuiteHCL(writeTemp(t, "composite.hcl", src))
-	require.NoError(t, err)
-	require.NotNil(t, suite.Tasks[0].Judge.Judges[1].LLM, "nested diff-review judge lost its llm block")
+	must.NoError(err)
+	must.NotNil(suite.Tasks[0].Judge.Judges[1].LLM, "nested diff-review judge lost its llm block")
 }
 
 func TestLoadSuiteHCL_DiffReviewLLMBlock_RejectsInvalidFields(t *testing.T) {
@@ -177,10 +181,11 @@ func TestLoadSuiteHCL_DiffReviewLLMBlock_RejectsInvalidFields(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			_, err := LoadSuiteHCL(writeTemp(t, "bad.hcl", diffReviewSuite("      "+tc.llm)))
-			require.Error(t, err)
+			must.Error(err)
 			for _, want := range tc.wants {
-				require.ErrorContains(t, err, want)
+				must.ErrorContains(err, want)
 			}
 		})
 	}
@@ -196,19 +201,21 @@ func TestLoadSuiteHCL_LLMBlock_ErrorOmitsAPIKeyRefValue(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			src := diffReviewSuite("      " + llmBlock(`model = "m"`, `api_key_ref = "`+tc.ref+`"`))
 			_, err := LoadSuiteHCL(writeTemp(t, "leak.hcl", src))
-			require.Error(t, err)
-			require.NotContains(t, err.Error(), "abc123", "error echoes the api_key_ref value")
+			must.Error(err)
+			must.NotContains(err.Error(), "abc123", "error echoes the api_key_ref value")
 		})
 	}
 }
 
 func TestLoadSuiteHCL_LLMBlock_ErrorOmitsBaseURLCredentials(t *testing.T) {
+	must := require.New(t)
 	src := diffReviewSuite(llmBlock(`model = "m"`, `base_url = "https://user:hunter2@example.com"`))
 	_, err := LoadSuiteHCL(writeTemp(t, "leak.hcl", src))
-	require.Error(t, err)
-	require.NotContains(t, err.Error(), "hunter2", "error echoes the embedded credential")
+	must.Error(err)
+	must.NotContains(err.Error(), "hunter2", "error echoes the embedded credential")
 }
 
 func TestLoadSuiteHCL_LLMBlockRejectedOnOtherJudgeTypes(t *testing.T) {
@@ -237,6 +244,7 @@ func TestLoadSuiteHCL_LLMBlockRejectedOnOtherJudgeTypes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			src := `
 suite "bad" {
   task "t1" {
@@ -252,9 +260,9 @@ suite "bad" {
 }
 `
 			_, err := LoadSuiteHCL(writeTemp(t, "wrongtype.hcl", src))
-			require.Error(t, err, "llm block should be rejected on this judge type")
-			require.ErrorContains(t, err, "does not support an llm block")
-			require.ErrorContains(t, err, "diff-review")
+			must.Error(err, "llm block should be rejected on this judge type")
+			must.ErrorContains(err, "does not support an llm block")
+			must.ErrorContains(err, "diff-review")
 		})
 	}
 }

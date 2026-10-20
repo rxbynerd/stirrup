@@ -69,12 +69,13 @@ func newSpanProbeLoop(prov *mockProvider) (*AgenticLoop, *tracetest.InMemoryExpo
 
 func spanByName(t *testing.T, exporter *tracetest.InMemoryExporter, name string) tracetest.SpanStub {
 	t.Helper()
+	must := require.New(t)
 	for _, s := range exporter.GetSpans() {
 		if s.Name == name {
 			return s
 		}
 	}
-	require.FailNowf(t, "span not exported", "no %q span exported", name)
+	must.FailNowf("span not exported", "no %q span exported", name)
 	return tracetest.SpanStub{}
 }
 
@@ -82,22 +83,24 @@ func spanByName(t *testing.T, exporter *tracetest.InMemoryExporter, name string)
 // recorded without the probe credential in its events or status.
 func assertSpanErrorScrubbed(t *testing.T, span tracetest.SpanStub, wantStatus bool) {
 	t.Helper()
+	must := require.New(t)
+	check := assert.New(t)
 	if wantStatus {
-		require.Equal(t, codes.Error, span.Status.Code)
-		require.NotContains(t, span.Status.Description, spanProbeKey)
-		require.Contains(t, span.Status.Description, "upstream echoed key")
+		must.Equal(codes.Error, span.Status.Code)
+		must.NotContains(span.Status.Description, spanProbeKey)
+		must.Contains(span.Status.Description, "upstream echoed key")
 	}
 	var message string
 	for _, ev := range span.Events {
 		for _, attr := range ev.Attributes {
-			assert.NotContains(t, attr.Value.String(), spanProbeKey, "event %q attribute %s", ev.Name, attr.Key)
+			check.NotContains(attr.Value.String(), spanProbeKey, "event %q attribute %s", ev.Name, attr.Key)
 			if ev.Name == "exception" && attr.Key == "exception.message" {
 				message = attr.Value.AsString()
 			}
 		}
 	}
-	require.Contains(t, message, "upstream echoed key")
-	require.Contains(t, message, "[REDACTED]")
+	must.Contains(message, "upstream echoed key")
+	must.Contains(message, "[REDACTED]")
 }
 
 func TestLoop_SpanErrorsAreScrubbed(t *testing.T) {
@@ -190,31 +193,33 @@ func TestLoop_SpanErrorsAreScrubbed(t *testing.T) {
 }
 
 func TestLoop_OTelChatSpanCarriesScrubbedProviderFailure(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop, exporter := otelLoop(t, nil)
 	loop.Provider = &errorProvider{err: errSpanProbe}
 	_, _ = loop.Run(context.Background(), buildTestConfig())
 
 	spans := exporter.GetSpans()
 	chats := spansNamed(spans, "chat claude-sonnet-4-6")
-	require.Len(t, chats, 1)
+	must.Len(chats, 1)
 	chat := chats[0]
 	chatErrorType, _ := spanAttr(chat, "error.type")
-	assert.Equal(t, "provider_request_failed", chatErrorType, "chat error.type")
-	assert.Equal(t, codes.Error, chat.Status.Code, "chat status code")
-	assert.Contains(t, chat.Status.Description, "upstream echoed key", "chat status description")
+	check.Equal("provider_request_failed", chatErrorType, "chat error.type")
+	check.Equal(codes.Error, chat.Status.Code, "chat status code")
+	check.Contains(chat.Status.Description, "upstream echoed key", "chat status description")
 
 	assertSpanErrorScrubbed(t, spanByName(t, exporter, "provider.stream"), true)
 
 	root := spanByName(t, exporter, "invoke_agent stirrup")
 	rootErrorType, _ := spanAttr(root, "error.type")
-	assert.Equal(t, "provider_request_failed", rootErrorType, "root error.type")
-	assert.Equal(t, codes.Error, root.Status.Code, "root status code")
-	assert.Contains(t, root.Status.Description, "upstream echoed key", "root status description")
+	check.Equal("provider_request_failed", rootErrorType, "root error.type")
+	check.Equal(codes.Error, root.Status.Code, "root status code")
+	check.Contains(root.Status.Description, "upstream echoed key", "root status description")
 
 	for _, s := range spans {
-		assert.NotContains(t, s.Status.Description, spanProbeKey, "%s status description", s.Name)
+		check.NotContains(s.Status.Description, spanProbeKey, "%s status description", s.Name)
 		for _, attr := range s.Attributes {
-			assert.NotContains(t, attr.Value.String(), spanProbeKey, "%s attribute %s", s.Name, attr.Key)
+			check.NotContains(attr.Value.String(), spanProbeKey, "%s attribute %s", s.Name, attr.Key)
 		}
 	}
 }
@@ -260,6 +265,7 @@ func TestRecordSpanError_PreservesExceptionType(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			exporter := tracetest.NewInMemoryExporter()
 			tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 			_, span := tp.Tracer("test").Start(context.Background(), "probe")
@@ -276,7 +282,7 @@ func TestRecordSpanError_PreservesExceptionType(t *testing.T) {
 					}
 				}
 			}
-			require.Equal(t, tc.want, got, "exception.type")
+			must.Equal(tc.want, got, "exception.type")
 		})
 	}
 }
@@ -286,8 +292,10 @@ func TestRecordSpanError_PreservesExceptionType(t *testing.T) {
 // RecordError call, or a SetStatus(codes.Error, ...) whose description is
 // not a string literal.
 func TestCoreSpanErrors_GoThroughScrubbingHelpers(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	files, err := filepath.Glob("*.go")
-	require.NoError(t, err)
+	must.NoError(err)
 	fset := token.NewFileSet()
 	scanned := map[string]bool{}
 	for _, name := range files {
@@ -296,9 +304,9 @@ func TestCoreSpanErrors_GoThroughScrubbingHelpers(t *testing.T) {
 		}
 		scanned[name] = true
 		src, err := os.ReadFile(name)
-		require.NoError(t, err)
+		must.NoError(err)
 		f, err := parser.ParseFile(fset, name, src, 0)
-		require.NoError(t, err)
+		must.NoError(err)
 		ast.Inspect(f, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
 			if !ok {
@@ -310,7 +318,7 @@ func TestCoreSpanErrors_GoThroughScrubbingHelpers(t *testing.T) {
 			}
 			switch sel.Sel.Name {
 			case "RecordError":
-				assert.Failf(t, "span error bypasses scrubbing helpers",
+				check.Failf("span error bypasses scrubbing helpers",
 					"%s: RecordError must go through recordSpanError or recordSpanException", fset.Position(call.Pos()))
 			case "SetStatus":
 				if len(call.Args) != 2 {
@@ -321,7 +329,7 @@ func TestCoreSpanErrors_GoThroughScrubbingHelpers(t *testing.T) {
 					return true
 				}
 				if lit, ok := call.Args[1].(*ast.BasicLit); !ok || lit.Kind != token.STRING {
-					assert.Failf(t, "span error description is not a literal",
+					check.Failf("span error description is not a literal",
 						"%s: SetStatus(codes.Error, ...) needs a literal description or recordSpanError", fset.Position(call.Pos()))
 				}
 			}
@@ -329,6 +337,6 @@ func TestCoreSpanErrors_GoThroughScrubbingHelpers(t *testing.T) {
 		})
 	}
 	for _, name := range []string{"loop.go", "types.go"} {
-		assert.True(t, scanned[name], "scan did not cover %s; the glob must run from the core package directory", name)
+		check.True(scanned[name], "scan did not cover %s; the glob must run from the core package directory", name)
 	}
 }

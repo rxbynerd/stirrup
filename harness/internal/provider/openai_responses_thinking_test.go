@@ -26,27 +26,28 @@ func TestResponsesRequest_ReasoningObjectSummary(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			params := effortParams(tc.model, tc.effort, false)
 			params.ReasoningSummary = tc.summary
 			q := quirks.DefaultRegistry().Resolve("openai-responses", tc.model)
 			req, err := buildResponsesRequest(params, q, nil, "")
-			require.NoError(t, err, "build request")
+			must.NoError(err, "build request")
 			body, err := json.Marshal(req)
-			require.NoError(t, err, "marshal request")
+			must.NoError(err, "marshal request")
 			var fields map[string]json.RawMessage
-			require.NoError(t, json.Unmarshal(body, &fields), "decode request")
+			must.NoError(json.Unmarshal(body, &fields), "decode request")
 
 			got, ok := fields["reasoning"]
 			if tc.want == "" {
-				require.False(t, ok, "reasoning = %s, want absent", got)
+				must.False(ok, "reasoning = %s, want absent", got)
 				return
 			}
-			require.True(t, ok, "reasoning is absent, want %s", tc.want)
-			require.JSONEq(t, tc.want, string(got))
+			must.True(ok, "reasoning is absent, want %s", tc.want)
+			must.JSONEq(tc.want, string(got))
 
 			var round responsesRequest
-			require.NoError(t, json.Unmarshal(body, &round), "round trip")
-			require.Equal(t, req.ReasoningSummary, round.ReasoningSummary, "round-tripped ReasoningSummary")
+			must.NoError(json.Unmarshal(body, &round), "round trip")
+			must.Equal(req.ReasoningSummary, round.ReasoningSummary, "round-tripped ReasoningSummary")
 		})
 	}
 }
@@ -75,47 +76,49 @@ func responsesSummaryTurn() []byte {
 // Summary deltas stream as thinking_delta only, and the reasoning item
 // that carries the summary is replayed verbatim on the next turn.
 func TestOpenAIResponsesAdapter_ReasoningSummary_StreamsAndReplays(t *testing.T) {
+	must := require.New(t)
 	script := newResponsesScript(t, responsesSummaryTurn())
 	adapter := script.adapter(nil)
 
 	params := effortParams(responsesReplayModel, "high", true)
 	params.ReasoningSummary = types.ReasoningSummaryAuto
 	ch, err := adapter.Stream(context.Background(), params)
-	require.NoError(t, err, "Stream")
+	must.NoError(err, "Stream")
 	events := drainStream(t, ch)
 
 	thinking, text := splitDeltas(events)
-	require.Equal(t, "**Plan**\n\n|Read a.go first.", strings.Join(thinking, "|"), "thinking_delta fragments")
-	require.Empty(t, text, "answer text")
+	must.Equal("**Plan**\n\n|Read a.go first.", strings.Join(thinking, "|"), "thinking_delta fragments")
+	must.Empty(text, "answer text")
 	for _, ev := range events {
 		if ev.Type == "tool_call" {
-			require.NotContains(t, string(mustJSON(t, ev.Input)), "Plan", "summary text leaked into tool input")
+			must.NotContains(string(mustJSON(t, ev.Input)), "Plan", "summary text leaked into tool input")
 		}
 	}
 	body := string(script.lastBody(t))
-	require.Contains(t, body, `"reasoning":{"effort":"high","summary":"auto"}`, "first request does not ask for a summary")
+	must.Contains(body, `"reasoning":{"effort":"high","summary":"auto"}`, "first request does not ask for a summary")
 
 	stored := storedReplayItems(t, messageComplete(t, events))
-	require.Len(t, stored, 2, "stored items")
-	require.Contains(t, string(stored[0]), `"summary_text"`, "the stored reasoning item should carry its summary")
+	must.Len(stored, 2, "stored items")
+	must.Contains(string(stored[0]), `"summary_text"`, "the stored reasoning item should carry its summary")
 
 	assistant := assistantFromEvents(events)
 	results := types.Message{Role: "user", Content: []types.ContentBlock{{Type: "tool_result", ToolUseID: "call_s1", Content: "package a"}}}
 	params.Messages = append(params.Messages, assistant, results)
 	ch, err = adapter.Stream(context.Background(), params)
-	require.NoError(t, err, "second Stream")
+	must.NoError(err, "second Stream")
 	drainStream(t, ch)
 
 	input := requestInput(t, script.lastBody(t))
-	require.GreaterOrEqual(t, len(input), 3, "second request input = %s", input)
-	require.JSONEq(t, string(stored[0]), string(input[1]), "second request should replay the stored reasoning item at index 1")
+	must.GreaterOrEqual(len(input), 3, "second request input = %s", input)
+	must.JSONEq(string(stored[0]), string(input[1]), "second request should replay the stored reasoning item at index 1")
 	assertCallsPaired(t, input)
 }
 
 func mustJSON(t *testing.T, v any) []byte {
 	t.Helper()
+	must := require.New(t)
 	b, err := json.Marshal(v)
-	require.NoError(t, err, "marshal")
+	must.NoError(err, "marshal")
 	return b
 }
 
@@ -167,18 +170,19 @@ func TestOpenAIResponsesAdapter_ReasoningSummary_PartsAreParagraphs(t *testing.T
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			script := newResponsesScript(t, responsesSummaryDeltas(tc.payloads...))
 			params := effortParams(responsesReplayModel, "high", true)
 			params.ReasoningSummary = types.ReasoningSummaryAuto
 			ch, err := script.adapter(nil).Stream(context.Background(), params)
-			require.NoError(t, err, "Stream")
+			must.NoError(err, "Stream")
 			events := drainStream(t, ch)
 			for _, ev := range events {
-				require.NotEqual(t, "error", ev.Type, "stream failed: %v", ev.Error)
+				must.NotEqual("error", ev.Type, "stream failed: %v", ev.Error)
 			}
 			thinking, text := splitDeltas(events)
-			require.Equal(t, strings.Join(tc.want, "|"), strings.Join(thinking, "|"), "thinking_delta fragments")
-			require.Equal(t, "done", text, "answer text")
+			must.Equal(strings.Join(tc.want, "|"), strings.Join(thinking, "|"), "thinking_delta fragments")
+			must.Equal("done", text, "answer text")
 		})
 	}
 }

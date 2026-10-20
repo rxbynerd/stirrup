@@ -20,30 +20,32 @@ import (
 // text fallback rendering unchanged.
 
 func TestRunCommandTool_StructuredAndText(t *testing.T) {
+	must := require.New(t)
 	mock := &mockExecutor{
 		execFunc: func(ctx context.Context, command string, timeout time.Duration) (*executor.ExecResult, error) {
 			return &executor.ExecResult{ExitCode: 3, Stdout: "out-data", Stderr: "err-data"}, nil
 		},
 	}
 	runTool := RunCommandTool(mock)
-	require.NotNil(t, runTool.StructuredHandler, "run_command must expose a StructuredHandler")
+	must.NotNil(runTool.StructuredHandler, "run_command must expose a StructuredHandler")
 
 	input, _ := json.Marshal(map[string]any{"command": "go test ./...", "timeout": 120})
 	res, err := runTool.StructuredHandler(context.Background(), input)
-	require.NoError(t, err)
-	require.Equal(t, "command_result", res.Kind)
+	must.NoError(err)
+	must.Equal("command_result", res.Kind)
 
 	// Text fallback must match the legacy concatenation exactly.
-	require.Equal(t, "out-data\nSTDERR:\nerr-data\n[exit code: 3]", res.Text)
+	must.Equal("out-data\nSTDERR:\nerr-data\n[exit code: 3]", res.Text)
 
 	got := decodeStructured[commandResult](t, res.Structured)
 	want := commandResult{Stdout: "out-data", Stderr: "err-data", ExitCode: 3, TimedOut: false, TimeoutSeconds: 120}
-	require.Equal(t, want, got)
+	must.Equal(want, got)
 }
 
 // TestRunCommandTool_StructuredDefaultTimeout: omitting timeout must default
 // TimeoutSeconds to 30.
 func TestRunCommandTool_StructuredDefaultTimeout(t *testing.T) {
+	must := require.New(t)
 	mock := &mockExecutor{
 		execFunc: func(ctx context.Context, command string, timeout time.Duration) (*executor.ExecResult, error) {
 			return &executor.ExecResult{ExitCode: 0, Stdout: "ok"}, nil
@@ -53,38 +55,40 @@ func TestRunCommandTool_StructuredDefaultTimeout(t *testing.T) {
 
 	input, _ := json.Marshal(map[string]any{"command": "ls"})
 	res, err := runTool.StructuredHandler(context.Background(), input)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	got := decodeStructured[commandResult](t, res.Structured)
-	require.Equal(t, 30, got.TimeoutSeconds, "omitted timeout must default to 30 seconds")
+	must.Equal(30, got.TimeoutSeconds, "omitted timeout must default to 30 seconds")
 }
 
 func TestReadFileTool_StructuredAndText(t *testing.T) {
+	must := require.New(t)
 	mock := &mockExecutor{
 		readFileFunc: func(ctx context.Context, path string) (string, error) {
 			return "one\ntwo\nthree\nfour\nfive\n", nil
 		},
 	}
 	readTool := ReadFileTool(mock)
-	require.NotNil(t, readTool.StructuredHandler, "read_file must expose a StructuredHandler")
+	must.NotNil(readTool.StructuredHandler, "read_file must expose a StructuredHandler")
 
 	input, _ := json.Marshal(map[string]any{"path": "f.go", "start_line": 2, "limit": 2})
 	res, err := readTool.StructuredHandler(context.Background(), input)
-	require.NoError(t, err)
-	require.Equal(t, "file_excerpt", res.Kind)
+	must.NoError(err)
+	must.Equal("file_excerpt", res.Kind)
 
 	// Text fallback must remain the line-numbered rendering.
-	require.Equal(t, "2\ttwo\n3\tthree", res.Text)
+	must.Equal("2\ttwo\n3\tthree", res.Text)
 
 	got := decodeStructured[fileExcerpt](t, res.Structured)
-	require.Equal(t, "f.go", got.Path)
-	require.Equal(t, 2, got.StartLine)
-	require.Equal(t, 3, got.EndLine)
-	require.True(t, got.Truncated, "a 5-line file read with a 2-line window stops short of EOF")
-	require.Equal(t, []string{"two", "three"}, got.Lines)
+	must.Equal("f.go", got.Path)
+	must.Equal(2, got.StartLine)
+	must.Equal(3, got.EndLine)
+	must.True(got.Truncated, "a 5-line file read with a 2-line window stops short of EOF")
+	must.Equal([]string{"two", "three"}, got.Lines)
 }
 
 func TestReadFileTool_PastEOFReturnsNoLines(t *testing.T) {
+	must := require.New(t)
 	mock := &mockExecutor{
 		readFileFunc: func(ctx context.Context, path string) (string, error) {
 			return "only one line\n", nil
@@ -94,129 +98,135 @@ func TestReadFileTool_PastEOFReturnsNoLines(t *testing.T) {
 
 	input, _ := json.Marshal(map[string]any{"path": "f.txt", "start_line": 500})
 	res, err := readTool.StructuredHandler(context.Background(), input)
-	require.NoError(t, err, "a read past EOF is not an error")
+	must.NoError(err, "a read past EOF is not an error")
 
 	got := decodeStructured[fileExcerpt](t, res.Structured)
-	require.True(t, got.PastEOF, "a read past EOF must set past_eof")
-	require.Empty(t, got.Lines)
+	must.True(got.PastEOF, "a read past EOF must set past_eof")
+	must.Empty(got.Lines)
 }
 
 func TestGrepFilesTool_StructuredMatches(t *testing.T) {
+	must := require.New(t)
 	withRipgrepProbe(t, false) // force the Go-native walker for determinism
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.go"), []byte("alpha needle\nplain\nneedle again\n"), 0o644), "write fixture")
+	must.NoError(os.WriteFile(filepath.Join(dir, "a.go"), []byte("alpha needle\nplain\nneedle again\n"), 0o644), "write fixture")
 	grep := GrepFilesTool(&fsExecutor{root: dir})
-	require.NotNil(t, grep.StructuredHandler, "grep_files must expose a StructuredHandler")
+	must.NotNil(grep.StructuredHandler, "grep_files must expose a StructuredHandler")
 
 	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
 	res, err := grep.StructuredHandler(context.Background(), input)
-	require.NoError(t, err)
-	require.Equal(t, "search_result", res.Kind)
+	must.NoError(err)
+	must.Equal("search_result", res.Kind)
 
 	got := decodeStructured[searchResult](t, res.Structured)
-	require.Len(t, got.Matches, 2, "matches: %+v", got.Matches)
-	require.Equal(t, searchMatch{Path: "a.go", Line: 1, Text: "alpha needle"}, got.Matches[0])
-	require.Equal(t, searchMatch{Path: "a.go", Line: 3, Text: "needle again"}, got.Matches[1])
-	require.False(t, got.Truncated, "2 matches are under the default cap")
+	must.Len(got.Matches, 2, "matches: %+v", got.Matches)
+	must.Equal(searchMatch{Path: "a.go", Line: 1, Text: "alpha needle"}, got.Matches[0])
+	must.Equal(searchMatch{Path: "a.go", Line: 3, Text: "needle again"}, got.Matches[1])
+	must.False(got.Truncated, "2 matches are under the default cap")
 	// The text rendering is the canonical "path:line:match" form.
-	require.Equal(t, "a.go:1:alpha needle\na.go:3:needle again", res.Text)
+	must.Equal("a.go:1:alpha needle\na.go:3:needle again", res.Text)
 }
 
 // TestGrepFilesTool_ColonInPathAndText: a path AND a matched line that both
 // contain colons must round-trip into searchMatch fields exactly, with the
 // rendered text still byte-identical.
 func TestGrepFilesTool_ColonInPathAndText(t *testing.T) {
+	must := require.New(t)
 	withRipgrepProbe(t, false) // exercise the native walker explicitly
 	dir := t.TempDir()
 	// A subdirectory whose name contains a colon (legal on Linux/macOS).
 	sub := filepath.Join(dir, "a:b")
-	require.NoError(t, os.MkdirAll(sub, 0o755), "mkdir colon dir")
+	must.NoError(os.MkdirAll(sub, 0o755), "mkdir colon dir")
 	// The matched line also contains colons.
-	require.NoError(t, os.WriteFile(filepath.Join(sub, "c.go"), []byte("key: needle: value\n"), 0o644), "write fixture")
+	must.NoError(os.WriteFile(filepath.Join(sub, "c.go"), []byte("key: needle: value\n"), 0o644), "write fixture")
 	grep := GrepFilesTool(&fsExecutor{root: dir})
 
 	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
 	res, err := grep.StructuredHandler(context.Background(), input)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	got := decodeStructured[searchResult](t, res.Structured)
-	require.Len(t, got.Matches, 1, "colon-bearing match was dropped: %+v", got.Matches)
+	must.Len(got.Matches, 1, "colon-bearing match was dropped: %+v", got.Matches)
 	want := searchMatch{Path: filepath.Join("a:b", "c.go"), Line: 1, Text: "key: needle: value"}
-	require.Equal(t, want, got.Matches[0])
+	must.Equal(want, got.Matches[0])
 	// Text rendering must still be the exact "path:line:text" form.
-	require.Equal(t, want.Path+":1:key: needle: value", res.Text)
+	must.Equal(want.Path+":1:key: needle: value", res.Text)
 }
 
 func TestGrepFilesTool_StructuredNoMatches(t *testing.T) {
+	must := require.New(t)
 	withRipgrepProbe(t, false)
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.go"), []byte("nothing here\n"), 0o644), "write fixture")
+	must.NoError(os.WriteFile(filepath.Join(dir, "a.go"), []byte("nothing here\n"), 0o644), "write fixture")
 	grep := GrepFilesTool(&fsExecutor{root: dir})
 
 	input, _ := json.Marshal(map[string]any{"pattern": "absent_pattern"})
 	res, err := grep.StructuredHandler(context.Background(), input)
-	require.NoError(t, err)
-	require.Equal(t, noMatchesText, res.Text)
+	must.NoError(err)
+	must.Equal(noMatchesText, res.Text)
 
 	got := decodeStructured[searchResult](t, res.Structured)
-	require.NotNil(t, got.Matches, "matches must be an empty array, not null")
-	require.Empty(t, got.Matches)
+	must.NotNil(got.Matches, "matches must be an empty array, not null")
+	must.Empty(got.Matches)
 }
 
 func TestGrepFilesTool_StructuredTruncated(t *testing.T) {
+	must := require.New(t)
 	withRipgrepProbe(t, false)
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.go"), []byte("hit one\nhit two\nhit three\n"), 0o644), "write fixture")
+	must.NoError(os.WriteFile(filepath.Join(dir, "a.go"), []byte("hit one\nhit two\nhit three\n"), 0o644), "write fixture")
 	grep := GrepFilesTool(&fsExecutor{root: dir})
 
 	input, _ := json.Marshal(map[string]any{"pattern": "hit", "max_results": 2})
 	res, err := grep.StructuredHandler(context.Background(), input)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	got := decodeStructured[searchResult](t, res.Structured)
-	require.Len(t, got.Matches, 2)
-	require.True(t, got.Truncated, "max_results cap must set truncated")
+	must.Len(got.Matches, 2)
+	must.True(got.Truncated, "max_results cap must set truncated")
 }
 
 func TestFindFilesTool_StructuredPaths(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	for _, name := range []string{"one.go", "two.go", "skip.txt"} {
-		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644), "write fixture")
+		must.NoError(os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644), "write fixture")
 	}
 	find := FindFilesTool(&fsExecutor{root: dir})
-	require.NotNil(t, find.StructuredHandler, "find_files must expose a StructuredHandler")
+	must.NotNil(find.StructuredHandler, "find_files must expose a StructuredHandler")
 
 	input, _ := json.Marshal(map[string]any{"name": "*.go"})
 	res, err := find.StructuredHandler(context.Background(), input)
-	require.NoError(t, err)
-	require.Equal(t, "find_result", res.Kind)
+	must.NoError(err)
+	must.Equal("find_result", res.Kind)
 
 	got := decodeStructured[findResult](t, res.Structured)
-	require.Len(t, got.Paths, 2)
+	must.Len(got.Paths, 2)
 	// The structured paths must be exactly the lines of the text rendering.
 	var textLines []string
 	if res.Text != noMatchesText {
 		textLines = strings.Split(res.Text, "\n")
 	}
-	require.Equal(t, textLines, got.Paths, "structured paths diverge from text")
+	must.Equal(textLines, got.Paths, "structured paths diverge from text")
 }
 
 // TestFindFilesTool_StructuredTruncated mirrors the grep truncation test for
 // find_files.
 func TestFindFilesTool_StructuredTruncated(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	for _, name := range []string{"one.go", "two.go"} {
-		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644), "write fixture")
+		must.NoError(os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644), "write fixture")
 	}
 	find := FindFilesTool(&fsExecutor{root: dir})
 
 	input, _ := json.Marshal(map[string]any{"name": "*.go", "max_results": 1})
 	res, err := find.StructuredHandler(context.Background(), input)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	got := decodeStructured[findResult](t, res.Structured)
-	require.Len(t, got.Paths, 1)
-	require.True(t, got.Truncated, "max_results cap must set truncated")
+	must.Len(got.Paths, 1)
+	must.True(got.Truncated, "max_results cap must set truncated")
 }
 
 // TestGrepFilesTool_RipgrepJSONBuildsMatches exercises the rg --json path via a
@@ -224,6 +234,7 @@ func TestFindFilesTool_StructuredTruncated(t *testing.T) {
 // from text, a colon in path or text must survive, and the rendered text must
 // be byte-identical to rg's "path:line:text" output.
 func TestGrepFilesTool_RipgrepJSONBuildsMatches(t *testing.T) {
+	must := require.New(t)
 	withRipgrepProbe(t, true)
 	rgJSON := strings.Join([]string{
 		`{"type":"begin","data":{"path":{"text":"/ws/a:b/c.go"}}}`,
@@ -243,18 +254,19 @@ func TestGrepFilesTool_RipgrepJSONBuildsMatches(t *testing.T) {
 
 	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
 	res, err := grep.StructuredHandler(context.Background(), input)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	got := decodeStructured[searchResult](t, res.Structured)
 	want := searchMatch{Path: "/ws/a:b/c.go", Line: 7, Column: 6, Text: "key: needle: value"}
-	require.Equal(t, []searchMatch{want}, got.Matches)
-	require.Equal(t, "/ws/a:b/c.go:7:key: needle: value", res.Text, "rg text must match rg's path:line:text output")
+	must.Equal([]searchMatch{want}, got.Matches)
+	must.Equal("/ws/a:b/c.go:7:key: needle: value", res.Text, "rg text must match rg's path:line:text output")
 }
 
 // TestGrepFilesTool_RipgrepJSONColumnIsByteOffset pins searchMatch.Column to a
 // 1-indexed *byte* column. The matched line carries a multi-byte "é" before the
 // match, so a rune-indexed implementation would report a smaller column.
 func TestGrepFilesTool_RipgrepJSONColumnIsByteOffset(t *testing.T) {
+	must := require.New(t)
 	withRipgrepProbe(t, true)
 	// "héllo " is 7 bytes but 6 runes, so rg's 0-based byte start is 7 and the
 	// 1-indexed byte column is 8; a rune column would be 7.
@@ -274,14 +286,14 @@ func TestGrepFilesTool_RipgrepJSONColumnIsByteOffset(t *testing.T) {
 
 	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
 	res, err := GrepFilesTool(exec).StructuredHandler(context.Background(), input)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	got := decodeStructured[searchResult](t, res.Structured)
 	want := searchMatch{Path: "/ws/u.go", Line: 3, Column: 8, Text: "héllo needle here"}
-	require.Equal(t, []searchMatch{want}, got.Matches)
+	must.Equal([]searchMatch{want}, got.Matches)
 	// The byte column must index into the raw bytes of Text, not its runes.
 	idx := got.Matches[0].Column - 1
-	require.True(t, strings.HasPrefix(got.Matches[0].Text[idx:], "needle"),
+	must.True(strings.HasPrefix(got.Matches[0].Text[idx:], "needle"),
 		"column %d does not point at the match in %q", got.Matches[0].Column, got.Matches[0].Text)
 }
 
@@ -289,6 +301,7 @@ func TestGrepFilesTool_RipgrepJSONColumnIsByteOffset(t *testing.T) {
 // carrying no submatches leaves "column" out of the payload entirely rather
 // than emitting a meaningless 0 or 1.
 func TestGrepFilesTool_RipgrepJSONNoSubmatchesOmitsColumn(t *testing.T) {
+	must := require.New(t)
 	withRipgrepProbe(t, true)
 	rgJSON := `{"type":"match","data":{"path":{"text":"/ws/a.go"},"lines":{"text":"needle\n"},"line_number":1}}`
 	exec := &fsExecutor{
@@ -301,7 +314,7 @@ func TestGrepFilesTool_RipgrepJSONNoSubmatchesOmitsColumn(t *testing.T) {
 
 	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
 	res, err := GrepFilesTool(exec).StructuredHandler(context.Background(), input)
-	require.NoError(t, err)
+	must.NoError(err)
 	assertNoColumnKey(t, res.Structured)
 }
 
@@ -309,13 +322,14 @@ func TestGrepFilesTool_RipgrepJSONNoSubmatchesOmitsColumn(t *testing.T) {
 // the searchMatch.Column contract: it has no match-offset tracking, so the
 // field must be absent rather than defaulted.
 func TestGrepFilesTool_NativeWalkerOmitsColumn(t *testing.T) {
+	must := require.New(t)
 	withRipgrepProbe(t, false)
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a\nvar needle = 1\n"), 0o644), "write fixture")
+	must.NoError(os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a\nvar needle = 1\n"), 0o644), "write fixture")
 
 	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
 	res, err := GrepFilesTool(&fsExecutor{root: dir}).StructuredHandler(context.Background(), input)
-	require.NoError(t, err)
+	must.NoError(err)
 	assertNoColumnKey(t, res.Structured)
 }
 
@@ -324,13 +338,15 @@ func TestGrepFilesTool_NativeWalkerOmitsColumn(t *testing.T) {
 // key from a zero value, so this inspects the raw JSON.
 func assertNoColumnKey(t *testing.T, structured json.RawMessage) {
 	t.Helper()
+	must := require.New(t)
+	check := assert.New(t)
 	var raw struct {
 		Matches []map[string]json.RawMessage `json:"matches"`
 	}
-	require.NoError(t, json.Unmarshal(structured, &raw), "structured payload is not a searchResult")
-	require.NotEmpty(t, raw.Matches, "expected at least one match, got payload %s", structured)
+	must.NoError(json.Unmarshal(structured, &raw), "structured payload is not a searchResult")
+	must.NotEmpty(raw.Matches, "expected at least one match, got payload %s", structured)
 	for i, m := range raw.Matches {
-		assert.NotContains(t, m, "column", "match %d unexpectedly carries a column: %s", i, structured)
+		check.NotContains(m, "column", "match %d unexpectedly carries a column: %s", i, structured)
 	}
 }
 
@@ -338,8 +354,9 @@ func assertNoColumnKey(t *testing.T, structured json.RawMessage) {
 // with the raw payload when it does not decode.
 func decodeStructured[T any](t *testing.T, raw json.RawMessage) T {
 	t.Helper()
+	must := require.New(t)
 	var v T
-	require.NoError(t, json.Unmarshal(raw, &v), "structured payload: %s", raw)
+	must.NoError(json.Unmarshal(raw, &v), "structured payload: %s", raw)
 	return v
 }
 
@@ -347,23 +364,24 @@ func decodeStructured[T any](t *testing.T, raw json.RawMessage) T {
 // real ripgrep binary rather than a hand-written fixture, so the byte-offset
 // contract is pinned to rg's actual output rather than an assumption about it.
 func TestGrepFilesTool_RealRipgrepColumn(t *testing.T) {
+	must := require.New(t)
 	if _, err := lookPath("rg"); err != nil {
 		t.Skip("ripgrep not on PATH")
 	}
 	withRipgrepProbe(t, true)
 	dir := t.TempDir()
 	// "héllo " occupies 7 bytes but 6 runes.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "u.txt"), []byte("héllo needle here\n"), 0o644), "write fixture")
+	must.NoError(os.WriteFile(filepath.Join(dir, "u.txt"), []byte("héllo needle here\n"), 0o644), "write fixture")
 	exec, err := executor.NewLocalExecutor(dir)
-	require.NoError(t, err, "NewLocalExecutor")
+	must.NoError(err, "NewLocalExecutor")
 
 	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
 	got := decodeSearchResult(t, GrepFilesTool(exec), input)
-	require.Len(t, got.Matches, 1, "expected exactly one match")
+	must.Len(got.Matches, 1, "expected exactly one match")
 	m := got.Matches[0]
-	require.Equal(t, 8, m.Column, "expected 1-indexed byte column 8 (7 would be a rune column)")
+	must.Equal(8, m.Column, "expected 1-indexed byte column 8 (7 would be a rune column)")
 	idx := m.Column - 1
-	require.True(t, idx >= 0 && idx <= len(m.Text) && strings.HasPrefix(m.Text[idx:], "needle"),
+	must.True(idx >= 0 && idx <= len(m.Text) && strings.HasPrefix(m.Text[idx:], "needle"),
 		"column %d does not point at the match in %q", m.Column, m.Text)
 }
 
@@ -372,6 +390,7 @@ func TestGrepFilesTool_RealRipgrepColumn(t *testing.T) {
 // carrying every span, ordered by position, so taking the first must not drift
 // to the last or the widest.
 func TestGrepFilesTool_RipgrepJSONMultipleSubmatches(t *testing.T) {
+	must := require.New(t)
 	withRipgrepProbe(t, true)
 	// Offsets copied from real rg output for the line below.
 	rgJSON := `{"type":"match","data":{"path":{"text":"/ws/m.txt"},"lines":{"text":"needle and needle\n"},"line_number":1,` +
@@ -387,7 +406,7 @@ func TestGrepFilesTool_RipgrepJSONMultipleSubmatches(t *testing.T) {
 	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
 	got := decodeSearchResult(t, GrepFilesTool(exec), input)
 	want := searchMatch{Path: "/ws/m.txt", Line: 1, Column: 1, Text: "needle and needle"}
-	require.Equal(t, []searchMatch{want}, got.Matches, "expected one match at the leftmost span")
+	must.Equal([]searchMatch{want}, got.Matches, "expected one match at the leftmost span")
 }
 
 // TestGrepFilesTool_RipgrepJSONColumnBounds covers both edges of the offset
@@ -407,6 +426,7 @@ func TestGrepFilesTool_RipgrepJSONColumnBounds(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			withRipgrepProbe(t, true)
 			rgJSON := `{"type":"match","data":{"path":{"text":"/ws/m.txt"},"lines":{"text":"needle and needle\n"},` +
 				`"line_number":1,"submatches":` + tc.submatches + `}}`
@@ -420,8 +440,8 @@ func TestGrepFilesTool_RipgrepJSONColumnBounds(t *testing.T) {
 
 			input, _ := json.Marshal(map[string]any{"pattern": "needle"})
 			got := decodeSearchResult(t, GrepFilesTool(exec), input)
-			require.Len(t, got.Matches, 1)
-			require.Equal(t, tc.wantColumn, got.Matches[0].Column)
+			must.Len(got.Matches, 1)
+			must.Equal(tc.wantColumn, got.Matches[0].Column)
 		})
 	}
 }

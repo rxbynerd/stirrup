@@ -9,6 +9,7 @@ import (
 )
 
 func TestValidateJSONSchema_AcceptsValidInput(t *testing.T) {
+	must := require.New(t)
 	schema := json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -19,10 +20,11 @@ func TestValidateJSONSchema_AcceptsValidInput(t *testing.T) {
 	}`)
 	input := json.RawMessage(`{"name": "Alice", "age": 30}`)
 
-	require.NoError(t, ValidateJSONSchema(input, schema))
+	must.NoError(ValidateJSONSchema(input, schema))
 }
 
 func TestValidateJSONSchema_RejectsMissingRequired(t *testing.T) {
+	must := require.New(t)
 	schema := json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -32,10 +34,11 @@ func TestValidateJSONSchema_RejectsMissingRequired(t *testing.T) {
 	}`)
 	input := json.RawMessage(`{}`)
 
-	require.Error(t, ValidateJSONSchema(input, schema))
+	must.Error(ValidateJSONSchema(input, schema))
 }
 
 func TestValidateJSONSchema_RejectsWrongType(t *testing.T) {
+	must := require.New(t)
 	schema := json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -44,10 +47,11 @@ func TestValidateJSONSchema_RejectsWrongType(t *testing.T) {
 	}`)
 	input := json.RawMessage(`{"count": "not-a-number"}`)
 
-	require.Error(t, ValidateJSONSchema(input, schema))
+	must.Error(ValidateJSONSchema(input, schema))
 }
 
 func TestValidateJSONSchema_RejectsFractionForInteger(t *testing.T) {
+	must := require.New(t)
 	schema := json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -56,10 +60,11 @@ func TestValidateJSONSchema_RejectsFractionForInteger(t *testing.T) {
 	}`)
 	input := json.RawMessage(`{"count": 3.7}`)
 
-	require.Error(t, ValidateJSONSchema(input, schema))
+	must.Error(ValidateJSONSchema(input, schema))
 }
 
 func TestValidateJSONSchema_RejectsAdditionalPropertiesWhenFalse(t *testing.T) {
+	must := require.New(t)
 	schema := json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -69,10 +74,11 @@ func TestValidateJSONSchema_RejectsAdditionalPropertiesWhenFalse(t *testing.T) {
 	}`)
 	input := json.RawMessage(`{"name": "Alice", "extra": true}`)
 
-	require.Error(t, ValidateJSONSchema(input, schema))
+	must.Error(ValidateJSONSchema(input, schema))
 }
 
 func TestValidateJSONSchema_AllowsAdditionalPropertiesWhenTrue(t *testing.T) {
+	must := require.New(t)
 	schema := json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -82,10 +88,11 @@ func TestValidateJSONSchema_AllowsAdditionalPropertiesWhenTrue(t *testing.T) {
 	}`)
 	input := json.RawMessage(`{"name": "Alice", "extra": true}`)
 
-	require.NoError(t, ValidateJSONSchema(input, schema))
+	must.NoError(ValidateJSONSchema(input, schema))
 }
 
 func TestValidateJSONSchema_StripsProtoKeys(t *testing.T) {
+	must := require.New(t)
 	schema := json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -96,10 +103,11 @@ func TestValidateJSONSchema_StripsProtoKeys(t *testing.T) {
 	// __proto__ should be stripped before validation, so this should pass.
 	input := json.RawMessage(`{"name": "Alice", "__proto__": {"admin": true}}`)
 
-	require.NoError(t, ValidateJSONSchema(input, schema))
+	must.NoError(ValidateJSONSchema(input, schema))
 }
 
 func TestValidateJSONSchema_StripsConstructorKeys(t *testing.T) {
+	must := require.New(t)
 	schema := json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -109,10 +117,11 @@ func TestValidateJSONSchema_StripsConstructorKeys(t *testing.T) {
 	}`)
 	input := json.RawMessage(`{"name": "Alice", "constructor": "bad"}`)
 
-	require.NoError(t, ValidateJSONSchema(input, schema))
+	must.NoError(ValidateJSONSchema(input, schema))
 }
 
 func TestValidateJSONSchema_AcceptsNestedProperties(t *testing.T) {
+	must := require.New(t)
 	schema := json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -127,10 +136,11 @@ func TestValidateJSONSchema_AcceptsNestedProperties(t *testing.T) {
 	}`)
 	input := json.RawMessage(`{"config": {"enabled": true}}`)
 
-	require.NoError(t, ValidateJSONSchema(input, schema))
+	must.NoError(ValidateJSONSchema(input, schema))
 }
 
 func TestValidateJSONSchema_RejectsNestedMissingRequired(t *testing.T) {
+	must := require.New(t)
 	schema := json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -145,21 +155,23 @@ func TestValidateJSONSchema_RejectsNestedMissingRequired(t *testing.T) {
 	}`)
 	input := json.RawMessage(`{"config": {}}`)
 
-	require.Error(t, ValidateJSONSchema(input, schema))
+	must.Error(ValidateJSONSchema(input, schema))
 }
 
 func TestValidateJSONSchema_RejectsTopLevelTypeMismatch(t *testing.T) {
+	must := require.New(t)
 	schema := json.RawMessage(`{"type": "object"}`)
 	input := json.RawMessage(`"just a string"`)
 
-	require.Error(t, ValidateJSONSchema(input, schema))
+	must.Error(ValidateJSONSchema(input, schema))
 }
 
 func TestValidateJSONSchema_RejectsInvalidJSON(t *testing.T) {
+	must := require.New(t)
 	schema := json.RawMessage(`{"type": "object"}`)
 	input := json.RawMessage(`{invalid`)
 
-	require.Error(t, ValidateJSONSchema(input, schema))
+	must.Error(ValidateJSONSchema(input, schema))
 }
 
 func TestValidateJSONSchema_TypeKeyword(t *testing.T) {
@@ -181,11 +193,12 @@ func TestValidateJSONSchema_TypeKeyword(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			err := ValidateJSONSchema(json.RawMessage(tt.input), json.RawMessage(tt.schema))
 			if tt.ok {
-				require.NoError(t, err)
+				must.NoError(err)
 			} else {
-				require.Error(t, err)
+				must.Error(err)
 			}
 		})
 	}
@@ -200,22 +213,26 @@ func TestValidateJSONSchema_OneOfMatchesExactlyOneBranch(t *testing.T) {
 	}`)
 
 	t.Run("matches string", func(t *testing.T) {
-		require.NoError(t, ValidateJSONSchema(json.RawMessage(`"hello"`), schema))
+		must := require.New(t)
+		must.NoError(ValidateJSONSchema(json.RawMessage(`"hello"`), schema))
 	})
 	t.Run("matches integer", func(t *testing.T) {
-		require.NoError(t, ValidateJSONSchema(json.RawMessage(`42`), schema))
+		must := require.New(t)
+		must.NoError(ValidateJSONSchema(json.RawMessage(`42`), schema))
 	})
 	t.Run("rejects value matching no branch", func(t *testing.T) {
-		require.Error(t, ValidateJSONSchema(json.RawMessage(`true`), schema))
+		must := require.New(t)
+		must.Error(ValidateJSONSchema(json.RawMessage(`true`), schema))
 	})
 	t.Run("rejects value matching two branches", func(t *testing.T) {
+		must := require.New(t)
 		bothSchema := json.RawMessage(`{
 			"oneOf": [
 				{"type": "number"},
 				{"type": "number"}
 			]
 		}`)
-		require.Error(t, ValidateJSONSchema(json.RawMessage(`42`), bothSchema))
+		must.Error(ValidateJSONSchema(json.RawMessage(`42`), bothSchema))
 	})
 }
 
@@ -228,13 +245,16 @@ func TestValidateJSONSchema_AnyOfMatchesAnyBranch(t *testing.T) {
 	}`)
 
 	t.Run("matches first", func(t *testing.T) {
-		require.NoError(t, ValidateJSONSchema(json.RawMessage(`"hello"`), schema))
+		must := require.New(t)
+		must.NoError(ValidateJSONSchema(json.RawMessage(`"hello"`), schema))
 	})
 	t.Run("matches second", func(t *testing.T) {
-		require.NoError(t, ValidateJSONSchema(json.RawMessage(`3.14`), schema))
+		must := require.New(t)
+		must.NoError(ValidateJSONSchema(json.RawMessage(`3.14`), schema))
 	})
 	t.Run("rejects value matching no branch", func(t *testing.T) {
-		require.Error(t, ValidateJSONSchema(json.RawMessage(`true`), schema))
+		must := require.New(t)
+		must.Error(ValidateJSONSchema(json.RawMessage(`true`), schema))
 	})
 }
 
@@ -247,12 +267,14 @@ func TestValidateJSONSchema_AllOfRequiresEveryBranch(t *testing.T) {
 	}`)
 
 	t.Run("satisfies all", func(t *testing.T) {
+		must := require.New(t)
 		input := json.RawMessage(`{"name": "Alice", "age": 30}`)
-		require.NoError(t, ValidateJSONSchema(input, schema))
+		must.NoError(ValidateJSONSchema(input, schema))
 	})
 	t.Run("missing from second", func(t *testing.T) {
+		must := require.New(t)
 		input := json.RawMessage(`{"name": "Alice"}`)
-		require.Error(t, ValidateJSONSchema(input, schema))
+		must.Error(ValidateJSONSchema(input, schema))
 	})
 }
 
@@ -260,10 +282,12 @@ func TestValidateJSONSchema_EnumRejectsValuesOutsideList(t *testing.T) {
 	schema := json.RawMessage(`{"enum": ["red", "green", "blue"]}`)
 
 	t.Run("valid value", func(t *testing.T) {
-		require.NoError(t, ValidateJSONSchema(json.RawMessage(`"green"`), schema))
+		must := require.New(t)
+		must.NoError(ValidateJSONSchema(json.RawMessage(`"green"`), schema))
 	})
 	t.Run("invalid value", func(t *testing.T) {
-		require.Error(t, ValidateJSONSchema(json.RawMessage(`"yellow"`), schema))
+		must := require.New(t)
+		must.Error(ValidateJSONSchema(json.RawMessage(`"yellow"`), schema))
 	})
 }
 
@@ -271,10 +295,12 @@ func TestValidateJSONSchema_PatternRejectsNonMatchingStrings(t *testing.T) {
 	schema := json.RawMessage(`{"type": "string", "pattern": "^[a-z]+$"}`)
 
 	t.Run("matches pattern", func(t *testing.T) {
-		require.NoError(t, ValidateJSONSchema(json.RawMessage(`"hello"`), schema))
+		must := require.New(t)
+		must.NoError(ValidateJSONSchema(json.RawMessage(`"hello"`), schema))
 	})
 	t.Run("does not match", func(t *testing.T) {
-		require.Error(t, ValidateJSONSchema(json.RawMessage(`"Hello123"`), schema))
+		must := require.New(t)
+		must.Error(ValidateJSONSchema(json.RawMessage(`"Hello123"`), schema))
 	})
 }
 
@@ -282,19 +308,24 @@ func TestValidateJSONSchema_MinimumAndMaximumAreInclusive(t *testing.T) {
 	schema := json.RawMessage(`{"type": "number", "minimum": 0, "maximum": 100}`)
 
 	t.Run("in range", func(t *testing.T) {
-		require.NoError(t, ValidateJSONSchema(json.RawMessage(`50`), schema))
+		must := require.New(t)
+		must.NoError(ValidateJSONSchema(json.RawMessage(`50`), schema))
 	})
 	t.Run("at minimum", func(t *testing.T) {
-		require.NoError(t, ValidateJSONSchema(json.RawMessage(`0`), schema))
+		must := require.New(t)
+		must.NoError(ValidateJSONSchema(json.RawMessage(`0`), schema))
 	})
 	t.Run("at maximum", func(t *testing.T) {
-		require.NoError(t, ValidateJSONSchema(json.RawMessage(`100`), schema))
+		must := require.New(t)
+		must.NoError(ValidateJSONSchema(json.RawMessage(`100`), schema))
 	})
 	t.Run("below minimum", func(t *testing.T) {
-		require.Error(t, ValidateJSONSchema(json.RawMessage(`-1`), schema))
+		must := require.New(t)
+		must.Error(ValidateJSONSchema(json.RawMessage(`-1`), schema))
 	})
 	t.Run("above maximum", func(t *testing.T) {
-		require.Error(t, ValidateJSONSchema(json.RawMessage(`101`), schema))
+		must := require.New(t)
+		must.Error(ValidateJSONSchema(json.RawMessage(`101`), schema))
 	})
 }
 
@@ -305,13 +336,16 @@ func TestValidateJSONSchema_ItemsChecksEachElement(t *testing.T) {
 	}`)
 
 	t.Run("valid items", func(t *testing.T) {
-		require.NoError(t, ValidateJSONSchema(json.RawMessage(`["a", "b", "c"]`), schema))
+		must := require.New(t)
+		must.NoError(ValidateJSONSchema(json.RawMessage(`["a", "b", "c"]`), schema))
 	})
 	t.Run("empty array", func(t *testing.T) {
-		require.NoError(t, ValidateJSONSchema(json.RawMessage(`[]`), schema))
+		must := require.New(t)
+		must.NoError(ValidateJSONSchema(json.RawMessage(`[]`), schema))
 	})
 	t.Run("invalid item type", func(t *testing.T) {
-		require.Error(t, ValidateJSONSchema(json.RawMessage(`["a", 42, "c"]`), schema))
+		must := require.New(t)
+		must.Error(ValidateJSONSchema(json.RawMessage(`["a", 42, "c"]`), schema))
 	})
 }
 
@@ -334,16 +368,19 @@ func TestValidateJSONSchema_ResolvesLocalRefs(t *testing.T) {
 	}`)
 
 	t.Run("valid ref", func(t *testing.T) {
+		must := require.New(t)
 		input := json.RawMessage(`{"address": {"street": "123 Main St", "city": "Springfield"}}`)
-		require.NoError(t, ValidateJSONSchema(input, schema))
+		must.NoError(ValidateJSONSchema(input, schema))
 	})
 	t.Run("invalid ref missing field", func(t *testing.T) {
+		must := require.New(t)
 		input := json.RawMessage(`{"address": {"street": "123 Main St"}}`)
-		require.Error(t, ValidateJSONSchema(input, schema))
+		must.Error(ValidateJSONSchema(input, schema))
 	})
 	t.Run("invalid ref wrong type", func(t *testing.T) {
+		must := require.New(t)
 		input := json.RawMessage(`{"address": "not an object"}`)
-		require.Error(t, ValidateJSONSchema(input, schema))
+		must.Error(ValidateJSONSchema(input, schema))
 	})
 }
 
@@ -351,38 +388,46 @@ func TestValidateJSONSchema_MinLengthAndMaxLengthAreInclusive(t *testing.T) {
 	schema := json.RawMessage(`{"type": "string", "minLength": 2, "maxLength": 5}`)
 
 	t.Run("valid length", func(t *testing.T) {
-		require.NoError(t, ValidateJSONSchema(json.RawMessage(`"abc"`), schema))
+		must := require.New(t)
+		must.NoError(ValidateJSONSchema(json.RawMessage(`"abc"`), schema))
 	})
 	t.Run("at minLength", func(t *testing.T) {
-		require.NoError(t, ValidateJSONSchema(json.RawMessage(`"ab"`), schema))
+		must := require.New(t)
+		must.NoError(ValidateJSONSchema(json.RawMessage(`"ab"`), schema))
 	})
 	t.Run("at maxLength", func(t *testing.T) {
-		require.NoError(t, ValidateJSONSchema(json.RawMessage(`"abcde"`), schema))
+		must := require.New(t)
+		must.NoError(ValidateJSONSchema(json.RawMessage(`"abcde"`), schema))
 	})
 	t.Run("too short", func(t *testing.T) {
-		require.Error(t, ValidateJSONSchema(json.RawMessage(`"a"`), schema))
+		must := require.New(t)
+		must.Error(ValidateJSONSchema(json.RawMessage(`"a"`), schema))
 	})
 	t.Run("too long", func(t *testing.T) {
-		require.Error(t, ValidateJSONSchema(json.RawMessage(`"abcdef"`), schema))
+		must := require.New(t)
+		must.Error(ValidateJSONSchema(json.RawMessage(`"abcdef"`), schema))
 	})
 }
 
 func TestValidateJSONSchema_BlocksExternalRefs(t *testing.T) {
 	t.Run("file ref blocked", func(t *testing.T) {
+		must := require.New(t)
 		schema := json.RawMessage(`{"$ref": "file:///etc/passwd"}`)
-		require.Error(t, ValidateJSONSchema(json.RawMessage(`{}`), schema))
+		must.Error(ValidateJSONSchema(json.RawMessage(`{}`), schema))
 	})
 	t.Run("http ref blocked", func(t *testing.T) {
+		must := require.New(t)
 		schema := json.RawMessage(`{"$ref": "http://attacker.com/schema.json"}`)
-		require.Error(t, ValidateJSONSchema(json.RawMessage(`{}`), schema))
+		must.Error(ValidateJSONSchema(json.RawMessage(`{}`), schema))
 	})
 	t.Run("inline ref still works", func(t *testing.T) {
+		must := require.New(t)
 		schema := json.RawMessage(`{
 			"type": "object",
 			"properties": {"val": {"$ref": "#/$defs/pos"}},
 			"$defs": {"pos": {"type": "integer", "minimum": 0}}
 		}`)
-		require.NoError(t, ValidateJSONSchema(json.RawMessage(`{"val": 5}`), schema))
+		must.NoError(ValidateJSONSchema(json.RawMessage(`{"val": 5}`), schema))
 	})
 }
 
@@ -390,57 +435,66 @@ func TestValidateJSONSchema_NilOrEmptySchemaAcceptsAnyInput(t *testing.T) {
 	input := json.RawMessage(`{"any": "input"}`)
 
 	t.Run("nil schema accepts any input", func(t *testing.T) {
-		require.NoError(t, ValidateJSONSchema(input, nil))
+		must := require.New(t)
+		must.NoError(ValidateJSONSchema(input, nil))
 	})
 	t.Run("empty schema accepts any input", func(t *testing.T) {
-		require.NoError(t, ValidateJSONSchema(input, json.RawMessage("")))
+		must := require.New(t)
+		must.NoError(ValidateJSONSchema(input, json.RawMessage("")))
 	})
 	t.Run("invalid schema JSON returns error", func(t *testing.T) {
-		require.Error(t, ValidateJSONSchema(input, json.RawMessage("{bad")))
+		must := require.New(t)
+		must.Error(ValidateJSONSchema(input, json.RawMessage("{bad")))
 	})
 }
 
 func TestStripDangerousKeysFromInput_ReportsDroppedKeys(t *testing.T) {
 	t.Run("clean input is unchanged and reports nothing", func(t *testing.T) {
+		must := require.New(t)
 		in := json.RawMessage(`{"a":1,"b":[2,3]}`)
 		out, dropped, err := StripDangerousKeysFromInput(in)
-		require.NoError(t, err)
-		require.Empty(t, dropped)
-		require.Equal(t, string(in), string(out))
+		must.NoError(err)
+		must.Empty(dropped)
+		must.Equal(string(in), string(out))
 	})
 
 	t.Run("reports top-level __proto__", func(t *testing.T) {
+		must := require.New(t)
 		in := json.RawMessage(`{"name":"alice","__proto__":{"admin":true}}`)
 		_, dropped, err := StripDangerousKeysFromInput(in)
-		require.NoError(t, err)
-		require.Contains(t, dropped, "__proto__")
+		must.NoError(err)
+		must.Contains(dropped, "__proto__")
 	})
 
 	t.Run("reports nested constructor", func(t *testing.T) {
+		must := require.New(t)
 		in := json.RawMessage(`{"outer":{"constructor":"x","keep":1}}`)
 		_, dropped, err := StripDangerousKeysFromInput(in)
-		require.NoError(t, err)
-		require.Contains(t, dropped, "constructor")
+		must.NoError(err)
+		must.Contains(dropped, "constructor")
 	})
 
 	t.Run("reports both dangerous keys", func(t *testing.T) {
+		must := require.New(t)
 		in := json.RawMessage(`{"__proto__":1,"constructor":2,"x":3}`)
 		_, dropped, err := StripDangerousKeysFromInput(in)
-		require.NoError(t, err)
-		require.Contains(t, dropped, "__proto__")
-		require.Contains(t, dropped, "constructor")
+		must.NoError(err)
+		must.Contains(dropped, "__proto__")
+		must.Contains(dropped, "constructor")
 	})
 
 	t.Run("invalid JSON returns error", func(t *testing.T) {
+		must := require.New(t)
 		_, _, err := StripDangerousKeysFromInput(json.RawMessage(`{bad`))
-		require.Error(t, err)
+		must.Error(err)
 	})
 
 	t.Run("empty input reports nothing and returns nil", func(t *testing.T) {
+		must := require.New(t)
 		out, dropped, err := StripDangerousKeysFromInput(nil)
-		require.NoError(t, err)
-		require.Empty(t, dropped)
-		require.Nil(t, out)
+		must.NoError(err)
+		must.Empty(dropped)
+		must.Nil(out)
 	})
 }
 
@@ -459,22 +513,24 @@ func TestCompileJSONSchema_ValidatesSchemas(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			err := CompileJSONSchema(json.RawMessage(tc.schema))
 			if tc.wantErr == "" {
-				require.NoError(t, err)
+				must.NoError(err)
 				return
 			}
-			require.ErrorContains(t, err, tc.wantErr)
+			must.ErrorContains(err, tc.wantErr)
 		})
 	}
 }
 
 func TestValidateJSONSchema_ErrorOmitsWorkingDirectory(t *testing.T) {
+	must := require.New(t)
 	wd, err := os.Getwd()
-	require.NoError(t, err)
+	must.NoError(err)
 
 	err = ValidateJSONSchema(json.RawMessage(`{}`), json.RawMessage(`{"type":"object","required":["title"]}`))
-	require.ErrorContains(t, err, "missing property 'title'")
-	require.NotContains(t, err.Error(), wd)
-	require.NotContains(t, err.Error(), "file://")
+	must.ErrorContains(err, "missing property 'title'")
+	must.NotContains(err.Error(), wd)
+	must.NotContains(err.Error(), "file://")
 }

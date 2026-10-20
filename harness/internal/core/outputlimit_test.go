@@ -140,6 +140,7 @@ func stopWith(reason string) types.StreamEvent {
 // answered by a tool_result in the message that follows it.
 func assertToolUsePaired(t *testing.T, label string, msgs []types.Message) {
 	t.Helper()
+	check := assert.New(t)
 	for i, m := range msgs {
 		if m.Role != "assistant" {
 			continue
@@ -154,7 +155,7 @@ func assertToolUsePaired(t *testing.T, label string, msgs []types.Message) {
 		}
 		for _, b := range m.Content {
 			if b.Type == "tool_use" {
-				assert.True(t, answered[b.ID], "%s: message %d holds tool_use %q (%s) with no paired tool_result", label, i, b.ID, b.Name)
+				check.True(answered[b.ID], "%s: message %d holds tool_use %q (%s) with no paired tool_result", label, i, b.ID, b.Name)
 			}
 		}
 	}
@@ -168,36 +169,38 @@ func assertAllRequestsPaired(t *testing.T, calls []types.StreamParams) {
 }
 
 func TestLoop_OutputLimitRecovery_ContinuesTruncatedText(t *testing.T) {
+	must := require.New(t)
 	h := newOutputLimitHarness(
 		[]types.StreamEvent{{Type: "text_delta", Text: "Partial answer"}, stopWith("max_tokens")},
 		[]types.StreamEvent{{Type: "text_delta", Text: "rest of the answer"}, stopWith("end_turn")},
 	)
 
 	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "success", runTrace.Outcome)
-	require.Equal(t, 2, runTrace.Turns)
-	require.Equal(t, "Partial answerrest of the answer", runTrace.FinalAssistantText)
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
+	must.Equal(2, runTrace.Turns)
+	must.Equal("Partial answerrest of the answer", runTrace.FinalAssistantText)
 
 	calls := h.provider.params()
-	require.Len(t, calls, 2)
+	must.Len(calls, 2)
 	msgs := calls[1].Messages
-	require.Len(t, msgs, 3, "second request: prompt, truncated turn, instruction")
-	require.Equal(t, "assistant", msgs[1].Role)
-	require.Equal(t, "Partial answer", strings.Join(textBlocks(msgs[1]), ""))
-	require.Equal(t, "user", msgs[2].Role)
-	require.True(t, msgs[2].Synthetic)
-	require.Equal(t, outputLimitContinueText, strings.Join(textBlocks(msgs[2]), ""))
+	must.Len(msgs, 3, "second request: prompt, truncated turn, instruction")
+	must.Equal("assistant", msgs[1].Role)
+	must.Equal("Partial answer", strings.Join(textBlocks(msgs[1]), ""))
+	must.Equal("user", msgs[2].Role)
+	must.True(msgs[2].Synthetic)
+	must.Equal(outputLimitContinueText, strings.Join(textBlocks(msgs[2]), ""))
 
 	turns, records := h.emitter.recoveryFlags()
-	require.Equal(t, []bool{true, false}, turns)
-	require.Equal(t, []bool{true, false}, records)
+	must.Equal([]bool{true, false}, turns)
+	must.Equal([]bool{true, false}, records)
 	warnings := h.warnings()
-	require.Len(t, warnings, 1)
-	require.Contains(t, warnings[0], "recovery 1 of 2")
+	must.Len(warnings, 1)
+	must.Contains(warnings[0], "recovery 1 of 2")
 }
 
 func TestLoop_OutputLimitRecovery_JoinsEveryContinuationOfTheAnswer(t *testing.T) {
+	must := require.New(t)
 	h := newOutputLimitHarness(
 		[]types.StreamEvent{{Type: "text_delta", Text: "one "}, stopWith("max_tokens")},
 		[]types.StreamEvent{{Type: "text_delta", Text: "two "}, stopWith("max_tokens")},
@@ -205,9 +208,9 @@ func TestLoop_OutputLimitRecovery_JoinsEveryContinuationOfTheAnswer(t *testing.T
 	)
 
 	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "success", runTrace.Outcome)
-	require.Equal(t, "one two three", runTrace.FinalAssistantText)
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
+	must.Equal("one two three", runTrace.FinalAssistantText)
 }
 
 // postTurnDenyGuard allows every phase but PhasePostTurn and records the
@@ -228,6 +231,7 @@ func (g *postTurnDenyGuard) Check(_ context.Context, in guard.Input) (*guard.Dec
 }
 
 func TestLoop_OutputLimitRecovery_PostTurnGuardChecksTheJoinedAnswer(t *testing.T) {
+	must := require.New(t)
 	h := newOutputLimitHarness(
 		[]types.StreamEvent{{Type: "text_delta", Text: "Checking first."}, {Type: "tool_call", ID: "tc_0", Name: "test_tool", Input: map[string]any{}}, stopWith("tool_use")},
 		[]types.StreamEvent{{Type: "text_delta", Text: "first half "}, stopWith("max_tokens")},
@@ -237,24 +241,26 @@ func TestLoop_OutputLimitRecovery_PostTurnGuardChecksTheJoinedAnswer(t *testing.
 	h.loop.GuardRail = g
 
 	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "guardrail_blocked", runTrace.Outcome)
-	require.Equal(t, []string{"first half second half"}, g.denied)
-	require.Equal(t, "Checking first.", runTrace.FinalAssistantText)
+	must.NoError(err)
+	must.Equal("guardrail_blocked", runTrace.Outcome)
+	must.Equal([]string{"first half second half"}, g.denied)
+	must.Equal("Checking first.", runTrace.FinalAssistantText)
 }
 
 func TestLoop_OutputLimitRecovery_ToolCallPreambleIsNotJoined(t *testing.T) {
+	must := require.New(t)
 	h := newOutputLimitHarness(
 		[]types.StreamEvent{{Type: "text_delta", Text: "Writing it now."}, writeFileCall("tc_big", "big.txt"), stopWith("max_tokens")},
 		[]types.StreamEvent{{Type: "text_delta", Text: "Done."}, stopWith("end_turn")},
 	)
 
 	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "Done.", runTrace.FinalAssistantText)
+	must.NoError(err)
+	must.Equal("Done.", runTrace.FinalAssistantText)
 }
 
 func TestLoop_OutputLimitRecovery_DropsTruncatedToolCalls(t *testing.T) {
+	must := require.New(t)
 	h := newOutputLimitHarness(
 		[]types.StreamEvent{
 			{Type: "text_delta", Text: "Writing both files now."},
@@ -267,27 +273,28 @@ func TestLoop_OutputLimitRecovery_DropsTruncatedToolCalls(t *testing.T) {
 	)
 
 	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "success", runTrace.Outcome)
-	require.Equal(t, []string{"part1.txt", "part2.txt"}, h.writtenPaths())
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
+	must.Equal([]string{"part1.txt", "part2.txt"}, h.writtenPaths())
 
 	calls := h.provider.params()
-	require.Len(t, calls, 3)
+	must.Len(calls, 3)
 	msgs := calls[1].Messages
-	require.Len(t, msgs, 3, "second request: prompt, truncated turn, instruction")
-	require.Equal(t, []string{"text"}, blockTypes(msgs[1]))
-	require.True(t, msgs[2].Synthetic)
-	require.Equal(t, fmt.Sprintf(outputLimitToolCallText, "write_file"), strings.Join(textBlocks(msgs[2]), ""))
+	must.Len(msgs, 3, "second request: prompt, truncated turn, instruction")
+	must.Equal([]string{"text"}, blockTypes(msgs[1]))
+	must.True(msgs[2].Synthetic)
+	must.Equal(fmt.Sprintf(outputLimitToolCallText, "write_file"), strings.Join(textBlocks(msgs[2]), ""))
 	assertAllRequestsPaired(t, calls)
 
 	warnings := h.warnings()
-	require.Len(t, warnings, 1)
-	require.Contains(t, warnings[0], "dropped 2 unrun tool call(s)")
+	must.Len(warnings, 1)
+	must.Contains(warnings[0], "dropped 2 unrun tool call(s)")
 }
 
 // A truncated turn with no text leaves no assistant message, so the
 // instruction joins the trailing user message instead of following it.
 func TestLoop_OutputLimitRecovery_ToolOnlyTurnJoinsTrailingUserMessage(t *testing.T) {
+	must := require.New(t)
 	h := newOutputLimitHarness(
 		scriptCallTestTool,
 		[]types.StreamEvent{writeFileCall("tc_big", "big.txt"), stopWith("max_tokens")},
@@ -295,59 +302,62 @@ func TestLoop_OutputLimitRecovery_ToolOnlyTurnJoinsTrailingUserMessage(t *testin
 	)
 
 	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "success", runTrace.Outcome)
-	require.Empty(t, h.writtenPaths(), "the truncated call must not be dispatched")
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
+	must.Empty(h.writtenPaths(), "the truncated call must not be dispatched")
 
 	calls := h.provider.params()
-	require.Len(t, calls, 3)
+	must.Len(calls, 3)
 	msgs := calls[2].Messages
-	require.Len(t, msgs, 3, "third request: prompt, first tool turn, results")
+	must.Len(msgs, 3, "third request: prompt, first tool turn, results")
 	last := msgs[2]
-	require.False(t, last.Synthetic)
-	require.Equal(t, []string{"tool_result", "text"}, blockTypes(last))
-	require.Equal(t, fmt.Sprintf(outputLimitToolCallText, "write_file"), strings.Join(textBlocks(last), ""))
+	must.False(last.Synthetic)
+	must.Equal([]string{"tool_result", "text"}, blockTypes(last))
+	must.Equal(fmt.Sprintf(outputLimitToolCallText, "write_file"), strings.Join(textBlocks(last), ""))
 	assertAllRequestsPaired(t, calls)
 }
 
 // Thinking alone may be cut before its signature arrives, so the turn
 // is not replayed.
 func TestLoop_OutputLimitRecovery_ThinkingOnlyTurnIsNotReplayed(t *testing.T) {
+	must := require.New(t)
 	h := newOutputLimitHarness(
 		[]types.StreamEvent{{Type: "thinking", Text: "a very long chain of reasoning"}, stopWith("max_tokens")},
 		scriptEndTurn,
 	)
 
 	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "success", runTrace.Outcome)
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
 
 	calls := h.provider.params()
-	require.Len(t, calls, 2)
+	must.Len(calls, 2)
 	msgs := calls[1].Messages
-	require.Len(t, msgs, 1, "second request: the prompt alone")
+	must.Len(msgs, 1, "second request: the prompt alone")
 	want := buildTestConfig().Prompt + "\n\n" + outputLimitNoTextText
-	require.Equal(t, want, strings.Join(textBlocks(msgs[0]), ""))
+	must.Equal(want, strings.Join(textBlocks(msgs[0]), ""))
 }
 
 func TestLoop_OutputLimitRecovery_BoundEndsRunWithMaxTokens(t *testing.T) {
+	must := require.New(t)
 	h := newOutputLimitHarness(
 		[]types.StreamEvent{{Type: "text_delta", Text: "Writing."}, writeFileCall("tc_big", "big.txt"), stopWith("max_tokens")},
 	)
 
 	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "max_tokens", runTrace.Outcome)
-	require.Equal(t, maxOutputLimitRecoveries+1, runTrace.Turns)
-	require.Empty(t, h.writtenPaths(), "the truncated call must not be dispatched")
+	must.NoError(err)
+	must.Equal("max_tokens", runTrace.Outcome)
+	must.Equal(maxOutputLimitRecoveries+1, runTrace.Turns)
+	must.Empty(h.writtenPaths(), "the truncated call must not be dispatched")
 
 	turns, _ := h.emitter.recoveryFlags()
-	require.Equal(t, []bool{true, true, false}, turns)
-	require.Len(t, h.warnings(), maxOutputLimitRecoveries)
+	must.Equal([]bool{true, true, false}, turns)
+	must.Len(h.warnings(), maxOutputLimitRecoveries)
 	assertAllRequestsPaired(t, h.provider.params())
 }
 
 func TestLoop_OutputLimitRecovery_LastTurnStopIsTerminal(t *testing.T) {
+	must := require.New(t)
 	h := newOutputLimitHarness(
 		[]types.StreamEvent{{Type: "text_delta", Text: "Partial"}, stopWith("max_tokens")},
 	)
@@ -355,13 +365,13 @@ func TestLoop_OutputLimitRecovery_LastTurnStopIsTerminal(t *testing.T) {
 	config.MaxTurns = 1
 
 	runTrace, err := h.loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	require.Equal(t, "max_tokens", runTrace.Outcome)
-	require.Len(t, h.provider.params(), 1)
+	must.NoError(err)
+	must.Equal("max_tokens", runTrace.Outcome)
+	must.Len(h.provider.params(), 1)
 
 	turns, _ := h.emitter.recoveryFlags()
-	require.Equal(t, []bool{false}, turns)
-	require.Empty(t, h.warnings())
+	must.Equal([]bool{false}, turns)
+	must.Empty(h.warnings())
 }
 
 func TestLoop_OutputLimitRecovery_BoundResetsPerRun(t *testing.T) {
@@ -370,23 +380,25 @@ func TestLoop_OutputLimitRecovery_BoundResetsPerRun(t *testing.T) {
 
 	for run := 1; run <= 2; run++ {
 		t.Run(fmt.Sprintf("run %d", run), func(t *testing.T) {
+			must := require.New(t)
 			config := buildTestConfig()
 			config.RunID = fmt.Sprintf("test-run-%d", run)
 			runTrace, err := h.loop.Run(context.Background(), config)
-			require.NoError(t, err)
-			require.Equal(t, "success", runTrace.Outcome, "after %d recoveries", maxOutputLimitRecoveries)
+			must.NoError(err)
+			must.Equal("success", runTrace.Outcome, "after %d recoveries", maxOutputLimitRecoveries)
 		})
 	}
 }
 
 func TestLoop_OutputLimitRecovery_VerificationRetriesShareTheBound(t *testing.T) {
+	must := require.New(t)
 	truncated := []types.StreamEvent{{Type: "text_delta", Text: "Partial"}, stopWith("max_tokens")}
 	h := newOutputLimitHarness(truncated, scriptEndTurn, truncated, truncated)
 	h.loop.Verifier = &scriptedVerifier{passes: []bool{false, true}}
 
 	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "max_tokens", runTrace.Outcome)
-	require.Len(t, h.provider.params(), 4)
-	require.Len(t, h.warnings(), maxOutputLimitRecoveries, "recovery warnings across the whole run")
+	must.NoError(err)
+	must.Equal("max_tokens", runTrace.Outcome)
+	must.Len(h.provider.params(), 4)
+	must.Len(h.warnings(), maxOutputLimitRecoveries, "recovery warnings across the whole run")
 }

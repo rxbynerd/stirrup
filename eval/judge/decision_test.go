@@ -78,8 +78,9 @@ func okDecision(body string) decisionReply { return decisionReply{status: http.S
 
 func newTestDecisionClient(t *testing.T, baseURL, apiKey string) *decisionClient {
 	t.Helper()
+	must := require.New(t)
 	c, err := newDecisionClient(&http.Client{Timeout: 5 * time.Second}, baseURL, apiKey, "jev-latest")
-	require.NoError(t, err)
+	must.NoError(err)
 	c.sleep = noSleep
 	return c
 }
@@ -89,53 +90,56 @@ func testDecisionRequest() decisionRequest {
 }
 
 func TestDecisionClient_RequestShape(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	srv := newDecisionServer(t, okDecision(decisionPassReply))
 
 	resp, err := newTestDecisionClient(t, srv.srv.URL, "ts-test-key").Decide(context.Background(), testDecisionRequest())
-	require.NoError(t, err)
+	must.NoError(err)
 
 	bodies, headers := srv.requests()
-	require.Len(t, bodies, 1)
+	must.Len(bodies, 1)
 	body := bodies[0]
 
-	assert.Equal(t, "Bearer ts-test-key", headers[0].Get("Authorization"))
-	assert.Equal(t, "application/json", headers[0].Get("Content-Type"))
-	assert.Equal(t, "jev-latest", body["model"])
+	check.Equal("Bearer ts-test-key", headers[0].Get("Authorization"))
+	check.Equal("application/json", headers[0].Get("Content-Type"))
+	check.Equal("jev-latest", body["model"])
 
 	state, _ := body["state"].(string)
-	assert.Contains(t, state, "<<<UNTRUSTED_DIFF_")
-	assert.Contains(t, state, "+two")
+	check.Contains(state, "<<<UNTRUSTED_DIFF_")
+	check.Contains(state, "+two")
 
 	questions, _ := body["questions"].(map[string]any)
-	require.Len(t, questions, 1, "questions = %v, want one question named verdict", body["questions"])
+	must.Len(questions, 1, "questions = %v, want one question named verdict", body["questions"])
 	q, _ := questions["verdict"].(map[string]any)
-	require.Equal(t, "choice", q["type"], "questions = %v, want one choice question named verdict", body["questions"])
+	must.Equal("choice", q["type"], "questions = %v, want one choice question named verdict", body["questions"])
 
 	criteria, _ := q["criteria"].(map[string]any)
-	assert.Len(t, criteria, 2, "criteria = %v, want the pass and fail options", q["criteria"])
-	assert.NotNil(t, criteria["pass"])
-	assert.NotNil(t, criteria["fail"])
+	check.Len(criteria, 2, "criteria = %v, want the pass and fail options", q["criteria"])
+	check.NotNil(criteria["pass"])
+	check.NotNil(criteria["fail"])
 
 	instructions, _ := q["instructions"].(map[string]any)
-	assert.Equal(t, "the change adds a test", instructions["criteria"])
-	assert.Equal(t, decisionQuestionText, instructions["question"])
+	check.Equal("the change adds a test", instructions["criteria"])
+	check.Equal(decisionQuestionText, instructions["question"])
 	boundary, _ := instructions["boundary"].(string)
-	assert.Contains(t, boundary, "untrusted data", "instructions boundary should carry the fence notice")
-	assert.NotContains(t, state, "the change adds a test", "criteria leaked into the agent-authored state")
+	check.Contains(boundary, "untrusted data", "instructions boundary should carry the fence notice")
+	check.NotContains(state, "the change adds a test", "criteria leaked into the agent-authored state")
 
-	assert.Equal(t, "jev-1.13.0", resp.Model)
-	assert.Equal(t, 412, resp.InputTokens)
-	assert.Equal(t, 20, resp.OutputTokens)
-	assert.Len(t, resp.Answers, 1)
+	check.Equal("jev-1.13.0", resp.Model)
+	check.Equal(412, resp.InputTokens)
+	check.Equal(20, resp.OutputTokens)
+	check.Len(resp.Answers, 1)
 }
 
 func TestDecisionClient_NoKeySendsNoAuthorization(t *testing.T) {
+	must := require.New(t)
 	srv := newDecisionServer(t, okDecision(decisionPassReply))
 	_, err := newTestDecisionClient(t, srv.srv.URL, "").Decide(context.Background(), testDecisionRequest())
-	require.NoError(t, err)
+	must.NoError(err)
 
 	_, headers := srv.requests()
-	require.Empty(t, headers[0].Get("Authorization"), "Authorization should be absent without a key")
+	must.Empty(headers[0].Get("Authorization"), "Authorization should be absent without a key")
 }
 
 func TestDecisionClient_DefaultEndpoint(t *testing.T) {
@@ -149,9 +153,10 @@ func TestDecisionClient_DefaultEndpoint(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c, err := newDecisionClient(&http.Client{}, tc.baseURL, "", "jev-latest")
-			require.NoError(t, err)
-			require.Equal(t, tc.want, c.endpoint)
+			must.NoError(err)
+			must.Equal(tc.want, c.endpoint)
 		})
 	}
 }
@@ -166,6 +171,7 @@ func TestDecisionClient_RetriesRateLimitAndOverload(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			srv := newDecisionServer(t,
 				decisionReply{status: tc.status, header: map[string]string{"Retry-After": "1"}, body: `{"error":"slow down"}`},
 				okDecision(decisionPassReply))
@@ -177,36 +183,39 @@ func TestDecisionClient_RetriesRateLimitAndOverload(t *testing.T) {
 			}
 
 			resp, err := c.Decide(context.Background(), testDecisionRequest())
-			require.NoError(t, err)
+			must.NoError(err)
 			bodies, _ := srv.requests()
-			require.Len(t, bodies, 2, "one retry then success")
-			require.Equal(t, "jev-1.13.0", resp.Model)
-			require.Equal(t, []time.Duration{time.Second}, waits, "the provider's Retry-After")
+			must.Len(bodies, 2, "one retry then success")
+			must.Equal("jev-1.13.0", resp.Model)
+			must.Equal([]time.Duration{time.Second}, waits, "the provider's Retry-After")
 		})
 	}
 }
 
 func TestDecisionClient_GivesUpAfterRetries(t *testing.T) {
+	must := require.New(t)
 	srv := newDecisionServer(t, decisionReply{status: 529, body: `{"error":"overloaded"}`})
 	_, err := newTestDecisionClient(t, srv.srv.URL, "").Decide(context.Background(), testDecisionRequest())
-	require.ErrorContains(t, err, "HTTP 529")
-	require.ErrorContains(t, err, "after 3 attempts")
+	must.ErrorContains(err, "HTTP 529")
+	must.ErrorContains(err, "after 3 attempts")
 }
 
 func TestDecisionClient_DoesNotRetryValidationErrors(t *testing.T) {
+	must := require.New(t)
 	srv := newDecisionServer(t, decisionReply{status: http.StatusUnprocessableEntity, body: `{"detail":"questions.verdict.criteria: required"}`})
 	_, err := newTestDecisionClient(t, srv.srv.URL, "").Decide(context.Background(), testDecisionRequest())
-	require.ErrorContains(t, err, "HTTP 422")
+	must.ErrorContains(err, "HTTP 422")
 	bodies, _ := srv.requests()
-	require.Len(t, bodies, 1, "a validation error is not retried")
+	must.Len(bodies, 1, "a validation error is not retried")
 }
 
 func TestDecisionClient_RedactsKeyFromErrors(t *testing.T) {
+	must := require.New(t)
 	srv := newDecisionServer(t, decisionReply{status: http.StatusUnauthorized, body: `{"error":"bad key ts-secret-value"}`})
 	_, err := newTestDecisionClient(t, srv.srv.URL, "ts-secret-value").Decide(context.Background(), testDecisionRequest())
-	require.Error(t, err)
-	require.NotContains(t, err.Error(), "ts-secret-value")
-	require.ErrorContains(t, err, redactedSecret)
+	must.Error(err)
+	must.NotContains(err.Error(), "ts-secret-value")
+	must.ErrorContains(err, redactedSecret)
 }
 
 // nonDeciding marks jctx as a judgment that decides no outcome, which a
@@ -226,47 +235,50 @@ func decisionJudge(t *testing.T, baseURL string) types.EvalJudge {
 }
 
 func TestDiffReview_DecisionVerdictAndRecord(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv := newDecisionServer(t, okDecision(decisionPassReply))
 	j := decisionJudge(t, srv.srv.URL)
 
 	v := evaluateOK(t, j, nonDeciding(changedJudgeContext(t, Options{})))
 
-	require.Equal(t, types.JudgeStatusPass, v.Status)
-	require.Equal(t, "decision model: p(pass)=0.91 confidence=0.82", v.Reason)
+	must.Equal(types.JudgeStatusPass, v.Status)
+	must.Equal("decision model: p(pass)=0.91 confidence=0.82", v.Reason)
 
 	rec := v.Record
-	require.NotNil(t, rec, "verdict has no record")
-	assert.Equal(t, types.JudgeKindDiffReview, rec.Kind)
-	assert.Equal(t, types.JudgeProviderDecision, rec.Provider)
-	assert.Equal(t, "jev-latest", rec.RequestedModel)
-	assert.Equal(t, "jev-1.13.0", rec.ServedModel)
-	assert.Equal(t, 412, rec.InputTokens)
-	assert.Equal(t, 20, rec.OutputTokens)
-	assert.Equal(t, types.JudgeParseOK, rec.ParseStatus)
-	assert.Equal(t, decisionStopReason, rec.StopReason)
-	assert.NotEmpty(t, rec.ConfigHash)
-	assert.NotEmpty(t, rec.InputSHA256)
-	assert.False(t, rec.Truncated)
-	assert.Equal(t, types.JudgeBaselineRunner, rec.BaselineSource)
+	must.NotNil(rec, "verdict has no record")
+	check.Equal(types.JudgeKindDiffReview, rec.Kind)
+	check.Equal(types.JudgeProviderDecision, rec.Provider)
+	check.Equal("jev-latest", rec.RequestedModel)
+	check.Equal("jev-1.13.0", rec.ServedModel)
+	check.Equal(412, rec.InputTokens)
+	check.Equal(20, rec.OutputTokens)
+	check.Equal(types.JudgeParseOK, rec.ParseStatus)
+	check.Equal(decisionStopReason, rec.StopReason)
+	check.NotEmpty(rec.ConfigHash)
+	check.NotEmpty(rec.InputSHA256)
+	check.False(rec.Truncated)
+	check.Equal(types.JudgeBaselineRunner, rec.BaselineSource)
 
 	bodies, _ := srv.requests()
 	state, _ := bodies[0]["state"].(string)
 	nonce := promptNonce(state)
-	require.NotEmpty(t, nonce, "state = %q, want the fence nonce", state)
-	require.Contains(t, state, "+two")
-	require.Contains(t, state, "Summary (git diff --stat)")
+	must.NotEmpty(nonce, "state = %q, want the fence nonce", state)
+	must.Contains(state, "+two")
+	must.Contains(state, "Summary (git diff --stat)")
 
 	boundary := bodies[0]["questions"].(map[string]any)["verdict"].(map[string]any)["instructions"].(map[string]any)["boundary"].(string)
-	require.Contains(t, boundary, nonce, "boundary should name the state's fence nonce")
+	must.Contains(boundary, nonce, "boundary should name the state's fence nonce")
 }
 
 func TestDiffReview_DecisionFailVerdict(t *testing.T) {
+	must := require.New(t)
 	srv := newDecisionServer(t, okDecision(`{"model":"jev-1.13.0","answers":{"verdict":{"type":"choice","choice":"fail","probabilities":{"pass":0.3,"fail":0.7},"confidence":0.4}},"usage":{"input_tokens":1,"output_tokens":1}}`))
 	v := evaluateOK(t, decisionJudge(t, srv.srv.URL), nonDeciding(changedJudgeContext(t, Options{})))
 
-	require.Equal(t, types.JudgeStatusFail, v.Status)
-	require.False(t, v.Passed)
-	require.Equal(t, "decision model: p(pass)=0.30 confidence=0.40", v.Reason)
+	must.Equal(types.JudgeStatusFail, v.Status)
+	must.False(v.Passed)
+	must.Equal("decision model: p(pass)=0.30 confidence=0.40", v.Reason)
 }
 
 func TestDiffReview_DecisionMalformedAnswersAreErrors(t *testing.T) {
@@ -292,27 +304,30 @@ func TestDiffReview_DecisionMalformedAnswersAreErrors(t *testing.T) {
 	}
 	for name, reply := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			srv := newDecisionServer(t, okDecision(reply))
 			v, err := Evaluate(context.Background(), decisionJudge(t, srv.srv.URL), nonDeciding(changedJudgeContext(t, Options{})))
-			require.Error(t, err)
-			require.Equal(t, types.JudgeStatusError, v.Status)
-			require.False(t, v.Passed)
-			require.NotNil(t, v.Record, "want a record with parse status schema_violation")
-			require.Equal(t, types.JudgeParseSchemaViolation, v.Record.ParseStatus)
-			require.Equal(t, "jev-1.13.0", v.Record.ServedModel)
+			must.Error(err)
+			must.Equal(types.JudgeStatusError, v.Status)
+			must.False(v.Passed)
+			must.NotNil(v.Record, "want a record with parse status schema_violation")
+			must.Equal(types.JudgeParseSchemaViolation, v.Record.ParseStatus)
+			must.Equal("jev-1.13.0", v.Record.ServedModel)
 		})
 	}
 }
 
 func TestDiffReview_DecisionUndecodableBodyIsError(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	srv := newDecisionServer(t, okDecision(`not json`))
 	v, err := Evaluate(context.Background(), decisionJudge(t, srv.srv.URL), nonDeciding(changedJudgeContext(t, Options{})))
 
-	require.Error(t, err)
-	require.Equal(t, types.JudgeStatusError, v.Status)
-	require.Contains(t, v.Reason, "decode response")
-	require.NotNil(t, v.Record)
-	assert.Empty(t, v.Record.ParseStatus, "a transport-level failure has no parse status")
+	must.Error(err)
+	must.Equal(types.JudgeStatusError, v.Status)
+	must.Contains(v.Reason, "decode response")
+	must.NotNil(v.Record)
+	check.Empty(v.Record.ParseStatus, "a transport-level failure has no parse status")
 }
 
 // bigWorkspace is a non-deciding judgment of a change whose diff is larger
@@ -325,40 +340,43 @@ func bigWorkspace(t *testing.T) JudgeContext {
 }
 
 func TestDiffReview_DecisionOverBudgetIsErrorWithoutAllowTruncated(t *testing.T) {
+	must := require.New(t)
 	srv := newDecisionServer(t, okDecision(decisionPassReply))
 	v, err := Evaluate(context.Background(), decisionJudge(t, srv.srv.URL), bigWorkspace(t))
 
-	require.Error(t, err)
-	require.Equal(t, types.JudgeStatusError, v.Status)
-	require.Contains(t, v.Reason, "32000-token input limit")
-	require.Contains(t, v.Reason, "allow_truncated")
-	require.NotNil(t, v.Record)
-	require.True(t, v.Record.Truncated)
+	must.Error(err)
+	must.Equal(types.JudgeStatusError, v.Status)
+	must.Contains(v.Reason, "32000-token input limit")
+	must.Contains(v.Reason, "allow_truncated")
+	must.NotNil(v.Record)
+	must.True(v.Record.Truncated)
 	bodies, _ := srv.requests()
-	require.Empty(t, bodies, "the model should not be called for an over-budget diff")
+	must.Empty(bodies, "the model should not be called for an over-budget diff")
 }
 
 func TestDiffReview_DecisionAllowTruncatedFitsTheLimit(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	srv := newDecisionServer(t, okDecision(decisionPassReply))
 	j := decisionJudge(t, srv.srv.URL)
 	j.LLM.AllowTruncated = true
 
 	v := evaluateOK(t, j, bigWorkspace(t))
 
-	require.Equal(t, types.JudgeStatusPass, v.Status, "want a pass over a truncated diff")
-	require.NotNil(t, v.Record)
-	require.True(t, v.Record.Truncated)
-	require.Greater(t, v.Record.InputBytes, decisionStateTokenLimit)
+	must.Equal(types.JudgeStatusPass, v.Status, "want a pass over a truncated diff")
+	must.NotNil(v.Record)
+	must.True(v.Record.Truncated)
+	must.Greater(v.Record.InputBytes, decisionStateTokenLimit)
 
 	bodies, _ := srv.requests()
 	state, _ := bodies[0]["state"].(string)
 	q := bodies[0]["questions"].(map[string]any)["verdict"]
 	qJSON, _ := json.Marshal(q)
-	assert.LessOrEqual(t, len(state)+len(qJSON), decisionStateTokenLimit-decisionTokenReserve, "state plus question must fit the budget")
+	check.LessOrEqual(len(state)+len(qJSON), decisionStateTokenLimit-decisionTokenReserve, "state plus question must fit the budget")
 
 	note, _ := q.(map[string]any)["instructions"].(map[string]any)["note"].(string)
-	assert.Contains(t, note, "only the first", "the truncation notice belongs in the instructions note")
-	assert.NotContains(t, state, "only the first", "the truncation notice must not be inside the agent-authored state")
+	check.Contains(note, "only the first", "the truncation notice belongs in the instructions note")
+	check.NotContains(state, "only the first", "the truncation notice must not be inside the agent-authored state")
 }
 
 // fenceMarkerWorkspace is a non-deciding judgment of a change of about size
@@ -374,39 +392,42 @@ func fenceMarkerWorkspace(t *testing.T, size int) JudgeContext {
 func TestDiffReview_DecisionBudgetCountsFenceNeutralisation(t *testing.T) {
 	for name, size := range map[string]int{"raw diff within budget": 24_000, "raw diff over budget": 48_000} {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			srv := newDecisionServer(t, okDecision(decisionPassReply))
 			j := decisionJudge(t, srv.srv.URL)
 			j.LLM.AllowTruncated = true
 
 			v := evaluateOK(t, j, fenceMarkerWorkspace(t, size))
 
-			require.Equal(t, types.JudgeStatusPass, v.Status, "want a pass over a diff cut to fit once neutralised")
-			require.NotNil(t, v.Record)
-			require.True(t, v.Record.Truncated)
+			must.Equal(types.JudgeStatusPass, v.Status, "want a pass over a diff cut to fit once neutralised")
+			must.NotNil(v.Record)
+			must.True(v.Record.Truncated)
 
 			bodies, _ := srv.requests()
 			state, _ := bodies[0]["state"].(string)
 			qJSON, _ := json.Marshal(bodies[0]["questions"].(map[string]any)["verdict"])
-			require.LessOrEqual(t, len(state)+len(qJSON), decisionStateTokenLimit-decisionTokenReserve, "state plus question must fit the budget")
+			must.LessOrEqual(len(state)+len(qJSON), decisionStateTokenLimit-decisionTokenReserve, "state plus question must fit the budget")
 
 			diff := state[strings.Index(state, "Diff:"):strings.LastIndex(state, "<<<END_")]
-			require.NotContains(t, diff, "<<<", "the fenced diff contains an unneutralised marker run")
+			must.NotContains(diff, "<<<", "the fenced diff contains an unneutralised marker run")
 		})
 	}
 }
 
 func TestDiffReview_DecisionNeutralisedOverflowNeedsAllowTruncated(t *testing.T) {
+	must := require.New(t)
 	srv := newDecisionServer(t, okDecision(decisionPassReply))
 	v, err := Evaluate(context.Background(), decisionJudge(t, srv.srv.URL), fenceMarkerWorkspace(t, 24_000))
 
-	require.Error(t, err)
-	require.Equal(t, types.JudgeStatusError, v.Status)
-	require.Contains(t, v.Reason, "allow_truncated")
+	must.Error(err)
+	must.Equal(types.JudgeStatusError, v.Status)
+	must.Contains(v.Reason, "allow_truncated")
 	bodies, _ := srv.requests()
-	require.Empty(t, bodies, "the model should not be called for an over-budget diff")
+	must.Empty(bodies, "the model should not be called for an over-budget diff")
 }
 
 func TestDiffReview_DecisionCriteriaOverBudgetIsError(t *testing.T) {
+	must := require.New(t)
 	srv := newDecisionServer(t, okDecision(decisionPassReply))
 	j := decisionJudge(t, srv.srv.URL)
 	j.Criteria = strings.Repeat("c", decisionStateTokenLimit)
@@ -414,44 +435,51 @@ func TestDiffReview_DecisionCriteriaOverBudgetIsError(t *testing.T) {
 
 	v, err := Evaluate(context.Background(), j, nonDeciding(changedJudgeContext(t, Options{})))
 
-	require.Error(t, err)
-	require.Equal(t, types.JudgeStatusError, v.Status)
-	require.Contains(t, v.Reason, "criteria and change summary alone")
+	must.Error(err)
+	must.Equal(types.JudgeStatusError, v.Status)
+	must.Contains(v.Reason, "criteria and change summary alone")
 }
 
 func TestCheckDecisionLimits_EnforcesBudgets(t *testing.T) {
+	must := require.New(t)
 	t.Run("small request is accepted", func(t *testing.T) {
-		require.NoError(t, checkDecisionLimits(testDecisionRequest()))
+		must := require.New(t)
+		must.NoError(checkDecisionLimits(testDecisionRequest()))
 	})
 
 	empty := testDecisionRequest()
 	empty.State = ""
 	question, _, err := decisionSizes(empty)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	atLimit := testDecisionRequest()
 	atLimit.State = strings.Repeat("x", decisionStateTokenLimit-decisionTokenReserve-question)
 
 	t.Run("state at the budget is accepted", func(t *testing.T) {
-		require.NoError(t, checkDecisionLimits(atLimit))
+		must := require.New(t)
+		must.NoError(checkDecisionLimits(atLimit))
 	})
 
 	t.Run("state one byte over the budget is refused", func(t *testing.T) {
+		must := require.New(t)
 		overLimit := atLimit
 		overLimit.State += "x"
-		require.ErrorContains(t, checkDecisionLimits(overLimit), "31488-byte budget for the provider's 32000-token limit on the state plus a question")
+		must.ErrorContains(checkDecisionLimits(overLimit), "31488-byte budget for the provider's 32000-token limit on the state plus a question")
 	})
 
 	t.Run("questions within the state budget but over the request budget are refused", func(t *testing.T) {
+		must := require.New(t)
 		many := decisionRequest{State: "s", Questions: map[string]decisionQuestion{}}
 		for _, k := range []string{"a", "b", "c"} {
 			many.Questions[k] = decisionQuestion{Type: "choice", Instructions: strings.Repeat("q", 25_000)}
 		}
-		require.ErrorContains(t, checkDecisionLimits(many), "63488-byte budget for the provider's 64000-token limit on a request")
+		must.ErrorContains(checkDecisionLimits(many), "63488-byte budget for the provider's 64000-token limit on a request")
 	})
 }
 
 func TestDiffReview_DecisionVerdictsAreCached(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv := newDecisionServer(t, okDecision(decisionPassReply))
 	j := decisionJudge(t, srv.srv.URL)
 	cache := newMemCache()
@@ -460,54 +488,60 @@ func TestDiffReview_DecisionVerdictsAreCached(t *testing.T) {
 	first := evaluateOK(t, j, jctx)
 	second := evaluateOK(t, j, jctx)
 
-	require.Equal(t, types.JudgeCacheStored, first.Record.CacheStatus, "first verdict")
-	require.Equal(t, types.JudgeCacheHit, second.Record.CacheStatus, "second verdict")
+	must.Equal(types.JudgeCacheStored, first.Record.CacheStatus, "first verdict")
+	must.Equal(types.JudgeCacheHit, second.Record.CacheStatus, "second verdict")
 	bodies, _ := srv.requests()
-	assert.Len(t, bodies, 1, "model calls")
-	assert.Equal(t, first.Reason, second.Reason, "cached verdict should keep the stored reason")
-	assert.Equal(t, decisionStopReason, second.Record.StopReason)
-	assert.Equal(t, "jev-1.13.0", second.Record.ServedModel)
+	check.Len(bodies, 1, "model calls")
+	check.Equal(first.Reason, second.Reason, "cached verdict should keep the stored reason")
+	check.Equal(decisionStopReason, second.Record.StopReason)
+	check.Equal("jev-1.13.0", second.Record.ServedModel)
 }
 
 func TestDiffReviewConfigHash_DecisionIsDistinctAndStable(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	decision := types.JudgeLLMConfig{Provider: types.JudgeProviderDecision, Model: "m"}
 	anthropic := types.JudgeLLMConfig{Provider: types.JudgeProviderAnthropic, Model: "m"}
 	h1, err := diffReviewConfigHash(decision, "c")
-	require.NoError(t, err)
+	must.NoError(err)
 	h2, _ := diffReviewConfigHash(decision, "c")
 	h3, _ := diffReviewConfigHash(anthropic, "c")
 	explicit := decision
 	explicit.BaseURL = decisionDefaultBaseURL
 	h4, _ := diffReviewConfigHash(explicit, "c")
 
-	assert.Equal(t, h1, h2, "the same configuration should hash the same")
-	assert.NotEqual(t, h1, h3, "decision and anthropic configurations should hash differently")
-	assert.Equal(t, h1, h4, "the explicit default endpoint should hash like the implicit one")
+	check.Equal(h1, h2, "the same configuration should hash the same")
+	check.NotEqual(h1, h3, "decision and anthropic configurations should hash differently")
+	check.Equal(h1, h4, "the explicit default endpoint should hash like the implicit one")
 }
 
 func TestResolveLLMConfig_DecisionDefaults(t *testing.T) {
 	t.Run("hosted endpoint gets the default model and key", func(t *testing.T) {
+		must := require.New(t)
 		cfg, err := ResolveLLMConfig(nil, &types.JudgeLLMConfig{Provider: types.JudgeProviderDecision})
-		require.NoError(t, err)
-		require.Equal(t, DefaultDecisionModel, cfg.Model)
-		require.Equal(t, DefaultDecisionKeyRef, cfg.APIKeyRef)
+		must.NoError(err)
+		must.Equal(DefaultDecisionModel, cfg.Model)
+		must.Equal(DefaultDecisionKeyRef, cfg.APIKeyRef)
 	})
 
 	t.Run("self-hosted base URL has no default key", func(t *testing.T) {
+		must := require.New(t)
 		cfg, err := ResolveLLMConfig(nil, &types.JudgeLLMConfig{Provider: types.JudgeProviderDecision, BaseURL: "http://127.0.0.1:8000"})
-		require.NoError(t, err)
-		require.Empty(t, cfg.APIKeyRef)
+		must.NoError(err)
+		must.Empty(cfg.APIKeyRef)
 	})
 
 	t.Run("explicit block without a model is refused", func(t *testing.T) {
+		must := require.New(t)
 		_, err := ResolveLLMConfig(&types.JudgeLLMConfig{Provider: types.JudgeProviderDecision}, nil)
-		require.ErrorContains(t, err, "model is required")
+		must.ErrorContains(err, "model is required")
 	})
 }
 
 func TestNewClient_RefusesDecisionProvider(t *testing.T) {
+	must := require.New(t)
 	_, err := NewClient(types.JudgeLLMConfig{Provider: types.JudgeProviderDecision, Model: "m"}, "")
-	require.Error(t, err, "NewClient built a text client for the decision provider")
+	must.Error(err, "NewClient built a text client for the decision provider")
 }
 
 func TestValidateTree_DecisionRequiresShadow(t *testing.T) {
@@ -515,38 +549,44 @@ func TestValidateTree_DecisionRequiresShadow(t *testing.T) {
 	deciding := types.EvalJudge{Type: "file-exists", Paths: []string{"a"}}
 
 	t.Run("top-level decision judge is refused", func(t *testing.T) {
-		require.ErrorContains(t, ValidateTree(decisionLeaf), "usable only on a shadow judge")
+		must := require.New(t)
+		must.ErrorContains(ValidateTree(decisionLeaf), "usable only on a shadow judge")
 	})
 
 	t.Run("deciding decision sub-judge is refused", func(t *testing.T) {
-		require.ErrorContains(t, ValidateTree(composite("all", deciding, decisionLeaf)), "sub-judge 2")
+		must := require.New(t)
+		must.ErrorContains(ValidateTree(composite("all", deciding, decisionLeaf)), "sub-judge 2")
 	})
 
 	t.Run("shadow decision sub-judge is accepted", func(t *testing.T) {
-		require.NoError(t, ValidateTree(composite("all", deciding, shadow(decisionLeaf))))
+		must := require.New(t)
+		must.NoError(ValidateTree(composite("all", deciding, shadow(decisionLeaf))))
 	})
 }
 
 func TestValidateTree_DecisionRequiresShadowInJSONSuites(t *testing.T) {
+	must := require.New(t)
 	var task types.EvalTask
 	src := `{"id":"t","judge":{"type":"composite","judges":[
 	  {"type":"file-exists","paths":["a"]},
 	  {"type":"diff-review","criteria":"c","llm":{"provider":"decision","model":"jev-latest"}}]}}`
-	require.NoError(t, json.Unmarshal([]byte(src), &task))
+	must.NoError(json.Unmarshal([]byte(src), &task))
 
-	require.ErrorContains(t, ValidateTree(task.Judge), "usable only on a shadow judge", "JSON suite with a deciding decision judge")
+	must.ErrorContains(ValidateTree(task.Judge), "usable only on a shadow judge", "JSON suite with a deciding decision judge")
 
 	task.Judge.Judges[1].Shadow = true
-	require.NoError(t, ValidateTree(task.Judge), "JSON suite with a shadow decision judge")
+	must.NoError(ValidateTree(task.Judge), "JSON suite with a shadow decision judge")
 }
 
 func TestPreflightSuite_RefusesDecisionDefaults(t *testing.T) {
+	must := require.New(t)
 	tasks := []types.EvalTask{{ID: "t", Judge: types.EvalJudge{Type: "diff-review", Criteria: "c"}}}
 	err := PreflightSuite(context.Background(), tasks, Options{LLMDefaults: &types.JudgeLLMConfig{Provider: types.JudgeProviderDecision}})
-	require.ErrorContains(t, err, "cannot be the default")
+	must.ErrorContains(err, "cannot be the default")
 }
 
 func TestDiffReview_DecisionRefusesADecidingJudgment(t *testing.T) {
+	must := require.New(t)
 	srv := newDecisionServer(t, okDecision(decisionPassReply))
 	explicit := decisionJudge(t, srv.srv.URL)
 	viaDefaults := Options{LLMDefaults: explicit.LLM}
@@ -559,17 +599,19 @@ func TestDiffReview_DecisionRefusesADecidingJudgment(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			v, err := Evaluate(context.Background(), tc.judge, changedJudgeContext(t, tc.opts))
-			require.Error(t, err)
-			require.Equal(t, types.JudgeStatusError, v.Status)
-			require.Contains(t, v.Reason, "cannot decide a task")
+			must.Error(err)
+			must.Equal(types.JudgeStatusError, v.Status)
+			must.Contains(v.Reason, "cannot decide a task")
 		})
 	}
 	bodies, _ := srv.requests()
-	require.Empty(t, bodies, "the decision endpoint should not be called")
+	must.Empty(bodies, "the decision endpoint should not be called")
 }
 
 func TestDiffReview_DecisionCachedVerdictIsNotServedToADecidingJudgment(t *testing.T) {
+	must := require.New(t)
 	srv := newDecisionServer(t, okDecision(decisionPassReply))
 	j := decisionJudge(t, srv.srv.URL)
 	jctx := nonDeciding(changedJudgeContext(t, Options{Cache: newMemCache(), CacheMode: CacheReadThrough}))
@@ -577,8 +619,8 @@ func TestDiffReview_DecisionCachedVerdictIsNotServedToADecidingJudgment(t *testi
 
 	jctx.NonDeciding = false
 	v, err := Evaluate(context.Background(), j, jctx)
-	require.Error(t, err, "a stored decision verdict must be refused to a deciding judgment")
-	require.Equal(t, types.JudgeStatusError, v.Status)
+	must.Error(err, "a stored decision verdict must be refused to a deciding judgment")
+	must.Equal(types.JudgeStatusError, v.Status)
 }
 
 func TestComposite_ShadowDecisionJudgeIsEvaluated(t *testing.T) {
@@ -592,14 +634,17 @@ func TestComposite_ShadowDecisionJudgeIsEvaluated(t *testing.T) {
 	}
 	for name, j := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			v := evaluateOK(t, j, jctx)
-			require.Equal(t, types.JudgeStatusPass, v.Status, "want pass decided by file-exists")
-			require.Contains(t, fmt.Sprintf("%+v", v.Details), "decision model: p(pass)=0.91", "details should record the decision shadow's verdict")
+			must.Equal(types.JudgeStatusPass, v.Status, "want pass decided by file-exists")
+			must.Contains(fmt.Sprintf("%+v", v.Details), "decision model: p(pass)=0.91", "details should record the decision shadow's verdict")
 		})
 	}
 }
 
 func TestDiffReview_DecisionUnresolvableKeyIsErrorWithoutACall(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv := newDecisionServer(t, okDecision(decisionPassReply))
 	j := decisionJudge(t, srv.srv.URL)
 	t.Setenv("DECISION_UNSET_KEY", "")
@@ -607,17 +652,18 @@ func TestDiffReview_DecisionUnresolvableKeyIsErrorWithoutACall(t *testing.T) {
 
 	v, err := Evaluate(context.Background(), j, nonDeciding(changedJudgeContext(t, Options{})))
 
-	require.Error(t, err)
-	require.Equal(t, types.JudgeStatusError, v.Status)
-	require.Contains(t, v.Reason, "resolving api_key_ref")
-	require.NotNil(t, v.Record, "the decision record should be kept")
-	assert.Equal(t, types.JudgeProviderDecision, v.Record.Provider)
-	assert.NotEmpty(t, v.Record.InputSHA256)
+	must.Error(err)
+	must.Equal(types.JudgeStatusError, v.Status)
+	must.Contains(v.Reason, "resolving api_key_ref")
+	must.NotNil(v.Record, "the decision record should be kept")
+	check.Equal(types.JudgeProviderDecision, v.Record.Provider)
+	check.NotEmpty(v.Record.InputSHA256)
 	bodies, _ := srv.requests()
-	require.Empty(t, bodies, "the decision endpoint should not be called without a key")
+	must.Empty(bodies, "the decision endpoint should not be called without a key")
 }
 
 func TestNewDecisionClient_RejectsAnInvalidBaseURL(t *testing.T) {
+	must := require.New(t)
 	_, err := newDecisionClient(&http.Client{}, "http://[::1", "k", "jev-latest")
-	require.ErrorContains(t, err, "not a valid URL")
+	must.ErrorContains(err, "not a valid URL")
 }

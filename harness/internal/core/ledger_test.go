@@ -21,56 +21,60 @@ import (
 )
 
 func TestTokenLedger_AdmitSpawnCarvesTheRemainder(t *testing.T) {
+	must := require.New(t)
 	l := NewTokenLedger(intPtr(100))
 	l.Charge(types.TokenUsage{Input: 30, Output: 10})
 	budget, err := l.AdmitSpawn()
-	require.NoError(t, err)
-	require.NotNil(t, budget)
-	require.Equal(t, 60, *budget, "admitted budget is the remainder")
+	must.NoError(err)
+	must.NotNil(budget)
+	must.Equal(60, *budget, "admitted budget is the remainder")
 
 	l.Charge(types.TokenUsage{Input: 60})
 	_, err = l.AdmitSpawn()
-	require.ErrorContains(t, err, "100 of 100", "no remainder refuses with the budget")
+	must.ErrorContains(err, "100 of 100", "no remainder refuses with the budget")
 
 	l.Charge(types.TokenUsage{Output: 1})
 	_, err = l.AdmitSpawn()
-	require.Error(t, err, "over budget")
+	must.Error(err, "over budget")
 }
 
 func TestTokenLedger_AdmitSpawnCapsAdmittedSpawns(t *testing.T) {
+	must := require.New(t)
 	l := NewTokenLedger(nil)
 	for i := range maxSpawnsPerRun {
 		budget, err := l.AdmitSpawn()
-		require.NoError(t, err, "spawn %d", i+1)
-		require.Nil(t, budget, "spawn %d carries no budget in an unbounded run", i+1)
+		must.NoError(err, "spawn %d", i+1)
+		must.Nil(budget, "spawn %d carries no budget in an unbounded run", i+1)
 	}
 	_, err := l.AdmitSpawn()
-	require.ErrorContains(t, err, fmt.Sprintf("%d sub-agents", maxSpawnsPerRun), "spawn past the cap")
+	must.ErrorContains(err, fmt.Sprintf("%d sub-agents", maxSpawnsPerRun), "spawn past the cap")
 }
 
 func TestTokenLedger_BudgetRefusalDoesNotConsumeASpawn(t *testing.T) {
+	must := require.New(t)
 	l := NewTokenLedger(intPtr(10))
 	l.Charge(types.TokenUsage{Input: 10})
 	for range maxSpawnsPerRun + 2 {
 		_, err := l.AdmitSpawn()
-		require.Error(t, err, "AdmitSpawn with no remainder")
+		must.Error(err, "AdmitSpawn with no remainder")
 	}
-	require.Zero(t, l.spawns, "spawns after refusals")
+	must.Zero(l.spawns, "spawns after refusals")
 }
 
 func TestTokenLedger_AuxiliaryAndExternalUsage(t *testing.T) {
+	check := assert.New(t)
 	l := NewTokenLedger(intPtr(100))
 	l.Charge(types.TokenUsage{Input: 50})
 	l.ChargeAuxiliary(types.TokenUsage{Input: 30, Output: 5})
 	l.ReportExternal(types.TokenUsage{Input: 1000})
 
-	assert.Equal(t, types.TokenUsage{Input: 80, Output: 5}, l.Total(), "total is turns plus auxiliary")
-	assert.Equal(t, types.TokenUsage{Input: 30, Output: 5}, l.Auxiliary())
-	assert.Equal(t, types.TokenUsage{Input: 1000}, l.External())
-	assert.True(t, l.CheckBudget().WithinBudget, "external usage counted toward the budget")
+	check.Equal(types.TokenUsage{Input: 80, Output: 5}, l.Total(), "total is turns plus auxiliary")
+	check.Equal(types.TokenUsage{Input: 30, Output: 5}, l.Auxiliary())
+	check.Equal(types.TokenUsage{Input: 1000}, l.External())
+	check.True(l.CheckBudget().WithinBudget, "external usage counted toward the budget")
 
 	l.ChargeAuxiliary(types.TokenUsage{Input: 16})
-	assert.False(t, l.CheckBudget().WithinBudget, "auxiliary usage past the limit left the run within budget")
+	check.False(l.CheckBudget().WithinBudget, "auxiliary usage past the limit left the run within budget")
 }
 
 func TestBudgetExhausted_AppliesOwnAndSharedLimits(t *testing.T) {
@@ -89,12 +93,13 @@ func TestBudgetExhausted_AppliesOwnAndSharedLimits(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			own := &TokenTracker{}
 			own.RecordTurn(types.TokenUsage{Input: tc.own})
 			ledger := NewTokenLedger(tc.runLimit)
 			ledger.Charge(types.TokenUsage{Input: tc.shared})
 			config := &types.RunConfig{MaxTokenBudget: tc.ownLimit}
-			require.Equal(t, tc.exhausted, budgetExhausted(own, ledger, config))
+			must.Equal(tc.exhausted, budgetExhausted(own, ledger, config))
 		})
 	}
 }
@@ -123,6 +128,7 @@ func (c *chargeRecorder) snapshot() []types.TokenUsage {
 }
 
 func TestChargingProvider_ChargesBeforeTheStreamCloses(t *testing.T) {
+	must := require.New(t)
 	inner := &scriptedProvider{turns: [][]types.StreamEvent{{
 		{Type: "text_delta", Text: "summary"},
 		{Type: "message_complete", InputTokens: 40, CacheReadTokens: 10},
@@ -130,17 +136,18 @@ func TestChargingProvider_ChargesBeforeTheStreamCloses(t *testing.T) {
 	}}}
 	rec := newChargeRecorder()
 	ch, err := newChargingProvider(inner, rec.charge).Stream(context.Background(), types.StreamParams{})
-	require.NoError(t, err)
+	must.NoError(err)
 	var events int
 	for range ch {
 		events++
 	}
-	require.Equal(t, 3, events, "forwarded events")
+	must.Equal(3, events, "forwarded events")
 	want := types.TokenUsage{Input: 40, Output: 5, CacheRead: 10}
-	require.Equal(t, []types.TokenUsage{want}, rec.snapshot(), "charges at stream close")
+	must.Equal([]types.TokenUsage{want}, rec.snapshot(), "charges at stream close")
 }
 
 func TestChargingProvider_EstimatesUnreportedInput(t *testing.T) {
+	must := require.New(t)
 	inner := &scriptedProvider{turns: [][]types.StreamEvent{{
 		{Type: "message_complete", StopReason: "end_turn", OutputTokens: 7},
 	}}}
@@ -150,17 +157,18 @@ func TestChargingProvider_EstimatesUnreportedInput(t *testing.T) {
 	}
 	rec := newChargeRecorder()
 	ch, err := newChargingProvider(inner, rec.charge).Stream(context.Background(), params)
-	require.NoError(t, err)
+	must.NoError(err)
 	for range ch {
 	}
 	wantInput := estimateCurrentTokens(params.Messages, true) + estimateSystemPromptTokens(params.System)
 	got := rec.snapshot()
-	require.Len(t, got, 1, "charges")
-	require.Equal(t, wantInput, got[0].Input, "estimated input")
-	require.Equal(t, 7, got[0].Output, "reported output")
+	must.Len(got, 1, "charges")
+	must.Equal(wantInput, got[0].Input, "estimated input")
+	must.Equal(7, got[0].Output, "reported output")
 }
 
 func TestChargingProvider_EstimateHonoursStructuredResultSupport(t *testing.T) {
+	must := require.New(t)
 	params := types.StreamParams{
 		Messages: []types.Message{{Role: "user", Content: []types.ContentBlock{
 			{Type: "tool_result", ToolUseID: "call-1", Content: "ok", Kind: types.ToolResultKindFileExcerpt,
@@ -173,45 +181,49 @@ func TestChargingProvider_EstimateHonoursStructuredResultSupport(t *testing.T) {
 		}}}
 		rec := newChargeRecorder()
 		ch, err := newChargingProvider(inner, rec.charge, opts...).Stream(context.Background(), params)
-		require.NoError(t, err)
+		must.NoError(err)
 		for range ch {
 		}
 		got := rec.snapshot()
-		require.Len(t, got, 1, "charges")
+		must.Len(got, 1, "charges")
 		return got[0].Input
 	}
 
 	with := estimate(withStructuredResults(func(string) bool { return true }))
 	without := estimate(withStructuredResults(func(string) bool { return false }))
 	want := estimateCurrentTokens(params.Messages, true) + estimateSystemPromptTokens("") + estimateToolDefinitionTokens(nil)
-	require.Equal(t, want, with, "estimate with structured result envelope")
-	require.Less(t, without, with, "estimate without structured result envelope")
+	must.Equal(want, with, "estimate with structured result envelope")
+	must.Less(without, with, "estimate without structured result envelope")
 }
 
 func TestChargingProvider_NoChargeForAFailedStream(t *testing.T) {
+	must := require.New(t)
 	inner := &scriptedProvider{turns: [][]types.StreamEvent{{
 		{Type: "error", Error: errors.New("overloaded")},
 	}}}
 	rec := newChargeRecorder()
 	ch, err := newChargingProvider(inner, rec.charge).Stream(context.Background(), types.StreamParams{})
-	require.NoError(t, err)
+	must.NoError(err)
 	for range ch {
 	}
-	require.Empty(t, rec.snapshot(), "a stream with no usage is not charged")
+	must.Empty(rec.snapshot(), "a stream with no usage is not charged")
 }
 
 func TestChargingProvider_PassesThroughAStreamError(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	m := newChargingProvider(&errorProvider{err: errors.New("connection refused")}, func(types.TokenUsage) {
-		assert.Fail(t, "charged a stream that never opened")
+		check.Fail("charged a stream that never opened")
 	})
 	_, err := m.Stream(context.Background(), types.StreamParams{})
-	require.ErrorContains(t, err, "connection refused")
-	require.Nil(t, newChargingProvider(nil, nil), "nil inner provider")
+	must.ErrorContains(err, "connection refused")
+	must.Nil(newChargingProvider(nil, nil), "nil inner provider")
 }
 
 // An abandoned consumer must not lose usage: once ctx ends the meter
 // drains the inner stream and charges what it reported.
 func TestChargingProvider_ChargesUsageOfAnAbandonedStream(t *testing.T) {
+	must := require.New(t)
 	inner := make(chan types.StreamEvent, 3)
 	inner <- types.StreamEvent{Type: "text_delta", Text: "partial"}
 	inner <- types.StreamEvent{Type: "text_delta", Text: "more"}
@@ -220,17 +232,17 @@ func TestChargingProvider_ChargesUsageOfAnAbandonedStream(t *testing.T) {
 	rec := newChargeRecorder()
 	ctx, cancel := context.WithCancel(context.Background())
 	ch, err := newChargingProvider(channelProvider(inner), rec.charge).Stream(ctx, types.StreamParams{})
-	require.NoError(t, err)
+	must.NoError(err)
 	<-ch
 	cancel()
 	select {
 	case <-rec.done:
 	case <-time.After(5 * time.Second):
-		require.Fail(t, "abandoned stream was never charged")
+		must.Fail("abandoned stream was never charged")
 	}
 	got := rec.snapshot()
-	require.NotEmpty(t, got, "charges")
-	require.Equal(t, types.TokenUsage{Input: 25, Output: 3}, got[0], "drained usage")
+	must.NotEmpty(got, "charges")
+	must.Equal(types.TokenUsage{Input: 25, Output: 3}, got[0], "drained usage")
 }
 
 type channelProvider <-chan types.StreamEvent
@@ -325,6 +337,7 @@ func ledgerSpawnLoop(t *testing.T, turns [][]types.StreamEvent, budget *int) (*A
 // The second spawn is refused and the run ends budget_exceeded with no
 // provider call after the refusal.
 func TestSpawnSubAgent_SecondSpawnIsRefusedOnceTheBudgetIsSpent(t *testing.T) {
+	must := require.New(t)
 	loop, config, prov, rec := ledgerSpawnLoop(t, [][]types.StreamEvent{
 		spawnCallsTurn(10, "first subtask"),
 		usageTurn(spawnTextTurn("first child done"), 90),
@@ -334,27 +347,28 @@ func TestSpawnSubAgent_SecondSpawnIsRefusedOnceTheBudgetIsSpent(t *testing.T) {
 	}, intPtr(100))
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	require.Equal(t, "budget_exceeded", runTrace.Outcome)
-	require.EqualValues(t, 3, prov.calls.Load(), "provider calls: parent, first child, parent")
+	must.NoError(err)
+	must.Equal("budget_exceeded", runTrace.Outcome)
+	must.EqualValues(3, prov.calls.Load(), "provider calls: parent, first child, parent")
 
 	results, errs := rec.snapshot()
-	require.Len(t, results, 1, "admitted spawns")
-	require.NotNil(t, results[0].TokenBudget, "admitted spawn budget")
-	require.Equal(t, 90, *results[0].TokenBudget)
+	must.Len(results, 1, "admitted spawns")
+	must.NotNil(results[0].TokenBudget, "admitted spawn budget")
+	must.Equal(90, *results[0].TokenBudget)
 
-	require.Len(t, errs, 1, "spawn refusals")
-	require.ErrorContains(t, errs[0], "token budget is spent")
+	must.Len(errs, 1, "spawn refusals")
+	must.ErrorContains(errs[0], "token budget is spent")
 
 	total, failed := countCalls(runTrace, "spawn_agent")
-	require.Equal(t, 2, total, "spawn_agent calls")
-	require.Equal(t, 1, failed, "failed spawn_agent calls")
+	must.Equal(2, total, "spawn_agent calls")
+	must.Equal(1, failed, "failed spawn_agent calls")
 
-	require.Equal(t, rec.ledger.Total(), runTrace.TokenUsage, "run usage equals the ledger total")
-	require.Equal(t, 110, runTrace.TokenUsage.Total())
+	must.Equal(rec.ledger.Total(), runTrace.TokenUsage, "run usage equals the ledger total")
+	must.Equal(110, runTrace.TokenUsage.Total())
 }
 
 func TestSpawnSubAgent_ChildSpawnedNearTheLimitMakesOneCall(t *testing.T) {
+	must := require.New(t)
 	loop, config, prov, rec := ledgerSpawnLoop(t, [][]types.StreamEvent{
 		spawnCallsTurn(99, "subtask"),
 		readTurn("a.txt", 10),
@@ -363,20 +377,21 @@ func TestSpawnSubAgent_ChildSpawnedNearTheLimitMakesOneCall(t *testing.T) {
 	}, intPtr(100))
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	require.EqualValues(t, 2, prov.calls.Load(), "provider calls: parent, one child call")
+	must.NoError(err)
+	must.EqualValues(2, prov.calls.Load(), "provider calls: parent, one child call")
 
 	results, _ := rec.snapshot()
-	require.Len(t, results, 1, "spawn results")
-	require.Equal(t, "budget_exceeded", results[0].Outcome, "child outcome")
-	require.Equal(t, 1, results[0].Turns, "child turns")
-	require.NotNil(t, results[0].TokenBudget, "child budget")
-	require.Equal(t, 1, *results[0].TokenBudget)
+	must.Len(results, 1, "spawn results")
+	must.Equal("budget_exceeded", results[0].Outcome, "child outcome")
+	must.Equal(1, results[0].Turns, "child turns")
+	must.NotNil(results[0].TokenBudget, "child budget")
+	must.Equal(1, *results[0].TokenBudget)
 
-	require.Equal(t, "budget_exceeded", runTrace.Outcome, "parent outcome")
+	must.Equal("budget_exceeded", runTrace.Outcome, "parent outcome")
 }
 
 func TestSpawnSubAgent_NinthSpawnReturnsAToolError(t *testing.T) {
+	must := require.New(t)
 	prompts := make([]string, maxSpawnsPerRun+1)
 	for i := range prompts {
 		prompts[i] = fmt.Sprintf("subtask %d", i+1)
@@ -389,21 +404,22 @@ func TestSpawnSubAgent_NinthSpawnReturnsAToolError(t *testing.T) {
 	loop, config, prov, rec := ledgerSpawnLoop(t, turns, nil)
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	require.Equal(t, "success", runTrace.Outcome)
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
 
 	results, errs := rec.snapshot()
-	require.Len(t, results, maxSpawnsPerRun, "admitted spawns")
-	require.Len(t, errs, 1, "spawn refusals")
-	require.ErrorContains(t, errs[0], "maximum per run")
-	require.EqualValues(t, maxSpawnsPerRun+2, prov.calls.Load(), "provider calls")
+	must.Len(results, maxSpawnsPerRun, "admitted spawns")
+	must.Len(errs, 1, "spawn refusals")
+	must.ErrorContains(errs[0], "maximum per run")
+	must.EqualValues(maxSpawnsPerRun+2, prov.calls.Load(), "provider calls")
 
 	total, failed := countCalls(runTrace, "spawn_agent")
-	require.Equal(t, maxSpawnsPerRun+1, total, "spawn_agent calls")
-	require.Equal(t, 1, failed, "failed spawn_agent calls")
+	must.Equal(maxSpawnsPerRun+1, total, "spawn_agent calls")
+	must.Equal(1, failed, "failed spawn_agent calls")
 }
 
 func TestPrepareSubAgent_RejectedSpawnDoesNotCountTowardTheCap(t *testing.T) {
+	must := require.New(t)
 	registry, _ := spawnParentRegistry(t, false)
 	parent := buildSubAgentTestLoop(&mockProvider{})
 	parent.Tools = registry
@@ -415,18 +431,19 @@ func TestPrepareSubAgent_RejectedSpawnDoesNotCountTowardTheCap(t *testing.T) {
 
 	for range maxSpawnsPerRun {
 		_, err := prepareSubAgent(context.Background(), parent, parentConfig, SubAgentConfig{Prompt: "p", Mode: "execution"})
-		require.Error(t, err, "a research parent spawned an execution child")
+		must.Error(err, "a research parent spawned an execution child")
 	}
 	for i := range maxSpawnsPerRun {
 		_, err := prepareSubAgent(context.Background(), parent, parentConfig, SubAgentConfig{Prompt: "p"})
-		require.NoError(t, err, "spawn %d", i+1)
+		must.NoError(err, "spawn %d", i+1)
 	}
 	_, err := prepareSubAgent(context.Background(), parent, parentConfig, SubAgentConfig{Prompt: "p"})
-	require.Error(t, err, "spawn %d past the cap", maxSpawnsPerRun+1)
-	require.Equal(t, maxSpawnsPerRun, ledger.spawns, "ledger spawns")
+	must.Error(err, "spawn %d past the cap", maxSpawnsPerRun+1)
+	must.Equal(maxSpawnsPerRun, ledger.spawns, "ledger spawns")
 }
 
 func TestPrepareSubAgent_ChildSharesTheParentLedger(t *testing.T) {
+	must := require.New(t)
 	parent := buildSubAgentTestLoop(&mockProvider{})
 	parentConfig := buildTestConfig()
 	parentConfig.MaxTokenBudget = intPtr(500)
@@ -435,30 +452,32 @@ func TestPrepareSubAgent_ChildSharesTheParentLedger(t *testing.T) {
 	ledger.Charge(types.TokenUsage{Input: 120})
 
 	run, err := prepareSubAgent(context.Background(), parent, parentConfig, SubAgentConfig{Prompt: "p"})
-	require.NoError(t, err)
-	require.NotNil(t, run.config.MaxTokenBudget, "child budget")
-	require.Equal(t, 380, *run.config.MaxTokenBudget, "child budget is the remainder")
-	require.Equal(t, 500, *parentConfig.MaxTokenBudget, "parent budget is unchanged")
+	must.NoError(err)
+	must.NotNil(run.config.MaxTokenBudget, "child budget")
+	must.Equal(380, *run.config.MaxTokenBudget, "child budget is the remainder")
+	must.Equal(500, *parentConfig.MaxTokenBudget, "parent budget is unchanged")
 
 	childLedger, childRelease := run.loop.acquireLedger(run.config)
 	childRelease()
-	require.Same(t, ledger, childLedger, "child loop shares the parent ledger")
-	require.Same(t, ledger, parent.activeLedger(), "child release keeps the parent ledger bound")
+	must.Same(ledger, childLedger, "child loop shares the parent ledger")
+	must.Same(ledger, parent.activeLedger(), "child release keeps the parent ledger bound")
 }
 
 // Without a run in progress there is no ledger to admit against; the
 // child keeps the parent's configured budget and builds its own ledger.
 func TestPrepareSubAgent_OutsideARunKeepsTheParentBudget(t *testing.T) {
+	must := require.New(t)
 	parent := buildSubAgentTestLoop(&mockProvider{})
 	parentConfig := buildTestConfig()
 	parentConfig.MaxTokenBudget = intPtr(500)
 	run, err := prepareSubAgent(context.Background(), parent, parentConfig, SubAgentConfig{Prompt: "p"})
-	require.NoError(t, err)
-	require.NotNil(t, run.config.MaxTokenBudget, "child budget")
-	require.Equal(t, 500, *run.config.MaxTokenBudget)
+	must.NoError(err)
+	must.NotNil(run.config.MaxTokenBudget, "child budget")
+	must.Equal(500, *run.config.MaxTokenBudget)
 }
 
 func TestRun_EachTopLevelRunGetsAFreshLedger(t *testing.T) {
+	must := require.New(t)
 	prov := &scriptedProvider{turns: [][]types.StreamEvent{
 		usageTurn(spawnTextTurn("first run"), 150),
 		usageTurn(spawnTextTurn("second run"), 10),
@@ -470,10 +489,10 @@ func TestRun_EachTopLevelRunGetsAFreshLedger(t *testing.T) {
 
 	for i, want := range []int{150, 10} {
 		runTrace, err := loop.Run(context.Background(), config)
-		require.NoError(t, err, "run %d", i+1)
-		require.Equal(t, "success", runTrace.Outcome, "run %d outcome", i+1)
-		require.Equal(t, want, runTrace.TokenUsage.Total(), "run %d tokens", i+1)
-		require.Nil(t, loop.activeLedger(), "run %d left its ledger bound", i+1)
+		must.NoError(err, "run %d", i+1)
+		must.Equal("success", runTrace.Outcome, "run %d outcome", i+1)
+		must.Equal(want, runTrace.TokenUsage.Total(), "run %d tokens", i+1)
+		must.Nil(loop.activeLedger(), "run %d left its ledger bound", i+1)
 	}
 }
 
@@ -515,6 +534,7 @@ func firstCompaction(compacted []bool) int {
 // by trial runs of the same script.
 func maxTokensCompactingOnFifthCall(t *testing.T, newProv func() provider.ProviderAdapter) int {
 	t.Helper()
+	must := require.New(t)
 	run := func(maxTokens int) []bool {
 		loop, _ := newReadFileLoop(newProv())
 		rec := &recordingStrategy{inner: contextpkg.NewSummariseStrategy(summaryTextProvider{}, "summary-model", 0)}
@@ -522,14 +542,14 @@ func maxTokensCompactingOnFifthCall(t *testing.T, newProv func() provider.Provid
 		config := buildTestConfig()
 		config.ContextStrategy.MaxTokens = maxTokens
 		_, err := loop.Run(context.Background(), config)
-		require.NoError(t, err, "calibration run")
+		must.NoError(err, "calibration run")
 		return rec.compacted
 	}
 	loop, _ := newReadFileLoop(newProv())
 	ample := &recordingStrategy{inner: contextpkg.NewSummariseStrategy(summaryTextProvider{}, "summary-model", 0)}
 	loop.Context = ample
 	_, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err, "calibration run")
+	must.NoError(err, "calibration run")
 
 	start := maxTokensCompactingFrom(t, ample.currentTokens, 4)
 	for m := start; m > start/2; m -= 25 {
@@ -537,11 +557,12 @@ func maxTokensCompactingOnFifthCall(t *testing.T, newProv func() provider.Provid
 			return m
 		}
 	}
-	require.Failf(t, "no maxTokens makes the summarise strategy first compact on the fifth call", "started from %d", start)
+	must.Failf("no maxTokens makes the summarise strategy first compact on the fifth call", "started from %d", start)
 	return 0
 }
 
 func TestRun_AuxiliaryUsageIsChargedAndReportedSeparately(t *testing.T) {
+	must := require.New(t)
 	newLoopProv := func() provider.ProviderAdapter {
 		return &scriptedProvider{turns: [][]types.StreamEvent{
 			readTurn("a.txt", 1000),
@@ -564,18 +585,20 @@ func TestRun_AuxiliaryUsageIsChargedAndReportedSeparately(t *testing.T) {
 	config.ContextStrategy = types.ContextStrategyConfig{Type: "summarise", MaxTokens: maxTokensCompactingOnFifthCall(t, newLoopProv)}
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	require.Equal(t, "success", runTrace.Outcome)
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
 
 	summaries := summaryProv.turn
-	require.NotZero(t, summaries, "the summarise strategy never called its provider")
+	must.NotZero(summaries, "the summarise strategy never called its provider")
 	wantAux := types.TokenUsage{Input: 300 * summaries, Output: 20 * summaries}
-	require.Equal(t, wantAux, runTrace.AuxiliaryTokens, "auxiliary usage")
+	must.Equal(wantAux, runTrace.AuxiliaryTokens, "auxiliary usage")
 	wantTotal := types.TokenUsage{Input: 6000 + wantAux.Input, Output: wantAux.Output}
-	require.Equal(t, wantTotal, runTrace.TokenUsage, "total is turns plus summary usage")
+	must.Equal(wantTotal, runTrace.TokenUsage, "total is turns plus summary usage")
 }
 
 func TestRun_AuxiliaryUsageCountsTowardTheBudget(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	newLoopProv := func() *spawnCountingProvider {
 		return &spawnCountingProvider{scriptedProvider: scriptedProvider{turns: [][]types.StreamEvent{
 			readTurn("a.txt", 100),
@@ -602,14 +625,15 @@ func TestRun_AuxiliaryUsageCountsTowardTheBudget(t *testing.T) {
 	config.MaxTokenBudget = intPtr(1000)
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	assert.Equal(t, "budget_exceeded", runTrace.Outcome, "the summary's usage should exhaust the budget")
+	must.NoError(err)
+	check.Equal("budget_exceeded", runTrace.Outcome, "the summary's usage should exhaust the budget")
 	// The summary runs inside the fifth turn's context preparation, so
 	// that turn's call is the documented one-call overshoot.
-	assert.EqualValues(t, 5, loopProv.calls.Load(), "loop provider calls")
+	check.EqualValues(5, loopProv.calls.Load(), "loop provider calls")
 }
 
 func TestSpawnAgent_DescriptionStatesTheSpawnCap(t *testing.T) {
+	must := require.New(t)
 	desc := builtins.SpawnAgentTool(nil).Description
-	require.Contains(t, desc, fmt.Sprintf("at most %d sub-agents", maxSpawnsPerRun))
+	must.Contains(desc, fmt.Sprintf("at most %d sub-agents", maxSpawnsPerRun))
 }

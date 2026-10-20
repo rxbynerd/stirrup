@@ -95,63 +95,71 @@ func TestRunConfig_EffectivePromptModel(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			tt.mutate(c)
-			require.Equal(t, tt.want, c.EffectivePromptModel())
+			must.Equal(tt.want, c.EffectivePromptModel())
 		})
 	}
 }
 
 func TestRunConfig_EffectivePromptModel_NilReceiverUsesDefault(t *testing.T) {
+	must := require.New(t)
 	var c *RunConfig
-	require.Equal(t, DefaultModel, c.EffectivePromptModel())
+	must.Equal(DefaultModel, c.EffectivePromptModel())
 }
 
 func TestValidateRunConfig_RejectsPromptModelWithSystemPromptOverride(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.SystemPromptOverride = "You are a helpful agent."
 	c.PromptBuilder.PromptModel = "claude-fable-5"
 	err := ValidateRunConfig(c)
-	require.Error(t, err)
-	require.ErrorContains(t, err, "promptBuilder.promptModel")
+	must.Error(err)
+	must.ErrorContains(err, "promptBuilder.promptModel")
 }
 
 func TestValidateRunConfig_RejectsTemplateWithSystemPromptOverride(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.SystemPromptOverride = "You are a helpful agent."
 	c.PromptBuilder.Template = "You are an agent for {{.Model}}."
 	err := ValidateRunConfig(c)
-	require.Error(t, err)
-	require.ErrorContains(t, err, "promptBuilder.template")
+	must.Error(err)
+	must.ErrorContains(err, "promptBuilder.template")
 }
 
 func TestValidateRunConfig_RejectsTemplateSyntaxError(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.PromptBuilder.Template = "broken {{if .Tier}} unclosed"
 	err := ValidateRunConfig(c)
-	require.Error(t, err)
-	require.ErrorContains(t, err, "text/template")
+	must.Error(err)
+	must.ErrorContains(err, "text/template")
 }
 
 // An uncompiled prompt from an external prompt-management system uses
 // "{{var}}" placeholders, which Go's template parser rejects as an
 // undefined function. Validation must catch this before run start.
 func TestValidateRunConfig_RejectsMustachePlaceholderInTemplate(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.PromptBuilder.Template = "You are an {{criticlevel}} movie critic"
 	err := ValidateRunConfig(c)
-	require.Error(t, err)
-	require.ErrorContains(t, err, "promptBuilder.template")
+	must.Error(err)
+	must.ErrorContains(err, "promptBuilder.template")
 }
 
 func TestValidateRunConfig_AcceptsValidTemplate(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.PromptBuilder.Template = `You are a coding agent.{{if eq .Tier "frontier"}} Act when ready.{{end}}`
-	require.NoError(t, ValidateRunConfig(c))
+	must.NoError(ValidateRunConfig(c))
 }
 
 func TestValidateRunConfig_AcceptsPromptModelAlone(t *testing.T) {
+	must := require.New(t)
 	c := validConfig()
 	c.PromptBuilder.PromptModel = "claude-fable-5"
-	require.NoError(t, ValidateRunConfig(c))
+	must.NoError(ValidateRunConfig(c))
 }

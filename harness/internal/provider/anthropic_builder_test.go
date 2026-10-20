@@ -114,21 +114,23 @@ func thinkingReplayHistory() []types.Message {
 // marshalled Anthropic request body.
 func assistantWireBlocks(t *testing.T, body []byte, idx int) []json.RawMessage {
 	t.Helper()
+	must := require.New(t)
 	var req struct {
 		Messages []struct {
 			Content []json.RawMessage `json:"content"`
 		} `json:"messages"`
 	}
-	require.NoError(t, json.Unmarshal(body, &req), "decode request body: %s", body)
-	require.Less(t, idx, len(req.Messages), "request body: %s", body)
+	must.NoError(json.Unmarshal(body, &req), "decode request body: %s", body)
+	must.Less(idx, len(req.Messages), "request body: %s", body)
 	return req.Messages[idx].Content
 }
 
 // anthropicWireBody marshals the request that buildAnthropicRequest builds for params.
 func anthropicWireBody(t *testing.T, params types.StreamParams, stream bool, q quirks.ProviderQuirks) []byte {
 	t.Helper()
+	must := require.New(t)
 	body, err := json.Marshal(buildAnthropicRequest(params, stream, q))
-	require.NoError(t, err, "marshal request")
+	must.NoError(err, "marshal request")
 	return body
 }
 
@@ -136,6 +138,7 @@ func anthropicWireBody(t *testing.T, params types.StreamParams, stream bool, q q
 // shape: "thinking" is present even when empty, the signature and redacted
 // data sit under their own keys, and block order is preserved.
 func TestBuildAnthropicRequest_ThinkingBlockWireShape(t *testing.T) {
+	must := require.New(t)
 	params := types.StreamParams{Model: "claude-sonnet-5-5", MaxTokens: 16, Messages: thinkingReplayHistory()}
 	body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
 
@@ -150,10 +153,11 @@ func TestBuildAnthropicRequest_ThinkingBlockWireShape(t *testing.T) {
 	for i, block := range raw {
 		got[i] = string(block)
 	}
-	require.Equal(t, want, got, "body: %s", body)
+	must.Equal(want, got, "body: %s", body)
 }
 
 func TestBuildAnthropicRequest_ThinkingTextReplayed(t *testing.T) {
+	must := require.New(t)
 	params := types.StreamParams{
 		Model:     "claude-opus-5-5",
 		MaxTokens: 16,
@@ -168,8 +172,8 @@ func TestBuildAnthropicRequest_ThinkingTextReplayed(t *testing.T) {
 	}
 	body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
 	got := assistantWireBlocks(t, body, 1)
-	require.NotEmpty(t, got, "assistant turn has no wire blocks")
-	require.JSONEq(t, `{"type":"thinking","thinking":"The user greets me.","signature":"sig"}`, string(got[0]))
+	must.NotEmpty(got, "assistant turn has no wire blocks")
+	must.JSONEq(`{"type":"thinking","thinking":"The user greets me.","signature":"sig"}`, string(got[0]))
 }
 
 // TestBuildAnthropicRequest_UnsignedThinkingDropped pins that a thinking or
@@ -177,6 +181,7 @@ func TestBuildAnthropicRequest_ThinkingTextReplayed(t *testing.T) {
 // recording-seeded history carries none), leaving the body byte-identical
 // to the same history without those blocks.
 func TestBuildAnthropicRequest_UnsignedThinkingDropped(t *testing.T) {
+	must := require.New(t)
 	withUnsigned := thinkingReplayHistory()
 	withUnsigned[1].Content = []types.ContentBlock{
 		{Type: "thinking", Text: "reasoning"},
@@ -193,7 +198,7 @@ func TestBuildAnthropicRequest_UnsignedThinkingDropped(t *testing.T) {
 	q := quirks.DefaultRegistry().Resolve("anthropic", "claude-sonnet-5-5")
 	gotBody := anthropicWireBody(t, types.StreamParams{Model: "claude-sonnet-5-5", MaxTokens: 16, Messages: withUnsigned}, true, q)
 	wantBody := anthropicWireBody(t, types.StreamParams{Model: "claude-sonnet-5-5", MaxTokens: 16, Messages: without}, true, q)
-	require.Equal(t, string(wantBody), string(gotBody), "unsigned thinking blocks leaked onto the wire")
+	must.Equal(string(wantBody), string(gotBody), "unsigned thinking blocks leaked onto the wire")
 }
 
 // thinkingOnlyTurnHistory has a middle assistant turn holding nothing but
@@ -209,12 +214,13 @@ func thinkingOnlyTurnHistory(signature string) []types.Message {
 
 func wireMessages(t *testing.T, history []types.Message) string {
 	t.Helper()
+	must := require.New(t)
 	q := quirks.DefaultRegistry().Resolve("anthropic", "claude-sonnet-5-5")
 	body := anthropicWireBody(t, types.StreamParams{Model: "claude-sonnet-5-5", MaxTokens: 16, Messages: history}, true, q)
 	var req struct {
 		Messages json.RawMessage `json:"messages"`
 	}
-	require.NoError(t, json.Unmarshal(body, &req))
+	must.NoError(json.Unmarshal(body, &req))
 	return string(req.Messages)
 }
 
@@ -230,15 +236,17 @@ func TestBuildAnthropicRequest_ThinkingOnlyTurnOmitted(t *testing.T) {
 	}
 	for name, history := range cases {
 		t.Run(name, func(t *testing.T) {
-			require.Equal(t, want, wireMessages(t, history))
+			must := require.New(t)
+			must.Equal(want, wireMessages(t, history))
 		})
 	}
 
 	t.Run("signed", func(t *testing.T) {
+		must := require.New(t)
 		wantSigned := `[{"role":"user","content":[{"type":"text","text":"Solve it."}]},` +
 			`{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"sig-A"}]},` +
 			`{"role":"user","content":[{"type":"text","text":"Continue."}]}]`
-		require.Equal(t, wantSigned, wireMessages(t, thinkingOnlyTurnHistory("sig-A")))
+		must.Equal(wantSigned, wireMessages(t, thinkingOnlyTurnHistory("sig-A")))
 	})
 }
 
@@ -250,11 +258,13 @@ func TestBuildAnthropicRequest_ThinkingOnlyTurnOmitted(t *testing.T) {
 func TestBuildAnthropicRequest_MatchesStream(t *testing.T) {
 	for _, tc := range anthropicBuilderCases() {
 		t.Run(tc.name, func(t *testing.T) {
+			check := assert.New(t)
+			must := require.New(t)
 			capturedCh := make(chan []byte, 1)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				// The handler runs on the server goroutine, so it reports with assert.
 				b, err := io.ReadAll(r.Body)
-				if !assert.NoError(t, err, "read body") {
+				if !check.NoError(err, "read body") {
 					return
 				}
 				capturedCh <- b
@@ -270,13 +280,13 @@ func TestBuildAnthropicRequest_MatchesStream(t *testing.T) {
 			adapter.baseURL = srv.URL
 
 			ch, err := adapter.Stream(context.Background(), tc.params)
-			require.NoError(t, err, "Stream()")
+			must.NoError(err, "Stream()")
 			for range ch {
 			}
 			captured := <-capturedCh
 
 			built := anthropicWireBody(t, tc.params, true, quirks.DefaultRegistry().Resolve("anthropic", tc.params.Model))
-			require.Equal(t, string(captured), string(built), "builder body must match the Stream wire body")
+			must.Equal(string(captured), string(built), "builder body must match the Stream wire body")
 		})
 	}
 }
@@ -286,16 +296,17 @@ func TestBuildAnthropicRequest_MatchesStream(t *testing.T) {
 // because "stream":false is only visible on the wire when the field has no
 // omitempty tag.
 func TestBuildAnthropicRequest_StreamFlag(t *testing.T) {
+	must := require.New(t)
 	params := types.StreamParams{
 		Model:     "claude-sonnet-4-6",
 		MaxTokens: 1024,
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
 	}
 	q := quirks.DefaultRegistry().Resolve("anthropic", params.Model)
-	require.True(t, buildAnthropicRequest(params, true, q).Stream, "stream=true argument")
-	require.False(t, buildAnthropicRequest(params, false, q).Stream, "stream=false argument")
-	require.Contains(t, string(anthropicWireBody(t, params, true, q)), `"stream":true`)
-	require.Contains(t, string(anthropicWireBody(t, params, false, q)), `"stream":false`)
+	must.True(buildAnthropicRequest(params, true, q).Stream, "stream=true argument")
+	must.False(buildAnthropicRequest(params, false, q).Stream, "stream=false argument")
+	must.Contains(string(anthropicWireBody(t, params, true, q)), `"stream":true`)
+	must.Contains(string(anthropicWireBody(t, params, false, q)), `"stream":false`)
 }
 
 // TestBuildAnthropicRequest_ToolChoiceByMode pins the tool_choice projection
@@ -333,15 +344,16 @@ func TestBuildAnthropicRequest_ToolChoiceByMode(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			params := base
 			params.ToolChoice = tc.choice
 			params.ToolChoiceName = tc.toolName
 			body := anthropicWireBody(t, params, true, q)
 			if tc.wantSubstr == "" {
-				require.NotContains(t, string(body), "tool_choice")
+				must.NotContains(string(body), "tool_choice")
 				return
 			}
-			require.Contains(t, string(body), tc.wantSubstr)
+			must.Contains(string(body), tc.wantSubstr)
 		})
 	}
 }
@@ -351,6 +363,7 @@ func TestBuildAnthropicRequest_ToolChoiceByMode(t *testing.T) {
 // (zero-value quirks), no tool_choice field is emitted even for a
 // ToolChoiceRequired request.
 func TestBuildAnthropicRequest_ToolChoiceUnsupportedCapability(t *testing.T) {
+	must := require.New(t)
 	params := types.StreamParams{
 		Model:      "claude-sonnet-4-6",
 		MaxTokens:  256,
@@ -358,7 +371,7 @@ func TestBuildAnthropicRequest_ToolChoiceUnsupportedCapability(t *testing.T) {
 		Messages:   []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
 	}
 	body := anthropicWireBody(t, params, true, quirks.ProviderQuirks{})
-	require.NotContains(t, string(body), "tool_choice", "zero-value capability must emit no tool_choice field")
+	must.NotContains(string(body), "tool_choice", "zero-value capability must emit no tool_choice field")
 }
 
 // TestBuildAnthropicRequest_ToolChoice_PartialCapability exercises the
@@ -366,6 +379,7 @@ func TestBuildAnthropicRequest_ToolChoiceUnsupportedCapability(t *testing.T) {
 // reaches: a capability with Supported=true but Required=false must omit
 // the field rather than fail open and emit {"type":"any"}.
 func TestBuildAnthropicRequest_ToolChoice_PartialCapability(t *testing.T) {
+	must := require.New(t)
 	params := types.StreamParams{
 		Model:      "claude-sonnet-4-6",
 		MaxTokens:  256,
@@ -374,7 +388,7 @@ func TestBuildAnthropicRequest_ToolChoice_PartialCapability(t *testing.T) {
 	}
 	q := quirks.ProviderQuirks{ToolChoice: quirks.ToolChoiceCapability{Supported: true, Required: false, NamedTool: true}}
 	body := anthropicWireBody(t, params, true, q)
-	require.NotContains(t, string(body), "tool_choice", "Required=false capability must emit no tool_choice field")
+	must.NotContains(string(body), "tool_choice", "Required=false capability must emit no tool_choice field")
 }
 
 // TestBuildAnthropicRequest_ThoughtSignatureDropped pins that a Gemini thought
@@ -382,6 +396,7 @@ func TestBuildAnthropicRequest_ToolChoice_PartialCapability(t *testing.T) {
 // returns. The Stream-level counterpart is
 // TestAnthropic_ThoughtSignatureNotLeakedToAnthropicAPI.
 func TestBuildAnthropicRequest_ThoughtSignatureDropped(t *testing.T) {
+	must := require.New(t)
 	const sig = "AY89SIGBLOB=="
 	params := types.StreamParams{
 		Model:     "claude-sonnet-4-6",
@@ -403,8 +418,8 @@ func TestBuildAnthropicRequest_ThoughtSignatureDropped(t *testing.T) {
 		},
 	}
 	body := anthropicWireBody(t, params, false, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
-	require.NotContains(t, string(body), "thought_signature", "Gemini-private state leaked into the Anthropic body")
-	require.NotContains(t, string(body), sig, "thought signature value leaked into the Anthropic body")
+	must.NotContains(string(body), "thought_signature", "Gemini-private state leaked into the Anthropic body")
+	must.NotContains(string(body), sig, "thought signature value leaked into the Anthropic body")
 }
 
 // TestBuildAnthropicRequest_OutputConfigEffort pins the output_config.effort
@@ -427,6 +442,7 @@ func TestBuildAnthropicRequest_OutputConfigEffort(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			params := types.StreamParams{
 				Model:           tc.model,
 				MaxTokens:       256,
@@ -435,10 +451,10 @@ func TestBuildAnthropicRequest_OutputConfigEffort(t *testing.T) {
 			}
 			body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", tc.model))
 			if tc.wantSubstr == "" {
-				require.NotContains(t, string(body), "output_config")
+				must.NotContains(string(body), "output_config")
 				return
 			}
-			require.Contains(t, string(body), tc.wantSubstr)
+			must.Contains(string(body), tc.wantSubstr)
 		})
 	}
 }
@@ -448,6 +464,7 @@ func TestBuildAnthropicRequest_OutputConfigEffort(t *testing.T) {
 // error returned from Stream, and no request reaches the API. "minimal"
 // is the provider-neutral level no Claude model accepts.
 func TestAnthropicStream_RejectsUnsupportedEffortBeforeSend(t *testing.T) {
+	must := require.New(t)
 	var hits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits++
@@ -464,8 +481,8 @@ func TestAnthropicStream_RejectsUnsupportedEffortBeforeSend(t *testing.T) {
 		ReasoningEffort: "minimal",
 		Messages:        []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
 	})
-	require.ErrorContains(t, err, `reasoningEffort "minimal" is not supported`)
-	require.Zero(t, hits, "server received requests")
+	must.ErrorContains(err, `reasoningEffort "minimal" is not supported`)
+	must.Zero(hits, "server received requests")
 }
 
 // TestBuildAnthropicRequest_ForcedToolChoiceDegradesToAuto pins the wire
@@ -487,6 +504,7 @@ func TestBuildAnthropicRequest_ForcedToolChoiceDegradesToAuto(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			params := types.StreamParams{
 				Model:             "claude-sonnet-5-5",
 				MaxTokens:         256,
@@ -498,10 +516,10 @@ func TestBuildAnthropicRequest_ForcedToolChoiceDegradesToAuto(t *testing.T) {
 			}
 			body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
 			if tc.want == "" {
-				require.NotContains(t, string(body), "tool_choice")
+				must.NotContains(string(body), "tool_choice")
 				return
 			}
-			require.Contains(t, string(body), tc.want)
+			must.Contains(string(body), tc.want)
 		})
 	}
 }
@@ -567,6 +585,7 @@ func TestBuildAnthropicRequest_PromptCaching(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			params := types.StreamParams{
 				Model:     "claude-sonnet-4-6",
 				System:    tc.system,
@@ -575,7 +594,7 @@ func TestBuildAnthropicRequest_PromptCaching(t *testing.T) {
 				CacheKey:  tc.cacheKey,
 			}
 			body := anthropicWireBody(t, params, true, tc.q)
-			require.Equal(t, tc.want, string(body))
+			must.Equal(tc.want, string(body))
 		})
 	}
 }
@@ -587,6 +606,7 @@ func TestBuildAnthropicRequest_PromptCaching(t *testing.T) {
 func TestBuildAnthropicRequest_PromptCaching_EnabledOnEveryModel(t *testing.T) {
 	for _, model := range []string{"claude-haiku-4-5-20251001", "claude-sonnet-4-6", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"} {
 		t.Run(model, func(t *testing.T) {
+			must := require.New(t)
 			params := types.StreamParams{
 				Model:     model,
 				System:    "sys",
@@ -596,12 +616,12 @@ func TestBuildAnthropicRequest_PromptCaching_EnabledOnEveryModel(t *testing.T) {
 			}
 			q := quirks.DefaultRegistry().Resolve("anthropic", model)
 			body, err := json.Marshal(buildAnthropicRequest(params, true, q))
-			require.NoError(t, err)
+			must.NoError(err)
 			for _, want := range []string{
 				`"system":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral"}}]`,
 				`"cache_control":{"type":"ephemeral"},"stream":true`,
 			} {
-				require.Contains(t, string(body), want)
+				must.Contains(string(body), want)
 			}
 		})
 	}
@@ -611,6 +631,7 @@ func TestBuildAnthropicRequest_PromptCaching_EnabledOnEveryModel(t *testing.T) {
 // forced tool_choice turn leaves both breakpoints byte-identical to an
 // auto turn, so escalation changes only the tool_choice field.
 func TestBuildAnthropicRequest_PromptCaching_IgnoresToolChoice(t *testing.T) {
+	must := require.New(t)
 	params := types.StreamParams{
 		Model:     "claude-sonnet-4-6",
 		System:    "sys",
@@ -628,24 +649,25 @@ func TestBuildAnthropicRequest_PromptCaching_IgnoresToolChoice(t *testing.T) {
 		p := params
 		p.ToolChoice = choice
 		body, err := json.Marshal(buildAnthropicRequest(p, true, q))
-		require.NoError(t, err)
+		must.NoError(err)
 		var fields map[string]json.RawMessage
-		require.NoError(t, json.Unmarshal(body, &fields))
+		must.NoError(json.Unmarshal(body, &fields))
 		return fields
 	}
 	auto := decode(types.ToolChoiceAuto)
 	required := decode(types.ToolChoiceRequired)
 
-	require.Contains(t, auto, "system")
-	require.Contains(t, auto, "cache_control")
-	require.NotContains(t, auto, "tool_choice")
-	require.JSONEq(t, `{"type":"any"}`, string(required["tool_choice"]))
+	must.Contains(auto, "system")
+	must.Contains(auto, "cache_control")
+	must.NotContains(auto, "tool_choice")
+	must.JSONEq(`{"type":"any"}`, string(required["tool_choice"]))
 
 	delete(required, "tool_choice")
-	require.Len(t, required, len(auto), "key sets differ beyond tool_choice")
+	must.Len(required, len(auto), "key sets differ beyond tool_choice")
 	for key, want := range auto {
 		t.Run(key, func(t *testing.T) {
-			require.Equal(t, string(want), string(required[key]))
+			must := require.New(t)
+			must.Equal(string(want), string(required[key]))
 		})
 	}
 }

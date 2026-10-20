@@ -18,6 +18,8 @@ import (
 // as it arrives, and the whole block, signature included, is emitted as
 // one event when it stops.
 func TestAnthropicAdapter_StreamThinkingBlock(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	body := joinLines(
 		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}`),
 		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"thinking_delta","thinking":"Let me "}}`),
@@ -38,22 +40,23 @@ func TestAnthropicAdapter_StreamThinkingBlock(t *testing.T) {
 	events := streamAnthropicSSE(t, body)
 
 	wantTypes := []string{"thinking_delta", "thinking_delta", "thinking", "text_delta", "tool_call", "message_complete"}
-	require.Len(t, events, len(wantTypes), "events: %+v", events)
-	assert.Equal(t, wantTypes, eventTypes(events))
+	must.Len(events, len(wantTypes), "events: %+v", events)
+	check.Equal(wantTypes, eventTypes(events))
 
-	assert.Equal(t, "Let me ", events[0].Text, "first thinking delta")
-	assert.Equal(t, "check.", events[1].Text, "second thinking delta")
-	assert.Empty(t, events[0].ThoughtSignature, "a thinking_delta carried a signature; only the complete block may")
-	assert.Empty(t, events[1].ThoughtSignature, "a thinking_delta carried a signature; only the complete block may")
-	assert.Equal(t, "Let me check.", events[2].Text, "complete thinking text")
-	assert.Equal(t, "EqQBCkYIBRgC", events[2].ThoughtSignature, "complete thinking signature")
-	assert.Empty(t, events[4].ThoughtSignature, "only thinking events may carry a signature")
+	check.Equal("Let me ", events[0].Text, "first thinking delta")
+	check.Equal("check.", events[1].Text, "second thinking delta")
+	check.Empty(events[0].ThoughtSignature, "a thinking_delta carried a signature; only the complete block may")
+	check.Empty(events[1].ThoughtSignature, "a thinking_delta carried a signature; only the complete block may")
+	check.Equal("Let me check.", events[2].Text, "complete thinking text")
+	check.Equal("EqQBCkYIBRgC", events[2].ThoughtSignature, "complete thinking signature")
+	check.Empty(events[4].ThoughtSignature, "only thinking events may carry a signature")
 }
 
 // TestAnthropicAdapter_StreamThinkingTextOnBlockStart pins that thinking
 // text carried by the block start is forwarded as a delta like the text
 // that follows it, so the deltas always add up to the complete block.
 func TestAnthropicAdapter_StreamThinkingTextOnBlockStart(t *testing.T) {
+	check := assert.New(t)
 	events := streamAnthropicSSE(t, joinLines(
 		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"thinking","thinking":"Start. ","signature":""}}`),
 		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"thinking_delta","thinking":"Then."}}`),
@@ -73,14 +76,16 @@ func TestAnthropicAdapter_StreamThinkingTextOnBlockStart(t *testing.T) {
 			block = ev.Text
 		}
 	}
-	assert.Equal(t, "Start. Then.", deltas.String(), "thinking deltas; events %v", eventTypes(events))
-	assert.Equal(t, "Start. Then.", block, "complete thinking block")
+	check.Equal("Start. Then.", deltas.String(), "thinking deltas; events %v", eventTypes(events))
+	check.Equal("Start. Then.", block, "complete thinking block")
 }
 
 // TestAnthropicAdapter_StreamInterleavedThinking pins event order when
 // thinking blocks follow text and tool_use blocks in one response: each
 // is emitted at its own block stop, between the events around it.
 func TestAnthropicAdapter_StreamInterleavedThinking(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	body := joinLines(
 		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}`),
 		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"thinking_delta","thinking":"first"}}`),
@@ -117,13 +122,13 @@ func TestAnthropicAdapter_StreamInterleavedThinking(t *testing.T) {
 		{Type: "tool_call", ID: "toolu_2"},
 		{Type: "message_complete"},
 	}
-	require.Len(t, events, len(want), "event types %v", eventTypes(events))
+	must.Len(events, len(want), "event types %v", eventTypes(events))
 	for i, w := range want {
 		got := events[i]
-		assert.Equal(t, w.Type, got.Type, "event %d type", i)
-		assert.Equal(t, w.Text, got.Text, "event %d text", i)
-		assert.Equal(t, w.ThoughtSignature, got.ThoughtSignature, "event %d signature", i)
-		assert.Equal(t, w.ID, got.ID, "event %d id", i)
+		check.Equal(w.Type, got.Type, "event %d type", i)
+		check.Equal(w.Text, got.Text, "event %d text", i)
+		check.Equal(w.ThoughtSignature, got.ThoughtSignature, "event %d signature", i)
+		check.Equal(w.ID, got.ID, "event %d id", i)
 	}
 }
 
@@ -131,15 +136,17 @@ func TestAnthropicAdapter_StreamInterleavedThinking(t *testing.T) {
 // empty redacted block: capture emits it with empty data, and egress never
 // resends it, since the API cannot verify an empty payload.
 func TestAnthropicAdapter_RedactedThinkingEmptyData(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	events := streamAnthropicSSE(t, joinLines(
 		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"redacted_thinking","data":""}}`),
 		makeSSE("content_block_stop", `{"index":0}`),
 		makeSSE("message_delta", `{"delta":{"stop_reason":"end_turn"}}`),
 		makeSSE("message_stop", `{}`),
 	))
-	require.Len(t, events, 2, "events %+v: want redacted_thinking with empty data, then message_complete", events)
-	require.Equal(t, "redacted_thinking", events[0].Type)
-	require.Empty(t, events[0].ThoughtSignature)
+	must.Len(events, 2, "events %+v: want redacted_thinking with empty data, then message_complete", events)
+	must.Equal("redacted_thinking", events[0].Type)
+	must.Empty(events[0].ThoughtSignature)
 
 	history := thinkingReplayHistory()
 	history[1].Content = []types.ContentBlock{
@@ -149,9 +156,9 @@ func TestAnthropicAdapter_RedactedThinkingEmptyData(t *testing.T) {
 	}
 	q := quirks.DefaultRegistry().Resolve("anthropic", "claude-sonnet-5-5")
 	body, err := json.Marshal(buildAnthropicRequest(types.StreamParams{Model: "claude-sonnet-5-5", MaxTokens: 16, Messages: history}, true, q))
-	require.NoError(t, err)
+	must.NoError(err)
 	for _, raw := range assistantWireBlocks(t, body, 1) {
-		assert.NotContains(t, string(raw), `"redacted_thinking"`, "empty redacted_thinking block reached the wire")
+		check.NotContains(string(raw), `"redacted_thinking"`, "empty redacted_thinking block reached the wire")
 	}
 }
 
@@ -159,6 +166,8 @@ func TestAnthropicAdapter_RedactedThinkingEmptyData(t *testing.T) {
 // on 5.x models: no thinking_delta arrives and only the signature carries
 // the content.
 func TestAnthropicAdapter_StreamThinkingOmittedText(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	body := joinLines(
 		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}`),
 		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"signature_delta","signature":"sig-omitted"}}`),
@@ -169,15 +178,17 @@ func TestAnthropicAdapter_StreamThinkingOmittedText(t *testing.T) {
 
 	events := streamAnthropicSSE(t, body)
 
-	require.Len(t, events, 2, "events: %+v", events)
-	assert.Equal(t, "thinking", events[0].Type)
-	assert.Empty(t, events[0].Text)
-	assert.Equal(t, "sig-omitted", events[0].ThoughtSignature)
+	must.Len(events, 2, "events: %+v", events)
+	check.Equal("thinking", events[0].Type)
+	check.Empty(events[0].Text)
+	check.Equal("sig-omitted", events[0].ThoughtSignature)
 }
 
 // TestAnthropicAdapter_StreamRedactedThinking pins that a redacted block's
 // data, which arrives whole on content_block_start, is emitted verbatim.
 func TestAnthropicAdapter_StreamRedactedThinking(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	body := joinLines(
 		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"redacted_thinking","data":"EmwKAhgBEgy3va"}}`),
 		makeSSE("content_block_stop", `{"index":0}`),
@@ -190,17 +201,18 @@ func TestAnthropicAdapter_StreamRedactedThinking(t *testing.T) {
 
 	events := streamAnthropicSSE(t, body)
 
-	require.Len(t, events, 3, "events: %+v", events)
-	assert.Equal(t, "redacted_thinking", events[0].Type)
-	assert.Equal(t, "EmwKAhgBEgy3va", events[0].ThoughtSignature)
-	assert.Empty(t, events[0].Text)
+	must.Len(events, 3, "events: %+v", events)
+	check.Equal("redacted_thinking", events[0].Type)
+	check.Equal("EmwKAhgBEgy3va", events[0].ThoughtSignature)
+	check.Empty(events[0].Text)
 }
 
 // jsonString returns n bytes of filler as a JSON string literal.
 func jsonString(t *testing.T, n int) string {
 	t.Helper()
+	must := require.New(t)
 	b, err := json.Marshal(strings.Repeat("a", n))
-	require.NoError(t, err)
+	must.NoError(err)
 	return string(b)
 }
 
@@ -252,18 +264,22 @@ func TestAnthropicAdapter_ThinkingSizeCap(t *testing.T) {
 	}
 	for name, body := range overflows {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
 			events := streamAnthropicSSE(t, joinLines(body, makeSSE("content_block_stop", `{"index":0}`), end))
 			last := events[len(events)-1]
-			require.Equal(t, "error", last.Type, "event types %v: stream should end on the thinking size-cap error", eventTypes(events))
-			require.ErrorContains(t, last.Error, "thinking blocks exceed")
+			must.Equal("error", last.Type, "event types %v: stream should end on the thinking size-cap error", eventTypes(events))
+			must.ErrorContains(last.Error, "thinking blocks exceed")
 
 			earlier := eventTypes(events[:len(events)-1])
-			assert.NotContains(t, earlier, "error", "event types %v: want exactly one error, ending the stream", eventTypes(events))
-			assert.NotContains(t, earlier, "message_complete", "event types %v: want exactly one error, ending the stream", eventTypes(events))
+			check.NotContains(earlier, "error", "event types %v: want exactly one error, ending the stream", eventTypes(events))
+			check.NotContains(earlier, "message_complete", "event types %v: want exactly one error, ending the stream", eventTypes(events))
 		})
 	}
 
 	t.Run("exactly at the cap", func(t *testing.T) {
+		must := require.New(t)
+		check := assert.New(t)
 		events := streamAnthropicSSE(t, joinLines(
 			thinkingStart,
 			delta(0, "thinking_delta", "thinking", half),
@@ -271,14 +287,15 @@ func TestAnthropicAdapter_ThinkingSizeCap(t *testing.T) {
 			makeSSE("content_block_stop", `{"index":0}`),
 			end,
 		))
-		require.Equal(t, []string{"thinking_delta", "thinking", "message_complete"}, eventTypes(events))
-		assert.Equal(t, capBytes, len(events[1].Text)+len(events[1].ThoughtSignature), "thinking event bytes")
+		must.Equal([]string{"thinking_delta", "thinking", "message_complete"}, eventTypes(events))
+		check.Equal(capBytes, len(events[1].Text)+len(events[1].ThoughtSignature), "thinking event bytes")
 	})
 }
 
 // TestAnthropicAdapter_OpenContentBlockCap pins the bound on content blocks
 // started and not yet stopped, while sequential blocks stay unbounded.
 func TestAnthropicAdapter_OpenContentBlockCap(t *testing.T) {
+	must := require.New(t)
 	var open, sequential []string
 	for i := 0; i <= maxOpenContentBlocks; i++ {
 		start := makeSSE("content_block_start", fmt.Sprintf(`{"index":%d,"content_block":{"type":"text","text":""}}`, i))
@@ -291,10 +308,10 @@ func TestAnthropicAdapter_OpenContentBlockCap(t *testing.T) {
 	)
 
 	events := streamAnthropicSSE(t, joinLines(joinLines(open...), end))
-	require.Len(t, events, 1, "event types %v", eventTypes(events))
-	require.Equal(t, "error", events[0].Type)
-	require.ErrorContains(t, events[0].Error, "content blocks open at once")
+	must.Len(events, 1, "event types %v", eventTypes(events))
+	must.Equal("error", events[0].Type)
+	must.ErrorContains(events[0].Error, "content blocks open at once")
 
 	events = streamAnthropicSSE(t, joinLines(joinLines(sequential...), end))
-	require.Equal(t, []string{"message_complete"}, eventTypes(events), "sequential blocks")
+	must.Equal([]string{"message_complete"}, eventTypes(events), "sequential blocks")
 }

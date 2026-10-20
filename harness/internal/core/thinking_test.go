@@ -20,6 +20,7 @@ import (
 // persisted blocks and the bytes the transport received.
 func runStreamEvents(t *testing.T, events []types.StreamEvent) ([]types.ContentBlock, string) {
 	t.Helper()
+	must := require.New(t)
 	var transportBuf bytes.Buffer
 	tp := transport.NewStdioTransport(&transportBuf, &bytes.Buffer{})
 	ch := make(chan types.StreamEvent, len(events))
@@ -28,7 +29,7 @@ func runStreamEvents(t *testing.T, events []types.StreamEvent) ([]types.ContentB
 	}
 	close(ch)
 	result, err := streamEventsToResult(context.Background(), ch, tp, true, ignoreEmitFailure, nil)
-	require.NoError(t, err)
+	must.NoError(err)
 	return result.Blocks, transportBuf.String()
 }
 
@@ -41,6 +42,7 @@ func recordStreamEvents(t *testing.T, events []types.StreamEvent) ([]types.Conte
 
 func recordStreamEventsWith(t *testing.T, events []types.StreamEvent, streamThinking bool) ([]types.ContentBlock, []types.HarnessEvent) {
 	t.Helper()
+	must := require.New(t)
 	rec := &recordingTransport{}
 	ch := make(chan types.StreamEvent, len(events))
 	for _, ev := range events {
@@ -48,7 +50,7 @@ func recordStreamEventsWith(t *testing.T, events []types.StreamEvent, streamThin
 	}
 	close(ch)
 	result, err := streamEventsToResult(context.Background(), ch, rec, streamThinking, ignoreEmitFailure, nil)
-	require.NoError(t, err)
+	must.NoError(err)
 	return result.Blocks, rec.events
 }
 
@@ -68,6 +70,7 @@ func thinkingDeltaTexts(events []types.HarnessEvent) []string {
 // that a block arriving whole reaches the transport as one thinking_delta
 // in stream position, while redacted reasoning and signatures never do.
 func TestStreamEventsToResult_ThinkingBlocksPersistedInOrder(t *testing.T) {
+	must := require.New(t)
 	visible := []types.StreamEvent{
 		{Type: "text_delta", Text: "Reading."},
 		{Type: "tool_call", ID: "tc_1", Name: "read_file", Input: map[string]any{"path": "a"}},
@@ -105,11 +108,12 @@ func TestStreamEventsToResult_ThinkingBlocksPersistedInOrder(t *testing.T) {
 		}
 		return out
 	}
-	require.Equal(t, fields(want), fields(blocks))
+	must.Equal(fields(want), fields(blocks))
 
 	for _, secret := range []string{"sig-A", "sig-B", "data-C"} {
 		t.Run("transport omits "+secret, func(t *testing.T) {
-			require.NotContains(t, withThinking, secret, "signatures and redacted data stay out of the transport")
+			must := require.New(t)
+			must.NotContains(withThinking, secret, "signatures and redacted data stay out of the transport")
 		})
 	}
 
@@ -119,8 +123,8 @@ func TestStreamEventsToResult_ThinkingBlocksPersistedInOrder(t *testing.T) {
 		gotTypes = append(gotTypes, ev.Type)
 	}
 	wantTypes := []string{"thinking_delta", "text_delta", "thinking_delta", "tool_call", "tool_call"}
-	require.Equal(t, wantTypes, gotTypes)
-	require.Equal(t, []string{"plan A", "plan B"}, thinkingDeltaTexts(emitted))
+	must.Equal(wantTypes, gotTypes)
+	must.Equal([]string{"plan A", "plan B"}, thinkingDeltaTexts(emitted))
 }
 
 // TestStreamEventsToResult_ThinkingDeltasForwardedOnce pins that streamed
@@ -128,6 +132,7 @@ func TestStreamEventsToResult_ThinkingBlocksPersistedInOrder(t *testing.T) {
 // closes them is not forwarded again, while a later block that arrives
 // whole is still forwarded, and an empty block produces no event.
 func TestStreamEventsToResult_ThinkingDeltasForwardedOnce(t *testing.T) {
+	must := require.New(t)
 	blocks, emitted := recordStreamEvents(t, []types.StreamEvent{
 		{Type: "thinking_delta", Text: "Let me "},
 		{Type: "thinking_delta", Text: "check."},
@@ -138,7 +143,7 @@ func TestStreamEventsToResult_ThinkingDeltasForwardedOnce(t *testing.T) {
 		{Type: "message_complete", StopReason: "end_turn"},
 	})
 
-	require.Equal(t, []string{"Let me ", "check.", "whole block"}, thinkingDeltaTexts(emitted))
+	must.Equal([]string{"Let me ", "check.", "whole block"}, thinkingDeltaTexts(emitted))
 
 	var thinkingBlocks int
 	for _, b := range blocks {
@@ -146,7 +151,7 @@ func TestStreamEventsToResult_ThinkingDeltasForwardedOnce(t *testing.T) {
 			thinkingBlocks++
 		}
 	}
-	require.Equal(t, 3, thinkingBlocks, "deltas must not add history")
+	must.Equal(3, thinkingBlocks, "deltas must not add history")
 }
 
 // TestStreamEventsToResult_ThinkingNotForwardedWhenOff pins that with
@@ -154,6 +159,7 @@ func TestStreamEventsToResult_ThinkingDeltasForwardedOnce(t *testing.T) {
 // whole reach the transport, while every thinking block is still persisted
 // and answer text is still forwarded.
 func TestStreamEventsToResult_ThinkingNotForwardedWhenOff(t *testing.T) {
+	must := require.New(t)
 	blocks, emitted := recordStreamEventsWith(t, []types.StreamEvent{
 		{Type: "thinking_delta", Text: "Let me "},
 		{Type: "thinking_delta", Text: "check."},
@@ -163,8 +169,8 @@ func TestStreamEventsToResult_ThinkingNotForwardedWhenOff(t *testing.T) {
 		{Type: "message_complete", StopReason: "end_turn"},
 	}, false)
 
-	require.Empty(t, thinkingDeltaTexts(emitted))
-	require.Equal(t, []string{"text_delta"}, eventTypeList(emitted))
+	must.Empty(thinkingDeltaTexts(emitted))
+	must.Equal([]string{"text_delta"}, eventTypeList(emitted))
 
 	var thinkingTexts []string
 	for _, b := range blocks {
@@ -172,21 +178,22 @@ func TestStreamEventsToResult_ThinkingNotForwardedWhenOff(t *testing.T) {
 			thinkingTexts = append(thinkingTexts, b.Text)
 		}
 	}
-	require.Equal(t, []string{"Let me check.", "whole block"}, thinkingTexts)
+	must.Equal([]string{"Let me check.", "whole block"}, thinkingTexts)
 }
 
 func TestThinkingBlocks_SkippedByTextAndToolCallReaders(t *testing.T) {
+	must := require.New(t)
 	blocks := []types.ContentBlock{
 		{Type: "thinking", Text: "private reasoning", ThoughtSignature: "sig"},
 		{Type: "text", Text: "answer"},
 		{Type: "redacted_thinking", ThoughtSignature: "data"},
 		{Type: "tool_use", ID: "tc_1", Name: "read_file", Input: json.RawMessage(`{}`)},
 	}
-	require.Equal(t, "answer", lastAssistantText(blocks))
+	must.Equal("answer", lastAssistantText(blocks))
 
 	calls := collectToolCalls(blocks, nil)
-	require.Len(t, calls, 1)
-	require.Equal(t, "tc_1", calls[0].ID)
+	must.Len(calls, 1)
+	must.Equal("tc_1", calls[0].ID)
 }
 
 // TestEstimateCurrentTokens_CountsThinkingTextNotSignature pins that a
@@ -197,6 +204,7 @@ func TestEstimateCurrentTokens_CountsThinkingTextNotSignature(t *testing.T) {
 	sig := strings.Repeat("s", 400)
 
 	t.Run("thinking blocks count their text only", func(t *testing.T) {
+		must := require.New(t)
 		thinking := []types.Message{{
 			Role: "assistant",
 			Content: []types.ContentBlock{
@@ -205,16 +213,17 @@ func TestEstimateCurrentTokens_CountsThinkingTextNotSignature(t *testing.T) {
 			},
 		}}
 		// 4 (msg) + 3 + 10 (thinking block and its text) + 3 (redacted block)
-		require.Equal(t, 20, estimateCurrentTokens(thinking, true))
+		must.Equal(20, estimateCurrentTokens(thinking, true))
 	})
 
 	t.Run("signature on a text block is not counted", func(t *testing.T) {
+		must := require.New(t)
 		gemini := []types.Message{{
 			Role:    "assistant",
 			Content: []types.ContentBlock{{Type: "text", Text: strings.Repeat("x", 40), ThoughtSignature: sig}},
 		}}
 		// 4 (msg) + 3 (block) + 10 (text); the signature is not counted.
-		require.Equal(t, 17, estimateCurrentTokens(gemini, true))
+		must.Equal(17, estimateCurrentTokens(gemini, true))
 	})
 }
 
@@ -289,20 +298,22 @@ func thinkingSignatures(messages []types.Message) []string {
 // and every one of them is stripped from a request whose history a context
 // strategy rewrote.
 func TestLoop_ReplaysThinkingUntilContextRewrite(t *testing.T) {
+	must := require.New(t)
 	prov := &thinkingParamsProvider{turns: 3}
 	loop := buildTestLoop(nil)
 	loop.Provider = prov
 	loop.Context = &rewriteFromCallStrategy{compactFrom: 3}
 
 	_, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	require.Len(t, prov.sent, 4)
+	must.NoError(err)
+	must.Len(prov.sent, 4)
 
-	require.Empty(t, thinkingSignatures(prov.sent[0]), "request 1 precedes any thinking")
-	require.Equal(t, []string{"sig-1"}, thinkingSignatures(prov.sent[1]), "request 2 replays sig-1")
+	must.Empty(thinkingSignatures(prov.sent[0]), "request 1 precedes any thinking")
+	must.Equal([]string{"sig-1"}, thinkingSignatures(prov.sent[1]), "request 2 replays sig-1")
 	for i := 2; i < len(prov.sent); i++ {
 		t.Run(fmt.Sprintf("request %d after rewrite", i+1), func(t *testing.T) {
-			require.Empty(t, thinkingSignatures(prov.sent[i]))
+			must := require.New(t)
+			must.Empty(thinkingSignatures(prov.sent[i]))
 		})
 	}
 
@@ -315,24 +326,26 @@ func TestLoop_ReplaysThinkingUntilContextRewrite(t *testing.T) {
 			}
 		}
 	}
-	require.Equal(t, 3, toolUses, "tool_use blocks in request 4")
+	must.Equal(3, toolUses, "tool_use blocks in request 4")
 }
 
 // TestLoop_StripsThinkingForRestOfRunAfterOneRewrite pins that a single
 // rewrite ends thinking replay for the rest of the run, even when the
 // strategy reports no compaction on later turns.
 func TestLoop_StripsThinkingForRestOfRunAfterOneRewrite(t *testing.T) {
+	must := require.New(t)
 	prov := &thinkingParamsProvider{turns: 3}
 	loop := buildTestLoop(nil)
 	loop.Provider = prov
 	loop.Context = &rewriteFromCallStrategy{compactFrom: 2, compactUntil: 2}
 
 	_, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	require.Len(t, prov.sent, 4)
+	must.NoError(err)
+	must.Len(prov.sent, 4)
 	for i := 1; i < len(prov.sent); i++ {
 		t.Run(fmt.Sprintf("request %d after rewrite", i+1), func(t *testing.T) {
-			require.Empty(t, thinkingSignatures(prov.sent[i]), "thinking after the run's rewrite")
+			must := require.New(t)
+			must.Empty(thinkingSignatures(prov.sent[i]), "thinking after the run's rewrite")
 		})
 	}
 }
@@ -379,6 +392,7 @@ func (discardFileWriter) WriteFile(context.Context, string, string) error { retu
 // over-budget strategy first compacts on call index first.
 func maxTokensCompactingFrom(t *testing.T, estimates []int, first int) int {
 	t.Helper()
+	must := require.New(t)
 	lo, hi := estimates[first-1], estimates[first]
 	found := 0
 	for m := lo; m <= 2*hi+defaultReserveForResponse; m++ {
@@ -387,7 +401,7 @@ func maxTokensCompactingFrom(t *testing.T, estimates []int, first int) int {
 			found = m
 		}
 	}
-	require.NotZero(t, found, "no maxTokens separates estimates %d and %d", lo, hi)
+	must.NotZero(found, "no maxTokens separates estimates %d and %d", lo, hi)
 	return found
 }
 
@@ -396,8 +410,9 @@ func maxTokensCompactingFrom(t *testing.T, estimates []int, first int) int {
 // fits its budget.
 func registerLargeTestTool(t *testing.T, loop *AgenticLoop) {
 	t.Helper()
+	must := require.New(t)
 	registry, ok := loop.Tools.(*tool.Registry)
-	require.True(t, ok, "loop Tools is %T, want *tool.Registry", loop.Tools)
+	must.True(ok, "loop Tools is %T, want *tool.Registry", loop.Tools)
 	registry.Register(&tool.Tool{
 		Name:        "test_tool",
 		Description: "A test tool",
@@ -432,13 +447,14 @@ func TestLoop_RealStrategiesStripThinkingAfterCompaction(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			calibration := &recordingStrategy{inner: tc.build()}
 			loop := buildTestLoop(nil)
 			registerLargeTestTool(t, loop)
 			loop.Provider = &thinkingParamsProvider{turns: turns}
 			loop.Context = calibration
 			_, err := loop.Run(context.Background(), buildTestConfig())
-			require.NoError(t, err, "calibration run")
+			must.NoError(err, "calibration run")
 
 			prov := &thinkingParamsProvider{turns: turns}
 			rec := &recordingStrategy{inner: tc.build()}
@@ -449,19 +465,20 @@ func TestLoop_RealStrategiesStripThinkingAfterCompaction(t *testing.T) {
 			loop.Provider = prov
 			loop.Context = rec
 			_, err = loop.Run(context.Background(), cfg)
-			require.NoError(t, err)
-			require.Len(t, prov.sent, turns+1)
+			must.NoError(err)
+			must.Len(prov.sent, turns+1)
 
 			for i := range prov.sent {
 				t.Run(fmt.Sprintf("call %d", i), func(t *testing.T) {
-					require.Equal(t, i >= tc.first, rec.compacted[i], "compacted")
-					require.Equal(t, i, rec.storedThinking[i], "thinking blocks in stored history")
+					must := require.New(t)
+					must.Equal(i >= tc.first, rec.compacted[i], "compacted")
+					must.Equal(i, rec.storedThinking[i], "thinking blocks in stored history")
 
 					wantSent := i
 					if i >= tc.first {
 						wantSent = 0
 					}
-					require.Len(t, thinkingSignatures(prov.sent[i]), wantSent, "thinking blocks in request %d", i+1)
+					must.Len(thinkingSignatures(prov.sent[i]), wantSent, "thinking blocks in request %d", i+1)
 				})
 			}
 		})

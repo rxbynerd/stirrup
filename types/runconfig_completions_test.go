@@ -31,9 +31,10 @@ func TestCompletionValues_SortedAndNonEmpty(t *testing.T) {
 		{"guard rails", ValidGuardRailTypeValues()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			require.NotEmpty(t, tc.got)
-			require.True(t, sort.StringsAreSorted(tc.got), "not sorted: %v", tc.got)
-			require.NotContains(t, tc.got, "", "contains an empty string")
+			must := require.New(t)
+			must.NotEmpty(tc.got)
+			must.True(sort.StringsAreSorted(tc.got), "not sorted: %v", tc.got)
+			must.NotContains(tc.got, "", "contains an empty string")
 		})
 	}
 }
@@ -65,6 +66,7 @@ func TestCompletionValues_MatchValidatorMaps(t *testing.T) {
 		{name: "guard rails", backing: validGuardRailTypes, got: ValidGuardRailTypeValues()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			expected := make(map[string]struct{}, len(tc.backing))
 			for k := range tc.backing {
 				if tc.filterEmpty && k == "" {
@@ -72,9 +74,9 @@ func TestCompletionValues_MatchValidatorMaps(t *testing.T) {
 				}
 				expected[k] = struct{}{}
 			}
-			require.Len(t, tc.got, len(expected), "backing map %v", tc.backing)
+			must.Len(tc.got, len(expected), "backing map %v", tc.backing)
 			for _, v := range tc.got {
-				require.Contains(t, expected, v, "helper returned %q not present in backing map", v)
+				must.Contains(expected, v, "helper returned %q not present in backing map", v)
 			}
 		})
 	}

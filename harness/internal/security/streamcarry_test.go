@@ -83,6 +83,7 @@ const secretWindow = 16
 // does not also release elsewhere.
 func assertNoSecretWindows(t *testing.T, input, got string) {
 	t.Helper()
+	must := require.New(t)
 	whole, ranges, _ := ScrubWithSpans(input)
 	windows := func(s string) map[string]bool {
 		set := map[string]bool{}
@@ -95,7 +96,7 @@ func assertNoSecretWindows(t *testing.T, input, got string) {
 	for _, r := range ranges {
 		for i := r.Start; i+secretWindow <= r.End; i++ {
 			w := input[i : i+secretWindow]
-			require.False(t, released[w] && !allowed[w], "released text holds %q, redacted at offset %d of the input", w, i)
+			must.False(released[w] && !allowed[w], "released text holds %q, redacted at offset %d of the input", w, i)
 		}
 	}
 }
@@ -139,7 +140,8 @@ func TestStreamCarry_EverySecretPatternHasFixture(t *testing.T) {
 	}
 	for _, p := range SecretPatterns() {
 		t.Run(p.Name, func(t *testing.T) {
-			require.Contains(t, have, p.Name, "add a stream fixture for this pattern")
+			must := require.New(t)
+			must.Contains(have, p.Name, "add a stream fixture for this pattern")
 		})
 	}
 }
@@ -151,15 +153,16 @@ func TestStreamCarry_EverySecretPatternHasFixture(t *testing.T) {
 func TestStreamCarry_SentinelNeverBeginsAMatch(t *testing.T) {
 	for i, p := range secretPatterns {
 		t.Run(p.name, func(t *testing.T) {
+			must := require.New(t)
 			re, err := syntax.Parse(p.re.String(), syntax.Perl)
-			require.NoError(t, err)
+			must.NoError(err)
 			first := firstRunes(re.Simplify())
-			require.NotNil(t, first, "the pattern can match the empty string or its first rune is unbounded")
-			require.False(t, slices.ContainsFunc(first, func(r [2]rune) bool { return r[0] <= '_' && '_' <= r[1] }), "the pattern can begin with %q", '_')
+			must.NotNil(first, "the pattern can match the empty string or its first rune is unbounded")
+			must.False(slices.ContainsFunc(first, func(r [2]rune) bool { return r[0] <= '_' && '_' <= r[1] }), "the pattern can begin with %q", '_')
 			for _, f := range prefixFixtures() {
 				in := "_" + f.text
 				loc := streamPrefixes[i].FindStringIndex(in)
-				require.False(t, loc != nil && loc[0] == 0, "a prefix matches from the sentinel in %q", in)
+				must.False(loc != nil && loc[0] == 0, "a prefix matches from the sentinel in %q", in)
 			}
 		})
 	}
@@ -228,6 +231,7 @@ func firstRunes(re *syntax.Regexp) [][2]rune {
 // guarantee for each pattern on its own: whichever byte a secret is split
 // at, the released pieces equal the whole secret scrubbed.
 func TestStreamCarry_EveryPrefixOfEveryFixtureIsHeld(t *testing.T) {
+	must := require.New(t)
 	for _, f := range prefixFixtures() {
 		want := Scrub(f.text)
 		step := 1
@@ -236,7 +240,7 @@ func TestStreamCarry_EveryPrefixOfEveryFixtureIsHeld(t *testing.T) {
 		}
 		for k := 1; k < len(f.text); k += step {
 			got, _ := streamThroughCarry([]string{f.text[:k], f.text[k:]})
-			require.Equal(t, want, got, "%s split at %d of %d", f.pattern, k, len(f.text))
+			must.Equal(want, got, "%s split at %d of %d", f.pattern, k, len(f.text))
 		}
 	}
 }
@@ -244,6 +248,7 @@ func TestStreamCarry_EveryPrefixOfEveryFixtureIsHeld(t *testing.T) {
 // TestStreamCarry_SecretSplitAcrossTwoFragmentsIsScrubbed checks the same
 // guarantee with prose around each secret.
 func TestStreamCarry_SecretSplitAcrossTwoFragmentsIsScrubbed(t *testing.T) {
+	must := require.New(t)
 	for _, f := range streamFixtures() {
 		input := "The model wrote this out: " + f.text + " and then went on with ordinary prose."
 		start := strings.Index(input, f.text)
@@ -251,8 +256,8 @@ func TestStreamCarry_SecretSplitAcrossTwoFragmentsIsScrubbed(t *testing.T) {
 		step := splitStep(len(f.text))
 		for split := start + 1; split < start+len(f.text); split += step {
 			got, _ := streamThroughCarry([]string{input[:split], input[split:]})
-			require.NotContains(t, got, f.sensitive, "%s split at %d: secret survived", f.pattern, split-start)
-			require.Equal(t, want, got, "%s split at %d", f.pattern, split-start)
+			must.NotContains(got, f.sensitive, "%s split at %d: secret survived", f.pattern, split-start)
+			must.Equal(want, got, "%s split at %d", f.pattern, split-start)
 		}
 	}
 }
@@ -268,10 +273,11 @@ func TestStreamCarry_JWTWithUnderscoreSplitBeforeSecondDot(t *testing.T) {
 	secondDot := start + strings.LastIndexByte(jwt, '.')
 	for _, size := range []int{1, 7} {
 		t.Run(fmt.Sprintf("%d-byte fragments", size), func(t *testing.T) {
+			must := require.New(t)
 			for k := start + 1; k <= secondDot; k++ {
 				fragments := append(chunk(input[:k], size), chunk(input[k:], size)...)
 				got, _ := streamThroughCarry(fragments)
-				require.Equal(t, want, got, "split at %d", k-start)
+				must.Equal(want, got, "split at %d", k-start)
 			}
 		})
 	}
@@ -281,6 +287,7 @@ func TestStreamCarry_JWTWithUnderscoreSplitBeforeSecondDot(t *testing.T) {
 // the two-fragment case does not: several secrets, small and uneven
 // fragments, and secrets back to back.
 func TestStreamCarry_RandomFragmentsMatchWholeStreamScrub(t *testing.T) {
+	must := require.New(t)
 	rng := rand.New(rand.NewSource(5)) //nolint:gosec // deterministic test input, not a security decision
 	fixtures := prefixFixtures()
 	words := []string{"the", "result", "is", "ready.", "see", "below:", "\n", "ok,", "café", "naïve", "日本語"}
@@ -307,11 +314,11 @@ func TestStreamCarry_RandomFragmentsMatchWholeStreamScrub(t *testing.T) {
 		}
 		got, pieces := streamThroughCarry(fragments)
 		for _, f := range placed {
-			require.NotContains(t, got, f.sensitive, "seed %d: %s survived streaming", seed, f.pattern)
+			must.NotContains(got, f.sensitive, "seed %d: %s survived streaming", seed, f.pattern)
 		}
-		require.Equal(t, Scrub(input), got, "seed %d: streamed output diverges from whole-stream Scrub", seed)
+		must.Equal(Scrub(input), got, "seed %d: streamed output diverges from whole-stream Scrub", seed)
 		for _, p := range pieces {
-			require.True(t, utf8.ValidString(p), "seed %d: piece %q splits a rune", seed, p)
+			must.True(utf8.ValidString(p), "seed %d: piece %q splits a rune", seed, p)
 		}
 	}
 }
@@ -321,6 +328,7 @@ func TestStreamCarry_RandomFragmentsMatchWholeStreamScrub(t *testing.T) {
 // earlier pattern's placeholder hides it, since later text can remove that
 // placeholder and expose the later match.
 func TestStreamCarry_InterleavedPatternsMatchWholeStreamScrub(t *testing.T) {
+	must := require.New(t)
 	atoms := []string{"ya29.", "Bearer ", "Basic ", "AKIA", "ABCDEFGHIJKLMNOP", "sk-", "sk-ant-", "secret://", "eyJ", ".", " ", "\n",
 		"-----BEGIN ", "RSA PRIVATE KEY-----\n", "-----END RSA PRIVATE KEY-----", "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=", "x", "_",
 		"ghp_", "token=", "0123456789abcdef0123456789abcdef", "api-key: ", "xoxb-", "AIza", "=", "\"", ":"}
@@ -338,7 +346,7 @@ func TestStreamCarry_InterleavedPatternsMatchWholeStreamScrub(t *testing.T) {
 			rest = rest[n:]
 		}
 		got, _ := streamThroughCarry(fragments)
-		require.Equal(t, Scrub(input), got, "seed %d: input %q", seed, input)
+		must.Equal(Scrub(input), got, "seed %d: input %q", seed, input)
 	}
 }
 
@@ -346,6 +354,7 @@ func TestStreamCarry_InterleavedPatternsMatchWholeStreamScrub(t *testing.T) {
 // carry adds to text no pattern can match: only a short word-fragment
 // that could begin a keyword is ever held.
 func TestStreamCarry_ReleasesOrdinaryProseImmediately(t *testing.T) {
+	must := require.New(t)
 	var c StreamCarry
 	released := 0
 	prose := strings.Repeat("The quick brown fox jumps over the lazy dog. ", 40)
@@ -354,16 +363,17 @@ func TestStreamCarry_ReleasesOrdinaryProseImmediately(t *testing.T) {
 		out, _ := c.Push(prose[i:end])
 		released += len(out)
 		held := end - released
-		require.LessOrEqual(t, held, 10, "after %d bytes the carry holds too much prose", end)
+		must.LessOrEqual(held, 10, "after %d bytes the carry holds too much prose", end)
 	}
 	rest, _ := c.Flush()
-	require.Equal(t, len(prose), released+len(rest), "released %d bytes and flushed %d", released, len(rest))
+	must.Equal(len(prose), released+len(rest), "released %d bytes and flushed %d", released, len(rest))
 }
 
 // TestStreamCarry_TruncatedPEMThenProseDoesNotLeakBody pins that an
 // unterminated key is released as soon as prose shows no END line can
 // follow, with its header, so the scrubbed piece still redacts the body.
 func TestStreamCarry_TruncatedPEMThenProseDoesNotLeakBody(t *testing.T) {
+	must := require.New(t)
 	body := pemBodyLines(2)
 	input := "Here is the key:\n-----BEGIN RSA PRIVATE KEY-----\n" + strings.Join(body, "\n") + "\n\n" +
 		strings.Repeat("Then the model kept writing ordinary prose about it. ", 15<<10/53)
@@ -385,18 +395,19 @@ func TestStreamCarry_TruncatedPEMThenProseDoesNotLeakBody(t *testing.T) {
 	out, _ := c.Flush()
 	b.WriteString(out)
 	assertNoPEMBody(t, b.String(), body)
-	require.LessOrEqual(t, maxHeld, 1024, "an unterminated key followed by prose should be released early")
+	must.LessOrEqual(maxHeld, 1024, "an unterminated key followed by prose should be released early")
 }
 
 // TestStreamCarry_ShortSecretBehindLongHoldIsRedacted pins that a secret
 // arriving just after an unterminated PEM header, followed by more than
 // streamCarryMax bytes of prose, is released whole in one piece.
 func TestStreamCarry_ShortSecretBehindLongHoldIsRedacted(t *testing.T) {
+	must := require.New(t)
 	prose := strings.Repeat("plain words here. ", 9<<10/18)
 	input := "-----BEGIN RSA PRIVATE KEY-----\nnext line: ghp_" + "AbC123xyzAbC123xyzAbC1 and then " + prose
 	for _, size := range []int{1, 3, 7} {
 		got, _ := streamThroughCarry(chunk(input, size))
-		require.NotContains(t, got, "AbC1", "%d-byte fragments: github token survived", size)
+		must.NotContains(got, "AbC1", "%d-byte fragments: github token survived", size)
 	}
 }
 
@@ -412,11 +423,12 @@ func TestStreamCarry_SpanOverCapIsRedactedWhole(t *testing.T) {
 	want := Scrub(input)
 	for _, size := range []int{1, 7, 50, 500, 3000} {
 		t.Run(fmt.Sprintf("%d-byte fragments", size), func(t *testing.T) {
+			must := require.New(t)
 			var c StreamCarry
 			got := streamThrough(&c, chunk(input, size))
 			assertNoPEMBody(t, got, body)
-			require.Equal(t, want, got)
-			require.NotZero(t, c.forced, "the cap forced no release")
+			must.Equal(want, got)
+			must.NotZero(c.forced, "the cap forced no release")
 		})
 	}
 }
@@ -435,11 +447,12 @@ func TestStreamCarry_UnmatchedHeadOverCapIsWithheld(t *testing.T) {
 	}
 	for name, input := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			for _, size := range []int{1, 7, 500, 4093} {
 				var c StreamCarry
 				got := streamThrough(&c, chunk(input, size))
 				assertNoSecretWindows(t, input, got)
-				require.Equal(t, Scrub(input), got, "%d-byte fragments", size)
+				must.Equal(Scrub(input), got, "%d-byte fragments", size)
 			}
 		})
 	}
@@ -450,6 +463,7 @@ func TestStreamCarry_UnmatchedHeadOverCapIsWithheld(t *testing.T) {
 // streamCarryRunMax only a window of it is kept, the carry reports that it
 // is withholding text, and text after the match is still released.
 func TestStreamCarry_RunPastTheCapIsBounded(t *testing.T) {
+	must := require.New(t)
 	lowerRunMax(t)
 	var c StreamCarry
 	run := "Bearer " + strings.Repeat("a", 4*streamCarryMax)
@@ -458,30 +472,30 @@ func TestStreamCarry_RunPastTheCapIsBounded(t *testing.T) {
 		out, _ := c.Push(run[i:min(i+7, len(run))])
 		got += out
 		if !c.run {
-			require.LessOrEqual(t, c.held(), streamCarryMax, "carry holds more than streamCarryMax outside a run")
+			must.LessOrEqual(c.held(), streamCarryMax, "carry holds more than streamCarryMax outside a run")
 		}
 	}
-	require.Equal(t, "[REDACTED]", got, "a run four times streamCarryMax should release one placeholder")
+	must.Equal("[REDACTED]", got, "a run four times streamCarryMax should release one placeholder")
 	out, _ := c.Push(strings.Repeat("a", streamCarryDrainWindow))
-	require.Empty(t, out, "an open run released text")
+	must.Empty(out, "an open run released text")
 	out, patterns := c.Push(strings.Repeat("a", streamCarryRunMax))
-	require.Empty(t, out, "a run past streamCarryRunMax released text")
-	require.True(t, c.drain, "a run past streamCarryRunMax did not start draining")
-	require.Contains(t, patterns, StreamWithheld, "a run past streamCarryRunMax was not reported as withheld")
+	must.Empty(out, "a run past streamCarryRunMax released text")
+	must.True(c.drain, "a run past streamCarryRunMax did not start draining")
+	must.Contains(patterns, StreamWithheld, "a run past streamCarryRunMax was not reported as withheld")
 	for range 8 {
 		out, patterns := c.Push(strings.Repeat("a", streamCarryDrainWindow))
-		require.Empty(t, out, "an open withheld run released text")
-		require.Empty(t, patterns, "an open withheld run reported patterns")
-		require.LessOrEqual(t, len(c.pending), 2*streamCarryDrainWindow, "an open withheld run holds too many bytes")
+		must.Empty(out, "an open withheld run released text")
+		must.Empty(patterns, "an open withheld run reported patterns")
+		must.LessOrEqual(len(c.pending), 2*streamCarryDrainWindow, "an open withheld run holds too many bytes")
 	}
 	c.Push("\nthen prose")
 	out, _ = c.Flush()
-	require.Equal(t, "\nthen prose", out, "Flush after the withheld run ended should release the text after it")
+	must.Equal("\nthen prose", out, "Flush after the withheld run ended should release the text after it")
 	c.Push("Bearer " + strings.Repeat("a", 2*streamCarryRunMax))
 	out, _ = c.Flush()
-	require.Empty(t, out, "Flush of a run still open released text")
+	must.Empty(out, "Flush of a run still open released text")
 	out, _ = c.Push("next stream")
-	require.Equal(t, "next stream", out, "carry after Flush")
+	must.Equal("next stream", out, "carry after Flush")
 }
 
 // lowerRunMax shrinks the withholding bounds for one test, so a run past
@@ -500,6 +514,7 @@ func TestStreamCarry_TextAfterAWithheldMatchIsReleased(t *testing.T) {
 	prose := strings.Repeat("plain words here. ", 3*streamCarryRunMax/8/18)
 	for _, n := range []int{streamCarryRunMax * 19 / 20, streamCarryRunMax * 6 / 5} {
 		t.Run(fmt.Sprintf("%d-byte match", n), func(t *testing.T) {
+			must := require.New(t)
 			input := "ghp_" + strings.Repeat("a", n) + " MATCH-ENDED " + prose
 			var c StreamCarry
 			var b strings.Builder
@@ -511,9 +526,9 @@ func TestStreamCarry_TextAfterAWithheldMatchIsReleased(t *testing.T) {
 			}
 			out, _ := c.Flush()
 			b.WriteString(out)
-			require.Equal(t, Scrub(input), b.String())
+			must.Equal(Scrub(input), b.String())
 			withheld := slices.Contains(reported, StreamWithheld)
-			require.Equal(t, n > streamCarryRunMax, withheld, "reported withholding")
+			must.Equal(n > streamCarryRunMax, withheld, "reported withholding")
 		})
 	}
 }
@@ -527,12 +542,13 @@ func TestStreamCarry_ForcedRescanIsAmortised(t *testing.T) {
 		"secret refs": strings.Repeat("secret://a/", 3000),
 	} {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			var c StreamCarry
 			for i := range len(run) {
 				c.Push(run[i : i+1])
 			}
 			c.Flush()
-			require.LessOrEqual(t, c.scanned, 16*len(run), "carry scanned more than 16 times the stream length")
+			must.LessOrEqual(c.scanned, 16*len(run), "carry scanned more than 16 times the stream length")
 		})
 	}
 }
@@ -543,10 +559,11 @@ func TestStreamCarry_ForcedReleaseNeverSplitsARune(t *testing.T) {
 	input := "-----BEGIN A KEY-----\nComment: " + strings.Repeat("日本語", 1<<10) + " done"
 	for _, size := range []int{1, 2, 5} {
 		t.Run(fmt.Sprintf("%d-byte fragments", size), func(t *testing.T) {
+			must := require.New(t)
 			var c StreamCarry
 			var b strings.Builder
 			emit := func(p string, _ []string) {
-				require.True(t, utf8.ValidString(p), "piece splits a rune: %q", clip(p))
+				must.True(utf8.ValidString(p), "piece splits a rune: %q", clip(p))
 				b.WriteString(p)
 			}
 			for _, f := range chunk(input, size) {
@@ -554,8 +571,8 @@ func TestStreamCarry_ForcedReleaseNeverSplitsARune(t *testing.T) {
 			}
 			emit(c.Flush())
 			got := b.String()
-			require.True(t, strings.HasPrefix(got, "[REDACTED]"), "output starts %q, want the redacted head", clip(got))
-			require.NotZero(t, c.forced, "no release was forced at the cap")
+			must.True(strings.HasPrefix(got, "[REDACTED]"), "output starts %q, want the redacted head", clip(got))
+			must.NotZero(c.forced, "no release was forced at the cap")
 		})
 	}
 }
@@ -577,10 +594,11 @@ func TestStreamCarry_WhitespaceAfterKeyword(t *testing.T) {
 			limit := streamCarryMax - len(tc.keyword)
 			for _, ws := range []int{0, 80, 90, 100, 3000, limit, limit + 1} {
 				t.Run(fmt.Sprintf("%d spaces", ws), func(t *testing.T) {
+					must := require.New(t)
 					head := tc.keyword + strings.Repeat(" ", max(ws, 1))
 					got, _ := streamThroughCarry(append(chunk(head, 64), tc.secret+" tail"))
-					require.NotContains(t, got, tc.sensitive, "secret leaked")
-					require.Equal(t, Scrub(head+tc.secret+" tail"), got)
+					must.NotContains(got, tc.sensitive, "secret leaked")
+					must.Equal(Scrub(head+tc.secret+" tail"), got)
 				})
 			}
 		})
@@ -592,6 +610,7 @@ func TestStreamCarry_WhitespaceAfterKeyword(t *testing.T) {
 // constant multiple of the stream.
 func TestStreamCarry_RescanIsAmortised(t *testing.T) {
 	t.Run("long held span", func(t *testing.T) {
+		must := require.New(t)
 		run := "Bearer " + strings.Repeat("Ab0.", 16<<10)
 		var c StreamCarry
 		for i := range len(run) {
@@ -600,19 +619,20 @@ func TestStreamCarry_RescanIsAmortised(t *testing.T) {
 		c.Push(strings.Repeat("Ab0.", 256<<10))
 		c.Flush()
 		n := len(run) + 1<<20
-		require.LessOrEqual(t, c.scanned, 16*n, "carry scanned more than 16 times a %d byte stream", n)
+		must.LessOrEqual(c.scanned, 16*n, "carry scanned more than 16 times a %d byte stream", n)
 	})
 
 	// Many short tokens, each held while it streams and released when it
 	// ends, below the size at which the quarter-growth rule applies.
 	t.Run("many short tokens", func(t *testing.T) {
+		must := require.New(t)
 		hovering := strings.Repeat("Bearer "+strings.Repeat("Ab0", 64)+" then ", 64)
 		var c StreamCarry
 		for i := 0; i < len(hovering); i += 3 {
 			c.Push(hovering[i:min(i+3, len(hovering))])
 		}
 		c.Flush()
-		require.LessOrEqual(t, c.scanned, 16*len(hovering), "carry scanned more than 16 times the length of the short tokens")
+		must.LessOrEqual(c.scanned, 16*len(hovering), "carry scanned more than 16 times the length of the short tokens")
 	})
 }
 
@@ -632,6 +652,7 @@ func TestStreamCarry_AdversarialStreamsStayFast(t *testing.T) {
 	}
 	for name, in := range shapes {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			baseline := fastest(func() { Scrub(in) })
 			start := time.Now()
 			var c StreamCarry
@@ -640,7 +661,7 @@ func TestStreamCarry_AdversarialStreamsStayFast(t *testing.T) {
 			}
 			c.Flush()
 			elapsed := time.Since(start)
-			require.LessOrEqual(t, elapsed, 200*baseline+100*time.Millisecond, "streaming 32 KiB in 7-byte fragments should take at most 200 times one Scrub (%v)", baseline)
+			must.LessOrEqual(elapsed, 200*baseline+100*time.Millisecond, "streaming 32 KiB in 7-byte fragments should take at most 200 times one Scrub (%v)", baseline)
 		})
 	}
 }
@@ -667,6 +688,7 @@ func FuzzStreamCarry(f *testing.F) {
 	f.Add("ghp_", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ended, then prose. ", uint16(400), uint8(255), uint8(255))
 	f.Cleanup(SetStreamCarryBoundsForTest(24<<10, 4<<10))
 	f.Fuzz(func(t *testing.T, head, body string, reps uint16, a, b uint8) {
+		must := require.New(t)
 		input := head + strings.Repeat(body, min(int(reps), (64<<10)/max(len(body), 1)))
 		sizes := [2]int{1 + int(a), 1 + int(b)}
 		var c StreamCarry
@@ -674,7 +696,7 @@ func FuzzStreamCarry(f *testing.F) {
 		valid := utf8.ValidString(input)
 		emit := func(piece string, _ []string) {
 			if valid {
-				require.True(t, utf8.ValidString(piece), "piece %q of valid input is not valid UTF-8", clip(piece))
+				must.True(utf8.ValidString(piece), "piece %q of valid input is not valid UTF-8", clip(piece))
 			}
 			out.WriteString(piece)
 		}
@@ -683,15 +705,15 @@ func FuzzStreamCarry(f *testing.F) {
 			emit(c.Push(rest[:n]))
 			rest = rest[n:]
 			if !c.run {
-				require.LessOrEqual(t, c.held(), streamCarryMax, "carry holds more than streamCarryMax outside a run")
+				must.LessOrEqual(c.held(), streamCarryMax, "carry holds more than streamCarryMax outside a run")
 			}
 		}
 		emit(c.Flush())
 		assertNoSecretWindows(t, input, out.String())
 		if c.forced == 0 {
-			require.Equal(t, Scrub(input), out.String(), "released text should match whole-stream Scrub when the cap forced no release")
+			must.Equal(Scrub(input), out.String(), "released text should match whole-stream Scrub when the cap forced no release")
 		}
 		again, _ := c.Flush()
-		require.Empty(t, again, "second Flush should return nothing")
+		must.Empty(again, "second Flush should return nothing")
 	})
 }

@@ -27,6 +27,7 @@ import (
 // runtime: warnings fail this test too. A shipped starter that warns is a
 // starter an operator would copy and then have to reason about.
 func TestStarterPolicies_PassTheLoadTimeLinter(t *testing.T) {
+	must := require.New(t)
 	registry := tool.NewRegistry()
 	registerAllForTest(registry, &mockExecutor{})
 
@@ -37,7 +38,7 @@ func TestStarterPolicies_PassTheLoadTimeLinter(t *testing.T) {
 
 	policiesDir := filepath.Join("..", "..", "..", "..", "examples", "policies")
 	entries, err := os.ReadDir(policiesDir)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	checked := 0
 	for _, entry := range entries {
@@ -46,17 +47,18 @@ func TestStarterPolicies_PassTheLoadTimeLinter(t *testing.T) {
 		}
 		checked++
 		t.Run(entry.Name(), func(t *testing.T) {
+			must := require.New(t)
 			ps, err := permission.LoadPolicySetFromFile(filepath.Join(policiesDir, entry.Name()))
-			require.NoError(t, err, "starter fails the structural lint")
+			must.NoError(err, "starter fails the structural lint")
 
 			findings := append(
 				permission.LintPolicySetStructure(ps),
 				permission.LintPolicySetTools(ps, schemas)...,
 			)
-			require.Empty(t, findings)
+			must.Empty(findings)
 		})
 	}
-	require.NotZero(t, checked, "no .cedar files found in %s; directory moved?", policiesDir)
+	must.NotZero(checked, "no .cedar files found in %s; directory moved?", policiesDir)
 }
 
 // TestBuiltinSchemas_AreClosed pins the property the linter's "can never
@@ -71,8 +73,9 @@ func TestBuiltinSchemas_AreClosed(t *testing.T) {
 
 	for _, def := range registry.List() {
 		t.Run(def.Name, func(t *testing.T) {
+			must := require.New(t)
 			schema := permission.NewToolSchema(def.InputSchema)
-			require.True(t, schema.Closed,
+			must.True(schema.Closed,
 				"tool does not set additionalProperties:false; the policy linter cannot prove a clause keyed on an undeclared attribute is dead")
 		})
 	}
@@ -81,9 +84,10 @@ func TestBuiltinSchemas_AreClosed(t *testing.T) {
 // TestAutonomousAllowListStarter_Decisions pins what the autonomous
 // allow-list starter grants, forbids, and leaves to the deny-all fallback.
 func TestAutonomousAllowListStarter_Decisions(t *testing.T) {
+	must := require.New(t)
 	path := filepath.Join("..", "..", "..", "..", "examples", "policies", "autonomous-allow-list.cedar")
 	ps, err := permission.LoadPolicySetFromFile(path)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	policy, err := permission.NewPolicyEnginePolicy(permission.PolicyEngineConfig{
 		PolicySet: ps,
@@ -92,7 +96,7 @@ func TestAutonomousAllowListStarter_Decisions(t *testing.T) {
 		Mode:      "execution",
 		Workspace: "/workspace",
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	cases := []struct {
 		name  string
@@ -114,9 +118,10 @@ func TestAutonomousAllowListStarter_Decisions(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			result, err := policy.Check(context.Background(), types.ToolDefinition{Name: tc.tool}, json.RawMessage(tc.input))
-			require.NoError(t, err)
-			require.Equal(t, tc.allow, result.Allowed, "reason: %q", result.Reason)
+			must.NoError(err)
+			must.Equal(tc.allow, result.Allowed, "reason: %q", result.Reason)
 		})
 	}
 }

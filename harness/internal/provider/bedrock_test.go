@@ -67,6 +67,8 @@ func (m *mockBedrockClient) ConverseStream(ctx context.Context, params *bedrockr
 }
 
 func TestBedrock_TextStreaming(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	events := []brtypes.ConverseStreamOutput{
 		&brtypes.ConverseStreamOutputMemberContentBlockDelta{
 			Value: brtypes.ContentBlockDeltaEvent{
@@ -92,16 +94,18 @@ func TestBedrock_TextStreaming(t *testing.T) {
 	go consumeBedrockStream(context.Background(), reader, ch)
 	result := collectEvents(t, ch)
 
-	require.Len(t, result, 3, "events: %+v", result)
-	assert.Equal(t, "text_delta", result[0].Type, "event[0].Type")
-	assert.Equal(t, "Hello", result[0].Text, "event[0].Text")
-	assert.Equal(t, "text_delta", result[1].Type, "event[1].Type")
-	assert.Equal(t, " world", result[1].Text, "event[1].Text")
-	assert.Equal(t, "message_complete", result[2].Type, "event[2].Type")
-	assert.Equal(t, "end_turn", result[2].StopReason, "event[2].StopReason")
+	must.Len(result, 3, "events: %+v", result)
+	check.Equal("text_delta", result[0].Type, "event[0].Type")
+	check.Equal("Hello", result[0].Text, "event[0].Text")
+	check.Equal("text_delta", result[1].Type, "event[1].Type")
+	check.Equal(" world", result[1].Text, "event[1].Text")
+	check.Equal("message_complete", result[2].Type, "event[2].Type")
+	check.Equal("end_turn", result[2].StopReason, "event[2].StopReason")
 }
 
 func TestBedrock_ToolCallStreaming(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	events := []brtypes.ConverseStreamOutput{
 		&brtypes.ConverseStreamOutputMemberContentBlockStart{
 			Value: brtypes.ContentBlockStartEvent{
@@ -151,19 +155,21 @@ func TestBedrock_ToolCallStreaming(t *testing.T) {
 	go consumeBedrockStream(context.Background(), reader, ch)
 	result := collectEvents(t, ch)
 
-	require.Len(t, result, 2, "events: %+v", result)
+	must.Len(result, 2, "events: %+v", result)
 
 	tc := result[0]
-	require.Equal(t, "tool_call", tc.Type, "event[0].Type")
-	assert.Equal(t, "toolu_abc", tc.ID, "event[0].ID")
-	assert.Equal(t, "read_file", tc.Name, "event[0].Name")
-	assert.Equal(t, "main.go", tc.Input["path"], "event[0].Input[path]")
+	must.Equal("tool_call", tc.Type, "event[0].Type")
+	check.Equal("toolu_abc", tc.ID, "event[0].ID")
+	check.Equal("read_file", tc.Name, "event[0].Name")
+	check.Equal("main.go", tc.Input["path"], "event[0].Input[path]")
 
-	assert.Equal(t, "message_complete", result[1].Type, "event[1].Type")
-	assert.Equal(t, "tool_use", result[1].StopReason, "event[1].StopReason")
+	check.Equal("message_complete", result[1].Type, "event[1].Type")
+	check.Equal("tool_use", result[1].StopReason, "event[1].StopReason")
 }
 
 func TestBedrock_MixedTextAndToolCall(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	events := []brtypes.ConverseStreamOutput{
 		// Text block at index 0.
 		&brtypes.ConverseStreamOutputMemberContentBlockDelta{
@@ -210,11 +216,11 @@ func TestBedrock_MixedTextAndToolCall(t *testing.T) {
 	go consumeBedrockStream(context.Background(), reader, ch)
 	result := collectEvents(t, ch)
 
-	require.Len(t, result, 3, "events: %+v", result)
-	assert.Equal(t, "text_delta", result[0].Type, "event[0].Type")
-	assert.Equal(t, "tool_call", result[1].Type, "event[1].Type")
-	assert.Equal(t, "read_file", result[1].Name, "event[1].Name")
-	assert.Equal(t, "message_complete", result[2].Type, "event[2].Type")
+	must.Len(result, 3, "events: %+v", result)
+	check.Equal("text_delta", result[0].Type, "event[0].Type")
+	check.Equal("tool_call", result[1].Type, "event[1].Type")
+	check.Equal("read_file", result[1].Name, "event[1].Name")
+	check.Equal("message_complete", result[2].Type, "event[2].Type")
 }
 
 func TestBedrock_StopReasonMapping(t *testing.T) {
@@ -231,12 +237,15 @@ func TestBedrock_StopReasonMapping(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, mapStopReason(tt.reason))
+			must := require.New(t)
+			must.Equal(tt.want, mapStopReason(tt.reason))
 		})
 	}
 }
 
 func TestBedrock_MetadataTokens(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	outputTokens := int32(150)
 	events := []brtypes.ConverseStreamOutput{
 		&brtypes.ConverseStreamOutputMemberMessageStop{
@@ -256,12 +265,14 @@ func TestBedrock_MetadataTokens(t *testing.T) {
 	go consumeBedrockStream(context.Background(), reader, ch)
 	result := collectEvents(t, ch)
 
-	require.Len(t, result, 2, "events: %+v", result)
-	assert.Equal(t, "end_turn", result[0].StopReason, "event[0].StopReason")
-	assert.Equal(t, 150, result[1].OutputTokens, "event[1].OutputTokens")
+	must.Len(result, 2, "events: %+v", result)
+	check.Equal("end_turn", result[0].StopReason, "event[0].StopReason")
+	check.Equal(150, result[1].OutputTokens, "event[1].OutputTokens")
 }
 
 func TestBedrock_StreamError(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	events := []brtypes.ConverseStreamOutput{
 		&brtypes.ConverseStreamOutputMemberContentBlockDelta{
 			Value: brtypes.ContentBlockDeltaEvent{
@@ -276,13 +287,14 @@ func TestBedrock_StreamError(t *testing.T) {
 	go consumeBedrockStream(context.Background(), reader, ch)
 	result := collectEvents(t, ch)
 
-	require.Len(t, result, 2, "events: %+v", result)
-	assert.Equal(t, "text_delta", result[0].Type, "event[0].Type")
-	require.Equal(t, "error", result[1].Type, "event[1].Type")
-	require.ErrorContains(t, result[1].Error, "connection reset")
+	must.Len(result, 2, "events: %+v", result)
+	check.Equal("text_delta", result[0].Type, "event[0].Type")
+	must.Equal("error", result[1].Type, "event[1].Type")
+	must.ErrorContains(result[1].Error, "connection reset")
 }
 
 func TestBedrock_ContextCancellation(t *testing.T) {
+	must := require.New(t)
 	// Create a reader with events that will block.
 	blockingCh := make(chan brtypes.ConverseStreamOutput)
 	reader := &mockEventReader{ch: blockingCh}
@@ -315,7 +327,7 @@ func TestBedrock_ContextCancellation(t *testing.T) {
 	hasError := slices.ContainsFunc(result, func(ev types.StreamEvent) bool {
 		return ev.Type == "error" && ev.Error != nil
 	})
-	require.True(t, hasError, "expected an error event from context cancellation")
+	must.True(hasError, "expected an error event from context cancellation")
 }
 
 func TestBedrock_MalformedToolInput_MarksToolCall(t *testing.T) {
@@ -358,6 +370,8 @@ func TestBedrock_MalformedToolInput_MarksToolCall(t *testing.T) {
 }
 
 func TestBedrock_TranslateMessages(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	msgs := []types.Message{
 		{
 			Role: "user",
@@ -381,53 +395,57 @@ func TestBedrock_TranslateMessages(t *testing.T) {
 	}
 
 	result, err := bedrockTranslateMessages(msgs)
-	require.NoError(t, err)
-	require.Len(t, result, 3)
+	must.NoError(err)
+	must.Len(result, 3)
 
-	assert.Equal(t, brtypes.ConversationRoleUser, result[0].Role, "msg[0].Role")
-	require.Len(t, result[0].Content, 1, "msg[0].Content")
-	require.IsType(t, &brtypes.ContentBlockMemberText{}, result[0].Content[0], "msg[0].Content[0]")
+	check.Equal(brtypes.ConversationRoleUser, result[0].Role, "msg[0].Role")
+	must.Len(result[0].Content, 1, "msg[0].Content")
+	must.IsType(&brtypes.ContentBlockMemberText{}, result[0].Content[0], "msg[0].Content[0]")
 	text := result[0].Content[0].(*brtypes.ContentBlockMemberText)
-	assert.Equal(t, "Hello", text.Value, "msg[0].Content[0].Value")
+	check.Equal("Hello", text.Value, "msg[0].Content[0].Value")
 
-	assert.Equal(t, brtypes.ConversationRoleAssistant, result[1].Role, "msg[1].Role")
-	require.Len(t, result[1].Content, 2, "msg[1].Content")
-	require.IsType(t, &brtypes.ContentBlockMemberToolUse{}, result[1].Content[1], "msg[1].Content[1]")
+	check.Equal(brtypes.ConversationRoleAssistant, result[1].Role, "msg[1].Role")
+	must.Len(result[1].Content, 2, "msg[1].Content")
+	must.IsType(&brtypes.ContentBlockMemberToolUse{}, result[1].Content[1], "msg[1].Content[1]")
 	toolUse := result[1].Content[1].(*brtypes.ContentBlockMemberToolUse)
-	assert.Equal(t, "read_file", aws.ToString(toolUse.Value.Name), "tool_use.Name")
-	assert.Equal(t, "toolu_1", aws.ToString(toolUse.Value.ToolUseId), "tool_use.ToolUseId")
+	check.Equal("read_file", aws.ToString(toolUse.Value.Name), "tool_use.Name")
+	check.Equal("toolu_1", aws.ToString(toolUse.Value.ToolUseId), "tool_use.ToolUseId")
 
-	require.Len(t, result[2].Content, 1, "msg[2].Content")
-	require.IsType(t, &brtypes.ContentBlockMemberToolResult{}, result[2].Content[0], "msg[2].Content[0]")
+	must.Len(result[2].Content, 1, "msg[2].Content")
+	must.IsType(&brtypes.ContentBlockMemberToolResult{}, result[2].Content[0], "msg[2].Content[0]")
 	toolResult := result[2].Content[0].(*brtypes.ContentBlockMemberToolResult)
-	assert.Equal(t, "toolu_1", aws.ToString(toolResult.Value.ToolUseId), "tool_result.ToolUseId")
+	check.Equal("toolu_1", aws.ToString(toolResult.Value.ToolUseId), "tool_result.ToolUseId")
 }
 
 func TestBedrock_TranslateMessages_RejectsUnknownRole(t *testing.T) {
+	must := require.New(t)
 	msgs := []types.Message{
 		{Role: "system", Content: []types.ContentBlock{{Type: "text", Text: "nope"}}},
 	}
 	_, err := bedrockTranslateMessages(msgs)
-	require.ErrorContains(t, err, "unsupported message role")
+	must.ErrorContains(err, "unsupported message role")
 }
 
 func TestBedrock_TranslateTools(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	schema := json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`)
 	tools := []types.ToolDefinition{
 		{Name: "read_file", Description: "Read a file", InputSchema: schema},
 	}
 
 	result, err := bedrockTranslateTools(tools)
-	require.NoError(t, err)
-	require.Len(t, result, 1)
+	must.NoError(err)
+	must.Len(result, 1)
 
-	require.IsType(t, &brtypes.ToolMemberToolSpec{}, result[0])
+	must.IsType(&brtypes.ToolMemberToolSpec{}, result[0])
 	toolSpec := result[0].(*brtypes.ToolMemberToolSpec)
-	assert.Equal(t, "read_file", aws.ToString(toolSpec.Value.Name), "tool.Name")
-	assert.Equal(t, "Read a file", aws.ToString(toolSpec.Value.Description), "tool.Description")
+	check.Equal("read_file", aws.ToString(toolSpec.Value.Name), "tool.Name")
+	check.Equal("Read a file", aws.ToString(toolSpec.Value.Description), "tool.Description")
 }
 
 func TestBedrock_TranslateToolResult_MarksErrorStatus(t *testing.T) {
+	must := require.New(t)
 	msgs := []types.Message{
 		{
 			Role: "user",
@@ -438,14 +456,16 @@ func TestBedrock_TranslateToolResult_MarksErrorStatus(t *testing.T) {
 	}
 
 	result, err := bedrockTranslateMessages(msgs)
-	require.NoError(t, err)
+	must.NoError(err)
 
-	require.IsType(t, &brtypes.ContentBlockMemberToolResult{}, result[0].Content[0])
+	must.IsType(&brtypes.ContentBlockMemberToolResult{}, result[0].Content[0])
 	trBlock := result[0].Content[0].(*brtypes.ContentBlockMemberToolResult)
-	require.Equal(t, brtypes.ToolResultStatusError, trBlock.Value.Status)
+	must.Equal(brtypes.ToolResultStatusError, trBlock.Value.Status)
 }
 
 func TestBedrock_BuildConverseStreamInput(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	params := types.StreamParams{
 		Model:       "anthropic.claude-sonnet-4-6-v1",
 		System:      "You are helpful.",
@@ -460,16 +480,16 @@ func TestBedrock_BuildConverseStreamInput(t *testing.T) {
 	}
 
 	input, err := buildConverseStreamInput(params)
-	require.NoError(t, err)
+	must.NoError(err)
 
-	assert.Equal(t, "anthropic.claude-sonnet-4-6-v1", aws.ToString(input.ModelId), "ModelId")
-	require.Len(t, input.System, 1)
-	require.Len(t, input.Messages, 1)
-	require.NotNil(t, input.InferenceConfig)
-	assert.Equal(t, int32(4096), aws.ToInt32(input.InferenceConfig.MaxTokens), "MaxTokens")
-	assert.InDelta(t, 0.1, aws.ToFloat32(input.InferenceConfig.Temperature), 1e-6, "Temperature")
-	require.NotNil(t, input.ToolConfig)
-	assert.Len(t, input.ToolConfig.Tools, 1, "ToolConfig.Tools")
+	check.Equal("anthropic.claude-sonnet-4-6-v1", aws.ToString(input.ModelId), "ModelId")
+	must.Len(input.System, 1)
+	must.Len(input.Messages, 1)
+	must.NotNil(input.InferenceConfig)
+	check.Equal(int32(4096), aws.ToInt32(input.InferenceConfig.MaxTokens), "MaxTokens")
+	check.InDelta(0.1, aws.ToFloat32(input.InferenceConfig.Temperature), 1e-6, "Temperature")
+	must.NotNil(input.ToolConfig)
+	check.Len(input.ToolConfig.Tools, 1, "ToolConfig.Tools")
 }
 
 // TestBedrock_TemperatureWireShape pins the unset-vs-explicit-zero
@@ -491,6 +511,7 @@ func TestBedrock_TemperatureWireShape(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			input, err := buildConverseStreamInput(types.StreamParams{
 				Model:       "anthropic.claude-sonnet-4-6-v1",
 				MaxTokens:   1024,
@@ -499,30 +520,32 @@ func TestBedrock_TemperatureWireShape(t *testing.T) {
 					{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 				},
 			})
-			require.NoError(t, err)
-			require.NotNil(t, input.InferenceConfig)
+			must.NoError(err)
+			must.NotNil(input.InferenceConfig)
 			got := input.InferenceConfig.Temperature
 			if tc.wantSet {
-				require.NotNil(t, got, "Temperature should be set")
-				require.InDelta(t, tc.wantValue, *got, 1e-6)
+				must.NotNil(got, "Temperature should be set")
+				must.InDelta(tc.wantValue, *got, 1e-6)
 			} else {
-				require.Nil(t, got, "Temperature should be unset")
+				must.Nil(got, "Temperature should be unset")
 			}
 		})
 	}
 }
 
 func TestBedrock_BuildConverseStreamInput_OmitsEmptySystem(t *testing.T) {
+	must := require.New(t)
 	params := types.StreamParams{
 		Model:     "anthropic.claude-sonnet-4-6-v1",
 		MaxTokens: 1024,
 	}
 	input, err := buildConverseStreamInput(params)
-	require.NoError(t, err)
-	require.Nil(t, input.System, "system prompt should be omitted when empty")
+	must.NoError(err)
+	must.Nil(input.System, "system prompt should be omitted when empty")
 }
 
 func TestBedrock_Stream_ReturnsAPIError(t *testing.T) {
+	must := require.New(t)
 	client := &mockBedrockClient{apiErr: fmt.Errorf("access denied")}
 	adapter := &BedrockAdapter{client: client}
 
@@ -530,7 +553,7 @@ func TestBedrock_Stream_ReturnsAPIError(t *testing.T) {
 		Model:     "anthropic.claude-sonnet-4-6-v1",
 		MaxTokens: 1024,
 	})
-	require.ErrorContains(t, err, "access denied")
+	must.ErrorContains(err, "access denied")
 }
 
 // TestBedrock_ToolChoiceNonAuto_WarnsDowngrade pins that Bedrock's
@@ -541,6 +564,8 @@ func TestBedrock_Stream_ReturnsAPIError(t *testing.T) {
 // model identifiers. The mock client's deliberate error is irrelevant:
 // the warn is emitted before the build/client call.
 func TestBedrock_ToolChoiceNonAuto_WarnsDowngrade(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
@@ -568,9 +593,9 @@ func TestBedrock_ToolChoiceNonAuto_WarnsDowngrade(t *testing.T) {
 	})
 
 	out := buf.String()
-	assert.Contains(t, out, "bedrock tool-choice downgraded to auto", "expected tool-choice downgrade warn")
-	assert.Contains(t, out, "anthropic.claude-sonnet-4-6-v1", "warn log missing model identifier")
-	assert.NotContains(t, out, "secret-prompt-text", "warn log leaked message content")
+	check.Contains(out, "bedrock tool-choice downgraded to auto", "expected tool-choice downgrade warn")
+	check.Contains(out, "anthropic.claude-sonnet-4-6-v1", "warn log missing model identifier")
+	check.NotContains(out, "secret-prompt-text", "warn log leaked message content")
 
 	// The downgrade is log-only: the request body must never carry a tool
 	// choice, mirroring the openai-responses wire-body guard. The mock
@@ -578,15 +603,16 @@ func TestBedrock_ToolChoiceNonAuto_WarnsDowngrade(t *testing.T) {
 	// the body the adapter built; with Tools present ToolConfig is non-nil,
 	// so the ToolChoice check below is exercised rather than skipped.
 	input := client.capturedInput
-	require.NotNil(t, input, "client never reached: buildConverseStreamInput must succeed so the wire body can be inspected")
-	require.NotNil(t, input.ToolConfig, "ToolConfig must be populated (Tools were supplied) for the ToolChoice assertion to be meaningful")
-	require.Nil(t, input.ToolConfig.ToolChoice, "request must not project ToolChoice onto ConverseStreamInput")
+	must.NotNil(input, "client never reached: buildConverseStreamInput must succeed so the wire body can be inspected")
+	must.NotNil(input.ToolConfig, "ToolConfig must be populated (Tools were supplied) for the ToolChoice assertion to be meaningful")
+	must.Nil(input.ToolConfig.ToolChoice, "request must not project ToolChoice onto ConverseStreamInput")
 }
 
 // TestBedrock_ToolChoiceAuto_NoWarn pins the negative: the zero-value
 // ToolChoiceAuto must not emit the downgrade warn (the auto case is the
 // always-satisfied no-op).
 func TestBedrock_ToolChoiceAuto_NoWarn(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
@@ -599,15 +625,17 @@ func TestBedrock_ToolChoiceAuto_NoWarn(t *testing.T) {
 		ToolChoice: types.ToolChoiceAuto,
 	})
 
-	require.NotContains(t, buf.String(), "tool-choice downgraded", "auto tool-choice must not warn")
+	must.NotContains(buf.String(), "tool-choice downgraded", "auto tool-choice must not warn")
 }
 
 func TestBedrock_APIError_RecordsLatency(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 	metrics, err := observability.NewMetricsForTesting(provider)
-	require.NoError(t, err, "NewMetricsForTesting")
+	must.NoError(err, "NewMetricsForTesting")
 
 	client := &mockBedrockClient{apiErr: fmt.Errorf("boom")}
 	adapter := &BedrockAdapter{client: client, Metrics: metrics}
@@ -616,12 +644,14 @@ func TestBedrock_APIError_RecordsLatency(t *testing.T) {
 		Model:     "anthropic.claude-sonnet-4-6-v1",
 		MaxTokens: 1024,
 	})
-	require.Error(t, err)
-	assert.EqualValues(t, 1, providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"), "error path still records latency")
-	assert.EqualValues(t, 0, providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"), "error path records no time to first byte")
+	must.Error(err)
+	check.EqualValues(1, providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"), "error path still records latency")
+	check.EqualValues(0, providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"), "error path records no time to first byte")
 }
 
 func TestBedrock_ConsumeStreamMetered_RecordsTTFB(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	events := []brtypes.ConverseStreamOutput{
 		&brtypes.ConverseStreamOutputMemberContentBlockDelta{
 			Value: brtypes.ContentBlockDeltaEvent{
@@ -640,7 +670,7 @@ func TestBedrock_ConsumeStreamMetered_RecordsTTFB(t *testing.T) {
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 	metrics, err := observability.NewMetricsForTesting(provider)
-	require.NoError(t, err, "NewMetricsForTesting")
+	must.NoError(err, "NewMetricsForTesting")
 
 	attrs := metric.WithAttributes(
 		attribute.String("provider.type", "bedrock"),
@@ -652,14 +682,14 @@ func TestBedrock_ConsumeStreamMetered_RecordsTTFB(t *testing.T) {
 	for range ch {
 	}
 
-	assert.EqualValues(t, 1, providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"), "provider_ttfb count")
-	assert.EqualValues(t, 1, providerHistogramTotalCount(t, reader, "gen_ai.client.operation.time_to_first_chunk"), "time_to_first_chunk count")
+	check.EqualValues(1, providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"), "provider_ttfb count")
+	check.EqualValues(1, providerHistogramTotalCount(t, reader, "gen_ai.client.operation.time_to_first_chunk"), "time_to_first_chunk count")
 
 	ttfc, _ := providerHistogramFinder(t, reader, "gen_ai.client.operation.time_to_first_chunk")
 	serverAddress, _ := ttfc.DataPoints[0].Attributes.Value("server.address")
-	assert.Equal(t, "bedrock-runtime.us-east-1.amazonaws.com", serverAddress.AsString(), "server.address should be the regional Bedrock Runtime host")
+	check.Equal("bedrock-runtime.us-east-1.amazonaws.com", serverAddress.AsString(), "server.address should be the regional Bedrock Runtime host")
 	providerName, _ := ttfc.DataPoints[0].Attributes.Value("gen_ai.provider.name")
-	assert.Equal(t, "aws.bedrock", providerName.AsString(), "gen_ai.provider.name")
+	check.Equal("aws.bedrock", providerName.AsString(), "gen_ai.provider.name")
 }
 
 // TestNewBedrockAdapter_RetryPolicyWiring covers the one adapter that
@@ -676,9 +706,10 @@ func TestNewBedrockAdapter_RetryPolicyWiring(t *testing.T) {
 		"disabled": {},
 	} {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			adapter, err := NewBedrockAdapter("", "", nil, policy)
-			require.NoError(t, err, "NewBedrockAdapter rejected the retry policy")
-			require.NotNil(t, adapter, "NewBedrockAdapter returned a nil adapter with no error")
+			must.NoError(err, "NewBedrockAdapter rejected the retry policy")
+			must.NotNil(adapter, "NewBedrockAdapter returned a nil adapter with no error")
 		})
 	}
 }
@@ -686,18 +717,20 @@ func TestNewBedrockAdapter_RetryPolicyWiring(t *testing.T) {
 // TestNewBedrockAdapter_ReadTimeout pins the idle-read bound on the SDK
 // client, which the SDK does not apply to Bedrock Runtime by default.
 func TestNewBedrockAdapter_ReadTimeout(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	adapter, err := NewBedrockAdapter("", "", nil, RetryPolicy{})
-	require.NoError(t, err, "NewBedrockAdapter")
+	must.NoError(err, "NewBedrockAdapter")
 
-	require.IsType(t, &bedrockruntime.Client{}, adapter.client, "adapter client type")
+	must.IsType(&bedrockruntime.Client{}, adapter.client, "adapter client type")
 	client := adapter.client.(*bedrockruntime.Client)
 
 	httpClient := client.Options().HTTPClient
-	require.IsType(t, &awshttp.BuildableClient{}, httpClient, "SDK HTTP client type")
+	must.IsType(&awshttp.BuildableClient{}, httpClient, "SDK HTTP client type")
 	buildable := httpClient.(*awshttp.BuildableClient)
 
 	readTimeout, set := buildable.GetReadTimeout()
-	require.True(t, set, "read timeout must be set on the SDK client")
-	assert.Equal(t, defaultStreamIdleTimeout, readTimeout, "read timeout")
-	assert.Zero(t, buildable.GetTimeout(), "total timeout would cap long ConverseStream turns")
+	must.True(set, "read timeout must be set on the SDK client")
+	check.Equal(defaultStreamIdleTimeout, readTimeout, "read timeout")
+	check.Zero(buildable.GetTimeout(), "total timeout would cap long ConverseStream turns")
 }

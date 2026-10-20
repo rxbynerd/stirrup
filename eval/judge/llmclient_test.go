@@ -24,55 +24,63 @@ func TestResolveLLMConfig_DefaultsAndExplicitBlocks(t *testing.T) {
 	temp := 0.1
 
 	t.Run("built-in default", func(t *testing.T) {
+		must := require.New(t)
 		cfg, err := ResolveLLMConfig(nil, nil)
-		require.NoError(t, err)
-		require.Equal(t, "anthropic", cfg.Provider)
-		require.Equal(t, "claude-haiku-5-5", cfg.Model)
-		require.Equal(t, "secret://ANTHROPIC_API_KEY", cfg.APIKeyRef)
+		must.NoError(err)
+		must.Equal("anthropic", cfg.Provider)
+		must.Equal("claude-haiku-5-5", cfg.Model)
+		must.Equal("secret://ANTHROPIC_API_KEY", cfg.APIKeyRef)
 	})
 
 	t.Run("anthropic defaults fill only missing fields", func(t *testing.T) {
+		must := require.New(t)
 		cfg, err := ResolveLLMConfig(nil, &types.JudgeLLMConfig{Model: "claude-other"})
-		require.NoError(t, err)
-		require.Equal(t, "claude-other", cfg.Model)
-		require.Equal(t, "secret://ANTHROPIC_API_KEY", cfg.APIKeyRef)
+		must.NoError(err)
+		must.Equal("claude-other", cfg.Model)
+		must.Equal("secret://ANTHROPIC_API_KEY", cfg.APIKeyRef)
 	})
 
 	t.Run("explicit block ignores defaults", func(t *testing.T) {
+		must := require.New(t)
 		explicit := &types.JudgeLLMConfig{Model: "explicit", Temperature: &temp}
 		defaults := &types.JudgeLLMConfig{Provider: "openai-compatible", Model: "default", BaseURL: "https://gw.example/v1"}
 		cfg, err := ResolveLLMConfig(explicit, defaults)
-		require.NoError(t, err)
-		require.Equal(t, "anthropic", cfg.Provider)
-		require.Equal(t, "explicit", cfg.Model)
-		require.Empty(t, cfg.BaseURL)
-		require.NotNil(t, cfg.Temperature)
+		must.NoError(err)
+		must.Equal("anthropic", cfg.Provider)
+		must.Equal("explicit", cfg.Model)
+		must.Empty(cfg.BaseURL)
+		must.NotNil(cfg.Temperature)
 	})
 
 	t.Run("explicit block must name a model", func(t *testing.T) {
+		must := require.New(t)
 		_, err := ResolveLLMConfig(&types.JudgeLLMConfig{Provider: "anthropic"}, nil)
-		require.Error(t, err, "an explicit block does not inherit the built-in model")
+		must.Error(err, "an explicit block does not inherit the built-in model")
 	})
 
 	t.Run("anthropic key is never defaulted for another provider", func(t *testing.T) {
+		must := require.New(t)
 		cfg, err := ResolveLLMConfig(nil, &types.JudgeLLMConfig{Provider: "openai-compatible", Model: "m", BaseURL: "https://gw.example/v1"})
-		require.NoError(t, err)
-		require.Empty(t, cfg.APIKeyRef, "no Anthropic key may reach another endpoint")
+		must.NoError(err)
+		must.Empty(cfg.APIKeyRef, "no Anthropic key may reach another endpoint")
 	})
 
 	t.Run("anthropic model is never defaulted for another provider", func(t *testing.T) {
+		must := require.New(t)
 		_, err := ResolveLLMConfig(nil, &types.JudgeLLMConfig{Provider: "openai-compatible", BaseURL: "https://gw.example/v1"})
-		require.ErrorContains(t, err, "model is required")
+		must.ErrorContains(err, "model is required")
 	})
 
 	t.Run("openai-compatible requires a base URL", func(t *testing.T) {
+		must := require.New(t)
 		_, err := ResolveLLMConfig(nil, &types.JudgeLLMConfig{Provider: "openai-compatible", Model: "m"})
-		require.ErrorContains(t, err, "base_url")
+		must.ErrorContains(err, "base_url")
 	})
 
 	t.Run("invalid defaults are rejected", func(t *testing.T) {
+		must := require.New(t)
 		_, err := ResolveLLMConfig(nil, &types.JudgeLLMConfig{APIKeyRef: "sk-raw-key"})
-		require.ErrorContains(t, err, "secret://")
+		must.ErrorContains(err, "secret://")
 	})
 }
 
@@ -95,19 +103,21 @@ func TestResolveLLMConfig_EndpointPolicy(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			cfg, err := ResolveLLMConfig(&tc.cfg, nil)
 			if tc.wantErr != "" {
-				require.ErrorContains(t, err, tc.wantErr)
+				must.ErrorContains(err, tc.wantErr)
 				return
 			}
-			require.NoError(t, err)
-			require.Equal(t, tc.wantRef, cfg.APIKeyRef)
+			must.NoError(err)
+			must.Equal(tc.wantRef, cfg.APIKeyRef)
 		})
 	}
 
 	t.Run("invocation defaults follow the same rule", func(t *testing.T) {
+		must := require.New(t)
 		_, err := ResolveLLMConfig(nil, &types.JudgeLLMConfig{BaseURL: "https://gw.example/v1"})
-		require.ErrorContains(t, err, "api_key_ref is required")
+		must.ErrorContains(err, "api_key_ref is required")
 	})
 }
 
@@ -145,19 +155,21 @@ func TestCheckEndpoint_LookupPolicy(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			check := assert.New(t)
+			must := require.New(t)
 			lookup := tc.lookup
 			if lookup == nil {
 				lookup = func(context.Context, string, string) ([]netip.Addr, error) {
-					assert.Fail(t, "lookup must not run for an address literal or the default endpoint")
+					check.Fail("lookup must not run for an address literal or the default endpoint")
 					return nil, errors.New("unexpected lookup")
 				}
 			}
 			err := checkEndpoint(context.Background(), tc.cfg, lookup)
 			if tc.wantErr != "" {
-				require.ErrorContains(t, err, tc.wantErr)
+				must.ErrorContains(err, tc.wantErr)
 				return
 			}
-			require.NoError(t, err)
+			must.NoError(err)
 		})
 	}
 }
@@ -181,14 +193,15 @@ func TestNewClient_RefusesForbiddenAddressesAtDialTime(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c, err := NewClient(types.JudgeLLMConfig{Provider: "anthropic", Model: "m", BaseURL: tc.baseURL, TimeoutSeconds: 5}, tc.key)
-			require.NoError(t, err)
+			must.NoError(err)
 			_, err = c.Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
 			if tc.wantErr != "" {
-				require.ErrorContains(t, err, tc.wantErr)
+				must.ErrorContains(err, tc.wantErr)
 				return
 			}
-			require.NoError(t, err, "the call should reach the server")
+			must.NoError(err, "the call should reach the server")
 		})
 	}
 }
@@ -214,12 +227,13 @@ func TestCheckDialAddress_IPPolicy(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			err := checkDialAddress(tc.address, tc.keyOverHTTP)
 			if tc.wantErr {
-				require.Error(t, err)
+				must.Error(err)
 				return
 			}
-			require.NoError(t, err)
+			must.NoError(err)
 		})
 	}
 }
@@ -234,50 +248,57 @@ func TestJoinEndpoint_JoinsBaseAndPath(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got, err := joinEndpoint(tc.base, tc.path)
-			require.NoError(t, err)
-			require.Equal(t, tc.want, got)
+			must.NoError(err)
+			must.Equal(tc.want, got)
 		})
 	}
 }
 
 func TestNewClient_DispatchesOnProvider(t *testing.T) {
 	t.Run("anthropic", func(t *testing.T) {
+		must := require.New(t)
 		client, err := NewClient(types.JudgeLLMConfig{Provider: "anthropic", Model: "m"}, "k")
-		require.NoError(t, err)
-		require.IsType(t, (*anthropicClient)(nil), client)
+		must.NoError(err)
+		must.IsType((*anthropicClient)(nil), client)
 	})
 
 	t.Run("openai-compatible", func(t *testing.T) {
+		must := require.New(t)
 		client, err := NewClient(types.JudgeLLMConfig{Provider: "openai-compatible", Model: "m", BaseURL: "https://gw.example/v1"}, "")
-		require.NoError(t, err)
-		require.IsType(t, (*openaiClient)(nil), client)
+		must.NoError(err)
+		must.IsType((*openaiClient)(nil), client)
 	})
 
 	t.Run("unsupported provider", func(t *testing.T) {
+		must := require.New(t)
 		_, err := NewClient(types.JudgeLLMConfig{Provider: "bedrock", Model: "m"}, "k")
-		require.Error(t, err)
+		must.Error(err)
 	})
 }
 
 func TestNewClient_AppliesConfiguredTimeout(t *testing.T) {
 	t.Run("configured timeout", func(t *testing.T) {
+		must := require.New(t)
 		c, err := NewClient(types.JudgeLLMConfig{Provider: "anthropic", Model: "m", TimeoutSeconds: 7}, "k")
-		require.NoError(t, err)
-		require.Equal(t, 7*time.Second, c.(*anthropicClient).http.Timeout)
+		must.NoError(err)
+		must.Equal(7*time.Second, c.(*anthropicClient).http.Timeout)
 	})
 
 	t.Run("default timeout", func(t *testing.T) {
+		must := require.New(t)
 		c, err := NewClient(types.JudgeLLMConfig{Provider: "anthropic", Model: "m"}, "k")
-		require.NoError(t, err)
-		require.Equal(t, 30*time.Second, c.(*anthropicClient).http.Timeout)
+		must.NoError(err)
+		must.Equal(30*time.Second, c.(*anthropicClient).http.Timeout)
 	})
 }
 
 func TestResolveSecretRef_ReadsEnvAndFileRefs(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("JUDGE_TEST_KEY", "  env-secret\n")
 	keyFile := filepath.Join(t.TempDir(), "key")
-	require.NoError(t, os.WriteFile(keyFile, []byte("file-secret\n"), 0o600))
+	must.NoError(os.WriteFile(keyFile, []byte("file-secret\n"), 0o600))
 
 	cases := []struct{ name, ref, want string }{
 		{name: "environment variable", ref: "secret://JUDGE_TEST_KEY", want: "env-secret"},
@@ -285,17 +306,19 @@ func TestResolveSecretRef_ReadsEnvAndFileRefs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got, err := resolveSecretRef(tc.ref)
-			require.NoError(t, err)
-			require.Equal(t, tc.want, got)
+			must.NoError(err)
+			must.Equal(tc.want, got)
 		})
 	}
 }
 
 func TestResolveSecretRef_RejectsMalformedAndRawRefs(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("JUDGE_EMPTY_KEY", "")
 	emptyFile := filepath.Join(t.TempDir(), "empty")
-	require.NoError(t, os.WriteFile(emptyFile, []byte(" \n"), 0o600))
+	must.NoError(os.WriteFile(emptyFile, []byte(" \n"), 0o600))
 
 	cases := []struct {
 		name    string
@@ -318,12 +341,13 @@ func TestResolveSecretRef_RejectsMalformedAndRawRefs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			_, err := resolveSecretRef(tc.ref)
-			require.ErrorContains(t, err, tc.wantMsg)
+			must.ErrorContains(err, tc.wantMsg)
 
 			name := strings.TrimPrefix(tc.ref, "secret://")
 			if name != "" && !strings.HasPrefix(name, "JUDGE_") && !strings.HasPrefix(name, "file://") {
-				require.NotContains(t, err.Error(), name, "the error must not echo the reference")
+				must.NotContains(err.Error(), name, "the error must not echo the reference")
 			}
 		})
 	}

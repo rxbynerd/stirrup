@@ -49,13 +49,14 @@ func fatalPreRunHookConfig(t *testing.T) *types.RunConfig {
 // emits a STIRRUP_RESULT line despite loop.Run() returning a non-nil
 // error, while runWithConfig itself still returns that error.
 func TestRunWithConfig_FatalPreRunHookFailure_StillEmitsRunResult(t *testing.T) {
+	must := require.New(t)
 	config := fatalPreRunHookConfig(t)
 
 	stdoutDone := captureStdout(t)
 	runErr := runWithConfig(config, runOptions{outputMode: "json"})
 	stdout := stdoutDone()
 
-	require.Error(t, runErr)
+	must.Error(runErr)
 
 	// stdout also carries the default stdio transport's own JSON event
 	// stream, so the STIRRUP_RESULT line is not necessarily the first
@@ -67,11 +68,11 @@ func TestRunWithConfig_FatalPreRunHookFailure_StillEmitsRunResult(t *testing.T) 
 			break
 		}
 	}
-	require.NotEmpty(t, resultLine, "no STIRRUP_RESULT line despite the fatal error; stdout: %q", stdout)
+	must.NotEmpty(resultLine, "no STIRRUP_RESULT line despite the fatal error; stdout: %q", stdout)
 
 	payload := strings.TrimPrefix(resultLine, "STIRRUP_RESULT ")
 	var result types.RunResult
-	require.NoError(t, json.Unmarshal([]byte(payload), &result), "payload: %s", payload)
-	require.Equal(t, "setup_failed", result.Outcome)
-	require.NotZero(t, result.HookFailures)
+	must.NoError(json.Unmarshal([]byte(payload), &result), "payload: %s", payload)
+	must.Equal("setup_failed", result.Outcome)
+	must.NotZero(result.HookFailures)
 }

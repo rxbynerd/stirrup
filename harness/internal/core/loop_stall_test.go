@@ -25,18 +25,20 @@ import (
 
 func newStallHarness(t *testing.T, script ...[]types.StreamEvent) (*outputLimitHarness, *sdkmetric.ManualReader) {
 	t.Helper()
+	must := require.New(t)
 	h := newOutputLimitHarness(script...)
 	reader := sdkmetric.NewManualReader()
 	metrics, err := observability.NewMetricsForTesting(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
-	require.NoError(t, err)
+	must.NoError(err)
 	h.loop.Metrics = metrics
 	return h, reader
 }
 
 func counterTotal(t *testing.T, reader *sdkmetric.ManualReader, name string) int64 {
 	t.Helper()
+	must := require.New(t)
 	var rm metricdata.ResourceMetrics
-	require.NoError(t, reader.Collect(context.Background(), &rm))
+	must.NoError(reader.Collect(context.Background(), &rm))
 	var total int64
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
@@ -89,21 +91,23 @@ func writeFileTurn(id string) []types.StreamEvent {
 // that it follows an assistant message.
 func assertNudgeJoinsToolResults(t *testing.T, msgs []types.Message, wantNudge string, ids ...string) {
 	t.Helper()
+	must := require.New(t)
 	n := len(msgs)
-	require.True(t, n >= 2 && msgs[n-2].Role == "assistant",
+	must.True(n >= 2 && msgs[n-2].Role == "assistant",
 		"request does not end with an assistant turn followed by its results: %+v", msgs)
 	last := msgs[n-1]
 	wantTypes := strings.Repeat("tool_result,", len(ids)) + "text"
-	require.Equal(t, "user", last.Role, "trailing message: %+v", last)
-	require.False(t, last.Synthetic, "trailing message is synthetic: %+v", last)
-	require.Equal(t, wantTypes, strings.Join(blockTypes(last), ","), "trailing message blocks: %+v", last)
+	must.Equal("user", last.Role, "trailing message: %+v", last)
+	must.False(last.Synthetic, "trailing message is synthetic: %+v", last)
+	must.Equal(wantTypes, strings.Join(blockTypes(last), ","), "trailing message blocks: %+v", last)
 	for i, id := range ids {
-		require.Equal(t, id, last.Content[i].ToolUseID, "tool_result %d", i)
+		must.Equal(id, last.Content[i].ToolUseID, "tool_result %d", i)
 	}
-	require.Equal(t, wantNudge, strings.Join(textBlocks(last), ""), "nudge text")
+	must.Equal(wantNudge, strings.Join(textBlocks(last), ""), "nudge text")
 }
 
 func TestLoop_StallNudge_AlternatingCycleNudgesOnceThenStalls(t *testing.T) {
+	must := require.New(t)
 	var script [][]types.StreamEvent
 	for i := 0; i < 4*stallRepeats; i++ {
 		id := fmt.Sprintf("tc_%d", i)
@@ -116,11 +120,11 @@ func TestLoop_StallNudge_AlternatingCycleNudgesOnceThenStalls(t *testing.T) {
 	h, reader := newStallHarness(t, script...)
 
 	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
+	must.NoError(err)
 	threshold := 2 * stallRepeats
-	require.Equal(t, "stalled", runTrace.Outcome)
+	must.Equal("stalled", runTrace.Outcome)
 	calls := h.provider.params()
-	require.Len(t, calls, 2*threshold, "one threshold of requests before the nudge and one after")
+	must.Len(calls, 2*threshold, "one threshold of requests before the nudge and one after")
 
 	assertNudgeJoinsToolResults(t, calls[threshold].Messages, fmt.Sprintf(stallNudgeText, threshold), fmt.Sprintf("tc_%d", threshold-1))
 	for i, c := range calls {
@@ -135,36 +139,40 @@ func TestLoop_StallNudge_AlternatingCycleNudgesOnceThenStalls(t *testing.T) {
 			want = 1
 		}
 		t.Run(fmt.Sprintf("request %d", i), func(t *testing.T) {
-			require.Equal(t, want, nudges, "nudges carried by the request")
+			must := require.New(t)
+			must.Equal(want, nudges, "nudges carried by the request")
 		})
 	}
 	assertAllRequestsPaired(t, calls)
 
 	for i, f := range stallNudgeFlags(h.emitter) {
 		t.Run(fmt.Sprintf("turn record %d", i), func(t *testing.T) {
-			require.Equal(t, i == threshold-1, f, "stallNudge is set only on turn %d", threshold-1)
+			must := require.New(t)
+			must.Equal(i == threshold-1, f, "stallNudge is set only on turn %d", threshold-1)
 		})
 	}
-	require.Equal(t, int64(1), counterTotal(t, reader, "stirrup.harness.stall_nudges"))
-	require.Equal(t, int64(1), counterTotal(t, reader, "stirrup.harness.stalls"))
-	require.Len(t, stallWarnings(h), 1, "stall warnings")
+	must.Equal(int64(1), counterTotal(t, reader, "stirrup.harness.stall_nudges"))
+	must.Equal(int64(1), counterTotal(t, reader, "stirrup.harness.stalls"))
+	must.Len(stallWarnings(h), 1, "stall warnings")
 }
 
 func TestLoop_StallNudge_ModelThatChangesApproachFinishes(t *testing.T) {
+	must := require.New(t)
 	h, reader := newStallHarness(t, testToolTurn("tc_0"), testToolTurn("tc_1"), testToolTurn("tc_2"), scriptEndTurn)
 
 	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "success", runTrace.Outcome)
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
 	calls := h.provider.params()
-	require.Len(t, calls, 4)
+	must.Len(calls, 4)
 	assertNudgeJoinsToolResults(t, calls[3].Messages, fmt.Sprintf(stallNudgeText, stallRepeats), "tc_2")
-	require.Equal(t, []bool{false, false, true, false}, stallNudgeFlags(h.emitter))
-	require.Equal(t, int64(1), counterTotal(t, reader, "stirrup.harness.stall_nudges"))
-	require.Zero(t, counterTotal(t, reader, "stirrup.harness.stalls"))
+	must.Equal([]bool{false, false, true, false}, stallNudgeFlags(h.emitter))
+	must.Equal(int64(1), counterTotal(t, reader, "stirrup.harness.stall_nudges"))
+	must.Zero(counterTotal(t, reader, "stirrup.harness.stalls"))
 }
 
 func TestLoop_StallNudge_KeepsEveryResultOfTheBatch(t *testing.T) {
+	must := require.New(t)
 	batch := []types.StreamEvent{
 		{Type: "tool_call", ID: "tc_a", Name: "test_tool", Input: map[string]any{}},
 		{Type: "tool_call", ID: "tc_b", Name: "test_tool", Input: map[string]any{}},
@@ -175,15 +183,16 @@ func TestLoop_StallNudge_KeepsEveryResultOfTheBatch(t *testing.T) {
 	h, _ := newStallHarness(t, batch, scriptEndTurn)
 
 	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "success", runTrace.Outcome)
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
 	calls := h.provider.params()
-	require.Len(t, calls, 2)
+	must.Len(calls, 2)
 	assertNudgeJoinsToolResults(t, calls[1].Messages, fmt.Sprintf(stallNudgeText, stallRepeats), "tc_a", "tc_b", "tc_c", "tc_d")
 	assertAllRequestsPaired(t, calls)
 }
 
 func TestLoop_StallNudge_PollWithChangingOutputIsNotNudged(t *testing.T) {
+	must := require.New(t)
 	const polls = 3 * stallRepeats
 	var script [][]types.StreamEvent
 	for i := 0; i < polls; i++ {
@@ -205,9 +214,9 @@ func TestLoop_StallNudge_PollWithChangingOutputIsNotNudged(t *testing.T) {
 	})
 
 	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "success", runTrace.Outcome)
-	require.Zero(t, counterTotal(t, reader, "stirrup.harness.stall_nudges"),
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
+	must.Zero(counterTotal(t, reader, "stirrup.harness.stall_nudges"),
 		"polls whose output changes are not nudged")
 }
 
@@ -225,6 +234,7 @@ func (e largeOutputExecutor) ExecStream(_ context.Context, _ string, _ time.Dura
 }
 
 func TestLoop_StallNudge_RepeatedSpilledCommandOutputStalls(t *testing.T) {
+	must := require.New(t)
 	const calls = 2 * stallRepeats
 	var script [][]types.StreamEvent
 	for i := 0; i < calls; i++ {
@@ -238,13 +248,13 @@ func TestLoop_StallNudge_RepeatedSpilledCommandOutputStalls(t *testing.T) {
 
 	cfg := (types.ToolsConfig{}).EffectiveCommandOutput()
 	store, err := commandoutput.New(commandoutput.Options{RunID: "test-run-1", Config: cfg, ArchivePath: filepath.Join(t.TempDir(), "archive.tar.gz")})
-	require.NoError(t, err)
+	must.NoError(err)
 	t.Cleanup(func() { _ = store.Close() })
 	exec := largeOutputExecutor{stdout: strings.Repeat("FAIL TestX\n", int(cfg.InlineMaxBytes)/10+1)}
 	h.loop.Tools.(*tool.Registry).Register(builtins.RunCommandToolWithStore(exec, store, cfg, types.DefaultToolMaxResultBytes))
 
 	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
+	must.NoError(err)
 	requests := h.provider.params()
 	refs := map[string]bool{}
 	for _, m := range requests[len(requests)-1].Messages {
@@ -259,15 +269,16 @@ func TestLoop_StallNudge_RepeatedSpilledCommandOutputStalls(t *testing.T) {
 			}
 		}
 	}
-	require.Len(t, refs, len(requests)-1, "every call must spill with its own stdout reference")
-	require.Equal(t, "stalled", runTrace.Outcome)
-	require.Len(t, requests, calls)
-	require.Equal(t, int64(1), counterTotal(t, reader, "stirrup.harness.stall_nudges"))
-	require.Equal(t, []bool{false, false, true, false, false, false}, stallNudgeFlags(h.emitter),
+	must.Len(refs, len(requests)-1, "every call must spill with its own stdout reference")
+	must.Equal("stalled", runTrace.Outcome)
+	must.Len(requests, calls)
+	must.Equal(int64(1), counterTotal(t, reader, "stirrup.harness.stall_nudges"))
+	must.Equal([]bool{false, false, true, false, false, false}, stallNudgeFlags(h.emitter),
 		"the nudge is sent on the third turn only")
 }
 
 func TestLoop_StallNudge_PendingNudgeIsDroppedWhenTheBatchEndsTheRun(t *testing.T) {
+	must := require.New(t)
 	batch := make([]types.StreamEvent, 0, maxConsecutiveFailures+1)
 	for i := 0; i < maxConsecutiveFailures; i++ {
 		batch = append(batch, types.StreamEvent{Type: "tool_call", ID: fmt.Sprintf("tc_%d", i), Name: "broken_tool", Input: map[string]any{}})
@@ -284,9 +295,9 @@ func TestLoop_StallNudge_PendingNudgeIsDroppedWhenTheBatchEndsTheRun(t *testing.
 	})
 
 	runTrace, err := h.loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "tool_failures", runTrace.Outcome)
-	require.Equal(t, []bool{false}, stallNudgeFlags(h.emitter), "the queued nudge was never sent")
-	require.Zero(t, counterTotal(t, reader, "stirrup.harness.stall_nudges"))
-	require.Empty(t, stallWarnings(h), "stall warnings")
+	must.NoError(err)
+	must.Equal("tool_failures", runTrace.Outcome)
+	must.Equal([]bool{false}, stallNudgeFlags(h.emitter), "the queued nudge was never sent")
+	must.Zero(counterTotal(t, reader, "stirrup.harness.stall_nudges"))
+	must.Empty(stallWarnings(h), "stall warnings")
 }

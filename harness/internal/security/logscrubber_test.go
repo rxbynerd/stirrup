@@ -26,8 +26,9 @@ func gcpAPIKeyFixture() string {
 }
 
 func TestScrub_RedactsAnthropicKey(t *testing.T) {
+	must := require.New(t)
 	got := Scrub("key is sk-ant-abc123_DEF-456")
-	require.Equal(t, "key is [REDACTED]", got)
+	must.Equal("key is [REDACTED]", got)
 }
 
 // TestScrub_SecretRefCaseInsensitive pins that the secret_ref pattern
@@ -46,56 +47,66 @@ func TestScrub_SecretRefCaseInsensitive(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got := Scrub(tc.input)
-			require.NotContains(t, strings.ToLower(got), "secret://", "Scrub(%q) = %q", tc.input, got)
-			require.Contains(t, got, "[REDACTED]")
+			must.NotContains(strings.ToLower(got), "secret://", "Scrub(%q) = %q", tc.input, got)
+			must.Contains(got, "[REDACTED]")
 		})
 	}
 }
 
 func TestScrub_RedactsGitHubPAT(t *testing.T) {
+	must := require.New(t)
 	got := Scrub("token: ghp_abc123XYZ")
-	require.Equal(t, "token: [REDACTED]", got)
+	must.Equal("token: [REDACTED]", got)
 }
 
 func TestScrub_RedactsGitHubAppToken(t *testing.T) {
+	must := require.New(t)
 	got := Scrub("ghs_tokenValue123")
-	require.Equal(t, "[REDACTED]", got)
+	must.Equal("[REDACTED]", got)
 }
 
 func TestScrub_RedactsAWSAccessKey(t *testing.T) {
+	must := require.New(t)
 	got := Scrub("AKIAIOSFODNN7EXAMPLE")
-	require.Equal(t, "[REDACTED]", got)
+	must.Equal("[REDACTED]", got)
 }
 
 func TestScrub_RedactsAWSSecretAccessKey(t *testing.T) {
+	must := require.New(t)
 	got := Scrub("aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
-	require.Equal(t, "[REDACTED]", got)
+	must.Equal("[REDACTED]", got)
 }
 
 func TestScrub_RedactsSlackToken(t *testing.T) {
+	must := require.New(t)
 	got := Scrub("SLACK_BOT_TOKEN=" + slackTokenFixture())
-	require.Equal(t, "SLACK_BOT_TOKEN=[REDACTED]", got)
+	must.Equal("SLACK_BOT_TOKEN=[REDACTED]", got)
 }
 
 func TestScrub_RedactsStripeLiveKey(t *testing.T) {
+	must := require.New(t)
 	got := Scrub("stripe " + stripeLiveKeyFixture())
-	require.Equal(t, "stripe [REDACTED]", got)
+	must.Equal("stripe [REDACTED]", got)
 }
 
 func TestScrub_RedactsGCPAPIKey(t *testing.T) {
+	must := require.New(t)
 	got := Scrub("gcp=" + gcpAPIKeyFixture())
-	require.Equal(t, "gcp=[REDACTED]", got)
+	must.Equal("gcp=[REDACTED]", got)
 }
 
 func TestScrub_RedactsAzureStorageKey(t *testing.T) {
+	must := require.New(t)
 	got := Scrub("primary_access_key: abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ=")
-	require.Equal(t, "[REDACTED]", got)
+	must.Equal("[REDACTED]", got)
 }
 
 func TestScrub_RedactsGenericHexSecret(t *testing.T) {
+	must := require.New(t)
 	got := Scrub("client_secret=0123456789abcdef0123456789abcdef")
-	require.Equal(t, "[REDACTED]", got)
+	must.Equal("[REDACTED]", got)
 }
 
 func TestScrub_AnchoredPatternsAvoidCommonFalsePositives(t *testing.T) {
@@ -110,27 +121,31 @@ func TestScrub_AnchoredPatternsAvoidCommonFalsePositives(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.input, Scrub(tc.input), "want unchanged")
+			must := require.New(t)
+			must.Equal(tc.input, Scrub(tc.input), "want unchanged")
 		})
 	}
 }
 
 func TestScrub_RedactsBearerToken(t *testing.T) {
+	must := require.New(t)
 	got := Scrub("Authorization: Bearer eyJhbGciOiJSUzI1NiJ9.abc")
-	require.Equal(t, "Authorization: [REDACTED]", got)
+	must.Equal("Authorization: [REDACTED]", got)
 }
 
 func TestScrub_RedactsBearerTokenWithBase64Chars(t *testing.T) {
+	must := require.New(t)
 	got := Scrub("Authorization: Bearer abc/def+ghi==")
-	require.Equal(t, "Authorization: [REDACTED]", got)
+	must.Equal("Authorization: [REDACTED]", got)
 }
 
 // TestScrub_RedactsBasicAuth pins that Grafana Cloud's documented OTLP gateway
 // credential (`Basic <base64>`, not Bearer) is scrubbed. Without this
 // pattern, a resolved Basic token would survive slog output unredacted.
 func TestScrub_RedactsBasicAuth(t *testing.T) {
+	must := require.New(t)
 	got := Scrub("Authorization: Basic dXNlcjpwYXNz")
-	require.Equal(t, "Authorization: [REDACTED]", got)
+	must.Equal("Authorization: [REDACTED]", got)
 }
 
 // TestScrub_RedactsBasicAuth_LongBase64 covers the realistic Grafana Cloud
@@ -138,8 +153,9 @@ func TestScrub_RedactsBasicAuth(t *testing.T) {
 // includes `+/=` which the regex must accept, otherwise long instance
 // IDs concatenated with API tokens would only be partially redacted.
 func TestScrub_RedactsBasicAuth_LongBase64(t *testing.T) {
+	must := require.New(t)
 	got := Scrub("Authorization: Basic MTIzNDU2OmdsY19leUp2PT09")
-	require.Equal(t, "Authorization: [REDACTED]", got)
+	must.Equal("Authorization: [REDACTED]", got)
 }
 
 // TestScrub_KeyValueOnTheNextLine pins that a key/value credential whose
@@ -164,13 +180,14 @@ func TestScrub_KeyValueOnTheNextLine(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, Scrub(tt.input))
+			must := require.New(t)
+			must.Equal(tt.want, Scrub(tt.input))
 
 			latched := false
 			for _, f := range DetectSensitive(tt.input) {
 				latched = latched || f.Tier == TierLatch
 			}
-			require.Equal(t, tt.want != tt.input, latched, "DetectSensitive(%q) latched", tt.input)
+			must.Equal(tt.want != tt.input, latched, "DetectSensitive(%q) latched", tt.input)
 		})
 	}
 }
@@ -199,7 +216,8 @@ func TestScrub_Bearer_RedactsOnlyCredentials(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, Scrub(tt.input))
+			must := require.New(t)
+			must.Equal(tt.want, Scrub(tt.input))
 		})
 	}
 }
@@ -236,7 +254,8 @@ func TestScrub_BasicAuth_RedactsOnlyCredentials(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, Scrub(tt.input))
+			must := require.New(t)
+			must.Equal(tt.want, Scrub(tt.input))
 		})
 	}
 }
@@ -244,42 +263,49 @@ func TestScrub_BasicAuth_RedactsOnlyCredentials(t *testing.T) {
 // TestScrubWithStats_BasicAuthCountsOnlyRedactions pins that prose matches
 // neither inflate the redaction count nor list the pattern.
 func TestScrubWithStats_BasicAuthCountsOnlyRedactions(t *testing.T) {
+	must := require.New(t)
 	_, stats := ScrubWithStats("Basic documentation and Basic auth")
-	require.Zero(t, stats.Count)
-	require.Empty(t, stats.Patterns)
+	must.Zero(stats.Count)
+	must.Empty(stats.Patterns)
 
 	_, stats = ScrubWithStats("Basic documentation and Basic dXNlcjpwYXNz")
-	require.Equal(t, 1, stats.Count)
-	require.Equal(t, []string{"basic_auth"}, stats.Patterns)
+	must.Equal(1, stats.Count)
+	must.Equal([]string{"basic_auth"}, stats.Patterns)
 }
 
 func TestScrub_RedactsOpenAIKey(t *testing.T) {
+	must := require.New(t)
 	got := Scrub("openai=sk-abcdefghijklmnopqrstuvwxyz123456")
-	require.Equal(t, "openai=[REDACTED]", got)
+	must.Equal("openai=[REDACTED]", got)
 }
 
 func TestScrub_RedactsPEMKey(t *testing.T) {
+	must := require.New(t)
 	got := Scrub("-----BEGIN RSA PRIVATE KEY-----")
-	require.Equal(t, "[REDACTED]", got)
+	must.Equal("[REDACTED]", got)
 }
 
 func TestScrub_RedactsSecretRef(t *testing.T) {
+	must := require.New(t)
 	got := Scrub("ref: secret://ANTHROPIC_KEY")
-	require.Equal(t, "ref: [REDACTED]", got)
+	must.Equal("ref: [REDACTED]", got)
 }
 
 func TestScrub_LeavesTextWithoutSecretsUnchanged(t *testing.T) {
+	must := require.New(t)
 	input := "this is a normal log line"
 	got := Scrub(input)
-	require.Equal(t, input, got)
+	must.Equal(input, got)
 }
 
 func TestScrub_RedactsMultipleSecrets(t *testing.T) {
+	must := require.New(t)
 	got := Scrub("keys: sk-ant-abc123 and ghp_token456")
-	require.Equal(t, "keys: [REDACTED] and [REDACTED]", got)
+	must.Equal("keys: [REDACTED] and [REDACTED]", got)
 }
 
 func TestScrubMap_RedactsNestedAndListValues(t *testing.T) {
+	must := require.New(t)
 	input := map[string]any{
 		"key":  "sk-ant-abc123",
 		"safe": "hello",
@@ -295,41 +321,45 @@ func TestScrubMap_RedactsNestedAndListValues(t *testing.T) {
 
 	got := ScrubMap(input)
 
-	require.Equal(t, "[REDACTED]", got["key"], "key")
-	require.Equal(t, "hello", got["safe"], "safe")
+	must.Equal("[REDACTED]", got["key"], "key")
+	must.Equal("hello", got["safe"], "safe")
 	nested := got["nested"].(map[string]any)
-	require.Equal(t, "[REDACTED]", nested["token"], "nested.token")
+	must.Equal("[REDACTED]", nested["token"], "nested.token")
 	list := got["list"].([]any)
-	require.Equal(t, "[REDACTED]", list[0], "list[0]")
-	require.Equal(t, "safe-value", list[1], "list[1]")
-	require.InDelta(t, 42.0, got["number"], 0, "number")
+	must.Equal("[REDACTED]", list[0], "list[0]")
+	must.Equal("safe-value", list[1], "list[1]")
+	must.InDelta(42.0, got["number"], 0, "number")
 }
 
 func TestScrubMap_NilMapReturnsNil(t *testing.T) {
+	must := require.New(t)
 	got := ScrubMap(nil)
-	require.Nil(t, got)
+	must.Nil(got)
 }
 
 func TestScrubWithStats_ReportsNothingForCleanText(t *testing.T) {
+	must := require.New(t)
 	scrubbed, stats := ScrubWithStats("nothing to redact here")
-	require.Equal(t, "nothing to redact here", scrubbed)
-	require.Zero(t, stats.Count)
-	require.Empty(t, stats.Patterns)
+	must.Equal("nothing to redact here", scrubbed)
+	must.Zero(stats.Count)
+	must.Empty(stats.Patterns)
 }
 
 func TestScrubWithStats_CountsSingleAnthropicKey(t *testing.T) {
+	must := require.New(t)
 	scrubbed, stats := ScrubWithStats("token sk-ant-abc123")
-	require.Equal(t, "token [REDACTED]", scrubbed)
-	require.Equal(t, 1, stats.Count)
-	require.Equal(t, []string{"anthropic_api_key"}, stats.Patterns)
+	must.Equal("token [REDACTED]", scrubbed)
+	must.Equal(1, stats.Count)
+	must.Equal([]string{"anthropic_api_key"}, stats.Patterns)
 }
 
 func TestScrubWithStats_MultipleSecretsCounted(t *testing.T) {
+	must := require.New(t)
 	scrubbed, stats := ScrubWithStats("a=sk-ant-aaa, b=ghp_bbb, c=sk-ant-ccc")
-	require.Equal(t, "a=[REDACTED], b=[REDACTED], c=[REDACTED]", scrubbed)
+	must.Equal("a=[REDACTED], b=[REDACTED], c=[REDACTED]", scrubbed)
 	// 2 anthropic + 1 github = 3 total replacements; 2 distinct pattern names.
-	require.Equal(t, 3, stats.Count)
-	require.Len(t, stats.Patterns, 2)
+	must.Equal(3, stats.Count)
+	must.Len(stats.Patterns, 2)
 }
 
 // TestScrubWithStats_PatternNames asserts that ScrubWithStats reports the
@@ -453,10 +483,11 @@ func TestScrubWithStats_PatternNames(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			_, stats := ScrubWithStats(tc.input)
-			require.NotZero(t, stats.Count, "no redaction for %q", tc.input)
-			require.NotEmpty(t, stats.Patterns)
-			require.Equal(t, tc.pattern, stats.Patterns[0])
+			must.NotZero(stats.Count, "no redaction for %q", tc.input)
+			must.NotEmpty(stats.Patterns)
+			must.Equal(tc.pattern, stats.Patterns[0])
 		})
 	}
 }
@@ -467,34 +498,38 @@ func TestScrubWithStats_PatternNames(t *testing.T) {
 // endpoint echoes it; without this scrubber entry, a hostile STS would
 // leak a usable JWT into slog/OTel output.
 func TestScrub_RedactsOIDCJWT(t *testing.T) {
+	must := require.New(t)
 	jwt := "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.abc123"
 	got := Scrub("got " + jwt + " from endpoint")
-	require.Equal(t, "got [REDACTED] from endpoint", got)
+	must.Equal("got [REDACTED] from endpoint", got)
 }
 
 // TestScrub_OIDCJWTNoBoundary asserts the JWT redaction does not
 // over-extend past the token. Adjacent text on either side must
 // survive intact so error messages remain debuggable.
 func TestScrub_OIDCJWTNoBoundary(t *testing.T) {
+	must := require.New(t)
 	got := Scrub("prefix eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.signature suffix")
-	require.Equal(t, "prefix [REDACTED] suffix", got)
+	must.Equal("prefix [REDACTED] suffix", got)
 }
 
 // TestScrub_RedactsGCPAccessToken exercises the ya29.* prefix common to all
 // Google OAuth2 access tokens (Application Default Credentials, IAM
 // generateAccessToken impersonation results, federated tokens).
 func TestScrub_RedactsGCPAccessToken(t *testing.T) {
+	must := require.New(t)
 	got := Scrub("token ya29.AbCdEfGhIjKl")
-	require.Equal(t, "token [REDACTED]", got)
+	must.Equal("token [REDACTED]", got)
 }
 
 // TestScrub_GCPAccessTokenWithSurroundingText asserts the redaction
 // stops at any character outside the base64url alphabet so trailing
 // punctuation does not get pulled into the [REDACTED] span.
 func TestScrub_GCPAccessTokenWithSurroundingText(t *testing.T) {
+	must := require.New(t)
 	input := `prefix ya29.AbCdEfGhIjKl and "ya29.MoreToken_Here-x" plus more`
 	got := Scrub(input)
-	require.Equal(t, `prefix [REDACTED] and "[REDACTED]" plus more`, got)
+	must.Equal(`prefix [REDACTED] and "[REDACTED]" plus more`, got)
 }
 
 // Scrub wraps ScrubWithStats and must return the same text for every input.
@@ -512,9 +547,10 @@ func TestScrubWithStats_ScrubWrapperParity(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got := Scrub(tc.input)
 			want, _ := ScrubWithStats(tc.input)
-			require.Equal(t, want, got)
+			must.Equal(want, got)
 		})
 	}
 }
@@ -535,7 +571,8 @@ func TestScrub_SkPrefixRequiresWordBoundary(t *testing.T) {
 	}
 	for _, tc := range notSecrets {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.input, Scrub(tc.input), "an identifier containing sk- mid-word is not a key")
+			must := require.New(t)
+			must.Equal(tc.input, Scrub(tc.input), "an identifier containing sk- mid-word is not a key")
 		})
 	}
 
@@ -553,7 +590,8 @@ func TestScrub_SkPrefixRequiresWordBoundary(t *testing.T) {
 	}
 	for _, tc := range realKeys {
 		t.Run(tc.name, func(t *testing.T) {
-			require.NotContains(t, Scrub(tc.input), "sk-")
+			must := require.New(t)
+			must.NotContains(Scrub(tc.input), "sk-")
 		})
 	}
 }
@@ -562,14 +600,16 @@ func TestScrub_SkPrefixRequiresWordBoundary(t *testing.T) {
 // must not produce one.
 func TestDetectSensitive_WorkspacePathIsNotAKey(t *testing.T) {
 	t.Run("workspace path does not latch", func(t *testing.T) {
+		must := require.New(t)
 		path := "Tool error: stat file: stat /tmp/eval-task-narrow-edit-leaves-surroundings-alone-1530359655/target.txt: no such file or directory"
-		require.Empty(t, DetectSensitive(path), "a tool-result path must not latch Rule-of-Two")
+		must.Empty(DetectSensitive(path), "a tool-result path must not latch Rule-of-Two")
 	})
 
 	t.Run("genuine key latches", func(t *testing.T) {
+		must := require.New(t)
 		leaked := "cat .env: OPENAI_API_KEY=sk-abcdefghijklmnop12345"
 		fs := DetectSensitive(leaked)
-		require.NotEmpty(t, fs, "want the key detected in %q", leaked)
+		must.NotEmpty(fs, "want the key detected in %q", leaked)
 
 		var latched bool
 		for _, f := range fs {
@@ -577,11 +617,12 @@ func TestDetectSensitive_WorkspacePathIsNotAKey(t *testing.T) {
 				latched = true
 			}
 		}
-		require.True(t, latched, "want a TierLatch finding for %q, got %+v", leaked, fs)
+		must.True(latched, "want a TierLatch finding for %q, got %+v", leaked, fs)
 	})
 }
 
 func TestScrubCorrelation_ScrubsEveryValueAndCopies(t *testing.T) {
+	must := require.New(t)
 	key := "sk-ant-api03-" + strings.Repeat("A", 40)
 	in := &types.CorrelationConfig{
 		SessionID: "s-" + key,
@@ -597,16 +638,17 @@ func TestScrubCorrelation_ScrubsEveryValueAndCopies(t *testing.T) {
 		"userId": got.UserID, "url": got.URL, "labels[agent_profile]": got.Labels["agent_profile"],
 	} {
 		t.Run(name, func(t *testing.T) {
-			require.NotContains(t, v, key)
-			require.Contains(t, v, redactedPlaceholder)
+			must := require.New(t)
+			must.NotContains(v, key)
+			must.Contains(v, redactedPlaceholder)
 		})
 	}
-	require.True(t, strings.HasPrefix(got.URL, "https://cp.example.com/runs/42?token="),
+	must.True(strings.HasPrefix(got.URL, "https://cp.example.com/runs/42?token="),
 		"scrubbing must keep the non-secret URL prefix, got %q", got.URL)
 
 	got.Labels["agent_profile"] = "mutated"
-	require.Equal(t, "p-"+key, in.Labels["agent_profile"], "ScrubCorrelation shares the input's label map")
-	require.Nil(t, ScrubCorrelation(nil), "nil in must be nil out")
+	must.Equal("p-"+key, in.Labels["agent_profile"], "ScrubCorrelation shares the input's label map")
+	must.Nil(ScrubCorrelation(nil), "nil in must be nil out")
 }
 
 // TestScrub_SelfOverlappingPrefixesStayLinear pins that Scrub stays
@@ -625,9 +667,10 @@ func TestScrub_SelfOverlappingPrefixesStayLinear(t *testing.T) {
 	}
 	for name, in := range shapes {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			start := time.Now()
 			Scrub(in)
-			require.LessOrEqual(t, time.Since(start), time.Second, "Scrub of 100 KiB")
+			must.LessOrEqual(time.Since(start), time.Second, "Scrub of 100 KiB")
 		})
 	}
 }
@@ -645,17 +688,18 @@ var kvNextLine = regexp.MustCompile(`[:=][ \t]*\r?\n[ \t]+`)
 // shell syntax, or a line break outside the PEM pattern.
 func checkMatchesHoldNoShellSyntax(t *testing.T, value string) {
 	t.Helper()
+	must := require.New(t)
 	for _, p := range SecretPatterns() {
 		for _, m := range p.Re.FindAllStringIndex(value, -1) {
 			match := value[m[0]:m[1]]
-			require.False(t, strings.ContainsAny(match, shellSyntax),
+			must.False(strings.ContainsAny(match, shellSyntax),
 				"%s match %q in %q holds shell syntax", p.Name, match, value)
 			switch p.Name {
 			case "aws_secret_access_key", "azure_storage_key", "generic_hex_secret":
 				match = kvNextLine.ReplaceAllLiteralString(match, ":")
 			}
 			if p.Name != "pem_private_key" {
-				require.False(t, strings.ContainsAny(match, "\r\n"),
+				must.False(strings.ContainsAny(match, "\r\n"),
 					"%s match %q in %q spans a line break", p.Name, match, value)
 			}
 		}

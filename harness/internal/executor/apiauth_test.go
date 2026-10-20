@@ -77,16 +77,18 @@ func TestAPIExecutorBackends_AuthHeaders(t *testing.T) {
 				t.Run(op.name, func(t *testing.T) {
 					for _, tokenCase := range tokenCases {
 						t.Run(tokenCase.name, func(t *testing.T) {
+							must := require.New(t)
+							check := assert.New(t)
 							want := backend.wantHeader
 							if tokenCase.token == "" {
 								want = ""
 							}
 							// The handler runs on the server's goroutine, so it must use assert, not require.
 							server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-								assert.Equal(t, want, r.Header.Get(backend.header), "header %s", backend.header)
+								check.Equal(want, r.Header.Get(backend.header), "header %s", backend.header)
 								if want == "" {
 									_, present := r.Header[http.CanonicalHeaderKey(backend.header)]
-									assert.False(t, present, "header %s should be absent for an empty token", backend.header)
+									check.False(present, "header %s should be absent for an empty token", backend.header)
 								}
 								w.Header().Set("Content-Type", "application/json")
 								_, _ = w.Write([]byte("[]"))
@@ -94,7 +96,7 @@ func TestAPIExecutorBackends_AuthHeaders(t *testing.T) {
 							defer server.Close()
 
 							e := backend.newFor(server.URL, tokenCase.token)
-							require.NoError(t, op.call(context.Background(), e))
+							must.NoError(op.call(context.Background(), e))
 						})
 					}
 				})

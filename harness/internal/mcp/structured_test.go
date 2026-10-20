@@ -45,13 +45,14 @@ func mcpServerReturningCallResult(t *testing.T, toolName, rawCallResult string) 
 // tool for serverName/toolName.
 func connectAndResolve(t *testing.T, srv *httptest.Server, serverName, toolName string) *tool.Tool {
 	t.Helper()
+	must := require.New(t)
 	registry := tool.NewRegistry()
 	client := NewClient(registry, srv.Client())
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 	err := client.Connect(context.Background(), types.MCPServerConfig{Name: serverName, URI: srv.URL}, secrets)
-	require.NoError(t, err)
+	must.NoError(err)
 	resolved := registry.Resolve("mcp_" + serverName + "_" + toolName)
-	require.NotNil(t, resolved, "tool mcp_%s_%s not registered", serverName, toolName)
+	must.NotNil(resolved, "tool mcp_%s_%s not registered", serverName, toolName)
 	return resolved
 }
 
@@ -59,6 +60,7 @@ func connectAndResolve(t *testing.T, srv *httptest.Server, serverName, toolName 
 // structuredContent is preserved into the envelope under the mcp_tool_result
 // kind, with the text content kept as the canonical fallback.
 func TestMCP_PreservesStructuredContent(t *testing.T) {
+	must := require.New(t)
 	raw := `{
 		"content": [{"type": "text", "text": "42 rows"}],
 		"structuredContent": {"rows": 42, "table": "users"}
@@ -66,22 +68,23 @@ func TestMCP_PreservesStructuredContent(t *testing.T) {
 	resolved := connectAndResolve(t, mcpServerReturningCallResult(t, "query", raw), "db", "query")
 
 	res, err := callMCPStructured(t, resolved, json.RawMessage(`{}`))
-	require.NoError(t, err)
-	require.Equal(t, "42 rows", res.Text, "text fallback")
-	require.Equal(t, kindMCPToolResult, res.Kind)
+	must.NoError(err)
+	must.Equal("42 rows", res.Text, "text fallback")
+	must.Equal(kindMCPToolResult, res.Kind)
 
 	var env mcpStructuredResult
-	require.NoError(t, json.Unmarshal(res.Structured, &env), "decode envelope")
+	must.NoError(json.Unmarshal(res.Structured, &env), "decode envelope")
 	var sc map[string]any
-	require.NoError(t, json.Unmarshal(env.StructuredContent, &sc), "decode structuredContent")
-	require.InDelta(t, 42.0, sc["rows"], 0)
-	require.Equal(t, "users", sc["table"])
+	must.NoError(json.Unmarshal(env.StructuredContent, &sc), "decode structuredContent")
+	must.InDelta(42.0, sc["rows"], 0)
+	must.Equal("users", sc["table"])
 }
 
 // TestMCP_MarksNonTextContent pins that resource links, embedded resources,
 // and unrecognised content types are represented explicitly in the envelope
 // rather than silently dropped, while the text content remains the fallback.
 func TestMCP_MarksNonTextContent(t *testing.T) {
+	must := require.New(t)
 	raw := `{
 		"content": [
 			{"type": "text", "text": "see attached"},
@@ -95,44 +98,49 @@ func TestMCP_MarksNonTextContent(t *testing.T) {
 	resolved := connectAndResolve(t, mcpServerReturningCallResult(t, "fetch", raw), "files", "fetch")
 
 	res, err := callMCPStructured(t, resolved, json.RawMessage(`{}`))
-	require.NoError(t, err)
-	require.Equal(t, "see attached", res.Text, "text fallback")
+	must.NoError(err)
+	must.Equal("see attached", res.Text, "text fallback")
 
 	var env mcpStructuredResult
-	require.NoError(t, json.Unmarshal(res.Structured, &env), "decode envelope")
-	require.Len(t, env.NonText, 5, "expected descriptors for link, resource, image, audio and unsupported: %+v", env.NonText)
+	must.NoError(json.Unmarshal(res.Structured, &env), "decode envelope")
+	must.Len(env.NonText, 5, "expected descriptors for link, resource, image, audio and unsupported: %+v", env.NonText)
 
 	byKind := map[string]mcpNonTextContent{}
 	for _, n := range env.NonText {
 		byKind[n.Kind] = n
 	}
 	t.Run("resource link", func(t *testing.T) {
+		must := require.New(t)
 		rl, ok := byKind["resource_link"]
-		require.True(t, ok, "descriptor missing")
-		require.Equal(t, "file:///report.pdf", rl.URI)
-		require.Equal(t, "report", rl.Name)
+		must.True(ok, "descriptor missing")
+		must.Equal("file:///report.pdf", rl.URI)
+		must.Equal("report", rl.Name)
 	})
 	t.Run("embedded resource", func(t *testing.T) {
+		must := require.New(t)
 		rs, ok := byKind["resource"]
-		require.True(t, ok, "descriptor missing")
-		require.Equal(t, "file:///note.txt", rs.URI)
-		require.Equal(t, "inline note", rs.Text)
+		must.True(ok, "descriptor missing")
+		must.Equal("file:///note.txt", rs.URI)
+		must.Equal("inline note", rs.Text)
 	})
 	t.Run("image", func(t *testing.T) {
+		must := require.New(t)
 		img, ok := byKind["image"]
-		require.True(t, ok, "descriptor missing")
-		require.Equal(t, "image/png", img.MimeType)
+		must.True(ok, "descriptor missing")
+		must.Equal("image/png", img.MimeType)
 	})
 	t.Run("audio", func(t *testing.T) {
+		must := require.New(t)
 		// Audio shares the image arm, so its discriminator must still be 'audio'.
 		au, ok := byKind["audio"]
-		require.True(t, ok, "descriptor missing")
-		require.Equal(t, "audio/mpeg", au.MimeType)
+		must.True(ok, "descriptor missing")
+		must.Equal("audio/mpeg", au.MimeType)
 	})
 	t.Run("unsupported content type", func(t *testing.T) {
+		must := require.New(t)
 		un, ok := byKind["unsupported"]
-		require.True(t, ok, "a new content kind must be marked, not dropped")
-		require.Equal(t, "future_kind", un.Name)
+		must.True(ok, "a new content kind must be marked, not dropped")
+		must.Equal("future_kind", un.Name)
 	})
 }
 
@@ -141,30 +149,32 @@ func TestMCP_MarksNonTextContent(t *testing.T) {
 // so an untrusted server cannot blow up memory/trace via a giant payload. The
 // text fallback survives intact.
 func TestMCP_BoundsOversizedStructuredContent(t *testing.T) {
+	must := require.New(t)
 	huge := strings.Repeat("A", maxMCPStructuredSize+1)
 	rawResult, err := json.Marshal(map[string]any{
 		"content":           []map[string]any{{"type": "text", "text": "ok"}},
 		"structuredContent": map[string]any{"blob": huge},
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	resolved := connectAndResolve(t, mcpServerReturningCallResult(t, "big", string(rawResult)), "hostile", "big")
 
 	res, err := callMCPStructured(t, resolved, json.RawMessage(`{}`))
-	require.NoError(t, err)
-	require.Equal(t, "ok", res.Text, "text fallback")
-	require.LessOrEqual(t, len(res.Structured), maxMCPStructuredSize, "oversized content not dropped")
+	must.NoError(err)
+	must.Equal("ok", res.Text, "text fallback")
+	must.LessOrEqual(len(res.Structured), maxMCPStructuredSize, "oversized content not dropped")
 
 	var env mcpStructuredResult
-	require.NoError(t, json.Unmarshal(res.Structured, &env), "decode envelope")
-	require.Empty(t, env.StructuredContent, "oversized structuredContent should have been dropped")
-	require.Len(t, env.NonText, 1, "expected an 'unsupported' marker for the dropped content: %+v", env.NonText)
-	require.Equal(t, "unsupported", env.NonText[0].Kind)
+	must.NoError(json.Unmarshal(res.Structured, &env), "decode envelope")
+	must.Empty(env.StructuredContent, "oversized structuredContent should have been dropped")
+	must.Len(env.NonText, 1, "expected an 'unsupported' marker for the dropped content: %+v", env.NonText)
+	must.Equal("unsupported", env.NonText[0].Kind)
 }
 
 // TestMCP_BoundsEmbeddedResourceText pins that an oversized embedded-resource
 // text body is truncated to the per-resource bound and flagged Truncated,
 // rather than inlined whole.
 func TestMCP_BoundsEmbeddedResourceText(t *testing.T) {
+	must := require.New(t)
 	huge := strings.Repeat("B", maxMCPEmbeddedResourceTextLen+500)
 	rawResult, err := json.Marshal(map[string]any{
 		"content": []map[string]any{
@@ -172,45 +182,47 @@ func TestMCP_BoundsEmbeddedResourceText(t *testing.T) {
 			{"type": "resource", "resource": map[string]any{"uri": "file:///big.txt", "text": huge}},
 		},
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	resolved := connectAndResolve(t, mcpServerReturningCallResult(t, "bigres", string(rawResult)), "hostile", "bigres")
 
 	res, err := callMCPStructured(t, resolved, json.RawMessage(`{}`))
-	require.NoError(t, err)
+	must.NoError(err)
 
 	var env mcpStructuredResult
-	require.NoError(t, json.Unmarshal(res.Structured, &env), "decode envelope")
-	require.Len(t, env.NonText, 1, "expected 1 resource descriptor: %+v", env.NonText)
+	must.NoError(json.Unmarshal(res.Structured, &env), "decode envelope")
+	must.Len(env.NonText, 1, "expected 1 resource descriptor: %+v", env.NonText)
 	d := env.NonText[0]
-	require.Equal(t, "resource", d.Kind)
-	require.True(t, d.Truncated, "descriptor %+v should be truncated", d)
-	require.Len(t, d.Text, maxMCPEmbeddedResourceTextLen, "inlined text should be truncated to the per-resource bound")
+	must.Equal("resource", d.Kind)
+	must.True(d.Truncated, "descriptor %+v should be truncated", d)
+	must.Len(d.Text, maxMCPEmbeddedResourceTextLen, "inlined text should be truncated to the per-resource bound")
 }
 
 // TestMCP_TextOnlyResultHasNoStructured pins the no-regression path: a
 // text-only tools/call result produces no structured envelope and no kind.
 func TestMCP_TextOnlyResultHasNoStructured(t *testing.T) {
+	must := require.New(t)
 	raw := `{"content": [{"type": "text", "text": "plain"}]}`
 	resolved := connectAndResolve(t, mcpServerReturningCallResult(t, "echo", raw), "srv", "echo")
 
 	res, err := callMCPStructured(t, resolved, json.RawMessage(`{}`))
-	require.NoError(t, err)
-	require.Equal(t, "plain", res.Text)
-	require.Empty(t, res.Structured, "text-only result must carry no structured envelope")
-	require.Empty(t, res.Kind, "text-only result must carry no kind")
+	must.NoError(err)
+	must.Equal("plain", res.Text)
+	must.Empty(res.Structured, "text-only result must carry no structured envelope")
+	must.Empty(res.Kind, "text-only result must carry no kind")
 }
 
 // TestMCP_NullStructuredContentIsAbsent pins that an explicit
 // "structuredContent": null does NOT fabricate a structured turn.
 func TestMCP_NullStructuredContentIsAbsent(t *testing.T) {
+	must := require.New(t)
 	raw := `{"content":[{"type":"text","text":"x"}],"structuredContent":null}`
 	resolved := connectAndResolve(t, mcpServerReturningCallResult(t, "nullsc", raw), "srv", "nullsc")
 
 	res, err := callMCPStructured(t, resolved, json.RawMessage(`{}`))
-	require.NoError(t, err)
-	require.Equal(t, "x", res.Text)
-	require.Empty(t, res.Structured, "null structuredContent must produce no envelope")
-	require.Empty(t, res.Kind, "null structuredContent must produce no kind")
+	must.NoError(err)
+	must.Equal("x", res.Text)
+	must.Empty(res.Structured, "null structuredContent must produce no envelope")
+	must.Empty(res.Kind, "null structuredContent must produce no kind")
 }
 
 // TestMCP_CapsContentItemCount pins that the content item-count cap fires
@@ -218,17 +230,18 @@ func TestMCP_NullStructuredContentIsAbsent(t *testing.T) {
 // maxMCPContentItems descriptors plus a truncation marker, stays within the
 // size bound, and the overflow is marked rather than silently dropped.
 func TestMCP_CapsContentItemCount(t *testing.T) {
+	must := require.New(t)
 	items := make([]contentItem, maxMCPContentItems+200)
 	for i := range items {
 		items[i] = contentItem{Type: "image", MimeType: "image/png"}
 	}
 	encoded := buildMCPStructured(toolsCallResult{Content: items})
-	require.NotEmpty(t, encoded, "expected a non-nil envelope")
-	require.LessOrEqual(t, len(encoded), maxMCPStructuredSize)
+	must.NotEmpty(encoded, "expected a non-nil envelope")
+	must.LessOrEqual(len(encoded), maxMCPStructuredSize)
 
 	var env mcpStructuredResult
-	require.NoError(t, json.Unmarshal(encoded, &env), "decode envelope")
-	require.Len(t, env.NonText, maxMCPContentItems+1, "expected the item cap plus one truncation marker")
+	must.NoError(json.Unmarshal(encoded, &env), "decode envelope")
+	must.Len(env.NonText, maxMCPContentItems+1, "expected the item cap plus one truncation marker")
 
 	var marked bool
 	for _, n := range env.NonText {
@@ -236,7 +249,7 @@ func TestMCP_CapsContentItemCount(t *testing.T) {
 			marked = true
 		}
 	}
-	require.True(t, marked, "expected a truncation marker for the dropped items, got %+v", env.NonText)
+	must.True(marked, "expected a truncation marker for the dropped items, got %+v", env.NonText)
 }
 
 // TestMCP_OversizedAssembledEnvelopeIsMarked pins that when many
@@ -244,6 +257,7 @@ func TestMCP_CapsContentItemCount(t *testing.T) {
 // the size bound, the bridge returns a marker envelope rather than silently
 // dropping everything.
 func TestMCP_OversizedAssembledEnvelopeIsMarked(t *testing.T) {
+	must := require.New(t)
 	longURI := "file:///" + strings.Repeat("a", 2048)
 	// 200 links of about 2 KiB each exceed maxMCPStructuredSize and stay under maxMCPContentItems.
 	const n = 200
@@ -252,14 +266,14 @@ func TestMCP_OversizedAssembledEnvelopeIsMarked(t *testing.T) {
 		items[i] = contentItem{Type: "resource_link", URI: longURI}
 	}
 	encoded := buildMCPStructured(toolsCallResult{Content: items})
-	require.NotEmpty(t, encoded, "expected a non-nil marker envelope")
-	require.LessOrEqual(t, len(encoded), maxMCPStructuredSize, "marker envelope")
+	must.NotEmpty(encoded, "expected a non-nil marker envelope")
+	must.LessOrEqual(len(encoded), maxMCPStructuredSize, "marker envelope")
 
 	var env mcpStructuredResult
-	require.NoError(t, json.Unmarshal(encoded, &env), "decode envelope")
-	require.Len(t, env.NonText, 1, "expected a single 'envelope dropped' marker, got %+v", env.NonText)
-	require.Equal(t, "unsupported", env.NonText[0].Kind)
-	require.Contains(t, env.NonText[0].Name, "envelope dropped")
+	must.NoError(json.Unmarshal(encoded, &env), "decode envelope")
+	must.Len(env.NonText, 1, "expected a single 'envelope dropped' marker, got %+v", env.NonText)
+	must.Equal("unsupported", env.NonText[0].Kind)
+	must.Contains(env.NonText[0].Name, "envelope dropped")
 }
 
 // TestMCP_BinaryBlobResourceNotInlined pins that an embedded resource
@@ -267,20 +281,21 @@ func TestMCP_OversizedAssembledEnvelopeIsMarked(t *testing.T) {
 // body — the bridge never forwards untrusted binary bytes, only the URI
 // handle.
 func TestMCP_BinaryBlobResourceNotInlined(t *testing.T) {
+	must := require.New(t)
 	raw := `{"content":[{"type":"text","text":"ok"},{"type":"resource","resource":{"uri":"file:///img.png","mimeType":"image/png","blob":"BASE64DATA=="}}]}`
 	resolved := connectAndResolve(t, mcpServerReturningCallResult(t, "blobres", raw), "files", "blobres")
 
 	res, err := callMCPStructured(t, resolved, json.RawMessage(`{}`))
-	require.NoError(t, err)
+	must.NoError(err)
 
 	var env mcpStructuredResult
-	require.NoError(t, json.Unmarshal(res.Structured, &env), "decode envelope")
-	require.Len(t, env.NonText, 1, "expected 1 resource descriptor: %+v", env.NonText)
+	must.NoError(json.Unmarshal(res.Structured, &env), "decode envelope")
+	must.Len(env.NonText, 1, "expected 1 resource descriptor: %+v", env.NonText)
 	d := env.NonText[0]
-	require.Equal(t, "resource", d.Kind)
-	require.True(t, d.Truncated, "binary blob resource must be flagged Truncated: %+v", d)
-	require.Empty(t, d.Text, "binary blob must not be inlined as text")
-	require.Equal(t, "file:///img.png", d.URI, "the URI is the durable handle")
+	must.Equal("resource", d.Kind)
+	must.True(d.Truncated, "binary blob resource must be flagged Truncated: %+v", d)
+	must.Empty(d.Text, "binary blob must not be inlined as text")
+	must.Equal("file:///img.png", d.URI, "the URI is the durable handle")
 }
 
 // TestSanitizeMCPToolName_TruncatesOnRuneBoundary pins that truncation counts
@@ -289,18 +304,21 @@ func TestMCP_BinaryBlobResourceNotInlined(t *testing.T) {
 // a codepoint and emit an invalid string into the tool.name metric attribute.
 func TestSanitizeMCPToolName_TruncatesOnRuneBoundary(t *testing.T) {
 	t.Run("long name truncates to the rune cap", func(t *testing.T) {
+		must := require.New(t)
 		long := strings.Repeat("世", maxMCPToolNameLen+20)
 		got := sanitizeMCPToolName(long)
-		require.True(t, utf8.ValidString(got), "sanitised name is not valid UTF-8: %q", got)
-		require.Equal(t, maxMCPToolNameLen, utf8.RuneCountInString(got))
+		must.True(utf8.ValidString(got), "sanitised name is not valid UTF-8: %q", got)
+		must.Equal(maxMCPToolNameLen, utf8.RuneCountInString(got))
 	})
 
 	t.Run("short name unchanged", func(t *testing.T) {
-		require.Equal(t, "echo", sanitizeMCPToolName("echo"))
+		must := require.New(t)
+		must.Equal("echo", sanitizeMCPToolName("echo"))
 	})
 
 	t.Run("name at cap unchanged", func(t *testing.T) {
+		must := require.New(t)
 		atCap := strings.Repeat("a", maxMCPToolNameLen)
-		require.Equal(t, atCap, sanitizeMCPToolName(atCap))
+		must.Equal(atCap, sanitizeMCPToolName(atCap))
 	})
 }

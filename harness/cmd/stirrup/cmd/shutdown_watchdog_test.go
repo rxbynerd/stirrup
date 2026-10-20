@@ -21,6 +21,8 @@ import (
 // record run_finished: the loop's executor and trace emitter stay open
 // until Run returns, because only a second signal arms the watchdog.
 func TestRunWithConfig_FirstSignalKeepsPostRunWorkPastCloseGrace(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	interrupts := make(chan func(), 1)
 	prevHandler, prevGrace := setupSignalHandler, shutdownCloseGrace
 	setupSignalHandler = func(interrupt, _ func()) { interrupts <- interrupt }
@@ -55,16 +57,16 @@ func TestRunWithConfig_FirstSignalKeepsPostRunWorkPastCloseGrace(t *testing.T) {
 	stdout := stdoutDone()
 
 	if runErr != nil {
-		require.NotContains(t, runErr.Error(), "finish trace", "runWithConfig should not fail on trace persistence")
+		must.NotContains(runErr.Error(), "finish trace", "runWithConfig should not fail on trace persistence")
 	}
 	result := decodeStirrupResult(t, stdout)
-	assert.Equal(t, "cancelled", result.Outcome, "STIRRUP_RESULT outcome")
+	check.Equal("cancelled", result.Outcome, "STIRRUP_RESULT outcome")
 
 	_, err := os.Stat(filepath.Join(config.Executor.Workspace, "hook-finished"))
-	require.NoError(t, err, "postRun hook should finish after the first signal")
+	must.NoError(err, "postRun hook should finish after the first signal")
 
 	traceBytes, err := os.ReadFile(tracePath)
-	require.NoError(t, err, "read trace file")
-	assert.Contains(t, string(traceBytes), `"run_finished"`,
+	must.NoError(err, "read trace file")
+	check.Contains(string(traceBytes), `"run_finished"`,
 		"trace file should record run_finished; the trace emitter was closed before Finish")
 }

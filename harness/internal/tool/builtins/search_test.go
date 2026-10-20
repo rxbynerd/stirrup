@@ -61,46 +61,48 @@ func (f *fsExecutor) HostWorkspaceRoot() string {
 // be skipped silently (returning fs.SkipDir from the callback) so that
 // matches in readable siblings are still returned.
 func TestGrepNative_PermissionDeniedSubdirSkipped(t *testing.T) {
+	must := require.New(t)
 	if os.Getuid() == 0 {
 		t.Skip("running as root: 0000 mode does not deny access")
 	}
 	withRipgrepProbe(t, false)
 	dir := t.TempDir()
 
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "readable.txt"), []byte("needle\n"), 0o644))
+	must.NoError(os.WriteFile(filepath.Join(dir, "readable.txt"), []byte("needle\n"), 0o644))
 	locked := filepath.Join(dir, "locked")
-	require.NoError(t, os.MkdirAll(locked, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(locked, "secret.txt"), []byte("needle\n"), 0o644))
-	require.NoError(t, os.Chmod(locked, 0o000))
+	must.NoError(os.MkdirAll(locked, 0o755))
+	must.NoError(os.WriteFile(filepath.Join(locked, "secret.txt"), []byte("needle\n"), 0o644))
+	must.NoError(os.Chmod(locked, 0o000))
 	// Restore mode on cleanup so t.TempDir() removal succeeds.
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
 
 	grep := GrepFilesTool(&fsExecutor{root: dir})
 	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
 	out, err := invokeText(context.Background(), grep, input)
-	require.NoError(t, err, "permission-denied dir must not surface as an error")
-	require.Contains(t, out, "readable.txt", "readable sibling must still match")
+	must.NoError(err, "permission-denied dir must not surface as an error")
+	must.Contains(out, "readable.txt", "readable sibling must still match")
 }
 
 // TestFindNative_PermissionDeniedSubdirSkipped is the symmetric coverage
 // for findNative's fs.ErrPermission branch.
 func TestFindNative_PermissionDeniedSubdirSkipped(t *testing.T) {
+	must := require.New(t)
 	if os.Getuid() == 0 {
 		t.Skip("running as root: 0000 mode does not deny access")
 	}
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "readable.go"), []byte("x"), 0o644))
+	must.NoError(os.WriteFile(filepath.Join(dir, "readable.go"), []byte("x"), 0o644))
 	locked := filepath.Join(dir, "locked")
-	require.NoError(t, os.MkdirAll(locked, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(locked, "secret.go"), []byte("x"), 0o644))
-	require.NoError(t, os.Chmod(locked, 0o000))
+	must.NoError(os.MkdirAll(locked, 0o755))
+	must.NoError(os.WriteFile(filepath.Join(locked, "secret.go"), []byte("x"), 0o644))
+	must.NoError(os.Chmod(locked, 0o000))
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
 
 	find := FindFilesTool(&fsExecutor{root: dir})
 	input, _ := json.Marshal(map[string]any{"name": "*.go"})
 	out, err := invokeText(context.Background(), find, input)
-	require.NoError(t, err, "permission-denied dir must not surface as an error")
-	require.Contains(t, out, "readable.go", "readable sibling must still match")
+	must.NoError(err, "permission-denied dir must not surface as an error")
+	must.Contains(out, "readable.go", "readable sibling must still match")
 }
 
 // TestRipgrepDetector_CachesProbeResult covers the once-cache semantics of the
@@ -111,6 +113,7 @@ func TestFindNative_PermissionDeniedSubdirSkipped(t *testing.T) {
 // caching contract — e.g. dropping sync.Once for an unsynchronised
 // re-probe per call — would not be caught.
 func TestRipgrepDetector_CachesProbeResult(t *testing.T) {
+	must := require.New(t)
 	var probeCount atomic.Int64
 	d := &ripgrepDetector{
 		probe: func() bool {
@@ -123,8 +126,8 @@ func TestRipgrepDetector_CachesProbeResult(t *testing.T) {
 	second := d.detect()
 	third := d.detect()
 
-	require.EqualValues(t, 1, probeCount.Load(), "probe must run exactly once")
-	require.Equal(t, []bool{true, true, true}, []bool{first, second, third},
+	must.EqualValues(1, probeCount.Load(), "probe must run exactly once")
+	must.Equal([]bool{true, true, true}, []bool{first, second, third},
 		"all detect() calls must return the cached value")
 }
 
@@ -141,49 +144,53 @@ func withRipgrepProbe(t *testing.T, present bool) {
 // --- GrepFilesTool tests ---
 
 func TestGrepFilesTool_NativeMatchesContent(t *testing.T) {
+	must := require.New(t)
 	withRipgrepProbe(t, false)
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a\nfunc Hello() {}\n"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "b.txt"), []byte("nothing here\n"), 0o644))
+	must.NoError(os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a\nfunc Hello() {}\n"), 0o644))
+	must.NoError(os.WriteFile(filepath.Join(dir, "b.txt"), []byte("nothing here\n"), 0o644))
 
 	grep := GrepFilesTool(&fsExecutor{root: dir})
 	input, _ := json.Marshal(map[string]any{"pattern": "Hello"})
 	out, err := invokeText(context.Background(), grep, input)
-	require.NoError(t, err)
-	require.Contains(t, out, "a.go:2:func Hello() {}", "expected path:line:match in output")
+	must.NoError(err)
+	must.Contains(out, "a.go:2:func Hello() {}", "expected path:line:match in output")
 }
 
 func TestGrepFilesTool_InvalidRegex(t *testing.T) {
+	must := require.New(t)
 	withRipgrepProbe(t, false)
 	grep := GrepFilesTool(&fsExecutor{root: t.TempDir()})
 	// `[` is an unbalanced character class — a common mistake for models
 	// that confuse shell globs with regexes.
 	input, _ := json.Marshal(map[string]any{"pattern": "["})
 	_, err := invokeText(context.Background(), grep, input)
-	require.ErrorContains(t, err, "invalid regex")
+	must.ErrorContains(err, "invalid regex")
 }
 
 func TestGrepFilesTool_MaxResultsBound(t *testing.T) {
+	must := require.New(t)
 	withRipgrepProbe(t, false)
 	dir := t.TempDir()
 	// 5 matching files, ask for at most 2.
 	for i := 0; i < 5; i++ {
 		path := filepath.Join(dir, "file"+string(rune('a'+i))+".txt")
-		require.NoError(t, os.WriteFile(path, []byte("needle\n"), 0o644))
+		must.NoError(os.WriteFile(path, []byte("needle\n"), 0o644))
 	}
 	grep := GrepFilesTool(&fsExecutor{root: dir})
 	input, _ := json.Marshal(map[string]any{"pattern": "needle", "max_results": 2})
 	out, err := invokeText(context.Background(), grep, input)
-	require.NoError(t, err)
-	require.Len(t, strings.Split(out, "\n"), 2, "max_results must cap the output at two matches")
+	must.NoError(err)
+	must.Len(strings.Split(out, "\n"), 2, "max_results must cap the output at two matches")
 }
 
 func TestGrepFilesTool_IncludeExclude(t *testing.T) {
+	must := require.New(t)
 	withRipgrepProbe(t, false)
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.go"), []byte("needle\n"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("needle\n"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "skip.go"), []byte("needle\n"), 0o644))
+	must.NoError(os.WriteFile(filepath.Join(dir, "a.go"), []byte("needle\n"), 0o644))
+	must.NoError(os.WriteFile(filepath.Join(dir, "a.txt"), []byte("needle\n"), 0o644))
+	must.NoError(os.WriteFile(filepath.Join(dir, "skip.go"), []byte("needle\n"), 0o644))
 
 	grep := GrepFilesTool(&fsExecutor{root: dir})
 	input, _ := json.Marshal(map[string]any{
@@ -192,42 +199,45 @@ func TestGrepFilesTool_IncludeExclude(t *testing.T) {
 		"exclude": []string{"skip.go"},
 	})
 	out, err := invokeText(context.Background(), grep, input)
-	require.NoError(t, err)
-	require.Contains(t, out, "a.go:", "expected a.go in result")
-	require.NotContains(t, out, "a.txt", "a.txt must be excluded by the include filter")
-	require.NotContains(t, out, "skip.go", "skip.go must be excluded by the exclude filter")
+	must.NoError(err)
+	must.Contains(out, "a.go:", "expected a.go in result")
+	must.NotContains(out, "a.txt", "a.txt must be excluded by the include filter")
+	must.NotContains(out, "skip.go", "skip.go must be excluded by the exclude filter")
 }
 
 func TestGrepFilesTool_NoMatches(t *testing.T) {
+	must := require.New(t)
 	withRipgrepProbe(t, false)
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.go"), []byte("hello\n"), 0o644))
+	must.NoError(os.WriteFile(filepath.Join(dir, "a.go"), []byte("hello\n"), 0o644))
 
 	grep := GrepFilesTool(&fsExecutor{root: dir})
 	input, _ := json.Marshal(map[string]any{"pattern": "absent_pattern"})
 	out, err := invokeText(context.Background(), grep, input)
-	require.NoError(t, err)
-	require.Contains(t, out, "No matches found")
+	must.NoError(err)
+	must.Contains(out, "No matches found")
 }
 
 func TestGrepFilesTool_BinaryFilesSkipped(t *testing.T) {
+	must := require.New(t)
 	withRipgrepProbe(t, false)
 	dir := t.TempDir()
 	// Binary file contains the literal bytes of "match" but also a NUL —
 	// the heuristic should skip it so we don't dump garbage at the model.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "blob.bin"), []byte("match\x00more"), 0o644))
+	must.NoError(os.WriteFile(filepath.Join(dir, "blob.bin"), []byte("match\x00more"), 0o644))
 	// Plain text file with the same word; this one should match.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "text.txt"), []byte("match\n"), 0o644))
+	must.NoError(os.WriteFile(filepath.Join(dir, "text.txt"), []byte("match\n"), 0o644))
 
 	grep := GrepFilesTool(&fsExecutor{root: dir})
 	input, _ := json.Marshal(map[string]any{"pattern": "match"})
 	out, err := invokeText(context.Background(), grep, input)
-	require.NoError(t, err)
-	require.NotContains(t, out, "blob.bin", "binary file must be skipped")
-	require.Contains(t, out, "text.txt", "text file must match")
+	must.NoError(err)
+	must.NotContains(out, "blob.bin", "binary file must be skipped")
+	must.Contains(out, "text.txt", "text file must match")
 }
 
 func TestGrepFilesTool_RipgrepPathSelected(t *testing.T) {
+	must := require.New(t)
 	withRipgrepProbe(t, true)
 	var capturedCmd string
 	fe := &fsExecutor{
@@ -248,22 +258,23 @@ func TestGrepFilesTool_RipgrepPathSelected(t *testing.T) {
 		"exclude": []string{"vendor/**"},
 	})
 	out, err := invokeText(context.Background(), grep, input)
-	require.NoError(t, err)
-	require.True(t, strings.HasPrefix(capturedCmd, "rg "), "expected rg command, got %q", capturedCmd)
-	require.Contains(t, capturedCmd, "--json", "rg must run with --json")
+	must.NoError(err)
+	must.True(strings.HasPrefix(capturedCmd, "rg "), "expected rg command, got %q", capturedCmd)
+	must.Contains(capturedCmd, "--json", "rg must run with --json")
 	// The rendered text is reconstructed from the JSON fields and must match
 	// the historical "path:line:text" form byte-for-byte.
-	require.Equal(t, "x.go:1:hit", out, "rg output must be reconstructed as path:line:text")
+	must.Equal("x.go:1:hit", out, "rg output must be reconstructed as path:line:text")
 	// Each include glob must be passed to rg as --glob 'pattern' and each
 	// exclude glob as --glob '!pattern'.
-	require.Contains(t, capturedCmd, "--glob '*.go'", "include glob must be passed to rg")
-	require.Contains(t, capturedCmd, "--glob '!vendor/**'", "exclude glob must be passed to rg negated")
+	must.Contains(capturedCmd, "--glob '*.go'", "include glob must be passed to rg")
+	must.Contains(capturedCmd, "--glob '!vendor/**'", "exclude glob must be passed to rg negated")
 }
 
 func TestGrepFilesTool_RipgrepFallsBackOnHardError(t *testing.T) {
+	must := require.New(t)
 	withRipgrepProbe(t, true)
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.go"), []byte("foo\n"), 0o644))
+	must.NoError(os.WriteFile(filepath.Join(dir, "a.go"), []byte("foo\n"), 0o644))
 	fe := &fsExecutor{
 		root:    dir,
 		canExec: true,
@@ -274,9 +285,9 @@ func TestGrepFilesTool_RipgrepFallsBackOnHardError(t *testing.T) {
 	grep := GrepFilesTool(fe)
 	input, _ := json.Marshal(map[string]any{"pattern": "foo"})
 	out, err := invokeText(context.Background(), grep, input)
-	require.NoError(t, err)
+	must.NoError(err)
 	// Native fallback should have found the match in a.go.
-	require.Contains(t, out, "a.go", "native fallback must surface the result")
+	must.Contains(out, "a.go", "native fallback must surface the result")
 }
 
 // TestGrepNative_SkipsSymlinks pins that grep_files never reads through a
@@ -284,13 +295,14 @@ func TestGrepFilesTool_RipgrepFallsBackOnHardError(t *testing.T) {
 // only validates the search root, so the WalkDir callback must skip symlink
 // entries before os.ReadFile, which would otherwise follow the link.
 func TestGrepNative_SkipsSymlinks(t *testing.T) {
+	must := require.New(t)
 	withRipgrepProbe(t, false)
 	workspace := t.TempDir()
 	outside := t.TempDir()
 
-	require.NoError(t, os.WriteFile(filepath.Join(workspace, "regular.txt"), []byte("match-target\n"), 0o644))
+	must.NoError(os.WriteFile(filepath.Join(workspace, "regular.txt"), []byte("match-target\n"), 0o644))
 	externalPath := filepath.Join(outside, "secret.txt")
-	require.NoError(t, os.WriteFile(externalPath, []byte("match-target\n"), 0o644))
+	must.NoError(os.WriteFile(externalPath, []byte("match-target\n"), 0o644))
 	symlinkPath := filepath.Join(workspace, "escape.txt")
 	if err := os.Symlink(externalPath, symlinkPath); err != nil {
 		t.Skipf("symlink not supported on this platform: %v", err)
@@ -299,10 +311,10 @@ func TestGrepNative_SkipsSymlinks(t *testing.T) {
 	grep := GrepFilesTool(&fsExecutor{root: workspace})
 	input, _ := json.Marshal(map[string]any{"pattern": "match-target"})
 	out, err := invokeText(context.Background(), grep, input)
-	require.NoError(t, err)
-	require.Contains(t, out, "regular.txt", "regular file must match")
-	require.NotContains(t, out, "escape.txt", "symlinked path must not appear in results (CWE-59)")
-	require.NotContains(t, out, "secret.txt", "external symlink target must not be surfaced")
+	must.NoError(err)
+	must.Contains(out, "regular.txt", "regular file must match")
+	must.NotContains(out, "escape.txt", "symlinked path must not appear in results (CWE-59)")
+	must.NotContains(out, "secret.txt", "external symlink target must not be surfaced")
 }
 
 // TestGrepViaRipgrep_TransportErrorFallsBackToNative pins the resilience
@@ -311,9 +323,10 @@ func TestGrepNative_SkipsSymlinks(t *testing.T) {
 // rg exit code >= 2 already falls back to native; transport failure
 // preventing rg from launching is less severe and should behave the same.
 func TestGrepViaRipgrep_TransportErrorFallsBackToNative(t *testing.T) {
+	must := require.New(t)
 	withRipgrepProbe(t, true)
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.go"), []byte("needle\n"), 0o644))
+	must.NoError(os.WriteFile(filepath.Join(dir, "a.go"), []byte("needle\n"), 0o644))
 	fe := &fsExecutor{
 		root:    dir,
 		canExec: true,
@@ -324,17 +337,18 @@ func TestGrepViaRipgrep_TransportErrorFallsBackToNative(t *testing.T) {
 	grep := GrepFilesTool(fe)
 	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
 	out, err := invokeText(context.Background(), grep, input)
-	require.NoError(t, err, "transport error must not surface; expected native fallback")
-	require.Contains(t, out, "a.go", "native walker must surface a.go")
+	must.NoError(err, "transport error must not surface; expected native fallback")
+	must.Contains(out, "a.go", "native walker must surface a.go")
 }
 
 // TestGrepViaRipgrep_ContextCancelPropagates pins the other half: when the
 // executor returns context.Canceled (the caller asked to stop), we must
 // NOT silently re-walk natively. The cancellation must propagate.
 func TestGrepViaRipgrep_ContextCancelPropagates(t *testing.T) {
+	must := require.New(t)
 	withRipgrepProbe(t, true)
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.go"), []byte("needle\n"), 0o644))
+	must.NoError(os.WriteFile(filepath.Join(dir, "a.go"), []byte("needle\n"), 0o644))
 	fe := &fsExecutor{
 		root:    dir,
 		canExec: true,
@@ -345,10 +359,11 @@ func TestGrepViaRipgrep_ContextCancelPropagates(t *testing.T) {
 	grep := GrepFilesTool(fe)
 	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
 	_, err := invokeText(context.Background(), grep, input)
-	require.ErrorIs(t, err, context.Canceled)
+	must.ErrorIs(err, context.Canceled)
 }
 
 func TestGrepFilesTool_PathTraversalRejected(t *testing.T) {
+	must := require.New(t)
 	mock := &mockExecutor{
 		resolvePathFunc: func(relativePath string) (string, error) {
 			return "", errors.New("path escapes workspace")
@@ -357,66 +372,72 @@ func TestGrepFilesTool_PathTraversalRejected(t *testing.T) {
 	grep := GrepFilesTool(mock)
 	input, _ := json.Marshal(map[string]any{"pattern": "secret", "path": "../../etc"})
 	_, err := invokeText(context.Background(), grep, input)
-	require.ErrorContains(t, err, "resolve search path")
+	must.ErrorContains(err, "resolve search path")
 }
 
 // --- FindFilesTool tests ---
 
 func TestFindFilesTool_GlobMatch(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.go"), []byte("x"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "b.txt"), []byte("x"), 0o644))
+	must.NoError(os.WriteFile(filepath.Join(dir, "a.go"), []byte("x"), 0o644))
+	must.NoError(os.WriteFile(filepath.Join(dir, "b.txt"), []byte("x"), 0o644))
 
 	find := FindFilesTool(&fsExecutor{root: dir})
 	input, _ := json.Marshal(map[string]any{"name": "*.go"})
 	out, err := invokeText(context.Background(), find, input)
-	require.NoError(t, err)
-	require.Contains(t, out, "a.go", "expected a.go in result")
-	require.NotContains(t, out, "b.txt", "b.txt must not match *.go")
+	must.NoError(err)
+	must.Contains(out, "a.go", "expected a.go in result")
+	must.NotContains(out, "b.txt", "b.txt must not match *.go")
 }
 
 func TestFindFilesTool_RecursesIntoSubdirs(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sub", "deep"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "sub", "deep", "handler_user.go"), []byte("x"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "noise.txt"), []byte("x"), 0o644))
+	must.NoError(os.MkdirAll(filepath.Join(dir, "sub", "deep"), 0o755))
+	must.NoError(os.WriteFile(filepath.Join(dir, "sub", "deep", "handler_user.go"), []byte("x"), 0o644))
+	must.NoError(os.WriteFile(filepath.Join(dir, "noise.txt"), []byte("x"), 0o644))
 
 	find := FindFilesTool(&fsExecutor{root: dir})
 	input, _ := json.Marshal(map[string]any{"name": "handler_*.go"})
 	out, err := invokeText(context.Background(), find, input)
-	require.NoError(t, err)
-	require.Contains(t, out, filepath.Join("sub", "deep", "handler_user.go"), "expected nested file in result")
+	must.NoError(err)
+	must.Contains(out, filepath.Join("sub", "deep", "handler_user.go"), "expected nested file in result")
 }
 
 func TestFindFilesTool_MaxResultsBound(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	for i := 0; i < 5; i++ {
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "f"+string(rune('a'+i))+".go"), []byte("x"), 0o644))
+		must.NoError(os.WriteFile(filepath.Join(dir, "f"+string(rune('a'+i))+".go"), []byte("x"), 0o644))
 	}
 	find := FindFilesTool(&fsExecutor{root: dir})
 	input, _ := json.Marshal(map[string]any{"name": "*.go", "max_results": 2})
 	out, err := invokeText(context.Background(), find, input)
-	require.NoError(t, err)
-	require.Len(t, strings.Split(out, "\n"), 2, "max_results must cap the output at two matches")
+	must.NoError(err)
+	must.Len(strings.Split(out, "\n"), 2, "max_results must cap the output at two matches")
 }
 
 func TestFindFilesTool_NoMatches(t *testing.T) {
+	must := require.New(t)
 	find := FindFilesTool(&fsExecutor{root: t.TempDir()})
 	input, _ := json.Marshal(map[string]any{"name": "*.nope"})
 	out, err := invokeText(context.Background(), find, input)
-	require.NoError(t, err)
-	require.Contains(t, out, "No matches found")
+	must.NoError(err)
+	must.Contains(out, "No matches found")
 }
 
 func TestFindFilesTool_InvalidGlob(t *testing.T) {
+	must := require.New(t)
 	find := FindFilesTool(&fsExecutor{root: t.TempDir()})
 	// An unbalanced bracket is rejected by filepath.Match.
 	input, _ := json.Marshal(map[string]any{"name": "[broken"})
 	_, err := invokeText(context.Background(), find, input)
-	require.ErrorContains(t, err, "invalid glob")
+	must.ErrorContains(err, "invalid glob")
 }
 
 func TestFindFilesTool_PathTraversalRejected(t *testing.T) {
+	must := require.New(t)
 	mock := &mockExecutor{
 		resolvePathFunc: func(string) (string, error) {
 			return "", errors.New("path escapes workspace")
@@ -425,22 +446,24 @@ func TestFindFilesTool_PathTraversalRejected(t *testing.T) {
 	find := FindFilesTool(mock)
 	input, _ := json.Marshal(map[string]any{"name": "*.go", "path": "../../etc"})
 	_, err := invokeText(context.Background(), find, input)
-	require.ErrorContains(t, err, "resolve search path")
+	must.ErrorContains(err, "resolve search path")
 }
 
 func TestFindFilesTool_MaxResultsValidation(t *testing.T) {
 	find := FindFilesTool(&fsExecutor{root: t.TempDir()})
 
 	t.Run("below minimum is rejected", func(t *testing.T) {
+		must := require.New(t)
 		input, _ := json.Marshal(map[string]any{"name": "*.go", "max_results": 0})
 		_, err := invokeText(context.Background(), find, input)
-		require.ErrorContains(t, err, "max_results must be >=")
+		must.ErrorContains(err, "max_results must be >=")
 	})
 
 	t.Run("above maximum is rejected", func(t *testing.T) {
+		must := require.New(t)
 		input, _ := json.Marshal(map[string]any{"name": "*.go", "max_results": 5000})
 		_, err := invokeText(context.Background(), find, input)
-		require.ErrorContains(t, err, "max_results must be <=")
+		must.ErrorContains(err, "max_results must be <=")
 	})
 }
 
@@ -449,23 +472,26 @@ func TestGrepFilesTool_MaxResultsValidation(t *testing.T) {
 	grep := GrepFilesTool(&fsExecutor{root: t.TempDir()})
 
 	t.Run("below minimum is rejected", func(t *testing.T) {
+		must := require.New(t)
 		input, _ := json.Marshal(map[string]any{"pattern": "x", "max_results": 0})
 		_, err := invokeText(context.Background(), grep, input)
-		require.ErrorContains(t, err, "max_results must be >=")
+		must.ErrorContains(err, "max_results must be >=")
 	})
 
 	t.Run("above maximum is rejected", func(t *testing.T) {
+		must := require.New(t)
 		input, _ := json.Marshal(map[string]any{"pattern": "x", "max_results": 5000})
 		_, err := invokeText(context.Background(), grep, input)
-		require.ErrorContains(t, err, "max_results must be <=")
+		must.ErrorContains(err, "max_results must be <=")
 	})
 }
 
 func TestGrepFilesTool_EmptyPattern(t *testing.T) {
+	must := require.New(t)
 	grep := GrepFilesTool(&fsExecutor{root: t.TempDir()})
 	input, _ := json.Marshal(map[string]any{"pattern": ""})
 	_, err := invokeText(context.Background(), grep, input)
-	require.ErrorContains(t, err, "pattern is required")
+	must.ErrorContains(err, "pattern is required")
 }
 
 // TestFindFilesTool_SchemaBasenameSemantics pins the name-field description
@@ -477,27 +503,33 @@ func TestFindFilesTool_SchemaBasenameSemantics(t *testing.T) {
 	schema := string(find.InputSchema)
 
 	t.Run("states basename-only semantics", func(t *testing.T) {
-		require.Contains(t, schema, "basename only")
+		must := require.New(t)
+		must.Contains(schema, "basename only")
 	})
 	t.Run("calls out missing ** support", func(t *testing.T) {
-		require.Contains(t, schema, "Does not support '**'")
+		must := require.New(t)
+		must.Contains(schema, "Does not support '**'")
 	})
 	t.Run("omits the misleading path example", func(t *testing.T) {
-		require.NotContains(t, schema, "**/handler_*.ts")
+		must := require.New(t)
+		must.NotContains(schema, "**/handler_*.ts")
 	})
 	t.Run("directs path matching to the include field", func(t *testing.T) {
-		require.Contains(t, schema, "include field")
+		must := require.New(t)
+		must.Contains(schema, "include field")
 	})
 }
 
 func TestFindFilesTool_EmptyName(t *testing.T) {
+	must := require.New(t)
 	find := FindFilesTool(&fsExecutor{root: t.TempDir()})
 	input, _ := json.Marshal(map[string]any{"name": ""})
 	_, err := invokeText(context.Background(), find, input)
-	require.ErrorContains(t, err, "name is required")
+	must.ErrorContains(err, "name is required")
 }
 
 func TestGrepFilesTool_RipgrepNoMatches(t *testing.T) {
+	must := require.New(t)
 	withRipgrepProbe(t, true)
 	fe := &fsExecutor{
 		root:    t.TempDir(),
@@ -510,8 +542,8 @@ func TestGrepFilesTool_RipgrepNoMatches(t *testing.T) {
 	grep := GrepFilesTool(fe)
 	input, _ := json.Marshal(map[string]any{"pattern": "absent"})
 	out, err := invokeText(context.Background(), grep, input)
-	require.NoError(t, err)
-	require.Contains(t, out, "No matches found")
+	must.NoError(err)
+	must.Contains(out, "No matches found")
 }
 
 // TestDoubleStarMatch_EscapesMetacharacters pins the regex-injection guard: a
@@ -562,19 +594,21 @@ func TestDoubleStarMatch_EscapesMetacharacters(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			must := require.New(t)
 			got := doubleStarMatch(c.pattern, c.path)
-			require.Equal(t, c.want, got, "doubleStarMatch(%q, %q)", c.pattern, c.path)
+			must.Equal(c.want, got, "doubleStarMatch(%q, %q)", c.pattern, c.path)
 		})
 	}
 }
 
 func TestFindFilesTool_IncludeDoubleStarGlob(t *testing.T) {
+	must := require.New(t)
 	// `**` is not supported by filepath.Match (which is shell-style) — the
 	// model is more likely to pass a basename like "handler_*.go" and rely
 	// on the walker recursing. But include filters DO honour `**`. Verify
 	// that path.
 	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "pkg", "deep"), 0o755))
+	must.NoError(os.MkdirAll(filepath.Join(dir, "pkg", "deep"), 0o755))
 	_ = os.WriteFile(filepath.Join(dir, "pkg", "deep", "x.go"), []byte("y"), 0o644)
 	_ = os.WriteFile(filepath.Join(dir, "top.go"), []byte("y"), 0o644)
 
@@ -584,13 +618,15 @@ func TestFindFilesTool_IncludeDoubleStarGlob(t *testing.T) {
 		"include": []string{"pkg/**"},
 	})
 	out, err := invokeText(context.Background(), find, input)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	t.Run("excludes files outside the include", func(t *testing.T) {
-		require.NotContains(t, out, "top.go", "got %q", out)
+		must := require.New(t)
+		must.NotContains(out, "top.go", "got %q", out)
 	})
 	t.Run("includes nested files under the include", func(t *testing.T) {
-		require.Contains(t, out, filepath.Join("pkg", "deep", "x.go"), "got %q", out)
+		must := require.New(t)
+		must.Contains(out, filepath.Join("pkg", "deep", "x.go"), "got %q", out)
 	})
 }
 
@@ -600,22 +636,24 @@ func TestFindFilesTool_IncludeDoubleStarGlob(t *testing.T) {
 // invocation, asserting the Kind is the search-result kind.
 func decodeSearchResult(t *testing.T, tl *tool.Tool, input json.RawMessage) searchResult {
 	t.Helper()
+	must := require.New(t)
 	res, err := tl.StructuredHandler(context.Background(), input)
-	require.NoError(t, err)
-	require.Equal(t, kindSearchResult, res.Kind)
+	must.NoError(err)
+	must.Equal(kindSearchResult, res.Kind)
 	var sr searchResult
-	require.NoError(t, json.Unmarshal(res.Structured, &sr))
+	must.NoError(json.Unmarshal(res.Structured, &sr))
 	return sr
 }
 
 // decodeFindResult is the find-side analogue of decodeSearchResult.
 func decodeFindResult(t *testing.T, tl *tool.Tool, input json.RawMessage) findResult {
 	t.Helper()
+	must := require.New(t)
 	res, err := tl.StructuredHandler(context.Background(), input)
-	require.NoError(t, err)
-	require.Equal(t, kindFindResult, res.Kind)
+	must.NoError(err)
+	must.Equal(kindFindResult, res.Kind)
 	var fr findResult
-	require.NoError(t, json.Unmarshal(res.Structured, &fr))
+	must.NoError(json.Unmarshal(res.Structured, &fr))
 	return fr
 }
 
@@ -650,16 +688,17 @@ func TestGrepFilesTool_TruncatedBoundary_Native(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			dir := t.TempDir()
 			for i := 0; i < tc.files; i++ {
 				path := filepath.Join(dir, "file"+string(rune('a'+i))+".txt")
-				require.NoError(t, os.WriteFile(path, []byte("needle\n"), 0o644))
+				must.NoError(os.WriteFile(path, []byte("needle\n"), 0o644))
 			}
 			grep := GrepFilesTool(&fsExecutor{root: dir})
 			input, _ := json.Marshal(map[string]any{"pattern": "needle", "max_results": maxResults})
 			sr := decodeSearchResult(t, grep, input)
-			require.Equal(t, tc.wantTruncated, sr.Truncated)
-			require.Len(t, sr.Matches, tc.wantMatches)
+			must.Equal(tc.wantTruncated, sr.Truncated)
+			must.Len(sr.Matches, tc.wantMatches)
 		})
 	}
 }
@@ -683,6 +722,7 @@ func TestGrepFilesTool_TruncatedBoundary_Ripgrep(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var gotCmd string
 			fe := &fsExecutor{
 				root:    t.TempDir(),
@@ -699,9 +739,9 @@ func TestGrepFilesTool_TruncatedBoundary_Ripgrep(t *testing.T) {
 			// maxResults+1 so a count landing exactly on the cap stays
 			// distinguishable from genuine truncation.
 			wantMaxCount := fmt.Sprintf("--max-count %d", maxResults+1)
-			require.Contains(t, gotCmd, wantMaxCount)
-			require.Equal(t, tc.wantTruncated, sr.Truncated)
-			require.Len(t, sr.Matches, tc.wantMatches)
+			must.Contains(gotCmd, wantMaxCount)
+			must.Equal(tc.wantTruncated, sr.Truncated)
+			must.Len(sr.Matches, tc.wantMatches)
 		})
 	}
 }
@@ -711,6 +751,7 @@ func TestGrepFilesTool_TruncatedBoundary_Ripgrep(t *testing.T) {
 // output cap that cuts off rg's stdout must mark the scan incomplete, even
 // when the invocation succeeds and the matches before the cut parse cleanly.
 func TestGrepFilesTool_HostRipgrepOutputCapMarksIncomplete(t *testing.T) {
+	must := require.New(t)
 	withRipgrepProbe(t, true)
 	fe := &fsExecutor{
 		root:    t.TempDir(),
@@ -727,8 +768,8 @@ func TestGrepFilesTool_HostRipgrepOutputCapMarksIncomplete(t *testing.T) {
 	grep := GrepFilesTool(fe)
 	input, _ := json.Marshal(map[string]any{"pattern": "hit"})
 	sr := decodeSearchResult(t, grep, input)
-	require.Len(t, sr.Matches, 1, "the one parsed match must be kept, got %+v", sr.Matches)
-	require.True(t, sr.Truncated, "an executor-level output cap must mark the scan incomplete")
+	must.Len(sr.Matches, 1, "the one parsed match must be kept, got %+v", sr.Matches)
+	must.True(sr.Truncated, "an executor-level output cap must mark the scan incomplete")
 }
 
 // TestFindFilesTool_TruncatedBoundary exercises the look-ahead probe on the
@@ -747,15 +788,16 @@ func TestFindFilesTool_TruncatedBoundary(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			dir := t.TempDir()
 			for i := 0; i < tc.files; i++ {
-				require.NoError(t, os.WriteFile(filepath.Join(dir, "f"+string(rune('a'+i))+".go"), []byte("x"), 0o644))
+				must.NoError(os.WriteFile(filepath.Join(dir, "f"+string(rune('a'+i))+".go"), []byte("x"), 0o644))
 			}
 			find := FindFilesTool(&fsExecutor{root: dir})
 			input, _ := json.Marshal(map[string]any{"name": "*.go", "max_results": maxResults})
 			fr := decodeFindResult(t, find, input)
-			require.Equal(t, tc.wantTruncated, fr.Truncated)
-			require.Len(t, fr.Paths, tc.wantPaths)
+			must.Equal(tc.wantTruncated, fr.Truncated)
+			must.Len(fr.Paths, tc.wantPaths)
 		})
 	}
 }
@@ -770,24 +812,28 @@ func TestGrepFilesTool_SchemaBoundsPatternAndGlobs(t *testing.T) {
 	grep := GrepFilesTool(&fsExecutor{root: t.TempDir()})
 
 	t.Run("pattern within bound", func(t *testing.T) {
+		must := require.New(t)
 		input, _ := json.Marshal(map[string]any{"pattern": strings.Repeat("a", 1000)})
-		require.NoError(t, security.ValidateJSONSchema(input, grep.InputSchema))
+		must.NoError(security.ValidateJSONSchema(input, grep.InputSchema))
 	})
 	t.Run("pattern over bound rejected", func(t *testing.T) {
+		must := require.New(t)
 		input, _ := json.Marshal(map[string]any{"pattern": strings.Repeat("a", 1001)})
-		require.Error(t, security.ValidateJSONSchema(input, grep.InputSchema))
+		must.Error(security.ValidateJSONSchema(input, grep.InputSchema))
 	})
 	t.Run("too many include globs rejected", func(t *testing.T) {
+		must := require.New(t)
 		globs := make([]string, 51)
 		for i := range globs {
 			globs[i] = "*.go"
 		}
 		input, _ := json.Marshal(map[string]any{"pattern": "x", "include": globs})
-		require.Error(t, security.ValidateJSONSchema(input, grep.InputSchema))
+		must.Error(security.ValidateJSONSchema(input, grep.InputSchema))
 	})
 	t.Run("over-length glob rejected", func(t *testing.T) {
+		must := require.New(t)
 		input, _ := json.Marshal(map[string]any{"pattern": "x", "include": []string{strings.Repeat("a", 501)}})
-		require.Error(t, security.ValidateJSONSchema(input, grep.InputSchema))
+		must.Error(security.ValidateJSONSchema(input, grep.InputSchema))
 	})
 }
 
@@ -796,11 +842,13 @@ func TestFindFilesTool_SchemaBoundsNameAndGlobs(t *testing.T) {
 	find := FindFilesTool(&fsExecutor{root: t.TempDir()})
 
 	t.Run("name within bound", func(t *testing.T) {
+		must := require.New(t)
 		input, _ := json.Marshal(map[string]any{"name": strings.Repeat("a", 255)})
-		require.NoError(t, security.ValidateJSONSchema(input, find.InputSchema))
+		must.NoError(security.ValidateJSONSchema(input, find.InputSchema))
 	})
 	t.Run("name over bound rejected", func(t *testing.T) {
+		must := require.New(t)
 		input, _ := json.Marshal(map[string]any{"name": strings.Repeat("a", 256)})
-		require.Error(t, security.ValidateJSONSchema(input, find.InputSchema))
+		must.Error(security.ValidateJSONSchema(input, find.InputSchema))
 	})
 }

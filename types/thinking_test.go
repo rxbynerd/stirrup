@@ -22,12 +22,14 @@ func TestIsThinkingBlock_ClassifiesBlockTypes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, IsThinkingBlock(ContentBlock{Type: tc.typ}), "block type %q", tc.typ)
+			must := require.New(t)
+			must.Equal(tc.want, IsThinkingBlock(ContentBlock{Type: tc.typ}), "block type %q", tc.typ)
 		})
 	}
 }
 
 func TestStripThinkingBlocks_RemovesBothTypesAndKeepsOrder(t *testing.T) {
+	must := require.New(t)
 	in := []Message{
 		{Role: "user", Content: []ContentBlock{{Type: "text", Text: "go"}}},
 		{
@@ -57,22 +59,23 @@ func TestStripThinkingBlocks_RemovesBothTypesAndKeepsOrder(t *testing.T) {
 		},
 		in[2],
 	}
-	require.Equal(t, want, got)
+	must.Equal(want, got)
 
-	require.Len(t, in[1].Content, 4, "input history was mutated: %+v", in[1].Content)
-	require.Equal(t, "thinking", in[1].Content[0].Type, "input history was mutated")
+	must.Len(in[1].Content, 4, "input history was mutated: %+v", in[1].Content)
+	must.Equal("thinking", in[1].Content[0].Type, "input history was mutated")
 }
 
 func TestStripThinkingBlocks_NoThinkingReturnsInput(t *testing.T) {
+	must := require.New(t)
 	in := []Message{
 		{Role: "user", Content: []ContentBlock{{Type: "text", Text: "go"}}},
 		{Role: "assistant", Content: []ContentBlock{{Type: "text", Text: "done"}}},
 	}
 	got := StripThinkingBlocks(in)
-	require.Len(t, got, len(in))
-	require.Same(t, &in[0], &got[0], "history without thinking blocks should be returned as-is")
+	must.Len(got, len(in))
+	must.Same(&in[0], &got[0], "history without thinking blocks should be returned as-is")
 
-	require.Nil(t, StripThinkingBlocks(nil), "nil history should stay nil")
+	must.Nil(StripThinkingBlocks(nil), "nil history should stay nil")
 }
 
 // TestStripThinkingBlocks_ThinkingOnlyMessageLeftForAdapter pins that the
@@ -80,12 +83,13 @@ func TestStripThinkingBlocks_NoThinkingReturnsInput(t *testing.T) {
 // stays in place for the adapter to handle (the Anthropic adapter's wire
 // shape is pinned by TestBuildAnthropicRequest_ThinkingOnlyTurnOmitted).
 func TestStripThinkingBlocks_ThinkingOnlyMessageLeftForAdapter(t *testing.T) {
+	must := require.New(t)
 	in := []Message{
 		{Role: "user", Content: []ContentBlock{{Type: "text", Text: "go"}}},
 		{Role: "assistant", Content: []ContentBlock{{Type: "thinking", ThoughtSignature: "sig"}}},
 	}
 	got := StripThinkingBlocks(in)
-	require.Len(t, got, 2, "both messages should keep their original positions: %+v", got)
-	require.Equal(t, "assistant", got[1].Role)
-	require.False(t, containsThinking(got[1].Content), "thinking block survived: %+v", got[1].Content)
+	must.Len(got, 2, "both messages should keep their original positions: %+v", got)
+	must.Equal("assistant", got[1].Role)
+	must.False(containsThinking(got[1].Content), "thinking block survived: %+v", got[1].Content)
 }

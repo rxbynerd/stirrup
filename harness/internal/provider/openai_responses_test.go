@@ -31,6 +31,8 @@ func makeResponsesEvent(name, data string) string {
 }
 
 func TestOpenAIResponsesAdapter_StreamEmitsTextDeltas(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	body := strings.Join([]string{
 		makeResponsesEvent("response.created", `{"response":{"id":"resp_1","status":"in_progress"}}`),
 		makeResponsesEvent("response.output_item.added", `{"output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant"}}`),
@@ -40,8 +42,8 @@ func TestOpenAIResponsesAdapter_StreamEmitsTextDeltas(t *testing.T) {
 	}, "")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
-		assert.True(t, strings.HasSuffix(r.URL.Path, "/responses"), "path %q", r.URL.Path)
+		check.Equal("Bearer test-key", r.Header.Get("Authorization"))
+		check.True(strings.HasSuffix(r.URL.Path, "/responses"), "path %q", r.URL.Path)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, body)
@@ -54,18 +56,18 @@ func TestOpenAIResponsesAdapter_StreamEmitsTextDeltas(t *testing.T) {
 		Model:     "gpt-4.1",
 		MaxTokens: 1024,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
 
-	require.Len(t, events, 3)
-	assert.Equal(t, "text_delta", events[0].Type)
-	assert.Equal(t, "Hello", events[0].Text)
-	assert.Equal(t, "text_delta", events[1].Type)
-	assert.Equal(t, " world", events[1].Text)
-	assert.Equal(t, "message_complete", events[2].Type)
-	assert.Equal(t, "end_turn", events[2].StopReason)
-	assert.Equal(t, 5, events[2].OutputTokens)
+	must.Len(events, 3)
+	check.Equal("text_delta", events[0].Type)
+	check.Equal("Hello", events[0].Text)
+	check.Equal("text_delta", events[1].Type)
+	check.Equal(" world", events[1].Text)
+	check.Equal("message_complete", events[2].Type)
+	check.Equal("end_turn", events[2].StopReason)
+	check.Equal(5, events[2].OutputTokens)
 }
 
 // responsesWarnStubServer is a minimal Responses stub that returns a single
@@ -87,6 +89,8 @@ func responsesWarnStubServer(t *testing.T) *httptest.Server {
 // silently downgraded to auto. The warn must fire without leaking message
 // content or any secret-derived value.
 func TestOpenAIResponsesAdapter_ToolChoiceNonAuto_WarnsDowngrade(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv := responsesWarnStubServer(t)
 
 	var buf bytes.Buffer
@@ -103,18 +107,19 @@ func TestOpenAIResponsesAdapter_ToolChoiceNonAuto_WarnsDowngrade(t *testing.T) {
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "secret-prompt-text"}}},
 		},
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	collectEvents(t, ch)
 
 	out := buf.String()
-	assert.Contains(t, out, "openai-responses tool-choice downgraded to auto")
-	assert.Contains(t, out, "gpt-4.1", "warn log missing model identifier")
-	assert.NotContains(t, out, "secret-prompt-text", "warn log leaked message content")
+	check.Contains(out, "openai-responses tool-choice downgraded to auto")
+	check.Contains(out, "gpt-4.1", "warn log missing model identifier")
+	check.NotContains(out, "secret-prompt-text", "warn log leaked message content")
 }
 
 // TestOpenAIResponsesAdapter_ToolChoiceAuto_NoWarn pins the negative: the
 // zero-value ToolChoiceAuto must not emit the downgrade warn.
 func TestOpenAIResponsesAdapter_ToolChoiceAuto_NoWarn(t *testing.T) {
+	must := require.New(t)
 	srv := responsesWarnStubServer(t)
 
 	var buf bytes.Buffer
@@ -128,13 +133,15 @@ func TestOpenAIResponsesAdapter_ToolChoiceAuto_NoWarn(t *testing.T) {
 		MaxTokens:  1024,
 		ToolChoice: types.ToolChoiceAuto,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	collectEvents(t, ch)
 
-	require.NotContains(t, buf.String(), "tool-choice downgraded", "auto tool-choice must not warn")
+	must.NotContains(buf.String(), "tool-choice downgraded", "auto tool-choice must not warn")
 }
 
 func TestOpenAIResponsesAdapter_StreamEmitsToolCall(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	body := strings.Join([]string{
 		makeResponsesEvent("response.output_item.added", `{"output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_abc","name":"read_file"}}`),
 		makeResponsesEvent("response.function_call_arguments.delta", `{"item_id":"fc_1","output_index":0,"delta":"{\"path\":"}`),
@@ -156,20 +163,22 @@ func TestOpenAIResponsesAdapter_StreamEmitsToolCall(t *testing.T) {
 		Model:     "gpt-4.1",
 		MaxTokens: 1024,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
 
-	require.Len(t, events, 2)
-	require.Equal(t, "tool_call", events[0].Type)
-	assert.Equal(t, "call_abc", events[0].ID)
-	assert.Equal(t, "read_file", events[0].Name)
-	assert.Equal(t, "main.go", events[0].Input["path"])
-	assert.Equal(t, "message_complete", events[1].Type)
-	assert.Equal(t, "tool_use", events[1].StopReason)
+	must.Len(events, 2)
+	must.Equal("tool_call", events[0].Type)
+	check.Equal("call_abc", events[0].ID)
+	check.Equal("read_file", events[0].Name)
+	check.Equal("main.go", events[0].Input["path"])
+	check.Equal("message_complete", events[1].Type)
+	check.Equal("tool_use", events[1].StopReason)
 }
 
 func TestOpenAIResponsesAdapter_InterleavedToolCallArgumentsStaySeparate(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	// Argument-deltas for two concurrent calls arrive interleaved (bbb
 	// then aaa); the adapter must emit each tool_call at .done and
 	// preserve output_index ordering across the resulting events.
@@ -200,28 +209,30 @@ func TestOpenAIResponsesAdapter_InterleavedToolCallArgumentsStaySeparate(t *test
 		Model:     "gpt-4.1",
 		MaxTokens: 1024,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
 
 	var toolCalls []types.StreamEvent
 	for _, ev := range events {
-		require.NotEqual(t, "error", ev.Type, "unexpected error event: %v", ev.Error)
+		must.NotEqual("error", ev.Type, "unexpected error event: %v", ev.Error)
 		if ev.Type == "tool_call" {
 			toolCalls = append(toolCalls, ev)
 		}
 	}
-	require.Len(t, toolCalls, 2)
+	must.Len(toolCalls, 2)
 
-	assert.Equal(t, "call_aaa", toolCalls[0].ID)
-	assert.Equal(t, "read_file", toolCalls[0].Name)
-	assert.Equal(t, "a.go", toolCalls[0].Input["path"])
-	assert.Equal(t, "call_bbb", toolCalls[1].ID)
-	assert.Equal(t, "write_file", toolCalls[1].Name)
-	assert.Equal(t, "b.go", toolCalls[1].Input["path"])
+	check.Equal("call_aaa", toolCalls[0].ID)
+	check.Equal("read_file", toolCalls[0].Name)
+	check.Equal("a.go", toolCalls[0].Input["path"])
+	check.Equal("call_bbb", toolCalls[1].ID)
+	check.Equal("write_file", toolCalls[1].Name)
+	check.Equal("b.go", toolCalls[1].Input["path"])
 }
 
 func TestOpenAIResponsesAdapter_DeferredFlushOrderedByOutputIndex(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	// If no .done events fire for two concurrent function calls, the
 	// adapter must still flush them on response.completed in
 	// deterministic output_index ascending order — state map iteration
@@ -246,7 +257,7 @@ func TestOpenAIResponsesAdapter_DeferredFlushOrderedByOutputIndex(t *testing.T) 
 
 	for i := 0; i < 5; i++ { // run a few times because map iteration is randomised
 		ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
-		require.NoError(t, err, "iter %d", i)
+		must.NoError(err, "iter %d", i)
 		events := collectEvents(t, ch)
 
 		var calls []types.StreamEvent
@@ -255,13 +266,15 @@ func TestOpenAIResponsesAdapter_DeferredFlushOrderedByOutputIndex(t *testing.T) 
 				calls = append(calls, ev)
 			}
 		}
-		require.Len(t, calls, 2, "iter %d", i)
-		assert.Equal(t, "call_a", calls[0].ID, "iter %d", i)
-		assert.Equal(t, "call_b", calls[1].ID, "iter %d", i)
+		must.Len(calls, 2, "iter %d", i)
+		check.Equal("call_a", calls[0].ID, "iter %d", i)
+		check.Equal("call_b", calls[1].ID, "iter %d", i)
 	}
 }
 
 func TestOpenAIResponsesAdapter_TextThenToolCall(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	body := strings.Join([]string{
 		makeResponsesEvent("response.output_item.added", `{"output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant"}}`),
 		makeResponsesEvent("response.output_text.delta", `{"item_id":"msg_1","output_index":0,"delta":"Let me read that file."}`),
@@ -284,18 +297,20 @@ func TestOpenAIResponsesAdapter_TextThenToolCall(t *testing.T) {
 		Model:     "gpt-4.1",
 		MaxTokens: 1024,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	events := collectEvents(t, ch)
 
-	require.Len(t, events, 3)
-	assert.Equal(t, "text_delta", events[0].Type)
-	assert.Equal(t, "tool_call", events[1].Type)
-	assert.Equal(t, "message_complete", events[2].Type)
-	assert.Equal(t, "tool_use", events[2].StopReason)
+	must.Len(events, 3)
+	check.Equal("text_delta", events[0].Type)
+	check.Equal("tool_call", events[1].Type)
+	check.Equal("message_complete", events[2].Type)
+	check.Equal("tool_use", events[2].StopReason)
 }
 
 func TestOpenAIResponsesAdapter_IncompleteMaxTokens(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	body := strings.Join([]string{
 		makeResponsesEvent("response.output_item.added", `{"output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant"}}`),
 		makeResponsesEvent("response.output_text.delta", `{"item_id":"msg_1","output_index":0,"delta":"hi"}`),
@@ -312,16 +327,18 @@ func TestOpenAIResponsesAdapter_IncompleteMaxTokens(t *testing.T) {
 	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
-	require.NoError(t, err)
+	must.NoError(err)
 	events := collectEvents(t, ch)
 
 	last := events[len(events)-1]
-	assert.Equal(t, "message_complete", last.Type)
-	assert.Equal(t, "max_tokens", last.StopReason)
-	assert.Equal(t, 1, last.OutputTokens)
+	check.Equal("message_complete", last.Type)
+	check.Equal("max_tokens", last.StopReason)
+	check.Equal(1, last.OutputTokens)
 }
 
 func TestOpenAIResponsesAdapter_FailedEventEmitsError(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	body := strings.Join([]string{
 		makeResponsesEvent("response.output_item.added", `{"output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant"}}`),
 		makeResponsesEvent("response.failed", `{"response":{"status":"failed","error":{"message":"server overloaded","type":"server_error"}}}`),
@@ -337,19 +354,21 @@ func TestOpenAIResponsesAdapter_FailedEventEmitsError(t *testing.T) {
 	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
-	require.NoError(t, err)
+	must.NoError(err)
 	events := collectEvents(t, ch)
 
 	last := events[len(events)-1]
-	assert.Equal(t, "error", last.Type)
-	require.ErrorContains(t, last.Error, "server overloaded")
+	check.Equal("error", last.Type)
+	must.ErrorContains(last.Error, "server overloaded")
 	// No message_complete should be emitted on a failed response.
 	for _, ev := range events {
-		assert.NotEqual(t, "message_complete", ev.Type, "unexpected message_complete on failed response: %+v", ev)
+		check.NotEqual("message_complete", ev.Type, "unexpected message_complete on failed response: %+v", ev)
 	}
 }
 
 func TestOpenAIResponsesAdapter_ErrorEventEmitsError(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	body := strings.Join([]string{
 		makeResponsesEvent("error", `{"message":"upstream timeout","type":"timeout","code":"E_TIMEOUT"}`),
 	}, "")
@@ -364,15 +383,16 @@ func TestOpenAIResponsesAdapter_ErrorEventEmitsError(t *testing.T) {
 	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
-	require.NoError(t, err)
+	must.NoError(err)
 	events := collectEvents(t, ch)
 
-	require.Len(t, events, 1)
-	assert.Equal(t, "error", events[0].Type)
-	assert.ErrorContains(t, events[0].Error, "upstream timeout")
+	must.Len(events, 1)
+	check.Equal("error", events[0].Type)
+	check.ErrorContains(events[0].Error, "upstream timeout")
 }
 
 func TestOpenAIResponsesAdapter_MalformedToolArgumentsMarksToolCall(t *testing.T) {
+	must := require.New(t)
 	body := strings.Join([]string{
 		makeResponsesEvent("response.output_item.added", `{"output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_bad","name":"read_file"}}`),
 		makeResponsesEvent("response.function_call_arguments.delta", `{"item_id":"fc_1","output_index":0,"delta":"{NOT VALID"}`),
@@ -390,12 +410,14 @@ func TestOpenAIResponsesAdapter_MalformedToolArgumentsMarksToolCall(t *testing.T
 	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
-	require.NoError(t, err)
+	must.NoError(err)
 	events := collectEvents(t, ch)
 	requireMarkedToolCall(t, events, "call_bad", "read_file", `{NOT VALID`)
 }
 
 func TestOpenAIResponsesAdapter_ToolArgumentsExceedSizeLimit(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	// Build several reasonably-sized deltas whose cumulative size exceeds
 	// the openaiMaxToolInputSize cap. The accumulated buffer check should
 	// trip on the chunk that crosses the limit, emit an error event, and
@@ -428,7 +450,7 @@ func TestOpenAIResponsesAdapter_ToolArgumentsExceedSizeLimit(t *testing.T) {
 	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
-	require.NoError(t, err)
+	must.NoError(err)
 	events := collectEvents(t, ch)
 
 	foundOversize := false
@@ -436,12 +458,13 @@ func TestOpenAIResponsesAdapter_ToolArgumentsExceedSizeLimit(t *testing.T) {
 		if ev.Type == "error" && ev.Error != nil && strings.Contains(ev.Error.Error(), "byte limit") {
 			foundOversize = true
 		}
-		assert.NotEqual(t, "tool_call", ev.Type, "tool_call should not be emitted when args exceed cap: %+v", ev)
+		check.NotEqual("tool_call", ev.Type, "tool_call should not be emitted when args exceed cap: %+v", ev)
 	}
-	assert.True(t, foundOversize, "expected an error event citing the byte limit")
+	check.True(foundOversize, "expected an error event citing the byte limit")
 }
 
 func TestOpenAIResponsesAdapter_HTTPErrorReturnsAPIMessage(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
@@ -452,10 +475,11 @@ func TestOpenAIResponsesAdapter_HTTPErrorReturnsAPIMessage(t *testing.T) {
 	adapter := NewOpenAIResponsesAdapter(staticBearer("bad-key"), srv.URL, OpenAIAuthConfig{})
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
-	require.ErrorContains(t, err, "Invalid API key")
+	must.ErrorContains(err, "Invalid API key")
 }
 
 func TestOpenAIResponsesAdapter_HTTPErrorLargeBodyReturnsStatus(t *testing.T) {
+	must := require.New(t)
 	largeMsg := strings.Repeat("x", 8192)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -470,10 +494,12 @@ func TestOpenAIResponsesAdapter_HTTPErrorLargeBodyReturnsStatus(t *testing.T) {
 	// The 4096-byte LimitReader truncates the JSON before it can decode, so
 	// we fall back to the generic status-code error. The key assertion is
 	// that the call returns cleanly without consuming unbounded memory.
-	require.ErrorContains(t, err, "400")
+	must.ErrorContains(err, "400")
 }
 
 func TestOpenAIResponsesAdapter_RequestBody(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var received responsesRequest
 	var rawBody []byte
 
@@ -481,8 +507,8 @@ func TestOpenAIResponsesAdapter_RequestBody(t *testing.T) {
 		buf := make([]byte, 1<<20)
 		n, _ := r.Body.Read(buf)
 		rawBody = buf[:n]
-		assert.NoError(t, json.Unmarshal(rawBody, &received), "decode request body")
-		assert.True(t, strings.HasSuffix(r.URL.Path, "/responses"), "expected /responses path, got %q", r.URL.Path)
+		check.NoError(json.Unmarshal(rawBody, &received), "decode request body")
+		check.True(strings.HasSuffix(r.URL.Path, "/responses"), "expected /responses path, got %q", r.URL.Path)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, makeResponsesEvent("response.completed", `{"response":{"status":"completed"}}`))
@@ -527,50 +553,51 @@ func TestOpenAIResponsesAdapter_RequestBody(t *testing.T) {
 			},
 		},
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	for range ch {
 	}
 
-	assert.True(t, received.Stream, "expected stream=true")
-	assert.Equal(t, quirks.StoreFalse, received.StoreMode, "request must set store:false")
-	assert.Equal(t, "You are helpful.", received.Instructions)
-	assert.Equal(t, "gpt-4.1", received.Model)
-	assert.Equal(t, 4096, received.MaxTokens)
-	require.NotNil(t, received.Temperature)
-	assert.InDelta(t, 0.5, *received.Temperature, 1e-9)
+	check.True(received.Stream, "expected stream=true")
+	check.Equal(quirks.StoreFalse, received.StoreMode, "request must set store:false")
+	check.Equal("You are helpful.", received.Instructions)
+	check.Equal("gpt-4.1", received.Model)
+	check.Equal(4096, received.MaxTokens)
+	must.NotNil(received.Temperature)
+	check.InDelta(0.5, *received.Temperature, 1e-9)
 
-	assert.NotContains(t, string(rawBody), `"messages"`, "Responses API uses 'input'")
-	assert.NotContains(t, string(rawBody), `"max_tokens"`, "Responses API uses 'max_output_tokens'")
-	assert.Contains(t, string(rawBody), `"store":false`)
+	check.NotContains(string(rawBody), `"messages"`, "Responses API uses 'input'")
+	check.NotContains(string(rawBody), `"max_tokens"`, "Responses API uses 'max_output_tokens'")
+	check.Contains(string(rawBody), `"store":false`)
 
 	// Input shape: user message, assistant message + function_call, function_call_output.
-	require.GreaterOrEqual(t, len(received.Input), 4, "input items: %+v", received.Input)
-	assert.Equal(t, "message", received.Input[0].Type)
-	assert.Equal(t, "user", received.Input[0].Role)
-	if assert.NotEmpty(t, received.Input[0].Content) {
-		assert.Equal(t, "input_text", received.Input[0].Content[0].Type)
+	must.GreaterOrEqual(len(received.Input), 4, "input items: %+v", received.Input)
+	check.Equal("message", received.Input[0].Type)
+	check.Equal("user", received.Input[0].Role)
+	if check.NotEmpty(received.Input[0].Content) {
+		check.Equal("input_text", received.Input[0].Content[0].Type)
 	}
-	assert.Equal(t, "message", received.Input[1].Type)
-	assert.Equal(t, "assistant", received.Input[1].Role)
-	if assert.NotEmpty(t, received.Input[1].Content) {
-		assert.Equal(t, "output_text", received.Input[1].Content[0].Type)
+	check.Equal("message", received.Input[1].Type)
+	check.Equal("assistant", received.Input[1].Role)
+	if check.NotEmpty(received.Input[1].Content) {
+		check.Equal("output_text", received.Input[1].Content[0].Type)
 	}
-	assert.Equal(t, "function_call", received.Input[2].Type)
-	assert.Equal(t, "call_1", received.Input[2].CallID)
-	assert.Equal(t, "read_file", received.Input[2].Name)
-	assert.Equal(t, "function_call_output", received.Input[3].Type)
-	assert.Equal(t, "call_1", received.Input[3].CallID)
+	check.Equal("function_call", received.Input[2].Type)
+	check.Equal("call_1", received.Input[2].CallID)
+	check.Equal("read_file", received.Input[2].Name)
+	check.Equal("function_call_output", received.Input[3].Type)
+	check.Equal("call_1", received.Input[3].CallID)
 
 	// Tools should use the flatter shape (no nested "function" object).
-	require.Len(t, received.Tools, 1)
-	assert.Equal(t, "function", received.Tools[0].Type)
-	assert.Equal(t, "read_file", received.Tools[0].Name)
-	assert.Equal(t, "Read a file", received.Tools[0].Description)
-	assert.NotContains(t, string(rawBody), `"function":{"name"`, "Responses API uses a flat tool shape")
+	must.Len(received.Tools, 1)
+	check.Equal("function", received.Tools[0].Type)
+	check.Equal("read_file", received.Tools[0].Name)
+	check.Equal("Read a file", received.Tools[0].Description)
+	check.NotContains(string(rawBody), `"function":{"name"`, "Responses API uses a flat tool shape")
 
 	// A non-auto ToolChoice must still omit "tool_choice" from the raw
 	// body: the adapter downgrades to auto and never serialises the field.
 	t.Run("ToolChoiceRequired", func(t *testing.T) {
+		must := require.New(t)
 		var rawBody []byte
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			rawBody, _ = io.ReadAll(r.Body)
@@ -591,11 +618,11 @@ func TestOpenAIResponsesAdapter_RequestBody(t *testing.T) {
 				{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "Hello"}}},
 			},
 		})
-		require.NoError(t, err)
+		must.NoError(err)
 		for range ch {
 		}
 
-		require.NotContains(t, string(rawBody), `"tool_choice"`, "the Responses adapter downgrades to auto: %s", rawBody)
+		must.NotContains(string(rawBody), `"tool_choice"`, "the Responses adapter downgrades to auto: %s", rawBody)
 	})
 }
 
@@ -604,6 +631,7 @@ func TestOpenAIResponsesAdapter_RequestBody(t *testing.T) {
 // never carry a "tool_choice" field, because the adapter does not support
 // it and silently downgrades to auto.
 func TestOpenAIResponsesAdapter_RequestBody_NonAutoToolChoiceOmitsField(t *testing.T) {
+	must := require.New(t)
 	var rawBody []byte
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -628,14 +656,15 @@ func TestOpenAIResponsesAdapter_RequestBody_NonAutoToolChoiceOmitsField(t *testi
 			},
 		},
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	for range ch {
 	}
 
-	require.NotContains(t, string(rawBody), `"tool_choice"`, "the Responses adapter downgrades to auto: %s", rawBody)
+	must.NotContains(string(rawBody), `"tool_choice"`, "the Responses adapter downgrades to auto: %s", rawBody)
 }
 
 func TestOpenAIResponsesAdapter_RequestBody_EmptyToolResult(t *testing.T) {
+	must := require.New(t)
 	// Drives Stream() with an empty tool_result block and asserts on the
 	// raw HTTP body: catches any regression where intermediate processing
 	// between translateMessagesResponses and json.Marshal silently elides
@@ -671,11 +700,11 @@ func TestOpenAIResponsesAdapter_RequestBody_EmptyToolResult(t *testing.T) {
 			},
 		},
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	for range ch {
 	}
 
-	require.Contains(t, string(rawBody), `"output":""`, "request body must keep the empty output key: %s", rawBody)
+	must.Contains(string(rawBody), `"output":""`, "request body must keep the empty output key: %s", rawBody)
 }
 
 // TestOpenAIResponsesAdapter_TemperatureWireShape pins the unset-vs-
@@ -696,6 +725,8 @@ func TestOpenAIResponsesAdapter_TemperatureWireShape(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
 			var rawBody []byte
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				rawBody, _ = io.ReadAll(r.Body)
@@ -712,20 +743,22 @@ func TestOpenAIResponsesAdapter_TemperatureWireShape(t *testing.T) {
 				MaxTokens:   1024,
 				Temperature: tc.temperature,
 			})
-			require.NoError(t, err)
+			must.NoError(err)
 			for range ch {
 			}
 
 			body := string(rawBody)
-			assert.Equal(t, tc.wantTemperature, strings.Contains(body, `"temperature"`), "temperature key present in body: %s", body)
+			check.Equal(tc.wantTemperature, strings.Contains(body, `"temperature"`), "temperature key present in body: %s", body)
 			if tc.wantTempSubstring != "" {
-				assert.Contains(t, body, tc.wantTempSubstring, "body: %s", body)
+				check.Contains(body, tc.wantTempSubstring, "body: %s", body)
 			}
 		})
 	}
 }
 
 func TestOpenAIResponsesAdapter_ContextCancellation(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -741,37 +774,43 @@ func TestOpenAIResponsesAdapter_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	ch, err := adapter.Stream(ctx, types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
-	require.NoError(t, err)
+	must.NoError(err)
 	cancel()
 
 	// An error event after cancellation is optional, so only a completed
 	// message is rejected. collectEvents returning shows the channel closed.
 	events := collectEvents(t, ch)
 	for _, ev := range events {
-		assert.NotEqual(t, "message_complete", ev.Type, "unexpected message_complete after cancel: %+v", ev)
+		check.NotEqual("message_complete", ev.Type, "unexpected message_complete after cancel: %+v", ev)
 	}
 }
 
 func TestOpenAIResponsesAdapter_DefaultBaseURL(t *testing.T) {
+	must := require.New(t)
 	adapter := NewOpenAIResponsesAdapter(staticBearer("key"), "", OpenAIAuthConfig{})
-	require.Equal(t, openaiDefaultBaseURL, adapter.baseURL)
+	must.Equal(openaiDefaultBaseURL, adapter.baseURL)
 }
 
 func TestOpenAIResponsesAdapter_TrailingSlashBaseURL(t *testing.T) {
+	must := require.New(t)
 	adapter := NewOpenAIResponsesAdapter(staticBearer("key"), "https://example.com/v1/", OpenAIAuthConfig{})
-	require.Equal(t, "https://example.com/v1", adapter.baseURL)
+	must.Equal("https://example.com/v1", adapter.baseURL)
 }
 
 func TestOpenAIResponsesAdapter_StreamingClientTimeouts(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), "", OpenAIAuthConfig{})
-	assert.Zero(t, adapter.httpClient.Timeout, "a total deadline cuts long streams, which idleTimeoutBody bounds instead")
+	check.Zero(adapter.httpClient.Timeout, "a total deadline cuts long streams, which idleTimeoutBody bounds instead")
 	tr, ok := adapter.httpClient.Transport.(*http.Transport)
-	require.True(t, ok, "expected *http.Transport")
-	assert.NotZero(t, tr.TLSHandshakeTimeout, "TLSHandshakeTimeout should be non-zero")
-	assert.NotZero(t, tr.ResponseHeaderTimeout, "ResponseHeaderTimeout should be non-zero")
+	must.True(ok, "expected *http.Transport")
+	check.NotZero(tr.TLSHandshakeTimeout, "TLSHandshakeTimeout should be non-zero")
+	check.NotZero(tr.ResponseHeaderTimeout, "ResponseHeaderTimeout should be non-zero")
 }
 
 func TestOpenAIResponsesAdapter_RecordsLatencyAndTTFB(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	body := strings.Join([]string{
 		makeResponsesEvent("response.output_item.added", `{"output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant"}}`),
 		makeResponsesEvent("response.output_text.delta", `{"item_id":"msg_1","output_index":0,"delta":"Hi"}`),
@@ -789,34 +828,36 @@ func TestOpenAIResponsesAdapter_RecordsLatencyAndTTFB(t *testing.T) {
 	prov := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = prov.Shutdown(context.Background()) })
 	metrics, err := observability.NewMetricsForTesting(prov)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 	adapter.Metrics = metrics
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
-	require.NoError(t, err)
+	must.NoError(err)
 	for range ch {
 	}
 
-	assert.EqualValues(t, 1, providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"), "provider_latency count")
-	assert.EqualValues(t, 1, providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"), "provider_ttfb count")
+	check.EqualValues(1, providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"), "provider_latency count")
+	check.EqualValues(1, providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"), "provider_ttfb count")
 	assertFirstChunkSeries(t, reader, adapter, "openai", "gpt-4.1")
 
 	h, ok := providerHistogramFinder(t, reader, "stirrup.harness.provider_latency")
-	require.True(t, ok, "provider_latency histogram is missing")
-	require.NotEmpty(t, h.DataPoints, "provider_latency has no data points")
+	must.True(ok, "provider_latency histogram is missing")
+	must.NotEmpty(h.DataPoints, "provider_latency has no data points")
 	attrs := h.DataPoints[0].Attributes
 
 	providerType, ok := attrs.Value("provider.type")
-	assert.True(t, ok, "provider.type attribute is missing")
-	assert.Equal(t, "openai-responses", providerType.AsString())
+	check.True(ok, "provider.type attribute is missing")
+	check.Equal("openai-responses", providerType.AsString())
 	model, ok := attrs.Value("provider.model")
-	assert.True(t, ok, "provider.model attribute is missing")
-	assert.Equal(t, "gpt-4.1", model.AsString())
+	check.True(ok, "provider.model attribute is missing")
+	check.Equal("gpt-4.1", model.AsString())
 }
 
 func TestOpenAIResponsesAdapter_RecordsLatencyOnHTTPError(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = fmt.Fprint(w, `{"error":{"message":"bad"}}`)
@@ -827,21 +868,23 @@ func TestOpenAIResponsesAdapter_RecordsLatencyOnHTTPError(t *testing.T) {
 	prov := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = prov.Shutdown(context.Background()) })
 	metrics, err := observability.NewMetricsForTesting(prov)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	adapter := NewOpenAIResponsesAdapter(staticBearer("bad-key"), srv.URL, OpenAIAuthConfig{})
 	adapter.Metrics = metrics
 
 	_, err = adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
-	require.Error(t, err)
+	must.Error(err)
 
-	assert.EqualValues(t, 1, providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"), "provider_latency count")
-	assert.EqualValues(t, 0, providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"), "provider_ttfb count")
+	check.EqualValues(1, providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"), "provider_latency count")
+	check.EqualValues(0, providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"), "provider_ttfb count")
 }
 
 // --- Translation unit tests ---
 
 func TestTranslateMessagesResponses_MapsTextToolUseAndToolResult(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	messages := []types.Message{
 		{
 			Role: "user",
@@ -869,30 +912,32 @@ func TestTranslateMessagesResponses_MapsTextToolUseAndToolResult(t *testing.T) {
 	// user message -> 1 item (input_text)
 	// assistant text + tool_use -> 1 message item + 1 function_call item
 	// tool_result -> 1 function_call_output item
-	require.Len(t, result, 4, "input items: %+v", result)
-	assert.Equal(t, "message", result[0].Type)
-	assert.Equal(t, "user", result[0].Role)
-	require.NotEmpty(t, result[0].Content)
-	assert.Equal(t, "input_text", result[0].Content[0].Type)
-	assert.Equal(t, "message", result[1].Type)
-	assert.Equal(t, "assistant", result[1].Role)
-	require.NotEmpty(t, result[1].Content)
-	assert.Equal(t, "output_text", result[1].Content[0].Type)
-	assert.Equal(t, "function_call", result[2].Type)
-	assert.Equal(t, "call_1", result[2].CallID)
-	assert.Equal(t, "read_file", result[2].Name)
-	assert.Equal(t, "function_call_output", result[3].Type)
-	assert.Equal(t, "call_1", result[3].CallID)
-	assert.Equal(t, "package main", result[3].Output)
+	must.Len(result, 4, "input items: %+v", result)
+	check.Equal("message", result[0].Type)
+	check.Equal("user", result[0].Role)
+	must.NotEmpty(result[0].Content)
+	check.Equal("input_text", result[0].Content[0].Type)
+	check.Equal("message", result[1].Type)
+	check.Equal("assistant", result[1].Role)
+	must.NotEmpty(result[1].Content)
+	check.Equal("output_text", result[1].Content[0].Type)
+	check.Equal("function_call", result[2].Type)
+	check.Equal("call_1", result[2].CallID)
+	check.Equal("read_file", result[2].Name)
+	check.Equal("function_call_output", result[3].Type)
+	check.Equal("call_1", result[3].CallID)
+	check.Equal("package main", result[3].Output)
 
 	// Marshal-roundtrip check: a future omitempty regression on the Output
 	// field would be invisible to the struct comparison above.
 	raw, err := json.Marshal(result[3])
-	require.NoError(t, err, "marshal result[3]")
-	assert.Contains(t, string(raw), `"output":"package main"`, "marshalled result[3]: %s", raw)
+	must.NoError(err, "marshal result[3]")
+	check.Contains(string(raw), `"output":"package main"`, "marshalled result[3]: %s", raw)
 }
 
 func TestTranslateMessagesResponses_ErrorToolResult(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	messages := []types.Message{
 		{
 			Role: "user",
@@ -903,19 +948,21 @@ func TestTranslateMessagesResponses_ErrorToolResult(t *testing.T) {
 	}
 
 	result := translateMessagesResponses(messages, "")
-	require.Len(t, result, 1)
-	assert.Equal(t, "function_call_output", result[0].Type)
-	assert.True(t, strings.HasPrefix(result[0].Output, "Error: "), "expected error-prefixed output, got %q", result[0].Output)
+	must.Len(result, 1)
+	check.Equal("function_call_output", result[0].Type)
+	check.True(strings.HasPrefix(result[0].Output, "Error: "), "expected error-prefixed output, got %q", result[0].Output)
 
 	// Marshal-roundtrip check: an omitempty regression on Output would not
 	// trip the struct assertions above for non-empty payloads, but the wire
 	// shape is what the API actually validates.
 	raw, err := json.Marshal(result[0])
-	require.NoError(t, err, "marshal result[0]")
-	assert.Contains(t, string(raw), `"output":"Error: file not found"`, "marshalled result[0]: %s", raw)
+	must.NoError(err, "marshal result[0]")
+	check.Contains(string(raw), `"output":"Error: file not found"`, "marshalled result[0]: %s", raw)
 }
 
 func TestTranslateMessagesResponses_EmptyToolResultContent(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	// An empty tool_result must marshal with an explicit empty output key,
 	// because the Responses API rejects a function_call_output without one.
 	messages := []types.Message{
@@ -924,17 +971,19 @@ func TestTranslateMessagesResponses_EmptyToolResultContent(t *testing.T) {
 		}},
 	}
 	result := translateMessagesResponses(messages, "")
-	require.Len(t, result, 1)
-	assert.Equal(t, "function_call_output", result[0].Type)
-	assert.Equal(t, "call_1", result[0].CallID)
-	assert.Empty(t, result[0].Output)
+	must.Len(result, 1)
+	check.Equal("function_call_output", result[0].Type)
+	check.Equal("call_1", result[0].CallID)
+	check.Empty(result[0].Output)
 
 	raw, err := json.Marshal(result[0])
-	require.NoError(t, err, "marshal result[0]")
-	assert.Contains(t, string(raw), `"output":""`, "marshalled JSON: %s", raw)
+	must.NoError(err, "marshal result[0]")
+	check.Contains(string(raw), `"output":""`, "marshalled JSON: %s", raw)
 }
 
 func TestTranslateMessagesResponses_EmptyErrorToolResultContent(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	// An error tool_result with empty content still has a non-empty output
 	// ("Error: "), so its wire shape is checked separately from the empty case.
 	messages := []types.Message{
@@ -943,16 +992,18 @@ func TestTranslateMessagesResponses_EmptyErrorToolResultContent(t *testing.T) {
 		}},
 	}
 	result := translateMessagesResponses(messages, "")
-	require.Len(t, result, 1)
-	assert.Equal(t, "function_call_output", result[0].Type)
-	assert.Equal(t, "Error: ", result[0].Output)
+	must.Len(result, 1)
+	check.Equal("function_call_output", result[0].Type)
+	check.Equal("Error: ", result[0].Output)
 
 	raw, err := json.Marshal(result[0])
-	require.NoError(t, err, "marshal result[0]")
-	assert.Contains(t, string(raw), `"output":"Error: "`, "marshalled JSON: %s", raw)
+	must.NoError(err, "marshal result[0]")
+	check.Contains(string(raw), `"output":"Error: "`, "marshalled JSON: %s", raw)
 }
 
 func TestTranslateMessagesResponses_MultipleEmptyToolResultContents(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	// Every empty tool_result in a multi-block user message must marshal with
 	// an explicit empty output key, not only the first.
 	messages := []types.Message{
@@ -962,21 +1013,22 @@ func TestTranslateMessagesResponses_MultipleEmptyToolResultContents(t *testing.T
 		}},
 	}
 	result := translateMessagesResponses(messages, "")
-	require.Len(t, result, 2)
+	must.Len(result, 2)
 
 	wantIDs := []string{"call_1", "call_2"}
 	for i, item := range result {
-		assert.Equal(t, "function_call_output", item.Type, "result[%d].Type", i)
-		assert.Equal(t, wantIDs[i], item.CallID, "result[%d].CallID", i)
-		assert.Empty(t, item.Output, "result[%d].Output", i)
+		check.Equal("function_call_output", item.Type, "result[%d].Type", i)
+		check.Equal(wantIDs[i], item.CallID, "result[%d].CallID", i)
+		check.Empty(item.Output, "result[%d].Output", i)
 
 		raw, err := json.Marshal(item)
-		require.NoError(t, err, "marshal result[%d]", i)
-		assert.Contains(t, string(raw), `"output":""`, "marshalled result[%d]: %s", i, raw)
+		must.NoError(err, "marshal result[%d]", i)
+		check.Contains(string(raw), `"output":""`, "marshalled result[%d]: %s", i, raw)
 	}
 }
 
 func TestTranslateMessagesResponses_AssistantToolUseEmptyInput(t *testing.T) {
+	must := require.New(t)
 	// An assistant tool_use block with empty Input should serialise as
 	// "{}", not "" — a missing Arguments field would be ambiguous.
 	messages := []types.Message{
@@ -988,15 +1040,17 @@ func TestTranslateMessagesResponses_AssistantToolUseEmptyInput(t *testing.T) {
 		},
 	}
 	result := translateMessagesResponses(messages, "")
-	require.Len(t, result, 1, "result: %+v", result)
-	require.Equal(t, "function_call", result[0].Type)
-	require.Equal(t, "{}", result[0].Arguments)
+	must.Len(result, 1, "result: %+v", result)
+	must.Equal("function_call", result[0].Type)
+	must.Equal("{}", result[0].Arguments)
 }
 
 // A message item must emit only the keys valid for the message variant,
 // because stricter validators reject unknown parameters such as
 // input[N].output with HTTP 400.
 func TestResponsesInputMarshal_MessageOmitsOutput(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	item := responsesInput{
 		Type: "message",
 		Role: "user",
@@ -1005,14 +1059,14 @@ func TestResponsesInputMarshal_MessageOmitsOutput(t *testing.T) {
 		},
 	}
 	raw, err := json.Marshal(item)
-	require.NoError(t, err)
+	must.NoError(err)
 	wire := string(raw)
-	assert.NotContains(t, wire, `"output"`, "message item must not emit an output key")
-	assert.NotContains(t, wire, `"call_id"`, "message item must not emit a call_id key")
-	assert.NotContains(t, wire, `"name"`, "message item must not emit a name key")
-	assert.NotContains(t, wire, `"arguments"`, "message item must not emit an arguments key")
-	assert.Contains(t, wire, `"type":"message"`, "message item must emit type=message")
-	assert.Contains(t, wire, `"role":"user"`, "message item must emit role")
+	check.NotContains(wire, `"output"`, "message item must not emit an output key")
+	check.NotContains(wire, `"call_id"`, "message item must not emit a call_id key")
+	check.NotContains(wire, `"name"`, "message item must not emit a name key")
+	check.NotContains(wire, `"arguments"`, "message item must not emit an arguments key")
+	check.Contains(wire, `"type":"message"`, "message item must emit type=message")
+	check.Contains(wire, `"role":"user"`, "message item must emit role")
 }
 
 // TestResponsesInputMarshal_FunctionCallOmitsOutput: on the function_call
@@ -1020,6 +1074,8 @@ func TestResponsesInputMarshal_MessageOmitsOutput(t *testing.T) {
 // "output" key (and "role"/"content") must not leak across the
 // discriminant.
 func TestResponsesInputMarshal_FunctionCallOmitsOutput(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	item := responsesInput{
 		Type:      "function_call",
 		CallID:    "call_abc",
@@ -1027,56 +1083,61 @@ func TestResponsesInputMarshal_FunctionCallOmitsOutput(t *testing.T) {
 		Arguments: `{"path":"main.go"}`,
 	}
 	raw, err := json.Marshal(item)
-	require.NoError(t, err)
+	must.NoError(err)
 	wire := string(raw)
-	assert.NotContains(t, wire, `"output"`, "function_call item must not emit an output key")
-	assert.NotContains(t, wire, `"role"`, "function_call item must not emit a role key")
-	assert.NotContains(t, wire, `"content"`, "function_call item must not emit a content key")
-	assert.Contains(t, wire, `"type":"function_call"`, "function_call item must emit type=function_call")
-	assert.Contains(t, wire, `"call_id":"call_abc"`, "function_call item must emit call_id")
+	check.NotContains(wire, `"output"`, "function_call item must not emit an output key")
+	check.NotContains(wire, `"role"`, "function_call item must not emit a role key")
+	check.NotContains(wire, `"content"`, "function_call item must not emit a content key")
+	check.Contains(wire, `"type":"function_call"`, "function_call item must emit type=function_call")
+	check.Contains(wire, `"call_id":"call_abc"`, "function_call item must emit call_id")
 }
 
 // A function_call_output item must emit "output":"" for an empty result,
 // because the Responses API rejects a missing output with HTTP 400.
 func TestResponsesInputMarshal_FunctionCallOutputKeepsEmptyOutput(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	item := responsesInput{
 		Type:   "function_call_output",
 		CallID: "call_1",
 		Output: "",
 	}
 	raw, err := json.Marshal(item)
-	require.NoError(t, err)
+	must.NoError(err)
 	wire := string(raw)
-	assert.Contains(t, wire, `"output":""`, "function_call_output must emit an empty output")
-	assert.NotContains(t, wire, `"role"`, "function_call_output must not emit a role key")
-	assert.NotContains(t, wire, `"content"`, "function_call_output must not emit a content key")
-	assert.NotContains(t, wire, `"name"`, "function_call_output must not emit a name key")
-	assert.NotContains(t, wire, `"arguments"`, "function_call_output must not emit an arguments key")
-	assert.Contains(t, wire, `"type":"function_call_output"`, "function_call_output must emit type=function_call_output")
-	assert.Contains(t, wire, `"call_id":"call_1"`, "function_call_output must emit call_id")
+	check.Contains(wire, `"output":""`, "function_call_output must emit an empty output")
+	check.NotContains(wire, `"role"`, "function_call_output must not emit a role key")
+	check.NotContains(wire, `"content"`, "function_call_output must not emit a content key")
+	check.NotContains(wire, `"name"`, "function_call_output must not emit a name key")
+	check.NotContains(wire, `"arguments"`, "function_call_output must not emit an arguments key")
+	check.Contains(wire, `"type":"function_call_output"`, "function_call_output must emit type=function_call_output")
+	check.Contains(wire, `"call_id":"call_1"`, "function_call_output must emit call_id")
 }
 
 // A function_call_output item carrying a result must send that result
 // verbatim under the output key.
 func TestResponsesInputMarshal_FunctionCallOutputNonEmpty(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	item := responsesInput{
 		Type:   "function_call_output",
 		CallID: "call_1",
 		Output: "some result",
 	}
 	raw, err := json.Marshal(item)
-	require.NoError(t, err)
+	must.NoError(err)
 	wire := string(raw)
-	assert.Contains(t, wire, `"output":"some result"`, "function_call_output must carry a non-empty output verbatim")
-	assert.Contains(t, wire, `"type":"function_call_output"`, "function_call_output must emit type=function_call_output")
-	assert.Contains(t, wire, `"call_id":"call_1"`, "function_call_output must emit call_id")
+	check.Contains(wire, `"output":"some result"`, "function_call_output must carry a non-empty output verbatim")
+	check.Contains(wire, `"type":"function_call_output"`, "function_call_output must emit type=function_call_output")
+	check.Contains(wire, `"call_id":"call_1"`, "function_call_output must emit call_id")
 }
 
 // Marshalling an unrecognised type must fail, so a type added without a
 // wire variant cannot be serialised silently.
 func TestResponsesInputMarshal_UnknownTypeErrors(t *testing.T) {
+	must := require.New(t)
 	_, err := json.Marshal(responsesInput{Type: "reasoning"})
-	require.Error(t, err)
+	must.Error(err)
 }
 
 // TestResponsesInput_RoundTripPreservesVariantFields checks that marshalling
@@ -1117,26 +1178,27 @@ func TestResponsesInput_RoundTripPreservesVariantFields(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			raw, err := json.Marshal(tc.in)
-			require.NoError(t, err)
+			must.NoError(err)
 			var got responsesInput
-			require.NoError(t, json.Unmarshal(raw, &got))
+			must.NoError(json.Unmarshal(raw, &got))
 
-			require.Equal(t, tc.in.Type, got.Type)
+			must.Equal(tc.in.Type, got.Type)
 			switch tc.in.Type {
 			case "message":
-				require.Equal(t, tc.in.Role, got.Role)
-				require.Len(t, got.Content, len(tc.in.Content))
+				must.Equal(tc.in.Role, got.Role)
+				must.Len(got.Content, len(tc.in.Content))
 				for i := range tc.in.Content {
-					require.Equal(t, tc.in.Content[i], got.Content[i], "Content[%d]", i)
+					must.Equal(tc.in.Content[i], got.Content[i], "Content[%d]", i)
 				}
 			case "function_call":
-				require.Equal(t, tc.in.CallID, got.CallID)
-				require.Equal(t, tc.in.Name, got.Name)
-				require.Equal(t, tc.in.Arguments, got.Arguments)
+				must.Equal(tc.in.CallID, got.CallID)
+				must.Equal(tc.in.Name, got.Name)
+				must.Equal(tc.in.Arguments, got.Arguments)
 			case "function_call_output":
-				require.Equal(t, tc.in.CallID, got.CallID)
-				require.Equal(t, tc.in.Output, got.Output)
+				must.Equal(tc.in.CallID, got.CallID)
+				must.Equal(tc.in.Output, got.Output)
 			}
 		})
 	}
@@ -1146,12 +1208,14 @@ func TestResponsesInput_RoundTripPreservesVariantFields(t *testing.T) {
 // zeroing the item. This is the inverse of the marshal-side guard in
 // TestResponsesInputMarshal_UnknownTypeErrors.
 func TestResponsesInputUnmarshal_UnknownTypeErrors(t *testing.T) {
+	must := require.New(t)
 	var item responsesInput
 	err := json.Unmarshal([]byte(`{"type":"reasoning"}`), &item)
-	require.Error(t, err)
+	must.Error(err)
 }
 
 func TestTranslateToolsResponses_MapsFunctionTools(t *testing.T) {
+	must := require.New(t)
 	tools := []types.ToolDefinition{
 		{
 			Name:        "read_file",
@@ -1165,14 +1229,14 @@ func TestTranslateToolsResponses_MapsFunctionTools(t *testing.T) {
 		},
 	}
 	result, err := translateToolsResponses(tools, false, false, "gpt-4o", nil)
-	require.NoError(t, err)
-	require.Len(t, result, 2)
+	must.NoError(err)
+	must.Len(result, 2)
 	for i, tool := range result {
-		require.Equal(t, "function", tool.Type, "tools[%d].Type", i)
-		require.NotEmpty(t, tool.Name, "tools[%d].Name", i)
+		must.Equal("function", tool.Type, "tools[%d].Type", i)
+		must.NotEmpty(tool.Name, "tools[%d].Name", i)
 	}
-	require.Equal(t, "read_file", result[0].Name)
-	require.Equal(t, "write_file", result[1].Name)
+	must.Equal("read_file", result[0].Name)
+	must.Equal("write_file", result[1].Name)
 }
 
 func TestTranslateToolsResponses_NilOrEmptyReturnsNil(t *testing.T) {
@@ -1185,9 +1249,10 @@ func TestTranslateToolsResponses_NilOrEmptyReturnsNil(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			got, err := translateToolsResponses(tt.tools, false, false, "gpt-4o", nil)
-			require.NoError(t, err)
-			require.Nil(t, got)
+			must.NoError(err)
+			must.Nil(got)
 		})
 	}
 }
@@ -1230,15 +1295,18 @@ func TestDeriveStopReason_MapsStatusToStopReason(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, deriveStopReason(tt.in))
+			must := require.New(t)
+			must.Equal(tt.want, deriveStopReason(tt.in))
 		})
 	}
 }
 
 // An empty API key must result in no Authorization header on the request.
 func TestOpenAIResponsesAdapter_EmptyKeyOmitsAuthorization(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Empty(t, r.Header.Get("Authorization"), "expected no Authorization header")
+		check.Empty(r.Header.Get("Authorization"), "expected no Authorization header")
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, makeResponsesEvent("response.completed", `{"response":{"status":"completed"}}`))
@@ -1247,7 +1315,7 @@ func TestOpenAIResponsesAdapter_EmptyKeyOmitsAuthorization(t *testing.T) {
 
 	adapter := NewOpenAIResponsesAdapter(staticBearer(""), srv.URL, OpenAIAuthConfig{})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "local", MaxTokens: 1024})
-	require.NoError(t, err)
+	must.NoError(err)
 	for range ch {
 	}
 }
@@ -1255,6 +1323,7 @@ func TestOpenAIResponsesAdapter_EmptyKeyOmitsAuthorization(t *testing.T) {
 // The stream goroutine must exit and close the channel when the consumer
 // cancels its context while the producer is blocked on a full channel.
 func TestOpenAIResponsesAdapter_BackpressureCancellation(t *testing.T) {
+	must := require.New(t)
 	// Continuously stream small SSE records as fast as possible so the
 	// channel buffer fills before the consumer gets a chance to drain.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1283,7 +1352,7 @@ func TestOpenAIResponsesAdapter_BackpressureCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	ch, err := adapter.Stream(ctx, types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	// Drain a handful of events so the goroutine starts producing, then
 	// stop reading and cancel. The goroutine must observe ctx.Done()
@@ -1292,7 +1361,7 @@ func TestOpenAIResponsesAdapter_BackpressureCancellation(t *testing.T) {
 		select {
 		case <-ch:
 		case <-time.After(2 * time.Second):
-			require.Fail(t, "timed out reading initial events")
+			must.Fail("timed out reading initial events")
 		}
 	}
 	cancel()
@@ -1308,13 +1377,14 @@ func TestOpenAIResponsesAdapter_BackpressureCancellation(t *testing.T) {
 	select {
 	case <-closed:
 	case <-time.After(3 * time.Second):
-		require.Fail(t, "channel did not close within 3s after cancel; the stream goroutine may have leaked")
+		must.Fail("channel did not close within 3s after cancel; the stream goroutine may have leaked")
 	}
 }
 
 // A single SSE record whose accumulated data lines exceed the input cap
 // must produce one bounded error event and end the stream.
 func TestOpenAIResponsesAdapter_SSERecordSizeCapEnforced(t *testing.T) {
+	must := require.New(t)
 	// Two data: lines, each just under 6MB, totalling > 10MB.
 	const half = 6 * 1024 * 1024
 	bigChunk := strings.Repeat("z", half)
@@ -1334,17 +1404,18 @@ func TestOpenAIResponsesAdapter_SSERecordSizeCapEnforced(t *testing.T) {
 
 	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
-	require.NoError(t, err)
+	must.NoError(err)
 	events := collectEvents(t, ch)
 
-	require.Len(t, events, 1, "events: %+v", events)
-	require.Equal(t, "error", events[0].Type)
-	require.ErrorContains(t, events[0].Error, "byte limit")
+	must.Len(events, 1, "events: %+v", events)
+	must.Equal("error", events[0].Type)
+	must.ErrorContains(events[0].Error, "byte limit")
 }
 
 // provider_latency must be recorded even when the caller cancels its
 // context before draining the stream.
 func TestOpenAIResponsesAdapter_LatencyRecordedAfterContextCancel(t *testing.T) {
+	must := require.New(t)
 	body := strings.Join([]string{
 		makeResponsesEvent("response.output_item.added", `{"output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant"}}`),
 		makeResponsesEvent("response.output_text.delta", `{"item_id":"msg_1","output_index":0,"delta":"hi"}`),
@@ -1362,14 +1433,14 @@ func TestOpenAIResponsesAdapter_LatencyRecordedAfterContextCancel(t *testing.T) 
 	prov := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = prov.Shutdown(context.Background()) })
 	metrics, err := observability.NewMetricsForTesting(prov)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 	adapter.Metrics = metrics
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ch, err := adapter.Stream(ctx, types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
-	require.NoError(t, err)
+	must.NoError(err)
 	// Cancel before draining so the latency recording happens after the
 	// caller's context is already done.
 	cancel()
@@ -1384,13 +1455,14 @@ func TestOpenAIResponsesAdapter_LatencyRecordedAfterContextCancel(t *testing.T) 
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	require.Equal(t, uint64(1), providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"),
+	must.Equal(uint64(1), providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"),
 		"latency must be recorded against a background context")
 }
 
 // A malformed response.completed payload must surface as an error event and
 // must not emit message_complete.
 func TestOpenAIResponsesAdapter_MalformedCompletedEvent(t *testing.T) {
+	must := require.New(t)
 	body := makeResponsesEvent("response.completed", `NOT_VALID_JSON`)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1402,14 +1474,14 @@ func TestOpenAIResponsesAdapter_MalformedCompletedEvent(t *testing.T) {
 
 	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
-	require.NoError(t, err)
+	must.NoError(err)
 	events := collectEvents(t, ch)
 
-	require.Len(t, events, 1, "events: %+v", events)
-	require.Equal(t, "error", events[0].Type)
-	require.ErrorContains(t, events[0].Error, "parse response.completed")
+	must.Len(events, 1, "events: %+v", events)
+	must.Equal("error", events[0].Type)
+	must.ErrorContains(events[0].Error, "parse response.completed")
 	for _, ev := range events {
-		require.NotEqual(t, "message_complete", ev.Type, "message_complete must not be emitted on malformed completed: %+v", ev)
+		must.NotEqual("message_complete", ev.Type, "message_complete must not be emitted on malformed completed: %+v", ev)
 	}
 }
 
@@ -1430,6 +1502,7 @@ func TestOpenAIResponsesAdapter_MalformedDispatchEvents(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			body := makeResponsesEvent(tc.eventName, "{NOT JSON")
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "text/event-stream")
@@ -1440,25 +1513,27 @@ func TestOpenAIResponsesAdapter_MalformedDispatchEvents(t *testing.T) {
 
 			adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 			ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
-			require.NoError(t, err)
+			must.NoError(err)
 			events := collectEvents(t, ch)
 
-			require.Len(t, events, 1, "events: %+v", events)
-			require.Equal(t, "error", events[0].Type)
-			require.ErrorContains(t, events[0].Error, tc.errSubstr)
+			must.Len(events, 1, "events: %+v", events)
+			must.Equal("error", events[0].Type)
+			must.ErrorContains(events[0].Error, tc.errSubstr)
 		})
 	}
 }
 
 // An empty item_id falls back to keying the call by its output index.
 func TestCallKey_FallbackToIndex(t *testing.T) {
-	require.Equal(t, "idx:3", callKey("", 3))
-	require.Equal(t, "real_id", callKey("real_id", 3))
+	must := require.New(t)
+	must.Equal("idx:3", callKey("", 3))
+	must.Equal("real_id", callKey("real_id", 3))
 }
 
 // An arguments delta that arrives before its output_item.added must create
 // the call state lazily, and the tool_call must still be emitted at .done.
 func TestOpenAIResponsesAdapter_DeltaBeforeAdded(t *testing.T) {
+	must := require.New(t)
 	body := strings.Join([]string{
 		// No output_item.added: the state is created on the first delta.
 		makeResponsesEvent("response.function_call_arguments.delta", `{"item_id":"fc_lazy","output_index":0,"delta":"{\"k\":1}"}`),
@@ -1476,7 +1551,7 @@ func TestOpenAIResponsesAdapter_DeltaBeforeAdded(t *testing.T) {
 
 	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
-	require.NoError(t, err)
+	must.NoError(err)
 	events := collectEvents(t, ch)
 
 	var toolCall *types.StreamEvent
@@ -1486,15 +1561,16 @@ func TestOpenAIResponsesAdapter_DeltaBeforeAdded(t *testing.T) {
 			break
 		}
 	}
-	require.NotNil(t, toolCall, "expected a tool_call event, got: %+v", events)
-	require.Equal(t, "call_lazy", toolCall.ID)
-	require.Equal(t, "noop", toolCall.Name)
-	require.InDelta(t, 1, toolCall.Input["k"], 0)
+	must.NotNil(toolCall, "expected a tool_call event, got: %+v", events)
+	must.Equal("call_lazy", toolCall.ID)
+	must.Equal("noop", toolCall.Name)
+	must.InDelta(1, toolCall.Input["k"], 0)
 }
 
 // When a delta and its done event carry no item_id, the call is keyed by
 // output index and must still produce a tool_call with the parsed arguments.
 func TestOpenAIResponsesAdapter_DeltaBeforeAddedNoItemIDFallback(t *testing.T) {
+	must := require.New(t)
 	body := strings.Join([]string{
 		makeResponsesEvent("response.function_call_arguments.delta", `{"output_index":2,"delta":"{\"a\":\"b\"}"}`),
 		makeResponsesEvent("response.function_call_arguments.done", `{"output_index":2,"arguments":"{\"a\":\"b\"}"}`),
@@ -1510,19 +1586,19 @@ func TestOpenAIResponsesAdapter_DeltaBeforeAddedNoItemIDFallback(t *testing.T) {
 
 	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
-	require.NoError(t, err)
+	must.NoError(err)
 	events := collectEvents(t, ch)
 
 	var toolCalls []types.StreamEvent
 	for _, ev := range events {
-		require.NotEqual(t, "error", ev.Type, "unexpected error event: %v", ev.Error)
+		must.NotEqual("error", ev.Type, "unexpected error event: %v", ev.Error)
 		if ev.Type == "tool_call" {
 			toolCalls = append(toolCalls, ev)
 		}
 	}
-	require.NotEmpty(t, toolCalls, "expected tool_call event, got: %+v", events)
+	must.NotEmpty(toolCalls, "expected tool_call event, got: %+v", events)
 	for _, call := range toolCalls {
-		require.Equal(t, "b", call.Input["a"])
+		must.Equal("b", call.Input["a"])
 	}
 }
 
@@ -1554,7 +1630,8 @@ func TestDeriveStopReason_DefaultUnknownStatus(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, deriveStopReason(tt.resp))
+			must := require.New(t)
+			must.Equal(tt.want, deriveStopReason(tt.resp))
 		})
 	}
 }
@@ -1563,19 +1640,21 @@ func TestDeriveStopReason_DefaultUnknownStatus(t *testing.T) {
 // of the max_tokens detection (`max_tokens` literal, not
 // `max_output_tokens`).
 func TestDeriveStopReason_MaxTokensSpelling(t *testing.T) {
+	must := require.New(t)
 	in := responsesResponse{
 		Status: "incomplete",
 		IncompleteDetails: &struct {
 			Reason string `json:"reason"`
 		}{Reason: "max_tokens"},
 	}
-	require.Equal(t, "max_tokens", deriveStopReason(in))
+	must.Equal("max_tokens", deriveStopReason(in))
 }
 
 // TestOpenAIResponsesAdapter_IncompleteMaxTokensAlternateSpelling
 // covers the same alternate spelling path inside the SSE dispatch for
 // response.incomplete.
 func TestOpenAIResponsesAdapter_IncompleteMaxTokensAlternateSpelling(t *testing.T) {
+	must := require.New(t)
 	body := makeResponsesEvent("response.incomplete",
 		`{"response":{"status":"incomplete","incomplete_details":{"reason":"max_tokens"}}}`)
 
@@ -1588,12 +1667,12 @@ func TestOpenAIResponsesAdapter_IncompleteMaxTokensAlternateSpelling(t *testing.
 
 	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
-	require.NoError(t, err)
+	must.NoError(err)
 	events := collectEvents(t, ch)
-	require.NotEmpty(t, events)
+	must.NotEmpty(events)
 	last := events[len(events)-1]
-	require.Equal(t, "message_complete", last.Type)
-	require.Equal(t, "max_tokens", last.StopReason)
+	must.Equal("message_complete", last.Type)
+	must.Equal("max_tokens", last.StopReason)
 }
 
 // TestOpenAIResponsesAdapter_SSEParser_ToleratesCommentsAndTrailingRecord
@@ -1601,6 +1680,7 @@ func TestOpenAIResponsesAdapter_IncompleteMaxTokensAlternateSpelling(t *testing.
 // header lines without a trailing space (`event:`/`data:`), and flushes
 // a trailing record at EOF without a terminating blank line.
 func TestOpenAIResponsesAdapter_SSEParser_ToleratesCommentsAndTrailingRecord(t *testing.T) {
+	must := require.New(t)
 	// Note: no terminating blank line on the last record — relies on
 	// the EOF-flush path.
 	body := ":heartbeat\n" +
@@ -1624,33 +1704,35 @@ func TestOpenAIResponsesAdapter_SSEParser_ToleratesCommentsAndTrailingRecord(t *
 
 	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
-	require.NoError(t, err)
+	must.NoError(err)
 	events := collectEvents(t, ch)
 
-	require.Len(t, events, 2, "expected text_delta then message_complete, got %+v", events)
-	require.Equal(t, "text_delta", events[0].Type)
-	require.Equal(t, "hi", events[0].Text)
-	require.Equal(t, "message_complete", events[1].Type)
-	require.Equal(t, "end_turn", events[1].StopReason)
+	must.Len(events, 2, "expected text_delta then message_complete, got %+v", events)
+	must.Equal("text_delta", events[0].Type)
+	must.Equal("hi", events[0].Text)
+	must.Equal("message_complete", events[1].Type)
+	must.Equal("end_turn", events[1].StopReason)
 }
 
 // TestOpenAIResponsesAdapter_ConnectionRefused_ReturnsRequestError covers
 // the connection-level failure path: the server is closed before the
 // request is sent.
 func TestOpenAIResponsesAdapter_ConnectionRefused_ReturnsRequestError(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	addr := srv.URL
 	srv.Close()
 
 	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), addr, OpenAIAuthConfig{})
 	_, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
-	require.ErrorContains(t, err, "execute request")
+	must.ErrorContains(err, "execute request")
 }
 
 // TestOpenAIResponsesAdapter_5xxWithoutBody_ReturnsStatusCode covers the
 // 5xx fallback path where the body is absent or unparseable: the adapter
 // returns the generic status-code error rather than crashing.
 func TestOpenAIResponsesAdapter_5xxWithoutBody_ReturnsStatusCode(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
@@ -1658,13 +1740,14 @@ func TestOpenAIResponsesAdapter_5xxWithoutBody_ReturnsStatusCode(t *testing.T) {
 
 	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 	_, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
-	require.ErrorContains(t, err, "503")
+	must.ErrorContains(err, "503")
 }
 
 // TestOpenAIResponsesAdapter_RateLimit_RecordsRetryAfterSpanEvent checks
 // that the 429 branch attaches a rate_limited span event carrying the
 // Retry-After header.
 func TestOpenAIResponsesAdapter_RateLimit_RecordsRetryAfterSpanEvent(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "42")
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -1683,11 +1766,11 @@ func TestOpenAIResponsesAdapter_RateLimit_RecordsRetryAfterSpanEvent(t *testing.
 	ctx, span := tracer.Start(context.Background(), "test")
 
 	_, err := adapter.Stream(ctx, types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
-	require.Error(t, err)
+	must.Error(err)
 	span.End()
 
 	stubs := exporter.GetSpans()
-	require.NotEmpty(t, stubs, "expected at least one finished span")
+	must.NotEmpty(stubs, "expected at least one finished span")
 	var retryAfters []string
 	for _, s := range stubs {
 		for _, ev := range s.Events {
@@ -1697,9 +1780,9 @@ func TestOpenAIResponsesAdapter_RateLimit_RecordsRetryAfterSpanEvent(t *testing.
 			retryAfters = append(retryAfters, spanEventAttribute(ev, "retry_after"))
 		}
 	}
-	require.NotEmpty(t, retryAfters, "expected a rate_limited span event")
+	must.NotEmpty(retryAfters, "expected a rate_limited span event")
 	for _, got := range retryAfters {
-		require.Equal(t, "42", got)
+		must.Equal("42", got)
 	}
 }
 
@@ -1725,6 +1808,7 @@ func spanEventAttribute(ev sdktrace.Event, key string) string {
 // unknown SSE event type is ignored and recorded as a span event for
 // production observability.
 func TestOpenAIResponsesAdapter_UnknownEvent_RecordsSpanEvent(t *testing.T) {
+	must := require.New(t)
 	body := strings.Join([]string{
 		// Unknown event type — must be ignored but tagged on the span.
 		makeResponsesEvent("response.reasoning_summary.delta", `{"text":"thinking..."}`),
@@ -1747,7 +1831,7 @@ func TestOpenAIResponsesAdapter_UnknownEvent_RecordsSpanEvent(t *testing.T) {
 
 	ctx, span := tracer.Start(context.Background(), "test")
 	ch, err := adapter.Stream(ctx, types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
-	require.NoError(t, err)
+	must.NoError(err)
 	for range ch {
 	}
 	span.End()
@@ -1761,9 +1845,9 @@ func TestOpenAIResponsesAdapter_UnknownEvent_RecordsSpanEvent(t *testing.T) {
 			eventTypes = append(eventTypes, spanEventAttribute(ev, "event.type"))
 		}
 	}
-	require.NotEmpty(t, eventTypes, "expected an openai_responses.unknown_sse_event span event")
+	must.NotEmpty(eventTypes, "expected an openai_responses.unknown_sse_event span event")
 	for _, typ := range eventTypes {
-		require.Equal(t, "response.reasoning_summary.delta", typ)
+		must.Equal("response.reasoning_summary.delta", typ)
 	}
 }
 
@@ -1774,6 +1858,7 @@ func TestOpenAIResponsesAdapter_UnknownEvent_RecordsSpanEvent(t *testing.T) {
 // a single trailing input_text item. See the comment in
 // translateMessagesResponses for rationale.
 func TestTranslateMessagesResponses_UserTextAndToolResultOrder(t *testing.T) {
+	must := require.New(t)
 	messages := []types.Message{
 		{
 			Role: "user",
@@ -1785,12 +1870,12 @@ func TestTranslateMessagesResponses_UserTextAndToolResultOrder(t *testing.T) {
 		},
 	}
 	result := translateMessagesResponses(messages, "")
-	require.Len(t, result, 2, "got %+v", result)
-	require.Equal(t, "function_call_output", result[0].Type)
-	require.Equal(t, "message", result[1].Type)
-	require.Equal(t, "user", result[1].Role)
-	require.NotEmpty(t, result[1].Content)
-	require.Equal(t, "Before. After.", result[1].Content[0].Text)
+	must.Len(result, 2, "got %+v", result)
+	must.Equal("function_call_output", result[0].Type)
+	must.Equal("message", result[1].Type)
+	must.Equal("user", result[1].Role)
+	must.NotEmpty(result[1].Content)
+	must.Equal("Before. After.", result[1].Content[0].Text)
 }
 
 // TestOpenAIResponsesAdapter_AzureKeyHeaderAndQueryParam is the Azure OpenAI
@@ -1800,6 +1885,8 @@ func TestTranslateMessagesResponses_UserTextAndToolResultOrder(t *testing.T) {
 // /openai/v1/responses?api-version=preview, carrying header api-key: <KEY>,
 // and NO Authorization header (Bearer fallback must not engage).
 func TestOpenAIResponsesAdapter_AzureKeyHeaderAndQueryParam(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	body := strings.Join([]string{
 		makeResponsesEvent("response.created", `{"response":{"id":"resp_1","status":"in_progress"}}`),
 		makeResponsesEvent("response.completed", `{"response":{"status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}`),
@@ -1807,10 +1894,10 @@ func TestOpenAIResponsesAdapter_AzureKeyHeaderAndQueryParam(t *testing.T) {
 
 	// The handler runs on the server goroutine, so it reports with assert.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/openai/v1/responses", r.URL.Path)
-		assert.Equal(t, "preview", r.URL.Query().Get("api-version"))
-		assert.Equal(t, "AZURE-KEY", r.Header.Get("api-key"))
-		assert.Empty(t, r.Header.Get("Authorization"))
+		check.Equal("/openai/v1/responses", r.URL.Path)
+		check.Equal("preview", r.URL.Query().Get("api-version"))
+		check.Equal("AZURE-KEY", r.Header.Get("api-key"))
+		check.Empty(r.Header.Get("Authorization"))
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, body)
@@ -1822,7 +1909,7 @@ func TestOpenAIResponsesAdapter_AzureKeyHeaderAndQueryParam(t *testing.T) {
 		QueryParams:  map[string]string{"api-version": "preview"},
 	})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
-	require.NoError(t, err)
+	must.NoError(err)
 	for range ch { //nolint:revive // drain stream
 	}
 }
@@ -1832,6 +1919,8 @@ func TestOpenAIResponsesAdapter_AzureKeyHeaderAndQueryParam(t *testing.T) {
 // QueryParams entries with the same key win, while unrelated BaseURL keys
 // survive untouched. Mirror of the Chat Completions equivalent.
 func TestOpenAIResponsesAdapter_QueryParamsOverrideBaseURL(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	body := strings.Join([]string{
 		makeResponsesEvent("response.completed", `{"response":{"status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}`),
 	}, "")
@@ -1839,9 +1928,9 @@ func TestOpenAIResponsesAdapter_QueryParamsOverrideBaseURL(t *testing.T) {
 	// The handler runs on the server goroutine, so it reports with assert.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		assert.Equal(t, "preview", q.Get("api-version"), "QueryParams should override BaseURL")
-		assert.Equal(t, "azure", q.Get("flavour"), "BaseURL key should survive")
-		assert.Len(t, q["api-version"], 1, "api-version should appear exactly once")
+		check.Equal("preview", q.Get("api-version"), "QueryParams should override BaseURL")
+		check.Equal("azure", q.Get("flavour"), "BaseURL key should survive")
+		check.Len(q["api-version"], 1, "api-version should appear exactly once")
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, body)
@@ -1852,7 +1941,7 @@ func TestOpenAIResponsesAdapter_QueryParamsOverrideBaseURL(t *testing.T) {
 		QueryParams: map[string]string{"api-version": "preview"},
 	})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
-	require.NoError(t, err)
+	must.NoError(err)
 	for range ch { //nolint:revive // drain stream
 	}
 }
@@ -1861,9 +1950,11 @@ func TestOpenAIResponsesAdapter_QueryParamsOverrideBaseURL(t *testing.T) {
 // resolveBearer error branch on the Responses adapter — same shape
 // as the openai-compatible test, distinct adapter implementation.
 func TestOpenAIResponsesAdapter_BearerClosureError(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	// The handler runs on the server goroutine, so it reports with assert.
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		assert.Fail(t, "openai-responses adapter should not have hit the network when the bearer closure errors")
+		check.Fail("openai-responses adapter should not have hit the network when the bearer closure errors")
 	}))
 	defer srv.Close()
 
@@ -1873,5 +1964,5 @@ func TestOpenAIResponsesAdapter_BearerClosureError(t *testing.T) {
 		Model:     "gpt-4o",
 		MaxTokens: 16,
 	})
-	require.ErrorContains(t, err, "STS returned 401", "error should preserve closure cause")
+	must.ErrorContains(err, "STS returned 401", "error should preserve closure cause")
 }

@@ -11,16 +11,18 @@ import (
 )
 
 func TestAllowAll_AlwaysAllows(t *testing.T) {
+	must := require.New(t)
 	policy := NewAllowAll()
 	tool := types.ToolDefinition{Name: "write_file"}
 	input := json.RawMessage(`{"path": "/tmp/test"}`)
 
 	result, err := policy.Check(context.Background(), tool, input)
-	require.NoError(t, err)
-	require.True(t, result.Allowed)
+	must.NoError(err)
+	must.True(result.Allowed)
 }
 
 func TestDenySideEffects_DeniesKnownTools(t *testing.T) {
+	must := require.New(t)
 	mutating := map[string]bool{
 		"write_file":        true,
 		"run_shell_command": true,
@@ -29,12 +31,13 @@ func TestDenySideEffects_DeniesKnownTools(t *testing.T) {
 
 	tool := types.ToolDefinition{Name: "write_file"}
 	result, err := policy.Check(context.Background(), tool, nil)
-	require.NoError(t, err)
-	require.False(t, result.Allowed)
-	require.NotEmpty(t, result.Reason, "denial reason")
+	must.NoError(err)
+	must.False(result.Allowed)
+	must.NotEmpty(result.Reason, "denial reason")
 }
 
 func TestDenySideEffects_AllowsReadOnlyTools(t *testing.T) {
+	must := require.New(t)
 	mutating := map[string]bool{
 		"write_file": true,
 	}
@@ -42,15 +45,16 @@ func TestDenySideEffects_AllowsReadOnlyTools(t *testing.T) {
 
 	tool := types.ToolDefinition{Name: "read_file"}
 	result, err := policy.Check(context.Background(), tool, nil)
-	require.NoError(t, err)
-	require.True(t, result.Allowed)
+	must.NoError(err)
+	must.True(result.Allowed)
 }
 
 func TestDenySideEffects_EmptySetAllowsAllTools(t *testing.T) {
+	must := require.New(t)
 	policy := NewDenySideEffects(map[string]bool{})
 
 	tool := types.ToolDefinition{Name: "anything"}
 	result, err := policy.Check(context.Background(), tool, nil)
-	require.NoError(t, err)
-	require.True(t, result.Allowed)
+	must.NoError(err)
+	must.True(result.Allowed)
 }

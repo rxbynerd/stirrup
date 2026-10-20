@@ -8,6 +8,7 @@ import (
 )
 
 func TestPerModeRouter_ConfiguredModeOverridesDefault(t *testing.T) {
+	must := require.New(t)
 	r := NewPerModeRouter(
 		ModelSelection{Provider: "anthropic", Model: "claude-sonnet-4-6"},
 		map[string]ModelSelection{
@@ -17,10 +18,11 @@ func TestPerModeRouter_ConfiguredModeOverridesDefault(t *testing.T) {
 
 	sel := r.Select(context.Background(), RouterContext{Mode: "planning", Turn: 1})
 
-	require.Equal(t, ModelSelection{Provider: "anthropic", Model: "claude-opus-4-6"}, sel)
+	must.Equal(ModelSelection{Provider: "anthropic", Model: "claude-opus-4-6"}, sel)
 }
 
 func TestPerModeRouter_UnknownModeFallsBackToDefault(t *testing.T) {
+	must := require.New(t)
 	r := NewPerModeRouter(
 		ModelSelection{Provider: "anthropic", Model: "claude-sonnet-4-6"},
 		map[string]ModelSelection{
@@ -30,7 +32,7 @@ func TestPerModeRouter_UnknownModeFallsBackToDefault(t *testing.T) {
 
 	sel := r.Select(context.Background(), RouterContext{Mode: "unknown-mode", Turn: 3})
 
-	require.Equal(t, ModelSelection{Provider: "anthropic", Model: "claude-sonnet-4-6"}, sel)
+	must.Equal(ModelSelection{Provider: "anthropic", Model: "claude-sonnet-4-6"}, sel)
 }
 
 func TestPerModeRouter_EmptyMapAlwaysReturnsDefault(t *testing.T) {
@@ -40,9 +42,10 @@ func TestPerModeRouter_EmptyMapAlwaysReturnsDefault(t *testing.T) {
 	modes := []string{"execution", "planning", "review", "research", "toil"}
 	for _, mode := range modes {
 		t.Run(mode, func(t *testing.T) {
+			must := require.New(t)
 			sel := r.Select(context.Background(), RouterContext{Mode: mode, Turn: 1})
 
-			require.Equal(t, def, sel)
+			must.Equal(def, sel)
 		})
 	}
 }
@@ -91,9 +94,10 @@ func TestPerModeRouter_RoutesEachConfiguredMode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			sel := r.Select(context.Background(), RouterContext{Mode: tt.mode, Turn: 1})
 
-			require.Equal(t, tt.want, sel)
+			must.Equal(tt.want, sel)
 		})
 	}
 }
@@ -103,6 +107,7 @@ func TestPerModeRouter_ImplementsInterface(t *testing.T) {
 }
 
 func TestPerModeRouter_DoesNotAliasModeMap(t *testing.T) {
+	must := require.New(t)
 	modeMap := map[string]ModelSelection{
 		"planning": {Provider: "anthropic", Model: "claude-opus-4-6"},
 	}
@@ -115,8 +120,7 @@ func TestPerModeRouter_DoesNotAliasModeMap(t *testing.T) {
 	modeMap["planning"] = ModelSelection{Provider: "changed", Model: "changed"}
 
 	sel := r.Select(context.Background(), RouterContext{Mode: "planning", Turn: 1})
-	require.Equal(t,
-		ModelSelection{Provider: "anthropic", Model: "claude-opus-4-6"},
+	must.Equal(ModelSelection{Provider: "anthropic", Model: "claude-opus-4-6"},
 		sel,
 		"router was affected by mutation of input map",
 	)

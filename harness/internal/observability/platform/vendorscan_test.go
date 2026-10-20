@@ -34,8 +34,9 @@ func TestVendorNamePattern_MatchesCodeNotProse(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got := vendorNamePattern.MatchString(tc.line)
-			require.Equal(t, tc.want, got, "vendorNamePattern.MatchString(%q)", tc.line)
+			must.Equal(tc.want, got, "vendorNamePattern.MatchString(%q)", tc.line)
 		})
 	}
 }
@@ -44,6 +45,8 @@ func TestVendorNamePattern_MatchesCodeNotProse(t *testing.T) {
 // Go code inside this package, so the rest of the harness stays
 // platform-neutral.
 func TestVendorNamesStayInPlatformPackage(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	root := workspaceRoot(t)
 	allowed := []string{
 		filepath.Join(root, "harness", "internal", "observability", "platform") + string(filepath.Separator),
@@ -83,23 +86,24 @@ func TestVendorNamesStayInPlatformPackage(t *testing.T) {
 		}
 		return nil
 	})
-	require.NoError(t, err, "walk %s", root)
-	assert.Empty(t, violations, "vendor-specific names belong in harness/internal/observability/platform")
-	require.GreaterOrEqual(t, scanned, 100, "scanned Go files under %s; the workspace root was not found correctly", root)
+	must.NoError(err, "walk %s", root)
+	check.Empty(violations, "vendor-specific names belong in harness/internal/observability/platform")
+	must.GreaterOrEqual(scanned, 100, "scanned Go files under %s; the workspace root was not found correctly", root)
 }
 
 // workspaceRoot returns the directory holding go.work, above this package.
 func workspaceRoot(t *testing.T) string {
 	t.Helper()
+	must := require.New(t)
 	dir, err := os.Getwd()
-	require.NoError(t, err)
+	must.NoError(err)
 	for {
 		if _, err := os.Stat(filepath.Join(dir, "go.work")); err == nil {
 			return dir
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			require.Fail(t, "go.work not found above the test directory")
+			must.Fail("go.work not found above the test directory")
 		}
 		dir = parent
 	}

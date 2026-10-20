@@ -60,6 +60,8 @@ const strictTestSchema = `{
 //   - the originally-optional fields are nullable (`["type","null"]`)
 //   - `additionalProperties` is false at the top-level object
 func TestOpenAIStrictMode_WireBodyShape(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	capturedBody := make(chan []byte, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -87,34 +89,35 @@ func TestOpenAIStrictMode_WireBodyShape(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	ch, err := adapter.Stream(ctx, params)
-	require.NoError(t, err)
+	must.NoError(err)
 	for range ch {
 	}
 	body := <-capturedBody
 
 	var req map[string]any
-	require.NoError(t, json.Unmarshal(body, &req))
+	must.NoError(json.Unmarshal(body, &req))
 	tools := req["tools"].([]any)
-	require.Len(t, tools, 1)
+	must.Len(tools, 1)
 	tool := tools[0].(map[string]any)
 	function := tool["function"].(map[string]any)
-	assert.Equal(t, true, function["strict"], "tool should be strict")
+	check.Equal(true, function["strict"], "tool should be strict")
 
 	schema := function["parameters"].(map[string]any)
-	assert.Equal(t, false, schema["additionalProperties"], "top-level object should close additional properties")
+	check.Equal(false, schema["additionalProperties"], "top-level object should close additional properties")
 	required := schema["required"].([]any)
-	assert.Len(t, required, 3, "every property should be required: %v", required)
+	check.Len(required, 3, "every property should be required: %v", required)
 
 	props := schema["properties"].(map[string]any)
 	_, pathIsArray := props["path"].(map[string]any)["type"].([]any)
-	assert.False(t, pathIsArray, "required path should keep a scalar type")
+	check.False(pathIsArray, "required path should keep a scalar type")
 
 	for _, field := range []string{"limit", "depth"} {
 		t.Run(field+" is nullable", func(t *testing.T) {
+			must := require.New(t)
 			typ := props[field].(map[string]any)["type"]
 			typeList, ok := typ.([]any)
-			require.True(t, ok, "optional %s should use array type form, got %v", field, typ)
-			require.Contains(t, typeList, "null")
+			must.True(ok, "optional %s should use array type form, got %v", field, typ)
+			must.Contains(typeList, "null")
 		})
 	}
 }
@@ -125,6 +128,8 @@ func TestOpenAIStrictMode_WireBodyShape(t *testing.T) {
 // request is sent. The error must name the tool and the offending
 // field path so the operator can locate it.
 func TestOpenAIStrictMode_FailsClosedOnUnsupportedSchema(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	// Whether the HTTP server was reached. Set true by the handler; the
 	// test fails if any request lands.
 	hit := false
@@ -150,10 +155,10 @@ func TestOpenAIStrictMode_FailsClosedOnUnsupportedSchema(t *testing.T) {
 		},
 	}
 	_, err := adapter.Stream(context.Background(), params)
-	require.Error(t, err)
-	require.ErrorContains(t, err, "bad_tool", "error should name the tool")
-	require.ErrorContains(t, err, "oneOf", "error should name the offending keyword")
-	assert.False(t, hit, "strict-mode lint should fail before any wire request")
+	must.Error(err)
+	must.ErrorContains(err, "bad_tool", "error should name the tool")
+	must.ErrorContains(err, "oneOf", "error should name the offending keyword")
+	check.False(hit, "strict-mode lint should fail before any wire request")
 }
 
 // TestOpenAIStrictMode_LintErrorDoesNotLeakDescriptionOrEnum pins the
@@ -161,6 +166,7 @@ func TestOpenAIStrictMode_FailsClosedOnUnsupportedSchema(t *testing.T) {
 // error message must NOT carry the schema's description or enum
 // content, even when those fields exist in the rejected schema.
 func TestOpenAIStrictMode_LintErrorDoesNotLeakDescriptionOrEnum(t *testing.T) {
+	must := require.New(t)
 	adapter := NewOpenAICompatibleAdapter(staticBearer("k"), "http://invalid.test", OpenAIAuthConfig{}, RetryPolicy{})
 	adapter.Registry = strictRegistryFor("gpt-4o-mini")
 
@@ -184,7 +190,7 @@ func TestOpenAIStrictMode_LintErrorDoesNotLeakDescriptionOrEnum(t *testing.T) {
 		},
 	}
 	_, err := adapter.Stream(context.Background(), params)
-	require.Error(t, err)
+	must.Error(err)
 	msg := err.Error()
 
 	for _, tc := range []struct {
@@ -195,7 +201,8 @@ func TestOpenAIStrictMode_LintErrorDoesNotLeakDescriptionOrEnum(t *testing.T) {
 		{name: "description", leak: "LEAKABLE-DESCRIPTION-TEXT"},
 	} {
 		t.Run("does not leak "+tc.name, func(t *testing.T) {
-			require.NotContains(t, msg, tc.leak)
+			must := require.New(t)
+			must.NotContains(msg, tc.leak)
 		})
 	}
 }
@@ -210,6 +217,8 @@ func TestOpenAIStrictMode_LintErrorDoesNotLeakDescriptionOrEnum(t *testing.T) {
 // adapter-private field with no public accessor (intentional —
 // production code does not need to read these).
 func TestOpenAIStrictMode_CacheHitOnRepeatedTurns(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
@@ -235,15 +244,15 @@ func TestOpenAIStrictMode_CacheHitOnRepeatedTurns(t *testing.T) {
 	// Two consecutive Stream calls in the same adapter lifetime.
 	for i := 0; i < 2; i++ {
 		ch, err := adapter.Stream(context.Background(), params)
-		require.NoError(t, err, "Stream %d", i)
+		must.NoError(err, "Stream %d", i)
 		for range ch {
 		}
 	}
 
 	misses := adapter.strictSchemas.Misses.Load()
 	hits := adapter.strictSchemas.Hits.Load()
-	assert.EqualValues(t, 1, misses, "one normalisation across two turns")
-	assert.EqualValues(t, 1, hits, "second turn should hit the cache")
+	check.EqualValues(1, misses, "one normalisation across two turns")
+	check.EqualValues(1, hits, "second turn should hit the cache")
 }
 
 // TestOpenAIStrictMode_CacheKeyIncludesModel pins that a model switch
@@ -254,6 +263,8 @@ func TestOpenAIStrictMode_CacheHitOnRepeatedTurns(t *testing.T) {
 // "gpt-5-nano" so both Stream calls hit the normaliser. The cache's
 // (model, tool-name, schema-hash) key separates them.
 func TestOpenAIStrictMode_CacheKeyIncludesModel(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
@@ -288,19 +299,21 @@ func TestOpenAIStrictMode_CacheKeyIncludesModel(t *testing.T) {
 			Tools:    toolDef,
 		}
 		ch, err := adapter.Stream(context.Background(), params)
-		require.NoError(t, err, "Stream %s", model)
+		must.NoError(err, "Stream %s", model)
 		for range ch {
 		}
 	}
 
 	misses := adapter.strictSchemas.Misses.Load()
-	assert.EqualValues(t, 2, misses, "each model should be normalised separately")
+	check.EqualValues(2, misses, "each model should be normalised separately")
 }
 
 // TestOpenAIStrictMode_DoesNotFireForNonStrictModel pins the negative
 // case: a model that does not match any strict-mode rule produces a
 // wire body without `strict: true` and without the property-rewrite.
 func TestOpenAIStrictMode_DoesNotFireForNonStrictModel(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	capturedBody := make(chan []byte, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -325,15 +338,15 @@ func TestOpenAIStrictMode_DoesNotFireForNonStrictModel(t *testing.T) {
 		},
 	}
 	ch, err := adapter.Stream(context.Background(), params)
-	require.NoError(t, err)
+	must.NoError(err)
 	for range ch {
 	}
 	body := <-capturedBody
 
-	assert.NotContains(t, string(body), `"strict":true`, "non-strict model should not set strict: %s", body)
+	check.NotContains(string(body), `"strict":true`, "non-strict model should not set strict: %s", body)
 	// The cache should not be touched when strict mode is off.
 	misses := adapter.strictSchemas.Misses.Load()
-	assert.Zero(t, misses, "non-strict path should not consult the cache")
+	check.Zero(misses, "non-strict path should not consult the cache")
 }
 
 // TestOpenAIStrictMode_ErrorsAreNotCached pins the documented contract
@@ -345,6 +358,8 @@ func TestOpenAIStrictMode_DoesNotFireForNonStrictModel(t *testing.T) {
 // failing schema is never stored, so subsequent lookups also miss),
 // and Misses is only incremented on a successful normalisation.
 func TestOpenAIStrictMode_ErrorsAreNotCached(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	// HTTP server must NOT be reached — strict-mode lint fails before
 	// any wire request is issued, on every turn.
 	hit := false
@@ -374,17 +389,17 @@ func TestOpenAIStrictMode_ErrorsAreNotCached(t *testing.T) {
 	// a cached failure.
 	for i := 0; i < 2; i++ {
 		_, err := adapter.Stream(context.Background(), params)
-		require.Error(t, err, "Stream %d", i)
-		require.ErrorContains(t, err, "oneOf", "Stream %d should name the offending keyword", i)
+		must.Error(err, "Stream %d", i)
+		must.ErrorContains(err, "oneOf", "Stream %d should name the offending keyword", i)
 	}
-	assert.False(t, hit, "strict-mode lint should fail before any wire request")
+	check.False(hit, "strict-mode lint should fail before any wire request")
 	// Both counters must stay at zero: the failing schema is never
 	// stored (so no subsequent lookup-hit is possible), and Misses
 	// only moves on a successful normalisation.
 	hits := adapter.strictSchemas.Hits.Load()
-	assert.Zero(t, hits, "failing schema must not produce cache hits")
+	check.Zero(hits, "failing schema must not produce cache hits")
 	misses := adapter.strictSchemas.Misses.Load()
-	assert.Zero(t, misses, "failing schema must not be memoised")
+	check.Zero(misses, "failing schema must not be memoised")
 }
 
 // TestOpenAIStrictMode_ConcurrentFirstMiss pins the singleflight
@@ -395,6 +410,7 @@ func TestOpenAIStrictMode_ErrorsAreNotCached(t *testing.T) {
 // counting it. Runs with -race to also catch a regression in the lock
 // ordering inside computeAndStore.
 func TestOpenAIStrictMode_ConcurrentFirstMiss(t *testing.T) {
+	check := assert.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
@@ -425,7 +441,7 @@ func TestOpenAIStrictMode_ConcurrentFirstMiss(t *testing.T) {
 			defer wg.Done()
 			<-start
 			ch, err := adapter.Stream(context.Background(), params)
-			if !assert.NoError(t, err) {
+			if !check.NoError(err) {
 				return
 			}
 			for range ch {
@@ -439,6 +455,6 @@ func TestOpenAIStrictMode_ConcurrentFirstMiss(t *testing.T) {
 
 	misses := adapter.strictSchemas.Misses.Load()
 	hits := adapter.strictSchemas.Hits.Load()
-	assert.EqualValues(t, 1, misses, "one logical first-miss across %d goroutines", N)
-	assert.EqualValues(t, N-1, hits, "all but the first-miss goroutine should observe the cached entry")
+	check.EqualValues(1, misses, "one logical first-miss across %d goroutines", N)
+	check.EqualValues(N-1, hits, "all but the first-miss goroutine should observe the cached entry")
 }

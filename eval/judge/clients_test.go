@@ -72,8 +72,9 @@ const anthropicOKReply = `{
 
 func newTestAnthropic(t *testing.T, baseURL string) *anthropicClient {
 	t.Helper()
+	must := require.New(t)
 	c, err := newAnthropicClient(&http.Client{Timeout: 5 * time.Second}, baseURL, "sk-test-key", "claude-requested")
-	require.NoError(t, err)
+	must.NoError(err)
 	c.sleep = noSleep
 	return c
 }
@@ -82,78 +83,87 @@ func newTestAnthropic(t *testing.T, baseURL string) *anthropicClient {
 func noSleep(context.Context, time.Duration) error { return nil }
 
 func TestAnthropicClient_RequestShape(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	srv, rec := stubServer(t, 200, anthropicOKReply)
 	temp := 0.0
 
 	resp, err := newTestAnthropic(t, srv.URL).Complete(context.Background(), JudgeRequest{
 		System: "sys", User: "usr", Schema: testSchema, MaxTokens: 777, Temperature: &temp,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
-	assert.Equal(t, http.MethodPost, rec.method)
-	assert.Equal(t, "/v1/messages", rec.path)
-	assert.Equal(t, "sk-test-key", rec.header.Get("x-api-key"))
-	assert.Equal(t, "2023-06-01", rec.header.Get("anthropic-version"))
-	assert.Equal(t, "application/json", rec.header.Get("Content-Type"))
-	assert.Empty(t, rec.header.Get("Authorization"), "Authorization must not be sent to Anthropic")
+	check.Equal(http.MethodPost, rec.method)
+	check.Equal("/v1/messages", rec.path)
+	check.Equal("sk-test-key", rec.header.Get("x-api-key"))
+	check.Equal("2023-06-01", rec.header.Get("anthropic-version"))
+	check.Equal("application/json", rec.header.Get("Content-Type"))
+	check.Empty(rec.header.Get("Authorization"), "Authorization must not be sent to Anthropic")
 
-	assert.Equal(t, "claude-requested", rec.body["model"])
-	assert.Equal(t, "sys", rec.body["system"])
-	assert.InDelta(t, 777, rec.body["max_tokens"], 0)
+	check.Equal("claude-requested", rec.body["model"])
+	check.Equal("sys", rec.body["system"])
+	check.InDelta(777, rec.body["max_tokens"], 0)
 
 	msgs, _ := rec.body["messages"].([]any)
-	require.Len(t, msgs, 1)
+	must.Len(msgs, 1)
 	msg, _ := msgs[0].(map[string]any)
-	assert.Equal(t, "user", msg["role"])
-	assert.Equal(t, "usr", msg["content"])
+	check.Equal("user", msg["role"])
+	check.Equal("usr", msg["content"])
 
-	assert.InDelta(t, 0, rec.body["temperature"], 0, "an explicit zero temperature is sent")
+	check.InDelta(0, rec.body["temperature"], 0, "an explicit zero temperature is sent")
 
 	cfg, _ := rec.body["output_config"].(map[string]any)
 	format, _ := cfg["format"].(map[string]any)
-	assert.Equal(t, "json_schema", format["type"])
+	check.Equal("json_schema", format["type"])
 	schemaJSON, err := json.Marshal(format["schema"])
-	require.NoError(t, err)
-	assert.JSONEq(t, string(testSchema), string(schemaJSON))
+	must.NoError(err)
+	check.JSONEq(string(testSchema), string(schemaJSON))
 
-	assert.JSONEq(t, `{"verdict":"pass"}`, resp.Text)
-	assert.Equal(t, "claude-served-1", resp.Model)
-	assert.Equal(t, "end_turn", resp.StopReason)
-	assert.Equal(t, 321, resp.InputTokens)
-	assert.Equal(t, 17, resp.OutputTokens)
+	check.JSONEq(`{"verdict":"pass"}`, resp.Text)
+	check.Equal("claude-served-1", resp.Model)
+	check.Equal("end_turn", resp.StopReason)
+	check.Equal(321, resp.InputTokens)
+	check.Equal(17, resp.OutputTokens)
 }
 
 func TestAnthropicClient_OmitsTemperatureAndSchemaWhenUnset(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv, rec := stubServer(t, 200, anthropicOKReply)
 
 	_, err := newTestAnthropic(t, srv.URL).Complete(context.Background(), JudgeRequest{System: "s", User: "u", MaxTokens: 10})
-	require.NoError(t, err)
-	assert.NotContains(t, rec.body, "temperature", "temperature is sent only when set")
-	assert.NotContains(t, rec.body, "output_config", "output_config is sent only when a schema is set")
+	must.NoError(err)
+	check.NotContains(rec.body, "temperature", "temperature is sent only when set")
+	check.NotContains(rec.body, "output_config", "output_config is sent only when a schema is set")
 }
 
 func TestAnthropicClient_DefaultBaseURL(t *testing.T) {
+	must := require.New(t)
 	c, err := newAnthropicClient(&http.Client{Timeout: time.Second}, "", "k", "m")
-	require.NoError(t, err)
-	require.Equal(t, "https://api.anthropic.com/v1/messages", c.endpoint)
+	must.NoError(err)
+	must.Equal("https://api.anthropic.com/v1/messages", c.endpoint)
 }
 
 func TestAnthropicClient_PreservesBasePathAndQuery(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	srv, rec := stubServer(t, 200, anthropicOKReply)
 
 	_, err := newTestAnthropic(t, srv.URL+"/proxy/?route=judge").Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-	require.NoError(t, err)
-	assert.Equal(t, "/proxy/v1/messages", rec.path)
-	assert.Equal(t, "route=judge", rec.query)
+	must.NoError(err)
+	check.Equal("/proxy/v1/messages", rec.path)
+	check.Equal("route=judge", rec.query)
 }
 
 func TestAnthropicClient_PassesStopReasonsThrough(t *testing.T) {
 	for _, reason := range []string{"max_tokens", "refusal"} {
 		t.Run(reason, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
 			srv, _ := stubServer(t, 200, `{"model":"m","content":[],"stop_reason":"`+reason+`","usage":{}}`)
 			resp, err := newTestAnthropic(t, srv.URL).Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-			require.NoError(t, err)
-			assert.Equal(t, reason, resp.StopReason)
+			must.NoError(err)
+			check.Equal(reason, resp.StopReason)
 		})
 	}
 }
@@ -161,49 +171,55 @@ func TestAnthropicClient_PassesStopReasonsThrough(t *testing.T) {
 func TestAnthropicClient_HTTPErrors(t *testing.T) {
 	for _, status := range []int{400, 401, 429, 500, 529} {
 		t.Run("http "+strconv.Itoa(status), func(t *testing.T) {
+			must := require.New(t)
 			srv, _ := stubServer(t, status, `{"type":"error","error":{"type":"x","message":"boom"}}`)
 			_, err := newTestAnthropic(t, srv.URL).Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-			require.ErrorContains(t, err, "HTTP "+strconv.Itoa(status))
-			require.ErrorContains(t, err, "boom")
+			must.ErrorContains(err, "HTTP "+strconv.Itoa(status))
+			must.ErrorContains(err, "boom")
 		})
 	}
 }
 
 func TestAnthropicClient_BoundsErrorBody(t *testing.T) {
+	must := require.New(t)
 	srv, _ := stubServer(t, 500, strings.Repeat("x", 100_000))
 
 	_, err := newTestAnthropic(t, srv.URL).Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-	require.Error(t, err)
-	require.LessOrEqual(t, len(err.Error()), 2*maxErrorBodyBytes, "error body not bounded")
+	must.Error(err)
+	must.LessOrEqual(len(err.Error()), 2*maxErrorBodyBytes, "error body not bounded")
 }
 
 func TestAnthropicClient_MalformedSuccessBody(t *testing.T) {
+	must := require.New(t)
 	srv, _ := stubServer(t, 200, `<html>gateway</html>`)
 
 	_, err := newTestAnthropic(t, srv.URL).Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-	require.ErrorContains(t, err, "decode response")
+	must.ErrorContains(err, "decode response")
 }
 
 func TestAnthropicClient_Timeout(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv := hangingServer(t)
 	c, err := newAnthropicClient(&http.Client{Timeout: 50 * time.Millisecond}, srv.URL+"?key=hunter2", "k", "m")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	start := time.Now()
 	_, err = c.Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-	require.Error(t, err, "expected a timeout error")
-	assert.Less(t, time.Since(start), 3*time.Second, "timeout not honoured")
-	assert.NotContains(t, err.Error(), "hunter2", "error leaks the request URL")
-	assert.NotContains(t, err.Error(), srv.URL, "error leaks the request URL")
+	must.Error(err, "expected a timeout error")
+	check.Less(time.Since(start), 3*time.Second, "timeout not honoured")
+	check.NotContains(err.Error(), "hunter2", "error leaks the request URL")
+	check.NotContains(err.Error(), srv.URL, "error leaks the request URL")
 }
 
 func TestAnthropicClient_ContextCancellation(t *testing.T) {
+	must := require.New(t)
 	srv := hangingServer(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(50*time.Millisecond, cancel)
 
 	_, err := newTestAnthropic(t, srv.URL).Complete(ctx, JudgeRequest{User: "u", MaxTokens: 1})
-	require.Error(t, err, "expected a cancellation error")
+	must.Error(err, "expected a cancellation error")
 }
 
 const openaiOKReply = `{
@@ -214,106 +230,119 @@ const openaiOKReply = `{
 
 func newTestOpenAI(t *testing.T, baseURL, key string) *openaiClient {
 	t.Helper()
+	must := require.New(t)
 	c, err := newOpenAIClient(&http.Client{Timeout: 5 * time.Second}, baseURL, key, "gpt-requested")
-	require.NoError(t, err)
+	must.NoError(err)
 	c.sleep = noSleep
 	return c
 }
 
 func TestOpenAIClient_RequestShape(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	srv, rec := stubServer(t, 200, openaiOKReply)
 	temp := 0.3
 
 	resp, err := newTestOpenAI(t, srv.URL+"/v1", "or-key").Complete(context.Background(), JudgeRequest{
 		System: "sys", User: "usr", Schema: testSchema, MaxTokens: 555, Temperature: &temp,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
-	assert.Equal(t, http.MethodPost, rec.method)
-	assert.Equal(t, "/v1/chat/completions", rec.path)
-	assert.Equal(t, "Bearer or-key", rec.header.Get("Authorization"))
-	assert.Empty(t, rec.header.Get("x-api-key"), "x-api-key must not be sent to an OpenAI-compatible endpoint")
+	check.Equal(http.MethodPost, rec.method)
+	check.Equal("/v1/chat/completions", rec.path)
+	check.Equal("Bearer or-key", rec.header.Get("Authorization"))
+	check.Empty(rec.header.Get("x-api-key"), "x-api-key must not be sent to an OpenAI-compatible endpoint")
 
-	assert.Equal(t, "gpt-requested", rec.body["model"])
-	assert.InDelta(t, 555, rec.body["max_completion_tokens"], 0)
-	assert.NotContains(t, rec.body, "max_tokens", "legacy max_tokens must not be sent")
-	assert.InDelta(t, 0.3, rec.body["temperature"], 1e-9)
+	check.Equal("gpt-requested", rec.body["model"])
+	check.InDelta(555, rec.body["max_completion_tokens"], 0)
+	check.NotContains(rec.body, "max_tokens", "legacy max_tokens must not be sent")
+	check.InDelta(0.3, rec.body["temperature"], 1e-9)
 
 	msgs, _ := rec.body["messages"].([]any)
-	require.Len(t, msgs, 2)
+	must.Len(msgs, 2)
 	system, _ := msgs[0].(map[string]any)
 	user, _ := msgs[1].(map[string]any)
-	assert.Equal(t, "system", system["role"])
-	assert.Equal(t, "sys", system["content"])
-	assert.Equal(t, "user", user["role"])
-	assert.Equal(t, "usr", user["content"])
+	check.Equal("system", system["role"])
+	check.Equal("sys", system["content"])
+	check.Equal("user", user["role"])
+	check.Equal("usr", user["content"])
 
 	rf, _ := rec.body["response_format"].(map[string]any)
 	js, _ := rf["json_schema"].(map[string]any)
-	assert.Equal(t, "json_schema", rf["type"])
-	assert.Equal(t, "verdict", js["name"])
+	check.Equal("json_schema", rf["type"])
+	check.Equal("verdict", js["name"])
 	strict, _ := js["strict"].(bool)
-	assert.True(t, strict, "json_schema must be strict")
+	check.True(strict, "json_schema must be strict")
 	schemaJSON, err := json.Marshal(js["schema"])
-	require.NoError(t, err)
-	assert.JSONEq(t, string(testSchema), string(schemaJSON))
+	must.NoError(err)
+	check.JSONEq(string(testSchema), string(schemaJSON))
 
-	assert.JSONEq(t, `{"verdict":"fail"}`, resp.Text)
-	assert.Equal(t, "gpt-served-1", resp.Model)
-	assert.Equal(t, "end_turn", resp.StopReason)
-	assert.Equal(t, 210, resp.InputTokens)
-	assert.Equal(t, 9, resp.OutputTokens)
+	check.JSONEq(`{"verdict":"fail"}`, resp.Text)
+	check.Equal("gpt-served-1", resp.Model)
+	check.Equal("end_turn", resp.StopReason)
+	check.Equal(210, resp.InputTokens)
+	check.Equal(9, resp.OutputTokens)
 }
 
 func TestOpenAIClient_OmitsTemperatureAndSchemaWhenUnset(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	srv, rec := stubServer(t, 200, openaiOKReply)
 
 	_, err := newTestOpenAI(t, srv.URL, "k").Complete(context.Background(), JudgeRequest{System: "s", User: "u", MaxTokens: 10})
-	require.NoError(t, err)
-	assert.NotContains(t, rec.body, "temperature", "temperature is sent only when set")
-	assert.NotContains(t, rec.body, "response_format", "response_format is sent only when a schema is set")
+	must.NoError(err)
+	check.NotContains(rec.body, "temperature", "temperature is sent only when set")
+	check.NotContains(rec.body, "response_format", "response_format is sent only when a schema is set")
 }
 
 func TestOpenAIClient_SendsZeroTemperatureWhenExplicit(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv, rec := stubServer(t, 200, openaiOKReply)
 	zero := 0.0
 
 	_, err := newTestOpenAI(t, srv.URL, "k").Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 10, Temperature: &zero})
-	require.NoError(t, err)
-	assert.InDelta(t, 0, rec.body["temperature"], 0, "an explicit zero temperature is sent")
+	must.NoError(err)
+	check.InDelta(0, rec.body["temperature"], 0, "an explicit zero temperature is sent")
 }
 
 func TestOpenAIClient_NoAuthorizationHeaderWithoutKey(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	srv, rec := stubServer(t, 200, openaiOKReply)
 
 	_, err := newTestOpenAI(t, srv.URL, "").Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 10})
-	require.NoError(t, err)
-	assert.Empty(t, rec.header.Get("Authorization"), "no Authorization header without a key")
+	must.NoError(err)
+	check.Empty(rec.header.Get("Authorization"), "no Authorization header without a key")
 }
 
 func TestOpenAIClient_RequiresBaseURL(t *testing.T) {
+	must := require.New(t)
 	_, err := newOpenAIClient(&http.Client{Timeout: time.Second}, "", "k", "m")
-	require.Error(t, err, "expected an error for an empty base URL")
+	must.Error(err, "expected an error for an empty base URL")
 }
 
 func TestOpenAIClient_MapsFinishReasons(t *testing.T) {
 	cases := map[string]string{"stop": "end_turn", "length": "max_tokens", "content_filter": "refusal", "tool_calls": "tool_calls"}
 	for finish, want := range cases {
 		t.Run(finish, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
 			srv, _ := stubServer(t, 200, `{"model":"m","choices":[{"message":{"content":"x"},"finish_reason":"`+finish+`"}],"usage":{}}`)
 			resp, err := newTestOpenAI(t, srv.URL, "k").Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-			require.NoError(t, err)
-			assert.Equal(t, want, resp.StopReason)
+			must.NoError(err)
+			check.Equal(want, resp.StopReason)
 		})
 	}
 }
 
 func TestOpenAIClient_RefusalFieldOverridesFinishReason(t *testing.T) {
+	must := require.New(t)
 	srv, _ := stubServer(t, 200, `{"model":"m","choices":[{"message":{"content":null,"refusal":"I cannot help with that."},"finish_reason":"stop"}],"usage":{}}`)
 
 	resp, err := newTestOpenAI(t, srv.URL, "k").Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-	require.NoError(t, err)
-	require.Equal(t, "refusal", resp.StopReason)
+	must.NoError(err)
+	must.Equal("refusal", resp.StopReason)
 }
 
 func TestOpenAIClient_ErrorsInSuccessfulResponses(t *testing.T) {
@@ -324,9 +353,10 @@ func TestOpenAIClient_ErrorsInSuccessfulResponses(t *testing.T) {
 	}
 	for name, reply := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			srv, _ := stubServer(t, 200, reply)
 			_, err := newTestOpenAI(t, srv.URL, "k").Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-			require.Error(t, err)
+			must.Error(err)
 		})
 	}
 }
@@ -334,23 +364,26 @@ func TestOpenAIClient_ErrorsInSuccessfulResponses(t *testing.T) {
 func TestOpenAIClient_HTTPErrors(t *testing.T) {
 	for _, status := range []int{400, 401, 429, 500} {
 		t.Run("http "+strconv.Itoa(status), func(t *testing.T) {
+			must := require.New(t)
 			srv, _ := stubServer(t, status, `{"error":{"message":"boom"}}`)
 			_, err := newTestOpenAI(t, srv.URL, "k").Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-			require.ErrorContains(t, err, "HTTP "+strconv.Itoa(status))
-			require.ErrorContains(t, err, "boom")
+			must.ErrorContains(err, "HTTP "+strconv.Itoa(status))
+			must.ErrorContains(err, "boom")
 		})
 	}
 }
 
 func TestOpenAIClient_Timeout(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv := hangingServer(t)
 	c, err := newOpenAIClient(&http.Client{Timeout: 50 * time.Millisecond}, srv.URL+"/v1?api-key=hunter2", "k", "m")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	_, err = c.Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-	require.Error(t, err, "expected a timeout error")
-	assert.NotContains(t, err.Error(), "hunter2", "error leaks the request URL")
-	assert.NotContains(t, err.Error(), srv.URL, "error leaks the request URL")
+	must.Error(err, "expected a timeout error")
+	check.NotContains(err.Error(), "hunter2", "error leaks the request URL")
+	check.NotContains(err.Error(), srv.URL, "error leaks the request URL")
 }
 
 func TestClients_RedactTheKeyFromProviderText(t *testing.T) {
@@ -385,18 +418,20 @@ func TestClients_RedactTheKeyFromProviderText(t *testing.T) {
 				continue
 			}
 			t.Run(name+"/"+client, func(t *testing.T) {
+				must := require.New(t)
+				check := assert.New(t)
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.WriteHeader(tc.status)
 					_, _ = io.WriteString(w, tc.reply(r))
 				}))
 				t.Cleanup(srv.Close)
 				_, err := build(srv.URL).Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-				require.Error(t, err)
+				must.Error(err)
 				msg := err.Error()
-				assert.NotContains(t, msg, key[:8], "error carries key material")
-				assert.NotContains(t, msg, "\n", "error spans several lines")
-				assert.NotContains(t, msg, "\r", "error spans several lines")
-				assert.LessOrEqual(t, len(msg), maxErrorBodyBytes+64, "error is not bounded near maxErrorBodyBytes")
+				check.NotContains(msg, key[:8], "error carries key material")
+				check.NotContains(msg, "\n", "error spans several lines")
+				check.NotContains(msg, "\r", "error spans several lines")
+				check.LessOrEqual(len(msg), maxErrorBodyBytes+64, "error is not bounded near maxErrorBodyBytes")
 			})
 		}
 	}
@@ -417,7 +452,8 @@ func TestRedactSecret_MasksRawAndEscapedOccurrences(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			require.Equal(t, tc.want, redactSecret(tc.in, tc.secret))
+			must := require.New(t)
+			must.Equal(tc.want, redactSecret(tc.in, tc.secret))
 		})
 	}
 }
@@ -425,6 +461,8 @@ func TestRedactSecret_MasksRawAndEscapedOccurrences(t *testing.T) {
 func TestNewClient_DoesNotFollowRedirects(t *testing.T) {
 	for _, provider := range []string{types.JudgeProviderAnthropic, types.JudgeProviderOpenAICompatible} {
 		t.Run(provider, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
 			var forwarded atomic.Int32
 			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				forwarded.Add(1)
@@ -438,12 +476,12 @@ func TestNewClient_DoesNotFollowRedirects(t *testing.T) {
 			t.Cleanup(redirector.Close)
 
 			c, err := NewClient(types.JudgeLLMConfig{Provider: provider, Model: "m", BaseURL: redirector.URL}, "sk-test-0123456789abcdef")
-			require.NoError(t, err)
+			must.NoError(err)
 			_, err = c.Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-			require.ErrorContains(t, err, "HTTP 307")
-			assert.NotContains(t, err.Error(), target.URL, "error names the redirect target")
-			assert.NotContains(t, err.Error(), "stolen", "error names the redirect target")
-			assert.Equal(t, int32(0), forwarded.Load(), "redirect target received requests")
+			must.ErrorContains(err, "HTTP 307")
+			check.NotContains(err.Error(), target.URL, "error names the redirect target")
+			check.NotContains(err.Error(), "stolen", "error names the redirect target")
+			check.Equal(int32(0), forwarded.Load(), "redirect target received requests")
 		})
 	}
 }
@@ -491,14 +529,16 @@ func TestClients_RetryTransientFailures(t *testing.T) {
 		build build
 	}{
 		"anthropic": {anthropicOKReply, func(t *testing.T, url string, sleep *recordingSleep, timeout time.Duration) JudgeClient {
+			must := require.New(t)
 			c, err := newAnthropicClient(&http.Client{Timeout: timeout}, url, "k", "m")
-			require.NoError(t, err)
+			must.NoError(err)
 			c.sleep = sleep.sleep
 			return c
 		}},
 		"openai": {openaiOKReply, func(t *testing.T, url string, sleep *recordingSleep, timeout time.Duration) JudgeClient {
+			must := require.New(t)
 			c, err := newOpenAIClient(&http.Client{Timeout: timeout}, url, "k", "m")
-			require.NoError(t, err)
+			must.NoError(err)
 			c.sleep = sleep.sleep
 			return c
 		}},
@@ -517,26 +557,32 @@ func TestClients_RetryTransientFailures(t *testing.T) {
 		{
 			name: "overloaded twice then ok", statuses: []int{529, 529, 200}, wantRequests: 3,
 			checkWaits: func(t *testing.T, waits []time.Duration) {
-				require.Len(t, waits, 2)
-				assert.GreaterOrEqual(t, waits[0], 250*time.Millisecond, "first wait is jittered between 250ms and 500ms")
-				assert.LessOrEqual(t, waits[0], 500*time.Millisecond, "first wait is jittered between 250ms and 500ms")
-				assert.GreaterOrEqual(t, waits[1], 500*time.Millisecond, "second wait is jittered between 500ms and 1s")
-				assert.LessOrEqual(t, waits[1], time.Second, "second wait is jittered between 500ms and 1s")
+				must := require.New(t)
+				check := assert.New(t)
+				must.Len(waits, 2)
+				check.GreaterOrEqual(waits[0], 250*time.Millisecond, "first wait is jittered between 250ms and 500ms")
+				check.LessOrEqual(waits[0], 500*time.Millisecond, "first wait is jittered between 250ms and 500ms")
+				check.GreaterOrEqual(waits[1], 500*time.Millisecond, "second wait is jittered between 500ms and 1s")
+				check.LessOrEqual(waits[1], time.Second, "second wait is jittered between 500ms and 1s")
 			},
 		},
 		{
 			name: "rate limited with retry-after seconds", statuses: []int{429, 200}, header: retryAfter("1"), wantRequests: 2,
 			checkWaits: func(t *testing.T, waits []time.Duration) {
-				require.Len(t, waits, 1)
-				assert.Equal(t, time.Second, waits[0])
+				check := assert.New(t)
+				must := require.New(t)
+				must.Len(waits, 1)
+				check.Equal(time.Second, waits[0])
 			},
 		},
 		{
 			name: "retry-after http date", statuses: []int{503, 200}, header: retryAfter(time.Now().Add(3 * time.Second).UTC().Format(http.TimeFormat)), wantRequests: 2,
 			checkWaits: func(t *testing.T, waits []time.Duration) {
-				require.Len(t, waits, 1)
-				assert.GreaterOrEqual(t, waits[0], time.Second, "wait follows the Retry-After date")
-				assert.LessOrEqual(t, waits[0], 3*time.Second, "wait follows the Retry-After date")
+				must := require.New(t)
+				check := assert.New(t)
+				must.Len(waits, 1)
+				check.GreaterOrEqual(waits[0], time.Second, "wait follows the Retry-After date")
+				check.LessOrEqual(waits[0], 3*time.Second, "wait follows the Retry-After date")
 			},
 		},
 		{name: "bad request is not retried", statuses: []int{400}, wantRequests: 1, wantErr: "HTTP 400"},
@@ -548,6 +594,8 @@ func TestClients_RetryTransientFailures(t *testing.T) {
 	for name, client := range clients {
 		for _, tc := range cases {
 			t.Run(name+"/"+tc.name, func(t *testing.T) {
+				check := assert.New(t)
+				must := require.New(t)
 				srv, requests := sequenceServer(t, client.ok, tc.header, tc.statuses...)
 				sleep := &recordingSleep{err: tc.sleepErr}
 				timeout := tc.timeout
@@ -556,11 +604,11 @@ func TestClients_RetryTransientFailures(t *testing.T) {
 				}
 				_, err := client.build(t, srv.URL, sleep, timeout).Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
 				if tc.wantErr == "" {
-					require.NoError(t, err)
+					must.NoError(err)
 				} else {
-					require.ErrorContains(t, err, tc.wantErr)
+					must.ErrorContains(err, tc.wantErr)
 				}
-				assert.Equal(t, tc.wantRequests, requests.Load())
+				check.Equal(tc.wantRequests, requests.Load())
 				if tc.checkWaits != nil {
 					tc.checkWaits(t, sleep.waits)
 				}
@@ -570,16 +618,18 @@ func TestClients_RetryTransientFailures(t *testing.T) {
 }
 
 func TestPostJSON_DeadlineBoundsAllAttempts(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv, requests := sequenceServer(t, anthropicOKReply, nil, 503)
 	c, err := newAnthropicClient(&http.Client{Timeout: 700 * time.Millisecond}, srv.URL, "k", "m")
-	require.NoError(t, err)
+	must.NoError(err)
 	start := time.Now()
 	_, err = c.Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-	require.Error(t, err)
-	assert.LessOrEqual(t, time.Since(start), 1500*time.Millisecond, "retries ran past a 700ms timeout")
+	must.Error(err)
+	check.LessOrEqual(time.Since(start), 1500*time.Millisecond, "retries ran past a 700ms timeout")
 	n := requests.Load()
-	assert.GreaterOrEqual(t, n, int32(1))
-	assert.LessOrEqual(t, n, int32(2), "the deadline stops retries before the attempt cap")
+	check.GreaterOrEqual(n, int32(1))
+	check.LessOrEqual(n, int32(2), "the deadline stops retries before the attempt cap")
 }
 
 func TestParseRetryAfter_SecondsAndHTTPDates(t *testing.T) {
@@ -601,7 +651,8 @@ func TestParseRetryAfter_SecondsAndHTTPDates(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, parseRetryAfter(tc.input, now))
+			must := require.New(t)
+			must.Equal(tc.want, parseRetryAfter(tc.input, now))
 		})
 	}
 }
@@ -616,14 +667,15 @@ func TestBackoff_JitteredWithinExponentialBounds(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run("attempt "+strconv.Itoa(tc.attempt), func(t *testing.T) {
+			must := require.New(t)
 			seen := map[time.Duration]bool{}
 			for range 200 {
 				d := backoff(tc.attempt)
-				require.GreaterOrEqual(t, d, tc.min)
-				require.LessOrEqual(t, d, tc.max)
+				must.GreaterOrEqual(d, tc.min)
+				must.LessOrEqual(d, tc.max)
 				seen[d] = true
 			}
-			require.Greater(t, len(seen), 1, "backoff is not jittered")
+			must.Greater(len(seen), 1, "backoff is not jittered")
 		})
 	}
 }
@@ -636,16 +688,18 @@ func TestClients_EnforcesResponseSizeLimit(t *testing.T) {
 	}
 	for name, build := range builders {
 		t.Run(name+" rejects an oversized response", func(t *testing.T) {
+			must := require.New(t)
 			srv, _ := stubServer(t, 200, `{"model":"m","pad":"`+huge+`"}`)
 			_, err := build(t, srv.URL).Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-			require.ErrorContains(t, err, "provider response exceeds")
+			must.ErrorContains(err, "provider response exceeds")
 		})
 	}
 	t.Run("accepts a response exactly at the cap", func(t *testing.T) {
+		must := require.New(t)
 		body := `{"model":"m","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{},"pad":"`
 		body += strings.Repeat("x", maxResponseBytes-len(body)-2) + `"}`
 		srv, _ := stubServer(t, 200, body)
 		_, err := newTestAnthropic(t, srv.URL).Complete(context.Background(), JudgeRequest{User: "u", MaxTokens: 1})
-		require.NoError(t, err, "a %d-byte response was rejected", len(body))
+		must.NoError(err, "a %d-byte response was rejected", len(body))
 	})
 }

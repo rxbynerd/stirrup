@@ -69,16 +69,17 @@ type toolUseScenario struct {
 // summary counts in the trace). It fails the test on any setup error.
 func runToolUseScenario(t *testing.T, sc toolUseScenario) (string, *types.RunTrace, *recordingTransport) {
 	t.Helper()
+	must := require.New(t)
 
 	workspace := t.TempDir()
 	for rel, content := range sc.workspaceFiles {
 		abs := filepath.Join(workspace, rel)
-		require.NoError(t, os.MkdirAll(filepath.Dir(abs), 0o755), "seed dir for %q", rel)
-		require.NoError(t, os.WriteFile(abs, []byte(content), 0o644), "seed file %q", rel)
+		must.NoError(os.MkdirAll(filepath.Dir(abs), 0o755), "seed dir for %q", rel)
+		must.NoError(os.WriteFile(abs, []byte(content), 0o644), "seed file %q", rel)
 	}
 
 	exec, err := executor.NewLocalExecutor(workspace)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	var es edit.EditStrategy
 	switch sc.editStrategy {
@@ -130,8 +131,8 @@ func runToolUseScenario(t *testing.T, sc toolUseScenario) (string, *types.RunTra
 	}
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	require.NotNil(t, runTrace)
+	must.NoError(err)
+	must.NotNil(runTrace)
 	return workspace, runTrace, rec
 }
 
@@ -140,6 +141,7 @@ func runToolUseScenario(t *testing.T, sc toolUseScenario) (string, *types.RunTra
 // recorded — every dispatched tool call produces exactly one tool_result.
 func toolResultContent(t *testing.T, rec *recordingTransport, toolUseID string) string {
 	t.Helper()
+	must := require.New(t)
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
 	for _, ev := range rec.events {
@@ -147,7 +149,7 @@ func toolResultContent(t *testing.T, rec *recordingTransport, toolUseID string) 
 			return ev.Content
 		}
 	}
-	require.Fail(t, "no tool_result event recorded", "tool-use ID %q", toolUseID)
+	must.Fail("no tool_result event recorded", "tool-use ID %q", toolUseID)
 	return ""
 }
 
@@ -169,6 +171,7 @@ func toolCallNames(tr *types.RunTrace) []string {
 // assertSequence checks each want name appears in the given relative order.
 func assertSequence(t *testing.T, tr *types.RunTrace, want ...string) {
 	t.Helper()
+	must := require.New(t)
 	got := toolCallNames(tr)
 	idx := 0
 	for _, n := range got {
@@ -176,7 +179,7 @@ func assertSequence(t *testing.T, tr *types.RunTrace, want ...string) {
 			idx++
 		}
 	}
-	require.Equal(t, len(want), idx, "tool-call sequence %v should contain %v in order", got, want)
+	must.Equal(len(want), idx, "tool-call sequence %v should contain %v in order", got, want)
 }
 
 func countCalls(tr *types.RunTrace, internalName string) (total, failed int) {
@@ -200,15 +203,17 @@ func countCalls(tr *types.RunTrace, internalName string) (total, failed int) {
 // and how many of those failed.
 func requireToolCallCounts(t *testing.T, tr *types.RunTrace, internalName string, wantTotal, wantFailed int) {
 	t.Helper()
+	must := require.New(t)
 	total, failed := countCalls(tr, internalName)
-	require.Equal(t, wantTotal, total, "%s calls", internalName)
-	require.Equal(t, wantFailed, failed, "%s failed calls", internalName)
+	must.Equal(wantTotal, total, "%s calls", internalName)
+	must.Equal(wantFailed, failed, "%s failed calls", internalName)
 }
 
 func readWorkspaceFile(t *testing.T, workspace, rel string) string {
 	t.Helper()
+	must := require.New(t)
 	data, err := os.ReadFile(filepath.Join(workspace, rel))
-	require.NoError(t, err, "read %q", rel)
+	must.NoError(err, "read %q", rel)
 	return string(data)
 }
 
@@ -232,6 +237,7 @@ func finalText(text string) types.TurnRecord {
 // model searches for a symbol, reads the matching file, edits it, then gives
 // a final answer.
 func TestToolUse_SearchReadEdit_AppliesEdit(t *testing.T) {
+	must := require.New(t)
 	workspace, tr, _ := runToolUseScenario(t, toolUseScenario{
 		editStrategy: "multi",
 		workspaceFiles: map[string]string{
@@ -246,13 +252,14 @@ func TestToolUse_SearchReadEdit_AppliesEdit(t *testing.T) {
 	})
 
 	assertSequence(t, tr, "grep_files", "read_file", "edit_file")
-	require.Contains(t, readWorkspaceFile(t, workspace, "calc.go"), "return n * 2", "edit not applied to calc.go")
+	must.Contains(readWorkspaceFile(t, workspace, "calc.go"), "return n * 2", "edit not applied to calc.go")
 	requireToolCallCounts(t, tr, "edit_file", 1, 0)
 }
 
 // TestToolUse_ReadBeforeEdit asserts the trace records read_file before
 // edit_file.
 func TestToolUse_ReadBeforeEdit(t *testing.T) {
+	must := require.New(t)
 	workspace, tr, _ := runToolUseScenario(t, toolUseScenario{
 		editStrategy: "multi",
 		workspaceFiles: map[string]string{
@@ -266,7 +273,7 @@ func TestToolUse_ReadBeforeEdit(t *testing.T) {
 	})
 
 	assertSequence(t, tr, "read_file", "edit_file")
-	require.Equal(t, "hello new world\n", readWorkspaceFile(t, workspace, "greeting.txt"))
+	must.Equal("hello new world\n", readWorkspaceFile(t, workspace, "greeting.txt"))
 }
 
 // TestToolUse_ReadFile_ReturnsRequestedLineWindow exercises read_file with
@@ -295,12 +302,14 @@ func TestToolUse_ReadFile_ReturnsRequestedLineWindow(t *testing.T) {
 	out := toolResultContent(t, rec, "c1")
 	for _, want := range []string{"line-05", "line-06", "line-07"} {
 		t.Run("includes "+want, func(t *testing.T) {
-			require.Contains(t, out, want)
+			must := require.New(t)
+			must.Contains(out, want)
 		})
 	}
 	for _, unwanted := range []string{"line-04", "line-08"} {
 		t.Run("excludes "+unwanted, func(t *testing.T) {
-			require.NotContains(t, out, unwanted)
+			must := require.New(t)
+			must.NotContains(out, unwanted)
 		})
 	}
 }
@@ -313,6 +322,7 @@ func TestToolUse_ReadFile_ReturnsRequestedLineWindow(t *testing.T) {
 // TestGrepFilesTool_StructuredTruncated), so this test asserts the behavioural
 // cap rather than the flag.
 func TestToolUse_GrepFiles_CapsMatchesAtMaxResults(t *testing.T) {
+	must := require.New(t)
 	files := map[string]string{}
 	for i := 0; i < 10; i++ {
 		files[fmt.Sprintf("f%d.txt", i)] = "needle here\nneedle again\n"
@@ -336,13 +346,14 @@ func TestToolUse_GrepFiles_CapsMatchesAtMaxResults(t *testing.T) {
 			matchLines++
 		}
 	}
-	require.Equal(t, 2, matchLines, "match lines in grep_files output (max_results bound):\n%s", out)
+	must.Equal(2, matchLines, "match lines in grep_files output (max_results bound):\n%s", out)
 }
 
 // TestToolUse_EditFile_RecoversFromInvalidArgs drives an edit_file with a
 // missing required field, then a corrected call. Asserts the first call
 // failed, the second succeeded, and the file ended in the corrected state.
 func TestToolUse_EditFile_RecoversFromInvalidArgs(t *testing.T) {
+	must := require.New(t)
 	workspace, tr, _ := runToolUseScenario(t, toolUseScenario{
 		editStrategy: "multi",
 		workspaceFiles: map[string]string{
@@ -359,7 +370,7 @@ func TestToolUse_EditFile_RecoversFromInvalidArgs(t *testing.T) {
 	})
 
 	requireToolCallCounts(t, tr, "edit_file", 2, 1)
-	require.Contains(t, readWorkspaceFile(t, workspace, "config.txt"), "mode=on")
+	must.Contains(readWorkspaceFile(t, workspace, "config.txt"), "mode=on")
 }
 
 // TestToolUse_EditFile_RecoversFromAmbiguousMatch covers the ambiguous-edit
@@ -371,6 +382,7 @@ func TestToolUse_EditFile_RecoversFromInvalidArgs(t *testing.T) {
 // Asserts two attempts (first fails), final file in the corrected state, and
 // that the failure message named the multi-location ambiguity.
 func TestToolUse_EditFile_RecoversFromAmbiguousMatch(t *testing.T) {
+	must := require.New(t)
 	workspace, tr, rec := runToolUseScenario(t, toolUseScenario{
 		editStrategy: "multi",
 		workspaceFiles: map[string]string{
@@ -390,9 +402,9 @@ func TestToolUse_EditFile_RecoversFromAmbiguousMatch(t *testing.T) {
 	requireToolCallCounts(t, tr, "edit_file", 2, 1)
 	// The first attempt's error must name the multi-location ambiguity so the
 	// model has a signal to recover from.
-	require.Contains(t, toolResultContent(t, rec, "c1"), "match", "first edit_file error should name the ambiguity")
+	must.Contains(toolResultContent(t, rec, "c1"), "match", "first edit_file error should name the ambiguity")
 	// Final state: section [b]'s value changed, section [a]'s did not.
-	require.Equal(t, "[a]\nvalue = 1\n[b]\nvalue = 2\n", readWorkspaceFile(t, workspace, "settings.ini"))
+	must.Equal("[a]\nvalue = 1\n[b]\nvalue = 2\n", readWorkspaceFile(t, workspace, "settings.ini"))
 }
 
 // TestToolUse_RetiredToolName_RecoversWithHint calls the retired search_files
@@ -400,6 +412,7 @@ func TestToolUse_EditFile_RecoversFromAmbiguousMatch(t *testing.T) {
 // Asserts the failed call's error names the replacements and that the
 // recovery call succeeded.
 func TestToolUse_RetiredToolName_RecoversWithHint(t *testing.T) {
+	must := require.New(t)
 	_, tr, _ := runToolUseScenario(t, toolUseScenario{
 		workspaceFiles: map[string]string{
 			"src.go": "package src\n// TODO: implement\n",
@@ -421,8 +434,8 @@ func TestToolUse_RetiredToolName_RecoversWithHint(t *testing.T) {
 			hint = c.ErrorReason
 		}
 	}
-	require.Contains(t, hint, "grep_files", "renamed-tool hint should name grep_files")
-	require.Contains(t, hint, "find_files", "renamed-tool hint should name find_files")
+	must.Contains(hint, "grep_files", "renamed-tool hint should name grep_files")
+	must.Contains(hint, "find_files", "renamed-tool hint should name find_files")
 }
 
 // TestToolUse_MultiToolTurn_DispatchesInOrder drives a single assistant turn
@@ -457,6 +470,7 @@ func TestToolUse_MultiToolTurn_DispatchesInOrder(t *testing.T) {
 // retry; the retried turn calls read_file and the run then completes with
 // outcome "success", not max_turns or a crash.
 func TestToolUse_NoToolAnswer_EscalatesToToolCall(t *testing.T) {
+	must := require.New(t)
 	_, tr, _ := runToolUseScenario(t, toolUseScenario{
 		escalationRetries: 1,
 		mode:              "execution",
@@ -474,15 +488,16 @@ func TestToolUse_NoToolAnswer_EscalatesToToolCall(t *testing.T) {
 	})
 
 	total, failed := countCalls(tr, "read_file")
-	require.Equal(t, 1, total, "read_file calls after escalation; tool names %v", toolCallNames(tr))
-	require.Zero(t, failed, "failed read_file calls after escalation")
-	require.Equal(t, "success", tr.Outcome, "run should complete after escalation recovery")
+	must.Equal(1, total, "read_file calls after escalation; tool names %v", toolCallNames(tr))
+	must.Zero(failed, "failed read_file calls after escalation")
+	must.Equal("success", tr.Outcome, "run should complete after escalation recovery")
 }
 
 // TestToolUse_NoToolAnswer_AcceptedWhenEscalationOff is the control: with the
 // escalation policy disabled (the OFF-by-default posture) a no-tool answer is
 // accepted unchanged and no tool is called.
 func TestToolUse_NoToolAnswer_AcceptedWhenEscalationOff(t *testing.T) {
+	must := require.New(t)
 	_, tr, _ := runToolUseScenario(t, toolUseScenario{
 		mode: "execution",
 		workspaceFiles: map[string]string{
@@ -493,7 +508,7 @@ func TestToolUse_NoToolAnswer_AcceptedWhenEscalationOff(t *testing.T) {
 		},
 	})
 
-	require.Empty(t, tr.ToolCalls, "no tool calls expected with escalation off; tool names %v", toolCallNames(tr))
+	must.Empty(tr.ToolCalls, "no tool calls expected with escalation off; tool names %v", toolCallNames(tr))
 }
 
 // TestToolUse_MCPName_NormalizedToInternalName registers a tool under an
@@ -503,6 +518,7 @@ func TestToolUse_NoToolAnswer_AcceptedWhenEscalationOff(t *testing.T) {
 // must reverse it to the internal name so dispatch resolves and the tool runs.
 // Asserts the trace records the internal MCP name and success.
 func TestToolUse_MCPName_NormalizedToInternalName(t *testing.T) {
+	must := require.New(t)
 	const internalName = "mcp__docs__fetch-page"
 
 	ran := false
@@ -531,7 +547,7 @@ func TestToolUse_MCPName_NormalizedToInternalName(t *testing.T) {
 		},
 	})
 
-	require.True(t, ran, "MCP tool handler did not run; reverse name mapping failed")
+	must.True(ran, "MCP tool handler did not run; reverse name mapping failed")
 	requireToolCallCounts(t, tr, internalName, 1, 0)
 }
 
@@ -546,11 +562,12 @@ func TestToolUse_MCPName_NormalizedToInternalName(t *testing.T) {
 // bypasses wire parsing, whereas this task proves the streamed-delta parser
 // itself produces a dispatchable tool call.
 func TestToolUse_StreamingToolCall_ReassemblesSplitArgs(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 
 	workspace := t.TempDir()
 	target := filepath.Join(workspace, "target.txt")
-	require.NoError(t, os.WriteFile(target, []byte("hello old world\n"), 0o644), "seed target")
+	must.NoError(os.WriteFile(target, []byte("hello old world\n"), 0o644), "seed target")
 
 	// Turn 1 streams a tool_calls delta with the function name in the first
 	// chunk and the arguments split across two subsequent chunks, so the
@@ -589,7 +606,7 @@ func TestToolUse_StreamingToolCall_ReassemblesSplitArgs(t *testing.T) {
 	}
 
 	loop, err := BuildLoopWithTransport(context.Background(), config, transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}))
-	require.NoError(t, err)
+	must.NoError(err)
 	// Order matters: defers run LIFO, so server.Close() is registered first
 	// and loop.Close() second, ensuring the loop tears down its provider
 	// transport before the httptest server stops listening. Closing the
@@ -599,18 +616,18 @@ func TestToolUse_StreamingToolCall_ReassemblesSplitArgs(t *testing.T) {
 	defer func() { _ = loop.Close() }()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	require.Equal(t, "success", runTrace.Outcome)
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
 
 	got, err := os.ReadFile(target)
-	require.NoError(t, err, "read target")
-	require.Equal(t, "hello new world\n", string(got))
+	must.NoError(err, "read target")
+	must.Equal("hello new world\n", string(got))
 	requireToolCallCounts(t, runTrace, "search_replace", 1, 0)
 	// Assert the tool reached the wire: the first request must advertise
 	// search_replace in its tools payload. Without this, a regression that
 	// dropped the tool from the request body could still pass on the
 	// streamed-response parse alone (the canned response names the tool
 	// regardless of what was sent).
-	require.NotEmpty(t, requestBodies, "no provider requests captured")
-	require.Contains(t, requestBodies[0], "search_replace", "first request should advertise the search_replace tool")
+	must.NotEmpty(requestBodies, "no provider requests captured")
+	must.Contains(requestBodies[0], "search_replace", "first request should advertise the search_replace tool")
 }

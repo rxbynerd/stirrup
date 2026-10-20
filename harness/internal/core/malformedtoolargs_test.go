@@ -22,14 +22,16 @@ import (
 // call succeeds, and the replayed history and the trace never carry the
 // raw arguments unscrubbed.
 func TestLoop_MalformedToolArgumentsRecoverEndToEnd(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 
 	workspace, err := filepath.EvalSymlinks(t.TempDir())
-	require.NoError(t, err, "eval symlinks")
-	require.NoError(t, os.WriteFile(filepath.Join(workspace, "main.go"), []byte("package main\n"), 0o600), "write main.go")
+	must.NoError(err, "eval symlinks")
+	must.NoError(os.WriteFile(filepath.Join(workspace, "main.go"), []byte("package main\n"), 0o600), "write main.go")
 
 	badArgs, err := json.Marshal(`{"path": "main.go", "token": "` + invalidArgsSecret + `",}`)
-	require.NoError(t, err, "marshal arguments")
+	must.NoError(err, "marshal arguments")
 	var requestBodies []string
 	server := newOpenAIServer(t, nil, []string{
 		openAIChunk(`{"id":"t1","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_bad","type":"function","function":{"name":"read_file","arguments":`+string(badArgs)+`}}]},"finish_reason":null}]}`) +
@@ -68,22 +70,22 @@ func TestLoop_MalformedToolArgumentsRecoverEndToEnd(t *testing.T) {
 
 	events := &recordingTransport{}
 	loop, err := BuildLoopWithTransport(context.Background(), config, events)
-	require.NoError(t, err, "BuildLoopWithTransport")
+	must.NoError(err, "BuildLoopWithTransport")
 	defer func() { _ = loop.Close() }()
 	var traceBuf bytes.Buffer
 	loop.Trace = trace.NewJSONLTraceEmitter(&traceBuf, false)
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err, "loop.Run")
-	require.Equal(t, "success", runTrace.Outcome)
+	must.NoError(err, "loop.Run")
+	must.Equal("success", runTrace.Outcome)
 
-	require.Len(t, runTrace.ToolCalls, 2, "tool calls in the trace: %+v", runTrace.ToolCalls)
+	must.Len(runTrace.ToolCalls, 2, "tool calls in the trace: %+v", runTrace.ToolCalls)
 	bad, good := runTrace.ToolCalls[0], runTrace.ToolCalls[1]
-	assert.False(t, bad.Success, "first call = %+v", bad)
-	assert.Equal(t, string(observability.ToolFailureInvalidArguments), bad.ErrorCategory, "first call = %+v", bad)
-	assert.Contains(t, bad.ErrorReason, "raw arguments")
-	assert.Contains(t, bad.ErrorReason, `"path": "main.go"`)
-	assert.True(t, good.Success, "second call = %+v", good)
+	check.False(bad.Success, "first call = %+v", bad)
+	check.Equal(string(observability.ToolFailureInvalidArguments), bad.ErrorCategory, "first call = %+v", bad)
+	check.Contains(bad.ErrorReason, "raw arguments")
+	check.Contains(bad.ErrorReason, `"path": "main.go"`)
+	check.True(good.Success, "second call = %+v", good)
 
 	var badResult string
 	for _, e := range events.events {
@@ -91,10 +93,10 @@ func TestLoop_MalformedToolArgumentsRecoverEndToEnd(t *testing.T) {
 			badResult = e.Content
 		}
 	}
-	assert.Contains(t, badResult, "were not valid JSON")
-	assert.Contains(t, badResult, "at byte offset")
+	check.Contains(badResult, "were not valid JSON")
+	check.Contains(badResult, "at byte offset")
 
-	require.Len(t, requestBodies, 3, "provider requests")
+	must.Len(requestBodies, 3, "provider requests")
 	var replay struct {
 		Messages []struct {
 			Role       string `json:"role"`
@@ -108,22 +110,22 @@ func TestLoop_MalformedToolArgumentsRecoverEndToEnd(t *testing.T) {
 			} `json:"tool_calls"`
 		} `json:"messages"`
 	}
-	require.NoError(t, json.Unmarshal([]byte(requestBodies[1]), &replay), "decode second request")
+	must.NoError(json.Unmarshal([]byte(requestBodies[1]), &replay), "decode second request")
 	paired := false
 	for i, m := range replay.Messages {
 		if m.Role != "assistant" || len(m.ToolCalls) != 1 || m.ToolCalls[0].ID != "call_bad" {
 			continue
 		}
-		assert.Equal(t, "{}", m.ToolCalls[0].Function.Arguments, "replayed arguments of call_bad")
+		check.Equal("{}", m.ToolCalls[0].Function.Arguments, "replayed arguments of call_bad")
 		if i+1 < len(replay.Messages) && replay.Messages[i+1].Role == "tool" && replay.Messages[i+1].ToolCallID == "call_bad" {
 			paired = true
 		}
 	}
-	assert.True(t, paired, "second request does not replay call_bad followed by its tool result:\n%s", requestBodies[1])
+	check.True(paired, "second request does not replay call_bad followed by its tool result:\n%s", requestBodies[1])
 
 	for i, body := range requestBodies {
-		assert.NotContains(t, body, invalidArgsSecret, "request %d carries the raw secret", i)
+		check.NotContains(body, invalidArgsSecret, "request %d carries the raw secret", i)
 	}
-	assert.NotContains(t, traceBuf.String(), invalidArgsSecret, "JSONL trace carries the raw secret")
-	assert.Contains(t, traceBuf.String(), "invalid_arguments", "JSONL trace records the invalid_arguments category")
+	check.NotContains(traceBuf.String(), invalidArgsSecret, "JSONL trace carries the raw secret")
+	check.Contains(traceBuf.String(), "invalid_arguments", "JSONL trace records the invalid_arguments category")
 }

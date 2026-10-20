@@ -12,50 +12,60 @@ import (
 // text-only ToolResult serialises byte-for-byte as before the field
 // existed.
 func TestToolResult_TextOnlyWireBytesUnchanged(t *testing.T) {
+	must := require.New(t)
 	r := ToolResult{ToolUseID: "tu_1", Content: "hello", IsError: false}
 	got, err := json.Marshal(r)
-	require.NoError(t, err, "marshal")
+	must.NoError(err, "marshal")
 
-	require.Equal(t, `{"tool_use_id":"tu_1","content":"hello"}`, string(got), "text-only ToolResult JSON changed") //nolint:testifylint // byte-exact wire form is the behaviour under test
+	must.Equal(`{"tool_use_id":"tu_1","content":"hello"}`, string(got), "text-only ToolResult JSON changed") //nolint:testifylint // byte-exact wire form is the behaviour under test
 	t.Run("structured omitted when nil", func(t *testing.T) {
-		require.NotContains(t, string(got), "structured")
+		must := require.New(t)
+		must.NotContains(string(got), "structured")
 	})
 	t.Run("kind omitted when empty", func(t *testing.T) {
-		require.NotContains(t, string(got), "kind")
+		must := require.New(t)
+		must.NotContains(string(got), "kind")
 	})
 }
 
 func TestToolResult_StructuredRoundTrip(t *testing.T) {
+	must := require.New(t)
 	payload := json.RawMessage(`{"exit_code":0,"stdout":"ok"}`)
 	r := ToolResult{ToolUseID: "tu_2", Content: "ok", Structured: payload, Kind: "command_result"}
 	raw, err := json.Marshal(r)
-	require.NoError(t, err, "marshal")
+	must.NoError(err, "marshal")
 	var back ToolResult
-	require.NoError(t, json.Unmarshal(raw, &back), "unmarshal")
+	must.NoError(json.Unmarshal(raw, &back), "unmarshal")
 
 	t.Run("text fallback kept", func(t *testing.T) {
-		require.Equal(t, "ok", back.Content)
+		must := require.New(t)
+		must.Equal("ok", back.Content)
 	})
 	t.Run("structured payload preserved", func(t *testing.T) {
-		require.Equal(t, string(payload), string(back.Structured))
+		must := require.New(t)
+		must.Equal(string(payload), string(back.Structured))
 	})
 	t.Run("kind preserved", func(t *testing.T) {
-		require.Equal(t, "command_result", back.Kind)
+		must := require.New(t)
+		must.Equal("command_result", back.Kind)
 	})
 }
 
 // TestToolCallRecord_StructuredAndKindOmittedWhenUnset mirrors the invariant for the trace
 // record so an existing text-only trace line is unchanged.
 func TestToolCallRecord_StructuredAndKindOmittedWhenUnset(t *testing.T) {
+	must := require.New(t)
 	rec := ToolCallRecord{ID: "id", Name: "read_file", Input: json.RawMessage(`{}`), Output: "x", Success: true}
 	got, err := json.Marshal(rec)
-	require.NoError(t, err, "marshal")
+	must.NoError(err, "marshal")
 
 	t.Run("structured omitted when nil", func(t *testing.T) {
-		require.NotContains(t, string(got), "structured")
+		must := require.New(t)
+		must.NotContains(string(got), "structured")
 	})
 	t.Run("kind omitted when empty", func(t *testing.T) {
-		require.NotContains(t, string(got), "kind")
+		must := require.New(t)
+		must.NotContains(string(got), "kind")
 	})
 }
 
@@ -65,24 +75,28 @@ func TestToolCallRecord_StructuredAndKindOmittedWhenUnset(t *testing.T) {
 // shape. The positive case confirms the key appears when set.
 func TestToolCall_InternalNameOmittedOnWire(t *testing.T) {
 	t.Run("summary omits empty internal name", func(t *testing.T) {
+		must := require.New(t)
 		b, err := json.Marshal(ToolCallSummary{Name: "grep_files", Success: true})
-		require.NoError(t, err, "marshal")
-		require.NotContains(t, string(b), "internalName")
+		must.NoError(err, "marshal")
+		must.NotContains(string(b), "internalName")
 	})
 	t.Run("trace omits empty internal name", func(t *testing.T) {
+		must := require.New(t)
 		b, err := json.Marshal(ToolCallTrace{Name: "grep_files", Success: true})
-		require.NoError(t, err, "marshal")
-		require.NotContains(t, string(b), "internalName")
+		must.NoError(err, "marshal")
+		must.NotContains(string(b), "internalName")
 	})
 	t.Run("record omits empty internal name", func(t *testing.T) {
+		must := require.New(t)
 		b, err := json.Marshal(ToolCallRecord{ID: "id", Name: "grep_files", Input: json.RawMessage(`{}`), Output: "x", Success: true})
-		require.NoError(t, err, "marshal")
-		require.NotContains(t, string(b), "internalName")
+		must.NoError(err, "marshal")
+		must.NotContains(string(b), "internalName")
 	})
 	t.Run("emits set internal name", func(t *testing.T) {
+		must := require.New(t)
 		b, err := json.Marshal(ToolCallTrace{Name: "grep", InternalName: "grep_files", Success: true})
-		require.NoError(t, err, "marshal")
-		require.Contains(t, string(b), `"internalName":"grep_files"`)
+		must.NoError(err, "marshal")
+		must.Contains(string(b), `"internalName":"grep_files"`)
 	})
 }
 
@@ -93,10 +107,11 @@ func TestToolCall_InternalNameOmittedOnWire(t *testing.T) {
 // it (json:"-") so the Anthropic verbatim path never leaks unknown
 // keys onto the wire.
 func TestToolDefinition_PresentationAbsentFromDefaultJSON(t *testing.T) {
+	must := require.New(t)
 	schema := json.RawMessage(`{"type":"object"}`)
 	bare := ToolDefinition{Name: "demo", Description: "d", InputSchema: schema}
 	bareBytes, err := json.Marshal(bare)
-	require.NoError(t, err, "marshal bare")
+	must.NoError(err, "marshal bare")
 
 	withPres := ToolDefinition{
 		Name:        "demo",
@@ -108,14 +123,16 @@ func TestToolDefinition_PresentationAbsentFromDefaultJSON(t *testing.T) {
 		},
 	}
 	withBytes, err := json.Marshal(withPres)
-	require.NoError(t, err, "marshal with presentation")
+	must.NoError(err, "marshal with presentation")
 
 	t.Run("presentation does not change encoding", func(t *testing.T) {
-		require.Equal(t, string(bareBytes), string(withBytes), "Presentation leaked onto the wire")
+		must := require.New(t)
+		must.Equal(string(bareBytes), string(withBytes), "Presentation leaked onto the wire")
 	})
 	t.Run("presentation keys absent", func(t *testing.T) {
+		must := require.New(t)
 		for _, key := range []string{"Presentation", "inputExamples", "annotations"} {
-			require.NotContains(t, string(withBytes), key, "Presentation field %q must not appear on the default encoding", key)
+			must.NotContains(string(withBytes), key, "Presentation field %q must not appear on the default encoding", key)
 		}
 	})
 }
@@ -125,6 +142,7 @@ func TestToolDefinition_PresentationAbsentFromDefaultJSON(t *testing.T) {
 // adapter that opts to project them), including the *bool unset-vs-false
 // distinction on the annotation hints.
 func TestToolPresentation_RoundTrip(t *testing.T) {
+	must := require.New(t)
 	readOnly := true
 	pres := ToolPresentation{
 		InputExamples: []json.RawMessage{json.RawMessage(`{"x":"y"}`)},
@@ -135,20 +153,23 @@ func TestToolPresentation_RoundTrip(t *testing.T) {
 		},
 	}
 	b, err := json.Marshal(pres)
-	require.NoError(t, err, "marshal")
+	must.NoError(err, "marshal")
 	var got ToolPresentation
-	require.NoError(t, json.Unmarshal(b, &got), "unmarshal")
-	require.NotNil(t, got.Annotations, "annotations did not round-trip")
+	must.NoError(json.Unmarshal(b, &got), "unmarshal")
+	must.NotNil(got.Annotations, "annotations did not round-trip")
 
 	t.Run("read-only hint round-trips", func(t *testing.T) {
-		require.NotNil(t, got.Annotations.ReadOnlyHint)
-		require.True(t, *got.Annotations.ReadOnlyHint)
+		must := require.New(t)
+		must.NotNil(got.Annotations.ReadOnlyHint)
+		must.True(*got.Annotations.ReadOnlyHint)
 	})
 	t.Run("unset destructive hint stays nil", func(t *testing.T) {
-		require.Nil(t, got.Annotations.DestructiveHint)
+		must := require.New(t)
+		must.Nil(got.Annotations.DestructiveHint)
 	})
 	t.Run("input examples round-trip", func(t *testing.T) {
-		require.Len(t, got.InputExamples, 1)
-		require.JSONEq(t, `{"x":"y"}`, string(got.InputExamples[0]))
+		must := require.New(t)
+		must.Len(got.InputExamples, 1)
+		must.JSONEq(`{"x":"y"}`, string(got.InputExamples[0]))
 	})
 }

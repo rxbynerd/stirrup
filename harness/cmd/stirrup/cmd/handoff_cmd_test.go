@@ -45,6 +45,7 @@ func installSlowExporter(t *testing.T, exp *slowExporter) {
 // which carries the stdio transport's JSON event stream.
 func stdioDoneEvent(t *testing.T, stdout string) types.HarnessEvent {
 	t.Helper()
+	must := require.New(t)
 	var dones []types.HarnessEvent
 	for _, line := range strings.Split(stdout, "\n") {
 		if !strings.HasPrefix(line, "{") {
@@ -55,15 +56,16 @@ func stdioDoneEvent(t *testing.T, stdout string) types.HarnessEvent {
 			dones = append(dones, ev)
 		}
 	}
-	require.Len(t, dones, 1, "stdout:\n%s", stdout)
+	must.Len(dones, 1, "stdout:\n%s", stdout)
 	return dones[0]
 }
 
 // runFinishedTrace reads the run summary from a JSONL trace file.
 func runFinishedTrace(t *testing.T, path string) types.RunTrace {
 	t.Helper()
+	must := require.New(t)
 	f, err := os.Open(path)
-	require.NoError(t, err)
+	must.NoError(err)
 	defer func() { _ = f.Close() }()
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 1<<20), 1<<24)
@@ -76,7 +78,7 @@ func runFinishedTrace(t *testing.T, path string) types.RunTrace {
 			return *ev.Trace
 		}
 	}
-	require.FailNowf(t, "no run_finished event", "in %s", path)
+	must.FailNowf("no run_finished event", "in %s", path)
 	return types.RunTrace{}
 }
 
@@ -91,6 +93,8 @@ func exportRunConfig(t *testing.T, baseURL string, required *bool) (*types.RunCo
 }
 
 func TestRunWithConfig_RequiredExportFailureReportsHandoffFailed(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	installSlowExporter(t, &slowExporter{err: errors.New("bucket denied")})
 	srv := openAICompatibleSuccessServer(t)
 	defer srv.Close()
@@ -100,29 +104,31 @@ func TestRunWithConfig_RequiredExportFailureReportsHandoffFailed(t *testing.T) {
 	runErr := runWithConfig(config, runOptions{outputMode: "json"})
 	stdout := stdoutDone()
 
-	require.Error(t, runErr)
-	assert.Equal(t, 1, classifyExitCode(runErr))
+	must.Error(runErr)
+	check.Equal(1, classifyExitCode(runErr))
 
 	done := stdioDoneEvent(t, stdout)
-	assert.Equal(t, "handoff_failed", done.StopReason)
-	require.NotNil(t, done.Trace)
-	assert.Equal(t, "handoff_failed", done.Trace.Outcome)
+	check.Equal("handoff_failed", done.StopReason)
+	must.NotNil(done.Trace)
+	check.Equal("handoff_failed", done.Trace.Outcome)
 
 	result := decodeStirrupResult(t, stdout)
-	assert.Equal(t, "handoff_failed", result.Outcome)
-	assert.Contains(t, result.Error, "bucket denied")
+	check.Equal("handoff_failed", result.Outcome)
+	check.Contains(result.Error, "bucket denied")
 
 	r := result.WorkspaceExport
-	require.NotNil(t, r)
-	assert.Equal(t, types.ExportStatusFailed, r.Status)
-	assert.True(t, r.Required)
+	must.NotNil(r)
+	check.Equal(types.ExportStatusFailed, r.Status)
+	check.True(r.Required)
 
 	rt := runFinishedTrace(t, tracePath)
-	assert.Equal(t, "handoff_failed", rt.Outcome)
-	assert.NotNil(t, rt.WorkspaceExport)
+	check.Equal("handoff_failed", rt.Outcome)
+	check.NotNil(rt.WorkspaceExport)
 }
 
 func TestRunWithConfig_OptionalExportFailureKeepsSuccess(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	installSlowExporter(t, &slowExporter{err: errors.New("bucket denied")})
 	srv := openAICompatibleSuccessServer(t)
 	defer srv.Close()
@@ -133,21 +139,23 @@ func TestRunWithConfig_OptionalExportFailureKeepsSuccess(t *testing.T) {
 	runErr := runWithConfig(config, runOptions{outputMode: "json"})
 	stdout := stdoutDone()
 
-	require.NoError(t, runErr)
+	must.NoError(runErr)
 
 	result := decodeStirrupResult(t, stdout)
-	assert.Equal(t, "success", result.Outcome)
+	check.Equal("success", result.Outcome)
 
 	r := result.WorkspaceExport
-	require.NotNil(t, r)
-	assert.Equal(t, types.ExportStatusFailed, r.Status)
-	assert.False(t, r.Required)
-	assert.Contains(t, r.Error, "bucket denied")
+	must.NotNil(r)
+	check.Equal(types.ExportStatusFailed, r.Status)
+	check.False(r.Required)
+	check.Contains(r.Error, "bucket denied")
 
-	assert.Empty(t, result.Error)
+	check.Empty(result.Error)
 }
 
 func TestRunWithConfig_FailedRunStillExports(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	exp := &slowExporter{}
 	installSlowExporter(t, exp)
 	srv := openAICompatibleErrorServer(t)
@@ -158,15 +166,15 @@ func TestRunWithConfig_FailedRunStillExports(t *testing.T) {
 	_ = runWithConfig(config, runOptions{outputMode: "json"})
 	stdout := stdoutDone()
 
-	require.Equal(t, int32(1), exp.completed.Load(), "exports for a failed run")
+	must.Equal(int32(1), exp.completed.Load(), "exports for a failed run")
 
 	result := decodeStirrupResult(t, stdout)
-	assert.Equal(t, "error", result.Outcome)
-	assert.NotEmpty(t, result.Error)
+	check.Equal("error", result.Outcome)
+	check.NotEmpty(result.Error)
 
 	r := result.WorkspaceExport
-	require.NotNil(t, r)
-	assert.Equal(t, types.ExportStatusUploaded, r.Status)
+	must.NotNil(r)
+	check.Equal(types.ExportStatusUploaded, r.Status)
 }
 
 func handoffJobTask(t *testing.T, providerURL string) *pb.RunConfig {
@@ -180,6 +188,7 @@ func handoffJobTask(t *testing.T, providerURL string) *pb.RunConfig {
 
 func runHandoffJob(t *testing.T, task *pb.RunConfig, exp *slowExporter) (done *pb.HarnessEvent, uploadedBeforeDone int32, runErr error) {
 	t.Helper()
+	must := require.New(t)
 	useTempMarkerPaths(t)
 	installSlowExporter(t, exp)
 	srv := newScriptedControlPlane(task, func(int) *pb.ControlEvent { return nil })
@@ -199,7 +208,7 @@ func runHandoffJob(t *testing.T, task *pb.RunConfig, exp *slowExporter) (done *p
 	select {
 	case runErr = <-errCh:
 	case <-time.After(15 * time.Second):
-		require.FailNow(t, "runJob did not return")
+		must.FailNow("runJob did not return")
 	}
 	for _, ev := range srv.events() {
 		if ev.Type == "done" {
@@ -210,50 +219,56 @@ func runHandoffJob(t *testing.T, task *pb.RunConfig, exp *slowExporter) (done *p
 }
 
 func TestRunJob_ExportCompletesBeforeDone(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	provider, _ := startOpenAIStub(t)
 	sink := &stubResultSink{}
 	installStubResultSink(t, sink)
 	exp := &slowExporter{}
 
 	done, uploaded, runErr := runHandoffJob(t, handoffJobTask(t, provider.URL), exp)
-	require.NoError(t, runErr)
-	assert.Equal(t, int32(1), uploaded, "uploads completed when done arrived")
+	must.NoError(runErr)
+	check.Equal(int32(1), uploaded, "uploads completed when done arrived")
 
-	assert.Equal(t, "success", done.GetStopReason())
-	assert.Equal(t, "success", done.GetTrace().GetOutcome())
+	check.Equal("success", done.GetStopReason())
+	check.Equal("success", done.GetTrace().GetOutcome())
 
 	r := done.GetTrace().GetWorkspaceExport()
-	assert.Equal(t, "uploaded", r.GetStatus())
-	assert.True(t, r.GetRequired())
-	assert.Equal(t, "gs://bucket/runs/job-followup-primary/workspace.tar.gz", r.GetUri())
+	check.Equal("uploaded", r.GetStatus())
+	check.True(r.GetRequired())
+	check.Equal("gs://bucket/runs/job-followup-primary/workspace.tar.gz", r.GetUri())
 
-	require.Len(t, sink.calls, 1)
-	require.NotNil(t, sink.calls[0].WorkspaceExport)
-	assert.Equal(t, types.ExportStatusUploaded, sink.calls[0].WorkspaceExport.Status)
+	must.Len(sink.calls, 1)
+	must.NotNil(sink.calls[0].WorkspaceExport)
+	check.Equal(types.ExportStatusUploaded, sink.calls[0].WorkspaceExport.Status)
 }
 
 func TestRunJob_RequiredExportFailureReportsHandoffFailed(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	provider, _ := startOpenAIStub(t)
 	sink := &stubResultSink{}
 	installStubResultSink(t, sink)
 	exp := &slowExporter{err: errors.New("bucket denied")}
 
 	done, uploaded, runErr := runHandoffJob(t, handoffJobTask(t, provider.URL), exp)
-	require.Error(t, runErr)
-	assert.Equal(t, 1, classifyExitCode(runErr))
-	assert.Equal(t, int32(1), uploaded, "upload attempts finished when done arrived")
+	must.Error(runErr)
+	check.Equal(1, classifyExitCode(runErr))
+	check.Equal(int32(1), uploaded, "upload attempts finished when done arrived")
 
-	assert.Equal(t, "handoff_failed", done.GetStopReason())
-	assert.Equal(t, "handoff_failed", done.GetTrace().GetOutcome())
-	assert.Contains(t, done.GetTrace().GetError(), "bucket denied")
-	assert.Equal(t, "failed", done.GetTrace().GetWorkspaceExport().GetStatus())
+	check.Equal("handoff_failed", done.GetStopReason())
+	check.Equal("handoff_failed", done.GetTrace().GetOutcome())
+	check.Contains(done.GetTrace().GetError(), "bucket denied")
+	check.Equal("failed", done.GetTrace().GetWorkspaceExport().GetStatus())
 
-	require.Len(t, sink.calls, 1)
-	assert.Equal(t, "handoff_failed", sink.calls[0].Outcome)
-	assert.Contains(t, sink.calls[0].Error, "bucket denied")
+	must.Len(sink.calls, 1)
+	check.Equal("handoff_failed", sink.calls[0].Outcome)
+	check.Contains(sink.calls[0].Error, "bucket denied")
 }
 
 func TestRunJob_WorkspaceExportRequiredFalseFromWire(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	provider, _ := startOpenAIStub(t)
 	sink := &stubResultSink{}
 	installStubResultSink(t, sink)
@@ -262,9 +277,9 @@ func TestRunJob_WorkspaceExportRequiredFalseFromWire(t *testing.T) {
 	task.Executor.WorkspaceExportRequired = &optional
 
 	done, _, runErr := runHandoffJob(t, task, &slowExporter{err: errors.New("bucket denied")})
-	require.NoError(t, runErr)
-	assert.Equal(t, "success", done.GetStopReason())
-	assert.False(t, done.GetTrace().GetWorkspaceExport().GetRequired())
+	must.NoError(runErr)
+	check.Equal("success", done.GetStopReason())
+	check.False(done.GetTrace().GetWorkspaceExport().GetRequired())
 }
 
 // TestApplyOverrides_ExportWorkspaceRequiredTriState pins that an unset
@@ -284,26 +299,29 @@ func TestApplyOverrides_ExportWorkspaceRequiredTriState(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			cmd := newTestHarnessCommand()
-			require.NoError(t, cmd.ParseFlags(tc.args))
+			must.NoError(cmd.ParseFlags(tc.args))
 			cfg := baseFileConfig()
 			cfg.Executor.WorkspaceExportRequired = &fileValue
-			require.NoError(t, applyOverrides(cmd, cfg, nil))
+			must.NoError(applyOverrides(cmd, cfg, nil))
 			got := cfg.Executor.WorkspaceExportRequired
-			require.NotNil(t, got)
-			require.Equal(t, *tc.want, *got)
+			must.NotNil(got)
+			must.Equal(*tc.want, *got)
 		})
 	}
 }
 
 func TestRunConfigCommand_RegistersExportWorkspaceRequired(t *testing.T) {
-	require.NotNil(t, runConfigCmd.Flags().Lookup("export-workspace-required"),
+	must := require.New(t)
+	must.NotNil(runConfigCmd.Flags().Lookup("export-workspace-required"),
 		"run-config should accept --export-workspace-required, which maps to executor.workspaceExportRequired")
 }
 
 func ptrBool(v bool) *bool { return &v }
 
 func TestPrintRunSummary_ErrorAndWorkspaceExportLines(t *testing.T) {
+	check := assert.New(t)
 	rt := outputModeRunTrace()
 	rt.Outcome = "handoff_failed"
 	rt.Error = "workspace export: bucket denied"
@@ -312,12 +330,12 @@ func TestPrintRunSummary_ErrorAndWorkspaceExportLines(t *testing.T) {
 	stderrDone := captureStderr(t)
 	printRunSummary(rt)
 	stderr := stderrDone()
-	assert.Contains(t, stderr, "Error: workspace export: bucket denied\n")
-	assert.Contains(t, stderr, "Workspace export: failed (gs://b/ws.tar.gz)\n")
+	check.Contains(stderr, "Error: workspace export: bucket denied\n")
+	check.Contains(stderr, "Workspace export: failed (gs://b/ws.tar.gz)\n")
 
 	stderrDone = captureStderr(t)
 	printRunSummary(outputModeRunTrace())
 	stderr = stderrDone()
-	assert.NotContains(t, stderr, "Error:")
-	assert.NotContains(t, stderr, "Workspace export:")
+	check.NotContains(stderr, "Error:")
+	check.NotContains(stderr, "Workspace export:")
 }

@@ -57,8 +57,9 @@ func anthropicTools() []types.ToolDefinition {
 // it. The default registry resolves the capability on for every Anthropic
 // model.
 func TestAnthropicStructuredToolResult_EmitsArrayFormWhenCapabilityOn(t *testing.T) {
+	must := require.New(t)
 	q := quirks.DefaultRegistry().Resolve("anthropic", "claude-sonnet-4-5")
-	require.True(t, q.StructuredToolResults.Supported, "precondition: anthropic structured capability resolved off")
+	must.True(q.StructuredToolResults.Supported, "precondition: anthropic structured capability resolved off")
 
 	body := buildAnthropicRequest(types.StreamParams{
 		Model:     "claude-sonnet-4-5",
@@ -76,25 +77,25 @@ func TestAnthropicStructuredToolResult_EmitsArrayFormWhenCapabilityOn(t *testing
 			} `json:"content"`
 		} `json:"messages"`
 	}
-	require.NoError(t, json.Unmarshal(raw, &decoded))
+	must.NoError(json.Unmarshal(raw, &decoded))
 
 	// The third message is the user tool_result turn.
 	trBlock := decoded.Messages[2].Content[0]
-	require.Equal(t, "tool_result", trBlock.Type)
+	must.Equal("tool_result", trBlock.Type)
 
 	var parts []anthropicToolResultPart
-	require.NoError(t, json.Unmarshal(trBlock.Content, &parts),
+	must.NoError(json.Unmarshal(trBlock.Content, &parts),
 		"tool_result content must be an array when the capability is on: %s", trBlock.Content)
-	require.Len(t, parts, 2, "expected text and structured parts, got %+v", parts)
+	must.Len(parts, 2, "expected text and structured parts, got %+v", parts)
 
-	require.Equal(t, "text", parts[0].Type)
-	require.Equal(t, "hi\n(exit 0)", parts[0].Text, "part[0] must be the canonical text fallback")
+	must.Equal("text", parts[0].Type)
+	must.Equal("hi\n(exit 0)", parts[0].Text, "part[0] must be the canonical text fallback")
 
-	require.Equal(t, "text", parts[1].Type)
-	require.True(t, json.Valid([]byte(parts[1].Text)), "part[1].text must be a JSON payload: %q", parts[1].Text)
+	must.Equal("text", parts[1].Type)
+	must.True(json.Valid([]byte(parts[1].Text)), "part[1].text must be a JSON payload: %q", parts[1].Text)
 	var sp map[string]any
-	require.NoError(t, json.Unmarshal([]byte(parts[1].Text), &sp), "structured part must decode")
-	require.InDelta(t, 0, sp["exit_code"], 0)
+	must.NoError(json.Unmarshal([]byte(parts[1].Text), &sp), "structured part must decode")
+	must.InDelta(0, sp["exit_code"], 0)
 }
 
 // TestAnthropicStructuredToolResult_TextOnlyWhenCapabilityOff pins the no-regression
@@ -103,6 +104,7 @@ func TestAnthropicStructuredToolResult_EmitsArrayFormWhenCapabilityOn(t *testing
 // stripped. The structured envelope must not leak onto the wire when the
 // provider has not opted in.
 func TestAnthropicStructuredToolResult_TextOnlyWhenCapabilityOff(t *testing.T) {
+	must := require.New(t)
 	var zero quirks.ProviderQuirks
 
 	withStructured := mustMarshal(t, buildAnthropicRequest(types.StreamParams{
@@ -119,9 +121,9 @@ func TestAnthropicStructuredToolResult_TextOnlyWhenCapabilityOff(t *testing.T) {
 		Messages:  textOnlyToolResultMessages(),
 	}, true, zero))
 
-	require.Equal(t, string(textOnly), string(withStructured),
+	must.Equal(string(textOnly), string(withStructured),
 		"capability-off body must be byte-identical to text-only history")
-	require.NotContains(t, string(withStructured), "exit_code",
+	must.NotContains(string(withStructured), "exit_code",
 		"structured payload leaked onto the wire with capability off")
 }
 
@@ -131,6 +133,7 @@ func TestAnthropicStructuredToolResult_TextOnlyWhenCapabilityOff(t *testing.T) {
 // a nil return (the omitempty shape for an empty-content tool result)
 // regardless of the structured envelope.
 func TestAnthropicToolResultContent_EmptyTextWithStructuredReturnsNil(t *testing.T) {
+	must := require.New(t)
 	cap := quirks.StructuredToolResultCapability{Supported: true, ContentBlockArray: true}
 	block := types.ContentBlock{
 		Type:       "tool_result",
@@ -140,7 +143,7 @@ func TestAnthropicToolResultContent_EmptyTextWithStructuredReturnsNil(t *testing
 		Kind:       "command_result",
 	}
 	got := anthropicToolResultContent(block, cap)
-	require.Nil(t, got, "empty content with structured must return nil, not an empty-string array part: %s", got)
+	must.Nil(got, "empty content with structured must return nil, not an empty-string array part: %s", got)
 }
 
 // TestAnthropicToolResultContent_IdenticalStructuredCollapsesToString pins that a
@@ -149,6 +152,7 @@ func TestAnthropicToolResultContent_EmptyTextWithStructuredReturnsNil(t *testing
 // as the plain string form: the array form would put the same bytes on the
 // wire twice, doubling a large page's token cost.
 func TestAnthropicToolResultContent_IdenticalStructuredCollapsesToString(t *testing.T) {
+	must := require.New(t)
 	cap := quirks.StructuredToolResultCapability{Supported: true, ContentBlockArray: true}
 	payload := `{"reference":"stirrup://command-output/abc/stdout","content":"chunk bytes"}`
 	block := types.ContentBlock{
@@ -160,7 +164,7 @@ func TestAnthropicToolResultContent_IdenticalStructuredCollapsesToString(t *test
 	}
 	got := anthropicToolResultContent(block, cap)
 	want := mustMarshal(t, payload)
-	require.Equal(t, string(want), string(got),
+	must.Equal(string(want), string(got),
 		"identical structured and text must collapse to the single string form")
 }
 
@@ -168,15 +172,16 @@ func TestAnthropicToolResultContent_IdenticalStructuredCollapsesToString(t *test
 // embeds the structured envelope under functionResponse.response.structured
 // (with kind) alongside the canonical content when the capability accepts it.
 func TestGeminiStructuredToolResult_EmbedsEnvelopeWhenCapabilityOn(t *testing.T) {
+	must := require.New(t)
 	q := quirks.DefaultRegistry().Resolve("gemini", "gemini-2.5-pro")
-	require.True(t, q.StructuredToolResults.ObjectResponse, "precondition: gemini object-response capability resolved off")
+	must.True(q.StructuredToolResults.ObjectResponse, "precondition: gemini object-response capability resolved off")
 
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model:    "gemini-2.5-pro",
 		Tools:    anthropicTools(),
 		Messages: structuredToolResultMessages(),
 	}, nil, q)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	resp := geminiFunctionResponseFromBody(t, body)
 	var got struct {
@@ -185,20 +190,21 @@ func TestGeminiStructuredToolResult_EmbedsEnvelopeWhenCapabilityOn(t *testing.T)
 		Structured json.RawMessage `json:"structured"`
 		Kind       string          `json:"kind"`
 	}
-	require.NoError(t, json.Unmarshal(resp, &got), "response object: %s", resp)
-	require.Equal(t, "hi\n(exit 0)", got.Content, "response.content must be the canonical text")
-	require.Equal(t, "command_result", got.Kind)
-	require.NotEmpty(t, got.Structured, "response.structured must be present with capability on")
+	must.NoError(json.Unmarshal(resp, &got), "response object: %s", resp)
+	must.Equal("hi\n(exit 0)", got.Content, "response.content must be the canonical text")
+	must.Equal("command_result", got.Kind)
+	must.NotEmpty(got.Structured, "response.structured must be present with capability on")
 
 	var sp map[string]any
-	require.NoError(t, json.Unmarshal(got.Structured, &sp), "structured must decode")
-	require.InDelta(t, 0, sp["exit_code"], 0)
+	must.NoError(json.Unmarshal(got.Structured, &sp), "structured must decode")
+	must.InDelta(0, sp["exit_code"], 0)
 }
 
 // TestGeminiStructuredToolResult_TextOnlyWhenCapabilityOff pins the no-regression
 // guarantee for Gemini: capability-off serialisation equals the text-only
 // history, and the structured payload never appears on the wire.
 func TestGeminiStructuredToolResult_TextOnlyWhenCapabilityOff(t *testing.T) {
+	must := require.New(t)
 	var zero quirks.ProviderQuirks
 
 	withStructured, _, err := BuildGenerateContentRequest(types.StreamParams{
@@ -206,18 +212,18 @@ func TestGeminiStructuredToolResult_TextOnlyWhenCapabilityOff(t *testing.T) {
 		Tools:    anthropicTools(),
 		Messages: structuredToolResultMessages(),
 	}, nil, zero)
-	require.NoError(t, err, "build with structured envelope")
+	must.NoError(err, "build with structured envelope")
 
 	textOnly, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model:    "gemini-2.5-pro",
 		Tools:    anthropicTools(),
 		Messages: textOnlyToolResultMessages(),
 	}, nil, zero)
-	require.NoError(t, err, "build text-only history")
+	must.NoError(err, "build text-only history")
 
-	require.Equal(t, string(textOnly), string(withStructured),
+	must.Equal(string(textOnly), string(withStructured),
 		"capability-off body must be byte-identical to text-only history")
-	require.NotContains(t, string(withStructured), "exit_code",
+	must.NotContains(string(withStructured), "exit_code",
 		"structured payload leaked onto the wire with capability off")
 }
 
@@ -227,28 +233,29 @@ func TestGeminiStructuredToolResult_TextOnlyWhenCapabilityOff(t *testing.T) {
 // a plain string on the wire. The structured and text-only histories must
 // serialise identically and the payload must never leak.
 func TestOpenAIStructuredToolResult_AlwaysText(t *testing.T) {
+	must := require.New(t)
 	q := quirks.DefaultRegistry().Resolve("openai-compatible", "gpt-4o")
-	require.False(t, q.StructuredToolResults.Supported, "precondition: openai must not resolve a structured capability")
+	must.False(q.StructuredToolResults.Supported, "precondition: openai must not resolve a structured capability")
 
 	withStructured, err := buildOpenAIRequest(types.StreamParams{
 		Model:    "gpt-4o",
 		Tools:    anthropicTools(),
 		Messages: structuredToolResultMessages(),
 	}, true, q, nil)
-	require.NoError(t, err, "build with structured envelope")
+	must.NoError(err, "build with structured envelope")
 
 	textOnly, err := buildOpenAIRequest(types.StreamParams{
 		Model:    "gpt-4o",
 		Tools:    anthropicTools(),
 		Messages: textOnlyToolResultMessages(),
 	}, true, q, nil)
-	require.NoError(t, err, "build text-only history")
+	must.NoError(err, "build text-only history")
 
 	withStructuredJSON := mustMarshal(t, withStructured)
 	textOnlyJSON := mustMarshal(t, textOnly)
-	require.Equal(t, string(textOnlyJSON), string(withStructuredJSON), //nolint:testifylint // byte identity is the contract
+	must.Equal(string(textOnlyJSON), string(withStructuredJSON), //nolint:testifylint // byte identity is the contract
 		"openai body must be byte-identical regardless of structured envelope")
-	require.NotContains(t, string(withStructuredJSON), "exit_code",
+	must.NotContains(string(withStructuredJSON), "exit_code",
 		"structured payload leaked into the openai request")
 }
 
@@ -256,6 +263,7 @@ func TestOpenAIStructuredToolResult_AlwaysText(t *testing.T) {
 // analogue: function_call_output.output is a plain string, so the adapter
 // stays text-only and the payload never reaches the wire.
 func TestOpenAIResponsesStructuredToolResult_AlwaysText(t *testing.T) {
+	must := require.New(t)
 	q := quirks.DefaultRegistry().Resolve("openai-compatible", "gpt-4o")
 
 	withStructured, err := buildResponsesRequest(types.StreamParams{
@@ -263,27 +271,28 @@ func TestOpenAIResponsesStructuredToolResult_AlwaysText(t *testing.T) {
 		Tools:    anthropicTools(),
 		Messages: structuredToolResultMessages(),
 	}, q, nil, "")
-	require.NoError(t, err, "build with structured envelope")
+	must.NoError(err, "build with structured envelope")
 
 	textOnly, err := buildResponsesRequest(types.StreamParams{
 		Model:    "gpt-4o",
 		Tools:    anthropicTools(),
 		Messages: textOnlyToolResultMessages(),
 	}, q, nil, "")
-	require.NoError(t, err, "build text-only history")
+	must.NoError(err, "build text-only history")
 
 	withStructuredJSON := mustMarshal(t, withStructured)
 	textOnlyJSON := mustMarshal(t, textOnly)
-	require.Equal(t, string(textOnlyJSON), string(withStructuredJSON), //nolint:testifylint // byte identity is the contract
+	must.Equal(string(textOnlyJSON), string(withStructuredJSON), //nolint:testifylint // byte identity is the contract
 		"responses body must be byte-identical regardless of structured envelope")
-	require.NotContains(t, string(withStructuredJSON), "exit_code",
+	must.NotContains(string(withStructuredJSON), "exit_code",
 		"structured payload leaked into the responses request")
 }
 
 func mustMarshal(t *testing.T, v any) []byte {
 	t.Helper()
+	must := require.New(t)
 	b, err := json.Marshal(v)
-	require.NoError(t, err)
+	must.NoError(err)
 	return b
 }
 
@@ -292,6 +301,7 @@ func mustMarshal(t *testing.T, v any) []byte {
 // body. Fails the test if the shape is not present.
 func geminiFunctionResponseFromBody(t *testing.T, body []byte) json.RawMessage {
 	t.Helper()
+	must := require.New(t)
 	var decoded struct {
 		Contents []struct {
 			Role  string `json:"role"`
@@ -303,7 +313,7 @@ func geminiFunctionResponseFromBody(t *testing.T, body []byte) json.RawMessage {
 			} `json:"parts"`
 		} `json:"contents"`
 	}
-	require.NoError(t, json.Unmarshal(body, &decoded), "decode gemini body")
+	must.NoError(json.Unmarshal(body, &decoded), "decode gemini body")
 	for _, c := range decoded.Contents {
 		if c.Role != "function" {
 			continue
@@ -314,6 +324,6 @@ func geminiFunctionResponseFromBody(t *testing.T, body []byte) json.RawMessage {
 			}
 		}
 	}
-	require.FailNow(t, "no functionResponse in gemini body", "body: %s", body)
+	must.FailNow("no functionResponse in gemini body", "body: %s", body)
 	return nil
 }

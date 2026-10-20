@@ -48,8 +48,9 @@ func TestTierFor_ClassifiesModelIDs(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			got := TierFor(tt.model)
-			require.Equal(t, tt.want, got, "TierFor(%q)", tt.model)
+			must.Equal(tt.want, got, "TierFor(%q)", tt.model)
 		})
 	}
 }
@@ -60,33 +61,42 @@ func TestTemplateData_ModelIs_MatchesGlobs(t *testing.T) {
 	empty := TemplateData{Model: ""}
 
 	t.Run("matches a glob", func(t *testing.T) {
-		require.True(t, d.ModelIs("claude-fable-5*"))
+		must := require.New(t)
+		must.True(d.ModelIs("claude-fable-5*"))
 	})
 	t.Run("matches when a later glob matches", func(t *testing.T) {
-		require.True(t, d.ModelIs("gpt-5.6*", "claude-fable-5*"))
+		must := require.New(t)
+		must.True(d.ModelIs("gpt-5.6*", "claude-fable-5*"))
 	})
 	t.Run("rejects a non-matching glob", func(t *testing.T) {
-		require.False(t, d.ModelIs("gpt-5.6*"))
+		must := require.New(t)
+		must.False(d.ModelIs("gpt-5.6*"))
 	})
 	// path.Match does not cross "/": a bare glob must not match a
 	// gateway-prefixed ID.
 	t.Run("bare glob does not match a gateway-prefixed id", func(t *testing.T) {
-		require.False(t, prefixed.ModelIs("claude-fable-5*"))
+		must := require.New(t)
+		must.False(prefixed.ModelIs("claude-fable-5*"))
 	})
 	t.Run("*/ glob matches a gateway-prefixed id", func(t *testing.T) {
-		require.True(t, prefixed.ModelIs("*/claude-fable-5*"))
+		must := require.New(t)
+		must.True(prefixed.ModelIs("*/claude-fable-5*"))
 	})
 	t.Run("malformed glob does not match", func(t *testing.T) {
-		require.False(t, d.ModelIs("[unclosed"))
+		must := require.New(t)
+		must.False(d.ModelIs("[unclosed"))
 	})
 	t.Run("empty model matches no glob", func(t *testing.T) {
-		require.False(t, empty.ModelIs("*"))
+		must := require.New(t)
+		must.False(empty.ModelIs("*"))
 	})
 }
 
 // The tier tables must stay disjoint: a model matching both would get
 // whichever tier TierFor checks first, hiding a classification bug.
 func TestTierGlobs_DisjointAndWellFormed(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	samples := []string{
 		"claude-fable-5", "claude-mythos-5", "claude-sonnet-5",
 		"claude-opus-4-8", "gpt-5.5", "gpt-5.6",
@@ -98,19 +108,20 @@ func TestTierGlobs_DisjointAndWellFormed(t *testing.T) {
 	for _, tables := range [][]string{frontierModelGlobs, openWeightModelGlobs} {
 		for _, g := range tables {
 			_, err := path.Match(g, "probe")
-			require.NoError(t, err, "glob %q does not compile", g)
+			must.NoError(err, "glob %q does not compile", g)
 		}
 	}
 	for _, m := range samples {
 		inFrontier := modelMatchesAny(m, frontierModelGlobs)
 		inOpenWeight := modelMatchesAny(m, openWeightModelGlobs)
-		assert.False(t, inFrontier && inOpenWeight, "model %q matches both tier tables", m)
+		check.False(inFrontier && inOpenWeight, "model %q matches both tier tables", m)
 	}
 }
 
 // Every tier table entry has a "*/"-prefixed sibling so gateway-routed
 // model IDs classify the same as their bare forms.
 func TestTierGlobs_PrefixedVariantsPresent(t *testing.T) {
+	check := assert.New(t)
 	for _, table := range [][]string{frontierModelGlobs, openWeightModelGlobs} {
 		bare := make(map[string]bool)
 		prefixed := make(map[string]bool)
@@ -123,7 +134,7 @@ func TestTierGlobs_PrefixedVariantsPresent(t *testing.T) {
 		}
 		// assert, not require: every glob missing a sibling is reported.
 		for g := range bare {
-			assert.True(t, prefixed[g], "glob %q has no */ variant", g)
+			check.True(prefixed[g], "glob %q has no */ variant", g)
 		}
 	}
 }

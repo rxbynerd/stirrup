@@ -12,13 +12,14 @@ import (
 )
 
 func TestMetricsRecording_Counters(t *testing.T) {
+	must := require.New(t)
 	ctx := context.Background()
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	meter := provider.Meter("test")
 
 	m, err := newMetricsFromMeter(meter, provider)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	m.Runs.Add(ctx, 1, metric.WithAttributes(attribute.String("run.mode", "execution")))
 	m.Turns.Add(ctx, 3)
@@ -102,7 +103,7 @@ func TestMetricsRecording_Counters(t *testing.T) {
 	))
 
 	var rm metricdata.ResourceMetrics
-	require.NoError(t, reader.Collect(ctx, &rm))
+	must.NoError(reader.Collect(ctx, &rm))
 
 	sums := extractInt64Sums(rm)
 
@@ -147,21 +148,23 @@ func TestMetricsRecording_Counters(t *testing.T) {
 		{"stirrup.context.strategy_runs", 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got, ok := sums[tc.name]
-			require.True(t, ok, "metric not collected")
-			require.Equal(t, tc.want, got)
+			must.True(ok, "metric not collected")
+			must.Equal(tc.want, got)
 		})
 	}
 }
 
 func TestMetricsRecording_Histograms(t *testing.T) {
+	must := require.New(t)
 	ctx := context.Background()
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	meter := provider.Meter("test")
 
 	m, err := newMetricsFromMeter(meter, provider)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	m.RunDuration.Record(ctx, 1500.0, metric.WithAttributes(
 		attribute.String("run.mode", "execution"),
@@ -190,7 +193,7 @@ func TestMetricsRecording_Histograms(t *testing.T) {
 	))
 
 	var rm metricdata.ResourceMetrics
-	require.NoError(t, reader.Collect(ctx, &rm))
+	must.NoError(reader.Collect(ctx, &rm))
 
 	histograms := extractFloat64Histograms(rm)
 
@@ -211,13 +214,14 @@ func TestMetricsRecording_Histograms(t *testing.T) {
 			{"stirrup.verifier.duration", 1},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
+				must := require.New(t)
 				h, ok := histograms[tc.name]
-				require.True(t, ok, "histogram not collected")
+				must.True(ok, "histogram not collected")
 				var total uint64
 				for _, dp := range h.DataPoints {
 					total += dp.Count
 				}
-				require.Equal(t, tc.want, total)
+				must.Equal(tc.want, total)
 			})
 		}
 	})
@@ -237,13 +241,14 @@ func TestMetricsRecording_Histograms(t *testing.T) {
 			{"stirrup.verifier.duration", 350.0},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
+				must := require.New(t)
 				h, ok := histograms[tc.name]
-				require.True(t, ok, "histogram not collected")
+				must.True(ok, "histogram not collected")
 				var total float64
 				for _, dp := range h.DataPoints {
 					total += dp.Sum
 				}
-				require.InDelta(t, tc.want, total, 1e-9)
+				must.InDelta(tc.want, total, 1e-9)
 			})
 		}
 	})
@@ -256,6 +261,7 @@ func TestMetricsRecording_Histograms(t *testing.T) {
 // explicit-options path is exercised by
 // TestMetricsRecording_Resource_ExplicitOptions.
 func TestMetricsRecording_Resource(t *testing.T) {
+	must := require.New(t)
 	t.Setenv(envServiceName, "")
 
 	t.Setenv(envEnvironment, "")
@@ -270,38 +276,44 @@ func TestMetricsRecording_Resource(t *testing.T) {
 	meter := provider.Meter("test")
 
 	m, err := newMetricsFromMeter(meter, provider)
-	require.NoError(t, err)
+	must.NoError(err)
 	m.Runs.Add(ctx, 1)
 
 	var rm metricdata.ResourceMetrics
-	require.NoError(t, reader.Collect(ctx, &rm))
+	must.NoError(reader.Collect(ctx, &rm))
 
-	require.NotNil(t, rm.Resource, "MeterProvider was constructed without WithResource")
+	must.NotNil(rm.Resource, "MeterProvider was constructed without WithResource")
 	got := make(map[string]string)
 	for _, kv := range rm.Resource.Attributes() {
 		got[string(kv.Key)] = kv.Value.AsString()
 	}
 
 	t.Run("service.name", func(t *testing.T) {
-		require.Equal(t, DefaultServiceName, got["service.name"])
+		must := require.New(t)
+		must.Equal(DefaultServiceName, got["service.name"])
 	})
 	t.Run("service.version", func(t *testing.T) {
-		require.NotEmpty(t, got["service.version"])
+		must := require.New(t)
+		must.NotEmpty(got["service.version"])
 	})
 	t.Run("service.instance.id", func(t *testing.T) {
-		require.NotEmpty(t, got["service.instance.id"])
+		must := require.New(t)
+		must.NotEmpty(got["service.instance.id"])
 	})
 	t.Run("deployment.environment.name", func(t *testing.T) {
-		require.Equal(t, DefaultEnvironment, got["deployment.environment.name"])
+		must := require.New(t)
+		must.Equal(DefaultEnvironment, got["deployment.environment.name"])
 	})
 	t.Run("service.namespace", func(t *testing.T) {
-		require.Equal(t, DefaultServiceNamespace, got["service.namespace"])
+		must := require.New(t)
+		must.Equal(DefaultServiceNamespace, got["service.namespace"])
 	})
 }
 
 // TestMetricsRecording_Resource_ExplicitOptions pins that
 // operator-supplied ResourceOptions reach the metric resource end-to-end.
 func TestMetricsRecording_Resource_ExplicitOptions(t *testing.T) {
+	must := require.New(t)
 	ctx := context.Background()
 	reader := sdkmetric.NewManualReader()
 	resOpts := ResourceOptions{
@@ -316,12 +328,12 @@ func TestMetricsRecording_Resource_ExplicitOptions(t *testing.T) {
 	meter := provider.Meter("test")
 
 	m, err := newMetricsFromMeter(meter, provider)
-	require.NoError(t, err)
+	must.NoError(err)
 	m.Runs.Add(ctx, 1)
 
 	var rm metricdata.ResourceMetrics
-	require.NoError(t, reader.Collect(ctx, &rm))
-	require.NotNil(t, rm.Resource)
+	must.NoError(reader.Collect(ctx, &rm))
+	must.NotNil(rm.Resource)
 
 	got := make(map[string]string)
 	for _, kv := range rm.Resource.Attributes() {
@@ -329,17 +341,21 @@ func TestMetricsRecording_Resource_ExplicitOptions(t *testing.T) {
 	}
 
 	t.Run("deployment.environment.name", func(t *testing.T) {
-		require.Equal(t, "staging", got["deployment.environment.name"])
+		must := require.New(t)
+		must.Equal("staging", got["deployment.environment.name"])
 	})
 	t.Run("service.namespace", func(t *testing.T) {
-		require.Equal(t, "stirrup-eval", got["service.namespace"])
+		must := require.New(t)
+		must.Equal("stirrup-eval", got["service.namespace"])
 	})
 	t.Run("harness.run.mode", func(t *testing.T) {
-		require.Equal(t, "execution", got["harness.run.mode"])
+		must := require.New(t)
+		must.Equal("execution", got["harness.run.mode"])
 	})
 }
 
 func TestNoopMetrics_NoPanic(t *testing.T) {
+	must := require.New(t)
 	ctx := context.Background()
 	m := NewNoopMetrics()
 
@@ -395,28 +411,30 @@ func TestNoopMetrics_NoPanic(t *testing.T) {
 	unregister, err := m.RegisterContextTokensCallback(func() (int64, []attribute.KeyValue) {
 		return 0, nil
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	unregister()
 }
 
 func TestNoopMetrics_CloseIsNoop(t *testing.T) {
+	must := require.New(t)
 	m := NewNoopMetrics()
-	require.NoError(t, m.Close())
+	must.NoError(m.Close())
 }
 
 func TestMetrics_Close_ShutsDownProvider(t *testing.T) {
+	must := require.New(t)
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	meter := provider.Meter("test")
 
 	m, err := newMetricsFromMeter(meter, provider)
-	require.NoError(t, err)
+	must.NoError(err)
 
-	require.NoError(t, m.Close())
+	must.NoError(m.Close())
 
 	// After shutdown, collecting should fail.
 	var rm metricdata.ResourceMetrics
-	require.Error(t, reader.Collect(context.Background(), &rm))
+	must.Error(reader.Collect(context.Background(), &rm))
 }
 
 func extractInt64Sums(rm metricdata.ResourceMetrics) map[string]int64 {

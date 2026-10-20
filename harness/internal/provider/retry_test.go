@@ -153,9 +153,10 @@ func TestParseRetryAfter_HeaderPrecedenceAndBounds(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			got, source := parseRetryAfter(tt.headers, now)
-			require.Equal(t, tt.want, got, "duration")
-			require.Equal(t, tt.wantSource, source, "source")
+			must.Equal(tt.want, got, "duration")
+			must.Equal(tt.wantSource, source, "source")
 		})
 	}
 }
@@ -188,12 +189,14 @@ func TestRetryableStatus_ClassifiesStatusCodes(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, retryableStatus(tt.status))
+			must := require.New(t)
+			must.Equal(tt.want, retryableStatus(tt.status))
 		})
 	}
 }
 
 func TestBackoffDelay_SamplesStayBelowCap(t *testing.T) {
+	must := require.New(t)
 	policy := RetryPolicy{
 		InitialDelay: 100 * time.Millisecond,
 		MaxDelay:     5 * time.Second,
@@ -207,8 +210,8 @@ func TestBackoffDelay_SamplesStayBelowCap(t *testing.T) {
 		}
 		for i := 0; i < 1000; i++ {
 			got := backoffDelay(n, policy, prng)
-			require.GreaterOrEqual(t, got, time.Duration(0), "attempt %d sample %d", n, i)
-			require.Less(t, got, expectedCap, "attempt %d sample %d", n, i)
+			must.GreaterOrEqual(got, time.Duration(0), "attempt %d sample %d", n, i)
+			must.Less(got, expectedCap, "attempt %d sample %d", n, i)
 		}
 	}
 }
@@ -217,10 +220,11 @@ func TestBackoffDelay_SamplesStayBelowCap(t *testing.T) {
 // assertions can inspect the recorded counter increments.
 func newTestMetrics(t *testing.T) (*observability.Metrics, *sdkmetric.ManualReader) {
 	t.Helper()
+	must := require.New(t)
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	m, err := observability.NewMetricsForTesting(provider)
-	require.NoError(t, err)
+	must.NoError(err)
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 	return m, reader
 }
@@ -229,8 +233,9 @@ func newTestMetrics(t *testing.T) (*observability.Metrics, *sdkmetric.ManualRead
 // counter data points keyed by outcome.
 func retryOutcomeFromMetrics(t *testing.T, reader *sdkmetric.ManualReader) map[string]int64 {
 	t.Helper()
+	must := require.New(t)
 	var rm metricdata.ResourceMetrics
-	require.NoError(t, reader.Collect(context.Background(), &rm))
+	must.NoError(reader.Collect(context.Background(), &rm))
 	out := make(map[string]int64)
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
@@ -252,9 +257,10 @@ func retryOutcomeFromMetrics(t *testing.T, reader *sdkmetric.ManualReader) map[s
 
 func newPostReq(t *testing.T, url, body string) *http.Request {
 	t.Helper()
+	must := require.New(t)
 	bodyBytes := []byte(body)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(bodyBytes))
-	require.NoError(t, err)
+	must.NoError(err)
 	req.GetBody = func() (io.ReadCloser, error) {
 		return io.NopCloser(bytes.NewReader(bodyBytes)), nil
 	}
@@ -300,6 +306,7 @@ func withRecordingSpan(t *testing.T) (context.Context, *tracetest.InMemoryExport
 }
 
 func TestDoWithRetry_RetriesOn429UntilSuccess(t *testing.T) {
+	must := require.New(t)
 	var attempts int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := atomic.AddInt32(&attempts, 1)
@@ -317,21 +324,22 @@ func TestDoWithRetry_RetriesOn429UntilSuccess(t *testing.T) {
 	req := newPostReq(t, srv.URL, `{"x":1}`)
 	resp, err := DoWithRetry(ctx, &http.Client{Timeout: 5 * time.Second}, req,
 		testOpts(defaultTestPolicy(), m))
-	require.NoError(t, err)
+	must.NoError(err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	require.EqualValues(t, 2, atomic.LoadInt32(&attempts))
+	must.Equal(http.StatusOK, resp.StatusCode)
+	must.EqualValues(2, atomic.LoadInt32(&attempts))
 
 	span.End()
 	events := collectSpanEvents(exporter, "provider_retry_attempt")
-	require.Len(t, events, 1, "provider_retry_attempt events")
+	must.Len(events, 1, "provider_retry_attempt events")
 
 	outcomes := retryOutcomeFromMetrics(t, reader)
-	require.Equal(t, int64(1), outcomes[retryOutcomeSucceeded], "succeeded counter")
+	must.Equal(int64(1), outcomes[retryOutcomeSucceeded], "succeeded counter")
 }
 
 func TestDoWithRetry_RetryAfterSecondsHonoured(t *testing.T) {
+	must := require.New(t)
 	var attempts int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := atomic.AddInt32(&attempts, 1)
@@ -354,14 +362,15 @@ func TestDoWithRetry_RetryAfterSecondsHonoured(t *testing.T) {
 	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req,
 		testOpts(policy, m))
 	elapsed := time.Since(start)
-	require.NoError(t, err)
+	must.NoError(err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
-	require.GreaterOrEqual(t, elapsed, 800*time.Millisecond, "Retry-After: 1 should wait about 1s")
-	require.LessOrEqual(t, elapsed, 1200*time.Millisecond, "Retry-After: 1 should wait about 1s")
+	must.GreaterOrEqual(elapsed, 800*time.Millisecond, "Retry-After: 1 should wait about 1s")
+	must.LessOrEqual(elapsed, 1200*time.Millisecond, "Retry-After: 1 should wait about 1s")
 }
 
 func TestDoWithRetry_RetryAfterMsHonoured(t *testing.T) {
+	must := require.New(t)
 	var attempts int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := atomic.AddInt32(&attempts, 1)
@@ -384,14 +393,16 @@ func TestDoWithRetry_RetryAfterMsHonoured(t *testing.T) {
 	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req,
 		testOpts(policy, m))
 	elapsed := time.Since(start)
-	require.NoError(t, err)
+	must.NoError(err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
-	require.GreaterOrEqual(t, elapsed, 150*time.Millisecond, "Retry-After-Ms: 250 should wait about 250ms")
-	require.LessOrEqual(t, elapsed, 450*time.Millisecond, "Retry-After-Ms: 250 should wait about 250ms")
+	must.GreaterOrEqual(elapsed, 150*time.Millisecond, "Retry-After-Ms: 250 should wait about 250ms")
+	must.LessOrEqual(elapsed, 450*time.Millisecond, "Retry-After-Ms: 250 should wait about 250ms")
 }
 
 func TestDoWithRetry_ReturnsLastResponseWhenAttemptsExhausted(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var attempts int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&attempts, 1)
@@ -411,17 +422,19 @@ func TestDoWithRetry_ReturnsLastResponseWhenAttemptsExhausted(t *testing.T) {
 	req := newPostReq(t, srv.URL, `{}`)
 	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req,
 		testOpts(policy, m))
-	require.NoError(t, err)
+	must.NoError(err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
-	assert.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
-	assert.EqualValues(t, 3, atomic.LoadInt32(&attempts))
+	check.Equal(http.StatusTooManyRequests, resp.StatusCode)
+	check.EqualValues(3, atomic.LoadInt32(&attempts))
 
 	outcomes := retryOutcomeFromMetrics(t, reader)
-	assert.Equal(t, int64(1), outcomes[retryOutcomeExhausted], "exhausted counter")
+	check.Equal(int64(1), outcomes[retryOutcomeExhausted], "exhausted counter")
 }
 
 func TestDoWithRetry_StopsWhenWallClockBudgetExhausted(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Force a large server-side hint so the first sleep would
 		// overshoot the budget.
@@ -442,17 +455,19 @@ func TestDoWithRetry_StopsWhenWallClockBudgetExhausted(t *testing.T) {
 	req := newPostReq(t, srv.URL, `{}`)
 	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req,
 		testOpts(policy, m))
-	require.NoError(t, err)
+	must.NoError(err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
-	assert.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
+	check.Equal(http.StatusTooManyRequests, resp.StatusCode)
 
 	outcomes := retryOutcomeFromMetrics(t, reader)
-	assert.Equal(t, int64(1), outcomes[retryOutcomeBudgetExhausted],
+	check.Equal(int64(1), outcomes[retryOutcomeBudgetExhausted],
 		"budget_exhausted counter (all outcomes: %+v)", outcomes)
 }
 
 func TestDoWithRetry_DoesNotRetryNonRetryableStatus(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var attempts int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&attempts, 1)
@@ -465,17 +480,19 @@ func TestDoWithRetry_DoesNotRetryNonRetryableStatus(t *testing.T) {
 	req := newPostReq(t, srv.URL, `{}`)
 	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req,
 		testOpts(defaultTestPolicy(), m))
-	require.NoError(t, err)
+	must.NoError(err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
-	assert.EqualValues(t, 1, atomic.LoadInt32(&attempts))
+	check.Equal(http.StatusBadRequest, resp.StatusCode)
+	check.EqualValues(1, atomic.LoadInt32(&attempts))
 
 	outcomes := retryOutcomeFromMetrics(t, reader)
-	assert.Equal(t, int64(1), outcomes[retryOutcomeNonRetryable], "non_retryable counter")
+	check.Equal(int64(1), outcomes[retryOutcomeNonRetryable], "non_retryable counter")
 }
 
 func TestDoWithRetry_ContextCancelDuringSleep(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After-Ms", "5000")
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -503,15 +520,16 @@ func TestDoWithRetry_ContextCancelDuringSleep(t *testing.T) {
 		testOpts(policy, m))
 	elapsed := time.Since(start)
 
-	require.ErrorIs(t, err, context.Canceled)
-	require.Nil(t, resp)
-	assert.LessOrEqual(t, elapsed, 200*time.Millisecond, "cancel should return promptly")
+	must.ErrorIs(err, context.Canceled)
+	must.Nil(resp)
+	check.LessOrEqual(elapsed, 200*time.Millisecond, "cancel should return promptly")
 
 	outcomes := retryOutcomeFromMetrics(t, reader)
-	assert.Equal(t, int64(1), outcomes[retryOutcomeContextDone], "context_done counter")
+	check.Equal(int64(1), outcomes[retryOutcomeContextDone], "context_done counter")
 }
 
 func TestDoWithRetry_BodyRewoundOnRetry(t *testing.T) {
+	must := require.New(t)
 	var (
 		mu     sync.Mutex
 		bodies []string
@@ -537,24 +555,25 @@ func TestDoWithRetry_BodyRewoundOnRetry(t *testing.T) {
 	req := newPostReq(t, srv.URL, bodyContent)
 	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req,
 		testOpts(defaultTestPolicy(), m))
-	require.NoError(t, err)
+	must.NoError(err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
 	mu.Lock()
 	defer mu.Unlock()
-	require.Len(t, bodies, 2)
-	require.Equal(t, []string{bodyContent, bodyContent}, bodies, "every attempt should resend the same body")
+	must.Len(bodies, 2)
+	must.Equal([]string{bodyContent, bodyContent}, bodies, "every attempt should resend the same body")
 }
 
 func TestDoWithRetry_PanicsWhenGetBodyMissing(t *testing.T) {
+	must := require.New(t)
 	defer func() {
 		r := recover()
-		require.NotNil(t, r, "expected a panic")
-		require.Contains(t, fmt.Sprint(r), "DoWithRetry: req.GetBody must be set")
+		must.NotNil(r, "expected a panic")
+		must.Contains(fmt.Sprint(r), "DoWithRetry: req.GetBody must be set")
 	}()
 
 	req, err := http.NewRequest(http.MethodPost, "http://example.invalid", strings.NewReader("body"))
-	require.NoError(t, err)
+	must.NoError(err)
 	// http.NewRequest with strings.NewReader sets GetBody automatically;
 	// clear it to exercise the contract check.
 	req.GetBody = nil
@@ -589,24 +608,29 @@ func (timeoutError) Temporary() bool { return true }
 
 func TestTransientErr_ClassifiesByErrorAndAttempt(t *testing.T) {
 	t.Run("nil error is not transient", func(t *testing.T) {
-		require.False(t, transientErr(nil, 0))
+		must := require.New(t)
+		must.False(transientErr(nil, 0))
 	})
 	t.Run("net.OpError with timeout is transient", func(t *testing.T) {
+		must := require.New(t)
 		opErr := &net.OpError{Op: "dial", Net: "tcp", Err: timeoutError{}}
-		require.True(t, transientErr(opErr, 0), "first attempt")
+		must.True(transientErr(opErr, 0), "first attempt")
 		// Timeouts stay transient on later attempts.
-		require.True(t, transientErr(opErr, 1), "second attempt")
+		must.True(transientErr(opErr, 1), "second attempt")
 	})
 	t.Run("io.EOF on first attempt is transient", func(t *testing.T) {
-		require.True(t, transientErr(io.EOF, 0))
+		must := require.New(t)
+		must.True(transientErr(io.EOF, 0))
 	})
 	t.Run("io.EOF on second attempt is not transient", func(t *testing.T) {
+		must := require.New(t)
 		// A repeated EOF points at a server-side condition the next
 		// attempt would also hit, not a stale keep-alive.
-		require.False(t, transientErr(io.EOF, 1))
+		must.False(transientErr(io.EOF, 1))
 	})
 	t.Run("plain error is not transient", func(t *testing.T) {
-		require.False(t, transientErr(errors.New("connection reset"), 0))
+		must := require.New(t)
+		must.False(transientErr(errors.New("connection reset"), 0))
 	})
 }
 
@@ -637,6 +661,7 @@ func hijackAndCloseHandler(t *testing.T, alwaysClose bool, count *int32) http.Ha
 }
 
 func TestDoWithRetry_TransientNetworkError(t *testing.T) {
+	must := require.New(t)
 	var count int32
 	srv := httptest.NewServer(hijackAndCloseHandler(t, false, &count))
 	defer srv.Close()
@@ -649,17 +674,18 @@ func TestDoWithRetry_TransientNetworkError(t *testing.T) {
 
 	req := newPostReq(t, srv.URL, `{}`)
 	resp, err := DoWithRetry(context.Background(), client, req, testOpts(defaultTestPolicy(), m))
-	require.NoError(t, err)
+	must.NoError(err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	require.Equal(t, int32(2), atomic.LoadInt32(&count), "server hit count")
+	must.Equal(http.StatusOK, resp.StatusCode)
+	must.Equal(int32(2), atomic.LoadInt32(&count), "server hit count")
 
 	outcomes := retryOutcomeFromMetrics(t, reader)
-	require.Equal(t, int64(1), outcomes[retryOutcomeSucceeded], "outcomes: %+v", outcomes)
+	must.Equal(int64(1), outcomes[retryOutcomeSucceeded], "outcomes: %+v", outcomes)
 }
 
 func TestDoWithRetry_TransientNetworkError_RecordsSpanAttr(t *testing.T) {
+	must := require.New(t)
 	// Uses the hijack-and-close server from TestDoWithRetry_TransientNetworkError
 	// with a recording span, so the span event for the retry is inspected.
 	var count int32
@@ -671,12 +697,12 @@ func TestDoWithRetry_TransientNetworkError_RecordsSpanAttr(t *testing.T) {
 
 	req := newPostReq(t, srv.URL, `{}`)
 	resp, err := DoWithRetry(ctx, &http.Client{Timeout: 5 * time.Second}, req, testOpts(defaultTestPolicy(), m))
-	require.NoError(t, err)
+	must.NoError(err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
 	span.End()
 	events := collectSpanEvents(exporter, "provider_retry_attempt")
-	require.Len(t, events, 1, "provider_retry_attempt events")
+	must.Len(events, 1, "provider_retry_attempt events")
 
 	// The exact error text varies by platform ("EOF", "connection reset
 	// by peer"), so only its presence and the absence of the URL are checked.
@@ -686,13 +712,14 @@ func TestDoWithRetry_TransientNetworkError_RecordsSpanAttr(t *testing.T) {
 			errValues = append(errValues, kv.Value.AsString())
 		}
 	}
-	require.NotEmpty(t, errValues, "provider_retry_attempt event error attribute")
+	must.NotEmpty(errValues, "provider_retry_attempt event error attribute")
 	for _, v := range errValues {
-		require.NotContains(t, v, srv.URL, "span error attribute leaks URL")
+		must.NotContains(v, srv.URL, "span error attribute leaks URL")
 	}
 }
 
 func TestDoWithRetry_PersistentEOF_GivesUpAfterSecondAttempt(t *testing.T) {
+	must := require.New(t)
 	var count int32
 	srv := httptest.NewServer(hijackAndCloseHandler(t, true, &count))
 	defer srv.Close()
@@ -705,18 +732,19 @@ func TestDoWithRetry_PersistentEOF_GivesUpAfterSecondAttempt(t *testing.T) {
 	if resp != nil {
 		t.Cleanup(func() { _ = resp.Body.Close() })
 	}
-	require.Error(t, err, "persistent EOF must surface as an error")
+	must.Error(err, "persistent EOF must surface as an error")
 
 	// Exactly two attempts: the first sees EOF and is retried; the second
 	// sees EOF with attempt>0, so transientErr is false and the error
 	// is reported as non-retryable.
-	require.Equal(t, int32(2), atomic.LoadInt32(&count), "server hit count")
+	must.Equal(int32(2), atomic.LoadInt32(&count), "server hit count")
 
 	outcomes := retryOutcomeFromMetrics(t, reader)
-	require.Equal(t, int64(1), outcomes[retryOutcomeNonRetryable], "outcomes: %+v", outcomes)
+	must.Equal(int64(1), outcomes[retryOutcomeNonRetryable], "outcomes: %+v", outcomes)
 }
 
 func TestDoWithRetry_TricklingRetryBodyDrainIsTimeBounded(t *testing.T) {
+	must := require.New(t)
 	const drainTimeout = 200 * time.Millisecond
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -747,20 +775,22 @@ func TestDoWithRetry_TricklingRetryBodyDrainIsTimeBounded(t *testing.T) {
 	start := time.Now()
 	resp, err := DoWithRetry(context.Background(), client, newPostReq(t, srv.URL, `{}`), opts)
 	elapsed := time.Since(start)
-	require.NoError(t, err)
+	must.NoError(err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	require.Equal(t, int32(2), hits.Load(), "server request count")
-	require.GreaterOrEqual(t, elapsed, drainTimeout, "retry returned before the drain ran")
-	require.LessOrEqual(t, elapsed, 2*time.Second, "drain should be cut off shortly after %v", drainTimeout)
+	must.Equal(http.StatusOK, resp.StatusCode)
+	must.Equal(int32(2), hits.Load(), "server request count")
+	must.GreaterOrEqual(elapsed, drainTimeout, "retry returned before the drain ran")
+	must.LessOrEqual(elapsed, 2*time.Second, "drain should be cut off shortly after %v", drainTimeout)
 }
 
 func TestRetryPolicyFromConfig_ConvertsFieldsAndHandlesNil(t *testing.T) {
 	t.Run("nil cfg returns zero policy", func(t *testing.T) {
-		require.Equal(t, RetryPolicy{}, RetryPolicyFromConfig(nil))
+		must := require.New(t)
+		must.Equal(RetryPolicy{}, RetryPolicyFromConfig(nil))
 	})
 	t.Run("populated cfg converts ms fields to durations", func(t *testing.T) {
+		must := require.New(t)
 		cfg := &types.ProviderRetryConfig{
 			MaxAttempts:       3,
 			InitialDelayMs:    200,
@@ -773,7 +803,7 @@ func TestRetryPolicyFromConfig_ConvertsFieldsAndHandlesNil(t *testing.T) {
 			MaxDelay:        5 * time.Second,
 			WallClockBudget: 30 * time.Second,
 		}
-		require.Equal(t, want, RetryPolicyFromConfig(cfg))
+		must.Equal(want, RetryPolicyFromConfig(cfg))
 	})
 }
 
@@ -781,6 +811,7 @@ func TestRetryPolicyFromConfig_ConvertsFieldsAndHandlesNil(t *testing.T) {
 // bypasses ValidateRunConfig with InitialDelayMs=0 still gets the safe
 // canonical default rather than a zero InitialDelay.
 func TestRetryPolicyFromConfig_ZeroInitialDelay(t *testing.T) {
+	must := require.New(t)
 	cfg := &types.ProviderRetryConfig{
 		MaxAttempts:       3,
 		InitialDelayMs:    0,
@@ -793,33 +824,36 @@ func TestRetryPolicyFromConfig_ZeroInitialDelay(t *testing.T) {
 		MaxDelay:        5 * time.Second,
 		WallClockBudget: 30 * time.Second,
 	}
-	require.Equal(t, want, RetryPolicyFromConfig(cfg), "zero InitialDelayMs falls back to 500ms")
+	must.Equal(want, RetryPolicyFromConfig(cfg), "zero InitialDelayMs falls back to 500ms")
 }
 
 func TestBackoffDelay_ZeroInitialDelay(t *testing.T) {
+	must := require.New(t)
 	policy := RetryPolicy{
 		InitialDelay: 0,
 		MaxDelay:     1 * time.Second,
 	}
 	prng := rand.New(rand.NewPCG(1, 2))
 	for i := range 100 {
-		require.Zero(t, backoffDelay(i%5, policy, prng), "attempt %d", i%5)
+		must.Zero(backoffDelay(i%5, policy, prng), "attempt %d", i%5)
 	}
 }
 
 // A zero MaxDelay caps every backoff at zero.
 func TestBackoffDelay_ZeroMaxDelay(t *testing.T) {
+	must := require.New(t)
 	policy := RetryPolicy{
 		InitialDelay: 100 * time.Millisecond,
 		MaxDelay:     0,
 	}
 	prng := rand.New(rand.NewPCG(1, 2))
 	for i := range 100 {
-		require.Zero(t, backoffDelay(i%5, policy, prng), "attempt %d", i%5)
+		must.Zero(backoffDelay(i%5, policy, prng), "attempt %d", i%5)
 	}
 }
 
 func TestDoWithRetry_RetryAfterMsCapped(t *testing.T) {
+	must := require.New(t)
 	var count int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := atomic.AddInt32(&count, 1)
@@ -848,14 +882,15 @@ func TestDoWithRetry_RetryAfterMsCapped(t *testing.T) {
 	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req,
 		testOpts(policy, m))
 	elapsed := time.Since(start)
-	require.NoError(t, err)
+	must.NoError(err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
 	// Uncapped, the 5 s Retry-After-Ms would be honoured.
-	require.LessOrEqual(t, elapsed, time.Second, "retry should be capped near MaxDelay (100ms)")
+	must.LessOrEqual(elapsed, time.Second, "retry should be capped near MaxDelay (100ms)")
 }
 
 func TestDoWithRetry_RetryAfterSecondsCapped(t *testing.T) {
+	must := require.New(t)
 	var count int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := atomic.AddInt32(&count, 1)
@@ -885,14 +920,15 @@ func TestDoWithRetry_RetryAfterSecondsCapped(t *testing.T) {
 	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req,
 		testOpts(policy, m))
 	elapsed := time.Since(start)
-	require.NoError(t, err)
+	must.NoError(err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
 	// Uncapped, the 30 s Retry-After would be honoured.
-	require.LessOrEqual(t, elapsed, time.Second, "retry should be capped near MaxDelay (100ms)")
+	must.LessOrEqual(elapsed, time.Second, "retry should be capped near MaxDelay (100ms)")
 }
 
 func TestDoWithRetry_MaxAttemptsZeroNormalisedToOne(t *testing.T) {
+	must := require.New(t)
 	var count int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&count, 1)
@@ -910,13 +946,14 @@ func TestDoWithRetry_MaxAttemptsZeroNormalisedToOne(t *testing.T) {
 	req := newPostReq(t, srv.URL, `{}`)
 	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req,
 		testOpts(policy, m))
-	require.NoError(t, err)
+	must.NoError(err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
-	require.Equal(t, int32(1), atomic.LoadInt32(&count), "server hits")
+	must.Equal(int32(1), atomic.LoadInt32(&count), "server hits")
 }
 
 func TestDoWithRetry_NilMetrics(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -932,10 +969,10 @@ func TestDoWithRetry_NilMetrics(t *testing.T) {
 		Model:        "gpt-test",
 	}
 	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req, opts)
-	require.NoError(t, err)
+	must.NoError(err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
-	require.Equal(t, http.StatusOK, resp.StatusCode)
+	must.Equal(http.StatusOK, resp.StatusCode)
 }
 
 // flakyGetBody is a counter-backed GetBody implementation that returns
@@ -958,6 +995,7 @@ func (f *flakyGetBody) get() (io.ReadCloser, error) {
 }
 
 func TestDoWithRetry_RewindFailureStopsWithoutExhaustion(t *testing.T) {
+	must := require.New(t)
 	var count int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&count, 1)
@@ -974,26 +1012,27 @@ func TestDoWithRetry_RewindFailureStopsWithoutExhaustion(t *testing.T) {
 	flaky := &flakyGetBody{body: bodyBytes, failAt: 1, failErr: injected}
 
 	req, err := http.NewRequest(http.MethodPost, srv.URL, bytes.NewReader(bodyBytes))
-	require.NoError(t, err)
+	must.NoError(err)
 	req.GetBody = flaky.get
 
 	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req,
 		testOpts(defaultTestPolicy(), m))
-	require.ErrorIs(t, err, injected)
-	require.Nil(t, resp, "rewind failure returns no response")
+	must.ErrorIs(err, injected)
+	must.Nil(resp, "rewind failure returns no response")
 
 	// Exactly one server hit: the first attempt succeeded in sending,
 	// the response was 429, then GetBody failed before attempt 2 could
 	// be dispatched.
-	require.Equal(t, int32(1), atomic.LoadInt32(&count), "server hits")
+	must.Equal(int32(1), atomic.LoadInt32(&count), "server hits")
 
 	outcomes := retryOutcomeFromMetrics(t, reader)
-	require.Equal(t, int64(1), outcomes[retryOutcomeRewindFailed], "outcomes: %+v", outcomes)
+	must.Equal(int64(1), outcomes[retryOutcomeRewindFailed], "outcomes: %+v", outcomes)
 	// A rewind failure must not also be recorded as exhaustion.
-	require.Equal(t, int64(0), outcomes[retryOutcomeExhausted], "outcomes: %+v", outcomes)
+	must.Equal(int64(0), outcomes[retryOutcomeExhausted], "outcomes: %+v", outcomes)
 }
 
 func TestDoWithRetry_ShouldRetry_ConsumesAndRetries(t *testing.T) {
+	must := require.New(t)
 	// ShouldRetry returns (retryable=true, consumed=true) on the
 	// first attempt's 200 response. Exercises the "consumed=true"
 	// branch overriding the default heuristic (which would treat
@@ -1028,13 +1067,14 @@ func TestDoWithRetry_ShouldRetry_ConsumesAndRetries(t *testing.T) {
 
 	req := newPostReq(t, srv.URL, `{}`)
 	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req, opts)
-	require.NoError(t, err)
+	must.NoError(err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
-	require.Equal(t, int32(2), atomic.LoadInt32(&count), "server hits")
+	must.Equal(int32(2), atomic.LoadInt32(&count), "server hits")
 }
 
 func TestDoWithRetry_ShouldRetry_FallsThroughOnNotConsumed(t *testing.T) {
+	must := require.New(t)
 	// ShouldRetry returns (false, false=not consumed) for every
 	// response. The default retryableStatus heuristic should apply
 	// — first 429 retries, second 200 succeeds.
@@ -1066,19 +1106,20 @@ func TestDoWithRetry_ShouldRetry_FallsThroughOnNotConsumed(t *testing.T) {
 
 	req := newPostReq(t, srv.URL, `{}`)
 	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req, opts)
-	require.NoError(t, err)
+	must.NoError(err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
-	require.Equal(t, int32(2), atomic.LoadInt32(&count), "server hits")
+	must.Equal(int32(2), atomic.LoadInt32(&count), "server hits")
 	// ShouldRetry is consulted on the 429 response and falls through to
 	// the default heuristic.
-	require.Positive(t, atomic.LoadInt32(&shouldRetryCalls), "ShouldRetry was never consulted")
+	must.Positive(atomic.LoadInt32(&shouldRetryCalls), "ShouldRetry was never consulted")
 }
 
 // TestDoWithRetry_NilLoggerFallback asserts the nil-logger fallback
 // emits a provider_retry warn record and wraps slog.Default() in a
 // ScrubHandler, so a scrubbable sentinel does not land raw.
 func TestDoWithRetry_NilLoggerFallback(t *testing.T) {
+	must := require.New(t)
 	var count int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if n := atomic.AddInt32(&count, 1); n == 1 {
@@ -1109,19 +1150,21 @@ func TestDoWithRetry_NilLoggerFallback(t *testing.T) {
 
 	req := newPostReq(t, srv.URL, `{}`)
 	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req, opts)
-	require.NoError(t, err)
+	must.NoError(err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
-	require.Equal(t, http.StatusOK, resp.StatusCode)
+	must.Equal(http.StatusOK, resp.StatusCode)
 	logOutput := buf.String()
-	require.Contains(t, logOutput, "provider_retry", "nil-logger fallback emitted no provider_retry record")
+	must.Contains(logOutput, "provider_retry", "nil-logger fallback emitted no provider_retry record")
 	// The Model field carries a scrubbable Anthropic key. Without the
 	// ScrubHandler wrap it reaches the warn record verbatim.
-	require.NotContains(t, logOutput, "sk-ant-test-cafebabe1234567890", "nil-logger fallback leaked a scrubbable sentinel")
-	require.Contains(t, logOutput, "[REDACTED]", "nil-logger fallback should scrub the sentinel")
+	must.NotContains(logOutput, "sk-ant-test-cafebabe1234567890", "nil-logger fallback leaked a scrubbable sentinel")
+	must.Contains(logOutput, "[REDACTED]", "nil-logger fallback should scrub the sentinel")
 }
 
 func TestDoWithRetry_TransportError_URLNotLogged(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
@@ -1162,23 +1205,23 @@ func TestDoWithRetry_TransportError_URLNotLogged(t *testing.T) {
 
 	secretURL := srv.URL + "/path?api_key=topsecret&token=alsosecret"
 	req, err := http.NewRequest(http.MethodPost, secretURL, bytes.NewReader(bodyBytes))
-	require.NoError(t, err)
+	must.NoError(err)
 	req.GetBody = func() (io.ReadCloser, error) {
 		return io.NopCloser(bytes.NewReader(bodyBytes)), nil
 	}
 
 	buf.Reset()
 	resp, err := DoWithRetry(context.Background(), client, req, opts)
-	require.NoError(t, err)
+	must.NoError(err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
 	logOutput := buf.String()
-	assert.NotContains(t, logOutput, "topsecret", "log output contains the api_key query value")
-	assert.NotContains(t, logOutput, "alsosecret", "log output contains the token query value")
+	check.NotContains(logOutput, "topsecret", "log output contains the api_key query value")
+	check.NotContains(logOutput, "alsosecret", "log output contains the token query value")
 	// The *url.Error wrapping the transport error includes the request
 	// URL, so the server host must be absent from the log as well.
 	host := strings.TrimPrefix(srv.URL, "http://")
-	assert.NotContains(t, logOutput, host, "log output contains the server URL host")
+	check.NotContains(logOutput, host, "log output contains the server URL host")
 }
 
 // scrubbableTransport is a stub http.RoundTripper that fails on the
@@ -1216,6 +1259,8 @@ func (e *scrubTimeoutErr) Temporary() bool { return true }
 // `error` attribute is run through security.Scrub before export,
 // mirroring the existing slog scrubbing at the same code site.
 func TestDoWithRetry_SpanErrorAttributeIsScrubbed(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	// Use a known scrubbable pattern (Anthropic API key prefix). The
 	// scrubber replaces it with "[REDACTED]" — asserting on the
 	// presence of the literal token in the span attribute would tell
@@ -1238,12 +1283,12 @@ func TestDoWithRetry_SpanErrorAttributeIsScrubbed(t *testing.T) {
 
 	req := newPostReq(t, srv.URL, `{}`)
 	resp, err := DoWithRetry(ctx, client, req, testOpts(defaultTestPolicy(), m))
-	require.NoError(t, err)
+	must.NoError(err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
 	span.End()
 	events := collectSpanEvents(exporter, "provider_retry_attempt")
-	require.Len(t, events, 1, "provider_retry_attempt events")
+	must.Len(events, 1, "provider_retry_attempt events")
 
 	var got string
 	var found bool
@@ -1253,10 +1298,10 @@ func TestDoWithRetry_SpanErrorAttributeIsScrubbed(t *testing.T) {
 			got = kv.Value.AsString()
 		}
 	}
-	require.True(t, found, "provider_retry_attempt event has no error attribute")
+	must.True(found, "provider_retry_attempt event has no error attribute")
 
-	assert.NotContains(t, got, secret, "span error attribute leaks the scrubbable token")
-	assert.Contains(t, got, "[REDACTED]", "span error attribute should contain the scrub marker")
+	check.NotContains(got, secret, "span error attribute leaks the scrubbable token")
+	check.Contains(got, "[REDACTED]", "span error attribute should contain the scrub marker")
 	// The non-secret message prefix must survive scrubbing.
-	assert.True(t, strings.HasPrefix(got, "dial tcp: "), "span error attribute lost its message prefix, got %q", got)
+	check.True(strings.HasPrefix(got, "dial tcp: "), "span error attribute lost its message prefix, got %q", got)
 }

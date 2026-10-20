@@ -16,9 +16,10 @@ import (
 func TestValidateDebugBuildFlags_AcceptsDebugOnDebugBuild(t *testing.T) {
 	for _, flagName := range debugBuildOnlyFlags {
 		t.Run(flagName, func(t *testing.T) {
+			must := require.New(t)
 			cmd := newTestHarnessCommand()
-			require.NoError(t, cmd.Flags().Set(flagName, "true"))
-			require.NoError(t, validateDebugBuildFlags(cmd, nil))
+			must.NoError(cmd.Flags().Set(flagName, "true"))
+			must.NoError(validateDebugBuildFlags(cmd, nil))
 		})
 	}
 }

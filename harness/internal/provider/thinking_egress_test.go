@@ -41,21 +41,23 @@ func historyWithThinking() []types.Message {
 // thinking-bearing one carries any thinking payload.
 func assertThinkingDropped(t *testing.T, adapter string, with, without []byte) {
 	t.Helper()
-	require.Equal(t, string(without), string(with),
+	must := require.New(t)
+	must.Equal(string(without), string(with),
 		"%s: history with thinking blocks serialises differently", adapter)
 	for _, leaked := range []string{foreignThinkingSignature, foreignRedactedData, "plan the read"} {
-		require.NotContains(t, string(with), leaked,
+		must.NotContains(string(with), leaked,
 			"%s: request carries thinking payload", adapter)
 	}
 }
 
 func TestOpenAICompatibleRequest_DropsThinkingBlocks(t *testing.T) {
+	must := require.New(t)
 	q := quirks.DefaultRegistry().Resolve("openai-compatible", "gpt-4o")
 	marshal := func(messages []types.Message) []byte {
 		req, err := buildOpenAIRequest(types.StreamParams{Model: "gpt-4o", MaxTokens: 64, Messages: messages}, true, q, nil)
-		require.NoError(t, err)
+		must.NoError(err)
 		body, err := json.Marshal(req)
-		require.NoError(t, err)
+		must.NoError(err)
 		return body
 	}
 	assertThinkingDropped(t, "openai-compatible",
@@ -64,12 +66,13 @@ func TestOpenAICompatibleRequest_DropsThinkingBlocks(t *testing.T) {
 }
 
 func TestOpenAIResponsesRequest_DropsThinkingBlocks(t *testing.T) {
+	must := require.New(t)
 	q := quirks.DefaultRegistry().Resolve("openai-responses", "gpt-4o")
 	marshal := func(messages []types.Message) []byte {
 		req, err := buildResponsesRequest(types.StreamParams{Model: "gpt-4o", MaxTokens: 64, Messages: messages}, q, nil, "")
-		require.NoError(t, err)
+		must.NoError(err)
 		body, err := json.Marshal(req)
-		require.NoError(t, err)
+		must.NoError(err)
 		return body
 	}
 	assertThinkingDropped(t, "openai-responses",
@@ -78,10 +81,11 @@ func TestOpenAIResponsesRequest_DropsThinkingBlocks(t *testing.T) {
 }
 
 func TestGeminiRequest_DropsThinkingBlocks(t *testing.T) {
+	must := require.New(t)
 	q := quirks.DefaultRegistry().Resolve("gemini", "gemini-2.5-pro")
 	marshal := func(messages []types.Message) []byte {
 		body, _, err := BuildGenerateContentRequest(types.StreamParams{Model: "gemini-2.5-pro", MaxTokens: 64, Messages: messages}, nil, q)
-		require.NoError(t, err)
+		must.NoError(err)
 		return body
 	}
 	assertThinkingDropped(t, "gemini",
@@ -90,12 +94,13 @@ func TestGeminiRequest_DropsThinkingBlocks(t *testing.T) {
 }
 
 func TestBedrockConverseRequest_DropsThinkingBlocks(t *testing.T) {
+	must := require.New(t)
 	params := func(messages []types.Message) types.StreamParams {
 		return types.StreamParams{Model: "anthropic.claude-sonnet-4-5", MaxTokens: 64, Messages: messages}
 	}
 	with, err := buildConverseStreamInput(params(historyWithThinking()))
-	require.NoError(t, err, "build with thinking blocks")
+	must.NoError(err, "build with thinking blocks")
 	without, err := buildConverseStreamInput(params(types.StripThinkingBlocks(historyWithThinking())))
-	require.NoError(t, err, "build without thinking blocks")
-	require.Equal(t, without, with, "bedrock: history with thinking blocks translates differently")
+	must.NoError(err, "build without thinking blocks")
+	must.Equal(without, with, "bedrock: history with thinking blocks translates differently")
 }

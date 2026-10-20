@@ -23,13 +23,16 @@ func emittedPayload(line string) string {
 // decodeEmittedResult decodes the RunResult carried by one emitted line.
 func decodeEmittedResult(t *testing.T, line string) types.RunResult {
 	t.Helper()
+	must := require.New(t)
 	payload := emittedPayload(line)
 	var decoded types.RunResult
-	require.NoError(t, json.Unmarshal([]byte(payload), &decoded), "payload=%q", payload)
+	must.NoError(json.Unmarshal([]byte(payload), &decoded), "payload=%q", payload)
 	return decoded
 }
 
 func TestStdoutJSONSink_Emit_WritesSentinelAndJSON(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var buf bytes.Buffer
 	sink := NewStdoutJSONSinkTo(&buf)
 
@@ -42,20 +45,20 @@ func TestStdoutJSONSink_Emit_WritesSentinelAndJSON(t *testing.T) {
 		DurationMs:         1234,
 		FinalAssistantText: "done",
 	}
-	require.NoError(t, sink.Emit(context.Background(), res))
+	must.NoError(sink.Emit(context.Background(), res))
 
 	out := buf.String()
-	assert.True(t, strings.HasPrefix(out, StdoutResultSentinel), "output missing sentinel prefix: %q", out)
-	assert.True(t, strings.HasSuffix(out, "\n"), "output missing trailing newline: %q", out)
+	check.True(strings.HasPrefix(out, StdoutResultSentinel), "output missing sentinel prefix: %q", out)
+	check.True(strings.HasSuffix(out, "\n"), "output missing trailing newline: %q", out)
 
 	// Exact sentinel bytes must be "STIRRUP_RESULT " — pinned as a
 	// contract so the smoke workflow can grep for it verbatim.
-	assert.Equal(t, "STIRRUP_RESULT ", StdoutResultSentinel)
+	check.Equal("STIRRUP_RESULT ", StdoutResultSentinel)
 
 	decoded := decodeEmittedResult(t, out)
-	assert.Equal(t, "run-xyz", decoded.RunID)
-	assert.Equal(t, "success", decoded.Outcome)
-	assert.Equal(t, 3, decoded.Turns)
+	check.Equal("run-xyz", decoded.RunID)
+	check.Equal("success", decoded.Outcome)
+	check.Equal(3, decoded.Turns)
 }
 
 // TestStdoutJSONSink_FinalAssistantText_OmitsKeyWhenEmpty pins the wire
@@ -74,6 +77,7 @@ func TestStdoutJSONSink_FinalAssistantText_OmitsKeyWhenEmpty(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var buf bytes.Buffer
 			sink := NewStdoutJSONSinkTo(&buf)
 			res := types.RunResult{
@@ -82,14 +86,14 @@ func TestStdoutJSONSink_FinalAssistantText_OmitsKeyWhenEmpty(t *testing.T) {
 				Outcome:            "success",
 				FinalAssistantText: tc.text,
 			}
-			require.NoError(t, sink.Emit(context.Background(), res))
+			must.NoError(sink.Emit(context.Background(), res))
 
 			payload := emittedPayload(buf.String())
 			hasKey := strings.Contains(payload, "finalAssistantText")
-			require.Equal(t, tc.wantKey, hasKey, "finalAssistantText key present; payload=%q", payload)
+			must.Equal(tc.wantKey, hasKey, "finalAssistantText key present; payload=%q", payload)
 
 			decoded := decodeEmittedResult(t, buf.String())
-			require.Equal(t, tc.text, decoded.FinalAssistantText)
+			must.Equal(tc.text, decoded.FinalAssistantText)
 		})
 	}
 }
@@ -111,6 +115,7 @@ func TestStdoutJSONSink_FinalAssistantTextTruncated_OmitsKeyWhenFalse(t *testing
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var buf bytes.Buffer
 			sink := NewStdoutJSONSinkTo(&buf)
 			res := types.RunResult{
@@ -120,14 +125,14 @@ func TestStdoutJSONSink_FinalAssistantTextTruncated_OmitsKeyWhenFalse(t *testing
 				FinalAssistantText:          "the answer is 42... [truncated by harness]",
 				FinalAssistantTextTruncated: tc.truncated,
 			}
-			require.NoError(t, sink.Emit(context.Background(), res))
+			must.NoError(sink.Emit(context.Background(), res))
 
 			payload := emittedPayload(buf.String())
 			hasKey := strings.Contains(payload, "finalAssistantTextTruncated")
-			require.Equal(t, tc.wantKey, hasKey, "finalAssistantTextTruncated key present; payload=%q", payload)
+			must.Equal(tc.wantKey, hasKey, "finalAssistantTextTruncated key present; payload=%q", payload)
 
 			decoded := decodeEmittedResult(t, buf.String())
-			require.Equal(t, tc.truncated, decoded.FinalAssistantTextTruncated)
+			must.Equal(tc.truncated, decoded.FinalAssistantTextTruncated)
 		})
 	}
 }
@@ -137,12 +142,13 @@ func TestStdoutJSONSink_FinalAssistantTextTruncated_OmitsKeyWhenFalse(t *testing
 // exactly maxEncodedResultBytes passes through untouched, while one
 // byte more triggers truncation and never exceeds the cap.
 func TestStdoutJSONSink_Emit_EncodedCapExactBoundary(t *testing.T) {
+	must := require.New(t)
 	base := types.RunResult{SchemaVersion: 1, RunID: "run-exact", Outcome: "success"}
 
 	probe := base
 	probe.FinalAssistantText = "x"
 	probeLine, err := marshalResultLine(probe)
-	require.NoError(t, err, "marshalResultLine")
+	must.NoError(err, "marshalResultLine")
 	// Every further "x" byte is unescaped ASCII, so the line grows by
 	// exactly one byte per character added to FinalAssistantText.
 	fixedOverhead := len(probeLine) - 1
@@ -152,22 +158,22 @@ func TestStdoutJSONSink_Emit_EncodedCapExactBoundary(t *testing.T) {
 
 	var buf bytes.Buffer
 	sink := NewStdoutJSONSinkTo(&buf)
-	require.NoError(t, sink.Emit(context.Background(), fitsExactly))
-	require.Equal(t, maxEncodedResultBytes, buf.Len(), "exact-fit line length")
+	must.NoError(sink.Emit(context.Background(), fitsExactly))
+	must.Equal(maxEncodedResultBytes, buf.Len(), "exact-fit line length")
 
 	decoded := decodeEmittedResult(t, buf.String())
-	require.False(t, decoded.FinalAssistantTextTruncated, "exact-fit payload should not be marked truncated")
-	require.Equal(t, fitsExactly.FinalAssistantText, decoded.FinalAssistantText, "exact-fit payload's FinalAssistantText was altered")
+	must.False(decoded.FinalAssistantTextTruncated, "exact-fit payload should not be marked truncated")
+	must.Equal(fitsExactly.FinalAssistantText, decoded.FinalAssistantText, "exact-fit payload's FinalAssistantText was altered")
 
 	oneOver := base
 	oneOver.FinalAssistantText = strings.Repeat("x", maxEncodedResultBytes-fixedOverhead+1)
 
 	buf.Reset()
-	require.NoError(t, sink.Emit(context.Background(), oneOver))
-	require.LessOrEqual(t, buf.Len(), maxEncodedResultBytes, "one-byte-over line length")
+	must.NoError(sink.Emit(context.Background(), oneOver))
+	must.LessOrEqual(buf.Len(), maxEncodedResultBytes, "one-byte-over line length")
 
 	decoded = decodeEmittedResult(t, buf.String())
-	require.True(t, decoded.FinalAssistantTextTruncated, "one-byte-over payload should be marked truncated")
+	must.True(decoded.FinalAssistantTextTruncated, "one-byte-over payload should be marked truncated")
 }
 
 // TestStdoutJSONSink_Emit_EncodedCapCatchesLineSeparatorInflation covers the
@@ -176,17 +182,18 @@ func TestStdoutJSONSink_Emit_EncodedCapExactBoundary(t *testing.T) {
 // payload whose raw byte size is comfortably under maxEncodedResultBytes can
 // still encode past it.
 func TestStdoutJSONSink_Emit_EncodedCapCatchesLineSeparatorInflation(t *testing.T) {
+	must := require.New(t)
 	text := strings.Repeat(" ", 50000) // 150,000 raw bytes, 300,000 encoded bytes
-	require.Less(t, len(text), maxEncodedResultBytes, "test fixture raw size should be under the cap")
+	must.Less(len(text), maxEncodedResultBytes, "test fixture raw size should be under the cap")
 	result := types.RunResult{SchemaVersion: 1, RunID: "run-u2028", Outcome: "success", FinalAssistantText: text}
 
 	var buf bytes.Buffer
 	sink := NewStdoutJSONSinkTo(&buf)
-	require.NoError(t, sink.Emit(context.Background(), result))
-	require.LessOrEqual(t, buf.Len(), maxEncodedResultBytes, "emitted line length")
+	must.NoError(sink.Emit(context.Background(), result))
+	must.LessOrEqual(buf.Len(), maxEncodedResultBytes, "emitted line length")
 
 	decoded := decodeEmittedResult(t, buf.String())
-	require.True(t, decoded.FinalAssistantTextTruncated, "U+2028-heavy payload under the raw cap but over the encoded cap should be truncated")
+	must.True(decoded.FinalAssistantTextTruncated, "U+2028-heavy payload under the raw cap but over the encoded cap should be truncated")
 }
 
 // TestStdoutJSONSink_Emit_HTMLCharactersNotEscaped pins that disabling
@@ -194,23 +201,25 @@ func TestStdoutJSONSink_Emit_EncodedCapCatchesLineSeparatorInflation(t *testing.
 // so a payload full of them that fits under maxEncodedResultBytes is emitted
 // whole rather than needlessly truncated by escaping inflation.
 func TestStdoutJSONSink_Emit_HTMLCharactersNotEscaped(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	text := strings.Repeat("<a>&", maxEncodedResultBytes/8) // well under the cap even unescaped
 	result := types.RunResult{SchemaVersion: 1, RunID: "run-html", Outcome: "success", FinalAssistantText: text}
 
 	var buf bytes.Buffer
 	sink := NewStdoutJSONSinkTo(&buf)
-	require.NoError(t, sink.Emit(context.Background(), result))
+	must.NoError(sink.Emit(context.Background(), result))
 
 	payload := emittedPayload(buf.String())
 	preview := payload
 	if len(preview) > 200 {
 		preview = preview[:200]
 	}
-	assert.Contains(t, payload, `<a>&`, "HTML characters were escaped despite SetEscapeHTML(false): %q", preview)
+	check.Contains(payload, `<a>&`, "HTML characters were escaped despite SetEscapeHTML(false): %q", preview)
 
 	decoded := decodeEmittedResult(t, buf.String())
-	assert.False(t, decoded.FinalAssistantTextTruncated, "HTML-heavy payload under the cap should not be truncated")
-	assert.Equal(t, text, decoded.FinalAssistantText, "FinalAssistantText was altered despite fitting under the cap")
+	check.False(decoded.FinalAssistantTextTruncated, "HTML-heavy payload under the cap should not be truncated")
+	check.Equal(text, decoded.FinalAssistantText, "FinalAssistantText was altered despite fitting under the cap")
 }
 
 // TestStdoutJSONSink_Emit_ShrinksFeedbackBeforeFinalAssistantText pins the
@@ -219,6 +228,8 @@ func TestStdoutJSONSink_Emit_HTMLCharactersNotEscaped(t *testing.T) {
 // judge's secondary verdict. A large Feedback should be truncated while a
 // modest FinalAssistantText is preserved intact.
 func TestStdoutJSONSink_Emit_ShrinksFeedbackBeforeFinalAssistantText(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	answer := "the final answer is 42"
 	result := types.RunResult{
 		SchemaVersion:      1,
@@ -233,14 +244,14 @@ func TestStdoutJSONSink_Emit_ShrinksFeedbackBeforeFinalAssistantText(t *testing.
 
 	var buf bytes.Buffer
 	sink := NewStdoutJSONSinkTo(&buf)
-	require.NoError(t, sink.Emit(context.Background(), result))
-	require.LessOrEqual(t, buf.Len(), maxEncodedResultBytes, "emitted line length")
+	must.NoError(sink.Emit(context.Background(), result))
+	must.LessOrEqual(buf.Len(), maxEncodedResultBytes, "emitted line length")
 
 	decoded := decodeEmittedResult(t, buf.String())
-	assert.Equal(t, answer, decoded.FinalAssistantText, "FinalAssistantText was truncated even though Feedback should absorb the cut first")
-	assert.False(t, decoded.FinalAssistantTextTruncated, "FinalAssistantTextTruncated should stay false when Feedback alone can absorb the cut")
-	require.NotNil(t, decoded.VerifierVerdict, "VerifierVerdict was dropped")
-	assert.Less(t, len(decoded.VerifierVerdict.Feedback), len(result.VerifierVerdict.Feedback), "VerifierVerdict.Feedback was not truncated")
+	check.Equal(answer, decoded.FinalAssistantText, "FinalAssistantText was truncated even though Feedback should absorb the cut first")
+	check.False(decoded.FinalAssistantTextTruncated, "FinalAssistantTextTruncated should stay false when Feedback alone can absorb the cut")
+	must.NotNil(decoded.VerifierVerdict, "VerifierVerdict was dropped")
+	check.Less(len(decoded.VerifierVerdict.Feedback), len(result.VerifierVerdict.Feedback), "VerifierVerdict.Feedback was not truncated")
 }
 
 // TestStdoutJSONSink_Emit_EnvelopeAloneOverCap covers the fallback path: when
@@ -249,6 +260,8 @@ func TestStdoutJSONSink_Emit_ShrinksFeedbackBeforeFinalAssistantText(t *testing.
 // decodable line, and logs a warning naming the encoded size and the cap
 // rather than failing silently.
 func TestStdoutJSONSink_Emit_EnvelopeAloneOverCap(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	// Error is neither Feedback nor FinalAssistantText, so it is not
 	// truncated by either search stage: an oversized Error is the
 	// simplest way to construct the "nothing left to shrink" case.
@@ -266,16 +279,16 @@ func TestStdoutJSONSink_Emit_EnvelopeAloneOverCap(t *testing.T) {
 
 	var buf bytes.Buffer
 	sink := NewStdoutJSONSinkTo(&buf)
-	require.NoError(t, sink.Emit(context.Background(), result))
-	require.Greater(t, buf.Len(), maxEncodedResultBytes,
+	must.NoError(sink.Emit(context.Background(), result))
+	must.Greater(buf.Len(), maxEncodedResultBytes,
 		"the fixture must exceed the cap even after truncation, or the test no longer exercises the fallback path")
 
 	decoded := decodeEmittedResult(t, buf.String())
-	assert.Equal(t, result.RunID, decoded.RunID)
+	check.Equal(result.RunID, decoded.RunID)
 
-	assert.Contains(t, logBuf.String(), "encoded line cap", "expected a warning naming the encoded line cap")
+	check.Contains(logBuf.String(), "encoded line cap", "expected a warning naming the encoded line cap")
 	wantCap := fmt.Sprintf(`"cap":%d`, maxEncodedResultBytes)
-	assert.Contains(t, logBuf.String(), wantCap, "expected the warning to name the cap")
+	check.Contains(logBuf.String(), wantCap, "expected the warning to name the cap")
 }
 
 // TestStdoutJSONSink_Emit_AlreadyTruncatedInput covers a FinalAssistantText
@@ -283,6 +296,8 @@ func TestStdoutJSONSink_Emit_EnvelopeAloneOverCap(t *testing.T) {
 // raw-size cap already fired) and is still over the encoded cap. Emit must
 // not duplicate the marker and must leave the truncated flag set.
 func TestStdoutJSONSink_Emit_AlreadyTruncatedInput(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	const marker = "... [truncated by harness]"
 	// The run of "x" is far longer than the marker, so the binary
 	// search's cut point lands deep inside it rather than inside the
@@ -299,17 +314,18 @@ func TestStdoutJSONSink_Emit_AlreadyTruncatedInput(t *testing.T) {
 
 	var buf bytes.Buffer
 	sink := NewStdoutJSONSinkTo(&buf)
-	require.NoError(t, sink.Emit(context.Background(), result))
-	require.LessOrEqual(t, buf.Len(), maxEncodedResultBytes, "emitted line length")
+	must.NoError(sink.Emit(context.Background(), result))
+	must.LessOrEqual(buf.Len(), maxEncodedResultBytes, "emitted line length")
 
 	decoded := decodeEmittedResult(t, buf.String())
-	assert.True(t, decoded.FinalAssistantTextTruncated, "FinalAssistantTextTruncated should remain true")
-	assert.Equal(t, 1, strings.Count(decoded.FinalAssistantText, marker), "expected exactly one truncation marker")
+	check.True(decoded.FinalAssistantTextTruncated, "FinalAssistantTextTruncated should remain true")
+	check.Equal(1, strings.Count(decoded.FinalAssistantText, marker), "expected exactly one truncation marker")
 }
 
 func TestNoneSink_EmitIsNoOp(t *testing.T) {
+	must := require.New(t)
 	sink := NoneSink{}
-	require.NoError(t, sink.Emit(context.Background(), types.RunResult{}))
+	must.NoError(sink.Emit(context.Background(), types.RunResult{}))
 }
 
 func TestNewResultSink_SelectsSinkByType(t *testing.T) {
@@ -325,9 +341,10 @@ func TestNewResultSink_SelectsSinkByType(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			sink, err := NewResultSink(tc.cfg)
-			require.NoError(t, err)
-			require.IsType(t, tc.wantType, sink)
+			must.NoError(err)
+			must.IsType(tc.wantType, sink)
 		})
 	}
 }
@@ -335,13 +352,15 @@ func TestNewResultSink_SelectsSinkByType(t *testing.T) {
 func TestNewResultSink_ReservedTypesRejected(t *testing.T) {
 	for _, typ := range []string{"gcp-pubsub", "gcs"} {
 		t.Run(typ, func(t *testing.T) {
+			must := require.New(t)
 			_, err := NewResultSink(&types.ResultSinkConfig{Type: typ})
-			require.ErrorContains(t, err, "not yet implemented")
+			must.ErrorContains(err, "not yet implemented")
 		})
 	}
 }
 
 func TestNewResultSink_UnknownTypeRejected(t *testing.T) {
+	must := require.New(t)
 	_, err := NewResultSink(&types.ResultSinkConfig{Type: "kinesis"})
-	require.ErrorContains(t, err, "unsupported resultSink.type")
+	must.ErrorContains(err, "unsupported resultSink.type")
 }

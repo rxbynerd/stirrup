@@ -8,6 +8,7 @@ import (
 )
 
 func TestStaticRouter_Select(t *testing.T) {
+	must := require.New(t)
 	r := NewStaticRouter("anthropic", "claude-sonnet-4-6")
 
 	sel := r.Select(context.Background(), RouterContext{
@@ -15,7 +16,7 @@ func TestStaticRouter_Select(t *testing.T) {
 		Turn: 1,
 	})
 
-	require.Equal(t, ModelSelection{Provider: "anthropic", Model: "claude-sonnet-4-6"}, sel)
+	must.Equal(ModelSelection{Provider: "anthropic", Model: "claude-sonnet-4-6"}, sel)
 }
 
 func TestStaticRouter_IgnoresContext(t *testing.T) {
@@ -41,8 +42,9 @@ func TestStaticRouter_IgnoresContext(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			sel := r.Select(context.Background(), tc.rc)
-			require.Equal(t, ModelSelection{Provider: "bedrock", Model: "claude-opus-4-6"}, sel)
+			must.Equal(ModelSelection{Provider: "bedrock", Model: "claude-opus-4-6"}, sel)
 		})
 	}
 }

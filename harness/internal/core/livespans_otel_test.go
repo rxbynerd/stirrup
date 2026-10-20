@@ -62,10 +62,13 @@ func spanAttr(s tracetest.SpanStub, key string) (string, bool) {
 
 func requireParent(t *testing.T, child, parent tracetest.SpanStub) {
 	t.Helper()
-	require.Equal(t, parent.SpanContext.SpanID(), child.Parent.SpanID(), "%s: parent span ID (want the %s span)", child.Name, parent.Name)
+	must := require.New(t)
+	must.Equal(parent.SpanContext.SpanID(), child.Parent.SpanID(), "%s: parent span ID (want the %s span)", child.Name, parent.Name)
 }
 
 func TestLoop_OTelChatSpanPerRequest(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop, exporter := otelLoop(t, nil)
 	loop.Provider = &scriptedProvider{turns: [][]types.StreamEvent{
 		{
@@ -78,37 +81,39 @@ func TestLoop_OTelChatSpanPerRequest(t *testing.T) {
 		},
 	}}
 	_, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
+	must.NoError(err)
 
 	spans := exporter.GetSpans()
-	assert.Empty(t, spansNamed(spans, "run"), "legacy run spans")
+	check.Empty(spansNamed(spans, "run"), "legacy run spans")
 	root := spansNamed(spans, "invoke_agent stirrup")
-	require.Len(t, root, 1, "invoke_agent stirrup spans")
+	must.Len(root, 1, "invoke_agent stirrup spans")
 	chats := spansNamed(spans, "chat claude-sonnet-4-6")
-	require.Len(t, chats, 2, "chat spans")
+	must.Len(chats, 2, "chat spans")
 	streams := spansNamed(spans, "provider.stream")
-	require.Len(t, streams, 2, "provider.stream spans")
+	must.Len(streams, 2, "provider.stream spans")
 	for i, chat := range chats {
-		assert.Equal(t, oteltrace.SpanKindClient, chat.SpanKind, "chat %d span kind", i)
+		check.Equal(oteltrace.SpanKindClient, chat.SpanKind, "chat %d span kind", i)
 		requireParent(t, chat, root[0])
 		requireParent(t, streams[i], chat)
 		turnNumber, _ := spanAttr(chat, "turn.number")
-		assert.Equal(t, []string{"0", "1"}[i], turnNumber, "chat %d turn.number", i)
+		check.Equal([]string{"0", "1"}[i], turnNumber, "chat %d turn.number", i)
 	}
 	toolCalls, _ := spanAttr(chats[0], "turn.tool_calls")
-	assert.Equal(t, "1", toolCalls, "turn.tool_calls")
+	check.Equal("1", toolCalls, "turn.tool_calls")
 	tools := spansNamed(spans, "execute_tool test_tool")
-	require.Len(t, tools, 1, "execute_tool spans")
+	must.Len(tools, 1, "execute_tool spans")
 	toolTurn, _ := spanAttr(tools[0], "turn.number")
-	assert.Equal(t, "0", toolTurn, "tool span turn.number (the emitting chat span's turn)")
+	check.Equal("0", toolTurn, "tool span turn.number (the emitting chat span's turn)")
 	inputTokens, _ := spanAttr(chats[1], "gen_ai.usage.input_tokens")
-	assert.Equal(t, "12", inputTokens, "second chat gen_ai.usage.input_tokens")
+	check.Equal("12", inputTokens, "second chat gen_ai.usage.input_tokens")
 	for _, s := range spans {
-		assert.False(t, strings.HasPrefix(s.Name, "turn["), "legacy turn span %q exported", s.Name)
+		check.False(strings.HasPrefix(s.Name, "turn["), "legacy turn span %q exported", s.Name)
 	}
 }
 
 func TestLoop_OTelOverflowRetryGetsItsOwnChatSpan(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop, prov, _, _ := buildOverflowLoop(t, overflowStep{err: promptTooLong()})
 	emitter, exporter := newInMemoryOTelEmitter(t)
 	loop.Trace = emitter
@@ -117,19 +122,21 @@ func TestLoop_OTelOverflowRetryGetsItsOwnChatSpan(t *testing.T) {
 	config.ContextStrategy.MaxTokens = 200_000
 
 	result, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	require.Equal(t, "success", result.Outcome, "prerequisite: run outcome")
-	require.Len(t, prov.requests, 5, "prerequisite: provider requests")
+	must.NoError(err)
+	must.Equal("success", result.Outcome, "prerequisite: run outcome")
+	must.Len(prov.requests, 5, "prerequisite: provider requests")
 
 	turn3 := chatSpansAtTurn(exporter.GetSpans(), "3")
-	require.Len(t, turn3, 2, "turn 3 chat spans (rejected request and retry)")
+	must.Len(turn3, 2, "turn 3 chat spans (rejected request and retry)")
 	rejectedErrType, _ := spanAttr(turn3[0], "error.type")
-	assert.Equal(t, "context_overflow", rejectedErrType, "rejected request error.type")
+	check.Equal("context_overflow", rejectedErrType, "rejected request error.type")
 	_, retryHasErr := spanAttr(turn3[1], "error.type")
-	assert.False(t, retryHasErr, "successful retry carries error.type")
+	check.False(retryHasErr, "successful retry carries error.type")
 }
 
 func TestLoop_OTelWindowFillingResponseEndsItsChatSpan(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop, prov, _, _ := buildOverflowLoop(t, overflowStepsByKind()["context window stop"])
 	emitter, exporter := newInMemoryOTelEmitter(t)
 	loop.Trace = emitter
@@ -138,24 +145,26 @@ func TestLoop_OTelWindowFillingResponseEndsItsChatSpan(t *testing.T) {
 	config.ContextStrategy.MaxTokens = 200_000
 
 	result, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	require.Equal(t, "success", result.Outcome, "prerequisite: run outcome")
-	require.Len(t, prov.requests, 5, "prerequisite: provider requests")
+	must.NoError(err)
+	must.Equal("success", result.Outcome, "prerequisite: run outcome")
+	must.Len(prov.requests, 5, "prerequisite: provider requests")
 
 	turn3 := chatSpansAtTurn(exporter.GetSpans(), "3")
-	require.Len(t, turn3, 2, "turn 3 chat spans (window-filling response and retry)")
+	must.Len(turn3, 2, "turn 3 chat spans (window-filling response and retry)")
 	filled := turn3[0]
 	filledErrType, _ := spanAttr(filled, "error.type")
-	assert.Equal(t, "context_overflow", filledErrType, "window-filling request error.type")
+	check.Equal("context_overflow", filledErrType, "window-filling request error.type")
 	_, abandoned := spanAttr(filled, "stirrup.span.abandoned")
-	assert.False(t, abandoned, "window-filling request span was abandoned rather than ended by the loop")
+	check.False(abandoned, "window-filling request span was abandoned rather than ended by the loop")
 	outputTokens, _ := spanAttr(filled, "gen_ai.usage.output_tokens")
-	assert.Equal(t, "40", outputTokens, "window-filling request gen_ai.usage.output_tokens")
+	check.Equal("40", outputTokens, "window-filling request gen_ai.usage.output_tokens")
 	_, retryHasErr := spanAttr(turn3[1], "error.type")
-	assert.False(t, retryHasErr, "successful retry carries error.type")
+	check.False(retryHasErr, "successful retry carries error.type")
 }
 
 func TestLoop_OTelOneToolSpanPerCall(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop, exporter := otelLoop(t, nil)
 	loop.Permissions = permission.NewAllowAll()
 	loop.Tools.(*tool.Registry).Register(&tool.Tool{
@@ -180,31 +189,33 @@ func TestLoop_OTelOneToolSpanPerCall(t *testing.T) {
 		},
 	}}
 	_, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
+	must.NoError(err)
 
 	spans := exporter.GetSpans()
 	roots := spansNamed(spans, "invoke_agent stirrup")
-	require.Len(t, roots, 1, "invoke_agent stirrup spans")
+	must.Len(roots, 1, "invoke_agent stirrup spans")
 	root := roots[0]
 	slow := spansNamed(spans, "execute_tool slow_mutating_tool")
 	fast := spansNamed(spans, "execute_tool test_tool")
-	require.Len(t, slow, 1, "execute_tool slow_mutating_tool spans")
-	require.Len(t, fast, 1, "execute_tool test_tool spans")
+	must.Len(slow, 1, "execute_tool slow_mutating_tool spans")
+	must.Len(fast, 1, "execute_tool test_tool spans")
 	for _, s := range spans {
-		assert.False(t, strings.HasPrefix(s.Name, "tool."), "legacy tool span %q exported", s.Name)
+		check.False(strings.HasPrefix(s.Name, "tool."), "legacy tool span %q exported", s.Name)
 	}
 	requireParent(t, slow[0], root)
 	requireParent(t, fast[0], root)
 	perm := spansNamed(spans, "permission.check")
-	require.Len(t, perm, 1, "permission.check spans")
+	must.Len(perm, 1, "permission.check spans")
 	requireParent(t, perm[0], slow[0])
-	assert.False(t, slow[0].EndTime.After(fast[0].StartTime),
+	check.False(slow[0].EndTime.After(fast[0].StartTime),
 		"first call's span ends at %v, after the second call's span starts at %v", slow[0].EndTime, fast[0].StartTime)
 	callID, _ := spanAttr(slow[0], "gen_ai.tool.call.id")
-	assert.Equal(t, "tc_0", callID, "gen_ai.tool.call.id")
+	check.Equal("tc_0", callID, "gen_ai.tool.call.id")
 }
 
 func TestLoop_ToolDurationExcludesLaterCalls(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	var traceBuf bytes.Buffer
 	loop := buildTestLoop(nil)
 	loop.Trace = trace.NewJSONLTraceEmitter(&traceBuf, false)
@@ -229,29 +240,31 @@ func TestLoop_ToolDurationExcludesLaterCalls(t *testing.T) {
 		},
 	}}
 	runTrace, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
+	must.NoError(err)
 	durations := map[string]int64{}
 	for _, call := range runTrace.ToolCalls {
 		durations[call.ID] = call.DurationMs
 	}
-	require.GreaterOrEqual(t, durations["tc_slow"], int64(60), "prerequisite: slow call duration in ms")
-	assert.Less(t, durations["tc_fast"], int64(60), "fast call duration in ms excludes the slow call after it")
+	must.GreaterOrEqual(durations["tc_slow"], int64(60), "prerequisite: slow call duration in ms")
+	check.Less(durations["tc_fast"], int64(60), "fast call duration in ms excludes the slow call after it")
 }
 
 func TestLoop_OTelChatSpanCarriesProviderEndpoint(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop, exporter := otelLoop(t, nil)
 	loop.Provider = endpointProvider{&scriptedTurnProvider{scripts: []turnScript{{events: []types.StreamEvent{
 		{Type: "text_delta", Text: "done"},
 		{Type: "message_complete", StopReason: "end_turn"},
 	}}}}}
 	_, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
+	must.NoError(err)
 	chats := spansNamed(exporter.GetSpans(), "chat claude-sonnet-4-6")
-	require.Len(t, chats, 1, "chat spans")
+	must.Len(chats, 1, "chat spans")
 	address, _ := spanAttr(chats[0], "server.address")
-	assert.Equal(t, "api.anthropic.com", address, "server.address")
+	check.Equal("api.anthropic.com", address, "server.address")
 	port, _ := spanAttr(chats[0], "server.port")
-	assert.Equal(t, "443", port, "server.port")
+	check.Equal("443", port, "server.port")
 }
 
 // ctxBlockingProvider blocks each Stream until its context is done, then
@@ -269,6 +282,8 @@ func (p *ctxBlockingProvider) Stream(ctx context.Context, _ types.StreamParams) 
 }
 
 func TestLoop_OTelProviderRequestCancelledWithRun(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop, exporter := otelLoop(t, nil)
 	prov := &ctxBlockingProvider{entered: make(chan struct{}), done: make(chan error, 1)}
 	loop.Provider = prov
@@ -285,16 +300,16 @@ func TestLoop_OTelProviderRequestCancelledWithRun(t *testing.T) {
 	cancel()
 	select {
 	case err := <-prov.done:
-		require.Error(t, err, "provider context finished without an error")
+		must.Error(err, "provider context finished without an error")
 	case <-time.After(5 * time.Second):
-		require.FailNow(t, "provider request was not cancelled with the run")
+		must.FailNow("provider request was not cancelled with the run")
 	}
 	rt := <-result
-	assert.Equal(t, "cancelled", rt.Outcome, "run outcome")
+	check.Equal("cancelled", rt.Outcome, "run outcome")
 	chats := spansNamed(exporter.GetSpans(), "chat claude-sonnet-4-6")
-	require.Len(t, chats, 1, "chat spans")
+	must.Len(chats, 1, "chat spans")
 	errType, _ := spanAttr(chats[0], "error.type")
-	assert.Equal(t, "cancelled", errType, "chat error.type")
+	check.Equal("cancelled", errType, "chat error.type")
 }
 
 func TestLoop_OTelChatSpanTemperatureOnlyWhenSet(t *testing.T) {
@@ -307,6 +322,8 @@ func TestLoop_OTelChatSpanTemperatureOnlyWhenSet(t *testing.T) {
 		{name: "operator set", temp: types.Float64Ptr(0.7), want: "0.7"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
 			loop, exporter := otelLoop(t, nil)
 			loop.Provider = &scriptedProvider{turns: [][]types.StreamEvent{{
 				{Type: "text_delta", Text: "done"},
@@ -315,27 +332,28 @@ func TestLoop_OTelChatSpanTemperatureOnlyWhenSet(t *testing.T) {
 			config := buildTestConfig()
 			config.Temperature = tc.temp
 			_, err := loop.Run(context.Background(), config)
-			require.NoError(t, err)
+			must.NoError(err)
 			chats := spansNamed(exporter.GetSpans(), "chat claude-sonnet-4-6")
-			require.Len(t, chats, 1, "chat spans")
+			must.Len(chats, 1, "chat spans")
 			got, _ := spanAttr(chats[0], "gen_ai.request.temperature")
-			assert.Equal(t, tc.want, got, "gen_ai.request.temperature")
+			check.Equal(tc.want, got, "gen_ai.request.temperature")
 		})
 	}
 }
 
 func TestLoop_OTelProviderRequestPastDeadlineIsTimeout(t *testing.T) {
+	must := require.New(t)
 	loop, exporter := otelLoop(t, nil)
 	loop.Provider = &ctxBlockingProvider{entered: make(chan struct{}), done: make(chan error, 1)}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
 	rt, _ := loop.Run(ctx, buildTestConfig())
-	require.Equal(t, "timeout", rt.Outcome, "prerequisite: run outcome")
+	must.Equal("timeout", rt.Outcome, "prerequisite: run outcome")
 	chats := spansNamed(exporter.GetSpans(), "chat claude-sonnet-4-6")
-	require.Len(t, chats, 1, "chat spans")
+	must.Len(chats, 1, "chat spans")
 	errType, _ := spanAttr(chats[0], "error.type")
-	require.Equal(t, "timeout", errType, "chat error.type")
+	must.Equal("timeout", errType, "chat error.type")
 }
 
 func eventsOfType(tp *recordingTransport, typ string) []types.HarnessEvent {
@@ -351,6 +369,8 @@ func eventsOfType(tp *recordingTransport, typ string) []types.HarnessEvent {
 }
 
 func TestLoop_RunStartedCarriesRunSpanReference(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop, exporter := otelLoop(t, &mockProvider{events: []types.StreamEvent{
 		{Type: "text_delta", Text: "done"},
 		{Type: "message_complete", StopReason: "end_turn"},
@@ -361,10 +381,10 @@ func TestLoop_RunStartedCarriesRunSpanReference(t *testing.T) {
 	config := buildTestConfig()
 
 	rt, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	root := spansNamed(exporter.GetSpans(), "invoke_agent stirrup")
-	require.Len(t, root, 1, "invoke_agent stirrup spans")
+	must.Len(root, 1, "invoke_agent stirrup spans")
 	want := types.TraceReference{
 		TraceID:   root[0].SpanContext.TraceID().String(),
 		RunSpanID: root[0].SpanContext.SpanID().String(),
@@ -388,24 +408,26 @@ func TestLoop_RunStartedCarriesRunSpanReference(t *testing.T) {
 			}
 		}
 	}
-	require.Len(t, started, 1, "run_started events")
-	assert.GreaterOrEqual(t, readyAt, 0, "ready event is emitted")
-	assert.Greater(t, startedAt, readyAt, "run_started follows ready")
-	assert.Greater(t, firstModelAt, startedAt, "first model event follows run_started")
-	assert.Equal(t, config.RunID, started[0].ID, "run_started ID")
-	require.NotNil(t, started[0].TraceReference, "run_started reference")
-	assert.Equal(t, want, *started[0].TraceReference, "run_started reference")
-	require.NotNil(t, rt.TraceReference, "RunTrace.TraceReference")
-	assert.Equal(t, want, *rt.TraceReference, "RunTrace.TraceReference")
+	must.Len(started, 1, "run_started events")
+	check.GreaterOrEqual(readyAt, 0, "ready event is emitted")
+	check.Greater(startedAt, readyAt, "run_started follows ready")
+	check.Greater(firstModelAt, startedAt, "first model event follows run_started")
+	check.Equal(config.RunID, started[0].ID, "run_started ID")
+	must.NotNil(started[0].TraceReference, "run_started reference")
+	check.Equal(want, *started[0].TraceReference, "run_started reference")
+	must.NotNil(rt.TraceReference, "RunTrace.TraceReference")
+	check.Equal(want, *rt.TraceReference, "RunTrace.TraceReference")
 
 	done := eventsOfType(tp, "done")
-	require.Len(t, done, 1, "done events")
-	require.NotNil(t, done[0].Trace, "done summary")
-	require.NotNil(t, done[0].Trace.TraceReference, "done summary reference")
-	assert.Equal(t, want, *done[0].Trace.TraceReference, "done summary reference")
+	must.Len(done, 1, "done events")
+	must.NotNil(done[0].Trace, "done summary")
+	must.NotNil(done[0].Trace.TraceReference, "done summary reference")
+	check.Equal(want, *done[0].Trace.TraceReference, "done summary reference")
 }
 
 func TestLoop_RunStartedWithoutOTelSpanCarriesNoReference(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop := buildTestLoop(&mockProvider{events: []types.StreamEvent{
 		{Type: "text_delta", Text: "done"},
 		{Type: "message_complete", StopReason: "end_turn"},
@@ -415,21 +437,23 @@ func TestLoop_RunStartedWithoutOTelSpanCarriesNoReference(t *testing.T) {
 	config := buildTestConfig()
 
 	rt, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
+	must.NoError(err)
 	started := eventsOfType(tp, "run_started")
-	require.Len(t, started, 1, "run_started events")
-	assert.Equal(t, config.RunID, started[0].ID, "run_started ID")
-	assert.Equal(t, "run_started", tp.events[0].Type, "first event type")
-	assert.Nil(t, rt.TraceReference, "RunTrace.TraceReference")
+	must.Len(started, 1, "run_started events")
+	check.Equal(config.RunID, started[0].ID, "run_started ID")
+	check.Equal("run_started", tp.events[0].Type, "first event type")
+	check.Nil(rt.TraceReference, "RunTrace.TraceReference")
 	for _, e := range tp.events {
-		assert.Nil(t, e.TraceReference, "%s event reference", e.Type)
+		check.Nil(e.TraceReference, "%s event reference", e.Type)
 		if e.Trace != nil {
-			assert.Nil(t, e.Trace.TraceReference, "%s event summary reference", e.Type)
+			check.Nil(e.Trace.TraceReference, "%s event summary reference", e.Type)
 		}
 	}
 }
 
 func TestLoop_RunStartedIsFirstEventWithoutLoopReady(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop, _ := otelLoop(t, &mockProvider{events: []types.StreamEvent{
 		{Type: "text_delta", Text: "done"},
 		{Type: "message_complete", StopReason: "end_turn"},
@@ -440,12 +464,12 @@ func TestLoop_RunStartedIsFirstEventWithoutLoopReady(t *testing.T) {
 	config := buildTestConfig()
 
 	_, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	require.NotEmpty(t, tp.events, "loop emitted events")
+	must.NoError(err)
+	must.NotEmpty(tp.events, "loop emitted events")
 	first := tp.events[0]
-	assert.Equal(t, "run_started", first.Type, "first event type")
-	assert.Equal(t, config.RunID, first.ID, "first event ID")
-	assert.NotNil(t, first.TraceReference, "first event reference")
+	check.Equal("run_started", first.Type, "first event type")
+	check.Equal(config.RunID, first.ID, "first event ID")
+	check.NotNil(first.TraceReference, "first event reference")
 }
 
 // recordingControlTransport records emitted events and lets the test fire
@@ -458,6 +482,8 @@ type recordingControlTransport struct {
 func (t *recordingControlTransport) Emit(e types.HarnessEvent) error { return t.rec.Emit(e) }
 
 func TestRunFollowUpLoop_EachRunStartsWithItsOwnReference(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop, _ := otelLoop(t, &mockProvider{events: []types.StreamEvent{
 		{Type: "text_delta", Text: "done"},
 		{Type: "message_complete", StopReason: "end_turn"},
@@ -468,7 +494,7 @@ func TestRunFollowUpLoop_EachRunStartsWithItsOwnReference(t *testing.T) {
 	config := buildTestConfig()
 
 	_, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -485,17 +511,17 @@ func TestRunFollowUpLoop_EachRunStartsWithItsOwnReference(t *testing.T) {
 	select {
 	case followUpRunID = <-ran:
 	case <-time.After(3 * time.Second):
-		require.FailNow(t, "follow-up run did not complete")
+		must.FailNow("follow-up run did not complete")
 	}
 	cancel()
 	<-done
 
 	started := eventsOfType(&tp.rec, "run_started")
-	require.Len(t, started, 2, "run_started events, one per run")
-	assert.Equal(t, "test-run-1", started[0].ID, "first run_started ID")
-	assert.Equal(t, followUpRunID, started[1].ID, "follow-up run_started ID")
-	require.NotNil(t, started[0].TraceReference, "first run_started reference")
-	require.NotNil(t, started[1].TraceReference, "follow-up run_started reference")
-	assert.NotEqual(t, started[0].TraceReference.TraceID, started[1].TraceReference.TraceID,
+	must.Len(started, 2, "run_started events, one per run")
+	check.Equal("test-run-1", started[0].ID, "first run_started ID")
+	check.Equal(followUpRunID, started[1].ID, "follow-up run_started ID")
+	must.NotNil(started[0].TraceReference, "first run_started reference")
+	must.NotNil(started[1].TraceReference, "follow-up run_started reference")
+	check.NotEqual(started[0].TraceReference.TraceID, started[1].TraceReference.TraceID,
 		"follow-up run should start its own trace")
 }

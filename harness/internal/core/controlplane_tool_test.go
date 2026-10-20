@@ -87,6 +87,7 @@ func controlPlaneToolsConfig() types.ToolsConfig {
 // covers registration, schema validation, dispatch, and the wire.
 func startControlPlaneLoop(t *testing.T, cp *fakeControlPlane) *AgenticLoop {
 	t.Helper()
+	must := require.New(t)
 
 	lis := bufconn.Listen(1 << 20)
 	srv := grpc.NewServer()
@@ -102,7 +103,7 @@ func startControlPlaneLoop(t *testing.T, cp *fakeControlPlane) *AgenticLoop {
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 		),
 	)
-	require.NoError(t, err, "NewGRPCTransport")
+	must.NoError(err, "NewGRPCTransport")
 	t.Cleanup(func() { _ = tr.Close() })
 
 	registry := buildToolRegistry(executor.NewNoneExecutor(), edit.NewWholeFileStrategy(), controlPlaneToolsConfig(), nil)
@@ -112,6 +113,7 @@ func startControlPlaneLoop(t *testing.T, cp *fakeControlPlane) *AgenticLoop {
 }
 
 func TestControlPlaneTool_RoundTripOverGRPC(t *testing.T) {
+	must := require.New(t)
 	cp := &fakeControlPlane{
 		respond: func(req *pb.HarnessEvent) *pb.ControlEvent {
 			return &pb.ControlEvent{
@@ -129,7 +131,7 @@ func TestControlPlaneTool_RoundTripOverGRPC(t *testing.T) {
 		names = append(names, d.Name)
 	}
 	for _, want := range []string{"web_fetch", "search_memory", "save_memory"} {
-		require.Contains(t, names, want)
+		must.Contains(names, want)
 	}
 
 	output, success := loop.dispatchToolCall(context.Background(), types.ToolCall{
@@ -137,23 +139,24 @@ func TestControlPlaneTool_RoundTripOverGRPC(t *testing.T) {
 		Name:  "search_memory",
 		Input: json.RawMessage(`{"query":"lunch","limit":3}`),
 	})
-	require.True(t, success, "expected success, got failure: %q", output)
-	require.Equal(t, `{"memories":[{"content":"remembered"}]}`, output, "content not delivered verbatim") //nolint:testifylint // byte-exact comparison is the point
+	must.True(success, "expected success, got failure: %q", output)
+	must.Equal(`{"memories":[{"content":"remembered"}]}`, output, "content not delivered verbatim") //nolint:testifylint // byte-exact comparison is the point
 
 	reqs := cp.seen()
-	require.Len(t, reqs, 1)
+	must.Len(reqs, 1)
 	req := reqs[0]
-	require.Equal(t, "search_memory", req.ToolName)
-	require.Equal(t, "tc_cp_1", req.ToolUseId)
-	require.NotEmpty(t, req.RequestId)
+	must.Equal("search_memory", req.ToolName)
+	must.Equal("tc_cp_1", req.ToolUseId)
+	must.NotEmpty(req.RequestId)
 
 	var input map[string]any
-	require.NoError(t, json.Unmarshal(req.Input, &input), "request input is not JSON: %s", req.Input)
-	require.Equal(t, "lunch", input["query"])
-	require.InDelta(t, float64(3), input["limit"], 0)
+	must.NoError(json.Unmarshal(req.Input, &input), "request input is not JSON: %s", req.Input)
+	must.Equal("lunch", input["query"])
+	must.InDelta(float64(3), input["limit"], 0)
 }
 
 func TestControlPlaneTool_IsErrorSurfacesAsToolFailure(t *testing.T) {
+	must := require.New(t)
 	cp := &fakeControlPlane{
 		respond: func(req *pb.HarnessEvent) *pb.ControlEvent {
 			return &pb.ControlEvent{
@@ -171,12 +174,13 @@ func TestControlPlaneTool_IsErrorSurfacesAsToolFailure(t *testing.T) {
 		Name:  "search_memory",
 		Input: json.RawMessage(`{"query":"x"}`),
 	})
-	require.False(t, success, "expected failure, got success: %q", output)
-	require.Contains(t, output, "upstream_error")
-	require.Contains(t, output, "billet unavailable")
+	must.False(success, "expected failure, got success: %q", output)
+	must.Contains(output, "upstream_error")
+	must.Contains(output, "billet unavailable")
 }
 
 func TestControlPlaneTool_InputValidatedBeforeRequest(t *testing.T) {
+	must := require.New(t)
 	cp := &fakeControlPlane{}
 	loop := startControlPlaneLoop(t, cp)
 
@@ -185,14 +189,15 @@ func TestControlPlaneTool_InputValidatedBeforeRequest(t *testing.T) {
 		Name:  "search_memory",
 		Input: json.RawMessage(`{"limit":"three"}`),
 	})
-	require.False(t, success, "expected schema rejection, got success: %q", output)
-	require.Contains(t, output, "Invalid input")
+	must.False(success, "expected schema rejection, got success: %q", output)
+	must.Contains(output, "Invalid input")
 
 	time.Sleep(50 * time.Millisecond)
-	require.Empty(t, cp.seen(), "control plane should not see a request for invalid input")
+	must.Empty(cp.seen(), "control plane should not see a request for invalid input")
 }
 
 func TestControlPlaneTool_TimeoutSecondsBoundsTheWait(t *testing.T) {
+	must := require.New(t)
 	cp := &fakeControlPlane{} // never answers
 	loop := startControlPlaneLoop(t, cp)
 
@@ -204,9 +209,9 @@ func TestControlPlaneTool_TimeoutSecondsBoundsTheWait(t *testing.T) {
 	})
 	elapsed := time.Since(start)
 
-	require.False(t, success, "expected timeout failure, got success: %q", output)
-	require.Contains(t, output, "timeout")
-	require.GreaterOrEqual(t, elapsed, time.Second, "wait ended before the configured 1s timeout")
-	require.LessOrEqual(t, elapsed, 10*time.Second, "wait ran past the bound, so the 60s default may apply")
-	require.Len(t, cp.seen(), 1)
+	must.False(success, "expected timeout failure, got success: %q", output)
+	must.Contains(output, "timeout")
+	must.GreaterOrEqual(elapsed, time.Second, "wait ended before the configured 1s timeout")
+	must.LessOrEqual(elapsed, 10*time.Second, "wait ran past the bound, so the 60s default may apply")
+	must.Len(cp.seen(), 1)
 }

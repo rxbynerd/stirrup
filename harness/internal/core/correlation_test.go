@@ -74,15 +74,17 @@ func (p *recordingProvider) Stream(_ context.Context, params types.StreamParams)
 }
 
 func TestLoop_CorrelationNeverReachesModelRequest(t *testing.T) {
+	must := require.New(t)
 	modes := make([]string, 0, len(prompt.ModePrompts()))
 	for mode := range prompt.ModePrompts() {
 		modes = append(modes, mode)
 	}
 	sort.Strings(modes)
-	require.NotEmpty(t, modes, "no mode prompts registered")
+	must.NotEmpty(modes, "no mode prompts registered")
 
 	for _, mode := range modes {
 		t.Run(mode, func(t *testing.T) {
+			must := require.New(t)
 			exporter := tracetest.NewInMemoryExporter()
 			tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 			t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
@@ -100,15 +102,15 @@ func TestLoop_CorrelationNeverReachesModelRequest(t *testing.T) {
 			cfg.Correlation = correlationFixture()
 
 			_, err := loop.Run(context.Background(), cfg)
-			require.NoError(t, err)
-			require.GreaterOrEqual(t, len(prov.params), 2, "expected a tool turn and a final turn")
+			must.NoError(err)
+			must.GreaterOrEqual(len(prov.params), 2, "expected a tool turn and a final turn")
 
 			forbidden := append(correlationValues(cfg.Correlation), cfg.SessionName)
 			for i, params := range prov.params {
 				raw, err := json.Marshal(params)
-				require.NoError(t, err, "marshal request %d", i)
+				must.NoError(err, "marshal request %d", i)
 				for _, v := range forbidden {
-					require.NotContains(t, string(raw), v, "request %d carries correlation value", i)
+					must.NotContains(string(raw), v, "request %d carries correlation value", i)
 				}
 			}
 
@@ -120,17 +122,18 @@ func TestLoop_CorrelationNeverReachesModelRequest(t *testing.T) {
 					}
 				}
 			}
-			require.True(t, stamped, "no span carries user.id; the run did not see the correlation block")
+			must.True(stamped, "no span carries user.id; the run did not see the correlation block")
 		})
 	}
 }
 
 func TestLoop_CorrelationNeverBecomesMetricLabel(t *testing.T) {
+	must := require.New(t)
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
 	metrics, err := observability.NewMetricsForTesting(mp)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(tracetest.NewInMemoryExporter()))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
@@ -146,10 +149,10 @@ func TestLoop_CorrelationNeverBecomesMetricLabel(t *testing.T) {
 	cfg.SessionName = "corr-session-name-1a2b"
 	cfg.Correlation = correlationFixture()
 	_, err = loop.Run(context.Background(), cfg)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	var rm metricdata.ResourceMetrics
-	require.NoError(t, reader.Collect(context.Background(), &rm))
+	must.NoError(reader.Collect(context.Background(), &rm))
 	values := map[string]bool{cfg.SessionName: true}
 	for _, v := range correlationValues(cfg.Correlation) {
 		values[v] = true
@@ -158,19 +161,20 @@ func TestLoop_CorrelationNeverBecomesMetricLabel(t *testing.T) {
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
 			t.Run(m.Name, func(t *testing.T) {
+				must := require.New(t)
 				for _, set := range metricAttributeSets(m.Data) {
 					observed++
 					for _, kv := range set.ToSlice() {
 						key := string(kv.Key)
 						value := kv.Value.String()
-						require.False(t, isCorrelationKey(key) || values[value],
+						must.False(isCorrelationKey(key) || values[value],
 							"carries correlation attribute %s=%s", key, value)
 					}
 				}
 			})
 		}
 	}
-	require.NotZero(t, observed, "the run recorded no metric data points")
+	must.NotZero(observed, "the run recorded no metric data points")
 }
 
 func isCorrelationKey(key string) bool {

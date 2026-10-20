@@ -11,16 +11,18 @@ import (
 
 func setFlags(t *testing.T, cmdFlags interface{ Set(string, string) error }, kvs [][2]string) {
 	t.Helper()
+	must := require.New(t)
 	for _, kv := range kvs {
-		require.NoError(t, cmdFlags.Set(kv[0], kv[1]), "set --%s", kv[0])
+		must.NoError(cmdFlags.Set(kv[0], kv[1]), "set --%s", kv[0])
 	}
 }
 
 func TestApplyOverrides_CorrelationDefaultLeavesBlockNil(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
-	require.NoError(t, applyOverrides(cmd, cfg, nil))
-	require.Nil(t, cfg.Correlation)
+	must.NoError(applyOverrides(cmd, cfg, nil))
+	must.Nil(cfg.Correlation)
 }
 
 func TestApplyOverrides_CorrelationFlagsMergeWithFile(t *testing.T) {
@@ -118,6 +120,7 @@ func TestApplyOverrides_CorrelationFlagsMergeWithFile(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			cmd := newTestHarnessCommand()
 			cfg := baseFileConfig()
 			if tc.file != nil {
@@ -129,8 +132,8 @@ func TestApplyOverrides_CorrelationFlagsMergeWithFile(t *testing.T) {
 				cfg.Correlation = &copied
 			}
 			setFlags(t, cmd.Flags(), tc.flags)
-			require.NoError(t, applyOverrides(cmd, cfg, nil))
-			require.Equal(t, tc.want, cfg.Correlation)
+			must.NoError(applyOverrides(cmd, cfg, nil))
+			must.Equal(tc.want, cfg.Correlation)
 		})
 	}
 }
@@ -147,16 +150,18 @@ func TestApplyOverrides_CorrelationLabelRejectsMalformedPair(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			cmd := newTestHarnessCommand()
 			setFlags(t, cmd.Flags(), [][2]string{{"correlation-label", tc.entry}})
 			err := applyOverrides(cmd, baseFileConfig(), nil)
-			require.ErrorContains(t, err, "--correlation-label")
+			must.ErrorContains(err, "--correlation-label")
 		})
 	}
 }
 
 func TestBuildRunConfig_CorrelationFlagsValidate(t *testing.T) {
 	t.Run("rejects an invalid label key", func(t *testing.T) {
+		must := require.New(t)
 		cmd := newTestHarnessCommand()
 		setFlags(t, cmd.Flags(), [][2]string{
 			{"prompt", "do the thing"},
@@ -164,10 +169,11 @@ func TestBuildRunConfig_CorrelationFlagsValidate(t *testing.T) {
 			{"correlation-label", "Bad-Key=v"},
 		})
 		_, err := BuildRunConfig(RunConfigSources{Cmd: cmd, Resolve: ResolveAll})
-		require.ErrorContains(t, err, "correlation.labels key")
+		must.ErrorContains(err, "correlation.labels key")
 	})
 
 	t.Run("builds the block from valid flags", func(t *testing.T) {
+		must := require.New(t)
 		cmd := newTestHarnessCommand()
 		setFlags(t, cmd.Flags(), [][2]string{
 			{"prompt", "do the thing"},
@@ -175,25 +181,26 @@ func TestBuildRunConfig_CorrelationFlagsValidate(t *testing.T) {
 			{"correlation-label", "agent_profile=reviewer"},
 		})
 		cfg, err := BuildRunConfig(RunConfigSources{Cmd: cmd, Resolve: ResolveAll})
-		require.NoError(t, err)
+		must.NoError(err)
 		want := &types.CorrelationConfig{SessionID: "s1", Labels: map[string]string{"agent_profile": "reviewer"}}
-		require.Equal(t, want, cfg.Correlation)
+		must.Equal(want, cfg.Correlation)
 	})
 }
 
 func TestRunRunConfig_CorrelationFlagsEmitBlock(t *testing.T) {
+	must := require.New(t)
 	out, err := runRunConfigForTest(t, []string{
 		"--correlation-session-id", "s1",
 		"--correlation-label", "agent_profile=reviewer",
 	}, `{"correlation":{"taskId":"from-stdin","sessionId":"stdin-session"}}`)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	var cfg types.RunConfig
-	require.NoError(t, json.Unmarshal([]byte(out), &cfg), "emitted output must be valid JSON:\n%s", out)
+	must.NoError(json.Unmarshal([]byte(out), &cfg), "emitted output must be valid JSON:\n%s", out)
 	want := &types.CorrelationConfig{
 		SessionID: "s1",
 		TaskID:    "from-stdin",
 		Labels:    map[string]string{"agent_profile": "reviewer"},
 	}
-	require.Equal(t, want, cfg.Correlation)
+	must.Equal(want, cfg.Correlation)
 }

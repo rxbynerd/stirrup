@@ -11,6 +11,7 @@ import (
 )
 
 func TestContainerExecutor_Probe_OK(t *testing.T) {
+	must := require.New(t)
 	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
 		"GET /_ping": func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
@@ -24,10 +25,11 @@ func TestContainerExecutor_Probe_OK(t *testing.T) {
 	defer cleanup()
 
 	exec := &ContainerExecutor{api: newContainerAPIClient(sock), image: "ubuntu:26.04"}
-	require.NoError(t, exec.Probe(context.Background()))
+	must.NoError(exec.Probe(context.Background()))
 }
 
 func TestContainerExecutor_Probe_ImageAbsent(t *testing.T) {
+	must := require.New(t)
 	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
 		"GET /_ping": func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
@@ -41,9 +43,9 @@ func TestContainerExecutor_Probe_ImageAbsent(t *testing.T) {
 
 	exec := &ContainerExecutor{api: newContainerAPIClient(sock), image: "missing:latest"}
 	err := exec.Probe(context.Background())
-	require.Error(t, err)
-	require.ErrorContains(t, err, "not present locally", "error should include a pull hint")
-	require.ErrorContains(t, err, "missing:latest", "error should name the missing image")
+	must.Error(err)
+	must.ErrorContains(err, "not present locally", "error should include a pull hint")
+	must.ErrorContains(err, "missing:latest", "error should name the missing image")
 }
 
 // TestProbeContainerEngine_NoContainerCreated asserts a container dry-run
@@ -51,6 +53,8 @@ func TestContainerExecutor_Probe_ImageAbsent(t *testing.T) {
 // never touches the egress proxy. The mock engine fails the test if it sees
 // a create/start request.
 func TestProbeContainerEngine_NoContainerCreated(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var createHits, startHits atomic.Int64
 	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
 		"GET /_ping": func(w http.ResponseWriter, _ *http.Request) {
@@ -77,12 +81,13 @@ func TestProbeContainerEngine_NoContainerCreated(t *testing.T) {
 		Image:      "ubuntu:26.04",
 		SocketPath: sock,
 	})
-	require.NoError(t, err)
-	assert.Zero(t, createHits.Load(), "a dry-run must not create a container")
-	assert.Zero(t, startHits.Load(), "a dry-run must not start a container")
+	must.NoError(err)
+	check.Zero(createHits.Load(), "a dry-run must not create a container")
+	check.Zero(startHits.Load(), "a dry-run must not start a container")
 }
 
 func TestProbeContainerEngine_ImageAbsent(t *testing.T) {
+	must := require.New(t)
 	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
 		"GET /_ping": func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
@@ -98,14 +103,15 @@ func TestProbeContainerEngine_ImageAbsent(t *testing.T) {
 		Image:      "missing:latest",
 		SocketPath: sock,
 	})
-	require.Error(t, err)
-	require.ErrorContains(t, err, "not present locally")
+	must.Error(err)
+	must.ErrorContains(err, "not present locally")
 }
 
 // TestProbeContainerEngine_DisallowedImage asserts the dry-run preflight
 // enforces the registry allowlist too, and fails fast before pinging the
 // engine — so a misconfigured image is caught without a false-clean dry-run.
 func TestProbeContainerEngine_DisallowedImage(t *testing.T) {
+	must := require.New(t)
 	var pingHits atomic.Int64
 	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
 		"GET /_ping": func(w http.ResponseWriter, _ *http.Request) {
@@ -124,12 +130,13 @@ func TestProbeContainerEngine_DisallowedImage(t *testing.T) {
 		Image:      "evil.example.com/malware:latest",
 		SocketPath: sock,
 	})
-	require.Error(t, err)
-	require.ErrorContains(t, err, "registry allowlist")
-	require.Zero(t, pingHits.Load(), "a disallowed image must be rejected before any engine call")
+	must.Error(err)
+	must.ErrorContains(err, "registry allowlist")
+	must.Zero(pingHits.Load(), "a disallowed image must be rejected before any engine call")
 }
 
 func TestContainerExecutor_Probe_EngineUnreachable(t *testing.T) {
+	must := require.New(t)
 	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
 		"GET /_ping": func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -140,6 +147,6 @@ func TestContainerExecutor_Probe_EngineUnreachable(t *testing.T) {
 
 	exec := &ContainerExecutor{api: newContainerAPIClient(sock), image: "ubuntu:26.04"}
 	err := exec.Probe(context.Background())
-	require.Error(t, err)
-	require.ErrorContains(t, err, "unreachable")
+	must.Error(err)
+	must.ErrorContains(err, "unreachable")
 }

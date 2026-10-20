@@ -12,10 +12,11 @@ import (
 
 func remoteParent(t *testing.T, sampled bool) oteltrace.SpanContext {
 	t.Helper()
+	must := require.New(t)
 	traceID, err := oteltrace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
-	require.NoError(t, err)
+	must.NoError(err)
 	spanID, err := oteltrace.SpanIDFromHex("00f067aa0ba902b7")
-	require.NoError(t, err)
+	must.NoError(err)
 	cfg := oteltrace.SpanContextConfig{TraceID: traceID, SpanID: spanID, Remote: true}
 	if sampled {
 		cfg.TraceFlags = oteltrace.FlagsSampled
@@ -24,22 +25,24 @@ func remoteParent(t *testing.T, sampled bool) oteltrace.SpanContext {
 }
 
 func TestOTelTraceEmitter_StartWithContextAdoptsParent(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	emitter, exporter := newTestOTelEmitter()
 	parent := remoteParent(t, true)
 
 	emitter.StartWithContext(oteltrace.ContextWithRemoteSpanContext(context.Background(), parent), "run-parented", nil)
 	ref := emitter.TraceReference()
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	root := findSpanByName(t, exporter.GetSpans(), "invoke_agent stirrup")
-	assert.Equal(t, parent.TraceID().String(), root.Parent.TraceID().String(), "root parent trace ID")
-	assert.Equal(t, parent.SpanID().String(), root.Parent.SpanID().String(), "root parent span ID")
-	assert.True(t, root.Parent.IsRemote(), "root parent should be marked remote")
-	assert.Equal(t, parent.TraceID().String(), root.SpanContext.TraceID().String(), "root trace ID")
-	require.NotNil(t, ref, "TraceReference")
-	assert.Equal(t, parent.TraceID().String(), ref.TraceID, "TraceReference trace ID")
-	assert.Equal(t, root.SpanContext.SpanID().String(), ref.RunSpanID, "TraceReference run span ID")
+	check.Equal(parent.TraceID().String(), root.Parent.TraceID().String(), "root parent trace ID")
+	check.Equal(parent.SpanID().String(), root.Parent.SpanID().String(), "root parent span ID")
+	check.True(root.Parent.IsRemote(), "root parent should be marked remote")
+	check.Equal(parent.TraceID().String(), root.SpanContext.TraceID().String(), "root trace ID")
+	must.NotNil(ref, "TraceReference")
+	check.Equal(parent.TraceID().String(), ref.TraceID, "TraceReference trace ID")
+	check.Equal(root.SpanContext.SpanID().String(), ref.RunSpanID, "TraceReference run span ID")
 }
 
 func TestOTelTraceEmitter_StartWithContextWithoutValidParentStartsNewTrace(t *testing.T) {
@@ -49,19 +52,22 @@ func TestOTelTraceEmitter_StartWithContextWithoutValidParentStartsNewTrace(t *te
 		"invalid": oteltrace.ContextWithRemoteSpanContext(context.Background(), invalid),
 	} {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			emitter, exporter := newTestOTelEmitter()
 			emitter.StartWithContext(ctx, "run-root", nil)
 			_, err := emitter.Finish(context.Background(), "success")
-			require.NoError(t, err)
+			must.NoError(err)
 
 			root := findSpanByName(t, exporter.GetSpans(), "invoke_agent stirrup")
-			require.False(t, root.Parent.IsValid(), "root parent = %+v, want none", root.Parent)
-			require.True(t, root.SpanContext.IsValid())
+			must.False(root.Parent.IsValid(), "root parent = %+v, want none", root.Parent)
+			must.True(root.SpanContext.IsValid())
 		})
 	}
 }
 
 func TestOTelTraceEmitter_StartWithContextDropsCallerCancellation(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	emitter, _ := newTestOTelEmitter()
 	parentCtx := oteltrace.ContextWithRemoteSpanContext(context.Background(), remoteParent(t, true))
 	ctx, cancel := context.WithTimeout(parentCtx, time.Hour)
@@ -70,12 +76,12 @@ func TestOTelTraceEmitter_StartWithContextDropsCallerCancellation(t *testing.T) 
 	cancel()
 
 	root := emitter.RootContext()
-	require.NoError(t, root.Err(), "RootContext should not inherit the caller's cancellation")
+	must.NoError(root.Err(), "RootContext should not inherit the caller's cancellation")
 	_, hasDeadline := root.Deadline()
-	assert.False(t, hasDeadline, "RootContext should not carry the caller's deadline")
-	assert.Nil(t, root.Done(), "RootContext should not have a Done channel inherited from the caller")
+	check.False(hasDeadline, "RootContext should not carry the caller's deadline")
+	check.Nil(root.Done(), "RootContext should not have a Done channel inherited from the caller")
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 }
 
 func TestTraceEmitter_OnlyOTelEmitterImplementsContextStarter(t *testing.T) {
@@ -85,8 +91,9 @@ func TestTraceEmitter_OnlyOTelEmitterImplementsContextStarter(t *testing.T) {
 		"nested": &NestedJSONLEmitter{},
 	} {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			_, ok := e.(ContextStarter)
-			require.False(t, ok, "implements ContextStarter; its run would be parented on the caller's span")
+			must.False(ok, "implements ContextStarter; its run would be parented on the caller's span")
 		})
 	}
 }

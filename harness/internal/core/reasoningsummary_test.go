@@ -21,8 +21,9 @@ func TestStreamsThinking_FollowsReasoningSummary(t *testing.T) {
 		{"off summary suppresses thinking", types.ReasoningSummaryOff, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got := streamsThinking(&types.RunConfig{ReasoningSummary: tc.summary})
-			require.Equal(t, tc.want, got)
+			must.Equal(tc.want, got)
 		})
 	}
 }
@@ -48,6 +49,7 @@ func TestLoop_ReasoningSummary_GatesThinkingDelta(t *testing.T) {
 		{"off suppresses all reasoning", types.ReasoningSummaryOff, "[]"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			loop := buildTestLoop(nil)
 			loop.Provider = &scriptedProvider{turns: [][]types.StreamEvent{turn}}
 			tp := &recordingTransport{}
@@ -56,8 +58,8 @@ func TestLoop_ReasoningSummary_GatesThinkingDelta(t *testing.T) {
 			cfg.ReasoningSummary = tc.summary
 
 			_, err := loop.Run(context.Background(), cfg)
-			require.NoError(t, err)
-			require.Equal(t, tc.want, fmt.Sprint(thinkingDeltaTexts(tp.events)))
+			must.NoError(err)
+			must.Equal(tc.want, fmt.Sprint(thinkingDeltaTexts(tp.events)))
 		})
 	}
 }

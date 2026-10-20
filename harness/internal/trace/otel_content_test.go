@@ -35,12 +35,13 @@ func newTestOTelEmitterWithCapture() (*OTelTraceEmitter, *tracetest.InMemoryExpo
 // fails the test.
 func findSpan(t *testing.T, exporter *tracetest.InMemoryExporter, name string) tracetest.SpanStub {
 	t.Helper()
+	must := require.New(t)
 	for _, s := range exporter.GetSpans() {
 		if s.Name == name {
 			return s
 		}
 	}
-	require.FailNowf(t, "span not found", "no %q span found among %d exported spans", name, len(exporter.GetSpans()))
+	must.FailNowf("span not found", "no %q span found among %d exported spans", name, len(exporter.GetSpans()))
 	return tracetest.SpanStub{}
 }
 
@@ -98,6 +99,8 @@ func captureTurnRecord() types.TurnRecord {
 // span count and the chat span's attribute set are identical to the
 // pre-capture emitter, and no gen_ai content key appears anywhere.
 func TestOTelTraceEmitter_RecordTurnRecord_NoOpWithoutCapture(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	emitter, exporter := newTestOTelEmitter()
 
 	emitter.Start("run-no-capture", nil)
@@ -118,17 +121,17 @@ func TestOTelTraceEmitter_RecordTurnRecord_NoOpWithoutCapture(t *testing.T) {
 		Record:  &record.ToolCalls[0],
 	})
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	spans := exporter.GetSpans()
-	require.Len(t, spans, 3, "expected chat, tool and root spans with capture off")
+	must.Len(spans, 3, "expected chat, tool and root spans with capture off")
 	for _, span := range spans {
 		for _, key := range []string{
 			genAIInputMessagesKey, genAIOutputMessagesKey, genAISystemInstructionsKey,
 			genAIToolCallArgumentsKey, genAIToolCallResultKey,
 		} {
 			_, present := spanAttrString(span, key)
-			assert.Falsef(t, present, "span %q carries %q with capture off: content leaked", span.Name, key)
+			check.Falsef(present, "span %q carries %q with capture off: content leaked", span.Name, key)
 		}
 	}
 	// The call ID is a non-sensitive correlation key and is emitted
@@ -146,6 +149,7 @@ func TestOTelTraceEmitter_RecordTurnRecord_NoOpWithoutCapture(t *testing.T) {
 // existing counter attributes, and each value is valid JSON in the
 // semconv message shape.
 func TestOTelTraceEmitter_CaptureContent_EmitsGenAIMessages(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := newTestOTelEmitterWithCapture()
 
 	emitter.Start("run-capture", nil)
@@ -158,7 +162,7 @@ func TestOTelTraceEmitter_CaptureContent_EmitsGenAIMessages(t *testing.T) {
 		DurationMs: 1500,
 	}, captureTurnRecord())
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	turn := findSpan(t, exporter, "chat")
 
@@ -168,9 +172,10 @@ func TestOTelTraceEmitter_CaptureContent_EmitsGenAIMessages(t *testing.T) {
 	assertAttribute(t, turn, genAIOperationNameKey, "chat")
 
 	t.Run("input messages", func(t *testing.T) {
+		must := require.New(t)
 		// Both history messages, in order, with the schema part shapes.
 		inputJSON, _ := spanAttrString(turn, genAIInputMessagesKey)
-		require.NotEmpty(t, inputJSON, "gen_ai.input.messages missing or empty")
+		must.NotEmpty(inputJSON, "gen_ai.input.messages missing or empty")
 		var input []struct {
 			Role  string `json:"role"`
 			Parts []struct {
@@ -182,21 +187,22 @@ func TestOTelTraceEmitter_CaptureContent_EmitsGenAIMessages(t *testing.T) {
 				Args     json.RawMessage `json:"arguments"`
 			} `json:"parts"`
 		}
-		require.NoError(t, json.Unmarshal([]byte(inputJSON), &input), "gen_ai.input.messages is not valid JSON: %s", inputJSON)
-		require.Len(t, input, 2, "gen_ai.input.messages: %s", inputJSON)
-		require.Equal(t, "user", input[0].Role)
-		require.Equal(t, "text", input[0].Parts[0].Type)
-		require.Equal(t, "list the workspace files", input[0].Parts[0].Content)
-		require.Equal(t, "tool_call_response", input[1].Parts[0].Type)
-		require.Equal(t, "tu-1", input[1].Parts[0].ID)
-		require.Equal(t, "main.go\nREADME.md", input[1].Parts[0].Response)
+		must.NoError(json.Unmarshal([]byte(inputJSON), &input), "gen_ai.input.messages is not valid JSON: %s", inputJSON)
+		must.Len(input, 2, "gen_ai.input.messages: %s", inputJSON)
+		must.Equal("user", input[0].Role)
+		must.Equal("text", input[0].Parts[0].Type)
+		must.Equal("list the workspace files", input[0].Parts[0].Content)
+		must.Equal("tool_call_response", input[1].Parts[0].Type)
+		must.Equal("tu-1", input[1].Parts[0].ID)
+		must.Equal("main.go\nREADME.md", input[1].Parts[0].Response)
 	})
 
 	t.Run("output messages", func(t *testing.T) {
+		must := require.New(t)
 		// One assistant message with text and tool_call parts, and the
 		// summary's stop reason as finish_reason.
 		outputJSON, _ := spanAttrString(turn, genAIOutputMessagesKey)
-		require.NotEmpty(t, outputJSON, "gen_ai.output.messages missing or empty")
+		must.NotEmpty(outputJSON, "gen_ai.output.messages missing or empty")
 		var output []struct {
 			Role  string `json:"role"`
 			Parts []struct {
@@ -207,28 +213,29 @@ func TestOTelTraceEmitter_CaptureContent_EmitsGenAIMessages(t *testing.T) {
 			} `json:"parts"`
 			FinishReason string `json:"finish_reason"`
 		}
-		require.NoError(t, json.Unmarshal([]byte(outputJSON), &output), "gen_ai.output.messages is not valid JSON: %s", outputJSON)
-		require.Len(t, output, 1, "gen_ai.output.messages: %s", outputJSON)
-		require.Equal(t, "assistant", output[0].Role)
-		require.Equal(t, "tool_use", output[0].FinishReason)
-		require.Len(t, output[0].Parts, 2, "gen_ai.output.messages: %s", outputJSON)
-		require.Equal(t, "tool_call", output[0].Parts[1].Type)
-		require.Equal(t, "read_file", output[0].Parts[1].Name)
-		require.JSONEq(t, `{"path":"main.go"}`, string(output[0].Parts[1].Args), "tool_call arguments")
+		must.NoError(json.Unmarshal([]byte(outputJSON), &output), "gen_ai.output.messages is not valid JSON: %s", outputJSON)
+		must.Len(output, 1, "gen_ai.output.messages: %s", outputJSON)
+		must.Equal("assistant", output[0].Role)
+		must.Equal("tool_use", output[0].FinishReason)
+		must.Len(output[0].Parts, 2, "gen_ai.output.messages: %s", outputJSON)
+		must.Equal("tool_call", output[0].Parts[1].Type)
+		must.Equal("read_file", output[0].Parts[1].Name)
+		must.JSONEq(`{"path":"main.go"}`, string(output[0].Parts[1].Args), "tool_call arguments")
 	})
 
 	t.Run("system instructions", func(t *testing.T) {
+		must := require.New(t)
 		// A single text part carrying the recorded prompt.
 		sysJSON, _ := spanAttrString(turn, genAISystemInstructionsKey)
-		require.NotEmpty(t, sysJSON, "gen_ai.system_instructions missing or empty")
+		must.NotEmpty(sysJSON, "gen_ai.system_instructions missing or empty")
 		var sys []struct {
 			Type    string `json:"type"`
 			Content string `json:"content"`
 		}
-		require.NoError(t, json.Unmarshal([]byte(sysJSON), &sys), "gen_ai.system_instructions is not valid JSON: %s", sysJSON)
-		require.Len(t, sys, 1, "gen_ai.system_instructions: %s", sysJSON)
-		require.Equal(t, "text", sys[0].Type)
-		require.Contains(t, sys[0].Content, "planning mode")
+		must.NoError(json.Unmarshal([]byte(sysJSON), &sys), "gen_ai.system_instructions is not valid JSON: %s", sysJSON)
+		must.Len(sys, 1, "gen_ai.system_instructions: %s", sysJSON)
+		must.Equal("text", sys[0].Type)
+		must.Contains(sys[0].Content, "planning mode")
 	})
 }
 
@@ -239,6 +246,8 @@ func TestOTelTraceEmitter_CaptureContent_EmitsGenAIMessages(t *testing.T) {
 // attribute in raw form. The scrubber runs before any attribute is
 // built, so the in-memory exporter sees only redacted content.
 func TestOTelTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	emitter, exporter := newTestOTelEmitterWithCapture()
 
 	emitter.Start("run-otel-scrub", nil)
@@ -277,7 +286,7 @@ func TestOTelTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 		Record:  &record.ToolCalls[0],
 	})
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	var sawRedacted bool
 	for _, span := range exporter.GetSpans() {
@@ -289,14 +298,14 @@ func TestOTelTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 				"sk-ant-api03-sysleak",
 				"Bearer ABCDEFG1",
 			} {
-				assert.NotContainsf(t, value, secret, "scrubber missed %q in span %q attribute %q", secret, span.Name, attr.Key)
+				check.NotContainsf(value, secret, "scrubber missed %q in span %q attribute %q", secret, span.Name, attr.Key)
 			}
 			if strings.Contains(value, "[REDACTED]") {
 				sawRedacted = true
 			}
 		}
 	}
-	require.True(t, sawRedacted, "expected at least one [REDACTED] placeholder proving the scrubber ran")
+	must.True(sawRedacted, "expected at least one [REDACTED] placeholder proving the scrubber ran")
 }
 
 // TestOTelTraceEmitter_CaptureContent_RootSpanIO pins the run-level
@@ -307,6 +316,7 @@ func TestOTelTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 // input/output views from the root span, so a regression here empties
 // those panels while leaving every chat span intact.
 func TestOTelTraceEmitter_CaptureContent_RootSpanIO(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := newTestOTelEmitterWithCapture()
 
 	emitter.Start("run-root-io", nil)
@@ -347,25 +357,25 @@ func TestOTelTraceEmitter_CaptureContent_RootSpanIO(t *testing.T) {
 	})
 
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	root := findSpan(t, exporter, "invoke_agent stirrup")
 
 	input, ok := spanAttrString(root, genAIInputMessagesKey)
-	require.True(t, ok, "root span missing gen_ai.input.messages")
-	require.Contains(t, input, "the seed prompt", "root input should carry the seed prompt")
-	require.NotContains(t, input, "intermediate answer", "root input must be turn 0's input (set-once), not a later turn's history")
+	must.True(ok, "root span missing gen_ai.input.messages")
+	must.Contains(input, "the seed prompt", "root input should carry the seed prompt")
+	must.NotContains(input, "intermediate answer", "root input must be turn 0's input (set-once), not a later turn's history")
 
 	output, ok := spanAttrString(root, genAIOutputMessagesKey)
-	require.True(t, ok, "root span missing gen_ai.output.messages")
-	require.Contains(t, output, "the final answer", "root output should carry the last parent turn's output")
+	must.True(ok, "root span missing gen_ai.output.messages")
+	must.Contains(output, "the final answer", "root output should carry the last parent turn's output")
 
-	require.NotContains(t, input, "child", "forwarded sub-agent content leaked into root input")
-	require.NotContains(t, output, "child", "forwarded sub-agent content leaked into root output")
+	must.NotContains(input, "child", "forwarded sub-agent content leaked into root input")
+	must.NotContains(output, "child", "forwarded sub-agent content leaked into root output")
 
 	system, ok := spanAttrString(root, genAISystemInstructionsKey)
-	require.True(t, ok, "root span missing gen_ai.system_instructions")
-	require.Contains(t, system, "You are a coding agent.")
+	must.True(ok, "root span missing gen_ai.system_instructions")
+	must.Contains(system, "You are a coding agent.")
 }
 
 // TestOTelTraceEmitter_CaptureContent_RootSpanIOAbsentWithoutRecords
@@ -373,17 +383,19 @@ func TestOTelTraceEmitter_CaptureContent_RootSpanIO(t *testing.T) {
 // (every loop error path) finishes with a bare root span — no content
 // keys, never empty-string attributes.
 func TestOTelTraceEmitter_CaptureContent_RootSpanIOAbsentWithoutRecords(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	emitter, exporter := newTestOTelEmitterWithCapture()
 
 	emitter.Start("run-root-bare", nil)
 	emitter.RecordTurn(types.TurnTrace{Turn: 0, StopReason: "", DurationMs: 5})
 	_, err := emitter.Finish(context.Background(), "error")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	root := findSpan(t, exporter, "invoke_agent stirrup")
 	for _, key := range []string{genAIInputMessagesKey, genAIOutputMessagesKey, genAISystemInstructionsKey} {
 		val, present := spanAttrString(root, key)
-		assert.Falsef(t, present, "root span carries %q (%q) with no records", key, val)
+		check.Falsef(present, "root span carries %q (%q) with no records", key, val)
 	}
 }
 
@@ -391,19 +403,21 @@ func TestOTelTraceEmitter_CaptureContent_RootSpanIOAbsentWithoutRecords(t *testi
 // redacted_thinking blocks never reach span content: they have no GenAI
 // part shape and their signatures are provider-opaque.
 func TestGenAIParts_DropsThinkingBlocks(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	parts := genAIParts([]types.ContentBlock{
 		{Type: "thinking", Text: "private plan", ThoughtSignature: "sig-blob"},
 		{Type: "text", Text: "answer"},
 		{Type: "redacted_thinking", ThoughtSignature: "redacted-blob"},
 	})
-	require.Len(t, parts, 1, "want only the text part, got %+v", parts)
-	require.Equal(t, "text", parts[0].Type)
-	require.Equal(t, "answer", parts[0].Content)
+	must.Len(parts, 1, "want only the text part, got %+v", parts)
+	must.Equal("text", parts[0].Type)
+	must.Equal("answer", parts[0].Content)
 
 	raw, err := json.Marshal(parts)
-	require.NoError(t, err)
+	must.NoError(err)
 	for _, leaked := range []string{"private plan", "sig-blob", "redacted-blob"} {
-		assert.NotContainsf(t, string(raw), leaked, "span content carries %q", leaked)
+		check.NotContainsf(string(raw), leaked, "span content carries %q", leaked)
 	}
 }
 
@@ -420,20 +434,21 @@ func TestGenAIParts_ToolResponseKeyAlwaysPresent(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			parts := genAIParts([]types.ContentBlock{
 				{Type: "tool_result", ToolUseID: "tu-1", Content: tc.content},
 			})
 			raw, err := json.Marshal(parts)
-			require.NoError(t, err)
+			must.NoError(err)
 			var decoded []map[string]any
-			require.NoError(t, json.Unmarshal(raw, &decoded))
+			must.NoError(json.Unmarshal(raw, &decoded))
 
 			response, ok := decoded[0]["response"]
-			require.True(t, ok, "response key missing: %s", raw)
-			require.Equal(t, tc.content, response)
+			must.True(ok, "response key missing: %s", raw)
+			must.Equal(tc.content, response)
 
 			_, legacy := decoded[0]["result"]
-			require.False(t, legacy, "legacy result key present: %s", raw)
+			must.False(legacy, "legacy result key present: %s", raw)
 		})
 	}
 }
@@ -464,6 +479,7 @@ func TestOTelTraceEmitter_ToolCallID_EmittedOnce(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			emitter, exporter := newTestOTelEmitter()
 			if tc.capture {
 				emitter, exporter = newTestOTelEmitterWithCapture()
@@ -474,17 +490,17 @@ func TestOTelTraceEmitter_ToolCallID_EmittedOnce(t *testing.T) {
 				Record:  &types.ToolCallRecord{ID: tc.id, Name: "tool", Output: "ok"},
 			})
 			_, err := emitter.Finish(context.Background(), "success")
-			require.NoError(t, err)
+			must.NoError(err)
 
 			span := findSpan(t, exporter, "execute_tool tool")
 			wantCount := 1
 			if tc.id == "" {
 				wantCount = 0
 			}
-			require.Equal(t, wantCount, countSpanAttr(span, genAIToolCallIDKey), "%s occurrences", genAIToolCallIDKey)
+			must.Equal(wantCount, countSpanAttr(span, genAIToolCallIDKey), "%s occurrences", genAIToolCallIDKey)
 
 			got, _ := spanAttrString(span, genAIToolCallIDKey)
-			require.Equal(t, tc.id, got, "%s value", genAIToolCallIDKey)
+			must.Equal(tc.id, got, "%s value", genAIToolCallIDKey)
 		})
 	}
 }
@@ -503,6 +519,7 @@ func TestOTelTraceEmitter_ToolCallID_Scrubbed(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			emitter, exporter := newTestOTelEmitter()
 			emitter.redactionDisabled = tc.disabled
 			emitter.Start("run-id-scrub", nil)
@@ -510,10 +527,10 @@ func TestOTelTraceEmitter_ToolCallID_Scrubbed(t *testing.T) {
 				Summary: &types.ToolCallTrace{ID: secretID, Name: "tool", Success: true},
 			})
 			_, err := emitter.Finish(context.Background(), "success")
-			require.NoError(t, err)
+			must.NoError(err)
 
 			got, _ := spanAttrString(findSpan(t, exporter, "execute_tool tool"), genAIToolCallIDKey)
-			require.Equal(t, tc.want, got, "%s value", genAIToolCallIDKey)
+			must.Equal(tc.want, got, "%s value", genAIToolCallIDKey)
 		})
 	}
 }

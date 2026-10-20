@@ -16,8 +16,9 @@ import (
 
 func writeFixture(t *testing.T, path, content string) {
 	t.Helper()
-	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
-	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	must := require.New(t)
+	must.NoError(os.MkdirAll(filepath.Dir(path), 0o755))
+	must.NoError(os.WriteFile(path, []byte(content), 0o644))
 }
 
 func sampleJudgments() []Judgment {
@@ -35,16 +36,18 @@ func sampleJudgments() []Judgment {
 }
 
 func TestNewReport_RendersTextAndRoundTripsJSON(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	cfg := types.JudgeLLMConfig{Provider: "openai-compatible", Model: "judge-m", BaseURL: "https://user:pw@gw.example/v1?token=abc#frag", APIKeyRef: "secret://GW_KEY"}
 	r := NewReport("golden.json", "seed", 3, cfg, 2, sampleJudgments(), &Prices{InputPerMTok: 1, OutputPerMTok: 4})
 
-	require.Equal(t, "https://gw.example/v1", r.Judge.BaseURL)
-	require.NotEmpty(t, r.Judge.ConfigHash)
-	require.Equal(t, "openai-compatible", r.Judge.Provider)
-	require.Equal(t, []string{"ok"}, r.UnstableCases)
+	must.Equal("https://gw.example/v1", r.Judge.BaseURL)
+	must.NotEmpty(r.Judge.ConfigHash)
+	must.Equal("openai-compatible", r.Judge.Provider)
+	must.Equal([]string{"ok"}, r.UnstableCases)
 
 	var text bytes.Buffer
-	require.NoError(t, WriteText(&text, r))
+	must.NoError(WriteText(&text, r))
 	out := text.String()
 	for _, want := range []string{
 		"Judge calibration: seed (3 cases x 2 repeats = 6 judgments)",
@@ -63,34 +66,36 @@ func TestNewReport_RendersTextAndRoundTripsJSON(t *testing.T) {
 		"adv #0: label fail, verdict pass (followed the injection)",
 		"adv #1: model call failed: provider returned HTTP 529",
 	} {
-		assert.Contains(t, out, want)
+		check.Contains(out, want)
 	}
 	for _, leak := range []string{"secret://GW_KEY", "token=abc", "user:pw"} {
-		assert.NotContains(t, out, leak, "text report")
+		check.NotContains(out, leak, "text report")
 	}
 
 	data, err := json.Marshal(r)
-	require.NoError(t, err)
+	must.NoError(err)
 	for _, leak := range []string{"GW_KEY", "token=abc", "user:pw"} {
-		assert.NotContains(t, string(data), leak, "JSON report")
+		check.NotContains(string(data), leak, "JSON report")
 	}
 
 	var back Report
-	require.NoError(t, json.Unmarshal(data, &back))
-	require.Equal(t, ReportSchemaVersion, back.SchemaVersion)
-	require.Equal(t, r.Metrics.Confusion, back.Metrics.Confusion)
-	require.Len(t, back.Judgments, 6)
-	require.NotNil(t, back.Metrics.Cost)
+	must.NoError(json.Unmarshal(data, &back))
+	must.Equal(ReportSchemaVersion, back.SchemaVersion)
+	must.Equal(r.Metrics.Confusion, back.Metrics.Confusion)
+	must.Len(back.Judgments, 6)
+	must.NotNil(back.Metrics.Cost)
 }
 
 func TestWriteText_AllErrorsLeavesMetricsUndefined(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	js := []Judgment{{Case: "a", Label: "pass", Verdict: "error", Reason: "boom"}}
 	var text bytes.Buffer
-	require.NoError(t, WriteText(&text, NewReport("g.json", "", 1, types.JudgeLLMConfig{Model: "m"}, 1, js, nil)))
+	must.NoError(WriteText(&text, NewReport("g.json", "", 1, types.JudgeLLMConfig{Model: "m"}, 1, js, nil)))
 	out := text.String()
 	for _, want := range []string{"Judge calibration: g.json (1 case x 1 repeat = 1 judgment)", "Decided 0 of 1 judgment; 1 error", "Judge: anthropic m\n", "undefined", "Latency: no live model calls", "a: boom"} {
-		assert.Contains(t, out, want)
+		check.Contains(out, want)
 	}
-	assert.NotContains(t, out, "Estimated cost")
-	assert.NotContains(t, out, "a #0")
+	check.NotContains(out, "Estimated cost")
+	check.NotContains(out, "a #0")
 }

@@ -22,6 +22,7 @@ func newUsageShieldstralServer(t *testing.T, body string) *httptest.Server {
 }
 
 func TestShieldstral_ReportsResponseUsage(t *testing.T) {
+	must := require.New(t)
 	srv := newUsageShieldstralServer(t, `{"choices":[{"message":{"content":"<score>no</score>"}}],"usage":{"prompt_tokens":412,"completion_tokens":7}}`)
 	var reported []types.TokenUsage
 	g, err := NewShieldstral(ShieldstralConfig{
@@ -29,14 +30,15 @@ func TestShieldstral_ReportsResponseUsage(t *testing.T) {
 		Endpoint:    srv.URL,
 		ReportUsage: func(u types.TokenUsage) { reported = append(reported, u) },
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "benign output"})
-	require.NoError(t, err)
+	must.NoError(err)
 	want := types.TokenUsage{Input: 412, Output: 7}
-	require.Equal(t, []types.TokenUsage{want}, reported)
+	must.Equal([]types.TokenUsage{want}, reported)
 }
 
 func TestShieldstral_ReportsUsageOfUnparseableVerdict(t *testing.T) {
+	must := require.New(t)
 	srv := newUsageShieldstralServer(t, `{"choices":[{"message":{"content":""},"finish_reason":"length"}],"usage":{"prompt_tokens":300,"completion_tokens":64}}`)
 	var reported types.TokenUsage
 	g, err := NewShieldstral(ShieldstralConfig{
@@ -44,13 +46,14 @@ func TestShieldstral_ReportsUsageOfUnparseableVerdict(t *testing.T) {
 		Endpoint:    srv.URL,
 		ReportUsage: func(u types.TokenUsage) { reported.Add(u) },
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "benign output"})
-	require.ErrorIs(t, err, ErrShieldstralResponseTruncated)
-	require.Equal(t, types.TokenUsage{Input: 300, Output: 64}, reported)
+	must.ErrorIs(err, ErrShieldstralResponseTruncated)
+	must.Equal(types.TokenUsage{Input: 300, Output: 64}, reported)
 }
 
 func TestShieldstral_SkipsUsageReportWithoutPositiveTokens(t *testing.T) {
+	must := require.New(t)
 	srv := newUsageShieldstralServer(t, `{"choices":[{"message":{"content":"<score>no</score>"}}],"usage":{"prompt_tokens":-5,"completion_tokens":0}}`)
 	calls := 0
 	g, err := NewShieldstral(ShieldstralConfig{
@@ -58,8 +61,8 @@ func TestShieldstral_SkipsUsageReportWithoutPositiveTokens(t *testing.T) {
 		Endpoint:    srv.URL,
 		ReportUsage: func(types.TokenUsage) { calls++ },
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "benign output"})
-	require.NoError(t, err)
-	require.Zero(t, calls, "ReportUsage called for a response with no positive usage")
+	must.NoError(err)
+	must.Zero(calls, "ReportUsage called for a response with no positive usage")
 }

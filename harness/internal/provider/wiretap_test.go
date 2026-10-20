@@ -19,6 +19,7 @@ import (
 // which is the SSE shape --trace-wire exists to capture live rather than
 // only after the stream closes.
 func TestWireTapTransport_DumpsRequestAndResponse(t *testing.T) {
+	must := require.New(t)
 	const reqBody = `{"secret":"sk-ant-super-secret-token"}`
 	const respChunk1 = `data: {"chunk":1}` + "\n\n"
 	const respChunk2 = `data: {"chunk":2,"secret":"sk-ant-response-secret"}` + "\n\n"
@@ -42,18 +43,18 @@ func TestWireTapTransport_DumpsRequestAndResponse(t *testing.T) {
 	client := &http.Client{Transport: WireTapTransport(http.DefaultTransport, &out)}
 
 	req, err := http.NewRequest(http.MethodPost, srv.URL, strings.NewReader(reqBody))
-	require.NoError(t, err, "build request")
+	must.NoError(err, "build request")
 	req.Header.Set("Authorization", "Bearer sk-ant-request-secret")
 
 	resp, err := client.Do(req)
-	require.NoError(t, err)
+	must.NoError(err)
 	defer func() { _ = resp.Body.Close() }()
 
 	// The real caller must still be able to read the full, correct body —
 	// tapping must not consume or corrupt the stream it observes.
 	gotBody, err := io.ReadAll(resp.Body)
-	require.NoError(t, err, "read response body")
-	require.Equal(t, respChunk1+respChunk2, string(gotBody))
+	must.NoError(err, "read response body")
+	must.Equal(respChunk1+respChunk2, string(gotBody))
 
 	dumped := out.String()
 
@@ -64,7 +65,8 @@ func TestWireTapTransport_DumpsRequestAndResponse(t *testing.T) {
 		{"request body", reqBody},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Contains(t, dumped, tc.want)
+			must := require.New(t)
+			must.Contains(dumped, tc.want)
 		})
 	}
 
@@ -78,7 +80,8 @@ func TestWireTapTransport_DumpsRequestAndResponse(t *testing.T) {
 		{"second response chunk", respChunk2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Contains(t, dumped, tc.want)
+			must := require.New(t)
+			must.Contains(dumped, tc.want)
 		})
 	}
 }
@@ -89,6 +92,7 @@ func TestWireTapTransport_DumpsRequestAndResponse(t *testing.T) {
 // construction and a round trip do not panic), and a nil base falls back
 // to http.DefaultTransport.
 func TestWireTapTransport_DefaultsWhenNil(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -98,21 +102,22 @@ func TestWireTapTransport_DefaultsWhenNil(t *testing.T) {
 	client := &http.Client{Transport: rt}
 
 	resp, err := client.Get(srv.URL)
-	require.NoError(t, err)
+	must.NoError(err)
 	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+	must.Equal(http.StatusNoContent, resp.StatusCode)
 }
 
 // TestWireTapTransport_PropagatesRoundTripError asserts a base transport
 // failure (e.g. connection refused) is returned unchanged rather than
 // swallowed by the tap.
 func TestWireTapTransport_PropagatesRoundTripError(t *testing.T) {
+	must := require.New(t)
 	var out bytes.Buffer
 	client := &http.Client{Transport: WireTapTransport(http.DefaultTransport, &out)}
 
 	// No listener on this port; the connection must fail.
 	_, err := client.Get("http://127.0.0.1:1/does-not-exist")
-	require.Error(t, err)
-	require.Contains(t, out.String(), "---- REQUEST ----",
+	must.Error(err)
+	must.Contains(out.String(), "---- REQUEST ----",
 		"the request is dumped before the failed round trip")
 }

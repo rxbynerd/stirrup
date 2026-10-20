@@ -51,9 +51,10 @@ func TestParseReplayPath_Valid(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got, err := ParseReplayPath(tc.path)
-			require.NoError(t, err)
-			require.Equal(t, tc.want, got)
+			must.NoError(err)
+			must.Equal(tc.want, got)
 		})
 	}
 }
@@ -77,8 +78,9 @@ func TestParseReplayPath_Invalid(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			_, err := ParseReplayPath(tc.path)
-			require.Error(t, err)
+			must.Error(err)
 		})
 	}
 }
@@ -87,10 +89,12 @@ func TestParseReplayPath_Invalid(t *testing.T) {
 // is a thin wrapper around ParseReplayPath.
 func TestValidateReplayPath_DelegatesToParse(t *testing.T) {
 	t.Run("accepts a dotted chain", func(t *testing.T) {
-		require.NoError(t, ValidateReplayPath("a.b.c"))
+		must := require.New(t)
+		must.NoError(ValidateReplayPath("a.b.c"))
 	})
 	t.Run("rejects an empty segment", func(t *testing.T) {
-		require.Error(t, ValidateReplayPath("a..b"))
+		must := require.New(t)
+		must.Error(ValidateReplayPath("a..b"))
 	})
 }
 
@@ -121,19 +125,21 @@ func TestCaptureReplayFields_GeminiToolCall(t *testing.T) {
 	}
 
 	t.Run("does not capture a sibling of functionCall", func(t *testing.T) {
+		must := require.New(t)
 		// thoughtSignature is a sibling of functionCall, not a child of it.
 		out := CaptureReplayFields(doc, []string{
 			"candidates[].content.parts[].functionCall.thoughtSignature",
 		})
-		require.Empty(t, out)
+		must.Empty(out)
 	})
 
 	t.Run("captures thoughtSignature on the part", func(t *testing.T) {
+		must := require.New(t)
 		const path = "candidates[].content.parts[].thoughtSignature"
 		out := CaptureReplayFields(doc, []string{path})
-		require.Contains(t, out, path)
-		require.Len(t, out[path], 1)
-		require.Equal(t, thoughtSignature, out[path][0])
+		must.Contains(out, path)
+		must.Len(out[path], 1)
+		must.Equal(thoughtSignature, out[path][0])
 	})
 }
 
@@ -141,73 +147,81 @@ func TestCaptureReplayFields_GeminiToolCall(t *testing.T) {
 // DeepSeek rules use: reasoning_content is a sibling of content on the
 // assistant delta, captured by a single-segment path.
 func TestCaptureReplayFields_DeepSeekReasoningContent(t *testing.T) {
+	must := require.New(t)
 	delta := map[string]any{
 		"role":              "assistant",
 		"content":           "The answer is 42.",
 		"reasoning_content": "Step 1: identified the question. Step 2: computed the answer.",
 	}
 	out := CaptureReplayFields(delta, []string{"reasoning_content"})
-	require.Contains(t, out, "reasoning_content")
+	must.Contains(out, "reasoning_content")
 	values := out["reasoning_content"]
-	require.Len(t, values, 1)
+	must.Len(values, 1)
 	got, ok := values[0].(string)
-	require.True(t, ok, "captured value has type %T, want string", values[0])
-	require.NotEmpty(t, got)
+	must.True(ok, "captured value has type %T, want string", values[0])
+	must.NotEmpty(got)
 }
 
 // TestCaptureReplayFields_MissingPathIsNoOp confirms a path that does
 // not resolve returns nothing rather than an error.
 func TestCaptureReplayFields_MissingPathIsNoOp(t *testing.T) {
+	must := require.New(t)
 	doc := map[string]any{"a": map[string]any{"b": "value"}}
 	out := CaptureReplayFields(doc, []string{"missing.path"})
-	require.Empty(t, out)
+	must.Empty(out)
 }
 
 // TestCaptureReplayFields_CapturesOnlyResolvablePaths asserts the
 // walker captures from paths that resolve and silently skips those
 // that don't, in a multi-path call.
 func TestCaptureReplayFields_CapturesOnlyResolvablePaths(t *testing.T) {
+	must := require.New(t)
 	doc := map[string]any{"reasoning_content": "thinking..."}
 	out := CaptureReplayFields(doc, []string{
 		"reasoning_content",
 		"candidates[].content.parts[].thoughtSignature",
 	})
-	require.Len(t, out, 1)
-	require.Contains(t, out, "reasoning_content")
+	must.Len(out, 1)
+	must.Contains(out, "reasoning_content")
 }
 
 // TestCaptureReplayFields_MalformedPathSilentlyDropped pins the
 // runtime safety property: a malformed path that reaches the walker
 // returns nothing rather than panicking.
 func TestCaptureReplayFields_MalformedPathSilentlyDropped(t *testing.T) {
+	must := require.New(t)
 	doc := map[string]any{"reasoning_content": "thinking..."}
 	out := CaptureReplayFields(doc, []string{"a..b", "reasoning_content"})
-	require.Len(t, out, 1, "expected only the valid path to capture")
+	must.Len(out, 1, "expected only the valid path to capture")
 }
 
 // TestCaptureReplayFields_EmptyDocOrPaths handles the two no-op
 // inputs; both must return nil.
 func TestCaptureReplayFields_EmptyDocOrPaths(t *testing.T) {
 	t.Run("nil doc", func(t *testing.T) {
-		require.Nil(t, CaptureReplayFields(nil, []string{"a"}))
+		must := require.New(t)
+		must.Nil(CaptureReplayFields(nil, []string{"a"}))
 	})
 	t.Run("empty paths", func(t *testing.T) {
-		require.Nil(t, CaptureReplayFields(map[string]any{"a": "b"}, nil))
+		must := require.New(t)
+		must.Nil(CaptureReplayFields(map[string]any{"a": "b"}, nil))
 	})
 }
 
 // TestCaptureFromJSON_ReturnsCapturedValues pins the JSON-bytes convenience wrapper.
 func TestCaptureFromJSON_ReturnsCapturedValues(t *testing.T) {
+	must := require.New(t)
 	raw := json.RawMessage(`{"role":"assistant","reasoning_content":"thinking"}`)
 	out := CaptureFromJSON(raw, []string{"reasoning_content"})
-	require.Equal(t, map[string][]any{"reasoning_content": {"thinking"}}, out)
+	must.Equal(map[string][]any{"reasoning_content": {"thinking"}}, out)
 }
 
 // TestCaptureFromJSON_MalformedJSONReturnsNil confirms a decode failure
 // is silent; the SSE parser is the authoritative reporter for chunk
 // decode failures.
 func TestCaptureFromJSON_MalformedJSONReturnsNil(t *testing.T) {
-	require.Nil(t, CaptureFromJSON(json.RawMessage(`{not json`), []string{"a"}))
+	must := require.New(t)
+	must.Nil(CaptureFromJSON(json.RawMessage(`{not json`), []string{"a"}))
 }
 
 // TestBuiltinRulesValidate_ReplayFieldsPathsAreSyntacticallyValid walks
@@ -220,6 +234,7 @@ func TestBuiltinRulesValidate_ReplayFieldsPathsAreSyntacticallyValid(t *testing.
 			continue
 		}
 		t.Run(rule.Description, func(t *testing.T) {
+			must := require.New(t)
 			q := ProviderQuirks{
 				FieldRenames:   map[string]string{},
 				OmitFields:     []string{},
@@ -230,7 +245,7 @@ func TestBuiltinRulesValidate_ReplayFieldsPathsAreSyntacticallyValid(t *testing.
 			}
 			rule.Apply(&q)
 			for _, path := range q.ReplayFields {
-				require.NoError(t, ValidateReplayPath(path), "ReplayFields path %q is invalid", path)
+				must.NoError(ValidateReplayPath(path), "ReplayFields path %q is invalid", path)
 			}
 		})
 	}
@@ -260,6 +275,7 @@ func TestBuiltinRulesReplayFieldsSuffix(t *testing.T) {
 			continue
 		}
 		t.Run(rule.Description, func(t *testing.T) {
+			must := require.New(t)
 			q := ProviderQuirks{
 				FieldRenames:   map[string]string{},
 				OmitFields:     []string{},
@@ -274,24 +290,24 @@ func TestBuiltinRulesReplayFieldsSuffix(t *testing.T) {
 			}
 			switch rule.ProviderType {
 			case "openai-compatible":
-				require.True(t, strings.HasSuffix(rule.Description, threadedSuffix),
+				must.True(strings.HasSuffix(rule.Description, threadedSuffix),
 					"openai-compatible ReplayFields rule description must end with %q (the adapter threads its captures outbound)", threadedSuffix)
 				for _, path := range q.ReplayFields {
 					segments, err := ParseReplayPath(path)
 					if err != nil {
 						continue
 					}
-					require.Len(t, segments, 1,
+					must.Len(segments, 1,
 						"ReplayFields path %q is not threadable (must be a single segment for outbound emission)", path)
-					require.False(t, segments[0].IsArray,
+					must.False(segments[0].IsArray,
 						"ReplayFields path %q is not threadable (must be a non-array segment for outbound emission)", path)
-					require.False(t, canonicalOpenAIMessageFieldNames[path],
+					must.False(canonicalOpenAIMessageFieldNames[path],
 						"ReplayFields path %q collides with a canonical openai message key", path)
 				}
 			default:
-				require.True(t, strings.HasSuffix(rule.Description, parseSideSuffix),
+				must.True(strings.HasSuffix(rule.Description, parseSideSuffix),
 					"ReplayFields rule description must end with %q (no outbound threading exists for provider %q)", parseSideSuffix, rule.ProviderType)
-				require.False(t, strings.HasSuffix(rule.Description, threadedSuffix),
+				must.False(strings.HasSuffix(rule.Description, threadedSuffix),
 					"provider %q has no outbound threading; the description must not claim %q", rule.ProviderType, threadedSuffix)
 			}
 		})
@@ -302,6 +318,7 @@ func TestBuiltinRulesReplayFieldsSuffix(t *testing.T) {
 // captured key set themselves — the walker does not sort (Go maps are
 // unordered).
 func TestCaptureReplayFields_CallerMustSortKeys(t *testing.T) {
+	must := require.New(t)
 	doc := map[string]any{
 		"reasoning_content": "thinking",
 		"other_field":       "value",
@@ -312,5 +329,5 @@ func TestCaptureReplayFields_CallerMustSortKeys(t *testing.T) {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	require.Equal(t, []string{"other_field", "reasoning_content"}, keys)
+	must.Equal([]string{"other_field", "reasoning_content"}, keys)
 }

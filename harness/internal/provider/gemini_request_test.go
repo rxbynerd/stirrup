@@ -75,12 +75,14 @@ type decodedGenerationCfg struct {
 
 func decodeGeminiRequest(t *testing.T, body []byte) decodedRequest {
 	t.Helper()
+	must := require.New(t)
 	var dr decodedRequest
-	require.NoError(t, json.Unmarshal(body, &dr), "body=%s", body)
+	must.NoError(json.Unmarshal(body, &dr), "body=%s", body)
 	return dr
 }
 
 func TestBuildGenerateContentRequest_SystemInstructionFromParams(t *testing.T) {
+	must := require.New(t)
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model:  "gemini-2.5-pro",
 		System: "You are a helpful coding assistant.",
@@ -88,31 +90,33 @@ func TestBuildGenerateContentRequest_SystemInstructionFromParams(t *testing.T) {
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	require.NoError(t, err)
+	must.NoError(err)
 	dr := decodeGeminiRequest(t, body)
-	require.NotNil(t, dr.SystemInstruction, "expected systemInstruction")
-	require.Len(t, dr.SystemInstruction.Parts, 1)
-	require.Equal(t, "You are a helpful coding assistant.", dr.SystemInstruction.Parts[0].Text)
-	require.Empty(t, dr.SystemInstruction.Role, "Vertex ignores systemInstruction.role")
+	must.NotNil(dr.SystemInstruction, "expected systemInstruction")
+	must.Len(dr.SystemInstruction.Parts, 1)
+	must.Equal("You are a helpful coding assistant.", dr.SystemInstruction.Parts[0].Text)
+	must.Empty(dr.SystemInstruction.Role, "Vertex ignores systemInstruction.role")
 }
 
 func TestBuildGenerateContentRequest_SingleUserText(t *testing.T) {
+	must := require.New(t)
 	body, toolNameByID, err := BuildGenerateContentRequest(types.StreamParams{
 		Model: "gemini-2.5-pro",
 		Messages: []types.Message{
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "Hello"}}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	require.NoError(t, err)
-	require.Empty(t, toolNameByID)
+	must.NoError(err)
+	must.Empty(toolNameByID)
 	dr := decodeGeminiRequest(t, body)
-	require.Len(t, dr.Contents, 1)
-	require.Equal(t, "user", dr.Contents[0].Role)
-	require.Len(t, dr.Contents[0].Parts, 1)
-	require.Equal(t, "Hello", dr.Contents[0].Parts[0].Text)
+	must.Len(dr.Contents, 1)
+	must.Equal("user", dr.Contents[0].Role)
+	must.Len(dr.Contents[0].Parts, 1)
+	must.Equal("Hello", dr.Contents[0].Parts[0].Text)
 }
 
 func TestBuildGenerateContentRequest_MultiTurnWithToolUse(t *testing.T) {
+	must := require.New(t)
 	body, toolNameByID, err := BuildGenerateContentRequest(types.StreamParams{
 		Model: "gemini-2.5-pro",
 		Messages: []types.Message{
@@ -126,35 +130,36 @@ func TestBuildGenerateContentRequest_MultiTurnWithToolUse(t *testing.T) {
 			}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	require.NoError(t, err)
-	require.Equal(t, "read_file", toolNameByID["call_1"])
+	must.NoError(err)
+	must.Equal("read_file", toolNameByID["call_1"])
 
 	dr := decodeGeminiRequest(t, body)
-	require.Len(t, dr.Contents, 3)
+	must.Len(dr.Contents, 3)
 
 	// User text.
-	require.Equal(t, "user", dr.Contents[0].Role)
-	require.Len(t, dr.Contents[0].Parts, 1)
-	require.Equal(t, "Read main.go", dr.Contents[0].Parts[0].Text)
+	must.Equal("user", dr.Contents[0].Role)
+	must.Len(dr.Contents[0].Parts, 1)
+	must.Equal("Read main.go", dr.Contents[0].Parts[0].Text)
 
 	// Model turn: text and functionCall share one Content.
-	require.Equal(t, "model", dr.Contents[1].Role)
-	require.Len(t, dr.Contents[1].Parts, 2)
-	require.Equal(t, "Sure, reading it now.", dr.Contents[1].Parts[0].Text)
-	require.NotNil(t, dr.Contents[1].Parts[1].FunctionCall)
-	require.Equal(t, "read_file", dr.Contents[1].Parts[1].FunctionCall.Name)
+	must.Equal("model", dr.Contents[1].Role)
+	must.Len(dr.Contents[1].Parts, 2)
+	must.Equal("Sure, reading it now.", dr.Contents[1].Parts[0].Text)
+	must.NotNil(dr.Contents[1].Parts[1].FunctionCall)
+	must.Equal("read_file", dr.Contents[1].Parts[1].FunctionCall.Name)
 
 	// Function-role response.
-	require.Equal(t, "function", dr.Contents[2].Role)
-	require.Len(t, dr.Contents[2].Parts, 1)
+	must.Equal("function", dr.Contents[2].Role)
+	must.Len(dr.Contents[2].Parts, 1)
 	resp := dr.Contents[2].Parts[0].FunctionResponse
-	require.NotNil(t, resp)
-	require.Equal(t, "read_file", resp.Name)
-	require.Equal(t, "package main", resp.Response["content"])
-	require.NotContains(t, resp.Response, "error", "response.error should not be present on success")
+	must.NotNil(resp)
+	must.Equal("read_file", resp.Name)
+	must.Equal("package main", resp.Response["content"])
+	must.NotContains(resp.Response, "error", "response.error should not be present on success")
 }
 
 func TestBuildGenerateContentRequest_AssistantToolUseCoalescing(t *testing.T) {
+	must := require.New(t)
 	body, toolNameByID, err := BuildGenerateContentRequest(types.StreamParams{
 		Model: "gemini-2.5-pro",
 		Messages: []types.Message{
@@ -165,20 +170,21 @@ func TestBuildGenerateContentRequest_AssistantToolUseCoalescing(t *testing.T) {
 			}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	require.NoError(t, err)
-	require.Equal(t, "list", toolNameByID["c1"])
-	require.Equal(t, "read_file", toolNameByID["c2"])
+	must.NoError(err)
+	must.Equal("list", toolNameByID["c1"])
+	must.Equal("read_file", toolNameByID["c2"])
 	dr := decodeGeminiRequest(t, body)
-	require.Len(t, dr.Contents, 2, "expected one user and one model content")
-	require.Equal(t, "model", dr.Contents[1].Role)
-	require.Len(t, dr.Contents[1].Parts, 2, "expected both tool calls coalesced into one model content")
-	require.NotNil(t, dr.Contents[1].Parts[0].FunctionCall)
-	require.Equal(t, "list", dr.Contents[1].Parts[0].FunctionCall.Name)
-	require.NotNil(t, dr.Contents[1].Parts[1].FunctionCall)
-	require.Equal(t, "read_file", dr.Contents[1].Parts[1].FunctionCall.Name)
+	must.Len(dr.Contents, 2, "expected one user and one model content")
+	must.Equal("model", dr.Contents[1].Role)
+	must.Len(dr.Contents[1].Parts, 2, "expected both tool calls coalesced into one model content")
+	must.NotNil(dr.Contents[1].Parts[0].FunctionCall)
+	must.Equal("list", dr.Contents[1].Parts[0].FunctionCall.Name)
+	must.NotNil(dr.Contents[1].Parts[1].FunctionCall)
+	must.Equal("read_file", dr.Contents[1].Parts[1].FunctionCall.Name)
 }
 
 func TestBuildGenerateContentRequest_ToolResultUnknownIDErrors(t *testing.T) {
+	must := require.New(t)
 	_, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model: "gemini-2.5-pro",
 		Messages: []types.Message{
@@ -187,10 +193,11 @@ func TestBuildGenerateContentRequest_ToolResultUnknownIDErrors(t *testing.T) {
 			}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	require.ErrorContains(t, err, "ghost")
+	must.ErrorContains(err, "ghost")
 }
 
 func TestBuildGenerateContentRequest_ErrorToolResultIncludesErrorFlag(t *testing.T) {
+	must := require.New(t)
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model: "gemini-2.5-pro",
 		Messages: []types.Message{
@@ -202,33 +209,34 @@ func TestBuildGenerateContentRequest_ErrorToolResultIncludesErrorFlag(t *testing
 			}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	require.NoError(t, err)
+	must.NoError(err)
 	dr := decodeGeminiRequest(t, body)
-	require.GreaterOrEqual(t, len(dr.Contents), 2)
+	must.GreaterOrEqual(len(dr.Contents), 2)
 	resp := dr.Contents[len(dr.Contents)-1].Parts[0].FunctionResponse
-	require.NotNil(t, resp, "expected functionResponse on last part")
-	require.Equal(t, "ENOENT", resp.Response["content"])
-	require.Contains(t, resp.Response, "error")
-	require.Equal(t, true, resp.Response["error"])
+	must.NotNil(resp, "expected functionResponse on last part")
+	must.Equal("ENOENT", resp.Response["content"])
+	must.Contains(resp.Response, "error")
+	must.Equal(true, resp.Response["error"])
 }
 
 func TestBuildGenerateContentRequest_DefaultSafetySettings(t *testing.T) {
+	must := require.New(t)
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model: "gemini-2.5-pro",
 		Messages: []types.Message{
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	require.NoError(t, err)
+	must.NoError(err)
 	dr := decodeGeminiRequest(t, body)
-	require.Len(t, dr.SafetySettings, 5)
+	must.Len(dr.SafetySettings, 5)
 
 	gotCategories := make([]string, 0, len(dr.SafetySettings))
 	for _, s := range dr.SafetySettings {
 		gotCategories = append(gotCategories, s.Category)
-		require.Equal(t, "BLOCK_NONE", s.Threshold, "category %s", s.Category)
+		must.Equal("BLOCK_NONE", s.Threshold, "category %s", s.Category)
 	}
-	require.ElementsMatch(t, []string{
+	must.ElementsMatch([]string{
 		"HARM_CATEGORY_HATE_SPEECH",
 		"HARM_CATEGORY_HARASSMENT",
 		"HARM_CATEGORY_DANGEROUS_CONTENT",
@@ -238,6 +246,7 @@ func TestBuildGenerateContentRequest_DefaultSafetySettings(t *testing.T) {
 }
 
 func TestBuildGenerateContentRequest_CustomSafetySettings(t *testing.T) {
+	must := require.New(t)
 	custom := []types.GeminiSafetySetting{
 		{Category: "HARM_CATEGORY_DANGEROUS_CONTENT", Threshold: "BLOCK_ONLY_HIGH"},
 		{Category: "HARM_CATEGORY_HATE_SPEECH", Threshold: "BLOCK_MEDIUM_AND_ABOVE"},
@@ -248,9 +257,9 @@ func TestBuildGenerateContentRequest_CustomSafetySettings(t *testing.T) {
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
 	}, custom, quirks.ProviderQuirks{})
-	require.NoError(t, err)
+	must.NoError(err)
 	dr := decodeGeminiRequest(t, body)
-	require.Equal(t, []decodedSafetyEntry{
+	must.Equal([]decodedSafetyEntry{
 		{Category: "HARM_CATEGORY_DANGEROUS_CONTENT", Threshold: "BLOCK_ONLY_HIGH"},
 		{Category: "HARM_CATEGORY_HATE_SPEECH", Threshold: "BLOCK_MEDIUM_AND_ABOVE"},
 	}, dr.SafetySettings)
@@ -261,6 +270,7 @@ func TestBuildGenerateContentRequest_CustomSafetySettings(t *testing.T) {
 // functionCallingConfig.mode="AUTO" and streamFunctionCallArguments=false.
 // See geminiToolConfig in gemini_types.go for why the flag stays off.
 func TestBuildGenerateContentRequest_StreamFunctionCallArgsFalseWithTools(t *testing.T) {
+	must := require.New(t)
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model: "gemini-2.5-pro",
 		Messages: []types.Message{
@@ -274,20 +284,20 @@ func TestBuildGenerateContentRequest_StreamFunctionCallArgsFalseWithTools(t *tes
 			},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	require.NoError(t, err)
+	must.NoError(err)
 	dr := decodeGeminiRequest(t, body)
-	require.NotNil(t, dr.ToolConfig, "expected toolConfig to be set")
-	require.Equal(t, "AUTO", dr.ToolConfig.FunctionCallingConfig.Mode)
-	require.False(t, dr.ToolConfig.FunctionCallingConfig.StreamFunctionCallArguments)
-	require.Len(t, dr.Tools, 1)
-	require.Len(t, dr.Tools[0].FunctionDeclarations, 1)
+	must.NotNil(dr.ToolConfig, "expected toolConfig to be set")
+	must.Equal("AUTO", dr.ToolConfig.FunctionCallingConfig.Mode)
+	must.False(dr.ToolConfig.FunctionCallingConfig.StreamFunctionCallArguments)
+	must.Len(dr.Tools, 1)
+	must.Len(dr.Tools[0].FunctionDeclarations, 1)
 	decl := dr.Tools[0].FunctionDeclarations[0]
-	require.Equal(t, "read_file", decl.Name)
+	must.Equal("read_file", decl.Name)
 
 	// Parameters must be Gemini-shaped (uppercase types).
 	var params map[string]any
-	require.NoError(t, json.Unmarshal(decl.Parameters, &params))
-	require.Equal(t, "OBJECT", params["type"])
+	must.NoError(json.Unmarshal(decl.Parameters, &params))
+	must.Equal("OBJECT", params["type"])
 }
 
 // TestBuildGenerateContentRequest_ToolChoice pins the
@@ -321,6 +331,7 @@ func TestBuildGenerateContentRequest_ToolChoice(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			body, _, err := BuildGenerateContentRequest(types.StreamParams{
 				Model:          "gemini-2.5-pro",
 				ToolChoice:     tc.choice,
@@ -328,11 +339,11 @@ func TestBuildGenerateContentRequest_ToolChoice(t *testing.T) {
 				Messages:       []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
 				Tools:          baseTools,
 			}, nil, q)
-			require.NoError(t, err)
+			must.NoError(err)
 			dr := decodeGeminiRequest(t, body)
-			require.NotNil(t, dr.ToolConfig, "expected toolConfig to be set")
-			require.Equal(t, tc.wantMode, dr.ToolConfig.FunctionCallingConfig.Mode)
-			require.Equal(t, tc.wantAllowed, dr.ToolConfig.FunctionCallingConfig.AllowedFunctionNames)
+			must.NotNil(dr.ToolConfig, "expected toolConfig to be set")
+			must.Equal(tc.wantMode, dr.ToolConfig.FunctionCallingConfig.Mode)
+			must.Equal(tc.wantAllowed, dr.ToolConfig.FunctionCallingConfig.AllowedFunctionNames)
 		})
 	}
 }
@@ -341,6 +352,7 @@ func TestBuildGenerateContentRequest_ToolChoice(t *testing.T) {
 // the graceful no-op: a zero-value capability leaves the mode at AUTO
 // even for a ToolChoiceRequired request.
 func TestBuildGenerateContentRequest_ToolChoiceUnsupportedCapability(t *testing.T) {
+	must := require.New(t)
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model:      "gemini-2.5-pro",
 		ToolChoice: types.ToolChoiceRequired,
@@ -349,10 +361,10 @@ func TestBuildGenerateContentRequest_ToolChoiceUnsupportedCapability(t *testing.
 			{Name: "read_file", Description: "read", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	require.NoError(t, err)
+	must.NoError(err)
 	dr := decodeGeminiRequest(t, body)
-	require.NotNil(t, dr.ToolConfig, "expected toolConfig to be set")
-	require.Equal(t, "AUTO", dr.ToolConfig.FunctionCallingConfig.Mode)
+	must.NotNil(dr.ToolConfig, "expected toolConfig to be set")
+	must.Equal("AUTO", dr.ToolConfig.FunctionCallingConfig.Mode)
 }
 
 // TestBuildGenerateContentRequest_ToolChoice_PartialCapability asserts
@@ -372,16 +384,17 @@ func TestBuildGenerateContentRequest_ToolChoice_PartialCapability(t *testing.T) 
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			body, _, err := BuildGenerateContentRequest(types.StreamParams{
 				Model:      "gemini-2.5-pro",
 				ToolChoice: tc.choice,
 				Messages:   []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
 				Tools:      tools,
 			}, nil, quirks.ProviderQuirks{ToolChoice: tc.cap})
-			require.NoError(t, err)
+			must.NoError(err)
 			dr := decodeGeminiRequest(t, body)
-			require.NotNil(t, dr.ToolConfig, "expected toolConfig to be set")
-			require.Equal(t, "AUTO", dr.ToolConfig.FunctionCallingConfig.Mode)
+			must.NotNil(dr.ToolConfig, "expected toolConfig to be set")
+			must.Equal("AUTO", dr.ToolConfig.FunctionCallingConfig.Mode)
 		})
 	}
 }
@@ -403,6 +416,7 @@ func TestStreamFunctionCallArgsFromQuirks_ShapeMapsToWireFlag(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			q := quirks.ProviderQuirks{
 				BehaviourFlags: quirks.ProviderBehaviourFlags{
 					Gemini: quirks.GeminiBehaviourFlags{
@@ -423,28 +437,30 @@ func TestStreamFunctionCallArgsFromQuirks_ShapeMapsToWireFlag(t *testing.T) {
 					},
 				},
 			}, nil, q)
-			require.NoError(t, err)
+			must.NoError(err)
 			dr := decodeGeminiRequest(t, body)
-			require.NotNil(t, dr.ToolConfig, "expected toolConfig to be present when tools are declared")
-			require.Equal(t, tc.want, dr.ToolConfig.FunctionCallingConfig.StreamFunctionCallArguments)
+			must.NotNil(dr.ToolConfig, "expected toolConfig to be present when tools are declared")
+			must.Equal(tc.want, dr.ToolConfig.FunctionCallingConfig.StreamFunctionCallArguments)
 		})
 	}
 }
 
 func TestBuildGenerateContentRequest_NoToolConfigWhenNoTools(t *testing.T) {
+	must := require.New(t)
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model: "gemini-2.5-pro",
 		Messages: []types.Message{
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	require.NoError(t, err)
+	must.NoError(err)
 	dr := decodeGeminiRequest(t, body)
-	require.Nil(t, dr.ToolConfig, "toolConfig should be omitted when no tools are declared")
-	require.Empty(t, dr.Tools)
+	must.Nil(dr.ToolConfig, "toolConfig should be omitted when no tools are declared")
+	must.Empty(dr.Tools)
 }
 
 func TestBuildGenerateContentRequest_BadToolSchemaErrors(t *testing.T) {
+	must := require.New(t)
 	_, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model: "gemini-2.5-pro",
 		Messages: []types.Message{
@@ -458,10 +474,11 @@ func TestBuildGenerateContentRequest_BadToolSchemaErrors(t *testing.T) {
 			},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	require.ErrorContains(t, err, "bad_tool")
+	must.ErrorContains(err, "bad_tool")
 }
 
 func TestBuildGenerateContentRequest_MultipleSystemMessagesConcatenated(t *testing.T) {
+	must := require.New(t)
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model:  "gemini-2.5-pro",
 		System: "Base system prompt.",
@@ -471,19 +488,20 @@ func TestBuildGenerateContentRequest_MultipleSystemMessagesConcatenated(t *testi
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	require.NoError(t, err)
+	must.NoError(err)
 	dr := decodeGeminiRequest(t, body)
-	require.NotNil(t, dr.SystemInstruction, "expected systemInstruction")
-	require.NotEmpty(t, dr.SystemInstruction.Parts)
-	require.Equal(t, "Base system prompt.\n\nExtra rule A.\n\nExtra rule B.", dr.SystemInstruction.Parts[0].Text)
+	must.NotNil(dr.SystemInstruction, "expected systemInstruction")
+	must.NotEmpty(dr.SystemInstruction.Parts)
+	must.Equal("Base system prompt.\n\nExtra rule A.\n\nExtra rule B.", dr.SystemInstruction.Parts[0].Text)
 
 	// System messages are folded into systemInstruction, not sent as contents.
 	for _, c := range dr.Contents {
-		require.NotEqual(t, "system", c.Role)
+		must.NotEqual("system", c.Role)
 	}
 }
 
 func TestBuildGenerateContentRequest_AssistantToolResultRejected(t *testing.T) {
+	must := require.New(t)
 	_, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model: "gemini-2.5-pro",
 		Messages: []types.Message{
@@ -492,10 +510,11 @@ func TestBuildGenerateContentRequest_AssistantToolResultRejected(t *testing.T) {
 			}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	require.ErrorContains(t, err, "tool_result")
+	must.ErrorContains(err, "tool_result")
 }
 
 func TestBuildGenerateContentRequest_GenerationConfig(t *testing.T) {
+	must := require.New(t)
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model:       "gemini-2.5-pro",
 		MaxTokens:   2048,
@@ -504,12 +523,12 @@ func TestBuildGenerateContentRequest_GenerationConfig(t *testing.T) {
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	require.NoError(t, err)
+	must.NoError(err)
 	dr := decodeGeminiRequest(t, body)
-	require.NotNil(t, dr.GenerationConfig, "expected generationConfig")
-	require.Equal(t, 2048, dr.GenerationConfig.MaxOutputTokens)
-	require.NotNil(t, dr.GenerationConfig.Temperature)
-	require.InDelta(t, 0.2, *dr.GenerationConfig.Temperature, 1e-9)
+	must.NotNil(dr.GenerationConfig, "expected generationConfig")
+	must.Equal(2048, dr.GenerationConfig.MaxOutputTokens)
+	must.NotNil(dr.GenerationConfig.Temperature)
+	must.InDelta(0.2, *dr.GenerationConfig.Temperature, 1e-9)
 }
 
 // findModelContent returns the first model-role content in the decoded request, or nil.
@@ -549,32 +568,34 @@ func TestBuildGenerateContentRequest_TemperatureWireShape(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			body, _, err := BuildGenerateContentRequest(types.StreamParams{
 				Model:       "gemini-2.5-pro",
 				MaxTokens:   tc.maxTokens,
 				Temperature: tc.temperature,
 				Messages:    messages,
 			}, nil, quirks.ProviderQuirks{})
-			require.NoError(t, err)
+			must.NoError(err)
 			bs := string(body)
 			if tc.wantTemperature {
-				require.Contains(t, bs, `"temperature"`, "non-nil pointer must emit temperature")
+				must.Contains(bs, `"temperature"`, "non-nil pointer must emit temperature")
 			} else {
-				require.NotContains(t, bs, `"temperature"`, "nil pointer must omit temperature (omitempty)")
+				must.NotContains(bs, `"temperature"`, "nil pointer must omit temperature (omitempty)")
 			}
 			if tc.wantTempSubstring != "" {
-				require.Contains(t, bs, tc.wantTempSubstring)
+				must.Contains(bs, tc.wantTempSubstring)
 			}
 			if tc.wantMaxOutTokens {
-				require.Contains(t, bs, `"maxOutputTokens"`, "non-zero MaxTokens must emit maxOutputTokens")
+				must.Contains(bs, `"maxOutputTokens"`, "non-zero MaxTokens must emit maxOutputTokens")
 			} else {
-				require.NotContains(t, bs, `"maxOutputTokens"`, "zero MaxTokens must omit maxOutputTokens")
+				must.NotContains(bs, `"maxOutputTokens"`, "zero MaxTokens must omit maxOutputTokens")
 			}
 		})
 	}
 }
 
 func TestBuildGenerateContentRequest_AssistantToolUseEmptyInputBecomesEmptyObject(t *testing.T) {
+	must := require.New(t)
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model: "gemini-2.5-pro",
 		Messages: []types.Message{
@@ -583,32 +604,33 @@ func TestBuildGenerateContentRequest_AssistantToolUseEmptyInputBecomesEmptyObjec
 			}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	require.NoError(t, err)
+	must.NoError(err)
 	dr := decodeGeminiRequest(t, body)
-	require.Len(t, dr.Contents, 1)
-	require.Len(t, dr.Contents[0].Parts, 1)
+	must.Len(dr.Contents, 1)
+	must.Len(dr.Contents[0].Parts, 1)
 	fc := dr.Contents[0].Parts[0].FunctionCall
-	require.NotNil(t, fc, "expected functionCall on the part")
+	must.NotNil(fc, "expected functionCall on the part")
 	// Args should serialise as "{}" not be omitted entirely (Vertex
 	// requires a present args object on functionCall).
 	var argsObj map[string]any
-	require.NoError(t, json.Unmarshal(fc.Args, &argsObj), "raw args=%s", fc.Args)
-	require.Empty(t, argsObj, "args should serialise as an empty object")
+	must.NoError(json.Unmarshal(fc.Args, &argsObj), "raw args=%s", fc.Args)
+	must.Empty(argsObj, "args should serialise as an empty object")
 }
 
 // TestBuildGenerateContentRequest_BodyIsValidJSON guards against the request
 // body ceasing to be a JSON object, for example from a programmer error that
 // breaks marshalling.
 func TestBuildGenerateContentRequest_BodyIsValidJSON(t *testing.T) {
+	must := require.New(t)
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model: "gemini-2.5-pro",
 		Messages: []types.Message{
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	require.NoError(t, err)
+	must.NoError(err)
 	var generic map[string]any
-	require.NoError(t, json.Unmarshal(body, &generic), "body=%s", body)
+	must.NoError(json.Unmarshal(body, &generic), "body=%s", body)
 }
 
 // TestBuildGenerateContentRequest_UserTextAndToolResultOrdering pins the
@@ -617,6 +639,7 @@ func TestBuildGenerateContentRequest_BodyIsValidJSON(t *testing.T) {
 // silently change wire output for callers that combine text and
 // tool_result blocks in one user message.
 func TestBuildGenerateContentRequest_UserTextAndToolResultOrdering(t *testing.T) {
+	must := require.New(t)
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model: "gemini-2.5-pro",
 		Messages: []types.Message{
@@ -629,20 +652,21 @@ func TestBuildGenerateContentRequest_UserTextAndToolResultOrdering(t *testing.T)
 			}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	require.NoError(t, err)
+	must.NoError(err)
 	dr := decodeGeminiRequest(t, body)
 	// contents: [model(call), function(response), user(text)]
-	require.Len(t, dr.Contents, 3)
-	require.Equal(t, "function", dr.Contents[1].Role)
-	require.Equal(t, "user", dr.Contents[2].Role)
-	require.NotEmpty(t, dr.Contents[2].Parts)
-	require.Equal(t, "follow-up note", dr.Contents[2].Parts[0].Text)
+	must.Len(dr.Contents, 3)
+	must.Equal("function", dr.Contents[1].Role)
+	must.Equal("user", dr.Contents[2].Role)
+	must.NotEmpty(dr.Contents[2].Parts)
+	must.Equal("follow-up note", dr.Contents[2].Parts[0].Text)
 }
 
 // TestBuildGenerateContentRequest_ThoughtSignatureRoundTrip asserts that
 // when an assistant `tool_use` block carries a ThoughtSignature, the
 // marshalled request emits `thoughtSignature` on the corresponding part.
 func TestBuildGenerateContentRequest_ThoughtSignatureRoundTrip(t *testing.T) {
+	must := require.New(t)
 	const sig = "AY89a18t+D98lADcFYKgjMgoHS7rOPAQUE=="
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model: "gemini-3.1-pro-preview",
@@ -662,14 +686,14 @@ func TestBuildGenerateContentRequest_ThoughtSignatureRoundTrip(t *testing.T) {
 			}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	require.NoError(t, err)
+	must.NoError(err)
 	dr := decodeGeminiRequest(t, body)
 
 	model := findModelContent(dr)
-	require.NotNil(t, model, "expected a model-role content in the request body")
-	require.Len(t, model.Parts, 1)
-	require.NotNil(t, model.Parts[0].FunctionCall, "expected functionCall on the model part")
-	require.Equal(t, sig, model.Parts[0].ThoughtSignature)
+	must.NotNil(model, "expected a model-role content in the request body")
+	must.Len(model.Parts, 1)
+	must.NotNil(model.Parts[0].FunctionCall, "expected functionCall on the model part")
+	must.Equal(sig, model.Parts[0].ThoughtSignature)
 }
 
 // TestBuildGenerateContentRequest_ThoughtSignatureRoundTripOnText asserts
@@ -677,6 +701,7 @@ func TestBuildGenerateContentRequest_ThoughtSignatureRoundTrip(t *testing.T) {
 // on the part. Receive-side capture on text parts is not yet implemented
 // (see TODO in gemini.go), but the send-side path supports the field.
 func TestBuildGenerateContentRequest_ThoughtSignatureRoundTripOnText(t *testing.T) {
+	must := require.New(t)
 	const sig = "TEXTPARTSIGNATURE=="
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model: "gemini-3.1-pro-preview",
@@ -687,19 +712,20 @@ func TestBuildGenerateContentRequest_ThoughtSignatureRoundTripOnText(t *testing.
 			}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	require.NoError(t, err)
+	must.NoError(err)
 	dr := decodeGeminiRequest(t, body)
 	model := findModelContent(dr)
-	require.NotNil(t, model, "expected a model-role content in the request body")
-	require.Len(t, model.Parts, 1)
-	require.Equal(t, "hello!", model.Parts[0].Text)
-	require.Equal(t, sig, model.Parts[0].ThoughtSignature)
+	must.NotNil(model, "expected a model-role content in the request body")
+	must.Len(model.Parts, 1)
+	must.Equal("hello!", model.Parts[0].Text)
+	must.Equal(sig, model.Parts[0].ThoughtSignature)
 }
 
 // TestBuildGenerateContentRequest_NoThoughtSignatureWhenAbsent confirms
 // assistant blocks without a ThoughtSignature do NOT emit the field on
 // the wire (`omitempty` keeps parity with the pre-3.x request shape).
 func TestBuildGenerateContentRequest_NoThoughtSignatureWhenAbsent(t *testing.T) {
+	must := require.New(t)
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model: "gemini-2.5-pro",
 		Messages: []types.Message{
@@ -709,8 +735,8 @@ func TestBuildGenerateContentRequest_NoThoughtSignatureWhenAbsent(t *testing.T) 
 			}},
 		},
 	}, nil, quirks.ProviderQuirks{})
-	require.NoError(t, err)
-	require.NotContains(t, string(body), "thoughtSignature", "no signature was set, so the field must be omitted")
+	must.NoError(err)
+	must.NotContains(string(body), "thoughtSignature", "no signature was set, so the field must be omitted")
 }
 
 // TestGeminiThoughtSignature_FullRoundTrip confirms JSON decode of the
@@ -722,16 +748,17 @@ func TestBuildGenerateContentRequest_NoThoughtSignatureWhenAbsent(t *testing.T) 
 // those paths are covered by TestGeminiAdapter_ThoughtSignatureCapturedOnToolCall
 // and TestStreamEventsToResult_ThoughtSignaturePropagatedToBlock.
 func TestGeminiThoughtSignature_FullRoundTrip(t *testing.T) {
+	must := require.New(t)
 	const sig = "AY89a18t+D98lADcFYKgjMgoHS7rOPAQUE=="
 
 	chunkJSON := `{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"docs/safety-rings.md"}},"thoughtSignature":"` + sig + `"}]},"finishReason":"STOP"}]}`
 	var chunk generateContentChunk
-	require.NoError(t, json.Unmarshal([]byte(chunkJSON), &chunk), "decode chunk")
-	require.NotEmpty(t, chunk.Candidates, "decoded chunk has no candidates")
-	require.NotNil(t, chunk.Candidates[0].Content, "decoded chunk has no content")
-	require.NotEmpty(t, chunk.Candidates[0].Content.Parts, "decoded chunk has no parts")
+	must.NoError(json.Unmarshal([]byte(chunkJSON), &chunk), "decode chunk")
+	must.NotEmpty(chunk.Candidates, "decoded chunk has no candidates")
+	must.NotNil(chunk.Candidates[0].Content, "decoded chunk has no content")
+	must.NotEmpty(chunk.Candidates[0].Content.Parts, "decoded chunk has no parts")
 	gotSig := chunk.Candidates[0].Content.Parts[0].ThoughtSignature
-	require.Equal(t, sig, gotSig, "decoded thoughtSignature")
+	must.Equal(sig, gotSig, "decoded thoughtSignature")
 
 	messages := []types.Message{
 		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "Read it"}}},
@@ -753,14 +780,15 @@ func TestGeminiThoughtSignature_FullRoundTrip(t *testing.T) {
 		Model:    "gemini-3.1-pro-preview",
 		Messages: messages,
 	}, nil, quirks.ProviderQuirks{})
-	require.NoError(t, err, "BuildGenerateContentRequest")
-	require.Contains(t, string(body), `"thoughtSignature":"`+sig+`"`, "round-tripped request body")
+	must.NoError(err, "BuildGenerateContentRequest")
+	must.Contains(string(body), `"thoughtSignature":"`+sig+`"`, "round-tripped request body")
 }
 
 // TestGeminiToolResultResponse_MarshalErrorOnInvalidStructured asserts a
 // malformed Structured payload surfaces as an error rather than emitting
 // a broken functionResponse body.
 func TestGeminiToolResultResponse_MarshalErrorOnInvalidStructured(t *testing.T) {
+	must := require.New(t)
 	block := types.ContentBlock{
 		Type:       "tool_result",
 		ToolUseID:  "c1",
@@ -771,7 +799,7 @@ func TestGeminiToolResultResponse_MarshalErrorOnInvalidStructured(t *testing.T) 
 	capability := quirks.StructuredToolResultCapability{Supported: true, ObjectResponse: true}
 
 	_, err := geminiToolResultResponse(block, capability)
-	require.Error(t, err, "invalid Structured payload must fail to marshal")
+	must.Error(err, "invalid Structured payload must fail to marshal")
 }
 
 // TestGeminiToolResultResponse_TextOnlyWhenCapabilityWithholdsStructured
@@ -779,6 +807,7 @@ func TestGeminiToolResultResponse_MarshalErrorOnInvalidStructured(t *testing.T) 
 // the capability withholds the object-response shape: the capability
 // gate, not the payload, decides whether Structured is embedded.
 func TestGeminiToolResultResponse_TextOnlyWhenCapabilityWithholdsStructured(t *testing.T) {
+	must := require.New(t)
 	block := types.ContentBlock{
 		Type:       "tool_result",
 		ToolUseID:  "c1",
@@ -787,9 +816,9 @@ func TestGeminiToolResultResponse_TextOnlyWhenCapabilityWithholdsStructured(t *t
 		Kind:       "file_excerpt",
 	}
 	raw, err := geminiToolResultResponse(block, quirks.StructuredToolResultCapability{})
-	require.NoError(t, err)
+	must.NoError(err)
 	var body map[string]interface{}
-	require.NoError(t, json.Unmarshal(raw, &body), "text-only body must be valid JSON: raw=%s", raw)
-	require.Equal(t, "ok", body["content"])
-	require.NotContains(t, body, "structured", "capability withholds structured, so it must be absent")
+	must.NoError(json.Unmarshal(raw, &body), "text-only body must be valid JSON: raw=%s", raw)
+	must.Equal("ok", body["content"])
+	must.NotContains(body, "structured", "capability withholds structured, so it must be absent")
 }

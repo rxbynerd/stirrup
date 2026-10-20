@@ -10,9 +10,10 @@ import (
 //
 // Mutates package-level vars; must NOT call t.Parallel.
 func TestVersion_DefaultsWithoutLdflags(t *testing.T) {
-	require.Equal(t, "dev", Version())
-	require.Empty(t, Commit())
-	require.Equal(t, "dev", Full())
+	must := require.New(t)
+	must.Equal("dev", Version())
+	must.Empty(Commit())
+	must.Equal("dev", Full())
 }
 
 // TestFull_FormatsVersionAndCommit exercises the formatting branches by temporarily mutating the
@@ -34,8 +35,9 @@ func TestFull_FormatsVersionAndCommit(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			version, commit = tc.version, tc.commit
-			require.Equal(t, tc.want, Full())
+			must.Equal(tc.want, Full())
 		})
 	}
 }

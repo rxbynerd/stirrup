@@ -17,6 +17,8 @@ import (
 // each parenting one hook span per execution, with a continueOnError
 // failure marking only its own hook span as an error.
 func TestLoop_Hooks_OTelPhaseAndHookSpans(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	emitter, exporter := newInMemoryOTelEmitter(t)
 
 	loop := buildTestLoop(simpleSuccessProvider())
@@ -33,9 +35,9 @@ func TestLoop_Hooks_OTelPhaseAndHookSpans(t *testing.T) {
 	}
 
 	runTrace, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "success", runTrace.Outcome)
-	assert.Len(t, runTrace.HookResults, 3, "HookResults = %+v", runTrace.HookResults)
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
+	check.Len(runTrace.HookResults, 3, "HookResults = %+v", runTrace.HookResults)
 
 	spans := exporter.GetSpans()
 	byID := map[string]tracetest.SpanStub{}
@@ -52,13 +54,13 @@ func TestLoop_Hooks_OTelPhaseAndHookSpans(t *testing.T) {
 		if s.Name != "hooks.preRun" && s.Name != "hooks.postRun" {
 			continue
 		}
-		assert.NotContains(t, phases, s.Name, "more than one %s span", s.Name)
+		check.NotContains(phases, s.Name, "more than one %s span", s.Name)
 		phases[s.Name] = s
-		assert.Equal(t, root.SpanContext.SpanID(), s.Parent.SpanID(), "%s parent should be the root span", s.Name)
-		assert.NotEqual(t, codes.Error, s.Status.Code,
+		check.Equal(root.SpanContext.SpanID(), s.Parent.SpanID(), "%s parent should be the root span", s.Name)
+		check.NotEqual(codes.Error, s.Status.Code,
 			"%s has error status %q; a continueOnError failure must not fail the phase", s.Name, s.Status.Description)
 	}
-	require.Len(t, phases, 2, "phase spans = %v, want hooks.preRun and hooks.postRun", phases)
+	must.Len(phases, 2, "phase spans = %v, want hooks.preRun and hooks.postRun", phases)
 
 	perPhase := map[string]int{}
 	for _, s := range spans {
@@ -75,8 +77,8 @@ func TestLoop_Hooks_OTelPhaseAndHookSpans(t *testing.T) {
 		}
 		wantError := exitCode != 0
 		isError := s.Status.Code == codes.Error
-		assert.Equal(t, wantError, isError, "error status of hook span under %s (exit code %d)", parent.Name, exitCode)
+		check.Equal(wantError, isError, "error status of hook span under %s (exit code %d)", parent.Name, exitCode)
 	}
-	assert.Equal(t, 1, perPhase["hooks.preRun"], "hook spans per phase = %v", perPhase)
-	assert.Equal(t, 2, perPhase["hooks.postRun"], "hook spans per phase = %v", perPhase)
+	check.Equal(1, perPhase["hooks.preRun"], "hook spans per phase = %v", perPhase)
+	check.Equal(2, perPhase["hooks.postRun"], "hook spans per phase = %v", perPhase)
 }

@@ -9,12 +9,13 @@ import (
 )
 
 func TestWriteProbe_CreatesFile(t *testing.T) {
+	must := require.New(t)
 	path := filepath.Join(t.TempDir(), "healthy")
 
-	require.NoError(t, WriteProbe(path))
+	must.NoError(WriteProbe(path))
 
 	_, err := os.Stat(path)
-	require.NoError(t, err, "probe file does not exist after WriteProbe")
+	must.NoError(err, "probe file does not exist after WriteProbe")
 }
 
 // TestWriteProbe_MissingParentDirReturnsError pins the caller-visible
@@ -22,62 +23,69 @@ func TestWriteProbe_CreatesFile(t *testing.T) {
 // /tmp) is reported, not silently swallowed, so the caller can choose to
 // warn and continue rather than crash the job.
 func TestWriteProbe_MissingParentDirReturnsError(t *testing.T) {
+	must := require.New(t)
 	path := filepath.Join(t.TempDir(), "missing-parent", "healthy")
 
-	require.Error(t, WriteProbe(path))
+	must.Error(WriteProbe(path))
 }
 
 func TestWriteProbe_Idempotent(t *testing.T) {
+	must := require.New(t)
 	path := filepath.Join(t.TempDir(), "healthy")
 
-	require.NoError(t, WriteProbe(path), "first WriteProbe() call")
-	require.NoError(t, WriteProbe(path), "second WriteProbe() call")
+	must.NoError(WriteProbe(path), "first WriteProbe() call")
+	must.NoError(WriteProbe(path), "second WriteProbe() call")
 
 	_, err := os.Stat(path)
-	require.NoError(t, err, "probe file does not exist after second WriteProbe")
+	must.NoError(err, "probe file does not exist after second WriteProbe")
 }
 
 func TestRemoveProbe_RemovesFile(t *testing.T) {
+	must := require.New(t)
 	path := filepath.Join(t.TempDir(), "healthy")
 
-	require.NoError(t, WriteProbe(path))
-	require.NoError(t, RemoveProbe(path))
+	must.NoError(WriteProbe(path))
+	must.NoError(RemoveProbe(path))
 
 	_, err := os.Stat(path)
-	require.True(t, os.IsNotExist(err), "probe file still exists after RemoveProbe")
+	must.True(os.IsNotExist(err), "probe file still exists after RemoveProbe")
 }
 
 func TestRemoveProbe_NonexistentFileReturnsNil(t *testing.T) {
+	must := require.New(t)
 	path := filepath.Join(t.TempDir(), "does-not-exist")
 
-	require.NoError(t, RemoveProbe(path))
+	must.NoError(RemoveProbe(path))
 }
 
 func TestCheckProbe_MarkerPresent(t *testing.T) {
+	must := require.New(t)
 	path := filepath.Join(t.TempDir(), "healthy")
 
-	require.NoError(t, WriteProbe(path))
-	require.NoError(t, CheckProbe(path))
+	must.NoError(WriteProbe(path))
+	must.NoError(CheckProbe(path))
 }
 
 func TestCheckProbe_MarkerAbsent(t *testing.T) {
+	must := require.New(t)
 	path := filepath.Join(t.TempDir(), "does-not-exist")
 
 	err := CheckProbe(path)
-	require.Error(t, err)
-	require.True(t, os.IsNotExist(err), "CheckProbe() error = %v, want os.IsNotExist to be true", err)
+	must.Error(err)
+	must.True(os.IsNotExist(err), "CheckProbe() error = %v, want os.IsNotExist to be true", err)
 }
 
 func TestCheckProbe_MarkerUnreadable(t *testing.T) {
+	must := require.New(t)
 	if os.Geteuid() == 0 {
 		t.Skip("permission bits are not enforced when running as root")
 	}
 
 	path := filepath.Join(t.TempDir(), "healthy")
-	require.NoError(t, WriteProbe(path))
-	require.NoError(t, os.Chmod(path, 0o000))
+	must.NoError(WriteProbe(path))
+	must.NoError(os.Chmod(path, 0o000))
 
 	err := CheckProbe(path)
-	require.Error(t, err)
-	require.False(t, os.IsNotExist(err), "CheckProbe() error = %v, want a permission error distinguishable from absent", err)
+	must.Error(err)
+	must.False(os.IsNotExist(err), "CheckProbe() error = %v, want a permission error distinguishable from absent", err)
 }

@@ -10,8 +10,9 @@ import (
 )
 
 func TestGuardToolCall_AllowsBenignInput(t *testing.T) {
+	must := require.New(t)
 	findings := GuardToolCall("run_command", true, json.RawMessage(`{"command":"go test ./harness/..."}`), ProtectedWriteTargets{})
-	require.Empty(t, findings)
+	must.Empty(findings)
 }
 
 func TestGuardToolCall_RejectsExfiltrationCommand(t *testing.T) {
@@ -30,9 +31,10 @@ func TestGuardToolCall_RejectsCredentialPathInCommand(t *testing.T) {
 }
 
 func TestGuardToolCall_RejectsBase64Payload(t *testing.T) {
+	must := require.New(t)
 	payload := "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWkFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFla"
 	input, err := json.Marshal(map[string]string{"content": payload})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	findings := GuardToolCall("write_file", true, input, ProtectedWriteTargets{})
 	requireFinding(t, findings, "encoded_payload")
@@ -51,7 +53,8 @@ func TestGuardToolCall_DefaultAllowsRepositoryInstructionFiles(t *testing.T) {
 			input := writeInput(t, "path", p)
 			for _, name := range tools {
 				t.Run(name, func(t *testing.T) {
-					require.Empty(t, GuardToolCall(name, true, input, ProtectedWriteTargets{}))
+					must := require.New(t)
+					must.Empty(GuardToolCall(name, true, input, ProtectedWriteTargets{}))
 				})
 			}
 		})
@@ -105,9 +108,10 @@ func TestGuardToolCall_ProtectedWriteTargetsMatchAsListed(t *testing.T) {
 		{"capitalized directory itself", "Docs", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			input := writeInput(t, "path", tc.path)
 			got := hasRule(GuardToolCall("write_file", true, input, protected), "protected_write_target")
-			require.Equal(t, tc.want, got, "path %q", tc.path)
+			must.Equal(tc.want, got, "path %q", tc.path)
 		})
 	}
 }
@@ -117,20 +121,23 @@ func TestGuardToolCall_ProtectedWriteTargetsIgnoreReadsAndNonWriteTools(t *testi
 	input := json.RawMessage(`{"path":"AGENTS.md"}`)
 	for _, name := range []string{"read_file", "list_directory", "git_show"} {
 		t.Run(name, func(t *testing.T) {
-			require.Empty(t, GuardToolCall(name, false, input, protected))
+			must := require.New(t)
+			must.Empty(GuardToolCall(name, false, input, protected))
 		})
 	}
 }
 
 func TestGuardToolCall_ProtectedWriteTargetsAppliesToMutatingWriteNamedTools(t *testing.T) {
+	must := require.New(t)
 	protected := NewProtectedWriteTargets([]string{"AGENTS.md"}, nil)
 	input := json.RawMessage(`{"file_path":"AGENTS.md","content":"x"}`)
 	requireFinding(t, GuardToolCall("mcp_fs_write", true, input, protected), "protected_write_target")
-	require.False(t, hasRule(GuardToolCall("mcp_fs_write", false, input, protected), "protected_write_target"),
+	must.False(hasRule(GuardToolCall("mcp_fs_write", false, input, protected), "protected_write_target"),
 		"a non-mutating tool must not trip the protected-write rule")
 }
 
 func TestGuardToolCall_ProtectedWriteTargetsMatchResolvedForms(t *testing.T) {
+	must := require.New(t)
 	links := map[string]string{"notes.md": "AGENTS.md"}
 	var resolved []string
 	resolve := func(p string) (string, error) {
@@ -165,13 +172,14 @@ func TestGuardToolCall_ProtectedWriteTargetsMatchResolvedForms(t *testing.T) {
 		{"relative path escaping workspace", "../AGENTS.md", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			input := writeInput(t, "path", tc.path)
 			got := hasRule(GuardToolCall("write_file", true, input, protected), "protected_write_target")
-			require.Equal(t, tc.want, got, "path %q", tc.path)
+			must.Equal(tc.want, got, "path %q", tc.path)
 		})
 	}
 	for _, p := range []string{"/etc/AGENTS.md", "../AGENTS.md"} {
-		require.NotContains(t, resolved, p, "resolver must not receive a path that lies outside the workspace on its face")
+		must.NotContains(resolved, p, "resolver must not receive a path that lies outside the workspace on its face")
 	}
 }
 
@@ -187,15 +195,17 @@ func TestNewProtectedWriteTargets_SkipsEntriesNamingTheWorkspaceRoot(t *testing.
 	protected := NewProtectedWriteTargets([]string{"", ".", "./", "  "}, nil)
 	for _, p := range []string{"main.go", "docs/guide.md", "."} {
 		t.Run(p, func(t *testing.T) {
-			require.False(t, protected.Matches(p), "entries naming the workspace root must not protect this path")
+			must := require.New(t)
+			must.False(protected.Matches(p), "entries naming the workspace root must not protect this path")
 		})
 	}
 }
 
 func writeInput(t *testing.T, field, path string) json.RawMessage {
 	t.Helper()
+	must := require.New(t)
 	input, err := json.Marshal(map[string]string{field: path, "content": "x"})
-	require.NoError(t, err)
+	must.NoError(err)
 	return input
 }
 
@@ -210,18 +220,21 @@ func hasRule(findings []ToolGuardFinding, rule string) bool {
 
 func requireFinding(t *testing.T, findings []ToolGuardFinding, rule string) {
 	t.Helper()
-	require.True(t, hasRule(findings, rule), "expected finding %q in %#v", rule, findings)
+	must := require.New(t)
+	must.True(hasRule(findings, rule), "expected finding %q in %#v", rule, findings)
 }
 
 func TestIsCredentialPath_ClassifiesSecretFiles(t *testing.T) {
 	for _, p := range []string{".env", "./app/.env", ".ssh/config", "home/.aws/credentials", "tls/server.pem", `dir\.env`} {
 		t.Run(p, func(t *testing.T) {
-			require.True(t, IsCredentialPath(p))
+			must := require.New(t)
+			must.True(IsCredentialPath(p))
 		})
 	}
 	for _, p := range []string{"main.go", "docs/environment.md", "src/envelope.txt"} {
 		t.Run(p, func(t *testing.T) {
-			require.False(t, IsCredentialPath(p))
+			must := require.New(t)
+			must.False(IsCredentialPath(p))
 		})
 	}
 }

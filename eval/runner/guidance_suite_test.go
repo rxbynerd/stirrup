@@ -65,18 +65,19 @@ echo "{\"id\":\"run-1\",\"turns\":1,\"outcome\":\"success\",\"toolCalls\":$CALLS
 // through the real runner and judges with a scripted harness, pinning that
 // each task passes only for the behaviour it is meant to reward.
 func TestGuidanceSuite_JudgesWithFakeHarness(t *testing.T) {
+	must := require.New(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fake harness assumes POSIX sh")
 	}
 	suite, err := spec.LoadSuiteHCL("../suites/guidance.hcl")
-	require.NoError(t, err)
-	require.NotNil(t, suite.RunConfig, "suite must enable repositoryGuidance for AGENTS.md")
-	require.NotNil(t, suite.RunConfig.RepositoryGuidance,
+	must.NoError(err)
+	must.NotNil(suite.RunConfig, "suite must enable repositoryGuidance for AGENTS.md")
+	must.NotNil(suite.RunConfig.RepositoryGuidance,
 		"suite must enable repositoryGuidance for AGENTS.md, got %+v", suite.RunConfig)
-	require.Equal(t, []string{"AGENTS.md"}, suite.RunConfig.RepositoryGuidance.Files)
+	must.Equal([]string{"AGENTS.md"}, suite.RunConfig.RepositoryGuidance.Files)
 
 	harnessPath := filepath.Join(t.TempDir(), "fake-harness")
-	require.NoError(t, os.WriteFile(harnessPath, []byte(guidanceFakeHarness), 0o755))
+	must.NoError(os.WriteFile(harnessPath, []byte(guidanceFakeHarness), 0o755))
 
 	// Behaviour -> task ID -> expected outcome.
 	wantOutcomes := map[string]map[string]string{
@@ -99,13 +100,15 @@ func TestGuidanceSuite_JudgesWithFakeHarness(t *testing.T) {
 	}
 	for behaviour, wantByTask := range wantOutcomes {
 		t.Run(behaviour, func(t *testing.T) {
+			must := require.New(t)
 			t.Setenv("GUIDANCE_FAKE_BEHAVIOUR", behaviour)
 			result, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harnessPath})
-			require.NoError(t, err)
-			require.Len(t, result.Tasks, len(wantByTask))
+			must.NoError(err)
+			must.Len(result.Tasks, len(wantByTask))
 			for _, tr := range result.Tasks {
 				t.Run(tr.TaskID, func(t *testing.T) {
-					require.Equal(t, wantByTask[tr.TaskID], tr.Outcome,
+					must := require.New(t)
+					must.Equal(wantByTask[tr.TaskID], tr.Outcome,
 						"reason: %s; error: %s", tr.JudgeVerdict.Reason, tr.Error)
 				})
 			}

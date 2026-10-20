@@ -96,8 +96,9 @@ func sendOne(ctx context.Context, t *testing.T, sig Signal, s Settings) {
 // request.
 func firstBytes(t *testing.T, sig Signal, protocol string, endpointFor func(addr string) string) []byte {
 	t.Helper()
+	must := require.New(t)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
+	must.NoError(err)
 	return firstBytesOn(t, ln, sig, protocol, endpointFor)
 }
 
@@ -166,12 +167,13 @@ func TestExporters_SchemeDecidesTLSOverEnvironment(t *testing.T) {
 		for _, protocol := range protocols {
 			for _, ec := range envCases {
 				t.Run(string(sig)+"/"+protocol+"/https with "+ec.name, func(t *testing.T) {
+					must := require.New(t)
 					clearOTLPEnv(t)
 					for k, v := range ec.env(sig) {
 						t.Setenv(k, v)
 					}
 					b := firstBytes(t, sig, protocol, func(addr string) string { return "https://" + addr + "/otlp" })
-					require.True(t, isTLSClientHello(b), "first bytes = %q, want a TLS ClientHello", b)
+					must.True(isTLSClientHello(b), "first bytes = %q, want a TLS ClientHello", b)
 				})
 			}
 
@@ -190,11 +192,12 @@ func TestExporters_SchemeDecidesTLSOverEnvironment(t *testing.T) {
 			}
 			for _, pc := range plaintextCases {
 				t.Run(string(sig)+"/"+protocol+"/"+pc.name, func(t *testing.T) {
+					must := require.New(t)
 					clearOTLPEnv(t)
 					if pc.genericEnv != "" {
 						t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", pc.genericEnv)
 					}
-					require.Equal(t, want, string(firstBytes(t, sig, protocol, pc.endpointFor)))
+					must.Equal(want, string(firstBytes(t, sig, protocol, pc.endpointFor)))
 				})
 			}
 		}
@@ -219,14 +222,15 @@ func TestSettingsEndpoint_EmptyIsLocalPlaintextUnlessEnvChooses(t *testing.T) {
 		}
 		for _, tc := range cases {
 			t.Run(string(sig)+"/"+tc.name, func(t *testing.T) {
+				must := require.New(t)
 				clearOTLPEnv(t)
 				if tc.env != "" {
 					t.Setenv(tc.env, "x")
 				}
 				ep, err := Settings{}.endpoint(sig)
-				require.NoError(t, err)
-				require.Empty(t, ep.url, "endpoint = %+v", ep)
-				require.Equal(t, tc.want, ep.localPlaintext, "endpoint = %+v", ep)
+				must.NoError(err)
+				must.Empty(ep.url, "endpoint = %+v", ep)
+				must.Equal(tc.want, ep.localPlaintext, "endpoint = %+v", ep)
 			})
 		}
 	}
@@ -246,13 +250,14 @@ func TestExporters_EmptyEndpointDialsLocalCollectorInPlaintext(t *testing.T) {
 	for _, sig := range []Signal{SignalTraces, SignalMetrics, SignalLogs} {
 		for _, tc := range cases {
 			t.Run(string(sig)+"/"+tc.protocol, func(t *testing.T) {
+				must := require.New(t)
 				clearOTLPEnv(t)
 				ln, err := net.Listen("tcp", "127.0.0.1:"+tc.port)
 				if err != nil {
 					t.Skipf("default collector port %s is in use: %v", tc.port, err)
 				}
 				b := firstBytesOn(t, ln, sig, tc.protocol, func(string) string { return "" })
-				require.Equal(t, tc.want, string(b))
+				must.Equal(tc.want, string(b))
 			})
 		}
 	}

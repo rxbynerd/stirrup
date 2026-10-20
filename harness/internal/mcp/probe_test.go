@@ -14,6 +14,7 @@ import (
 )
 
 func TestProbe_HandshakeSucceedsWithoutRegistering(t *testing.T) {
+	must := require.New(t)
 	tools := []mcpTool{
 		{Name: "search", Description: "Search", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
@@ -25,23 +26,25 @@ func TestProbe_HandshakeSucceedsWithoutRegistering(t *testing.T) {
 	config := types.MCPServerConfig{Name: "docs", URI: srv.URL}
 
 	err := client.Probe(context.Background(), config, secrets)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	// Unlike Connect, a probe must not register tools.
-	require.Empty(t, registry.List(), "probe must not mutate the registry")
+	must.Empty(registry.List(), "probe must not mutate the registry")
 }
 
 func TestProbe_RejectsNonHTTPScheme(t *testing.T) {
+	must := require.New(t)
 	client := NewClient(tool.NewRegistry(), nil)
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 	config := types.MCPServerConfig{Name: "bad", URI: "file:///etc/passwd"}
 
 	err := client.Probe(context.Background(), config, secrets)
-	require.Error(t, err)
-	require.ErrorContains(t, err, "scheme")
+	must.Error(err)
+	must.ErrorContains(err, "scheme")
 }
 
 func TestProbe_FailsOnServerError(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte("boom"))
@@ -53,11 +56,12 @@ func TestProbe_FailsOnServerError(t *testing.T) {
 	config := types.MCPServerConfig{Name: "down", URI: srv.URL}
 
 	err := client.Probe(context.Background(), config, secrets)
-	require.Error(t, err)
-	require.ErrorContains(t, err, "down")
+	must.Error(err)
+	must.ErrorContains(err, "down")
 }
 
 func TestProbe_ReportsMissingAllowlistedTool(t *testing.T) {
+	must := require.New(t)
 	srv, _ := fakeMCPServer(t, []mcpTool{{Name: "search", InputSchema: json.RawMessage(`{"type":"object"}`)}}, "")
 	client := NewClient(tool.NewRegistry(), srv.Client())
 	secrets := &stubSecretStore{secrets: map[string]string{}}
@@ -69,11 +73,12 @@ func TestProbe_ReportsMissingAllowlistedTool(t *testing.T) {
 	}, secrets)
 
 	var missing *MissingToolsError
-	require.ErrorAs(t, err, &missing)
-	require.Equal(t, []string{"fetch"}, missing.Tools)
+	must.ErrorAs(err, &missing)
+	must.Equal([]string{"fetch"}, missing.Tools)
 }
 
 func TestProbe_AcceptsFullyAdvertisedAllowlist(t *testing.T) {
+	must := require.New(t)
 	srv, _ := fakeMCPServer(t, []mcpTool{{Name: "search", InputSchema: json.RawMessage(`{"type":"object"}`)}}, "")
 	client := NewClient(tool.NewRegistry(), srv.Client())
 	secrets := &stubSecretStore{secrets: map[string]string{}}
@@ -83,5 +88,5 @@ func TestProbe_AcceptsFullyAdvertisedAllowlist(t *testing.T) {
 		URI:          srv.URL,
 		AllowedTools: []string{"search"},
 	}, secrets)
-	require.NoError(t, err)
+	must.NoError(err)
 }

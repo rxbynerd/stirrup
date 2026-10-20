@@ -48,24 +48,25 @@ func repeatCalls(pattern []stallCall, times int) []stallCall {
 }
 
 func TestStallDetector_IdenticalCallsNudgeBeforeStall(t *testing.T) {
+	must := require.New(t)
 	s := &stallDetector{}
 	call := okCall("read_file", `{"path":"main.go"}`, "package main")
 
 	for i := 1; i <= stallRepeats; i++ {
 		out := call.record(s)
-		require.Empty(t, out, "call %d should not end the run before a nudge", i)
+		must.Empty(out, "call %d should not end the run before a nudge", i)
 	}
 	text, ok := s.takeNudge()
-	require.True(t, ok, "no nudge after three identical calls")
-	require.Equal(t, fmt.Sprintf(stallNudgeText, stallRepeats), text)
+	must.True(ok, "no nudge after three identical calls")
+	must.Equal(fmt.Sprintf(stallNudgeText, stallRepeats), text)
 	_, again := s.takeNudge()
-	require.False(t, again, "takeNudge returned the same nudge twice")
+	must.False(again, "takeNudge returned the same nudge twice")
 
 	for i := 1; i < stallRepeats; i++ {
 		out := call.record(s)
-		require.Empty(t, out, "post-nudge call %d should wait for a full threshold", i)
+		must.Empty(out, "post-nudge call %d should wait for a full threshold", i)
 	}
-	require.Equal(t, "stalled", call.record(s), "post-nudge call %d", stallRepeats)
+	must.Equal("stalled", call.record(s), "post-nudge call %d", stallRepeats)
 }
 
 func TestStallDetector_CyclesNudgeOnceThenStall(t *testing.T) {
@@ -84,27 +85,30 @@ func TestStallDetector_CyclesNudgeOnceThenStall(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			threshold := len(tc.pattern) * stallRepeats
 			nudgedAt, outcome, endedAt := runStallBatches(t, &stallDetector{}, repeatCalls(tc.pattern, 2*stallRepeats+1))
-			require.Equal(t, []int{threshold}, nudgedAt, "want exactly one nudge, at call %d", threshold)
-			require.Equal(t, "stalled", outcome)
-			require.Equal(t, 2*threshold, endedAt)
+			must.Equal([]int{threshold}, nudgedAt, "want exactly one nudge, at call %d", threshold)
+			must.Equal("stalled", outcome)
+			must.Equal(2*threshold, endedAt)
 		})
 	}
 }
 
 func TestStallDetector_CycleNudgeNamesPatternLength(t *testing.T) {
+	must := require.New(t)
 	s := &stallDetector{}
 	pattern := []stallCall{okCall("a", `{}`, "1"), okCall("b", `{}`, "2")}
 	for _, c := range repeatCalls(pattern, stallRepeats) {
 		c.record(s)
 	}
 	text, ok := s.takeNudge()
-	require.True(t, ok, "no nudge after the pattern repeated %d times", stallRepeats)
-	require.Contains(t, text, "The last 6 tool calls")
+	must.True(ok, "no nudge after the pattern repeated %d times", stallRepeats)
+	must.Contains(text, "The last 6 tool calls")
 }
 
 func TestStallDetector_AlternationBrokenAfterNudgeDoesNotStall(t *testing.T) {
+	must := require.New(t)
 	a := okCall("read_file", `{"path":"a.go"}`, "A")
 	b := okCall("read_file", `{"path":"b.go"}`, "B")
 	calls := repeatCalls([]stallCall{a, b}, stallRepeats)
@@ -113,81 +117,88 @@ func TestStallDetector_AlternationBrokenAfterNudgeDoesNotStall(t *testing.T) {
 	}
 
 	nudgedAt, outcome, _ := runStallBatches(t, &stallDetector{}, calls)
-	require.Len(t, nudgedAt, 1, "want one nudge, got nudges at calls %v", nudgedAt)
-	require.Empty(t, outcome, "want no outcome once the model changes approach")
+	must.Len(nudgedAt, 1, "want one nudge, got nudges at calls %v", nudgedAt)
+	must.Empty(outcome, "want no outcome once the model changes approach")
 }
 
 func TestStallDetector_ChangingOutputIsNotAStall(t *testing.T) {
+	must := require.New(t)
 	s := &stallDetector{}
 	for i := 0; i < 3*stallWindowSize; i++ {
 		call := okCall("run_command", `{"command":"tail build.log"}`, fmt.Sprintf("progress %d%%", i))
 		out := call.record(s)
-		require.Empty(t, out, "call %d: poll whose output changes", i+1)
+		must.Empty(out, "call %d: poll whose output changes", i+1)
 		_, ok := s.takeNudge()
-		require.False(t, ok, "call %d: nudge for a poll whose output changes", i+1)
+		must.False(ok, "call %d: nudge for a poll whose output changes", i+1)
 	}
 }
 
 func TestStallDetector_KeyOrderAndWhitespaceDoNotDefeatDetection(t *testing.T) {
+	must := require.New(t)
 	s := &stallDetector{}
 	inputs := []string{`{"a":1,"b":2}`, `{"b":2,"a":1}`, "{ \"a\" : 1,\n \"b\" : 2 }"}
 	for _, in := range inputs {
 		out := okCall("tool", in, "same").record(s)
-		require.Empty(t, out, "input %s", in)
+		must.Empty(out, "input %s", in)
 	}
 	_, ok := s.takeNudge()
-	require.True(t, ok, "inputs that differ only in key order or whitespace must count as the same call")
+	must.True(ok, "inputs that differ only in key order or whitespace must count as the same call")
 }
 
 func TestStallDetector_SuccessFlagIsPartOfTheSignature(t *testing.T) {
+	must := require.New(t)
 	s := &stallDetector{}
 	in := `{"path":"main.go"}`
 	stallCall{name: "read_file", input: in, output: "x", success: true}.record(s)
 	stallCall{name: "read_file", input: in, output: "x", success: false}.record(s)
 	stallCall{name: "read_file", input: in, output: "x", success: true}.record(s)
 	_, ok := s.takeNudge()
-	require.False(t, ok, "nudge for calls whose success differs")
+	must.False(ok, "nudge for calls whose success differs")
 }
 
 func TestStallDetector_CallsBeforeNudgeTakenDoNotCount(t *testing.T) {
+	must := require.New(t)
 	s := &stallDetector{}
 	call := okCall("read_file", `{"path":"main.go"}`, "same")
 	for i := 0; i < 3*stallRepeats; i++ {
 		out := call.record(s)
-		require.Empty(t, out, "call %d in the nudging batch; the model has not seen the nudge yet", i+1)
+		must.Empty(out, "call %d in the nudging batch; the model has not seen the nudge yet", i+1)
 	}
 	_, ok := s.takeNudge()
-	require.True(t, ok, "no nudge from the batch")
+	must.True(ok, "no nudge from the batch")
 
 	for i := 1; i < stallRepeats; i++ {
 		out := call.record(s)
-		require.Empty(t, out, "post-nudge call %d", i)
+		must.Empty(out, "post-nudge call %d", i)
 	}
-	require.Equal(t, "stalled", call.record(s), "post-nudge call %d", stallRepeats)
+	must.Equal("stalled", call.record(s), "post-nudge call %d", stallRepeats)
 }
 
 func TestStallDetector_WindowIsBounded(t *testing.T) {
+	must := require.New(t)
 	s := &stallDetector{}
 	for i := 0; i < 5*stallWindowSize; i++ {
 		okCall("read_file", fmt.Sprintf(`{"i":%d}`, i), "x").record(s)
 	}
-	require.Len(t, s.window, stallWindowSize)
+	must.Len(s.window, stallWindowSize)
 }
 
 func TestStallDetector_ConsecutiveFailuresEndRun(t *testing.T) {
+	must := require.New(t)
 	s := &stallDetector{}
 
 	for i := 0; i < maxConsecutiveFailures-1; i++ {
 		c := stallCall{name: fmt.Sprintf("tool_%d", i), input: fmt.Sprintf(`{"i":%d}`, i), output: "boom"}
 		out := c.record(s)
-		require.Empty(t, out, "call %d", i+1)
+		must.Empty(out, "call %d", i+1)
 	}
 
 	out := (stallCall{name: "tool_final", input: `{"final":true}`, output: "boom"}).record(s)
-	require.Equal(t, "tool_failures", out)
+	must.Equal("tool_failures", out)
 }
 
 func TestStallDetector_SuccessResetsFailures(t *testing.T) {
+	must := require.New(t)
 	s := &stallDetector{}
 
 	for i := 0; i < maxConsecutiveFailures-1; i++ {
@@ -197,28 +208,30 @@ func TestStallDetector_SuccessResetsFailures(t *testing.T) {
 	okCall("good_tool", `{}`, "ok").record(s)
 
 	out := (stallCall{name: "bad_tool", input: `{}`, output: "boom"}).record(s)
-	require.Empty(t, out, "expected no outcome after the success reset")
+	must.Empty(out, "expected no outcome after the success reset")
 }
 
 func TestStallDetector_FailureLimitNotDeferredByNudge(t *testing.T) {
+	must := require.New(t)
 	s := &stallDetector{}
 	failing := stallCall{name: "run_command", input: `{"command":"make"}`, output: "exit 2"}
 	for i := 1; i < maxConsecutiveFailures; i++ {
 		out := failing.record(s)
-		require.Empty(t, out, "call %d", i)
+		must.Empty(out, "call %d", i)
 	}
 	out := failing.record(s)
-	require.Equal(t, "tool_failures", out, "call %d with a nudge pending", maxConsecutiveFailures)
+	must.Equal("tool_failures", out, "call %d with a nudge pending", maxConsecutiveFailures)
 }
 
 func TestStallDetector_SameNameDifferentInputNoNudge(t *testing.T) {
+	must := require.New(t)
 	s := &stallDetector{}
 
 	okCall("read_file", `{"path":"a.go"}`, "x").record(s)
 	okCall("read_file", `{"path":"b.go"}`, "x").record(s)
 	okCall("read_file", `{"path":"c.go"}`, "x").record(s)
 	_, ok := s.takeNudge()
-	require.False(t, ok, "nudge for calls with different inputs")
+	must.False(ok, "nudge for calls with different inputs")
 }
 
 func spilledRendering(refID, tail string) string {
@@ -233,13 +246,14 @@ func spilledRendering(refID, tail string) string {
 }
 
 func TestStallSignature_IgnoresPerCallCommandOutputRefs(t *testing.T) {
+	must := require.New(t)
 	input := json.RawMessage(`{"command":"go test ./..."}`)
 	first := stallSignatureOf("run_command", input, spilledRendering("0123456789abcdef", "FAIL"), false)
 	second := stallSignatureOf("run_command", input, spilledRendering("fedcba9876543210", "FAIL"), false)
-	require.Equal(t, first, second, "spilled renderings that differ only in their references")
+	must.Equal(first, second, "spilled renderings that differ only in their references")
 
 	changed := stallSignatureOf("run_command", input, spilledRendering("fedcba9876543210", "ok"), false)
-	require.NotEqual(t, first, changed, "spilled renderings with different output")
+	must.NotEqual(first, changed, "spilled renderings with different output")
 }
 
 func TestCanonicalToolInput_EqualityRules(t *testing.T) {
@@ -259,12 +273,13 @@ func TestCanonicalToolInput_EqualityRules(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			ca := string(canonicalToolInput(json.RawMessage(tc.a)))
 			cb := string(canonicalToolInput(json.RawMessage(tc.b)))
 			if tc.same {
-				require.Equal(t, ca, cb)
+				must.Equal(ca, cb)
 			} else {
-				require.NotEqual(t, ca, cb)
+				must.NotEqual(ca, cb)
 			}
 		})
 	}

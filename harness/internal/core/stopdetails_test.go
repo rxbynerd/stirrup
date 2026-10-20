@@ -106,6 +106,8 @@ func providerStreamAttr(exporter *tracetest.InMemoryExporter, key string) (strin
 }
 
 func TestLoop_RefusalRecordsStopDetails(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	want := types.StopDetails{
 		Type:        "refusal",
 		Category:    "cyber",
@@ -119,10 +121,10 @@ func TestLoop_RefusalRecordsStopDetails(t *testing.T) {
 	logBuf, exporter := observedLoop(t, loop)
 
 	runTrace, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
+	must.NoError(err)
 
-	assert.Equal(t, "refusal", runTrace.Outcome)
-	assert.Equal(t, &want, runTrace.StopDetails)
+	check.Equal("refusal", runTrace.Outcome)
+	check.Equal(&want, runTrace.StopDetails)
 
 	var finished struct {
 		Kind  string         `json:"kind"`
@@ -130,19 +132,19 @@ func TestLoop_RefusalRecordsStopDetails(t *testing.T) {
 	}
 	lines := strings.Split(strings.TrimSpace(traceBuf.String()), "\n")
 	err = json.Unmarshal([]byte(lines[len(lines)-1]), &finished)
-	require.NoError(t, err, "decode run_finished line")
-	require.Equal(t, "run_finished", finished.Kind)
-	assert.Equal(t, &want, finished.Trace.StopDetails)
+	must.NoError(err, "decode run_finished line")
+	must.Equal("run_finished", finished.Kind)
+	check.Equal(&want, finished.Trace.StopDetails)
 
 	refusals := logRecords(t, logBuf, "provider refused to respond")
-	require.Len(t, refusals, 1, "logs:\n%s", logBuf.String())
+	must.Len(refusals, 1, "logs:\n%s", logBuf.String())
 	rec := refusals[0]
-	assert.Equal(t, "WARN", rec["level"])
-	assert.Equal(t, "cyber", rec["category"])
-	assert.Equal(t, want.Explanation, rec["explanation"])
+	check.Equal("WARN", rec["level"])
+	check.Equal("cyber", rec["category"])
+	check.Equal(want.Explanation, rec["explanation"])
 
 	category, _ := providerStreamAttr(exporter, "stop.category")
-	assert.Equal(t, "cyber", category)
+	check.Equal("cyber", category)
 }
 
 func TestLoop_RefusalWithoutCategory(t *testing.T) {
@@ -160,22 +162,23 @@ func TestLoop_RefusalWithoutCategory(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			loop := buildTestLoop(&mockProvider{events: refusalEvents(tc.details)})
 			logBuf, exporter := observedLoop(t, loop)
 
 			runTrace, err := loop.Run(context.Background(), buildTestConfig())
-			require.NoError(t, err)
-			require.Equal(t, "refusal", runTrace.Outcome)
+			must.NoError(err)
+			must.Equal("refusal", runTrace.Outcome)
 
 			refusals := logRecords(t, logBuf, "provider refused to respond")
-			require.Len(t, refusals, 1, "logs:\n%s", logBuf.String())
+			must.Len(refusals, 1, "logs:\n%s", logBuf.String())
 			rec := refusals[0]
-			require.Equal(t, "WARN", rec["level"])
-			require.Empty(t, rec["category"])
-			require.Equal(t, tc.wantExplanation, rec["explanation"])
+			must.Equal("WARN", rec["level"])
+			must.Empty(rec["category"])
+			must.Equal(tc.wantExplanation, rec["explanation"])
 
 			value, ok := providerStreamAttr(exporter, "stop.category")
-			require.False(t, ok, "stop.category = %q, want the attribute absent", value)
+			must.False(ok, "stop.category = %q, want the attribute absent", value)
 		})
 	}
 }
@@ -185,6 +188,8 @@ func TestLoop_RefusalWithoutCategory(t *testing.T) {
 // ends the run as context_exhausted, with the stop's tokens charged and
 // no stop details or refusal log.
 func TestLoop_ContextWindowExceededWithNothingToCompact(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop := buildTestLoop(&mockProvider{events: []types.StreamEvent{
 		{Type: "text_delta", Text: "Partial answer"},
 		{Type: "message_complete", StopReason: "model_context_window_exceeded", InputTokens: 120, OutputTokens: 30},
@@ -192,18 +197,20 @@ func TestLoop_ContextWindowExceededWithNothingToCompact(t *testing.T) {
 	logBuf, _ := observedLoop(t, loop)
 
 	runTrace, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
+	must.NoError(err)
 
-	assert.Equal(t, "context_exhausted", runTrace.Outcome)
-	assert.Equal(t, 30, runTrace.TokenUsage.Output, "the overflowing response's output tokens")
-	assert.Nil(t, runTrace.StopDetails)
-	assert.Empty(t, logRecords(t, logBuf, "provider refused to respond"))
+	check.Equal("context_exhausted", runTrace.Outcome)
+	check.Equal(30, runTrace.TokenUsage.Output, "the overflowing response's output tokens")
+	check.Nil(runTrace.StopDetails)
+	check.Empty(logRecords(t, logBuf, "provider refused to respond"))
 }
 
 // TestLoop_StreamErrorAfterPartialText feeds the loop the event sequence
 // the Anthropic adapter emits for an SSE error event that follows streamed
 // text (pinned adapter-side by TestSSE_ErrorEventSurfacesErrorType).
 func TestLoop_StreamErrorAfterPartialText(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop := buildTestLoop(&mockProvider{events: []types.StreamEvent{
 		{Type: "text_delta", Text: "Looking at the"},
 		{Type: "error", Error: errors.New("anthropic API stream error (overloaded_error): Overloaded")},
@@ -211,19 +218,21 @@ func TestLoop_StreamErrorAfterPartialText(t *testing.T) {
 	logBuf, _ := observedLoop(t, loop)
 
 	runTrace, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
+	must.NoError(err)
 
-	assert.Equal(t, "error", runTrace.Outcome)
-	assert.Nil(t, runTrace.StopDetails)
+	check.Equal("error", runTrace.Outcome)
+	check.Nil(runTrace.StopDetails)
 
 	failures := logRecords(t, logBuf, "provider stream failed")
-	require.Len(t, failures, 1, "logs:\n%s", logBuf.String())
+	must.Len(failures, 1, "logs:\n%s", logBuf.String())
 	msg, _ := failures[0]["error"].(string)
-	assert.Contains(t, msg, "overloaded_error", "logged error should carry the provider error type")
-	assert.Empty(t, logRecords(t, logBuf, "provider returned empty stop reason"))
+	check.Contains(msg, "overloaded_error", "logged error should carry the provider error type")
+	check.Empty(logRecords(t, logBuf, "provider returned empty stop reason"))
 }
 
 func TestLoop_StopDetailsOnTurnTrace(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	want := types.StopDetails{Type: "refusal", Category: "bio"}
 	provided := want
 	loop := buildTestLoop(nil)
@@ -238,17 +247,19 @@ func TestLoop_StopDetailsOnTurnTrace(t *testing.T) {
 	loop.Trace = emitter
 
 	_, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
+	must.NoError(err)
 
 	turns, _ := emitter.snapshot()
-	require.Len(t, turns, 2)
-	assert.Nil(t, turns[0].StopDetails, "tool_use turn")
-	assert.Equal(t, "refusal", turns[1].StopReason)
-	assert.Equal(t, &want, turns[1].StopDetails)
-	assert.Equal(t, &want, emitter.stopDetails, "recorded run StopDetails")
+	must.Len(turns, 2)
+	check.Nil(turns[0].StopDetails, "tool_use turn")
+	check.Equal("refusal", turns[1].StopReason)
+	check.Equal(&want, turns[1].StopDetails)
+	check.Equal(&want, emitter.stopDetails, "recorded run StopDetails")
 }
 
 func TestLoop_StopDetailsAbsentOnSuccess(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop := buildTestLoop(&mockProvider{events: []types.StreamEvent{
 		{Type: "text_delta", Text: "Done."},
 		{Type: "message_complete", StopReason: "end_turn"},
@@ -257,17 +268,19 @@ func TestLoop_StopDetailsAbsentOnSuccess(t *testing.T) {
 	loop.Trace = trace.NewJSONLTraceEmitter(&traceBuf, false)
 
 	runTrace, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
+	must.NoError(err)
 
-	assert.Equal(t, "success", runTrace.Outcome)
-	assert.Nil(t, runTrace.StopDetails)
-	assert.NotContains(t, traceBuf.String(), "stopDetails", "trace should not carry stopDetails")
+	check.Equal("success", runTrace.Outcome)
+	check.Nil(runTrace.StopDetails)
+	check.NotContains(traceBuf.String(), "stopDetails", "trace should not carry stopDetails")
 }
 
 // TestLoop_StopDetailsNotRecordedWhenRunEndsOnToolTurn pins that
 // RunTrace.StopDetails reflects only a run that ended on a non-tool stop:
 // details on a tool_use turn stay on that turn's TurnTrace.
 func TestLoop_StopDetailsNotRecordedWhenRunEndsOnToolTurn(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop := buildTestLoop(nil)
 	loop.Provider = &multiCallProvider{calls: [][]types.StreamEvent{{
 		{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: map[string]any{}},
@@ -279,8 +292,8 @@ func TestLoop_StopDetailsNotRecordedWhenRunEndsOnToolTurn(t *testing.T) {
 	config.MaxTurns = 1
 
 	_, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	assert.Nil(t, emitter.stopDetails, "recorded run StopDetails")
+	must.NoError(err)
+	check.Nil(emitter.stopDetails, "recorded run StopDetails")
 }
 
 // TestLoop_StopDetailsFromEarlierVerificationAttemptNotRecorded pins that
@@ -288,6 +301,8 @@ func TestLoop_StopDetailsNotRecordedWhenRunEndsOnToolTurn(t *testing.T) {
 // A refusal ends the run before verification, so the earlier attempt
 // carries its details on an end_turn stop.
 func TestLoop_StopDetailsFromEarlierVerificationAttemptNotRecorded(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop := buildTestLoop(nil)
 	loop.Provider = &multiCallProvider{calls: [][]types.StreamEvent{
 		{
@@ -304,20 +319,22 @@ func TestLoop_StopDetailsFromEarlierVerificationAttemptNotRecorded(t *testing.T)
 	loop.Trace = emitter
 
 	runTrace, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
+	must.NoError(err)
 
-	assert.Equal(t, "success", runTrace.Outcome)
-	assert.Nil(t, emitter.stopDetails, "recorded run StopDetails")
+	check.Equal("success", runTrace.Outcome)
+	check.Nil(emitter.stopDetails, "recorded run StopDetails")
 
 	turns, _ := emitter.snapshot()
-	require.Len(t, turns, 2)
-	assert.NotNil(t, turns[0].StopDetails, "first turn keeps its StopDetails")
+	must.Len(turns, 2)
+	check.NotNil(turns[0].StopDetails, "first turn keeps its StopDetails")
 }
 
 // TestLoop_StopDetailsClearedWhenOutcomeReclassified pins that a run whose
 // outcome no longer reports the inner loop's provider stop carries no
 // RunTrace.StopDetails, while the turn keeps its own.
 func TestLoop_StopDetailsClearedWhenOutcomeReclassified(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop := buildTestLoop(&mockProvider{events: []types.StreamEvent{
 		{Type: "text_delta", Text: "Done."},
 		{Type: "message_complete", StopReason: "end_turn", StopDetails: &types.StopDetails{Type: "refusal", Category: "bio"}},
@@ -327,17 +344,19 @@ func TestLoop_StopDetailsClearedWhenOutcomeReclassified(t *testing.T) {
 	loop.Trace = emitter
 
 	runTrace, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
+	must.NoError(err)
 
-	assert.Equal(t, "verification_failed", runTrace.Outcome)
-	assert.Nil(t, emitter.stopDetails, "recorded run StopDetails")
+	check.Equal("verification_failed", runTrace.Outcome)
+	check.Nil(emitter.stopDetails, "recorded run StopDetails")
 
 	turns, _ := emitter.snapshot()
-	require.NotEmpty(t, turns)
-	assert.NotNil(t, turns[len(turns)-1].StopDetails, "last turn keeps the provider's details")
+	must.NotEmpty(turns)
+	check.NotNil(turns[len(turns)-1].StopDetails, "last turn keeps the provider's details")
 }
 
 func TestLoop_StopDetailsExplanationIsScrubbed(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	const raw = "declined: AKIAIOSFODNN7EXAMPLE"
 	provided := &types.StopDetails{Type: "refusal", Explanation: raw}
 	loop := buildTestLoop(&mockProvider{events: refusalEvents(provided)})
@@ -346,25 +365,25 @@ func TestLoop_StopDetailsExplanationIsScrubbed(t *testing.T) {
 	loop.Trace = emitter
 
 	_, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
+	must.NoError(err)
 
 	scrubbed := func(where, got string) {
 		t.Helper()
-		assert.NotContains(t, got, "AKIA", "%s explanation should not keep the access key", where)
-		assert.Contains(t, got, "[REDACTED]", "%s explanation should redact the access key", where)
+		check.NotContains(got, "AKIA", "%s explanation should not keep the access key", where)
+		check.Contains(got, "[REDACTED]", "%s explanation should redact the access key", where)
 	}
-	require.NotNil(t, emitter.stopDetails, "recorded run StopDetails")
+	must.NotNil(emitter.stopDetails, "recorded run StopDetails")
 	scrubbed("RunTrace", emitter.stopDetails.Explanation)
 
 	turns, _ := emitter.snapshot()
-	require.Len(t, turns, 1)
-	require.NotNil(t, turns[0].StopDetails, "turn StopDetails")
+	must.Len(turns, 1)
+	must.NotNil(turns[0].StopDetails, "turn StopDetails")
 	scrubbed("TurnTrace", turns[0].StopDetails.Explanation)
 
 	refusals := logRecords(t, logBuf, "provider refused to respond")
-	require.Len(t, refusals, 1)
+	must.Len(refusals, 1)
 	explanation, _ := refusals[0]["explanation"].(string)
 	scrubbed("WARN log", explanation)
 
-	assert.Equal(t, raw, provided.Explanation, "provider event explanation should not be mutated")
+	check.Equal(raw, provided.Explanation, "provider event explanation should not be mutated")
 }

@@ -67,17 +67,18 @@ func TestOpenAIRequest_ReasoningEffortProjection(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			params := effortParams(tc.model, tc.effort, false)
 			q := quirks.DefaultRegistry().Resolve("openai-compatible", tc.model)
 			req, err := buildOpenAIRequest(params, true, q, nil)
-			require.NoError(t, err)
+			must.NoError(err)
 			body, err := json.Marshal(req)
-			require.NoError(t, err)
+			must.NoError(err)
 			if tc.want == "" {
-				require.NotContains(t, string(body), "reasoning_effort")
+				must.NotContains(string(body), "reasoning_effort")
 				return
 			}
-			require.Contains(t, string(body), tc.want)
+			must.Contains(string(body), tc.want)
 		})
 	}
 }
@@ -86,29 +87,33 @@ func TestOpenAIRequest_ReasoningEffortProjection(t *testing.T) {
 // first-party gpt-6 id: temperature omitted and max_completion_tokens as
 // the budget key.
 func TestOpenAIRequest_GPT6WireShape(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	params := effortParams("gpt-6.1-sol", "", false)
 	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
 	req, err := buildOpenAIRequest(params, true, q, nil)
-	require.NoError(t, err)
+	must.NoError(err)
 	body, _ := json.Marshal(req)
 	text := string(body)
-	assert.NotContains(t, text, `"temperature"`)
-	assert.Contains(t, text, `"max_completion_tokens":1024`)
+	check.NotContains(text, `"temperature"`)
+	check.Contains(text, `"max_completion_tokens":1024`)
 }
 
 // TestOpenAIRequest_ReasoningEffortRoundTrip pins that reasoning_effort
 // decodes back onto its own field rather than into ExtraBodyFields, where
 // a re-marshal would reject it as a canonical-field collision.
 func TestOpenAIRequest_ReasoningEffortRoundTrip(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	in := openaiRequest{Model: "gpt-6-astra", ReasoningEffort: "xhigh", MaxTokens: 8}
 	body, err := json.Marshal(in)
-	require.NoError(t, err)
+	must.NoError(err)
 	var out openaiRequest
-	require.NoError(t, json.Unmarshal(body, &out))
-	assert.Equal(t, "xhigh", out.ReasoningEffort)
-	assert.Empty(t, out.ExtraBodyFields)
+	must.NoError(json.Unmarshal(body, &out))
+	check.Equal("xhigh", out.ReasoningEffort)
+	check.Empty(out.ExtraBodyFields)
 	_, err = json.Marshal(out)
-	assert.NoError(t, err)
+	check.NoError(err)
 }
 
 // TestOpenAIAdapter_RejectsBeforeSend pins the Chat Completions pre-send
@@ -125,11 +130,12 @@ func TestOpenAIAdapter_RejectsBeforeSend(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			srv, hits := countingServer(t)
 			adapter := NewOpenAICompatibleAdapter(staticBearer("k"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 			_, err := adapter.Stream(context.Background(), tc.params)
-			require.ErrorContains(t, err, tc.wantErr)
-			require.Zero(t, hits.Load())
+			must.ErrorContains(err, tc.wantErr)
+			must.Zero(hits.Load())
 		})
 	}
 }
@@ -137,9 +143,10 @@ func TestOpenAIAdapter_RejectsBeforeSend(t *testing.T) {
 // TestOpenAIAdapter_GatewayGPT6AllowsTools pins that the tools guard is
 // first-party only: a gateway-prefixed gpt-6 id passes the pre-send check.
 func TestOpenAIAdapter_GatewayGPT6AllowsTools(t *testing.T) {
+	must := require.New(t)
 	params := effortParams("openai/gpt-6-luna", "", true)
 	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
-	require.NoError(t, checkOpenAIRequestSupported(params, q))
+	must.NoError(checkOpenAIRequestSupported(params, q))
 }
 
 // TestResponsesRequest_GPT6ReasoningAndSampling pins the Responses wire
@@ -179,22 +186,23 @@ func TestResponsesRequest_GPT6ReasoningAndSampling(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			params := effortParams(tc.model, tc.effort, false)
 			q := quirks.DefaultRegistry().Resolve("openai-responses", tc.model)
 			req, err := buildResponsesRequest(params, q, nil, "")
-			require.NoError(t, err)
+			must.NoError(err)
 			body, err := json.Marshal(req)
-			require.NoError(t, err)
+			must.NoError(err)
 			text := string(body)
 			for _, want := range tc.contains {
-				require.Contains(t, text, want)
+				must.Contains(text, want)
 			}
 			for _, absent := range tc.notContains {
-				require.NotContains(t, text, absent)
+				must.NotContains(text, absent)
 			}
 			var back responsesRequest
-			require.NoError(t, json.Unmarshal(body, &back))
-			require.Equal(t, req.ReasoningEffort, back.ReasoningEffort)
+			must.NoError(json.Unmarshal(body, &back))
+			must.Equal(req.ReasoningEffort, back.ReasoningEffort)
 		})
 	}
 }
@@ -202,11 +210,12 @@ func TestResponsesRequest_GPT6ReasoningAndSampling(t *testing.T) {
 // TestResponsesAdapter_RejectsUnsupportedEffortBeforeSend mirrors the Chat
 // Completions guard on the Responses surface.
 func TestResponsesAdapter_RejectsUnsupportedEffortBeforeSend(t *testing.T) {
+	must := require.New(t)
 	srv, hits := countingServer(t)
 	adapter := NewOpenAIResponsesAdapter(staticBearer("k"), srv.URL, OpenAIAuthConfig{})
 	_, err := adapter.Stream(context.Background(), effortParams("gpt-6-astra", "minimal", true))
-	require.ErrorContains(t, err, `reasoningEffort "minimal" is not supported`)
-	require.Zero(t, hits.Load())
+	must.ErrorContains(err, `reasoningEffort "minimal" is not supported`)
+	must.Zero(hits.Load())
 }
 
 // TestResponsesAdapter_GPT5EffortAllowListsBeforeSend pins the GPT-5.x
@@ -228,11 +237,12 @@ func TestResponsesAdapter_GPT5EffortAllowListsBeforeSend(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			srv, hits := countingServer(t)
 			adapter := NewOpenAIResponsesAdapter(staticBearer("k"), srv.URL, OpenAIAuthConfig{})
 			_, err := adapter.Stream(context.Background(), effortParams(tc.model, tc.effort, false))
-			require.ErrorContains(t, err, `reasoningEffort "`+tc.effort+`" is not supported`)
-			require.Zero(t, hits.Load())
+			must.ErrorContains(err, `reasoningEffort "`+tc.effort+`" is not supported`)
+			must.Zero(hits.Load())
 		})
 	}
 }
@@ -256,15 +266,16 @@ func TestResponsesAdapter_GPT5EffortLevelsOnTheWire(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			script := newResponsesScript(t)
 			ch, err := script.adapter(nil).Stream(context.Background(), effortParams(tc.model, tc.effort, false))
-			require.NoError(t, err)
+			must.NoError(err)
 			collectEvents(t, ch)
 			body := string(script.lastBody(t))
-			require.NotContains(t, body, `"temperature"`)
+			must.NotContains(body, `"temperature"`)
 			wantReasoning := tc.effort != ""
 			gotReasoning := strings.Contains(body, `"reasoning":{"effort":"`+tc.effort+`"}`)
-			require.Equal(t, wantReasoning, gotReasoning, "reasoning.effort %q in body: %s", tc.effort, body)
+			must.Equal(wantReasoning, gotReasoning, "reasoning.effort %q in body: %s", tc.effort, body)
 		})
 	}
 }
@@ -285,14 +296,15 @@ func TestResponsesAdapter_EffortSuppressesTemperatureWarns(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var buf bytes.Buffer
 			adapter := NewOpenAIResponsesAdapter(staticBearer("k"), responsesWarnStubServer(t).URL, OpenAIAuthConfig{})
 			adapter.Logger = slog.New(slog.NewJSONHandler(&buf, nil))
 			ch, err := adapter.Stream(context.Background(), effortParams(tc.model, tc.effort, false))
-			require.NoError(t, err)
+			must.NoError(err)
 			collectEvents(t, ch)
 			gotWarns := strings.Count(buf.String(), "suppressed caller temperature")
-			require.Equal(t, tc.wantWarns, gotWarns, "log: %s", buf.String())
+			must.Equal(tc.wantWarns, gotWarns, "log: %s", buf.String())
 		})
 	}
 }
@@ -310,11 +322,12 @@ func TestWarnDroppedReasoningEffort_LogsOnlyWhenLevelDropped(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var buf bytes.Buffer
 			logger := slog.New(slog.NewJSONHandler(&buf, nil))
 			warnDroppedReasoningEffort(context.Background(), logger, "anthropic", tc.level, "claude-haiku-4-5", tc.allowed)
 			got := strings.Contains(buf.String(), "reasoningEffort ignored")
-			require.Equal(t, tc.want, got, "log: %s", buf.String())
+			must.Equal(tc.want, got, "log: %s", buf.String())
 		})
 	}
 }

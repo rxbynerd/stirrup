@@ -24,8 +24,9 @@ func geminiParams(model string, tools ...types.ToolDefinition) types.StreamParam
 // schema uses a JSON Schema keyword the resolved quirks list as
 // unsupported; the error names the tool and offending field path.
 func TestGeminiSchemaLint_FailsClosedOnUnsupportedFeature(t *testing.T) {
+	must := require.New(t)
 	q := quirks.DefaultRegistry().Resolve("gemini", "gemini-3-pro")
-	require.NotEmpty(t, q.BehaviourFlags.Gemini.SchemaUnsupportedFeatures,
+	must.NotEmpty(q.BehaviourFlags.Gemini.SchemaUnsupportedFeatures,
 		"gemini-3 rule should pin SchemaUnsupportedFeatures")
 
 	params := geminiParams("gemini-3-pro", types.ToolDefinition{
@@ -35,7 +36,7 @@ func TestGeminiSchemaLint_FailsClosedOnUnsupportedFeature(t *testing.T) {
 	})
 
 	_, _, err := BuildGenerateContentRequest(params, nil, q)
-	require.Error(t, err)
+	must.Error(err)
 
 	for _, tc := range []struct {
 		name string
@@ -46,7 +47,8 @@ func TestGeminiSchemaLint_FailsClosedOnUnsupportedFeature(t *testing.T) {
 		{name: "names the offending field path", want: "properties.name"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			require.ErrorContains(t, err, tc.want)
+			must := require.New(t)
+			must.ErrorContains(err, tc.want)
 		})
 	}
 }
@@ -54,6 +56,7 @@ func TestGeminiSchemaLint_FailsClosedOnUnsupportedFeature(t *testing.T) {
 // TestGeminiSchemaLint_PassesCleanSchema pins that a schema using only
 // Gemini-supported keywords clears the lint and proceeds to ConvertSchema.
 func TestGeminiSchemaLint_PassesCleanSchema(t *testing.T) {
+	must := require.New(t)
 	q := quirks.DefaultRegistry().Resolve("gemini", "gemini-3-pro")
 	params := geminiParams("gemini-3-pro", types.ToolDefinition{
 		Name:        "search",
@@ -62,15 +65,16 @@ func TestGeminiSchemaLint_PassesCleanSchema(t *testing.T) {
 	})
 
 	body, _, err := BuildGenerateContentRequest(params, nil, q)
-	require.NoError(t, err)
-	require.Contains(t, string(body), "search", "body should reference the tool")
+	must.NoError(err)
+	must.Contains(string(body), "search", "body should reference the tool")
 }
 
 // TestGeminiSchemaLint_IsNoOpForGemini25 pins that gemini-2.5, having no
 // SchemaUnsupportedFeatures rule, accepts a schema with `pattern`.
 func TestGeminiSchemaLint_IsNoOpForGemini25(t *testing.T) {
+	must := require.New(t)
 	q := quirks.DefaultRegistry().Resolve("gemini", "gemini-2.5-pro")
-	require.Empty(t, q.BehaviourFlags.Gemini.SchemaUnsupportedFeatures,
+	must.Empty(q.BehaviourFlags.Gemini.SchemaUnsupportedFeatures,
 		"gemini-2.5 should not pin SchemaUnsupportedFeatures")
 
 	params := geminiParams("gemini-2.5-pro", types.ToolDefinition{
@@ -80,5 +84,5 @@ func TestGeminiSchemaLint_IsNoOpForGemini25(t *testing.T) {
 	})
 
 	_, _, err := BuildGenerateContentRequest(params, nil, q)
-	require.NoError(t, err, "gemini-2.5 should accept schema with pattern (no lint rule)")
+	must.NoError(err, "gemini-2.5 should accept schema with pattern (no lint rule)")
 }

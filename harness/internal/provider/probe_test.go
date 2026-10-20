@@ -22,6 +22,8 @@ type probeRecorder struct {
 }
 
 func TestAnthropicAdapter_Probe_UsesMetadataEndpointOnly(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var rec probeRecorder
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -41,13 +43,14 @@ func TestAnthropicAdapter_Probe_UsesMetadataEndpointOnly(t *testing.T) {
 	adapter := NewAnthropicAdapter(staticBearer("sk-test"), AuthModeAPIKey)
 	adapter.baseURL = srv.URL + "/v1/messages"
 
-	require.NoError(t, adapter.Probe(context.Background()))
-	assert.EqualValues(t, 1, rec.metadataHits.Load(), "metadata endpoint hits")
-	assert.EqualValues(t, 0, rec.completionHits.Load(),
+	must.NoError(adapter.Probe(context.Background()))
+	check.EqualValues(1, rec.metadataHits.Load(), "metadata endpoint hits")
+	check.EqualValues(0, rec.completionHits.Load(),
 		"completion endpoint hits (dry-run must not spend tokens)")
 }
 
 func TestAnthropicAdapter_Probe_RejectedKeyReturnsDiagnostic(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":{"message":"invalid x-api-key"}}`))
@@ -58,12 +61,14 @@ func TestAnthropicAdapter_Probe_RejectedKeyReturnsDiagnostic(t *testing.T) {
 	adapter.baseURL = srv.URL + "/v1/messages"
 
 	err := adapter.Probe(context.Background())
-	require.Error(t, err)
-	require.ErrorContains(t, err, "401")
-	require.ErrorContains(t, err, "invalid x-api-key")
+	must.Error(err)
+	must.ErrorContains(err, "401")
+	must.ErrorContains(err, "invalid x-api-key")
 }
 
 func TestOpenAICompatibleAdapter_Probe_UsesMetadataEndpointOnly(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var rec probeRecorder
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -81,12 +86,14 @@ func TestOpenAICompatibleAdapter_Probe_UsesMetadataEndpointOnly(t *testing.T) {
 	defer srv.Close()
 
 	adapter := NewOpenAICompatibleAdapter(staticBearer("sk-test"), srv.URL+"/v1", OpenAIAuthConfig{}, RetryPolicy{})
-	require.NoError(t, adapter.Probe(context.Background()))
-	assert.EqualValues(t, 1, rec.metadataHits.Load(), "metadata endpoint hits")
-	assert.EqualValues(t, 0, rec.completionHits.Load(), "completion endpoint hits")
+	must.NoError(adapter.Probe(context.Background()))
+	check.EqualValues(1, rec.metadataHits.Load(), "metadata endpoint hits")
+	check.EqualValues(0, rec.completionHits.Load(), "completion endpoint hits")
 }
 
 func TestOpenAIResponsesAdapter_Probe_UsesMetadataEndpointOnly(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var rec probeRecorder
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -104,12 +111,14 @@ func TestOpenAIResponsesAdapter_Probe_UsesMetadataEndpointOnly(t *testing.T) {
 	defer srv.Close()
 
 	adapter := NewOpenAIResponsesAdapter(staticBearer("sk-test"), srv.URL+"/v1", OpenAIAuthConfig{})
-	require.NoError(t, adapter.Probe(context.Background()))
-	assert.EqualValues(t, 1, rec.metadataHits.Load(), "metadata endpoint hits")
-	assert.EqualValues(t, 0, rec.completionHits.Load(), "completion endpoint hits")
+	must.NoError(adapter.Probe(context.Background()))
+	check.EqualValues(1, rec.metadataHits.Load(), "metadata endpoint hits")
+	check.EqualValues(0, rec.completionHits.Load(), "completion endpoint hits")
 }
 
 func TestGeminiAdapter_Probe_UsesMetadataEndpointOnly(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var rec probeRecorder
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -128,24 +137,28 @@ func TestGeminiAdapter_Probe_UsesMetadataEndpointOnly(t *testing.T) {
 
 	adapter := NewGeminiAdapter(staticBearer("ya29.token"), "proj", "us-central1", nil)
 	adapter.baseURLOverride = srv.URL
-	require.NoError(t, adapter.Probe(context.Background()))
-	assert.EqualValues(t, 1, rec.metadataHits.Load(), "metadata endpoint hits")
-	assert.EqualValues(t, 0, rec.completionHits.Load(), "completion endpoint hits")
+	must.NoError(adapter.Probe(context.Background()))
+	check.EqualValues(1, rec.metadataHits.Load(), "metadata endpoint hits")
+	check.EqualValues(0, rec.completionHits.Load(), "completion endpoint hits")
 }
 
 func TestAnthropicAdapter_Probe_PropagatesCredentialError(t *testing.T) {
+	must := require.New(t)
 	adapter := NewAnthropicAdapter(erroringBearer("no creds"), AuthModeAPIKey)
-	require.Error(t, adapter.Probe(context.Background()))
+	must.Error(adapter.Probe(context.Background()))
 }
 
 func TestBedrockAdapter_Probe_NilCredentialsIsNoOp(t *testing.T) {
+	must := require.New(t)
 	// The mock-client construction path leaves credentials nil; Probe must
 	// then be a no-op rather than panicking or failing.
 	adapter := &BedrockAdapter{}
-	require.NoError(t, adapter.Probe(context.Background()))
+	must.NoError(adapter.Probe(context.Background()))
 }
 
 func TestBedrockAdapter_Probe_CredentialErrorNamesCauseAndRegion(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	adapter := &BedrockAdapter{
 		region: "us-east-1",
 		credentials: aws.CredentialsProviderFunc(func(_ context.Context) (aws.Credentials, error) {
@@ -153,9 +166,9 @@ func TestBedrockAdapter_Probe_CredentialErrorNamesCauseAndRegion(t *testing.T) {
 		}),
 	}
 	err := adapter.Probe(context.Background())
-	require.Error(t, err)
-	require.ErrorContains(t, err, "STS AssumeRole denied", "error should wrap the credential failure")
-	assert.ErrorContains(t, err, "us-east-1", "error should name the region for diagnosis")
+	must.Error(err)
+	must.ErrorContains(err, "STS AssumeRole denied", "error should wrap the credential failure")
+	check.ErrorContains(err, "us-east-1", "error should name the region for diagnosis")
 }
 
 func TestProbe_Unauthorized_ErrorNamesStatusAndProvider(t *testing.T) {
@@ -196,7 +209,8 @@ func TestProbe_Unauthorized_ErrorNamesStatusAndProvider(t *testing.T) {
 // status and names providerLabel.
 func requireProbeStatusError(t *testing.T, err error, providerLabel string) {
 	t.Helper()
-	require.Error(t, err, "expected error for 401")
-	require.ErrorContains(t, err, "401", "error should carry the 401 status")
-	require.ErrorContains(t, err, providerLabel, "error should name the provider")
+	must := require.New(t)
+	must.Error(err, "expected error for 401")
+	must.ErrorContains(err, "401", "error should carry the 401 status")
+	must.ErrorContains(err, providerLabel, "error should name the provider")
 }

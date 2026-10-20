@@ -15,10 +15,11 @@ import (
 
 func newRecorder(t *testing.T, inner ContextStrategy, strat string) (ContextStrategy, *sdkmetric.ManualReader) {
 	t.Helper()
+	must := require.New(t)
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	m, err := observability.NewMetricsForTesting(provider)
-	require.NoError(t, err)
+	must.NoError(err)
 	return NewMetricRecorder(inner, m, strat), reader
 }
 
@@ -43,6 +44,7 @@ func oversizedHistory() []types.Message {
 // TestMetricRecorder_RecordsNoop verifies that a Prepare call which
 // did not trigger compaction (messages already fit) records kind="noop".
 func TestMetricRecorder_RecordsNoop(t *testing.T) {
+	must := require.New(t)
 	rec, reader := newRecorder(t, NewSlidingWindowStrategy(), "sliding-window")
 
 	// Tiny message slice with a generous budget, so no compaction is expected.
@@ -54,17 +56,18 @@ func TestMetricRecorder_RecordsNoop(t *testing.T) {
 		CurrentTokens:      4,
 		ReserveForResponse: 100,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	dps := collectStrategyRuns(t, reader)
-	require.Len(t, dps, 1)
-	require.Equal(t, "sliding-window", dps[0].attrs["strategy"])
-	require.Equal(t, "noop", dps[0].attrs["kind"])
+	must.Len(dps, 1)
+	must.Equal("sliding-window", dps[0].attrs["strategy"])
+	must.Equal("noop", dps[0].attrs["kind"])
 }
 
 // TestMetricRecorder_RecordsCompaction verifies that a Prepare call
 // which triggered compaction records kind="compaction".
 func TestMetricRecorder_RecordsCompaction(t *testing.T) {
+	must := require.New(t)
 	rec, reader := newRecorder(t, NewSlidingWindowStrategy(), "sliding-window")
 
 	// The TokenBudget reports CurrentTokens well above the available room,
@@ -74,11 +77,11 @@ func TestMetricRecorder_RecordsCompaction(t *testing.T) {
 		CurrentTokens:      500,
 		ReserveForResponse: 50,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	dps := collectStrategyRuns(t, reader)
-	require.Len(t, dps, 1)
-	require.Equal(t, "compaction", dps[0].attrs["kind"])
+	must.Len(dps, 1)
+	must.Equal("compaction", dps[0].attrs["kind"])
 }
 
 // TestMetricRecorder_LastCompactionPassthrough verifies the wrapper
@@ -87,6 +90,7 @@ func TestMetricRecorder_RecordsCompaction(t *testing.T) {
 // would never increment because the loop reads LastCompaction off the
 // strategy directly.
 func TestMetricRecorder_LastCompactionPassthrough(t *testing.T) {
+	must := require.New(t)
 	inner := NewSlidingWindowStrategy()
 	rec, _ := newRecorder(t, inner, "sliding-window")
 
@@ -95,25 +99,27 @@ func TestMetricRecorder_LastCompactionPassthrough(t *testing.T) {
 		CurrentTokens:      500,
 		ReserveForResponse: 50,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
-	require.NotNil(t, rec.LastCompaction(), "wrapper LastCompaction returned nil after compaction; pass-through broken")
-	require.NotNil(t, inner.LastCompaction(), "inner LastCompaction returned nil after compaction; setup invariant violated")
+	must.NotNil(rec.LastCompaction(), "wrapper LastCompaction returned nil after compaction; pass-through broken")
+	must.NotNil(inner.LastCompaction(), "inner LastCompaction returned nil after compaction; setup invariant violated")
 }
 
 // TestMetricRecorder_NilMetricsReturnsInner verifies the wrapper has
 // zero overhead when metrics are disabled.
 func TestMetricRecorder_NilMetricsReturnsInner(t *testing.T) {
+	must := require.New(t)
 	inner := NewSlidingWindowStrategy()
 	got := NewMetricRecorder(inner, nil, "sliding-window")
-	require.Same(t, inner, got, "nil metrics must return the inner strategy unchanged")
+	must.Same(inner, got, "nil metrics must return the inner strategy unchanged")
 }
 
 // collectStrategyRuns returns the data points of the strategy_runs counter.
 func collectStrategyRuns(t *testing.T, reader *sdkmetric.ManualReader) []counterDataPoint {
 	t.Helper()
+	must := require.New(t)
 	var rm metricdata.ResourceMetrics
-	require.NoError(t, reader.Collect(context.Background(), &rm))
+	must.NoError(reader.Collect(context.Background(), &rm))
 	return collectInt64Counters(t, rm, "stirrup.context.strategy_runs")
 }
 
@@ -124,13 +130,14 @@ type counterDataPoint struct {
 
 func collectInt64Counters(t *testing.T, rm metricdata.ResourceMetrics, name string) []counterDataPoint {
 	t.Helper()
+	must := require.New(t)
 	for _, sm := range rm.ScopeMetrics {
 		for _, mt := range sm.Metrics {
 			if mt.Name != name {
 				continue
 			}
 			sum, ok := mt.Data.(metricdata.Sum[int64])
-			require.True(t, ok, "metric %q is not a Sum[int64]", name)
+			must.True(ok, "metric %q is not a Sum[int64]", name)
 			out := make([]counterDataPoint, 0, len(sum.DataPoints))
 			for _, dp := range sum.DataPoints {
 				attrs := make(map[string]string)

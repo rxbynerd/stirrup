@@ -83,10 +83,11 @@ func TestToolResultWireEnvelope_LeanViewPerKind(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			block := ContentBlock{Type: "tool_result", Content: "text rendering", Kind: tc.kind, Structured: json.RawMessage(tc.structured)}
 			got := ToolResultWireEnvelope(block)
-			require.Equal(t, tc.want, string(got))
-			require.Equal(t, tc.structured, string(block.Structured), "block's structured payload was modified")
+			must.Equal(tc.want, string(got))
+			must.Equal(tc.structured, string(block.Structured), "block's structured payload was modified")
 		})
 	}
 }
@@ -108,12 +109,13 @@ func TestToolResultWireEnvelope_PassThroughAndEmpty(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var structured json.RawMessage
 			if tc.structured != "" {
 				structured = json.RawMessage(tc.structured)
 			}
 			got := ToolResultWireEnvelope(ContentBlock{Type: "tool_result", Content: tc.content, Kind: tc.kind, Structured: structured})
-			require.Equal(t, tc.want, string(got))
+			must.Equal(tc.want, string(got))
 		})
 	}
 }

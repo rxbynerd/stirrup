@@ -157,16 +157,17 @@ func (f *fakeControlPlaneTransport) emittedOfType(eventType string) []types.Harn
 // package.
 func fakeDockerEngine(t *testing.T) (socketPath string, capture *engineCapture, cleanup func()) {
 	t.Helper()
+	must := require.New(t)
 
 	dir, err := os.MkdirTemp("/tmp", "sbid-de-")
-	require.NoError(t, err, "create temp dir")
+	must.NoError(err, "create temp dir")
 	sock := filepath.Join(dir, "s.sock")
 
 	listener, err := net.Listen("unix", sock)
 	if err != nil {
 		_ = os.RemoveAll(dir)
 	}
-	require.NoError(t, err, "listen on unix socket")
+	must.NoError(err, "listen on unix socket")
 
 	capture = &engineCapture{}
 
@@ -298,7 +299,8 @@ func (c *engineCapture) argvSeen() [][]string {
 // waitForStdin blocks until the engine has seen n stdin deliveries.
 func (c *engineCapture) waitForStdin(t *testing.T, n int, timeout time.Duration) []string {
 	t.Helper()
-	require.EventuallyWithT(t, func(collect *assert.CollectT) {
+	must := require.New(t)
+	must.EventuallyWithT(func(collect *assert.CollectT) {
 		assert.GreaterOrEqual(collect, len(c.stdinSeen()), n, "stdin deliveries")
 	}, timeout, 10*time.Millisecond)
 	return c.stdinSeen()
@@ -352,6 +354,7 @@ func sandboxIdentityContainerConfig(t *testing.T, runID, providerURL string) *ty
 // token tmpfs is mounted, and the initial token arrives over exec stdin and
 // never in exec argv.
 func TestBuildLoopWithTransport_SandboxIdentity_ContainerEnvAndGitConfig(t *testing.T) {
+	must := require.New(t)
 	sock, capture, cleanupEngine := fakeDockerEngine(t)
 	defer cleanupEngine()
 	t.Setenv("DOCKER_HOST", "unix://"+sock)
@@ -363,22 +366,24 @@ func TestBuildLoopWithTransport_SandboxIdentity_ContainerEnvAndGitConfig(t *test
 	config := sandboxIdentityContainerConfig(t, "sandboxidentity-integration-test", server.URL)
 
 	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
-	require.NoError(t, err)
+	must.NoError(err)
 	defer func() { _ = loop.Close() }()
 
 	env := capture.envMap()
 
 	t.Run("token env vars", func(t *testing.T) {
-		require.Equal(t, "the-jwt-token", env["HAYBALE_TOKEN"])
-		require.Equal(t, executor.SandboxIdentityTokenPath, env["HAYBALE_TOKEN_FILE"])
+		must := require.New(t)
+		must.Equal("the-jwt-token", env["HAYBALE_TOKEN"])
+		must.Equal(executor.SandboxIdentityTokenPath, env["HAYBALE_TOKEN_FILE"])
 	})
 
 	t.Run("git config rewrites and credential helper", func(t *testing.T) {
+		must := require.New(t)
 		insteadOfKey := "url.http://haybale.internal:8466/github.com/.insteadOf"
 		credKey := "credential.http://haybale.internal:8466/.helper"
 		wantCredValue := `!f() { echo username=x-access-token; echo "password=$(cat ` + executor.SandboxIdentityTokenPath + `)"; }; f`
 
-		require.Equal(t, "4", env["GIT_CONFIG_COUNT"])
+		must.Equal("4", env["GIT_CONFIG_COUNT"])
 
 		var insteadOfValues []string
 		var credValue string
@@ -391,34 +396,37 @@ func TestBuildLoopWithTransport_SandboxIdentity_ContainerEnvAndGitConfig(t *test
 			case credKey:
 				credValue = value
 			default:
-				require.Failf(t, "unexpected git config key", "GIT_CONFIG_KEY_%d = %q", i, key)
+				must.Failf("unexpected git config key", "GIT_CONFIG_KEY_%d = %q", i, key)
 			}
 		}
 
-		require.Subset(t, insteadOfValues, []string{"https://github.com/", "git@github.com:", "ssh://git@github.com/"})
-		require.Equal(t, wantCredValue, credValue)
-		require.NotContains(t, credValue, "the-jwt-token", "credential helper must read the token file, not the env var")
-		require.NotContains(t, credValue, "$HAYBALE_TOKEN", "credential helper must read the token file, not the env var")
+		must.Subset(insteadOfValues, []string{"https://github.com/", "git@github.com:", "ssh://git@github.com/"})
+		must.Equal(wantCredValue, credValue)
+		must.NotContains(credValue, "the-jwt-token", "credential helper must read the token file, not the env var")
+		must.NotContains(credValue, "$HAYBALE_TOKEN", "credential helper must read the token file, not the env var")
 	})
 
 	t.Run("token tmpfs mounted", func(t *testing.T) {
-		require.Contains(t, capture.HostConfig.Tmpfs, executor.SandboxIdentityTokenDir, "container created without the token tmpfs")
+		must := require.New(t)
+		must.Contains(capture.HostConfig.Tmpfs, executor.SandboxIdentityTokenDir, "container created without the token tmpfs")
 	})
 
 	t.Run("token delivered over stdin, not argv", func(t *testing.T) {
-		require.Equal(t, []string{"the-jwt-token"}, capture.stdinSeen(), "exec stdin deliveries")
+		must := require.New(t)
+		must.Equal([]string{"the-jwt-token"}, capture.stdinSeen(), "exec stdin deliveries")
 		for _, argv := range capture.argvSeen() {
 			for _, arg := range argv {
-				require.NotContains(t, arg, "the-jwt-token", "token appeared in exec argv")
+				must.NotContains(arg, "the-jwt-token", "token appeared in exec argv")
 			}
 		}
 	})
 
 	t.Run("single token request with audience", func(t *testing.T) {
+		must := require.New(t)
 		// Without an expiry the control plane sees exactly one request and no refresh is scheduled.
 		requests := tp.emittedOfType("sandbox_token_request")
-		require.Len(t, requests, 1)
-		require.Equal(t, "https://haybale.internal", requests[0].Audience)
+		must.Len(requests, 1)
+		must.Equal("https://haybale.internal", requests[0].Audience)
 	})
 }
 
@@ -427,6 +435,7 @@ func TestBuildLoopWithTransport_SandboxIdentity_ContainerEnvAndGitConfig(t *test
 // second sandbox_token_request before expiry, delivers the new token over
 // exec stdin, and never lets either token into an emitted event.
 func TestBuildLoopWithTransport_SandboxIdentity_RefreshesToken(t *testing.T) {
+	must := require.New(t)
 	sock, capture, cleanupEngine := fakeDockerEngine(t)
 	defer cleanupEngine()
 	t.Setenv("DOCKER_HOST", "unix://"+sock)
@@ -442,14 +451,14 @@ func TestBuildLoopWithTransport_SandboxIdentity_RefreshesToken(t *testing.T) {
 	config := sandboxIdentityContainerConfig(t, "sandboxidentity-refresh-test", server.URL)
 
 	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	deliveries := capture.waitForStdin(t, 2, 5*time.Second)
-	require.NoError(t, loop.Close())
+	must.NoError(loop.Close())
 
-	require.Equal(t, []string{"jwt-1", "jwt-2"}, deliveries[:2], "initial token followed by the refreshed token")
-	require.GreaterOrEqual(t, len(tp.emittedOfType("sandbox_token_request")), 2)
-	require.Empty(t, tp.emittedOfType("warning"), "no warning on a successful refresh")
+	must.Equal([]string{"jwt-1", "jwt-2"}, deliveries[:2], "initial token followed by the refreshed token")
+	must.GreaterOrEqual(len(tp.emittedOfType("sandbox_token_request")), 2)
+	must.Empty(tp.emittedOfType("warning"), "no warning on a successful refresh")
 
 	tp.mu.Lock()
 	emitted := append([]types.HarnessEvent(nil), tp.emitted...)
@@ -457,7 +466,7 @@ func TestBuildLoopWithTransport_SandboxIdentity_RefreshesToken(t *testing.T) {
 	for _, e := range emitted {
 		raw, _ := json.Marshal(e)
 		for _, tok := range deliveries {
-			require.NotContains(t, string(raw), tok, "emitted event carries a sandbox identity token")
+			must.NotContains(string(raw), tok, "emitted event carries a sandbox identity token")
 		}
 	}
 }
@@ -468,6 +477,7 @@ func TestBuildLoopWithTransport_SandboxIdentity_RefreshesToken(t *testing.T) {
 // must fail closed before any sandbox is created, even though
 // ValidateRunConfig has already accepted transport.type=grpc.
 func TestBuildLoopWithTransport_SandboxIdentity_NilTransportFailsClosed(t *testing.T) {
+	must := require.New(t)
 	timeout := 30
 	config := &types.RunConfig{
 		RunID:           "sandboxidentity-nil-transport-test",
@@ -500,8 +510,8 @@ func TestBuildLoopWithTransport_SandboxIdentity_NilTransportFailsClosed(t *testi
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 
 	_, err := BuildLoopWithTransport(context.Background(), config, nil)
-	require.Error(t, err, "expected an error when sandboxIdentity is set but no transport was pre-established")
-	require.ErrorContains(t, err, "sandboxIdentity")
+	must.Error(err, "expected an error when sandboxIdentity is set but no transport was pre-established")
+	must.ErrorContains(err, "sandboxIdentity")
 }
 
 // sandboxIdentityFailClosedConfig returns a container RunConfig with
@@ -520,6 +530,7 @@ func sandboxIdentityFailClosedConfig(t *testing.T, runID string) *types.RunConfi
 // reject the decline before any sandbox is created; otherwise the fake Docker
 // Engine would record a /containers/create call.
 func TestBuildLoopWithTransport_SandboxIdentity_DeclineSkipsContainerCreate(t *testing.T) {
+	must := require.New(t)
 	sock, capture, cleanupEngine := fakeDockerEngine(t)
 	defer cleanupEngine()
 	t.Setenv("DOCKER_HOST", "unix://"+sock)
@@ -528,9 +539,9 @@ func TestBuildLoopWithTransport_SandboxIdentity_DeclineSkipsContainerCreate(t *t
 	config := sandboxIdentityFailClosedConfig(t, "sandboxidentity-decline-test")
 
 	_, err := BuildLoopWithTransport(context.Background(), config, tp)
-	require.Error(t, err, "expected an error when the control plane declines the sandbox identity exchange")
-	require.ErrorContains(t, err, "declined")
-	require.Zero(t, capture.createCallCount(), "sandbox must not be created before a declined exchange")
+	must.Error(err, "expected an error when the control plane declines the sandbox identity exchange")
+	must.ErrorContains(err, "declined")
+	must.Zero(capture.createCallCount(), "sandbox must not be created before a declined exchange")
 }
 
 // TestBuildLoopWithTransport_SandboxIdentity_TimeoutSkipsContainerCreate
@@ -539,6 +550,7 @@ func TestBuildLoopWithTransport_SandboxIdentity_DeclineSkipsContainerCreate(t *t
 // Cancellation must abort before sandbox creation, as it would during a real
 // control-plane outage.
 func TestBuildLoopWithTransport_SandboxIdentity_TimeoutSkipsContainerCreate(t *testing.T) {
+	must := require.New(t)
 	sock, capture, cleanupEngine := fakeDockerEngine(t)
 	defer cleanupEngine()
 	t.Setenv("DOCKER_HOST", "unix://"+sock)
@@ -550,9 +562,9 @@ func TestBuildLoopWithTransport_SandboxIdentity_TimeoutSkipsContainerCreate(t *t
 	defer cancel()
 
 	_, err := BuildLoopWithTransport(ctx, config, tp)
-	require.Error(t, err, "expected an error when the control plane never responds")
-	require.ErrorContains(t, err, "cancelled")
-	require.Zero(t, capture.createCallCount(), "sandbox must not be created before a timed-out exchange")
+	must.Error(err, "expected an error when the control plane never responds")
+	must.ErrorContains(err, "cancelled")
+	must.Zero(capture.createCallCount(), "sandbox must not be created before a timed-out exchange")
 }
 
 // TestBuildLoopWithTransport_SandboxIdentity_OversizeTokenSkipsContainerCreate
@@ -561,6 +573,7 @@ func TestBuildLoopWithTransport_SandboxIdentity_TimeoutSkipsContainerCreate(t *t
 // failure (never truncated-and-used); this test proves the factory aborts
 // before sandbox creation rather than passing the oversized token through.
 func TestBuildLoopWithTransport_SandboxIdentity_OversizeTokenSkipsContainerCreate(t *testing.T) {
+	must := require.New(t)
 	sock, capture, cleanupEngine := fakeDockerEngine(t)
 	defer cleanupEngine()
 	t.Setenv("DOCKER_HOST", "unix://"+sock)
@@ -569,7 +582,7 @@ func TestBuildLoopWithTransport_SandboxIdentity_OversizeTokenSkipsContainerCreat
 	config := sandboxIdentityFailClosedConfig(t, "sandboxidentity-oversize-test")
 
 	_, err := BuildLoopWithTransport(context.Background(), config, tp)
-	require.Error(t, err, "expected an error for an oversized sandbox identity token")
-	require.ErrorContains(t, err, "byte cap")
-	require.Zero(t, capture.createCallCount(), "sandbox must not be created before an oversize-token failure")
+	must.Error(err, "expected an error for an oversized sandbox identity token")
+	must.ErrorContains(err, "byte cap")
+	must.Zero(capture.createCallCount(), "sandbox must not be created before an oversize-token failure")
 }

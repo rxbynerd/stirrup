@@ -8,17 +8,19 @@ import (
 )
 
 func TestModePrompts_AllModesPresent(t *testing.T) {
+	must := require.New(t)
 	prompts := ModePrompts()
 
 	expectedModes := []string{"execution", "planning", "review", "research", "toil"}
 	for _, mode := range expectedModes {
 		t.Run(mode, func(t *testing.T) {
-			require.Contains(t, prompts, mode)
-			require.NotEmpty(t, prompts[mode])
+			must := require.New(t)
+			must.Contains(prompts, mode)
+			must.NotEmpty(prompts[mode])
 		})
 	}
 
-	require.Len(t, prompts, len(expectedModes))
+	must.Len(prompts, len(expectedModes))
 }
 
 func TestModePrompts_ExpectedPhrases(t *testing.T) {
@@ -37,9 +39,10 @@ func TestModePrompts_ExpectedPhrases(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.mode, func(t *testing.T) {
+			must := require.New(t)
 			text := prompts[tc.mode]
 			for _, phrase := range tc.phrases {
-				require.Contains(t, text, phrase)
+				must.Contains(text, phrase)
 			}
 		})
 	}
@@ -48,18 +51,21 @@ func TestModePrompts_ExpectedPhrases(t *testing.T) {
 func TestModePrompts_NoLeadingTrailingWhitespace(t *testing.T) {
 	for mode, text := range ModePrompts() {
 		t.Run(mode, func(t *testing.T) {
-			require.Equal(t, strings.TrimSpace(text), text)
+			must := require.New(t)
+			must.Equal(strings.TrimSpace(text), text)
 		})
 	}
 }
 
 func TestModePrompts_Idempotent(t *testing.T) {
+	must := require.New(t)
 	a := ModePrompts()
 	b := ModePrompts()
-	require.Len(t, b, len(a), "ModePrompts() returned different lengths on successive calls")
+	must.Len(b, len(a), "ModePrompts() returned different lengths on successive calls")
 	for k, v := range a {
 		t.Run(k, func(t *testing.T) {
-			require.Equal(t, v, b[k])
+			must := require.New(t)
+			must.Equal(v, b[k])
 		})
 	}
 }

@@ -11,17 +11,20 @@ import (
 )
 
 func TestProbeAllowlist_EmptyIsNoop(t *testing.T) {
+	must := require.New(t)
 	err := ProbeAllowlist(context.Background(), nil, net.DefaultResolver)
-	require.NoError(t, err, "empty allowlist should be a no-op")
+	must.NoError(err, "empty allowlist should be a no-op")
 }
 
 func TestProbeAllowlist_MalformedEntry(t *testing.T) {
+	must := require.New(t)
 	err := ProbeAllowlist(context.Background(), []string{"bad host with spaces"}, net.DefaultResolver)
-	require.Error(t, err, "expected parse error for malformed allowlist entry")
-	require.ErrorContains(t, err, "parse")
+	must.Error(err, "expected parse error for malformed allowlist entry")
+	must.ErrorContains(err, "parse")
 }
 
 func TestProbeAllowlist_Unresolvable(t *testing.T) {
+	must := require.New(t)
 	// A custom resolver whose Dial always errors makes every lookup fail,
 	// standing in for an NXDOMAIN/unreachable destination without depending
 	// on a hostname that is guaranteed not to resolve in CI.
@@ -35,10 +38,10 @@ func TestProbeAllowlist_Unresolvable(t *testing.T) {
 	defer cancel()
 
 	err := ProbeAllowlist(ctx, []string{"example.com", "*.api.example.com:8443"}, failing)
-	require.Error(t, err, "expected error when destinations do not resolve")
-	require.ErrorContains(t, err, "unresolvable")
+	must.Error(err, "expected error when destinations do not resolve")
+	must.ErrorContains(err, "unresolvable")
 	// Both the exact host and the wildcard base zone should be reported.
-	require.ErrorContains(t, err, "example.com")
+	must.ErrorContains(err, "example.com")
 }
 
 func TestProbeHost_ExtractsHostname(t *testing.T) {
@@ -53,7 +56,8 @@ func TestProbeHost_ExtractsHostname(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, probeHost(tt.in), "probeHost(%q)", tt.in)
+			must := require.New(t)
+			must.Equal(tt.want, probeHost(tt.in), "probeHost(%q)", tt.in)
 		})
 	}
 }

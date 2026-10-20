@@ -175,6 +175,7 @@ func TestPrepareSubAgent_ReadOnlyChildToolsAndPermissions(t *testing.T) {
 	for _, parentPolicy := range parents {
 		for _, mode := range readOnlyModeNames {
 			t.Run(parentPolicy.policy+"/"+mode, func(t *testing.T) {
+				must := require.New(t)
 				registry, _ := spawnParentRegistry(t, true)
 				parent := buildSubAgentTestLoop(&mockProvider{})
 				parent.Tools = registry
@@ -186,22 +187,22 @@ func TestPrepareSubAgent_ReadOnlyChildToolsAndPermissions(t *testing.T) {
 				parentConfig.PermissionPolicy = types.PermissionPolicyConfig{Type: parentPolicy.policy}
 
 				run, err := prepareSubAgent(context.Background(), parent, parentConfig, SubAgentConfig{Prompt: "investigate", Mode: mode})
-				require.NoError(t, err, "prepareSubAgent")
+				must.NoError(err, "prepareSubAgent")
 
 				wantOffered := []string{"read_file", "grep_files", "web_fetch", "ticket_lookup"}
-				require.Equal(t, wantOffered, offeredToolIDs(run.loop), "offered tools")
-				require.Equal(t, wantOffered, run.effectiveTools, "effective tools")
+				must.Equal(wantOffered, offeredToolIDs(run.loop), "offered tools")
+				must.Equal(wantOffered, run.effectiveTools, "effective tools")
 
 				for _, name := range mutatingSpawnTools {
 					result, err := run.loop.Permissions.Check(context.Background(), types.ToolDefinition{Name: name}, json.RawMessage(`{}`))
-					require.NoError(t, err, "Check(%s)", name)
-					require.False(t, result.Allowed, "child permission chain allowed %s", name)
+					must.NoError(err, "Check(%s)", name)
+					must.False(result.Allowed, "child permission chain allowed %s", name)
 				}
-				require.Empty(t, rt.requested(), "mutating checks must not ask upstream")
+				must.Empty(rt.requested(), "mutating checks must not ask upstream")
 
-				require.Equal(t, []string{"read_file", "grep_files", "web_fetch"}, run.config.Tools.BuiltIn, "recorded tools.builtIn")
-				require.Equal(t, parentPolicy.wantPolicy, run.config.PermissionPolicy.Type, "recorded permission policy")
-				require.Equal(t, mode, run.config.Mode, "recorded mode")
+				must.Equal([]string{"read_file", "grep_files", "web_fetch"}, run.config.Tools.BuiltIn, "recorded tools.builtIn")
+				must.Equal(parentPolicy.wantPolicy, run.config.PermissionPolicy.Type, "recorded permission policy")
+				must.Equal(mode, run.config.Mode, "recorded mode")
 			})
 		}
 	}
@@ -211,6 +212,7 @@ func TestPrepareSubAgent_ReadOnlyChildToolsAndPermissions(t *testing.T) {
 // research child whose model calls every mutating tool by name: none of
 // the handlers runs and every call is recorded as failed.
 func TestSpawnSubAgent_ReadOnlyChildCannotDispatchMutatingTools(t *testing.T) {
+	must := require.New(t)
 	registry, calls := spawnParentRegistry(t, true)
 	parent := buildSubAgentTestLoop(&mockProvider{})
 	parent.Tools = registry
@@ -228,21 +230,23 @@ func TestSpawnSubAgent_ReadOnlyChildCannotDispatchMutatingTools(t *testing.T) {
 		Prompt: "edit things",
 		Mode:   "research",
 	})
-	require.NoError(t, err, "SpawnSubAgent")
+	must.NoError(err, "SpawnSubAgent")
 
 	for _, name := range mutatingSpawnTools {
 		t.Run(name, func(t *testing.T) {
-			require.Zero(t, calls.count(name), "handler must not run in a research child")
+			must := require.New(t)
+			must.Zero(calls.count(name), "handler must not run in a research child")
 		})
 	}
-	require.Equal(t, 1, calls.count("read_file"), "read_file handler runs")
+	must.Equal(1, calls.count("read_file"), "read_file handler runs")
 
 	_, toolCalls := parentTrace.snapshot()
-	require.Len(t, toolCalls, len(mutatingSpawnTools)+1)
+	must.Len(toolCalls, len(mutatingSpawnTools)+1)
 	for _, tc := range toolCalls {
 		t.Run("trace "+tc.Name, func(t *testing.T) {
+			must := require.New(t)
 			wantSuccess := tc.Name == "read_file"
-			require.Equal(t, wantSuccess, tc.Success, "recorded success")
+			must.Equal(wantSuccess, tc.Success, "recorded success")
 		})
 	}
 }
@@ -252,6 +256,8 @@ func TestSpawnSubAgent_ReadOnlyChildCannotDispatchMutatingTools(t *testing.T) {
 // for mutating tools, while a non-mutating approval-required tool still
 // asks upstream.
 func TestSpawnSubAgent_ReadOnlyChildOfAskUpstreamParentNeverAsks(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	registry, calls := spawnParentRegistry(t, true)
 	parent := buildSubAgentTestLoop(&mockProvider{})
 	parent.Tools = registry
@@ -269,12 +275,13 @@ func TestSpawnSubAgent_ReadOnlyChildOfAskUpstreamParentNeverAsks(t *testing.T) {
 		Prompt: "edit things",
 		Mode:   "research",
 	})
-	require.NoError(t, err, "SpawnSubAgent")
+	must.NoError(err, "SpawnSubAgent")
 
-	assert.Equal(t, []string{"web_fetch"}, rt.requested(), "permission requests")
+	check.Equal([]string{"web_fetch"}, rt.requested(), "permission requests")
 	for _, name := range []string{"write_file", "run_command", "mcp_docs_update"} {
 		t.Run(name, func(t *testing.T) {
-			require.Zero(t, calls.count(name), "handler must not run")
+			must := require.New(t)
+			must.Zero(calls.count(name), "handler must not run")
 		})
 	}
 }
@@ -285,6 +292,7 @@ func TestSpawnSubAgent_ReadOnlyChildOfAskUpstreamParentNeverAsks(t *testing.T) {
 func TestSpawnSubAgent_ReadOnlyParentCannotSpawnExecutionChild(t *testing.T) {
 	for _, parentMode := range readOnlyModeNames {
 		t.Run(parentMode, func(t *testing.T) {
+			must := require.New(t)
 			registry, _ := spawnParentRegistry(t, false)
 			parent := buildSubAgentTestLoop(&mockProvider{})
 			parent.Tools = registry
@@ -302,10 +310,10 @@ func TestSpawnSubAgent_ReadOnlyParentCannotSpawnExecutionChild(t *testing.T) {
 				return json.Marshal(result)
 			})
 			out, err := spawn.Handler(context.Background(), json.RawMessage(`{"prompt":"write the fix","mode":"execution"}`))
-			require.Error(t, err, "spawn_agent returned %q, want a tool error", out)
-			require.ErrorContains(t, err, "cannot spawn")
-			require.ErrorContains(t, err, parentMode, "rejection names the parent mode")
-			require.Zero(t, prov.calls.Load(), "no child may start")
+			must.Error(err, "spawn_agent returned %q, want a tool error", out)
+			must.ErrorContains(err, "cannot spawn")
+			must.ErrorContains(err, parentMode, "rejection names the parent mode")
+			must.Zero(prov.calls.Load(), "no child may start")
 		})
 	}
 }
@@ -313,20 +321,22 @@ func TestSpawnSubAgent_ReadOnlyParentCannotSpawnExecutionChild(t *testing.T) {
 // TestCheckSubAgentMode_ExecutionChildNeedsExecutionParent enumerates the
 // mode-transition rule.
 func TestCheckSubAgentMode_ExecutionChildNeedsExecutionParent(t *testing.T) {
+	must := require.New(t)
 	allModes := append([]string{"execution"}, readOnlyModeNames...)
 	for _, parentMode := range allModes {
 		for _, childMode := range allModes {
 			t.Run(parentMode+"/"+childMode, func(t *testing.T) {
+				must := require.New(t)
 				err := checkSubAgentMode(parentMode, childMode)
 				if parentMode != "execution" && childMode == "execution" {
-					require.Error(t, err)
+					must.Error(err)
 				} else {
-					require.NoError(t, err)
+					must.NoError(err)
 				}
 			})
 		}
 	}
-	require.Error(t, checkSubAgentMode("research", "unknown"), "a read-only parent must not spawn a child in an unrecognised mode")
+	must.Error(checkSubAgentMode("research", "unknown"), "a read-only parent must not spawn a child in an unrecognised mode")
 }
 
 // TestPrepareSubAgent_AllowedTransitionsValidate runs every allowed
@@ -334,9 +344,10 @@ func TestCheckSubAgentMode_ExecutionChildNeedsExecutionParent(t *testing.T) {
 // top-level read-only invariant as a structural check on the recorded
 // child config.
 func TestPrepareSubAgent_AllowedTransitionsValidate(t *testing.T) {
+	must := require.New(t)
 	policyPath := filepath.Join(t.TempDir(), "policy.cedar")
 	err := os.WriteFile(policyPath, []byte(`permit (principal, action, resource);`), 0o644)
-	require.NoError(t, err, "write policy")
+	must.NoError(err, "write policy")
 
 	readOnlyBuiltIns := []string{"read_file", "grep_files", "web_fetch", "spawn_agent"}
 	parents := []struct {
@@ -358,7 +369,7 @@ func TestPrepareSubAgent_AllowedTransitionsValidate(t *testing.T) {
 		parentConfig.Mode = p.mode
 		parentConfig.Tools.BuiltIn = p.builtIn
 		parentConfig.PermissionPolicy = p.policy
-		require.NoError(t, types.ValidateRunConfig(parentConfig), "%s: parent config must be valid", p.name)
+		must.NoError(types.ValidateRunConfig(parentConfig), "%s: parent config must be valid", p.name)
 
 		childModes := readOnlyModeNames
 		if p.mode == "execution" {
@@ -366,17 +377,18 @@ func TestPrepareSubAgent_AllowedTransitionsValidate(t *testing.T) {
 		}
 		for _, childMode := range childModes {
 			t.Run(p.name+"/"+childMode, func(t *testing.T) {
+				must := require.New(t)
 				registry, _ := spawnParentRegistry(t, p.mutating)
 				parent := buildSubAgentTestLoop(&mockProvider{})
 				parent.Tools = registry
 
 				run, err := prepareSubAgent(context.Background(), parent, parentConfig, SubAgentConfig{Prompt: "subtask", Mode: childMode})
-				require.NoError(t, err, "prepareSubAgent")
+				must.NoError(err, "prepareSubAgent")
 				// The nested run ID ("parent/sub-N") is deliberately outside
 				// the operator-facing run ID pattern; validate the rest.
 				validated := *run.config
 				validated.RunID = "child-run"
-				require.NoError(t, types.ValidateRunConfig(&validated), "child config fails validation")
+				must.NoError(types.ValidateRunConfig(&validated), "child config fails validation")
 			})
 		}
 	}
@@ -386,6 +398,8 @@ func TestPrepareSubAgent_AllowedTransitionsValidate(t *testing.T) {
 // own RunTrace records the tools, permission policy and context strategy
 // it enforced, and that building it leaves the parent's config intact.
 func TestSpawnSubAgent_ChildTraceRecordsEnforcedConfig(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	registry, _ := spawnParentRegistry(t, true)
 	parent := buildSubAgentTestLoop(&mockProvider{})
 	parent.Tools = registry
@@ -397,20 +411,20 @@ func TestSpawnSubAgent_ChildTraceRecordsEnforcedConfig(t *testing.T) {
 	}
 
 	run, err := prepareSubAgent(context.Background(), parent, parentConfig, SubAgentConfig{Prompt: "investigate", Mode: "research"})
-	require.NoError(t, err, "prepareSubAgent")
+	must.NoError(err, "prepareSubAgent")
 	runTrace, err := run.execute(context.Background())
-	require.NoError(t, err, "execute")
+	must.NoError(err, "execute")
 
 	got := runTrace.Config
-	assert.Equal(t, "research", got.Mode, "recorded mode")
-	assert.Equal(t, []string{"read_file", "grep_files", "web_fetch"}, got.Tools.BuiltIn, "recorded tools.builtIn")
-	assert.Equal(t, "deny-side-effects", got.PermissionPolicy.Type, "recorded permission policy")
-	assert.Equal(t, types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 100000}, got.ContextStrategy, "recorded context strategy")
-	assert.Equal(t, []string{"read_file", "grep_files", "web_fetch", "ticket_lookup"}, runTrace.EffectiveTools, "trace effectiveTools")
+	check.Equal("research", got.Mode, "recorded mode")
+	check.Equal([]string{"read_file", "grep_files", "web_fetch"}, got.Tools.BuiltIn, "recorded tools.builtIn")
+	check.Equal("deny-side-effects", got.PermissionPolicy.Type, "recorded permission policy")
+	check.Equal(types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 100000}, got.ContextStrategy, "recorded context strategy")
+	check.Equal([]string{"read_file", "grep_files", "web_fetch", "ticket_lookup"}, runTrace.EffectiveTools, "trace effectiveTools")
 
-	assert.Nil(t, parentConfig.Tools.BuiltIn, "parent builtIn tools mutated")
-	assert.Equal(t, "allow-all", parentConfig.PermissionPolicy.Type, "parent permission policy mutated")
-	assert.Equal(t, "clear-tool-results", parentConfig.ContextStrategy.Type, "parent context strategy mutated")
+	check.Nil(parentConfig.Tools.BuiltIn, "parent builtIn tools mutated")
+	check.Equal("allow-all", parentConfig.PermissionPolicy.Type, "parent permission policy mutated")
+	check.Equal("clear-tool-results", parentConfig.ContextStrategy.Type, "parent context strategy mutated")
 }
 
 // TestSpawnSubAgent_CedarModeRuleFiresForResearchChild pins that a Cedar
@@ -418,6 +432,7 @@ func TestSpawnSubAgent_ChildTraceRecordsEnforcedConfig(t *testing.T) {
 // through the parent's wrapped policy-engine chain. web_fetch is
 // non-mutating, so the denial can only come from Cedar.
 func TestSpawnSubAgent_CedarModeRuleFiresForResearchChild(t *testing.T) {
+	must := require.New(t)
 	policyPath := filepath.Join(t.TempDir(), "policy.cedar")
 	policy := `forbid (
 		principal,
@@ -427,14 +442,14 @@ func TestSpawnSubAgent_CedarModeRuleFiresForResearchChild(t *testing.T) {
 		principal.mode == "research"
 	};`
 	err := os.WriteFile(policyPath, []byte(policy), 0o644)
-	require.NoError(t, err, "write policy")
+	must.NoError(err, "write policy")
 
 	engine, err := permission.New(
 		types.PermissionPolicyConfig{Type: "policy-engine", PolicyFile: policyPath, Fallback: "allow-all"},
 		permission.PolicyEngineEnv{RunID: "run-parent-1", Mode: "execution"},
 		func(string) (permission.PermissionPolicy, error) { return permission.NewAllowAll(), nil },
 	)
-	require.NoError(t, err, "permission.New")
+	must.NoError(err, "permission.New")
 
 	registry, _ := spawnParentRegistry(t, true)
 	parent := buildSubAgentTestLoop(&mockProvider{})
@@ -446,45 +461,49 @@ func TestSpawnSubAgent_CedarModeRuleFiresForResearchChild(t *testing.T) {
 	input := json.RawMessage(`{"url":"https://example.com"}`)
 	decide := func(t *testing.T, pp permission.PermissionPolicy) *permission.PermissionResult {
 		t.Helper()
+		must := require.New(t)
 		result, err := pp.Check(context.Background(), webFetch, input)
-		require.NoError(t, err, "Check")
+		must.NoError(err, "Check")
 		return result
 	}
 
-	require.True(t, decide(t, parent.Permissions).Allowed, "execution parent: web_fetch should fall through to the allow-all fallback")
+	must.True(decide(t, parent.Permissions).Allowed, "execution parent: web_fetch should fall through to the allow-all fallback")
 
 	research, err := prepareSubAgent(context.Background(), parent, parentConfig, SubAgentConfig{Prompt: "look it up", Mode: "research"})
-	require.NoError(t, err, "prepareSubAgent(research)")
-	require.False(t, decide(t, research.loop.Permissions).Allowed, "research child: web_fetch should be denied by the principal.mode rule")
+	must.NoError(err, "prepareSubAgent(research)")
+	must.False(decide(t, research.loop.Permissions).Allowed, "research child: web_fetch should be denied by the principal.mode rule")
 
 	execution, err := prepareSubAgent(context.Background(), parent, parentConfig, SubAgentConfig{Prompt: "look it up", Mode: "execution"})
-	require.NoError(t, err, "prepareSubAgent(execution)")
-	require.True(t, decide(t, execution.loop.Permissions).Allowed, "execution child: the research-only rule must not fire")
+	must.NoError(err, "prepareSubAgent(execution)")
+	must.True(decide(t, execution.loop.Permissions).Allowed, "execution child: the research-only rule must not fire")
 }
 
 // TestPrepareSubAgent_ExecutionChildKeepsParentAuthority pins that an
 // execution child of an execution parent keeps every parent tool except
 // spawn_agent and the parent's permission chain, with no extra gate.
 func TestPrepareSubAgent_ExecutionChildKeepsParentAuthority(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	registry, _ := spawnParentRegistry(t, true)
 	parent := buildSubAgentTestLoop(&mockProvider{})
 	parent.Tools = registry
 	parentConfig := buildTestConfig()
 
 	run, err := prepareSubAgent(context.Background(), parent, parentConfig, SubAgentConfig{Prompt: "fix it", Mode: "execution"})
-	require.NoError(t, err, "prepareSubAgent")
+	must.NoError(err, "prepareSubAgent")
 
 	offered := offeredToolIDs(run.loop)
-	assert.NotContains(t, offered, "spawn_agent", "execution child offered spawn_agent")
+	check.NotContains(offered, "spawn_agent", "execution child offered spawn_agent")
 	for _, name := range mutatingSpawnTools {
 		t.Run(name, func(t *testing.T) {
-			require.Contains(t, offered, name, "execution child must keep the parent tool")
+			must := require.New(t)
+			must.Contains(offered, name, "execution child must keep the parent tool")
 		})
 	}
 	_, gated := run.loop.Permissions.(*permission.SideEffectGate)
-	assert.False(t, gated, "execution child permission chain wrapped in a SideEffectGate")
-	assert.Equal(t, "allow-all", run.config.PermissionPolicy.Type, "recorded permission policy")
-	assert.NotContains(t, run.config.Tools.BuiltIn, "spawn_agent", "recorded tools.builtIn")
+	check.False(gated, "execution child permission chain wrapped in a SideEffectGate")
+	check.Equal("allow-all", run.config.PermissionPolicy.Type, "recorded permission policy")
+	check.NotContains(run.config.Tools.BuiltIn, "spawn_agent", "recorded tools.builtIn")
 }
 
 // TestPrepareSubAgent_ReadOnlyChildWithoutBuiltInsIsRejected pins that a
@@ -492,6 +511,7 @@ func TestPrepareSubAgent_ExecutionChildKeepsParentAuthority(t *testing.T) {
 // tools.builtIn could not express an empty set, since an empty list means
 // every built-in.
 func TestPrepareSubAgent_ReadOnlyChildWithoutBuiltInsIsRejected(t *testing.T) {
+	must := require.New(t)
 	registry := tool.NewRegistry()
 	for _, name := range []string{"write_file", "mcp_docs_update", "spawn_agent"} {
 		registry.Register(&tool.Tool{
@@ -505,8 +525,8 @@ func TestPrepareSubAgent_ReadOnlyChildWithoutBuiltInsIsRejected(t *testing.T) {
 	parent.Tools = registry
 
 	_, err := prepareSubAgent(context.Background(), parent, buildTestConfig(), SubAgentConfig{Prompt: "look", Mode: "review"})
-	require.Error(t, err)
-	require.ErrorContains(t, err, "no read-only built-in tools")
+	must.Error(err)
+	must.ErrorContains(err, "no read-only built-in tools")
 }
 
 var _ permission.Transport = (*permissionRequestTransport)(nil)

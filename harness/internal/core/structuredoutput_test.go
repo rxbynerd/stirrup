@@ -88,40 +88,44 @@ func structuredTestConfig() *types.RunConfig {
 }
 
 func TestRun_InvalidThenValidAnswerReturnsStructuredOutput(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop, prov, tr := structuredTestLoop(
 		"Here is the triage: the title is Fix login.",
 		"```json\n{\n  \"title\": \"Fix login\",\n  \"labels\": [\"bug\"]\n}\n```",
 	)
 
 	runTrace, err := loop.Run(context.Background(), structuredTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "success", runTrace.Outcome, "error: %s", runTrace.Error)
-	require.Equal(t, 2, prov.calls())
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome, "error: %s", runTrace.Error)
+	must.Equal(2, prov.calls())
 
 	const want = `{"title":"Fix login","labels":["bug"]}`
-	assert.Equal(t, want, string(runTrace.StructuredOutput)) //nolint:testifylint // the compacted bytes are what is asserted
+	check.Equal(want, string(runTrace.StructuredOutput)) //nolint:testifylint // the compacted bytes are what is asserted
 
 	correction := prov.requests[1][len(prov.requests[1])-1]
-	require.Equal(t, "user", correction.Role)
-	require.True(t, correction.Synthetic, "the second request should end with a synthetic user correction")
-	assert.Contains(t, correction.Content[0].Text, "not a single JSON document")
-	assert.Contains(t, correction.Content[0].Text, "<output_schema>")
-	assert.Contains(t, prov.systems[0], "<output_schema>", "system prompt lacks the output schema section")
+	must.Equal("user", correction.Role)
+	must.True(correction.Synthetic, "the second request should end with a synthetic user correction")
+	check.Contains(correction.Content[0].Text, "not a single JSON document")
+	check.Contains(correction.Content[0].Text, "<output_schema>")
+	check.Contains(prov.systems[0], "<output_schema>", "system prompt lacks the output schema section")
 
 	done := doneEvent(t, tr.Events())
-	require.NotNil(t, done.Trace)
-	assert.Equal(t, want, string(done.Trace.StructuredOutput)) //nolint:testifylint // the compacted bytes are what is asserted
+	must.NotNil(done.Trace)
+	check.Equal(want, string(done.Trace.StructuredOutput)) //nolint:testifylint // the compacted bytes are what is asserted
 }
 
 // TestRun_StructuredOutputCorrectionIsReportedBetweenTurns pins that the
 // correction request is reported as the text appended to history, after
 // the rejected answer commits and before the corrected turn opens.
 func TestRun_StructuredOutputCorrectionIsReportedBetweenTurns(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop, prov, tr := structuredTestLoop("not json", `{"title":"Fix login","labels":["bug"]}`)
 
 	_, err := loop.Run(context.Background(), structuredTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, 2, prov.calls())
+	must.NoError(err)
+	must.Equal(2, prov.calls())
 	appended := prov.requests[1][len(prov.requests[1])-1].Content[0].Text
 
 	var order []string
@@ -133,13 +137,15 @@ func TestRun_StructuredOutputCorrectionIsReportedBetweenTurns(t *testing.T) {
 			order = append(order, fmt.Sprintf("commit:%d", *ev.Turn))
 		case ev.Type == "user_message" && ev.Source == types.UserMessageSourceStructuredOutputCorrection:
 			order = append(order, "correction")
-			assert.Equal(t, appended, ev.Text, "the correction text reported as an event")
+			check.Equal(appended, ev.Text, "the correction text reported as an event")
 		}
 	}
-	assert.Equal(t, []string{"start:0", "commit:0", "correction", "start:1", "commit:1"}, order)
+	check.Equal([]string{"start:0", "commit:0", "correction", "start:1", "commit:1"}, order)
 }
 
 func TestRun_StructuredOutputFailsAfterCorrectiveAttempts(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop, prov, tr := structuredTestLoop(
 		`{"title":"Fix login"}`,
 		`{"title":"Fix login","labels":["urgent"]}`,
@@ -149,21 +155,21 @@ func TestRun_StructuredOutputFailsAfterCorrectiveAttempts(t *testing.T) {
 	loop.Verifier = ver
 
 	runTrace, err := loop.Run(context.Background(), structuredTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "structured_output_failed", runTrace.Outcome)
+	must.NoError(err)
+	must.Equal("structured_output_failed", runTrace.Outcome)
 
-	assert.Equal(t, 1+maxStructuredOutputCorrections, prov.calls())
-	assert.True(t, strings.HasPrefix(runTrace.Error, "structured output: the JSON document does not satisfy the schema:"), "Error = %q", runTrace.Error)
-	assert.Contains(t, runTrace.Error, "additional properties 'owner' not allowed")
-	assert.NotContains(t, runTrace.Error, "missing property", "the error carries an earlier attempt's violation")
-	assert.Nil(t, runTrace.StructuredOutput, "a failed run has no structured output")
-	assert.Empty(t, ver.seen, "the verifier must not run on invalid answers")
-	assert.Nil(t, runTrace.StopDetails, "reclassifying the outcome clears the stop details")
+	check.Equal(1+maxStructuredOutputCorrections, prov.calls())
+	check.True(strings.HasPrefix(runTrace.Error, "structured output: the JSON document does not satisfy the schema:"), "Error = %q", runTrace.Error)
+	check.Contains(runTrace.Error, "additional properties 'owner' not allowed")
+	check.NotContains(runTrace.Error, "missing property", "the error carries an earlier attempt's violation")
+	check.Nil(runTrace.StructuredOutput, "a failed run has no structured output")
+	check.Empty(ver.seen, "the verifier must not run on invalid answers")
+	check.Nil(runTrace.StopDetails, "reclassifying the outcome clears the stop details")
 
 	done := doneEvent(t, tr.Events())
-	require.NotNil(t, done.Trace)
-	assert.Equal(t, "structured_output_failed", done.StopReason)
-	assert.Equal(t, runTrace.Error, done.Trace.Error)
+	must.NotNil(done.Trace)
+	check.Equal("structured_output_failed", done.StopReason)
+	check.Equal(runTrace.Error, done.Trace.Error)
 }
 
 func TestRun_StructuredCorrectionsShareMaxTurns(t *testing.T) {
@@ -182,21 +188,22 @@ func TestRun_StructuredCorrectionsShareMaxTurns(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			loop, prov, _ := structuredTestLoop(tc.answers...)
 			config := structuredTestConfig()
 			config.MaxTurns = tc.maxTurns
 
 			runTrace, err := loop.Run(context.Background(), config)
-			require.NoError(t, err)
-			require.Equal(t, tc.wantCalls, prov.calls())
-			require.Equal(t, tc.wantCalls, runTrace.Turns)
-			require.Equal(t, tc.wantOutcome, runTrace.Outcome, "error: %s", runTrace.Error)
+			must.NoError(err)
+			must.Equal(tc.wantCalls, prov.calls())
+			must.Equal(tc.wantCalls, runTrace.Turns)
+			must.Equal(tc.wantOutcome, runTrace.Outcome, "error: %s", runTrace.Error)
 
 			if tc.wantOutcome == "max_turns" {
-				require.Contains(t, runTrace.Error, "before the final answer satisfied the output schema")
-				require.Contains(t, runTrace.Error, "not a single JSON document")
+				must.Contains(runTrace.Error, "before the final answer satisfied the output schema")
+				must.Contains(runTrace.Error, "not a single JSON document")
 				last := prov.requests[len(prov.requests)-1]
-				require.Equal(t, tc.wantCalls-1, countSyntheticUserTurns(last), "corrections carried by the last request")
+				must.Equal(tc.wantCalls-1, countSyntheticUserTurns(last), "corrections carried by the last request")
 			}
 		})
 	}
@@ -213,16 +220,17 @@ func TestRun_StructuredCorrectionsWithToolTurnsShareMaxTurns(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			prov := &attemptProvider{turnsPerAttempt: 2}
 			loop, callTurns := buildRepairTestLoop(prov)
 			config := structuredTestConfig()
 			config.MaxTurns = tc.maxTurns
 
 			runTrace, err := loop.Run(context.Background(), config)
-			require.NoError(t, err)
-			require.Equal(t, tc.maxTurns, prov.callCount())
-			require.Equal(t, tc.maxTurns, runTrace.Turns)
-			require.Equal(t, tc.wantOutcome, runTrace.Outcome, "error: %s", runTrace.Error)
+			must.NoError(err)
+			must.Equal(tc.maxTurns, prov.callCount())
+			must.Equal(tc.maxTurns, runTrace.Turns)
+			must.Equal(tc.wantOutcome, runTrace.Outcome, "error: %s", runTrace.Error)
 			assertStrictlyIncreasing(t, "tool call turns", *callTurns)
 		})
 	}
@@ -239,6 +247,7 @@ func countSyntheticUserTurns(messages []types.Message) int {
 }
 
 func TestRun_InvalidAnswerNeverReachesVerifier(t *testing.T) {
+	must := require.New(t)
 	loop, _, _ := structuredTestLoop(
 		"not json",
 		`{"title":"Fix login","labels":["bug"]}`,
@@ -247,12 +256,14 @@ func TestRun_InvalidAnswerNeverReachesVerifier(t *testing.T) {
 	loop.Verifier = ver
 
 	runTrace, err := loop.Run(context.Background(), structuredTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "success", runTrace.Outcome)
-	require.Equal(t, []string{`{"title":"Fix login","labels":["bug"]}`}, ver.seen, "the verifier should see only the valid answer")
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
+	must.Equal([]string{`{"title":"Fix login","labels":["bug"]}`}, ver.seen, "the verifier should see only the valid answer")
 }
 
 func TestRun_AnswerAfterVerifierRetryIsValidatedAgain(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop, prov, _ := structuredTestLoop(
 		`{"title":"Fix login","labels":["feature"]}`,
 		`{"title":"Fix login","labels":"bug"}`,
@@ -262,13 +273,13 @@ func TestRun_AnswerAfterVerifierRetryIsValidatedAgain(t *testing.T) {
 	loop.Verifier = ver
 
 	runTrace, err := loop.Run(context.Background(), structuredTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "success", runTrace.Outcome, "error: %s", runTrace.Error)
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome, "error: %s", runTrace.Error)
 
-	assert.Equal(t, `{"title":"Fix login","labels":["bug"]}`, string(runTrace.StructuredOutput), "the answer that passed verification") //nolint:testifylint // the compacted bytes are what is asserted
-	assert.Equal(t, 3, prov.calls())
+	check.Equal(`{"title":"Fix login","labels":["bug"]}`, string(runTrace.StructuredOutput), "the answer that passed verification") //nolint:testifylint // the compacted bytes are what is asserted
+	check.Equal(3, prov.calls())
 	want := []string{`{"title":"Fix login","labels":["feature"]}`, `{"title":"Fix login","labels":["bug"]}`}
-	assert.Equal(t, want, ver.seen)
+	check.Equal(want, ver.seen)
 }
 
 func TestRun_FailedOutcomeReportsNoStructuredOutput(t *testing.T) {
@@ -290,88 +301,100 @@ func TestRun_FailedOutcomeReportsNoStructuredOutput(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			loop, _, tr := structuredTestLoop(`{"title":"Fix login","labels":["bug"]}`)
 			tc.setup(loop)
 
 			runTrace, err := loop.Run(context.Background(), structuredTestConfig())
-			require.NoError(t, err)
-			require.Equal(t, tc.wantOutcome, runTrace.Outcome)
-			require.Nil(t, runTrace.StructuredOutput, "a failed run has no structured output")
+			must.NoError(err)
+			must.Equal(tc.wantOutcome, runTrace.Outcome)
+			must.Nil(runTrace.StructuredOutput, "a failed run has no structured output")
 
 			done := doneEvent(t, tr.Events())
-			require.NotNil(t, done.Trace)
-			require.Nil(t, done.Trace.StructuredOutput)
+			must.NotNil(done.Trace)
+			must.Nil(done.Trace.StructuredOutput)
 		})
 	}
 }
 
 func TestRun_RepairEndingWithoutAnAnswerReportsNoStructuredOutput(t *testing.T) {
+	must := require.New(t)
 	loop, prov, _ := structuredTestLoop(`{"title":"Fix login","labels":["bug"]}`, `{"title":"Fix`)
 	prov.stops = []string{"end_turn", "max_tokens"}
 	loop.Verifier = &recordingVerifier{passes: []bool{false}}
 
 	runTrace, err := loop.Run(context.Background(), structuredTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "max_tokens", runTrace.Outcome)
-	require.Nil(t, runTrace.StructuredOutput, "the run's last answer was cut off")
+	must.NoError(err)
+	must.Equal("max_tokens", runTrace.Outcome)
+	must.Nil(runTrace.StructuredOutput, "the run's last answer was cut off")
 }
 
 func TestRun_NoOutputSchemaKeepsFreeText(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop, prov, tr := structuredTestLoop("Plain prose answer.")
 	ver := &recordingVerifier{}
 	loop.Verifier = ver
 
 	runTrace, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	assert.Equal(t, "success", runTrace.Outcome)
-	assert.Equal(t, "Plain prose answer.", runTrace.FinalAssistantText)
-	assert.Nil(t, runTrace.StructuredOutput)
-	assert.Equal(t, 1, prov.calls())
-	assert.Len(t, ver.seen, 1)
-	assert.NotContains(t, prov.systems[0], "output_schema", "system prompt mentions an output schema without one configured")
+	must.NoError(err)
+	check.Equal("success", runTrace.Outcome)
+	check.Equal("Plain prose answer.", runTrace.FinalAssistantText)
+	check.Nil(runTrace.StructuredOutput)
+	check.Equal(1, prov.calls())
+	check.Len(ver.seen, 1)
+	check.NotContains(prov.systems[0], "output_schema", "system prompt mentions an output schema without one configured")
 
 	done := doneEvent(t, tr.Events())
-	require.NotNil(t, done.Trace)
-	assert.Nil(t, done.Trace.StructuredOutput)
+	must.NotNil(done.Trace)
+	check.Nil(done.Trace.StructuredOutput)
 }
 
 func TestRun_StructuredOutputIsScrubbed(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop, _, _ := structuredTestLoop(`{"title":"key AKIAIOSFODNN7EXAMPLE leaked","labels":["bug"]}`)
 
 	runTrace, err := loop.Run(context.Background(), structuredTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "success", runTrace.Outcome, "error: %s", runTrace.Error)
-	assert.NotContains(t, string(runTrace.StructuredOutput), "AKIAIOSFODNN7EXAMPLE", "the credential should be scrubbed")
-	assert.True(t, json.Valid(runTrace.StructuredOutput), "the structured output should stay valid JSON after scrubbing")
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome, "error: %s", runTrace.Error)
+	check.NotContains(string(runTrace.StructuredOutput), "AKIAIOSFODNN7EXAMPLE", "the credential should be scrubbed")
+	check.True(json.Valid(runTrace.StructuredOutput), "the structured output should stay valid JSON after scrubbing")
 }
 
 func TestRun_RedactionThatBreaksTheSchemaFailsWithoutCorrection(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop, prov, _ := structuredTestLoop(`{"key":"AKIAIOSFODNN7EXAMPLE"}`)
 	config := structuredTestConfig()
 	config.OutputSchema = json.RawMessage(`{"type":"object","required":["key"],"properties":{"key":{"type":"string","pattern":"^AKIA[A-Z0-9]{16}$"}}}`)
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	require.Equal(t, "structured_output_failed", runTrace.Outcome)
-	assert.Equal(t, 1, prov.calls(), "the model cannot correct a redaction")
-	assert.True(t, strings.HasPrefix(runTrace.Error, "structured output: scrubbing secrets from the JSON document broke it"), "Error = %q", runTrace.Error)
+	must.NoError(err)
+	must.Equal("structured_output_failed", runTrace.Outcome)
+	check.Equal(1, prov.calls(), "the model cannot correct a redaction")
+	check.True(strings.HasPrefix(runTrace.Error, "structured output: scrubbing secrets from the JSON document broke it"), "Error = %q", runTrace.Error)
 }
 
 func TestRun_OversizedStructuredOutputIsAFailureNotTruncated(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	big := `{"title":"` + strings.Repeat("x", 60) + `","labels":["bug","bug","bug","bug","bug","bug"]}`
 	loop, prov, _ := structuredTestLoop(big)
 	config := structuredTestConfig()
 	config.ResultSink = &types.ResultSinkConfig{Type: "none", MaxFinalAssistantTextBytes: 64}
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	require.Equal(t, "structured_output_failed", runTrace.Outcome)
-	assert.Contains(t, runTrace.Error, "over the 64-byte limit")
-	assert.Equal(t, 1+maxStructuredOutputCorrections, prov.calls(), "every corrective attempt is spent")
-	assert.Nil(t, runTrace.StructuredOutput)
+	must.NoError(err)
+	must.Equal("structured_output_failed", runTrace.Outcome)
+	check.Contains(runTrace.Error, "over the 64-byte limit")
+	check.Equal(1+maxStructuredOutputCorrections, prov.calls(), "every corrective attempt is spent")
+	check.Nil(runTrace.StructuredOutput)
 }
 
 func TestSpawnSubAgent_ChildDoesNotInheritOutputSchema(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	parent, _, _ := structuredTestLoop(`{"title":"parent","labels":["bug"]}`)
 	parent.Tools.(*tool.Registry).Register(&tool.Tool{
 		Name:        "read_file",
@@ -386,10 +409,10 @@ func TestSpawnSubAgent_ChildDoesNotInheritOutputSchema(t *testing.T) {
 	parentConfig := structuredTestConfig()
 
 	result, err := SpawnSubAgent(context.Background(), parent, parentConfig, SubAgentConfig{Prompt: "look around", Mode: "research"})
-	require.NoError(t, err)
-	require.Equal(t, "success", result.Outcome, "a prose answer should succeed")
-	assert.NotContains(t, child.systems[0], "output_schema", "the child system prompt carries the parent's output schema")
-	assert.NotEmpty(t, parentConfig.OutputSchema, "spawning a child cleared the parent's output schema")
+	must.NoError(err)
+	must.Equal("success", result.Outcome, "a prose answer should succeed")
+	check.NotContains(child.systems[0], "output_schema", "the child system prompt carries the parent's output schema")
+	check.NotEmpty(parentConfig.OutputSchema, "spawning a child cleared the parent's output schema")
 }
 
 func TestExtractStructuredOutput_UnwrapsFencesAndRejectsProse(t *testing.T) {
@@ -419,13 +442,14 @@ func TestExtractStructuredOutput_UnwrapsFencesAndRejectsProse(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got, err := extractStructuredOutput(tc.text)
 			if tc.wantErr != "" {
-				require.ErrorContains(t, err, tc.wantErr)
+				must.ErrorContains(err, tc.wantErr)
 				return
 			}
-			require.NoError(t, err)
-			require.Equal(t, tc.want, string(got))
+			must.NoError(err)
+			must.Equal(tc.want, string(got))
 		})
 	}
 }
@@ -434,58 +458,66 @@ func TestCheckStructuredOutput_CompactsAndRejectsViolations(t *testing.T) {
 	schema := json.RawMessage(`{"type":"object","properties":{"n":{"type":"integer"},"note":{"type":"string"}},"additionalProperties":false}`)
 
 	t.Run("compacts and keeps key order and numbers", func(t *testing.T) {
+		must := require.New(t)
 		got, err := checkStructuredOutput("{\n \"note\": \"a<b\",\n \"n\": 12345678901234567890\n}", json.RawMessage(`{"type":"object"}`), 1024)
-		require.NoError(t, err)
-		require.Equal(t, `{"note":"a<b","n":12345678901234567890}`, string(got)) //nolint:testifylint // asserts exact bytes, including a number beyond float64 precision
+		must.NoError(err)
+		must.Equal(`{"note":"a<b","n":12345678901234567890}`, string(got)) //nolint:testifylint // asserts exact bytes, including a number beyond float64 precision
 	})
 
 	t.Run("rejects prototype pollution keys", func(t *testing.T) {
+		must := require.New(t)
 		for _, doc := range []string{`{"n":1,"__proto__":{"admin":true}}`, `{"n":1,"note":"x","nested":[{"constructor":"Foo"}]}`} {
 			_, err := checkStructuredOutput(doc, json.RawMessage(`{"type":"object"}`), 1024)
-			require.ErrorContains(t, err, "reserved key", "document: %s", doc)
-			require.NotErrorIs(t, err, errStructuredOutputRedacted, "document: %s", doc)
+			must.ErrorContains(err, "reserved key", "document: %s", doc)
+			must.NotErrorIs(err, errStructuredOutputRedacted, "document: %s", doc)
 		}
 	})
 
 	t.Run("names the reserved key a schema requires", func(t *testing.T) {
+		must := require.New(t)
 		requires := json.RawMessage(`{"type":"object","required":["constructor"]}`)
 		_, err := checkStructuredOutput(`{"constructor":"Foo"}`, requires, 1024)
-		require.ErrorContains(t, err, `reserved key "constructor"`)
+		must.ErrorContains(err, `reserved key "constructor"`)
 	})
 
 	t.Run("rejects a repeated key", func(t *testing.T) {
+		must := require.New(t)
 		_, err := checkStructuredOutput(`{"n":1,"note":"a","note":"b"}`, schema, 1024)
-		require.ErrorContains(t, err, `repeats the key "note"`)
-		require.NotErrorIs(t, err, errStructuredOutputRedacted)
+		must.ErrorContains(err, `repeats the key "note"`)
+		must.NotErrorIs(err, errStructuredOutputRedacted)
 	})
 
 	t.Run("redaction that breaks the schema is not correctable", func(t *testing.T) {
+		must := require.New(t)
 		pattern := json.RawMessage(`{"type":"object","properties":{"key":{"type":"string","pattern":"^AKIA[A-Z0-9]{16}$"}}}`)
 		_, err := checkStructuredOutput(`{"key":"AKIAIOSFODNN7EXAMPLE"}`, pattern, 1024)
-		require.ErrorIs(t, err, errStructuredOutputRedacted)
-		require.NotContains(t, err.Error(), "AKIAIOSFODNN7EXAMPLE", "the error must not carry the credential")
+		must.ErrorIs(err, errStructuredOutputRedacted)
+		must.NotContains(err.Error(), "AKIAIOSFODNN7EXAMPLE", "the error must not carry the credential")
 	})
 
 	t.Run("keys that collide after redaction are not correctable", func(t *testing.T) {
+		must := require.New(t)
 		_, err := checkStructuredOutput(`{"AKIAIOSFODNN7EXAMPLE":1,"AKIAIOSFODNN7EXAMPL2":2}`, json.RawMessage(`{"type":"object"}`), 1024)
-		require.ErrorIs(t, err, errStructuredOutputRedacted)
-		require.ErrorContains(t, err, "two keys became")
+		must.ErrorIs(err, errStructuredOutputRedacted)
+		must.ErrorContains(err, "two keys became")
 	})
 
 	t.Run("violation lists pointers without header", func(t *testing.T) {
+		must := require.New(t)
 		_, err := checkStructuredOutput(`{"n":"one","extra":true}`, schema, 1024)
-		require.Error(t, err)
+		must.Error(err)
 		msg := err.Error()
-		require.True(t, strings.HasPrefix(msg, "the JSON document does not satisfy the schema:\n- at "), "violation = %q", msg)
-		require.NotContains(t, msg, "urn:stirrup")
-		require.NotContains(t, msg, "jsonschema validation failed")
+		must.True(strings.HasPrefix(msg, "the JSON document does not satisfy the schema:\n- at "), "violation = %q", msg)
+		must.NotContains(msg, "urn:stirrup")
+		must.NotContains(msg, "jsonschema validation failed")
 	})
 
 	t.Run("size limit applies to the compact document", func(t *testing.T) {
+		must := require.New(t)
 		_, err := checkStructuredOutput("{\n\n\n\"n\": 1\n\n\n}", schema, 7)
-		require.NoError(t, err, "the 7-byte compact document should be accepted")
+		must.NoError(err, "the 7-byte compact document should be accepted")
 		_, err = checkStructuredOutput(`{"n":1}`, schema, 6)
-		require.ErrorContains(t, err, "over the 6-byte limit")
+		must.ErrorContains(err, "over the 6-byte limit")
 	})
 }
 
@@ -503,28 +535,32 @@ func TestDuplicateKey_ReportsRepeatedObjectKeys(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			key, ok := duplicateKey([]byte(tc.doc))
-			require.Equal(t, tc.wantKey, key)
-			require.Equal(t, tc.wantKey != "", ok)
+			must.Equal(tc.wantKey, key)
+			must.Equal(tc.wantKey != "", ok)
 		})
 	}
 }
 
 func TestScrubJSONStrings_RedactsCredentialsKeepsLiterals(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	in := []byte(`{"key":"AKIAIOSFODNN7EXAMPLE","esc":"quote \" and \\ back","list":["AKIAIOSFODNN7EXAMPLE",1],"AKIAIOSFODNN7EXAMPLE":true}`)
 	got := scrubJSONStrings(in)
-	assert.NotContains(t, string(got), "AKIAIOSFODNN7EXAMPLE", "every credential occurrence should be redacted")
-	require.True(t, json.Valid(got), "scrubbed = %s is not valid JSON", got)
-	assert.Contains(t, string(got), `"esc":"quote \" and \\ back"`, "unchanged literals should be kept byte for byte")
+	check.NotContains(string(got), "AKIAIOSFODNN7EXAMPLE", "every credential occurrence should be redacted")
+	must.True(json.Valid(got), "scrubbed = %s is not valid JSON", got)
+	check.Contains(string(got), `"esc":"quote \" and \\ back"`, "unchanged literals should be kept byte for byte")
 
 	clean := []byte(`{"a":"plain","b":[true,null,1.50]}`)
-	assert.Equal(t, string(clean), string(scrubJSONStrings(clean)), "a clean document should be unchanged")
+	check.Equal(string(clean), string(scrubJSONStrings(clean)), "a clean document should be unchanged")
 }
 
 func TestStructuredOutputViolation_IsScrubbedAndCapped(t *testing.T) {
+	check := assert.New(t)
 	got := structuredOutputViolation(errors.New("bad value AKIAIOSFODNN7EXAMPLE " + strings.Repeat("y", 4096)))
-	assert.NotContains(t, got, "AKIAIOSFODNN7EXAMPLE", "the violation must not carry the credential")
-	assert.LessOrEqual(t, len(got), maxStructuredOutputViolationBytes+64, "the violation should be capped near the limit")
+	check.NotContains(got, "AKIAIOSFODNN7EXAMPLE", "the violation must not carry the credential")
+	check.LessOrEqual(len(got), maxStructuredOutputViolationBytes+64, "the violation should be capped near the limit")
 }
 
 func TestStructuredOutputLimit_DefaultsAndCapsOperatorLimit(t *testing.T) {
@@ -539,45 +575,51 @@ func TestStructuredOutputLimit_DefaultsAndCapsOperatorLimit(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			config := structuredTestConfig()
 			config.ResultSink = tc.sink
-			require.Equal(t, tc.want, structuredOutputLimit(config))
+			must.Equal(tc.want, structuredOutputLimit(config))
 		})
 	}
 }
 
 func TestValidateOutputSchema_AcceptsCompilableAndRejectsUncompilable(t *testing.T) {
 	t.Run("no schema", func(t *testing.T) {
-		require.NoError(t, ValidateOutputSchema(buildTestConfig()))
+		must := require.New(t)
+		must.NoError(ValidateOutputSchema(buildTestConfig()))
 	})
 	t.Run("valid schema", func(t *testing.T) {
-		require.NoError(t, ValidateOutputSchema(structuredTestConfig()))
+		must := require.New(t)
+		must.NoError(ValidateOutputSchema(structuredTestConfig()))
 	})
 	t.Run("uncompilable schema", func(t *testing.T) {
+		must := require.New(t)
 		config := buildTestConfig()
 		config.OutputSchema = json.RawMessage(`{"type":"strng"}`)
 		err := ValidateOutputSchema(config)
-		require.Error(t, err)
-		require.True(t, strings.HasPrefix(err.Error(), "outputSchema: failed to compile schema"), "error = %v", err)
+		must.Error(err)
+		must.True(strings.HasPrefix(err.Error(), "outputSchema: failed to compile schema"), "error = %v", err)
 	})
 }
 
 func TestBuildLoopWithTransport_RejectsUncompilableOutputSchema(t *testing.T) {
+	must := require.New(t)
 	config := buildTestConfig()
 	config.Executor.Workspace = t.TempDir()
 	config.OutputSchema = json.RawMessage(`{"type":"object","required":"title"}`)
 
 	_, err := BuildLoopWithTransport(context.Background(), config, nil)
-	require.ErrorContains(t, err, "config validation: outputSchema: failed to compile schema")
+	must.ErrorContains(err, "config validation: outputSchema: failed to compile schema")
 }
 
 func TestPreflight_UncompilableOutputSchemaFailsValidation(t *testing.T) {
+	must := require.New(t)
 	cfg := preflightTestConfig(t, "http://127.0.0.1:1/v1")
 	cfg.OutputSchema = json.RawMessage(`{"type":"strng"}`)
 
 	report, err := Preflight(context.Background(), cfg, PreflightOptions{})
-	require.NoError(t, err)
+	must.NoError(err)
 	st, _ := stepStatus(report, "config-validation")
-	require.Equal(t, PreflightFail, st)
-	require.False(t, report.OK)
+	must.Equal(PreflightFail, st)
+	must.False(report.OK)
 }

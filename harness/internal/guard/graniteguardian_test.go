@@ -57,14 +57,15 @@ func newFakeGraniteServer(t *testing.T, responseContent string, status int) *fak
 // strings.Contains assertions without a nil check.
 func (fs *fakeServer) firstUserMessageContent(t *testing.T) string {
 	t.Helper()
-	require.NotEmpty(t, fs.lastBody, "no captured request body")
+	must := require.New(t)
+	must.NotEmpty(fs.lastBody, "no captured request body")
 	var req struct {
 		Messages []struct {
 			Role    string `json:"role"`
 			Content string `json:"content"`
 		} `json:"messages"`
 	}
-	require.NoError(t, json.Unmarshal(fs.lastBody, &req), "unmarshal captured body")
+	must.NoError(json.Unmarshal(fs.lastBody, &req), "unmarshal captured body")
 	for _, m := range req.Messages {
 		if m.Role == "user" {
 			return m.Content
@@ -74,129 +75,139 @@ func (fs *fakeServer) firstUserMessageContent(t *testing.T) string {
 }
 
 func TestGraniteGuardian_AllowsBenignContent(t *testing.T) {
+	must := require.New(t)
 	fs := newFakeGraniteServer(t, "<score>no</score>", http.StatusOK)
 	g, err := NewGraniteGuardian(GraniteGuardianConfig{Endpoint: fs.srv.URL})
-	require.NoError(t, err)
+	must.NoError(err)
 	d, err := g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "the model said something benign"})
-	require.NoError(t, err)
-	require.Equal(t, VerdictAllow, d.Verdict)
-	require.Equal(t, guardianGuardID, d.GuardID)
-	require.Zero(t, d.Score)
+	must.NoError(err)
+	must.Equal(VerdictAllow, d.Verdict)
+	must.Equal(guardianGuardID, d.GuardID)
+	must.Zero(d.Score)
 }
 
 func TestGraniteGuardian_DeniesFlaggedContent(t *testing.T) {
+	must := require.New(t)
 	fs := newFakeGraniteServer(t, "<score>yes</score>", http.StatusOK)
 	g, err := NewGraniteGuardian(GraniteGuardianConfig{Endpoint: fs.srv.URL})
-	require.NoError(t, err)
+	must.NoError(err)
 	d, err := g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "rm -rf /"})
-	require.NoError(t, err)
-	require.Equal(t, VerdictDeny, d.Verdict)
-	require.InDelta(t, 1.0, d.Score, 1e-9)
-	require.NotEmpty(t, d.Reason, "deny decision must carry a reason")
+	must.NoError(err)
+	must.Equal(VerdictDeny, d.Verdict)
+	must.InDelta(1.0, d.Score, 1e-9)
+	must.NotEmpty(d.Reason, "deny decision must carry a reason")
 }
 
 func TestGraniteGuardian_ErrorsCarryGuardID(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
 	defer srv.Close()
 
 	g, err := NewGraniteGuardian(GraniteGuardianConfig{Endpoint: srv.URL})
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "some output"})
-	require.Equal(t, guardianGuardID, ErrorGuardID(err), "error: %v", err)
+	must.Equal(guardianGuardID, ErrorGuardID(err), "error: %v", err)
 }
 
 func TestGraniteGuardian_ThinkModePlacesThinkInsideGuardian(t *testing.T) {
+	must := require.New(t)
 	fs := newFakeGraniteServer(t, "<think>this looks malicious</think><score>yes</score>", http.StatusOK)
 	g, err := NewGraniteGuardian(GraniteGuardianConfig{
 		Endpoint: fs.srv.URL,
 		Think:    true,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	d, err := g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "payload"})
-	require.NoError(t, err)
-	require.Equal(t, VerdictDeny, d.Verdict)
+	must.NoError(err)
+	must.Equal(VerdictDeny, d.Verdict)
 	// The literal sequence is asserted rather than a regex: the placement of
 	// <think> inside <guardian> is load-bearing for the classifier.
-	require.Contains(t, fs.firstUserMessageContent(t), "<guardian><think>")
+	must.Contains(fs.firstUserMessageContent(t), "<guardian><think>")
 }
 
 func TestGraniteGuardian_PromptUsesJudgeEnvelope(t *testing.T) {
+	must := require.New(t)
 	fs := newFakeGraniteServer(t, "<score>no</score>", http.StatusOK)
 	g, err := NewGraniteGuardian(GraniteGuardianConfig{Endpoint: fs.srv.URL})
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "x"})
-	require.NoError(t, err)
+	must.NoError(err)
 	got := fs.firstUserMessageContent(t)
-	require.True(t, strings.HasPrefix(got, "<guardian><no-think>As a judge agent"), "prompt envelope; got: %s", got)
-	require.Contains(t, got, "### Criteria:")
-	require.Contains(t, got, "### Scoring Schema:")
+	must.True(strings.HasPrefix(got, "<guardian><no-think>As a judge agent"), "prompt envelope; got: %s", got)
+	must.Contains(got, "### Criteria:")
+	must.Contains(got, "### Scoring Schema:")
 }
 
 func TestGraniteGuardian_CustomCriterionTextReachesPrompt(t *testing.T) {
+	must := require.New(t)
 	fs := newFakeGraniteServer(t, "<score>no</score>", http.StatusOK)
 	g, err := NewGraniteGuardian(GraniteGuardianConfig{
 		Endpoint:       fs.srv.URL,
 		Criteria:       []string{"my_rule"},
 		CustomCriteria: map[string]string{"my_rule": "reject curse words"},
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "x"})
-	require.NoError(t, err)
-	require.Contains(t, fs.firstUserMessageContent(t), "reject curse words")
+	must.NoError(err)
+	must.Contains(fs.firstUserMessageContent(t), "reject curse words")
 }
 
 func TestGraniteGuardian_RejectsUnknownCriterionAtConstruction(t *testing.T) {
+	must := require.New(t)
 	// We use a syntactically valid endpoint so we exercise the criteria
 	// validation path specifically (not the endpoint validation path).
 	_, err := NewGraniteGuardian(GraniteGuardianConfig{
 		Endpoint: "http://example.invalid",
 		Criteria: []string{"nonexistent"},
 	})
-	require.ErrorContains(t, err, "nonexistent")
+	must.ErrorContains(err, "nonexistent")
 }
 
 // TestGraniteGuardian_IgnoreMinChunkClassifiesShortInput pins the opt-out
 // mid-run operator input uses: content under MinChunkChars is still
 // sent to the classifier when the caller asks for it.
 func TestGraniteGuardian_IgnoreMinChunkClassifiesShortInput(t *testing.T) {
+	must := require.New(t)
 	fs := newFakeGraniteServer(t, "<score>no</score>", http.StatusOK)
 	g, err := NewGraniteGuardian(GraniteGuardianConfig{
 		Endpoint:      fs.srv.URL,
 		MinChunkChars: 256,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	d, err := g.Check(context.Background(), Input{
 		Phase:          PhasePreTurn,
 		Content:        "tiny",
 		IgnoreMinChunk: true,
 	})
-	require.NoError(t, err)
-	require.NotEqual(t, ReasonSkippedMinChunk, d.Reason, "short input was skipped despite IgnoreMinChunk")
-	require.EqualValues(t, 1, atomic.LoadInt32(&fs.requests), "the classifier must see the input")
+	must.NoError(err)
+	must.NotEqual(ReasonSkippedMinChunk, d.Reason, "short input was skipped despite IgnoreMinChunk")
+	must.EqualValues(1, atomic.LoadInt32(&fs.requests), "the classifier must see the input")
 }
 
 func TestGraniteGuardian_MinChunkCharsSkipsShortPreTurn(t *testing.T) {
+	must := require.New(t)
 	fs := newFakeGraniteServer(t, "<score>no</score>", http.StatusOK)
 	g, err := NewGraniteGuardian(GraniteGuardianConfig{
 		Endpoint:      fs.srv.URL,
 		MinChunkChars: 256,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	d, err := g.Check(context.Background(), Input{
 		Phase:   PhasePreTurn,
 		Content: "tiny",
 	})
-	require.NoError(t, err)
-	require.Equal(t, VerdictAllow, d.Verdict)
-	require.Equal(t, ReasonSkippedMinChunk, d.Reason)
+	must.NoError(err)
+	must.Equal(VerdictAllow, d.Verdict)
+	must.Equal(ReasonSkippedMinChunk, d.Reason)
 	// Skipped chunks must not reach the classifier: avoiding that call is
 	// what keeps sub-256-char chunks from dominating PreTurn latency.
-	require.Zero(t, atomic.LoadInt32(&fs.requests), "no HTTP request should be issued")
+	must.Zero(atomic.LoadInt32(&fs.requests), "no HTTP request should be issued")
 }
 
 func TestGraniteGuardian_MinChunkCharsSkipOnlyAppliesToPreTurn(t *testing.T) {
+	must := require.New(t)
 	// Even with a high MinChunkChars, post-turn / pre-tool must still
 	// classify — those phases see model-authored content where length
 	// is not a useful proxy for risk.
@@ -205,31 +216,33 @@ func TestGraniteGuardian_MinChunkCharsSkipOnlyAppliesToPreTurn(t *testing.T) {
 		Endpoint:      fs.srv.URL,
 		MinChunkChars: 100000,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "small"})
-	require.NoError(t, err)
-	require.EqualValues(t, 1, atomic.LoadInt32(&fs.requests), "skip should not apply to PostTurn")
+	must.NoError(err)
+	must.EqualValues(1, atomic.LoadInt32(&fs.requests), "skip should not apply to PostTurn")
 }
 
 func TestGraniteGuardian_HTTPErrorReturnsError(t *testing.T) {
+	must := require.New(t)
 	fs := newFakeGraniteServer(t, "upstream broken", http.StatusBadGateway)
 	g, err := NewGraniteGuardian(GraniteGuardianConfig{Endpoint: fs.srv.URL})
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "x"})
-	require.ErrorContains(t, err, "502")
+	must.ErrorContains(err, "502")
 }
 
 func TestGraniteGuardian_MalformedBodyReturnsParseError(t *testing.T) {
+	must := require.New(t)
 	// Response that decodes as JSON but contains no <score> tag.
 	fs := newFakeGraniteServer(t, "the model went off-script", http.StatusOK)
 	g, err := NewGraniteGuardian(GraniteGuardianConfig{Endpoint: fs.srv.URL})
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "x"})
-	require.ErrorIs(t, err, ErrParseFailed)
+	must.ErrorIs(err, ErrParseFailed)
 	// Path-not-truncation: a malformed body without finish_reason="length"
 	// must NOT be reported as ErrResponseTruncated, otherwise operators
 	// chase a max_tokens red herring for an unrelated bug.
-	require.NotErrorIs(t, err, ErrResponseTruncated)
+	must.NotErrorIs(err, ErrResponseTruncated)
 }
 
 // truncatingFakeServer mirrors newFakeGraniteServer but emits the optional
@@ -261,30 +274,32 @@ func newTruncatingFakeServer(t *testing.T, content, finishReason string) *fakeSe
 }
 
 func TestGraniteGuardian_TruncatedResponseReturnsActionableError(t *testing.T) {
+	must := require.New(t)
 	// Empty content + finish_reason="length" must surface
 	// ErrResponseTruncated so operators raise the budget rather than
 	// debug the parser.
 	fs := newTruncatingFakeServer(t, "", "length")
 	g, err := NewGraniteGuardian(GraniteGuardianConfig{Endpoint: fs.srv.URL})
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "x"})
-	require.ErrorIs(t, err, ErrResponseTruncated)
+	must.ErrorIs(err, ErrResponseTruncated)
 	// ErrResponseTruncated must still chain ErrParseFailed so existing
 	// callers on the broader category keep matching.
-	require.ErrorIs(t, err, ErrParseFailed)
+	must.ErrorIs(err, ErrParseFailed)
 }
 
 func TestGraniteGuardian_LengthFinishWithScoreIsAllowed(t *testing.T) {
+	must := require.New(t)
 	// finish_reason="length" alone is not a failure — when the model
 	// emits the score before the budget runs out, the verdict is valid
 	// even if generation was capped immediately afterwards. Only treat
 	// truncation as the cause when the score head did not fire.
 	fs := newTruncatingFakeServer(t, "<score>no</score>", "length")
 	g, err := NewGraniteGuardian(GraniteGuardianConfig{Endpoint: fs.srv.URL})
-	require.NoError(t, err)
+	must.NoError(err)
 	d, err := g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "x"})
-	require.NoError(t, err)
-	require.Equal(t, VerdictAllow, d.Verdict)
+	must.NoError(err)
+	must.Equal(VerdictAllow, d.Verdict)
 }
 
 func TestGraniteGuardian_DefaultCriteriaPerPhase(t *testing.T) {
@@ -302,14 +317,15 @@ func TestGraniteGuardian_DefaultCriteriaPerPhase(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			fs := newFakeGraniteServer(t, "<score>no</score>", http.StatusOK)
 			g, err := NewGraniteGuardian(GraniteGuardianConfig{Endpoint: fs.srv.URL})
-			require.NoError(t, err)
+			must.NoError(err)
 			// Pad the content for PreTurn so MinChunkChars does not skip it.
 			content := strings.Repeat("a", defaultMinChunkChars+1)
 			_, err = g.Check(context.Background(), Input{Phase: tc.phase, Content: content})
-			require.NoError(t, err)
-			require.Contains(t, fs.firstUserMessageContent(t), tc.want)
+			must.NoError(err)
+			must.Contains(fs.firstUserMessageContent(t), tc.want)
 		})
 	}
 }
@@ -321,16 +337,18 @@ func TestGraniteGuardian_DefaultCriteriaPerPhase(t *testing.T) {
 // since a benign response meets the requirement and the model says
 // "yes", which the adapter maps to deny.
 func TestGraniteGuardian_DefaultPostTurnCriterionHasRiskPolarity(t *testing.T) {
+	must := require.New(t)
 	postTurn := defaultPhaseCriteria[PhasePostTurn]
-	require.NotEmpty(t, postTurn, "post turn default criterion is empty")
+	must.NotEmpty(postTurn, "post turn default criterion is empty")
 	// Risk-form marker: criteria must describe what a risky response
 	// looks like. The literal string "contains" is the simplest
 	// invariant that survives reasonable rewording.
-	require.Contains(t, postTurn, "contains", "risk-form marker lost; benign content would be denied")
+	must.Contains(postTurn, "contains", "risk-form marker lost; benign content would be denied")
 	// Safety-form anti-markers: phrasings that flip the polarity.
 	for _, antimarker := range []string{"must satisfy", "must not contain"} {
 		t.Run("rejects "+antimarker, func(t *testing.T) {
-			require.NotContains(t, postTurn, antimarker, "safety-form phrasing maps benign content to deny")
+			must := require.New(t)
+			must.NotContains(postTurn, antimarker, "safety-form phrasing maps benign content to deny")
 		})
 	}
 }
@@ -380,10 +398,11 @@ var riskFormMarkers = []string{
 func TestBuiltInCriteria_HaveRiskPolarity(t *testing.T) {
 	for id, text := range builtInCriteria {
 		t.Run(id, func(t *testing.T) {
-			require.NotEmpty(t, text, "criterion has empty text")
+			must := require.New(t)
+			must.NotEmpty(text, "criterion has empty text")
 			lower := strings.ToLower(text)
 			for _, marker := range requirementFormMarkers {
-				require.NotContains(t, lower, marker, "requirement-form wording maps a benign response to deny")
+				must.NotContains(lower, marker, "requirement-form wording maps a benign response to deny")
 			}
 			hasRisk := false
 			for _, marker := range riskFormMarkers {
@@ -392,7 +411,7 @@ func TestBuiltInCriteria_HaveRiskPolarity(t *testing.T) {
 					break
 				}
 			}
-			require.True(t, hasRisk, "criterion has no risk-form marker; it may not describe a risk")
+			must.True(hasRisk, "criterion has no risk-form marker; it may not describe a risk")
 		})
 	}
 }
@@ -409,6 +428,7 @@ func TestBuiltInCriteria_PolarityHeuristicFlagsRequirementForm(t *testing.T) {
 	}
 	for id, text := range fixtures {
 		t.Run(id, func(t *testing.T) {
+			must := require.New(t)
 			lower := strings.ToLower(text)
 			flagged := false
 			for _, marker := range requirementFormMarkers {
@@ -417,7 +437,7 @@ func TestBuiltInCriteria_PolarityHeuristicFlagsRequirementForm(t *testing.T) {
 					break
 				}
 			}
-			require.True(t, flagged, "heuristic failed to flag requirement-form fixture: %s", text)
+			must.True(flagged, "heuristic failed to flag requirement-form fixture: %s", text)
 		})
 	}
 }
@@ -436,15 +456,16 @@ func TestBuiltInCriteria_RiskPhrasedTextReachesPrompt(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.id, func(t *testing.T) {
+			must := require.New(t)
 			fs := newFakeGraniteServer(t, "<score>no</score>", http.StatusOK)
 			g, err := NewGraniteGuardian(GraniteGuardianConfig{
 				Endpoint: fs.srv.URL,
 				Criteria: []string{tc.id},
 			})
-			require.NoError(t, err)
+			must.NoError(err)
 			_, err = g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "x"})
-			require.NoError(t, err)
-			require.Contains(t, fs.firstUserMessageContent(t), tc.want)
+			must.NoError(err)
+			must.Contains(fs.firstUserMessageContent(t), tc.want)
 		})
 	}
 }
@@ -453,9 +474,10 @@ func TestBuiltInCriteria_RiskPhrasedTextReachesPrompt(t *testing.T) {
 // contract end-to-end: with a risk-form criterion, a benign response
 // gets "no" from the classifier and the verdict is allow.
 func TestGraniteGuardian_BenignPostTurnAllowed(t *testing.T) {
+	must := require.New(t)
 	fs := newFakeGraniteServer(t, "<score>no</score>", http.StatusOK)
 	g, err := NewGraniteGuardian(GraniteGuardianConfig{Endpoint: fs.srv.URL})
-	require.NoError(t, err)
+	must.NoError(err)
 	// A representative benign post-turn payload: a short README summary
 	// with no harm, no unsupported claims, no secrets. Under risk-form
 	// criteria the model returns "no" and the adapter must allow.
@@ -463,11 +485,12 @@ func TestGraniteGuardian_BenignPostTurnAllowed(t *testing.T) {
 		Phase:   PhasePostTurn,
 		Content: "This README explains the project's build and test commands. Run `just build` to compile the binaries; run `just test` to execute the unit suite.",
 	})
-	require.NoError(t, err)
-	require.Equal(t, VerdictAllow, d.Verdict, "criterion polarity may have flipped")
+	must.NoError(err)
+	must.Equal(VerdictAllow, d.Verdict, "criterion polarity may have flipped")
 }
 
 func TestGraniteGuardian_EndpointURLComposition(t *testing.T) {
+	must := require.New(t)
 	// Both bare-host endpoints and pre-pinned-path endpoints should
 	// resolve to a working POST URL. We use a single httptest server but
 	// drive the adapter twice with two different endpoint forms.
@@ -481,23 +504,24 @@ func TestGraniteGuardian_EndpointURLComposition(t *testing.T) {
 
 	// 1) Bare endpoint: adapter must append /v1/chat/completions.
 	g1, err := NewGraniteGuardian(GraniteGuardianConfig{Endpoint: srv.URL})
-	require.NoError(t, err, "construct bare endpoint")
-	require.True(t, strings.HasSuffix(g1.endpoint, "/v1/chat/completions"), "bare endpoint not appended: %s", g1.endpoint)
+	must.NoError(err, "construct bare endpoint")
+	must.True(strings.HasSuffix(g1.endpoint, "/v1/chat/completions"), "bare endpoint not appended: %s", g1.endpoint)
 
 	// 2) Pre-pinned path: adapter must use the operator's path verbatim.
 	pinned := srv.URL + "/v1/chat/completions"
 	g2, err := NewGraniteGuardian(GraniteGuardianConfig{Endpoint: pinned})
-	require.NoError(t, err, "construct pinned endpoint")
-	require.Equal(t, pinned, g2.endpoint, "pinned endpoint must not be mutated")
+	must.NoError(err, "construct pinned endpoint")
+	must.Equal(pinned, g2.endpoint, "pinned endpoint must not be mutated")
 
 	// Both adapters should successfully classify against the same server.
 	for i, g := range []*GraniteGuardian{g1, g2} {
 		_, err := g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "x"})
-		require.NoError(t, err, "adapter %d Check", i)
+		must.NoError(err, "adapter %d Check", i)
 	}
 }
 
 func TestGraniteGuardian_ContextCancellationReturnsCanceled(t *testing.T) {
+	must := require.New(t)
 	// The handler blocks until the test releases it; we cancel the
 	// context immediately so the adapter must return ctx.Err() rather
 	// than hanging on the HTTP round trip.
@@ -513,17 +537,18 @@ func TestGraniteGuardian_ContextCancellationReturnsCanceled(t *testing.T) {
 		Endpoint: srv.URL,
 		Timeout:  5 * time.Second, // generous; we want ctx cancellation, not timeout
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel before issuing the call
 
 	_, err = g.Check(ctx, Input{Phase: PhasePostTurn, Content: "x"})
-	require.Error(t, err, "expected error from cancelled context")
+	must.Error(err, "expected error from cancelled context")
 	// The error should carry context.Canceled (wrapped).
-	require.ErrorIs(t, err, context.Canceled)
+	must.ErrorIs(err, context.Canceled)
 }
 
 func TestGraniteGuardian_BatchedPreTurn_SingleRequest(t *testing.T) {
+	must := require.New(t)
 	// Batched PreTurn is conceptually a "single HTTP call regardless of
 	// chunk count" — the loop concatenates chunks before calling Check.
 	// The adapter just trusts the input and emits one request.
@@ -532,7 +557,7 @@ func TestGraniteGuardian_BatchedPreTurn_SingleRequest(t *testing.T) {
 		Endpoint:      fs.srv.URL,
 		MinChunkChars: 256,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	// Build ~500 bytes of "batched" content with chunk delimiters, just
 	// like the loop will. Source carries the batched marker for any
 	// future telemetry consumers.
@@ -545,24 +570,27 @@ func TestGraniteGuardian_BatchedPreTurn_SingleRequest(t *testing.T) {
 		Content: b.String(),
 		Source:  "batched:n=5",
 	})
-	require.NoError(t, err)
-	require.EqualValues(t, 1, atomic.LoadInt32(&fs.requests), "batched PreTurn must fold to one call")
+	must.NoError(err)
+	must.EqualValues(1, atomic.LoadInt32(&fs.requests), "batched PreTurn must fold to one call")
 }
 
 func TestGraniteGuardian_RejectsEmptyEndpoint(t *testing.T) {
+	must := require.New(t)
 	_, err := NewGraniteGuardian(GraniteGuardianConfig{})
-	require.Error(t, err)
+	must.Error(err)
 }
 
 func TestGraniteGuardian_RejectsNonHTTPScheme(t *testing.T) {
+	must := require.New(t)
 	_, err := NewGraniteGuardian(GraniteGuardianConfig{Endpoint: "file:///etc/passwd"})
-	require.Error(t, err, "file:// endpoint must be rejected")
+	must.Error(err, "file:// endpoint must be rejected")
 }
 
 // TestGraniteGuardian_ThresholdWarnsAtConstruction asserts that a
 // non-zero Threshold emits a startup warning — the field is reserved
 // for forward compatibility and has no behavioural effect in v1.
 func TestGraniteGuardian_ThresholdWarnsAtConstruction(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
@@ -571,17 +599,18 @@ func TestGraniteGuardian_ThresholdWarnsAtConstruction(t *testing.T) {
 		Threshold: 0.8,
 		Logger:    logger,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	out := buf.String()
-	require.Contains(t, out, `"level":"WARN"`, "expected a WARN log entry")
-	require.Regexp(t, "[Tt]hreshold", out, "expected threshold mention in warning")
+	must.Contains(out, `"level":"WARN"`, "expected a WARN log entry")
+	must.Regexp("[Tt]hreshold", out, "expected threshold mention in warning")
 }
 
 // TestGraniteGuardian_ThresholdSilentAtDefault asserts that the zero
 // threshold value emits no warning so operators who never touched the
 // field are not spammed.
 func TestGraniteGuardian_ThresholdSilentAtDefault(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
@@ -589,7 +618,7 @@ func TestGraniteGuardian_ThresholdSilentAtDefault(t *testing.T) {
 		Endpoint: "http://localhost:9999",
 		Logger:   logger,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
-	require.Empty(t, buf.String(), "expected silent construction at default threshold")
+	must.Empty(buf.String(), "expected silent construction at default threshold")
 }

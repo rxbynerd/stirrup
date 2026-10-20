@@ -43,19 +43,22 @@ func TestRunOutcomeError_OnlySuccessIsNil(t *testing.T) {
 	}
 	for _, tc := range nonSuccessCases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			err := runOutcomeError(&types.RunTrace{Outcome: tc.outcome})
-			require.Error(t, err)
-			require.Equal(t, 1, classifyExitCode(err), "failed and cancelled runs exit 1")
+			must.Error(err)
+			must.Equal(1, classifyExitCode(err), "failed and cancelled runs exit 1")
 		})
 	}
 
 	t.Run("success", func(t *testing.T) {
-		require.NoError(t, runOutcomeError(&types.RunTrace{Outcome: "success"}))
+		must := require.New(t)
+		must.NoError(runOutcomeError(&types.RunTrace{Outcome: "success"}))
 	})
 
 	// Callers return their own error before a nil trace reaches this check.
 	t.Run("nil trace", func(t *testing.T) {
-		require.NoError(t, runOutcomeError(nil))
+		must := require.New(t)
+		must.NoError(runOutcomeError(nil))
 	})
 }
 
@@ -121,6 +124,8 @@ func runOutcomeTestConfig(t *testing.T, baseURL string) *types.RunConfig {
 // (trace, nil) with Outcome=="error" for a mid-run provider failure)
 // into a non-nil error, so the process does not exit 0 on a failed run.
 func TestRunWithConfig_ProviderErrorOutcome_ExitsNonZero(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv := openAICompatibleErrorServer(t)
 	defer srv.Close()
 
@@ -130,17 +135,19 @@ func TestRunWithConfig_ProviderErrorOutcome_ExitsNonZero(t *testing.T) {
 	runErr := runWithConfig(config, runOptions{outputMode: "json"})
 	stdout := stdoutDone()
 
-	require.Error(t, runErr, "an outcome of error must still fail the process")
-	assert.Equal(t, 1, classifyExitCode(runErr))
+	must.Error(runErr, "an outcome of error must still fail the process")
+	check.Equal(1, classifyExitCode(runErr))
 
 	result := decodeStirrupResult(t, stdout)
-	assert.Equal(t, "error", result.Outcome)
+	check.Equal("error", result.Outcome)
 }
 
 // TestRunWithConfig_SuccessOutcome_ExitsZero is the success-path
 // counterpart: a run that completes normally must still return a nil
 // error (and therefore exit 0).
 func TestRunWithConfig_SuccessOutcome_ExitsZero(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	srv := openAICompatibleSuccessServer(t)
 	defer srv.Close()
 
@@ -150,11 +157,11 @@ func TestRunWithConfig_SuccessOutcome_ExitsZero(t *testing.T) {
 	runErr := runWithConfig(config, runOptions{outputMode: "json"})
 	stdout := stdoutDone()
 
-	require.NoError(t, runErr, "a successful run must return a nil error")
-	assert.Equal(t, 0, classifyExitCode(runErr))
+	must.NoError(runErr, "a successful run must return a nil error")
+	check.Equal(0, classifyExitCode(runErr))
 
 	result := decodeStirrupResult(t, stdout)
-	assert.Equal(t, "success", result.Outcome)
+	check.Equal("success", result.Outcome)
 }
 
 // decodeStirrupResult finds and parses the STIRRUP_RESULT line out of
@@ -162,6 +169,7 @@ func TestRunWithConfig_SuccessOutcome_ExitsZero(t *testing.T) {
 // stream, so the result line is not necessarily first.
 func decodeStirrupResult(t *testing.T, stdout string) types.RunResult {
 	t.Helper()
+	must := require.New(t)
 	var resultLine string
 	for _, line := range strings.Split(stdout, "\n") {
 		if strings.HasPrefix(line, "STIRRUP_RESULT ") {
@@ -169,9 +177,9 @@ func decodeStirrupResult(t *testing.T, stdout string) types.RunResult {
 			break
 		}
 	}
-	require.NotEmpty(t, resultLine, "expected a STIRRUP_RESULT line in stdout: %q", stdout)
+	must.NotEmpty(resultLine, "expected a STIRRUP_RESULT line in stdout: %q", stdout)
 	payload := strings.TrimPrefix(resultLine, "STIRRUP_RESULT ")
 	var result types.RunResult
-	require.NoError(t, json.Unmarshal([]byte(payload), &result), "STIRRUP_RESULT payload should parse as RunResult: %s", payload)
+	must.NoError(json.Unmarshal([]byte(payload), &result), "STIRRUP_RESULT payload should parse as RunResult: %s", payload)
 	return result
 }

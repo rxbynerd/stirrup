@@ -35,6 +35,7 @@ func contractFixtureMessages() []types.Message {
 // Messages request for a tool-enabled, required-tool-choice main-loop turn
 // (one carrying a cache key).
 func TestAnthropicContract_ToolEnabledRequestBody(t *testing.T) {
+	must := require.New(t)
 	params := types.StreamParams{
 		Model:       "claude-sonnet-4-6",
 		System:      "You are helpful.",
@@ -47,7 +48,7 @@ func TestAnthropicContract_ToolEnabledRequestBody(t *testing.T) {
 	}
 	q := quirks.DefaultRegistry().Resolve("anthropic", params.Model)
 	body, err := json.Marshal(buildAnthropicRequest(params, true, q))
-	require.NoError(t, err, "marshal anthropic request")
+	must.NoError(err, "marshal anthropic request")
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath("testdata", "quirks", "anthropic", "claude-sonnet-4-6", "request.json"), body)
 }
 
@@ -59,6 +60,7 @@ func TestAnthropicContract_ToolEnabledRequestBody(t *testing.T) {
 // OmitSamplingParams quirk must suppress the field before it reaches the
 // wire.
 func TestAnthropicContract_ClaudeSonnet5OmitsTemperature(t *testing.T) {
+	must := require.New(t)
 	params := types.StreamParams{
 		Model:       "claude-sonnet-5",
 		System:      "You are helpful.",
@@ -71,7 +73,7 @@ func TestAnthropicContract_ClaudeSonnet5OmitsTemperature(t *testing.T) {
 	}
 	q := quirks.DefaultRegistry().Resolve("anthropic", params.Model)
 	body, err := json.Marshal(buildAnthropicRequest(params, true, q))
-	require.NoError(t, err, "marshal anthropic request")
+	must.NoError(err, "marshal anthropic request")
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath("testdata", "quirks", "anthropic", "claude-sonnet-5", "request.json"), body)
 }
 
@@ -79,6 +81,7 @@ func TestAnthropicContract_ClaudeSonnet5OmitsTemperature(t *testing.T) {
 // Responses request for a tool-enabled turn, including the typed input-item
 // variants and the flat function-tool shape.
 func TestResponsesContract_ToolEnabledRequestBody(t *testing.T) {
+	must := require.New(t)
 	params := types.StreamParams{
 		Model:       "gpt-4o",
 		System:      "You are helpful.",
@@ -89,10 +92,10 @@ func TestResponsesContract_ToolEnabledRequestBody(t *testing.T) {
 	}
 	q := quirks.DefaultRegistry().Resolve("openai-responses", params.Model)
 	req, err := buildResponsesRequest(params, q, nil, "")
-	require.NoError(t, err, "build responses request")
+	must.NoError(err, "build responses request")
 	req.Stream = true
 	body, err := json.Marshal(req)
-	require.NoError(t, err, "marshal responses request")
+	must.NoError(err, "marshal responses request")
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath("testdata", "quirks", "openai-responses", "gpt-4o", "request.json"), body)
 }
 
@@ -101,6 +104,7 @@ func TestResponsesContract_ToolEnabledRequestBody(t *testing.T) {
 // omitted despite a non-nil value, strict tools with a normalised schema, and
 // the encrypted-reasoning include. Documented, not probed.
 func TestResponsesContract_GPT56RequestBody(t *testing.T) {
+	must := require.New(t)
 	params := types.StreamParams{
 		Model:           "gpt-5.6-sol",
 		System:          "You are helpful.",
@@ -112,9 +116,9 @@ func TestResponsesContract_GPT56RequestBody(t *testing.T) {
 	}
 	q := quirks.DefaultRegistry().Resolve("openai-responses", params.Model)
 	req, err := buildResponsesRequest(params, q, nil, "")
-	require.NoError(t, err, "build responses request")
+	must.NoError(err, "build responses request")
 	req.Stream = true
 	body, err := json.Marshal(req)
-	require.NoError(t, err, "marshal responses request")
+	must.NoError(err, "marshal responses request")
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath("testdata", "quirks", "openai-responses", "gpt-5.6-sol", "request.json"), body)
 }

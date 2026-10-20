@@ -23,15 +23,16 @@ import (
 // host.
 func failingGoogleCredentials(t *testing.T) {
 	t.Helper()
+	must := require.New(t)
 	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, `{"error":"backend_error"}`, http.StatusInternalServerError)
 	}))
 	t.Cleanup(tokenSrv.Close)
 
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	require.NoError(t, err, "generate key")
+	must.NoError(err, "generate key")
 	der, err := x509.MarshalPKCS8PrivateKey(key)
-	require.NoError(t, err, "marshal key")
+	must.NoError(err, "marshal key")
 	keyJSON, err := json.Marshal(map[string]string{
 		"type":           "service_account",
 		"project_id":     "stirrup-test",
@@ -41,13 +42,14 @@ func failingGoogleCredentials(t *testing.T) {
 		"client_id":      "1",
 		"token_uri":      tokenSrv.URL,
 	})
-	require.NoError(t, err, "marshal key file")
+	must.NoError(err, "marshal key file")
 	path := filepath.Join(t.TempDir(), "sa.json")
-	require.NoError(t, os.WriteFile(path, keyJSON, 0o600), "write key file")
+	must.NoError(os.WriteFile(path, keyJSON, 0o600), "write key file")
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
 }
 
 func TestRunWithConfig_GCSTraceUploadFailureStillEmitsRunResult(t *testing.T) {
+	must := require.New(t)
 	failingGoogleCredentials(t)
 	srv := openAICompatibleSuccessServer(t)
 	defer srv.Close()
@@ -63,10 +65,10 @@ func TestRunWithConfig_GCSTraceUploadFailureStillEmitsRunResult(t *testing.T) {
 	runErr := runWithConfig(config, runOptions{outputMode: "json"})
 	stdout := stdoutDone()
 
-	require.Error(t, runErr, "run error should report the trace upload failure")
-	require.ErrorContains(t, runErr, "finish trace")
-	require.ErrorContains(t, runErr, "upload trace")
+	must.Error(runErr, "run error should report the trace upload failure")
+	must.ErrorContains(runErr, "finish trace")
+	must.ErrorContains(runErr, "upload trace")
 
 	result := decodeStirrupResult(t, stdout)
-	require.Equal(t, "success", result.Outcome, "a trace upload failure does not change the outcome")
+	must.Equal("success", result.Outcome, "a trace upload failure does not change the outcome")
 }

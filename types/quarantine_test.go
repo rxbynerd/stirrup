@@ -12,10 +12,12 @@ import (
 // without a quarantine challenge.
 func TestClassifyForQuarantine_Empty(t *testing.T) {
 	t.Run("nil recordings", func(t *testing.T) {
-		require.Empty(t, ClassifyForQuarantine(nil))
+		must := require.New(t)
+		must.Empty(ClassifyForQuarantine(nil))
 	})
 	t.Run("empty recordings", func(t *testing.T) {
-		require.Empty(t, ClassifyForQuarantine([]RunRecording{}))
+		must := require.New(t)
+		must.Empty(ClassifyForQuarantine([]RunRecording{}))
 	})
 }
 
@@ -24,6 +26,7 @@ func TestClassifyForQuarantine_Empty(t *testing.T) {
 // QuarantineLargePayload. A modest conversation should ingest
 // without lighting up the flag.
 func TestClassifyForQuarantine_SmallPayload(t *testing.T) {
+	must := require.New(t)
 	recordings := []RunRecording{
 		{
 			RunID: "r1",
@@ -36,7 +39,7 @@ func TestClassifyForQuarantine_SmallPayload(t *testing.T) {
 		},
 	}
 	flags := ClassifyForQuarantine(recordings)
-	require.Empty(t, flags)
+	must.Empty(flags)
 }
 
 // TestClassifyForQuarantine_LargeToolOutput pins that a tool call
@@ -45,6 +48,7 @@ func TestClassifyForQuarantine_SmallPayload(t *testing.T) {
 // ordinary conversation turns stay under it; a single multi-hundred-
 // kilobyte tool output is the signal we want to flag.
 func TestClassifyForQuarantine_LargeToolOutput(t *testing.T) {
+	must := require.New(t)
 	big := strings.Repeat("x", DefaultLargePayloadBytes+1)
 	recordings := []RunRecording{
 		{
@@ -60,8 +64,8 @@ func TestClassifyForQuarantine_LargeToolOutput(t *testing.T) {
 		},
 	}
 	flags := ClassifyForQuarantine(recordings)
-	require.Len(t, flags, 1, "flags = %v", flags)
-	require.Equal(t, QuarantineLargePayload, flags[0])
+	must.Len(flags, 1, "flags = %v", flags)
+	must.Equal(QuarantineLargePayload, flags[0])
 }
 
 // TestClassifyForQuarantine_LargeTurnAggregate pins that a turn
@@ -69,6 +73,7 @@ func TestClassifyForQuarantine_LargeToolOutput(t *testing.T) {
 // threshold trips the flag even when no single payload is big on
 // its own. Catches the "many medium-sized tool outputs" case.
 func TestClassifyForQuarantine_LargeTurnAggregate(t *testing.T) {
+	must := require.New(t)
 	half := strings.Repeat("y", DefaultLargePayloadBytes/2)
 	recordings := []RunRecording{
 		{
@@ -86,8 +91,8 @@ func TestClassifyForQuarantine_LargeTurnAggregate(t *testing.T) {
 		},
 	}
 	flags := ClassifyForQuarantine(recordings)
-	require.Len(t, flags, 1, "flags = %v", flags)
-	require.Equal(t, QuarantineLargePayload, flags[0])
+	must.Len(flags, 1, "flags = %v", flags)
+	must.Equal(QuarantineLargePayload, flags[0])
 }
 
 // TestClassifyForQuarantine_LargeArchivedCommandStream pins that a
@@ -95,20 +100,22 @@ func TestClassifyForQuarantine_LargeTurnAggregate(t *testing.T) {
 // QuarantineLargePayload even when the tool call output is a small
 // preview.
 func TestClassifyForQuarantine_LargeArchivedCommandStream(t *testing.T) {
+	must := require.New(t)
 	recordings := []RunRecording{{
 		RunID:          "r1",
 		Turns:          []TurnRecord{{ToolCalls: []ToolCallRecord{{Name: "run_command", Output: "small preview"}}}},
 		CommandOutputs: []CommandOutputRecord{{Stdout: CommandOutputStreamRecord{ScrubbedBytes: DefaultLargePayloadBytes + 1}}},
 	}}
 	flags := ClassifyForQuarantine(recordings)
-	require.Len(t, flags, 1, "flags = %v", flags)
-	require.Equal(t, QuarantineLargePayload, flags[0])
+	must.Len(flags, 1, "flags = %v", flags)
+	must.Equal(QuarantineLargePayload, flags[0])
 }
 
 // TestClassifyForQuarantine_LargeSubRunTurn pins that a large payload
 // inside a sub-agent run is flagged: sub-runs are stored with the
 // recording, so they are baked into the suite with it.
 func TestClassifyForQuarantine_LargeSubRunTurn(t *testing.T) {
+	must := require.New(t)
 	big := strings.Repeat("z", DefaultLargePayloadBytes+1)
 	recordings := []RunRecording{{
 		RunID: "r1",
@@ -119,6 +126,6 @@ func TestClassifyForQuarantine_LargeSubRunTurn(t *testing.T) {
 		}},
 	}}
 	flags := ClassifyForQuarantine(recordings)
-	require.Len(t, flags, 1, "flags = %v", flags)
-	require.Equal(t, QuarantineLargePayload, flags[0])
+	must.Len(flags, 1, "flags = %v", flags)
+	must.Equal(QuarantineLargePayload, flags[0])
 }

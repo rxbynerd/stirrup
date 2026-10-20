@@ -42,13 +42,15 @@ func TestFilterTracesForMining_FailedOnlyDefault(t *testing.T) {
 	}
 
 	t.Run("default keeps only failed traces", func(t *testing.T) {
+		must := require.New(t)
 		got := filterTracesForMining(traces, types.EvalFailed, false, false)
-		require.ElementsMatch(t, []string{"t2", "t4"}, traceIDs(got))
+		must.ElementsMatch([]string{"t2", "t4"}, traceIDs(got))
 	})
 
 	t.Run("include-inconclusive also keeps inconclusive traces", func(t *testing.T) {
+		must := require.New(t)
 		got := filterTracesForMining(traces, types.EvalFailed, true, false)
-		require.ElementsMatch(t, []string{"t2", "t3", "t4"}, traceIDs(got))
+		must.ElementsMatch([]string{"t2", "t3", "t4"}, traceIDs(got))
 	})
 }
 
@@ -61,13 +63,15 @@ func TestFilterTracesForMining_ExcludesBatchByDefault(t *testing.T) {
 	batch.Config.Provider.Batch = &types.BatchProviderConfig{Enabled: true}
 
 	t.Run("excludes batch traces by default", func(t *testing.T) {
+		must := require.New(t)
 		got := filterTracesForMining([]types.RunTrace{stream, batch}, types.EvalFailed, false, false)
-		require.Equal(t, []string{"s1"}, traceIDs(got))
+		must.Equal([]string{"s1"}, traceIDs(got))
 	})
 
 	t.Run("includes batch traces when requested", func(t *testing.T) {
+		must := require.New(t)
 		got := filterTracesForMining([]types.RunTrace{stream, batch}, types.EvalFailed, false, true)
-		require.Len(t, got, 2)
+		must.Len(got, 2)
 	})
 }
 
@@ -82,13 +86,15 @@ func TestSampleTraces_LimitTakesFirstN(t *testing.T) {
 	}
 
 	t.Run("limit truncates to first n in input order", func(t *testing.T) {
+		must := require.New(t)
 		got := sampleTraces(traces, "", 2)
-		require.Equal(t, []string{"a", "b"}, traceIDs(got))
+		must.Equal([]string{"a", "b"}, traceIDs(got))
 	})
 
 	t.Run("zero limit returns all traces", func(t *testing.T) {
+		must := require.New(t)
 		got := sampleTraces(traces, "", 0)
-		require.Len(t, got, 3)
+		must.Len(got, 3)
 	})
 }
 
@@ -96,6 +102,7 @@ func TestSampleTraces_LimitTakesFirstN(t *testing.T) {
 // model A and one from model B, --sample-by model --limit 2 picks one from
 // each.
 func TestSampleTraces_StratifyByModel(t *testing.T) {
+	must := require.New(t)
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	traces := []types.RunTrace{
 		makeTraceWithOutcomeMode("a1", "error", "execution", "anthropic", "claude-3-5", base),
@@ -104,13 +111,13 @@ func TestSampleTraces_StratifyByModel(t *testing.T) {
 		makeTraceWithOutcomeMode("b1", "error", "execution", "anthropic", "claude-opus-4", base),
 	}
 	got := sampleTraces(traces, "model", 2)
-	require.Len(t, got, 2)
+	must.Len(got, 2)
 
 	models := map[string]int{}
 	for _, tr := range got {
 		models[tr.Config.ModelRouter.Model]++
 	}
-	require.Equal(t, map[string]int{"claude-3-5": 1, "claude-opus-4": 1}, models)
+	must.Equal(map[string]int{"claude-3-5": 1, "claude-opus-4": 1}, models)
 }
 
 // TestBuildMinedTask_HydratedDescriptionIncludesContext pins that when a
@@ -141,11 +148,13 @@ func TestBuildMinedTask_HydratedDescriptionIncludesContext(t *testing.T) {
 	task := buildMinedTask(trace, rec, true)
 
 	t.Run("includes the assistant excerpt", func(t *testing.T) {
-		require.Contains(t, task.Description, "I'll run the failing command now.")
+		must := require.New(t)
+		must.Contains(task.Description, "I'll run the failing command now.")
 	})
 
 	t.Run("includes the failing tool name", func(t *testing.T) {
-		require.Contains(t, task.Description, "run_command")
+		must := require.New(t)
+		must.Contains(task.Description, "run_command")
 	})
 }
 
@@ -157,11 +166,13 @@ func TestBuildMinedTask_ThinTraceFallback(t *testing.T) {
 	task := buildMinedTask(trace, types.RunRecording{}, false)
 
 	t.Run("takes the prompt from the trace config", func(t *testing.T) {
-		require.Equal(t, "p-t1", task.Prompt)
+		must := require.New(t)
+		must.Equal("p-t1", task.Prompt)
 	})
 
 	t.Run("flags the thin trace in the description", func(t *testing.T) {
-		require.Contains(t, task.Description, "thin trace")
+		must := require.New(t)
+		must.Contains(task.Description, "thin trace")
 	})
 }
 
@@ -169,6 +180,7 @@ func TestBuildMinedTask_ThinTraceFallback(t *testing.T) {
 // traces, sampling by outcome at a small limit pulls one from each
 // non-empty stratum before doubling up.
 func TestSampleTraces_StratifyByOutcome(t *testing.T) {
+	must := require.New(t)
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	traces := []types.RunTrace{
 		makeTraceWithOutcomeMode("e1", "error", "execution", "anthropic", "claude", base),
@@ -177,13 +189,13 @@ func TestSampleTraces_StratifyByOutcome(t *testing.T) {
 		makeTraceWithOutcomeMode("i1", "max_turns", "execution", "anthropic", "claude", base),
 	}
 	got := sampleTraces(traces, "outcome", 2)
-	require.Len(t, got, 2)
+	must.Len(got, 2)
 
 	outcomes := map[types.EvalOutcome]int{}
 	for _, tr := range got {
 		outcomes[types.EvalOutcomeFor(tr)]++
 	}
-	require.Equal(t, map[types.EvalOutcome]int{types.EvalFailed: 1, types.EvalInconclusive: 1}, outcomes)
+	must.Equal(map[types.EvalOutcome]int{types.EvalFailed: 1, types.EvalInconclusive: 1}, outcomes)
 }
 
 // --- helpers ---

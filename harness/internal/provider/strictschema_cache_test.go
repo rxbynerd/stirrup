@@ -34,19 +34,21 @@ func TestSchemaHash_DeterministicDistinctLength(t *testing.T) {
 	t.Run("deterministic", func(t *testing.T) {
 		for _, tc := range schemas {
 			t.Run(tc.name, func(t *testing.T) {
+				must := require.New(t)
 				first := schemaHash(tc.schema)
 				second := schemaHash(tc.schema)
-				require.Equal(t, first, second)
+				must.Equal(first, second)
 			})
 		}
 	})
 
 	t.Run("distinct inputs", func(t *testing.T) {
+		must := require.New(t)
 		seen := make(map[string]string, len(schemas))
 		for _, tc := range schemas {
 			h := schemaHash(tc.schema)
 			prev, dup := seen[h]
-			require.False(t, dup, "%s and %s hash to the same value %q", prev, tc.name, h)
+			must.False(dup, "%s and %s hash to the same value %q", prev, tc.name, h)
 			seen[h] = tc.name
 		}
 	})
@@ -55,7 +57,8 @@ func TestSchemaHash_DeterministicDistinctLength(t *testing.T) {
 	// and would not pad to 64 characters, so the cache-key comparison cost
 	// stays bounded only while the length is pinned.
 	t.Run("sha256 hex length", func(t *testing.T) {
+		must := require.New(t)
 		h := schemaHash(schemas[0].schema)
-		require.Len(t, h, 64, "want 64 hex characters (hex-encoded SHA-256)")
+		must.Len(h, 64, "want 64 hex characters (hex-encoded SHA-256)")
 	})
 }

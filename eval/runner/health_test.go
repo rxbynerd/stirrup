@@ -44,53 +44,58 @@ func healthSuite() types.EvalSuite {
 // runHealthSuite runs the suite and fails the test if the run itself errors.
 func runHealthSuite(t *testing.T, suite types.EvalSuite, cfg RunConfig) eval.SuiteResult {
 	t.Helper()
+	must := require.New(t)
 	result, err := RunSuite(context.Background(), suite, cfg)
-	require.NoError(t, err)
+	must.NoError(err)
 	return result
 }
 
 func TestRunSuite_JudgePassOnFailedRunIsCountedButNotHealthy(t *testing.T) {
+	must := require.New(t)
 	harness := healthHarness(t, "error", "[]", 1)
 
 	result := runHealthSuite(t, healthSuite(), RunConfig{HarnessPath: harness})
 	task := result.Tasks[0]
-	require.Equal(t, "pass", task.Outcome, "the judge verdict alone decides the outcome")
-	require.Equal(t, types.RunFailed, task.RunHealth)
-	require.Equal(t, types.VerificationNone, task.Verification)
-	require.Equal(t, eval.DeliveryNotMeasured, task.Delivery)
-	require.InDelta(t, 1.0, result.PassRate, 1e-9)
-	require.NotNil(t, result.HealthyPassRate)
-	require.InDelta(t, 0.0, *result.HealthyPassRate, 1e-9)
-	require.False(t, result.RequireHealthy, "neither the flag nor the suite asked for it")
+	must.Equal("pass", task.Outcome, "the judge verdict alone decides the outcome")
+	must.Equal(types.RunFailed, task.RunHealth)
+	must.Equal(types.VerificationNone, task.Verification)
+	must.Equal(eval.DeliveryNotMeasured, task.Delivery)
+	must.InDelta(1.0, result.PassRate, 1e-9)
+	must.NotNil(result.HealthyPassRate)
+	must.InDelta(0.0, *result.HealthyPassRate, 1e-9)
+	must.False(result.RequireHealthy, "neither the flag nor the suite asked for it")
 }
 
 func TestRunSuite_NonZeroExitWithSuccessTraceIsFailed(t *testing.T) {
+	must := require.New(t)
 	harness := healthHarness(t, "success", "[]", 1)
 
 	result := runHealthSuite(t, healthSuite(), RunConfig{HarnessPath: harness})
-	require.Equal(t, types.RunFailed, result.Tasks[0].RunHealth,
+	must.Equal(types.RunFailed, result.Tasks[0].RunHealth,
 		"the exit status is the operator-visible contract")
 }
 
 func TestRunSuite_HealthyRunCountsInBothRates(t *testing.T) {
+	must := require.New(t)
 	harness := healthHarness(t, "success", "[]", 0)
 
 	result := runHealthSuite(t, healthSuite(), RunConfig{HarnessPath: harness})
-	require.Equal(t, types.RunHealthy, result.Tasks[0].RunHealth)
-	require.NotNil(t, result.HealthyPassRate)
-	require.InDelta(t, 1.0, *result.HealthyPassRate, 1e-9)
-	require.InDelta(t, 1.0, result.PassRate, 1e-9)
+	must.Equal(types.RunHealthy, result.Tasks[0].RunHealth)
+	must.NotNil(result.HealthyPassRate)
+	must.InDelta(1.0, *result.HealthyPassRate, 1e-9)
+	must.InDelta(1.0, result.PassRate, 1e-9)
 }
 
 func TestRunSuite_LimitHitTraceOutcomesAreDegraded(t *testing.T) {
 	for _, outcome := range []string{"max_turns", "timeout"} {
 		t.Run(outcome, func(t *testing.T) {
+			must := require.New(t)
 			harness := healthHarness(t, outcome, "[]", 0)
 
 			result := runHealthSuite(t, healthSuite(), RunConfig{HarnessPath: harness})
-			require.Equal(t, types.RunDegraded, result.Tasks[0].RunHealth)
-			require.NotNil(t, result.HealthyPassRate)
-			require.InDelta(t, 0.0, *result.HealthyPassRate, 1e-9)
+			must.Equal(types.RunDegraded, result.Tasks[0].RunHealth)
+			must.NotNil(result.HealthyPassRate)
+			must.InDelta(0.0, *result.HealthyPassRate, 1e-9)
 		})
 	}
 }
@@ -106,12 +111,13 @@ func TestRunSuite_VerificationReflectsTheLastResult(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			harness := healthHarness(t, "success", tc.verification, 0)
 
 			result := runHealthSuite(t, healthSuite(), RunConfig{HarnessPath: harness})
 			task := result.Tasks[0]
-			require.Equal(t, tc.want, task.Verification)
-			require.Equal(t, types.RunHealthy, task.RunHealth,
+			must.Equal(tc.want, task.Verification)
+			must.Equal(types.RunHealthy, task.RunHealth,
 				"verification is reported separately from run health")
 		})
 	}
@@ -130,37 +136,40 @@ func TestRunSuite_RequireHealthyGatesWithoutChangingTheOutcome(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			tc.cfg.HarnessPath = harness
 			result := runHealthSuite(t, tc.suite(healthSuite()), tc.cfg)
-			require.True(t, result.RequireHealthy, "requireHealthy not recorded in the result")
+			must.True(result.RequireHealthy, "requireHealthy not recorded in the result")
 
 			task := result.Tasks[0]
-			require.Equal(t, "pass", task.Outcome, "outcome is judge-based")
-			require.InDelta(t, 1.0, result.PassRate, 1e-9, "pass rate is judge-based")
+			must.Equal("pass", task.Outcome, "outcome is judge-based")
+			must.InDelta(1.0, result.PassRate, 1e-9, "pass rate is judge-based")
 
 			got := task.GateCounts(result.RequireHealthy)
-			require.Equal(t, 0, got.Pass, "the unhealthy pass is not counted as a pass")
-			require.Equal(t, 1, got.Fail, "the unhealthy pass is counted as a fail")
+			must.Equal(0, got.Pass, "the unhealthy pass is not counted as a pass")
+			must.Equal(1, got.Fail, "the unhealthy pass is counted as a fail")
 		})
 	}
 }
 
 func TestRunSuite_TrialsAggregateTheWorstHealth(t *testing.T) {
+	must := require.New(t)
 	harness := healthHarness(t, "error", "[]", 1)
 
 	result := runHealthSuite(t, healthSuite(), RunConfig{HarnessPath: harness, Trials: 2})
 	task := result.Tasks[0]
-	require.Equal(t, types.RunFailed, task.RunHealth)
-	require.Len(t, task.Trials, 2)
+	must.Equal(types.RunFailed, task.RunHealth)
+	must.Len(task.Trials, 2)
 	for i, tr := range task.Trials {
 		t.Run("trial "+strconv.Itoa(i+1), func(t *testing.T) {
-			require.Equal(t, types.RunFailed, tr.RunHealth)
-			require.Equal(t, eval.DeliveryNotMeasured, tr.Delivery)
+			must := require.New(t)
+			must.Equal(types.RunFailed, tr.RunHealth)
+			must.Equal(eval.DeliveryNotMeasured, tr.Delivery)
 		})
 	}
-	require.NotNil(t, result.HealthyPassRate)
-	require.InDelta(t, 0.0, *result.HealthyPassRate, 1e-9)
-	require.InDelta(t, 1.0, result.PassRate, 1e-9)
+	must.NotNil(result.HealthyPassRate)
+	must.InDelta(0.0, *result.HealthyPassRate, 1e-9)
+	must.InDelta(1.0, result.PassRate, 1e-9)
 }
 
 func TestAggregateTrials_HealthAndVerificationFold(t *testing.T) {
@@ -169,28 +178,31 @@ func TestAggregateTrials_HealthAndVerificationFold(t *testing.T) {
 	}
 
 	t.Run("mixed healthy and degraded trials", func(t *testing.T) {
+		must := require.New(t)
 		got := aggregateTrials("t", []eval.TaskResult{
 			trial(types.RunHealthy, types.VerificationNone),
 			trial(types.RunDegraded, types.VerificationPassed),
 			trial(types.RunHealthy, types.VerificationPassed),
 		})
-		require.Equal(t, types.RunDegraded, got.RunHealth, "the worst trial sets run health")
-		require.Equal(t, types.VerificationPassed, got.Verification)
+		must.Equal(types.RunDegraded, got.RunHealth, "the worst trial sets run health")
+		must.Equal(types.VerificationPassed, got.Verification)
 	})
 
 	t.Run("healthy trial with a failed trial", func(t *testing.T) {
+		must := require.New(t)
 		got := aggregateTrials("t", []eval.TaskResult{
 			trial(types.RunHealthy, types.VerificationPassed),
 			trial(types.RunFailed, types.VerificationFailed),
 		})
-		require.Equal(t, types.RunFailed, got.RunHealth)
-		require.Equal(t, types.VerificationFailed, got.Verification)
+		must.Equal(types.RunFailed, got.RunHealth)
+		must.Equal(types.VerificationFailed, got.Verification)
 	})
 }
 
 func TestErrorResult_IsAFailedRun(t *testing.T) {
+	must := require.New(t)
 	r := errorResult("t", time.Now(), context.Canceled)
-	require.Equal(t, types.RunFailed, r.RunHealth)
-	require.Equal(t, types.VerificationNone, r.Verification)
-	require.Equal(t, eval.DeliveryNotMeasured, r.Delivery)
+	must.Equal(types.RunFailed, r.RunHealth)
+	must.Equal(types.VerificationNone, r.Verification)
+	must.Equal(eval.DeliveryNotMeasured, r.Delivery)
 }

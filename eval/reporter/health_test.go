@@ -36,29 +36,32 @@ func meanFraction(tasks []eval.TaskResult) float64 {
 }
 
 func TestCompare_LegacyResultsKeepTheirNumbers(t *testing.T) {
+	must := require.New(t)
 	legacy := `{"suiteId":"s","runId":"%s","tasks":[
 {"taskId":"a","outcome":"pass","judgeVerdict":{"passed":true,"reason":""},"durationMs":1,"passFraction":1},
 {"taskId":"b","outcome":"fail","judgeVerdict":{"passed":false,"reason":""},"durationMs":1,"passFraction":0}],"passRate":0.5}`
 	decode := func(id string) eval.SuiteResult {
 		var r eval.SuiteResult
-		require.NoError(t, json.Unmarshal([]byte(strings.Replace(legacy, "%s", id, 1)), &r))
+		must.NoError(json.Unmarshal([]byte(strings.Replace(legacy, "%s", id, 1)), &r))
 		return r
 	}
 
 	report := Compare(decode("base"), decode("curr"), DefaultOptions())
 	s := report.Summary
-	require.InDelta(t, 0.5, s.BaselinePassRate, 1e-12)
-	require.InDelta(t, 0.5, s.CurrentPassRate, 1e-12)
-	require.InDelta(t, 0.0, s.PassRateDelta, 1e-12)
-	require.Nil(t, s.Baseline.HealthyPassRate, "a legacy result reports a healthy pass rate")
-	require.Nil(t, s.Current.HealthyPassRate, "a legacy result reports a healthy pass rate")
+	must.InDelta(0.5, s.BaselinePassRate, 1e-12)
+	must.InDelta(0.5, s.CurrentPassRate, 1e-12)
+	must.InDelta(0.0, s.PassRateDelta, 1e-12)
+	must.Nil(s.Baseline.HealthyPassRate, "a legacy result reports a healthy pass rate")
+	must.Nil(s.Current.HealthyPassRate, "a legacy result reports a healthy pass rate")
 
 	text := FormatText(report)
-	require.NotContains(t, text, "Healthy", "legacy comparison mentions health")
-	require.NotContains(t, text, "healthy", "legacy comparison mentions health")
+	must.NotContains(text, "Healthy", "legacy comparison mentions health")
+	must.NotContains(text, "healthy", "legacy comparison mentions health")
 }
 
 func TestCompare_ReportsBothRatesAndSampleSize(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	baseline := healthSuiteResult("base", false,
 		healthTask("a", "pass", types.RunHealthy), healthTask("b", "pass", types.RunHealthy))
 	current := healthSuiteResult("curr", false,
@@ -66,10 +69,10 @@ func TestCompare_ReportsBothRatesAndSampleSize(t *testing.T) {
 
 	report := Compare(baseline, current, DefaultOptions())
 	s := report.Summary
-	require.InDelta(t, 1.0, s.CurrentPassRate, 1e-12, "judge-based without require_healthy")
-	require.NotNil(t, s.Current.HealthyPassRate)
-	require.InDelta(t, 0.5, *s.Current.HealthyPassRate, 1e-12)
-	require.Equal(t, eval.GateInconclusive, s.Gate, "a judge-based comparison with no change must not block")
+	must.InDelta(1.0, s.CurrentPassRate, 1e-12, "judge-based without require_healthy")
+	must.NotNil(s.Current.HealthyPassRate)
+	must.InDelta(0.5, *s.Current.HealthyPassRate, 1e-12)
+	must.Equal(eval.GateInconclusive, s.Gate, "a judge-based comparison with no change must not block")
 
 	text := FormatText(report)
 	for _, want := range []string{
@@ -77,11 +80,13 @@ func TestCompare_ReportsBothRatesAndSampleSize(t *testing.T) {
 		"Healthy Pass Rate: 100.0% → 50.0% (-50.0%)",
 		"n=2 tasks, K=1, healthy 50.0%",
 	} {
-		assert.Contains(t, text, want)
+		check.Contains(text, want)
 	}
 }
 
 func TestCompare_RequireHealthyGatesOnHealthyPasses(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	baseline := healthSuiteResult("base", false,
 		healthTask("a", "pass", types.RunHealthy), healthTask("b", "pass", types.RunHealthy))
 	current := healthSuiteResult("curr", true,
@@ -89,23 +94,25 @@ func TestCompare_RequireHealthyGatesOnHealthyPasses(t *testing.T) {
 
 	report := Compare(baseline, current, DefaultOptions())
 	s := report.Summary
-	require.InDelta(t, 0.5, s.CurrentPassRate, 1e-12, "current pass rate under require_healthy")
-	require.InDelta(t, -0.5, s.PassRateDelta, 1e-12, "pass rate delta under require_healthy")
-	require.NotNil(t, s.Current.JudgePassRate)
-	require.InDelta(t, 1.0, *s.Current.JudgePassRate, 1e-12)
-	require.True(t, s.Current.RequireHealthy)
-	require.True(t, s.HasRegressions)
-	require.Len(t, report.Regressions, 1)
-	require.Equal(t, "b", report.Regressions[0].TaskID)
-	require.Equal(t, eval.GateBlock, s.Gate, "b passed every baseline trial and no current trial counts")
+	must.InDelta(0.5, s.CurrentPassRate, 1e-12, "current pass rate under require_healthy")
+	must.InDelta(-0.5, s.PassRateDelta, 1e-12, "pass rate delta under require_healthy")
+	must.NotNil(s.Current.JudgePassRate)
+	must.InDelta(1.0, *s.Current.JudgePassRate, 1e-12)
+	must.True(s.Current.RequireHealthy)
+	must.True(s.HasRegressions)
+	must.Len(report.Regressions, 1)
+	must.Equal("b", report.Regressions[0].TaskID)
+	must.Equal(eval.GateBlock, s.Gate, "b passed every baseline trial and no current trial counts")
 
 	text := FormatText(report)
 	for _, want := range []string{"current counts a pass only when the run was healthy (require_healthy)", "judge-only pass rate is 100.0%"} {
-		assert.Contains(t, text, want)
+		check.Contains(text, want)
 	}
 }
 
 func TestWriteJUnit_RunHealthProperties(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	healthy := healthTask("ok", "pass", types.RunHealthy)
 	healthy.Verification, healthy.Delivery = types.VerificationPassed, eval.DeliveryNotMeasured
 	unhealthy := healthTask("flaky", "pass", types.RunFailed)
@@ -115,7 +122,7 @@ func TestWriteJUnit_RunHealthProperties(t *testing.T) {
 	result.Trials = 2
 
 	var buf bytes.Buffer
-	require.NoError(t, WriteJUnit(&buf, result))
+	must.NoError(WriteJUnit(&buf, result))
 	out := buf.String()
 	for _, want := range []string{
 		`<property name="pass_rate" value="1.000"></property>`,
@@ -128,9 +135,9 @@ func TestWriteJUnit_RunHealthProperties(t *testing.T) {
 		`<property name="delivery" value="not_measured"></property>`,
 		`the judge passed but the run health was failed`,
 	} {
-		assert.Contains(t, out, want)
+		check.Contains(out, want)
 	}
-	require.NotContains(t, out, "<failure", "a judge pass must stay a passing testcase")
-	require.NotContains(t, out, "<error", "a judge pass must stay a passing testcase")
-	require.Equal(t, 1, strings.Count(out, "the judge passed but the run health"), "healthy case also carries the unhealthy note")
+	must.NotContains(out, "<failure", "a judge pass must stay a passing testcase")
+	must.NotContains(out, "<error", "a judge pass must stay a passing testcase")
+	must.Equal(1, strings.Count(out, "the judge passed but the run health"), "healthy case also carries the unhealthy note")
 }

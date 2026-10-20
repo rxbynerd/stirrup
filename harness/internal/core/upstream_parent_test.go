@@ -23,10 +23,11 @@ import (
 
 func upstreamParent(t *testing.T, sampled bool) oteltrace.SpanContext {
 	t.Helper()
+	must := require.New(t)
 	traceID, err := oteltrace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
-	require.NoError(t, err)
+	must.NoError(err)
 	spanID, err := oteltrace.SpanIDFromHex("00f067aa0ba902b7")
-	require.NoError(t, err)
+	must.NoError(err)
 	cfg := oteltrace.SpanContextConfig{TraceID: traceID, SpanID: spanID, Remote: true}
 	if sampled {
 		cfg.TraceFlags = oteltrace.FlagsSampled
@@ -40,55 +41,59 @@ func upstreamCtx(t *testing.T, sampled bool) context.Context {
 }
 
 func TestLoop_TopLevelRunAdoptsUpstreamParent(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop, exporter := otelLoop(t, endTurnProvider())
 	tp := &recordingTransport{}
 	loop.Transport = tp
 	parent := upstreamParent(t, true)
 
 	_, err := loop.Run(upstreamCtx(t, true), buildTestConfig())
-	require.NoError(t, err)
+	must.NoError(err)
 
 	spans := exporter.GetSpans()
 	root := spansNamed(spans, "invoke_agent stirrup")
-	require.Len(t, root, 1)
-	assert.Equal(t, parent.SpanID(), root[0].Parent.SpanID(), "run span parent span ID")
-	assert.Equal(t, parent.TraceID(), root[0].Parent.TraceID(), "run span parent trace ID")
+	must.Len(root, 1)
+	check.Equal(parent.SpanID(), root[0].Parent.SpanID(), "run span parent span ID")
+	check.Equal(parent.TraceID(), root[0].Parent.TraceID(), "run span parent trace ID")
 	for _, s := range spans {
-		assert.Equal(t, parent.TraceID(), s.SpanContext.TraceID(), "%s trace ID", s.Name)
+		check.Equal(parent.TraceID(), s.SpanContext.TraceID(), "%s trace ID", s.Name)
 	}
 	chats := spansNamed(spans, "chat claude-sonnet-4-6")
-	require.Len(t, chats, 1)
+	must.Len(chats, 1)
 	requireParent(t, chats[0], root[0])
 
 	started := eventsOfType(tp, "run_started")
-	require.Len(t, started, 1)
-	require.NotNil(t, started[0].TraceReference)
+	must.Len(started, 1)
+	must.NotNil(started[0].TraceReference)
 	ref := started[0].TraceReference
-	assert.Equal(t, parent.TraceID().String(), ref.TraceID, "run_started trace ID")
-	assert.Equal(t, root[0].SpanContext.SpanID().String(), ref.RunSpanID, "run_started run span ID")
-	assert.True(t, ref.Sampled, "run_started sampled")
+	check.Equal(parent.TraceID().String(), ref.TraceID, "run_started trace ID")
+	check.Equal(root[0].SpanContext.SpanID().String(), ref.RunSpanID, "run_started run span ID")
+	check.True(ref.Sampled, "run_started sampled")
 }
 
 func TestLoop_UnsampledUpstreamParentSuppressesExport(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop, exporter := otelLoop(t, endTurnProvider())
 	tp := &recordingTransport{}
 	loop.Transport = tp
 
 	rt, err := loop.Run(upstreamCtx(t, false), buildTestConfig())
-	require.NoError(t, err)
+	must.NoError(err)
 
 	spans := exporter.GetSpans()
-	assert.Empty(t, spans, "spans exported under an unsampled parent: %v", spanNames(spans))
+	check.Empty(spans, "spans exported under an unsampled parent: %v", spanNames(spans))
 
 	started := eventsOfType(tp, "run_started")
-	require.Len(t, started, 1)
-	require.NotNil(t, started[0].TraceReference)
+	must.Len(started, 1)
+	must.NotNil(started[0].TraceReference)
 	ref := started[0].TraceReference
-	assert.False(t, ref.Sampled, "run_started sampled under an unsampled parent")
-	assert.Equal(t, upstreamParent(t, false).TraceID().String(), ref.TraceID, "run_started trace ID")
+	check.False(ref.Sampled, "run_started sampled under an unsampled parent")
+	check.Equal(upstreamParent(t, false).TraceID().String(), ref.TraceID, "run_started trace ID")
 
-	require.NotNil(t, rt.TraceReference)
-	assert.False(t, rt.TraceReference.Sampled, "RunTrace.TraceReference sampled")
+	must.NotNil(rt.TraceReference)
+	check.False(rt.TraceReference.Sampled, "RunTrace.TraceReference sampled")
 }
 
 func TestLoop_SubAgentRunIgnoresCallerSpan(t *testing.T) {
@@ -97,20 +102,23 @@ func TestLoop_SubAgentRunIgnoresCallerSpan(t *testing.T) {
 		"trace context preset": func(l *AgenticLoop) { l.TraceContext = context.Background() },
 	} {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			loop, exporter := otelLoop(t, endTurnProvider())
 			configure(loop)
 
 			_, err := loop.Run(upstreamCtx(t, true), buildTestConfig())
-			require.NoError(t, err)
+			must.NoError(err)
 
 			root := spansNamed(exporter.GetSpans(), "invoke_agent stirrup")
-			require.Len(t, root, 1)
-			require.False(t, root[0].Parent.IsValid(), "run span parented on %s, want a new root", root[0].Parent.SpanID())
+			must.Len(root, 1)
+			must.False(root[0].Parent.IsValid(), "run span parented on %s, want a new root", root[0].Parent.SpanID())
 		})
 	}
 }
 
 func TestSpawnSubAgent_UnderUpstreamParentNestsUnderSpawnTool(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	exporter := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
@@ -150,25 +158,27 @@ func TestSpawnSubAgent_UnderUpstreamParentNestsUnderSpawnTool(t *testing.T) {
 	})
 
 	_, err := parentLoop.Run(upstreamCtx(t, true), parentConfig)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	spans := exporter.GetSpans()
 	one := func(name string) tracetest.SpanStub {
 		t.Helper()
 		found := spansNamed(spans, name)
-		require.Len(t, found, 1, "span %q (spans=%v)", name, spanNames(spans))
+		must.Len(found, 1, "span %q (spans=%v)", name, spanNames(spans))
 		return found[0]
 	}
 	root := one("invoke_agent stirrup")
 	spawn := one("execute_tool spawn_agent")
 	sub := one("invoke_agent stirrup.subagent")
-	assert.Equal(t, parent.SpanID(), root.Parent.SpanID(), "run span parent span ID")
+	check.Equal(parent.SpanID(), root.Parent.SpanID(), "run span parent span ID")
 	requireParent(t, spawn, root)
 	requireParent(t, sub, spawn)
-	assert.Equal(t, root.SpanContext.TraceID(), sub.SpanContext.TraceID(), "sub-agent trace ID")
+	check.Equal(root.SpanContext.TraceID(), sub.SpanContext.TraceID(), "sub-agent trace ID")
 }
 
 func TestRunFollowUpLoop_FollowUpStartsNewTraceAfterParentedRun(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop, exporter := otelLoop(t, endTurnProvider())
 	tp := &recordingControlTransport{}
 	loop.Transport = tp
@@ -177,7 +187,7 @@ func TestRunFollowUpLoop_FollowUpStartsNewTraceAfterParentedRun(t *testing.T) {
 	parent := upstreamParent(t, true)
 
 	_, err := loop.Run(upstreamCtx(t, true), config)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	sessionCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -193,19 +203,21 @@ func TestRunFollowUpLoop_FollowUpStartsNewTraceAfterParentedRun(t *testing.T) {
 	select {
 	case <-ran:
 	case <-time.After(3 * time.Second):
-		require.Fail(t, "follow-up run did not complete")
+		must.Fail("follow-up run did not complete")
 	}
 	cancel()
 	<-done
 
 	roots := spansNamed(exporter.GetSpans(), "invoke_agent stirrup")
-	require.Len(t, roots, 2, "one root span per run")
-	assert.Equal(t, parent.SpanID(), roots[0].Parent.SpanID(), "primary run parent span ID")
-	assert.False(t, roots[1].Parent.IsValid(), "follow-up run parented on %s, want a new root", roots[1].Parent.SpanID())
-	assert.NotEqual(t, parent.TraceID(), roots[1].SpanContext.TraceID(), "follow-up run joined the upstream trace")
+	must.Len(roots, 2, "one root span per run")
+	check.Equal(parent.SpanID(), roots[0].Parent.SpanID(), "primary run parent span ID")
+	check.False(roots[1].Parent.IsValid(), "follow-up run parented on %s, want a new root", roots[1].Parent.SpanID())
+	check.NotEqual(parent.TraceID(), roots[1].SpanContext.TraceID(), "follow-up run joined the upstream trace")
 }
 
 func TestAsyncToolResultRequest_ForwardsUpstreamParentWithoutOTelSpans(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop := buildTestLoop(nil)
 	loop.Tools.(*tool.Registry).Register(asyncEchoTool())
 	loop.Provider = &scriptedProvider{turns: [][]types.StreamEvent{
@@ -224,21 +236,23 @@ func TestAsyncToolResultRequest_ForwardsUpstreamParentWithoutOTelSpans(t *testin
 
 	go respondWhenAllRequested(t, tr, 1)
 	_, err := loop.Run(upstreamCtx(t, true), buildTestConfig())
-	require.NoError(t, err)
+	must.NoError(err)
 
 	for _, e := range tr.Events() {
 		if e.Type != "tool_result_request" {
 			continue
 		}
 		sc := decodeTraceContext(t, e.TraceContext)
-		assert.Equal(t, parent.TraceID(), sc.TraceID(), "carrier trace ID")
-		assert.Equal(t, parent.SpanID(), sc.SpanID(), "carrier span ID")
+		check.Equal(parent.TraceID(), sc.TraceID(), "carrier trace ID")
+		check.Equal(parent.SpanID(), sc.SpanID(), "carrier span ID")
 		return
 	}
-	require.Fail(t, "no tool_result_request emitted")
+	must.Fail("no tool_result_request emitted")
 }
 
 func TestLoop_UpstreamParentCorrelatesLogsWithoutOTelSpans(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var stderr bytes.Buffer
 	scope := observability.NewRunScope("")
 	loop := buildTestLoop(endTurnProvider())
@@ -247,7 +261,7 @@ func TestLoop_UpstreamParentCorrelatesLogsWithoutOTelSpans(t *testing.T) {
 	parent := upstreamParent(t, true)
 
 	_, err := loop.Run(upstreamCtx(t, true), buildTestConfig())
-	require.NoError(t, err)
+	must.NoError(err)
 
 	var records int
 	sc := bufio.NewScanner(&stderr)
@@ -257,8 +271,8 @@ func TestLoop_UpstreamParentCorrelatesLogsWithoutOTelSpans(t *testing.T) {
 			continue
 		}
 		records++
-		assert.Equal(t, parent.TraceID().String(), rec["trace_id"], "record %q trace_id", rec["msg"])
-		assert.Equal(t, parent.SpanID().String(), rec["span_id"], "record %q span_id", rec["msg"])
+		check.Equal(parent.TraceID().String(), rec["trace_id"], "record %q trace_id", rec["msg"])
+		check.Equal(parent.SpanID().String(), rec["span_id"], "record %q span_id", rec["msg"])
 	}
-	require.NotZero(t, records, "run logged no records")
+	must.NotZero(records, "run logged no records")
 }

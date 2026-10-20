@@ -24,18 +24,20 @@ func TestWilson_ScoreInterval(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			r := wilson(tc.k, tc.n)
-			require.NotNil(t, r)
-			require.Equal(t, tc.k, r.K)
-			require.Equal(t, tc.n, r.N)
-			require.True(t, near(r.Value, tc.value), "value = %v, want %v", r.Value, tc.value)
-			require.True(t, near(r.Low, tc.low), "low = %v, want %v", r.Low, tc.low)
-			require.True(t, near(r.High, tc.high), "high = %v, want %v", r.High, tc.high)
+			must.NotNil(r)
+			must.Equal(tc.k, r.K)
+			must.Equal(tc.n, r.N)
+			must.True(near(r.Value, tc.value), "value = %v, want %v", r.Value, tc.value)
+			must.True(near(r.Low, tc.low), "low = %v, want %v", r.Low, tc.low)
+			must.True(near(r.High, tc.high), "high = %v, want %v", r.High, tc.high)
 		})
 	}
 
 	t.Run("no trials", func(t *testing.T) {
-		require.Nil(t, wilson(0, 0))
+		must := require.New(t)
+		must.Nil(wilson(0, 0))
 	})
 }
 
@@ -54,13 +56,14 @@ func TestConfusion_Kappa(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got := tc.c.kappa()
 			if tc.want == nil {
-				require.Nil(t, got, "kappa should be undefined")
+				must.Nil(got, "kappa should be undefined")
 				return
 			}
-			require.NotNil(t, got)
-			require.True(t, near(*got, *tc.want), "kappa = %v, want %v", *got, *tc.want)
+			must.NotNil(got)
+			must.True(near(*got, *tc.want), "kappa = %v, want %v", *got, *tc.want)
 		})
 	}
 }
@@ -97,15 +100,17 @@ func TestSummarize_CountsRatesAndCost(t *testing.T) {
 	m := Summarize(js, &Prices{InputPerMTok: 1, OutputPerMTok: 5})
 
 	t.Run("counts", func(t *testing.T) {
-		require.Equal(t, 12, m.Judgments)
-		require.Equal(t, 10, m.Decided)
-		require.Equal(t, 2, m.Errors)
-		require.Equal(t, 1, m.AdversarialErrors)
-		require.Equal(t, 1, m.CacheHits)
+		must := require.New(t)
+		must.Equal(12, m.Judgments)
+		must.Equal(10, m.Decided)
+		must.Equal(2, m.Errors)
+		must.Equal(1, m.AdversarialErrors)
+		must.Equal(1, m.CacheHits)
 	})
 
 	t.Run("confusion", func(t *testing.T) {
-		require.Equal(t, Confusion{TruePositive: 4, FalseNegative: 1, TrueNegative: 3, FalsePositive: 2}, m.Confusion)
+		must := require.New(t)
+		must.Equal(Confusion{TruePositive: 4, FalseNegative: 1, TrueNegative: 3, FalsePositive: 2}, m.Confusion)
 	})
 
 	rates := []struct {
@@ -121,74 +126,84 @@ func TestSummarize_CountsRatesAndCost(t *testing.T) {
 	}
 	for _, tc := range rates {
 		t.Run(tc.name, func(t *testing.T) {
-			require.NotNil(t, tc.r)
-			require.Equal(t, tc.k, tc.r.K)
-			require.Equal(t, tc.n, tc.r.N)
+			must := require.New(t)
+			must.NotNil(tc.r)
+			must.Equal(tc.k, tc.r.K)
+			must.Equal(tc.n, tc.r.N)
 		})
 	}
 
 	t.Run("kappa", func(t *testing.T) {
-		require.NotNil(t, m.Kappa)
-		require.True(t, near(*m.Kappa, 0.4), "kappa = %v, want 0.4", *m.Kappa)
+		must := require.New(t)
+		must.NotNil(m.Kappa)
+		must.True(near(*m.Kappa, 0.4), "kappa = %v, want 0.4", *m.Kappa)
 	})
 
 	t.Run("latency", func(t *testing.T) {
-		require.NotNil(t, m.Latency)
-		require.Equal(t, 9, m.Latency.Calls)
-		require.True(t, near(m.Latency.MeanMs, 500), "mean = %v, want 500", m.Latency.MeanMs)
-		require.Equal(t, int64(900), m.Latency.P95Ms)
+		must := require.New(t)
+		must.NotNil(m.Latency)
+		must.Equal(9, m.Latency.Calls)
+		must.True(near(m.Latency.MeanMs, 500), "mean = %v, want 500", m.Latency.MeanMs)
+		must.Equal(int64(900), m.Latency.P95Ms)
 	})
 
 	t.Run("tokens", func(t *testing.T) {
-		require.Equal(t, Tokens{Input: 1200, Output: 120}, m.Tokens)
+		must := require.New(t)
+		must.Equal(Tokens{Input: 1200, Output: 120}, m.Tokens)
 	})
 
 	t.Run("cost", func(t *testing.T) {
-		require.NotNil(t, m.Cost)
-		require.True(t, near(m.Cost.InputUSD, 0.0012), "input cost = %v, want 0.0012", m.Cost.InputUSD)
-		require.True(t, near(m.Cost.OutputUSD, 0.0006), "output cost = %v, want 0.0006", m.Cost.OutputUSD)
-		require.True(t, near(m.Cost.TotalUSD, 0.0018), "total cost = %v, want 0.0018", m.Cost.TotalUSD)
+		must := require.New(t)
+		must.NotNil(m.Cost)
+		must.True(near(m.Cost.InputUSD, 0.0012), "input cost = %v, want 0.0012", m.Cost.InputUSD)
+		must.True(near(m.Cost.OutputUSD, 0.0006), "output cost = %v, want 0.0006", m.Cost.OutputUSD)
+		must.True(near(m.Cost.TotalUSD, 0.0018), "total cost = %v, want 0.0018", m.Cost.TotalUSD)
 	})
 
 	t.Run("no prices means no cost", func(t *testing.T) {
-		require.Nil(t, Summarize(js, nil).Cost)
+		must := require.New(t)
+		must.Nil(Summarize(js, nil).Cost)
 	})
 }
 
 func TestSummarize_NoJudgments(t *testing.T) {
+	must := require.New(t)
 	m := Summarize(nil, nil)
-	require.Nil(t, m.TPR)
-	require.Nil(t, m.TNR)
-	require.Nil(t, m.Accuracy)
-	require.Nil(t, m.Kappa)
-	require.Nil(t, m.ErrorRate)
-	require.Nil(t, m.AdversarialFlipRate)
-	require.Nil(t, m.Latency)
+	must.Nil(m.TPR)
+	must.Nil(m.TNR)
+	must.Nil(m.Accuracy)
+	must.Nil(m.Kappa)
+	must.Nil(m.ErrorRate)
+	must.Nil(m.AdversarialFlipRate)
+	must.Nil(m.Latency)
 }
 
 func TestSummarizeLatency_P95AndMean(t *testing.T) {
 	t.Run("twenty calls", func(t *testing.T) {
+		must := require.New(t)
 		ms := make([]int64, 20)
 		for i := range ms {
 			ms[i] = int64(20 - i)
 		}
 		l := summarizeLatency(ms)
-		require.Equal(t, int64(19), l.P95Ms)
-		require.True(t, near(l.MeanMs, 10.5), "mean = %v, want 10.5", l.MeanMs)
+		must.Equal(int64(19), l.P95Ms)
+		must.True(near(l.MeanMs, 10.5), "mean = %v, want 10.5", l.MeanMs)
 	})
 
 	t.Run("single call", func(t *testing.T) {
+		must := require.New(t)
 		l := summarizeLatency([]int64{42})
-		require.Equal(t, int64(42), l.P95Ms)
+		must.Equal(int64(42), l.P95Ms)
 	})
 }
 
 func TestUnstableCases_ListsDisagreeingCases(t *testing.T) {
+	must := require.New(t)
 	js := []Judgment{
 		{Case: "a", Verdict: "pass"}, {Case: "a", Sample: 1, Verdict: "fail"},
 		{Case: "b", Verdict: "pass"}, {Case: "b", Sample: 1, Verdict: "pass"}, {Case: "b", Sample: 2, Verdict: "error"},
 		{Case: "c", Verdict: "fail"},
 		{Case: "d", Verdict: "fail"}, {Case: "d", Sample: 1, Verdict: "pass"},
 	}
-	require.Equal(t, []string{"a", "d"}, unstableCases(js))
+	must.Equal([]string{"a", "d"}, unstableCases(js))
 }

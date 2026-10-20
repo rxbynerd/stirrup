@@ -9,6 +9,7 @@ import (
 )
 
 func TestLoadSuiteHCL_RepositoryGuidanceBlock(t *testing.T) {
+	must := require.New(t)
 	src := `
 suite "s" {
   run_config {
@@ -37,27 +38,29 @@ suite "s" {
 }
 `
 	got, err := LoadSuiteHCL(writeTemp(t, "runcfg-repository-guidance.hcl", src))
-	require.NoError(t, err)
+	must.NoError(err)
 
 	want := &types.RepositoryGuidanceConfig{
 		Files:        []string{"AGENTS.md", "CLAUDE.md"},
 		MaxBytes:     2048,
 		PinnedSHA256: map[string]string{"AGENTS.md": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"},
 	}
-	require.NotNil(t, got.RunConfig)
-	require.Equal(t, want, got.RunConfig.RepositoryGuidance)
+	must.NotNil(got.RunConfig)
+	must.Equal(want, got.RunConfig.RepositoryGuidance)
 }
 
 func TestLoadSuiteHCL_GuidanceSuiteParses(t *testing.T) {
+	must := require.New(t)
 	got, err := LoadSuiteHCL("../suites/guidance.hcl")
-	require.NoError(t, err)
+	must.NoError(err)
 
-	require.Equal(t, "repository-guidance", got.ID)
-	require.Len(t, got.Tasks, 2)
+	must.Equal("repository-guidance", got.ID)
+	must.Len(got.Tasks, 2)
 
 	for _, task := range got.Tasks {
 		t.Run(task.ID, func(t *testing.T) {
-			require.Contains(t, task.Files, "AGENTS.md", "task must seed an AGENTS.md for the guidance loader to read")
+			must := require.New(t)
+			must.Contains(task.Files, "AGENTS.md", "task must seed an AGENTS.md for the guidance loader to read")
 		})
 	}
 }

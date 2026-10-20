@@ -26,15 +26,16 @@ func sessionConfig(session string) *types.RunConfig {
 }
 
 func TestRunScope_SessionOnEverySpan(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := newTestOTelEmitter()
 	emitter.Start("run-scope", sessionConfig("nightly-eval"))
 	_, child := emitter.Tracer().Start(emitter.RootContext(), "context.prepare")
 	child.End()
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	spans := exporter.GetSpans()
-	require.Len(t, spans, 2)
+	must.Len(spans, 2)
 	for _, s := range spans {
 		assertAttribute(t, s, genAIConversationIDKey, "nightly-eval")
 		assertAttribute(t, s, sessionIDKey, "nightly-eval")
@@ -43,12 +44,13 @@ func TestRunScope_SessionOnEverySpan(t *testing.T) {
 }
 
 func TestRunScope_NoSessionAttributesWithoutSessionName(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := newTestOTelEmitter()
 	emitter.Start("run-scope", sessionConfig(""))
 	_, child := emitter.Tracer().Start(emitter.RootContext(), "context.prepare")
 	child.End()
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	for _, s := range exporter.GetSpans() {
 		assertAttributesAbsent(t, s, genAIConversationIDKey, sessionIDKey)
@@ -57,14 +59,15 @@ func TestRunScope_NoSessionAttributesWithoutSessionName(t *testing.T) {
 }
 
 func TestRunScope_FollowUpRunResetsSession(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := newTestOTelEmitter()
 	emitter.Start("run-1", sessionConfig("first"))
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err, "finish run-1")
+	must.NoError(err, "finish run-1")
 	exporter.Reset()
 	emitter.Start("run-2", sessionConfig(""))
 	_, err = emitter.Finish(context.Background(), "success")
-	require.NoError(t, err, "finish run-2")
+	must.NoError(err, "finish run-2")
 
 	for _, s := range exporter.GetSpans() {
 		assertAttributesAbsent(t, s, genAIConversationIDKey, sessionIDKey)
@@ -72,6 +75,7 @@ func TestRunScope_FollowUpRunResetsSession(t *testing.T) {
 }
 
 func TestRunScope_AgentNameInheritedFromNearestAgentSpan(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := newTestOTelEmitter()
 	emitter.Start("run-scope", sessionConfig("s"))
 	tracer := emitter.Tracer()
@@ -86,7 +90,7 @@ func TestRunScope_AgentNameInheritedFromNearestAgentSpan(t *testing.T) {
 	_, after := tracer.Start(emitter.RootContext(), "git.checkpoint")
 	after.End()
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	spans := exporter.GetSpans()
 	cases := []struct {
@@ -127,7 +131,7 @@ func TestRunScope_AgentNameInheritedFromNearestAgentSpan(t *testing.T) {
 			assertAttribute(t, s, sessionIDKey, "s")
 		})
 	}
-	require.Empty(t, emitter.scope.agents, "span entries retained after every span ended")
+	must.Empty(emitter.scope.agents, "span entries retained after every span ended")
 }
 
 // startAttrRecorder captures the attributes each span carries when its
@@ -144,6 +148,7 @@ func (r *startAttrRecorder) Shutdown(context.Context) error   { return nil }
 func (r *startAttrRecorder) ForceFlush(context.Context) error { return nil }
 
 func TestWithSpanProcessor_SeesRunScopeAttributesAtStart(t *testing.T) {
+	must := require.New(t)
 	rec := &startAttrRecorder{seen: map[string][]attribute.KeyValue{}}
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(tracetest.NewInMemoryExporter()))
 	emitter := newOTelTraceEmitterForTest(tp, false, WithSpanProcessor(rec))
@@ -151,7 +156,7 @@ func TestWithSpanProcessor_SeesRunScopeAttributesAtStart(t *testing.T) {
 	_, child := emitter.Tracer().Start(emitter.RootContext(), "context.prepare")
 	child.End()
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	attrs := rec.seen["context.prepare"]
 	missing := map[attribute.Key]string{
@@ -164,7 +169,7 @@ func TestWithSpanProcessor_SeesRunScopeAttributesAtStart(t *testing.T) {
 			delete(missing, kv.Key)
 		}
 	}
-	require.Empty(t, missing, "start attributes missing from span; saw %v", attrs)
+	must.Empty(missing, "start attributes missing from span; saw %v", attrs)
 }
 
 func correlatedConfig(session string) *types.RunConfig {
@@ -181,6 +186,8 @@ func correlatedConfig(session string) *types.RunConfig {
 }
 
 func TestRunScope_CorrelationOnEverySpan(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	emitter, exporter := newTestOTelEmitter()
 	emitter.Start("run-scope", correlatedConfig("nightly-eval"))
 	tracer := emitter.Tracer()
@@ -190,10 +197,10 @@ func TestRunScope_CorrelationOnEverySpan(t *testing.T) {
 	leaf.End()
 	sub.End()
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	spans := exporter.GetSpans()
-	require.Len(t, spans, 3)
+	must.Len(spans, 3)
 	for _, s := range spans {
 		assertAttribute(t, s, sessionIDKey, "cp-session-42")
 		assertAttribute(t, s, genAIConversationIDKey, "cp-session-42")
@@ -209,17 +216,18 @@ func TestRunScope_CorrelationOnEverySpan(t *testing.T) {
 				labels++
 			}
 		}
-		assert.Equal(t, 2, labels, "%s: label attributes, want one per label", s.Name)
+		check.Equal(2, labels, "%s: label attributes, want one per label", s.Name)
 	}
 }
 
 func TestRunScope_SessionNameIsSessionFallback(t *testing.T) {
+	must := require.New(t)
 	cfg := sessionConfig("nightly-eval")
 	cfg.Correlation = &types.CorrelationConfig{TaskID: "task-7"}
 	emitter, exporter := newTestOTelEmitter()
 	emitter.Start("run-scope", cfg)
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	for _, s := range exporter.GetSpans() {
 		assertAttribute(t, s, sessionIDKey, "nightly-eval")
@@ -230,12 +238,13 @@ func TestRunScope_SessionNameIsSessionFallback(t *testing.T) {
 }
 
 func TestRunScope_NoSessionWithoutSessionIDOrName(t *testing.T) {
+	must := require.New(t)
 	cfg := sessionConfig("")
 	cfg.Correlation = &types.CorrelationConfig{UserID: "user-9f2c"}
 	emitter, exporter := newTestOTelEmitter()
 	emitter.Start("run-scope", cfg)
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	for _, s := range exporter.GetSpans() {
 		assertAttributesAbsent(t, s, sessionIDKey, genAIConversationIDKey)
@@ -244,14 +253,15 @@ func TestRunScope_NoSessionWithoutSessionIDOrName(t *testing.T) {
 }
 
 func TestRunScope_FollowUpRunResetsCorrelation(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := newTestOTelEmitter()
 	emitter.Start("run-1", correlatedConfig(""))
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err, "finish run-1")
+	must.NoError(err, "finish run-1")
 	exporter.Reset()
 	emitter.Start("run-2", sessionConfig(""))
 	_, err = emitter.Finish(context.Background(), "success")
-	require.NoError(t, err, "finish run-2")
+	must.NoError(err, "finish run-2")
 
 	for _, s := range exporter.GetSpans() {
 		assertAttributesAbsent(t, s, sessionIDKey, userIDKey, taskIDKey, attemptIDKey,
@@ -260,6 +270,7 @@ func TestRunScope_FollowUpRunResetsCorrelation(t *testing.T) {
 }
 
 func TestRunScope_BackToBackRunsCarryTheirOwnCorrelation(t *testing.T) {
+	must := require.New(t)
 	first := correlatedConfig("")
 	second := correlatedConfig("")
 	second.Correlation = &types.CorrelationConfig{
@@ -277,16 +288,16 @@ func TestRunScope_BackToBackRunsCarryTheirOwnCorrelation(t *testing.T) {
 		_, child := emitter.Tracer().Start(emitter.RootContext(), "context.prepare")
 		child.End()
 		_, err := emitter.Finish(context.Background(), "success")
-		require.NoError(t, err, "finish run %d", i+1)
+		must.NoError(err, "finish run %d", i+1)
 	}
 
 	spans := exporter.GetSpans()
-	require.Len(t, spans, 4)
+	must.Len(spans, 4)
 	byTrace := map[oteltrace.TraceID]*types.CorrelationConfig{
 		spans[1].SpanContext.TraceID(): first.Correlation,
 		spans[3].SpanContext.TraceID(): second.Correlation,
 	}
-	require.Len(t, byTrace, 2, "the two runs should be separate traces")
+	must.Len(byTrace, 2, "the two runs should be separate traces")
 	for _, s := range spans {
 		want := byTrace[s.SpanContext.TraceID()]
 		assertAttribute(t, s, sessionIDKey, want.SessionID)
@@ -302,6 +313,8 @@ func TestRunScope_BackToBackRunsCarryTheirOwnCorrelation(t *testing.T) {
 }
 
 func TestRunScope_CorrelationIsScrubbed(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	key := "sk-ant-api03-" + strings.Repeat("A", 40)
 	cfg := sessionConfig("")
 	cfg.Correlation = &types.CorrelationConfig{
@@ -312,19 +325,19 @@ func TestRunScope_CorrelationIsScrubbed(t *testing.T) {
 	emitter, exporter := newTestOTelEmitter()
 	emitter.Start("run-scope", cfg)
 	runTrace, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	for _, s := range exporter.GetSpans() {
 		for _, kv := range s.Attributes {
-			assert.NotContains(t, kv.Value.String(), key,
+			check.NotContains(kv.Value.String(), key,
 				"%s: attribute %s carries the unscrubbed key", s.Name, kv.Key)
 		}
 		assertAttribute(t, s, controlPlaneURLKey, "https://cp.example.com/runs/42?token=[REDACTED]")
 	}
 
 	got := runTrace.Config.Correlation
-	require.NotNil(t, got, "RunTrace config has no correlation")
-	require.NotContains(t, got.URL+got.UserID+got.Labels["agent_profile"], key,
+	must.NotNil(got, "RunTrace config has no correlation")
+	must.NotContains(got.URL+got.UserID+got.Labels["agent_profile"], key,
 		"RunTrace config correlation not scrubbed: %+v", got)
-	require.Contains(t, cfg.Correlation.URL, key, "scrubbing must not reach the live config")
+	must.Contains(cfg.Correlation.URL, key, "scrubbing must not reach the live config")
 }

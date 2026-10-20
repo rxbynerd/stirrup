@@ -27,6 +27,7 @@ import (
 // types/trace and would form a test-only dependency cycle).
 func readEvents(t *testing.T, src []byte) []Event {
 	t.Helper()
+	must := require.New(t)
 	scanner := bufio.NewScanner(bytes.NewReader(src))
 	scanner.Buffer(make([]byte, 0, 256*1024), 4*1024*1024)
 	var events []Event
@@ -36,10 +37,10 @@ func readEvents(t *testing.T, src []byte) []Event {
 			continue
 		}
 		var ev Event
-		require.NoError(t, json.Unmarshal(line, &ev), "unmarshal event\n%s", line)
+		must.NoError(json.Unmarshal(line, &ev), "unmarshal event\n%s", line)
 		events = append(events, ev)
 	}
-	require.NoError(t, scanner.Err(), "scan events")
+	must.NoError(scanner.Err(), "scan events")
 	return events
 }
 
@@ -48,16 +49,19 @@ func readEvents(t *testing.T, src []byte) []Event {
 // run_finished per run, so "first" is unambiguous for those kinds.
 func pickEvent(t *testing.T, events []Event, kind EventKind) Event {
 	t.Helper()
+	must := require.New(t)
 	for _, ev := range events {
 		if ev.Kind == kind {
 			return ev
 		}
 	}
-	require.FailNowf(t, "event not found", "no event of kind %q in stream", kind)
+	must.FailNowf("event not found", "no event of kind %q in stream", kind)
 	return Event{}
 }
 
 func TestJSONLTraceEmitter_FullLifecycle(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 
@@ -103,25 +107,25 @@ func TestJSONLTraceEmitter_FullLifecycle(t *testing.T) {
 	emitter.RecordPermissionDenial()
 
 	trace, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
-	assert.Equal(t, "run-123", trace.ID)
-	assert.Equal(t, 2, trace.Turns)
+	check.Equal("run-123", trace.ID)
+	check.Equal(2, trace.Turns)
 	wantTokens := types.TokenUsage{Input: 300, Output: 125, CacheRead: 210, CacheWrite: 30, Reasoning: 15}
-	assert.Equal(t, wantTokens, trace.TokenUsage)
-	assert.Len(t, trace.ToolCalls, 2)
-	assert.Equal(t, "success", trace.Outcome)
-	assert.Equal(t, 2, trace.PermissionDenials)
-	assert.Equal(t, "secret://[REDACTED]", trace.Config.Provider.APIKeyRef)
+	check.Equal(wantTokens, trace.TokenUsage)
+	check.Len(trace.ToolCalls, 2)
+	check.Equal("success", trace.Outcome)
+	check.Equal(2, trace.PermissionDenials)
+	check.Equal("secret://[REDACTED]", trace.Config.Provider.APIKeyRef)
 
 	events := readEvents(t, buf.Bytes())
-	require.GreaterOrEqual(t, len(events), 4, "expected started, 2 tool_call_record and finished events")
+	must.GreaterOrEqual(len(events), 4, "expected started, 2 tool_call_record and finished events")
 
 	started := pickEvent(t, events, EventKindRunStarted)
-	assert.Equal(t, CurrentSchemaVersion, started.SchemaVersion)
-	assert.Equal(t, "run-123", started.RunID)
-	require.NotNil(t, started.Config, "run_started missing config")
-	assert.Equal(t, "secret://[REDACTED]", started.Config.Provider.APIKeyRef)
+	check.Equal(CurrentSchemaVersion, started.SchemaVersion)
+	check.Equal("run-123", started.RunID)
+	must.NotNil(started.Config, "run_started missing config")
+	check.Equal("secret://[REDACTED]", started.Config.Provider.APIKeyRef)
 
 	var toolCallEvents int
 	for _, ev := range events {
@@ -129,15 +133,15 @@ func TestJSONLTraceEmitter_FullLifecycle(t *testing.T) {
 			toolCallEvents++
 		}
 	}
-	assert.Equal(t, 2, toolCallEvents, "tool_call_record events")
+	check.Equal(2, toolCallEvents, "tool_call_record events")
 
 	finished := pickEvent(t, events, EventKindRunFinished)
-	require.NotNil(t, finished.Trace, "run_finished missing embedded trace summary")
-	assert.Equal(t, "run-123", finished.Trace.ID)
-	assert.Equal(t, "success", finished.Trace.Outcome)
-	assert.Equal(t, 2, finished.Trace.PermissionDenials)
-	assert.Equal(t, wantTokens, finished.Trace.TokenUsage)
-	assert.Contains(t, buf.String(), `"tokenUsage":{"input":300,"output":125,"cacheRead":210,"cacheWrite":30,"reasoning":15}`,
+	must.NotNil(finished.Trace, "run_finished missing embedded trace summary")
+	check.Equal("run-123", finished.Trace.ID)
+	check.Equal("success", finished.Trace.Outcome)
+	check.Equal(2, finished.Trace.PermissionDenials)
+	check.Equal(wantTokens, finished.Trace.TokenUsage)
+	check.Contains(buf.String(), `"tokenUsage":{"input":300,"output":125,"cacheRead":210,"cacheWrite":30,"reasoning":15}`,
 		"run_finished line missing the token usage breakdown")
 }
 
@@ -148,6 +152,8 @@ func TestJSONLTraceEmitter_FullLifecycle(t *testing.T) {
 // labelled --name "nightly-eval" would not be filterable by label in
 // downstream analysis.
 func TestJSONLTraceEmitter_SessionNameRoundTrip(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 
@@ -162,37 +168,39 @@ func TestJSONLTraceEmitter_SessionNameRoundTrip(t *testing.T) {
 	}
 	emitter.Start("run-session", config)
 	tr, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
-	require.Equal(t, "nightly-eval", tr.Config.SessionName, "returned trace SessionName")
+	must.NoError(err)
+	must.Equal("nightly-eval", tr.Config.SessionName, "returned trace SessionName")
 
 	events := readEvents(t, buf.Bytes())
 	started := pickEvent(t, events, EventKindRunStarted)
-	require.NotNil(t, started.Config, "run_started missing config")
-	assert.Equal(t, "nightly-eval", started.Config.SessionName, "run_started SessionName")
+	must.NotNil(started.Config, "run_started missing config")
+	check.Equal("nightly-eval", started.Config.SessionName, "run_started SessionName")
 
 	finished := pickEvent(t, events, EventKindRunFinished)
-	require.NotNil(t, finished.Trace, "run_finished missing embedded trace summary")
-	assert.Equal(t, "nightly-eval", finished.Trace.Config.SessionName, "run_finished trace SessionName")
+	must.NotNil(finished.Trace, "run_finished missing embedded trace summary")
+	check.Equal("nightly-eval", finished.Trace.Config.SessionName, "run_finished trace SessionName")
 }
 
 func TestJSONLTraceEmitter_EmptyRun(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 
 	emitter.Start("run-empty", nil)
 
 	trace, err := emitter.Finish(context.Background(), "error")
-	require.NoError(t, err)
-	assert.Zero(t, trace.Turns)
-	assert.Equal(t, "error", trace.Outcome)
-	assert.NotEmpty(t, buf.Bytes(), "expected output to be written")
+	must.NoError(err)
+	check.Zero(trace.Turns)
+	check.Equal("error", trace.Outcome)
+	check.NotEmpty(buf.Bytes(), "expected output to be written")
 
 	// A nil config is accepted, so callers that fail validation before
 	// constructing a full RunConfig can still record telemetry.
 	events := readEvents(t, buf.Bytes())
-	require.Len(t, events, 2, "expected run_started and run_finished only")
-	assert.Equal(t, EventKindRunStarted, events[0].Kind, "first event")
-	assert.Equal(t, EventKindRunFinished, events[len(events)-1].Kind, "last event")
+	must.Len(events, 2, "expected run_started and run_finished only")
+	check.Equal(EventKindRunStarted, events[0].Kind, "first event")
+	check.Equal(EventKindRunFinished, events[len(events)-1].Kind, "last event")
 }
 
 // TestJSONLTraceEmitter_RecordTurnRecord_Scrubs pins the defence-in-
@@ -202,6 +210,8 @@ func TestJSONLTraceEmitter_EmptyRun(t *testing.T) {
 // written, so a SIGKILL between RecordTurnRecord and Finish still
 // leaves a scrubbed event on disk.
 func TestJSONLTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 
@@ -231,16 +241,16 @@ func TestJSONLTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 		},
 	})
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	onDisk := buf.String()
 	// Anchor on a known-distinctive secret prefix: if any substring of
 	// the form sk-ant-api03-... lands on disk verbatim the scrubber is
 	// broken.
-	assert.NotContains(t, onDisk, "sk-ant-api03-redactme", "scrubber missed model input secret")
-	assert.NotContains(t, onDisk, "sk-ant-api03-leak-leak", "scrubber missed tool input secret")
-	assert.NotContains(t, onDisk, "Bearer ABCDEFG1", "scrubber missed bearer token")
-	assert.Contains(t, onDisk, "[REDACTED]", "scrubbed trace has no [REDACTED] placeholder")
+	check.NotContains(onDisk, "sk-ant-api03-redactme", "scrubber missed model input secret")
+	check.NotContains(onDisk, "sk-ant-api03-leak-leak", "scrubber missed tool input secret")
+	check.NotContains(onDisk, "Bearer ABCDEFG1", "scrubber missed bearer token")
+	check.Contains(onDisk, "[REDACTED]", "scrubbed trace has no [REDACTED] placeholder")
 }
 
 // TestScrubTurnRecord_ToolCallRecord_FieldCompleteness guards
@@ -252,6 +262,8 @@ func TestJSONLTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 // non-zero value, so a field left unset cannot pass by comparing
 // zero to zero.
 func TestScrubTurnRecord_ToolCallRecord_FieldCompleteness(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	// scrubbedFields are redacted by scrubTurnRecord, so they are exempt
 	// from the verbatim check. Their redaction is covered by
 	// TestJSONLTraceEmitter_RecordTurnRecord_Scrubs and the other
@@ -278,14 +290,14 @@ func TestScrubTurnRecord_ToolCallRecord_FieldCompleteness(t *testing.T) {
 	rtIn := reflect.TypeOf(in)
 	inFixtureVal := reflect.ValueOf(in)
 	for i := 0; i < rtIn.NumField(); i++ {
-		require.False(t, inFixtureVal.Field(i).IsZero(),
+		must.False(inFixtureVal.Field(i).IsZero(),
 			"fixture field %q is zero; set every ToolCallRecord field in the fixture", rtIn.Field(i).Name)
 	}
 
 	turn := types.TurnRecord{Turn: 1, ToolCalls: []types.ToolCallRecord{in}}
 
 	out := scrubTurnRecord(turn, false)
-	require.Len(t, out.ToolCalls, 1)
+	must.Len(out.ToolCalls, 1)
 	got := out.ToolCalls[0]
 
 	inVal := reflect.ValueOf(in)
@@ -294,11 +306,11 @@ func TestScrubTurnRecord_ToolCallRecord_FieldCompleteness(t *testing.T) {
 	for i := 0; i < rt.NumField(); i++ {
 		name := rt.Field(i).Name
 		if scrubbedFields[name] {
-			assert.False(t, gotVal.Field(i).IsZero(),
+			check.False(gotVal.Field(i).IsZero(),
 				"field %s was dropped instead of scrubbed", name)
 			continue
 		}
-		assert.Equal(t, inVal.Field(i).Interface(), gotVal.Field(i).Interface(),
+		check.Equal(inVal.Field(i).Interface(), gotVal.Field(i).Interface(),
 			"field %s not copied verbatim by scrubTurnRecord", name)
 	}
 }
@@ -311,6 +323,8 @@ func TestScrubTurnRecord_ToolCallRecord_FieldCompleteness(t *testing.T) {
 // it outright, on both the model-output route and the message-history
 // route of the next turn.
 func TestJSONLTraceEmitter_RecordTurnRecord_DropsThoughtSignature(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 
@@ -334,11 +348,11 @@ func TestJSONLTraceEmitter_RecordTurnRecord_DropsThoughtSignature(t *testing.T) 
 		},
 	})
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	onDisk := buf.String()
-	assert.NotContains(t, onDisk, signature, "ThoughtSignature survived into the persisted trace")
-	assert.NotContains(t, onDisk, "thought_signature", "thought_signature key should be omitted after drop")
+	check.NotContains(onDisk, signature, "ThoughtSignature survived into the persisted trace")
+	check.NotContains(onDisk, "thought_signature", "thought_signature key should be omitted after drop")
 }
 
 // TestJSONLTraceEmitter_RecordTurnRecord_DropsThinkingSignatures extends the
@@ -346,6 +360,8 @@ func TestJSONLTraceEmitter_RecordTurnRecord_DropsThoughtSignature(t *testing.T) 
 // redacted data are both opaque, so the recording keeps each block's type
 // and (scrubbed) text but never the blob.
 func TestJSONLTraceEmitter_RecordTurnRecord_DropsThinkingSignatures(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 
@@ -366,14 +382,14 @@ func TestJSONLTraceEmitter_RecordTurnRecord_DropsThinkingSignatures(t *testing.T
 		ModelOutput: thinking,
 	})
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	onDisk := buf.String()
 	for _, secret := range []string{signature, redacted} {
-		assert.NotContains(t, onDisk, secret, "thinking blob survived into the persisted trace")
+		check.NotContains(onDisk, secret, "thinking blob survived into the persisted trace")
 	}
-	assert.Contains(t, onDisk, `"type":"thinking","text":"plan"`, "thinking block type missing from the recording")
-	assert.Contains(t, onDisk, `"type":"redacted_thinking"`, "redacted_thinking block type missing from the recording")
+	check.Contains(onDisk, `"type":"thinking","text":"plan"`, "thinking block type missing from the recording")
+	check.Contains(onDisk, `"type":"redacted_thinking"`, "redacted_thinking block type missing from the recording")
 }
 
 // TestJSONLTraceEmitter_RecordTurnRecord_DropsMessageReplayFields mirrors
@@ -384,6 +400,8 @@ func TestJSONLTraceEmitter_RecordTurnRecord_DropsThinkingSignatures(t *testing.T
 // within it, and scrubModelInput's explicit field list drops it from
 // the persisted message history outright.
 func TestJSONLTraceEmitter_RecordTurnRecord_DropsMessageReplayFields(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 
@@ -407,11 +425,11 @@ func TestJSONLTraceEmitter_RecordTurnRecord_DropsMessageReplayFields(t *testing.
 		},
 	})
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	onDisk := buf.String()
-	assert.NotContains(t, onDisk, replayValue, "Message.ReplayFields value survived into the persisted trace")
-	assert.NotContains(t, onDisk, "replay_fields", "replay_fields key should be omitted after drop")
+	check.NotContains(onDisk, replayValue, "Message.ReplayFields value survived into the persisted trace")
+	check.NotContains(onDisk, "replay_fields", "replay_fields key should be omitted after drop")
 }
 
 // TestJSONLTraceEmitter_RecordTurnRecord_DropsResponsesOutputReplay pins the
@@ -419,6 +437,8 @@ func TestJSONLTraceEmitter_RecordTurnRecord_DropsMessageReplayFields(t *testing.
 // reasoning items carry encrypted_content: the whole array stays out of the
 // persisted trace.
 func TestJSONLTraceEmitter_RecordTurnRecord_DropsResponsesOutputReplay(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 
@@ -440,11 +460,11 @@ func TestJSONLTraceEmitter_RecordTurnRecord_DropsResponsesOutputReplay(t *testin
 		},
 	})
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	onDisk := buf.String()
 	for _, leak := range []string{encrypted, "rs_trace", "msg_trace", "replay_fields"} {
-		assert.NotContains(t, onDisk, leak, "persisted trace contains leaked replay content")
+		check.NotContains(onDisk, leak, "persisted trace contains leaked replay content")
 	}
 }
 
@@ -454,6 +474,8 @@ func TestJSONLTraceEmitter_RecordTurnRecord_DropsResponsesOutputReplay(t *testin
 // same payload is scrubbed as ToolCallRecord.Output on its other route
 // into the trace; this covers the message-history route.
 func TestJSONLTraceEmitter_RecordTurnRecord_ScrubsToolResultContent(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 
@@ -477,11 +499,11 @@ func TestJSONLTraceEmitter_RecordTurnRecord_ScrubsToolResultContent(t *testing.T
 		},
 	})
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	onDisk := buf.String()
-	assert.NotContains(t, onDisk, "sk-ant-api03-toolresultleak", "scrubber missed secret in tool_result content")
-	assert.Contains(t, onDisk, "[REDACTED]", "tool_result scrub did not run")
+	check.NotContains(onDisk, "sk-ant-api03-toolresultleak", "scrubber missed secret in tool_result content")
+	check.Contains(onDisk, "[REDACTED]", "tool_result scrub did not run")
 }
 
 // TestJSONLTraceEmitter_RecordTurnRecord_ScrubsStructured pins the
@@ -489,6 +511,8 @@ func TestJSONLTraceEmitter_RecordTurnRecord_ScrubsToolResultContent(t *testing.T
 // footing as the text Output: a command transcript or file excerpt carried in
 // ToolCallRecord.Structured must never reach disk with a secret in the clear.
 func TestJSONLTraceEmitter_RecordTurnRecord_ScrubsStructured(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 
@@ -508,15 +532,15 @@ func TestJSONLTraceEmitter_RecordTurnRecord_ScrubsStructured(t *testing.T) {
 		},
 	})
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	onDisk := buf.String()
-	assert.NotContains(t, onDisk, "sk-ant-api03-structuredleak", "scrubber missed secret in structured payload")
-	assert.Contains(t, onDisk, "[REDACTED]", "structured scrub did not run")
-	assert.Contains(t, onDisk, `"structured"`, "structured field missing from the trace")
+	check.NotContains(onDisk, "sk-ant-api03-structuredleak", "scrubber missed secret in structured payload")
+	check.Contains(onDisk, "[REDACTED]", "structured scrub did not run")
+	check.Contains(onDisk, `"structured"`, "structured field missing from the trace")
 	// scrubRawJSON matches secrets in the raw JSON bytes. The persisted
 	// JSON must not contain \u escapes, which would split a secret's bytes.
-	assert.NotContains(t, onDisk, `\u`, "persisted JSON contains a \\u escape")
+	check.NotContains(onDisk, `\u`, "persisted JSON contains a \\u escape")
 }
 
 // TestJSONLTraceEmitter_RecordTurnRecord_ScrubsContentBlockStructured pins the
@@ -527,6 +551,8 @@ func TestJSONLTraceEmitter_RecordTurnRecord_ScrubsStructured(t *testing.T) {
 // only on the ToolCallRecord. A secret-shaped substring inside that block's
 // Structured payload must not reach disk in the clear.
 func TestJSONLTraceEmitter_RecordTurnRecord_ScrubsContentBlockStructured(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 
@@ -554,14 +580,14 @@ func TestJSONLTraceEmitter_RecordTurnRecord_ScrubsContentBlockStructured(t *test
 		},
 	})
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	onDisk := buf.String()
-	assert.NotContains(t, onDisk, "sk-ant-api03-cbleak", "scrubber missed secret in content-block structured payload")
-	assert.Contains(t, onDisk, "[REDACTED]", "content-block structured scrub did not run")
+	check.NotContains(onDisk, "sk-ant-api03-cbleak", "scrubber missed secret in content-block structured payload")
+	check.Contains(onDisk, "[REDACTED]", "content-block structured scrub did not run")
 	// The structured field must survive as parseable JSON, not a mangled
 	// fragment: scrubRawJSON preserves a valid shape.
-	assert.Contains(t, onDisk, `"structured"`, "content-block structured field should survive scrubbing")
+	check.Contains(onDisk, `"structured"`, "content-block structured field should survive scrubbing")
 }
 
 // TestJSONLTraceEmitter_RecordTurnRecord_PreservesSynthetic pins the requirement
@@ -569,6 +595,8 @@ func TestJSONLTraceEmitter_RecordTurnRecord_ScrubsContentBlockStructured(t *test
 // replay/mining toolchain can distinguish harness-injected turns from genuine
 // user content.
 func TestJSONLTraceEmitter_RecordTurnRecord_PreservesSynthetic(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 
@@ -597,24 +625,26 @@ func TestJSONLTraceEmitter_RecordTurnRecord_PreservesSynthetic(t *testing.T) {
 		},
 	})
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	turnEv := pickEvent(t, readEvents(t, buf.Bytes()), EventKindTurnRecord)
-	require.NotNil(t, turnEv.ModelInput, "turn_record has no modelInput")
+	must.NotNil(turnEv.ModelInput, "turn_record has no modelInput")
 	msgs := turnEv.ModelInput.Messages
-	require.Len(t, msgs, 3)
-	assert.False(t, msgs[0].Synthetic, "first message should not be synthetic")
-	assert.True(t, msgs[1].Synthetic, "second message should keep Synthetic:true through scrubModelInput")
-	assert.Empty(t, msgs[1].Origin, "escalation nudge should not gain an origin")
-	assert.Equal(t, types.MessageOriginVerifierFeedback, msgs[2].Origin, "verifier feedback origin should survive scrubModelInput")
+	must.Len(msgs, 3)
+	check.False(msgs[0].Synthetic, "first message should not be synthetic")
+	check.True(msgs[1].Synthetic, "second message should keep Synthetic:true through scrubModelInput")
+	check.Empty(msgs[1].Origin, "escalation nudge should not gain an origin")
+	check.Equal(types.MessageOriginVerifierFeedback, msgs[2].Origin, "verifier feedback origin should survive scrubModelInput")
 
-	assert.Contains(t, buf.String(), `"synthetic":true`, "on-disk JSON should carry synthetic:true")
+	check.Contains(buf.String(), `"synthetic":true`, "on-disk JSON should carry synthetic:true")
 }
 
 // TestJSONLTraceEmitter_RecordTurnRecord_PreservesOutputLimitRecovery pins
 // that a turn the loop continued past an output-limit stop is marked on
 // its turn_record line, and that other turns omit the field.
 func TestJSONLTraceEmitter_RecordTurnRecord_PreservesOutputLimitRecovery(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 
@@ -622,7 +652,7 @@ func TestJSONLTraceEmitter_RecordTurnRecord_PreservesOutputLimitRecovery(t *test
 	emitter.RecordTurnRecord(types.TurnRecord{Turn: 0, OutputLimitRecovery: true})
 	emitter.RecordTurnRecord(types.TurnRecord{Turn: 1})
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	var flags []bool
 	for _, ev := range readEvents(t, buf.Bytes()) {
@@ -630,14 +660,16 @@ func TestJSONLTraceEmitter_RecordTurnRecord_PreservesOutputLimitRecovery(t *test
 			flags = append(flags, ev.OutputLimitRecovery)
 		}
 	}
-	assert.Equal(t, []bool{true, false}, flags, "turn_record outputLimitRecovery")
-	assert.Equal(t, 1, strings.Count(buf.String(), `"outputLimitRecovery":true`), "on-disk outputLimitRecovery:true count")
+	check.Equal([]bool{true, false}, flags, "turn_record outputLimitRecovery")
+	check.Equal(1, strings.Count(buf.String(), `"outputLimitRecovery":true`), "on-disk outputLimitRecovery:true count")
 }
 
 // TestJSONLTraceEmitter_RecordTurnRecord_PreservesStallNudge pins that a
 // turn followed by a stall nudge is marked on its turn_record line, and
 // that other turns omit the field.
 func TestJSONLTraceEmitter_RecordTurnRecord_PreservesStallNudge(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 
@@ -645,7 +677,7 @@ func TestJSONLTraceEmitter_RecordTurnRecord_PreservesStallNudge(t *testing.T) {
 	emitter.RecordTurnRecord(types.TurnRecord{Turn: 0})
 	emitter.RecordTurnRecord(types.TurnRecord{Turn: 1, StallNudge: true})
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	var flags []bool
 	for _, ev := range readEvents(t, buf.Bytes()) {
@@ -653,14 +685,16 @@ func TestJSONLTraceEmitter_RecordTurnRecord_PreservesStallNudge(t *testing.T) {
 			flags = append(flags, ev.StallNudge)
 		}
 	}
-	assert.Equal(t, []bool{false, true}, flags, "turn_record stallNudge")
-	assert.Equal(t, 1, strings.Count(buf.String(), `"stallNudge":true`), "on-disk stallNudge:true count")
+	check.Equal([]bool{false, true}, flags, "turn_record stallNudge")
+	check.Equal(1, strings.Count(buf.String(), `"stallNudge":true`), "on-disk stallNudge:true count")
 }
 
 // TestJSONLTraceEmitter_RecordTurnRecord_PreservesWindDown pins that the
 // turn carrying the wind-down instruction names its trigger on its
 // turn_record line, and that other turns omit the field.
 func TestJSONLTraceEmitter_RecordTurnRecord_PreservesWindDown(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 
@@ -668,7 +702,7 @@ func TestJSONLTraceEmitter_RecordTurnRecord_PreservesWindDown(t *testing.T) {
 	emitter.RecordTurnRecord(types.TurnRecord{Turn: 0})
 	emitter.RecordTurnRecord(types.TurnRecord{Turn: 1, WindDown: "time"})
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	var triggers []string
 	for _, ev := range readEvents(t, buf.Bytes()) {
@@ -676,8 +710,8 @@ func TestJSONLTraceEmitter_RecordTurnRecord_PreservesWindDown(t *testing.T) {
 			triggers = append(triggers, ev.WindDown)
 		}
 	}
-	assert.Equal(t, []string{"", "time"}, triggers, "turn_record windDown")
-	assert.Equal(t, 1, strings.Count(buf.String(), `"windDown"`), "on-disk windDown count")
+	check.Equal([]string{"", "time"}, triggers, "turn_record windDown")
+	check.Equal(1, strings.Count(buf.String(), `"windDown"`), "on-disk windDown count")
 }
 
 // TestJSONLTraceEmitter_PartialStream_ParseableBeforeFinish pins the SIGKILL-safety property:
@@ -687,6 +721,8 @@ func TestJSONLTraceEmitter_RecordTurnRecord_PreservesWindDown(t *testing.T) {
 // emitter writes to an os.File whose os.Write calls are line-flushed
 // by the kernel for sub-PIPE_BUF writes.
 func TestJSONLTraceEmitter_PartialStream_ParseableBeforeFinish(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 
@@ -699,10 +735,10 @@ func TestJSONLTraceEmitter_PartialStream_ParseableBeforeFinish(t *testing.T) {
 	})
 	// Simulate a SIGKILL: no Finish call.
 	events := readEvents(t, buf.Bytes())
-	require.Len(t, events, 2, "expected run_started and turn_record before Finish")
-	assert.Equal(t, EventKindRunStarted, events[0].Kind, "first event kind")
-	assert.Equal(t, EventKindTurnRecord, events[1].Kind, "second event kind")
-	assert.Equal(t, 1, events[1].Turn, "turn_record turn")
+	must.Len(events, 2, "expected run_started and turn_record before Finish")
+	check.Equal(EventKindRunStarted, events[0].Kind, "first event kind")
+	check.Equal(EventKindTurnRecord, events[1].Kind, "second event kind")
+	check.Equal(1, events[1].Turn, "turn_record turn")
 }
 
 // TestJSONLTraceEmitter_ImplementsHookRecorder is a compile-time
@@ -717,6 +753,8 @@ func TestJSONLTraceEmitter_ImplementsHookRecorder(t *testing.T) {
 // mirroring tool_call_record) AND accumulation into RunTrace.HookResults
 // at Finish, in call order.
 func TestJSONLTraceEmitter_RecordHookExecution_StreamsAndAccumulates(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 	emitter.Start("run-hooks", nil)
@@ -729,13 +767,13 @@ func TestJSONLTraceEmitter_RecordHookExecution_StreamsAndAccumulates(t *testing.
 	})
 
 	trace, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
-	require.Len(t, trace.HookResults, 2)
-	assert.Equal(t, "preRun", trace.HookResults[0].Phase, "HookResults[0] phase")
-	assert.Equal(t, "clone", trace.HookResults[0].Name, "HookResults[0] name")
-	assert.Equal(t, "postRun", trace.HookResults[1].Phase, "HookResults[1] phase")
-	assert.Equal(t, "smoke-test", trace.HookResults[1].Name, "HookResults[1] name")
+	must.Len(trace.HookResults, 2)
+	check.Equal("preRun", trace.HookResults[0].Phase, "HookResults[0] phase")
+	check.Equal("clone", trace.HookResults[0].Name, "HookResults[0] name")
+	check.Equal("postRun", trace.HookResults[1].Phase, "HookResults[1] phase")
+	check.Equal("smoke-test", trace.HookResults[1].Name, "HookResults[1] name")
 
 	events := readEvents(t, buf.Bytes())
 	var hookEvents []Event
@@ -744,11 +782,11 @@ func TestJSONLTraceEmitter_RecordHookExecution_StreamsAndAccumulates(t *testing.
 			hookEvents = append(hookEvents, ev)
 		}
 	}
-	require.Len(t, hookEvents, 2)
-	require.NotNil(t, hookEvents[0].Hook, "hook_record[0] has no hook payload")
-	assert.Equal(t, "clone", hookEvents[0].Hook.Name, "hook_record[0] name")
-	require.NotNil(t, hookEvents[1].Hook, "hook_record[1] has no hook payload")
-	assert.Equal(t, "smoke-test", hookEvents[1].Hook.Name, "hook_record[1] name")
+	must.Len(hookEvents, 2)
+	must.NotNil(hookEvents[0].Hook, "hook_record[0] has no hook payload")
+	check.Equal("clone", hookEvents[0].Hook.Name, "hook_record[0] name")
+	must.NotNil(hookEvents[1].Hook, "hook_record[1] has no hook payload")
+	check.Equal("smoke-test", hookEvents[1].Hook.Name, "hook_record[1] name")
 }
 
 // TestJSONLTraceEmitter_RecordHookExecution_Scrubs pins the
@@ -760,6 +798,8 @@ func TestJSONLTraceEmitter_RecordHookExecution_StreamsAndAccumulates(t *testing.
 // disk, the same posture RecordTurnRecord applies to tool output. A
 // Command with no secret-shaped literal survives intact.
 func TestJSONLTraceEmitter_RecordHookExecution_Scrubs(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 	emitter.Start("run-hook-scrub", nil)
@@ -772,13 +812,13 @@ func TestJSONLTraceEmitter_RecordHookExecution_Scrubs(t *testing.T) {
 		Error:      "request failed, token sk-ant-api03-leak rejected",
 	})
 	trace, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
-	assert.NotContains(t, buf.String(), "sk-ant-api03-leak", "scrubber missed hook secret in on-disk trace")
+	check.NotContains(buf.String(), "sk-ant-api03-leak", "scrubber missed hook secret in on-disk trace")
 	hook := trace.HookResults[0]
-	assert.NotContains(t, hook.OutputTail, "sk-ant-api03-leak", "HookResults[0] OutputTail not scrubbed")
-	assert.NotContains(t, hook.Error, "sk-ant-api03-leak", "HookResults[0] Error not scrubbed")
-	assert.Equal(t, `curl -H "Authorization: Bearer $TOKEN"`, hook.Command, "a command without a secret-shaped literal must survive intact")
+	check.NotContains(hook.OutputTail, "sk-ant-api03-leak", "HookResults[0] OutputTail not scrubbed")
+	check.NotContains(hook.Error, "sk-ant-api03-leak", "HookResults[0] Error not scrubbed")
+	check.Equal(`curl -H "Authorization: Bearer $TOKEN"`, hook.Command, "a command without a secret-shaped literal must survive intact")
 }
 
 // TestJSONLTraceEmitter_RecordHookExecution_ScrubsCaseVariedSecretRef
@@ -800,6 +840,7 @@ func TestJSONLTraceEmitter_RecordHookExecution_ScrubsCaseVariedSecretRef(t *test
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var buf bytes.Buffer
 			emitter := NewJSONLTraceEmitter(&buf, false)
 			emitter.Start("run-hook-case-bypass", nil)
@@ -810,11 +851,11 @@ func TestJSONLTraceEmitter_RecordHookExecution_ScrubsCaseVariedSecretRef(t *test
 				Command: tc.command,
 			})
 			trace, err := emitter.Finish(context.Background(), "success")
-			require.NoError(t, err)
+			must.NoError(err)
 
 			onDisk := buf.String()
-			require.NotContains(t, strings.ToLower(onDisk), "secret://", "scrubber missed case-varied secret:// reference in on-disk trace")
-			require.NotContains(t, strings.ToLower(trace.HookResults[0].Command), "secret://", "HookResults[0].Command not scrubbed")
+			must.NotContains(strings.ToLower(onDisk), "secret://", "scrubber missed case-varied secret:// reference in on-disk trace")
+			must.NotContains(strings.ToLower(trace.HookResults[0].Command), "secret://", "HookResults[0].Command not scrubbed")
 		})
 	}
 }
@@ -824,13 +865,15 @@ func TestJSONLTraceEmitter_RecordHookExecution_ScrubsCaseVariedSecretRef(t *test
 // a nil/empty HookResults, so the byte-for-byte-unchanged guarantee for
 // a hookless run extends to the JSONL trace shape.
 func TestJSONLTraceEmitter_NoHooks_LeavesHookResultsEmpty(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 	emitter.Start("run-no-hooks", nil)
 	trace, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
-	assert.Empty(t, trace.HookResults, "a hookless run should have no hook results")
-	assert.NotContains(t, buf.String(), string(EventKindHookRecord), "a hookless run should write no hook_record events")
+	must.NoError(err)
+	check.Empty(trace.HookResults, "a hookless run should have no hook results")
+	check.NotContains(buf.String(), string(EventKindHookRecord), "a hookless run should write no hook_record events")
 }
 
 // TestScrubRawJSON_WrapsWhenScrubBreaksValidity exercises the branch where the
@@ -840,32 +883,35 @@ func TestJSONLTraceEmitter_NoHooks_LeavesHookResultsEmpty(t *testing.T) {
 // the scrubbed text as a JSON string literal so the on-disk line stays valid,
 // rather than emitting raw broken JSON.
 func TestScrubRawJSON_WrapsWhenScrubBreaksValidity(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	// secret:// matches the secret_ref pattern; sitting as an unquoted value it
 	// is replaced by the bare "[REDACTED]" token, breaking JSON validity.
 	in := json.RawMessage(`{"a":secret://leaked}`)
 	out := scrubRawJSON(in, false)
 
-	require.True(t, json.Valid(out), "scrubRawJSON output is not valid JSON: %s", out)
+	must.True(json.Valid(out), "scrubRawJSON output is not valid JSON: %s", out)
 	// The wrap path encodes the scrubbed text as a JSON string. Decoding it
 	// back must yield the scrubbed-but-invalid intermediate, with the secret
 	// gone.
 	var decoded string
-	require.NoError(t, json.Unmarshal(out, &decoded), "wrapped output should decode as a JSON string (out=%s)", out)
-	assert.NotContains(t, decoded, "secret://leaked", "secret survived scrub")
-	assert.Contains(t, decoded, "[REDACTED]", "expected redaction marker in wrapped text")
+	must.NoError(json.Unmarshal(out, &decoded), "wrapped output should decode as a JSON string (out=%s)", out)
+	check.NotContains(decoded, "secret://leaked", "secret survived scrub")
+	check.Contains(decoded, "[REDACTED]", "expected redaction marker in wrapped text")
 }
 
 // TestScrubRawJSON_PreservesValidJSON guards the common path: a secret embedded
 // in a well-formed JSON string is scrubbed in place and the result stays valid
 // JSON without the string-wrap fallback.
 func TestScrubRawJSON_PreservesValidJSON(t *testing.T) {
+	must := require.New(t)
 	in := json.RawMessage(`{"token":"ghp_deadbeefcafef00d"}`)
 	out := scrubRawJSON(in, false)
 
-	require.True(t, json.Valid(out), "scrubRawJSON output is not valid JSON: %s", out)
+	must.True(json.Valid(out), "scrubRawJSON output is not valid JSON: %s", out)
 	var decoded map[string]string
-	require.NoError(t, json.Unmarshal(out, &decoded), "scrubbed output should decode as an object (out=%s)", out)
-	require.Equal(t, "[REDACTED]", decoded["token"], "token field")
+	must.NoError(json.Unmarshal(out, &decoded), "scrubbed output should decode as an object (out=%s)", out)
+	must.Equal("[REDACTED]", decoded["token"], "token field")
 }
 
 // TestScrubContentBlocks_DecodesFencedSecret pins that a secret the loop
@@ -873,11 +919,13 @@ func TestScrubRawJSON_PreservesValidJSON(t *testing.T) {
 // payload is decoded, scrubbed and re-encoded rather than stored as
 // base64 of the key.
 func TestScrubContentBlocks_DecodesFencedSecret(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	const key = "sk-ant-api03-QUJDZGVmR0hJSktMbW5vcFFSU1RVdld4eXow"
 	encoded := base64.StdEncoding.EncodeToString([]byte(key))
 	fence := func(s string) string { return security.Spotlight(s) }
 	structured, err := json.Marshal(map[string]string{"text": "x " + fence(key)})
-	require.NoError(t, err)
+	must.NoError(err)
 	turn := types.TurnRecord{ModelInput: types.ModelInput{Messages: []types.Message{{
 		Role: "user",
 		Content: []types.ContentBlock{
@@ -890,28 +938,29 @@ func TestScrubContentBlocks_DecodesFencedSecret(t *testing.T) {
 	}}}}
 	got := scrubTurnRecord(turn, false).ModelInput.Messages[0].Content
 	all, _ := json.Marshal(got)
-	require.NotContains(t, string(all), key, "persisted blocks carry the key")
-	require.NotContains(t, string(all), encoded, "persisted blocks carry the key's base64")
-	assert.Equal(t, "prefix "+fence("[REDACTED]")+" suffix", got[0].Content, "span fence")
-	assert.Equal(t, fence("whole block with [REDACTED]"), got[1].Content, "whole-block fence")
-	assert.Equal(t, "benign "+fence("plain words"), got[3].Content, "benign block should be unchanged")
+	must.NotContains(string(all), key, "persisted blocks carry the key")
+	must.NotContains(string(all), encoded, "persisted blocks carry the key's base64")
+	check.Equal("prefix "+fence("[REDACTED]")+" suffix", got[0].Content, "span fence")
+	check.Equal(fence("whole block with [REDACTED]"), got[1].Content, "whole-block fence")
+	check.Equal("benign "+fence("plain words"), got[3].Content, "benign block should be unchanged")
 }
 
 // TestScrubRawJSON_PEMKeyAsLineArray covers read_file's structured shape:
 // a key held one line per array element is redacted as one match and the
 // payload keeps its object shape rather than taking the string-wrap path.
 func TestScrubRawJSON_PEMKeyAsLineArray(t *testing.T) {
+	must := require.New(t)
 	body := []string{
 		"MIIEowIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLezV6ffAt0gun",
 		"VTLw7onLRnrq0/IzW7yWR7QkrmBL7jTKEn5u+qKhbwKfBstIs+bMY2Zkp18gnTxK",
 	}
 	lines := append(append([]string{"x", "-----BEGIN RSA PRIVATE KEY-----"}, body...), "-----END RSA PRIVATE KEY-----", "y")
 	in, err := json.Marshal(map[string][]string{"lines": lines})
-	require.NoError(t, err)
+	must.NoError(err)
 	out := scrubRawJSON(in, false)
 	var decoded struct{ Lines []string }
-	require.NoError(t, json.Unmarshal(out, &decoded), "scrubbed output should decode as an object (out=%s)", out)
-	require.Equal(t, []string{"x", "[REDACTED]", "y"}, decoded.Lines)
+	must.NoError(json.Unmarshal(out, &decoded), "scrubbed output should decode as an object (out=%s)", out)
+	must.Equal([]string{"x", "[REDACTED]", "y"}, decoded.Lines)
 }
 
 type failingWriter struct{}
@@ -919,28 +968,33 @@ type failingWriter struct{}
 func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
 
 func TestJSONLTraceEmitter_FinishWriteFailureReturnsTrace(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	emitter := NewJSONLTraceEmitter(failingWriter{}, false)
 	emitter.Start("run-w", nil)
 	emitter.RecordTurn(types.TurnTrace{Turn: 0, Tokens: types.TokenUsage{Input: 10, Output: 5}})
 
 	tr, err := emitter.Finish(context.Background(), "timeout")
-	require.ErrorContains(t, err, "disk full")
-	require.NotNil(t, tr, "Finish should return the assembled trace alongside the write error")
-	assert.Equal(t, "run-w", tr.ID)
-	assert.Equal(t, "timeout", tr.Outcome)
-	assert.Equal(t, 1, tr.Turns)
+	must.ErrorContains(err, "disk full")
+	must.NotNil(tr, "Finish should return the assembled trace alongside the write error")
+	check.Equal("run-w", tr.ID)
+	check.Equal("timeout", tr.Outcome)
+	check.Equal(1, tr.Turns)
 }
 
 func TestJSONLTraceEmitter_RunStartedCarriesHarnessVersion(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 	emitter.Start("run-version", nil)
 
 	started := pickEvent(t, readEvents(t, buf.Bytes()), EventKindRunStarted)
-	require.Equal(t, version.Full(), started.HarnessVersion)
+	must.Equal(version.Full(), started.HarnessVersion)
 }
 
 func TestJSONLTraceEmitter_RecordSystemInstructions_WritesScrubbedPromptAndDigest(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 	emitter.Start("run-prompt", nil)
@@ -948,16 +1002,17 @@ func TestJSONLTraceEmitter_RecordSystemInstructions_WritesScrubbedPromptAndDiges
 	prompt := "You are an agent.\nDeploy with key sk-ant-api03-promptsecret please."
 	emitter.RecordSystemInstructions(prompt)
 
-	require.NotContains(t, buf.String(), "sk-ant-api03-promptsecret", "system prompt secret reached the trace")
+	must.NotContains(buf.String(), "sk-ant-api03-promptsecret", "system prompt secret reached the trace")
 	ev := pickEvent(t, readEvents(t, buf.Bytes()), EventKindSystemPrompt)
-	assert.Equal(t, "run-prompt", ev.RunID)
-	assert.Contains(t, ev.SystemPrompt, "[REDACTED]", "system prompt should have the secret redacted")
-	assert.True(t, strings.HasPrefix(ev.SystemPrompt, "You are an agent."), "system prompt should keep its leading text")
+	check.Equal("run-prompt", ev.RunID)
+	check.Contains(ev.SystemPrompt, "[REDACTED]", "system prompt should have the secret redacted")
+	check.True(strings.HasPrefix(ev.SystemPrompt, "You are an agent."), "system prompt should keep its leading text")
 	sum := sha256.Sum256([]byte(prompt))
-	assert.Equal(t, hex.EncodeToString(sum[:]), ev.SystemPromptSHA256, "digest of the prompt as sent")
+	check.Equal(hex.EncodeToString(sum[:]), ev.SystemPromptSHA256, "digest of the prompt as sent")
 }
 
 func TestJSONLTraceEmitter_RecordSystemInstructions_RedactionDisabledWritesVerbatim(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, true)
 	emitter.Start("run-debug", nil)
@@ -966,10 +1021,12 @@ func TestJSONLTraceEmitter_RecordSystemInstructions_RedactionDisabledWritesVerba
 	emitter.RecordSystemInstructions(prompt)
 
 	ev := pickEvent(t, readEvents(t, buf.Bytes()), EventKindSystemPrompt)
-	require.Equal(t, prompt, ev.SystemPrompt, "system prompt should be written verbatim under --debug")
+	must.Equal(prompt, ev.SystemPrompt, "system prompt should be written verbatim under --debug")
 }
 
 func TestJSONLTraceEmitter_RecordTurnRecord_PreservesRequestParamsAndResponseModel(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 	emitter.Start("run-request", nil)
@@ -988,15 +1045,17 @@ func TestJSONLTraceEmitter_RecordTurnRecord_PreservesRequestParamsAndResponseMod
 	})
 
 	ev := pickEvent(t, readEvents(t, buf.Bytes()), EventKindTurnRecord)
-	assert.Equal(t, "m-20260101", ev.ResponseModel)
-	require.NotNil(t, ev.ModelInput, "turn_record dropped the model input")
-	require.NotNil(t, ev.ModelInput.Request, "turn_record dropped the request params")
-	require.Equal(t, want, *ev.ModelInput.Request)
-	assert.Contains(t, buf.String(), `"toolChoice":"required"`, "wire form should carry toolChoice")
-	assert.Contains(t, buf.String(), `"temperature":0`, "wire form should carry an explicit zero temperature")
+	check.Equal("m-20260101", ev.ResponseModel)
+	must.NotNil(ev.ModelInput, "turn_record dropped the model input")
+	must.NotNil(ev.ModelInput.Request, "turn_record dropped the request params")
+	must.Equal(want, *ev.ModelInput.Request)
+	check.Contains(buf.String(), `"toolChoice":"required"`, "wire form should carry toolChoice")
+	check.Contains(buf.String(), `"temperature":0`, "wire form should carry an explicit zero temperature")
 }
 
 func TestJSONLTraceEmitter_CorrelationScrubbedInPersistedConfig(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	key := "sk-ant-api03-" + strings.Repeat("B", 40)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
@@ -1011,15 +1070,15 @@ func TestJSONLTraceEmitter_CorrelationScrubbedInPersistedConfig(t *testing.T) {
 	}
 	emitter.Start("run-corr", config)
 	trace, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
-	assert.NotContains(t, buf.String(), key, "JSONL output should not carry the unscrubbed key")
+	check.NotContains(buf.String(), key, "JSONL output should not carry the unscrubbed key")
 	started := pickEvent(t, readEvents(t, buf.Bytes()), EventKindRunStarted)
-	require.NotNil(t, started.Config, "run_started has no config")
-	require.NotNil(t, started.Config.Correlation, "run_started config lost the correlation block")
+	must.NotNil(started.Config, "run_started has no config")
+	must.NotNil(started.Config.Correlation, "run_started config lost the correlation block")
 	got := started.Config.Correlation
-	assert.Equal(t, "task-7", got.TaskID, "run_started correlation task ID")
-	assert.Equal(t, "https://cp.example.com/runs/42?token=[REDACTED]", got.URL, "run_started correlation URL")
-	assert.NotContains(t, trace.Config.Correlation.Labels["agent_profile"], key, "RunTrace correlation label should be scrubbed")
-	assert.Contains(t, config.Correlation.URL, key, "scrubbing must not reach the live config")
+	check.Equal("task-7", got.TaskID, "run_started correlation task ID")
+	check.Equal("https://cp.example.com/runs/42?token=[REDACTED]", got.URL, "run_started correlation URL")
+	check.NotContains(trace.Config.Correlation.Labels["agent_profile"], key, "RunTrace correlation label should be scrubbed")
+	check.Contains(config.Correlation.URL, key, "scrubbing must not reach the live config")
 }

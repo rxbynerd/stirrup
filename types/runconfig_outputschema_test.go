@@ -26,9 +26,10 @@ func TestValidateRunConfig_OutputSchema_RejectsInvalid(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.OutputSchema = json.RawMessage(tc.schema)
-			require.ErrorContains(t, ValidateRunConfig(c), tc.wantErr)
+			must.ErrorContains(ValidateRunConfig(c), tc.wantErr)
 		})
 	}
 }
@@ -41,37 +42,41 @@ func TestValidateRunConfig_OutputSchema_AcceptsValid(t *testing.T) {
 	}
 	for name, schema := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.OutputSchema = json.RawMessage(schema)
-			require.NoError(t, ValidateRunConfig(c))
+			must.NoError(ValidateRunConfig(c))
 		})
 	}
 
 	t.Run("read only mode", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.Mode = "review"
 		c.Tools.BuiltIn = []string{"read_file"}
 		c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
 		c.OutputSchema = json.RawMessage(`{"type":"object"}`)
-		require.NoError(t, ValidateRunConfig(c))
+		must.NoError(ValidateRunConfig(c))
 	})
 }
 
 func TestRunConfig_OutputSchema_JSONRoundTrip(t *testing.T) {
 	t.Run("unset field is omitted", func(t *testing.T) {
+		must := require.New(t)
 		out, err := json.Marshal(validConfig())
-		require.NoError(t, err)
-		require.NotContains(t, string(out), "outputSchema")
+		must.NoError(err)
+		must.NotContains(string(out), "outputSchema")
 	})
 
 	t.Run("set field survives a round trip", func(t *testing.T) {
+		must := require.New(t)
 		c := validConfig()
 		c.OutputSchema = json.RawMessage(`{"type":"object","required":["title"]}`)
 		out, err := json.Marshal(c)
-		require.NoError(t, err)
+		must.NoError(err)
 
 		var back RunConfig
-		require.NoError(t, json.Unmarshal(out, &back))
-		require.JSONEq(t, `{"type":"object","required":["title"]}`, string(back.OutputSchema))
+		must.NoError(json.Unmarshal(out, &back))
+		must.JSONEq(`{"type":"object","required":["title"]}`, string(back.OutputSchema))
 	})
 }

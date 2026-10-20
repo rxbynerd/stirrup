@@ -15,10 +15,11 @@ import (
 // deep-equals a hand-rolled types.EvalSuite literal with the same
 // logical content.
 func TestLoadSuiteHCL_DecodesFullSuite(t *testing.T) {
+	must := require.New(t)
 	hclPath := filepath.Join("testdata", "sample.hcl")
 
 	got, err := LoadSuiteHCL(hclPath)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	want := types.EvalSuite{
 		ID:          "sample-suite",
@@ -55,12 +56,13 @@ func TestLoadSuiteHCL_DecodesFullSuite(t *testing.T) {
 		},
 	}
 
-	require.Equal(t, want, got)
+	must.Equal(want, got)
 }
 
 // TestLoadSuiteHCL_CommentsTolerated confirms that all three HCL comment
 // styles parse without affecting the resulting suite.
 func TestLoadSuiteHCL_CommentsTolerated(t *testing.T) {
+	must := require.New(t)
 	src := `
 # leading hash comment
 // leading slash comment
@@ -82,10 +84,10 @@ suite "with-comments" {
 `
 	path := writeTemp(t, "comments.hcl", src)
 	got, err := LoadSuiteHCL(path)
-	require.NoError(t, err)
-	require.Equal(t, "with-comments", got.ID)
-	require.Len(t, got.Tasks, 1)
-	require.Equal(t, "hello", got.Tasks[0].Prompt)
+	must.NoError(err)
+	must.Equal("with-comments", got.ID)
+	must.Len(got.Tasks, 1)
+	must.Equal("hello", got.Tasks[0].Prompt)
 }
 
 // TestLoadSuiteHCL_HeredocPreserved asserts that a `<<-EOT` heredoc
@@ -93,6 +95,7 @@ suite "with-comments" {
 // byte. The leading-tab stripping rule is part of HCL semantics; we
 // just want the documented behaviour to be predictable.
 func TestLoadSuiteHCL_HeredocPreserved(t *testing.T) {
+	must := require.New(t)
 	src := "suite \"hd\" {\n" +
 		"  task \"t1\" {\n" +
 		"    mode   = \"execution\"\n" +
@@ -108,8 +111,8 @@ func TestLoadSuiteHCL_HeredocPreserved(t *testing.T) {
 		"}\n"
 	path := writeTemp(t, "heredoc.hcl", src)
 	got, err := LoadSuiteHCL(path)
-	require.NoError(t, err)
-	require.Equal(t, "first\nsecond\n", got.Tasks[0].Prompt)
+	must.NoError(err)
+	must.Equal("first\nsecond\n", got.Tasks[0].Prompt)
 }
 
 // TestLoadSuiteHCL_DecodesSeedFilesByPath asserts that labelled `file`
@@ -117,6 +120,8 @@ func TestLoadSuiteHCL_HeredocPreserved(t *testing.T) {
 // workspace-relative path, with the heredoc content preserved and nested
 // paths supported.
 func TestLoadSuiteHCL_DecodesSeedFilesByPath(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	src := "suite \"seed\" {\n" +
 		"  task \"t1\" {\n" +
 		"    mode   = \"execution\"\n" +
@@ -138,17 +143,19 @@ func TestLoadSuiteHCL_DecodesSeedFilesByPath(t *testing.T) {
 		"}\n"
 	path := writeTemp(t, "seed.hcl", src)
 	got, err := LoadSuiteHCL(path)
-	require.NoError(t, err)
+	must.NoError(err)
 	files := got.Tasks[0].Files
-	require.Len(t, files, 2)
-	assert.Equal(t, "# Title\nbody\n", files["README.md"])
-	assert.Equal(t, "hello", files["docs/guide.txt"])
+	must.Len(files, 2)
+	check.Equal("# Title\nbody\n", files["README.md"])
+	check.Equal("hello", files["docs/guide.txt"])
 }
 
 // TestLoadSuiteHCL_CompositeChildrenOrdered asserts that composite
 // judges with two `judge` child blocks decode to a Judges slice of
 // length 2 in source order.
 func TestLoadSuiteHCL_CompositeChildrenOrdered(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	src := `
 suite "c" {
   task "t1" {
@@ -172,13 +179,13 @@ suite "c" {
 `
 	path := writeTemp(t, "composite.hcl", src)
 	got, err := LoadSuiteHCL(path)
-	require.NoError(t, err)
+	must.NoError(err)
 	j := got.Tasks[0].Judge
-	require.Equal(t, "composite", j.Type)
-	require.Equal(t, "all", j.Require)
-	require.Len(t, j.Judges, 2)
-	assert.Equal(t, "file-exists", j.Judges[0].Type)
-	assert.Equal(t, "file-contains", j.Judges[1].Type)
+	must.Equal("composite", j.Type)
+	must.Equal("all", j.Require)
+	must.Len(j.Judges, 2)
+	check.Equal("file-exists", j.Judges[0].Type)
+	check.Equal("file-contains", j.Judges[1].Type)
 }
 
 // TestLoadSuiteHCL_DecodesToolTraceJudge parses a tool-trace judge with a
@@ -186,6 +193,8 @@ suite "c" {
 // the block decodes into types.ToolTraceCriteria with the call labels and
 // bounds preserved.
 func TestLoadSuiteHCL_DecodesToolTraceJudge(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	src := `
 suite "tt" {
   task "t1" {
@@ -210,29 +219,30 @@ suite "tt" {
 `
 	path := writeTemp(t, "tooltrace.hcl", src)
 	got, err := LoadSuiteHCL(path)
-	require.NoError(t, err)
+	must.NoError(err)
 	j := got.Tasks[0].Judge
-	require.Equal(t, "tool-trace", j.Type)
-	require.NotNil(t, j.ToolTrace)
-	assert.Equal(t, []string{"read_file", "edit_file"}, j.ToolTrace.Sequence)
-	assert.True(t, j.ToolTrace.ForbidUnknown)
-	require.Len(t, j.ToolTrace.Calls, 2)
+	must.Equal("tool-trace", j.Type)
+	must.NotNil(j.ToolTrace)
+	check.Equal([]string{"read_file", "edit_file"}, j.ToolTrace.Sequence)
+	check.True(j.ToolTrace.ForbidUnknown)
+	must.Len(j.ToolTrace.Calls, 2)
 
 	editCall := j.ToolTrace.Calls[0]
-	assert.Equal(t, "edit_file", editCall.Name)
-	assert.Equal(t, 1, editCall.MinCalls)
-	assert.True(t, editCall.AllSucceeded)
+	check.Equal("edit_file", editCall.Name)
+	check.Equal(1, editCall.MinCalls)
+	check.True(editCall.AllSucceeded)
 
 	writeCall := j.ToolTrace.Calls[1]
-	assert.Equal(t, "write_file", writeCall.Name)
-	require.NotNil(t, writeCall.MaxCalls)
-	assert.Equal(t, 0, *writeCall.MaxCalls)
+	check.Equal("write_file", writeCall.Name)
+	must.NotNil(writeCall.MaxCalls)
+	check.Equal(0, *writeCall.MaxCalls)
 }
 
 // TestLoadSuiteHCL_ToolTraceRejectedOnWrongType asserts a tool_trace block
 // under a non-tool-trace judge type is a parse error, mirroring the nested
 // judge-block guard.
 func TestLoadSuiteHCL_ToolTraceRejectedOnWrongType(t *testing.T) {
+	must := require.New(t)
 	src := `
 suite "tt" {
   task "t1" {
@@ -250,12 +260,13 @@ suite "tt" {
 `
 	path := writeTemp(t, "tooltrace-bad.hcl", src)
 	_, err := LoadSuiteHCL(path)
-	require.Error(t, err)
+	must.Error(err)
 }
 
 // TestLoadSuiteHCL_ToolTraceRequiresBlock asserts a tool-trace judge with
 // no tool_trace block is rejected at parse time.
 func TestLoadSuiteHCL_ToolTraceRequiresBlock(t *testing.T) {
+	must := require.New(t)
 	src := `
 suite "tt" {
   task "t1" {
@@ -269,7 +280,7 @@ suite "tt" {
 `
 	path := writeTemp(t, "tooltrace-empty.hcl", src)
 	_, err := LoadSuiteHCL(path)
-	require.Error(t, err)
+	must.Error(err)
 }
 
 // TestLoadSuiteHCL_ValidationErrors covers all the guard-rails: missing
@@ -442,11 +453,12 @@ suite "s" {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			path := writeTemp(t, "case.hcl", tc.src)
 			_, err := LoadSuiteHCL(path)
-			require.Error(t, err)
+			must.Error(err)
 			for _, frag := range tc.wantErrFrags {
-				require.ErrorContains(t, err, frag)
+				must.ErrorContains(err, frag)
 			}
 		})
 	}
@@ -457,6 +469,7 @@ suite "s" {
 // message. The grammar may grow these later; until then they are off
 // limits.
 func TestLoadSuiteHCL_UnknownTopLevelBlock(t *testing.T) {
+	must := require.New(t)
 	src := `
 variable "foo" {
   default = "bar"
@@ -475,8 +488,8 @@ suite "s" {
 `
 	path := writeTemp(t, "unknown.hcl", src)
 	_, err := LoadSuiteHCL(path)
-	require.ErrorContains(t, err, "unsupported top-level block")
-	require.ErrorContains(t, err, "variable")
+	must.ErrorContains(err, "unsupported top-level block")
+	must.ErrorContains(err, "variable")
 }
 
 // TestLoadSuiteHCL_UnknownTopLevelAttributesDeterministic asserts that
@@ -484,6 +497,7 @@ suite "s" {
 // error names them in a deterministic (sorted) order. Map iteration
 // order would otherwise make future tests flaky.
 func TestLoadSuiteHCL_UnknownTopLevelAttributesDeterministic(t *testing.T) {
+	must := require.New(t)
 	src := `
 zeta = "z"
 alpha = "a"
@@ -501,13 +515,14 @@ suite "s" {
 `
 	path := writeTemp(t, "attrs.hcl", src)
 	_, err := LoadSuiteHCL(path)
-	require.ErrorContains(t, err, `unsupported top-level attribute "alpha"`)
+	must.ErrorContains(err, `unsupported top-level attribute "alpha"`)
 }
 
 // TestLoadSuiteHCL_RejectsOtherTopLevelBlockTypes rejects top-level block
 // types beyond the named ones (for example `output`) with the same
 // unsupported-block error.
 func TestLoadSuiteHCL_RejectsOtherTopLevelBlockTypes(t *testing.T) {
+	must := require.New(t)
 	src := `
 output "x" {
   value = "y"
@@ -526,21 +541,23 @@ suite "s" {
 `
 	path := writeTemp(t, "output-block.hcl", src)
 	_, err := LoadSuiteHCL(path)
-	require.ErrorContains(t, err, "unsupported top-level block")
-	require.ErrorContains(t, err, "output")
+	must.ErrorContains(err, "unsupported top-level block")
+	must.ErrorContains(err, "output")
 }
 
 // TestLoadSuiteHCL_EmptyFile fails clearly rather than panicking when
 // handed a zero-byte source.
 func TestLoadSuiteHCL_EmptyFile(t *testing.T) {
+	must := require.New(t)
 	path := writeTemp(t, "empty.hcl", "")
 	_, err := LoadSuiteHCL(path)
-	require.ErrorContains(t, err, "no suite block found")
+	must.ErrorContains(err, "no suite block found")
 }
 
 // TestLoadSuiteHCL_RejectsTwoSuiteBlocks fails clearly: exactly one suite
 // per file is the contract.
 func TestLoadSuiteHCL_RejectsTwoSuiteBlocks(t *testing.T) {
+	must := require.New(t)
 	src := `
 suite "a" {
   task "t1" {
@@ -566,21 +583,23 @@ suite "b" {
 `
 	path := writeTemp(t, "two.hcl", src)
 	_, err := LoadSuiteHCL(path)
-	require.ErrorContains(t, err, "exactly one suite block")
+	must.ErrorContains(err, "exactly one suite block")
 }
 
 // TestLoadSuiteHCL_RejectsMalformedHCL returns a clear parser error rather
 // than panicking when the input isn't valid HCL.
 func TestLoadSuiteHCL_RejectsMalformedHCL(t *testing.T) {
+	must := require.New(t)
 	path := writeTemp(t, "broken.hcl", `suite "x" { not even close to valid {{`)
 	_, err := LoadSuiteHCL(path)
-	require.Error(t, err)
+	must.Error(err)
 }
 
 // TestLoadSuiteHCL_ReportsMissingFile surfaces the underlying os error.
 func TestLoadSuiteHCL_ReportsMissingFile(t *testing.T) {
+	must := require.New(t)
 	_, err := LoadSuiteHCL("/nonexistent/missing.hcl")
-	require.Error(t, err)
+	must.Error(err)
 }
 
 // TestLoadSuiteHCL_TaskMissingJudgeBlock pins the gohcl.DecodeBody
@@ -589,10 +608,11 @@ func TestLoadSuiteHCL_ReportsMissingFile(t *testing.T) {
 // originates inside hcl/v2 so we only assert that "judge" appears in
 // the message — the wording is library-controlled.
 func TestLoadSuiteHCL_TaskMissingJudgeBlock(t *testing.T) {
+	must := require.New(t)
 	src := `suite "s" { task "t" { prompt = "x" } }`
 	path := writeTemp(t, "no-judge.hcl", src)
 	_, err := LoadSuiteHCL(path)
-	require.ErrorContains(t, err, "judge")
+	must.ErrorContains(err, "judge")
 }
 
 // TestLoadSuiteHCL_RejectsNestedJudgeOnNonComposite pins the contract that
@@ -600,6 +620,7 @@ func TestLoadSuiteHCL_TaskMissingJudgeBlock(t *testing.T) {
 // loudly rather than silently dropped (gohcl decodes the field for
 // every judge type).
 func TestLoadSuiteHCL_RejectsNestedJudgeOnNonComposite(t *testing.T) {
+	must := require.New(t)
 	src := `
 suite "s" {
   task "t1" {
@@ -618,8 +639,8 @@ suite "s" {
 `
 	path := writeTemp(t, "non-composite-with-child.hcl", src)
 	_, err := LoadSuiteHCL(path)
-	require.Error(t, err)
-	require.ErrorContains(t, err, "does not support nested judge blocks")
+	must.Error(err)
+	must.ErrorContains(err, "does not support nested judge blocks")
 }
 
 // TestLoadSuiteHCL_RejectsEmptyCompositeJudge pins the contract that a
@@ -627,6 +648,7 @@ suite "s" {
 // would otherwise treat `all` of zero as a vacuous pass, producing
 // misleading green CI for what is almost always a forgotten typo.
 func TestLoadSuiteHCL_RejectsEmptyCompositeJudge(t *testing.T) {
+	must := require.New(t)
 	src := `
 suite "s" {
   task "t1" {
@@ -641,14 +663,15 @@ suite "s" {
 `
 	path := writeTemp(t, "empty-composite.hcl", src)
 	_, err := LoadSuiteHCL(path)
-	require.Error(t, err)
-	require.ErrorContains(t, err, "at least one nested judge block")
+	must.Error(err)
+	must.ErrorContains(err, "at least one nested judge block")
 }
 
 // TestLoadSuiteHCL_CompositeRequireDefaultsToAll pins the contract that
 // omitting `require` on a composite judge defaults to "all". A change
 // of the default to "" or "any" must surface here.
 func TestLoadSuiteHCL_CompositeRequireDefaultsToAll(t *testing.T) {
+	must := require.New(t)
 	src := `
 suite "s" {
   task "t" {
@@ -666,9 +689,9 @@ suite "s" {
 `
 	path := writeTemp(t, "default-require.hcl", src)
 	got, err := LoadSuiteHCL(path)
-	require.NoError(t, err)
-	require.Len(t, got.Tasks, 1)
-	require.Equal(t, "all", got.Tasks[0].Judge.Require)
+	must.NoError(err)
+	must.Len(got.Tasks, 1)
+	must.Equal("all", got.Tasks[0].Judge.Require)
 }
 
 // TestLoadSuiteHCL_RejectsSuiteBlockWithoutLabel pins the diagnostic surfaced
@@ -676,17 +699,19 @@ suite "s" {
 // label. This is distinct from the `suite ""` empty-label path and
 // fires earlier (PartialContent reports a label arity mismatch).
 func TestLoadSuiteHCL_RejectsSuiteBlockWithoutLabel(t *testing.T) {
+	must := require.New(t)
 	src := "suite {\n  task \"t\" { judge { type = \"file-exists\"; paths = [\"a.txt\"] } }\n}\n"
 	path := writeTemp(t, "no-label.hcl", src)
 	_, err := LoadSuiteHCL(path)
-	require.Error(t, err)
-	require.NotEmpty(t, err.Error(), "error message for a labelless suite block")
+	must.Error(err)
+	must.NotEmpty(err.Error(), "error message for a labelless suite block")
 }
 
 func writeTemp(t *testing.T, name, content string) string {
 	t.Helper()
+	must := require.New(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, name)
-	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	must.NoError(os.WriteFile(path, []byte(content), 0o644))
 	return path
 }

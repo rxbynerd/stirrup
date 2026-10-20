@@ -69,10 +69,11 @@ func TestExchange_ErrorWrapsSentinelAndTransientFlag(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			result, err := Exchange(context.Background(), tc.mt, "aud", 20*time.Millisecond)
-			require.ErrorIs(t, err, tc.want)
-			require.Empty(t, result.Token, "a failed exchange must not return a token")
-			require.Equal(t, tc.transient, IsTransient(err))
+			must.ErrorIs(err, tc.want)
+			must.Empty(result.Token, "a failed exchange must not return a token")
+			must.Equal(tc.transient, IsTransient(err))
 		})
 	}
 }
@@ -92,18 +93,20 @@ func TestExchange_RejectsTokensThatCouldInjectHelperDirectives(t *testing.T) {
 		"non-ascii":       "ünïcode.token",
 	} {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			mt := &mockTransport{respond: respondWith(types.ControlEvent{Token: token})}
 			result, err := Exchange(context.Background(), mt, "aud", time.Second)
-			require.ErrorIs(t, err, ErrMalformedToken)
-			require.Empty(t, result.Token, "a malformed token must not be returned")
-			require.NotContains(t, err.Error(), "abc", "error must not carry the rejected token")
+			must.ErrorIs(err, ErrMalformedToken)
+			must.Empty(result.Token, "a malformed token must not be returned")
+			must.NotContains(err.Error(), "abc", "error must not carry the rejected token")
 		})
 	}
 
 	t.Run("accepts base64url jwt", func(t *testing.T) {
+		must := require.New(t)
 		mt := &mockTransport{respond: respondWith(types.ControlEvent{Token: "eyJhbGciOiJFUzI1NiJ9.payload-with_all~allowed+chars/=.sig"})}
 		_, err := Exchange(context.Background(), mt, "aud", time.Second)
-		require.NoError(t, err, "a base64url JWT with dots must be accepted")
+		must.NoError(err, "a base64url JWT with dots must be accepted")
 	})
 }
 
@@ -111,15 +114,16 @@ func TestExchange_RejectsTokensThatCouldInjectHelperDirectives(t *testing.T) {
 // stripped of control characters and capped before it reaches an error
 // that is later interpolated into a warning event and a log line.
 func TestExchange_SanitisesDeclineReason(t *testing.T) {
+	must := require.New(t)
 	hostile := "issuer revoked\nusername=attacker\r\x00" + strings.Repeat("x", 500)
 	mt := &mockTransport{respond: respondWith(types.ControlEvent{IsError: boolPtr(true), Reason: hostile})}
 
 	_, err := Exchange(context.Background(), mt, "aud", time.Second)
-	require.ErrorIs(t, err, ErrDeclined)
+	must.ErrorIs(err, ErrDeclined)
 
 	msg := err.Error()
-	require.False(t, strings.ContainsAny(msg, "\n\r\x00"), "error %q carries control characters from the reason", msg)
-	require.Contains(t, msg, "issuer revokedusername=attacker")
-	require.LessOrEqual(t, strings.Count(msg, "x"), maxReasonRunes, "reason must be capped at %d runes", maxReasonRunes)
-	require.True(t, strings.HasSuffix(msg, "…"), "a capped reason should end with an ellipsis, got %q", msg)
+	must.False(strings.ContainsAny(msg, "\n\r\x00"), "error %q carries control characters from the reason", msg)
+	must.Contains(msg, "issuer revokedusername=attacker")
+	must.LessOrEqual(strings.Count(msg, "x"), maxReasonRunes, "reason must be capped at %d runes", maxReasonRunes)
+	must.True(strings.HasSuffix(msg, "…"), "a capped reason should end with an ellipsis, got %q", msg)
 }

@@ -103,19 +103,21 @@ func TestJudgeLLMConfig_Validate(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := valid
 			tc.mutate(&c)
 			err := c.Validate()
 			if tc.wantErr == "" {
-				require.NoError(t, err)
+				must.NoError(err)
 				return
 			}
-			require.ErrorContains(t, err, tc.wantErr)
+			must.ErrorContains(err, tc.wantErr)
 		})
 	}
 }
 
 func TestCheckJudgeEndpointAddr_ClassifiesAddresses(t *testing.T) {
+	must := require.New(t)
 	cases := []struct {
 		name        string
 		addr        string
@@ -143,15 +145,16 @@ func TestCheckJudgeEndpointAddr_ClassifiesAddresses(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			err := CheckJudgeEndpointAddr(netip.MustParseAddr(tc.addr), tc.keyOverHTTP)
 			if tc.wantErr == "" {
-				require.NoError(t, err)
+				must.NoError(err)
 				return
 			}
-			require.ErrorContains(t, err, tc.wantErr)
+			must.ErrorContains(err, tc.wantErr)
 		})
 	}
-	require.Error(t, CheckJudgeEndpointAddr(netip.Addr{}, false), "the zero address was accepted")
+	must.Error(CheckJudgeEndpointAddr(netip.Addr{}, false), "the zero address was accepted")
 }
 
 func TestJudgeLLMConfig_Validate_DoesNotEchoKeyRef(t *testing.T) {
@@ -162,9 +165,10 @@ func TestJudgeLLMConfig_Validate_DoesNotEchoKeyRef(t *testing.T) {
 	}
 	for _, tc := range rejected {
 		t.Run("rejects "+tc.name, func(t *testing.T) {
+			must := require.New(t)
 			err := JudgeLLMConfig{Model: "m", APIKeyRef: tc.ref}.Validate()
-			require.Error(t, err)
-			require.NotContains(t, err.Error(), "REAL", "error echoes the reference")
+			must.Error(err)
+			must.NotContains(err.Error(), "REAL", "error echoes the reference")
 		})
 	}
 
@@ -175,7 +179,8 @@ func TestJudgeLLMConfig_Validate_DoesNotEchoKeyRef(t *testing.T) {
 	}
 	for _, tc := range accepted {
 		t.Run("accepts "+tc.name, func(t *testing.T) {
-			require.NoError(t, JudgeLLMConfig{Model: "m", APIKeyRef: tc.ref}.Validate())
+			must := require.New(t)
+			must.NoError(JudgeLLMConfig{Model: "m", APIKeyRef: tc.ref}.Validate())
 		})
 	}
 }
@@ -187,9 +192,10 @@ func TestJudgeLLMConfig_Validate_DoesNotEchoBaseURL(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			err := JudgeLLMConfig{Model: "m", BaseURL: tc.raw}.Validate()
-			require.Error(t, err)
-			require.NotContains(t, err.Error(), "hunter2", "error leaks the base URL credential")
+			must.Error(err)
+			must.NotContains(err.Error(), "hunter2", "error leaks the base URL credential")
 		})
 	}
 }
@@ -198,39 +204,46 @@ func TestJudgeLLMConfig_EffectiveDefaults(t *testing.T) {
 	var zero JudgeLLMConfig
 
 	t.Run("zero value provider is anthropic", func(t *testing.T) {
-		require.Equal(t, JudgeProviderAnthropic, zero.EffectiveProvider())
+		must := require.New(t)
+		must.Equal(JudgeProviderAnthropic, zero.EffectiveProvider())
 	})
 	t.Run("zero value timeout is 30 seconds", func(t *testing.T) {
-		require.Equal(t, 30, zero.EffectiveTimeoutSeconds())
+		must := require.New(t)
+		must.Equal(30, zero.EffectiveTimeoutSeconds())
 	})
 	t.Run("zero value input cap is 64 KiB", func(t *testing.T) {
-		require.Equal(t, 65536, zero.EffectiveMaxInputBytes())
+		must := require.New(t)
+		must.Equal(65536, zero.EffectiveMaxInputBytes())
 	})
 	t.Run("zero value max tokens is 1024", func(t *testing.T) {
-		require.Equal(t, 1024, zero.EffectiveMaxTokens())
+		must := require.New(t)
+		must.Equal(1024, zero.EffectiveMaxTokens())
 	})
 	t.Run("zero value structured output is json schema", func(t *testing.T) {
-		require.Equal(t, JudgeStructuredJSONSchema, zero.EffectiveStructuredOutput()) //nolint:testifylint // enum constant, not an encoded payload
+		must := require.New(t)
+		must.Equal(JudgeStructuredJSONSchema, zero.EffectiveStructuredOutput()) //nolint:testifylint // enum constant, not an encoded payload
 	})
 
 	t.Run("explicit values are preserved", func(t *testing.T) {
+		must := require.New(t)
 		c := JudgeLLMConfig{Provider: JudgeProviderOpenAICompatible, TimeoutSeconds: 5, MaxInputBytes: 10, MaxTokens: 7, StructuredOutput: JudgeStructuredPromptOnly}
-		require.Equal(t, JudgeProviderOpenAICompatible, c.EffectiveProvider())
-		require.Equal(t, 5, c.EffectiveTimeoutSeconds())
-		require.Equal(t, 10, c.EffectiveMaxInputBytes())
-		require.Equal(t, 7, c.EffectiveMaxTokens())
-		require.Equal(t, JudgeStructuredPromptOnly, c.EffectiveStructuredOutput())
+		must.Equal(JudgeProviderOpenAICompatible, c.EffectiveProvider())
+		must.Equal(5, c.EffectiveTimeoutSeconds())
+		must.Equal(10, c.EffectiveMaxInputBytes())
+		must.Equal(7, c.EffectiveMaxTokens())
+		must.Equal(JudgeStructuredPromptOnly, c.EffectiveStructuredOutput())
 	})
 }
 
 func TestEvalJudge_LLMWireShape(t *testing.T) {
+	must := require.New(t)
 	temp := 0.0
 	j := EvalJudge{Type: "diff-review", Criteria: "c", LLM: &JudgeLLMConfig{
 		Provider: JudgeProviderOpenAICompatible, Model: "m", BaseURL: "https://x/v1", APIKeyRef: "secret://K",
 		Temperature: &temp, AllowTruncated: true,
 	}}
 	data, err := json.Marshal(j)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	wantFields := []struct{ name, want string }{
 		{name: "llm key", want: `"llm":`},
@@ -241,11 +254,12 @@ func TestEvalJudge_LLMWireShape(t *testing.T) {
 	}
 	for _, tc := range wantFields {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Contains(t, string(data), tc.want)
+			must := require.New(t)
+			must.Contains(string(data), tc.want)
 		})
 	}
 
 	data, err = json.Marshal(EvalJudge{Type: "file-exists"})
-	require.NoError(t, err)
-	require.NotContains(t, string(data), `"llm"`, "non-LLM judge serialises an llm key")
+	must.NoError(err)
+	must.NotContains(string(data), `"llm"`, "non-LLM judge serialises an llm key")
 }

@@ -18,6 +18,7 @@ import (
 // advertising the named tools.
 func mcpToolsServer(t *testing.T, toolNames ...string) *httptest.Server {
 	t.Helper()
+	must := require.New(t)
 	tools := make([]map[string]any, 0, len(toolNames))
 	for _, name := range toolNames {
 		tools = append(tools, map[string]any{
@@ -27,7 +28,7 @@ func mcpToolsServer(t *testing.T, toolNames ...string) *httptest.Server {
 		})
 	}
 	result, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"tools": tools}})
-	require.NoError(t, err)
+	must.NoError(err)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(result)
@@ -87,6 +88,8 @@ func (tr *recordingTransport) warnings() []string {
 }
 
 func TestBuildLoop_RequiredMCPServerUnreachableFails(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cfg := mcpFactoryConfig(t, types.MCPServerConfig{Name: "docs", URI: unreachableMCPURL(t)})
 
 	tp := &recordingTransport{}
@@ -94,12 +97,13 @@ func TestBuildLoop_RequiredMCPServerUnreachableFails(t *testing.T) {
 	if err == nil {
 		_ = loop.Close()
 	}
-	require.Error(t, err, "construction should fail for an unreachable required MCP server")
-	require.ErrorContains(t, err, `required MCP server "docs"`, "error should name the server")
-	assert.Empty(t, tp.warnings(), "a required-server failure must not be downgraded to a warning")
+	must.Error(err, "construction should fail for an unreachable required MCP server")
+	must.ErrorContains(err, `required MCP server "docs"`, "error should name the server")
+	check.Empty(tp.warnings(), "a required-server failure must not be downgraded to a warning")
 }
 
 func TestBuildLoop_RequiredMCPServerUnreachableFailsWithExecutorNone(t *testing.T) {
+	must := require.New(t)
 	cfg := mcpFactoryConfig(t, types.MCPServerConfig{Name: "docs", URI: unreachableMCPURL(t)})
 	cfg.Mode = "planning"
 	cfg.Executor = types.ExecutorConfig{Type: "none"}
@@ -110,11 +114,12 @@ func TestBuildLoop_RequiredMCPServerUnreachableFailsWithExecutorNone(t *testing.
 	if err == nil {
 		_ = loop.Close()
 	}
-	require.Error(t, err, "an MCP-only run should fail when its only MCP server is unavailable")
-	require.ErrorContains(t, err, `required MCP server "docs"`)
+	must.Error(err, "an MCP-only run should fail when its only MCP server is unavailable")
+	must.ErrorContains(err, `required MCP server "docs"`)
 }
 
 func TestBuildLoop_RequiredMCPServerMissingAllowedToolFails(t *testing.T) {
+	must := require.New(t)
 	srv := mcpToolsServer(t, "search")
 	cfg := mcpFactoryConfig(t, types.MCPServerConfig{
 		Name:         "docs",
@@ -126,35 +131,41 @@ func TestBuildLoop_RequiredMCPServerMissingAllowedToolFails(t *testing.T) {
 	if err == nil {
 		_ = loop.Close()
 	}
-	require.Error(t, err, "construction should fail when an allowlisted tool is not advertised")
+	must.Error(err, "construction should fail when an allowlisted tool is not advertised")
 	t.Run("names the server", func(t *testing.T) {
-		require.ErrorContains(t, err, `"docs"`)
+		must := require.New(t)
+		must.ErrorContains(err, `"docs"`)
 	})
 	t.Run("names the missing tool", func(t *testing.T) {
-		require.ErrorContains(t, err, "fetch")
+		must := require.New(t)
+		must.ErrorContains(err, "fetch")
 	})
 }
 
 func TestBuildLoop_OptionalMCPServerUnreachableDegrades(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cfg := mcpFactoryConfig(t, types.MCPServerConfig{Name: "docs", URI: unreachableMCPURL(t), Optional: true})
 
 	tp := &recordingTransport{}
 	loop, err := BuildLoopWithTransport(context.Background(), cfg, tp)
-	require.NoError(t, err, "an unreachable optional server must not fail construction")
+	must.NoError(err, "an unreachable optional server must not fail construction")
 	defer func() { _ = loop.Close() }()
 
-	require.Len(t, loop.DegradedCapabilities, 1)
+	must.Len(loop.DegradedCapabilities, 1)
 	got := loop.DegradedCapabilities[0]
-	assert.Equal(t, types.DegradedCapabilityMCP, got.Kind)
-	assert.Equal(t, "docs", got.Name)
-	assert.NotEmpty(t, got.Error, "the degraded capability should record the failure reason")
+	check.Equal(types.DegradedCapabilityMCP, got.Kind)
+	check.Equal("docs", got.Name)
+	check.NotEmpty(got.Error, "the degraded capability should record the failure reason")
 
 	warnings := tp.warnings()
-	require.Len(t, warnings, 1)
-	require.Contains(t, warnings[0], `"docs"`, "the warning should name the server")
+	must.Len(warnings, 1)
+	must.Contains(warnings[0], `"docs"`, "the warning should name the server")
 }
 
 func TestBuildLoop_OptionalMCPServerMissingAllowedToolKeepsAdvertisedTools(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	srv := mcpToolsServer(t, "search", "other")
 	cfg := mcpFactoryConfig(t, types.MCPServerConfig{
 		Name:         "docs",
@@ -165,17 +176,19 @@ func TestBuildLoop_OptionalMCPServerMissingAllowedToolKeepsAdvertisedTools(t *te
 
 	tp := &recordingTransport{}
 	loop, err := BuildLoopWithTransport(context.Background(), cfg, tp)
-	require.NoError(t, err, "a partial optional server must not fail construction")
+	must.NoError(err, "a partial optional server must not fail construction")
 	defer func() { _ = loop.Close() }()
 
-	assert.NotNil(t, loop.Tools.Resolve("mcp_docs_search"), "the advertised allowlisted tool should be registered")
-	assert.Nil(t, loop.Tools.Resolve("mcp_docs_other"), "a tool outside the allowlist must not be registered")
-	require.Len(t, loop.DegradedCapabilities, 1)
-	assert.Contains(t, loop.DegradedCapabilities[0].Error, "fetch", "the degraded reason should name the missing tool")
-	assert.Len(t, tp.warnings(), 1, "a partial optional server should emit one warning")
+	check.NotNil(loop.Tools.Resolve("mcp_docs_search"), "the advertised allowlisted tool should be registered")
+	check.Nil(loop.Tools.Resolve("mcp_docs_other"), "a tool outside the allowlist must not be registered")
+	must.Len(loop.DegradedCapabilities, 1)
+	check.Contains(loop.DegradedCapabilities[0].Error, "fetch", "the degraded reason should name the missing tool")
+	check.Len(tp.warnings(), 1, "a partial optional server should emit one warning")
 }
 
 func TestBuildLoop_HealthyMCPServerRegistersToolsWithoutDegrading(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	srv := mcpToolsServer(t, "search", "fetch")
 	cfg := mcpFactoryConfig(t,
 		types.MCPServerConfig{Name: "docs", URI: srv.URL, AllowedTools: []string{"search", "fetch"}},
@@ -184,16 +197,17 @@ func TestBuildLoop_HealthyMCPServerRegistersToolsWithoutDegrading(t *testing.T) 
 
 	tp := &recordingTransport{}
 	loop, err := BuildLoopWithTransport(context.Background(), cfg, tp)
-	require.NoError(t, err)
+	must.NoError(err)
 	defer func() { _ = loop.Close() }()
 
-	assert.NotNil(t, loop.Tools.Resolve("mcp_docs_search"), "the search tool should be registered")
-	assert.NotNil(t, loop.Tools.Resolve("mcp_docs_fetch"), "the fetch tool should be registered")
-	assert.Empty(t, loop.DegradedCapabilities)
-	assert.Empty(t, tp.warnings())
+	check.NotNil(loop.Tools.Resolve("mcp_docs_search"), "the search tool should be registered")
+	check.NotNil(loop.Tools.Resolve("mcp_docs_fetch"), "the fetch tool should be registered")
+	check.Empty(loop.DegradedCapabilities)
+	check.Empty(tp.warnings())
 }
 
 func TestRun_DegradedCapabilitiesReachRunTrace(t *testing.T) {
+	must := require.New(t)
 	cfg := mcpFactoryConfig(t, types.MCPServerConfig{Name: "docs", URI: unreachableMCPURL(t), Optional: true})
 	provider := newOpenAIServer(t, nil, []string{
 		openAIChunk(`{"id":"r-1","choices":[{"index":0,"delta":{"content":"done"},"finish_reason":null}]}`) +
@@ -204,29 +218,31 @@ func TestRun_DegradedCapabilitiesReachRunTrace(t *testing.T) {
 	cfg.Provider.BaseURL = provider.URL
 
 	loop, err := BuildLoopWithTransport(context.Background(), cfg, &recordingTransport{})
-	require.NoError(t, err)
+	must.NoError(err)
 	defer func() { _ = loop.Close() }()
 
 	runTrace, err := loop.Run(context.Background(), cfg)
-	require.NoError(t, err)
-	require.Equal(t, "success", runTrace.Outcome)
-	require.Len(t, runTrace.DegradedCapabilities, 1)
-	require.Equal(t, "docs", runTrace.DegradedCapabilities[0].Name, "the skipped docs server should be reported")
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
+	must.Len(runTrace.DegradedCapabilities, 1)
+	must.Equal("docs", runTrace.DegradedCapabilities[0].Name, "the skipped docs server should be reported")
 }
 
 func TestBoundDegradedError_ScrubsAndTruncates(t *testing.T) {
+	check := assert.New(t)
 	long := strings.Repeat("x", maxDegradedErrorBytes*2)
 	got := boundDegradedError(errString(long))
-	assert.LessOrEqual(t, len(got), maxDegradedErrorBytes+len("... [truncated by harness]"),
+	check.LessOrEqual(len(got), maxDegradedErrorBytes+len("... [truncated by harness]"),
 		"a truncated error should stay near %d bytes", maxDegradedErrorBytes)
-	assert.True(t, strings.HasSuffix(got, "[truncated by harness]"),
+	check.True(strings.HasSuffix(got, "[truncated by harness]"),
 		"a truncated error should end with the truncation marker")
 }
 
 func TestBoundDegradedError_ScrubsSecrets(t *testing.T) {
+	must := require.New(t)
 	const secret = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789"
 	got := boundDegradedError(errString("upstream rejected " + secret))
-	require.NotContains(t, got, secret, "a degraded error should not leak a secret")
+	must.NotContains(got, secret, "a degraded error should not leak a secret")
 }
 
 type errString string
@@ -237,12 +253,13 @@ func (e errString) Error() string { return string(e) }
 // is long and carries a credential.
 func leakyMCPServer(t *testing.T, secret string) *httptest.Server {
 	t.Helper()
+	must := require.New(t)
 	body, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,
 		"error":   map[string]any{"code": -32000, "message": secret + " " + strings.Repeat("x", maxDegradedErrorBytes*4)},
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(body)
@@ -252,6 +269,8 @@ func leakyMCPServer(t *testing.T, secret string) *httptest.Server {
 }
 
 func TestBuildLoop_RequiredMCPServerErrorIsScrubbedAndBounded(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	const secret = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789"
 	const prefix = `required MCP server "docs" unavailable: `
 	srv := leakyMCPServer(t, secret)
@@ -261,12 +280,12 @@ func TestBuildLoop_RequiredMCPServerErrorIsScrubbedAndBounded(t *testing.T) {
 	if err == nil {
 		_ = loop.Close()
 	}
-	require.Error(t, err, "construction should fail for a required MCP server returning an error")
+	must.Error(err, "construction should fail for a required MCP server returning an error")
 
 	text := err.Error()
-	assert.NotContains(t, text, secret, "the required-server error should not leak a secret")
-	require.True(t, strings.HasPrefix(text, prefix), "error should start with %q, got %q", prefix, text)
+	check.NotContains(text, secret, "the required-server error should not leak a secret")
+	must.True(strings.HasPrefix(text, prefix), "error should start with %q, got %q", prefix, text)
 	reason := text[len(prefix):]
-	require.LessOrEqual(t, len(reason), maxDegradedErrorBytes+len("... [truncated by harness]"),
+	must.LessOrEqual(len(reason), maxDegradedErrorBytes+len("... [truncated by harness]"),
 		"the reason should be bounded near %d bytes", maxDegradedErrorBytes)
 }

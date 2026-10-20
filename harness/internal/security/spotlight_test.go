@@ -29,9 +29,10 @@ func TestScrubFenced_ScrubsFencePayloads(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			got := ScrubFenced(tc.in)
-			require.Equal(t, tc.want, got)
-			require.NotContains(t, got, base64.StdEncoding.EncodeToString([]byte(key)),
+			must.Equal(tc.want, got)
+			must.NotContains(got, base64.StdEncoding.EncodeToString([]byte(key)),
 				"base64 of the key survived")
 		})
 	}
@@ -51,9 +52,10 @@ func TestDecodeFences_DecodesWellFormedAndRejectsMalformed(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			got, ok := DecodeFences(tc.in)
-			require.Equal(t, tc.want, got)
-			require.Equal(t, tc.ok, ok)
+			must.Equal(tc.want, got)
+			must.Equal(tc.ok, ok)
 		})
 	}
 }
@@ -86,16 +88,17 @@ func FuzzScrubFenced(f *testing.F) {
 	f.Add(SpotlightOpenTag+"QUJD", "Bearer abc.def "+key)
 	f.Add(SpotlightCloseTag+SpotlightOpenTag, "x "+key+" y secret://ref")
 	f.Fuzz(func(t *testing.T, prefix, value string) {
+		must := require.New(t)
 		fenced, secrets := spotlightRanges(value)
 		out := ScrubFenced(prefix + fenced)
 		for _, s := range secrets {
 			if len(s) < 8 {
 				continue
 			}
-			require.NotContains(t, out, base64.StdEncoding.EncodeToString([]byte(s)),
+			must.NotContains(out, base64.StdEncoding.EncodeToString([]byte(s)),
 				"base64 of fenced secret %q persisted", s)
 			if strings.Count(prefix+value, s) == 1 {
-				require.NotContains(t, out, s, "fenced secret %q persisted raw", s)
+				must.NotContains(out, s, "fenced secret %q persisted raw", s)
 			}
 		}
 	})

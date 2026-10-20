@@ -18,57 +18,62 @@ import (
 
 func TestCapLine_BoundsLineLength(t *testing.T) {
 	t.Run("passes a line at the cap through unchanged", func(t *testing.T) {
+		must := require.New(t)
 		short := strings.Repeat("a", maxLineBytes)
-		require.Equal(t, short, capLine(short))
+		must.Equal(short, capLine(short))
 	})
 
 	t.Run("caps a long multibyte line on a rune boundary", func(t *testing.T) {
+		must := require.New(t)
 		long := strings.Repeat("ü", maxLineBytes) // two bytes per rune
 		got := capLine(long)
-		require.LessOrEqual(t, len(got), maxLineBytes)
-		require.True(t, utf8.ValidString(got), "capped line split a UTF-8 rune")
+		must.LessOrEqual(len(got), maxLineBytes)
+		must.True(utf8.ValidString(got), "capped line split a UTF-8 rune")
 		marker := fmt.Sprintf(" of %d bytes shown]", len(long))
-		require.Truef(t, strings.HasSuffix(got, marker), "marker must name the original length: %q", got[len(got)-60:])
+		must.Truef(strings.HasSuffix(got, marker), "marker must name the original length: %q", got[len(got)-60:])
 	})
 
 	t.Run("re-capping a capped line stays within the cap", func(t *testing.T) {
+		must := require.New(t)
 		got := capLine(strings.Repeat("ü", maxLineBytes))
-		require.LessOrEqual(t, len(capLine(got)), maxLineBytes)
+		must.LessOrEqual(len(capLine(got)), maxLineBytes)
 	})
 }
 
 func TestReadFileTool_CapsSingleLongLine(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	const size = 3 << 20
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "bundle.min.js"), []byte(strings.Repeat("x", size)), 0o644))
+	must.NoError(os.WriteFile(filepath.Join(dir, "bundle.min.js"), []byte(strings.Repeat("x", size)), 0o644))
 	exec, err := executor.NewLocalExecutor(dir)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	res, err := ReadFileTool(exec).StructuredHandler(context.Background(), json.RawMessage(`{"path":"bundle.min.js"}`))
-	require.NoError(t, err)
-	require.Truef(t, strings.HasPrefix(res.Text, "1\t"), "expected a line-numbered rendering, got %.40q", res.Text)
+	must.NoError(err)
+	must.Truef(strings.HasPrefix(res.Text, "1\t"), "expected a line-numbered rendering, got %.40q", res.Text)
 	line := strings.TrimPrefix(res.Text, "1\t")
-	require.LessOrEqual(t, len(line), maxLineBytes)
+	must.LessOrEqual(len(line), maxLineBytes)
 
 	marker := fmt.Sprintf("of %d bytes shown]", size)
-	require.Truef(t, strings.HasSuffix(res.Text, marker), "text must end with a marker naming the original size: %q", res.Text[len(res.Text)-60:])
+	must.Truef(strings.HasSuffix(res.Text, marker), "text must end with a marker naming the original size: %q", res.Text[len(res.Text)-60:])
 
 	var excerpt fileExcerpt
-	require.NoError(t, json.Unmarshal(res.Structured, &excerpt))
-	require.Len(t, excerpt.Lines, 1, "structured lines must carry the same capped line")
-	require.LessOrEqual(t, len(excerpt.Lines[0]), maxLineBytes)
-	require.True(t, strings.HasSuffix(excerpt.Lines[0], marker), "structured line must carry the same marker")
+	must.NoError(json.Unmarshal(res.Structured, &excerpt))
+	must.Len(excerpt.Lines, 1, "structured lines must carry the same capped line")
+	must.LessOrEqual(len(excerpt.Lines[0]), maxLineBytes)
+	must.True(strings.HasSuffix(excerpt.Lines[0], marker), "structured line must carry the same marker")
 }
 
 func TestReadFileTool_ShortLinesUnchanged(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\ntwo\n"), 0o644))
+	must.NoError(os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\ntwo\n"), 0o644))
 	exec, err := executor.NewLocalExecutor(dir)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	out, err := invokeText(context.Background(), ReadFileTool(exec), json.RawMessage(`{"path":"a.txt"}`))
-	require.NoError(t, err)
-	require.Equal(t, "1\tone\n2\ttwo", out)
+	must.NoError(err)
+	must.Equal("1\tone\n2\ttwo", out)
 }
 
 // hostRipgrepExecutor is a HostPathWorkspace executor whose Exec answers
@@ -106,9 +111,10 @@ func TestGrepFilesTool_CapsLongMatchedLinesOnEverySearchPath(t *testing.T) {
 		{
 			name: "host native walker",
 			setup: func(t *testing.T) executor.Executor {
+				must := require.New(t)
 				withRipgrepProbe(t, false)
 				dir := t.TempDir()
-				require.NoError(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte(longLine+"\n"+shortLine+"\n"), 0o644))
+				must.NoError(os.WriteFile(filepath.Join(dir, "a.txt"), []byte(longLine+"\n"+shortLine+"\n"), 0o644))
 				return &hostAndExecExecutor{root: dir}
 			},
 		},
@@ -159,21 +165,22 @@ func TestGrepFilesTool_CapsLongMatchedLinesOnEverySearchPath(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			res := runSearchTool(t, GrepFilesTool(tt.setup(t)), map[string]any{"pattern": "needle"})
 
 			var result searchResult
-			require.NoError(t, json.Unmarshal(res.Structured, &result))
-			require.Len(t, result.Matches, 2)
+			must.NoError(json.Unmarshal(res.Structured, &result))
+			must.Len(result.Matches, 2)
 
 			long, short := result.Matches[0].Text, result.Matches[1].Text
-			require.LessOrEqual(t, len(long), maxLineBytes)
-			require.True(t, strings.HasPrefix(long, "needle"), "shortened line must keep its head")
+			must.LessOrEqual(len(long), maxLineBytes)
+			must.True(strings.HasPrefix(long, "needle"), "shortened line must keep its head")
 			marker := fmt.Sprintf("of %d bytes shown]", len(longLine))
-			require.Truef(t, strings.HasSuffix(long, marker), "shortened line must carry the marker: %q", long[len(long)-60:])
-			require.Equal(t, shortLine, short)
+			must.Truef(strings.HasSuffix(long, marker), "shortened line must carry the marker: %q", long[len(long)-60:])
+			must.Equal(shortLine, short)
 
 			for _, line := range strings.Split(res.Text, "\n") {
-				require.LessOrEqual(t, len(line), maxLineBytes+len("a.txt:1:"), "rendered match line is too long")
+				must.LessOrEqual(len(line), maxLineBytes+len("a.txt:1:"), "rendered match line is too long")
 			}
 		})
 	}

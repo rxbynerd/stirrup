@@ -24,11 +24,12 @@ func TestDenySideEffects_DeniesMutatingTools(t *testing.T) {
 
 	for _, name := range []string{"write_file", "run_command", "edit_file"} {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			tool := types.ToolDefinition{Name: name}
 			result, err := policy.Check(context.Background(), tool, json.RawMessage(`{}`))
-			require.NoError(t, err)
-			require.False(t, result.Allowed)
-			require.NotEmpty(t, result.Reason)
+			must.NoError(err)
+			must.False(result.Allowed)
+			must.NotEmpty(result.Reason)
 		})
 	}
 }
@@ -46,10 +47,11 @@ func TestDenySideEffects_AllowsApprovalRequiredButNonMutating(t *testing.T) {
 
 	for _, name := range []string{"web_fetch", "spawn_agent"} {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			tool := types.ToolDefinition{Name: name}
 			result, err := policy.Check(context.Background(), tool, json.RawMessage(`{}`))
-			require.NoError(t, err)
-			require.True(t, result.Allowed, "reason: %q", result.Reason)
+			must.NoError(err)
+			must.True(result.Allowed, "reason: %q", result.Reason)
 		})
 	}
 }
@@ -65,10 +67,11 @@ func TestDenySideEffects_AllowsPureReadTools(t *testing.T) {
 
 	for _, name := range []string{"read_file", "list_directory", "grep_files", "find_files"} {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			tool := types.ToolDefinition{Name: name}
 			result, err := policy.Check(context.Background(), tool, json.RawMessage(`{}`))
-			require.NoError(t, err)
-			require.True(t, result.Allowed, "reason: %q", result.Reason)
+			must.NoError(err)
+			must.True(result.Allowed, "reason: %q", result.Reason)
 		})
 	}
 }
@@ -90,13 +93,14 @@ func (c *countingPolicy) Check(context.Context, types.ToolDefinition, json.RawMe
 // mutating call is denied by the gate alone, so an inner ask-upstream
 // policy is never asked to approve it.
 func TestSideEffectGate_DeniesMutatingWithoutConsultingInner(t *testing.T) {
+	must := require.New(t)
 	inner := &countingPolicy{result: &PermissionResult{Allowed: true}}
 	gate := NewSideEffectGate(map[string]bool{"write_file": true}, inner)
 
 	result, err := gate.Check(context.Background(), types.ToolDefinition{Name: "write_file"}, json.RawMessage(`{}`))
-	require.NoError(t, err)
-	require.False(t, result.Allowed, "write_file should be denied by the gate")
-	require.Zero(t, inner.calls, "inner policy should not be consulted for a mutating tool")
+	must.NoError(err)
+	must.False(result.Allowed, "write_file should be denied by the gate")
+	must.Zero(inner.calls, "inner policy should not be consulted for a mutating tool")
 }
 
 // TestSideEffectGate_DelegatesNonMutating pins that the inner policy
@@ -116,15 +120,16 @@ func TestSideEffectGate_DelegatesNonMutating(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			gate := NewSideEffectGate(map[string]bool{"write_file": true}, tc.inner)
 			result, err := gate.Check(context.Background(), types.ToolDefinition{Name: "web_fetch"}, json.RawMessage(`{}`))
-			require.Equal(t, 1, tc.inner.calls)
+			must.Equal(1, tc.inner.calls)
 			if tc.wantErr != nil {
-				require.ErrorIs(t, err, tc.wantErr)
+				must.ErrorIs(err, tc.wantErr)
 				return
 			}
-			require.NoError(t, err)
-			require.Equal(t, tc.wantAllowed, result.Allowed)
+			must.NoError(err)
+			must.Equal(tc.wantAllowed, result.Allowed)
 		})
 	}
 }
@@ -133,17 +138,18 @@ func TestSideEffectGate_DelegatesNonMutating(t *testing.T) {
 // the gate and RewrapChain keeps it, with its denied set, in front of a
 // replacement inner policy.
 func TestSideEffectGate_SurvivesRewrapChain(t *testing.T) {
+	must := require.New(t)
 	original := &countingPolicy{result: &PermissionResult{Allowed: true}}
 	gate := NewSideEffectGate(map[string]bool{"write_file": true}, original)
-	require.Same(t, original, Unwrap(gate), "Unwrap should return the inner policy")
+	must.Same(original, Unwrap(gate), "Unwrap should return the inner policy")
 
 	replacement := &countingPolicy{result: &PermissionResult{Allowed: true}}
 	rewrapped, ok := RewrapChain(gate, replacement)
-	require.True(t, ok, "RewrapChain should accept a chain containing only the gate")
-	require.Same(t, replacement, Unwrap(rewrapped), "rewrapped chain should end at the replacement policy")
+	must.True(ok, "RewrapChain should accept a chain containing only the gate")
+	must.Same(replacement, Unwrap(rewrapped), "rewrapped chain should end at the replacement policy")
 
 	result, err := rewrapped.Check(context.Background(), types.ToolDefinition{Name: "write_file"}, json.RawMessage(`{}`))
-	require.NoError(t, err)
-	require.False(t, result.Allowed, "rewrapped gate should keep its denied set")
-	require.Zero(t, replacement.calls, "replacement should not be consulted for a mutating tool")
+	must.NoError(err)
+	must.False(result.Allowed, "rewrapped gate should keep its denied set")
+	must.Zero(replacement.calls, "replacement should not be consulted for a mutating tool")
 }

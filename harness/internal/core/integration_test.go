@@ -27,6 +27,7 @@ import (
 )
 
 func TestBuildLoop_UsesSelectedProviderAlias(t *testing.T) {
+	must := require.New(t)
 	var defaultHits atomic.Int32
 	defaultServer := newOpenAIServer(t, &defaultHits, []string{
 		openAIChunk(`{"id":"default","choices":[{"index":0,"delta":{"content":"default"},"finish_reason":null}]}`) +
@@ -59,22 +60,23 @@ func TestBuildLoop_UsesSelectedProviderAlias(t *testing.T) {
 
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 	loop, err := BuildLoopWithTransport(context.Background(), config, transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}))
-	require.NoError(t, err)
+	must.NoError(err)
 	defer func() { _ = loop.Close() }()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
+	must.NoError(err)
 
-	require.Equal(t, "success", runTrace.Outcome)
-	require.Zero(t, defaultHits.Load(), "default provider should not receive requests")
-	require.Equal(t, int32(1), alternateHits.Load(), "alternate provider should receive one request")
+	must.Equal("success", runTrace.Outcome)
+	must.Zero(defaultHits.Load(), "default provider should not receive requests")
+	must.Equal(int32(1), alternateHits.Load(), "alternate provider should receive one request")
 }
 
 func TestBuildLoop_HonorsEditStrategyAndBuiltInSelection(t *testing.T) {
+	must := require.New(t)
 	workspace := t.TempDir()
 	targetPath := filepath.Join(workspace, "target.txt")
 	err := os.WriteFile(targetPath, []byte("hello old world\n"), 0o644)
-	require.NoError(t, err, "write target file")
+	must.NoError(err, "write target file")
 
 	var requestBodies []string
 	server := newOpenAIServer(t, nil, []string{
@@ -113,27 +115,28 @@ func TestBuildLoop_HonorsEditStrategyAndBuiltInSelection(t *testing.T) {
 
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 	loop, err := BuildLoopWithTransport(context.Background(), config, transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}))
-	require.NoError(t, err)
+	must.NoError(err)
 	defer func() { _ = loop.Close() }()
 
-	require.NotNil(t, loop.Tools.Resolve("search_replace"), "expected search_replace tool to be registered")
-	require.Nil(t, loop.Tools.Resolve("write_file"), "did not expect write_file tool when search-replace strategy is active")
-	require.Nil(t, loop.Tools.Resolve("run_command"), "did not expect run_command tool when it is omitted from tools.builtIn")
+	must.NotNil(loop.Tools.Resolve("search_replace"), "expected search_replace tool to be registered")
+	must.Nil(loop.Tools.Resolve("write_file"), "did not expect write_file tool when search-replace strategy is active")
+	must.Nil(loop.Tools.Resolve("run_command"), "did not expect run_command tool when it is omitted from tools.builtIn")
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	require.Equal(t, "success", runTrace.Outcome)
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
 
 	content, err := os.ReadFile(targetPath)
-	require.NoError(t, err, "read target file")
-	require.Equal(t, "hello new world\n", string(content))
+	must.NoError(err, "read target file")
+	must.Equal("hello new world\n", string(content))
 
-	require.NotEmpty(t, requestBodies, "expected at least one provider request")
-	require.Contains(t, requestBodies[0], `"search_replace"`, "expected search_replace tool definition in provider request")
-	require.NotContains(t, requestBodies[0], `"write_file"`, "did not expect write_file tool definition in provider request")
+	must.NotEmpty(requestBodies, "expected at least one provider request")
+	must.Contains(requestBodies[0], `"search_replace"`, "expected search_replace tool definition in provider request")
+	must.NotContains(requestBodies[0], `"write_file"`, "did not expect write_file tool definition in provider request")
 }
 
 func TestBuildToolRegistry_RespectsExecutorCapabilities(t *testing.T) {
+	must := require.New(t)
 	exec := &registryExecutor{
 		caps: executor.ExecutorCapabilities{
 			CanRead:  true,
@@ -144,15 +147,15 @@ func TestBuildToolRegistry_RespectsExecutorCapabilities(t *testing.T) {
 
 	registry := buildToolRegistry(exec, edit.NewWholeFileStrategy(), types.ToolsConfig{}, nil)
 
-	require.NotNil(t, registry.Resolve("read_file"), "expected read_file to be registered")
-	require.Nil(t, registry.Resolve("run_command"), "did not expect run_command without exec capability")
+	must.NotNil(registry.Resolve("read_file"), "expected read_file to be registered")
+	must.Nil(registry.Resolve("run_command"), "did not expect run_command without exec capability")
 	// grep_files's rg fast path gates on CanExec internally and falls back
 	// to the native walker, so a CanRead-only executor must still get both
 	// grep_files and find_files.
-	require.NotNil(t, registry.Resolve("grep_files"), "expected grep_files to register on a CanRead-only executor")
-	require.NotNil(t, registry.Resolve("find_files"), "expected find_files to register on a CanRead-only executor")
-	require.Nil(t, registry.Resolve("search_files"), "search_files must not be registered (split into grep_files/find_files)")
-	require.Nil(t, registry.Resolve("write_file"), "did not expect write_file without write capability")
+	must.NotNil(registry.Resolve("grep_files"), "expected grep_files to register on a CanRead-only executor")
+	must.NotNil(registry.Resolve("find_files"), "expected find_files to register on a CanRead-only executor")
+	must.Nil(registry.Resolve("search_files"), "search_files must not be registered (split into grep_files/find_files)")
+	must.Nil(registry.Resolve("write_file"), "did not expect write_file without write capability")
 }
 
 type registryExecutor struct {
@@ -208,6 +211,7 @@ func buildOpenAIConfig(t *testing.T, baseURL string) *types.RunConfig {
 // and returns instead of calling require.
 func newOpenAIServer(t *testing.T, hits *atomic.Int32, responses []string, requestBodies *[]string) *httptest.Server {
 	t.Helper()
+	check := assert.New(t)
 	var requestIndex atomic.Int32
 
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -215,7 +219,7 @@ func newOpenAIServer(t *testing.T, hits *atomic.Int32, responses []string, reque
 			hits.Add(1)
 		}
 		bodyBytes, err := io.ReadAll(r.Body)
-		if !assert.NoError(t, err, "read request body") {
+		if !check.NoError(err, "read request body") {
 			return
 		}
 		if requestBodies != nil {
@@ -223,7 +227,7 @@ func newOpenAIServer(t *testing.T, hits *atomic.Int32, responses []string, reque
 		}
 
 		idx := int(requestIndex.Add(1) - 1)
-		if !assert.Less(t, idx, len(responses), "received unexpected provider request %d", idx) {
+		if !check.Less(idx, len(responses), "received unexpected provider request %d", idx) {
 			return
 		}
 
@@ -242,6 +246,7 @@ func openAIChunk(payload string) string {
 // with a stub so the test needs no network access; the permission gate
 // runs before the handler, so the policy path is still exercised.
 func TestBuildLoop_ResearchModeWebFetchEndToEnd(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 
 	server := newOpenAIServer(t, nil, []string{
@@ -283,18 +288,18 @@ func TestBuildLoop_ResearchModeWebFetchEndToEnd(t *testing.T) {
 
 	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
 	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
-	require.NoError(t, err)
+	must.NoError(err)
 	defer func() { _ = loop.Close() }()
 
 	// loop.Tools is the profile Presenter; unwrap to the underlying
 	// registry to swap the handler. web_fetch is unaliased under the
 	// default profile, so the presented name is unchanged.
 	presenter, ok := loop.Tools.(*tool.Presenter)
-	require.True(t, ok, "expected *tool.Presenter, got %T", loop.Tools)
+	must.True(ok, "expected *tool.Presenter, got %T", loop.Tools)
 	registry, ok := presenter.Unwrap().(*tool.Registry)
-	require.True(t, ok, "expected *tool.Registry under presenter, got %T", presenter.Unwrap())
+	must.True(ok, "expected *tool.Registry under presenter, got %T", presenter.Unwrap())
 	original := registry.Resolve("web_fetch")
-	require.NotNil(t, original, "expected web_fetch tool to be registered in research mode")
+	must.NotNil(original, "expected web_fetch tool to be registered in research mode")
 	registry.Register(&tool.Tool{
 		Name:              original.Name,
 		Description:       original.Description,
@@ -307,8 +312,8 @@ func TestBuildLoop_ResearchModeWebFetchEndToEnd(t *testing.T) {
 	})
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	require.Equal(t, "success", runTrace.Outcome)
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
 
 	var sawWebFetch bool
 	var denied []string
@@ -320,8 +325,8 @@ func TestBuildLoop_ResearchModeWebFetchEndToEnd(t *testing.T) {
 			denied = append(denied, fmt.Sprintf("%s: %s", call.Name, call.ErrorReason))
 		}
 	}
-	require.Empty(t, denied, "tool calls must not be denied by the permission policy")
-	require.True(t, sawWebFetch, "expected at least one web_fetch call in run trace")
+	must.Empty(denied, "tool calls must not be denied by the permission policy")
+	must.True(sawWebFetch, "expected at least one web_fetch call in run trace")
 }
 
 // TestLoop_ReplayProvider_CancelledAfterFirstTurn drives the agentic loop
@@ -329,6 +334,8 @@ func TestBuildLoop_ResearchModeWebFetchEndToEnd(t *testing.T) {
 // the transport after the first turn completes. The next turn should be
 // aborted and RunTrace.Outcome should be "cancelled".
 func TestLoop_ReplayProvider_CancelledAfterFirstTurn(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	// Two-turn recording: turn 0 calls a read-only tool, turn 1 ends the
 	// run; a cancel is injected between them.
 	turns := []types.TurnRecord{
@@ -373,9 +380,9 @@ func TestLoop_ReplayProvider_CancelledAfterFirstTurn(t *testing.T) {
 	config := buildTestConfig()
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	require.NotNil(t, runTrace, "expected non-nil RunTrace")
-	assert.Equal(t, "cancelled", runTrace.Outcome)
+	must.NoError(err)
+	must.NotNil(runTrace, "expected non-nil RunTrace")
+	check.Equal("cancelled", runTrace.Outcome)
 
 	var doneEvents []types.HarnessEvent
 	for _, ev := range tr.Events() {
@@ -383,8 +390,8 @@ func TestLoop_ReplayProvider_CancelledAfterFirstTurn(t *testing.T) {
 			doneEvents = append(doneEvents, ev)
 		}
 	}
-	require.Len(t, doneEvents, 1, "expected exactly one done event")
-	assert.Equal(t, "cancelled", doneEvents[0].StopReason)
+	must.Len(doneEvents, 1, "expected exactly one done event")
+	check.Equal("cancelled", doneEvents[0].StopReason)
 
-	assert.LessOrEqual(t, runTrace.Turns, 1, "expected at most one recorded turn")
+	check.LessOrEqual(runTrace.Turns, 1, "expected at most one recorded turn")
 }

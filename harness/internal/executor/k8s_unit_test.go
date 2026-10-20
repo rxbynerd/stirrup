@@ -56,13 +56,14 @@ func TestK8sExecutor_ResolvePath_ConfinesToWorkspace(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			got, err := exec.ResolvePath(tt.input)
 			if tt.wantErr {
-				require.Error(t, err)
+				must.Error(err)
 				return
 			}
-			require.NoError(t, err)
-			require.Equal(t, tt.want, got)
+			must.NoError(err)
+			must.Equal(tt.want, got)
 		})
 	}
 }
@@ -70,33 +71,36 @@ func TestK8sExecutor_ResolvePath_ConfinesToWorkspace(t *testing.T) {
 // TestNewK8sExecutor_RejectsMissingImage asserts the early-return guard fires
 // before any cluster I/O is attempted.
 func TestNewK8sExecutor_RejectsMissingImage(t *testing.T) {
+	must := require.New(t)
 	_, err := NewK8sExecutor(context.Background(), K8sExecutorConfig{
 		Namespace: "default",
 	})
-	require.Error(t, err)
-	require.ErrorContains(t, err, "image")
+	must.Error(err)
+	must.ErrorContains(err, "image")
 }
 
 // TestNewK8sExecutor_RejectsMissingNamespace asserts the early-return guard
 // fires before any cluster I/O is attempted.
 func TestNewK8sExecutor_RejectsMissingNamespace(t *testing.T) {
+	must := require.New(t)
 	_, err := NewK8sExecutor(context.Background(), K8sExecutorConfig{
 		Image: "busybox",
 	})
-	require.Error(t, err)
-	require.ErrorContains(t, err, "namespace")
+	must.Error(err)
+	must.ErrorContains(err, "namespace")
 }
 
 // TestNewK8sExecutor_RejectsNilNetwork asserts the fail-closed guard fires
 // before any cluster I/O: a nil Network leaves egress posture undefined and
 // is rejected at construction.
 func TestNewK8sExecutor_RejectsNilNetwork(t *testing.T) {
+	must := require.New(t)
 	_, err := NewK8sExecutor(context.Background(), K8sExecutorConfig{
 		Image:     "busybox",
 		Namespace: "default",
 	})
-	require.Error(t, err)
-	require.ErrorContains(t, err, "network")
+	must.Error(err)
+	must.ErrorContains(err, "network")
 }
 
 // TestNewK8sExecutor_RejectsAllowlistWithoutProxyURL asserts the allowlist-mode
@@ -104,13 +108,14 @@ func TestNewK8sExecutor_RejectsNilNetwork(t *testing.T) {
 // An enforced allowlist NetworkPolicy makes the proxy the only route to the
 // network, so omitting its URL is a misconfiguration.
 func TestNewK8sExecutor_RejectsAllowlistWithoutProxyURL(t *testing.T) {
+	must := require.New(t)
 	_, err := NewK8sExecutor(context.Background(), K8sExecutorConfig{
 		Image:     "busybox",
 		Namespace: "default",
 		Network:   &types.NetworkConfig{Mode: "allowlist"},
 	})
-	require.Error(t, err)
-	require.ErrorContains(t, err, "proxy")
+	must.Error(err)
+	must.ErrorContains(err, "proxy")
 }
 
 // TestEgressPolicyFor covers the pure NetworkPolicy construction for each
@@ -128,52 +133,56 @@ func TestEgressPolicyFor_BuildsPolicyPerMode(t *testing.T) {
 	const ns, pod = "default", "stirrup-abc123"
 
 	t.Run("nil network is rejected", func(t *testing.T) {
+		must := require.New(t)
 		_, err := egressPolicyFor(nil, ns, pod, "")
-		require.Error(t, err)
+		must.Error(err)
 	})
 
 	t.Run("unsupported mode is rejected", func(t *testing.T) {
+		must := require.New(t)
 		_, err := egressPolicyFor(&types.NetworkConfig{Mode: "bridge"}, ns, pod, "")
-		require.Error(t, err)
+		must.Error(err)
 	})
 
 	t.Run("none yields deny-all egress", func(t *testing.T) {
+		must := require.New(t)
 		np, err := egressPolicyFor(&types.NetworkConfig{Mode: "none"}, ns, pod, "")
-		require.NoError(t, err)
-		require.Equal(t, networkPolicyName(pod), np.Name)
-		require.Equal(t, ns, np.Namespace)
-		require.Equal(t, pod, np.Spec.PodSelector.MatchLabels[k8sPodNameLabel])
-		require.Equal(t, []networkingv1.PolicyType{networkingv1.PolicyTypeEgress}, np.Spec.PolicyTypes)
-		require.Empty(t, np.Spec.Egress, "deny-all must have zero egress rules")
+		must.NoError(err)
+		must.Equal(networkPolicyName(pod), np.Name)
+		must.Equal(ns, np.Namespace)
+		must.Equal(pod, np.Spec.PodSelector.MatchLabels[k8sPodNameLabel])
+		must.Equal([]networkingv1.PolicyType{networkingv1.PolicyTypeEgress}, np.Spec.PolicyTypes)
+		must.Empty(np.Spec.Egress, "deny-all must have zero egress rules")
 	})
 
 	t.Run("allowlist yields dns + proxy egress", func(t *testing.T) {
+		must := require.New(t)
 		np, err := egressPolicyFor(&types.NetworkConfig{Mode: "allowlist"}, ns, pod, "")
-		require.NoError(t, err)
-		require.Equal(t, []networkingv1.PolicyType{networkingv1.PolicyTypeEgress}, np.Spec.PolicyTypes)
-		require.Len(t, np.Spec.Egress, 2, "allowlist egress rules should be dns and proxy")
+		must.NoError(err)
+		must.Equal([]networkingv1.PolicyType{networkingv1.PolicyTypeEgress}, np.Spec.PolicyTypes)
+		must.Len(np.Spec.Egress, 2, "allowlist egress rules should be dns and proxy")
 
 		// First rule is DNS: two ports (UDP/TCP 53), no peer restriction.
 		dns := np.Spec.Egress[0]
-		require.Len(t, dns.Ports, 2, "dns rule needs udp and tcp")
+		must.Len(dns.Ports, 2, "dns rule needs udp and tcp")
 		for _, p := range dns.Ports {
-			require.NotNil(t, p.Port)
-			require.Equal(t, k8sDNSPort, p.Port.IntValue())
+			must.NotNil(p.Port)
+			must.Equal(k8sDNSPort, p.Port.IntValue())
 		}
 
 		// Second rule selects the egress proxy by label.
 		proxy := np.Spec.Egress[1]
-		require.Len(t, proxy.To, 1, "proxy rule must select the proxy pod")
-		require.NotNil(t, proxy.To[0].PodSelector, "proxy rule must select the proxy pod")
-		require.Equal(t, "stirrup-egress-proxy", proxy.To[0].PodSelector.MatchLabels["app"])
+		must.Len(proxy.To, 1, "proxy rule must select the proxy pod")
+		must.NotNil(proxy.To[0].PodSelector, "proxy rule must select the proxy pod")
+		must.Equal("stirrup-egress-proxy", proxy.To[0].PodSelector.MatchLabels["app"])
 
 		// The proxy rule must confine egress to the proxy's listen port so an
 		// enforcing CNI does not permit reaching the proxy Pod on any port.
-		require.Len(t, proxy.Ports, 1, "proxy rule should allow only the listen port")
-		require.NotNil(t, proxy.Ports[0].Protocol)
-		require.Equal(t, corev1.ProtocolTCP, *proxy.Ports[0].Protocol)
-		require.NotNil(t, proxy.Ports[0].Port)
-		require.Equal(t, k8sEgressProxyPort, proxy.Ports[0].Port.IntValue())
+		must.Len(proxy.Ports, 1, "proxy rule should allow only the listen port")
+		must.NotNil(proxy.Ports[0].Protocol)
+		must.Equal(corev1.ProtocolTCP, *proxy.Ports[0].Protocol)
+		must.NotNil(proxy.Ports[0].Port)
+		must.Equal(k8sEgressProxyPort, proxy.Ports[0].Port.IntValue())
 	})
 }
 
@@ -182,25 +191,29 @@ func TestEgressPolicyFor_BuildsPolicyPerMode(t *testing.T) {
 // variables, and a nil or unsupported mode errors.
 func TestProxyEnvFor_InjectsProxyVarsPerMode(t *testing.T) {
 	t.Run("nil network is rejected", func(t *testing.T) {
+		must := require.New(t)
 		_, err := proxyEnvFor(nil, "")
-		require.Error(t, err)
+		must.Error(err)
 	})
 
 	t.Run("none injects nothing", func(t *testing.T) {
+		must := require.New(t)
 		env, err := proxyEnvFor(&types.NetworkConfig{Mode: "none"}, "")
-		require.NoError(t, err)
-		require.Empty(t, env)
+		must.NoError(err)
+		must.Empty(env)
 	})
 
 	t.Run("allowlist without url errors", func(t *testing.T) {
+		must := require.New(t)
 		_, err := proxyEnvFor(&types.NetworkConfig{Mode: "allowlist"}, "")
-		require.Error(t, err)
+		must.Error(err)
 	})
 
 	t.Run("allowlist with url injects proxy vars", func(t *testing.T) {
+		must := require.New(t)
 		const url = "http://stirrup-egress-proxy.default.svc:8080"
 		env, err := proxyEnvFor(&types.NetworkConfig{Mode: "allowlist"}, url)
-		require.NoError(t, err)
+		must.NoError(err)
 
 		got := map[string]string{}
 		for _, e := range env {
@@ -209,16 +222,17 @@ func TestProxyEnvFor_InjectsProxyVarsPerMode(t *testing.T) {
 		// Both spellings are injected: git honours only the lower-case
 		// http_proxy for plain-http destinations.
 		for _, name := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"} {
-			require.Equal(t, url, got[name], "proxy env %s", name)
+			must.Equal(url, got[name], "proxy env %s", name)
 		}
 		for _, name := range []string{"NO_PROXY", "no_proxy"} {
-			require.NotEmpty(t, got[name], "%s must be set", name)
+			must.NotEmpty(got[name], "%s must be set", name)
 		}
 	})
 
 	t.Run("unsupported mode errors", func(t *testing.T) {
+		must := require.New(t)
 		_, err := proxyEnvFor(&types.NetworkConfig{Mode: "bridge"}, "http://x")
-		require.Error(t, err)
+		must.Error(err)
 	})
 }
 
@@ -239,13 +253,14 @@ func TestK8sExecutor_Capabilities_TracksNetworkMode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			exec := &K8sExecutor{podExecCore: podExecCore{network: tt.network}}
 			caps := exec.Capabilities()
-			require.Equal(t, tt.wantCanNet, caps.CanNetwork)
-			require.True(t, caps.CanRead)
-			require.True(t, caps.CanWrite)
-			require.True(t, caps.CanExec)
-			require.Equal(t, maxTimeout, caps.MaxTimeout)
+			must.Equal(tt.wantCanNet, caps.CanNetwork)
+			must.True(caps.CanRead)
+			must.True(caps.CanWrite)
+			must.True(caps.CanExec)
+			must.Equal(maxTimeout, caps.MaxTimeout)
 		})
 	}
 }
@@ -255,13 +270,14 @@ func TestK8sExecutor_Capabilities_TracksNetworkMode(t *testing.T) {
 // random bytes encoded as hex yield 12 characters; format drift would be
 // visible to operators.
 func TestGeneratePodName_FormatAndUniqueness(t *testing.T) {
+	must := require.New(t)
 	re := regexp.MustCompile(`^stirrup-[0-9a-f]{12}$`)
 	seen := make(map[string]struct{}, 10)
 	for i := 0; i < 10; i++ {
 		name, err := generatePodName()
-		require.NoError(t, err)
-		require.Regexp(t, re, name)
-		require.NotContains(t, seen, name, "pod name repeated across calls")
+		must.NoError(err)
+		must.Regexp(re, name)
+		must.NotContains(seen, name, "pod name repeated across calls")
 		seen[name] = struct{}{}
 	}
 }
@@ -293,9 +309,10 @@ func TestExtractExitCode_HandlesCodeAndTransportErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			code, ok := extractExitCode(tt.err)
-			require.Equal(t, tt.wantOK, ok)
-			require.Equal(t, tt.wantCode, code)
+			must.Equal(tt.wantOK, ok)
+			must.Equal(tt.wantCode, code)
 		})
 	}
 }
@@ -307,31 +324,34 @@ func TestExtractExitCode_HandlesCodeAndTransportErrors(t *testing.T) {
 // remotecommand never errors mid-stream on a capped buffer.
 func TestWriteCapBuffer_CapsAtLimit(t *testing.T) {
 	t.Run("under limit accumulates", func(t *testing.T) {
+		must := require.New(t)
 		w := writeCapBuffer{limit: 16}
 		n, err := w.Write([]byte("hello"))
-		require.NoError(t, err)
-		require.Equal(t, 5, n)
-		require.False(t, w.exceeded, "exceeded must stay unset below the limit")
-		require.Equal(t, "hello", w.String())
+		must.NoError(err)
+		must.Equal(5, n)
+		must.False(w.exceeded, "exceeded must stay unset below the limit")
+		must.Equal("hello", w.String())
 	})
 
 	t.Run("crossing limit truncates and flags", func(t *testing.T) {
+		must := require.New(t)
 		w := writeCapBuffer{limit: 4}
 		n, err := w.Write([]byte("abcdefgh"))
-		require.NoError(t, err)
-		require.Equal(t, 8, n, "the full slice is reported as consumed")
-		require.True(t, w.exceeded)
-		require.Equal(t, "abcd", w.String(), "buffer is truncated at the limit")
+		must.NoError(err)
+		must.Equal(8, n, "the full slice is reported as consumed")
+		must.True(w.exceeded)
+		must.Equal("abcd", w.String(), "buffer is truncated at the limit")
 	})
 
 	t.Run("post-limit writes dropped", func(t *testing.T) {
+		must := require.New(t)
 		w := writeCapBuffer{limit: 4}
 		_, _ = w.Write([]byte("abcd"))
 		_, _ = w.Write([]byte("more"))
 		n, err := w.Write([]byte("xyz"))
-		require.NoError(t, err)
-		require.Equal(t, 3, n)
-		require.Equal(t, "abcd", w.String(), "buffer must not grow after the cap")
+		must.NoError(err)
+		must.Equal(3, n)
+		must.Equal("abcd", w.String(), "buffer must not grow after the cap")
 	})
 }
 
@@ -344,36 +364,40 @@ func TestWriteCapBuffer_CapsAtLimit(t *testing.T) {
 // it, rather than requiring a fake streaming apparatus.
 func TestTimeoutExecResult_OutputTruncated(t *testing.T) {
 	t.Run("neither stream capped", func(t *testing.T) {
+		must := require.New(t)
 		var stdout, stderr writeCapBuffer
 		stdout.limit, stderr.limit = 16, 16
 		_, _ = stdout.Write([]byte("hello"))
 
 		result := timeoutExecResult(&stdout, &stderr)
-		require.False(t, result.OutputTruncated)
-		require.Equal(t, "hello", result.Stdout)
+		must.False(result.OutputTruncated)
+		must.Equal("hello", result.Stdout)
 	})
 
 	t.Run("stdout capped", func(t *testing.T) {
+		must := require.New(t)
 		var stdout, stderr writeCapBuffer
 		stdout.limit, stderr.limit = 4, 4
 		_, _ = stdout.Write([]byte("abcdefgh"))
 
 		result := timeoutExecResult(&stdout, &stderr)
-		require.True(t, result.OutputTruncated)
+		must.True(result.OutputTruncated)
 	})
 
 	t.Run("stderr capped", func(t *testing.T) {
+		must := require.New(t)
 		var stdout, stderr writeCapBuffer
 		stdout.limit, stderr.limit = 4, 4
 		_, _ = stderr.Write([]byte("abcdefgh"))
 
 		result := timeoutExecResult(&stdout, &stderr)
-		require.True(t, result.OutputTruncated)
+		must.True(result.OutputTruncated)
 	})
 
 	t.Run("ctx-ended exec exit code is -1", func(t *testing.T) {
+		must := require.New(t)
 		result := timeoutExecResult(&writeCapBuffer{}, &writeCapBuffer{})
-		require.Equal(t, -1, result.ExitCode, "-1 is the sentinel for a ctx-ended exec")
+		must.Equal(-1, result.ExitCode, "-1 is the sentinel for a ctx-ended exec")
 	})
 }
 
@@ -383,30 +407,34 @@ func TestTimeoutExecResult_OutputTruncated(t *testing.T) {
 // errors.Is. Other stderr is passed through.
 func TestClassifyTarError_MapsMissingFilesToErrNotExist(t *testing.T) {
 	t.Run("no such file", func(t *testing.T) {
+		must := require.New(t)
 		err := classifyTarError("missing.txt", "tar: missing.txt: No such file or directory")
-		require.ErrorIs(t, err, fs.ErrNotExist)
+		must.ErrorIs(err, fs.ErrNotExist)
 	})
 
 	// The "not found" substring (busybox phrasing) must also map to
 	// fs.ErrNotExist.
 	t.Run("busybox not found", func(t *testing.T) {
+		must := require.New(t)
 		err := classifyTarError("missing.txt", "ls: missing.txt: not found")
-		require.ErrorIs(t, err, fs.ErrNotExist)
+		must.ErrorIs(err, fs.ErrNotExist)
 	})
 
 	t.Run("other stderr is passed through", func(t *testing.T) {
+		must := require.New(t)
 		err := classifyTarError("x", "tar: permission denied")
-		require.NotErrorIs(t, err, fs.ErrNotExist)
-		require.ErrorContains(t, err, "permission denied")
+		must.NotErrorIs(err, fs.ErrNotExist)
+		must.ErrorContains(err, "permission denied")
 	})
 
 	// Empty stderr (a non-zero exit with nothing on stderr) must still
 	// produce a usable, non-nil error that names the target.
 	t.Run("empty stderr names the target", func(t *testing.T) {
+		must := require.New(t)
 		err := classifyTarError("ghost", "")
-		require.Error(t, err)
-		require.NotErrorIs(t, err, fs.ErrNotExist)
-		require.ErrorContains(t, err, "ghost")
+		must.Error(err)
+		must.NotErrorIs(err, fs.ErrNotExist)
+		must.ErrorContains(err, "ghost")
 	})
 }
 
@@ -418,16 +446,18 @@ func TestK8sResolveFilePath_RejectsRoot(t *testing.T) {
 	exec := &K8sExecutor{}
 
 	t.Run("root-resolving inputs are rejected", func(t *testing.T) {
+		must := require.New(t)
 		for _, in := range []string{"", ".", "/workspace", "/workspace/"} {
 			_, err := exec.resolveFilePath(in)
-			require.Error(t, err, "resolveFilePath(%q) should reject the workspace root", in)
+			must.Error(err, "resolveFilePath(%q) should reject the workspace root", in)
 		}
 	})
 
 	t.Run("file path resolves under workspace", func(t *testing.T) {
+		must := require.New(t)
 		got, err := exec.resolveFilePath("a.txt")
-		require.NoError(t, err)
-		require.Equal(t, "/workspace/a.txt", got)
+		must.NoError(err)
+		must.Equal("/workspace/a.txt", got)
 	})
 }
 
@@ -436,10 +466,11 @@ func TestK8sResolveFilePath_RejectsRoot(t *testing.T) {
 // default `just test` (no cluster). The receiver is a zero-value executor;
 // the size check returns before any clientset use.
 func TestK8sWriteFile_RejectsOversizedContent(t *testing.T) {
+	must := require.New(t)
 	exec := &K8sExecutor{}
 	big := strings.Repeat("a", int(k8sMaxOutput)+1)
 	err := exec.WriteFile(context.Background(), "big.txt", big)
-	require.ErrorIs(t, err, errK8sOutputCap)
+	must.ErrorIs(err, errK8sOutputCap)
 }
 
 // TestK8sWriteFile_OversizedEmitsFileSizeEvent verifies the oversized-write
@@ -447,17 +478,18 @@ func TestK8sWriteFile_RejectsOversizedContent(t *testing.T) {
 // prefix of the cap path). A nil emitter must stay silent, which
 // TestK8sWriteFile_RejectsOversizedContent covers with a zero-value executor.
 func TestK8sWriteFile_OversizedEmitsFileSizeEvent(t *testing.T) {
+	must := require.New(t)
 	rec := &recordingSecurityEmitter{}
 	exec := &K8sExecutor{podExecCore: podExecCore{Security: rec}}
 	big := strings.Repeat("a", int(k8sMaxOutput)+1)
 	err := exec.WriteFile(context.Background(), "big.txt", big)
-	require.ErrorIs(t, err, errK8sOutputCap)
+	must.ErrorIs(err, errK8sOutputCap)
 
-	require.Len(t, rec.fileSizeEvents, 1)
+	must.Len(rec.fileSizeEvents, 1)
 	ev := rec.fileSizeEvents[0]
-	require.Equal(t, "big.txt", ev.path)
-	require.Equal(t, k8sMaxOutput, ev.limit)
-	require.Greater(t, ev.size, k8sMaxOutput, "reported size should exceed the cap")
+	must.Equal("big.txt", ev.path)
+	must.Equal(k8sMaxOutput, ev.limit)
+	must.Greater(ev.size, k8sMaxOutput, "reported size should exceed the cap")
 }
 
 // TestK8sResolvePath_EmitsPathTraversal verifies the escape branch reports
@@ -465,19 +497,20 @@ func TestK8sWriteFile_OversizedEmitsFileSizeEvent(t *testing.T) {
 // in-bounds path. This is the monitoring hook the container/local executors
 // already provide.
 func TestK8sResolvePath_EmitsPathTraversal(t *testing.T) {
+	must := require.New(t)
 	rec := &recordingSecurityEmitter{}
 	exec := &K8sExecutor{podExecCore: podExecCore{Security: rec}}
 
 	_, err := exec.ResolvePath("../etc/passwd")
-	require.Error(t, err)
-	require.Len(t, rec.pathTraversalEvents, 1)
+	must.Error(err)
+	must.Len(rec.pathTraversalEvents, 1)
 	got := rec.pathTraversalEvents[0]
-	require.Equal(t, "../etc/passwd", got.path)
-	require.Equal(t, "/workspace", got.workspace)
+	must.Equal("../etc/passwd", got.path)
+	must.Equal("/workspace", got.workspace)
 
 	_, err = exec.ResolvePath("ok.txt")
-	require.NoError(t, err)
-	require.Len(t, rec.pathTraversalEvents, 1, "in-bounds path emitted a traversal event: %+v", rec.pathTraversalEvents)
+	must.NoError(err)
+	must.Len(rec.pathTraversalEvents, 1, "in-bounds path emitted a traversal event: %+v", rec.pathTraversalEvents)
 }
 
 // TestClampInt_SaturatesInsteadOfWrapping verifies the int64->int narrowing
@@ -485,15 +518,18 @@ func TestK8sResolvePath_EmitsPathTraversal(t *testing.T) {
 // 32-bit builds.
 func TestClampInt_SaturatesInsteadOfWrapping(t *testing.T) {
 	t.Run("zero is unchanged", func(t *testing.T) {
-		require.Equal(t, 0, clampInt(0))
+		must := require.New(t)
+		must.Equal(0, clampInt(0))
 	})
 
 	t.Run("output cap fits in int", func(t *testing.T) {
-		require.Equal(t, int(k8sMaxOutput), clampInt(k8sMaxOutput))
+		must := require.New(t)
+		must.Equal(int(k8sMaxOutput), clampInt(k8sMaxOutput))
 	})
 
 	t.Run("int64 max saturates to int max", func(t *testing.T) {
-		require.Equal(t, math.MaxInt, clampInt(math.MaxInt64))
+		must := require.New(t)
+		must.Equal(math.MaxInt, clampInt(math.MaxInt64))
 	})
 }
 
@@ -550,38 +586,43 @@ func TestClassifyPodCreateError_RuntimeClassHint(t *testing.T) {
 	transport := errors.New("connection refused")
 
 	t.Run("invalid with runtime class gets hint", func(t *testing.T) {
+		must := require.New(t)
 		err := classifyPodCreateError("gvisor", invalid)
-		require.ErrorContains(t, err, `RuntimeClass "gvisor"`)
-		require.ErrorContains(t, err, "kubectl get runtimeclass")
-		require.True(t, apierrors.IsInvalid(err), "wrapped error must remain IsInvalid via errors.As")
+		must.ErrorContains(err, `RuntimeClass "gvisor"`)
+		must.ErrorContains(err, "kubectl get runtimeclass")
+		must.True(apierrors.IsInvalid(err), "wrapped error must remain IsInvalid via errors.As")
 	})
 
 	t.Run("forbidden with runtime class gets hint", func(t *testing.T) {
+		must := require.New(t)
 		err := classifyPodCreateError("gvisor", forbidden)
-		require.ErrorContains(t, err, `RuntimeClass "gvisor"`)
-		require.ErrorContains(t, err, "kubectl get runtimeclass")
-		require.True(t, apierrors.IsForbidden(err), "wrapped error must remain IsForbidden via errors.As")
+		must.ErrorContains(err, `RuntimeClass "gvisor"`)
+		must.ErrorContains(err, "kubectl get runtimeclass")
+		must.True(apierrors.IsForbidden(err), "wrapped error must remain IsForbidden via errors.As")
 	})
 
 	t.Run("forbidden without runtime class is plain", func(t *testing.T) {
+		must := require.New(t)
 		err := classifyPodCreateError("", forbidden)
 		// The synthetic forbidden error carries "RuntimeClass" in its own
 		// text, so assert on the hint phrase the wrapper adds rather than
 		// the bare word.
-		require.NotContains(t, err.Error(), "kubectl get runtimeclass")
-		require.True(t, apierrors.IsForbidden(err), "wrapped error must remain IsForbidden")
+		must.NotContains(err.Error(), "kubectl get runtimeclass")
+		must.True(apierrors.IsForbidden(err), "wrapped error must remain IsForbidden")
 	})
 
 	t.Run("invalid without runtime class is plain", func(t *testing.T) {
+		must := require.New(t)
 		err := classifyPodCreateError("", invalid)
-		require.NotContains(t, err.Error(), "RuntimeClass")
-		require.True(t, strings.HasPrefix(err.Error(), "create pod:"), "expected plain create-pod wrap")
+		must.NotContains(err.Error(), "RuntimeClass")
+		must.True(strings.HasPrefix(err.Error(), "create pod:"), "expected plain create-pod wrap")
 	})
 
 	t.Run("non-invalid error with runtime class is plain", func(t *testing.T) {
+		must := require.New(t)
 		err := classifyPodCreateError("gvisor", transport)
-		require.NotContains(t, err.Error(), "RuntimeClass")
-		require.ErrorIs(t, err, transport)
+		must.NotContains(err.Error(), "RuntimeClass")
+		must.ErrorIs(err, transport)
 	})
 }
 
@@ -606,36 +647,42 @@ func recordingExecCore(hang bool) (*podExecCore, *[][]string) {
 // group-kill exec that targets the run's pid file.
 func assertKillFollowedRun(t *testing.T, calls [][]string) {
 	t.Helper()
-	require.Len(t, calls, 2, "want the run followed by one kill")
+	must := require.New(t)
+	check := assert.New(t)
+	must.Len(calls, 2, "want the run followed by one kill")
 	run, kill := calls[0], calls[1]
-	require.Equal(t, "stirrup-exec", run[3], "run exec script")
-	require.Equal(t, "stirrup-kill", kill[3], "kill exec script")
-	assert.Equal(t, groupKillScript, kill[2], "kill exec command")
-	assert.Equal(t, run[5], kill[4], "kill pid file")
+	must.Equal("stirrup-exec", run[3], "run exec script")
+	must.Equal("stirrup-kill", kill[3], "kill exec script")
+	check.Equal(groupKillScript, kill[2], "kill exec command")
+	check.Equal(run[5], kill[4], "kill pid file")
 }
 
 func TestPodExecCore_ExecKillsGroupAfterTimeout(t *testing.T) {
+	must := require.New(t)
 	core, calls := recordingExecCore(true)
 	_, err := core.Exec(context.Background(), "sleep 600", 50*time.Millisecond)
-	require.ErrorIs(t, err, ErrTimeout)
+	must.ErrorIs(err, ErrTimeout)
 	assertKillFollowedRun(t, *calls)
 }
 
 func TestPodExecCore_ExecStreamKillsGroupAfterTimeout(t *testing.T) {
+	must := require.New(t)
 	core, calls := recordingExecCore(true)
 	_, err := core.ExecStream(context.Background(), "sleep 600", 50*time.Millisecond, io.Discard, io.Discard)
-	require.ErrorIs(t, err, ErrTimeout)
+	must.ErrorIs(err, ErrTimeout)
 	assertKillFollowedRun(t, *calls)
 }
 
 func TestPodExecCore_CompletedCommandIsNotKilled(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	core, calls := recordingExecCore(false)
 	_, err := core.Exec(context.Background(), "true", time.Second)
-	require.NoError(t, err, "Exec")
+	must.NoError(err, "Exec")
 	_, err = core.ExecStream(context.Background(), "true", time.Second, io.Discard, io.Discard)
-	require.NoError(t, err, "ExecStream")
-	require.Len(t, *calls, 2, "want one run per command and no kill")
+	must.NoError(err, "ExecStream")
+	must.Len(*calls, 2, "want one run per command and no kill")
 	for _, c := range *calls {
-		assert.Equal(t, "stirrup-exec", c[3], "unexpected kill exec: %q", c)
+		check.Equal("stirrup-exec", c[3], "unexpected kill exec: %q", c)
 	}
 }

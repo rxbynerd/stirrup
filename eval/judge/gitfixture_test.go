@@ -32,30 +32,33 @@ var gitTestIdentity = []string{
 // shIn runs script with sh in dir, playing the agent.
 func shIn(t *testing.T, dir, script string) {
 	t.Helper()
+	must := require.New(t)
 	cmd := exec.Command("sh", "-c", script)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), gitTestIdentity...)
 	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, "sh %q\n%s", script, out)
+	must.NoError(err, "sh %q\n%s", script, out)
 }
 
 // gitCmd runs git in dir and returns its output.
 func gitCmd(t *testing.T, dir string, args ...string) string {
 	t.Helper()
+	must := require.New(t)
 	cmd := exec.Command("git", append([]string{"-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), gitTestIdentity...)
 	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, "git %s\n%s", strings.Join(args, " "), out)
+	must.NoError(err, "git %s\n%s", strings.Join(args, " "), out)
 	return string(out)
 }
 
 func writeFiles(t *testing.T, dir string, files map[string]string) {
 	t.Helper()
+	must := require.New(t)
 	for rel, content := range files {
 		path := filepath.Join(dir, rel)
-		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
-		require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+		must.NoError(os.MkdirAll(filepath.Dir(path), 0o755))
+		must.NoError(os.WriteFile(path, []byte(content), 0o644))
 	}
 }
 
@@ -68,8 +71,9 @@ func fileExists(path string) bool {
 // the ones git reports.
 func tempDir(t *testing.T) string {
 	t.Helper()
+	must := require.New(t)
 	dir, err := filepath.EvalSymlinks(t.TempDir())
-	require.NoError(t, err)
+	must.NoError(err)
 	return dir
 }
 
@@ -86,8 +90,9 @@ func newWorkspace(t *testing.T, files map[string]string) (string, Baseline) {
 // baselineOf records ws's current content as a runner baseline.
 func baselineOf(t *testing.T, ws string) Baseline {
 	t.Helper()
+	must := require.New(t)
 	base, err := CreateBaseline(context.Background(), ws, filepath.Join(tempDir(t), "judge.git"))
-	require.NoError(t, err, "CreateBaseline(%s)", ws)
+	must.NoError(err, "CreateBaseline(%s)", ws)
 	return base
 }
 
@@ -95,9 +100,10 @@ func baselineOf(t *testing.T, ws string) Baseline {
 // relative to its baseline.
 func changedWorkspace(t *testing.T) (string, Baseline) {
 	t.Helper()
+	must := require.New(t)
 	ws, base := newWorkspace(t, map[string]string{"a.txt": "one\n", "gone.txt": "bye\n"})
 	writeFiles(t, ws, map[string]string{"a.txt": "one\ntwo\n", "new.txt": "brand new\n"})
-	require.NoError(t, os.Remove(filepath.Join(ws, "gone.txt")))
+	must.NoError(os.Remove(filepath.Join(ws, "gone.txt")))
 	return ws, base
 }
 
@@ -118,6 +124,7 @@ func gitRepoWorkspace(t *testing.T, files map[string]string) string {
 // store.
 func countObjects(t *testing.T, gitDir string) int {
 	t.Helper()
+	must := require.New(t)
 	n := 0
 	err := filepath.WalkDir(filepath.Join(gitDir, "objects"), func(_ string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -128,13 +135,14 @@ func countObjects(t *testing.T, gitDir string) int {
 		}
 		return nil
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	return n
 }
 
 func capture(t *testing.T, ws string, base Baseline, maxBytes int) workspaceDiff {
 	t.Helper()
+	must := require.New(t)
 	got, err := captureWorkspaceDiff(context.Background(), ws, base, maxBytes)
-	require.NoError(t, err, "captureWorkspaceDiff(%s)", ws)
+	must.NoError(err, "captureWorkspaceDiff(%s)", ws)
 	return got
 }

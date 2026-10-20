@@ -16,14 +16,16 @@ func TestNoop_RunPreAndRunPost_AreNoOps(t *testing.T) {
 	n := NewNoop()
 
 	t.Run("run pre returns no results and no error", func(t *testing.T) {
+		must := require.New(t)
 		results, err := n.RunPre(context.Background())
-		require.NoError(t, err)
-		require.Nil(t, results)
+		must.NoError(err)
+		must.Nil(results)
 	})
 
 	t.Run("run post returns no results and no error", func(t *testing.T) {
+		must := require.New(t)
 		results, err := n.RunPost(context.Background(), "success")
-		require.NoError(t, err)
-		require.Nil(t, results)
+		must.NoError(err)
+		must.Nil(results)
 	})
 }

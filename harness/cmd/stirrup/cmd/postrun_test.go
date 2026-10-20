@@ -78,8 +78,9 @@ func TestFollowUpExportURI_DerivesPerRunDestination(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got := followUpExportURI(tc.base, tc.runID)
-			require.Equal(t, tc.want, got, "followUpExportURI(%q, %q)", tc.base, tc.runID)
+			must.Equal(tc.want, got, "followUpExportURI(%q, %q)", tc.base, tc.runID)
 		})
 	}
 }
@@ -88,6 +89,7 @@ func TestFollowUpExportURI_DerivesPerRunDestination(t *testing.T) {
 // emission per completed run and no export, which the loop has already
 // performed before "done".
 func TestPostRunPolicy_FinaliseOnlyEmits(t *testing.T) {
+	must := require.New(t)
 	rec := &recordingExporter{}
 	installRecordingExporter(t, rec)
 
@@ -101,17 +103,18 @@ func TestPostRunPolicy_FinaliseOnlyEmits(t *testing.T) {
 	cfg.Executor.WorkspaceExportTo = "gs://bucket/runs/primary/workspace.tar.gz"
 
 	err := policy.finalise(cfg, finaliseTestTrace("primary"), nil)
-	require.NoError(t, err, "finalise primary run")
+	must.NoError(err, "finalise primary run")
 	policy.finaliseFollowUp(cfg, finaliseTestTrace("run-2"), nil)
 
-	require.Equal(t, []string{"primary", "run-2"}, emitted, "emitted run IDs")
-	require.Empty(t, rec.destinations(), "finalise must not export outside the loop")
+	must.Equal([]string{"primary", "run-2"}, emitted, "emitted run IDs")
+	must.Empty(rec.destinations(), "finalise must not export outside the loop")
 }
 
 // TestPostRunPolicy_FinaliseFailedRunEmitsAndPropagates pins that a run
 // error still reaches the result surface (the failure must be
 // observable) and propagates.
 func TestPostRunPolicy_FinaliseFailedRunEmitsAndPropagates(t *testing.T) {
+	must := require.New(t)
 	emitted := 0
 	policy := &postRunPolicy{
 		emit: func(_ context.Context, _ *types.RunConfig, _ *types.RunTrace) { emitted++ },
@@ -119,14 +122,15 @@ func TestPostRunPolicy_FinaliseFailedRunEmitsAndPropagates(t *testing.T) {
 
 	runErr := errors.New("finish trace: boom")
 	err := policy.finalise(&types.RunConfig{}, finaliseTestTrace("primary"), runErr)
-	require.ErrorIs(t, err, runErr, "finalise must wrap the run error")
-	require.Equal(t, 1, emitted, "emit calls")
+	must.ErrorIs(err, runErr, "finalise must wrap the run error")
+	must.Equal(1, emitted, "emit calls")
 }
 
 // TestPostRunPolicy_FinaliseNilTraceEmitsNothing pins that a run which
 // produced no trace at all is not emitted (the loop already sent its
 // terminal "done", and a second result would be a fabricated one).
 func TestPostRunPolicy_FinaliseNilTraceEmitsNothing(t *testing.T) {
+	must := require.New(t)
 	emitted := 0
 	policy := &postRunPolicy{
 		emit: func(_ context.Context, _ *types.RunConfig, _ *types.RunTrace) { emitted++ },
@@ -134,8 +138,8 @@ func TestPostRunPolicy_FinaliseNilTraceEmitsNothing(t *testing.T) {
 	runErr := errors.New("finish trace: boom")
 
 	err := policy.finalise(&types.RunConfig{}, nil, runErr)
-	require.ErrorIs(t, err, runErr, "finalise must wrap the run error")
-	require.Zero(t, emitted, "emit calls for a nil trace")
+	must.ErrorIs(err, runErr, "finalise must wrap the run error")
+	must.Zero(emitted, "emit calls for a nil trace")
 }
 
 // TestCLISessionBudget_ScalesWithFollowUpWindow pins the CLI's self-imposed
@@ -143,13 +147,15 @@ func TestPostRunPolicy_FinaliseNilTraceEmitsNothing(t *testing.T) {
 // follow-ups each waited for through a full grace window.
 func TestCLISessionBudget_ScalesWithFollowUpWindow(t *testing.T) {
 	t.Run("unbounded without a window", func(t *testing.T) {
+		must := require.New(t)
 		got := cliSessionBudget(30*time.Second, 0)
-		require.Zero(t, got, "the primary run has its own timeout")
+		must.Zero(got, "the primary run has its own timeout")
 	})
 	t.Run("ten follow-ups each with a full window", func(t *testing.T) {
+		must := require.New(t)
 		want := 10 * (30*time.Second + 60*time.Second)
 		got := cliSessionBudget(30*time.Second, 60)
-		require.Equal(t, want, got, "budget with a 60 s window")
+		must.Equal(want, got, "budget with a 60 s window")
 	})
 }
 
@@ -158,6 +164,7 @@ func TestCLISessionBudget_ScalesWithFollowUpWindow(t *testing.T) {
 // optional export failure are already on its done/RunResult and are not
 // recorded, while the first required-export failure is.
 func TestPostRunPolicy_FollowUpErrRecordsOnlyRequiredExportFailures(t *testing.T) {
+	must := require.New(t)
 	noop := func(_ context.Context, _ *types.RunConfig, _ *types.RunTrace) {}
 	withReceipt := func(id string, receipt types.ExportReceipt) *types.RunTrace {
 		rt := finaliseTestTrace(id)
@@ -169,18 +176,18 @@ func TestPostRunPolicy_FollowUpErrRecordsOnlyRequiredExportFailures(t *testing.T
 
 	policy := &postRunPolicy{emit: noop}
 	policy.finaliseFollowUp(cfg, finaliseTestTrace("run-2"), errors.New("finish trace: boom"))
-	require.NoError(t, policy.followUpErr(), "a follow-up's run error must not become the exit status")
+	must.NoError(policy.followUpErr(), "a follow-up's run error must not become the exit status")
 
 	policy.finaliseFollowUp(cfg, withReceipt("run-3", failed), nil)
-	require.NoError(t, policy.followUpErr(), "an optional export failure must not become the exit status")
+	must.NoError(policy.followUpErr(), "an optional export failure must not become the exit status")
 
 	required := failed
 	required.Required = true
 	policy.finaliseFollowUp(cfg, withReceipt("run-4", required), nil)
 	err := policy.followUpErr()
-	require.ErrorContains(t, err, "upload refused")
-	require.ErrorContains(t, err, required.URI)
+	must.ErrorContains(err, "upload refused")
+	must.ErrorContains(err, required.URI)
 
 	policy.finaliseFollowUp(cfg, withReceipt("run-5", types.ExportReceipt{URI: "gs://other", Status: types.ExportStatusFailed, Required: true, Error: "later"}), nil)
-	require.Same(t, err, policy.followUpErr(), "the first required export failure must be kept")
+	must.Same(err, policy.followUpErr(), "the first required export failure must be kept")
 }

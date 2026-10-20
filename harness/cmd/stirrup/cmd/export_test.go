@@ -63,22 +63,24 @@ func installGCSUploadCapture(t *testing.T) func() [][]byte {
 
 func sandboxTarStream(t *testing.T, files map[string]string) []byte {
 	t.Helper()
+	must := require.New(t)
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
-	require.NoError(t, tw.WriteHeader(&tar.Header{Name: "./", Typeflag: tar.TypeDir, Mode: 0o755}))
+	must.NoError(tw.WriteHeader(&tar.Header{Name: "./", Typeflag: tar.TypeDir, Mode: 0o755}))
 	for name, body := range files {
-		require.NoError(t, tw.WriteHeader(&tar.Header{Name: "./" + name, Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(body))}))
+		must.NoError(tw.WriteHeader(&tar.Header{Name: "./" + name, Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(body))}))
 		_, err := tw.Write([]byte(body))
-		require.NoError(t, err)
+		must.NoError(err)
 	}
-	require.NoError(t, tw.Close())
+	must.NoError(tw.Close())
 	return buf.Bytes()
 }
 
 func uploadedFiles(t *testing.T, body []byte) map[string]string {
 	t.Helper()
+	must := require.New(t)
 	gzr, err := gzip.NewReader(bytes.NewReader(body))
-	require.NoError(t, err, "gzip.NewReader")
+	must.NoError(err, "gzip.NewReader")
 	tr := tar.NewReader(gzr)
 	files := map[string]string{}
 	for {
@@ -86,7 +88,7 @@ func uploadedFiles(t *testing.T, body []byte) map[string]string {
 		if err == io.EOF {
 			return files
 		}
-		require.NoError(t, err, "tar.Next")
+		must.NoError(err, "tar.Next")
 		data, _ := io.ReadAll(tr)
 		files[h.Name] = string(data)
 	}
@@ -98,8 +100,10 @@ func uploadedFiles(t *testing.T, body []byte) map[string]string {
 func TestExportWorkspace_ArchivesSandboxNotHarnessCwd(t *testing.T) {
 	for _, typ := range []string{"k8s", "k8s-sandbox"} {
 		t.Run(typ, func(t *testing.T) {
+			check := assert.New(t)
+			must := require.New(t)
 			hostCwd := t.TempDir()
-			require.NoError(t, os.WriteFile(filepath.Join(hostCwd, "host-sentinel.txt"), []byte("host"), 0o644))
+			must.NoError(os.WriteFile(filepath.Join(hostCwd, "host-sentinel.txt"), []byte("host"), 0o644))
 			t.Chdir(hostCwd)
 			uploads := installGCSUploadCapture(t)
 
@@ -109,10 +113,10 @@ func TestExportWorkspace_ArchivesSandboxNotHarnessCwd(t *testing.T) {
 			sandbox := &archiverExecutor{stream: sandboxTarStream(t, map[string]string{"sandbox-sentinel.txt": "sandbox"})}
 
 			_, err := exportWorkspace(context.Background(), cfg, sandbox, cfg.Executor.WorkspaceExportTo)
-			require.NoError(t, err)
+			must.NoError(err)
 			got := uploads()
-			require.Len(t, got, 1)
-			assert.Equal(t, map[string]string{"sandbox-sentinel.txt": "sandbox"}, uploadedFiles(t, got[0]))
+			must.Len(got, 1)
+			check.Equal(map[string]string{"sandbox-sentinel.txt": "sandbox"}, uploadedFiles(t, got[0]))
 		})
 	}
 }
@@ -121,6 +125,8 @@ func TestExportWorkspace_ArchivesSandboxNotHarnessCwd(t *testing.T) {
 // workspace root fails the export with an error naming the executor, and
 // uploads nothing.
 func TestExportWorkspace_MissingRootNamesTheExecutor(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	uploads := installGCSUploadCapture(t)
 	cfg := &types.RunConfig{}
 	cfg.Executor.Type = "k8s-sandbox"
@@ -128,47 +134,52 @@ func TestExportWorkspace_MissingRootNamesTheExecutor(t *testing.T) {
 	missing := &archiverExecutor{err: fmt.Errorf("archive workspace /workspace: %w", executor.ErrWorkspaceRootMissing)}
 
 	receipt, err := exportWorkspace(context.Background(), cfg, missing, cfg.Executor.WorkspaceExportTo)
-	require.ErrorIs(t, err, executor.ErrWorkspaceRootMissing)
-	require.ErrorContains(t, err, "k8s-sandbox executor")
-	assert.False(t, receipt.Delivered(), "receipt = %+v", receipt)
-	assert.Empty(t, uploads())
+	must.ErrorIs(err, executor.ErrWorkspaceRootMissing)
+	must.ErrorContains(err, "k8s-sandbox executor")
+	check.False(receipt.Delivered(), "receipt = %+v", receipt)
+	check.Empty(uploads())
 }
 
 // TestExportWorkspace_EmptyWorkspaceUploadsAnEmptyArchive pins that an
 // empty workspace uploads an empty archive and reports status "empty".
 func TestExportWorkspace_EmptyWorkspaceUploadsAnEmptyArchive(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	uploads := installGCSUploadCapture(t)
 	cfg := &types.RunConfig{}
 	cfg.Executor.Type = "k8s"
 	cfg.Executor.WorkspaceExportTo = "gs://bucket/runs/r1/workspace.tar.gz"
 
 	receipt, err := exportWorkspace(context.Background(), cfg, &archiverExecutor{}, cfg.Executor.WorkspaceExportTo)
-	require.NoError(t, err)
-	assert.Equal(t, types.ExportStatusEmpty, receipt.Status)
+	must.NoError(err)
+	check.Equal(types.ExportStatusEmpty, receipt.Status)
 	got := uploads()
-	require.Len(t, got, 1, "an empty workspace uploads one archive")
-	assert.Empty(t, uploadedFiles(t, got[0]))
+	must.Len(got, 1, "an empty workspace uploads one archive")
+	check.Empty(uploadedFiles(t, got[0]))
 }
 
 // TestExportWorkspace_ExecutorWithoutArchiver pins that an executor lacking
 // the archiver capability fails the export without building an exporter.
 func TestExportWorkspace_ExecutorWithoutArchiver(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	uploads := installGCSUploadCapture(t)
 	cfg := &types.RunConfig{}
 	cfg.Executor.Type = "none"
 	cfg.Executor.WorkspaceExportTo = "gs://bucket/runs/r1/workspace.tar.gz"
 
 	receipt, err := exportWorkspace(context.Background(), cfg, &executor.NoneExecutor{}, cfg.Executor.WorkspaceExportTo)
-	require.ErrorContains(t, err, "cannot archive its workspace")
-	assert.Equal(t, types.ExportStatusFailed, receipt.Status)
-	assert.Equal(t, cfg.Executor.WorkspaceExportTo, receipt.URI)
-	assert.Empty(t, uploads())
+	must.ErrorContains(err, "cannot archive its workspace")
+	check.Equal(types.ExportStatusFailed, receipt.Status)
+	check.Equal(cfg.Executor.WorkspaceExportTo, receipt.URI)
+	check.Empty(uploads())
 }
 
 // TestRunWithConfig_ExportsLoopExecutorWorkspace pins that a harness run
 // exports through the loop's executor: the upload holds a file seeded in
 // the executor's workspace, not the harness process's working directory.
 func TestRunWithConfig_ExportsLoopExecutorWorkspace(t *testing.T) {
+	must := require.New(t)
 	srv := openAICompatibleSuccessServer(t)
 	defer srv.Close()
 	uploads := installGCSUploadCapture(t)
@@ -176,14 +187,14 @@ func TestRunWithConfig_ExportsLoopExecutorWorkspace(t *testing.T) {
 
 	config := runOutcomeTestConfig(t, srv.URL)
 	config.Executor.WorkspaceExportTo = "gs://bucket/runs/r1/workspace.tar.gz"
-	require.NoError(t, os.WriteFile(filepath.Join(config.Executor.Workspace, "seed.txt"), []byte("from the executor"), 0o644))
+	must.NoError(os.WriteFile(filepath.Join(config.Executor.Workspace, "seed.txt"), []byte("from the executor"), 0o644))
 
 	stdoutDone := captureStdout(t)
 	runErr := runWithConfig(config, runOptions{outputMode: "json"})
 	_ = stdoutDone()
-	require.NoError(t, runErr)
+	must.NoError(runErr)
 	got := uploads()
-	require.Len(t, got, 1)
+	must.Len(got, 1)
 	files := uploadedFiles(t, got[0])
-	require.Equal(t, "from the executor", files["seed.txt"], "uploaded entries = %v", files)
+	must.Equal("from the executor", files["seed.txt"], "uploaded entries = %v", files)
 }

@@ -31,10 +31,11 @@ func TestGeminiFlashRules_Resolution(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.model, func(t *testing.T) {
+			must := require.New(t)
 			g := DefaultRegistry().Resolve("gemini", tc.model).BehaviourFlags.Gemini
-			require.Equal(t, tc.wantRole, g.ToolResultRole)
-			require.Equal(t, tc.wantOmit, g.OmitSamplingParams)
-			require.Equal(t, tc.wantLevels, g.ThinkingLevels)
+			must.Equal(tc.wantRole, g.ToolResultRole)
+			must.Equal(tc.wantOmit, g.OmitSamplingParams)
+			must.Equal(tc.wantLevels, g.ThinkingLevels)
 		})
 	}
 }
@@ -47,10 +48,11 @@ func TestGeminiFlashRules_Resolution(t *testing.T) {
 func TestGeminiFlashRules_DoNotLeakAcrossProviders(t *testing.T) {
 	for _, pt := range []string{"openai-compatible", "anthropic", "openai-responses"} {
 		t.Run(pt, func(t *testing.T) {
+			must := require.New(t)
 			g := DefaultRegistry().Resolve(pt, "gemini-3.8-flash").BehaviourFlags.Gemini
-			require.Equal(t, ToolResultRoleFunction, g.ToolResultRole)
-			require.False(t, g.OmitSamplingParams)
-			require.Empty(t, g.ThinkingLevels)
+			must.Equal(ToolResultRoleFunction, g.ToolResultRole)
+			must.False(g.OmitSamplingParams)
+			must.Empty(g.ThinkingLevels)
 		})
 	}
 }
@@ -69,25 +71,28 @@ func TestGeminiToolResultRole_MarshalJSON_MatchesWireRoles(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got, err := json.Marshal(tc.val)
-			require.NoError(t, err)
-			require.Equal(t, tc.want, string(got))
+			must.NoError(err)
+			must.Equal(tc.want, string(got))
 
 			var round GeminiToolResultRole
-			require.NoError(t, json.Unmarshal(got, &round))
-			require.Equal(t, tc.val, round)
+			must.NoError(json.Unmarshal(got, &round))
+			must.Equal(tc.val, round)
 
 			wire := tc.val.WireRole()
-			require.Equal(t, tc.want, `"`+wire+`"`)
+			must.Equal(tc.want, `"`+wire+`"`)
 		})
 	}
 	t.Run("marshals unknown value as unknown(n)", func(t *testing.T) {
+		must := require.New(t)
 		got, err := json.Marshal(GeminiToolResultRole(99))
-		require.NoError(t, err)
-		require.Equal(t, `"unknown(99)"`, string(got))
+		must.NoError(err)
+		must.Equal(`"unknown(99)"`, string(got))
 	})
 	t.Run("rejects role outside enum", func(t *testing.T) {
+		must := require.New(t)
 		var r GeminiToolResultRole
-		require.Error(t, json.Unmarshal([]byte(`"model"`), &r))
+		must.Error(json.Unmarshal([]byte(`"model"`), &r))
 	})
 }

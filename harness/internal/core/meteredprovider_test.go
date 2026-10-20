@@ -14,11 +14,12 @@ import (
 
 func newMeteredTestProvider(t *testing.T, inner *scriptedTurnProvider) (*meteredProvider, *sdkmetric.ManualReader) {
 	t.Helper()
+	must := require.New(t)
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
 	metrics, err := observability.NewMetricsForTesting(mp)
-	require.NoError(t, err)
+	must.NoError(err)
 	m := newMeteredProvider(endpointProvider{inner}, "anthropic")
 	m.metrics = metrics
 	return m, reader
@@ -33,6 +34,7 @@ func drain(ch <-chan types.StreamEvent) []types.StreamEvent {
 }
 
 func TestMeteredProvider_RecordsDurationAndTokens(t *testing.T) {
+	must := require.New(t)
 	script := turnScript{events: []types.StreamEvent{
 		{Type: "text_delta", Text: "ok"},
 		{Type: "message_complete", StopReason: "end_turn", InputTokens: 120, OutputTokens: 8, ResponseModel: "claude-haiku-4-5-20251001"},
@@ -40,12 +42,12 @@ func TestMeteredProvider_RecordsDurationAndTokens(t *testing.T) {
 	m, reader := newMeteredTestProvider(t, &scriptedTurnProvider{scripts: []turnScript{script}})
 
 	ch, err := m.Stream(context.Background(), types.StreamParams{Model: "claude-haiku-4-5"})
-	require.NoError(t, err)
-	require.Len(t, drain(ch), 2)
+	must.NoError(err)
+	must.Len(drain(ch), 2)
 
 	durations, _ := findHistogram[float64](t, reader, "gen_ai.client.operation.duration")
-	require.Len(t, durations, 1)
-	require.EqualValues(t, 1, durations[0].Count)
+	must.Len(durations, 1)
+	must.EqualValues(1, durations[0].Count)
 
 	for _, tc := range []struct {
 		name, key, want string
@@ -56,13 +58,14 @@ func TestMeteredProvider_RecordsDurationAndTokens(t *testing.T) {
 		{name: "server address", key: "server.address", want: "api.anthropic.com"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			v, _ := attrValue(durations[0].Attributes, tc.key)
-			require.Equal(t, tc.want, v.AsString())
+			must.Equal(tc.want, v.AsString())
 		})
 	}
 
 	_, hasErrorType := attrValue(durations[0].Attributes, "error.type")
-	require.False(t, hasErrorType, "successful call carries error.type")
+	must.False(hasErrorType, "successful call carries error.type")
 
 	sums := map[string]int64{}
 	tokens, _ := findHistogram[int64](t, reader, "gen_ai.client.token.usage")
@@ -70,46 +73,49 @@ func TestMeteredProvider_RecordsDurationAndTokens(t *testing.T) {
 		typ, _ := attrValue(dp.Attributes, "gen_ai.token.type")
 		sums[typ.AsString()] += dp.Sum
 	}
-	require.Equal(t, int64(120), sums["input"], "token sums: %v", sums)
-	require.Equal(t, int64(8), sums["output"], "token sums: %v", sums)
+	must.Equal(int64(120), sums["input"], "token sums: %v", sums)
+	must.Equal(int64(8), sums["output"], "token sums: %v", sums)
 }
 
 func TestMeteredProvider_RecordsFailedRequest(t *testing.T) {
+	must := require.New(t)
 	m, reader := newMeteredTestProvider(t, &scriptedTurnProvider{scripts: []turnScript{{err: errors.New("refused")}}})
 
 	_, err := m.Stream(context.Background(), types.StreamParams{Model: "claude-haiku-4-5"})
-	require.Error(t, err, "Stream() should return the provider error")
+	must.Error(err, "Stream() should return the provider error")
 
 	durations, _ := findHistogram[float64](t, reader, "gen_ai.client.operation.duration")
-	require.Len(t, durations, 1)
+	must.Len(durations, 1)
 	errorType, _ := attrValue(durations[0].Attributes, "error.type")
-	require.Equal(t, "provider_request_failed", errorType.AsString())
+	must.Equal("provider_request_failed", errorType.AsString())
 }
 
 func TestMeteredProvider_RecordsStreamError(t *testing.T) {
+	must := require.New(t)
 	script := turnScript{events: []types.StreamEvent{
 		{Type: "error", Error: errors.New("broken stream")},
 	}}
 	m, reader := newMeteredTestProvider(t, &scriptedTurnProvider{scripts: []turnScript{script}})
 
 	ch, err := m.Stream(context.Background(), types.StreamParams{Model: "claude-haiku-4-5"})
-	require.NoError(t, err)
+	must.NoError(err)
 	drain(ch)
 
 	durations, _ := findHistogram[float64](t, reader, "gen_ai.client.operation.duration")
-	require.Len(t, durations, 1)
+	must.Len(durations, 1)
 	errorType, _ := attrValue(durations[0].Attributes, "error.type")
-	require.Equal(t, "provider_stream_failed", errorType.AsString())
+	must.Equal("provider_stream_failed", errorType.AsString())
 
 	_, hasTokenUsage := findHistogram[int64](t, reader, "gen_ai.client.token.usage")
-	require.False(t, hasTokenUsage, "token usage recorded for a stream that reported none")
+	must.False(hasTokenUsage, "token usage recorded for a stream that reported none")
 }
 
 func TestMeteredProvider_PassesThroughWithoutMetrics(t *testing.T) {
+	must := require.New(t)
 	script := turnScript{events: []types.StreamEvent{{Type: "message_complete", StopReason: "end_turn"}}}
 	m := newMeteredProvider(&scriptedTurnProvider{scripts: []turnScript{script}}, "anthropic")
 
 	ch, err := m.Stream(context.Background(), types.StreamParams{Model: "m"})
-	require.NoError(t, err)
-	require.Len(t, drain(ch), 1)
+	must.NoError(err)
+	must.Len(drain(ch), 1)
 }

@@ -23,9 +23,10 @@ func TestValidateRunConfig_ProtectedWriteTargets_AcceptsValid(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Tools.ProtectedWriteTargets = tc.targets
-			require.NoError(t, ValidateRunConfig(c))
+			must.NoError(ValidateRunConfig(c))
 		})
 	}
 }
@@ -52,9 +53,10 @@ func TestValidateRunConfig_ProtectedWriteTargets_RejectsInvalid(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			c := validConfig()
 			c.Tools.ProtectedWriteTargets = tc.targets
-			require.ErrorContains(t, ValidateRunConfig(c), tc.wantErr)
+			must.ErrorContains(ValidateRunConfig(c), tc.wantErr)
 		})
 	}
 }

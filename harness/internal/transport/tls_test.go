@@ -34,8 +34,9 @@ func TestTLSConfig_Mode(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, tc.cfg.Mode())
-			require.Equal(t, tc.want != TLSModePlaintext, tc.cfg.Enabled())
+			must := require.New(t)
+			must.Equal(tc.want, tc.cfg.Mode())
+			must.Equal(tc.want != TLSModePlaintext, tc.cfg.Enabled())
 		})
 	}
 }
@@ -52,34 +53,37 @@ func TestTLSConfig_ClientTLSConfig_RequiresTLS13(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			tlsCfg, err := tc.cfg.ClientTLSConfig()
-			require.NoError(t, err)
-			require.Equal(t, uint16(tls.VersionTLS13), tlsCfg.MinVersion)
+			must.NoError(err)
+			must.Equal(uint16(tls.VersionTLS13), tlsCfg.MinVersion)
 		})
 	}
 }
 
 func TestTLSConfig_ClientTLSConfig_LoadsMaterial(t *testing.T) {
+	must := require.New(t)
 	pki := tlstest.New(t)
 
 	serverAuth, err := TLSConfig{CAFile: pki.CAFile, ServerName: "cp.internal"}.ClientTLSConfig()
-	require.NoError(t, err)
-	require.NotNil(t, serverAuth.RootCAs, "the CA file's pool should be loaded")
-	require.Equal(t, "cp.internal", serverAuth.ServerName)
-	require.Empty(t, serverAuth.Certificates, "no client certificate is configured")
+	must.NoError(err)
+	must.NotNil(serverAuth.RootCAs, "the CA file's pool should be loaded")
+	must.Equal("cp.internal", serverAuth.ServerName)
+	must.Empty(serverAuth.Certificates, "no client certificate is configured")
 
 	clientCert, err := TLSConfig{CertFile: pki.ClientCertFile, KeyFile: pki.ClientKeyFile}.ClientTLSConfig()
-	require.NoError(t, err)
-	require.Nil(t, clientCert.RootCAs, "system roots must verify the server")
-	require.Len(t, clientCert.Certificates, 1)
+	must.NoError(err)
+	must.Nil(clientCert.RootCAs, "system roots must verify the server")
+	must.Len(clientCert.Certificates, 1)
 }
 
 func TestTLSConfig_Credentials_RejectsInvalidConfig(t *testing.T) {
+	must := require.New(t)
 	pki := tlstest.New(t)
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "missing.pem")
 	notPEM := filepath.Join(dir, "not.pem")
-	require.NoError(t, os.WriteFile(notPEM, []byte("not a certificate"), 0o600))
+	must.NoError(os.WriteFile(notPEM, []byte("not a certificate"), 0o600))
 
 	cases := []struct {
 		name    string
@@ -97,8 +101,9 @@ func TestTLSConfig_Credentials_RejectsInvalidConfig(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			_, err := tc.cfg.Credentials()
-			require.ErrorContains(t, err, tc.wantErr)
+			must.ErrorContains(err, tc.wantErr)
 		})
 	}
 }
@@ -116,12 +121,13 @@ func TestTLSConfig_SummaryOmitsFileContents(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			summary := tc.cfg.Summary()
 			for _, want := range tc.want {
-				require.Contains(t, summary, want)
+				must.Contains(summary, want)
 			}
-			require.NotContains(t, summary, "BEGIN", "the summary must not carry PEM content")
-			require.NotContains(t, summary, pki.ClientKeyFile, "the summary must not carry the key path")
+			must.NotContains(summary, "BEGIN", "the summary must not carry PEM content")
+			must.NotContains(summary, pki.ClientKeyFile, "the summary must not carry the key path")
 		})
 	}
 }
@@ -165,8 +171,9 @@ func (s *peerRecordingServer) snapshot() (string, []*pb.HarnessEvent) {
 // serves plaintext.
 func startTCPServer(t *testing.T, srv pb.HarnessServiceServer, serverTLS *tls.Config) string {
 	t.Helper()
+	must := require.New(t)
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
+	must.NoError(err)
 	var opts []grpc.ServerOption
 	if serverTLS != nil {
 		opts = append(opts, grpc.Creds(credentials.NewTLS(serverTLS)))
@@ -180,14 +187,16 @@ func startTCPServer(t *testing.T, srv pb.HarnessServiceServer, serverTLS *tls.Co
 
 func dialWithTLS(t *testing.T, addr string, cfg TLSConfig) (*GRPCTransport, error) {
 	t.Helper()
+	must := require.New(t)
 	creds, err := cfg.Credentials()
-	require.NoError(t, err)
+	must.NoError(err)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	t.Cleanup(cancel)
 	return NewGRPCTransport(ctx, addr, WithTLSCredentials(creds))
 }
 
 func TestGRPCTransport_MutualTLSSucceeds(t *testing.T) {
+	must := require.New(t)
 	pki := tlstest.New(t)
 	srv := &peerRecordingServer{}
 	addr := startTCPServer(t, srv, pki.ServerTLSConfig(true))
@@ -197,31 +206,33 @@ func TestGRPCTransport_MutualTLSSucceeds(t *testing.T) {
 		CertFile: pki.ClientCertFile,
 		KeyFile:  pki.ClientKeyFile,
 	})
-	require.NoError(t, err)
-	require.NoError(t, tr.Emit(types.HarnessEvent{Type: "ready"}))
-	require.NoError(t, tr.Close())
+	must.NoError(err)
+	must.NoError(tr.Emit(types.HarnessEvent{Type: "ready"}))
+	must.NoError(tr.Close())
 
-	require.Eventually(t, func() bool {
+	must.Eventually(func() bool {
 		_, received := srv.snapshot()
 		return len(received) == 1
 	}, 5*time.Second, 5*time.Millisecond)
 
 	clientCN, received := srv.snapshot()
-	require.Len(t, received, 1)
-	require.Equal(t, "ready", received[0].Type)
-	require.Equal(t, tlstest.ClientCommonName, clientCN)
+	must.Len(received, 1)
+	must.Equal("ready", received[0].Type)
+	must.Equal(tlstest.ClientCommonName, clientCN)
 }
 
 func TestGRPCTransport_ServerAuthenticatedTLSSucceeds(t *testing.T) {
+	must := require.New(t)
 	pki := tlstest.New(t)
 	addr := startTCPServer(t, &peerRecordingServer{}, pki.ServerTLSConfig(false))
 
 	tr, err := dialWithTLS(t, addr, TLSConfig{CAFile: pki.CAFile})
-	require.NoError(t, err)
+	must.NoError(err)
 	_ = tr.Close()
 }
 
 func TestGRPCTransport_TLSRefusesPlaintextServer(t *testing.T) {
+	must := require.New(t)
 	pki := tlstest.New(t)
 	addr := startTCPServer(t, &peerRecordingServer{}, nil)
 
@@ -233,11 +244,12 @@ func TestGRPCTransport_TLSRefusesPlaintextServer(t *testing.T) {
 	if err == nil {
 		_ = tr.Close()
 	}
-	require.ErrorContains(t, err, "handshake", "NewGRPCTransport must fail against a plaintext server")
+	must.ErrorContains(err, "handshake", "NewGRPCTransport must fail against a plaintext server")
 	t.Logf("refused: %v", err)
 }
 
 func TestGRPCTransport_TLSRefusesServerFromOtherCA(t *testing.T) {
+	must := require.New(t)
 	trusted := tlstest.New(t)
 	impostor := tlstest.New(t)
 	addr := startTCPServer(t, &peerRecordingServer{}, impostor.ServerTLSConfig(false))
@@ -250,11 +262,12 @@ func TestGRPCTransport_TLSRefusesServerFromOtherCA(t *testing.T) {
 	if err == nil {
 		_ = tr.Close()
 	}
-	require.ErrorContains(t, err, "certificate signed by unknown authority", "NewGRPCTransport must reject a server certificate from an untrusted CA")
+	must.ErrorContains(err, "certificate signed by unknown authority", "NewGRPCTransport must reject a server certificate from an untrusted CA")
 	t.Logf("refused: %v", err)
 }
 
 func TestGRPCTransport_TLSRefusesServerBelowTLS13(t *testing.T) {
+	must := require.New(t)
 	pki := tlstest.New(t)
 	serverTLS := pki.ServerTLSConfig(false)
 	serverTLS.MaxVersion = tls.VersionTLS12
@@ -264,6 +277,6 @@ func TestGRPCTransport_TLSRefusesServerBelowTLS13(t *testing.T) {
 	if err == nil {
 		_ = tr.Close()
 	}
-	require.ErrorContains(t, err, "protocol version", "NewGRPCTransport must require TLS 1.3 from the server")
+	must.ErrorContains(err, "protocol version", "NewGRPCTransport must require TLS 1.3 from the server")
 	t.Logf("refused: %v", err)
 }

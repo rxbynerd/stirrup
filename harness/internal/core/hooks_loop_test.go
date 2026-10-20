@@ -85,6 +85,8 @@ func simpleSuccessProvider() *mockProvider {
 // (Run() returns before Git.Setup / the inner loop), and RunPost is
 // never called since Run() returns early.
 func TestLoop_Hooks_PreRunFatalFailure_SetsSetupFailedZeroTurns(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop := buildTestLoop(simpleSuccessProvider())
 	hooks := &fakeHookRunner{preErr: errSentinelPreHookFailure}
 	loop.Hooks = hooks
@@ -94,12 +96,12 @@ func TestLoop_Hooks_PreRunFatalFailure_SetsSetupFailedZeroTurns(t *testing.T) {
 	// finishWithOutcome surfaces the underlying hook error as Run()'s Go
 	// error (see TestLoop_PromptBuildError), alongside the populated
 	// RunTrace reporting the classified outcome.
-	require.Error(t, err, "Run() must fail on a fatal pre-run hook failure")
-	require.ErrorContains(t, err, "pre-run hooks")
-	assert.Equal(t, "setup_failed", runTrace.Outcome)
-	assert.Equal(t, 0, runTrace.Turns, "the inner loop must never start")
-	assert.Equal(t, 1, hooks.preCalls, "RunPre calls")
-	assert.Empty(t, hooks.postCalls, "post is skipped after a pre-run failure")
+	must.Error(err, "Run() must fail on a fatal pre-run hook failure")
+	must.ErrorContains(err, "pre-run hooks")
+	check.Equal("setup_failed", runTrace.Outcome)
+	check.Equal(0, runTrace.Turns, "the inner loop must never start")
+	check.Equal(1, hooks.preCalls, "RunPre calls")
+	check.Empty(hooks.postCalls, "post is skipped after a pre-run failure")
 }
 
 // TestLoop_Hooks_PreRunFatalFailure_EmitsDoneEvent pins that a fatal
@@ -107,6 +109,8 @@ func TestLoop_Hooks_PreRunFatalFailure_SetsSetupFailedZeroTurns(t *testing.T) {
 // (StopReason=outcome), not just the "error" event — control planes
 // watch for the terminal "done" event per docs/deployment.md.
 func TestLoop_Hooks_PreRunFatalFailure_EmitsDoneEvent(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop := buildTestLoop(simpleSuccessProvider())
 	rec := &recordingTransport{}
 	loop.Transport = rec
@@ -115,8 +119,8 @@ func TestLoop_Hooks_PreRunFatalFailure_EmitsDoneEvent(t *testing.T) {
 
 	config := buildTestConfig()
 	runTrace, err := loop.Run(context.Background(), config)
-	require.Error(t, err, "Run() must fail on a fatal pre-run hook failure")
-	require.Equal(t, "setup_failed", runTrace.Outcome)
+	must.Error(err, "Run() must fail on a fatal pre-run hook failure")
+	must.Equal("setup_failed", runTrace.Outcome)
 
 	var sawError, sawDone bool
 	var doneStopReason string
@@ -129,9 +133,9 @@ func TestLoop_Hooks_PreRunFatalFailure_EmitsDoneEvent(t *testing.T) {
 			doneStopReason = ev.StopReason
 		}
 	}
-	assert.True(t, sawError, "expected an \"error\" event on the transport")
-	require.True(t, sawDone, "expected a \"done\" event on the transport")
-	assert.Equal(t, "setup_failed", doneStopReason, "done event StopReason")
+	check.True(sawError, "expected an \"error\" event on the transport")
+	must.True(sawDone, "expected a \"done\" event on the transport")
+	check.Equal("setup_failed", doneStopReason, "done event StopReason")
 }
 
 // TestLoop_Hooks_PreRunFatalFailure_CtxDeadWinsOverSetupFailed pins that
@@ -139,6 +143,7 @@ func TestLoop_Hooks_PreRunFatalFailure_EmitsDoneEvent(t *testing.T) {
 // reported via classifyCtxOutcome, not the generic "setup_failed" — the
 // hook almost certainly failed because the deadline hit.
 func TestLoop_Hooks_PreRunFatalFailure_CtxDeadWinsOverSetupFailed(t *testing.T) {
+	must := require.New(t)
 	loop := buildTestLoop(simpleSuccessProvider())
 	hooks := &fakeHookRunner{preErr: errSentinelPreHookFailure}
 	loop.Hooks = hooks
@@ -148,23 +153,25 @@ func TestLoop_Hooks_PreRunFatalFailure_CtxDeadWinsOverSetupFailed(t *testing.T) 
 
 	config := buildTestConfig()
 	runTrace, err := loop.Run(ctx, config)
-	require.Error(t, err, "Run() must fail on a fatal pre-run hook failure")
-	require.Equal(t, "cancelled", runTrace.Outcome, "ctx-cause classification must win over setup_failed")
+	must.Error(err, "Run() must fail on a fatal pre-run hook failure")
+	must.Equal("cancelled", runTrace.Outcome, "ctx-cause classification must win over setup_failed")
 }
 
 // TestLoop_Hooks_PostRunFatalFailure_OverridesSuccessOnly pins the
 // outcome-override rule: a fatal postRun failure turns an otherwise-
 // successful run's outcome into "hook_failed".
 func TestLoop_Hooks_PostRunFatalFailure_OverridesSuccessOnly(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop := buildTestLoop(simpleSuccessProvider())
 	hooks := &fakeHookRunner{postErr: errSentinelPostHookFailure}
 	loop.Hooks = hooks
 
 	config := buildTestConfig()
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	assert.Equal(t, "hook_failed", runTrace.Outcome)
-	assert.Equal(t, []string{"success"}, hooks.postCalls, "RunPost outcomes")
+	must.NoError(err)
+	check.Equal("hook_failed", runTrace.Outcome)
+	check.Equal([]string{"success"}, hooks.postCalls, "RunPost outcomes")
 }
 
 // TestLoop_Hooks_PostRunFatalFailure_DoesNotMaskNonSuccessOutcome pins
@@ -172,6 +179,8 @@ func TestLoop_Hooks_PostRunFatalFailure_OverridesSuccessOnly(t *testing.T) {
 // outcome is already non-success (max_turns here), a fatal postRun
 // failure must not overwrite it with "hook_failed".
 func TestLoop_Hooks_PostRunFatalFailure_DoesNotMaskNonSuccessOutcome(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop := buildTestLoop(nil)
 	loop.Provider = &infiniteToolCallProvider{}
 	hooks := &fakeHookRunner{postErr: errSentinelPostHookFailure}
@@ -181,9 +190,9 @@ func TestLoop_Hooks_PostRunFatalFailure_DoesNotMaskNonSuccessOutcome(t *testing.
 	config.MaxTurns = 3
 
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	assert.Equal(t, "max_turns", runTrace.Outcome, "the post-hook failure must not mask the run outcome")
-	assert.Equal(t, []string{"max_turns"}, hooks.postCalls, "post still runs on every outcome by default")
+	must.NoError(err)
+	check.Equal("max_turns", runTrace.Outcome, "the post-hook failure must not mask the run outcome")
+	check.Equal([]string{"max_turns"}, hooks.postCalls, "post still runs on every outcome by default")
 }
 
 // TestLoop_Hooks_PostRunRunsOnTimeout pins two things at once: postRun
@@ -191,6 +200,7 @@ func TestLoop_Hooks_PostRunFatalFailure_DoesNotMaskNonSuccessOutcome(t *testing.
 // detached ctx handed to RunPost is not already dead even though the
 // run's own wall-clock ctx has already expired by that point.
 func TestLoop_Hooks_PostRunRunsOnTimeout(t *testing.T) {
+	must := require.New(t)
 	loop := buildTestLoop(nil)
 	loop.Provider = &fireAndCloseProvider{
 		onStream: func() {
@@ -207,10 +217,10 @@ func TestLoop_Hooks_PostRunRunsOnTimeout(t *testing.T) {
 	defer cancel()
 
 	runTrace, err := loop.Run(ctx, config)
-	require.NoError(t, err)
-	require.Equal(t, "timeout", runTrace.Outcome)
-	require.Equal(t, []string{"timeout"}, hooks.postCalls, "RunPost outcomes")
-	require.NoError(t, hooks.postCtxErrs[0], "the detached post-hook ctx must not inherit the expired run ctx")
+	must.NoError(err)
+	must.Equal("timeout", runTrace.Outcome)
+	must.Equal([]string{"timeout"}, hooks.postCalls, "RunPost outcomes")
+	must.NoError(hooks.postCtxErrs[0], "the detached post-hook ctx must not inherit the expired run ctx")
 }
 
 // TestLoop_Hooks_PostRunCutShortByShutdownSignal pins that a detached
@@ -219,6 +229,8 @@ func TestLoop_Hooks_PostRunRunsOnTimeout(t *testing.T) {
 // signal on l.Shutdown still cuts it off well before its full
 // configured budget.
 func TestLoop_Hooks_PostRunCutShortByShutdownSignal(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop := buildTestLoop(simpleSuccessProvider())
 
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
@@ -254,8 +266,8 @@ func TestLoop_Hooks_PostRunCutShortByShutdownSignal(t *testing.T) {
 	runTrace, err := loop.Run(context.Background(), config)
 	elapsed := time.Since(start)
 
-	require.NoError(t, err)
-	assert.Equal(t, "success", runTrace.Outcome)
+	must.NoError(err)
+	check.Equal("success", runTrace.Outcome)
 
 	cancelled := false
 	select {
@@ -263,14 +275,16 @@ func TestLoop_Hooks_PostRunCutShortByShutdownSignal(t *testing.T) {
 		cancelled = true
 	default:
 	}
-	assert.True(t, cancelled, "the in-flight hook's postCtx was never cancelled by the shutdown signal")
-	assert.LessOrEqual(t, elapsed, 2*time.Second, "shutdown must cut postRun short of its 60s configured timeout")
+	check.True(cancelled, "the in-flight hook's postCtx was never cancelled by the shutdown signal")
+	check.LessOrEqual(elapsed, 2*time.Second, "shutdown must cut postRun short of its 60s configured timeout")
 }
 
 // TestLoop_Hooks_ContinueOnError_EmitsWarningTransportEvent pins that a
 // continueOnError hook failure surfaces as a transport "warning" event
 // and never touches the run's outcome.
 func TestLoop_Hooks_ContinueOnError_EmitsWarningTransportEvent(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	loop := buildTestLoop(simpleSuccessProvider())
 	rec := &recordingTransport{}
 	loop.Transport = rec
@@ -283,8 +297,8 @@ func TestLoop_Hooks_ContinueOnError_EmitsWarningTransportEvent(t *testing.T) {
 
 	config := buildTestConfig()
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	assert.Equal(t, "success", runTrace.Outcome, "continueOnError must never touch outcome")
+	must.NoError(err)
+	check.Equal("success", runTrace.Outcome, "continueOnError must never touch outcome")
 
 	var warnings []types.HarnessEvent
 	for _, ev := range rec.events {
@@ -292,14 +306,16 @@ func TestLoop_Hooks_ContinueOnError_EmitsWarningTransportEvent(t *testing.T) {
 			warnings = append(warnings, ev)
 		}
 	}
-	require.Len(t, warnings, 1, "warning events")
-	require.Contains(t, warnings[0].Message, "flaky", "warning message should name the hook")
+	must.Len(warnings, 1, "warning events")
+	must.Contains(warnings[0].Message, "flaky", "warning message should name the hook")
 }
 
 // TestLoop_Hooks_NilHooks_RunsWithoutWarnings pins that a run with Hooks
 // left nil (a hand-assembled loop that never configured lifecycle hooks)
 // succeeds and emits no warning events.
 func TestLoop_Hooks_NilHooks_RunsWithoutWarnings(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop := buildTestLoop(simpleSuccessProvider())
 	rec := &recordingTransport{}
 	loop.Transport = rec
@@ -307,8 +323,8 @@ func TestLoop_Hooks_NilHooks_RunsWithoutWarnings(t *testing.T) {
 
 	config := buildTestConfig()
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	assert.Equal(t, "success", runTrace.Outcome)
+	must.NoError(err)
+	check.Equal("success", runTrace.Outcome)
 
 	var warnings []types.HarnessEvent
 	for _, ev := range rec.events {
@@ -316,13 +332,14 @@ func TestLoop_Hooks_NilHooks_RunsWithoutWarnings(t *testing.T) {
 			warnings = append(warnings, ev)
 		}
 	}
-	assert.Empty(t, warnings, "a hookless run must emit no warning events")
+	check.Empty(warnings, "a hookless run must emit no warning events")
 }
 
 // TestLoop_Hooks_ResultsReachRunTrace pins that hook results reach
 // RunTrace.HookResults through the JSONL trace emitter's optional
 // HookRecorder capability.
 func TestLoop_Hooks_ResultsReachRunTrace(t *testing.T) {
+	must := require.New(t)
 	loop := buildTestLoop(simpleSuccessProvider())
 	loop.Trace = trace.NewJSONLTraceEmitter(discardWriter{}, false)
 	hooks := &fakeHookRunner{
@@ -333,13 +350,13 @@ func TestLoop_Hooks_ResultsReachRunTrace(t *testing.T) {
 
 	config := buildTestConfig()
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	names := make([]string, 0, len(runTrace.HookResults))
 	for _, result := range runTrace.HookResults {
 		names = append(names, result.Name)
 	}
-	require.Equal(t, []string{"clone", "smoke"}, names, "hook results in run order")
+	must.Equal([]string{"clone", "smoke"}, names, "hook results in run order")
 }
 
 // discardWriter is a minimal io.Writer that discards everything, used
@@ -382,7 +399,8 @@ func TestPostHookBudget_SizesFromPostRunTimeouts(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, postHookBudget(tc.hooks))
+			must := require.New(t)
+			must.Equal(tc.want, postHookBudget(tc.hooks))
 		})
 	}
 }
@@ -422,6 +440,8 @@ func (e *recordingPromptTrace) RecordPromptResolution(model, tier string) {
 }
 
 func TestLoop_Hooks_PromptBuiltAfterPreRunHook(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	workspace := t.TempDir()
 	marker := filepath.Join(workspace, "cloned.txt")
 
@@ -431,7 +451,7 @@ func TestLoop_Hooks_PromptBuiltAfterPreRunHook(t *testing.T) {
 	loop.Prompt = builder
 	loop.Hooks = &fakeHookRunner{onPre: func() {
 		log = append(log, "pre_hook")
-		assert.NoError(t, os.WriteFile(marker, []byte("x"), 0o644), "write marker file")
+		check.NoError(os.WriteFile(marker, []byte("x"), 0o644), "write marker file")
 	}}
 	rec := &recordingPromptTrace{JSONLTraceEmitter: trace.NewJSONLTraceEmitter(&bytes.Buffer{}, false), log: &log}
 	loop.Trace = rec
@@ -439,16 +459,18 @@ func TestLoop_Hooks_PromptBuiltAfterPreRunHook(t *testing.T) {
 	config := buildTestConfig()
 	config.Executor.Workspace = workspace
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	require.Equal(t, "success", runTrace.Outcome)
-	require.Equal(t, 1, builder.calls, "Build calls")
-	assert.True(t, builder.seen, "Build did not see the file created by the pre-run hook")
-	assert.Equal(t, []string{"pre_hook", "record_system_instructions", "record_prompt_resolution"}, log, "event order")
-	assert.Equal(t, []string{"system prompt"}, rec.systemInstruction, "RecordSystemInstructions calls")
-	assert.Len(t, rec.resolutions, 1, "RecordPromptResolution calls")
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
+	must.Equal(1, builder.calls, "Build calls")
+	check.True(builder.seen, "Build did not see the file created by the pre-run hook")
+	check.Equal([]string{"pre_hook", "record_system_instructions", "record_prompt_resolution"}, log, "event order")
+	check.Equal([]string{"system prompt"}, rec.systemInstruction, "RecordSystemInstructions calls")
+	check.Len(rec.resolutions, 1, "RecordPromptResolution calls")
 }
 
 func TestLoop_Hooks_PreRunFatalFailure_NeverBuildsPrompt(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var log []string
 	builder := &workspaceProbeBuilder{marker: filepath.Join(t.TempDir(), "absent")}
 	loop := buildTestLoop(simpleSuccessProvider())
@@ -458,21 +480,23 @@ func TestLoop_Hooks_PreRunFatalFailure_NeverBuildsPrompt(t *testing.T) {
 	loop.Trace = rec
 
 	runTrace, err := loop.Run(context.Background(), buildTestConfig())
-	require.Error(t, err, "Run() must fail on a fatal pre-run hook failure")
-	assert.Equal(t, "setup_failed", runTrace.Outcome)
-	assert.Zero(t, builder.calls, "Build must not run after a failed pre-run hook")
-	assert.Empty(t, log, "prompt recorders must not run after a failed pre-run hook")
+	must.Error(err, "Run() must fail on a fatal pre-run hook failure")
+	check.Equal("setup_failed", runTrace.Outcome)
+	check.Zero(builder.calls, "Build must not run after a failed pre-run hook")
+	check.Empty(log, "prompt recorders must not run after a failed pre-run hook")
 }
 
 func TestLoop_Hooks_PromptBuildErrorAfterHooksSkipsPostRun(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop := buildTestLoop(simpleSuccessProvider())
 	loop.Prompt = &failingPromptBuilder{err: errors.New("builder boom")}
 	hooks := &fakeHookRunner{}
 	loop.Hooks = hooks
 
 	runTrace, err := loop.Run(context.Background(), buildTestConfig())
-	require.ErrorContains(t, err, "build system prompt")
-	assert.Equal(t, "error", runTrace.Outcome)
-	assert.Equal(t, 1, hooks.preCalls, "hooks run before the prompt build")
-	assert.Empty(t, hooks.postCalls, "post must not run after an early failure")
+	must.ErrorContains(err, "build system prompt")
+	check.Equal("error", runTrace.Outcome)
+	check.Equal(1, hooks.preCalls, "hooks run before the prompt build")
+	check.Empty(hooks.postCalls, "post must not run after an early failure")
 }

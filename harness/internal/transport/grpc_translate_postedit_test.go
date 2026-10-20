@@ -13,6 +13,7 @@ import (
 )
 
 func TestRunConfigFromProto_PostEditPreserved(t *testing.T) {
+	must := require.New(t)
 	original := &pb.RunConfig{
 		Tools: &pb.ToolsConfig{
 			PostEdit: []*pb.PostEditCheck{
@@ -22,35 +23,37 @@ func TestRunConfigFromProto_PostEditPreserved(t *testing.T) {
 		},
 	}
 	raw, err := proto.Marshal(original)
-	require.NoError(t, err)
+	must.NoError(err)
 	var decoded pb.RunConfig
-	require.NoError(t, proto.Unmarshal(raw, &decoded))
+	must.NoError(proto.Unmarshal(raw, &decoded))
 
 	got := runConfigFromProto(&decoded).Tools.PostEdit
 	want := []types.PostEditCheckConfig{
 		{Glob: "*.go", Command: "gofmt -l {path}", TimeoutSeconds: 30},
 		{Glob: "cmd/*.go", Command: "go vet ./cmd/..."},
 	}
-	require.Equal(t, want, got)
+	must.Equal(want, got)
 
 	absent := runConfigFromProto(&pb.RunConfig{Tools: &pb.ToolsConfig{}}).Tools.PostEdit
-	require.Nil(t, absent, "absent post_edit should stay nil")
+	must.Nil(absent, "absent post_edit should stay nil")
 }
 
 // The proto JSON mirror of RunConfig must accept the Go-side JSON shape
 // for tools.postEdit unchanged.
 func TestRunConfigFromProto_PostEditJSONMirrorMatchesGoShape(t *testing.T) {
+	must := require.New(t)
 	goSide := types.ToolsConfig{PostEdit: []types.PostEditCheckConfig{
 		{Glob: "*.go", Command: "gofmt -l {path}", TimeoutSeconds: 45},
 	}}
 	raw, err := json.Marshal(map[string]any{"postEdit": goSide.PostEdit})
-	require.NoError(t, err)
+	must.NoError(err)
 	var pc pb.ToolsConfig
-	require.NoError(t, protojson.Unmarshal(raw, &pc), "proto JSON mirror rejected Go JSON %s", raw)
-	require.Equal(t, goSide.PostEdit, toolsConfigFromProto(&pc).PostEdit)
+	must.NoError(protojson.Unmarshal(raw, &pc), "proto JSON mirror rejected Go JSON %s", raw)
+	must.Equal(goSide.PostEdit, toolsConfigFromProto(&pc).PostEdit)
 }
 
 func TestRunTraceToProto_PostEditCheckSummary(t *testing.T) {
+	must := require.New(t)
 	tr := &types.RunTrace{
 		ID:      "run-checks",
 		Outcome: "success",
@@ -63,16 +66,16 @@ func TestRunTraceToProto_PostEditCheckSummary(t *testing.T) {
 		},
 	}
 	raw, err := proto.Marshal(runTraceToProto(tr))
-	require.NoError(t, err)
+	must.NoError(err)
 	var decoded pb.RunTrace
-	require.NoError(t, proto.Unmarshal(raw, &decoded))
+	must.NoError(proto.Unmarshal(raw, &decoded))
 
 	s := decoded.GetPostEditChecks()
-	require.EqualValues(t, 5, s.GetRuns(), "runs")
-	require.EqualValues(t, 2, s.GetFailures(), "failures")
-	require.EqualValues(t, 1, s.GetTimeouts(), "timeouts")
-	require.EqualValues(t, 1, s.GetErrors(), "errors")
+	must.EqualValues(5, s.GetRuns(), "runs")
+	must.EqualValues(2, s.GetFailures(), "failures")
+	must.EqualValues(1, s.GetTimeouts(), "timeouts")
+	must.EqualValues(1, s.GetErrors(), "errors")
 
 	pt := runTraceToProto(&types.RunTrace{Outcome: "success"})
-	require.Nil(t, pt.PostEditChecks, "summary should be absent when no check ran")
+	must.Nil(pt.PostEditChecks, "summary should be absent when no check ran")
 }

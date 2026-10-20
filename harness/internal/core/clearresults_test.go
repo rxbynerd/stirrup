@@ -104,6 +104,7 @@ func (u promptCacheUsage) cost() float64 {
 // no executor, under strategy and a 16k-token window.
 func runCacheScript(t *testing.T, strategy contextpkg.ContextStrategy) (*cacheScriptProvider, *recordingStrategy) {
 	t.Helper()
+	must := require.New(t)
 	const toolTurns = 40
 	prov := &cacheScriptProvider{toolTurns: toolTurns}
 	rec := &recordingStrategy{inner: strategy}
@@ -119,9 +120,9 @@ func runCacheScript(t *testing.T, strategy contextpkg.ContextStrategy) (*cacheSc
 	cfg.MaxTurns = toolTurns + 5
 	cfg.ContextStrategy.MaxTokens = 16_000
 	runTrace, err := loop.Run(context.Background(), cfg)
-	require.NoError(t, err, "Run")
-	require.Equal(t, "success", runTrace.Outcome, "run outcome")
-	require.Len(t, prov.requests, toolTurns+1, "provider requests")
+	must.NoError(err, "Run")
+	must.Equal("success", runTrace.Outcome, "run outcome")
+	must.Len(prov.requests, toolTurns+1, "provider requests")
 	return prov, rec
 }
 
@@ -132,6 +133,8 @@ func runCacheScript(t *testing.T, strategy contextpkg.ContextStrategy) (*cacheSc
 // stripped from the first batch onward. It also logs the prompt-cache
 // usage this gives against the sliding window over the same script.
 func TestLoop_ClearToolResultsKeepsRequestsStableBetweenBatches(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov, rec := runCacheScript(t, contextpkg.NewClearToolResultsStrategy(contextpkg.ClearToolResultsConfig{Keep: contextpkg.DefaultClearKeep}))
 
 	batches, firstBatch := 0, -1
@@ -143,19 +146,19 @@ func TestLoop_ClearToolResultsKeepsRequestsStableBetweenBatches(t *testing.T) {
 			}
 		}
 	}
-	require.GreaterOrEqual(t, batches, 2, "the script must cross at least two clearing batches")
+	must.GreaterOrEqual(batches, 2, "the script must cross at least two clearing batches")
 	for k, req := range prov.requests {
 		joined := strings.Join(req, "\n")
-		require.NotContains(t, joined, "[...truncated", "request %d was truncated by the fit check", k)
+		must.NotContains(joined, "[...truncated", "request %d was truncated by the fit check", k)
 		if !rec.compacted[k] && k > 0 {
 			prev := prov.requests[k-1]
-			require.Len(t, req, len(prev)+2, "request %d: want the previous request plus one exchange", k)
+			must.Len(req, len(prev)+2, "request %d: want the previous request plus one exchange", k)
 			for i := range prev {
-				require.Equal(t, prev[i], req[i], "request %d changed message %d of the previous request between batches", k, i)
+				must.Equal(prev[i], req[i], "request %d changed message %d of the previous request between batches", k, i)
 			}
 		}
 		wantThinking := k > 0 && k < firstBatch
-		assert.Equal(t, wantThinking, strings.Contains(joined, `"type":"thinking"`),
+		check.Equal(wantThinking, strings.Contains(joined, `"type":"thinking"`),
 			"request %d: thinking present (first clearing batch at request %d)", k, firstBatch)
 	}
 
@@ -166,19 +169,20 @@ func TestLoop_ClearToolResultsKeepsRequestsStableBetweenBatches(t *testing.T) {
 		batches, clearing.read, clearing.written, 100*clearing.readShare(), clearing.missedTurns, clearing.cost())
 	t.Logf("sliding-window:     cache read %d, written %d (%.0f%% read), %d turns missed the cache, cost %.0f",
 		sliding.read, sliding.written, 100*sliding.readShare(), sliding.missedTurns, sliding.cost())
-	assert.Equal(t, batches, clearing.missedTurns, "requests that missed the cache, want one per clearing batch")
-	assert.Less(t, clearing.cost(), sliding.cost(), "clear-tool-results input cost should be below the sliding window's")
+	check.Equal(batches, clearing.missedTurns, "requests that missed the cache, want one per clearing batch")
+	check.Less(clearing.cost(), sliding.cost(), "clear-tool-results input cost should be below the sliding window's")
 }
 
 func TestBuildContextStrategy_BuildsClearToolResults(t *testing.T) {
+	must := require.New(t)
 	keep, clearAtLeast := 0, 500
 	cs := buildContextStrategy(types.ContextStrategyConfig{
 		Type: "clear-tool-results", Keep: &keep, ClearAtLeast: &clearAtLeast, ExcludeTools: []string{"run_command"},
 	}, nil, "", 0, nil, nil)
-	require.IsType(t, &contextpkg.ClearToolResultsStrategy{}, cs, "configured clear-tool-results strategy")
+	must.IsType(&contextpkg.ClearToolResultsStrategy{}, cs, "configured clear-tool-results strategy")
 
 	defaults := buildContextStrategy(types.ContextStrategyConfig{Type: "clear-tool-results"}, nil, "", 0, nil, nil)
-	require.NotNil(t, defaults, "clear-tool-results with default settings built no strategy")
+	must.NotNil(defaults, "clear-tool-results with default settings built no strategy")
 }
 
 // TestBuildContextStrategy_ClearAtLeastReachesStrategy pins that a
@@ -186,6 +190,7 @@ func TestBuildContextStrategy_BuildsClearToolResults(t *testing.T) {
 // batch can reach falls back to dropping exchanges, while the default
 // clears results from the same history.
 func TestBuildContextStrategy_ClearAtLeastReachesStrategy(t *testing.T) {
+	must := require.New(t)
 	history := []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "task"}}}}
 	for i := range 10 {
 		id := fmt.Sprintf("call_%d", i)
@@ -198,41 +203,43 @@ func TestBuildContextStrategy_ClearAtLeastReachesStrategy(t *testing.T) {
 	prepare := func(cfg types.ContextStrategyConfig) ([]types.Message, *contextpkg.CompactionEvent) {
 		cs := buildContextStrategy(cfg, nil, "", 0, nil, nil)
 		out, err := cs.Prepare(context.Background(), history, budget)
-		require.NoError(t, err, "Prepare")
+		must.NoError(err, "Prepare")
 		return out, cs.LastCompaction()
 	}
 
 	clearAtLeast := 1_000_000
 	out, ev := prepare(types.ContextStrategyConfig{Type: "clear-tool-results", ClearAtLeast: &clearAtLeast})
-	require.NotNil(t, ev, "clearAtLeast=%d: no compaction event", clearAtLeast)
-	require.Zero(t, ev.ToolResultsCleared, "clearAtLeast=%d: unreachable minimum cleared results", clearAtLeast)
-	require.Len(t, ev.Warnings, 1, "clearAtLeast=%d: fallback warning", clearAtLeast)
-	require.Less(t, len(out), len(history), "clearAtLeast=%d: fallback should drop exchanges", clearAtLeast)
+	must.NotNil(ev, "clearAtLeast=%d: no compaction event", clearAtLeast)
+	must.Zero(ev.ToolResultsCleared, "clearAtLeast=%d: unreachable minimum cleared results", clearAtLeast)
+	must.Len(ev.Warnings, 1, "clearAtLeast=%d: fallback warning", clearAtLeast)
+	must.Less(len(out), len(history), "clearAtLeast=%d: fallback should drop exchanges", clearAtLeast)
 
 	out, ev = prepare(types.ContextStrategyConfig{Type: "clear-tool-results"})
-	require.NotNil(t, ev, "default minimum: no compaction event")
-	require.NotZero(t, ev.ToolResultsCleared, "default minimum: results should be cleared")
-	require.Empty(t, ev.Warnings, "default minimum: no warnings expected")
-	require.Len(t, out, len(history), "default minimum: nothing should be dropped")
+	must.NotNil(ev, "default minimum: no compaction event")
+	must.NotZero(ev.ToolResultsCleared, "default minimum: results should be cleared")
+	must.Empty(ev.Warnings, "default minimum: no warnings expected")
+	must.Len(out, len(history), "default minimum: nothing should be dropped")
 }
 
 func TestWarnUnknownExcludedTools_WarnsOnlyForUnknownNames(t *testing.T) {
+	must := require.New(t)
 	registry := tool.NewRegistry()
 	registry.Register(&tool.Tool{Name: "run_command", InputSchema: json.RawMessage(`{"type":"object"}`)})
 	profile, _ := tool.ProfileFor("coding-classic")
 	presenter, err := tool.NewPresenter(registry, profile)
-	require.NoError(t, err, "NewPresenter")
+	must.NoError(err, "NewPresenter")
 	var logs bytes.Buffer
 	warnUnknownExcludedTools([]string{"run_command", "bash", "no_such_tool"}, presenter, slog.New(slog.NewTextHandler(&logs, nil)))
 	out := logs.String()
-	require.Equal(t, 1, strings.Count(out, "level=WARN"), "want exactly one warning, got:\n%s", out)
-	require.Contains(t, out, "tool=no_such_tool", "warning should name the unknown tool")
+	must.Equal(1, strings.Count(out, "level=WARN"), "want exactly one warning, got:\n%s", out)
+	must.Contains(out, "tool=no_such_tool", "warning should name the unknown tool")
 }
 
 // TestBuildLoop_ClearToolResultsInReadOnlyModeWithoutWritableExecutor pins
 // that a read-only run on an executor that cannot write accepts the
 // strategy end to end through validation and the factory.
 func TestBuildLoop_ClearToolResultsInReadOnlyModeWithoutWritableExecutor(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("TEST_ANTHROPIC_KEY", "test-key")
 	keep := 2
 	config := buildTestConfig()
@@ -245,19 +252,20 @@ func TestBuildLoop_ClearToolResultsInReadOnlyModeWithoutWritableExecutor(t *test
 	config.ContextStrategy = types.ContextStrategyConfig{
 		Type: "clear-tool-results", MaxTokens: 100_000, Keep: &keep, ExcludeTools: []string{"web_fetch"},
 	}
-	require.NoError(t, types.ValidateRunConfig(config), "ValidateRunConfig")
+	must.NoError(types.ValidateRunConfig(config), "ValidateRunConfig")
 	loop, err := BuildLoopWithTransport(context.Background(), config, transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}))
-	require.NoError(t, err, "BuildLoopWithTransport")
+	must.NoError(err, "BuildLoopWithTransport")
 	defer func() { _ = loop.Close() }()
 	_, err = loop.Context.Prepare(context.Background(), []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "task"}}}},
 		contextpkg.TokenBudget{MaxTokens: 100_000, CurrentTokens: 10, ReserveForResponse: 1000})
-	require.NoError(t, err, "Prepare")
+	must.NoError(err, "Prepare")
 }
 
 // TestBuildLoop_ClearToolResultsResolvesProfileAliases pins that the
 // factory-built strategy matches excludeTools against the presented alias
 // a tool_use block records under a toolset profile.
 func TestBuildLoop_ClearToolResultsResolvesProfileAliases(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("TEST_ANTHROPIC_KEY", "test-key")
 	keep := 0
 	config := buildTestConfig()
@@ -268,9 +276,9 @@ func TestBuildLoop_ClearToolResultsResolvesProfileAliases(t *testing.T) {
 	config.ContextStrategy = types.ContextStrategyConfig{
 		Type: "clear-tool-results", MaxTokens: 100_000, Keep: &keep, ExcludeTools: []string{"run_command"},
 	}
-	require.NoError(t, types.ValidateRunConfig(config), "ValidateRunConfig")
+	must.NoError(types.ValidateRunConfig(config), "ValidateRunConfig")
 	loop, err := BuildLoopWithTransport(context.Background(), config, transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}))
-	require.NoError(t, err, "BuildLoopWithTransport")
+	must.NoError(err, "BuildLoopWithTransport")
 	defer func() { _ = loop.Close() }()
 
 	result := strings.Repeat("output\n", 400)
@@ -288,7 +296,7 @@ func TestBuildLoop_ClearToolResultsResolvesProfileAliases(t *testing.T) {
 	out, err := loop.Context.Prepare(context.Background(), messages, contextpkg.TokenBudget{
 		MaxTokens: reserve + trigger*100/90 + 1, CurrentTokens: current, ReserveForResponse: reserve,
 	})
-	require.NoError(t, err, "Prepare")
-	require.Equal(t, result, out[2].Content[0].Content, "bash result should be kept")
-	require.Equal(t, contextpkg.ClearedToolResultPlaceholder, out[4].Content[0].Content, "read_file result should be cleared")
+	must.NoError(err, "Prepare")
+	must.Equal(result, out[2].Content[0].Content, "bash result should be kept")
+	must.Equal(contextpkg.ClearedToolResultPlaceholder, out[4].Content[0].Content, "read_file result should be cleared")
 }

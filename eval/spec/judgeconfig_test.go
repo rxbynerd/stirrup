@@ -42,14 +42,15 @@ llm {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got, err := LoadJudgeLLMConfig(writeTemp(t, tc.file, tc.src))
-			require.NoError(t, err)
-			require.Equal(t, want.Provider, got.Provider)
-			require.Equal(t, want.Model, got.Model)
-			require.Equal(t, want.BaseURL, got.BaseURL)
-			require.Equal(t, want.APIKeyRef, got.APIKeyRef)
-			require.Equal(t, want.MaxTokens, got.MaxTokens)
-			require.Equal(t, want.AllowTruncated, got.AllowTruncated)
+			must.NoError(err)
+			must.Equal(want.Provider, got.Provider)
+			must.Equal(want.Model, got.Model)
+			must.Equal(want.BaseURL, got.BaseURL)
+			must.Equal(want.APIKeyRef, got.APIKeyRef)
+			must.Equal(want.MaxTokens, got.MaxTokens)
+			must.Equal(want.AllowTruncated, got.AllowTruncated)
 		})
 	}
 }
@@ -66,8 +67,9 @@ func TestLoadJudgeLLMConfig_RejectsInvalidInput(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			_, err := LoadJudgeLLMConfig(writeTemp(t, tc.name, tc.src))
-			require.ErrorContains(t, err, tc.want)
+			must.ErrorContains(err, tc.want)
 		})
 	}
 }
@@ -82,10 +84,11 @@ func TestLoadJudgeLLMConfig_ErrorsDoNotQuoteTheSource(t *testing.T) {
 	}
 	for name, src := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			path := writeTemp(t, "judge.hcl", src)
 			_, err := LoadJudgeLLMConfig(path)
-			require.ErrorContains(t, err, path)
-			require.NotContains(t, err.Error(), "SECRETVALUE", "error quotes the key")
+			must.ErrorContains(err, path)
+			must.NotContains(err.Error(), "SECRETVALUE", "error quotes the key")
 		})
 	}
 }

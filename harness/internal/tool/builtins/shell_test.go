@@ -21,8 +21,9 @@ import (
 // rendering still begins with "\n"; a regression here would silently change
 // the model-visible output for silent-but-failing commands.
 func TestFormatRunCommand_ExitCodeOnlyNoOutput(t *testing.T) {
+	must := require.New(t)
 	want := "\n[exit code: 2]"
-	require.Equal(t, want, formatRunCommand("", "", 2))
+	must.Equal(want, formatRunCommand("", "", 2))
 }
 
 // TestRunCommandTool_TimeoutClampedTo300s pins the run_command tool's
@@ -31,6 +32,7 @@ func TestFormatRunCommand_ExitCodeOnlyNoOutput(t *testing.T) {
 // comment in executor/local.go — so raising the executor cap does not
 // silently hand the model-reachable tool a longer exec budget.
 func TestRunCommandTool_TimeoutClampedTo300s(t *testing.T) {
+	must := require.New(t)
 	var gotTimeout time.Duration
 	exec := &mockExecutor{
 		execFunc: func(_ context.Context, _ string, timeout time.Duration) (*executor.ExecResult, error) {
@@ -42,10 +44,10 @@ func TestRunCommandTool_TimeoutClampedTo300s(t *testing.T) {
 	tl := RunCommandTool(exec)
 	input := json.RawMessage(`{"command":"true","timeout":9000}`)
 	_, err := tl.StructuredHandler(context.Background(), input)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	want := 300 * time.Second
-	require.Equal(t, want, gotTimeout, "tool-layer clamp must stay independent of the raised executor cap")
+	must.Equal(want, gotTimeout, "tool-layer clamp must stay independent of the raised executor cap")
 }
 
 // TestRunCommandTool_TimeoutReturnsPartialOutputAsSoftOutcome pins the
@@ -58,6 +60,7 @@ func TestRunCommandTool_TimeoutClampedTo300s(t *testing.T) {
 // unambiguous in the Text fallback so a model reading only Text (not
 // Structured) can still tell a timeout apart from a clean exit.
 func TestRunCommandTool_TimeoutReturnsPartialOutputAsSoftOutcome(t *testing.T) {
+	must := require.New(t)
 	const timeout = 5 * time.Second
 	execErr := fmt.Errorf("%w after %s: %w", executor.ErrTimeout, timeout, context.DeadlineExceeded)
 
@@ -73,15 +76,17 @@ func TestRunCommandTool_TimeoutReturnsPartialOutputAsSoftOutcome(t *testing.T) {
 	tl := RunCommandTool(exec)
 	input := json.RawMessage(`{"command":"sleep 999","timeout":5}`)
 	got, err := tl.StructuredHandler(context.Background(), input)
-	require.NoError(t, err, "a timeout must not be a hard error")
+	must.NoError(err, "a timeout must not be a hard error")
 
 	t.Run("kind", func(t *testing.T) {
-		require.Equal(t, kindCommandResult, got.Kind)
+		must := require.New(t)
+		must.Equal(kindCommandResult, got.Kind)
 	})
 
 	t.Run("structured payload", func(t *testing.T) {
+		must := require.New(t)
 		var structured commandResult
-		require.NoError(t, json.Unmarshal(got.Structured, &structured))
+		must.NoError(json.Unmarshal(got.Structured, &structured))
 
 		want := commandResult{
 			Stdout:         "partial stdout before kill\n",
@@ -90,12 +95,13 @@ func TestRunCommandTool_TimeoutReturnsPartialOutputAsSoftOutcome(t *testing.T) {
 			TimedOut:       true,
 			TimeoutSeconds: 5,
 		}
-		require.Equal(t, want, structured)
+		must.Equal(want, structured)
 	})
 
 	t.Run("text fallback", func(t *testing.T) {
-		require.Contains(t, got.Text, "partial stdout before kill", "text must preserve partial stdout")
-		require.Contains(t, got.Text, "[timed out after 5s]", "text must carry an explicit timed-out marker")
+		must := require.New(t)
+		must.Contains(got.Text, "partial stdout before kill", "text must preserve partial stdout")
+		must.Contains(got.Text, "[timed out after 5s]", "text must carry an explicit timed-out marker")
 	})
 }
 
@@ -107,6 +113,7 @@ func TestRunCommandTool_TimeoutReturnsPartialOutputAsSoftOutcome(t *testing.T) {
 // broad — errors.Is must exclude cancellation so a SIGTERM-driven shutdown
 // isn't mistaken for a timed-out command's soft outcome.
 func TestRunCommandTool_NonTimeoutErrorStillPropagates(t *testing.T) {
+	must := require.New(t)
 	cancelErr := fmt.Errorf("command cancelled: %w", context.Canceled)
 
 	exec := &mockExecutor{
@@ -118,9 +125,9 @@ func TestRunCommandTool_NonTimeoutErrorStillPropagates(t *testing.T) {
 	tl := RunCommandTool(exec)
 	input := json.RawMessage(`{"command":"true","timeout":5}`)
 	got, err := tl.StructuredHandler(context.Background(), input)
-	require.Error(t, err, "a non-timeout exec failure must be a hard error, got result %+v", got)
-	require.ErrorIs(t, err, context.Canceled)
-	require.NotErrorIs(t, err, executor.ErrTimeout)
+	must.Error(err, "a non-timeout exec failure must be a hard error, got result %+v", got)
+	must.ErrorIs(err, context.Canceled)
+	must.NotErrorIs(err, executor.ErrTimeout)
 }
 
 func TestRunCommandTool_DescriptionStatesProcessTreeKillGuarantee(t *testing.T) {
@@ -135,7 +142,8 @@ func TestRunCommandTool_DescriptionStatesProcessTreeKillGuarantee(t *testing.T) 
 		{name: "covers detached processes", want: "detached into their own session or process group"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Contains(t, desc, tc.want)
+			must := require.New(t)
+			must.Contains(desc, tc.want)
 		})
 	}
 }
@@ -145,6 +153,7 @@ func TestRunCommandTool_DescriptionStatesProcessTreeKillGuarantee(t *testing.T) 
 // result budget while keeping the head and tail of both streams and the
 // exit-code and timeout markers that follow them.
 func TestRunCommandTool_UncapturedOutputBoundedKeepsStderrAndExitCode(t *testing.T) {
+	must := require.New(t)
 	const budget = 8 << 10
 	execErr := fmt.Errorf("%w after 5s", executor.ErrTimeout)
 	exec := &mockExecutor{
@@ -159,8 +168,8 @@ func TestRunCommandTool_UncapturedOutputBoundedKeepsStderrAndExitCode(t *testing
 
 	tl := RunCommandToolWithStore(exec, nil, types.CommandOutputConfig{}, budget)
 	got, err := tl.StructuredHandler(context.Background(), json.RawMessage(`{"command":"build","timeout":5}`))
-	require.NoError(t, err)
-	require.LessOrEqual(t, len(got.Text), budget, "text must fit the result budget")
+	must.NoError(err)
+	must.LessOrEqual(len(got.Text), budget, "text must fit the result budget")
 
 	for _, tc := range []struct {
 		name string
@@ -174,28 +183,30 @@ func TestRunCommandTool_UncapturedOutputBoundedKeepsStderrAndExitCode(t *testing
 		{name: "stderr truncation marker", want: "[run_command stderr truncated: "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Contains(t, got.Text, tc.want)
+			must := require.New(t)
+			must.Contains(got.Text, tc.want)
 		})
 	}
 
-	require.True(t, strings.HasSuffix(got.Text, "STDERR-TAIL\n[exit code: 1]\n[timed out after 5s]"),
+	must.True(strings.HasSuffix(got.Text, "STDERR-TAIL\n[exit code: 1]\n[timed out after 5s]"),
 		"text must end with the stderr tail, then the exit-code and timeout markers")
-	require.Nil(t, got.Structured, "truncated result must not keep its structured envelope")
-	require.Empty(t, got.Kind, "truncated result must not keep its structured envelope")
-	require.True(t, tl.SelfBoundedResult, "uncaptured run_command must report SelfBoundedResult")
+	must.Nil(got.Structured, "truncated result must not keep its structured envelope")
+	must.Empty(got.Kind, "truncated result must not keep its structured envelope")
+	must.True(tl.SelfBoundedResult, "uncaptured run_command must report SelfBoundedResult")
 }
 
 // TestRunCommandTool_UncapturedSmallStderrKeptWhole checks that a short
 // stderr is never elided and stdout receives the rest of the budget.
 func TestRunCommandTool_UncapturedSmallStderrKeptWhole(t *testing.T) {
+	must := require.New(t)
 	const budget = 4 << 10
 	got, truncated := boundCommandText(strings.Repeat("o", 1<<20), "error: build failed", 2, "", budget)
 
-	require.True(t, truncated, "a 1 MiB stdout must be truncated")
-	require.LessOrEqual(t, len(got), budget)
-	require.True(t, strings.HasSuffix(got, "\nSTDERR:\nerror: build failed\n[exit code: 2]"),
+	must.True(truncated, "a 1 MiB stdout must be truncated")
+	must.LessOrEqual(len(got), budget)
+	must.True(strings.HasSuffix(got, "\nSTDERR:\nerror: build failed\n[exit code: 2]"),
 		"stderr and exit code must survive truncation")
-	require.GreaterOrEqual(t, len(got), budget-64, "stdout should use the space stderr left unused")
+	must.GreaterOrEqual(len(got), budget-64, "stdout should use the space stderr left unused")
 }
 
 // TestElideMiddle_RespectsRuneBoundaries checks that elision never splits a
@@ -204,9 +215,10 @@ func TestElideMiddle_RespectsRuneBoundaries(t *testing.T) {
 	s := strings.Repeat("€", 10_000)
 	for _, limit := range []int{10, 200, 201, 202, 1000} {
 		t.Run(fmt.Sprintf("limit %d", limit), func(t *testing.T) {
+			must := require.New(t)
 			got := elideMiddle(s, limit, "stdout")
-			require.LessOrEqual(t, len(got), limit)
-			require.True(t, utf8.ValidString(got), "result must be valid UTF-8")
+			must.LessOrEqual(len(got), limit)
+			must.True(utf8.ValidString(got), "result must be valid UTF-8")
 		})
 	}
 }

@@ -17,6 +17,7 @@ import (
 // interrupted-run summary counts only the parent's turns, the children
 // are kept in SubRuns, and no child is stored as a run of its own.
 func TestIngestFile_SubRunsStayInsideParentRecording(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	turn := func(runID, parentRunID string, n int) string {
 		ev := map[string]any{"kind": "turn_record", "runId": runID, "turn": n, "modelOutput": []types.ContentBlock{{Type: "text", Text: runID}}}
@@ -36,46 +37,48 @@ func TestIngestFile_SubRunsStayInsideParentRecording(t *testing.T) {
 
 	storeDir := t.TempDir()
 	store, err := lakehouse.NewFileStore(storeDir)
-	require.NoError(t, err)
+	must.NoError(err)
 	defer func() { _ = store.Close() }()
 
 	traces, recordings, skipped, err := ingestFile(context.Background(), store, tracePath, false)
-	require.NoError(t, err)
-	require.Equal(t, 1, traces, "ingested traces")
-	require.Equal(t, 1, recordings, "ingested recordings")
-	require.Equal(t, 0, skipped, "skipped lines")
+	must.NoError(err)
+	must.Equal(1, traces, "ingested traces")
+	must.Equal(1, recordings, "ingested recordings")
+	must.Equal(0, skipped, "skipped lines")
 
 	for _, sub := range []string{"traces", "recordings"} {
 		t.Run(sub, func(t *testing.T) {
+			must := require.New(t)
 			entries, err := os.ReadDir(filepath.Join(storeDir, sub))
-			require.NoError(t, err)
-			require.Len(t, entries, 1)
-			require.Equal(t, "run-p.json", entries[0].Name())
+			must.NoError(err)
+			must.Len(entries, 1)
+			must.Equal("run-p.json", entries[0].Name())
 		})
 	}
 
 	gotTraces, err := store.QueryTraces(context.Background(), types.TraceFilter{})
-	require.NoError(t, err)
-	require.Len(t, gotTraces, 1, "traces = %+v", gotTraces)
-	require.Equal(t, 1, gotTraces[0].Turns, "parent turns in summary")
-	require.Equal(t, "interrupted", gotTraces[0].Outcome)
+	must.NoError(err)
+	must.Len(gotTraces, 1, "traces = %+v", gotTraces)
+	must.Equal(1, gotTraces[0].Turns, "parent turns in summary")
+	must.Equal("interrupted", gotTraces[0].Outcome)
 
 	recs, err := store.QueryRecordings(context.Background(), types.TraceFilter{})
-	require.NoError(t, err)
-	require.Len(t, recs, 1, "recordings = %+v", recs)
-	require.Len(t, recs[0].Turns, 1, "parent turns in recording")
-	require.Len(t, recs[0].SubRuns, 1, "sub-runs in recording")
+	must.NoError(err)
+	must.Len(recs, 1, "recordings = %+v", recs)
+	must.Len(recs[0].Turns, 1, "parent turns in recording")
+	must.Len(recs[0].SubRuns, 1, "sub-runs in recording")
 
 	sub := recs[0].SubRuns[0]
-	require.Equal(t, "run-p/sub-1", sub.RunID, "sub-run = %+v", sub)
-	require.Len(t, sub.Turns, 2, "sub-run turns")
-	require.NotNil(t, sub.Summary, "sub-run summary")
+	must.Equal("run-p/sub-1", sub.RunID, "sub-run = %+v", sub)
+	must.Len(sub.Turns, 2, "sub-run turns")
+	must.NotNil(sub.Summary, "sub-run summary")
 }
 
 // TestSummariseFailingTurn_UsesParentsLastTurn pins that the mined
 // task description quotes the parent's last turn even when a sub-run
 // recorded later turns.
 func TestSummariseFailingTurn_UsesParentsLastTurn(t *testing.T) {
+	must := require.New(t)
 	rec := types.RunRecording{
 		RunID: "run-p",
 		Turns: []types.TurnRecord{
@@ -90,7 +93,7 @@ func TestSummariseFailingTurn_UsesParentsLastTurn(t *testing.T) {
 		}},
 	}
 	summary := summariseFailingTurn(rec)
-	require.Contains(t, summary, "last turn: 4")
-	require.Contains(t, summary, "parent gave up")
-	require.NotContains(t, summary, "child text", "summary quotes a sub-run turn")
+	must.Contains(summary, "last turn: 4")
+	must.Contains(summary, "parent gave up")
+	must.NotContains(summary, "child text", "summary quotes a sub-run turn")
 }

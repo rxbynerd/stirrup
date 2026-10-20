@@ -9,6 +9,7 @@ import (
 )
 
 func TestParseDiff_CreateModifyDelete(t *testing.T) {
+	must := require.New(t)
 	diff := `diff --git a/new.txt b/new.txt
 new file mode 100644
 index 0000000..1111111
@@ -35,14 +36,15 @@ index 4444444..0000000
 -bye
 `
 	files, err := ParseDiff(diff)
-	require.NoError(t, err)
+	must.NoError(err)
 	wantBefore := Tree{"mod.txt": "keep\nold\ntail\n", "gone.txt": "bye\n"}
 	wantAfter := Tree{"new.txt": "one\ntwo\n", "mod.txt": "keep\nnew\ntail\n"}
-	require.Equal(t, wantBefore, files.Before)
-	require.Equal(t, wantAfter, files.After)
+	must.Equal(wantBefore, files.Before)
+	must.Equal(wantAfter, files.After)
 }
 
 func TestParseDiff_FillsUnshownLines(t *testing.T) {
+	must := require.New(t)
 	diff := `--- a/f.txt
 +++ b/f.txt
 @@ -4,3 +4,4 @@
@@ -57,11 +59,11 @@ func TestParseDiff_FillsUnshownLines(t *testing.T) {
 +appended
 `
 	files, err := ParseDiff(diff)
-	require.NoError(t, err)
+	must.NoError(err)
 	before := strings.Split(strings.TrimSuffix(files.Before["f.txt"], "\n"), "\n")
 	after := strings.Split(strings.TrimSuffix(files.After["f.txt"], "\n"), "\n")
-	require.Len(t, before, 20, "before line count")
-	require.Len(t, after, 21, "after line count")
+	must.Len(before, 20, "before line count")
+	must.Len(after, 21, "after line count")
 	checks := []struct {
 		name  string
 		lines []string
@@ -83,7 +85,8 @@ func TestParseDiff_FillsUnshownLines(t *testing.T) {
 	}
 	for _, c := range checks {
 		t.Run(c.name, func(t *testing.T) {
-			require.Equal(t, c.want, c.lines[c.line-1])
+			must := require.New(t)
+			must.Equal(c.want, c.lines[c.line-1])
 		})
 	}
 }
@@ -108,19 +111,21 @@ func TestParseDiff_NoNewlineAtEndOfFile(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			files, err := ParseDiff(tc.diff)
-			require.NoError(t, err)
-			require.Equal(t, tc.before, files.Before["f"])
-			require.Equal(t, tc.after, files.After["f"])
+			must.NoError(err)
+			must.Equal(tc.before, files.Before["f"])
+			must.Equal(tc.after, files.After["f"])
 		})
 	}
 }
 
 func TestParseDiff_EmptyContextLineIsAccepted(t *testing.T) {
+	must := require.New(t)
 	files, err := ParseDiff("--- a/f\n+++ b/f\n@@ -1,3 +1,3 @@\n a\n\n-b\n+c\n")
-	require.NoError(t, err)
-	require.Equal(t, "a\n\nb\n", files.Before["f"])
-	require.Equal(t, "a\n\nc\n", files.After["f"])
+	must.NoError(err)
+	must.Equal("a\n\nb\n", files.Before["f"])
+	must.Equal("a\n\nc\n", files.After["f"])
 }
 
 func TestParseDiff_Rejects(t *testing.T) {
@@ -161,8 +166,9 @@ func TestParseDiff_Rejects(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			_, err := ParseDiff(tc.diff)
-			require.ErrorContains(t, err, tc.want)
+			must.ErrorContains(err, tc.want)
 		})
 	}
 }
@@ -181,22 +187,25 @@ func TestParseDiff_BoundsTheReconstruction(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			_, err := ParseDiff(tc.diff)
-			require.ErrorContains(t, err, tc.want)
+			must.ErrorContains(err, tc.want)
 		})
 	}
 }
 
 func TestParseDiff_PaddingWithinBudget(t *testing.T) {
+	must := require.New(t)
 	files, err := ParseDiff("--- a/x\n+++ b/x\n@@ -1000000 +1000000 @@\n-a\n+b\n")
-	require.NoError(t, err)
+	must.NoError(err)
 	want := strings.Repeat("\n", 999_999) + "a\n"
-	require.Len(t, files.Before["x"], len(want), "before size in bytes")
-	require.Equal(t, want, files.Before["x"])
+	must.Len(files.Before["x"], len(want), "before size in bytes")
+	must.Equal(want, files.Before["x"])
 }
 
 func TestParseDiff_TimestampedPaths(t *testing.T) {
+	must := require.New(t)
 	files, err := ParseDiff("--- a/x\t2026-01-01 00:00:00\n+++ b/x\t2026-01-02 00:00:00\n@@ -1 +1 @@\n-a\n+b\n")
-	require.NoError(t, err)
-	require.Equal(t, "b\n", files.After["x"])
+	must.NoError(err)
+	must.Equal("b\n", files.After["x"])
 }

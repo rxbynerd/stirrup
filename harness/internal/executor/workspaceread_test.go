@@ -27,14 +27,15 @@ func singleFileTar(t *testing.T, name, content string) []byte {
 // and body.
 func tarWithEntry(t *testing.T, hdr *tar.Header, body []byte) []byte {
 	t.Helper()
+	must := require.New(t)
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
-	require.NoError(t, tw.WriteHeader(hdr), "write tar header")
+	must.NoError(tw.WriteHeader(hdr), "write tar header")
 	if len(body) > 0 {
 		_, err := tw.Write(body)
-		require.NoError(t, err, "write tar content")
+		must.NoError(err, "write tar content")
 	}
-	require.NoError(t, tw.Close(), "close tar")
+	must.NoError(tw.Close(), "close tar")
 	return buf.Bytes()
 }
 
@@ -90,10 +91,12 @@ func readExecHandlers(capture *readExecCapture, stdout []byte, stderr string, ex
 // the resolved path, and the workspace root and requested path travel as
 // arguments rather than being interpolated.
 func TestWorkspaceReadCommand_GuardScriptAndArguments(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	cmd := workspaceReadCommand("/workspace", "/workspace/notes.md")
-	require.Len(t, cmd, 6)
-	require.Equal(t, []string{"sh", "-c"}, cmd[:2])
-	require.Equal(t, []string{"sh", "/workspace", "/workspace/notes.md"}, cmd[3:])
+	must.Len(cmd, 6)
+	must.Equal([]string{"sh", "-c"}, cmd[:2])
+	must.Equal([]string{"sh", "/workspace", "/workspace/notes.md"}, cmd[3:])
 
 	script := cmd[2]
 	for _, want := range []string{
@@ -105,58 +108,64 @@ func TestWorkspaceReadCommand_GuardScriptAndArguments(t *testing.T) {
 		"exit 113",
 		`exec tar -C / -cf - -- "${t#/}"`,
 	} {
-		assert.Contains(t, script, want)
+		check.Contains(script, want)
 	}
-	require.NotContains(t, script, "/workspace/notes.md",
+	must.NotContains(script, "/workspace/notes.md",
 		"the requested path must reach the script as an argument, not by interpolation")
 }
 
 // TestClassifyWorkspaceReadExit_EscapeReadlinkAndNotFound shares one
 // emitter across the calls: only the escape exit may emit PathTraversalBlocked.
 func TestClassifyWorkspaceReadExit_EscapeReadlinkAndNotFound(t *testing.T) {
+	must := require.New(t)
 	emitter := &mockSecurityEmitter{}
 
 	err := classifyWorkspaceReadExit(workspaceReadEscapeExit, "path escapes workspace: link\n", "link", "/workspace", emitter)
-	require.ErrorContains(t, err, "escapes workspace")
-	require.Equal(t, 1, emitter.pathTraversalCount, "escape exit must emit PathTraversalBlocked")
+	must.ErrorContains(err, "escapes workspace")
+	must.Equal(1, emitter.pathTraversalCount, "escape exit must emit PathTraversalBlocked")
 
 	err = classifyWorkspaceReadExit(workspaceReadNoReadlinkExit, "readlink is required for workspace reads\n", "a.txt", "/workspace", emitter)
-	require.ErrorContains(t, err, "readlink")
+	must.ErrorContains(err, "readlink")
 
 	err = classifyWorkspaceReadExit(2, "tar: workspace/missing.txt: No such file or directory\n", "missing.txt", "/workspace", emitter)
-	require.ErrorIs(t, err, fs.ErrNotExist)
-	require.Equal(t, 1, emitter.pathTraversalCount, "non-escape exits must not emit PathTraversalBlocked")
+	must.ErrorIs(err, fs.ErrNotExist)
+	must.Equal(1, emitter.pathTraversalCount, "non-escape exits must not emit PathTraversalBlocked")
 }
 
 func TestDecodeSingleFileArchive_ClassifiesEntries(t *testing.T) {
 	t.Run("regular file returns its content and size", func(t *testing.T) {
+		must := require.New(t)
 		content, size, err := decodeSingleFileArchive(singleFileTar(t, "workspace/a.txt", "hello"), 1024)
-		require.NoError(t, err)
-		require.Equal(t, "hello", content)
-		require.Equal(t, int64(5), size)
+		must.NoError(err)
+		must.Equal("hello", content)
+		must.Equal(int64(5), size)
 	})
 
 	t.Run("empty archive is not found", func(t *testing.T) {
+		must := require.New(t)
 		_, _, err := decodeSingleFileArchive(nil, 1024)
-		require.ErrorIs(t, err, fs.ErrNotExist)
+		must.ErrorIs(err, fs.ErrNotExist)
 	})
 
 	t.Run("directory entry is rejected", func(t *testing.T) {
+		must := require.New(t)
 		archive := tarWithEntry(t, &tar.Header{Name: "workspace/sub/", Typeflag: tar.TypeDir, Mode: 0o755}, nil)
 		_, _, err := decodeSingleFileArchive(archive, 1024)
-		require.ErrorIs(t, err, errArchiveEntryIsDir)
+		must.ErrorIs(err, errArchiveEntryIsDir)
 	})
 
 	t.Run("dangling symlink is not found", func(t *testing.T) {
+		must := require.New(t)
 		archive := tarWithEntry(t, &tar.Header{Name: "workspace/dangling", Typeflag: tar.TypeSymlink, Linkname: "gone", Mode: 0o777}, nil)
 		_, _, err := decodeSingleFileArchive(archive, 1024)
-		require.ErrorIs(t, err, fs.ErrNotExist)
+		must.ErrorIs(err, fs.ErrNotExist)
 	})
 
 	t.Run("entry over the limit reports its size", func(t *testing.T) {
+		must := require.New(t)
 		_, size, err := decodeSingleFileArchive(singleFileTar(t, "workspace/big", strings.Repeat("x", 2048)), 1024)
-		require.ErrorIs(t, err, errArchiveEntryTooLarge)
-		require.Equal(t, int64(2048), size)
+		must.ErrorIs(err, errArchiveEntryTooLarge)
+		must.Equal(int64(2048), size)
 	})
 }
 
@@ -165,6 +174,7 @@ func TestDecodeSingleFileArchive_ClassifiesEntries(t *testing.T) {
 // must surface as a workspace-escape error, emit PathTraversalBlocked, and
 // return no content.
 func TestContainerExecutor_ReadFile_EscapeReportedAndBlocked(t *testing.T) {
+	must := require.New(t)
 	capture := &readExecCapture{}
 	exec, cleanup := newMockContainerExecutor(t, readExecHandlers(capture, nil, "path escapes workspace: /workspace/link\n", workspaceReadEscapeExit))
 	defer cleanup()
@@ -172,19 +182,20 @@ func TestContainerExecutor_ReadFile_EscapeReportedAndBlocked(t *testing.T) {
 	exec.Security = emitter
 
 	content, err := exec.ReadFile(context.Background(), "link")
-	require.ErrorContains(t, err, "escapes workspace", "ReadFile(link) returned content %q", content)
-	require.Empty(t, content, "content must be empty on an escape")
-	require.Equal(t, 1, emitter.pathTraversalCount, "PathTraversalBlocked emissions")
+	must.ErrorContains(err, "escapes workspace", "ReadFile(link) returned content %q", content)
+	must.Empty(content, "content must be empty on an escape")
+	must.Equal(1, emitter.pathTraversalCount, "PathTraversalBlocked emissions")
 
 	argv := capture.last()
-	require.Len(t, argv, 6, "read ran with argv %q", argv)
-	require.Equal(t, []string{containerWorkspace, "/workspace/link"}, argv[4:], "guarded read targets /workspace/link")
+	must.Len(argv, 6, "read ran with argv %q", argv)
+	must.Equal([]string{containerWorkspace, "/workspace/link"}, argv[4:], "guarded read targets /workspace/link")
 }
 
 // TestContainerExecutor_ReadFile_UsesExecNotArchive pins that a container
 // read never touches the engine's archive endpoint, which dereferences
 // symlinks.
 func TestContainerExecutor_ReadFile_UsesExecNotArchive(t *testing.T) {
+	must := require.New(t)
 	handlers := readExecHandlers(nil, singleFileTar(t, "workspace/a.txt", "via exec"), "", 0)
 	var archiveHits atomic.Int32
 	handlers["GET /containers/*/archive"] = func(w http.ResponseWriter, r *http.Request) {
@@ -195,7 +206,7 @@ func TestContainerExecutor_ReadFile_UsesExecNotArchive(t *testing.T) {
 	defer cleanup()
 
 	got, err := exec.ReadFile(context.Background(), "a.txt")
-	require.NoError(t, err)
-	require.Equal(t, "via exec", got)
-	require.Zero(t, archiveHits.Load(), "archive endpoint must not be hit")
+	must.NoError(err)
+	must.Equal("via exec", got)
+	must.Zero(archiveHits.Load(), "archive endpoint must not be hit")
 }

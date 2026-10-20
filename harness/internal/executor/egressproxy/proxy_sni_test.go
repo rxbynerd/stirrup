@@ -18,6 +18,7 @@ import (
 // allowlisted host but suppresses the SNI extension on the inner
 // ClientHello must be dropped, not allowed through.
 func TestProxy_CONNECT_SNIAbsent_IsDropped(t *testing.T) {
+	must := require.New(t)
 	upstream := startEchoTCPServer(t)
 	upstreamHost, upstreamPort := splitHostPort(t, upstream.Addr().String())
 
@@ -42,9 +43,9 @@ func TestProxy_CONNECT_SNIAbsent_IsDropped(t *testing.T) {
 
 	// The proxy must drop the connection rather than splice it to an upstream;
 	// after draining the optional 200 the read hits EOF (no echoed bytes).
-	require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)), "set read deadline")
+	must.NoError(conn.SetReadDeadline(time.Now().Add(2*time.Second)), "set read deadline")
 	got := readAllUntilEOF(t, conn)
-	require.NotContains(t, string(got), string(hello), "absent-SNI tunnel echoed client bytes back, so the upstream was reached")
+	must.NotContains(string(got), string(hello), "absent-SNI tunnel echoed client bytes back, so the upstream was reached")
 }
 
 // TestProxy_CONNECT_CompliantClient_Succeeds: an RFC 7231 §4.3.6 client
@@ -52,6 +53,8 @@ func TestProxy_CONNECT_SNIAbsent_IsDropped(t *testing.T) {
 // browsers, Go net/http, git all do this), so the proxy must write the
 // 200 before peeking the ClientHello.
 func TestProxy_CONNECT_CompliantClient_Succeeds(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	upstream := startEchoTCPServer(t)
 	upstreamHost, upstreamPort := splitHostPort(t, upstream.Addr().String())
 
@@ -60,27 +63,27 @@ func TestProxy_CONNECT_CompliantClient_Succeeds(t *testing.T) {
 	p := startTestProxy(t, []string{allowEntry}, emitter)
 
 	conn := dialConnectTunnel(t, p.Addr(), upstreamHost, upstreamPort)
-	require.NoError(t, conn.SetDeadline(time.Now().Add(5*time.Second)), "set deadline")
+	must.NoError(conn.SetDeadline(time.Now().Add(5*time.Second)), "set deadline")
 
 	// Compliant ordering: read the CONNECT response first, only then send
 	// the ClientHello.
 	r := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(r, &http.Request{Method: http.MethodConnect})
-	require.NoError(t, err, "read CONNECT response")
-	require.Equal(t, http.StatusOK, resp.StatusCode)
+	must.NoError(err, "read CONNECT response")
+	must.Equal(http.StatusOK, resp.StatusCode)
 
 	hello := clientHelloWithSNI(upstreamHost)
 	_, err = conn.Write(hello)
-	require.NoError(t, err, "write hello after 200")
+	must.NoError(err, "write hello after 200")
 
 	// The proxy replays the ClientHello to the echo upstream, which echoes it
 	// back through the spliced tunnel — proof the tunnel is live end to end.
 	got := make([]byte, len(hello))
 	_, err = io.ReadFull(r, got)
-	require.NoError(t, err, "read echoed bytes through tunnel")
-	assert.Equal(t, hello, got, "upstream echo mismatch through compliant-client tunnel")
+	must.NoError(err, "read echoed bytes through tunnel")
+	check.Equal(hello, got, "upstream echo mismatch through compliant-client tunnel")
 
-	assert.Eventually(t, func() bool {
+	check.Eventually(func() bool {
 		return emitter.hasEvent("egress_allowed")
 	}, time.Second, 20*time.Millisecond, "expected egress_allowed event for the compliant CONNECT")
 }
@@ -211,8 +214,9 @@ func TestParseSNIFromHandshake_MalformedInputs(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			_, err := parseSNIFromHandshake(tc.body)
-			require.Error(t, err)
+			must.Error(err)
 		})
 	}
 }
@@ -235,13 +239,14 @@ func helloBeforeExtensions() []byte {
 // upstreamHost:upstreamPort. The connection is closed when the test ends.
 func dialConnectTunnel(t *testing.T, proxyAddr, upstreamHost string, upstreamPort int) net.Conn {
 	t.Helper()
+	must := require.New(t)
 	conn, err := net.Dial("tcp", proxyAddr)
-	require.NoError(t, err, "dial proxy")
+	must.NoError(err, "dial proxy")
 	t.Cleanup(func() { _ = conn.Close() })
 
 	connectLine := fmt.Sprintf("CONNECT %s:%d HTTP/1.1\r\nHost: %s:%d\r\n\r\n", upstreamHost, upstreamPort, upstreamHost, upstreamPort)
 	_, err = conn.Write([]byte(connectLine))
-	require.NoError(t, err, "write CONNECT")
+	must.NoError(err, "write CONNECT")
 	return conn
 }
 
@@ -249,6 +254,7 @@ func dialConnectTunnel(t *testing.T, proxyAddr, upstreamHost string, upstreamPor
 // given reason.
 func awaitDeny(t *testing.T, emitter *fakeEmitter, reason string) {
 	t.Helper()
+	must := require.New(t)
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		for _, ev := range emitter.snapshot() {
@@ -260,7 +266,7 @@ func awaitDeny(t *testing.T, emitter *fakeEmitter, reason string) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	require.Failf(t, "egress_blocked event not observed", "reason %q; events: %+v", reason, emitter.snapshot())
+	must.Failf("egress_blocked event not observed", "reason %q; events: %+v", reason, emitter.snapshot())
 }
 
 // readAllUntilEOF reads from conn until EOF or the existing read

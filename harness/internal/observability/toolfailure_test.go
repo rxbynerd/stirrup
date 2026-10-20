@@ -16,6 +16,7 @@ import (
 // new constant is added, this list and the map both need updates;
 // missing either ends with a failing test, which is the goal.
 func TestToolFailureCategory_KnownValuesAreValid(t *testing.T) {
+	must := require.New(t)
 	known := []ToolFailureCategory{
 		ToolFailureUnknownTool,
 		ToolFailureInvalidArguments,
@@ -41,14 +42,15 @@ func TestToolFailureCategory_KnownValuesAreValid(t *testing.T) {
 	}
 	for _, c := range known {
 		t.Run(string(c), func(t *testing.T) {
-			require.True(t, c.IsValid(), "category is not registered in allToolFailureCategories")
-			require.NotEmpty(t, c.String(), "category has an empty wire string")
+			must := require.New(t)
+			must.True(c.IsValid(), "category is not registered in allToolFailureCategories")
+			must.NotEmpty(c.String(), "category has an empty wire string")
 		})
 	}
 
 	// A typo in the registry (an orphaned entry, or a known constant
 	// left out of it) changes the count, so the sizes must match.
-	require.Len(t, allToolFailureCategories, len(known), "registry entries diverge from known constants")
+	must.Len(allToolFailureCategories, len(known), "registry entries diverge from known constants")
 }
 
 // TestToolFailureCategory_BogusValuesRejected pins the other half of
@@ -70,7 +72,8 @@ func TestToolFailureCategory_BogusValuesRejected(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.False(t, ToolFailureCategory(tt.value).IsValid(), "value %q must not validate", tt.value)
+			must := require.New(t)
+			must.False(ToolFailureCategory(tt.value).IsValid(), "value %q must not validate", tt.value)
 		})
 	}
 }
@@ -79,5 +82,6 @@ func TestToolFailureCategory_BogusValuesRejected(t *testing.T) {
 // the underlying wire form unchanged so reflective consumers (tests,
 // dashboards) read the same value they would see on the OTLP wire.
 func TestToolFailureCategory_StringReturnsWireValue(t *testing.T) {
-	require.Equal(t, "handler_error", ToolFailureHandlerError.String())
+	must := require.New(t)
+	must.Equal("handler_error", ToolFailureHandlerError.String())
 }

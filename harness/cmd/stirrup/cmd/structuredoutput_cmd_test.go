@@ -57,6 +57,8 @@ func structuredRunConfig(t *testing.T, baseURL string) (*types.RunConfig, string
 }
 
 func TestRunWithConfig_StructuredOutputAfterCorrection(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	srv, requests := answerSequenceServer(t,
 		"The title is Fix login and it is a bug.",
 		"```json\n{\"title\": \"Fix login\", \"labels\": [\"bug\"]}\n```",
@@ -67,23 +69,25 @@ func TestRunWithConfig_StructuredOutputAfterCorrection(t *testing.T) {
 	runErr := runWithConfig(config, runOptions{outputMode: "json"})
 	stdout := stdoutDone()
 
-	require.NoError(t, runErr)
+	must.NoError(runErr)
 	const want = `{"title":"Fix login","labels":["bug"]}`
-	assert.EqualValues(t, 2, requests.Load())
+	check.EqualValues(2, requests.Load())
 
 	result := decodeStirrupResult(t, stdout)
-	assert.Equal(t, "success", result.Outcome)
-	assert.Equal(t, want, string(result.StructuredOutput)) //nolint:testifylint // exact compact bytes are the behaviour under test
+	check.Equal("success", result.Outcome)
+	check.Equal(want, string(result.StructuredOutput)) //nolint:testifylint // exact compact bytes are the behaviour under test
 
 	done := stdioDoneEvent(t, stdout)
-	require.NotNil(t, done.Trace)
-	assert.Equal(t, want, string(done.Trace.StructuredOutput)) //nolint:testifylint // exact compact bytes are the behaviour under test
+	must.NotNil(done.Trace)
+	check.Equal(want, string(done.Trace.StructuredOutput)) //nolint:testifylint // exact compact bytes are the behaviour under test
 
 	rt := runFinishedTrace(t, tracePath)
-	assert.Equal(t, want, string(rt.StructuredOutput)) //nolint:testifylint // exact compact bytes are the behaviour under test
+	check.Equal(want, string(rt.StructuredOutput)) //nolint:testifylint // exact compact bytes are the behaviour under test
 }
 
 func TestRunWithConfig_StructuredOutputFailureExitsNonZero(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	srv, requests := answerSequenceServer(t, `{"title":"Fix login"}`)
 	config, _ := structuredRunConfig(t, srv.URL)
 	config.MaxTurns = 3
@@ -92,17 +96,17 @@ func TestRunWithConfig_StructuredOutputFailureExitsNonZero(t *testing.T) {
 	runErr := runWithConfig(config, runOptions{outputMode: "json"})
 	stdout := stdoutDone()
 
-	require.Error(t, runErr)
-	assert.Equal(t, 1, classifyExitCode(runErr))
-	assert.EqualValues(t, 3, requests.Load(), "the answer and two corrective attempts")
+	must.Error(runErr)
+	check.Equal(1, classifyExitCode(runErr))
+	check.EqualValues(3, requests.Load(), "the answer and two corrective attempts")
 
 	result := decodeStirrupResult(t, stdout)
-	assert.Equal(t, "structured_output_failed", result.Outcome)
-	assert.Contains(t, result.Error, "missing property 'labels'")
-	assert.Nil(t, result.StructuredOutput)
+	check.Equal("structured_output_failed", result.Outcome)
+	check.Contains(result.Error, "missing property 'labels'")
+	check.Nil(result.StructuredOutput)
 
 	done := stdioDoneEvent(t, stdout)
-	assert.Equal(t, "structured_output_failed", done.StopReason)
+	check.Equal("structured_output_failed", done.StopReason)
 }
 
 func TestRunWithConfig_StructuredOutput_ResultLineStaysUnderCap(t *testing.T) {
@@ -121,6 +125,7 @@ func TestRunWithConfig_StructuredOutput_ResultLineStaysUnderCap(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			srv, _ := answerSequenceServer(t, tc.doc)
 			config, _ := structuredRunConfig(t, srv.URL)
 			// An unregistered model keeps the default window, which fits the
@@ -135,13 +140,13 @@ func TestRunWithConfig_StructuredOutput_ResultLineStaysUnderCap(t *testing.T) {
 
 			for _, line := range strings.Split(stdout, "\n") {
 				if strings.HasPrefix(line, "STIRRUP_RESULT ") {
-					require.LessOrEqual(t, len(line)+1, resultLineCap, "STIRRUP_RESULT line including its newline")
+					must.LessOrEqual(len(line)+1, resultLineCap, "STIRRUP_RESULT line including its newline")
 				}
 			}
 			result := decodeStirrupResult(t, stdout)
-			require.Equal(t, tc.wantOutcome, result.Outcome, "error %q", result.Error)
+			must.Equal(tc.wantOutcome, result.Outcome, "error %q", result.Error)
 			if tc.wantOutcome == "success" {
-				require.Equal(t, tc.doc, string(result.StructuredOutput))
+				must.Equal(tc.doc, string(result.StructuredOutput))
 			}
 		})
 	}
@@ -149,11 +154,12 @@ func TestRunWithConfig_StructuredOutput_ResultLineStaysUnderCap(t *testing.T) {
 
 func structuredJobTask(t *testing.T, providerURL string) *pb.RunConfig {
 	t.Helper()
+	must := require.New(t)
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 	var schemaDoc map[string]any
-	require.NoError(t, json.Unmarshal([]byte(cmdTriageSchema), &schemaDoc), "parse schema")
+	must.NoError(json.Unmarshal([]byte(cmdTriageSchema), &schemaDoc), "parse schema")
 	schema, err := structpb.NewStruct(schemaDoc)
-	require.NoError(t, err, "build schema struct")
+	must.NoError(err, "build schema struct")
 	task := followUpJobConfig(t, providerURL, 30, 0)
 	task.FollowUpGrace = nil
 	task.MaxTurns = 3
@@ -163,6 +169,7 @@ func structuredJobTask(t *testing.T, providerURL string) *pb.RunConfig {
 
 func runStructuredJob(t *testing.T, task *pb.RunConfig) (*pb.HarnessEvent, error) {
 	t.Helper()
+	must := require.New(t)
 	useTempMarkerPaths(t)
 	srv := newScriptedControlPlane(task, func(int) *pb.ControlEvent { return nil })
 	serveControlPlane(t, srv)
@@ -174,7 +181,7 @@ func runStructuredJob(t *testing.T, task *pb.RunConfig) (*pb.HarnessEvent, error
 	select {
 	case runErr = <-errCh:
 	case <-time.After(15 * time.Second):
-		require.Fail(t, "runJob did not return")
+		must.Fail("runJob did not return")
 	}
 	var done *pb.HarnessEvent
 	for _, ev := range srv.events() {
@@ -186,67 +193,75 @@ func runStructuredJob(t *testing.T, task *pb.RunConfig) (*pb.HarnessEvent, error
 }
 
 func TestRunJob_StructuredOutputOnDone(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	provider, requests := answerSequenceServer(t, "Not JSON yet.", `{"title":"Fix login","labels":["bug"]}`)
 	sink := &stubResultSink{}
 	installStubResultSink(t, sink)
 
 	done, runErr := runStructuredJob(t, structuredJobTask(t, provider.URL))
-	require.NoError(t, runErr)
+	must.NoError(runErr)
 	const want = `{"title":"Fix login","labels":["bug"]}`
-	assert.EqualValues(t, 2, requests.Load())
-	assert.Equal(t, "success", done.GetStopReason())
-	assert.Equal(t, want, done.GetTrace().GetStructuredOutput()) //nolint:testifylint // exact compact bytes are the behaviour under test
-	require.Len(t, sink.calls, 1)
-	assert.Equal(t, want, string(sink.calls[0].StructuredOutput)) //nolint:testifylint // exact compact bytes are the behaviour under test
+	check.EqualValues(2, requests.Load())
+	check.Equal("success", done.GetStopReason())
+	check.Equal(want, done.GetTrace().GetStructuredOutput()) //nolint:testifylint // exact compact bytes are the behaviour under test
+	must.Len(sink.calls, 1)
+	check.Equal(want, string(sink.calls[0].StructuredOutput)) //nolint:testifylint // exact compact bytes are the behaviour under test
 }
 
 func TestRunJob_StructuredOutputFailureOnDone(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	provider, _ := answerSequenceServer(t, "still prose")
 	sink := &stubResultSink{}
 	installStubResultSink(t, sink)
 
 	done, runErr := runStructuredJob(t, structuredJobTask(t, provider.URL))
-	require.Error(t, runErr)
-	assert.Equal(t, 1, classifyExitCode(runErr))
-	assert.Equal(t, "structured_output_failed", done.GetStopReason())
-	assert.Empty(t, done.GetTrace().GetStructuredOutput())
-	assert.Contains(t, done.GetTrace().GetError(), "not a single JSON document")
-	require.Len(t, sink.calls, 1)
-	assert.Equal(t, "structured_output_failed", sink.calls[0].Outcome)
+	must.Error(runErr)
+	check.Equal(1, classifyExitCode(runErr))
+	check.Equal("structured_output_failed", done.GetStopReason())
+	check.Empty(done.GetTrace().GetStructuredOutput())
+	check.Contains(done.GetTrace().GetError(), "not a single JSON document")
+	must.Len(sink.calls, 1)
+	check.Equal("structured_output_failed", sink.calls[0].Outcome)
 }
 
 func writeSchemaFile(t *testing.T, content string) string {
 	t.Helper()
+	must := require.New(t)
 	path := filepath.Join(t.TempDir(), "schema.json")
-	require.NoError(t, os.WriteFile(path, []byte(content), 0o600), "write schema")
+	must.NoError(os.WriteFile(path, []byte(content), 0o600), "write schema")
 	return path
 }
 
 func TestApplyOverrides_OutputSchemaFlag(t *testing.T) {
 	t.Run("file sets compact schema", func(t *testing.T) {
+		must := require.New(t)
 		cmd := newTestHarnessCommand()
 		path := writeSchemaFile(t, "{\n  \"type\": \"object\",\n  \"required\": [\"title\"]\n}\n")
-		require.NoError(t, cmd.ParseFlags([]string{"--output-schema", path}))
+		must.NoError(cmd.ParseFlags([]string{"--output-schema", path}))
 		cfg := baseFileConfig()
-		require.NoError(t, applyOverrides(cmd, cfg, nil))
-		require.Equal(t, `{"type":"object","required":["title"]}`, string(cfg.OutputSchema)) //nolint:testifylint // exact compact bytes are the behaviour under test
+		must.NoError(applyOverrides(cmd, cfg, nil))
+		must.Equal(`{"type":"object","required":["title"]}`, string(cfg.OutputSchema)) //nolint:testifylint // exact compact bytes are the behaviour under test
 	})
 
 	t.Run("empty value clears file schema", func(t *testing.T) {
+		must := require.New(t)
 		cmd := newTestHarnessCommand()
-		require.NoError(t, cmd.ParseFlags([]string{"--output-schema="}))
+		must.NoError(cmd.ParseFlags([]string{"--output-schema="}))
 		cfg := baseFileConfig()
 		cfg.OutputSchema = json.RawMessage(`{"type":"object"}`)
-		require.NoError(t, applyOverrides(cmd, cfg, nil))
-		require.Nil(t, cfg.OutputSchema)
+		must.NoError(applyOverrides(cmd, cfg, nil))
+		must.Nil(cfg.OutputSchema)
 	})
 
 	t.Run("unset flag keeps file schema", func(t *testing.T) {
+		must := require.New(t)
 		cmd := newTestHarnessCommand()
 		cfg := baseFileConfig()
 		cfg.OutputSchema = json.RawMessage(`{"type":"object"}`)
-		require.NoError(t, applyOverrides(cmd, cfg, nil))
-		require.Equal(t, `{"type":"object"}`, string(cfg.OutputSchema)) //nolint:testifylint // exact compact bytes are the behaviour under test
+		must.NoError(applyOverrides(cmd, cfg, nil))
+		must.Equal(`{"type":"object"}`, string(cfg.OutputSchema)) //nolint:testifylint // exact compact bytes are the behaviour under test
 	})
 
 	tests := []struct {
@@ -272,49 +287,54 @@ func TestApplyOverrides_OutputSchemaFlag(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			cmd := newTestHarnessCommand()
-			require.NoError(t, cmd.ParseFlags([]string{"--output-schema", tc.path(t)}))
+			must.NoError(cmd.ParseFlags([]string{"--output-schema", tc.path(t)}))
 			err := applyOverrides(cmd, baseFileConfig(), nil)
 			var exitErr *exitError
-			require.ErrorAs(t, err, &exitErr)
-			require.Equal(t, tc.wantCode, exitErr.code)
+			must.ErrorAs(err, &exitErr)
+			must.Equal(tc.wantCode, exitErr.code)
 		})
 	}
 }
 
 func TestRunRunConfig_OutputSchema(t *testing.T) {
 	t.Run("validate rejects uncompilable schema", func(t *testing.T) {
+		must := require.New(t)
 		path := writeSchemaFile(t, `{"type":"strng"}`)
 		_, err := runRunConfigForTest(t, []string{"--validate", "--mode", "execution", "--prompt", "x", "--output-schema", path}, "")
 		var exitErr *exitError
-		require.ErrorAs(t, err, &exitErr)
-		require.Equal(t, exitValidation, exitErr.code)
-		require.ErrorContains(t, err, "outputSchema")
+		must.ErrorAs(err, &exitErr)
+		must.Equal(exitValidation, exitErr.code)
+		must.ErrorContains(err, "outputSchema")
 	})
 
 	t.Run("validate rejects external ref", func(t *testing.T) {
+		must := require.New(t)
 		path := writeSchemaFile(t, `{"$ref":"https://example.com/s.json"}`)
 		_, err := runRunConfigForTest(t, []string{"--validate", "--mode", "execution", "--prompt", "x", "--output-schema", path}, "")
-		require.ErrorContains(t, err, "not a local fragment")
+		must.ErrorContains(err, "not a local fragment")
 	})
 
 	t.Run("emits schema as json object", func(t *testing.T) {
+		must := require.New(t)
 		path := writeSchemaFile(t, cmdTriageSchema)
 		out, err := runRunConfigForTest(t, []string{"--mode", "execution", "--output-schema", path}, "")
-		require.NoError(t, err)
+		must.NoError(err)
 		var cfg types.RunConfig
-		require.NoError(t, json.Unmarshal([]byte(out), &cfg))
+		must.NoError(json.Unmarshal([]byte(out), &cfg))
 		var compact bytes.Buffer
-		require.NoError(t, json.Compact(&compact, cfg.OutputSchema))
-		require.Equal(t, cmdTriageSchema, compact.String()) //nolint:testifylint // exact compact bytes are the behaviour under test
+		must.NoError(json.Compact(&compact, cfg.OutputSchema))
+		must.Equal(cmdTriageSchema, compact.String()) //nolint:testifylint // exact compact bytes are the behaviour under test
 	})
 }
 
 func TestBuildRunResult_CarriesStructuredOutput(t *testing.T) {
+	must := require.New(t)
 	res := buildRunResult(&types.RunTrace{
 		ID:               "run-1",
 		Outcome:          "success",
 		StructuredOutput: json.RawMessage(`{"title":"Fix login"}`),
 	}, types.DefaultMaxFinalAssistantTextBytes)
-	require.Equal(t, `{"title":"Fix login"}`, string(res.StructuredOutput)) //nolint:testifylint // exact compact bytes are the behaviour under test
+	must.Equal(`{"title":"Fix login"}`, string(res.StructuredOutput)) //nolint:testifylint // exact compact bytes are the behaviour under test
 }

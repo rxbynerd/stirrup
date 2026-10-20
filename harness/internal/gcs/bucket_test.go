@@ -12,6 +12,8 @@ import (
 )
 
 func TestBucketAccessible_GetsBucketMetadataWithBearer(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	var gotMethod, gotPath, gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
@@ -27,15 +29,16 @@ func TestBucketAccessible_GetsBucketMetadataWithBearer(t *testing.T) {
 		Bearer:          staticBearer("tok"),
 		EndpointBaseURL: srv.URL,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
-	assert.Equal(t, http.MethodGet, gotMethod, "probe must be read-only")
-	assert.Truef(t, strings.HasSuffix(gotPath, "/storage/v1/b/my-bucket"),
+	check.Equal(http.MethodGet, gotMethod, "probe must be read-only")
+	check.Truef(strings.HasSuffix(gotPath, "/storage/v1/b/my-bucket"),
 		"path = %q, want bucket-metadata route", gotPath)
-	assert.Equal(t, "Bearer tok", gotAuth, "bearer token must be applied")
+	check.Equal("Bearer tok", gotAuth, "bearer token must be applied")
 }
 
 func TestBucketAccessible_NotFoundErrorNamesStatusAndBucket(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"error":{"message":"not found"}}`))
@@ -47,12 +50,13 @@ func TestBucketAccessible_NotFoundErrorNamesStatusAndBucket(t *testing.T) {
 		Bearer:          staticBearer("tok"),
 		EndpointBaseURL: srv.URL,
 	})
-	require.Error(t, err)
-	require.ErrorContains(t, err, "404", "error should carry the HTTP status")
-	require.ErrorContains(t, err, "missing", "error should carry the bucket name")
+	must.Error(err)
+	must.ErrorContains(err, "404", "error should carry the HTTP status")
+	must.ErrorContains(err, "missing", "error should carry the bucket name")
 }
 
 func TestBucketAccessible_RequiresBearer(t *testing.T) {
+	must := require.New(t)
 	err := BucketAccessible(context.Background(), http.DefaultClient, BucketProbeOptions{Bucket: "b"})
-	require.Error(t, err, "bearer is nil")
+	must.Error(err, "bearer is nil")
 }

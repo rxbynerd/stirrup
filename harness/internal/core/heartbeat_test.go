@@ -40,6 +40,7 @@ func (t *recordingTransport) heartbeatCount() int {
 }
 
 func TestStartHeartbeat_EmitsHeartbeatEvents(t *testing.T) {
+	must := require.New(t)
 	rec := &recordingTransport{}
 	loop := &AgenticLoop{
 		Transport: rec,
@@ -51,10 +52,11 @@ func TestStartHeartbeat_EmitsHeartbeatEvents(t *testing.T) {
 	time.Sleep(60 * time.Millisecond)
 	stop()
 
-	require.GreaterOrEqual(t, rec.heartbeatCount(), 2)
+	must.GreaterOrEqual(rec.heartbeatCount(), 2)
 }
 
 func TestStartHeartbeat_StopFunctionHaltsHeartbeats(t *testing.T) {
+	must := require.New(t)
 	rec := &recordingTransport{}
 	loop := &AgenticLoop{
 		Transport: rec,
@@ -73,11 +75,12 @@ func TestStartHeartbeat_StopFunctionHaltsHeartbeats(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	countAfter := rec.heartbeatCount()
 
-	require.LessOrEqual(t, countAfter-countAtStop, 1,
+	must.LessOrEqual(countAfter-countAtStop, 1,
 		"heartbeat continued after stop beyond tolerance: %d at stop, %d after", countAtStop, countAfter)
 }
 
 func TestStartHeartbeat_RespectsContextCancellation(t *testing.T) {
+	must := require.New(t)
 	rec := &recordingTransport{}
 	loop := &AgenticLoop{
 		Transport: rec,
@@ -97,11 +100,12 @@ func TestStartHeartbeat_RespectsContextCancellation(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	countAfter := rec.heartbeatCount()
 
-	require.LessOrEqual(t, countAfter-countAtCancel, 1,
+	must.LessOrEqual(countAfter-countAtCancel, 1,
 		"heartbeat continued after context cancel beyond tolerance: %d at cancel, %d after", countAtCancel, countAfter)
 }
 
 func TestStartHeartbeat_CancelBeforeFirstTick(t *testing.T) {
+	must := require.New(t)
 	rec := &recordingTransport{}
 	loop := &AgenticLoop{
 		Transport: rec,
@@ -119,6 +123,6 @@ func TestStartHeartbeat_CancelBeforeFirstTick(t *testing.T) {
 	// observes the cancellation.
 	time.Sleep(30 * time.Millisecond)
 
-	require.LessOrEqual(t, rec.heartbeatCount(), 1,
+	must.LessOrEqual(rec.heartbeatCount(), 1,
 		"expected at most 1 heartbeat when the context is cancelled before the first tick")
 }

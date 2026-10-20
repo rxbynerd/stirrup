@@ -16,10 +16,11 @@ import (
 // on String(): "1024Mi" round-trips as "1Gi", which is the same value.
 func requireQuantity(t *testing.T, list corev1.ResourceList, name corev1.ResourceName, want string) {
 	t.Helper()
+	must := require.New(t)
 	got, ok := list[name]
-	require.True(t, ok, "%s is not set, want %s", name, want)
+	must.True(ok, "%s is not set, want %s", name, want)
 	wantQ := resource.MustParse(want)
-	require.Equal(t, 0, got.Cmp(wantQ), "%s = %s, want %s", name, got.String(), want)
+	must.Equal(0, got.Cmp(wantQ), "%s = %s, want %s", name, got.String(), want)
 }
 
 // TestResourcesToPodResources_RendersEachLimit covers nil input, whole and
@@ -79,13 +80,14 @@ func TestResourcesToPodResources_RendersEachLimit(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got := resourcesToPodResources(tc.limits)
 
 			if tc.wantNoReq {
-				require.Nil(t, got.Requests)
+				must.Nil(got.Requests)
 			}
 			if tc.wantNoLim {
-				require.Nil(t, got.Limits)
+				must.Nil(got.Limits)
 			}
 
 			if tc.wantReqCPU != "" {
@@ -106,12 +108,12 @@ func TestResourcesToPodResources_RendersEachLimit(t *testing.T) {
 			// with that much free scratch space.
 			if tc.wantLimEph != "" {
 				requireQuantity(t, got.Limits, corev1.ResourceEphemeralStorage, tc.wantLimEph)
-				require.NotContains(t, got.Requests, corev1.ResourceEphemeralStorage)
+				must.NotContains(got.Requests, corev1.ResourceEphemeralStorage)
 			}
 
 			// PIDs is never enforced as a container resource, regardless of
 			// the input value.
-			require.NotContains(t, got.Limits, corev1.ResourceName("pids"))
+			must.NotContains(got.Limits, corev1.ResourceName("pids"))
 		})
 	}
 }
@@ -138,13 +140,14 @@ func TestCPUQuantity_RendersReadableQuantities(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got := cpuQuantity(tc.in)
-			require.Equal(t, tc.want, got.String())
+			must.Equal(tc.want, got.String())
 
 			// Round-trip through resource.Quantity so a malformed render is
 			// caught here rather than panicking later in MustParse.
 			_, err := resource.ParseQuantity(got.String())
-			require.NoError(t, err)
+			must.NoError(err)
 		})
 	}
 }

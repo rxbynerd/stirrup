@@ -37,6 +37,8 @@ func spanAttrs(s tracetest.SpanStub) map[string]any {
 }
 
 func TestOTelTraceEmitter_RecordHookExecution_EmitsChildSpanAndAggregates(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	emitter, exporter := newTestOTelEmitter()
 	emitter.Start("run-otel-hooks", &types.RunConfig{RunID: "run-otel-hooks"})
 
@@ -52,43 +54,44 @@ func TestOTelTraceEmitter_RecordHookExecution_EmitsChildSpanAndAggregates(t *tes
 	phaseSpan.End()
 
 	tr, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
-	require.Len(t, tr.HookResults, 2)
-	require.Equal(t, "clone", tr.HookResults[0].Name)
-	assert.NotContains(t, tr.HookResults[1].Command+tr.HookResults[1].Error, "sk-ant-api03-leak",
+	must.NoError(err)
+	must.Len(tr.HookResults, 2)
+	must.Equal("clone", tr.HookResults[0].Name)
+	check.NotContains(tr.HookResults[1].Command+tr.HookResults[1].Error, "sk-ant-api03-leak",
 		"HookResults carries an unscrubbed secret: %+v", tr.HookResults[1])
 
 	spans := hookSpans(exporter.GetSpans())
-	require.Len(t, spans, 2)
+	must.Len(spans, 2)
 	wantParent := phaseSpan.SpanContext().SpanID()
 	for _, s := range spans {
-		assert.Equal(t, wantParent, s.Parent.SpanID(),
+		check.Equal(wantParent, s.Parent.SpanID(),
 			"hook span should parent under the hooks.preRun span")
 		attrs := spanAttrs(s)
-		assert.NotContains(t, attrs, hookOutputTailKey, "output tail emitted with content capture off")
-		assert.NotContains(t, attrs["hook.command"].(string), "sk-ant-api03-leak",
+		check.NotContains(attrs, hookOutputTailKey, "output tail emitted with content capture off")
+		check.NotContains(attrs["hook.command"].(string), "sk-ant-api03-leak",
 			"hook.command carries an unscrubbed secret")
 	}
 
 	clone := spanAttrs(spans[0])
-	assert.Equal(t, "clone", clone["hook.name"])
-	assert.Equal(t, "preRun", clone["hook.phase"])
-	assert.Equal(t, true, clone["hook.output_truncated"])
-	assert.Equal(t, 1200*time.Millisecond, spans[0].EndTime.Sub(spans[0].StartTime),
+	check.Equal("clone", clone["hook.name"])
+	check.Equal("preRun", clone["hook.phase"])
+	check.Equal(true, clone["hook.output_truncated"])
+	check.Equal(1200*time.Millisecond, spans[0].EndTime.Sub(spans[0].StartTime),
 		"clone span should last the hook duration")
-	assert.NotEqual(t, codes.Error, spans[0].Status.Code,
+	check.NotEqual(codes.Error, spans[0].Status.Code,
 		"successful hook span has error status %q", spans[0].Status.Description)
 
 	failed := spanAttrs(spans[1])
-	assert.NotContains(t, failed, "hook.name", "unnamed hook should not carry hook.name")
-	assert.Equal(t, int64(3), failed["hook.exit_code"])
-	assert.Equal(t, true, failed["hook.continued_on_error"])
-	assert.Equal(t, codes.Error, spans[1].Status.Code)
-	assert.NotContains(t, spans[1].Status.Description, "sk-ant-api03-leak",
+	check.NotContains(failed, "hook.name", "unnamed hook should not carry hook.name")
+	check.Equal(int64(3), failed["hook.exit_code"])
+	check.Equal(true, failed["hook.continued_on_error"])
+	check.Equal(codes.Error, spans[1].Status.Code)
+	check.NotContains(spans[1].Status.Description, "sk-ant-api03-leak",
 		"failed span status should be scrubbed")
 }
 
 func TestOTelTraceEmitter_RecordHookExecution_OutputTailRequiresCaptureContent(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := newTestOTelEmitterWithCapture()
 	emitter.Start("run-otel-hook-tail", &types.RunConfig{RunID: "run-otel-hook-tail"})
 
@@ -96,34 +99,36 @@ func TestOTelTraceEmitter_RecordHookExecution_OutputTailRequiresCaptureContent(t
 		Phase: "postRun", Command: "make test", OutputTail: "FAIL token=sk-ant-api03-leak", ExitCode: 1, Error: "exit status 1",
 	})
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	spans := hookSpans(exporter.GetSpans())
-	require.Len(t, spans, 1)
+	must.Len(spans, 1)
 	tail, ok := spanAttrs(spans[0])[hookOutputTailKey].(string)
-	require.True(t, ok, "%s should be a string", hookOutputTailKey)
-	require.True(t, strings.HasPrefix(tail, "FAIL token="),
+	must.True(ok, "%s should be a string", hookOutputTailKey)
+	must.True(strings.HasPrefix(tail, "FAIL token="),
 		"%s = %q, want the captured tail", hookOutputTailKey, tail)
-	require.NotContains(t, tail, "sk-ant-api03-leak", "captured tail carries an unscrubbed secret")
+	must.NotContains(tail, "sk-ant-api03-leak", "captured tail carries an unscrubbed secret")
 }
 
 func TestOTelTraceEmitter_RecordHookExecution_ParentsUnderRootWithoutPhaseSpan(t *testing.T) {
+	must := require.New(t)
 	emitter, exporter := newTestOTelEmitter()
 	emitter.Start("run-otel-hook-root", &types.RunConfig{RunID: "run-otel-hook-root"})
 
 	emitter.RecordHookExecution(context.Background(), types.HookExecution{Phase: "postRun", Command: "true"})
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	spans := exporter.GetSpans()
 	hooks := hookSpans(spans)
-	require.Len(t, hooks, 1)
+	must.Len(hooks, 1)
 	root := findSpanByName(t, spans, "invoke_agent stirrup")
-	require.Equal(t, root.SpanContext.SpanID(), hooks[0].Parent.SpanID(),
+	must.Equal(root.SpanContext.SpanID(), hooks[0].Parent.SpanID(),
 		"hook span should parent under the root span")
 }
 
 func TestGCSTraceEmitter_RecordHookExecution_AccumulatesAndScrubs(t *testing.T) {
+	must := require.New(t)
 	srv := newGCSCaptureServer()
 	httpSrv := httptest.NewServer(srv.handler())
 	defer httpSrv.Close()
@@ -133,7 +138,7 @@ func TestGCSTraceEmitter_RecordHookExecution_AccumulatesAndScrubs(t *testing.T) 
 		CredentialSource: &staticBearerSource{token: "test-token"},
 		EndpointBaseURL:  httpSrv.URL,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	emitter.Start("run-gcs-hooks", nil)
 	emitter.RecordHookExecution(context.Background(), types.HookExecution{Phase: "preRun", Name: "clone", Command: "git clone repo"})
 	emitter.RecordHookExecution(context.Background(), types.HookExecution{
@@ -141,19 +146,21 @@ func TestGCSTraceEmitter_RecordHookExecution_AccumulatesAndScrubs(t *testing.T) 
 	})
 
 	tr, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
-	require.Len(t, tr.HookResults, 2)
-	require.Equal(t, "clone", tr.HookResults[0].Name)
+	must.NoError(err)
+	must.Len(tr.HookResults, 2)
+	must.Equal("clone", tr.HookResults[0].Name)
 
 	body := string(srv.last().Body)
-	require.NotContains(t, body, "sk-ant-api03-leak", "secret reached the uploaded trace:\n%s", body)
+	must.NotContains(body, "sk-ant-api03-leak", "secret reached the uploaded trace:\n%s", body)
 	var uploaded types.RunTrace
-	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(body)), &uploaded), "unmarshal uploaded body")
-	require.Len(t, uploaded.HookResults, 2)
-	require.Equal(t, "postRun", uploaded.HookResults[1].Phase)
+	must.NoError(json.Unmarshal([]byte(strings.TrimSpace(body)), &uploaded), "unmarshal uploaded body")
+	must.Len(uploaded.HookResults, 2)
+	must.Equal("postRun", uploaded.HookResults[1].Phase)
 }
 
 func TestOTelTraceEmitter_RecordHookExecution_CapKeepsOutputTailEnd(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	exporter := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 	emitter := newOTelTraceEmitter(tp, true, 256, false)
@@ -162,13 +169,13 @@ func TestOTelTraceEmitter_RecordHookExecution_CapKeepsOutputTailEnd(t *testing.T
 	tail := strings.Repeat("é", 200) + "FAILED: last line"
 	emitter.RecordHookExecution(emitter.RootContext(), types.HookExecution{Phase: "postRun", Command: "make", OutputTail: tail})
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	attrs := spanAttrs(hookSpans(exporter.GetSpans())[0])
 	got := attrs[hookOutputTailKey].(string)
-	assert.LessOrEqual(t, len(got), 256, "capped tail %q should fit within 256 bytes", got)
-	assert.True(t, strings.HasSuffix(got, "FAILED: last line"), "capped tail %q should end with the last line", got)
-	assert.True(t, utf8.ValidString(got), "capped tail %q should be valid UTF-8", got)
-	assert.Equal(t, true, attrs[contentTruncatedKey(hookOutputTailKey)],
+	check.LessOrEqual(len(got), 256, "capped tail %q should fit within 256 bytes", got)
+	check.True(strings.HasSuffix(got, "FAILED: last line"), "capped tail %q should end with the last line", got)
+	check.True(utf8.ValidString(got), "capped tail %q should be valid UTF-8", got)
+	check.Equal(true, attrs[contentTruncatedKey(hookOutputTailKey)],
 		"missing %s marker", contentTruncatedKey(hookOutputTailKey))
 }

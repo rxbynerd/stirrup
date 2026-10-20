@@ -14,6 +14,7 @@ import (
 )
 
 func TestJSONLTraceEmitter_RecordsCommandOutputAndArchiveLink(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf, false)
 	emitter.Start("run-1", &types.RunConfig{})
@@ -24,20 +25,20 @@ func TestJSONLTraceEmitter_RecordsCommandOutputAndArchiveLink(t *testing.T) {
 	emitter.RecordCommandOutput(record)
 	emitter.RecordCommandOutputArchive("/tmp/run-1.command-output.tar.gz")
 	_, err := emitter.Finish(context.Background(), "success")
-	require.NoError(t, err)
+	must.NoError(err)
 
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	require.Len(t, lines, 3, "trace:\n%s", buf.String())
+	must.Len(lines, 3, "trace:\n%s", buf.String())
 
 	var event Event
-	require.NoError(t, json.Unmarshal([]byte(lines[1]), &event))
-	require.Equal(t, EventKindCommandOutputRecord, event.Kind)
-	require.NotNil(t, event.CommandOutput, "event=%+v", event)
-	require.EqualValues(t, 99, event.CommandOutput.Stdout.RawBytes)
-	require.NotContains(t, lines[1], "stdout.txt content", "trace must not embed command stream content")
+	must.NoError(json.Unmarshal([]byte(lines[1]), &event))
+	must.Equal(EventKindCommandOutputRecord, event.Kind)
+	must.NotNil(event.CommandOutput, "event=%+v", event)
+	must.EqualValues(99, event.CommandOutput.Stdout.RawBytes)
+	must.NotContains(lines[1], "stdout.txt content", "trace must not embed command stream content")
 
 	recording, err := typestrace.NewReader(strings.NewReader(buf.String())).ReadRecording()
-	require.NoError(t, err)
-	require.Len(t, recording.CommandOutputs, 1, "recording=%+v", recording)
-	require.NotEmpty(t, recording.FinalOutcome.CommandOutputArchive)
+	must.NoError(err)
+	must.Len(recording.CommandOutputs, 1, "recording=%+v", recording)
+	must.NotEmpty(recording.FinalOutcome.CommandOutputArchive)
 }

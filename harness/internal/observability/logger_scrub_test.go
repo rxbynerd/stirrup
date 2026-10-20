@@ -84,6 +84,7 @@ func TestScrubHandler_ScrubsEveryValueKindOnBothSinks(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var buf bytes.Buffer
 			capture := newCaptureHandler()
 			spy := &spyNotifier{}
@@ -91,16 +92,17 @@ func TestScrubHandler_ScrubsEveryValueKindOnBothSinks(t *testing.T) {
 
 			tc.log(logger)
 
-			require.NotContains(t, buf.String(), key, "key leaked into JSON sink")
+			must.NotContains(buf.String(), key, "key leaked into JSON sink")
 			records := capture.snapshot()
-			require.Len(t, records, 1, "export sink records")
-			require.NotContains(t, renderRecord(records[0]), key, "key leaked into export sink")
-			require.NotEmpty(t, spy.snapshot(), "SecretRedactedInOutput did not fire")
+			must.Len(records, 1, "export sink records")
+			must.NotContains(renderRecord(records[0]), key, "key leaked into export sink")
+			must.NotEmpty(spy.snapshot(), "SecretRedactedInOutput did not fire")
 		})
 	}
 }
 
 func TestScrubHandler_NonScalarValuesRenderAsOneJSONString(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	capture := newCaptureHandler()
 	logger := NewLoggerWithExport("run-1", slog.LevelInfo, &buf, nil, capture)
@@ -113,9 +115,9 @@ func TestScrubHandler_NonScalarValuesRenderAsOneJSONString(t *testing.T) {
 	)
 
 	var rec map[string]any
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &rec), "record: %s", buf.String())
+	must.NoError(json.Unmarshal(buf.Bytes(), &rec), "record: %s", buf.String())
 	records := capture.snapshot()
-	require.Len(t, records, 1, "export sink records")
+	must.Len(records, 1, "export sink records")
 
 	want := map[string]string{
 		"map":    `{"a":"1","b":"2"}`,
@@ -125,14 +127,16 @@ func TestScrubHandler_NonScalarValuesRenderAsOneJSONString(t *testing.T) {
 	}
 	for k, w := range want {
 		t.Run(k, func(t *testing.T) {
-			require.Equal(t, w, rec[k], "JSON sink")
+			must := require.New(t)
+			must.Equal(w, rec[k], "JSON sink")
 			got, _ := attrValue(records[0], k)
-			require.Equal(t, w, got, "export sink")
+			must.Equal(w, got, "export sink")
 		})
 	}
 }
 
 func TestScrubHandler_TextualKindsRenderAsText(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	logger := NewLogger("run-1", slog.LevelInfo, &buf)
 
@@ -144,7 +148,7 @@ func TestScrubHandler_TextualKindsRenderAsText(t *testing.T) {
 	)
 
 	var rec map[string]any
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &rec), "record: %s", buf.String())
+	must.NoError(json.Unmarshal(buf.Bytes(), &rec), "record: %s", buf.String())
 	want := map[string]string{
 		"bytes":    "plain body",
 		"stringer": "stringer holds t",
@@ -153,28 +157,32 @@ func TestScrubHandler_TextualKindsRenderAsText(t *testing.T) {
 	}
 	for k, w := range want {
 		t.Run(k, func(t *testing.T) {
-			require.Equal(t, w, rec[k])
+			must := require.New(t)
+			must.Equal(w, rec[k])
 		})
 	}
 }
 
 func TestScrubHandler_ScalarKindsKeepTheirShape(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	logger := NewLogger("run-1", slog.LevelInfo, &buf)
 
 	logger.Info("m", "i", 3, "named", namedInt(7), "b", true, "f", 1.5, "d", slog.DurationValue(2e9))
 
 	var rec map[string]any
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &rec), "record: %s", buf.String())
+	must.NoError(json.Unmarshal(buf.Bytes(), &rec), "record: %s", buf.String())
 	want := map[string]any{"i": float64(3), "named": float64(7), "b": true, "f": 1.5, "d": float64(2e9)}
 	for k, w := range want {
 		t.Run(k, func(t *testing.T) {
-			require.Equal(t, w, rec[k])
+			must := require.New(t)
+			must.Equal(w, rec[k])
 		})
 	}
 }
 
 func TestScrubHandler_UnrenderableValuesDoNotPanic(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	logger := NewLogger("run-1", slog.LevelInfo, &buf)
 	var nilErr *wrappedErr
@@ -186,15 +194,17 @@ func TestScrubHandler_UnrenderableValuesDoNotPanic(t *testing.T) {
 	)
 
 	var rec map[string]any
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &rec), "record: %s", buf.String())
+	must.NoError(json.Unmarshal(buf.Bytes(), &rec), "record: %s", buf.String())
 	for _, k := range []string{"panics", "nilptr"} {
 		t.Run(k, func(t *testing.T) {
-			require.Equal(t, "[unrenderable log value]", rec[k], "want placeholder")
+			must := require.New(t)
+			must.Equal("[unrenderable log value]", rec[k], "want placeholder")
 		})
 	}
 	t.Run("chan", func(t *testing.T) {
+		must := require.New(t)
 		got, _ := rec["chan"].(string)
-		require.True(t, strings.HasPrefix(got, "0x"), "chan = %v, want %%+v fallback", rec["chan"])
+		must.True(strings.HasPrefix(got, "0x"), "chan = %v, want %%+v fallback", rec["chan"])
 	})
 }
 
@@ -206,27 +216,30 @@ func TestScrubHandler_ZeroAttrAndNilValueAreUnchanged(t *testing.T) {
 	h := &ScrubHandler{}
 
 	t.Run("zero attr is unchanged", func(t *testing.T) {
+		must := require.New(t)
 		got := h.scrubAttrAndReport(slog.Attr{})
-		require.True(t, got.Equal(slog.Attr{}), "zero attr = %v, want it unchanged", got)
+		must.True(got.Equal(slog.Attr{}), "zero attr = %v, want it unchanged", got)
 	})
 
 	t.Run("nil value stays a nil any value", func(t *testing.T) {
+		must := require.New(t)
 		got := h.scrubAttrAndReport(slog.Any("k", nil))
-		require.Equal(t, "k", got.Key)
-		require.Equal(t, slog.KindAny, got.Value.Kind())
-		require.Nil(t, got.Value.Any())
+		must.Equal("k", got.Key)
+		must.Equal(slog.KindAny, got.Value.Kind())
+		must.Nil(got.Value.Any())
 	})
 
 	t.Run("record renders nil as JSON null and drops empty keys", func(t *testing.T) {
+		must := require.New(t)
 		var buf bytes.Buffer
 		logger := NewLogger("run-1", slog.LevelInfo, &buf)
 		logger.Info("m", slog.Attr{}, "nilval", nil)
 
 		var rec map[string]any
-		require.NoError(t, json.Unmarshal(buf.Bytes(), &rec), "record: %s", buf.String())
+		must.NoError(json.Unmarshal(buf.Bytes(), &rec), "record: %s", buf.String())
 		v, ok := rec["nilval"]
-		require.True(t, ok, "nilval is missing from the record")
-		require.Nil(t, v, "nilval should be JSON null")
-		require.NotContains(t, rec, "", "record has an empty-key attribute")
+		must.True(ok, "nilval is missing from the record")
+		must.Nil(v, "nilval should be JSON null")
+		must.NotContains(rec, "", "record has an empty-key attribute")
 	})
 }

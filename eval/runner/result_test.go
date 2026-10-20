@@ -29,17 +29,18 @@ func TestBuildResult_ErrorStatusIsTheErrorOutcome(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got := buildResult("t1", time.Now(), nil, tc.verdict, false)
-			require.Equal(t, tc.wantOutcome, got.Outcome)
-			require.Equal(t, tc.wantError, got.Error)
+			must.Equal(tc.wantOutcome, got.Outcome)
+			must.Equal(tc.wantError, got.Error)
 			if got.Outcome == "error" {
-				require.False(t, got.JudgeVerdict.Passed, "an error result must not report Passed")
+				must.False(got.JudgeVerdict.Passed, "an error result must not report Passed")
 			}
 
 			var junit bytes.Buffer
-			require.NoError(t, reporter.WriteJUnit(&junit, eval.SuiteResult{SuiteID: "s", Tasks: []eval.TaskResult{got}}))
+			must.NoError(reporter.WriteJUnit(&junit, eval.SuiteResult{SuiteID: "s", Tasks: []eval.TaskResult{got}}))
 			hasError := strings.Contains(junit.String(), "<error")
-			require.Equal(t, tc.wantOutcome == "error", hasError, "JUnit <error> element present for outcome %q:\n%s", tc.wantOutcome, junit.String())
+			must.Equal(tc.wantOutcome == "error", hasError, "JUnit <error> element present for outcome %q:\n%s", tc.wantOutcome, junit.String())
 		})
 	}
 }

@@ -30,17 +30,18 @@ func (c *chatEndSpy) StartChatSpan(parent context.Context, start trace.ChatSpanS
 }
 
 func TestLoop_FailedChatSpanEndsWithTheRequestSent(t *testing.T) {
+	must := require.New(t)
 	loop, _ := otelLoop(t, nil)
 	spy := &chatEndSpy{OTelTraceEmitter: loop.Trace.(*trace.OTelTraceEmitter)}
 	loop.Trace = spy
 	loop.Provider = &errorProvider{err: errSpanProbe}
 	_, _ = loop.Run(context.Background(), buildTestConfig())
 
-	require.Len(t, spy.ends, 1, "chat span should end exactly once")
+	must.Len(spy.ends, 1, "chat span should end exactly once")
 	end := spy.ends[0]
-	require.Equal(t, "provider_request_failed", end.ErrorType)
-	require.NotNil(t, end.Record, "failed span should record the request")
-	require.NotEmpty(t, end.Record.ModelInput.Messages, "recorded request should carry the messages that were sent")
-	require.NotEmpty(t, end.Record.ModelInput.Model, "recorded request should name the model")
-	require.Empty(t, end.Record.ModelOutput, "failed span should record no model output")
+	must.Equal("provider_request_failed", end.ErrorType)
+	must.NotNil(end.Record, "failed span should record the request")
+	must.NotEmpty(end.Record.ModelInput.Messages, "recorded request should carry the messages that were sent")
+	must.NotEmpty(end.Record.ModelInput.Model, "recorded request should name the model")
+	must.Empty(end.Record.ModelOutput, "failed span should record no model output")
 }

@@ -126,7 +126,8 @@ func awaitWarnings(t *testing.T, tr *cancellableTransport, n int) []types.Harnes
 
 func lastMessage(t *testing.T, params types.StreamParams) types.Message {
 	t.Helper()
-	require.NotEmpty(t, params.Messages, "provider call carried no messages")
+	must := require.New(t)
+	must.NotEmpty(params.Messages, "provider call carried no messages")
 	return params.Messages[len(params.Messages)-1]
 }
 
@@ -156,32 +157,33 @@ func userResponseGuardInputs(g *inputRecordingGuard) []guard.Input {
 }
 
 func TestUserInputQueue_OrderOverflowAndClear(t *testing.T) {
+	must := require.New(t)
 	q := newUserInputQueue()
 	for i := 1; i <= maxQueuedUserInput; i++ {
-		require.True(t, q.push(queuedUserInput{RequestID: fmt.Sprint(i), Text: fmt.Sprintf("m%d", i)}),
+		must.True(q.push(queuedUserInput{RequestID: fmt.Sprint(i), Text: fmt.Sprintf("m%d", i)}),
 			"push %d rejected below the cap", i)
 	}
-	require.False(t, q.push(queuedUserInput{RequestID: "overflow", Text: "one too many"}),
+	must.False(q.push(queuedUserInput{RequestID: "overflow", Text: "one too many"}),
 		"push beyond the cap was accepted")
-	require.True(t, takeNotifyToken(q), "notify carried no signal after pushes")
-	require.False(t, takeNotifyToken(q), "notify carried more than one pending signal")
+	must.True(takeNotifyToken(q), "notify carried no signal after pushes")
+	must.False(takeNotifyToken(q), "notify carried more than one pending signal")
 
 	first, ok := q.pop()
-	require.True(t, ok, "pop reported an empty queue")
-	require.Equal(t, "m1", first.Text, "pop should return the oldest item")
+	must.True(ok, "pop reported an empty queue")
+	must.Equal("m1", first.Text, "pop should return the oldest item")
 
 	rest := q.drain()
-	require.Len(t, rest, maxQueuedUserInput-1, "drain should return the remaining items")
-	require.Equal(t, "m2", rest[0].Text, "drain should keep arrival order")
-	require.Equal(t, fmt.Sprintf("m%d", maxQueuedUserInput), rest[len(rest)-1].Text,
+	must.Len(rest, maxQueuedUserInput-1, "drain should return the remaining items")
+	must.Equal("m2", rest[0].Text, "drain should keep arrival order")
+	must.Equal(fmt.Sprintf("m%d", maxQueuedUserInput), rest[len(rest)-1].Text,
 		"drain should end with the newest item")
 
 	_, ok = q.pop()
-	require.False(t, ok, "pop on an empty queue reported an item")
+	must.False(ok, "pop on an empty queue reported an item")
 
 	q.push(queuedUserInput{Text: "later"})
-	require.Equal(t, 1, q.clear(), "clear should drop the one queued item")
-	require.Zero(t, q.pending(), "clear should leave the queue empty")
+	must.Equal(1, q.clear(), "clear should drop the one queued item")
+	must.Zero(q.pending(), "clear should leave the queue empty")
 }
 
 func TestInjectUserInput_PlacementRules(t *testing.T) {
@@ -192,38 +194,42 @@ func TestInjectUserInput_PlacementRules(t *testing.T) {
 	}
 
 	t.Run("trailing user message keeps tool results first", func(t *testing.T) {
+		must := require.New(t)
 		got := injectUserInput(msgs, []string{"a", "b"})
-		require.Len(t, got, 3)
-		require.Equal(t, []string{"tool_result", "text"}, blockTypes(got[2]), "trailing message block order")
-		require.Equal(t, []string{"a\n\nb"}, textBlocks(got[2]), "inputs should be joined as arrival-ordered paragraphs")
+		must.Len(got, 3)
+		must.Equal([]string{"tool_result", "text"}, blockTypes(got[2]), "trailing message block order")
+		must.Equal([]string{"a\n\nb"}, textBlocks(got[2]), "inputs should be joined as arrival-ordered paragraphs")
 	})
 
 	t.Run("trailing text block is merged into", func(t *testing.T) {
+		must := require.New(t)
 		// Merged rather than appended, so no adapter receives two adjacent text parts.
 		got := injectUserInput(msgs[:1], []string{"c"})
-		require.Len(t, got, 1)
-		require.Equal(t, []string{"text"}, blockTypes(got[0]))
-		require.Equal(t, "prompt\n\nc", got[0].Content[0].Text)
+		must.Len(got, 1)
+		must.Equal([]string{"text"}, blockTypes(got[0]))
+		must.Equal("prompt\n\nc", got[0].Content[0].Text)
 	})
 
 	t.Run("after an assistant message starts a new user message", func(t *testing.T) {
+		must := require.New(t)
 		// Never two consecutive user messages.
 		got := injectUserInput(msgs[:2], []string{"d"})
-		require.Len(t, got, 3)
-		require.Equal(t, "user", got[2].Role)
-		require.Equal(t, []string{"d"}, textBlocks(got[2]))
+		must.Len(got, 3)
+		must.Equal("user", got[2].Role)
+		must.Equal([]string{"d"}, textBlocks(got[2]))
 	})
 
 	t.Run("harness-injected message is merged and unmarked", func(t *testing.T) {
+		must := require.New(t)
 		// Unmarked so compaction and the LLM judge keep the operator's words.
 		synthetic := []types.Message{
 			msgs[0], msgs[1],
 			{Role: "user", Synthetic: true, Content: []types.ContentBlock{{Type: "text", Text: "Verification failed."}}},
 		}
 		got := injectUserInput(synthetic, []string{"e"})
-		require.Len(t, got, 3)
-		require.False(t, got[2].Synthetic, "operator text must not stay marked synthetic")
-		require.Equal(t, "Verification failed.\n\ne", got[2].Content[0].Text)
+		must.Len(got, 3)
+		must.False(got[2].Synthetic, "operator text must not stay marked synthetic")
+		must.Equal("Verification failed.\n\ne", got[2].Content[0].Text)
 	})
 }
 
@@ -233,31 +239,34 @@ func TestInjectSyntheticUserText_PlacementRules(t *testing.T) {
 	results := types.Message{Role: "user", Content: []types.ContentBlock{{Type: "tool_result", ToolUseID: "c1", Content: "ok"}}}
 
 	t.Run("after an assistant message is a new synthetic user message", func(t *testing.T) {
+		must := require.New(t)
 		got := injectSyntheticUserText([]types.Message{prompt, assistant}, "nudge")
-		require.Len(t, got, 3)
-		require.Equal(t, "user", got[2].Role)
-		require.True(t, got[2].Synthetic)
-		require.Equal(t, []string{"nudge"}, textBlocks(got[2]))
+		must.Len(got, 3)
+		must.Equal("user", got[2].Role)
+		must.True(got[2].Synthetic)
+		must.Equal([]string{"nudge"}, textBlocks(got[2]))
 	})
 
 	t.Run("onto tool results is appended and stays unmarked", func(t *testing.T) {
+		must := require.New(t)
 		// Tool results are not harness-authored, so the message stays unmarked.
 		msgs := []types.Message{prompt, assistant, results}
 		got := injectSyntheticUserText(msgs, "nudge")
-		require.Len(t, got, 3)
-		require.False(t, got[2].Synthetic, "tool results should not be marked synthetic")
-		require.Equal(t, []string{"tool_result", "text"}, blockTypes(got[2]))
-		require.Len(t, msgs[2].Content, 1, "caller's history was mutated")
+		must.Len(got, 3)
+		must.False(got[2].Synthetic, "tool results should not be marked synthetic")
+		must.Equal([]string{"tool_result", "text"}, blockTypes(got[2]))
+		must.Len(msgs[2].Content, 1, "caller's history was mutated")
 	})
 
 	t.Run("harness-injected message is merged and stays synthetic", func(t *testing.T) {
+		must := require.New(t)
 		synthetic := []types.Message{prompt, assistant,
 			{Role: "user", Synthetic: true, Content: []types.ContentBlock{{Type: "text", Text: "Verification failed."}}},
 		}
 		got := injectSyntheticUserText(synthetic, "nudge")
-		require.Len(t, got, 3)
-		require.True(t, got[2].Synthetic)
-		require.Equal(t, "Verification failed.\n\nnudge", got[2].Content[0].Text)
+		must.Len(got, 3)
+		must.True(got[2].Synthetic)
+		must.Equal("Verification failed.\n\nnudge", got[2].Content[0].Text)
 	})
 }
 
@@ -266,28 +275,29 @@ func TestInjectSyntheticUserText_PlacementRules(t *testing.T) {
 // harmless miss, and two items pushed while idle need only one token
 // to be consumed in order.
 func TestUserInputQueue_NotifyTokenAccounting(t *testing.T) {
+	must := require.New(t)
 	q := newUserInputQueue()
 
 	// Stale token: pushed, then drained by an active run before the
 	// idle consumer woke. The consumer must see an empty pop, not block.
 	q.push(queuedUserInput{Text: "drained by the run"})
 	q.drain()
-	require.True(t, takeNotifyToken(q), "no token after a push")
+	must.True(takeNotifyToken(q), "no token after a push")
 	_, ok := q.pop()
-	require.False(t, ok, "stale token yielded an item")
+	must.False(ok, "stale token yielded an item")
 
 	// Two items while idle: one token wakes the consumer; the second
 	// item is still there for the run's first drain (or the next pop).
 	q.push(queuedUserInput{Text: "first"})
 	q.push(queuedUserInput{Text: "second"})
-	require.True(t, takeNotifyToken(q), "no token after two pushes")
+	must.True(takeNotifyToken(q), "no token after two pushes")
 	first, ok := q.pop()
-	require.True(t, ok, "pop reported an empty queue")
-	require.Equal(t, "first", first.Text, "pop should return the oldest item")
+	must.True(ok, "pop reported an empty queue")
+	must.Equal("first", first.Text, "pop should return the oldest item")
 	rest := q.drain()
-	require.Len(t, rest, 1, "drain should return the second item")
-	require.Equal(t, "second", rest[0].Text)
-	require.False(t, takeNotifyToken(q), "a second token was queued for the second push")
+	must.Len(rest, 1, "drain should return the second item")
+	must.Equal("second", rest[0].Text)
+	must.False(takeNotifyToken(q), "a second token was queued for the second push")
 }
 
 // TestLoop_UserResponseBeforeFirstProviderCallJoinsPrompt covers input
@@ -295,21 +305,22 @@ func TestUserInputQueue_NotifyTokenAccounting(t *testing.T) {
 // (component construction, hooks, git setup): it rides along with the
 // prompt on turn 0.
 func TestLoop_UserResponseBeforeFirstProviderCallJoinsPrompt(t *testing.T) {
+	must := require.New(t)
 	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptEndTurn}}
 	loop, tr := buildUserInputTestLoop(prov)
 	tr.FireControl(userResponse("Also add tests.", "r1"))
 
 	rt, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "success", rt.Outcome)
+	must.NoError(err)
+	must.Equal("success", rt.Outcome)
 
 	calls := prov.params()
-	require.Len(t, calls, 1, "input should join turn 0 with no extra turn")
+	must.Len(calls, 1, "input should join turn 0 with no extra turn")
 	first := calls[0].Messages[0]
-	require.Equal(t, "user", first.Role)
-	require.Equal(t, []string{"Hello, write a test file.\n\nAlso add tests."}, textBlocks(first),
+	must.Equal("user", first.Role)
+	must.Equal([]string{"Hello, write a test file.\n\nAlso add tests."}, textBlocks(first),
 		"turn-0 user message should be the prompt followed by the injected text")
-	require.Empty(t, warningEvents(tr), "unexpected warnings")
+	must.Empty(warningEvents(tr), "unexpected warnings")
 }
 
 // TestLoop_UserResponseDuringStreamFollowsToolResults covers arrival
@@ -317,6 +328,7 @@ func TestLoop_UserResponseBeforeFirstProviderCallJoinsPrompt(t *testing.T) {
 // turn boundary, after that turn's tool results and before the next
 // model call.
 func TestLoop_UserResponseDuringStreamFollowsToolResults(t *testing.T) {
+	must := require.New(t)
 	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptCallTestTool, scriptEndTurn}}
 	loop, tr := buildUserInputTestLoop(prov)
 	prov.onCall = func(i int) {
@@ -326,20 +338,21 @@ func TestLoop_UserResponseDuringStreamFollowsToolResults(t *testing.T) {
 	}
 
 	rt, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "success", rt.Outcome)
+	must.NoError(err)
+	must.Equal("success", rt.Outcome)
 
 	calls := prov.params()
-	require.Len(t, calls, 2)
+	must.Len(calls, 2)
 	last := lastMessage(t, calls[1])
-	require.Equal(t, "user", last.Role, "turn-1 trailing message role")
-	require.Equal(t, []string{"tool_result", "text"}, blockTypes(last), "turn-1 trailing message blocks")
-	require.Equal(t, "Focus on the parser.", strings.Join(textBlocks(last), ""), "injected text")
+	must.Equal("user", last.Role, "turn-1 trailing message role")
+	must.Equal([]string{"tool_result", "text"}, blockTypes(last), "turn-1 trailing message blocks")
+	must.Equal("Focus on the parser.", strings.Join(textBlocks(last), ""), "injected text")
 }
 
 // TestLoop_UserResponseDuringToolDispatchFollowsToolResults covers
 // arrival while a tool is executing.
 func TestLoop_UserResponseDuringToolDispatchFollowsToolResults(t *testing.T) {
+	must := require.New(t)
 	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptCallTestTool, scriptEndTurn}}
 	loop, tr := buildUserInputTestLoop(prov)
 	registry := tool.NewRegistry()
@@ -355,20 +368,21 @@ func TestLoop_UserResponseDuringToolDispatchFollowsToolResults(t *testing.T) {
 	loop.Tools = registry
 
 	rt, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "success", rt.Outcome)
+	must.NoError(err)
+	must.Equal("success", rt.Outcome)
 
 	calls := prov.params()
-	require.Len(t, calls, 2)
+	must.Len(calls, 2)
 	last := lastMessage(t, calls[1])
-	require.Equal(t, []string{"tool_result", "text"}, blockTypes(last), "turn-1 trailing message blocks")
-	require.Equal(t, "Skip the docs.", strings.Join(textBlocks(last), ""), "injected text")
+	must.Equal([]string{"tool_result", "text"}, blockTypes(last), "turn-1 trailing message blocks")
+	must.Equal("Skip the docs.", strings.Join(textBlocks(last), ""), "injected text")
 }
 
 // TestLoop_EndTurnWithQueuedInputContinuesRun pins that the run does not
 // end while unconsumed operator input exists: an end_turn with input
 // queued becomes another turn whose user message is that input.
 func TestLoop_EndTurnWithQueuedInputContinuesRun(t *testing.T) {
+	must := require.New(t)
 	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptEndTurn, scriptEndTurn}}
 	loop, tr := buildUserInputTestLoop(prov)
 	prov.onCall = func(i int) {
@@ -378,17 +392,17 @@ func TestLoop_EndTurnWithQueuedInputContinuesRun(t *testing.T) {
 	}
 
 	rt, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "success", rt.Outcome)
+	must.NoError(err)
+	must.Equal("success", rt.Outcome)
 
 	calls := prov.params()
-	require.Len(t, calls, 2, "end_turn should continue with the queued input")
+	must.Len(calls, 2, "end_turn should continue with the queued input")
 	msgs := calls[1].Messages
-	require.Len(t, msgs, 3, "turn-1 history")
-	require.Equal(t, "assistant", msgs[1].Role, "turn-1 history role at index 1")
-	require.Equal(t, "user", msgs[2].Role, "turn-1 history role at index 2")
-	require.Equal(t, "One more thing.", strings.Join(textBlocks(msgs[2]), ""), "turn-1 user message")
-	require.Zero(t, loop.userInput.pending(), "inputs left queued after the run")
+	must.Len(msgs, 3, "turn-1 history")
+	must.Equal("assistant", msgs[1].Role, "turn-1 history role at index 1")
+	must.Equal("user", msgs[2].Role, "turn-1 history role at index 2")
+	must.Equal("One more thing.", strings.Join(textBlocks(msgs[2]), ""), "turn-1 user message")
+	must.Zero(loop.userInput.pending(), "inputs left queued after the run")
 }
 
 func rolesOf(msgs []types.Message) []string {
@@ -403,6 +417,7 @@ func rolesOf(msgs []types.Message) []string {
 // queue: the event beyond the cap is rejected with a warning that
 // echoes its requestId, and every accepted event is injected in order.
 func TestLoop_UserResponseOverflowIsReportedNotSilent(t *testing.T) {
+	must := require.New(t)
 	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptEndTurn}}
 	loop, tr := buildUserInputTestLoop(prov)
 	for i := 1; i <= maxQueuedUserInput+1; i++ {
@@ -410,20 +425,20 @@ func TestLoop_UserResponseOverflowIsReportedNotSilent(t *testing.T) {
 	}
 
 	w := awaitWarnings(t, tr, 1)
-	require.Len(t, w, 1, "want exactly one warning for the overflow, got %+v", w)
-	require.Equal(t, fmt.Sprintf("r%d", maxQueuedUserInput+1), w[0].RequestID,
+	must.Len(w, 1, "want exactly one warning for the overflow, got %+v", w)
+	must.Equal(fmt.Sprintf("r%d", maxQueuedUserInput+1), w[0].RequestID,
 		"warning should echo the rejected event's requestId")
-	require.Contains(t, w[0].Message, "queue full", "warning should name the reason")
+	must.Contains(w[0].Message, "queue full", "warning should name the reason")
 
 	_, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
+	must.NoError(err)
 
 	texts := textBlocks(prov.params()[0].Messages[0])
-	require.Len(t, texts, 1, "turn-0 should carry one merged text block")
+	must.Len(texts, 1, "turn-0 should carry one merged text block")
 	paragraphs := strings.Split(texts[0], "\n\n")
-	require.Len(t, paragraphs, 1+maxQueuedUserInput, "turn-0 should hold the prompt plus the accepted inputs")
-	require.Equal(t, "message 1", paragraphs[1], "accepted inputs out of order")
-	require.Equal(t, fmt.Sprintf("message %d", maxQueuedUserInput), paragraphs[len(paragraphs)-1],
+	must.Len(paragraphs, 1+maxQueuedUserInput, "turn-0 should hold the prompt plus the accepted inputs")
+	must.Equal("message 1", paragraphs[1], "accepted inputs out of order")
+	must.Equal(fmt.Sprintf("message %d", maxQueuedUserInput), paragraphs[len(paragraphs)-1],
 		"accepted inputs truncated")
 }
 
@@ -431,6 +446,7 @@ func TestLoop_UserResponseOverflowIsReportedNotSilent(t *testing.T) {
 // queued input: the run ends cancelled and nothing queued is injected
 // or retained.
 func TestLoop_CancelDiscardsQueuedUserInput(t *testing.T) {
+	must := require.New(t)
 	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptEndTurn}}
 	loop, tr := buildUserInputTestLoop(prov)
 	prov.onCall = func(i int) {
@@ -441,20 +457,21 @@ func TestLoop_CancelDiscardsQueuedUserInput(t *testing.T) {
 	}
 
 	rt, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "cancelled", rt.Outcome)
-	require.Len(t, prov.params(), 1, "queued input must not start another turn")
-	require.Zero(t, loop.userInput.pending(), "inputs survived the cancel")
+	must.NoError(err)
+	must.Equal("cancelled", rt.Outcome)
+	must.Len(prov.params(), 1, "queued input must not start another turn")
+	must.Zero(loop.userInput.pending(), "inputs survived the cancel")
 }
 
 func TestLoop_EmptyUserResponseIsRejectedWithWarning(t *testing.T) {
+	must := require.New(t)
 	loop, tr := buildUserInputTestLoop(&recordingScriptProvider{script: [][]types.StreamEvent{scriptEndTurn}})
 	tr.FireControl(userResponse("   ", "r-empty"))
 
 	w := awaitWarnings(t, tr, 1)
-	require.Len(t, w, 1, "want one warning, got %+v", w)
-	require.Equal(t, "r-empty", w[0].RequestID, "warning should echo the rejected requestId")
-	require.Zero(t, loop.userInput.pending(), "an empty user_response was queued")
+	must.Len(w, 1, "want one warning, got %+v", w)
+	must.Equal("r-empty", w[0].RequestID, "warning should echo the rejected requestId")
+	must.Zero(loop.userInput.pending(), "an empty user_response was queued")
 }
 
 // TestLoop_UserResponseIsSanitizedLikeDynamicContext pins the shared
@@ -463,6 +480,7 @@ func TestLoop_EmptyUserResponseIsRejectedWithWarning(t *testing.T) {
 // echoing the requestId, and a message that is nothing but markup is
 // rejected rather than queued empty.
 func TestLoop_UserResponseIsSanitizedLikeDynamicContext(t *testing.T) {
+	must := require.New(t)
 	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptEndTurn}}
 	loop, tr := buildUserInputTestLoop(prov)
 
@@ -473,27 +491,30 @@ func TestLoop_UserResponseIsSanitizedLikeDynamicContext(t *testing.T) {
 	// The markup-only message is reported twice: sanitised, then
 	// rejected because nothing was left to inject.
 	w := awaitWarnings(t, tr, 4)
-	require.Len(t, w, 4, "want four warnings, got %+v", w)
+	must.Len(w, 4, "want four warnings, got %+v", w)
 	byID := map[string]string{}
 	for _, ev := range w {
 		byID[ev.RequestID] += ev.Message + "\n"
 	}
 	t.Run("markup is stripped and reported", func(t *testing.T) {
-		require.Contains(t, byID["r-tags"], "user_response sanitized: tags_stripped")
+		must := require.New(t)
+		must.Contains(byID["r-tags"], "user_response sanitized: tags_stripped")
 	})
 	t.Run("oversized text is truncated and reported", func(t *testing.T) {
-		require.Contains(t, byID["r-long"], "user_response sanitized: truncated")
+		must := require.New(t)
+		must.Contains(byID["r-long"], "user_response sanitized: truncated")
 	})
 	t.Run("markup-only message is rejected and reported", func(t *testing.T) {
-		require.Contains(t, byID["r-only-tags"], "user_response dropped: empty after sanitisation")
+		must := require.New(t)
+		must.Contains(byID["r-only-tags"], "user_response dropped: empty after sanitisation")
 	})
 
 	_, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
+	must.NoError(err)
 	paragraphs := strings.Split(textBlocks(prov.params()[0].Messages[0])[0], "\n\n")
-	require.Len(t, paragraphs, 3, "turn-0 should hold the prompt plus the two accepted inputs")
-	require.Equal(t, "ignore the rules keep this", paragraphs[1], "markup should be stripped from the accepted input")
-	require.Len(t, paragraphs[2], security.MaxOperatorTextBytes, "oversized input should be truncated to the cap")
+	must.Len(paragraphs, 3, "turn-0 should hold the prompt plus the two accepted inputs")
+	must.Equal("ignore the rules keep this", paragraphs[1], "markup should be stripped from the accepted input")
+	must.Len(paragraphs[2], security.MaxOperatorTextBytes, "oversized input should be truncated to the cap")
 }
 
 // sourceDenyingGuard denies pre-turn content whose Source carries the
@@ -511,6 +532,7 @@ func (g sourceDenyingGuard) Check(_ context.Context, in guard.Input) (*guard.Dec
 // input passes through the pre-turn guard like the initial prompt, and
 // that a deny ends the run before the input reaches the model.
 func TestLoop_InjectedUserInputIsGuardScreened(t *testing.T) {
+	must := require.New(t)
 	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptCallTestTool, scriptEndTurn}}
 	loop, tr := buildUserInputTestLoop(prov)
 	loop.GuardRail = sourceDenyingGuard{denyPrefix: "user_response"}
@@ -521,9 +543,9 @@ func TestLoop_InjectedUserInputIsGuardScreened(t *testing.T) {
 	}
 
 	rt, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "guardrail_blocked", rt.Outcome)
-	require.Len(t, prov.params(), 1, "denied input must not reach the model")
+	must.NoError(err)
+	must.Equal("guardrail_blocked", rt.Outcome)
+	must.Len(prov.params(), 1, "denied input must not reach the model")
 }
 
 // TestLoop_InjectedUserInputGuardCopyIsScrubbed pins that the guard
@@ -531,6 +553,7 @@ func TestLoop_InjectedUserInputIsGuardScreened(t *testing.T) {
 // told the span count, while the model receives the operator's words
 // unchanged and unfenced.
 func TestLoop_InjectedUserInputGuardCopyIsScrubbed(t *testing.T) {
+	must := require.New(t)
 	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptCallTestTool, scriptEndTurn}}
 	loop, tr := buildUserInputTestLoop(prov)
 	g := &inputRecordingGuard{}
@@ -543,25 +566,26 @@ func TestLoop_InjectedUserInputGuardCopyIsScrubbed(t *testing.T) {
 	}
 
 	_, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
+	must.NoError(err)
 
 	screened := userResponseGuardInputs(g)
-	require.Len(t, screened, 1, "user_response guard inputs")
-	require.NotContains(t, screened[0].Content, fakeAnthropicKey, "guard input should not carry the key")
-	require.Contains(t, screened[0].Content, "[REDACTED]", "guard input should show the scrubbed key")
-	require.Equal(t, "1", screened[0].Metadata[guard.MetadataRedactedSpans], "redacted span count")
+	must.Len(screened, 1, "user_response guard inputs")
+	must.NotContains(screened[0].Content, fakeAnthropicKey, "guard input should not carry the key")
+	must.Contains(screened[0].Content, "[REDACTED]", "guard input should show the scrubbed key")
+	must.Equal("1", screened[0].Metadata[guard.MetadataRedactedSpans], "redacted span count")
 
 	calls := prov.params()
-	require.GreaterOrEqual(t, len(calls), 2, "the reply should reach a second turn")
+	must.GreaterOrEqual(len(calls), 2, "the reply should reach a second turn")
 	texts := textBlocks(lastMessage(t, calls[1]))
-	require.NotEmpty(t, texts, "the second turn should carry user text")
-	require.Contains(t, texts[len(texts)-1], reply, "model should receive the operator's reply verbatim")
+	must.NotEmpty(texts, "the second turn should carry user text")
+	must.Contains(texts[len(texts)-1], reply, "model should receive the operator's reply verbatim")
 }
 
 // TestLoop_InjectedUserInputsGuardCopyKeepsOrder pins that two
 // user_response inputs absorbed together reach the guard as chunks in
 // arrival order, only the one with a secret scrubbed, and counted once.
 func TestLoop_InjectedUserInputsGuardCopyKeepsOrder(t *testing.T) {
+	must := require.New(t)
 	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptCallTestTool, scriptEndTurn}}
 	loop, tr := buildUserInputTestLoop(prov)
 	g := &inputRecordingGuard{}
@@ -574,11 +598,11 @@ func TestLoop_InjectedUserInputsGuardCopyKeepsOrder(t *testing.T) {
 	}
 
 	_, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
+	must.NoError(err)
 
 	screened := userResponseGuardInputs(g)
-	require.Len(t, screened, 1, "both inputs should be screened together once")
+	must.Len(screened, 1, "both inputs should be screened together once")
 	want := batchUntrustedChunks([]string{"first, nothing secret", "second, key [REDACTED]"})
-	require.Equal(t, want, screened[0].Content, "chunks should keep arrival order")
-	require.Equal(t, "1", screened[0].Metadata[guard.MetadataRedactedSpans], "redacted span count")
+	must.Equal(want, screened[0].Content, "chunks should keep arrival order")
+	must.Equal("1", screened[0].Metadata[guard.MetadataRedactedSpans], "redacted span count")
 }

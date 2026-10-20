@@ -81,34 +81,35 @@ func TestStructuredEnvelopes_WireViewKeepsEveryNonBodyField(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.kind, func(t *testing.T) {
+			must := require.New(t)
 			full, err := json.Marshal(tt.payload)
-			require.NoError(t, err, "marshal payload")
+			must.NoError(err, "marshal payload")
 			wire := types.ToolResultWireEnvelope(types.ContentBlock{
 				Type: "tool_result", Content: "text rendering", Kind: tt.kind, Structured: full,
 			})
 
 			var fullFields, wireFields map[string]json.RawMessage
-			require.NoError(t, json.Unmarshal(full, &fullFields), "decode full envelope")
-			require.NoError(t, json.Unmarshal(wire, &wireFields), "decode wire view %s", wire)
+			must.NoError(json.Unmarshal(full, &fullFields), "decode full envelope")
+			must.NoError(json.Unmarshal(wire, &wireFields), "decode wire view %s", wire)
 
 			for _, name := range jsonFieldNames(tt.payload) {
-				require.Contains(t, fullFields, name,
+				must.Contains(fullFields, name,
 					"fixture leaves field %q unset, so the wire view is not checked for it", name)
 			}
 
 			isBody := map[string]bool{}
 			for _, k := range tt.body {
 				isBody[k] = true
-				require.Contains(t, fullFields, k, "body field %q is not in the full envelope", k)
+				must.Contains(fullFields, k, "body field %q is not in the full envelope", k)
 			}
 			for k, v := range fullFields {
 				got, ok := wireFields[k]
 				if isBody[k] {
-					require.False(t, ok, "body field %q reached the wire view", k)
+					must.False(ok, "body field %q reached the wire view", k)
 					continue
 				}
-				require.True(t, ok, "field %q is missing from the wire view %s", k, wire)
-				require.Equal(t, string(v), string(got), "field %q on the wire", k)
+				must.True(ok, "field %q is missing from the wire view %s", k, wire)
+				must.Equal(string(v), string(got), "field %q on the wire", k)
 			}
 
 			isDerived := map[string]bool{}
@@ -119,7 +120,7 @@ func TestStructuredEnvelopes_WireViewKeepsEveryNonBodyField(t *testing.T) {
 				if isDerived[k] {
 					continue
 				}
-				require.Contains(t, fullFields, k, "wire view has field %q the envelope lacks", k)
+				must.Contains(fullFields, k, "wire view has field %q the envelope lacks", k)
 			}
 		})
 	}

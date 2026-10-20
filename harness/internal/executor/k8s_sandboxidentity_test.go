@@ -20,6 +20,7 @@ import (
 // in place, and the workspace-scoped file API cannot reach it. Gated on
 // STIRRUP_TEST_KUBECONFIG like the rest of this suite.
 func TestK8sSandboxIdentityToken_RoundTrip(t *testing.T) {
+	must := require.New(t)
 	cfg := testK8sEnv(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -33,7 +34,7 @@ func TestK8sSandboxIdentityToken_RoundTrip(t *testing.T) {
 		Network:              &types.NetworkConfig{Mode: "none"},
 		SandboxIdentityToken: true,
 	})
-	require.NoError(t, err, "NewK8sExecutor")
+	must.NoError(err, "NewK8sExecutor")
 	t.Cleanup(func() { _ = exec.Close() })
 
 	const (
@@ -41,28 +42,28 @@ func TestK8sSandboxIdentityToken_RoundTrip(t *testing.T) {
 		second = "eyJhbGciOiJFUzI1NiJ9.second-token-payload.sig"
 	)
 	for i, token := range []string{first, second} {
-		require.NoError(t, exec.WriteSandboxIdentityToken(ctx, token), "WriteSandboxIdentityToken #%d", i+1)
+		must.NoError(exec.WriteSandboxIdentityToken(ctx, token), "WriteSandboxIdentityToken #%d", i+1)
 		res, err := exec.Exec(ctx, "cat "+SandboxIdentityTokenPath, 30*time.Second)
-		require.NoError(t, err, "cat token #%d", i+1)
-		require.Equal(t, token, res.Stdout, "token file after delivery #%d (stderr %q)", i+1, res.Stderr)
+		must.NoError(err, "cat token #%d", i+1)
+		must.Equal(token, res.Stdout, "token file after delivery #%d (stderr %q)", i+1, res.Stderr)
 	}
 
 	res, err := exec.Exec(ctx, "stat -c '%a %u' "+SandboxIdentityTokenPath+" && ls -A "+SandboxIdentityTokenDir, 30*time.Second)
-	require.NoError(t, err, "stat token")
+	must.NoError(err, "stat token")
 	lines := strings.Split(strings.TrimSpace(res.Stdout), "\n")
-	require.GreaterOrEqual(t, len(lines), 2, "stat output %q", res.Stdout)
-	require.Equal(t, "600 65532", lines[0], "token file mode and uid (output %q)", res.Stdout)
-	require.NotContains(t, res.Stdout, ".token.tmp", "staging file left behind after rename")
+	must.GreaterOrEqual(len(lines), 2, "stat output %q", res.Stdout)
+	must.Equal("600 65532", lines[0], "token file mode and uid (output %q)", res.Stdout)
+	must.NotContains(res.Stdout, ".token.tmp", "staging file left behind after rename")
 
 	_, err = exec.ReadFile(ctx, SandboxIdentityTokenPath)
-	require.Error(t, err, "ReadFile reached the token through the workspace-scoped file API")
+	must.Error(err, "ReadFile reached the token through the workspace-scoped file API")
 
 	// A symlink committed into the workspace must not reach the token
 	// either, whether it names the file or a directory above it.
 	setup := "ln -sf " + SandboxIdentityTokenPath + " /workspace/link && ln -sf " + SandboxIdentityTokenDir + " /workspace/dirlink"
 	res, err = exec.Exec(ctx, setup, 30*time.Second)
-	require.NoError(t, err, "symlink setup")
-	require.Zero(t, res.ExitCode, "symlink setup result %+v", res)
+	must.NoError(err, "symlink setup")
+	must.Zero(res.ExitCode, "symlink setup result %+v", res)
 
 	for _, tc := range []struct {
 		name  string
@@ -72,9 +73,10 @@ func TestK8sSandboxIdentityToken_RoundTrip(t *testing.T) {
 		{name: "directory symlink", probe: "dirlink/token"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			content, err := exec.ReadFile(ctx, tc.probe)
-			require.ErrorContains(t, err, "escapes workspace", "ReadFile(%s) returned content %q", tc.probe, content)
-			require.NotContains(t, content, second, "ReadFile(%s) disclosed the token", tc.probe)
+			must.ErrorContains(err, "escapes workspace", "ReadFile(%s) returned content %q", tc.probe, content)
+			must.NotContains(content, second, "ReadFile(%s) disclosed the token", tc.probe)
 		})
 	}
 }

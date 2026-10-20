@@ -63,6 +63,8 @@ func (p *blockingProvider) Stream(ctx context.Context, _ types.StreamParams) (<-
 }
 
 func TestRun_ControlStreamLostDuringProviderCallCancelsRun(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := newBlockingProvider()
 	tr := &cancellableTransport{}
 	loop := buildTestLoop(nil)
@@ -81,20 +83,22 @@ func TestRun_ControlStreamLostDuringProviderCallCancelsRun(t *testing.T) {
 
 	start := time.Now()
 	rt, err := loop.Run(context.Background(), exportConfig(nil))
-	require.NoError(t, err)
-	require.Equal(t, "control_stream_lost", rt.Outcome)
-	assert.Equal(t, int32(1), prov.calls.Load(), "no model request may follow the loss")
-	assert.Zero(t, toolCalls.Load(), "no tool may run after the loss")
-	assert.Contains(t, rt.Error, "control stream lost", "RunTrace.Error should describe the loss")
-	assert.Contains(t, rt.Error, transport.ErrPeerEndedStream.Error(), "RunTrace.Error should include the loss cause")
+	must.NoError(err)
+	must.Equal("control_stream_lost", rt.Outcome)
+	check.Equal(int32(1), prov.calls.Load(), "no model request may follow the loss")
+	check.Zero(toolCalls.Load(), "no tool may run after the loss")
+	check.Contains(rt.Error, "control stream lost", "RunTrace.Error should describe the loss")
+	check.Contains(rt.Error, transport.ErrPeerEndedStream.Error(), "RunTrace.Error should include the loss cause")
 	assertDoneStopReason(t, tr, "control_stream_lost")
 	assertLiveDetached(t, "git finalise", git.observed(), gitFinaliseBudget, start)
 	calls, obs := handoff.observed()
-	require.Equal(t, 1, calls, "workspace handoff calls")
+	must.Equal(1, calls, "workspace handoff calls")
 	assertLiveDetached(t, "workspace handoff", obs, handoffBudget, start)
 }
 
 func TestRun_ControlStreamLostBeforeInFlightResponseSkipsItsTools(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptCallTestTool, scriptEndTurn}}
 	loop, tr := buildUserInputTestLoop(prov)
 	toolCalls := countingTool(loop)
@@ -105,14 +109,16 @@ func TestRun_ControlStreamLostBeforeInFlightResponseSkipsItsTools(t *testing.T) 
 	}
 
 	rt, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "control_stream_lost", rt.Outcome)
-	assert.Zero(t, toolCalls.Load(), "no tool from the in-flight response may run")
-	assert.Len(t, prov.params(), 1, "only the in-flight response may reach the provider")
+	must.NoError(err)
+	must.Equal("control_stream_lost", rt.Outcome)
+	check.Zero(toolCalls.Load(), "no tool from the in-flight response may run")
+	check.Len(prov.params(), 1, "only the in-flight response may reach the provider")
 	assertDoneStopReason(t, tr, "control_stream_lost")
 }
 
 func TestRun_ControlStreamLostDuringToolCallCancelsTheTool(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptCallTestTool, scriptEndTurn}}
 	loop, tr := buildUserInputTestLoop(prov)
 	var sawCancel atomic.Bool
@@ -134,22 +140,23 @@ func TestRun_ControlStreamLostDuringToolCallCancelsTheTool(t *testing.T) {
 	loop.Tools = registry
 
 	rt, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	assert.True(t, sawCancel.Load(), "the loss must cancel the tool handler's context")
-	require.Equal(t, "control_stream_lost", rt.Outcome)
-	assert.Len(t, prov.params(), 1, "no model request may follow the loss")
+	must.NoError(err)
+	check.True(sawCancel.Load(), "the loss must cancel the tool handler's context")
+	must.Equal("control_stream_lost", rt.Outcome)
+	check.Len(prov.params(), 1, "no model request may follow the loss")
 	assertDoneStopReason(t, tr, "control_stream_lost")
 }
 
 func TestRun_ControlStreamLostBeforeStartCancelsRunWithoutProviderCall(t *testing.T) {
+	must := require.New(t)
 	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptEndTurn}}
 	loop, _ := buildUserInputTestLoop(prov)
 	loop.ControlStreamLost(transport.ErrPeerEndedStream)
 
 	rt, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "control_stream_lost", rt.Outcome)
-	require.Empty(t, prov.params(), "the provider must not be called after a pre-run loss")
+	must.NoError(err)
+	must.Equal("control_stream_lost", rt.Outcome)
+	must.Empty(prov.params(), "the provider must not be called after a pre-run loss")
 }
 
 // ctxHonouringGit fails Setup once its context has ended, as a strategy
@@ -175,38 +182,42 @@ func TestRun_ControlStreamLostBeforeSetupStepsReportsTheLoss(t *testing.T) {
 		"prompt build": func(l *AgenticLoop) { l.Prompt = ctxHonouringPrompt{} },
 	} {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptEndTurn}}
 			loop, tr := buildUserInputTestLoop(prov)
 			configure(loop)
 			loop.ControlStreamLost(transport.ErrPeerEndedStream)
 
 			rt, _ := loop.Run(context.Background(), buildTestConfig())
-			require.NotNil(t, rt, "Run returned no trace")
-			require.Equal(t, "control_stream_lost", rt.Outcome, "run error: %q", rt.Error)
+			must.NotNil(rt, "Run returned no trace")
+			must.Equal("control_stream_lost", rt.Outcome, "run error: %q", rt.Error)
 			assertDoneStopReason(t, tr, "control_stream_lost")
 		})
 	}
 }
 
 func TestRun_ControlPlaneCancelOutranksALaterStreamLoss(t *testing.T) {
+	must := require.New(t)
 	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptEndTurn}}
 	loop, tr := buildUserInputTestLoop(prov)
 	tr.FireControl(types.ControlEvent{Type: "cancel"})
 	loop.ControlStreamLost(transport.ErrPeerEndedStream)
 
 	rt, err := loop.Run(context.Background(), buildTestConfig())
-	require.NoError(t, err)
-	require.Equal(t, "cancelled", rt.Outcome, "the control plane asked first")
+	must.NoError(err)
+	must.Equal("cancelled", rt.Outcome, "the control plane asked first")
 }
 
 func TestControlStreamLost_ClosesIdleFollowUpWindow(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptEndTurn}}
 	loop, tr := buildUserInputTestLoop(prov)
 	config := buildTestConfig()
 
 	rt, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	require.Equal(t, "success", rt.Outcome)
+	must.NoError(err)
+	must.Equal("success", rt.Outcome)
 
 	followUps := 0
 	done := make(chan struct{})
@@ -221,20 +232,21 @@ func TestControlStreamLost_ClosesIdleFollowUpWindow(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
-		require.Fail(t, "follow-up window stayed open after the control stream ended")
+		must.Fail("follow-up window stayed open after the control stream ended")
 	}
-	assert.Zero(t, followUps, "no follow-up run may start after the loss")
-	assert.Len(t, prov.params(), 1, "only the primary run may reach the provider")
+	check.Zero(followUps, "no follow-up run may start after the loss")
+	check.Len(prov.params(), 1, "only the primary run may reach the provider")
 	var dones int
 	for _, ev := range tr.Events() {
 		if ev.Type == "done" {
 			dones++
 		}
 	}
-	assert.Equal(t, 1, dones, "an idle loss emits no extra done")
+	check.Equal(1, dones, "an idle loss emits no extra done")
 }
 
 func TestControlStreamLost_DuringFollowUpRunCancelsRun(t *testing.T) {
+	must := require.New(t)
 	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptEndTurn}}
 	loop, tr := buildUserInputTestLoop(prov)
 	prov.onCall = func(i int) {
@@ -256,9 +268,9 @@ func TestControlStreamLost_DuringFollowUpRunCancelsRun(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
-		require.Fail(t, "follow-up window stayed open after a loss during the follow-up run")
+		must.Fail("follow-up window stayed open after a loss during the follow-up run")
 	}
-	require.Equal(t, "control_stream_lost", outcome, "follow-up run outcome")
+	must.Equal("control_stream_lost", outcome, "follow-up run outcome")
 }
 
 // levelCounter is a slog.Handler that counts records by level and
@@ -294,6 +306,8 @@ func (h *levelCounter) count(level slog.Level) int {
 }
 
 func TestLogEmitFailure_OneWarningAfterStreamLoss(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	loop, _ := buildUserInputTestLoop(&recordingScriptProvider{script: [][]types.StreamEvent{scriptEndTurn}})
 	logs := newLevelCounter("transport emit failed")
 	loop.Logger = slog.New(logs)
@@ -301,14 +315,14 @@ func TestLogEmitFailure_OneWarningAfterStreamLoss(t *testing.T) {
 
 	loop.logEmitFailure("text_delta", emitErr)
 	loop.logEmitFailure("text_delta", emitErr)
-	require.Equal(t, 2, logs.count(slog.LevelWarn), "a live stream reports every failure")
+	must.Equal(2, logs.count(slog.LevelWarn), "a live stream reports every failure")
 
 	loop.ControlStreamLost(transport.ErrPeerEndedStream)
 	for range 5 {
 		loop.logEmitFailure("tool_result", emitErr)
 	}
-	assert.Equal(t, 3, logs.count(slog.LevelWarn), "only the first failure after the loss warns")
-	assert.Equal(t, 4, logs.count(slog.LevelDebug), "the four failures after the first log at debug")
+	check.Equal(3, logs.count(slog.LevelWarn), "only the first failure after the loss warns")
+	check.Equal(4, logs.count(slog.LevelDebug), "the four failures after the first log at debug")
 }
 
 // failingTransport rejects every Emit.
@@ -323,6 +337,7 @@ func (t *failingTransport) Emit(types.HarnessEvent) error {
 }
 
 func TestStartHeartbeat_LogsOnlyTheFirstFailure(t *testing.T) {
+	must := require.New(t)
 	tr := &failingTransport{}
 	loop := buildTestLoop(nil)
 	loop.Transport = tr
@@ -331,8 +346,8 @@ func TestStartHeartbeat_LogsOnlyTheFirstFailure(t *testing.T) {
 
 	stop := loop.startHeartbeat(context.Background(), time.Millisecond)
 	t.Cleanup(stop)
-	require.Eventually(t, func() bool { return tr.attempts.Load() >= 5 }, 5*time.Second, time.Millisecond, "heartbeat did not tick")
+	must.Eventually(func() bool { return tr.attempts.Load() >= 5 }, 5*time.Second, time.Millisecond, "heartbeat did not tick")
 	stop()
 
-	require.Equal(t, 1, logs.count(slog.LevelWarn)+logs.count(slog.LevelDebug), "heartbeat failure log records")
+	must.Equal(1, logs.count(slog.LevelWarn)+logs.count(slog.LevelDebug), "heartbeat failure log records")
 }

@@ -25,7 +25,8 @@ func TestValidateToolChoiceName_EnforcesGrammarAndLength(t *testing.T) {
 	}
 	for _, tc := range valid {
 		t.Run(tc.name, func(t *testing.T) {
-			require.NoError(t, ValidateToolChoiceName(tc.input))
+			must := require.New(t)
+			must.NoError(ValidateToolChoiceName(tc.input))
 		})
 	}
 
@@ -42,7 +43,8 @@ func TestValidateToolChoiceName_EnforcesGrammarAndLength(t *testing.T) {
 	}
 	for _, tc := range invalid {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Error(t, ValidateToolChoiceName(tc.input))
+			must := require.New(t)
+			must.Error(ValidateToolChoiceName(tc.input))
 		})
 	}
 }
@@ -51,15 +53,17 @@ func TestValidateToolChoiceName_EnforcesGrammarAndLength(t *testing.T) {
 // the JSON, and any other value must marshal to its string form.
 func TestStreamParams_MarshalOmitsAutoToolChoice(t *testing.T) {
 	t.Run("auto is omitted", func(t *testing.T) {
+		must := require.New(t)
 		b, err := json.Marshal(StreamParams{Model: "m"})
-		require.NoError(t, err)
-		require.NotContains(t, string(b), "toolChoice")
+		must.NoError(err)
+		must.NotContains(string(b), "toolChoice")
 	})
 
 	t.Run("non-auto marshals to its string form", func(t *testing.T) {
+		must := require.New(t)
 		b, err := json.Marshal(StreamParams{Model: "m", ToolChoice: ToolChoiceRequired})
-		require.NoError(t, err)
-		require.Contains(t, string(b), `"toolChoice":"required"`)
+		must.NoError(err)
+		must.Contains(string(b), `"toolChoice":"required"`)
 	})
 }
 
@@ -79,13 +83,14 @@ func TestToolChoiceMode_JSONRoundTrip(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			b, err := json.Marshal(tc.mode)
-			require.NoError(t, err)
-			require.Equal(t, tc.wire, string(b))
+			must.NoError(err)
+			must.Equal(tc.wire, string(b))
 
 			var got ToolChoiceMode
-			require.NoError(t, json.Unmarshal(b, &got))
-			require.Equal(t, tc.mode, got)
+			must.NoError(json.Unmarshal(b, &got))
+			must.Equal(tc.mode, got)
 		})
 	}
 }
@@ -109,7 +114,8 @@ func TestToolChoiceMode_StringHandlesOutOfRange(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, tc.mode.String())
+			must := require.New(t)
+			must.Equal(tc.want, tc.mode.String())
 		})
 	}
 }
@@ -132,8 +138,9 @@ func TestToolChoiceMode_UnmarshalRejectsInvalidForms(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var m ToolChoiceMode
-			require.Error(t, json.Unmarshal([]byte(tc.input), &m))
+			must.Error(json.Unmarshal([]byte(tc.input), &m))
 		})
 	}
 }
@@ -156,7 +163,8 @@ func TestToolChoiceMode_IsValidDistinguishesRange(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, tc.mode.IsValid())
+			must := require.New(t)
+			must.Equal(tc.want, tc.mode.IsValid())
 		})
 	}
 }
@@ -174,8 +182,9 @@ func TestToolChoiceMode_MarshalRejectsOutOfRange(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			_, err := json.Marshal(tc.mode)
-			require.Error(t, err)
+			must.Error(err)
 		})
 	}
 }
@@ -185,22 +194,24 @@ func TestToolChoiceMode_MarshalRejectsOutOfRange(t *testing.T) {
 // 64-byte cap surfaces a quoted, ellipsis-terminated excerpt rather than
 // the full raw payload, so the error stays log-safe and bounded.
 func TestToolChoiceMode_UnmarshalErrorTruncatesLongInput(t *testing.T) {
+	must := require.New(t)
 	long := `"` + strings.Repeat("x", 200) + `"`
 	var m ToolChoiceMode
 	err := json.Unmarshal([]byte(long), &m)
-	require.Error(t, err)
+	must.Error(err)
 
 	msg := err.Error()
-	require.Contains(t, msg, "…", "error must mark truncation with an ellipsis")
-	require.LessOrEqual(t, len(msg), 120, "error message must stay bounded: %s", msg)
+	must.Contains(msg, "…", "error must mark truncation with an ellipsis")
+	must.LessOrEqual(len(msg), 120, "error message must stay bounded: %s", msg)
 }
 
 func TestHarnessCapabilities_AdvertisesFeaturesAndIsolatesSlice(t *testing.T) {
+	must := require.New(t)
 	want := []string{"live_transcript", "reasoning_summary", "follow_up_history", "turn_abandoned"}
 	got := HarnessCapabilities()
-	require.Equal(t, want, got)
+	must.Equal(want, got)
 
 	got[0] = "mutated"
 	again := HarnessCapabilities()
-	require.Equal(t, want[0], again[0], "mutating the returned slice must not change later calls")
+	must.Equal(want[0], again[0], "mutating the returned slice must not change later calls")
 }

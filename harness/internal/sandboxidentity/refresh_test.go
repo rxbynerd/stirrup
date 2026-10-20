@@ -122,6 +122,7 @@ func tokenFor(n int) string {
 
 func (h *refreshHarness) start(t *testing.T, ctx context.Context, initial Result, deadline time.Time) *Refresher {
 	t.Helper()
+	must := require.New(t)
 	r, err := NewRefresher(RefresherConfig{
 		Exchanger:      h.exchanger,
 		Writer:         h.writer,
@@ -132,7 +133,7 @@ func (h *refreshHarness) start(t *testing.T, ctx context.Context, initial Result
 		ExpiresAt:      initial.ExpiresAt,
 		BudgetDeadline: deadline,
 	})
-	require.NoError(t, err, "NewRefresher()")
+	must.NoError(err, "NewRefresher()")
 	r.Start(ctx)
 	return r
 }
@@ -153,26 +154,28 @@ func (h *refreshHarness) emittedOfType(eventType string) []types.HarnessEvent {
 // in any emitted HarnessEvent's JSON form.
 func (h *refreshHarness) assertNoTokenLeak(t *testing.T) {
 	t.Helper()
+	check := assert.New(t)
 	logs := h.logs.String()
 	h.mt.mu.Lock()
 	emitted := append([]types.HarnessEvent(nil), h.mt.emitted...)
 	h.mt.mu.Unlock()
 	for _, tok := range h.writer.all() {
-		assert.NotContains(t, logs, tok, "log output contains a sandbox identity token")
+		check.NotContains(logs, tok, "log output contains a sandbox identity token")
 		for _, e := range emitted {
 			raw, _ := json.Marshal(e)
-			assert.NotContains(t, string(raw), tok, "emitted event contains a sandbox identity token")
+			check.NotContains(string(raw), tok, "emitted event contains a sandbox identity token")
 		}
 	}
 }
 
 func waitFor(t *testing.T, ch <-chan string, timeout time.Duration) string {
 	t.Helper()
+	must := require.New(t)
 	select {
 	case v := <-ch:
 		return v
 	case <-time.After(timeout):
-		require.FailNow(t, "timed out waiting for a token delivery")
+		must.FailNow("timed out waiting for a token delivery")
 		return ""
 	}
 }
@@ -181,13 +184,14 @@ func waitFor(t *testing.T, ch <-chan string, timeout time.Duration) string {
 // test can observe a terminal outcome before Close cancels the schedule.
 func (h *refreshHarness) waitForWarning(t *testing.T) types.HarnessEvent {
 	t.Helper()
+	must := require.New(t)
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		if warnings := h.emittedOfType("warning"); len(warnings) > 0 {
 			return warnings[0]
 		}
 		if time.Now().After(deadline) {
-			require.FailNow(t, "timed out waiting for a warning")
+			must.FailNow("timed out waiting for a warning")
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -197,11 +201,12 @@ func (h *refreshHarness) waitForWarning(t *testing.T) types.HarnessEvent {
 // initial token expires shortly, a second sandbox_token_request goes out
 // before that expiry, and the sandbox receives the new token.
 func TestRefresher_RefreshesBeforeExpiry(t *testing.T) {
+	must := require.New(t)
 	const ttl = 500 * time.Millisecond
 	h := newRefreshHarness(t, ttl, nil)
 
 	initial, err := h.exchanger.Exchange(context.Background(), "https://haybale.internal", time.Second)
-	require.NoError(t, err, "initial Exchange()")
+	must.NoError(err, "initial Exchange()")
 	initialExpiry := time.Unix(*initial.ExpiresAt, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -212,16 +217,16 @@ func TestRefresher_RefreshesBeforeExpiry(t *testing.T) {
 	got := waitFor(t, h.writer.written, 2*time.Second)
 	refreshedAt := time.Now()
 
-	require.Equal(t, tokenFor(2), got, "delivered token should be the second issued token")
-	require.NotEqual(t, initial.Token, got, "the sandbox file content must change on refresh")
+	must.Equal(tokenFor(2), got, "delivered token should be the second issued token")
+	must.NotEqual(initial.Token, got, "the sandbox file content must change on refresh")
 	// Unix-second expiry granularity makes the "before expiry" bound
 	// coarse; the refresh must at least precede the expiry second's end.
-	require.True(t, refreshedAt.Before(initialExpiry.Add(time.Second)),
+	must.True(refreshedAt.Before(initialExpiry.Add(time.Second)),
 		"refresh landed at %s, after the initial expiry %s", refreshedAt, initialExpiry)
 	reqs := h.emittedOfType("sandbox_token_request")
-	require.GreaterOrEqual(t, len(reqs), 2, "expected the initial exchange and the refresh")
-	require.NotEqual(t, reqs[0].RequestID, reqs[1].RequestID, "each request must be uniquely correlated")
-	require.Empty(t, h.emittedOfType("warning"), "a successful refresh must not warn")
+	must.GreaterOrEqual(len(reqs), 2, "expected the initial exchange and the refresh")
+	must.NotEqual(reqs[0].RequestID, reqs[1].RequestID, "each request must be uniquely correlated")
+	must.Empty(h.emittedOfType("warning"), "a successful refresh must not warn")
 	h.assertNoTokenLeak(t)
 }
 
@@ -230,11 +235,12 @@ func TestRefresher_RefreshesBeforeExpiry(t *testing.T) {
 // initial exchange, and that the stop is reported when the last token
 // expires before the run's wall-clock budget.
 func TestRefresher_CapsRequestsPerRun(t *testing.T) {
+	must := require.New(t)
 	const ttl = 40 * time.Millisecond
 	h := newRefreshHarness(t, ttl, nil)
 
 	initial, err := h.exchanger.Exchange(context.Background(), "https://haybale.internal", time.Second)
-	require.NoError(t, err, "initial Exchange()")
+	must.NoError(err, "initial Exchange()")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -253,15 +259,15 @@ func TestRefresher_CapsRequestsPerRun(t *testing.T) {
 	select {
 	case <-closed:
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "Refresher did not stop after exhausting its request budget")
+		must.FailNow("Refresher did not stop after exhausting its request budget")
 	}
 
-	require.Equal(t, MaxTokenRequests, h.exchanger.Requests(), "exchanger request count")
-	require.Len(t, h.emittedOfType("sandbox_token_request"), MaxTokenRequests)
-	require.Len(t, h.writer.all(), MaxTokenRequests-1, "refreshed tokens delivered")
+	must.Equal(MaxTokenRequests, h.exchanger.Requests(), "exchanger request count")
+	must.Len(h.emittedOfType("sandbox_token_request"), MaxTokenRequests)
+	must.Len(h.writer.all(), MaxTokenRequests-1, "refreshed tokens delivered")
 	warnings := h.emittedOfType("warning")
-	require.Len(t, warnings, 1, "expected exactly one warning once the budget is exhausted")
-	require.Contains(t, warnings[0].Message, "budget exhausted")
+	must.Len(warnings, 1, "expected exactly one warning once the budget is exhausted")
+	must.Contains(warnings[0].Message, "budget exhausted")
 	h.assertNoTokenLeak(t)
 }
 
@@ -269,25 +275,27 @@ func TestRefresher_CapsRequestsPerRun(t *testing.T) {
 // exhausted-budget report is informational, not a warning, when the last
 // token already outlives the run's deadline.
 func TestRefresher_ExhaustedBudgetSilentWhenTokenOutlivesRun(t *testing.T) {
+	must := require.New(t)
 	h := newRefreshHarness(t, time.Hour, nil)
 	// Exhaust the budget up front so the refresher stops on its first pass.
 	for i := 0; i < MaxTokenRequests; i++ {
 		_, err := h.exchanger.Exchange(context.Background(), "aud", time.Second)
-		require.NoError(t, err, "Exchange() %d", i)
+		must.NoError(err, "Exchange() %d", i)
 	}
 
 	expires := time.Now().Add(time.Hour).Unix()
 	r := h.start(t, context.Background(), Result{ExpiresAt: &expires}, time.Now().Add(time.Minute))
 	_ = r.Close()
 
-	require.Empty(t, h.emittedOfType("warning"), "a token that outlives the run must not warn")
-	require.Contains(t, h.logs.String(), "outlives the run", "expected an informational log line")
+	must.Empty(h.emittedOfType("warning"), "a token that outlives the run must not warn")
+	must.Contains(h.logs.String(), "outlives the run", "expected an informational log line")
 }
 
 // TestRefresher_DeclinedRefreshWarns asserts a control-plane decline on a
 // refresh is reported as a warning HarnessEvent and a log line, and that
 // the schedule stops rather than retrying.
 func TestRefresher_DeclinedRefreshWarns(t *testing.T) {
+	must := require.New(t)
 	const ttl = 40 * time.Millisecond
 	h := newRefreshHarness(t, ttl, func(n int, requestID string) (types.ControlEvent, bool) {
 		if n == 1 {
@@ -307,22 +315,23 @@ func TestRefresher_DeclinedRefreshWarns(t *testing.T) {
 	})
 
 	initial, err := h.exchanger.Exchange(context.Background(), "aud", time.Second)
-	require.NoError(t, err, "initial Exchange()")
+	must.NoError(err, "initial Exchange()")
 
 	r := h.start(t, context.Background(), initial, time.Time{})
 	h.waitForWarning(t)
-	require.NoError(t, r.Close(), "Close()")
+	must.NoError(r.Close(), "Close()")
 
 	warnings := h.emittedOfType("warning")
-	require.Len(t, warnings, 1, "a declined refresh warns exactly once")
+	must.Len(warnings, 1, "a declined refresh warns exactly once")
 	for _, want := range []string{"refresh failed", "declined", "run-scoped issuer revoked", "fail authentication"} {
 		t.Run(want, func(t *testing.T) {
-			require.Contains(t, warnings[0].Message, want)
+			must := require.New(t)
+			must.Contains(warnings[0].Message, want)
 		})
 	}
-	require.Contains(t, h.logs.String(), "refresh failed", "expected a warning log line")
-	require.Empty(t, h.writer.all(), "a declined refresh must deliver nothing")
-	require.Len(t, h.emittedOfType("sandbox_token_request"), 2, "initial request plus the declined refresh, no retry")
+	must.Contains(h.logs.String(), "refresh failed", "expected a warning log line")
+	must.Empty(h.writer.all(), "a declined refresh must deliver nothing")
+	must.Len(h.emittedOfType("sandbox_token_request"), 2, "initial request plus the declined refresh, no retry")
 	h.assertNoTokenLeak(t)
 }
 
@@ -330,50 +339,53 @@ func TestRefresher_DeclinedRefreshWarns(t *testing.T) {
 // could not be written into the sandbox is reported the same way as a
 // declined exchange, and that its value never reaches the warning.
 func TestRefresher_DeliveryFailureWarns(t *testing.T) {
+	must := require.New(t)
 	const ttl = 40 * time.Millisecond
 	h := newRefreshHarness(t, ttl, nil)
 	h.writer.failErr = errors.New("exec: container not running")
 
 	initial, err := h.exchanger.Exchange(context.Background(), "aud", time.Second)
-	require.NoError(t, err, "initial Exchange()")
+	must.NoError(err, "initial Exchange()")
 
 	r := h.start(t, context.Background(), initial, time.Time{})
 	h.waitForWarning(t)
-	require.NoError(t, r.Close(), "Close()")
+	must.NoError(r.Close(), "Close()")
 
 	warnings := h.emittedOfType("warning")
-	require.Len(t, warnings, 1, "a failed delivery warns exactly once")
-	require.Contains(t, warnings[0].Message, "deliver refreshed token")
-	require.Contains(t, warnings[0].Message, "container not running")
-	require.NotContains(t, warnings[0].Message, tokenFor(2), "the undelivered token must not reach the warning")
-	require.NotContains(t, h.logs.String(), tokenFor(2), "the undelivered token must not reach the log")
+	must.Len(warnings, 1, "a failed delivery warns exactly once")
+	must.Contains(warnings[0].Message, "deliver refreshed token")
+	must.Contains(warnings[0].Message, "container not running")
+	must.NotContains(warnings[0].Message, tokenFor(2), "the undelivered token must not reach the warning")
+	must.NotContains(h.logs.String(), tokenFor(2), "the undelivered token must not reach the log")
 }
 
 // TestRefresher_NoExpiryNoRefresh asserts a control plane that never sets
 // expires_at gets exactly the pre-refresh behaviour: one request, no
 // schedule, no warning.
 func TestRefresher_NoExpiryNoRefresh(t *testing.T) {
+	must := require.New(t)
 	h := newRefreshHarness(t, 0, func(_ int, requestID string) (types.ControlEvent, bool) {
 		return types.ControlEvent{Type: "sandbox_token_response", RequestID: requestID, Token: tokenFor(1)}, true
 	})
 
 	initial, err := h.exchanger.Exchange(context.Background(), "aud", time.Second)
-	require.NoError(t, err, "initial Exchange()")
-	require.Nil(t, initial.ExpiresAt, "precondition: ExpiresAt must be nil")
+	must.NoError(err, "initial Exchange()")
+	must.Nil(initial.ExpiresAt, "precondition: ExpiresAt must be nil")
 
 	r := h.start(t, context.Background(), initial, time.Time{})
 	time.Sleep(50 * time.Millisecond)
-	require.NoError(t, r.Close(), "Close()")
+	must.NoError(r.Close(), "Close()")
 
-	require.Len(t, h.emittedOfType("sandbox_token_request"), 1, "one request without an expiry")
-	require.Empty(t, h.emittedOfType("warning"), "no warning without an expiry")
-	require.Contains(t, h.logs.String(), "refresh not scheduled", "expected the no-expiry log line")
+	must.Len(h.emittedOfType("sandbox_token_request"), 1, "one request without an expiry")
+	must.Empty(h.emittedOfType("warning"), "no warning without an expiry")
+	must.Contains(h.logs.String(), "refresh not scheduled", "expected the no-expiry log line")
 }
 
 // TestRefresher_RefreshedTokenWithoutExpiryStopsSchedule asserts that a
 // refreshed token reported without expires_at is delivered and then ends
 // the schedule, since there is no longer a lifetime to plan against.
 func TestRefresher_RefreshedTokenWithoutExpiryStopsSchedule(t *testing.T) {
+	must := require.New(t)
 	const ttl = 40 * time.Millisecond
 	h := newRefreshHarness(t, ttl, func(n int, requestID string) (types.ControlEvent, bool) {
 		ev := types.ControlEvent{Type: "sandbox_token_response", RequestID: requestID, Token: tokenFor(n)}
@@ -384,11 +396,11 @@ func TestRefresher_RefreshedTokenWithoutExpiryStopsSchedule(t *testing.T) {
 	})
 
 	initial, err := h.exchanger.Exchange(context.Background(), "aud", time.Second)
-	require.NoError(t, err, "initial Exchange()")
+	must.NoError(err, "initial Exchange()")
 
 	r := h.start(t, context.Background(), initial, time.Time{})
 	got := waitFor(t, h.writer.written, 2*time.Second)
-	require.Equal(t, tokenFor(2), got, "delivered token")
+	must.Equal(tokenFor(2), got, "delivered token")
 	closed := make(chan struct{})
 	go func() {
 		_ = r.Close()
@@ -397,16 +409,17 @@ func TestRefresher_RefreshedTokenWithoutExpiryStopsSchedule(t *testing.T) {
 	select {
 	case <-closed:
 	case <-time.After(2 * time.Second):
-		require.FailNow(t, "Refresher did not stop after a refreshed token without expiry")
+		must.FailNow("Refresher did not stop after a refreshed token without expiry")
 	}
-	require.Len(t, h.emittedOfType("sandbox_token_request"), 2)
-	require.Empty(t, h.emittedOfType("warning"), "a refreshed token without expiry must not warn")
+	must.Len(h.emittedOfType("sandbox_token_request"), 2)
+	must.Empty(h.emittedOfType("warning"), "a refreshed token without expiry must not warn")
 }
 
 // TestRefresher_CloseCancelsInFlightExchange asserts Close returns promptly
 // while a refresh is waiting on a control plane that never answers, and
 // that the abandoned exchange is not reported as a failure.
 func TestRefresher_CloseCancelsInFlightExchange(t *testing.T) {
+	must := require.New(t)
 	const ttl = 20 * time.Millisecond
 	h := newRefreshHarness(t, ttl, func(n int, requestID string) (types.ControlEvent, bool) {
 		if n == 1 {
@@ -421,7 +434,7 @@ func TestRefresher_CloseCancelsInFlightExchange(t *testing.T) {
 	})
 
 	initial, err := h.exchanger.Exchange(context.Background(), "aud", time.Second)
-	require.NoError(t, err, "initial Exchange()")
+	must.NoError(err, "initial Exchange()")
 
 	r, err := NewRefresher(RefresherConfig{
 		Exchanger: h.exchanger,
@@ -431,32 +444,33 @@ func TestRefresher_CloseCancelsInFlightExchange(t *testing.T) {
 		Timeout:   time.Minute,
 		ExpiresAt: initial.ExpiresAt,
 	})
-	require.NoError(t, err, "NewRefresher()")
+	must.NoError(err, "NewRefresher()")
 	r.Start(context.Background())
 
 	// Wait until the refresh request is in flight.
 	deadline := time.Now().Add(2 * time.Second)
 	for len(h.emittedOfType("sandbox_token_request")) < 2 {
 		if time.Now().After(deadline) {
-			require.FailNow(t, "refresh request never went out")
+			must.FailNow("refresh request never went out")
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
 
 	start := time.Now()
-	require.NoError(t, r.Close(), "Close()")
-	require.LessOrEqual(t, time.Since(start), time.Second,
+	must.NoError(r.Close(), "Close()")
+	must.LessOrEqual(time.Since(start), time.Second,
 		"Close must cancel the in-flight exchange rather than wait out its timeout")
-	require.Empty(t, h.emittedOfType("warning"), "an exchange abandoned by Close must not warn")
+	must.Empty(h.emittedOfType("warning"), "an exchange abandoned by Close must not warn")
 }
 
 // TestRefresher_CloseWithoutStart pins that Close is safe on a Refresher
 // that was never started (the factory's cleanup path on a build failure).
 func TestRefresher_CloseWithoutStart(t *testing.T) {
+	must := require.New(t)
 	h := newRefreshHarness(t, time.Minute, nil)
 	r, err := NewRefresher(RefresherConfig{Exchanger: h.exchanger, Writer: h.writer, Transport: h.mt})
-	require.NoError(t, err, "NewRefresher()")
-	require.NoError(t, r.Close(), "Close() before Start")
+	must.NoError(err, "NewRefresher()")
+	must.NoError(r.Close(), "Close() before Start")
 }
 
 func TestNewRefresher_RequiresDependencies(t *testing.T) {
@@ -468,21 +482,23 @@ func TestNewRefresher_RequiresDependencies(t *testing.T) {
 	}
 	for name, cfg := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			_, err := NewRefresher(cfg)
-			require.Error(t, err)
+			must.Error(err)
 		})
 	}
 }
 
 func TestRefreshDelay_JitteredFractionOfLifetimeOrImmediate(t *testing.T) {
+	must := require.New(t)
 	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
 
 	// A fifteen-minute token refreshes around the twelve-minute mark, with
 	// jitter of at most 5% either way and always inside the lifetime.
 	for i := 0; i < 50; i++ {
 		got := refreshDelay(now, now.Add(15*time.Minute).Unix())
-		require.GreaterOrEqual(t, got, 11*time.Minute+24*time.Second, "refreshDelay(15m) should be within 5% of 12m")
-		require.LessOrEqual(t, got, 12*time.Minute+36*time.Second, "refreshDelay(15m) should be within 5% of 12m")
+		must.GreaterOrEqual(got, 11*time.Minute+24*time.Second, "refreshDelay(15m) should be within 5% of 12m")
+		must.LessOrEqual(got, 12*time.Minute+36*time.Second, "refreshDelay(15m) should be within 5% of 12m")
 	}
 
 	cases := []struct {
@@ -494,25 +510,28 @@ func TestRefreshDelay_JitteredFractionOfLifetimeOrImmediate(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Zero(t, refreshDelay(now, now.Add(tc.expiresIn).Unix()), "an expired token should refresh immediately")
+			must := require.New(t)
+			must.Zero(refreshDelay(now, now.Add(tc.expiresIn).Unix()), "an expired token should refresh immediately")
 		})
 	}
 }
 
 func TestRetryDelay_HalfOfRemainingLifetimeOrNone(t *testing.T) {
+	must := require.New(t)
 	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
 	got, ok := retryDelay(now, now.Add(4*time.Minute).Unix())
-	require.True(t, ok, "retryDelay(4m) should report lifetime left")
-	require.Equal(t, 2*time.Minute, got)
+	must.True(ok, "retryDelay(4m) should report lifetime left")
+	must.Equal(2*time.Minute, got)
 
 	_, ok = retryDelay(now, now.Add(-time.Second).Unix())
-	require.False(t, ok, "retryDelay on an expired token must report no lifetime left")
+	must.False(ok, "retryDelay on an expired token must report no lifetime left")
 }
 
 // TestRefresher_RetriesTransientFailure drives the slack the schedule
 // reserves: a refresh whose exchange times out is retried within the
 // token's remaining lifetime and succeeds without any warning.
 func TestRefresher_RetriesTransientFailure(t *testing.T) {
+	must := require.New(t)
 	const ttl = 2 * time.Second
 	h := newRefreshHarness(t, ttl, func(n int, requestID string) (types.ControlEvent, bool) {
 		if n == 2 {
@@ -527,7 +546,7 @@ func TestRefresher_RetriesTransientFailure(t *testing.T) {
 	})
 
 	initial, err := h.exchanger.Exchange(context.Background(), "aud", time.Second)
-	require.NoError(t, err, "initial Exchange()")
+	must.NoError(err, "initial Exchange()")
 
 	r, err := NewRefresher(RefresherConfig{
 		Exchanger: h.exchanger,
@@ -537,14 +556,14 @@ func TestRefresher_RetriesTransientFailure(t *testing.T) {
 		Timeout:   30 * time.Millisecond,
 		ExpiresAt: initial.ExpiresAt,
 	})
-	require.NoError(t, err, "NewRefresher()")
+	must.NoError(err, "NewRefresher()")
 	r.Start(context.Background())
 	defer func() { _ = r.Close() }()
 
-	require.Equal(t, tokenFor(3), waitFor(t, h.writer.written, 5*time.Second), "token issued on the retried request")
-	require.Len(t, h.emittedOfType("sandbox_token_request"), 3, "initial, timed-out refresh, and retry")
-	require.Empty(t, h.emittedOfType("warning"), "a retried transient failure must not warn")
-	require.Contains(t, h.logs.String(), "retrying within the token's remaining lifetime", "expected a retry log line")
+	must.Equal(tokenFor(3), waitFor(t, h.writer.written, 5*time.Second), "token issued on the retried request")
+	must.Len(h.emittedOfType("sandbox_token_request"), 3, "initial, timed-out refresh, and retry")
+	must.Empty(h.emittedOfType("warning"), "a retried transient failure must not warn")
+	must.Contains(h.logs.String(), "retrying within the token's remaining lifetime", "expected a retry log line")
 	h.assertNoTokenLeak(t)
 }
 
@@ -552,6 +571,7 @@ func TestRefresher_RetriesTransientFailure(t *testing.T) {
 // on an already-expired token is not retried into the void: with no
 // lifetime left the schedule stops and warns.
 func TestRefresher_TransientFailureWithNoLifetimeLeftWarns(t *testing.T) {
+	must := require.New(t)
 	h := newRefreshHarness(t, 0, func(_ int, _ string) (types.ControlEvent, bool) {
 		return types.ControlEvent{}, false
 	})
@@ -565,13 +585,13 @@ func TestRefresher_TransientFailureWithNoLifetimeLeftWarns(t *testing.T) {
 		Timeout:   20 * time.Millisecond,
 		ExpiresAt: &expired,
 	})
-	require.NoError(t, err, "NewRefresher()")
+	must.NoError(err, "NewRefresher()")
 	r.Start(context.Background())
 	warning := h.waitForWarning(t)
 	_ = r.Close()
 
-	require.Contains(t, warning.Message, "timed out", "the warning should name the timeout")
-	require.Len(t, h.emittedOfType("sandbox_token_request"), 1, "no lifetime left to retry in")
+	must.Contains(warning.Message, "timed out", "the warning should name the timeout")
+	must.Len(h.emittedOfType("sandbox_token_request"), 1, "no lifetime left to retry in")
 }
 
 // blockingWriter ignores ctx and blocks until released, standing in for a
@@ -592,13 +612,15 @@ func (w *blockingWriter) WriteSandboxIdentityToken(context.Context, string) erro
 // ignores cancellation once closeGrace elapses, so a wedged engine cannot
 // hold the loop's shutdown.
 func TestRefresher_CloseIsBounded(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	prev := closeGrace
 	closeGrace = 50 * time.Millisecond
 	defer func() { closeGrace = prev }()
 
 	h := newRefreshHarness(t, 40*time.Millisecond, nil)
 	initial, err := h.exchanger.Exchange(context.Background(), "aud", time.Second)
-	require.NoError(t, err, "initial exchange")
+	must.NoError(err, "initial exchange")
 	writer := &blockingWriter{entered: make(chan struct{}), release: make(chan struct{})}
 	defer close(writer.release)
 
@@ -610,20 +632,20 @@ func TestRefresher_CloseIsBounded(t *testing.T) {
 		Timeout:   time.Second,
 		ExpiresAt: initial.ExpiresAt,
 	})
-	require.NoError(t, err, "NewRefresher")
+	must.NoError(err, "NewRefresher")
 	r.Start(context.Background())
 
 	select {
 	case <-writer.entered:
 	case <-time.After(2 * time.Second):
-		require.Fail(t, "refresh never reached the writer")
+		must.Fail("refresh never reached the writer")
 	}
 
 	start := time.Now()
 	err = r.Close()
 	elapsed := time.Since(start)
-	require.Error(t, err, "Close() must report that the refresher did not stop in time")
-	assert.LessOrEqual(t, elapsed, time.Second, "Close() must give up after closeGrace")
-	assert.Contains(t, h.logs.String(), "did not stop within the close grace period",
+	must.Error(err, "Close() must report that the refresher did not stop in time")
+	check.LessOrEqual(elapsed, time.Second, "Close() must give up after closeGrace")
+	check.Contains(h.logs.String(), "did not stop within the close grace period",
 		"expected the abandonment log line")
 }

@@ -8,42 +8,46 @@ import (
 )
 
 func TestPhaseGated_DelegatesOnSelectedPhase(t *testing.T) {
+	must := require.New(t)
 	inner := &stubGuard{d: deny("inner", "blocked")}
 	g := PhaseGated{Phases: []Phase{PhasePreTool}, Inner: inner}
 
 	d, err := g.Check(context.Background(), Input{Phase: PhasePreTool})
-	require.NoError(t, err)
-	require.Equal(t, 1, inner.called, "inner should be called once")
+	must.NoError(err)
+	must.Equal(1, inner.called, "inner should be called once")
 
 	// The inner decision is propagated verbatim.
-	require.Equal(t, VerdictDeny, d.Verdict)
-	require.Equal(t, "inner", d.GuardID)
-	require.Equal(t, "blocked", d.Reason)
+	must.Equal(VerdictDeny, d.Verdict)
+	must.Equal("inner", d.GuardID)
+	must.Equal("blocked", d.Reason)
 }
 
 func TestPhaseGated_SkipsUnselectedPhase(t *testing.T) {
+	must := require.New(t)
 	inner := &stubGuard{d: deny("inner", "should-not-fire")}
 	g := PhaseGated{Phases: []Phase{PhasePreTool}, Inner: inner}
 
 	d, err := g.Check(context.Background(), Input{Phase: PhasePostTurn})
-	require.NoError(t, err)
-	require.Equal(t, 0, inner.called, "inner should not be called")
-	require.Equal(t, VerdictAllow, d.Verdict)
-	require.Equal(t, "phase-gated:skipped", d.GuardID)
+	must.NoError(err)
+	must.Equal(0, inner.called, "inner should not be called")
+	must.Equal(VerdictAllow, d.Verdict)
+	must.Equal("phase-gated:skipped", d.GuardID)
 }
 
 func TestPhaseGated_EmptyPhasesSkipsEverything(t *testing.T) {
+	must := require.New(t)
 	inner := &stubGuard{d: deny("inner", "should-not-fire")}
 	g := PhaseGated{Inner: inner}
 
 	for _, ph := range []Phase{PhasePreTurn, PhasePreTool, PhasePostTurn} {
 		t.Run(string(ph), func(t *testing.T) {
+			must := require.New(t)
 			d, err := g.Check(context.Background(), Input{Phase: ph})
-			require.NoError(t, err)
-			require.Equal(t, VerdictAllow, d.Verdict, "empty Phases skips all")
+			must.NoError(err)
+			must.Equal(VerdictAllow, d.Verdict, "empty Phases skips all")
 		})
 	}
-	require.Equal(t, 0, inner.called, "inner should not be invoked despite empty Phases")
+	must.Equal(0, inner.called, "inner should not be invoked despite empty Phases")
 }
 
 func TestChecksPhase_ReportsWhetherGuardChecksPhase(t *testing.T) {
@@ -69,7 +73,8 @@ func TestChecksPhase_ReportsWhetherGuardChecksPhase(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, ChecksPhase(tc.g, PhasePreTurn))
+			must := require.New(t)
+			must.Equal(tc.want, ChecksPhase(tc.g, PhasePreTurn))
 		})
 	}
 }

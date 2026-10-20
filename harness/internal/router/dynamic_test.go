@@ -24,6 +24,7 @@ var (
 )
 
 func TestDynamicRouter_CheapStopReason(t *testing.T) {
+	must := require.New(t)
 	r := NewDynamicRouter(standardConfig)
 
 	sel := r.Select(context.Background(), RouterContext{
@@ -32,10 +33,11 @@ func TestDynamicRouter_CheapStopReason(t *testing.T) {
 		LastStopReason: "tool_use",
 	})
 
-	require.Equal(t, cheapSel, sel)
+	must.Equal(cheapSel, sel)
 }
 
 func TestDynamicRouter_HighTurnCount(t *testing.T) {
+	must := require.New(t)
 	r := NewDynamicRouter(standardConfig)
 
 	sel := r.Select(context.Background(), RouterContext{
@@ -44,10 +46,11 @@ func TestDynamicRouter_HighTurnCount(t *testing.T) {
 		LastStopReason: "end_turn",
 	})
 
-	require.Equal(t, expensiveSel, sel)
+	must.Equal(expensiveSel, sel)
 }
 
 func TestDynamicRouter_HighTokenUsage(t *testing.T) {
+	must := require.New(t)
 	r := NewDynamicRouter(standardConfig)
 
 	sel := r.Select(context.Background(), RouterContext{
@@ -57,10 +60,11 @@ func TestDynamicRouter_HighTokenUsage(t *testing.T) {
 		TokenUsage:     TokenUsage{Input: 10000, Output: 55000},
 	})
 
-	require.Equal(t, expensiveSel, sel)
+	must.Equal(expensiveSel, sel)
 }
 
 func TestDynamicRouter_BelowThresholds_SelectsDefault(t *testing.T) {
+	must := require.New(t)
 	r := NewDynamicRouter(standardConfig)
 
 	sel := r.Select(context.Background(), RouterContext{
@@ -70,10 +74,11 @@ func TestDynamicRouter_BelowThresholds_SelectsDefault(t *testing.T) {
 		TokenUsage:     TokenUsage{Input: 5000, Output: 2000},
 	})
 
-	require.Equal(t, defaultSel, sel)
+	must.Equal(defaultSel, sel)
 }
 
 func TestDynamicRouter_CheapStopReason_WinsOverHighTurn(t *testing.T) {
+	must := require.New(t)
 	r := NewDynamicRouter(standardConfig)
 
 	// Turn 15 would normally trigger expensive, but tool_use stop reason
@@ -85,10 +90,11 @@ func TestDynamicRouter_CheapStopReason_WinsOverHighTurn(t *testing.T) {
 		TokenUsage:     TokenUsage{Input: 80000, Output: 60000},
 	})
 
-	require.Equal(t, cheapSel, sel)
+	must.Equal(cheapSel, sel)
 }
 
 func TestDynamicRouter_ZeroThresholds_AreDisabled(t *testing.T) {
+	must := require.New(t)
 	cfg := DynamicRouterConfig{
 		DefaultSelection:        defaultSel,
 		CheapSelection:          cheapSel,
@@ -106,10 +112,11 @@ func TestDynamicRouter_ZeroThresholds_AreDisabled(t *testing.T) {
 		LastStopReason: "end_turn",
 	})
 
-	require.Equal(t, defaultSel, sel)
+	must.Equal(defaultSel, sel)
 }
 
 func TestDynamicRouter_NoCheapStopReasons_NeverSelectsCheap(t *testing.T) {
+	must := require.New(t)
 	cfg := DynamicRouterConfig{
 		DefaultSelection:        defaultSel,
 		CheapSelection:          cheapSel,
@@ -127,7 +134,7 @@ func TestDynamicRouter_NoCheapStopReasons_NeverSelectsCheap(t *testing.T) {
 		LastStopReason: "tool_use",
 	})
 
-	require.Equal(t, defaultSel, sel)
+	must.Equal(defaultSel, sel)
 }
 
 func TestDynamicRouter_CustomSelections(t *testing.T) {
@@ -176,13 +183,15 @@ func TestDynamicRouter_CustomSelections(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			sel := r.Select(context.Background(), tt.rc)
-			require.Equal(t, tt.want, sel)
+			must.Equal(tt.want, sel)
 		})
 	}
 }
 
 func TestDynamicRouter_FirstTurn_SelectsDefault(t *testing.T) {
+	must := require.New(t)
 	r := NewDynamicRouter(standardConfig)
 
 	sel := r.Select(context.Background(), RouterContext{
@@ -190,7 +199,7 @@ func TestDynamicRouter_FirstTurn_SelectsDefault(t *testing.T) {
 		Turn: 0,
 	})
 
-	require.Equal(t, defaultSel, sel)
+	must.Equal(defaultSel, sel)
 }
 
 func TestDynamicRouter_ImplementsInterface(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 )
 
 func TestLoadSuiteHCL_AcceptsShadowSubJudge(t *testing.T) {
+	must := require.New(t)
 	src := `
 suite "s" {
   task "t1" {
@@ -27,11 +28,11 @@ suite "s" {
 }
 `
 	suite, err := LoadSuiteHCL(writeTemp(t, "shadow.hcl", src))
-	require.NoError(t, err)
+	must.NoError(err)
 	subs := suite.Tasks[0].Judge.Judges
-	require.Len(t, subs, 2, "sub-judges = %+v", subs)
-	require.False(t, subs[0].Shadow, "first sub-judge should not be a shadow")
-	require.True(t, subs[1].Shadow, "second sub-judge should be a shadow")
+	must.Len(subs, 2, "sub-judges = %+v", subs)
+	must.False(subs[0].Shadow, "first sub-judge should not be a shadow")
+	must.True(subs[1].Shadow, "second sub-judge should be a shadow")
 }
 
 func TestLoadSuiteHCL_RejectsInvalidShadowJudges(t *testing.T) {
@@ -116,15 +117,17 @@ func TestLoadSuiteHCL_RejectsInvalidShadowJudges(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			src := "suite \"s\" {\n  task \"t1\" {\n    prompt = \"p\"\n" + tc.judge + "\n  }\n}\n"
 			_, err := LoadSuiteHCL(writeTemp(t, "shadow.hcl", src))
-			require.ErrorContains(t, err, tc.wantErr)
-			require.ErrorContains(t, err, `task "t1"`)
+			must.ErrorContains(err, tc.wantErr)
+			must.ErrorContains(err, `task "t1"`)
 		})
 	}
 }
 
 func TestLoadSuiteHCL_AcceptsShadowDecisionJudge(t *testing.T) {
+	must := require.New(t)
 	src := `
 suite "s" {
   task "t1" {
@@ -149,9 +152,9 @@ suite "s" {
 }
 `
 	suite, err := LoadSuiteHCL(writeTemp(t, "decision.hcl", src))
-	require.NoError(t, err)
+	must.NoError(err)
 	sub := suite.Tasks[0].Judge.Judges[1]
-	require.True(t, sub.Shadow, "sub-judge = %+v", sub)
-	require.NotNil(t, sub.LLM, "sub-judge = %+v", sub)
-	require.Equal(t, "decision", sub.LLM.Provider)
+	must.True(sub.Shadow, "sub-judge = %+v", sub)
+	must.NotNil(sub.LLM, "sub-judge = %+v", sub)
+	must.Equal("decision", sub.LLM.Provider)
 }

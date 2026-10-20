@@ -15,31 +15,32 @@ import (
 )
 
 func TestMultiStrategy_ToolDefinition_DeclaresOperationSchema(t *testing.T) {
+	must := require.New(t)
 	m := NewMultiStrategy(defaultFuzzyThreshold)
 	def := m.ToolDefinition()
 
-	require.Equal(t, "edit_file", def.Name)
-	require.NotEmpty(t, def.InputSchema, "input schema should not be empty")
+	must.Equal("edit_file", def.Name)
+	must.NotEmpty(def.InputSchema, "input schema should not be empty")
 
 	var schema map[string]interface{}
-	require.NoError(t, json.Unmarshal(def.InputSchema, &schema), "schema is not valid JSON")
+	must.NoError(json.Unmarshal(def.InputSchema, &schema), "schema is not valid JSON")
 
 	props, ok := schema["properties"].(map[string]interface{})
-	require.True(t, ok, "schema missing properties")
+	must.True(ok, "schema missing properties")
 	for _, field := range []string{"path", "operation", "content", "diff", "old_string", "new_string"} {
-		require.Contains(t, props, field, "schema missing property %q", field)
+		must.Contains(props, field, "schema missing property %q", field)
 	}
 
 	opProp, ok := props["operation"].(map[string]interface{})
-	require.True(t, ok, "operation property missing or wrong type")
+	must.True(ok, "operation property missing or wrong type")
 	enum, ok := opProp["enum"].([]interface{})
-	require.True(t, ok, "operation enum missing")
+	must.True(ok, "operation enum missing")
 	for _, want := range []string{"replace", "delete", "rewrite", "patch"} {
-		require.Contains(t, enum, want, "operation enum missing %q", want)
+		must.Contains(enum, want, "operation enum missing %q", want)
 	}
 
 	required, _ := schema["required"].([]interface{})
-	require.Contains(t, required, "operation", "operation should be listed in required")
+	must.Contains(required, "operation", "operation should be listed in required")
 }
 
 // maxEditFileDescriptionLen mirrors the cap used for built-in tool
@@ -55,34 +56,36 @@ const maxEditFileDescriptionLen = 2000
 // capture the JSON object, matching the helper in
 // harness/internal/tool/builtins/builtins_test.go.
 func TestMultiStrategy_Description_IncludesGuidanceAndExample(t *testing.T) {
+	must := require.New(t)
 	m := NewMultiStrategy(defaultFuzzyThreshold)
 	def := m.ToolDefinition()
 
-	require.LessOrEqual(t, len(def.Description), maxEditFileDescriptionLen, "description exceeds length cap")
+	must.LessOrEqual(len(def.Description), maxEditFileDescriptionLen, "description exceeds length cap")
 	// hasPositiveUseThis rejects negated matches (a description
 	// containing only "Do not use this..." would otherwise pass an
 	// unguarded strings.Contains check). Mirrors the helper in
 	// harness/internal/tool/builtins/builtins_test.go.
-	require.True(t, hasPositiveUseThis(def.Description),
+	must.True(hasPositiveUseThis(def.Description),
 		"description missing positive when-to-use guidance (expected non-negated \"Use this\" clause)")
 
 	example, ok := extractEditFileJSONExample(def.Description)
-	require.True(t, ok, "description missing JSON example after \"Example\" marker; got: %s", def.Description)
+	must.True(ok, "description missing JSON example after \"Example\" marker; got: %s", def.Description)
 	var probe map[string]any
-	require.NoError(t, json.Unmarshal([]byte(example), &probe), "example is not valid JSON: %s", example)
+	must.NoError(json.Unmarshal([]byte(example), &probe), "example is not valid JSON: %s", example)
 
 	// The structured InputExamples must mirror the description example
 	// byte-for-byte; adapters send it natively or fold it into the schema
 	// `examples` keyword for providers that support it.
-	require.NotNil(t, def.Presentation, "ToolDefinition().Presentation is nil")
-	require.Len(t, def.Presentation.InputExamples, 1, "want exactly one InputExample")
-	require.Equal(t, example, string(def.Presentation.InputExamples[0]), "InputExamples[0] drifted from description")
+	must.NotNil(def.Presentation, "ToolDefinition().Presentation is nil")
+	must.Len(def.Presentation.InputExamples, 1, "want exactly one InputExample")
+	must.Equal(example, string(def.Presentation.InputExamples[0]), "InputExamples[0] drifted from description")
 }
 
 // TestEditStrategyInputExamples_PassDispatchValidation pins that every edit
 // strategy's worked example validates against the strategy's own schema
 // with the validator dispatch uses, mirroring the built-in tools test.
 func TestEditStrategyInputExamples_PassDispatchValidation(t *testing.T) {
+	must := require.New(t)
 	strategies := []EditStrategy{
 		NewMultiStrategy(defaultFuzzyThreshold),
 		NewUdiffStrategy(defaultFuzzyThreshold),
@@ -97,11 +100,11 @@ func TestEditStrategyInputExamples_PassDispatchValidation(t *testing.T) {
 		}
 		for i, example := range def.Presentation.InputExamples {
 			err := security.ValidateJSONSchema(example, def.InputSchema)
-			require.NoError(t, err, "%T: InputExamples[%d] fails its InputSchema\nexample: %s", s, i, example)
+			must.NoError(err, "%T: InputExamples[%d] fails its InputSchema\nexample: %s", s, i, example)
 			validated++
 		}
 	}
-	require.NotZero(t, validated, "no edit strategy input examples were validated")
+	must.NotZero(validated, "no edit strategy input examples were validated")
 }
 
 // hasPositiveUseThis reports whether desc contains a "Use this" clause
@@ -223,14 +226,16 @@ func TestExtractEditFileJSONExample_ReturnsRightmostObject(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got, ok := extractEditFileJSONExample(tc.input)
-			require.Equal(t, tc.wantOK, ok)
-			require.Equal(t, tc.want, got)
+			must.Equal(tc.wantOK, ok)
+			must.Equal(tc.want, got)
 		})
 	}
 }
 
 func TestMultiStrategy_RoutesPatchToUdiff(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -245,14 +250,15 @@ func TestMultiStrategy_RoutesPatchToUdiff(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	require.NoError(t, err)
-	require.True(t, result.Applied, "expected Applied=true; error: %s", result.Error)
+	must.NoError(err)
+	must.True(result.Applied, "expected Applied=true; error: %s", result.Error)
 
 	content, _ := exec.ReadFile(context.Background(), "test.txt")
-	require.Equal(t, "line1\nline2_modified\nline3\n", content)
+	must.Equal("line1\nline2_modified\nline3\n", content)
 }
 
 func TestMultiStrategy_RoutesReplaceToSearchReplace(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -267,14 +273,15 @@ func TestMultiStrategy_RoutesReplaceToSearchReplace(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	require.NoError(t, err)
-	require.True(t, result.Applied, "expected Applied=true; error: %s", result.Error)
+	must.NoError(err)
+	must.True(result.Applied, "expected Applied=true; error: %s", result.Error)
 
 	content, _ := exec.ReadFile(context.Background(), "test.txt")
-	require.Equal(t, "hello universe", content)
+	must.Equal("hello universe", content)
 }
 
 func TestMultiStrategy_RoutesDeleteToSearchReplace(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -288,14 +295,15 @@ func TestMultiStrategy_RoutesDeleteToSearchReplace(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	require.NoError(t, err)
-	require.True(t, result.Applied, "expected Applied=true; error: %s", result.Error)
+	must.NoError(err)
+	must.True(result.Applied, "expected Applied=true; error: %s", result.Error)
 
 	content, _ := exec.ReadFile(context.Background(), "test.txt")
-	require.Equal(t, "hello", content)
+	must.Equal("hello", content)
 }
 
 func TestMultiStrategy_RoutesRewriteToWholeFile(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -307,14 +315,15 @@ func TestMultiStrategy_RoutesRewriteToWholeFile(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	require.NoError(t, err)
-	require.True(t, result.Applied, "expected Applied=true; error: %s", result.Error)
+	must.NoError(err)
+	must.True(result.Applied, "expected Applied=true; error: %s", result.Error)
 
 	content, _ := exec.ReadFile(context.Background(), "new.txt")
-	require.Equal(t, "brand new content", content)
+	must.Equal("brand new content", content)
 }
 
 func TestMultiStrategy_FallbackPatchToWholeFile(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -333,14 +342,15 @@ func TestMultiStrategy_FallbackPatchToWholeFile(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	require.NoError(t, err)
-	require.True(t, result.Applied, "expected Applied=true via fallback; error: %s", result.Error)
+	must.NoError(err)
+	must.True(result.Applied, "expected Applied=true via fallback; error: %s", result.Error)
 
 	content, _ := exec.ReadFile(context.Background(), "test.txt")
-	require.Equal(t, "fallback content", content)
+	must.Equal("fallback content", content)
 }
 
 func TestMultiStrategy_FallbackReplaceToWholeFile(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -359,14 +369,15 @@ func TestMultiStrategy_FallbackReplaceToWholeFile(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	require.NoError(t, err)
-	require.True(t, result.Applied, "expected Applied=true via fallback; error: %s", result.Error)
+	must.NoError(err)
+	must.True(result.Applied, "expected Applied=true via fallback; error: %s", result.Error)
 
 	content, _ := exec.ReadFile(context.Background(), "test.txt")
-	require.Equal(t, "whole file fallback", content)
+	must.Equal("whole file fallback", content)
 }
 
 func TestMultiStrategy_MissingOperation(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -378,12 +389,13 @@ func TestMultiStrategy_MissingOperation(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	require.NoError(t, err)
-	require.False(t, result.Applied)
-	require.Contains(t, result.Error, "operation is required")
+	must.NoError(err)
+	must.False(result.Applied)
+	must.Contains(result.Error, "operation is required")
 }
 
 func TestMultiStrategy_ReplaceMissingNewString(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -395,14 +407,15 @@ func TestMultiStrategy_ReplaceMissingNewString(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	require.NoError(t, err)
-	require.False(t, result.Applied)
-	require.Contains(t, result.Error, "new_string")
+	must.NoError(err)
+	must.False(result.Applied)
+	must.Contains(result.Error, "new_string")
 }
 
 // TestMultiStrategy_ReplaceMissingOldString covers operation=replace with
 // new_string set but old_string absent.
 func TestMultiStrategy_ReplaceMissingOldString(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -414,14 +427,15 @@ func TestMultiStrategy_ReplaceMissingOldString(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	require.NoError(t, err)
-	require.False(t, result.Applied)
-	require.Contains(t, result.Error, "old_string")
+	must.NoError(err)
+	must.False(result.Applied)
+	must.Contains(result.Error, "old_string")
 }
 
 // TestMultiStrategy_DeleteMissingOldString covers operation=delete with
 // both old_string and new_string absent.
 func TestMultiStrategy_DeleteMissingOldString(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -432,12 +446,13 @@ func TestMultiStrategy_DeleteMissingOldString(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	require.NoError(t, err)
-	require.False(t, result.Applied)
-	require.Contains(t, result.Error, "old_string")
+	must.NoError(err)
+	must.False(result.Applied)
+	must.Contains(result.Error, "old_string")
 }
 
 func TestMultiStrategy_DeleteWithNewStringRejected(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -450,12 +465,13 @@ func TestMultiStrategy_DeleteWithNewStringRejected(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	require.NoError(t, err)
-	require.False(t, result.Applied)
-	require.Contains(t, result.Error, "delete")
+	must.NoError(err)
+	must.False(result.Applied)
+	must.Contains(result.Error, "delete")
 }
 
 func TestMultiStrategy_RewriteMissingContent(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -466,12 +482,13 @@ func TestMultiStrategy_RewriteMissingContent(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	require.NoError(t, err)
-	require.False(t, result.Applied)
-	require.Contains(t, result.Error, "content")
+	must.NoError(err)
+	must.False(result.Applied)
+	must.Contains(result.Error, "content")
 }
 
 func TestMultiStrategy_PatchMissingDiff(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -482,12 +499,13 @@ func TestMultiStrategy_PatchMissingDiff(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	require.NoError(t, err)
-	require.False(t, result.Applied)
-	require.Contains(t, result.Error, "diff")
+	must.NoError(err)
+	must.False(result.Applied)
+	must.Contains(result.Error, "diff")
 }
 
 func TestMultiStrategy_UnknownOperation(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -498,12 +516,13 @@ func TestMultiStrategy_UnknownOperation(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	require.NoError(t, err)
-	require.False(t, result.Applied)
-	require.Contains(t, result.Error, "unknown operation")
+	must.NoError(err)
+	must.False(result.Applied)
+	must.Contains(result.Error, "unknown operation")
 }
 
 func TestMultiStrategy_MissingPath(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -511,11 +530,12 @@ func TestMultiStrategy_MissingPath(t *testing.T) {
 	input := json.RawMessage(`{"operation": "rewrite", "content": "hello"}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	require.NoError(t, err)
-	require.False(t, result.Applied)
+	must.NoError(err)
+	must.False(result.Applied)
 }
 
 func TestMultiStrategy_InvalidJSON_ReturnsError(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -523,10 +543,11 @@ func TestMultiStrategy_InvalidJSON_ReturnsError(t *testing.T) {
 	input := json.RawMessage(`{invalid`)
 
 	_, err := m.Apply(context.Background(), input, exec)
-	require.Error(t, err)
+	must.Error(err)
 }
 
 func TestMultiStrategy_AllStrategiesFail(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -545,14 +566,15 @@ func TestMultiStrategy_AllStrategiesFail(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	require.NoError(t, err)
-	require.False(t, result.Applied)
-	require.NotEmpty(t, result.Error, "expected an error message listing failures")
-	require.Contains(t, result.Error, "udiff")
-	require.Contains(t, result.Error, "search-replace")
+	must.NoError(err)
+	must.False(result.Applied)
+	must.NotEmpty(result.Error, "expected an error message listing failures")
+	must.Contains(result.Error, "udiff")
+	must.Contains(result.Error, "search-replace")
 }
 
 func TestMultiStrategy_PrimaryWinsOverFallback(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -569,23 +591,25 @@ func TestMultiStrategy_PrimaryWinsOverFallback(t *testing.T) {
 	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
-	require.NoError(t, err)
-	require.True(t, result.Applied, "error: %s", result.Error)
+	must.NoError(err)
+	must.True(result.Applied, "error: %s", result.Error)
 
 	content, _ := exec.ReadFile(context.Background(), "test.txt")
-	require.Equal(t, "line1\nline2_via_diff\nline3\n", content)
+	must.Equal("line1\nline2_via_diff\nline3\n", content)
 }
 
 func newTestExecutor(t *testing.T, dir string) executor.Executor {
 	t.Helper()
+	must := require.New(t)
 	exec, err := executor.NewLocalExecutor(dir)
-	require.NoError(t, err)
+	must.NoError(err)
 	return exec
 }
 
 func writeTestFile(t *testing.T, dir, name, content string) {
 	t.Helper()
+	must := require.New(t)
 	path := filepath.Join(dir, name)
-	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
-	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	must.NoError(os.MkdirAll(filepath.Dir(path), 0o755))
+	must.NoError(os.WriteFile(path, []byte(content), 0o644))
 }

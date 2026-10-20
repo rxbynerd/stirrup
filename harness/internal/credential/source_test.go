@@ -38,19 +38,20 @@ func (m *mockSecretStore) Resolve(_ context.Context, ref string) (string, error)
 var _ security.SecretStore = (*mockSecretStore)(nil)
 
 func TestStaticSource_Resolve(t *testing.T) {
+	must := require.New(t)
 	secrets := &mockSecretStore{values: map[string]string{
 		"secret://MY_KEY": "sk-test-123",
 	}}
 	src := &StaticSource{secrets: secrets, ref: "secret://MY_KEY"}
 
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
-	require.NotNil(t, cred.BearerToken, "BearerToken closure should be non-nil for static source")
+	must.NoError(err)
+	must.NotNil(cred.BearerToken, "BearerToken closure should be non-nil for static source")
 
 	tok, err := cred.BearerToken(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, "sk-test-123", tok)
-	require.Nil(t, cred.AWSCredentials, "AWSCredentials should be nil for static source")
+	must.NoError(err)
+	must.Equal("sk-test-123", tok)
+	must.Nil(cred.AWSCredentials, "AWSCredentials should be nil for static source")
 }
 
 // TestStaticSource_ClosureUsesCachedValue verifies that the BearerToken
@@ -59,62 +60,68 @@ func TestStaticSource_Resolve(t *testing.T) {
 // Adapters call the closure on every provider request, so this avoids a
 // SecretStore round-trip per request.
 func TestStaticSource_ClosureUsesCachedValue(t *testing.T) {
+	must := require.New(t)
 	secrets := &mockSecretStore{values: map[string]string{
 		"secret://MY_KEY": "sk-test-123",
 	}}
 	src := &StaticSource{secrets: secrets, ref: "secret://MY_KEY"}
 
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, 1, secrets.calls, "after Resolve")
-	require.NotNil(t, cred.BearerToken)
+	must.NoError(err)
+	must.Equal(1, secrets.calls, "after Resolve")
+	must.NotNil(cred.BearerToken)
 
 	for i := 0; i < 10; i++ {
 		tok, err := cred.BearerToken(context.Background())
-		require.NoError(t, err, "closure call %d", i)
-		require.Equal(t, "sk-test-123", tok, "closure call %d", i)
+		must.NoError(err, "closure call %d", i)
+		must.Equal("sk-test-123", tok, "closure call %d", i)
 	}
 
-	require.Equal(t, 1, secrets.calls, "after 10 closure calls; closure must reuse cached value")
+	must.Equal(1, secrets.calls, "after 10 closure calls; closure must reuse cached value")
 }
 
 func TestStaticSource_ResolveError(t *testing.T) {
+	must := require.New(t)
 	secrets := &mockSecretStore{err: fmt.Errorf("vault unreachable")}
 	src := &StaticSource{secrets: secrets, ref: "secret://MISSING"}
 
 	_, err := src.Resolve(context.Background())
-	require.Error(t, err)
+	must.Error(err)
 }
 
 func TestAWSDefaultSource_Resolve(t *testing.T) {
+	must := require.New(t)
 	src := &AWSDefaultSource{}
 
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
-	require.Nil(t, cred.AWSCredentials, "nil AWSCredentials signals use of the SDK credential chain")
-	require.Nil(t, cred.BearerToken, "BearerToken closure should be nil for AWS default source")
+	must.NoError(err)
+	must.Nil(cred.AWSCredentials, "nil AWSCredentials signals use of the SDK credential chain")
+	must.Nil(cred.BearerToken, "BearerToken closure should be nil for AWS default source")
 }
 
 func TestBuildSource_InfersBedrock(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{Type: "bedrock"}
 
 	src, err := BuildSource(cfg, nil)
-	require.NoError(t, err)
-	require.IsType(t, (*AWSDefaultSource)(nil), src)
+	must.NoError(err)
+	must.IsType((*AWSDefaultSource)(nil), src)
 }
 
 func TestBuildSource_InfersStatic(t *testing.T) {
+	must := require.New(t)
 	secrets := &mockSecretStore{values: map[string]string{
 		"secret://KEY": "value",
 	}}
 	cfg := types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://KEY"}
 
 	src, err := BuildSource(cfg, secrets)
-	require.NoError(t, err)
-	require.IsType(t, (*StaticSource)(nil), src)
+	must.NoError(err)
+	must.IsType((*StaticSource)(nil), src)
 }
 
 func TestBuildSource_ExplicitStatic(t *testing.T) {
+	must := require.New(t)
 	secrets := &mockSecretStore{values: map[string]string{
 		"secret://KEY": "value",
 	}}
@@ -127,11 +134,12 @@ func TestBuildSource_ExplicitStatic(t *testing.T) {
 	}
 
 	src, err := BuildSource(cfg, secrets)
-	require.NoError(t, err)
-	require.IsType(t, (*StaticSource)(nil), src)
+	must.NoError(err)
+	must.IsType((*StaticSource)(nil), src)
 }
 
 func TestBuildSource_ExplicitAWSDefault(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{
 		Type: "bedrock",
 		Credential: &types.CredentialConfig{
@@ -140,11 +148,12 @@ func TestBuildSource_ExplicitAWSDefault(t *testing.T) {
 	}
 
 	src, err := BuildSource(cfg, nil)
-	require.NoError(t, err)
-	require.IsType(t, (*AWSDefaultSource)(nil), src)
+	must.NoError(err)
+	must.IsType((*AWSDefaultSource)(nil), src)
 }
 
 func TestBuildSource_WebIdentity(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{
 		Type:   "bedrock",
 		Region: "us-east-1",
@@ -159,8 +168,8 @@ func TestBuildSource_WebIdentity(t *testing.T) {
 	}
 
 	src, err := BuildSource(cfg, nil)
-	require.NoError(t, err)
-	require.IsType(t, (*WebIdentityAWSSource)(nil), src)
+	must.NoError(err)
+	must.IsType((*WebIdentityAWSSource)(nil), src)
 }
 
 // TestBuildSource_AzureWorkloadIdentity_BadTokenSourceType verifies that
@@ -168,6 +177,7 @@ func TestBuildSource_WebIdentity(t *testing.T) {
 // failure with "build token source" rather than silently falling
 // through to a malformed or nil source.
 func TestBuildSource_AzureWorkloadIdentity_BadTokenSourceType(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{
 		Type: "openai-compatible",
 		Credential: &types.CredentialConfig{
@@ -181,10 +191,11 @@ func TestBuildSource_AzureWorkloadIdentity_BadTokenSourceType(t *testing.T) {
 	}
 
 	_, err := BuildSource(cfg, nil)
-	require.ErrorContains(t, err, "build token source")
+	must.ErrorContains(err, "build token source")
 }
 
 func TestBuildSource_UnsupportedType(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{
 		Type: "anthropic",
 		Credential: &types.CredentialConfig{
@@ -193,96 +204,109 @@ func TestBuildSource_UnsupportedType(t *testing.T) {
 	}
 
 	_, err := BuildSource(cfg, nil)
-	require.Error(t, err)
+	must.Error(err)
 }
 
 func TestBuildTokenSource_GKEMetadata(t *testing.T) {
+	must := require.New(t)
 	ts, err := BuildTokenSource(&types.TokenSourceConfig{
 		Type:     "gke-metadata",
 		Audience: "sts.amazonaws.com",
 	})
-	require.NoError(t, err)
-	require.IsType(t, (*GKEMetadataTokenSource)(nil), ts)
+	must.NoError(err)
+	must.IsType((*GKEMetadataTokenSource)(nil), ts)
 }
 
 func TestBuildTokenSource_File(t *testing.T) {
+	must := require.New(t)
 	ts, err := BuildTokenSource(&types.TokenSourceConfig{
 		Type: "file",
 		Path: "/tmp/token",
 	})
-	require.NoError(t, err)
-	require.IsType(t, (*FileTokenSource)(nil), ts)
+	must.NoError(err)
+	must.IsType((*FileTokenSource)(nil), ts)
 }
 
 func TestBuildTokenSource_Env(t *testing.T) {
+	must := require.New(t)
 	ts, err := BuildTokenSource(&types.TokenSourceConfig{
 		Type:   "env",
 		EnvVar: "TOKEN",
 	})
-	require.NoError(t, err)
-	require.IsType(t, (*EnvTokenSource)(nil), ts)
+	must.NoError(err)
+	must.IsType((*EnvTokenSource)(nil), ts)
 }
 
 func TestBuildTokenSource_NilConfigErrors(t *testing.T) {
+	must := require.New(t)
 	_, err := BuildTokenSource(nil)
-	require.Error(t, err)
+	must.Error(err)
 }
 
 func TestBuildTokenSource_UnsupportedType(t *testing.T) {
+	must := require.New(t)
 	_, err := BuildTokenSource(&types.TokenSourceConfig{Type: "unknown-source"})
-	require.Error(t, err)
+	must.Error(err)
 }
 
 func TestBuildTokenSource_AWSIRSA(t *testing.T) {
+	must := require.New(t)
 	ts, err := BuildTokenSource(&types.TokenSourceConfig{Type: "aws-irsa"})
-	require.NoError(t, err)
-	require.IsType(t, (*AWSIRSATokenSource)(nil), ts)
+	must.NoError(err)
+	must.IsType((*AWSIRSATokenSource)(nil), ts)
 }
 
 func TestBuildTokenSource_AzureIMDS(t *testing.T) {
+	must := require.New(t)
 	ts, err := BuildTokenSource(&types.TokenSourceConfig{
 		Type:     "azure-imds",
 		Resource: "https://management.azure.com/",
 	})
-	require.NoError(t, err)
-	require.IsType(t, (*AzureIMDSTokenSource)(nil), ts)
+	must.NoError(err)
+	must.IsType((*AzureIMDSTokenSource)(nil), ts)
 }
 
 func TestBuildTokenSource_AzureIMDS_MissingResource(t *testing.T) {
+	must := require.New(t)
 	_, err := BuildTokenSource(&types.TokenSourceConfig{Type: "azure-imds"})
-	require.Error(t, err)
+	must.Error(err)
 }
 
 // TestBuildTokenSource_GitHubActionsOIDC needs the env var set before
 // BuildTokenSource runs: the constructor reads the issuance URL once and
 // keeps it for the source's lifetime.
 func TestBuildTokenSource_GitHubActionsOIDC(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://token.actions.githubusercontent.com/?api-version=2.0")
 
 	ts, err := BuildTokenSource(&types.TokenSourceConfig{
 		Type:     "github-actions-oidc",
 		Audience: "sts.amazonaws.com",
 	})
-	require.NoError(t, err)
-	require.IsType(t, (*GitHubActionsOIDCTokenSource)(nil), ts)
+	must.NoError(err)
+	must.IsType((*GitHubActionsOIDCTokenSource)(nil), ts)
 }
 
 func TestBuildTokenSource_GitHubActionsOIDC_MissingURLEnv(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
 
 	_, err := BuildTokenSource(&types.TokenSourceConfig{
 		Type:     "github-actions-oidc",
 		Audience: "sts.amazonaws.com",
 	})
-	require.ErrorContains(t, err, "ACTIONS_ID_TOKEN_REQUEST_URL")
+	must.ErrorContains(err, "ACTIONS_ID_TOKEN_REQUEST_URL")
 }
 
 func TestBuildTokenSource_GitHubActionsOIDC_MissingAudience(t *testing.T) {
+	must := require.New(t)
 	_, err := BuildTokenSource(&types.TokenSourceConfig{Type: "github-actions-oidc"})
-	require.Error(t, err)
+	must.Error(err)
 }
 
 func TestBuildSource_GCPWorkloadIdentityFederation(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cfg := types.ProviderConfig{
 		Type: "gemini",
 		Credential: &types.CredentialConfig{
@@ -296,16 +320,17 @@ func TestBuildSource_GCPWorkloadIdentityFederation(t *testing.T) {
 	}
 
 	src, err := BuildSource(cfg, nil)
-	require.NoError(t, err)
+	must.NoError(err)
 	wif, ok := src.(*GCPWorkloadIdentityFederationSource)
-	require.True(t, ok, "expected *GCPWorkloadIdentityFederationSource, got %T", src)
+	must.True(ok, "expected *GCPWorkloadIdentityFederationSource, got %T", src)
 
-	assert.Equal(t, cfg.Credential.Audience, wif.audience)
-	assert.Equal(t, cfg.Credential.ServiceAccount, wif.serviceAccount)
-	assert.IsType(t, (*AWSIRSATokenSource)(nil), wif.tokenSource, "wrapped token source")
+	check.Equal(cfg.Credential.Audience, wif.audience)
+	check.Equal(cfg.Credential.ServiceAccount, wif.serviceAccount)
+	check.IsType((*AWSIRSATokenSource)(nil), wif.tokenSource, "wrapped token source")
 }
 
 func TestBuildSource_GCPWorkloadIdentityFederation_MissingAudience(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{
 		Type: "gemini",
 		Credential: &types.CredentialConfig{
@@ -317,10 +342,11 @@ func TestBuildSource_GCPWorkloadIdentityFederation_MissingAudience(t *testing.T)
 	}
 
 	_, err := BuildSource(cfg, nil)
-	require.Error(t, err)
+	must.Error(err)
 }
 
 func TestBuildSource_GCPWorkloadIdentityFederation_MissingTokenSource(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{
 		Type: "gemini",
 		Credential: &types.CredentialConfig{
@@ -330,7 +356,7 @@ func TestBuildSource_GCPWorkloadIdentityFederation_MissingTokenSource(t *testing
 	}
 
 	_, err := BuildSource(cfg, nil)
-	require.Error(t, err)
+	must.Error(err)
 }
 
 // TestBuildSource_AzureWorkloadIdentity verifies that the dispatch
@@ -339,6 +365,8 @@ func TestBuildSource_GCPWorkloadIdentityFederation_MissingTokenSource(t *testing
 // validated upstream (in types.ValidateRunConfig), so the dispatch
 // itself only needs to wire fields.
 func TestBuildSource_AzureWorkloadIdentity(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	cfg := types.ProviderConfig{
 		Type: "openai-compatible",
 		Credential: &types.CredentialConfig{
@@ -354,19 +382,20 @@ func TestBuildSource_AzureWorkloadIdentity(t *testing.T) {
 	}
 
 	src, err := BuildSource(cfg, nil)
-	require.NoError(t, err)
+	must.NoError(err)
 	azure, ok := src.(*AzureWorkloadIdentitySource)
-	require.True(t, ok, "expected *AzureWorkloadIdentitySource, got %T", src)
+	must.True(ok, "expected *AzureWorkloadIdentitySource, got %T", src)
 
-	assert.Equal(t, cfg.Credential.AzureTenantID, azure.tenantID)
-	assert.Equal(t, cfg.Credential.AzureClientID, azure.clientID)
-	assert.Equal(t, cfg.Credential.AzureScope, azure.scope)
-	assert.IsType(t, (*FileTokenSource)(nil), azure.tokenSource, "wrapped token source")
+	check.Equal(cfg.Credential.AzureTenantID, azure.tenantID)
+	check.Equal(cfg.Credential.AzureClientID, azure.clientID)
+	check.Equal(cfg.Credential.AzureScope, azure.scope)
+	check.IsType((*FileTokenSource)(nil), azure.tokenSource, "wrapped token source")
 }
 
 // TestBuildSource_AzureWorkloadIdentity_DefaultsScope verifies that an
 // empty AzureScope yields the Cognitive Services default scope.
 func TestBuildSource_AzureWorkloadIdentity_DefaultsScope(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{
 		Type: "openai-responses",
 		Credential: &types.CredentialConfig{
@@ -381,13 +410,14 @@ func TestBuildSource_AzureWorkloadIdentity_DefaultsScope(t *testing.T) {
 	}
 
 	src, err := BuildSource(cfg, nil)
-	require.NoError(t, err)
+	must.NoError(err)
 	azure, ok := src.(*AzureWorkloadIdentitySource)
-	require.True(t, ok, "expected *AzureWorkloadIdentitySource, got %T", src)
-	require.Equal(t, "https://cognitiveservices.azure.com/.default", azure.scope)
+	must.True(ok, "expected *AzureWorkloadIdentitySource, got %T", src)
+	must.Equal("https://cognitiveservices.azure.com/.default", azure.scope)
 }
 
 func TestBuildSource_AzureWorkloadIdentity_MissingTenant(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{
 		Type: "openai-compatible",
 		Credential: &types.CredentialConfig{
@@ -401,10 +431,11 @@ func TestBuildSource_AzureWorkloadIdentity_MissingTenant(t *testing.T) {
 	}
 
 	_, err := BuildSource(cfg, nil)
-	require.ErrorContains(t, err, "azureTenantId")
+	must.ErrorContains(err, "azureTenantId")
 }
 
 func TestBuildSource_AzureWorkloadIdentity_MissingClient(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{
 		Type: "openai-compatible",
 		Credential: &types.CredentialConfig{
@@ -418,10 +449,11 @@ func TestBuildSource_AzureWorkloadIdentity_MissingClient(t *testing.T) {
 	}
 
 	_, err := BuildSource(cfg, nil)
-	require.ErrorContains(t, err, "azureClientId")
+	must.ErrorContains(err, "azureClientId")
 }
 
 func TestBuildSource_AzureWorkloadIdentity_MissingTokenSource(t *testing.T) {
+	must := require.New(t)
 	cfg := types.ProviderConfig{
 		Type: "openai-compatible",
 		Credential: &types.CredentialConfig{
@@ -432,5 +464,5 @@ func TestBuildSource_AzureWorkloadIdentity_MissingTokenSource(t *testing.T) {
 	}
 
 	_, err := BuildSource(cfg, nil)
-	require.ErrorContains(t, err, "tokenSource")
+	must.ErrorContains(err, "tokenSource")
 }

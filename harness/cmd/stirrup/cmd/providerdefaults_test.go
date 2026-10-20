@@ -11,8 +11,9 @@ import (
 
 func resolveProviderDefaults(t *testing.T, base string, args ...string) (*types.RunConfig, error) {
 	t.Helper()
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
-	require.NoError(t, cmd.ParseFlags(args))
+	must.NoError(cmd.ParseFlags(args))
 	sources := RunConfigSources{Cmd: cmd, Resolve: ResolveBase}
 	if base != "" {
 		sources.Stdin = strings.NewReader(base)
@@ -39,10 +40,11 @@ func TestProviderDefaults_FlagOnlyKeyRefAndModel(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			cfg, err := resolveProviderDefaults(t, "", tc.args...)
-			require.NoError(t, err)
-			require.Equal(t, tc.wantKeyRef, cfg.Provider.APIKeyRef)
-			require.Equal(t, tc.wantModel, cfg.ModelRouter.Model)
+			must.NoError(err)
+			must.Equal(tc.wantKeyRef, cfg.Provider.APIKeyRef)
+			must.Equal(tc.wantModel, cfg.ModelRouter.Model)
 		})
 	}
 }
@@ -50,11 +52,12 @@ func TestProviderDefaults_FlagOnlyKeyRefAndModel(t *testing.T) {
 func TestProviderDefaults_MissingModelNamesProviderAndFlag(t *testing.T) {
 	for _, provider := range []string{"openai-responses", "openai-compatible", "bedrock", "gemini"} {
 		t.Run(provider, func(t *testing.T) {
+			must := require.New(t)
 			_, err := resolveProviderDefaults(t, "", "--provider", provider)
-			require.Error(t, err)
-			require.ErrorContains(t, err, "--model")
-			require.ErrorContains(t, err, "--provider="+provider)
-			require.Equal(t, exitValidation, classifyExitCode(err))
+			must.Error(err)
+			must.ErrorContains(err, "--model")
+			must.ErrorContains(err, "--provider="+provider)
+			must.Equal(exitValidation, classifyExitCode(err))
 		})
 	}
 }
@@ -63,46 +66,51 @@ func TestProviderDefaults_ConfigFileValuesWin(t *testing.T) {
 	// The file base is anthropic with an explicit key and model; neither
 	// default may replace them, with or without a provider flag.
 	t.Run("file values are kept", func(t *testing.T) {
+		must := require.New(t)
 		cfg, err := resolveProviderDefaults(t, minimalRunConfigJSON(t))
-		require.NoError(t, err)
-		require.Equal(t, "secret://FILE_KEY", cfg.Provider.APIKeyRef)
-		require.Equal(t, "claude-sonnet-4-6", cfg.ModelRouter.Model)
+		must.NoError(err)
+		must.Equal("secret://FILE_KEY", cfg.Provider.APIKeyRef)
+		must.Equal("claude-sonnet-4-6", cfg.ModelRouter.Model)
 	})
 
 	t.Run("flags override file values", func(t *testing.T) {
+		must := require.New(t)
 		cfg, err := resolveProviderDefaults(t, minimalRunConfigJSON(t),
 			"--model", "claude-opus-4-7", "--api-key-ref", "secret://FLAG_KEY")
-		require.NoError(t, err)
-		require.Equal(t, "secret://FLAG_KEY", cfg.Provider.APIKeyRef)
-		require.Equal(t, "claude-opus-4-7", cfg.ModelRouter.Model)
+		must.NoError(err)
+		must.Equal("secret://FLAG_KEY", cfg.Provider.APIKeyRef)
+		must.Equal("claude-opus-4-7", cfg.ModelRouter.Model)
 	})
 }
 
 func TestProviderDefaults_FileProviderDrivesDefaults(t *testing.T) {
+	must := require.New(t)
 	base := `{"provider":{"type":"openai-responses"},"modelRouter":{"type":"static","provider":"openai-responses"}}`
 
 	cfg, err := resolveProviderDefaults(t, base, "--model", "gpt-5.4-nano")
-	require.NoError(t, err)
-	require.Equal(t, "secret://OPENAI_API_KEY", cfg.Provider.APIKeyRef)
+	must.NoError(err)
+	must.Equal("secret://OPENAI_API_KEY", cfg.Provider.APIKeyRef)
 
 	_, err = resolveProviderDefaults(t, base)
-	require.ErrorContains(t, err, "--provider=openai-responses")
+	must.ErrorContains(err, "--provider=openai-responses")
 }
 
 func TestProviderDefaults_EmptyKeyFlagOptsOutOnFileBase(t *testing.T) {
+	must := require.New(t)
 	base := `{"provider":{"type":"openai-responses"},"modelRouter":{"type":"static","model":"gpt-5.4-nano"}}`
 	cfg, err := resolveProviderDefaults(t, base, "--api-key-ref=")
-	require.NoError(t, err)
-	require.Empty(t, cfg.Provider.APIKeyRef)
+	must.NoError(err)
+	must.Empty(cfg.Provider.APIKeyRef)
 }
 
 func TestProviderDefaults_KeylessDocumentGatewayGetsNoKeyDefault(t *testing.T) {
 	for _, providerType := range []string{"openai-compatible", "openai-responses"} {
 		t.Run(providerType, func(t *testing.T) {
+			must := require.New(t)
 			base := `{"provider":{"type":"` + providerType + `","baseUrl":"http://localhost:1234/v1"},"modelRouter":{"type":"static","model":"qwen"}}`
 			cfg, err := resolveProviderDefaults(t, base)
-			require.NoError(t, err)
-			require.Empty(t, cfg.Provider.APIKeyRef, "a keyless gateway document must not get a key default")
+			must.NoError(err)
+			must.Empty(cfg.Provider.APIKeyRef, "a keyless gateway document must not get a key default")
 		})
 	}
 }
@@ -141,41 +149,46 @@ func TestProviderDefaults_DocumentKeyDefaultKeptWithoutGateway(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			cfg, err := resolveProviderDefaults(t, tc.base, tc.args...)
-			require.NoError(t, err)
-			require.Equal(t, tc.want, cfg.Provider.APIKeyRef)
+			must.NoError(err)
+			must.Equal(tc.want, cfg.Provider.APIKeyRef)
 		})
 	}
 }
 
 func TestProviderDefaults_FlagBuiltGatewayKeepsKeyDefault(t *testing.T) {
+	must := require.New(t)
 	cfg, err := resolveProviderDefaults(t, "",
 		"--provider", "openai-compatible", "--model", "qwen", "--base-url", "http://localhost:1234/v1")
-	require.NoError(t, err)
-	require.Equal(t, "secret://OPENAI_API_KEY", cfg.Provider.APIKeyRef)
+	must.NoError(err)
+	must.Equal("secret://OPENAI_API_KEY", cfg.Provider.APIKeyRef)
 }
 
 func TestProviderDefaults_CredentialBlockSuppressesKeyDefault(t *testing.T) {
+	must := require.New(t)
 	cfg, err := resolveProviderDefaults(t, "",
 		"--provider", "openai-responses", "--model", "m",
 		"--openai-identity-provider-id", "idp_1", "--openai-service-account-id", "sa_1")
-	require.NoError(t, err)
-	require.Empty(t, cfg.Provider.APIKeyRef, "no key default applies under workload identity federation")
+	must.NoError(err)
+	must.Empty(cfg.Provider.APIKeyRef, "no key default applies under workload identity federation")
 }
 
 func TestProviderDefaults_NonStaticRouterLeftToValidation(t *testing.T) {
+	must := require.New(t)
 	base := `{"provider":{"type":"openai-compatible"},"modelRouter":{"type":"dynamic","cheapModel":"a","expensiveModel":"b"}}`
 	cfg, err := resolveProviderDefaults(t, base)
-	require.NoError(t, err)
-	require.Empty(t, cfg.ModelRouter.Model)
+	must.NoError(err)
+	must.Empty(cfg.ModelRouter.Model)
 }
 
 func TestProviderDefaults_GeminiRejectsClaudeModel(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
-	require.NoError(t, cmd.ParseFlags([]string{
+	must.NoError(cmd.ParseFlags([]string{
 		"--provider", "gemini", "--model", "claude-sonnet-4-6",
 		"--gcp-project", "p", "--prompt", "x",
 	}))
 	_, err := BuildRunConfig(RunConfigSources{Cmd: cmd, Resolve: ResolveAll})
-	require.ErrorContains(t, err, "Anthropic model name")
+	must.ErrorContains(err, "Anthropic model name")
 }

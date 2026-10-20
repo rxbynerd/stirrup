@@ -42,6 +42,8 @@ func liveModel(envVar, fallback string) string {
 }
 
 func runLiveDiffReview(t *testing.T, keyEnv string, llm types.JudgeLLMConfig) {
+	check := assert.New(t)
+	must := require.New(t)
 	if os.Getenv("STIRRUP_EVAL_LIVE_JUDGE") != "1" {
 		t.Skip("set STIRRUP_EVAL_LIVE_JUDGE=1 to call a live judge provider")
 	}
@@ -55,23 +57,23 @@ func runLiveDiffReview(t *testing.T, keyEnv string, llm types.JudgeLLMConfig) {
 
 	ctx := context.Background()
 	task := types.EvalTask{ID: "live", Judge: j}
-	require.NoError(t, PreflightSuite(ctx, []types.EvalTask{task}, Options{}), "preflight")
+	must.NoError(PreflightSuite(ctx, []types.EvalTask{task}, Options{}), "preflight")
 
 	jctx := changedJudgeContext(t, Options{})
 	verdict, err := Evaluate(ctx, j, jctx)
-	require.NoError(t, err, "Evaluate")
+	must.NoError(err, "Evaluate")
 	rec := verdict.Record
-	require.NotNil(t, rec, "verdict has no record")
+	must.NotNil(rec, "verdict has no record")
 	t.Logf("verdict=%s parse=%s stop=%s served=%s tokens=%d/%d latency=%dms reason=%q",
 		verdict.Status, rec.ParseStatus, rec.StopReason, rec.ServedModel,
 		rec.InputTokens, rec.OutputTokens, rec.LatencyMs, verdict.Reason)
 
-	assert.Contains(t, []string{types.JudgeStatusPass, types.JudgeStatusFail}, verdict.Status,
+	check.Contains([]string{types.JudgeStatusPass, types.JudgeStatusFail}, verdict.Status,
 		"verdict status should be pass or fail")
-	assert.Contains(t, []string{types.JudgeParseOK, types.JudgeParseLastMatch}, rec.ParseStatus,
+	check.Contains([]string{types.JudgeParseOK, types.JudgeParseLastMatch}, rec.ParseStatus,
 		"the nonce-bound verdict should parse")
-	assert.NotEmpty(t, rec.ServedModel, "record lacks provider metadata: %+v", rec)
-	assert.NotZero(t, rec.InputTokens, "record lacks provider metadata: %+v", rec)
+	check.NotEmpty(rec.ServedModel, "record lacks provider metadata: %+v", rec)
+	check.NotZero(rec.InputTokens, "record lacks provider metadata: %+v", rec)
 	// A plain bool assertion keeps the key out of failure output, which NotContains would print.
-	assert.False(t, strings.Contains(verdict.Reason, key), "verdict reason contains the API key") //nolint:testifylint // NotContains prints the secret on failure
+	check.False(strings.Contains(verdict.Reason, key), "verdict reason contains the API key") //nolint:testifylint // NotContains prints the secret on failure
 }

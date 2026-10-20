@@ -35,24 +35,26 @@ func baselineRunConfig() *types.RunConfig {
 // TestMergeOverrides_NoOverlay confirms a nil overlay leaves the baseline
 // untouched.
 func TestMergeOverrides_NoOverlay(t *testing.T) {
+	must := require.New(t)
 	baseline := baselineRunConfig()
 	got := mergeOverrides(baseline, nil)
-	require.NotNil(t, got, "expected non-nil merged config")
-	require.Equal(t, 10, got.MaxTurns)
-	require.Equal(t, "execution", got.Mode)
+	must.NotNil(got, "expected non-nil merged config")
+	must.Equal(10, got.MaxTurns)
+	must.Equal("execution", got.Mode)
 }
 
 // TestMergeOverrides_SparseField asserts a sparse overlay only changes
 // the named field; every other baseline field passes through unchanged.
 func TestMergeOverrides_SparseField(t *testing.T) {
+	must := require.New(t)
 	baseline := baselineRunConfig()
 	four := 4
 	overlay := &types.RunConfigOverrides{MaxTurns: &four}
 
 	got := mergeOverrides(baseline, overlay)
-	require.Equal(t, 4, got.MaxTurns)
-	require.Equal(t, "execution", got.Mode, "Mode is not in the overlay")
-	require.Equal(t, "anthropic", got.Provider.Type, "Provider is not in the overlay")
+	must.Equal(4, got.MaxTurns)
+	must.Equal("execution", got.Mode, "Mode is not in the overlay")
+	must.Equal("anthropic", got.Provider.Type, "Provider is not in the overlay")
 }
 
 // TestMergeOverrides_PointerFieldIsCopiedNotAliased covers an overlay
@@ -60,6 +62,7 @@ func TestMergeOverrides_SparseField(t *testing.T) {
 // pointer copies are deref'd so the merged config does not alias overlay
 // memory.
 func TestMergeOverrides_PointerFieldIsCopiedNotAliased(t *testing.T) {
+	must := require.New(t)
 	baseline := baselineRunConfig()
 	overlay := &types.RunConfigOverrides{
 		Mode:     "planning",
@@ -67,53 +70,56 @@ func TestMergeOverrides_PointerFieldIsCopiedNotAliased(t *testing.T) {
 	}
 
 	got := mergeOverrides(baseline, overlay)
-	require.Equal(t, "planning", got.Mode)
-	require.Equal(t, "openai-responses", got.Provider.Type)
+	must.Equal("planning", got.Mode)
+	must.Equal("openai-responses", got.Provider.Type)
 	// Pointer dereference, not alias: mutating the overlay's Provider
 	// must not be observable on the merged result.
 	overlay.Provider.Type = "mutated"
-	require.NotEqual(t, "mutated", got.Provider.Type, "merged Provider aliases overlay-owned memory")
+	must.NotEqual("mutated", got.Provider.Type, "merged Provider aliases overlay-owned memory")
 }
 
 // TestMergeOverrides_NilBaseline asserts a nil baseline returns nil
 // rather than fabricating a half-formed config.
 func TestMergeOverrides_NilBaseline(t *testing.T) {
+	must := require.New(t)
 	four := 4
 	got := mergeOverrides(nil, &types.RunConfigOverrides{MaxTurns: &four})
-	require.Nil(t, got, "nil baseline must return nil")
+	must.Nil(got, "nil baseline must return nil")
 }
 
 // TestBuildMergedConfig_FromInlineBaseline exercises the suite-inline
 // baseline path end-to-end: clone, apply overrides, return a fresh
 // allocation not aliasing the suite's original RunConfig pointer.
 func TestBuildMergedConfig_FromInlineBaseline(t *testing.T) {
+	must := require.New(t)
 	suite := types.EvalSuite{
 		ID:        "s",
 		Tasks:     []types.EvalTask{{ID: "t1"}},
 		RunConfig: baselineRunConfig(),
 	}
 	baseline, err := resolveBaseline(suite)
-	require.NoError(t, err)
-	require.NotNil(t, baseline, "expected non-nil baseline for inline run_config")
+	must.NoError(err)
+	must.NotNil(baseline, "expected non-nil baseline for inline run_config")
 
 	four := 4
 	merged, err := buildMergedConfig(baseline, &types.RunConfigOverrides{MaxTurns: &four})
-	require.NoError(t, err)
-	require.Equal(t, 4, merged.MaxTurns)
+	must.NoError(err)
+	must.Equal(4, merged.MaxTurns)
 	// Mutating the merged result must not touch the suite spec pointer.
 	merged.MaxTurns = 99
-	require.NotEqual(t, 99, suite.RunConfig.MaxTurns, "merged config aliases suite.RunConfig; clone must be a deep copy")
+	must.NotEqual(99, suite.RunConfig.MaxTurns, "merged config aliases suite.RunConfig; clone must be a deep copy")
 }
 
 // TestBuildMergedConfig_FromFileBaseline asserts the run_config_file
 // path reads and decodes a RunConfig and applies overrides identically
 // to the inline path.
 func TestBuildMergedConfig_FromFileBaseline(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "baseline.json")
 	data, err := json.Marshal(baselineRunConfig())
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(path, data, 0o600))
+	must.NoError(err)
+	must.NoError(os.WriteFile(path, data, 0o600))
 
 	suite := types.EvalSuite{
 		ID:            "s",
@@ -121,23 +127,24 @@ func TestBuildMergedConfig_FromFileBaseline(t *testing.T) {
 		RunConfigFile: path,
 	}
 	baseline, err := resolveBaseline(suite)
-	require.NoError(t, err)
-	require.NotNil(t, baseline, "expected non-nil baseline for run_config_file")
-	require.Equal(t, "anthropic", baseline.Provider.Type)
+	must.NoError(err)
+	must.NotNil(baseline, "expected non-nil baseline for run_config_file")
+	must.Equal("anthropic", baseline.Provider.Type)
 
 	four := 4
 	merged, err := buildMergedConfig(baseline, &types.RunConfigOverrides{MaxTurns: &four})
-	require.NoError(t, err)
-	require.Equal(t, 4, merged.MaxTurns)
+	must.NoError(err)
+	must.Equal(4, merged.MaxTurns)
 }
 
 // TestResolveBaseline_NoSourceReturnsNil pins the legacy path: a suite with
 // neither a file nor an inline block returns (nil, nil).
 func TestResolveBaseline_NoSourceReturnsNil(t *testing.T) {
+	must := require.New(t)
 	suite := types.EvalSuite{ID: "s", Tasks: []types.EvalTask{{ID: "t1"}}}
 	baseline, err := resolveBaseline(suite)
-	require.NoError(t, err)
-	require.Nil(t, baseline, "expected nil baseline for legacy suite")
+	must.NoError(err)
+	must.Nil(baseline, "expected nil baseline for legacy suite")
 }
 
 // TestResolveBaseline_RejectsInvalidFiles covers the failure modes of the
@@ -159,8 +166,9 @@ func TestResolveBaseline_RejectsInvalidFiles(t *testing.T) {
 		{
 			name: "directory",
 			setup: func(t *testing.T) string {
+				must := require.New(t)
 				p := filepath.Join(dir, "dir")
-				require.NoError(t, os.Mkdir(p, 0o755))
+				must.NoError(os.Mkdir(p, 0o755))
 				return p
 			},
 			// Directories fail the regular-file guard, the same guard that
@@ -170,8 +178,9 @@ func TestResolveBaseline_RejectsInvalidFiles(t *testing.T) {
 		{
 			name: "empty file",
 			setup: func(t *testing.T) string {
+				must := require.New(t)
 				p := filepath.Join(dir, "empty.json")
-				require.NoError(t, os.WriteFile(p, nil, 0o600))
+				must.NoError(os.WriteFile(p, nil, 0o600))
 				return p
 			},
 			errContains: "file is empty",
@@ -179,8 +188,9 @@ func TestResolveBaseline_RejectsInvalidFiles(t *testing.T) {
 		{
 			name: "unknown field",
 			setup: func(t *testing.T) string {
+				must := require.New(t)
 				p := filepath.Join(dir, "bad.json")
-				require.NoError(t, os.WriteFile(p, []byte(`{"thisFieldDoesNotExist":true}`), 0o600))
+				must.NoError(os.WriteFile(p, []byte(`{"thisFieldDoesNotExist":true}`), 0o600))
 				return p
 			},
 			errContains: "parsing run_config_file",
@@ -190,9 +200,10 @@ func TestResolveBaseline_RejectsInvalidFiles(t *testing.T) {
 			// since the size guard fires before json.Decode.
 			name: "oversized file",
 			setup: func(t *testing.T) string {
+				must := require.New(t)
 				p := filepath.Join(dir, "oversize.json")
 				big := bytes.Repeat([]byte("x"), int(maxRunConfigFileBytes)+1)
-				require.NoError(t, os.WriteFile(p, big, 0o600))
+				must.NoError(os.WriteFile(p, big, 0o600))
 				return p
 			},
 			errContains: "exceeds",
@@ -200,10 +211,11 @@ func TestResolveBaseline_RejectsInvalidFiles(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			path := tc.setup(t)
 			suite := types.EvalSuite{ID: "s", Tasks: []types.EvalTask{{ID: "t1"}}, RunConfigFile: path}
 			_, err := resolveBaseline(suite)
-			require.ErrorContains(t, err, tc.errContains)
+			must.ErrorContains(err, tc.errContains)
 		})
 	}
 }
@@ -213,6 +225,7 @@ func TestResolveBaseline_RejectsInvalidFiles(t *testing.T) {
 // loadRunConfigFile rather than blocking os.ReadFile indefinitely.
 // FIFOs are a POSIX construct; the test skips on non-unix platforms.
 func TestResolveBaseline_RejectsFIFO(t *testing.T) {
+	must := require.New(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("FIFOs unsupported on Windows")
 	}
@@ -224,14 +237,15 @@ func TestResolveBaseline_RejectsFIFO(t *testing.T) {
 
 	suite := types.EvalSuite{ID: "s", Tasks: []types.EvalTask{{ID: "t1"}}, RunConfigFile: fifo}
 	_, err := resolveBaseline(suite)
-	require.Error(t, err, "expected error opening a FIFO")
-	require.ErrorContains(t, err, "not a regular file")
+	must.Error(err, "expected error opening a FIFO")
+	must.ErrorContains(err, "not a regular file")
 }
 
 // TestResolveBaseline_RejectsBothFileAndInlineBlock pins the
 // mutual-exclusion guard for Go callers that construct EvalSuite
 // directly, bypassing the HCL parser's own check.
 func TestResolveBaseline_RejectsBothFileAndInlineBlock(t *testing.T) {
+	must := require.New(t)
 	suite := types.EvalSuite{
 		ID:            "dual",
 		Tasks:         []types.EvalTask{{ID: "t1"}},
@@ -239,9 +253,9 @@ func TestResolveBaseline_RejectsBothFileAndInlineBlock(t *testing.T) {
 		RunConfig:     baselineRunConfig(),
 	}
 	_, err := resolveBaseline(suite)
-	require.Error(t, err, "expected error when both run_config_file and run_config are set")
-	require.ErrorContains(t, err, "mutually exclusive")
-	require.ErrorContains(t, err, "dual", "error should name the suite ID")
+	must.Error(err, "expected error when both run_config_file and run_config are set")
+	must.ErrorContains(err, "mutually exclusive")
+	must.ErrorContains(err, "dual", "error should name the suite ID")
 }
 
 // TestMergeOverrides_AllOverlayFields fans the merge contract over
@@ -249,53 +263,58 @@ func TestResolveBaseline_RejectsBothFileAndInlineBlock(t *testing.T) {
 // EditStrategy, Verifier, MaxTurns).
 func TestMergeOverrides_AllOverlayFields(t *testing.T) {
 	t.Run("ModelRouter", func(t *testing.T) {
+		must := require.New(t)
 		baseline := baselineRunConfig()
 		overlay := &types.RunConfigOverrides{
 			ModelRouter: &types.ModelRouterConfig{Type: "static", Model: "claude-haiku-5-5"},
 		}
 		got := mergeOverrides(baseline, overlay)
-		require.Equal(t, "static", got.ModelRouter.Type)
-		require.Equal(t, "claude-haiku-5-5", got.ModelRouter.Model)
+		must.Equal("static", got.ModelRouter.Type)
+		must.Equal("claude-haiku-5-5", got.ModelRouter.Model)
 	})
 
 	t.Run("ContextStrategy", func(t *testing.T) {
+		must := require.New(t)
 		baseline := baselineRunConfig()
 		overlay := &types.RunConfigOverrides{
 			ContextStrategy: &types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 12000},
 		}
 		got := mergeOverrides(baseline, overlay)
-		require.Equal(t, "sliding-window", got.ContextStrategy.Type)
-		require.Equal(t, 12000, got.ContextStrategy.MaxTokens)
+		must.Equal("sliding-window", got.ContextStrategy.Type)
+		must.Equal(12000, got.ContextStrategy.MaxTokens)
 	})
 
 	t.Run("EditStrategy", func(t *testing.T) {
+		must := require.New(t)
 		baseline := baselineRunConfig()
 		threshold := 0.7
 		overlay := &types.RunConfigOverrides{
 			EditStrategy: &types.EditStrategyConfig{Type: "multi", FuzzyThreshold: &threshold},
 		}
 		got := mergeOverrides(baseline, overlay)
-		require.Equal(t, "multi", got.EditStrategy.Type)
-		require.NotNil(t, got.EditStrategy.FuzzyThreshold)
-		require.InDelta(t, 0.7, *got.EditStrategy.FuzzyThreshold, 1e-9)
+		must.Equal("multi", got.EditStrategy.Type)
+		must.NotNil(got.EditStrategy.FuzzyThreshold)
+		must.InDelta(0.7, *got.EditStrategy.FuzzyThreshold, 1e-9)
 	})
 
 	t.Run("Verifier", func(t *testing.T) {
+		must := require.New(t)
 		baseline := baselineRunConfig()
 		overlay := &types.RunConfigOverrides{
 			Verifier: &types.VerifierConfig{Type: "test-runner", Command: "go test ./..."},
 		}
 		got := mergeOverrides(baseline, overlay)
-		require.Equal(t, "test-runner", got.Verifier.Type)
-		require.Equal(t, "go test ./...", got.Verifier.Command)
+		must.Equal("test-runner", got.Verifier.Type)
+		must.Equal("go test ./...", got.Verifier.Command)
 	})
 
 	t.Run("MaxTurns", func(t *testing.T) {
+		must := require.New(t)
 		baseline := baselineRunConfig()
 		six := 6
 		overlay := &types.RunConfigOverrides{MaxTurns: &six}
 		got := mergeOverrides(baseline, overlay)
-		require.Equal(t, 6, got.MaxTurns)
+		must.Equal(6, got.MaxTurns)
 	})
 }
 
@@ -305,12 +324,13 @@ func TestMergeOverrides_AllOverlayFields(t *testing.T) {
 // mode. Without this, an overlay constructed with only pointer-typed
 // fields would zero the baseline's Mode.
 func TestMergeOverrides_ZeroModeDoesNotOverwrite(t *testing.T) {
+	must := require.New(t)
 	baseline := baselineRunConfig() // Mode = "execution"
 	four := 4
 	overlay := &types.RunConfigOverrides{MaxTurns: &four}
 
 	got := mergeOverrides(baseline, overlay)
-	require.Equal(t, "execution", got.Mode, "zero-value overlay Mode must leave baseline Mode unchanged")
+	must.Equal("execution", got.Mode, "zero-value overlay Mode must leave baseline Mode unchanged")
 }
 
 // TestBuildMergedConfig_FileBaselineWithTaskOverride covers the
@@ -318,11 +338,12 @@ func TestMergeOverrides_ZeroModeDoesNotOverwrite(t *testing.T) {
 // merged config must reflect both the baseline's provider/timeout and
 // the overlay's MaxTurns.
 func TestBuildMergedConfig_FileBaselineWithTaskOverride(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "baseline.json")
 	data, err := json.Marshal(baselineRunConfig())
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(path, data, 0o600))
+	must.NoError(err)
+	must.NoError(os.WriteFile(path, data, 0o600))
 
 	suite := types.EvalSuite{
 		ID:            "s",
@@ -330,7 +351,7 @@ func TestBuildMergedConfig_FileBaselineWithTaskOverride(t *testing.T) {
 		RunConfigFile: path,
 	}
 	baseline, err := resolveBaseline(suite)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	six := 6
 	overlay := &types.RunConfigOverrides{
@@ -338,11 +359,11 @@ func TestBuildMergedConfig_FileBaselineWithTaskOverride(t *testing.T) {
 		Provider: &types.ProviderConfig{Type: "openai-responses", APIKeyRef: "secret://OPENAI_KEY"},
 	}
 	merged, err := buildMergedConfig(baseline, overlay)
-	require.NoError(t, err)
-	require.Equal(t, 6, merged.MaxTurns, "overlay MaxTurns should win")
-	require.Equal(t, "openai-responses", merged.Provider.Type, "overlay Provider should win")
-	require.NotNil(t, merged.Timeout, "baseline Timeout should survive the merge")
-	require.Equal(t, 300, *merged.Timeout)
+	must.NoError(err)
+	must.Equal(6, merged.MaxTurns, "overlay MaxTurns should win")
+	must.Equal("openai-responses", merged.Provider.Type, "overlay Provider should win")
+	must.NotNil(merged.Timeout, "baseline Timeout should survive the merge")
+	must.Equal(300, *merged.Timeout)
 }
 
 // TestBuildMergedConfig_InjectsDefaultTimeoutWhenAbsent pins the
@@ -350,6 +371,7 @@ func TestBuildMergedConfig_FileBaselineWithTaskOverride(t *testing.T) {
 // `timeout`, so a merged config from an inline block arrives with
 // Timeout == nil and must get the runner's default injected.
 func TestBuildMergedConfig_InjectsDefaultTimeoutWhenAbsent(t *testing.T) {
+	must := require.New(t)
 	baseline := &types.RunConfig{
 		Mode:     "execution",
 		Provider: types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
@@ -358,16 +380,17 @@ func TestBuildMergedConfig_InjectsDefaultTimeoutWhenAbsent(t *testing.T) {
 		// block where the HCL grammar does not expose `timeout`.
 	}
 	merged, err := buildMergedConfig(baseline, nil)
-	require.NoError(t, err)
-	require.NotNil(t, merged, "expected non-nil merged config")
-	require.NotNil(t, merged.Timeout, "expected default Timeout to be injected")
-	require.Equal(t, defaultTaskTimeoutSeconds, *merged.Timeout)
+	must.NoError(err)
+	must.NotNil(merged, "expected non-nil merged config")
+	must.NotNil(merged.Timeout, "expected default Timeout to be injected")
+	must.Equal(defaultTaskTimeoutSeconds, *merged.Timeout)
 }
 
 // TestBuildMergedConfig_PreservesExplicitTimeout confirms a Timeout
 // already pinned by the baseline survives the merge unchanged rather
 // than being overwritten by the default.
 func TestBuildMergedConfig_PreservesExplicitTimeout(t *testing.T) {
+	must := require.New(t)
 	explicit := 900
 	baseline := &types.RunConfig{
 		Mode:     "execution",
@@ -376,15 +399,16 @@ func TestBuildMergedConfig_PreservesExplicitTimeout(t *testing.T) {
 		Timeout:  &explicit,
 	}
 	merged, err := buildMergedConfig(baseline, nil)
-	require.NoError(t, err)
-	require.NotNil(t, merged.Timeout)
-	require.Equal(t, 900, *merged.Timeout, "baseline Timeout should be preserved")
+	must.NoError(err)
+	must.NotNil(merged.Timeout)
+	must.Equal(900, *merged.Timeout, "baseline Timeout should be preserved")
 }
 
 // TestDryRun_InlineConfigWithoutTimeoutPasses asserts a suite with an
 // inline run_config block that omits `timeout` still passes dry-run
 // validation via the timeout-injection contract.
 func TestDryRun_InlineConfigWithoutTimeoutPasses(t *testing.T) {
+	must := require.New(t)
 	baseline := &types.RunConfig{
 		Mode:             "execution",
 		Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
@@ -397,9 +421,9 @@ func TestDryRun_InlineConfigWithoutTimeoutPasses(t *testing.T) {
 		RunConfig: baseline,
 	}
 	result, err := RunSuite(context.Background(), suite, RunConfig{DryRun: true})
-	require.NoError(t, err)
-	require.Len(t, result.Tasks, 1)
-	require.Equal(t, "pass", result.Tasks[0].Outcome,
+	must.NoError(err)
+	must.Len(result.Tasks, 1)
+	must.Equal("pass", result.Tasks[0].Outcome,
 		"inline configs without timeout should pass dry-run after injection; task error: %q",
 		result.Tasks[0].Error)
 }
@@ -408,6 +432,7 @@ func TestDryRun_InlineConfigWithoutTimeoutPasses(t *testing.T) {
 // suite with no run_config block must still dry-run as "pass" for
 // every task.
 func TestDryRun_NoBaselineIsNoOp(t *testing.T) {
+	must := require.New(t)
 	suite := types.EvalSuite{
 		ID: "legacy-suite",
 		Tasks: []types.EvalTask{
@@ -416,20 +441,22 @@ func TestDryRun_NoBaselineIsNoOp(t *testing.T) {
 		},
 	}
 	result, err := RunSuite(context.Background(), suite, RunConfig{DryRun: true})
-	require.NoError(t, err)
-	require.Len(t, result.Tasks, 2)
+	must.NoError(err)
+	must.Len(result.Tasks, 2)
 	for _, tr := range result.Tasks {
 		t.Run(tr.TaskID, func(t *testing.T) {
-			require.Equal(t, "pass", tr.Outcome)
+			must := require.New(t)
+			must.Equal("pass", tr.Outcome)
 		})
 	}
-	require.InDelta(t, 1.0, result.PassRate, 1e-9)
+	must.InDelta(1.0, result.PassRate, 1e-9)
 }
 
 // TestDryRun_InvalidMergedConfig surfaces a ValidateRunConfig failure as
 // a per-task "error" outcome without aborting siblings: planning mode
 // plus a write tool in tools.builtIn.
 func TestDryRun_InvalidMergedConfig(t *testing.T) {
+	must := require.New(t)
 	timeout := 300
 	bad := &types.RunConfig{
 		Mode:             "planning",
@@ -446,15 +473,16 @@ func TestDryRun_InvalidMergedConfig(t *testing.T) {
 	}
 
 	result, err := RunSuite(context.Background(), suite, RunConfig{DryRun: true})
-	require.NoError(t, err)
-	require.Len(t, result.Tasks, 2)
+	must.NoError(err)
+	must.Len(result.Tasks, 2)
 	// Every task inherits the same broken baseline, so every task
 	// should surface the same validation error rather than pass.
 	for _, tr := range result.Tasks {
 		t.Run(tr.TaskID, func(t *testing.T) {
-			require.Equal(t, "error", tr.Outcome)
-			require.Contains(t, tr.Error, "write tool")
-			require.Equal(t, types.JudgeStatusError, tr.JudgeVerdict.Status)
+			must := require.New(t)
+			must.Equal("error", tr.Outcome)
+			must.Contains(tr.Error, "write tool")
+			must.Equal(types.JudgeStatusError, tr.JudgeVerdict.Status)
 		})
 	}
 }
@@ -463,6 +491,7 @@ func TestDryRun_InvalidMergedConfig(t *testing.T) {
 // sibling-isolation property: when only one task's overlay produces an
 // invalid merged config, the other tasks still pass.
 func TestDryRun_PerTaskOverrideInvalidatesOnlyThatTask(t *testing.T) {
+	must := require.New(t)
 	timeout := 300
 	baseline := &types.RunConfig{
 		Mode:             "execution",
@@ -484,14 +513,14 @@ func TestDryRun_PerTaskOverrideInvalidatesOnlyThatTask(t *testing.T) {
 	}
 
 	result, err := RunSuite(context.Background(), suite, RunConfig{DryRun: true})
-	require.NoError(t, err)
-	require.Len(t, result.Tasks, 2)
+	must.NoError(err)
+	must.Len(result.Tasks, 2)
 	outcomes := map[string]string{
 		result.Tasks[0].TaskID: result.Tasks[0].Outcome,
 		result.Tasks[1].TaskID: result.Tasks[1].Outcome,
 	}
-	require.Equal(t, "pass", outcomes["ok-task"], "ok-task outcome")
-	require.Equal(t, "error", outcomes["bad-task"], "bad-task outcome")
+	must.Equal("pass", outcomes["ok-task"], "ok-task outcome")
+	must.Equal("error", outcomes["bad-task"], "bad-task outcome")
 }
 
 // TestRunSuite_NoBaselineUsesLegacyInvocation verifies the
@@ -500,6 +529,7 @@ func TestDryRun_PerTaskOverrideInvalidatesOnlyThatTask(t *testing.T) {
 // only — no --config wire, no redacted artifact. The fake harness
 // writes its argv to a sidecar file so the test can inspect it.
 func TestRunSuite_NoBaselineUsesLegacyInvocation(t *testing.T) {
+	must := require.New(t)
 	logDir := t.TempDir()
 	argLog := filepath.Join(logDir, "args.log")
 	script := fmt.Sprintf(`#!/bin/sh
@@ -527,16 +557,16 @@ done
 		HarnessPath: harness,
 		OutputDir:   out,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	logData, err := os.ReadFile(argLog)
-	require.NoError(t, err, "reading arg log")
-	require.NotContains(t, string(logData), "--config", "legacy invocation must not pass --config")
+	must.NoError(err, "reading arg log")
+	must.NotContains(string(logData), "--config", "legacy invocation must not pass --config")
 
 	// No baseline → no redacted artifact retained.
 	redactedPath := filepath.Join(out, "legacy", "t1", "run_config.redacted.json")
 	_, err = os.Stat(redactedPath)
-	require.ErrorIs(t, err, os.ErrNotExist, "legacy invocation must not write %s", redactedPath)
+	must.ErrorIs(err, os.ErrNotExist, "legacy invocation must not write %s", redactedPath)
 }
 
 // TestRunSuite_WithBaselineWritesConfigAndRedactedArtifact covers the
@@ -544,6 +574,7 @@ done
 // shadowing flags, the merged config carries the runner's trace path,
 // and the retained run_config.redacted.json is scrubbed and private.
 func TestRunSuite_WithBaselineWritesConfigAndRedactedArtifact(t *testing.T) {
+	must := require.New(t)
 	logDir := t.TempDir()
 	argLog := filepath.Join(logDir, "args.log")
 	configCapture := filepath.Join(logDir, "config-capture.json")
@@ -588,50 +619,54 @@ fi
 		HarnessPath: harness,
 		OutputDir:   out,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	redactedPath := filepath.Join(out, "wired", "t1", "run_config.redacted.json")
 
 	t.Run("invokes harness with config and without shadowing flags", func(t *testing.T) {
+		must := require.New(t)
 		logData, err := os.ReadFile(argLog)
-		require.NoError(t, err, "reading arg log")
+		must.NoError(err, "reading arg log")
 		logStr := string(logData)
-		require.Contains(t, logStr, "--config")
+		must.Contains(logStr, "--config")
 		for _, banned := range []string{"--timeout", "--mode", "--trace"} {
-			require.NotContains(t, logStr, banned, "merged-config invocation must not pass %s", banned)
+			must.NotContains(logStr, banned, "merged-config invocation must not pass %s", banned)
 		}
 	})
 
 	t.Run("captured config keeps the reference and gets a trace path", func(t *testing.T) {
+		must := require.New(t)
 		captured, err := os.ReadFile(configCapture)
-		require.NoError(t, err, "reading captured config")
+		must.NoError(err, "reading captured config")
 		var got types.RunConfig
-		require.NoError(t, json.Unmarshal(captured, &got), "unmarshal captured config")
-		require.Equal(t, "openai-responses", got.Provider.Type)
-		require.Equal(t, "secret://OPENAI_KEY", got.Provider.APIKeyRef,
+		must.NoError(json.Unmarshal(captured, &got), "unmarshal captured config")
+		must.Equal("openai-responses", got.Provider.Type)
+		must.Equal("secret://OPENAI_KEY", got.Provider.APIKeyRef,
 			"the harness needs the unredacted reference to resolve the secret")
-		require.NotEmpty(t, got.TraceEmitter.FilePath, "runner must inject the per-task trace path")
-		require.True(t, strings.HasSuffix(got.TraceEmitter.FilePath, "trace.jsonl"),
+		must.NotEmpty(got.TraceEmitter.FilePath, "runner must inject the per-task trace path")
+		must.True(strings.HasSuffix(got.TraceEmitter.FilePath, "trace.jsonl"),
 			"trace path %q must end in trace.jsonl", got.TraceEmitter.FilePath)
 	})
 
 	t.Run("redacted artifact replaces the api key reference with a marker", func(t *testing.T) {
+		must := require.New(t)
 		redactedData, err := os.ReadFile(redactedPath)
-		require.NoError(t, err, "reading redacted artifact")
+		must.NoError(err, "reading redacted artifact")
 		var redacted types.RunConfig
-		require.NoError(t, json.Unmarshal(redactedData, &redacted), "unmarshal redacted artifact")
-		require.Equal(t, "secret://[REDACTED]", redacted.Provider.APIKeyRef)
+		must.NoError(json.Unmarshal(redactedData, &redacted), "unmarshal redacted artifact")
+		must.Equal("secret://[REDACTED]", redacted.Provider.APIKeyRef)
 		// The artifact holds only the reference, so the raw JSON must
 		// contain the redaction marker and never a plaintext token.
-		require.Contains(t, string(redactedData), "secret://[REDACTED]")
+		must.Contains(string(redactedData), "secret://[REDACTED]")
 	})
 
 	t.Run("redacted artifact is mode 0600", func(t *testing.T) {
+		must := require.New(t)
 		// The file carries operator posture and must not be world-readable
 		// on shared CI runners.
 		info, err := os.Stat(redactedPath)
-		require.NoError(t, err, "stat redacted artifact")
-		require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+		must.NoError(err, "stat redacted artifact")
+		must.Equal(os.FileMode(0o600), info.Mode().Perm())
 	})
 }
 
@@ -640,6 +675,7 @@ fi
 // usable trace: the runner must consult the judge rather than
 // discarding the trace and reporting "error".
 func TestRunSuite_HarnessFailWithTracePreservesVerdict(t *testing.T) {
+	must := require.New(t)
 	script := `#!/bin/sh
 TRACE=""
 while [ $# -gt 0 ]; do
@@ -664,10 +700,10 @@ exit 1
 	}
 
 	result, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness})
-	require.NoError(t, err)
-	require.Len(t, result.Tasks, 1)
+	must.NoError(err)
+	must.Len(result.Tasks, 1)
 	// Judge rejects the missing file, but the trace was consumed.
-	require.Equal(t, "fail", result.Tasks[0].Outcome)
+	must.Equal("fail", result.Tasks[0].Outcome)
 }
 
 // TestRunSuite_CloneRepoFailureSurfacedAsError exercises the
@@ -675,6 +711,7 @@ exit 1
 // `git clone` fail quickly and the runner must report "error"
 // without spawning the harness.
 func TestRunSuite_CloneRepoFailureSurfacedAsError(t *testing.T) {
+	must := require.New(t)
 	// Skip when git isn't installed; the error path is otherwise unreachable.
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available on PATH")
@@ -698,9 +735,9 @@ exit 99
 	}
 
 	result, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness})
-	require.NoError(t, err)
-	require.Equal(t, "error", result.Tasks[0].Outcome)
-	require.Contains(t, result.Tasks[0].Error, "cloning repo")
+	must.NoError(err)
+	must.Equal("error", result.Tasks[0].Outcome)
+	must.Contains(result.Tasks[0].Error, "cloning repo")
 }
 
 // TestRunSuite_HarnessFailWithoutTraceErrors covers the runTask
@@ -708,6 +745,7 @@ exit 99
 // usable trace. The outcome must be "error" and the surfaced error
 // must include the harness's stderr so the operator can diagnose.
 func TestRunSuite_HarnessFailWithoutTraceErrors(t *testing.T) {
+	must := require.New(t)
 	script := `#!/bin/sh
 echo "harness boot failure" >&2
 exit 2
@@ -722,14 +760,15 @@ exit 2
 	}
 
 	result, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness})
-	require.NoError(t, err)
-	require.Equal(t, "error", result.Tasks[0].Outcome)
-	require.Contains(t, result.Tasks[0].Error, "harness boot failure")
+	must.NoError(err)
+	must.Equal("error", result.Tasks[0].Outcome)
+	must.Contains(result.Tasks[0].Error, "harness boot failure")
 }
 
 // TestRunSuite_HarnessSuccessWithoutTraceErrors covers the parse-trace
 // error path after a clean harness exit that emits no trace.
 func TestRunSuite_HarnessSuccessWithoutTraceErrors(t *testing.T) {
+	must := require.New(t)
 	script := `#!/bin/sh
 exit 0
 `
@@ -743,25 +782,27 @@ exit 0
 	}
 
 	result, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness})
-	require.NoError(t, err)
-	require.Equal(t, "error", result.Tasks[0].Outcome)
-	require.Contains(t, result.Tasks[0].Error, "parsing trace")
+	must.NoError(err)
+	must.Equal("error", result.Tasks[0].Outcome)
+	must.Contains(result.Tasks[0].Error, "parsing trace")
 }
 
 // TestBuildMergedConfig_NilBaseline pins the legacy-invocation
 // contract on the merge helper: a nil baseline returns (nil, nil)
 // so runTask falls through to the legacy flag-only path.
 func TestBuildMergedConfig_NilBaseline(t *testing.T) {
+	must := require.New(t)
 	four := 4
 	merged, err := buildMergedConfig(nil, &types.RunConfigOverrides{MaxTurns: &four})
-	require.NoError(t, err)
-	require.Nil(t, merged)
+	must.NoError(err)
+	must.Nil(merged)
 }
 
 // TestRunSuite_FailOutcomeOnJudgeReject covers the buildResult
 // fail-outcome branch: harness success plus Passed=false must yield
 // "fail", not "error".
 func TestRunSuite_FailOutcomeOnJudgeReject(t *testing.T) {
+	must := require.New(t)
 	script := `#!/bin/sh
 TRACE=""
 while [ $# -gt 0 ]; do
@@ -782,15 +823,16 @@ done
 	}
 
 	result, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness})
-	require.NoError(t, err)
-	require.Len(t, result.Tasks, 1)
-	require.Equal(t, "fail", result.Tasks[0].Outcome)
+	must.NoError(err)
+	must.Len(result.Tasks, 1)
+	must.Equal("fail", result.Tasks[0].Outcome)
 }
 
 // TestRunTask_RejectsInvalidMergedConfigBeforeSubprocess asserts that
 // when the merged RunConfig fails ValidateRunConfig, the runner
 // surfaces a per-task "error" outcome without launching the harness.
 func TestRunTask_RejectsInvalidMergedConfigBeforeSubprocess(t *testing.T) {
+	must := require.New(t)
 	logDir := t.TempDir()
 	argLog := filepath.Join(logDir, "args.log")
 	script := fmt.Sprintf(`#!/bin/sh
@@ -820,19 +862,20 @@ echo "$@" >> %q
 	result, err := RunSuite(context.Background(), suite, RunConfig{
 		HarnessPath: harness,
 	})
-	require.NoError(t, err)
-	require.Len(t, result.Tasks, 1)
-	require.Equal(t, "error", result.Tasks[0].Outcome)
-	require.Contains(t, result.Tasks[0].Error, "review", "error must name the offending mode")
+	must.NoError(err)
+	must.Len(result.Tasks, 1)
+	must.Equal("error", result.Tasks[0].Outcome)
+	must.Contains(result.Tasks[0].Error, "review", "error must name the offending mode")
 
 	_, err = os.Stat(argLog)
-	require.ErrorIs(t, err, os.ErrNotExist, "harness must not be invoked after validation failure")
+	must.ErrorIs(err, os.ErrNotExist, "harness must not be invoked after validation failure")
 }
 
 // TestRunSuite_WithBaselineRetainedArtifactOmitsResolvedSecrets asserts
 // the retained run_config.redacted.json never contains a resolved
 // secret, only references.
 func TestRunSuite_WithBaselineRetainedArtifactOmitsResolvedSecrets(t *testing.T) {
+	must := require.New(t)
 	// The fake harness reads the trace path out of the merged config.
 	script := `#!/bin/sh
 CONFIG=""
@@ -870,16 +913,16 @@ fi
 		HarnessPath: harness,
 		OutputDir:   out,
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	redactedPath := filepath.Join(out, "redact-suite", "t1", "run_config.redacted.json")
 	data, err := os.ReadFile(redactedPath)
-	require.NoError(t, err, "reading redacted artifact")
+	must.NoError(err, "reading redacted artifact")
 	// The bare secret:// scheme outside a [REDACTED] context is the
 	// failure mode to guard against.
 	body := string(data)
-	require.NotContains(t, body, "secret://ANTHROPIC_API_KEY")
-	require.Contains(t, body, "secret://[REDACTED]")
+	must.NotContains(body, "secret://ANTHROPIC_API_KEY")
+	must.Contains(body, "secret://[REDACTED]")
 }
 
 // TestWarnIfRawAPIKeyRef_WarnsForEachRawSecretField pins the
@@ -911,7 +954,8 @@ func TestWarnIfRawAPIKeyRef_WarnsForEachRawSecretField(t *testing.T) {
 		"tools.mcpServers[0].apiKeyRef",
 	} {
 		t.Run("warns about "+field, func(t *testing.T) {
-			require.Contains(t, stderr, field)
+			must := require.New(t)
+			must.Contains(stderr, field)
 		})
 	}
 }
@@ -920,6 +964,7 @@ func TestWarnIfRawAPIKeyRef_WarnsForEachRawSecretField(t *testing.T) {
 // only fires for raw values; an all-secret:// config produces no
 // stderr output.
 func TestWarnIfRawAPIKeyRef_AllSecretRefsStaysSilent(t *testing.T) {
+	must := require.New(t)
 	cfg := &types.RunConfig{
 		Provider: types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_KEY"},
 		Executor: types.ExecutorConfig{
@@ -927,7 +972,7 @@ func TestWarnIfRawAPIKeyRef_AllSecretRefsStaysSilent(t *testing.T) {
 		},
 	}
 	stderr := captureStderr(t, func() { warnIfRawAPIKeyRef("t1", cfg) })
-	require.Empty(t, stderr)
+	must.Empty(stderr)
 }
 
 // captureStderr replaces os.Stderr with a pipe for the duration of fn
@@ -935,9 +980,10 @@ func TestWarnIfRawAPIKeyRef_AllSecretRefsStaysSilent(t *testing.T) {
 // concurrent tests must not run this helper in parallel.
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
+	must := require.New(t)
 	origStderr := os.Stderr
 	r, w, err := os.Pipe()
-	require.NoError(t, err, "creating stderr pipe")
+	must.NoError(err, "creating stderr pipe")
 	os.Stderr = w
 	done := make(chan struct{})
 	var buf bytes.Buffer

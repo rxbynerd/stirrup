@@ -25,7 +25,8 @@ func TestGenAIProviderName_TranslatesStirrupTypes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, GenAIProviderName(tc.stirrupType))
+			must := require.New(t)
+			must.Equal(tc.want, GenAIProviderName(tc.stirrupType))
 		})
 	}
 }

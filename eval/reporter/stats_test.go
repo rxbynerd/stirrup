@@ -12,8 +12,9 @@ import (
 // because InDelta alone accepts it.
 func within(t *testing.T, name string, got, want, tol float64) {
 	t.Helper()
-	require.False(t, math.IsNaN(got), "%s = NaN, want %.6f ± %g", name, want, tol)
-	require.InDelta(t, want, got, tol, "%s", name)
+	must := require.New(t)
+	must.False(math.IsNaN(got), "%s = NaN, want %.6f ± %g", name, want, tol)
+	must.InDelta(want, got, tol, "%s", name)
 }
 
 func TestStudentTQuantile_MatchesReferenceTables(t *testing.T) {
@@ -42,85 +43,96 @@ func TestStudentTQuantile_MatchesReferenceTables(t *testing.T) {
 	}
 
 	t.Run("median is zero", func(t *testing.T) {
-		require.Zero(t, StudentTQuantile(0.5, 3))
+		must := require.New(t)
+		must.Zero(StudentTQuantile(0.5, 3))
 	})
 
 	t.Run("invalid arguments are NaN", func(t *testing.T) {
+		must := require.New(t)
 		for _, bad := range []struct {
 			p  float64
 			df int
 		}{{0.975, 0}, {0, 5}, {1, 5}, {math.NaN(), 5}} {
 			got := StudentTQuantile(bad.p, bad.df)
-			require.True(t, math.IsNaN(got), "StudentTQuantile(%v, %d) = %v, want NaN", bad.p, bad.df, got)
+			must.True(math.IsNaN(got), "StudentTQuantile(%v, %d) = %v, want NaN", bad.p, bad.df, got)
 		}
 	})
 }
 
 func TestSignFlipPValue_EdgeCases(t *testing.T) {
 	t.Run("all-zero diffs have p 1 and are exact", func(t *testing.T) {
+		must := require.New(t)
 		p, exact := SignFlipPValue([]float64{0, 0, 0})
-		require.InDelta(t, 1.0, p, 1e-12)
-		require.True(t, exact)
+		must.InDelta(1.0, p, 1e-12)
+		must.True(exact)
 	})
 
 	t.Run("single non-zero diff has p 1", func(t *testing.T) {
+		must := require.New(t)
 		p, _ := SignFlipPValue([]float64{-0.5})
-		require.InDelta(t, 1.0, p, 1e-12)
+		must.InDelta(1.0, p, 1e-12)
 	})
 
 	t.Run("five equal drops", func(t *testing.T) {
+		must := require.New(t)
 		// Only the two all-same-sign assignments reach |5|.
 		p, exact := SignFlipPValue([]float64{-1, -1, -1, -1, -1})
-		require.InDelta(t, 2.0/32, p, 1e-12)
-		require.True(t, exact)
+		must.InDelta(2.0/32, p, 1e-12)
+		must.True(exact)
 	})
 
 	t.Run("25 non-zero diffs use the normal approximation", func(t *testing.T) {
+		must := require.New(t)
 		many := make([]float64, 25)
 		for i := range many {
 			many[i] = -1
 		}
 		p, exact := SignFlipPValue(many)
-		require.False(t, exact)
+		must.False(exact)
 		within(t, "normal-approximation p", p, math.Erfc(5/math.Sqrt2), 1e-12)
 	})
 
 	t.Run("zeros do not count toward the enumeration bound", func(t *testing.T) {
+		must := require.New(t)
 		padded := append(make([]float64, 30), -1, -1, 1)
 		_, exact := SignFlipPValue(padded)
-		require.True(t, exact)
+		must.True(exact)
 	})
 }
 
 func TestPaired_Degenerate(t *testing.T) {
 	t.Run("no diffs are undefined", func(t *testing.T) {
+		must := require.New(t)
 		_, ok := Paired(nil)
-		require.False(t, ok)
+		must.False(ok)
 	})
 
 	t.Run("one diff has no standard error", func(t *testing.T) {
+		must := require.New(t)
 		_, ok := Paired([]float64{-1})
-		require.False(t, ok)
+		must.False(ok)
 	})
 
 	t.Run("all-zero diffs", func(t *testing.T) {
+		must := require.New(t)
 		zero, ok := Paired([]float64{0, 0, 0, 0})
-		require.True(t, ok)
-		require.InDelta(t, 0.0, zero.MeanDelta, 1e-12)
-		require.InDelta(t, 0.0, zero.StdErr, 1e-12)
-		require.InDelta(t, 0.0, zero.CILow, 1e-12)
-		require.InDelta(t, 0.0, zero.CIHigh, 1e-12)
-		require.InDelta(t, 0.0, zero.UpperBound, 1e-12)
-		require.InDelta(t, 1.0, zero.PValue, 1e-12)
+		must.True(ok)
+		must.InDelta(0.0, zero.MeanDelta, 1e-12)
+		must.InDelta(0.0, zero.StdErr, 1e-12)
+		must.InDelta(0.0, zero.CILow, 1e-12)
+		must.InDelta(0.0, zero.CIHigh, 1e-12)
+		must.InDelta(0.0, zero.UpperBound, 1e-12)
+		must.InDelta(1.0, zero.PValue, 1e-12)
 		// MDE is undefined at zero SE.
-		require.Nil(t, zero.MDE)
+		must.Nil(zero.MDE)
 	})
 
 	t.Run("equal drops have zero SE and a negative upper bound", func(t *testing.T) {
+		must := require.New(t)
 		drop, ok := Paired([]float64{-1.0 / 3, -1.0 / 3, -1.0 / 3})
-		require.True(t, ok)
+		must.True(ok)
 		within(t, "equal-drop SE", drop.StdErr, 0, 1e-12)
-		require.Less(t, drop.UpperBound, 0.0)
+		must.Less(drop.UpperBound, 0.0)
 	})
 }
 
@@ -137,11 +149,12 @@ func TestPaired_MDEUsesStudentT(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			ps, ok := Paired(tc.diffs)
-			require.True(t, ok)
-			require.NotNil(t, ps.MDE)
+			must.True(ok)
+			must.NotNil(ps.MDE)
 			within(t, "MDE / SE", *ps.MDE/ps.StdErr, tc.tSum, 0.0005)
-			require.Greater(t, *ps.MDE, zBased*ps.StdErr)
+			must.Greater(*ps.MDE, zBased*ps.StdErr)
 		})
 	}
 
@@ -150,11 +163,12 @@ func TestPaired_MDEUsesStudentT(t *testing.T) {
 }
 
 func TestStdErr_RequiresTwoScores(t *testing.T) {
+	must := require.New(t)
 	_, ok := StdErr([]float64{1})
-	require.False(t, ok)
+	must.False(ok)
 
 	se, ok := StdErr([]float64{1, 0})
-	require.True(t, ok)
+	must.True(ok)
 	within(t, "SE of {1,0}", se, 0.5, 1e-12)
 }
 
@@ -170,21 +184,25 @@ func TestPassK_Estimators(t *testing.T) {
 	})
 
 	t.Run("pass^k with fewer passes than k is zero", func(t *testing.T) {
-		require.Zero(t, PassHatK(1, 3, 2))
+		must := require.New(t)
+		must.Zero(PassHatK(1, 3, 2))
 	})
 
 	t.Run("pass@k with every trial passing is one", func(t *testing.T) {
-		require.InDelta(t, 1.0, PassAtK(3, 3, 3), 1e-12)
+		must := require.New(t)
+		must.InDelta(1.0, PassAtK(3, 3, 3), 1e-12)
 	})
 
 	t.Run("pass^k over many trials stays a probability", func(t *testing.T) {
+		must := require.New(t)
 		v := PassHatK(400, 500, 200)
-		require.GreaterOrEqual(t, v, 0.0)
-		require.LessOrEqual(t, v, 1.0)
+		must.GreaterOrEqual(v, 0.0)
+		must.LessOrEqual(v, 1.0)
 	})
 
 	t.Run("k above the trial count is NaN", func(t *testing.T) {
-		require.True(t, math.IsNaN(PassHatK(1, 1, 2)))
+		must := require.New(t)
+		must.True(math.IsNaN(PassHatK(1, 1, 2)))
 	})
 }
 
@@ -208,17 +226,20 @@ func TestWilson95_IntervalsAndFormatting(t *testing.T) {
 	})
 
 	t.Run("no samples spans the unit interval", func(t *testing.T) {
+		must := require.New(t)
 		lo, hi := Wilson95(0, 0)
-		require.InDelta(t, 0.0, lo, 1e-12)
-		require.InDelta(t, 1.0, hi, 1e-12)
+		must.InDelta(0.0, lo, 1e-12)
+		must.InDelta(1.0, hi, 1e-12)
 	})
 
 	t.Run("formats the interval as a percentage range", func(t *testing.T) {
-		require.Equal(t, "56.6-100.0%", FormatWilson95(1, 5))
+		must := require.New(t)
+		must.Equal("56.6-100.0%", FormatWilson95(1, 5))
 	})
 
 	t.Run("formats no samples as n/a", func(t *testing.T) {
-		require.Equal(t, "n/a", FormatWilson95(0.5, 0))
+		must := require.New(t)
+		must.Equal("n/a", FormatWilson95(0.5, 0))
 	})
 }
 
@@ -229,11 +250,13 @@ func TestFlipFalseAlarmRate_ClosedForm(t *testing.T) {
 	within(t, "3-of-3 flip rule", FlipFalseAlarmRate(0.98, 5, 3), 1-math.Pow(1-0.02*0.02*0.02, 5), 1e-15)
 
 	t.Run("perfectly reliable agent never false-alarms", func(t *testing.T) {
-		require.Zero(t, FlipFalseAlarmRate(1, 5, 3))
+		must := require.New(t)
+		must.Zero(FlipFalseAlarmRate(1, 5, 3))
 	})
 }
 
 func TestSignFlipPValue_ExactEnumerationBound(t *testing.T) {
+	must := require.New(t)
 	diffs := func(n int) []float64 {
 		d := make([]float64, n)
 		for i := range d {
@@ -243,11 +266,11 @@ func TestSignFlipPValue_ExactEnumerationBound(t *testing.T) {
 	}
 
 	p, exact := SignFlipPValue(diffs(20))
-	require.True(t, exact)
+	must.True(exact)
 	within(t, "20 equal drops", p, math.Pow(2, -19), 1e-15)
 
 	p, exact = SignFlipPValue(diffs(21))
-	require.False(t, exact)
+	must.False(exact)
 	within(t, "21 equal drops", p, math.Erfc(math.Sqrt(21)/math.Sqrt2), 1e-12)
 }
 
@@ -255,6 +278,7 @@ func TestSignFlipPValue_ExactEnumerationBound(t *testing.T) {
 // against integer arithmetic on thirds, where sums of 1/3-valued diffs tie
 // exactly in rational arithmetic but not always in floating point.
 func TestSignFlipPValue_TiesMatchExactArithmetic(t *testing.T) {
+	must := require.New(t)
 	rng := rand.New(rand.NewPCG(7, 11))
 	for range 400 {
 		n := 2 + rng.IntN(11)
@@ -293,7 +317,7 @@ func TestSignFlipPValue_TiesMatchExactArithmetic(t *testing.T) {
 		}
 
 		got, exact := SignFlipPValue(diffs)
-		require.True(t, exact, "diffs %v (thirds %v)", diffs, thirds)
-		require.InDelta(t, want, got, 1e-12, "diffs %v (thirds %v)", diffs, thirds)
+		must.True(exact, "diffs %v (thirds %v)", diffs, thirds)
+		must.InDelta(want, got, 1e-12, "diffs %v (thirds %v)", diffs, thirds)
 	}
 }

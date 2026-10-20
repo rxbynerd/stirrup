@@ -15,7 +15,8 @@ import (
 // build configuration — the companion debug_enabled_test.go asserts the
 // opposite under -tags stirrupdebug.
 func TestDebugBuild_DisabledByDefault(t *testing.T) {
-	require.False(t, DebugBuildEnabled(),
+	must := require.New(t)
+	must.False(DebugBuildEnabled(),
 		"DebugBuildEnabled() must be false in a build without -tags stirrupdebug")
 }
 
@@ -23,6 +24,7 @@ func TestDebugBuild_DisabledByDefault(t *testing.T) {
 // build's suffix must be empty so `stirrup --version` prints the plain
 // version.
 func TestVersionSuffix_EmptyByDefault(t *testing.T) {
-	require.Empty(t, VersionSuffix(),
+	must := require.New(t)
+	must.Empty(VersionSuffix(),
 		"VersionSuffix() must be empty in a build without -tags stirrupdebug")
 }

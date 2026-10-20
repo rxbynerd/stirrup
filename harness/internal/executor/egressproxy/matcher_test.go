@@ -9,6 +9,8 @@ import (
 )
 
 func TestNewMatcher_ParsesEntries(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	m, err := NewMatcher([]string{
 		"example.com",
 		"*.example.com",
@@ -17,7 +19,7 @@ func TestNewMatcher_ParsesEntries(t *testing.T) {
 		"  EXAMPLE.NET.  ",
 		"",
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	got := m.Entries()
 	want := map[string]bool{
@@ -28,9 +30,9 @@ func TestNewMatcher_ParsesEntries(t *testing.T) {
 		"example.net:443":    true,
 	}
 
-	require.Len(t, got, len(want), "entries: %v", got)
+	must.Len(got, len(want), "entries: %v", got)
 	for _, entry := range got {
-		assert.True(t, want[entry], "unexpected entry %q", entry)
+		check.True(want[entry], "unexpected entry %q", entry)
 	}
 }
 
@@ -48,15 +50,17 @@ func TestNewMatcher_RejectsMalformed(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			_, err := NewMatcher([]string{tc.entry})
-			require.Error(t, err, "entry %q", tc.entry)
+			must.Error(err, "entry %q", tc.entry)
 		})
 	}
 }
 
 func TestMatcher_ExactMatch(t *testing.T) {
+	must := require.New(t)
 	m, err := NewMatcher([]string{"example.com"})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	cases := []struct {
 		name string
@@ -74,15 +78,17 @@ func TestMatcher_ExactMatch(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got := m.Match(tc.host, tc.port)
-			require.Equal(t, tc.want, got)
+			must.Equal(tc.want, got)
 		})
 	}
 }
 
 func TestMatcher_Wildcard(t *testing.T) {
+	must := require.New(t)
 	m, err := NewMatcher([]string{"*.example.com"})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	cases := []struct {
 		name string
@@ -101,47 +107,53 @@ func TestMatcher_Wildcard(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got := m.Match(tc.host, tc.port)
-			require.Equal(t, tc.want, got)
+			must.Equal(tc.want, got)
 		})
 	}
 }
 
 func TestMatcher_PortSuffixIsExact(t *testing.T) {
+	must := require.New(t)
 	m, err := NewMatcher([]string{"apt.example.org:80"})
-	require.NoError(t, err)
+	must.NoError(err)
 
-	require.True(t, m.Match("apt.example.org", 80))
+	must.True(m.Match("apt.example.org", 80))
 	// A port-suffixed entry must not also allow 443.
-	require.False(t, m.Match("apt.example.org", 443))
+	must.False(m.Match("apt.example.org", 443))
 }
 
 func TestMatcher_DefaultPortIs443(t *testing.T) {
+	must := require.New(t)
 	m, err := NewMatcher([]string{"example.com"})
-	require.NoError(t, err)
+	must.NoError(err)
 
-	require.True(t, m.Match("example.com", 443), "entry without explicit port should default to 443")
+	must.True(m.Match("example.com", 443), "entry without explicit port should default to 443")
 	for _, port := range []int{80, 8080, 22, 25} {
 		t.Run(fmt.Sprintf("port %d", port), func(t *testing.T) {
-			require.False(t, m.Match("example.com", port), "entry without explicit port must not match")
+			must := require.New(t)
+			must.False(m.Match("example.com", port), "entry without explicit port must not match")
 		})
 	}
 }
 
 func TestMatcher_NilReceiverIsSafe(t *testing.T) {
+	must := require.New(t)
 	var m *Matcher
-	require.False(t, m.Match("example.com", 443), "nil matcher should reject everything")
-	require.Nil(t, m.Entries())
+	must.False(m.Match("example.com", 443), "nil matcher should reject everything")
+	must.Nil(m.Entries())
 }
 
 func TestMatcher_MixedEntries(t *testing.T) {
+	must := require.New(t)
 	m, err := NewMatcher([]string{
 		"api.github.com",
 		"*.githubusercontent.com",
 		"registry.npmjs.org",
 		"apt.example.org:80",
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	cases := []struct {
 		name string
@@ -162,14 +174,16 @@ func TestMatcher_MixedEntries(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got := m.Match(tc.host, tc.port)
-			require.Equal(t, tc.want, got)
+			must.Equal(tc.want, got)
 		})
 	}
 }
 
 func TestNewMatcher_ErrorMentionsEntry(t *testing.T) {
+	must := require.New(t)
 	_, err := NewMatcher([]string{"example.com:abc"})
-	require.Error(t, err)
-	require.ErrorContains(t, err, "example.com:abc", "error should reference the offending entry")
+	must.Error(err)
+	must.ErrorContains(err, "example.com:abc", "error should reference the offending entry")
 }

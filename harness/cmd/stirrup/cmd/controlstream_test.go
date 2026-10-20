@@ -66,8 +66,9 @@ func (s *losingControlPlane) RunTask(stream pb.HarnessService_RunTaskServer) err
 // a test can stop it to fail the connection hard.
 func serveStoppableControlPlane(t *testing.T, srv pb.HarnessServiceServer) *grpc.Server {
 	t.Helper()
+	must := require.New(t)
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
+	must.NoError(err)
 	grpcServer := grpc.NewServer()
 	pb.RegisterHarnessServiceServer(grpcServer, srv)
 	go func() { _ = grpcServer.Serve(lis) }()
@@ -147,25 +148,28 @@ func streamLossJobConfig(t *testing.T, providerURL string) *pb.RunConfig {
 // stream lost while the provider call was blocked.
 func assertJobCancelledOnLoss(t *testing.T, provider *blockingToolCallProvider, sink *stubResultSink, exporter *recordingExporter, errCh <-chan error) {
 	t.Helper()
+	must := require.New(t)
+	check := assert.New(t)
 	select {
 	case err := <-errCh:
-		require.Error(t, err, "runJob returned nil, want the loss to fail the process")
-		require.ErrorContains(t, err, "control_stream_lost", "runJob should name the control_stream_lost outcome")
+		must.Error(err, "runJob returned nil, want the loss to fail the process")
+		must.ErrorContains(err, "control_stream_lost", "runJob should name the control_stream_lost outcome")
 	case <-time.After(terminalWaitBudget):
-		require.FailNow(t, "runJob did not return after the control stream was lost")
+		must.FailNow("runJob did not return after the control stream was lost")
 	}
 
-	assert.Equal(t, int32(1), provider.requests.Load(), "no model request may follow the loss")
-	assert.True(t, provider.waitCancelled(), "the in-flight provider request was not cancelled")
-	require.Len(t, sink.calls, 1, "the result sink should receive exactly one result")
+	check.Equal(int32(1), provider.requests.Load(), "no model request may follow the loss")
+	check.True(provider.waitCancelled(), "the in-flight provider request was not cancelled")
+	must.Len(sink.calls, 1, "the result sink should receive exactly one result")
 	result := sink.calls[0]
-	assert.Equal(t, "control_stream_lost", result.Outcome)
-	assert.Contains(t, result.Error, "control stream lost", "RunResult.Error should name the loss")
-	assert.Equal(t, []string{"gs://bucket/runs/job-stream-loss/workspace.tar.gz"}, exporter.destinations(),
+	check.Equal("control_stream_lost", result.Outcome)
+	check.Contains(result.Error, "control stream lost", "RunResult.Error should name the loss")
+	check.Equal([]string{"gs://bucket/runs/job-stream-loss/workspace.tar.gz"}, exporter.destinations(),
 		"the workspace export runs after a loss")
 }
 
 func TestRunJob_ControlPlaneEndingRPCDuringProviderCallCancelsRun(t *testing.T) {
+	must := require.New(t)
 	useTempMarkerPaths(t)
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 	t.Setenv("CONTROL_PLANE_SESSION_ID", "")
@@ -184,7 +188,7 @@ func TestRunJob_ControlPlaneEndingRPCDuringProviderCallCancelsRun(t *testing.T) 
 	select {
 	case <-provider.reached:
 	case <-time.After(eventWaitBudget):
-		require.FailNow(t, "the run never reached the provider")
+		must.FailNow("the run never reached the provider")
 	}
 	close(srv.end)
 
@@ -192,6 +196,7 @@ func TestRunJob_ControlPlaneEndingRPCDuringProviderCallCancelsRun(t *testing.T) 
 }
 
 func TestRunJob_ConnectionFailureDuringProviderCallCancelsRun(t *testing.T) {
+	must := require.New(t)
 	useTempMarkerPaths(t)
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 	t.Setenv("CONTROL_PLANE_SESSION_ID", "")
@@ -210,7 +215,7 @@ func TestRunJob_ConnectionFailureDuringProviderCallCancelsRun(t *testing.T) {
 	select {
 	case <-provider.reached:
 	case <-time.After(eventWaitBudget):
-		require.FailNow(t, "the run never reached the provider")
+		must.FailNow("the run never reached the provider")
 	}
 	grpcServer.Stop()
 
@@ -218,6 +223,8 @@ func TestRunJob_ConnectionFailureDuringProviderCallCancelsRun(t *testing.T) {
 }
 
 func TestRunJob_StreamLostDuringConstructionStartsNoRun(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	useTempMarkerPaths(t)
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 	t.Setenv("CONTROL_PLANE_SESSION_ID", "")
@@ -235,7 +242,7 @@ func TestRunJob_StreamLostDuringConstructionStartsNoRun(t *testing.T) {
 		select {
 		case <-ctx.Done():
 		case <-time.After(eventWaitBudget):
-			assert.Fail(t, "construction context was not cancelled by the stream loss")
+			check.Fail("construction context was not cancelled by the stream loss")
 		}
 		return prevBuild(ctx, config, tp, opts...)
 	}
@@ -245,16 +252,18 @@ func TestRunJob_StreamLostDuringConstructionStartsNoRun(t *testing.T) {
 
 	select {
 	case err := <-errCh:
-		require.ErrorIs(t, err, core.ErrControlStreamLost, "runJob should report the loss during construction")
-		require.True(t, strings.HasPrefix(err.Error(), "building harness: "), "the error should come from building the harness")
+		must.ErrorIs(err, core.ErrControlStreamLost, "runJob should report the loss during construction")
+		must.True(strings.HasPrefix(err.Error(), "building harness: "), "the error should come from building the harness")
 	case <-time.After(terminalWaitBudget):
-		require.FailNow(t, "runJob did not return after the control stream ended")
+		must.FailNow("runJob did not return after the control stream ended")
 	}
-	assert.Equal(t, int32(0), requests.Load(), "no run may start once the stream is gone")
-	assert.Empty(t, sink.calls, "no result is recorded when no run started")
+	check.Equal(int32(0), requests.Load(), "no run may start once the stream is gone")
+	check.Empty(sink.calls, "no result is recorded when no run started")
 }
 
 func TestRunJob_StreamEndedAfterDoneClosesFollowUpWindow(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	useTempMarkerPaths(t)
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 	t.Setenv("CONTROL_PLANE_SESSION_ID", "")
@@ -271,15 +280,15 @@ func TestRunJob_StreamEndedAfterDoneClosesFollowUpWindow(t *testing.T) {
 	select {
 	case <-srv.doneCh:
 	case <-time.After(terminalWaitBudget):
-		require.FailNow(t, "control plane never received done")
+		must.FailNow("control plane never received done")
 	}
 	select {
 	case err := <-errCh:
-		require.NoError(t, err, "the run succeeded before the stream ended")
+		must.NoError(err, "the run succeeded before the stream ended")
 	case <-time.After(graceSecs * time.Second / 2):
-		require.FailNowf(t, "runJob did not return after the control stream ended", "waited %v", time.Since(start))
+		must.FailNowf("runJob did not return after the control stream ended", "waited %v", time.Since(start))
 	}
-	assert.Equal(t, int32(1), requests.Load())
+	check.Equal(int32(1), requests.Load())
 }
 
 // fakeLiveness is a Transport with Liveness whose stream end the test
@@ -307,6 +316,7 @@ func TestWatchControlStream_ReportsLossCause(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			tp := &fakeLiveness{done: make(chan struct{}), err: tc.err}
 			got := make(chan error, 1)
 			stop := watchControlStream(tp, func(err error) { got <- err })
@@ -316,9 +326,9 @@ func TestWatchControlStream_ReportsLossCause(t *testing.T) {
 			if tc.wantLoss != nil {
 				select {
 				case err := <-got:
-					require.ErrorIs(t, err, tc.wantLoss)
+					must.ErrorIs(err, tc.wantLoss)
 				case <-time.After(5 * time.Second):
-					require.FailNow(t, "onLoss was not called")
+					must.FailNow("onLoss was not called")
 				}
 			}
 			stop()
@@ -326,7 +336,7 @@ func TestWatchControlStream_ReportsLossCause(t *testing.T) {
 			if tc.wantLoss == nil {
 				select {
 				case err := <-got:
-					require.Failf(t, "onLoss called, want no call", "onLoss(%v)", err)
+					must.Failf("onLoss called, want no call", "onLoss(%v)", err)
 				default:
 				}
 			}
@@ -335,14 +345,17 @@ func TestWatchControlStream_ReportsLossCause(t *testing.T) {
 }
 
 func TestWatchControlStream_TransportWithoutLivenessIsNotWatched(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	stop := watchControlStream(&recordingTransport{}, func(error) {
-		assert.Fail(t, "onLoss called for a transport without liveness")
+		check.Fail("onLoss called for a transport without liveness")
 	})
 	stop()
-	require.NoError(t, controlStreamErr(&recordingTransport{}), "a transport without liveness reports no stream error")
+	must.NoError(controlStreamErr(&recordingTransport{}), "a transport without liveness reports no stream error")
 }
 
 func TestPostRunPolicy_FollowUpStreamLossFailsTheProcess(t *testing.T) {
+	must := require.New(t)
 	policy := &postRunPolicy{emit: func(_ context.Context, _ *types.RunConfig, _ *types.RunTrace) {}}
 	rt := finaliseTestTrace("run-2")
 	rt.Outcome = "control_stream_lost"
@@ -350,8 +363,8 @@ func TestPostRunPolicy_FollowUpStreamLossFailsTheProcess(t *testing.T) {
 	policy.finaliseFollowUp(&types.RunConfig{RunID: "run-2"}, rt, nil)
 
 	err := policy.followUpErr()
-	require.ErrorContains(t, err, "run-2", "the error should name the follow-up run")
-	require.ErrorContains(t, err, "control stream lost", "the error should name the loss")
+	must.ErrorContains(err, "run-2", "the error should name the follow-up run")
+	must.ErrorContains(err, "control stream lost", "the error should name the loss")
 }
 
 // silentControlPlane serves a `stirrup harness --transport grpc` stream:
@@ -379,6 +392,8 @@ func (s *silentControlPlane) RunTask(stream pb.HarnessService_RunTaskServer) err
 }
 
 func TestRunWithConfig_GRPCTransportLossCancelsRun(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 	sink := &stubResultSink{}
 	installStubResultSink(t, sink)
@@ -416,17 +431,17 @@ func TestRunWithConfig_GRPCTransportLossCancelsRun(t *testing.T) {
 	select {
 	case <-provider.reached:
 	case <-time.After(eventWaitBudget):
-		require.FailNow(t, "the run never reached the provider")
+		must.FailNow("the run never reached the provider")
 	}
 	close(srv.end)
 
 	select {
 	case err := <-errCh:
-		require.ErrorContains(t, err, "control_stream_lost", "runWithConfig should return the control_stream_lost outcome")
+		must.ErrorContains(err, "control_stream_lost", "runWithConfig should return the control_stream_lost outcome")
 	case <-time.After(terminalWaitBudget):
-		require.FailNow(t, "runWithConfig did not return after the control stream was lost")
+		must.FailNow("runWithConfig did not return after the control stream was lost")
 	}
-	assert.Equal(t, int32(1), provider.requests.Load())
-	require.Len(t, sink.calls, 1, "the run should record exactly one result")
-	assert.Equal(t, "control_stream_lost", sink.calls[0].Outcome)
+	check.Equal(int32(1), provider.requests.Load())
+	must.Len(sink.calls, 1, "the run should record exactly one result")
+	check.Equal("control_stream_lost", sink.calls[0].Outcome)
 }

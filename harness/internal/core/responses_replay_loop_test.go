@@ -64,15 +64,16 @@ type responsesTurnServer struct {
 // so it reports failures with assert rather than require.
 func newResponsesTurnServer(t *testing.T, turns ...string) *responsesTurnServer {
 	t.Helper()
+	check := assert.New(t)
 	s := &responsesTurnServer{turns: turns}
 	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
-		assert.NoError(t, err, "read request body")
+		check.NoError(err, "read request body")
 		s.mu.Lock()
 		s.bodies = append(s.bodies, string(body))
 		if len(s.turns) == 0 {
 			s.mu.Unlock()
-			assert.Fail(t, "unscripted request", "body: %s", body)
+			check.Fail("unscripted request", "body: %s", body)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -105,9 +106,10 @@ func responsesLoopConfig() *types.RunConfig {
 
 func runResponsesLoop(t *testing.T, loop *AgenticLoop, config *types.RunConfig) {
 	t.Helper()
+	must := require.New(t)
 	runTrace, err := loop.Run(context.Background(), config)
-	require.NoError(t, err)
-	require.Equal(t, "success", runTrace.Outcome)
+	must.NoError(err)
+	must.Equal("success", runTrace.Outcome)
 }
 
 // TestLoop_ResponsesReplayFollowsItsEndpoint pins the loop-level replay
@@ -117,6 +119,7 @@ func runResponsesLoop(t *testing.T, loop *AgenticLoop, config *types.RunConfig) 
 // encrypted reasoning, with its tool call still paired.
 func TestLoop_ResponsesReplayFollowsItsEndpoint(t *testing.T) {
 	t.Run("same provider replays", func(t *testing.T) {
+		must := require.New(t)
 		a := newResponsesTurnServer(t, responsesToolTurnSSE(0), responsesFinalTurnSSE())
 		loop := buildTestLoop(nil)
 		loop.Provider = nil
@@ -125,12 +128,13 @@ func TestLoop_ResponsesReplayFollowsItsEndpoint(t *testing.T) {
 		runResponsesLoop(t, loop, responsesLoopConfig())
 
 		bodies := a.requests()
-		require.Len(t, bodies, 2)
-		require.Contains(t, bodies[1], "enc-turn-0")
-		require.Contains(t, bodies[1], `"id":"fc_0"`)
+		must.Len(bodies, 2)
+		must.Contains(bodies[1], "enc-turn-0")
+		must.Contains(bodies[1], `"id":"fc_0"`)
 	})
 
 	t.Run("router switch reconstructs", func(t *testing.T) {
+		must := require.New(t)
 		a := newResponsesTurnServer(t, responsesToolTurnSSE(0))
 		b := newResponsesTurnServer(t, responsesFinalTurnSSE())
 		loop := buildTestLoop(nil)
@@ -146,13 +150,13 @@ func TestLoop_ResponsesReplayFollowsItsEndpoint(t *testing.T) {
 		})
 		runResponsesLoop(t, loop, responsesLoopConfig())
 
-		require.Len(t, a.requests(), 1)
+		must.Len(a.requests(), 1)
 		bodies := b.requests()
-		require.Len(t, bodies, 1)
+		must.Len(bodies, 1)
 		body := bodies[0]
-		require.NotContains(t, body, "enc-turn-0")
-		require.NotContains(t, body, `"id":`)
-		require.Equal(t, 2, strings.Count(body, `"call_id":"call_0"`),
+		must.NotContains(body, "enc-turn-0")
+		must.NotContains(body, `"id":`)
+		must.Equal(2, strings.Count(body, `"call_id":"call_0"`),
 			"call_0 should appear in its function call and in its output: %s", body)
 	})
 }
@@ -194,6 +198,7 @@ func TestLoop_ResponsesReplaySurvivesSummarisation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			srv := newResponsesTurnServer(t, script...)
 			loop := buildTestLoop(nil)
 			registerLargeTestTool(t, loop)
@@ -206,19 +211,19 @@ func TestLoop_ResponsesReplaySurvivesSummarisation(t *testing.T) {
 			runResponsesLoop(t, loop, config)
 
 			bodies := srv.requests()
-			require.Len(t, bodies, len(script))
+			must.Len(bodies, len(script))
 			last := bodies[len(bodies)-1]
 			summarised := strings.Contains(last, "conversation_summary")
-			require.Equal(t, tc.wantSummarised, summarised, "last request body: %s", last)
+			must.Equal(tc.wantSummarised, summarised, "last request body: %s", last)
 			for _, marker := range []string{"enc-turn-0", `"id":"rs_0"`, `"id":"fc_0"`} {
 				if tc.wantFirstTurn {
-					require.Contains(t, last, marker)
+					must.Contains(last, marker)
 				} else {
-					require.NotContains(t, last, marker)
+					must.NotContains(last, marker)
 				}
 			}
-			require.Contains(t, last, "enc-turn-3")
-			require.Contains(t, last, `"id":"fc_3"`)
+			must.Contains(last, "enc-turn-3")
+			must.Contains(last, `"id":"fc_3"`)
 		})
 	}
 }

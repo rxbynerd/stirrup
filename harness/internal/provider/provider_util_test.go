@@ -24,8 +24,9 @@ func newHTTP2TLSServer(t *testing.T, h http.Handler) *httptest.Server {
 // trustServer makes client's transport accept srv's self-signed certificate.
 func trustServer(t *testing.T, client *http.Client, srv *httptest.Server) {
 	t.Helper()
+	must := require.New(t)
 	tr, ok := client.Transport.(*http.Transport)
-	require.True(t, ok, "transport is %T, want *http.Transport", client.Transport)
+	must.True(ok, "transport is %T, want *http.Transport", client.Transport)
 	pool := x509.NewCertPool()
 	pool.AddCert(srv.Certificate())
 	tr.TLSClientConfig = &tls.Config{RootCAs: pool}
@@ -34,8 +35,9 @@ func trustServer(t *testing.T, client *http.Client, srv *httptest.Server) {
 // getProto performs a GET against url and returns the negotiated HTTP major version.
 func getProto(t *testing.T, client *http.Client, url string) int {
 	t.Helper()
+	must := require.New(t)
 	resp, err := client.Get(url)
-	require.NoError(t, err, "GET %s", url)
+	must.NoError(err, "GET %s", url)
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
 	client.CloseIdleConnections()
@@ -53,19 +55,21 @@ func TestStreamingHTTPClients_NegotiateHTTP2(t *testing.T) {
 	}
 	for name, client := range clients {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			trustServer(t, client, srv)
 			got := getProto(t, client, srv.URL)
-			require.Equal(t, 2, got, "negotiated HTTP major version")
+			must.Equal(2, got, "negotiated HTTP major version")
 		})
 	}
 }
 
 func TestStreamingHTTPClient_CustomDialer_NoForceAttemptFallsBackToHTTP1(t *testing.T) {
+	must := require.New(t)
 	srv := newHTTP2TLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 
 	client := newStreamingHTTPClient()
 	client.Transport.(*http.Transport).ForceAttemptHTTP2 = false
 	trustServer(t, client, srv)
 	got := getProto(t, client, srv.URL)
-	require.Equal(t, 1, got, "negotiated HTTP major version")
+	must.Equal(1, got, "negotiated HTTP major version")
 }

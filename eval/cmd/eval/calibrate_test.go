@@ -72,23 +72,27 @@ func TestCmdJudgeCalibrate_UsageErrorsExit2(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			code, stdout, stderr := runCalibrate(t, tc.args...)
-			require.Equal(t, 2, code, "stderr %q", stderr)
-			require.Contains(t, stderr, tc.want)
-			require.Empty(t, stdout, "a usage error printed a report")
+			must.Equal(2, code, "stderr %q", stderr)
+			must.Contains(stderr, tc.want)
+			must.Empty(stdout, "a usage error printed a report")
 		})
 	}
 }
 
 func TestCmdJudgeCalibrate_HelpExits0(t *testing.T) {
+	must := require.New(t)
 	code, _, stderr := runCalibrate(t, "-help")
-	require.Equal(t, 0, code, "stderr %q", stderr)
-	require.Contains(t, stderr, "-golden")
-	require.Contains(t, stderr, "decision")
-	require.Equal(t, 0, run([]string{"judge-calibrate", "-help"}, io.Discard), "run() dispatch exit")
+	must.Equal(0, code, "stderr %q", stderr)
+	must.Contains(stderr, "-golden")
+	must.Contains(stderr, "decision")
+	must.Equal(0, run([]string{"judge-calibrate", "-help"}, io.Discard), "run() dispatch exit")
 }
 
 func TestCmdJudgeCalibrate_ReportsAndReusesTheCache(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	endpoint := newJudgeEndpoint(t)
 	t.Setenv("CLI_JUDGE_KEY", "cli-secret")
 	output := filepath.Join(t.TempDir(), "calibration.json")
@@ -100,59 +104,63 @@ func TestCmdJudgeCalibrate_ReportsAndReusesTheCache(t *testing.T) {
 	}
 
 	code, stdout, stderr := runCalibrate(t, append(args, "--judge-cache", "record")...)
-	require.Equal(t, 0, code, "stderr:\n%s", stderr)
+	must.Equal(0, code, "stderr:\n%s", stderr)
 	for _, want := range []string{
 		"Judge calibration: diff-review-seed (24 cases x 2 repeats = 48 judgments)",
 		"Judge: anthropic stub-judge at " + endpoint.srv.URL,
 		"Adversarial flip rate", "Estimated cost: $",
 	} {
-		assert.Contains(t, stdout, want)
+		check.Contains(stdout, want)
 	}
 	bodies, _ := endpoint.seen()
-	assert.Len(t, bodies, 48, "judge requests")
+	check.Len(bodies, 48, "judge requests")
 
 	report := readCalibrationReport(t, output)
 	m := report.Metrics
-	assert.Len(t, report.Judgments, 48)
-	assert.Equal(t, 24, m.TPR.K, "TPR sample size")
-	assert.Equal(t, 0, m.TNR.K, "TNR sample size")
-	assert.Equal(t, 12, m.AdversarialFlipRate.K, "adversarial flip sample size")
-	assert.NotNil(t, m.Cost, "cost estimate")
+	check.Len(report.Judgments, 48)
+	check.Equal(24, m.TPR.K, "TPR sample size")
+	check.Equal(0, m.TNR.K, "TNR sample size")
+	check.Equal(12, m.AdversarialFlipRate.K, "adversarial flip sample size")
+	check.NotNil(m.Cost, "cost estimate")
 
 	_, err := os.Stat(cacheDir)
-	require.NoError(t, err, "judge cache beside the report")
-	assert.Contains(t, stderr, "Using judge cache directory "+cacheDir+" (mode record)")
-	assert.Contains(t, stderr, "Judge cache (record): 0 hits, 48 misses, 48 stored")
+	must.NoError(err, "judge cache beside the report")
+	check.Contains(stderr, "Using judge cache directory "+cacheDir+" (mode record)")
+	check.Contains(stderr, "Judge cache (record): 0 hits, 48 misses, 48 stored")
 
 	raw, _ := os.ReadFile(output)
-	assert.NotContains(t, string(raw), "cli-secret", "the report file carries the resolved API key")
-	assert.NotContains(t, stdout, "cli-secret", "the report output carries the resolved API key")
+	check.NotContains(string(raw), "cli-secret", "the report file carries the resolved API key")
+	check.NotContains(stdout, "cli-secret", "the report output carries the resolved API key")
 
 	code, stdout, stderr = runCalibrate(t, append(args, "--judge-cache", "read-through", "--judge-cache-dir", cacheDir)...)
-	require.Equal(t, 0, code, "second run stderr:\n%s", stderr)
-	require.Contains(t, stdout, "including 48 judgments served from the cache")
+	must.Equal(0, code, "second run stderr:\n%s", stderr)
+	must.Contains(stdout, "including 48 judgments served from the cache")
 	bodies, _ = endpoint.seen()
-	assert.Len(t, bodies, 48, "judge requests after a cached re-run")
+	check.Len(bodies, 48, "judge requests after a cached re-run")
 }
 
 func TestCmdJudgeCalibrate_RefusesAnUntrustedCacheDir(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	endpoint := newJudgeEndpoint(t)
 	t.Setenv("CLI_JUDGE_KEY", "cli-secret")
 	cacheDir := t.TempDir()
-	require.NoError(t, os.Chmod(cacheDir, 0o777))
+	must.NoError(os.Chmod(cacheDir, 0o777))
 
 	code, stdout, stderr := runCalibrate(t, "--golden", seedGoldenPath, "--judge-model", "m", "--judge-base-url", endpoint.srv.URL,
 		"--judge-api-key-ref", "secret://CLI_JUDGE_KEY", "--judge-cache", "record", "--judge-cache-dir", cacheDir)
-	require.Equal(t, 2, code, "stderr %q", stderr)
-	require.Contains(t, stderr, "--judge-cache-dir")
-	require.Contains(t, stderr, "chmod go-w")
+	must.Equal(2, code, "stderr %q", stderr)
+	must.Contains(stderr, "--judge-cache-dir")
+	must.Contains(stderr, "chmod go-w")
 
 	bodies, _ := endpoint.seen()
-	assert.Empty(t, stdout, "an untrusted cache directory printed a report")
-	assert.Empty(t, bodies, "an untrusted cache directory still ran judgments")
+	check.Empty(stdout, "an untrusted cache directory printed a report")
+	check.Empty(bodies, "an untrusted cache directory still ran judgments")
 }
 
 func TestCmdJudgeCalibrate_DecisionJudgeFromConfigFile(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/systemone" {
 			http.NotFound(w, r)
@@ -162,20 +170,22 @@ func TestCmdJudgeCalibrate_DecisionJudgeFromConfigFile(t *testing.T) {
 	}))
 	defer srv.Close()
 	config := filepath.Join(t.TempDir(), "judge.hcl")
-	require.NoError(t, os.WriteFile(config, []byte("llm {\n  provider = \"decision\"\n  model = \"jev-latest\"\n  base_url = \""+srv.URL+"\"\n}\n"), 0o644))
+	must.NoError(os.WriteFile(config, []byte("llm {\n  provider = \"decision\"\n  model = \"jev-latest\"\n  base_url = \""+srv.URL+"\"\n}\n"), 0o644))
 	output := filepath.Join(t.TempDir(), "report.json")
 
 	code, stdout, stderr := runCalibrate(t, "--golden", seedGoldenPath, "--judge-config", config, "--output", output)
-	require.Equal(t, 0, code, "stderr:\n%s", stderr)
-	assert.Contains(t, stdout, "Judge: decision jev-latest")
+	must.Equal(0, code, "stderr:\n%s", stderr)
+	check.Contains(stdout, "Judge: decision jev-latest")
 
 	report := readCalibrationReport(t, output)
-	assert.Equal(t, 12, report.Metrics.TNR.K, "TNR sample size")
-	assert.Equal(t, 0, report.Metrics.TPR.K, "TPR sample size")
-	assert.Equal(t, types.JudgeProviderDecision, report.Judgments[0].Record.Provider)
+	check.Equal(12, report.Metrics.TNR.K, "TNR sample size")
+	check.Equal(0, report.Metrics.TPR.K, "TPR sample size")
+	check.Equal(types.JudgeProviderDecision, report.Judgments[0].Record.Provider)
 }
 
 func TestCmdJudgeCalibrate_SomeJudgeErrorsStillExit0(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	endpoint := newJudgeEndpoint(t)
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -189,12 +199,14 @@ func TestCmdJudgeCalibrate_SomeJudgeErrorsStillExit0(t *testing.T) {
 	t.Setenv("CLI_JUDGE_KEY", "cli-secret")
 
 	code, stdout, stderr := runCalibrate(t, "--golden", seedGoldenPath, "--judge-model", "m", "--judge-base-url", srv.URL, "--judge-api-key-ref", "secret://CLI_JUDGE_KEY")
-	require.Equal(t, 0, code, "a judge that ruled on most cases should exit 0; stderr:\n%s", stderr)
-	assert.Contains(t, stdout, "Decided 23 of 24 judgments; 1 error")
-	assert.Contains(t, stdout, "HTTP 400")
+	must.Equal(0, code, "a judge that ruled on most cases should exit 0; stderr:\n%s", stderr)
+	check.Contains(stdout, "Decided 23 of 24 judgments; 1 error")
+	check.Contains(stdout, "HTTP 400")
 }
 
 func TestCmdJudgeCalibrate_AllJudgmentsErroredExits1WithTheReport(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
 	}))
@@ -204,36 +216,40 @@ func TestCmdJudgeCalibrate_AllJudgmentsErroredExits1WithTheReport(t *testing.T) 
 
 	code, stdout, stderr := runCalibrate(t, "--golden", seedGoldenPath, "--judge-model", "m", "--judge-base-url", srv.URL,
 		"--judge-api-key-ref", "secret://CLI_JUDGE_KEY", "--output", output)
-	require.Equal(t, 1, code, "a judge that never rules should exit 1; stderr:\n%s", stderr)
-	require.Contains(t, stderr, "all 24 judgments ended in error")
-	assert.Contains(t, stdout, "Decided 0 of 24 judgments; 24 errors")
-	assert.Contains(t, stdout, "HTTP 400")
+	must.Equal(1, code, "a judge that never rules should exit 1; stderr:\n%s", stderr)
+	must.Contains(stderr, "all 24 judgments ended in error")
+	check.Contains(stdout, "Decided 0 of 24 judgments; 24 errors")
+	check.Contains(stdout, "HTTP 400")
 
 	r := readCalibrationReport(t, output)
-	assert.Len(t, r.Judgments, 24, "judgments in the JSON report")
-	assert.Equal(t, 24, r.Metrics.Errors, "errors in the JSON report")
+	check.Len(r.Judgments, 24, "judgments in the JSON report")
+	check.Equal(24, r.Metrics.Errors, "errors in the JSON report")
 }
 
 func TestCmdJudgeCalibrate_UnwritableOutputExits1(t *testing.T) {
+	must := require.New(t)
 	endpoint := newJudgeEndpoint(t)
 	t.Setenv("CLI_JUDGE_KEY", "cli-secret")
 	output := filepath.Join(t.TempDir(), "missing-dir", "report.json")
 	code, _, stderr := runCalibrate(t, "--golden", seedGoldenPath, "--judge-model", "m", "--judge-base-url", endpoint.srv.URL,
 		"--judge-api-key-ref", "secret://CLI_JUDGE_KEY", "--output", output)
-	require.Equal(t, 1, code, "stderr %q", stderr)
-	require.Contains(t, stderr, "writing report")
+	must.Equal(1, code, "stderr %q", stderr)
+	must.Contains(stderr, "writing report")
 }
 
 func readCalibrationReport(t *testing.T, path string) calibrate.Report {
 	t.Helper()
+	must := require.New(t)
 	raw, err := os.ReadFile(path)
-	require.NoError(t, err)
+	must.NoError(err)
 	var r calibrate.Report
-	require.NoError(t, json.Unmarshal(raw, &r))
+	must.NoError(json.Unmarshal(raw, &r))
 	return r
 }
 
 func TestCmdJudgeCalibrate_UnusableTempDirExits1(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	endpoint := newJudgeEndpoint(t)
 	t.Setenv("CLI_JUDGE_KEY", "cli-secret")
 	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "absent"))
@@ -241,9 +257,9 @@ func TestCmdJudgeCalibrate_UnusableTempDirExits1(t *testing.T) {
 	code, stdout, stderr := runCalibrate(t, "--golden", seedGoldenPath, "--judge-model", "m", "--judge-base-url", endpoint.srv.URL,
 		"--judge-api-key-ref", "secret://CLI_JUDGE_KEY")
 
-	require.Equal(t, 1, code, "stderr %q", stderr)
-	require.Contains(t, stderr, "creating work directory")
+	must.Equal(1, code, "stderr %q", stderr)
+	must.Contains(stderr, "creating work directory")
 	bodies, _ := endpoint.seen()
-	assert.Empty(t, stdout, "a failed setup printed a report")
-	assert.Empty(t, bodies, "a failed setup still made judge requests")
+	check.Empty(stdout, "a failed setup printed a report")
+	check.Empty(bodies, "a failed setup still made judge requests")
 }

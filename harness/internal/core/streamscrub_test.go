@@ -21,6 +21,7 @@ import (
 // reached the wire.
 func stdioWireEvents(t *testing.T, ctx context.Context, events []types.StreamEvent) []types.HarnessEvent {
 	t.Helper()
+	must := require.New(t)
 	var wire bytes.Buffer
 	tp := transport.NewStdioTransport(&wire, strings.NewReader(""))
 	ch := make(chan types.StreamEvent, len(events))
@@ -34,7 +35,7 @@ func stdioWireEvents(t *testing.T, ctx context.Context, events []types.StreamEve
 	sc.Buffer(nil, 1<<20)
 	for sc.Scan() {
 		var ev types.HarnessEvent
-		require.NoError(t, json.Unmarshal(sc.Bytes(), &ev), "decode wire event")
+		must.NoError(json.Unmarshal(sc.Bytes(), &ev), "decode wire event")
 		out = append(out, ev)
 	}
 	return out
@@ -57,6 +58,7 @@ func joinedText(events []types.HarnessEvent, eventType string) string {
 func TestStreamEventsToResult_SecretSplitAcrossDeltasIsScrubbed(t *testing.T) {
 	for _, eventType := range []string{"text_delta", "thinking_delta"} {
 		t.Run(eventType, func(t *testing.T) {
+			must := require.New(t)
 			split := len(fakeAnthropicKey) / 2
 			wire := stdioWireEvents(t, context.Background(), []types.StreamEvent{
 				{Type: eventType, Text: "the key is " + fakeAnthropicKey[:split]},
@@ -64,8 +66,8 @@ func TestStreamEventsToResult_SecretSplitAcrossDeltasIsScrubbed(t *testing.T) {
 				{Type: "message_complete", StopReason: "end_turn"},
 			})
 			got := joinedText(wire, eventType)
-			require.NotContains(t, got, fakeAnthropicKey[split:])
-			require.Equal(t, "the key is [REDACTED] and that is all", got)
+			must.NotContains(got, fakeAnthropicKey[split:])
+			must.Equal("the key is [REDACTED] and that is all", got)
 		})
 	}
 }
@@ -75,6 +77,7 @@ func TestStreamEventsToResult_SecretSplitAcrossDeltasIsScrubbed(t *testing.T) {
 // stream carry's cap first: a block longer than the cap goes out exactly
 // as whole-text Scrub leaves it.
 func TestStreamEventsToResult_WholeThinkingBlockIsScrubbedWhole(t *testing.T) {
+	must := require.New(t)
 	block := "the reasoning ends on aws_secret_access_key=" + strings.Repeat("QUJDREVGR0hJSktMTU5P", 600)
 	wire := stdioWireEvents(t, context.Background(), []types.StreamEvent{
 		{Type: "thinking", Text: block},
@@ -82,7 +85,7 @@ func TestStreamEventsToResult_WholeThinkingBlockIsScrubbedWhole(t *testing.T) {
 	})
 	want := security.Scrub(block)
 	got := joinedText(wire, "thinking_delta")
-	require.Equal(t, want, got)
+	must.Equal(want, got)
 }
 
 // TestStreamEventsToResult_HeldDeltasFlushInOrderOnEveryExit pins that
@@ -137,6 +140,7 @@ func TestStreamEventsToResult_HeldDeltasFlushInOrderOnEveryExit(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			rec := &recordingTransport{}
 			ch := make(chan types.StreamEvent, len(tc.events))
 			for _, ev := range tc.events {
@@ -154,7 +158,7 @@ func TestStreamEventsToResult_HeldDeltasFlushInOrderOnEveryExit(t *testing.T) {
 				}
 				got = append(got, ev.Type+":"+ev.Text)
 			}
-			require.Equal(t, strings.Join(tc.want, "|"), strings.Join(got, "|"))
+			must.Equal(strings.Join(tc.want, "|"), strings.Join(got, "|"))
 		})
 	}
 }
@@ -164,6 +168,7 @@ func TestStreamEventsToResult_HeldDeltasFlushInOrderOnEveryExit(t *testing.T) {
 // transport cancels on the first release, and the loop returns through
 // its cancellation check on the next event.
 func TestStreamEventsToResult_CancellationFlushesHeldText(t *testing.T) {
+	must := require.New(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// The carry holds the trailing "sk-ant-", which could begin a key.
@@ -179,9 +184,9 @@ func TestStreamEventsToResult_CancellationFlushesHeldText(t *testing.T) {
 	close(ch)
 	rec := &cancelOnEmitTransport{cancel: cancel}
 	_, err := streamEventsToResult(ctx, ch, rec, true, ignoreEmitFailure, nil)
-	require.ErrorIs(t, err, context.Canceled)
-	require.GreaterOrEqual(t, len(rec.events), 2, "want the release that cancelled and the flush after it")
-	require.Equal(t, first, joinedText(rec.events, "text_delta"), "want everything pushed before the cancellation")
+	must.ErrorIs(err, context.Canceled)
+	must.GreaterOrEqual(len(rec.events), 2, "want the release that cancelled and the flush after it")
+	must.Equal(first, joinedText(rec.events, "text_delta"), "want everything pushed before the cancellation")
 }
 
 // cancelOnEmitTransport records events and cancels its context on the

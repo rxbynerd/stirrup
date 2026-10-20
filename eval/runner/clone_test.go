@@ -13,10 +13,11 @@ import (
 
 func runGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
+	must := require.New(t)
 	cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"}, args...)...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, "git %v\n%s", args, out)
+	must.NoError(err, "git %v\n%s", args, out)
 	return strings.TrimSpace(string(out))
 }
 
@@ -25,10 +26,11 @@ func runGit(t *testing.T, dir string, args ...string) string {
 // the SHA of each commit.
 func newThreeCommitRepo(t *testing.T) (url string, shas []string) {
 	t.Helper()
+	must := require.New(t)
 	dir := t.TempDir()
 	runGit(t, dir, "init", "--quiet", "--initial-branch=main")
 	for _, content := range []string{"one", "two", "three"} {
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "version.txt"), []byte(content), 0o644))
+		must.NoError(os.WriteFile(filepath.Join(dir, "version.txt"), []byte(content), 0o644))
 		runGit(t, dir, "add", "version.txt")
 		runGit(t, dir, "commit", "--quiet", "-m", content)
 		shas = append(shas, runGit(t, dir, "rev-parse", "HEAD"))
@@ -38,26 +40,29 @@ func newThreeCommitRepo(t *testing.T) (url string, shas []string) {
 
 func readVersion(t *testing.T, dir string) string {
 	t.Helper()
+	must := require.New(t)
 	data, err := os.ReadFile(filepath.Join(dir, "version.txt"))
-	require.NoError(t, err)
+	must.NoError(err)
 	return string(data)
 }
 
 func TestCloneRepo_EmptyRefTakesTheDefaultBranchTip(t *testing.T) {
+	must := require.New(t)
 	url, _ := newThreeCommitRepo(t)
 	dest := t.TempDir()
 	err := cloneRepo(context.Background(), url, "", dest)
-	require.NoError(t, err)
-	require.Equal(t, "three", readVersion(t, dest))
+	must.NoError(err)
+	must.Equal("three", readVersion(t, dest))
 }
 
 func TestCloneRepo_ChecksOutNonTipCommitSHA(t *testing.T) {
+	must := require.New(t)
 	url, shas := newThreeCommitRepo(t)
 	dest := t.TempDir()
 	err := cloneRepo(context.Background(), url, shas[1], dest)
-	require.NoError(t, err)
-	require.Equal(t, "two", readVersion(t, dest))
-	require.Equal(t, shas[1], runGit(t, dest, "rev-parse", "HEAD"))
+	must.NoError(err)
+	must.Equal("two", readVersion(t, dest))
+	must.Equal(shas[1], runGit(t, dest, "rev-parse", "HEAD"))
 }
 
 func TestCloneRepo_AcceptsBranchAndTagRefs(t *testing.T) {
@@ -77,30 +82,34 @@ func TestCloneRepo_AcceptsBranchAndTagRefs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			dest := t.TempDir()
 			err := cloneRepo(context.Background(), url, tc.ref, dest)
-			require.NoError(t, err)
-			require.Equal(t, tc.want, readVersion(t, dest))
+			must.NoError(err)
+			must.Equal(tc.want, readVersion(t, dest))
 		})
 	}
 }
 
 func TestCloneRepo_RejectsUnknownRef(t *testing.T) {
+	must := require.New(t)
 	url, _ := newThreeCommitRepo(t)
 	missing := strings.Repeat("0", 40)
 	err := cloneRepo(context.Background(), url, missing, t.TempDir())
-	require.Error(t, err)
-	require.ErrorContains(t, err, "git fetch", "error should name the failing git step")
+	must.Error(err)
+	must.ErrorContains(err, "git fetch", "error should name the failing git step")
 }
 
 func TestCloneRepo_RejectsOptionLikeArguments(t *testing.T) {
 	t.Run("ref starting with a dash", func(t *testing.T) {
+		must := require.New(t)
 		url, _ := newThreeCommitRepo(t)
 		err := cloneRepo(context.Background(), url, "--upload-pack=touch pwned", t.TempDir())
-		require.Error(t, err)
+		must.Error(err)
 	})
 	t.Run("repo starting with a dash", func(t *testing.T) {
+		must := require.New(t)
 		err := cloneRepo(context.Background(), "--upload-pack=touch pwned", "", t.TempDir())
-		require.Error(t, err)
+		must.Error(err)
 	})
 }

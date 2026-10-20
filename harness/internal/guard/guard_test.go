@@ -21,7 +21,8 @@ func TestValidPhase_AcceptsOnlyKnownPhases(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, ValidPhase(tc.p), "ValidPhase(%q)", tc.p)
+			must := require.New(t)
+			must.Equal(tc.want, ValidPhase(tc.p), "ValidPhase(%q)", tc.p)
 		})
 	}
 }
@@ -40,7 +41,8 @@ func TestIsValidVerdict_AcceptsOnlyKnownVerdicts(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, IsValidVerdict(tc.v), "IsValidVerdict(%q)", tc.v)
+			must := require.New(t)
+			must.Equal(tc.want, IsValidVerdict(tc.v), "IsValidVerdict(%q)", tc.v)
 		})
 	}
 }

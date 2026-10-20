@@ -121,10 +121,12 @@ func responsesBuilderCases() []struct {
 func TestBuildResponsesRequest_MatchesStream(t *testing.T) {
 	for _, tc := range responsesBuilderCases() {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
 			capturedCh := make(chan []byte, 1)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				b, err := io.ReadAll(r.Body)
-				if !assert.NoError(t, err, "read request body") {
+				if !check.NoError(err, "read request body") {
 					return
 				}
 				capturedCh <- b
@@ -142,19 +144,19 @@ func TestBuildResponsesRequest_MatchesStream(t *testing.T) {
 			adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 
 			ch, err := adapter.Stream(context.Background(), tc.params)
-			require.NoError(t, err)
+			must.NoError(err)
 			for range ch {
 			}
 			captured := <-capturedCh
 
 			q := quirks.DefaultRegistry().Resolve("openai-responses", tc.params.Model)
 			built, err := buildResponsesRequest(tc.params, q, nil, "")
-			require.NoError(t, err)
+			must.NoError(err)
 			built.Stream = true
 			builtBytes, err := json.Marshal(built)
-			require.NoError(t, err)
+			must.NoError(err)
 
-			require.Equal(t, string(captured), string(builtBytes), "builder body should match the Stream wire body")
+			must.Equal(string(captured), string(builtBytes), "builder body should match the Stream wire body")
 		})
 	}
 }
@@ -171,6 +173,8 @@ func TestBuildResponsesRequest_MatchesStream(t *testing.T) {
 // of the Responses wire entry (flat `name` + `parameters` + `strict`)
 // is what differs and is what this test pins.
 func TestResponsesStrictMode_WireBodyShape(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	q := quirks.NewRegistry([]quirks.Rule{
 		{
 			ProviderType: "openai-responses",
@@ -205,23 +209,23 @@ func TestResponsesStrictMode_WireBodyShape(t *testing.T) {
 		},
 	}
 	got, err := buildResponsesRequest(params, q, nil, "")
-	require.NoError(t, err)
-	require.Len(t, got.Tools, 1)
+	must.NoError(err)
+	must.Len(got.Tools, 1)
 	tool := got.Tools[0]
-	require.NotNil(t, tool.Strict, "tool should set strict")
-	require.True(t, *tool.Strict, "tool should be strict")
+	must.NotNil(tool.Strict, "tool should set strict")
+	must.True(*tool.Strict, "tool should be strict")
 
 	var params2 map[string]any
-	require.NoError(t, json.Unmarshal(tool.Parameters, &params2))
-	assert.Equal(t, false, params2["additionalProperties"])
+	must.NoError(json.Unmarshal(tool.Parameters, &params2))
+	check.Equal(false, params2["additionalProperties"])
 	required, _ := params2["required"].([]any)
-	assert.Len(t, required, 2, "required should list both properties")
+	check.Len(required, 2, "required should list both properties")
 	props := params2["properties"].(map[string]any)
 	// limit was optional → nullable-wrapped.
 	limit := props["limit"].(map[string]any)
 	limitType, ok := limit["type"].([]any)
-	require.True(t, ok, "limit.type should be in array form")
-	assert.Contains(t, limitType, "null", "optional limit should be nullable")
+	must.True(ok, "limit.type should be in array form")
+	check.Contains(limitType, "null", "optional limit should be nullable")
 }
 
 // TestResponsesStrictMode_BuiltinRules pins which first-party models get an
@@ -246,16 +250,17 @@ func TestResponsesStrictMode_BuiltinRules(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.model, func(t *testing.T) {
+			must := require.New(t)
 			params := effortParams(tc.model, "", true)
 			q := quirks.DefaultRegistry().Resolve("openai-responses", tc.model)
 			req, err := buildResponsesRequest(params, q, nil, "")
-			require.NoError(t, err)
+			must.NoError(err)
 			body, err := json.Marshal(req)
-			require.NoError(t, err)
-			require.Equal(t, tc.wantStrict, strings.Contains(string(body), `"strict":true`),
+			must.NoError(err)
+			must.Equal(tc.wantStrict, strings.Contains(string(body), `"strict":true`),
 				"strict emitted in body: %s", body)
 			if tc.wantStrict {
-				require.Contains(t, string(body), `"additionalProperties":false`, "strict tool schema should be normalised")
+				must.Contains(string(body), `"additionalProperties":false`, "strict tool schema should be normalised")
 			}
 		})
 	}
@@ -282,17 +287,18 @@ func TestResponsesRequest_IncludeEncryptedReasoning(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.model, func(t *testing.T) {
+			must := require.New(t)
 			q := quirks.DefaultRegistry().Resolve("openai-responses", tc.model)
 			req, err := buildResponsesRequest(effortParams(tc.model, "", false), q, nil, "")
-			require.NoError(t, err)
+			must.NoError(err)
 			body, err := json.Marshal(req)
-			require.NoError(t, err)
-			require.Equal(t, tc.want, strings.Contains(string(body), include),
+			must.NoError(err)
+			must.Equal(tc.want, strings.Contains(string(body), include),
 				"include emitted in body: %s", body)
 
 			var back responsesRequest
-			require.NoError(t, json.Unmarshal(body, &back))
-			require.Equal(t, tc.want, back.IncludeEncryptedReasoning)
+			must.NoError(json.Unmarshal(body, &back))
+			must.Equal(tc.want, back.IncludeEncryptedReasoning)
 		})
 	}
 }
@@ -317,14 +323,15 @@ func TestResponsesRequest_UnmarshalInclude(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var r responsesRequest
 			err := json.Unmarshal([]byte(tc.body), &r)
 			if tc.wantErr {
-				require.Error(t, err)
+				must.Error(err)
 				return
 			}
-			require.NoError(t, err)
-			require.Equal(t, tc.want, r.IncludeEncryptedReasoning)
+			must.NoError(err)
+			must.Equal(tc.want, r.IncludeEncryptedReasoning)
 		})
 	}
 }
@@ -333,6 +340,8 @@ func TestResponsesRequest_UnmarshalInclude(t *testing.T) {
 // shape through Stream on gpt-5.6: strict:true on the tool and the schema
 // rewritten for strict mode.
 func TestResponsesStrictMode_StreamSendsNormalisedSchema(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	params := effortParams("gpt-5.6-sol", "", false)
 	params.Tools = []types.ToolDefinition{{
 		Name:        "search",
@@ -341,7 +350,7 @@ func TestResponsesStrictMode_StreamSendsNormalisedSchema(t *testing.T) {
 	}}
 	script := newResponsesScript(t)
 	ch, err := script.adapter(nil).Stream(context.Background(), params)
-	require.NoError(t, err)
+	must.NoError(err)
 	collectEvents(t, ch)
 	var req struct {
 		Tools []struct {
@@ -349,18 +358,18 @@ func TestResponsesStrictMode_StreamSendsNormalisedSchema(t *testing.T) {
 			Parameters map[string]any `json:"parameters"`
 		} `json:"tools"`
 	}
-	require.NoError(t, json.Unmarshal(script.lastBody(t), &req))
-	require.Len(t, req.Tools, 1)
-	require.True(t, req.Tools[0].Strict, "tool should be strict")
+	must.NoError(json.Unmarshal(script.lastBody(t), &req))
+	must.Len(req.Tools, 1)
+	must.True(req.Tools[0].Strict, "tool should be strict")
 
 	schema := req.Tools[0].Parameters
-	assert.Equal(t, false, schema["additionalProperties"])
+	check.Equal(false, schema["additionalProperties"])
 	required, _ := schema["required"].([]any)
-	assert.Len(t, required, 2, "required should list both properties")
+	check.Len(required, 2, "required should list both properties")
 	limit, _ := schema["properties"].(map[string]any)["limit"].(map[string]any)
 	limitTypes, ok := limit["type"].([]any)
-	require.True(t, ok, "limit.type should be in array form")
-	assert.Len(t, limitTypes, 2, "optional limit should be made nullable")
+	must.True(ok, "limit.type should be in array form")
+	check.Len(limitTypes, 2, "optional limit should be made nullable")
 }
 
 // TestStrictMode_FailsClosedAlikeOnBothSurfaces pins that a tool schema
@@ -368,6 +377,8 @@ func TestResponsesStrictMode_StreamSendsNormalisedSchema(t *testing.T) {
 // supply) stops a strict-mode request before any bytes are sent, with the
 // same lint error on Chat Completions gpt-5 and Responses gpt-5.x.
 func TestStrictMode_FailsClosedAlikeOnBothSurfaces(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	const lintFailure = "strict-mode schema lint failed"
 	params := func(model string) types.StreamParams {
 		p := effortParams(model, "", false)
@@ -396,17 +407,18 @@ func TestStrictMode_FailsClosedAlikeOnBothSurfaces(t *testing.T) {
 	var lintErrs []string
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			srv, hits := countingServer(t)
 			_, err := tc.new(srv.URL).Stream(context.Background(), params(tc.model))
-			require.ErrorContains(t, err, lintFailure)
+			must.ErrorContains(err, lintFailure)
 			msg := err.Error()
 			lintErrs = append(lintErrs, msg[strings.Index(msg, lintFailure):])
-			require.Zero(t, hits.Load(), "server should receive no requests")
+			must.Zero(hits.Load(), "server should receive no requests")
 		})
 	}
-	require.Len(t, lintErrs, len(cases))
+	must.Len(lintErrs, len(cases))
 	for _, e := range lintErrs[1:] {
-		assert.Equal(t, lintErrs[0], e, "lint errors should match across surfaces")
+		check.Equal(lintErrs[0], e, "lint errors should match across surfaces")
 	}
 }
 
@@ -418,6 +430,7 @@ func TestStrictMode_FailsClosedAlikeOnBothSurfaces(t *testing.T) {
 // rejects the field outright; the Responses batch endpoint contract
 // is unverified, and omission is the safer default.
 func TestBuildResponsesRequest_StreamDefaultFalse(t *testing.T) {
+	must := require.New(t)
 	params := types.StreamParams{
 		Model:     "gpt-4o",
 		MaxTokens: 1024,
@@ -425,13 +438,13 @@ func TestBuildResponsesRequest_StreamDefaultFalse(t *testing.T) {
 	}
 	q := quirks.DefaultRegistry().Resolve("openai-responses", params.Model)
 	got, err := buildResponsesRequest(params, q, nil, "")
-	require.NoError(t, err)
-	require.False(t, got.Stream, "builder should leave Stream unset")
-	require.Equal(t, quirks.StoreFalse, got.StoreMode, "builder should default StoreMode to StoreFalse")
+	must.NoError(err)
+	must.False(got.Stream, "builder should leave Stream unset")
+	must.Equal(quirks.StoreFalse, got.StoreMode, "builder should default StoreMode to StoreFalse")
 
 	body, err := json.Marshal(got)
-	require.NoError(t, err)
-	require.NotContains(t, string(body), `"stream"`, "builder output should omit the stream key")
+	must.NoError(err)
+	must.NotContains(string(body), `"stream"`, "builder output should omit the stream key")
 }
 
 // TestBuildResponsesRequest_PromptCacheKey pins the prompt_cache_key
@@ -452,10 +465,11 @@ func TestBuildResponsesRequest_PromptCacheKey(t *testing.T) {
 
 	marshal := func(t *testing.T, params types.StreamParams, q quirks.ProviderQuirks) []byte {
 		t.Helper()
+		must := require.New(t)
 		req, err := buildResponsesRequest(params, q, nil, "")
-		require.NoError(t, err)
+		must.NoError(err)
 		body, err := json.Marshal(req)
-		require.NoError(t, err)
+		must.NoError(err)
 		return body
 	}
 	flagOn := quirks.DefaultRegistry().Resolve("openai-responses", base.Model)
@@ -463,28 +477,32 @@ func TestBuildResponsesRequest_PromptCacheKey(t *testing.T) {
 	noKey := marshal(t, base, flagOn)
 
 	t.Run("flag on with key appends prompt_cache_key", func(t *testing.T) {
+		must := require.New(t)
 		body := marshal(t, withKey, flagOn)
 		want := strings.TrimSuffix(string(noKey), "}") + `,"prompt_cache_key":"` + key + `"}`
-		require.Equal(t, want, string(body))
+		must.Equal(want, string(body))
 
 		var back responsesRequest
-		require.NoError(t, json.Unmarshal(body, &back))
-		require.Equal(t, key, back.PromptCacheKey)
+		must.NoError(json.Unmarshal(body, &back))
+		must.Equal(key, back.PromptCacheKey)
 	})
 	t.Run("flag on without key omits it", func(t *testing.T) {
-		require.NotContains(t, string(noKey), "prompt_cache_key")
+		must := require.New(t)
+		must.NotContains(string(noKey), "prompt_cache_key")
 	})
 	t.Run("flag off with key omits it", func(t *testing.T) {
+		must := require.New(t)
 		body := marshal(t, withKey, flagOff)
-		require.Equal(t, marshal(t, base, flagOff), body, "flag-off body should ignore CacheKey")
+		must.Equal(marshal(t, base, flagOff), body, "flag-off body should ignore CacheKey")
 	})
 	t.Run("chat completions never sends it", func(t *testing.T) {
+		must := require.New(t)
 		q := quirks.DefaultRegistry().Resolve("openai-compatible", withKey.Model)
 		req, err := buildOpenAIRequest(withKey, true, q, nil)
-		require.NoError(t, err)
+		must.NoError(err)
 		body, err := json.Marshal(req)
-		require.NoError(t, err)
-		require.NotContains(t, string(body), "prompt_cache_key")
-		require.NotContains(t, string(body), key)
+		must.NoError(err)
+		must.NotContains(string(body), "prompt_cache_key")
+		must.NotContains(string(body), key)
 	})
 }

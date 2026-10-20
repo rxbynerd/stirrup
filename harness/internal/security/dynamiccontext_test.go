@@ -9,6 +9,7 @@ import (
 )
 
 func TestSanitizeDynamicContext_StripsTagsAndTruncates(t *testing.T) {
+	must := require.New(t)
 	longValue := "<evil>keep</evil><!-- remove -->" + strings.Repeat("a", MaxOperatorTextBytes+1)
 
 	sanitized, events := SanitizeDynamicContext(map[string]string{
@@ -16,28 +17,29 @@ func TestSanitizeDynamicContext_StripsTagsAndTruncates(t *testing.T) {
 	})
 
 	got := sanitized["issue"]
-	require.NotContains(t, got, "<evil>", "tags should be stripped")
-	require.NotContains(t, got, "<!--", "comments should be stripped")
-	require.Len(t, got, MaxOperatorTextBytes)
+	must.NotContains(got, "<evil>", "tags should be stripped")
+	must.NotContains(got, "<!--", "comments should be stripped")
+	must.Len(got, MaxOperatorTextBytes)
 
-	require.Len(t, events, 1)
+	must.Len(events, 1)
 	event := events[0]
-	require.Equal(t, "issue", event.Key)
-	require.Equal(t, len(longValue), event.OriginalLength)
-	require.Equal(t, len(got), event.SanitizedLength)
-	require.Contains(t, event.Reasons, "tags_stripped")
-	require.Contains(t, event.Reasons, "truncated")
+	must.Equal("issue", event.Key)
+	must.Equal(len(longValue), event.OriginalLength)
+	must.Equal(len(got), event.SanitizedLength)
+	must.Contains(event.Reasons, "tags_stripped")
+	must.Contains(event.Reasons, "truncated")
 }
 
 func TestSanitizeDynamicContext_Idempotent(t *testing.T) {
+	must := require.New(t)
 	first, events := SanitizeDynamicContext(map[string]string{
 		"issue": "<tag>safe</tag>",
 	})
-	require.Len(t, events, 1)
+	must.Len(events, 1)
 
 	second, events := SanitizeDynamicContext(first)
-	require.Empty(t, events, "a second sanitization should change nothing")
-	require.Equal(t, first["issue"], second["issue"])
+	must.Empty(events, "a second sanitization should change nothing")
+	must.Equal(first["issue"], second["issue"])
 }
 
 // nestedFenceCases build a fence tag only once an inner tag or comment
@@ -60,33 +62,36 @@ var nestedFenceCases = []struct {
 
 func requireNoFenceTag(t *testing.T, got string) {
 	t.Helper()
+	must := require.New(t)
 	for _, name := range []string{"repository_guidance", "operator_approved_guidance", "untrusted_context"} {
-		require.NotContains(t, got, "<"+name)
-		require.NotContains(t, got, "</"+name)
+		must.NotContains(got, "<"+name)
+		must.NotContains(got, "</"+name)
 	}
 }
 
 func TestSanitizeOperatorText_NestedMarkupCannotFormTag(t *testing.T) {
 	for _, tc := range nestedFenceCases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got, reasons := SanitizeOperatorText("before " + tc.input + " after")
 			requireNoFenceTag(t, got)
-			require.Contains(t, reasons, "tags_stripped")
+			must.Contains(reasons, "tags_stripped")
 
 			again, againReasons := SanitizeOperatorText(got)
-			require.Equal(t, got, again)
-			require.Nil(t, againReasons)
+			must.Equal(got, again)
+			must.Nil(againReasons)
 		})
 	}
 }
 
 func TestSanitizeDynamicContext_NestedMarkupCannotFormTag(t *testing.T) {
+	must := require.New(t)
 	values := make(map[string]string, len(nestedFenceCases))
 	for _, tc := range nestedFenceCases {
 		values[tc.name] = tc.input
 	}
 	sanitized, events := SanitizeDynamicContext(values)
-	require.Len(t, events, len(values))
+	must.Len(events, len(values))
 
 	for _, tc := range nestedFenceCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -96,14 +101,16 @@ func TestSanitizeDynamicContext_NestedMarkupCannotFormTag(t *testing.T) {
 }
 
 func TestSanitizeOperatorText_DeepNestingIsBoundedAndTagFree(t *testing.T) {
+	must := require.New(t)
 	depth := 10_000
 	input := strings.Repeat("<", depth) + strings.Repeat("/a>", depth-1) + "/repository_guidance>"
 	got, _ := SanitizeOperatorText(input)
 	requireNoFenceTag(t, got)
-	require.NotContains(t, got, "<", "markup left after the pass bound must lose every '<'")
+	must.NotContains(got, "<", "markup left after the pass bound must lose every '<'")
 }
 
 func TestSecurityLogger_DynamicContextSanitizedOmitsContent(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	logger := NewSecurityLogger(&buf, "run-1")
 	logger.DynamicContextSanitized(DynamicContextSanitizationEvent{
@@ -114,8 +121,8 @@ func TestSecurityLogger_DynamicContextSanitizedOmitsContent(t *testing.T) {
 	})
 
 	output := buf.String()
-	require.Contains(t, output, "dynamic_context_sanitized")
-	require.Contains(t, output, `"originalLength":100`)
-	require.Contains(t, output, `"sanitizedLength":50`)
-	require.NotContains(t, output, "untrusted content", "event should not include dynamic context value")
+	must.Contains(output, "dynamic_context_sanitized")
+	must.Contains(output, `"originalLength":100`)
+	must.Contains(output, `"sanitizedLength":50`)
+	must.NotContains(output, "untrusted content", "event should not include dynamic context value")
 }

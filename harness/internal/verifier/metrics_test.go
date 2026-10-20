@@ -17,64 +17,70 @@ import (
 // verifier records runs (passed=true) and duration with the type label
 // supplied at construction time.
 func TestMetricRecorder_RecordsPassingRun(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	reader, m := newRecorderTestMetrics(t)
 
 	wrapped := NewMetricRecorder(passingStub(map[string]any{"ok": true}), m, "test-runner")
 	_, err := wrapped.Verify(context.Background(), VerifyContext{})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	rm := collectRunMetrics(t, reader)
 
 	dps := collectInt64Counters(t, rm, "stirrup.verifier.runs")
-	require.Len(t, dps, 1)
-	assert.Equal(t, "test-runner", dps[0].attrs["type"])
-	assert.Equal(t, "true", dps[0].attrs["passed"])
+	must.Len(dps, 1)
+	check.Equal("test-runner", dps[0].attrs["type"])
+	check.Equal("true", dps[0].attrs["passed"])
 
-	assert.True(t, histogramHasObservation(t, rm, "stirrup.verifier.duration"),
+	check.True(histogramHasObservation(t, rm, "stirrup.verifier.duration"),
 		"stirrup.verifier.duration recorded no observations")
 }
 
 // TestMetricRecorder_RecordsFailingRun verifies passed=false on a
 // failing verifier (Passed=false, no error).
 func TestMetricRecorder_RecordsFailingRun(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	reader, m := newRecorderTestMetrics(t)
 
 	wrapped := NewMetricRecorder(failingStub("nope", nil), m, "llm-judge")
 	_, err := wrapped.Verify(context.Background(), VerifyContext{})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	rm := collectRunMetrics(t, reader)
 
 	dps := collectInt64Counters(t, rm, "stirrup.verifier.runs")
-	require.Len(t, dps, 1)
-	assert.Equal(t, "llm-judge", dps[0].attrs["type"])
-	assert.Equal(t, "false", dps[0].attrs["passed"])
+	must.Len(dps, 1)
+	check.Equal("llm-judge", dps[0].attrs["type"])
+	check.Equal("false", dps[0].attrs["passed"])
 }
 
 // TestMetricRecorder_TreatsErrorAsFailed asserts that a verifier that
 // returns an error counts as passed=false on the metric, even though
 // the result itself may be nil.
 func TestMetricRecorder_TreatsErrorAsFailed(t *testing.T) {
+	must := require.New(t)
 	reader, m := newRecorderTestMetrics(t)
 
 	wrapped := NewMetricRecorder(errorStub(errors.New("boom")), m, "test-runner")
 	_, err := wrapped.Verify(context.Background(), VerifyContext{})
-	require.Error(t, err, "verifier error must propagate")
+	must.Error(err, "verifier error must propagate")
 
 	rm := collectRunMetrics(t, reader)
 
 	dps := collectInt64Counters(t, rm, "stirrup.verifier.runs")
-	require.Len(t, dps, 1)
-	require.Equal(t, "false", dps[0].attrs["passed"])
+	must.Len(dps, 1)
+	must.Equal("false", dps[0].attrs["passed"])
 }
 
 // TestMetricRecorder_NilMetricsReturnsInner verifies the zero-overhead
 // path when metrics are disabled — the wrapper returns inner unchanged
 // so no extra allocation or method dispatch happens per Verify.
 func TestMetricRecorder_NilMetricsReturnsInner(t *testing.T) {
+	must := require.New(t)
 	inner := passingStub(nil)
 	got := NewMetricRecorder(inner, nil, "none")
-	require.Same(t, inner, got)
+	must.Same(inner, got)
 }
 
 // --- helpers ---
@@ -82,18 +88,20 @@ func TestMetricRecorder_NilMetricsReturnsInner(t *testing.T) {
 // newRecorderTestMetrics returns a manual reader and metrics that export to it.
 func newRecorderTestMetrics(t *testing.T) (*sdkmetric.ManualReader, *observability.Metrics) {
 	t.Helper()
+	must := require.New(t)
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	m, err := observability.NewMetricsForTesting(provider)
-	require.NoError(t, err)
+	must.NoError(err)
 	return reader, m
 }
 
 // collectRunMetrics collects everything recorded so far by reader.
 func collectRunMetrics(t *testing.T, reader *sdkmetric.ManualReader) metricdata.ResourceMetrics {
 	t.Helper()
+	must := require.New(t)
 	var rm metricdata.ResourceMetrics
-	require.NoError(t, reader.Collect(context.Background(), &rm))
+	must.NoError(reader.Collect(context.Background(), &rm))
 	return rm
 }
 
@@ -104,13 +112,14 @@ type counterDataPoint struct {
 
 func collectInt64Counters(t *testing.T, rm metricdata.ResourceMetrics, name string) []counterDataPoint {
 	t.Helper()
+	must := require.New(t)
 	for _, sm := range rm.ScopeMetrics {
 		for _, mt := range sm.Metrics {
 			if mt.Name != name {
 				continue
 			}
 			sum, ok := mt.Data.(metricdata.Sum[int64])
-			require.Truef(t, ok, "metric %q is not a Sum[int64]", name)
+			must.Truef(ok, "metric %q is not a Sum[int64]", name)
 			out := make([]counterDataPoint, 0, len(sum.DataPoints))
 			for _, dp := range sum.DataPoints {
 				attrs := make(map[string]string)

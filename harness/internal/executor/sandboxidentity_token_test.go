@@ -44,6 +44,7 @@ func (c *stdinExecCapture) stdinSeen() []string {
 // The handlers run on the server's goroutines, so they report through assert.
 func stdinExecHandlers(t *testing.T, capture *stdinExecCapture, exitCode int, stderr string) map[string]http.HandlerFunc {
 	t.Helper()
+	check := assert.New(t)
 	return map[string]http.HandlerFunc{
 		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
 			var req execCreateRequest
@@ -56,16 +57,16 @@ func stdinExecHandlers(t *testing.T, capture *stdinExecCapture, exitCode int, st
 		},
 		"POST /exec/*/start": func(w http.ResponseWriter, r *http.Request) {
 			_, _ = io.ReadAll(r.Body)
-			if !assert.Equal(t, "tcp", r.Header.Get("Upgrade"), "exec start must request Upgrade: tcp; stdin cannot be delivered") {
+			if !check.Equal("tcp", r.Header.Get("Upgrade"), "exec start must request Upgrade: tcp; stdin cannot be delivered") {
 				http.Error(w, "expected upgrade", http.StatusBadRequest)
 				return
 			}
 			hj, ok := w.(http.Hijacker)
-			if !assert.True(t, ok, "mock server must support hijacking") {
+			if !check.True(ok, "mock server must support hijacking") {
 				return
 			}
 			conn, rw, err := hj.Hijack()
-			if !assert.NoError(t, err, "hijack") {
+			if !check.NoError(err, "hijack") {
 				return
 			}
 			defer func() { _ = conn.Close() }()
@@ -101,6 +102,7 @@ func TestContainerExecutor_SandboxIdentityToken_MountsPrivateTmpfs(t *testing.T)
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var received containerCreateRequest
 			sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
 				"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
@@ -120,18 +122,18 @@ func TestContainerExecutor_SandboxIdentityToken_MountsPrivateTmpfs(t *testing.T)
 				SocketPath:           sock,
 				SandboxIdentityToken: tc.enabled,
 			})
-			require.NoError(t, err, "NewContainerExecutorWithContext")
+			must.NoError(err, "NewContainerExecutorWithContext")
 			defer func() { _ = exec.Close() }()
 
 			opts, mounted := received.HostConfig.Tmpfs[SandboxIdentityTokenDir]
-			require.Equal(t, tc.enabled, mounted, "tmpfs at %s (Tmpfs=%v)", SandboxIdentityTokenDir, received.HostConfig.Tmpfs)
+			must.Equal(tc.enabled, mounted, "tmpfs at %s (Tmpfs=%v)", SandboxIdentityTokenDir, received.HostConfig.Tmpfs)
 			if !tc.enabled {
 				return
 			}
 			for _, want := range []string{"nosuid", "nodev", "noexec", "mode=1777", fmt.Sprintf("size=%d", sandboxIdentityTokenMountBytes)} {
-				require.Contains(t, opts, want)
+				must.Contains(opts, want)
 			}
-			require.False(t, strings.HasPrefix(SandboxIdentityTokenDir, containerWorkspace+"/"),
+			must.False(strings.HasPrefix(SandboxIdentityTokenDir, containerWorkspace+"/"),
 				"token dir %s must lie outside the workspace %s", SandboxIdentityTokenDir, containerWorkspace)
 		})
 	}
@@ -143,30 +145,31 @@ func TestContainerExecutor_SandboxIdentityToken_MountsPrivateTmpfs(t *testing.T)
 // path-bearing write command in argv, and the executor must report success
 // from the inspected exit code.
 func TestContainerExecutor_WriteSandboxIdentityToken_StdinNotArgv(t *testing.T) {
+	must := require.New(t)
 	const token = "eyJhbGciOiJFUzI1NiJ9.refresh-payload.signature"
 	capture := &stdinExecCapture{}
 	exec, cleanup := newMockContainerExecutor(t, stdinExecHandlers(t, capture, 0, ""))
 	defer cleanup()
 	exec.sandboxIdentity = true
 
-	require.NoError(t, exec.WriteSandboxIdentityToken(context.Background(), token))
+	must.NoError(exec.WriteSandboxIdentityToken(context.Background(), token))
 
-	require.Equal(t, []string{token}, capture.stdinSeen(), "the engine must receive exactly one delivery of the token on stdin")
+	must.Equal([]string{token}, capture.stdinSeen(), "the engine must receive exactly one delivery of the token on stdin")
 	create := capture.lastCreate()
-	require.True(t, create.AttachStdin, "exec create must attach stdin")
-	require.Equal(t, sandboxIdentityWriteCommand(len(token)), create.Cmd, "exec argv must be the token write command")
+	must.True(create.AttachStdin, "exec create must attach stdin")
+	must.Equal(sandboxIdentityWriteCommand(len(token)), create.Cmd, "exec argv must be the token write command")
 	for _, arg := range create.Cmd {
-		require.NotContains(t, arg, token, "token must not appear in exec argv")
+		must.NotContains(arg, token, "token must not appear in exec argv")
 	}
 
 	script := create.Cmd[2]
 	for _, need := range []string{"umask 077", `wc -c < "$2"`, `-eq "$3"`, `mv -f -- "$2" "$1"`, `rm -f -- "$2"`, "exit 4"} {
-		require.Contains(t, script, need)
+		must.Contains(script, need)
 	}
 
-	require.Equal(t, SandboxIdentityTokenPath, create.Cmd[4], "write argv final path")
-	require.Equal(t, sandboxIdentityTokenStaging, create.Cmd[5], "write argv staging path")
-	require.Equal(t, strconv.Itoa(len(token)), create.Cmd[6], "write argv byte length")
+	must.Equal(SandboxIdentityTokenPath, create.Cmd[4], "write argv final path")
+	must.Equal(sandboxIdentityTokenStaging, create.Cmd[5], "write argv staging path")
+	must.Equal(strconv.Itoa(len(token)), create.Cmd[6], "write argv byte length")
 }
 
 // TestContainerExecutor_WriteSandboxIdentityToken_ShortStreamSurfaces
@@ -174,6 +177,7 @@ func TestContainerExecutor_WriteSandboxIdentityToken_StdinNotArgv(t *testing.T) 
 // reported even when the in-container command reports success, so a
 // truncated delivery can never pass as a complete one.
 func TestContainerExecutor_WriteSandboxIdentityToken_ShortStreamSurfaces(t *testing.T) {
+	must := require.New(t)
 	capture := &stdinExecCapture{}
 	exec, cleanup := newMockContainerExecutor(t, stdinExecHandlers(t, capture, 0, ""))
 	defer cleanup()
@@ -181,13 +185,14 @@ func TestContainerExecutor_WriteSandboxIdentityToken_ShortStreamSurfaces(t *test
 
 	aborted := io.MultiReader(strings.NewReader("eyJhbGciOiJFUzI1NiJ9.half"), iotest.ErrReader(errors.New("client aborted")))
 	_, err := exec.execInContainerInput(context.Background(), sandboxIdentityWriteCommand(64), exec.workspace, aborted, containerFileIOTimeout)
-	require.ErrorContains(t, err, "client aborted", "the error must carry the stdin reader's failure")
+	must.ErrorContains(err, "client aborted", "the error must carry the stdin reader's failure")
 }
 
 // TestContainerExecutor_WriteSandboxIdentityToken_ReportsFailure asserts a
 // non-zero exit surfaces the command's stderr without ever echoing the
 // token.
 func TestContainerExecutor_WriteSandboxIdentityToken_ReportsFailure(t *testing.T) {
+	must := require.New(t)
 	const token = "must-not-appear"
 	capture := &stdinExecCapture{}
 	exec, cleanup := newMockContainerExecutor(t, stdinExecHandlers(t, capture, 1, "sh: can't create /run/stirrup/sandbox-identity/.token.tmp: Permission denied\n"))
@@ -195,9 +200,9 @@ func TestContainerExecutor_WriteSandboxIdentityToken_ReportsFailure(t *testing.T
 	exec.sandboxIdentity = true
 
 	err := exec.WriteSandboxIdentityToken(context.Background(), token)
-	require.ErrorContains(t, err, "Permission denied")
-	require.ErrorContains(t, err, "exit 1")
-	require.NotContains(t, err.Error(), token, "the error must not contain the token")
+	must.ErrorContains(err, "Permission denied")
+	must.ErrorContains(err, "exit 1")
+	must.NotContains(err.Error(), token, "the error must not contain the token")
 }
 
 // TestContainerExecutor_WriteSandboxIdentityToken_RequiresMount asserts a
@@ -205,13 +210,14 @@ func TestContainerExecutor_WriteSandboxIdentityToken_ReportsFailure(t *testing.T
 // touching the engine, rather than running the command against a
 // read-only rootfs.
 func TestContainerExecutor_WriteSandboxIdentityToken_RequiresMount(t *testing.T) {
+	must := require.New(t)
 	capture := &stdinExecCapture{}
 	exec, cleanup := newMockContainerExecutor(t, stdinExecHandlers(t, capture, 0, ""))
 	defer cleanup()
 
 	err := exec.WriteSandboxIdentityToken(context.Background(), "tok")
-	require.Error(t, err, "an error is expected without the sandbox identity mount")
-	require.Empty(t, capture.stdinSeen(), "the engine must receive no exec")
+	must.Error(err, "an error is expected without the sandbox identity mount")
+	must.Empty(capture.stdinSeen(), "the engine must receive no exec")
 }
 
 // TestContainerAPIClient_StartExecWithStdin_RequiresUpgrade asserts a
@@ -219,6 +225,7 @@ func TestContainerExecutor_WriteSandboxIdentityToken_RequiresMount(t *testing.T)
 // protocols is treated as unable to carry stdin, and the call fails rather
 // than running the command without its input.
 func TestContainerAPIClient_StartExecWithStdin_RequiresUpgrade(t *testing.T) {
+	must := require.New(t)
 	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
 		"POST /exec/*/start": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
@@ -233,17 +240,18 @@ func TestContainerAPIClient_StartExecWithStdin_RequiresUpgrade(t *testing.T) {
 		// Release the connection before failing on the unexpected success.
 		_ = stream.Close()
 	}
-	require.ErrorContains(t, err, "HTTP 101", "the error must explain the missing upgrade")
+	must.ErrorContains(err, "HTTP 101", "the error must explain the missing upgrade")
 }
 
 // TestBuildSandboxPodSpec_SandboxIdentityVolume asserts the flag adds a
 // memory-backed emptyDir mounted at SandboxIdentityTokenDir outside the
 // workspace, and that the Pod spec is unchanged without it.
 func TestBuildSandboxPodSpec_SandboxIdentityVolume(t *testing.T) {
+	must := require.New(t)
 	cfg := baseSandboxCfg()
 	without := buildSandboxPodSpec(cfg, nil, nil)
-	require.Len(t, without.Volumes, 1, "volumes without the flag")
-	require.Len(t, without.Containers[0].VolumeMounts, 1, "mounts without the flag")
+	must.Len(without.Volumes, 1, "volumes without the flag")
+	must.Len(without.Containers[0].VolumeMounts, 1, "mounts without the flag")
 
 	cfg.SandboxIdentityToken = true
 	spec := buildSandboxPodSpec(cfg, nil, nil)
@@ -254,11 +262,11 @@ func TestBuildSandboxPodSpec_SandboxIdentityVolume(t *testing.T) {
 			vol = &spec.Volumes[i]
 		}
 	}
-	require.NotNil(t, vol, "volume %q missing from %+v", k8sSandboxIdentityVolume, spec.Volumes)
-	require.NotNil(t, vol.EmptyDir, "volume %q must be an emptyDir, got %+v", k8sSandboxIdentityVolume, vol.VolumeSource)
-	require.Equal(t, corev1.StorageMediumMemory, vol.EmptyDir.Medium, "volume %q must be memory-backed", k8sSandboxIdentityVolume)
-	require.NotNil(t, vol.EmptyDir.SizeLimit, "volume %q must set a size limit", k8sSandboxIdentityVolume)
-	require.Equal(t, k8sSandboxIdentityVolumeSize, vol.EmptyDir.SizeLimit.String(), "volume %q size limit", k8sSandboxIdentityVolume)
+	must.NotNil(vol, "volume %q missing from %+v", k8sSandboxIdentityVolume, spec.Volumes)
+	must.NotNil(vol.EmptyDir, "volume %q must be an emptyDir, got %+v", k8sSandboxIdentityVolume, vol.VolumeSource)
+	must.Equal(corev1.StorageMediumMemory, vol.EmptyDir.Medium, "volume %q must be memory-backed", k8sSandboxIdentityVolume)
+	must.NotNil(vol.EmptyDir.SizeLimit, "volume %q must set a size limit", k8sSandboxIdentityVolume)
+	must.Equal(k8sSandboxIdentityVolumeSize, vol.EmptyDir.SizeLimit.String(), "volume %q size limit", k8sSandboxIdentityVolume)
 
 	var mount *corev1.VolumeMount
 	for i := range spec.Containers[0].VolumeMounts {
@@ -266,20 +274,21 @@ func TestBuildSandboxPodSpec_SandboxIdentityVolume(t *testing.T) {
 			mount = &spec.Containers[0].VolumeMounts[i]
 		}
 	}
-	require.NotNil(t, mount, "mount for %q missing from %+v", k8sSandboxIdentityVolume, spec.Containers[0].VolumeMounts)
-	require.Equal(t, SandboxIdentityTokenDir, mount.MountPath, "token mount path")
-	require.False(t, strings.HasPrefix(mount.MountPath, k8sWorkspace+"/"),
+	must.NotNil(mount, "mount for %q missing from %+v", k8sSandboxIdentityVolume, spec.Containers[0].VolumeMounts)
+	must.Equal(SandboxIdentityTokenDir, mount.MountPath, "token mount path")
+	must.False(strings.HasPrefix(mount.MountPath, k8sWorkspace+"/"),
 		"token dir %s must lie outside the workspace %s", mount.MountPath, k8sWorkspace)
 	// The workspace volume must survive untouched alongside the new one.
-	require.Equal(t, k8sWorkspace, spec.Containers[0].VolumeMounts[0].MountPath,
+	must.Equal(k8sWorkspace, spec.Containers[0].VolumeMounts[0].MountPath,
 		"the first mount must remain the workspace mount, got %+v", spec.Containers[0].VolumeMounts[0])
 }
 
 // TestPodExecCore_WriteSandboxIdentityToken_RequiresVolume asserts a Pod
 // created without the token volume refuses the write up front.
 func TestPodExecCore_WriteSandboxIdentityToken_RequiresVolume(t *testing.T) {
+	must := require.New(t)
 	core := &podExecCore{}
-	require.Error(t, core.WriteSandboxIdentityToken(context.Background(), "tok"),
+	must.Error(core.WriteSandboxIdentityToken(context.Background(), "tok"),
 		"an error is expected without the sandbox identity volume")
 }
 
@@ -289,13 +298,15 @@ func TestPodExecCore_WriteSandboxIdentityToken_RequiresVolume(t *testing.T) {
 // it.
 func TestSandboxIdentityTokenPath_OutsideEveryWorkspace(t *testing.T) {
 	t.Run("container executor", func(t *testing.T) {
+		must := require.New(t)
 		container := &ContainerExecutor{workspace: containerWorkspace}
 		_, err := container.ResolvePath(SandboxIdentityTokenPath)
-		require.Error(t, err, "ResolvePath(%s) must fail: the token must be unreachable through the workspace", SandboxIdentityTokenPath)
+		must.Error(err, "ResolvePath(%s) must fail: the token must be unreachable through the workspace", SandboxIdentityTokenPath)
 	})
 	t.Run("k8s pod executor", func(t *testing.T) {
+		must := require.New(t)
 		pod := &podExecCore{}
 		_, err := pod.ResolvePath(SandboxIdentityTokenPath)
-		require.Error(t, err, "ResolvePath(%s) must fail: the token must be unreachable through the workspace", SandboxIdentityTokenPath)
+		must.Error(err, "ResolvePath(%s) must fail: the token must be unreachable through the workspace", SandboxIdentityTokenPath)
 	})
 }

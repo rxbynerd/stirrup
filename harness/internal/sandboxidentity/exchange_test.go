@@ -75,6 +75,7 @@ func boolPtr(b bool) *bool    { return &b }
 func int64Ptr(v int64) *int64 { return &v }
 
 func TestExchange_ReturnsTokenAndExpiry(t *testing.T) {
+	must := require.New(t)
 	mt := &mockTransport{
 		respond: func(requestID string) (types.ControlEvent, bool) {
 			return types.ControlEvent{
@@ -87,27 +88,28 @@ func TestExchange_ReturnsTokenAndExpiry(t *testing.T) {
 	}
 
 	result, err := Exchange(context.Background(), mt, "https://haybale.internal", time.Second)
-	require.NoError(t, err)
-	require.Equal(t, "the-jwt", result.Token)
-	require.NotNil(t, result.ExpiresAt)
-	require.Equal(t, int64(1234), *result.ExpiresAt)
+	must.NoError(err)
+	must.Equal("the-jwt", result.Token)
+	must.NotNil(result.ExpiresAt)
+	must.Equal(int64(1234), *result.ExpiresAt)
 
 	emitted := mt.lastEmitted()
-	require.NotNil(t, emitted, "expected a sandbox_token_request to be emitted")
-	require.Equal(t, "sandbox_token_request", emitted.Type)
-	require.Equal(t, "https://haybale.internal", emitted.Audience)
-	require.NotEmpty(t, emitted.RequestID, "RequestID should be set on the outbound request")
+	must.NotNil(emitted, "expected a sandbox_token_request to be emitted")
+	must.Equal("sandbox_token_request", emitted.Type)
+	must.Equal("https://haybale.internal", emitted.Audience)
+	must.NotEmpty(emitted.RequestID, "RequestID should be set on the outbound request")
 }
 
 // TestExchange_TimeoutFailsClosed asserts fail-closed behaviour: no response within
 // the bounded wait returns an error and a zero Result, never a partial or
 // default token.
 func TestExchange_TimeoutFailsClosed(t *testing.T) {
+	must := require.New(t)
 	mt := &mockTransport{} // never responds
 
 	result, err := Exchange(context.Background(), mt, "aud", 20*time.Millisecond)
-	require.Error(t, err)
-	require.Empty(t, result.Token)
+	must.Error(err)
+	must.Empty(result.Token)
 }
 
 // TestExchange_ZeroTimeoutUsesDefault verifies that a timeout of zero falls
@@ -115,6 +117,7 @@ func TestExchange_TimeoutFailsClosed(t *testing.T) {
 // long to wait out, so the test cancels the context after a short delay and
 // checks that the call did not return at once.
 func TestExchange_ZeroTimeoutUsesDefault(t *testing.T) {
+	must := require.New(t)
 	mt := &mockTransport{} // never responds
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -126,26 +129,28 @@ func TestExchange_ZeroTimeoutUsesDefault(t *testing.T) {
 
 	result, err := Exchange(ctx, mt, "aud", 0)
 	elapsed := time.Since(start)
-	require.Error(t, err)
-	require.Empty(t, result.Token)
-	require.GreaterOrEqual(t, elapsed, 15*time.Millisecond,
+	must.Error(err)
+	must.Empty(result.Token)
+	must.GreaterOrEqual(elapsed, 15*time.Millisecond,
 		"a zero timeout may have fired immediately instead of falling back to DefaultTimeout")
 }
 
 // TestExchange_CancelledContextFailsClosed asserts cancellation also fails closed.
 func TestExchange_CancelledContextFailsClosed(t *testing.T) {
+	must := require.New(t)
 	mt := &mockTransport{}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	result, err := Exchange(ctx, mt, "aud", time.Second)
-	require.Error(t, err)
-	require.Empty(t, result.Token)
+	must.Error(err)
+	must.Empty(result.Token)
 }
 
 // TestExchange_DeclineReturnsReason asserts a control-plane decline (IsError) aborts
 // with an error incorporating Reason, never proceeding with a token.
 func TestExchange_DeclineReturnsReason(t *testing.T) {
+	must := require.New(t)
 	mt := &mockTransport{
 		respond: func(requestID string) (types.ControlEvent, bool) {
 			return types.ControlEvent{
@@ -158,13 +163,14 @@ func TestExchange_DeclineReturnsReason(t *testing.T) {
 	}
 
 	result, err := Exchange(context.Background(), mt, "aud", time.Second)
-	require.ErrorContains(t, err, "no issuer configured")
-	require.Empty(t, result.Token)
+	must.ErrorContains(err, "no issuer configured")
+	must.Empty(result.Token)
 }
 
 // TestExchange_OversizedTokenRejected asserts a token exceeding MaxTokenBytes is treated
 // as an error and never truncated-and-used.
 func TestExchange_OversizedTokenRejected(t *testing.T) {
+	must := require.New(t)
 	oversized := strings.Repeat("a", MaxTokenBytes+1)
 	mt := &mockTransport{
 		respond: func(requestID string) (types.ControlEvent, bool) {
@@ -177,15 +183,16 @@ func TestExchange_OversizedTokenRejected(t *testing.T) {
 	}
 
 	result, err := Exchange(context.Background(), mt, "aud", time.Second)
-	require.Error(t, err)
-	require.Empty(t, result.Token)
-	require.NotContains(t, err.Error(), oversized, "error message must not contain the raw token content")
+	must.Error(err)
+	must.Empty(result.Token)
+	must.NotContains(err.Error(), oversized, "error message must not contain the raw token content")
 }
 
 // TestExchange_EmptyTokenIsError asserts a success-shaped response (IsError not
 // set) carrying no token is still treated as a failure rather than an
 // empty-string credential silently flowing into env composition.
 func TestExchange_EmptyTokenIsError(t *testing.T) {
+	must := require.New(t)
 	mt := &mockTransport{
 		respond: func(requestID string) (types.ControlEvent, bool) {
 			return types.ControlEvent{
@@ -196,13 +203,14 @@ func TestExchange_EmptyTokenIsError(t *testing.T) {
 	}
 
 	_, err := Exchange(context.Background(), mt, "aud", time.Second)
-	require.Error(t, err)
+	must.Error(err)
 }
 
 // TestExchange_NoTokenInLogs asserts that neither slog output nor errors from a
 // successful or declined exchange contain the token. Exchange must read named
 // ControlEvent fields, never format the whole struct.
 func TestExchange_NoTokenInLogs(t *testing.T) {
+	must := require.New(t)
 	const secretToken = "eyJhbGciOiJFUzI1NiJ9.super-secret-payload-value.signature-goes-here"
 
 	var buf strings.Builder
@@ -223,9 +231,9 @@ func TestExchange_NoTokenInLogs(t *testing.T) {
 	}
 
 	result, err := Exchange(context.Background(), mt, "aud", time.Second)
-	require.NoError(t, err)
-	require.Equal(t, secretToken, result.Token, "returned token should match the fixture")
-	require.NotContains(t, buf.String(), secretToken, "token leaked into slog output")
+	must.NoError(err)
+	must.Equal(secretToken, result.Token, "returned token should match the fixture")
+	must.NotContains(buf.String(), secretToken, "token leaked into slog output")
 
 	// The decline path builds its error from response fields, so the error
 	// must not embed the token either.
@@ -240,7 +248,7 @@ func TestExchange_NoTokenInLogs(t *testing.T) {
 		},
 	}
 	_, declineErr := Exchange(context.Background(), mtDecline, "aud", time.Second)
-	require.Error(t, declineErr)
-	require.NotContains(t, declineErr.Error(), secretToken, "decline error must not contain the token")
-	require.NotContains(t, buf.String(), secretToken, "token leaked into slog output after decline path")
+	must.Error(declineErr)
+	must.NotContains(declineErr.Error(), secretToken, "decline error must not contain the token")
+	must.NotContains(buf.String(), secretToken, "token leaked into slog output after decline path")
 }

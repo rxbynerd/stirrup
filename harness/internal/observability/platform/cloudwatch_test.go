@@ -54,10 +54,11 @@ func staticAWS(region string) (*countingCredentials, Deps) {
 }
 
 func TestCloudWatch_Profile_ResolvesSignalsAndResource(t *testing.T) {
+	must := require.New(t)
 	_, deps := staticAWS("eu-west-2")
 	p, err := Resolve(context.Background(), "cloudwatch", map[string]string{"logGroup": "/stirrup/agents"}, deps)
-	require.NoError(t, err)
-	require.Equal(t, otlp.ProtocolHTTPProtobuf, p.RequiredProtocol)
+	must.NoError(err)
+	must.Equal(otlp.ProtocolHTTPProtobuf, p.RequiredProtocol)
 
 	wantEndpoints := map[otlp.Signal]string{
 		otlp.SignalTraces:  "https://xray.eu-west-2.amazonaws.com",
@@ -66,31 +67,33 @@ func TestCloudWatch_Profile_ResolvesSignalsAndResource(t *testing.T) {
 	}
 	for sig, endpoint := range wantEndpoints {
 		t.Run(string(sig)+" endpoint", func(t *testing.T) {
-			require.Equal(t, endpoint, p.Signals[sig].Endpoint)
+			must := require.New(t)
+			must.Equal(endpoint, p.Signals[sig].Endpoint)
 		})
 	}
 
-	require.Empty(t, p.Signals[otlp.SignalTraces].Headers, "log routing headers must apply to the logs signal only")
-	require.Empty(t, p.Signals[otlp.SignalMetrics].Headers, "log routing headers must apply to the logs signal only")
+	must.Empty(p.Signals[otlp.SignalTraces].Headers, "log routing headers must apply to the logs signal only")
+	must.Empty(p.Signals[otlp.SignalMetrics].Headers, "log routing headers must apply to the logs signal only")
 	wantLogHeaders := map[string]string{"x-aws-log-group": "/stirrup/agents", "x-aws-log-stream": cloudwatchDefaultLogStream}
-	require.Equal(t, wantLogHeaders, p.Signals[otlp.SignalLogs].Headers)
+	must.Equal(wantLogHeaders, p.Signals[otlp.SignalLogs].Headers)
 
 	wantAttrs := []attribute.KeyValue{
 		attribute.String("aws.service.type", "gen_ai_agent"),
 		attribute.String("aws.log.group.names", "/stirrup/agents"),
 	}
-	require.Equal(t, wantAttrs, p.ResourceAttrs)
-	require.NotNil(t, p.WrapTransport, "cloudwatch must sign requests")
+	must.Equal(wantAttrs, p.ResourceAttrs)
+	must.NotNil(p.WrapTransport, "cloudwatch must sign requests")
 }
 
 func TestCloudWatch_Options_OverrideAWSConfigChain(t *testing.T) {
+	must := require.New(t)
 	_, deps := staticAWS("eu-west-2")
 	p, err := Resolve(context.Background(), "cloudwatch", map[string]string{
 		"region": "us-east-1", "logGroup": "/g", "logStream": "runs",
 	}, deps)
-	require.NoError(t, err)
-	require.Equal(t, "https://xray.us-east-1.amazonaws.com", p.Signals[otlp.SignalTraces].Endpoint, "region option must win over the chain")
-	require.Equal(t, "runs", p.Signals[otlp.SignalLogs].Headers["x-aws-log-stream"], "logStream option must set the log stream header")
+	must.NoError(err)
+	must.Equal("https://xray.us-east-1.amazonaws.com", p.Signals[otlp.SignalTraces].Endpoint, "region option must win over the chain")
+	must.Equal("runs", p.Signals[otlp.SignalLogs].Headers["x-aws-log-stream"], "logStream option must set the log stream header")
 }
 
 func TestCloudWatch_Resolve_RejectsInvalidConfig(t *testing.T) {
@@ -127,28 +130,32 @@ func TestCloudWatch_Resolve_RejectsInvalidConfig(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			_, err := Resolve(context.Background(), "cloudwatch", tc.opts, tc.deps)
-			require.ErrorContains(t, err, tc.wantErr)
+			must.ErrorContains(err, tc.wantErr)
 		})
 	}
 }
 
 func TestCloudWatch_Apply_RejectsConflictingSettings(t *testing.T) {
+	must := require.New(t)
 	_, deps := staticAWS("eu-west-2")
 	p, err := Resolve(context.Background(), "cloudwatch", map[string]string{"logGroup": "/g"}, deps)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	t.Run("explicit grpc protocol", func(t *testing.T) {
+		must := require.New(t)
 		_, err := Apply(Input{TraceEmitter: types.TraceEmitterConfig{Type: "otel", Protocol: "grpc"}, Getenv: noEnv}, p)
-		require.Error(t, err)
+		must.Error(err)
 	})
 	t.Run("explicit Authorization header", func(t *testing.T) {
+		must := require.New(t)
 		_, err := Apply(Input{
 			TraceEmitter: types.TraceEmitterConfig{Type: "otel", Protocol: otlp.ProtocolHTTPProtobuf},
 			Headers:      map[string]string{"Authorization": "Bearer t"},
 			Getenv:       noEnv,
 		}, p)
-		require.ErrorContains(t, err, "Authorization")
+		must.ErrorContains(err, "Authorization")
 	})
 }
 
@@ -172,9 +179,10 @@ func (r *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error
 }
 
 func TestSigV4Transport_SignsEachSignalForItsService(t *testing.T) {
+	must := require.New(t)
 	_, deps := staticAWS("eu-west-2")
 	p, err := Resolve(context.Background(), "cloudwatch", map[string]string{"logGroup": "/g"}, deps)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	signingServices := map[otlp.Signal]string{
 		otlp.SignalTraces:  "xray",
@@ -183,7 +191,8 @@ func TestSigV4Transport_SignsEachSignalForItsService(t *testing.T) {
 	}
 	for sig, service := range signingServices {
 		t.Run(string(sig), func(t *testing.T) {
-			require.Equal(t, "https://"+service+".eu-west-2.amazonaws.com", p.Signals[sig].Endpoint)
+			must := require.New(t)
+			must.Equal("https://"+service+".eu-west-2.amazonaws.com", p.Signals[sig].Endpoint)
 
 			rec := &recordingTransport{}
 			rt := p.WrapTransport(sig, rec)
@@ -192,26 +201,27 @@ func TestSigV4Transport_SignsEachSignalForItsService(t *testing.T) {
 			req.Header.Set("Content-Type", "application/x-protobuf")
 			req.Header.Set("x-aws-log-group", "/g")
 			resp, err := rt.RoundTrip(req)
-			require.NoError(t, err)
+			must.NoError(err)
 			_ = resp.Body.Close()
 
 			got := rec.requests[0]
 			auth := got.Header.Get("Authorization")
-			require.True(t, strings.HasPrefix(auth, "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/"),
+			must.True(strings.HasPrefix(auth, "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/"),
 				"Authorization = %q, want a SigV4 signature", auth)
-			require.Contains(t, auth, "/eu-west-2/"+service+"/aws4_request")
-			require.Contains(t, auth, "x-aws-log-group", "the routing header must be signed")
-			require.NotEmpty(t, got.Header.Get("X-Amz-Date"))
+			must.Contains(auth, "/eu-west-2/"+service+"/aws4_request")
+			must.Contains(auth, "x-aws-log-group", "the routing header must be signed")
+			must.NotEmpty(got.Header.Get("X-Amz-Date"))
 			sum := sha256.Sum256(payload)
-			require.Equal(t, hex.EncodeToString(sum[:]), got.Header.Get("X-Amz-Content-Sha256"))
-			require.Equal(t, "session-token", got.Header.Get("X-Amz-Security-Token"))
-			require.Equal(t, payload, rec.bodies[0], "body must be unchanged after signing")
-			require.Equal(t, int64(len(payload)), got.ContentLength)
+			must.Equal(hex.EncodeToString(sum[:]), got.Header.Get("X-Amz-Content-Sha256"))
+			must.Equal("session-token", got.Header.Get("X-Amz-Security-Token"))
+			must.Equal(payload, rec.bodies[0], "body must be unchanged after signing")
+			must.Equal(int64(len(payload)), got.ContentLength)
 		})
 	}
 }
 
 func TestSigV4Transport_ResignsEveryAttempt(t *testing.T) {
+	must := require.New(t)
 	creds, _ := staticAWS("eu-west-2")
 	rec := &recordingTransport{}
 	clock := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
@@ -222,16 +232,17 @@ func TestSigV4Transport_ResignsEveryAttempt(t *testing.T) {
 	for range 2 {
 		req, _ := http.NewRequest(http.MethodPost, "https://xray.eu-west-2.amazonaws.com/v1/traces", bytes.NewReader([]byte("same body")))
 		_, err := rt.RoundTrip(req)
-		require.NoError(t, err)
+		must.NoError(err)
 	}
-	require.EqualValues(t, 2, creds.calls.Load(), "credentials must be retrieved once per attempt")
+	must.EqualValues(2, creds.calls.Load(), "credentials must be retrieved once per attempt")
 
 	first, second := rec.requests[0], rec.requests[1]
-	require.NotEqual(t, first.Header.Get("X-Amz-Date"), second.Header.Get("X-Amz-Date"), "a retry must carry a fresh X-Amz-Date")
-	require.NotEqual(t, first.Header.Get("Authorization"), second.Header.Get("Authorization"), "a retry must carry a fresh signature")
+	must.NotEqual(first.Header.Get("X-Amz-Date"), second.Header.Get("X-Amz-Date"), "a retry must carry a fresh X-Amz-Date")
+	must.NotEqual(first.Header.Get("Authorization"), second.Header.Get("Authorization"), "a retry must carry a fresh signature")
 }
 
 func TestSigV4Transport_CredentialErrorFailsTheRequest(t *testing.T) {
+	must := require.New(t)
 	rec := &recordingTransport{}
 	rt := &sigV4Transport{
 		base: rec, signer: v4.NewSigner(), service: "logs", region: "eu-west-2", now: time.Now,
@@ -241,11 +252,12 @@ func TestSigV4Transport_CredentialErrorFailsTheRequest(t *testing.T) {
 	}
 	req, _ := http.NewRequest(http.MethodPost, "https://logs.eu-west-2.amazonaws.com/v1/logs", strings.NewReader("x"))
 	_, err := rt.RoundTrip(req)
-	require.ErrorContains(t, err, "retrieve AWS credentials: expired")
-	require.Empty(t, rec.requests, "an unsigned request must not be sent")
+	must.ErrorContains(err, "retrieve AWS credentials: expired")
+	must.Empty(rec.requests, "an unsigned request must not be sent")
 }
 
 func TestSigV4Transport_WithholdsCredentialProcessOutput(t *testing.T) {
+	must := require.New(t)
 	rt := &sigV4Transport{
 		base: &recordingTransport{}, signer: v4.NewSigner(), service: "xray", region: "eu-west-2", now: time.Now,
 		credentials: aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
@@ -256,19 +268,20 @@ func TestSigV4Transport_WithholdsCredentialProcessOutput(t *testing.T) {
 	}
 	req, _ := http.NewRequest(http.MethodPost, "https://xray.eu-west-2.amazonaws.com/v1/traces", strings.NewReader("x"))
 	_, err := rt.RoundTrip(req)
-	require.Error(t, err)
-	require.NotContains(t, err.Error(), "s3cr3t-key", "the error must not include the process output")
-	require.NotContains(t, err.Error(), "ASIAEXAMPLE", "the error must not include the process output")
+	must.Error(err)
+	must.NotContains(err.Error(), "s3cr3t-key", "the error must not include the process output")
+	must.NotContains(err.Error(), "ASIAEXAMPLE", "the error must not include the process output")
 }
 
 func TestSigV4Transport_BodyReadErrorFailsTheRequest(t *testing.T) {
+	must := require.New(t)
 	creds, _ := staticAWS("eu-west-2")
 	rec := &recordingTransport{}
 	rt := &sigV4Transport{base: rec, credentials: creds, signer: v4.NewSigner(), service: "xray", region: "eu-west-2", now: time.Now}
 	req, _ := http.NewRequest(http.MethodPost, "https://xray.eu-west-2.amazonaws.com/v1/traces", io.NopCloser(failingReader{}))
 	_, err := rt.RoundTrip(req)
-	require.ErrorContains(t, err, "read request body for signing")
-	require.Empty(t, rec.requests, "a request whose body could not be read must not be sent")
+	must.ErrorContains(err, "read request body for signing")
+	must.Empty(rec.requests, "a request whose body could not be read must not be sent")
 }
 
 type failingReader struct{}
@@ -287,6 +300,7 @@ func TestSigV4Transport_SignsUnknownLengthAndEmptyBodies(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			creds, _ := staticAWS("eu-west-2")
 			rec := &recordingTransport{}
 			rt := &sigV4Transport{base: rec, credentials: creds, signer: v4.NewSigner(), service: "xray", region: "eu-west-2", now: time.Now}
@@ -295,43 +309,45 @@ func TestSigV4Transport_SignsUnknownLengthAndEmptyBodies(t *testing.T) {
 				req.ContentLength = -1
 			}
 			_, err := rt.RoundTrip(req)
-			require.NoError(t, err)
+			must.NoError(err)
 
 			got := rec.requests[0]
-			require.Equal(t, int64(len(tc.want)), got.ContentLength)
+			must.Equal(int64(len(tc.want)), got.ContentLength)
 			// Compared as strings so that a nil body and an empty body match.
-			require.Equal(t, string(tc.want), string(rec.bodies[0]))
+			must.Equal(string(tc.want), string(rec.bodies[0]))
 			if tc.wantHash != "" {
-				require.Equal(t, tc.wantHash, got.Header.Get("X-Amz-Content-Sha256"))
+				must.Equal(tc.wantHash, got.Header.Get("X-Amz-Content-Sha256"))
 			}
 			replay, err := got.GetBody()
-			require.NoError(t, err)
+			must.NoError(err)
 			b, _ := io.ReadAll(replay)
-			require.Equal(t, string(tc.want), string(b), "GetBody must replay the body")
+			must.Equal(string(tc.want), string(b), "GetBody must replay the body")
 		})
 	}
 }
 
 func TestCloudWatch_SignsWithTheCurrentTime(t *testing.T) {
+	must := require.New(t)
 	_, deps := staticAWS("eu-west-2")
 	p, err := Resolve(context.Background(), "cloudwatch", map[string]string{"logGroup": "/g"}, deps)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	rec := &recordingTransport{}
 	req, _ := http.NewRequest(http.MethodPost, "https://xray.eu-west-2.amazonaws.com/v1/traces", strings.NewReader("x"))
 	_, err = p.WrapTransport(otlp.SignalTraces, rec).RoundTrip(req)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	signedAt, err := time.Parse("20060102T150405Z", rec.requests[0].Header.Get("X-Amz-Date"))
-	require.NoError(t, err)
-	require.WithinDuration(t, time.Now(), signedAt, time.Minute, "X-Amz-Date must be the signing time")
+	must.NoError(err)
+	must.WithinDuration(time.Now(), signedAt, time.Minute, "X-Amz-Date must be the signing time")
 }
 
 func TestCloudWatch_AcceptsGovCloudRegions(t *testing.T) {
+	must := require.New(t)
 	_, deps := staticAWS("")
 	p, err := Resolve(context.Background(), "cloudwatch", map[string]string{"logGroup": "/g", "region": "us-gov-west-1"}, deps)
-	require.NoError(t, err)
-	require.Equal(t, "https://xray.us-gov-west-1.amazonaws.com", p.Signals[otlp.SignalTraces].Endpoint)
+	must.NoError(err)
+	must.Equal("https://xray.us-gov-west-1.amazonaws.com", p.Signals[otlp.SignalTraces].Endpoint)
 }
 
 // localAWS is the base transport under a test's signing transport: it
@@ -373,31 +389,34 @@ func servedLocally(p Profile, srv *httptest.Server) (Profile, *localAWS) {
 // exportOneSpan sends one span through a real OTLP exporter built from s.
 func exportOneSpan(t *testing.T, s otlp.Settings) {
 	t.Helper()
+	must := require.New(t)
 	exporter, err := otlp.NewTraceExporter(context.Background(), s)
-	require.NoError(t, err, "NewTraceExporter")
+	must.NoError(err, "NewTraceExporter")
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 	_, span := tp.Tracer("test").Start(context.Background(), "span")
 	span.End()
-	require.NoError(t, tp.Shutdown(context.Background()), "shutdown")
+	must.NoError(tp.Shutdown(context.Background()), "shutdown")
 }
 
 // exportOneMetric sends one data point through a real OTLP exporter built
 // from s.
 func exportOneMetric(t *testing.T, s otlp.Settings) {
 	t.Helper()
+	must := require.New(t)
 	exporter, err := otlp.NewMetricExporter(context.Background(), s)
-	require.NoError(t, err, "NewMetricExporter")
+	must.NoError(err, "NewMetricExporter")
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter)))
 	counter, err := mp.Meter("test").Int64Counter("runs")
-	require.NoError(t, err, "Int64Counter")
+	must.NoError(err, "Int64Counter")
 	counter.Add(context.Background(), 1)
-	require.NoError(t, mp.Shutdown(context.Background()), "shutdown")
+	must.NoError(mp.Shutdown(context.Background()), "shutdown")
 }
 
 // TestCloudWatch_ExporterSendsSignedRequests drives a real OTLP span
 // exporter through Apply's settings to the profile's X-Ray endpoint,
 // served by a local stand-in.
 func TestCloudWatch_ExporterSendsSignedRequests(t *testing.T) {
+	must := require.New(t)
 	var auth, path string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth, path = r.Header.Get("Authorization"), r.URL.Path
@@ -407,21 +426,22 @@ func TestCloudWatch_ExporterSendsSignedRequests(t *testing.T) {
 
 	_, deps := staticAWS("eu-west-2")
 	p, err := Resolve(context.Background(), "cloudwatch", map[string]string{"logGroup": "/g"}, deps)
-	require.NoError(t, err)
+	must.NoError(err)
 	p, base := servedLocally(p, srv)
 	ex, err := Apply(Input{TraceEmitter: types.TraceEmitterConfig{Type: "otel"}, Getenv: noEnv}, p)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	exportOneSpan(t, ex.Traces)
-	require.Equal(t, []string{"https://xray.eu-west-2.amazonaws.com/v1/traces"}, base.addressed(), "requests must address the X-Ray traces URL")
-	require.Equal(t, "/v1/traces", path)
-	require.Contains(t, auth, "/eu-west-2/xray/aws4_request", "the request must carry an xray SigV4 signature")
+	must.Equal([]string{"https://xray.eu-west-2.amazonaws.com/v1/traces"}, base.addressed(), "requests must address the X-Ray traces URL")
+	must.Equal("/v1/traces", path)
+	must.Contains(auth, "/eu-west-2/xray/aws4_request", "the request must carry an xray SigV4 signature")
 }
 
 // TestCloudWatch_OTLPEnvironmentCannotDowngradeTLS pins that a plaintext
 // OTEL_EXPORTER_OTLP_ENDPOINT, which redirects only the log signal, leaves
 // the signed trace and metric requests on https.
 func TestCloudWatch_OTLPEnvironmentCannotDowngradeTLS(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
 	t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", "true")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -431,10 +451,10 @@ func TestCloudWatch_OTLPEnvironmentCannotDowngradeTLS(t *testing.T) {
 
 	_, deps := staticAWS("eu-west-2")
 	p, err := Resolve(context.Background(), "cloudwatch", map[string]string{"logGroup": "/g"}, deps)
-	require.NoError(t, err)
+	must.NoError(err)
 	p, base := servedLocally(p, srv)
 	ex, err := Apply(Input{TraceEmitter: types.TraceEmitterConfig{Type: "otel"}}, p)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	exportOneSpan(t, ex.Traces)
 	exportOneMetric(t, ex.Metrics)
@@ -443,10 +463,10 @@ func TestCloudWatch_OTLPEnvironmentCannotDowngradeTLS(t *testing.T) {
 		"https://xray.eu-west-2.amazonaws.com/v1/traces",
 		"https://monitoring.eu-west-2.amazonaws.com/v1/metrics",
 	}
-	require.Equal(t, want, base.addressed(), "trace and metric requests must stay signed over https")
-	require.Empty(t, ex.Logs.Endpoint, "logs must follow the environment")
-	require.Nil(t, ex.Logs.HTTPClient, "logs must not be signed")
-	require.Empty(t, ex.Logs.Headers, "logs must not carry log group headers")
+	must.Equal(want, base.addressed(), "trace and metric requests must stay signed over https")
+	must.Empty(ex.Logs.Endpoint, "logs must follow the environment")
+	must.Nil(ex.Logs.HTTPClient, "logs must not be signed")
+	must.Empty(ex.Logs.Headers, "logs must not carry log group headers")
 }
 
 // isolateAWSEnvironment points the AWS default chain at static
@@ -473,20 +493,23 @@ func isolateAWSEnvironment(t *testing.T, accessKey string) {
 }
 
 func TestCloudWatch_DefaultChain_LoadsEnvironmentCredentials(t *testing.T) {
+	must := require.New(t)
 	isolateAWSEnvironment(t, "AKIDEXAMPLE")
 	p, err := Resolve(context.Background(), "cloudwatch", map[string]string{"logGroup": "/g"}, Deps{})
-	require.NoError(t, err)
-	require.Equal(t, "https://xray.eu-west-1.amazonaws.com", p.Signals[otlp.SignalTraces].Endpoint, "the endpoint must follow AWS_REGION")
+	must.NoError(err)
+	must.Equal("https://xray.eu-west-1.amazonaws.com", p.Signals[otlp.SignalTraces].Endpoint, "the endpoint must follow AWS_REGION")
 }
 
 func TestCloudWatch_DefaultChain_FailsWithoutCredentials(t *testing.T) {
+	must := require.New(t)
 	isolateAWSEnvironment(t, "")
 	_, err := Resolve(context.Background(), "cloudwatch", map[string]string{"logGroup": "/g"}, Deps{})
-	require.ErrorContains(t, err, "retrieve AWS credentials")
+	must.ErrorContains(err, "retrieve AWS credentials")
 }
 
 func TestCredentialsError_TimeoutNamesTheMissingChain(t *testing.T) {
+	must := require.New(t)
 	err := credentialsError(fmt.Errorf("retrieve: %w", context.DeadlineExceeded))
-	require.ErrorContains(t, err, "found none within", "a timeout must explain that no credentials were found")
-	require.ErrorContains(t, err, "AWS_PROFILE")
+	must.ErrorContains(err, "found none within", "a timeout must explain that no credentials were found")
+	must.ErrorContains(err, "AWS_PROFILE")
 }

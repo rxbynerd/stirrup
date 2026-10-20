@@ -89,14 +89,16 @@ func respondToNextRequest(mt *mockTransport, allowed bool, reason string) {
 }
 
 func TestAskUpstream_AutoAllowsReadOnlyTools(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	mt := &mockTransport{}
 	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
 
 	tool := types.ToolDefinition{Name: "read_file"}
 	result, err := policy.Check(context.Background(), tool, nil)
-	require.NoError(t, err)
-	assert.True(t, result.Allowed, "read-only tool should be auto-allowed")
-	assert.Nil(t, mt.lastEmitted(), "should not emit any event for read-only tools")
+	must.NoError(err)
+	check.True(result.Allowed, "read-only tool should be auto-allowed")
+	check.Nil(mt.lastEmitted(), "should not emit any event for read-only tools")
 }
 
 // TestAskUpstream_MCPPrefixRequiresApprovalWhenAbsentFromSnapshot: an
@@ -106,6 +108,8 @@ func TestAskUpstream_AutoAllowsReadOnlyTools(t *testing.T) {
 // auto-allow, bypassing the upstream approval the rule-of-two gate routes
 // it here to obtain.
 func TestAskUpstream_MCPPrefixRequiresApprovalWhenAbsentFromSnapshot(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	mt := &mockTransport{}
 	// Snapshot deliberately omits the MCP tool.
 	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
@@ -118,16 +122,18 @@ func TestAskUpstream_MCPPrefixRequiresApprovalWhenAbsentFromSnapshot(t *testing.
 	respondToNextRequest(mt, true, "")
 
 	result, err := policy.Check(context.Background(), tool, json.RawMessage(`{}`))
-	require.NoError(t, err)
-	assert.True(t, result.Allowed, "expected allow after upstream approval")
+	must.NoError(err)
+	check.True(result.Allowed, "expected allow after upstream approval")
 
 	e := mt.lastEmitted()
-	require.NotNil(t, e, "mcp_-prefixed tool must emit a permission_request, not auto-allow")
-	require.Equal(t, "permission_request", e.Type, "mcp_-prefixed tool must emit a permission_request, not auto-allow")
-	assert.Equal(t, "mcp_newserver_tool", e.ToolName)
+	must.NotNil(e, "mcp_-prefixed tool must emit a permission_request, not auto-allow")
+	must.Equal("permission_request", e.Type, "mcp_-prefixed tool must emit a permission_request, not auto-allow")
+	check.Equal("mcp_newserver_tool", e.ToolName)
 }
 
 func TestAskUpstream_EmitsRequestForSideEffectingTool(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	mt := &mockTransport{}
 	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
 
@@ -137,17 +143,18 @@ func TestAskUpstream_EmitsRequestForSideEffectingTool(t *testing.T) {
 	respondToNextRequest(mt, true, "")
 
 	result, err := policy.Check(context.Background(), tool, input)
-	require.NoError(t, err)
-	assert.True(t, result.Allowed, "should be allowed after upstream approval")
+	must.NoError(err)
+	check.True(result.Allowed, "should be allowed after upstream approval")
 
 	e := mt.lastEmitted()
-	require.NotNil(t, e, "expected a permission_request event to be emitted")
-	assert.Equal(t, "permission_request", e.Type)
-	assert.Equal(t, "write_file", e.ToolName)
-	assert.NotEmpty(t, e.RequestID, "expected non-empty request ID")
+	must.NotNil(e, "expected a permission_request event to be emitted")
+	check.Equal("permission_request", e.Type)
+	check.Equal("write_file", e.ToolName)
+	check.NotEmpty(e.RequestID, "expected non-empty request ID")
 }
 
 func TestAskUpstream_ApprovalResponseAllowsTool(t *testing.T) {
+	must := require.New(t)
 	mt := &mockTransport{}
 	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
 
@@ -156,11 +163,13 @@ func TestAskUpstream_ApprovalResponseAllowsTool(t *testing.T) {
 	respondToNextRequest(mt, true, "")
 
 	result, err := policy.Check(context.Background(), tool, nil)
-	require.NoError(t, err)
-	require.True(t, result.Allowed)
+	must.NoError(err)
+	must.True(result.Allowed)
 }
 
 func TestAskUpstream_DenialResponseDeniesTool(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	mt := &mockTransport{}
 	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
 
@@ -169,12 +178,14 @@ func TestAskUpstream_DenialResponseDeniesTool(t *testing.T) {
 	respondToNextRequest(mt, false, "user denied the operation")
 
 	result, err := policy.Check(context.Background(), tool, nil)
-	require.NoError(t, err)
-	assert.False(t, result.Allowed)
-	assert.Equal(t, "user denied the operation", result.Reason)
+	must.NoError(err)
+	check.False(result.Allowed)
+	check.Equal("user denied the operation", result.Reason)
 }
 
 func TestAskUpstream_ContextCancelReturnsCanceledError(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	mt := &mockTransport{}
 	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
 
@@ -194,28 +205,31 @@ func TestAskUpstream_ContextCancelReturnsCanceledError(t *testing.T) {
 	}()
 
 	result, err := policy.Check(ctx, tool, nil)
-	require.ErrorIs(t, err, context.Canceled)
-	assert.Nil(t, result)
+	must.ErrorIs(err, context.Canceled)
+	check.Nil(result)
 
 	// The pending request must be removed once Check returns.
-	assert.Zero(t, policy.correlator.PendingCount(), "pending requests after cancellation")
+	check.Zero(policy.correlator.PendingCount(), "pending requests after cancellation")
 }
 
 func TestAskUpstream_EmitFailureReturnsError(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	mt := &mockTransport{emitErr: errors.New("transport broken")}
 	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
 
 	tool := types.ToolDefinition{Name: "write_file"}
 
 	result, err := policy.Check(context.Background(), tool, nil)
-	require.Error(t, err)
-	assert.Nil(t, result)
+	must.Error(err)
+	check.Nil(result)
 
 	// The pending map must be cleaned up.
-	assert.Zero(t, policy.correlator.PendingCount(), "pending requests after emit error")
+	check.Zero(policy.correlator.PendingCount(), "pending requests after emit error")
 }
 
 func TestAskUpstream_IgnoresUnrelatedControlEvents(t *testing.T) {
+	must := require.New(t)
 	mt := &mockTransport{}
 	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
 
@@ -250,11 +264,13 @@ func TestAskUpstream_IgnoresUnrelatedControlEvents(t *testing.T) {
 	}()
 
 	result, err := policy.Check(context.Background(), tool, nil)
-	require.NoError(t, err)
-	require.True(t, result.Allowed, "expected allowed after correct response arrives")
+	must.NoError(err)
+	must.True(result.Allowed, "expected allowed after correct response arrives")
 }
 
 func TestAskUpstream_TimeoutReturnsError(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	mt := &mockTransport{}
 	// Use a very short timeout so the test completes quickly.
 	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 50*time.Millisecond)
@@ -263,17 +279,18 @@ func TestAskUpstream_TimeoutReturnsError(t *testing.T) {
 
 	// No response is sent, so the request times out.
 	result, err := policy.Check(context.Background(), tool, nil)
-	require.ErrorContains(t, err, "timed out")
-	assert.Nil(t, result)
+	must.ErrorContains(err, "timed out")
+	check.Nil(result)
 
 	// The pending request must be removed once Check returns.
-	assert.Zero(t, policy.correlator.PendingCount(), "pending requests after timeout")
+	check.Zero(policy.correlator.PendingCount(), "pending requests after timeout")
 }
 
 func TestAskUpstream_ZeroTimeoutUsesDefault(t *testing.T) {
+	must := require.New(t)
 	mt := &mockTransport{}
 	// Pass 0 to get the default timeout.
 	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
 
-	require.Equal(t, DefaultAskUpstreamTimeout, policy.Timeout)
+	must.Equal(DefaultAskUpstreamTimeout, policy.Timeout)
 }

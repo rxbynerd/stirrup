@@ -22,11 +22,12 @@ import (
 // request bodies it received.
 func geminiRecordingServer(t *testing.T, body string) (*httptest.Server, func() []string) {
 	t.Helper()
+	check := assert.New(t)
 	var mu sync.Mutex
 	var bodies []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, err := io.ReadAll(r.Body)
-		assert.NoError(t, err, "read request body")
+		check.NoError(err, "read request body")
 		mu.Lock()
 		bodies = append(bodies, string(b))
 		mu.Unlock()
@@ -46,6 +47,8 @@ func geminiRecordingServer(t *testing.T, body string) (*httptest.Server, func() 
 // includeThoughts: thought parts first, then answer text, then the
 // functionCall carrying the turn's thoughtSignature.
 func TestGeminiAdapter_ThoughtPartsStreamAsThinkingDelta(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	const sig = "AY89a18t+thought-signature=="
 	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"text":"**Plan**\n\n","thought":true}]}}]}`) +
 		makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"text":"Read the file first.","thought":true}]}}]}`) +
@@ -58,12 +61,12 @@ func TestGeminiAdapter_ThoughtPartsStreamAsThinkingDelta(t *testing.T) {
 		Model:    "gemini-3.8-flash",
 		Messages: []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "read a.go"}}}},
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	events := collectEvents(t, ch)
 
 	thinking, text := splitDeltas(events)
-	assert.Equal(t, "**Plan**\n\n|Read the file first.", strings.Join(thinking, "|"), "thinking_delta fragments")
-	assert.Equal(t, "Reading it.", text, "answer text")
+	check.Equal("**Plan**\n\n|Read the file first.", strings.Join(thinking, "|"), "thinking_delta fragments")
+	check.Equal("Reading it.", text, "answer text")
 
 	var calls []types.StreamEvent
 	var stop string
@@ -74,22 +77,24 @@ func TestGeminiAdapter_ThoughtPartsStreamAsThinkingDelta(t *testing.T) {
 		case "message_complete":
 			stop = ev.StopReason
 		case "error":
-			require.FailNowf(t, "unexpected error event", "%v", ev.Error)
+			must.FailNowf("unexpected error event", "%v", ev.Error)
 		}
 	}
-	require.Len(t, calls, 1, "tool calls")
-	assert.Equal(t, sig, calls[0].ThoughtSignature, "tool call thought signature")
-	assert.Equal(t, "a.go", calls[0].Input["path"], "tool call path")
-	assert.Equal(t, "tool_use", stop, "stop reason")
+	must.Len(calls, 1, "tool calls")
+	check.Equal(sig, calls[0].ThoughtSignature, "tool call thought signature")
+	check.Equal("a.go", calls[0].Input["path"], "tool call path")
+	check.Equal("tool_use", stop, "stop reason")
 
 	sent := bodies()
-	require.Len(t, sent, 1)
-	assert.Contains(t, sent[0], `"thinkingConfig":{"includeThoughts":true}`, "request did not ask for thoughts")
+	must.Len(sent, 1)
+	check.Contains(sent[0], `"thinkingConfig":{"includeThoughts":true}`, "request did not ask for thoughts")
 }
 
 // With reasoningSummary off no thoughts are requested, and a replayed
 // history never sends a thought part back.
 func TestGeminiAdapter_ReasoningSummaryOff_OmitsThoughtsOnReplay(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv, bodies := geminiRecordingServer(t, makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"text":"done"}]},"finishReason":"STOP"}]}`))
 	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
 
@@ -106,15 +111,15 @@ func TestGeminiAdapter_ReasoningSummaryOff_OmitsThoughtsOnReplay(t *testing.T) {
 			{Role: "user", Content: []types.ContentBlock{{Type: "tool_result", ToolUseID: "gemini-1-0", Content: "package a"}}},
 		},
 	})
-	require.NoError(t, err)
+	must.NoError(err)
 	collectEvents(t, ch)
 
 	sent := bodies()
-	require.Len(t, sent, 1)
-	assert.NotContains(t, sent[0], "includeThoughts", "reasoningSummary off still configured thinking")
-	assert.NotContains(t, sent[0], "thinkingConfig", "reasoningSummary off still configured thinking")
-	assert.NotContains(t, sent[0], `"thought"`, "replayed history carries a thought part")
-	assert.Contains(t, sent[0], `"thoughtSignature":"sig"`, "replayed functionCall lost its signature")
+	must.Len(sent, 1)
+	check.NotContains(sent[0], "includeThoughts", "reasoningSummary off still configured thinking")
+	check.NotContains(sent[0], "thinkingConfig", "reasoningSummary off still configured thinking")
+	check.NotContains(sent[0], `"thought"`, "replayed history carries a thought part")
+	check.Contains(sent[0], `"thoughtSignature":"sig"`, "replayed functionCall lost its signature")
 }
 
 // TestBuildGenerateContentRequest_IncludeThoughtsGate pins which requests
@@ -141,6 +146,7 @@ func TestBuildGenerateContentRequest_IncludeThoughtsGate(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			params := types.StreamParams{
 				Model:            tc.model,
 				ReasoningEffort:  tc.effort,
@@ -148,18 +154,18 @@ func TestBuildGenerateContentRequest_IncludeThoughtsGate(t *testing.T) {
 				Messages:         []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
 			}
 			body, _, err := BuildGenerateContentRequest(params, nil, quirks.DefaultRegistry().Resolve("gemini", tc.model))
-			require.NoError(t, err, "build request")
+			must.NoError(err, "build request")
 			var req struct {
 				GenerationConfig *struct {
 					ThinkingConfig json.RawMessage `json:"thinkingConfig"`
 				} `json:"generationConfig"`
 			}
-			require.NoError(t, json.Unmarshal(body, &req), "decode request")
+			must.NoError(json.Unmarshal(body, &req), "decode request")
 			var got string
 			if req.GenerationConfig != nil {
 				got = string(req.GenerationConfig.ThinkingConfig)
 			}
-			require.Equal(t, tc.want, got, "thinkingConfig")
+			must.Equal(tc.want, got, "thinkingConfig")
 		})
 	}
 }

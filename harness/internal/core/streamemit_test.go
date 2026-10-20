@@ -37,6 +37,7 @@ func TestStreamEventsToResult_DeltasAreScrubbedBeforeEmit(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			split := len(fakeAnthropicKey) / 2
 			rec := &recordingTransport{}
 			ch := make(chan types.StreamEvent, 3)
@@ -45,8 +46,8 @@ func TestStreamEventsToResult_DeltasAreScrubbedBeforeEmit(t *testing.T) {
 			ch <- types.StreamEvent{Type: "message_complete", StopReason: "end_turn"}
 			close(ch)
 			_, err := streamEventsToResult(context.Background(), ch, rec, true, ignoreEmitFailure, nil)
-			require.NoError(t, err)
-			require.Equal(t, "the key is [REDACTED] and that is all", joinedText(rec.events, tc.eventType))
+			must.NoError(err)
+			must.Equal("the key is [REDACTED] and that is all", joinedText(rec.events, tc.eventType))
 		})
 	}
 }
@@ -55,6 +56,7 @@ func TestStreamEventsToResult_DeltasAreScrubbedBeforeEmit(t *testing.T) {
 // short reply reaches the transport while the provider is still silent,
 // rather than waiting for the stream's next event.
 func TestStreamEventsToResult_ShortReplyReleasedBeforeNextEvent(t *testing.T) {
+	must := require.New(t)
 	ch := make(chan types.StreamEvent)
 	emitted := make(chan string, 4)
 	tp := emitFunc(func(ev types.HarnessEvent) error {
@@ -76,7 +78,7 @@ func TestStreamEventsToResult_ShortReplyReleasedBeforeNextEvent(t *testing.T) {
 		case text := <-emitted:
 			got += text
 		case <-time.After(5 * time.Second):
-			require.Equal(t, reply, got, "reply reached the transport before the next provider event")
+			must.Equal(reply, got, "reply reached the transport before the next provider event")
 		}
 	}
 	ch <- types.StreamEvent{Type: "message_complete", StopReason: "end_turn"}
@@ -88,6 +90,8 @@ func TestStreamEventsToResult_ShortReplyReleasedBeforeNextEvent(t *testing.T) {
 // delta Emit is reported once per failed release, the deferred flush
 // included, and does not change the stream result.
 func TestStreamEventsToResult_DeltaEmitFailureReported(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	boom := errors.New("emit failed")
 	tp := emitFunc(func(ev types.HarnessEvent) error {
 		if ev.Type == "text_delta" || ev.Type == "thinking_delta" {
@@ -111,16 +115,17 @@ func TestStreamEventsToResult_DeltaEmitFailureReported(t *testing.T) {
 	ch <- types.StreamEvent{Type: "text_delta", Text: "the answer, then sk-"}
 	close(ch)
 	result, err := streamEventsToResult(context.Background(), ch, tp, true, report, nil)
-	require.NoError(t, err)
-	assert.Equal(t, "thinking_delta text_delta text_delta", strings.Join(failed, " "), "reported delta failures")
-	require.Len(t, result.Blocks, 1, "stream result blocks")
-	require.Equal(t, "the answer, then sk-", result.Blocks[0].Text)
+	must.NoError(err)
+	check.Equal("thinking_delta text_delta text_delta", strings.Join(failed, " "), "reported delta failures")
+	must.Len(result.Blocks, 1, "stream result blocks")
+	must.Equal("the answer, then sk-", result.Blocks[0].Text)
 }
 
 // TestStreamEventsToResult_RedactionReported pins that the loop reports a
 // secret it scrubs from a delta, since the transport then has nothing
 // left to redact and report.
 func TestStreamEventsToResult_RedactionReported(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	loop := &AgenticLoop{Security: security.NewSecurityLogger(&buf, "run-1")}
 	split := len(fakeAnthropicKey) / 2
@@ -129,11 +134,11 @@ func TestStreamEventsToResult_RedactionReported(t *testing.T) {
 	ch <- types.StreamEvent{Type: "text_delta", Text: fakeAnthropicKey[split:] + " done"}
 	close(ch)
 	_, err := streamEventsToResult(context.Background(), ch, transport.NewNullTransport(), true, ignoreEmitFailure, loop.reportStreamRedaction)
-	require.NoError(t, err)
+	must.NoError(err)
 	out := buf.String()
-	require.Contains(t, out, `"secret_redacted_in_output"`)
-	require.Contains(t, out, `"core.stream.text_delta"`)
-	require.Contains(t, out, "anthropic_api_key")
+	must.Contains(out, `"secret_redacted_in_output"`)
+	must.Contains(out, `"core.stream.text_delta"`)
+	must.Contains(out, "anthropic_api_key")
 }
 
 // TestStreamEventsToResult_WithheldTextIsReported pins that the carry
@@ -141,6 +146,8 @@ func TestStreamEventsToResult_RedactionReported(t *testing.T) {
 // stream gets a warning, a security event is raised, and the text after
 // the match still arrives.
 func TestStreamEventsToResult_WithheldTextIsReported(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	t.Cleanup(security.SetStreamCarryBoundsForTest(64<<10, 8<<10))
 	var buf bytes.Buffer
 	loop := &AgenticLoop{Security: security.NewSecurityLogger(&buf, "run-1"), Logger: slog.New(slog.DiscardHandler)}
@@ -157,7 +164,7 @@ func TestStreamEventsToResult_WithheldTextIsReported(t *testing.T) {
 	close(ch)
 	tp := &recordingTransport{}
 	_, err := streamEventsToResult(context.Background(), ch, tp, true, ignoreEmitFailure, loop.reportStreamRedaction)
-	require.NoError(t, err)
+	must.NoError(err)
 	var text strings.Builder
 	warned := false
 	for _, ev := range tp.events {
@@ -168,15 +175,17 @@ func TestStreamEventsToResult_WithheldTextIsReported(t *testing.T) {
 			warned = warned || strings.HasPrefix(ev.Message, "text_delta withheld:")
 		}
 	}
-	assert.Equal(t, "token [REDACTED] then prose", text.String(), "text on the control stream")
-	assert.True(t, warned, "withheld-text warning on the control stream")
-	assert.Contains(t, buf.String(), `"stream_text_withheld"`)
+	check.Equal("token [REDACTED] then prose", text.String(), "text on the control stream")
+	check.True(warned, "withheld-text warning on the control stream")
+	check.Contains(buf.String(), `"stream_text_withheld"`)
 }
 
 // TestStreamEventsToResult_GRPCTransportReceivesScrubbedDeltas runs split
 // deltas through the real gRPC transport: the control plane receives the
 // key redacted once, and the thinking cap applies to the scrubbed text.
 func TestStreamEventsToResult_GRPCTransportReceivesScrubbedDeltas(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	srv := &recordingHarnessServer{}
 	lis := bufconn.Listen(1 << 20)
 	gs := grpc.NewServer()
@@ -188,7 +197,7 @@ func TestStreamEventsToResult_GRPCTransportReceivesScrubbedDeltas(t *testing.T) 
 			grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 		))
-	require.NoError(t, err)
+	must.NoError(err)
 
 	split := len(fakeAnthropicKey) / 2
 	bigBlock := "reasoning with " + fakeAnthropicKey + " " + strings.Repeat("long reasoning. ", 20<<10)
@@ -199,19 +208,19 @@ func TestStreamEventsToResult_GRPCTransportReceivesScrubbedDeltas(t *testing.T) 
 	ch <- types.StreamEvent{Type: "message_complete", StopReason: "end_turn"}
 	close(ch)
 	_, err = streamEventsToResult(context.Background(), ch, tp, true, ignoreEmitFailure, nil)
-	require.NoError(t, err)
+	must.NoError(err)
 	_ = tp.Close()
 
-	require.Eventually(t, func() bool {
+	must.Eventually(func() bool {
 		return strings.Contains(srv.joined("thinking_delta"), "truncated by harness")
 	}, 5*time.Second, 10*time.Millisecond, "capped thinking block never reached the control stream")
 	text := srv.joined("text_delta")
 	thinking := srv.joined("thinking_delta")
-	assert.Equal(t, "the key is [REDACTED] and that is all", text, "text on the control stream")
-	assert.True(t, strings.HasPrefix(thinking, "reasoning with [REDACTED] long"),
+	check.Equal("the key is [REDACTED] and that is all", text, "text on the control stream")
+	check.True(strings.HasPrefix(thinking, "reasoning with [REDACTED] long"),
 		"thinking on the control stream starts %q and is %d bytes", thinking[:min(len(thinking), 60)], len(thinking))
-	assert.Contains(t, thinking, "truncated by harness")
-	assert.NotContains(t, text+thinking, fakeAnthropicKey[split:], "part of the key reached the control stream")
+	check.Contains(thinking, "truncated by harness")
+	check.NotContains(text+thinking, fakeAnthropicKey[split:], "part of the key reached the control stream")
 }
 
 type emitFunc func(types.HarnessEvent) error

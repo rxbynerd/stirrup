@@ -18,8 +18,9 @@ func post(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder 
 }
 
 func TestChatCompletions_SuccessMode_StreamsOneFinalMessage(t *testing.T) {
+	must := require.New(t)
 	rec := post(t, newHandler("success"), "/chat/completions")
-	require.Equal(t, http.StatusOK, rec.Code)
+	must.Equal(http.StatusOK, rec.Code)
 
 	body := rec.Body.String()
 	tests := []struct {
@@ -33,32 +34,37 @@ func TestChatCompletions_SuccessMode_StreamsOneFinalMessage(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Contains(t, body, tc.want)
+			must := require.New(t)
+			must.Contains(body, tc.want)
 		})
 	}
 }
 
 func TestChatCompletions_EmptyMode_StreamsMessageWithoutContent(t *testing.T) {
+	must := require.New(t)
 	rec := post(t, newHandler("empty"), "/chat/completions")
-	require.Equal(t, http.StatusOK, rec.Code)
+	must.Equal(http.StatusOK, rec.Code)
 
 	body := rec.Body.String()
-	require.NotContains(t, body, finalMessage)
-	require.Contains(t, body, `"content":""`)
-	require.Contains(t, body, `"finish_reason":"stop"`)
+	must.NotContains(body, finalMessage)
+	must.Contains(body, `"content":""`)
+	must.Contains(body, `"finish_reason":"stop"`)
 }
 
 func TestChatCompletions_ErrorMode_RejectsWithBadRequest(t *testing.T) {
+	must := require.New(t)
 	rec := post(t, newHandler("error"), "/chat/completions")
-	require.Equal(t, http.StatusBadRequest, rec.Code)
-	require.Contains(t, rec.Body.String(), "scripted provider failure")
+	must.Equal(http.StatusBadRequest, rec.Code)
+	must.Contains(rec.Body.String(), "scripted provider failure")
 }
 
 func TestHandler_UnknownPath_ReturnsNotFound(t *testing.T) {
+	must := require.New(t)
 	rec := post(t, newHandler("success"), "/v1/other")
-	require.Equal(t, http.StatusNotFound, rec.Code)
+	must.Equal(http.StatusNotFound, rec.Code)
 }
 
 func TestRun_InvalidMode_ReturnsExitCodeTwo(t *testing.T) {
-	require.Equal(t, 2, run([]string{"-mode", "flaky"}, io.Discard))
+	must := require.New(t)
+	must.Equal(2, run([]string{"-mode", "flaky"}, io.Discard))
 }

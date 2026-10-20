@@ -12,44 +12,47 @@ import (
 )
 
 func TestResolveHeaders_PlaintextPassthrough(t *testing.T) {
+	must := require.New(t)
 	in := map[string]string{
 		"X-Tenant": "team-a",
 		"X-Region": "eu-west-1",
 	}
 	out, err := ResolveHeaders(context.Background(), security.NewEnvSecretStore(), in)
-	require.NoError(t, err)
-	require.Equal(t, "team-a", out["X-Tenant"])
-	require.Equal(t, "eu-west-1", out["X-Region"])
+	must.NoError(err)
+	must.Equal("team-a", out["X-Tenant"])
+	must.Equal("eu-west-1", out["X-Region"])
 
 	// The result must be a fresh map, not the input map.
 	out["__probe__"] = "x"
-	require.NotContains(t, in, "__probe__", "ResolveHeaders returned the input map")
+	must.NotContains(in, "__probe__", "ResolveHeaders returned the input map")
 }
 
 func TestResolveHeaders_SecretEnvVar(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("TEST_GRAFANA_AUTH", "Basic dXNlcjpwYXNz")
 
 	in := map[string]string{
 		"Authorization": "secret://TEST_GRAFANA_AUTH",
 	}
 	out, err := ResolveHeaders(context.Background(), security.NewEnvSecretStore(), in)
-	require.NoError(t, err)
-	require.Equal(t, "Basic dXNlcjpwYXNz", out["Authorization"])
-	require.Equal(t, "secret://TEST_GRAFANA_AUTH", in["Authorization"], "ResolveHeaders mutated its input")
+	must.NoError(err)
+	must.Equal("Basic dXNlcjpwYXNz", out["Authorization"])
+	must.Equal("secret://TEST_GRAFANA_AUTH", in["Authorization"], "ResolveHeaders mutated its input")
 }
 
 func TestResolveHeaders_SecretFileScheme(t *testing.T) {
+	must := require.New(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "token.txt")
-	require.NoError(t, os.WriteFile(path, []byte("file-bearer-token\n"), 0o600))
+	must.NoError(os.WriteFile(path, []byte("file-bearer-token\n"), 0o600))
 
 	in := map[string]string{
 		"Authorization": "secret://file://" + path,
 	}
 	out, err := ResolveHeaders(context.Background(), security.NewEnvSecretStore(), in)
-	require.NoError(t, err)
+	must.NoError(err)
 	// EnvSecretStore.Resolve trims trailing whitespace on file values.
-	require.Equal(t, "file-bearer-token", out["Authorization"])
+	must.Equal("file-bearer-token", out["Authorization"])
 }
 
 // TestResolveHeaders_MissingEnvVar pins the error path: an env var that
@@ -58,12 +61,13 @@ func TestResolveHeaders_SecretFileScheme(t *testing.T) {
 // actual mistake (typo'd header value) rather than at a generic
 // "couldn't construct exporter" log line.
 func TestResolveHeaders_MissingEnvVar(t *testing.T) {
-	require.NoError(t, os.Unsetenv("STIRRUP_TEST_NOT_SET"))
+	must := require.New(t)
+	must.NoError(os.Unsetenv("STIRRUP_TEST_NOT_SET"))
 	in := map[string]string{
 		"Authorization": "secret://STIRRUP_TEST_NOT_SET",
 	}
 	_, err := ResolveHeaders(context.Background(), security.NewEnvSecretStore(), in)
-	require.ErrorContains(t, err, "Authorization", "error must reference the header name")
+	must.ErrorContains(err, "Authorization", "error must reference the header name")
 }
 
 // TestResolveHeaders_NilStoreWithSecret rejects a config that asks to
@@ -73,11 +77,12 @@ func TestResolveHeaders_MissingEnvVar(t *testing.T) {
 // an opaque 401 — making this a hard error at exporter init catches
 // the misconfiguration the moment it can be detected.
 func TestResolveHeaders_NilStoreWithSecret(t *testing.T) {
+	must := require.New(t)
 	in := map[string]string{
 		"Authorization": "secret://GRAFANA_CLOUD_AUTH",
 	}
 	_, err := ResolveHeaders(context.Background(), nil, in)
-	require.ErrorContains(t, err, "no SecretStore")
+	must.ErrorContains(err, "no SecretStore")
 }
 
 // TestResolveHeaders_NilStoreWithPlaintextOnly is the symmetric case:
@@ -86,24 +91,27 @@ func TestResolveHeaders_NilStoreWithSecret(t *testing.T) {
 // in code paths that don't have a SecretStore in hand and don't need
 // one (e.g. tests).
 func TestResolveHeaders_NilStoreWithPlaintextOnly(t *testing.T) {
+	must := require.New(t)
 	in := map[string]string{
 		"X-Tenant": "team-a",
 	}
 	out, err := ResolveHeaders(context.Background(), nil, in)
-	require.NoError(t, err)
-	require.Equal(t, "team-a", out["X-Tenant"])
+	must.NoError(err)
+	must.Equal("team-a", out["X-Tenant"])
 }
 
 func TestResolveHeaders_EmptyInput(t *testing.T) {
 	t.Run("nil input", func(t *testing.T) {
+		must := require.New(t)
 		out, err := ResolveHeaders(context.Background(), nil, nil)
-		require.NoError(t, err)
-		require.Nil(t, out)
+		must.NoError(err)
+		must.Nil(out)
 	})
 
 	t.Run("empty map", func(t *testing.T) {
+		must := require.New(t)
 		out, err := ResolveHeaders(context.Background(), nil, map[string]string{})
-		require.NoError(t, err)
-		require.Nil(t, out)
+		must.NoError(err)
+		must.Nil(out)
 	})
 }

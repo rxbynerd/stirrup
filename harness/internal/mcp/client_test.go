@@ -133,11 +133,14 @@ func callMCPText(t *testing.T, tl *tool.Tool, input json.RawMessage) (string, er
 
 func callMCPStructured(t *testing.T, tl *tool.Tool, input json.RawMessage) (tool.StructuredResult, error) {
 	t.Helper()
-	require.NotNil(t, tl.StructuredHandler, "tool %q has no StructuredHandler", tl.Name)
+	must := require.New(t)
+	must.NotNil(tl.StructuredHandler, "tool %q has no StructuredHandler", tl.Name)
 	return tl.StructuredHandler(context.Background(), input)
 }
 
 func TestConnect_ToolDiscovery(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	tools := []mcpTool{
 		{
 			Name:        "search",
@@ -158,17 +161,17 @@ func TestConnect_ToolDiscovery(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 	config := types.MCPServerConfig{Name: "docs", URI: srv.URL}
 
-	require.NoError(t, client.Connect(context.Background(), config, secrets))
+	must.NoError(client.Connect(context.Background(), config, secrets))
 
 	defs := registry.List()
-	require.Len(t, defs, 2)
-	assert.Equal(t, "mcp_docs_search", defs[0].Name)
-	assert.Equal(t, "mcp_docs_fetch", defs[1].Name)
+	must.Len(defs, 2)
+	check.Equal("mcp_docs_search", defs[0].Name)
+	check.Equal("mcp_docs_fetch", defs[1].Name)
 
 	resolved := registry.Resolve("mcp_docs_search")
-	require.NotNil(t, resolved, "Resolve returned nil for mcp_docs_search")
-	assert.True(t, resolved.WorkspaceMutating, "MCP tools should default to WorkspaceMutating=true")
-	assert.True(t, resolved.RequiresApproval, "MCP tools should default to RequiresApproval=true")
+	must.NotNil(resolved, "Resolve returned nil for mcp_docs_search")
+	check.True(resolved.WorkspaceMutating, "MCP tools should default to WorkspaceMutating=true")
+	check.True(resolved.RequiresApproval, "MCP tools should default to RequiresApproval=true")
 }
 
 // TestConnect_ToolAnnotations verifies the bridge parses server-declared MCP
@@ -178,6 +181,8 @@ func TestConnect_ToolDiscovery(t *testing.T) {
 // WorkspaceMutating/RequiresApproval gating the harness applies to all remote
 // tools.
 func TestConnect_ToolAnnotations(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	readOnly := true
 	destructive := false
 	tools := []mcpTool{
@@ -199,27 +204,28 @@ func TestConnect_ToolAnnotations(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 	config := types.MCPServerConfig{Name: "svc", URI: srv.URL}
 
-	require.NoError(t, client.Connect(context.Background(), config, secrets))
+	must.NoError(client.Connect(context.Background(), config, secrets))
 
 	resolved := registry.Resolve("mcp_svc_lookup")
-	require.NotNil(t, resolved, "Resolve returned nil for mcp_svc_lookup")
-	require.NotNil(t, resolved.Annotations, "server annotations were not carried onto the tool")
-	assert.Equal(t, "Lookup", resolved.Annotations.Title)
-	require.NotNil(t, resolved.Annotations.ReadOnlyHint)
-	assert.True(t, *resolved.Annotations.ReadOnlyHint, "ReadOnlyHint should round-trip as true")
+	must.NotNil(resolved, "Resolve returned nil for mcp_svc_lookup")
+	must.NotNil(resolved.Annotations, "server annotations were not carried onto the tool")
+	check.Equal("Lookup", resolved.Annotations.Title)
+	must.NotNil(resolved.Annotations.ReadOnlyHint)
+	check.True(*resolved.Annotations.ReadOnlyHint, "ReadOnlyHint should round-trip as true")
 
 	// The advisory hint must not override the conservative gating defaults.
-	assert.True(t, resolved.WorkspaceMutating, "server readOnlyHint must not relax WorkspaceMutating")
-	assert.True(t, resolved.RequiresApproval, "server readOnlyHint must not relax RequiresApproval")
+	check.True(resolved.WorkspaceMutating, "server readOnlyHint must not relax WorkspaceMutating")
+	check.True(resolved.RequiresApproval, "server readOnlyHint must not relax RequiresApproval")
 
 	// The annotations also surface on the model-facing Presentation.
 	def := resolved.Definition()
-	require.NotNil(t, def.Presentation, "Definition().Presentation is missing")
-	require.NotNil(t, def.Presentation.Annotations, "Definition().Presentation.Annotations is missing")
-	assert.Equal(t, "Lookup", def.Presentation.Annotations.Title)
+	must.NotNil(def.Presentation, "Definition().Presentation is missing")
+	must.NotNil(def.Presentation.Annotations, "Definition().Presentation.Annotations is missing")
+	check.Equal("Lookup", def.Presentation.Annotations.Title)
 }
 
 func TestConnect_ToolCallDispatch(t *testing.T) {
+	must := require.New(t)
 	tools := []mcpTool{
 		{
 			Name:        "echo",
@@ -235,17 +241,19 @@ func TestConnect_ToolCallDispatch(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 	config := types.MCPServerConfig{Name: "test", URI: srv.URL}
 
-	require.NoError(t, client.Connect(context.Background(), config, secrets))
+	must.NoError(client.Connect(context.Background(), config, secrets))
 
 	resolved := registry.Resolve("mcp_test_echo")
-	require.NotNil(t, resolved, "tool not found")
+	must.NotNil(resolved, "tool not found")
 
 	result, err := callMCPText(t, resolved, json.RawMessage(`{}`))
-	require.NoError(t, err)
-	require.Equal(t, "result from echo", result)
+	must.NoError(err)
+	must.Equal("result from echo", result)
 }
 
 func TestConnect_SessionIDManagement(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	tools := []mcpTool{
 		{
 			Name:        "ping",
@@ -261,26 +269,28 @@ func TestConnect_SessionIDManagement(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 	config := types.MCPServerConfig{Name: "sess", URI: srv.URL}
 
-	require.NoError(t, client.Connect(context.Background(), config, secrets))
+	must.NoError(client.Connect(context.Background(), config, secrets))
 
 	// tools/list was request #1 — should have no session ID.
 	reqs := log.get()
-	require.NotEmpty(t, reqs)
-	assert.Empty(t, reqs[0].SessionID, "first request should have no session ID")
+	must.NotEmpty(reqs)
+	check.Empty(reqs[0].SessionID, "first request should have no session ID")
 
 	resolved := registry.Resolve("mcp_sess_ping")
-	require.NotNil(t, resolved, "tool not found")
+	must.NotNil(resolved, "tool not found")
 	_, _ = callMCPText(t, resolved, json.RawMessage(`{}`))
 
 	reqs = log.get()
-	require.GreaterOrEqual(t, len(reqs), 2)
-	assert.Equal(t, "session-abc-123", reqs[1].SessionID)
+	must.GreaterOrEqual(len(reqs), 2)
+	check.Equal("session-abc-123", reqs[1].SessionID)
 }
 
 // TestConnect_RejectsOversizedSessionID pins the maxMCPSessionIDLen cap: a
 // server that returns an Mcp-Session-Id longer than the cap must not have
 // that value stored or echoed back.
 func TestConnect_RejectsOversizedSessionID(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	oversized := strings.Repeat("x", maxMCPSessionIDLen+1)
 	tools := []mcpTool{
 		{Name: "ping", Description: "Ping", InputSchema: json.RawMessage(`{"type":"object"}`)},
@@ -293,18 +303,20 @@ func TestConnect_RejectsOversizedSessionID(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 	config := types.MCPServerConfig{Name: "sess", URI: srv.URL}
 
-	require.NoError(t, client.Connect(context.Background(), config, secrets))
+	must.NoError(client.Connect(context.Background(), config, secrets))
 
 	resolved := registry.Resolve("mcp_sess_ping")
-	require.NotNil(t, resolved, "tool not found")
+	must.NotNil(resolved, "tool not found")
 	_, _ = callMCPText(t, resolved, json.RawMessage(`{}`))
 
 	for i, r := range log.get() {
-		assert.Emptyf(t, r.SessionID, "request %d carried an oversized session ID", i)
+		check.Emptyf(r.SessionID, "request %d carried an oversized session ID", i)
 	}
 }
 
 func TestConnect_AuthHeader(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	tools := []mcpTool{}
 
 	srv, log := fakeMCPServer(t, tools, "")
@@ -320,14 +332,16 @@ func TestConnect_AuthHeader(t *testing.T) {
 		APIKeyRef: "secret://MCP_TOKEN",
 	}
 
-	require.NoError(t, client.Connect(context.Background(), config, secrets))
+	must.NoError(client.Connect(context.Background(), config, secrets))
 
 	reqs := log.get()
-	require.NotEmpty(t, reqs)
-	assert.Equal(t, "Bearer my-secret-token", reqs[0].Authorization)
+	must.NotEmpty(reqs)
+	check.Equal("Bearer my-secret-token", reqs[0].Authorization)
 }
 
 func TestConnect_NoAuthHeaderWhenNoAPIKeyRef(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	tools := []mcpTool{}
 
 	srv, log := fakeMCPServer(t, tools, "")
@@ -337,13 +351,14 @@ func TestConnect_NoAuthHeaderWhenNoAPIKeyRef(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 	config := types.MCPServerConfig{Name: "noauth", URI: srv.URL}
 
-	require.NoError(t, client.Connect(context.Background(), config, secrets))
+	must.NoError(client.Connect(context.Background(), config, secrets))
 
 	reqs := log.get()
-	assert.Empty(t, reqs[0].Authorization, "Authorization header should be absent")
+	check.Empty(reqs[0].Authorization, "Authorization header should be absent")
 }
 
 func TestConnect_JSONRPCError(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req jsonRPCRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
@@ -357,10 +372,12 @@ func TestConnect_JSONRPCError(t *testing.T) {
 	config := types.MCPServerConfig{Name: "broken", URI: srv.URL}
 
 	err := client.Connect(context.Background(), config, secrets)
-	require.ErrorContains(t, err, "JSON-RPC error")
+	must.ErrorContains(err, "JSON-RPC error")
 }
 
 func TestConnect_ToolNamePrefixing(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	tools := []mcpTool{
 		{
 			Name:        "run_query",
@@ -375,14 +392,16 @@ func TestConnect_ToolNamePrefixing(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 
 	config := types.MCPServerConfig{Name: "analytics", URI: srv.URL}
-	require.NoError(t, client.Connect(context.Background(), config, secrets))
+	must.NoError(client.Connect(context.Background(), config, secrets))
 
 	resolved := registry.Resolve("mcp_analytics_run_query")
-	require.NotNil(t, resolved, "expected tool with prefixed name mcp_analytics_run_query")
-	assert.Equal(t, "Run a query", resolved.Description)
+	must.NotNil(resolved, "expected tool with prefixed name mcp_analytics_run_query")
+	check.Equal("Run a query", resolved.Description)
 }
 
 func TestConnect_MultipleServers(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	toolsA := []mcpTool{
 		{Name: "search", Description: "Search A", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
@@ -403,36 +422,39 @@ func TestConnect_MultipleServers(t *testing.T) {
 	configA := types.MCPServerConfig{Name: "alpha", URI: srvA.URL}
 	configB := types.MCPServerConfig{Name: "beta", URI: srvB.URL}
 
-	require.NoError(t, client.Connect(context.Background(), configA, secrets), "connect alpha")
-	require.NoError(t, client.Connect(context.Background(), configB, secrets), "connect beta")
+	must.NoError(client.Connect(context.Background(), configA, secrets), "connect alpha")
+	must.NoError(client.Connect(context.Background(), configB, secrets), "connect beta")
 
 	defs := registry.List()
-	require.Len(t, defs, 3)
+	must.Len(defs, 3)
 
-	assert.NotNil(t, registry.Resolve("mcp_alpha_search"), "missing mcp_alpha_search")
-	assert.NotNil(t, registry.Resolve("mcp_beta_search"), "missing mcp_beta_search")
-	assert.NotNil(t, registry.Resolve("mcp_beta_index"), "missing mcp_beta_index")
+	check.NotNil(registry.Resolve("mcp_alpha_search"), "missing mcp_alpha_search")
+	check.NotNil(registry.Resolve("mcp_beta_search"), "missing mcp_beta_search")
+	check.NotNil(registry.Resolve("mcp_beta_index"), "missing mcp_beta_index")
 }
 
 func TestConnect_MissingName(t *testing.T) {
+	must := require.New(t)
 	registry := tool.NewRegistry()
 	client := NewClient(registry, nil)
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 
 	err := client.Connect(context.Background(), types.MCPServerConfig{URI: "http://localhost"}, secrets)
-	require.Error(t, err)
+	must.Error(err)
 }
 
 func TestConnect_MissingURI(t *testing.T) {
+	must := require.New(t)
 	registry := tool.NewRegistry()
 	client := NewClient(registry, nil)
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 
 	err := client.Connect(context.Background(), types.MCPServerConfig{Name: "test"}, secrets)
-	require.Error(t, err)
+	must.Error(err)
 }
 
 func TestConnect_ToolCallError(t *testing.T) {
+	must := require.New(t)
 	tools := []mcpTool{
 		{Name: "fail", Description: "Always fails", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
@@ -460,16 +482,18 @@ func TestConnect_ToolCallError(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 
 	config := types.MCPServerConfig{Name: "errserver", URI: srv.URL}
-	require.NoError(t, client.Connect(context.Background(), config, secrets))
+	must.NoError(client.Connect(context.Background(), config, secrets))
 
 	resolved := registry.Resolve("mcp_errserver_fail")
-	require.NotNil(t, resolved, "tool not found")
+	must.NotNil(resolved, "tool not found")
 
 	_, err := callMCPText(t, resolved, json.RawMessage(`{}`))
-	require.ErrorContains(t, err, "something went wrong")
+	must.ErrorContains(err, "something went wrong")
 }
 
 func TestClient_Close_RemovesSessions(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	tools := []mcpTool{
 		{Name: "x", Description: "X", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
@@ -479,17 +503,18 @@ func TestClient_Close_RemovesSessions(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 
 	config := types.MCPServerConfig{Name: "srv", URI: srv.URL}
-	require.NoError(t, client.Connect(context.Background(), config, secrets))
+	must.NoError(client.Connect(context.Background(), config, secrets))
 
 	_ = client.Close()
 
 	client.mu.Lock()
 	n := len(client.sessions)
 	client.mu.Unlock()
-	assert.Zero(t, n, "sessions remaining after Close")
+	check.Zero(n, "sessions remaining after Close")
 }
 
 func TestConnect_RejectsFileSchemeURI(t *testing.T) {
+	must := require.New(t)
 	registry := tool.NewRegistry()
 	client := NewClient(registry, nil)
 	secrets := &stubSecretStore{secrets: map[string]string{}}
@@ -498,10 +523,11 @@ func TestConnect_RejectsFileSchemeURI(t *testing.T) {
 		Name: "evil",
 		URI:  "file:///etc/passwd",
 	}, secrets)
-	require.ErrorContains(t, err, "not allowed")
+	must.ErrorContains(err, "not allowed")
 }
 
 func TestConnect_RejectsNoSchemeURI(t *testing.T) {
+	must := require.New(t)
 	registry := tool.NewRegistry()
 	client := NewClient(registry, nil)
 	secrets := &stubSecretStore{secrets: map[string]string{}}
@@ -510,24 +536,27 @@ func TestConnect_RejectsNoSchemeURI(t *testing.T) {
 		Name: "bad",
 		URI:  "localhost:8080",
 	}, secrets)
-	require.ErrorContains(t, err, "not allowed")
+	must.ErrorContains(err, "not allowed")
 }
 
 func TestNewClient_NilHTTPClient_HasTimeout(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	registry := tool.NewRegistry()
 	client := NewClient(registry, nil)
-	assert.NotZero(t, client.httpClient.Timeout, "default HTTP client should have a non-zero timeout")
+	check.NotZero(client.httpClient.Timeout, "default HTTP client should have a non-zero timeout")
 
 	tr, ok := client.httpClient.Transport.(*http.Transport)
-	require.True(t, ok, "expected *http.Transport as default transport")
-	assert.NotZero(t, tr.TLSHandshakeTimeout, "TLSHandshakeTimeout should be non-zero")
+	must.True(ok, "expected *http.Transport as default transport")
+	check.NotZero(tr.TLSHandshakeTimeout, "TLSHandshakeTimeout should be non-zero")
 }
 
 func TestNewClient_ExplicitHTTPClient_Preserved(t *testing.T) {
+	check := assert.New(t)
 	registry := tool.NewRegistry()
 	custom := &http.Client{}
 	client := NewClient(registry, custom)
-	assert.Same(t, custom, client.httpClient, "explicit HTTP client should be preserved, not replaced")
+	check.Same(custom, client.httpClient, "explicit HTTP client should be preserved, not replaced")
 }
 
 // TestMCPCall_RecordsMetrics_Success asserts that a successful tools/call
@@ -537,15 +566,18 @@ func TestNewClient_ExplicitHTTPClient_Preserved(t *testing.T) {
 // can inspect the observations recorded by a call.
 func attachTestMetrics(t *testing.T, client *Client) *sdkmetric.ManualReader {
 	t.Helper()
+	must := require.New(t)
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	m, err := observability.NewMetricsForTesting(provider)
-	require.NoError(t, err)
+	must.NoError(err)
 	client.Metrics = m
 	return reader
 }
 
 func TestMCPCall_RecordsMetrics_Success(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	tools := []mcpTool{{
 		Name:        "echo",
 		Description: "Echo tool",
@@ -558,31 +590,33 @@ func TestMCPCall_RecordsMetrics_Success(t *testing.T) {
 	reader := attachTestMetrics(t, client)
 
 	secrets := &stubSecretStore{secrets: map[string]string{}}
-	require.NoError(t, client.Connect(context.Background(), types.MCPServerConfig{Name: "metrics-srv", URI: srv.URL}, secrets))
+	must.NoError(client.Connect(context.Background(), types.MCPServerConfig{Name: "metrics-srv", URI: srv.URL}, secrets))
 
 	resolved := registry.Resolve("mcp_metrics-srv_echo")
-	require.NotNil(t, resolved, "tool not found")
+	must.NotNil(resolved, "tool not found")
 	_, err := callMCPText(t, resolved, json.RawMessage(`{}`))
-	require.NoError(t, err)
+	must.NoError(err)
 
 	var rm metricdata.ResourceMetrics
-	require.NoError(t, reader.Collect(context.Background(), &rm))
+	must.NoError(reader.Collect(context.Background(), &rm))
 
 	calls := findInt64Counter(t, rm, "stirrup.mcp.calls")
-	assert.Equal(t, int64(1), calls.total, "stirrup.mcp.calls total")
-	assert.Equal(t, "metrics-srv", calls.attrs["server.name"], "server.name attribute")
-	assert.Equal(t, "echo", calls.attrs["tool.name"], "tool.name attribute")
-	assert.Equal(t, "true", calls.attrs["success"], "success attribute")
+	check.Equal(int64(1), calls.total, "stirrup.mcp.calls total")
+	check.Equal("metrics-srv", calls.attrs["server.name"], "server.name attribute")
+	check.Equal("echo", calls.attrs["tool.name"], "tool.name attribute")
+	check.Equal("true", calls.attrs["success"], "success attribute")
 
 	duration := findFloat64Histogram(t, rm, "stirrup.mcp.duration")
-	assert.NotZero(t, duration.count, "stirrup.mcp.duration observations")
-	assert.Equal(t, "metrics-srv", duration.attrs["server.name"], "duration server.name attribute")
+	check.NotZero(duration.count, "stirrup.mcp.duration observations")
+	check.Equal("metrics-srv", duration.attrs["server.name"], "duration server.name attribute")
 }
 
 // TestMCPCall_RecordsMetrics_Failure asserts a failed tools/call still
 // records the counter with success=false; the success label distinguishes
 // an isError=true response from a transport error (also success=false).
 func TestMCPCall_RecordsMetrics_Failure(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	tools := []mcpTool{{
 		Name:        "boom",
 		Description: "Always errors",
@@ -609,19 +643,19 @@ func TestMCPCall_RecordsMetrics_Failure(t *testing.T) {
 	reader := attachTestMetrics(t, client)
 
 	secrets := &stubSecretStore{secrets: map[string]string{}}
-	require.NoError(t, client.Connect(context.Background(), types.MCPServerConfig{Name: "boom-srv", URI: srv.URL}, secrets))
+	must.NoError(client.Connect(context.Background(), types.MCPServerConfig{Name: "boom-srv", URI: srv.URL}, secrets))
 
 	resolved := registry.Resolve("mcp_boom-srv_boom")
-	require.NotNil(t, resolved, "tool not found")
+	must.NotNil(resolved, "tool not found")
 	_, err := callMCPText(t, resolved, json.RawMessage(`{}`))
-	require.Error(t, err, "expected handler error from isError=true response")
+	must.Error(err, "expected handler error from isError=true response")
 
 	var rm metricdata.ResourceMetrics
-	require.NoError(t, reader.Collect(context.Background(), &rm))
+	must.NoError(reader.Collect(context.Background(), &rm))
 
 	calls := findInt64Counter(t, rm, "stirrup.mcp.calls")
-	assert.Equal(t, int64(1), calls.total, "stirrup.mcp.calls total")
-	assert.Equal(t, "false", calls.attrs["success"], "success attribute")
+	check.Equal(int64(1), calls.total, "stirrup.mcp.calls total")
+	check.Equal("false", calls.attrs["success"], "success attribute")
 }
 
 // counterDataPoint is a flattened view of a single int64 counter
@@ -634,13 +668,14 @@ type counterDataPoint struct {
 
 func findInt64Counter(t *testing.T, rm metricdata.ResourceMetrics, name string) counterDataPoint {
 	t.Helper()
+	must := require.New(t)
 	for _, sm := range rm.ScopeMetrics {
 		for _, mt := range sm.Metrics {
 			if mt.Name != name {
 				continue
 			}
 			sum, ok := mt.Data.(metricdata.Sum[int64])
-			require.True(t, ok, "metric %q is not a Sum[int64]", name)
+			must.True(ok, "metric %q is not a Sum[int64]", name)
 			if len(sum.DataPoints) == 0 {
 				return counterDataPoint{}
 			}
@@ -652,7 +687,7 @@ func findInt64Counter(t *testing.T, rm metricdata.ResourceMetrics, name string) 
 			return counterDataPoint{total: dp.Value, attrs: attrs}
 		}
 	}
-	require.Failf(t, "metric not found", "%q", name)
+	must.Failf("metric not found", "%q", name)
 	return counterDataPoint{}
 }
 
@@ -663,13 +698,14 @@ type histogramDataPoint struct {
 
 func findFloat64Histogram(t *testing.T, rm metricdata.ResourceMetrics, name string) histogramDataPoint {
 	t.Helper()
+	must := require.New(t)
 	for _, sm := range rm.ScopeMetrics {
 		for _, mt := range sm.Metrics {
 			if mt.Name != name {
 				continue
 			}
 			h, ok := mt.Data.(metricdata.Histogram[float64])
-			require.True(t, ok, "metric %q is not a Histogram[float64]", name)
+			must.True(ok, "metric %q is not a Histogram[float64]", name)
 			if len(h.DataPoints) == 0 {
 				return histogramDataPoint{}
 			}
@@ -681,7 +717,7 @@ func findFloat64Histogram(t *testing.T, rm metricdata.ResourceMetrics, name stri
 			return histogramDataPoint{count: dp.Count, attrs: attrs}
 		}
 	}
-	require.Failf(t, "metric not found", "%q", name)
+	must.Failf("metric not found", "%q", name)
 	return histogramDataPoint{}
 }
 
@@ -690,6 +726,7 @@ func findFloat64Histogram(t *testing.T, rm metricdata.ResourceMetrics, name stri
 // truncated before it flows into the registry name or the `tool.name`
 // metric attribute.
 func TestRegisterMCPTool_TruncatesLongNames(t *testing.T) {
+	must := require.New(t)
 	longName := strings.Repeat("a", maxMCPToolNameLen+50)
 	tools := []mcpTool{{
 		Name:        longName,
@@ -702,7 +739,7 @@ func TestRegisterMCPTool_TruncatesLongNames(t *testing.T) {
 	client := NewClient(registry, srv.Client())
 
 	secrets := &stubSecretStore{secrets: map[string]string{}}
-	require.NoError(t, client.Connect(context.Background(), types.MCPServerConfig{Name: "long", URI: srv.URL}, secrets))
+	must.NoError(client.Connect(context.Background(), types.MCPServerConfig{Name: "long", URI: srv.URL}, secrets))
 
 	// Registry stores the prefixed, sanitised name. The remote-side name
 	// portion of the registered tool must be exactly maxMCPToolNameLen.
@@ -712,7 +749,7 @@ func TestRegisterMCPTool_TruncatesLongNames(t *testing.T) {
 	for _, d := range registry.List() {
 		names = append(names, d.Name)
 	}
-	require.NotNil(t, registry.Resolve(wantRegistered), "expected registered tool %q, got names %v", wantRegistered, names)
+	must.NotNil(registry.Resolve(wantRegistered), "expected registered tool %q, got names %v", wantRegistered, names)
 }
 
 // TestRegisterMCPTool_RecordsTruncatedToolName extends the truncation
@@ -720,6 +757,8 @@ func TestRegisterMCPTool_TruncatesLongNames(t *testing.T) {
 // the truncated tool name so downstream cardinality is bounded even
 // when a hostile MCP server returns a 4 KB name.
 func TestRegisterMCPTool_RecordsTruncatedToolName(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	longName := strings.Repeat("a", maxMCPToolNameLen+50)
 	tools := []mcpTool{{
 		Name:        longName,
@@ -733,27 +772,28 @@ func TestRegisterMCPTool_RecordsTruncatedToolName(t *testing.T) {
 	reader := attachTestMetrics(t, client)
 
 	secrets := &stubSecretStore{secrets: map[string]string{}}
-	require.NoError(t, client.Connect(context.Background(), types.MCPServerConfig{Name: "long-srv", URI: srv.URL}, secrets))
+	must.NoError(client.Connect(context.Background(), types.MCPServerConfig{Name: "long-srv", URI: srv.URL}, secrets))
 
 	wantSuffix := strings.Repeat("a", maxMCPToolNameLen)
 	resolved := registry.Resolve("mcp_long-srv_" + wantSuffix)
-	require.NotNil(t, resolved, "registered tool not found")
+	must.NotNil(resolved, "registered tool not found")
 	_, err := callMCPText(t, resolved, json.RawMessage(`{}`))
-	require.NoError(t, err)
+	must.NoError(err)
 
 	var rm metricdata.ResourceMetrics
-	require.NoError(t, reader.Collect(context.Background(), &rm))
+	must.NoError(reader.Collect(context.Background(), &rm))
 
 	calls := findInt64Counter(t, rm, "stirrup.mcp.calls")
 	gotName := calls.attrs["tool.name"]
-	assert.Len(t, gotName, maxMCPToolNameLen, "tool.name length")
-	assert.Equal(t, wantSuffix, gotName, "tool.name attribute")
+	check.Len(gotName, maxMCPToolNameLen, "tool.name length")
+	check.Equal(wantSuffix, gotName, "tool.name attribute")
 }
 
 // TestConnect_CapsToolsPerServer asserts the per-server tool count cap
 // applied at Connect time: the first maxMCPToolsPerServer entries are
 // registered and the rest are dropped.
 func TestConnect_CapsToolsPerServer(t *testing.T) {
+	must := require.New(t)
 	overflow := maxMCPToolsPerServer + 25
 	tools := make([]mcpTool, overflow)
 	for i := 0; i < overflow; i++ {
@@ -769,15 +809,17 @@ func TestConnect_CapsToolsPerServer(t *testing.T) {
 	client := NewClient(registry, srv.Client())
 
 	secrets := &stubSecretStore{secrets: map[string]string{}}
-	require.NoError(t, client.Connect(context.Background(), types.MCPServerConfig{Name: "flood", URI: srv.URL}, secrets))
+	must.NoError(client.Connect(context.Background(), types.MCPServerConfig{Name: "flood", URI: srv.URL}, secrets))
 
-	require.Len(t, registry.List(), maxMCPToolsPerServer, "registered tools should be capped at maxMCPToolsPerServer")
+	must.Len(registry.List(), maxMCPToolsPerServer, "registered tools should be capped at maxMCPToolsPerServer")
 }
 
 // TestConnect_AllowedToolsFiltersAdvertised verifies the per-server
 // allowlist: a server advertising a tool not in AllowedTools has that tool
 // rejected at registration, while allowlisted tools register.
 func TestConnect_AllowedToolsFiltersAdvertised(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	tools := []mcpTool{
 		{Name: "search", Description: "ok", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		{Name: "exfiltrate", Description: "evil", InputSchema: json.RawMessage(`{"type":"object"}`)},
@@ -794,17 +836,18 @@ func TestConnect_AllowedToolsFiltersAdvertised(t *testing.T) {
 		URI:          srv.URL,
 		AllowedTools: []string{"search", "fetch"},
 	}
-	require.NoError(t, client.Connect(context.Background(), config, secrets))
+	must.NoError(client.Connect(context.Background(), config, secrets))
 
-	assert.NotNil(t, registry.Resolve("mcp_docs_search"), "allowlisted tool search should be registered")
-	assert.NotNil(t, registry.Resolve("mcp_docs_fetch"), "allowlisted tool fetch should be registered")
-	assert.Nil(t, registry.Resolve("mcp_docs_exfiltrate"), "tool exfiltrate is not in the allowlist and must be rejected")
-	assert.Len(t, registry.List(), 2, "registered tool count")
+	check.NotNil(registry.Resolve("mcp_docs_search"), "allowlisted tool search should be registered")
+	check.NotNil(registry.Resolve("mcp_docs_fetch"), "allowlisted tool fetch should be registered")
+	check.Nil(registry.Resolve("mcp_docs_exfiltrate"), "tool exfiltrate is not in the allowlist and must be rejected")
+	check.Len(registry.List(), 2, "registered tool count")
 }
 
 // TestConnect_EmptyAllowedToolsRegistersAll pins the backward-compatible
 // default: an unset AllowedTools registers every advertised tool.
 func TestConnect_EmptyAllowedToolsRegistersAll(t *testing.T) {
+	must := require.New(t)
 	tools := []mcpTool{
 		{Name: "a", Description: "", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		{Name: "b", Description: "", InputSchema: json.RawMessage(`{"type":"object"}`)},
@@ -816,14 +859,15 @@ func TestConnect_EmptyAllowedToolsRegistersAll(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 
 	config := types.MCPServerConfig{Name: "srv", URI: srv.URL}
-	require.NoError(t, client.Connect(context.Background(), config, secrets))
-	require.Len(t, registry.List(), 2, "an unset allowlist should register every advertised tool")
+	must.NoError(client.Connect(context.Background(), config, secrets))
+	must.Len(registry.List(), 2, "an unset allowlist should register every advertised tool")
 }
 
 // TestConnect_RejectsNonHTTPSRemote verifies a remote (non-loopback) server
 // reached over plain http is refused — credentials and tool-call payloads
 // must not travel in clear.
 func TestConnect_RejectsNonHTTPSRemote(t *testing.T) {
+	must := require.New(t)
 	registry := tool.NewRegistry()
 	client := NewClient(registry, nil)
 	secrets := &stubSecretStore{secrets: map[string]string{}}
@@ -832,8 +876,8 @@ func TestConnect_RejectsNonHTTPSRemote(t *testing.T) {
 		Name: "remote",
 		URI:  "http://mcp.example.com/rpc",
 	}, secrets)
-	require.Error(t, err, "expected error for non-https remote URI")
-	require.ErrorContains(t, err, "https")
+	must.Error(err, "expected error for non-https remote URI")
+	must.ErrorContains(err, "https")
 }
 
 // TestConnect_RejectsPrivateIPURI verifies the connect-time SSRF guard refuses
@@ -847,6 +891,7 @@ func TestConnect_RejectsPrivateIPURI(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			registry := tool.NewRegistry()
 			client := NewClient(registry, nil)
 			secrets := &stubSecretStore{secrets: map[string]string{}}
@@ -855,8 +900,8 @@ func TestConnect_RejectsPrivateIPURI(t *testing.T) {
 				Name: "ssrf",
 				URI:  tc.uri,
 			}, secrets)
-			require.Error(t, err, "expected SSRF rejection for %q", tc.uri)
-			require.ErrorContains(t, err, "private host")
+			must.Error(err, "expected SSRF rejection for %q", tc.uri)
+			must.ErrorContains(err, "private host")
 		})
 	}
 }
@@ -870,33 +915,36 @@ func TestConnect_AllowedMCPHostsPin(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 
 	t.Run("rejects host outside the pin", func(t *testing.T) {
+		must := require.New(t)
 		client := NewClient(tool.NewRegistry(), srv.Client())
 		err := client.Connect(context.Background(), types.MCPServerConfig{
 			Name:            "pinned",
 			URI:             srv.URL,
 			AllowedMCPHosts: []string{"only.example.com"},
 		}, secrets)
-		require.Error(t, err, "expected rejection: host not in allowedMcpHosts")
-		require.ErrorContains(t, err, "allowedMcpHosts")
+		must.Error(err, "expected rejection: host not in allowedMcpHosts")
+		must.ErrorContains(err, "allowedMcpHosts")
 	})
 
 	t.Run("admits the pinned host", func(t *testing.T) {
+		must := require.New(t)
 		registry := tool.NewRegistry()
 		client := NewClient(registry, srv.Client())
 		host := mustHost(t, srv.URL)
-		require.NoError(t, client.Connect(context.Background(), types.MCPServerConfig{
+		must.NoError(client.Connect(context.Background(), types.MCPServerConfig{
 			Name:            "pinned",
 			URI:             srv.URL,
 			AllowedMCPHosts: []string{host},
 		}, secrets))
-		require.NotNil(t, registry.Resolve("mcp_pinned_a"), "tool should register when host is pinned")
+		must.NotNil(registry.Resolve("mcp_pinned_a"), "tool should register when host is pinned")
 	})
 }
 
 func mustHost(t *testing.T, raw string) string {
 	t.Helper()
+	must := require.New(t)
 	u, err := url.Parse(raw)
-	require.NoError(t, err, "parse %q", raw)
+	must.NoError(err, "parse %q", raw)
 	return u.Hostname()
 }
 
@@ -907,6 +955,7 @@ func mustHost(t *testing.T, raw string) string {
 // SSRF guard. Reaching the registered tool's result is the proof the dial
 // succeeded.
 func TestConnect_LocalhostNameDefaultTransport(t *testing.T) {
+	must := require.New(t)
 	tools := []mcpTool{{Name: "ping", InputSchema: json.RawMessage(`{"type":"object"}`)}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req jsonRPCRequest
@@ -928,12 +977,12 @@ func TestConnect_LocalhostNameDefaultTransport(t *testing.T) {
 	client := NewClient(registry, nil) // default transport: LoopbackAwareDialContext
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 
-	require.NoError(t, client.Connect(context.Background(), types.MCPServerConfig{Name: "local", URI: uri}, secrets), "connect to %s", uri)
+	must.NoError(client.Connect(context.Background(), types.MCPServerConfig{Name: "local", URI: uri}, secrets), "connect to %s", uri)
 	resolved := registry.Resolve("mcp_local_ping")
-	require.NotNil(t, resolved, "tool not registered")
+	must.NotNil(resolved, "tool not registered")
 	out, err := resolved.StructuredHandler(context.Background(), json.RawMessage(`{}`))
-	require.NoError(t, err, "tool call through loopback-name dial")
-	require.Equal(t, "pong", out.Text)
+	must.NoError(err, "tool call through loopback-name dial")
+	must.Equal("pong", out.Text)
 }
 
 // credentialedURI rewrites base (e.g. an httptest server URL) to embed
@@ -941,8 +990,9 @@ func TestConnect_LocalhostNameDefaultTransport(t *testing.T) {
 // of an operator putting credentials directly in the MCP server URI.
 func credentialedURI(t *testing.T, base string) string {
 	t.Helper()
+	must := require.New(t)
 	u, err := url.Parse(base)
-	require.NoError(t, err, "parse base URL %q", base)
+	must.NoError(err, "parse base URL %q", base)
 	u.User = url.UserPassword("user", "pass")
 	u.RawQuery = "api_key=supersecret"
 	return u.String()
@@ -952,14 +1002,16 @@ func credentialedURI(t *testing.T, base string) string {
 // value appears in s.
 func assertNoSecret(t *testing.T, where, s string) {
 	t.Helper()
-	assert.NotContains(t, s, "user:pass", "%s leaked userinfo", where)
-	assert.NotContains(t, s, "supersecret", "%s leaked query secret", where)
+	check := assert.New(t)
+	check.NotContains(s, "user:pass", "%s leaked userinfo", where)
+	check.NotContains(s, "supersecret", "%s leaked query secret", where)
 }
 
 // TestCall_NonOKError_DoesNotLeakCredentials drives the non-200 error site in
 // call(): the returned error must report a display-safe URI, never the raw
 // credentialed one.
 func TestCall_NonOKError_DoesNotLeakCredentials(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "upstream is sad", http.StatusInternalServerError)
 	}))
@@ -969,13 +1021,13 @@ func TestCall_NonOKError_DoesNotLeakCredentials(t *testing.T) {
 	sess, err := newSession(context.Background(),
 		types.MCPServerConfig{Name: "leaky", URI: uri},
 		&stubSecretStore{secrets: map[string]string{}})
-	require.NoError(t, err)
-	require.NotContains(t, sess.displayURI, "user:pass", "displayURI leaked userinfo")
-	require.NotContains(t, sess.displayURI, "supersecret", "displayURI leaked query secret")
+	must.NoError(err)
+	must.NotContains(sess.displayURI, "user:pass", "displayURI leaked userinfo")
+	must.NotContains(sess.displayURI, "supersecret", "displayURI leaked query secret")
 
 	client := NewClient(tool.NewRegistry(), srv.Client())
 	_, err = client.call(context.Background(), sess, "tools/list", nil)
-	require.Error(t, err, "expected error from non-200 response")
+	must.Error(err, "expected error from non-200 response")
 	assertNoSecret(t, "non-200 error", err.Error())
 }
 
@@ -983,6 +1035,7 @@ func TestCall_NonOKError_DoesNotLeakCredentials(t *testing.T) {
 // site in call(): a dial failure against a credentialed loopback URI must not
 // surface the credentials.
 func TestCall_TransportError_DoesNotLeakCredentials(t *testing.T) {
+	must := require.New(t)
 	// Bind then immediately close a listener to obtain a port that refuses
 	// connections, keeping the host loopback so the SSRF dial guard allows it.
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
@@ -993,11 +1046,11 @@ func TestCall_TransportError_DoesNotLeakCredentials(t *testing.T) {
 	sess, err := newSession(context.Background(),
 		types.MCPServerConfig{Name: "leaky", URI: uri},
 		&stubSecretStore{secrets: map[string]string{}})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	client := NewClient(tool.NewRegistry(), nil) // default transport: real dial
 	_, err = client.call(context.Background(), sess, "tools/list", nil)
-	require.Error(t, err, "expected transport error from closed port")
+	must.Error(err, "expected transport error from closed port")
 	assertNoSecret(t, "transport error", err.Error())
 }
 
@@ -1015,14 +1068,17 @@ func TestDisplaySafeURI_StripsUserinfoQueryAndFragment(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			check := assert.New(t)
 			got := displaySafeURI(tt.in)
-			assert.Equal(t, tt.want, got, "displaySafeURI(%q)", tt.in)
+			check.Equal(tt.want, got, "displaySafeURI(%q)", tt.in)
 			assertNoSecret(t, "displaySafeURI", got)
 		})
 	}
 }
 
 func TestConnect_MissingAllowlistedTool_ReturnsMissingToolsError(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	tools := []mcpTool{
 		{Name: "search", Description: "Search", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		{Name: "extra", Description: "Extra", InputSchema: json.RawMessage(`{"type":"object"}`)},
@@ -1039,16 +1095,17 @@ func TestConnect_MissingAllowlistedTool_ReturnsMissingToolsError(t *testing.T) {
 	}, secrets)
 
 	var missing *MissingToolsError
-	require.ErrorAs(t, err, &missing)
-	assert.Equal(t, "docs", missing.Server)
-	assert.Equal(t, "fetch,lookup", strings.Join(missing.Tools, ","), "missing tools in allowlist order, deduplicated")
-	require.ErrorContains(t, err, `"docs"`)
-	require.ErrorContains(t, err, "fetch, lookup")
-	assert.NotNil(t, registry.Resolve("mcp_docs_search"), "advertised allowlisted tool should still be registered")
-	assert.Len(t, registry.List(), 1, "only the advertised allowlisted tool should be registered")
+	must.ErrorAs(err, &missing)
+	check.Equal("docs", missing.Server)
+	check.Equal("fetch,lookup", strings.Join(missing.Tools, ","), "missing tools in allowlist order, deduplicated")
+	must.ErrorContains(err, `"docs"`)
+	must.ErrorContains(err, "fetch, lookup")
+	check.NotNil(registry.Resolve("mcp_docs_search"), "advertised allowlisted tool should still be registered")
+	check.Len(registry.List(), 1, "only the advertised allowlisted tool should be registered")
 }
 
 func TestConnect_AllowlistFullyAdvertised_ConnectsCleanly(t *testing.T) {
+	must := require.New(t)
 	tools := []mcpTool{
 		{Name: "search", Description: "Search", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		{Name: "extra", Description: "Extra", InputSchema: json.RawMessage(`{"type":"object"}`)},
@@ -1058,10 +1115,10 @@ func TestConnect_AllowlistFullyAdvertised_ConnectsCleanly(t *testing.T) {
 	client := NewClient(registry, srv.Client())
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 
-	require.NoError(t, client.Connect(context.Background(), types.MCPServerConfig{
+	must.NoError(client.Connect(context.Background(), types.MCPServerConfig{
 		Name:         "docs",
 		URI:          srv.URL,
 		AllowedTools: []string{"search"},
 	}, secrets))
-	require.Len(t, registry.List(), 1)
+	must.Len(registry.List(), 1)
 }

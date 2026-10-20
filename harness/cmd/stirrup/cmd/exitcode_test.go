@@ -45,7 +45,8 @@ func TestClassifyExitCode_MapsErrorClasses(t *testing.T) {
 		{name: "untyped error defaults to 1", err: errors.New("something else"), want: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, classifyExitCode(tc.err), "err=%v", tc.err)
+			must := require.New(t)
+			must.Equal(tc.want, classifyExitCode(tc.err), "err=%v", tc.err)
 		})
 	}
 }
@@ -63,10 +64,11 @@ func TestExitErrorWrapper_PreservesMessageAndErrorsIs(t *testing.T) {
 		{name: "validationError", wrap: validationError},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			sentinel := errors.New("the underlying failure")
 			got := tc.wrap(sentinel)
-			require.EqualError(t, got, sentinel.Error())
-			require.ErrorIs(t, got, sentinel)
+			must.EqualError(got, sentinel.Error())
+			must.ErrorIs(got, sentinel)
 		})
 	}
 }
@@ -84,7 +86,8 @@ func TestExitErrorWrapper_NilReturnsNil(t *testing.T) {
 		{name: "validationError", wrap: validationError},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			require.NoError(t, tc.wrap(nil))
+			must := require.New(t)
+			must.NoError(tc.wrap(nil))
 		})
 	}
 }
@@ -95,33 +98,38 @@ func TestExitErrorWrapper_NilReturnsNil(t *testing.T) {
 // the test follows the same path Execute() does.
 func TestLoadRunConfigFile_ExitClasses(t *testing.T) {
 	t.Run("missing file classifies as io", func(t *testing.T) {
+		must := require.New(t)
 		_, err := loadRunConfigFile(filepath.Join(t.TempDir(), "absent.json"))
-		require.Equal(t, exitIO, classifyExitCode(err), "err=%v", err)
+		must.Equal(exitIO, classifyExitCode(err), "err=%v", err)
 	})
 	t.Run("malformed json classifies as parse", func(t *testing.T) {
+		must := require.New(t)
 		path := filepath.Join(t.TempDir(), "bad.json")
 		writeFile(t, path, "{not json")
 		_, err := loadRunConfigFile(path)
-		require.Equal(t, exitParse, classifyExitCode(err), "err=%v", err)
+		must.Equal(exitParse, classifyExitCode(err), "err=%v", err)
 	})
 	t.Run("empty file classifies as io", func(t *testing.T) {
+		must := require.New(t)
 		path := filepath.Join(t.TempDir(), "empty.json")
 		writeFile(t, path, "")
 		_, err := loadRunConfigFile(path)
-		require.Equal(t, exitIO, classifyExitCode(err), "err=%v", err)
+		must.Equal(exitIO, classifyExitCode(err), "err=%v", err)
 	})
 	t.Run("directory path classifies as io", func(t *testing.T) {
+		must := require.New(t)
 		_, err := loadRunConfigFile(t.TempDir())
-		require.Equal(t, exitIO, classifyExitCode(err), "err=%v", err)
+		must.Equal(exitIO, classifyExitCode(err), "err=%v", err)
 	})
 	t.Run("oversize file classifies as io", func(t *testing.T) {
+		must := require.New(t)
 		path := filepath.Join(t.TempDir(), "big.json")
 		writeFile(t, path, "")
 		// A sparse file one byte over the cap trips the size guard without
 		// writing a megabyte to disk.
-		require.NoError(t, os.Truncate(path, maxConfigFileBytes+1))
+		must.NoError(os.Truncate(path, maxConfigFileBytes+1))
 		_, err := loadRunConfigFile(path)
-		require.Equal(t, exitIO, classifyExitCode(err), "err=%v", err)
+		must.Equal(exitIO, classifyExitCode(err), "err=%v", err)
 	})
 }
 
@@ -131,18 +139,21 @@ func TestLoadRunConfigFile_ExitClasses(t *testing.T) {
 // the piped path without a real pipe (see isStdinPiped).
 func TestReadRunConfigFromReader_ExitClasses(t *testing.T) {
 	t.Run("malformed piped json classifies as parse", func(t *testing.T) {
+		must := require.New(t)
 		_, err := readRunConfigFromReader(strings.NewReader("{bad"), "<stdin>")
-		require.Equal(t, exitParse, classifyExitCode(err), "err=%v", err)
+		must.Equal(exitParse, classifyExitCode(err), "err=%v", err)
 	})
 	t.Run("empty stream classifies as io", func(t *testing.T) {
+		must := require.New(t)
 		_, err := readRunConfigFromReader(strings.NewReader(""), "<stdin>")
-		require.Equal(t, exitIO, classifyExitCode(err), "err=%v", err)
+		must.Equal(exitIO, classifyExitCode(err), "err=%v", err)
 	})
 	t.Run("read failure classifies as io", func(t *testing.T) {
+		must := require.New(t)
 		// The io.ReadAll-failure branch is unreachable via strings.Reader
 		// (it never errors), so inject a reader that fails on first Read.
 		_, err := readRunConfigFromReader(&errReader{err: errors.New("broken pipe")}, "<stdin>")
-		require.Equal(t, exitIO, classifyExitCode(err), "err=%v", err)
+		must.Equal(exitIO, classifyExitCode(err), "err=%v", err)
 	})
 }
 
@@ -163,14 +174,16 @@ func (r *errReader) Read([]byte) (int, error) {
 // JSON parse failure.
 func TestReadPromptFile_ExitClassIsIO(t *testing.T) {
 	t.Run("missing file classifies as io", func(t *testing.T) {
+		must := require.New(t)
 		_, err := readPromptFile(filepath.Join(t.TempDir(), "absent.txt"))
-		require.Equal(t, exitIO, classifyExitCode(err), "err=%v", err)
+		must.Equal(exitIO, classifyExitCode(err), "err=%v", err)
 	})
 	t.Run("empty file classifies as io", func(t *testing.T) {
+		must := require.New(t)
 		path := filepath.Join(t.TempDir(), "empty.txt")
 		writeFile(t, path, "\n")
 		_, err := readPromptFile(path)
-		require.Equal(t, exitIO, classifyExitCode(err), "err=%v", err)
+		must.Equal(exitIO, classifyExitCode(err), "err=%v", err)
 	})
 }
 
@@ -181,16 +194,17 @@ func TestReadPromptFile_ExitClassIsIO(t *testing.T) {
 // default by a stray wrapper anywhere on that chain. ResolveAll is used
 // because resolvePromptForRun only runs on the loop-ready path.
 func TestBuildRunConfig_MissingPromptFileExitClass(t *testing.T) {
+	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	missing := filepath.Join(t.TempDir(), "absent-brief.txt")
-	require.NoError(t, cmd.Flags().Set("prompt-file", missing))
+	must.NoError(cmd.Flags().Set("prompt-file", missing))
 
 	_, err := BuildRunConfig(RunConfigSources{
 		Cmd:     cmd,
 		Resolve: ResolveAll,
 	})
-	require.Error(t, err)
-	require.Equal(t, exitIO, classifyExitCode(err), "err=%v", err)
+	must.Error(err)
+	must.Equal(exitIO, classifyExitCode(err), "err=%v", err)
 }
 
 // TestBuildRunConfig_ValidationExitClass pins that a read-only mode with
@@ -198,6 +212,7 @@ func TestBuildRunConfig_MissingPromptFileExitClass(t *testing.T) {
 // ValidateRunConfig — classifies as validation (exit 1) when resolved
 // through the ResolveAll path the harness uses.
 func TestBuildRunConfig_ValidationExitClass(t *testing.T) {
+	must := require.New(t)
 	path := filepath.Join(t.TempDir(), "config.json")
 	// planning is read-only; allow-all on a read-only mode is the hard
 	// invariant ValidateRunConfig rejects (see CLAUDE.md). The prompt is
@@ -216,8 +231,8 @@ func TestBuildRunConfig_ValidationExitClass(t *testing.T) {
 		Cmd:        cmd,
 		Resolve:    ResolveAll,
 	})
-	require.Error(t, err)
-	require.Equal(t, exitValidation, classifyExitCode(err), "err=%v", err)
+	must.Error(err)
+	must.Equal(exitValidation, classifyExitCode(err), "err=%v", err)
 }
 
 // TestRunConfigCommand_PromptRequired_ExitClassIsValidation pins that `run-config
@@ -225,6 +240,7 @@ func TestBuildRunConfig_ValidationExitClass(t *testing.T) {
 // validation (exit 1). The stderrIsInteractive seam is pinned to false
 // so the test does not depend on whether the test runner has a TTY.
 func TestRunConfigCommand_PromptRequired_ExitClassIsValidation(t *testing.T) {
+	must := require.New(t)
 	orig := stderrIsInteractive
 	stderrIsInteractive = func() bool { return false }
 	defer func() { stderrIsInteractive = orig }()
@@ -237,8 +253,8 @@ func TestRunConfigCommand_PromptRequired_ExitClassIsValidation(t *testing.T) {
 	// error before resolution reaches the prompt-required gate.
 	var out bytes.Buffer
 	err := runRunConfigWithIO(cmd, nil, nil, &out)
-	require.ErrorIs(t, err, errPromptRequired)
-	require.Equal(t, exitValidation, classifyExitCode(err), "err=%v", err)
+	must.ErrorIs(err, errPromptRequired)
+	must.Equal(exitValidation, classifyExitCode(err), "err=%v", err)
 }
 
 // TestCLIExitCodes_EndToEnd pins the real os.Exit codes the built binary
@@ -391,8 +407,9 @@ func TestCLIExitCodes_EndToEnd(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			got := runExit(t, bin, tc.args, tc.env...)
-			require.Equal(t, tc.want, got, "args: %v", tc.args)
+			must.Equal(tc.want, got, "args: %v", tc.args)
 		})
 	}
 }
@@ -402,11 +419,12 @@ func TestCLIExitCodes_EndToEnd(t *testing.T) {
 // prompt exits non-zero under the non-TTY `go test` subprocess; its
 // interactive hint exit-0 path needs a PTY and is not covered here.)
 func TestCLIExitCodes_BareInvocationsStayZero(t *testing.T) {
+	must := require.New(t)
 	if testing.Short() {
 		t.Skip("skipping binary build + exec in -short mode")
 	}
 	bin := buildStirrupBinary(t)
-	require.Equal(t, 0, runExit(t, bin, []string{}))
+	must.Equal(0, runExit(t, bin, []string{}))
 }
 
 // buildStirrupBinary compiles the stirrup CLI into the test's temp dir
@@ -414,10 +432,11 @@ func TestCLIExitCodes_BareInvocationsStayZero(t *testing.T) {
 // exec hermetic (no dependency on a stale ./stirrup in the worktree).
 func buildStirrupBinary(t *testing.T) string {
 	t.Helper()
+	must := require.New(t)
 	bin := filepath.Join(t.TempDir(), "stirrup-exitcode-test")
 	cmd := exec.Command("go", "build", "-o", bin, "github.com/rxbynerd/stirrup/harness/cmd/stirrup")
 	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, "go build failed:\n%s", out)
+	must.NoError(err, "go build failed:\n%s", out)
 	return bin
 }
 
@@ -427,8 +446,9 @@ func buildStirrupBinary(t *testing.T) string {
 // as ambiguous against a phantom piped base.
 func runExit(t *testing.T, bin string, args []string, extraEnv ...string) int {
 	t.Helper()
+	must := require.New(t)
 	devNull, err := os.Open(os.DevNull)
-	require.NoError(t, err)
+	must.NoError(err)
 	defer func() { _ = devNull.Close() }()
 
 	cmd := exec.Command(bin, args...) //nolint:gosec // bin is the test-built binary, args are test-controlled
@@ -441,11 +461,12 @@ func runExit(t *testing.T, bin string, args []string, extraEnv ...string) int {
 		return 0
 	}
 	var exitErr *exec.ExitError
-	require.ErrorAs(t, runErr, &exitErr, "running %s %v", bin, args)
+	must.ErrorAs(runErr, &exitErr, "running %s %v", bin, args)
 	return exitErr.ExitCode()
 }
 
 func writeFile(t *testing.T, path, body string) {
 	t.Helper()
-	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+	must := require.New(t)
+	must.NoError(os.WriteFile(path, []byte(body), 0o600))
 }

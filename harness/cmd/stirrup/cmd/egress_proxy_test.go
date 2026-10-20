@@ -26,8 +26,9 @@ import (
 // TOCTOU a free-port-then-rebind helper would carry.
 func boundLoopbackListener(t *testing.T) net.Listener {
 	t.Helper()
+	must := require.New(t)
 	l, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err, "bind loopback listener")
+	must.NoError(err, "bind loopback listener")
 	return l
 }
 
@@ -37,6 +38,8 @@ func boundLoopbackListener(t *testing.T) net.Listener {
 // shutdown. The returned addr is the bound host:port.
 func startTestEgressProxy(t *testing.T, allowlist []string) (addr string) {
 	t.Helper()
+	check := assert.New(t)
+	must := require.New(t)
 	listener := boundLoopbackListener(t)
 	addr = listener.Addr().String()
 
@@ -54,9 +57,9 @@ func startTestEgressProxy(t *testing.T, allowlist []string) (addr string) {
 		cancel()
 		select {
 		case err := <-done:
-			assert.NoError(t, err, "serveEgressProxy returned an error")
+			check.NoError(err, "serveEgressProxy returned an error")
 		case <-time.After(10 * time.Second):
-			assert.Fail(t, "serveEgressProxy did not shut down within 10s")
+			check.Fail("serveEgressProxy did not shut down within 10s")
 		}
 	})
 
@@ -65,7 +68,7 @@ func startTestEgressProxy(t *testing.T, allowlist []string) (addr string) {
 	for {
 		select {
 		case err := <-done:
-			require.FailNow(t, "serveEgressProxy exited before listening", "error: %v", err)
+			must.FailNow("serveEgressProxy exited before listening", "error: %v", err)
 		default:
 		}
 		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
@@ -74,7 +77,7 @@ func startTestEgressProxy(t *testing.T, allowlist []string) (addr string) {
 			return addr
 		}
 		if time.Now().After(deadline) {
-			require.FailNow(t, fmt.Sprintf("egress proxy did not start listening on %s within 5s", addr))
+			must.FailNow(fmt.Sprintf("egress proxy did not start listening on %s within 5s", addr))
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -83,19 +86,20 @@ func startTestEgressProxy(t *testing.T, allowlist []string) (addr string) {
 // TestEgressProxy_DeniesNonAllowlisted drives a CONNECT for a host that
 // is not on the allowlist through the real serve path and asserts a 403.
 func TestEgressProxy_DeniesNonAllowlisted(t *testing.T) {
+	must := require.New(t)
 	addr := startTestEgressProxy(t, []string{"allowed.example.com"})
 
 	conn, err := net.Dial("tcp", addr)
-	require.NoError(t, err, "dial proxy")
+	must.NoError(err, "dial proxy")
 	defer func() { _ = conn.Close() }()
 
 	connectLine := "CONNECT denied.example.com:443 HTTP/1.1\r\nHost: denied.example.com:443\r\n\r\n"
 	_, err = conn.Write([]byte(connectLine))
-	require.NoError(t, err, "write CONNECT")
+	must.NoError(err, "write CONNECT")
 
 	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
-	require.NoError(t, err, "read CONNECT response")
-	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	must.NoError(err, "read CONNECT response")
+	must.Equal(http.StatusForbidden, resp.StatusCode)
 }
 
 // TestEgressProxy_TunnelsAllowlistedCONNECT drives a CONNECT for an allowlisted
@@ -105,36 +109,37 @@ func TestEgressProxy_DeniesNonAllowlisted(t *testing.T) {
 // proxy verifies SNI before establishing the tunnel); the upstream
 // echoes the bytes back, confirming the splice.
 func TestEgressProxy_TunnelsAllowlistedCONNECT(t *testing.T) {
+	must := require.New(t)
 	upstream := startEchoServer(t)
 	upstreamHost, upstreamPort := hostPort(t, "http://"+upstream.Addr().String())
 	allowEntry := fmt.Sprintf("%s:%s", upstreamHost, upstreamPort)
 	addr := startTestEgressProxy(t, []string{allowEntry})
 
 	conn, err := net.Dial("tcp", addr)
-	require.NoError(t, err, "dial proxy")
+	must.NoError(err, "dial proxy")
 	defer func() { _ = conn.Close() }()
 
 	connectLine := fmt.Sprintf("CONNECT %s:%s HTTP/1.1\r\nHost: %s:%s\r\n\r\n", upstreamHost, upstreamPort, upstreamHost, upstreamPort)
 	_, err = conn.Write([]byte(connectLine))
-	require.NoError(t, err, "write CONNECT")
+	must.NoError(err, "write CONNECT")
 
 	// The proxy peeks the ClientHello SNI before writing the 200, so the
 	// hello must be sent before reading the response. SNI matches the CONNECT
 	// host (both the literal upstream host), which passes the cross-check.
 	hello := clientHelloWithSNI(upstreamHost)
 	_, err = conn.Write(hello)
-	require.NoError(t, err, "write ClientHello")
+	must.NoError(err, "write ClientHello")
 
 	r := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(r, &http.Request{Method: http.MethodConnect})
-	require.NoError(t, err, "read CONNECT response")
-	require.Equal(t, http.StatusOK, resp.StatusCode)
+	must.NoError(err, "read CONNECT response")
+	must.Equal(http.StatusOK, resp.StatusCode)
 
 	// The upstream echoes the replayed ClientHello back through the tunnel.
 	got := make([]byte, len(hello))
 	_, err = io.ReadFull(r, got)
-	require.NoError(t, err, "read echoed bytes through tunnel")
-	require.Equal(t, hello, got, "spliced bytes should match the sent ClientHello")
+	must.NoError(err, "read echoed bytes through tunnel")
+	must.Equal(hello, got, "spliced bytes should match the sent ClientHello")
 }
 
 // TestEgressProxy_ForwardsAllowlistedPlainHTTP drives a plain-HTTP proxy request
@@ -142,6 +147,7 @@ func TestEgressProxy_TunnelsAllowlistedCONNECT(t *testing.T) {
 // forwarded to the upstream (200). Plain HTTP avoids the TLS
 // ClientHello/SNI handshake; the allowlist gate is identical for both.
 func TestEgressProxy_ForwardsAllowlistedPlainHTTP(t *testing.T) {
+	check := assert.New(t)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("upstream-ok"))
 	}))
@@ -152,14 +158,15 @@ func TestEgressProxy_ForwardsAllowlistedPlainHTTP(t *testing.T) {
 	addr := startTestEgressProxy(t, []string{allowEntry})
 
 	status, body := proxiedGet(t, addr, upstream.URL)
-	assert.Equal(t, http.StatusOK, status)
-	assert.Equal(t, "upstream-ok", body)
+	check.Equal(http.StatusOK, status)
+	check.Equal("upstream-ok", body)
 }
 
 // TestEgressProxy_ForwardsHostFromAllowlistFile asserts entries from an allowlist
 // file are honoured by the parse+serve path: a host listed in the file is
 // forwarded. Blank lines and #-comments in the file must be ignored.
 func TestEgressProxy_ForwardsHostFromAllowlistFile(t *testing.T) {
+	must := require.New(t)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -170,17 +177,17 @@ func TestEgressProxy_ForwardsHostFromAllowlistFile(t *testing.T) {
 	file := filepath.Join(dir, "allowlist.txt")
 	content := fmt.Sprintf("# comment line\n\n%s:%s\n", upstreamHost, upstreamPort)
 	err := os.WriteFile(file, []byte(content), 0o600)
-	require.NoError(t, err, "write allowlist file")
+	must.NoError(err, "write allowlist file")
 
 	// Exercise the file reader the subcommand uses, then serve with the parsed
 	// entries — the same composition runEgressProxy performs.
 	entries, err := readAllowlistFile(file)
-	require.NoError(t, err, "readAllowlistFile")
-	require.Len(t, entries, 1, "comment and blank lines should be ignored")
+	must.NoError(err, "readAllowlistFile")
+	must.Len(entries, 1, "comment and blank lines should be ignored")
 
 	addr := startTestEgressProxy(t, entries)
 	status, _ := proxiedGet(t, addr, upstream.URL)
-	require.Equal(t, http.StatusOK, status)
+	must.Equal(http.StatusOK, status)
 }
 
 // TestReadAllowlistFile_SizeCap asserts the 1 MiB read cap fires on an
@@ -190,18 +197,20 @@ func TestReadAllowlistFile_SizeCap(t *testing.T) {
 	dir := t.TempDir()
 
 	t.Run("over cap rejected", func(t *testing.T) {
+		must := require.New(t)
 		file := filepath.Join(dir, "over.txt")
 		// One byte past the cap. Content shape is irrelevant — the read is
 		// bounded before any parsing.
 		big := bytes.Repeat([]byte("a"), int(maxAllowlistFileBytes)+1)
 		err := os.WriteFile(file, big, 0o600)
-		require.NoError(t, err, "write oversize file")
+		must.NoError(err, "write oversize file")
 
 		_, err = readAllowlistFile(file)
-		require.ErrorContains(t, err, "cap", "error should mention the byte cap")
+		must.ErrorContains(err, "cap", "error should mention the byte cap")
 	})
 
 	t.Run("at cap accepted", func(t *testing.T) {
+		must := require.New(t)
 		file := filepath.Join(dir, "atcap.txt")
 		// Fill exactly to the cap with a single valid entry followed by
 		// padding comment bytes so the parse yields one entry.
@@ -212,12 +221,12 @@ func TestReadAllowlistFile_SizeCap(t *testing.T) {
 			content = content[:maxAllowlistFileBytes]
 		}
 		err := os.WriteFile(file, content, 0o600)
-		require.NoError(t, err, "write at-cap file")
+		must.NoError(err, "write at-cap file")
 
 		entries, err := readAllowlistFile(file)
-		require.NoError(t, err, "at-cap file should be accepted")
-		require.NotEmpty(t, entries)
-		require.Equal(t, "example.com", entries[0])
+		must.NoError(err, "at-cap file should be accepted")
+		must.NotEmpty(entries)
+		must.Equal("example.com", entries[0])
 	})
 }
 
@@ -225,6 +234,7 @@ func TestReadAllowlistFile_SizeCap(t *testing.T) {
 // entry makes serveEgressProxy return an error rather than serving.
 // serveEgressProxy closes the supplied listener on the Start-failure path, so no leak.
 func TestEgressProxy_RejectsMalformedAllowlistEntry(t *testing.T) {
+	must := require.New(t)
 	err := serveEgressProxy(context.Background(), egressProxyOptions{
 		listener: boundLoopbackListener(t),
 		// A non-numeric port is rejected by the matcher at Start.
@@ -233,8 +243,8 @@ func TestEgressProxy_RejectsMalformedAllowlistEntry(t *testing.T) {
 	}, io.Discard)
 
 	var ee *exitError
-	require.ErrorAs(t, err, &ee, "want an exitValidation (exit 1) exitError")
-	require.Equal(t, exitValidation, ee.code)
+	must.ErrorAs(err, &ee, "want an exitValidation (exit 1) exitError")
+	must.Equal(exitValidation, ee.code)
 }
 
 // proxiedGet issues a plain-HTTP proxied GET for targetURL through the proxy
@@ -243,17 +253,18 @@ func TestEgressProxy_RejectsMalformedAllowlistEntry(t *testing.T) {
 // proxy gates on the allowlist before forwarding.
 func proxiedGet(t *testing.T, proxyAddr, targetURL string) (int, string) {
 	t.Helper()
+	must := require.New(t)
 	conn, err := net.Dial("tcp", proxyAddr)
-	require.NoError(t, err, "dial proxy")
+	must.NoError(err, "dial proxy")
 	defer func() { _ = conn.Close() }()
 
 	hostOnly := strings.TrimPrefix(targetURL, "http://")
 	req := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", targetURL, hostOnly)
 	_, err = conn.Write([]byte(req))
-	require.NoError(t, err, "write request")
+	must.NoError(err, "write request")
 
 	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodGet})
-	require.NoError(t, err, "read response")
+	must.NoError(err, "read response")
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(body)
@@ -262,9 +273,10 @@ func proxiedGet(t *testing.T, proxyAddr, targetURL string) (int, string) {
 // hostPort splits a http://host:port URL into its host and port components.
 func hostPort(t *testing.T, rawURL string) (host, port string) {
 	t.Helper()
+	must := require.New(t)
 	hostPort := strings.TrimPrefix(rawURL, "http://")
 	h, p, err := net.SplitHostPort(hostPort)
-	require.NoError(t, err, "split %q", hostPort)
+	must.NoError(err, "split %q", hostPort)
 	return h, p
 }
 
@@ -272,8 +284,9 @@ func hostPort(t *testing.T, rawURL string) (host, port string) {
 // points the proxy at it and confirms bytes splice through both ways.
 func startEchoServer(t *testing.T) net.Listener {
 	t.Helper()
+	must := require.New(t)
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
-	require.NoError(t, err, "listen echo upstream")
+	must.NoError(err, "listen echo upstream")
 	go func() {
 		for {
 			conn, err := ln.Accept()

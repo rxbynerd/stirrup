@@ -44,19 +44,20 @@ func newAnthropicWIFSourceForTest(t *testing.T, ts TokenSource, ruleID, orgID, s
 // with assert rather than require.
 func anthropicOAuthHandler(t *testing.T, accessToken string, expiresIn int64, verify func(req anthropicOAuthRequest, raw []byte)) http.HandlerFunc {
 	t.Helper()
+	check := assert.New(t)
 	return func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, http.MethodPost, r.Method, "Anthropic OAuth request method")
-		assert.Equal(t, "application/json", r.Header.Get("Content-Type"), "Content-Type header")
-		assert.Equal(t, anthropicVersionHeader, r.Header.Get("anthropic-version"), "anthropic-version header")
+		check.Equal(http.MethodPost, r.Method, "Anthropic OAuth request method")
+		check.Equal("application/json", r.Header.Get("Content-Type"), "Content-Type header")
+		check.Equal(anthropicVersionHeader, r.Header.Get("anthropic-version"), "anthropic-version header")
 		raw, err := io.ReadAll(r.Body)
-		if !assert.NoError(t, err, "read request body") {
+		if !check.NoError(err, "read request body") {
 			return
 		}
 		var parsed anthropicOAuthRequest
-		if !assert.NoError(t, json.Unmarshal(raw, &parsed), "unmarshal request body") {
+		if !check.NoError(json.Unmarshal(raw, &parsed), "unmarshal request body") {
 			return
 		}
-		assert.Equal(t, anthropicJWTBearerGrantType, parsed.GrantType, "grant_type")
+		check.Equal(anthropicJWTBearerGrantType, parsed.GrantType, "grant_type")
 		if verify != nil {
 			verify(parsed, raw)
 		}
@@ -72,15 +73,17 @@ func anthropicOAuthHandler(t *testing.T, accessToken string, expiresIn int64, ve
 }
 
 func TestAnthropicWIFSource_Resolve_ReturnsExchangedAccessToken(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	const oidcJWT = "eyJ.fake-jwt.signature"
 	const accessToken = "sk-ant-oat01-fake-access-token"
 
 	srv := httptest.NewServer(anthropicOAuthHandler(t, accessToken, 3600, func(req anthropicOAuthRequest, _ []byte) {
-		assert.Equal(t, oidcJWT, req.Assertion, "assertion")
-		assert.Equal(t, testFederationRuleID, req.FederationRuleID, "federation_rule_id")
-		assert.Equal(t, testOrganizationID, req.OrganizationID, "organization_id")
-		assert.Equal(t, testServiceAccountID, req.ServiceAccountID, "service_account_id")
-		assert.Equal(t, testWorkspaceID, req.WorkspaceID, "workspace_id")
+		check.Equal(oidcJWT, req.Assertion, "assertion")
+		check.Equal(testFederationRuleID, req.FederationRuleID, "federation_rule_id")
+		check.Equal(testOrganizationID, req.OrganizationID, "organization_id")
+		check.Equal(testServiceAccountID, req.ServiceAccountID, "service_account_id")
+		check.Equal(testWorkspaceID, req.WorkspaceID, "workspace_id")
 	}))
 	defer srv.Close()
 
@@ -92,16 +95,17 @@ func TestAnthropicWIFSource_Resolve_ReturnsExchangedAccessToken(t *testing.T) {
 	)
 
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
-	require.NotNil(t, cred.BearerToken, "expected BearerToken closure")
+	must.NoError(err)
+	must.NotNil(cred.BearerToken, "expected BearerToken closure")
 
 	got, err := cred.BearerToken(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, accessToken, got)
+	must.NoError(err)
+	must.Equal(accessToken, got)
 }
 
 // Verifies the parsed expires_in feeds into oauth2.Token.Expiry.
 func TestAnthropicWIFSource_Token_HonoursServerExpiresIn(t *testing.T) {
+	must := require.New(t)
 	const customExpiresIn int64 = 600 // 10 minutes, well outside the 1-hour fallback
 	srv := httptest.NewServer(anthropicOAuthHandler(t, "tok", customExpiresIn, nil))
 	defer srv.Close()
@@ -117,13 +121,14 @@ func TestAnthropicWIFSource_Token_HonoursServerExpiresIn(t *testing.T) {
 	before := time.Now()
 	tok, err := inner.Token()
 	after := time.Now()
-	require.NoError(t, err)
+	must.NoError(err)
 	lifetime := time.Duration(customExpiresIn) * time.Second
-	require.WithinRange(t, tok.Expiry, before.Add(lifetime), after.Add(lifetime), "expiry")
+	must.WithinRange(tok.Expiry, before.Add(lifetime), after.Add(lifetime), "expiry")
 }
 
 // Verifies the 1-hour expiry fallback when the server omits expires_in.
 func TestAnthropicWIFSource_MissingExpiresIn_CachesForOneHour(t *testing.T) {
+	must := require.New(t)
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&calls, 1)
@@ -141,19 +146,20 @@ func TestAnthropicWIFSource_MissingExpiresIn_CachesForOneHour(t *testing.T) {
 	)
 
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 	tok1, err := cred.BearerToken(context.Background())
-	require.NoError(t, err, "BearerToken first")
+	must.NoError(err, "BearerToken first")
 	tok2, err := cred.BearerToken(context.Background())
-	require.NoError(t, err, "BearerToken second")
-	require.Equal(t, "tok", tok1, "first bearer")
-	require.Equal(t, "tok", tok2, "second bearer")
-	require.Equal(t, int32(1), atomic.LoadInt32(&calls), "the 1-hour fallback should let the cache absorb the second call")
+	must.NoError(err, "BearerToken second")
+	must.Equal("tok", tok1, "first bearer")
+	must.Equal("tok", tok2, "second bearer")
+	must.Equal(int32(1), atomic.LoadInt32(&calls), "the 1-hour fallback should let the cache absorb the second call")
 }
 
 // Asserts workspace_id is omitted (not sent empty) when unset; inspects
 // raw bytes since unmarshalling would erase the distinction.
 func TestAnthropicWIFSource_WorkspaceIDOmittedWhenEmpty(t *testing.T) {
+	must := require.New(t)
 	var capturedBody []byte
 	srv := httptest.NewServer(anthropicOAuthHandler(t, "tok", 3600, func(_ anthropicOAuthRequest, raw []byte) {
 		capturedBody = append(capturedBody[:0], raw...)
@@ -168,16 +174,18 @@ func TestAnthropicWIFSource_WorkspaceIDOmittedWhenEmpty(t *testing.T) {
 	)
 
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = cred.BearerToken(context.Background())
-	require.NoError(t, err)
-	require.NotContains(t, string(capturedBody), "workspace_id", "workspace_id must be omitted from the request when empty")
+	must.NoError(err)
+	must.NotContains(string(capturedBody), "workspace_id", "workspace_id must be omitted from the request when empty")
 }
 
 // Verifies the "default" workspace ID rides through as a literal value.
 func TestAnthropicWIFSource_WorkspaceIDDefaultLiteralSent(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	srv := httptest.NewServer(anthropicOAuthHandler(t, "tok", 3600, func(req anthropicOAuthRequest, _ []byte) {
-		assert.Equal(t, "default", req.WorkspaceID, "workspace_id")
+		check.Equal("default", req.WorkspaceID, "workspace_id")
 	}))
 	defer srv.Close()
 
@@ -188,9 +196,9 @@ func TestAnthropicWIFSource_WorkspaceIDDefaultLiteralSent(t *testing.T) {
 		srv.URL,
 	)
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = cred.BearerToken(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 }
 
 // Covers the four status codes Anthropic uses for federation failures
@@ -208,6 +216,7 @@ func TestAnthropicWIFSource_HTTPErrorStatusSurfacesBody(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(tc.status)
 				_, _ = w.Write([]byte(tc.body))
@@ -221,21 +230,22 @@ func TestAnthropicWIFSource_HTTPErrorStatusSurfacesBody(t *testing.T) {
 				srv.URL,
 			)
 			cred, err := src.Resolve(context.Background())
-			require.NoError(t, err)
+			must.NoError(err)
 			_, err = cred.BearerToken(context.Background())
-			require.Error(t, err)
-			require.ErrorContains(t, err, "Anthropic WIF", "error should be prefixed with \"Anthropic WIF\"")
-			require.ErrorContains(t, err, "returned ", "error should name the status code")
+			must.Error(err)
+			must.ErrorContains(err, "Anthropic WIF", "error should be prefixed with \"Anthropic WIF\"")
+			must.ErrorContains(err, "returned ", "error should name the status code")
 
 			excerpt := strings.TrimSpace(tc.body)
 			excerpt = excerpt[:min(20, len(excerpt))]
-			require.ErrorContains(t, err, excerpt, "error should include the body excerpt")
+			must.ErrorContains(err, excerpt, "error should include the body excerpt")
 		})
 	}
 }
 
 // Verifies the response body cap is enforced on the error path.
 func TestAnthropicWIFSource_HTTPErrorBodyTruncated(t *testing.T) {
+	must := require.New(t)
 	huge := strings.Repeat("A", stsErrorBodyLimit*4)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
@@ -250,19 +260,20 @@ func TestAnthropicWIFSource_HTTPErrorBodyTruncated(t *testing.T) {
 		srv.URL,
 	)
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = cred.BearerToken(context.Background())
-	require.Error(t, err, "expected error for huge body")
+	must.Error(err, "expected error for huge body")
 	// Header overhead plus the truncated body plus the ellipsis stays
 	// well under twice the body limit.
-	require.LessOrEqual(t, len(err.Error()), 2*stsErrorBodyLimit,
+	must.LessOrEqual(len(err.Error()), 2*stsErrorBodyLimit,
 		"error message should be capped near %d (truncateForError should bound the body)", stsErrorBodyLimit)
-	require.ErrorContains(t, err, "…", "error should carry the truncation ellipsis when the body exceeds the cap")
+	must.ErrorContains(err, "…", "error should carry the truncation ellipsis when the body exceeds the cap")
 }
 
 // Verifies the request_id from the Anthropic response header rides
 // through to the error message.
 func TestAnthropicWIFSource_HTTPErrorIncludesRequestID(t *testing.T) {
+	must := require.New(t)
 	const reqID = "req_01ABCDEFGHJKMNPQRSTVWXYZ12"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("request-id", reqID)
@@ -278,14 +289,15 @@ func TestAnthropicWIFSource_HTTPErrorIncludesRequestID(t *testing.T) {
 		srv.URL,
 	)
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = cred.BearerToken(context.Background())
-	require.Error(t, err)
-	require.ErrorContains(t, err, reqID)
+	must.Error(err)
+	must.ErrorContains(err, reqID)
 }
 
 // A 200 with non-JSON content must produce a parse error, not a panic.
 func TestAnthropicWIFSource_BearerToken_MalformedJSONIsParseError(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte("not json"))
@@ -299,14 +311,15 @@ func TestAnthropicWIFSource_BearerToken_MalformedJSONIsParseError(t *testing.T) 
 		srv.URL,
 	)
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = cred.BearerToken(context.Background())
-	require.ErrorContains(t, err, "parse token response")
+	must.ErrorContains(err, "parse token response")
 }
 
 // A 200 response omitting access_token must surface as an error, not
 // an empty bearer.
 func TestAnthropicWIFSource_BearerToken_EmptyAccessTokenIsError(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"access_token":"","token_type":"Bearer","expires_in":3600}`))
@@ -320,15 +333,16 @@ func TestAnthropicWIFSource_BearerToken_EmptyAccessTokenIsError(t *testing.T) {
 		srv.URL,
 	)
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = cred.BearerToken(context.Background())
-	require.ErrorContains(t, err, "empty access_token")
+	must.ErrorContains(err, "empty access_token")
 }
 
 // Verifies the underlying TokenSource is consulted on each exchange,
 // not cached at construction, since projected tokens rotate ahead of
 // expiry.
 func TestAnthropicWIFSource_JWTReadFreshOnEveryExchange(t *testing.T) {
+	must := require.New(t)
 	srv := httptest.NewServer(anthropicOAuthHandler(t, "tok", 1, nil)) // 1s expiry forces refresh
 	defer srv.Close()
 
@@ -343,15 +357,16 @@ func TestAnthropicWIFSource_JWTReadFreshOnEveryExchange(t *testing.T) {
 
 	// Two direct Token() calls bypass ReuseTokenSource caching.
 	_, err := inner.Token()
-	require.NoError(t, err, "Token first")
+	must.NoError(err, "Token first")
 	_, err = inner.Token()
-	require.NoError(t, err, "Token second")
-	require.Equal(t, int32(2), atomic.LoadInt32(&stub.calls), "each exchange must re-read the JWT")
+	must.NoError(err, "Token second")
+	must.Equal(int32(2), atomic.LoadInt32(&stub.calls), "each exchange must re-read the JWT")
 }
 
 // Pins the ReuseTokenSource contract: repeated BearerToken calls must
 // not round-trip to the exchange endpoint while the token is fresh.
 func TestAnthropicWIFSource_ReuseTokenSourceCachesExchange(t *testing.T) {
+	must := require.New(t)
 	var exchanges int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&exchanges, 1)
@@ -371,17 +386,18 @@ func TestAnthropicWIFSource_ReuseTokenSourceCachesExchange(t *testing.T) {
 		srv.URL,
 	)
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 
 	for i := 0; i < 5; i++ {
 		got, err := cred.BearerToken(context.Background())
-		require.NoError(t, err, "BearerToken %d", i)
-		require.Equal(t, "cached", got, "call %d", i)
+		must.NoError(err, "BearerToken %d", i)
+		must.Equal("cached", got, "call %d", i)
 	}
-	require.Equal(t, int32(1), atomic.LoadInt32(&exchanges), "ReuseTokenSource should cache the exchange across calls")
+	must.Equal(int32(1), atomic.LoadInt32(&exchanges), "ReuseTokenSource should cache the exchange across calls")
 }
 
 func TestAnthropicWIFSource_BearerToken_EmptyJWTIsError(t *testing.T) {
+	must := require.New(t)
 	src := newAnthropicWIFSourceForTest(
 		t,
 		&stubTokenSource{token: []byte{}},
@@ -389,16 +405,17 @@ func TestAnthropicWIFSource_BearerToken_EmptyJWTIsError(t *testing.T) {
 		"http://unused.invalid",
 	)
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = cred.BearerToken(context.Background())
-	require.ErrorContains(t, err, "Anthropic WIF:")
-	require.ErrorContains(t, err, "empty token")
+	must.ErrorContains(err, "Anthropic WIF:")
+	must.ErrorContains(err, "empty token")
 }
 
 func TestAnthropicWIFSource_Resolve_NilTokenSourceIsError(t *testing.T) {
+	must := require.New(t)
 	src := NewAnthropicWIFSource(nil, testFederationRuleID, testOrganizationID, testServiceAccountID, "")
 	_, err := src.Resolve(context.Background())
-	require.ErrorContains(t, err, "token source is required")
+	must.ErrorContains(err, "token source is required")
 }
 
 func TestAnthropicWIFSource_MissingRequiredFieldsAtResolve(t *testing.T) {
@@ -415,9 +432,10 @@ func TestAnthropicWIFSource_MissingRequiredFieldsAtResolve(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			src := NewAnthropicWIFSource(&stubTokenSource{token: []byte("x")}, tc.ruleID, tc.orgID, tc.saID, "")
 			_, err := src.Resolve(context.Background())
-			require.ErrorContains(t, err, tc.errSubstr)
+			must.ErrorContains(err, tc.errSubstr)
 		})
 	}
 }
@@ -425,6 +443,8 @@ func TestAnthropicWIFSource_MissingRequiredFieldsAtResolve(t *testing.T) {
 // Pins the oauth2.ReuseTokenSource single-flight contract: twenty
 // concurrent BearerToken callers must trigger exactly one exchange.
 func TestAnthropicWIFSource_ConcurrentBearerCallsSingleFlight(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	var exchanges atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Sleep widens the contention window so a non-locking
@@ -447,7 +467,7 @@ func TestAnthropicWIFSource_ConcurrentBearerCallsSingleFlight(t *testing.T) {
 		srv.URL,
 	)
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 
 	const goroutines = 20
 	results := make(chan string, goroutines)
@@ -469,20 +489,22 @@ func TestAnthropicWIFSource_ConcurrentBearerCallsSingleFlight(t *testing.T) {
 	for i := 0; i < goroutines; i++ {
 		select {
 		case tok := <-results:
-			assert.Equal(t, "concurrent-tok", tok, "goroutine result %d", i)
+			check.Equal("concurrent-tok", tok, "goroutine result %d", i)
 		case err := <-errs:
-			require.NoError(t, err, "goroutine returned error")
+			must.NoError(err, "goroutine returned error")
 		case <-time.After(5 * time.Second):
-			require.FailNow(t, "timeout waiting for goroutines")
+			must.FailNow("timeout waiting for goroutines")
 		}
 	}
-	require.Equal(t, int32(1), exchanges.Load(), "ReuseTokenSource must serialise refresh")
+	must.Equal(int32(1), exchanges.Load(), "ReuseTokenSource must serialise refresh")
 }
 
 // Covers the http.Client.Do failure path against a refused connection.
 func TestAnthropicWIFSource_BearerToken_NetworkErrorIsWrapped(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		assert.Fail(t, "handler must not be reached after server is closed")
+		check.Fail("handler must not be reached after server is closed")
 	}))
 	closedURL := srv.URL
 	srv.Close() // server is now refusing connections
@@ -494,16 +516,17 @@ func TestAnthropicWIFSource_BearerToken_NetworkErrorIsWrapped(t *testing.T) {
 		closedURL,
 	)
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = cred.BearerToken(context.Background())
-	require.Error(t, err, "expected error against closed server")
-	require.ErrorContains(t, err, "Anthropic WIF:")
-	require.ErrorContains(t, err, "token request")
+	must.Error(err, "expected error against closed server")
+	must.ErrorContains(err, "Anthropic WIF:")
+	must.ErrorContains(err, "token request")
 }
 
 // Pins the lifetime <= 0 → 1h fallback for a negative expires_in,
 // guarding against a future refactor narrowing the check to == 0.
 func TestAnthropicWIFSource_NegativeExpiresIn_CachesForOneHour(t *testing.T) {
+	must := require.New(t)
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&calls, 1)
@@ -519,18 +542,19 @@ func TestAnthropicWIFSource_NegativeExpiresIn_CachesForOneHour(t *testing.T) {
 		srv.URL,
 	)
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 	tok1, err := cred.BearerToken(context.Background())
-	require.NoError(t, err, "BearerToken first")
+	must.NoError(err, "BearerToken first")
 	tok2, err := cred.BearerToken(context.Background())
-	require.NoError(t, err, "BearerToken second")
-	require.Equal(t, "tok", tok1, "first bearer")
-	require.Equal(t, "tok", tok2, "second bearer")
-	require.Equal(t, int32(1), atomic.LoadInt32(&calls), "negative expires_in must trigger the 1-hour fallback")
+	must.NoError(err, "BearerToken second")
+	must.Equal("tok", tok1, "first bearer")
+	must.Equal("tok", tok2, "second bearer")
+	must.Equal(int32(1), atomic.LoadInt32(&calls), "negative expires_in must trigger the 1-hour fallback")
 }
 
 // Verifies an underlying TokenSource failure is wrapped, not swallowed.
 func TestAnthropicWIFSource_BearerToken_WrapsTokenSourceError(t *testing.T) {
+	must := require.New(t)
 	src := newAnthropicWIFSourceForTest(
 		t,
 		&stubTokenSource{err: errors.New("idp boom")},
@@ -538,7 +562,7 @@ func TestAnthropicWIFSource_BearerToken_WrapsTokenSourceError(t *testing.T) {
 		"http://unused.invalid",
 	)
 	cred, err := src.Resolve(context.Background())
-	require.NoError(t, err)
+	must.NoError(err)
 	_, err = cred.BearerToken(context.Background())
-	require.ErrorContains(t, err, "idp boom", "error should wrap the underlying token source failure")
+	must.ErrorContains(err, "idp boom", "error should wrap the underlying token source failure")
 }

@@ -40,6 +40,7 @@ func newTrackedPipe() (*trackedBody, *io.PipeWriter) {
 // below baseline within a bounded window.
 func waitForGoroutines(t *testing.T, baseline int) {
 	t.Helper()
+	must := require.New(t)
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		n := runtime.NumGoroutine()
@@ -49,13 +50,15 @@ func waitForGoroutines(t *testing.T, baseline int) {
 		if time.Now().After(deadline) {
 			buf := make([]byte, 1<<16)
 			buf = buf[:runtime.Stack(buf, true)]
-			require.Failf(t, "goroutines did not settle", "have %d, baseline %d\n%s", n, baseline, buf)
+			must.Failf("goroutines did not settle", "have %d, baseline %d\n%s", n, baseline, buf)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 }
 
 func TestIdleTimeoutBody_SteadyDripOutlivesTimeout(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	const idle = 150 * time.Millisecond
 	body, w := newTrackedPipe()
 	go func() {
@@ -71,15 +74,17 @@ func TestIdleTimeoutBody_SteadyDripOutlivesTimeout(t *testing.T) {
 	b := newIdleTimeoutBody(body, idle)
 	start := time.Now()
 	data, err := io.ReadAll(b)
-	require.NoError(t, err, "ReadAll after %v", time.Since(start))
+	must.NoError(err, "ReadAll after %v", time.Since(start))
 	chunks := strings.Count(string(data), "chunk\n")
-	assert.Equal(t, 12, chunks)
+	check.Equal(12, chunks)
 	elapsed := time.Since(start)
-	assert.Greater(t, elapsed, idle, "drip must outlast the idle timeout, or the test proves nothing")
+	check.Greater(elapsed, idle, "drip must outlast the idle timeout, or the test proves nothing")
 	_ = b.Close()
 }
 
 func TestIdleTimeoutBody_StallFailsAndClosesBody(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	const idle = 100 * time.Millisecond
 	body, w := newTrackedPipe()
 	defer func() { _ = w.Close() }()
@@ -90,19 +95,20 @@ func TestIdleTimeoutBody_StallFailsAndClosesBody(t *testing.T) {
 	data, err := io.ReadAll(b)
 	elapsed := time.Since(start)
 
-	assert.Equal(t, "first\n", string(data), "data delivered before the stall")
-	require.ErrorIs(t, err, errStreamIdle)
-	assert.Equal(t, "stream idle for 0.1s", err.Error())
-	assert.GreaterOrEqual(t, elapsed, idle, "idle error must not fire before the timeout")
-	assert.EqualValues(t, 1, body.closes.Load(), "underlying body closed once on expiry")
+	check.Equal("first\n", string(data), "data delivered before the stall")
+	must.ErrorIs(err, errStreamIdle)
+	check.Equal("stream idle for 0.1s", err.Error())
+	check.GreaterOrEqual(elapsed, idle, "idle error must not fire before the timeout")
+	check.EqualValues(1, body.closes.Load(), "underlying body closed once on expiry")
 
 	_, err = b.Read(make([]byte, 8))
-	require.ErrorIs(t, err, errStreamIdle, "Read after expiry returns the idle error")
-	require.NoError(t, b.Close(), "Close after expiry")
-	assert.EqualValues(t, 1, body.closes.Load(), "underlying body closed once after caller Close")
+	must.ErrorIs(err, errStreamIdle, "Read after expiry returns the idle error")
+	must.NoError(b.Close(), "Close after expiry")
+	check.EqualValues(1, body.closes.Load(), "underlying body closed once after caller Close")
 }
 
 func TestIdleTimeoutBody_ConsumerPauseIsNotIdleness(t *testing.T) {
+	must := require.New(t)
 	const idle = 80 * time.Millisecond
 	body, w := newTrackedPipe()
 	go func() {
@@ -115,14 +121,15 @@ func TestIdleTimeoutBody_ConsumerPauseIsNotIdleness(t *testing.T) {
 	defer func() { _ = b.Close() }()
 	buf := make([]byte, 1)
 	_, err := b.Read(buf)
-	require.NoError(t, err, "first Read")
+	must.NoError(err, "first Read")
 	time.Sleep(3 * idle)
 	_, err = b.Read(buf)
-	require.NoError(t, err, "Read after a consumer-side pause should return data")
-	require.Equal(t, "b", string(buf))
+	must.NoError(err, "Read after a consumer-side pause should return data")
+	must.Equal("b", string(buf))
 }
 
 func TestIdleTimeoutBody_CallerCloseDuringReadIsNotIdle(t *testing.T) {
+	must := require.New(t)
 	body, w := newTrackedPipe()
 	defer func() { _ = w.Close() }()
 	b := newIdleTimeoutBody(body, time.Hour)
@@ -133,24 +140,25 @@ func TestIdleTimeoutBody_CallerCloseDuringReadIsNotIdle(t *testing.T) {
 		errc <- err
 	}()
 	time.Sleep(20 * time.Millisecond)
-	require.NoError(t, b.Close())
+	must.NoError(b.Close())
 
 	select {
 	case err := <-errc:
-		require.Error(t, err, "Read unblocked by caller Close should return the body's close error")
-		require.NotErrorIs(t, err, errStreamIdle)
+		must.Error(err, "Read unblocked by caller Close should return the body's close error")
+		must.NotErrorIs(err, errStreamIdle)
 	case <-time.After(2 * time.Second):
-		require.Fail(t, "Read did not unblock after Close")
+		must.Fail("Read did not unblock after Close")
 	}
 }
 
 func TestIdleTimeoutBody_ZeroTimeoutSelectsDefault(t *testing.T) {
+	check := assert.New(t)
 	body, w := newTrackedPipe()
 	defer func() { _ = w.Close() }()
 	b := newIdleTimeoutBody(body, 0)
 	defer func() { _ = b.Close() }()
-	assert.Equal(t, defaultStreamIdleTimeout, b.timeout)
-	assert.EqualError(t, b.idleErr(), "stream idle for 120s")
+	check.Equal(defaultStreamIdleTimeout, b.timeout)
+	check.EqualError(b.idleErr(), "stream idle for 120s")
 }
 
 // lateDataBody blocks every Read until Close, then returns data with
@@ -180,44 +188,50 @@ func (b *lateDataBody) Close() error {
 }
 
 func TestIdleTimeoutBody_DataRacingExpiryIsDelivered(t *testing.T) {
+	must := require.New(t)
 	b := newIdleTimeoutBody(newLateDataBody("late", nil), 20*time.Millisecond)
 	buf := make([]byte, 16)
 
 	n, err := b.Read(buf)
-	require.NoError(t, err)
-	require.Equal(t, "late", string(buf[:n]))
+	must.NoError(err)
+	must.Equal("late", string(buf[:n]))
 	n, err = b.Read(buf)
-	require.Zero(t, n)
-	require.ErrorIs(t, err, errStreamIdle)
+	must.Zero(n)
+	must.ErrorIs(err, errStreamIdle)
 }
 
 func TestIdleTimeoutBody_EOFRacingExpiryIsEOF(t *testing.T) {
+	must := require.New(t)
 	b := newIdleTimeoutBody(newLateDataBody("end", io.EOF), 20*time.Millisecond)
 	buf := make([]byte, 16)
 
 	n, err := b.Read(buf)
-	require.ErrorIs(t, err, io.EOF)
-	require.Equal(t, "end", string(buf[:n]))
+	must.ErrorIs(err, io.EOF)
+	must.Equal("end", string(buf[:n]))
 	_, err = b.Read(buf)
-	require.ErrorIs(t, err, io.EOF)
+	must.ErrorIs(err, io.EOF)
 }
 
 func TestIdleTimeoutBody_ReadAfterCloseIsNotIdle(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	const idle = 10 * time.Millisecond
 	body, w := newTrackedPipe()
 	defer func() { _ = w.Close() }()
 	b := newIdleTimeoutBody(body, idle)
-	require.NoError(t, b.Close())
+	must.NoError(b.Close())
 
 	_, err := b.Read(make([]byte, 8))
-	require.Error(t, err)
-	require.NotErrorIs(t, err, errStreamIdle, "Read after Close returns the body's own close error")
-	assert.False(t, b.timer.Stop(), "Read after Close must not arm the idle timer")
+	must.Error(err)
+	must.NotErrorIs(err, errStreamIdle, "Read after Close returns the body's own close error")
+	check.False(b.timer.Stop(), "Read after Close must not arm the idle timer")
 	time.Sleep(3 * idle)
-	assert.EqualValues(t, 1, body.closes.Load(), "underlying body closed once")
+	check.EqualValues(1, body.closes.Load(), "underlying body closed once")
 }
 
 func TestIdleTimeoutBody_ContextCancelIsNotIdle(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeFlush(w, "x")
 		select {
@@ -230,23 +244,24 @@ func TestIdleTimeoutBody_ContextCancelIsNotIdle(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
-	require.NoError(t, err)
+	must.NoError(err)
 	resp, err := srv.Client().Do(req)
-	require.NoError(t, err)
+	must.NoError(err)
 	b := newIdleTimeoutBody(resp.Body, time.Hour)
 	buf := make([]byte, 8)
 	_, err = b.Read(buf)
-	require.NoError(t, err, "first Read")
+	must.NoError(err, "first Read")
 
 	time.AfterFunc(20*time.Millisecond, cancel)
 	_, err = b.Read(buf)
-	require.ErrorIs(t, err, context.Canceled)
-	require.NotErrorIs(t, err, errStreamIdle)
-	require.NoError(t, b.Close())
-	assert.False(t, b.timer.Stop(), "idle timer must be disarmed after Close")
+	must.ErrorIs(err, context.Canceled)
+	must.NotErrorIs(err, errStreamIdle)
+	must.NoError(b.Close())
+	check.False(b.timer.Stop(), "idle timer must be disarmed after Close")
 }
 
 func TestIdleTimeoutBody_ConcurrentCloseAndExpiryRace(t *testing.T) {
+	must := require.New(t)
 	const idle = 2 * time.Millisecond
 	for i := range 200 {
 		body, w := newTrackedPipe()
@@ -276,24 +291,25 @@ func TestIdleTimeoutBody_ConcurrentCloseAndExpiryRace(t *testing.T) {
 		select {
 		case <-readerDone:
 		case <-time.After(2 * time.Second):
-			require.Failf(t, "reader did not stop after Close", "iteration %d", i)
+			must.Failf("reader did not stop after Close", "iteration %d", i)
 		}
-		require.EqualValues(t, 1, body.closes.Load(), "iteration %d: underlying body closes", i)
+		must.EqualValues(1, body.closes.Load(), "iteration %d: underlying body closes", i)
 		_ = w.Close()
 	}
 }
 
 func TestIdleTimeoutBody_NoGoroutineOrTimerLeak(t *testing.T) {
+	must := require.New(t)
 	baseline := runtime.NumGoroutine()
 
 	for range 20 {
 		expiring, ew := newTrackedPipe()
 		eb := newIdleTimeoutBody(expiring, 10*time.Millisecond)
 		_, err := io.ReadAll(eb)
-		require.ErrorIs(t, err, errStreamIdle, "expiring body")
+		must.ErrorIs(err, errStreamIdle, "expiring body")
 		_ = eb.Close()
 		_ = ew.Close()
-		require.False(t, eb.timer.Stop(), "expired body left its timer armed after Close")
+		must.False(eb.timer.Stop(), "expired body left its timer armed after Close")
 
 		completing, cw := newTrackedPipe()
 		go func() {
@@ -302,9 +318,9 @@ func TestIdleTimeoutBody_NoGoroutineOrTimerLeak(t *testing.T) {
 		}()
 		cb := newIdleTimeoutBody(completing, 10*time.Millisecond)
 		_, err = io.ReadAll(cb)
-		require.NoError(t, err, "completing body")
+		must.NoError(err, "completing body")
 		_ = cb.Close()
-		require.False(t, cb.timer.Stop(), "completed body left its timer armed after Close")
+		must.False(cb.timer.Stop(), "completed body left its timer armed after Close")
 	}
 
 	// Wait past the timeout so any expiry goroutine has finished.
@@ -431,19 +447,22 @@ func stallHandler(preamble string, hits *atomic.Int32, disconnected chan<- struc
 // error event, naming the idle timeout, after at least idle has elapsed.
 func assertIdleFailure(t *testing.T, events []types.StreamEvent, elapsed, idle time.Duration) {
 	t.Helper()
-	require.Len(t, events, 1, "events = %+v, want exactly one error event", events)
-	require.Equal(t, "error", events[0].Type, "events = %+v", events)
-	require.ErrorIs(t, events[0].Error, errStreamIdle)
-	assert.True(t, types.IsRetryable(events[0].Error), "error %v should be retryable for the loop's turn retry", events[0].Error)
-	require.ErrorContains(t, events[0].Error, fmt.Sprintf("stream idle for %vs", idle.Seconds()))
-	assert.GreaterOrEqual(t, elapsed, idle, "idle error must not fire before the timeout")
-	assert.LessOrEqual(t, elapsed, 3*time.Second, "idle error must fire within 3s")
+	must := require.New(t)
+	check := assert.New(t)
+	must.Len(events, 1, "events = %+v, want exactly one error event", events)
+	must.Equal("error", events[0].Type, "events = %+v", events)
+	must.ErrorIs(events[0].Error, errStreamIdle)
+	check.True(types.IsRetryable(events[0].Error), "error %v should be retryable for the loop's turn retry", events[0].Error)
+	must.ErrorContains(events[0].Error, fmt.Sprintf("stream idle for %vs", idle.Seconds()))
+	check.GreaterOrEqual(elapsed, idle, "idle error must not fire before the timeout")
+	check.LessOrEqual(elapsed, 3*time.Second, "idle error must fire within 3s")
 }
 
 func TestStreamingAdapters_SlowSteadyStreamOutlivesIdleTimeout(t *testing.T) {
 	const idle = 150 * time.Millisecond
 	for _, tc := range idleStreamCases() {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "text/event-stream")
 				w.WriteHeader(http.StatusOK)
@@ -459,16 +478,16 @@ func TestStreamingAdapters_SlowSteadyStreamOutlivesIdleTimeout(t *testing.T) {
 			defer ad.client.CloseIdleConnections()
 			start := time.Now()
 			ch, err := ad.stream(context.Background())
-			require.NoError(t, err, "Stream()")
+			must.NoError(err, "Stream()")
 			events := collectEvents(t, ch)
 			elapsed := time.Since(start)
 
-			require.Greater(t, elapsed, idle, "stream must outlast the idle timeout, or the test proves nothing")
+			must.Greater(elapsed, idle, "stream must outlast the idle timeout, or the test proves nothing")
 			for _, ev := range events {
-				require.NotEqual(t, "error", ev.Type, "unexpected error event after %v: %v", elapsed, ev.Error)
+				must.NotEqual("error", ev.Type, "unexpected error event after %v: %v", elapsed, ev.Error)
 			}
-			require.NotEmpty(t, events, "want a trailing message_complete")
-			require.Equal(t, "message_complete", events[len(events)-1].Type, "events = %+v", events)
+			must.NotEmpty(events, "want a trailing message_complete")
+			must.Equal("message_complete", events[len(events)-1].Type, "events = %+v", events)
 		})
 	}
 }
@@ -481,6 +500,7 @@ func TestStreamingAdapters_StalledStreamFailsWithIdleError(t *testing.T) {
 			{"mid-line", tc.partial},
 		} {
 			t.Run(tc.name+"/"+stall.name, func(t *testing.T) {
+				must := require.New(t)
 				var hits atomic.Int32
 				disconnected := make(chan struct{})
 				srv := httptest.NewServer(stallHandler(stall.preamble, &hits, disconnected))
@@ -490,16 +510,16 @@ func TestStreamingAdapters_StalledStreamFailsWithIdleError(t *testing.T) {
 				defer ad.client.CloseIdleConnections()
 				start := time.Now()
 				ch, err := ad.stream(context.Background())
-				require.NoError(t, err, "Stream()")
+				must.NoError(err, "Stream()")
 				events := collectEvents(t, ch)
 				assertIdleFailure(t, events, time.Since(start), idle)
 
 				select {
 				case <-disconnected:
 				case <-time.After(2 * time.Second):
-					require.Fail(t, "server never observed the client closing the stalled stream")
+					must.Fail("server never observed the client closing the stalled stream")
 				}
-				require.EqualValues(t, 1, hits.Load(), "server must see one request: the adapter must not replay a mid-stream idle failure")
+				must.EqualValues(1, hits.Load(), "server must see one request: the adapter must not replay a mid-stream idle failure")
 			})
 		}
 	}
@@ -510,6 +530,7 @@ func TestStreamingAdapters_StalledStreamFailsWithIdleError(t *testing.T) {
 // that is not a whole record; it must not be dispatched ahead of the idle
 // error.
 func TestOpenAIResponsesAdapter_StallMidRecordFailsWithIdleError(t *testing.T) {
+	must := require.New(t)
 	const idle = 150 * time.Millisecond
 	var hits atomic.Int32
 	srv := httptest.NewServer(stallHandler(
@@ -523,7 +544,7 @@ func TestOpenAIResponsesAdapter_StallMidRecordFailsWithIdleError(t *testing.T) {
 	defer a.httpClient.CloseIdleConnections()
 	start := time.Now()
 	ch, err := a.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
-	require.NoError(t, err, "Stream()")
+	must.NoError(err, "Stream()")
 	assertIdleFailure(t, collectEvents(t, ch), time.Since(start), idle)
 }
 
@@ -531,6 +552,7 @@ func TestStreamingAdapters_CancelInsideIdleWindowIsNotIdle(t *testing.T) {
 	const idle = 2 * time.Second
 	for _, tc := range idleStreamCases() {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var hits atomic.Int32
 			srv := httptest.NewServer(stallHandler(": keepalive\n\n", &hits, nil))
 			defer srv.Close()
@@ -541,14 +563,14 @@ func TestStreamingAdapters_CancelInsideIdleWindowIsNotIdle(t *testing.T) {
 			defer cancel()
 			start := time.Now()
 			ch, err := ad.stream(ctx)
-			require.NoError(t, err, "Stream()")
+			must.NoError(err, "Stream()")
 			time.AfterFunc(50*time.Millisecond, cancel)
 			events := collectEvents(t, ch)
 
 			elapsed := time.Since(start)
-			require.Less(t, elapsed, idle, "stream must end inside the idle window")
+			must.Less(elapsed, idle, "stream must end inside the idle window")
 			for _, ev := range events {
-				require.NotErrorIs(t, ev.Error, errStreamIdle, "cancelled stream must not report an idle timeout")
+				must.NotErrorIs(ev.Error, errStreamIdle, "cancelled stream must not report an idle timeout")
 			}
 		})
 	}
@@ -558,11 +580,13 @@ func TestStreamingAdapters_IdleTimeoutOverHTTP2(t *testing.T) {
 	const idle = 150 * time.Millisecond
 	for _, tc := range idleStreamCases() {
 		t.Run(tc.name, func(t *testing.T) {
+			check := assert.New(t)
+			must := require.New(t)
 			var hits atomic.Int32
 			disconnected := make(chan struct{})
 			stall := stallHandler(": keepalive\n\n", &hits, disconnected)
 			srv := newHTTP2TLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				assert.Equal(t, 2, r.ProtoMajor, "request arrived over %s, want HTTP/2", r.Proto)
+				check.Equal(2, r.ProtoMajor, "request arrived over %s, want HTTP/2", r.Proto)
 				stall(w, r)
 			}))
 
@@ -571,13 +595,13 @@ func TestStreamingAdapters_IdleTimeoutOverHTTP2(t *testing.T) {
 			defer ad.client.CloseIdleConnections()
 			start := time.Now()
 			ch, err := ad.stream(context.Background())
-			require.NoError(t, err, "Stream()")
+			must.NoError(err, "Stream()")
 			assertIdleFailure(t, collectEvents(t, ch), time.Since(start), idle)
 
 			select {
 			case <-disconnected:
 			case <-time.After(2 * time.Second):
-				require.Fail(t, "server never observed the client resetting the stalled HTTP/2 stream")
+				must.Fail("server never observed the client resetting the stalled HTTP/2 stream")
 			}
 		})
 	}
@@ -589,6 +613,7 @@ func TestStreamingAdapters_IdleTimeoutLeavesNoGoroutines(t *testing.T) {
 
 	for _, tc := range idleStreamCases() {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			var stall atomic.Bool
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "text/event-stream")
@@ -609,12 +634,12 @@ func TestStreamingAdapters_IdleTimeoutLeavesNoGoroutines(t *testing.T) {
 				stall.Store(stalled)
 				ad := tc.build(srv.URL, idle)
 				ch, err := ad.stream(context.Background())
-				require.NoError(t, err)
+				must.NoError(err)
 				events := collectEvents(t, ch)
 				ad.client.CloseIdleConnections()
 				if stalled {
-					require.Len(t, events, 1, "stalled stream events = %+v", events)
-					require.ErrorIs(t, events[0].Error, errStreamIdle)
+					must.Len(events, 1, "stalled stream events = %+v", events)
+					must.ErrorIs(events[0].Error, errStreamIdle)
 				}
 			}
 		})

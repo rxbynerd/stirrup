@@ -52,6 +52,8 @@ var (
 )
 
 func TestCompare_WorkedExample(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	report := Compare(trialSuite("A", 3, workedA), trialSuite("B", 3, workedB), DefaultOptions())
 	s := report.Summary
 
@@ -61,17 +63,17 @@ func TestCompare_WorkedExample(t *testing.T) {
 	within(t, "current task-level SE", *s.Current.StdErr, 0.114, 0.0005)
 
 	p := s.Paired
-	require.NotNil(t, p, "paired statistics missing")
-	assert.Equal(t, 10, p.Tasks, "paired task count")
-	assert.Equal(t, 9, p.DF, "paired degrees of freedom")
+	must.NotNil(p, "paired statistics missing")
+	check.Equal(10, p.Tasks, "paired task count")
+	check.Equal(9, p.DF, "paired degrees of freedom")
 	within(t, "d-bar", p.MeanDelta, -0.100, 0.0005)
 	within(t, "paired SE", p.StdErr, 0.0711, 0.00005)
 	within(t, "t(9) CI low", p.CILow, -0.261, 0.0005)
 	within(t, "t(9) CI high", p.CIHigh, 0.061, 0.0005)
 	within(t, "sign-flip p", p.PValue, 0.375, 1e-12)
-	assert.True(t, p.PValueExact, "sign-flip p should be exact for 10 tasks")
+	check.True(p.PValueExact, "sign-flip p should be exact for 10 tasks")
 	within(t, "upper bound", p.UpperBound, -0.100+1.83311*0.0711458, 0.0001)
-	require.NotNil(t, p.MDE, "MDE missing")
+	must.NotNil(p.MDE, "MDE missing")
 	within(t, "MDE", *p.MDE, 0.2238, 0.0005)
 
 	wantHatA := []float64{0.60, 0.47, 0.40}
@@ -85,17 +87,19 @@ func TestCompare_WorkedExample(t *testing.T) {
 
 	// The mean drop equals the default warn margin, so the gate passes;
 	// no task crosses the flip threshold even though four tasks lost a pass.
-	assert.Equal(t, eval.GatePass, s.Gate, "reasons %v", s.GateReasons)
-	assert.Empty(t, report.Regressions)
-	assert.Nil(t, s.NoiseFloor, "noise floor reported for a baseline that is not all-pass")
+	check.Equal(eval.GatePass, s.Gate, "reasons %v", s.GateReasons)
+	check.Empty(report.Regressions)
+	check.Nil(s.NoiseFloor, "noise floor reported for a baseline that is not all-pass")
 }
 
 func TestCompare_WorkedExample_WarnsAtTighterMargin(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	opts := Options{WarnMargin: 0.05, FlipThreshold: DefaultFlipThreshold}
 	s := Compare(trialSuite("A", 3, workedA), trialSuite("B", 3, workedB), opts).Summary
-	assert.Equal(t, eval.GateWarn, s.Gate, "reasons %v", s.GateReasons)
-	require.Len(t, s.GateReasons, 1)
-	assert.Contains(t, s.GateReasons[0], "upper bound +0.030 is not below 0")
+	check.Equal(eval.GateWarn, s.Gate, "reasons %v", s.GateReasons)
+	must.Len(s.GateReasons, 1)
+	check.Contains(s.GateReasons[0], "upper bound +0.030 is not below 0")
 }
 
 // singleRunSuite builds a K=1 result without Trials, PassFraction, or a
@@ -260,40 +264,43 @@ func TestCompare_GateDecisions(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			opts := tc.opts
 			if opts == (Options{}) {
 				opts = DefaultOptions()
 			}
 			s := Compare(tc.baseline, tc.current, opts).Summary
-			require.Equal(t, tc.wantGate, s.Gate, "reasons %v, paired %+v", s.GateReasons, s.Paired)
-			require.Equal(t, strings.Join(tc.wantFlips, ","), strings.Join(s.DeterministicFlips, ","), "deterministic flips")
+			must.Equal(tc.wantGate, s.Gate, "reasons %v, paired %+v", s.GateReasons, s.Paired)
+			must.Equal(strings.Join(tc.wantFlips, ","), strings.Join(s.DeterministicFlips, ","), "deterministic flips")
 			if s.Gate != eval.GatePass {
-				require.NotEmpty(t, s.GateReasons, "gate %q carries no reason", s.Gate)
+				must.NotEmpty(s.GateReasons, "gate %q carries no reason", s.Gate)
 			}
 			if tc.wantReason != "" {
-				require.Contains(t, strings.Join(s.GateReasons, "\n"), tc.wantReason, "gate reasons %v", s.GateReasons)
+				must.Contains(strings.Join(s.GateReasons, "\n"), tc.wantReason, "gate reasons %v", s.GateReasons)
 			}
 		})
 	}
 }
 
 func TestCompare_FlipThreshold(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	baseline := singleRunSuite("base", "pass", "pass", "pass")
 	current := trialSuite("curr", 3, []int{2, 1, 3})
 
 	report := Compare(baseline, current, DefaultOptions())
-	require.Len(t, report.Regressions, 1, "default threshold regressions %+v, want only tb (1/3)", report.Regressions)
-	require.Equal(t, "tb", report.Regressions[0].TaskID)
+	must.Len(report.Regressions, 1, "default threshold regressions %+v, want only tb (1/3)", report.Regressions)
+	must.Equal("tb", report.Regressions[0].TaskID)
 	r := report.Regressions[0]
 	within(t, "regression baseline fraction", r.BaselinePassFraction, 1, 1e-12)
 	within(t, "regression current fraction", r.CurrentPassFraction, 1.0/3, 1e-12)
 
 	loose := Compare(baseline, current, Options{WarnMargin: DefaultWarnMargin, FlipThreshold: 0.7})
-	assert.Len(t, loose.Regressions, 2, "threshold 0.7 regressions %+v, want ta and tb", loose.Regressions)
+	check.Len(loose.Regressions, 2, "threshold 0.7 regressions %+v, want ta and tb", loose.Regressions)
 
 	improved := Compare(trialSuite("base", 3, []int{1, 3, 0}), singleRunSuite("curr", "pass", "pass", "fail"), DefaultOptions())
-	require.Len(t, improved.Improvements, 1, "improvements %+v, want only ta (1/3 to 1/1)", improved.Improvements)
-	require.Equal(t, "ta", improved.Improvements[0].TaskID)
+	must.Len(improved.Improvements, 1, "improvements %+v, want only ta (1/3 to 1/1)", improved.Improvements)
+	must.Equal("ta", improved.Improvements[0].TaskID)
 }
 
 func ids[T any](items []T, id func(T) string) string {
@@ -327,46 +334,50 @@ func TestCompare_FlipThresholdBoundary(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			report := Compare(tc.baseline, tc.current, Options{WarnMargin: DefaultWarnMargin, FlipThreshold: tc.threshold})
 			gotRegress := ids(report.Regressions, func(r eval.TaskRegression) string { return r.TaskID })
-			require.Equal(t, tc.wantRegress, gotRegress)
+			must.Equal(tc.wantRegress, gotRegress)
 			gotImproved := ids(report.Improvements, func(r eval.TaskImprovement) string { return r.TaskID })
-			require.Equal(t, tc.wantImproved, gotImproved)
+			must.Equal(tc.wantImproved, gotImproved)
 		})
 	}
 }
 
 func TestCompare_MixedTrialCounts(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	report := Compare(singleRunSuite("base", "pass", "pass", "pass", "pass", "pass"), trialSuite("curr", 3, []int{3, 3, 3, 3, 2}), DefaultOptions())
 	s := report.Summary
 
-	assert.Equal(t, 1, s.Baseline.Trials, "baseline trials")
-	assert.Equal(t, 3, s.Current.Trials, "current trials")
-	require.Len(t, s.Baseline.PassHatK, 1)
-	require.Len(t, s.Current.PassHatK, 3)
+	check.Equal(1, s.Baseline.Trials, "baseline trials")
+	check.Equal(3, s.Current.Trials, "current trials")
+	must.Len(s.Baseline.PassHatK, 1)
+	must.Len(s.Current.PassHatK, 3)
 	within(t, "current pass^3", s.Current.PassHatK[2], 0.8, 1e-12)
 	within(t, "current pass rate", s.CurrentPassRate, 14.0/15, 1e-12)
 	within(t, "pass rate delta", s.PassRateDelta, 14.0/15-1, 1e-12)
 
-	require.Len(t, report.Tasks, 5)
-	assert.Equal(t, 1, report.Tasks[4].BaselineTrials, "baseline trials of the last paired task")
-	assert.Equal(t, 3, report.Tasks[4].CurrentTrials, "current trials of the last paired task")
+	must.Len(report.Tasks, 5)
+	check.Equal(1, report.Tasks[4].BaselineTrials, "baseline trials of the last paired task")
+	check.Equal(3, report.Tasks[4].CurrentTrials, "current trials of the last paired task")
 
 	nf := s.NoiseFloor
-	require.NotNil(t, nf, "noise floor missing for an all-pass baseline")
-	assert.Equal(t, 20, nf.PooledTrials, "pooled trials: 5 baseline and 15 current")
+	must.NotNil(nf, "noise floor missing for an all-pass baseline")
+	check.Equal(20, nf.PooledTrials, "pooled trials: 5 baseline and 15 current")
 	within(t, "per-trial pass rate", nf.PerTrialPassRate, 19.0/20, 1e-12)
-	require.NotNil(t, nf.SingleRunFalseAlarm, "false-alarm rates missing for a pool with a failure: %+v", nf)
-	require.NotNil(t, nf.FlipRuleFalseAlarm)
+	must.NotNil(nf.SingleRunFalseAlarm, "false-alarm rates missing for a pool with a failure: %+v", nf)
+	must.NotNil(nf.FlipRuleFalseAlarm)
 	within(t, "single-run false alarm", *nf.SingleRunFalseAlarm, FlipFalseAlarmRate(0.95, 5, 1), 1e-12)
 	within(t, "3-of-3 false alarm", *nf.FlipRuleFalseAlarm, FlipFalseAlarmRate(0.95, 5, 3), 1e-12)
 }
 
 func TestCompare_SinglePairedTask(t *testing.T) {
+	check := assert.New(t)
 	s := Compare(singleRunSuite("base", "pass"), trialSuite("curr", 3, []int{2}), DefaultOptions()).Summary
-	assert.Nil(t, s.Paired, "paired statistics with n=1")
-	assert.Equal(t, eval.GateInconclusive, s.Gate)
-	assert.Nil(t, s.Baseline.StdErr, "task-level SE with one task")
+	check.Nil(s.Paired, "paired statistics with n=1")
+	check.Equal(eval.GateInconclusive, s.Gate)
+	check.Nil(s.Baseline.StdErr, "task-level SE with one task")
 }
 
 // TestCompare_CommittedBaselineWithoutTrials pins that the committed
@@ -374,32 +385,34 @@ func TestCompare_SinglePairedTask(t *testing.T) {
 func TestCompare_CommittedBaselineWithoutTrials(t *testing.T) {
 	for _, name := range []string{"dogfood-seed.json", "provider-quirks-openai.json"} {
 		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
 			data, err := os.ReadFile(filepath.Join("..", "baselines", name))
-			require.NoError(t, err)
+			must.NoError(err)
 			var baseline eval.SuiteResult
-			require.NoError(t, json.Unmarshal(data, &baseline), "unmarshal")
-			require.Zero(t, baseline.Trials, "committed baseline should be a single-run file")
-			require.NotEmpty(t, baseline.Tasks)
+			must.NoError(json.Unmarshal(data, &baseline), "unmarshal")
+			must.Zero(baseline.Trials, "committed baseline should be a single-run file")
+			must.NotEmpty(baseline.Tasks)
 
 			current := eval.SuiteResult{RunID: "curr", Trials: 3}
 			for _, bt := range baseline.Tasks {
-				require.Empty(t, bt.Trials, "task %s has explicit trials", bt.TaskID)
-				require.Equal(t, 1, bt.Counts().Total(), "task %s: want one implicit trial, got %+v", bt.TaskID, bt.Counts())
+				must.Empty(bt.Trials, "task %s has explicit trials", bt.TaskID)
+				must.Equal(1, bt.Counts().Total(), "task %s: want one implicit trial, got %+v", bt.TaskID, bt.Counts())
 				ct := trialTask(bt.TaskID, 3, 3)
 				current.Tasks = append(current.Tasks, ct)
 			}
 
 			s := Compare(baseline, current, DefaultOptions()).Summary
-			require.Equal(t, eval.GatePass, s.Gate, "reasons %v", s.GateReasons)
+			must.Equal(eval.GatePass, s.Gate, "reasons %v", s.GateReasons)
 			within(t, "baseline pass rate", s.BaselinePassRate, baseline.PassRate, 1e-12)
-			require.Equal(t, 1, s.Baseline.Trials, "baseline trials")
-			require.Equal(t, 3, s.Current.Trials, "current trials")
+			must.Equal(1, s.Baseline.Trials, "baseline trials")
+			must.Equal(3, s.Current.Trials, "current trials")
 		})
 	}
 }
 
 func TestOptions_Validate_AcceptsDefaultsAndRejectsOutOfRange(t *testing.T) {
-	require.NoError(t, DefaultOptions().Validate())
+	must := require.New(t)
+	must.NoError(DefaultOptions().Validate())
 
 	cases := []struct {
 		name string
@@ -412,12 +425,14 @@ func TestOptions_Validate_AcceptsDefaultsAndRejectsOutOfRange(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Error(t, tc.opts.Validate())
+			must := require.New(t)
+			must.Error(tc.opts.Validate())
 		})
 	}
 }
 
 func TestFormatText_ReportsWorkedExampleStatistics(t *testing.T) {
+	check := assert.New(t)
 	report := Compare(trialSuite("run-a", 3, workedA), trialSuite("run-b", 3, workedB), DefaultOptions())
 	got := FormatText(report)
 	for _, want := range []string{
@@ -430,11 +445,12 @@ func TestFormatText_ReportsWorkedExampleStatistics(t *testing.T) {
 		"sign-flip p 0.375 (exact), MDE 0.22",
 		"No regressions found.",
 	} {
-		assert.Contains(t, got, want)
+		check.Contains(got, want)
 	}
 }
 
 func TestFormatText_ReportsNoiseFloorAndUndefinedPaired(t *testing.T) {
+	check := assert.New(t)
 	report := Compare(singleRunSuite("base", "pass"), trialSuite("curr", 3, []int{0}), DefaultOptions())
 	got := FormatText(report)
 	for _, want := range []string{
@@ -445,50 +461,53 @@ func TestFormatText_ReportsNoiseFloorAndUndefinedPaired(t *testing.T) {
 		"the 3-of-3 flip rule",
 		"ta: pass → fail (pass fraction 1.00 → 0.00)",
 	} {
-		assert.Contains(t, got, want)
+		check.Contains(got, want)
 	}
 }
 
 // TestComparisonReport_JSON_UsesDocumentedFieldNames pins the documented JSON field names.
 func TestComparisonReport_JSON_UsesDocumentedFieldNames(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	report := Compare(singleRunSuite("base", "pass", "pass", "pass"), trialSuite("curr", 3, []int{3, 2, 3}), DefaultOptions())
 	data, err := json.Marshal(report)
-	require.NoError(t, err, "marshal")
+	must.NoError(err, "marshal")
 	var doc map[string]any
-	require.NoError(t, json.Unmarshal(data, &doc))
+	must.NoError(json.Unmarshal(data, &doc))
 
 	summary := doc["summary"].(map[string]any)
 	for _, key := range []string{
 		"baselinePassRate", "currentPassRate", "passRateDelta", "hasRegressions",
 		"gate", "warnMargin", "flipThreshold", "baseline", "current", "paired", "noiseFloor",
 	} {
-		assert.Contains(t, summary, key)
+		check.Contains(summary, key)
 	}
 	paired := summary["paired"].(map[string]any)
 	for _, key := range []string{"tasks", "meanDelta", "stdErr", "df", "ciLow", "ciHigh", "upperBound", "pValue", "pValueExact", "mde"} {
-		assert.Contains(t, paired, key)
+		check.Contains(paired, key)
 	}
 
 	flat := Compare(singleRunSuite("base", "pass", "pass", "pass"), trialSuite("curr", 3, []int{3, 3, 3}), DefaultOptions())
 	flatData, err := json.Marshal(flat)
-	require.NoError(t, err, "marshal")
+	must.NoError(err, "marshal")
 	var flatDoc map[string]any
-	require.NoError(t, json.Unmarshal(flatData, &flatDoc))
+	must.NoError(json.Unmarshal(flatData, &flatDoc))
 	flatPaired := flatDoc["summary"].(map[string]any)["paired"].(map[string]any)
-	assert.NotContains(t, flatPaired, "mde", "mde present for a zero standard error: %s", flatData)
+	check.NotContains(flatPaired, "mde", "mde present for a zero standard error: %s", flatData)
 
 	current := summary["current"].(map[string]any)
 	for _, key := range []string{"tasks", "trials", "passRate", "stdErr", "wilsonLow", "wilsonHigh", "passHatK", "passAtK"} {
-		assert.Contains(t, current, key)
+		check.Contains(current, key)
 	}
-	assert.Contains(t, doc, "tasks", "report missing per-task pairs")
+	check.Contains(doc, "tasks", "report missing per-task pairs")
 }
 
 func TestFormatText_MDEUndefinedAtZeroStdErr(t *testing.T) {
+	check := assert.New(t)
 	report := Compare(singleRunSuite("base", "pass", "pass", "pass"), trialSuite("curr", 3, []int{3, 3, 3}), DefaultOptions())
 	got := FormatText(report)
-	assert.Contains(t, got, "MDE n/a")
-	assert.NotContains(t, got, "MDE 0.00", "report prints a zero MDE")
+	check.Contains(got, "MDE n/a")
+	check.NotContains(got, "MDE 0.00", "report prints a zero MDE")
 }
 
 func TestFloorGate_OnlyRaisesToMoreSevereGate(t *testing.T) {
@@ -496,6 +515,7 @@ func TestFloorGate_OnlyRaisesToMoreSevereGate(t *testing.T) {
 	for _, floor := range gates {
 		for _, base := range gates {
 			t.Run(base+" floored at "+floor, func(t *testing.T) {
+				must := require.New(t)
 				floorApplies := gateSeverity[floor] >= gateSeverity[base]
 				gate, got := floorGate(base, []string{"base reason"}, floor, "floor reason")
 
@@ -503,19 +523,20 @@ func TestFloorGate_OnlyRaisesToMoreSevereGate(t *testing.T) {
 				if floorApplies {
 					want = floor
 				}
-				require.Equal(t, want, gate)
-				require.Equal(t, floorApplies, slices.Contains(got, "floor reason"), "reasons %v", got)
-				require.Contains(t, got, "base reason")
+				must.Equal(want, gate)
+				must.Equal(floorApplies, slices.Contains(got, "floor reason"), "reasons %v", got)
+				must.Contains(got, "base reason")
 			})
 		}
 	}
 }
 
 func TestCompare_FlipRuleBlockSurvivesRegressionFloor(t *testing.T) {
+	check := assert.New(t)
 	s := Compare(singleRunSuite("base", "pass", "pass", "pass"), trialSuite("curr", 3, []int{0, 1, 3}), DefaultOptions()).Summary
-	assert.Equal(t, eval.GateBlock, s.Gate, "reasons %v", s.GateReasons)
+	check.Equal(eval.GateBlock, s.Gate, "reasons %v", s.GateReasons)
 	for _, r := range s.GateReasons {
-		assert.NotContains(t, r, "regressed:", "block reasons include the regression floor: %v", s.GateReasons)
+		check.NotContains(r, "regressed:", "block reasons include the regression floor: %v", s.GateReasons)
 	}
 }
 
@@ -523,6 +544,7 @@ func TestCompare_FlipRuleBlockSurvivesRegressionFloor(t *testing.T) {
 // exactly at the warn margin never warns, whatever order the float
 // summation sees the tasks in.
 func TestCompare_WarnMarginBoundaryIgnoresTaskOrder(t *testing.T) {
+	must := require.New(t)
 	// Six tasks lose a trial, three gain one, eleven are unchanged: the
 	// mean delta is exactly -0.05 and the upper bound stays above zero.
 	baselinePasses := slices.Concat(repeat(3, 6), repeat(2, 3), repeat(3, 11))
@@ -538,7 +560,7 @@ func TestCompare_WarnMarginBoundaryIgnoresTaskOrder(t *testing.T) {
 			b[i], c[i] = baselinePasses[j], currentPasses[j]
 		}
 		s := Compare(trialSuite("base", 3, b), trialSuite("curr", 3, c), opts).Summary
-		require.Equal(t, eval.GatePass, s.Gate, "order %v: reasons %v, mean delta %.17g", order, s.GateReasons, s.Paired.MeanDelta)
+		must.Equal(eval.GatePass, s.Gate, "order %v: reasons %v, mean delta %.17g", order, s.GateReasons, s.Paired.MeanDelta)
 	}
 }
 
@@ -551,73 +573,81 @@ func repeat(v, n int) []int {
 }
 
 func TestFormatText_ResolutionNote(t *testing.T) {
+	check := assert.New(t)
 	baseline := singleRunSuite("base", "pass", "pass", "pass", "pass", "pass")
 	current := trialSuite("curr", 3, []int{3, 3, 3, 3, 2})
 
 	tight := FormatText(Compare(baseline, current, Options{WarnMargin: 0.05, FlipThreshold: DefaultFlipThreshold}))
-	assert.Contains(t, tight, "one lost trial lowers the mean pass fraction by 0.067, more than the warn margin 0.050")
+	check.Contains(tight, "one lost trial lowers the mean pass fraction by 0.067, more than the warn margin 0.050")
 
 	roomy := FormatText(Compare(baseline, current, DefaultOptions()))
-	assert.NotContains(t, roomy, "one lost trial", "default margin report carries a resolution note")
+	check.NotContains(roomy, "one lost trial", "default margin report carries a resolution note")
 
 	exact := FormatText(Compare(baseline, current, Options{WarnMargin: 1.0 / 15, FlipThreshold: DefaultFlipThreshold}))
-	assert.NotContains(t, exact, "one lost trial", "margin equal to one lost trial carries a resolution note")
+	check.NotContains(exact, "one lost trial", "margin equal to one lost trial carries a resolution note")
 }
 
 func TestCompare_ListsUnpairedTasks(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	baseline := singleRunSuite("base", "pass", "pass", "pass", "pass", "pass")
 	current := trialSuite("curr", 3, []int{3, 3, 3, 3})
 	current.Tasks[1].TaskID = "zz-new"
 	current.Tasks[3].TaskID = "aa-new"
 
 	report := Compare(baseline, current, DefaultOptions())
-	assert.Equal(t, []string{"tb", "td", "te"}, report.BaselineOnly)
-	assert.Equal(t, []string{"aa-new", "zz-new"}, report.CurrentOnly)
-	assert.Len(t, report.Tasks, 2)
+	check.Equal([]string{"tb", "td", "te"}, report.BaselineOnly)
+	check.Equal([]string{"aa-new", "zz-new"}, report.CurrentOnly)
+	check.Len(report.Tasks, 2)
 
 	text := FormatText(report)
 	for _, want := range []string{
 		"Missing from current run (3): tb, td, te",
 		"New in current run (2): aa-new, zz-new",
 	} {
-		assert.Contains(t, text, want)
+		check.Contains(text, want)
 	}
 
 	data, err := json.Marshal(report)
-	require.NoError(t, err, "marshal")
+	must.NoError(err, "marshal")
 	var round eval.ComparisonReport
-	require.NoError(t, json.Unmarshal(data, &round), "unmarshal")
-	assert.Equal(t, []string{"tb", "td", "te"}, round.BaselineOnly, "round trip lost the baseline-only list")
-	assert.Equal(t, []string{"aa-new", "zz-new"}, round.CurrentOnly, "round trip lost the current-only list")
+	must.NoError(json.Unmarshal(data, &round), "unmarshal")
+	check.Equal([]string{"tb", "td", "te"}, round.BaselineOnly, "round trip lost the baseline-only list")
+	check.Equal([]string{"aa-new", "zz-new"}, round.CurrentOnly, "round trip lost the current-only list")
 }
 
 func TestCompare_UnpairedListsAreEmptyArraysWhenEveryTaskPairs(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	report := Compare(singleRunSuite("base", "pass", "pass", "pass"), trialSuite("curr", 3, []int{3, 3, 3}), DefaultOptions())
 	data, err := json.Marshal(report)
-	require.NoError(t, err, "marshal")
+	must.NoError(err, "marshal")
 	var doc map[string]json.RawMessage
-	require.NoError(t, json.Unmarshal(data, &doc))
+	must.NoError(json.Unmarshal(data, &doc))
 	for _, key := range []string{"baselineOnly", "currentOnly"} {
 		t.Run(key, func(t *testing.T) {
-			assert.Equal(t, "[]", string(doc[key]))
+			check := assert.New(t)
+			check.Equal("[]", string(doc[key]))
 		})
 	}
 
 	text := FormatText(report)
-	assert.NotContains(t, text, "Missing from current run", "report lists unpaired tasks when every task pairs")
-	assert.NotContains(t, text, "New in current run", "report lists unpaired tasks when every task pairs")
+	check.NotContains(text, "Missing from current run", "report lists unpaired tasks when every task pairs")
+	check.NotContains(text, "New in current run", "report lists unpaired tasks when every task pairs")
 }
 
 // Three of five tasks lose one trial each: the two-sided 95% interval
 // straddles zero, yet the one-sided 95% upper bound sits below it.
 func TestCompare_BlocksOnOneSidedUpperBound(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	baseline := singleRunSuite("base", "pass", "pass", "pass", "pass", "pass")
 	report := Compare(baseline, trialSuite("curr", 3, []int{2, 2, 2, 3, 3}), DefaultOptions())
 	s := report.Summary
 
-	require.Equal(t, eval.GateBlock, s.Gate, "reasons %v", s.GateReasons)
-	assert.Empty(t, report.Regressions, "the bound alone blocks")
-	assert.Empty(t, s.DeterministicFlips, "the bound alone blocks")
+	must.Equal(eval.GateBlock, s.Gate, "reasons %v", s.GateReasons)
+	check.Empty(report.Regressions, "the bound alone blocks")
+	check.Empty(s.DeterministicFlips, "the bound alone blocks")
 	p := s.Paired
 	within(t, "d-bar", p.MeanDelta, -0.2, 1e-9)
 	within(t, "paired SE", p.StdErr, 0.0816, 0.0001)
@@ -627,38 +657,41 @@ func TestCompare_BlocksOnOneSidedUpperBound(t *testing.T) {
 	within(t, "sign-flip p", p.PValue, 0.25, 1e-12)
 
 	reasons := strings.Join(s.GateReasons, "\n")
-	assert.Contains(t, reasons, "one-sided 95% upper bound on the mean delta is -0.026, below 0")
+	check.Contains(reasons, "one-sided 95% upper bound on the mean delta is -0.026, below 0")
 	text := FormatText(report)
-	assert.Contains(t, text, "Gate: BLOCK")
-	assert.Contains(t, text, "two-sided 95% t(4) CI [-0.427, +0.027]")
-	assert.Contains(t, text, "one-sided 95% upper bound -0.026")
-	assert.NotContains(t, text, "confirmed", "block report claims a confirmed regression")
+	check.Contains(text, "Gate: BLOCK")
+	check.Contains(text, "two-sided 95% t(4) CI [-0.427, +0.027]")
+	check.Contains(text, "one-sided 95% upper bound -0.026")
+	check.NotContains(text, "confirmed", "block report claims a confirmed regression")
 }
 
 func TestNoiseFloor_AllPassPoolReportsInsufficientVariation(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
 	report := Compare(singleRunSuite("base", "pass", "pass", "pass", "pass", "pass"), trialSuite("curr", 3, []int{3, 3, 3, 3, 3}), DefaultOptions())
 	nf := report.Summary.NoiseFloor
-	require.NotNil(t, nf, "noise floor missing for an all-pass baseline")
-	assert.InDelta(t, 1.0, nf.PerTrialPassRate, 1e-12, "noise floor %+v", nf)
-	assert.Equal(t, 20, nf.PooledTrials, "noise floor %+v", nf)
-	assert.Nil(t, nf.SingleRunFalseAlarm, "false-alarm rates reported for an all-pass pool: %+v", nf)
-	assert.Nil(t, nf.FlipRuleFalseAlarm, "false-alarm rates reported for an all-pass pool: %+v", nf)
+	must.NotNil(nf, "noise floor missing for an all-pass baseline")
+	check.InDelta(1.0, nf.PerTrialPassRate, 1e-12, "noise floor %+v", nf)
+	check.Equal(20, nf.PooledTrials, "noise floor %+v", nf)
+	check.Nil(nf.SingleRunFalseAlarm, "false-alarm rates reported for an all-pass pool: %+v", nf)
+	check.Nil(nf.FlipRuleFalseAlarm, "false-alarm rates reported for an all-pass pool: %+v", nf)
 
 	text := FormatText(report)
-	assert.Contains(t, text, "insufficient variation")
-	assert.NotContains(t, text, "0.00%", "report prints a 0.00 percent false-alarm rate")
+	check.Contains(text, "insufficient variation")
+	check.NotContains(text, "0.00%", "report prints a 0.00 percent false-alarm rate")
 
 	data, err := json.Marshal(report.Summary.NoiseFloor)
-	require.NoError(t, err, "marshal")
-	assert.NotContains(t, string(data), "FalseAlarm", "noise floor JSON carries a false-alarm rate")
+	must.NoError(err, "marshal")
+	check.NotContains(string(data), "FalseAlarm", "noise floor JSON carries a false-alarm rate")
 }
 
 func TestNoiseFloor_PoolWithAFailurePrintsBothRates(t *testing.T) {
+	check := assert.New(t)
 	report := Compare(singleRunSuite("base", "pass", "pass", "pass", "pass", "pass"), trialSuite("curr", 3, []int{3, 3, 3, 3, 2}), DefaultOptions())
 	text := FormatText(report)
-	assert.Contains(t, text, "per-trial pass rate 0.950 over 20 pooled trials")
-	assert.Contains(t, text, "a single-run flip gate false-alarms on 22.62% of pushes, the 3-of-3 flip rule on 0.06%")
-	assert.NotContains(t, text, "insufficient variation", "report flags insufficient variation despite a failure")
+	check.Contains(text, "per-trial pass rate 0.950 over 20 pooled trials")
+	check.Contains(text, "a single-run flip gate false-alarms on 22.62% of pushes, the 3-of-3 flip rule on 0.06%")
+	check.NotContains(text, "insufficient variation", "report flags insufficient variation despite a failure")
 }
 
 func TestRateSummary_WilsonIntervalOverTasks(t *testing.T) {
@@ -674,6 +707,7 @@ func TestRateSummary_WilsonIntervalOverTasks(t *testing.T) {
 }
 
 func TestRateSummary_PassHatKStopsAtTheSmallestTrialCount(t *testing.T) {
+	must := require.New(t)
 	r := eval.SuiteResult{RunID: "mixed", Tasks: []eval.TaskResult{
 		trialTask("a", 2, 2),
 		trialTask("b", 2, 3),
@@ -681,8 +715,8 @@ func TestRateSummary_PassHatKStopsAtTheSmallestTrialCount(t *testing.T) {
 	}}
 	s := rateSummary(r)
 
-	require.Len(t, s.PassHatK, 2, "pass^k rows should stop at the smallest trial count")
-	require.Len(t, s.PassAtK, 2, "pass@k rows should stop at the smallest trial count")
+	must.Len(s.PassHatK, 2, "pass^k rows should stop at the smallest trial count")
+	must.Len(s.PassAtK, 2, "pass@k rows should stop at the smallest trial count")
 	within(t, "pass^1", s.PassHatK[0], 8.0/9, 1e-12)
 	within(t, "pass^2", s.PassHatK[1], 7.0/9, 1e-12)
 	within(t, "pass@2", s.PassAtK[1], 1, 1e-12)
@@ -703,22 +737,25 @@ No regressions found.
 `
 
 func TestFormatText_WorkedExampleGolden(t *testing.T) {
+	check := assert.New(t)
 	baseline, current := trialSuite("baseline-run", 3, workedA), trialSuite("current-run", 3, workedB)
 
 	got := FormatText(Compare(baseline, current, DefaultOptions()))
-	assert.Equal(t, workedExampleReportDefault, got, "default-options report differs from the golden text")
+	check.Equal(workedExampleReportDefault, got, "default-options report differs from the golden text")
 
 	tight := FormatText(Compare(baseline, current, Options{WarnMargin: 0.05, FlipThreshold: DefaultFlipThreshold}))
 	wantTight := strings.Replace(workedExampleReportDefault, "Gate: PASS\n",
 		"Gate: WARN\n  - mean delta -0.100 is below -0.050 and the one-sided 95% upper bound +0.030 is not below 0\n", 1)
-	assert.Equal(t, wantTight, tight, "0.05-margin report differs from the golden text")
+	check.Equal(wantTight, tight, "0.05-margin report differs from the golden text")
 }
 
 // TestFormatText_WorkedExampleMatchesDocs keeps the report block in
 // docs/eval.md identical to what the code prints for the worked example.
 func TestFormatText_WorkedExampleMatchesDocs(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
 	doc, err := os.ReadFile(filepath.Join("..", "..", "docs", "eval.md"))
-	require.NoError(t, err)
-	assert.Contains(t, string(doc), strings.TrimRight(workedExampleReportDefault, "\n"),
+	must.NoError(err)
+	check.Contains(string(doc), strings.TrimRight(workedExampleReportDefault, "\n"),
 		"docs/eval.md does not contain the worked-example report printed by FormatText")
 }

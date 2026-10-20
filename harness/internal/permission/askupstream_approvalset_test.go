@@ -12,6 +12,7 @@ import (
 // must prompt on every tool that requires upstream approval — not just
 // workspace-mutating tools.
 func TestAskUpstream_ApprovalToolNamesContainsExpectedTools(t *testing.T) {
+	must := require.New(t)
 	approval := map[string]bool{
 		"write_file":  true,
 		"run_command": true,
@@ -24,5 +25,5 @@ func TestAskUpstream_ApprovalToolNamesContainsExpectedTools(t *testing.T) {
 	sort.Strings(got)
 
 	want := []string{"run_command", "spawn_agent", "web_fetch", "write_file"}
-	require.Equal(t, want, got)
+	must.Equal(want, got)
 }

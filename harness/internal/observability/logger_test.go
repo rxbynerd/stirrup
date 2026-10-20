@@ -48,6 +48,7 @@ const anthropicKeyFixture = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 // With on a NewLogger logger appear on every record. The harness factory
 // relies on this when it chains logger.With("sessionName", ...).
 func TestLogger_WithSessionNameAttribute(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	logger := NewLogger("test-run", slog.LevelInfo, &buf)
 	logger = logger.With("sessionName", "nightly-eval")
@@ -55,72 +56,79 @@ func TestLogger_WithSessionNameAttribute(t *testing.T) {
 	logger.Info("hello")
 
 	var record map[string]any
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &record), "output: %s", buf.String())
-	require.Equal(t, "nightly-eval", record["sessionName"], "record: %v", record)
-	require.Equal(t, "test-run", record["runId"], "record: %v", record)
+	must.NoError(json.Unmarshal(buf.Bytes(), &record), "output: %s", buf.String())
+	must.Equal("nightly-eval", record["sessionName"], "record: %v", record)
+	must.Equal("test-run", record["runId"], "record: %v", record)
 }
 
 func TestScrubHandler_RedactsAnthropicKey(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	logger := NewLogger("test-run", slog.LevelInfo, &buf)
 
 	logger.Info("api call", "apiKey", "sk-ant-api03-abcdef1234567890")
 
 	output := buf.String()
-	require.NotContains(t, output, "sk-ant-api03", "Anthropic key not scrubbed from output")
-	require.Contains(t, output, "[REDACTED]", "expected [REDACTED] placeholder in output")
+	must.NotContains(output, "sk-ant-api03", "Anthropic key not scrubbed from output")
+	must.Contains(output, "[REDACTED]", "expected [REDACTED] placeholder in output")
 }
 
 func TestScrubHandler_RedactsOpenAIKey(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	logger := NewLogger("test-run", slog.LevelInfo, &buf)
 
 	logger.Info("api call", "key", "sk-proj-abcdef1234567890abcdef")
 
 	output := buf.String()
-	require.NotContains(t, output, "sk-proj-abcdef", "OpenAI key not scrubbed from output")
-	require.Contains(t, output, "[REDACTED]", "expected [REDACTED] placeholder in output")
+	must.NotContains(output, "sk-proj-abcdef", "OpenAI key not scrubbed from output")
+	must.Contains(output, "[REDACTED]", "expected [REDACTED] placeholder in output")
 }
 
 func TestScrubHandler_RedactsGitHubPAT(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	logger := NewLogger("test-run", slog.LevelInfo, &buf)
 
 	logger.Info("auth", "token", "ghp_abc123def456ghi789")
 
-	require.NotContains(t, buf.String(), "ghp_", "GitHub PAT not scrubbed from output")
+	must.NotContains(buf.String(), "ghp_", "GitHub PAT not scrubbed from output")
 }
 
 func TestScrubHandler_RedactsAWSAccessKey(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	logger := NewLogger("test-run", slog.LevelInfo, &buf)
 
 	logger.Info("aws", "accessKeyId", "AKIAIOSFODNN7EXAMPLE")
 
-	require.NotContains(t, buf.String(), "AKIAIOSFODNN7EXAMPLE", "AWS access key not scrubbed from output")
+	must.NotContains(buf.String(), "AKIAIOSFODNN7EXAMPLE", "AWS access key not scrubbed from output")
 }
 
 func TestScrubHandler_RedactsBearerToken(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	logger := NewLogger("test-run", slog.LevelInfo, &buf)
 
 	logger.Info("request", "auth", "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123")
 
-	require.NotContains(t, buf.String(), "eyJhbGci", "Bearer token not scrubbed from output")
+	must.NotContains(buf.String(), "eyJhbGci", "Bearer token not scrubbed from output")
 }
 
 func TestScrubHandler_PreservesNonSecretValues(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	logger := NewLogger("test-run", slog.LevelInfo, &buf)
 
 	logger.Info("normal log", "workspace", "/tmp/workspace", "turn", 5)
 
 	output := buf.String()
-	require.Contains(t, output, "/tmp/workspace", "non-secret string value was modified")
-	require.Contains(t, output, "normal log", "message was modified")
+	must.Contains(output, "/tmp/workspace", "non-secret string value was modified")
+	must.Contains(output, "normal log", "message was modified")
 }
 
 func TestScrubHandler_GroupAttrs_ScrubsSecretInGroup(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	jsonHandler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
 	scrubHandler := NewScrubHandler(jsonHandler)
@@ -134,11 +142,12 @@ func TestScrubHandler_GroupAttrs_ScrubsSecretInGroup(t *testing.T) {
 	)
 
 	output := buf.String()
-	require.NotContains(t, output, "sk-ant-api03", "secret in group attr not scrubbed")
-	require.Contains(t, output, "test", "non-secret value in group was modified")
+	must.NotContains(output, "sk-ant-api03", "secret in group attr not scrubbed")
+	must.Contains(output, "test", "non-secret value in group was modified")
 }
 
 func TestScrubHandler_WithAttrs_ScrubsBoundAttrs(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	jsonHandler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
 	scrubHandler := NewScrubHandler(jsonHandler)
@@ -151,10 +160,11 @@ func TestScrubHandler_WithAttrs_ScrubsBoundAttrs(t *testing.T) {
 
 	logger.Info("test message")
 
-	require.NotContains(t, buf.String(), "ghp_", "secret in WithAttrs not scrubbed")
+	must.NotContains(buf.String(), "ghp_", "secret in WithAttrs not scrubbed")
 }
 
 func TestScrubHandler_WithGroup_ScrubsSecretAndKeepsGroupName(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	jsonHandler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
 	scrubHandler := NewScrubHandler(jsonHandler)
@@ -165,26 +175,28 @@ func TestScrubHandler_WithGroup_ScrubsSecretAndKeepsGroupName(t *testing.T) {
 	logger.Info("test", "secret", "sk-ant-api03-xyz")
 
 	output := buf.String()
-	require.NotContains(t, output, "sk-ant-api03", "secret in group not scrubbed")
-	require.Contains(t, output, "details", "group name not present in output")
+	must.NotContains(output, "sk-ant-api03", "secret in group not scrubbed")
+	must.Contains(output, "details", "group name not present in output")
 }
 
 func TestNewLogger_ProducesValidJSON(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	logger := NewLogger("run-123", slog.LevelInfo, &buf)
 
 	logger.Info("test event", "key", "value")
 
 	var parsed map[string]any
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &parsed), "output: %s", buf.String())
+	must.NoError(json.Unmarshal(buf.Bytes(), &parsed), "output: %s", buf.String())
 
-	require.Equal(t, "run-123", parsed["runId"], "runId field in JSON output")
-	require.Contains(t, parsed, "time")
-	require.Contains(t, parsed, "level")
-	require.Contains(t, parsed, "msg")
+	must.Equal("run-123", parsed["runId"], "runId field in JSON output")
+	must.Contains(parsed, "time")
+	must.Contains(parsed, "level")
+	must.Contains(parsed, "msg")
 }
 
 func TestNewLogger_RespectsLevel(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	logger := NewLogger("run-123", slog.LevelWarn, &buf)
 
@@ -192,14 +204,15 @@ func TestNewLogger_RespectsLevel(t *testing.T) {
 	logger.Warn("should appear")
 
 	output := buf.String()
-	require.NotContains(t, output, "should not appear", "info message logged despite warn level")
-	require.Contains(t, output, "should appear", "warn message not logged")
+	must.NotContains(output, "should not appear", "info message logged despite warn level")
+	must.Contains(output, "should appear", "warn message not logged")
 }
 
 // TestScrubHandlerWithSecurity_FiresSecretRedactedInOutput asserts that the
 // logger emits a SecretRedactedInOutput event (via the wired notifier) when
 // the scrubber redacts a secret from an attribute value.
 func TestScrubHandlerWithSecurity_FiresSecretRedactedInOutput(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	jsonHandler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
 	spy := &spyNotifier{}
@@ -209,17 +222,18 @@ func TestScrubHandlerWithSecurity_FiresSecretRedactedInOutput(t *testing.T) {
 	logger.Info("api call", slog.String("token", anthropicKeyFixture))
 
 	calls := spy.snapshot()
-	require.Len(t, calls, 1, "notifier calls: %+v", calls)
-	require.Equal(t, "anthropic_api_key", calls[0].pattern)
-	require.Contains(t, calls[0].location, "token")
+	must.Len(calls, 1, "notifier calls: %+v", calls)
+	must.Equal("anthropic_api_key", calls[0].pattern)
+	must.Contains(calls[0].location, "token")
 
 	// The redacted value must not appear in the JSON output.
-	require.NotContains(t, buf.String(), anthropicKeyFixture, "secret leaked into log output")
+	must.NotContains(buf.String(), anthropicKeyFixture, "secret leaked into log output")
 }
 
 // TestScrubHandlerWithSecurity_NoEventOnCleanAttr asserts that emitting an
 // attribute with no secret content does not produce a notifier call.
 func TestScrubHandlerWithSecurity_NoEventOnCleanAttr(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	jsonHandler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
 	spy := &spyNotifier{}
@@ -228,13 +242,14 @@ func TestScrubHandlerWithSecurity_NoEventOnCleanAttr(t *testing.T) {
 
 	logger.Info("plain log", slog.String("ok", "hello"))
 
-	require.Empty(t, spy.snapshot(), "notifier calls for a clean attribute")
+	must.Empty(spy.snapshot(), "notifier calls for a clean attribute")
 }
 
 // TestScrubHandlerWithSecurity_WithGroupPropagatesNotifier asserts that
 // WithGroup returns a handler that still notifies on redactions, i.e. the
 // security field survives the group-binding code path.
 func TestScrubHandlerWithSecurity_WithGroupPropagatesNotifier(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	jsonHandler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
 	spy := &spyNotifier{}
@@ -245,14 +260,15 @@ func TestScrubHandlerWithSecurity_WithGroupPropagatesNotifier(t *testing.T) {
 	logger.Info("with group", slog.String("token", anthropicKeyFixture))
 
 	calls := spy.snapshot()
-	require.NotEmpty(t, calls, "expected a notifier call after WithGroup")
-	require.Equal(t, "anthropic_api_key", calls[0].pattern)
+	must.NotEmpty(calls, "expected a notifier call after WithGroup")
+	must.Equal("anthropic_api_key", calls[0].pattern)
 }
 
 // TestScrubHandlerWithSecurity_WithAttrsPropagatesNotifier asserts that
 // WithAttrs scrubs and notifies at bind time (and that the resulting
 // child handler retains the notifier so subsequent emissions also fire).
 func TestScrubHandlerWithSecurity_WithAttrsPropagatesNotifier(t *testing.T) {
+	must := require.New(t)
 	var buf bytes.Buffer
 	jsonHandler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
 	spy := &spyNotifier{}
@@ -265,8 +281,8 @@ func TestScrubHandlerWithSecurity_WithAttrsPropagatesNotifier(t *testing.T) {
 
 	// WithAttrs scrubs at bind time, so the notifier fires during the call.
 	preEmitCalls := spy.snapshot()
-	require.NotEmpty(t, preEmitCalls, "expected notifier to fire during WithAttrs bind")
-	require.Equal(t, "anthropic_api_key", preEmitCalls[0].pattern)
+	must.NotEmpty(preEmitCalls, "expected notifier to fire during WithAttrs bind")
+	must.Equal("anthropic_api_key", preEmitCalls[0].pattern)
 
 	// Sanity: emitting through the child handler still works.
 	logger.Info("child emit")

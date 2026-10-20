@@ -29,19 +29,20 @@ func TestWorkspaceRoot_ParsesPwdOutput(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
 			var gotCommand string
 			exec := newScriptedExecutor(func(command string) (*executor.ExecResult, error) {
 				gotCommand = command
 				return tt.result, tt.err
 			})
 			got, err := WorkspaceRoot(context.Background(), exec)
-			require.Equal(t, "pwd -P", gotCommand)
+			must.Equal("pwd -P", gotCommand)
 			if tt.wantErr != "" {
-				require.ErrorContains(t, err, tt.wantErr)
+				must.ErrorContains(err, tt.wantErr)
 				return
 			}
-			require.NoError(t, err)
-			require.Equal(t, tt.want, got)
+			must.NoError(err)
+			must.Equal(tt.want, got)
 		})
 	}
 }

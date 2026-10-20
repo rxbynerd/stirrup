@@ -32,19 +32,20 @@ func reportStep(report *PreflightReport, name string) (PreflightStep, bool) {
 // read-only-safe (local) for the representative config.
 func buildComponentsForParity(t *testing.T, config *types.RunConfig) *builtComponents {
 	t.Helper()
+	must := require.New(t)
 	ctx := context.Background()
 	secLogger := security.NewSecurityLogger(io.Discard, config.RunID)
 	secrets, err := security.NewAutoSecretStore(ctx, config)
-	require.NoError(t, err, "secret store")
+	must.NoError(err, "secret store")
 	execResult := preflightExecutorConstruct(ctx, config, secrets, secLogger)
-	require.NoError(t, execResult.err, "executor construct")
+	must.NoError(execResult.err, "executor construct")
 	resolvedHeaders, err := observability.ResolveHeaders(ctx, secrets, config.TraceEmitter.Headers)
-	require.NoError(t, err, "resolve headers")
+	must.NoError(err, "resolve headers")
 	tp := transport.NewStdioTransport(io.Discard, nil)
 	exporters, resourceOpts, err := resolveTelemetry(ctx, config, resolvedHeaders)
-	require.NoError(t, err, "resolve telemetry")
+	must.NoError(err, "resolve telemetry")
 	bc, err := buildComponents(ctx, config, secrets, secLogger, tool.NewRegistry(), tp, execResult, exporters, resourceOpts, nil, false)
-	require.NoError(t, err, "buildComponents")
+	must.NoError(err, "buildComponents")
 	return bc
 }
 
@@ -57,6 +58,7 @@ func buildComponentsForParity(t *testing.T, config *types.RunConfig) *builtCompo
 // probeSteps entry left nil would emit a present-but-vacuous skip and a naive
 // name-only check would pass.
 func TestPreflight_DryRunProbesMatchRealRunComponents(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
 	srv, _ := metadataOnlyServer(t)
 	defer srv.Close()
@@ -65,15 +67,16 @@ func TestPreflight_DryRunProbesMatchRealRunComponents(t *testing.T) {
 
 	bc := buildComponentsForParity(t, config)
 	steps := bc.probeSteps()
-	require.NotEmpty(t, steps, "probeSteps returned no components; the parity check would be vacuous")
+	must.NotEmpty(steps, "probeSteps returned no components; the parity check would be vacuous")
 
 	report, err := Preflight(context.Background(), config, PreflightOptions{})
-	require.NoError(t, err)
+	must.NoError(err)
 
 	for _, ps := range steps {
 		t.Run(ps.name, func(t *testing.T) {
+			must := require.New(t)
 			step, found := reportStep(report, ps.name)
-			require.True(t, found,
+			must.True(found,
 				"probe-eligible component produced no step in the dry-run report; "+
 					"every component in builtComponents.probeSteps must produce a Preflight step "+
 					"(add construction + probe handling in Preflight); report steps: %+v", report.Steps)
@@ -83,7 +86,7 @@ func TestPreflight_DryRunProbesMatchRealRunComponents(t *testing.T) {
 			// false-clean-dry-run drift the parity guarantee exists to kill, so
 			// it must fail rather than satisfy a name-only check.
 			notConstructed := step.Status == PreflightSkip && strings.Contains(step.Detail, "not constructed")
-			require.False(t, notConstructed,
+			must.False(notConstructed,
 				"the component is enumerated but Preflight did not build it (false-clean dry-run), detail=%q", step.Detail)
 		})
 	}
@@ -97,6 +100,7 @@ func TestPreflight_DryRunProbesMatchRealRunComponents(t *testing.T) {
 // so adding a probe-eligible field without enumerating it (or vice versa)
 // fails here.
 func TestProbeSteps_CoversBuiltComponents(t *testing.T) {
+	must := require.New(t)
 	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
 	srv, _ := metadataOnlyServer(t)
 	defer srv.Close()
@@ -119,7 +123,7 @@ func TestProbeSteps_CoversBuiltComponents(t *testing.T) {
 		}
 		tagged[tag] = true
 	}
-	require.NotEmpty(t, tagged, "no probe-tagged fields found; the coverage check would be vacuous")
+	must.NotEmpty(tagged, "no probe-tagged fields found; the coverage check would be vacuous")
 
 	matches := func(stepName, tag string) bool {
 		if stepName == tag {
@@ -135,6 +139,7 @@ func TestProbeSteps_CoversBuiltComponents(t *testing.T) {
 	// emitted step.
 	for tag := range tagged {
 		t.Run("tagged field "+tag, func(t *testing.T) {
+			must := require.New(t)
 			found := false
 			for name := range emitted {
 				if matches(name, tag) {
@@ -142,7 +147,7 @@ func TestProbeSteps_CoversBuiltComponents(t *testing.T) {
 					break
 				}
 			}
-			require.True(t, found,
+			must.True(found,
 				"probe-eligible field is not enumerated by probeSteps(); add it to probeSteps or remove the probe tag")
 		})
 	}
@@ -152,6 +157,7 @@ func TestProbeSteps_CoversBuiltComponents(t *testing.T) {
 	// direction) is also caught.
 	for name := range emitted {
 		t.Run("emitted step "+name, func(t *testing.T) {
+			must := require.New(t)
 			found := false
 			for tag := range tagged {
 				if matches(name, tag) {
@@ -159,7 +165,7 @@ func TestProbeSteps_CoversBuiltComponents(t *testing.T) {
 					break
 				}
 			}
-			require.True(t, found,
+			must.True(found,
 				"no builtComponents field is tagged for this step; tag the backing field or drop the step")
 		})
 	}
@@ -169,6 +175,7 @@ func TestProbeSteps_CoversBuiltComponents(t *testing.T) {
 // test applied by TestPreflight_DryRunProbesMatchRealRunComponents flags a "not constructed" skip as vacuous.
 // Without this, a broken check could let the false-clean case through.
 func TestPreflightParity_DetectsNotConstructedSkip(t *testing.T) {
+	must := require.New(t)
 	report := &PreflightReport{
 		Steps: []PreflightStep{
 			{Name: "trace-emitter-probe", Status: PreflightSkip, Detail: "component not constructed"},
@@ -176,8 +183,8 @@ func TestPreflightParity_DetectsNotConstructedSkip(t *testing.T) {
 		OK: true,
 	}
 	step, found := reportStep(report, "trace-emitter-probe")
-	require.True(t, found, "expected the fabricated step to be found")
+	must.True(found, "expected the fabricated step to be found")
 
 	isVacuous := step.Status == PreflightSkip && strings.Contains(step.Detail, "not constructed")
-	require.True(t, isVacuous, "a 'not constructed' skip must be flagged as vacuous")
+	must.True(isVacuous, "a 'not constructed' skip must be flagged as vacuous")
 }

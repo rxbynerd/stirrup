@@ -28,7 +28,8 @@ func TestIsRetryable_ReportsOnlyMarkedErrors(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, IsRetryable(tc.err), "IsRetryable(%v)", tc.err)
+			must := require.New(t)
+			must.Equal(tc.want, IsRetryable(tc.err), "IsRetryable(%v)", tc.err)
 		})
 	}
 }
@@ -38,12 +39,15 @@ func TestMarkRetryable_PreservesMessageAndChain(t *testing.T) {
 	marked := MarkRetryable(base)
 
 	t.Run("keeps message", func(t *testing.T) {
-		require.Equal(t, base.Error(), marked.Error())
+		must := require.New(t)
+		must.Equal(base.Error(), marked.Error())
 	})
 	t.Run("unwraps to original", func(t *testing.T) {
-		require.ErrorIs(t, marked, base)
+		must := require.New(t)
+		must.ErrorIs(marked, base)
 	})
 	t.Run("nil returns nil", func(t *testing.T) {
-		require.NoError(t, MarkRetryable(nil))
+		must := require.New(t)
+		must.NoError(MarkRetryable(nil))
 	})
 }
