@@ -1228,7 +1228,7 @@ func TestTranslateToolsResponses_MapsFunctionTools(t *testing.T) {
 			InputSchema: json.RawMessage(`{"type":"object"}`),
 		},
 	}
-	result, err := translateToolsResponses(tools, false, false, "gpt-4o", nil)
+	result, err := translateToolsResponses(tools, false, false, false, "gpt-4o", nil)
 	must.NoError(err)
 	must.Len(result, 2)
 	for i, tool := range result {
@@ -1250,7 +1250,7 @@ func TestTranslateToolsResponses_NilOrEmptyReturnsNil(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			must := require.New(t)
-			got, err := translateToolsResponses(tt.tools, false, false, "gpt-4o", nil)
+			got, err := translateToolsResponses(tt.tools, false, false, false, "gpt-4o", nil)
 			must.NoError(err)
 			must.Nil(got)
 		})

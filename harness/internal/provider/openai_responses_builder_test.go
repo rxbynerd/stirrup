@@ -95,6 +95,21 @@ func responsesBuilderCases() []struct {
 			},
 		},
 		{
+			name: "tool_search_deferred",
+			params: types.StreamParams{
+				Model:      "gpt-5.5",
+				MaxTokens:  1024,
+				ToolSearch: true,
+				Tools: []types.ToolDefinition{
+					{Name: "read_file", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`)},
+					{Name: "mcp_jira_create_issue", Description: "Create a Jira issue", InputSchema: json.RawMessage(`{"type":"object","properties":{"title":{"type":"string"}},"required":["title"]}`), Deferred: true},
+				},
+				Messages: []types.Message{
+					{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "file a ticket"}}},
+				},
+			},
+		},
+		{
 			name: "cache_key",
 			params: types.StreamParams{
 				Model:     "gpt-4o",

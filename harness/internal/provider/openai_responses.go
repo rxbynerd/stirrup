@@ -573,12 +573,33 @@ type responsesContentBlock struct {
 // rule that pins strict mode causes the adapter to emit an explicit
 // `"strict": true` on every tool entry. See openaiToolDefinition for
 // the equivalent on the Chat Completions side.
+//
+// DeferLoading marks a function the hosted tool search loads on demand.
+// A Type of responsesToolSearchType is the hosted search entry itself,
+// which MarshalJSON emits with no other key.
 type responsesTool struct {
-	Type        string          `json:"type"` // "function"
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	Parameters  json.RawMessage `json:"parameters"`
-	Strict      *bool           `json:"strict,omitempty"`
+	Type         string          `json:"type"` // "function" | "tool_search"
+	Name         string          `json:"name"`
+	Description  string          `json:"description,omitempty"`
+	Parameters   json.RawMessage `json:"parameters"`
+	Strict       *bool           `json:"strict,omitempty"`
+	DeferLoading *bool           `json:"defer_loading,omitempty"`
+}
+
+// responsesToolSearchType is the tools[] entry type of OpenAI's hosted
+// tool search.
+const responsesToolSearchType = "tool_search"
+
+// MarshalJSON emits the hosted tool search entry as {"type":"tool_search"}
+// and every other entry with its struct tags.
+func (t responsesTool) MarshalJSON() ([]byte, error) {
+	if t.Type == responsesToolSearchType {
+		return json.Marshal(struct {
+			Type string `json:"type"`
+		}{t.Type})
+	}
+	type wire responsesTool
+	return json.Marshal(wire(t))
 }
 
 // --- SSE event payload types ---
@@ -1200,17 +1221,25 @@ func sameToolArguments(stored string, input json.RawMessage) bool {
 // strict=true; the cache memoises rewrites within the adapter's
 // lifetime. A schema that fails the lint surfaces as an error here,
 // and the caller MUST NOT send a request.
-func translateToolsResponses(tools []types.ToolDefinition, strict, examples bool, model string, cache *strictSchemaCache) ([]responsesTool, error) {
+//
+// When toolSearch is true, every Deferred tool carries defer_loading and
+// the hosted tool search entry is appended last; otherwise Deferred is
+// ignored and every tool is sent loaded.
+func translateToolsResponses(tools []types.ToolDefinition, strict, examples, toolSearch bool, model string, cache *strictSchemaCache) ([]responsesTool, error) {
 	if len(tools) == 0 {
 		return nil, nil
 	}
-	out := make([]responsesTool, len(tools))
+	out := make([]responsesTool, len(tools), len(tools)+1)
 	for i, t := range tools {
 		entry := responsesTool{
 			Type:        "function",
 			Name:        t.Name,
 			Description: t.Description,
 			Parameters:  t.InputSchema,
+		}
+		if toolSearch && t.Deferred {
+			truthy := true
+			entry.DeferLoading = &truthy
 		}
 		if strict {
 			normalised, err := normalizeStrictWithCache(cache, model, t.Name, t.InputSchema)
@@ -1232,7 +1261,16 @@ func translateToolsResponses(tools []types.ToolDefinition, strict, examples bool
 		}
 		out[i] = entry
 	}
+	if toolSearch {
+		out = append(out, responsesTool{Type: responsesToolSearchType})
+	}
 	return out, nil
+}
+
+// responsesToolSearchActive reports whether a request uses OpenAI's hosted
+// tool search: the loop asked for it and the resolved quirks support it.
+func responsesToolSearchActive(params types.StreamParams, q quirks.ProviderQuirks) bool {
+	return params.ToolSearch && q.ToolSearch.Supported
 }
 
 // buildResponsesRequest projects a StreamParams into the Responses API wire
@@ -1252,7 +1290,8 @@ func translateToolsResponses(tools []types.ToolDefinition, strict, examples bool
 // TODO(batch): consider returning json.RawMessage if endpoint-contract drift
 // becomes a maintenance burden.
 func buildResponsesRequest(params types.StreamParams, q quirks.ProviderQuirks, strictCache *strictSchemaCache, replayOrigin string) (responsesRequest, error) {
-	tools, err := translateToolsResponses(params.Tools, q.BehaviourFlags.OpenAI.StrictMode, q.ToolExamples.Supported, params.Model, strictCache)
+	toolSearch := responsesToolSearchActive(params, q)
+	tools, err := translateToolsResponses(params.Tools, q.BehaviourFlags.OpenAI.StrictMode, q.ToolExamples.Supported, toolSearch, params.Model, strictCache)
 	if err != nil {
 		return responsesRequest{}, err
 	}
@@ -1338,6 +1377,13 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 			slog.String("provider.type", "openai-responses"),
 			slog.String("provider.model", params.Model),
 			slog.Int("tool_choice", int(params.ToolChoice)),
+		)
+	}
+
+	if params.ToolSearch && !q.ToolSearch.Supported {
+		logger.DebugContext(ctx, "openai-responses tool search not supported; sending every tool loaded",
+			slog.String("provider.type", "openai-responses"),
+			slog.String("provider.model", params.Model),
 		)
 	}
 
