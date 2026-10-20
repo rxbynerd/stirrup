@@ -57,6 +57,9 @@ type pendingCall struct {
 	// failureCategory is the bounded ToolFailureCategory describing why
 	// this call failed; empty when success is true.
 	failureCategory observability.ToolFailureCategory
+	// toolsLoaded lists the deferred tools the call loaded (a harness
+	// tool_search), by internal ID.
+	toolsLoaded []string
 }
 
 // planAndDispatch executes the tool calls produced by one assistant turn,
@@ -103,6 +106,7 @@ func (l *AgenticLoop) planAndDispatch(
 		l.Logger.InfoContext(toolSpanCtx, "tool dispatched", "tool", call.Name)
 		callMeta := tool.CallContextFrom(ctx)
 		callMeta.ToolUseID = call.ID
+		callMeta.Lazy = l.LazyTools
 		toolSpanCtx = tool.WithCallContext(toolSpanCtx, callMeta)
 		plan[i] = pendingCall{
 			call:      call,
@@ -176,12 +180,16 @@ func (l *AgenticLoop) planAndDispatch(
 			continue
 		}
 
+		// Sync calls run one at a time, so the loaded set grows only by
+		// what this call loaded.
+		loadedBefore := l.lazyLoadedCount()
 		output, success, category, structured := l.executeToolCall(toolSpanCtx, t, call, input)
 		plan[i].output = output
 		plan[i].structured = structured
 		plan[i].success = success
 		plan[i].failureCategory = category
 		plan[i].finishedAt = time.Now()
+		plan[i].toolsLoaded = l.lazyLoadedSince(loadedBefore)
 	}
 
 	// Phase 2: fan out async calls under a bounded semaphore. Defend
@@ -300,6 +308,9 @@ func (l *AgenticLoop) planAndDispatch(
 			DurationMs: callDuration.Milliseconds(),
 		}); err != nil {
 			l.logEmitFailure("tool_result", err)
+		}
+		if len(p.toolsLoaded) > 0 {
+			l.emitToolsLoaded(p.internalName, p.input, p.toolsLoaded)
 		}
 
 		if outcome := stall.recordToolCall(p.call.Name, stallInput(p.call), p.output, p.success); outcome != "" {

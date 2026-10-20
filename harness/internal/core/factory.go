@@ -709,6 +709,14 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	loop.ToolProfile = profile
 	warnUnknownExcludedTools(config.ContextStrategy.ExcludeTools, presenter, logger)
 
+	// Built over the presenter, after every registration, so the eager
+	// and deferred sets cover spawn_agent and MCP tools and the loader
+	// can map presented names to internal IDs.
+	if config.Tools.LazyLoading.Enabled {
+		loop.LazyTools = tool.NewLazyLoader(presenter, config.Tools.LazyLoading, lazyLoaderOptions(config.Tools))
+		loop.ToolSearch = buildToolSearchSupport(config, quirks.DefaultRegistry())
+	}
+
 	return loop, nil
 }
 
@@ -745,6 +753,28 @@ func buildStructuredResultSupport(config *types.RunConfig, caps capabilityResolv
 		c := caps.Resolve(providerType, model).StructuredToolResults
 		return c.Supported && (c.ContentBlockArray || c.ObjectResponse)
 	}
+}
+
+// buildToolSearchSupport resolves the native tool search capability of a
+// router-selected provider key and model against the registry the
+// Anthropic and OpenAI Responses adapters gate their own search on.
+func buildToolSearchSupport(config *types.RunConfig, caps capabilityResolver) ToolSearchSupport {
+	return func(key, model string) quirks.ToolSearchCapability {
+		return caps.Resolve(selectedProviderType(config, key), model).ToolSearch
+	}
+}
+
+// lazyLoaderOptions names the control-plane tools and MCP servers of a
+// run's tools config for the lazy tool loader.
+func lazyLoaderOptions(cfg types.ToolsConfig) tool.LazyLoaderOptions {
+	var opts tool.LazyLoaderOptions
+	for _, ct := range cfg.ControlPlane {
+		opts.ControlPlaneTools = append(opts.ControlPlaneTools, ct.Name)
+	}
+	for _, server := range cfg.MCPServers {
+		opts.MCPServers = append(opts.MCPServers, server.Name)
+	}
+	return opts
 }
 
 func buildProviders(ctx context.Context, config *types.RunConfig, secrets security.SecretStore) (provider.ProviderAdapter, map[string]provider.ProviderAdapter, error) {
@@ -1242,6 +1272,12 @@ func buildToolRegistry(exec executor.Executor, es edit.EditStrategy, cfg types.T
 	}
 	for _, ct := range cfg.ControlPlane {
 		registry.Register(tool.ControlPlaneTool(ct))
+	}
+	// Registered with the other tools so the permission policy's tool
+	// schema index and the Cedar lint know it; the loop's lazy loader
+	// decides whether a turn sends it.
+	if cfg.LazyLoading.Enabled {
+		registry.Register(builtins.ToolSearchTool())
 	}
 	return registry
 }

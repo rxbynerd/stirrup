@@ -180,6 +180,13 @@ func prepareSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *typ
 			"err", err, "profile", profileName)
 	}
 
+	// The child defers within its own registry and starts with nothing
+	// loaded; the parent's loads do not carry over.
+	var childLazy *tool.LazyLoader
+	if parent.LazyTools != nil {
+		childLazy = parent.LazyTools.ForRegistry(childTools)
+	}
+
 	captureTp := newCaptureTransport()
 
 	tracer := parent.Tracer
@@ -282,6 +289,8 @@ func prepareSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *typ
 	}
 
 	childLoop.StructuredResults = parent.StructuredResults
+	childLoop.LazyTools = childLazy
+	childLoop.ToolSearch = parent.ToolSearch
 	childLoop.ContextWindows = parent.ContextWindows
 	// Copied so a sub-agent cannot write a path the parent run protects;
 	// the child's Run adds the inherited guidance snapshot's files.

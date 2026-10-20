@@ -1,6 +1,8 @@
 package core
 
 import (
+	"bytes"
+	"encoding/json"
 	"sync"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -138,5 +140,24 @@ func (l *AgenticLoop) emitTurnAbandoned(reason string) {
 		AbandonReason: reason,
 	}); err != nil {
 		l.logEmitFailure("turn_abandoned", err)
+	}
+}
+
+// emitToolsLoaded reports deferred tools a search loaded, by internal ID.
+// search names the search tool and input is its input; turn is the open
+// turn, omitted when none is open.
+func (l *AgenticLoop) emitToolsLoaded(search string, input json.RawMessage, tools []string) {
+	ev := types.HarnessEvent{
+		Type:  "tools_loaded",
+		Name:  search,
+		Input: bytes.Clone(input),
+		Tools: tools,
+	}
+	if l.openTurn != nil {
+		turn := *l.openTurn
+		ev.Turn = &turn
+	}
+	if err := l.Transport.Emit(ev); err != nil {
+		l.logEmitFailure("tools_loaded", err)
 	}
 }
