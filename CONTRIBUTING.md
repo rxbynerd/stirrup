@@ -107,21 +107,28 @@ Tests are read far more often than they are written, and a failing
 test is usually read by someone who did not write it. Optimise for a
 reader with no context.
 
-- **Assert with testify.** Use `require` from
-  `github.com/stretchr/testify/require` for every assertion, in the
-  order `require.Equal(t, want, got)`. Pick the most specific form
-  (`NoError`, `ErrorIs`, `ErrorContains`, `Len`, `Empty`, `Contains`,
-  `ElementsMatch`, `EqualValues`, `JSONEq`, `WithinDuration`) rather
-  than `True` over a hand-written comparison. Hand-rolled
-  `if got != want { t.Fatalf(...) }` blocks and `reflect.DeepEqual`
-  are not accepted in new tests. `testifylint` runs under `just lint`
-  and rejects swapped arguments, `Equal` on errors, and the other
-  common misuses.
+- **Assert with testify through a per-scope object.** Every function
+  or closure that asserts starts with `must := require.New(t)` (and
+  `check := assert.New(t)` where a soft assertion is wanted) and then
+  asserts as `must.Equal(want, got)`. The object captures the `t` it
+  was built from, so each `t.Run` closure builds its own `must` from
+  the subtest's `t`; reusing the parent's object inside a subtest
+  fails the parent instead and no linter catches it. The names are
+  fixed as `must` and `check` across the suite. Pick the most specific
+  form (`NoError`, `ErrorIs`, `ErrorContains`, `Len`, `Empty`,
+  `Contains`, `ElementsMatch`, `EqualValues`, `JSONEq`,
+  `WithinDuration`) rather than `True` over a hand-written comparison.
+  Hand-rolled `if got != want { t.Fatalf(...) }` blocks and
+  `reflect.DeepEqual` are not accepted in new tests. `testifylint` runs
+  under `just lint` and rejects swapped arguments, `Equal` on errors,
+  and the other common misuses in both the object and package styles.
 - **`require` stops the test; keep it on the test goroutine.** Inside
-  `go func` bodies, `httptest` handlers, `require.Eventually`
-  conditions and any other callback that may run off the test
-  goroutine, use `assert` or hand the failure back over a channel.
-  `require` there panics instead of failing the test.
+  `go func` bodies, `httptest` handlers and any other callback that may
+  run off the test goroutine, use `check` or hand the failure back over
+  a channel. `must` there panics instead of failing the test. Inside
+  `must.EventuallyWithT` the condition asserts through the `CollectT`
+  it receives (`require.NoError(c, err)`), never through the outer
+  `must`.
 - **Name each test so it reads on its own.** Test names follow
   `Test<Subject>_<Behaviour>[_<Detail>]`, for example
   `TestRunConfig_Validate_RejectsAllowAllInPlanningMode`. JUnit output
@@ -129,8 +136,8 @@ reader with no context.
   names are short lowercase phrases.
 - **Prefer subtests over loops with `t.Errorf`.** A table-driven test
   runs each case under `t.Run` with the case's name, uses the subtest's
-  own `t`, and asserts with `require`, so the first failure names the
-  case and stops there.
+  own `t` and its own `must`, so the first failure names the case and
+  stops there.
 - **Helpers build fixtures; assertions stay in the test.** A helper that
   only wraps an assertion hides what the test checks. Keep helpers for
   setup and teardown, mark them with `t.Helper()`, and use `t.TempDir`,

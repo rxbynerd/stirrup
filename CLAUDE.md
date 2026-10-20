@@ -54,9 +54,11 @@ acting on an LSP error.
 
 ### Test conventions
 
-Tests assert with `testify/require` in `(t, want, got)` order, are
-named `Test<Subject>_<Behaviour>[_<Detail>]` so each reads on its own
-in JUnit output, and keep `require` on the test goroutine. The full
+Tests assert through a per-scope `must := require.New(t)` (and
+`check := assert.New(t)`) in `(want, got)` order, rebuilt inside every
+`t.Run` closure, are named `Test<Subject>_<Behaviour>[_<Detail>]` so
+each reads on its own in JUnit output, and keep `must` on the test
+goroutine. The full
 guidance is in [`CONTRIBUTING.md#writing-tests`](CONTRIBUTING.md#writing-tests);
 `testifylint` enforces the mechanical part under `just lint`.
 
