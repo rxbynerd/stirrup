@@ -216,9 +216,11 @@ type HarnessEvent struct {
 	// (tools.lazy_loading) made deferred tools visible to the model: `tools`
 	// lists their internal IDs, `name` is the search tool that loaded them
 	// ("tool_search" for the harness search, otherwise the provider's native
-	// search tool), `input` is the search input and `turn` the turn the
-	// search ran in. Sent once per search that loaded a tool not already
-	// loaded.
+	// search tool), `input` is the search input, `source` is "native" or
+	// "harness" for the search that ran, and `turn` is the turn it ran in.
+	// Sent once per search that loaded a tool not already loaded, before
+	// that turn's tool results and before the turn is committed or
+	// abandoned.
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
 	// Incremental text fragment from the model. Set on "text_delta" events,
 	// and on "thinking_delta" events for reasoning text. On "user_message"

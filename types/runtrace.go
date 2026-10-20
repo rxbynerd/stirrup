@@ -427,8 +427,9 @@ type TurnTrace struct {
 	// ToolsLoaded lists, by internal ID, the deferred tools that tool
 	// searches in this turn made visible to the model for the rest of the
 	// run. Empty when lazy tool loading is off or no search loaded a new
-	// tool. The full TurnRecord carries the visible set itself:
-	// ModelInput.Tools with each definition's Deferred flag.
+	// tool. Only in-process emitters see this summary field; the persisted
+	// copy is TurnRecord.ToolsLoaded, beside ModelInput.Tools with each
+	// definition's Deferred flag.
 	ToolsLoaded []string `json:"toolsLoaded,omitempty"`
 }
 
@@ -494,6 +495,10 @@ type TurnRecord struct {
 	StallNudge bool `json:"stallNudge,omitempty"`
 	// WindDown mirrors TurnTrace.WindDown.
 	WindDown string `json:"windDown,omitempty"`
+	// ToolsLoaded mirrors TurnTrace.ToolsLoaded: the deferred tools this
+	// turn's searches made visible, by internal ID. Recorded here because
+	// the turn record is what the recording emitters persist.
+	ToolsLoaded []string `json:"toolsLoaded,omitempty"`
 }
 
 // ModelInput records what the model saw on a given turn. Request is nil

@@ -61,12 +61,12 @@ const MessageOriginVerifierFeedback = "verifier_feedback"
 // docs/configuration.md#lazy-tool-loading). A tool_search block holds the
 // search call: ID is the provider's call ID, Name the search tool's wire
 // name and Input the search input. A tool_search_result block answers it:
-// ToolUseID echoes the call ID and ToolReferences lists the tools the
-// search loaded, by the model-facing name tool_use blocks use; a failed search sets IsError and puts
-// the provider's error in Content. Both are replayed to the provider that
-// produced them, in place, so a loaded tool stays loaded; the harness's
-// own ToolSearchToolName tool uses ordinary tool_use and tool_result
-// blocks instead.
+// ToolUseID echoes the call ID and ToolReferences lists the internal IDs
+// of the tools the search loaded; a failed search sets IsError, Name to the
+// provider's error code and Content to its error message. Both are
+// replayed to the provider that produced them, in place, so a loaded tool
+// stays loaded; the harness's own ToolSearchToolName tool uses ordinary
+// tool_use and tool_result blocks instead.
 type ContentBlock struct {
 	Type             string          `json:"type"` // "text" | "tool_use" | "tool_result" | "thinking" | "redacted_thinking" | "tool_search" | "tool_search_result"
 	Text             string          `json:"text,omitempty"`
@@ -78,11 +78,10 @@ type ContentBlock struct {
 	IsError          bool            `json:"is_error,omitempty"`
 	ThoughtSignature string          `json:"thought_signature,omitempty"`
 
-	// ToolReferences lists the tools a tool_search_result block loaded, by
-	// the model-facing name tool_use blocks use (the loop presents internal
-	// IDs through the toolset profile before a request). Provider adapters
-	// translate them to wire names on egress exactly as they do tool_use
-	// names.
+	// ToolReferences lists the internal IDs of the registered tools a
+	// tool_search_result block loaded. The loop presents them through the
+	// toolset profile before a request, and provider adapters then translate
+	// them to wire names on egress exactly as they do tool_use names.
 	ToolReferences []string `json:"tool_references,omitempty"`
 
 	// Structured and Kind carry the optional typed tool-result envelope from

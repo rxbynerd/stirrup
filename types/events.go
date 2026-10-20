@@ -338,8 +338,10 @@ func Float64Ptr(v float64) *float64 {
 // deferred tools visible to the model: Tools lists their internal IDs,
 // Name is the search tool that loaded them (ToolSearchToolName for the
 // harness search, otherwise the provider's native search tool), Input is
-// the search input and Turn the turn the search ran in. It is sent once
-// per search that loaded at least one tool not already loaded.
+// the search input, Source "native" or "harness" says which search ran, and
+// Turn is the turn it ran in. It is sent once per search that loaded at
+// least one tool not already loaded, before that turn's tool results and
+// before the turn is committed or abandoned.
 // RequestID correlates a request event with its matching ControlEvent
 // response. See docs/deployment.md for the gRPC sequence and
 // docs/batch.md for the batch event correlation.
