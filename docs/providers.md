@@ -256,6 +256,69 @@ ends with outcome `error` and the `provider stream failed` log line and
 transport `warning` carry the provider's error type. Like every
 failure after the stream opens, it is not retried.
 
+### Tool search
+
+Under [lazy tool loading](configuration.md#lazy-tool-loading) with the
+`auto` strategy, Claude models from the 4.5 generation on use
+Anthropic's server-side tool search
+([`ToolSearch` quirk](provider-quirks.md#3-wave-2-rules-builtinrules))
+instead of the harness `tool_search` tool. The feature is generally
+available and needs no beta header; the wire shape below is taken from
+Anthropic's documentation and is not probed.
+
+The adapter adds the search tool only when the loop asks for it, the
+resolved model has the capability, and at least one tool is deferred.
+The search tool goes first in `tools` and is never deferred, which
+satisfies the API's rule that not every tool may carry
+`defer_loading`. Every deferred definition is sent in full with
+`"defer_loading": true`, on every turn, loaded or not, so the tool
+list stays byte-stable for the prompt cache:
+
+```json
+"tools": [
+  {"type": "tool_search_tool_bm25_20251119", "name": "tool_search_tool_bm25"},
+  {"name": "read_file", "description": "…", "input_schema": {…}},
+  {"name": "mcp_github_search_issues", "description": "…", "input_schema": {…}, "defer_loading": true}
+]
+```
+
+The model's search streams as a `server_tool_use` block whose input
+arrives as `input_json_delta`; the result arrives whole on its
+`content_block_start`:
+
+```text
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"srvtoolu_01","name":"tool_search_tool_bm25"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"github issues\"}"}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_01","content":{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"mcp_github_search_issues"}]}}}
+```
+
+The adapter emits a `tool_search` stream event when the call block
+closes and a `tool_search_result` event carrying the referenced tool
+names when the result block closes. The loop records both in the
+assistant message, in stream order, and marks the referenced tools
+loaded. An empty `tool_references` array means the search matched
+nothing. A failed search carries `tool_search_tool_result_error` with
+an `error_code` (`invalid_tool_input`, `unavailable`,
+`too_many_requests` or `execution_time_exceeded`) and an
+`error_message`; the adapter reports both and the stream continues. A
+result in any other shape loads nothing and is logged at Debug. The
+harness never sends a `tool_result` for a `srvtoolu_` call: the search
+runs on Anthropic's side and the turn's `stop_reason` is unaffected.
+
+On the next request both blocks are replayed in place, rebuilt in the
+exact shape the API returned, so the API keeps the referenced
+definitions expanded for the rest of the run. Only a call naming an
+Anthropic search tool and answered by a result in the same message is
+replayed. When a request does not carry the search tool (the run
+routed this turn to a model without the capability, or nothing is
+deferred), every recorded search block is dropped and every tool is
+sent loaded; a message left empty by the drop is omitted.
+
 ## AWS Bedrock
 
 **File:** `harness/internal/provider/bedrock.go`
