@@ -738,11 +738,3 @@ func BuiltinRules() []Rule {
 		},
 	}
 }
-
-// applyToolSearch returns an Apply that advertises a native tool search of
-// the given variant.
-func applyToolSearch(variant string) func(*ProviderQuirks) {
-	return func(q *ProviderQuirks) {
-		q.ToolSearch = ToolSearchCapability{Supported: true, Variant: variant}
-	}
-}
