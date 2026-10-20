@@ -715,3 +715,105 @@ func writeTemp(t *testing.T, name, content string) string {
 	must.NoError(os.WriteFile(path, []byte(content), 0o644))
 	return path
 }
+
+// TestLoadSuiteHCL_ReplayFileAnchoredToSuiteDir pins that a relative
+// replay_file, on the suite baseline and on a task override, resolves
+// against the suite file's directory rather than the caller's working
+// directory, while an absolute path passes through unchanged.
+func TestLoadSuiteHCL_ReplayFileAnchoredToSuiteDir(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	src := "suite \"replayed\" {\n" +
+		"  run_config {\n" +
+		"    provider {\n" +
+		"      type        = \"replay\"\n" +
+		"      replay_file = \"fixtures/base.jsonl\"\n" +
+		"    }\n" +
+		"  }\n" +
+		"  task \"t1\" {\n" +
+		"    mode   = \"execution\"\n" +
+		"    prompt = \"p\"\n" +
+		"    run_config_overrides {\n" +
+		"      provider {\n" +
+		"        type        = \"replay\"\n" +
+		"        replay_file = \"fixtures/t1.jsonl\"\n" +
+		"      }\n" +
+		"    }\n" +
+		"    judge {\n" +
+		"      type    = \"test-command\"\n" +
+		"      command = \"true\"\n" +
+		"    }\n" +
+		"  }\n" +
+		"  task \"t2\" {\n" +
+		"    mode   = \"execution\"\n" +
+		"    prompt = \"p\"\n" +
+		"    run_config_overrides {\n" +
+		"      provider {\n" +
+		"        type        = \"replay\"\n" +
+		"        replay_file = \"/abs/t2.jsonl\"\n" +
+		"      }\n" +
+		"    }\n" +
+		"    judge {\n" +
+		"      type    = \"test-command\"\n" +
+		"      command = \"true\"\n" +
+		"    }\n" +
+		"  }\n" +
+		"}\n"
+	path := writeTemp(t, "replayed.hcl", src)
+	got, err := LoadSuiteHCL(path)
+	must.NoError(err)
+	dir := filepath.Dir(path)
+	must.NotNil(got.RunConfig)
+	check.Equal(filepath.Join(dir, "fixtures/base.jsonl"), got.RunConfig.Provider.ReplayFile)
+	must.Len(got.Tasks, 2)
+	check.Equal(filepath.Join(dir, "fixtures/t1.jsonl"), got.Tasks[0].RunConfigOverrides.Provider.ReplayFile)
+	check.Equal("/abs/t2.jsonl", got.Tasks[1].RunConfigOverrides.Provider.ReplayFile)
+}
+
+// TestLoadSuiteHCL_DecodesToolChoiceEscalation pins the block on both the
+// suite baseline and a task override, and that a task without it leaves
+// the override nil so the baseline posture passes through.
+func TestLoadSuiteHCL_DecodesToolChoiceEscalation(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	src := "suite \"escalating\" {\n" +
+		"  run_config {\n" +
+		"    tool_choice_escalation {\n" +
+		"      enabled     = true\n" +
+		"      max_retries = 2\n" +
+		"    }\n" +
+		"  }\n" +
+		"  task \"on\" {\n" +
+		"    mode   = \"execution\"\n" +
+		"    prompt = \"p\"\n" +
+		"    run_config_overrides {\n" +
+		"      tool_choice_escalation {\n" +
+		"        enabled = true\n" +
+		"      }\n" +
+		"    }\n" +
+		"    judge {\n" +
+		"      type    = \"test-command\"\n" +
+		"      command = \"true\"\n" +
+		"    }\n" +
+		"  }\n" +
+		"  task \"inherit\" {\n" +
+		"    mode   = \"execution\"\n" +
+		"    prompt = \"p\"\n" +
+		"    run_config_overrides {\n" +
+		"      max_turns = 3\n" +
+		"    }\n" +
+		"    judge {\n" +
+		"      type    = \"test-command\"\n" +
+		"      command = \"true\"\n" +
+		"    }\n" +
+		"  }\n" +
+		"}\n"
+	path := writeTemp(t, "escalating.hcl", src)
+	got, err := LoadSuiteHCL(path)
+	must.NoError(err)
+	must.NotNil(got.RunConfig)
+	check.Equal(&types.ToolChoiceEscalationConfig{Enabled: true, MaxRetries: 2}, got.RunConfig.ToolChoiceEscalation)
+	must.Len(got.Tasks, 2)
+	check.Equal(&types.ToolChoiceEscalationConfig{Enabled: true}, got.Tasks[0].RunConfigOverrides.ToolChoiceEscalation)
+	check.Nil(got.Tasks[1].RunConfigOverrides.ToolChoiceEscalation)
+}

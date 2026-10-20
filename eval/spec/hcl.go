@@ -114,6 +114,16 @@ func LoadSuiteHCL(path string) (types.EvalSuite, error) {
 	if suite.RunConfigFile != "" && !filepath.IsAbs(suite.RunConfigFile) {
 		suite.RunConfigFile = filepath.Join(filepath.Dir(path), suite.RunConfigFile)
 	}
+	// Recording paths follow the same rule so a suite can ship its
+	// fixtures beside it; the harness would otherwise read them relative
+	// to the task workspace.
+	AnchorReplayFiles(suite.RunConfig, filepath.Dir(path))
+	for i := range suite.Tasks {
+		overrides := suite.Tasks[i].RunConfigOverrides
+		if overrides != nil && overrides.Provider != nil {
+			anchorReplayFile(overrides.Provider, filepath.Dir(path))
+		}
+	}
 	return suite, nil
 }
 

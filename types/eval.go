@@ -511,4 +511,7 @@ type RunConfigOverrides struct {
 	EditStrategy    *EditStrategyConfig    `json:"editStrategy,omitempty"`
 	Verifier        *VerifierConfig        `json:"verifier,omitempty"`
 	MaxTurns        *int                   `json:"maxTurns,omitempty"`
+	// ToolChoiceEscalation turns the first-turn no-tool recovery on for
+	// one task; nil leaves the baseline's (off by default) posture.
+	ToolChoiceEscalation *ToolChoiceEscalationConfig `json:"toolChoiceEscalation,omitempty"`
 }
