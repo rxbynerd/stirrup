@@ -39,8 +39,8 @@ import (
 // search tool's wire name and Input the search input. The matching
 // "tool_search_result" event carries the same call ID in ID and the wire
 // names of the tools the search loaded in ToolReferences; a failed search
-// instead sets Text to the provider's error message and Name to its error
-// code. Adapters emit the pair once per search, in stream order, so the
+// instead sets IsError, Name to the provider's error code and Text to its
+// error message. Adapters emit the pair once per search, in stream order, so the
 // loop persists them as tool_search and tool_search_result blocks for
 // replay. Neither needs a tool result from the harness.
 type StreamEvent struct {
@@ -95,6 +95,11 @@ type StreamEvent struct {
 	// "tool_search_result" event loaded. The NormalizingAdapter maps them
 	// back to registry names as it does tool_call names.
 	ToolReferences []string `json:"toolReferences,omitempty"`
+
+	// IsError marks a "tool_search_result" event whose search failed, so a
+	// failure with neither an error code in Name nor a message in Text is
+	// still recorded as one.
+	IsError bool `json:"isError,omitempty"`
 }
 
 // InvalidToolInput describes tool-call arguments that are not a JSON
