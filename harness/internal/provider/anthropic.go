@@ -498,9 +498,8 @@ type anthropicToolResultPart struct {
 //
 // tool_search and tool_search_result blocks become server_tool_use and
 // tool_search_tool_result blocks only when toolSearch is set, and only as a
-// matched pair (see anthropicReplayableToolSearches). Otherwise they are
-// dropped: the request carries no search tool to answer them, and every
-// tool is sent loaded.
+// matched pair (see anthropicReplayableToolSearches); otherwise they are
+// dropped.
 func translateMessagesAnthropic(messages []types.Message, cap quirks.StructuredToolResultCapability, toolSearch bool) []anthropicMessage {
 	out := make([]anthropicMessage, 0, len(messages))
 	skipped := false
