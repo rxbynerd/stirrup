@@ -1477,9 +1477,13 @@ func translateToolsResponses(tools []types.ToolDefinition, strict, examples, too
 }
 
 // responsesToolSearchActive reports whether a request uses OpenAI's hosted
-// tool search: the loop asked for it and the resolved quirks support it.
-func responsesToolSearchActive(params types.StreamParams, q quirks.ProviderQuirks) bool {
-	return params.ToolSearch && q.ToolSearch.Supported
+// tool search: the loop asked for it, the resolved quirks support it, and
+// at least one tool is deferred.
+func responsesToolSearchActive(params types.StreamParams, capability quirks.ToolSearchCapability) bool {
+	if !params.ToolSearch || !capability.Supported {
+		return false
+	}
+	return slices.ContainsFunc(params.Tools, func(t types.ToolDefinition) bool { return t.Deferred })
 }
 
 // buildResponsesRequest projects a StreamParams into the Responses API wire
@@ -1499,7 +1503,7 @@ func responsesToolSearchActive(params types.StreamParams, q quirks.ProviderQuirk
 // TODO(batch): consider returning json.RawMessage if endpoint-contract drift
 // becomes a maintenance burden.
 func buildResponsesRequest(params types.StreamParams, q quirks.ProviderQuirks, strictCache *strictSchemaCache, replayOrigin string) (responsesRequest, error) {
-	toolSearch := responsesToolSearchActive(params, q)
+	toolSearch := responsesToolSearchActive(params, q.ToolSearch)
 	tools, err := translateToolsResponses(params.Tools, q.BehaviourFlags.OpenAI.StrictMode, q.ToolExamples.Supported, toolSearch, params.Model, strictCache)
 	if err != nil {
 		return responsesRequest{}, err

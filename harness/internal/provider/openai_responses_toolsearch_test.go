@@ -112,12 +112,17 @@ func TestBuildResponsesRequest_ToolSearchGateOff(t *testing.T) {
 			p.ToolSearch = false
 			return p
 		}, responsesToolSearchQuirks(true)},
+		{"no tool is deferred", func() types.StreamParams {
+			p := responsesToolSearchParams()
+			p.Tools = p.Tools[:1]
+			return p
+		}, responsesToolSearchQuirks(true)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
 			tools := requestTools(t, tc.params(), tc.q)
-			must.Len(tools, 2, "no hosted search entry")
+			must.NotEmpty(tools)
 			for _, tool := range tools {
 				must.Equal("function", tool["type"])
 				must.NotContains(tool, "defer_loading")
