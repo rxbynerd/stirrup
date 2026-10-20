@@ -91,12 +91,12 @@ func anthropicBuilderCases() []struct {
 		},
 		{
 			name:   "tool_search_replay",
-			params: toolSearchParams(toolSearchHistory(loadedResult("mcp_github_search_issues"))),
+			params: anthropicToolSearchParams(anthropicToolSearchHistory(anthropicToolSearchLoadedResult("mcp_github_search_issues"))),
 		},
 		{
 			name: "tool_search_requested_on_unsupported_model",
 			params: func() types.StreamParams {
-				p := toolSearchParams(toolSearchHistory(loadedResult("mcp_github_search_issues")))
+				p := anthropicToolSearchParams(anthropicToolSearchHistory(anthropicToolSearchLoadedResult("mcp_github_search_issues")))
 				p.Model = "claude-sonnet-4-20250514"
 				return p
 			}(),

@@ -1,8 +1,14 @@
 package provider
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -13,10 +19,10 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-const toolSearchTestModel = "claude-sonnet-5-5"
+const anthropicToolSearchTestModel = "claude-sonnet-5-5"
 
-// toolSearchTools is an eager built-in followed by two deferred MCP tools.
-func toolSearchTools() []types.ToolDefinition {
+// anthropicToolSearchTools is an eager built-in followed by two deferred MCP tools.
+func anthropicToolSearchTools() []types.ToolDefinition {
 	return []types.ToolDefinition{
 		{Name: "read_file", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		{Name: "mcp_github_search_issues", Description: "Search GitHub issues", InputSchema: json.RawMessage(`{"type":"object"}`), Deferred: true},
@@ -24,9 +30,9 @@ func toolSearchTools() []types.ToolDefinition {
 	}
 }
 
-// toolSearchHistory is a turn in which the model searched, loaded one
+// anthropicToolSearchHistory is a turn in which the model searched, loaded one
 // deferred tool and called it, followed by that call's result.
-func toolSearchHistory(result types.ContentBlock) []types.Message {
+func anthropicToolSearchHistory(result types.ContentBlock) []types.Message {
 	return []types.Message{
 		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "find the open bug"}}},
 		{Role: "assistant", Content: []types.ContentBlock{
@@ -39,21 +45,21 @@ func toolSearchHistory(result types.ContentBlock) []types.Message {
 	}
 }
 
-func loadedResult(names ...string) types.ContentBlock {
+func anthropicToolSearchLoadedResult(names ...string) types.ContentBlock {
 	return types.ContentBlock{Type: "tool_search_result", ToolUseID: "srvtoolu_1", ToolReferences: names}
 }
 
-func toolSearchParams(history []types.Message) types.StreamParams {
+func anthropicToolSearchParams(history []types.Message) types.StreamParams {
 	return types.StreamParams{
-		Model:      toolSearchTestModel,
+		Model:      anthropicToolSearchTestModel,
 		MaxTokens:  1024,
-		Tools:      toolSearchTools(),
+		Tools:      anthropicToolSearchTools(),
 		ToolSearch: true,
 		Messages:   history,
 	}
 }
 
-func wireTools(t *testing.T, body []byte) []string {
+func anthropicToolSearchWireTools(t *testing.T, body []byte) []string {
 	t.Helper()
 	must := require.New(t)
 	var req struct {
@@ -67,7 +73,7 @@ func wireTools(t *testing.T, body []byte) []string {
 	return out
 }
 
-func blockStrings(raw []json.RawMessage) []string {
+func anthropicToolSearchBlockStrings(raw []json.RawMessage) []string {
 	out := make([]string, len(raw))
 	for i, b := range raw {
 		out[i] = string(b)
@@ -77,7 +83,7 @@ func blockStrings(raw []json.RawMessage) []string {
 
 func TestBuildAnthropicRequest_ToolSearch_SearchToolFirstAndDeferredFlagged(t *testing.T) {
 	must := require.New(t)
-	params := toolSearchParams(nil)
+	params := anthropicToolSearchParams(nil)
 	body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
 
 	want := []string{
@@ -86,12 +92,12 @@ func TestBuildAnthropicRequest_ToolSearch_SearchToolFirstAndDeferredFlagged(t *t
 		`{"name":"mcp_github_search_issues","description":"Search GitHub issues","input_schema":{"type":"object"},"defer_loading":true}`,
 		`{"name":"mcp_jira_create_issue","description":"Create a Jira issue","input_schema":{"type":"object"},"defer_loading":true}`,
 	}
-	must.Equal(want, wireTools(t, body))
+	must.Equal(want, anthropicToolSearchWireTools(t, body))
 }
 
 func TestBuildAnthropicRequest_ToolSearch_InputExamplesSurviveDeferral(t *testing.T) {
 	must := require.New(t)
-	params := toolSearchParams(nil)
+	params := anthropicToolSearchParams(nil)
 	params.Tools[1].Presentation = &types.ToolPresentation{
 		InputExamples: []json.RawMessage{json.RawMessage(`{"q":"bug"}`)},
 	}
@@ -99,19 +105,19 @@ func TestBuildAnthropicRequest_ToolSearch_InputExamplesSurviveDeferral(t *testin
 
 	must.JSONEq(
 		`{"name":"mcp_github_search_issues","description":"Search GitHub issues","input_schema":{"type":"object"},"input_examples":[{"q":"bug"}],"defer_loading":true}`,
-		wireTools(t, body)[2],
+		anthropicToolSearchWireTools(t, body)[2],
 	)
 }
 
 func TestBuildAnthropicRequest_ToolSearch_SearchToolNeverDeferred(t *testing.T) {
 	must := require.New(t)
-	params := toolSearchParams(nil)
+	params := anthropicToolSearchParams(nil)
 	for i := range params.Tools {
 		params.Tools[i].Deferred = true
 	}
 	body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
 
-	tools := wireTools(t, body)
+	tools := anthropicToolSearchWireTools(t, body)
 	must.Len(tools, 4)
 	must.JSONEq(`{"type":"tool_search_tool_bm25_20251119","name":"tool_search_tool_bm25"}`, tools[0])
 	for _, tool := range tools[1:] {
@@ -129,8 +135,8 @@ func TestBuildAnthropicRequest_ToolSearch_VariantSelectsSearchTool(t *testing.T)
 		t.Run("variant="+variant, func(t *testing.T) {
 			must := require.New(t)
 			q := quirks.ProviderQuirks{ToolSearch: quirks.ToolSearchCapability{Supported: true, Variant: variant}}
-			body := anthropicWireBody(t, toolSearchParams(nil), true, q)
-			must.Equal(want, wireTools(t, body)[0])
+			body := anthropicWireBody(t, anthropicToolSearchParams(nil), true, q)
+			must.Equal(want, anthropicToolSearchWireTools(t, body)[0])
 		})
 	}
 }
@@ -140,13 +146,13 @@ func TestBuildAnthropicRequest_ToolSearch_VariantSelectsSearchTool(t *testing.T)
 // least one deferred tool) the request carries no search tool, no
 // defer_loading, and none of the recorded search blocks.
 func TestBuildAnthropicRequest_ToolSearch_GateOffSendsEveryToolLoaded(t *testing.T) {
-	notRequested := toolSearchParams(toolSearchHistory(loadedResult("mcp_github_search_issues")))
+	notRequested := anthropicToolSearchParams(anthropicToolSearchHistory(anthropicToolSearchLoadedResult("mcp_github_search_issues")))
 	notRequested.ToolSearch = false
 
-	unsupportedModel := toolSearchParams(toolSearchHistory(loadedResult("mcp_github_search_issues")))
+	unsupportedModel := anthropicToolSearchParams(anthropicToolSearchHistory(anthropicToolSearchLoadedResult("mcp_github_search_issues")))
 	unsupportedModel.Model = "claude-sonnet-4-20250514"
 
-	nothingDeferred := toolSearchParams(toolSearchHistory(loadedResult("mcp_github_search_issues")))
+	nothingDeferred := anthropicToolSearchParams(anthropicToolSearchHistory(anthropicToolSearchLoadedResult("mcp_github_search_issues")))
 	for i := range nothingDeferred.Tools {
 		nothingDeferred.Tools[i].Deferred = false
 	}
@@ -165,11 +171,11 @@ func TestBuildAnthropicRequest_ToolSearch_GateOffSendsEveryToolLoaded(t *testing
 			must.NotContains(wire, "defer_loading")
 			must.NotContains(wire, "server_tool_use")
 			must.NotContains(wire, "srvtoolu_1")
-			must.Len(wireTools(t, body), 3)
+			must.Len(anthropicToolSearchWireTools(t, body), 3)
 			must.Equal([]string{
 				`{"type":"text","text":"Searching."}`,
 				`{"type":"tool_use","id":"toolu_1","name":"mcp_github_search_issues","input":{"q":"bug"}}`,
-			}, blockStrings(assistantWireBlocks(t, body, 1)))
+			}, anthropicToolSearchBlockStrings(assistantWireBlocks(t, body, 1)))
 		})
 	}
 }
@@ -180,7 +186,7 @@ func TestBuildAnthropicRequest_ToolSearch_GateOffOmitsSearchOnlyTurn(t *testing.
 		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "find it"}}},
 		{Role: "assistant", Content: []types.ContentBlock{
 			{Type: "tool_search", ID: "srvtoolu_1", Name: "tool_search_tool_bm25", Input: json.RawMessage(`{"query":"x"}`)},
-			loadedResult(),
+			anthropicToolSearchLoadedResult(),
 		}},
 		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "Continue."}}},
 	}
@@ -201,50 +207,65 @@ func TestBuildAnthropicRequest_ToolSearch_ReplayWireShape(t *testing.T) {
 	}{
 		{
 			name:   "loaded",
-			result: loadedResult("mcp_github_search_issues", "mcp_jira_create_issue"),
+			result: anthropicToolSearchLoadedResult("mcp_github_search_issues", "mcp_jira_create_issue"),
 			want: `{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_1","content":{"type":"tool_search_tool_search_result",` +
 				`"tool_references":[{"type":"tool_reference","tool_name":"mcp_github_search_issues"},{"type":"tool_reference","tool_name":"mcp_jira_create_issue"}]}}`,
 		},
 		{
 			name:   "no match",
-			result: loadedResult(),
+			result: anthropicToolSearchLoadedResult(),
 			want:   `{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_1","content":{"type":"tool_search_tool_search_result","tool_references":[]}}`,
 		},
 		{
-			name: "error",
+			name: "error with code and message",
 			result: types.ContentBlock{
 				Type: "tool_search_result", ToolUseID: "srvtoolu_1", IsError: true,
-				Content: "invalid_tool_input: Query too long: exceeds 500 characters",
+				Name: "invalid_tool_input", Content: "Query too long: exceeds 500 characters",
 			},
 			want: `{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_1","content":{"type":"tool_search_tool_result_error",` +
 				`"error_code":"invalid_tool_input","error_message":"Query too long: exceeds 500 characters"}}`,
 		},
 		{
-			name:   "error without message",
-			result: types.ContentBlock{Type: "tool_search_result", ToolUseID: "srvtoolu_1", IsError: true, Content: "unavailable"},
+			name:   "error with code only",
+			result: types.ContentBlock{Type: "tool_search_result", ToolUseID: "srvtoolu_1", IsError: true, Name: "too_many_requests"},
+			want:   `{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_1","content":{"type":"tool_search_tool_result_error","error_code":"too_many_requests","error_message":""}}`,
+		},
+		{
+			name:   "error with message only",
+			result: types.ContentBlock{Type: "tool_search_result", ToolUseID: "srvtoolu_1", IsError: true, Content: "Search timed out"},
+			want:   `{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_1","content":{"type":"tool_search_tool_result_error","error_code":"unavailable","error_message":"Search timed out"}}`,
+		},
+		{
+			name:   "error with neither code nor message",
+			result: types.ContentBlock{Type: "tool_search_result", ToolUseID: "srvtoolu_1", IsError: true},
 			want:   `{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_1","content":{"type":"tool_search_tool_result_error","error_code":"unavailable","error_message":""}}`,
+		},
+		{
+			name:   "message colon text is not split",
+			result: types.ContentBlock{Type: "tool_search_result", ToolUseID: "srvtoolu_1", IsError: true, Name: "unavailable", Content: "upstream: timed out"},
+			want:   `{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_1","content":{"type":"tool_search_tool_result_error","error_code":"unavailable","error_message":"upstream: timed out"}}`,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
-			params := toolSearchParams(toolSearchHistory(tc.result))
+			params := anthropicToolSearchParams(anthropicToolSearchHistory(tc.result))
 			body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
 			must.Equal([]string{
 				`{"type":"text","text":"Searching."}`,
 				call,
 				tc.want,
 				`{"type":"tool_use","id":"toolu_1","name":"mcp_github_search_issues","input":{"q":"bug"}}`,
-			}, blockStrings(assistantWireBlocks(t, body, 1)))
+			}, anthropicToolSearchBlockStrings(assistantWireBlocks(t, body, 1)))
 		})
 	}
 }
 
 func TestBuildAnthropicRequest_ToolSearch_ReplaysEmptyInputAsObject(t *testing.T) {
 	must := require.New(t)
-	history := toolSearchHistory(loadedResult())
+	history := anthropicToolSearchHistory(anthropicToolSearchLoadedResult())
 	history[1].Content[1].Input = nil
-	params := toolSearchParams(history)
+	params := anthropicToolSearchParams(history)
 	body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
 	must.JSONEq(
 		`{"type":"server_tool_use","id":"srvtoolu_1","name":"tool_search_tool_bm25","input":{}}`,
@@ -260,15 +281,15 @@ func TestBuildAnthropicRequest_ToolSearch_DropsUnreplayableSearchBlocks(t *testi
 			{Type: "tool_search", ID: "srvtoolu_1", Name: "tool_search_tool_bm25"},
 		},
 		"orphaned result": {
-			loadedResult("mcp_github_search_issues"),
+			anthropicToolSearchLoadedResult("mcp_github_search_issues"),
 		},
 		"result for another call": {
 			{Type: "tool_search", ID: "srvtoolu_2", Name: "tool_search_tool_bm25"},
-			loadedResult("mcp_github_search_issues"),
+			anthropicToolSearchLoadedResult("mcp_github_search_issues"),
 		},
 		"foreign search tool": {
 			{Type: "tool_search", ID: "srvtoolu_1", Name: "tool_search"},
-			loadedResult("mcp_github_search_issues"),
+			anthropicToolSearchLoadedResult("mcp_github_search_issues"),
 		},
 	}
 	for name, searchBlocks := range cases {
@@ -279,17 +300,17 @@ func TestBuildAnthropicRequest_ToolSearch_DropsUnreplayableSearchBlocks(t *testi
 				{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "go"}}},
 				{Role: "assistant", Content: content},
 			}
-			params := toolSearchParams(history)
+			params := anthropicToolSearchParams(history)
 			body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
-			must.Equal([]string{`{"type":"text","text":"Searching."}`}, blockStrings(assistantWireBlocks(t, body, 1)))
+			must.Equal([]string{`{"type":"text","text":"Searching."}`}, anthropicToolSearchBlockStrings(assistantWireBlocks(t, body, 1)))
 		})
 	}
 }
 
-// toolSearchSSE is a streamed turn in which the model searches, the search
+// anthropicToolSearchSSE is a streamed turn in which the model searches, the search
 // result arrives inline on content_block_start, and the model calls the
 // loaded tool.
-func toolSearchSSE(resultContent string) string {
+func anthropicToolSearchSSE(resultContent string) string {
 	return joinLines(
 		makeSSE("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
 		makeSSE("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Searching."}}`),
@@ -308,80 +329,65 @@ func toolSearchSSE(resultContent string) string {
 	)
 }
 
-// assistantBlocksFromEvents persists stream events as the loop does for
-// the assistant message: in stream order, text joined per run.
-func assistantBlocksFromEvents(t *testing.T, events []types.StreamEvent) []types.ContentBlock {
-	t.Helper()
-	must := require.New(t)
-	var blocks []types.ContentBlock
-	var text strings.Builder
-	flush := func() {
-		if text.Len() > 0 {
-			blocks = append(blocks, types.ContentBlock{Type: "text", Text: text.String()})
-			text.Reset()
-		}
-	}
-	for _, ev := range events {
-		switch ev.Type {
-		case "text_delta":
-			text.WriteString(ev.Text)
-		case "tool_call":
-			flush()
-			input, err := json.Marshal(ev.Input)
-			must.NoError(err)
-			blocks = append(blocks, types.ContentBlock{Type: "tool_use", ID: ev.ID, Name: ev.Name, Input: input})
-		case "tool_search":
-			flush()
-			input, err := json.Marshal(ev.Input)
-			must.NoError(err)
-			blocks = append(blocks, types.ContentBlock{Type: "tool_search", ID: ev.ID, Name: ev.Name, Input: input})
-		case "tool_search_result":
-			flush()
-			b := types.ContentBlock{Type: "tool_search_result", ToolUseID: ev.ID, ToolReferences: ev.ToolReferences}
-			if ev.Name != "" {
-				b.IsError = true
-				b.Content = ev.Name + ": " + ev.Text
-			}
-			blocks = append(blocks, b)
-		}
-	}
-	flush()
-	return blocks
-}
-
 // TestAnthropicAdapter_ToolSearchStream_RoundTrips streams each documented
-// result form, checks the events, and replays the persisted turn: the
-// server_tool_use and tool_search_tool_result blocks go back exactly as
-// the API sent them.
+// result form, checks the events, and replays the persisted blocks: the
+// server_tool_use and tool_search_tool_result blocks go back as the API sent
+// them, except that a failed search with no error code replays with the
+// fallback code.
 func TestAnthropicAdapter_ToolSearchStream_RoundTrips(t *testing.T) {
 	cases := []struct {
 		name       string
 		content    string
-		wantRefs   []string
-		wantCode   string
-		wantErrMsg string
+		wantEvent  types.StreamEvent
+		wantBlock  types.ContentBlock
+		wantReplay string
 	}{
 		{
-			name:     "loaded",
-			content:  `{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"mcp_github_search_issues"}]}`,
-			wantRefs: []string{"mcp_github_search_issues"},
+			name:       "loaded",
+			content:    `{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"mcp_github_search_issues"}]}`,
+			wantEvent:  types.StreamEvent{ToolReferences: []string{"mcp_github_search_issues"}},
+			wantBlock:  types.ContentBlock{ToolReferences: []string{"mcp_github_search_issues"}},
+			wantReplay: `{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"mcp_github_search_issues"}]}`,
 		},
 		{
-			name:    "no match",
-			content: `{"type":"tool_search_tool_search_result","tool_references":[]}`,
+			name:       "no match",
+			content:    `{"type":"tool_search_tool_search_result","tool_references":[]}`,
+			wantReplay: `{"type":"tool_search_tool_search_result","tool_references":[]}`,
 		},
 		{
-			name:       "error",
+			name:       "error with code and message",
 			content:    `{"type":"tool_search_tool_result_error","error_code":"too_many_requests","error_message":"Rate limit exceeded"}`,
-			wantCode:   "too_many_requests",
-			wantErrMsg: "Rate limit exceeded",
+			wantEvent:  types.StreamEvent{IsError: true, Name: "too_many_requests", Text: "Rate limit exceeded"},
+			wantBlock:  types.ContentBlock{IsError: true, Name: "too_many_requests", Content: "Rate limit exceeded"},
+			wantReplay: `{"type":"tool_search_tool_result_error","error_code":"too_many_requests","error_message":"Rate limit exceeded"}`,
+		},
+		{
+			name:       "error with code only",
+			content:    `{"type":"tool_search_tool_result_error","error_code":"execution_time_exceeded"}`,
+			wantEvent:  types.StreamEvent{IsError: true, Name: "execution_time_exceeded"},
+			wantBlock:  types.ContentBlock{IsError: true, Name: "execution_time_exceeded"},
+			wantReplay: `{"type":"tool_search_tool_result_error","error_code":"execution_time_exceeded","error_message":""}`,
+		},
+		{
+			name:       "error with message only",
+			content:    `{"type":"tool_search_tool_result_error","error_message":"Search timed out"}`,
+			wantEvent:  types.StreamEvent{IsError: true, Text: "Search timed out"},
+			wantBlock:  types.ContentBlock{IsError: true, Content: "Search timed out"},
+			wantReplay: `{"type":"tool_search_tool_result_error","error_code":"unavailable","error_message":"Search timed out"}`,
+		},
+		{
+			name:       "error with neither code nor message",
+			content:    `{"type":"tool_search_tool_result_error"}`,
+			wantEvent:  types.StreamEvent{IsError: true},
+			wantBlock:  types.ContentBlock{IsError: true},
+			wantReplay: `{"type":"tool_search_tool_result_error","error_code":"unavailable","error_message":""}`,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
 			check := assert.New(t)
-			events := streamAnthropicSSE(t, toolSearchSSE(tc.content))
+			events := streamAnthropicSSE(t, anthropicToolSearchSSE(tc.content))
 			must.Equal([]string{"text_delta", "tool_search", "tool_search_result", "tool_call", "message_complete"}, eventTypes(events))
 
 			search := events[1]
@@ -389,23 +395,28 @@ func TestAnthropicAdapter_ToolSearchStream_RoundTrips(t *testing.T) {
 			check.Equal("tool_search_tool_bm25", search.Name)
 			check.Equal(map[string]any{"query": "github issues", "limit": float64(3)}, search.Input)
 
-			result := events[2]
-			check.Equal("srvtoolu_1", result.ID)
-			check.Equal(tc.wantRefs, result.ToolReferences)
-			check.Equal(tc.wantCode, result.Name)
-			check.Equal(tc.wantErrMsg, result.Text)
+			wantEvent := tc.wantEvent
+			wantEvent.Type, wantEvent.ID = "tool_search_result", "srvtoolu_1"
+			check.Equal(wantEvent, events[2])
 			check.Equal("tool_use", events[4].StopReason)
 
+			wantBlock := tc.wantBlock
+			wantBlock.Type, wantBlock.ToolUseID = "tool_search_result", "srvtoolu_1"
 			history := []types.Message{
 				{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "find the open bug"}}},
-				{Role: "assistant", Content: assistantBlocksFromEvents(t, events)},
+				{Role: "assistant", Content: []types.ContentBlock{
+					{Type: "text", Text: "Searching."},
+					{Type: "tool_search", ID: "srvtoolu_1", Name: "tool_search_tool_bm25", Input: json.RawMessage(`{"query":"github issues","limit":3}`)},
+					wantBlock,
+					{Type: "tool_use", ID: "toolu_1", Name: "mcp_github_search_issues", Input: json.RawMessage(`{"q":"bug"}`)},
+				}},
 			}
-			params := toolSearchParams(history)
+			params := anthropicToolSearchParams(history)
 			body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
 			got := assistantWireBlocks(t, body, 1)
 			must.Len(got, 4)
 			must.JSONEq(`{"type":"server_tool_use","id":"srvtoolu_1","name":"tool_search_tool_bm25","input":{"query":"github issues","limit":3}}`, string(got[1]))
-			must.JSONEq(`{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_1","content":`+tc.content+`}`, string(got[2]))
+			must.JSONEq(`{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_1","content":`+tc.wantReplay+`}`, string(got[2]))
 		})
 	}
 }
@@ -479,4 +490,103 @@ func TestAnthropicAdapter_ToolSearchStream_EnforcesSizeLimits(t *testing.T) {
 		must.Equal([]string{"error"}, eventTypes(events))
 		must.ErrorContains(events[0].Error, "tool_search_tool_result block exceeds")
 	})
+}
+
+// TestBuildAnthropicRequest_ToolSearch_ForeignSearchEmptiesMessage pins that
+// a message holding only another provider's search is omitted and the turns
+// either side of it are joined.
+func TestBuildAnthropicRequest_ToolSearch_ForeignSearchEmptiesMessage(t *testing.T) {
+	must := require.New(t)
+	history := []types.Message{
+		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "find it"}}},
+		{Role: "assistant", Content: []types.ContentBlock{
+			{Type: "tool_search", ID: "call_1", Name: "tool_search", Input: json.RawMessage(`{"paths":["mcp"]}`)},
+			{Type: "tool_search_result", ToolUseID: "call_1", ToolReferences: []string{"mcp_github_search_issues"}},
+		}},
+		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "Continue."}}},
+	}
+	got, err := json.Marshal(translateMessagesAnthropic(history, quirks.StructuredToolResultCapability{}, true))
+	must.NoError(err)
+	must.JSONEq(`[{"role":"user","content":[{"type":"text","text":"find it"},{"type":"text","text":"Continue."}]}]`, string(got))
+}
+
+func TestAnthropicAdapter_ToolSearchUnsupported_LogsAndSendsEveryToolLoaded(t *testing.T) {
+	cases := map[string]struct {
+		model     string
+		wantDebug int
+		wantTools int
+	}{
+		"unsupported model": {model: "claude-sonnet-4-20250514", wantDebug: 1, wantTools: 3},
+		"supported model":   {model: anthropicToolSearchTestModel, wantDebug: 0, wantTools: 4},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
+			var rawBody []byte
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				rawBody, _ = io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				_, _ = fmt.Fprint(w, makeSSE("message_stop", `{}`))
+			}))
+			t.Cleanup(srv.Close)
+
+			var buf bytes.Buffer
+			adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
+			adapter.baseURL = srv.URL
+			adapter.Logger = slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+			params := anthropicToolSearchParams(nil)
+			params.Model = tc.model
+			ch, err := adapter.Stream(context.Background(), params)
+			must.NoError(err)
+			for range ch {
+			}
+
+			var records []map[string]any
+			for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+				var rec map[string]any
+				must.NoError(json.Unmarshal([]byte(line), &rec))
+				if rec["msg"] == "anthropic tool search not supported; sending every tool loaded" {
+					records = append(records, rec)
+				}
+			}
+			must.Len(records, tc.wantDebug)
+			for _, rec := range records {
+				must.Equal("anthropic", rec["provider.type"])
+				must.Equal(tc.model, rec["provider.model"])
+			}
+			must.Len(anthropicToolSearchWireTools(t, rawBody), tc.wantTools)
+			if tc.wantDebug > 0 {
+				must.NotContains(string(rawBody), "defer_loading")
+				must.NotContains(string(rawBody), "tool_search_tool_bm25")
+			}
+		})
+	}
+}
+
+func TestBuildAnthropicRequest_ToolSearch_NothingDeferredSendsNoSearchTool(t *testing.T) {
+	must := require.New(t)
+	params := anthropicToolSearchParams(nil)
+	for i := range params.Tools {
+		params.Tools[i].Deferred = false
+	}
+	body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
+	must.Len(anthropicToolSearchWireTools(t, body), 3)
+	must.NotContains(string(body), "defer_loading")
+	must.NotContains(string(body), "tool_search_tool_bm25")
+}
+
+func TestAnthropicAdapter_ToolSearchStream_UnrecognisedResultWarns(t *testing.T) {
+	must := require.New(t)
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	ev := parseAnthropicToolSearchResult(context.Background(), logger, "srvtoolu_1", json.RawMessage(`{"type":"tool_search_tool_future_result"}`))
+
+	must.Equal(types.StreamEvent{Type: "tool_search_result", ID: "srvtoolu_1"}, ev)
+	var rec map[string]any
+	must.NoError(json.Unmarshal(buf.Bytes(), &rec))
+	must.Equal("WARN", rec["level"])
+	must.Equal("anthropic tool search result not recognised", rec["msg"])
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -149,6 +150,7 @@ func TestFabricateStream_AnthropicToolSearch(t *testing.T) {
 		name        string
 		content     string
 		wantRefs    []string
+		wantError   bool
 		wantCode    string
 		wantMessage string
 		wantBlock   types.ContentBlock
@@ -165,11 +167,32 @@ func TestFabricateStream_AnthropicToolSearch(t *testing.T) {
 			wantBlock: types.ContentBlock{Type: "tool_search_result", ToolUseID: "srvtoolu_1"},
 		},
 		{
-			name:        "error",
+			name:        "error with code and message",
 			content:     `{"type":"tool_search_tool_result_error","error_code":"unavailable","error_message":"Search timed out"}`,
+			wantError:   true,
 			wantCode:    "unavailable",
 			wantMessage: "Search timed out",
-			wantBlock:   types.ContentBlock{Type: "tool_search_result", ToolUseID: "srvtoolu_1", IsError: true, Content: "unavailable: Search timed out"},
+			wantBlock:   types.ContentBlock{Type: "tool_search_result", ToolUseID: "srvtoolu_1", IsError: true, Name: "unavailable", Content: "Search timed out"},
+		},
+		{
+			name:      "error with code only",
+			content:   `{"type":"tool_search_tool_result_error","error_code":"too_many_requests"}`,
+			wantError: true,
+			wantCode:  "too_many_requests",
+			wantBlock: types.ContentBlock{Type: "tool_search_result", ToolUseID: "srvtoolu_1", IsError: true, Name: "too_many_requests"},
+		},
+		{
+			name:        "error with message only",
+			content:     `{"type":"tool_search_tool_result_error","error_message":"Search timed out"}`,
+			wantError:   true,
+			wantMessage: "Search timed out",
+			wantBlock:   types.ContentBlock{Type: "tool_search_result", ToolUseID: "srvtoolu_1", IsError: true, Content: "Search timed out"},
+		},
+		{
+			name:      "error with neither code nor message",
+			content:   `{"type":"tool_search_tool_result_error"}`,
+			wantError: true,
+			wantBlock: types.ContentBlock{Type: "tool_search_result", ToolUseID: "srvtoolu_1", IsError: true},
 		},
 	}
 	for _, tc := range cases {
@@ -207,6 +230,7 @@ func TestFabricateStream_AnthropicToolSearch(t *testing.T) {
 				Type:           "tool_search_result",
 				ID:             "srvtoolu_1",
 				ToolReferences: tc.wantRefs,
+				IsError:        tc.wantError,
 				Name:           tc.wantCode,
 				Text:           tc.wantMessage,
 			}, got[2])
@@ -222,6 +246,31 @@ func TestFabricateStream_AnthropicToolSearch(t *testing.T) {
 			check.Equal(tc.wantBlock, content[2])
 		})
 	}
+}
+
+// TestFabricateStream_AnthropicToolSearch_DoesNotLogToDefaultHandler pins
+// that an unrecognised result in a batch response is not logged through the
+// process-wide logger, whose handler may not scrub content.
+func TestFabricateStream_AnthropicToolSearch_DoesNotLogToDefaultHandler(t *testing.T) {
+	must := require.New(t)
+	var logged strings.Builder
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	response := []byte(`{
+		"content": [
+			{"type": "server_tool_use", "id": "srvtoolu_1", "name": "tool_search_tool_bm25", "input": "not an object"},
+			{"type": "tool_search_tool_result", "tool_use_id": "srvtoolu_1", "content": {"type": "tool_search_tool_future_result"}}
+		],
+		"stop_reason": "end_turn"
+	}`)
+	ch := make(chan types.StreamEvent, 8)
+	must.NoError(fabricateAnthropicStream(ch, response))
+	close(ch)
+
+	must.Equal([]string{"tool_search", "tool_search_result", "message_complete"}, eventTypes(drain(t, ch)))
+	must.Empty(logged.String())
 }
 
 // TestFabricateStream_OpenAIChatCompletions covers the mapping of an
@@ -2004,36 +2053,47 @@ func TestFabricateStream_AnthropicThinkingMatchesStream(t *testing.T) {
 }
 
 func TestFabricateStream_AnthropicToolSearchMatchesStream(t *testing.T) {
-	must := require.New(t)
-	result := `{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"mcp_github_search_issues"}]}`
-	response := []byte(`{
-		"content": [
-			{"type": "text", "text": "Searching."},
-			{"type": "server_tool_use", "id": "srvtoolu_1", "name": "tool_search_tool_bm25", "input": {"query": "github issues", "limit": 3}},
-			{"type": "tool_search_tool_result", "tool_use_id": "srvtoolu_1", "content": ` + result + `},
-			{"type": "tool_use", "id": "toolu_1", "name": "mcp_github_search_issues", "input": {"q": "bug"}}
-		],
-		"stop_reason": "tool_use",
-		"usage": {"output_tokens": 40}
-	}`)
-	streamed := streamAnthropicSSE(t, toolSearchSSE(result))
-
-	ch := make(chan types.StreamEvent, 8)
-	must.NoError(fabricateAnthropicStream(ch, response))
-	close(ch)
-	batched := drain(t, ch)
-
-	must.Equal(eventTypes(streamed), eventTypes(batched))
-	for i := range streamed {
-		t.Run(fmt.Sprintf("event %d %s", i, streamed[i].Type), func(t *testing.T) {
+	results := map[string]string{
+		"loaded":                  `{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"mcp_github_search_issues"}]}`,
+		"no match":                `{"type":"tool_search_tool_search_result","tool_references":[]}`,
+		"error code and message":  `{"type":"tool_search_tool_result_error","error_code":"unavailable","error_message":"Search timed out"}`,
+		"error code only":         `{"type":"tool_search_tool_result_error","error_code":"too_many_requests"}`,
+		"error message only":      `{"type":"tool_search_tool_result_error","error_message":"Search timed out"}`,
+		"error without any field": `{"type":"tool_search_tool_result_error"}`,
+		"unrecognised":            `{"type":"tool_search_tool_future_result"}`,
+	}
+	for name, result := range results {
+		t.Run(name, func(t *testing.T) {
 			must := require.New(t)
-			s, b := streamed[i], batched[i]
-			must.Equal(s.Text, b.Text)
-			must.Equal(s.ID, b.ID)
-			must.Equal(s.Name, b.Name)
-			must.Equal(s.Input, b.Input)
-			must.Equal(s.ToolReferences, b.ToolReferences)
-			must.Equal(s.StopReason, b.StopReason)
+			response := []byte(`{
+				"content": [
+					{"type": "text", "text": "Searching."},
+					{"type": "server_tool_use", "id": "srvtoolu_1", "name": "tool_search_tool_bm25", "input": {"query": "github issues", "limit": 3}},
+					{"type": "tool_search_tool_result", "tool_use_id": "srvtoolu_1", "content": ` + result + `},
+					{"type": "tool_use", "id": "toolu_1", "name": "mcp_github_search_issues", "input": {"q": "bug"}}
+				],
+				"stop_reason": "tool_use",
+				"usage": {"output_tokens": 40}
+			}`)
+			streamed := streamAnthropicSSE(t, anthropicToolSearchSSE(result))
+
+			ch := make(chan types.StreamEvent, 8)
+			must.NoError(fabricateAnthropicStream(ch, response))
+			close(ch)
+			batched := drain(t, ch)
+
+			must.Equal(eventTypes(streamed), eventTypes(batched))
+			for i := range streamed {
+				must := require.New(t)
+				s, b := streamed[i], batched[i]
+				must.Equal(s.Text, b.Text, "event %d %s", i, s.Type)
+				must.Equal(s.ID, b.ID, "event %d %s", i, s.Type)
+				must.Equal(s.Name, b.Name, "event %d %s", i, s.Type)
+				must.Equal(s.Input, b.Input, "event %d %s", i, s.Type)
+				must.Equal(s.ToolReferences, b.ToolReferences, "event %d %s", i, s.Type)
+				must.Equal(s.IsError, b.IsError, "event %d %s", i, s.Type)
+				must.Equal(s.StopReason, b.StopReason, "event %d %s", i, s.Type)
+			}
 		})
 	}
 }

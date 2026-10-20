@@ -467,7 +467,7 @@ func fabricateAnthropicStream(ch chan<- types.StreamEvent, response json.RawMess
 		return fmt.Errorf("fabricate anthropic stream: decode response: %w", err)
 	}
 
-	ctx, logger := context.Background(), slog.Default()
+	ctx, logger := context.Background(), slog.New(slog.DiscardHandler)
 	blocks := make([]types.ContentBlock, 0, len(resp.Content))
 	for _, block := range resp.Content {
 		switch block.Type {
@@ -489,10 +489,9 @@ func fabricateAnthropicStream(ch chan<- types.StreamEvent, response json.RawMess
 				Type:           "tool_search_result",
 				ToolUseID:      block.ToolUseID,
 				ToolReferences: ev.ToolReferences,
-			}
-			if ev.Name != "" {
-				result.IsError = true
-				result.Content = ev.Name + ": " + ev.Text
+				IsError:        ev.IsError,
+				Name:           ev.Name,
+				Content:        ev.Text,
 			}
 			blocks = append(blocks, result)
 		case "text":

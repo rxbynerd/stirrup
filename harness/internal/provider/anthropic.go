@@ -379,8 +379,8 @@ type anthropicMessage struct {
 // requires, so it never rides on any other block type.
 //
 // A tool_search_tool_result block is rebuilt from ToolReferences (the
-// loaded tools' wire names) or, when IsError is set, from Text holding
-// "<error_code>: <error_message>"; MarshalJSON emits only its documented
+// loaded tools' wire names) or, when IsError is set, from Name (the error
+// code) and Text (the error message); MarshalJSON emits only its documented
 // keys.
 type anthropicContentBlock struct {
 	Type           string          `json:"type"`
@@ -438,6 +438,10 @@ func (b anthropicContentBlock) MarshalJSON() ([]byte, error) {
 const (
 	anthropicToolSearchResultType = "tool_search_tool_search_result"
 	anthropicToolSearchErrorType  = "tool_search_tool_result_error"
+
+	// anthropicToolSearchFallbackErrorCode is replayed for a failed search
+	// recorded without an error code, which the API would not accept empty.
+	anthropicToolSearchFallbackErrorCode = "unavailable"
 )
 
 // anthropicToolReference is one entry of a tool search result's
@@ -452,12 +456,15 @@ type anthropicToolReference struct {
 // the search matched nothing.
 func anthropicToolSearchResultContent(b anthropicContentBlock) any {
 	if b.IsError {
-		code, message, _ := strings.Cut(b.Text, ": ")
+		code := b.Name
+		if code == "" {
+			code = anthropicToolSearchFallbackErrorCode
+		}
 		return struct {
 			Type         string `json:"type"`
 			ErrorCode    string `json:"error_code"`
 			ErrorMessage string `json:"error_message"`
-		}{Type: anthropicToolSearchErrorType, ErrorCode: code, ErrorMessage: message}
+		}{Type: anthropicToolSearchErrorType, ErrorCode: code, ErrorMessage: b.Text}
 	}
 	refs := make([]anthropicToolReference, len(b.ToolReferences))
 	for i, name := range b.ToolReferences {
@@ -523,6 +530,7 @@ func translateMessagesAnthropic(messages []types.Message, cap quirks.StructuredT
 						ToolUseID:      b.ToolUseID,
 						ToolReferences: b.ToolReferences,
 						IsError:        b.IsError,
+						Name:           b.Name,
 						Text:           b.Content,
 					})
 				}
@@ -552,9 +560,9 @@ func translateMessagesAnthropic(messages []types.Message, cap quirks.StructuredT
 			})
 		}
 		// The API rejects an empty content array, so a message left empty by
-		// stripped or unsigned thinking blocks or dropped tool search blocks
-		// is omitted, and the turns on
-		// either side are joined when that leaves two of the same role.
+		// stripped thinking or dropped tool search blocks is omitted, and
+		// the turns on either side are joined when that leaves two of the
+		// same role.
 		if len(blocks) == 0 && onlyThinking {
 			skipped = true
 			continue
@@ -688,10 +696,10 @@ func toolSearchCallEvent(ctx context.Context, logger *slog.Logger, id, name, str
 }
 
 // parseAnthropicToolSearchResult builds the tool_search_result event for a
-// tool_search_tool_result block. An error result carries its code in Name
-// and its message in Text. A content shape the adapter does not recognise
-// is reported as a search that loaded nothing rather than failing the
-// stream.
+// tool_search_tool_result block. A failed search sets IsError, with the
+// error code in Name and the message in Text. A content shape the adapter
+// does not recognise is reported as a search that loaded nothing rather
+// than failing the stream.
 func parseAnthropicToolSearchResult(ctx context.Context, logger *slog.Logger, toolUseID string, content json.RawMessage) types.StreamEvent {
 	ev := types.StreamEvent{Type: "tool_search_result", ID: toolUseID}
 	var body struct {
@@ -709,6 +717,7 @@ func parseAnthropicToolSearchResult(ctx context.Context, logger *slog.Logger, to
 			}
 		}
 	case err == nil && body.Type == anthropicToolSearchErrorType:
+		ev.IsError = true
 		ev.Name = body.ErrorCode
 		ev.Text = body.ErrorMessage
 	default:
@@ -716,7 +725,7 @@ func parseAnthropicToolSearchResult(ctx context.Context, logger *slog.Logger, to
 		if err != nil {
 			attrs = append(attrs, slog.String("error", err.Error()))
 		}
-		logger.DebugContext(ctx, "anthropic tool search result not recognised", attrs...)
+		logger.WarnContext(ctx, "anthropic tool search result not recognised", attrs...)
 	}
 	return ev
 }
@@ -996,6 +1005,13 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 		return nil, err
 	}
 	warnDroppedReasoningEffort(ctx, logger, "anthropic", params.ReasoningEffort, params.Model, q.BehaviourFlags.Anthropic.EffortLevels)
+
+	if params.ToolSearch && !q.ToolSearch.Supported {
+		logger.DebugContext(ctx, "anthropic tool search not supported; sending every tool loaded",
+			slog.String("provider.type", "anthropic"),
+			slog.String("provider.model", params.Model),
+		)
+	}
 
 	reqBody := buildAnthropicRequest(params, true, q)
 
