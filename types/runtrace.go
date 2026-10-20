@@ -424,6 +424,12 @@ type TurnTrace struct {
 	// wind-down instruction at the start of this turn: "turns", "tokens"
 	// or "time". Empty on every other turn.
 	WindDown string `json:"windDown,omitempty"`
+	// ToolsLoaded lists, by internal ID, the deferred tools that tool
+	// searches in this turn made visible to the model for the rest of the
+	// run. Empty when lazy tool loading is off or no search loaded a new
+	// tool. The full TurnRecord carries the visible set itself:
+	// ModelInput.Tools with each definition's Deferred flag.
+	ToolsLoaded []string `json:"toolsLoaded,omitempty"`
 }
 
 // IsBatch reports whether the turn was submitted via async batch.

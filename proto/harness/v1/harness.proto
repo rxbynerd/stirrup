@@ -219,13 +219,21 @@ service HarnessService {
 message HarnessEvent {
   // Required. The event type discriminator.
   // Valid values: "text_delta", "thinking_delta", "tool_call",
-  //              "tool_result", "user_message", "turn_started",
-  //              "turn_committed", "turn_abandoned", "done", "error",
-  //              "warning", "heartbeat",
+  //              "tool_result", "tools_loaded", "user_message",
+  //              "turn_started", "turn_committed", "turn_abandoned",
+  //              "done", "error", "warning", "heartbeat",
   //              "ready", "run_started", "permission_request",
   //              "tool_result_request", "batch_submission", "batch_waiting",
   //              "batch_cancel_request", "sandbox_token_request".
   // Consumers should ignore types they do not recognise.
+  //
+  // "tools_loaded" reports that a tool search under lazy tool loading
+  // (tools.lazy_loading) made deferred tools visible to the model: `tools`
+  // lists their internal IDs, `name` is the search tool that loaded them
+  // ("tool_search" for the harness search, otherwise the provider's native
+  // search tool), `input` is the search input and `turn` the turn the
+  // search ran in. Sent once per search that loaded a tool not already
+  // loaded.
   string type = 1;
 
   // Incremental text fragment from the model. Set on "text_delta" events,
@@ -384,6 +392,10 @@ message HarnessEvent {
   //                           turn had a result.
   //   "guardrail_blocked"     a post-turn guardrail rejected the answer.
   string abandon_reason = 26;
+
+  // Internal IDs of the deferred tools a search loaded. Set on
+  // "tools_loaded" events.
+  repeated string tools = 27;
 }
 
 // TraceReference mirrors types.TraceReference: the identity of a run's
@@ -2614,6 +2626,39 @@ message ToolsConfig {
   // the permission policy. Rejected in read-only modes and for the "api"
   // and "none" executors. At most 16 entries.
   repeated PostEditCheck post_edit = 10;
+
+  // Optional. Lazy tool loading. Mirrors RunConfig `tools.lazyLoading`;
+  // off when unset (see docs/configuration.md#lazy-tool-loading).
+  LazyToolLoadingConfig lazy_loading = 11;
+}
+
+// LazyToolLoadingConfig keeps the tool definitions a turn carries small:
+// tools outside the eager set are deferred and reach the model only after
+// it searches for them. A deferred tool stays registered, permission-gated
+// and dispatchable exactly like an eager one; only its visibility to the
+// model changes.
+message LazyToolLoadingConfig {
+  // Optional. Turns lazy loading on. Off by default: every registered
+  // tool is sent on every turn.
+  bool enabled = 1;
+
+  // Optional. How deferred tools are searched: "auto" (default) uses the
+  // provider's native tool search where the harness's quirks registry
+  // advertises one (Anthropic tool search, OpenAI Responses hosted
+  // tool_search) and the harness's own "tool_search" tool otherwise;
+  // "harness" always uses the harness tool, which also hides deferred
+  // tools' names and descriptions until they are loaded.
+  string strategy = 2;
+
+  // Optional. Internal IDs of the tools sent on every turn without a
+  // search. Empty selects every registered built-in tool, so only
+  // MCP-imported and control-plane tools are deferred by default. At most
+  // 256 entries.
+  repeated string eager = 3;
+
+  // Optional. How many tools one harness search loads. 0 selects 5;
+  // maximum 20. The provider's native search applies its own limit.
+  int32 max_results = 4;
 }
 
 // CommandOutputConfig bounds full run_command output capture. The byte

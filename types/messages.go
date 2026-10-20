@@ -55,8 +55,20 @@ const MessageOriginVerifierFeedback = "verifier_feedback"
 // must not introspect, log, or mutate it. Each adapter reads it only from
 // the block types it owns; adapter-private wire types omit it everywhere
 // else.
+//
+// The "tool_search" and "tool_search_result" types record a provider-side
+// tool search from an assistant turn under lazy tool loading (see
+// docs/configuration.md#lazy-tool-loading). A tool_search block holds the
+// search call: ID is the provider's call ID, Name the search tool's wire
+// name and Input the search input. A tool_search_result block answers it:
+// ToolUseID echoes the call ID and ToolReferences lists the internal IDs
+// of the tools the search loaded; a failed search sets IsError and puts
+// the provider's error in Content. Both are replayed to the provider that
+// produced them, in place, so a loaded tool stays loaded; the harness's
+// own ToolSearchToolName tool uses ordinary tool_use and tool_result
+// blocks instead.
 type ContentBlock struct {
-	Type             string          `json:"type"` // "text" | "tool_use" | "tool_result" | "thinking" | "redacted_thinking"
+	Type             string          `json:"type"` // "text" | "tool_use" | "tool_result" | "thinking" | "redacted_thinking" | "tool_search" | "tool_search_result"
 	Text             string          `json:"text,omitempty"`
 	ID               string          `json:"id,omitempty"`
 	Name             string          `json:"name,omitempty"`
@@ -65,6 +77,11 @@ type ContentBlock struct {
 	Content          string          `json:"content,omitempty"`
 	IsError          bool            `json:"is_error,omitempty"`
 	ThoughtSignature string          `json:"thought_signature,omitempty"`
+
+	// ToolReferences lists the internal IDs of the tools a
+	// tool_search_result block loaded. Provider adapters translate them to
+	// wire names on egress exactly as they do tool_use names.
+	ToolReferences []string `json:"tool_references,omitempty"`
 
 	// Structured and Kind carry the optional typed tool-result envelope from
 	// a tool_result ToolResult, letting provider adapters decide, per the
@@ -87,6 +104,15 @@ type ToolDefinition struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"input_schema"`
+
+	// Deferred marks a tool the model loads through a tool search rather
+	// than seeing up front. Set only on requests that carry
+	// StreamParams.ToolSearch: adapters with a native tool search send the
+	// definition flagged for deferred loading (Anthropic defer_loading,
+	// OpenAI Responses defer_loading), and the loop omits deferred tools
+	// from requests served by the harness search instead. Recorded in the
+	// trace so a turn's visible tool set can be reconstructed.
+	Deferred bool `json:"deferred,omitempty"`
 
 	// Presentation carries optional, additive per-tool metadata: worked
 	// input examples and behavioural annotations. The `json:"-"` tag is

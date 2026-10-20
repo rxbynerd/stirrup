@@ -44,7 +44,30 @@ func boundEventFields(event *types.HarnessEvent) {
 		event.Text = capEventText(event.Text)
 	case "tool_call":
 		event.Input = capEventInput(event.Input)
+	case "tools_loaded":
+		event.Input = capEventInput(event.Input)
+		event.Tools = capEventIdentifiers(event.Tools)
 	}
+}
+
+// maxEventToolEntries bounds the tool list on a tools_loaded event. A
+// search loads at most the configured maximum, so the cap only guards a
+// misbehaving producer.
+const maxEventToolEntries = 256
+
+// capEventIdentifiers caps every entry and the length of a name list.
+func capEventIdentifiers(names []string) []string {
+	if names == nil {
+		return nil
+	}
+	if len(names) > maxEventToolEntries {
+		names = names[:maxEventToolEntries]
+	}
+	out := make([]string, len(names))
+	for i, name := range names {
+		out[i] = capEventIdentifier(name)
+	}
+	return out
 }
 
 // capEventText keeps the head of s on a UTF-8 boundary, marker included,

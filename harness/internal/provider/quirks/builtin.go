@@ -660,5 +660,61 @@ func BuiltinRules() []Rule {
 			LastVerified: Date("2026-10-10"),
 			Apply:        applyContextWindow(128_000),
 		},
+
+		// Native tool search. Anthropic documents tool_search_tool_bm25_20251119
+		// and the regex variant on every model from the 4.5 generation on
+		// (Opus 4.1 and earlier have none); OpenAI documents hosted
+		// tool_search on gpt-5.4 and later Responses models. Each entry is a
+		// positive allow-list so an unlisted model keeps the harness search.
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-opus-4-[5-8]*",
+			Description:  "Anthropic Claude Opus 4.5-4.8: native BM25 tool search with defer_loading (documented, not probed)",
+			LastVerified: Date("2026-10-20"),
+			Apply:        applyToolSearch("bm25"),
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-sonnet-4-[5-6]*",
+			Description:  "Anthropic Claude Sonnet 4.5-4.6: native BM25 tool search with defer_loading (documented, not probed)",
+			LastVerified: Date("2026-10-20"),
+			Apply:        applyToolSearch("bm25"),
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-haiku-4-5*",
+			Description:  "Anthropic Claude Haiku 4.5: native BM25 tool search with defer_loading (documented, not probed)",
+			LastVerified: Date("2026-10-20"),
+			Apply:        applyToolSearch("bm25"),
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-*-5*",
+			Description:  "Anthropic Claude 5 generation (Opus, Sonnet, Haiku, Fable, Mythos): native BM25 tool search with defer_loading (documented, not probed)",
+			LastVerified: Date("2026-10-20"),
+			Apply:        applyToolSearch("bm25"),
+		},
+		{
+			ProviderType: "openai-responses",
+			ModelMatch:   "gpt-5.[4-9]*",
+			Description:  "OpenAI Responses gpt-5.4 and later 5.x: hosted tool_search with defer_loading (documented, not probed)",
+			LastVerified: Date("2026-10-20"),
+			Apply:        applyToolSearch("hosted"),
+		},
+		{
+			ProviderType: "openai-responses",
+			ModelMatch:   "gpt-6*",
+			Description:  "OpenAI Responses gpt-6 family: hosted tool_search with defer_loading (documented, not probed)",
+			LastVerified: Date("2026-10-20"),
+			Apply:        applyToolSearch("hosted"),
+		},
+	}
+}
+
+// applyToolSearch returns an Apply that advertises a native tool search of
+// the given variant.
+func applyToolSearch(variant string) func(*ProviderQuirks) {
+	return func(q *ProviderQuirks) {
+		q.ToolSearch = ToolSearchCapability{Supported: true, Variant: variant}
 	}
 }
