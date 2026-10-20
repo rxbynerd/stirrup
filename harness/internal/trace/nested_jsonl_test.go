@@ -108,6 +108,22 @@ func TestNestedJSONLEmitter_ForwardsTurnsAndToolCalls(t *testing.T) {
 	check.Equal("end_turn", turn.StopReason, "forwarded turn StopReason")
 }
 
+func TestNestedJSONLEmitter_ForwardsToolsLoaded(t *testing.T) {
+	must := require.New(t)
+	parent := &recordingEmitter{}
+	child := NewNestedJSONLEmitter(parent, "parent-run-1", context.Background())
+	child.Start("sub-run-1", nil)
+
+	child.RecordTurn(types.TurnTrace{Turn: 0, ToolsLoaded: []string{"mcp_github_create_issue"}})
+	child.RecordTurnRecord(types.TurnRecord{Turn: 0, ToolsLoaded: []string{"mcp_github_create_issue"}})
+
+	must.Len(parent.turns, 1)
+	must.Equal([]string{"mcp_github_create_issue"}, parent.turns[0].ToolsLoaded)
+	must.Len(parent.turnRecords, 1)
+	must.Equal([]string{"mcp_github_create_issue"}, parent.turnRecords[0].ToolsLoaded)
+	must.Equal("sub-run-1", parent.turnRecords[0].RunID)
+}
+
 func TestNestedJSONLEmitter_DoesNotCallParentStartOrFinish(t *testing.T) {
 	must := require.New(t)
 	check := assert.New(t)

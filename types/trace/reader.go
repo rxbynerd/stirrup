@@ -217,12 +217,13 @@ type streamedEvent struct {
 	CommandOutput *types.CommandOutputRecord `json:"commandOutput,omitempty"`
 	SubRun        *types.SubRunSummary       `json:"subRun,omitempty"`
 
-	HarnessVersion      string `json:"harnessVersion,omitempty"`
-	SystemPrompt        string `json:"systemPrompt,omitempty"`
-	SystemPromptSHA256  string `json:"systemPromptSha256,omitempty"`
-	OutputLimitRecovery bool   `json:"outputLimitRecovery,omitempty"`
-	StallNudge          bool   `json:"stallNudge,omitempty"`
-	WindDown            string `json:"windDown,omitempty"`
+	HarnessVersion      string   `json:"harnessVersion,omitempty"`
+	SystemPrompt        string   `json:"systemPrompt,omitempty"`
+	SystemPromptSHA256  string   `json:"systemPromptSha256,omitempty"`
+	OutputLimitRecovery bool     `json:"outputLimitRecovery,omitempty"`
+	StallNudge          bool     `json:"stallNudge,omitempty"`
+	WindDown            string   `json:"windDown,omitempty"`
+	ToolsLoaded         []string `json:"toolsLoaded,omitempty"`
 }
 
 // kindOnly is used to peek at the discriminator without decoding the
@@ -358,6 +359,7 @@ func (r *Reader) ReadRecording() (*types.RunRecording, error) {
 				OutputLimitRecovery: ev.OutputLimitRecovery,
 				StallNudge:          ev.StallNudge,
 				WindDown:            ev.WindDown,
+				ToolsLoaded:         ev.ToolsLoaded,
 			}
 			if ev.ModelInput != nil {
 				tr.ModelInput = *ev.ModelInput

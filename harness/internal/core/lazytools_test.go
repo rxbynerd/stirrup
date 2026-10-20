@@ -143,6 +143,9 @@ func TestLoop_LazyTools_HarnessSearchLoadsADeferredTool(t *testing.T) {
 	must.Empty(turns[0].ToolsLoaded)
 	must.Equal([]string{lazyMCPTool}, turns[1].ToolsLoaded)
 	must.Empty(turns[2].ToolsLoaded)
+	must.Empty(turnRecords[0].ToolsLoaded)
+	must.Equal([]string{lazyMCPTool}, turnRecords[1].ToolsLoaded, "the persisted turn record mirrors the summary")
+	must.Empty(turnRecords[2].ToolsLoaded)
 }
 
 func TestLoop_LazyTools_ToolsLoadedFollowsTheSearchResult(t *testing.T) {
@@ -211,6 +214,7 @@ func TestLoop_LazyTools_NativeSearchLoadsFromTheStream(t *testing.T) {
 
 	turns, _ := rec.snapshot()
 	must.Equal([]string{lazyMCPTool}, turns[0].ToolsLoaded)
+	must.Equal([]string{lazyMCPTool}, rec.turnRecords[0].ToolsLoaded)
 	must.Equal([]string{lazyMCPTool}, rec.turnRecords[0].ModelOutput[2].ToolReferences)
 }
 

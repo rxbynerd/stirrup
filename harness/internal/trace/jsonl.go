@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -215,6 +216,7 @@ func (e *JSONLTraceEmitter) RecordTurnRecord(turn types.TurnRecord) {
 		OutputLimitRecovery: scrubbed.OutputLimitRecovery,
 		StallNudge:          scrubbed.StallNudge,
 		WindDown:            scrubbed.WindDown,
+		ToolsLoaded:         scrubbed.ToolsLoaded,
 	}
 	_ = e.writeLineLocked(ev)
 }
@@ -530,6 +532,7 @@ func scrubTurnRecord(t types.TurnRecord, redactionDisabled bool) types.TurnRecor
 		OutputLimitRecovery: t.OutputLimitRecovery,
 		StallNudge:          t.StallNudge,
 		WindDown:            t.WindDown,
+		ToolsLoaded:         slices.Clone(t.ToolsLoaded),
 	}
 	for i, tc := range t.ToolCalls {
 		out.ToolCalls[i] = scrubToolCallRecord(tc, redactionDisabled)

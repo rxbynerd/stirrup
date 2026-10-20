@@ -729,7 +729,10 @@ func TestJSONLTraceEmitter_PreservesLazyToolLoadingFields(t *testing.T) {
 		ModelOutput: []types.ContentBlock{
 			{Type: "tool_search", ID: "srvtoolu_1", Name: "tool_search_tool_bm25", Input: json.RawMessage(`{"query":"github"}`)},
 			{Type: "tool_search_result", ToolUseID: "srvtoolu_1", ToolReferences: []string{"mcp_github_create_issue"}},
+			{Type: "tool_search", ID: "srvtoolu_2", Name: "tool_search_tool_bm25", Input: json.RawMessage(`{"query":""}`)},
+			{Type: "tool_search_result", ToolUseID: "srvtoolu_2", Name: "invalid_tool_input", Content: "query is empty", IsError: true},
 		},
+		ToolsLoaded: []string{"mcp_github_create_issue"},
 	})
 	_, err := emitter.Finish(context.Background(), "success")
 	must.NoError(err)
@@ -742,6 +745,32 @@ func TestJSONLTraceEmitter_PreservesLazyToolLoadingFields(t *testing.T) {
 	must.JSONEq(`{"query":"github"}`, string(record.ModelOutput[0].Input))
 	must.Equal("srvtoolu_1", record.ModelOutput[1].ToolUseID)
 	must.Equal([]string{"mcp_github_create_issue"}, record.ModelOutput[1].ToolReferences)
+	must.Equal(types.ContentBlock{
+		Type: "tool_search_result", ToolUseID: "srvtoolu_2", Name: "invalid_tool_input", Content: "query is empty", IsError: true,
+	}, record.ModelOutput[3])
+	must.Equal([]string{"mcp_github_create_issue"}, record.ToolsLoaded)
+}
+
+func TestJSONLTraceEmitter_ScrubsToolSearchErrorMessage(t *testing.T) {
+	must := require.New(t)
+	const secret = "sk-ant-api03-toolsearchleak"
+	var buf bytes.Buffer
+	emitter := NewJSONLTraceEmitter(&buf, false)
+
+	emitter.Start("run-lazy-tools-scrub", nil)
+	emitter.RecordTurnRecord(types.TurnRecord{
+		ModelOutput: []types.ContentBlock{
+			{Type: "tool_search", ID: "srvtoolu_1", Name: "tool_search_tool_bm25", Input: json.RawMessage(`{"query":"` + secret + `"}`)},
+			{Type: "tool_search_result", ToolUseID: "srvtoolu_1", Name: "invalid_tool_input", Content: "bad query " + secret, IsError: true},
+		},
+	})
+	_, err := emitter.Finish(context.Background(), "success")
+	must.NoError(err)
+
+	must.NotContains(buf.String(), secret)
+	record := pickEvent(t, readEvents(t, buf.Bytes()), EventKindTurnRecord)
+	must.Equal("invalid_tool_input", record.ModelOutput[1].Name)
+	must.True(record.ModelOutput[1].IsError)
 }
 
 // TestJSONLTraceEmitter_PartialStream_ParseableBeforeFinish pins the SIGKILL-safety property:

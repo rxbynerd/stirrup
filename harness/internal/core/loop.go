@@ -1071,6 +1071,7 @@ func (l *AgenticLoop) runInnerLoop(
 			ResponseModel:       sr.ResponseModel,
 			OutputLimitRecovery: outputLimitRecovery,
 			WindDown:            windDown,
+			ToolsLoaded:         summary.ToolsLoaded,
 		}
 		// The chat span covers inference only; tool spans are its
 		// siblings under the agent span.
@@ -1238,6 +1239,7 @@ func (l *AgenticLoop) runInnerLoop(
 		summary.ToolsLoaded = append(summary.ToolsLoaded, l.lazyLoadedSince(loadedBefore)...)
 		l.Trace.RecordTurn(summary)
 		nudge, nudged := stall.takeNudge()
+		turnRecord.ToolsLoaded = summary.ToolsLoaded
 		turnRecord.ToolCalls = toolRecords
 		turnRecord.StallNudge = nudged && stallOutcome == ""
 		l.Trace.RecordTurnRecord(turnRecord)
