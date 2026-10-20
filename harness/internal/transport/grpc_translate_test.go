@@ -2244,3 +2244,17 @@ func TestHarnessEventToProto_ReadyCapabilities(t *testing.T) {
 	bare := harnessEventWireRoundTrip(t, types.HarnessEvent{Type: "ready"})
 	must.Empty(bare.GetCapabilities(), "ready without capabilities")
 }
+
+// TestProviderConfigFromProto_ReplayFileCarried pins that the replay
+// provider's recording path survives the proto boundary; without it a
+// TaskAssignment selecting the replay provider fails ValidateRunConfig
+// ("replayFile is required") although the wire payload named one.
+func TestProviderConfigFromProto_ReplayFileCarried(t *testing.T) {
+	check := assert.New(t)
+	cfg := providerConfigFromProto(&pb.ProviderConfig{
+		Type:       "replay",
+		ReplayFile: "/recordings/run.jsonl",
+	})
+	check.Equal("replay", cfg.Type, "Type")
+	check.Equal("/recordings/run.jsonl", cfg.ReplayFile, "ReplayFile")
+}

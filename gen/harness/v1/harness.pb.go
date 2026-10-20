@@ -3716,6 +3716,8 @@ type ProviderConfig struct {
 	//	                      Azure Foundry's /openai/v1/responses endpoint).
 	//	"gemini"            — Google Vertex AI streamGenerateContent
 	//	                      (OAuth2 Bearer via google.golang.org/x/oauth2/google).
+	//	"replay"            — Replays the model output recorded in a JSONL trace
+	//	                      file (replay_file). No credential, no network.
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
 	// Secret reference for the API key (e.g. "secret://ANTHROPIC_API_KEY").
 	// Required for "anthropic" and "openai-compatible" when credential is
@@ -3783,8 +3785,14 @@ type ProviderConfig struct {
 	// The wire-shape knowledge lives in harness/internal/provider/compat/;
 	// this field is a discriminator only and never carries operator-
 	// authored rule data.
-	// Next available field number: 16.
 	CompatProfile string `protobuf:"bytes,15,opt,name=compat_profile,json=compatProfile,proto3" json:"compat_profile,omitempty"`
+	// For "replay": path to a JSONL trace recording whose turn_record events
+	// supply the model output of every turn, in order. Read by the harness
+	// process from its own filesystem (relative to its working directory
+	// when not absolute). Required for "replay"; rejected for every other
+	// type, as are api_key_ref and credential alongside it.
+	// Next available field number: 17.
+	ReplayFile    string `protobuf:"bytes,16,opt,name=replay_file,json=replayFile,proto3" json:"replay_file,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3920,6 +3928,13 @@ func (x *ProviderConfig) GetBatch() *BatchProviderConfig {
 func (x *ProviderConfig) GetCompatProfile() string {
 	if x != nil {
 		return x.CompatProfile
+	}
+	return ""
+}
+
+func (x *ProviderConfig) GetReplayFile() string {
+	if x != nil {
+		return x.ReplayFile
 	}
 	return ""
 }
@@ -6919,7 +6934,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\vStopDetails\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1a\n" +
 	"\bcategory\x18\x02 \x01(\tR\bcategory\x12 \n" +
-	"\vexplanation\x18\x03 \x01(\tR\vexplanation\"\x9e\x06\n" +
+	"\vexplanation\x18\x03 \x01(\tR\vexplanation\"\xbf\x06\n" +
 	"\x0eProviderConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1e\n" +
 	"\vapi_key_ref\x18\x02 \x01(\tR\tapiKeyRef\x12\x16\n" +
@@ -6939,7 +6954,9 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x16gemini_safety_settings\x18\f \x03(\v2'.stirrup.harness.v1.GeminiSafetySettingR\x14geminiSafetySettings\x12B\n" +
 	"\x05retry\x18\r \x01(\v2'.stirrup.harness.v1.ProviderRetryConfigH\x00R\x05retry\x88\x01\x01\x12=\n" +
 	"\x05batch\x18\x0e \x01(\v2'.stirrup.harness.v1.BatchProviderConfigR\x05batch\x12%\n" +
-	"\x0ecompat_profile\x18\x0f \x01(\tR\rcompatProfile\x1a>\n" +
+	"\x0ecompat_profile\x18\x0f \x01(\tR\rcompatProfile\x12\x1f\n" +
+	"\vreplay_file\x18\x10 \x01(\tR\n" +
+	"replayFile\x1a>\n" +
 	"\x10QueryParamsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\b\n" +

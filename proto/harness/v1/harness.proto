@@ -1597,6 +1597,8 @@ message ProviderConfig {
   //                         Azure Foundry's /openai/v1/responses endpoint).
   //   "gemini"            — Google Vertex AI streamGenerateContent
   //                         (OAuth2 Bearer via google.golang.org/x/oauth2/google).
+  //   "replay"            — Replays the model output recorded in a JSONL trace
+  //                         file (replay_file). No credential, no network.
   string type = 1;
 
   // Secret reference for the API key (e.g. "secret://ANTHROPIC_API_KEY").
@@ -1676,8 +1678,15 @@ message ProviderConfig {
   // The wire-shape knowledge lives in harness/internal/provider/compat/;
   // this field is a discriminator only and never carries operator-
   // authored rule data.
-  // Next available field number: 16.
   string compat_profile = 15;
+
+  // For "replay": path to a JSONL trace recording whose turn_record events
+  // supply the model output of every turn, in order. Read by the harness
+  // process from its own filesystem (relative to its working directory
+  // when not absolute). Required for "replay"; rejected for every other
+  // type, as are api_key_ref and credential alongside it.
+  // Next available field number: 17.
+  string replay_file = 16;
 }
 
 // BatchProviderConfig controls async batch submission for a provider
