@@ -56,17 +56,11 @@ const MessageOriginVerifierFeedback = "verifier_feedback"
 // the block types it owns; adapter-private wire types omit it everywhere
 // else.
 //
-// The "tool_search" and "tool_search_result" types record a provider-side
-// tool search from an assistant turn under lazy tool loading (see
-// docs/configuration.md#lazy-tool-loading). A tool_search block holds the
-// search call: ID is the provider's call ID, Name the search tool's wire
-// name and Input the search input. A tool_search_result block answers it:
-// ToolUseID echoes the call ID and ToolReferences lists the internal IDs
-// of the tools the search loaded; a failed search sets IsError, Name to the
-// provider's error code and Content to its error message. Both are
-// replayed to the provider that produced them, in place, so a loaded tool
-// stays loaded; the harness's own ToolSearchToolName tool uses ordinary
-// tool_use and tool_result blocks instead.
+// "tool_search" (ID, Name, Input) and "tool_search_result" (ToolUseID,
+// ToolReferences) record a provider-side tool search and replay only to
+// the provider that produced them; a failed search sets IsError, Name to
+// the error code and Content to the message. See
+// docs/configuration.md#lazy-tool-loading.
 type ContentBlock struct {
 	Type             string          `json:"type"` // "text" | "tool_use" | "tool_result" | "thinking" | "redacted_thinking" | "tool_search" | "tool_search_result"
 	Text             string          `json:"text,omitempty"`
@@ -78,10 +72,9 @@ type ContentBlock struct {
 	IsError          bool            `json:"is_error,omitempty"`
 	ThoughtSignature string          `json:"thought_signature,omitempty"`
 
-	// ToolReferences lists the internal IDs of the registered tools a
-	// tool_search_result block loaded. The loop presents them through the
-	// toolset profile before a request, and provider adapters then translate
-	// them to wire names on egress exactly as they do tool_use names.
+	// ToolReferences lists the internal IDs of the tools a
+	// tool_search_result loaded. The loop presents them under the toolset
+	// profile's names (LazyLoader.PresentReferences) before each request.
 	ToolReferences []string `json:"tool_references,omitempty"`
 
 	// Structured and Kind carry the optional typed tool-result envelope from
@@ -106,13 +99,10 @@ type ToolDefinition struct {
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"input_schema"`
 
-	// Deferred marks a tool the model loads through a tool search rather
-	// than seeing up front. Set only on requests that carry
-	// StreamParams.ToolSearch: adapters with a native tool search send the
-	// definition flagged for deferred loading (Anthropic defer_loading,
-	// OpenAI Responses defer_loading), and the loop omits deferred tools
-	// from requests served by the harness search instead. Recorded in the
-	// trace so a turn's visible tool set can be reconstructed.
+	// Deferred marks a tool the provider's native tool search loads on
+	// demand (sent with defer_loading). Set only on requests that carry
+	// StreamParams.ToolSearch; the harness search omits unloaded tools
+	// instead.
 	Deferred bool `json:"deferred,omitempty"`
 
 	// Presentation carries optional, additive per-tool metadata: worked

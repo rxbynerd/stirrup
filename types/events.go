@@ -34,15 +34,10 @@ import (
 // CacheReadTokens and CacheWriteTokens included. ReasoningTokens is a
 // subset of OutputTokens.
 //
-// A "tool_search" event is a provider-side tool search the model made
-// under StreamParams.ToolSearch: ID is the provider's call ID, Name the
-// search tool's wire name and Input the search input. The matching
-// "tool_search_result" event carries the same call ID in ID and the wire
-// names of the tools the search loaded in ToolReferences; a failed search
-// instead sets IsError, Name to the provider's error code and Text to its
-// error message. Adapters emit the pair once per search, in stream order, so the
-// loop persists them as tool_search and tool_search_result blocks for
-// replay. Neither needs a tool result from the harness.
+// A "tool_search" event (ID, Name, Input) and its "tool_search_result"
+// (ID echoed, ToolReferences) record one provider-side search; a failed
+// search sets IsError, Name to the error code and Text to the message.
+// See docs/configuration.md#lazy-tool-loading.
 type StreamEvent struct {
 	Type         string         `json:"type"` // "text_delta" | "tool_call" | "thinking_delta" | "thinking" | "redacted_thinking" | "tool_search" | "tool_search_result" | "message_complete" | "error"
 	Text         string         `json:"text,omitempty"`
@@ -92,13 +87,12 @@ type StreamEvent struct {
 	InvalidInput *InvalidToolInput `json:"-"`
 
 	// ToolReferences lists the wire names of the tools a
-	// "tool_search_result" event loaded. The NormalizingAdapter maps them
+	// "tool_search_result" event loaded; the NormalizingAdapter maps them
 	// back to registry names as it does tool_call names.
 	ToolReferences []string `json:"toolReferences,omitempty"`
 
-	// IsError marks a "tool_search_result" event whose search failed, so a
-	// failure with neither an error code in Name nor a message in Text is
-	// still recorded as one.
+	// IsError marks a failed "tool_search_result", including one with
+	// neither an error code nor a message.
 	IsError bool `json:"isError,omitempty"`
 }
 
