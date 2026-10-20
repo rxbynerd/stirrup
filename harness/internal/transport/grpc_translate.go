@@ -534,6 +534,7 @@ func providerConfigFromProto(pc *pb.ProviderConfig) types.ProviderConfig {
 		GCPProject:         pc.GcpProject,
 		GCPLocation:        pc.GcpLocation,
 		GCPCredentialsFile: pc.GcpCredentialsFile,
+		ReplayFile:         pc.ReplayFile,
 	}
 	if len(pc.GeminiSafetySettings) > 0 {
 		cfg.GeminiSafetySettings = make([]types.GeminiSafetySetting, 0, len(pc.GeminiSafetySettings))

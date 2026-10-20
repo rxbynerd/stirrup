@@ -720,7 +720,7 @@ func isRedactSafeProviderQueryParam(key string) bool {
 
 // ProviderConfig selects the model provider implementation.
 type ProviderConfig struct {
-	Type       string            `json:"type"`                 // "anthropic" | "bedrock" | "openai-compatible" | "openai-responses" | "gemini"
+	Type       string            `json:"type"`                 // "anthropic" | "bedrock" | "openai-compatible" | "openai-responses" | "gemini" | "replay"
 	APIKeyRef  string            `json:"apiKeyRef,omitempty"`  // e.g. "secret://anthropic-key"
 	Region     string            `json:"region,omitempty"`     // bedrock
 	Profile    string            `json:"profile,omitempty"`    // bedrock
@@ -765,6 +765,15 @@ type ProviderConfig struct {
 	// tooling, where false positives on code samples are operationally
 	// unacceptable.
 	GeminiSafetySettings []GeminiSafetySetting `json:"geminiSafetySettings,omitempty"`
+
+	// ReplayFile is the path to a JSONL trace recording whose turn_record
+	// events supply the model output of every turn, in order, for the
+	// "replay" provider. The harness process reads it from its own
+	// filesystem, relative to its working directory when not absolute.
+	// Required for "replay"; rejected for every other type. A replay
+	// provider resolves no credential, so apiKeyRef and credential are
+	// rejected alongside it.
+	ReplayFile string `json:"replayFile,omitempty"`
 
 	// Retry overrides the per-call retry policy applied by adapters that
 	// honour it. Nil = use defaults. Defaults are filled in by
@@ -1799,6 +1808,7 @@ var validProviderTypes = map[string]bool{
 	"openai-compatible": true,
 	"openai-responses":  true,
 	"gemini":            true,
+	"replay":            true,
 }
 
 // validBatchProviderTypes is the closed set of provider types whose adapters
@@ -3971,6 +3981,7 @@ func validateProviderConfigs(config *RunConfig, retryDefaulted map[string]provid
 	}
 	validateOpenAIAuthFields("provider", config.Provider, errs)
 	validateGeminiProviderFields("provider", config.Provider, errs)
+	validateReplayProviderFields("provider", config.Provider, errs)
 	validateAnthropicProviderFields("provider", config.Provider, errs)
 	validateAzureWIFCrossField("provider", config.Provider, errs)
 	validateOpenAIWIFCrossField("provider", config.Provider, errs)
@@ -3991,6 +4002,7 @@ func validateProviderConfigs(config *RunConfig, retryDefaulted map[string]provid
 		validateRequiredType(path, provider.Type, validProviderTypes, errs)
 		validateOpenAIAuthFields(path, provider, errs)
 		validateGeminiProviderFields(path, provider, errs)
+		validateReplayProviderFields(path, provider, errs)
 		validateAnthropicProviderFields(path, provider, errs)
 		validateAzureWIFCrossField(path, provider, errs)
 		validateOpenAIWIFCrossField(path, provider, errs)
@@ -5050,6 +5062,31 @@ func validateGeminiProviderFields(path string, cfg ProviderConfig, errs *[]strin
 		} else if !validGeminiSafetyThresholds[s.Threshold] {
 			*errs = append(*errs, fmt.Sprintf("%s.threshold %q is not a valid BLOCK_* value", entryPath, s.Threshold))
 		}
+	}
+}
+
+// validateReplayProviderFields pins replayFile to the replay provider in
+// both directions and keeps credential fields off it: a replay provider
+// resolves no credential, so a key reference on it is a stale value from
+// another provider type that would otherwise sit unused.
+func validateReplayProviderFields(path string, cfg ProviderConfig, errs *[]string) {
+	if cfg.Type != "replay" {
+		if cfg.ReplayFile != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.replayFile is only valid for provider type %q", path, "replay"))
+		}
+		return
+	}
+	if cfg.ReplayFile == "" {
+		*errs = append(*errs, fmt.Sprintf("%s.replayFile is required for provider type %q", path, "replay"))
+	}
+	if cfg.APIKeyRef != "" {
+		*errs = append(*errs, fmt.Sprintf("%s.apiKeyRef must not be set for provider type %q; a replay provider resolves no credential", path, "replay"))
+	}
+	if cfg.Credential != nil {
+		*errs = append(*errs, fmt.Sprintf("%s.credential must not be set for provider type %q; a replay provider resolves no credential", path, "replay"))
+	}
+	if cfg.BaseURL != "" {
+		*errs = append(*errs, fmt.Sprintf("%s.baseUrl is not used by provider type %q", path, "replay"))
 	}
 }
 
