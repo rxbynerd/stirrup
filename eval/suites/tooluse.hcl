@@ -1,13 +1,12 @@
-# Tool-use reliability suite (issue #233).
+# Tool-use reliability suite.
 #
-# This suite gives the tool redesign delivered across Waves 1-5 end-to-end
-# regression coverage: the #225 schema redesign (read_file line ranges,
-# grep_files/find_files split, edit_file operation enum), #230 tool-choice
-# escalation, #231 structured results, and the #234 toolset-profile
-# aliases. Each task seeds a small synthetic workspace, exercises ONE
-# behaviour, and judges BOTH the final workspace state AND the tool-call
-# trace the run produced (the "tool-trace" judge inspects
-# RunTrace.ToolCalls).
+# This suite gives the built-in tool surface end-to-end regression
+# coverage: read_file line ranges, the grep_files/find_files split, the
+# edit_file operation enum, tool-choice escalation, structured results
+# and the toolset-profile aliases. Each task seeds a small synthetic
+# workspace, exercises ONE behaviour, and judges BOTH the final workspace
+# state AND the tool-call trace the run produced (the "tool-trace" judge
+# inspects RunTrace.ToolCalls).
 #
 # Default (no-credential) path:
 #   Every task names a recording under fixtures/tooluse/ and runs it
@@ -27,7 +26,9 @@
 # Live-provider path (opt-in, NOT default CI):
 #   Pass a provider on the command line. The harness drops the recording
 #   path when the provider is switched, so the same tasks run against a
-#   live model with their seeded workspaces and judges unchanged:
+#   live model with their seeded workspaces and judges unchanged. The
+#   judges accept any correct path to the end state, so a model that
+#   needs no recovery still passes the recovery tasks:
 #
 #     ANTHROPIC_API_KEY=... ./stirrup-eval run \
 #       --suite eval/suites/tooluse.hcl \
@@ -48,7 +49,7 @@
 # See eval/suites/README.md for the run/compare/baseline workflow.
 
 suite "tooluse-reliability" {
-  description = "Tool-use reliability regression for the Wave 1-5 tool redesign (#233); replayed from fixtures/tooluse/ by default, live on request. See the file header for the per-behaviour breakdown and the run/compare workflow."
+  description = "Tool-use reliability regression for the built-in tool surface; replayed from fixtures/tooluse/ by default, live on request. See the file header for the per-behaviour breakdown and the run/compare workflow."
 
   run_config {
     mode      = "execution"
@@ -71,7 +72,7 @@ suite "tooluse-reliability" {
   }
 
   task "read-search-edit-loop" {
-    description = "Search for a function, read the file, edit it. Judge confirms the edit landed AND the trace shows grep_files -> read_file -> edit_file in order. Regression-covers the #225 grep_files/read_file/edit_file split and the core coding loop."
+    description = "Search for a function, read the file, edit it. Judge confirms the edit landed AND the trace shows grep_files -> read_file -> edit_file in order. Regression-covers the grep_files/read_file/edit_file split and the core coding loop."
     repo        = ""
     ref         = ""
     mode        = "execution"
@@ -114,7 +115,7 @@ suite "tooluse-reliability" {
   }
 
   task "read-before-edit" {
-    description = "Asserts read_file precedes edit_file in the trace. Regression-covers the read-before-edit discipline #225's schema encourages."
+    description = "Asserts read_file precedes edit_file in the trace. Regression-covers the read-before-edit discipline the edit_file schema encourages."
     repo        = ""
     ref         = ""
     mode        = "execution"
@@ -153,7 +154,7 @@ suite "tooluse-reliability" {
   }
 
   task "line-range-read" {
-    description = "Read a specific line window with read_file start_line/limit (#225). Judge confirms read_file was called and the written window holds the requested lines. Regression-covers line-range reading and the #231 fileExcerpt structured result."
+    description = "Read a specific line window with read_file start_line/limit. Judge confirms read_file was called and the written window holds exactly the requested lines. Regression-covers line-range reading and the fileExcerpt structured result."
     repo        = ""
     ref         = ""
     mode        = "execution"
@@ -179,7 +180,7 @@ suite "tooluse-reliability" {
       judge {
         type    = "file-contains"
         path    = "window.txt"
-        pattern = "line 6"
+        pattern = "\\Aline 5\\nline 6\\nline 7\\n?\\z"
       }
 
       judge {
@@ -195,7 +196,7 @@ suite "tooluse-reliability" {
   }
 
   task "bounded-search" {
-    description = "A broad grep with a small max_results must not flood output (#225 bounded results). Judge confirms grep_files was called and succeeded. Regression-covers bounded search and the #231 searchResult truncation flag."
+    description = "A broad grep with a small max_results must not flood output. Judge confirms grep_files was called and succeeded and that the reported match count is the cap. Regression-covers bounded search and the searchResult truncation flag."
     repo        = ""
     ref         = ""
     mode        = "execution"
@@ -242,18 +243,29 @@ suite "tooluse-reliability" {
     }
 
     judge {
-      type = "tool-trace"
-      tool_trace {
-        call "grep_files" {
-          min_calls     = 1
-          all_succeeded = true
+      type    = "composite"
+      require = "all"
+
+      judge {
+        type    = "file-contains"
+        path    = "count.txt"
+        pattern = "\\A\\s*2\\s*\\z"
+      }
+
+      judge {
+        type = "tool-trace"
+        tool_trace {
+          call "grep_files" {
+            min_calls     = 1
+            all_succeeded = true
+          }
         }
       }
     }
   }
 
   task "invalid-arg-recovery" {
-    description = "An edit_file 'replace' missing new_string violates the per-operation field contract (#225). Judge confirms the file ended in the corrected state AND the trace shows an edit_file failure followed by a successful one. Regression-covers invalid-argument recovery."
+    description = "An edit_file 'replace' missing new_string violates the per-operation field contract. Judge confirms the file ended in the corrected state AND that no failed edit_file call was left unrecovered. Regression-covers invalid-argument recovery."
     repo        = ""
     ref         = ""
     mode        = "execution"
@@ -295,7 +307,7 @@ suite "tooluse-reliability" {
   }
 
   task "ambiguous-edit-recovery" {
-    description = "An edit_file 'replace' whose old_string matches two locations is rejected by the search-replace strategy (exactly-one-match); the model recovers with a section-qualified old_string. Judge confirms only section [b] changed AND the trace shows an edit_file failure followed by a successful one. Regression-covers the ambiguous-edit request behaviour from the #233 goal list."
+    description = "An edit_file 'replace' whose old_string matches two locations is rejected by the search-replace strategy (exactly-one-match); the model recovers with a section-qualified old_string. Judge confirms only section [b] changed AND that no failed edit_file call was left unrecovered. Regression-covers ambiguous-edit recovery."
     repo        = ""
     ref         = ""
     mode        = "execution"
@@ -329,7 +341,7 @@ suite "tooluse-reliability" {
         tool_trace {
           forbid_unknown = true
           call "edit_file" {
-            min_calls = 2
+            min_calls = 1
           }
         }
       }
@@ -337,7 +349,7 @@ suite "tooluse-reliability" {
   }
 
   task "renamed-tool-recovery" {
-    description = "Calling the retired search_files name yields the directional renamed-tool hint (#225); the model should recover with grep_files. Judge confirms grep_files ultimately succeeded. forbid_unknown is not used here: a retired name is never followed by a successful call to itself, which is the recovery shape that check expects. Regression-covers unknown-tool recovery."
+    description = "Calling the retired search_files name yields the directional renamed-tool hint; the model should recover with grep_files. Judge confirms grep_files ultimately succeeded. forbid_unknown is not used here: a retired name is never followed by a successful call to itself, which is the recovery shape that check expects. Regression-covers unknown-tool recovery."
     repo        = ""
     ref         = ""
     mode        = "execution"
@@ -368,7 +380,7 @@ suite "tooluse-reliability" {
   }
 
   task "no-tool-answer-escalation" {
-    description = "In execution mode the model must inspect the workspace before answering; a no-tool answer triggers tool-choice escalation (#230), enabled for this task by its override. The recording answers without a tool on its first turn, so the escalated retry is what produces the read_file call the judge requires. A live model that reads first also passes; the escalation path is then simply not exercised."
+    description = "In execution mode the model must inspect the workspace before answering; a no-tool answer triggers tool-choice escalation, enabled for this task by its override. The recording answers without a tool on its first turn, so the escalated retry is what produces the read_file call the judge requires. A live model that reads first also passes; the escalation path is then simply not exercised."
     repo        = ""
     ref         = ""
     mode        = "execution"
