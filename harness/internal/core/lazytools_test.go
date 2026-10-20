@@ -233,8 +233,59 @@ func TestLoop_LazyTools_FailedNativeSearchLoadsNothing(t *testing.T) {
 	must.Empty(toolsLoadedEvents(tp))
 	result := rec.turnRecords[0].ModelOutput[1]
 	must.True(result.IsError)
-	must.Equal("invalid_tool_input: query is empty", result.Content)
+	must.Equal("invalid_tool_input", result.Name)
+	must.Equal("query is empty", result.Content)
 	must.Zero(loop.LazyTools.LoadedCount())
+}
+
+func TestToolSearchBlock_RecordsTheSearchOutcome(t *testing.T) {
+	cases := []struct {
+		name  string
+		event types.StreamEvent
+		want  types.ContentBlock
+	}{
+		{
+			name:  "code and message",
+			event: types.StreamEvent{Type: "tool_search_result", ID: "s1", Name: "invalid_tool_input", Text: "query is empty", IsError: true},
+			want:  types.ContentBlock{Type: "tool_search_result", ToolUseID: "s1", Name: "invalid_tool_input", Content: "query is empty", IsError: true},
+		},
+		{
+			name:  "code only",
+			event: types.StreamEvent{Type: "tool_search_result", ID: "s1", Name: "unavailable", IsError: true},
+			want:  types.ContentBlock{Type: "tool_search_result", ToolUseID: "s1", Name: "unavailable", IsError: true},
+		},
+		{
+			name:  "message only",
+			event: types.StreamEvent{Type: "tool_search_result", ID: "s1", Text: "search failed", IsError: true},
+			want:  types.ContentBlock{Type: "tool_search_result", ToolUseID: "s1", Content: "search failed", IsError: true},
+		},
+		{
+			name:  "neither code nor message",
+			event: types.StreamEvent{Type: "tool_search_result", ID: "s1", IsError: true},
+			want:  types.ContentBlock{Type: "tool_search_result", ToolUseID: "s1", IsError: true},
+		},
+		{
+			name:  "code without the error flag",
+			event: types.StreamEvent{Type: "tool_search_result", ID: "s1", Name: "too_many_requests"},
+			want:  types.ContentBlock{Type: "tool_search_result", ToolUseID: "s1", Name: "too_many_requests", IsError: true},
+		},
+		{
+			name:  "success",
+			event: types.StreamEvent{Type: "tool_search_result", ID: "s1", ToolReferences: []string{lazyMCPTool}},
+			want:  types.ContentBlock{Type: "tool_search_result", ToolUseID: "s1", ToolReferences: []string{lazyMCPTool}},
+		},
+		{
+			name:  "search call",
+			event: types.StreamEvent{Type: "tool_search", ID: "s1", Name: "tool_search_tool_bm25", Input: map[string]any{"query": "github"}},
+			want:  types.ContentBlock{Type: "tool_search", ID: "s1", Name: "tool_search_tool_bm25", Input: json.RawMessage(`{"query":"github"}`)},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, toolSearchBlock(tc.event))
+		})
+	}
 }
 
 func TestLoop_LazyTools_ToolSearchFollowsCapabilityAndStrategy(t *testing.T) {

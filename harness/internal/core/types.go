@@ -985,7 +985,8 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 // toolSearchBlock converts a provider tool search event into the content
 // block that records it in history. A result's references stay the
 // presented names the adapter reported until the loop maps them to
-// internal IDs.
+// internal IDs. A failed search keeps the provider's error code in Name
+// and its message in Content.
 func toolSearchBlock(event types.StreamEvent) types.ContentBlock {
 	if event.Type == "tool_search" {
 		input, _ := json.Marshal(event.Input)
@@ -996,16 +997,10 @@ func toolSearchBlock(event types.StreamEvent) types.ContentBlock {
 		ToolUseID:      event.ID,
 		ToolReferences: slices.Clone(event.ToolReferences),
 	}
-	if event.Name != "" || event.Text != "" {
+	if event.IsError || event.Name != "" || event.Text != "" {
 		block.IsError = true
-		switch {
-		case event.Name == "":
-			block.Content = event.Text
-		case event.Text == "":
-			block.Content = event.Name
-		default:
-			block.Content = event.Name + ": " + event.Text
-		}
+		block.Name = event.Name
+		block.Content = event.Text
 	}
 	return block
 }
