@@ -1,6 +1,7 @@
 # Provider adapters
 
-Stirrup ships five provider adapters. All share the same `ProviderAdapter`
+Stirrup ships five provider adapters and one test double, the
+[replay provider](#replay). All share the same `ProviderAdapter`
 interface and are selected via `provider.type` in `RunConfig` (or
 `--provider` on the CLI). Authentication is decoupled through the
 `credential` package — see
@@ -1045,13 +1046,13 @@ call, which ends the run as an error rather than looping.
 
 | Field | Required | Notes |
 |---|---|---|
-| `provider.replayFile` | yes | JSONL trace file. Relative paths resolve against the harness working directory. |
+| `provider.replayFile` | yes | JSONL trace file; a regular file of at most 64 MiB whose path has no `..` segment. Relative paths resolve against the harness working directory. |
 | `provider.apiKeyRef`, `provider.credential`, `provider.baseUrl` | rejected | A replay provider resolves no credential and contacts no endpoint. |
 
-The file is read by `types/trace.Reader.ReadRecording`, so any trace
-the `jsonl` emitter wrote is a valid recording and replays the turns of
-its top-level run (a sub-agent's turns are dropped). A hand-written
-recording needs only the `turn_record` lines:
+The file is read by `types/trace.Reader.ReadRecording`, so a trace the
+`jsonl` emitter wrote is a valid recording of its top-level run, within
+the limits listed below. A hand-written recording needs only the
+`turn_record` lines:
 
 ```jsonl
 {"kind":"turn_record","turn":1,"modelOutput":[{"type":"tool_use","id":"c1","name":"read_file","input":{"path":"main.go"}}]}
@@ -1062,13 +1063,35 @@ Tool names are the external names the model would have seen on the
 wire. The replay provider has no name-normalization policy of its own,
 so the strictest policy applies (no hyphens, no leading digit) and a
 recorded call to a tool whose registered name needs rewriting must use
-the rewritten form. A recording with no `turn_record` event is rejected
-when the provider is built.
+the rewritten form.
 
-What a replay does not exercise: the wire parsing of any adapter (a
-`tool_call` is emitted whole, never reassembled from deltas), provider
-quirks, retries, and `ReplayFields` capture. The eval framework's
-tool-use suite runs on this provider by default; see
+A recording must be complete: the provider is not built when the file
+has no `turn_record` event, holds only sub-agent turns, or has any
+line the reader would drop (malformed JSON, or over the reader's 4 MiB
+line cap), because a dropped line would shift every later turn onto
+the wrong request.
+
+What a replay does not exercise or preserve:
+
+- the wire parsing of any adapter (a `tool_call` is emitted whole,
+  never reassembled from deltas), provider quirks, retries and
+  `ReplayFields` capture;
+- `spawn_agent`: a child loop shares the parent's provider and draws
+  the parent's next recorded turns, so a trace that used sub-agents
+  does not replay;
+- stop reasons, which are not recorded; a turn ends with `tool_use`
+  or `end_turn`, so output-limit recovery paths differ;
+- scrubbed values: the emitter redacts secret-like strings before
+  writing, and they replay redacted;
+- auxiliary model calls: a cloud-judge guard, an llm-judge verifier or
+  the summarise context strategy share the default provider, so each
+  consumes a recorded turn and fails to parse it. A fail-open guard is
+  then silently neutralised; do not combine them with a replay.
+
+A recording is trusted model output: pointing `replayFile` at another
+run's trace replays that run's model text into this run's events and
+trace, so recordings belong in operator-controlled storage. The eval
+framework's tool-use suite runs on this provider by default; see
 [`eval.md`](eval.md#replay-doubles).
 
 ## Per-model wire-shape quirks

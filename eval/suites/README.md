@@ -115,9 +115,9 @@ fixtures are hand-written to the shapes
 `harness/internal/core/tooluse_replay_test.go` pins in process, and
 that Go test remains the unit-level gate for the same behaviours.
 Two of its behaviours stay in process only: MCP name normalization
-needs an MCP server the runner does not start, and streaming
-tool-call parsing is a wire property of each adapter that a replay
-bypasses by design.
+needs an MCP server the runner does not start (and the HCL `tools`
+block has no MCP server field), and streaming tool-call parsing is a
+wire property of each adapter that a replay bypasses by design.
 
 ### Running against a live provider (opt-in)
 

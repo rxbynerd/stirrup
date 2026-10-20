@@ -77,7 +77,7 @@ Requires `ANTHROPIC_API_KEY` environment variable for the default Anthropic prov
 | `--prompt` | (required) | User prompt, also accepted as a positional argument |
 | `--mode`, `-m` | `planning` | Run mode: planning (default, read-only), execution, review, research, toil |
 | `--model` | `claude-sonnet-4-6` | Model to use |
-| `--provider` | `anthropic` | Provider type: anthropic, bedrock, openai-compatible (Chat Completions), openai-responses (Responses API), gemini (Vertex AI) |
+| `--provider` | `anthropic` | Provider type: anthropic, bedrock, openai-compatible (Chat Completions), openai-responses (Responses API), gemini (Vertex AI), replay (recorded output from `--replay-file`, no credential) |
 | `--api-key-ref` | `secret://ANTHROPIC_API_KEY` | Secret reference for API key |
 | `--workspace`, `-w` | current directory | Workspace directory |
 | `--max-turns` | `20` | Maximum agentic loop turns |
@@ -131,6 +131,7 @@ The core loop is a pure function of its interfaces. All dependencies are injecte
 - **OpenAI-compatible** (`provider/openai.go`) — OpenAI chat completions streaming. Works with OpenAI, LiteLLM, Azure OpenAI, vLLM, Ollama via configurable `baseURL`.
 - **OpenAI Responses** (`provider/openai_responses.go`) — OpenAI Responses API (`POST /v1/responses`) streaming. Distinct wire format from Chat Completions: top-level `instructions`, typed `input[]` items, flat tool schema, `max_output_tokens`, explicit `store: false`, and named SSE events. Selected explicitly via `provider.type: "openai-responses"` — no auto-detection between the two OpenAI adapters.
 - **Gemini via Vertex AI** (`provider/gemini.go`) — Vertex AI `:streamGenerateContent` with `?alt=sse`. SSE-framed, hand-rolled HTTP. Auth is GCP IAM via Application Default Credentials or a service account key. Synthesises tool-call IDs and remaps `finishReason: STOP` to `tool_use` when the stream emitted function calls.
+- **Replay** (`provider/replay.go`) — test double that serves the `turn_record` events of a JSONL trace as successive turns. Selected via `provider.type: "replay"` with `replayFile`; built before credential resolution in `core/factory.go::buildReplayProvider`. Backs `eval/suites/tooluse.hcl`.
 
 See [`docs/providers.md`](docs/providers.md) for full per-adapter configuration details.
 

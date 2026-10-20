@@ -3840,10 +3840,11 @@ type ProviderConfig struct {
 	// they are probed.
 	EndpointProfile string `protobuf:"bytes,16,opt,name=endpoint_profile,json=endpointProfile,proto3" json:"endpoint_profile,omitempty"`
 	// For "replay": path to a JSONL trace recording whose turn_record events
-	// supply the model output of every turn, in order. Read by the harness
-	// process from its own filesystem (relative to its working directory
-	// when not absolute). Required for "replay"; rejected for every other
-	// type, as are api_key_ref and credential alongside it.
+	// supply the model output of every turn, in order. For eval and testing:
+	// the harness process reads a regular file from its own filesystem
+	// (relative to its working directory when not absolute; ".." segments
+	// are rejected). Required for "replay" and rejected for every other
+	// type. A replay provider rejects api_key_ref, credential and base_url.
 	// Next available field number: 18.
 	ReplayFile    string `protobuf:"bytes,17,opt,name=replay_file,json=replayFile,proto3" json:"replay_file,omitempty"`
 	unknownFields protoimpl.UnknownFields
