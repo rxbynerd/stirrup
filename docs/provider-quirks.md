@@ -454,8 +454,6 @@ test catch malformed paths at registry-build time.
 | `openai-responses`  | `gpt-5.6*`         | OpenAI Responses gpt-5.6 family: `reasoning.effort` `low`..`max` (documented, not probed); omit sampling params (inferred) |
 | `openai-responses`  | `gpt-5-chat*`      | OpenAI Responses gpt-5-chat carve-out: no `reasoning.encrypted_content` include or output replay (inferred, not probed) |
 | `openai-responses`  | `gpt-6*`           | OpenAI Responses gpt-6 family: the `gpt-5*` reasoning rules plus omit sampling params and `reasoning.effort` `low`..`max` (documented, not probed) |
-| `openai-responses`  | `gpt-5.[4-9]*`     | OpenAI Responses gpt-5.4 and later 5.x: hosted `tool_search` with `defer_loading` under lazy tool loading (documented, not probed; see [providers.md](providers.md#hosted-tool-search)) |
-| `openai-responses`  | `gpt-6*`           | OpenAI Responses gpt-6 family: hosted `tool_search` with `defer_loading` under lazy tool loading (documented, not probed) |
 | `anthropic`         | `*`                | Anthropic: `tool_choice.disable_parallel_tool_use` (#222) |
 | `anthropic`         | `*`                | Anthropic: tool examples on the native `input_examples` field (probed 2026-09-30) |
 | `anthropic`         | `*`                | Anthropic: prompt caching via `system` `cache_control` breakpoint plus top-level automatic `cache_control` (the latter on keyed requests only) |
@@ -472,19 +470,25 @@ test catch malformed paths at registry-build time.
 | `anthropic`         | `claude-opus-4-[5-8]*` | Anthropic Claude Opus 4.5-4.8: native BM25 tool search with `defer_loading` (documented, not probed) |
 | `anthropic`         | `claude-sonnet-4-[5-6]*` | Anthropic Claude Sonnet 4.5-4.6: native BM25 tool search with `defer_loading` (documented, not probed) |
 | `anthropic`         | `claude-haiku-4-5*` | Anthropic Claude Haiku 4.5: native BM25 tool search with `defer_loading` (documented, not probed) |
-| `anthropic`         | `claude-*-5*`      | Anthropic Claude 5 generation (Opus, Sonnet, Haiku, Fable, Mythos): native BM25 tool search with `defer_loading` (documented, not probed) |
-| `openai-responses`  | `gpt-5.[4-9]*`     | OpenAI Responses gpt-5.4 and later 5.x: hosted `tool_search` with `defer_loading` (documented, not probed) |
+| `anthropic`         | `claude-opus-5*`   | Anthropic Claude Opus 5 / 5.5: native BM25 tool search with `defer_loading` (documented, not probed) |
+| `anthropic`         | `claude-sonnet-5*` | Anthropic Claude Sonnet 5 / 5.5: native BM25 tool search with `defer_loading` (documented, not probed) |
+| `anthropic`         | `claude-haiku-5*`  | Anthropic Claude Haiku 5.5: native BM25 tool search with `defer_loading` (documented, not probed) |
+| `anthropic`         | `claude-fable-5*`  | Anthropic Claude Fable 5 / 5.1: native BM25 tool search with `defer_loading` (documented, not probed) |
+| `anthropic`         | `claude-mythos-5*` | Anthropic Claude Mythos 5 / 5.1: native BM25 tool search with `defer_loading` (documented, not probed) |
+| `openai-responses`  | `gpt-5.[4-9]*`     | OpenAI Responses gpt-5.4 and later 5.x: hosted `tool_search` with `defer_loading` (documented, not probed; see [providers.md](providers.md#hosted-tool-search)) |
 | `openai-responses`  | `gpt-6*`           | OpenAI Responses gpt-6 family: hosted `tool_search` with `defer_loading` (documented, not probed) |
 
-The six tool search rules set `ToolSearchCapability`, which the loop
+The ten tool search rules set `ToolSearchCapability`, which the loop
 reads under [lazy tool loading](configuration.md#lazy-tool-loading) to
 choose the provider's native search over the harness `tool_search`
 tool. They are positive allow-lists: Claude Opus 4.1 and earlier,
 Sonnet 4, Bedrock, Gemini, OpenAI Chat Completions and Responses models
-before gpt-5.4 match none of them and keep the harness search. The
-Anthropic rules select the `bm25` variant; the adapter also accepts
-`regex`. See [Anthropic tool search](providers.md#tool-search) for the
-Anthropic wire shape.
+before gpt-5.4 match none of them and keep the harness search. Bedrock
+keeps the harness search because the adapter uses Converse, and
+Anthropic documents server-side tool search on Bedrock only through
+InvokeModel. The Anthropic rules select the `bm25` variant; the adapter
+also accepts `regex`. See [Anthropic tool search](providers.md#tool-search)
+for the Anthropic wire shape.
 
 `claude-opus-4-6*`, `claude-sonnet-4-6*`, and `claude-haiku-4-5*` get no
 sampling rule — those models still accept a non-default temperature — and
