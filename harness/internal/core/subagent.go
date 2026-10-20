@@ -291,6 +291,7 @@ func prepareSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *typ
 	childLoop.StructuredResults = parent.StructuredResults
 	childLoop.LazyTools = childLazy
 	childLoop.ToolSearch = parent.ToolSearch
+	childLoop.lazyStartReported = true
 	childLoop.ContextWindows = parent.ContextWindows
 	// Copied so a sub-agent cannot write a path the parent run protects;
 	// the child's Run adds the inherited guidance snapshot's files.

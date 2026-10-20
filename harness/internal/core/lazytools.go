@@ -147,8 +147,9 @@ func (l *AgenticLoop) lazyLoadedSince(n int) []string {
 }
 
 // startLazyTools prepares lazy loading for a run: a run that does not
-// continue carried history starts with nothing loaded, and every eager
-// name that matches no registered tool is reported as a setup warning.
+// continue carried history starts with nothing loaded. The loop's first
+// run also logs what lazy loading defers and reports every eager name
+// that matches no registered tool as a setup warning.
 func (l *AgenticLoop) startLazyTools(ctx context.Context, continuesHistory bool) {
 	if l.LazyTools == nil {
 		return
@@ -156,6 +157,24 @@ func (l *AgenticLoop) startLazyTools(ctx context.Context, continuesHistory bool)
 	if !continuesHistory {
 		l.LazyTools.Reset()
 	}
+	if l.lazyStartReported {
+		return
+	}
+	l.lazyStartReported = true
+
+	counts := l.LazyTools.DeferredCounts()
+	msg := "lazy tool loading enabled"
+	if counts.Total() == 0 {
+		msg = "lazy tool loading enabled with nothing to defer; every tool is sent"
+	}
+	l.Logger.InfoContext(ctx, msg,
+		"strategy", l.LazyTools.Strategy(),
+		"eager", l.LazyTools.EagerCount(),
+		"deferred", counts.Total(),
+		"deferred.builtIn", counts.BuiltIn,
+		"deferred.mcp", counts.MCP,
+		"deferred.controlPlane", counts.ControlPlane,
+	)
 	for _, name := range l.LazyTools.UnknownEager() {
 		l.Logger.WarnContext(ctx, "tools.lazyLoading.eager names a tool this run does not have; it is ignored", "tool", name)
 		l.emitRunWarning(types.HarnessEvent{

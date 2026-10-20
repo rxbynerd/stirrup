@@ -228,6 +228,11 @@ type AgenticLoop struct {
 	// tool loading, set when the turn's tools are chosen.
 	turnSearch lazySearch
 
+	// lazyStartReported is set once the run-start lazy-loading log line
+	// and unknown-eager warnings have been sent, so follow-up runs on the
+	// same loop and sub-agent loops do not repeat them.
+	lazyStartReported bool
+
 	// setupWarnings holds the warnings raised during run setup until the
 	// run's run_started is sent; see holdSetupWarnings.
 	setupWarnings setupWarningHold

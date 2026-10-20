@@ -66,6 +66,7 @@ type LazyLoader struct {
 	presentedFor map[string]string
 	internalFor  map[string]string
 	deferred     map[string]bool
+	controlPlane map[string]bool
 	// eagerTools counts eager tools other than the search tool.
 	eagerTools   int
 	unknownEager []string
@@ -86,6 +87,7 @@ func NewLazyLoader(reg ToolRegistry, cfg types.LazyToolLoadingConfig, opts LazyL
 		presentedFor: map[string]string{},
 		internalFor:  map[string]string{},
 		deferred:     map[string]bool{},
+		controlPlane: make(map[string]bool, len(opts.ControlPlaneTools)),
 		loaded:       map[string]bool{},
 	}
 	for _, def := range reg.List() {
@@ -99,9 +101,8 @@ func NewLazyLoader(reg ToolRegistry, cfg types.LazyToolLoadingConfig, opts LazyL
 		l.entries = append(l.entries, lazyEntry{id: id, def: def, schemaText: schemaSearchText(def.InputSchema)})
 	}
 
-	controlPlane := make(map[string]bool, len(opts.ControlPlaneTools))
 	for _, name := range opts.ControlPlaneTools {
-		controlPlane[name] = true
+		l.controlPlane[name] = true
 	}
 	eager := make(map[string]bool, len(cfg.Eager))
 	for _, name := range cfg.Eager {
@@ -118,7 +119,7 @@ func NewLazyLoader(reg ToolRegistry, cfg types.LazyToolLoadingConfig, opts LazyL
 		case len(cfg.Eager) > 0:
 			deferred = !eager[e.id]
 		default:
-			deferred = strings.HasPrefix(e.id, "mcp_") || controlPlane[e.id]
+			deferred = strings.HasPrefix(e.id, "mcp_") || l.controlPlane[e.id]
 		}
 		if deferred {
 			l.deferred[e.id] = true
@@ -130,15 +131,58 @@ func NewLazyLoader(reg ToolRegistry, cfg types.LazyToolLoadingConfig, opts LazyL
 }
 
 // ForRegistry returns a fresh loader with the same configuration over
-// reg, with nothing loaded. A sub-agent gets one over its own registry.
+// reg, with nothing loaded. A sub-agent gets one over its own registry;
+// it reports no unknown eager names, because the parent's loader already
+// reported them and the sub-agent's mode may have filtered tools out.
 func (l *LazyLoader) ForRegistry(reg ToolRegistry) *LazyLoader {
-	return NewLazyLoader(reg, l.cfg, l.opts)
+	child := NewLazyLoader(reg, l.cfg, l.opts)
+	child.unknownEager = nil
+	return child
 }
 
 // UnknownEager returns the configured eager names that match no
 // registered tool, in configuration order.
 func (l *LazyLoader) UnknownEager() []string {
 	return slices.Clone(l.unknownEager)
+}
+
+// LazyDeferredCounts counts a loader's deferred tools by origin.
+type LazyDeferredCounts struct {
+	BuiltIn      int
+	MCP          int
+	ControlPlane int
+}
+
+// Total returns the number of deferred tools.
+func (c LazyDeferredCounts) Total() int {
+	return c.BuiltIn + c.MCP + c.ControlPlane
+}
+
+// DeferredCounts returns the loader's deferred tools counted by origin.
+func (l *LazyLoader) DeferredCounts() LazyDeferredCounts {
+	var c LazyDeferredCounts
+	for _, e := range l.entries {
+		switch {
+		case !l.deferred[e.id]:
+		case l.controlPlane[e.id]:
+			c.ControlPlane++
+		case strings.HasPrefix(e.id, "mcp_"):
+			c.MCP++
+		default:
+			c.BuiltIn++
+		}
+	}
+	return c
+}
+
+// EagerCount returns the number of eager tools, the search tool excluded.
+func (l *LazyLoader) EagerCount() int {
+	return l.eagerTools
+}
+
+// Strategy returns the effective search strategy, "auto" or "harness".
+func (l *LazyLoader) Strategy() string {
+	return l.cfg.EffectiveStrategy()
 }
 
 // HasDeferred reports whether any tool is deferred. Without one, lazy
@@ -375,10 +419,6 @@ func (l *LazyLoader) searchDescription(base string) string {
 	// Longest first, so a server whose name extends another's claims its
 	// own tools.
 	sort.SliceStable(servers, func(i, j int) bool { return len(servers[i]) > len(servers[j]) })
-	controlPlane := make(map[string]bool, len(l.opts.ControlPlaneTools))
-	for _, name := range l.opts.ControlPlaneTools {
-		controlPlane[name] = true
-	}
 
 	perServer := map[string]int{}
 	var serverOrder []string
@@ -388,7 +428,7 @@ func (l *LazyLoader) searchDescription(base string) string {
 			continue
 		}
 		switch {
-		case controlPlane[e.id]:
+		case l.controlPlane[e.id]:
 			controlPlaneCount++
 		case strings.HasPrefix(e.id, "mcp_"):
 			server := ""
