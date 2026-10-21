@@ -88,6 +88,8 @@ type Event struct {
 	StallNudge bool `json:"stallNudge,omitempty"`
 	// WindDown carries TurnRecord.WindDown.
 	WindDown string `json:"windDown,omitempty"`
+	// ToolsLoaded carries TurnRecord.ToolsLoaded.
+	ToolsLoaded []string `json:"toolsLoaded,omitempty"`
 
 	// ResponseModel is the model the provider reported answering with —
 	// populated for turn_record when the provider reports one.

@@ -55,8 +55,14 @@ const MessageOriginVerifierFeedback = "verifier_feedback"
 // must not introspect, log, or mutate it. Each adapter reads it only from
 // the block types it owns; adapter-private wire types omit it everywhere
 // else.
+//
+// "tool_search" (ID, Name, Input) and "tool_search_result" (ToolUseID,
+// ToolReferences) record a provider-side tool search and replay only to
+// the provider that produced them; a failed search sets IsError, Name to
+// the error code and Content to the message. See
+// docs/configuration.md#lazy-tool-loading.
 type ContentBlock struct {
-	Type             string          `json:"type"` // "text" | "tool_use" | "tool_result" | "thinking" | "redacted_thinking"
+	Type             string          `json:"type"` // "text" | "tool_use" | "tool_result" | "thinking" | "redacted_thinking" | "tool_search" | "tool_search_result"
 	Text             string          `json:"text,omitempty"`
 	ID               string          `json:"id,omitempty"`
 	Name             string          `json:"name,omitempty"`
@@ -65,6 +71,11 @@ type ContentBlock struct {
 	Content          string          `json:"content,omitempty"`
 	IsError          bool            `json:"is_error,omitempty"`
 	ThoughtSignature string          `json:"thought_signature,omitempty"`
+
+	// ToolReferences lists the internal IDs of the tools a
+	// tool_search_result loaded. The loop presents them under the toolset
+	// profile's names (LazyLoader.PresentReferences) before each request.
+	ToolReferences []string `json:"tool_references,omitempty"`
 
 	// Structured and Kind carry the optional typed tool-result envelope from
 	// a tool_result ToolResult, letting provider adapters decide, per the
@@ -87,6 +98,12 @@ type ToolDefinition struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"input_schema"`
+
+	// Deferred marks a tool the provider's native tool search loads on
+	// demand (sent with defer_loading). Set only on requests that carry
+	// StreamParams.ToolSearch; the harness search omits unloaded tools
+	// instead.
+	Deferred bool `json:"deferred,omitempty"`
 
 	// Presentation carries optional, additive per-tool metadata: worked
 	// input examples and behavioural annotations. The `json:"-"` tag is

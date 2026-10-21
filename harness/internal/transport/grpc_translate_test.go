@@ -1660,6 +1660,46 @@ func TestRunConfigFromProto_ProtectedWriteTargetsPreserved(t *testing.T) {
 	check.Nil(empty.Tools.ProtectedWriteTargets, "unset protected_write_targets maps to nil")
 }
 
+func TestRunConfigFromProto_LazyLoadingPreserved(t *testing.T) {
+	t.Run("every field", func(t *testing.T) {
+		must := require.New(t)
+		original := &pb.RunConfig{Tools: &pb.ToolsConfig{LazyLoading: &pb.LazyToolLoadingConfig{
+			Enabled:    true,
+			Strategy:   types.LazyToolStrategyHarness,
+			Eager:      []string{"read_file", "mcp_github_create_issue"},
+			MaxResults: 12,
+		}}}
+		raw, err := proto.Marshal(original)
+		must.NoError(err, "marshal")
+		var decoded pb.RunConfig
+		must.NoError(proto.Unmarshal(raw, &decoded), "unmarshal")
+
+		rc := runConfigFromProto(&decoded)
+		must.Equal(types.LazyToolLoadingConfig{
+			Enabled:    true,
+			Strategy:   types.LazyToolStrategyHarness,
+			Eager:      []string{"read_file", "mcp_github_create_issue"},
+			MaxResults: 12,
+		}, rc.Tools.LazyLoading)
+
+		decoded.Tools.LazyLoading.Eager[0] = "mutated"
+		must.Equal("read_file", rc.Tools.LazyLoading.Eager[0], "translated Eager must not alias the proto's backing data")
+	})
+
+	t.Run("absent message leaves lazy loading off", func(t *testing.T) {
+		must := require.New(t)
+		rc := runConfigFromProto(&pb.RunConfig{Tools: &pb.ToolsConfig{}})
+		must.Zero(rc.Tools.LazyLoading)
+	})
+
+	t.Run("empty eager stays nil", func(t *testing.T) {
+		must := require.New(t)
+		rc := runConfigFromProto(&pb.RunConfig{Tools: &pb.ToolsConfig{LazyLoading: &pb.LazyToolLoadingConfig{Enabled: true}}})
+		must.True(rc.Tools.LazyLoading.Enabled)
+		must.Nil(rc.Tools.LazyLoading.Eager)
+	})
+}
+
 // TestRunConfigFromProto_MaxCostBudgetStillTranslated pins the deprecated
 // field's translation: the budget is not enforced, but dropping it here
 // would swallow the value before ValidateRunConfig can warn that the cap
@@ -2119,6 +2159,21 @@ func TestHarnessEventToProto_LiveTranscriptFields(t *testing.T) {
 		must.NotNil(got.Turn, "turn 0 must stay present")
 		must.Zero(got.GetTurn(), "turn")
 		must.Equal(types.TurnAbandonedUnansweredToolCalls, got.GetAbandonReason(), "abandon_reason")
+	})
+
+	t.Run("tools_loaded", func(t *testing.T) {
+		must := require.New(t)
+		got := harnessEventWireRoundTrip(t, types.HarnessEvent{
+			Type: "tools_loaded", Turn: turn(0), Source: types.ToolsLoadedSourceNative, Name: "tool_search_tool_bm25",
+			Input: json.RawMessage(`{"query":"github"}`), Tools: []string{"mcp_github_create_issue", "mcp_github_add_comment"},
+		})
+		must.Equal("tools_loaded", got.GetType(), "type")
+		must.NotNil(got.Turn, "turn 0 must stay present")
+		must.Zero(got.GetTurn(), "turn")
+		must.Equal("native", got.GetSource(), "source")
+		must.Equal("tool_search_tool_bm25", got.GetName(), "name")
+		must.JSONEq(`{"query":"github"}`, string(got.GetInput()), "input")
+		must.Equal([]string{"mcp_github_create_issue", "mcp_github_add_comment"}, got.GetTools(), "tools")
 	})
 
 	t.Run("tool_result", func(t *testing.T) {

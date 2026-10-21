@@ -19,6 +19,11 @@ const (
 	// does not resolve via tool.Registry.Resolve.
 	ToolFailureUnknownTool ToolFailureCategory = "unknown_tool"
 
+	// ToolFailureToolNotLoaded — model called a registered tool that lazy
+	// tool loading defers and no search has loaded yet. The tool name
+	// label is the registered name, not the unknown-tool sentinel.
+	ToolFailureToolNotLoaded ToolFailureCategory = "tool_not_loaded"
+
 	// ToolFailureInvalidArguments — the model's tool-call arguments did
 	// not decode to a JSON object, so the provider adapter marked the call
 	// and the loop rejected it before schema validation.
@@ -124,6 +129,7 @@ const ToolNameProviderScope = ""
 // metric labels are drawn from the enum rather than a free-form string.
 var allToolFailureCategories = map[ToolFailureCategory]struct{}{
 	ToolFailureUnknownTool:              {},
+	ToolFailureToolNotLoaded:            {},
 	ToolFailureInvalidArguments:         {},
 	ToolFailureSchemaValidation:         {},
 	ToolFailureSecurityGuard:            {},

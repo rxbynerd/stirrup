@@ -232,6 +232,9 @@ func streamingTrace(t *testing.T, runID string, config types.RunConfig, turns []
 		if tr.WindDown != "" {
 			ev["windDown"] = tr.WindDown
 		}
+		if len(tr.ToolsLoaded) > 0 {
+			ev["toolsLoaded"] = tr.ToolsLoaded
+		}
 		buf.Write(mustMarshal(t, ev))
 		buf.WriteByte('\n')
 	}
@@ -388,6 +391,22 @@ func TestReadRecording_PreservesWindDown(t *testing.T) {
 	must.Len(rec.Turns, 2)
 	must.Empty(rec.Turns[0].WindDown)
 	must.Equal("turns", rec.Turns[1].WindDown)
+}
+
+func TestReadRecording_PreservesToolsLoaded(t *testing.T) {
+	must := require.New(t)
+	turns := []types.TurnRecord{
+		{Turn: 0},
+		{Turn: 1, ToolsLoaded: []string{"mcp_github_create_issue", "mcp_github_add_comment"}},
+	}
+	body := streamingTrace(t, "run-tools-loaded", types.RunConfig{RunID: "run-tools-loaded"}, turns,
+		types.RunTrace{ID: "run-tools-loaded", Turns: 2, Outcome: "success"})
+
+	rec, err := NewReader(bytes.NewReader(body), WithLogger(discardLogger())).ReadRecording()
+	must.NoError(err)
+	must.Len(rec.Turns, 2)
+	must.Nil(rec.Turns[0].ToolsLoaded)
+	must.Equal([]string{"mcp_github_create_issue", "mcp_github_add_comment"}, rec.Turns[1].ToolsLoaded)
 }
 
 // TestReadRecording_PartialStream pins that a stream interrupted

@@ -605,9 +605,9 @@ func replayLeakageMessages(withReplay bool) []types.Message {
 // ThoughtSignature.
 func TestTranslateMessagesAnthropic_IgnoresMessageReplayFields(t *testing.T) {
 	must := require.New(t)
-	without, err := json.Marshal(translateMessagesAnthropic(replayLeakageMessages(false), quirks.StructuredToolResultCapability{}))
+	without, err := json.Marshal(translateMessagesAnthropic(replayLeakageMessages(false), quirks.StructuredToolResultCapability{}, false))
 	must.NoError(err, "marshal without replay fields")
-	with, err := json.Marshal(translateMessagesAnthropic(replayLeakageMessages(true), quirks.StructuredToolResultCapability{}))
+	with, err := json.Marshal(translateMessagesAnthropic(replayLeakageMessages(true), quirks.StructuredToolResultCapability{}, false))
 	must.NoError(err, "marshal with replay fields")
 	must.Equal(string(without), string(with), "anthropic wire bytes diverge when Message.ReplayFields is set")
 	must.NotContains(string(with), "reasoning_content", "anthropic wire body leaked reasoning_content")

@@ -36,6 +36,7 @@ func harnessEventToProto(e types.HarnessEvent) *pb.HarnessEvent {
 		IsError:         e.IsError,
 		DurationMs:      e.DurationMs,
 		AbandonReason:   e.AbandonReason,
+		Tools:           e.Tools,
 	}
 	if e.Turn != nil {
 		turn := saturateInt32(*e.Turn)
@@ -816,6 +817,16 @@ func toolsConfigFromProto(pc *pb.ToolsConfig) types.ToolsConfig {
 	}
 	if targets := pc.GetProtectedWriteTargets(); len(targets) > 0 {
 		tc.ProtectedWriteTargets = append([]string(nil), targets...)
+	}
+	if lazy := pc.GetLazyLoading(); lazy != nil {
+		tc.LazyLoading = types.LazyToolLoadingConfig{
+			Enabled:    lazy.GetEnabled(),
+			Strategy:   lazy.GetStrategy(),
+			MaxResults: int(lazy.GetMaxResults()),
+		}
+		if eager := lazy.GetEager(); len(eager) > 0 {
+			tc.LazyLoading.Eager = append([]string(nil), eager...)
+		}
 	}
 	for _, srv := range pc.McpServers {
 		tc.MCPServers = append(tc.MCPServers, types.MCPServerConfig{

@@ -384,3 +384,44 @@ func TestNormalizingAdapter_RoundTripDispatch_OpenAIResponses(t *testing.T) {
 		must.Equal("mcp_jira_create-issue", ev.Name)
 	}
 }
+
+func TestNormalizingAdapter_ToolSearchReferencesTranslatedBothWays(t *testing.T) {
+	must := require.New(t)
+	inner := &fakeAdapter{
+		scripted: []types.StreamEvent{
+			{Type: "tool_search", ID: "srvtoolu_1", Name: "tool_search_tool_bm25", Input: map[string]any{"query": "post"}},
+			{Type: "tool_search_result", ID: "srvtoolu_1", ToolReferences: []string{"mcp_slack_post_message", "read_file"}},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}
+	w := NewNormalizingAdapter(inner, "anthropic")
+	history := []types.Message{{Role: "assistant", Content: []types.ContentBlock{
+		{Type: "tool_search", ID: "srvtoolu_0", Name: "tool_search_tool_bm25"},
+		{Type: "tool_search_result", ToolUseID: "srvtoolu_0", ToolReferences: []string{"mcp_slack_post.message"}},
+	}}}
+	params := types.StreamParams{
+		Tools: []types.ToolDefinition{
+			{Name: "read_file", InputSchema: json.RawMessage(`{}`)},
+			{Name: "mcp_slack_post.message", InputSchema: json.RawMessage(`{}`), Deferred: true},
+		},
+		Messages:   history,
+		ToolSearch: true,
+	}
+	ch, err := w.Stream(context.Background(), params)
+	must.NoError(err)
+
+	sent := inner.receivedParams
+	must.Equal("mcp_slack_post_message", sent.Tools[1].Name)
+	must.True(sent.Tools[1].Deferred, "the deferred flag passes through")
+	must.True(sent.ToolSearch)
+	must.Equal("tool_search_tool_bm25", sent.Messages[0].Content[0].Name, "the search tool's own name is not a registry name")
+	must.Equal([]string{"mcp_slack_post_message"}, sent.Messages[0].Content[1].ToolReferences)
+	must.Equal([]string{"mcp_slack_post.message"}, history[0].Content[1].ToolReferences, "the caller's history is not mutated")
+
+	var events []types.StreamEvent
+	for ev := range ch {
+		events = append(events, ev)
+	}
+	must.Equal("tool_search_tool_bm25", events[0].Name)
+	must.Equal([]string{"mcp_slack_post.message", "read_file"}, events[1].ToolReferences)
+}

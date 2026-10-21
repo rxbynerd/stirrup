@@ -172,6 +172,9 @@ type providerAttempt struct {
 	// summary is the "error" turn summary a failed request recorded; nil
 	// when none was recorded.
 	summary *types.TurnTrace
+	// toolsLoaded lists the deferred tools the response's native tool
+	// searches loaded, by internal ID.
+	toolsLoaded []string
 }
 
 // requestErrorType classifies a failed request for error.type: a run
@@ -446,9 +449,10 @@ func (l *AgenticLoop) completeAttempt(
 }
 
 // recordAttemptUsage charges a completed request's tokens to the loop and
-// the run ledger, records its turn summary, metrics and log line, and
-// returns the summary. toolCalls is the number of tool calls the turn dispatches; a
-// discarded response passes zero.
+// the run ledger, records its metrics and log line, and returns its turn
+// summary for the caller to record once the turn's tool calls, which can
+// add to the summary, have run. toolCalls is the number of tool calls the
+// turn dispatches; a discarded response passes zero.
 func (l *AgenticLoop) recordAttemptUsage(
 	ctx context.Context,
 	config *types.RunConfig,
@@ -482,8 +486,8 @@ func (l *AgenticLoop) recordAttemptUsage(
 		ToolCalls:           toolCalls,
 		OutputLimitRecovery: outputLimitRecovery,
 		WindDown:            windDown,
+		ToolsLoaded:         attempt.toolsLoaded,
 	}
-	l.Trace.RecordTurn(summary)
 
 	modeAttr := l.metricAttrs(attribute.String("run.mode", config.Mode))
 	l.Metrics.Turns.Add(ctx, 1, modeAttr)

@@ -33,8 +33,13 @@ import (
 // reported; see TokenUsage.MergeEvent). InputTokens is the whole prompt,
 // CacheReadTokens and CacheWriteTokens included. ReasoningTokens is a
 // subset of OutputTokens.
+//
+// A "tool_search" event (ID, Name, Input) and its "tool_search_result"
+// (ID echoed, ToolReferences) record one provider-side search; a failed
+// search sets IsError, Name to the error code and Text to the message.
+// See docs/configuration.md#lazy-tool-loading.
 type StreamEvent struct {
-	Type         string         `json:"type"` // "text_delta" | "tool_call" | "thinking_delta" | "thinking" | "redacted_thinking" | "message_complete" | "error"
+	Type         string         `json:"type"` // "text_delta" | "tool_call" | "thinking_delta" | "thinking" | "redacted_thinking" | "tool_search" | "tool_search_result" | "message_complete" | "error"
 	Text         string         `json:"text,omitempty"`
 	ID           string         `json:"id,omitempty"`
 	Name         string         `json:"name,omitempty"`
@@ -80,6 +85,15 @@ type StreamEvent struct {
 	// text is model output that has not been scrubbed, so it never
 	// serialises.
 	InvalidInput *InvalidToolInput `json:"-"`
+
+	// ToolReferences lists the wire names of the tools a
+	// "tool_search_result" event loaded; the NormalizingAdapter maps them
+	// back to registry names as it does tool_call names.
+	ToolReferences []string `json:"toolReferences,omitempty"`
+
+	// IsError marks a failed "tool_search_result", including one with
+	// neither an error code nor a message.
+	IsError bool `json:"isError,omitempty"`
 }
 
 // InvalidToolInput describes tool-call arguments that are not a JSON
@@ -292,6 +306,14 @@ type StreamParams struct {
 	// Empty means "not a multi-turn conversation": OpenAI Responses omits
 	// `prompt_cache_key` and Anthropic omits its top-level breakpoint.
 	CacheKey string `json:"cacheKey,omitempty"`
+
+	// ToolSearch asks the adapter to add the provider's native tool
+	// search tool to the request and to send every ToolDefinition with
+	// Deferred set as a deferred definition. The loop sets it only when
+	// the resolved quirks advertise a ToolSearch capability; an adapter
+	// whose resolved quirks do not ignores the flag and sends every tool
+	// loaded. At least one tool in Tools is never deferred.
+	ToolSearch bool `json:"toolSearch,omitempty"`
 }
 
 // Float64Ptr returns a pointer to the given float64 value. It is a
@@ -304,12 +326,13 @@ func Float64Ptr(v float64) *float64 {
 // HarnessEvent is an event emitted by the harness to the control plane.
 //
 // Type discriminates the event shape: "text_delta", "thinking_delta",
-// "tool_call", "tool_result", "user_message", "turn_started",
+// "tool_call", "tool_result", "tools_loaded", "user_message", "turn_started",
 // "turn_committed", "turn_abandoned", "done", "error", "warning", "heartbeat", "ready",
 // "run_started", "permission_request", "tool_result_request",
 // "batch_submission", "batch_waiting", "batch_cancel_request",
 // "sandbox_token_request". The per-type field table is the HarnessEvent
 // comment in proto/harness/v1/harness.proto.
+//
 // RequestID correlates a request event with its matching ControlEvent
 // response. See docs/deployment.md for the gRPC sequence and
 // docs/batch.md for the batch event correlation.
@@ -327,9 +350,10 @@ func Float64Ptr(v float64) *float64 {
 // is per session, so a follow-up run's "run_started" follows the
 // previous run's "done".
 //
-// Source takes one of the UserMessageSource* values; the vocabulary is
-// open, so consumers preserve values they do not recognise. Turn is a
-// pointer so turn 0 is present on the wire.
+// Source takes one of the UserMessageSource* values on a "user_message"
+// and one of the ToolsLoadedSource* values on a "tools_loaded"; both
+// vocabularies are open, so consumers preserve values they do not
+// recognise. Turn is a pointer so turn 0 is present on the wire.
 type HarnessEvent struct {
 	Type           string          `json:"type"`
 	Text           string          `json:"text,omitempty"`
@@ -349,8 +373,8 @@ type HarnessEvent struct {
 	TraceReference *TraceReference `json:"traceReference,omitempty"` // run span identity (run_started only); the done summary carries it on Trace
 	TraceContext   *TraceContext   `json:"traceContext,omitempty"`   // the tool call's span context (tool_result_request only)
 
-	Source          string      `json:"source,omitempty"`          // where a user_message's text came from (user_message only)
-	Turn            *int        `json:"turn,omitempty"`            // run-scoped turn number (turn_started, turn_committed and turn_abandoned)
+	Source          string      `json:"source,omitempty"`          // where a user_message's text came from, or which search loaded tools (user_message and tools_loaded)
+	Turn            *int        `json:"turn,omitempty"`            // run-scoped turn number (turn_started, turn_committed, turn_abandoned and tools_loaded)
 	Model           string      `json:"model,omitempty"`           // the routed model (turn_started only)
 	Provider        string      `json:"provider,omitempty"`        // the routed provider's adapter type, never a providers-map key (turn_started only)
 	Usage           *TokenUsage `json:"usage,omitempty"`           // the turn's token usage, nil when it reported none (turn_committed only)
@@ -358,6 +382,7 @@ type HarnessEvent struct {
 	IsError         bool        `json:"isError,omitempty"`         // the call failed (tool_result only)
 	DurationMs      int64       `json:"durationMs,omitempty"`      // the call's run time, excluding dispatch queueing (tool_result only)
 	AbandonReason   string      `json:"abandonReason,omitempty"`   // why the turn left no valid history, one of the TurnAbandoned* values (turn_abandoned only)
+	Tools           []string    `json:"tools,omitempty"`           // internal IDs of the tools a search loaded (tools_loaded only)
 }
 
 // Contract capabilities a harness advertises on "ready".
@@ -373,12 +398,15 @@ const (
 	// CapabilityTurnAbandoned: every turn_started is followed by exactly
 	// one turn_committed or turn_abandoned.
 	CapabilityTurnAbandoned = "turn_abandoned"
+	// CapabilityLazyToolLoading: RunConfig.Tools.LazyLoading is honoured
+	// and tools_loaded events report every search that loaded tools.
+	CapabilityLazyToolLoading = "lazy_tool_loading"
 )
 
 // HarnessCapabilities returns the capabilities this harness advertises on
 // "ready", as a new slice on every call.
 func HarnessCapabilities() []string {
-	return []string{CapabilityLiveTranscript, CapabilityReasoningSummary, CapabilityFollowUpHistory, CapabilityTurnAbandoned}
+	return []string{CapabilityLiveTranscript, CapabilityReasoningSummary, CapabilityFollowUpHistory, CapabilityTurnAbandoned, CapabilityLazyToolLoading}
 }
 
 // Values of HarnessEvent.AbandonReason on a "turn_abandoned" event. The
@@ -400,6 +428,12 @@ const (
 	// TurnAbandonedGuardrailBlocked: a post-turn guardrail rejected the
 	// turn's answer.
 	TurnAbandonedGuardrailBlocked = "guardrail_blocked"
+)
+
+// Values of HarnessEvent.Source on a "tools_loaded" event.
+const (
+	ToolsLoadedSourceNative  = "native"
+	ToolsLoadedSourceHarness = "harness"
 )
 
 // Values of HarnessEvent.Source on a "user_message" event.

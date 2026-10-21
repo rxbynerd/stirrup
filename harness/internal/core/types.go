@@ -30,6 +30,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
+	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
 	"github.com/rxbynerd/stirrup/harness/internal/ruleoftwo"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
@@ -110,6 +111,15 @@ type AgenticLoop struct {
 	// sends the structured tool-result envelope, so the context estimate
 	// counts what goes on the wire. Nil counts it for every provider.
 	StructuredResults StructuredResultSupport
+	// LazyTools decides which tools each turn sends under lazy tool
+	// loading and gates calls to deferred tools not yet loaded; nil turns
+	// lazy loading off. Tools stays the full registry, so sub-agents and
+	// dispatch see every tool. See docs/configuration.md#lazy-tool-loading.
+	LazyTools *tool.LazyLoader
+	// ToolSearch reports the native tool search of the provider a turn is
+	// routed to; nil means none, so the harness tool_search serves every
+	// turn.
+	ToolSearch ToolSearchSupport
 	// Hooks runs the run's configured lifecycle hooks; optional, like
 	// GuardRail/RuleOfTwo/Escalation. The factory always injects a
 	// non-nil value. See docs/configuration.md#lifecycle-hooks.
@@ -213,6 +223,15 @@ type AgenticLoop struct {
 	// openTurn is the turn that sent turn_started and has sent neither
 	// turn_committed nor turn_abandoned yet; nil between turns.
 	openTurn *int
+
+	// turnSearch is the tool search the current turn offers under lazy
+	// tool loading, set when the turn's tools are chosen.
+	turnSearch lazySearch
+
+	// lazyStartReported is set once the run-start lazy-loading log line
+	// and unknown-eager warnings have been sent, so follow-up runs on the
+	// same loop and sub-agent loops do not repeat them.
+	lazyStartReported bool
 
 	// setupWarnings holds the warnings raised during run setup until the
 	// run's run_started is sent; see holdSetupWarnings.
@@ -451,8 +470,9 @@ type structuredOutput struct {
 
 // preflightToolCall runs the deterministic, model-free checks every tool
 // call must pass before the PhasePreTool guard and dispatch: unknown-tool
-// rejection, malformed-arguments rejection, prototype-pollution strip,
-// JSON-schema validation, and the tool-input tripwires. t is call's resolved tool, nil when unknown.
+// and unloaded-deferred-tool rejection, malformed-arguments rejection,
+// prototype-pollution strip, JSON-schema validation, and the tool-input
+// tripwires. t is call's resolved tool, nil when unknown.
 //
 // On success it returns the cleaned input (the form both the guard and the
 // handler see) and an empty category. On rejection it returns the
@@ -466,6 +486,9 @@ func (l *AgenticLoop) preflightToolCall(call types.ToolCall, t *tool.Tool) (json
 			return nil, msg, observability.ToolFailureUnknownTool
 		}
 		return nil, "Unknown tool: " + call.Name, observability.ToolFailureUnknownTool
+	}
+	if l.LazyTools != nil && l.LazyTools.Unloaded(t.Name) {
+		return nil, l.turnSearch.notLoadedMessage(call.Name), observability.ToolFailureToolNotLoaded
 	}
 
 	if call.InvalidInput != nil {
@@ -928,6 +951,14 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 				ThoughtSignature: event.ThoughtSignature,
 			})
 
+		case "tool_search", "tool_search_result":
+			if inText {
+				result.Blocks = append(result.Blocks, types.ContentBlock{Type: "text", Text: currentText})
+				inText = false
+				currentText = ""
+			}
+			result.Blocks = append(result.Blocks, toolSearchBlock(event))
+
 		case "message_complete":
 			if inText {
 				result.Blocks = append(result.Blocks, types.ContentBlock{Type: "text", Text: currentText})
@@ -961,6 +992,29 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 	return result, nil
 }
 
+// toolSearchBlock converts a provider tool search event into the content
+// block that records it in history. A result's references stay the
+// presented names the adapter reported until the loop maps them to
+// internal IDs. A failed search keeps the provider's error code in Name
+// and its message in Content.
+func toolSearchBlock(event types.StreamEvent) types.ContentBlock {
+	if event.Type == "tool_search" {
+		input, _ := json.Marshal(event.Input)
+		return types.ContentBlock{Type: "tool_search", ID: event.ID, Name: event.Name, Input: types.NormalizeToolInput(input)}
+	}
+	block := types.ContentBlock{
+		Type:           "tool_search_result",
+		ToolUseID:      event.ID,
+		ToolReferences: slices.Clone(event.ToolReferences),
+	}
+	if event.IsError || event.Name != "" || event.Text != "" {
+		block.IsError = true
+		block.Name = event.Name
+		block.Content = event.Text
+	}
+	return block
+}
+
 // Close releases resources owned by the loop, such as container executors,
 // internally-created transports, and closable trace emitters.
 func (l *AgenticLoop) Close() error {
@@ -981,6 +1035,11 @@ func (l *AgenticLoop) Close() error {
 // provider key and model sends tool results' structured envelope on the
 // wire. An empty provider key names the run's primary provider.
 type StructuredResultSupport func(provider, model string) bool
+
+// ToolSearchSupport resolves the native tool search capability of a
+// router-selected provider key and model. An empty provider key names the
+// run's primary provider.
+type ToolSearchSupport func(provider, model string) quirks.ToolSearchCapability
 
 // sendsStructuredResults resolves StructuredResults for one turn's routing
 // selection.
@@ -1016,10 +1075,22 @@ func estimateSystemPromptTokens(systemPrompt string) int {
 }
 
 // estimateToolDefinitionTokens estimates the token count for tool definitions
-// that are sent alongside messages in each API call.
+// that are sent alongside messages in each API call, counting no deferred
+// definition.
 func estimateToolDefinitionTokens(tools []types.ToolDefinition) int {
+	return estimateLoadedToolDefinitionTokens(tools, nil)
+}
+
+// estimateLoadedToolDefinitionTokens is estimateToolDefinitionTokens for a
+// native tool search turn: a deferred definition reaches the model's
+// context once a search loads it, so it counts when loaded reports its
+// model-facing name. A nil loaded counts no deferred definition.
+func estimateLoadedToolDefinitionTokens(tools []types.ToolDefinition, loaded func(name string) bool) int {
 	total := 0
 	for _, t := range tools {
+		if t.Deferred && (loaded == nil || !loaded(t.Name)) {
+			continue
+		}
 		total += toolDefinitionOverheadTokens
 		total += len(t.Name) / tokenEstimationDivisor
 		total += len(t.Description) / tokenEstimationDivisor

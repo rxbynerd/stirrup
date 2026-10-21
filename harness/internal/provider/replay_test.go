@@ -217,3 +217,69 @@ func TestReplayProvider_ForwardsThoughtSignature(t *testing.T) {
 	must.NotNil(toolCall, "expected a tool_call event")
 	must.Equal(sig, toolCall.ThoughtSignature)
 }
+
+// TestReplayProvider_ToolSearchBlocks pins that recorded search blocks
+// replay as the events the loop persists them from, so a recorded call to a
+// tool the search loaded is not rejected as unloaded.
+func TestReplayProvider_ToolSearchBlocks(t *testing.T) {
+	cases := []struct {
+		name   string
+		result types.ContentBlock
+		want   types.StreamEvent
+	}{
+		{
+			name:   "loaded",
+			result: types.ContentBlock{Type: "tool_search_result", ToolUseID: "srvtoolu_1", ToolReferences: []string{"mcp_github_search_issues"}},
+			want:   types.StreamEvent{Type: "tool_search_result", ID: "srvtoolu_1", ToolReferences: []string{"mcp_github_search_issues"}},
+		},
+		{
+			name:   "error",
+			result: types.ContentBlock{Type: "tool_search_result", ToolUseID: "srvtoolu_1", IsError: true, Name: "unavailable", Content: "upstream: timed out"},
+			want:   types.StreamEvent{Type: "tool_search_result", ID: "srvtoolu_1", IsError: true, Name: "unavailable", Text: "upstream: timed out"},
+		},
+		{
+			name:   "error without code or message",
+			result: types.ContentBlock{Type: "tool_search_result", ToolUseID: "srvtoolu_1", IsError: true},
+			want:   types.StreamEvent{Type: "tool_search_result", ID: "srvtoolu_1", IsError: true},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			turns := []types.TurnRecord{{
+				Turn: 1,
+				ModelOutput: []types.ContentBlock{
+					{Type: "tool_search", ID: "srvtoolu_1", Name: "tool_search_tool_bm25", Input: json.RawMessage(`{"query":"github issues"}`)},
+					tc.result,
+					{Type: "future_block", Text: "ignored"},
+					{Type: "tool_use", ID: "toolu_1", Name: "mcp_github_search_issues", Input: json.RawMessage(`{"q":"bug"}`)},
+				},
+			}}
+
+			events := replayEvents(t, NewReplayProvider(turns))
+
+			must.Equal([]string{"tool_search", "tool_search_result", "tool_call", "message_complete"}, eventTypes(events))
+			must.Equal(types.StreamEvent{
+				Type:  "tool_search",
+				ID:    "srvtoolu_1",
+				Name:  "tool_search_tool_bm25",
+				Input: map[string]any{"query": "github issues"},
+			}, events[0])
+			must.Equal(tc.want, events[1])
+			must.Equal("tool_use", events[3].StopReason)
+		})
+	}
+}
+
+func TestReplayProvider_ToolSearchBlockWithInvalidInputErrors(t *testing.T) {
+	must := require.New(t)
+	turns := []types.TurnRecord{{
+		Turn:        1,
+		ModelOutput: []types.ContentBlock{{Type: "tool_search", ID: "srvtoolu_1", Name: "tool_search_tool_bm25", Input: json.RawMessage(`{broken`)}},
+	}}
+
+	events := replayEvents(t, NewReplayProvider(turns))
+
+	must.Equal([]string{"error"}, eventTypes(events))
+	must.ErrorContains(events[0].Error, "invalid tool search input JSON")
+}

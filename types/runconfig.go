@@ -1508,6 +1508,99 @@ type ToolsConfig struct {
 	// edit is never rolled back. Rejected in read-only modes and for
 	// executors that cannot exec.
 	PostEdit []PostEditCheckConfig `json:"postEdit,omitempty"`
+
+	// LazyLoading keeps the tool definitions a turn carries small: tools
+	// outside the eager set are deferred and reach the model only after
+	// it searches for them. Off unless Enabled is set.
+	LazyLoading LazyToolLoadingConfig `json:"lazyLoading,omitzero"`
+}
+
+// LazyToolLoadingConfig configures deferred tool loading. A deferred tool
+// stays registered and permission-gated like an eager one and is
+// dispatchable once loaded; only its visibility to the model changes. The
+// model loads deferred tools through a search: the provider's native tool
+// search where the resolved (provider, model) pair has one, otherwise the
+// harness's built-in ToolSearchToolName tool.
+type LazyToolLoadingConfig struct {
+	// Enabled turns lazy loading on. Off by default: every registered
+	// tool is sent on every turn.
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Strategy selects how deferred tools are searched: "auto" (the
+	// default) uses the provider's native tool search where the quirks
+	// registry advertises one and the harness tool otherwise; "harness"
+	// always uses the harness tool, which also hides deferred tools'
+	// names and descriptions until they are loaded.
+	Strategy string `json:"strategy,omitempty"`
+
+	// Eager names the tools sent on every turn without a search, by
+	// internal tool ID. Empty selects every registered built-in tool, so
+	// only MCP-imported and control-plane tools are deferred by default; a
+	// non-empty list defers every other tool, built-ins included.
+	Eager []string `json:"eager,omitempty"`
+
+	// MaxResults bounds how many tools one harness search loads. Zero
+	// selects DefaultLazyToolSearchResults; the ceiling is
+	// MaxLazyToolSearchResults. The provider's native search applies its
+	// own limit.
+	MaxResults int `json:"maxResults,omitempty"`
+}
+
+// Lazy tool loading constants.
+const (
+	// ToolSearchToolName is the harness's built-in search tool, registered
+	// only when lazy loading is on. The name is reserved: a control-plane
+	// tool may not use it.
+	ToolSearchToolName = "tool_search"
+
+	LazyToolStrategyAuto    = "auto"
+	LazyToolStrategyHarness = "harness"
+
+	DefaultLazyToolSearchResults = 5
+	MaxLazyToolSearchResults     = 20
+	maxLazyToolEagerEntries      = 256
+	maxLazyToolEagerNameBytes    = 256
+)
+
+// lazyToolEagerReservedChars are reserved for a future pattern form of
+// tools.lazyLoading.eager entries.
+const lazyToolEagerReservedChars = "*?["
+
+// nativeToolSearchNames are the tool names Anthropic's native tool search
+// uses in requests and responses, so no control-plane tool may take one.
+var nativeToolSearchNames = map[string]bool{
+	"tool_search_tool_bm25":  true,
+	"tool_search_tool_regex": true,
+}
+
+var validLazyToolStrategies = map[string]bool{
+	"":                      true,
+	LazyToolStrategyAuto:    true,
+	LazyToolStrategyHarness: true,
+}
+
+// ValidLazyToolStrategyValues returns the accepted
+// LazyToolLoadingConfig.Strategy values, sorted, for completion and help.
+func ValidLazyToolStrategyValues() []string {
+	return []string{LazyToolStrategyAuto, LazyToolStrategyHarness}
+}
+
+// EffectiveStrategy returns Strategy with the empty default resolved to
+// LazyToolStrategyAuto.
+func (c LazyToolLoadingConfig) EffectiveStrategy() string {
+	if c.Strategy == "" {
+		return LazyToolStrategyAuto
+	}
+	return c.Strategy
+}
+
+// EffectiveMaxResults returns MaxResults, or DefaultLazyToolSearchResults
+// when it is unset (<= 0).
+func (c LazyToolLoadingConfig) EffectiveMaxResults() int {
+	if c.MaxResults <= 0 {
+		return DefaultLazyToolSearchResults
+	}
+	return c.MaxResults
 }
 
 // Bounds for ToolsConfig.MaxResultBytes. The minimum leaves room for the
@@ -2588,6 +2681,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateToolMaxResultBytes(config.Tools.MaxResultBytes, &errs)
 	validateProtectedWriteTargets(config.Tools.ProtectedWriteTargets, &errs)
 	validatePostEditChecks(config, &errs)
+	validateLazyToolLoading(config.Tools.LazyLoading, &errs)
 	validateTraceArchiveConfig(config.TraceEmitter.Archive, &errs)
 	validateCredentialConfig(config.Provider.Credential, "provider.credential", &errs)
 	if config.TraceEmitter.Archive != nil {
@@ -3992,6 +4086,69 @@ func validateBuiltInTools(builtIns []string, errs *[]string) {
 	}
 }
 
+// validateLazyToolLoading checks the lazy-loading knobs even when lazy
+// loading is off, so a config does not start failing when it is turned
+// on. Eager entries are checked for shape only: MCP tool names are not
+// known until discovery, so an eager entry naming no registered tool is
+// reported at run start, not here. The shape rules are looser than any
+// provider's tool-name grammar because an MCP server's tool names are
+// not constrained by one.
+func validateLazyToolLoading(cfg LazyToolLoadingConfig, errs *[]string) {
+	if !validLazyToolStrategies[cfg.Strategy] {
+		*errs = append(*errs, fmt.Sprintf(
+			"tools.lazyLoading.strategy %q is not recognised; legal values: \"\" (auto), %q, %q",
+			cfg.Strategy, LazyToolStrategyAuto, LazyToolStrategyHarness,
+		))
+	}
+	if cfg.MaxResults < 0 || cfg.MaxResults > MaxLazyToolSearchResults {
+		*errs = append(*errs, fmt.Sprintf(
+			"tools.lazyLoading.maxResults %d must be 0 (default %d) or 1..%d",
+			cfg.MaxResults, DefaultLazyToolSearchResults, MaxLazyToolSearchResults,
+		))
+	}
+	if len(cfg.Eager) > maxLazyToolEagerEntries {
+		*errs = append(*errs, fmt.Sprintf("tools.lazyLoading.eager has %d entries; at most %d", len(cfg.Eager), maxLazyToolEagerEntries))
+	}
+	seen := make(map[string]int, len(cfg.Eager))
+	for i, name := range cfg.Eager {
+		path := fmt.Sprintf("tools.lazyLoading.eager[%d]", i)
+		switch problem := lazyToolEagerNameProblem(name); {
+		case name == "":
+			*errs = append(*errs, path+" must not be empty")
+		case problem != "":
+			*errs = append(*errs, fmt.Sprintf("%s %q %s", path, name, problem))
+		case name == ToolSearchToolName:
+			*errs = append(*errs, fmt.Sprintf("%s %q is the harness tool search, which is always visible", path, name))
+		default:
+			if prev, dup := seen[name]; dup {
+				*errs = append(*errs, fmt.Sprintf("%s %q duplicates tools.lazyLoading.eager[%d]", path, name, prev))
+			} else {
+				seen[name] = i
+			}
+		}
+	}
+}
+
+// lazyToolEagerNameProblem returns the rule a non-empty eager entry
+// breaks, or "" when it breaks none.
+func lazyToolEagerNameProblem(name string) string {
+	if len(name) > maxLazyToolEagerNameBytes {
+		return fmt.Sprintf("is %d bytes; at most %d", len(name), maxLazyToolEagerNameBytes)
+	}
+	if strings.ContainsAny(name, lazyToolEagerReservedChars) {
+		return "must not contain *, ? or [, which are reserved"
+	}
+	for _, r := range name {
+		switch {
+		case unicode.IsSpace(r):
+			return "must not contain whitespace"
+		case unicode.IsControl(r):
+			return "must not contain control characters"
+		}
+	}
+	return ""
+}
+
 // controlPlaneToolNamePattern bounds ControlPlaneToolConfig.Name to the
 // intersection of the provider tool-name grammars (a leading letter or
 // underscore, then letters, digits, underscores, or hyphens, 64 max).
@@ -4024,6 +4181,10 @@ func validateControlPlaneTools(config *RunConfig, errs *[]string) {
 			*errs = append(*errs, fmt.Sprintf("%s.name %q must match %s", path, ct.Name, controlPlaneToolNamePattern.String()))
 		case validBuiltInToolNames[ct.Name]:
 			*errs = append(*errs, fmt.Sprintf("%s.name %q collides with a built-in tool", path, ct.Name))
+		case ct.Name == ToolSearchToolName:
+			*errs = append(*errs, fmt.Sprintf("%s.name %q is reserved for the harness tool search", path, ct.Name))
+		case nativeToolSearchNames[ct.Name]:
+			*errs = append(*errs, fmt.Sprintf("%s.name %q is reserved for native tool search", path, ct.Name))
 		case strings.HasPrefix(ct.Name, "mcp_"):
 			*errs = append(*errs, fmt.Sprintf("%s.name %q must not use the mcp_ prefix reserved for MCP-imported tools", path, ct.Name))
 		default:

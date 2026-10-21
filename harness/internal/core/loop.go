@@ -184,6 +184,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	l.holdSetupWarnings()
 	defer l.releaseSetupWarnings()
 	carried := l.takeCarriedHistory(followUp != nil)
+	l.startLazyTools(runCtx, carried != nil && len(carried.messages) > 0)
 
 	// A non-nil TraceContext here was set by the caller; otherwise
 	// establish the emitter's run span or a plain ctx as the span parent
@@ -883,11 +884,12 @@ func (l *AgenticLoop) runInnerLoop(
 
 		// Token estimate includes system prompt and tool definitions —
 		// these consume context but aren't in the message history.
-		toolDefs := l.Tools.List()
+		toolDefs, search := l.visibleTools(selection)
+		l.turnSearch = search
 		structuredResults := l.sendsStructuredResults(selection.Provider, selection.Model)
 		currentTokens := estimateCurrentTokens(messages, structuredResults) +
 			estimateSystemPromptTokens(systemPrompt) +
-			estimateToolDefinitionTokens(toolDefs)
+			estimateLoadedToolDefinitionTokens(toolDefs, l.deferredToolLoaded)
 		window := l.resolveContextWindow(config, selection.Provider, selection.Model)
 		if turn == 0 && window.cappedFrom > 0 {
 			l.Logger.WarnContext(ctx, "contextStrategy.maxTokens exceeds the model's registered context window",
@@ -981,14 +983,15 @@ func (l *AgenticLoop) runInnerLoop(
 		params := types.StreamParams{
 			Model:            selection.Model,
 			System:           systemPrompt,
-			Messages:         preparedMessages,
-			Tools:            l.Tools.List(),
+			Messages:         l.presentToolReferences(preparedMessages),
+			Tools:            toolDefs,
 			MaxTokens:        responseReserve,
 			Temperature:      temperature,
 			ReasoningEffort:  config.ReasoningEffort,
 			ReasoningSummary: types.ResolveReasoningSummary(providerType, config.ReasoningSummary),
 			ToolChoice:       turnToolChoice,
 			CacheKey:         cacheKey,
+			ToolSearch:       search.native,
 		}
 		l.emitTurnStarted(turn, selection.Model, providerType)
 
@@ -1012,6 +1015,7 @@ func (l *AgenticLoop) runInnerLoop(
 				// The response filled the window: its tokens are charged
 				// and the truncated response is discarded.
 				summary := l.recordAttemptUsage(chatCtx, config, tokenTracker, ledger, turn, selection, selectedProvider, attempt, 0, false, windDown)
+				l.Trace.RecordTurn(summary)
 				chat.End(trace.ChatSpanEnd{Summary: &summary, Record: sentRecord(turn, selection.Model, params), ErrorType: "context_overflow"})
 				if budgetExhausted(tokenTracker, ledger, config) {
 					return messages, "budget_exceeded", finalAssistantText, nil
@@ -1029,7 +1033,7 @@ func (l *AgenticLoop) runInnerLoop(
 			if prepOutcome != "" {
 				return messages, prepOutcome, finalAssistantText, nil
 			}
-			params.Messages = preparedMessages
+			params.Messages = l.presentToolReferences(preparedMessages)
 		}
 		if attempt.err != nil {
 			chat.End(trace.ChatSpanEnd{Summary: attempt.summary, Record: sentRecord(turn, selection.Model, params), ErrorType: attempt.errorType, ErrorText: attempt.errText})
@@ -1050,7 +1054,13 @@ func (l *AgenticLoop) runInnerLoop(
 			dispatched = len(toolCalls)
 		}
 		outputLimitRecovery := l.canRecoverFromOutputLimit(sr.StopReason, turn, config.MaxTurns)
+		attempt.toolsLoaded = l.loadSearchedTools(chatCtx, sr.Blocks, params.ToolSearch)
 		summary := l.recordAttemptUsage(chatCtx, config, tokenTracker, ledger, turn, selection, selectedProvider, attempt, dispatched, outputLimitRecovery, windDown)
+		// A turn that dispatches tool calls is recorded after them, so its
+		// summary includes the tools a harness tool_search loaded.
+		if dispatched == 0 {
+			l.Trace.RecordTurn(summary)
+		}
 
 		// Persisted as a TurnRecord (full transcript) by recording
 		// emitters (JSONL); summary-only emitters ignore it. Tool
@@ -1062,6 +1072,7 @@ func (l *AgenticLoop) runInnerLoop(
 			ResponseModel:       sr.ResponseModel,
 			OutputLimitRecovery: outputLimitRecovery,
 			WindDown:            windDown,
+			ToolsLoaded:         summary.ToolsLoaded,
 		}
 		// The chat span covers inference only; tool spans are its
 		// siblings under the agent span.
@@ -1224,8 +1235,12 @@ func (l *AgenticLoop) runInnerLoop(
 		dispatchCtx := tool.WithCallContext(ctx, tool.CallContext{
 			RunID: config.RunID, ParentRunID: l.ParentRunID, Turn: turn + 1,
 		})
+		loadedBefore := l.lazyLoadedCount()
 		toolResults, toolRecords, stallOutcome := l.planAndDispatch(dispatchCtx, config, toolCalls, stall, selection.Provider, selection.Model)
+		summary.ToolsLoaded = append(summary.ToolsLoaded, l.lazyLoadedSince(loadedBefore)...)
+		l.Trace.RecordTurn(summary)
 		nudge, nudged := stall.takeNudge()
+		turnRecord.ToolsLoaded = summary.ToolsLoaded
 		turnRecord.ToolCalls = toolRecords
 		turnRecord.StallNudge = nudged && stallOutcome == ""
 		l.Trace.RecordTurnRecord(turnRecord)

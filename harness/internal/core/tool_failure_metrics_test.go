@@ -562,6 +562,7 @@ func TestToolFailureCategory_InvalidCategoryDropped(t *testing.T) {
 func TestToolFailureCategory_IsValidAcceptsOnlyRegisteredConstants(t *testing.T) {
 	known := []observability.ToolFailureCategory{
 		observability.ToolFailureUnknownTool,
+		observability.ToolFailureToolNotLoaded,
 		observability.ToolFailureInvalidArguments,
 		observability.ToolFailureSchemaValidation,
 		observability.ToolFailureSecurityGuard,

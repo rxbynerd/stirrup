@@ -911,6 +911,18 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	if changed("protected-write-target") {
 		cfg.Tools.ProtectedWriteTargets, _ = f.GetStringArray("protected-write-target")
 	}
+	if changed("lazy-tools") {
+		cfg.Tools.LazyLoading.Enabled, _ = f.GetBool("lazy-tools")
+	}
+	if changed("lazy-tools-strategy") {
+		cfg.Tools.LazyLoading.Strategy, _ = f.GetString("lazy-tools-strategy")
+	}
+	if changed("lazy-tools-eager") {
+		cfg.Tools.LazyLoading.Eager, _ = f.GetStringArray("lazy-tools-eager")
+	}
+	if changed("lazy-tools-max-results") {
+		cfg.Tools.LazyLoading.MaxResults, _ = f.GetInt("lazy-tools-max-results")
+	}
 	if changed("gcp-project") {
 		cfg.Provider.GCPProject, _ = f.GetString("gcp-project")
 	}
