@@ -1516,10 +1516,10 @@ type ToolsConfig struct {
 }
 
 // LazyToolLoadingConfig configures deferred tool loading. A deferred tool
-// stays registered, permission-gated and dispatchable exactly like an
-// eager one; only its visibility to the model changes. The model loads
-// deferred tools through a search: the provider's native tool search
-// where the resolved (provider, model) pair has one, otherwise the
+// stays registered and permission-gated like an eager one and is
+// dispatchable once loaded; only its visibility to the model changes. The
+// model loads deferred tools through a search: the provider's native tool
+// search where the resolved (provider, model) pair has one, otherwise the
 // harness's built-in ToolSearchToolName tool.
 type LazyToolLoadingConfig struct {
 	// Enabled turns lazy loading on. Off by default: every registered
@@ -1535,7 +1535,8 @@ type LazyToolLoadingConfig struct {
 
 	// Eager names the tools sent on every turn without a search, by
 	// internal tool ID. Empty selects every registered built-in tool, so
-	// only MCP-imported and control-plane tools are deferred by default.
+	// only MCP-imported and control-plane tools are deferred by default; a
+	// non-empty list defers every other tool, built-ins included.
 	Eager []string `json:"eager,omitempty"`
 
 	// MaxResults bounds how many tools one harness search loads. Zero
