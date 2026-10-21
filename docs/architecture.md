@@ -569,11 +569,15 @@ adapter adds the provider's search tool. Elsewhere it is the eager and
 loaded tools plus `tool_search`.
 
 A native search arrives as `tool_search` and `tool_search_result`
-stream events. The loop persists them as content blocks for replay and
-loads the referenced tools once the attempt is accepted. A harness
-search loads through the `tool_search` handler, which finds the loader
-on the dispatch call context. Preflight rejects a call to a deferred
-tool that is not loaded. `AgenticLoop.Tools` stays the full registry,
+stream events. The loop persists them as content blocks for replay
+(a failed search keeps the provider's error code in `Name` and its
+message in `Content`) and, once the attempt is accepted, loads the
+referenced tools, keeping only registered deferred tools and only on a
+turn that offered the native search. A harness search loads through
+the `tool_search` handler, which finds the loader on the dispatch call
+context. Preflight rejects a call to a deferred tool that is not
+loaded as `tool_not_loaded`, before the `pre_tool` guard and the
+permission policy. `AgenticLoop.Tools` stays the full registry,
 so dispatch and sub-agents see every tool; each sub-agent gets a fresh
 loader over its own registry. Operator reference:
 [`configuration.md`](configuration.md#lazy-tool-loading).
@@ -752,7 +756,7 @@ in `harness/internal/observability/toolfailure.go`. The metric is
 labelled `(provider.type, provider.model, tool.name, category,
 run.mode)` so dashboards can attribute failures to specific model
 selections. Categories cover dispatch-site failures
-(`unknown_tool`, `schema_validation_failed`, `permission_denied`,
+(`unknown_tool`, `tool_not_loaded`, `schema_validation_failed`, `permission_denied`,
 `permission_error`, `security_guard_denied`, `guardrail_denied`,
 `handler_error`, `handler_missing`), async-tool failures
 (`async_preflight_error`, `async_transport_unavailable`,
