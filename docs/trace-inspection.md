@@ -34,7 +34,7 @@ replay](providers.md#thinking-block-replay)).
 Under [lazy tool loading](configuration.md#lazy-tool-loading), a
 provider's native tool search appears in `modelOutput` as a
 `tool_search` block and a `tool_search_result` block, and again in
-later turns' `modelInput.messages`; `modelInput.tools` marks each
+later turns' `modelInput.messages`. `modelInput.tools` marks each
 definition a native search defers with `deferred: true`, and
 `toolsLoaded` lists the tools the turn's searches loaded. See [What is
 recorded](configuration.md#what-is-recorded).

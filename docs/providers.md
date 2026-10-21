@@ -271,8 +271,8 @@ The adapter adds the search tool only when the request carries
 `ToolSearch`, the resolved model's `ToolSearch` capability is supported,
 and at least one tool is deferred. When `ToolSearch` is requested for a
 model without the capability, the adapter logs the downgrade at Debug
-and sends every tool loaded. The search tool goes first in `tools` and is never deferred, which
-satisfies the API's rule that not every tool may carry
+and sends every tool loaded. The search tool goes first in `tools` and is
+never deferred, which satisfies the API's rule that not every tool may carry
 `defer_loading`. Every deferred definition is sent in full with
 `"defer_loading": true`, on every turn, loaded or not, so the tool
 list stays byte-stable for the prompt cache:
@@ -307,7 +307,7 @@ assistant message, in stream order, and marks the referenced tools
 loaded. An empty `tool_references` array means the search matched
 nothing. A failed search carries `tool_search_tool_result_error` with
 an `error_code` (`invalid_tool_input`, `unavailable`,
-`too_many_requests` or `execution_time_exceeded`) and an
+`too_many_requests`, or `execution_time_exceeded`) and an
 `error_message`; the adapter reports both, marks the event as failed,
 and the stream continues. The recorded `tool_search_result` block of a
 failed search holds the error code in `name` and the message in
@@ -326,8 +326,8 @@ the API rejects an empty code. Only a call naming an Anthropic search
 tool (`tool_search_tool_bm25` or `tool_search_tool_regex`) and answered
 by a result in the same message is replayed; a search recorded from
 another provider, such as the OpenAI hosted `tool_search`, is dropped
-together with its result. When a request does not carry the search tool (the run
-routed this turn to a model without the capability, or nothing is
+together with its result. When a request does not carry the search tool
+(the run routed this turn to a model without the capability, or nothing is
 deferred), every recorded search block is dropped and every tool is
 sent loaded; a message left empty by the drop is omitted.
 
@@ -620,12 +620,12 @@ been probed against the live API.
 ### Hosted tool search
 
 Under [lazy tool loading](configuration.md#lazy-tool-loading) with the
-native strategy, `gpt-5.4` and later 5.x models and the `gpt-6*` family
+`auto` strategy, `gpt-5.4` and later 5.x models and the `gpt-6*` family
 use OpenAI's hosted
 [tool search](https://developers.openai.com/api/docs/guides/tools-tool-search).
 The adapter sends it only when the loop asks for a native search, the
 resolved quirks advertise the `ToolSearch` capability, and at least one
-tool in the request is deferred; every other model, every request the
+tool in the request is deferred. Every other model, every request the
 loop serves with the harness's own `tool_search` tool, and every request
 with nothing deferred gets no search entry and no `defer_loading`.
 
@@ -659,14 +659,14 @@ items carry `"call_id": null`; a call without an `id` gets
 with the earliest unanswered call. The result names every function in
 `tools`, including functions inside a `namespace` entry (a namespace
 nested inside another is ignored); other entry types are ignored. A
-`namespace` field on a later `function_call` is ignored. A malformed search item produces an event with no input or no
-loaded tools rather than failing the turn. OpenAI documents no failure
+`namespace` field on a later `function_call` is ignored. A malformed search item produces an event with no input
+or no loaded tools rather than failing the turn. OpenAI documents no failure
 shape for hosted search, so the adapter never reports a failed search.
 
 **Replay.** On the reasoning families both items are captured with the
 turn's other output items and replay verbatim, in place. They take no
 part in the check that the stored items still match the persisted
-message, so a search never forces reconstruction, but they replay only
+message, so a search never forces reconstruction. They replay only
 to a request that carries the hosted search entry; otherwise the turn
 is reconstructed without them. A reconstructed turn rebuilds each search
 as a `tool_search_call` and `tool_search_output` with

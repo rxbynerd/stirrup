@@ -563,9 +563,9 @@ into an eager set and a deferred set and tracks which deferred tools a
 search has loaded; it keys on internal tool IDs and returns
 model-facing definitions. Each turn the loop asks it for the
 definitions to send. Where the quirks registry gives the routed
-(provider, model) a native tool search, that is every tool with the
+(provider, model) a native tool search, the definitions are every tool, with the
 deferred ones flagged and `StreamParams.ToolSearch` set, and the
-adapter adds the provider's search tool. Elsewhere it is the eager and
+adapter adds the provider's search tool. Elsewhere the definitions are the eager and
 loaded tools plus `tool_search`.
 
 A native search arrives as `tool_search` and `tool_search_result`

@@ -457,7 +457,7 @@ The exchange audience is set on the `tokenSource` (canonically
 | `--tools-profile` | (none) | Model-facing toolset profile. Closed enum: `""`/`default` (no aliasing, internal tool names) or `coding-classic` (terse coding-CLI aliases). Changes only the names the model sees; dispatch identities and gating are unchanged. JSON path: `tools.profile`. See [Toolset profiles](#toolset-profiles). |
 | `--lazy-tools` | `false` | Turns on lazy tool loading: tools outside the eager set reach the model only after it searches for them. JSON path: `tools.lazyLoading.enabled`. See [Lazy tool loading](#lazy-tool-loading). |
 | `--lazy-tools-strategy` | (none; behaves as `auto`) | How deferred tools are searched: `auto` uses the provider's native tool search where the model has one and the harness `tool_search` otherwise; `harness` always uses `tool_search`. JSON path: `tools.lazyLoading.strategy`. |
-| `--lazy-tools-eager` | (none) | Repeatable internal tool ID sent on every turn without a search. Unset defers only MCP-imported and control-plane tools; a list defers every other tool, built-ins included. Replaces any `tools.lazyLoading.eager` from `--config`. JSON path: `tools.lazyLoading.eager`. |
+| `--lazy-tools-eager` | (none) | Repeatable internal tool ID sent on every turn without a search. Unset defers only MCP-imported and control-plane tools; a list defers all remaining tools, built-ins included. Replaces any `tools.lazyLoading.eager` from `--config`. JSON path: `tools.lazyLoading.eager`. |
 | `--lazy-tools-max-results` | `0` | How many tools one harness `tool_search` loads. `0` selects 5; the maximum is 20. JSON path: `tools.lazyLoading.maxResults`. |
 
 See also: [`docs/executors/k8s.md`](executors/k8s.md) for the `k8s`
@@ -1181,7 +1181,7 @@ harness strategy spends an extra round trip on every search.
 |---|---|---|
 | `enabled` | `false` | Turns lazy loading on. |
 | `strategy` | `auto` | `auto` uses the provider's native tool search where the routed model has one, and the harness `tool_search` tool otherwise. `harness` always uses `tool_search`. |
-| `eager` | every built-in tool | Internal tool IDs sent on every turn. Empty selects every registered tool that is neither MCP-imported (`mcp_` prefix) nor a [control-plane tool](#control-plane-tools), so only those two groups are deferred. A non-empty list makes exactly those tools eager and defers every other registered tool, built-ins included. At most 256 entries; `tool_search` may not be listed because it is always eager. |
+| `eager` | every built-in tool | Internal tool IDs sent on every turn. Empty selects every registered tool that is neither MCP-imported (`mcp_` prefix) nor a [control-plane tool](#control-plane-tools), so only those two groups are deferred. A non-empty list makes exactly those tools eager and defers all remaining registered tools, built-ins included. At most 256 entries; `tool_search` may not be listed because it is always eager. |
 | `maxResults` | `5` | How many tools one harness `tool_search` loads, 1–20. The `tool_search` schema advertises this value as both its default and its maximum. A native search applies the provider's own limit. |
 
 The eager list names internal tool IDs (`run_command`, not the
@@ -1193,8 +1193,7 @@ rejected because they are reserved for a future pattern form. The list
 interacts with `tools.builtIn` only through registration: a tool
 `tools.builtIn` leaves out is never registered, so it is neither eager
 nor deferred. MCP tool names are known only after discovery, so an
-`eager` entry that matches no registered tool is not a validation error;
-the run starts, logs it, and sends a `warning` event naming it after
+`eager` entry that matches no registered tool is not a validation error. The run starts, logs it, and sends a `warning` event naming it after
 `run_started`. Like the info line that reports the strategy, the eager
 count and the deferred count by group (built-in, MCP, control-plane),
 the warning is sent once per session, not again for follow-up runs or
@@ -1253,10 +1252,10 @@ harness search.
 
 With the harness search, a turn sends the eager tools, the tools loaded
 so far, and `tool_search` itself, whose description names the deferred
-groups (each MCP server, control-plane tools, built-ins) and their
+groups (each MCP server, control-plane tools, and built-ins) and their
 sizes without listing the tools. `tool_search` matches keywords, not
 meaning: the query is lowercased and split on every character that is
-not a letter or digit into at most 32 distinct terms, and each term
+not a letter or digit into at most 32 distinct terms. Each term
 scores the strongest field it appears in as a substring: 3 for the tool
 name, 2 for the description, 1 for a top-level parameter name or
 description. It is neither BM25 nor semantic search. The best-scoring
@@ -1296,7 +1295,7 @@ search the turn offered; `<name>` is the tool name the model used:
 - harness search: `Tool "<name>" is not loaded; call tool_search to load it first`
 - native search: `Tool "<name>" is not loaded; search for it with <search tool> first`,
   where `<search tool>` is `tool_search_tool_bm25`,
-  `tool_search_tool_regex` or the hosted `tool_search`.
+  `tool_search_tool_regex`, or the hosted `tool_search`.
 
 The rejection is recorded with the `tool_not_loaded` failure category,
 whose metric keeps the tool's name instead of the `__unknown__` label an
@@ -1337,7 +1336,7 @@ permission policy when it is called, exactly as without lazy loading.
 Because the policy is never consulted for `tool_search`, a Cedar rule
 naming it has no effect. The pre-turn guardrail and the Rule-of-Two
 sensitive-data monitor screen a harness search result like any other
-tool result, which covers only the 200-byte first-line preview of each
+tool result. That screening covers only the 200-byte first-line preview of each
 loaded tool's description, not the full definition the next request
 sends.
 
@@ -1357,11 +1356,11 @@ In the JSONL trace, a turn record's `modelInput.tools` lists the
 definitions the turn sent, and the two strategies look different
 there. A native-search turn lists every deferred tool, loaded or not,
 with `deferred: true`, and no `tool_search`. A harness-search turn
-lists the eager tools, the tools loaded so far and `tool_search`, and no
+lists the eager tools, the tools loaded so far, and `tool_search`, and no
 tool carries the flag. A native search appears in the turn's
 `modelOutput` as a `tool_search` block (the search input) and a
-`tool_search_result` block whose `tool_references` lists internal IDs;
-a failed search sets `is_error`, with the provider's error code in
+`tool_search_result` block whose `tool_references` lists internal IDs.
+A failed search sets `is_error`, with the provider's error code in
 `name` and its message in `content`. The same blocks in a later turn's
 `modelInput.messages` carry the names the model sees (a toolset
 profile's aliases), because the harness presents them before each

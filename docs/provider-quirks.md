@@ -467,8 +467,8 @@ test catch malformed paths at registry-build time.
 | `anthropic`         | `claude-fable-5*`  | Anthropic Claude Fable 5 / 5.1: same as `claude-opus-4-7*` |
 | `anthropic`         | `claude-mythos-5*` | Anthropic Claude Mythos 5: omit sampling params (same API surface as Fable 5); effort unprobed |
 | `anthropic`         | `claude-sonnet-5-5*`, `claude-opus-5-5*`, `claude-fable-5-1*`, `claude-mythos-5-1*` | `tool_choice` auto only (`any`/`tool` are a 400) |
-| `anthropic`         | `claude-opus-4-[5-8]*` | Anthropic Claude Opus 4.5-4.8: native BM25 tool search with `defer_loading` (documented, not probed) |
-| `anthropic`         | `claude-sonnet-4-[5-6]*` | Anthropic Claude Sonnet 4.5-4.6: native BM25 tool search with `defer_loading` (documented, not probed) |
+| `anthropic`         | `claude-opus-4-[5-8]*` | Anthropic Claude Opus 4.5–4.8: native BM25 tool search with `defer_loading` (documented, not probed) |
+| `anthropic`         | `claude-sonnet-4-[5-6]*` | Anthropic Claude Sonnet 4.5–4.6: native BM25 tool search with `defer_loading` (documented, not probed) |
 | `anthropic`         | `claude-haiku-4-5*` | Anthropic Claude Haiku 4.5: native BM25 tool search with `defer_loading` (documented, not probed) |
 | `anthropic`         | `claude-opus-5*`   | Anthropic Claude Opus 5 / 5.5: native BM25 tool search with `defer_loading` (documented, not probed) |
 | `anthropic`         | `claude-sonnet-5*` | Anthropic Claude Sonnet 5 / 5.5: native BM25 tool search with `defer_loading` (documented, not probed) |
