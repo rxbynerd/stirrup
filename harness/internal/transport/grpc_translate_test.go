@@ -857,6 +857,16 @@ func TestProviderConfigFromProto_GeminiFieldsCarried(t *testing.T) {
 	check.Equal(want, cfg.GeminiSafetySettings, "GeminiSafetySettings")
 }
 
+// The gRPC path applies no CLI key default, so a provider with no
+// api_key_ref reaches the factory with an empty reference and no
+// credential block; the factory decides whether that is allowed.
+func TestProviderConfigFromProto_EmptyAPIKeyRefGetsNoDefault(t *testing.T) {
+	check := assert.New(t)
+	cfg := providerConfigFromProto(&pb.ProviderConfig{Type: "anthropic"})
+	check.Empty(cfg.APIKeyRef)
+	check.Nil(cfg.Credential)
+}
+
 // TestRunTraceToProto_OutcomePopulated pins that the canonical Outcome
 // lands on the proto outcome field verbatim, and stop_reason mirrors it
 // for consumers predating the outcome field. The proto.Marshal/Unmarshal

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -775,4 +776,34 @@ func TestCredentialsHint_MentionsFlagOnlyOnProviderMismatch(t *testing.T) {
 			must.Equal(tc.wantMismatch, strings.Contains(hint, "--api-key-ref"), "credentialsHint = %q", hint)
 		})
 	}
+}
+
+func TestPreflight_EmptyAPIKeyRef_FailsCredentialsOnDefaultEndpoint(t *testing.T) {
+	must := require.New(t)
+	config := preflightTestConfig(t, "")
+	config.Provider.APIKeyRef = ""
+
+	report, err := Preflight(context.Background(), config, PreflightOptions{})
+	must.NoError(err)
+	must.False(report.OK, "a keyless provider on api.openai.com must fail the dry run")
+
+	idx := slices.IndexFunc(report.Steps, func(s PreflightStep) bool { return s.Name == "credentials" })
+	must.GreaterOrEqual(idx, 0, "no credentials step")
+	must.Equal(PreflightFail, report.Steps[idx].Status)
+	must.Contains(report.Steps[idx].Detail, "requires apiKeyRef")
+}
+
+func TestPreflight_EmptyAPIKeyRef_PassesCredentialsOnCustomEndpoint(t *testing.T) {
+	must := require.New(t)
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+	config := preflightTestConfig(t, srv.URL+"/v1")
+	config.Provider.APIKeyRef = ""
+
+	report, err := Preflight(context.Background(), config, PreflightOptions{})
+	must.NoError(err)
+
+	st, ok := stepStatus(report, "credentials")
+	must.True(ok, "no credentials step")
+	must.Equal(PreflightOK, st)
 }

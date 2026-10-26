@@ -823,6 +823,9 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 	if err != nil {
 		return nil, fmt.Errorf("build credential source: %w", err)
 	}
+	if _, static := src.(*credential.StaticSource); static && cfg.APIKeyRef == "" && !keylessEndpoint(cfg) {
+		return nil, fmt.Errorf("provider %s requires apiKeyRef (empty reference is only valid for openai-compatible/openai-responses with a custom baseUrl)", cfg.Type)
+	}
 	cred, err := src.Resolve(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("resolve credentials: %w", err)
@@ -892,6 +895,18 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 		return adapter, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider type: %q (supported: anthropic, bedrock, gemini, openai-compatible, openai-responses)", cfg.Type)
+	}
+}
+
+// keylessEndpoint reports whether cfg may run with no API key: only an
+// OpenAI-wire provider pointed away from api.openai.com can reach a server
+// that accepts unauthenticated requests.
+func keylessEndpoint(cfg types.ProviderConfig) bool {
+	switch cfg.Type {
+	case "openai-compatible", "openai-responses":
+		return !provider.IsDefaultOpenAIBaseURL(cfg.BaseURL)
+	default:
+		return false
 	}
 }
 
