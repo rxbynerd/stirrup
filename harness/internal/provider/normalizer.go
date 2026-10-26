@@ -3,7 +3,9 @@ package provider
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"slices"
+	"sync"
 
 	"github.com/rxbynerd/stirrup/harness/internal/tool/toolname"
 	"github.com/rxbynerd/stirrup/types"
@@ -21,6 +23,10 @@ import (
 type NormalizingAdapter struct {
 	inner        ProviderAdapter
 	providerType string
+	policy       toolname.Policy
+	logger       *slog.Logger // nil falls back to slog.Default()
+
+	namespacesDropped sync.Once
 }
 
 // NewNormalizingAdapter constructs a NormalizingAdapter that applies
@@ -29,7 +35,7 @@ type NormalizingAdapter struct {
 // safe (strictest) policy from toolname.PolicyFor — the wrapper never
 // no-ops.
 func NewNormalizingAdapter(inner ProviderAdapter, providerType string) *NormalizingAdapter {
-	return &NormalizingAdapter{inner: inner, providerType: providerType}
+	return &NormalizingAdapter{inner: inner, providerType: providerType, policy: toolname.PolicyFor(providerType)}
 }
 
 // Compile-time assertion that NormalizingAdapter satisfies the
@@ -129,7 +135,7 @@ func (a *NormalizingAdapter) buildMapping(tools []types.ToolDefinition) (*toolna
 	for i, t := range tools {
 		names[i] = t.Name
 	}
-	return toolname.BuildSorted(names, toolname.PolicyFor(a.providerType))
+	return toolname.BuildSorted(names, a.policy)
 }
 
 // rewriteParams returns a copy of params with tool names normalised on
@@ -141,12 +147,60 @@ func (a *NormalizingAdapter) buildMapping(tools []types.ToolDefinition) (*toolna
 func (a *NormalizingAdapter) rewriteParams(params types.StreamParams, mapping *toolname.Mapping) types.StreamParams {
 	out := params
 	out.Tools = make([]types.ToolDefinition, len(params.Tools))
+	namespaces, namespacesErr := a.buildNamespaceMapping(params.Tools)
+	if namespacesErr != nil {
+		a.warnNamespacesDropped(params.Tools)
+	}
 	for i, t := range params.Tools {
 		t.Name = mapping.Translate(t.Name)
+		if namespacesErr != nil {
+			t.Namespace, t.NamespaceDescription = "", ""
+		} else if t.Namespace != "" {
+			t.Namespace = namespaces.Translate(t.Namespace)
+		}
 		out.Tools[i] = t
 	}
 	out.Messages = cloneMessagesWithTranslatedToolNames(params.Messages, mapping)
 	return out
+}
+
+// buildNamespaceMapping normalises the tools' distinct namespace names
+// under the provider's tool-name policy, keeping two distinct namespaces
+// distinct. Namespaces only group tools for a search and never route a
+// call, so a mapping that cannot be built sends every tool ungrouped
+// rather than failing the request.
+func (a *NormalizingAdapter) buildNamespaceMapping(tools []types.ToolDefinition) (*toolname.Mapping, error) {
+	var names []string
+	for _, t := range tools {
+		if t.Namespace != "" && !slices.Contains(names, t.Namespace) {
+			names = append(names, t.Namespace)
+		}
+	}
+	if len(names) == 0 {
+		return nil, nil
+	}
+	return toolname.BuildSorted(names, a.policy)
+}
+
+// warnNamespacesDropped logs once per adapter that tools are being sent
+// without their namespaces, since the deferred tools' names and
+// descriptions then reach the provider's search ungrouped. The record
+// carries only the count and the provider type.
+func (a *NormalizingAdapter) warnNamespacesDropped(tools []types.ToolDefinition) {
+	a.namespacesDropped.Do(func() {
+		count := 0
+		for _, t := range tools {
+			if t.Namespace != "" {
+				count++
+			}
+		}
+		logger := a.logger
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Warn("tool namespaces dropped: names cannot be normalised distinctly",
+			"tools", count, "provider_type", a.providerType)
+	})
 }
 
 // cloneMessagesWithTranslatedToolNames returns a copy of messages with

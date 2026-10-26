@@ -82,6 +82,25 @@ func (g LazyGroup) Label() string {
 	}
 }
 
+// controlPlaneNamespace is the namespace of deferred control-plane tools.
+const controlPlaneNamespace = "control_plane"
+
+// Namespace returns the name and description a native tool search groups
+// the group's deferred tools under, or empty strings for a group that
+// stays ungrouped (built-in tools and MCP tools no configured server
+// claims). Both are built from operator configuration, never from text a
+// tool source supplies.
+func (g LazyGroup) Namespace() (name, description string) {
+	switch g.Kind {
+	case LazyGroupControlPlane:
+		return controlPlaneNamespace, "Tools provided by the control plane."
+	case LazyGroupMCPServer:
+		return "mcp_" + g.Server, fmt.Sprintf("Tools from MCP server %q.", g.Server)
+	default:
+		return "", ""
+	}
+}
+
 // LazyMatch is one Search result: the internal tool ID, the definition
 // under the model-facing name, and the group the tool belongs to.
 type LazyMatch struct {
@@ -398,7 +417,8 @@ func (l *LazyLoader) InternalID(name string) string {
 // deferred it is the plain list, without the search tool. With native
 // set, every tool except the harness search tool is sent and deferred
 // ones carry Deferred, whether loaded or not, so the request stays stable
-// across turns. Otherwise the eager and loaded tools are sent in
+// across turns; deferred MCP-server and control-plane tools also carry
+// their group's Namespace. Otherwise the eager and loaded tools are sent in
 // registration order, followed by the search tool.
 func (l *LazyLoader) Visible(native bool) []types.ToolDefinition {
 	out := make([]types.ToolDefinition, 0, len(l.entries))
@@ -415,6 +435,7 @@ func (l *LazyLoader) Visible(native bool) []types.ToolDefinition {
 		case !l.deferred[e.id]:
 		case native:
 			def.Deferred = true
+			def.Namespace, def.NamespaceDescription = l.GroupOf(e.id).Namespace()
 		case !l.Loaded(e.id):
 			continue
 		}

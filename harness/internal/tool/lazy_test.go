@@ -101,6 +101,34 @@ func TestLazyLoader_VisibleNativeModeFlagsDeferredAndDropsHarnessSearch(t *testi
 	}, deferred, "a loaded tool stays flagged so the request is stable across turns")
 }
 
+func TestLazyLoaderVisible_SetsNamespaceForMCPAndControlPlane(t *testing.T) {
+	must := require.New(t)
+	reg := lazyFixture()
+	reg.Register(fixedTool("mcp_unclaimed_ping", "Ping"))
+	cfg := types.LazyToolLoadingConfig{Enabled: true, Eager: []string{"read_file"}}
+	l := NewLazyLoader(reg, cfg, lazyFixtureOptions)
+
+	type grouping struct{ namespace, description string }
+	got := map[string]grouping{}
+	for _, d := range l.Visible(true) {
+		got[d.Name] = grouping{d.Namespace, d.NamespaceDescription}
+	}
+	github := grouping{"mcp_github", `Tools from MCP server "github".`}
+	must.Equal(map[string]grouping{
+		"read_file":               {},
+		"run_command":             {},
+		"mcp_github_create_issue": github,
+		"mcp_github_list_pulls":   github,
+		"mcp_jira_find_ticket":    {"mcp_jira", `Tools from MCP server "jira".`},
+		"lookup_order":            {"control_plane", "Tools provided by the control plane."},
+		"mcp_unclaimed_ping":      {},
+	}, got, "eager tools, deferred built-ins and unclaimed MCP tools stay ungrouped")
+
+	for _, d := range l.Visible(false) {
+		must.Empty(d.Namespace, "the harness search sends no namespace: %s", d.Name)
+	}
+}
+
 func TestLazyLoader_NoDeferredToolsIsANoOp(t *testing.T) {
 	must := require.New(t)
 	reg := newRegistryWith(fixedTool("read_file", "Read a file"), fixedTool(types.ToolSearchToolName, "Search."))
