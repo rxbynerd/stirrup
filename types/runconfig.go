@@ -784,6 +784,15 @@ type ProviderConfig struct {
 	// validated at startup; only legal non-empty value in v1 is
 	// "zai-glm". See docs/provider-quirks.md.
 	CompatProfile string `json:"compatProfile,omitempty"`
+
+	// EndpointProfile declares which implementation of the OpenAI wire
+	// serves BaseURL, so the quirks registry can resolve endpoint-specific
+	// capabilities such as hosted tool search. Closed enum of the
+	// EndpointProfile* constants; empty derives "openai" for OpenAI's own
+	// API and "generic" for any other BaseURL. Only legal on the
+	// openai-compatible and openai-responses types. See
+	// docs/provider-quirks.md.
+	EndpointProfile string `json:"endpointProfile,omitempty"`
 }
 
 // BatchProviderConfig controls async batch submission for a provider turn.
@@ -1811,6 +1820,38 @@ var validBatchProviderTypes = map[string]bool{
 var validCompatProfiles = map[string]bool{
 	"":        true, // explicit empty is the default (no profile)
 	"zai-glm": true,
+}
+
+// ProviderConfig.EndpointProfile values.
+const (
+	EndpointProfileOpenAI        = "openai"
+	EndpointProfileAzureOpenAI   = "azure-openai"
+	EndpointProfileBedrockMantle = "bedrock-mantle"
+	EndpointProfileGeneric       = "generic"
+)
+
+// validEndpointProfiles is the closed set of ProviderConfig.EndpointProfile
+// values accepted by ValidateRunConfig.
+var validEndpointProfiles = map[string]bool{
+	"":                           true, // derived from baseUrl
+	EndpointProfileOpenAI:        true,
+	EndpointProfileAzureOpenAI:   true,
+	EndpointProfileBedrockMantle: true,
+	EndpointProfileGeneric:       true,
+}
+
+// endpointProfileProviderTypes are the provider types that speak the
+// OpenAI wire and so accept an endpoint profile.
+var endpointProfileProviderTypes = map[string]bool{
+	"openai-compatible": true,
+	"openai-responses":  true,
+}
+
+// endpointProfilesRequiringBaseURL name endpoints that are never
+// api.openai.com, so an empty baseUrl would silently send the run there.
+var endpointProfilesRequiringBaseURL = map[string]bool{
+	EndpointProfileAzureOpenAI:   true,
+	EndpointProfileBedrockMantle: true,
 }
 
 // validToolsProfiles is the closed set of ToolsConfig.Profile values
@@ -3087,6 +3128,36 @@ func validateCompatProfile(path, value string, errs *[]string) {
 	))
 }
 
+// validateEndpointProfile enforces the closed set of
+// ProviderConfig.EndpointProfile values, the OpenAI-wire provider types
+// that accept one, and the baseUrl the non-OpenAI endpoints need.
+func validateEndpointProfile(path string, cfg ProviderConfig, errs *[]string) {
+	value := cfg.EndpointProfile
+	if value == "" {
+		return
+	}
+	if !validEndpointProfiles[value] {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s %q is not a recognised endpoint profile; legal values: %s",
+			path, value, strings.Join(ValidEndpointProfileValues(), ", "),
+		))
+		return
+	}
+	if !endpointProfileProviderTypes[cfg.Type] {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s is only supported for openai-compatible and openai-responses providers, got type %q",
+			path, cfg.Type,
+		))
+		return
+	}
+	if endpointProfilesRequiringBaseURL[value] && strings.TrimSpace(cfg.BaseURL) == "" {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s %q requires baseUrl; without one the run addresses OpenAI's API",
+			path, value,
+		))
+	}
+}
+
 // validateToolsProfile enforces the closed set of legal
 // ToolsConfig.Profile values. Unknown values fail loudly with the
 // legal-set list so a typo surfaces at startup rather than as a
@@ -3898,6 +3969,7 @@ func validateProviderConfigs(config *RunConfig, retryDefaulted map[string]provid
 	validateOpenAIWIFCrossField("provider", config.Provider, errs)
 	validateProviderRetryConfig("provider.retry", config.Provider.Retry, retryDefaulted["provider.retry"], errs)
 	validateCompatProfile("provider.compatProfile", config.Provider.CompatProfile, errs)
+	validateEndpointProfile("provider.endpointProfile", config.Provider, errs)
 	for name, provider := range config.Providers {
 		if name == "" {
 			*errs = append(*errs, "providers map contains an empty provider name")
@@ -3918,6 +3990,7 @@ func validateProviderConfigs(config *RunConfig, retryDefaulted map[string]provid
 		retryPath := fmt.Sprintf("%s.retry", path)
 		validateProviderRetryConfig(retryPath, provider.Retry, retryDefaulted[retryPath], errs)
 		validateCompatProfile(fmt.Sprintf("%s.compatProfile", path), provider.CompatProfile, errs)
+		validateEndpointProfile(fmt.Sprintf("%s.endpointProfile", path), provider, errs)
 		// Batch is a top-level-only concept in v1: the spec wires
 		// per-turn batching against RunConfig.Provider, and a Batch
 		// block on a named entry would silently parse, store, and have

@@ -83,6 +83,10 @@ func ValidGuardRailTypeValues() []string { return sortedKeys(validGuardRailTypes
 // accepted on RunConfig.Provider.CompatProfile.
 func ValidCompatProfileValues() []string { return sortedNonEmptyKeys(validCompatProfiles) }
 
+// ValidEndpointProfileValues returns the endpoint profiles accepted on
+// ProviderConfig.EndpointProfile.
+func ValidEndpointProfileValues() []string { return sortedNonEmptyKeys(validEndpointProfiles) }
+
 // ValidToolsProfileValues returns the toolset profiles accepted on
 // RunConfig.Tools.Profile. "default" is retained as a typeable synonym
 // for the empty value.

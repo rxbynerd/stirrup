@@ -6801,6 +6801,95 @@ func TestValidateRunConfig_CompatProfile_ClosedEnum(t *testing.T) {
 	})
 }
 
+func TestValidateRunConfig_EndpointProfile_AcceptsEveryProfileOnOpenAIWireTypes(t *testing.T) {
+	for _, providerType := range []string{"openai-compatible", "openai-responses"} {
+		for _, profile := range append([]string{""}, ValidEndpointProfileValues()...) {
+			t.Run(providerType+"/"+profile, func(t *testing.T) {
+				must := require.New(t)
+				c := validConfig()
+				c.Provider = ProviderConfig{
+					Type:            providerType,
+					BaseURL:         "https://gateway.example.com/v1",
+					EndpointProfile: profile,
+				}
+				must.NoError(ValidateRunConfig(c))
+			})
+		}
+	}
+}
+
+func TestValidateRunConfig_EndpointProfile_RejectsUnknownValue(t *testing.T) {
+	must := require.New(t)
+	c := validConfig()
+	c.Provider = ProviderConfig{Type: "openai-responses", EndpointProfile: "azure"}
+	err := ValidateRunConfig(c)
+	must.ErrorContains(err, `provider.endpointProfile "azure" is not a recognised endpoint profile`)
+	must.ErrorContains(err, "azure-openai, bedrock-mantle, generic, openai")
+}
+
+func TestValidateRunConfig_EndpointProfile_RejectsNonOpenAIWireType(t *testing.T) {
+	for _, providerType := range []string{"anthropic", "bedrock", "gemini"} {
+		t.Run(providerType, func(t *testing.T) {
+			must := require.New(t)
+			c := validConfig()
+			c.Provider.Type = providerType
+			c.Provider.EndpointProfile = EndpointProfileOpenAI
+			err := ValidateRunConfig(c)
+			must.ErrorContains(err, "provider.endpointProfile is only supported for openai-compatible and openai-responses providers")
+		})
+	}
+}
+
+func TestValidateRunConfig_EndpointProfile_RequiresBaseURLForNonOpenAIEndpoints(t *testing.T) {
+	for _, profile := range []string{EndpointProfileAzureOpenAI, EndpointProfileBedrockMantle} {
+		t.Run(profile, func(t *testing.T) {
+			must := require.New(t)
+			c := validConfig()
+			c.Provider = ProviderConfig{Type: "openai-responses", EndpointProfile: profile}
+			err := ValidateRunConfig(c)
+			must.ErrorContains(err, fmt.Sprintf("provider.endpointProfile %q requires baseUrl", profile))
+		})
+	}
+}
+
+func TestValidateRunConfig_EndpointProfile_AcceptsOpenAIAndGenericWithoutBaseURL(t *testing.T) {
+	for _, profile := range []string{EndpointProfileOpenAI, EndpointProfileGeneric} {
+		t.Run(profile, func(t *testing.T) {
+			must := require.New(t)
+			c := validConfig()
+			c.Provider = ProviderConfig{Type: "openai-responses", EndpointProfile: profile}
+			must.NoError(ValidateRunConfig(c))
+		})
+	}
+}
+
+func TestValidateRunConfig_EndpointProfile_ValidatesNamedProviders(t *testing.T) {
+	t.Run("unknown value", func(t *testing.T) {
+		must := require.New(t)
+		c := validConfig()
+		c.Providers = map[string]ProviderConfig{
+			"secondary": {Type: "openai-responses", EndpointProfile: "not-real"},
+		}
+		must.ErrorContains(ValidateRunConfig(c), `providers[secondary].endpointProfile "not-real"`)
+	})
+	t.Run("wrong type", func(t *testing.T) {
+		must := require.New(t)
+		c := validConfig()
+		c.Providers = map[string]ProviderConfig{
+			"secondary": {Type: "anthropic", EndpointProfile: EndpointProfileGeneric},
+		}
+		must.ErrorContains(ValidateRunConfig(c), "providers[secondary].endpointProfile is only supported")
+	})
+	t.Run("missing base url", func(t *testing.T) {
+		must := require.New(t)
+		c := validConfig()
+		c.Providers = map[string]ProviderConfig{
+			"secondary": {Type: "openai-compatible", EndpointProfile: EndpointProfileAzureOpenAI},
+		}
+		must.ErrorContains(ValidateRunConfig(c), `providers[secondary].endpointProfile "azure-openai" requires baseUrl`)
+	})
+}
+
 // --- HooksConfig ---
 
 func validHookConfig() HookConfig {
