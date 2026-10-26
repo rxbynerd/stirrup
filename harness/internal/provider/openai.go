@@ -54,6 +54,24 @@ const (
 	maxReplayFieldBytes = 512 * 1024
 )
 
+// IsDefaultOpenAIBaseURL reports whether baseURL addresses OpenAI's own API:
+// the empty string, which the adapters default to OpenAI's URL, or that URL
+// with or without a trailing slash. The scheme and host compare
+// case-insensitively and an explicit port 443 is accepted.
+func IsDefaultOpenAIBaseURL(baseURL string) bool {
+	if baseURL == "" {
+		return true
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	return strings.EqualFold(u.Scheme, "https") &&
+		strings.EqualFold(u.Hostname(), "api.openai.com") &&
+		(u.Port() == "" || u.Port() == "443") &&
+		strings.TrimRight(u.Path, "/") == "/v1"
+}
+
 // OpenAICompatibleAdapter implements ProviderAdapter for the OpenAI Chat
 // Completions API. It works with any OpenAI-compatible endpoint: OpenAI,
 // LiteLLM, Azure OpenAI, vLLM, Ollama, llama.cpp server.

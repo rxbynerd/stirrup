@@ -715,7 +715,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// can map presented names to internal IDs.
 	if config.Tools.LazyLoading.Enabled {
 		loop.LazyTools = tool.NewLazyLoader(presenter, config.Tools.LazyLoading, lazyLoaderOptions(config.Tools))
-		loop.ToolSearch = buildToolSearchSupport(config, quirks.DefaultRegistry())
+		loop.ToolSearch = buildToolSearchSupport(config, quirks.DefaultRegistry(), logger)
 	}
 
 	return loop, nil
@@ -758,10 +758,33 @@ func buildStructuredResultSupport(config *types.RunConfig, caps capabilityResolv
 
 // buildToolSearchSupport resolves the native tool search capability of a
 // router-selected provider key and model against the registry the
-// Anthropic and OpenAI Responses adapters gate their own search on.
-func buildToolSearchSupport(config *types.RunConfig, caps capabilityResolver) ToolSearchSupport {
+// Anthropic and OpenAI Responses adapters gate their own search on. An
+// openai-responses provider with a custom baseUrl (Azure OpenAI, LiteLLM and
+// other gateways) resolves to no native search, so the loop serves the
+// harness tool_search; the hosted search is only known to exist on OpenAI's
+// own endpoint.
+func buildToolSearchSupport(config *types.RunConfig, caps capabilityResolver, logger *slog.Logger) ToolSearchSupport {
+	if config.Tools.LazyLoading.EffectiveStrategy() == types.LazyToolStrategyAuto {
+		logCustomResponsesEndpoint(logger, config.Provider.Type, config.Provider)
+		for name, cfg := range config.Providers {
+			logCustomResponsesEndpoint(logger, name, cfg)
+		}
+	}
 	return func(key, model string) quirks.ToolSearchCapability {
+		if hasCustomResponsesEndpoint(providerConfigFor(config, key)) {
+			return quirks.ToolSearchCapability{}
+		}
 		return caps.Resolve(selectedProviderType(config, key), model).ToolSearch
+	}
+}
+
+func hasCustomResponsesEndpoint(cfg types.ProviderConfig) bool {
+	return cfg.Type == "openai-responses" && !provider.IsDefaultOpenAIBaseURL(cfg.BaseURL)
+}
+
+func logCustomResponsesEndpoint(logger *slog.Logger, name string, cfg types.ProviderConfig) {
+	if hasCustomResponsesEndpoint(cfg) {
+		logger.Info("native tool search is off for a custom openai-responses baseUrl, where a gateway may silently drop the hosted search; the harness tool_search is used", "provider", name)
 	}
 }
 

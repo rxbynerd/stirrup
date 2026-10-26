@@ -459,6 +459,19 @@ func selectedProviderType(config *types.RunConfig, name string) string {
 	return providerTypeFor(config, name)
 }
 
+// providerConfigFor resolves the ProviderConfig of a routed selection, where
+// an empty name is the default provider. A name that is neither a key of
+// config.Providers nor the default provider's type has no configuration.
+func providerConfigFor(config *types.RunConfig, name string) types.ProviderConfig {
+	if cfg, ok := config.Providers[name]; ok {
+		return cfg
+	}
+	if name == "" || name == config.Provider.Type {
+		return config.Provider
+	}
+	return types.ProviderConfig{}
+}
+
 // providerProbeDetail returns the success detail for a provider probe.
 // Bedrock is special-cased: its probe resolves the AWS credential chain
 // but contacts no endpoint (bedrockruntime has no zero-cost reachability

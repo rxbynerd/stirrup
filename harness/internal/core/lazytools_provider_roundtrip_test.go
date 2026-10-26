@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -108,7 +109,7 @@ func TestLoop_LazyTools_ResponsesHostedSearchRoundTrips(t *testing.T) {
 	config := buildTestConfig()
 	config.Provider = types.ProviderConfig{Type: "openai-responses", APIKeyRef: "secret://TEST"}
 	config.ModelRouter = types.ModelRouterConfig{Type: "static", Provider: "openai-responses", Model: roundTripResponsesModel}
-	loop.ToolSearch = buildToolSearchSupport(config, quirks.DefaultRegistry())
+	loop.ToolSearch = buildToolSearchSupport(config, quirks.DefaultRegistry(), slog.New(slog.DiscardHandler))
 	must.True(loop.ToolSearch("", roundTripResponsesModel).Supported, "the fixture model must have hosted tool search")
 	loop.Router = router.NewStaticRouter("openai-responses", roundTripResponsesModel)
 	rec := &recordingTraceEmitter{}

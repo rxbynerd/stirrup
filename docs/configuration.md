@@ -1235,7 +1235,7 @@ mid-run switches search paths with it:
 | Provider and model | `auto` uses |
 |---|---|
 | `anthropic`: Claude Opus 4.5–4.8, Sonnet 4.5–4.6, Haiku 4.5 and the Claude 5 generation | Native search: the Anthropic BM25 tool search tool, with deferred tools sent with `defer_loading` |
-| `openai-responses`: `gpt-5.4` and later 5.x, the `gpt-6` family | Native search: the hosted `tool_search` tool, with deferred tools sent with `defer_loading`; names and descriptions stay visible (see below) |
+| `openai-responses`: `gpt-5.4` and later 5.x, the `gpt-6` family | Native search: the hosted `tool_search` tool, with deferred tools sent with `defer_loading`; names and descriptions stay visible (see below). Only on the default endpoint; a custom `baseUrl` (Azure OpenAI, LiteLLM, LM Studio and other gateways) uses the harness `tool_search`, because a gateway may accept the hosted search entry and silently drop it, leaving deferred tools unloadable |
 | `bedrock` | The harness `tool_search` tool: the adapter uses the Converse API, and Anthropic documents server-side tool search on Bedrock only for InvokeModel |
 | Every other provider and model (Gemini, `openai-compatible`, older Claude and GPT models) | The harness `tool_search` tool |
 

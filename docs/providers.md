@@ -622,12 +622,20 @@ been probed against the live API.
 Under [lazy tool loading](configuration.md#lazy-tool-loading) with the
 `auto` strategy, `gpt-5.4` and later 5.x models and the `gpt-6*` family
 use OpenAI's hosted
-[tool search](https://developers.openai.com/api/docs/guides/tools-tool-search).
-The adapter sends it only when the loop asks for a native search, the
-resolved quirks advertise the `ToolSearch` capability, and at least one
-tool in the request is deferred. Every other model, every request the
-loop serves with the harness's own `tool_search` tool, and every request
-with nothing deferred gets no search entry and no `defer_loading`.
+[tool search](https://developers.openai.com/api/docs/guides/tools-tool-search)
+on the default endpoint only. Only `https://api.openai.com/v1`, with or
+without a trailing slash, counts as the default endpoint. A provider with
+any other `baseUrl` (Azure OpenAI deployments, LiteLLM, LM Studio, other
+gateways, and regional first-party hosts) uses the harness's own
+`tool_search` tool. A gateway can answer 200 while silently
+dropping the hosted search entry and the `defer_loading` flags, which
+leaves every deferred tool unloadable while the run still ends in
+success. The run logs the fallback once at startup. The adapter sends it
+only when the loop asks for a native search, the resolved quirks
+advertise the `ToolSearch` capability, and at least one tool in the
+request is deferred. Every other model, every request the loop serves with
+the harness's own `tool_search` tool, and every request with nothing
+deferred gets no search entry and no `defer_loading`.
 
 The request lists every function tool as usual, adds
 `"defer_loading": true` to each deferred one, and appends the hosted
