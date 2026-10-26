@@ -242,16 +242,17 @@ func BuiltinRules() []Rule {
 		{
 			ProviderType: "gemini",
 			ModelMatch:   "*",
-			Description:  "Gemini: native functionCallingConfig.mode (AUTO/ANY/NONE)",
-			LastVerified: Date("2026-05-24"),
+			Description:  "Gemini: native functionCallingConfig.mode (AUTO/ANY/NONE); a request ending on a model turn is a 400 on 3.6 Flash and later (and on AI Studio from 3.5 Flash)",
+			LastVerified: Date("2026-10-18"),
 			Apply: func(q *ProviderQuirks) {
 
 				q.ToolChoice = ToolChoiceCapability{
-					Supported: true,
-					Auto:      true,
-					Required:  true,
-					None:      true,
-					NamedTool: true,
+					Supported:                true,
+					Auto:                     true,
+					Required:                 true,
+					None:                     true,
+					NamedTool:                true,
+					RejectsTrailingAssistant: true,
 				}
 			},
 		},

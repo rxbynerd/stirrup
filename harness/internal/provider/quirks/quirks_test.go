@@ -413,10 +413,10 @@ func TestQuirks_ToolChoiceCapabilityRules(t *testing.T) {
 		must.Equal(want, q.ToolChoice)
 	})
 
-	t.Run("gemini advertises every mode", func(t *testing.T) {
+	t.Run("gemini advertises every mode and rejects a trailing model turn", func(t *testing.T) {
 		must := require.New(t)
 		q := DefaultRegistry().Resolve("gemini", "gemini-2.5-pro")
-		want := ToolChoiceCapability{Supported: true, Auto: true, Required: true, None: true, NamedTool: true}
+		want := ToolChoiceCapability{Supported: true, Auto: true, Required: true, None: true, NamedTool: true, RejectsTrailingAssistant: true}
 		must.Equal(want, q.ToolChoice)
 	})
 
