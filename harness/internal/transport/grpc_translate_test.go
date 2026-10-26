@@ -772,6 +772,26 @@ func TestRunConfigFromProto_CompatProfileRoundTrip(t *testing.T) {
 	}
 }
 
+// TestRunConfigFromProto_EndpointProfileRoundTrip pins the wire-to-internal
+// copy of ProviderConfig.EndpointProfile on the default and named providers.
+// ValidateRunConfig, not the translate layer, rejects unknown values.
+func TestRunConfigFromProto_EndpointProfileRoundTrip(t *testing.T) {
+	for _, profile := range []string{"", "openai", "azure-openai", "bedrock-mantle", "generic", "future-profile"} {
+		t.Run("profile "+profile, func(t *testing.T) {
+			must := require.New(t)
+			pc := &pb.RunConfig{
+				Provider: &pb.ProviderConfig{Type: "openai-responses", EndpointProfile: profile},
+				Providers: map[string]*pb.ProviderConfig{
+					"secondary": {Type: "openai-compatible", EndpointProfile: profile},
+				},
+			}
+			rc := runConfigFromProto(pc)
+			must.Equal(profile, rc.Provider.EndpointProfile)
+			must.Equal(profile, rc.Providers["secondary"].EndpointProfile)
+		})
+	}
+}
+
 // TestRunConfigFromProto_TemperatureRoundTrip pins the pointer-vs-nil
 // distinction across the wire boundary for RunConfig.Temperature: unset
 // must inherit the harness default, while an explicit 0.0 (greedy
