@@ -951,7 +951,10 @@ Rules in the `patterns` pack fall into two classes:
 
 - **Secret rules** (`secret/*`) are unscoped. A hardcoded credential
   is a finding in any file, including one with an unknown extension
-  or none at all.
+  or none at all. They share the log scrubber's pattern set and its
+  prose filters, so text such as "basic documentation" or "bearer
+  tokens" is not a finding while a decodable `Basic` credential or a
+  `Bearer` token value is.
 - **Sink rules** (`sink/*`) are scoped to the language whose syntax
   the pattern describes, because the same characters mean something
   else elsewhere — a backtick is command substitution in shell and a

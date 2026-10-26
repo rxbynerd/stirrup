@@ -18,6 +18,7 @@ import (
 type patternRule struct {
 	id       string
 	re       *regexp.Regexp
+	valid    func(match string) bool
 	severity string
 	message  string
 	scope    ruleScope
@@ -79,6 +80,7 @@ func secretRules() []patternRule {
 		rules = append(rules, patternRule{
 			id:       "secret/" + p.Name,
 			re:       p.Re,
+			valid:    p.Valid,
 			severity: SeverityBlock,
 			message:  "hardcoded secret detected (pattern: " + p.Name + ")",
 		})
@@ -171,7 +173,7 @@ func (s *PatternScanner) Scan(ctx context.Context, path string, content []byte) 
 		if !r.scope.matches(file) {
 			continue
 		}
-		matches := r.re.FindAllIndex(content, -1)
+		matches := r.matches(content)
 		for _, m := range matches {
 			findings = append(findings, Finding{
 				Severity: r.severity,
@@ -182,6 +184,15 @@ func (s *PatternScanner) Scan(ctx context.Context, path string, content []byte) 
 		}
 	}
 	return &ScanResult{Findings: findings}, nil
+}
+
+// matches returns the byte ranges of content the rule reports, dropping
+// those its validator rejects.
+func (r patternRule) matches(content []byte) [][]int {
+	if r.valid == nil {
+		return r.re.FindAllIndex(content, -1)
+	}
+	return security.FindValidated(r.re, string(content), r.valid)
 }
 
 // fileIdentity is the per-file information rule scopes are matched

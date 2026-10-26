@@ -733,3 +733,17 @@ func TestSecretPatterns_MatchesHoldNoShellSyntax(t *testing.T) {
 		checkMatchesHoldNoShellSyntax(t, in)
 	}
 }
+
+func TestSecretPatterns_CarryScrubberValidators(t *testing.T) {
+	must := require.New(t)
+	byName := map[string]SecretPattern{}
+	for _, p := range SecretPatterns() {
+		byName[p.Name] = p
+	}
+	for name := range matchValidators {
+		p, ok := byName[name]
+		must.True(ok, "pattern %q has a validator but is not in SecretPatterns()", name)
+		must.NotNil(p.Valid, "pattern %q lost its validator", name)
+	}
+	must.Nil(byName["anthropic_api_key"].Valid, "a pattern without a validator must report nil")
+}
