@@ -473,16 +473,16 @@ test catch malformed paths at registry-build time.
 | `anthropic`         | `claude-fable-5*`  | Anthropic Claude Fable 5 / 5.1: same as `claude-opus-4-7*` |
 | `anthropic`         | `claude-mythos-5*` | Anthropic Claude Mythos 5: omit sampling params (same API surface as Fable 5); effort unprobed |
 | `anthropic`         | `claude-sonnet-5-5*`, `claude-opus-5-5*`, `claude-fable-5-1*`, `claude-mythos-5-1*` | `tool_choice` auto only (`any`/`tool` are a 400) |
-| `anthropic`         | `claude-opus-4-[5-8]*` | Anthropic Claude Opus 4.5–4.8: native BM25 tool search with `defer_loading` (documented, not probed) |
-| `anthropic`         | `claude-sonnet-4-[5-6]*` | Anthropic Claude Sonnet 4.5–4.6: native BM25 tool search with `defer_loading` (documented, not probed) |
-| `anthropic`         | `claude-haiku-4-5*` | Anthropic Claude Haiku 4.5: native BM25 tool search with `defer_loading` (documented, not probed) |
-| `anthropic`         | `claude-opus-5*`   | Anthropic Claude Opus 5 / 5.5: native BM25 tool search with `defer_loading` (documented, not probed) |
-| `anthropic`         | `claude-sonnet-5*` | Anthropic Claude Sonnet 5 / 5.5: native BM25 tool search with `defer_loading` (documented, not probed) |
-| `anthropic`         | `claude-haiku-5*`  | Anthropic Claude Haiku 5.5: native BM25 tool search with `defer_loading` (documented, not probed) |
-| `anthropic`         | `claude-fable-5*`  | Anthropic Claude Fable 5 / 5.1: native BM25 tool search with `defer_loading` (documented, not probed) |
+| `anthropic`         | `claude-opus-4-[5-8]*` | Anthropic Claude Opus 4.5–4.8: native BM25 tool search with `defer_loading` (probed on `claude-opus-4-5`, first turn only) |
+| `anthropic`         | `claude-sonnet-4-[5-6]*` | Anthropic Claude Sonnet 4.5–4.6: native BM25 tool search with `defer_loading` (probed on `claude-sonnet-4-6` including the `pause_turn` resend; Sonnet 4.5 not probed) |
+| `anthropic`         | `claude-haiku-4-5*` | Anthropic Claude Haiku 4.5: native BM25 tool search with `defer_loading` (probed: stream, replay, router switch, `pause_turn`, batch) |
+| `anthropic`         | `claude-opus-5*`   | Anthropic Claude Opus 5 / 5.5: native BM25 tool search with `defer_loading` (probed on `claude-opus-5-5`, first turn only) |
+| `anthropic`         | `claude-sonnet-5*` | Anthropic Claude Sonnet 5 / 5.5: native BM25 tool search with `defer_loading` (probed on `claude-sonnet-5-5`: first turn, `pause_turn` resend, trimmed history) |
+| `anthropic`         | `claude-haiku-5*`  | Anthropic Claude Haiku 5.5: native BM25 tool search with `defer_loading` (probed, first turn only) |
+| `anthropic`         | `claude-fable-5*`  | Anthropic Claude Fable 5 / 5.1: native BM25 tool search with `defer_loading` (probed on `claude-fable-5-1`, first turn only) |
 | `anthropic`         | `claude-mythos-5*` | Anthropic Claude Mythos 5 / 5.1: native BM25 tool search with `defer_loading` (documented, not probed) |
-| `openai-responses`  | `gpt-5.[4-9]*`     | OpenAI Responses gpt-5.4 and later 5.x: hosted `tool_search` with `defer_loading` (documented, not probed; see [providers.md](providers.md#hosted-tool-search)) |
-| `openai-responses`  | `gpt-6*`           | OpenAI Responses gpt-6 family: hosted `tool_search` with `defer_loading` (documented, not probed) |
+| `openai-responses`  | `gpt-5.[4-9]*`     | OpenAI Responses gpt-5.4 and later 5.x: hosted `tool_search` with `defer_loading` (probed on `gpt-5.4-mini`: stream, verbatim replay, namespaces, batch; `gpt-5.5` first turn only; see [providers.md](providers.md#hosted-tool-search)) |
+| `openai-responses`  | `gpt-6*`           | OpenAI Responses gpt-6 family: hosted `tool_search` with `defer_loading` (probed on `gpt-6-luna` and `gpt-6-astra`, first turn only) |
 
 The ten tool search rules set `ToolSearchCapability`, which the loop
 reads under [lazy tool loading](configuration.md#lazy-tool-loading) to
@@ -1197,6 +1197,8 @@ concerns are tracked separately:
     | `anthropic` | `claude-sonnet-4-6` | `any` | with synthetic user turn | probed | 200, `tool_use` |
     | `anthropic` | `claude-sonnet-4-6` | `tool` (named) | trailing assistant | probed | 400 `invalid_request_error`, same message |
     | `anthropic` | `claude-sonnet-4-6` | `tool` (named) | with synthetic user turn | probed | 200, `tool_use` |
+    | `anthropic` | `claude-sonnet-4-6`, `claude-sonnet-5-5` | `auto` | trailing assistant ending on an unanswered `server_tool_use` | probed | 200: the request continues a paused turn instead of being a prefill (`claude-haiku-4-5` also 200) |
+    | `anthropic` | `claude-sonnet-4-6` | `auto` | the same message with the unanswered `server_tool_use` removed | probed | 400 `invalid_request_error`, same prefill message |
     | `anthropic` | Opus 4.6 / 4.7 / 4.8, Sonnet 5, Opus 5 | any | trailing assistant | documentation only | Anthropic's API documentation states that a trailing assistant message returns 400 on these models; Sonnet 4.6, probed above, matches the documentation |
     | `anthropic` | `claude-haiku-4-5`, `claude-sonnet-4-6` | thinking on / adaptive thinking | any | unprobed | not reachable from a stirrup request |
 

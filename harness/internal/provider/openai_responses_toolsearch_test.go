@@ -155,9 +155,9 @@ func TestResponsesTool_RoundTripsHostedSearchEntry(t *testing.T) {
 	must.Equal(string(body), string(again))
 }
 
-// Hosted tool search output items, shaped after the OpenAI tool search
-// guide (documented, not probed): call_id is null, the call's arguments
-// are a JSON object, and the output lists the loaded definitions.
+// Hosted tool search output items trimmed to the fields the adapter reads:
+// call_id is null, the call's arguments are a JSON object, and the output
+// lists the loaded definitions.
 const (
 	toolSearchCallItem   = `{"type":"tool_search_call","id":"tsc_1","execution":"server","call_id":null,"status":"completed","arguments":{"paths":["mcp_jira_create_issue"]}}`
 	toolSearchOutputItem = `{"type":"tool_search_output","id":"tso_1","execution":"server","call_id":null,"status":"completed","tools":[{"type":"function","name":"mcp_jira_create_issue","description":"Create a Jira issue","defer_loading":true,"parameters":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"]}}]}`
