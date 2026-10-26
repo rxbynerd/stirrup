@@ -1,8 +1,8 @@
 # Safety rings
 
 Stirrup composes five deterministic *safety rings* on top of its usual
-hardening. Each ring is an agent-uncircumventable control that catches
-a different class of attack on the harness's core job — turning LLM
+hardening. Each ring is a control evaluated outside the model
+that catches a different class of attack on the harness's core job — turning LLM
 output into actions on a workspace. Together they form a layered
 defence-in-depth boundary: any single ring is sufficient against the
 attack shape it covers, and combining them ensures a misconfiguration
