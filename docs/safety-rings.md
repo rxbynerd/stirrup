@@ -521,6 +521,12 @@ attribute (`cmd`, say) parses cleanly and can never fire. The
 load-time linter below rejects exactly that, so the defect no longer
 survives to runtime.
 
+The action and resource carry the tool's internal ID (`run_command`),
+never the alias a non-default `tools.profile` presents to the model
+(`bash` under `coding-classic`). A policy written against an alias
+never matches. The harness logs a warning at startup when the policy
+engine is combined with a profile other than the default.
+
 `principal.capabilities` (Cedar `Set<String>`) exists in the schema
 but is **reserved and not populated in v1** — see the "reserved for
 sub-agent wiring" comment on the `PolicyEngineEnv` literal in

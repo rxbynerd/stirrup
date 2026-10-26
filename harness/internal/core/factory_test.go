@@ -2347,6 +2347,61 @@ func TestBuildProvider_OpenAICompatibleWithUnknownCompatProfile_Errors(t *testin
 	must.ErrorContains(err, "not-a-real-profile")
 }
 
+func TestWarnCedarWithAliasedProfile_WarnsOnlyForCedarWithAliasingProfile(t *testing.T) {
+	tests := []struct {
+		name     string
+		policy   string
+		profile  string
+		wantWarn bool
+	}{
+		{"cedar with coding-classic", "policy-engine", "coding-classic", true},
+		{"cedar with the empty profile", "policy-engine", "", false},
+		{"cedar with the default profile", "policy-engine", "default", false},
+		{"allow-all with coding-classic", "allow-all", "coding-classic", false},
+		{"deny-side-effects with coding-classic", "deny-side-effects", "coding-classic", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
+			var logs bytes.Buffer
+			config := &types.RunConfig{
+				PermissionPolicy: types.PermissionPolicyConfig{Type: tc.policy},
+				Tools:            types.ToolsConfig{Profile: tc.profile},
+			}
+			warnCedarWithAliasedProfile(config, slog.New(slog.NewTextHandler(&logs, nil)))
+			out := logs.String()
+			if !tc.wantWarn {
+				must.Empty(out)
+				return
+			}
+			must.Equal(1, strings.Count(out, "level=WARN"), out)
+			check.Contains(out, "internal tool IDs")
+			check.Contains(out, "profile=coding-classic")
+		})
+	}
+}
+
+func TestResolveCompatProfile_ResolvesEveryValidProfile(t *testing.T) {
+	for _, name := range types.ValidCompatProfileValues() {
+		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
+			_, err := resolveCompatProfile(name)
+			must.NoError(err)
+		})
+	}
+}
+
+func TestResolveCompatProfile_UnknownNamesSupportedProfiles(t *testing.T) {
+	must := require.New(t)
+	_, err := resolveCompatProfile("not-a-real-profile")
+	must.Error(err)
+	must.ErrorContains(err, "not-a-real-profile")
+	for _, name := range types.ValidCompatProfileValues() {
+		must.ErrorContains(err, name)
+	}
+}
+
 // BuildLoopWithTransport injects the scrub-backed logger into the
 // OpenAI-compatible adapter, so retry warnings pass through secret scrubbing.
 func TestBuildLoopWithTransport_OpenAICompatibleAdapterHasLogger(t *testing.T) {

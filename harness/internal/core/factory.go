@@ -708,6 +708,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	loop.Tools = presenter
 	loop.ToolProfile = profile
 	warnUnknownExcludedTools(config.ContextStrategy.ExcludeTools, presenter, logger)
+	warnCedarWithAliasedProfile(config, logger)
 
 	// Built over the presenter, after every registration, so the eager
 	// and deferred sets cover spawn_agent and MCP tools and the loader
@@ -1066,6 +1067,20 @@ func warnUnknownExcludedTools(names []string, tools tool.ToolRegistry, logger *s
 			logger.Warn("contextStrategy.excludeTools names a tool this run does not have; it excludes nothing", "tool", name)
 		}
 	}
+}
+
+// warnCedarWithAliasedProfile logs when a Cedar policy engine runs alongside
+// a tools profile that renames tools. The policy engine evaluates internal
+// tool IDs, so a policy written against a profile alias never matches.
+func warnCedarWithAliasedProfile(config *types.RunConfig, logger *slog.Logger) {
+	if config.PermissionPolicy.Type != "policy-engine" {
+		return
+	}
+	if config.Tools.Profile == "" || config.Tools.Profile == "default" {
+		return
+	}
+	logger.Warn("permissionPolicy policy-engine matches internal tool IDs, not the aliases of the tools profile; write policies against the internal names",
+		"profile", config.Tools.Profile)
 }
 
 // sandboxLifecycle derives the run label and lifetime bound handed to
@@ -2218,7 +2233,8 @@ func resolveCompatProfile(profile string) ([]quirks.Rule, error) {
 	case "zai-glm":
 		return zai.CompatRules(), nil
 	default:
-		return nil, fmt.Errorf("unknown compat profile %q (supported: zai-glm)", profile)
+		return nil, fmt.Errorf("unknown compat profile %q (supported: %s)",
+			profile, strings.Join(types.ValidCompatProfileValues(), ", "))
 	}
 }
 
