@@ -113,6 +113,30 @@ func TestBuildRunConfig_ToolsProfileFlag(t *testing.T) {
 	must.Empty(bareCfg.Tools.Profile, "profile should default to empty without --tools-profile")
 }
 
+func TestBuildRunConfig_ProviderEndpointProfileFlag(t *testing.T) {
+	must := require.New(t)
+	cmd := newTestHarnessCommand()
+	must.NoError(cmd.ParseFlags([]string{
+		"--mode", "execution",
+		"--prompt", "x",
+		"--provider", "openai-responses",
+		"--model", "gpt-5.5",
+		"--api-key-ref", "secret://OPENAI_API_KEY",
+		"--base-url", "https://relay.example.com/v1",
+		"--provider-endpoint-profile", "openai",
+	}))
+	cfg, err := BuildRunConfig(RunConfigSources{Cmd: cmd, Resolve: ResolveAll})
+	must.NoError(err)
+	must.Equal(types.EndpointProfileOpenAI, cfg.Provider.EndpointProfile)
+	must.NoError(types.ValidateRunConfig(cfg))
+
+	bare := newTestHarnessCommand()
+	must.NoError(bare.ParseFlags([]string{"--mode", "execution", "--prompt", "x"}))
+	bareCfg, err := BuildRunConfig(RunConfigSources{Cmd: bare, Resolve: ResolveAll})
+	must.NoError(err)
+	must.Empty(bareCfg.Provider.EndpointProfile)
+}
+
 // TestBuildRunConfig_ToolsProfileOverridesBase pins that --tools-profile
 // overrides a base config's tools.profile and that omitting the flag
 // preserves the base value (the applyOverrides Changed() guard).
