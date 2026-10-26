@@ -777,11 +777,17 @@ Or in a `RunConfig` file:
 {
   "executor": {
     "type": "container",
-    "image": "ghcr.io/rxbynerd/stirrup:latest",
+    "image": "ghcr.io/rxbynerd/stirrup-sandbox:latest",
     "runtime": "runsc"
   }
 }
 ```
+
+`executor.image` is the sandbox image, built from `Dockerfile.sandbox`,
+not the harness image (`ghcr.io/rxbynerd/stirrup`). The harness image is
+distroless and has no shell, so it cannot run commands, hooks, or
+in-sandbox git. Production configurations should pin the sandbox image
+by digest instead of `latest`.
 
 `ValidateRunConfig` rejects values outside the closed set above.
 
@@ -1081,7 +1087,7 @@ RunConfig snippet that validates against `ValidateRunConfig`.
   "modelRouter": { "type": "static", "provider": "anthropic", "model": "claude-sonnet-4-6" },
   "promptBuilder": { "type": "default" },
   "contextStrategy": { "type": "sliding-window", "maxTokens": 200000 },
-  "executor": { "type": "container", "image": "ghcr.io/rxbynerd/stirrup:latest", "runtime": "runc", "network": { "mode": "none" } },
+  "executor": { "type": "container", "image": "ghcr.io/rxbynerd/stirrup-sandbox:latest", "runtime": "runc", "network": { "mode": "none" } },
   "editStrategy": { "type": "multi" },
   "verifier": { "type": "none" },
   "permissionPolicy": { "type": "allow-all" },
@@ -1114,7 +1120,7 @@ not sensitive data — it never counts toward the sensitive-data leg.)
   "modelRouter": { "type": "static", "provider": "anthropic", "model": "claude-sonnet-4-6" },
   "promptBuilder": { "type": "default" },
   "contextStrategy": { "type": "sliding-window", "maxTokens": 200000 },
-  "executor": { "type": "container", "image": "ghcr.io/rxbynerd/stirrup:latest", "runtime": "runc", "network": { "mode": "none" } },
+  "executor": { "type": "container", "image": "ghcr.io/rxbynerd/stirrup-sandbox:latest", "runtime": "runc", "network": { "mode": "none" } },
   "editStrategy": { "type": "multi" },
   "verifier": { "type": "none" },
   "permissionPolicy": { "type": "deny-side-effects" },
@@ -1149,7 +1155,7 @@ needed.
   "contextStrategy": { "type": "sliding-window", "maxTokens": 200000 },
   "executor": {
     "type": "container",
-    "image": "ghcr.io/rxbynerd/stirrup:latest",
+    "image": "ghcr.io/rxbynerd/stirrup-sandbox:latest",
     "runtime": "runsc",
     "network": { "mode": "allowlist", "allowlist": ["api.github.com", "*.githubusercontent.com"] }
   },
@@ -1174,6 +1180,10 @@ needed.
 `codeScanner: composite`. Production posture. Cedar gates destructive
 shell commands; gVisor isolates the kernel; egress is FQDN-restricted;
 both pattern and semgrep scanners run on every edit.
+
+For production, `executor.image` should reference the sandbox image by
+digest (`ghcr.io/rxbynerd/stirrup-sandbox@sha256:...`) instead of the
+mutable `latest` tag.
 
 This config is also the runtime-classifier showcase, and carries **no**
 `ruleOfTwo` override. `web_fetch` supplies both the untrusted-input and
@@ -1200,7 +1210,7 @@ override is removed so the classifier can do its job.)
   "modelRouter": { "type": "static", "provider": "anthropic", "model": "claude-sonnet-4-6" },
   "promptBuilder": { "type": "default" },
   "contextStrategy": { "type": "sliding-window", "maxTokens": 200000 },
-  "executor": { "type": "container", "image": "ghcr.io/rxbynerd/stirrup:latest", "runtime": "runc", "network": { "mode": "none" } },
+  "executor": { "type": "container", "image": "ghcr.io/rxbynerd/stirrup-sandbox:latest", "runtime": "runc", "network": { "mode": "none" } },
   "editStrategy": { "type": "multi" },
   "verifier": { "type": "none" },
   "permissionPolicy": { "type": "deny-side-effects" },

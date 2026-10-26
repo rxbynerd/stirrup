@@ -48,7 +48,7 @@ ANTHROPIC_API_KEY=... ./stirrup harness --mode execution --prompt "Fix the faili
   --workspace .
 
 # using OpenAI Responses
-OPENAI_KEY="$(op read "op://Private/qeu6gafabhkpsm6hhzattx6p4m/credential")" ./stirrup harness \
+OPENAI_KEY=... ./stirrup harness \
   --api-key-ref secret://OPENAI_KEY \
   --provider openai-responses \
   --model gpt-5.4-nano \
