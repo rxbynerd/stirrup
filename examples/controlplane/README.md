@@ -52,7 +52,9 @@ Exit status:
 The model's answer text goes to stdout. Everything else goes to stderr as a
 live transcript: the user-role messages the harness appends, turn boundaries
 with token usage (including turns reported as abandoned, with the reason),
-reasoning text, and each tool call and result with its outcome and duration.
+reasoning text, each tool call and result with its outcome and duration, and,
+under lazy tool loading, each search that loads tools as
+`[tools_loaded] <source> <search tool> <tool IDs>`.
 
 Model and tool output is untrusted, so control characters, ANSI escape
 sequences and bidirectional formatting characters are printed as escapes
