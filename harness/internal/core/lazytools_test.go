@@ -127,7 +127,7 @@ func TestLoop_LazyTools_HarnessSearchLoadsADeferredTool(t *testing.T) {
 	turnRecords := rec.turnRecords
 	must.Equal(`Tool "mcp_github_create_issue" is not loaded; call tool_search to load it first`, turnRecords[0].ToolCalls[0].Output)
 	must.True(turnRecords[0].ToolCalls[0].IsError)
-	must.Contains(turnRecords[1].ToolCalls[0].Output, "Loaded 1 tool:\n- mcp_github_create_issue: Open a new GitHub issue")
+	must.Contains(turnRecords[1].ToolCalls[0].Output, "Loaded 1 tool:\n- mcp_github_create_issue (MCP server \"github\"): Open a new GitHub issue")
 	must.False(turnRecords[2].ToolCalls[0].IsError)
 
 	loadedEvents := toolsLoadedEvents(tp)

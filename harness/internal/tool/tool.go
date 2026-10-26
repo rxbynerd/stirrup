@@ -95,6 +95,11 @@ type Tool struct {
 	// tool annotations; built-in tools leave it nil and accept the derived
 	// ReadOnlyHint/DestructiveHint.
 	Annotations *types.ToolAnnotations
+
+	// MCPServer is the configured name of the MCP server that registered
+	// the tool, empty for every other tool. It is set by the MCP bridge
+	// and never derived from the tool's name, which a server chooses.
+	MCPServer string
 }
 
 // Definition converts a Tool to the wire-format ToolDefinition used by the

@@ -208,6 +208,7 @@ func TestConnect_ToolAnnotations(t *testing.T) {
 
 	resolved := registry.Resolve("mcp_svc_lookup")
 	must.NotNil(resolved, "Resolve returned nil for mcp_svc_lookup")
+	check.Equal("svc", resolved.MCPServer, "the tool must record the server that registered it")
 	must.NotNil(resolved.Annotations, "server annotations were not carried onto the tool")
 	check.Equal("Lookup", resolved.Annotations.Title)
 	must.NotNil(resolved.Annotations.ReadOnlyHint)

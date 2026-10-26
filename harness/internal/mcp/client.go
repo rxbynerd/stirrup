@@ -805,6 +805,7 @@ func (c *Client) registerMCPTool(serverName string, sess *serverSession, mt mcpT
 		InputSchema: mt.InputSchema,
 		// Advisory only; gating always uses the conservative defaults below.
 		Annotations: mt.Annotations,
+		MCPServer:   serverName,
 		// MCP tools are opaque to the harness; assume mutation and require
 		// approval.
 		WorkspaceMutating: true,
