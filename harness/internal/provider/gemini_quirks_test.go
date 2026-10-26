@@ -208,3 +208,52 @@ func TestGeminiQuirks_OmitSamplingParams_NoOpForGemini(t *testing.T) {
 		})
 	}
 }
+
+func TestGeminiRequest_WarnsWhenQuirkSuppressesTemperature(t *testing.T) {
+	run := func(t *testing.T, model string, temperature *float64) string {
+		t.Helper()
+		must := require.New(t)
+		srv := geminiQuirksLogStubServer(t)
+		defer srv.Close()
+
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+		adapter := NewGeminiAdapter(staticBearer("test-token"), "test-project", "us-central1", nil)
+		adapter.baseURLOverride = srv.URL
+		adapter.Logger = logger
+
+		ch, err := adapter.Stream(context.Background(), types.StreamParams{
+			Model:       model,
+			MaxTokens:   1024,
+			Temperature: temperature,
+			Messages: []types.Message{
+				{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
+			},
+		})
+		must.NoError(err)
+		for range ch {
+		}
+		return buf.String()
+	}
+
+	t.Run("suppressing rule with a caller temperature warns without the value", func(t *testing.T) {
+		check := assert.New(t)
+		out := run(t, "gemini-3.7-pro", types.Float64Ptr(0.123456))
+		check.Contains(out, "gemini quirks suppressed caller temperature")
+		check.Contains(out, "omit deprecated sampling params")
+		check.NotContains(out, "0.123456")
+	})
+
+	t.Run("suppressing rule without a caller temperature stays quiet", func(t *testing.T) {
+		check := assert.New(t)
+		out := run(t, "gemini-3.7-pro", nil)
+		check.NotContains(out, "suppressed caller temperature")
+	})
+
+	t.Run("model without a suppressing rule stays quiet", func(t *testing.T) {
+		check := assert.New(t)
+		out := run(t, "gemini-2.5-pro", types.Float64Ptr(0.5))
+		check.NotContains(out, "suppressed caller temperature")
+	})
+}

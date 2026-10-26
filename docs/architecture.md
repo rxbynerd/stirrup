@@ -717,13 +717,14 @@ The provider-quirks layer (see
 [`provider-quirks.md`](provider-quirks.md)) surfaces resolution
 observability through both slog records and OTel span attributes
 so log-only and trace-only consumers each see which rules fired.
-Each `ProviderAdapter.Stream` call emits an `openai quirks
-resolved` (or `gemini quirks resolved`) DEBUG record naming every
-contributing rule's description, and sets the matching
-`provider.quirk.applied` attribute on the active span. When a
-rule's `OmitSamplingParams` suppresses a caller-supplied non-nil
-`Temperature`, an `openai quirks suppressed caller temperature`
-WARN record fires naming the responsible rule. When a rule
+Each `ProviderAdapter.Stream` call emits a `<adapter> quirks
+resolved` DEBUG record naming every contributing rule's
+description, and sets the matching `provider.quirk.applied`
+attribute on the active span. When a rule's `OmitSamplingParams`
+suppresses a caller-supplied non-nil `Temperature`, a `<adapter>
+quirks suppressed caller temperature` WARN record fires naming
+the responsible rule. `<adapter>` is `openai`, `openai-responses`,
+`anthropic`, or `gemini`. When a rule
 registers `ReplayFields` paths and any value is captured during
 the stream, a `quirks replay fields captured` DEBUG record fires
 on stream exit summarising `{count, total_len}` per path — and
