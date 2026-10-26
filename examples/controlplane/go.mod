@@ -1,6 +1,6 @@
 module github.com/rxbynerd/stirrup/examples/controlplane
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/rxbynerd/stirrup/gen v0.0.0
