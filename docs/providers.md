@@ -275,7 +275,10 @@ and sends every tool loaded. The search tool goes first in `tools` and is
 never deferred, which satisfies the API's rule that not every tool may carry
 `defer_loading`. Every deferred definition is sent in full with
 `"defer_loading": true`, on every turn, loaded or not, so the tool
-list stays byte-stable for the prompt cache:
+list stays byte-stable for the prompt cache. The one exception is a
+loaded tool whose search result is no longer in the request, which is
+sent without the flag (see
+[Lifetime of the loaded set](configuration.md#lifetime-of-the-loaded-set)):
 
 ```json
 "tools": [
@@ -720,7 +723,10 @@ to the provider's tool-name rules like tool names. A namespace sits where
 its first member would have been. Members keep their full names (such
 as `mcp_jira_create_issue`), so dispatch and permissions see the same
 names as without namespaces. Until a search loads a namespace, the model
-sees only its name and description.
+sees only its name and description. A loaded tool whose
+`tool_search_output` is no longer in the request is sent as a flat
+function without `defer_loading`, outside its namespace (see
+[Lifetime of the loaded set](configuration.md#lifetime-of-the-loaded-set)).
 
 Deferred built-in tools, and MCP tools whose name no configured server
 claims, are sent as flat functions. The model still sees each flat

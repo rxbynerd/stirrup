@@ -640,6 +640,15 @@ limit:
   placeholder in occasional batches, so the prompt cache stays valid
   between batches.
 
+A native tool search's `tool_search` and `tool_search_result` blocks
+are never rewritten: `clear-tool-results` and `offload-to-file` touch
+only tool results. The estimate counts the tool names a search result
+references, and `summarise` records each search and the tools it
+loaded (or its error code) in the summary input. A strategy that drops
+a search exchange leaves its tools loaded, and the next native-search
+request sends them in full; see
+[`configuration.md`](configuration.md#lifetime-of-the-loaded-set).
+
 Token estimation accounts for per-message overhead (4 tokens),
 per-block overhead (3 tokens), tool-related metadata, system prompt
 tokens, tool definition tokens, and the reasoning text of thinking

@@ -1274,9 +1274,11 @@ mid-run switches search paths with it:
 
 With a native search, every registered tool except the harness
 `tool_search` is sent on every turn and the deferred ones are flagged
-for deferred loading, so the request stays the same from turn to turn;
-the provider searches and expands the definitions of the tools it
-finds. A native search gives the model no inventory of the deferred
+for deferred loading, so the request stays the same from turn to turn
+until the history is compacted (see
+[Lifetime of the loaded set](#lifetime-of-the-loaded-set)); the
+provider searches and expands the definitions of the tools it finds.
+A native search gives the model no inventory of the deferred
 tools, so a system-prompt hint naming the tool categories helps it
 search for the right words. A native search also needs at least one
 eager tool besides `tool_search`, because a provider rejects a request
@@ -1375,6 +1377,27 @@ and starts empty otherwise. Tools load as soon as a search reports
 them, before the turn commits, so a turn that is later abandoned still
 leaves its tools loaded.
 
+A provider's native search expands a loaded tool's definition only
+through the search result that loaded it, so that result must be in
+the request. It is missing when the context strategy dropped or
+summarised the exchange that held it, when a router switch loaded the
+tool through the harness `tool_search` or another provider's search,
+or when output-limit recovery discarded a paused turn's continuation
+after its search had loaded tools. A native-search request then sends
+each such tool's full definition without the deferred flag or a
+namespace, like an eager tool. This applies to that request only: the
+loaded set does not change, and every later request is checked again.
+The tool list changes whenever a tool's search result leaves or
+re-enters the request, and each change costs one cache write of the
+tools and system prefix. The check is per request because a run-long
+un-defer would, on the Responses API, place a now-flat tool inside a
+rebuilt `tool_search_output`, which is the shape the API rejects. When
+every deferred tool is loaded and none has its search result in the
+request, the request defers nothing and the adapter leaves the native
+search off it, because there is nothing left to load. A continuation of
+a paused turn that ends on an unanswered native search keeps its tools
+deferred, so the search tool stays on the request.
+
 ### Sub-agents
 
 A sub-agent starts with the eager tools of its own tool set and nothing
@@ -1413,7 +1436,9 @@ but only in process; no durable emitter writes it.
 In the JSONL trace, a turn record's `modelInput.tools` lists the
 definitions the turn sent, and the two strategies look different
 there. A native-search turn lists every deferred tool, loaded or not,
-with `deferred: true`, and no `tool_search`. A native-search turn
+with `deferred: true`, and no `tool_search`; a loaded tool whose search
+result is not in the request is listed without the flag (see
+[Lifetime of the loaded set](#lifetime-of-the-loaded-set)). A native-search turn
 also records each deferred MCP or control-plane tool's `namespace` and
 `namespaceDescription`, with the unnormalised name, whichever provider
 the turn went to. A harness-search turn

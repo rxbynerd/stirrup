@@ -1234,6 +1234,13 @@ semantic-convention attributes those backends read natively:
 | `gen_ai.tool.call.arguments` / `.result` | `execute_tool {name}` | Each tool call's input arguments and result text. |
 | `hook.output_tail` | `hook` | The last 4 KB of a lifecycle hook's combined output. Not a GenAI attribute. |
 
+A provider's native tool search appears in the messages as the
+schema's server tool parts: a `server_tool_call` part with the search
+tool's name and arguments, and a `server_tool_call_response` part whose
+`server_tool_call_response` object, typed `tool_search`, lists the
+loaded tools in `tool_references` or carries the provider's error code
+in `error`.
+
 The tool call identifier (`gen_ai.tool.call.id`) is a correlation key
 rather than content and is emitted on every `execute_tool` span
 whether or not capture is on.
