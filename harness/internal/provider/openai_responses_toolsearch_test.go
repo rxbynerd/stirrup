@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
@@ -383,9 +384,244 @@ func TestBuildResponsesRequest_ToolSearchReconstructsSearchItems(t *testing.T) {
 			{"type":"function","name":"mcp_jira_create_issue","description":"Create a Jira issue","defer_loading":true,
 			 "parameters":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"]}}
 		]},
-		{"type":"function_call","call_id":"call_1","name":"mcp_jira_create_issue","arguments":"{\"title\":\"Broken build\"}"},
+		{"type":"function_call","call_id":"call_1","name":"mcp_jira_create_issue","namespace":"mcp_jira_create_issue","arguments":"{\"title\":\"Broken build\"}"},
 		{"type":"function_call_output","call_id":"call_1","output":"PROJ-1"}
 	]`, string(input))
+}
+
+// namespacedToolSearchParams is responsesToolSearchParams with the Jira
+// tool grouped under the mcp_jira namespace, as the lazy loader sends an
+// MCP server's deferred tools.
+func namespacedToolSearchParams() types.StreamParams {
+	params := responsesToolSearchParams()
+	jira := jiraCreateTool
+	jira.Namespace = "mcp_jira"
+	jira.NamespaceDescription = `Tools from MCP server "jira".`
+	params.Tools = []types.ToolDefinition{readFileTool, jira}
+	return params
+}
+
+// requestFunctionCall returns the single function_call input item of a
+// built request.
+func requestFunctionCall(t *testing.T, params types.StreamParams, q quirks.ProviderQuirks) map[string]any {
+	t.Helper()
+	must := require.New(t)
+	req, err := buildResponsesRequest(params, q, nil, "")
+	must.NoError(err)
+	body, err := json.Marshal(req)
+	must.NoError(err)
+	var calls []map[string]any
+	for _, raw := range requestInput(t, body) {
+		var item map[string]any
+		must.NoError(json.Unmarshal(raw, &item))
+		if item["type"] == "function_call" {
+			calls = append(calls, item)
+		}
+	}
+	must.Len(calls, 1)
+	return calls[0]
+}
+
+func TestResponsesReconstruct_FunctionCallCarriesNamespace(t *testing.T) {
+	readFileBlocks := func() []types.ContentBlock {
+		b := responsesToolSearchTurnBlocks()
+		b[2] = types.ContentBlock{Type: "tool_use", ID: "call_1", Name: "read_file", Input: json.RawMessage(`{"path":"a.txt"}`)}
+		return b
+	}
+	callOnlyBlocks := func(name string) func() []types.ContentBlock {
+		return func() []types.ContentBlock {
+			return []types.ContentBlock{{Type: "tool_use", ID: "call_1", Name: name, Input: json.RawMessage(`{}`)}}
+		}
+	}
+	withEagerMember := func() types.StreamParams {
+		params := namespacedToolSearchParams()
+		member := jiraCreateTool
+		member.Name = "mcp_jira_list_projects"
+		member.Namespace = "mcp_jira"
+		member.NamespaceDescription = `Tools from MCP server "jira".`
+		member.Deferred = false
+		params.Tools = append(params.Tools, member)
+		return params
+	}
+	cases := []struct {
+		name   string
+		params func() types.StreamParams
+		blocks func() []types.ContentBlock
+		q      quirks.ProviderQuirks
+		want   any
+	}{
+		{"ungrouped deferred function names itself", responsesToolSearchParams, responsesToolSearchTurnBlocks, responsesToolSearchQuirks(true), "mcp_jira_create_issue"},
+		{"namespace member names its namespace", namespacedToolSearchParams, responsesToolSearchTurnBlocks, responsesToolSearchQuirks(true), "mcp_jira"},
+		{"eager function stays in the default namespace", responsesToolSearchParams, readFileBlocks, responsesToolSearchQuirks(true), nil},
+		{"request without hosted search sends no namespace", namespacedToolSearchParams, responsesToolSearchTurnBlocks, responsesToolSearchQuirks(false), nil},
+		{"namespace member called without a search pair names its namespace", namespacedToolSearchParams, callOnlyBlocks("mcp_jira_create_issue"), responsesToolSearchQuirks(true), "mcp_jira"},
+		{"un-deferred namespace member names its namespace", withEagerMember, callOnlyBlocks("mcp_jira_list_projects"), responsesToolSearchQuirks(true), "mcp_jira"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			check := assert.New(t)
+			params := tc.params()
+			params.Messages = responsesToolSearchHistory(tc.blocks())
+			call := requestFunctionCall(t, params, tc.q)
+			check.Equal(tc.want, call["namespace"])
+		})
+	}
+}
+
+func TestResponsesReconstruct_ToolSearchOutputUsesNamespace(t *testing.T) {
+	must := require.New(t)
+	params := namespacedToolSearchParams()
+	blocks := responsesToolSearchTurnBlocks()
+	blocks[0].Input = json.RawMessage(`{"paths":["mcp_jira"]}`)
+	params.Messages = responsesToolSearchHistory(blocks)
+	req, err := buildResponsesRequest(params, responsesToolSearchQuirks(true), nil, "")
+	must.NoError(err)
+	input, err := json.Marshal(req.Input)
+	must.NoError(err)
+
+	must.JSONEq(`[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"file a ticket"}]},
+		{"type":"tool_search_call","execution":"server","call_id":null,"status":"completed","arguments":{"paths":["mcp_jira"]}},
+		{"type":"tool_search_output","execution":"server","call_id":null,"status":"completed","tools":[
+			{"type":"namespace","name":"mcp_jira","description":"Tools from MCP server \"jira\".","tools":[
+				{"type":"function","name":"mcp_jira_create_issue","description":"Create a Jira issue","defer_loading":true,
+				 "parameters":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"]}}
+			]}
+		]},
+		{"type":"function_call","call_id":"call_1","name":"mcp_jira_create_issue","namespace":"mcp_jira","arguments":"{\"title\":\"Broken build\"}"},
+		{"type":"function_call_output","call_id":"call_1","output":"PROJ-1"}
+	]`, string(input))
+}
+
+func TestResponsesReconstruct_ToolSearchOutputGroupsMembersOnce(t *testing.T) {
+	must := require.New(t)
+	search := newResponsesToolSearch([]responsesTool{
+		{Type: "function", Name: "read_file"},
+		{Type: responsesNamespaceType, Name: "mcp_jira", Description: "Jira", Tools: []responsesTool{
+			{Type: "function", Name: "mcp_jira_create_issue"},
+			{Type: "function", Name: "mcp_jira_get_issue"},
+		}},
+		{Type: "function", Name: "list_directory"},
+	})
+	loaded, ok := search.loaded([]string{"mcp_jira_get_issue", "list_directory", "mcp_jira_create_issue"})
+	must.True(ok)
+	must.Len(loaded, 2)
+	must.Equal(responsesNamespaceType, loaded[0].Type)
+	must.Equal("mcp_jira", loaded[0].Name)
+	must.Equal("Jira", loaded[0].Description)
+	must.Len(loaded[0].Tools, 2)
+	must.Equal("mcp_jira_get_issue", loaded[0].Tools[0].Name)
+	must.Equal("mcp_jira_create_issue", loaded[0].Tools[1].Name)
+	must.Equal("list_directory", loaded[1].Name)
+	for _, def := range []responsesTool{loaded[0].Tools[0], loaded[0].Tools[1], loaded[1]} {
+		must.NotNil(def.DeferLoading)
+		must.True(*def.DeferLoading, "%s is flagged defer_loading", def.Name)
+	}
+}
+
+func TestTranslateToolsResponses_GroupsDeferredToolsByNamespace(t *testing.T) {
+	must := require.New(t)
+	params := namespacedToolSearchParams()
+	jiraGet := jiraCreateTool
+	jiraGet.Name = "mcp_jira_get_issue"
+	jiraGet.Namespace = "mcp_jira"
+	jiraGet.NamespaceDescription = `Tools from MCP server "jira".`
+	cp := jiraCreateTool
+	cp.Name = "approve_deploy"
+	cp.Namespace = "control_plane"
+	cp.NamespaceDescription = "Tools provided by the control plane."
+	builtIn := jiraCreateTool
+	builtIn.Name = "list_directory"
+	params.Tools = append(params.Tools, cp, jiraGet, builtIn)
+
+	tools := requestTools(t, params, responsesToolSearchQuirks(true))
+	must.Len(tools, 5)
+	must.Equal("read_file", tools[0]["name"])
+	must.Equal("namespace", tools[1]["type"])
+	must.Equal("mcp_jira", tools[1]["name"])
+	must.Equal(`Tools from MCP server "jira".`, tools[1]["description"])
+	must.NotContains(tools[1], "parameters")
+	members, ok := tools[1]["tools"].([]any)
+	must.True(ok)
+	must.Len(members, 2)
+	for i, want := range []string{"mcp_jira_create_issue", "mcp_jira_get_issue"} {
+		member, ok := members[i].(map[string]any)
+		must.True(ok)
+		must.Equal(want, member["name"], "members keep their full presented names")
+		must.Equal(true, member["defer_loading"])
+		must.Contains(member, "parameters")
+	}
+	must.Equal("namespace", tools[2]["type"])
+	must.Equal("control_plane", tools[2]["name"])
+	must.Equal("function", tools[3]["type"])
+	must.Equal("list_directory", tools[3]["name"], "a deferred tool without a namespace stays ungrouped")
+	must.Equal(true, tools[3]["defer_loading"])
+	must.Equal(map[string]any{"type": "tool_search"}, tools[4])
+}
+
+func TestTranslateToolsResponses_UndeferredMemberStaysInItsNamespace(t *testing.T) {
+	must := require.New(t)
+	params := namespacedToolSearchParams()
+	eager := jiraCreateTool
+	eager.Name = "mcp_jira_list_projects"
+	eager.Namespace = "mcp_jira"
+	eager.NamespaceDescription = `Tools from MCP server "jira".`
+	eager.Deferred = false
+	params.Tools = append(params.Tools, eager)
+
+	tools := requestTools(t, params, responsesToolSearchQuirks(true))
+	must.Len(tools, 3)
+	must.Equal("namespace", tools[1]["type"])
+	members, ok := tools[1]["tools"].([]any)
+	must.True(ok)
+	must.Len(members, 2)
+	deferred, ok := members[0].(map[string]any)
+	must.True(ok)
+	must.Equal(true, deferred["defer_loading"])
+	undeferred, ok := members[1].(map[string]any)
+	must.True(ok)
+	must.Equal("mcp_jira_list_projects", undeferred["name"])
+	must.NotContains(undeferred, "defer_loading")
+}
+
+func TestTranslateToolsResponses_NoNamespaceWithoutToolSearch(t *testing.T) {
+	must := require.New(t)
+	tools := requestTools(t, namespacedToolSearchParams(), responsesToolSearchQuirks(false))
+	must.Len(tools, 2)
+	for _, tool := range tools {
+		must.Equal("function", tool["type"])
+		must.NotContains(tool, "defer_loading")
+	}
+	must.Equal("mcp_jira_create_issue", tools[1]["name"])
+}
+
+func TestTranslateToolsResponses_NamespaceNamedLikeAFunctionStaysUngrouped(t *testing.T) {
+	must := require.New(t)
+	params := namespacedToolSearchParams()
+	clash := readFileTool
+	clash.Name = "mcp_jira"
+	params.Tools = append(params.Tools, clash)
+
+	tools := requestTools(t, params, responsesToolSearchQuirks(true))
+	must.Len(tools, 4)
+	for _, tool := range tools[:3] {
+		must.NotEqual("namespace", tool["type"])
+	}
+	must.Equal("mcp_jira_create_issue", tools[1]["name"])
+	must.Equal("mcp_jira", tools[2]["name"])
+}
+
+func TestResponsesTool_RoundTripsNamespaceEntry(t *testing.T) {
+	must := require.New(t)
+	req, err := buildResponsesRequest(namespacedToolSearchParams(), responsesToolSearchQuirks(true), nil, "")
+	must.NoError(err)
+	body, err := json.Marshal(req)
+	must.NoError(err)
+	var back responsesRequest
+	must.NoError(json.Unmarshal(body, &back))
+	again, err := json.Marshal(back)
+	must.NoError(err)
+	must.Equal(string(body), string(again))
 }
 
 func TestBuildResponsesRequest_ToolSearchReconstructsEmptyResult(t *testing.T) {
@@ -577,6 +813,12 @@ func TestResponsesInput_ToolSearchItemsRoundTrip(t *testing.T) {
 			Type: "function", Name: "list_open_orders", Parameters: json.RawMessage(`{"type":"object"}`), DeferLoading: &truthy,
 		}}},
 		{Type: "tool_search_output", LoadedTools: []responsesTool{}},
+		{Type: "tool_search_output", LoadedTools: []responsesTool{{
+			Type: responsesNamespaceType, Name: "crm", Description: "CRM tools", Tools: []responsesTool{{
+				Type: "function", Name: "list_open_orders", Parameters: json.RawMessage(`{"type":"object"}`), DeferLoading: &truthy,
+			}},
+		}}},
+		{Type: "function_call", CallID: "call_1", Name: "list_open_orders", Arguments: "{}", Namespace: "crm"},
 	}
 	for _, in := range cases {
 		t.Run(in.Type, func(t *testing.T) {

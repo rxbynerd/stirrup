@@ -434,6 +434,11 @@ type responsesInput struct {
 	Arguments string                  `json:"-"` // for "function_call" — JSON string
 	Output    string                  `json:"-"` // for "function_call_output" — required even when empty
 
+	// Namespace is a function_call's namespace: the API rejects a call to
+	// a function a tool_search_output in the same input loaded unless it
+	// names the function's namespace (its own name when ungrouped).
+	Namespace string `json:"-"`
+
 	SearchArguments json.RawMessage `json:"-"` // for "tool_search_call" — JSON object
 	LoadedTools     []responsesTool `json:"-"` // for "tool_search_output"
 
@@ -465,6 +470,7 @@ func (r responsesInput) MarshalJSON() ([]byte, error) {
 			CallID:    r.CallID,
 			Name:      r.Name,
 			Arguments: r.Arguments,
+			Namespace: r.Namespace,
 		})
 	case "function_call_output":
 		return json.Marshal(responsesFunctionCallOutputInputWire{
@@ -536,6 +542,7 @@ func (r *responsesInput) UnmarshalJSON(data []byte) error {
 		r.CallID = w.CallID
 		r.Name = w.Name
 		r.Arguments = w.Arguments
+		r.Namespace = w.Namespace
 	case "function_call_output":
 		var w responsesFunctionCallOutputInputWire
 		if err := json.Unmarshal(data, &w); err != nil {
@@ -594,12 +601,13 @@ type responsesMessageInputWire struct {
 }
 
 // responsesFunctionCallInputWire is the wire shape for type=="function_call".
-// Only type/call_id/name/arguments are valid for this variant.
+// Only type/call_id/name/arguments/namespace are valid for this variant.
 type responsesFunctionCallInputWire struct {
 	Type      string `json:"type"`
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
 }
 
 // responsesFunctionCallOutputInputWire is the wire shape for
@@ -638,27 +646,48 @@ type responsesContentBlock struct {
 //
 // DeferLoading marks a function the hosted tool search loads on demand.
 // A Type of responsesToolSearchType is the hosted search entry itself,
-// which MarshalJSON emits with no other key.
+// which MarshalJSON emits with no other key. A Type of
+// responsesNamespaceType groups the functions in Tools under Name, and
+// the hosted search loads them by that name.
 type responsesTool struct {
-	Type         string          `json:"type"` // "function" | "tool_search"
+	Type         string          `json:"type"` // "function" | "namespace" | "tool_search"
 	Name         string          `json:"name"`
 	Description  string          `json:"description,omitempty"`
 	Parameters   json.RawMessage `json:"parameters"`
 	Strict       *bool           `json:"strict,omitempty"`
 	DeferLoading *bool           `json:"defer_loading,omitempty"`
+	Tools        []responsesTool `json:"tools,omitempty"`
 }
 
-// responsesToolSearchType is the tools[] entry type of OpenAI's hosted
-// tool search.
-const responsesToolSearchType = "tool_search"
+const (
+	// responsesToolSearchType is the tools[] entry type of OpenAI's
+	// hosted tool search.
+	responsesToolSearchType = "tool_search"
+	// responsesNamespaceType is the tools[] entry type that groups
+	// functions for the hosted tool search.
+	responsesNamespaceType = "namespace"
+)
 
-// MarshalJSON emits the hosted tool search entry as {"type":"tool_search"}
-// and every other entry with its struct tags.
+// MarshalJSON emits the hosted tool search entry as {"type":"tool_search"},
+// a namespace with only its type, name, description and tools, and every
+// other entry with its struct tags.
 func (t responsesTool) MarshalJSON() ([]byte, error) {
-	if t.Type == responsesToolSearchType {
+	switch t.Type {
+	case responsesToolSearchType:
 		return json.Marshal(struct {
 			Type string `json:"type"`
 		}{t.Type})
+	case responsesNamespaceType:
+		tools := t.Tools
+		if tools == nil {
+			tools = []responsesTool{}
+		}
+		return json.Marshal(struct {
+			Type        string          `json:"type"`
+			Name        string          `json:"name"`
+			Description string          `json:"description,omitempty"`
+			Tools       []responsesTool `json:"tools"`
+		}{t.Type, t.Name, t.Description, tools})
 	}
 	type wire responsesTool
 	return json.Marshal(wire(t))
@@ -1162,7 +1191,8 @@ func (c *responsesReplayCapture) disable(ctx context.Context, reason string, att
 // search is the request's hosted tool search, or nil when it has none.
 // tool_search and tool_search_result blocks are reconstructed only under
 // a search, and only as complete pairs (see reconstructableToolSearches);
-// otherwise they are dropped.
+// otherwise they are dropped. Under a search, a reconstructed call to a
+// deferred or namespaced function carries its namespace.
 func translateMessagesResponses(messages []types.Message, replayOrigin string, search *responsesToolSearch) []responsesInput {
 	var out []responsesInput
 
@@ -1189,6 +1219,7 @@ func translateMessagesResponses(messages []types.Message, replayOrigin string, s
 						CallID:    block.ID,
 						Name:      block.Name,
 						Arguments: args,
+						Namespace: search.callNamespace(block.Name),
 					})
 				case "tool_search":
 					if _, ok := searches[block.ID]; ok {
@@ -1262,24 +1293,40 @@ type responsesToolSearch struct {
 	// definitions maps each function tool's wire name to its translated
 	// definition, as the request's tools array carries it.
 	definitions map[string]responsesTool
+	// namespaces maps a namespace member's wire name to its namespace
+	// entry, without the entry's tools.
+	namespaces map[string]responsesTool
 }
 
-// newResponsesToolSearch indexes a request's translated function tools.
+// newResponsesToolSearch indexes a request's translated function tools,
+// including the members of each namespace.
 func newResponsesToolSearch(tools []responsesTool) *responsesToolSearch {
-	s := &responsesToolSearch{definitions: make(map[string]responsesTool, len(tools))}
+	s := &responsesToolSearch{
+		definitions: make(map[string]responsesTool, len(tools)),
+		namespaces:  make(map[string]responsesTool),
+	}
 	for _, t := range tools {
-		if t.Type == "function" {
+		switch t.Type {
+		case "function":
 			s.definitions[t.Name] = t
+		case responsesNamespaceType:
+			group := responsesTool{Type: t.Type, Name: t.Name, Description: t.Description}
+			for _, member := range t.Tools {
+				s.definitions[member.Name] = member
+				s.namespaces[member.Name] = group
+			}
 		}
 	}
 	return s
 }
 
-// loaded returns the definitions a rebuilt tool_search_output carries for
-// names, each flagged defer_loading, or false when a name has no
-// definition in the request.
+// loaded returns the entries a rebuilt tool_search_output carries for
+// names: each definition flagged defer_loading, with namespace members
+// grouped under their namespace where the namespace first appears. It
+// returns false when a name has no definition in the request.
 func (s *responsesToolSearch) loaded(names []string) ([]responsesTool, bool) {
 	out := make([]responsesTool, 0, len(names))
+	groupIndex := make(map[string]int)
 	for _, name := range names {
 		def, ok := s.definitions[name]
 		if !ok {
@@ -1287,9 +1334,38 @@ func (s *responsesToolSearch) loaded(names []string) ([]responsesTool, bool) {
 		}
 		truthy := true
 		def.DeferLoading = &truthy
-		out = append(out, def)
+		group, member := s.namespaces[name]
+		if !member {
+			out = append(out, def)
+			continue
+		}
+		i, seen := groupIndex[group.Name]
+		if !seen {
+			i = len(out)
+			groupIndex[group.Name] = i
+			out = append(out, group)
+		}
+		out[i].Tools = append(out[i].Tools, def)
 	}
 	return out, true
+}
+
+// callNamespace returns the namespace a reconstructed function_call to
+// name carries: its namespace for a namespace member, its own name for
+// an ungrouped deferred function, and "" for an eager function or a
+// request without a hosted search. The API resolves an eager function
+// in its default namespace.
+func (s *responsesToolSearch) callNamespace(name string) string {
+	if s == nil {
+		return ""
+	}
+	if group, ok := s.namespaces[name]; ok {
+		return group.Name
+	}
+	if def, ok := s.definitions[name]; ok && def.DeferLoading != nil && *def.DeferLoading {
+		return name
+	}
+	return ""
 }
 
 // reconstructableToolSearches returns, keyed by call ID, the loaded
@@ -1439,9 +1515,11 @@ func sameToolArguments(stored string, input json.RawMessage) bool {
 // time are returned in fallbacks so the caller can log them. An error
 // returns no fallbacks: the request is not sent.
 //
-// When toolSearch is true, every Deferred tool carries defer_loading and
-// the hosted tool search entry is appended last; otherwise Deferred is
-// ignored and every tool is sent loaded.
+// When toolSearch is true, every Deferred tool carries defer_loading,
+// tools sharing a Namespace are grouped into one namespace entry (see
+// groupResponsesNamespaces), and the hosted tool search entry is appended
+// last; otherwise Deferred and Namespace are ignored and every tool is
+// sent loaded and ungrouped.
 func translateToolsResponses(tools []types.ToolDefinition, strict, examples, toolSearch bool, model string, cache *strictSchemaCache) (out []responsesTool, fallbacks []*strictSchemaError, err error) {
 	if len(tools) == 0 {
 		return nil, nil, nil
@@ -1484,9 +1562,43 @@ func translateToolsResponses(tools []types.ToolDefinition, strict, examples, too
 		out[i] = entry
 	}
 	if toolSearch {
+		out = groupResponsesNamespaces(tools, out)
 		out = append(out, responsesTool{Type: responsesToolSearchType})
 	}
 	return out, fallbacks, nil
+}
+
+// groupResponsesNamespaces replaces the function entries of tools that
+// share a Namespace with one namespace entry, placed where its first
+// member was; entries are the translated tools, index for index. A
+// namespace whose name is also a function's name is not formed, and its
+// members stay ungrouped, so a search path never names both.
+func groupResponsesNamespaces(tools []types.ToolDefinition, entries []responsesTool) []responsesTool {
+	functionNames := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		functionNames[e.Name] = true
+	}
+	out := make([]responsesTool, 0, len(entries)+1)
+	groupIndex := make(map[string]int)
+	for i, e := range entries {
+		ns := tools[i].Namespace
+		if ns == "" || functionNames[ns] {
+			out = append(out, e)
+			continue
+		}
+		g, seen := groupIndex[ns]
+		if !seen {
+			g = len(out)
+			groupIndex[ns] = g
+			out = append(out, responsesTool{
+				Type:        responsesNamespaceType,
+				Name:        ns,
+				Description: tools[i].NamespaceDescription,
+			})
+		}
+		out[g].Tools = append(out[g].Tools, e)
+	}
+	return out
 }
 
 // responsesToolSearchActive reports whether a request uses OpenAI's hosted

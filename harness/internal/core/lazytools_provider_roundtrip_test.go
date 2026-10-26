@@ -21,9 +21,11 @@ const (
 	roundTripResponsesModel = "gpt-5.5"
 	roundTripJiraTool       = "mcp_jira_create_issue"
 
-	roundTripSearchCall   = `{"type":"tool_search_call","id":"tsc_1","execution":"server","call_id":null,"status":"completed","arguments":{"paths":["mcp_jira_create_issue"]}}`
-	roundTripSearchOutput = `{"type":"tool_search_output","id":"tso_1","execution":"server","call_id":null,"status":"completed","tools":[{"type":"function","name":"mcp_jira_create_issue","description":"Create a Jira issue","defer_loading":true,"parameters":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"]}}]}`
-	roundTripFunctionCall = `{"type":"function_call","id":"fc_1","call_id":"call_1","name":"mcp_jira_create_issue","arguments":"{\"title\":\"Broken build\"}","status":"completed"}`
+	roundTripJiraNamespace = "mcp_jira"
+
+	roundTripSearchCall   = `{"type":"tool_search_call","id":"tsc_1","execution":"server","call_id":null,"status":"completed","arguments":{"paths":["mcp_jira"]}}`
+	roundTripSearchOutput = `{"type":"tool_search_output","id":"tso_1","execution":"server","call_id":null,"status":"completed","tools":[{"type":"namespace","name":"mcp_jira","description":"Tools from MCP server \"jira\".","tools":[{"type":"function","name":"mcp_jira_create_issue","description":"Create a Jira issue","defer_loading":true,"parameters":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"]}}]}]}`
+	roundTripFunctionCall = `{"type":"function_call","id":"fc_1","call_id":"call_1","name":"mcp_jira_create_issue","namespace":"mcp_jira","arguments":"{\"title\":\"Broken build\"}","status":"completed"}`
 )
 
 // responsesSearchTurnSSE is one Responses turn that runs the hosted tool
@@ -59,14 +61,26 @@ func searchItems(items []map[string]any) []map[string]any {
 	return out
 }
 
-// loadedToolNames returns the tool names a tool_search_output item lists;
-// a rebuilt item carries the request's own definitions of them.
+// loadedToolNames returns the tool names a tool_search_output item lists,
+// a namespace member as namespace/name; a rebuilt item carries the
+// request's own definitions of them.
 func loadedToolNames(item map[string]any) []string {
 	var names []string
 	tools, _ := item["tools"].([]any)
 	for _, t := range tools {
-		if def, ok := t.(map[string]any); ok {
+		def, ok := t.(map[string]any)
+		if !ok {
+			continue
+		}
+		if def["type"] != "namespace" {
 			names = append(names, fmt.Sprint(def["name"]))
+			continue
+		}
+		members, _ := def["tools"].([]any)
+		for _, m := range members {
+			if member, ok := m.(map[string]any); ok {
+				names = append(names, fmt.Sprintf("%s/%s", def["name"], member["name"]))
+			}
 		}
 	}
 	return names
@@ -118,9 +132,10 @@ func TestLoop_LazyTools_ResponsesHostedSearchRoundTrips(t *testing.T) {
 	_, err := loop.Run(context.Background(), config)
 	must.NoError(err)
 	must.Equal(1, calls, "the tool the hosted search loaded is dispatched")
+	must.Contains(server.requests()[0], `{"type":"namespace","name":"mcp_jira","description":"Tools from MCP server \"jira\".","tools":[{"type":"function","name":"mcp_jira_create_issue"`, "the deferred MCP tool is sent inside its server's namespace")
 
 	blocks := rec.turnRecords[0].ModelOutput
-	must.Equal(types.ContentBlock{Type: "tool_search", ID: "tsc_1", Name: "tool_search", Input: json.RawMessage(`{"paths":["mcp_jira_create_issue"]}`)}, blocks[0])
+	must.Equal(types.ContentBlock{Type: "tool_search", ID: "tsc_1", Name: "tool_search", Input: json.RawMessage(`{"paths":["mcp_jira"]}`)}, blocks[0])
 	must.Equal(types.ContentBlock{Type: "tool_search_result", ToolUseID: "tsc_1", ToolReferences: []string{roundTripJiraTool}}, blocks[1])
 
 	want := originalSearchItems(t)
@@ -149,6 +164,9 @@ func TestLoop_LazyTools_ResponsesHostedSearchRoundTrips(t *testing.T) {
 	var order []string
 	for _, item := range rebuilt {
 		order = append(order, fmt.Sprint(item["type"]))
+		if item["type"] == "function_call" {
+			must.Equal(roundTripJiraNamespace, item["namespace"], "the rebuilt call names the namespace the rebuilt output loaded")
+		}
 	}
 	must.Equal("message tool_search_call tool_search_output function_call function_call_output", strings.Join(order, " "))
 }
