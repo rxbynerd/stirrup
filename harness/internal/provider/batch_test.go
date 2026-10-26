@@ -249,6 +249,63 @@ func TestFabricateStream_AnthropicToolSearch(t *testing.T) {
 	}
 }
 
+// TestFabricateStream_AnthropicPauseTurn pins that a batch response paused
+// in its server tool loop keeps the pause_turn stop reason and the pending
+// search call, as the streaming path does.
+func TestFabricateStream_AnthropicPauseTurn(t *testing.T) {
+	must := require.New(t)
+	response := []byte(`{
+		"content": [
+			{"type": "server_tool_use", "id": "srvtoolu_1", "name": "tool_search_tool_bm25", "input": {"query": "github"}},
+			{"type": "tool_search_tool_result", "tool_use_id": "srvtoolu_1", "content": {"type": "tool_search_tool_search_result", "tool_references": []}},
+			{"type": "server_tool_use", "id": "srvtoolu_2", "name": "tool_search_tool_bm25", "input": {"query": "jira"}}
+		],
+		"stop_reason": "pause_turn",
+		"usage": {"output_tokens": 12}
+	}`)
+
+	ch := make(chan types.StreamEvent, 8)
+	fabricateStream(ch, response, "anthropic")
+	close(ch)
+	var got []types.StreamEvent
+	for ev := range ch {
+		got = append(got, ev)
+	}
+
+	must.Equal([]string{"tool_search", "tool_search_result", "tool_search", "message_complete"}, eventTypes(got))
+	must.Equal("pause_turn", got[3].StopReason)
+	must.Len(got[3].Content, 3)
+	must.Equal(types.ContentBlock{
+		Type:  "tool_search",
+		ID:    "srvtoolu_2",
+		Name:  "tool_search_tool_bm25",
+		Input: json.RawMessage(`{"query": "jira"}`),
+	}, got[3].Content[2])
+}
+
+// TestAnthropicBatch_PauseTurnRequestShape pins that a batch request
+// continuing a paused turn replays the pending search call as the last
+// block of the final assistant message, as a streamed request does.
+func TestAnthropicBatch_PauseTurnRequestShape(t *testing.T) {
+	must := require.New(t)
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "anthropic", "run-test")
+	body, err := a.marshalRequestBody(t.Context(), anthropicToolSearchParams([]types.Message{
+		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "find the open bug"}}},
+		{Role: "assistant", Content: []types.ContentBlock{
+			{Type: "tool_search", ID: "srvtoolu_1", Name: "tool_search_tool_bm25", Input: json.RawMessage(`{"query":"github"}`)},
+			anthropicToolSearchLoadedResult(),
+			{Type: "tool_search", ID: "srvtoolu_2", Name: "tool_search_tool_bm25", Input: json.RawMessage(`{"query":"jira"}`)},
+		}},
+	}))
+	must.NoError(err, "marshalRequestBody")
+
+	must.Equal([]string{
+		`{"type":"server_tool_use","id":"srvtoolu_1","name":"tool_search_tool_bm25","input":{"query":"github"}}`,
+		`{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_1","content":{"type":"tool_search_tool_search_result","tool_references":[]}}`,
+		`{"type":"server_tool_use","id":"srvtoolu_2","name":"tool_search_tool_bm25","input":{"query":"jira"}}`,
+	}, anthropicToolSearchBlockStrings(assistantWireBlocks(t, body, 1)))
+}
+
 // TestFabricateStream_AnthropicToolSearch_DoesNotLogToDefaultHandler pins
 // that an unrecognised result in a batch response is not logged through the
 // process-wide logger, whose handler may not scrub content.
