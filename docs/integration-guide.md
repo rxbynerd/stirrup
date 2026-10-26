@@ -127,6 +127,7 @@ status.
 | `thinking_delta` | `text` | Render / accumulate. Incremental reasoning text, where the provider exposes it, capped at 256 KiB per event and re-chunked like `text_delta`. Opaque (redacted) reasoning is never sent, and none is sent when `reasoningSummary` is `"off"`. |
 | `tool_call` | `id`, `name`, `input` (JSON bytes) | Informational. Not guaranteed to be followed by a matching `tool_result`: a cancelled, stream-faulted, stalled, or `max_tokens`-truncated turn can orphan one, so treat `done` as the terminal close for any pending state keyed on `id`. `input` is the model's raw output — scrubbed of secrets but not yet schema-validated, guardrail-checked, or stripped of prototype-pollution keys — and must be treated as untrusted, unlike `permission_request.input`. When the model's arguments are not a JSON object, `input` is `{}`, a `warning` event names the call, and its `tool_result` carries the parse error. `name` is the presented (aliased) tool name, which can differ from `permission_request.tool_name` (the internal tool ID) under a non-default toolset profile. |
 | `tool_result` | `tool_use_id`, `name`, `content`, `is_error`, `duration_ms` | Informational. `name` is the same presented name as the matching `tool_call`. `is_error` is true when the call failed. `duration_ms` is the call's run time, excluding any wait for a parallel dispatch slot. `content` is capped at 256 KiB. |
+| `tools_loaded` | `tools`, `source`, `name`, `input`, `turn` | Informational. Under lazy tool loading, a tool search makes deferred tools visible to the model for the rest of the run. `tools` lists their internal tool IDs, `source` says which search ran (`native` or `harness`; an open vocabulary, so preserve unknown values), `name` is the search tool's name, `input` is its input, and `turn` is the turn it ran in. `name` is informational only: OpenAI's hosted search is also named `tool_search`, so only `source` tells it from the harness search. Sent once per search that loaded a tool not already loaded: for a harness search, right after that search's `tool_result`; for a native search, when the response is accepted, after the turn's `tool_call` events and before its `tool_result` events, so a `tool_call` for a newly loaded tool can arrive before the `tools_loaded` that explains it. Either way it precedes the turn's `turn_committed` or `turn_abandoned`, and a `tools_loaded` followed by `turn_abandoned` still leaves its tools loaded. Sent by harnesses advertising the `lazy_tool_loading` capability; see [Lazy tool loading](configuration.md#lazy-tool-loading). |
 | `turn_committed` | `turn`, `stop_reason`, `usage`, `tool_result_count` | Informational. The turn's assistant message, and a result for every tool call in it, are in the history. `stop_reason` is the model's stop reason for the turn, not the run outcome. `usage` is the turn's token usage. |
 | `turn_abandoned` | `turn`, `abandon_reason` | Informational. The turn left nothing valid in the history; discard what was buffered for it. `abandon_reason` says why; see [Watching a run live](#watching-a-run-live) for the vocabulary, which is open. Every `turn_started` is followed by exactly one `turn_committed` or `turn_abandoned`. Sent by harnesses advertising the `turn_abandoned` capability. |
 | `permission_request` | `request_id`, `tool_name`, `input` | **Must respond** with `permission_response` echoing `request_id` before the policy timeout (default 60 s) or the call is auto-denied. |
@@ -769,7 +770,9 @@ turn_started           turn 0, model, provider (adapter type)
   thinking_delta …     reasoning text, where exposed
   text_delta …         answer text
   tool_call …          one per call the model made
-  tool_result …        one per call, in call order
+  tools_loaded …       one per native tool search that loaded tools
+  tool_result …        one per call, in call order; each harness
+                       tool_search result is followed by its tools_loaded
 turn_committed         turn 0, stop_reason, usage, tool_result_count
                        (or turn_abandoned: turn 0, abandon_reason)
 user_message …         anything the harness appends before the next turn
@@ -893,6 +896,9 @@ The name and ID fields (`id`, `name`, `tool_use_id`, `request_id`,
 without a marker so equal values stay equal: a capped `tool_call.id`
 still matches its `tool_result.tool_use_id`, but a `request_id` longer
 than 1 KiB comes back shortened and does not match the one sent.
+`source` is capped like a name field. `tools_loaded.tools` holds at
+most 256 entries, each capped like a name field, and
+`tools_loaded.input` is capped like a `tool_call` input.
 
 <a id="secrets-on-the-stream"></a>**Secrets.** Every text field is scrubbed of recognised secret formats
 before it is sent. `text_delta` and `thinking_delta` fragments are not
@@ -1371,6 +1377,10 @@ around silently".
   - `turn_abandoned`: the `turn_abandoned` event and its
     `abandon_reason` (field 26); every `turn_started` is followed by
     exactly one `turn_committed` or `turn_abandoned`.
+  - `lazy_tool_loading`: `RunConfig.tools.lazyLoading`
+    (`ToolsConfig.lazy_loading`, field 11) is honoured, and the
+    `tools_loaded` event and its `tools` (field 27) report every tool
+    search that loaded tools.
 - `ready.harness_version` carries the build label
   (`v1.2.3 (abc1234)` for releases) and is informational: `dev` and
   `main` builds cannot be ordered against a release, so it is not a

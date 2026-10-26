@@ -784,6 +784,9 @@ func translateMessages(system string, messages []types.Message, replayPaths []st
 				}
 			}
 
+			if len(textParts) == 0 && len(toolCalls) == 0 && hasToolSearchBlocks(msg.Content) {
+				continue
+			}
 			if len(textParts) > 0 {
 				oai.Content = strings.Join(textParts, "")
 			}

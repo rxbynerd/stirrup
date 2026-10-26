@@ -168,6 +168,49 @@ func TestBoundEventFields_CapsIdentifiers(t *testing.T) {
 	must.Equal("read_file", short.Name, "identifier under the cap must not be altered")
 }
 
+func TestBoundEventFields_CapsToolsLoaded(t *testing.T) {
+	t.Run("tool list is cut to the entry cap", func(t *testing.T) {
+		must := require.New(t)
+		tools := make([]string, maxEventToolEntries+44)
+		for i := range tools {
+			tools[i] = fmt.Sprintf("mcp_server_tool_%d", i)
+		}
+		ev := types.HarnessEvent{Type: "tools_loaded", Tools: tools}
+		boundEventFields(&ev)
+		must.Len(ev.Tools, maxEventToolEntries)
+		must.Equal(tools[:maxEventToolEntries], ev.Tools)
+	})
+
+	t.Run("oversized entries, name and source are capped", func(t *testing.T) {
+		must := require.New(t)
+		big := strings.Repeat("é", maxEventIdentifierBytes)
+		ev := types.HarnessEvent{Type: "tools_loaded", Name: big, Source: big, Tools: []string{"read_file", big}}
+		boundEventFields(&ev)
+		must.Equal("read_file", ev.Tools[0], "an entry under the cap is not altered")
+		for field, got := range map[string]string{"tools[1]": ev.Tools[1], "name": ev.Name, "source": ev.Source} {
+			must.LessOrEqual(len(got), maxEventIdentifierBytes, "%s is over the identifier cap", field)
+			must.True(utf8.ValidString(got), "%s must be valid UTF-8", field)
+		}
+	})
+
+	t.Run("oversized input stays valid JSON", func(t *testing.T) {
+		must := require.New(t)
+		input := json.RawMessage(`{"query":"` + strings.Repeat("a", maxEventFieldBytes) + `"}`)
+		ev := types.HarnessEvent{Type: "tools_loaded", Input: input}
+		boundEventFields(&ev)
+		must.LessOrEqual(len(ev.Input), maxEventFieldBytes)
+		must.True(json.Valid(ev.Input), "tools_loaded input must remain valid JSON")
+	})
+
+	t.Run("nil tool list stays nil", func(t *testing.T) {
+		must := require.New(t)
+		ev := types.HarnessEvent{Type: "tools_loaded", Source: types.ToolsLoadedSourceHarness}
+		boundEventFields(&ev)
+		must.Nil(ev.Tools)
+		must.Equal("harness", ev.Source)
+	})
+}
+
 func TestGRPCTransport_OversizedIdentifiersDoNotEndStream(t *testing.T) {
 	must := require.New(t)
 	srv := newTestServer()

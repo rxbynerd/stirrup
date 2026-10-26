@@ -907,7 +907,7 @@ func TestTranslateMessagesResponses_MapsTextToolUseAndToolResult(t *testing.T) {
 		},
 	}
 
-	result := translateMessagesResponses(messages, "")
+	result := translateMessagesResponses(messages, "", nil)
 
 	// user message -> 1 item (input_text)
 	// assistant text + tool_use -> 1 message item + 1 function_call item
@@ -947,7 +947,7 @@ func TestTranslateMessagesResponses_ErrorToolResult(t *testing.T) {
 		},
 	}
 
-	result := translateMessagesResponses(messages, "")
+	result := translateMessagesResponses(messages, "", nil)
 	must.Len(result, 1)
 	check.Equal("function_call_output", result[0].Type)
 	check.True(strings.HasPrefix(result[0].Output, "Error: "), "expected error-prefixed output, got %q", result[0].Output)
@@ -970,7 +970,7 @@ func TestTranslateMessagesResponses_EmptyToolResultContent(t *testing.T) {
 			{Type: "tool_result", ToolUseID: "call_1", Content: ""},
 		}},
 	}
-	result := translateMessagesResponses(messages, "")
+	result := translateMessagesResponses(messages, "", nil)
 	must.Len(result, 1)
 	check.Equal("function_call_output", result[0].Type)
 	check.Equal("call_1", result[0].CallID)
@@ -991,7 +991,7 @@ func TestTranslateMessagesResponses_EmptyErrorToolResultContent(t *testing.T) {
 			{Type: "tool_result", ToolUseID: "call_1", Content: "", IsError: true},
 		}},
 	}
-	result := translateMessagesResponses(messages, "")
+	result := translateMessagesResponses(messages, "", nil)
 	must.Len(result, 1)
 	check.Equal("function_call_output", result[0].Type)
 	check.Equal("Error: ", result[0].Output)
@@ -1012,7 +1012,7 @@ func TestTranslateMessagesResponses_MultipleEmptyToolResultContents(t *testing.T
 			{Type: "tool_result", ToolUseID: "call_2", Content: ""},
 		}},
 	}
-	result := translateMessagesResponses(messages, "")
+	result := translateMessagesResponses(messages, "", nil)
 	must.Len(result, 2)
 
 	wantIDs := []string{"call_1", "call_2"}
@@ -1039,7 +1039,7 @@ func TestTranslateMessagesResponses_AssistantToolUseEmptyInput(t *testing.T) {
 			},
 		},
 	}
-	result := translateMessagesResponses(messages, "")
+	result := translateMessagesResponses(messages, "", nil)
 	must.Len(result, 1, "result: %+v", result)
 	must.Equal("function_call", result[0].Type)
 	must.Equal("{}", result[0].Arguments)
@@ -1228,7 +1228,7 @@ func TestTranslateToolsResponses_MapsFunctionTools(t *testing.T) {
 			InputSchema: json.RawMessage(`{"type":"object"}`),
 		},
 	}
-	result, err := translateToolsResponses(tools, false, false, "gpt-4o", nil)
+	result, err := translateToolsResponses(tools, false, false, false, "gpt-4o", nil)
 	must.NoError(err)
 	must.Len(result, 2)
 	for i, tool := range result {
@@ -1250,7 +1250,7 @@ func TestTranslateToolsResponses_NilOrEmptyReturnsNil(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			must := require.New(t)
-			got, err := translateToolsResponses(tt.tools, false, false, "gpt-4o", nil)
+			got, err := translateToolsResponses(tt.tools, false, false, false, "gpt-4o", nil)
 			must.NoError(err)
 			must.Nil(got)
 		})
@@ -1869,7 +1869,7 @@ func TestTranslateMessagesResponses_UserTextAndToolResultOrder(t *testing.T) {
 			},
 		},
 	}
-	result := translateMessagesResponses(messages, "")
+	result := translateMessagesResponses(messages, "", nil)
 	must.Len(result, 2, "got %+v", result)
 	must.Equal("function_call_output", result[0].Type)
 	must.Equal("message", result[1].Type)

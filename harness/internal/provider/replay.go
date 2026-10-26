@@ -104,6 +104,32 @@ func (rp *ReplayProvider) Stream(ctx context.Context, _ types.StreamParams) (<-c
 					ThoughtSignature: block.ThoughtSignature,
 				}
 
+			case "tool_search":
+				inputMap, err := rawMessageToMap(block.Input)
+				if err != nil {
+					ch <- types.StreamEvent{
+						Type:  "error",
+						Error: fmt.Errorf("replay provider: invalid tool search input JSON for %q: %w", block.Name, err),
+					}
+					return
+				}
+				ch <- types.StreamEvent{
+					Type:  "tool_search",
+					ID:    block.ID,
+					Name:  block.Name,
+					Input: inputMap,
+				}
+
+			case "tool_search_result":
+				ch <- types.StreamEvent{
+					Type:           "tool_search_result",
+					ID:             block.ToolUseID,
+					ToolReferences: block.ToolReferences,
+					IsError:        block.IsError,
+					Name:           block.Name,
+					Text:           block.Content,
+				}
+
 			case "thinking", "redacted_thinking":
 				// Recordings drop the signature, so a replayed block is
 				// unsigned and the Anthropic adapter will not resend it;

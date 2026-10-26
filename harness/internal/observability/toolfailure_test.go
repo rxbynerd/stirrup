@@ -19,6 +19,7 @@ func TestToolFailureCategory_KnownValuesAreValid(t *testing.T) {
 	must := require.New(t)
 	known := []ToolFailureCategory{
 		ToolFailureUnknownTool,
+		ToolFailureToolNotLoaded,
 		ToolFailureInvalidArguments,
 		ToolFailureSchemaValidation,
 		ToolFailureSecurityGuard,

@@ -421,13 +421,16 @@ func responsesStoreValue(m quirks.OpenAIResponsesStoreMode) bool {
 // endpoint) reject an empty "output" on message / function_call items.
 // See docs/provider-quirks.md for the function_call_output invariant.
 type responsesInput struct {
-	Type      string                  `json:"-"` // "message" | "function_call" | "function_call_output" | "reasoning" (Raw only)
+	Type      string                  `json:"-"` // "message" | "function_call" | "function_call_output" | "tool_search_call" | "tool_search_output" | "reasoning" (Raw only)
 	Role      string                  `json:"-"` // for "message"
 	Content   []responsesContentBlock `json:"-"` // for "message"
 	Name      string                  `json:"-"` // for "function_call"
 	CallID    string                  `json:"-"` // for "function_call" / "function_call_output"
 	Arguments string                  `json:"-"` // for "function_call" — JSON string
 	Output    string                  `json:"-"` // for "function_call_output" — required even when empty
+
+	SearchArguments json.RawMessage `json:"-"` // for "tool_search_call" — JSON object
+	LoadedTools     []responsesTool `json:"-"` // for "tool_search_output"
 
 	// Raw is a stored output item to replay; when set, MarshalJSON returns
 	// it and ignores the typed fields. The enclosing json.Marshal compacts
@@ -463,6 +466,24 @@ func (r responsesInput) MarshalJSON() ([]byte, error) {
 			Type:   r.Type,
 			CallID: r.CallID,
 			Output: r.Output,
+		})
+	case "tool_search_call":
+		return json.Marshal(responsesToolSearchCallInputWire{
+			Type:      r.Type,
+			Execution: responsesToolSearchExecution,
+			Status:    "completed",
+			Arguments: r.SearchArguments,
+		})
+	case "tool_search_output":
+		tools := r.LoadedTools
+		if tools == nil {
+			tools = []responsesTool{}
+		}
+		return json.Marshal(responsesToolSearchOutputInputWire{
+			Type:      r.Type,
+			Execution: responsesToolSearchExecution,
+			Status:    "completed",
+			Tools:     tools,
 		})
 	default:
 		// Unknown variants would previously have been serialised as a
@@ -517,10 +538,46 @@ func (r *responsesInput) UnmarshalJSON(data []byte) error {
 		}
 		r.CallID = w.CallID
 		r.Output = w.Output
+	case "tool_search_call":
+		var w responsesToolSearchCallInputWire
+		if err := json.Unmarshal(data, &w); err != nil {
+			return err
+		}
+		r.SearchArguments = w.Arguments
+	case "tool_search_output":
+		var w responsesToolSearchOutputInputWire
+		if err := json.Unmarshal(data, &w); err != nil {
+			return err
+		}
+		r.LoadedTools = w.Tools
 	default:
 		return fmt.Errorf("responsesInput: unknown type %q", head.Type)
 	}
 	return nil
+}
+
+// responsesToolSearchExecution is the execution mode of hosted tool
+// search items.
+const responsesToolSearchExecution = "server"
+
+// responsesToolSearchCallInputWire is the wire shape for a reconstructed
+// type=="tool_search_call". CallID is always null for hosted search.
+type responsesToolSearchCallInputWire struct {
+	Type      string          `json:"type"`
+	Execution string          `json:"execution"`
+	CallID    *string         `json:"call_id"`
+	Status    string          `json:"status"`
+	Arguments json.RawMessage `json:"arguments"`
+}
+
+// responsesToolSearchOutputInputWire is the wire shape for a reconstructed
+// type=="tool_search_output". CallID is always null for hosted search.
+type responsesToolSearchOutputInputWire struct {
+	Type      string          `json:"type"`
+	Execution string          `json:"execution"`
+	CallID    *string         `json:"call_id"`
+	Status    string          `json:"status"`
+	Tools     []responsesTool `json:"tools"`
 }
 
 // responsesMessageInputWire is the wire shape for type=="message".
@@ -573,12 +630,33 @@ type responsesContentBlock struct {
 // rule that pins strict mode causes the adapter to emit an explicit
 // `"strict": true` on every tool entry. See openaiToolDefinition for
 // the equivalent on the Chat Completions side.
+//
+// DeferLoading marks a function the hosted tool search loads on demand.
+// A Type of responsesToolSearchType is the hosted search entry itself,
+// which MarshalJSON emits with no other key.
 type responsesTool struct {
-	Type        string          `json:"type"` // "function"
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	Parameters  json.RawMessage `json:"parameters"`
-	Strict      *bool           `json:"strict,omitempty"`
+	Type         string          `json:"type"` // "function" | "tool_search"
+	Name         string          `json:"name"`
+	Description  string          `json:"description,omitempty"`
+	Parameters   json.RawMessage `json:"parameters"`
+	Strict       *bool           `json:"strict,omitempty"`
+	DeferLoading *bool           `json:"defer_loading,omitempty"`
+}
+
+// responsesToolSearchType is the tools[] entry type of OpenAI's hosted
+// tool search.
+const responsesToolSearchType = "tool_search"
+
+// MarshalJSON emits the hosted tool search entry as {"type":"tool_search"}
+// and every other entry with its struct tags.
+func (t responsesTool) MarshalJSON() ([]byte, error) {
+	if t.Type == responsesToolSearchType {
+		return json.Marshal(struct {
+			Type string `json:"type"`
+		}{t.Type})
+	}
+	type wire responsesTool
+	return json.Marshal(wire(t))
 }
 
 // --- SSE event payload types ---
@@ -588,14 +666,43 @@ type responsesTool struct {
 // and response.output_item.done. Replay forwards the raw item JSON, so
 // fields such as a reasoning item's encrypted_content are not modelled here.
 type responsesOutputItem struct {
-	Type      string                  `json:"type"` // "message" | "function_call" | "reasoning"
+	Type      string                  `json:"type"` // "message" | "function_call" | "reasoning" | "tool_search_call" | "tool_search_output"
 	ID        string                  `json:"id,omitempty"`
 	CallID    string                  `json:"call_id,omitempty"`
 	Name      string                  `json:"name,omitempty"`
-	Arguments string                  `json:"arguments,omitempty"`
+	Arguments string                  `json:"arguments,omitempty"` // "function_call": a JSON string
 	Status    string                  `json:"status,omitempty"`
 	Phase     string                  `json:"phase,omitempty"`   // "message": "commentary" | "final_answer"
 	Content   []responsesContentBlock `json:"content,omitempty"` // "message": output_text / refusal parts
+
+	// SearchArguments is a tool_search_call item's arguments, a JSON
+	// object rather than the string a function_call carries.
+	SearchArguments json.RawMessage `json:"-"`
+	// Tools is a tool_search_output item's loaded function and namespace
+	// definitions.
+	Tools json.RawMessage `json:"tools,omitempty"`
+}
+
+// UnmarshalJSON decodes arguments by item type: a tool_search_call keeps
+// its arguments as raw JSON in SearchArguments, every other type decodes
+// them as a string.
+func (i *responsesOutputItem) UnmarshalJSON(data []byte) error {
+	type plain responsesOutputItem
+	wire := struct {
+		*plain
+		Arguments json.RawMessage `json:"arguments"`
+	}{plain: (*plain)(i)}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	if len(wire.Arguments) == 0 {
+		return nil
+	}
+	if i.Type == "tool_search_call" {
+		i.SearchArguments = wire.Arguments
+		return nil
+	}
+	return json.Unmarshal(wire.Arguments, &i.Arguments)
 }
 
 // responsesUsage is the usage object on response.completed and
@@ -786,7 +893,7 @@ func responsesReplayOriginFor(q quirks.ProviderQuirks, model, baseURL string) st
 // program items, compaction) disable replay for their turn.
 func replayableResponsesItem(itemType string) bool {
 	switch itemType {
-	case "reasoning", "message", "function_call":
+	case "reasoning", "message", "function_call", "tool_search_call", "tool_search_output":
 		return true
 	}
 	return false
@@ -798,6 +905,24 @@ type responsesReplayItem struct {
 	responsesOutputItem
 	Role             string `json:"role"`
 	EncryptedContent string `json:"encrypted_content"`
+}
+
+// UnmarshalJSON decodes the embedded item with its own UnmarshalJSON,
+// which would otherwise be promoted and leave Role and EncryptedContent
+// unset.
+func (r *responsesReplayItem) UnmarshalJSON(data []byte) error {
+	if err := json.Unmarshal(data, &r.responsesOutputItem); err != nil {
+		return err
+	}
+	var extra struct {
+		Role             string `json:"role"`
+		EncryptedContent string `json:"encrypted_content"`
+	}
+	if err := json.Unmarshal(data, &extra); err != nil {
+		return err
+	}
+	r.Role, r.EncryptedContent = extra.Role, extra.EncryptedContent
+	return nil
 }
 
 // checkResponsesReplayItems decodes a turn's output items and reports why
@@ -828,6 +953,7 @@ func checkResponsesReplayItems(raws []json.RawMessage) (items []responsesReplayI
 					return nil, replayReasonNotAssistant, item.Type
 				}
 			}
+		case "tool_search_call", "tool_search_output":
 		default:
 			return nil, replayReasonUnreplayable, item.Type
 		}
@@ -1027,19 +1153,25 @@ func (c *responsesReplayCapture) disable(ctx context.Context, reason string, att
 // items came from that origin and still match its content is replayed
 // instead (see replayedResponsesItems); every other turn is reconstructed
 // without item ids, so one turn never mixes the two.
-func translateMessagesResponses(messages []types.Message, replayOrigin string) []responsesInput {
+//
+// search is the request's hosted tool search, or nil when it has none.
+// tool_search and tool_search_result blocks are reconstructed only under
+// a search, and only as complete pairs (see reconstructableToolSearches);
+// otherwise they are dropped.
+func translateMessagesResponses(messages []types.Message, replayOrigin string, search *responsesToolSearch) []responsesInput {
 	var out []responsesInput
 
 	for _, msg := range messages {
 		switch msg.Role {
 		case "assistant":
-			if replayed := replayedResponsesItems(msg, replayOrigin); replayed != nil {
+			if replayed := replayedResponsesItems(msg, replayOrigin, search); replayed != nil {
 				out = append(out, replayed...)
 				continue
 			}
 
 			var textParts []string
 			var calls []responsesInput
+			searches := reconstructableToolSearches(msg.Content, search)
 
 			for _, block := range msg.Content {
 				switch block.Type {
@@ -1053,6 +1185,20 @@ func translateMessagesResponses(messages []types.Message, replayOrigin string) [
 						Name:      block.Name,
 						Arguments: args,
 					})
+				case "tool_search":
+					if _, ok := searches[block.ID]; ok {
+						calls = append(calls, responsesInput{
+							Type:            "tool_search_call",
+							SearchArguments: types.NormalizeToolInput(block.Input),
+						})
+					}
+				case "tool_search_result":
+					if loaded, ok := searches[block.ToolUseID]; ok {
+						calls = append(calls, responsesInput{
+							Type:        "tool_search_output",
+							LoadedTools: loaded,
+						})
+					}
 				}
 			}
 
@@ -1105,6 +1251,84 @@ func translateMessagesResponses(messages []types.Message, replayOrigin string) [
 	return out
 }
 
+// responsesToolSearch is a request's hosted tool search as message
+// translation needs it.
+type responsesToolSearch struct {
+	// definitions maps each function tool's wire name to its translated
+	// definition, as the request's tools array carries it.
+	definitions map[string]responsesTool
+}
+
+// newResponsesToolSearch indexes a request's translated function tools.
+func newResponsesToolSearch(tools []responsesTool) *responsesToolSearch {
+	s := &responsesToolSearch{definitions: make(map[string]responsesTool, len(tools))}
+	for _, t := range tools {
+		if t.Type == "function" {
+			s.definitions[t.Name] = t
+		}
+	}
+	return s
+}
+
+// loaded returns the definitions a rebuilt tool_search_output carries for
+// names, each flagged defer_loading, or false when a name has no
+// definition in the request.
+func (s *responsesToolSearch) loaded(names []string) ([]responsesTool, bool) {
+	out := make([]responsesTool, 0, len(names))
+	for _, name := range names {
+		def, ok := s.definitions[name]
+		if !ok {
+			return nil, false
+		}
+		truthy := true
+		def.DeferLoading = &truthy
+		out = append(out, def)
+	}
+	return out, true
+}
+
+// reconstructableToolSearches returns, keyed by call ID, the loaded
+// definitions of each provider-side search in blocks that can be rebuilt
+// as a tool_search_call and tool_search_output pair. A search is left out,
+// and both its blocks dropped, when the request has no hosted search, when
+// either block is missing or repeated, when the search failed (no error
+// shape is documented for hosted search output), when its input is not
+// valid JSON, or when a loaded tool has no definition in the request.
+func reconstructableToolSearches(blocks []types.ContentBlock, search *responsesToolSearch) map[string][]responsesTool {
+	if search == nil {
+		return nil
+	}
+	calls := make(map[string]int)
+	results := make(map[string]int)
+	invalidInput := make(map[string]bool)
+	foreign := make(map[string]bool)
+	for _, b := range blocks {
+		switch b.Type {
+		case "tool_search":
+			calls[b.ID]++
+			if b.Name != responsesToolSearchType {
+				foreign[b.ID] = true
+			}
+			if !json.Valid(types.NormalizeToolInput(b.Input)) {
+				invalidInput[b.ID] = true
+			}
+		case "tool_search_result":
+			results[b.ToolUseID]++
+		}
+	}
+	out := make(map[string][]responsesTool)
+	for _, b := range blocks {
+		id := b.ToolUseID
+		if b.Type != "tool_search_result" || b.IsError || calls[id] != 1 || results[id] != 1 || invalidInput[id] || foreign[id] {
+			continue
+		}
+		if loaded, ok := search.loaded(b.ToolReferences); ok {
+			out[b.ToolUseID] = loaded
+		}
+	}
+	return out
+}
+
 // replayedResponsesItems returns msg's stored output items as input items,
 // or nil when the turn must be reconstructed. The stored items are used
 // only when they came from origin, pass checkResponsesReplayItems, and
@@ -1113,7 +1337,9 @@ func translateMessagesResponses(messages []types.Message, replayOrigin string) [
 // must equal the text blocks. A message the harness has since rewritten
 // therefore never replays stale items. Replayed items are semantically
 // identical to the stored JSON; json.Marshal compacts and HTML-escapes them.
-func replayedResponsesItems(msg types.Message, origin string) []responsesInput {
+// Stored tool search items take no part in the match and replay in place,
+// but only to a request with a hosted search (search non-nil).
+func replayedResponsesItems(msg types.Message, origin string, search *responsesToolSearch) []responsesInput {
 	if origin == "" {
 		return nil
 	}
@@ -1134,6 +1360,10 @@ func replayedResponsesItems(msg types.Message, origin string) []responsesInput {
 	var storedText strings.Builder
 	for _, item := range items {
 		switch item.Type {
+		case "tool_search_call", "tool_search_output":
+			if search == nil {
+				return nil
+			}
 		case "function_call":
 			if _, dup := storedCalls[item.CallID]; dup {
 				return nil
@@ -1200,17 +1430,25 @@ func sameToolArguments(stored string, input json.RawMessage) bool {
 // strict=true; the cache memoises rewrites within the adapter's
 // lifetime. A schema that fails the lint surfaces as an error here,
 // and the caller MUST NOT send a request.
-func translateToolsResponses(tools []types.ToolDefinition, strict, examples bool, model string, cache *strictSchemaCache) ([]responsesTool, error) {
+//
+// When toolSearch is true, every Deferred tool carries defer_loading and
+// the hosted tool search entry is appended last; otherwise Deferred is
+// ignored and every tool is sent loaded.
+func translateToolsResponses(tools []types.ToolDefinition, strict, examples, toolSearch bool, model string, cache *strictSchemaCache) ([]responsesTool, error) {
 	if len(tools) == 0 {
 		return nil, nil
 	}
-	out := make([]responsesTool, len(tools))
+	out := make([]responsesTool, len(tools), len(tools)+1)
 	for i, t := range tools {
 		entry := responsesTool{
 			Type:        "function",
 			Name:        t.Name,
 			Description: t.Description,
 			Parameters:  t.InputSchema,
+		}
+		if toolSearch && t.Deferred {
+			truthy := true
+			entry.DeferLoading = &truthy
 		}
 		if strict {
 			normalised, err := normalizeStrictWithCache(cache, model, t.Name, t.InputSchema)
@@ -1232,7 +1470,20 @@ func translateToolsResponses(tools []types.ToolDefinition, strict, examples bool
 		}
 		out[i] = entry
 	}
+	if toolSearch {
+		out = append(out, responsesTool{Type: responsesToolSearchType})
+	}
 	return out, nil
+}
+
+// responsesToolSearchActive reports whether a request uses OpenAI's hosted
+// tool search: the loop asked for it, the resolved quirks support it, and
+// at least one tool is deferred.
+func responsesToolSearchActive(params types.StreamParams, capability quirks.ToolSearchCapability) bool {
+	if !params.ToolSearch || !capability.Supported {
+		return false
+	}
+	return slices.ContainsFunc(params.Tools, func(t types.ToolDefinition) bool { return t.Deferred })
 }
 
 // buildResponsesRequest projects a StreamParams into the Responses API wire
@@ -1252,9 +1503,14 @@ func translateToolsResponses(tools []types.ToolDefinition, strict, examples bool
 // TODO(batch): consider returning json.RawMessage if endpoint-contract drift
 // becomes a maintenance burden.
 func buildResponsesRequest(params types.StreamParams, q quirks.ProviderQuirks, strictCache *strictSchemaCache, replayOrigin string) (responsesRequest, error) {
-	tools, err := translateToolsResponses(params.Tools, q.BehaviourFlags.OpenAI.StrictMode, q.ToolExamples.Supported, params.Model, strictCache)
+	toolSearch := responsesToolSearchActive(params, q.ToolSearch)
+	tools, err := translateToolsResponses(params.Tools, q.BehaviourFlags.OpenAI.StrictMode, q.ToolExamples.Supported, toolSearch, params.Model, strictCache)
 	if err != nil {
 		return responsesRequest{}, err
+	}
+	var search *responsesToolSearch
+	if toolSearch {
+		search = newResponsesToolSearch(tools)
 	}
 	effort := projectReasoningEffort(params.ReasoningEffort, q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels)
 	temperature := params.Temperature
@@ -1272,7 +1528,7 @@ func buildResponsesRequest(params types.StreamParams, q quirks.ProviderQuirks, s
 	return responsesRequest{
 		Model:             params.Model,
 		Instructions:      params.System,
-		Input:             translateMessagesResponses(params.Messages, replayOrigin),
+		Input:             translateMessagesResponses(params.Messages, replayOrigin, search),
 		Tools:             tools,
 		MaxTokens:         params.MaxTokens,
 		Temperature:       temperature,
@@ -1338,6 +1594,13 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 			slog.String("provider.type", "openai-responses"),
 			slog.String("provider.model", params.Model),
 			slog.Int("tool_choice", int(params.ToolChoice)),
+		)
+	}
+
+	if params.ToolSearch && !q.ToolSearch.Supported {
+		logger.DebugContext(ctx, "openai-responses tool search not supported; sending every tool loaded",
+			slog.String("provider.type", "openai-responses"),
+			slog.String("provider.model", params.Model),
 		)
 	}
 
@@ -1506,6 +1769,7 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 	calls := make(map[string]*responsesCallState)
 	replay := newResponsesReplayCapture(logger, model, replayOrigin, &o.replayWarnedNoEncrypted)
 	summary := &responsesSummaryParts{logger: logger}
+	searches := newResponsesToolSearches(logger)
 
 	scanner := bufio.NewScanner(resp.Body)
 	// Increase the buffer ceiling so a single SSE record carrying a large
@@ -1531,7 +1795,7 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 		if eventName == "" || data == "" {
 			return true
 		}
-		return o.dispatchEvent(ctx, eventName, data, calls, replay, summary, emitEvent)
+		return o.dispatchEvent(ctx, eventName, data, calls, replay, summary, searches, emitEvent)
 	}
 
 	for scanner.Scan() {
@@ -1626,6 +1890,137 @@ func (s *responsesSummaryParts) text(itemID string, index int, delta string) str
 	return delta
 }
 
+// responsesToolSearches turns hosted tool_search_call and
+// tool_search_output items into tool_search and tool_search_result
+// events. Hosted items carry a null call_id, so each output is paired with
+// the earliest unanswered call by item id.
+type responsesToolSearches struct {
+	logger  *slog.Logger
+	pending []string
+}
+
+// newResponsesToolSearches returns the search pairing state for one
+// response. A nil logger discards its debug records.
+func newResponsesToolSearches(logger *slog.Logger) *responsesToolSearches {
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+	return &responsesToolSearches{logger: logger}
+}
+
+// call returns the tool_search event for a completed tool_search_call.
+func (s *responsesToolSearches) call(ctx context.Context, item responsesOutputItem, outputIdx int) types.StreamEvent {
+	id := item.ID
+	if id == "" {
+		id = item.CallID
+	}
+	if id == "" {
+		id = fmt.Sprintf("tool_search_%d", outputIdx)
+	}
+	s.pending = append(s.pending, id)
+	return types.StreamEvent{
+		Type:  "tool_search",
+		ID:    id,
+		Name:  responsesToolSearchType,
+		Input: s.input(ctx, item.SearchArguments),
+	}
+}
+
+// input decodes a tool_search_call's arguments, which hosted search sends
+// as a JSON object. A string holding a JSON object is accepted too; any
+// other value yields no input.
+func (s *responsesToolSearches) input(ctx context.Context, raw json.RawMessage) map[string]any {
+	if len(raw) == 0 {
+		return nil
+	}
+	var input map[string]any
+	if json.Unmarshal(raw, &input) == nil {
+		return input
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil && json.Unmarshal([]byte(text), &input) == nil {
+		return input
+	}
+	s.logger.DebugContext(ctx, "openai-responses tool_search_call arguments are not a JSON object",
+		slog.String("provider.type", "openai-responses"),
+		slog.Int("arguments_len", len(raw)),
+	)
+	return nil
+}
+
+// output returns the tool_search_result event for a completed
+// tool_search_output, naming every function it loaded.
+func (s *responsesToolSearches) output(ctx context.Context, item responsesOutputItem) types.StreamEvent {
+	var id string
+	switch {
+	case len(s.pending) > 0:
+		id, s.pending = s.pending[0], s.pending[1:]
+	case item.CallID != "":
+		id = item.CallID
+	default:
+		id = item.ID
+	}
+	names, err := responsesLoadedToolNames(item.Tools)
+	if err != nil {
+		s.logger.DebugContext(ctx, "openai-responses tool_search_output tools undecodable; no tools loaded",
+			slog.String("provider.type", "openai-responses"),
+			slog.Int("tools_len", len(item.Tools)),
+		)
+	}
+	return types.StreamEvent{Type: "tool_search_result", ID: id, ToolReferences: names}
+}
+
+// responsesLoadedTool is one entry of a tool_search_output's tools array:
+// a function, or a namespace wrapping further entries.
+type responsesLoadedTool struct {
+	Type  string          `json:"type"`
+	Name  string          `json:"name"`
+	Tools json.RawMessage `json:"tools"`
+}
+
+// responsesMaxNamespaceDepth bounds how deep responsesLoadedToolNames
+// descends: the top-level array is depth 1 and a namespace's tools are
+// depth 2. Namespaces nested further are ignored without being decoded.
+const responsesMaxNamespaceDepth = 2
+
+// responsesLoadedToolNames returns the names of the functions in a
+// tool_search_output's tools array, flattening namespaces up to
+// responsesMaxNamespaceDepth, in order and without duplicates.
+func responsesLoadedToolNames(raw json.RawMessage) ([]string, error) {
+	var names []string
+	seen := make(map[string]bool)
+	var walk func(json.RawMessage, int) error
+	walk = func(raw json.RawMessage, depth int) error {
+		if len(raw) == 0 {
+			return nil
+		}
+		var entries []responsesLoadedTool
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			return err
+		}
+		for _, e := range entries {
+			switch e.Type {
+			case "function":
+				if e.Name != "" && !seen[e.Name] {
+					seen[e.Name] = true
+					names = append(names, e.Name)
+				}
+			case "namespace":
+				if depth < responsesMaxNamespaceDepth {
+					if err := walk(e.Tools, depth+1); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		return nil
+	}
+	if err := walk(raw, 1); err != nil {
+		return nil, err
+	}
+	return names, nil
+}
+
 // dispatchEvent handles a single completed SSE record. It returns false to
 // signal the caller to stop reading (terminal event or consumer cancelled),
 // true to continue.
@@ -1633,7 +2028,7 @@ func (s *responsesSummaryParts) text(itemID string, index int, delta string) str
 // `emit` returns false when the consumer has gone away (context cancelled);
 // every emit call site propagates that to abandon the stream rather than
 // pretending to keep going.
-func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data string, calls map[string]*responsesCallState, replay *responsesReplayCapture, summary *responsesSummaryParts, emit func(types.StreamEvent) bool) bool {
+func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data string, calls map[string]*responsesCallState, replay *responsesReplayCapture, summary *responsesSummaryParts, searches *responsesToolSearches, emit func(types.StreamEvent) bool) bool {
 	switch name {
 	case "response.created":
 		// Optional metadata; nothing to emit.
@@ -1786,7 +2181,13 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data s
 			}
 		}
 		replay.add(ctx, payload.OutputIndex, item.Type, payload.Item)
-		if item.Type != "function_call" {
+		switch item.Type {
+		case "function_call":
+		case "tool_search_call":
+			return emit(searches.call(ctx, item, payload.OutputIndex))
+		case "tool_search_output":
+			return emit(searches.output(ctx, item))
+		default:
 			return true
 		}
 		key := callKey(item.ID, payload.OutputIndex)

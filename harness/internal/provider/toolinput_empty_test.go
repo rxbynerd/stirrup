@@ -249,7 +249,7 @@ func TestTranslateMessagesAnthropic_EmptyToolInputBecomesObject(t *testing.T) {
 	for name, form := range emptyToolInputForms {
 		t.Run(name, func(t *testing.T) {
 			must := require.New(t)
-			out := translateMessagesAnthropic(zeroArgAssistantTurn(form), quirks.StructuredToolResultCapability{})
+			out := translateMessagesAnthropic(zeroArgAssistantTurn(form), quirks.StructuredToolResultCapability{}, false)
 
 			wire, err := json.Marshal(out)
 			must.NoError(err, "marshal request messages")
@@ -268,7 +268,7 @@ func TestTranslateMessagesAnthropic_NonToolBlocksOmitInput(t *testing.T) {
 		{Role: "user", Content: []types.ContentBlock{{Type: "tool_result", ToolUseID: "toolu_empty", Content: "clean"}}},
 	}
 
-	wire, err := json.Marshal(translateMessagesAnthropic(messages, quirks.StructuredToolResultCapability{}))
+	wire, err := json.Marshal(translateMessagesAnthropic(messages, quirks.StructuredToolResultCapability{}, false))
 	must.NoError(err, "marshal request messages")
 	must.NotContains(string(wire), `"input"`, "non-tool_use block carries an input key")
 }
@@ -295,7 +295,7 @@ func TestTranslateMessagesResponses_EmptyToolInputBecomesObjectArguments(t *test
 		t.Run(name, func(t *testing.T) {
 			must := require.New(t)
 			var args string
-			for _, item := range translateMessagesResponses(zeroArgAssistantTurn(form), "") {
+			for _, item := range translateMessagesResponses(zeroArgAssistantTurn(form), "", nil) {
 				if item.Type == "function_call" {
 					args = item.Arguments
 				}

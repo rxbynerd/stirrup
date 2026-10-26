@@ -138,6 +138,7 @@ type ProviderQuirks struct {
     StructuredToolResults StructuredToolResultCapability // accepts a non-string tool-result payload, and in which shape
     ParallelToolCalls     ParallelToolCallsCapability    // native parallel-tool-call control (#222)
     ToolExamples          ToolExamplesCapability         // accepts worked tool-input examples: the JSON-Schema `examples` keyword, or a native wire field when Native is set (#222)
+    ToolSearch            ToolSearchCapability           // native tool search for deferred tool definitions under lazy tool loading, and its Variant (#235)
 
     // Behaviour flags (per-adapter typed sub-structs).
     BehaviourFlags  ProviderBehaviourFlags
@@ -148,7 +149,7 @@ A **capability** is a top-level field rather than a per-adapter
 behaviour flag when it expresses a concept the loop reasons about
 uniformly across families even though each provider encodes it
 differently. `ToolChoice`, `StructuredToolResults`,
-`ParallelToolCalls`, and `ToolExamples` are the four: every family
+`ParallelToolCalls`, `ToolExamples`, and `ToolSearch` are the five: every family
 has *some* form of (or lack of) each, so modelling any of them under
 one provider's sub-struct would force the other adapters to reach
 across family boundaries to read it, which the behaviour-flag
@@ -466,6 +467,28 @@ test catch malformed paths at registry-build time.
 | `anthropic`         | `claude-fable-5*`  | Anthropic Claude Fable 5 / 5.1: same as `claude-opus-4-7*` |
 | `anthropic`         | `claude-mythos-5*` | Anthropic Claude Mythos 5: omit sampling params (same API surface as Fable 5); effort unprobed |
 | `anthropic`         | `claude-sonnet-5-5*`, `claude-opus-5-5*`, `claude-fable-5-1*`, `claude-mythos-5-1*` | `tool_choice` auto only (`any`/`tool` are a 400) |
+| `anthropic`         | `claude-opus-4-[5-8]*` | Anthropic Claude Opus 4.5–4.8: native BM25 tool search with `defer_loading` (documented, not probed) |
+| `anthropic`         | `claude-sonnet-4-[5-6]*` | Anthropic Claude Sonnet 4.5–4.6: native BM25 tool search with `defer_loading` (documented, not probed) |
+| `anthropic`         | `claude-haiku-4-5*` | Anthropic Claude Haiku 4.5: native BM25 tool search with `defer_loading` (documented, not probed) |
+| `anthropic`         | `claude-opus-5*`   | Anthropic Claude Opus 5 / 5.5: native BM25 tool search with `defer_loading` (documented, not probed) |
+| `anthropic`         | `claude-sonnet-5*` | Anthropic Claude Sonnet 5 / 5.5: native BM25 tool search with `defer_loading` (documented, not probed) |
+| `anthropic`         | `claude-haiku-5*`  | Anthropic Claude Haiku 5.5: native BM25 tool search with `defer_loading` (documented, not probed) |
+| `anthropic`         | `claude-fable-5*`  | Anthropic Claude Fable 5 / 5.1: native BM25 tool search with `defer_loading` (documented, not probed) |
+| `anthropic`         | `claude-mythos-5*` | Anthropic Claude Mythos 5 / 5.1: native BM25 tool search with `defer_loading` (documented, not probed) |
+| `openai-responses`  | `gpt-5.[4-9]*`     | OpenAI Responses gpt-5.4 and later 5.x: hosted `tool_search` with `defer_loading` (documented, not probed; see [providers.md](providers.md#hosted-tool-search)) |
+| `openai-responses`  | `gpt-6*`           | OpenAI Responses gpt-6 family: hosted `tool_search` with `defer_loading` (documented, not probed) |
+
+The ten tool search rules set `ToolSearchCapability`, which the loop
+reads under [lazy tool loading](configuration.md#lazy-tool-loading) to
+choose the provider's native search over the harness `tool_search`
+tool. They are positive allow-lists: Claude Opus 4.1 and earlier,
+Sonnet 4, Bedrock, Gemini, OpenAI Chat Completions and Responses models
+before gpt-5.4 match none of them and keep the harness search. Bedrock
+keeps the harness search because the adapter uses Converse, and
+Anthropic documents server-side tool search on Bedrock only through
+InvokeModel. The Anthropic rules select the `bm25` variant; the adapter
+also accepts `regex`. See [Anthropic tool search](providers.md#tool-search)
+for the Anthropic wire shape.
 
 `claude-opus-4-6*`, `claude-sonnet-4-6*`, and `claude-haiku-4-5*` get no
 sampling rule — those models still accept a non-default temperature — and

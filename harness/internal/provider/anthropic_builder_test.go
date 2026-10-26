@@ -89,6 +89,18 @@ func anthropicBuilderCases() []struct {
 				Messages:  thinkingReplayHistory(),
 			},
 		},
+		{
+			name:   "tool_search_replay",
+			params: anthropicToolSearchParams(anthropicToolSearchHistory(anthropicToolSearchLoadedResult("mcp_github_search_issues"))),
+		},
+		{
+			name: "tool_search_requested_on_unsupported_model",
+			params: func() types.StreamParams {
+				p := anthropicToolSearchParams(anthropicToolSearchHistory(anthropicToolSearchLoadedResult("mcp_github_search_issues")))
+				p.Model = "claude-sonnet-4-20250514"
+				return p
+			}(),
+		},
 	}
 }
 

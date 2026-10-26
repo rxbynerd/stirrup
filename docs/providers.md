@@ -256,6 +256,86 @@ ends with outcome `error` and the `provider stream failed` log line and
 transport `warning` carry the provider's error type. Like every
 failure after the stream opens, it is not retried.
 
+### Tool search
+
+Under [lazy tool loading](configuration.md#lazy-tool-loading) with the
+`auto` strategy, the Claude models listed in the configuration
+[model table](configuration.md#lazy-tool-loading) use Anthropic's
+server-side tool search
+([`ToolSearch` quirk](provider-quirks.md#3-wave-2-rules-builtinrules))
+instead of the harness `tool_search` tool. The feature is generally
+available and needs no beta header; the wire shape below is taken from
+Anthropic's documentation and is not probed.
+
+The adapter adds the search tool only when the request carries
+`ToolSearch`, the resolved model's `ToolSearch` capability is supported,
+and at least one tool is deferred. When `ToolSearch` is requested for a
+model without the capability, the adapter logs the downgrade at Debug
+and sends every tool loaded. The search tool goes first in `tools` and is
+never deferred, which satisfies the API's rule that not every tool may carry
+`defer_loading`. Every deferred definition is sent in full with
+`"defer_loading": true`, on every turn, loaded or not, so the tool
+list stays byte-stable for the prompt cache:
+
+```json
+"tools": [
+  {"type": "tool_search_tool_bm25_20251119", "name": "tool_search_tool_bm25"},
+  {"name": "read_file", "description": "…", "input_schema": {…}},
+  {"name": "mcp_github_search_issues", "description": "…", "input_schema": {…}, "defer_loading": true}
+]
+```
+
+The model's search streams as a `server_tool_use` block whose input
+arrives as `input_json_delta`; the result arrives whole on its
+`content_block_start`:
+
+```text
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"srvtoolu_01","name":"tool_search_tool_bm25"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"github issues\"}"}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_01","content":{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"mcp_github_search_issues"}]}}}
+```
+
+The adapter emits a `tool_search` stream event when the call block
+closes and a `tool_search_result` event carrying the referenced tool
+names when the result block closes. The loop records both in the
+assistant message, in stream order, and marks the referenced tools
+loaded. An empty `tool_references` array means the search matched
+nothing. A failed search carries `tool_search_tool_result_error` with
+an `error_code` (`invalid_tool_input`, `unavailable`,
+`too_many_requests`, or `execution_time_exceeded`) and an
+`error_message`; the adapter reports both, marks the event as failed,
+and the stream continues. The recorded `tool_search_result` block of a
+failed search holds the error code in `name` and the message in
+`content`, with `is_error` set. A result in any other shape loads
+nothing and is logged at Warn, because it leaves the loaded set out of
+step with the provider. The harness never sends a `tool_result` for a
+`srvtoolu_` call: the search runs on Anthropic's side and the turn's
+`stop_reason` is unaffected.
+
+On the next request both blocks are replayed in place, rebuilt in the
+exact shape the API returned, so the API keeps the referenced
+definitions expanded for the rest of the run. A failed search replays
+as a `tool_search_tool_result_error` with the recorded code and
+message, and with the code `unavailable` when none was recorded, since
+the API rejects an empty code. Only a call naming an Anthropic search
+tool (`tool_search_tool_bm25` or `tool_search_tool_regex`) and answered
+by a result in the same message is replayed; a search recorded from
+another provider, such as the OpenAI hosted `tool_search`, is dropped
+together with its result. When a request does not carry the search tool
+(the run routed this turn to a model without the capability, or nothing is
+deferred), every recorded search block is dropped and every tool is
+sent loaded; a message left empty by the drop is omitted.
+
+Batch turns build their request through the same code, so the native
+search is sent in a batch turn exactly as in a streamed one, and the
+batch response is decoded into the same events and blocks. The batch
+path is not probed against the live batch endpoint.
+
 ## AWS Bedrock
 
 **File:** `harness/internal/provider/bedrock.go`
@@ -377,7 +457,8 @@ format from Chat Completions:
 
 - Top-level `instructions` field (not a system message in the array).
 - Typed `input[]` items: `message`, `function_call`, `function_call_output`,
-  and replayed `reasoning` items.
+  replayed `reasoning` items, and `tool_search_call` /
+  `tool_search_output` items under [hosted tool search](#hosted-tool-search).
 - Flat tool schema.
 - `max_output_tokens` (not `max_tokens`).
 - Explicit `store: false`.
@@ -390,15 +471,17 @@ Selected explicitly via `provider.type: "openai-responses"`. There is
 would mask configuration errors.
 
 **Intentional exclusions:** OpenAI built-in tools (`web_search`,
-`file_search`, `computer_use`, `code_interpreter`) and server-side state
+`file_search`, `computer_use`, `code_interpreter`; hosted `tool_search`
+is the one exception, sent only under lazy tool loading) and server-side state
 via `previous_response_id`. The harness manages its own conversation
 history and does not delegate to server-side state.
 
 **Output replay.** With `store: false`, OpenAI documents that stateless
 reasoning models need every prior response output item resent. For the
 reasoning families (`o[1-9]*`, `gpt-5*` except `gpt-5-chat*`, and
-`gpt-6*`), the adapter captures each turn's `reasoning`, `message`, and
-`function_call` output items and replays them, as semantically identical
+`gpt-6*`), the adapter captures each turn's `reasoning`, `message`,
+`function_call`, `tool_search_call`, and `tool_search_output` output
+items and replays them, as semantically identical
 JSON, on later requests to the same model and endpoint, so reasoning
 items (with `encrypted_content`), item ids, `status`, and the assistant
 `phase` reach the model. Replay is all-or-nothing per turn: a turn whose
@@ -533,6 +616,84 @@ retried; the full classification is in
 the stream opens is never retried. These codes are documented in
 OpenAI's error-codes and misalignment-monitoring guides; they have not
 been probed against the live API.
+
+### Hosted tool search
+
+Under [lazy tool loading](configuration.md#lazy-tool-loading) with the
+`auto` strategy, `gpt-5.4` and later 5.x models and the `gpt-6*` family
+use OpenAI's hosted
+[tool search](https://developers.openai.com/api/docs/guides/tools-tool-search).
+The adapter sends it only when the loop asks for a native search, the
+resolved quirks advertise the `ToolSearch` capability, and at least one
+tool in the request is deferred. Every other model, every request the
+loop serves with the harness's own `tool_search` tool, and every request
+with nothing deferred gets no search entry and no `defer_loading`.
+
+The request lists every function tool as usual, adds
+`"defer_loading": true` to each deferred one, and appends the hosted
+search entry last, with no field other than its type. On the strict
+families `defer_loading` sits beside `strict: true`:
+
+```json
+"tools": [
+  {"type": "function", "name": "read_file", "description": "Read a file", "parameters": {...}, "strict": true},
+  {"type": "function", "name": "mcp_jira_create_issue", "description": "Create a Jira issue", "parameters": {...}, "strict": true, "defer_loading": true},
+  {"type": "tool_search"}
+]
+```
+
+The adapter sends flat top-level functions. With flat functions the model
+still sees each deferred function's name and description from the first
+turn; only the parameter schema is deferred, so the saving is smaller
+than on Anthropic. Operators who need deferred tools hidden entirely set
+`tools.lazyLoading.strategy: "harness"`, which keeps the names and
+descriptions out of the request until a search loads them.
+
+A search arrives as two output items ahead of the function call that
+uses a loaded tool: a `tool_search_call`, whose `arguments` is a JSON
+object (a `function_call` carries a string), and a `tool_search_output`,
+whose `tools` array holds the loaded definitions. The adapter emits them
+as a `tool_search` event (ID is the call item's `id`, because hosted
+items carry `"call_id": null`; a call without an `id` gets
+`tool_search_<output_index>`) and a `tool_search_result` event paired
+with the earliest unanswered call. The result names every function in
+`tools`, including functions inside a `namespace` entry (a namespace
+nested inside another is ignored); other entry types are ignored. A
+`namespace` field on a later `function_call` is ignored. A malformed search item produces an event with no input
+or no loaded tools rather than failing the turn. OpenAI documents no failure
+shape for hosted search, so the adapter never reports a failed search.
+
+**Replay.** On the reasoning families both items are captured with the
+turn's other output items and replay verbatim, in place. They take no
+part in the check that the stored items still match the persisted
+message, so a search never forces reconstruction. They replay only
+to a request that carries the hosted search entry; otherwise the turn
+is reconstructed without them. A reconstructed turn rebuilds each search
+as a `tool_search_call` and `tool_search_output` with
+`"execution": "server"`, `"call_id": null` and
+`"status": "completed"`: the call's `arguments` is the persisted search
+input, and the output's `tools` lists the request's own definitions of
+the loaded tools, each with `defer_loading: true`. This reconstruction
+is best effort. The adapter drops both items of a search, and still sends
+the function calls that follow, when the request has no hosted search,
+when the search was recorded by another provider (a call not named
+`tool_search`, such as an Anthropic `tool_search_tool_bm25` pair left by
+a router switch), when a loaded tool has no definition in the request,
+when the search failed, or when the call or its result is missing or
+repeated.
+
+**Batch.** Batch turns send the hosted search entry under the same
+conditions as streamed turns. A batch result is decoded by the same code
+as a streamed response, but batch turns never capture output items, so a
+hosted search from a batch turn is always replayed through the
+reconstruction above. Neither the batch request nor its replay has been
+probed against the live API.
+
+The request shape, the output items, verbatim replay and reconstruction
+all follow OpenAI's guide; none has been probed against the live API.
+Namespaces (grouping, for example, each MCP server's tools so the model
+sees only the group until it loads one) and client-executed search
+(`"execution": "client"`, answered by the harness) are not implemented.
 
 ## Google Gemini via Vertex AI
 

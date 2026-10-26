@@ -124,6 +124,8 @@ guard round-trip:
 ```text
 tool_use block from the model
   1. resolve the tool name          unknown          -> unknown_tool
+                                    deferred and not -> tool_not_loaded
+                                    yet loaded
   2. strip __proto__ / constructor  keys dropped     -> prototype_pollution_blocked event
   3. JSON-schema validation         invalid          -> schema_validation_failed
   4. tool-input tripwires           match            -> security_guard_denied
@@ -132,6 +134,12 @@ tool_use block from the model
   6. PermissionPolicy               deny             -> permission_denied
   7. handler / executor
 ```
+
+A call to a tool that [lazy tool loading](configuration.md#lazy-tool-loading)
+defers and no search has loaded stops at step 1, before the `pre_tool`
+guard and the permission policy see it. Like any failed call, repeated
+rejections count toward the stall detector's limit of consecutive
+failures.
 
 Step 4 is `security.GuardToolCall`: network-exfiltration utilities
 and shell-escape syntax in command fields, credential paths, writes

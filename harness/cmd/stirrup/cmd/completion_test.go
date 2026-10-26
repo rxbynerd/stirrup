@@ -104,6 +104,7 @@ func TestFlagCompletion_EnumValues(t *testing.T) {
 		{flag: "container-runtime", want: types.ValidExecutorRuntimeValues()},
 		{flag: "code-scanner", want: types.ValidCodeScannerTypeValues()},
 		{flag: "guardrail", want: types.ValidGuardRailTypeValues()},
+		{flag: "lazy-tools-strategy", want: types.ValidLazyToolStrategyValues()},
 		{flag: "log-level", want: []string{"debug", "error", "info", "warn"}},
 		{flag: "api-key-header", want: []string{"Authorization", "api-key"}},
 		// --output is harness-only: a hand-rolled RegisterFlagCompletionFunc

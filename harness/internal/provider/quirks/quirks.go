@@ -68,6 +68,12 @@ type ProviderQuirks struct {
 	// its Schema dialect rejects `examples`.
 	ToolExamples ToolExamplesCapability `json:"toolExamples"`
 
+	// ToolSearch declares whether the resolved (provider, model) has a
+	// native tool search for deferred tool definitions. Top-level because
+	// lazy tool loading is a cross-provider concept. The zero value
+	// advertises no support, so the loop serves the search itself.
+	ToolSearch ToolSearchCapability `json:"toolSearch"`
+
 	// ContextWindow is the resolved model's context window in tokens,
 	// input and output together. Zero means no entry: the loop falls back
 	// to contextStrategy.maxTokens or its default window. When both are

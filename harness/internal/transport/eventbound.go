@@ -20,11 +20,17 @@ const maxEventFieldBytes = 256 << 10
 // MCP server or the control plane, so none of them is trusted to be short.
 const maxEventIdentifierBytes = 1 << 10
 
+// maxEventToolEntries bounds the tool list on a tools_loaded event. A
+// search loads at most the configured maximum, so the cap only guards a
+// misbehaving producer.
+const maxEventToolEntries = 256
+
 const eventTruncationFmt = "\n[truncated by harness for the control stream: %d of %d bytes shown]"
 
 // boundEventFields caps the event fields that carry tool payloads,
-// appended user text, reasoning and messages, and every name, ID and stop
-// reason. The model's view is bounded separately by tools.maxResultBytes;
+// appended user text, reasoning and messages, every name, ID, source and
+// stop reason, and the tools_loaded tool list (entry count and each
+// entry). The model's view is bounded separately by tools.maxResultBytes;
 // this cap protects the control stream when that budget is raised, a tool
 // input is large, a user_message carries a long prompt, a warning quotes
 // model output, or a provider delivers a whole reasoning block as one
@@ -36,6 +42,7 @@ func boundEventFields(event *types.HarnessEvent) {
 	event.RequestID = capEventIdentifier(event.RequestID)
 	event.ToolName = capEventIdentifier(event.ToolName)
 	event.StopReason = capEventIdentifier(event.StopReason)
+	event.Source = capEventIdentifier(event.Source)
 	event.Message = capEventText(event.Message)
 	switch event.Type {
 	case "tool_result":
@@ -44,7 +51,25 @@ func boundEventFields(event *types.HarnessEvent) {
 		event.Text = capEventText(event.Text)
 	case "tool_call":
 		event.Input = capEventInput(event.Input)
+	case "tools_loaded":
+		event.Input = capEventInput(event.Input)
+		event.Tools = capEventIdentifiers(event.Tools)
 	}
+}
+
+// capEventIdentifiers caps every entry and the length of a name list.
+func capEventIdentifiers(names []string) []string {
+	if names == nil {
+		return nil
+	}
+	if len(names) > maxEventToolEntries {
+		names = names[:maxEventToolEntries]
+	}
+	out := make([]string, len(names))
+	for i, name := range names {
+		out[i] = capEventIdentifier(name)
+	}
+	return out
 }
 
 // capEventText keeps the head of s on a UTF-8 boundary, marker included,
