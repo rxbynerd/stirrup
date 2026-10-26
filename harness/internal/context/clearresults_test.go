@@ -158,6 +158,24 @@ func TestClearToolResults_ExcludedToolsNeverCleared(t *testing.T) {
 	}
 }
 
+func TestClearToolResults_LeavesToolSearchResultsAlone(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	msgs := toolHistory(6, 2000)
+	search := []types.ContentBlock{
+		{Type: "tool_search", ID: "srvtoolu_1", Name: "tool_search_tool_bm25", Input: json.RawMessage(`{"query":"github"}`)},
+		{Type: "tool_search_result", ToolUseID: "srvtoolu_1", ToolReferences: []string{"mcp_github_create_issue"}},
+	}
+	msgs[1].Content = append(append([]types.ContentBlock(nil), search...), msgs[1].Content...)
+	s := NewClearToolResultsStrategy(ClearToolResultsConfig{Keep: 0, ClearAtLeast: 1})
+
+	out := mustPrepare(t, s, msgs, clearBudget(msgs, 0, 2000))
+
+	must.True(clearedIDs(out)["call_0"], "the budget does not clear the result beside the search")
+	must.Equal(msgs[1].Content[:2], out[1].Content[:2])
+	check.Equal(search, msgs[1].Content[:2], "the history is not modified")
+}
+
 func TestClearToolResults_UnseenResultsNeverCleared(t *testing.T) {
 	check := assert.New(t)
 	msgs := toolHistory(4, 2000)
