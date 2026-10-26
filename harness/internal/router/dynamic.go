@@ -66,3 +66,9 @@ func (r *DynamicRouter) Select(_ context.Context, rc RouterContext) ModelSelecti
 
 	return r.defaultSel
 }
+
+// Selections returns every selection the router can make: the default,
+// the cheap and the expensive one.
+func (r *DynamicRouter) Selections() []ModelSelection {
+	return []ModelSelection{r.defaultSel, r.cheapSel, r.expensiveSel}
+}

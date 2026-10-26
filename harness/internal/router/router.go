@@ -29,3 +29,29 @@ type ModelSelection struct {
 type ModelRouter interface {
 	Select(ctx context.Context, rc RouterContext) ModelSelection
 }
+
+// selectionLister is implemented by a router whose selection varies with
+// the mode or with turn signals, so every selection it can make is
+// knowable up front.
+type selectionLister interface {
+	Selections() []ModelSelection
+}
+
+// Candidates returns the distinct selections r can make for a run in mode:
+// the selection for the mode, then any others the router can make, such as
+// another mode's or one a turn signal switches to.
+func Candidates(ctx context.Context, r ModelRouter, mode string) []ModelSelection {
+	all := []ModelSelection{r.Select(ctx, RouterContext{Mode: mode})}
+	if lister, ok := r.(selectionLister); ok {
+		all = append(all, lister.Selections()...)
+	}
+	seen := make(map[ModelSelection]bool, len(all))
+	distinct := all[:0]
+	for _, sel := range all {
+		if !seen[sel] {
+			seen[sel] = true
+			distinct = append(distinct, sel)
+		}
+	}
+	return distinct
+}

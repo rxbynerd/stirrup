@@ -125,3 +125,10 @@ func TestPerModeRouter_DoesNotAliasModeMap(t *testing.T) {
 		"router was affected by mutation of input map",
 	)
 }
+
+func TestPerModeRouter_SelectionsListsTheDefaultThenEachModeByName(t *testing.T) {
+	must := require.New(t)
+	r := NewPerModeRouter(defaultSel, map[string]ModelSelection{"review": cheapSel, "planning": expensiveSel})
+
+	must.Equal([]ModelSelection{defaultSel, expensiveSel, cheapSel}, r.Selections())
+}

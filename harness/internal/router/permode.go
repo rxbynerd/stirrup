@@ -1,6 +1,10 @@
 package router
 
-import "context"
+import (
+	"context"
+	"maps"
+	"slices"
+)
 
 // PerModeRouter maps each run mode to a specific provider+model pair, falling
 // back to a default selection for modes not explicitly configured.
@@ -29,4 +33,14 @@ func (r *PerModeRouter) Select(_ context.Context, rc RouterContext) ModelSelecti
 		return sel
 	}
 	return r.defaultSelection
+}
+
+// Selections returns every selection the router can make: the default, then
+// each configured mode's in mode name order.
+func (r *PerModeRouter) Selections() []ModelSelection {
+	all := []ModelSelection{r.defaultSelection}
+	for _, mode := range slices.Sorted(maps.Keys(r.modeMap)) {
+		all = append(all, r.modeMap[mode])
+	}
+	return all
 }
