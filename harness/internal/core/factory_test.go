@@ -2296,6 +2296,36 @@ func TestBuildProvider_OpenAIResponsesWithRetryConfig(t *testing.T) {
 	must.Equal(5, adapter.RetryPolicy.MaxAttempts)
 }
 
+func TestBuildProvider_OpenAIAdaptersCarryTheEffectiveEndpointProfile(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  types.ProviderConfig
+		want string
+	}{
+		{"responses default endpoint", types.ProviderConfig{Type: "openai-responses"}, types.EndpointProfileOpenAI},
+		{"responses derived generic", types.ProviderConfig{Type: "openai-responses", BaseURL: "https://gateway.example.com/v1"}, types.EndpointProfileGeneric},
+		{"responses declared openai relay", types.ProviderConfig{Type: "openai-responses", BaseURL: "https://relay.example.com/v1", EndpointProfile: types.EndpointProfileOpenAI}, types.EndpointProfileOpenAI},
+		{"compatible declared azure", types.ProviderConfig{Type: "openai-compatible", BaseURL: "https://example.openai.azure.com/openai/v1", EndpointProfile: types.EndpointProfileAzureOpenAI}, types.EndpointProfileAzureOpenAI},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			secrets := &stubSecretStore{secrets: map[string]string{"secret://OPENAI_KEY": "sk-test"}}
+			cfg := tc.cfg
+			cfg.APIKeyRef = "secret://OPENAI_KEY"
+			prov, err := buildProvider(context.Background(), cfg, secrets)
+			must.NoError(err)
+			switch adapter := prov.(type) {
+			case *provider.OpenAIResponsesAdapter:
+				must.Equal(tc.want, adapter.EndpointProfile)
+			case *provider.OpenAICompatibleAdapter:
+				must.Equal(tc.want, adapter.EndpointProfile)
+			default:
+				must.Failf("unexpected adapter", "buildProvider type = %T", prov)
+			}
+		})
+	}
+}
+
 // The factory wires the Z.ai compat rules into the adapter's registry, so GLM
 // model IDs resolve through them.
 func TestBuildProvider_OpenAICompatibleWithCompatProfile_ZAI(t *testing.T) {
