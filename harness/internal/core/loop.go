@@ -1007,7 +1007,7 @@ func (l *AgenticLoop) runInnerLoop(
 			Model:            selection.Model,
 			System:           systemPrompt,
 			Messages:         l.presentToolReferences(preparedMessages),
-			Tools:            toolDefs,
+			Tools:            l.undeferUnreferenced(toolDefs, search, preparedMessages),
 			MaxTokens:        responseReserve,
 			Temperature:      temperature,
 			ReasoningEffort:  config.ReasoningEffort,
@@ -1057,6 +1057,7 @@ func (l *AgenticLoop) runInnerLoop(
 				return messages, prepOutcome, finalAssistantText, nil
 			}
 			params.Messages = l.presentToolReferences(preparedMessages)
+			params.Tools = l.undeferUnreferenced(toolDefs, search, preparedMessages)
 		}
 		if attempt.err != nil {
 			chat.End(trace.ChatSpanEnd{Summary: attempt.summary, Record: sentRecord(turn, selection.Model, params), ErrorType: attempt.errorType, ErrorText: attempt.errText})

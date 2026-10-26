@@ -468,6 +468,43 @@ func TestResponsesReconstruct_FunctionCallCarriesNamespace(t *testing.T) {
 	}
 }
 
+func TestResponsesReconstruct_UndeferredFlatToolAfterRebuiltOutputKeepsNoNamespace(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	params := namespacedToolSearchParams()
+	flat := jiraCreateTool
+	flat.Name = "mcp_jira_list_projects"
+	flat.Deferred = false
+	params.Tools = append(params.Tools, flat)
+	params.Messages = responsesToolSearchHistory(append(responsesToolSearchTurnBlocks(),
+		types.ContentBlock{Type: "tool_use", ID: "call_2", Name: "mcp_jira_list_projects", Input: json.RawMessage(`{}`)}))
+
+	req, err := buildResponsesRequest(params, responsesToolSearchQuirks(true), nil, "")
+	must.NoError(err)
+	body, err := json.Marshal(req)
+	must.NoError(err)
+
+	var outputs []string
+	namespaces := map[string]any{}
+	for _, raw := range requestInput(t, body) {
+		var item map[string]any
+		must.NoError(json.Unmarshal(raw, &item))
+		switch item["type"] {
+		case "tool_search_output":
+			outputs = append(outputs, string(raw))
+		case "function_call":
+			name, ok := item["name"].(string)
+			must.True(ok)
+			namespaces[name] = item["namespace"]
+		}
+	}
+	must.Len(outputs, 1)
+	check.NotContains(outputs[0], "mcp_jira_list_projects", "an un-deferred tool is never part of a rebuilt output")
+	check.Equal("mcp_jira", namespaces["mcp_jira_create_issue"])
+	check.Contains(namespaces, "mcp_jira_list_projects")
+	check.Nil(namespaces["mcp_jira_list_projects"])
+}
+
 func TestResponsesReconstruct_ToolSearchOutputUsesNamespace(t *testing.T) {
 	must := require.New(t)
 	params := namespacedToolSearchParams()

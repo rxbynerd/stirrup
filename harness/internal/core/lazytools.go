@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
@@ -63,6 +64,87 @@ func lazySearchFor(loader *tool.LazyLoader, capability quirks.ToolSearchCapabili
 // presented as name.
 func (l *AgenticLoop) deferredToolLoaded(name string) bool {
 	return l.LazyTools != nil && l.LazyTools.Loaded(l.LazyTools.InternalID(name))
+}
+
+// undeferUnreferenced returns toolDefs for a native-search request whose
+// history is prepared, with every loaded deferred tool that no search
+// result in prepared references sent like an eager tool: without Deferred
+// or Namespace. Only a result answering a call to the turn's native search
+// tool counts, since the provider drops search blocks from another
+// provider's tool. Nothing is un-deferred while prepared ends on an
+// unanswered call to that tool, a paused turn's continuation: the search
+// tool must stay on the request to answer it. prepared must still carry
+// internal IDs. toolDefs is not modified; it is returned as-is when nothing
+// changes.
+func (l *AgenticLoop) undeferUnreferenced(toolDefs []types.ToolDefinition, search lazySearch, prepared []types.Message) []types.ToolDefinition {
+	if l.LazyTools == nil || !search.native || endsOnUnansweredSearch(prepared, search.tool) {
+		return toolDefs
+	}
+	referenced := nativeSearchReferences(prepared, search.tool)
+	var out []types.ToolDefinition
+	for i, def := range toolDefs {
+		if !def.Deferred {
+			continue
+		}
+		id := l.LazyTools.InternalID(def.Name)
+		if referenced[id] || !l.LazyTools.Loaded(id) {
+			continue
+		}
+		if out == nil {
+			out = slices.Clone(toolDefs)
+		}
+		out[i].Deferred = false
+		out[i].Namespace, out[i].NamespaceDescription = "", ""
+	}
+	if out == nil {
+		return toolDefs
+	}
+	return out
+}
+
+// endsOnUnansweredSearch reports whether the last message holds a
+// tool_search call named searchTool that no tool_search_result in that
+// message answers.
+func endsOnUnansweredSearch(messages []types.Message, searchTool string) bool {
+	if len(messages) == 0 {
+		return false
+	}
+	content := messages[len(messages)-1].Content
+	answered := make(map[string]bool)
+	for _, b := range content {
+		if b.Type == "tool_search_result" {
+			answered[b.ToolUseID] = true
+		}
+	}
+	return slices.ContainsFunc(content, func(b types.ContentBlock) bool {
+		return b.Type == "tool_search" && b.Name == searchTool && !answered[b.ID]
+	})
+}
+
+// nativeSearchReferences returns the tools referenced by the successful
+// tool_search_result blocks in messages that answer, in the same message,
+// a tool_search call named searchTool. Its result must contain every
+// (call, result) pair the Responses adapter rebuilds into a
+// tool_search_output, so an un-deferred tool never appears inside one.
+func nativeSearchReferences(messages []types.Message, searchTool string) map[string]bool {
+	referenced := make(map[string]bool)
+	for _, m := range messages {
+		calls := make(map[string]bool)
+		for _, b := range m.Content {
+			if b.Type == "tool_search" && b.ID != "" && b.Name == searchTool {
+				calls[b.ID] = true
+			}
+		}
+		for _, b := range m.Content {
+			if b.Type != "tool_search_result" || b.IsError || !calls[b.ToolUseID] {
+				continue
+			}
+			for _, id := range b.ToolReferences {
+				referenced[id] = true
+			}
+		}
+	}
+	return referenced
 }
 
 // presentToolReferences returns messages with tool_search_result
