@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -117,7 +118,7 @@ func TestFabricateStream_AnthropicTextAndToolUse(t *testing.T) {
 	}`)
 
 	ch := make(chan types.StreamEvent, 8)
-	fabricateStream(ch, response, "anthropic")
+	fabricateStream(ch, response, "anthropic", nil)
 	close(ch)
 
 	var got []types.StreamEvent
@@ -212,7 +213,7 @@ func TestFabricateStream_AnthropicToolSearch(t *testing.T) {
 			}`)
 
 			ch := make(chan types.StreamEvent, 8)
-			fabricateStream(ch, response, "anthropic")
+			fabricateStream(ch, response, "anthropic", nil)
 			close(ch)
 			var got []types.StreamEvent
 			for ev := range ch {
@@ -246,6 +247,63 @@ func TestFabricateStream_AnthropicToolSearch(t *testing.T) {
 			check.Equal(tc.wantBlock, content[2])
 		})
 	}
+}
+
+// TestFabricateStream_AnthropicPauseTurn pins that a batch response paused
+// in its server tool loop keeps the pause_turn stop reason and the pending
+// search call, as the streaming path does.
+func TestFabricateStream_AnthropicPauseTurn(t *testing.T) {
+	must := require.New(t)
+	response := []byte(`{
+		"content": [
+			{"type": "server_tool_use", "id": "srvtoolu_1", "name": "tool_search_tool_bm25", "input": {"query": "github"}},
+			{"type": "tool_search_tool_result", "tool_use_id": "srvtoolu_1", "content": {"type": "tool_search_tool_search_result", "tool_references": []}},
+			{"type": "server_tool_use", "id": "srvtoolu_2", "name": "tool_search_tool_bm25", "input": {"query": "jira"}}
+		],
+		"stop_reason": "pause_turn",
+		"usage": {"output_tokens": 12}
+	}`)
+
+	ch := make(chan types.StreamEvent, 8)
+	fabricateStream(ch, response, "anthropic", nil)
+	close(ch)
+	var got []types.StreamEvent
+	for ev := range ch {
+		got = append(got, ev)
+	}
+
+	must.Equal([]string{"tool_search", "tool_search_result", "tool_search", "message_complete"}, eventTypes(got))
+	must.Equal("pause_turn", got[3].StopReason)
+	must.Len(got[3].Content, 3)
+	must.Equal(types.ContentBlock{
+		Type:  "tool_search",
+		ID:    "srvtoolu_2",
+		Name:  "tool_search_tool_bm25",
+		Input: json.RawMessage(`{"query": "jira"}`),
+	}, got[3].Content[2])
+}
+
+// TestAnthropicBatch_PauseTurnRequestShape pins that a batch request
+// continuing a paused turn replays the pending search call as the last
+// block of the final assistant message, as a streamed request does.
+func TestAnthropicBatch_PauseTurnRequestShape(t *testing.T) {
+	must := require.New(t)
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "anthropic", "run-test")
+	body, _, err := a.marshalRequestBody(t.Context(), anthropicToolSearchParams([]types.Message{
+		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "find the open bug"}}},
+		{Role: "assistant", Content: []types.ContentBlock{
+			{Type: "tool_search", ID: "srvtoolu_1", Name: "tool_search_tool_bm25", Input: json.RawMessage(`{"query":"github"}`)},
+			anthropicToolSearchLoadedResult(),
+			{Type: "tool_search", ID: "srvtoolu_2", Name: "tool_search_tool_bm25", Input: json.RawMessage(`{"query":"jira"}`)},
+		}},
+	}))
+	must.NoError(err, "marshalRequestBody")
+
+	must.Equal([]string{
+		`{"type":"server_tool_use","id":"srvtoolu_1","name":"tool_search_tool_bm25","input":{"query":"github"}}`,
+		`{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_1","content":{"type":"tool_search_tool_search_result","tool_references":[]}}`,
+		`{"type":"server_tool_use","id":"srvtoolu_2","name":"tool_search_tool_bm25","input":{"query":"jira"}}`,
+	}, anthropicToolSearchBlockStrings(assistantWireBlocks(t, body, 1)))
 }
 
 // TestFabricateStream_AnthropicToolSearch_DoesNotLogToDefaultHandler pins
@@ -299,7 +357,7 @@ func TestFabricateStream_OpenAIChatCompletions(t *testing.T) {
 	}`)
 
 	ch := make(chan types.StreamEvent, 8)
-	fabricateStream(ch, response, "openai-compatible")
+	fabricateStream(ch, response, "openai-compatible", nil)
 	close(ch)
 
 	var got []types.StreamEvent
@@ -333,7 +391,7 @@ func TestFabricateStream_OpenAIChatCompletions_TextOnly(t *testing.T) {
 		"usage": {"completion_tokens": 1}
 	}`)
 	ch := make(chan types.StreamEvent, 4)
-	fabricateStream(ch, response, "openai-compatible")
+	fabricateStream(ch, response, "openai-compatible", nil)
 	close(ch)
 	var got []types.StreamEvent
 	for ev := range ch {
@@ -353,7 +411,7 @@ func TestFabricateStream_OpenAIChatCompletions_TextOnly(t *testing.T) {
 func TestFabricateStream_OpenAIChatCompletions_NoChoices(t *testing.T) {
 	must := require.New(t)
 	ch := make(chan types.StreamEvent, 1)
-	fabricateStream(ch, []byte(`{"choices":[]}`), "openai-compatible")
+	fabricateStream(ch, []byte(`{"choices":[]}`), "openai-compatible", nil)
 	close(ch)
 	got := <-ch
 	must.Equal("error", got.Type, "expected error event, got %+v", got)
@@ -378,7 +436,7 @@ func TestFabricateStream_OpenAIResponses(t *testing.T) {
 	}`)
 
 	ch := make(chan types.StreamEvent, 8)
-	fabricateStream(ch, response, "openai-responses")
+	fabricateStream(ch, response, "openai-responses", nil)
 	close(ch)
 	var got []types.StreamEvent
 	for ev := range ch {
@@ -410,7 +468,7 @@ func TestFabricateStream_OpenAIResponses_Incomplete(t *testing.T) {
 		"usage": {"output_tokens": 64}
 	}`)
 	ch := make(chan types.StreamEvent, 4)
-	fabricateStream(ch, response, "openai-responses")
+	fabricateStream(ch, response, "openai-responses", nil)
 	close(ch)
 	var got []types.StreamEvent
 	for ev := range ch {
@@ -427,7 +485,7 @@ func TestFabricateStream_OpenAIResponses_Incomplete(t *testing.T) {
 func TestBatchAdapter_marshalRequestBody_OpenAICompatible(t *testing.T) {
 	must := require.New(t)
 	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "run-test")
-	body, err := a.marshalRequestBody(types.StreamParams{
+	body, _, err := a.marshalRequestBody(t.Context(), types.StreamParams{
 		Model:     "gpt-4o-mini",
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
 		MaxTokens: 256,
@@ -450,7 +508,7 @@ func TestBatchAdapter_marshalRequestBody_AnthropicSendsNoCacheControl(t *testing
 	must.True(quirks.DefaultRegistry().Resolve("anthropic", model).BehaviourFlags.Anthropic.PromptCaching,
 		"precondition: registry must enable PromptCaching for %s", model)
 	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "anthropic", "run-test")
-	body, err := a.marshalRequestBody(types.StreamParams{
+	body, _, err := a.marshalRequestBody(t.Context(), types.StreamParams{
 		Model:     model,
 		System:    "sys",
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
@@ -493,7 +551,7 @@ func TestBatchAdapter_MarshalUsesInjectedRegistry(t *testing.T) {
 	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "run-test")
 	a.Registry = quirks.NewRegistry([]quirks.Rule{customRule})
 
-	body, err := a.marshalRequestBody(types.StreamParams{
+	body, _, err := a.marshalRequestBody(t.Context(), types.StreamParams{
 		Model:     "synthetic-foo",
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
 		MaxTokens: 256,
@@ -515,13 +573,57 @@ func TestBatchAdapter_MarshalFallsBackToDefaultRegistryWhenNil(t *testing.T) {
 	must := require.New(t)
 	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "run-test")
 	// Registry intentionally left nil.
-	body, err := a.marshalRequestBody(types.StreamParams{
+	body, _, err := a.marshalRequestBody(t.Context(), types.StreamParams{
 		Model:     "o1-mini", // matches the builtin reasoning-class rule
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
 		MaxTokens: 256,
 	})
 	must.NoError(err, "marshalRequestBody")
 	must.Contains(string(body), `"max_completion_tokens"`, "nil-registry fallback failed: %s", body)
+}
+
+// TestBatchAdapter_marshalRequestBody_StrictFallbackWarns pins that a batch
+// request sends a non-normalisable tool with strict:false and reports it
+// through the inner adapter's logger, as the streaming path does.
+func TestBatchAdapter_marshalRequestBody_StrictFallbackWarns(t *testing.T) {
+	cases := []struct {
+		name     string
+		provType string
+		inner    func(logger *slog.Logger) ProviderAdapter
+	}{
+		{"openai-compatible", "openai-compatible", func(logger *slog.Logger) ProviderAdapter {
+			a := NewOpenAICompatibleAdapter(staticBearer("k"), "http://unused.invalid", OpenAIAuthConfig{}, RetryPolicy{})
+			a.Logger = logger
+			return a
+		}},
+		{"openai-responses", "openai-responses", func(logger *slog.Logger) ProviderAdapter {
+			a := NewOpenAIResponsesAdapter(staticBearer("k"), "http://unused.invalid", OpenAIAuthConfig{})
+			a.Logger = logger
+			return a
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
+			var logs bytes.Buffer
+			a := NewBatchAdapter(tc.inner(slog.New(slog.NewJSONHandler(&logs, nil))), &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, tc.provType, "run-test")
+
+			params := effortParams("gpt-5", "", false)
+			params.Tools = strictFallbackTools()
+			body, _, err := a.marshalRequestBody(t.Context(), params)
+			must.NoError(err)
+
+			wire := wireTools(t, body)
+			check.Equal(true, wire["search"].Strict)
+			check.Equal(false, wire["mcp_lookup"].Strict)
+
+			warns := strictFallbackWarns(t, &logs)
+			must.Len(warns, 1)
+			check.Equal(tc.provType, warns[0]["provider.type"])
+			check.Equal("mcp_lookup", warns[0]["tool.name"])
+		})
+	}
 }
 
 // TestBatchAdapter_marshalRequestBody_OpenAIResponses pins the
@@ -531,7 +633,7 @@ func TestBatchAdapter_MarshalFallsBackToDefaultRegistryWhenNil(t *testing.T) {
 func TestBatchAdapter_marshalRequestBody_OpenAIResponses(t *testing.T) {
 	must := require.New(t)
 	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-responses", "run-test")
-	body, err := a.marshalRequestBody(types.StreamParams{
+	body, _, err := a.marshalRequestBody(t.Context(), types.StreamParams{
 		Model:     "gpt-4o-mini",
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
 		MaxTokens: 256,
@@ -568,7 +670,7 @@ func TestBatchAdapter_marshalRequestBody_OpenAIResponsesReasoningParity(t *testi
 				[]types.ContentBlock{{Type: "tool_use", ID: "call_1", Name: "read_file", Input: json.RawMessage(`{"path":"a.go"}`)}},
 				`{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"enc-batch"}`,
 				`{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read_file","arguments":"{\"path\":\"a.go\"}","status":"completed"}`)
-			body, err := a.marshalRequestBody(types.StreamParams{
+			body, _, err := a.marshalRequestBody(t.Context(), types.StreamParams{
 				Model: tc.model,
 				Messages: []types.Message{
 					replayUserPrompt,
@@ -612,7 +714,7 @@ func TestFabricateStream_OpenAIResponses_CarriesNoReplayFields(t *testing.T) {
 		]
 	}`)
 	ch := make(chan types.StreamEvent, 4)
-	fabricateStream(ch, response, "openai-responses")
+	fabricateStream(ch, response, "openai-responses", nil)
 	close(ch)
 	sawComplete := false
 	for ev := range ch {
@@ -719,7 +821,7 @@ func TestDeriveOpenAIResponsesStopReason_MapsStatusAndReason(t *testing.T) {
 func TestFabricateStream_UnsupportedProviderEmitsError(t *testing.T) {
 	must := require.New(t)
 	ch := make(chan types.StreamEvent, 1)
-	fabricateStream(ch, []byte(`{}`), "bedrock")
+	fabricateStream(ch, []byte(`{}`), "bedrock", nil)
 	close(ch)
 	got := <-ch
 	must.Equal("error", got.Type)
@@ -1099,7 +1201,7 @@ func TestFabricateStream_AnthropicDecodeError(t *testing.T) {
 			{"type": "tool_use", "id": "tu_bad", "name": "read_file", "input": {"path": "/etc/hosts`)
 
 	ch := make(chan types.StreamEvent, 4)
-	fabricateStream(ch, response, "anthropic")
+	fabricateStream(ch, response, "anthropic", nil)
 	close(ch)
 
 	var sawError bool
@@ -2115,7 +2217,7 @@ func TestBatchAdapter_marshalRequestBody_AnthropicInputExamples(t *testing.T) {
 			Presentation: &types.ToolPresentation{InputExamples: []json.RawMessage{json.RawMessage(`{"x":"hi"}`)}},
 		}},
 	}
-	body, err := a.marshalRequestBody(params)
+	body, _, err := a.marshalRequestBody(t.Context(), params)
 	must.NoError(err)
 	var req struct {
 		Tools []struct {
@@ -2144,11 +2246,11 @@ func TestBatchAdapter_marshalRequestBody_AnthropicEffortAllowList(t *testing.T) 
 		MaxTokens:       256,
 		ReasoningEffort: "high",
 	}
-	body, err := a.marshalRequestBody(params)
+	body, _, err := a.marshalRequestBody(t.Context(), params)
 	must.NoError(err)
 	must.Contains(string(body), `"output_config":{"effort":"high"}`)
 
 	params.ReasoningEffort = "minimal"
-	_, err = a.marshalRequestBody(params)
+	_, _, err = a.marshalRequestBody(t.Context(), params)
 	must.Error(err, "reasoningEffort minimal on claude-sonnet-5-5 should be rejected")
 }

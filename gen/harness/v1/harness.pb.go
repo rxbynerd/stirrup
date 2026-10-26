@@ -6328,8 +6328,8 @@ type LazyToolLoadingConfig struct {
 	// provider's native tool search where the harness's quirks registry
 	// advertises one (Anthropic tool search, OpenAI Responses hosted
 	// tool_search) and the harness's own "tool_search" tool otherwise;
-	// "harness" always uses the harness tool, which also hides deferred
-	// tools' names and descriptions until they are loaded.
+	// "harness" always uses the harness tool, which hides every deferred
+	// tool's name and description on every provider until it is loaded.
 	Strategy string `protobuf:"bytes,2,opt,name=strategy,proto3" json:"strategy,omitempty"`
 	// Optional. Internal IDs of the tools sent on every turn without a
 	// search. Empty selects every registered built-in tool, so only

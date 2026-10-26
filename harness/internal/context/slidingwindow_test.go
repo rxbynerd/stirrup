@@ -323,6 +323,16 @@ func TestEstimateTokens_CountsEveryFieldSent(t *testing.T) {
 	})
 }
 
+func TestEstimateBlockTokens_CountsToolReferences(t *testing.T) {
+	must := require.New(t)
+	block := types.ContentBlock{
+		Type: "tool_search_result", ToolUseID: "srvtoolu_01",
+		ToolReferences: []string{strings.Repeat("a", 20), strings.Repeat("b", 20)},
+	}
+	// 3 (block) + 2 (tool use ID) + 10 (references)
+	must.Equal(15, estimateBlockTokens(block))
+}
+
 // structuredToolHistory is a task followed by exchanges of one read_file
 // call whose result carries a structured envelope as large as its text.
 func structuredToolHistory(exchanges int) []types.Message {

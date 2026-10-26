@@ -412,56 +412,6 @@ func TestResponsesStrictMode_StreamSendsNormalisedSchema(t *testing.T) {
 	check.Len(limitTypes, 2, "optional limit should be made nullable")
 }
 
-// TestStrictMode_FailsClosedAlikeOnBothSurfaces pins that a tool schema
-// the strict rewriter cannot express (anyOf here, as an MCP server might
-// supply) stops a strict-mode request before any bytes are sent, with the
-// same lint error on Chat Completions gpt-5 and Responses gpt-5.x.
-func TestStrictMode_FailsClosedAlikeOnBothSurfaces(t *testing.T) {
-	must := require.New(t)
-	check := assert.New(t)
-	const lintFailure = "strict-mode schema lint failed"
-	params := func(model string) types.StreamParams {
-		p := effortParams(model, "", false)
-		p.Tools = []types.ToolDefinition{{
-			Name:        "mcp_lookup",
-			Description: "Look up a record",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"anyOf":[{"type":"string"},{"type":"integer"}]}},"required":["id"]}`),
-		}}
-		return p
-	}
-	cases := []struct {
-		name  string
-		model string
-		new   func(url string) ProviderAdapter
-	}{
-		{"chat gpt-5", "gpt-5", func(url string) ProviderAdapter {
-			return NewOpenAICompatibleAdapter(staticBearer("k"), url, OpenAIAuthConfig{}, RetryPolicy{})
-		}},
-		{"responses gpt-5", "gpt-5", func(url string) ProviderAdapter {
-			return NewOpenAIResponsesAdapter(staticBearer("k"), url, OpenAIAuthConfig{})
-		}},
-		{"responses gpt-5.6", "gpt-5.6-sol", func(url string) ProviderAdapter {
-			return NewOpenAIResponsesAdapter(staticBearer("k"), url, OpenAIAuthConfig{})
-		}},
-	}
-	var lintErrs []string
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			must := require.New(t)
-			srv, hits := countingServer(t)
-			_, err := tc.new(srv.URL).Stream(context.Background(), params(tc.model))
-			must.ErrorContains(err, lintFailure)
-			msg := err.Error()
-			lintErrs = append(lintErrs, msg[strings.Index(msg, lintFailure):])
-			must.Zero(hits.Load(), "server should receive no requests")
-		})
-	}
-	must.Len(lintErrs, len(cases))
-	for _, e := range lintErrs[1:] {
-		check.Equal(lintErrs[0], e, "lint errors should match across surfaces")
-	}
-}
-
 // TestBuildResponsesRequest_StreamDefaultFalse verifies the helper
 // leaves Stream at its zero value AND that the marshalled wire body
 // omits the "stream" key entirely (via omitempty on the struct tag).

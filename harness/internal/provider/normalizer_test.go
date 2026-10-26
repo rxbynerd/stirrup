@@ -1,14 +1,17 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/rxbynerd/stirrup/harness/internal/tool/toolname"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -267,6 +270,65 @@ func TestNormalizingAdapter_CollisionResolvedByDisambiguation(t *testing.T) {
 	must.NoError(err)
 
 	must.NotEqual(inner.receivedParams.Tools[0].Name, inner.receivedParams.Tools[1].Name)
+}
+
+func TestNamespaceName_SanitisedToToolNamePolicy(t *testing.T) {
+	must := require.New(t)
+	inner := &fakeAdapter{}
+	w := NewNormalizingAdapter(inner, "openai-responses")
+
+	params := types.StreamParams{
+		Tools: []types.ToolDefinition{
+			{Name: "read_file", InputSchema: json.RawMessage(`{}`)},
+			{Name: "mcp_a.b_one", InputSchema: json.RawMessage(`{}`), Deferred: true, Namespace: "mcp_a.b", NamespaceDescription: `Tools from MCP server "a.b".`},
+			{Name: "mcp_a.b_two", InputSchema: json.RawMessage(`{}`), Deferred: true, Namespace: "mcp_a.b", NamespaceDescription: `Tools from MCP server "a.b".`},
+			{Name: "mcp_a_b_three", InputSchema: json.RawMessage(`{}`), Deferred: true, Namespace: "mcp_a_b", NamespaceDescription: `Tools from MCP server "a_b".`},
+		},
+	}
+	_, err := w.Stream(context.Background(), params)
+	must.NoError(err)
+
+	tools := inner.receivedParams.Tools
+	must.Empty(tools[0].Namespace)
+	for _, td := range tools[1:] {
+		must.NotContains(td.Namespace, ".", "%s namespace keeps a character the policy rejects", td.Name)
+	}
+	must.Equal(tools[1].Namespace, tools[2].Namespace, "members of one namespace stay together")
+	must.NotEqual(tools[1].Namespace, tools[3].Namespace, "distinct namespaces stay distinct after sanitising")
+	must.Equal(`Tools from MCP server "a.b".`, tools[1].NamespaceDescription, "the description is not a name and passes through")
+	must.Equal("mcp_a.b", params.Tools[1].Namespace, "the caller's params are not mutated")
+}
+
+func TestNamespaceName_UnbuildableMappingDropsNamespacesAndWarnsOnce(t *testing.T) {
+	must := require.New(t)
+	var buf bytes.Buffer
+	inner := &fakeAdapter{}
+	w := NewNormalizingAdapter(inner, "openai-responses")
+	w.logger = slog.New(slog.NewJSONHandler(&buf, nil))
+	w.policy = toolname.Policy{MaxLen: 1, AllowHyphen: false, AllowLeadingDigit: true}
+
+	params := types.StreamParams{
+		Tools: []types.ToolDefinition{
+			{Name: "x", InputSchema: json.RawMessage(`{}`), Deferred: true, Namespace: "secret_server_a", NamespaceDescription: "private description a"},
+			{Name: "y", InputSchema: json.RawMessage(`{}`), Deferred: true, Namespace: "secret_server_b", NamespaceDescription: "private description b"},
+			{Name: "z", InputSchema: json.RawMessage(`{}`), Deferred: true, Namespace: "secret_server_c", NamespaceDescription: "private description c"},
+		},
+	}
+	for range 2 {
+		_, err := w.Stream(context.Background(), params)
+		must.NoError(err)
+		for _, td := range inner.receivedParams.Tools {
+			must.Empty(td.Namespace)
+			must.Empty(td.NamespaceDescription)
+		}
+	}
+
+	logged := buf.String()
+	must.Equal(1, strings.Count(logged, "\n"), "one warning across both requests")
+	must.Contains(logged, `"tools":3`)
+	must.Contains(logged, `"provider_type":"openai-responses"`)
+	must.NotContains(logged, "secret_server")
+	must.NotContains(logged, "private description")
 }
 
 func TestNormalizingAdapter_IrresolvableCollisionFailsClosed(t *testing.T) {

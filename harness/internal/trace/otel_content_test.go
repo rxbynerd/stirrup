@@ -453,6 +453,54 @@ func TestGenAIParts_ToolResponseKeyAlwaysPresent(t *testing.T) {
 	}
 }
 
+func TestGenAIParts_RendersToolSearchBlocks(t *testing.T) {
+	cases := []struct {
+		name  string
+		block types.ContentBlock
+		want  string
+	}{
+		{
+			name:  "search call",
+			block: types.ContentBlock{Type: "tool_search", ID: "srvtoolu_1", Name: "tool_search_tool_bm25", Input: json.RawMessage(`{"query":"github"}`)},
+			want:  `{"type":"server_tool_call","id":"srvtoolu_1","name":"tool_search_tool_bm25","server_tool_call":{"type":"tool_search","arguments":{"query":"github"}}}`,
+		},
+		{
+			name:  "search call without a name keeps the required key",
+			block: types.ContentBlock{Type: "tool_search", ID: "srvtoolu_1", Input: json.RawMessage(`{"query":"github"}`)},
+			want:  `{"type":"server_tool_call","id":"srvtoolu_1","name":"","server_tool_call":{"type":"tool_search","arguments":{"query":"github"}}}`,
+		},
+		{
+			name:  "loaded tools",
+			block: types.ContentBlock{Type: "tool_search_result", ToolUseID: "srvtoolu_1", ToolReferences: []string{"mcp_github_create_issue", "mcp_github_list_issues"}},
+			want:  `{"type":"server_tool_call_response","id":"srvtoolu_1","server_tool_call_response":{"type":"tool_search","tool_references":["mcp_github_create_issue","mcp_github_list_issues"]}}`,
+		},
+		{
+			name:  "nothing loaded",
+			block: types.ContentBlock{Type: "tool_search_result", ToolUseID: "srvtoolu_1"},
+			want:  `{"type":"server_tool_call_response","id":"srvtoolu_1","server_tool_call_response":{"type":"tool_search","tool_references":[]}}`,
+		},
+		{
+			name:  "failed search",
+			block: types.ContentBlock{Type: "tool_search_result", ToolUseID: "srvtoolu_1", Name: "invalid_tool_input", Content: "query is empty", IsError: true},
+			want:  `{"type":"server_tool_call_response","id":"srvtoolu_1","server_tool_call_response":{"type":"tool_search","error":"invalid_tool_input"}}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			parts := genAIParts([]types.ContentBlock{tc.block})
+			must.Len(parts, 1)
+			raw, err := json.Marshal(parts[0])
+			must.NoError(err)
+			must.JSONEq(tc.want, string(raw))
+
+			var decoded genAIPart
+			must.NoError(json.Unmarshal(raw, &decoded))
+			must.Equal(parts[0], decoded, "a capped attribute decodes the part unchanged")
+		})
+	}
+}
+
 func countSpanAttr(span tracetest.SpanStub, key string) int {
 	n := 0
 	for _, attr := range span.Attributes {

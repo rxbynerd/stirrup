@@ -20,7 +20,20 @@ type StaticSource struct {
 // Resolved whose BearerToken closure yields the captured value on every
 // call without further IO. The closure is safe for concurrent use because
 // it reads only the captured immutable string.
+//
+// An empty reference means no credential: the closure yields an empty
+// token and the SecretStore is not consulted. The OpenAI adapters send an
+// empty token as no auth; the Anthropic adapter would send an empty
+// x-api-key, so the factory admits an empty reference only for an
+// OpenAI-wire provider at a custom baseUrl.
 func (s *StaticSource) Resolve(ctx context.Context) (*Resolved, error) {
+	if s.ref == "" {
+		return &Resolved{
+			BearerToken: func(_ context.Context) (string, error) {
+				return "", nil
+			},
+		}, nil
+	}
 	token, err := s.secrets.Resolve(ctx, s.ref)
 	if err != nil {
 		return nil, fmt.Errorf("resolve static credential: %w", err)

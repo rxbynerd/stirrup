@@ -636,8 +636,8 @@ func TestEscalationPolicy_NativeAddsUserTurnWhenTrailingAssistantRejected(t *tes
 
 // TestEscalation_RetryHistoryShapeByProvider drives the loop with the
 // built-in quirks registry and asserts the history each forced retry
-// sends: Anthropic's native retry ends on a synthetic user message, other
-// native providers end on the no-tool assistant answer, and auto-only
+// sends: Anthropic's and Gemini's native retries end on a synthetic user
+// message, other native providers end on the no-tool assistant answer, and auto-only
 // Anthropic models keep the single prompt-strategy message.
 func TestEscalation_RetryHistoryShapeByProvider(t *testing.T) {
 	cases := []struct {
@@ -650,7 +650,7 @@ func TestEscalation_RetryHistoryShapeByProvider(t *testing.T) {
 		{"anthropic native ends on a user turn", "anthropic", "claude-sonnet-4-6", types.ToolChoiceRequired, "user"},
 		{"anthropic native keeps the user turn where a prefill is accepted", "anthropic", "claude-haiku-4-5", types.ToolChoiceRequired, "user"},
 		{"openai-compatible native unchanged", "openai-compatible", "gpt-4o", types.ToolChoiceRequired, "assistant"},
-		{"gemini native unchanged", "gemini", "gemini-2.5-pro", types.ToolChoiceRequired, "assistant"},
+		{"gemini native ends on a user turn", "gemini", "gemini-3.8-flash", types.ToolChoiceRequired, "user"},
 		{"anthropic auto-only takes the prompt strategy", "anthropic", "claude-sonnet-5-5", types.ToolChoiceAuto, "user"},
 	}
 	for _, tc := range cases {

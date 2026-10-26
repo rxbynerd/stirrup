@@ -122,7 +122,7 @@ func scrubSegments(value, skip string, visit func(pattern int, current string, s
 // any, accepts.
 func patternMatches(p namedPattern, value string) [][]int {
 	if valid := matchValidators[p.name]; valid != nil {
-		return findValidated(p.re, value, valid)
+		return FindValidated(p.re, value, valid)
 	}
 	return p.re.FindAllStringIndex(value, -1)
 }

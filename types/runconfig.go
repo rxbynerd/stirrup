@@ -1529,8 +1529,8 @@ type LazyToolLoadingConfig struct {
 	// Strategy selects how deferred tools are searched: "auto" (the
 	// default) uses the provider's native tool search where the quirks
 	// registry advertises one and the harness tool otherwise; "harness"
-	// always uses the harness tool, which also hides deferred tools'
-	// names and descriptions until they are loaded.
+	// always uses the harness tool, which hides every deferred tool's
+	// name and description on every provider until it is loaded.
 	Strategy string `json:"strategy,omitempty"`
 
 	// Eager names the tools sent on every turn without a search, by

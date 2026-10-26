@@ -178,7 +178,7 @@ and the `gcs` trace probe authenticate via the same
 GCP runtime that provides a metadata server unless an explicit credential
 is configured.
 
-The report lists each step with one of three statuses:
+The report lists each step with one of four statuses:
 
 - `ok` — the component constructed and (where applicable) its probe
   succeeded.
@@ -186,9 +186,31 @@ The report lists each step with one of three statuses:
   network probe (a local executor, a `jsonl` trace file), the feature is
   not configured (no MCP servers, no workspace export), or a
   `--no-probe-*` gate suppressed it.
+- `warn` — the step found a condition the run can proceed with: an
+  optional MCP server that did not answer or does not advertise every
+  allowlisted tool, or a `tools.lazyLoading.eager` name that matches no
+  tool. A warning does not fail the report.
 - `fail` — construction or a probe failed. The step names the component,
   carries the underlying error, and — where a concrete next step is
   known — a remediation hint.
+
+When `tools.lazyLoading.enabled` is set, the `lazy-tools` step reports the
+tool set a run would send. Its detail gives the search strategy, the
+eager and deferred counts in total and per group (built-in, control
+plane, each MCP server), and, for every provider and model the router can
+select, whether the turn uses the provider's native tool search or the
+harness `tool_search`, with the reason when it is the harness one
+(`strategy harness`, `custom baseUrl`, the model missing from the native
+search allow-list, or no eager tool besides `tool_search`). Each eager
+name that matches no tool adds a `warn` step named
+`lazy-tools:eager:<name>`. The step builds the tool set with the same
+code a real run uses, so the counts match the run's. It counts MCP tools
+from the `tools/list` probe: under `--no-probe-mcp`, or when a server does
+not answer, those tools are left out of the counts, the detail says so
+and defers the deferral decision to run start, and `eager` names that
+start with `mcp_<server>_` for such a server are not reported as unknown.
+The step never fails the dry-run. See
+[Lazy tool loading](#lazy-tool-loading).
 
 The human-readable report goes to **stderr**; `--output=json` emits the
 structured report (a `PreflightReport`: a `steps` array plus an `ok`
@@ -236,7 +258,7 @@ who expects a server to be unavailable suppresses its probe with
 
 | Outcome | Exit code |
 |---|---|
-| Every step `ok` or `skip` | `0` |
+| Every step `ok`, `skip` or `warn` | `0` |
 | One or more steps `fail` | `1` |
 | Invalid flag combination | `4` |
 
@@ -284,7 +306,7 @@ reference.
 | Flag | Default | Notes |
 |---|---|---|
 | `--max-tool-parallel` | `0` | Maximum async tool calls dispatched concurrently in a single turn. Range `1`–`16` (hard ceiling enforced by `ValidateRunConfig`); `0` resolves to the library default of `4`. JSON path: `toolDispatch.maxParallel`. |
-| `--escalate-tool-choice` | `false` | Recover from a first-turn no-tool answer on a workspace-dependent task by retrying with provider-native required tool choice (a stronger prompt where the provider does not support forcing). A turn that stops on `refusal` or `model_context_window_exceeded` is not retried. A run continuing a previous run's history (`followUpHistory: "continue"`) counts the tool calls in that history as tool use. Off by default (issue #230). JSON path: `toolChoiceEscalation.enabled`. |
+| `--escalate-tool-choice` | `false` | Recover from a first-turn no-tool answer on a workspace-dependent task by retrying with provider-native required tool choice (a stronger prompt where the provider does not support forcing). On Anthropic and Gemini the native retry adds a short synthetic user message before forcing a tool, because some models on those APIs reject a request that ends on a model turn. A turn that stops on `refusal` or `model_context_window_exceeded` is not retried. A run continuing a previous run's history (`followUpHistory: "continue"`) counts the tool calls in that history as tool use. Off by default (issue #230). JSON path: `toolChoiceEscalation.enabled`. |
 | `--escalate-tool-choice-max-retries` | `0` | Maximum forced retries per inner-loop run. Range `1`–`3`; `0` resolves to the default of `1`. No effect unless `--escalate-tool-choice` is set. JSON path: `toolChoiceEscalation.maxRetries`. |
 
 ### Provider
@@ -294,7 +316,7 @@ reference.
 | `--provider` | `anthropic` | One of `anthropic`, `bedrock`, `openai-compatible`, `openai-responses`, `gemini`. |
 | `--model` | `claude-sonnet-4-6` for `anthropic`; none otherwise | Model id for the static / per-mode router. Required for every provider other than `anthropic`; omitting it exits 1 with an error naming the provider. |
 | `--prompt-model` | (none) | Model identity the system prompt templates render against, without changing the wire model. Combine with `--model` to compare a prompt tuned for one model against another. Empty derives the prompt model from the effective model. JSON path: `promptBuilder.promptModel`. See [System prompt templating](#system-prompt-templating). |
-| `--api-key-ref` | `secret://ANTHROPIC_API_KEY` for `anthropic`; `secret://OPENAI_API_KEY` for `openai-compatible` / `openai-responses`; none for `bedrock` / `gemini` | A `secret://` reference. API keys never live in `RunConfig`. The default applies only when neither the flag nor `--config` supplies a value and no `credential` block is set; `--api-key-ref=""` sends no key (a keyless local server). Rejected for `gemini` (Vertex uses GCP IAM). |
+| `--api-key-ref` | `secret://ANTHROPIC_API_KEY` for `anthropic`; `secret://OPENAI_API_KEY` for `openai-compatible` / `openai-responses`; none for `bedrock` / `gemini` | A `secret://` reference. API keys never live in `RunConfig`. The default applies only when neither the flag nor `--config` supplies a value and no `credential` block is set; `--api-key-ref=""` sends no key, which is valid only for `openai-compatible` / `openai-responses` at a custom `--base-url` (a keyless local server); provider construction rejects an empty reference for any other provider or for the default OpenAI endpoint. Rejected for `gemini` (Vertex uses GCP IAM). |
 | `--base-url` | (none) | Provider base URL. Required for Azure / gateway scenarios. |
 | `--api-key-header` | (none) | Header name. Empty = `Authorization: Bearer`; set to `api-key` for Azure key auth. |
 | `--query-param key=value` | (none) | Repeatable. Adds query parameters to every provider request URL — e.g. `--query-param api-version=preview` for Azure. Keys here override duplicates already encoded in `--base-url`. |
@@ -1216,6 +1238,13 @@ stirrup harness --lazy-tools --lazy-tools-eager read_file --lazy-tools-eager gre
 
 `--lazy-tools=false` turns off an `enabled: true` from `--config`.
 
+`stirrup harness --dry-run` reports the resolved split before any run
+starts: the eager and deferred counts per group, the tool search each
+routed provider and model uses, and every `eager` entry that matches no
+tool. See [Dry-run preflight](#dry-run-preflight). An evaluation suite
+sets the same fields in a `tools { lazy_loading { ... } }` block of its
+inline `run_config`.
+
 ### Visibility, not authority
 
 Deferral changes what the model sees, not what it may call. Any
@@ -1224,7 +1253,11 @@ every deferred definition to the provider on every turn. To withhold a
 tool, leave it out of `tools.builtIn` or an MCP server's
 `allowedTools`, or deny it in the permission policy. Search ranking is
 keyword scoring and is not a trust signal: a tool's position in a
-result says nothing about where it came from.
+result says nothing about where it came from. The harness search caps
+how many results one group can take, which limits a server that fills
+its tool names and descriptions with keywords so that another server's
+tool never loads, but the cap bounds that squatting and does not
+prevent it.
 
 ### Strategies and providers
 
@@ -1235,15 +1268,17 @@ mid-run switches search paths with it:
 | Provider and model | `auto` uses |
 |---|---|
 | `anthropic`: Claude Opus 4.5–4.8, Sonnet 4.5–4.6, Haiku 4.5 and the Claude 5 generation | Native search: the Anthropic BM25 tool search tool, with deferred tools sent with `defer_loading` |
-| `openai-responses`: `gpt-5.4` and later 5.x, the `gpt-6` family | Native search: the hosted `tool_search` tool, with deferred tools sent with `defer_loading`; names and descriptions stay visible (see below) |
+| `openai-responses`: `gpt-5.4` and later 5.x, the `gpt-6` family | Native search: the hosted `tool_search` tool, with deferred tools sent with `defer_loading` and each MCP server's and the control plane's deferred tools grouped into a namespace; deferred built-ins keep their names and descriptions visible (see below). Only on the default endpoint; a custom `baseUrl` (Azure OpenAI, LiteLLM, LM Studio and other gateways) uses the harness `tool_search`, because a gateway may accept the hosted search entry and silently drop it, and the run then completes with every deferred tool refused as not loaded |
 | `bedrock` | The harness `tool_search` tool: the adapter uses the Converse API, and Anthropic documents server-side tool search on Bedrock only for InvokeModel |
 | Every other provider and model (Gemini, `openai-compatible`, older Claude and GPT models) | The harness `tool_search` tool |
 
 With a native search, every registered tool except the harness
 `tool_search` is sent on every turn and the deferred ones are flagged
-for deferred loading, so the request stays the same from turn to turn;
-the provider searches and expands the definitions of the tools it
-finds. A native search gives the model no inventory of the deferred
+for deferred loading, so the request stays the same from turn to turn
+until the history is compacted (see
+[Lifetime of the loaded set](#lifetime-of-the-loaded-set)); the
+provider searches and expands the definitions of the tools it finds.
+A native search gives the model no inventory of the deferred
 tools, so a system-prompt hint naming the tool categories helps it
 search for the right words. A native search also needs at least one
 eager tool besides `tool_search`, because a provider rejects a request
@@ -1264,10 +1299,35 @@ definitions. Tools that match but are already loaded are not loaded
 again and do not count toward the limit; the result names them on an
 `Already loaded:` line.
 
-Only `strategy: "harness"` keeps deferred tools' names and descriptions
-hidden until they are loaded. The OpenAI hosted search defers only
-parameter schemas: with the flat function list the harness sends, the
-model still sees every deferred tool's name and description.
+The harness search also keeps one group from filling every slot. A
+group is an MCP server, the MCP tools no configured server claims,
+the control-plane tools, or the built-ins. While other groups have
+matches, one group takes at most half the limit, rounded up: 1 of 1,
+1 of 2, 3 of 5. Slots a cap leaves free are then filled with the
+skipped matches in score order, so a group that alone matches is not
+held back. A tool whose name, internal ID, or (for an MCP server's
+tool) the server's own name for it equals the whole query, ignoring
+case and surrounding whitespace, is loaded ahead of every scored match.
+Such a tool counts toward its group's cap, so a group takes the larger
+of the cap and its number of exact matches. A tool belongs to the MCP
+server that registered it, whatever the tool is named. Each result line
+names the group after the tool name, as `(MCP server "github")`,
+`(MCP)`, `(control plane)`, or `(built-in)`; the server name comes from
+the `tools.mcpServers` configuration and not from the server. Control
+characters in a server-supplied tool name or description are dropped
+from result lines, so neither can start a line of its own.
+
+The harness search keeps every deferred tool's name and description out
+of the request until it is loaded, on every provider. The OpenAI hosted
+search hides a deferred tool only inside a namespace. The harness groups
+each configured MCP server's deferred tools into a namespace named
+`mcp_<server>`, and the deferred control-plane tools into one named
+`control_plane`, so the model sees only each namespace's name and a
+generated description until it loads the namespace. Deferred
+built-in tools, and MCP tools whose name no configured server claims,
+are sent as flat functions whose names and descriptions stay visible;
+only their parameter schemas are deferred. See
+[Hosted tool search](providers.md#hosted-tool-search).
 
 Under the harness strategy, each search that loads a tool changes the
 tool list, so the next request misses the provider's prompt cache. A
@@ -1275,8 +1335,11 @@ native search keeps the request stable and the cache warm.
 
 Both native searches are also sent on batch turns. An OpenAI batch turn
 never captures the provider's output items, so a hosted search made in
-a batch turn is always replayed by best-effort reconstruction. Neither
-batch path has been probed against the live API.
+a batch turn is always replayed by best-effort reconstruction. Both
+batch paths were probed against the live API on 2026-10-26: an Anthropic
+batch (`claude-haiku-4-5`) completed in about 98 s and an OpenAI batch
+(`gpt-5.4-mini`) in 338 s, each
+returning the same shapes as a streamed turn.
 
 ### Nothing to defer
 
@@ -1317,6 +1380,27 @@ and starts empty otherwise. Tools load as soon as a search reports
 them, before the turn commits, so a turn that is later abandoned still
 leaves its tools loaded.
 
+A provider's native search expands a loaded tool's definition only
+through the search result that loaded it, so that result must be in
+the request. It is missing when the context strategy dropped or
+summarised the exchange that held it, when a router switch loaded the
+tool through the harness `tool_search` or another provider's search,
+or when output-limit recovery discarded a paused turn's continuation
+after its search had loaded tools. A native-search request then sends
+each such tool's full definition without the deferred flag or a
+namespace, like an eager tool. This applies to that request only: the
+loaded set does not change, and every later request is checked again.
+The tool list changes whenever a tool's search result leaves or
+re-enters the request, and each change costs one cache write of the
+tools and system prefix. The check is per request because a run-long
+un-defer would, on the Responses API, place a now-flat tool inside a
+rebuilt `tool_search_output`, which is the shape the API rejects. When
+every deferred tool is loaded and none has its search result in the
+request, the request defers nothing and the adapter leaves the native
+search off it, because there is nothing left to load. A continuation of
+a paused turn that ends on an unanswered native search keeps its tools
+deferred, so the search tool stays on the request.
+
 ### Sub-agents
 
 A sub-agent starts with the eager tools of its own tool set and nothing
@@ -1355,7 +1439,12 @@ but only in process; no durable emitter writes it.
 In the JSONL trace, a turn record's `modelInput.tools` lists the
 definitions the turn sent, and the two strategies look different
 there. A native-search turn lists every deferred tool, loaded or not,
-with `deferred: true`, and no `tool_search`. A harness-search turn
+with `deferred: true`, and no `tool_search`; a loaded tool whose search
+result is not in the request is listed without the flag (see
+[Lifetime of the loaded set](#lifetime-of-the-loaded-set)). A native-search turn
+also records each deferred MCP or control-plane tool's `namespace` and
+`namespaceDescription`, with the unnormalised name, whichever provider
+the turn went to. A harness-search turn
 lists the eager tools, the tools loaded so far, and `tool_search`, and no
 tool carries the flag. A native search appears in the turn's
 `modelOutput` as a `tool_search` block (the search input) and a
@@ -1908,7 +1997,7 @@ signatures) is persisted and replayed exactly as before.
 | Adapter | `auto` | `off` |
 |---|---|---|
 | `anthropic` | Streams thinking the request already enables through `reasoningEffort`; no request change. | No request change; the loop forwards no `thinking_delta`. |
-| `openai-compatible` | Streams each `reasoning_content` delta the server sends (DeepSeek, GLM, Qwen); no request change, because Chat Completions has no reasoning-summary control. | No request change; the loop forwards no `thinking_delta`. |
+| `openai-compatible` | Streams each `reasoning_content` delta the server sends (DeepSeek, GLM, Qwen), or `reasoning` delta (OpenRouter); no request change, because Chat Completions has no reasoning-summary control. | No request change; the loop forwards no `thinking_delta`. |
 | `openai-responses` | Adds `reasoning.summary: "auto"` to any request that carries `reasoning.effort`, and streams `response.reasoning_summary_text.delta`. A request with no projected effort carries no `reasoning` object and no summary. | Sends no `reasoning.summary`. An empty value does the same. |
 | `gemini` | Sends `generationConfig.thinkingConfig.includeThoughts: true` when the model's quirks accept a thinking config (Gemini 3.6, 3.7, 3.8, 3.1 Pro and 2.5 Flash) or `reasoningEffort` is set, and streams each `thought: true` part. Other models get no `thinkingConfig`, because models that do not think reject one. Thought parts never become answer text or tool input. | Sends no `includeThoughts`. |
 | `bedrock` | No effect: the adapter streams no reasoning text and has no request control for it. | No effect. |

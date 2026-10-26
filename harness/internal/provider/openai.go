@@ -54,6 +54,24 @@ const (
 	maxReplayFieldBytes = 512 * 1024
 )
 
+// IsDefaultOpenAIBaseURL reports whether baseURL addresses OpenAI's own API:
+// the empty string, which the adapters default to OpenAI's URL, or that URL
+// with or without a trailing slash. The scheme and host compare
+// case-insensitively and an explicit port 443 is accepted.
+func IsDefaultOpenAIBaseURL(baseURL string) bool {
+	if baseURL == "" {
+		return true
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	return strings.EqualFold(u.Scheme, "https") &&
+		strings.EqualFold(u.Hostname(), "api.openai.com") &&
+		(u.Port() == "" || u.Port() == "443") &&
+		strings.TrimRight(u.Path, "/") == "/v1"
+}
+
 // OpenAICompatibleAdapter implements ProviderAdapter for the OpenAI Chat
 // Completions API. It works with any OpenAI-compatible endpoint: OpenAI,
 // LiteLLM, Azure OpenAI, vLLM, Ollama, llama.cpp server.
@@ -148,6 +166,14 @@ type openaiRequest struct {
 	// ReasoningEffort is the wire value for the top-level
 	// "reasoning_effort" field. Empty omits it.
 	ReasoningEffort string
+
+	// strictFallbacks lists the tools newly sent with strict:false because
+	// their schema failed the strict-mode lint; Stream logs them. Not
+	// serialised.
+	strictFallbacks []*strictSchemaError
+	// strictNulls lists the optional properties of strict-sent tools whose
+	// synthetic nulls the stream parser drops. Not serialised.
+	strictNulls strictNullables
 }
 
 // MarshalJSON projects the canonical openaiRequest into the wire body the
@@ -663,21 +689,33 @@ func (c *openaiChunkChoice) UnmarshalJSON(data []byte) error {
 
 // openaiDelta is the incremental content in a streaming chunk.
 // ReasoningContent is the non-standard reasoning text that DeepSeek, GLM,
-// and LM Studio stream beside content; it is display-only here, and any
-// replay goes through a ReplayFields rule on RawDelta. It stays raw so a
-// server that sends a non-string value does not fail the chunk.
+// and LM Studio stream beside content; Reasoning carries the same text
+// under the name OpenRouter uses. Both are display-only here, and any replay
+// goes through a ReplayFields rule on RawDelta. They stay raw so a server
+// that sends a non-string value does not fail the chunk.
 type openaiDelta struct {
 	Role             string                `json:"role,omitempty"`
 	Content          *string               `json:"content,omitempty"`
 	ReasoningContent json.RawMessage       `json:"reasoning_content,omitempty"`
+	Reasoning        json.RawMessage       `json:"reasoning,omitempty"`
 	ToolCalls        []openaiToolCallDelta `json:"tool_calls,omitempty"`
 }
 
-// reasoningText returns the delta's reasoning_content when it is a JSON
-// string, and "" for null, absent, or any other shape.
+// reasoningText returns the delta's reasoning_content when it is a non-empty
+// JSON string, otherwise its reasoning when that is. Null, absent, and any
+// other shape yield "".
 func (d openaiDelta) reasoningText() string {
+	if s := rawJSONString(d.ReasoningContent); s != "" {
+		return s
+	}
+	return rawJSONString(d.Reasoning)
+}
+
+// rawJSONString returns raw decoded as a JSON string, or "" when raw is
+// empty or any other JSON value.
+func rawJSONString(raw json.RawMessage) string {
 	var s string
-	if len(d.ReasoningContent) == 0 || json.Unmarshal(d.ReasoningContent, &s) != nil {
+	if len(raw) == 0 || json.Unmarshal(raw, &s) != nil {
 		return ""
 	}
 	return s
@@ -844,36 +882,47 @@ func translateMessages(system string, messages []types.Message, replayPaths []st
 // translateTools converts stirrup ToolDefinitions to OpenAI's function
 // format. When strict is true, every tool's Parameters is rewritten by
 // NormalizeStrictSchema and the Strict flag is set on the wire entry; the
-// cache memoises rewrites by (model, tool-name, schema-hash). Returns an
-// error when strict-mode normalisation rejects a tool's schema — the
-// request must not be sent in that case (fail-closed).
-func translateTools(tools []types.ToolDefinition, strict, examples bool, model string, cache *strictSchemaCache) ([]openaiTool, error) {
+// cache memoises rewrites by (model, tool-name, schema-hash). A tool whose
+// schema strict mode cannot express is sent with its original schema and
+// an explicit strict:false instead of failing the request; each such
+// rejection the cache records for the first time is returned in fallbacks
+// so the caller can log it. nulls records the optional properties of every
+// tool sent strict:true (see strictNullables). Returns an error only for a
+// malformed schema, and then returns no fallbacks: the request is not
+// sent, so no tool goes out non-strict.
+func translateTools(tools []types.ToolDefinition, strict, examples bool, model string, cache *strictSchemaCache) (out []openaiTool, fallbacks []*strictSchemaError, nulls strictNullables, err error) {
 	if len(tools) == 0 {
-		return nil, nil
+		return nil, nil, nil, nil
 	}
-	out := make([]openaiTool, len(tools))
+	out = make([]openaiTool, len(tools))
 	for i, t := range tools {
 		def := openaiToolDefinition{
 			Name:        t.Name,
 			Description: t.Description,
 			Parameters:  t.InputSchema,
 		}
+		strictTool := strict
 		if strict {
-			normalised, err := normalizeStrictWithCache(cache, model, t.Name, t.InputSchema)
+			schema, nullable, ok, fallback, err := strictToolSchema(cache, model, t.Name, t.InputSchema)
 			if err != nil {
-				return nil, err
+				return nil, nil, nil, err
 			}
-			def.Parameters = normalised
-			truthy := true
-			def.Strict = &truthy
-		} else if examples {
+			def.Parameters = schema
+			def.Strict = &ok
+			strictTool = ok
+			nulls = nulls.with(t.Name, nullable)
+			if fallback != nil {
+				fallbacks = append(fallbacks, fallback)
+			}
+		}
+		if !strictTool && examples {
 			// Fold worked examples into the schema's `examples` keyword —
 			// only for non-strict tools, since OpenAI's structured-outputs
 			// subset rejects `examples`; strict tools rely on the
 			// description text instead.
 			merged, err := mergeSchemaExamples(def.Parameters, toolInputExamples(t))
 			if err != nil {
-				return nil, fmt.Errorf("tool %q: merge examples: %w", t.Name, err)
+				return nil, nil, nil, fmt.Errorf("tool %q: merge examples: %w", t.Name, err)
 			}
 			def.Parameters = merged
 		}
@@ -882,7 +931,7 @@ func translateTools(tools []types.ToolDefinition, strict, examples bool, model s
 			Function: def,
 		}
 	}
-	return out, nil
+	return out, fallbacks, nulls, nil
 }
 
 // openAIToolChoiceFromParams projects the provider-neutral
@@ -977,15 +1026,15 @@ func mapFinishReason(reason string) string {
 // q carries the resolved quirks for the (provider, model) pair; the zero
 // value reproduces today's default behaviour for callers that skip
 // resolution. strictCache memoises strict-mode schema rewrites across
-// turns; pass nil to disable caching. Returns an error when a tool's
-// schema fails the strict-mode lint — the caller must NOT send a request
-// in that case.
+// turns; pass nil to disable caching. A tool whose schema fails the
+// strict-mode lint is built with strict:false and reported through the
+// request's strictFallbacks; only a malformed schema returns an error.
 //
 // TODO(batch): if the batch endpoint rejects fields the streaming endpoint
 // accepts (e.g. top_p on Responses, equivalent constraints on Chat
 // Completions), apply a batch-specific projection here.
 func buildOpenAIRequest(params types.StreamParams, stream bool, q quirks.ProviderQuirks, strictCache *strictSchemaCache) (openaiRequest, error) {
-	tools, err := translateTools(params.Tools, q.BehaviourFlags.OpenAI.StrictMode, q.ToolExamples.Supported, params.Model, strictCache)
+	tools, fallbacks, nulls, err := translateTools(params.Tools, q.BehaviourFlags.OpenAI.StrictMode, q.ToolExamples.Supported, params.Model, strictCache)
 	if err != nil {
 		return openaiRequest{}, err
 	}
@@ -993,6 +1042,8 @@ func buildOpenAIRequest(params types.StreamParams, stream bool, q quirks.Provide
 		Model:              params.Model,
 		Messages:           translateMessages(params.System, params.Messages, q.ReplayFields),
 		Tools:              tools,
+		strictFallbacks:    fallbacks,
+		strictNulls:        nulls,
 		MaxTokens:          params.MaxTokens,
 		Temperature:        params.Temperature,
 		Stream:             stream,
@@ -1061,8 +1112,6 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 		)
 	}
 
-	// Emitted before buildOpenAIRequest so a fail-closed lint error surfaces
-	// against a context that already shows strict-mode was active.
 	if q.BehaviourFlags.OpenAI.StrictMode {
 		logger.DebugContext(ctx, "openai strict mode applied",
 			slog.String("provider.type", "openai-compatible"),
@@ -1082,6 +1131,7 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 		o.recordLatency(ctx, start, metricAttrs)
 		return nil, fmt.Errorf("build request: %w", err)
 	}
+	warnStrictFallbacks(ctx, logger, "openai-compatible", params.Model, reqBody.strictFallbacks)
 
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
@@ -1157,7 +1207,7 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 
 	ch := make(chan types.StreamEvent, 64)
 	go func() {
-		o.consumeSSE(ctx, resp, ch, start, metricAttrs, q, logger, params.Model)
+		o.consumeSSE(ctx, resp, ch, start, metricAttrs, q, logger, params.Model, reqBody.strictNulls)
 		o.recordLatency(ctx, start, metricAttrs)
 	}()
 	return ch, nil
@@ -1182,7 +1232,7 @@ func (o *OpenAICompatibleAdapter) recordLatency(ctx context.Context, start time.
 // parser reads q.ReplayFields and captures the named paths from each
 // chunk's delta object (see docs/provider-quirks.md), surfacing them in a
 // per-stream debug log and, flattened, on the message_complete event.
-func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Response, ch chan<- types.StreamEvent, streamStart time.Time, metricAttrs metric.MeasurementOption, q quirks.ProviderQuirks, logger *slog.Logger, model string) {
+func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Response, ch chan<- types.StreamEvent, streamStart time.Time, metricAttrs metric.MeasurementOption, q quirks.ProviderQuirks, logger *slog.Logger, model string, strictNulls strictNullables) {
 	defer close(ch)
 	defer func() { _ = resp.Body.Close() }()
 
@@ -1192,7 +1242,7 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 			o.Metrics.RecordFirstChunk(ctx, metricAttrs, inferenceAttrs("openai-compatible", model, o.baseURL), time.Since(streamStart))
 			ttfbRecorded = true
 		}
-		ch <- ev
+		ch <- strictNulls.strip(ev)
 	}
 
 	toolCalls := make(map[int]*openaiToolCallState)

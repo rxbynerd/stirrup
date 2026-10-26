@@ -3,12 +3,11 @@
 A **production-grade coding harness** built for **safe
 autonomous operation**.
 
-The majority of coding harnesses are single-player tools, focused on
-excellent local experiences, providing trend-setting TUIs or
-comprehensive IDE integration. Any kind of API/RPC channel is an
-afterthought, often just to support a desktop client.
+Stirrup is an operator-owned coding worker. The operator chooses the
+model provider, the execution environment, the permission policy,
+and the control plane. Each run leaves inspectable evidence.
 
-Stirrup is intentionally designed and built from the ground up with the following tenets in mind:
+Stirrup is designed and built from the ground up with the following tenets in mind:
 
 - **Production-grade safety** provided by [a comprehensive set of rings](docs/safety-rings.md), designed to provide defence-in-depth security.
 - **Autonomous operation** via [a gRPC interface](proto/harness/v1/harness.proto), allowing remote control & management of the coding harness.
@@ -49,7 +48,7 @@ ANTHROPIC_API_KEY=... ./stirrup harness --mode execution --prompt "Fix the faili
   --workspace .
 
 # using OpenAI Responses
-OPENAI_KEY="$(op read "op://Private/qeu6gafabhkpsm6hhzattx6p4m/credential")" ./stirrup harness \
+OPENAI_KEY=... ./stirrup harness \
   --api-key-ref secret://OPENAI_KEY \
   --provider openai-responses \
   --model gpt-5.4-nano \

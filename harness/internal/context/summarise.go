@@ -346,7 +346,8 @@ func omissionNote(omitted int) string {
 // text, which can carry raw command output, is scrubbed. A text block with
 // an Origin is harness text merged into another message and is rendered
 // as its own harness line. Operator text reaches the summariser as
-// written.
+// written. A native tool search result is rendered as the tools it loaded
+// or its error code, never the provider's error message.
 func renderSummaryMessage(msg types.Message) string {
 	label := msg.Role
 	if msg.Synthetic {
@@ -374,6 +375,15 @@ func renderSummaryMessage(msg types.Message) string {
 		case "tool_result":
 			content := truncateToChars(stripSummaryInjectionPhrases(security.Scrub(block.Content)), summaryBlockMaxChars)
 			fmt.Fprintf(&sb, "<tool_result id=%q>%s</tool_result>", block.ToolUseID, content)
+		case "tool_search":
+			fmt.Fprintf(&sb, "<tool_search name=%q id=%q />", block.Name, block.ID)
+		case "tool_search_result":
+			if block.IsError {
+				fmt.Fprintf(&sb, "<tool_search_result id=%q error=%q />", block.ToolUseID, block.Name)
+				continue
+			}
+			loaded := truncateToChars(strings.Join(block.ToolReferences, ", "), summaryBlockMaxChars)
+			fmt.Fprintf(&sb, "<tool_search_result id=%q loaded=%q />", block.ToolUseID, loaded)
 		}
 	}
 	sb.WriteString("\n")

@@ -264,8 +264,13 @@ Under [lazy tool loading](configuration.md#lazy-tool-loading) with the
 server-side tool search
 ([`ToolSearch` quirk](provider-quirks.md#3-wave-2-rules-builtinrules))
 instead of the harness `tool_search` tool. The feature is generally
-available and needs no beta header; the wire shape below is taken from
-Anthropic's documentation and is not probed.
+available and needs no beta header. The wire shapes below were probed on
+2026-10-26 against `claude-haiku-4-5`, with a first-turn check on Opus
+4.5, Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1. Paused-turn
+behaviour was also probed on `claude-sonnet-4-6`. Sonnet 4.5 and Mythos
+5.x were unavailable to the probing account, so their rules rest on
+documentation. The search tool's name is fixed by its type: any name
+other than `tool_search_tool_bm25` is rejected with a 400.
 
 The adapter adds the search tool only when the request carries
 `ToolSearch`, the resolved model's `ToolSearch` capability is supported,
@@ -275,7 +280,10 @@ and sends every tool loaded. The search tool goes first in `tools` and is
 never deferred, which satisfies the API's rule that not every tool may carry
 `defer_loading`. Every deferred definition is sent in full with
 `"defer_loading": true`, on every turn, loaded or not, so the tool
-list stays byte-stable for the prompt cache:
+list stays byte-stable for the prompt cache. The one exception is a
+loaded tool whose search result is no longer in the request, which is
+sent without the flag (see
+[Lifetime of the loaded set](configuration.md#lifetime-of-the-loaded-set)):
 
 ```json
 "tools": [
@@ -291,7 +299,7 @@ arrives as `input_json_delta`; the result arrives whole on its
 
 ```text
 event: content_block_start
-data: {"type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"srvtoolu_01","name":"tool_search_tool_bm25"}}
+data: {"type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"srvtoolu_01","name":"tool_search_tool_bm25","input":{}}}
 
 event: content_block_delta
 data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"github issues\"}"}}
@@ -299,6 +307,15 @@ data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta"
 event: content_block_start
 data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_01","content":{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"mcp_github_search_issues"}]}}}
 ```
+
+The `server_tool_use` block starts with an empty input and the query
+streams as `input_json_delta`. Besides `query`, the input may carry the
+model's `limit`, which the adapter keeps and replays. The result block
+has no deltas. Usage grows during the turn as the API expands the loaded
+definitions, so `message_start` under-reports input tokens, and the
+adapter takes usage from `message_delta`. A result can also reference
+eager tools and the search tool itself; the loop ignores those
+references.
 
 The adapter emits a `tool_search` stream event when the call block
 closes and a `tool_search_result` event carrying the referenced tool
@@ -324,7 +341,8 @@ as a `tool_search_tool_result_error` with the recorded code and
 message, and with the code `unavailable` when none was recorded, since
 the API rejects an empty code. Only a call naming an Anthropic search
 tool (`tool_search_tool_bm25` or `tool_search_tool_regex`) and answered
-by a result in the same message is replayed; a search recorded from
+by a result in the same message is replayed. The one exception is a
+paused turn's pending call, described below. A search recorded from
 another provider, such as the OpenAI hosted `tool_search`, is dropped
 together with its result. When a request does not carry the search tool
 (the run routed this turn to a model without the capability, or nothing is
@@ -333,8 +351,73 @@ sent loaded; a message left empty by the drop is omitted.
 
 Batch turns build their request through the same code, so the native
 search is sent in a batch turn exactly as in a streamed one, and the
-batch response is decoded into the same events and blocks. The batch
-path is not probed against the live batch endpoint.
+batch response is decoded into the same events and blocks. A batch
+request carrying the search tool was probed on 2026-10-26 against
+`claude-haiku-4-5`: the result message has the same block shapes as a
+streamed turn.
+
+#### Paused turns
+
+The probed server tool loop paused after ten searches per request (Haiku
+4.5 and Sonnet 4.6). Anthropic documents a higher limit for batch
+requests. A turn that reaches the limit stops with
+`stop_reason: "pause_turn"`. Its content ends on a `server_tool_use` search call with no result: the
+probed paused turns held eleven calls and ten results. In the harness,
+this happens after about ten sequential searches in one turn. Searches
+are sequential by default, because the adapter disables parallel tool
+use; with parallel calls allowed, Haiku 4.5 completed fifteen searches
+in one turn without a pause. Sending the paused content unchanged
+continued the turn and was not treated as a prefill on every probed
+model, including Sonnet 4.6, which rejects a trailing assistant message
+otherwise. Anthropic's server tools documentation also says to pass a
+paused response back as-is. The same message without its unanswered
+call is rejected as a prefill on Sonnet 4.6. The loop continues a
+paused turn instead of ending the run:
+
+1. It commits the paused assistant content to the history, including
+   the pending call, and emits `turn_committed` with `stop_reason`
+   `pause_turn`.
+2. It sends the next request with that history unchanged. The request
+   ends on the paused assistant message and adds no user message. The
+   adapter replays the pending call as the message's last block,
+   because a search is replayed unanswered only as the last block of a
+   request's final assistant message. Dropping it would leave the
+   request ending on assistant text, which Sonnet 4.6 and later reject
+   as a prefill.
+3. The continuation response holds only new blocks, starting with the
+   pending call's `tool_search_tool_result`. The loop appends them to
+   the paused assistant message rather than opening a new one, so the
+   call and its result form a pair in one message.
+
+The continuation turn reuses the paused turn's provider and model
+without consulting the model router. Operator input queued during the
+pause, and the budget wind-down notice, wait for the next turn boundary.
+The exception is a wind-down notice due on the run's last allowed turn,
+which has no later boundary. The notice is sent on that turn, which then
+no longer continues the pause: the request ends on the notice, the
+adapter drops the unanswered pending call, and the response starts a new
+assistant message. Tool-choice escalation never treats a paused turn as
+a missed tool call. Each continuation counts against `maxTurns`. After
+five consecutive continuations, a sixth pause ends the run with outcome
+`pause_turn` and a `warning` event. A pause on the run's last allowed
+turn, or a paused response with no content to commit, does the same. A
+batch response keeps its `pause_turn` stop reason and is continued the
+same way. The continuation was probed on 2026-10-26. Resending the
+paused content was accepted on Haiku 4.5 and Sonnet 4.6, and a
+trailing assistant message ending on an unanswered search call was
+accepted on Sonnet 5.5. With the adapter's prompt caching shape, Haiku
+4.5 paused twice in a row, and both pauses merged into one assistant
+message were accepted and ended the turn. Sonnet 4.6 continued under the same caching shape,
+including with a 1,024-token thinking budget set directly in the probe
+request, which the adapter never sends, and a signed thinking block
+leading the paused content. A resend with the thinking block stripped, a
+thinking pause on Haiku 4.5, a paused turn led by a default thinking
+block on Claude 5 models, and a paused batch response were not probed.
+
+Paused turns are expensive. Every server tool iteration counts toward
+the turn's input tokens, so a paused turn reports roughly 70,000 input
+tokens per ten searches, even when the prompt is cached. Long search
+chains therefore consume `maxTokenBudget` quickly.
 
 ## AWS Bedrock
 
@@ -382,15 +465,19 @@ Azure Entra ID bearer tokens work with the default empty `apiKeyHeader`
 See `examples/runconfig/azure-openai.json`.
 
 **Reasoning text.** Servers that stream reasoning in a non-standard
-`reasoning_content` delta field (DeepSeek, Z.ai GLM, LM Studio) have
+`reasoning_content` delta field (DeepSeek, Z.ai GLM, LM Studio), or in
+the `reasoning` field that OpenRouter uses, have
 each fragment forwarded, through the loop's secret carry (see
 [Control-stream scrubbing](security.md#control-stream-scrubbing)), as
 `thinking_delta` events, whether or not a replay rule also captures it
 for the next turn. Chat Completions has no
 request control for this, so `reasoningSummary` changes nothing on the
-wire; `off` only stops the loop forwarding the events. A
-`reasoning_content` value that is not a JSON string is ignored. The
-`reasoning` delta field some gateways use instead is not read.
+wire; `off` only stops the loop forwarding the events. When a delta
+carries both fields, a non-empty `reasoning_content` is used and
+`reasoning` is ignored. A value that is not a JSON string is ignored.
+Only `reasoning_content` is ever captured for replay; OpenRouter does
+not require reasoning to be sent back (see
+[provider quirks](provider-quirks.md#9-open-risks)).
 
 ### Local models via LM Studio (Qwen 3.6)
 
@@ -539,10 +626,13 @@ summary on this adapter and the request is the same as with `off`.
 `strict: true`, because an omitted `strict` lets the API fall back to
 non-strict silently. A tool schema the strict rewriter cannot express
 (`$ref`, `oneOf`, `anyOf`, `allOf`, `patternProperties`, tuple
-`items`; common in MCP-imported tools) fails the request before send.
+`items`; common in MCP-imported tools) is sent with its original schema
+and an explicit `strict: false`, and the adapter logs one WARN for it.
 An MCP server that declares an optional parameter as an `anyOf` with
-`null`, as FastMCP and Pydantic do, therefore stops the run on these
-models; there is no per-tool fallback to `strict: false`.
+`null`, as FastMCP and Pydantic do, therefore loses constrained
+decoding for that one tool while every other tool stays strict. The
+harness still validates every tool input against the schema before
+dispatch.
 
 The replay, include, GPT-5.x effort, and strict behaviour is
 documented, not probed: no live request against an OpenAI endpoint has
@@ -622,30 +712,63 @@ been probed against the live API.
 Under [lazy tool loading](configuration.md#lazy-tool-loading) with the
 `auto` strategy, `gpt-5.4` and later 5.x models and the `gpt-6*` family
 use OpenAI's hosted
-[tool search](https://developers.openai.com/api/docs/guides/tools-tool-search).
-The adapter sends it only when the loop asks for a native search, the
+[tool search](https://developers.openai.com/api/docs/guides/tools-tool-search)
+on the default endpoint only. Only `https://api.openai.com/v1`, with or
+without a trailing slash, counts as the default endpoint. A provider
+with any other `baseUrl` (Azure OpenAI deployments, LiteLLM, LM Studio,
+other gateways, and regional first-party hosts) uses the harness's own
+`tool_search` tool. A gateway can answer 200 while silently dropping the
+hosted search entry and the `defer_loading` flags, which leaves every
+deferred tool unloadable while the run still ends in success. LM Studio
+did this when probed on 2026-10-26 with a build that still sent the
+hosted search to a custom `baseUrl`: the request returned 200 with the
+search entry and every `defer_loading` flag removed, and every deferred
+call in the run was refused as not loaded. The gate now routes such runs
+to the harness search. The run logs the fallback once at startup. The
+adapter sends it only when the loop asks for a native search, the
 resolved quirks advertise the `ToolSearch` capability, and at least one
 tool in the request is deferred. Every other model, every request the
 loop serves with the harness's own `tool_search` tool, and every request
 with nothing deferred gets no search entry and no `defer_loading`.
 
 The request lists every function tool as usual, adds
-`"defer_loading": true` to each deferred one, and appends the hosted
-search entry last, with no field other than its type. On the strict
-families `defer_loading` sits beside `strict: true`:
+`"defer_loading": true` to each deferred one, groups the deferred tools
+of each configured MCP server, and the deferred control-plane tools,
+into one `namespace` entry per group, and appends the hosted search
+entry last, with no field other than its type. On the strict families
+`defer_loading` sits beside `strict: true`:
 
 ```json
 "tools": [
   {"type": "function", "name": "read_file", "description": "Read a file", "parameters": {...}, "strict": true},
-  {"type": "function", "name": "mcp_jira_create_issue", "description": "Create a Jira issue", "parameters": {...}, "strict": true, "defer_loading": true},
+  {"type": "namespace", "name": "mcp_jira", "description": "Tools from MCP server \"jira\".", "tools": [
+    {"type": "function", "name": "mcp_jira_create_issue", "description": "Create a Jira issue", "parameters": {...}, "strict": true, "defer_loading": true}
+  ]},
+  {"type": "function", "name": "list_directory", "description": "List a directory", "parameters": {...}, "strict": true, "defer_loading": true},
   {"type": "tool_search"}
 ]
 ```
 
-The adapter sends flat top-level functions. With flat functions the model
-still sees each deferred function's name and description from the first
-turn; only the parameter schema is deferred, so the saving is smaller
-than on Anthropic. Operators who need deferred tools hidden entirely set
+An MCP server's namespace is named `mcp_<server>` and described as
+`Tools from MCP server "<server>".`; control-plane tools share the
+`control_plane` namespace, described as `Tools provided by the control
+plane.` Both come from operator configuration, never from text an MCP
+server or the control plane supplies, and namespace names are normalised
+to the provider's tool-name rules like tool names. A namespace sits where
+its first member would have been. Members keep their full names (such
+as `mcp_jira_create_issue`), so dispatch and permissions see the same
+names as without namespaces. Until a search loads a namespace, the model
+sees only its name and description. A loaded tool whose
+`tool_search_output` is no longer in the request is sent as a flat
+function without `defer_loading`, outside its namespace (see
+[Lifetime of the loaded set](configuration.md#lifetime-of-the-loaded-set)).
+
+Deferred built-in tools, and MCP tools whose name no configured server
+claims, are sent as flat functions. The model still sees each flat
+deferred function's name and description from the first turn; only its
+parameter schema is deferred. A namespace whose name equals a
+function's name is not formed, and its members are sent flat. Operators
+who need every deferred tool hidden set
 `tools.lazyLoading.strategy: "harness"`, which keeps the names and
 descriptions out of the request until a search loads them.
 
@@ -658,10 +781,16 @@ items carry `"call_id": null`; a call without an `id` gets
 `tool_search_<output_index>`) and a `tool_search_result` event paired
 with the earliest unanswered call. The result names every function in
 `tools`, including functions inside a `namespace` entry (a namespace
-nested inside another is ignored); other entry types are ignored. A
-`namespace` field on a later `function_call` is ignored. A malformed search item produces an event with no input
-or no loaded tools rather than failing the turn. OpenAI documents no failure
-shape for hosted search, so the adapter never reports a failed search.
+nested inside another is ignored); other entry types are ignored. The
+search's `arguments` names what it loads, as `{"paths": [...]}` holding
+namespace or function names. Every probed `function_call` to a deferred
+function carries a `namespace` field: the namespace's name for a
+namespace member, or the function's own name for a flat function. No
+probe captured a model-issued call to an eager function. The adapter
+dispatches on `name` and ignores `namespace` on read. A malformed search
+item produces an event with no input or no loaded tools rather than
+failing the turn. OpenAI documents no failure shape for hosted search,
+so the adapter never reports a failed search.
 
 **Replay.** On the reasoning families both items are captured with the
 turn's other output items and replay verbatim, in place. They take no
@@ -673,8 +802,15 @@ as a `tool_search_call` and `tool_search_output` with
 `"execution": "server"`, `"call_id": null` and
 `"status": "completed"`: the call's `arguments` is the persisted search
 input, and the output's `tools` lists the request's own definitions of
-the loaded tools, each with `defer_loading: true`. This reconstruction
-is best effort. The adapter drops both items of a search, and still sends
+the loaded tools, each with `defer_loading: true`, with namespace
+members inside their namespace entry. A rebuilt `function_call` in a
+request with the hosted search carries `namespace`: the namespace's
+name for a namespace member, or the function's own name for a flat
+deferred function. The API rejects a rebuilt call to a function that a
+rebuilt `tool_search_output` in the same input loaded unless the call
+carries its namespace. A call to an eager function carries none, because
+the API resolves it in the default namespace. This reconstruction is
+best effort. The adapter drops both items of a search, and still sends
 the function calls that follow, when the request has no hosted search,
 when the search was recorded by another provider (a call not named
 `tool_search`, such as an Anthropic `tool_search_tool_bm25` pair left by
@@ -686,14 +822,42 @@ repeated.
 conditions as streamed turns. A batch result is decoded by the same code
 as a streamed response, but batch turns never capture output items, so a
 hosted search from a batch turn is always replayed through the
-reconstruction above. Neither the batch request nor its replay has been
-probed against the live API.
+reconstruction above. A batch request with the hosted search was probed
+on 2026-10-26 against `gpt-5.4-mini`: it completed in 338 s and returned
+the same items as a streamed turn, including `namespace` on the function
+call. Its replay goes through reconstruction.
 
-The request shape, the output items, verbatim replay and reconstruction
-all follow OpenAI's guide; none has been probed against the live API.
-Namespaces (grouping, for example, each MCP server's tools so the model
-sees only the group until it loads one) and client-executed search
-(`"execution": "client"`, answered by the harness) are not implemented.
+The request shape, the output items, streaming and verbatim replay were
+probed on 2026-10-26 against `gpt-5.4-mini`, with a first-turn check on
+`gpt-5.5`, `gpt-6-luna` and `gpt-6-astra`. Streaming carries a search
+only as `response.output_item.added` and `response.output_item.done`
+events, with no search-specific delta events. A `tool_search_output`
+item carries an extra `output_schema: null` on each function.
+
+The namespace shapes were probed on the same date against
+`gpt-5.4-mini`: a search loads a namespace by name, and the following
+call carries the bare function name with its `namespace`. Replay
+follows these rules:
+
+- A verbatim replay was not validated in any probed case
+  (`gpt-5.4-mini`) against the request's `tools` array. It was accepted
+  with the deferred flags and the hosted search entry removed, with the
+  namespace entry removed, and with the search items kept after every
+  deferral was dropped.
+- A reconstructed history is rejected with a 400 (`Missing namespace for
+  function_call`) only when a rebuilt `tool_search_output` precedes a
+  `function_call` to a deferred function that lacks `namespace`. A rebuilt
+  call that carries its namespace is accepted, with or without the hosted
+  search entry in the request. Calls to eager functions may omit
+  `namespace`.
+- A deferred call with no `tool_search_output` anywhere in the input is
+  accepted without `namespace`.
+- A harness `tool_search` function call in the history, left by a router
+  switch, is accepted beside the hosted search entry, and a function
+  named `tool_search` can be defined beside it.
+
+Client-executed search (`"execution": "client"`, answered by the
+harness) is not implemented.
 
 ## Google Gemini via Vertex AI
 
@@ -835,9 +999,12 @@ harness routes them through a registry-driven quirks layer at
 stock Chat Completions adapter (`provider.type:
 "openai-compatible"` with `provider.baseUrl:
 "https://api.deepseek.com"`); the built-in `deepseek-v4*`,
-`deepseek-flash*` (V4.1 Flash) and gateway-prefixed rules supply the
-replay threading, sampling suppression, and legacy token key with no
-operator configuration.
+`deepseek-flash*` (V4.1 Flash) rules supply the replay threading,
+sampling suppression, and legacy token key with no operator
+configuration. The OpenRouter rules (`deepseek/deepseek-v4*`,
+`deepseek/deepseek-flash*`, and one rule per listed `~deepseek/...-latest`
+alias) supply the sampling suppression, token key and `reasoning_effort`
+projection, and no replay, because OpenRouter does not require it.
 
 Operators do not author quirk rules. Two surfaces are available:
 

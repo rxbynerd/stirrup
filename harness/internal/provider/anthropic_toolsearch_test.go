@@ -274,7 +274,8 @@ func TestBuildAnthropicRequest_ToolSearch_ReplaysEmptyInputAsObject(t *testing.T
 }
 
 // TestBuildAnthropicRequest_ToolSearch_DropsUnreplayableSearchBlocks pins
-// that only a matched pair naming an Anthropic search tool is replayed.
+// that before the final message only a matched pair naming an Anthropic
+// search tool is replayed.
 func TestBuildAnthropicRequest_ToolSearch_DropsUnreplayableSearchBlocks(t *testing.T) {
 	cases := map[string][]types.ContentBlock{
 		"unanswered call": {
@@ -299,10 +300,104 @@ func TestBuildAnthropicRequest_ToolSearch_DropsUnreplayableSearchBlocks(t *testi
 			history := []types.Message{
 				{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "go"}}},
 				{Role: "assistant", Content: content},
+				{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "Continue."}}},
 			}
 			params := anthropicToolSearchParams(history)
 			body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
 			must.Equal([]string{`{"type":"text","text":"Searching."}`}, anthropicToolSearchBlockStrings(assistantWireBlocks(t, body, 1)))
+		})
+	}
+}
+
+// TestBuildAnthropicRequest_ToolSearch_ReplaysPausedTurnPendingSearch pins
+// the pause_turn continuation shape: a request ending on the paused
+// assistant message replays the search call the server loop paused before
+// answering, as the message's last block, so the turn resumes rather than
+// reading as a prefill.
+func TestBuildAnthropicRequest_ToolSearch_ReplaysPausedTurnPendingSearch(t *testing.T) {
+	must := require.New(t)
+	history := []types.Message{
+		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "find the open bug"}}},
+		{Role: "assistant", Content: []types.ContentBlock{
+			{Type: "text", Text: "Searching."},
+			{Type: "tool_search", ID: "srvtoolu_1", Name: "tool_search_tool_bm25", Input: json.RawMessage(`{"query":"github"}`)},
+			anthropicToolSearchLoadedResult(),
+			{Type: "tool_search", ID: "srvtoolu_2", Name: "tool_search_tool_bm25", Input: json.RawMessage(`{"query":"jira"}`)},
+		}},
+	}
+	params := anthropicToolSearchParams(history)
+	body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
+
+	must.Equal([]string{
+		`{"type":"text","text":"Searching."}`,
+		`{"type":"server_tool_use","id":"srvtoolu_1","name":"tool_search_tool_bm25","input":{"query":"github"}}`,
+		`{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_1","content":{"type":"tool_search_tool_search_result","tool_references":[]}}`,
+		`{"type":"server_tool_use","id":"srvtoolu_2","name":"tool_search_tool_bm25","input":{"query":"jira"}}`,
+	}, anthropicToolSearchBlockStrings(assistantWireBlocks(t, body, 1)))
+	var req struct {
+		Messages []struct {
+			Role string `json:"role"`
+		} `json:"messages"`
+	}
+	must.NoError(json.Unmarshal(body, &req))
+	must.Len(req.Messages, 2)
+	must.Equal("assistant", req.Messages[1].Role)
+}
+
+// TestBuildAnthropicRequest_ToolSearch_SecondContinuationShape pins the
+// request continuing a second pause: the first pause's call, answered by
+// the first continuation, sits mid-message, and the second pause's call
+// is last. Every call and result is replayed in order.
+func TestBuildAnthropicRequest_ToolSearch_SecondContinuationShape(t *testing.T) {
+	must := require.New(t)
+	history := []types.Message{
+		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "find the open bug"}}},
+		{Role: "assistant", Content: []types.ContentBlock{
+			{Type: "text", Text: "Searching."},
+			{Type: "tool_search", ID: "srvtoolu_1", Name: "tool_search_tool_bm25", Input: json.RawMessage(`{"query":"github"}`)},
+			anthropicToolSearchLoadedResult(),
+			{Type: "tool_search", ID: "srvtoolu_2", Name: "tool_search_tool_bm25", Input: json.RawMessage(`{"query":"jira"}`)},
+			{Type: "tool_search_result", ToolUseID: "srvtoolu_2"},
+			{Type: "tool_search", ID: "srvtoolu_3", Name: "tool_search_tool_bm25", Input: json.RawMessage(`{"query":"linear"}`)},
+		}},
+	}
+	params := anthropicToolSearchParams(history)
+	body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
+
+	must.Equal([]string{
+		`{"type":"text","text":"Searching."}`,
+		`{"type":"server_tool_use","id":"srvtoolu_1","name":"tool_search_tool_bm25","input":{"query":"github"}}`,
+		`{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_1","content":{"type":"tool_search_tool_search_result","tool_references":[]}}`,
+		`{"type":"server_tool_use","id":"srvtoolu_2","name":"tool_search_tool_bm25","input":{"query":"jira"}}`,
+		`{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_2","content":{"type":"tool_search_tool_search_result","tool_references":[]}}`,
+		`{"type":"server_tool_use","id":"srvtoolu_3","name":"tool_search_tool_bm25","input":{"query":"linear"}}`,
+	}, anthropicToolSearchBlockStrings(assistantWireBlocks(t, body, 1)))
+}
+
+// TestBuildAnthropicRequest_ToolSearch_FinalMessageDropsOtherUnansweredSearches
+// pins that the paused-turn exception covers only a final assistant
+// message's last block naming an Anthropic search tool.
+func TestBuildAnthropicRequest_ToolSearch_FinalMessageDropsOtherUnansweredSearches(t *testing.T) {
+	cases := map[string][]types.ContentBlock{
+		"unanswered call before the last block": {
+			{Type: "tool_search", ID: "srvtoolu_1", Name: "tool_search_tool_bm25"},
+			{Type: "text", Text: "Done."},
+		},
+		"foreign search tool": {
+			{Type: "tool_search", ID: "srvtoolu_1", Name: "tool_search"},
+		},
+	}
+	for name, searchBlocks := range cases {
+		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
+			content := append([]types.ContentBlock{{Type: "text", Text: "Searching."}}, searchBlocks...)
+			history := []types.Message{
+				{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "go"}}},
+				{Role: "assistant", Content: content},
+			}
+			params := anthropicToolSearchParams(history)
+			body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
+			must.NotContains(string(body), "server_tool_use")
 		})
 	}
 }
@@ -444,6 +539,18 @@ func TestAnthropicAdapter_ToolSearchStream_IgnoresOtherServerTools(t *testing.T)
 		makeSSE("message_stop", `{}`),
 	))
 	must.Equal([]string{"message_complete"}, eventTypes(events))
+}
+
+func TestAnthropicAdapter_ToolSearchStream_PauseTurnKeepsPendingSearch(t *testing.T) {
+	must := require.New(t)
+	events := streamAnthropicSSE(t, joinLines(
+		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"tool_search_tool_bm25","input":{"query":"jira"}}}`),
+		makeSSE("content_block_stop", `{"index":0}`),
+		makeSSE("message_delta", `{"delta":{"stop_reason":"pause_turn"},"usage":{"output_tokens":9}}`),
+		makeSSE("message_stop", `{}`),
+	))
+	must.Equal([]string{"tool_search", "message_complete"}, eventTypes(events))
+	must.Equal("pause_turn", events[1].StopReason)
 }
 
 func TestAnthropicAdapter_ToolSearchStream_UnknownResultLoadsNothing(t *testing.T) {

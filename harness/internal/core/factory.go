@@ -667,20 +667,18 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// reference to the loop (chicken-and-egg), so we close over the loop
 	// pointer here. The spawner closure captures the loop and config so
 	// the tool can call SpawnSubAgent without a circular import.
-	if toolEnabled(config.Tools.BuiltIn, "spawn_agent") {
-		spawner := func(ctx context.Context, prompt, mode string, maxTurns int) (json.RawMessage, error) {
-			result, err := SpawnSubAgent(ctx, loop, config, SubAgentConfig{
-				Prompt:   prompt,
-				Mode:     mode,
-				MaxTurns: maxTurns,
-			})
-			if err != nil {
-				return nil, err
-			}
-			return json.Marshal(result)
+	spawner := func(ctx context.Context, prompt, mode string, maxTurns int) (json.RawMessage, error) {
+		result, err := SpawnSubAgent(ctx, loop, config, SubAgentConfig{
+			Prompt:   prompt,
+			Mode:     mode,
+			MaxTurns: maxTurns,
+		})
+		if err != nil {
+			return nil, err
 		}
-		registry.Register(builtins.SpawnAgentTool(spawner))
-
+		return json.Marshal(result)
+	}
+	if registerSpawnAgent(registry, config.Tools, spawner) {
 		// The ask-upstream policy snapshots the approval-required tool set
 		// at construction time, before spawn_agent is registered; refresh
 		// it here so spawn_agent is gated rather than auto-allowed. See
@@ -708,13 +706,14 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	loop.Tools = presenter
 	loop.ToolProfile = profile
 	warnUnknownExcludedTools(config.ContextStrategy.ExcludeTools, presenter, logger)
+	warnCedarWithAliasedProfile(config, logger)
 
 	// Built over the presenter, after every registration, so the eager
 	// and deferred sets cover spawn_agent and MCP tools and the loader
 	// can map presented names to internal IDs.
 	if config.Tools.LazyLoading.Enabled {
 		loop.LazyTools = tool.NewLazyLoader(presenter, config.Tools.LazyLoading, lazyLoaderOptions(config.Tools))
-		loop.ToolSearch = buildToolSearchSupport(config, quirks.DefaultRegistry())
+		loop.ToolSearch = buildToolSearchSupport(config, quirks.DefaultRegistry(), logger)
 	}
 
 	return loop, nil
@@ -757,10 +756,33 @@ func buildStructuredResultSupport(config *types.RunConfig, caps capabilityResolv
 
 // buildToolSearchSupport resolves the native tool search capability of a
 // router-selected provider key and model against the registry the
-// Anthropic and OpenAI Responses adapters gate their own search on.
-func buildToolSearchSupport(config *types.RunConfig, caps capabilityResolver) ToolSearchSupport {
+// Anthropic and OpenAI Responses adapters gate their own search on. An
+// openai-responses provider with a custom baseUrl (Azure OpenAI, LiteLLM and
+// other gateways) resolves to no native search, so the loop serves the
+// harness tool_search; the hosted search is only known to exist on OpenAI's
+// own endpoint.
+func buildToolSearchSupport(config *types.RunConfig, caps capabilityResolver, logger *slog.Logger) ToolSearchSupport {
+	if config.Tools.LazyLoading.EffectiveStrategy() == types.LazyToolStrategyAuto {
+		logCustomResponsesEndpoint(logger, config.Provider.Type, config.Provider)
+		for name, cfg := range config.Providers {
+			logCustomResponsesEndpoint(logger, name, cfg)
+		}
+	}
 	return func(key, model string) quirks.ToolSearchCapability {
+		if hasCustomResponsesEndpoint(providerConfigFor(config, key)) {
+			return quirks.ToolSearchCapability{}
+		}
 		return caps.Resolve(selectedProviderType(config, key), model).ToolSearch
+	}
+}
+
+func hasCustomResponsesEndpoint(cfg types.ProviderConfig) bool {
+	return cfg.Type == "openai-responses" && !provider.IsDefaultOpenAIBaseURL(cfg.BaseURL)
+}
+
+func logCustomResponsesEndpoint(logger *slog.Logger, name string, cfg types.ProviderConfig) {
+	if hasCustomResponsesEndpoint(cfg) {
+		logger.Info("native tool search is off for a custom openai-responses baseUrl, where a gateway may silently drop the hosted search; the harness tool_search is used", "provider", name)
 	}
 }
 
@@ -800,6 +822,9 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 	src, err := credential.BuildSource(cfg, secrets)
 	if err != nil {
 		return nil, fmt.Errorf("build credential source: %w", err)
+	}
+	if _, static := src.(*credential.StaticSource); static && cfg.APIKeyRef == "" && !keylessEndpoint(cfg) {
+		return nil, fmt.Errorf("provider %s requires apiKeyRef (empty reference is only valid for openai-compatible/openai-responses with a custom baseUrl)", cfg.Type)
 	}
 	cred, err := src.Resolve(ctx)
 	if err != nil {
@@ -870,6 +895,18 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 		return adapter, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider type: %q (supported: anthropic, bedrock, gemini, openai-compatible, openai-responses)", cfg.Type)
+	}
+}
+
+// keylessEndpoint reports whether cfg may run with no API key: only an
+// OpenAI-wire provider pointed away from api.openai.com can reach a server
+// that accepts unauthenticated requests.
+func keylessEndpoint(cfg types.ProviderConfig) bool {
+	switch cfg.Type {
+	case "openai-compatible", "openai-responses":
+		return !provider.IsDefaultOpenAIBaseURL(cfg.BaseURL)
+	default:
+		return false
 	}
 }
 
@@ -1066,6 +1103,20 @@ func warnUnknownExcludedTools(names []string, tools tool.ToolRegistry, logger *s
 			logger.Warn("contextStrategy.excludeTools names a tool this run does not have; it excludes nothing", "tool", name)
 		}
 	}
+}
+
+// warnCedarWithAliasedProfile logs when a Cedar policy engine runs alongside
+// a tools profile that renames tools. The policy engine evaluates internal
+// tool IDs, so a policy written against a profile alias never matches.
+func warnCedarWithAliasedProfile(config *types.RunConfig, logger *slog.Logger) {
+	if config.PermissionPolicy.Type != "policy-engine" {
+		return
+	}
+	if config.Tools.Profile == "" || config.Tools.Profile == "default" {
+		return
+	}
+	logger.Warn("permissionPolicy policy-engine matches internal tool IDs, not the aliases of the tools profile; write policies against the internal names",
+		"profile", config.Tools.Profile)
 }
 
 // sandboxLifecycle derives the run label and lifetime bound handed to
@@ -1284,15 +1335,29 @@ func buildToolRegistry(exec executor.Executor, es edit.EditStrategy, cfg types.T
 
 var _ CommandOutputFinalizer = (*commandoutput.Store)(nil)
 
+// commandOutputStoreWanted reports whether a run builds a command output
+// store: capture is on and a registered tool could feed it.
+func commandOutputStoreWanted(cfg types.ToolsConfig) bool {
+	return cfg.CommandOutputCaptureEnabled() &&
+		(toolEnabled(cfg.BuiltIn, "run_command") || toolEnabled(cfg.BuiltIn, "read_command_output"))
+}
+
+// registerSpawnAgent registers spawn_agent when the run's built-in tools
+// enable it and reports whether it did.
+func registerSpawnAgent(registry *tool.Registry, cfg types.ToolsConfig, spawner builtins.SubAgentSpawner) bool {
+	if !toolEnabled(cfg.BuiltIn, "spawn_agent") {
+		return false
+	}
+	registry.Register(builtins.SpawnAgentTool(spawner))
+	return true
+}
+
 // buildCommandOutputStore returns nil when capture is disabled or no
 // registered tool could feed the store — read-only modes exclude
 // run_command, and skipping construction also skips resolving GCS archive
 // credentials those runs would never use.
 func buildCommandOutputStore(ctx context.Context, config *types.RunConfig) (*commandoutput.Store, error) {
-	if !config.Tools.CommandOutputCaptureEnabled() {
-		return nil, nil
-	}
-	if !toolEnabled(config.Tools.BuiltIn, "run_command") && !toolEnabled(config.Tools.BuiltIn, "read_command_output") {
+	if !commandOutputStoreWanted(config.Tools) {
 		return nil, nil
 	}
 	archivePath := ""
@@ -2218,7 +2283,8 @@ func resolveCompatProfile(profile string) ([]quirks.Rule, error) {
 	case "zai-glm":
 		return zai.CompatRules(), nil
 	default:
-		return nil, fmt.Errorf("unknown compat profile %q (supported: zai-glm)", profile)
+		return nil, fmt.Errorf("unknown compat profile %q (supported: %s)",
+			profile, strings.Join(types.ValidCompatProfileValues(), ", "))
 	}
 }
 

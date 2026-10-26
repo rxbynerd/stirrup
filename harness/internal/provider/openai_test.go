@@ -1185,3 +1185,32 @@ func TestOpenAIAdapter_TerminalNon429WithTracer_SetsStatusCode(t *testing.T) {
 	}
 	check.NotContains(eventNames, "rate_limited", "rate_limited must not fire on a non-429 terminal status")
 }
+
+func TestIsDefaultOpenAIBaseURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		want    bool
+	}{
+		{"empty", "", true},
+		{"exact", "https://api.openai.com/v1", true},
+		{"trailing slash", "https://api.openai.com/v1/", true},
+		{"mixed case host", "HTTPS://API.OpenAI.com/v1", true},
+		{"explicit default port", "https://api.openai.com:443/v1", true},
+		{"other port", "https://api.openai.com:8443/v1", false},
+		{"plain http", "http://api.openai.com/v1", false},
+		{"userinfo", "https://user@api.openai.com/v1", false},
+		{"query", "https://api.openai.com/v1?x=1", false},
+		{"lookalike host", "https://api.openai.com.evil.example/v1", false},
+		{"unparseable", "https://api.openai.com/%zz", false},
+		{"azure", "https://example.openai.azure.com/openai/v1", false},
+		{"other path", "https://api.openai.com/v2", false},
+		{"local gateway", "http://localhost:4000/v1", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tt.want, IsDefaultOpenAIBaseURL(tt.baseURL))
+		})
+	}
+}

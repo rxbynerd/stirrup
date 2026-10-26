@@ -807,6 +807,13 @@ func (l *AgenticLoop) runInnerLoop(
 	escalationsSoFar := 0
 	pendingToolChoice := types.ToolChoiceAuto
 
+	// pausedRoute is the routing of a turn that stopped on pause_turn,
+	// pinned for the turn continuing it, since only the model that paused
+	// a server tool loop can resume it. pauseContinuations counts
+	// consecutive continuations.
+	var pausedRoute *router.ModelSelection
+	pauseContinuations := 0
+
 	cacheKey := l.cacheKey
 	var calibration tokenCalibration
 
@@ -831,9 +838,13 @@ func (l *AgenticLoop) runInnerLoop(
 		}
 
 		// Turn boundary: operator input that arrived since the last
-		// model call joins the history before this turn's request.
-		if _, blocked := l.absorbQueuedUserInput(ctx, config, turn, &messages); blocked != "" {
-			return messages, blocked, finalAssistantText, nil
+		// model call joins the history before this turn's request. A
+		// paused turn's continuation must end on its assistant message,
+		// so input waits for the next boundary.
+		if pausedRoute == nil {
+			if _, blocked := l.absorbQueuedUserInput(ctx, config, turn, &messages); blocked != "" {
+				return messages, blocked, finalAssistantText, nil
+			}
 		}
 
 		// See docs/guardrails.md for what counts as untrusted content
@@ -869,18 +880,30 @@ func (l *AgenticLoop) runInnerLoop(
 		}
 		l.screenedLen = len(messages)
 
+		// A continuation holds the wind-down notice like operator input,
+		// except on the run's last turn, where no later boundary exists:
+		// the notice is sent and the turn no longer continues the pause.
 		var windDown string
-		messages, windDown = l.windDownIfDue(ctx, config, turn, tokenTracker.Tokens(), messages)
-
-		selection := l.Router.Select(ctx, router.RouterContext{
-			Mode:           config.Mode,
-			Turn:           turn,
-			LastStopReason: lastStopReason,
-			TokenUsage: router.TokenUsage{
-				Input:  tokenTracker.Tokens().Input,
-				Output: tokenTracker.Tokens().Output,
-			},
-		})
+		if pausedRoute == nil || turn+1 == config.MaxTurns {
+			messages, windDown = l.windDownIfDue(ctx, config, turn, tokenTracker.Tokens(), messages)
+			if windDown != "" {
+				pausedRoute = nil
+			}
+		}
+		var selection router.ModelSelection
+		if pausedRoute != nil {
+			selection = *pausedRoute
+		} else {
+			selection = l.Router.Select(ctx, router.RouterContext{
+				Mode:           config.Mode,
+				Turn:           turn,
+				LastStopReason: lastStopReason,
+				TokenUsage: router.TokenUsage{
+					Input:  tokenTracker.Tokens().Input,
+					Output: tokenTracker.Tokens().Output,
+				},
+			})
+		}
 
 		// Token estimate includes system prompt and tool definitions —
 		// these consume context but aren't in the message history.
@@ -984,7 +1007,7 @@ func (l *AgenticLoop) runInnerLoop(
 			Model:            selection.Model,
 			System:           systemPrompt,
 			Messages:         l.presentToolReferences(preparedMessages),
-			Tools:            toolDefs,
+			Tools:            l.undeferUnreferenced(toolDefs, search, preparedMessages),
 			MaxTokens:        responseReserve,
 			Temperature:      temperature,
 			ReasoningEffort:  config.ReasoningEffort,
@@ -1034,6 +1057,7 @@ func (l *AgenticLoop) runInnerLoop(
 				return messages, prepOutcome, finalAssistantText, nil
 			}
 			params.Messages = l.presentToolReferences(preparedMessages)
+			params.Tools = l.undeferUnreferenced(toolDefs, search, preparedMessages)
 		}
 		if attempt.err != nil {
 			chat.End(trace.ChatSpanEnd{Summary: attempt.summary, Record: sentRecord(turn, selection.Model, params), ErrorType: attempt.errorType, ErrorText: attempt.errText})
@@ -1046,6 +1070,11 @@ func (l *AgenticLoop) runInnerLoop(
 			return messages, "error", finalAssistantText, nil
 		}
 		sr := attempt.result
+		continuesPause := pausedRoute != nil
+		pausedRoute = nil
+		if sr.StopReason != "pause_turn" {
+			pauseContinuations = 0
+		}
 
 		lastStopReason = sr.StopReason
 		toolCalls := collectToolCalls(sr.Blocks, sr.InvalidToolInputs)
@@ -1054,7 +1083,11 @@ func (l *AgenticLoop) runInnerLoop(
 			dispatched = len(toolCalls)
 		}
 		outputLimitRecovery := l.canRecoverFromOutputLimit(sr.StopReason, turn, config.MaxTurns)
-		attempt.toolsLoaded = l.loadSearchedTools(chatCtx, sr.Blocks, params.ToolSearch)
+		var pausedBlocks []types.ContentBlock
+		if continuesPause && len(messages) > 0 {
+			pausedBlocks = messages[len(messages)-1].Content
+		}
+		attempt.toolsLoaded = l.loadSearchedTools(chatCtx, sr.Blocks, pausedBlocks, params.ToolSearch)
 		summary := l.recordAttemptUsage(chatCtx, config, tokenTracker, ledger, turn, selection, selectedProvider, attempt, dispatched, outputLimitRecovery, windDown)
 		// A turn that dispatches tool calls is recorded after them, so its
 		// summary includes the tools a harness tool_search loaded.
@@ -1095,7 +1128,7 @@ func (l *AgenticLoop) runInnerLoop(
 		if outputLimitRecovery {
 			l.Trace.RecordTurnRecord(turnRecord)
 			var continues bool
-			messages, continues = l.recoverFromOutputLimit(turn, selection.Model, responseReserve, sr, summary.Tokens, messages)
+			messages, continues = l.recoverFromOutputLimit(turn, selection.Model, responseReserve, sr, summary.Tokens, messages, continuesPause)
 			if continues {
 				continuedText, preContinuationText = finalText, priorFinalText
 			}
@@ -1107,7 +1140,28 @@ func (l *AgenticLoop) runInnerLoop(
 		// never committed.
 		assistantBlocks, appended := committableAssistantBlocks(sr.StopReason, sr.Blocks)
 		if appended {
-			messages = appendAssistantContent(messages, assistantBlocks, sr.ReplayFields)
+			messages = commitAssistantContent(messages, assistantBlocks, sr.ReplayFields, continuesPause)
+		}
+
+		// A paused server tool turn is continued by resending the history
+		// as it stands, ending on the paused assistant message, with no
+		// user message. It is not a missed tool call, so it precedes the
+		// escalation check.
+		if sr.StopReason == "pause_turn" {
+			l.Trace.RecordTurnRecord(turnRecord)
+			if !appended {
+				l.emitTurnAbandoned(types.TurnAbandonedEmptyResponse)
+				l.reportUncontinuedPause(turn, selection.Model, pauseContinuations, "with an empty response")
+				return messages, sr.StopReason, finalAssistantText, sr.StopDetails
+			}
+			l.emitTurnCommitted(turn, sr.StopReason, summary.Tokens, 0)
+			if !canContinuePausedTurn(pauseContinuations, turn, config.MaxTurns) {
+				l.reportUncontinuedPause(turn, selection.Model, pauseContinuations, pauseLimitReason(pauseContinuations))
+				return messages, sr.StopReason, finalAssistantText, sr.StopDetails
+			}
+			pauseContinuations++
+			pausedRoute = &selection
+			continue
 		}
 
 		// The loop makes no judgement — it forwards turn facts to

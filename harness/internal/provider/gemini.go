@@ -189,6 +189,15 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 		span.SetAttributes(attribute.StringSlice("provider.quirk.applied", ruleDescriptions(appliedRules)))
 	}
 
+	// The suppressed value itself is intentionally NOT logged.
+	if q.BehaviourFlags.Gemini.OmitSamplingParams && params.Temperature != nil {
+		logger.WarnContext(ctx, "gemini quirks suppressed caller temperature",
+			slog.String("provider.type", "gemini"),
+			slog.String("provider.model", params.Model),
+			slog.Any("quirk.rules", ruleDescriptions(appliedRules)),
+		)
+	}
+
 	body, _, err := BuildGenerateContentRequest(params, g.safety, q)
 	if err != nil {
 		g.recordLatency(ctx, start, metricAttrs)

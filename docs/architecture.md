@@ -494,7 +494,9 @@ at the trust boundary: `structuredContent` larger than the size cap is
 dropped (with a marker noting the omission), embedded-resource text is
 truncated to a per-resource limit, and image/audio bytes and binary
 blobs are never inlined — the URI is the durable handle the model uses
-to re-fetch them. The preserved content is not scrubbed in the bridge;
+to re-fetch them. Markers for content omitted by a bound carry kind
+`dropped`, and content of a type the bridge does not recognise is
+recorded with kind `unsupported`. The preserved content is not scrubbed in the bridge;
 it rides the same dispatch path as every other tool result, so it
 passes through the secret scrubber before reaching a trace or the model
 history.
@@ -638,6 +640,15 @@ limit:
   placeholder in occasional batches, so the prompt cache stays valid
   between batches.
 
+A native tool search's `tool_search` and `tool_search_result` blocks
+are never rewritten: `clear-tool-results` and `offload-to-file` touch
+only tool results. The estimate counts the tool names a search result
+references, and `summarise` records each search and the tools it
+loaded (or its error code) in the summary input. A strategy that drops
+a search exchange leaves its tools loaded, and the next native-search
+request sends them in full; see
+[`configuration.md`](configuration.md#lifetime-of-the-loaded-set).
+
 Token estimation accounts for per-message overhead (4 tokens),
 per-block overhead (3 tokens), tool-related metadata, system prompt
 tokens, tool definition tokens, and the reasoning text of thinking
@@ -717,13 +728,14 @@ The provider-quirks layer (see
 [`provider-quirks.md`](provider-quirks.md)) surfaces resolution
 observability through both slog records and OTel span attributes
 so log-only and trace-only consumers each see which rules fired.
-Each `ProviderAdapter.Stream` call emits an `openai quirks
-resolved` (or `gemini quirks resolved`) DEBUG record naming every
-contributing rule's description, and sets the matching
-`provider.quirk.applied` attribute on the active span. When a
-rule's `OmitSamplingParams` suppresses a caller-supplied non-nil
-`Temperature`, an `openai quirks suppressed caller temperature`
-WARN record fires naming the responsible rule. When a rule
+Each `ProviderAdapter.Stream` call emits a `<adapter> quirks
+resolved` DEBUG record naming every contributing rule's
+description, and sets the matching `provider.quirk.applied`
+attribute on the active span. When a rule's `OmitSamplingParams`
+suppresses a caller-supplied non-nil `Temperature`, a `<adapter>
+quirks suppressed caller temperature` WARN record fires naming
+the responsible rule. `<adapter>` is `openai`, `openai-responses`,
+`anthropic`, or `gemini`. When a rule
 registers `ReplayFields` paths and any value is captured during
 the stream, a `quirks replay fields captured` DEBUG record fires
 on stream exit summarising `{count, total_len}` per path — and

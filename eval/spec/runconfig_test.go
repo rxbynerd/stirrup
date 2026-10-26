@@ -229,6 +229,82 @@ suite "s" {
 	must.Equal(want, got.RunConfig.Tools.PostEdit)
 }
 
+func TestToolsSpec_LazyLoadingMapsToRunConfig(t *testing.T) {
+	must := require.New(t)
+	src := `
+suite "s" {
+  run_config {
+    mode = "execution"
+
+    provider {
+      type        = "anthropic"
+      api_key_ref = "secret://ANTHROPIC_KEY"
+    }
+
+    tools {
+      lazy_loading {
+        enabled     = true
+        strategy    = "harness"
+        eager       = ["read_file", "run_command"]
+        max_results = 8
+      }
+    }
+  }
+
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	got, err := LoadSuiteHCL(writeTemp(t, "runcfg-lazy-loading.hcl", src))
+	must.NoError(err)
+	must.NotNil(got.RunConfig)
+	must.Equal(types.LazyToolLoadingConfig{
+		Enabled:    true,
+		Strategy:   "harness",
+		Eager:      []string{"read_file", "run_command"},
+		MaxResults: 8,
+	}, got.RunConfig.Tools.LazyLoading)
+}
+
+func TestToolsSpec_LazyLoadingDefaultsToOff(t *testing.T) {
+	must := require.New(t)
+	src := `
+suite "s" {
+  run_config {
+    mode = "execution"
+
+    provider {
+      type        = "anthropic"
+      api_key_ref = "secret://ANTHROPIC_KEY"
+    }
+
+    tools {
+      built_in = ["read_file"]
+    }
+  }
+
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	got, err := LoadSuiteHCL(writeTemp(t, "runcfg-lazy-loading-off.hcl", src))
+	must.NoError(err)
+	must.NotNil(got.RunConfig)
+	must.Equal(types.LazyToolLoadingConfig{}, got.RunConfig.Tools.LazyLoading)
+}
+
 // TestLoadSuiteHCL_PostEditABArmsDifferOnlyInChecks pins the paired
 // post-edit suites: identical tasks and run config apart from
 // tools.postEdit, which only the on arm sets.

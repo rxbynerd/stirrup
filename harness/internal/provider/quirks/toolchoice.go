@@ -32,7 +32,8 @@ type ToolChoiceCapability struct {
 
 	// RejectsTrailingAssistant reports that the provider rejects a
 	// request whose history ends on an assistant message (Anthropic
-	// reads it as a prefill), so a forced-tool retry after a no-tool
-	// answer must end on a user message.
+	// reads it as a prefill; Gemini rejects a request ending on a model
+	// turn), so a forced-tool retry after a no-tool answer must end on a
+	// user message.
 	RejectsTrailingAssistant bool `json:"rejectsTrailingAssistant"`
 }

@@ -43,11 +43,70 @@ type lazyEntry struct {
 	schemaText string
 }
 
-// LazyMatch is one Search result: the internal tool ID and the
-// definition under the model-facing name.
+// LazyGroupKind is the origin of a deferred tool.
+type LazyGroupKind int
+
+const (
+	// LazyGroupBuiltIn is a tool built into the harness.
+	LazyGroupBuiltIn LazyGroupKind = iota
+	// LazyGroupControlPlane is a tool fulfilled by the control plane.
+	LazyGroupControlPlane
+	// LazyGroupMCPServer is a tool imported from a configured MCP server.
+	LazyGroupMCPServer
+	// LazyGroupMCPOther is an MCP-prefixed tool that no configured
+	// server name claims.
+	LazyGroupMCPOther
+)
+
+// LazyGroup is the origin a tool is grouped under: the unit a search
+// caps and a result line names. Server is the configured server name for
+// LazyGroupMCPServer and empty otherwise, so two groups are equal exactly
+// when their tools share an origin.
+type LazyGroup struct {
+	Kind   LazyGroupKind
+	Server string
+}
+
+// Label describes the group for a search result line. The server name
+// comes from operator configuration, never from the server.
+func (g LazyGroup) Label() string {
+	switch g.Kind {
+	case LazyGroupControlPlane:
+		return "control plane"
+	case LazyGroupMCPServer:
+		return fmt.Sprintf("MCP server %q", g.Server)
+	case LazyGroupMCPOther:
+		return "MCP"
+	default:
+		return "built-in"
+	}
+}
+
+// controlPlaneNamespace is the namespace of deferred control-plane tools.
+const controlPlaneNamespace = "control_plane"
+
+// Namespace returns the name and description a native tool search groups
+// the group's deferred tools under, or empty strings for a group that
+// stays ungrouped (built-in tools and MCP tools no configured server
+// claims). Both are built from operator configuration, never from text a
+// tool source supplies.
+func (g LazyGroup) Namespace() (name, description string) {
+	switch g.Kind {
+	case LazyGroupControlPlane:
+		return controlPlaneNamespace, "Tools provided by the control plane."
+	case LazyGroupMCPServer:
+		return "mcp_" + g.Server, fmt.Sprintf("Tools from MCP server %q.", g.Server)
+	default:
+		return "", ""
+	}
+}
+
+// LazyMatch is one Search result: the internal tool ID, the definition
+// under the model-facing name, and the group the tool belongs to.
 type LazyMatch struct {
 	ID         string
 	Definition types.ToolDefinition
+	Group      LazyGroup
 }
 
 // LazyLoader decides which registered tools the model sees on a turn
@@ -60,6 +119,12 @@ type LazyMatch struct {
 type LazyLoader struct {
 	cfg  types.LazyToolLoadingConfig
 	opts LazyLoaderOptions
+	// servers are opts.MCPServers longest first, so a server whose name
+	// extends another's claims its own tools. They attribute only tools
+	// that name no owner.
+	servers []string
+	// owners maps an MCP tool's internal ID to the server that registered it.
+	owners map[string]string
 
 	entries      []lazyEntry
 	byID         map[string]int
@@ -83,6 +148,8 @@ func NewLazyLoader(reg ToolRegistry, cfg types.LazyToolLoadingConfig, opts LazyL
 	l := &LazyLoader{
 		cfg:          cfg,
 		opts:         opts,
+		servers:      longestFirst(opts.MCPServers),
+		owners:       map[string]string{},
 		byID:         map[string]int{},
 		presentedFor: map[string]string{},
 		internalFor:  map[string]string{},
@@ -94,6 +161,9 @@ func NewLazyLoader(reg ToolRegistry, cfg types.LazyToolLoadingConfig, opts LazyL
 		id := def.Name
 		if t := reg.Resolve(def.Name); t != nil {
 			id = t.Name
+			if t.MCPServer != "" {
+				l.owners[id] = t.MCPServer
+			}
 		}
 		l.byID[id] = len(l.entries)
 		l.presentedFor[id] = def.Name
@@ -162,17 +232,84 @@ func (c LazyDeferredCounts) Total() int {
 func (l *LazyLoader) DeferredCounts() LazyDeferredCounts {
 	var c LazyDeferredCounts
 	for _, e := range l.entries {
-		switch {
-		case !l.deferred[e.id]:
-		case l.controlPlane[e.id]:
+		if !l.deferred[e.id] {
+			continue
+		}
+		switch l.GroupOf(e.id).Kind {
+		case LazyGroupControlPlane:
 			c.ControlPlane++
-		case strings.HasPrefix(e.id, "mcp_"):
+		case LazyGroupMCPServer, LazyGroupMCPOther:
 			c.MCP++
 		default:
 			c.BuiltIn++
 		}
 	}
 	return c
+}
+
+// LazyGroupCount counts the eager and deferred tools of one group, the
+// search tool excluded.
+type LazyGroupCount struct {
+	Group    LazyGroup
+	Eager    int
+	Deferred int
+}
+
+// GroupCounts returns the loader's tools counted per group, built-in
+// first, then control-plane, then MCP servers by name. Groups with no
+// tool are omitted.
+func (l *LazyLoader) GroupCounts() []LazyGroupCount {
+	counts := map[LazyGroup]*LazyGroupCount{}
+	for _, e := range l.entries {
+		if e.id == types.ToolSearchToolName {
+			continue
+		}
+		group := l.GroupOf(e.id)
+		c := counts[group]
+		if c == nil {
+			c = &LazyGroupCount{Group: group}
+			counts[group] = c
+		}
+		if l.deferred[e.id] {
+			c.Deferred++
+		} else {
+			c.Eager++
+		}
+	}
+	out := make([]LazyGroupCount, 0, len(counts))
+	for _, c := range counts {
+		out = append(out, *c)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Group.Kind != out[j].Group.Kind {
+			return out[i].Group.Kind < out[j].Group.Kind
+		}
+		return out[i].Group.Server < out[j].Group.Server
+	})
+	return out
+}
+
+// GroupOf returns the group the tool with internal ID id belongs to:
+// control-plane tools first, then MCP tools by the server that registered
+// them or, for an MCP-prefixed tool with no recorded owner, by the longest
+// configured server name that prefixes mcp_<server>_, then every other
+// tool as built-in.
+func (l *LazyLoader) GroupOf(id string) LazyGroup {
+	if l.controlPlane[id] {
+		return LazyGroup{Kind: LazyGroupControlPlane}
+	}
+	if server, ok := l.owners[id]; ok {
+		return LazyGroup{Kind: LazyGroupMCPServer, Server: server}
+	}
+	if !strings.HasPrefix(id, "mcp_") {
+		return LazyGroup{Kind: LazyGroupBuiltIn}
+	}
+	for _, s := range l.servers {
+		if strings.HasPrefix(id, "mcp_"+s+"_") {
+			return LazyGroup{Kind: LazyGroupMCPServer, Server: s}
+		}
+	}
+	return LazyGroup{Kind: LazyGroupMCPOther}
 }
 
 // EagerCount returns the number of eager tools, the search tool excluded.
@@ -280,7 +417,8 @@ func (l *LazyLoader) InternalID(name string) string {
 // deferred it is the plain list, without the search tool. With native
 // set, every tool except the harness search tool is sent and deferred
 // ones carry Deferred, whether loaded or not, so the request stays stable
-// across turns. Otherwise the eager and loaded tools are sent in
+// across turns; deferred MCP-server and control-plane tools also carry
+// their group's Namespace. Otherwise the eager and loaded tools are sent in
 // registration order, followed by the search tool.
 func (l *LazyLoader) Visible(native bool) []types.ToolDefinition {
 	out := make([]types.ToolDefinition, 0, len(l.entries))
@@ -297,6 +435,7 @@ func (l *LazyLoader) Visible(native bool) []types.ToolDefinition {
 		case !l.deferred[e.id]:
 		case native:
 			def.Deferred = true
+			def.Namespace, def.NamespaceDescription = l.GroupOf(e.id).Namespace()
 		case !l.Loaded(e.id):
 			continue
 		}
@@ -313,30 +452,41 @@ func (l *LazyLoader) Visible(native bool) []types.ToolDefinition {
 // term scores the strongest field it appears in: name, then description,
 // then input schema property names and descriptions. Ties keep
 // registration order; tools matching no term are not returned.
+//
+// A tool whose name or ID equals the whole query ranks ahead of every
+// scored hit and is always returned, but counts toward its group's cap,
+// so a group takes max((limit+1)/2, its exact hits) results while other
+// groups have matches. Slots a group cap leaves free are backfilled in
+// rank order, so a lone matching group is not starved.
 func (l *LazyLoader) Search(query string, limit int) []LazyMatch {
 	maxResults := l.cfg.EffectiveMaxResults()
 	if limit <= 0 || limit > maxResults {
 		limit = maxResults
 	}
-	return l.search(query, limit, func(id string) bool { return !l.Loaded(id) })
+	return l.search(query, limit, true, func(id string) bool { return !l.Loaded(id) })
 }
 
 // LoadedMatches returns the loaded deferred tools that match query,
 // ranked as Search ranks them, at most MaxLazyToolSearchResults of them.
+// Nothing is loaded by this call, so no group cap applies.
 func (l *LazyLoader) LoadedMatches(query string) []LazyMatch {
-	return l.search(query, types.MaxLazyToolSearchResults, l.Loaded)
+	return l.search(query, types.MaxLazyToolSearchResults, false, l.Loaded)
 }
 
 // search ranks the deferred tools for which include reports true against
-// query and returns at most limit of them.
-func (l *LazyLoader) search(query string, limit int, include func(id string) bool) []LazyMatch {
+// query and returns at most limit of them, capping each group when
+// capGroups is set.
+func (l *LazyLoader) search(query string, limit int, capGroups bool, include func(id string) bool) []LazyMatch {
 	terms := searchTerms(query)
 	if len(terms) == 0 {
 		return nil
 	}
 	type scored struct {
 		index, score int
+		exact        bool
+		group        LazyGroup
 	}
+	query = strings.ToLower(strings.TrimSpace(query))
 	var hits []scored
 	for i, e := range l.entries {
 		if !l.deferred[e.id] || !include(e.id) {
@@ -355,20 +505,71 @@ func (l *LazyLoader) search(query string, limit int, include func(id string) boo
 				score += searchWeightSchema
 			}
 		}
-		if score > 0 {
-			hits = append(hits, scored{index: i, score: score})
+		group := l.GroupOf(e.id)
+		exact := l.exactName(e, group, query)
+		if score > 0 || exact {
+			hits = append(hits, scored{index: i, score: score, exact: exact, group: group})
 		}
 	}
-	sort.SliceStable(hits, func(a, b int) bool { return hits[a].score > hits[b].score })
-	if len(hits) > limit {
-		hits = hits[:limit]
+	sort.SliceStable(hits, func(a, b int) bool {
+		if hits[a].exact != hits[b].exact {
+			return hits[a].exact
+		}
+		return hits[a].score > hits[b].score
+	})
+
+	selected := make([]bool, len(hits))
+	groupCap := limit
+	if capGroups {
+		groupCap = (limit + 1) / 2
 	}
-	out := make([]LazyMatch, len(hits))
+	perGroup := map[LazyGroup]int{}
+	taken := 0
 	for i, h := range hits {
-		e := l.entries[h.index]
-		out[i] = LazyMatch{ID: e.id, Definition: e.def}
+		if taken == limit {
+			break
+		}
+		if !h.exact && perGroup[h.group] >= groupCap {
+			continue
+		}
+		perGroup[h.group]++
+		selected[i] = true
+		taken++
+	}
+	for i := range hits {
+		if taken == limit {
+			break
+		}
+		if !selected[i] {
+			selected[i] = true
+			taken++
+		}
+	}
+
+	out := make([]LazyMatch, 0, taken)
+	for i, h := range hits {
+		if selected[i] {
+			e := l.entries[h.index]
+			out = append(out, LazyMatch{ID: e.id, Definition: e.def, Group: h.group})
+		}
 	}
 	return out
+}
+
+// exactName reports whether query, already trimmed and lowercased, is the
+// whole of the tool's model-facing name, internal ID, or (for a tool of a
+// configured MCP server) the server's own name for it.
+func (l *LazyLoader) exactName(e lazyEntry, group LazyGroup, query string) bool {
+	if query == "" {
+		return false
+	}
+	if strings.ToLower(e.def.Name) == query || strings.ToLower(e.id) == query {
+		return true
+	}
+	if group.Kind != LazyGroupMCPServer {
+		return false
+	}
+	return strings.ToLower(strings.TrimPrefix(e.id, "mcp_"+group.Server+"_")) == query
 }
 
 // PresentReferences returns messages with the internal IDs in every
@@ -427,11 +628,6 @@ func (l *LazyLoader) presentedName(id string) string {
 // search tool's registered description, so the model knows what a search
 // can find without seeing every tool.
 func (l *LazyLoader) searchDescription(base string) string {
-	servers := slices.Clone(l.opts.MCPServers)
-	// Longest first, so a server whose name extends another's claims its
-	// own tools.
-	sort.SliceStable(servers, func(i, j int) bool { return len(servers[i]) > len(servers[j]) })
-
 	perServer := map[string]int{}
 	var serverOrder []string
 	var otherMCP, controlPlaneCount, builtIn int
@@ -439,25 +635,17 @@ func (l *LazyLoader) searchDescription(base string) string {
 		if !l.deferred[e.id] {
 			continue
 		}
-		switch {
-		case l.controlPlane[e.id]:
+		g := l.GroupOf(e.id)
+		switch g.Kind {
+		case LazyGroupControlPlane:
 			controlPlaneCount++
-		case strings.HasPrefix(e.id, "mcp_"):
-			server := ""
-			for _, s := range servers {
-				if strings.HasPrefix(e.id, "mcp_"+s+"_") {
-					server = s
-					break
-				}
+		case LazyGroupMCPOther:
+			otherMCP++
+		case LazyGroupMCPServer:
+			if perServer[g.Server] == 0 {
+				serverOrder = append(serverOrder, g.Server)
 			}
-			if server == "" {
-				otherMCP++
-				continue
-			}
-			if perServer[server] == 0 {
-				serverOrder = append(serverOrder, server)
-			}
-			perServer[server]++
+			perServer[g.Server]++
 		default:
 			builtIn++
 		}
@@ -477,6 +665,13 @@ func (l *LazyLoader) searchDescription(base string) string {
 		groups = append(groups, countTools(builtIn)+" built into the harness")
 	}
 	return base + " Tools available to load: " + strings.Join(groups, "; ") + "."
+}
+
+// longestFirst returns a copy of names sorted longest first.
+func longestFirst(names []string) []string {
+	out := slices.Clone(names)
+	sort.SliceStable(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
+	return out
 }
 
 func countTools(n int) string {

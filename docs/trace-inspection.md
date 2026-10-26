@@ -36,7 +36,10 @@ provider's native tool search appears in `modelOutput` as a
 `tool_search` block and a `tool_search_result` block, and again in
 later turns' `modelInput.messages`. `modelInput.tools` marks each
 definition a native search defers with `deferred: true`, and
-`toolsLoaded` lists the tools the turn's searches loaded. See [What is
+`toolsLoaded` lists the tools the turn's searches loaded. A
+native-search turn also records each deferred MCP or control-plane
+tool's `namespace` and `namespaceDescription`, with the unnormalised
+name. See [What is
 recorded](configuration.md#what-is-recorded).
 `command_output_record` links a `run_command` call to bounded stream hashes,
 sizes, references, and its compressed sidecar archive without embedding full

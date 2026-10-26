@@ -89,6 +89,21 @@ func TestStaticSource_ResolveError(t *testing.T) {
 	must.Error(err)
 }
 
+func TestStaticSource_Resolve_EmptyRefMeansNoCredential(t *testing.T) {
+	must := require.New(t)
+	secrets := &mockSecretStore{err: fmt.Errorf("must not be consulted")}
+	src := &StaticSource{secrets: secrets, ref: ""}
+
+	cred, err := src.Resolve(context.Background())
+	must.NoError(err)
+	must.NotNil(cred.BearerToken, "adapters reject a nil bearer closure; an empty ref must still yield one")
+
+	tok, err := cred.BearerToken(context.Background())
+	must.NoError(err)
+	must.Empty(tok)
+	must.Equal(0, secrets.calls, "the SecretStore must not be asked to resolve an empty reference")
+}
+
 func TestAWSDefaultSource_Resolve(t *testing.T) {
 	must := require.New(t)
 	src := &AWSDefaultSource{}

@@ -8,11 +8,13 @@ single declarative `RunConfig`. Swap the provider or the executor
 without touching the loop.
 
 **Five deterministic safety rings.** Stirrup runs LLM-produced code,
-so it composes five layered controls the agent cannot circumvent:
-kernel-isolation runtime classes, an in-process egress allowlist
-proxy, a Cedar-backed policy engine, the Rule-of-Two structural
-invariant, and a post-edit code scanner. Each ring catches a
-different class of attack at a different point in the run.
+so it composes five layered controls: kernel-isolation runtime
+classes, an in-process egress allowlist proxy, a Cedar-backed policy
+engine, the Rule-of-Two structural invariant, and a post-edit code
+scanner. Every ring is evaluated outside the model, so a prompt cannot
+change its decision. Each ring covers specific attack shapes at a
+different point in the run and has documented limits; see
+[Safety rings](safety-rings.md).
 
 **Secrets never live in `RunConfig`.** API keys are `secret://`
 references resolved through env vars, files, or AWS SSM. The

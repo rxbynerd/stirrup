@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"slices"
 	"sync"
 	"testing"
@@ -253,7 +254,7 @@ func TestLoop_LazyTools_RoutedProviderDecidesTheSearchPerTurn(t *testing.T) {
 	loop.Providers = map[string]provider.ProviderAdapter{"chat": routed}
 	config := buildTestConfig()
 	config.Providers = map[string]types.ProviderConfig{"chat": {Type: "openai", APIKeyRef: "secret://TEST"}}
-	resolve := buildToolSearchSupport(config, quirks.DefaultRegistry())
+	resolve := buildToolSearchSupport(config, quirks.DefaultRegistry(), slog.New(slog.DiscardHandler))
 	var asked []string
 	loop.ToolSearch = func(key, model string) quirks.ToolSearchCapability {
 		asked = append(asked, key+"/"+model)

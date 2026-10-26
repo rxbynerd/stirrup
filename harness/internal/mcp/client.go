@@ -174,7 +174,9 @@ type mcpStructuredResult struct {
 // for an embedded text resource a bounded prefix (Text, Truncated when cut).
 type mcpNonTextContent struct {
 	// Kind is the MCP content type: "image", "audio", "resource_link",
-	// "resource", or "unsupported" for a type the bridge does not recognise.
+	// "resource", "unsupported" for a type the bridge does not recognise, or
+	// "dropped" for a marker recording that a size or count bound omitted
+	// content.
 	Kind      string `json:"kind"`
 	URI       string `json:"uri,omitempty"`
 	MimeType  string `json:"mime_type,omitempty"`
@@ -372,7 +374,21 @@ func (c *Client) Connect(ctx context.Context, config types.MCPServerConfig, secr
 		return fmt.Errorf("mcp: list tools from server %q: %w", config.Name, err)
 	}
 	missing := missingAllowedTools(config, tools)
+	tools = c.selectTools(config, tools)
 
+	for _, mt := range tools {
+		c.registerMCPTool(config.Name, sess, mt)
+	}
+
+	if len(missing) > 0 {
+		return &MissingToolsError{Server: config.Name, Tools: missing}
+	}
+	return nil
+}
+
+// selectTools applies the allowlist and the per-server count cap to the
+// advertised tools, returning the ones Connect registers.
+func (c *Client) selectTools(config types.MCPServerConfig, tools []mcpTool) []mcpTool {
 	// Allowlist filtering happens before the count cap so a hostile server
 	// cannot fill the cap with disallowed tools and starve legitimate ones.
 	tools = c.filterAllowedTools(config, tools)
@@ -387,15 +403,7 @@ func (c *Client) Connect(ctx context.Context, config types.MCPServerConfig, secr
 		)
 		tools = tools[:maxMCPToolsPerServer]
 	}
-
-	for _, mt := range tools {
-		c.registerMCPTool(config.Name, sess, mt)
-	}
-
-	if len(missing) > 0 {
-		return &MissingToolsError{Server: config.Name, Tools: missing}
-	}
-	return nil
+	return tools
 }
 
 // Probe performs a read-only reachability and auth handshake against a
@@ -403,18 +411,38 @@ func (c *Client) Connect(ctx context.Context, config types.MCPServerConfig, secr
 // Connect, but it does NOT register the discovered tools into the registry.
 // It returns a *MissingToolsError under the same condition as Connect.
 func (c *Client) Probe(ctx context.Context, config types.MCPServerConfig, secrets security.SecretStore) error {
+	_, err := c.ProbeTools(ctx, config, secrets)
+	return err
+}
+
+// ProbeTools is Probe that also returns the registry names Connect would
+// register for the server, so a dry-run can see the tool set without
+// registering it. The names are returned alongside a *MissingToolsError,
+// as Connect registers its tools before returning that error.
+func (c *Client) ProbeTools(ctx context.Context, config types.MCPServerConfig, secrets security.SecretStore) ([]string, error) {
 	sess, err := newSession(ctx, config, secrets)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	tools, err := c.listTools(ctx, sess)
 	if err != nil {
-		return fmt.Errorf("mcp: list tools from server %q: %w", config.Name, err)
+		return nil, fmt.Errorf("mcp: list tools from server %q: %w", config.Name, err)
 	}
-	if missing := missingAllowedTools(config, tools); len(missing) > 0 {
-		return &MissingToolsError{Server: config.Name, Tools: missing}
+	missing := missingAllowedTools(config, tools)
+	selected := c.selectTools(config, tools)
+	names := make([]string, 0, len(selected))
+	for _, mt := range selected {
+		names = append(names, mcpToolID(config.Name, sanitizeMCPToolName(mt.Name)))
 	}
-	return nil
+	if len(missing) > 0 {
+		return names, &MissingToolsError{Server: config.Name, Tools: missing}
+	}
+	return names, nil
+}
+
+// mcpToolID is the registry name of an MCP tool: mcp_<server>_<tool>.
+func mcpToolID(serverName, remoteName string) string {
+	return fmt.Sprintf("mcp_%s_%s", serverName, remoteName)
 }
 
 // newSession runs the shared Connect/Probe prologue: validates Name/URI and
@@ -570,7 +598,7 @@ func buildMCPStructured(result toolsCallResult) json.RawMessage {
 	if len(result.Content) > maxMCPContentItems {
 		result.Content = result.Content[:maxMCPContentItems]
 		env.NonText = append(env.NonText, mcpNonTextContent{
-			Kind: "unsupported",
+			Kind: "dropped",
 			Name: "content items truncated: exceeds item-count bound",
 		})
 	}
@@ -586,7 +614,7 @@ func buildMCPStructured(result toolsCallResult) json.RawMessage {
 		// Mark, don't silently drop, so the envelope distinguishes oversized
 		// from absent.
 		env.NonText = append(env.NonText, mcpNonTextContent{
-			Kind: "unsupported",
+			Kind: "dropped",
 			Name: "structuredContent dropped: exceeds size bound",
 		})
 	}
@@ -634,7 +662,7 @@ func buildMCPStructured(result toolsCallResult) json.RawMessage {
 	if len(encoded) > maxMCPStructuredSize {
 		fallback := mcpStructuredResult{
 			NonText: []mcpNonTextContent{{
-				Kind: "unsupported",
+				Kind: "dropped",
 				Name: "envelope dropped: assembled size exceeds bound",
 			}},
 		}
@@ -791,7 +819,7 @@ func (c *Client) call(ctx context.Context, sess *serverSession, method string, p
 // metric values.
 func (c *Client) registerMCPTool(serverName string, sess *serverSession, mt mcpTool) {
 	remoteName := sanitizeMCPToolName(mt.Name)
-	prefixedName := fmt.Sprintf("mcp_%s_%s", serverName, remoteName)
+	prefixedName := mcpToolID(serverName, remoteName)
 	remoteSess := sess
 	// Captured by value so the handler closure is independent of later
 	// registrations on the same client.
@@ -803,6 +831,7 @@ func (c *Client) registerMCPTool(serverName string, sess *serverSession, mt mcpT
 		InputSchema: mt.InputSchema,
 		// Advisory only; gating always uses the conservative defaults below.
 		Annotations: mt.Annotations,
+		MCPServer:   serverName,
 		// MCP tools are opaque to the harness; assume mutation and require
 		// approval.
 		WorkspaceMutating: true,

@@ -190,6 +190,8 @@ func (s *server) handle(ctx context.Context, stream runStream) (result, error) {
 				status = "error"
 			}
 			writef(s.errOut, "[tool_result] %s %s %dms %s\n", escapeLine(ev.GetName()), status, ev.GetDurationMs(), preview(ev.GetContent()))
+		case "tools_loaded":
+			writef(s.errOut, "[tools_loaded] %s %s %s\n", escapeLine(ev.GetSource()), escapeLine(ev.GetName()), preview(strings.Join(ev.GetTools(), ", ")))
 		case "turn_committed":
 			usage := ev.GetUsage()
 			writef(s.errOut, "\n[turn_committed] %d %s in=%d out=%d\n", ev.GetTurn(), escapeLine(ev.GetStopReason()), usage.GetInputTokens(), usage.GetOutputTokens())

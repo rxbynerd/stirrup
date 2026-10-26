@@ -238,6 +238,29 @@ writes no artifacts:
 ./stirrup-eval run --suite eval/suites/<name>.hcl --dry-run
 ```
 
+**Lazy tool loading is set in the inline `run_config`.** A `tools`
+block takes a `lazy_loading` block that mirrors
+`tools.lazyLoading`, so a suite can pair a run with and without lazy
+loading without a `run_config_file`. `enabled` defaults to `false`;
+`strategy`, `eager` and `max_results` take the values documented in
+[Lazy tool loading](../../docs/configuration.md#lazy-tool-loading),
+and `ValidateRunConfig` rejects invalid ones. The block belongs to the
+suite baseline only; `run_config_overrides` has no `tools` block.
+
+```hcl
+run_config {
+  # mode, max_turns, provider and the rest of the baseline.
+  tools {
+    lazy_loading {
+      enabled     = true
+      strategy    = "harness"
+      eager       = ["read_file", "grep_files"]
+      max_results = 8
+    }
+  }
+}
+```
+
 ## Promoting a mined suite
 
 The v0.1 demo narrative (#277) is:

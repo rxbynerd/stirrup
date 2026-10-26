@@ -90,24 +90,9 @@ func BuiltinRules() []Rule {
 				q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape = StreamArgsOff
 			},
 		},
-		// ReplayFields rules: Description must end "(threaded)" or
-		// "(parse-side only)" per docs/provider-quirks.md §3.1;
-		// enforced by TestBuiltinRulesReplayFieldsSuffix.
-		{
-			ProviderType: "openai-compatible",
-			ModelMatch:   "deepseek-reasoner*",
-			Description:  "DeepSeek reasoner: replay reasoning_content, omit sampling params, legacy max_tokens (threaded)",
-			LastVerified: Date("2026-06-07"),
-			Apply: func(q *ProviderQuirks) {
-				// SUNSET: deepseek-reasoner retires 2026-07-24; see
-				// docs/provider-quirks.md §9 risk 9.
-				q.ReplayFields = append(q.ReplayFields, "reasoning_content")
-
-				q.BehaviourFlags.OpenAI.OmitSamplingParams = true
-
-				q.BehaviourFlags.OpenAI.TokenField = TokenFieldMaxTokens
-			},
-		},
+		// A rule that sets ReplayFields must end its Description with
+		// "(threaded)" or "(parse-side only)" per docs/provider-quirks.md
+		// §3.1; enforced by TestBuiltinRulesReplayFieldsSuffix.
 		{
 			ProviderType: "openai-compatible",
 			ModelMatch:   "deepseek-v4*",
@@ -125,25 +110,37 @@ func BuiltinRules() []Rule {
 		{
 			ProviderType: "openai-compatible",
 			ModelMatch:   "deepseek/deepseek-flash*",
-			Description:  "DeepSeek V4.1 Flash via gateway prefix: replay reasoning_content, omit sampling params, legacy max_tokens (threaded)",
-			LastVerified: Date("2026-09-29"),
-			Apply: func(q *ProviderQuirks) {
-				q.ReplayFields = append(q.ReplayFields, "reasoning_content")
-				q.BehaviourFlags.OpenAI.OmitSamplingParams = true
-				q.BehaviourFlags.OpenAI.TokenField = TokenFieldMaxTokens
-			},
+			Description:  "DeepSeek V4.1 Flash via OpenRouter: omit sampling params, legacy max_tokens, reasoning_effort (probed 2026-10-18)",
+			LastVerified: Date("2026-10-18"),
+			Apply:        applyDeepSeekGatewayClass,
 		},
 		{
 			ProviderType: "openai-compatible",
 			ModelMatch:   "deepseek/deepseek-v4*",
-			Description:  "DeepSeek v4 via gateway prefix: replay reasoning_content, omit sampling params, legacy max_tokens (threaded)",
-			LastVerified: Date("2026-06-07"),
-			Apply: func(q *ProviderQuirks) {
-
-				q.ReplayFields = append(q.ReplayFields, "reasoning_content")
-				q.BehaviourFlags.OpenAI.OmitSamplingParams = true
-				q.BehaviourFlags.OpenAI.TokenField = TokenFieldMaxTokens
-			},
+			Description:  "DeepSeek v4 via OpenRouter: omit sampling params, legacy max_tokens, reasoning_effort (probed 2026-10-18)",
+			LastVerified: Date("2026-10-18"),
+			Apply:        applyDeepSeekGatewayClass,
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "~deepseek/deepseek-flash-latest",
+			Description:  "DeepSeek via OpenRouter latest alias: listed by OpenRouter 2026-10-18; quirk set taken from the probed deepseek/deepseek-v4* and deepseek/deepseek-flash* ids (alias itself not probed)",
+			LastVerified: Date("2026-10-18"),
+			Apply:        applyDeepSeekGatewayClass,
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "~deepseek/deepseek-v4-flash-latest",
+			Description:  "DeepSeek via OpenRouter latest alias: listed by OpenRouter 2026-10-18; quirk set taken from the probed deepseek/deepseek-v4* and deepseek/deepseek-flash* ids (alias itself not probed)",
+			LastVerified: Date("2026-10-18"),
+			Apply:        applyDeepSeekGatewayClass,
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "~deepseek/deepseek-pro-latest",
+			Description:  "DeepSeek via OpenRouter latest alias: listed by OpenRouter 2026-10-18; quirk set taken from the probed deepseek/deepseek-v4* and deepseek/deepseek-flash* ids (alias itself not probed)",
+			LastVerified: Date("2026-10-18"),
+			Apply:        applyDeepSeekGatewayClass,
 		},
 
 		{
@@ -193,8 +190,8 @@ func BuiltinRules() []Rule {
 		{
 			ProviderType: "anthropic",
 			ModelMatch:   "*",
-			Description:  "Anthropic: native tool_choice (auto/any/tool); no native none; a trailing assistant message is a prefill (documented 400 on Sonnet 4.6+, Opus 4.6+)",
-			LastVerified: Date("2026-05-24"),
+			Description:  "Anthropic: native tool_choice (auto/any/tool); no native none; a trailing assistant message is a prefill (400 probed on Sonnet 4.6; documented on Opus 4.6+), except one ending on an unanswered server_tool_use, which continues a paused turn (probed on Sonnet 4.6 and 5.5)",
+			LastVerified: Date("2026-10-26"),
 			Apply: func(q *ProviderQuirks) {
 
 				q.ToolChoice = ToolChoiceCapability{
@@ -242,16 +239,17 @@ func BuiltinRules() []Rule {
 		{
 			ProviderType: "gemini",
 			ModelMatch:   "*",
-			Description:  "Gemini: native functionCallingConfig.mode (AUTO/ANY/NONE)",
-			LastVerified: Date("2026-05-24"),
+			Description:  "Gemini: native functionCallingConfig.mode (AUTO/ANY/NONE); a request ending on a model turn is a 400 on 3.6 Flash and later (and on AI Studio from 3.5 Flash)",
+			LastVerified: Date("2026-10-18"),
 			Apply: func(q *ProviderQuirks) {
 
 				q.ToolChoice = ToolChoiceCapability{
-					Supported: true,
-					Auto:      true,
-					Required:  true,
-					None:      true,
-					NamedTool: true,
+					Supported:                true,
+					Auto:                     true,
+					Required:                 true,
+					None:                     true,
+					NamedTool:                true,
+					RejectsTrailingAssistant: true,
 				}
 			},
 		},
@@ -669,50 +667,50 @@ func BuiltinRules() []Rule {
 		{
 			ProviderType: "anthropic",
 			ModelMatch:   "claude-opus-4-[5-8]*",
-			Description:  "Anthropic Claude Opus 4.5-4.8: native BM25 tool search with defer_loading (documented, not probed)",
-			LastVerified: Date("2026-10-20"),
+			Description:  "Anthropic Claude Opus 4.5-4.8: native BM25 tool search with defer_loading (probed on claude-opus-4-5, first turn only)",
+			LastVerified: Date("2026-10-26"),
 			Apply:        applyToolSearch("bm25"),
 		},
 		{
 			ProviderType: "anthropic",
 			ModelMatch:   "claude-sonnet-4-[5-6]*",
-			Description:  "Anthropic Claude Sonnet 4.5-4.6: native BM25 tool search with defer_loading (documented, not probed)",
-			LastVerified: Date("2026-10-20"),
+			Description:  "Anthropic Claude Sonnet 4.5-4.6: native BM25 tool search with defer_loading (probed on claude-sonnet-4-6 including pause_turn resend; Sonnet 4.5 not probed)",
+			LastVerified: Date("2026-10-26"),
 			Apply:        applyToolSearch("bm25"),
 		},
 		{
 			ProviderType: "anthropic",
 			ModelMatch:   "claude-haiku-4-5*",
-			Description:  "Anthropic Claude Haiku 4.5: native BM25 tool search with defer_loading (documented, not probed)",
-			LastVerified: Date("2026-10-20"),
+			Description:  "Anthropic Claude Haiku 4.5: native BM25 tool search with defer_loading (probed: stream, replay, router switch, pause_turn, batch)",
+			LastVerified: Date("2026-10-26"),
 			Apply:        applyToolSearch("bm25"),
 		},
 		{
 			ProviderType: "anthropic",
 			ModelMatch:   "claude-opus-5*",
-			Description:  "Anthropic Claude Opus 5 / 5.5: native BM25 tool search with defer_loading (documented, not probed)",
-			LastVerified: Date("2026-10-20"),
+			Description:  "Anthropic Claude Opus 5 / 5.5: native BM25 tool search with defer_loading (probed on claude-opus-5-5, first turn only)",
+			LastVerified: Date("2026-10-26"),
 			Apply:        applyToolSearch("bm25"),
 		},
 		{
 			ProviderType: "anthropic",
 			ModelMatch:   "claude-sonnet-5*",
-			Description:  "Anthropic Claude Sonnet 5 / 5.5: native BM25 tool search with defer_loading (documented, not probed)",
-			LastVerified: Date("2026-10-20"),
+			Description:  "Anthropic Claude Sonnet 5 / 5.5: native BM25 tool search with defer_loading (probed on claude-sonnet-5-5: first turn, unanswered-call resend (no paused turn produced), trimmed history)",
+			LastVerified: Date("2026-10-26"),
 			Apply:        applyToolSearch("bm25"),
 		},
 		{
 			ProviderType: "anthropic",
 			ModelMatch:   "claude-haiku-5*",
-			Description:  "Anthropic Claude Haiku 5.5: native BM25 tool search with defer_loading (documented, not probed)",
-			LastVerified: Date("2026-10-20"),
+			Description:  "Anthropic Claude Haiku 5.5: native BM25 tool search with defer_loading (probed, first turn only)",
+			LastVerified: Date("2026-10-26"),
 			Apply:        applyToolSearch("bm25"),
 		},
 		{
 			ProviderType: "anthropic",
 			ModelMatch:   "claude-fable-5*",
-			Description:  "Anthropic Claude Fable 5 / 5.1: native BM25 tool search with defer_loading (documented, not probed)",
-			LastVerified: Date("2026-10-20"),
+			Description:  "Anthropic Claude Fable 5 / 5.1: native BM25 tool search with defer_loading (probed on claude-fable-5-1, first turn only)",
+			LastVerified: Date("2026-10-26"),
 			Apply:        applyToolSearch("bm25"),
 		},
 		{
@@ -725,15 +723,15 @@ func BuiltinRules() []Rule {
 		{
 			ProviderType: "openai-responses",
 			ModelMatch:   "gpt-5.[4-9]*",
-			Description:  "OpenAI Responses gpt-5.4 and later 5.x: hosted tool_search with defer_loading (documented, not probed)",
-			LastVerified: Date("2026-10-20"),
+			Description:  "OpenAI Responses gpt-5.4 and later 5.x: hosted tool_search with defer_loading (probed on gpt-5.4-mini: stream, verbatim replay, namespaces, batch; gpt-5.5 first turn only)",
+			LastVerified: Date("2026-10-26"),
 			Apply:        applyToolSearch("hosted"),
 		},
 		{
 			ProviderType: "openai-responses",
 			ModelMatch:   "gpt-6*",
-			Description:  "OpenAI Responses gpt-6 family: hosted tool_search with defer_loading (documented, not probed)",
-			LastVerified: Date("2026-10-20"),
+			Description:  "OpenAI Responses gpt-6 family: hosted tool_search with defer_loading (probed on gpt-6-luna and gpt-6-astra, first turn only)",
+			LastVerified: Date("2026-10-26"),
 			Apply:        applyToolSearch("hosted"),
 		},
 	}

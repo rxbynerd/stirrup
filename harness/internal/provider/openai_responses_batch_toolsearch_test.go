@@ -12,7 +12,7 @@ import (
 )
 
 // Output items of a hosted tool search followed by a call to the loaded
-// tool, shaped after OpenAI's tool search guide (documented, not probed).
+// tool, trimmed to the fields the adapter reads.
 const (
 	responsesBatchSearchCall   = `{"type":"tool_search_call","id":"tsc_1","execution":"server","call_id":null,"status":"completed","arguments":{"paths":["mcp_jira_create_issue"]}}`
 	responsesBatchSearchOutput = `{"type":"tool_search_output","id":"tso_1","execution":"server","call_id":null,"status":"completed","tools":[{"type":"namespace","name":"jira","tools":[{"type":"function","name":"mcp_jira_create_issue","defer_loading":true}]}]}`
@@ -26,7 +26,7 @@ func responsesBatchResult(items ...string) []byte {
 func responsesFabricate(t *testing.T, response []byte) []types.StreamEvent {
 	t.Helper()
 	ch := make(chan types.StreamEvent, 16)
-	fabricateStream(ch, response, "openai-responses")
+	fabricateStream(ch, response, "openai-responses", nil)
 	close(ch)
 	return drain(t, ch)
 }

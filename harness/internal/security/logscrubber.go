@@ -165,7 +165,7 @@ func isBasicCredential(match string) bool {
 
 // replaceValidated replaces every match of re that valid accepts.
 func replaceValidated(re *regexp.Regexp, value string, valid func(string) bool) (string, int) {
-	matches := findValidated(re, value, valid)
+	matches := FindValidated(re, value, valid)
 	if len(matches) == 0 {
 		return value, 0
 	}
@@ -180,10 +180,10 @@ func replaceValidated(re *regexp.Regexp, value string, valid func(string) bool) 
 	return b.String(), len(matches)
 }
 
-// findValidated returns the matches of re that valid accepts. A rejected
+// FindValidated returns the matches of re that valid accepts. A rejected
 // match does not consume the text after its first byte, so a credential
 // directly following a rejected match is still examined.
-func findValidated(re *regexp.Regexp, value string, valid func(string) bool) [][]int {
+func FindValidated(re *regexp.Regexp, value string, valid func(string) bool) [][]int {
 	var matches [][]int
 	for off := 0; ; {
 		loc := re.FindStringIndex(value[off:])
@@ -211,9 +211,14 @@ type ScrubStats struct {
 // SecretPattern is a read-only view of a single secret-detection pattern,
 // exposed so other packages (e.g. codescanner) can reuse the canonical
 // regex set without duplicating the definitions.
+//
+// Valid, when non-nil, narrows a pattern whose regex also matches prose: only
+// matches it accepts are secrets. Use FindValidated to apply it. The Ring 4
+// sensitive-data detector keeps its own validators and does not use this field.
 type SecretPattern struct {
-	Name string
-	Re   *regexp.Regexp
+	Name  string
+	Re    *regexp.Regexp
+	Valid func(match string) bool
 }
 
 // SecretPatterns returns a copy of the canonical secret-detection regex set
@@ -222,7 +227,7 @@ type SecretPattern struct {
 func SecretPatterns() []SecretPattern {
 	out := make([]SecretPattern, len(secretPatterns))
 	for i, p := range secretPatterns {
-		out[i] = SecretPattern{Name: p.name, Re: p.re}
+		out[i] = SecretPattern{Name: p.name, Re: p.re, Valid: matchValidators[p.name]}
 	}
 	return out
 }

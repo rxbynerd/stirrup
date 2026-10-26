@@ -1,0 +1,47 @@
+# captured: live OpenRouter stream, 2026-10-18, deepseek/deepseek-v4.1-flash-1017 pinned to the DeepInfra host (provider.order, allow_fallbacks false), reasoning_effort high, one tool (get_weather) offered. OpenRouter emits reasoning as delta.reasoning plus delta.reasoning_details and never reasoning_content.
+data: {"id":"gen-1792360754-OzrltsMSZoL3OlKfeUV0","object":"chat.completion.chunk","created":1792360754,"model":"deepseek/deepseek-v4.1-flash-1017","provider":"DeepInfra","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"We","reasoning_details":[{"type":"reasoning.text","text":"We","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1792360754-OzrltsMSZoL3OlKfeUV0","object":"chat.completion.chunk","created":1792360754,"model":"deepseek/deepseek-v4.1-flash-1017","provider":"DeepInfra","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" need answer. Need reason","reasoning_details":[{"type":"reasoning.text","text":" need answer. Need reason","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1792360754-OzrltsMSZoL3OlKfeUV0","object":"chat.completion.chunk","created":1792360754,"model":"deepseek/deepseek-v4.1-flash-1017","provider":"DeepInfra","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":". Anagram","reasoning_details":[{"type":"reasoning.text","text":". Anagram","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1792360754-OzrltsMSZoL3OlKfeUV0","object":"chat.completion.chunk","created":1792360754,"model":"deepseek/deepseek-v4.1-flash-1017","provider":"DeepInfra","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" S","reasoning_details":[{"type":"reasoning.text","text":" S","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1792360754-OzrltsMSZoL3OlKfeUV0","object":"chat.completion.chunk","created":1792360754,"model":"deepseek/deepseek-v4.1-flash-1017","provider":"DeepInfra","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"PAIR -> Paris. European capital. Need","reasoning_details":[{"type":"reasoning.text","text":"PAIR -> Paris. European capital. Need","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1792360754-OzrltsMSZoL3OlKfeUV0","object":"chat.completion.chunk","created":1792360754,"model":"deepseek/deepseek-v4.1-flash-1017","provider":"DeepInfra","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" get weather via","reasoning_details":[{"type":"reasoning.text","text":" get weather via","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1792360754-OzrltsMSZoL3OlKfeUV0","object":"chat.completion.chunk","created":1792360754,"model":"deepseek/deepseek-v4.1-flash-1017","provider":"DeepInfra","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" tool. Use get","reasoning_details":[{"type":"reasoning.text","text":" tool. Use get","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1792360754-OzrltsMSZoL3OlKfeUV0","object":"chat.completion.chunk","created":1792360754,"model":"deepseek/deepseek-v4.1-flash-1017","provider":"DeepInfra","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"_weather city Paris","reasoning_details":[{"type":"reasoning.text","text":"_weather city Paris","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1792360754-OzrltsMSZoL3OlKfeUV0","object":"chat.completion.chunk","created":1792360754,"model":"deepseek/deepseek-v4.1-flash-1017","provider":"DeepInfra","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":".","reasoning_details":[{"type":"reasoning.text","text":".","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1792360754-OzrltsMSZoL3OlKfeUV0","object":"chat.completion.chunk","created":1792360754,"model":"deepseek/deepseek-v4.1-flash-1017","provider":"DeepInfra","choices":[{"index":0,"delta":{"content":"The","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1792360754-OzrltsMSZoL3OlKfeUV0","object":"chat.completion.chunk","created":1792360754,"model":"deepseek/deepseek-v4.1-flash-1017","provider":"DeepInfra","choices":[{"index":0,"delta":{"content":" letters","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1792360754-OzrltsMSZoL3OlKfeUV0","object":"chat.completion.chunk","created":1792360754,"model":"deepseek/deepseek-v4.1-flash-1017","provider":"DeepInfra","choices":[{"index":0,"delta":{"content":" **","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1792360754-OzrltsMSZoL3OlKfeUV0","object":"chat.completion.chunk","created":1792360754,"model":"deepseek/deepseek-v4.1-flash-1017","provider":"DeepInfra","choices":[{"index":0,"delta":{"content":"S-P-A-I-R** can be rearranged to spell","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1792360754-OzrltsMSZoL3OlKfeUV0","object":"chat.completion.chunk","created":1792360754,"model":"deepseek/deepseek-v4.1-flash-1017","provider":"DeepInfra","choices":[{"index":0,"delta":{"content":" **PARIS**, which is","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1792360754-OzrltsMSZoL3OlKfeUV0","object":"chat.completion.chunk","created":1792360754,"model":"deepseek/deepseek-v4.1-flash-1017","provider":"DeepInfra","choices":[{"index":0,"delta":{"content":" the capital of France","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1792360754-OzrltsMSZoL3OlKfeUV0","object":"chat.completion.chunk","created":1792360754,"model":"deepseek/deepseek-v4.1-flash-1017","provider":"DeepInfra","choices":[{"index":0,"delta":{"content":".\n\n","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1792360754-OzrltsMSZoL3OlKfeUV0","object":"chat.completion.chunk","created":1792360754,"model":"deepseek/deepseek-v4.1-flash-1017","provider":"DeepInfra","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"id":"chatcmpl-tool-a34a15cb72a7bdfa","type":"function","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1792360754-OzrltsMSZoL3OlKfeUV0","object":"chat.completion.chunk","created":1792360754,"model":"deepseek/deepseek-v4.1-flash-1017","provider":"DeepInfra","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"function":{"arguments":""}}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1792360754-OzrltsMSZoL3OlKfeUV0","object":"chat.completion.chunk","created":1792360754,"model":"deepseek/deepseek-v4.1-flash-1017","provider":"DeepInfra","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"function":{"arguments":""}}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1792360754-OzrltsMSZoL3OlKfeUV0","object":"chat.completion.chunk","created":1792360754,"model":"deepseek/deepseek-v4.1-flash-1017","provider":"DeepInfra","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"function":{"arguments":"{\"city\": \"Paris\"}"}}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1792360754-OzrltsMSZoL3OlKfeUV0","object":"chat.completion.chunk","created":1792360754,"model":"deepseek/deepseek-v4.1-flash-1017","provider":"DeepInfra","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":null},"finish_reason":"tool_calls","native_finish_reason":"tool_calls"}]}
+
+data: {"id":"gen-1792360754-OzrltsMSZoL3OlKfeUV0","object":"chat.completion.chunk","created":1792360754,"model":"deepseek/deepseek-v4.1-flash-1017","provider":"DeepInfra","service_tier":"default","choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"tool_calls","native_finish_reason":"tool_calls"}],"usage":{"prompt_tokens":322,"completion_tokens":95,"total_tokens":417,"cost":0.000059486,"is_byok":false,"prompt_tokens_details":{"cached_tokens":0,"cache_write_tokens":0,"audio_tokens":0,"video_tokens":0},"cost_details":{"upstream_inference_cost":0.000059486,"upstream_inference_prompt_cost":0.000031556,"upstream_inference_completions_cost":0.00002793},"completion_tokens_details":{"reasoning_tokens":30,"image_tokens":0,"audio_tokens":0}}}
+
+data: [DONE]
+

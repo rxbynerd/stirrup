@@ -1,9 +1,0 @@
-# synthetic: post-parse capture snapshot matching response.sse in this directory; see that fixture's comment for provenance.
-{
-  "reasoning_content": [
-    "",
-    "Weighing the options ",
-    "before answering."
-  ],
-  "content": "Done."
-}

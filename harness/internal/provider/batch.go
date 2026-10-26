@@ -191,7 +191,7 @@ func (a *BatchAdapter) Stream(ctx context.Context, params types.StreamParams) (<
 	turn := a.turnCount.Add(1)
 	customID := fmt.Sprintf("stirrup-%s-turn-%d", a.runID, turn)
 
-	body, err := a.marshalRequestBody(params)
+	body, nulls, err := a.marshalRequestBody(ctx, params)
 	if err != nil {
 		ch := make(chan types.StreamEvent, 1)
 		ch <- types.StreamEvent{Type: "error", Error: err}
@@ -215,7 +215,7 @@ func (a *BatchAdapter) Stream(ctx context.Context, params types.StreamParams) (<
 	a.lastBatchID.Store(batchID)
 
 	ch := make(chan types.StreamEvent, 64)
-	go a.awaitAndFabricate(ctx, ch, params, customID, batchID)
+	go a.awaitAndFabricate(ctx, ch, params, customID, batchID, nulls)
 	return ch, nil
 }
 
@@ -234,7 +234,9 @@ func (a *BatchAdapter) LastBatchID() string {
 // marshalRequestBody projects params into the wire body for the
 // configured provider type. Unsupported provider types surface as a
 // marshal-time error so the caller can emit a single error StreamEvent.
-func (a *BatchAdapter) marshalRequestBody(params types.StreamParams) (json.RawMessage, error) {
+// The returned strictNullables lists the synthetic nulls the fabricated
+// response must drop; it is nil for every provider type but the OpenAI ones.
+func (a *BatchAdapter) marshalRequestBody(ctx context.Context, params types.StreamParams) (json.RawMessage, strictNullables, error) {
 	switch a.provType {
 	case "anthropic":
 		registry := a.Registry
@@ -243,12 +245,13 @@ func (a *BatchAdapter) marshalRequestBody(params types.StreamParams) (json.RawMe
 		}
 		q := registry.Resolve("anthropic", params.Model)
 		if err := validateReasoningEffort("anthropic", params.ReasoningEffort, params.Model, q.BehaviourFlags.Anthropic.EffortLevels); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		// Consecutive batch turns rarely land within the five-minute cache
 		// lifetime, so a cache write would be paid for and not read.
 		q.BehaviourFlags.Anthropic.PromptCaching = false
-		return json.Marshal(buildAnthropicRequest(params, false, q))
+		body, err := json.Marshal(buildAnthropicRequest(params, false, q))
+		return body, nil, err
 	case "openai-compatible":
 		registry := a.Registry
 		if registry == nil {
@@ -256,15 +259,17 @@ func (a *BatchAdapter) marshalRequestBody(params types.StreamParams) (json.RawMe
 		}
 		q := registry.Resolve("openai-compatible", params.Model)
 		if err := checkOpenAIRequestSupported(params, q); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		// Pass nil cache: a batch submission is rare enough that the
 		// per-tool normaliser walk cost is negligible.
 		req, err := buildOpenAIRequest(params, false, q, nil)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return json.Marshal(req)
+		warnStrictFallbacks(ctx, a.innerLogger(), "openai-compatible", params.Model, req.strictFallbacks)
+		body, err := json.Marshal(req)
+		return body, req.strictNulls, err
 	case "openai-responses":
 		registry := a.Registry
 		if registry == nil {
@@ -272,7 +277,7 @@ func (a *BatchAdapter) marshalRequestBody(params types.StreamParams) (json.RawMe
 		}
 		q := registry.Resolve("openai-responses", params.Model)
 		if err := validateReasoningEffort("openai-responses", params.ReasoningEffort, params.Model, q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		// Only turns the inner adapter streamed carry stored items: batch
 		// results are never captured.
@@ -282,12 +287,30 @@ func (a *BatchAdapter) marshalRequestBody(params types.StreamParams) (json.RawMe
 		}
 		req, err := buildResponsesRequest(params, q, nil, replayOrigin)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return json.Marshal(req)
+		warnStrictFallbacks(ctx, a.innerLogger(), "openai-responses", params.Model, req.strictFallbacks)
+		body, err := json.Marshal(req)
+		return body, req.strictNulls, err
 	default:
-		return nil, fmt.Errorf("batch: unsupported provider type %q", a.provType)
+		return nil, nil, fmt.Errorf("batch: unsupported provider type %q", a.provType)
 	}
+}
+
+// innerLogger returns the logger of the wrapped OpenAI adapter, or the
+// default logger when the inner adapter carries none.
+func (a *BatchAdapter) innerLogger() *slog.Logger {
+	var logger *slog.Logger
+	switch inner := a.inner.(type) {
+	case *OpenAICompatibleAdapter:
+		logger = inner.Logger
+	case *OpenAIResponsesAdapter:
+		logger = inner.Logger
+	}
+	if logger == nil {
+		return slog.Default()
+	}
+	return logger
 }
 
 // awaitAndFabricate runs in a goroutine, blocks on the batch result, and
@@ -299,6 +322,7 @@ func (a *BatchAdapter) awaitAndFabricate(
 	params types.StreamParams,
 	customID string,
 	batchID string,
+	nulls strictNullables,
 ) {
 	defer close(ch)
 
@@ -337,7 +361,7 @@ func (a *BatchAdapter) awaitAndFabricate(
 		return
 	}
 
-	fabricateStream(ch, entry.Response, a.provType)
+	fabricateStream(ch, entry.Response, a.provType, nulls)
 }
 
 // pumpInner relays events from the streaming fallback into the
@@ -408,18 +432,18 @@ func expiredOrCancelled(ctx context.Context, expired error) error {
 // Unsupported provider types emit a single error event rather than a
 // separate error return, mirroring ProviderAdapter.Stream's convention
 // of surfacing all failures as in-channel error events.
-func fabricateStream(ch chan<- types.StreamEvent, response json.RawMessage, provType string) {
+func fabricateStream(ch chan<- types.StreamEvent, response json.RawMessage, provType string, nulls strictNullables) {
 	switch provType {
 	case "anthropic":
 		if err := fabricateAnthropicStream(ch, response); err != nil {
 			ch <- types.StreamEvent{Type: "error", Error: err}
 		}
 	case "openai-compatible":
-		if err := fabricateOpenAIChatStream(ch, response); err != nil {
+		if err := fabricateOpenAIChatStream(ch, response, nulls); err != nil {
 			ch <- types.StreamEvent{Type: "error", Error: err}
 		}
 	case "openai-responses":
-		if err := fabricateOpenAIResponsesStream(ch, response); err != nil {
+		if err := fabricateOpenAIResponsesStream(ch, response, nulls); err != nil {
 			ch <- types.StreamEvent{Type: "error", Error: err}
 		}
 	default:
@@ -853,7 +877,7 @@ type openaiChatBatchToolCall struct {
 // a single message_complete carrying the mapped finish_reason and the
 // reported usage. Content is left nil on message_complete
 // to match consumeSSE, which does not populate it either.
-func fabricateOpenAIChatStream(ch chan<- types.StreamEvent, response json.RawMessage) error {
+func fabricateOpenAIChatStream(ch chan<- types.StreamEvent, response json.RawMessage, nulls strictNullables) error {
 	var resp openaiChatBatchResponse
 	if err := json.Unmarshal(response, &resp); err != nil {
 		return fmt.Errorf("fabricate openai chat stream: decode response: %w", err)
@@ -873,12 +897,12 @@ func fabricateOpenAIChatStream(ch chan<- types.StreamEvent, response json.RawMes
 				return fmt.Errorf("fabricate openai chat stream: decode tool arguments: %w", err)
 			}
 		}
-		ch <- types.StreamEvent{
+		ch <- nulls.strip(types.StreamEvent{
 			Type:  "tool_call",
 			ID:    tc.ID,
 			Name:  tc.Function.Name,
 			Input: input,
-		}
+		})
 	}
 
 	ev := types.StreamEvent{
@@ -917,7 +941,7 @@ type openaiResponsesBatchResponse struct {
 // rules, all in upstream order (the JSON array preserves document
 // order), then a single message_complete carrying the derived stop
 // reason and the reported usage.
-func fabricateOpenAIResponsesStream(ch chan<- types.StreamEvent, response json.RawMessage) error {
+func fabricateOpenAIResponsesStream(ch chan<- types.StreamEvent, response json.RawMessage, nulls strictNullables) error {
 	var resp openaiResponsesBatchResponse
 	if err := json.Unmarshal(response, &resp); err != nil {
 		return fmt.Errorf("fabricate openai responses stream: decode response: %w", err)
@@ -946,12 +970,12 @@ func fabricateOpenAIResponsesStream(ch chan<- types.StreamEvent, response json.R
 					return fmt.Errorf("fabricate openai responses stream: decode tool arguments: %w", err)
 				}
 			}
-			ch <- types.StreamEvent{
+			ch <- nulls.strip(types.StreamEvent{
 				Type:  "tool_call",
 				ID:    item.CallID,
 				Name:  item.Name,
 				Input: input,
-			}
+			})
 		}
 	}
 

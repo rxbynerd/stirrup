@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
@@ -92,16 +93,28 @@ func toolSearchHandler(ctx context.Context, input json.RawMessage) (string, erro
 		fmt.Fprintf(&b, "Loaded %d tools:", len(matches))
 	}
 	for _, m := range matches {
-		fmt.Fprintf(&b, "\n- %s: %s", m.Definition.Name, truncateDescription(m.Definition.Description))
+		fmt.Fprintf(&b, "\n- %s (%s): %s", plainText(m.Definition.Name), m.Group.Label(), plainText(truncateDescription(m.Definition.Description)))
 	}
 	if len(alreadyLoaded) > 0 {
 		names := make([]string, len(alreadyLoaded))
 		for i, m := range alreadyLoaded {
-			names[i] = m.Definition.Name
+			names[i] = plainText(m.Definition.Name)
 		}
 		b.WriteString("\nAlready loaded: " + strings.Join(names, ", "))
 	}
 	return b.String(), nil
+}
+
+// plainText drops control characters and line separators from
+// server-supplied text, so a tool name or description cannot start a
+// result line of its own.
+func plainText(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // truncateDescription returns the first line of d, cut on a rune boundary

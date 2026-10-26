@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -584,6 +585,11 @@ func TestDoubleStarMatch_EscapesMetacharacters(t *testing.T) {
 
 		// `**` and `*` still behave as wildcards (regression guard).
 		{"double star match", "src/**/x.go", "src/a/b/x.go", true},
+		{"double star segment matches zero directories", "src/**/x.go", "src/x.go", true},
+		{"leading double star matches a root file", "**/*.txt", "a.txt", true},
+		{"leading double star matches a nested file", "**/*.txt", "notes/b.txt", true},
+		{"leading double star keeps the suffix", "**/*.txt", "notes/b.go", false},
+		{"double star inside a segment needs its slash", "foo**/bar", "foobar", false},
 		{"single star match", "src/*.go", "src/foo.go", true},
 		{"single star no cross segment", "src/*.go", "src/sub/foo.go", false},
 
@@ -628,6 +634,72 @@ func TestFindFilesTool_IncludeDoubleStarGlob(t *testing.T) {
 		must := require.New(t)
 		must.Contains(out, filepath.Join("pkg", "deep", "x.go"), "got %q", out)
 	})
+}
+
+func TestMatchesFilters_LeadingDoubleStarMatchesZeroDirectories(t *testing.T) {
+	cases := []struct {
+		name    string
+		rel     string
+		include []string
+		exclude []string
+		want    bool
+	}{
+		{"include matches a root file", "a.txt", []string{"**/*.txt"}, nil, true},
+		{"include matches a nested file", "notes/b.txt", []string{"**/*.txt"}, nil, true},
+		{"include matches the directory itself", "src/x.go", []string{"src/**/x.go"}, nil, true},
+		{"exclude vetoes a root file", "a.txt", nil, []string{"**/*.txt"}, false},
+		{"exclude vetoes a nested file", "notes/b.txt", nil, []string{"**/*.txt"}, false},
+		{"exclude leaves other files", "main.go", nil, []string{"**/*.txt"}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(c.want, matchesFilters(path.Base(c.rel), c.rel, c.include, c.exclude))
+		})
+	}
+}
+
+func TestFindFilesTool_LeadingDoubleStarIncludesRootFiles(t *testing.T) {
+	must := require.New(t)
+	dir := t.TempDir()
+	must.NoError(os.MkdirAll(filepath.Join(dir, "notes"), 0o755))
+	must.NoError(os.WriteFile(filepath.Join(dir, "a.txt"), []byte("y"), 0o644))
+	must.NoError(os.WriteFile(filepath.Join(dir, "notes", "b.txt"), []byte("y"), 0o644))
+	must.NoError(os.WriteFile(filepath.Join(dir, "main.go"), []byte("y"), 0o644))
+	find := FindFilesTool(&fsExecutor{root: dir})
+
+	t.Run("include", func(t *testing.T) {
+		must := require.New(t)
+		input, err := json.Marshal(map[string]any{"name": "*", "include": []string{"**/*.txt"}})
+		must.NoError(err)
+		fr := decodeFindResult(t, find, input)
+		must.ElementsMatch([]string{"a.txt", filepath.Join("notes", "b.txt")}, fr.Paths)
+	})
+	t.Run("exclude", func(t *testing.T) {
+		must := require.New(t)
+		input, err := json.Marshal(map[string]any{"name": "*", "exclude": []string{"**/*.txt"}})
+		must.NoError(err)
+		fr := decodeFindResult(t, find, input)
+		must.Equal([]string{"main.go"}, fr.Paths)
+	})
+}
+
+func TestGrepFilesTool_LeadingDoubleStarIncludesRootFiles(t *testing.T) {
+	must := require.New(t)
+	dir := t.TempDir()
+	must.NoError(os.MkdirAll(filepath.Join(dir, "notes"), 0o755))
+	must.NoError(os.WriteFile(filepath.Join(dir, "a.txt"), []byte("needle\n"), 0o644))
+	must.NoError(os.WriteFile(filepath.Join(dir, "notes", "b.txt"), []byte("needle\n"), 0o644))
+	must.NoError(os.WriteFile(filepath.Join(dir, "main.go"), []byte("needle\n"), 0o644))
+	grep := GrepFilesTool(&fsExecutor{root: dir})
+
+	input, err := json.Marshal(map[string]any{"pattern": "needle", "include": []string{"**/*.txt"}})
+	must.NoError(err)
+	out, err := invokeText(context.Background(), grep, input)
+	must.NoError(err)
+	must.Contains(out, "a.txt")
+	must.Contains(out, filepath.Join("notes", "b.txt"))
+	must.NotContains(out, "main.go")
 }
 
 // --- Truncated boundary coverage ---

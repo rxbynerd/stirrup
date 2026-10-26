@@ -340,3 +340,45 @@ func TestPatternScanner_PEMKeyIsOneFindingOnItsBeginLine(t *testing.T) {
 	}
 	must.Equal([]int{2}, lines, "all findings: %+v", res.Findings)
 }
+
+func TestSecretRules_HTTPAuthProseIsNotAFinding(t *testing.T) {
+	for _, tc := range []struct {
+		name, rule, content string
+	}{
+		{"basic_documentation", "secret/basic_auth", "Read the basic documentation first.\n"},
+		{"basic_auth_prose", "secret/basic_auth", "Basic auth is supported.\n"},
+		{"bearer_tokens_prose", "secret/bearer_token", "Bearer tokens are sent in the header.\n"},
+		{"bearer_token_prose", "secret/bearer_token", "Use a bearer token to authenticate.\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			check := assert.New(t)
+			res := scanContent(t, "README.md", []byte(tc.content))
+			check.Empty(findingsWithRule(res.Findings, tc.rule), "prose must not be a finding: %+v", res.Findings)
+			check.False(res.HasBlocking(), "prose must not block: %+v", res.Findings)
+		})
+	}
+}
+
+func TestSecretRules_HTTPAuthCredentialIsAFinding(t *testing.T) {
+	for _, tc := range []struct {
+		name, rule, content string
+	}{
+		{"basic_credential", "secret/basic_auth", "Authorization: Basic dXNlcjpwYXNzd29yZA==\n"},
+		{"basic_credential_after_prose", "secret/basic_auth", "Basic auth uses Basic dXNlcjpwYXNzd29yZA==\n"},
+		{"basic_credential_after_rejected_basic", "secret/basic_auth", "basic basic dXNlcjpwYXNzd29yZA==\n"},
+		{"basic_credential_unpadded", "secret/basic_auth", "Authorization: Basic dXNlcjpwYXNzd29yZA\n"},
+		{"bearer_credential", "secret/bearer_token", "Authorization: Bearer abc123def456ghi789jkl\n"},
+		{"bearer_jwt_credential", "secret/bearer_token", "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.c2lnbmF0dXJl\n"},
+		{"bearer_credential_after_prose", "secret/bearer_token", "Bearer token Bearer abc123def456ghi789jkl\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
+			res := scanContent(t, "README.md", []byte(tc.content))
+			found := findingsWithRule(res.Findings, tc.rule)
+			must.Len(found, 1, "findings: %+v", res.Findings)
+			check.Equal(SeverityBlock, found[0].Severity)
+			check.Equal(1, found[0].Line)
+		})
+	}
+}

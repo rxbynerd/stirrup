@@ -1,10 +1,39 @@
 package provider
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 )
+
+// maxStrictWarnPathRunes bounds the schema path in a fallback WARN, since
+// property names come from tool schemas the harness does not author.
+const maxStrictWarnPathRunes = 256
+
+// warnStrictFallbacks logs one WARN per tool the request sends with
+// strict:false because its schema failed the strict-mode lint. Only the
+// tool name, field path, and keyword reason are logged — never schema
+// content.
+func warnStrictFallbacks(ctx context.Context, logger *slog.Logger, providerType, model string, fallbacks []*strictSchemaError) {
+	for _, fb := range fallbacks {
+		path := fb.path
+		if path == "" {
+			path = "<root>"
+		}
+		if runes := []rune(path); len(runes) > maxStrictWarnPathRunes {
+			path = string(runes[:maxStrictWarnPathRunes]) + "..."
+		}
+		logger.WarnContext(ctx, "strict-mode schema lint rejected tool; sending it with strict:false",
+			slog.String("provider.type", providerType),
+			slog.String("provider.model", model),
+			slog.String("tool.name", fb.tool),
+			slog.String("schema.path", path),
+			slog.String("reason", fb.reason),
+		)
+	}
+}
 
 // strictSchemaError carries a tool name plus the schema field path the
 // normaliser rejected. The exported message names the tool and path only
@@ -12,10 +41,17 @@ import (
 // contain operator-supplied or model-supplied content that should not
 // land in a log or trace at error level. The reason string names the
 // JSON Schema keyword or structural issue and is safe to surface.
+//
+// malformed marks a schema that does not parse as JSON or whose keywords
+// have the wrong shape (properties not an object, required not a string
+// array), as opposed to a well-formed schema using a construct strict mode
+// cannot express. Such a schema cannot validate tool input either, so it
+// fails the request instead of falling back to strict:false.
 type strictSchemaError struct {
-	tool   string
-	path   string
-	reason string
+	tool      string
+	path      string
+	reason    string
+	malformed bool
 }
 
 func (e *strictSchemaError) Error() string {
@@ -55,7 +91,7 @@ func NormalizeStrictSchema(toolName string, in json.RawMessage) (json.RawMessage
 	}
 	var node any
 	if err := json.Unmarshal(in, &node); err != nil {
-		return nil, &strictSchemaError{tool: toolName, path: "", reason: fmt.Sprintf("parse schema: %v", err)}
+		return nil, &strictSchemaError{tool: toolName, path: "", reason: fmt.Sprintf("parse schema: %v", err), malformed: true}
 	}
 	out, err := normalizeStrictNode(toolName, node, "")
 	if err != nil {
@@ -137,9 +173,10 @@ func normalizeStrictObject(toolName string, out map[string]any, path string) err
 	props, ok := rawProps.(map[string]any)
 	if !ok {
 		return &strictSchemaError{
-			tool:   toolName,
-			path:   path,
-			reason: "properties must be an object",
+			tool:      toolName,
+			path:      path,
+			reason:    "properties must be an object",
+			malformed: true,
 		}
 	}
 
@@ -150,18 +187,20 @@ func normalizeStrictObject(toolName string, out map[string]any, path string) err
 		arr, ok := rawReq.([]any)
 		if !ok {
 			return &strictSchemaError{
-				tool:   toolName,
-				path:   path,
-				reason: "required must be an array of strings",
+				tool:      toolName,
+				path:      path,
+				reason:    "required must be an array of strings",
+				malformed: true,
 			}
 		}
 		for i, v := range arr {
 			s, ok := v.(string)
 			if !ok {
 				return &strictSchemaError{
-					tool:   toolName,
-					path:   path,
-					reason: fmt.Sprintf("required[%d] must be a string", i),
+					tool:      toolName,
+					path:      path,
+					reason:    fmt.Sprintf("required[%d] must be a string", i),
+					malformed: true,
 				}
 			}
 			currentRequired[s] = true
@@ -274,9 +313,10 @@ func makeNullable(toolName string, node any, path string) (any, error) {
 		}
 	default:
 		return nil, &strictSchemaError{
-			tool:   toolName,
-			path:   path,
-			reason: fmt.Sprintf("type must be a string or array of strings, got %T", rawType),
+			tool:      toolName,
+			path:      path,
+			reason:    fmt.Sprintf("type must be a string or array of strings, got %T", rawType),
+			malformed: true,
 		}
 	}
 	return obj, nil

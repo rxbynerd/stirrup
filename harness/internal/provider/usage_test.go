@@ -48,7 +48,7 @@ func serveSSE(t *testing.T, body string) *httptest.Server {
 func fabricatedUsage(t *testing.T, response, providerType string) types.TokenUsage {
 	t.Helper()
 	ch := make(chan types.StreamEvent, 8)
-	fabricateStream(ch, []byte(response), providerType)
+	fabricateStream(ch, []byte(response), providerType, nil)
 	close(ch)
 	return mergedUsage(t, collectEvents(t, ch))
 }

@@ -418,6 +418,38 @@ func TestHandle_RendersTurnAbandoned(t *testing.T) {
 	must.Contains(errOut.String(), "[turn_abandoned] 2 empty_response")
 }
 
+func TestHandle_RendersToolsLoaded(t *testing.T) {
+	must := require.New(t)
+	srv, _, errOut := testServer(t, permissionDeny, "")
+	turn := int32(1)
+	stream := &fakeStream{events: []*harnessv1.HarnessEvent{
+		{Type: "ready", HarnessVersion: "v1"},
+		{Type: "tools_loaded", Turn: &turn, Source: "harness", Name: "tool_search",
+			Input: []byte(`{"query":"issues"}`), Tools: []string{"mcp_github_create_issue", "mcp_github_list_issues"}},
+		{Type: "done", StopReason: "success"},
+	}}
+
+	_, err := srv.handle(context.Background(), stream)
+	must.NoError(err)
+	must.Contains(errOut.String(), "[tools_loaded] harness tool_search mcp_github_create_issue, mcp_github_list_issues\n")
+	must.NotContains(errOut.String(), "not handled")
+}
+
+func TestHandle_EscapesToolsLoadedFields(t *testing.T) {
+	must := require.New(t)
+	srv, _, errOut := testServer(t, permissionDeny, "")
+	stream := &fakeStream{events: []*harnessv1.HarnessEvent{
+		{Type: "ready", HarnessVersion: "v1"},
+		{Type: "tools_loaded", Source: "native\x1b[2J", Name: "tool_search", Tools: []string{"evil\nname"}},
+		{Type: "done", StopReason: "success"},
+	}}
+
+	_, err := srv.handle(context.Background(), stream)
+	must.NoError(err)
+	must.Contains(errOut.String(), `[tools_loaded] native\x1b[2J tool_search evil\nname`)
+	must.NotContains(errOut.String(), "\x1b")
+}
+
 func TestHandle_SendsFollowUpsAfterEachDone(t *testing.T) {
 	check := assert.New(t)
 	must := require.New(t)

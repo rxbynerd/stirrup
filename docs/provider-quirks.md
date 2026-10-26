@@ -46,13 +46,16 @@ Concrete v1 divergences:
   every `parts[]` entry that the harness must preserve verbatim for
   multi-turn reasoning continuity. Issue #194 traced the symptom; the
   fix is a registry-driven `ReplayFields` capture.
-- DeepSeek's reasoner and v4 families surface chain-of-thought
+- DeepSeek's first-party v4 family surfaces chain-of-thought
   through a `reasoning_content` sibling field on the assistant
   delta. DeepSeek v4 and V4.1 thinking mode (default-on) additionally
   *requires* the field replayed for every prior assistant turn once a
   request carries tools — the API returns 400 otherwise — so the `ReplayFields`
   capture is threaded back outbound on the openai-compatible
-  adapter (see [§3.1](#31-replayfields-rules)).
+  adapter (see [§3.1](#31-replayfields-rules)). Through OpenRouter the
+  same models stream the reasoning as `reasoning` instead, and
+  replaying it is not required (probed 2026-10-18), so the gateway
+  rules set no `ReplayFields`.
 
 ### 1.1 Prior art
 
@@ -110,13 +113,16 @@ Fixture trees for the wire-shape contract tests:
 harness/internal/provider/testdata/quirks/
     openai-compatible/<model>/{request.json, response.sse}
     openai-compatible/<deepseek-model>/{request.json, response.sse, replay.json}
+    openai-compatible/deepseek/<model>/response.sse   # live OpenRouter capture
     gemini/<model>/{request.json, response.sse[, replay.json]}
     openai-responses/<model>/{request.json[, response.sse, replay.json]}
 ```
 
-A gateway-prefixed model id (e.g. `deepseek/deepseek-v4-flash`) maps
-onto a nested fixture directory; the `<model>` path component is the
-id verbatim.
+A gateway-prefixed model id (e.g. `deepseek/deepseek-v4.1-flash-1017`)
+maps onto a nested fixture directory; the `<model>` path component is
+the id verbatim. A fixture captured from a live stream starts with a
+`# captured:` line recording the date and host in place of the
+`# synthetic:` line.
 
 ### 2.1 ProviderQuirks
 
@@ -435,11 +441,11 @@ test catch malformed paths at registry-build time.
 | `openai-compatible` | `*/gpt-5-chat*`    | OpenAI gpt-5-chat carve-out via gateway prefix: same as `gpt-5-chat*` |
 | `openai-compatible` | `gpt-6*`           | OpenAI gpt-6 family: omit sampling params, strict tools, `reasoning_effort` `low`..`max`; a request with tools fails before send (tool calling needs `openai-responses`) |
 | `openai-compatible` | `*/gpt-6*`         | OpenAI gpt-6 family via gateway prefix: omit sampling params only |
-| `openai-compatible` | `deepseek-reasoner*` | DeepSeek reasoner: replay `reasoning_content`, omit sampling params, legacy `max_tokens` (threaded) |
 | `openai-compatible` | `deepseek-v4*`     | DeepSeek v4: replay `reasoning_content`, omit sampling params, legacy `max_tokens`, `reasoning_effort` (threaded) |
 | `openai-compatible` | `deepseek-flash*`  | DeepSeek V4.1 Flash: same quirk set as `deepseek-v4*` (threaded) |
-| `openai-compatible` | `deepseek/deepseek-flash*` | DeepSeek V4.1 Flash via gateway prefix: replay, omit sampling, `max_tokens`; no `reasoning_effort` (threaded) |
-| `openai-compatible` | `deepseek/deepseek-v4*` | DeepSeek v4 via gateway prefix (OpenRouter-style ids): same quirk set as `deepseek-v4*` (threaded) |
+| `openai-compatible` | `deepseek/deepseek-flash*` | DeepSeek V4.1 Flash via OpenRouter: omit sampling params, legacy `max_tokens`, `reasoning_effort`; no replay (probed 2026-10-18) |
+| `openai-compatible` | `deepseek/deepseek-v4*` | DeepSeek v4 via OpenRouter: same quirk set as `deepseek/deepseek-flash*` (probed 2026-10-18) |
+| `openai-compatible` | `~deepseek/deepseek-flash-latest`, `~deepseek/deepseek-v4-flash-latest`, `~deepseek/deepseek-pro-latest` | DeepSeek via OpenRouter `~`-prefixed latest aliases (the `~` defeats the two globs above), one exact rule per alias: same quirk set, taken from the probed gateway ids; listed by OpenRouter 2026-10-18, aliases themselves not probed |
 | `gemini`            | `*`                | Gemini: off `streamFunctionCallArguments` (post-#191 default)        |
 | `gemini`            | `gemini-3*`        | Gemini 3: preserve `thoughtSignature` as a sibling of `functionCall` on each `parts[]` element (parse-side only) |
 | `gemini`            | `gemini-3.6*`      | Gemini 3.6: tool results on `role:"user"` (`role:"function"` is a 400 on AI Studio, still accepted by Vertex); omit deprecated sampling params; thinking levels `minimal`/`low`/`medium`/`high` |
@@ -467,16 +473,16 @@ test catch malformed paths at registry-build time.
 | `anthropic`         | `claude-fable-5*`  | Anthropic Claude Fable 5 / 5.1: same as `claude-opus-4-7*` |
 | `anthropic`         | `claude-mythos-5*` | Anthropic Claude Mythos 5: omit sampling params (same API surface as Fable 5); effort unprobed |
 | `anthropic`         | `claude-sonnet-5-5*`, `claude-opus-5-5*`, `claude-fable-5-1*`, `claude-mythos-5-1*` | `tool_choice` auto only (`any`/`tool` are a 400) |
-| `anthropic`         | `claude-opus-4-[5-8]*` | Anthropic Claude Opus 4.5–4.8: native BM25 tool search with `defer_loading` (documented, not probed) |
-| `anthropic`         | `claude-sonnet-4-[5-6]*` | Anthropic Claude Sonnet 4.5–4.6: native BM25 tool search with `defer_loading` (documented, not probed) |
-| `anthropic`         | `claude-haiku-4-5*` | Anthropic Claude Haiku 4.5: native BM25 tool search with `defer_loading` (documented, not probed) |
-| `anthropic`         | `claude-opus-5*`   | Anthropic Claude Opus 5 / 5.5: native BM25 tool search with `defer_loading` (documented, not probed) |
-| `anthropic`         | `claude-sonnet-5*` | Anthropic Claude Sonnet 5 / 5.5: native BM25 tool search with `defer_loading` (documented, not probed) |
-| `anthropic`         | `claude-haiku-5*`  | Anthropic Claude Haiku 5.5: native BM25 tool search with `defer_loading` (documented, not probed) |
-| `anthropic`         | `claude-fable-5*`  | Anthropic Claude Fable 5 / 5.1: native BM25 tool search with `defer_loading` (documented, not probed) |
+| `anthropic`         | `claude-opus-4-[5-8]*` | Anthropic Claude Opus 4.5–4.8: native BM25 tool search with `defer_loading` (probed on `claude-opus-4-5`, first turn only) |
+| `anthropic`         | `claude-sonnet-4-[5-6]*` | Anthropic Claude Sonnet 4.5–4.6: native BM25 tool search with `defer_loading` (probed on `claude-sonnet-4-6` including the `pause_turn` resend; Sonnet 4.5 not probed) |
+| `anthropic`         | `claude-haiku-4-5*` | Anthropic Claude Haiku 4.5: native BM25 tool search with `defer_loading` (probed: stream, replay, router switch, `pause_turn`, batch) |
+| `anthropic`         | `claude-opus-5*`   | Anthropic Claude Opus 5 / 5.5: native BM25 tool search with `defer_loading` (probed on `claude-opus-5-5`, first turn only) |
+| `anthropic`         | `claude-sonnet-5*` | Anthropic Claude Sonnet 5 / 5.5: native BM25 tool search with `defer_loading` (probed on `claude-sonnet-5-5`: first turn, unanswered-call resend (no paused turn produced), trimmed history) |
+| `anthropic`         | `claude-haiku-5*`  | Anthropic Claude Haiku 5.5: native BM25 tool search with `defer_loading` (probed, first turn only) |
+| `anthropic`         | `claude-fable-5*`  | Anthropic Claude Fable 5 / 5.1: native BM25 tool search with `defer_loading` (probed on `claude-fable-5-1`, first turn only) |
 | `anthropic`         | `claude-mythos-5*` | Anthropic Claude Mythos 5 / 5.1: native BM25 tool search with `defer_loading` (documented, not probed) |
-| `openai-responses`  | `gpt-5.[4-9]*`     | OpenAI Responses gpt-5.4 and later 5.x: hosted `tool_search` with `defer_loading` (documented, not probed; see [providers.md](providers.md#hosted-tool-search)) |
-| `openai-responses`  | `gpt-6*`           | OpenAI Responses gpt-6 family: hosted `tool_search` with `defer_loading` (documented, not probed) |
+| `openai-responses`  | `gpt-5.[4-9]*`     | OpenAI Responses gpt-5.4 and later 5.x: hosted `tool_search` with `defer_loading` (probed on `gpt-5.4-mini`: stream, verbatim replay, namespaces, batch; `gpt-5.5` first turn only; see [providers.md](providers.md#hosted-tool-search)) |
+| `openai-responses`  | `gpt-6*`           | OpenAI Responses gpt-6 family: hosted `tool_search` with `defer_loading` (probed on `gpt-6-luna` and `gpt-6-astra`, first turn only) |
 
 The ten tool search rules set `ToolSearchCapability`, which the loop
 reads under [lazy tool loading](configuration.md#lazy-tool-loading) to
@@ -528,18 +534,40 @@ On `openai-responses`, the `o[1-9]*`, `gpt-5*`, and `gpt-6*` rules set
 possible with a silent non-strict fallback, so the harness pins
 `strict: true` and the strict-schema rewriter rejects a construct it
 cannot express (`$ref`, `oneOf`, `anyOf`, `allOf`, `patternProperties`,
-tuple `items`) before send, matching the Chat Completions `gpt-5*` rule.
-An MCP tool whose schema uses one of those constructs therefore fails
-the request on these models rather than degrading silently. The cost is
-availability: MCP servers built on FastMCP or Pydantic declare an
-`Optional[...]` parameter as an `anyOf` with `null`, so one such tool
-stops every request before send and the run cannot proceed until the
-tool is removed or its schema rewritten. Neither adapter falls back to
-`strict: false` per tool. The same
+tuple `items`), matching the Chat Completions `gpt-5*` rule. MCP servers
+built on FastMCP or Pydantic declare an `Optional[...]` parameter as an
+`anyOf` with `null`, so such a tool cannot be normalised. Both adapters
+send that one tool with its original schema and an explicit
+`strict: false` rather than failing the request, and keep every other
+tool strict. The fallback is explicit because an omitted `strict` would
+mean strict-when-possible on this surface, and it is not configurable.
+The cost is that the affected tool loses constrained decoding; the
+harness still validates each tool input against the original schema
+before dispatch, so the input guarantee is unchanged. Each fallback
+logs one WARN ([§5](#5-operator-surface)). Only a schema that does not
+parse as JSON still fails the request before send. The same
 three rules set `IncludeEncryptedReasoning` and `ReplayOutputItems`
 ([§3.1](#31-replayfields-rules)); the `gpt-5-chat*` carve-out clears
 both because the chat snapshots do not reason. All three flags are
 documented, not probed, and the carve-out is inferred.
+
+Strict normalisation makes every optional property required and
+nullable, so a model omits an optional argument by sending an explicit
+`null`. The harness validates each call against the tool's original
+schema, which has no `null` for that property. Both OpenAI adapters
+(streaming, and the batch path that fabricates the same events) therefore
+drop a top-level argument whose value is `null` when the tool was sent
+with `strict: true`, the property was not in the original `required`
+list, and its original `type` does not admit `null`. A `null` for a
+required property, or for a property the original schema declares
+nullable, is kept and reaches validation unchanged, and a tool sent with
+`strict: false` is never touched. Only top-level arguments are affected;
+the original schema and the harness-side validation are not modified.
+Stored Responses output items keep the model's `null` values, so verbatim
+replay sends exactly what the model produced. The replay consistency
+check ignores those stripped `null` values when it compares a stored
+`function_call` with the persisted `tool_use` input, so stripping alone
+never forces a turn to be reconstructed.
 
 Temperature on `openai-responses` follows the projected effort. The
 `gpt-6*`, `gpt-5.5*`, and `gpt-5.6*` rules set `OmitSamplingParams`, so
@@ -726,7 +754,7 @@ each `parts[]` element, not a child; see `geminiPart` in
 log sinks. The same totals are mirrored onto the OTel span as
 `replay_fields_captured.count` and `replay_fields_captured.total_len`,
 so trace-only consumers see the rule fired without correlating
-back to slog. `TestReplayFields_DeepSeekReasoner_LogIsLengthOnly`
+back to slog. `TestReplayFields_DeepSeekV4Flash_LogIsLengthOnly`
 pins the side-channel guard on the slog side.
 
 ### 3.2 Reasoning effort
@@ -763,6 +791,7 @@ Probed or documented acceptance as of 2026-09-30:
 | GPT-5.6 Sol / Terra / Luna (`openai-responses` only) | `low` `medium` `high` `xhigh` `max` (documented) |
 | GPT-5.4 / 5.5 (`openai-responses` only) | `low` `medium` `high` `xhigh` (documented) |
 | DeepSeek v4 / V4.1 Flash (first-party) | all six; DeepSeek folds them onto `low`/`high`/`max` (documented) |
+| DeepSeek v4 / V4.1 Flash via OpenRouter | all six (probed 2026-10-18; some hosts return no reasoning at the lower levels) |
 | GLM-5.3 (`zai-glm` profile) | `low` `high` `max`; any other value silently becomes `max` (documented) |
 | Gemini 3.6 | `minimal` `low` `medium` `high` (probed) |
 | Gemini 3.7 / 3.8 | `low` `medium` `high` (probed) |
@@ -845,14 +874,24 @@ protects against a runtime overwrite of a tool's canonical schema —
 if the bytes change, the hash changes, and the stale rewrite is
 bypassed.
 
-Errors are NOT cached: a schema that fails the strict-mode lint
-re-fails on every turn, so a rule change that introduces strict mode
-mid-run does not paper over a transient parse problem, and an
-operator sees the failure surface in logs each time. The miss path
-takes a write lock and re-checks for the key after acquiring it, so
-concurrent first-misses on the same key produce exactly one
-normalisation call and one `Misses` increment — this gives the cache
-singleflight semantics without a separate singleflight dependency.
+A schema the lint rejects is cached as a fallback entry: the tool is
+sent with `strict: false` on every turn, and the WARN fires only on the
+call that records the entry, so it appears once per
+`(model, tool-name, schema-hash)` key rather than every turn. A changed
+schema or a model switch is a new key and warns again. Batch runs
+build each request without the cache, so every submitted request warns.
+The `schema.path` of a fallback WARN is truncated to 256 runes.
+
+A malformed schema, meaning one that is not valid JSON or whose
+`properties` or `required` has the wrong shape, cannot validate tool
+input either. It is NOT cached and fails the request each time, so a
+transient parse problem is not papered over.
+
+The miss path takes a
+write lock and re-checks for the key after acquiring it, so concurrent
+first-misses on the same key produce exactly one normalisation call and
+one `Misses` increment — this gives the cache singleflight semantics
+without a separate singleflight dependency.
 
 ## 5. Operator surface
 
@@ -864,7 +903,8 @@ singleflight semantics without a separate singleflight dependency.
 | `provider.quirk.applied` OTel span attribute | trace attribute | Set on the active `provider.stream` span at the same point the slog DEBUG line is emitted. Carries the same `[]string` of rule Descriptions. Lets a trace-only consumer (Datadog, Honeycomb, Jaeger) see which rules fired without needing to correlate with a separate log sink. |
 | `quirks replay fields captured` slog DEBUG line | structured log | Per-stream summary of `{count, total_len}` per captured ReplayFields path, emitted on stream exit. Length-only — captured values themselves are not logged. |
 | `replay_fields_captured.count` / `replay_fields_captured.total_len` OTel span attributes | trace attributes | Set on the active `provider.stream` span on stream exit, in parallel with the slog DEBUG record above. Totals across every captured path; length-only invariant matches the slog surface. |
-| `openai quirks suppressed caller temperature` / `anthropic quirks suppressed caller temperature` slog WARN line | structured log | Fires when `OmitSamplingParams` suppresses a caller-supplied non-nil `Temperature`. Names the rule that caused the suppression. The suppressed value itself is not logged. |
+| `openai quirks suppressed caller temperature` / `anthropic quirks suppressed caller temperature` / `gemini quirks suppressed caller temperature` slog WARN line | structured log | Fires when `OmitSamplingParams` suppresses a caller-supplied non-nil `Temperature`. Names the rule that caused the suppression. The suppressed value itself is not logged. |
+| `strict-mode schema lint rejected tool; sending it with strict:false` slog WARN line | structured log | Fires on the `openai-compatible` and `openai-responses` adapters when a tool schema cannot be normalised for strict mode, once per `(model, tool, schema)` per adapter instance. Carries `provider.type`, `provider.model`, `tool.name`, `schema.path` and `reason` (the rejected keyword or structural issue); schema descriptions and enum values are never logged. The tool is sent non-strict; every other tool stays strict. |
 | `anthropic prompt cache` slog DEBUG line | structured log | One line per Anthropic stream whose usage reports any input, carrying `cache.read`, `cache.write` and `input.uncached` (input total minus both cache counts) as they appear on the emitted `message_complete` event, so the line matches the trace, plus `provider.model`. Counts only. A turn after the first with `cache.read` at zero means the cached prefix was invalidated or the prompt is below the model's cacheable minimum. |
 
 ### 5.1 Read-only registry
@@ -1056,23 +1096,45 @@ concerns are tracked separately:
    field. `TestDefaultRegistryConcurrentAccess` stresses the
    singleton under `-race`.
 
-9. **DeepSeek verification status.** The `reasoning_content` path
-   and the v4 replay requirement are doc-verified as of 2026-06-07
-   against the DeepSeek thinking-mode guide
-   (https://api-docs.deepseek.com/guides/thinking_mode), with broad
-   community corroboration of the 400-on-missing-replay behaviour on
-   both first-party and OpenRouter-served v4 traffic — but no live
-   first-party capture exists yet. Remaining live-capture gaps,
-   each flagged in the rule comments: whether the v4 endpoint also
-   accepts `max_completion_tokens` (the rules pin the doc-consistent
-   legacy `max_tokens`), where `reasoning_effort` sits on the wire
-   (the API reference and the guide disagree on nested-vs-top-level
-   placement, so no rule ships for it), and whether any gateway
-   renames the field to `reasoning`. If a live capture surfaces a
-   different shape (e.g. a structured `thinking` object rather than
-   a flat string), the rule's path and the corresponding
-   `replay.json` fixture need to be adjusted in lockstep. The
-   180-day staleness window flags the rules for re-verification.
+9. **DeepSeek verification status.** The first-party rules
+   (`deepseek-v4*`, `deepseek-flash*`) rest on documentation only:
+   the `reasoning_content` path and the v4 replay requirement are
+   doc-verified as of 2026-06-07 against the DeepSeek thinking-mode
+   guide (https://api-docs.deepseek.com/guides/thinking_mode), and
+   no live first-party capture exists yet. Remaining first-party
+   gaps: the real stream shape and the 400-on-missing-replay
+   behaviour, whether the v4 endpoint also accepts
+   `max_completion_tokens` (the rules pin the doc-consistent legacy
+   `max_tokens`), and where `reasoning_effort` sits on the wire (the
+   API reference and the guide disagree on nested-vs-top-level
+   placement; the rules send the top-level form). If a live capture
+   surfaces a different shape (e.g. a structured `thinking` object
+   rather than a flat string), the rule's path and the corresponding
+   `replay.json` fixture need to be adjusted in lockstep.
+
+   The OpenRouter rules (`deepseek/deepseek-flash*`,
+   `deepseek/deepseek-v4*`) were probed live on 2026-10-18 against
+   `deepseek/deepseek-v4.1-flash-1017` and `deepseek/deepseek-v4-flash`,
+   on default routing and pinned to DeepInfra and Fireworks. The three
+   `~deepseek/...-latest` alias rules were not probed: OpenRouter lists
+   the aliases, and they take the quirk set of the probed ids. OpenRouter emits reasoning as
+   `delta.reasoning` plus a `reasoning_details` array and never as
+   `reasoning_content`; every replay variant (as `reasoning_content`,
+   as `reasoning`, as `reasoning_details`, and none) returned 200;
+   all seven `reasoning_effort` values, `temperature`, `top_p`,
+   `max_tokens` and `max_completion_tokens` were accepted. The
+   gateway rules therefore set no replay path and keep the sampling
+   and token-field flags only because they are harmless there. The
+   replay paths were dropped on the evidence of the verified hosts
+   only (DeepInfra, Fireworks, Relace and OpenInference). If
+   OpenRouter routes to DeepSeek's own host and passes
+   `reasoning_content` through, the gateway rules do not replay it.
+   Unverified: requests that OpenRouter routes to DeepSeek's own
+   host (the probe account's privacy setting excluded it), and
+   whether a replay is required on that route. The Chat Completions
+   adapter shows `delta.reasoning` as thinking deltas beside
+   `reasoning_content`; it is never replayed. The 180-day staleness
+   window flags the rules for re-verification.
 
    Operators who want v4 *non-thinking* behaviour can inject a rule
    via `NewRegistry` whose `ExtraBodyFields` carries the documented
@@ -1080,11 +1142,9 @@ concerns are tracked separately:
    sets it: thinking default-on is the desired behaviour for a
    coding agent, and disabling it also forfeits the documented
    reasoning quality. The legacy `deepseek-chat` /
-   `deepseek-reasoner` ids are first-party aliases for v4-flash
+   `deepseek-reasoner` ids were first-party aliases for v4-flash
    non-thinking / thinking modes, fully retired after 2026-07-24
-   15:59 UTC; the reasoner rule carries a matching sunset note and
-   no `deepseek-chat` rule exists (non-thinking, no
-   `reasoning_content`).
+   15:59 UTC; no rule exists for either.
 
 10. **Gemini 3.6/3.7 verification surface, and the role split
     between it and Vertex.** Every rule here was probed live on
@@ -1128,7 +1188,7 @@ concerns are tracked separately:
     advertises `Required`, which is every model except Sonnet 5.5,
     Opus 5.5, Fable 5.1 and Mythos 5.1
     (`applyAnthropicAutoToolChoiceOnly` routes those to the prompt
-    strategy). The base Anthropic rule therefore sets
+    strategy). The base Anthropic and Gemini rules therefore set
     `ToolChoice.RejectsTrailingAssistant`, and for a provider with
     that flag the policy adds a short synthetic user message on the
     native path, so the retry ends on a user turn. The Anthropic
@@ -1141,7 +1201,9 @@ concerns are tracked separately:
     128, one `read_file` tool, no `thinking` parameter). The
     trailing-assistant history is `user`, `assistant` (plain text, no
     tool use). The fixed history appends the synthetic user message
-    the quirk adds.
+    the quirk adds. The two `server_tool_use` rows were probed on
+    2026-10-26 instead, with the search tool, `read_file` and one
+    deferred tool.
 
     | Provider | Model | `tool_choice` | History | Status | Result |
     |---|---|---|---|---|---|
@@ -1155,10 +1217,42 @@ concerns are tracked separately:
     | `anthropic` | `claude-sonnet-4-6` | `any` | with synthetic user turn | probed | 200, `tool_use` |
     | `anthropic` | `claude-sonnet-4-6` | `tool` (named) | trailing assistant | probed | 400 `invalid_request_error`, same message |
     | `anthropic` | `claude-sonnet-4-6` | `tool` (named) | with synthetic user turn | probed | 200, `tool_use` |
+    | `anthropic` | `claude-sonnet-4-6`, `claude-sonnet-5-5` | `auto` | trailing assistant ending on an unanswered `server_tool_use` | probed | 200: the request continues a paused turn instead of being a prefill (`claude-haiku-4-5` also 200) |
+    | `anthropic` | `claude-sonnet-4-6` | `auto` | the same message with the unanswered `server_tool_use` removed | probed | 400 `invalid_request_error`, same prefill message |
     | `anthropic` | Opus 4.6 / 4.7 / 4.8, Sonnet 5, Opus 5 | any | trailing assistant | documentation only | Anthropic's API documentation states that a trailing assistant message returns 400 on these models; Sonnet 4.6, probed above, matches the documentation |
     | `anthropic` | `claude-haiku-4-5`, `claude-sonnet-4-6` | thinking on / adaptive thinking | any | unprobed | not reachable from a stirrup request |
-    | `openai-compatible`, `openai-responses` | default model | any | any | unprobed | `OPENAI_API_KEY` was not present in the session; neither a rejection nor an acceptance has been established |
-    | `gemini` | any | any | any | unprobed | not attempted |
+
+    Probed 2026-10-18 for Gemini and OpenAI. The Gemini probe was a
+    two-turn exchange. Turn 1 sent one user message, one `read_file`
+    tool and `functionCallingConfig.mode: NONE`, and kept the model's
+    plain-text answer verbatim, including its `thoughtSignature`.
+    Turn 2 resent the user message and that model content with
+    `mode: ANY`, with and without `allowedFunctionNames:
+    ["read_file"]`, and `maxOutputTokens` 2048. The control repeated
+    turn 2 with one extra user text turn appended. Vertex AI was
+    called through `aiplatform.googleapis.com` (`locations/global`)
+    and AI Studio through `generativelanguage.googleapis.com/v1beta`.
+    The OpenAI rows used `tool_choice: "required"` and a named
+    function; the result was identical for both.
+
+    | Provider | Model | Surface | Trailing model turn | With synthetic user turn |
+    |---|---|---|---|---|
+    | `gemini` | `gemini-3.8-flash` | Vertex AI | 400 | 200, one `functionCall` |
+    | `gemini` | `gemini-3.8-flash` | AI Studio | 400 | 200, one `functionCall` |
+    | `gemini` | `gemini-3.7-flash` | Vertex AI | 400 | 200, one `functionCall` |
+    | `gemini` | `gemini-3.7-flash` | AI Studio | 400 | 200, one `functionCall` |
+    | `gemini` | `gemini-3.6-flash` | Vertex AI | 400 | 200, one `functionCall` |
+    | `gemini` | `gemini-3.6-flash` | AI Studio | 400 | 200, one `functionCall` |
+    | `gemini` | `gemini-3.5-flash` | Vertex AI | 200, one `functionCall` | 200, one `functionCall` |
+    | `gemini` | `gemini-3.5-flash` | AI Studio | 400 | 200, one `functionCall` |
+    | `gemini` | `gemini-3.1-pro-preview` | Vertex AI | 200, one `functionCall` | 200, one `functionCall` |
+    | `gemini` | `gemini-3.1-pro-preview` | AI Studio | 200, one `functionCall` | 200, one `functionCall` |
+    | `openai-compatible` | `gpt-5.5` (OpenAI direct) | Chat Completions | 200, tool call | 200, tool call |
+    | `openai-compatible` | `openai/gpt-5.5` (OpenRouter) | Chat Completions | 200, tool call | 200, tool call |
+    | `openai-responses` | default model | Responses | unprobed | unprobed |
+
+    Every Gemini 400 carried `Requests ending with a model turn are
+    not supported.`, with and without `allowedFunctionNames`.
 
     A trailing assistant message is rejected on Sonnet 4.6 for both
     `any` and a named `tool` choice, and accepted on Haiku 4.5, so
@@ -1169,13 +1263,29 @@ concerns are tracked separately:
     Sonnet 5 rows rest on documentation that the Sonnet 4.6 result
     corroborates. Narrowing the flag to named models would trade that
     margin for one fewer short message on Haiku-class models.
-    `openai-compatible` and `gemini` do not set the flag and still
-    retry with a history that ends on the assistant answer.
+
+    The Gemini rejection applies to 3.6 Flash and later on both
+    surfaces and to 3.5 Flash on AI Studio. Vertex AI still accepts a
+    trailing model turn on 3.5 Flash, and 3.1 Pro accepts it on both
+    surfaces. The flag is set on the whole `gemini` family rather
+    than on the 3.6 and later models: the synthetic user turn was
+    accepted in every probed cell, so it is harmless where a trailing
+    model turn would be allowed, and the family-wide flag covers AI
+    Studio on 3.5 Flash and any later model without another registry
+    change.
+
+    `openai-compatible` does not set the flag: `gpt-5.5` accepts a
+    history ending on an assistant message both directly and through
+    OpenRouter, so its retry still ends on the assistant answer.
+    Third-party OpenAI-compatible endpoints (DeepSeek, GLM, local
+    servers) were not probed; if one rejects a trailing assistant
+    message, set the flag on a model-scoped `openai-compatible` rule.
+    First-party `gpt-6*` cannot reach the native path: a request with
+    tools on Chat Completions fails before send, and
     `openai-responses` resolves no native tool-choice capability, so
-    it takes the prompt strategy and cannot reach this path. Probe
-    procedure for the remaining rows: send a Messages-style request
-    with one tool, a history of `user`, `assistant` (plain text, no
-    tool use), a required tool choice, and a small output cap; record
-    the HTTP status and the error body (never the request headers).
-    If an OpenAI-compatible or Gemini row returns 400, set the flag on
-    that provider's base tool-choice rule.
+    it takes the prompt strategy. Probe procedure for a new row:
+    send a request with one tool, a history of `user`, `assistant`
+    (plain text, no tool use), a required tool choice, and a small
+    output cap; record the HTTP status and the error body (never the
+    request headers). If the row returns 400, set the flag on a rule
+    scoped to that provider and model.

@@ -30,7 +30,9 @@ comparing, so field order and insignificant whitespace do not matter — only
 the set of keys and their values.
 
 Mark a fixture `# synthetic` when it was derived from a builder rather than
-captured from a live provider, and say why. A live capture is preferred where
+captured from a live provider, and say why. A `response.sse` captured from a
+live stream instead starts with a `# captured:` line giving the date and the
+host; check a capture for account or credential identifiers before committing it. A live capture is preferred where
 one exists (the Gemini 3.x streaming precedent in #191 is why); a synthetic
 fixture is acceptable for a shape the harness fully controls.
 
@@ -61,8 +63,11 @@ blindly to make a red test green — that defeats its purpose.
 - **Secrets never appear in fixtures.** Use fake keys/headers only; the
   registry self-tests assert no `secret://` reference reaches a wire body.
 - **Negative coverage.** "Reject before send" tests live where the harness
-  actually lints a schema: OpenAI strict-mode normalisation
-  (`normalizeStrictWithCache`, fail-closed) and the Gemini schema lint
+  actually lints a schema: the OpenAI strict-mode normaliser fails closed
+  on a schema that is not valid JSON or has a structurally invalid
+  `properties` or `required` (`TestTranslateTools_MalformedSchemaStillFails`;
+  a construct strict mode cannot express falls back to `strict:false`
+  instead, see `strictfallback_test.go`), and the Gemini schema lint
   (`LintGeminiSchema`, e.g. `TestGeminiSchemaLint_FailsClosedOnUnsupportedFeature`).
   The Anthropic adapter forwards `input_schema` verbatim and has no harness-side
   schema lint, so its pre-send validation is the tool-name normalisation layer

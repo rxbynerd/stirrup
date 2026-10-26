@@ -1,8 +1,8 @@
 # Safety rings
 
 Stirrup composes five deterministic *safety rings* on top of its usual
-hardening. Each ring is an agent-uncircumventable control that catches
-a different class of attack on the harness's core job — turning LLM
+hardening. Each ring is a control evaluated outside the model
+that catches a different class of attack on the harness's core job — turning LLM
 output into actions on a workspace. Together they form a layered
 defence-in-depth boundary: any single ring is sufficient against the
 attack shape it covers, and combining them ensures a misconfiguration
@@ -521,6 +521,12 @@ attribute (`cmd`, say) parses cleanly and can never fire. The
 load-time linter below rejects exactly that, so the defect no longer
 survives to runtime.
 
+The action and resource carry the tool's internal ID (`run_command`),
+never the alias a non-default `tools.profile` presents to the model
+(`bash` under `coding-classic`). A policy written against an alias
+never matches. The harness logs a warning at startup when the policy
+engine is combined with a profile other than the default.
+
 `principal.capabilities` (Cedar `Set<String>`) exists in the schema
 but is **reserved and not populated in v1** — see the "reserved for
 sub-agent wiring" comment on the `PolicyEngineEnv` literal in
@@ -777,11 +783,17 @@ Or in a `RunConfig` file:
 {
   "executor": {
     "type": "container",
-    "image": "ghcr.io/rxbynerd/stirrup:latest",
+    "image": "ghcr.io/rxbynerd/stirrup-sandbox:latest",
     "runtime": "runsc"
   }
 }
 ```
+
+`executor.image` is the sandbox image, built from `Dockerfile.sandbox`,
+not the harness image (`ghcr.io/rxbynerd/stirrup`). The harness image is
+distroless and has no shell, so it cannot run commands, hooks, or
+in-sandbox git. Production configurations should pin the sandbox image
+by digest instead of `latest`.
 
 `ValidateRunConfig` rejects values outside the closed set above.
 
@@ -945,7 +957,10 @@ Rules in the `patterns` pack fall into two classes:
 
 - **Secret rules** (`secret/*`) are unscoped. A hardcoded credential
   is a finding in any file, including one with an unknown extension
-  or none at all.
+  or none at all. They share the log scrubber's pattern set and its
+  prose filters, so text such as "basic documentation" or "bearer
+  tokens" is not a finding while a decodable `Basic` credential or a
+  `Bearer` token value is.
 - **Sink rules** (`sink/*`) are scoped to the language whose syntax
   the pattern describes, because the same characters mean something
   else elsewhere — a backtick is command substitution in shell and a
@@ -1081,7 +1096,7 @@ RunConfig snippet that validates against `ValidateRunConfig`.
   "modelRouter": { "type": "static", "provider": "anthropic", "model": "claude-sonnet-4-6" },
   "promptBuilder": { "type": "default" },
   "contextStrategy": { "type": "sliding-window", "maxTokens": 200000 },
-  "executor": { "type": "container", "image": "ghcr.io/rxbynerd/stirrup:latest", "runtime": "runc", "network": { "mode": "none" } },
+  "executor": { "type": "container", "image": "ghcr.io/rxbynerd/stirrup-sandbox:latest", "runtime": "runc", "network": { "mode": "none" } },
   "editStrategy": { "type": "multi" },
   "verifier": { "type": "none" },
   "permissionPolicy": { "type": "allow-all" },
@@ -1114,7 +1129,7 @@ not sensitive data — it never counts toward the sensitive-data leg.)
   "modelRouter": { "type": "static", "provider": "anthropic", "model": "claude-sonnet-4-6" },
   "promptBuilder": { "type": "default" },
   "contextStrategy": { "type": "sliding-window", "maxTokens": 200000 },
-  "executor": { "type": "container", "image": "ghcr.io/rxbynerd/stirrup:latest", "runtime": "runc", "network": { "mode": "none" } },
+  "executor": { "type": "container", "image": "ghcr.io/rxbynerd/stirrup-sandbox:latest", "runtime": "runc", "network": { "mode": "none" } },
   "editStrategy": { "type": "multi" },
   "verifier": { "type": "none" },
   "permissionPolicy": { "type": "deny-side-effects" },
@@ -1149,7 +1164,7 @@ needed.
   "contextStrategy": { "type": "sliding-window", "maxTokens": 200000 },
   "executor": {
     "type": "container",
-    "image": "ghcr.io/rxbynerd/stirrup:latest",
+    "image": "ghcr.io/rxbynerd/stirrup-sandbox:latest",
     "runtime": "runsc",
     "network": { "mode": "allowlist", "allowlist": ["api.github.com", "*.githubusercontent.com"] }
   },
@@ -1174,6 +1189,10 @@ needed.
 `codeScanner: composite`. Production posture. Cedar gates destructive
 shell commands; gVisor isolates the kernel; egress is FQDN-restricted;
 both pattern and semgrep scanners run on every edit.
+
+For production, `executor.image` should reference the sandbox image by
+digest (`ghcr.io/rxbynerd/stirrup-sandbox@sha256:...`) instead of the
+mutable `latest` tag.
 
 This config is also the runtime-classifier showcase, and carries **no**
 `ruleOfTwo` override. `web_fetch` supplies both the untrusted-input and
@@ -1200,7 +1219,7 @@ override is removed so the classifier can do its job.)
   "modelRouter": { "type": "static", "provider": "anthropic", "model": "claude-sonnet-4-6" },
   "promptBuilder": { "type": "default" },
   "contextStrategy": { "type": "sliding-window", "maxTokens": 200000 },
-  "executor": { "type": "container", "image": "ghcr.io/rxbynerd/stirrup:latest", "runtime": "runc", "network": { "mode": "none" } },
+  "executor": { "type": "container", "image": "ghcr.io/rxbynerd/stirrup-sandbox:latest", "runtime": "runc", "network": { "mode": "none" } },
   "editStrategy": { "type": "multi" },
   "verifier": { "type": "none" },
   "permissionPolicy": { "type": "deny-side-effects" },

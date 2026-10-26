@@ -498,17 +498,18 @@ type anthropicToolResultPart struct {
 //
 // tool_search and tool_search_result blocks become server_tool_use and
 // tool_search_tool_result blocks only when toolSearch is set, and only as a
-// matched pair (see anthropicReplayableToolSearches); otherwise they are
-// dropped.
+// matched pair or a paused turn's pending call (see
+// anthropicReplayableToolSearches); otherwise they are dropped.
 func translateMessagesAnthropic(messages []types.Message, cap quirks.StructuredToolResultCapability, toolSearch bool) []anthropicMessage {
 	out := make([]anthropicMessage, 0, len(messages))
 	skipped := false
-	for _, msg := range messages {
+	for i, msg := range messages {
 		blocks := make([]anthropicContentBlock, 0, len(msg.Content))
 		onlyThinking := true
 		var searches map[string]bool
 		if toolSearch {
-			searches = anthropicReplayableToolSearches(msg.Content)
+			paused := i == len(messages)-1 && msg.Role == "assistant"
+			searches = anthropicReplayableToolSearches(msg.Content, paused)
 		}
 		for _, b := range msg.Content {
 			switch b.Type {
@@ -579,22 +580,28 @@ func translateMessagesAnthropic(messages []types.Message, cap quirks.StructuredT
 // anthropicReplayableToolSearches returns the call IDs of the native tool
 // searches in one message's content that can be replayed: a tool_search
 // block naming an Anthropic search tool, answered by a tool_search_result
-// in the same message. An unanswered call, an orphaned result, or a search
-// recorded from another provider's tool is not a valid replay.
-func anthropicReplayableToolSearches(content []types.ContentBlock) map[string]bool {
+// in the same message. paused marks the assistant message a request ends
+// on, which continues a pause_turn stop: its final block may be the call
+// the server loop paused before answering, and is replayed unanswered.
+// Any other unanswered call, an orphaned result, or a search recorded from
+// another provider's tool is not a valid replay.
+func anthropicReplayableToolSearches(content []types.ContentBlock, paused bool) map[string]bool {
 	calls := make(map[string]bool)
 	for _, b := range content {
 		if b.Type == "tool_search" && b.ID != "" && isAnthropicToolSearchName(b.Name) {
 			calls[b.ID] = true
 		}
 	}
-	paired := make(map[string]bool, len(calls))
+	replayable := make(map[string]bool, len(calls))
 	for _, b := range content {
 		if b.Type == "tool_search_result" && calls[b.ToolUseID] {
-			paired[b.ToolUseID] = true
+			replayable[b.ToolUseID] = true
 		}
 	}
-	return paired
+	if n := len(content); paused && n > 0 && content[n-1].Type == "tool_search" && calls[content[n-1].ID] {
+		replayable[content[n-1].ID] = true
+	}
+	return replayable
 }
 
 // anthropicToolUseInput renders the `input` field of one content block for

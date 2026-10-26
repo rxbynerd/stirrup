@@ -42,15 +42,16 @@ func loadReplayFixture(t *testing.T, path string) map[string][]any {
 	return out
 }
 
-// streamFixtureSSE reads an SSE fixture file (synthetic comment stripped)
-// and returns the wire-equivalent bytes verbatim for a test server to write.
+// streamFixtureSSE reads an SSE fixture file (leading "# synthetic:" or
+// "# captured:" provenance line stripped) and returns the wire-equivalent
+// bytes verbatim for a test server to write.
 func streamFixtureSSE(t *testing.T, path string) []byte {
 	t.Helper()
 	must := require.New(t)
 	raw, err := os.ReadFile(path)
 	must.NoError(err, "read sse fixture %s", path)
 
-	if bytes.HasPrefix(raw, []byte("# synthetic:")) {
+	if bytes.HasPrefix(raw, []byte("# synthetic:")) || bytes.HasPrefix(raw, []byte("# captured:")) {
 		if idx := bytes.IndexByte(raw, '\n'); idx >= 0 {
 			raw = raw[idx+1:]
 		} else {
@@ -191,22 +192,9 @@ func requireReplayCaptureCounts(t *testing.T, want map[string][]any, logOutput s
 	}
 }
 
-// TestReplayFields_DeepSeekReasoner_PreservesReasoningContent asserts the
+// TestReplayFields_DeepSeekV4_PreservesReasoningContent asserts the
 // parse-side hook captures reasoning_content from every chunk's delta and
 // surfaces the per-stream summary on the debug logger.
-func TestReplayFields_DeepSeekReasoner_PreservesReasoningContent(t *testing.T) {
-	const ssePath = "testdata/quirks/openai-compatible/deepseek-reasoner/response.sse"
-	const replayPath = "testdata/quirks/openai-compatible/deepseek-reasoner/replay.json"
-
-	_, logOutput := streamOpenAICompatibleWithDebugLog(t, ssePath, "deepseek-reasoner")
-
-	want := loadReplayFixture(t, replayPath)
-	delete(want, "content") // Present for fixture readability; not a captured path.
-	requireReplayCaptureCounts(t, want, logOutput)
-}
-
-// TestReplayFields_DeepSeekV4_PreservesReasoningContent mirrors the
-// reasoner test for the v4 family (same rule shape, different glob).
 func TestReplayFields_DeepSeekV4_PreservesReasoningContent(t *testing.T) {
 	const ssePath = "testdata/quirks/openai-compatible/deepseek-v4/response.sse"
 	const replayPath = "testdata/quirks/openai-compatible/deepseek-v4/replay.json"
@@ -218,30 +206,47 @@ func TestReplayFields_DeepSeekV4_PreservesReasoningContent(t *testing.T) {
 	requireReplayCaptureCounts(t, want, logOutput)
 }
 
-// TestReplayFields_DeepSeekV4Gateway_PreservesReasoningContent drives the
-// OpenRouter-style prefixed id (deepseek/deepseek-v4-flash) through the
-// production Stream path; the gateway sibling rule must fire since the
-// bare deepseek-v4* glob cannot match across the slash.
-func TestReplayFields_DeepSeekV4Gateway_PreservesReasoningContent(t *testing.T) {
-	must := require.New(t)
-	const ssePath = "testdata/quirks/openai-compatible/deepseek/deepseek-v4-flash/response.sse"
-	const replayPath = "testdata/quirks/openai-compatible/deepseek/deepseek-v4-flash/replay.json"
+// TestReplayFields_DeepSeekGateway_OpenRouterStreamCapturesNothing drives a
+// real OpenRouter stream (reasoning arrives as delta.reasoning, never
+// reasoning_content) through the gateway rule. No replay path is captured,
+// the reasoning still streams as thinking deltas, and the tool call is
+// assembled.
+func TestReplayFields_DeepSeekGateway_OpenRouterStreamCapturesNothing(t *testing.T) {
+	const ssePath = "testdata/quirks/openai-compatible/deepseek/deepseek-v4.1-flash-1017/response.sse"
+	events, logOutput := streamOpenAICompatibleWithDebugLog(t, ssePath, "deepseek/deepseek-v4.1-flash-1017")
 
-	events, logOutput := streamOpenAICompatibleWithDebugLog(t, ssePath, "deepseek/deepseek-v4-flash")
-
-	want := loadReplayFixture(t, replayPath)
-	delete(want, "content") // Present for fixture readability; not a captured path.
-	requireReplayCaptureCounts(t, want, logOutput)
-
-	var complete *types.StreamEvent
-	for i := range events {
-		if events[i].Type == "message_complete" {
-			complete = &events[i]
+	// Does not guard the dropped ReplayFields: the capture would be empty
+	// for any rule. TestDeepSeekV4_GatewayResolution and
+	// latest_models_test.go assert the rules set no replay path.
+	t.Run("no replay capture", func(t *testing.T) {
+		must := require.New(t)
+		must.NotContains(logOutput, "quirks replay fields captured")
+		for _, ev := range events {
+			if ev.Type == "message_complete" {
+				must.Empty(ev.ReplayFields)
+			}
 		}
-	}
-	must.NotNil(complete, "no message_complete event in %v", events)
-	wantFlat := `"Weighing the options before answering."`
-	must.Equal(wantFlat, string(complete.ReplayFields["reasoning_content"]))
+	})
+	t.Run("reasoning streams as thinking deltas", func(t *testing.T) {
+		must := require.New(t)
+		thinking, text := splitDeltas(events)
+		must.Equal(
+			"We| need answer. Need reason|. Anagram| S|PAIR -> Paris. European capital. Need| get weather via| tool. Use get|_weather city Paris|.",
+			strings.Join(thinking, "|"))
+		must.Equal("The letters **S-P-A-I-R** can be rearranged to spell **PARIS**, which is the capital of France.\n\n", text)
+	})
+	t.Run("tool call assembled", func(t *testing.T) {
+		must := require.New(t)
+		var calls []types.StreamEvent
+		for _, ev := range events {
+			if ev.Type == "tool_call" {
+				calls = append(calls, ev)
+			}
+		}
+		must.Len(calls, 1)
+		must.Equal("get_weather", calls[0].Name)
+		must.Equal(map[string]any{"city": "Paris"}, calls[0].Input)
+	})
 }
 
 // TestReplayFields_Gemini3_PreservesThoughtSignature drives the
@@ -284,14 +289,14 @@ func TestReplayFields_Gemini25_NoCaptureWhenNoRuleFires(t *testing.T) {
 		"replay-fields debug line surfaced when no rule fired; log:\n%s", logOutput)
 }
 
-// TestReplayFields_DeepSeekReasoner_LogIsLengthOnly asserts the debug log
+// TestReplayFields_DeepSeekV4Flash_LogIsLengthOnly asserts the debug log
 // records only the captured length, never the verbatim reasoning_content
 // value.
-func TestReplayFields_DeepSeekReasoner_LogIsLengthOnly(t *testing.T) {
+func TestReplayFields_DeepSeekV4Flash_LogIsLengthOnly(t *testing.T) {
 	must := require.New(t)
-	const ssePath = "testdata/quirks/openai-compatible/deepseek-reasoner/response.sse"
+	const ssePath = "testdata/quirks/openai-compatible/deepseek-v4-flash/response.sse"
 
-	_, logOutput := streamOpenAICompatibleWithDebugLog(t, ssePath, "deepseek-reasoner")
+	_, logOutput := streamOpenAICompatibleWithDebugLog(t, ssePath, "deepseek-v4-flash")
 
 	must.Contains(logOutput, "quirks replay fields captured",
 		"debug log missing 'quirks replay fields captured' record; log:\n%s", logOutput)
@@ -300,8 +305,8 @@ func TestReplayFields_DeepSeekReasoner_LogIsLengthOnly(t *testing.T) {
 		name   string
 		leaked string
 	}{
-		{"step-by-step reasoning", "Let me think step by step"},
-		{"arithmetic reasoning", "The user asked for 2+2"},
+		{"first piece", "Scanning the request"},
+		{"second piece", "Choosing an answer"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
@@ -315,9 +320,9 @@ func TestReplayFields_DeepSeekReasoner_LogIsLengthOnly(t *testing.T) {
 // than being overwritten by the last chunk's piece.
 func TestReplayFieldsCapture_AcrossCallChunks_AccumulatesInOrder(t *testing.T) {
 	must := require.New(t)
-	const ssePath = "testdata/quirks/openai-compatible/deepseek-reasoner/response.sse"
+	const ssePath = "testdata/quirks/openai-compatible/deepseek-v4-flash/response.sse"
 
-	_, logOutput := streamOpenAICompatibleWithDebugLog(t, ssePath, "deepseek-reasoner")
+	_, logOutput := streamOpenAICompatibleWithDebugLog(t, ssePath, "deepseek-v4-flash")
 
 	got := extractReplayFieldsLog(t, logOutput)
 	// Fixture has 3 reasoning_content chunks: an empty initial role chunk
@@ -335,7 +340,6 @@ func TestQuirksRegistry_Resolve_SetsReplayFields(t *testing.T) {
 		model        string
 		wantPaths    []string
 	}{
-		{"deepseek-reasoner", "openai-compatible", "deepseek-reasoner", []string{"reasoning_content"}},
 		{"deepseek-v4", "openai-compatible", "deepseek-v4", []string{"reasoning_content"}},
 		{"gemini-3", "gemini", "gemini-3.1-pro-preview", []string{"candidates[].content.parts[].thoughtSignature"}},
 	}

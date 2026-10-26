@@ -413,10 +413,10 @@ func TestQuirks_ToolChoiceCapabilityRules(t *testing.T) {
 		must.Equal(want, q.ToolChoice)
 	})
 
-	t.Run("gemini advertises every mode", func(t *testing.T) {
+	t.Run("gemini advertises every mode and rejects a trailing model turn", func(t *testing.T) {
 		must := require.New(t)
 		q := DefaultRegistry().Resolve("gemini", "gemini-2.5-pro")
-		want := ToolChoiceCapability{Supported: true, Auto: true, Required: true, None: true, NamedTool: true}
+		want := ToolChoiceCapability{Supported: true, Auto: true, Required: true, None: true, NamedTool: true, RejectsTrailingAssistant: true}
 		must.Equal(want, q.ToolChoice)
 	})
 
@@ -833,44 +833,26 @@ func freshQuirks() ProviderQuirks {
 	}
 }
 
-// TestReplayFieldsRules_DeepSeekReasoner pins that the deepseek-reasoner rule
-// populates ReplayFields with the documented path. The isolation cases assert
-// that the rule does not fire for other DeepSeek-family models and does not
-// fire when the same model name is routed through a non-openai-compatible
+// TestReplayFieldsRules_DeepSeekV4 pins that the deepseek-v4 rule fires on the
+// v4 family ids and not on earlier or retired DeepSeek models, and that it
+// does not fire when the same model name is routed through a different
 // provider.
-func TestReplayFieldsRules_DeepSeekReasoner(t *testing.T) {
-	t.Run("fires on deepseek-reasoner", func(t *testing.T) {
+func TestReplayFieldsRules_DeepSeekV4(t *testing.T) {
+	t.Run("does not fire on the retired deepseek-reasoner alias", func(t *testing.T) {
 		must := require.New(t)
 		q := DefaultRegistry().Resolve("openai-compatible", "deepseek-reasoner")
-		must.Equal([]string{"reasoning_content"}, q.ReplayFields)
-		// The reasoner rule carries the same behaviour-flag set as the v4
-		// rule: sampling params suppressed, legacy max_tokens key, no
-		// strict mode (Beta-only, unreliable).
-		oai := q.BehaviourFlags.OpenAI
-		must.True(oai.OmitSamplingParams)
-		must.Equal(TokenFieldMaxTokens, oai.TokenField)
-		must.False(oai.StrictMode)
+		must.Empty(q.ReplayFields)
 	})
-	t.Run("fires on deepseek-reasoner-lite (suffix variant)", func(t *testing.T) {
-		must := require.New(t)
-		q := DefaultRegistry().Resolve("openai-compatible", "deepseek-reasoner-lite")
-		must.Equal([]string{"reasoning_content"}, q.ReplayFields)
-	})
-	t.Run("does not fire on unrelated openai-compatible models", func(t *testing.T) {
+	t.Run("does not fire on deepseek-chat", func(t *testing.T) {
 		must := require.New(t)
 		q := DefaultRegistry().Resolve("openai-compatible", "deepseek-chat")
 		must.Empty(q.ReplayFields)
 	})
 	t.Run("does not fire when routed through a different provider", func(t *testing.T) {
 		must := require.New(t)
-		q := DefaultRegistry().Resolve("gemini", "deepseek-reasoner")
+		q := DefaultRegistry().Resolve("gemini", "deepseek-v4")
 		must.NotContains(q.ReplayFields, "reasoning_content", "DeepSeek rule leaked into gemini resolution")
 	})
-}
-
-// TestReplayFieldsRules_DeepSeekV4 pins that the deepseek-v4 rule fires on the
-// v4 family ids and not on earlier DeepSeek models.
-func TestReplayFieldsRules_DeepSeekV4(t *testing.T) {
 	t.Run("fires on deepseek-v4", func(t *testing.T) {
 		must := require.New(t)
 		q := DefaultRegistry().Resolve("openai-compatible", "deepseek-v4")
@@ -912,53 +894,60 @@ func TestDeepSeekV4_Resolution(t *testing.T) {
 	}
 }
 
-// TestDeepSeekV4GatewayPrefixResolution pins the sibling rule for
-// OpenRouter-style prefixed ids. path.Match's `*` does not cross `/`,
-// which cuts both ways: the bare deepseek-v4* glob cannot match the
-// prefixed id (hence the sibling rule), and the openai-compatible base
-// "*" rules cannot either — so the gateway ids resolve the DeepSeek
-// flags but zero-value capabilities. Both directions are pinned so a
-// future glob change is a deliberate edit.
-func TestDeepSeekV4_GatewayPrefixResolution(t *testing.T) {
-	for _, model := range []string{"deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro"} {
+// TestDeepSeekV4_GatewayResolution pins the OpenRouter rules for DeepSeek
+// ids. path.Match's `*` does not cross `/`, which cuts both ways: the bare
+// deepseek-v4* glob cannot match the prefixed id (hence the gateway rules),
+// and the openai-compatible base "*" rules cannot either, so the gateway ids
+// resolve the DeepSeek flags but get their capabilities from the "*/*"
+// siblings. OpenRouter never emits reasoning_content, so no replay path is
+// set. Both directions are pinned so a future glob change is a deliberate
+// edit.
+func TestDeepSeekV4_GatewayResolution(t *testing.T) {
+	efforts := []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+	for _, model := range []string{
+		"deepseek/deepseek-v4-flash",
+		"deepseek/deepseek-v4-pro",
+		"deepseek/deepseek-v4.1-flash",
+		"deepseek/deepseek-v4.1-flash-1017",
+		"deepseek/deepseek-flash",
+		"~deepseek/deepseek-flash-latest",
+		"~deepseek/deepseek-v4-flash-latest",
+		"~deepseek/deepseek-pro-latest",
+	} {
 		t.Run(model, func(t *testing.T) {
 			must := require.New(t)
 			q, applied := DefaultRegistry().ResolveWithRules("openai-compatible", model)
-			must.Equal([]string{"reasoning_content"}, q.ReplayFields)
+			must.Empty(q.ReplayFields, "OpenRouter normalises reasoning and does not require a replay")
 			oai := q.BehaviourFlags.OpenAI
 			must.True(oai.OmitSamplingParams)
 			must.Equal(TokenFieldMaxTokens, oai.TokenField)
 			must.False(oai.StrictMode)
-			// The DeepSeek-specific wire behaviour (replay, sampling,
-			// token key) comes solely from the gateway-prefix rule: the
-			// bare "*" reasoning/sampling globs do not cross the slash.
-			// Capabilities, however, now arrive from the "*/*" sibling
-			// rules added so vendor-prefixed ids advertise the same tool
-			// surface as bare ids — so more than one rule contributes.
+			must.Equal(efforts, oai.ReasoningEffortLevels)
 			descs := make([]string, 0, len(applied))
 			for _, r := range applied {
 				descs = append(descs, r.Description)
 			}
-			must.Contains(strings.Join(descs, "\n"), "gateway prefix", "applied rules %v should include the gateway-prefix rule", descs)
+			must.Contains(strings.Join(descs, "\n"), "via OpenRouter", "applied rules %v should include a gateway rule", descs)
 			// The "*/*" siblings restore the tool surface for the slash id.
 			must.True(q.ToolChoice.Supported, "the */* sibling should cover vendor-prefixed ids")
 			must.True(q.ParallelToolCalls.Supported, "the */* sibling should cover vendor-prefixed ids")
 		})
 	}
 
-	t.Run("bare ids do not fire the gateway rule", func(t *testing.T) {
+	t.Run("bare ids do not fire the gateway rules", func(t *testing.T) {
 		must := require.New(t)
 		_, applied := DefaultRegistry().ResolveWithRules("openai-compatible", "deepseek-v4-flash")
 		for _, r := range applied {
-			must.NotContains(r.Description, "gateway prefix")
+			must.NotContains(r.Description, "via OpenRouter")
 		}
 	})
 
-	for _, model := range []string{"deepseek/deepseek-chat", "deepseek/deepseek-v3", "openrouter/deepseek-v4-flash"} {
+	for _, model := range []string{"deepseek/deepseek-chat", "deepseek/deepseek-v3", "openrouter/deepseek-v4-flash", "~deepseek/deepseek-chat", "~deepseek/deepseek-chat-latest"} {
 		t.Run(model+" does not fire", func(t *testing.T) {
 			must := require.New(t)
 			q := DefaultRegistry().Resolve("openai-compatible", model)
-			must.Empty(q.ReplayFields)
+			must.False(q.BehaviourFlags.OpenAI.OmitSamplingParams)
+			must.Empty(q.BehaviourFlags.OpenAI.ReasoningEffortLevels)
 		})
 	}
 }
