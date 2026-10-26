@@ -150,6 +150,9 @@ type responsesRequest struct {
 	// their schema failed the strict-mode lint; Stream logs them. Not
 	// serialised.
 	strictFallbacks []*strictSchemaError
+	// strictNulls lists the optional properties of strict-sent tools whose
+	// synthetic nulls the stream parser drops. Not serialised.
+	strictNulls strictNullables
 }
 
 // MarshalJSON projects the canonical responsesRequest into the Responses
@@ -1193,13 +1196,13 @@ func (c *responsesReplayCapture) disable(ctx context.Context, reason string, att
 // a search, and only as complete pairs (see reconstructableToolSearches);
 // otherwise they are dropped. Under a search, a reconstructed call to a
 // deferred or namespaced function carries its namespace.
-func translateMessagesResponses(messages []types.Message, replayOrigin string, search *responsesToolSearch) []responsesInput {
+func translateMessagesResponses(messages []types.Message, replayOrigin string, search *responsesToolSearch, nulls strictNullables) []responsesInput {
 	var out []responsesInput
 
 	for _, msg := range messages {
 		switch msg.Role {
 		case "assistant":
-			if replayed := replayedResponsesItems(msg, replayOrigin, search); replayed != nil {
+			if replayed := replayedResponsesItems(msg, replayOrigin, search, nulls); replayed != nil {
 				out = append(out, replayed...)
 				continue
 			}
@@ -1419,8 +1422,10 @@ func reconstructableToolSearches(blocks []types.ContentBlock, search *responsesT
 // therefore never replays stale items. Replayed items are semantically
 // identical to the stored JSON; json.Marshal compacts and HTML-escapes them.
 // Stored tool search items take no part in the match and replay in place,
-// but only to a request with a hosted search (search non-nil).
-func replayedResponsesItems(msg types.Message, origin string, search *responsesToolSearch) []responsesInput {
+// but only to a request with a hosted search (search non-nil). Stored
+// arguments are compared without the synthetic nulls listed in nulls,
+// which the stream parser dropped from the tool_use input.
+func replayedResponsesItems(msg types.Message, origin string, search *responsesToolSearch, nulls strictNullables) []responsesInput {
 	if origin == "" {
 		return nil
 	}
@@ -1467,7 +1472,7 @@ func replayedResponsesItems(msg types.Message, origin string, search *responsesT
 			blockText.WriteString(block.Text)
 		case "tool_use":
 			call, ok := storedCalls[block.ID]
-			if !ok || matched[block.ID] || call.Name != block.Name || !sameToolArguments(call.Arguments, block.Input) {
+			if !ok || matched[block.ID] || call.Name != block.Name || !sameToolArguments(call, block.Input, nulls) {
 				return nil
 			}
 			matched[block.ID] = true
@@ -1485,14 +1490,19 @@ func replayedResponsesItems(msg types.Message, origin string, search *responsesT
 }
 
 // sameToolArguments reports whether a stored function_call arguments string
-// and a tool_use block's input hold the same JSON value.
-func sameToolArguments(stored string, input json.RawMessage) bool {
+// and a tool_use block's input hold the same JSON value once the stored
+// arguments lose the synthetic nulls nulls lists for the call's tool.
+func sameToolArguments(call responsesReplayItem, input json.RawMessage, nulls strictNullables) bool {
+	stored := call.Arguments
 	if stored == "" {
 		stored = "{}"
 	}
 	var storedValue, inputValue any
 	if json.Unmarshal([]byte(stored), &storedValue) != nil {
 		return false
+	}
+	if args, ok := storedValue.(map[string]any); ok {
+		nulls.dropFrom(call.Name, args)
 	}
 	if json.Unmarshal(types.NormalizeToolInput(input), &inputValue) != nil {
 		return false
@@ -1512,17 +1522,19 @@ func sameToolArguments(stored string, input json.RawMessage) bool {
 // lifetime. A tool whose schema fails the lint is sent with its original
 // schema and an explicit strict=false (an omitted strict on this surface
 // means strict when possible); rejections the cache records for the first
-// time are returned in fallbacks so the caller can log them. An error
-// returns no fallbacks: the request is not sent.
+// time are returned in fallbacks so the caller can log them. nulls records
+// the optional properties of every tool sent strict:true, keyed by tool
+// name (see strictNullables). An error returns no fallbacks: the request is
+// not sent.
 //
 // When toolSearch is true, every Deferred tool carries defer_loading,
 // tools sharing a Namespace are grouped into one namespace entry (see
 // groupResponsesNamespaces), and the hosted tool search entry is appended
 // last; otherwise Deferred and Namespace are ignored and every tool is
 // sent loaded and ungrouped.
-func translateToolsResponses(tools []types.ToolDefinition, strict, examples, toolSearch bool, model string, cache *strictSchemaCache) (out []responsesTool, fallbacks []*strictSchemaError, err error) {
+func translateToolsResponses(tools []types.ToolDefinition, strict, examples, toolSearch bool, model string, cache *strictSchemaCache) (out []responsesTool, fallbacks []*strictSchemaError, nulls strictNullables, err error) {
 	if len(tools) == 0 {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	out = make([]responsesTool, len(tools), len(tools)+1)
 	for i, t := range tools {
@@ -1538,13 +1550,14 @@ func translateToolsResponses(tools []types.ToolDefinition, strict, examples, too
 		}
 		strictTool := strict
 		if strict {
-			schema, ok, fallback, err := strictToolSchema(cache, model, t.Name, t.InputSchema)
+			schema, nullable, ok, fallback, err := strictToolSchema(cache, model, t.Name, t.InputSchema)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			entry.Parameters = schema
 			entry.Strict = &ok
 			strictTool = ok
+			nulls = nulls.with(t.Name, nullable)
 			if fallback != nil {
 				fallbacks = append(fallbacks, fallback)
 			}
@@ -1555,7 +1568,7 @@ func translateToolsResponses(tools []types.ToolDefinition, strict, examples, too
 			// `examples` keyword, identical to the Chat Completions side.
 			merged, err := mergeSchemaExamples(entry.Parameters, toolInputExamples(t))
 			if err != nil {
-				return nil, nil, fmt.Errorf("tool %q: merge examples: %w", t.Name, err)
+				return nil, nil, nil, fmt.Errorf("tool %q: merge examples: %w", t.Name, err)
 			}
 			entry.Parameters = merged
 		}
@@ -1565,7 +1578,7 @@ func translateToolsResponses(tools []types.ToolDefinition, strict, examples, too
 		out = groupResponsesNamespaces(tools, out)
 		out = append(out, responsesTool{Type: responsesToolSearchType})
 	}
-	return out, fallbacks, nil
+	return out, fallbacks, nulls, nil
 }
 
 // groupResponsesNamespaces replaces the function entries of tools that
@@ -1629,7 +1642,7 @@ func responsesToolSearchActive(params types.StreamParams, capability quirks.Tool
 // becomes a maintenance burden.
 func buildResponsesRequest(params types.StreamParams, q quirks.ProviderQuirks, strictCache *strictSchemaCache, replayOrigin string) (responsesRequest, error) {
 	toolSearch := responsesToolSearchActive(params, q.ToolSearch)
-	tools, fallbacks, err := translateToolsResponses(params.Tools, q.BehaviourFlags.OpenAI.StrictMode, q.ToolExamples.Supported, toolSearch, params.Model, strictCache)
+	tools, fallbacks, nulls, err := translateToolsResponses(params.Tools, q.BehaviourFlags.OpenAI.StrictMode, q.ToolExamples.Supported, toolSearch, params.Model, strictCache)
 	if err != nil {
 		return responsesRequest{}, err
 	}
@@ -1653,9 +1666,10 @@ func buildResponsesRequest(params types.StreamParams, q quirks.ProviderQuirks, s
 	return responsesRequest{
 		Model:             params.Model,
 		Instructions:      params.System,
-		Input:             translateMessagesResponses(params.Messages, replayOrigin, search),
+		Input:             translateMessagesResponses(params.Messages, replayOrigin, search, nulls),
 		Tools:             tools,
 		strictFallbacks:   fallbacks,
+		strictNulls:       nulls,
 		MaxTokens:         params.MaxTokens,
 		Temperature:       temperature,
 		ParallelToolCalls: openAIParallelFromParams(params, q.ParallelToolCalls),
@@ -1840,7 +1854,7 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 
 	ch := make(chan types.StreamEvent, 64)
 	go func() {
-		o.consumeSSE(ctx, resp, ch, start, metricAttrs, logger, params.Model, replayOrigin)
+		o.consumeSSE(ctx, resp, ch, start, metricAttrs, logger, params.Model, replayOrigin, reqBody.strictNulls)
 		// Record latency on a background context: the caller's `ctx` may
 		// already have been cancelled by the time the stream completes
 		// (the agentic loop has moved on), and some OTel exporters drop
@@ -1865,7 +1879,7 @@ func (o *OpenAIResponsesAdapter) recordLatency(ctx context.Context, start time.T
 // `event: <name>` and `data: <payload>` fields. Unlike the Chat Completions
 // adapter (which only reads `data:` lines), Responses streaming relies on
 // the event name to disambiguate payloads — there is no `[DONE]` sentinel.
-func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Response, ch chan<- types.StreamEvent, streamStart time.Time, metricAttrs metric.MeasurementOption, logger *slog.Logger, model, replayOrigin string) {
+func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Response, ch chan<- types.StreamEvent, streamStart time.Time, metricAttrs metric.MeasurementOption, logger *slog.Logger, model, replayOrigin string, strictNulls strictNullables) {
 	defer close(ch)
 	defer func() { _ = resp.Body.Close() }()
 
@@ -1883,7 +1897,7 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 			ttfbRecorded = true
 		}
 		select {
-		case ch <- ev:
+		case ch <- strictNulls.strip(ev):
 			return true
 		case <-ctx.Done():
 			return false

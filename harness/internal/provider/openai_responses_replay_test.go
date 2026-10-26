@@ -599,7 +599,7 @@ func TestTranslateMessagesResponses_ReplaysStoredItemsVerbatim(t *testing.T) {
 	assistant, stored := fixtureReplayTurn(t)
 	origin := replayOriginOf(t, assistant.ReplayFields)
 
-	got := translateMessagesResponses([]types.Message{replayUserPrompt, assistant, fixtureToolResults()}, origin, nil)
+	got := translateMessagesResponses([]types.Message{replayUserPrompt, assistant, fixtureToolResults()}, origin, nil, nil)
 	must.Len(got, 1+len(stored)+2)
 	for i, item := range stored {
 		raw := got[1+i].Raw
@@ -631,7 +631,7 @@ func TestTranslateMessagesResponses_ReplayIsSemanticallyIdentical(t *testing.T) 
 		{Type: "tool_use", ID: "call_1", Name: "run", Input: json.RawMessage(`{"cmd":"x<y&&z"}`)},
 	}, message, call)
 
-	got := translateMessagesResponses([]types.Message{msg}, testReplayOrigin, nil)
+	got := translateMessagesResponses([]types.Message{msg}, testReplayOrigin, nil, nil)
 	body, err := json.Marshal(got)
 	must.NoError(err, "marshal")
 	sent := requestInput(t, []byte(`{"input":`+string(body)+`}`))
@@ -717,9 +717,9 @@ func TestTranslateMessagesResponses_ReplayConsistencyFallback(t *testing.T) {
 			reconstructed := msg
 			reconstructed.ReplayFields = nil
 
-			got, err := json.Marshal(translateMessagesResponses([]types.Message{msg}, origin, nil))
+			got, err := json.Marshal(translateMessagesResponses([]types.Message{msg}, origin, nil, nil))
 			must.NoError(err, "marshal")
-			want, err := json.Marshal(translateMessagesResponses([]types.Message{reconstructed}, origin, nil))
+			want, err := json.Marshal(translateMessagesResponses([]types.Message{reconstructed}, origin, nil, nil))
 			must.NoError(err, "marshal reconstruction")
 			must.Equal(string(want), string(got), "fallback differs from the reconstruction")
 			must.NotContains(string(got), `"id":`, "fallback leaked stored item ids")
@@ -768,7 +768,7 @@ func TestTranslateMessagesResponses_ReplayConsistencyAccepts(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
-			got := translateMessagesResponses([]types.Message{tc.msg}, origin, tc.search)
+			got := translateMessagesResponses([]types.Message{tc.msg}, origin, tc.search, nil)
 			must.Len(got, tc.items, "replayed items: %+v", got)
 			for i, item := range got {
 				must.NotNil(item.Raw, "item %d was reconstructed, want replayed", i)
@@ -785,9 +785,9 @@ func TestTranslateMessagesResponses_EmptyOriginReconstructs(t *testing.T) {
 	assistant, _ := fixtureReplayTurn(t)
 	stripped := cloneMessage(assistant)
 	stripped.ReplayFields = nil
-	got, err := json.Marshal(translateMessagesResponses([]types.Message{assistant}, "", nil))
+	got, err := json.Marshal(translateMessagesResponses([]types.Message{assistant}, "", nil, nil))
 	must.NoError(err, "marshal")
-	want, err := json.Marshal(translateMessagesResponses([]types.Message{stripped}, "", nil))
+	want, err := json.Marshal(translateMessagesResponses([]types.Message{stripped}, "", nil, nil))
 	must.NoError(err, "marshal reconstruction")
 	must.Equal(string(want), string(got), "origin-less request differs from the reconstruction")
 }
@@ -802,7 +802,7 @@ func TestTranslateMessagesResponses_OtherReplayKeysIgnored(t *testing.T) {
 		Content:      []types.ContentBlock{{Type: "text", Text: "done"}},
 		ReplayFields: map[string]json.RawMessage{"reasoning_content": json.RawMessage(`"thinking"`)},
 	}
-	got, err := json.Marshal(translateMessagesResponses([]types.Message{msg}, testReplayOrigin, nil))
+	got, err := json.Marshal(translateMessagesResponses([]types.Message{msg}, testReplayOrigin, nil, nil))
 	must.NoError(err, "marshal")
 	want := `[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]`
 	must.Equal(want, string(got))
@@ -908,7 +908,7 @@ func TestOpenAIResponsesAdapter_ReplayNonReasoningModelsReconstruct(t *testing.T
 	assistant, _ := fixtureReplayTurn(t)
 	stripped := cloneMessage(assistant)
 	stripped.ReplayFields = nil
-	want, err := json.Marshal(translateMessagesResponses([]types.Message{replayUserPrompt, stripped, fixtureToolResults()}, "", nil))
+	want, err := json.Marshal(translateMessagesResponses([]types.Message{replayUserPrompt, stripped, fixtureToolResults()}, "", nil, nil))
 	must.NoError(err, "marshal reconstruction")
 
 	for _, model := range []string{"gpt-4o", "gpt-4.1", "gpt-5-chat-latest"} {

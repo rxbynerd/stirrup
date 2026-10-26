@@ -26,7 +26,7 @@ func responsesBatchResult(items ...string) []byte {
 func responsesFabricate(t *testing.T, response []byte) []types.StreamEvent {
 	t.Helper()
 	ch := make(chan types.StreamEvent, 16)
-	fabricateStream(ch, response, "openai-responses")
+	fabricateStream(ch, response, "openai-responses", nil)
 	close(ch)
 	return drain(t, ch)
 }

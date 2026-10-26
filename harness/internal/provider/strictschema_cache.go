@@ -34,10 +34,13 @@ type strictSchemaCacheKey struct {
 }
 
 // strictSchemaEntry is one cached outcome: schema holds the normalised
-// bytes, or fallback holds the lint rejection that sends the tool
-// non-strict.
+// bytes and nullable the properties whose synthetic nulls are dropped (see
+// optionalNonNullable), or fallback holds the lint rejection that sends the
+// tool non-strict. Cached entries are shared across requests, so nullable
+// is read-only.
 type strictSchemaEntry struct {
 	schema   json.RawMessage
+	nullable map[string]struct{}
 	fallback *strictSchemaError
 }
 
@@ -74,20 +77,21 @@ func schemaHash(raw json.RawMessage) string {
 // the harness still validates every tool input against the original
 // schema before dispatch. newFallback is non-nil only the first time the
 // cache records that rejection, so callers log one WARN per cache key.
+// nullable is set only for a strict tool and must not be modified.
 // A malformed schema (invalid JSON, or keywords of the wrong shape) returns
 // an error: it cannot validate tool input, so no request body carries it.
-func strictToolSchema(cache *strictSchemaCache, model, toolName string, raw json.RawMessage) (schema json.RawMessage, strict bool, newFallback *strictSchemaError, err error) {
+func strictToolSchema(cache *strictSchemaCache, model, toolName string, raw json.RawMessage) (schema json.RawMessage, nullable map[string]struct{}, strict bool, newFallback *strictSchemaError, err error) {
 	entry, first, err := normalizeStrictWithCache(cache, model, toolName, raw)
 	if err != nil {
-		return nil, false, nil, err
+		return nil, nil, false, nil, err
 	}
 	if entry.fallback == nil {
-		return entry.schema, true, nil, nil
+		return entry.schema, entry.nullable, true, nil, nil
 	}
 	if first {
 		newFallback = entry.fallback
 	}
-	return raw, false, newFallback, nil
+	return raw, nil, false, newFallback, nil
 }
 
 // normalizeStrictWithCache consults the cache, runs NormalizeStrictSchema
@@ -115,7 +119,7 @@ func normalizeStrictWithCache(cache *strictSchemaCache, model, toolName string, 
 func computeStrictEntry(toolName string, raw json.RawMessage) (strictSchemaEntry, bool, error) {
 	out, err := NormalizeStrictSchema(toolName, raw)
 	if err == nil {
-		return strictSchemaEntry{schema: out}, true, nil
+		return strictSchemaEntry{schema: out, nullable: optionalNonNullable(raw)}, true, nil
 	}
 	var lintErr *strictSchemaError
 	if errors.As(err, &lintErr) && !lintErr.malformed {

@@ -132,7 +132,7 @@ func TestFabricateStream_ResponseModel(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
 			ch := make(chan types.StreamEvent, 8)
-			fabricateStream(ch, []byte(tc.response), tc.provider)
+			fabricateStream(ch, []byte(tc.response), tc.provider, nil)
 			close(ch)
 			var events []types.StreamEvent
 			for ev := range ch {

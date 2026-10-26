@@ -551,6 +551,24 @@ three rules set `IncludeEncryptedReasoning` and `ReplayOutputItems`
 both because the chat snapshots do not reason. All three flags are
 documented, not probed, and the carve-out is inferred.
 
+Strict normalisation makes every optional property required and
+nullable, so a model omits an optional argument by sending an explicit
+`null`. The harness validates each call against the tool's original
+schema, which has no `null` for that property. Both OpenAI adapters
+(streaming, and the batch path that fabricates the same events) therefore
+drop a top-level argument whose value is `null` when the tool was sent
+with `strict: true`, the property was not in the original `required`
+list, and its original `type` does not admit `null`. A `null` for a
+required property, or for a property the original schema declares
+nullable, is kept and reaches validation unchanged, and a tool sent with
+`strict: false` is never touched. Only top-level arguments are affected;
+the original schema and the harness-side validation are not modified.
+Stored Responses output items keep the model's `null` values, so verbatim
+replay sends exactly what the model produced. The replay consistency
+check ignores those stripped `null` values when it compares a stored
+`function_call` with the persisted `tool_use` input, so stripping alone
+never forces a turn to be reconstructed.
+
 Temperature on `openai-responses` follows the projected effort. The
 `gpt-6*`, `gpt-5.5*`, and `gpt-5.6*` rules set `OmitSamplingParams`, so
 `temperature` is never sent. On any other Responses model the adapter

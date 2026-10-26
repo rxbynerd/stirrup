@@ -102,7 +102,7 @@ func wireTools(t *testing.T, body []byte) map[string]wireTool {
 func TestTranslateTools_NonNormalisableSchemaFallsBackToNonStrict(t *testing.T) {
 	must := require.New(t)
 	check := assert.New(t)
-	tools, fallbacks, err := translateTools(strictFallbackTools(), true, false, "gpt-5", newStrictSchemaCache())
+	tools, fallbacks, _, err := translateTools(strictFallbackTools(), true, false, "gpt-5", newStrictSchemaCache())
 	must.NoError(err)
 	must.Len(tools, 2)
 
@@ -122,7 +122,7 @@ func TestTranslateTools_NonNormalisableSchemaFallsBackToNonStrict(t *testing.T) 
 func TestTranslateToolsResponses_NonNormalisableSchemaFallsBackToNonStrict(t *testing.T) {
 	must := require.New(t)
 	check := assert.New(t)
-	tools, fallbacks, err := translateToolsResponses(strictFallbackTools(), true, false, false, "gpt-5", newStrictSchemaCache())
+	tools, fallbacks, _, err := translateToolsResponses(strictFallbackTools(), true, false, false, "gpt-5", newStrictSchemaCache())
 	must.NoError(err)
 	must.Len(tools, 2)
 
@@ -144,12 +144,12 @@ func TestTranslateTools_FallbackToolFoldsExamplesIntoSchema(t *testing.T) {
 	tools := strictFallbackTools()
 	tools[1].Presentation = &types.ToolPresentation{InputExamples: []json.RawMessage{json.RawMessage(`{"limit":3}`)}}
 
-	chat, _, err := translateTools(tools, true, true, "gpt-5", nil)
+	chat, _, _, err := translateTools(tools, true, true, "gpt-5", nil)
 	must.NoError(err)
 	check.Contains(string(chat[1].Function.Parameters), `"examples"`, "fallback tool is non-strict, so examples are folded")
 	check.NotContains(string(chat[0].Function.Parameters), `"examples"`)
 
-	responses, _, err := translateToolsResponses(tools, true, true, false, "gpt-5", nil)
+	responses, _, _, err := translateToolsResponses(tools, true, true, false, "gpt-5", nil)
 	must.NoError(err)
 	check.Contains(string(responses[1].Parameters), `"examples"`)
 }
@@ -159,9 +159,9 @@ func TestTranslateTools_MalformedSchemaStillFails(t *testing.T) {
 	cache := newStrictSchemaCache()
 	bad := []types.ToolDefinition{{Name: "broken", InputSchema: json.RawMessage(`{"type":`)}}
 
-	_, _, err := translateTools(bad, true, false, "gpt-5", cache)
+	_, _, _, err := translateTools(bad, true, false, "gpt-5", cache)
 	must.ErrorContains(err, "broken")
-	_, _, err = translateToolsResponses(bad, true, false, false, "gpt-5", cache)
+	_, _, _, err = translateToolsResponses(bad, true, false, false, "gpt-5", cache)
 	must.ErrorContains(err, "broken")
 	must.Zero(cache.Misses.Load(), "a schema that does not parse is not cached")
 }
@@ -182,9 +182,9 @@ func TestTranslateTools_StructurallyInvalidSchemaStillFails(t *testing.T) {
 			cache := newStrictSchemaCache()
 			bad := []types.ToolDefinition{{Name: "broken", InputSchema: json.RawMessage(tc.schema)}}
 
-			_, _, err := translateTools(bad, true, false, "gpt-5", cache)
+			_, _, _, err := translateTools(bad, true, false, "gpt-5", cache)
 			must.ErrorContains(err, "broken")
-			_, _, err = translateToolsResponses(bad, true, false, false, "gpt-5", cache)
+			_, _, _, err = translateToolsResponses(bad, true, false, false, "gpt-5", cache)
 			must.ErrorContains(err, "broken")
 			must.Zero(cache.Misses.Load(), "a malformed schema is not cached")
 		})
@@ -197,11 +197,11 @@ func TestStrictFallback_ConcurrentFirstMissReportsOnce(t *testing.T) {
 		translate func(cache *strictSchemaCache) ([]*strictSchemaError, error)
 	}{
 		{"chat", func(cache *strictSchemaCache) ([]*strictSchemaError, error) {
-			_, fallbacks, err := translateTools(strictFallbackTools(), true, false, "gpt-5", cache)
+			_, fallbacks, _, err := translateTools(strictFallbackTools(), true, false, "gpt-5", cache)
 			return fallbacks, err
 		}},
 		{"responses", func(cache *strictSchemaCache) ([]*strictSchemaError, error) {
-			_, fallbacks, err := translateToolsResponses(strictFallbackTools(), true, false, false, "gpt-5", cache)
+			_, fallbacks, _, err := translateToolsResponses(strictFallbackTools(), true, false, false, "gpt-5", cache)
 			return fallbacks, err
 		}},
 	}
@@ -348,12 +348,12 @@ func TestStrictFallback_WarnsAgainWhenSchemaChanges(t *testing.T) {
 	cache := newStrictSchemaCache()
 	tools := strictFallbackTools()
 
-	_, first, err := translateTools(tools, true, false, "gpt-5", cache)
+	_, first, _, err := translateTools(tools, true, false, "gpt-5", cache)
 	must.NoError(err)
 	must.Len(first, 1)
 
 	tools[1].InputSchema = json.RawMessage(`{"type":"object","properties":{"limit":{"oneOf":[{"type":"integer"}]}}}`)
-	_, second, err := translateTools(tools, true, false, "gpt-5", cache)
+	_, second, _, err := translateTools(tools, true, false, "gpt-5", cache)
 	must.NoError(err)
 	check.Len(second, 1, "a changed schema is a new cache key and is reported again")
 }
