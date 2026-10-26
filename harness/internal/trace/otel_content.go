@@ -307,16 +307,42 @@ type genAIMessage struct {
 
 // genAIPart is the union of the schema part shapes. Type selects the
 // variant: "text" carries Content; "tool_call" carries ID/Name/Arguments;
-// "tool_call_response" carries ID/Response. omitempty keeps each variant's
-// unused fields off the wire; Response is a pointer because the schema
-// requires the key even when the tool output is empty.
+// "tool_call_response" carries ID/Response; "server_tool_call" carries
+// ID/Name/ServerToolCall; "server_tool_call_response" carries
+// ID/ServerToolCallResponse. omitempty keeps each variant's unused fields
+// off the wire; Name and Response are pointers because the schema requires
+// the key on the variants that carry them even when the value is empty.
 type genAIPart struct {
 	Type      string          `json:"type"`
 	Content   string          `json:"content,omitempty"`
 	ID        string          `json:"id,omitempty"`
-	Name      string          `json:"name,omitempty"`
+	Name      *string         `json:"name,omitempty"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
 	Response  *string         `json:"response,omitempty"`
+
+	ServerToolCall         *genAIServerToolCall         `json:"server_tool_call,omitempty"`
+	ServerToolCallResponse *genAIServerToolCallResponse `json:"server_tool_call_response,omitempty"`
+}
+
+// genAIToolSearchType is the server tool type a provider-side tool search
+// and its result are recorded under.
+const genAIToolSearchType = "tool_search"
+
+// genAIServerToolCall is a GenericServerToolCall: a type discriminator
+// plus the call's arguments.
+type genAIServerToolCall struct {
+	Type      string          `json:"type"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+}
+
+// genAIServerToolCallResponse is a GenericServerToolCallResponse for a
+// tool search: the tools it loaded, or its error code. Both are pointers
+// so a search that loaded nothing still carries an empty list and an
+// error without a code still carries the key.
+type genAIServerToolCallResponse struct {
+	Type           string    `json:"type"`
+	ToolReferences *[]string `json:"tool_references,omitempty"`
+	Error          *string   `json:"error,omitempty"`
 }
 
 // genAIInputMessagesJSON serialises the turn's message history as the
@@ -371,9 +397,13 @@ func genAISystemInstructionsJSON(system string) string {
 
 // genAIParts maps stirrup content blocks onto schema parts.
 //
-//   - "text"        → TextPart{type: "text", content}
-//   - "tool_use"    → ToolCallRequestPart{type: "tool_call", id, name, arguments}
-//   - "tool_result" → ToolCallResponsePart{type: "tool_call_response", id, result}
+//   - "text"               → TextPart{type: "text", content}
+//   - "tool_use"           → ToolCallRequestPart{type: "tool_call", id, name, arguments}
+//   - "tool_result"        → ToolCallResponsePart{type: "tool_call_response", id, result}
+//   - "tool_search"        → ServerToolCallPart{type: "server_tool_call", id, name,
+//     server_tool_call: {type: "tool_search", arguments}}
+//   - "tool_search_result" → ServerToolCallResponsePart{type: "server_tool_call_response",
+//     id, server_tool_call_response: {type: "tool_search", tool_references | error}}
 //
 // Anything else is deliberately dropped: unknown block types have no
 // schema shape, and thinking / redacted_thinking blocks carry
@@ -396,7 +426,7 @@ func genAIParts(blocks []types.ContentBlock) []genAIPart {
 			parts = append(parts, genAIPart{
 				Type:      "tool_call",
 				ID:        b.ID,
-				Name:      b.Name,
+				Name:      &b.Name,
 				Arguments: validRawJSON(b.Input),
 			})
 		case "tool_result":
@@ -406,9 +436,36 @@ func genAIParts(blocks []types.ContentBlock) []genAIPart {
 				ID:       b.ToolUseID,
 				Response: &response,
 			})
+		case "tool_search":
+			parts = append(parts, genAIPart{
+				Type:           "server_tool_call",
+				ID:             b.ID,
+				Name:           &b.Name,
+				ServerToolCall: &genAIServerToolCall{Type: genAIToolSearchType, Arguments: validRawJSON(b.Input)},
+			})
+		case "tool_search_result":
+			parts = append(parts, genAIPart{
+				Type:                   "server_tool_call_response",
+				ID:                     b.ToolUseID,
+				ServerToolCallResponse: toolSearchResponse(b),
+			})
 		}
 	}
 	return parts
+}
+
+// toolSearchResponse returns a tool_search_result block's outcome: its
+// error code when the search failed, otherwise the tools it loaded.
+func toolSearchResponse(b types.ContentBlock) *genAIServerToolCallResponse {
+	response := &genAIServerToolCallResponse{Type: genAIToolSearchType}
+	if b.IsError {
+		code := b.Name
+		response.Error = &code
+		return response
+	}
+	refs := append([]string{}, b.ToolReferences...)
+	response.ToolReferences = &refs
+	return response
 }
 
 // validRawJSON guards a json.RawMessage destined for re-marshalling:
