@@ -168,7 +168,7 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 	if registry == nil {
 		registry = quirks.DefaultRegistry()
 	}
-	q, appliedRules := registry.ResolveWithRules("gemini", params.Model)
+	q, appliedRules := registry.ResolveWithRules("gemini", "", params.Model)
 
 	logger := g.Logger
 	if logger == nil {

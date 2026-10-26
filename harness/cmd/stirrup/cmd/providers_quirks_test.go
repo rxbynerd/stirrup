@@ -19,6 +19,7 @@ func newTestProvidersQuirksCommand() *cobra.Command {
 	cmd := &cobra.Command{Use: "quirks"}
 	cmd.Flags().String("provider", "", "")
 	cmd.Flags().String("model", "", "")
+	cmd.Flags().String("endpoint-profile", "", "")
 	return cmd
 }
 
@@ -92,8 +93,53 @@ func TestProvidersQuirks_OutputHasTopLevelKeys(t *testing.T) {
 
 	var raw map[string]any
 	must.NoError(json.Unmarshal(buf.Bytes(), &raw), "output is not valid JSON:\n%s", buf.String())
-	for _, key := range []string{"provider", "model", "quirks", "appliedRules"} {
+	for _, key := range []string{"provider", "model", "endpointProfile", "quirks", "appliedRules"} {
 		must.Contains(raw, key, "output:\n%s", buf.String())
+	}
+}
+
+func TestProvidersQuirks_EndpointProfileReportsEffectiveProfile(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"responses default", []string{"--provider", "openai-responses", "--model", "gpt-5.4"}, "openai"},
+		{"responses declared generic", []string{"--provider", "openai-responses", "--model", "gpt-5.4", "--endpoint-profile", "generic"}, "generic"},
+		{"compatible declared azure", []string{"--provider", "openai-compatible", "--model", "gpt-4o", "--endpoint-profile", "azure-openai"}, "azure-openai"},
+		{"anthropic has none", []string{"--provider", "anthropic", "--model", "claude-sonnet-5-5"}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			cmd := newTestProvidersQuirksCommand()
+			must.NoError(cmd.ParseFlags(tc.args))
+			var buf bytes.Buffer
+			must.NoError(runProvidersQuirksWithIO(cmd, &buf))
+
+			var got quirksCLIOutput
+			must.NoError(json.Unmarshal(buf.Bytes(), &got), "output:\n%s", buf.String())
+			must.Equal(tc.want, got.EndpointProfile)
+		})
+	}
+}
+
+func TestProvidersQuirks_EndpointProfileRejectsInvalidUse(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{"unknown profile", []string{"--provider", "openai-responses", "--model", "gpt-5.4", "--endpoint-profile", "azure"}, `--endpoint-profile "azure" is not a recognised endpoint profile`},
+		{"non openai wire type", []string{"--provider", "anthropic", "--model", "claude-sonnet-5-5", "--endpoint-profile", "openai"}, "--endpoint-profile only applies to openai-compatible and openai-responses providers"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			cmd := newTestProvidersQuirksCommand()
+			must.NoError(cmd.ParseFlags(tc.args))
+			var buf bytes.Buffer
+			must.ErrorContains(runProvidersQuirksWithIO(cmd, &buf), tc.wantErr)
+			must.Empty(buf.String())
+		})
 	}
 }
 
@@ -161,7 +207,7 @@ func TestCollectAppliedRules_FiltersAndFlagsCorrectly(t *testing.T) {
 	}
 
 	reg := quirks.NewRegistry(rules)
-	_, applied := reg.ResolveWithRules("openai-compatible", "gpt-4o")
+	_, applied := reg.ResolveWithRules("openai-compatible", "", "gpt-4o")
 	got := formatAppliedRules(applied)
 
 	// Expected, in specificity order:

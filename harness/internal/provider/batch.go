@@ -257,7 +257,11 @@ func (a *BatchAdapter) marshalRequestBody(ctx context.Context, params types.Stre
 		if registry == nil {
 			registry = quirks.DefaultRegistry()
 		}
-		q := registry.Resolve("openai-compatible", params.Model)
+		endpoint := ""
+		if inner, ok := a.inner.(*OpenAICompatibleAdapter); ok {
+			endpoint = inner.EndpointProfile
+		}
+		q := registry.ResolveEndpoint("openai-compatible", endpoint, params.Model)
 		if err := checkOpenAIRequestSupported(params, q); err != nil {
 			return nil, nil, err
 		}
@@ -275,14 +279,19 @@ func (a *BatchAdapter) marshalRequestBody(ctx context.Context, params types.Stre
 		if registry == nil {
 			registry = quirks.DefaultRegistry()
 		}
-		q := registry.Resolve("openai-responses", params.Model)
+		inner, _ := a.inner.(*OpenAIResponsesAdapter)
+		endpoint := ""
+		if inner != nil {
+			endpoint = inner.EndpointProfile
+		}
+		q := registry.ResolveEndpoint("openai-responses", endpoint, params.Model)
 		if err := validateReasoningEffort("openai-responses", params.ReasoningEffort, params.Model, q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels); err != nil {
 			return nil, nil, err
 		}
 		// Only turns the inner adapter streamed carry stored items: batch
 		// results are never captured.
 		replayOrigin := ""
-		if inner, ok := a.inner.(*OpenAIResponsesAdapter); ok {
+		if inner != nil {
 			replayOrigin = responsesReplayOriginFor(q, params.Model, inner.baseURL)
 		}
 		req, err := buildResponsesRequest(params, q, nil, replayOrigin)

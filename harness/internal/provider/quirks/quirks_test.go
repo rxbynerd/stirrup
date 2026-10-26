@@ -916,7 +916,7 @@ func TestDeepSeekV4_GatewayResolution(t *testing.T) {
 	} {
 		t.Run(model, func(t *testing.T) {
 			must := require.New(t)
-			q, applied := DefaultRegistry().ResolveWithRules("openai-compatible", model)
+			q, applied := DefaultRegistry().ResolveWithRules("openai-compatible", "", model)
 			must.Empty(q.ReplayFields, "OpenRouter normalises reasoning and does not require a replay")
 			oai := q.BehaviourFlags.OpenAI
 			must.True(oai.OmitSamplingParams)
@@ -936,7 +936,7 @@ func TestDeepSeekV4_GatewayResolution(t *testing.T) {
 
 	t.Run("bare ids do not fire the gateway rules", func(t *testing.T) {
 		must := require.New(t)
-		_, applied := DefaultRegistry().ResolveWithRules("openai-compatible", "deepseek-v4-flash")
+		_, applied := DefaultRegistry().ResolveWithRules("openai-compatible", "", "deepseek-v4-flash")
 		for _, r := range applied {
 			must.NotContains(r.Description, "via OpenRouter")
 		}
@@ -1153,6 +1153,7 @@ func TestRule_Matches(t *testing.T) {
 		name         string
 		rule         Rule
 		providerType string
+		endpoint     string
 		model        string
 		want         bool
 	}{
@@ -1191,14 +1192,88 @@ func TestRule_Matches(t *testing.T) {
 			model:        "gpt-5-nano",
 			want:         false,
 		},
+		{
+			name:         "endpoint-agnostic rule matches a stated endpoint",
+			rule:         Rule{ProviderType: "openai-responses", ModelMatch: "gpt-5*"},
+			providerType: "openai-responses",
+			endpoint:     "generic",
+			model:        "gpt-5.4",
+			want:         true,
+		},
+		{
+			name:         "endpoint-scoped rule matches its endpoint",
+			rule:         Rule{ProviderType: "openai-responses", ModelMatch: "gpt-5*", Endpoint: "openai"},
+			providerType: "openai-responses",
+			endpoint:     "openai",
+			model:        "gpt-5.4",
+			want:         true,
+		},
+		{
+			name:         "endpoint-scoped rule does not match another endpoint",
+			rule:         Rule{ProviderType: "openai-responses", ModelMatch: "gpt-5*", Endpoint: "openai"},
+			providerType: "openai-responses",
+			endpoint:     "generic",
+			model:        "gpt-5.4",
+			want:         false,
+		},
+		{
+			name:         "endpoint-scoped rule does not match an unstated endpoint",
+			rule:         Rule{ProviderType: "openai-responses", ModelMatch: "gpt-5*", Endpoint: "openai"},
+			providerType: "openai-responses",
+			endpoint:     "",
+			model:        "gpt-5.4",
+			want:         false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
-			got := RuleMatches(tc.rule, tc.providerType, tc.model)
-			must.Equal(tc.want, got, "RuleMatches(%+v, %q, %q)", tc.rule, tc.providerType, tc.model)
+			got := RuleMatches(tc.rule, tc.providerType, tc.endpoint, tc.model)
+			must.Equal(tc.want, got, "RuleMatches(%+v, %q, %q, %q)", tc.rule, tc.providerType, tc.endpoint, tc.model)
 		})
 	}
+}
+
+func TestRegistry_ResolveEndpoint_EndpointScopedRuleWinsAtEqualGlobLength(t *testing.T) {
+	must := require.New(t)
+	setVariant := func(v string) func(*ProviderQuirks) {
+		return func(q *ProviderQuirks) { q.ToolSearch = ToolSearchCapability{Supported: true, Variant: v} }
+	}
+	reg := NewRegistry([]Rule{
+		{ProviderType: "openai-responses", ModelMatch: "gpt-5*", Endpoint: "openai", Description: "scoped", Apply: setVariant("scoped")},
+		{ProviderType: "openai-responses", ModelMatch: "gpt-5*", Description: "agnostic", Apply: setVariant("agnostic")},
+	})
+
+	q, applied := reg.ResolveWithRules("openai-responses", "openai", "gpt-5.4")
+	must.Equal("scoped", q.ToolSearch.Variant)
+	must.Len(applied, 2)
+	must.Equal("agnostic", applied[0].Description)
+	must.Equal("scoped", applied[1].Description)
+}
+
+func TestRegistry_ResolveEndpoint_LongerGlobOutranksEndpointScope(t *testing.T) {
+	must := require.New(t)
+	setVariant := func(v string) func(*ProviderQuirks) {
+		return func(q *ProviderQuirks) { q.ToolSearch = ToolSearchCapability{Supported: true, Variant: v} }
+	}
+	reg := NewRegistry([]Rule{
+		{ProviderType: "openai-responses", ModelMatch: "gpt-5.4*", Description: "longer agnostic", Apply: setVariant("agnostic")},
+		{ProviderType: "openai-responses", ModelMatch: "gpt-5*", Endpoint: "openai", Description: "shorter scoped", Apply: setVariant("scoped")},
+	})
+
+	must.Equal("agnostic", reg.ResolveEndpoint("openai-responses", "openai", "gpt-5.4").ToolSearch.Variant)
+}
+
+func TestRegistry_Resolve_SkipsEndpointScopedRules(t *testing.T) {
+	must := require.New(t)
+	reg := NewRegistry([]Rule{
+		{ProviderType: "openai-responses", ModelMatch: "gpt-5*", Endpoint: "openai", Description: "scoped", Apply: func(q *ProviderQuirks) {
+			q.ToolSearch = ToolSearchCapability{Supported: true, Variant: "hosted"}
+		}},
+	})
+
+	must.False(reg.Resolve("openai-responses", "gpt-5.4").ToolSearch.Supported)
+	must.True(reg.ResolveEndpoint("openai-responses", "openai", "gpt-5.4").ToolSearch.Supported)
 }
 
 // TestOpenAITokenField_MarshalJSON pins the wire form of each named
