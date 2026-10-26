@@ -1268,7 +1268,7 @@ mid-run switches search paths with it:
 | Provider and model | `auto` uses |
 |---|---|
 | `anthropic`: Claude Opus 4.5–4.8, Sonnet 4.5–4.6, Haiku 4.5 and the Claude 5 generation | Native search: the Anthropic BM25 tool search tool, with deferred tools sent with `defer_loading` |
-| `openai-responses`: `gpt-5.4` and later 5.x, the `gpt-6` family | Native search: the hosted `tool_search` tool, with deferred tools sent with `defer_loading` and each MCP server's and the control plane's deferred tools grouped into a namespace; deferred built-ins keep their names and descriptions visible (see below). Only on the default endpoint; a custom `baseUrl` (Azure OpenAI, LiteLLM, LM Studio and other gateways) uses the harness `tool_search`, because a gateway may accept the hosted search entry and silently drop it, leaving deferred tools unloadable |
+| `openai-responses`: `gpt-5.4` and later 5.x, the `gpt-6` family | Native search: the hosted `tool_search` tool, with deferred tools sent with `defer_loading` and each MCP server's and the control plane's deferred tools grouped into a namespace; deferred built-ins keep their names and descriptions visible (see below). Only on the default endpoint; a custom `baseUrl` (Azure OpenAI, LiteLLM, LM Studio and other gateways) uses the harness `tool_search`, because a gateway may accept the hosted search entry and silently drop it, and the run then completes with every deferred tool refused as not loaded |
 | `bedrock` | The harness `tool_search` tool: the adapter uses the Converse API, and Anthropic documents server-side tool search on Bedrock only for InvokeModel |
 | Every other provider and model (Gemini, `openai-compatible`, older Claude and GPT models) | The harness `tool_search` tool |
 
@@ -1335,8 +1335,11 @@ native search keeps the request stable and the cache warm.
 
 Both native searches are also sent on batch turns. An OpenAI batch turn
 never captures the provider's output items, so a hosted search made in
-a batch turn is always replayed by best-effort reconstruction. Neither
-batch path has been probed against the live API.
+a batch turn is always replayed by best-effort reconstruction. Both
+batch paths were probed against the live API on 2026-10-26: an Anthropic
+batch (`claude-haiku-4-5`) completed in about 98 s and an OpenAI batch
+(`gpt-5.4-mini`) in 338 s, each
+returning the same shapes as a streamed turn.
 
 ### Nothing to defer
 

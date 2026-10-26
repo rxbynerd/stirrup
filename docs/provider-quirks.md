@@ -477,7 +477,7 @@ test catch malformed paths at registry-build time.
 | `anthropic`         | `claude-sonnet-4-[5-6]*` | Anthropic Claude Sonnet 4.5–4.6: native BM25 tool search with `defer_loading` (probed on `claude-sonnet-4-6` including the `pause_turn` resend; Sonnet 4.5 not probed) |
 | `anthropic`         | `claude-haiku-4-5*` | Anthropic Claude Haiku 4.5: native BM25 tool search with `defer_loading` (probed: stream, replay, router switch, `pause_turn`, batch) |
 | `anthropic`         | `claude-opus-5*`   | Anthropic Claude Opus 5 / 5.5: native BM25 tool search with `defer_loading` (probed on `claude-opus-5-5`, first turn only) |
-| `anthropic`         | `claude-sonnet-5*` | Anthropic Claude Sonnet 5 / 5.5: native BM25 tool search with `defer_loading` (probed on `claude-sonnet-5-5`: first turn, `pause_turn` resend, trimmed history) |
+| `anthropic`         | `claude-sonnet-5*` | Anthropic Claude Sonnet 5 / 5.5: native BM25 tool search with `defer_loading` (probed on `claude-sonnet-5-5`: first turn, unanswered-call resend (no paused turn produced), trimmed history) |
 | `anthropic`         | `claude-haiku-5*`  | Anthropic Claude Haiku 5.5: native BM25 tool search with `defer_loading` (probed, first turn only) |
 | `anthropic`         | `claude-fable-5*`  | Anthropic Claude Fable 5 / 5.1: native BM25 tool search with `defer_loading` (probed on `claude-fable-5-1`, first turn only) |
 | `anthropic`         | `claude-mythos-5*` | Anthropic Claude Mythos 5 / 5.1: native BM25 tool search with `defer_loading` (documented, not probed) |
@@ -1183,7 +1183,9 @@ concerns are tracked separately:
     128, one `read_file` tool, no `thinking` parameter). The
     trailing-assistant history is `user`, `assistant` (plain text, no
     tool use). The fixed history appends the synthetic user message
-    the quirk adds.
+    the quirk adds. The two `server_tool_use` rows were probed on
+    2026-10-26 instead, with the search tool, `read_file` and one
+    deferred tool.
 
     | Provider | Model | `tool_choice` | History | Status | Result |
     |---|---|---|---|---|---|
