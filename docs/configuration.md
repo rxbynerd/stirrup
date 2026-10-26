@@ -1268,7 +1268,7 @@ mid-run switches search paths with it:
 | Provider and model | `auto` uses |
 |---|---|
 | `anthropic`: Claude Opus 4.5–4.8, Sonnet 4.5–4.6, Haiku 4.5 and the Claude 5 generation | Native search: the Anthropic BM25 tool search tool, with deferred tools sent with `defer_loading` |
-| `openai-responses`: `gpt-5.4` and later 5.x, the `gpt-6` family | Native search: the hosted `tool_search` tool, with deferred tools sent with `defer_loading`; names and descriptions stay visible (see below). Only on the default endpoint; a custom `baseUrl` (Azure OpenAI, LiteLLM, LM Studio and other gateways) uses the harness `tool_search`, because a gateway may accept the hosted search entry and silently drop it, leaving deferred tools unloadable |
+| `openai-responses`: `gpt-5.4` and later 5.x, the `gpt-6` family | Native search: the hosted `tool_search` tool, with deferred tools sent with `defer_loading` and each MCP server's and the control plane's deferred tools grouped into a namespace; deferred built-ins keep their names and descriptions visible (see below). Only on the default endpoint; a custom `baseUrl` (Azure OpenAI, LiteLLM, LM Studio and other gateways) uses the harness `tool_search`, because a gateway may accept the hosted search entry and silently drop it, leaving deferred tools unloadable |
 | `bedrock` | The harness `tool_search` tool: the adapter uses the Converse API, and Anthropic documents server-side tool search on Bedrock only for InvokeModel |
 | Every other provider and model (Gemini, `openai-compatible`, older Claude and GPT models) | The harness `tool_search` tool |
 
@@ -1315,10 +1315,17 @@ the `tools.mcpServers` configuration and not from the server. Control
 characters in a server-supplied tool name or description are dropped
 from result lines, so neither can start a line of its own.
 
-Only `strategy: "harness"` keeps deferred tools' names and descriptions
-hidden until they are loaded. The OpenAI hosted search defers only
-parameter schemas: with the flat function list the harness sends, the
-model still sees every deferred tool's name and description.
+The harness search keeps every deferred tool's name and description out
+of the request until it is loaded, on every provider. The OpenAI hosted
+search hides a deferred tool only inside a namespace. The harness groups
+each configured MCP server's deferred tools into a namespace named
+`mcp_<server>`, and the deferred control-plane tools into one named
+`control_plane`, so the model sees only each namespace's name and a
+generated description until it loads the namespace. Deferred
+built-in tools, and MCP tools whose name no configured server claims,
+are sent as flat functions whose names and descriptions stay visible;
+only their parameter schemas are deferred. See
+[Hosted tool search](providers.md#hosted-tool-search).
 
 Under the harness strategy, each search that loads a tool changes the
 tool list, so the next request misses the provider's prompt cache. A
@@ -1406,7 +1413,10 @@ but only in process; no durable emitter writes it.
 In the JSONL trace, a turn record's `modelInput.tools` lists the
 definitions the turn sent, and the two strategies look different
 there. A native-search turn lists every deferred tool, loaded or not,
-with `deferred: true`, and no `tool_search`. A harness-search turn
+with `deferred: true`, and no `tool_search`. A native-search turn
+also records each deferred MCP or control-plane tool's `namespace` and
+`namespaceDescription`, with the unnormalised name, whichever provider
+the turn went to. A harness-search turn
 lists the eager tools, the tools loaded so far, and `tool_search`, and no
 tool carries the flag. A native search appears in the turn's
 `modelOutput` as a `tool_search` block (the search input) and a

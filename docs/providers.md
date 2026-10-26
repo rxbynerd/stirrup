@@ -645,22 +645,40 @@ the harness's own `tool_search` tool, and every request with nothing
 deferred gets no search entry and no `defer_loading`.
 
 The request lists every function tool as usual, adds
-`"defer_loading": true` to each deferred one, and appends the hosted
-search entry last, with no field other than its type. On the strict
-families `defer_loading` sits beside `strict: true`:
+`"defer_loading": true` to each deferred one, groups the deferred tools
+of each configured MCP server, and the deferred control-plane tools,
+into one `namespace` entry per group, and appends the hosted search
+entry last, with no field other than its type. On the strict families
+`defer_loading` sits beside `strict: true`:
 
 ```json
 "tools": [
   {"type": "function", "name": "read_file", "description": "Read a file", "parameters": {...}, "strict": true},
-  {"type": "function", "name": "mcp_jira_create_issue", "description": "Create a Jira issue", "parameters": {...}, "strict": true, "defer_loading": true},
+  {"type": "namespace", "name": "mcp_jira", "description": "Tools from MCP server \"jira\".", "tools": [
+    {"type": "function", "name": "mcp_jira_create_issue", "description": "Create a Jira issue", "parameters": {...}, "strict": true, "defer_loading": true}
+  ]},
+  {"type": "function", "name": "list_directory", "description": "List a directory", "parameters": {...}, "strict": true, "defer_loading": true},
   {"type": "tool_search"}
 ]
 ```
 
-The adapter sends flat top-level functions. With flat functions the model
-still sees each deferred function's name and description from the first
-turn; only the parameter schema is deferred, so the saving is smaller
-than on Anthropic. Operators who need deferred tools hidden entirely set
+An MCP server's namespace is named `mcp_<server>` and described as
+`Tools from MCP server "<server>".`; control-plane tools share the
+`control_plane` namespace, described as `Tools provided by the control
+plane.` Both come from operator configuration, never from text an MCP
+server or the control plane supplies, and namespace names are normalised
+to the provider's tool-name rules like tool names. A namespace sits where
+its first member would have been. Members keep their full names (such
+as `mcp_jira_create_issue`), so dispatch and permissions see the same
+names as without namespaces. Until a search loads a namespace, the model
+sees only its name and description.
+
+Deferred built-in tools, and MCP tools whose name no configured server
+claims, are sent as flat functions. The model still sees each flat
+deferred function's name and description from the first turn; only its
+parameter schema is deferred. A namespace whose name equals a
+function's name is not formed, and its members are sent flat. Operators
+who need every deferred tool hidden set
 `tools.lazyLoading.strategy: "harness"`, which keeps the names and
 descriptions out of the request until a search loads them.
 
@@ -673,9 +691,13 @@ items carry `"call_id": null`; a call without an `id` gets
 `tool_search_<output_index>`) and a `tool_search_result` event paired
 with the earliest unanswered call. The result names every function in
 `tools`, including functions inside a `namespace` entry (a namespace
-nested inside another is ignored); other entry types are ignored. A
-`namespace` field on a later `function_call` is ignored. A malformed search item produces an event with no input
-or no loaded tools rather than failing the turn. OpenAI documents no failure
+nested inside another is ignored); other entry types are ignored. The
+search's `arguments` names what it loads, as `{"paths": [...]}` holding
+namespace or function names. Every `function_call` carries a
+`namespace` field: the namespace's name for a namespace member, or the
+function's own name for a flat function. The adapter dispatches on
+`name` and ignores `namespace` on read. A malformed search item produces
+an event with no input or no loaded tools rather than failing the turn. OpenAI documents no failure
 shape for hosted search, so the adapter never reports a failed search.
 
 **Replay.** On the reasoning families both items are captured with the
@@ -688,8 +710,15 @@ as a `tool_search_call` and `tool_search_output` with
 `"execution": "server"`, `"call_id": null` and
 `"status": "completed"`: the call's `arguments` is the persisted search
 input, and the output's `tools` lists the request's own definitions of
-the loaded tools, each with `defer_loading: true`. This reconstruction
-is best effort. The adapter drops both items of a search, and still sends
+the loaded tools, each with `defer_loading: true`, with namespace
+members inside their namespace entry. A rebuilt `function_call` in a
+request with the hosted search carries `namespace`: the namespace's
+name for a namespace member, or the function's own name for a flat
+deferred function. The API rejects a call to a function that a
+`tool_search_output` in the same input loaded unless it carries its
+namespace. A call to an eager function carries none, because the API
+resolves it in the default namespace. This reconstruction is best
+effort. The adapter drops both items of a search, and still sends
 the function calls that follow, when the request has no hosted search,
 when the search was recorded by another provider (a call not named
 `tool_search`, such as an Anthropic `tool_search_tool_bm25` pair left by
@@ -705,10 +734,12 @@ reconstruction above. Neither the batch request nor its replay has been
 probed against the live API.
 
 The request shape, the output items, verbatim replay and reconstruction
-all follow OpenAI's guide; none has been probed against the live API.
-Namespaces (grouping, for example, each MCP server's tools so the model
-sees only the group until it loads one) and client-executed search
-(`"execution": "client"`, answered by the harness) are not implemented.
+follow OpenAI's guide. The namespace shapes were probed on 2026-10-26
+against `gpt-5.4-mini`: a search loads a namespace by name, members
+with full names are returned and called by those names, and a rebuilt
+call is accepted with its namespace and rejected without it.
+Client-executed search (`"execution": "client"`, answered by the
+harness) is not implemented.
 
 ## Google Gemini via Vertex AI
 
