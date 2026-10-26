@@ -1224,7 +1224,11 @@ every deferred definition to the provider on every turn. To withhold a
 tool, leave it out of `tools.builtIn` or an MCP server's
 `allowedTools`, or deny it in the permission policy. Search ranking is
 keyword scoring and is not a trust signal: a tool's position in a
-result says nothing about where it came from.
+result says nothing about where it came from. The harness search caps
+how many results one group can take, which limits a server that fills
+its tool names and descriptions with keywords so that another server's
+tool never loads, but the cap bounds that squatting and does not
+prevent it.
 
 ### Strategies and providers
 
@@ -1263,6 +1267,24 @@ tools not yet loaded are loaded, and the next turn sends their full
 definitions. Tools that match but are already loaded are not loaded
 again and do not count toward the limit; the result names them on an
 `Already loaded:` line.
+
+The harness search also keeps one group from filling every slot. A
+group is an MCP server, the MCP tools no configured server claims,
+the control-plane tools, or the built-ins. While other groups have
+matches, one group takes at most half the limit, rounded up: 1 of 1,
+1 of 2, 3 of 5. Slots a cap leaves free are then filled with the
+skipped matches in score order, so a group that alone matches is not
+held back. A tool whose name, internal ID, or (for an MCP server's
+tool) the server's own name for it equals the whole query, ignoring
+case and surrounding whitespace, is loaded ahead of every scored match.
+Such a tool counts toward its group's cap, so a group takes the larger
+of the cap and its number of exact matches. A tool belongs to the MCP
+server that registered it, whatever the tool is named. Each result line
+names the group after the tool name, as `(MCP server "github")`,
+`(MCP)`, `(control plane)`, or `(built-in)`; the server name comes from
+the `tools.mcpServers` configuration and not from the server. Control
+characters in a server-supplied tool name or description are dropped
+from result lines, so neither can start a line of its own.
 
 Only `strategy: "harness"` keeps deferred tools' names and descriptions
 hidden until they are loaded. The OpenAI hosted search defers only
