@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -427,7 +428,7 @@ func TestFabricateStream_OpenAIResponses_Incomplete(t *testing.T) {
 func TestBatchAdapter_marshalRequestBody_OpenAICompatible(t *testing.T) {
 	must := require.New(t)
 	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "run-test")
-	body, err := a.marshalRequestBody(types.StreamParams{
+	body, err := a.marshalRequestBody(t.Context(), types.StreamParams{
 		Model:     "gpt-4o-mini",
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
 		MaxTokens: 256,
@@ -450,7 +451,7 @@ func TestBatchAdapter_marshalRequestBody_AnthropicSendsNoCacheControl(t *testing
 	must.True(quirks.DefaultRegistry().Resolve("anthropic", model).BehaviourFlags.Anthropic.PromptCaching,
 		"precondition: registry must enable PromptCaching for %s", model)
 	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "anthropic", "run-test")
-	body, err := a.marshalRequestBody(types.StreamParams{
+	body, err := a.marshalRequestBody(t.Context(), types.StreamParams{
 		Model:     model,
 		System:    "sys",
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
@@ -493,7 +494,7 @@ func TestBatchAdapter_MarshalUsesInjectedRegistry(t *testing.T) {
 	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "run-test")
 	a.Registry = quirks.NewRegistry([]quirks.Rule{customRule})
 
-	body, err := a.marshalRequestBody(types.StreamParams{
+	body, err := a.marshalRequestBody(t.Context(), types.StreamParams{
 		Model:     "synthetic-foo",
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
 		MaxTokens: 256,
@@ -515,13 +516,57 @@ func TestBatchAdapter_MarshalFallsBackToDefaultRegistryWhenNil(t *testing.T) {
 	must := require.New(t)
 	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "run-test")
 	// Registry intentionally left nil.
-	body, err := a.marshalRequestBody(types.StreamParams{
+	body, err := a.marshalRequestBody(t.Context(), types.StreamParams{
 		Model:     "o1-mini", // matches the builtin reasoning-class rule
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
 		MaxTokens: 256,
 	})
 	must.NoError(err, "marshalRequestBody")
 	must.Contains(string(body), `"max_completion_tokens"`, "nil-registry fallback failed: %s", body)
+}
+
+// TestBatchAdapter_marshalRequestBody_StrictFallbackWarns pins that a batch
+// request sends a non-normalisable tool with strict:false and reports it
+// through the inner adapter's logger, as the streaming path does.
+func TestBatchAdapter_marshalRequestBody_StrictFallbackWarns(t *testing.T) {
+	cases := []struct {
+		name     string
+		provType string
+		inner    func(logger *slog.Logger) ProviderAdapter
+	}{
+		{"openai-compatible", "openai-compatible", func(logger *slog.Logger) ProviderAdapter {
+			a := NewOpenAICompatibleAdapter(staticBearer("k"), "http://unused.invalid", OpenAIAuthConfig{}, RetryPolicy{})
+			a.Logger = logger
+			return a
+		}},
+		{"openai-responses", "openai-responses", func(logger *slog.Logger) ProviderAdapter {
+			a := NewOpenAIResponsesAdapter(staticBearer("k"), "http://unused.invalid", OpenAIAuthConfig{})
+			a.Logger = logger
+			return a
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
+			var logs bytes.Buffer
+			a := NewBatchAdapter(tc.inner(slog.New(slog.NewJSONHandler(&logs, nil))), &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, tc.provType, "run-test")
+
+			params := effortParams("gpt-5", "", false)
+			params.Tools = strictFallbackTools()
+			body, err := a.marshalRequestBody(t.Context(), params)
+			must.NoError(err)
+
+			wire := wireTools(t, body)
+			check.Equal(true, wire["search"].Strict)
+			check.Equal(false, wire["mcp_lookup"].Strict)
+
+			warns := strictFallbackWarns(t, &logs)
+			must.Len(warns, 1)
+			check.Equal(tc.provType, warns[0]["provider.type"])
+			check.Equal("mcp_lookup", warns[0]["tool.name"])
+		})
+	}
 }
 
 // TestBatchAdapter_marshalRequestBody_OpenAIResponses pins the
@@ -531,7 +576,7 @@ func TestBatchAdapter_MarshalFallsBackToDefaultRegistryWhenNil(t *testing.T) {
 func TestBatchAdapter_marshalRequestBody_OpenAIResponses(t *testing.T) {
 	must := require.New(t)
 	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-responses", "run-test")
-	body, err := a.marshalRequestBody(types.StreamParams{
+	body, err := a.marshalRequestBody(t.Context(), types.StreamParams{
 		Model:     "gpt-4o-mini",
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
 		MaxTokens: 256,
@@ -568,7 +613,7 @@ func TestBatchAdapter_marshalRequestBody_OpenAIResponsesReasoningParity(t *testi
 				[]types.ContentBlock{{Type: "tool_use", ID: "call_1", Name: "read_file", Input: json.RawMessage(`{"path":"a.go"}`)}},
 				`{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"enc-batch"}`,
 				`{"type":"function_call","id":"fc_1","call_id":"call_1","name":"read_file","arguments":"{\"path\":\"a.go\"}","status":"completed"}`)
-			body, err := a.marshalRequestBody(types.StreamParams{
+			body, err := a.marshalRequestBody(t.Context(), types.StreamParams{
 				Model: tc.model,
 				Messages: []types.Message{
 					replayUserPrompt,
@@ -2115,7 +2160,7 @@ func TestBatchAdapter_marshalRequestBody_AnthropicInputExamples(t *testing.T) {
 			Presentation: &types.ToolPresentation{InputExamples: []json.RawMessage{json.RawMessage(`{"x":"hi"}`)}},
 		}},
 	}
-	body, err := a.marshalRequestBody(params)
+	body, err := a.marshalRequestBody(t.Context(), params)
 	must.NoError(err)
 	var req struct {
 		Tools []struct {
@@ -2144,11 +2189,11 @@ func TestBatchAdapter_marshalRequestBody_AnthropicEffortAllowList(t *testing.T) 
 		MaxTokens:       256,
 		ReasoningEffort: "high",
 	}
-	body, err := a.marshalRequestBody(params)
+	body, err := a.marshalRequestBody(t.Context(), params)
 	must.NoError(err)
 	must.Contains(string(body), `"output_config":{"effort":"high"}`)
 
 	params.ReasoningEffort = "minimal"
-	_, err = a.marshalRequestBody(params)
+	_, err = a.marshalRequestBody(t.Context(), params)
 	must.Error(err, "reasoningEffort minimal on claude-sonnet-5-5 should be rejected")
 }

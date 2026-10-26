@@ -145,6 +145,11 @@ type responsesRequest struct {
 	TokenField     quirks.OpenAIResponsesTokenField `json:"-"`
 	StoreMode      quirks.OpenAIResponsesStoreMode  `json:"-"`
 	InputItemShape quirks.OpenAIResponsesInputShape `json:"-"`
+
+	// strictFallbacks lists the tools newly sent with strict:false because
+	// their schema failed the strict-mode lint; Stream logs them. Not
+	// serialised.
+	strictFallbacks []*strictSchemaError
 }
 
 // MarshalJSON projects the canonical responsesRequest into the Responses
@@ -1428,17 +1433,20 @@ func sameToolArguments(stored string, input json.RawMessage) bool {
 // Chat Completions side: when strict is true, every tool's schema is
 // rewritten by NormalizeStrictSchema and the wire entry carries
 // strict=true; the cache memoises rewrites within the adapter's
-// lifetime. A schema that fails the lint surfaces as an error here,
-// and the caller MUST NOT send a request.
+// lifetime. A tool whose schema fails the lint is sent with its original
+// schema and an explicit strict=false (an omitted strict on this surface
+// means strict when possible); rejections the cache records for the first
+// time are returned in fallbacks so the caller can log them. An error
+// returns no fallbacks: the request is not sent.
 //
 // When toolSearch is true, every Deferred tool carries defer_loading and
 // the hosted tool search entry is appended last; otherwise Deferred is
 // ignored and every tool is sent loaded.
-func translateToolsResponses(tools []types.ToolDefinition, strict, examples, toolSearch bool, model string, cache *strictSchemaCache) ([]responsesTool, error) {
+func translateToolsResponses(tools []types.ToolDefinition, strict, examples, toolSearch bool, model string, cache *strictSchemaCache) (out []responsesTool, fallbacks []*strictSchemaError, err error) {
 	if len(tools) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
-	out := make([]responsesTool, len(tools), len(tools)+1)
+	out = make([]responsesTool, len(tools), len(tools)+1)
 	for i, t := range tools {
 		entry := responsesTool{
 			Type:        "function",
@@ -1450,21 +1458,26 @@ func translateToolsResponses(tools []types.ToolDefinition, strict, examples, too
 			truthy := true
 			entry.DeferLoading = &truthy
 		}
+		strictTool := strict
 		if strict {
-			normalised, err := normalizeStrictWithCache(cache, model, t.Name, t.InputSchema)
+			schema, ok, fallback, err := strictToolSchema(cache, model, t.Name, t.InputSchema)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
-			entry.Parameters = normalised
-			truthy := true
-			entry.Strict = &truthy
-		} else if examples {
+			entry.Parameters = schema
+			entry.Strict = &ok
+			strictTool = ok
+			if fallback != nil {
+				fallbacks = append(fallbacks, fallback)
+			}
+		}
+		if !strictTool && examples {
 			// Fold worked examples into the schema, but only for
 			// non-strict tools: the structured-outputs subset rejects the
 			// `examples` keyword, identical to the Chat Completions side.
 			merged, err := mergeSchemaExamples(entry.Parameters, toolInputExamples(t))
 			if err != nil {
-				return nil, fmt.Errorf("tool %q: merge examples: %w", t.Name, err)
+				return nil, nil, fmt.Errorf("tool %q: merge examples: %w", t.Name, err)
 			}
 			entry.Parameters = merged
 		}
@@ -1473,7 +1486,7 @@ func translateToolsResponses(tools []types.ToolDefinition, strict, examples, too
 	if toolSearch {
 		out = append(out, responsesTool{Type: responsesToolSearchType})
 	}
-	return out, nil
+	return out, fallbacks, nil
 }
 
 // responsesToolSearchActive reports whether a request uses OpenAI's hosted
@@ -1492,9 +1505,9 @@ func responsesToolSearchActive(params types.StreamParams, capability quirks.Tool
 //
 // q carries the resolved quirks for the (provider, model) pair; the
 // Responses behaviour flags are threaded onto the request struct so
-// MarshalJSON projects the body they selected. A schema that fails strict-mode
-// lint surfaces as an error here so the caller can fail-closed before any
-// HTTP request is issued.
+// MarshalJSON projects the body they selected. A tool whose schema fails
+// the strict-mode lint is built with strict:false and reported through the
+// request's strictFallbacks; only a malformed schema returns an error.
 //
 // replayOrigin is the caller's responsesReplayOriginFor value; stored
 // output items from that origin are replayed, and "" reconstructs every
@@ -1504,7 +1517,7 @@ func responsesToolSearchActive(params types.StreamParams, capability quirks.Tool
 // becomes a maintenance burden.
 func buildResponsesRequest(params types.StreamParams, q quirks.ProviderQuirks, strictCache *strictSchemaCache, replayOrigin string) (responsesRequest, error) {
 	toolSearch := responsesToolSearchActive(params, q.ToolSearch)
-	tools, err := translateToolsResponses(params.Tools, q.BehaviourFlags.OpenAI.StrictMode, q.ToolExamples.Supported, toolSearch, params.Model, strictCache)
+	tools, fallbacks, err := translateToolsResponses(params.Tools, q.BehaviourFlags.OpenAI.StrictMode, q.ToolExamples.Supported, toolSearch, params.Model, strictCache)
 	if err != nil {
 		return responsesRequest{}, err
 	}
@@ -1530,6 +1543,7 @@ func buildResponsesRequest(params types.StreamParams, q quirks.ProviderQuirks, s
 		Instructions:      params.System,
 		Input:             translateMessagesResponses(params.Messages, replayOrigin, search),
 		Tools:             tools,
+		strictFallbacks:   fallbacks,
 		MaxTokens:         params.MaxTokens,
 		Temperature:       temperature,
 		ParallelToolCalls: openAIParallelFromParams(params, q.ParallelToolCalls),
@@ -1634,6 +1648,7 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 		o.recordLatency(ctx, start, metricAttrs)
 		return nil, fmt.Errorf("build request: %w", err)
 	}
+	warnStrictFallbacks(ctx, logger, "openai-responses", params.Model, reqBody.strictFallbacks)
 	reqBody.Stream = true
 
 	bodyBytes, err := json.Marshal(reqBody)

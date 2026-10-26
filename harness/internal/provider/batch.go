@@ -191,7 +191,7 @@ func (a *BatchAdapter) Stream(ctx context.Context, params types.StreamParams) (<
 	turn := a.turnCount.Add(1)
 	customID := fmt.Sprintf("stirrup-%s-turn-%d", a.runID, turn)
 
-	body, err := a.marshalRequestBody(params)
+	body, err := a.marshalRequestBody(ctx, params)
 	if err != nil {
 		ch := make(chan types.StreamEvent, 1)
 		ch <- types.StreamEvent{Type: "error", Error: err}
@@ -234,7 +234,7 @@ func (a *BatchAdapter) LastBatchID() string {
 // marshalRequestBody projects params into the wire body for the
 // configured provider type. Unsupported provider types surface as a
 // marshal-time error so the caller can emit a single error StreamEvent.
-func (a *BatchAdapter) marshalRequestBody(params types.StreamParams) (json.RawMessage, error) {
+func (a *BatchAdapter) marshalRequestBody(ctx context.Context, params types.StreamParams) (json.RawMessage, error) {
 	switch a.provType {
 	case "anthropic":
 		registry := a.Registry
@@ -264,6 +264,7 @@ func (a *BatchAdapter) marshalRequestBody(params types.StreamParams) (json.RawMe
 		if err != nil {
 			return nil, err
 		}
+		warnStrictFallbacks(ctx, a.innerLogger(), "openai-compatible", params.Model, req.strictFallbacks)
 		return json.Marshal(req)
 	case "openai-responses":
 		registry := a.Registry
@@ -284,10 +285,27 @@ func (a *BatchAdapter) marshalRequestBody(params types.StreamParams) (json.RawMe
 		if err != nil {
 			return nil, err
 		}
+		warnStrictFallbacks(ctx, a.innerLogger(), "openai-responses", params.Model, req.strictFallbacks)
 		return json.Marshal(req)
 	default:
 		return nil, fmt.Errorf("batch: unsupported provider type %q", a.provType)
 	}
+}
+
+// innerLogger returns the logger of the wrapped OpenAI adapter, or the
+// default logger when the inner adapter carries none.
+func (a *BatchAdapter) innerLogger() *slog.Logger {
+	var logger *slog.Logger
+	switch inner := a.inner.(type) {
+	case *OpenAICompatibleAdapter:
+		logger = inner.Logger
+	case *OpenAIResponsesAdapter:
+		logger = inner.Logger
+	}
+	if logger == nil {
+		return slog.Default()
+	}
+	return logger
 }
 
 // awaitAndFabricate runs in a goroutine, blocks on the batch result, and

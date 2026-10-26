@@ -61,8 +61,11 @@ blindly to make a red test green — that defeats its purpose.
 - **Secrets never appear in fixtures.** Use fake keys/headers only; the
   registry self-tests assert no `secret://` reference reaches a wire body.
 - **Negative coverage.** "Reject before send" tests live where the harness
-  actually lints a schema: OpenAI strict-mode normalisation
-  (`normalizeStrictWithCache`, fail-closed) and the Gemini schema lint
+  actually lints a schema: the OpenAI strict-mode normaliser fails closed
+  on a schema that is not valid JSON or has a structurally invalid
+  `properties` or `required` (`TestTranslateTools_MalformedSchemaStillFails`;
+  a construct strict mode cannot express falls back to `strict:false`
+  instead, see `strictfallback_test.go`), and the Gemini schema lint
   (`LintGeminiSchema`, e.g. `TestGeminiSchemaLint_FailsClosedOnUnsupportedFeature`).
   The Anthropic adapter forwards `input_schema` verbatim and has no harness-side
   schema lint, so its pre-send validation is the tool-name normalisation layer

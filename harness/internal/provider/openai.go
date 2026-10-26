@@ -166,6 +166,11 @@ type openaiRequest struct {
 	// ReasoningEffort is the wire value for the top-level
 	// "reasoning_effort" field. Empty omits it.
 	ReasoningEffort string
+
+	// strictFallbacks lists the tools newly sent with strict:false because
+	// their schema failed the strict-mode lint; Stream logs them. Not
+	// serialised.
+	strictFallbacks []*strictSchemaError
 }
 
 // MarshalJSON projects the canonical openaiRequest into the wire body the
@@ -862,36 +867,45 @@ func translateMessages(system string, messages []types.Message, replayPaths []st
 // translateTools converts stirrup ToolDefinitions to OpenAI's function
 // format. When strict is true, every tool's Parameters is rewritten by
 // NormalizeStrictSchema and the Strict flag is set on the wire entry; the
-// cache memoises rewrites by (model, tool-name, schema-hash). Returns an
-// error when strict-mode normalisation rejects a tool's schema — the
-// request must not be sent in that case (fail-closed).
-func translateTools(tools []types.ToolDefinition, strict, examples bool, model string, cache *strictSchemaCache) ([]openaiTool, error) {
+// cache memoises rewrites by (model, tool-name, schema-hash). A tool whose
+// schema strict mode cannot express is sent with its original schema and
+// an explicit strict:false instead of failing the request; each such
+// rejection the cache records for the first time is returned in fallbacks
+// so the caller can log it. Returns an error only for a malformed schema,
+// and then returns no fallbacks: the request is not sent, so no tool goes
+// out non-strict.
+func translateTools(tools []types.ToolDefinition, strict, examples bool, model string, cache *strictSchemaCache) (out []openaiTool, fallbacks []*strictSchemaError, err error) {
 	if len(tools) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
-	out := make([]openaiTool, len(tools))
+	out = make([]openaiTool, len(tools))
 	for i, t := range tools {
 		def := openaiToolDefinition{
 			Name:        t.Name,
 			Description: t.Description,
 			Parameters:  t.InputSchema,
 		}
+		strictTool := strict
 		if strict {
-			normalised, err := normalizeStrictWithCache(cache, model, t.Name, t.InputSchema)
+			schema, ok, fallback, err := strictToolSchema(cache, model, t.Name, t.InputSchema)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
-			def.Parameters = normalised
-			truthy := true
-			def.Strict = &truthy
-		} else if examples {
+			def.Parameters = schema
+			def.Strict = &ok
+			strictTool = ok
+			if fallback != nil {
+				fallbacks = append(fallbacks, fallback)
+			}
+		}
+		if !strictTool && examples {
 			// Fold worked examples into the schema's `examples` keyword —
 			// only for non-strict tools, since OpenAI's structured-outputs
 			// subset rejects `examples`; strict tools rely on the
 			// description text instead.
 			merged, err := mergeSchemaExamples(def.Parameters, toolInputExamples(t))
 			if err != nil {
-				return nil, fmt.Errorf("tool %q: merge examples: %w", t.Name, err)
+				return nil, nil, fmt.Errorf("tool %q: merge examples: %w", t.Name, err)
 			}
 			def.Parameters = merged
 		}
@@ -900,7 +914,7 @@ func translateTools(tools []types.ToolDefinition, strict, examples bool, model s
 			Function: def,
 		}
 	}
-	return out, nil
+	return out, fallbacks, nil
 }
 
 // openAIToolChoiceFromParams projects the provider-neutral
@@ -995,15 +1009,15 @@ func mapFinishReason(reason string) string {
 // q carries the resolved quirks for the (provider, model) pair; the zero
 // value reproduces today's default behaviour for callers that skip
 // resolution. strictCache memoises strict-mode schema rewrites across
-// turns; pass nil to disable caching. Returns an error when a tool's
-// schema fails the strict-mode lint — the caller must NOT send a request
-// in that case.
+// turns; pass nil to disable caching. A tool whose schema fails the
+// strict-mode lint is built with strict:false and reported through the
+// request's strictFallbacks; only a malformed schema returns an error.
 //
 // TODO(batch): if the batch endpoint rejects fields the streaming endpoint
 // accepts (e.g. top_p on Responses, equivalent constraints on Chat
 // Completions), apply a batch-specific projection here.
 func buildOpenAIRequest(params types.StreamParams, stream bool, q quirks.ProviderQuirks, strictCache *strictSchemaCache) (openaiRequest, error) {
-	tools, err := translateTools(params.Tools, q.BehaviourFlags.OpenAI.StrictMode, q.ToolExamples.Supported, params.Model, strictCache)
+	tools, fallbacks, err := translateTools(params.Tools, q.BehaviourFlags.OpenAI.StrictMode, q.ToolExamples.Supported, params.Model, strictCache)
 	if err != nil {
 		return openaiRequest{}, err
 	}
@@ -1011,6 +1025,7 @@ func buildOpenAIRequest(params types.StreamParams, stream bool, q quirks.Provide
 		Model:              params.Model,
 		Messages:           translateMessages(params.System, params.Messages, q.ReplayFields),
 		Tools:              tools,
+		strictFallbacks:    fallbacks,
 		MaxTokens:          params.MaxTokens,
 		Temperature:        params.Temperature,
 		Stream:             stream,
@@ -1079,8 +1094,6 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 		)
 	}
 
-	// Emitted before buildOpenAIRequest so a fail-closed lint error surfaces
-	// against a context that already shows strict-mode was active.
 	if q.BehaviourFlags.OpenAI.StrictMode {
 		logger.DebugContext(ctx, "openai strict mode applied",
 			slog.String("provider.type", "openai-compatible"),
@@ -1100,6 +1113,7 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 		o.recordLatency(ctx, start, metricAttrs)
 		return nil, fmt.Errorf("build request: %w", err)
 	}
+	warnStrictFallbacks(ctx, logger, "openai-compatible", params.Model, reqBody.strictFallbacks)
 
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
