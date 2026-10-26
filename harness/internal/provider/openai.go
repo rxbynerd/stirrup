@@ -686,21 +686,33 @@ func (c *openaiChunkChoice) UnmarshalJSON(data []byte) error {
 
 // openaiDelta is the incremental content in a streaming chunk.
 // ReasoningContent is the non-standard reasoning text that DeepSeek, GLM,
-// and LM Studio stream beside content; it is display-only here, and any
-// replay goes through a ReplayFields rule on RawDelta. It stays raw so a
-// server that sends a non-string value does not fail the chunk.
+// and LM Studio stream beside content; Reasoning carries the same text
+// under the name OpenRouter uses. Both are display-only here, and any replay
+// goes through a ReplayFields rule on RawDelta. They stay raw so a server
+// that sends a non-string value does not fail the chunk.
 type openaiDelta struct {
 	Role             string                `json:"role,omitempty"`
 	Content          *string               `json:"content,omitempty"`
 	ReasoningContent json.RawMessage       `json:"reasoning_content,omitempty"`
+	Reasoning        json.RawMessage       `json:"reasoning,omitempty"`
 	ToolCalls        []openaiToolCallDelta `json:"tool_calls,omitempty"`
 }
 
-// reasoningText returns the delta's reasoning_content when it is a JSON
-// string, and "" for null, absent, or any other shape.
+// reasoningText returns the delta's reasoning_content when it is a non-empty
+// JSON string, otherwise its reasoning when that is. Null, absent, and any
+// other shape yield "".
 func (d openaiDelta) reasoningText() string {
+	if s := rawJSONString(d.ReasoningContent); s != "" {
+		return s
+	}
+	return rawJSONString(d.Reasoning)
+}
+
+// rawJSONString returns raw decoded as a JSON string, or "" when raw is
+// empty or any other JSON value.
+func rawJSONString(raw json.RawMessage) string {
 	var s string
-	if len(d.ReasoningContent) == 0 || json.Unmarshal(d.ReasoningContent, &s) != nil {
+	if len(raw) == 0 || json.Unmarshal(raw, &s) != nil {
 		return ""
 	}
 	return s

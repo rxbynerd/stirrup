@@ -123,3 +123,32 @@ data: [DONE]
 	}
 	must.Equal("thinking_delta:plan,text_delta:answer", strings.Join(order, ","))
 }
+
+// reasoning_content wins when a delta carries both fields, so a server that
+// echoes the text under both names is shown once; an empty or non-string
+// reasoning_content falls back to reasoning, and a non-string reasoning is
+// ignored.
+func TestOpenAICompatible_ReasoningField_PrecedenceAndFallback(t *testing.T) {
+	must := require.New(t)
+	sse := []byte(`data: {"choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"both","reasoning":"both"}}]}
+
+data: {"choices":[{"index":0,"delta":{"reasoning_content":"","reasoning":"fallback-empty"}}]}
+
+data: {"choices":[{"index":0,"delta":{"reasoning_content":null,"reasoning":"fallback-null"}}]}
+
+data: {"choices":[{"index":0,"delta":{"reasoning_content":{"unexpected":"object"},"reasoning":"fallback-shape"}}]}
+
+data: {"choices":[{"index":0,"delta":{"reasoning":{"unexpected":"object"}}}]}
+
+data: {"choices":[{"index":0,"delta":{"reasoning":null,"content":"answer"}}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+`)
+	events := streamOpenAICompatible(t, "some-gateway-model", sse)
+
+	thinking, text := splitDeltas(events)
+	must.Equal("both|fallback-empty|fallback-null|fallback-shape", strings.Join(thinking, "|"))
+	must.Equal("answer", text)
+}
