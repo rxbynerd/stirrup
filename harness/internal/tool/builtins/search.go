@@ -961,8 +961,8 @@ func matchesFilters(base, rel string, include, exclude []string) bool {
 
 // globHit reports whether glob g matches either the basename or the relative
 // path. filepath.Match is shell-style (no `**`); a pattern containing `**`
-// is converted to a regex-like equivalent that treats `**` as "zero or more
-// path segments".
+// is converted to a regex-like equivalent that treats a `**/` segment as
+// "zero or more directories".
 func globHit(g, base, rel string) bool {
 	if ok, _ := filepath.Match(g, base); ok {
 		return true
@@ -978,8 +978,10 @@ func globHit(g, base, rel string) bool {
 	return false
 }
 
-// doubleStarMatch translates `**` into a regex `.*` over a path-segment-aware
-// matcher. A short helper rather than a dependency on doublestar keeps the
+// doubleStarMatch translates a whole `**/` segment into an optional run of
+// directories, so `**/*.txt` also matches a root-level `a.txt`, and any
+// other `**` into a regex `.*` over a path-segment-aware matcher. A short
+// helper rather than a dependency on doublestar keeps the
 // behaviour explicit at the call site and avoids pulling another module.
 // Non-wildcard runes are passed through regexp.QuoteMeta so glob patterns
 // containing regex metacharacters translate to a regex that matches them
@@ -991,6 +993,9 @@ func doubleStarMatch(pattern, path string) bool {
 	i := 0
 	for i < len(pattern) {
 		switch {
+		case strings.HasPrefix(pattern[i:], "**/") && (i == 0 || pattern[i-1] == '/'):
+			b.WriteString("(?:.*/)?")
+			i += 3
 		case strings.HasPrefix(pattern[i:], "**"):
 			b.WriteString(".*")
 			i += 2
