@@ -494,7 +494,9 @@ at the trust boundary: `structuredContent` larger than the size cap is
 dropped (with a marker noting the omission), embedded-resource text is
 truncated to a per-resource limit, and image/audio bytes and binary
 blobs are never inlined — the URI is the durable handle the model uses
-to re-fetch them. The preserved content is not scrubbed in the bridge;
+to re-fetch them. Markers for content omitted by a bound carry kind
+`dropped`, and content of a type the bridge does not recognise is
+recorded with kind `unsupported`. The preserved content is not scrubbed in the bridge;
 it rides the same dispatch path as every other tool result, so it
 passes through the secret scrubber before reaching a trace or the model
 history.

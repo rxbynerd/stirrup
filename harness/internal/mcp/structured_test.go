@@ -166,8 +166,8 @@ func TestMCP_BoundsOversizedStructuredContent(t *testing.T) {
 	var env mcpStructuredResult
 	must.NoError(json.Unmarshal(res.Structured, &env), "decode envelope")
 	must.Empty(env.StructuredContent, "oversized structuredContent should have been dropped")
-	must.Len(env.NonText, 1, "expected an 'unsupported' marker for the dropped content: %+v", env.NonText)
-	must.Equal("unsupported", env.NonText[0].Kind)
+	must.Len(env.NonText, 1, "expected a 'dropped' marker for the dropped content: %+v", env.NonText)
+	must.Equal("dropped", env.NonText[0].Kind)
 }
 
 // TestMCP_BoundsEmbeddedResourceText pins that an oversized embedded-resource
@@ -243,13 +243,10 @@ func TestMCP_CapsContentItemCount(t *testing.T) {
 	must.NoError(json.Unmarshal(encoded, &env), "decode envelope")
 	must.Len(env.NonText, maxMCPContentItems+1, "expected the item cap plus one truncation marker")
 
-	var marked bool
-	for _, n := range env.NonText {
-		if n.Kind == "unsupported" && strings.Contains(n.Name, "item-count bound") {
-			marked = true
-		}
+	must.Equal("dropped", env.NonText[0].Kind, "expected the truncation marker to lead the descriptors")
+	for _, n := range env.NonText[1:] {
+		must.Equal("image", n.Kind, "only the marker may carry the dropped kind")
 	}
-	must.True(marked, "expected a truncation marker for the dropped items, got %+v", env.NonText)
 }
 
 // TestMCP_OversizedAssembledEnvelopeIsMarked pins that when many
@@ -272,8 +269,7 @@ func TestMCP_OversizedAssembledEnvelopeIsMarked(t *testing.T) {
 	var env mcpStructuredResult
 	must.NoError(json.Unmarshal(encoded, &env), "decode envelope")
 	must.Len(env.NonText, 1, "expected a single 'envelope dropped' marker, got %+v", env.NonText)
-	must.Equal("unsupported", env.NonText[0].Kind)
-	must.Contains(env.NonText[0].Name, "envelope dropped")
+	must.Equal("dropped", env.NonText[0].Kind)
 }
 
 // TestMCP_BinaryBlobResourceNotInlined pins that an embedded resource

@@ -174,7 +174,9 @@ type mcpStructuredResult struct {
 // for an embedded text resource a bounded prefix (Text, Truncated when cut).
 type mcpNonTextContent struct {
 	// Kind is the MCP content type: "image", "audio", "resource_link",
-	// "resource", or "unsupported" for a type the bridge does not recognise.
+	// "resource", "unsupported" for a type the bridge does not recognise, or
+	// "dropped" for a marker recording that a size or count bound omitted
+	// content.
 	Kind      string `json:"kind"`
 	URI       string `json:"uri,omitempty"`
 	MimeType  string `json:"mime_type,omitempty"`
@@ -570,7 +572,7 @@ func buildMCPStructured(result toolsCallResult) json.RawMessage {
 	if len(result.Content) > maxMCPContentItems {
 		result.Content = result.Content[:maxMCPContentItems]
 		env.NonText = append(env.NonText, mcpNonTextContent{
-			Kind: "unsupported",
+			Kind: "dropped",
 			Name: "content items truncated: exceeds item-count bound",
 		})
 	}
@@ -586,7 +588,7 @@ func buildMCPStructured(result toolsCallResult) json.RawMessage {
 		// Mark, don't silently drop, so the envelope distinguishes oversized
 		// from absent.
 		env.NonText = append(env.NonText, mcpNonTextContent{
-			Kind: "unsupported",
+			Kind: "dropped",
 			Name: "structuredContent dropped: exceeds size bound",
 		})
 	}
@@ -634,7 +636,7 @@ func buildMCPStructured(result toolsCallResult) json.RawMessage {
 	if len(encoded) > maxMCPStructuredSize {
 		fallback := mcpStructuredResult{
 			NonText: []mcpNonTextContent{{
-				Kind: "unsupported",
+				Kind: "dropped",
 				Name: "envelope dropped: assembled size exceeds bound",
 			}},
 		}
