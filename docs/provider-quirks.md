@@ -528,14 +528,18 @@ On `openai-responses`, the `o[1-9]*`, `gpt-5*`, and `gpt-6*` rules set
 possible with a silent non-strict fallback, so the harness pins
 `strict: true` and the strict-schema rewriter rejects a construct it
 cannot express (`$ref`, `oneOf`, `anyOf`, `allOf`, `patternProperties`,
-tuple `items`) before send, matching the Chat Completions `gpt-5*` rule.
-An MCP tool whose schema uses one of those constructs therefore fails
-the request on these models rather than degrading silently. The cost is
-availability: MCP servers built on FastMCP or Pydantic declare an
-`Optional[...]` parameter as an `anyOf` with `null`, so one such tool
-stops every request before send and the run cannot proceed until the
-tool is removed or its schema rewritten. Neither adapter falls back to
-`strict: false` per tool. The same
+tuple `items`), matching the Chat Completions `gpt-5*` rule. MCP servers
+built on FastMCP or Pydantic declare an `Optional[...]` parameter as an
+`anyOf` with `null`, so such a tool cannot be normalised. Both adapters
+send that one tool with its original schema and an explicit
+`strict: false` rather than failing the request, and keep every other
+tool strict. The fallback is explicit because an omitted `strict` would
+mean strict-when-possible on this surface, and it is not configurable.
+The cost is that the affected tool loses constrained decoding; the
+harness still validates each tool input against the original schema
+before dispatch, so the input guarantee is unchanged. Each fallback
+logs one WARN ([§5](#5-operator-surface)). Only a schema that does not
+parse as JSON still fails the request before send. The same
 three rules set `IncludeEncryptedReasoning` and `ReplayOutputItems`
 ([§3.1](#31-replayfields-rules)); the `gpt-5-chat*` carve-out clears
 both because the chat snapshots do not reason. All three flags are
@@ -845,14 +849,24 @@ protects against a runtime overwrite of a tool's canonical schema —
 if the bytes change, the hash changes, and the stale rewrite is
 bypassed.
 
-Errors are NOT cached: a schema that fails the strict-mode lint
-re-fails on every turn, so a rule change that introduces strict mode
-mid-run does not paper over a transient parse problem, and an
-operator sees the failure surface in logs each time. The miss path
-takes a write lock and re-checks for the key after acquiring it, so
-concurrent first-misses on the same key produce exactly one
-normalisation call and one `Misses` increment — this gives the cache
-singleflight semantics without a separate singleflight dependency.
+A schema the lint rejects is cached as a fallback entry: the tool is
+sent with `strict: false` on every turn, and the WARN fires only on the
+call that records the entry, so it appears once per
+`(model, tool-name, schema-hash)` key rather than every turn. A changed
+schema or a model switch is a new key and warns again. Batch runs
+build each request without the cache, so every submitted request warns.
+The `schema.path` of a fallback WARN is truncated to 256 runes.
+
+A malformed schema, meaning one that is not valid JSON or whose
+`properties` or `required` has the wrong shape, cannot validate tool
+input either. It is NOT cached and fails the request each time, so a
+transient parse problem is not papered over.
+
+The miss path takes a
+write lock and re-checks for the key after acquiring it, so concurrent
+first-misses on the same key produce exactly one normalisation call and
+one `Misses` increment — this gives the cache singleflight semantics
+without a separate singleflight dependency.
 
 ## 5. Operator surface
 
@@ -865,6 +879,7 @@ singleflight semantics without a separate singleflight dependency.
 | `quirks replay fields captured` slog DEBUG line | structured log | Per-stream summary of `{count, total_len}` per captured ReplayFields path, emitted on stream exit. Length-only — captured values themselves are not logged. |
 | `replay_fields_captured.count` / `replay_fields_captured.total_len` OTel span attributes | trace attributes | Set on the active `provider.stream` span on stream exit, in parallel with the slog DEBUG record above. Totals across every captured path; length-only invariant matches the slog surface. |
 | `openai quirks suppressed caller temperature` / `anthropic quirks suppressed caller temperature` / `gemini quirks suppressed caller temperature` slog WARN line | structured log | Fires when `OmitSamplingParams` suppresses a caller-supplied non-nil `Temperature`. Names the rule that caused the suppression. The suppressed value itself is not logged. |
+| `strict-mode schema lint rejected tool; sending it with strict:false` slog WARN line | structured log | Fires on the `openai-compatible` and `openai-responses` adapters when a tool schema cannot be normalised for strict mode, once per `(model, tool, schema)` per adapter instance. Carries `provider.type`, `provider.model`, `tool.name`, `schema.path` and `reason` (the rejected keyword or structural issue); schema descriptions and enum values are never logged. The tool is sent non-strict; every other tool stays strict. |
 | `anthropic prompt cache` slog DEBUG line | structured log | One line per Anthropic stream whose usage reports any input, carrying `cache.read`, `cache.write` and `input.uncached` (input total minus both cache counts) as they appear on the emitted `message_complete` event, so the line matches the trace, plus `provider.model`. Counts only. A turn after the first with `cache.read` at zero means the cached prefix was invalidated or the prompt is below the model's cacheable minimum. |
 
 ### 5.1 Read-only registry

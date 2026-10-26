@@ -539,10 +539,13 @@ summary on this adapter and the request is the same as with `off`.
 `strict: true`, because an omitted `strict` lets the API fall back to
 non-strict silently. A tool schema the strict rewriter cannot express
 (`$ref`, `oneOf`, `anyOf`, `allOf`, `patternProperties`, tuple
-`items`; common in MCP-imported tools) fails the request before send.
+`items`; common in MCP-imported tools) is sent with its original schema
+and an explicit `strict: false`, and the adapter logs one WARN for it.
 An MCP server that declares an optional parameter as an `anyOf` with
-`null`, as FastMCP and Pydantic do, therefore stops the run on these
-models; there is no per-tool fallback to `strict: false`.
+`null`, as FastMCP and Pydantic do, therefore loses constrained
+decoding for that one tool while every other tool stays strict. The
+harness still validates every tool input against the schema before
+dispatch.
 
 The replay, include, GPT-5.x effort, and strict behaviour is
 documented, not probed: no live request against an OpenAI endpoint has
