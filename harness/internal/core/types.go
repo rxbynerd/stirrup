@@ -715,6 +715,26 @@ func appendAssistantContent(messages []types.Message, blocks []types.ContentBloc
 	})
 }
 
+// commitAssistantContent adds a turn's assistant blocks to the history.
+// When continuesPause is set the turn continues a paused turn, whose
+// assistant message ends messages: the blocks extend that message instead,
+// so a server tool call paused before its result is answered in the same
+// message, and non-nil replayFields replace the message's. The history is
+// copied before the extension, so earlier slices of it are not mutated.
+func commitAssistantContent(messages []types.Message, blocks []types.ContentBlock, replayFields map[string]json.RawMessage, continuesPause bool) []types.Message {
+	n := len(messages)
+	if !continuesPause || n == 0 || messages[n-1].Role != "assistant" {
+		return appendAssistantContent(messages, blocks, replayFields)
+	}
+	out := slices.Clone(messages)
+	paused := &out[n-1]
+	paused.Content = slices.Concat(paused.Content, blocks)
+	if replayFields != nil {
+		paused.ReplayFields = replayFields
+	}
+	return out
+}
+
 // appendToolResults adds tool results as a user message (per Anthropic API format).
 func appendToolResults(messages []types.Message, results []types.ToolResult) []types.Message {
 	blocks := make([]types.ContentBlock, len(results))

@@ -128,7 +128,7 @@ func TestLoadSearchedTools_CapsReferencesPerResult(t *testing.T) {
 		{Type: "tool_search_result", ToolUseID: "srvtoolu_1", ToolReferences: refs},
 	}
 
-	loaded := loop.loadSearchedTools(context.Background(), blocks, true)
+	loaded := loop.loadSearchedTools(context.Background(), blocks, nil, true)
 	must.Len(blocks[1].ToolReferences, maxSearchReferences)
 	must.Equal(refs[:maxSearchReferences], blocks[1].ToolReferences)
 	must.Equal(refs[:maxSearchReferences], loaded)
@@ -142,7 +142,7 @@ func TestLoadSearchedTools_OrphanResultLoadsUnderTheSameRules(t *testing.T) {
 		{Type: "tool_search_result", ToolUseID: "srvtoolu_orphan", ToolReferences: []string{lazyMCPTool, "mcp_github_invented"}},
 	}
 
-	must.NotPanics(func() { loop.loadSearchedTools(context.Background(), blocks, true) })
+	must.NotPanics(func() { loop.loadSearchedTools(context.Background(), blocks, nil, true) })
 	must.Equal([]string{lazyMCPTool}, blocks[0].ToolReferences)
 	loadedEvents := toolsLoadedEvents(tp)
 	must.Len(loadedEvents, 1)

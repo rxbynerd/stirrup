@@ -42,13 +42,14 @@ func withoutToolUse(blocks []types.ContentBlock) []types.ContentBlock {
 // its tool calls, under committableAssistantBlocks, and appends a
 // synthetic instruction for the next turn. It reports whether the model
 // was told to continue its cut-off text. A turn whose assistant message
-// is kept commits with usage; one discarded is abandoned.
-func (l *AgenticLoop) recoverFromOutputLimit(turn int, model string, outputLimit int, sr *streamResult, usage types.TokenUsage, messages []types.Message) ([]types.Message, bool) {
+// is kept commits with usage; one discarded is abandoned. continuesPause
+// is whether the turn continued a paused turn, whose message it extends.
+func (l *AgenticLoop) recoverFromOutputLimit(turn int, model string, outputLimit int, sr *streamResult, usage types.TokenUsage, messages []types.Message, continuesPause bool) ([]types.Message, bool) {
 	l.outputLimitRecoveries++
 
 	kept, hasText := committableAssistantBlocks(sr.StopReason, sr.Blocks)
 	if hasText {
-		messages = appendAssistantContent(messages, kept, sr.ReplayFields)
+		messages = commitAssistantContent(messages, kept, sr.ReplayFields, continuesPause)
 		l.emitTurnCommitted(turn, sr.StopReason, usage, 0)
 	} else {
 		l.emitTurnAbandoned(types.TurnAbandonedEmptyResponse)

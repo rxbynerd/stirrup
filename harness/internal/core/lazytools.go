@@ -76,16 +76,23 @@ func (l *AgenticLoop) presentToolReferences(messages []types.Message) []types.Me
 
 // loadSearchedTools rewrites the references of every tool_search_result
 // block in a response, in place, to the internal IDs of the registered
-// deferred tools they name, and loads them. native is whether the turn
-// offered the provider's native search; without it a result is
-// unsolicited, keeps no references and loads nothing. Each search that
-// loaded a tool not already loaded is reported as a tools_loaded event;
-// the tools it loaded are returned in order.
-func (l *AgenticLoop) loadSearchedTools(ctx context.Context, blocks []types.ContentBlock, native bool) []string {
+// deferred tools they name, and loads them. paused holds the blocks of
+// the paused turn a continuation extends, whose calls the continuation's
+// results may answer. native is whether the turn offered the provider's
+// native search; without it a result is unsolicited, keeps no references
+// and loads nothing. Each search that loaded a tool not already loaded is
+// reported as a tools_loaded event; the tools it loaded are returned in
+// order.
+func (l *AgenticLoop) loadSearchedTools(ctx context.Context, blocks, paused []types.ContentBlock, native bool) []string {
 	if l.LazyTools == nil {
 		return nil
 	}
 	searches := map[string]types.ContentBlock{}
+	for _, b := range paused {
+		if b.Type == "tool_search" {
+			searches[b.ID] = b
+		}
+	}
 	var loaded []string
 	for i := range blocks {
 		b := &blocks[i]
