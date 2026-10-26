@@ -128,7 +128,7 @@ status.
 | `tool_call` | `id`, `name`, `input` (JSON bytes) | Informational. Not guaranteed to be followed by a matching `tool_result`: a cancelled, stream-faulted, stalled, or `max_tokens`-truncated turn can orphan one, so treat `done` as the terminal close for any pending state keyed on `id`. `input` is the model's raw output — scrubbed of secrets but not yet schema-validated, guardrail-checked, or stripped of prototype-pollution keys — and must be treated as untrusted, unlike `permission_request.input`. When the model's arguments are not a JSON object, `input` is `{}`, a `warning` event names the call, and its `tool_result` carries the parse error. `name` is the presented (aliased) tool name, which can differ from `permission_request.tool_name` (the internal tool ID) under a non-default toolset profile. |
 | `tool_result` | `tool_use_id`, `name`, `content`, `is_error`, `duration_ms` | Informational. `name` is the same presented name as the matching `tool_call`. `is_error` is true when the call failed. `duration_ms` is the call's run time, excluding any wait for a parallel dispatch slot. `content` is capped at 256 KiB. |
 | `tools_loaded` | `tools`, `source`, `name`, `input`, `turn` | Informational. Under lazy tool loading, a tool search makes deferred tools visible to the model for the rest of the run. `tools` lists their internal tool IDs, `source` says which search ran (`native` or `harness`; an open vocabulary, so preserve unknown values), `name` is the search tool's name, `input` is its input, and `turn` is the turn it ran in. `name` is informational only: OpenAI's hosted search is also named `tool_search`, so only `source` tells it from the harness search. Sent once per search that loaded a tool not already loaded: for a harness search, right after that search's `tool_result`; for a native search, when the response is accepted, after the turn's `tool_call` events and before its `tool_result` events, so a `tool_call` for a newly loaded tool can arrive before the `tools_loaded` that explains it. Either way it precedes the turn's `turn_committed` or `turn_abandoned`, and a `tools_loaded` followed by `turn_abandoned` still leaves its tools loaded. Sent by harnesses advertising the `lazy_tool_loading` capability; see [Lazy tool loading](configuration.md#lazy-tool-loading). |
-| `turn_committed` | `turn`, `stop_reason`, `usage`, `tool_result_count` | Informational. The turn's assistant message, and a result for every tool call in it, are in the history. `stop_reason` is the model's stop reason for the turn, not the run outcome. `usage` is the turn's token usage. |
+| `turn_committed` | `turn`, `stop_reason`, `usage`, `tool_result_count` | Informational. The turn's assistant message, and a result for every tool call in it, are in the history. `stop_reason` is the model's stop reason for the turn, not the run outcome. A `pause_turn` stop means the next turn continues the same assistant message; see [Watching a run live](#watching-a-run-live). `usage` is the turn's token usage. |
 | `turn_abandoned` | `turn`, `abandon_reason` | Informational. The turn left nothing valid in the history; discard what was buffered for it. `abandon_reason` says why; see [Watching a run live](#watching-a-run-live) for the vocabulary, which is open. Every `turn_started` is followed by exactly one `turn_committed` or `turn_abandoned`. Sent by harnesses advertising the `turn_abandoned` capability. |
 | `permission_request` | `request_id`, `tool_name`, `input` | **Must respond** with `permission_response` echoing `request_id` before the policy timeout (default 60 s) or the call is auto-denied. |
 | `tool_result_request` | `request_id`, `tool_use_id`, `tool_name`, `input`, `trace_context` | **Must respond** with `tool_result_response` echoing `request_id`; the loop blocks on it under a per-call timeout. `trace_context` (`traceparent`, `tracestate`), when present, is the W3C context of the call's `execute_tool` span; see [Control-plane-fulfilled tools](#control-plane-fulfilled-tools-tool_result_request). |
@@ -173,7 +173,9 @@ For the current `stirrup job` implementation, read
 `max_tokens`, and feature-specific outcomes such as `setup_failed`,
 `hook_failed`, `guardrail_blocked`, and `rule_of_two_violation`.
 Provider stop reasons also pass through verbatim, such as `refusal`
-(the model declined to respond).
+(the model declined to respond) and `pause_turn` (a paused server tool
+turn the harness stopped continuing; see
+[Paused turns](providers.md#paused-turns)).
 Consumers should preserve unknown values so outcomes can be added
 without breaking the protocol.
 
@@ -813,6 +815,21 @@ A harness without the `turn_abandoned` capability sends nothing in
 its place: there, a `turn_started` that reaches the next
 `turn_started` or `done` without a `turn_committed` is a turn that did
 not commit.
+
+**Paused turns.** A turn committed with `stop_reason` `pause_turn` was
+paused by Anthropic's server tool loop, typically after about ten
+native tool searches. The harness continues it in the next turn,
+sending no `user_message` in between and keeping the paused turn's
+model. The continuation's content extends the paused turn's assistant
+message in the history rather than starting a new one, so a consumer
+that keeps one entry per assistant message appends the next turn's
+content to the paused entry. On the run's last allowed turn, a due
+budget wind-down notice is sent instead, as a `user_message` with
+source `wind_down`, and that turn's content starts a new assistant
+message. After five consecutive continuations, a further pause ends
+the run with outcome `pause_turn` and a `warning`, as does a paused
+turn with no content, which is reported as `turn_abandoned`; see
+[Paused turns](providers.md#paused-turns).
 
 Within one turn, a provider failure that the harness retries, or a
 request it compacts and resends after a context-window overflow,

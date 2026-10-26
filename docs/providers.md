@@ -324,7 +324,8 @@ as a `tool_search_tool_result_error` with the recorded code and
 message, and with the code `unavailable` when none was recorded, since
 the API rejects an empty code. Only a call naming an Anthropic search
 tool (`tool_search_tool_bm25` or `tool_search_tool_regex`) and answered
-by a result in the same message is replayed; a search recorded from
+by a result in the same message is replayed. The one exception is a
+paused turn's pending call, described below. A search recorded from
 another provider, such as the OpenAI hosted `tool_search`, is dropped
 together with its result. When a request does not carry the search tool
 (the run routed this turn to a model without the capability, or nothing is
@@ -335,6 +336,54 @@ Batch turns build their request through the same code, so the native
 search is sent in a batch turn exactly as in a streamed one, and the
 batch response is decoded into the same events and blocks. The batch
 path is not probed against the live batch endpoint.
+
+#### Paused turns
+
+Anthropic runs a server tool loop of up to ten iterations per request by
+default. A turn that reaches the limit stops with `stop_reason: "pause_turn"`.
+Its content ends on a `server_tool_use` search call with no result. In
+the harness, this happens after about ten sequential searches in one
+turn. Searches are sequential by default, because the adapter disables
+parallel tool use. The loop continues a paused turn instead of ending
+the run:
+
+1. It commits the paused assistant content to the history, including
+   the pending call, and emits `turn_committed` with `stop_reason`
+   `pause_turn`.
+2. It sends the next request with that history unchanged. The request
+   ends on the paused assistant message and adds no user message. The
+   adapter replays the pending call as the message's last block,
+   because a search is replayed unanswered only as the last block of a
+   request's final assistant message. Dropping it would leave the
+   request ending on assistant text, which Sonnet 4.6 and later reject
+   as a prefill.
+3. The continuation response holds only new blocks, starting with the
+   pending call's `tool_search_tool_result`. The loop appends them to
+   the paused assistant message rather than opening a new one, so the
+   call and its result form a pair in one message.
+
+The continuation turn reuses the paused turn's provider and model
+without consulting the model router. Operator input queued during the
+pause, and the budget wind-down notice, wait for the next turn boundary.
+The exception is a wind-down notice due on the run's last allowed turn,
+which has no later boundary. The notice is sent on that turn, which then
+no longer continues the pause: the request ends on the notice, the
+adapter drops the unanswered pending call, and the response starts a new
+assistant message. Tool-choice escalation never treats a paused turn as
+a missed tool call. Each continuation counts against `maxTurns`. After
+five consecutive continuations, a sixth pause ends the run with outcome
+`pause_turn` and a `warning` event. A pause on the run's last allowed
+turn, or a paused response with no content to commit, does the same. A
+batch response keeps its `pause_turn` stop reason and is continued the
+same way. The continuation shape was probed live on Haiku 4.5, Sonnet
+4.6 and Sonnet 5.5 on 2026-10-26, with prompt caching on, across two
+consecutive pauses merged into one assistant message, and with a
+leading thinking block. The batch path was not probed.
+
+Paused turns are expensive. Every server tool iteration counts toward
+the turn's input tokens, so a paused turn reports roughly 70,000 input
+tokens per ten searches, even when the prompt is cached. Long search
+chains therefore consume `maxTokenBudget` quickly.
 
 ## AWS Bedrock
 
