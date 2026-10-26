@@ -1128,7 +1128,7 @@ concerns are tracked separately:
     advertises `Required`, which is every model except Sonnet 5.5,
     Opus 5.5, Fable 5.1 and Mythos 5.1
     (`applyAnthropicAutoToolChoiceOnly` routes those to the prompt
-    strategy). The base Anthropic rule therefore sets
+    strategy). The base Anthropic and Gemini rules therefore set
     `ToolChoice.RejectsTrailingAssistant`, and for a provider with
     that flag the policy adds a short synthetic user message on the
     native path, so the retry ends on a user turn. The Anthropic
@@ -1157,8 +1157,38 @@ concerns are tracked separately:
     | `anthropic` | `claude-sonnet-4-6` | `tool` (named) | with synthetic user turn | probed | 200, `tool_use` |
     | `anthropic` | Opus 4.6 / 4.7 / 4.8, Sonnet 5, Opus 5 | any | trailing assistant | documentation only | Anthropic's API documentation states that a trailing assistant message returns 400 on these models; Sonnet 4.6, probed above, matches the documentation |
     | `anthropic` | `claude-haiku-4-5`, `claude-sonnet-4-6` | thinking on / adaptive thinking | any | unprobed | not reachable from a stirrup request |
-    | `openai-compatible`, `openai-responses` | default model | any | any | unprobed | `OPENAI_API_KEY` was not present in the session; neither a rejection nor an acceptance has been established |
-    | `gemini` | any | any | any | unprobed | not attempted |
+
+    Probed 2026-10-18 for Gemini and OpenAI. The Gemini probe was a
+    two-turn exchange. Turn 1 sent one user message, one `read_file`
+    tool and `functionCallingConfig.mode: NONE`, and kept the model's
+    plain-text answer verbatim, including its `thoughtSignature`.
+    Turn 2 resent the user message and that model content with
+    `mode: ANY`, with and without `allowedFunctionNames:
+    ["read_file"]`, and `maxOutputTokens` 2048. The control repeated
+    turn 2 with one extra user text turn appended. Vertex AI was
+    called through `aiplatform.googleapis.com` (`locations/global`)
+    and AI Studio through `generativelanguage.googleapis.com/v1beta`.
+    The OpenAI rows used `tool_choice: "required"` and a named
+    function; the result was identical for both.
+
+    | Provider | Model | Surface | Trailing model turn | With synthetic user turn |
+    |---|---|---|---|---|
+    | `gemini` | `gemini-3.8-flash` | Vertex AI | 400 | 200, one `functionCall` |
+    | `gemini` | `gemini-3.8-flash` | AI Studio | 400 | 200, one `functionCall` |
+    | `gemini` | `gemini-3.7-flash` | Vertex AI | 400 | 200, one `functionCall` |
+    | `gemini` | `gemini-3.7-flash` | AI Studio | 400 | 200, one `functionCall` |
+    | `gemini` | `gemini-3.6-flash` | Vertex AI | 400 | 200, one `functionCall` |
+    | `gemini` | `gemini-3.6-flash` | AI Studio | 400 | 200, one `functionCall` |
+    | `gemini` | `gemini-3.5-flash` | Vertex AI | 200, one `functionCall` | 200, one `functionCall` |
+    | `gemini` | `gemini-3.5-flash` | AI Studio | 400 | 200, one `functionCall` |
+    | `gemini` | `gemini-3.1-pro-preview` | Vertex AI | 200, one `functionCall` | 200, one `functionCall` |
+    | `gemini` | `gemini-3.1-pro-preview` | AI Studio | 200, one `functionCall` | 200, one `functionCall` |
+    | `openai-compatible` | `gpt-5.5` (OpenAI direct) | Chat Completions | 200, tool call | 200, tool call |
+    | `openai-compatible` | `openai/gpt-5.5` (OpenRouter) | Chat Completions | 200, tool call | 200, tool call |
+    | `openai-responses` | default model | Responses | unprobed | unprobed |
+
+    Every Gemini 400 carried `Requests ending with a model turn are
+    not supported.`, with and without `allowedFunctionNames`.
 
     A trailing assistant message is rejected on Sonnet 4.6 for both
     `any` and a named `tool` choice, and accepted on Haiku 4.5, so
@@ -1169,13 +1199,29 @@ concerns are tracked separately:
     Sonnet 5 rows rest on documentation that the Sonnet 4.6 result
     corroborates. Narrowing the flag to named models would trade that
     margin for one fewer short message on Haiku-class models.
-    `openai-compatible` and `gemini` do not set the flag and still
-    retry with a history that ends on the assistant answer.
+
+    The Gemini rejection applies to 3.6 Flash and later on both
+    surfaces and to 3.5 Flash on AI Studio. Vertex AI still accepts a
+    trailing model turn on 3.5 Flash, and 3.1 Pro accepts it on both
+    surfaces. The flag is set on the whole `gemini` family rather
+    than on the 3.6 and later models: the synthetic user turn was
+    accepted in every probed cell, so it is harmless where a trailing
+    model turn would be allowed, and the family-wide flag covers AI
+    Studio on 3.5 Flash and any later model without another registry
+    change.
+
+    `openai-compatible` does not set the flag: `gpt-5.5` accepts a
+    history ending on an assistant message both directly and through
+    OpenRouter, so its retry still ends on the assistant answer.
+    Third-party OpenAI-compatible endpoints (DeepSeek, GLM, local
+    servers) were not probed; if one rejects a trailing assistant
+    message, set the flag on a model-scoped `openai-compatible` rule.
+    First-party `gpt-6*` cannot reach the native path: a request with
+    tools on Chat Completions fails before send, and
     `openai-responses` resolves no native tool-choice capability, so
-    it takes the prompt strategy and cannot reach this path. Probe
-    procedure for the remaining rows: send a Messages-style request
-    with one tool, a history of `user`, `assistant` (plain text, no
-    tool use), a required tool choice, and a small output cap; record
-    the HTTP status and the error body (never the request headers).
-    If an OpenAI-compatible or Gemini row returns 400, set the flag on
-    that provider's base tool-choice rule.
+    it takes the prompt strategy. Probe procedure for a new row:
+    send a request with one tool, a history of `user`, `assistant`
+    (plain text, no tool use), a required tool choice, and a small
+    output cap; record the HTTP status and the error body (never the
+    request headers). If the row returns 400, set the flag on a rule
+    scoped to that provider and model.
