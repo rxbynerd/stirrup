@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/rxbynerd/stirrup/types"
 )
 
 func TestToolSearchCapability_ResolvesPerModel(t *testing.T) {
@@ -40,9 +42,47 @@ func TestToolSearchCapability_ResolvesPerModel(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.provider+"/"+tc.model, func(t *testing.T) {
 			must := require.New(t)
-			got := DefaultRegistry().Resolve(tc.provider, tc.model).ToolSearch
+			endpoint := ""
+			if tc.provider == "openai-responses" || tc.provider == "openai-compatible" {
+				endpoint = types.EndpointProfileOpenAI
+			}
+			got := DefaultRegistry().ResolveEndpoint(tc.provider, endpoint, tc.model).ToolSearch
 			must.Equal(tc.supported, got.Supported)
 			must.Equal(tc.variant, got.Variant)
+		})
+	}
+}
+
+func TestToolSearchCapability_HostedSearchOnlyOnOpenAIEndpointProfile(t *testing.T) {
+	for _, tc := range []struct {
+		endpoint  string
+		supported bool
+	}{
+		{types.EndpointProfileOpenAI, true},
+		{types.EndpointProfileGeneric, false},
+		{types.EndpointProfileAzureOpenAI, false},
+		{types.EndpointProfileBedrockMantle, false},
+		{"", false},
+	} {
+		t.Run("endpoint "+tc.endpoint, func(t *testing.T) {
+			must := require.New(t)
+			for _, model := range []string{"gpt-5.4", "gpt-6-astra"} {
+				got := DefaultRegistry().ResolveEndpoint("openai-responses", tc.endpoint, model).ToolSearch
+				must.Equal(tc.supported, got.Supported, model)
+			}
+		})
+	}
+}
+
+func TestBuiltinRules_EndpointIsARecognisedProfile(t *testing.T) {
+	for _, rule := range BuiltinRules() {
+		if rule.Endpoint == "" {
+			continue
+		}
+		t.Run(rule.Description, func(t *testing.T) {
+			must := require.New(t)
+			must.Contains(types.ValidEndpointProfileValues(), rule.Endpoint)
+			must.Contains([]string{"openai-compatible", "openai-responses"}, rule.ProviderType)
 		})
 	}
 }

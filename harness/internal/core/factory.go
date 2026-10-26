@@ -756,33 +756,33 @@ func buildStructuredResultSupport(config *types.RunConfig, caps capabilityResolv
 
 // buildToolSearchSupport resolves the native tool search capability of a
 // router-selected provider key and model against the registry the
-// Anthropic and OpenAI Responses adapters gate their own search on. An
-// openai-responses provider with a custom baseUrl (Azure OpenAI, LiteLLM and
-// other gateways) resolves to no native search, so the loop serves the
-// harness tool_search; the hosted search is only known to exist on OpenAI's
-// own endpoint.
-func buildToolSearchSupport(config *types.RunConfig, caps capabilityResolver, logger *slog.Logger) ToolSearchSupport {
+// Anthropic and OpenAI Responses adapters gate their own search on,
+// including the provider's endpoint profile so a gateway that does not
+// implement the hosted search resolves to the harness tool_search.
+func buildToolSearchSupport(config *types.RunConfig, caps endpointCapabilityResolver, logger *slog.Logger) ToolSearchSupport {
 	if config.Tools.LazyLoading.EffectiveStrategy() == types.LazyToolStrategyAuto {
-		logCustomResponsesEndpoint(logger, config.Provider.Type, config.Provider)
+		logDerivedGenericResponsesEndpoint(logger, config.Provider.Type, config.Provider)
 		for name, cfg := range config.Providers {
-			logCustomResponsesEndpoint(logger, name, cfg)
+			logDerivedGenericResponsesEndpoint(logger, name, cfg)
 		}
 	}
 	return func(key, model string) quirks.ToolSearchCapability {
-		if hasCustomResponsesEndpoint(providerConfigFor(config, key)) {
-			return quirks.ToolSearchCapability{}
-		}
-		return caps.Resolve(selectedProviderType(config, key), model).ToolSearch
+		endpoint := provider.EndpointProfileFor(providerConfigFor(config, key))
+		return caps.ResolveEndpoint(selectedProviderType(config, key), endpoint, model).ToolSearch
 	}
 }
 
-func hasCustomResponsesEndpoint(cfg types.ProviderConfig) bool {
-	return cfg.Type == "openai-responses" && !provider.IsDefaultOpenAIBaseURL(cfg.BaseURL)
+// isDerivedGenericResponsesEndpoint reports whether cfg is an
+// openai-responses provider whose generic endpoint profile was derived from
+// a custom baseUrl rather than declared.
+func isDerivedGenericResponsesEndpoint(cfg types.ProviderConfig) bool {
+	return cfg.Type == "openai-responses" && cfg.EndpointProfile == "" &&
+		provider.EndpointProfileFor(cfg) == types.EndpointProfileGeneric
 }
 
-func logCustomResponsesEndpoint(logger *slog.Logger, name string, cfg types.ProviderConfig) {
-	if hasCustomResponsesEndpoint(cfg) {
-		logger.Info("native tool search is off for a custom openai-responses baseUrl, where a gateway may silently drop the hosted search; the harness tool_search is used", "provider", name)
+func logDerivedGenericResponsesEndpoint(logger *slog.Logger, name string, cfg types.ProviderConfig) {
+	if isDerivedGenericResponsesEndpoint(cfg) {
+		logger.Info("the harness tool_search is used for an openai-responses baseUrl with the generic endpoint profile; set provider.endpointProfile to declare an endpoint that implements the hosted tool_search", "provider", name)
 	}
 }
 
@@ -859,6 +859,7 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 			QueryParams:  cfg.QueryParams,
 		}
 		adapter := provider.NewOpenAICompatibleAdapter(cred.BearerToken, cfg.BaseURL, auth, retry)
+		adapter.EndpointProfile = provider.EndpointProfileFor(cfg)
 		// Compat rules are appended after BuiltinRules so their
 		// specificity ordering wins against any overlapping glob.
 		if cfg.CompatProfile != "" {
@@ -882,6 +883,7 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 		}
 		adapter := provider.NewOpenAIResponsesAdapter(cred.BearerToken, cfg.BaseURL, auth)
 		adapter.RetryPolicy = retry
+		adapter.EndpointProfile = provider.EndpointProfileFor(cfg)
 		return adapter, nil
 	case "bedrock":
 		return provider.NewBedrockAdapter(cfg.Region, cfg.Profile, cred.AWSCredentials, retry)

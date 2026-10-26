@@ -68,8 +68,11 @@ func newResponsesScript(t *testing.T, sse ...[]byte) *responsesScript {
 	return s
 }
 
+// adapter returns an adapter whose endpoint profile is "openai": the
+// script server stands in for OpenAI's own API.
 func (s *responsesScript) adapter(logger *slog.Logger) *OpenAIResponsesAdapter {
 	a := NewOpenAIResponsesAdapter(staticBearer("test-key"), s.srv.URL, OpenAIAuthConfig{})
+	a.EndpointProfile = types.EndpointProfileOpenAI
 	if logger != nil {
 		a.Logger = logger
 	}

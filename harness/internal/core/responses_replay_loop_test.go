@@ -87,8 +87,12 @@ func newResponsesTurnServer(t *testing.T, turns ...string) *responsesTurnServer 
 	return s
 }
 
+// adapter returns an adapter whose endpoint profile is "openai": the turn
+// server stands in for OpenAI's own API.
 func (s *responsesTurnServer) adapter() *provider.OpenAIResponsesAdapter {
-	return provider.NewOpenAIResponsesAdapter(func(context.Context) (string, error) { return "test-key", nil }, s.srv.URL, provider.OpenAIAuthConfig{})
+	a := provider.NewOpenAIResponsesAdapter(func(context.Context) (string, error) { return "test-key", nil }, s.srv.URL, provider.OpenAIAuthConfig{})
+	a.EndpointProfile = types.EndpointProfileOpenAI
+	return a
 }
 
 func (s *responsesTurnServer) requests() []string {

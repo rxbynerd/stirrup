@@ -868,3 +868,68 @@ func TestResponsesInput_ToolSearchItemsRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// hostedSearchEntryCount counts the hosted tool_search entries in a
+// Responses request body's tools array.
+func hostedSearchEntryCount(t *testing.T, body []byte) int {
+	t.Helper()
+	must := require.New(t)
+	var decoded struct {
+		Tools []map[string]any `json:"tools"`
+	}
+	must.NoError(json.Unmarshal(body, &decoded))
+	n := 0
+	for _, tool := range decoded.Tools {
+		if tool["type"] == responsesToolSearchType {
+			n++
+		}
+	}
+	return n
+}
+
+func TestOpenAIResponsesAdapter_HostedSearchEntryOnlyForOpenAIEndpointProfile(t *testing.T) {
+	for _, tc := range []struct {
+		profile string
+		want    int
+	}{
+		{types.EndpointProfileOpenAI, 1},
+		{types.EndpointProfileGeneric, 0},
+		{types.EndpointProfileAzureOpenAI, 0},
+		{types.EndpointProfileBedrockMantle, 0},
+	} {
+		t.Run(tc.profile, func(t *testing.T) {
+			must := require.New(t)
+			script := newResponsesScript(t)
+			adapter := script.adapter(nil)
+			adapter.EndpointProfile = tc.profile
+
+			ch, err := adapter.Stream(t.Context(), responsesToolSearchParams())
+			must.NoError(err)
+			drainStream(t, ch)
+
+			must.Equal(tc.want, hostedSearchEntryCount(t, script.lastBody(t)))
+		})
+	}
+}
+
+func TestBatchAdapter_ResponsesHostedSearchFollowsInnerEndpointProfile(t *testing.T) {
+	for _, tc := range []struct {
+		profile string
+		want    int
+	}{
+		{types.EndpointProfileOpenAI, 1},
+		{types.EndpointProfileGeneric, 0},
+	} {
+		t.Run(tc.profile, func(t *testing.T) {
+			must := require.New(t)
+			inner := NewOpenAIResponsesAdapter(staticBearer("k"), "http://unused.invalid", OpenAIAuthConfig{})
+			inner.EndpointProfile = tc.profile
+			a := NewBatchAdapter(inner, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-responses", "run-test")
+
+			body, _, err := a.marshalRequestBody(t.Context(), responsesToolSearchParams())
+			must.NoError(err)
+
+			must.Equal(tc.want, hostedSearchEntryCount(t, body))
+		})
+	}
+}

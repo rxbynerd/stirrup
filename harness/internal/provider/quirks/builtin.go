@@ -1,5 +1,7 @@
 package quirks
 
+import "github.com/rxbynerd/stirrup/types"
+
 // BuiltinRules returns the first-party rule set baked into the harness.
 // Rules compose under specificity-then-declaration-order (longer
 // ModelMatch globs run last); see docs/provider-quirks.md for the
@@ -723,6 +725,7 @@ func BuiltinRules() []Rule {
 		{
 			ProviderType: "openai-responses",
 			ModelMatch:   "gpt-5.[4-9]*",
+			Endpoint:     types.EndpointProfileOpenAI,
 			Description:  "OpenAI Responses gpt-5.4 and later 5.x: hosted tool_search with defer_loading (probed on gpt-5.4-mini: stream, verbatim replay, namespaces, batch; gpt-5.5 first turn only)",
 			LastVerified: Date("2026-10-26"),
 			Apply:        applyToolSearch("hosted"),
@@ -730,6 +733,7 @@ func BuiltinRules() []Rule {
 		{
 			ProviderType: "openai-responses",
 			ModelMatch:   "gpt-6*",
+			Endpoint:     types.EndpointProfileOpenAI,
 			Description:  "OpenAI Responses gpt-6 family: hosted tool_search with defer_loading (probed on gpt-6-luna and gpt-6-astra, first turn only)",
 			LastVerified: Date("2026-10-26"),
 			Apply:        applyToolSearch("hosted"),

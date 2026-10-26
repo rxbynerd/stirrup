@@ -8,6 +8,7 @@ import (
 
 	"github.com/rxbynerd/stirrup/harness/internal/commandoutput"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
+	"github.com/rxbynerd/stirrup/harness/internal/provider"
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
@@ -155,9 +156,11 @@ func describeToolSearch(config *types.RunConfig, loader *tool.LazyLoader, suppor
 	if search := lazySearchFor(loader, capability); search.native {
 		return "the native " + capability.Variant + " tool search"
 	}
+	cfg := providerConfigFor(config, sel.Provider)
+	endpoint := provider.EndpointProfileFor(cfg)
 	switch {
-	case !capability.Supported && hasCustomResponsesEndpoint(providerConfigFor(config, sel.Provider)):
-		return "the harness tool_search (custom baseUrl)"
+	case !capability.Supported && cfg.Type == "openai-responses" && endpoint != types.EndpointProfileOpenAI:
+		return "the harness tool_search (endpoint profile " + endpoint + ")"
 	case !capability.Supported:
 		return "the harness tool_search (model not in the native tool search allow-list)"
 	case !loader.HasDeferred():

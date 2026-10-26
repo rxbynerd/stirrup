@@ -119,18 +119,44 @@ func TestPreflight_LazyToolsStepNamesHarnessStrategyAsTheReason(t *testing.T) {
 	must.Contains(detail, "searches with the harness tool_search (strategy harness)")
 }
 
-func TestPreflight_LazyToolsStepNamesACustomBaseURLAsTheReason(t *testing.T) {
-	must := require.New(t)
-	mcpSrv := mcpToolsServer(t, "search")
-	cfg := lazyPreflightConfig(t, mcpSrv.URL)
-	cfg.Provider = types.ProviderConfig{Type: "openai-responses", APIKeyRef: "secret://TEST_PREFLIGHT_KEY", BaseURL: "https://gateway.example.com/v1"}
-	cfg.ModelRouter = types.ModelRouterConfig{Type: "static", Provider: "openai-responses", Model: "gpt-5.5"}
+func TestPreflight_LazyToolsStepNamesTheEndpointProfileAsTheReason(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider types.ProviderConfig
+		want     string
+	}{
+		{
+			name:     "derived generic",
+			provider: types.ProviderConfig{BaseURL: "https://gateway.example.com/v1"},
+			want:     "the harness tool_search (endpoint profile generic)",
+		},
+		{
+			name:     "declared azure",
+			provider: types.ProviderConfig{BaseURL: "https://example.openai.azure.com/openai/v1", EndpointProfile: types.EndpointProfileAzureOpenAI},
+			want:     "the harness tool_search (endpoint profile azure-openai)",
+		},
+		{
+			name:     "declared openai on a relay",
+			provider: types.ProviderConfig{BaseURL: "https://relay.example.com/v1", EndpointProfile: types.EndpointProfileOpenAI},
+			want:     "the native hosted tool search",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			mcpSrv := mcpToolsServer(t, "search")
+			cfg := lazyPreflightConfig(t, mcpSrv.URL)
+			cfg.Provider = tc.provider
+			cfg.Provider.Type = "openai-responses"
+			cfg.Provider.APIKeyRef = "secret://TEST_PREFLIGHT_KEY"
+			cfg.ModelRouter = types.ModelRouterConfig{Type: "static", Provider: "openai-responses", Model: "gpt-5.5"}
 
-	report, err := Preflight(context.Background(), cfg, PreflightOptions{SkipProvider: true})
-	must.NoError(err)
+			report, err := Preflight(context.Background(), cfg, PreflightOptions{SkipProvider: true})
+			must.NoError(err)
 
-	detail, _ := stepDetail(report, "lazy-tools")
-	must.Contains(detail, "openai-responses/gpt-5.5 searches with the harness tool_search (custom baseUrl)")
+			detail, _ := stepDetail(report, "lazy-tools")
+			must.Contains(detail, "openai-responses/gpt-5.5 searches with "+tc.want)
+		})
+	}
 }
 
 func TestPreflight_LazyToolsStepReportsNothingDeferred(t *testing.T) {

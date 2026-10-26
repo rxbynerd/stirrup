@@ -123,6 +123,30 @@ func TestProvidersQuirks_EndpointProfileReportsEffectiveProfile(t *testing.T) {
 	}
 }
 
+func TestProvidersQuirks_HostedSearchFollowsEndpointProfile(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"derived openai", []string{"--provider", "openai-responses", "--model", "gpt-5.4"}, true},
+		{"declared generic", []string{"--provider", "openai-responses", "--model", "gpt-5.4", "--endpoint-profile", "generic"}, false},
+		{"declared azure", []string{"--provider", "openai-responses", "--model", "gpt-5.4", "--endpoint-profile", "azure-openai"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			cmd := newTestProvidersQuirksCommand()
+			must.NoError(cmd.ParseFlags(tc.args))
+			var buf bytes.Buffer
+			must.NoError(runProvidersQuirksWithIO(cmd, &buf))
+
+			var got quirksCLIOutput
+			must.NoError(json.Unmarshal(buf.Bytes(), &got), "output:\n%s", buf.String())
+			must.Equal(tc.want, got.Quirks.ToolSearch.Supported)
+		})
+	}
+}
+
 func TestProvidersQuirks_EndpointProfileRejectsInvalidUse(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

@@ -14,6 +14,12 @@ type capabilityResolver interface {
 	Resolve(providerType, model string) quirks.ProviderQuirks
 }
 
+// endpointCapabilityResolver resolves a capability that depends on the
+// provider's endpoint profile as well as its type and model.
+type endpointCapabilityResolver interface {
+	ResolveEndpoint(providerType, endpoint, model string) quirks.ProviderQuirks
+}
+
 // modeRequirement describes the first-turn tool expectation for a run mode.
 // A mode absent from the table, or with a zero-value requirement, needs no
 // tool and never escalates.

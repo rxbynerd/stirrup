@@ -14,7 +14,26 @@ import (
 
 const hostedSearchModel = "gpt-5.5"
 
-func TestBuildToolSearchSupport_CustomResponsesBaseURLUsesHarnessSearch(t *testing.T) {
+func TestBuildToolSearchSupport_DefaultEndpointKeepsHostedSearch(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+	}{
+		{"empty", ""},
+		{"exact url", "https://api.openai.com/v1"},
+		{"trailing slash", "https://api.openai.com/v1/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
+			config := &types.RunConfig{Provider: types.ProviderConfig{Type: "openai-responses", BaseURL: tt.baseURL}}
+			support := buildToolSearchSupport(config, quirks.DefaultRegistry(), slog.New(slog.DiscardHandler))
+			must.Equal(quirks.ToolSearchCapability{Supported: true, Variant: "hosted"}, support("", hostedSearchModel))
+		})
+	}
+}
+
+func TestBuildToolSearchSupport_CustomBaseURLDerivesGenericAndUsesHarnessSearch(t *testing.T) {
 	tests := []struct {
 		name    string
 		baseURL string
@@ -33,21 +52,31 @@ func TestBuildToolSearchSupport_CustomResponsesBaseURLUsesHarnessSearch(t *testi
 	}
 }
 
-func TestBuildToolSearchSupport_DefaultResponsesBaseURLKeepsNative(t *testing.T) {
-	tests := []struct {
-		name    string
+func TestBuildToolSearchSupport_DeclaredOpenAIProfileOnCustomBaseURLKeepsHostedSearch(t *testing.T) {
+	must := require.New(t)
+	config := &types.RunConfig{Provider: types.ProviderConfig{
+		Type:            "openai-responses",
+		BaseURL:         "https://relay.example.com/v1",
+		EndpointProfile: types.EndpointProfileOpenAI,
+	}}
+	support := buildToolSearchSupport(config, quirks.DefaultRegistry(), slog.New(slog.DiscardHandler))
+	must.Equal(quirks.ToolSearchCapability{Supported: true, Variant: "hosted"}, support("", hostedSearchModel))
+}
+
+func TestBuildToolSearchSupport_UnprobedEndpointProfilesUseHarnessSearch(t *testing.T) {
+	for _, tc := range []struct {
+		profile string
 		baseURL string
 	}{
-		{"empty", ""},
-		{"exact url", "https://api.openai.com/v1"},
-		{"trailing slash", "https://api.openai.com/v1/"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		{types.EndpointProfileAzureOpenAI, "https://example.openai.azure.com/openai/v1"},
+		{types.EndpointProfileBedrockMantle, "https://bedrock-mantle.us-east-1.api.aws/v1"},
+		{types.EndpointProfileGeneric, ""},
+	} {
+		t.Run(tc.profile, func(t *testing.T) {
 			must := require.New(t)
-			config := &types.RunConfig{Provider: types.ProviderConfig{Type: "openai-responses", BaseURL: tt.baseURL}}
+			config := &types.RunConfig{Provider: types.ProviderConfig{Type: "openai-responses", BaseURL: tc.baseURL, EndpointProfile: tc.profile}}
 			support := buildToolSearchSupport(config, quirks.DefaultRegistry(), slog.New(slog.DiscardHandler))
-			must.True(support("", hostedSearchModel).Supported)
+			must.Equal(quirks.ToolSearchCapability{}, support("", hostedSearchModel))
 		})
 	}
 }
@@ -78,7 +107,7 @@ func TestBuildToolSearchSupport_CustomBaseURLDoesNotAffectOtherProviderTypes(t *
 	must.True(support("anthropic", "claude-sonnet-4-6").Supported)
 }
 
-func TestBuildToolSearchSupport_LogsEachCustomEndpointOnce(t *testing.T) {
+func TestBuildToolSearchSupport_LogsEachDerivedGenericEndpointOnce(t *testing.T) {
 	must := require.New(t)
 	config := &types.RunConfig{
 		Provider: types.ProviderConfig{Type: "openai-responses"},
@@ -93,6 +122,22 @@ func TestBuildToolSearchSupport_LogsEachCustomEndpointOnce(t *testing.T) {
 
 	must.Equal(1, strings.Count(buf.String(), "provider=gateway"))
 	must.Equal(1, strings.Count(buf.String(), "\n"))
+	must.Contains(buf.String(), "provider.endpointProfile")
+}
+
+func TestBuildToolSearchSupport_DeclaredEndpointProfileLogsNothing(t *testing.T) {
+	for _, profile := range []string{types.EndpointProfileGeneric, types.EndpointProfileAzureOpenAI, types.EndpointProfileOpenAI} {
+		t.Run(profile, func(t *testing.T) {
+			must := require.New(t)
+			config := &types.RunConfig{
+				Provider: types.ProviderConfig{Type: "openai-responses", BaseURL: "https://gateway.example/v1", EndpointProfile: profile},
+			}
+			var buf bytes.Buffer
+			buildToolSearchSupport(config, quirks.DefaultRegistry(), slog.New(slog.NewTextHandler(&buf, nil)))
+
+			must.Empty(buf.String())
+		})
+	}
 }
 
 func TestBuildToolSearchSupport_HarnessStrategyLogsNothing(t *testing.T) {
