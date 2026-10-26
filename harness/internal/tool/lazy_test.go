@@ -503,6 +503,31 @@ func TestLazyLoader_SearchExactNameRanksFirst(t *testing.T) {
 	})
 }
 
+func TestLazyLoader_GroupCountsSplitEagerAndDeferredPerGroup(t *testing.T) {
+	must := require.New(t)
+	l := NewLazyLoader(lazyFixture(), types.LazyToolLoadingConfig{Enabled: true}, lazyFixtureOptions)
+
+	must.Equal([]LazyGroupCount{
+		{Group: LazyGroup{Kind: LazyGroupBuiltIn}, Eager: 2},
+		{Group: LazyGroup{Kind: LazyGroupControlPlane}, Deferred: 1},
+		{Group: LazyGroup{Kind: LazyGroupMCPServer, Server: "github"}, Deferred: 2},
+		{Group: LazyGroup{Kind: LazyGroupMCPServer, Server: "jira"}, Deferred: 1},
+	}, l.GroupCounts())
+}
+
+func TestLazyLoader_GroupCountsFollowAnExplicitEagerList(t *testing.T) {
+	must := require.New(t)
+	cfg := types.LazyToolLoadingConfig{Enabled: true, Eager: []string{"read_file", "mcp_jira_find_ticket"}}
+	l := NewLazyLoader(lazyFixture(), cfg, lazyFixtureOptions)
+
+	must.Equal([]LazyGroupCount{
+		{Group: LazyGroup{Kind: LazyGroupBuiltIn}, Eager: 1, Deferred: 1},
+		{Group: LazyGroup{Kind: LazyGroupControlPlane}, Deferred: 1},
+		{Group: LazyGroup{Kind: LazyGroupMCPServer, Server: "github"}, Deferred: 2},
+		{Group: LazyGroup{Kind: LazyGroupMCPServer, Server: "jira"}, Eager: 1},
+	}, l.GroupCounts())
+}
+
 func TestLazyLoader_GroupOfClassifiesByOrigin(t *testing.T) {
 	must := require.New(t)
 	l := NewLazyLoader(newRegistryWith(

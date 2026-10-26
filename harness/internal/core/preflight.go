@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"os"
 	"reflect"
 	"strings"
 	"time"
@@ -209,7 +211,8 @@ func Preflight(ctx context.Context, config *types.RunConfig, opts PreflightOptio
 		runProbeStep(ctx, config, step, opts, ok, skip, fail)
 	}
 
-	preflightMCP(ctx, config, secrets, opts, ok, skip, warn, fail)
+	discovery := preflightMCP(ctx, config, secrets, opts, ok, skip, warn, fail)
+	preflightLazyTools(ctx, config, execResult.exec, discovery, ok, skip, warn)
 
 	preflightEgress(ctx, config, opts, ok, skip, fail)
 	// No dedicated --no-probe gate: the probe is a read-only
@@ -487,7 +490,8 @@ func providerProbeDetail(providerType string) string {
 // preflightMCP probes every configured MCP server. Gated by
 // --no-probe-mcp. A required server that does not answer the tools/list
 // handshake, or does not advertise every allowlisted tool, fails the
-// dry-run; the same failure on an optional server is a warning.
+// dry-run; the same failure on an optional server is a warning. It returns
+// the tools the servers advertised.
 func preflightMCP(
 	ctx context.Context,
 	config *types.RunConfig,
@@ -497,19 +501,31 @@ func preflightMCP(
 	skip func(string, string),
 	warn func(string, error),
 	fail func(string, error, string),
-) {
+) mcpDiscovery {
+	discovery := mcpDiscovery{tools: map[string][]string{}}
 	if len(config.Tools.MCPServers) == 0 {
 		skip("mcp", "no MCP servers configured")
-		return
+		return discovery
 	}
 	client := mcp.NewClient(tool.NewRegistry(), nil)
+	client.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	for _, srv := range config.Tools.MCPServers {
 		step := "mcp:" + srv.Name
 		if opts.SkipMCP {
 			skip(step, "--no-probe-mcp set")
+			discovery.unprobed = append(discovery.unprobed, srv.Name)
+			discovery.incomplete = "--no-probe-mcp set"
 			continue
 		}
-		if err := client.Probe(ctx, srv, secrets); err != nil {
+		names, err := client.ProbeTools(ctx, srv, secrets)
+		var missing *mcp.MissingToolsError
+		if err == nil || errors.As(err, &missing) {
+			discovery.tools[srv.Name] = names
+		} else {
+			discovery.unprobed = append(discovery.unprobed, srv.Name)
+			discovery.incomplete = fmt.Sprintf("MCP server %q did not answer", srv.Name)
+		}
+		if err != nil {
 			bounded := errors.New(boundDegradedError(err))
 			if srv.Optional {
 				warn(step, bounded)
@@ -520,6 +536,7 @@ func preflightMCP(
 		}
 		ok(step, "initialize/tools/list handshake succeeded")
 	}
+	return discovery
 }
 
 // preflightEgress probes the egress allowlist by resolving each

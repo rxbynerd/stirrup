@@ -228,6 +228,48 @@ func (l *LazyLoader) DeferredCounts() LazyDeferredCounts {
 	return c
 }
 
+// LazyGroupCount counts the eager and deferred tools of one group, the
+// search tool excluded.
+type LazyGroupCount struct {
+	Group    LazyGroup
+	Eager    int
+	Deferred int
+}
+
+// GroupCounts returns the loader's tools counted per group, built-in
+// first, then control-plane, then MCP servers by name. Groups with no
+// tool are omitted.
+func (l *LazyLoader) GroupCounts() []LazyGroupCount {
+	counts := map[LazyGroup]*LazyGroupCount{}
+	for _, e := range l.entries {
+		if e.id == types.ToolSearchToolName {
+			continue
+		}
+		group := l.GroupOf(e.id)
+		c := counts[group]
+		if c == nil {
+			c = &LazyGroupCount{Group: group}
+			counts[group] = c
+		}
+		if l.deferred[e.id] {
+			c.Deferred++
+		} else {
+			c.Eager++
+		}
+	}
+	out := make([]LazyGroupCount, 0, len(counts))
+	for _, c := range counts {
+		out = append(out, *c)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Group.Kind != out[j].Group.Kind {
+			return out[i].Group.Kind < out[j].Group.Kind
+		}
+		return out[i].Group.Server < out[j].Group.Server
+	})
+	return out
+}
+
 // GroupOf returns the group the tool with internal ID id belongs to:
 // control-plane tools first, then MCP tools by the server that registered
 // them or, for an MCP-prefixed tool with no recorded owner, by the longest

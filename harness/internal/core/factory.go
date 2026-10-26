@@ -667,20 +667,18 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// reference to the loop (chicken-and-egg), so we close over the loop
 	// pointer here. The spawner closure captures the loop and config so
 	// the tool can call SpawnSubAgent without a circular import.
-	if toolEnabled(config.Tools.BuiltIn, "spawn_agent") {
-		spawner := func(ctx context.Context, prompt, mode string, maxTurns int) (json.RawMessage, error) {
-			result, err := SpawnSubAgent(ctx, loop, config, SubAgentConfig{
-				Prompt:   prompt,
-				Mode:     mode,
-				MaxTurns: maxTurns,
-			})
-			if err != nil {
-				return nil, err
-			}
-			return json.Marshal(result)
+	spawner := func(ctx context.Context, prompt, mode string, maxTurns int) (json.RawMessage, error) {
+		result, err := SpawnSubAgent(ctx, loop, config, SubAgentConfig{
+			Prompt:   prompt,
+			Mode:     mode,
+			MaxTurns: maxTurns,
+		})
+		if err != nil {
+			return nil, err
 		}
-		registry.Register(builtins.SpawnAgentTool(spawner))
-
+		return json.Marshal(result)
+	}
+	if registerSpawnAgent(registry, config.Tools, spawner) {
 		// The ask-upstream policy snapshots the approval-required tool set
 		// at construction time, before spawn_agent is registered; refresh
 		// it here so spawn_agent is gated rather than auto-allowed. See
@@ -1322,15 +1320,29 @@ func buildToolRegistry(exec executor.Executor, es edit.EditStrategy, cfg types.T
 
 var _ CommandOutputFinalizer = (*commandoutput.Store)(nil)
 
+// commandOutputStoreWanted reports whether a run builds a command output
+// store: capture is on and a registered tool could feed it.
+func commandOutputStoreWanted(cfg types.ToolsConfig) bool {
+	return cfg.CommandOutputCaptureEnabled() &&
+		(toolEnabled(cfg.BuiltIn, "run_command") || toolEnabled(cfg.BuiltIn, "read_command_output"))
+}
+
+// registerSpawnAgent registers spawn_agent when the run's built-in tools
+// enable it and reports whether it did.
+func registerSpawnAgent(registry *tool.Registry, cfg types.ToolsConfig, spawner builtins.SubAgentSpawner) bool {
+	if !toolEnabled(cfg.BuiltIn, "spawn_agent") {
+		return false
+	}
+	registry.Register(builtins.SpawnAgentTool(spawner))
+	return true
+}
+
 // buildCommandOutputStore returns nil when capture is disabled or no
 // registered tool could feed the store — read-only modes exclude
 // run_command, and skipping construction also skips resolving GCS archive
 // credentials those runs would never use.
 func buildCommandOutputStore(ctx context.Context, config *types.RunConfig) (*commandoutput.Store, error) {
-	if !config.Tools.CommandOutputCaptureEnabled() {
-		return nil, nil
-	}
-	if !toolEnabled(config.Tools.BuiltIn, "run_command") && !toolEnabled(config.Tools.BuiltIn, "read_command_output") {
+	if !commandOutputStoreWanted(config.Tools) {
 		return nil, nil
 	}
 	archivePath := ""

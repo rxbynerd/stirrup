@@ -6,6 +6,7 @@ import (
 
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -45,10 +46,17 @@ func (l *AgenticLoop) visibleTools(selection router.ModelSelection) ([]types.Too
 	if l.ToolSearch != nil {
 		capability = l.ToolSearch(selection.Provider, selection.Model)
 	}
-	if l.LazyTools.UsesNative(capability.Supported) {
-		return l.LazyTools.Visible(true), lazySearch{native: true, tool: capability.NativeToolName()}
+	search := lazySearchFor(l.LazyTools, capability)
+	return l.LazyTools.Visible(search.native), search
+}
+
+// lazySearchFor returns the tool search a turn offers when the routed
+// (provider, model) pair has capability.
+func lazySearchFor(loader *tool.LazyLoader, capability quirks.ToolSearchCapability) lazySearch {
+	if loader.UsesNative(capability.Supported) {
+		return lazySearch{native: true, tool: capability.NativeToolName()}
 	}
-	return l.LazyTools.Visible(false), lazySearch{}
+	return lazySearch{}
 }
 
 // deferredToolLoaded reports whether a search has loaded the deferred tool
