@@ -215,6 +215,17 @@ type toolsSpec struct {
 	BuiltIn       []string           `hcl:"built_in,optional"`
 	CommandOutput *commandOutputSpec `hcl:"command_output,block"`
 	PostEdit      []postEditSpec     `hcl:"post_edit,block"`
+	LazyLoading   *lazyLoadingSpec   `hcl:"lazy_loading,block"`
+}
+
+// lazyLoadingSpec mirrors types.LazyToolLoadingConfig so a suite can pair a
+// run with and without lazy tool loading. Validation stays in
+// ValidateRunConfig.
+type lazyLoadingSpec struct {
+	Enabled    bool     `hcl:"enabled,optional"`
+	Strategy   string   `hcl:"strategy,optional"`
+	Eager      []string `hcl:"eager,optional"`
+	MaxResults int      `hcl:"max_results,optional"`
 }
 
 // postEditSpec mirrors types.PostEditCheckConfig so a suite can pair a
@@ -414,6 +425,14 @@ func runConfigSpecToType(s *runConfigSpec) *types.RunConfig {
 				Command:        pe.Command,
 				TimeoutSeconds: pe.TimeoutSeconds,
 			})
+		}
+		if ll := s.Tools.LazyLoading; ll != nil {
+			out.Tools.LazyLoading = types.LazyToolLoadingConfig{
+				Enabled:    ll.Enabled,
+				Strategy:   ll.Strategy,
+				Eager:      ll.Eager,
+				MaxResults: ll.MaxResults,
+			}
 		}
 	}
 	if s.RuleOfTwo != nil {
