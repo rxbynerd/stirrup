@@ -178,7 +178,7 @@ and the `gcs` trace probe authenticate via the same
 GCP runtime that provides a metadata server unless an explicit credential
 is configured.
 
-The report lists each step with one of three statuses:
+The report lists each step with one of four statuses:
 
 - `ok` — the component constructed and (where applicable) its probe
   succeeded.
@@ -186,9 +186,31 @@ The report lists each step with one of three statuses:
   network probe (a local executor, a `jsonl` trace file), the feature is
   not configured (no MCP servers, no workspace export), or a
   `--no-probe-*` gate suppressed it.
+- `warn` — the step found a condition the run can proceed with: an
+  optional MCP server that did not answer or does not advertise every
+  allowlisted tool, or a `tools.lazyLoading.eager` name that matches no
+  tool. A warning does not fail the report.
 - `fail` — construction or a probe failed. The step names the component,
   carries the underlying error, and — where a concrete next step is
   known — a remediation hint.
+
+When `tools.lazyLoading.enabled` is set, the `lazy-tools` step reports the
+tool set a run would send. Its detail gives the search strategy, the
+eager and deferred counts in total and per group (built-in, control
+plane, each MCP server), and, for every provider and model the router can
+select, whether the turn uses the provider's native tool search or the
+harness `tool_search`, with the reason when it is the harness one
+(`strategy harness`, `custom baseUrl`, the model missing from the native
+search allow-list, or no eager tool besides `tool_search`). Each eager
+name that matches no tool adds a `warn` step named
+`lazy-tools:eager:<name>`. The step builds the tool set with the same
+code a real run uses, so the counts match the run's. It counts MCP tools
+from the `tools/list` probe: under `--no-probe-mcp`, or when a server does
+not answer, those tools are left out of the counts, the detail says so
+and defers the deferral decision to run start, and `eager` names that
+start with `mcp_<server>_` for such a server are not reported as unknown.
+The step never fails the dry-run. See
+[Lazy tool loading](#lazy-tool-loading).
 
 The human-readable report goes to **stderr**; `--output=json` emits the
 structured report (a `PreflightReport`: a `steps` array plus an `ok`
@@ -236,7 +258,7 @@ who expects a server to be unavailable suppresses its probe with
 
 | Outcome | Exit code |
 |---|---|
-| Every step `ok` or `skip` | `0` |
+| Every step `ok`, `skip` or `warn` | `0` |
 | One or more steps `fail` | `1` |
 | Invalid flag combination | `4` |
 
@@ -1215,6 +1237,13 @@ stirrup harness --lazy-tools --lazy-tools-eager read_file --lazy-tools-eager gre
 ```
 
 `--lazy-tools=false` turns off an `enabled: true` from `--config`.
+
+`stirrup harness --dry-run` reports the resolved split before any run
+starts: the eager and deferred counts per group, the tool search each
+routed provider and model uses, and every `eager` entry that matches no
+tool. See [Dry-run preflight](#dry-run-preflight). An evaluation suite
+sets the same fields in a `tools { lazy_loading { ... } }` block of its
+inline `run_config`.
 
 ### Visibility, not authority
 
