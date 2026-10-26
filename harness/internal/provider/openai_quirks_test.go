@@ -160,33 +160,6 @@ func TestOpenAIQuirks_DeepSeekV4Flash_RequestShape(t *testing.T) {
 		"body must replay reasoning_content on the assistant message")
 }
 
-// TestOpenAIQuirks_DeepSeekReasoner_RequestShape mirrors the v4-flash
-// golden for the retiring deepseek-reasoner alias (a v4-flash thinking
-// alias until 2026-07-24): the rule's behaviour flags must produce the
-// same wire divergences — legacy max_tokens, suppressed temperature,
-// reasoning_content replayed on the assistant message. The fixture pins
-// the current shape for the alias's remaining operation; remove it
-// together with the rule after the sunset.
-func TestOpenAIQuirks_DeepSeekReasoner_RequestShape(t *testing.T) {
-	must := require.New(t)
-	check := assert.New(t)
-	params := deepseekReplayParams("deepseek-reasoner")
-	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
-	must.True(q.BehaviourFlags.OpenAI.OmitSamplingParams, "deepseek-reasoner: rule not firing")
-	must.Equal(quirks.TokenFieldMaxTokens, q.BehaviourFlags.OpenAI.TokenField, "deepseek-reasoner token field")
-	req, err := buildOpenAIRequest(params, true, q, nil)
-	must.NoError(err, "build")
-	body, err := json.Marshal(req)
-	must.NoError(err, "marshal")
-	quirkstest.AssertWireEqual(t, quirkstest.JoinPath(fixtureRoot, "deepseek-reasoner", "request.json"), body)
-
-	s := string(body)
-	check.Contains(s, `"max_tokens"`, "body must use the legacy max_tokens key")
-	check.NotContains(s, `"max_completion_tokens"`, "body must use the legacy max_tokens key")
-	check.NotContains(s, `"temperature"`, "body must omit temperature despite OmitSamplingParams")
-	check.Contains(s, `"reasoning_content"`, "body must replay reasoning_content on the assistant message")
-}
-
 // TestOpenAIQuirks_DeepSeekV4Flash_SSEParse drives the deepseek-v4-flash
 // response fixture through the production Stream path: the SSE parse
 // must capture every reasoning_content delta and the message_complete
@@ -597,7 +570,7 @@ func TestLogReplayFieldsCapture_NonStringValueLogsLengthOnly(t *testing.T) {
 	capture := map[string][]any{
 		"reasoning_content": {float64(123.45)},
 	}
-	logReplayFieldsCapture(context.Background(), logger, "openai-compatible", "deepseek-reasoner", capture)
+	logReplayFieldsCapture(context.Background(), logger, "openai-compatible", "deepseek-v4-flash", capture)
 
 	out := buf.String()
 	must.Contains(out, "quirks replay fields captured")

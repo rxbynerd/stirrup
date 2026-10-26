@@ -58,6 +58,18 @@ func applyDeepSeekThinkingClass(q *ProviderQuirks) {
 	q.BehaviourFlags.OpenAI.ReasoningEffortLevels = []string{"minimal", "low", "medium", "high", "xhigh", "max"}
 }
 
+// applyDeepSeekGatewayClass covers DeepSeek V4 models served through
+// OpenRouter. The gateway streams reasoning as delta.reasoning rather than
+// reasoning_content and does not require it replayed, so no ReplayFields
+// path is set. Every provider-neutral effort level is accepted, and the
+// first-party sampling and token-field constraints are kept in case the
+// request is routed to DeepSeek's own host.
+func applyDeepSeekGatewayClass(q *ProviderQuirks) {
+	q.BehaviourFlags.OpenAI.OmitSamplingParams = true
+	q.BehaviourFlags.OpenAI.TokenField = TokenFieldMaxTokens
+	q.BehaviourFlags.OpenAI.ReasoningEffortLevels = []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+}
+
 // applyContextWindow returns a rule body registering a context window of
 // tokens, input and output together.
 func applyContextWindow(tokens int) func(*ProviderQuirks) {

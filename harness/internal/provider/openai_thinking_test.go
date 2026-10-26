@@ -124,6 +124,25 @@ data: [DONE]
 	must.Equal("thinking_delta:plan,text_delta:answer", strings.Join(order, ","))
 }
 
+// OpenRouter streams reasoning as a string in delta.reasoning (beside a
+// reasoning_details array) and never as reasoning_content; it reaches the
+// transport as thinking_delta and never as answer text.
+func TestOpenAICompatible_ReasoningField_StreamsAsThinkingDelta(t *testing.T) {
+	events := streamOpenAICompatible(t, "deepseek/deepseek-v4.1-flash-1017",
+		streamFixtureSSE(t, "testdata/quirks/openai-compatible/deepseek/deepseek-v4.1-flash-1017/response.sse"))
+	thinking, text := splitDeltas(events)
+
+	t.Run("thinking deltas", func(t *testing.T) {
+		must := require.New(t)
+		must.Equal("We| need answer. Need reason|. Anagram| S|PAIR -> Paris. European capital. Need| get weather via| tool. Use get|_weather city Paris|.",
+			strings.Join(thinking, "|"))
+	})
+	t.Run("answer text carries no reasoning", func(t *testing.T) {
+		must := require.New(t)
+		must.NotContains(text, "Anagram")
+	})
+}
+
 // reasoning_content wins when a delta carries both fields, so a server that
 // echoes the text under both names is shown once; an empty or non-string
 // reasoning_content falls back to reasoning, and a non-string reasoning is

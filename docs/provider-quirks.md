@@ -46,13 +46,16 @@ Concrete v1 divergences:
   every `parts[]` entry that the harness must preserve verbatim for
   multi-turn reasoning continuity. Issue #194 traced the symptom; the
   fix is a registry-driven `ReplayFields` capture.
-- DeepSeek's reasoner and v4 families surface chain-of-thought
+- DeepSeek's first-party v4 family surfaces chain-of-thought
   through a `reasoning_content` sibling field on the assistant
   delta. DeepSeek v4 and V4.1 thinking mode (default-on) additionally
   *requires* the field replayed for every prior assistant turn once a
   request carries tools — the API returns 400 otherwise — so the `ReplayFields`
   capture is threaded back outbound on the openai-compatible
-  adapter (see [§3.1](#31-replayfields-rules)).
+  adapter (see [§3.1](#31-replayfields-rules)). Through OpenRouter the
+  same models stream the reasoning as `reasoning` instead, and
+  replaying it is not required (probed 2026-10-18), so the gateway
+  rules set no `ReplayFields`.
 
 ### 1.1 Prior art
 
@@ -110,13 +113,16 @@ Fixture trees for the wire-shape contract tests:
 harness/internal/provider/testdata/quirks/
     openai-compatible/<model>/{request.json, response.sse}
     openai-compatible/<deepseek-model>/{request.json, response.sse, replay.json}
+    openai-compatible/deepseek/<model>/response.sse   # live OpenRouter capture
     gemini/<model>/{request.json, response.sse[, replay.json]}
     openai-responses/<model>/{request.json[, response.sse, replay.json]}
 ```
 
-A gateway-prefixed model id (e.g. `deepseek/deepseek-v4-flash`) maps
-onto a nested fixture directory; the `<model>` path component is the
-id verbatim.
+A gateway-prefixed model id (e.g. `deepseek/deepseek-v4.1-flash-1017`)
+maps onto a nested fixture directory; the `<model>` path component is
+the id verbatim. A fixture captured from a live stream starts with a
+`# captured:` line recording the date and host in place of the
+`# synthetic:` line.
 
 ### 2.1 ProviderQuirks
 
@@ -435,11 +441,11 @@ test catch malformed paths at registry-build time.
 | `openai-compatible` | `*/gpt-5-chat*`    | OpenAI gpt-5-chat carve-out via gateway prefix: same as `gpt-5-chat*` |
 | `openai-compatible` | `gpt-6*`           | OpenAI gpt-6 family: omit sampling params, strict tools, `reasoning_effort` `low`..`max`; a request with tools fails before send (tool calling needs `openai-responses`) |
 | `openai-compatible` | `*/gpt-6*`         | OpenAI gpt-6 family via gateway prefix: omit sampling params only |
-| `openai-compatible` | `deepseek-reasoner*` | DeepSeek reasoner: replay `reasoning_content`, omit sampling params, legacy `max_tokens` (threaded) |
 | `openai-compatible` | `deepseek-v4*`     | DeepSeek v4: replay `reasoning_content`, omit sampling params, legacy `max_tokens`, `reasoning_effort` (threaded) |
 | `openai-compatible` | `deepseek-flash*`  | DeepSeek V4.1 Flash: same quirk set as `deepseek-v4*` (threaded) |
-| `openai-compatible` | `deepseek/deepseek-flash*` | DeepSeek V4.1 Flash via gateway prefix: replay, omit sampling, `max_tokens`; no `reasoning_effort` (threaded) |
-| `openai-compatible` | `deepseek/deepseek-v4*` | DeepSeek v4 via gateway prefix (OpenRouter-style ids): same quirk set as `deepseek-v4*` (threaded) |
+| `openai-compatible` | `deepseek/deepseek-flash*` | DeepSeek V4.1 Flash via OpenRouter: omit sampling params, legacy `max_tokens`, `reasoning_effort`; no replay (probed 2026-10-18) |
+| `openai-compatible` | `deepseek/deepseek-v4*` | DeepSeek v4 via OpenRouter: same quirk set as `deepseek/deepseek-flash*` (probed 2026-10-18) |
+| `openai-compatible` | `~deepseek/deepseek-flash-latest`, `~deepseek/deepseek-v4-flash-latest`, `~deepseek/deepseek-pro-latest` | DeepSeek via OpenRouter `~`-prefixed latest aliases (the `~` defeats the two globs above), one exact rule per alias: same quirk set, taken from the probed gateway ids; listed by OpenRouter 2026-10-18, aliases themselves not probed |
 | `gemini`            | `*`                | Gemini: off `streamFunctionCallArguments` (post-#191 default)        |
 | `gemini`            | `gemini-3*`        | Gemini 3: preserve `thoughtSignature` as a sibling of `functionCall` on each `parts[]` element (parse-side only) |
 | `gemini`            | `gemini-3.6*`      | Gemini 3.6: tool results on `role:"user"` (`role:"function"` is a 400 on AI Studio, still accepted by Vertex); omit deprecated sampling params; thinking levels `minimal`/`low`/`medium`/`high` |
@@ -730,7 +736,7 @@ each `parts[]` element, not a child; see `geminiPart` in
 log sinks. The same totals are mirrored onto the OTel span as
 `replay_fields_captured.count` and `replay_fields_captured.total_len`,
 so trace-only consumers see the rule fired without correlating
-back to slog. `TestReplayFields_DeepSeekReasoner_LogIsLengthOnly`
+back to slog. `TestReplayFields_DeepSeekV4Flash_LogIsLengthOnly`
 pins the side-channel guard on the slog side.
 
 ### 3.2 Reasoning effort
@@ -767,6 +773,7 @@ Probed or documented acceptance as of 2026-09-30:
 | GPT-5.6 Sol / Terra / Luna (`openai-responses` only) | `low` `medium` `high` `xhigh` `max` (documented) |
 | GPT-5.4 / 5.5 (`openai-responses` only) | `low` `medium` `high` `xhigh` (documented) |
 | DeepSeek v4 / V4.1 Flash (first-party) | all six; DeepSeek folds them onto `low`/`high`/`max` (documented) |
+| DeepSeek v4 / V4.1 Flash via OpenRouter | all six (probed 2026-10-18; some hosts return no reasoning at the lower levels) |
 | GLM-5.3 (`zai-glm` profile) | `low` `high` `max`; any other value silently becomes `max` (documented) |
 | Gemini 3.6 | `minimal` `low` `medium` `high` (probed) |
 | Gemini 3.7 / 3.8 | `low` `medium` `high` (probed) |
@@ -1071,23 +1078,45 @@ concerns are tracked separately:
    field. `TestDefaultRegistryConcurrentAccess` stresses the
    singleton under `-race`.
 
-9. **DeepSeek verification status.** The `reasoning_content` path
-   and the v4 replay requirement are doc-verified as of 2026-06-07
-   against the DeepSeek thinking-mode guide
-   (https://api-docs.deepseek.com/guides/thinking_mode), with broad
-   community corroboration of the 400-on-missing-replay behaviour on
-   both first-party and OpenRouter-served v4 traffic — but no live
-   first-party capture exists yet. Remaining live-capture gaps,
-   each flagged in the rule comments: whether the v4 endpoint also
-   accepts `max_completion_tokens` (the rules pin the doc-consistent
-   legacy `max_tokens`), where `reasoning_effort` sits on the wire
-   (the API reference and the guide disagree on nested-vs-top-level
-   placement, so no rule ships for it), and whether any gateway
-   renames the field to `reasoning`. If a live capture surfaces a
-   different shape (e.g. a structured `thinking` object rather than
-   a flat string), the rule's path and the corresponding
-   `replay.json` fixture need to be adjusted in lockstep. The
-   180-day staleness window flags the rules for re-verification.
+9. **DeepSeek verification status.** The first-party rules
+   (`deepseek-v4*`, `deepseek-flash*`) rest on documentation only:
+   the `reasoning_content` path and the v4 replay requirement are
+   doc-verified as of 2026-06-07 against the DeepSeek thinking-mode
+   guide (https://api-docs.deepseek.com/guides/thinking_mode), and
+   no live first-party capture exists yet. Remaining first-party
+   gaps: the real stream shape and the 400-on-missing-replay
+   behaviour, whether the v4 endpoint also accepts
+   `max_completion_tokens` (the rules pin the doc-consistent legacy
+   `max_tokens`), and where `reasoning_effort` sits on the wire (the
+   API reference and the guide disagree on nested-vs-top-level
+   placement; the rules send the top-level form). If a live capture
+   surfaces a different shape (e.g. a structured `thinking` object
+   rather than a flat string), the rule's path and the corresponding
+   `replay.json` fixture need to be adjusted in lockstep.
+
+   The OpenRouter rules (`deepseek/deepseek-flash*`,
+   `deepseek/deepseek-v4*`) were probed live on 2026-10-18 against
+   `deepseek/deepseek-v4.1-flash-1017` and `deepseek/deepseek-v4-flash`,
+   on default routing and pinned to DeepInfra and Fireworks. The three
+   `~deepseek/...-latest` alias rules were not probed: OpenRouter lists
+   the aliases, and they take the quirk set of the probed ids. OpenRouter emits reasoning as
+   `delta.reasoning` plus a `reasoning_details` array and never as
+   `reasoning_content`; every replay variant (as `reasoning_content`,
+   as `reasoning`, as `reasoning_details`, and none) returned 200;
+   all seven `reasoning_effort` values, `temperature`, `top_p`,
+   `max_tokens` and `max_completion_tokens` were accepted. The
+   gateway rules therefore set no replay path and keep the sampling
+   and token-field flags only because they are harmless there. The
+   replay paths were dropped on the evidence of the verified hosts
+   only (DeepInfra, Fireworks, Relace and OpenInference). If
+   OpenRouter routes to DeepSeek's own host and passes
+   `reasoning_content` through, the gateway rules do not replay it.
+   Unverified: requests that OpenRouter routes to DeepSeek's own
+   host (the probe account's privacy setting excluded it), and
+   whether a replay is required on that route. The Chat Completions
+   adapter shows `delta.reasoning` as thinking deltas beside
+   `reasoning_content`; it is never replayed. The 180-day staleness
+   window flags the rules for re-verification.
 
    Operators who want v4 *non-thinking* behaviour can inject a rule
    via `NewRegistry` whose `ExtraBodyFields` carries the documented
@@ -1095,11 +1124,9 @@ concerns are tracked separately:
    sets it: thinking default-on is the desired behaviour for a
    coding agent, and disabling it also forfeits the documented
    reasoning quality. The legacy `deepseek-chat` /
-   `deepseek-reasoner` ids are first-party aliases for v4-flash
+   `deepseek-reasoner` ids were first-party aliases for v4-flash
    non-thinking / thinking modes, fully retired after 2026-07-24
-   15:59 UTC; the reasoner rule carries a matching sunset note and
-   no `deepseek-chat` rule exists (non-thinking, no
-   `reasoning_content`).
+   15:59 UTC; no rule exists for either.
 
 10. **Gemini 3.6/3.7 verification surface, and the role split
     between it and Vertex.** Every rule here was probed live on

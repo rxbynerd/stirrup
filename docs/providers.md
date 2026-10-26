@@ -382,15 +382,19 @@ Azure Entra ID bearer tokens work with the default empty `apiKeyHeader`
 See `examples/runconfig/azure-openai.json`.
 
 **Reasoning text.** Servers that stream reasoning in a non-standard
-`reasoning_content` delta field (DeepSeek, Z.ai GLM, LM Studio) have
+`reasoning_content` delta field (DeepSeek, Z.ai GLM, LM Studio), or in
+the `reasoning` field that OpenRouter uses, have
 each fragment forwarded, through the loop's secret carry (see
 [Control-stream scrubbing](security.md#control-stream-scrubbing)), as
 `thinking_delta` events, whether or not a replay rule also captures it
 for the next turn. Chat Completions has no
 request control for this, so `reasoningSummary` changes nothing on the
-wire; `off` only stops the loop forwarding the events. A
-`reasoning_content` value that is not a JSON string is ignored. The
-`reasoning` delta field some gateways use instead is not read.
+wire; `off` only stops the loop forwarding the events. When a delta
+carries both fields, a non-empty `reasoning_content` is used and
+`reasoning` is ignored. A value that is not a JSON string is ignored.
+Only `reasoning_content` is ever captured for replay; OpenRouter does
+not require reasoning to be sent back (see
+[provider quirks](provider-quirks.md#9-open-risks)).
 
 ### Local models via LM Studio (Qwen 3.6)
 
@@ -846,9 +850,12 @@ harness routes them through a registry-driven quirks layer at
 stock Chat Completions adapter (`provider.type:
 "openai-compatible"` with `provider.baseUrl:
 "https://api.deepseek.com"`); the built-in `deepseek-v4*`,
-`deepseek-flash*` (V4.1 Flash) and gateway-prefixed rules supply the
-replay threading, sampling suppression, and legacy token key with no
-operator configuration.
+`deepseek-flash*` (V4.1 Flash) rules supply the replay threading,
+sampling suppression, and legacy token key with no operator
+configuration. The OpenRouter rules (`deepseek/deepseek-v4*`,
+`deepseek/deepseek-flash*`, and one rule per listed `~deepseek/...-latest`
+alias) supply the sampling suppression, token key and `reasoning_effort`
+projection, and no replay, because OpenRouter does not require it.
 
 Operators do not author quirk rules. Two surfaces are available:
 

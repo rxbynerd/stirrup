@@ -194,10 +194,10 @@ func TestDeepSeekFlash_ReplayAndThinkingRules(t *testing.T) {
 			must.Equal(levels, o.ReasoningEffortLevels)
 		})
 	}
-	t.Run("gateway deepseek-flash gets no thinking efforts", func(t *testing.T) {
+	t.Run("gateway deepseek-flash replays nothing and carries the thinking efforts", func(t *testing.T) {
 		must := require.New(t)
 		q := DefaultRegistry().Resolve("openai-compatible", "deepseek/deepseek-flash")
-		must.Equal([]string{"reasoning_content"}, q.ReplayFields)
-		must.Empty(q.BehaviourFlags.OpenAI.ReasoningEffortLevels)
+		must.Empty(q.ReplayFields)
+		must.Equal(levels, q.BehaviourFlags.OpenAI.ReasoningEffortLevels)
 	})
 }

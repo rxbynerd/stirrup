@@ -90,24 +90,9 @@ func BuiltinRules() []Rule {
 				q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape = StreamArgsOff
 			},
 		},
-		// ReplayFields rules: Description must end "(threaded)" or
-		// "(parse-side only)" per docs/provider-quirks.md §3.1;
-		// enforced by TestBuiltinRulesReplayFieldsSuffix.
-		{
-			ProviderType: "openai-compatible",
-			ModelMatch:   "deepseek-reasoner*",
-			Description:  "DeepSeek reasoner: replay reasoning_content, omit sampling params, legacy max_tokens (threaded)",
-			LastVerified: Date("2026-06-07"),
-			Apply: func(q *ProviderQuirks) {
-				// SUNSET: deepseek-reasoner retires 2026-07-24; see
-				// docs/provider-quirks.md §9 risk 9.
-				q.ReplayFields = append(q.ReplayFields, "reasoning_content")
-
-				q.BehaviourFlags.OpenAI.OmitSamplingParams = true
-
-				q.BehaviourFlags.OpenAI.TokenField = TokenFieldMaxTokens
-			},
-		},
+		// A rule that sets ReplayFields must end its Description with
+		// "(threaded)" or "(parse-side only)" per docs/provider-quirks.md
+		// §3.1; enforced by TestBuiltinRulesReplayFieldsSuffix.
 		{
 			ProviderType: "openai-compatible",
 			ModelMatch:   "deepseek-v4*",
@@ -125,25 +110,37 @@ func BuiltinRules() []Rule {
 		{
 			ProviderType: "openai-compatible",
 			ModelMatch:   "deepseek/deepseek-flash*",
-			Description:  "DeepSeek V4.1 Flash via gateway prefix: replay reasoning_content, omit sampling params, legacy max_tokens (threaded)",
-			LastVerified: Date("2026-09-29"),
-			Apply: func(q *ProviderQuirks) {
-				q.ReplayFields = append(q.ReplayFields, "reasoning_content")
-				q.BehaviourFlags.OpenAI.OmitSamplingParams = true
-				q.BehaviourFlags.OpenAI.TokenField = TokenFieldMaxTokens
-			},
+			Description:  "DeepSeek V4.1 Flash via OpenRouter: omit sampling params, legacy max_tokens, reasoning_effort (probed 2026-10-18)",
+			LastVerified: Date("2026-10-18"),
+			Apply:        applyDeepSeekGatewayClass,
 		},
 		{
 			ProviderType: "openai-compatible",
 			ModelMatch:   "deepseek/deepseek-v4*",
-			Description:  "DeepSeek v4 via gateway prefix: replay reasoning_content, omit sampling params, legacy max_tokens (threaded)",
-			LastVerified: Date("2026-06-07"),
-			Apply: func(q *ProviderQuirks) {
-
-				q.ReplayFields = append(q.ReplayFields, "reasoning_content")
-				q.BehaviourFlags.OpenAI.OmitSamplingParams = true
-				q.BehaviourFlags.OpenAI.TokenField = TokenFieldMaxTokens
-			},
+			Description:  "DeepSeek v4 via OpenRouter: omit sampling params, legacy max_tokens, reasoning_effort (probed 2026-10-18)",
+			LastVerified: Date("2026-10-18"),
+			Apply:        applyDeepSeekGatewayClass,
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "~deepseek/deepseek-flash-latest",
+			Description:  "DeepSeek via OpenRouter latest alias: listed by OpenRouter 2026-10-18; quirk set taken from the probed deepseek/deepseek-v4* and deepseek/deepseek-flash* ids (alias itself not probed)",
+			LastVerified: Date("2026-10-18"),
+			Apply:        applyDeepSeekGatewayClass,
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "~deepseek/deepseek-v4-flash-latest",
+			Description:  "DeepSeek via OpenRouter latest alias: listed by OpenRouter 2026-10-18; quirk set taken from the probed deepseek/deepseek-v4* and deepseek/deepseek-flash* ids (alias itself not probed)",
+			LastVerified: Date("2026-10-18"),
+			Apply:        applyDeepSeekGatewayClass,
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "~deepseek/deepseek-pro-latest",
+			Description:  "DeepSeek via OpenRouter latest alias: listed by OpenRouter 2026-10-18; quirk set taken from the probed deepseek/deepseek-v4* and deepseek/deepseek-flash* ids (alias itself not probed)",
+			LastVerified: Date("2026-10-18"),
+			Apply:        applyDeepSeekGatewayClass,
 		},
 
 		{

@@ -1930,7 +1930,7 @@ signatures) is persisted and replayed exactly as before.
 | Adapter | `auto` | `off` |
 |---|---|---|
 | `anthropic` | Streams thinking the request already enables through `reasoningEffort`; no request change. | No request change; the loop forwards no `thinking_delta`. |
-| `openai-compatible` | Streams each `reasoning_content` delta the server sends (DeepSeek, GLM, Qwen); no request change, because Chat Completions has no reasoning-summary control. | No request change; the loop forwards no `thinking_delta`. |
+| `openai-compatible` | Streams each `reasoning_content` delta the server sends (DeepSeek, GLM, Qwen), or `reasoning` delta (OpenRouter); no request change, because Chat Completions has no reasoning-summary control. | No request change; the loop forwards no `thinking_delta`. |
 | `openai-responses` | Adds `reasoning.summary: "auto"` to any request that carries `reasoning.effort`, and streams `response.reasoning_summary_text.delta`. A request with no projected effort carries no `reasoning` object and no summary. | Sends no `reasoning.summary`. An empty value does the same. |
 | `gemini` | Sends `generationConfig.thinkingConfig.includeThoughts: true` when the model's quirks accept a thinking config (Gemini 3.6, 3.7, 3.8, 3.1 Pro and 2.5 Flash) or `reasoningEffort` is set, and streams each `thought: true` part. Other models get no `thinkingConfig`, because models that do not think reject one. Thought parts never become answer text or tool input. | Sends no `includeThoughts`. |
 | `bedrock` | No effect: the adapter streams no reasoning text and has no request control for it. | No effect. |
