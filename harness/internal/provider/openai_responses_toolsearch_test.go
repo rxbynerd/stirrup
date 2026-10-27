@@ -1,7 +1,9 @@
 package provider
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -889,15 +891,17 @@ func hostedSearchEntryCount(t *testing.T, body []byte) int {
 
 func TestOpenAIResponsesAdapter_HostedSearchEntryOnlyForOpenAIEndpointProfile(t *testing.T) {
 	for _, tc := range []struct {
+		name    string
 		profile string
 		want    int
 	}{
-		{types.EndpointProfileOpenAI, 1},
-		{types.EndpointProfileGeneric, 0},
-		{types.EndpointProfileAzureOpenAI, 0},
-		{types.EndpointProfileBedrockMantle, 0},
+		{"openai", types.EndpointProfileOpenAI, 1},
+		{"generic", types.EndpointProfileGeneric, 0},
+		{"azure-openai", types.EndpointProfileAzureOpenAI, 0},
+		{"bedrock-mantle", types.EndpointProfileBedrockMantle, 0},
+		{"unstated", "", 0},
 	} {
-		t.Run(tc.profile, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
 			script := newResponsesScript(t)
 			adapter := script.adapter(nil)
@@ -907,9 +911,28 @@ func TestOpenAIResponsesAdapter_HostedSearchEntryOnlyForOpenAIEndpointProfile(t 
 			must.NoError(err)
 			drainStream(t, ch)
 
-			must.Equal(tc.want, hostedSearchEntryCount(t, script.lastBody(t)))
+			body := script.lastBody(t)
+			must.Equal(tc.want, hostedSearchEntryCount(t, body))
+			if tc.want == 0 {
+				must.NotContains(string(body), "defer_loading", "no tool is deferred without a hosted search")
+			}
 		})
 	}
+}
+
+func TestOpenAIResponsesAdapter_DebugLogCarriesEndpointProfile(t *testing.T) {
+	must := require.New(t)
+	script := newResponsesScript(t)
+	var buf bytes.Buffer
+	adapter := script.adapter(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	adapter.EndpointProfile = types.EndpointProfileGeneric
+
+	ch, err := adapter.Stream(t.Context(), responsesToolSearchParams())
+	must.NoError(err)
+	drainStream(t, ch)
+
+	must.Contains(buf.String(), "openai-responses quirks resolved")
+	must.Contains(buf.String(), `"provider.endpoint_profile":"generic"`)
 }
 
 func TestBatchAdapter_ResponsesHostedSearchFollowsEndpointProfileArgument(t *testing.T) {

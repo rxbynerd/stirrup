@@ -673,6 +673,7 @@ func TestOpenAIAdapter_DebugLogListsAppliedRules(t *testing.T) {
 
 			adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 			adapter.Logger = logger
+			adapter.EndpointProfile = types.EndpointProfileAzureOpenAI
 
 			ch, err := adapter.Stream(context.Background(), types.StreamParams{
 				Model:     tc.model,
@@ -687,6 +688,7 @@ func TestOpenAIAdapter_DebugLogListsAppliedRules(t *testing.T) {
 
 			logOutput := buf.String()
 			must.Contains(logOutput, "openai quirks resolved")
+			must.Contains(logOutput, `"provider.endpoint_profile":"azure-openai"`)
 			for _, want := range tc.wantRuleSubstrings {
 				must.Contains(logOutput, want)
 			}
