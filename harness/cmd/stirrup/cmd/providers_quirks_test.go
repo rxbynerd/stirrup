@@ -17,9 +17,7 @@ import (
 // flag-changed state does not leak between tests.
 func newTestProvidersQuirksCommand() *cobra.Command {
 	cmd := &cobra.Command{Use: "quirks"}
-	cmd.Flags().String("provider", "", "")
-	cmd.Flags().String("model", "", "")
-	cmd.Flags().String("endpoint-profile", "", "")
+	addProvidersQuirksFlags(cmd)
 	return cmd
 }
 
@@ -60,10 +58,7 @@ func TestProvidersQuirks_MissingRequiredFlagIsError(t *testing.T) {
 			root := &cobra.Command{Use: "stirrup"}
 			parent := &cobra.Command{Use: "providers"}
 			child := &cobra.Command{Use: "quirks", RunE: runProvidersQuirks}
-			child.Flags().String("provider", "", "")
-			child.Flags().String("model", "", "")
-			_ = child.MarkFlagRequired("provider")
-			_ = child.MarkFlagRequired("model")
+			addProvidersQuirksFlags(child)
 			root.AddCommand(parent)
 			parent.AddCommand(child)
 
@@ -147,6 +142,41 @@ func TestProvidersQuirks_HostedSearchFollowsEndpointProfile(t *testing.T) {
 	}
 }
 
+func TestProvidersQuirks_RegisteredCommandHasTheEndpointFlags(t *testing.T) {
+	must := require.New(t)
+	for _, name := range []string{"provider", "model", "base-url", "endpoint-profile"} {
+		must.NotNil(providersQuirksCmd.Flags().Lookup(name), "providers quirks has no --%s flag", name)
+	}
+}
+
+func TestProvidersQuirks_BaseURLDerivesTheProfileAsARunDoes(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		args        []string
+		wantProfile string
+		wantHosted  bool
+	}{
+		{"no flags", []string{"--provider", "openai-responses", "--model", "gpt-5.4"}, "openai", true},
+		{"default url", []string{"--provider", "openai-responses", "--model", "gpt-5.4", "--base-url", "https://api.openai.com/v1/"}, "openai", true},
+		{"gateway url", []string{"--provider", "openai-responses", "--model", "gpt-5.4", "--base-url", "http://localhost:1234/v1"}, "generic", false},
+		{"gateway url declared openai", []string{"--provider", "openai-responses", "--model", "gpt-5.4", "--base-url", "http://localhost:1234/v1", "--endpoint-profile", "openai"}, "openai", true},
+		{"chat completions default", []string{"--provider", "openai-compatible", "--model", "gpt-5.4"}, "openai", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			cmd := newTestProvidersQuirksCommand()
+			must.NoError(cmd.ParseFlags(tc.args))
+			var buf bytes.Buffer
+			must.NoError(runProvidersQuirksWithIO(cmd, &buf))
+
+			var got quirksCLIOutput
+			must.NoError(json.Unmarshal(buf.Bytes(), &got), "output:\n%s", buf.String())
+			must.Equal(tc.wantProfile, got.EndpointProfile)
+			must.Equal(tc.wantHosted, got.Quirks.ToolSearch.Supported)
+		})
+	}
+}
+
 func TestProvidersQuirks_EndpointProfileRejectsInvalidUse(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -155,6 +185,7 @@ func TestProvidersQuirks_EndpointProfileRejectsInvalidUse(t *testing.T) {
 	}{
 		{"unknown profile", []string{"--provider", "openai-responses", "--model", "gpt-5.4", "--endpoint-profile", "azure"}, `--endpoint-profile "azure" is not a recognised endpoint profile`},
 		{"non openai wire type", []string{"--provider", "anthropic", "--model", "claude-sonnet-5-5", "--endpoint-profile", "openai"}, "--endpoint-profile only applies to openai-compatible and openai-responses providers"},
+		{"base url on a non openai wire type", []string{"--provider", "anthropic", "--model", "claude-sonnet-5-5", "--base-url", "https://example.com/v1"}, "--base-url only applies to openai-compatible and openai-responses providers"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)

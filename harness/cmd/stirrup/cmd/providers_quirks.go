@@ -51,9 +51,11 @@ var providersQuirksCmd = &cobra.Command{
 carries the merged ProviderQuirks value plus a list of every
 contributing rule (description, last-verified date, staleness flag).
 
---endpoint-profile resolves an openai-compatible or openai-responses
-provider against a declared endpoint profile. Unset, it resolves
-against the profile derived for OpenAI's own API.
+For an openai-compatible or openai-responses provider, --base-url and
+--endpoint-profile select the endpoint profile the way a run does: a
+declared --endpoint-profile wins, otherwise the profile is derived from
+--base-url (openai for OpenAI's own API or no --base-url, generic for
+any other URL).
 
 The empty-registry case (no rule matched) is not an error: the output
 carries an empty appliedRules list and a ProviderQuirks value at its
@@ -65,16 +67,22 @@ zero-after-init shape.`,
 func init() {
 	rootCmd.AddCommand(providersCmd)
 	providersCmd.AddCommand(providersQuirksCmd)
+	addProvidersQuirksFlags(providersQuirksCmd)
+}
 
-	f := providersQuirksCmd.Flags()
+// addProvidersQuirksFlags registers the providers-quirks flag surface on
+// cmd.
+func addProvidersQuirksFlags(cmd *cobra.Command) {
+	f := cmd.Flags()
 	f.String("provider", "", "Provider type to resolve (e.g. openai-compatible, gemini, anthropic).")
 	f.String("model", "", "Model identifier to resolve (e.g. gpt-5-nano, gemini-3.1-pro-preview).")
-	f.String("endpoint-profile", "", "Endpoint profile to resolve an openai-compatible or openai-responses provider against (e.g. openai, generic). Empty derives the profile for OpenAI's own API.")
-	_ = providersQuirksCmd.RegisterFlagCompletionFunc("endpoint-profile", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+	f.String("base-url", "", "Base URL of an openai-compatible or openai-responses provider; derives the endpoint profile as a run does when --endpoint-profile is unset.")
+	f.String("endpoint-profile", "", "Endpoint profile of an openai-compatible or openai-responses provider (openai, azure-openai, bedrock-mantle, generic). Empty derives it from --base-url.")
+	_ = cmd.RegisterFlagCompletionFunc("endpoint-profile", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
 		return types.ValidEndpointProfileValues(), cobra.ShellCompDirectiveNoFileComp
 	})
-	_ = providersQuirksCmd.MarkFlagRequired("provider")
-	_ = providersQuirksCmd.MarkFlagRequired("model")
+	_ = cmd.MarkFlagRequired("provider")
+	_ = cmd.MarkFlagRequired("model")
 }
 
 // quirksCLIOutput is the wire shape printed by `stirrup providers
@@ -109,7 +117,11 @@ func runProvidersQuirksWithIO(cmd *cobra.Command, stdout io.Writer) error {
 	providerType, _ := cmd.Flags().GetString("provider")
 	model, _ := cmd.Flags().GetString("model")
 	declared, _ := cmd.Flags().GetString("endpoint-profile")
+	baseURL, _ := cmd.Flags().GetString("base-url")
 
+	if baseURL != "" && !types.IsOpenAIWireProviderType(providerType) {
+		return fmt.Errorf("--base-url only applies to openai-compatible and openai-responses providers, got %q", providerType)
+	}
 	if declared != "" {
 		if !slices.Contains(types.ValidEndpointProfileValues(), declared) {
 			return fmt.Errorf("--endpoint-profile %q is not a recognised endpoint profile; legal values: %s",
@@ -119,7 +131,7 @@ func runProvidersQuirksWithIO(cmd *cobra.Command, stdout io.Writer) error {
 			return fmt.Errorf("--endpoint-profile only applies to openai-compatible and openai-responses providers, got %q", providerType)
 		}
 	}
-	endpoint := provider.EndpointProfileFor(types.ProviderConfig{Type: providerType, EndpointProfile: declared})
+	endpoint := provider.EndpointProfileFor(types.ProviderConfig{Type: providerType, BaseURL: baseURL, EndpointProfile: declared})
 
 	reg := quirks.DefaultRegistry()
 	resolved, applied := reg.ResolveWithRules(quirks.Target{ProviderType: providerType, Endpoint: endpoint, Model: model})
