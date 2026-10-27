@@ -58,7 +58,7 @@ func TestRun_RecordsRequestParamsSentToProvider(t *testing.T) {
 		toolCallTurn(),
 		{{Type: "text_delta", Text: "done"}, {Type: "message_complete", StopReason: "end_turn"}},
 	}}
-	loop, _ := buildEscalationLoop(&sequencedProvider{scripts: [][]types.StreamEvent{noToolAnswer()}}, newDefaultEscalationPolicy(1, nativeCaps))
+	loop, _ := buildEscalationLoop(&sequencedProvider{scripts: [][]types.StreamEvent{noToolAnswer()}}, newDefaultEscalationPolicy(1, nativeCaps, keyAsProviderType))
 	loop.Provider = prov
 	rec := &recordingTraceEmitter{}
 	loop.Trace = rec

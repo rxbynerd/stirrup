@@ -770,7 +770,7 @@ func TestRunFollowUpLoop_EscalationCountsCarriedToolCalls(t *testing.T) {
 			must := require.New(t)
 			prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptCallTestTool, scriptEndTurn}}
 			loop, tr := buildUserInputTestLoop(prov)
-			loop.Escalation = newDefaultEscalationPolicy(1, nil)
+			loop.Escalation = newDefaultEscalationPolicy(1, nil, keyAsProviderType)
 			config := buildTestConfig()
 			config.FollowUpHistory = tc.history
 
@@ -822,7 +822,7 @@ func TestRunFollowUpLoop_ContinueEscalatesWhenCarriedHistoryHasNoToolCalls(t *te
 	must := require.New(t)
 	prov := &recordingScriptProvider{script: [][]types.StreamEvent{scriptEndTurn}}
 	loop, tr := buildUserInputTestLoop(prov)
-	loop.Escalation = newDefaultEscalationPolicy(1, nil)
+	loop.Escalation = newDefaultEscalationPolicy(1, nil, keyAsProviderType)
 	config := buildTestConfig()
 	config.FollowUpHistory = types.FollowUpHistoryContinue
 
@@ -850,7 +850,7 @@ func TestRunFollowUpLoop_EscalationAfterWithheldHistoryStartsFromZero(t *testing
 	}}
 	loop, tr := buildUserInputTestLoop(prov)
 	loop.GuardRail = phaseMarkerGuard{phase: guard.PhasePostTurn, marker: "LEAK-MARKER"}
-	loop.Escalation = newDefaultEscalationPolicy(1, nil)
+	loop.Escalation = newDefaultEscalationPolicy(1, nil, keyAsProviderType)
 	config := buildTestConfig()
 	config.FollowUpHistory = types.FollowUpHistoryContinue
 

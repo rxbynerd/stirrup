@@ -36,6 +36,12 @@ type fakeCapabilityResolver struct {
 	cap quirks.ToolChoiceCapability
 }
 
+// keyAsProviderType reads a router key as the provider type with no
+// endpoint, as a single-provider test config does.
+func keyAsProviderType(key, model string) quirks.Target {
+	return quirks.Target{ProviderType: key, Model: model}
+}
+
 func (f fakeCapabilityResolver) Resolve(quirks.Target) quirks.ProviderQuirks {
 	return quirks.ProviderQuirks{ToolChoice: f.cap}
 }
@@ -237,58 +243,58 @@ func TestEscalationPolicy_DecideByInput(t *testing.T) {
 	}{
 		{
 			name:     "native_when_supported",
-			policy:   newDefaultEscalationPolicy(1, nativeCaps),
+			policy:   newDefaultEscalationPolicy(1, nativeCaps, keyAsProviderType),
 			wantKind: EscalationNative,
 		},
 		{
 			name:     "prompt_when_native_unsupported",
-			policy:   newDefaultEscalationPolicy(1, promptCaps),
+			policy:   newDefaultEscalationPolicy(1, promptCaps, keyAsProviderType),
 			wantKind: EscalationPrompt,
 		},
 		{
 			name:     "no_escalation_when_disabled",
-			policy:   newDefaultEscalationPolicy(0, nativeCaps),
+			policy:   newDefaultEscalationPolicy(0, nativeCaps, keyAsProviderType),
 			wantKind: EscalationNone,
 		},
 		{
 			name:     "no_escalation_when_cap_reached",
-			policy:   newDefaultEscalationPolicy(1, nativeCaps),
+			policy:   newDefaultEscalationPolicy(1, nativeCaps, keyAsProviderType),
 			mutate:   func(in *EscalationInput) { in.EscalationsSoFar = 1 },
 			wantKind: EscalationNone,
 		},
 		{
 			name:     "no_escalation_on_tool_use",
-			policy:   newDefaultEscalationPolicy(1, nativeCaps),
+			policy:   newDefaultEscalationPolicy(1, nativeCaps, keyAsProviderType),
 			mutate:   func(in *EscalationInput) { in.StopReason = "tool_use" },
 			wantKind: EscalationNone,
 		},
 		{
 			name:     "no_escalation_on_refusal",
-			policy:   newDefaultEscalationPolicy(1, nativeCaps),
+			policy:   newDefaultEscalationPolicy(1, nativeCaps, keyAsProviderType),
 			mutate:   func(in *EscalationInput) { in.StopReason = "refusal" },
 			wantKind: EscalationNone,
 		},
 		{
 			name:     "no_escalation_on_context_window_exceeded",
-			policy:   newDefaultEscalationPolicy(1, nativeCaps),
+			policy:   newDefaultEscalationPolicy(1, nativeCaps, keyAsProviderType),
 			mutate:   func(in *EscalationInput) { in.StopReason = "model_context_window_exceeded" },
 			wantKind: EscalationNone,
 		},
 		{
 			name:     "no_escalation_on_max_tokens",
-			policy:   newDefaultEscalationPolicy(1, nativeCaps),
+			policy:   newDefaultEscalationPolicy(1, nativeCaps, keyAsProviderType),
 			mutate:   func(in *EscalationInput) { in.StopReason = "max_tokens" },
 			wantKind: EscalationNone,
 		},
 		{
 			name:     "no_escalation_when_no_tools",
-			policy:   newDefaultEscalationPolicy(1, nativeCaps),
+			policy:   newDefaultEscalationPolicy(1, nativeCaps, keyAsProviderType),
 			mutate:   func(in *EscalationInput) { in.ToolsAvailable = false },
 			wantKind: EscalationNone,
 		},
 		{
 			name:     "no_escalation_after_prior_tool_calls",
-			policy:   newDefaultEscalationPolicy(1, nativeCaps),
+			policy:   newDefaultEscalationPolicy(1, nativeCaps, keyAsProviderType),
 			mutate:   func(in *EscalationInput) { in.PriorToolCalls = 1 },
 			wantKind: EscalationNone,
 		},
@@ -297,37 +303,37 @@ func TestEscalationPolicy_DecideByInput(t *testing.T) {
 			// is still a missed-tool failure and must escalate; only
 			// PriorToolCalls > 0 stops it.
 			name:     "escalates_on_later_turn_when_no_prior_tool_calls",
-			policy:   newDefaultEscalationPolicy(1, nativeCaps),
+			policy:   newDefaultEscalationPolicy(1, nativeCaps, keyAsProviderType),
 			mutate:   func(in *EscalationInput) { in.Turn = 2 },
 			wantKind: EscalationNative,
 		},
 		{
 			name:     "no_escalation_for_mode_without_requirement",
-			policy:   newDefaultEscalationPolicy(1, nativeCaps),
+			policy:   newDefaultEscalationPolicy(1, nativeCaps, keyAsProviderType),
 			mutate:   func(in *EscalationInput) { in.Mode = "no-such-mode" },
 			wantKind: EscalationNone,
 		},
 		{
 			name:     "planning_mode_escalates",
-			policy:   newDefaultEscalationPolicy(1, nativeCaps),
+			policy:   newDefaultEscalationPolicy(1, nativeCaps, keyAsProviderType),
 			mutate:   func(in *EscalationInput) { in.Mode = "planning" },
 			wantKind: EscalationNative,
 		},
 		{
 			name:     "review_mode_escalates",
-			policy:   newDefaultEscalationPolicy(1, nativeCaps),
+			policy:   newDefaultEscalationPolicy(1, nativeCaps, keyAsProviderType),
 			mutate:   func(in *EscalationInput) { in.Mode = "review" },
 			wantKind: EscalationNative,
 		},
 		{
 			name:     "toil_mode_escalates",
-			policy:   newDefaultEscalationPolicy(1, nativeCaps),
+			policy:   newDefaultEscalationPolicy(1, nativeCaps, keyAsProviderType),
 			mutate:   func(in *EscalationInput) { in.Mode = "toil" },
 			wantKind: EscalationNative,
 		},
 		{
 			name:     "prompt_when_resolver_nil",
-			policy:   newDefaultEscalationPolicy(1, nil),
+			policy:   newDefaultEscalationPolicy(1, nil, keyAsProviderType),
 			wantKind: EscalationPrompt,
 		},
 	}
@@ -382,7 +388,7 @@ func TestEscalation_NativeRetryOnMissedTool(t *testing.T) {
 		toolCallTurn(),
 		{{Type: "text_delta", Text: "done"}, {Type: "message_complete", StopReason: "end_turn"}},
 	}}
-	loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, nativeCaps))
+	loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, nativeCaps, keyAsProviderType))
 
 	_, err := loop.Run(context.Background(), escalationConfig("execution"))
 	must.NoError(err)
@@ -404,7 +410,7 @@ func TestEscalation_PromptFallback(t *testing.T) {
 		toolCallTurn(),
 		{{Type: "text_delta", Text: "done"}, {Type: "message_complete", StopReason: "end_turn"}},
 	}}
-	loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, promptCaps))
+	loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, promptCaps, keyAsProviderType))
 
 	_, err := loop.Run(context.Background(), escalationConfig("execution"))
 	must.NoError(err)
@@ -452,7 +458,7 @@ func TestEscalation_TerminalStopReasonsNoRetry(t *testing.T) {
 				{{Type: "text_delta", Text: "I can't help with that."}, {Type: "message_complete", StopReason: tc.stop}},
 				toolCallTurn(),
 			}}
-			loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, nativeCaps))
+			loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, nativeCaps, keyAsProviderType))
 
 			runTrace, err := loop.Run(context.Background(), escalationConfig("execution"))
 			must.NoError(err)
@@ -478,7 +484,7 @@ func (maxTokensEscalatePolicy) Decide(in EscalationInput) EscalationDecision {
 // never also escalated, whichever policy is installed.
 func TestEscalation_MaxTokensStopRecoversWithoutEscalating(t *testing.T) {
 	policies := map[string]EscalationPolicy{
-		"default":            newDefaultEscalationPolicy(1, nativeCaps),
+		"default":            newDefaultEscalationPolicy(1, nativeCaps, keyAsProviderType),
 		"escalates_on_limit": maxTokensEscalatePolicy{},
 	}
 	for name, policy := range policies {
@@ -510,7 +516,7 @@ func TestEscalation_TerminalMaxTokensStopNoRetry(t *testing.T) {
 	prov := &sequencedProvider{scripts: [][]types.StreamEvent{
 		{{Type: "text_delta", Text: "Partial"}, {Type: "message_complete", StopReason: "max_tokens"}},
 	}}
-	loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, nativeCaps))
+	loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, nativeCaps, keyAsProviderType))
 	config := escalationConfig("execution")
 	config.MaxTurns = 1
 
@@ -526,7 +532,7 @@ func TestEscalation_TerminalMaxTokensStopNoRetry(t *testing.T) {
 func TestEscalation_NoToolsNoRetry(t *testing.T) {
 	must := require.New(t)
 	prov := &sequencedProvider{scripts: [][]types.StreamEvent{noToolAnswer()}}
-	loop := buildEscalationLoopNoTools(prov, newDefaultEscalationPolicy(1, nativeCaps))
+	loop := buildEscalationLoopNoTools(prov, newDefaultEscalationPolicy(1, nativeCaps, keyAsProviderType))
 
 	_, err := loop.Run(context.Background(), escalationConfig("execution"))
 	must.NoError(err)
@@ -546,7 +552,7 @@ func TestEscalation_ResearchAllowsFetchTool(t *testing.T) {
 		toolCallTurn(),
 		{{Type: "text_delta", Text: "done"}, {Type: "message_complete", StopReason: "end_turn"}},
 	}}
-	loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, promptCaps))
+	loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, promptCaps, keyAsProviderType))
 
 	_, err := loop.Run(context.Background(), escalationConfig("research"))
 	must.NoError(err)
@@ -561,7 +567,7 @@ func TestEscalation_MaxRetryCapEnforced(t *testing.T) {
 	check := assert.New(t)
 	must := require.New(t)
 	prov := &sequencedProvider{scripts: [][]types.StreamEvent{noToolAnswer()}}
-	loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, nativeCaps))
+	loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, nativeCaps, keyAsProviderType))
 
 	_, err := loop.Run(context.Background(), escalationConfig("execution"))
 	must.NoError(err)
@@ -580,7 +586,7 @@ func TestEscalation_MaxRetryCapEnforcedAtTwo(t *testing.T) {
 	must := require.New(t)
 	check := assert.New(t)
 	prov := &sequencedProvider{scripts: [][]types.StreamEvent{noToolAnswer()}}
-	loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(2, nativeCaps))
+	loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(2, nativeCaps, keyAsProviderType))
 
 	_, err := loop.Run(context.Background(), escalationConfig("execution"))
 	must.NoError(err)
@@ -603,7 +609,7 @@ func TestEscalation_RecoveryStopsAfterToolCall(t *testing.T) {
 		toolCallTurn(),
 		{{Type: "text_delta", Text: "done"}, {Type: "message_complete", StopReason: "end_turn"}},
 	}}
-	loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(2, nativeCaps))
+	loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(2, nativeCaps, keyAsProviderType))
 
 	_, err := loop.Run(context.Background(), escalationConfig("execution"))
 	must.NoError(err)
@@ -626,11 +632,11 @@ func TestEscalationPolicy_NativeAddsUserTurnWhenTrailingAssistantRejected(t *tes
 		ToolsAvailable: true,
 	}
 	rejecting := fakeCapabilityResolver{cap: quirks.ToolChoiceCapability{Supported: true, Required: true, RejectsTrailingAssistant: true}}
-	got := newDefaultEscalationPolicy(1, rejecting).Decide(in)
+	got := newDefaultEscalationPolicy(1, rejecting, keyAsProviderType).Decide(in)
 	must.Equal(EscalationNative, got.Kind)
 	check.NotEmpty(got.PromptMessage, "a provider rejecting a trailing assistant message needs a PromptMessage")
 
-	accepting := newDefaultEscalationPolicy(1, nativeCaps).Decide(in)
+	accepting := newDefaultEscalationPolicy(1, nativeCaps, keyAsProviderType).Decide(in)
 	check.Empty(accepting.PromptMessage, "a provider accepting a trailing assistant message needs no PromptMessage")
 }
 
@@ -661,7 +667,7 @@ func TestEscalation_RetryHistoryShapeByProvider(t *testing.T) {
 				toolCallTurn(),
 				{{Type: "text_delta", Text: "done"}, {Type: "message_complete", StopReason: "end_turn"}},
 			}}
-			loop, _ := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, quirks.DefaultRegistry()))
+			loop, _ := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, quirks.DefaultRegistry(), keyAsProviderType))
 			loop.Router = router.NewStaticRouter(tc.provider, tc.model)
 
 			_, err := loop.Run(context.Background(), escalationConfig("execution"))

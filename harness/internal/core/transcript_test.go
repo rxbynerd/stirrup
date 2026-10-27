@@ -691,7 +691,7 @@ func TestLoop_EscalationCommitsTheRejectedAnswer(t *testing.T) {
 	check := assert.New(t)
 	must := require.New(t)
 	prov := &sequencedProvider{scripts: [][]types.StreamEvent{noToolAnswer(), toolCallTurn(), scriptEndTurn}}
-	loop, _ := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, promptCaps))
+	loop, _ := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, promptCaps, keyAsProviderType))
 	tp := &recordingTransport{}
 	loop.Transport = tp
 

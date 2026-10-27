@@ -727,9 +727,9 @@ func buildEscalationPolicy(maxRetries int, config *types.RunConfig, caps capabil
 	if maxRetries <= 0 {
 		return nil
 	}
-	policy := newDefaultEscalationPolicy(maxRetries, caps)
-	policy.targets = func(key, model string) quirks.Target { return targetFor(config, key, model) }
-	return policy
+	return newDefaultEscalationPolicy(maxRetries, caps, func(key, model string) quirks.Target {
+		return targetFor(config, key, model)
+	})
 }
 
 // targetFor is the quirks target of a routed selection, where an empty key
@@ -780,7 +780,11 @@ func logDerivedGenericResponsesEndpoints(config *types.RunConfig, caps capabilit
 			continue
 		}
 		logged[sel.Provider] = true
-		logger.Info("the harness tool_search is used for an openai-responses baseUrl with the derived generic endpoint profile; declare provider.endpointProfile openai only if this endpoint forwards OpenAI's hosted tool_search and defer_loading unchanged",
+		field := "provider.endpointProfile"
+		if _, named := config.Providers[sel.Provider]; named {
+			field = "providers." + sel.Provider + ".endpointProfile"
+		}
+		logger.Info("the harness tool_search is used for an openai-responses baseUrl with the derived generic endpoint profile; declare "+field+" openai only if this endpoint forwards OpenAI's hosted tool_search and defer_loading unchanged",
 			"provider", sel.Provider, "model", sel.Model)
 	}
 }

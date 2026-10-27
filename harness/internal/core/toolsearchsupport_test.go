@@ -134,7 +134,19 @@ func TestBuildToolSearchSupport_LogsEachDerivedGenericEndpointOnce(t *testing.T)
 
 	must.Equal(1, strings.Count(buf.String(), "provider=gateway"))
 	must.Equal(1, strings.Count(buf.String(), "\n"))
-	must.Contains(buf.String(), "declare provider.endpointProfile openai only if this endpoint forwards OpenAI's hosted tool_search and defer_loading unchanged")
+	must.Contains(buf.String(), "declare providers.gateway.endpointProfile openai only if this endpoint forwards OpenAI's hosted tool_search and defer_loading unchanged")
+}
+
+func TestBuildToolSearchSupport_DerivedGenericNoticeNamesTheDefaultProvidersField(t *testing.T) {
+	must := require.New(t)
+	config := &types.RunConfig{
+		Provider:    types.ProviderConfig{Type: "openai-responses", BaseURL: "https://gateway.example/v1"},
+		ModelRouter: types.ModelRouterConfig{Type: "static", Provider: "openai-responses", Model: hostedSearchModel},
+	}
+	var buf bytes.Buffer
+	buildToolSearchSupport(config, quirks.DefaultRegistry(), slog.New(slog.NewTextHandler(&buf, nil)))
+
+	must.Contains(buf.String(), "declare provider.endpointProfile openai only if")
 }
 
 func TestBuildToolSearchSupport_DerivedGenericLogsNothingForModelsWithoutHostedSearch(t *testing.T) {
