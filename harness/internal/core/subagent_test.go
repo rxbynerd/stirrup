@@ -25,6 +25,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
+	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
@@ -1030,4 +1031,26 @@ func TestSpawnSubAgent_CompactionNeverOrphansToolResults(t *testing.T) {
 		}
 	}
 	must.True(compacted, "no request was compacted; the budget does not exercise compaction")
+}
+
+func TestSubAgent_ToolSearchKeepsTheParentsEndpointProfile(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider types.ProviderConfig
+		want     bool
+	}{
+		{"derived generic", types.ProviderConfig{Type: "openai-responses", BaseURL: "https://gateway.example.com/v1"}, false},
+		{"default endpoint", types.ProviderConfig{Type: "openai-responses"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			parent := buildSubAgentTestLoop(&mockProvider{})
+			parent.ToolSearch = buildToolSearchSupport(&types.RunConfig{Provider: tc.provider}, quirks.DefaultRegistry(), slog.New(slog.DiscardHandler))
+
+			run, err := prepareSubAgent(context.Background(), parent, buildTestConfig(), SubAgentConfig{Prompt: "open an issue", Mode: "execution"})
+			must.NoError(err)
+
+			must.Equal(tc.want, run.loop.ToolSearch("", hostedSearchModel).Supported)
+		})
+	}
 }

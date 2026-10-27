@@ -9,6 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
+	"github.com/rxbynerd/stirrup/harness/internal/router"
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
+	"github.com/rxbynerd/stirrup/harness/internal/tool/builtins"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -150,4 +153,47 @@ func TestBuildToolSearchSupport_HarnessStrategyLogsNothing(t *testing.T) {
 	buildToolSearchSupport(config, quirks.DefaultRegistry(), slog.New(slog.NewTextHandler(&buf, nil)))
 
 	must.Empty(buf.String())
+}
+
+func mixedEndpointConfig() *types.RunConfig {
+	return &types.RunConfig{
+		Provider: types.ProviderConfig{Type: "openai-responses", BaseURL: "https://gateway.example.com/v1"},
+		Providers: map[string]types.ProviderConfig{
+			"direct": {Type: "openai-responses", BaseURL: "https://relay.example.com/v1", EndpointProfile: types.EndpointProfileOpenAI},
+			"azure":  {Type: "openai-responses", BaseURL: "https://example.openai.azure.com/openai/v1", EndpointProfile: types.EndpointProfileAzureOpenAI},
+		},
+	}
+}
+
+func TestBuildToolSearchSupport_MixedEndpointsResolvePerProvider(t *testing.T) {
+	must := require.New(t)
+	support := buildToolSearchSupport(mixedEndpointConfig(), quirks.DefaultRegistry(), slog.New(slog.DiscardHandler))
+
+	must.False(support("", hostedSearchModel).Supported, "the default provider derives generic")
+	must.True(support("direct", hostedSearchModel).Supported, "direct declares openai")
+	must.False(support("azure", hostedSearchModel).Supported, "azure-openai is unprobed")
+}
+
+func TestDescribeToolSearch_NamesEachProvidersEndpointProfile(t *testing.T) {
+	loop := buildTestLoop(nil)
+	registry := loop.Tools.(*tool.Registry)
+	registerLazyMCPTool(registry, lazyMCPTool)
+	registry.Register(builtins.ToolSearchTool(types.LazyToolLoadingConfig{}))
+	loader := tool.NewLazyLoader(registry, types.LazyToolLoadingConfig{Enabled: true}, tool.LazyLoaderOptions{MCPServers: []string{"github"}})
+	config := mixedEndpointConfig()
+	support := buildToolSearchSupport(config, quirks.DefaultRegistry(), slog.New(slog.DiscardHandler))
+
+	for _, tc := range []struct {
+		key  string
+		want string
+	}{
+		{"", "the harness tool_search (endpoint profile generic)"},
+		{"direct", "the native hosted tool search"},
+		{"azure", "the harness tool_search (endpoint profile azure-openai)"},
+	} {
+		t.Run("key "+tc.key, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, describeToolSearch(config, loader, support, router.ModelSelection{Provider: tc.key, Model: hostedSearchModel}))
+		})
+	}
 }

@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
-	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -87,11 +86,7 @@ func (l *AgenticLoop) resolveContextWindow(config *types.RunConfig, providerName
 	explicit := config.ContextStrategy.MaxTokens
 	registered := 0
 	if l.ContextWindows != nil {
-		providerType := config.Provider.Type
-		if providerName != "" {
-			providerType = providerTypeFor(config, providerName)
-		}
-		registered = l.ContextWindows.Resolve(quirks.Target{ProviderType: providerType, Model: model}).ContextWindow
+		registered = l.ContextWindows.Resolve(targetFor(config, providerName, model)).ContextWindow
 	}
 	switch effectiveContextWindow(explicit, registered) {
 	case 0:

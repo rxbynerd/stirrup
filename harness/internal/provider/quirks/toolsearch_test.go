@@ -82,7 +82,7 @@ func TestBuiltinRules_EndpointIsARecognisedProfile(t *testing.T) {
 		t.Run(rule.Description, func(t *testing.T) {
 			must := require.New(t)
 			must.Contains(types.ValidEndpointProfileValues(), rule.Endpoint)
-			must.Contains([]string{"openai-compatible", "openai-responses"}, rule.ProviderType)
+			must.True(types.IsOpenAIWireProviderType(rule.ProviderType), "an endpoint-scoped rule must name an OpenAI-wire provider type")
 		})
 	}
 }

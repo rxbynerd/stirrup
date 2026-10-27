@@ -347,7 +347,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// 8. Context strategy. Built after buildComponents because the
 	// "summarise" strategy needs the default provider adapter.
 	summaryWindow := effectiveContextWindow(config.ContextStrategy.MaxTokens,
-		quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: config.Provider.Type, Model: config.ModelRouter.Model}).ContextWindow)
+		quirks.DefaultRegistry().Resolve(targetFor(config, "", config.ModelRouter.Model)).ContextWindow)
 	// presenter is assigned once every tool is registered, before the run
 	// starts; tool_use blocks carry the presented name.
 	var presenter *tool.Presenter
@@ -603,7 +603,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 
 	// Tool-choice escalation policy: off by default (nil) unless the
 	// operator opts in via RunConfig.ToolChoiceEscalation.
-	escalation := buildEscalationPolicy(config.EffectiveToolChoiceEscalationMaxRetries(), prov)
+	escalation := buildEscalationPolicy(config.EffectiveToolChoiceEscalationMaxRetries(), config, quirks.DefaultRegistry())
 
 	// Last in, first closed: the refresher stops before every other owned
 	// resource (see cleanup above for the same ordering on a failed build).
@@ -720,15 +720,28 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 }
 
 // buildEscalationPolicy constructs the tool-choice escalation policy
-// injected into the loop. maxRetries <= 0 returns nil (off by default);
-// the resolver is quirks.DefaultRegistry() since tool-choice support is
-// a cross-provider capability no compat profile overrides. The _
-// provider argument is reserved for a future per-provider registry.
-func buildEscalationPolicy(maxRetries int, _ provider.ProviderAdapter) EscalationPolicy {
+// injected into the loop. maxRetries <= 0 returns nil (off by default).
+// The factory passes quirks.DefaultRegistry() since tool-choice support is
+// a cross-provider capability no compat profile overrides.
+func buildEscalationPolicy(maxRetries int, config *types.RunConfig, caps capabilityResolver) EscalationPolicy {
 	if maxRetries <= 0 {
 		return nil
 	}
-	return newDefaultEscalationPolicy(maxRetries, quirks.DefaultRegistry())
+	policy := newDefaultEscalationPolicy(maxRetries, caps)
+	policy.targets = func(key, model string) quirks.Target { return targetFor(config, key, model) }
+	return policy
+}
+
+// targetFor is the quirks target of a routed selection, where an empty key
+// is the default provider. The endpoint is the profile the provider's
+// adapter resolves with, so loop-side lookups and adapters agree; a key
+// with no configuration has no endpoint.
+func targetFor(config *types.RunConfig, key, model string) quirks.Target {
+	return quirks.Target{
+		ProviderType: selectedProviderType(config, key),
+		Endpoint:     provider.EndpointProfileFor(providerConfigFor(config, key)),
+		Model:        model,
+	}
 }
 
 // buildStructuredResultSupport resolves the StructuredToolResults capability
@@ -736,20 +749,8 @@ func buildEscalationPolicy(maxRetries int, _ provider.ProviderAdapter) Escalatio
 // router provider key to its declared provider type. It reports support only
 // for a wire shape an adapter sends, matching the adapters' own gates.
 func buildStructuredResultSupport(config *types.RunConfig, caps capabilityResolver) StructuredResultSupport {
-	providerTypes := make(map[string]string, len(config.Providers)+1)
-	providerTypes[config.Provider.Type] = config.Provider.Type
-	for name, cfg := range config.Providers {
-		providerTypes[name] = cfg.Type
-	}
 	return func(key, model string) bool {
-		providerType := config.Provider.Type
-		if key != "" {
-			providerType = key
-			if declared, ok := providerTypes[key]; ok {
-				providerType = declared
-			}
-		}
-		c := caps.Resolve(quirks.Target{ProviderType: providerType, Model: model}).StructuredToolResults
+		c := caps.Resolve(targetFor(config, key, model)).StructuredToolResults
 		return c.Supported && (c.ContentBlockArray || c.ObjectResponse)
 	}
 }
@@ -767,8 +768,7 @@ func buildToolSearchSupport(config *types.RunConfig, caps capabilityResolver, lo
 		}
 	}
 	return func(key, model string) quirks.ToolSearchCapability {
-		endpoint := provider.EndpointProfileFor(providerConfigFor(config, key))
-		return caps.Resolve(quirks.Target{ProviderType: selectedProviderType(config, key), Endpoint: endpoint, Model: model}).ToolSearch
+		return caps.Resolve(targetFor(config, key, model)).ToolSearch
 	}
 }
 

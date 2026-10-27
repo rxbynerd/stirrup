@@ -44,6 +44,9 @@ var modeRequirements = map[string]modeRequirement{
 type defaultEscalationPolicy struct {
 	maxRetries int
 	caps       capabilityResolver
+	// targets maps a routed provider key and model to its quirks target;
+	// nil treats the key as the provider type with no endpoint.
+	targets func(key, model string) quirks.Target
 }
 
 var _ EscalationPolicy = (*defaultEscalationPolicy)(nil)
@@ -106,11 +109,15 @@ func (p *defaultEscalationPolicy) Decide(in EscalationInput) EscalationDecision 
 	}
 }
 
-// toolChoice resolves the (provider, model) tool-choice capability; an
-// unresolvable pair reports no support.
-func (p *defaultEscalationPolicy) toolChoice(providerType, model string) quirks.ToolChoiceCapability {
-	if p.caps == nil || providerType == "" {
+// toolChoice resolves the tool-choice capability of a routed provider key
+// and model; an unresolvable pair reports no support.
+func (p *defaultEscalationPolicy) toolChoice(key, model string) quirks.ToolChoiceCapability {
+	if p.caps == nil || key == "" {
 		return quirks.ToolChoiceCapability{}
 	}
-	return p.caps.Resolve(quirks.Target{ProviderType: providerType, Model: model}).ToolChoice
+	target := quirks.Target{ProviderType: key, Model: model}
+	if p.targets != nil {
+		target = p.targets(key, model)
+	}
+	return p.caps.Resolve(target).ToolChoice
 }
