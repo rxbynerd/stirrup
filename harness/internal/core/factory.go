@@ -904,12 +904,7 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 // OpenAI-wire provider pointed away from api.openai.com can reach a server
 // that accepts unauthenticated requests.
 func keylessEndpoint(cfg types.ProviderConfig) bool {
-	switch cfg.Type {
-	case "openai-compatible", "openai-responses":
-		return !provider.IsDefaultOpenAIBaseURL(cfg.BaseURL)
-	default:
-		return false
-	}
+	return types.IsOpenAIWireProviderType(cfg.Type) && !provider.IsDefaultOpenAIBaseURL(cfg.BaseURL)
 }
 
 func buildRouter(cfg types.ModelRouterConfig, defaultProvider string) router.ModelRouter {

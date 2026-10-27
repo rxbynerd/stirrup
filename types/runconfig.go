@@ -1840,11 +1840,18 @@ var validEndpointProfiles = map[string]bool{
 	EndpointProfileGeneric:       true,
 }
 
-// endpointProfileProviderTypes are the provider types that speak the
-// OpenAI wire and so accept an endpoint profile.
-var endpointProfileProviderTypes = map[string]bool{
+// openAIWireProviderTypes are the provider types that speak the OpenAI
+// wire. See IsOpenAIWireProviderType.
+var openAIWireProviderTypes = map[string]bool{
 	"openai-compatible": true,
 	"openai-responses":  true,
+}
+
+// IsOpenAIWireProviderType reports whether providerType speaks the OpenAI
+// wire (Chat Completions or Responses), the types that accept an endpoint
+// profile.
+func IsOpenAIWireProviderType(providerType string) bool {
+	return openAIWireProviderTypes[providerType]
 }
 
 // endpointProfilesRequiringBaseURL name endpoints that are never
@@ -3143,7 +3150,7 @@ func validateEndpointProfile(path string, cfg ProviderConfig, errs *[]string) {
 		))
 		return
 	}
-	if !endpointProfileProviderTypes[cfg.Type] {
+	if !IsOpenAIWireProviderType(cfg.Type) {
 		*errs = append(*errs, fmt.Sprintf(
 			"%s is only supported for openai-compatible and openai-responses providers, got type %q",
 			path, cfg.Type,

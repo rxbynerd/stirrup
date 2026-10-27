@@ -110,16 +110,16 @@ func runProvidersQuirksWithIO(cmd *cobra.Command, stdout io.Writer) error {
 	model, _ := cmd.Flags().GetString("model")
 	declared, _ := cmd.Flags().GetString("endpoint-profile")
 
-	endpoint := provider.EndpointProfileFor(types.ProviderConfig{Type: providerType, EndpointProfile: declared})
 	if declared != "" {
 		if !slices.Contains(types.ValidEndpointProfileValues(), declared) {
 			return fmt.Errorf("--endpoint-profile %q is not a recognised endpoint profile; legal values: %s",
 				declared, strings.Join(types.ValidEndpointProfileValues(), ", "))
 		}
-		if endpoint == "" {
+		if !types.IsOpenAIWireProviderType(providerType) {
 			return fmt.Errorf("--endpoint-profile only applies to openai-compatible and openai-responses providers, got %q", providerType)
 		}
 	}
+	endpoint := provider.EndpointProfileFor(types.ProviderConfig{Type: providerType, EndpointProfile: declared})
 
 	reg := quirks.DefaultRegistry()
 	resolved, applied := reg.ResolveWithRules(providerType, endpoint, model)

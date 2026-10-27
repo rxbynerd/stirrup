@@ -6842,12 +6842,34 @@ func TestValidateRunConfig_EndpointProfile_RejectsNonOpenAIWireType(t *testing.T
 
 func TestValidateRunConfig_EndpointProfile_RequiresBaseURLForNonOpenAIEndpoints(t *testing.T) {
 	for _, profile := range []string{EndpointProfileAzureOpenAI, EndpointProfileBedrockMantle} {
-		t.Run(profile, func(t *testing.T) {
+		for _, baseURL := range []string{"", "  "} {
+			t.Run(fmt.Sprintf("%s/baseUrl %q", profile, baseURL), func(t *testing.T) {
+				must := require.New(t)
+				c := validConfig()
+				c.Provider = ProviderConfig{Type: "openai-responses", BaseURL: baseURL, EndpointProfile: profile}
+				err := ValidateRunConfig(c)
+				must.ErrorContains(err, fmt.Sprintf("provider.endpointProfile %q requires baseUrl", profile))
+			})
+		}
+	}
+}
+
+func TestIsOpenAIWireProviderType_OnlyOpenAIWireTypes(t *testing.T) {
+	for _, tc := range []struct {
+		providerType string
+		want         bool
+	}{
+		{"openai-compatible", true},
+		{"openai-responses", true},
+		{"anthropic", false},
+		{"gemini", false},
+		{"bedrock", false},
+		{"", false},
+		{"openai-response", false},
+	} {
+		t.Run(tc.providerType, func(t *testing.T) {
 			must := require.New(t)
-			c := validConfig()
-			c.Provider = ProviderConfig{Type: "openai-responses", EndpointProfile: profile}
-			err := ValidateRunConfig(c)
-			must.ErrorContains(err, fmt.Sprintf("provider.endpointProfile %q requires baseUrl", profile))
+			must.Equal(tc.want, IsOpenAIWireProviderType(tc.providerType))
 		})
 	}
 }

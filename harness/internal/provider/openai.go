@@ -77,9 +77,7 @@ func IsDefaultOpenAIBaseURL(baseURL string) bool {
 // "openai" when BaseURL addresses OpenAI's own API and "generic"
 // otherwise. Provider types that do not speak the OpenAI wire return "".
 func EndpointProfileFor(cfg types.ProviderConfig) string {
-	switch cfg.Type {
-	case "openai-compatible", "openai-responses":
-	default:
+	if !types.IsOpenAIWireProviderType(cfg.Type) {
 		return ""
 	}
 	if cfg.EndpointProfile != "" {
