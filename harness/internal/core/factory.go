@@ -762,13 +762,26 @@ func buildStructuredResultSupport(config *types.RunConfig, caps capabilityResolv
 // implement the hosted search resolves to the harness tool_search.
 func buildToolSearchSupport(config *types.RunConfig, caps capabilityResolver, logger *slog.Logger) ToolSearchSupport {
 	if config.Tools.LazyLoading.EffectiveStrategy() == types.LazyToolStrategyAuto {
-		logDerivedGenericResponsesEndpoint(logger, config.Provider.Type, config.Provider)
-		for name, cfg := range config.Providers {
-			logDerivedGenericResponsesEndpoint(logger, name, cfg)
-		}
+		logDerivedGenericResponsesEndpoints(config, caps, logger)
 	}
 	return func(key, model string) quirks.ToolSearchCapability {
 		return caps.Resolve(targetFor(config, key, model)).ToolSearch
+	}
+}
+
+// logDerivedGenericResponsesEndpoints logs once per routable provider whose
+// derived generic endpoint profile withholds a hosted search the model has
+// on OpenAI's own API.
+func logDerivedGenericResponsesEndpoints(config *types.RunConfig, caps capabilityResolver, logger *slog.Logger) {
+	logged := map[string]bool{}
+	for _, sel := range router.Candidates(context.Background(), buildRouter(config.ModelRouter, config.Provider.Type), config.Mode) {
+		cfg := providerConfigFor(config, sel.Provider)
+		if logged[sel.Provider] || !isDerivedGenericResponsesEndpoint(cfg) || !hostedSearchOnOpenAIProfile(caps, cfg.Type, sel.Model) {
+			continue
+		}
+		logged[sel.Provider] = true
+		logger.Info("the harness tool_search is used for an openai-responses baseUrl with the derived generic endpoint profile; declare provider.endpointProfile openai only if this endpoint forwards OpenAI's hosted tool_search and defer_loading unchanged",
+			"provider", sel.Provider, "model", sel.Model)
 	}
 }
 
@@ -780,10 +793,10 @@ func isDerivedGenericResponsesEndpoint(cfg types.ProviderConfig) bool {
 		provider.EndpointProfileFor(cfg) == types.EndpointProfileGeneric
 }
 
-func logDerivedGenericResponsesEndpoint(logger *slog.Logger, name string, cfg types.ProviderConfig) {
-	if isDerivedGenericResponsesEndpoint(cfg) {
-		logger.Info("the harness tool_search is used for an openai-responses baseUrl with the generic endpoint profile; set provider.endpointProfile to declare an endpoint that implements the hosted tool_search", "provider", name)
-	}
+// hostedSearchOnOpenAIProfile reports whether model would have a native
+// tool search on providerType served by OpenAI's own API.
+func hostedSearchOnOpenAIProfile(caps capabilityResolver, providerType, model string) bool {
+	return caps.Resolve(quirks.Target{ProviderType: providerType, Endpoint: types.EndpointProfileOpenAI, Model: model}).ToolSearch.Supported
 }
 
 // lazyLoaderOptions names the control-plane tools and MCP servers of a
@@ -860,8 +873,9 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 		}
 		adapter := provider.NewOpenAICompatibleAdapter(cred.BearerToken, cfg.BaseURL, auth, retry)
 		adapter.EndpointProfile = provider.EndpointProfileFor(cfg)
-		// Compat rules are appended after BuiltinRules so their
-		// specificity ordering wins against any overlapping glob.
+		// Compat rules are appended after BuiltinRules so they win against
+		// an overlapping endpoint-agnostic glob of equal length; an
+		// endpoint-scoped builtin rule of that length still applies last.
 		if cfg.CompatProfile != "" {
 			extra, err := resolveCompatProfile(cfg.CompatProfile)
 			if err != nil {

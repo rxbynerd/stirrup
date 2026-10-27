@@ -131,7 +131,7 @@ func preflightLazyTools(
 		}
 		support := buildToolSearchSupport(config, quirks.DefaultRegistry(), slog.New(slog.DiscardHandler))
 		for _, sel := range router.Candidates(ctx, buildRouter(config.ModelRouter, config.Provider.Type), config.Mode) {
-			parts = append(parts, fmt.Sprintf("%s/%s searches with %s", sel.Provider, sel.Model, describeToolSearch(config, loader, support, sel)))
+			parts = append(parts, fmt.Sprintf("%s/%s searches with %s", sel.Provider, sel.Model, describeToolSearch(config, quirks.DefaultRegistry(), loader, support, sel)))
 		}
 	default:
 		parts = append(parts, "nothing is deferred, so every tool is sent")
@@ -148,7 +148,7 @@ func preflightLazyTools(
 
 // describeToolSearch names the tool search a turn routed to sel offers
 // under the loader's strategy, and why it is not the native one.
-func describeToolSearch(config *types.RunConfig, loader *tool.LazyLoader, support ToolSearchSupport, sel router.ModelSelection) string {
+func describeToolSearch(config *types.RunConfig, caps capabilityResolver, loader *tool.LazyLoader, support ToolSearchSupport, sel router.ModelSelection) string {
 	if loader.Strategy() == types.LazyToolStrategyHarness {
 		return "the harness tool_search (strategy harness)"
 	}
@@ -159,7 +159,7 @@ func describeToolSearch(config *types.RunConfig, loader *tool.LazyLoader, suppor
 	cfg := providerConfigFor(config, sel.Provider)
 	endpoint := provider.EndpointProfileFor(cfg)
 	switch {
-	case !capability.Supported && cfg.Type == "openai-responses" && endpoint != types.EndpointProfileOpenAI:
+	case !capability.Supported && endpoint != "" && endpoint != types.EndpointProfileOpenAI && hostedSearchOnOpenAIProfile(caps, cfg.Type, sel.Model):
 		return "the harness tool_search (endpoint profile " + endpoint + ")"
 	case !capability.Supported:
 		return "the harness tool_search (model not in the native tool search allow-list)"

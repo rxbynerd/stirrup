@@ -117,6 +117,15 @@ func TestBuildToolSearchSupport_LogsEachDerivedGenericEndpointOnce(t *testing.T)
 		Providers: map[string]types.ProviderConfig{
 			"gateway": {Type: "openai-responses", BaseURL: "https://gateway.example/v1"},
 		},
+		ModelRouter: types.ModelRouterConfig{
+			Type:              "dynamic",
+			Provider:          "gateway",
+			Model:             hostedSearchModel,
+			CheapProvider:     "gateway",
+			CheapModel:        "gpt-5.4-mini",
+			ExpensiveProvider: "openai-responses",
+			ExpensiveModel:    hostedSearchModel,
+		},
 	}
 	var buf bytes.Buffer
 	support := buildToolSearchSupport(config, quirks.DefaultRegistry(), slog.New(slog.NewTextHandler(&buf, nil)))
@@ -125,7 +134,29 @@ func TestBuildToolSearchSupport_LogsEachDerivedGenericEndpointOnce(t *testing.T)
 
 	must.Equal(1, strings.Count(buf.String(), "provider=gateway"))
 	must.Equal(1, strings.Count(buf.String(), "\n"))
-	must.Contains(buf.String(), "provider.endpointProfile")
+	must.Contains(buf.String(), "declare provider.endpointProfile openai only if this endpoint forwards OpenAI's hosted tool_search and defer_loading unchanged")
+}
+
+func TestBuildToolSearchSupport_DerivedGenericLogsNothingForModelsWithoutHostedSearch(t *testing.T) {
+	for _, tc := range []struct {
+		providerType string
+		model        string
+	}{
+		{"openai-responses", "gpt-4o"},
+		{"openai-compatible", hostedSearchModel},
+	} {
+		t.Run(tc.providerType+"/"+tc.model, func(t *testing.T) {
+			must := require.New(t)
+			config := &types.RunConfig{
+				Provider:    types.ProviderConfig{Type: tc.providerType, BaseURL: "https://gateway.example/v1"},
+				ModelRouter: types.ModelRouterConfig{Type: "static", Provider: tc.providerType, Model: tc.model},
+			}
+			var buf bytes.Buffer
+			buildToolSearchSupport(config, quirks.DefaultRegistry(), slog.New(slog.NewTextHandler(&buf, nil)))
+
+			must.Empty(buf.String())
+		})
+	}
 }
 
 func TestBuildToolSearchSupport_DeclaredEndpointProfileLogsNothing(t *testing.T) {
@@ -133,7 +164,8 @@ func TestBuildToolSearchSupport_DeclaredEndpointProfileLogsNothing(t *testing.T)
 		t.Run(profile, func(t *testing.T) {
 			must := require.New(t)
 			config := &types.RunConfig{
-				Provider: types.ProviderConfig{Type: "openai-responses", BaseURL: "https://gateway.example/v1", EndpointProfile: profile},
+				Provider:    types.ProviderConfig{Type: "openai-responses", BaseURL: "https://gateway.example/v1", EndpointProfile: profile},
+				ModelRouter: types.ModelRouterConfig{Type: "static", Provider: "openai-responses", Model: hostedSearchModel},
 			}
 			var buf bytes.Buffer
 			buildToolSearchSupport(config, quirks.DefaultRegistry(), slog.New(slog.NewTextHandler(&buf, nil)))
@@ -146,8 +178,9 @@ func TestBuildToolSearchSupport_DeclaredEndpointProfileLogsNothing(t *testing.T)
 func TestBuildToolSearchSupport_HarnessStrategyLogsNothing(t *testing.T) {
 	must := require.New(t)
 	config := &types.RunConfig{
-		Provider: types.ProviderConfig{Type: "openai-responses", BaseURL: "https://gateway.example/v1"},
-		Tools:    types.ToolsConfig{LazyLoading: types.LazyToolLoadingConfig{Enabled: true, Strategy: types.LazyToolStrategyHarness}},
+		Provider:    types.ProviderConfig{Type: "openai-responses", BaseURL: "https://gateway.example/v1"},
+		ModelRouter: types.ModelRouterConfig{Type: "static", Provider: "openai-responses", Model: hostedSearchModel},
+		Tools:       types.ToolsConfig{LazyLoading: types.LazyToolLoadingConfig{Enabled: true, Strategy: types.LazyToolStrategyHarness}},
 	}
 	var buf bytes.Buffer
 	buildToolSearchSupport(config, quirks.DefaultRegistry(), slog.New(slog.NewTextHandler(&buf, nil)))
@@ -193,7 +226,34 @@ func TestDescribeToolSearch_NamesEachProvidersEndpointProfile(t *testing.T) {
 	} {
 		t.Run("key "+tc.key, func(t *testing.T) {
 			must := require.New(t)
-			must.Equal(tc.want, describeToolSearch(config, loader, support, router.ModelSelection{Provider: tc.key, Model: hostedSearchModel}))
+			must.Equal(tc.want, describeToolSearch(config, quirks.DefaultRegistry(), loader, support, router.ModelSelection{Provider: tc.key, Model: hostedSearchModel}))
+		})
+	}
+}
+
+func TestDescribeToolSearch_NamesTheAllowListWhenNoProfileWouldHelp(t *testing.T) {
+	loop := buildTestLoop(nil)
+	registry := loop.Tools.(*tool.Registry)
+	registerLazyMCPTool(registry, lazyMCPTool)
+	registry.Register(builtins.ToolSearchTool(types.LazyToolLoadingConfig{}))
+	loader := tool.NewLazyLoader(registry, types.LazyToolLoadingConfig{Enabled: true}, tool.LazyLoaderOptions{MCPServers: []string{"github"}})
+	const allowList = "the harness tool_search (model not in the native tool search allow-list)"
+
+	for _, tc := range []struct {
+		name         string
+		providerType string
+		model        string
+		want         string
+	}{
+		{"responses model with hosted search", "openai-responses", "gpt-5.4", "the harness tool_search (endpoint profile generic)"},
+		{"responses model without hosted search", "openai-responses", "gpt-4o", allowList},
+		{"chat completions", "openai-compatible", "gpt-5.4", allowList},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			config := &types.RunConfig{Provider: types.ProviderConfig{Type: tc.providerType, BaseURL: "https://gateway.example.com/v1"}}
+			support := buildToolSearchSupport(config, quirks.DefaultRegistry(), slog.New(slog.DiscardHandler))
+			must.Equal(tc.want, describeToolSearch(config, quirks.DefaultRegistry(), loader, support, router.ModelSelection{Provider: tc.providerType, Model: tc.model}))
 		})
 	}
 }
