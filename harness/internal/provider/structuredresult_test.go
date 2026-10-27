@@ -58,7 +58,7 @@ func anthropicTools() []types.ToolDefinition {
 // model.
 func TestAnthropicStructuredToolResult_EmitsArrayFormWhenCapabilityOn(t *testing.T) {
 	must := require.New(t)
-	q := quirks.DefaultRegistry().Resolve("anthropic", "claude-sonnet-4-5")
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: "claude-sonnet-4-5"})
 	must.True(q.StructuredToolResults.Supported, "precondition: anthropic structured capability resolved off")
 
 	body := buildAnthropicRequest(types.StreamParams{
@@ -173,7 +173,7 @@ func TestAnthropicToolResultContent_IdenticalStructuredCollapsesToString(t *test
 // (with kind) alongside the canonical content when the capability accepts it.
 func TestGeminiStructuredToolResult_EmbedsEnvelopeWhenCapabilityOn(t *testing.T) {
 	must := require.New(t)
-	q := quirks.DefaultRegistry().Resolve("gemini", "gemini-2.5-pro")
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "gemini", Model: "gemini-2.5-pro"})
 	must.True(q.StructuredToolResults.ObjectResponse, "precondition: gemini object-response capability resolved off")
 
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
@@ -234,7 +234,7 @@ func TestGeminiStructuredToolResult_TextOnlyWhenCapabilityOff(t *testing.T) {
 // serialise identically and the payload must never leak.
 func TestOpenAIStructuredToolResult_AlwaysText(t *testing.T) {
 	must := require.New(t)
-	q := quirks.DefaultRegistry().Resolve("openai-compatible", "gpt-4o")
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: "gpt-4o"})
 	must.False(q.StructuredToolResults.Supported, "precondition: openai must not resolve a structured capability")
 
 	withStructured, err := buildOpenAIRequest(types.StreamParams{
@@ -264,7 +264,7 @@ func TestOpenAIStructuredToolResult_AlwaysText(t *testing.T) {
 // stays text-only and the payload never reaches the wire.
 func TestOpenAIResponsesStructuredToolResult_AlwaysText(t *testing.T) {
 	must := require.New(t)
-	q := quirks.DefaultRegistry().Resolve("openai-compatible", "gpt-4o")
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: "gpt-4o"})
 
 	withStructured, err := buildResponsesRequest(types.StreamParams{
 		Model:    "gpt-4o",

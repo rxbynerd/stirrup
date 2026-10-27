@@ -1710,7 +1710,7 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 	if registry == nil {
 		registry = quirks.DefaultRegistry()
 	}
-	q, appliedRules := registry.ResolveWithRules("openai-responses", o.EndpointProfile, params.Model)
+	q, appliedRules := registry.ResolveWithRules(quirks.Target{ProviderType: "openai-responses", Endpoint: o.EndpointProfile, Model: params.Model})
 
 	logger := o.Logger
 	if logger == nil {

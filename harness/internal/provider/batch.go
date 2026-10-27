@@ -243,7 +243,7 @@ func (a *BatchAdapter) marshalRequestBody(ctx context.Context, params types.Stre
 		if registry == nil {
 			registry = quirks.DefaultRegistry()
 		}
-		q := registry.Resolve("anthropic", params.Model)
+		q := registry.Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model})
 		if err := validateReasoningEffort("anthropic", params.ReasoningEffort, params.Model, q.BehaviourFlags.Anthropic.EffortLevels); err != nil {
 			return nil, nil, err
 		}
@@ -261,7 +261,7 @@ func (a *BatchAdapter) marshalRequestBody(ctx context.Context, params types.Stre
 		if inner, ok := a.inner.(*OpenAICompatibleAdapter); ok {
 			endpoint = inner.EndpointProfile
 		}
-		q := registry.ResolveEndpoint("openai-compatible", endpoint, params.Model)
+		q := registry.Resolve(quirks.Target{ProviderType: "openai-compatible", Endpoint: endpoint, Model: params.Model})
 		if err := checkOpenAIRequestSupported(params, q); err != nil {
 			return nil, nil, err
 		}
@@ -284,7 +284,7 @@ func (a *BatchAdapter) marshalRequestBody(ctx context.Context, params types.Stre
 		if inner != nil {
 			endpoint = inner.EndpointProfile
 		}
-		q := registry.ResolveEndpoint("openai-responses", endpoint, params.Model)
+		q := registry.Resolve(quirks.Target{ProviderType: "openai-responses", Endpoint: endpoint, Model: params.Model})
 		if err := validateReasoningEffort("openai-responses", params.ReasoningEffort, params.Model, q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels); err != nil {
 			return nil, nil, err
 		}

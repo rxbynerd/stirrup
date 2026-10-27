@@ -152,7 +152,7 @@ func anthropicWireBody(t *testing.T, params types.StreamParams, stream bool, q q
 func TestBuildAnthropicRequest_ThinkingBlockWireShape(t *testing.T) {
 	must := require.New(t)
 	params := types.StreamParams{Model: "claude-sonnet-5-5", MaxTokens: 16, Messages: thinkingReplayHistory()}
-	body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
+	body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model}))
 
 	want := []string{
 		`{"type":"thinking","thinking":"","signature":"sig-A"}`,
@@ -182,7 +182,7 @@ func TestBuildAnthropicRequest_ThinkingTextReplayed(t *testing.T) {
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "again"}}},
 		},
 	}
-	body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
+	body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model}))
 	got := assistantWireBlocks(t, body, 1)
 	must.NotEmpty(got, "assistant turn has no wire blocks")
 	must.JSONEq(`{"type":"thinking","thinking":"The user greets me.","signature":"sig"}`, string(got[0]))
@@ -207,7 +207,7 @@ func TestBuildAnthropicRequest_UnsignedThinkingDropped(t *testing.T) {
 		{Type: "tool_use", ID: "toolu_1", Name: "read_file", Input: json.RawMessage(`{"path":"main.go"}`)},
 	}
 
-	q := quirks.DefaultRegistry().Resolve("anthropic", "claude-sonnet-5-5")
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: "claude-sonnet-5-5"})
 	gotBody := anthropicWireBody(t, types.StreamParams{Model: "claude-sonnet-5-5", MaxTokens: 16, Messages: withUnsigned}, true, q)
 	wantBody := anthropicWireBody(t, types.StreamParams{Model: "claude-sonnet-5-5", MaxTokens: 16, Messages: without}, true, q)
 	must.Equal(string(wantBody), string(gotBody), "unsigned thinking blocks leaked onto the wire")
@@ -227,7 +227,7 @@ func thinkingOnlyTurnHistory(signature string) []types.Message {
 func wireMessages(t *testing.T, history []types.Message) string {
 	t.Helper()
 	must := require.New(t)
-	q := quirks.DefaultRegistry().Resolve("anthropic", "claude-sonnet-5-5")
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: "claude-sonnet-5-5"})
 	body := anthropicWireBody(t, types.StreamParams{Model: "claude-sonnet-5-5", MaxTokens: 16, Messages: history}, true, q)
 	var req struct {
 		Messages json.RawMessage `json:"messages"`
@@ -297,7 +297,7 @@ func TestBuildAnthropicRequest_MatchesStream(t *testing.T) {
 			}
 			captured := <-capturedCh
 
-			built := anthropicWireBody(t, tc.params, true, quirks.DefaultRegistry().Resolve("anthropic", tc.params.Model))
+			built := anthropicWireBody(t, tc.params, true, quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: tc.params.Model}))
 			must.Equal(string(captured), string(built), "builder body must match the Stream wire body")
 		})
 	}
@@ -314,7 +314,7 @@ func TestBuildAnthropicRequest_StreamFlag(t *testing.T) {
 		MaxTokens: 1024,
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
 	}
-	q := quirks.DefaultRegistry().Resolve("anthropic", params.Model)
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model})
 	must.True(buildAnthropicRequest(params, true, q).Stream, "stream=true argument")
 	must.False(buildAnthropicRequest(params, false, q).Stream, "stream=false argument")
 	must.Contains(string(anthropicWireBody(t, params, true, q)), `"stream":true`)
@@ -338,7 +338,7 @@ func TestBuildAnthropicRequest_ToolChoiceByMode(t *testing.T) {
 			{Name: "read_file", Description: "read", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		},
 	}
-	q := quirks.DefaultRegistry().Resolve("anthropic", base.Model)
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: base.Model})
 
 	cases := []struct {
 		name       string
@@ -429,7 +429,7 @@ func TestBuildAnthropicRequest_ThoughtSignatureDropped(t *testing.T) {
 			},
 		},
 	}
-	body := anthropicWireBody(t, params, false, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
+	body := anthropicWireBody(t, params, false, quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model}))
 	must.NotContains(string(body), "thought_signature", "Gemini-private state leaked into the Anthropic body")
 	must.NotContains(string(body), sig, "thought signature value leaked into the Anthropic body")
 }
@@ -461,7 +461,7 @@ func TestBuildAnthropicRequest_OutputConfigEffort(t *testing.T) {
 				ReasoningEffort: tc.effort,
 				Messages:        []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
 			}
-			body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", tc.model))
+			body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: tc.model}))
 			if tc.wantSubstr == "" {
 				must.NotContains(string(body), "output_config")
 				return
@@ -526,7 +526,7 @@ func TestBuildAnthropicRequest_ForcedToolChoiceDegradesToAuto(t *testing.T) {
 				Tools:             []types.ToolDefinition{{Name: "read_file", Description: "read", InputSchema: json.RawMessage(`{"type":"object"}`)}},
 				Messages:          []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
 			}
-			body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
+			body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model}))
 			if tc.want == "" {
 				must.NotContains(string(body), "tool_choice")
 				return
@@ -626,7 +626,7 @@ func TestBuildAnthropicRequest_PromptCaching_EnabledOnEveryModel(t *testing.T) {
 				Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
 				CacheKey:  "k",
 			}
-			q := quirks.DefaultRegistry().Resolve("anthropic", model)
+			q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: model})
 			body, err := json.Marshal(buildAnthropicRequest(params, true, q))
 			must.NoError(err)
 			for _, want := range []string{
@@ -654,7 +654,7 @@ func TestBuildAnthropicRequest_PromptCaching_IgnoresToolChoice(t *testing.T) {
 		},
 		CacheKey: "k",
 	}
-	q := quirks.DefaultRegistry().Resolve("anthropic", params.Model)
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model})
 
 	decode := func(choice types.ToolChoiceMode) map[string]json.RawMessage {
 		t.Helper()

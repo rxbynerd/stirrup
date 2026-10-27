@@ -150,8 +150,8 @@ func TestLoop_CalibrationCompactsEarlierWhenProviderCountsMore(t *testing.T) {
 // windowResolver registers context windows by "providerType/model".
 type windowResolver map[string]int
 
-func (r windowResolver) Resolve(providerType, model string) quirks.ProviderQuirks {
-	return quirks.ProviderQuirks{ContextWindow: r[providerType+"/"+model]}
+func (r windowResolver) Resolve(t quirks.Target) quirks.ProviderQuirks {
+	return quirks.ProviderQuirks{ContextWindow: r[t.ProviderType+"/"+t.Model]}
 }
 
 func TestEffectiveContextWindow_PicksSmallerNonZeroWindow(t *testing.T) {

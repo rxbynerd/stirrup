@@ -1729,7 +1729,7 @@ func TestBuildLoopWithTransport_MinimalValidConfig(t *testing.T) {
 	must.NotNil(loop.Security, "loop.Security")
 	must.NotNil(loop.Logger, "loop.Logger")
 	must.NotNil(loop.ContextWindows, "loop.ContextWindows")
-	got := loop.ContextWindows.Resolve("openai-compatible", "gpt-4o").ContextWindow
+	got := loop.ContextWindows.Resolve(quirks.Target{ProviderType: "openai-compatible", Model: "gpt-4o"}).ContextWindow
 	must.Equal(128_000, got, "gpt-4o context window from the model registry")
 }
 
@@ -2344,7 +2344,7 @@ func TestBuildProvider_OpenAICompatibleWithCompatProfile_ZAI(t *testing.T) {
 
 	t.Run("glm-4-plus maps to max_tokens and tool_stream", func(t *testing.T) {
 		must := require.New(t)
-		q := adapter.Registry.Resolve("openai-compatible", "glm-4-plus")
+		q := adapter.Registry.Resolve(quirks.Target{ProviderType: "openai-compatible", Model: "glm-4-plus"})
 		must.Equal(quirks.TokenFieldMaxTokens, q.BehaviourFlags.OpenAI.TokenField,
 			"Z.ai compat rule did not fire; check resolveCompatProfile dispatch")
 		must.Contains(q.BehaviourFlags.OpenAI.ExtraBodyFields, "tool_stream")
@@ -2355,7 +2355,7 @@ func TestBuildProvider_OpenAICompatibleWithCompatProfile_ZAI(t *testing.T) {
 	// CompatRules() slice, not only the base rule.
 	t.Run("glm-4.7 enables the thinking family", func(t *testing.T) {
 		must := require.New(t)
-		q := adapter.Registry.Resolve("openai-compatible", "glm-4.7")
+		q := adapter.Registry.Resolve(quirks.Target{ProviderType: "openai-compatible", Model: "glm-4.7"})
 		must.Contains(q.ReplayFields, "reasoning_content",
 			"thinking-family rule did not fire via factory")
 		must.Contains(q.BehaviourFlags.OpenAI.ExtraBodyFields, "thinking")

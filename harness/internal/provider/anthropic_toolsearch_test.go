@@ -84,7 +84,7 @@ func anthropicToolSearchBlockStrings(raw []json.RawMessage) []string {
 func TestBuildAnthropicRequest_ToolSearch_SearchToolFirstAndDeferredFlagged(t *testing.T) {
 	must := require.New(t)
 	params := anthropicToolSearchParams(nil)
-	body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
+	body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model}))
 
 	want := []string{
 		`{"type":"tool_search_tool_bm25_20251119","name":"tool_search_tool_bm25"}`,
@@ -101,7 +101,7 @@ func TestBuildAnthropicRequest_ToolSearch_InputExamplesSurviveDeferral(t *testin
 	params.Tools[1].Presentation = &types.ToolPresentation{
 		InputExamples: []json.RawMessage{json.RawMessage(`{"q":"bug"}`)},
 	}
-	body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
+	body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model}))
 
 	must.JSONEq(
 		`{"name":"mcp_github_search_issues","description":"Search GitHub issues","input_schema":{"type":"object"},"input_examples":[{"q":"bug"}],"defer_loading":true}`,
@@ -115,7 +115,7 @@ func TestBuildAnthropicRequest_ToolSearch_SearchToolNeverDeferred(t *testing.T) 
 	for i := range params.Tools {
 		params.Tools[i].Deferred = true
 	}
-	body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
+	body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model}))
 
 	tools := anthropicToolSearchWireTools(t, body)
 	must.Len(tools, 4)
@@ -165,7 +165,7 @@ func TestBuildAnthropicRequest_ToolSearch_GateOffSendsEveryToolLoaded(t *testing
 	for name, params := range cases {
 		t.Run(name, func(t *testing.T) {
 			must := require.New(t)
-			body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
+			body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model}))
 			wire := string(body)
 			must.NotContains(wire, "tool_search_tool_bm25")
 			must.NotContains(wire, "defer_loading")
@@ -250,7 +250,7 @@ func TestBuildAnthropicRequest_ToolSearch_ReplayWireShape(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
 			params := anthropicToolSearchParams(anthropicToolSearchHistory(tc.result))
-			body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
+			body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model}))
 			must.Equal([]string{
 				`{"type":"text","text":"Searching."}`,
 				call,
@@ -266,7 +266,7 @@ func TestBuildAnthropicRequest_ToolSearch_ReplaysEmptyInputAsObject(t *testing.T
 	history := anthropicToolSearchHistory(anthropicToolSearchLoadedResult())
 	history[1].Content[1].Input = nil
 	params := anthropicToolSearchParams(history)
-	body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
+	body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model}))
 	must.JSONEq(
 		`{"type":"server_tool_use","id":"srvtoolu_1","name":"tool_search_tool_bm25","input":{}}`,
 		string(assistantWireBlocks(t, body, 1)[1]),
@@ -303,7 +303,7 @@ func TestBuildAnthropicRequest_ToolSearch_DropsUnreplayableSearchBlocks(t *testi
 				{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "Continue."}}},
 			}
 			params := anthropicToolSearchParams(history)
-			body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
+			body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model}))
 			must.Equal([]string{`{"type":"text","text":"Searching."}`}, anthropicToolSearchBlockStrings(assistantWireBlocks(t, body, 1)))
 		})
 	}
@@ -326,7 +326,7 @@ func TestBuildAnthropicRequest_ToolSearch_ReplaysPausedTurnPendingSearch(t *test
 		}},
 	}
 	params := anthropicToolSearchParams(history)
-	body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
+	body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model}))
 
 	must.Equal([]string{
 		`{"type":"text","text":"Searching."}`,
@@ -362,7 +362,7 @@ func TestBuildAnthropicRequest_ToolSearch_SecondContinuationShape(t *testing.T) 
 		}},
 	}
 	params := anthropicToolSearchParams(history)
-	body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
+	body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model}))
 
 	must.Equal([]string{
 		`{"type":"text","text":"Searching."}`,
@@ -396,7 +396,7 @@ func TestBuildAnthropicRequest_ToolSearch_FinalMessageDropsOtherUnansweredSearch
 				{Role: "assistant", Content: content},
 			}
 			params := anthropicToolSearchParams(history)
-			body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
+			body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model}))
 			must.NotContains(string(body), "server_tool_use")
 		})
 	}
@@ -507,7 +507,7 @@ func TestAnthropicAdapter_ToolSearchStream_RoundTrips(t *testing.T) {
 				}},
 			}
 			params := anthropicToolSearchParams(history)
-			body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
+			body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model}))
 			got := assistantWireBlocks(t, body, 1)
 			must.Len(got, 4)
 			must.JSONEq(`{"type":"server_tool_use","id":"srvtoolu_1","name":"tool_search_tool_bm25","input":{"query":"github issues","limit":3}}`, string(got[1]))
@@ -678,7 +678,7 @@ func TestBuildAnthropicRequest_ToolSearch_NothingDeferredSendsNoSearchTool(t *te
 	for i := range params.Tools {
 		params.Tools[i].Deferred = false
 	}
-	body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve("anthropic", params.Model))
+	body := anthropicWireBody(t, params, true, quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model}))
 	must.Len(anthropicToolSearchWireTools(t, body), 3)
 	must.NotContains(string(body), "defer_loading")
 	must.NotContains(string(body), "tool_search_tool_bm25")

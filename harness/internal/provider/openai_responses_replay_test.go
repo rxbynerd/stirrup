@@ -984,7 +984,7 @@ func TestOpenAIAdapter_IgnoresResponsesReplayKey(t *testing.T) {
 	assistant, _ := fixtureReplayTurn(t)
 	for _, paths := range [][]string{
 		{responsesReplayKey, responsesReplayOriginKey},
-		quirks.DefaultRegistry().Resolve("openai-compatible", "gpt-5.6-sol").ReplayFields,
+		quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: "gpt-5.6-sol"}).ReplayFields,
 	} {
 		out := translateMessages("", []types.Message{assistant}, paths)
 		body, err := json.Marshal(out)

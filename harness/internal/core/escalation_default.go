@@ -7,17 +7,11 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// capabilityResolver resolves a (provider, model) pair to its tool-choice
-// capability. An interface so tests can inject a fake without a real
+// capabilityResolver resolves a provider, endpoint and model to its
+// quirks. An interface so tests can inject a fake without a real
 // *quirks.Registry.
 type capabilityResolver interface {
-	Resolve(providerType, model string) quirks.ProviderQuirks
-}
-
-// endpointCapabilityResolver resolves a capability that depends on the
-// provider's endpoint profile as well as its type and model.
-type endpointCapabilityResolver interface {
-	ResolveEndpoint(providerType, endpoint, model string) quirks.ProviderQuirks
+	Resolve(t quirks.Target) quirks.ProviderQuirks
 }
 
 // modeRequirement describes the first-turn tool expectation for a run mode.
@@ -118,5 +112,5 @@ func (p *defaultEscalationPolicy) toolChoice(providerType, model string) quirks.
 	if p.caps == nil || providerType == "" {
 		return quirks.ToolChoiceCapability{}
 	}
-	return p.caps.Resolve(providerType, model).ToolChoice
+	return p.caps.Resolve(quirks.Target{ProviderType: providerType, Model: model}).ToolChoice
 }

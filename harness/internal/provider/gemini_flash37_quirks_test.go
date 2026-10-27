@@ -88,7 +88,7 @@ func TestGeminiQuirks_ToolResultRole_ByFamily(t *testing.T) {
 		t.Run(tc.model, func(t *testing.T) {
 			must := require.New(t)
 			params := geminiToolRoundTripParams(tc.model)
-			q := quirks.DefaultRegistry().Resolve("gemini", tc.model)
+			q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "gemini", Model: tc.model})
 			body, _, err := BuildGenerateContentRequest(params, nil, q)
 			must.NoError(err)
 			roles := geminiContentRoles(t, body)
@@ -117,7 +117,7 @@ func TestGeminiQuirks_OmitSamplingParams_ByFamily(t *testing.T) {
 		t.Run(tc.model, func(t *testing.T) {
 			must := require.New(t)
 			params := geminiQuirksCanonicalParams(tc.model)
-			q := quirks.DefaultRegistry().Resolve("gemini", tc.model)
+			q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "gemini", Model: tc.model})
 			body, _, err := BuildGenerateContentRequest(params, nil, q)
 			must.NoError(err)
 			if tc.wantTemperature {
@@ -140,7 +140,7 @@ func TestGeminiQuirks_OmitSamplingParams_ByFamily(t *testing.T) {
 // body readable against the reference.
 func TestGeminiQuirks_ThinkingLevel_Wire(t *testing.T) {
 	const model = "gemini-3.7-flash"
-	q := quirks.DefaultRegistry().Resolve("gemini", model)
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "gemini", Model: model})
 
 	t.Run("explicit level is uppercased with summaries", func(t *testing.T) {
 		must := require.New(t)
@@ -202,7 +202,7 @@ func TestGeminiQuirks_ThinkingLevel_RejectedBeforeWire(t *testing.T) {
 		t.Run(tc.model+"/"+tc.level, func(t *testing.T) {
 			must := require.New(t)
 			params := geminiQuirksCanonicalParams(tc.model)
-			q := quirks.DefaultRegistry().Resolve("gemini", tc.model)
+			q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "gemini", Model: tc.model})
 			params.ReasoningEffort = tc.level
 			_, _, err := BuildGenerateContentRequest(params, nil, q)
 			if !tc.wantError {
@@ -222,7 +222,7 @@ func TestGeminiQuirks_ThinkingLevel_RejectedBeforeWire(t *testing.T) {
 func TestGeminiQuirks_Gemini37Flash_WireFixture(t *testing.T) {
 	must := require.New(t)
 	params := geminiToolRoundTripParams("gemini-3.7-flash")
-	q := quirks.DefaultRegistry().Resolve("gemini", params.Model)
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "gemini", Model: params.Model})
 	params.ReasoningEffort = "low"
 	body, _, err := BuildGenerateContentRequest(params, nil, q)
 	must.NoError(err)
@@ -235,7 +235,7 @@ func TestGeminiQuirks_Gemini37Flash_WireFixture(t *testing.T) {
 func TestGeminiQuirks_Gemini36Flash_WireFixture(t *testing.T) {
 	must := require.New(t)
 	params := geminiToolRoundTripParams("gemini-3.6-flash")
-	q := quirks.DefaultRegistry().Resolve("gemini", params.Model)
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "gemini", Model: params.Model})
 	params.ReasoningEffort = "minimal"
 	body, _, err := BuildGenerateContentRequest(params, nil, q)
 	must.NoError(err)
@@ -249,7 +249,7 @@ func TestGeminiQuirks_Gemini36Flash_WireFixture(t *testing.T) {
 func TestGeminiQuirks_ThoughtSignatureSurvivesRoleSwitch(t *testing.T) {
 	must := require.New(t)
 	params := geminiToolRoundTripParams("gemini-3.7-flash")
-	q := quirks.DefaultRegistry().Resolve("gemini", params.Model)
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "gemini", Model: params.Model})
 	body, _, err := BuildGenerateContentRequest(params, nil, q)
 	must.NoError(err)
 	must.Contains(string(body), `"thoughtSignature":"sig-abc"`,

@@ -235,7 +235,7 @@ func TestBuildStructuredResultSupport_RoutesByProviderAndModel(t *testing.T) {
 
 type structuredCapsResolver quirks.StructuredToolResultCapability
 
-func (r structuredCapsResolver) Resolve(_, _ string) quirks.ProviderQuirks {
+func (r structuredCapsResolver) Resolve(quirks.Target) quirks.ProviderQuirks {
 	return quirks.ProviderQuirks{StructuredToolResults: quirks.StructuredToolResultCapability(r)}
 }
 

@@ -36,7 +36,7 @@ type fakeCapabilityResolver struct {
 	cap quirks.ToolChoiceCapability
 }
 
-func (f fakeCapabilityResolver) Resolve(_, _ string) quirks.ProviderQuirks {
+func (f fakeCapabilityResolver) Resolve(quirks.Target) quirks.ProviderQuirks {
 	return quirks.ProviderQuirks{ToolChoice: f.cap}
 }
 

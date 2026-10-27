@@ -46,7 +46,7 @@ func TestToolSearchCapability_ResolvesPerModel(t *testing.T) {
 			if tc.provider == "openai-responses" || tc.provider == "openai-compatible" {
 				endpoint = types.EndpointProfileOpenAI
 			}
-			got := DefaultRegistry().ResolveEndpoint(tc.provider, endpoint, tc.model).ToolSearch
+			got := DefaultRegistry().Resolve(Target{ProviderType: tc.provider, Endpoint: endpoint, Model: tc.model}).ToolSearch
 			must.Equal(tc.supported, got.Supported)
 			must.Equal(tc.variant, got.Variant)
 		})
@@ -67,7 +67,7 @@ func TestToolSearchCapability_HostedSearchOnlyOnOpenAIEndpointProfile(t *testing
 		t.Run("endpoint "+tc.endpoint, func(t *testing.T) {
 			must := require.New(t)
 			for _, model := range []string{"gpt-5.4", "gpt-6-astra"} {
-				got := DefaultRegistry().ResolveEndpoint("openai-responses", tc.endpoint, model).ToolSearch
+				got := DefaultRegistry().Resolve(Target{ProviderType: "openai-responses", Endpoint: tc.endpoint, Model: model}).ToolSearch
 				must.Equal(tc.supported, got.Supported, model)
 			}
 		})

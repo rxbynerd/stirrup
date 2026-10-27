@@ -309,7 +309,7 @@ func TestBuildGenerateContentRequest_StreamFunctionCallArgsFalseWithTools(t *tes
 //   - ToolChoiceTool emits mode ANY restricted to the named tool;
 //   - ToolChoiceTool with no name degrades to AUTO.
 func TestBuildGenerateContentRequest_ToolChoice(t *testing.T) {
-	q := quirks.DefaultRegistry().Resolve("gemini", "gemini-2.5-pro")
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "gemini", Model: "gemini-2.5-pro"})
 	baseTools := []types.ToolDefinition{
 		{Name: "read_file", Description: "read a file", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}}}`)},
 	}

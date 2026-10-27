@@ -153,7 +153,7 @@ func TestBuildGenerateContentRequest_IncludeThoughtsGate(t *testing.T) {
 				ReasoningSummary: tc.summary,
 				Messages:         []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
 			}
-			body, _, err := BuildGenerateContentRequest(params, nil, quirks.DefaultRegistry().Resolve("gemini", tc.model))
+			body, _, err := BuildGenerateContentRequest(params, nil, quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "gemini", Model: tc.model}))
 			must.NoError(err, "build request")
 			var req struct {
 				GenerationConfig *struct {

@@ -189,7 +189,7 @@ func TestBuildResponsesRequest_MatchesStream(t *testing.T) {
 			}
 			captured := <-capturedCh
 
-			q := quirks.DefaultRegistry().Resolve("openai-responses", tc.params.Model)
+			q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-responses", Model: tc.params.Model})
 			built, err := buildResponsesRequest(tc.params, q, nil, "")
 			must.NoError(err)
 			built.Stream = true
@@ -225,7 +225,7 @@ func TestResponsesStrictMode_WireBodyShape(t *testing.T) {
 				q.BehaviourFlags.OpenAI.StrictMode = true
 			},
 		},
-	}).Resolve("openai-responses", "gpt-4o-mini")
+	}).Resolve(quirks.Target{ProviderType: "openai-responses", Model: "gpt-4o-mini"})
 
 	params := types.StreamParams{
 		Model:     "gpt-4o-mini",
@@ -292,7 +292,7 @@ func TestResponsesStrictMode_BuiltinRules(t *testing.T) {
 		t.Run(tc.model, func(t *testing.T) {
 			must := require.New(t)
 			params := effortParams(tc.model, "", true)
-			q := quirks.DefaultRegistry().Resolve("openai-responses", tc.model)
+			q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-responses", Model: tc.model})
 			req, err := buildResponsesRequest(params, q, nil, "")
 			must.NoError(err)
 			body, err := json.Marshal(req)
@@ -328,7 +328,7 @@ func TestResponsesRequest_IncludeEncryptedReasoning(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.model, func(t *testing.T) {
 			must := require.New(t)
-			q := quirks.DefaultRegistry().Resolve("openai-responses", tc.model)
+			q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-responses", Model: tc.model})
 			req, err := buildResponsesRequest(effortParams(tc.model, "", false), q, nil, "")
 			must.NoError(err)
 			body, err := json.Marshal(req)
@@ -426,7 +426,7 @@ func TestBuildResponsesRequest_StreamDefaultFalse(t *testing.T) {
 		MaxTokens: 1024,
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
 	}
-	q := quirks.DefaultRegistry().Resolve("openai-responses", params.Model)
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-responses", Model: params.Model})
 	got, err := buildResponsesRequest(params, q, nil, "")
 	must.NoError(err)
 	must.False(got.Stream, "builder should leave Stream unset")
@@ -462,8 +462,8 @@ func TestBuildResponsesRequest_PromptCacheKey(t *testing.T) {
 		must.NoError(err)
 		return body
 	}
-	flagOn := quirks.DefaultRegistry().Resolve("openai-responses", base.Model)
-	flagOff := quirks.NewRegistry(nil).Resolve("openai-responses", base.Model)
+	flagOn := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-responses", Model: base.Model})
+	flagOff := quirks.NewRegistry(nil).Resolve(quirks.Target{ProviderType: "openai-responses", Model: base.Model})
 	noKey := marshal(t, base, flagOn)
 
 	t.Run("flag on with key appends prompt_cache_key", func(t *testing.T) {
@@ -487,7 +487,7 @@ func TestBuildResponsesRequest_PromptCacheKey(t *testing.T) {
 	})
 	t.Run("chat completions never sends it", func(t *testing.T) {
 		must := require.New(t)
-		q := quirks.DefaultRegistry().Resolve("openai-compatible", withKey.Model)
+		q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: withKey.Model})
 		req, err := buildOpenAIRequest(withKey, true, q, nil)
 		must.NoError(err)
 		body, err := json.Marshal(req)

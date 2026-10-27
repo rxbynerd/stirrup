@@ -505,7 +505,7 @@ func TestBatchAdapter_marshalRequestBody_OpenAICompatible(t *testing.T) {
 func TestBatchAdapter_marshalRequestBody_AnthropicSendsNoCacheControl(t *testing.T) {
 	must := require.New(t)
 	const model = "claude-sonnet-4-6"
-	must.True(quirks.DefaultRegistry().Resolve("anthropic", model).BehaviourFlags.Anthropic.PromptCaching,
+	must.True(quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: model}).BehaviourFlags.Anthropic.PromptCaching,
 		"precondition: registry must enable PromptCaching for %s", model)
 	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "anthropic", "run-test")
 	body, _, err := a.marshalRequestBody(t.Context(), types.StreamParams{

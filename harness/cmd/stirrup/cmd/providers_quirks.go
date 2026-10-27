@@ -122,7 +122,7 @@ func runProvidersQuirksWithIO(cmd *cobra.Command, stdout io.Writer) error {
 	endpoint := provider.EndpointProfileFor(types.ProviderConfig{Type: providerType, EndpointProfile: declared})
 
 	reg := quirks.DefaultRegistry()
-	resolved, applied := reg.ResolveWithRules(providerType, endpoint, model)
+	resolved, applied := reg.ResolveWithRules(quirks.Target{ProviderType: providerType, Endpoint: endpoint, Model: model})
 
 	out := quirksCLIOutput{
 		Provider:        providerType,

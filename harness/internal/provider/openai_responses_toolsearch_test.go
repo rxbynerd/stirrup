@@ -40,7 +40,7 @@ func responsesToolSearchQuirks(supported bool) quirks.ProviderQuirks {
 		Apply: func(q *quirks.ProviderQuirks) {
 			q.ToolSearch = quirks.ToolSearchCapability{Supported: supported, Variant: "hosted"}
 		},
-	}}).Resolve("openai-responses", responsesToolSearchModel)
+	}}).Resolve(quirks.Target{ProviderType: "openai-responses", Model: responsesToolSearchModel})
 }
 
 func responsesToolSearchParams() types.StreamParams {

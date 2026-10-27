@@ -347,7 +347,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// 8. Context strategy. Built after buildComponents because the
 	// "summarise" strategy needs the default provider adapter.
 	summaryWindow := effectiveContextWindow(config.ContextStrategy.MaxTokens,
-		quirks.DefaultRegistry().Resolve(config.Provider.Type, config.ModelRouter.Model).ContextWindow)
+		quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: config.Provider.Type, Model: config.ModelRouter.Model}).ContextWindow)
 	// presenter is assigned once every tool is registered, before the run
 	// starts; tool_use blocks carry the presented name.
 	var presenter *tool.Presenter
@@ -749,7 +749,7 @@ func buildStructuredResultSupport(config *types.RunConfig, caps capabilityResolv
 				providerType = declared
 			}
 		}
-		c := caps.Resolve(providerType, model).StructuredToolResults
+		c := caps.Resolve(quirks.Target{ProviderType: providerType, Model: model}).StructuredToolResults
 		return c.Supported && (c.ContentBlockArray || c.ObjectResponse)
 	}
 }
@@ -759,7 +759,7 @@ func buildStructuredResultSupport(config *types.RunConfig, caps capabilityResolv
 // Anthropic and OpenAI Responses adapters gate their own search on,
 // including the provider's endpoint profile so a gateway that does not
 // implement the hosted search resolves to the harness tool_search.
-func buildToolSearchSupport(config *types.RunConfig, caps endpointCapabilityResolver, logger *slog.Logger) ToolSearchSupport {
+func buildToolSearchSupport(config *types.RunConfig, caps capabilityResolver, logger *slog.Logger) ToolSearchSupport {
 	if config.Tools.LazyLoading.EffectiveStrategy() == types.LazyToolStrategyAuto {
 		logDerivedGenericResponsesEndpoint(logger, config.Provider.Type, config.Provider)
 		for name, cfg := range config.Providers {
@@ -768,7 +768,7 @@ func buildToolSearchSupport(config *types.RunConfig, caps endpointCapabilityReso
 	}
 	return func(key, model string) quirks.ToolSearchCapability {
 		endpoint := provider.EndpointProfileFor(providerConfigFor(config, key))
-		return caps.ResolveEndpoint(selectedProviderType(config, key), endpoint, model).ToolSearch
+		return caps.Resolve(quirks.Target{ProviderType: selectedProviderType(config, key), Endpoint: endpoint, Model: model}).ToolSearch
 	}
 }
 

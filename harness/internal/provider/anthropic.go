@@ -976,7 +976,7 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 	if registry == nil {
 		registry = quirks.DefaultRegistry()
 	}
-	q, appliedRules := registry.ResolveWithRules("anthropic", "", params.Model)
+	q, appliedRules := registry.ResolveWithRules(quirks.Target{ProviderType: "anthropic", Model: params.Model})
 
 	logger := a.Logger
 	if logger == nil {

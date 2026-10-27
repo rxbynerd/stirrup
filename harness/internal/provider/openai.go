@@ -1108,7 +1108,7 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 	if registry == nil {
 		registry = quirks.DefaultRegistry()
 	}
-	q, appliedRules := registry.ResolveWithRules("openai-compatible", o.EndpointProfile, params.Model)
+	q, appliedRules := registry.ResolveWithRules(quirks.Target{ProviderType: "openai-compatible", Endpoint: o.EndpointProfile, Model: params.Model})
 
 	logger := o.Logger
 	if logger == nil {

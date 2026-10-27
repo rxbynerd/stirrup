@@ -59,7 +59,7 @@ func geminiQuirksCanonicalParams(model string) types.StreamParams {
 func TestGeminiQuirks_Gemini25Pro_StreamArgsOff(t *testing.T) {
 	must := require.New(t)
 	params := geminiQuirksCanonicalParams("gemini-2.5-pro")
-	q := quirks.DefaultRegistry().Resolve("gemini", params.Model)
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "gemini", Model: params.Model})
 	must.Equal(quirks.StreamArgsOff, q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape,
 		"gemini-2.5-pro: Gemini base rule must set StreamArgsOff")
 	body, _, err := BuildGenerateContentRequest(params, nil, q)
@@ -81,7 +81,7 @@ func TestGeminiQuirks_Gemini25Pro_StreamArgsOff(t *testing.T) {
 func TestGeminiQuirks_Gemini31PreviewLocked_StreamArgsOff(t *testing.T) {
 	must := require.New(t)
 	params := geminiQuirksCanonicalParams("gemini-3.1-pro-preview")
-	q := quirks.DefaultRegistry().Resolve("gemini", params.Model)
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "gemini", Model: params.Model})
 	must.Equal(quirks.StreamArgsOff, q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape,
 		"gemini-3.1-pro-preview: Gemini base rule must set StreamArgsOff")
 	body, _, err := BuildGenerateContentRequest(params, nil, q)
@@ -186,7 +186,7 @@ func TestGeminiQuirks_ZeroValueIsIdenticalToDefaultRegistry(t *testing.T) {
 
 	pre, _, err := BuildGenerateContentRequest(params, nil, quirks.ProviderQuirks{})
 	must.NoError(err)
-	post, _, err := BuildGenerateContentRequest(params, nil, quirks.DefaultRegistry().Resolve("gemini", "gemini-2.5-pro"))
+	post, _, err := BuildGenerateContentRequest(params, nil, quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "gemini", Model: "gemini-2.5-pro"}))
 	must.NoError(err)
 	must.Equal(string(pre), string(post), "zero-value and registry-resolved wire shapes must match")
 }
@@ -198,7 +198,7 @@ func TestGeminiQuirks_OmitSamplingParams_NoOpForGemini(t *testing.T) {
 	for _, model := range []string{"gemini-2.5-pro", "gemini-3.1-pro-preview", "gemini-unknown-future"} {
 		t.Run(model, func(t *testing.T) {
 			must := require.New(t)
-			q := quirks.DefaultRegistry().Resolve("gemini", model)
+			q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "gemini", Model: model})
 			must.False(q.BehaviourFlags.OpenAI.OmitSamplingParams,
 				"Gemini rules must not set OpenAI.OmitSamplingParams")
 			must.Equal(quirks.TokenFieldMaxCompletionTokens, q.BehaviourFlags.OpenAI.TokenField,

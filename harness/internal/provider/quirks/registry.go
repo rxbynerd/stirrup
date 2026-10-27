@@ -58,30 +58,32 @@ func DefaultRegistry() *Registry {
 	return defaultRegistry
 }
 
-// Resolve is ResolveEndpoint with the endpoint not stated. Rules scoped
-// to an endpoint profile do not fire, so a capability that only some
-// endpoints implement resolves as unsupported. Callers that know the
-// endpoint profile should use ResolveEndpoint.
-func (r *Registry) Resolve(providerType, model string) ProviderQuirks {
-	return r.ResolveEndpoint(providerType, "", model)
+// Target is what a resolution resolves for. Endpoint is the provider's
+// endpoint profile (provider.EndpointProfileFor); an empty Endpoint means
+// the endpoint is not stated, and rules scoped to an endpoint do not
+// match it, so a capability only some endpoints implement resolves as
+// unsupported.
+type Target struct {
+	ProviderType string
+	Endpoint     string
+	Model        string
 }
 
-// ResolveEndpoint walks all rules matching (providerType, endpoint,
-// model) in specificity-then-declaration order and applies each one to
-// a fresh ProviderQuirks. The returned value has every map and slice
-// field initialised (non-nil), so callers can read them without
-// nil-guarding. Safe to call concurrently.
-func (r *Registry) ResolveEndpoint(providerType, endpoint, model string) ProviderQuirks {
-	q, _ := r.ResolveWithRules(providerType, endpoint, model)
+// Resolve walks all rules matching t in specificity-then-declaration
+// order and applies each one to a fresh ProviderQuirks. The returned
+// value has every map and slice field initialised (non-nil), so callers
+// can read them without nil-guarding. Safe to call concurrently.
+func (r *Registry) Resolve(t Target) ProviderQuirks {
+	q, _ := r.ResolveWithRules(t)
 	return q
 }
 
-// ResolveWithRules is ResolveEndpoint plus the ordered list of rules
-// that actually contributed to the result, in the same specificity-
-// then-declaration order Apply was invoked in — the last entry is the
-// rule whose writes won on overlapping fields. Rules with a nil Apply
-// are filtered out since they did not run.
-func (r *Registry) ResolveWithRules(providerType, endpoint, model string) (ProviderQuirks, []Rule) {
+// ResolveWithRules is Resolve plus the ordered list of rules that
+// actually contributed to the result, in the same specificity-then-
+// declaration order Apply was invoked in — the last entry is the rule
+// whose writes won on overlapping fields. Rules with a nil Apply are
+// filtered out since they did not run.
+func (r *Registry) ResolveWithRules(t Target) (ProviderQuirks, []Rule) {
 	q := ProviderQuirks{
 		FieldRenames:   map[string]string{},
 		OmitFields:     []string{},
@@ -118,7 +120,7 @@ func (r *Registry) ResolveWithRules(providerType, endpoint, model string) (Provi
 	}
 	matches := make([]indexed, 0, len(r.rules))
 	for i, rule := range r.rules {
-		if !RuleMatches(rule, providerType, endpoint, model) {
+		if !RuleMatches(rule, t) {
 			continue
 		}
 		matches = append(matches, indexed{idx: i, rule: rule})
@@ -147,23 +149,22 @@ func (r *Registry) ResolveWithRules(providerType, endpoint, model string) (Provi
 	return q, applied
 }
 
-// RuleMatches reports whether the rule fires for the given (provider,
-// endpoint, model) triple. An empty ModelMatch matches every model and
-// an empty Endpoint every endpoint; an endpoint-scoped rule never
-// matches an unstated ("") endpoint. A glob that fails to compile is
-// treated as a non-match rather than panicking. Exported so CLI
-// introspection reuses the same predicate Resolve uses.
-func RuleMatches(rule Rule, providerType, endpoint, model string) bool {
-	if rule.ProviderType != providerType {
+// RuleMatches reports whether the rule fires for t. An empty ModelMatch
+// matches every model and an empty Endpoint every endpoint; an
+// endpoint-scoped rule never matches an unstated ("") endpoint. A glob
+// that fails to compile is treated as a non-match rather than panicking.
+// Exported so CLI introspection reuses the same predicate Resolve uses.
+func RuleMatches(rule Rule, t Target) bool {
+	if rule.ProviderType != t.ProviderType {
 		return false
 	}
-	if rule.Endpoint != "" && rule.Endpoint != endpoint {
+	if rule.Endpoint != "" && rule.Endpoint != t.Endpoint {
 		return false
 	}
 	if rule.ModelMatch == "" {
 		return true
 	}
-	ok, err := path.Match(rule.ModelMatch, model)
+	ok, err := path.Match(rule.ModelMatch, t.Model)
 	if err != nil {
 		return false
 	}

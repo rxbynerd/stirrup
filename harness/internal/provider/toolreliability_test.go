@@ -49,7 +49,7 @@ func TestOpenAIChat_NonStrictModel_DisablesParallelAndFoldsExamples(t *testing.T
 		MaxTokens:         100,
 		ParallelToolCalls: &disable,
 	}
-	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: params.Model})
 	req, err := buildOpenAIRequest(params, true, q, nil)
 	must.NoError(err)
 	body, err := json.Marshal(req)
@@ -73,7 +73,7 @@ func TestOpenAIChat_StrictModel_OmitsExamplesAndSetsStrict(t *testing.T) {
 		Tools:     []types.ToolDefinition{demoToolWithExample()},
 		MaxTokens: 100,
 	}
-	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: params.Model})
 	req, err := buildOpenAIRequest(params, true, q, newStrictSchemaCache())
 	must.NoError(err)
 	body, err := json.Marshal(req)
@@ -99,7 +99,7 @@ func TestOpenAIChat_UnsetParallel_OmitsField(t *testing.T) {
 		Tools:     []types.ToolDefinition{demoToolWithExample()},
 		MaxTokens: 100,
 	}
-	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: params.Model})
 	req, err := buildOpenAIRequest(params, true, q, nil)
 	must.NoError(err)
 	body, err := json.Marshal(req)
@@ -119,7 +119,7 @@ func TestResponses_EnabledParallel_EmitsTrueAndFoldsExamples(t *testing.T) {
 		MaxTokens:         100,
 		ParallelToolCalls: &enable,
 	}
-	q := quirks.DefaultRegistry().Resolve("openai-responses", params.Model)
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-responses", Model: params.Model})
 	req, err := buildResponsesRequest(params, q, nil, "")
 	must.NoError(err)
 	body, err := json.Marshal(req)
@@ -144,7 +144,7 @@ func TestAnthropic_DisabledParallel_SetsAutoToolChoice(t *testing.T) {
 		MaxTokens:         100,
 		ParallelToolCalls: &disable,
 	}
-	q := quirks.DefaultRegistry().Resolve("anthropic", params.Model)
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model})
 	body, err := json.Marshal(buildAnthropicRequest(params, true, q))
 	must.NoError(err)
 	top := decodeObject(t, body)
@@ -217,7 +217,7 @@ func TestAnthropic_EnabledParallel_OmitsToolChoice(t *testing.T) {
 		MaxTokens:         100,
 		ParallelToolCalls: &enable, // parallel is the default; nothing to emit
 	}
-	q := quirks.DefaultRegistry().Resolve("anthropic", params.Model)
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model})
 	body, err := json.Marshal(buildAnthropicRequest(params, true, q))
 	must.NoError(err)
 
@@ -236,7 +236,7 @@ func TestAnthropic_RequiredChoice_CarriesDisableParallel(t *testing.T) {
 		ToolChoice:        types.ToolChoiceRequired,
 		ParallelToolCalls: &disable,
 	}
-	q := quirks.DefaultRegistry().Resolve("anthropic", params.Model)
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model})
 	body, err := json.Marshal(buildAnthropicRequest(params, true, q))
 	must.NoError(err)
 
@@ -256,7 +256,7 @@ func TestGemini_ParallelAndExamples_AreNotEmitted(t *testing.T) {
 		MaxTokens:         100,
 		ParallelToolCalls: &disable, // unsupported on Gemini → no-op
 	}
-	q := quirks.DefaultRegistry().Resolve("gemini", params.Model)
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "gemini", Model: params.Model})
 	body, _, err := BuildGenerateContentRequest(params, nil, q)
 	must.NoError(err)
 	top := decodeObject(t, body)

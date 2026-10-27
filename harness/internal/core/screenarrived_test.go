@@ -301,7 +301,7 @@ func TestScreenArrivedContent_DenyAndSpotlightDropStructuredPayload(t *testing.T
 			must.Empty(outcome)
 			must.Nil(types.ToolResultWireEnvelope(messages[2].Content[0]), "wire envelope should be absent")
 			const model = "gemini-3.8-flash"
-			body, _, err := provider.BuildGenerateContentRequest(types.StreamParams{Model: model, Messages: messages}, nil, quirks.DefaultRegistry().Resolve("gemini", model))
+			body, _, err := provider.BuildGenerateContentRequest(types.StreamParams{Model: model, Messages: messages}, nil, quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "gemini", Model: model}))
 			must.NoError(err, "build gemini request")
 			must.NotContains(string(body), injection, "gemini request should not carry the structured payload")
 		})

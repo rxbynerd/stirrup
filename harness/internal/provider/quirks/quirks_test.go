@@ -23,7 +23,7 @@ const staleness = 180 * 24 * time.Hour
 // closures rely on this so they can read-modify-write without nil guards.
 func TestResolve_EmptyRegistryAllocatesEveryField(t *testing.T) {
 	must := require.New(t)
-	q := DefaultRegistry().Resolve("openai-compatible", "gpt-4o")
+	q := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: "gpt-4o"})
 
 	must.NotNil(q.FieldRenames)
 	must.NotNil(q.OmitFields)
@@ -231,24 +231,24 @@ func TestRemoveFromOmit_RemovesOnlyNamedEntry(t *testing.T) {
 func TestRuleCarveOuts(t *testing.T) {
 	t.Run("gpt-5-chat-latest keeps sampling params", func(t *testing.T) {
 		must := require.New(t)
-		q := DefaultRegistry().Resolve("openai-compatible", "gpt-5-chat-latest")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: "gpt-5-chat-latest"})
 		must.False(q.BehaviourFlags.OpenAI.OmitSamplingParams)
 	})
 	// The carve-out clears OmitSamplingParams but must not clear
 	// StrictMode (set by the earlier-firing gpt-5* strict-mode rule).
 	t.Run("gpt-5-chat-latest retains strict mode", func(t *testing.T) {
 		must := require.New(t)
-		q := DefaultRegistry().Resolve("openai-compatible", "gpt-5-chat-latest")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: "gpt-5-chat-latest"})
 		must.True(q.BehaviourFlags.OpenAI.StrictMode, "carve-out must not clear strict mode")
 	})
 	t.Run("gpt-5-nano omits sampling params", func(t *testing.T) {
 		must := require.New(t)
-		q := DefaultRegistry().Resolve("openai-compatible", "gpt-5-nano")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: "gpt-5-nano"})
 		must.True(q.BehaviourFlags.OpenAI.OmitSamplingParams, "gpt-5* rule should fire")
 	})
 	t.Run("gpt-5-chat-mini also keeps sampling params", func(t *testing.T) {
 		must := require.New(t)
-		q := DefaultRegistry().Resolve("openai-compatible", "gpt-5-chat-mini")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: "gpt-5-chat-mini"})
 		must.False(q.BehaviourFlags.OpenAI.OmitSamplingParams, "carve-out should cover the family")
 	})
 	// Bare o-series aliases (o1, o3, o4) ship alongside dash-suffixed
@@ -258,7 +258,7 @@ func TestRuleCarveOuts(t *testing.T) {
 		bare := bare
 		t.Run("bare "+bare+" omits sampling params", func(t *testing.T) {
 			must := require.New(t)
-			q := DefaultRegistry().Resolve("openai-compatible", bare)
+			q := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: bare})
 			must.True(q.BehaviourFlags.OpenAI.OmitSamplingParams, "o-series rule must cover the bare alias")
 		})
 	}
@@ -267,7 +267,7 @@ func TestRuleCarveOuts(t *testing.T) {
 	// tightening of the glob is a deliberate, test-visible edit.
 	t.Run("o10-mini also omits sampling params (forward-compat)", func(t *testing.T) {
 		must := require.New(t)
-		q := DefaultRegistry().Resolve("openai-compatible", "o10-mini")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: "o10-mini"})
 		must.True(q.BehaviourFlags.OpenAI.OmitSamplingParams, "o[1-9]* should match two-digit aliases")
 	})
 }
@@ -292,7 +292,7 @@ func TestBuiltinRulesStrictMode(t *testing.T) {
 		model := model
 		t.Run(model+" enables strict mode", func(t *testing.T) {
 			must := require.New(t)
-			q := DefaultRegistry().Resolve("openai-compatible", model)
+			q := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: model})
 			must.True(q.BehaviourFlags.OpenAI.StrictMode, "built-in rule did not fire")
 		})
 	}
@@ -302,12 +302,12 @@ func TestBuiltinRulesStrictMode(t *testing.T) {
 	// rule but not any strict-mode rule.
 	t.Run("gpt-4o does not enable strict mode", func(t *testing.T) {
 		must := require.New(t)
-		q := DefaultRegistry().Resolve("openai-compatible", "gpt-4o")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: "gpt-4o"})
 		must.False(q.BehaviourFlags.OpenAI.StrictMode, "no built-in rule covers bare gpt-4o today")
 	})
 	t.Run("o1-mini omits sampling params but does not enable strict mode", func(t *testing.T) {
 		must := require.New(t)
-		q := DefaultRegistry().Resolve("openai-compatible", "o1-mini")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: "o1-mini"})
 		must.True(q.BehaviourFlags.OpenAI.OmitSamplingParams, "reasoning-class rule should fire")
 		must.False(q.BehaviourFlags.OpenAI.StrictMode, "no rule enables strict mode on o-series")
 	})
@@ -356,7 +356,7 @@ func TestKnownModelIDs_ResolutionSmoke(t *testing.T) {
 			continue
 		}
 		for _, prov := range provs {
-			q := DefaultRegistry().Resolve(prov, line)
+			q := DefaultRegistry().Resolve(Target{ProviderType: prov, Model: line})
 			if q.BehaviourFlags.OpenAI.OmitSamplingParams || q.BehaviourFlags.OpenAI.TokenField != TokenFieldMaxCompletionTokens || q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape != StreamArgsOff || q.ToolChoice.Supported {
 				resolved++
 			}
@@ -371,7 +371,7 @@ func TestKnownModelIDs_ResolutionSmoke(t *testing.T) {
 // for the openai-compatible provider, even when the model string looks
 // like a Gemini model id (e.g. routed through a third-party gateway).
 func TestGeminiRule_NoMatchOnOpenAICompatProvider(t *testing.T) {
-	q := DefaultRegistry().Resolve("openai-compatible", "gemini-2.5-pro")
+	q := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: "gemini-2.5-pro"})
 
 	t.Run("gemini stream args shape stays off", func(t *testing.T) {
 		must := require.New(t)
@@ -397,7 +397,7 @@ func TestGeminiRule_NoMatchOnOpenAICompatProvider(t *testing.T) {
 func TestQuirks_ToolChoiceCapabilityRules(t *testing.T) {
 	t.Run("anthropic advertises auto/required/named but not none", func(t *testing.T) {
 		must := require.New(t)
-		q := DefaultRegistry().Resolve("anthropic", "claude-sonnet-4-5")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "anthropic", Model: "claude-sonnet-4-5"})
 		must.True(q.ToolChoice.Supported)
 		must.True(q.ToolChoice.Auto)
 		must.True(q.ToolChoice.Required)
@@ -408,21 +408,21 @@ func TestQuirks_ToolChoiceCapabilityRules(t *testing.T) {
 
 	t.Run("openai-compatible advertises every mode", func(t *testing.T) {
 		must := require.New(t)
-		q := DefaultRegistry().Resolve("openai-compatible", "gpt-4o")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: "gpt-4o"})
 		want := ToolChoiceCapability{Supported: true, Auto: true, Required: true, None: true, NamedTool: true}
 		must.Equal(want, q.ToolChoice)
 	})
 
 	t.Run("gemini advertises every mode and rejects a trailing model turn", func(t *testing.T) {
 		must := require.New(t)
-		q := DefaultRegistry().Resolve("gemini", "gemini-2.5-pro")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "gemini", Model: "gemini-2.5-pro"})
 		want := ToolChoiceCapability{Supported: true, Auto: true, Required: true, None: true, NamedTool: true, RejectsTrailingAssistant: true}
 		must.Equal(want, q.ToolChoice)
 	})
 
 	t.Run("unknown provider resolves zero (no support)", func(t *testing.T) {
 		must := require.New(t)
-		q := DefaultRegistry().Resolve("mystery-provider", "some-model")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "mystery-provider", Model: "some-model"})
 		must.Zero(q.ToolChoice, "no native support")
 	})
 }
@@ -460,21 +460,21 @@ func TestToolChoiceRules_AnyModeImpliesSupported(t *testing.T) {
 func TestQuirks_StructuredToolResultCapabilityRules(t *testing.T) {
 	t.Run("anthropic advertises content-block array", func(t *testing.T) {
 		must := require.New(t)
-		q := DefaultRegistry().Resolve("anthropic", "claude-sonnet-4-5")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "anthropic", Model: "claude-sonnet-4-5"})
 		want := StructuredToolResultCapability{Supported: true, ContentBlockArray: true}
 		must.Equal(want, q.StructuredToolResults)
 	})
 
 	t.Run("gemini advertises object response", func(t *testing.T) {
 		must := require.New(t)
-		q := DefaultRegistry().Resolve("gemini", "gemini-2.5-pro")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "gemini", Model: "gemini-2.5-pro"})
 		want := StructuredToolResultCapability{Supported: true, ObjectResponse: true}
 		must.Equal(want, q.StructuredToolResults)
 	})
 
 	t.Run("openai-compatible stays text-only", func(t *testing.T) {
 		must := require.New(t)
-		q := DefaultRegistry().Resolve("openai-compatible", "gpt-4o")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: "gpt-4o"})
 		must.Zero(q.StructuredToolResults, "text-only")
 	})
 
@@ -482,13 +482,13 @@ func TestQuirks_StructuredToolResultCapabilityRules(t *testing.T) {
 		must := require.New(t)
 		// Pin bedrock as text-only so a future rule enabling Supported
 		// cannot land unnoticed.
-		q := DefaultRegistry().Resolve("bedrock", "anthropic.claude-3-5-sonnet-20241022-v2:0")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "bedrock", Model: "anthropic.claude-3-5-sonnet-20241022-v2:0"})
 		must.Zero(q.StructuredToolResults, "text-only")
 	})
 
 	t.Run("unknown provider resolves zero (text-only)", func(t *testing.T) {
 		must := require.New(t)
-		q := DefaultRegistry().Resolve("mystery-provider", "some-model")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "mystery-provider", Model: "some-model"})
 		must.Zero(q.StructuredToolResults, "text-only")
 	})
 }
@@ -514,7 +514,7 @@ func TestQuirks_AnthropicOmitSamplingParamsCapabilityRules(t *testing.T) {
 	for _, model := range omits {
 		t.Run(model+" omits sampling params", func(t *testing.T) {
 			must := require.New(t)
-			q := DefaultRegistry().Resolve("anthropic", model)
+			q := DefaultRegistry().Resolve(Target{ProviderType: "anthropic", Model: model})
 			must.True(q.BehaviourFlags.Anthropic.OmitSamplingParams, "rule not firing")
 		})
 	}
@@ -532,7 +532,7 @@ func TestQuirks_AnthropicOmitSamplingParamsCapabilityRules(t *testing.T) {
 	for _, model := range accepts {
 		t.Run(model+" keeps sampling params", func(t *testing.T) {
 			must := require.New(t)
-			q := DefaultRegistry().Resolve("anthropic", model)
+			q := DefaultRegistry().Resolve(Target{ProviderType: "anthropic", Model: model})
 			must.False(q.BehaviourFlags.Anthropic.OmitSamplingParams, "rule misfire")
 		})
 	}
@@ -568,7 +568,7 @@ func TestAnthropicEffortLevels_PerModelAllowList(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.model, func(t *testing.T) {
 			must := require.New(t)
-			got := DefaultRegistry().Resolve("anthropic", tc.model).BehaviourFlags.Anthropic.EffortLevels
+			got := DefaultRegistry().Resolve(Target{ProviderType: "anthropic", Model: tc.model}).BehaviourFlags.Anthropic.EffortLevels
 			must.Equal(tc.want, got)
 		})
 	}
@@ -597,18 +597,18 @@ func TestAnthropicPromptCaching_ResolvesOnForAnthropicOnly(t *testing.T) {
 	for _, model := range models {
 		t.Run(model+" enables prompt caching", func(t *testing.T) {
 			must := require.New(t)
-			q := DefaultRegistry().Resolve("anthropic", model)
+			q := DefaultRegistry().Resolve(Target{ProviderType: "anthropic", Model: model})
 			must.True(q.BehaviourFlags.Anthropic.PromptCaching)
 		})
 	}
 	t.Run("empty registry leaves prompt caching off", func(t *testing.T) {
 		must := require.New(t)
-		q := NewRegistry(nil).Resolve("anthropic", "claude-sonnet-5-5")
+		q := NewRegistry(nil).Resolve(Target{ProviderType: "anthropic", Model: "claude-sonnet-5-5"})
 		must.False(q.BehaviourFlags.Anthropic.PromptCaching)
 	})
 	t.Run("openai-compatible does not get prompt caching", func(t *testing.T) {
 		must := require.New(t)
-		q := DefaultRegistry().Resolve("openai-compatible", "claude-sonnet-5-5")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: "claude-sonnet-5-5"})
 		must.False(q.BehaviourFlags.Anthropic.PromptCaching, "rule scoped to the anthropic provider")
 	})
 }
@@ -622,7 +622,7 @@ func TestAnthropic_ForcedToolChoiceRemoved(t *testing.T) {
 	for _, model := range []string{"claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1", "claude-mythos-5-1"} {
 		t.Run(model, func(t *testing.T) {
 			must := require.New(t)
-			q := DefaultRegistry().Resolve("anthropic", model)
+			q := DefaultRegistry().Resolve(Target{ProviderType: "anthropic", Model: model})
 			must.Equal(autoOnly, q.ToolChoice)
 			must.True(q.ParallelToolCalls.Disable, "disable_parallel_tool_use still works with auto")
 		})
@@ -630,7 +630,7 @@ func TestAnthropic_ForcedToolChoiceRemoved(t *testing.T) {
 	for _, model := range []string{"claude-sonnet-5", "claude-opus-5", "claude-fable-5", "claude-opus-4-8", "claude-haiku-5-5"} {
 		t.Run(model+" keeps forced choice", func(t *testing.T) {
 			must := require.New(t)
-			tc := DefaultRegistry().Resolve("anthropic", model).ToolChoice
+			tc := DefaultRegistry().Resolve(Target{ProviderType: "anthropic", Model: model}).ToolChoice
 			must.True(tc.Required && tc.NamedTool, "ToolChoice = %+v, want Required and NamedTool", tc)
 		})
 	}
@@ -641,7 +641,7 @@ func TestAnthropic_ForcedToolChoiceRemoved(t *testing.T) {
 // pre-existing "anthropic / *" capability rules, do not clobber
 // ToolChoice, StructuredToolResults, or ParallelToolCalls.
 func TestAnthropic_OmitSamplingParamsComposesWithCapabilities(t *testing.T) {
-	baseline := DefaultRegistry().Resolve("anthropic", "claude-sonnet-4-5")
+	baseline := DefaultRegistry().Resolve(Target{ProviderType: "anthropic", Model: "claude-sonnet-4-5"})
 
 	for _, model := range []string{
 		"claude-opus-4-7",
@@ -653,7 +653,7 @@ func TestAnthropic_OmitSamplingParamsComposesWithCapabilities(t *testing.T) {
 	} {
 		t.Run(model, func(t *testing.T) {
 			must := require.New(t)
-			q := DefaultRegistry().Resolve("anthropic", model)
+			q := DefaultRegistry().Resolve(Target{ProviderType: "anthropic", Model: model})
 			must.True(q.BehaviourFlags.Anthropic.OmitSamplingParams, "rule not firing")
 			must.Equal(baseline.ToolChoice, q.ToolChoice, "differs from the claude-sonnet-4-5 baseline")
 			must.Equal(baseline.StructuredToolResults, q.StructuredToolResults, "differs from the claude-sonnet-4-5 baseline")
@@ -698,7 +698,7 @@ func TestParallelToolCalls_CapabilityRules(t *testing.T) {
 	for provider, model := range supported {
 		t.Run(provider+" advertises disable", func(t *testing.T) {
 			must := require.New(t)
-			q := DefaultRegistry().Resolve(provider, model)
+			q := DefaultRegistry().Resolve(Target{ProviderType: provider, Model: model})
 			must.Equal(ParallelToolCallsCapability{Supported: true, Disable: true}, q.ParallelToolCalls)
 		})
 	}
@@ -711,7 +711,7 @@ func TestParallelToolCalls_CapabilityRules(t *testing.T) {
 	for provider, model := range unsupported {
 		t.Run(provider+" stays unsupported", func(t *testing.T) {
 			must := require.New(t)
-			q := DefaultRegistry().Resolve(provider, model)
+			q := DefaultRegistry().Resolve(Target{ProviderType: provider, Model: model})
 			must.Zero(q.ParallelToolCalls)
 		})
 	}
@@ -735,7 +735,7 @@ func TestToolExamples_CapabilityRules(t *testing.T) {
 	for provider, tc := range supported {
 		t.Run(provider+" accepts examples", func(t *testing.T) {
 			must := require.New(t)
-			q := DefaultRegistry().Resolve(provider, tc.model)
+			q := DefaultRegistry().Resolve(Target{ProviderType: provider, Model: tc.model})
 			must.Equal(tc.want, q.ToolExamples)
 		})
 	}
@@ -748,7 +748,7 @@ func TestToolExamples_CapabilityRules(t *testing.T) {
 	for provider, model := range unsupported {
 		t.Run(provider+" stays unsupported", func(t *testing.T) {
 			must := require.New(t)
-			q := DefaultRegistry().Resolve(provider, model)
+			q := DefaultRegistry().Resolve(Target{ProviderType: provider, Model: model})
 			must.Zero(q.ToolExamples)
 		})
 	}
@@ -756,7 +756,7 @@ func TestToolExamples_CapabilityRules(t *testing.T) {
 	for _, model := range []string{"claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5"} {
 		t.Run("anthropic "+model+" sends input_examples natively", func(t *testing.T) {
 			must := require.New(t)
-			q := DefaultRegistry().Resolve("anthropic", model)
+			q := DefaultRegistry().Resolve(Target{ProviderType: "anthropic", Model: model})
 			must.Equal(ToolExamplesCapability{Supported: true, Native: true}, q.ToolExamples)
 		})
 	}
@@ -768,7 +768,7 @@ func TestToolExamples_CapabilityRules(t *testing.T) {
 // them, so each one is asserted explicitly and a dropped pin fails here.
 func TestOpenAIResponses_BehaviourFlags(t *testing.T) {
 	must := require.New(t)
-	q := DefaultRegistry().Resolve("openai-responses", "gpt-4o")
+	q := DefaultRegistry().Resolve(Target{ProviderType: "openai-responses", Model: "gpt-4o"})
 	rf := q.BehaviourFlags.OpenAIResponses
 	must.Equal(TokenFieldMaxOutputTokens, rf.TokenField)
 	must.Equal(StoreFalse, rf.StoreMode)
@@ -777,21 +777,21 @@ func TestOpenAIResponses_BehaviourFlags(t *testing.T) {
 	for _, model := range []string{"gpt-4o", "gpt-5.4", "gpt-6-astra", "some-new-model"} {
 		t.Run("openai-responses "+model+" enables prompt cache key", func(t *testing.T) {
 			must := require.New(t)
-			q := DefaultRegistry().Resolve("openai-responses", model)
+			q := DefaultRegistry().Resolve(Target{ProviderType: "openai-responses", Model: model})
 			must.True(q.BehaviourFlags.OpenAIResponses.PromptCacheKey)
 		})
 	}
 	for _, providerType := range []string{"openai-compatible", "anthropic"} {
 		t.Run(providerType+" leaves prompt cache key off", func(t *testing.T) {
 			must := require.New(t)
-			q := DefaultRegistry().Resolve(providerType, "gpt-4o")
+			q := DefaultRegistry().Resolve(Target{ProviderType: providerType, Model: "gpt-4o"})
 			must.False(q.BehaviourFlags.OpenAIResponses.PromptCacheKey, "rule is scoped to openai-responses")
 		})
 	}
 
 	// With no matching rule the flags resolve to their zero values, with
 	// ReasoningEffortLevels allocated as an empty slice.
-	empty := NewRegistry(nil).Resolve("openai-responses", "gpt-4o")
+	empty := NewRegistry(nil).Resolve(Target{ProviderType: "openai-responses", Model: "gpt-4o"})
 	wantEmpty := OpenAIResponsesBehaviourFlags{ReasoningEffortLevels: []string{}}
 	must.Equal(wantEmpty, empty.BehaviourFlags.OpenAIResponses)
 }
@@ -840,32 +840,32 @@ func freshQuirks() ProviderQuirks {
 func TestReplayFieldsRules_DeepSeekV4(t *testing.T) {
 	t.Run("does not fire on the retired deepseek-reasoner alias", func(t *testing.T) {
 		must := require.New(t)
-		q := DefaultRegistry().Resolve("openai-compatible", "deepseek-reasoner")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: "deepseek-reasoner"})
 		must.Empty(q.ReplayFields)
 	})
 	t.Run("does not fire on deepseek-chat", func(t *testing.T) {
 		must := require.New(t)
-		q := DefaultRegistry().Resolve("openai-compatible", "deepseek-chat")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: "deepseek-chat"})
 		must.Empty(q.ReplayFields)
 	})
 	t.Run("does not fire when routed through a different provider", func(t *testing.T) {
 		must := require.New(t)
-		q := DefaultRegistry().Resolve("gemini", "deepseek-v4")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "gemini", Model: "deepseek-v4"})
 		must.NotContains(q.ReplayFields, "reasoning_content", "DeepSeek rule leaked into gemini resolution")
 	})
 	t.Run("fires on deepseek-v4", func(t *testing.T) {
 		must := require.New(t)
-		q := DefaultRegistry().Resolve("openai-compatible", "deepseek-v4")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: "deepseek-v4"})
 		must.Equal([]string{"reasoning_content"}, q.ReplayFields)
 	})
 	t.Run("fires on deepseek-v4-chat", func(t *testing.T) {
 		must := require.New(t)
-		q := DefaultRegistry().Resolve("openai-compatible", "deepseek-v4-chat")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: "deepseek-v4-chat"})
 		must.Equal([]string{"reasoning_content"}, q.ReplayFields)
 	})
 	t.Run("does not fire on deepseek-v3 (no rule)", func(t *testing.T) {
 		must := require.New(t)
-		q := DefaultRegistry().Resolve("openai-compatible", "deepseek-v3")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: "deepseek-v3"})
 		must.Empty(q.ReplayFields)
 	})
 }
@@ -878,7 +878,7 @@ func TestDeepSeekV4_Resolution(t *testing.T) {
 	for _, model := range []string{"deepseek-v4-flash", "deepseek-v4-pro"} {
 		t.Run(model, func(t *testing.T) {
 			must := require.New(t)
-			q := DefaultRegistry().Resolve("openai-compatible", model)
+			q := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: model})
 			must.Equal([]string{"reasoning_content"}, q.ReplayFields)
 			oai := q.BehaviourFlags.OpenAI
 			must.True(oai.OmitSamplingParams, "thinking mode ignores sampling params; logprobs hard-errors")
@@ -916,7 +916,7 @@ func TestDeepSeekV4_GatewayResolution(t *testing.T) {
 	} {
 		t.Run(model, func(t *testing.T) {
 			must := require.New(t)
-			q, applied := DefaultRegistry().ResolveWithRules("openai-compatible", "", model)
+			q, applied := DefaultRegistry().ResolveWithRules(Target{ProviderType: "openai-compatible", Model: model})
 			must.Empty(q.ReplayFields, "OpenRouter normalises reasoning and does not require a replay")
 			oai := q.BehaviourFlags.OpenAI
 			must.True(oai.OmitSamplingParams)
@@ -936,7 +936,7 @@ func TestDeepSeekV4_GatewayResolution(t *testing.T) {
 
 	t.Run("bare ids do not fire the gateway rules", func(t *testing.T) {
 		must := require.New(t)
-		_, applied := DefaultRegistry().ResolveWithRules("openai-compatible", "", "deepseek-v4-flash")
+		_, applied := DefaultRegistry().ResolveWithRules(Target{ProviderType: "openai-compatible", Model: "deepseek-v4-flash"})
 		for _, r := range applied {
 			must.NotContains(r.Description, "via OpenRouter")
 		}
@@ -945,7 +945,7 @@ func TestDeepSeekV4_GatewayResolution(t *testing.T) {
 	for _, model := range []string{"deepseek/deepseek-chat", "deepseek/deepseek-v3", "openrouter/deepseek-v4-flash", "~deepseek/deepseek-chat", "~deepseek/deepseek-chat-latest"} {
 		t.Run(model+" does not fire", func(t *testing.T) {
 			must := require.New(t)
-			q := DefaultRegistry().Resolve("openai-compatible", model)
+			q := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: model})
 			must.False(q.BehaviourFlags.OpenAI.OmitSamplingParams)
 			must.Empty(q.BehaviourFlags.OpenAI.ReasoningEffortLevels)
 		})
@@ -962,7 +962,7 @@ func TestVendorPrefixed_CapabilityRules(t *testing.T) {
 	for _, model := range []string{"qwen/qwen3.6-27b", "acme/foo-model"} {
 		t.Run(model+" gains the full tool surface", func(t *testing.T) {
 			must := require.New(t)
-			q := DefaultRegistry().Resolve("openai-compatible", model)
+			q := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: model})
 			must.True(q.ToolChoice.Supported, "ToolChoice.Supported should be true")
 			must.True(q.ParallelToolCalls.Supported, "ParallelToolCalls.Supported should be true")
 			must.True(q.ToolExamples.Supported, "ToolExamples.Supported should be true")
@@ -973,7 +973,7 @@ func TestVendorPrefixed_CapabilityRules(t *testing.T) {
 		must := require.New(t)
 		// The bare id continues to resolve via the "*" base rule; the
 		// "*/*" sibling must not regress it.
-		q := DefaultRegistry().Resolve("openai-compatible", "qwen3.6-35b-a3b-mlx")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: "qwen3.6-35b-a3b-mlx"})
 		must.True(q.ToolChoice.Supported, "bare id lost ToolChoice support")
 		must.True(q.ParallelToolCalls.Supported, "bare id lost ParallelToolCalls support")
 	})
@@ -982,7 +982,7 @@ func TestVendorPrefixed_CapabilityRules(t *testing.T) {
 		must := require.New(t)
 		// "*/*" matches exactly one slash; deeper nesting is intentionally
 		// out of scope, so a/b/c stays at the zero (unsupported) value.
-		q := DefaultRegistry().Resolve("openai-compatible", "a/b/c")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: "a/b/c"})
 		must.False(q.ToolChoice.Supported, "a/b/c must not match */*")
 	})
 }
@@ -994,17 +994,17 @@ func TestVendorPrefixed_CapabilityRules(t *testing.T) {
 func TestReplayFieldsRules_Gemini3(t *testing.T) {
 	t.Run("fires on gemini-3.1-pro-preview", func(t *testing.T) {
 		must := require.New(t)
-		q := DefaultRegistry().Resolve("gemini", "gemini-3.1-pro-preview")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "gemini", Model: "gemini-3.1-pro-preview"})
 		must.Contains(q.ReplayFields, "candidates[].content.parts[].thoughtSignature")
 	})
 	t.Run("does not fire on gemini-2.5-pro", func(t *testing.T) {
 		must := require.New(t)
-		q := DefaultRegistry().Resolve("gemini", "gemini-2.5-pro")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "gemini", Model: "gemini-2.5-pro"})
 		must.Empty(q.ReplayFields)
 	})
 	t.Run("does not fire when routed through openai-compatible", func(t *testing.T) {
 		must := require.New(t)
-		q := DefaultRegistry().Resolve("openai-compatible", "gemini-3.1-pro-preview")
+		q := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: "gemini-3.1-pro-preview"})
 		must.Empty(q.ReplayFields)
 	})
 }
@@ -1048,19 +1048,19 @@ func TestRegistry_Composition(t *testing.T) {
 
 	t.Run("specific glob overrides the wildcard when both match", func(t *testing.T) {
 		must := require.New(t)
-		got := reg.Resolve("openai-compatible", "gpt-5-nano")
+		got := reg.Resolve(Target{ProviderType: "openai-compatible", Model: "gpt-5-nano"})
 		must.Equal(TokenFieldMaxCompletionTokens, got.BehaviourFlags.OpenAI.TokenField)
 	})
 
 	t.Run("wildcard applies when only it matches", func(t *testing.T) {
 		must := require.New(t)
-		got := reg.Resolve("openai-compatible", "gpt-4o")
+		got := reg.Resolve(Target{ProviderType: "openai-compatible", Model: "gpt-4o"})
 		must.Equal(TokenFieldMaxTokens, got.BehaviourFlags.OpenAI.TokenField)
 	})
 
 	t.Run("no rule applies to another provider type", func(t *testing.T) {
 		must := require.New(t)
-		got := reg.Resolve("anthropic", "gpt-5-nano")
+		got := reg.Resolve(Target{ProviderType: "anthropic", Model: "gpt-5-nano"})
 		must.Equal(TokenFieldMaxCompletionTokens, got.BehaviourFlags.OpenAI.TokenField, "TokenField keeps its zero default")
 	})
 }
@@ -1133,7 +1133,7 @@ func TestDefaultRegistryConcurrentAccess(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < perGoroutine; j++ {
-				q := DefaultRegistry().Resolve("openai-compatible", "gpt-4o")
+				q := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: "gpt-4o"})
 				// Touch the maps so a future regression that returned a
 				// shared map would race under -race.
 				q.FieldRenames["k"] = "v"
@@ -1228,13 +1228,13 @@ func TestRule_Matches(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
-			got := RuleMatches(tc.rule, tc.providerType, tc.endpoint, tc.model)
+			got := RuleMatches(tc.rule, Target{ProviderType: tc.providerType, Endpoint: tc.endpoint, Model: tc.model})
 			must.Equal(tc.want, got, "RuleMatches(%+v, %q, %q, %q)", tc.rule, tc.providerType, tc.endpoint, tc.model)
 		})
 	}
 }
 
-func TestRegistry_ResolveEndpoint_EndpointScopedRuleWinsAtEqualGlobLength(t *testing.T) {
+func TestRegistry_Resolve_EndpointScopedRuleWinsAtEqualGlobLength(t *testing.T) {
 	must := require.New(t)
 	setVariant := func(v string) func(*ProviderQuirks) {
 		return func(q *ProviderQuirks) { q.ToolSearch = ToolSearchCapability{Supported: true, Variant: v} }
@@ -1244,14 +1244,14 @@ func TestRegistry_ResolveEndpoint_EndpointScopedRuleWinsAtEqualGlobLength(t *tes
 		{ProviderType: "openai-responses", ModelMatch: "gpt-5*", Description: "agnostic", Apply: setVariant("agnostic")},
 	})
 
-	q, applied := reg.ResolveWithRules("openai-responses", "openai", "gpt-5.4")
+	q, applied := reg.ResolveWithRules(Target{ProviderType: "openai-responses", Endpoint: "openai", Model: "gpt-5.4"})
 	must.Equal("scoped", q.ToolSearch.Variant)
 	must.Len(applied, 2)
 	must.Equal("agnostic", applied[0].Description)
 	must.Equal("scoped", applied[1].Description)
 }
 
-func TestRegistry_ResolveEndpoint_LongerGlobOutranksEndpointScope(t *testing.T) {
+func TestRegistry_Resolve_LongerGlobOutranksEndpointScope(t *testing.T) {
 	must := require.New(t)
 	setVariant := func(v string) func(*ProviderQuirks) {
 		return func(q *ProviderQuirks) { q.ToolSearch = ToolSearchCapability{Supported: true, Variant: v} }
@@ -1261,7 +1261,7 @@ func TestRegistry_ResolveEndpoint_LongerGlobOutranksEndpointScope(t *testing.T) 
 		{ProviderType: "openai-responses", ModelMatch: "gpt-5*", Endpoint: "openai", Description: "shorter scoped", Apply: setVariant("scoped")},
 	})
 
-	must.Equal("agnostic", reg.ResolveEndpoint("openai-responses", "openai", "gpt-5.4").ToolSearch.Variant)
+	must.Equal("agnostic", reg.Resolve(Target{ProviderType: "openai-responses", Endpoint: "openai", Model: "gpt-5.4"}).ToolSearch.Variant)
 }
 
 func TestRegistry_Resolve_SkipsEndpointScopedRules(t *testing.T) {
@@ -1272,8 +1272,8 @@ func TestRegistry_Resolve_SkipsEndpointScopedRules(t *testing.T) {
 		}},
 	})
 
-	must.False(reg.Resolve("openai-responses", "gpt-5.4").ToolSearch.Supported)
-	must.True(reg.ResolveEndpoint("openai-responses", "openai", "gpt-5.4").ToolSearch.Supported)
+	must.False(reg.Resolve(Target{ProviderType: "openai-responses", Model: "gpt-5.4"}).ToolSearch.Supported)
+	must.True(reg.Resolve(Target{ProviderType: "openai-responses", Endpoint: "openai", Model: "gpt-5.4"}).ToolSearch.Supported)
 }
 
 // TestOpenAITokenField_MarshalJSON pins the wire form of each named
@@ -1504,14 +1504,14 @@ func TestGatewayPrefixResolution_OpenAIReasoningClass(t *testing.T) {
 	for _, model := range reasoningModels {
 		t.Run(model, func(t *testing.T) {
 			must := require.New(t)
-			q := r.Resolve("openai-compatible", model)
+			q := r.Resolve(Target{ProviderType: "openai-compatible", Model: model})
 			must.True(q.BehaviourFlags.OpenAI.OmitSamplingParams,
 				"a gateway-prefixed reasoning model must omit sampling params")
 
 			// The bare form must keep resolving identically; the sibling
 			// rules add coverage rather than moving it.
 			bare := model[strings.Index(model, "/")+1:]
-			bq := r.Resolve("openai-compatible", bare)
+			bq := r.Resolve(Target{ProviderType: "openai-compatible", Model: bare})
 			must.True(bq.BehaviourFlags.OpenAI.OmitSamplingParams,
 				"bare form %q must omit sampling params", bare)
 		})
@@ -1523,7 +1523,7 @@ func TestGatewayPrefixResolution_OpenAIReasoningClass(t *testing.T) {
 	for _, model := range chatModels {
 		t.Run(model, func(t *testing.T) {
 			must := require.New(t)
-			q := r.Resolve("openai-compatible", model)
+			q := r.Resolve(Target{ProviderType: "openai-compatible", Model: model})
 			must.False(q.BehaviourFlags.OpenAI.OmitSamplingParams,
 				"chat-class models accept sampling params")
 		})
@@ -1534,7 +1534,7 @@ func TestGatewayPrefixResolution_OpenAIReasoningClass(t *testing.T) {
 	for _, model := range nonReasoningModels {
 		t.Run(model, func(t *testing.T) {
 			must := require.New(t)
-			q := r.Resolve("openai-compatible", model)
+			q := r.Resolve(Target{ProviderType: "openai-compatible", Model: model})
 			must.False(q.BehaviourFlags.OpenAI.OmitSamplingParams)
 		})
 	}
@@ -1564,7 +1564,7 @@ func TestContextWindow_OnlyRegisteredModelsHaveWindow(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
-			got := reg.Resolve(tc.provider, tc.model).ContextWindow
+			got := reg.Resolve(Target{ProviderType: tc.provider, Model: tc.model}).ContextWindow
 			must.Equal(tc.want, got)
 		})
 	}

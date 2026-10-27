@@ -231,7 +231,7 @@ func TestCollectAppliedRules_FiltersAndFlagsCorrectly(t *testing.T) {
 	}
 
 	reg := quirks.NewRegistry(rules)
-	_, applied := reg.ResolveWithRules("openai-compatible", "", "gpt-4o")
+	_, applied := reg.ResolveWithRules(quirks.Target{ProviderType: "openai-compatible", Model: "gpt-4o"})
 	got := formatAppliedRules(applied)
 
 	// Expected, in specificity order:
