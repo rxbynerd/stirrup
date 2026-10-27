@@ -561,8 +561,9 @@ would mask configuration errors.
 
 **Intentional exclusions:** OpenAI built-in tools (`web_search`,
 `file_search`, `computer_use`, `code_interpreter`; hosted `tool_search`
-is the one exception, sent only under lazy tool loading) and server-side state
-via `previous_response_id`. The harness manages its own conversation
+is the one exception, sent only under lazy tool loading on the `openai`
+[endpoint profile](#endpoint-profiles)) and server-side state via
+`previous_response_id`. The harness manages its own conversation
 history and does not delegate to server-side state.
 
 **Output replay.** With `store: false`, OpenAI documents that stateless
@@ -719,32 +720,40 @@ use OpenAI's hosted
 [tool search](https://developers.openai.com/api/docs/guides/tools-tool-search)
 on the `openai` [endpoint profile](#endpoint-profiles) only. The hosted
 search rules are scoped to that profile, which an empty
-`provider.endpointProfile` derives only for the default endpoint,
-`https://api.openai.com/v1` with or without a trailing slash. A provider
-with any other `baseUrl` (Azure OpenAI deployments, LiteLLM, LM Studio,
-other gateways, and regional first-party hosts) derives the `generic`
-profile and uses the harness's own `tool_search` tool. A relay in front
-of OpenAI's own API declares `provider.endpointProfile: "openai"` to keep
-the hosted search. `azure-openai` and `bedrock-mantle` are recognised
-profiles that have not been probed with hosted `tool_search`, so they
-also resolve to the harness `tool_search`.
+`provider.endpointProfile` derives only for the default endpoint (see
+[Endpoint profiles](#endpoint-profiles) for how the URL is matched). A
+provider with any other `baseUrl` (Azure OpenAI deployments, LiteLLM,
+LM Studio, other gateways, and regional first-party hosts) derives the
+`generic` profile and uses the harness's own `tool_search` tool. A
+relay in front of OpenAI's own API declares
+`provider.endpointProfile: "openai"` to keep the hosted search.
+`azure-openai` and `bedrock-mantle` are accepted but resolve like
+`generic` until they are probed with hosted `tool_search`, so they also
+use the harness `tool_search`.
 
 A gateway can answer 200 while silently dropping the hosted search entry
 and the `defer_loading` flags, which leaves every deferred tool
-unloadable while the run still ends in success. LM Studio did this when
-probed on 2026-10-26 with a build that still sent the hosted search to a
-custom `baseUrl`: the request returned 200 with the search entry and
-every `defer_loading` flag removed, and every deferred call in the run
-was refused as not loaded. When the `generic` profile was derived rather
-than declared, the run logs the fallback once at startup, naming
-`provider.endpointProfile` as the way to declare an endpoint that
-implements the hosted search.
+unloadable while the run still ends in success. LM Studio returned 200
+and removed the hosted search entry and every `defer_loading` flag when
+sent the hosted search (probed 2026-10-26).
 
-The adapter sends the hosted search entry only when the loop asks for a native search, the
-resolved quirks advertise the `ToolSearch` capability, and at least one
-tool in the request is deferred. Every other model, every request the
-loop serves with the harness's own `tool_search` tool, and every request
-with nothing deferred gets no search entry and no `defer_loading`.
+The run logs one Info notice at startup for each routable provider entry
+(`provider` and each `providers[name]` the router can select) that
+meets every condition: lazy loading is on with strategy `auto`, the type
+is `openai-responses`, `endpointProfile` is empty and derives `generic`,
+and the routed model would have the hosted search on the `openai`
+profile. The notice says to declare `provider.endpointProfile: "openai"`
+only for an endpoint that forwards the hosted `tool_search` entry and
+`defer_loading` unchanged. It does not fire for a declared profile
+(declaring `azure-openai` silences it), for `openai-compatible`, or for
+a model with no hosted search such as `gpt-4o`.
+
+The adapter sends the hosted search entry only when the loop asks for a
+native search, the resolved quirks advertise the `ToolSearch`
+capability, and at least one tool in the request is deferred. Every
+other model, every request the loop serves with the harness's own
+`tool_search` tool, and every request with nothing deferred gets no
+search entry and no `defer_loading`.
 
 The request lists every function tool as usual, adds
 `"defer_loading": true` to each deferred one, groups the deferred tools
@@ -881,20 +890,24 @@ declares which implementation of the OpenAI wire serves `baseUrl`, so
 the [quirks registry](provider-quirks.md#22-rule-and-registry) can
 resolve capabilities that differ between endpoints serving the same
 model. It is legal only on `openai-compatible` and `openai-responses`;
-any other provider type fails validation.
+any other provider type fails validation. The profile currently affects
+only hosted `tool_search` on `openai-responses`; on `openai-compatible`
+no rule is endpoint-scoped yet, so it has no effect.
 
 | Profile | Endpoint | Notes |
 |---|---|---|
-| (empty) | Derived | `openai` when `baseUrl` is empty or `https://api.openai.com/v1` (with or without a trailing slash), `generic` for any other `baseUrl`. |
+| (empty) | Derived | `openai` when `baseUrl` is empty or addresses `https://api.openai.com/v1`: with or without a trailing slash, scheme and host matched case-insensitively, and an optional `:443` port. Any other `baseUrl` derives `generic`, including the default URL with a query string, fragment or userinfo, so a gateway configured through the URL is not mistaken for OpenAI. |
 | `openai` | OpenAI's own API, directly or through a relay | The only profile with hosted `tool_search`. Declaring it on a custom `baseUrl` asserts that the relay forwards the hosted search entry and `defer_loading` unchanged. |
-| `azure-openai` | Azure OpenAI (`*.openai.azure.com/openai/v1`) | Requires `baseUrl`. Recognised but not yet probed: no rule is scoped to it, so it resolves like `generic`. |
-| `bedrock-mantle` | Amazon Bedrock Mantle, the OpenAI-compatible Bedrock endpoint | Requires `baseUrl`. Recognised but not yet probed: no rule is scoped to it, so it resolves like `generic`. |
-| `generic` | Any other OpenAI-compatible server (LiteLLM, LM Studio, vLLM, gateways) | No endpoint-scoped rules by design. |
+| `azure-openai` | Azure OpenAI (`*.openai.azure.com/openai/v1`) | Requires `baseUrl`. Accepted but not yet probed: no rule is scoped to it, so it resolves like `generic`. Declaring it silences the derived-`generic` startup notice. |
+| `bedrock-mantle` | Amazon Bedrock Mantle, the OpenAI-compatible Bedrock endpoint | Requires `baseUrl`. Accepted but not yet probed: no rule is scoped to it, so it resolves like `generic`. |
+| `generic` | Any other OpenAI-compatible server (LiteLLM, LM Studio, vLLM, gateways) | No endpoint-scoped rules by design. A declared `generic` with an empty `baseUrl` validates and still addresses OpenAI's API; it only withholds the `openai` rules. |
 
 The profile describes the endpoint, a connection concern, so it lives
 on `ProviderConfig`; it does not change the model, credential, or URL
 the adapter sends to. `stirrup providers quirks --provider X --model Y
---endpoint-profile Z` shows what a profile resolves to.
+[--base-url U] [--endpoint-profile Z]` shows what a profile resolves
+to, deriving it from `--base-url` as a run does when
+`--endpoint-profile` is unset.
 
 ## Google Gemini via Vertex AI
 
@@ -1043,7 +1056,7 @@ configuration. The OpenRouter rules (`deepseek/deepseek-v4*`,
 alias) supply the sampling suppression, token key and `reasoning_effort`
 projection, and no replay, because OpenRouter does not require it.
 
-Operators do not author quirk rules. Two surfaces are available:
+Operators do not author quirk rules. Three surfaces are available:
 
 - `provider.compatProfile` on `ProviderConfig` — a closed enum that
   selects from a small set of compatibility profiles. Only legal
@@ -1055,7 +1068,7 @@ Operators do not author quirk rules. Two surfaces are available:
   `bedrock-mantle`, `generic`; empty derives it from `baseUrl`). Rules
   scoped to an endpoint fire only for that profile. See
   [Endpoint profiles](#endpoint-profiles).
-- `stirrup providers quirks --provider X --model Y
+- `stirrup providers quirks --provider X --model Y [--base-url U]
   [--endpoint-profile Z]` — introspection subcommand that prints the
   effective endpoint profile and the resolved `ProviderQuirks` value
   plus every contributing rule's description, last-verified date, and

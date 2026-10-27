@@ -3825,7 +3825,7 @@ type ProviderConfig struct {
 	// base_url, so the quirks registry resolves endpoint-specific
 	// capabilities such as hosted tool_search. Closed enum, validated by
 	// ValidateRunConfig; only legal on "openai-compatible" and
-	// "openai-responses". Currently supported:
+	// "openai-responses". Accepted values:
 	//
 	//	""               — derived: "openai" for OpenAI's own API,
 	//	                   "generic" for any other base_url (default).
@@ -3834,6 +3834,8 @@ type ProviderConfig struct {
 	//	"bedrock-mantle" — Amazon Bedrock Mantle; requires base_url.
 	//	"generic"        — any other OpenAI-compatible endpoint.
 	//
+	// "azure-openai" and "bedrock-mantle" resolve like "generic" until
+	// they are probed.
 	// Next available field number: 17.
 	EndpointProfile string `protobuf:"bytes,16,opt,name=endpoint_profile,json=endpointProfile,proto3" json:"endpoint_profile,omitempty"`
 	unknownFields   protoimpl.UnknownFields

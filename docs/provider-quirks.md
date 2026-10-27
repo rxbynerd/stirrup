@@ -3,7 +3,8 @@
 **Status:** implemented (Wave 2)
 
 The quirks layer encapsulates per-(provider, model) wire-shape and
-behaviour divergences that the canonical `ProviderAdapter` interface
+behaviour divergences, keyed also on the endpoint profile for
+OpenAI-wire providers, that the canonical `ProviderAdapter` interface
 cannot express. Adapters resolve a `ProviderQuirks` value at the top
 of every `Stream()` call and apply it to request marshalling and
 response parsing. The registry is a first-party Go construct;
@@ -388,37 +389,47 @@ type Rule struct {
     Apply        func(*ProviderQuirks)
 }
 
+type Target struct {
+    ProviderType string
+    Endpoint     string // endpoint profile; "" means not stated
+    Model        string
+}
+
 type Registry struct { /* unexported */ }
 func NewRegistry(rules []Rule) *Registry
 func DefaultRegistry() *Registry
-func (r *Registry) Resolve(providerType, model string) ProviderQuirks
-func (r *Registry) ResolveEndpoint(providerType, endpoint, model string) ProviderQuirks
-func (r *Registry) ResolveWithRules(providerType, endpoint, model string) (ProviderQuirks, []Rule)
+func (r *Registry) Resolve(t Target) ProviderQuirks
+func (r *Registry) ResolveWithRules(t Target) (ProviderQuirks, []Rule)
+func RuleMatches(rule Rule, t Target) bool
 ```
 
-The endpoint is the provider's
+`Target.Endpoint` is the provider's
 [endpoint profile](providers.md#endpoint-profiles)
 (`provider.EndpointProfileFor`): the declared
 `provider.endpointProfile`, or `openai` / `generic` derived from
 `baseUrl`, and empty for provider types that do not speak the OpenAI
 wire. A rule with an empty `Endpoint` matches every endpoint; a rule
-with an `Endpoint` matches only that profile. `Resolve` is resolution
-with the endpoint not stated, under which endpoint-scoped rules do not
-fire, so a capability only some endpoints implement resolves as
-unsupported. The OpenAI adapters, the batch body marshaller, and the
-loop's tool search capability resolve with the endpoint; the
-`openai quirks resolved` and `openai-responses quirks resolved` DEBUG
-lines carry it as `provider.endpoint_profile`.
+with an `Endpoint` matches only that profile. An empty
+`Target.Endpoint` means the endpoint is not stated, and endpoint-scoped
+rules do not fire for it, so a capability only some endpoints implement
+resolves as unsupported. Every lookup passes the endpoint: the OpenAI
+adapters, the batch body marshaller (which receives the profile at
+construction), and the loop-side context window, tool choice,
+structured result and tool search lookups, so adapters and the loop
+resolve identically. The `openai quirks resolved` and
+`openai-responses quirks resolved` DEBUG lines carry the profile as
+`provider.endpoint_profile`.
 
 Composition is **specificity-then-declaration-order**: rules with a
 longer `ModelMatch` glob run later so their writes override earlier
-rules. Ties (identical glob length) break on declaration order. An
-empty `ModelMatch` is treated as length 0 and matches every model,
-so a "default for this provider" rule can be declared once and
-overridden by a specific glob. The `gpt-5*` + `gpt-5-chat*` carve-out
-in `BuiltinRules()` is the worked example. At equal glob length an
-endpoint-scoped rule runs after an endpoint-agnostic one, so the rule
-naming the endpoint wins.
+rules. At equal glob length an endpoint-agnostic rule runs before an
+endpoint-scoped one, so the rule naming the endpoint wins; remaining
+ties break on declaration order. An empty `ModelMatch` is treated as
+length 0 and matches every model, so a "default for this provider" rule
+can be declared once and overridden by a specific glob. The `gpt-5*` +
+`gpt-5-chat*` carve-out in `BuiltinRules()` is the worked example. Glob
+length dominates endpoint scope: an endpoint-scoped rule cannot outrank
+a longer endpoint-agnostic glob unless it repeats that longer glob.
 
 `DefaultRegistry()` is constructed once via `sync.Once` and is
 read-only after construction. Tests inject custom registries via
@@ -510,16 +521,18 @@ Sonnet 4, Bedrock, Gemini, OpenAI Chat Completions and Responses models
 before gpt-5.4 match none of them and keep the harness search. Bedrock
 keeps the harness search because the adapter uses Converse, and
 Anthropic documents server-side tool search on Bedrock only through
-InvokeModel. The two `openai-responses` rules carry `Endpoint:
-"openai"`, so a provider whose endpoint profile is `generic` (any
-custom `baseUrl` with no declared profile), `azure-openai`, or
-`bedrock-mantle` keeps the harness search. No rule is scoped to
-`azure-openai` or `bedrock-mantle` because neither has been probed with
-hosted `tool_search`; `generic` has no rules by design, because a
-gateway can return 200 while stripping the hosted search entry and
-every `defer_loading`. The Anthropic rules select the `bm25` variant; the adapter
-also accepts `regex`. See [Anthropic tool search](providers.md#tool-search)
-for the Anthropic wire shape.
+InvokeModel. The two `openai-responses` rules carry
+`Endpoint: "openai"`, so a provider whose endpoint profile is `generic`
+(any custom `baseUrl` with no declared profile), `azure-openai`, or
+`bedrock-mantle` keeps the harness search. `azure-openai` and
+`bedrock-mantle` are accepted but resolve like `generic` until probed:
+no rule is scoped to either because neither has been probed with hosted
+`tool_search`. `generic` has no rules by design, because a gateway can
+return 200 while stripping the hosted search entry and every
+`defer_loading`. The Anthropic rules select the `bm25` variant; the
+adapter also accepts `regex`. See
+[Anthropic tool search](providers.md#tool-search) for the Anthropic
+wire shape.
 
 `claude-opus-4-6*`, `claude-sonnet-4-6*`, and `claude-haiku-4-5*` get no
 sampling rule — those models still accept a non-default temperature — and
@@ -924,8 +937,8 @@ without a separate singleflight dependency.
 |---|---|---|
 | `provider.compatProfile` on `ProviderConfig` | `RunConfig` string field | Closed enum. Only legal value in v1: `"zai-glm"`. Unknown values fail at startup via `ValidateRunConfig`. |
 | `provider.endpointProfile` on `ProviderConfig` | `RunConfig` string field | Closed enum: `openai`, `azure-openai`, `bedrock-mantle`, `generic`; empty derives `openai` for OpenAI's own API and `generic` otherwise. Legal only on `openai-compatible` and `openai-responses`; `azure-openai` and `bedrock-mantle` require `baseUrl`. Selects which endpoint-scoped rules fire. See [Endpoint profiles](providers.md#endpoint-profiles). |
-| `stirrup providers quirks --provider X --model Y [--endpoint-profile Z]` | CLI subcommand | Prints the effective endpoint profile and resolved `ProviderQuirks` as JSON, plus `Description`, `LastVerified`, staleness flag of every contributing rule. An unset `--endpoint-profile` resolves an OpenAI-wire provider as OpenAI's own API. Side-effect-free. |
-| `openai quirks resolved` / `gemini quirks resolved` / `anthropic quirks resolved` slog DEBUG line (per-adapter prefix, identical body shape) | structured log | One line per Stream call, listing every contributing rule's Description in apply order. Last entry is the rule whose writes won on overlapping fields. Emitted even when no rule fired (rules:[]) so a missing line unambiguously means "the resolution did not run". Operators writing log filters should match the exact per-adapter prefix; a generic `"quirks resolved"` substring will not find every record. |
+| `stirrup providers quirks --provider X --model Y [--base-url U] [--endpoint-profile Z]` | CLI subcommand | Prints the effective endpoint profile and resolved `ProviderQuirks` as JSON, plus `Description`, `LastVerified`, staleness flag of every contributing rule. For an OpenAI-wire provider the profile is derived as a run derives it: a declared `--endpoint-profile` wins, otherwise `--base-url` derives `openai` (unset or OpenAI's own API) or `generic`. `--base-url` and `--endpoint-profile` are rejected for other provider types. Side-effect-free. |
+| `openai quirks resolved` / `openai-responses quirks resolved` / `gemini quirks resolved` / `anthropic quirks resolved` slog DEBUG line (per-adapter prefix, identical body shape) | structured log | One line per Stream call, listing every contributing rule's Description in apply order. The two OpenAI lines also carry the endpoint profile as `provider.endpoint_profile`. Last entry is the rule whose writes won on overlapping fields. Emitted even when no rule fired (rules:[]) so a missing line unambiguously means "the resolution did not run". Operators writing log filters should match the exact per-adapter prefix; a generic `"quirks resolved"` substring will not find every record. |
 | `provider.quirk.applied` OTel span attribute | trace attribute | Set on the active `provider.stream` span at the same point the slog DEBUG line is emitted. Carries the same `[]string` of rule Descriptions. Lets a trace-only consumer (Datadog, Honeycomb, Jaeger) see which rules fired without needing to correlate with a separate log sink. |
 | `quirks replay fields captured` slog DEBUG line | structured log | Per-stream summary of `{count, total_len}` per captured ReplayFields path, emitted on stream exit. Length-only — captured values themselves are not logged. |
 | `replay_fields_captured.count` / `replay_fields_captured.total_len` OTel span attributes | trace attributes | Set on the active `provider.stream` span on stream exit, in parallel with the slog DEBUG record above. Totals across every captured path; length-only invariant matches the slog surface. |
@@ -1032,7 +1045,8 @@ Capture discipline:
 ## 8. Adjacent concerns (not part of this layer)
 
 The quirks layer is deliberately scoped to per-(provider, model)
-request-shape and response-parsing divergence. Several adjacent
+request-shape and response-parsing divergence, with the endpoint
+profile as a third input for OpenAI-wire providers. Several adjacent
 concerns are tracked separately:
 
 - **Tool-contract metadata (#222, landed).** Provider-facing tool
