@@ -782,7 +782,7 @@ func logDerivedGenericResponsesEndpoints(config *types.RunConfig, caps capabilit
 		logged[sel.Provider] = true
 		field := "provider.endpointProfile"
 		if _, named := config.Providers[sel.Provider]; named {
-			field = "providers." + sel.Provider + ".endpointProfile"
+			field = "providers[" + sel.Provider + "].endpointProfile"
 		}
 		logger.Info("the harness tool_search is used for an openai-responses baseUrl with the derived generic endpoint profile; declare "+field+" openai only if this endpoint forwards OpenAI's hosted tool_search and defer_loading unchanged",
 			"provider", sel.Provider, "model", sel.Model)

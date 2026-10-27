@@ -134,7 +134,7 @@ func TestBuildToolSearchSupport_LogsEachDerivedGenericEndpointOnce(t *testing.T)
 
 	must.Equal(1, strings.Count(buf.String(), "provider=gateway"))
 	must.Equal(1, strings.Count(buf.String(), "\n"))
-	must.Contains(buf.String(), "declare providers.gateway.endpointProfile openai only if this endpoint forwards OpenAI's hosted tool_search and defer_loading unchanged")
+	must.Contains(buf.String(), "declare providers[gateway].endpointProfile openai only if this endpoint forwards OpenAI's hosted tool_search and defer_loading unchanged")
 }
 
 func TestBuildToolSearchSupport_DerivedGenericNoticeNamesTheDefaultProvidersField(t *testing.T) {
