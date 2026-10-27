@@ -152,12 +152,10 @@ type BatchAdapter struct {
 	endpoint  string // wrapped provider's endpoint profile; see NewBatchAdapter
 	runID     string
 	turnCount atomic.Int64
-	// Registry resolves per-(provider, model) quirks for the request
-	// body marshalling path, so a batch run against a compat-profile
-	// provider sees the same wire shape the streaming path would have
-	// produced. Nil falls back to quirks.DefaultRegistry(). Exported
-	// (not a constructor arg) to avoid churn on every NewBatchAdapter
-	// call site in tests.
+	// Registry resolves quirks for the request body marshalling path, so
+	// a batch run against a compat-profile provider sees the same wire
+	// shape the streaming path would have produced. Nil falls back to
+	// quirks.DefaultRegistry().
 	Registry *quirks.Registry
 	// lastBatchID stores the provider-assigned batch identifier from the
 	// most recent successful Submit; the agentic loop reads it via

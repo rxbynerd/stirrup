@@ -415,8 +415,11 @@ rules do not fire for it, so a capability only some endpoints implement
 resolves as unsupported. Every lookup passes the endpoint: the OpenAI
 adapters, the batch body marshaller (which receives the profile at
 construction), and the loop-side context window, tool choice,
-structured result and tool search lookups, so adapters and the loop
-resolve identically. The `openai quirks resolved` and
+structured result and tool search lookups, so for the built-in rules
+adapters and the loop resolve identically. The loop-side lookups use
+the built-in registry only: an `openai-compatible` adapter with a
+`compatProfile` also applies that profile's rules, which the loop does
+not see. The `openai quirks resolved` and
 `openai-responses quirks resolved` DEBUG lines carry the profile as
 `provider.endpoint_profile`.
 

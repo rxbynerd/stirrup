@@ -15,8 +15,8 @@ const (
 	unscopedContextWindow = 64_000
 )
 
-// endpointScopedRegistry sets every loop-side capability for
-// openai-responses, and a larger set of values only on the openai profile.
+// endpointScopedRegistry sets a context window for openai-responses on
+// every endpoint, and every loop-side capability only on the openai profile.
 func endpointScopedRegistry() *quirks.Registry {
 	return quirks.NewRegistry([]quirks.Rule{
 		{

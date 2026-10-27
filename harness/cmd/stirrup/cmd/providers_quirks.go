@@ -32,8 +32,8 @@ var providersCmd = &cobra.Command{
 	Long: `Inspect provider-adapter configuration without running a turn.
 
 Subcommands:
-  quirks  Resolve the per-(provider, model) quirks registry and print
-          the result as JSON. Side-effect-free; safe to invoke from
+  quirks  Resolve the quirks registry for a provider, endpoint profile
+          and model and print the result as JSON. Side-effect-free; safe to invoke from
           shell completion or CI checks.`,
 }
 
@@ -45,9 +45,10 @@ Subcommands:
 // and what a rule actually applied.
 var providersQuirksCmd = &cobra.Command{
 	Use:   "quirks",
-	Short: "Print the resolved provider quirks for a (provider, model) pair",
+	Short: "Print the resolved provider quirks for a provider, endpoint profile and model",
 	Long: `Resolve the built-in provider quirks registry for the supplied
-(--provider, --model) pair and emit the result as JSON. The output
+--provider and --model, and the endpoint profile from --base-url and
+--endpoint-profile, and emit the result as JSON. The output
 carries the merged ProviderQuirks value plus a list of every
 contributing rule (description, last-verified date, staleness flag).
 
@@ -154,8 +155,9 @@ func runProvidersQuirksWithIO(cmd *cobra.Command, stdout io.Writer) error {
 // formatAppliedRules projects the rule list returned by
 // ResolveWithRules into the CLI-facing summary shape. The registry
 // orders the input the same way Resolve applies the rules — glob
-// length ascending with declaration order as the tiebreaker — so the
-// last entry is the rule whose writes won on overlapping keys.
+// length ascending, then endpoint-agnostic before endpoint-scoped, then
+// declaration order — so the last entry is the rule whose writes won on
+// overlapping keys.
 //
 // Returns a non-nil empty slice when no rule matched so the JSON
 // output is `[]` rather than `null` — easier to script against.
