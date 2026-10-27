@@ -912,19 +912,20 @@ func TestOpenAIResponsesAdapter_HostedSearchEntryOnlyForOpenAIEndpointProfile(t 
 	}
 }
 
-func TestBatchAdapter_ResponsesHostedSearchFollowsInnerEndpointProfile(t *testing.T) {
+func TestBatchAdapter_ResponsesHostedSearchFollowsEndpointProfileArgument(t *testing.T) {
 	for _, tc := range []struct {
-		profile string
-		want    int
+		name     string
+		inner    ProviderAdapter
+		endpoint string
+		want     int
 	}{
-		{types.EndpointProfileOpenAI, 1},
-		{types.EndpointProfileGeneric, 0},
+		{"openai", NewOpenAIResponsesAdapter(staticBearer("k"), "http://unused.invalid", OpenAIAuthConfig{}), types.EndpointProfileOpenAI, 1},
+		{"generic", NewOpenAIResponsesAdapter(staticBearer("k"), "http://unused.invalid", OpenAIAuthConfig{}), types.EndpointProfileGeneric, 0},
+		{"unstated with a wrapped inner adapter", &fakeAdapter{}, "", 0},
 	} {
-		t.Run(tc.profile, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
-			inner := NewOpenAIResponsesAdapter(staticBearer("k"), "http://unused.invalid", OpenAIAuthConfig{})
-			inner.EndpointProfile = tc.profile
-			a := NewBatchAdapter(inner, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-responses", "run-test")
+			a := NewBatchAdapter(tc.inner, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-responses", tc.endpoint, "run-test")
 
 			body, _, err := a.marshalRequestBody(t.Context(), responsesToolSearchParams())
 			must.NoError(err)

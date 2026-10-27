@@ -288,7 +288,7 @@ func TestFabricateStream_AnthropicPauseTurn(t *testing.T) {
 // block of the final assistant message, as a streamed request does.
 func TestAnthropicBatch_PauseTurnRequestShape(t *testing.T) {
 	must := require.New(t)
-	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "anthropic", "run-test")
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "anthropic", "", "run-test")
 	body, _, err := a.marshalRequestBody(t.Context(), anthropicToolSearchParams([]types.Message{
 		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "find the open bug"}}},
 		{Role: "assistant", Content: []types.ContentBlock{
@@ -484,7 +484,7 @@ func TestFabricateStream_OpenAIResponses_Incomplete(t *testing.T) {
 // Completions request with stream set to false.
 func TestBatchAdapter_marshalRequestBody_OpenAICompatible(t *testing.T) {
 	must := require.New(t)
-	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "run-test")
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "", "run-test")
 	body, _, err := a.marshalRequestBody(t.Context(), types.StreamParams{
 		Model:     "gpt-4o-mini",
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
@@ -507,7 +507,7 @@ func TestBatchAdapter_marshalRequestBody_AnthropicSendsNoCacheControl(t *testing
 	const model = "claude-sonnet-4-6"
 	must.True(quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: model}).BehaviourFlags.Anthropic.PromptCaching,
 		"precondition: registry must enable PromptCaching for %s", model)
-	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "anthropic", "run-test")
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "anthropic", "", "run-test")
 	body, _, err := a.marshalRequestBody(t.Context(), types.StreamParams{
 		Model:     model,
 		System:    "sys",
@@ -548,7 +548,7 @@ func TestBatchAdapter_MarshalUsesInjectedRegistry(t *testing.T) {
 			q.BehaviourFlags.OpenAI.ExtraBodyFields["tool_stream"] = true
 		},
 	}
-	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "run-test")
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "", "run-test")
 	a.Registry = quirks.NewRegistry([]quirks.Rule{customRule})
 
 	body, _, err := a.marshalRequestBody(t.Context(), types.StreamParams{
@@ -571,7 +571,7 @@ func TestBatchAdapter_MarshalUsesInjectedRegistry(t *testing.T) {
 // quirks.DefaultRegistry() preserves their behaviour.
 func TestBatchAdapter_MarshalFallsBackToDefaultRegistryWhenNil(t *testing.T) {
 	must := require.New(t)
-	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "run-test")
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "", "run-test")
 	// Registry intentionally left nil.
 	body, _, err := a.marshalRequestBody(t.Context(), types.StreamParams{
 		Model:     "o1-mini", // matches the builtin reasoning-class rule
@@ -607,7 +607,7 @@ func TestBatchAdapter_marshalRequestBody_StrictFallbackWarns(t *testing.T) {
 			must := require.New(t)
 			check := assert.New(t)
 			var logs bytes.Buffer
-			a := NewBatchAdapter(tc.inner(slog.New(slog.NewJSONHandler(&logs, nil))), &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, tc.provType, "run-test")
+			a := NewBatchAdapter(tc.inner(slog.New(slog.NewJSONHandler(&logs, nil))), &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, tc.provType, "", "run-test")
 
 			params := effortParams("gpt-5", "", false)
 			params.Tools = strictFallbackTools()
@@ -632,7 +632,7 @@ func TestBatchAdapter_marshalRequestBody_StrictFallbackWarns(t *testing.T) {
 // stripping in buildResponsesRequest).
 func TestBatchAdapter_marshalRequestBody_OpenAIResponses(t *testing.T) {
 	must := require.New(t)
-	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-responses", "run-test")
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-responses", "", "run-test")
 	body, _, err := a.marshalRequestBody(t.Context(), types.StreamParams{
 		Model:     "gpt-4o-mini",
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
@@ -665,7 +665,7 @@ func TestBatchAdapter_marshalRequestBody_OpenAIResponsesReasoningParity(t *testi
 			must := require.New(t)
 			check := assert.New(t)
 			inner := NewOpenAIResponsesAdapter(staticBearer("test-key"), baseURL, OpenAIAuthConfig{})
-			a := NewBatchAdapter(inner, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-responses", "run-test")
+			a := NewBatchAdapter(inner, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-responses", "", "run-test")
 			assistant := storedTurn(t, responsesReplayOrigin(tc.model, baseURL),
 				[]types.ContentBlock{{Type: "tool_use", ID: "call_1", Name: "read_file", Input: json.RawMessage(`{"path":"a.go"}`)}},
 				`{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"enc-batch"}`,
@@ -834,7 +834,7 @@ func TestFabricateStream_UnsupportedProviderEmitsError(t *testing.T) {
 
 func batchAdapter(t *testing.T, client BatchClient, cfg *types.BatchProviderConfig, inner ProviderAdapter) *BatchAdapter {
 	t.Helper()
-	return NewBatchAdapter(inner, client, cfg, "anthropic", "run-test")
+	return NewBatchAdapter(inner, client, cfg, "anthropic", "", "run-test")
 }
 
 func anthropicParams() types.StreamParams {
@@ -1239,7 +1239,7 @@ func TestBatchAdapter_Stream_ResultNonTransientError(t *testing.T) {
 func TestBatchAdapter_Stream_UnsupportedProviderEmitsError(t *testing.T) {
 	must := require.New(t)
 	client := &fakeBatchClient{}
-	a := NewBatchAdapter(nil, client, &types.BatchProviderConfig{Enabled: true}, "bedrock", "run-test")
+	a := NewBatchAdapter(nil, client, &types.BatchProviderConfig{Enabled: true}, "bedrock", "", "run-test")
 	ch, err := a.Stream(context.Background(), anthropicParams())
 	must.NoError(err, "unsupported provider surfaces via the channel")
 	events := drain(t, ch)
@@ -2205,7 +2205,7 @@ func TestFabricateStream_AnthropicToolSearchMatchesStream(t *testing.T) {
 // leaves the schema untouched, as Stream does.
 func TestBatchAdapter_marshalRequestBody_AnthropicInputExamples(t *testing.T) {
 	must := require.New(t)
-	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "anthropic", "run-test")
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "anthropic", "", "run-test")
 	params := types.StreamParams{
 		Model:     "claude-sonnet-5-5",
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
@@ -2239,7 +2239,7 @@ func TestBatchAdapter_marshalRequestBody_AnthropicInputExamples(t *testing.T) {
 // time rather than as a per-item batch error hours later.
 func TestBatchAdapter_marshalRequestBody_AnthropicEffortAllowList(t *testing.T) {
 	must := require.New(t)
-	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "anthropic", "run-test")
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "anthropic", "", "run-test")
 	params := types.StreamParams{
 		Model:           "claude-sonnet-5-5",
 		Messages:        []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},

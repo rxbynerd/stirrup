@@ -1766,7 +1766,7 @@ func openAIBatchStreamErrors(t *testing.T, pollBody string) []string {
 	c, teardown := newTestOpenAIPollingClient(t, f.Server, src, "openai-compatible", time.Second)
 	defer teardown()
 
-	adapter := NewBatchAdapter(nil, c, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "run-test")
+	adapter := NewBatchAdapter(nil, c, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "", "run-test")
 
 	params := types.StreamParams{
 		Model:     "gpt-4o-mini",

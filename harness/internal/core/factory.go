@@ -564,7 +564,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 			return nil, fmt.Errorf("batch is not supported for transport type %q", config.Transport.Type)
 		}
 
-		batchAdapter := provider.NewBatchAdapter(prov, batchClient, config.Provider.Batch, config.Provider.Type, config.RunID)
+		batchAdapter := provider.NewBatchAdapter(prov, batchClient, config.Provider.Batch, config.Provider.Type, provider.EndpointProfileFor(config.Provider), config.RunID)
 		// Thread the streaming inner adapter's quirks registry through so
 		// the batch marshal path matches the streaming wire shape,
 		// including any compat-profile extras.

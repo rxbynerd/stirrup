@@ -149,6 +149,7 @@ type BatchAdapter struct {
 	client    BatchClient
 	cfg       *types.BatchProviderConfig
 	provType  string
+	endpoint  string // wrapped provider's endpoint profile; see NewBatchAdapter
 	runID     string
 	turnCount atomic.Int64
 	// Registry resolves per-(provider, model) quirks for the request
@@ -167,12 +168,15 @@ type BatchAdapter struct {
 
 // NewBatchAdapter constructs a BatchAdapter. cfg.MaxWaitSeconds is read
 // on each Stream call; the client is expected to enforce the same cap
-// internally (defence in depth).
+// internally (defence in depth). endpointProfile is the wrapped
+// provider's EndpointProfileFor value; "" leaves the endpoint unstated,
+// so endpoint-scoped rules do not fire.
 func NewBatchAdapter(
 	inner ProviderAdapter,
 	client BatchClient,
 	cfg *types.BatchProviderConfig,
 	provType string,
+	endpointProfile string,
 	runID string,
 ) *BatchAdapter {
 	return &BatchAdapter{
@@ -180,6 +184,7 @@ func NewBatchAdapter(
 		client:   client,
 		cfg:      cfg,
 		provType: provType,
+		endpoint: endpointProfile,
 		runID:    runID,
 	}
 }
@@ -257,11 +262,7 @@ func (a *BatchAdapter) marshalRequestBody(ctx context.Context, params types.Stre
 		if registry == nil {
 			registry = quirks.DefaultRegistry()
 		}
-		endpoint := ""
-		if inner, ok := a.inner.(*OpenAICompatibleAdapter); ok {
-			endpoint = inner.EndpointProfile
-		}
-		q := registry.Resolve(quirks.Target{ProviderType: "openai-compatible", Endpoint: endpoint, Model: params.Model})
+		q := registry.Resolve(quirks.Target{ProviderType: "openai-compatible", Endpoint: a.endpoint, Model: params.Model})
 		if err := checkOpenAIRequestSupported(params, q); err != nil {
 			return nil, nil, err
 		}
@@ -279,19 +280,14 @@ func (a *BatchAdapter) marshalRequestBody(ctx context.Context, params types.Stre
 		if registry == nil {
 			registry = quirks.DefaultRegistry()
 		}
-		inner, _ := a.inner.(*OpenAIResponsesAdapter)
-		endpoint := ""
-		if inner != nil {
-			endpoint = inner.EndpointProfile
-		}
-		q := registry.Resolve(quirks.Target{ProviderType: "openai-responses", Endpoint: endpoint, Model: params.Model})
+		q := registry.Resolve(quirks.Target{ProviderType: "openai-responses", Endpoint: a.endpoint, Model: params.Model})
 		if err := validateReasoningEffort("openai-responses", params.ReasoningEffort, params.Model, q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels); err != nil {
 			return nil, nil, err
 		}
 		// Only turns the inner adapter streamed carry stored items: batch
 		// results are never captured.
 		replayOrigin := ""
-		if inner != nil {
+		if inner, ok := a.inner.(*OpenAIResponsesAdapter); ok {
 			replayOrigin = responsesReplayOriginFor(q, params.Model, inner.baseURL)
 		}
 		req, err := buildResponsesRequest(params, q, nil, replayOrigin)
