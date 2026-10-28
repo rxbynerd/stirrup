@@ -1,7 +1,9 @@
 package provider
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -40,7 +42,7 @@ func responsesToolSearchQuirks(supported bool) quirks.ProviderQuirks {
 		Apply: func(q *quirks.ProviderQuirks) {
 			q.ToolSearch = quirks.ToolSearchCapability{Supported: supported, Variant: "hosted"}
 		},
-	}}).Resolve("openai-responses", responsesToolSearchModel)
+	}}).Resolve(quirks.Target{ProviderType: "openai-responses", Model: responsesToolSearchModel})
 }
 
 func responsesToolSearchParams() types.StreamParams {
@@ -865,6 +867,93 @@ func TestResponsesInput_ToolSearchItemsRoundTrip(t *testing.T) {
 			var back responsesInput
 			must.NoError(json.Unmarshal(body, &back))
 			must.Equal(in, back)
+		})
+	}
+}
+
+// hostedSearchEntryCount counts the hosted tool_search entries in a
+// Responses request body's tools array.
+func hostedSearchEntryCount(t *testing.T, body []byte) int {
+	t.Helper()
+	must := require.New(t)
+	var decoded struct {
+		Tools []map[string]any `json:"tools"`
+	}
+	must.NoError(json.Unmarshal(body, &decoded))
+	n := 0
+	for _, tool := range decoded.Tools {
+		if tool["type"] == responsesToolSearchType {
+			n++
+		}
+	}
+	return n
+}
+
+func TestOpenAIResponsesAdapter_HostedSearchEntryOnlyForOpenAIEndpointProfile(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		profile string
+		want    int
+	}{
+		{"openai", types.EndpointProfileOpenAI, 1},
+		{"generic", types.EndpointProfileGeneric, 0},
+		{"azure-openai", types.EndpointProfileAzureOpenAI, 0},
+		{"bedrock-mantle", types.EndpointProfileBedrockMantle, 0},
+		{"unstated", "", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			script := newResponsesScript(t)
+			adapter := script.adapter(nil)
+			adapter.EndpointProfile = tc.profile
+
+			ch, err := adapter.Stream(t.Context(), responsesToolSearchParams())
+			must.NoError(err)
+			drainStream(t, ch)
+
+			body := script.lastBody(t)
+			must.Equal(tc.want, hostedSearchEntryCount(t, body))
+			if tc.want == 0 {
+				must.NotContains(string(body), "defer_loading", "no tool is deferred without a hosted search")
+			}
+		})
+	}
+}
+
+func TestOpenAIResponsesAdapter_DebugLogCarriesEndpointProfile(t *testing.T) {
+	must := require.New(t)
+	script := newResponsesScript(t)
+	var buf bytes.Buffer
+	adapter := script.adapter(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	adapter.EndpointProfile = types.EndpointProfileGeneric
+
+	ch, err := adapter.Stream(t.Context(), responsesToolSearchParams())
+	must.NoError(err)
+	drainStream(t, ch)
+
+	must.Contains(buf.String(), "openai-responses quirks resolved")
+	must.Contains(buf.String(), `"provider.endpoint_profile":"generic"`)
+}
+
+func TestBatchAdapter_ResponsesHostedSearchFollowsEndpointProfileArgument(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		inner    ProviderAdapter
+		endpoint string
+		want     int
+	}{
+		{"openai", NewOpenAIResponsesAdapter(staticBearer("k"), "http://unused.invalid", OpenAIAuthConfig{}), types.EndpointProfileOpenAI, 1},
+		{"generic", NewOpenAIResponsesAdapter(staticBearer("k"), "http://unused.invalid", OpenAIAuthConfig{}), types.EndpointProfileGeneric, 0},
+		{"unstated with a wrapped inner adapter", &fakeAdapter{}, "", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			a := NewBatchAdapter(tc.inner, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-responses", tc.endpoint, "run-test")
+
+			body, _, err := a.marshalRequestBody(t.Context(), responsesToolSearchParams())
+			must.NoError(err)
+
+			must.Equal(tc.want, hostedSearchEntryCount(t, body))
 		})
 	}
 }

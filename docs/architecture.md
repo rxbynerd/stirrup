@@ -543,8 +543,9 @@ tool_call to the wrong handler.
 ### Provider-quirks layer
 
 Beneath the tool-name normalization layer, each concrete adapter
-resolves a per-(provider, model) `ProviderQuirks` value at the top
-of every `Stream()` call. The layer handles wire-shape and
+resolves a per-(provider, model) `ProviderQuirks` value, keyed also on
+the endpoint profile for OpenAI-wire providers, at the top of every
+`Stream()` call. The layer handles wire-shape and
 behaviour divergences that the canonical `ProviderAdapter`
 interface cannot express: OpenAI reasoning-class sampling-param
 omissions, Z.ai GLM legacy field names, Gemini 3.x

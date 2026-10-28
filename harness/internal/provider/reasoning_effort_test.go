@@ -71,7 +71,7 @@ func TestOpenAIRequest_ReasoningEffortProjection(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
 			params := effortParams(tc.model, tc.effort, false)
-			q := quirks.DefaultRegistry().Resolve("openai-compatible", tc.model)
+			q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: tc.model})
 			req, err := buildOpenAIRequest(params, true, q, nil)
 			must.NoError(err)
 			body, err := json.Marshal(req)
@@ -92,7 +92,7 @@ func TestOpenAIRequest_GPT6WireShape(t *testing.T) {
 	must := require.New(t)
 	check := assert.New(t)
 	params := effortParams("gpt-6.1-sol", "", false)
-	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: params.Model})
 	req, err := buildOpenAIRequest(params, true, q, nil)
 	must.NoError(err)
 	body, _ := json.Marshal(req)
@@ -147,7 +147,7 @@ func TestOpenAIAdapter_RejectsBeforeSend(t *testing.T) {
 func TestOpenAIAdapter_GatewayGPT6AllowsTools(t *testing.T) {
 	must := require.New(t)
 	params := effortParams("openai/gpt-6-luna", "", true)
-	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: params.Model})
 	must.NoError(checkOpenAIRequestSupported(params, q))
 }
 
@@ -190,7 +190,7 @@ func TestResponsesRequest_GPT6ReasoningAndSampling(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
 			params := effortParams(tc.model, tc.effort, false)
-			q := quirks.DefaultRegistry().Resolve("openai-responses", tc.model)
+			q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-responses", Model: tc.model})
 			req, err := buildResponsesRequest(params, q, nil, "")
 			must.NoError(err)
 			body, err := json.Marshal(req)

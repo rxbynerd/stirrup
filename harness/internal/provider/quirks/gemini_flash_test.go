@@ -32,7 +32,7 @@ func TestGeminiFlashRules_Resolution(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.model, func(t *testing.T) {
 			must := require.New(t)
-			g := DefaultRegistry().Resolve("gemini", tc.model).BehaviourFlags.Gemini
+			g := DefaultRegistry().Resolve(Target{ProviderType: "gemini", Model: tc.model}).BehaviourFlags.Gemini
 			must.Equal(tc.wantRole, g.ToolResultRole)
 			must.Equal(tc.wantOmit, g.OmitSamplingParams)
 			must.Equal(tc.wantLevels, g.ThinkingLevels)
@@ -49,7 +49,7 @@ func TestGeminiFlashRules_DoNotLeakAcrossProviders(t *testing.T) {
 	for _, pt := range []string{"openai-compatible", "anthropic", "openai-responses"} {
 		t.Run(pt, func(t *testing.T) {
 			must := require.New(t)
-			g := DefaultRegistry().Resolve(pt, "gemini-3.8-flash").BehaviourFlags.Gemini
+			g := DefaultRegistry().Resolve(Target{ProviderType: pt, Model: "gemini-3.8-flash"}).BehaviourFlags.Gemini
 			must.Equal(ToolResultRoleFunction, g.ToolResultRole)
 			must.False(g.OmitSamplingParams)
 			must.Empty(g.ThinkingLevels)

@@ -1,6 +1,6 @@
 package quirks
 
-// ToolSearchCapability declares whether a resolved (provider, model) pair
+// ToolSearchCapability declares whether a resolved Target
 // has a native tool search for deferred tool definitions. The zero value
 // advertises no support. See docs/configuration.md#lazy-tool-loading.
 type ToolSearchCapability struct {

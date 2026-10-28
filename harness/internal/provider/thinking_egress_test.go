@@ -52,7 +52,7 @@ func assertThinkingDropped(t *testing.T, adapter string, with, without []byte) {
 
 func TestOpenAICompatibleRequest_DropsThinkingBlocks(t *testing.T) {
 	must := require.New(t)
-	q := quirks.DefaultRegistry().Resolve("openai-compatible", "gpt-4o")
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: "gpt-4o"})
 	marshal := func(messages []types.Message) []byte {
 		req, err := buildOpenAIRequest(types.StreamParams{Model: "gpt-4o", MaxTokens: 64, Messages: messages}, true, q, nil)
 		must.NoError(err)
@@ -67,7 +67,7 @@ func TestOpenAICompatibleRequest_DropsThinkingBlocks(t *testing.T) {
 
 func TestOpenAIResponsesRequest_DropsThinkingBlocks(t *testing.T) {
 	must := require.New(t)
-	q := quirks.DefaultRegistry().Resolve("openai-responses", "gpt-4o")
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-responses", Model: "gpt-4o"})
 	marshal := func(messages []types.Message) []byte {
 		req, err := buildResponsesRequest(types.StreamParams{Model: "gpt-4o", MaxTokens: 64, Messages: messages}, q, nil, "")
 		must.NoError(err)
@@ -82,7 +82,7 @@ func TestOpenAIResponsesRequest_DropsThinkingBlocks(t *testing.T) {
 
 func TestGeminiRequest_DropsThinkingBlocks(t *testing.T) {
 	must := require.New(t)
-	q := quirks.DefaultRegistry().Resolve("gemini", "gemini-2.5-pro")
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "gemini", Model: "gemini-2.5-pro"})
 	marshal := func(messages []types.Message) []byte {
 		body, _, err := BuildGenerateContentRequest(types.StreamParams{Model: "gemini-2.5-pro", MaxTokens: 64, Messages: messages}, nil, q)
 		must.NoError(err)

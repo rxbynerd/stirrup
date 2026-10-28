@@ -154,7 +154,7 @@ func TestAnthropicAdapter_RedactedThinkingEmptyData(t *testing.T) {
 		{Type: "text", Text: "Reading it."},
 		{Type: "tool_use", ID: "toolu_1", Name: "read_file", Input: json.RawMessage(`{"path":"main.go"}`)},
 	}
-	q := quirks.DefaultRegistry().Resolve("anthropic", "claude-sonnet-5-5")
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: "claude-sonnet-5-5"})
 	body, err := json.Marshal(buildAnthropicRequest(types.StreamParams{Model: "claude-sonnet-5-5", MaxTokens: 16, Messages: history}, true, q))
 	must.NoError(err)
 	for _, raw := range assistantWireBlocks(t, body, 1) {

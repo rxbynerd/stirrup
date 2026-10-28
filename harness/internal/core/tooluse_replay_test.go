@@ -120,7 +120,7 @@ func runToolUseScenario(t *testing.T, sc toolUseScenario) (string, *types.RunTra
 	if sc.escalationRetries > 0 {
 		// nil capabilityResolver → the policy always falls back to the
 		// prompt path, which is the no-credential-friendly branch.
-		loop.Escalation = newDefaultEscalationPolicy(sc.escalationRetries, nil)
+		loop.Escalation = newDefaultEscalationPolicy(sc.escalationRetries, nil, keyAsProviderType)
 	}
 
 	config := buildTestConfig()

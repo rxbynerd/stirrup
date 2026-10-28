@@ -9,7 +9,8 @@
     "apiKeyHeader": "api-key",
     "queryParams": {
       "api-version": "preview"
-    }
+    },
+    "endpointProfile": "azure-openai"
   },
   "modelRouter": {
     "type": "static",

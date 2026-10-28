@@ -565,7 +565,8 @@ hard — or different providers per mode.
   on every provider; see
   [Reasoning summaries](configuration.md#reasoning-summaries).
 - Provider-specific wire quirks (Azure headers/query params, Z.ai
-  compat profile, Gemini safety settings) live on `ProviderConfig`.
+  compat profile, the OpenAI-wire endpoint profile, Gemini safety
+  settings) live on `ProviderConfig`.
   See [`providers.md`](providers.md).
 
 ### Budgets and limits

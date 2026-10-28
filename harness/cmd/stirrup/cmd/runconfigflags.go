@@ -25,6 +25,7 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.String("api-key-header", "", "Header name for sending the API key. Empty = Authorization: Bearer (default). Set to \"api-key\" for Azure OpenAI key auth.")
 	f.StringArray("query-param", nil, "Repeatable key=value query parameter appended to every provider request URL (e.g. api-version=preview). Used by the openai-* adapters.")
 	f.String("provider-compat-profile", "", "Optional compatibility profile selecting a pre-defined provider-quirks rule. Closed set; current legal values: \"\" (no profile), \"zai-glm\" (Z.ai GLM tool_stream + legacy max_tokens).")
+	f.String("provider-endpoint-profile", "", "Endpoint profile of an openai-compatible or openai-responses provider (sets provider.endpointProfile). Closed set; current legal values: \"\" (derived: openai for OpenAI's own API, generic for any other --base-url), \"openai\", \"azure-openai\", \"bedrock-mantle\", \"generic\". See docs/providers.md#endpoint-profiles.")
 	f.String("tools-profile", "", "Model-facing toolset profile (sets tools.profile). Closed set; current legal values: \"\"/\"default\" (no aliasing, internal tool names), \"coding-classic\" (terse coding-CLI aliases: grep, find, bash). Dispatch identities are unchanged regardless of profile.")
 	f.Bool("lazy-tools", false, "Turn on lazy tool loading (sets tools.lazyLoading.enabled): tools outside the eager set reach the model only after it searches for them. See docs/configuration.md#lazy-tool-loading.")
 	f.String("lazy-tools-strategy", "", "How deferred tools are searched (sets tools.lazyLoading.strategy). Closed set; current legal values: \"\"/\"auto\" (the provider's native tool search where the model has one, the harness tool_search otherwise), \"harness\" (always tool_search, which hides every deferred tool's name and description on every provider).")
@@ -160,6 +161,7 @@ func addRunConfigFlagCompletions(cmd *cobra.Command) {
 	staticValues("code-scanner", types.ValidCodeScannerTypeValues())
 	staticValues("guardrail", types.ValidGuardRailTypeValues())
 	staticValues("provider-compat-profile", types.ValidCompatProfileValues())
+	staticValues("provider-endpoint-profile", types.ValidEndpointProfileValues())
 	staticValues("tools-profile", types.ValidToolsProfileValues())
 	staticValues("lazy-tools-strategy", types.ValidLazyToolStrategyValues())
 

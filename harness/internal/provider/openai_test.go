@@ -1214,3 +1214,45 @@ func TestIsDefaultOpenAIBaseURL(t *testing.T) {
 		})
 	}
 }
+
+func TestEndpointProfileFor_DeclaredOrDerived(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  types.ProviderConfig
+		want string
+	}{
+		{"responses default endpoint", types.ProviderConfig{Type: "openai-responses"}, types.EndpointProfileOpenAI},
+		{"compatible default endpoint", types.ProviderConfig{Type: "openai-compatible", BaseURL: "https://api.openai.com/v1/"}, types.EndpointProfileOpenAI},
+		{"custom base url derives generic", types.ProviderConfig{Type: "openai-responses", BaseURL: "http://localhost:1234/v1"}, types.EndpointProfileGeneric},
+		{"declared openai on a relay", types.ProviderConfig{Type: "openai-responses", BaseURL: "https://relay.example.com/v1", EndpointProfile: types.EndpointProfileOpenAI}, types.EndpointProfileOpenAI},
+		{"declared azure", types.ProviderConfig{Type: "openai-responses", BaseURL: "https://example.openai.azure.com/openai/v1", EndpointProfile: types.EndpointProfileAzureOpenAI}, types.EndpointProfileAzureOpenAI},
+		{"declared generic on the default endpoint", types.ProviderConfig{Type: "openai-compatible", EndpointProfile: types.EndpointProfileGeneric}, types.EndpointProfileGeneric},
+		{"anthropic has no endpoint profile", types.ProviderConfig{Type: "anthropic"}, ""},
+		{"gemini has no endpoint profile", types.ProviderConfig{Type: "gemini", EndpointProfile: types.EndpointProfileOpenAI}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tt.want, EndpointProfileFor(tt.cfg))
+		})
+	}
+}
+
+func TestNewOpenAIAdapters_DeriveEndpointProfileFromBaseURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		want    string
+	}{
+		{"empty", "", types.EndpointProfileOpenAI},
+		{"openai", "https://api.openai.com/v1", types.EndpointProfileOpenAI},
+		{"gateway", "http://localhost:4000/v1", types.EndpointProfileGeneric},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tt.want, NewOpenAICompatibleAdapter(nil, tt.baseURL, OpenAIAuthConfig{}, RetryPolicy{}).EndpointProfile)
+			must.Equal(tt.want, NewOpenAIResponsesAdapter(nil, tt.baseURL, OpenAIAuthConfig{}).EndpointProfile)
+		})
+	}
+}

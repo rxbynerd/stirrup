@@ -346,7 +346,7 @@ func TestQuirksRegistry_Resolve_SetsReplayFields(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
-			q := quirks.DefaultRegistry().Resolve(tc.providerType, tc.model)
+			q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: tc.providerType, Model: tc.model})
 			must.Equal(tc.wantPaths, q.ReplayFields)
 		})
 	}

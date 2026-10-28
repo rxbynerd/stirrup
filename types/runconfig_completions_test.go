@@ -29,6 +29,7 @@ func TestCompletionValues_SortedAndNonEmpty(t *testing.T) {
 		{"logs export types", ValidLogsExportTypeValues()},
 		{"code scanners", ValidCodeScannerTypeValues()},
 		{"guard rails", ValidGuardRailTypeValues()},
+		{"endpoint profiles", ValidEndpointProfileValues()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
@@ -64,6 +65,7 @@ func TestCompletionValues_MatchValidatorMaps(t *testing.T) {
 		{name: "logs export types", backing: validLogsExportTypes, got: ValidLogsExportTypeValues(), filterEmpty: true},
 		{name: "code scanners", backing: validCodeScannerTypes, got: ValidCodeScannerTypeValues()},
 		{name: "guard rails", backing: validGuardRailTypes, got: ValidGuardRailTypeValues()},
+		{name: "endpoint profiles", backing: validEndpointProfiles, got: ValidEndpointProfileValues(), filterEmpty: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)

@@ -199,9 +199,13 @@ tool set a run would send. Its detail gives the search strategy, the
 eager and deferred counts in total and per group (built-in, control
 plane, each MCP server), and, for every provider and model the router can
 select, whether the turn uses the provider's native tool search or the
-harness `tool_search`, with the reason when it is the harness one
-(`strategy harness`, `custom baseUrl`, the model missing from the native
-search allow-list, or no eager tool besides `tool_search`). Each eager
+harness `tool_search`, with the reason when it is the harness one:
+`strategy harness`; an `openai-responses` provider whose endpoint profile
+is not `openai`, reported as `endpoint profile <name>`; the model missing
+from the native search allow-list; or no eager tool besides
+`tool_search`. The endpoint profile is named only when the model would
+have a hosted search on the `openai` profile; otherwise the allow-list
+reason is given. Each eager
 name that matches no tool adds a `warn` step named
 `lazy-tools:eager:<name>`. The step builds the tool set with the same
 code a real run uses, so the counts match the run's. It counts MCP tools
@@ -321,15 +325,17 @@ reference.
 | `--api-key-header` | (none) | Header name. Empty = `Authorization: Bearer`; set to `api-key` for Azure key auth. |
 | `--query-param key=value` | (none) | Repeatable. Adds query parameters to every provider request URL — e.g. `--query-param api-version=preview` for Azure. Keys here override duplicates already encoded in `--base-url`. |
 | `--provider-compat-profile` | (none) | Closed enum that loads a provider-quirks compatibility profile. Only legal value in v1: `"zai-glm"` (Z.ai GLM legacy `max_tokens` key + `tool_stream: true` extension). Unknown values fail at startup. JSON path: `provider.compatProfile`. |
+| `--provider-endpoint-profile` | (derived) | Closed enum declaring which implementation of the OpenAI wire serves `--base-url`: `openai`, `azure-openai`, `bedrock-mantle`, or `generic`. Empty derives `openai` for OpenAI's own API (`https://api.openai.com/v1`, or no `--base-url`) and `generic` for any other base URL. Legal only for `openai-compatible` and `openai-responses`; `azure-openai` and `bedrock-mantle` require `--base-url`. Set `openai` to declare a relay in front of OpenAI's API. See [Endpoint profiles](providers.md#endpoint-profiles). JSON path: `provider.endpointProfile` (and `providers[name].endpointProfile`). |
 
 Wire-shape divergences between provider/model pairs (e.g. OpenAI
 reasoning-class sampling-param omissions, Z.ai GLM legacy field
 names, Gemini 3.x `thoughtSignature` preservation) are not exposed
 on `RunConfig`. They are first-party rules in the
 `harness/internal/provider/quirks` registry, applied per-stream by
-the adapter. The `--provider-compat-profile` flag is the only
-operator-facing surface that influences quirk resolution; all other
-rules apply automatically based on `provider.type` and `model`.
+the adapter. The `--provider-compat-profile` and
+`--provider-endpoint-profile` flags are the only operator-facing
+surfaces that influence quirk resolution; all other rules apply
+automatically based on `provider.type` and `model`.
 Introspect with `stirrup providers quirks --provider X --model Y`;
 full reference at [`provider-quirks.md`](provider-quirks.md).
 
@@ -478,7 +484,7 @@ The exchange audience is set on the `tokenSource` (canonically
 | `--guardrail-fail-open` | `false` | When set, classifier transport errors / timeouts produce an allow verdict plus a `guard_error` security event instead of blocking the run. Default is fail-closed. Top-level only — governs the whole guardrail tree. JSON path: `guardRail.failOpen`. See [`guardrails.md`](guardrails.md#fail-open-posture). |
 | `--tools-profile` | (none) | Model-facing toolset profile. Closed enum: `""`/`default` (no aliasing, internal tool names) or `coding-classic` (terse coding-CLI aliases). Changes only the names the model sees; dispatch identities and gating are unchanged. JSON path: `tools.profile`. See [Toolset profiles](#toolset-profiles). |
 | `--lazy-tools` | `false` | Turns on lazy tool loading: tools outside the eager set reach the model only after it searches for them. JSON path: `tools.lazyLoading.enabled`. See [Lazy tool loading](#lazy-tool-loading). |
-| `--lazy-tools-strategy` | (none; behaves as `auto`) | How deferred tools are searched: `auto` uses the provider's native tool search where the model has one and the harness `tool_search` otherwise; `harness` always uses `tool_search`. JSON path: `tools.lazyLoading.strategy`. |
+| `--lazy-tools-strategy` | (none; behaves as `auto`) | How deferred tools are searched: `auto` uses the provider's native tool search where the quirks registry gives the routed provider, endpoint profile and model one (see [Strategies and providers](#strategies-and-providers)), and the harness `tool_search` otherwise; `harness` always uses `tool_search`. JSON path: `tools.lazyLoading.strategy`. |
 | `--lazy-tools-eager` | (none) | Repeatable internal tool ID sent on every turn without a search. Unset defers only MCP-imported and control-plane tools; a list defers all remaining tools, built-ins included. Replaces any `tools.lazyLoading.eager` from `--config`. JSON path: `tools.lazyLoading.eager`. |
 | `--lazy-tools-max-results` | `0` | How many tools one harness `tool_search` loads. `0` selects 5; the maximum is 20. JSON path: `tools.lazyLoading.maxResults`. |
 
@@ -1262,13 +1268,14 @@ prevent it.
 ### Strategies and providers
 
 Under `auto`, the harness consults the quirks registry for the routed
-provider and model on every turn, so a router that switches models
-mid-run switches search paths with it:
+provider, its [endpoint profile](providers.md#endpoint-profiles), and
+the model on every turn, so a router that switches models mid-run
+switches search paths with it:
 
 | Provider and model | `auto` uses |
 |---|---|
 | `anthropic`: Claude Opus 4.5–4.8, Sonnet 4.5–4.6, Haiku 4.5 and the Claude 5 generation | Native search: the Anthropic BM25 tool search tool, with deferred tools sent with `defer_loading` |
-| `openai-responses`: `gpt-5.4` and later 5.x, the `gpt-6` family | Native search: the hosted `tool_search` tool, with deferred tools sent with `defer_loading` and each MCP server's and the control plane's deferred tools grouped into a namespace; deferred built-ins keep their names and descriptions visible (see below). Only on the default endpoint; a custom `baseUrl` (Azure OpenAI, LiteLLM, LM Studio and other gateways) uses the harness `tool_search`, because a gateway may accept the hosted search entry and silently drop it, and the run then completes with every deferred tool refused as not loaded |
+| `openai-responses`: `gpt-5.4` and later 5.x, the `gpt-6` family | Native search: the hosted `tool_search` tool, with deferred tools sent with `defer_loading` and each MCP server's and the control plane's deferred tools grouped into a namespace; deferred built-ins keep their names and descriptions visible (see below). Only on the `openai` [endpoint profile](providers.md#endpoint-profiles), which an empty `provider.endpointProfile` derives for OpenAI's own API. A custom `baseUrl` derives `generic` and uses the harness `tool_search`, because a gateway can accept the hosted search entry and silently drop it, leaving every deferred tool unloadable (observed with LM Studio; other gateways are unprobed). `azure-openai` and `bedrock-mantle` are accepted but resolve like `generic` until probed, so they also use the harness `tool_search`. A relay in front of OpenAI's API declares `provider.endpointProfile: "openai"` to keep the hosted search. When the profile is derived as `generic` for a model that would have the hosted search, the run logs a notice at startup; see [Hosted tool search](providers.md#hosted-tool-search) |
 | `bedrock` | The harness `tool_search` tool: the adapter uses the Converse API, and Anthropic documents server-side tool search on Bedrock only for InvokeModel |
 | Every other provider and model (Gemini, `openai-compatible`, older Claude and GPT models) | The harness `tool_search` tool |
 

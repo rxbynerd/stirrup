@@ -149,14 +149,13 @@ type BatchAdapter struct {
 	client    BatchClient
 	cfg       *types.BatchProviderConfig
 	provType  string
+	endpoint  string // wrapped provider's endpoint profile; see NewBatchAdapter
 	runID     string
 	turnCount atomic.Int64
-	// Registry resolves per-(provider, model) quirks for the request
-	// body marshalling path, so a batch run against a compat-profile
-	// provider sees the same wire shape the streaming path would have
-	// produced. Nil falls back to quirks.DefaultRegistry(). Exported
-	// (not a constructor arg) to avoid churn on every NewBatchAdapter
-	// call site in tests.
+	// Registry resolves quirks for the request body marshalling path, so
+	// a batch run against a compat-profile provider sees the same wire
+	// shape the streaming path would have produced. Nil falls back to
+	// quirks.DefaultRegistry().
 	Registry *quirks.Registry
 	// lastBatchID stores the provider-assigned batch identifier from the
 	// most recent successful Submit; the agentic loop reads it via
@@ -167,12 +166,15 @@ type BatchAdapter struct {
 
 // NewBatchAdapter constructs a BatchAdapter. cfg.MaxWaitSeconds is read
 // on each Stream call; the client is expected to enforce the same cap
-// internally (defence in depth).
+// internally (defence in depth). endpointProfile is the wrapped
+// provider's EndpointProfileFor value; "" leaves the endpoint unstated,
+// so endpoint-scoped rules do not fire.
 func NewBatchAdapter(
 	inner ProviderAdapter,
 	client BatchClient,
 	cfg *types.BatchProviderConfig,
 	provType string,
+	endpointProfile string,
 	runID string,
 ) *BatchAdapter {
 	return &BatchAdapter{
@@ -180,6 +182,7 @@ func NewBatchAdapter(
 		client:   client,
 		cfg:      cfg,
 		provType: provType,
+		endpoint: endpointProfile,
 		runID:    runID,
 	}
 }
@@ -243,7 +246,7 @@ func (a *BatchAdapter) marshalRequestBody(ctx context.Context, params types.Stre
 		if registry == nil {
 			registry = quirks.DefaultRegistry()
 		}
-		q := registry.Resolve("anthropic", params.Model)
+		q := registry.Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model})
 		if err := validateReasoningEffort("anthropic", params.ReasoningEffort, params.Model, q.BehaviourFlags.Anthropic.EffortLevels); err != nil {
 			return nil, nil, err
 		}
@@ -257,7 +260,7 @@ func (a *BatchAdapter) marshalRequestBody(ctx context.Context, params types.Stre
 		if registry == nil {
 			registry = quirks.DefaultRegistry()
 		}
-		q := registry.Resolve("openai-compatible", params.Model)
+		q := registry.Resolve(quirks.Target{ProviderType: "openai-compatible", Endpoint: a.endpoint, Model: params.Model})
 		if err := checkOpenAIRequestSupported(params, q); err != nil {
 			return nil, nil, err
 		}
@@ -275,7 +278,7 @@ func (a *BatchAdapter) marshalRequestBody(ctx context.Context, params types.Stre
 		if registry == nil {
 			registry = quirks.DefaultRegistry()
 		}
-		q := registry.Resolve("openai-responses", params.Model)
+		q := registry.Resolve(quirks.Target{ProviderType: "openai-responses", Endpoint: a.endpoint, Model: params.Model})
 		if err := validateReasoningEffort("openai-responses", params.ReasoningEffort, params.Model, q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels); err != nil {
 			return nil, nil, err
 		}

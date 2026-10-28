@@ -51,6 +51,10 @@ type OpenAIResponsesAdapter struct {
 	// every Stream call. Defaults to quirks.DefaultRegistry().
 	Registry *quirks.Registry
 
+	// EndpointProfile is the endpoint the quirks registry resolves on.
+	// See OpenAICompatibleAdapter.EndpointProfile.
+	EndpointProfile string
+
 	// strictSchemas memoises strict-mode schema rewrites within this
 	// adapter's lifetime. See OpenAICompatibleAdapter.strictSchemas.
 	strictSchemas *strictSchemaCache
@@ -70,13 +74,14 @@ func NewOpenAIResponsesAdapter(bearer credential.BearerTokenFunc, baseURL string
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 	return &OpenAIResponsesAdapter{
-		bearer:        bearer,
-		httpClient:    newStreamingHTTPClient(),
-		baseURL:       baseURL,
-		apiKeyHeader:  auth.APIKeyHeader,
-		queryParams:   auth.QueryParams,
-		Registry:      quirks.DefaultRegistry(),
-		strictSchemas: newStrictSchemaCache(),
+		bearer:          bearer,
+		httpClient:      newStreamingHTTPClient(),
+		baseURL:         baseURL,
+		apiKeyHeader:    auth.APIKeyHeader,
+		queryParams:     auth.QueryParams,
+		Registry:        quirks.DefaultRegistry(),
+		EndpointProfile: derivedEndpointProfile(baseURL),
+		strictSchemas:   newStrictSchemaCache(),
 	}
 }
 
@@ -1705,7 +1710,7 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 	if registry == nil {
 		registry = quirks.DefaultRegistry()
 	}
-	q, appliedRules := registry.ResolveWithRules("openai-responses", params.Model)
+	q, appliedRules := registry.ResolveWithRules(quirks.Target{ProviderType: "openai-responses", Endpoint: o.EndpointProfile, Model: params.Model})
 
 	logger := o.Logger
 	if logger == nil {
@@ -1720,6 +1725,7 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 	logger.DebugContext(ctx, "openai-responses quirks resolved",
 		slog.String("provider.type", "openai-responses"),
 		slog.String("provider.model", params.Model),
+		slog.String("provider.endpoint_profile", o.EndpointProfile),
 		slog.Any("rules", ruleDescriptions(appliedRules)),
 	)
 

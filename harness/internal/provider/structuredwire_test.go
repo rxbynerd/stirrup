@@ -115,7 +115,7 @@ func anthropicEnvelopePart(t *testing.T, content json.RawMessage) map[string]jso
 // own JSON-string encoding.
 func TestAnthropicStructuredToolResult_WireSizeBound(t *testing.T) {
 	exec := structuredWireWorkspace(t)
-	capability := quirks.DefaultRegistry().Resolve("anthropic", "claude-sonnet-4-5").StructuredToolResults
+	capability := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: "claude-sonnet-4-5"}).StructuredToolResults
 	for _, c := range structuredWireCases {
 		t.Run(c.name, func(t *testing.T) {
 			must := require.New(t)
@@ -175,8 +175,8 @@ func TestStructuredToolResult_MetadataReachesAnthropicAndGemini(t *testing.T) {
 			absent:             []string{"paths"},
 		},
 	}
-	anthropicCap := quirks.DefaultRegistry().Resolve("anthropic", "claude-sonnet-4-5")
-	geminiCap := quirks.DefaultRegistry().Resolve("gemini", "gemini-2.5-pro")
+	anthropicCap := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: "claude-sonnet-4-5"})
+	geminiCap := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "gemini", Model: "gemini-2.5-pro"})
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			check := assert.New(t)
@@ -238,10 +238,10 @@ func TestStructuredToolResult_EncodingLeavesHistoryEnvelopeIntact(t *testing.T) 
 
 	_ = mustMarshal(t, buildAnthropicRequest(types.StreamParams{
 		Model: "claude-sonnet-4-5", MaxTokens: 1024, Messages: history,
-	}, true, quirks.DefaultRegistry().Resolve("anthropic", "claude-sonnet-4-5")))
+	}, true, quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: "claude-sonnet-4-5"})))
 	_, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model: "gemini-2.5-pro", Messages: history,
-	}, nil, quirks.DefaultRegistry().Resolve("gemini", "gemini-2.5-pro"))
+	}, nil, quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "gemini", Model: "gemini-2.5-pro"}))
 	must.NoError(err, "build gemini request")
 
 	got := history[2].Content[0].Structured

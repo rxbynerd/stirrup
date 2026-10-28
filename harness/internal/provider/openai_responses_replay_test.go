@@ -68,8 +68,11 @@ func newResponsesScript(t *testing.T, sse ...[]byte) *responsesScript {
 	return s
 }
 
+// adapter returns an adapter whose endpoint profile is "openai": the
+// script server stands in for OpenAI's own API.
 func (s *responsesScript) adapter(logger *slog.Logger) *OpenAIResponsesAdapter {
 	a := NewOpenAIResponsesAdapter(staticBearer("test-key"), s.srv.URL, OpenAIAuthConfig{})
+	a.EndpointProfile = types.EndpointProfileOpenAI
 	if logger != nil {
 		a.Logger = logger
 	}
@@ -981,7 +984,7 @@ func TestOpenAIAdapter_IgnoresResponsesReplayKey(t *testing.T) {
 	assistant, _ := fixtureReplayTurn(t)
 	for _, paths := range [][]string{
 		{responsesReplayKey, responsesReplayOriginKey},
-		quirks.DefaultRegistry().Resolve("openai-compatible", "gpt-5.6-sol").ReplayFields,
+		quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: "gpt-5.6-sol"}).ReplayFields,
 	} {
 		out := translateMessages("", []types.Message{assistant}, paths)
 		body, err := json.Marshal(out)

@@ -124,6 +124,11 @@ type harnessCLIOptions struct {
 	// closed set validated by ValidateRunConfig, empty by default.
 	CompatProfile string
 
+	// EndpointProfile declares the provider's OpenAI-wire endpoint;
+	// closed set validated by ValidateRunConfig, empty derives it from
+	// BaseURL.
+	EndpointProfile string
+
 	// ToolsProfile selects the model-facing toolset profile; closed set
 	// validated by ValidateRunConfig, empty by default (identity
 	// presentation).
@@ -374,10 +379,11 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 				}
 				return opts.APIKeyRef
 			}(),
-			BaseURL:       opts.BaseURL,
-			APIKeyHeader:  opts.APIKeyHeader,
-			QueryParams:   opts.QueryParams,
-			CompatProfile: opts.CompatProfile,
+			BaseURL:         opts.BaseURL,
+			APIKeyHeader:    opts.APIKeyHeader,
+			QueryParams:     opts.QueryParams,
+			CompatProfile:   opts.CompatProfile,
+			EndpointProfile: opts.EndpointProfile,
 		},
 		ModelRouter: types.ModelRouterConfig{
 			Type:     "static",
@@ -904,6 +910,9 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	}
 	if changed("provider-compat-profile") {
 		cfg.Provider.CompatProfile, _ = f.GetString("provider-compat-profile")
+	}
+	if changed("provider-endpoint-profile") {
+		cfg.Provider.EndpointProfile, _ = f.GetString("provider-endpoint-profile")
 	}
 	if changed("tools-profile") {
 		cfg.Tools.Profile, _ = f.GetString("tools-profile")

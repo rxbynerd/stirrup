@@ -3820,10 +3820,26 @@ type ProviderConfig struct {
 	// The wire-shape knowledge lives in harness/internal/provider/compat/;
 	// this field is a discriminator only and never carries operator-
 	// authored rule data.
-	// Next available field number: 16.
 	CompatProfile string `protobuf:"bytes,15,opt,name=compat_profile,json=compatProfile,proto3" json:"compat_profile,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Optional. Declares which implementation of the OpenAI wire serves
+	// base_url, so the quirks registry resolves endpoint-specific
+	// capabilities such as hosted tool_search. Closed enum, validated by
+	// ValidateRunConfig; only legal on "openai-compatible" and
+	// "openai-responses". Accepted values:
+	//
+	//	""               — derived: "openai" for OpenAI's own API,
+	//	                   "generic" for any other base_url (default).
+	//	"openai"         — OpenAI's API, directly or through a relay.
+	//	"azure-openai"   — Azure OpenAI; requires base_url.
+	//	"bedrock-mantle" — Amazon Bedrock Mantle; requires base_url.
+	//	"generic"        — any other OpenAI-compatible endpoint.
+	//
+	// "azure-openai" and "bedrock-mantle" resolve like "generic" until
+	// they are probed.
+	// Next available field number: 17.
+	EndpointProfile string `protobuf:"bytes,16,opt,name=endpoint_profile,json=endpointProfile,proto3" json:"endpoint_profile,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ProviderConfig) Reset() {
@@ -3957,6 +3973,13 @@ func (x *ProviderConfig) GetBatch() *BatchProviderConfig {
 func (x *ProviderConfig) GetCompatProfile() string {
 	if x != nil {
 		return x.CompatProfile
+	}
+	return ""
+}
+
+func (x *ProviderConfig) GetEndpointProfile() string {
+	if x != nil {
+		return x.EndpointProfile
 	}
 	return ""
 }
@@ -7055,7 +7078,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\vStopDetails\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1a\n" +
 	"\bcategory\x18\x02 \x01(\tR\bcategory\x12 \n" +
-	"\vexplanation\x18\x03 \x01(\tR\vexplanation\"\x9e\x06\n" +
+	"\vexplanation\x18\x03 \x01(\tR\vexplanation\"\xc9\x06\n" +
 	"\x0eProviderConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1e\n" +
 	"\vapi_key_ref\x18\x02 \x01(\tR\tapiKeyRef\x12\x16\n" +
@@ -7075,7 +7098,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x16gemini_safety_settings\x18\f \x03(\v2'.stirrup.harness.v1.GeminiSafetySettingR\x14geminiSafetySettings\x12B\n" +
 	"\x05retry\x18\r \x01(\v2'.stirrup.harness.v1.ProviderRetryConfigH\x00R\x05retry\x88\x01\x01\x12=\n" +
 	"\x05batch\x18\x0e \x01(\v2'.stirrup.harness.v1.BatchProviderConfigR\x05batch\x12%\n" +
-	"\x0ecompat_profile\x18\x0f \x01(\tR\rcompatProfile\x1a>\n" +
+	"\x0ecompat_profile\x18\x0f \x01(\tR\rcompatProfile\x12)\n" +
+	"\x10endpoint_profile\x18\x10 \x01(\tR\x0fendpointProfile\x1a>\n" +
 	"\x10QueryParamsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\b\n" +

@@ -72,6 +72,27 @@ func IsDefaultOpenAIBaseURL(baseURL string) bool {
 		strings.TrimRight(u.Path, "/") == "/v1"
 }
 
+// EndpointProfileFor returns the endpoint profile the quirks registry
+// resolves cfg on: the declared ProviderConfig.EndpointProfile, else
+// "openai" when BaseURL addresses OpenAI's own API and "generic"
+// otherwise. Provider types that do not speak the OpenAI wire return "".
+func EndpointProfileFor(cfg types.ProviderConfig) string {
+	if !types.IsOpenAIWireProviderType(cfg.Type) {
+		return ""
+	}
+	if cfg.EndpointProfile != "" {
+		return cfg.EndpointProfile
+	}
+	return derivedEndpointProfile(cfg.BaseURL)
+}
+
+func derivedEndpointProfile(baseURL string) string {
+	if IsDefaultOpenAIBaseURL(baseURL) {
+		return types.EndpointProfileOpenAI
+	}
+	return types.EndpointProfileGeneric
+}
+
 // OpenAICompatibleAdapter implements ProviderAdapter for the OpenAI Chat
 // Completions API. It works with any OpenAI-compatible endpoint: OpenAI,
 // LiteLLM, Azure OpenAI, vLLM, Ollama, llama.cpp server.
@@ -99,6 +120,11 @@ type OpenAICompatibleAdapter struct {
 	// constructor with quirks.DefaultRegistry().
 	Registry *quirks.Registry
 
+	// EndpointProfile is the endpoint the quirks registry resolves on.
+	// The constructor derives it from baseURL; the factory overwrites it
+	// with EndpointProfileFor so a declared profile wins.
+	EndpointProfile string
+
 	// strictSchemas memoises strict-mode schema rewrites within this
 	// adapter's lifetime, keyed by (model, tool-name, schema-hash). nil
 	// disables caching; the constructor initialises a non-nil instance.
@@ -122,14 +148,15 @@ func NewOpenAICompatibleAdapter(bearer credential.BearerTokenFunc, baseURL strin
 
 	baseURL = strings.TrimRight(baseURL, "/")
 	return &OpenAICompatibleAdapter{
-		bearer:        bearer,
-		httpClient:    newStreamingHTTPClient(),
-		baseURL:       baseURL,
-		apiKeyHeader:  auth.APIKeyHeader,
-		queryParams:   auth.QueryParams,
-		AdapterDeps:   AdapterDeps{RetryPolicy: retry},
-		Registry:      quirks.DefaultRegistry(),
-		strictSchemas: newStrictSchemaCache(),
+		bearer:          bearer,
+		httpClient:      newStreamingHTTPClient(),
+		baseURL:         baseURL,
+		apiKeyHeader:    auth.APIKeyHeader,
+		queryParams:     auth.QueryParams,
+		AdapterDeps:     AdapterDeps{RetryPolicy: retry},
+		Registry:        quirks.DefaultRegistry(),
+		EndpointProfile: derivedEndpointProfile(baseURL),
+		strictSchemas:   newStrictSchemaCache(),
 	}
 }
 
@@ -1081,7 +1108,7 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 	if registry == nil {
 		registry = quirks.DefaultRegistry()
 	}
-	q, appliedRules := registry.ResolveWithRules("openai-compatible", params.Model)
+	q, appliedRules := registry.ResolveWithRules(quirks.Target{ProviderType: "openai-compatible", Endpoint: o.EndpointProfile, Model: params.Model})
 
 	logger := o.Logger
 	if logger == nil {
@@ -1093,6 +1120,7 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 	logger.DebugContext(ctx, "openai quirks resolved",
 		slog.String("provider.type", "openai-compatible"),
 		slog.String("provider.model", params.Model),
+		slog.String("provider.endpoint_profile", o.EndpointProfile),
 		slog.Any("rules", ruleDescriptions(appliedRules)),
 	)
 

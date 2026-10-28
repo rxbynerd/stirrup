@@ -257,7 +257,7 @@ func TestZAICompatRules_ThinkingFamilyResolution(t *testing.T) {
 	for _, model := range []string{"glm-4.7", "glm-4.5-air", "glm-5", "glm-5.1", "glm-5.3", "glm-5.3-flash"} {
 		t.Run(model, func(t *testing.T) {
 			must := require.New(t)
-			q := reg.Resolve("openai-compatible", model)
+			q := reg.Resolve(quirks.Target{ProviderType: "openai-compatible", Model: model})
 			openAI := q.BehaviourFlags.OpenAI
 
 			// Base quirks still resolve.
@@ -289,7 +289,7 @@ func TestZAICompatRules_GLM53ReasoningEffort(t *testing.T) {
 	for model, want := range cases {
 		t.Run(model, func(t *testing.T) {
 			must := require.New(t)
-			got := reg.Resolve("openai-compatible", model).BehaviourFlags.OpenAI.ReasoningEffortLevels
+			got := reg.Resolve(quirks.Target{ProviderType: "openai-compatible", Model: model}).BehaviourFlags.OpenAI.ReasoningEffortLevels
 			must.Equal(want, got)
 		})
 	}
@@ -304,7 +304,7 @@ func TestZAICompatRules_LegacyLineHasNoThinking(t *testing.T) {
 	for _, model := range []string{"glm-4-plus", "glm-4-flash", "glm-4-air"} {
 		t.Run(model, func(t *testing.T) {
 			must := require.New(t)
-			q := reg.Resolve("openai-compatible", model)
+			q := reg.Resolve(quirks.Target{ProviderType: "openai-compatible", Model: model})
 			openAI := q.BehaviourFlags.OpenAI
 
 			// Base quirks present.
@@ -323,7 +323,7 @@ func TestZAICompatRules_LegacyLineHasNoThinking(t *testing.T) {
 // receives only the base quirks, no thinking.
 func TestZAICompatRules_GLM410IsAKnownGap(t *testing.T) {
 	must := require.New(t)
-	q := zaiRegistry().Resolve("openai-compatible", "glm-4.10")
+	q := zaiRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: "glm-4.10"})
 	openAI := q.BehaviourFlags.OpenAI
 
 	// Base rule still fires (glm-* matches glm-4.10).
@@ -341,7 +341,7 @@ func TestZAICompatRules_GLM410IsAKnownGap(t *testing.T) {
 // unverified through gateways).
 func TestZAICompatRules_GatewayPrefixResolution(t *testing.T) {
 	must := require.New(t)
-	q := zaiRegistry().Resolve("openai-compatible", "z-ai/glm-4.7")
+	q := zaiRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: "z-ai/glm-4.7"})
 	openAI := q.BehaviourFlags.OpenAI
 
 	must.Equal(quirks.TokenFieldMaxTokens, openAI.TokenField)
@@ -359,14 +359,14 @@ func TestZAICompatRules_DoesNotAffectNonGLMModels(t *testing.T) {
 
 	t.Run("gpt-4o is unaffected", func(t *testing.T) {
 		must := require.New(t)
-		q := reg.Resolve("openai-compatible", "gpt-4o")
+		q := reg.Resolve(quirks.Target{ProviderType: "openai-compatible", Model: "gpt-4o"})
 		must.Equal(quirks.TokenFieldMaxCompletionTokens, q.BehaviourFlags.OpenAI.TokenField)
 		must.NotContains(q.BehaviourFlags.OpenAI.ExtraBodyFields, "tool_stream")
 	})
 
 	t.Run("glm-4-plus gets the rule", func(t *testing.T) {
 		must := require.New(t)
-		q := reg.Resolve("openai-compatible", "glm-4-plus")
+		q := reg.Resolve(quirks.Target{ProviderType: "openai-compatible", Model: "glm-4-plus"})
 		must.Equal(quirks.TokenFieldMaxTokens, q.BehaviourFlags.OpenAI.TokenField)
 	})
 }
@@ -438,7 +438,7 @@ func TestCompatRules_ExtraBodyFieldsHaveNoSecretRefs(t *testing.T) {
 	for i, rule := range rules {
 		t.Run(rule.Description, func(t *testing.T) {
 			must := require.New(t)
-			q := quirks.NewRegistry([]quirks.Rule{rule}).Resolve("openai-compatible", models[i])
+			q := quirks.NewRegistry([]quirks.Rule{rule}).Resolve(quirks.Target{ProviderType: "openai-compatible", Model: models[i]})
 			for k, v := range q.BehaviourFlags.OpenAI.ExtraBodyFields {
 				must.Empty(scanForSecretRefs(v),
 					"ExtraBodyFields[%q] contains a secret:// reference; compat rule values are serialised verbatim and bypass RunConfig.Redact()", k)

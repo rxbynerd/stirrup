@@ -29,7 +29,7 @@ func TestResponsesRequest_ReasoningObjectSummary(t *testing.T) {
 			must := require.New(t)
 			params := effortParams(tc.model, tc.effort, false)
 			params.ReasoningSummary = tc.summary
-			q := quirks.DefaultRegistry().Resolve("openai-responses", tc.model)
+			q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-responses", Model: tc.model})
 			req, err := buildResponsesRequest(params, q, nil, "")
 			must.NoError(err, "build request")
 			body, err := json.Marshal(req)

@@ -1706,8 +1706,23 @@ message ProviderConfig {
   // The wire-shape knowledge lives in harness/internal/provider/compat/;
   // this field is a discriminator only and never carries operator-
   // authored rule data.
-  // Next available field number: 16.
   string compat_profile = 15;
+
+  // Optional. Declares which implementation of the OpenAI wire serves
+  // base_url, so the quirks registry resolves endpoint-specific
+  // capabilities such as hosted tool_search. Closed enum, validated by
+  // ValidateRunConfig; only legal on "openai-compatible" and
+  // "openai-responses". Accepted values:
+  //   ""               — derived: "openai" for OpenAI's own API,
+  //                      "generic" for any other base_url (default).
+  //   "openai"         — OpenAI's API, directly or through a relay.
+  //   "azure-openai"   — Azure OpenAI; requires base_url.
+  //   "bedrock-mantle" — Amazon Bedrock Mantle; requires base_url.
+  //   "generic"        — any other OpenAI-compatible endpoint.
+  // "azure-openai" and "bedrock-mantle" resolve like "generic" until
+  // they are probed.
+  // Next available field number: 17.
+  string endpoint_profile = 16;
 }
 
 // BatchProviderConfig controls async batch submission for a provider

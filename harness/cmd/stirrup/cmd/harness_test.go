@@ -2051,6 +2051,28 @@ func TestApplyOverrides_AzureProviderFlags(t *testing.T) {
 	check.Equal("gpt4-prod", cfg.Provider.QueryParams["deployment-id"], "QueryParams[deployment-id]")
 }
 
+func TestApplyOverrides_ProviderEndpointProfileFlag(t *testing.T) {
+	t.Run("flag overrides file value", func(t *testing.T) {
+		must := require.New(t)
+		cmd := newTestHarnessCommand()
+		cfg := baseFileConfig()
+		cfg.Provider.EndpointProfile = types.EndpointProfileGeneric
+		must.NoError(cmd.Flags().Set("provider-endpoint-profile", "azure-openai"))
+
+		must.NoError(applyOverrides(cmd, cfg, nil))
+		must.Equal(types.EndpointProfileAzureOpenAI, cfg.Provider.EndpointProfile)
+	})
+	t.Run("unset flag keeps file value", func(t *testing.T) {
+		must := require.New(t)
+		cmd := newTestHarnessCommand()
+		cfg := baseFileConfig()
+		cfg.Provider.EndpointProfile = types.EndpointProfileGeneric
+
+		must.NoError(applyOverrides(cmd, cfg, nil))
+		must.Equal(types.EndpointProfileGeneric, cfg.Provider.EndpointProfile)
+	})
+}
+
 // TestApplyOverrides_AzureFlagsDoNotOverrideWhenUnset verifies the
 // precedence rule for the new flags: a flag that the user did not pass
 // MUST NOT clobber a file-provided value.

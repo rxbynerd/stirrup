@@ -1729,7 +1729,7 @@ func TestBuildLoopWithTransport_MinimalValidConfig(t *testing.T) {
 	must.NotNil(loop.Security, "loop.Security")
 	must.NotNil(loop.Logger, "loop.Logger")
 	must.NotNil(loop.ContextWindows, "loop.ContextWindows")
-	got := loop.ContextWindows.Resolve("openai-compatible", "gpt-4o").ContextWindow
+	got := loop.ContextWindows.Resolve(quirks.Target{ProviderType: "openai-compatible", Model: "gpt-4o"}).ContextWindow
 	must.Equal(128_000, got, "gpt-4o context window from the model registry")
 }
 
@@ -2296,6 +2296,36 @@ func TestBuildProvider_OpenAIResponsesWithRetryConfig(t *testing.T) {
 	must.Equal(5, adapter.RetryPolicy.MaxAttempts)
 }
 
+func TestBuildProvider_OpenAIAdaptersCarryTheEffectiveEndpointProfile(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  types.ProviderConfig
+		want string
+	}{
+		{"responses default endpoint", types.ProviderConfig{Type: "openai-responses"}, types.EndpointProfileOpenAI},
+		{"responses derived generic", types.ProviderConfig{Type: "openai-responses", BaseURL: "https://gateway.example.com/v1"}, types.EndpointProfileGeneric},
+		{"responses declared openai relay", types.ProviderConfig{Type: "openai-responses", BaseURL: "https://relay.example.com/v1", EndpointProfile: types.EndpointProfileOpenAI}, types.EndpointProfileOpenAI},
+		{"compatible declared azure", types.ProviderConfig{Type: "openai-compatible", BaseURL: "https://example.openai.azure.com/openai/v1", EndpointProfile: types.EndpointProfileAzureOpenAI}, types.EndpointProfileAzureOpenAI},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			secrets := &stubSecretStore{secrets: map[string]string{"secret://OPENAI_KEY": "sk-test"}}
+			cfg := tc.cfg
+			cfg.APIKeyRef = "secret://OPENAI_KEY"
+			prov, err := buildProvider(context.Background(), cfg, secrets)
+			must.NoError(err)
+			switch adapter := prov.(type) {
+			case *provider.OpenAIResponsesAdapter:
+				must.Equal(tc.want, adapter.EndpointProfile)
+			case *provider.OpenAICompatibleAdapter:
+				must.Equal(tc.want, adapter.EndpointProfile)
+			default:
+				must.Failf("unexpected adapter", "buildProvider type = %T", prov)
+			}
+		})
+	}
+}
+
 // The factory wires the Z.ai compat rules into the adapter's registry, so GLM
 // model IDs resolve through them.
 func TestBuildProvider_OpenAICompatibleWithCompatProfile_ZAI(t *testing.T) {
@@ -2314,7 +2344,7 @@ func TestBuildProvider_OpenAICompatibleWithCompatProfile_ZAI(t *testing.T) {
 
 	t.Run("glm-4-plus maps to max_tokens and tool_stream", func(t *testing.T) {
 		must := require.New(t)
-		q := adapter.Registry.Resolve("openai-compatible", "glm-4-plus")
+		q := adapter.Registry.Resolve(quirks.Target{ProviderType: "openai-compatible", Model: "glm-4-plus"})
 		must.Equal(quirks.TokenFieldMaxTokens, q.BehaviourFlags.OpenAI.TokenField,
 			"Z.ai compat rule did not fire; check resolveCompatProfile dispatch")
 		must.Contains(q.BehaviourFlags.OpenAI.ExtraBodyFields, "tool_stream")
@@ -2325,7 +2355,7 @@ func TestBuildProvider_OpenAICompatibleWithCompatProfile_ZAI(t *testing.T) {
 	// CompatRules() slice, not only the base rule.
 	t.Run("glm-4.7 enables the thinking family", func(t *testing.T) {
 		must := require.New(t)
-		q := adapter.Registry.Resolve("openai-compatible", "glm-4.7")
+		q := adapter.Registry.Resolve(quirks.Target{ProviderType: "openai-compatible", Model: "glm-4.7"})
 		must.Contains(q.ReplayFields, "reasoning_content",
 			"thinking-family rule did not fire via factory")
 		must.Contains(q.BehaviourFlags.OpenAI.ExtraBodyFields, "thinking")
@@ -2826,6 +2856,135 @@ func TestBuildLoopWithTransport_BatchOnStdioAcceptsOpenAI(t *testing.T) {
 			must.True(ok, "loop.Provider after unwrap is %T, want *provider.BatchAdapter", unwrapNormalizer(loop.Provider))
 			must.Contains(loop.Providers, config.Provider.Type)
 			must.Same(ba, unwrapNormalizer(loop.Providers[config.Provider.Type]))
+		})
+	}
+}
+
+// hostedSearchCapture records every request body sent to a fake OpenAI
+// API and fails each request, so a stream or batch submit ends after
+// sending its body.
+type hostedSearchCapture struct {
+	mu     sync.Mutex
+	bodies map[string][]string
+}
+
+func newHostedSearchCapture(t *testing.T) (*hostedSearchCapture, string) {
+	t.Helper()
+	c := &hostedSearchCapture{bodies: map[string][]string{}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		c.mu.Lock()
+		c.bodies[r.URL.Path] = append(c.bodies[r.URL.Path], string(body))
+		c.mu.Unlock()
+		http.Error(w, `{"error":{"message":"captured"}}`, http.StatusBadRequest)
+	}))
+	t.Cleanup(srv.Close)
+	return c, srv.URL + "/v1"
+}
+
+func (c *hostedSearchCapture) last(path string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if b := c.bodies[path]; len(b) > 0 {
+		return b[len(b)-1]
+	}
+	return ""
+}
+
+func hostedSearchStreamParams() types.StreamParams {
+	return types.StreamParams{
+		Model:      "gpt-5.5",
+		MaxTokens:  256,
+		ToolSearch: true,
+		Tools: []types.ToolDefinition{
+			{Name: "read_file", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`)},
+			{Name: "mcp_jira_create_issue", Description: "Create a Jira issue", InputSchema: json.RawMessage(`{"type":"object","properties":{"title":{"type":"string"}},"required":["title"]}`), Deferred: true},
+		},
+		Messages: []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "file a ticket"}}}},
+	}
+}
+
+// streamOnce sends one request through p. The capture server fails every
+// request, so the error, returned or streamed, is expected and ignored.
+func streamOnce(t *testing.T, p provider.ProviderAdapter, params types.StreamParams) {
+	t.Helper()
+	ch, err := p.Stream(t.Context(), params)
+	if err != nil {
+		return
+	}
+	for range ch {
+	}
+}
+
+// buildResponsesLoopForCapture builds a loop for an openai-responses
+// provider at baseURL, batched over harness-side polling when batch is set.
+func buildResponsesLoopForCapture(t *testing.T, baseURL, endpointProfile string, batch bool) *AgenticLoop {
+	t.Helper()
+	must := require.New(t)
+	timeout := 30
+	config := &types.RunConfig{
+		RunID:            "factory-test-hosted-search",
+		Mode:             "planning",
+		Prompt:           "hello",
+		Provider:         types.ProviderConfig{Type: "openai-responses", APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: baseURL, EndpointProfile: endpointProfile},
+		ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "openai-responses", Model: "gpt-5.5"},
+		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
+		Executor:         types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+		EditStrategy:     types.EditStrategyConfig{Type: "multi"},
+		Verifier:         types.VerifierConfig{Type: "none"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		Transport:        types.TransportConfig{Type: "stdio"},
+		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		Tools:            types.ToolsConfig{BuiltIn: types.DefaultReadOnlyBuiltInTools()},
+		RuleOfTwo:        disableRuleOfTwo(),
+		MaxTurns:         2,
+		Timeout:          &timeout,
+	}
+	if batch {
+		config.Provider.Batch = &types.BatchProviderConfig{
+			Enabled:               true,
+			MaxWaitSeconds:        intPtr(30),
+			HarnessSidePolling:    true,
+			AllowInteractiveModes: true,
+		}
+	}
+	loop, err := BuildLoopWithTransport(context.Background(), config, transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}))
+	must.NoError(err)
+	t.Cleanup(func() { _ = loop.Close() })
+	return loop
+}
+
+func TestBuildLoopWithTransport_BatchHostedSearchMatchesStreaming(t *testing.T) {
+	t.Setenv("TEST_OPENAI_KEY", "test-key")
+	const hostedEntry = `{"type":"tool_search"}`
+	for _, tc := range []struct {
+		name            string
+		endpointProfile string
+		wantHosted      bool
+	}{
+		{"declared openai on a custom baseUrl", types.EndpointProfileOpenAI, true},
+		{"derived generic", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			capture, baseURL := newHostedSearchCapture(t)
+
+			streaming := buildResponsesLoopForCapture(t, baseURL, tc.endpointProfile, false)
+			streamOnce(t, unwrapNormalizer(streaming.Provider), hostedSearchStreamParams())
+			streamed := capture.last("/v1/responses")
+			must.NotEmpty(streamed, "the streaming adapter sent no request")
+
+			batched := buildResponsesLoopForCapture(t, baseURL, tc.endpointProfile, true)
+			ba, ok := unwrapNormalizer(batched.Provider).(*provider.BatchAdapter)
+			must.True(ok, "loop.Provider after unwrap is %T, want *provider.BatchAdapter", unwrapNormalizer(batched.Provider))
+			streamOnce(t, ba, hostedSearchStreamParams())
+			uploaded := capture.last("/v1/files")
+			must.NotEmpty(uploaded, "the batch adapter uploaded no input file")
+
+			must.Equal(tc.wantHosted, strings.Contains(streamed, hostedEntry), "streaming body:\n%s", streamed)
+			must.Equal(tc.wantHosted, strings.Contains(uploaded, hostedEntry), "batch input file:\n%s", uploaded)
 		})
 	}
 }

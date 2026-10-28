@@ -347,7 +347,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// 8. Context strategy. Built after buildComponents because the
 	// "summarise" strategy needs the default provider adapter.
 	summaryWindow := effectiveContextWindow(config.ContextStrategy.MaxTokens,
-		quirks.DefaultRegistry().Resolve(config.Provider.Type, config.ModelRouter.Model).ContextWindow)
+		quirks.DefaultRegistry().Resolve(targetFor(config, "", config.ModelRouter.Model)).ContextWindow)
 	// presenter is assigned once every tool is registered, before the run
 	// starts; tool_use blocks carry the presented name.
 	var presenter *tool.Presenter
@@ -564,7 +564,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 			return nil, fmt.Errorf("batch is not supported for transport type %q", config.Transport.Type)
 		}
 
-		batchAdapter := provider.NewBatchAdapter(prov, batchClient, config.Provider.Batch, config.Provider.Type, config.RunID)
+		batchAdapter := provider.NewBatchAdapter(prov, batchClient, config.Provider.Batch, config.Provider.Type, provider.EndpointProfileFor(config.Provider), config.RunID)
 		// Thread the streaming inner adapter's quirks registry through so
 		// the batch marshal path matches the streaming wire shape,
 		// including any compat-profile extras.
@@ -603,7 +603,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 
 	// Tool-choice escalation policy: off by default (nil) unless the
 	// operator opts in via RunConfig.ToolChoiceEscalation.
-	escalation := buildEscalationPolicy(config.EffectiveToolChoiceEscalationMaxRetries(), prov)
+	escalation := buildEscalationPolicy(config.EffectiveToolChoiceEscalationMaxRetries(), config, quirks.DefaultRegistry())
 
 	// Last in, first closed: the refresher stops before every other owned
 	// resource (see cleanup above for the same ordering on a failed build).
@@ -720,15 +720,28 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 }
 
 // buildEscalationPolicy constructs the tool-choice escalation policy
-// injected into the loop. maxRetries <= 0 returns nil (off by default);
-// the resolver is quirks.DefaultRegistry() since tool-choice support is
-// a cross-provider capability no compat profile overrides. The _
-// provider argument is reserved for a future per-provider registry.
-func buildEscalationPolicy(maxRetries int, _ provider.ProviderAdapter) EscalationPolicy {
+// injected into the loop. maxRetries <= 0 returns nil (off by default).
+// The factory passes quirks.DefaultRegistry() since tool-choice support is
+// a cross-provider capability no compat profile overrides.
+func buildEscalationPolicy(maxRetries int, config *types.RunConfig, caps capabilityResolver) EscalationPolicy {
 	if maxRetries <= 0 {
 		return nil
 	}
-	return newDefaultEscalationPolicy(maxRetries, quirks.DefaultRegistry())
+	return newDefaultEscalationPolicy(maxRetries, caps, func(key, model string) quirks.Target {
+		return targetFor(config, key, model)
+	})
+}
+
+// targetFor is the quirks target of a routed selection, where an empty key
+// is the default provider. The endpoint is the profile the provider's
+// adapter resolves with, so loop-side lookups and adapters agree; a key
+// with no configuration has no endpoint.
+func targetFor(config *types.RunConfig, key, model string) quirks.Target {
+	return quirks.Target{
+		ProviderType: selectedProviderType(config, key),
+		Endpoint:     provider.EndpointProfileFor(providerConfigFor(config, key)),
+		Model:        model,
+	}
 }
 
 // buildStructuredResultSupport resolves the StructuredToolResults capability
@@ -736,54 +749,58 @@ func buildEscalationPolicy(maxRetries int, _ provider.ProviderAdapter) Escalatio
 // router provider key to its declared provider type. It reports support only
 // for a wire shape an adapter sends, matching the adapters' own gates.
 func buildStructuredResultSupport(config *types.RunConfig, caps capabilityResolver) StructuredResultSupport {
-	providerTypes := make(map[string]string, len(config.Providers)+1)
-	providerTypes[config.Provider.Type] = config.Provider.Type
-	for name, cfg := range config.Providers {
-		providerTypes[name] = cfg.Type
-	}
 	return func(key, model string) bool {
-		providerType := config.Provider.Type
-		if key != "" {
-			providerType = key
-			if declared, ok := providerTypes[key]; ok {
-				providerType = declared
-			}
-		}
-		c := caps.Resolve(providerType, model).StructuredToolResults
+		c := caps.Resolve(targetFor(config, key, model)).StructuredToolResults
 		return c.Supported && (c.ContentBlockArray || c.ObjectResponse)
 	}
 }
 
 // buildToolSearchSupport resolves the native tool search capability of a
 // router-selected provider key and model against the registry the
-// Anthropic and OpenAI Responses adapters gate their own search on. An
-// openai-responses provider with a custom baseUrl (Azure OpenAI, LiteLLM and
-// other gateways) resolves to no native search, so the loop serves the
-// harness tool_search; the hosted search is only known to exist on OpenAI's
-// own endpoint.
+// Anthropic and OpenAI Responses adapters gate their own search on,
+// including the provider's endpoint profile so a gateway that does not
+// implement the hosted search resolves to the harness tool_search.
 func buildToolSearchSupport(config *types.RunConfig, caps capabilityResolver, logger *slog.Logger) ToolSearchSupport {
 	if config.Tools.LazyLoading.EffectiveStrategy() == types.LazyToolStrategyAuto {
-		logCustomResponsesEndpoint(logger, config.Provider.Type, config.Provider)
-		for name, cfg := range config.Providers {
-			logCustomResponsesEndpoint(logger, name, cfg)
-		}
+		logDerivedGenericResponsesEndpoints(config, caps, logger)
 	}
 	return func(key, model string) quirks.ToolSearchCapability {
-		if hasCustomResponsesEndpoint(providerConfigFor(config, key)) {
-			return quirks.ToolSearchCapability{}
+		return caps.Resolve(targetFor(config, key, model)).ToolSearch
+	}
+}
+
+// logDerivedGenericResponsesEndpoints logs once per routable provider whose
+// derived generic endpoint profile withholds a hosted search the model has
+// on OpenAI's own API.
+func logDerivedGenericResponsesEndpoints(config *types.RunConfig, caps capabilityResolver, logger *slog.Logger) {
+	logged := map[string]bool{}
+	for _, sel := range router.Candidates(context.Background(), buildRouter(config.ModelRouter, config.Provider.Type), config.Mode) {
+		cfg := providerConfigFor(config, sel.Provider)
+		if logged[sel.Provider] || !isDerivedGenericResponsesEndpoint(cfg) || !hostedSearchOnOpenAIProfile(caps, cfg.Type, sel.Model) {
+			continue
 		}
-		return caps.Resolve(selectedProviderType(config, key), model).ToolSearch
+		logged[sel.Provider] = true
+		field := "provider.endpointProfile"
+		if _, named := config.Providers[sel.Provider]; named {
+			field = "providers[" + sel.Provider + "].endpointProfile"
+		}
+		logger.Info("the harness tool_search is used for an openai-responses baseUrl with the derived generic endpoint profile; declare "+field+" openai only if this endpoint forwards OpenAI's hosted tool_search and defer_loading unchanged",
+			"provider", sel.Provider, "model", sel.Model)
 	}
 }
 
-func hasCustomResponsesEndpoint(cfg types.ProviderConfig) bool {
-	return cfg.Type == "openai-responses" && !provider.IsDefaultOpenAIBaseURL(cfg.BaseURL)
+// isDerivedGenericResponsesEndpoint reports whether cfg is an
+// openai-responses provider whose generic endpoint profile was derived from
+// a custom baseUrl rather than declared.
+func isDerivedGenericResponsesEndpoint(cfg types.ProviderConfig) bool {
+	return cfg.Type == "openai-responses" && cfg.EndpointProfile == "" &&
+		provider.EndpointProfileFor(cfg) == types.EndpointProfileGeneric
 }
 
-func logCustomResponsesEndpoint(logger *slog.Logger, name string, cfg types.ProviderConfig) {
-	if hasCustomResponsesEndpoint(cfg) {
-		logger.Info("native tool search is off for a custom openai-responses baseUrl, where a gateway may silently drop the hosted search; the harness tool_search is used", "provider", name)
-	}
+// hostedSearchOnOpenAIProfile reports whether model would have a native
+// tool search on providerType served by OpenAI's own API.
+func hostedSearchOnOpenAIProfile(caps capabilityResolver, providerType, model string) bool {
+	return caps.Resolve(quirks.Target{ProviderType: providerType, Endpoint: types.EndpointProfileOpenAI, Model: model}).ToolSearch.Supported
 }
 
 // lazyLoaderOptions names the control-plane tools and MCP servers of a
@@ -859,8 +876,10 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 			QueryParams:  cfg.QueryParams,
 		}
 		adapter := provider.NewOpenAICompatibleAdapter(cred.BearerToken, cfg.BaseURL, auth, retry)
-		// Compat rules are appended after BuiltinRules so their
-		// specificity ordering wins against any overlapping glob.
+		adapter.EndpointProfile = provider.EndpointProfileFor(cfg)
+		// Compat rules are appended after BuiltinRules so they win against
+		// an overlapping endpoint-agnostic glob of equal length; an
+		// endpoint-scoped builtin rule of that length still applies last.
 		if cfg.CompatProfile != "" {
 			extra, err := resolveCompatProfile(cfg.CompatProfile)
 			if err != nil {
@@ -882,6 +901,7 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 		}
 		adapter := provider.NewOpenAIResponsesAdapter(cred.BearerToken, cfg.BaseURL, auth)
 		adapter.RetryPolicy = retry
+		adapter.EndpointProfile = provider.EndpointProfileFor(cfg)
 		return adapter, nil
 	case "bedrock":
 		return provider.NewBedrockAdapter(cfg.Region, cfg.Profile, cred.AWSCredentials, retry)
@@ -902,12 +922,7 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 // OpenAI-wire provider pointed away from api.openai.com can reach a server
 // that accepts unauthenticated requests.
 func keylessEndpoint(cfg types.ProviderConfig) bool {
-	switch cfg.Type {
-	case "openai-compatible", "openai-responses":
-		return !provider.IsDefaultOpenAIBaseURL(cfg.BaseURL)
-	default:
-		return false
-	}
+	return types.IsOpenAIWireProviderType(cfg.Type) && !provider.IsDefaultOpenAIBaseURL(cfg.BaseURL)
 }
 
 func buildRouter(cfg types.ModelRouterConfig, defaultProvider string) router.ModelRouter {

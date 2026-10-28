@@ -530,6 +530,7 @@ func providerConfigFromProto(pc *pb.ProviderConfig) types.ProviderConfig {
 		BaseURL:            pc.BaseUrl,
 		APIKeyHeader:       pc.ApiKeyHeader,
 		CompatProfile:      pc.CompatProfile,
+		EndpointProfile:    pc.EndpointProfile,
 		GCPProject:         pc.GcpProject,
 		GCPLocation:        pc.GcpLocation,
 		GCPCredentialsFile: pc.GcpCredentialsFile,

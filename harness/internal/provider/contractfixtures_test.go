@@ -46,7 +46,7 @@ func TestAnthropicContract_ToolEnabledRequestBody(t *testing.T) {
 		ToolChoice:  types.ToolChoiceRequired,
 		CacheKey:    "contract-cache-key",
 	}
-	q := quirks.DefaultRegistry().Resolve("anthropic", params.Model)
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model})
 	body, err := json.Marshal(buildAnthropicRequest(params, true, q))
 	must.NoError(err, "marshal anthropic request")
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath("testdata", "quirks", "anthropic", "claude-sonnet-4-6", "request.json"), body)
@@ -71,7 +71,7 @@ func TestAnthropicContract_ClaudeSonnet5OmitsTemperature(t *testing.T) {
 		ToolChoice:  types.ToolChoiceRequired,
 		CacheKey:    "contract-cache-key",
 	}
-	q := quirks.DefaultRegistry().Resolve("anthropic", params.Model)
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model})
 	body, err := json.Marshal(buildAnthropicRequest(params, true, q))
 	must.NoError(err, "marshal anthropic request")
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath("testdata", "quirks", "anthropic", "claude-sonnet-5", "request.json"), body)
@@ -90,7 +90,7 @@ func TestResponsesContract_ToolEnabledRequestBody(t *testing.T) {
 		MaxTokens:   4096,
 		Temperature: types.Float64Ptr(0.5),
 	}
-	q := quirks.DefaultRegistry().Resolve("openai-responses", params.Model)
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-responses", Model: params.Model})
 	req, err := buildResponsesRequest(params, q, nil, "")
 	must.NoError(err, "build responses request")
 	req.Stream = true
@@ -114,7 +114,7 @@ func TestResponsesContract_GPT56RequestBody(t *testing.T) {
 		Temperature:     types.Float64Ptr(0.5),
 		ReasoningEffort: "high",
 	}
-	q := quirks.DefaultRegistry().Resolve("openai-responses", params.Model)
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-responses", Model: params.Model})
 	req, err := buildResponsesRequest(params, q, nil, "")
 	must.NoError(err, "build responses request")
 	req.Stream = true

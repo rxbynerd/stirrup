@@ -9,13 +9,16 @@ import (
 
 // Rule is one entry in the quirks registry. ModelMatch is a path.Match
 // glob against StreamParams.Model; an empty ModelMatch matches every
-// model for the named provider. Apply mutates the ProviderQuirks the
+// model for the named provider. Endpoint scopes the rule to one
+// endpoint profile (types.EndpointProfile*); an empty Endpoint matches
+// every endpoint. Apply mutates the ProviderQuirks the
 // registry constructed for a resolution; the registry pre-initialises
 // every map and slice field, so Apply can read-modify-write without nil
 // guards.
 type Rule struct {
 	ProviderType string    // exact RunConfig provider.type; "" reserved as wildcard (not used in v1)
 	ModelMatch   string    // path.Match glob against StreamParams.Model; "" matches all models
+	Endpoint     string    // exact endpoint profile; "" matches every endpoint
 	Description  string    // required; used in trace attributes and CLI introspection
 	LastVerified time.Time // set via Date("2026-05-24"); staleness signal at 180 days
 	Apply        func(*ProviderQuirks)
@@ -55,16 +58,23 @@ func DefaultRegistry() *Registry {
 	return defaultRegistry
 }
 
-// Resolve walks all matching rules in specificity-then-declaration order
-// and applies each one to a fresh ProviderQuirks. The returned value has
-// every map and slice field initialised (non-nil), so callers can read
-// them without nil-guarding. Safe to call concurrently.
-//
-// Resolve delegates to ResolveWithRules and discards the contributing
-// rule list; call ResolveWithRules directly when the caller also needs
-// to know which rules fired.
-func (r *Registry) Resolve(providerType, model string) ProviderQuirks {
-	q, _ := r.ResolveWithRules(providerType, model)
+// Target is what a resolution resolves for. Endpoint is the provider's
+// endpoint profile (provider.EndpointProfileFor); an empty Endpoint means
+// the endpoint is not stated, and rules scoped to an endpoint do not
+// match it, so a capability only some endpoints implement resolves as
+// unsupported.
+type Target struct {
+	ProviderType string
+	Endpoint     string
+	Model        string
+}
+
+// Resolve walks all rules matching t in specificity-then-declaration
+// order and applies each one to a fresh ProviderQuirks. The returned
+// value has every map and slice field initialised (non-nil), so callers
+// can read them without nil-guarding. Safe to call concurrently.
+func (r *Registry) Resolve(t Target) ProviderQuirks {
+	q, _ := r.ResolveWithRules(t)
 	return q
 }
 
@@ -73,7 +83,7 @@ func (r *Registry) Resolve(providerType, model string) ProviderQuirks {
 // declaration order Apply was invoked in — the last entry is the rule
 // whose writes won on overlapping fields. Rules with a nil Apply are
 // filtered out since they did not run.
-func (r *Registry) ResolveWithRules(providerType, model string) (ProviderQuirks, []Rule) {
+func (r *Registry) ResolveWithRules(t Target) (ProviderQuirks, []Rule) {
 	q := ProviderQuirks{
 		FieldRenames:   map[string]string{},
 		OmitFields:     []string{},
@@ -101,15 +111,16 @@ func (r *Registry) ResolveWithRules(providerType, model string) (ProviderQuirks,
 		return q, nil
 	}
 
-	// Sort by glob length ascending, declaration order as tiebreaker, so
-	// longer (more specific) rules apply last and win on overlapping keys.
+	// Sort by glob length ascending, then endpoint-agnostic before
+	// endpoint-scoped, then declaration order, so more specific rules
+	// apply last and win on overlapping keys.
 	type indexed struct {
 		idx  int
 		rule Rule
 	}
 	matches := make([]indexed, 0, len(r.rules))
 	for i, rule := range r.rules {
-		if !RuleMatches(rule, providerType, model) {
+		if !RuleMatches(rule, t) {
 			continue
 		}
 		matches = append(matches, indexed{idx: i, rule: rule})
@@ -119,6 +130,11 @@ func (r *Registry) ResolveWithRules(providerType, model string) (ProviderQuirks,
 		lj := len(matches[j].rule.ModelMatch)
 		if li != lj {
 			return li < lj
+		}
+		ei := matches[i].rule.Endpoint != ""
+		ej := matches[j].rule.Endpoint != ""
+		if ei != ej {
+			return ej
 		}
 		return matches[i].idx < matches[j].idx
 	})
@@ -133,18 +149,22 @@ func (r *Registry) ResolveWithRules(providerType, model string) (ProviderQuirks,
 	return q, applied
 }
 
-// RuleMatches reports whether the rule fires for the given (provider,
-// model) pair. An empty ModelMatch matches every model. A glob that
-// fails to compile is treated as a non-match rather than panicking.
+// RuleMatches reports whether the rule fires for t. An empty ModelMatch
+// matches every model and an empty Endpoint every endpoint; an
+// endpoint-scoped rule never matches an unstated ("") endpoint. A glob
+// that fails to compile is treated as a non-match rather than panicking.
 // Exported so CLI introspection reuses the same predicate Resolve uses.
-func RuleMatches(rule Rule, providerType, model string) bool {
-	if rule.ProviderType != providerType {
+func RuleMatches(rule Rule, t Target) bool {
+	if rule.ProviderType != t.ProviderType {
+		return false
+	}
+	if rule.Endpoint != "" && rule.Endpoint != t.Endpoint {
 		return false
 	}
 	if rule.ModelMatch == "" {
 		return true
 	}
-	ok, err := path.Match(rule.ModelMatch, model)
+	ok, err := path.Match(rule.ModelMatch, t.Model)
 	if err != nil {
 		return false
 	}
