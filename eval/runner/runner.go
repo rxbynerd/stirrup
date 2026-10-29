@@ -33,8 +33,9 @@ type RunConfig struct {
 
 	// OutputDir, when non-empty, enables per-task artifact retention: the
 	// runner writes trace.jsonl, harness.stdout.txt, and harness.stderr.txt
-	// under <OutputDir>/<suiteID>/<taskID>/ (trial-<n>/ below that when a
-	// task runs more than once). The temporary workspace is not copied.
+	// under <OutputDir>/<suiteID>/<taskID>/ (trial-<n>/ below that when
+	// the resolved trial count is above one, including for a task that
+	// confirm-on-fail ran once). The temporary workspace is not copied.
 	OutputDir string
 
 	// Concurrency caps the number of task trials executed in parallel.
@@ -46,6 +47,11 @@ type RunConfig struct {
 	// workspace and harness subprocess. Values <= 0 defer to the suite's
 	// trials attribute, then to 1.
 	Trials int
+
+	// TrialsPolicy is eval.TrialsPolicyFixed (the default when empty) or
+	// eval.TrialsPolicyConfirmOnFail, under which only a task whose first
+	// trial did not pass runs the remaining trials.
+	TrialsPolicy string
 
 	// RequireHealthy makes the comparison gate count a judge pass only when
 	// the run was healthy, in addition to a suite's require_healthy
@@ -138,6 +144,12 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 	if cfg.Trials > eval.MaxTrials {
 		return eval.SuiteResult{}, fmt.Errorf("trials must be at most %d, got %d", eval.MaxTrials, cfg.Trials)
 	}
+	if err := eval.ValidateTrialsPolicy(cfg.TrialsPolicy); err != nil {
+		return eval.SuiteResult{}, err
+	}
+	if cfg.TrialsPolicy == "" {
+		cfg.TrialsPolicy = eval.TrialsPolicyFixed
+	}
 	if err := judge.PreflightSuite(ctx, suite.Tasks, cfg.JudgeOptions); err != nil {
 		return eval.SuiteResult{}, err
 	}
@@ -196,13 +208,14 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 			tasks[i] = aggregateTrials(t.ID, []eval.TaskResult{dryRunTask(t, baseline)})
 		}
 		return eval.SuiteResult{
-			SuiteID:     suite.ID,
-			RunID:       runID,
-			StartedAt:   startedAt,
-			CompletedAt: time.Now(),
-			Tasks:       tasks,
-			PassRate:    suitePassRate(tasks),
-			Trials:      trials,
+			SuiteID:      suite.ID,
+			RunID:        runID,
+			StartedAt:    startedAt,
+			CompletedAt:  time.Now(),
+			Tasks:        tasks,
+			PassRate:     suitePassRate(tasks),
+			Trials:       trials,
+			TrialsPolicy: cfg.TrialsPolicy,
 		}, nil
 	}
 
@@ -214,19 +227,21 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 		cfg.JudgeOptions.CacheStats = &judge.CacheStats{}
 	}
 
-	results := runTasksConcurrently(ctx, suite.Tasks, cfg, suiteArtifactDir, baseline, trials)
+	requireHealthy := cfg.RequireHealthy || suite.RequireHealthy
+	results := runTasksConcurrently(ctx, suite.Tasks, cfg, suiteArtifactDir, baseline, trials, requireHealthy)
 
 	result := eval.SuiteResult{
-		SuiteID:     suite.ID,
-		RunID:       runID,
-		StartedAt:   startedAt,
-		CompletedAt: time.Now(),
-		Tasks:       results,
-		PassRate:    suitePassRate(results),
-		Trials:      trials,
+		SuiteID:      suite.ID,
+		RunID:        runID,
+		StartedAt:    startedAt,
+		CompletedAt:  time.Now(),
+		Tasks:        results,
+		PassRate:     suitePassRate(results),
+		Trials:       trials,
+		TrialsPolicy: cfg.TrialsPolicy,
 
 		HealthyPassRate: eval.HealthyPassRate(results),
-		RequireHealthy:  cfg.RequireHealthy || suite.RequireHealthy,
+		RequireHealthy:  requireHealthy,
 	}
 	if !cacheMode.IsLive() {
 		summary := cfg.JudgeOptions.CacheStats.Summary(cacheMode)
@@ -235,65 +250,115 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 	return result, nil
 }
 
-// runTasksConcurrently dispatches every (task, trial) pair across a bounded
-// worker pool, trial-major, and returns one aggregated result per task in
-// input order. Concurrency is capped at the pair count; values <= 0
-// collapse to 1. Per-trial errors do not abort siblings.
-func runTasksConcurrently(ctx context.Context, tasks []types.EvalTask, cfg RunConfig, suiteArtifactDir string, baseline *types.RunConfig, trials int) []eval.TaskResult {
-	pairs := len(tasks) * trials
-	concurrency := cfg.Concurrency
-	if concurrency <= 0 {
-		concurrency = 1
-	}
-	if concurrency > pairs {
-		concurrency = pairs
-	}
-
+// runTasksConcurrently runs the suite's trials across a bounded worker
+// pool and returns one aggregated result per task in input order. Under
+// eval.TrialsPolicyFixed every (task, trial) pair runs. Under
+// eval.TrialsPolicyConfirmOnFail every task's first trial runs, then the
+// remaining trials of each task that needsConfirmation. Per-trial errors
+// do not abort siblings.
+func runTasksConcurrently(ctx context.Context, tasks []types.EvalTask, cfg RunConfig, suiteArtifactDir string, baseline *types.RunConfig, trials int, requireHealthy bool) []eval.TaskResult {
 	runs := make([][]eval.TaskResult, len(tasks))
-	for i := range runs {
-		runs[i] = make([]eval.TaskResult, trials)
-	}
-
-	type job struct {
-		task  int
-		trial int
-	}
-	jobs := make(chan job)
-
-	var wg sync.WaitGroup
-	for range concurrency {
-		wg.Go(func() {
-			for j := range jobs {
-				runs[j.task][j.trial] = runTrial(ctx, tasks[j.task], cfg, suiteArtifactDir, baseline, j.trial+1, trials)
-			}
-		})
-	}
-
-	// Feed jobs; honour ctx cancellation so the dispatcher doesn't
-	// deadlock if all workers have exited.
-dispatch:
-	for n := range pairs {
-		trial, task := n/len(tasks), n%len(tasks)
-		select {
-		case <-ctx.Done():
-			// Record every undispatched pair as a cancellation error so
-			// each task still aggregates a full set of trials.
-			for rest := n; rest < pairs; rest++ {
-				trial, task := rest/len(tasks), rest%len(tasks)
-				runs[task][trial] = errorResult(tasks[task].ID, time.Now(), ctx.Err())
-			}
-			break dispatch
-		case jobs <- job{task: task, trial: trial}:
+	if cfg.TrialsPolicy == eval.TrialsPolicyConfirmOnFail {
+		for i := range runs {
+			runs[i] = make([]eval.TaskResult, 1)
 		}
+		runTrialJobs(ctx, tasks, cfg, suiteArtifactDir, baseline, trials, trialJobs(len(tasks), 1), runs)
+
+		first := make([]eval.TaskResult, len(tasks))
+		for i := range runs {
+			first[i] = runs[i][0]
+			if needsConfirmation(first[i], requireHealthy) {
+				runs[i] = append(runs[i], make([]eval.TaskResult, trials-1)...)
+			}
+		}
+		runTrialJobs(ctx, tasks, cfg, suiteArtifactDir, baseline, trials, confirmationJobs(first, trials, requireHealthy), runs)
+	} else {
+		for i := range runs {
+			runs[i] = make([]eval.TaskResult, trials)
+		}
+		runTrialJobs(ctx, tasks, cfg, suiteArtifactDir, baseline, trials, trialJobs(len(tasks), trials), runs)
 	}
-	close(jobs)
-	wg.Wait()
 
 	results := make([]eval.TaskResult, len(tasks))
 	for i, t := range tasks {
 		results[i] = aggregateTrials(t.ID, runs[i])
 	}
 	return results
+}
+
+// trialJob addresses one trial of one task by zero-based indexes.
+type trialJob struct {
+	task  int
+	trial int
+}
+
+// trialJobs lists the first trials trials of every task, trial-major.
+func trialJobs(tasks, trials int) []trialJob {
+	jobs := make([]trialJob, 0, tasks*trials)
+	for trial := range trials {
+		for task := range tasks {
+			jobs = append(jobs, trialJob{task: task, trial: trial})
+		}
+	}
+	return jobs
+}
+
+// confirmationJobs lists, trial-major, trials 2 to trials of every task
+// whose first trial needsConfirmation.
+func confirmationJobs(first []eval.TaskResult, trials int, requireHealthy bool) []trialJob {
+	var jobs []trialJob
+	for trial := 1; trial < trials; trial++ {
+		for task, r := range first {
+			if needsConfirmation(r, requireHealthy) {
+				jobs = append(jobs, trialJob{task: task, trial: trial})
+			}
+		}
+	}
+	return jobs
+}
+
+// needsConfirmation reports whether a first trial did not pass by the
+// comparison gate's rule, so a judge pass on an unhealthy run is confirmed
+// when the gate requires healthy runs.
+func needsConfirmation(first eval.TaskResult, requireHealthy bool) bool {
+	return first.GateCounts(requireHealthy).Pass == 0
+}
+
+// runTrialJobs runs jobs in order across at most cfg.Concurrency workers
+// (at least one), storing each result at runs[task][trial]. Once ctx is
+// cancelled every undispatched job is recorded as a cancellation error, so
+// each task still aggregates every trial it was scheduled.
+func runTrialJobs(ctx context.Context, tasks []types.EvalTask, cfg RunConfig, suiteArtifactDir string, baseline *types.RunConfig, trials int, jobs []trialJob, runs [][]eval.TaskResult) {
+	if len(jobs) == 0 {
+		return
+	}
+	concurrency := min(max(cfg.Concurrency, 1), len(jobs))
+
+	queue := make(chan trialJob)
+	var wg sync.WaitGroup
+	for range concurrency {
+		wg.Go(func() {
+			for j := range queue {
+				runs[j.task][j.trial] = runTrial(ctx, tasks[j.task], cfg, suiteArtifactDir, baseline, j.trial+1, trials)
+			}
+		})
+	}
+
+	// Honour ctx cancellation so the dispatcher doesn't deadlock if all
+	// workers have exited.
+dispatch:
+	for n, j := range jobs {
+		select {
+		case <-ctx.Done():
+			for _, rest := range jobs[n:] {
+				runs[rest.task][rest.trial] = errorResult(tasks[rest.task].ID, time.Now(), ctx.Err())
+			}
+			break dispatch
+		case queue <- j:
+		}
+	}
+	close(queue)
+	wg.Wait()
 }
 
 // validateSuite checks that a suite has the minimum required fields, that every
