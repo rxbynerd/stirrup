@@ -283,3 +283,20 @@ func TestReplayProvider_ToolSearchBlockWithInvalidInputErrors(t *testing.T) {
 	must.Equal([]string{"error"}, eventTypes(events))
 	must.ErrorContains(events[0].Error, "invalid tool search input JSON")
 }
+
+// TestReplayProvider_ReplaysRecordedStopReason pins that a recorded stop
+// reason is replayed as recorded, so an output-limit stop takes the same
+// recovery path it took live, and that a turn without one still derives
+// tool_use or end_turn from its blocks.
+func TestReplayProvider_ReplaysRecordedStopReason(t *testing.T) {
+	must := require.New(t)
+	rp := NewReplayProvider([]types.TurnRecord{
+		{StopReason: "max_tokens", ModelOutput: []types.ContentBlock{{Type: "text", Text: "cut off"}}},
+		{ModelOutput: []types.ContentBlock{{Type: "text", Text: "done"}}},
+	})
+
+	first := replayEvents(t, rp)
+	must.Equal("max_tokens", first[len(first)-1].StopReason)
+	second := replayEvents(t, rp)
+	must.Equal("end_turn", second[len(second)-1].StopReason)
+}

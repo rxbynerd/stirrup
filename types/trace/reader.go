@@ -230,6 +230,7 @@ type streamedEvent struct {
 	HarnessVersion      string   `json:"harnessVersion,omitempty"`
 	SystemPrompt        string   `json:"systemPrompt,omitempty"`
 	SystemPromptSHA256  string   `json:"systemPromptSha256,omitempty"`
+	StopReason          string   `json:"stopReason,omitempty"`
 	OutputLimitRecovery bool     `json:"outputLimitRecovery,omitempty"`
 	StallNudge          bool     `json:"stallNudge,omitempty"`
 	WindDown            string   `json:"windDown,omitempty"`
@@ -369,6 +370,7 @@ func (r *Reader) ReadRecording() (*types.RunRecording, error) {
 				RunID:               ev.RunID,
 				ParentRunID:         ev.ParentRunID,
 				ResponseModel:       ev.ResponseModel,
+				StopReason:          ev.StopReason,
 				OutputLimitRecovery: ev.OutputLimitRecovery,
 				StallNudge:          ev.StallNudge,
 				WindDown:            ev.WindDown,
