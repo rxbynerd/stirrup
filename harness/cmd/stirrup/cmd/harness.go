@@ -1538,6 +1538,7 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	traceState, _ := f.GetString("tracestate")
 	warnIgnoredTraceParent(cfg, traceParent, traceState)
 	return runWithConfig(cfg, runOptions{
+		apiKeyRefFlagGiven:     f.Changed("api-key-ref"),
 		outputMode:             outputMode,
 		debugRedactionDisabled: debugRedactionDisabled,
 		wireTrace:              wireTrace,
@@ -1960,12 +1961,25 @@ func applyOpenAIWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error {
 // traceParent and traceState carry --traceparent / --tracestate: the
 // upstream span context of the primary run, applied to its context only.
 type runOptions struct {
+	// apiKeyRefFlagGiven is whether --api-key-ref was on the command line.
+	apiKeyRefFlagGiven     bool
 	outputMode             string
 	debugRedactionDisabled bool
 	wireTrace              bool
 	transportTLS           credentials.TransportCredentials
 	traceParent            string
 	traceState             string
+}
+
+// apiKeyRefHint names --api-key-ref when the top-level provider's key
+// reference, defaulted or taken from a document rather than given on the
+// command line, did not resolve.
+func apiKeyRefHint(err error, config *types.RunConfig, flagGiven bool) string {
+	var keyErr *core.APIKeyRefError
+	if flagGiven || !errors.As(err, &keyErr) || keyErr.Ref != config.Provider.APIKeyRef {
+		return ""
+	}
+	return fmt.Sprintf("; set the secret %s names, or pass --api-key-ref to name another", keyErr.Ref)
 }
 
 // runWithConfig is the shared run path for both --config and flag-only
@@ -2013,7 +2027,7 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 		core.WithTransportTLS(opts.transportTLS),
 	)
 	if err != nil {
-		return fmt.Errorf("building harness: %w", err)
+		return fmt.Errorf("building harness: %w%s", err, apiKeyRefHint(err, config, opts.apiKeyRefFlagGiven))
 	}
 	defer func() { _ = loop.Close() }()
 

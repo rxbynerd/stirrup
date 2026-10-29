@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -107,6 +106,22 @@ func TestBuildPermissionPolicy_UnusablePolicyFileReturnsHostFileError(t *testing
 		err := build(deadClause)
 		must.ErrorContains(err, "unknown-principal-attribute")
 		var hostFile *HostFileError
-		must.False(errors.As(err, &hostFile), "a lint finding is not a host-file failure: %v", err)
+		must.NotErrorAs(err, &hostFile, "a lint finding is not a host-file failure")
 	})
+}
+
+// TestBuildProvider_UnresolvedAPIKeyRefNamesTheReference pins that a key
+// reference which does not resolve is reported as an APIKeyRefError
+// carrying the reference, so the CLI can point at the flag that names it.
+func TestBuildProvider_UnresolvedAPIKeyRefNamesTheReference(t *testing.T) {
+	must := require.New(t)
+	t.Setenv("STIRRUP_TEST_UNSET_KEY", "")
+	cfg := types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://STIRRUP_TEST_UNSET_KEY"}
+
+	_, err := buildProvider(context.Background(), cfg, security.NewEnvSecretStore())
+
+	var keyErr *APIKeyRefError
+	must.ErrorAs(err, &keyErr)
+	must.Equal("secret://STIRRUP_TEST_UNSET_KEY", keyErr.Ref)
+	must.ErrorContains(err, `apiKeyRef "secret://STIRRUP_TEST_UNSET_KEY"`)
 }

@@ -25,3 +25,16 @@ func (e *HostFileError) Unwrap() error { return e.Err }
 func (e *HostFileError) Redacted() string {
 	return fmt.Sprintf("%s unavailable on the harness host", e.Field)
 }
+
+// APIKeyRefError reports a provider apiKeyRef that did not resolve to a
+// key, so a caller can point the operator at the field that names it.
+type APIKeyRefError struct {
+	Ref string
+	Err error
+}
+
+func (e *APIKeyRefError) Error() string {
+	return fmt.Sprintf("apiKeyRef %q: %v", e.Ref, e.Err)
+}
+
+func (e *APIKeyRefError) Unwrap() error { return e.Err }

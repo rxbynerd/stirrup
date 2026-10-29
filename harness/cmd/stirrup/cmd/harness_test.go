@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -5499,4 +5501,32 @@ func TestApplyOverrides_ReplaySwitchKeepsExplicitBaseURL(t *testing.T) {
 
 	must.Equal("https://kept.example/v1", cfg.Provider.BaseURL)
 	must.ErrorContains(types.ValidateRunConfig(cfg), "baseUrl must not be set for provider type \"replay\"")
+}
+
+// TestAPIKeyRefHint_NamesFlagOnlyForAnUnflaggedTopLevelReference pins
+// that a build failure on the top-level provider's key reference points
+// at --api-key-ref when the reference came from a default or a document,
+// and adds nothing when the flag was given, when the failing reference
+// belongs to another provider, or when the failure is unrelated.
+func TestAPIKeyRefHint_NamesFlagOnlyForAnUnflaggedTopLevelReference(t *testing.T) {
+	config := &types.RunConfig{Provider: types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"}}
+	keyErr := fmt.Errorf("build providers: resolve credentials: %w", &core.APIKeyRefError{Ref: "secret://ANTHROPIC_API_KEY", Err: errors.New("environment variable is empty")})
+	otherKeyErr := &core.APIKeyRefError{Ref: "secret://OTHER", Err: errors.New("empty")}
+	cases := []struct {
+		name      string
+		err       error
+		flagGiven bool
+		want      string
+	}{
+		{name: "defaulted reference", err: keyErr, want: "; set the secret secret://ANTHROPIC_API_KEY names, or pass --api-key-ref to name another"},
+		{name: "flag given", err: keyErr, flagGiven: true, want: ""},
+		{name: "another provider's reference", err: otherKeyErr, want: ""},
+		{name: "unrelated failure", err: errors.New("boom"), want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, apiKeyRefHint(tc.err, config, tc.flagGiven))
+		})
+	}
 }
