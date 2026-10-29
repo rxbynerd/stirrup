@@ -34,17 +34,22 @@ func writeResultFile(t *testing.T, dir, name string, r eval.SuiteResult) string 
 	return path
 }
 
+// TestCmdCompare_ExitCodeFollowsGate runs against a single-run, all-pass
+// baseline over the committed dogfood-seed task IDs, so each case's gate
+// does not depend on the committed baseline's measured pass fractions.
 func TestCmdCompare_ExitCodeFollowsGate(t *testing.T) {
 	must := require.New(t)
-	baseline := filepath.Join("..", "..", "baselines", "dogfood-seed.json")
-	data, err := os.ReadFile(baseline)
+	data, err := os.ReadFile(filepath.Join("..", "..", "baselines", "dogfood-seed.json"))
 	must.NoError(err)
-	var base eval.SuiteResult
-	must.NoError(json.Unmarshal(data, &base))
-	ids := make([]string, len(base.Tasks))
-	for i, task := range base.Tasks {
+	var committed eval.SuiteResult
+	must.NoError(json.Unmarshal(data, &committed))
+	base := eval.SuiteResult{SuiteID: committed.SuiteID, RunID: "baseline"}
+	ids := make([]string, len(committed.Tasks))
+	for i, task := range committed.Tasks {
 		ids[i] = task.TaskID
+		base.Tasks = append(base.Tasks, eval.TaskResult{TaskID: task.TaskID, Outcome: "pass", PassFraction: 1})
 	}
+	baseline := writeResultFile(t, t.TempDir(), "baseline.json", base)
 
 	build := func(outcomes func(i int) []string) eval.SuiteResult {
 		r := eval.SuiteResult{SuiteID: base.SuiteID, RunID: "current", Trials: 3}
