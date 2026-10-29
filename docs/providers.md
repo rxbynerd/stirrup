@@ -96,17 +96,17 @@ compactions trigger as the provider's own input count would suggest.
 
 Anthropic's [preserved-thinking
 documentation](https://platform.claude.com/docs/en/build-with-claude/preserved-thinking)
-binds a thinking block to the model that produced it and to the exact
+ties a thinking block to a set of compatible models and to the exact
 history that preceded it. The API enforces the history check by
 default only for accounts created on or after 2026-08-31 00:00 UTC;
 older accounts opt in per request, and the check was not reproduced on
 the account used for probing. Once the context strategy rewrites
-history on any turn of a run (a sliding-window trim, a summary, an
+history on any turn of a run (a `sliding-window` trim, a summary, an
 offload, a `clear-tool-results` batch, or the fit check truncating a
 large tool result), the loop removes every thinking block from that
 request and from every later request in the run; the stored history
 keeps them. From that point the model continues from the visible
-transcript alone. Under sliding-window this starts the first time the
+transcript alone. Under `sliding-window` this starts the first time the
 budget is exceeded. Compaction cuts only at exchange boundaries, so a
 trim never separates a `tool_result` from its `tool_use`.
 
@@ -215,8 +215,8 @@ afterwards depends on the strategy:
   verbatim no longer fit. The turns between extensions append to the
   previous request.
 - `offload-to-file` rewrites the tool results that have just left the
-  six most recent messages, so each turn misses from that point onward,
-  which is a short tail of the history.
+  six most recent messages, so each turn misses the cache from that point
+  onward, and that point lies in a short tail of the history.
 - `clear-tool-results` replaces old tool results with one fixed
   placeholder in occasional batches and re-applies the same placeholder
   on later turns. A turn misses the message cache only when a batch
@@ -1139,8 +1139,8 @@ framework's tool-use suite runs on this provider by default; see
 
 Each of the five wire adapters (every provider type except `replay`)
 builds its tool-call events through one constructor. Empty argument
-text is a call with no arguments. Text that does not decode to a JSON object, such as a call cut off mid-object,
-does not fail the stream. The adapter emits the call with a marker that
+text is a call with no arguments. Text that does not decode to a JSON
+object, such as a call cut off mid-object, does not fail the stream. The adapter emits the call with a marker that
 holds the raw text and the decoder's message, which includes the byte
 offset of a syntax error, and the stored history keeps the call with an
 empty object as its input.

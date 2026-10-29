@@ -210,7 +210,7 @@ two is set, that one applies. When neither is, the loop uses its
 registered window is capped to it, with a warning on the first turn. The
 registry holds an entry only where the documented window is smaller
 than the 200,000-token default, because the default would otherwise
-pack requests the model rejects. A model with a larger window keeps the
+allow requests the model rejects. A model with a larger window keeps the
 default until `contextStrategy.maxTokens` raises it. The value appears
 as `contextWindow` in the output of `stirrup providers quirks`.
 

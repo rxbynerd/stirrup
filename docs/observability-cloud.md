@@ -1125,8 +1125,8 @@ the turn whose request carried the wind-down instruction carries
 `time`.
 
 On a `context.prepare` span, `context.token_ratio` is the number of
-provider tokens counted per estimated token that the turn's budget was
-scaled by. It is 1 until a request of at least 1,000 estimated tokens
+provider tokens counted per estimated token, and the turn's budget is
+scaled by it. It is 1 until a request of at least 1,000 estimated tokens
 reports its input, and afterwards a smoothed ratio held between 0.5 and
 2. `context.forced_from` is the estimate of the request the provider
 rejected as exceeding the context window. It appears only on the span
