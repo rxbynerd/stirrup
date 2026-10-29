@@ -184,14 +184,25 @@ func parsePolicySetFile(path string) (*cedar.PolicySet, error) {
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("policy-engine: read policy file %q: %w", path, err)
+		return nil, &PolicyFileError{Err: fmt.Errorf("policy-engine: read policy file %q: %w", path, err)}
 	}
 	ps, err := cedar.NewPolicySetFromBytes(path, data)
 	if err != nil {
-		return nil, fmt.Errorf("policy-engine: parse policy file %q: %w", path, err)
+		return nil, &PolicyFileError{Err: fmt.Errorf("policy-engine: parse policy file %q: %w", path, err)}
 	}
 	return ps, nil
 }
+
+// PolicyFileError reports a policy file that could not be read or did
+// not parse as Cedar, as distinct from a parsed policy set the linter
+// rejected.
+type PolicyFileError struct {
+	Err error
+}
+
+func (e *PolicyFileError) Error() string { return e.Err.Error() }
+
+func (e *PolicyFileError) Unwrap() error { return e.Err }
 
 // policySourceName labels a policy file in lint error text.
 func policySourceName(path string) string {

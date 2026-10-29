@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -857,7 +858,7 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 	if cfg.Type == "replay" {
 		replay, err := buildReplayProvider(ctx, cfg.ReplayFile)
 		if err != nil {
-			return nil, err
+			return nil, &HostFileError{Field: "replayFile", Err: err}
 		}
 		return replay, nil
 	}
@@ -871,7 +872,11 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 	}
 	cred, err := src.Resolve(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("resolve credentials: %w", err)
+		err = fmt.Errorf("resolve credentials: %w", err)
+		if cfg.Credential != nil && cfg.Credential.Type == "gcp-service-account" {
+			return nil, &HostFileError{Field: "gcpCredentialsFile", Err: err}
+		}
+		return nil, err
 	}
 
 	// Single point where RunConfig's retry config becomes a provider-level
@@ -2099,6 +2104,10 @@ func buildPermissionPolicy(config *types.RunConfig, registry *tool.Registry, tp 
 		}
 		policy, err := permission.New(cfg, env, fallback)
 		if err != nil {
+			var fileErr *permission.PolicyFileError
+			if errors.As(err, &fileErr) {
+				return nil, &HostFileError{Field: "permissionPolicy.policyFile", Err: fileErr}
+			}
 			return nil, err
 		}
 		return policy, nil
