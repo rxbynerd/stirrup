@@ -31,6 +31,11 @@ func Start(cfg types.FixtureServerConfig) (*Server, error) {
 			return nil, err
 		}
 		handler = newSSEHandler(turns)
+	case types.FixtureModeMCP:
+		if cfg.StreamFile != "" {
+			return nil, fmt.Errorf("fixture server mode %q takes no stream file", cfg.Mode)
+		}
+		handler = newMCPHandler()
 	default:
 		return nil, fmt.Errorf("unknown fixture server mode %q", cfg.Mode)
 	}

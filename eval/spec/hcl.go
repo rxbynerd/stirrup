@@ -400,8 +400,12 @@ func convertFixtureServer(s *fixtureServerSpec, taskID string) (*types.FixtureSe
 		if s.StreamFile == "" {
 			return nil, fmt.Errorf("task %q: fixture_server mode %q requires stream_file", taskID, s.Mode)
 		}
+	case types.FixtureModeMCP:
+		if s.StreamFile != "" {
+			return nil, fmt.Errorf("task %q: fixture_server mode %q does not take stream_file", taskID, s.Mode)
+		}
 	default:
-		return nil, fmt.Errorf("task %q: invalid fixture_server.mode %q (must be %q)", taskID, s.Mode, types.FixtureModeSSE)
+		return nil, fmt.Errorf("task %q: invalid fixture_server.mode %q (must be %q or %q)", taskID, s.Mode, types.FixtureModeSSE, types.FixtureModeMCP)
 	}
 	return &types.FixtureServerConfig{Mode: s.Mode, StreamFile: s.StreamFile}, nil
 }

@@ -66,6 +66,24 @@ func TestApplyFixtureServer_SSE_RejectsPresetBaseURL(t *testing.T) {
 	must.Equal("https://example.com/v1", cfg.Provider.BaseURL)
 }
 
+func TestApplyFixtureServer_MCP_FillsServersWithoutURI(t *testing.T) {
+	must := require.New(t)
+	cfg := &types.RunConfig{Tools: types.ToolsConfig{MCPServers: []types.MCPServerConfig{
+		{Name: "stub"},
+		{Name: "remote", URI: "https://mcp.example.com"},
+	}}}
+	must.NoError(applyFixtureServer(cfg, types.FixtureServerConfig{Mode: types.FixtureModeMCP}, "http://127.0.0.1:9"))
+	must.Equal("http://127.0.0.1:9", cfg.Tools.MCPServers[0].URI)
+	must.Equal("https://mcp.example.com", cfg.Tools.MCPServers[1].URI)
+}
+
+func TestApplyFixtureServer_MCP_RequiresServerWithoutURI(t *testing.T) {
+	must := require.New(t)
+	cfg := &types.RunConfig{Tools: types.ToolsConfig{MCPServers: []types.MCPServerConfig{{Name: "remote", URI: "https://mcp.example.com"}}}}
+	err := applyFixtureServer(cfg, types.FixtureServerConfig{Mode: types.FixtureModeMCP}, "http://127.0.0.1:9")
+	must.ErrorContains(err, "mcp_server with no uri")
+}
+
 func TestApplyFixtureServer_UnknownMode_ReturnsError(t *testing.T) {
 	must := require.New(t)
 	err := applyFixtureServer(&types.RunConfig{}, types.FixtureServerConfig{Mode: "grpc"}, "http://127.0.0.1:9")

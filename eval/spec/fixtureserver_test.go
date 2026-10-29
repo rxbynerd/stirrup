@@ -91,6 +91,11 @@ func TestLoadSuiteHCL_FixtureServerRejectsInvalidBlocks(t *testing.T) {
 			want: `fixture_server mode "sse" requires stream_file`,
 		},
 		{
+			name: "mcp with stream file",
+			body: "    fixture_server {\n      mode        = \"mcp\"\n      stream_file = \"x.sse\"\n    }\n",
+			want: `fixture_server mode "mcp" does not take stream_file`,
+		},
+		{
 			name: "missing mode",
 			body: "    fixture_server {\n      stream_file = \"x.sse\"\n    }\n",
 			want: "mode",

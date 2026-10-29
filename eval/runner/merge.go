@@ -145,6 +145,9 @@ func mergeOverrides(baseline *types.RunConfig, overlay *types.RunConfigOverrides
 		escalation := *overlay.ToolChoiceEscalation
 		baseline.ToolChoiceEscalation = &escalation
 	}
+	if overlay.MCPServers != nil {
+		baseline.Tools.MCPServers = append([]types.MCPServerConfig(nil), overlay.MCPServers...)
+	}
 
 	return baseline
 }
