@@ -4,6 +4,7 @@
 package eval
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -12,6 +13,26 @@ import (
 // MaxTrials is the most runs per task accepted from a CLI flag, a suite
 // attribute, or an EvalSuite.
 const MaxTrials = 20
+
+// Trials policies recorded in SuiteResult.TrialsPolicy. Under
+// TrialsPolicyFixed every task runs K times. Under
+// TrialsPolicyConfirmOnFail every task runs once, and only a task whose
+// first trial did not pass runs the remaining K-1 trials.
+const (
+	TrialsPolicyFixed         = "fixed"
+	TrialsPolicyConfirmOnFail = "confirm-on-fail"
+)
+
+// ValidateTrialsPolicy rejects a policy other than TrialsPolicyFixed or
+// TrialsPolicyConfirmOnFail. The empty string is accepted as fixed.
+func ValidateTrialsPolicy(policy string) error {
+	switch policy {
+	case "", TrialsPolicyFixed, TrialsPolicyConfirmOnFail:
+		return nil
+	default:
+		return fmt.Errorf("unknown trials policy %q (want %q or %q)", policy, TrialsPolicyFixed, TrialsPolicyConfirmOnFail)
+	}
+}
 
 // DeliveryNotMeasured is the Delivery value of a run whose handoff to the
 // caller is not recorded.
@@ -140,6 +161,18 @@ func (t TaskResult) GateCounts(requireHealthy bool) TrialCounts {
 	return c
 }
 
+// FirstTrialGateCounts is GateCounts over the task's first trial alone.
+func (t TaskResult) FirstTrialGateCounts(requireHealthy bool) TrialCounts {
+	var c TrialCounts
+	if len(t.Trials) == 0 {
+		c.add(gatedOutcome(t.Outcome, t.RunHealth, requireHealthy))
+		return c
+	}
+	first := t.Trials[0]
+	c.add(gatedOutcome(first.Outcome, first.RunHealth, requireHealthy))
+	return c
+}
+
 func gatedOutcome(outcome string, health types.RunHealth, requireHealthy bool) string {
 	if requireHealthy && outcome == "pass" && health != types.RunHealthy {
 		return "fail"
@@ -219,7 +252,9 @@ func (c TrialCounts) Outcome() string {
 // passed and whose run was healthy, over all tasks; it is nil when the
 // result carries no run health. RequireHealthy records that the comparison
 // gate counts only healthy judge passes. Trials is the number of runs per
-// task; zero means one.
+// task; zero means one. Under TrialsPolicyConfirmOnFail it is the most
+// runs any task could take. TrialsPolicy is empty on results written
+// before it existed, which all ran under TrialsPolicyFixed.
 type SuiteResult struct {
 	SuiteID     string       `json:"suiteId"`
 	RunID       string       `json:"runId"`
@@ -229,12 +264,22 @@ type SuiteResult struct {
 	PassRate    float64      `json:"passRate"`
 	Trials      int          `json:"trials,omitempty"`
 
+	TrialsPolicy string `json:"trialsPolicy,omitempty"`
+
 	HealthyPassRate *float64 `json:"healthyPassRate,omitempty"`
 	RequireHealthy  bool     `json:"requireHealthy,omitempty"`
 
 	// JudgeCache counts how diff-review verdicts used the judge cache. Nil
 	// when the invocation ran live.
 	JudgeCache *JudgeCacheSummary `json:"judgeCache,omitempty"`
+}
+
+// ResolvedTrialsPolicy is TrialsPolicy, or TrialsPolicyFixed when unset.
+func (r SuiteResult) ResolvedTrialsPolicy() string {
+	if r.TrialsPolicy == "" {
+		return TrialsPolicyFixed
+	}
+	return r.TrialsPolicy
 }
 
 // JudgeCacheSummary tallies the judge cache outcomes of one invocation, one
@@ -325,6 +370,11 @@ type ComparisonSummary struct {
 	Current    RateSummary    `json:"current"`
 	Paired     *PairedSummary `json:"paired,omitempty"`
 	NoiseFloor *NoiseFloor    `json:"noiseFloor,omitempty"`
+
+	// FirstTrialOnly records that Paired, NoiseFloor, and both sides'
+	// PassHatK and PassAtK use each task's first trial alone, because a
+	// side ran under TrialsPolicyConfirmOnFail.
+	FirstTrialOnly bool `json:"firstTrialOnly,omitempty"`
 }
 
 // RateSummary describes one side of a comparison over all of its tasks.
@@ -333,11 +383,12 @@ type ComparisonSummary struct {
 // rate. HealthyPassRate is nil when the result carries no run health.
 // StdErr is nil with fewer than two tasks. PassHatK[k-1] and PassAtK[k-1]
 // hold the pass^k and pass@k estimates for k up to the smallest per-task
-// trial count.
+// trial count, or for k = 1 alone under ComparisonSummary.FirstTrialOnly.
 type RateSummary struct {
-	Tasks    int     `json:"tasks"`
-	Trials   int     `json:"trials"`
-	PassRate float64 `json:"passRate"`
+	Tasks        int     `json:"tasks"`
+	Trials       int     `json:"trials"`
+	TrialsPolicy string  `json:"trialsPolicy"`
+	PassRate     float64 `json:"passRate"`
 
 	HealthyPassRate *float64 `json:"healthyPassRate,omitempty"`
 	JudgePassRate   *float64 `json:"judgePassRate,omitempty"`
