@@ -1151,11 +1151,12 @@ unless the two spawns asked the same thing.
 When `stirrup job` cannot build the provider from `replayFile` for any
 reason (missing, unreadable, a directory, too large, or not a complete
 trace), the `error` event sent to the control plane reads only
-`building harness: replayFile unavailable on the harness host; the
-harness log has the detail`, so the field cannot be used to probe the
-harness filesystem; the detail goes to the harness's stderr.
-`permissionPolicy.policyFile` and `gcpCredentialsFile` are reported
-the same way. See
+`building harness: provider.replayFile unavailable on the harness
+host; the harness log has the detail` (`providers[<name>].replayFile`
+for a named entry), so the field cannot be used to probe the harness
+filesystem; the detail goes to the harness's stderr.
+`permissionPolicy.policyFile` and `provider.gcpCredentialsFile` are
+reported the same way. See
 [`integration-guide.md`](integration-guide.md#stream-lifecycle).
 
 What a replay does not exercise or preserve:

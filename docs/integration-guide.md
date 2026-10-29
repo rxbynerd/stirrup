@@ -111,8 +111,9 @@ status.
    build failure) gets a `done` with `stop_reason: "error"` and no
    `trace`. When the build failed because a file named by
    `provider.replayFile`, `permissionPolicy.policyFile` or
-   `gcpCredentialsFile` could not be used from the harness host, the
-   `error` event names only the field (`building harness: replayFile
+   `provider.gcpCredentialsFile` (or the same field of a `providers`
+   entry) could not be used from the harness host, the `error` event
+   names only the field (`building harness: provider.replayFile
    unavailable on the harness host; the harness log has the detail`),
    whatever the cause, so a control plane cannot use those fields to
    probe the harness filesystem; the detail is on the harness's

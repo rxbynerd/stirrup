@@ -129,6 +129,10 @@ type AgenticLoop struct {
 	// routed to; nil means none, so the harness tool_search serves every
 	// turn.
 	ToolSearch ToolSearchSupport
+	// SubAgentProviders supplies each sub-agent's providers; nil shares
+	// the parent's. A run that replays a recording sets it so each child
+	// serves its own recorded turns.
+	SubAgentProviders SubAgentProviderSource
 	// Hooks runs the run's configured lifecycle hooks; optional, like
 	// GuardRail/RuleOfTwo/Escalation. The factory always injects a
 	// non-nil value. See docs/configuration.md#lifecycle-hooks.
@@ -231,12 +235,6 @@ type AgenticLoop struct {
 	// subAgentSpawns numbers this run's sub-agents, so each child's run
 	// ID is unique within the trace file the run shares with them.
 	subAgentSpawns atomic.Int64
-
-	// subAgentProviders, when set, supplies a sub-agent's default provider
-	// and providers map in place of the parent's, or refuses the spawn. A
-	// run that replays a recording sets it so each child serves its own
-	// recorded turns.
-	subAgentProviders func(parentRunID, childRunID, prompt string) (provider.ProviderAdapter, map[string]provider.ProviderAdapter, error)
 
 	// outputLimitRecoveries counts the max_tokens stops the current run
 	// has continued past. It is reset at run start, so verification
@@ -1086,6 +1084,11 @@ func (l *AgenticLoop) Close() error {
 // provider key and model sends tool results' structured envelope on the
 // wire. An empty provider key names the run's primary provider.
 type StructuredResultSupport func(provider, model string) bool
+
+// SubAgentProviderSource returns the default provider and providers map
+// for the sub-agent childRunID that parentRunID spawns with prompt, or an
+// error refusing the spawn.
+type SubAgentProviderSource func(parentRunID, childRunID, prompt string) (provider.ProviderAdapter, map[string]provider.ProviderAdapter, error)
 
 // ToolSearchSupport resolves the native tool search capability of a
 // router-selected provider key and model. An empty provider key names the

@@ -64,12 +64,10 @@ func NewReplayProviderFromRecording(rec *types.RunRecording) *ReplayProvider {
 	return rp
 }
 
-// ForSubRun returns a provider serving the recorded turns of the sub-agent
-// childRunID, spawned under parentRunID with prompt. The child is matched
-// by its run ID relative to its parent ("sub-2" in "run-1/sub-2") under
-// the recorded run of the turn served last, which is the one that spawned
-// it. A recording without that sub-run, or whose sub-run was spawned with
-// another prompt, yields an error and a provider that fails with it.
+// ForSubRun returns a provider serving the recorded sub-run that matches
+// childRunID relative to parentRunID ("sub-2" in "run-1/sub-2") under the
+// recorded run of the turn served last. A missing sub-run, or one spawned
+// with another prompt, yields an error and a provider that fails with it.
 func (rp *ReplayProvider) ForSubRun(parentRunID, childRunID, prompt string) (*ReplayProvider, error) {
 	relative := strings.TrimPrefix(childRunID, parentRunID+"/")
 	recordedParent := ""

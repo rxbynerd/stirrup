@@ -656,7 +656,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// serves every provider.
 	loop.ContextWindows = quirks.DefaultRegistry()
 	loop.StructuredResults = structuredResults
-	loop.subAgentProviders = replaySubAgentProviders(config, replays, providers)
+	loop.SubAgentProviders = replaySubAgentProviders(config, replays, providers)
 	loop.ProtectedWriteTargets = config.Tools.ProtectedWriteTargets
 	// Registered at build rather than at Run so a user_response that
 	// arrives while the loop is still being assembled is queued for the
@@ -844,7 +844,13 @@ func buildProviders(ctx context.Context, config *types.RunConfig, secrets securi
 	for name, cfg := range config.Providers {
 		providerAdapter, err := buildProvider(ctx, cfg, secrets)
 		if err != nil {
-			return nil, nil, fmt.Errorf("build provider %q: %w", name, err)
+			err = fmt.Errorf("build provider %q: %w", name, err)
+			var hostFile *HostFileError
+			if errors.As(err, &hostFile) {
+				field := fmt.Sprintf("providers[%s].%s", name, strings.TrimPrefix(hostFile.Field, "provider."))
+				return nil, nil, &HostFileError{Field: field, Err: err}
+			}
+			return nil, nil, err
 		}
 		providers[name] = providerAdapter
 	}
@@ -861,7 +867,7 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, ctxErr
 			}
-			return nil, &HostFileError{Field: "replayFile", Err: err}
+			return nil, &HostFileError{Field: "provider.replayFile", Err: err}
 		}
 		return replay, nil
 	}
@@ -880,7 +886,7 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 		}
 		err = fmt.Errorf("resolve credentials: %w", err)
 		if cfg.Credential != nil && cfg.Credential.Type == "gcp-service-account" {
-			return nil, &HostFileError{Field: "gcpCredentialsFile", Err: err}
+			return nil, &HostFileError{Field: "provider.gcpCredentialsFile", Err: err}
 		}
 		return nil, err
 	}
@@ -1026,12 +1032,12 @@ func replayProvidersOf(providers map[string]provider.ProviderAdapter) map[string
 	return replays
 }
 
-// replaySubAgentProviders returns the loop's subAgentProviders hook when
-// the run replays a recording, and nil otherwise. A child gets each replay
+// replaySubAgentProviders returns the loop's SubAgentProviders when the
+// run replays a recording, and nil otherwise. A child gets each replay
 // entry's recording of it and shares live entries. The entry that served
 // the spawning turn decides whether the spawn runs; another entry that
 // cannot serve the child fails only a request routed to it.
-func replaySubAgentProviders(config *types.RunConfig, replays map[string]*provider.ReplayProvider, loopProviders map[string]provider.ProviderAdapter) func(parentRunID, childRunID, prompt string) (provider.ProviderAdapter, map[string]provider.ProviderAdapter, error) {
+func replaySubAgentProviders(config *types.RunConfig, replays map[string]*provider.ReplayProvider, loopProviders map[string]provider.ProviderAdapter) SubAgentProviderSource {
 	if len(replays) == 0 {
 		return nil
 	}

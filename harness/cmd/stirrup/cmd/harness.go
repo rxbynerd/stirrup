@@ -1963,7 +1963,6 @@ func applyOpenAIWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error {
 // traceParent and traceState carry --traceparent / --tracestate: the
 // upstream span context of the primary run, applied to its context only.
 type runOptions struct {
-	// apiKeyRefFlagGiven is whether --api-key-ref was on the command line.
 	apiKeyRefFlagGiven     bool
 	outputMode             string
 	debugRedactionDisabled bool

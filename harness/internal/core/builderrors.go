@@ -7,8 +7,8 @@ import "fmt"
 // harness log; Redacted names only the field, so a control plane cannot
 // use the field to probe the harness host.
 type HostFileError struct {
-	// Field is the RunConfig field that named the file, such as
-	// "replayFile" or "permissionPolicy.policyFile".
+	// Field is the RunConfig path of the field that named the file, such
+	// as "provider.replayFile" or "providers[alt].replayFile".
 	Field string
 	Err   error
 }

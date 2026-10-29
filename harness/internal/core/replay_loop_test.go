@@ -170,7 +170,7 @@ func streamNext(t *testing.T, rp provider.ProviderAdapter) {
 // whose recording holds rec/sub-1, a named replay entry whose recording
 // holds other/sub-1 when namedHasChild is set, and a stand-in for a live
 // entry that is not registered as a replay.
-func replayHookFixture(t *testing.T, namedHasChild bool) (defaultReplay, namedReplay *provider.ReplayProvider, live provider.ProviderAdapter, hook func(string, string, string) (provider.ProviderAdapter, map[string]provider.ProviderAdapter, error)) {
+func replayHookFixture(t *testing.T, namedHasChild bool) (defaultReplay, namedReplay *provider.ReplayProvider, live provider.ProviderAdapter, hook SubAgentProviderSource) {
 	t.Helper()
 	defaultReplay = provider.NewReplayProviderFromRecording(&types.RunRecording{
 		Turns:   []types.TurnRecord{recordedTextTurn("rec", "parent")},
@@ -188,7 +188,7 @@ func replayHookFixture(t *testing.T, namedHasChild bool) (defaultReplay, namedRe
 	}
 	loopProviders := map[string]provider.ProviderAdapter{"replay": defaultReplay, "named": namedReplay, "live": live}
 	hook = replaySubAgentProviders(config, replayProvidersOf(map[string]provider.ProviderAdapter{"replay": defaultReplay, "named": namedReplay}), loopProviders)
-	require.NotNil(t, hook)
+	require.New(t).NotNil(hook)
 	return defaultReplay, namedReplay, live, hook
 }
 
