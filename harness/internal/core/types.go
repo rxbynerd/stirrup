@@ -75,6 +75,15 @@ type WorkspaceHandoff interface {
 	Handoff(ctx context.Context, config *types.RunConfig, exec executor.Executor) (*types.ExportReceipt, error)
 }
 
+// ResultDelivery sends a finished run's RunResult to a remote result
+// sink. The entry points inject it, keeping RunResult construction and
+// the sinks out of the loop.
+type ResultDelivery interface {
+	// Deliver sends the result of the run config describes, built from
+	// runTrace. It returns nil when the run's sink is not remote.
+	Deliver(ctx context.Context, config *types.RunConfig, runTrace *types.RunTrace) error
+}
+
 // AgenticLoop drives the ReAct loop. All dependencies are injected as struct
 // fields — the loop has no imports from concrete implementations, no environment
 // variable reads, no direct file system access.
@@ -146,14 +155,19 @@ type AgenticLoop struct {
 	// Handoff, when non-nil, exports the workspace at the end of every run
 	// whose executor has one, before "done"; a failed required export turns
 	// a successful run into "handoff_failed".
-	Handoff      WorkspaceHandoff
-	Transport    transport.Transport
-	Trace        trace.TraceEmitter
-	Tracer       oteltrace.Tracer         // OTel tracer for loop-level spans (noop when not using OTel)
-	TraceContext context.Context          // context carrying the root span for child span parenting
-	Metrics      *observability.Metrics   // OTel metric instruments (noop when disabled)
-	Security     *security.SecurityLogger // optional, for structured security event logging
-	Logger       *slog.Logger             // structured logger with secret scrubbing
+	Handoff WorkspaceHandoff
+	// ResultDelivery, when non-nil, delivers every run's RunResult to a
+	// remote result sink after the trace is finished and before "done";
+	// a failed delivery is reported as a "warning" and leaves the outcome
+	// unchanged.
+	ResultDelivery ResultDelivery
+	Transport      transport.Transport
+	Trace          trace.TraceEmitter
+	Tracer         oteltrace.Tracer         // OTel tracer for loop-level spans (noop when not using OTel)
+	TraceContext   context.Context          // context carrying the root span for child span parenting
+	Metrics        *observability.Metrics   // OTel metric instruments (noop when disabled)
+	Security       *security.SecurityLogger // optional, for structured security event logging
+	Logger         *slog.Logger             // structured logger with secret scrubbing
 	// LogScope, when non-nil, is the run identity every logger derived
 	// from Logger stamps on its records; a top-level Run points it (and
 	// Security) at its own run ID so follow-ups are not attributed to
