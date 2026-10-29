@@ -3,11 +3,9 @@ package core
 import "fmt"
 
 // HostFileError reports a file named in the RunConfig that the harness
-// could not use from its own filesystem. Error carries the full detail
-// for the harness log. Redacted names only the field, so a caller on the
-// far side of the control stream cannot tell a missing file from an
-// unreadable one, a directory, or one with the wrong content, and so
-// cannot use the field to probe the harness host.
+// could not use from its own filesystem. Error carries the detail for the
+// harness log; Redacted names only the field, so a control plane cannot
+// use the field to probe the harness host.
 type HostFileError struct {
 	// Field is the RunConfig field that named the file, such as
 	// "replayFile" or "permissionPolicy.policyFile".

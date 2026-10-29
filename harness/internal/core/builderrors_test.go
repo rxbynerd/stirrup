@@ -125,3 +125,19 @@ func TestBuildProvider_UnresolvedAPIKeyRefNamesTheReference(t *testing.T) {
 	must.Equal("secret://STIRRUP_TEST_UNSET_KEY", keyErr.Ref)
 	must.ErrorContains(err, `apiKeyRef "secret://STIRRUP_TEST_UNSET_KEY"`)
 }
+
+// TestBuildProvider_CancelledReplayLoadIsNotAHostFileError pins that a
+// build cancelled while the recording loads reports the cancellation, not
+// an unusable replay file.
+func TestBuildProvider_CancelledReplayLoadIsNotAHostFileError(t *testing.T) {
+	must := require.New(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	recording := writeReplayRecording(t, replayToolTurn, replayTextTurn)
+
+	_, err := buildProvider(ctx, types.ProviderConfig{Type: "replay", ReplayFile: recording}, &stubSecretStore{})
+
+	must.ErrorIs(err, context.Canceled)
+	var hostFile *HostFileError
+	must.NotErrorAs(err, &hostFile)
+}
