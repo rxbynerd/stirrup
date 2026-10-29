@@ -13,7 +13,8 @@ via `stirrup providers quirks --provider X --model Y`.
 
 This document is the canonical specification of the layer. The
 design history (the problem framing, the prior-art survey, the open
-risks) lives in §1 and §9 below.
+risks) lives in §1 and §9 below. The procedure for adding rules when
+vendors ship new models is the [model refresh runbook](model-refresh.md).
 
 ## 1. Problem
 
