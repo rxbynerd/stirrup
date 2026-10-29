@@ -42,16 +42,16 @@ var hostFilepathFuncs = map[string]bool{
 }
 
 // hostTemplateFuncs are text/template and html/template functions that read
-// template files from the host.
+// template files from the host. ParseFS is absent: it reads an fs.FS, and
+// reaching the host through one needs os.DirFS, which the os ban covers.
 var hostTemplateFuncs = map[string]bool{
 	"ParseFiles": true,
 	"ParseGlob":  true,
-	"ParseFS":    true,
 }
 
 // TestExecutorOnlyPackages_DoNotTouchTheHost pins that no production file
 // in the git, prompt and workspaceexport packages imports a host-access
-// package or calls a host-reading path/filepath or template function. Test
+// package or calls a host-reading path/filepath or template-file function. Test
 // files are exempt: they build fixtures with the host's tools. Packages
 // these import are not followed; a shared helper that reads the host
 // needs its own entry.

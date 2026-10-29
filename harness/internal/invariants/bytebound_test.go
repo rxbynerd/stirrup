@@ -119,22 +119,42 @@ func TestToolResults_PassTheResultBudget(t *testing.T) {
 	for i := range files {
 		sf := &files[i]
 		typesName := importName(sf.file, "github.com/rxbynerd/stirrup/types")
+		// implied holds the element type of literals written without one
+		// inside a slice, array or map literal.
+		implied := map[*ast.CompositeLit]ast.Expr{}
 		ast.Inspect(sf.file, func(n ast.Node) bool {
 			lit, ok := n.(*ast.CompositeLit)
 			if !ok {
 				return true
 			}
+			litType := lit.Type
+			if litType == nil {
+				litType = implied[lit]
+			}
+			if elt := elementType(litType); elt != nil {
+				for _, e := range lit.Elts {
+					if kv, ok := e.(*ast.KeyValueExpr); ok {
+						e = kv.Value
+					}
+					if u, ok := e.(*ast.UnaryExpr); ok && u.Op == token.AND {
+						e = u.X
+					}
+					if inner, ok := e.(*ast.CompositeLit); ok && inner.Type == nil {
+						implied[inner] = elt
+					}
+				}
+			}
 			encl, inFunc := enclosingFunc(sf, lit.Pos())
 			where := position(fset, lit.Pos())
 			switch {
-			case isPkgSelector(lit.Type, typesName, "ToolResult") || isToolResultSlice(lit.Type, typesName):
+			case isPkgSelector(litType, typesName, "ToolResult"):
 				results++
 				check.True(inFunc && callsIn(encl.decl.Body, "boundToolResult"),
 					"%s: a ToolResult is built where boundToolResult does not run", where)
-			case isPkgSelector(lit.Type, typesName, "ContentBlock") && fieldIsString(lit, "Type", "tool_result"):
+			case isPkgSelector(litType, typesName, "ContentBlock") && fieldIsString(lit, "Type", "tool_result"):
 				check.True(inFunc && blockBuilders.allows(encl.site()),
 					"%s: a tool_result block is built outside the bounded ToolResult path", where)
-			case isPkgSelector(lit.Type, importName(sf.file, "github.com/rxbynerd/stirrup/harness/internal/tool"), "Tool") && fieldIsTrue(lit, "SelfBoundedResult"):
+			case isPkgSelector(litType, importName(sf.file, "github.com/rxbynerd/stirrup/harness/internal/tool"), "Tool") && fieldIsTrue(lit, "SelfBoundedResult"):
 				check.True(inFunc && selfBounded.allows(encl.site()),
 					"%s: a tool skips the result budget without being listed in selfBoundedTools", where)
 			}
@@ -173,9 +193,20 @@ func fieldIsTrue(lit *ast.CompositeLit, field string) bool {
 	return ok && v.Name == "true"
 }
 
-// isToolResultSlice reports whether expr is []types.ToolResult or
-// [N]types.ToolResult, whose elements may be written without their type.
-func isToolResultSlice(expr ast.Expr, typesName string) bool {
-	arr, ok := expr.(*ast.ArrayType)
-	return ok && isPkgSelector(arr.Elt, typesName, "ToolResult")
+// elementType returns the element type of a slice, array or map type,
+// pointer stripped, or nil for any other type.
+func elementType(expr ast.Expr) ast.Expr {
+	var elt ast.Expr
+	switch t := expr.(type) {
+	case *ast.ArrayType:
+		elt = t.Elt
+	case *ast.MapType:
+		elt = t.Value
+	default:
+		return nil
+	}
+	if star, ok := elt.(*ast.StarExpr); ok {
+		return star.X
+	}
+	return elt
 }

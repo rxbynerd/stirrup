@@ -120,7 +120,10 @@ type outcomeScan struct {
 	results map[string]map[int]bool
 	consts  map[string]*ast.BasicLit
 	found   map[string]token.Pos
-	changed bool
+	// following holds the variables being traced, so an assignment cycle
+	// (prev := outcome; outcome = prev) ends instead of recursing.
+	following map[*ast.FuncDecl]map[string]bool
+	changed   bool
 }
 
 func newOutcomeScan(files []sourceFile) *outcomeScan {
@@ -130,6 +133,8 @@ func newOutcomeScan(files []sourceFile) *outcomeScan {
 		results: map[string]map[int]bool{},
 		consts:  map[string]*ast.BasicLit{},
 		found:   map[string]token.Pos{},
+
+		following: map[*ast.FuncDecl]map[string]bool{},
 	}
 	for _, sf := range files {
 		for _, decl := range sf.file.Decls {
@@ -313,6 +318,14 @@ func (s *outcomeScan) value(fd *ast.FuncDecl, expr ast.Expr) {
 		if lit, ok := s.consts[e.Name]; ok {
 			s.value(fd, lit)
 		}
+		if s.following[fd] == nil {
+			s.following[fd] = map[string]bool{}
+		}
+		if s.following[fd][e.Name] {
+			return
+		}
+		s.following[fd][e.Name] = true
+		defer delete(s.following[fd], e.Name)
 		ast.Inspect(fd.Body, func(n ast.Node) bool {
 			as, ok := n.(*ast.AssignStmt)
 			if !ok {
@@ -371,6 +384,8 @@ func run(rt *RunTrace) {
 	_ = Result{Outcome: "via_key"}
 	if outcome == "via_compare" {
 	}
+	prev := outcome
+	outcome = prev
 	status := "not_an_outcome"
 	_ = status
 }
