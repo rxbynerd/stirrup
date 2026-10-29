@@ -602,7 +602,7 @@ On a release binary, setting `--debug` or `--trace-wire` hard-errors
 (exit code 4, the usage class) before `BuildRunConfig` does any I/O
 or credential resolution:
 
-```
+```text
 --trace-wire requires a debug build; rebuild with: go build -tags stirrupdebug ./harness/cmd/stirrup
 ```
 

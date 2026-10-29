@@ -908,6 +908,7 @@ stdlib HTTP client. The container is wired with
 variable is set in both upper and lower case, because libcurl reads only
 the lower-case `http_proxy` for plain-http destinations.
 
+> [!WARNING]
 > **The current implementation enforces fail-closed via the proxy
 > env vars only.** A misbehaving in-container client (raw TCP, custom
 > DNS resolver, env-stripped subprocess) can still dial the bridge
@@ -1365,6 +1366,7 @@ cross-namespace proxy is denied (more restrictive, not a bypass). Deploy
 it from [`examples/k8s/egress-proxy/`](../examples/k8s/egress-proxy/) or
 run it standalone with `stirrup egress-proxy`.
 
+> [!WARNING]
 > **Enforcement depends on the CNI.** kindnet — the default CNI for
 > `kind` — accepts `NetworkPolicy` objects but does **not** enforce
 > them, so on a stock kind cluster the deny/allowlist policy is inert

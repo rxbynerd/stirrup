@@ -60,6 +60,7 @@ account is not a member of that workspace fails *every* exchange with
 Add the membership in the Console, or via the Admin API
 `POST /v1/organizations/service_accounts/{svac}/workspaces`.
 
+> [!NOTE]
 > Programmatic creation of the issuer / service account / rule requires
 > an `org:admin` **OAuth** token — the Admin **API key**
 > (`sk-ant-admin...`) returns `404` on the federation endpoints. Mint one

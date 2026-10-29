@@ -1293,7 +1293,7 @@ at `<lakehouse>/manifest.jsonl` alongside the trace and recording
 directories, so queries with a narrow filter can skip loading most
 JSON files. Each line is one event:
 
-```
+```jsonl
 {"kind":"trace","id":"...","startedAt":"...","outcome":"...","mode":"...","model":"...","provider":"..."}
 {"kind":"recording","runId":"...","startedAt":"...","outcome":"...","mode":"...","model":"...","provider":"..."}
 ```

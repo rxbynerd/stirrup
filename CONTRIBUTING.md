@@ -163,7 +163,7 @@ Commit subjects in this repo follow `<area>: <imperative subject>` in
 lowercase, where `<area>` is a package or theme. Examples drawn straight
 from `git log`:
 
-```
+```text
 core: surface provider errors via slog and transport warning
 ci: SHA-pin third-party release actions (M-2)
 permission: bound Cedar value recursion depth (M5, refs #42)
@@ -204,6 +204,10 @@ PR.
   Catching regressions locally is cheaper still; see
   [`eval/suites/README.md`](eval/suites/README.md) for the local
   invocation.
+- A new page under `docs/` needs an entry in two places: the table for
+  its group in [`docs/index.md`](docs/index.md) and the same group's
+  `pages` list in [`docs-site.json`](docs-site.json), which the docs
+  site builds its navigation from.
 - Keep PRs focused. The exception is the safety-ring style multi-step
   PR that ships an opt-in feature in one go — those are fine but
   benefit from clear sub-task labels in commit subjects.

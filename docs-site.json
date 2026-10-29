@@ -1,0 +1,89 @@
+{
+  "title": "Stirrup documentation",
+  "product": "stirrup",
+  "label": "Documentation",
+  "description": "Stirrup is a coding-agent harness: configuration, providers, safety rings, deployment and evaluation.",
+  "repository": {
+    "url": "https://github.com/rxbynerd/stirrup",
+    "ref": "main"
+  },
+  "issues": "https://github.com/rxbynerd/stirrup/issues/{number}",
+  "footer": "stirrup · Apache License 2.0",
+  "nav": [
+    {
+      "title": "Start",
+      "pages": [
+        {
+          "path": "README.md",
+          "title": "Introduction"
+        },
+        {
+          "path": "docs/index.md",
+          "title": "Documentation index"
+        }
+      ]
+    },
+    {
+      "title": "Concepts",
+      "pages": [
+        "docs/philosophy.md",
+        "docs/architecture.md",
+        "docs/safety-rings.md",
+        "docs/guardrails.md",
+        "docs/security.md"
+      ]
+    },
+    {
+      "title": "Reference",
+      "pages": [
+        "docs/configuration.md",
+        "docs/providers.md",
+        "docs/provider-quirks.md",
+        "docs/batch.md",
+        "docs/eval.md",
+        "docs/trace-inspection.md"
+      ]
+    },
+    {
+      "title": "Operate",
+      "pages": [
+        "docs/deployment.md",
+        "docs/autonomous-preset.md",
+        "docs/executors/k8s.md",
+        "docs/executors/k8s-agent-sandbox.md",
+        "docs/cloud-run-jobs.md",
+        "docs/credential-federation.md",
+        "docs/anthropic-wif.md",
+        "docs/openai-wif.md",
+        "docs/azure-workload-identity.md",
+        "docs/observability-cloud.md",
+        "docs/container-publishing.md",
+        "docs/smoke-tests.md"
+      ]
+    },
+    {
+      "title": "Develop",
+      "pages": [
+        "docs/integration-guide.md",
+        "CONTRIBUTING.md",
+        "SECURITY.md"
+      ]
+    },
+    {
+      "title": "Design records",
+      "pages": [
+        "docs/sessions-spec-draft.md",
+        "docs/langfuse-feedback-and-trace-propagation-research.md",
+        "docs/langfuse-feedback-and-trace-propagation-implementation.md",
+        "docs/langfuse-feedback-and-trace-propagation-qualification.md",
+        "docs/langfuse-feedback-outer-application-worksheet.md"
+      ]
+    }
+  ],
+  "external": [
+    "AGENTS.md",
+    "eval/**",
+    "examples/**",
+    "research/**"
+  ]
+}
