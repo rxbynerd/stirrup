@@ -5268,6 +5268,15 @@ func rejectReplayCloudJudge(cfg GuardRailConfig, path string, errs *[]string) {
 // validateGeminiProviderFields, and the OpenAI adapters legitimately
 // use apiKeyRef alongside any of their supported credential types).
 func validateAnthropicProviderFields(path string, cfg ProviderConfig, errs *[]string) {
+	// A Google credential mints an access token for whatever endpoint
+	// the provider calls, so it is confined to Vertex AI.
+	if cfg.Credential != nil && strings.HasPrefix(cfg.Credential.Type, "gcp-") && cfg.Type != "gemini" {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s.credential.type=%q is only valid when provider.type=%q; got provider.type=%q "+
+				"(a Google access token must not be sent to a non-Vertex endpoint)",
+			path, cfg.Credential.Type, "gemini", cfg.Type))
+	}
+
 	// Cross-provider check applies regardless of cfg.Type; an
 	// anthropic-wif credential paired with a non-anthropic provider
 	// is structurally a misconfiguration.
