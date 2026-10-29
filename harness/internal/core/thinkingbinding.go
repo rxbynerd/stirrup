@@ -34,7 +34,11 @@ func (l *AgenticLoop) bindRequestThinking(ctx context.Context, systemPrompt stri
 	if previous == nil || previous.equal(binding) || !hasThinkingBlocks(messages) {
 		return messages
 	}
-	l.Logger.InfoContext(ctx, "thinking blocks dropped from the history: the system prompt or tools differ from the request they were last sent with")
+	l.Logger.InfoContext(ctx, "thinking blocks dropped from the history: the system prompt or tools differ from the request they were last sent with",
+		"systemPromptChanged", previous.system != binding.system,
+		"tools.before", len(previous.tools),
+		"tools.after", len(binding.tools),
+	)
 	return types.StripThinkingBlocks(messages)
 }
 

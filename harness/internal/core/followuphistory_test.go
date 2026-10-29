@@ -953,17 +953,19 @@ func TestBeginRunState_ResetsStateFromCarriedHistory(t *testing.T) {
 	config := buildTestConfig()
 	own := providerCacheKey(config.RunID)
 	history := []types.Message{userText("task"), assistantText("done")}
+	sent := &thinkingBinding{system: "carried system"}
 	cases := []struct {
-		name      string
-		carried   *carriedHistory
-		wantKey   string
-		wantCalls int
+		name        string
+		carried     *carriedHistory
+		wantKey     string
+		wantCalls   int
+		wantBinding *thinkingBinding
 	}{
 		{name: "no carried history", wantKey: own},
-		{name: "withheld history", carried: &carriedHistory{withheld: "guardrail_blocked", cacheKey: "k", toolCalls: 3}, wantKey: own},
-		{name: "empty messages", carried: &carriedHistory{cacheKey: "k", toolCalls: 3}, wantKey: own},
+		{name: "withheld history", carried: &carriedHistory{withheld: "guardrail_blocked", cacheKey: "k", toolCalls: 3, binding: sent}, wantKey: own},
+		{name: "empty messages", carried: &carriedHistory{cacheKey: "k", toolCalls: 3, binding: sent}, wantKey: own},
 		{name: "carried history without a key", carried: &carriedHistory{messages: history, toolCalls: 2}, wantKey: own, wantCalls: 2},
-		{name: "carried history", carried: &carriedHistory{messages: history, cacheKey: "k", toolCalls: 2}, wantKey: "k", wantCalls: 2},
+		{name: "carried history", carried: &carriedHistory{messages: history, cacheKey: "k", toolCalls: 2, binding: sent}, wantKey: "k", wantCalls: 2, wantBinding: sent},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -972,9 +974,11 @@ func TestBeginRunState_ResetsStateFromCarriedHistory(t *testing.T) {
 			// State from an earlier run must not leak into this one.
 			loop.cacheKey = "stale"
 			loop.carriedToolCalls = 9
+			loop.requestBinding = &thinkingBinding{system: "stale"}
 			loop.beginRunState(config, tc.carried)
 			must.Equal(tc.wantKey, loop.cacheKey, "cache key")
 			must.Equal(tc.wantCalls, loop.carriedToolCalls, "carried tool calls")
+			must.Equal(tc.wantBinding, loop.requestBinding, "thinking binding")
 		})
 	}
 }
