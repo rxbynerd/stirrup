@@ -82,6 +82,8 @@ type Event struct {
 	ModelOutput []types.ContentBlock   `json:"modelOutput,omitempty"`
 	ToolCalls   []types.ToolCallRecord `json:"toolCalls,omitempty"`
 	ToolCall    *types.ToolCallRecord  `json:"toolCall,omitempty"`
+	// StopReason carries TurnRecord.StopReason.
+	StopReason string `json:"stopReason,omitempty"`
 	// OutputLimitRecovery carries TurnRecord.OutputLimitRecovery.
 	OutputLimitRecovery bool `json:"outputLimitRecovery,omitempty"`
 	// StallNudge carries TurnRecord.StallNudge.

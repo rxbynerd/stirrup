@@ -147,9 +147,12 @@ func (rp *ReplayProvider) Stream(ctx context.Context, _ types.StreamParams) (<-c
 			}
 		}
 
-		stopReason := "end_turn"
-		if hasToolUse {
-			stopReason = "tool_use"
+		stopReason := turn.StopReason
+		if stopReason == "" {
+			stopReason = "end_turn"
+			if hasToolUse {
+				stopReason = "tool_use"
+			}
 		}
 		if estimatedTokens == 0 {
 			estimatedTokens = 1
