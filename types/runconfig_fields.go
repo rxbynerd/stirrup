@@ -15,7 +15,7 @@ const ConfigFieldWildcard = "*"
 
 var configFieldPaths = sync.OnceValue(func() []string {
 	seen := map[string]struct{}{}
-	collectConfigFieldPaths("", reflect.TypeFor[RunConfig](), seen, map[reflect.Type]bool{})
+	collectConfigFieldPaths("", reflect.TypeFor[RunConfig](), seen, map[reflect.Type]int{})
 	paths := make([]string, 0, len(seen))
 	for p := range seen {
 		paths = append(paths, p)
@@ -30,9 +30,16 @@ var configFieldPaths = sync.OnceValue(func() []string {
 // fields; an array contributes its element's fields under its own path;
 // a map contributes a ConfigFieldWildcard segment for its keys, followed
 // by its value's fields. Types that decode themselves are not descended.
+// A type that contains itself (a composite guardrail's stages, a
+// composite verifier's sub-verifiers) is walked one nesting level deep:
+// its own field at the second level is listed, but nothing beneath it.
 func ConfigFieldPaths() []string {
 	return slices.Clone(configFieldPaths())
 }
+
+// maxConfigFieldTypeNesting is how many times one struct type may appear
+// on a descent, so a recursive type is walked one level inside itself.
+const maxConfigFieldTypeNesting = 2
 
 var (
 	jsonUnmarshalerType = reflect.TypeFor[json.Unmarshaler]()
@@ -40,10 +47,10 @@ var (
 )
 
 // collectConfigFieldPaths records the paths beneath prefix for a value of
-// type t, following encoding/json's field naming. active holds the
+// type t, following encoding/json's field naming. active counts the
 // struct types on the current descent so a recursive type ends the walk
-// instead of looping.
-func collectConfigFieldPaths(prefix string, t reflect.Type, seen map[string]struct{}, active map[reflect.Type]bool) {
+// after maxConfigFieldTypeNesting levels instead of looping.
+func collectConfigFieldPaths(prefix string, t reflect.Type, seen map[string]struct{}, active map[reflect.Type]int) {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
@@ -52,27 +59,24 @@ func collectConfigFieldPaths(prefix string, t reflect.Type, seen map[string]stru
 	}
 	switch t.Kind() {
 	case reflect.Slice, reflect.Array:
-		if t.Elem().Kind() == reflect.Uint8 {
-			return
-		}
 		collectConfigFieldPaths(prefix, t.Elem(), seen, active)
 	case reflect.Map:
 		path := joinConfigFieldPath(prefix, ConfigFieldWildcard)
 		seen[path] = struct{}{}
 		collectConfigFieldPaths(path, t.Elem(), seen, active)
 	case reflect.Struct:
-		if active[t] {
+		if active[t] >= maxConfigFieldTypeNesting {
 			return
 		}
-		active[t] = true
-		defer delete(active, t)
+		active[t]++
+		defer func() { active[t]-- }()
 		for i := range t.NumField() {
 			collectStructField(prefix, t.Field(i), seen, active)
 		}
 	}
 }
 
-func collectStructField(prefix string, f reflect.StructField, seen map[string]struct{}, active map[reflect.Type]bool) {
+func collectStructField(prefix string, f reflect.StructField, seen map[string]struct{}, active map[reflect.Type]int) {
 	tag := f.Tag.Get("json")
 	if tag == "-" {
 		return

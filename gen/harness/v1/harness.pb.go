@@ -385,8 +385,12 @@ type HarnessEvent struct {
 	// its fields ("provider", "provider.endpointProfile"); a repeated field
 	// lists its element's fields under its own path ("tools.mcpServers.name");
 	// a map lists "*" for its keys, then its value's fields under that
-	// ("providers.*", "providers.*.type"). Set on "ready" events. A
-	// RunConfig field this list omits is not one this harness knows: in a
+	// ("providers.*", "providers.*.type"). A message that contains itself
+	// is listed one level inside itself ("guardRail.stages.type",
+	// "guardRail.stages.stages") and not below. Set on "ready" events.
+	// The value of a listed path that no other listed path extends is not
+	// checked against the list, such as a Struct body. Any other RunConfig
+	// field this list omits is not one this harness knows: in a
 	// task_assignment it is dropped without notice, and in file-config JSON
 	// it fails the parse. The list also names fields that have no protobuf
 	// mirror and so can only be set in file-config JSON.
