@@ -50,9 +50,11 @@
 # has no base URL a RunConfig can set and needs Google credentials, so
 # its parsing stays pinned in process.
 #
-# MCP name normalization stays in process only: it needs a tool
-# registered under an MCP-style name, which requires an HTTP MCP server
-# the runner does not start.
+# MCP name normalization needs a tool registered under an MCP-style name.
+# The mcp-name-normalization task gets one from a loopback MCP stub (a
+# fixture_server in mode "mcp") that advertises read-file-stub, and
+# replays a recording that calls it by the underscore name the replay
+# provider's strictest naming policy shows the model.
 #
 # See eval/suites/README.md for the run/compare/baseline workflow.
 
@@ -478,8 +480,44 @@ suite "tooluse-reliability" {
     }
   }
 
+  task "mcp-name-normalization" {
+    description = "A tool registered from an MCP server under a hyphenated name is called by the model under the provider-safe name the normalizer shows it (the replay provider is held to the strictest policy, which rewrites hyphens to underscores). Judge confirms the call dispatched under the registry name and succeeded, so the reverse mapping resolved it. The task runs against a loopback MCP fixture server that advertises read-file-stub, so no credential is used. Regression-covers MCP name normalization."
+    repo        = ""
+    ref         = ""
+    mode        = "execution"
+    prompt      = <<-EOT
+      Read the stub file with the read-file-stub tool from the stub MCP server.
+    EOT
+
+    fixture_server {
+      mode = "mcp"
+    }
+
+    run_config_overrides {
+      provider {
+        type        = "replay"
+        replay_file = "fixtures/tooluse/mcp-name-normalization.jsonl"
+      }
+
+      tools {
+        mcp_server "stub" {}
+      }
+    }
+
+    judge {
+      type = "tool-trace"
+      tool_trace {
+        forbid_unknown = true
+        call "mcp_stub_read-file-stub" {
+          min_calls     = 1
+          all_succeeded = true
+        }
+      }
+    }
+  }
+
   task "streaming-split-args-openai-compatible" {
-    description = "A openai-compatible tool call whose arguments arrive split across chat-completion deltas is reassembled by the real adapter's stream parser and dispatched. The task runs the openai-compatible adapter against a loopback fixture server that plays back fixtures/tooluse/openai-compatible-split-args.sse, so no credential is used. Judge confirms the edit landed AND the edit_file call succeeded. Regression-covers openai-compatible streamed tool-call parsing, which a replay recording bypasses."
+    description = "An openai-compatible tool call whose arguments arrive split across chat-completion deltas is reassembled by the real adapter's stream parser and dispatched. The task runs the openai-compatible adapter against a loopback fixture server that plays back fixtures/tooluse/openai-compatible-split-args.sse, so no credential is used. Judge confirms the edit landed AND the edit_file call succeeded. Regression-covers openai-compatible streamed tool-call parsing, which a replay recording bypasses."
     repo        = ""
     ref         = ""
     mode        = "execution"
@@ -533,7 +571,7 @@ suite "tooluse-reliability" {
   }
 
   task "streaming-split-args-openai-responses" {
-    description = "A openai-responses tool call whose arguments arrive split across function-call argument deltas is reassembled by the real adapter's stream parser and dispatched. The task runs the openai-responses adapter against a loopback fixture server that plays back fixtures/tooluse/openai-responses-split-args.sse, so no credential is used. Judge confirms the edit landed AND the edit_file call succeeded. Regression-covers openai-responses streamed tool-call parsing, which a replay recording bypasses."
+    description = "An openai-responses tool call whose arguments arrive split across function-call argument deltas is reassembled by the real adapter's stream parser and dispatched. The task runs the openai-responses adapter against a loopback fixture server that plays back fixtures/tooluse/openai-responses-split-args.sse, so no credential is used. Judge confirms the edit landed AND the edit_file call succeeded. Regression-covers openai-responses streamed tool-call parsing, which a replay recording bypasses."
     repo        = ""
     ref         = ""
     mode        = "execution"

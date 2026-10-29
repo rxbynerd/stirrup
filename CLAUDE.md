@@ -211,7 +211,7 @@ Quick map for "I need to change X" lookups:
 | `stirrup run-config` subcommand | `harness/cmd/stirrup/cmd/runconfig.go` |
 | gRPC schema | `proto/harness/v1/harness.proto` (then `buf generate`) |
 | Eval suite parser | `eval/spec/` |
-| Eval per-task fixture servers (`fixture_server`: scripted SSE provider) | `eval/fixtureserver/`, lifecycle and URL substitution in `eval/runner/fixture.go` (operator doc: `docs/eval.md#fixture-servers`) |
+| Eval per-task fixture servers (`fixture_server`: scripted SSE provider, MCP stub) | `eval/fixtureserver/`, lifecycle and URL substitution in `eval/runner/fixture.go` (operator doc: `docs/eval.md#fixture-servers`) |
 | Eval CLI subcommands | `eval/cmd/eval/main.go` |
 
 Stirrup runs unmodified as a Google Cloud Run job — the container

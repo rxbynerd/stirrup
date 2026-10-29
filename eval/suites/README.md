@@ -114,18 +114,25 @@ runs it on every push. A recording is a JSONL trace whose
 fixtures are hand-written to the shapes
 `harness/internal/core/tooluse_replay_test.go` pins in process, and
 that Go test remains the unit-level gate for the same behaviours.
-Two of its behaviours cannot be replayed. MCP name normalization stays
-in process only: it needs an MCP server the runner does not start (and
-the HCL `tools` block has no MCP server field). Streaming tool-call
-parsing is a wire property of each adapter that a replay bypasses by
-design, so the `streaming-split-args-*` tasks instead run the real
-`openai-compatible` and `openai-responses` adapters against a loopback
-[fixture server](../../docs/eval.md#fixture-servers) that plays back a
-canned SSE stream (`fixtures/tooluse/*.sse`) with the tool-call
-arguments split across deltas. These tasks are keyless and ignore the
-live-model flags of an invocation. The Gemini adapter's parsing stays in
-process only, because a RunConfig cannot point that adapter at a
-loopback server.
+Two of its behaviours need a server instead, and each task declares a
+loopback [fixture server](../../docs/eval.md#fixture-servers) that the
+runner starts for the trial:
+
+- Streaming tool-call parsing is a wire property of each adapter that a
+  replay bypasses by design, so the `streaming-split-args-*` tasks run
+  the real `openai-compatible` and `openai-responses` adapters against
+  a canned SSE stream (`fixtures/tooluse/*.sse`) with the tool-call
+  arguments split across deltas. The Gemini adapter has no such task,
+  because a RunConfig cannot point it at a loopback server; its parsing
+  stays pinned in process.
+- MCP name normalization needs a tool registered under a hyphenated MCP
+  name, so the `mcp-name-normalization` task registers an MCP stub that
+  advertises `read-file-stub` and replays a recording that calls it by
+  the underscore name the strictest provider naming policy shows the
+  model.
+
+These tasks need no credential, and the live-model flags of an
+invocation do not reach them.
 
 ### Running against a live provider (opt-in)
 
