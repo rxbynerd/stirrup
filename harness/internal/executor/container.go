@@ -46,8 +46,8 @@ var (
 	// (see container_api.go), so a wedged daemon would otherwise hang the
 	// calling goroutine indefinitely. A var, not const, so tests can shrink it.
 	containerFileIOTimeout = 60 * time.Second
-	// containerMkdirTimeout bounds WriteFile's "mkdir -p" exec call
-	// specifically, snappier than the file-transfer budget above.
+	// containerMkdirTimeout bounds WriteFile's target guard exec (which
+	// runs mkdir -p), snappier than the file-transfer budget above.
 	containerMkdirTimeout = 10 * time.Second
 )
 
@@ -460,9 +460,11 @@ func classifyFileIOCtxErr(ctx context.Context, verb string, err error) error {
 }
 
 // WriteFile writes content to a file inside the container using the archive
-// API. Parent directories must already exist in the container, or the
-// archive extraction will create them. Content must not exceed 10 MB. The
-// whole operation (mkdir -p plus the archive upload) is bounded by
+// API, against the path workspaceWriteGuardCommand resolved in-sandbox.
+// The archive endpoint follows symlinks, so the guard first pins the
+// destination to a symlink-free path inside /workspace and creates any
+// missing parent directories. Content must not exceed 10 MB. The whole
+// operation (guard plus the archive upload) is bounded by
 // containerFileIOTimeout, for the same reason as ReadFile.
 func (e *ContainerExecutor) WriteFile(ctx context.Context, filePath string, content string) error {
 	if len(content) > maxFileSize {
@@ -476,23 +478,31 @@ func (e *ContainerExecutor) WriteFile(ctx context.Context, filePath string, cont
 	if err != nil {
 		return err
 	}
+	if resolved == e.workspace {
+		return fmt.Errorf("path resolves to workspace root: %q", filePath)
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, containerFileIOTimeout)
 	defer cancel()
 
-	dir := path.Dir(resolved)
-	if dir != e.workspace {
-		_, mkdirErr := e.execInContainer(ctx, []string{"mkdir", "-p", dir}, e.workspace, containerMkdirTimeout)
-		if mkdirErr != nil {
-			return fmt.Errorf("create parent directory: %w", mkdirErr)
-		}
+	guard, err := e.execInContainer(ctx, workspaceWriteGuardCommand(e.workspace, resolved), e.workspace, containerMkdirTimeout)
+	if err != nil {
+		return fmt.Errorf("resolve write target: %w", err)
 	}
+	if guard.ExitCode != 0 {
+		return classifyWorkspaceWriteExit(guard.ExitCode, guard.Stderr, filePath, e.workspace, e.Security)
+	}
+	target, err := parseWorkspaceWriteTarget(guard.Stdout, filePath, e.workspace, e.Security)
+	if err != nil {
+		return err
+	}
+	dir := path.Dir(target)
 
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 
 	// The archive path must be relative to the destination (the parent dir).
-	archiveName := path.Base(resolved)
+	archiveName := path.Base(target)
 	if err := tw.WriteHeader(&tar.Header{
 		Name: archiveName,
 		Mode: 0o644,

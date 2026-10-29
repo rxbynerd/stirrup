@@ -368,12 +368,12 @@ func TestContainerExecutor_WriteFile(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		},
 		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
-			// mkdir -p call
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(execCreateResponse{ID: "mkdir-exec"})
+			_ = json.NewEncoder(w).Encode(execCreateResponse{ID: "guard-exec"})
 		},
 		"POST /exec/*/start": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
+			writeDockerFrame(w, 1, []byte("/workspace/sub/dir/test.txt\n"))
 		},
 		"GET /exec/*/json": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
