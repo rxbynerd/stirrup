@@ -217,10 +217,11 @@ int-test-openai-responses: build
 # ANTHROPIC_API_KEY, OPENAI_API_KEY or OPENROUTER_API_KEY; the repository
 # holds no vault paths. Each key is read inside the session, exported
 # only when non-empty, and reported as KEY_OK or KEY_MISSING; a value is
-# never printed or written to disk. Exits non-zero when any key is
-# missing. op-session-check repeats the presence check later, and is the
-# check to run before claiming a live probe ran. See
-# CONTRIBUTING.md#live-provider-keys.
+# never printed or written to disk. The recipe waits up to 180 seconds for
+# the 1Password approvals and exits non-zero when any key is missing; a key
+# approved after that is exported but reported missing. op-session-check
+# repeats the presence check later, and is the check to run before
+# claiming a live probe ran. See CONTRIBUTING.md#live-provider-keys.
 
 # Load NAME=op://... keys into tmux session `session`.
 [positional-arguments]
@@ -229,6 +230,10 @@ op-session session +refs:
     set -euo pipefail
     session="$1"
     shift
+    # 1Password references name vaults, items and fields by these
+    # characters (others need IDs). Paths are typed into the session's
+    # shell, so nothing else, control characters included, may pass.
+    path_re='^op://[A-Za-z0-9 ._/?=-]+$'
     for ref in "$@"; do
         name="${ref%%=*}"
         path="${ref#*=}"
@@ -236,8 +241,8 @@ op-session session +refs:
             echo "op-session: ${ref%%=*} is not NAME=op://vault/item/field" >&2
             exit 2
         fi
-        if [[ ! "$path" =~ ^op://[^\']+$ ]]; then
-            echo "op-session: the path for ${name} must start with op:// and contain no single quote" >&2
+        if [[ ! "$path" =~ $path_re ]]; then
+            echo "op-session: the path for ${name} must be op:// followed by letters, digits, spaces and . _ / ? = -" >&2
             exit 2
         fi
     done
@@ -251,10 +256,14 @@ op-session session +refs:
     for ref in "$@"; do
         name="${ref%%=*}"
         path="${ref#*=}"
-        # Leading space keeps the command out of shell history.
-        tmux send-keys -t "=${session}:" " __v=\"\$(op read '${path}')\"; if [ -n \"\$__v\" ]; then export ${name}=\"\$__v\"; echo KEY_OK ${name} >> '${status}'; else echo KEY_MISSING ${name} >> '${status}'; fi; unset __v" Enter
+        # The leading space keeps the line, which holds the vault path but
+        # never the value, out of history in shells that ignore
+        # space-prefixed commands.
+        tmux send-keys -t "=${session}:" -l " __v=\"\$(op read '${path}')\"; if [ -n \"\$__v\" ]; then export ${name}=\"\$__v\"; echo KEY_OK ${name} >> '${status}'; else echo KEY_MISSING ${name} >> '${status}'; fi; unset __v"
+        tmux send-keys -t "=${session}:" Enter
     done
-    tmux send-keys -t "=${session}:" " echo DONE >> '${status}'" Enter
+    tmux send-keys -t "=${session}:" -l " echo DONE >> '${status}'"
+    tmux send-keys -t "=${session}:" Enter
     for _ in $(seq 1 180); do
         grep -qx DONE "$status" && break
         sleep 1
@@ -293,9 +302,11 @@ op-session-check session +names:
     status="${status_dir}/status"
     : > "$status"
     for name in "$@"; do
-        tmux send-keys -t "=${session}:" " if [ -n \"\${${name}:-}\" ]; then echo KEY_OK ${name}; else echo KEY_MISSING ${name}; fi >> '${status}'" Enter
+        tmux send-keys -t "=${session}:" -l " if [ -n \"\${${name}:-}\" ]; then echo KEY_OK ${name}; else echo KEY_MISSING ${name}; fi >> '${status}'"
+        tmux send-keys -t "=${session}:" Enter
     done
-    tmux send-keys -t "=${session}:" " echo DONE >> '${status}'" Enter
+    tmux send-keys -t "=${session}:" -l " echo DONE >> '${status}'"
+    tmux send-keys -t "=${session}:" Enter
     for _ in $(seq 1 30); do
         grep -qx DONE "$status" && break
         sleep 1
