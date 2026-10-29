@@ -5550,3 +5550,17 @@ func TestApplyOverrides_SwitchFromGeminiDropsEveryGoogleCredential(t *testing.T)
 		})
 	}
 }
+
+// TestApplyOverrides_SameProviderKeepsItsFields pins that --provider
+// naming the document's own type is not a switch and drops nothing.
+func TestApplyOverrides_SameProviderKeepsItsFields(t *testing.T) {
+	must := require.New(t)
+	cmd := newTestHarnessCommand()
+	cfg := geminiFileConfig()
+	want := cfg.Provider
+	must.NoError(cmd.Flags().Set("provider", "gemini"))
+
+	must.NoError(applyOverrides(cmd, cfg, nil))
+
+	must.Equal(want, cfg.Provider)
+}

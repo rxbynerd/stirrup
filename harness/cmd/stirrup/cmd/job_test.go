@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc"
 
 	pb "github.com/rxbynerd/stirrup/gen/harness/v1"
+	"github.com/rxbynerd/stirrup/harness/internal/core"
 	"github.com/rxbynerd/stirrup/harness/internal/health"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -739,4 +740,37 @@ func TestRunJob_RequiredMCPServerUnreachableSendsErrorThenDone(t *testing.T) {
 	must.NotNil(doneEvent)
 	check.Contains(errEvent.Message, `required MCP server "docs"`)
 	check.Equal("error", doneEvent.StopReason)
+}
+
+// TestControlPlaneBuildError_RedactsOnlyHostFileFailures pins that every
+// host-file failure reaches the control plane as its field alone, through
+// any wrapping, and that other build errors pass through unchanged.
+func TestControlPlaneBuildError_RedactsOnlyHostFileFailures(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "policy file",
+			err:  fmt.Errorf("building harness: build components: %w", &core.HostFileError{Field: "permissionPolicy.policyFile", Err: errors.New("open /etc/x: permission denied")}),
+			want: "building harness: permissionPolicy.policyFile unavailable on the harness host; the harness log has the detail",
+		},
+		{
+			name: "named replay entry",
+			err:  fmt.Errorf("building harness: build providers: %w", &core.HostFileError{Field: "providers[alt].replayFile", Err: errors.New("is a directory")}),
+			want: "building harness: providers[alt].replayFile unavailable on the harness host; the harness log has the detail",
+		},
+		{
+			name: "other failure",
+			err:  errors.New("building harness: config validation: bad"),
+			want: "building harness: config validation: bad",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.EqualError(controlPlaneBuildError(tc.err), tc.want)
+		})
+	}
 }

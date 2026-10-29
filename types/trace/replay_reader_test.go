@@ -112,3 +112,21 @@ func TestReadReplay_RefusesTooManyModelOutputBlocks(t *testing.T) {
 
 	must.ErrorContains(err, "more than 131072 model output blocks")
 }
+
+// TestReadReplay_BlockCapSpansTheRecording pins that the block cap counts
+// across every turn of a recording, not per line.
+func TestReadReplay_BlockCapSpansTheRecording(t *testing.T) {
+	must := require.New(t)
+	half := make([]any, MaxReplayContentBlocks/2+1)
+	for i := range half {
+		half[i] = map[string]any{}
+	}
+	body := eventLines(t,
+		map[string]any{"kind": "turn_record", "turn": 1, "modelOutput": half},
+		map[string]any{"kind": "turn_record", "turn": 2, "modelOutput": half},
+	)
+
+	_, err := NewReader(bytes.NewReader(body), WithLogger(discardLogger())).ReadReplay(context.Background())
+
+	must.ErrorContains(err, "more than 131072 model output blocks")
+}

@@ -255,3 +255,38 @@ func TestReplaySubAgentProviders_LiveDefaultWithReplayEntry(t *testing.T) {
 	must.Same(live, childDefault)
 	streamNext(t, childProviders["named"])
 }
+
+// TestBuildLoop_ReplayProvider_RefusedSpawnKeepsTheChildNumber pins that a
+// refused spawn does not use up a child run number: the next spawn is
+// still sub-1 and is served the recorded sub-1.
+func TestBuildLoop_ReplayProvider_RefusedSpawnKeepsTheChildNumber(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	workspace := t.TempDir()
+	recording := writeReplayRecording(t,
+		`{"kind":"run_started","runId":"rec-1"}`,
+		`{"kind":"turn_record","runId":"rec-1","turn":1,"modelOutput":[{"type":"tool_use","id":"p1","name":"spawn_agent","input":{"prompt":"Do something else.","mode":"execution","max_turns":3}}]}`,
+		`{"kind":"turn_record","runId":"rec-1","turn":2,"modelOutput":[{"type":"tool_use","id":"p2","name":"spawn_agent","input":{"prompt":"Write child.txt.","mode":"execution","max_turns":3}}]}`,
+		`{"kind":"subrun_started","runId":"rec-1/sub-1","parentRunId":"rec-1","config":{"prompt":"Write child.txt."}}`,
+		`{"kind":"turn_record","runId":"rec-1/sub-1","parentRunId":"rec-1","turn":1,"modelOutput":[{"type":"tool_use","id":"s1","name":"edit_file","input":{"path":"child.txt","operation":"rewrite","content":"from the child\n"}}]}`,
+		`{"kind":"turn_record","runId":"rec-1/sub-1","parentRunId":"rec-1","turn":2,"modelOutput":[{"type":"text","text":"Child done."}]}`,
+		`{"kind":"turn_record","runId":"rec-1","turn":3,"modelOutput":[{"type":"text","text":"Parent done."}]}`,
+	)
+
+	runTrace := runReplaySpawn(t, replaySpawnConfig(t, recording, workspace))
+
+	must.Equal("success", runTrace.Outcome)
+	got, err := os.ReadFile(filepath.Join(workspace, "child.txt"))
+	must.NoError(err)
+	check.Equal("from the child\n", string(got))
+	var spawns []bool
+	for _, call := range runTrace.ToolCalls {
+		if call.Name == "spawn_agent" {
+			spawns = append(spawns, call.Success)
+		}
+		if call.Name == "edit_file" {
+			check.Equal("replay-run/sub-1", call.RunID, "the admitted child is still sub-1")
+		}
+	}
+	check.Equal([]bool{false, true}, spawns, "the first spawn's prompt does not match the recorded sub-1")
+}
