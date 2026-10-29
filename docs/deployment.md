@@ -121,7 +121,8 @@ IMDS, GitHub Actions OIDC). See
    `HarnessEvent{type:"ready", harness_version, harness_semver,
    capabilities, config_fields}`. `capabilities` names the contract
    features the harness implements and `config_fields` names every
-   `RunConfig` field it accepts, so the control plane can check both
+   `RunConfig` field a `task_assignment` can set on it, so the control
+   plane can check both
    before dispatching work; `harness_version` and `harness_semver` are
    informational. See
    [Negotiating RunConfig fields](integration-guide.md#negotiating-runconfig-fields).

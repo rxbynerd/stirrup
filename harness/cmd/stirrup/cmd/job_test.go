@@ -16,6 +16,7 @@ import (
 
 	pb "github.com/rxbynerd/stirrup/gen/harness/v1"
 	"github.com/rxbynerd/stirrup/harness/internal/health"
+	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -426,7 +427,8 @@ func TestRunJob_ReadyAdvertisesCapabilitiesAndConfigFields(t *testing.T) {
 	must.Equal("ready", ready.GetType(), "first event sent to the control plane")
 	want := []string{"live_transcript", "reasoning_summary", "follow_up_history", "turn_abandoned", "lazy_tool_loading"}
 	must.Equal(want, ready.GetCapabilities())
-	must.Equal(types.ConfigFieldPaths(), ready.GetConfigFields())
+	must.Equal(transport.TaskAssignmentFieldPaths(), ready.GetConfigFields())
+	must.NotContains(ready.GetConfigFields(), "transport", "a field a task_assignment cannot carry is not advertised")
 	must.Subset(ready.GetConfigFields(), []string{"provider.endpointProfile", "tools.lazyLoading.eager", "providers.*.type"})
 	must.Empty(ready.GetHarnessSemver(), "a dev build advertises no semantic version")
 }

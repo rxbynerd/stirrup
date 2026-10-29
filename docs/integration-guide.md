@@ -1365,7 +1365,7 @@ topology):
 |---|---|---|
 | `transport` | Transport selection. | Deliberate. It describes how the harness was launched, not the work assigned: a config arriving in a `task_assignment` came over the gRPC stream by construction, so the harness sets `grpc` itself. Accepting a wire value would let a control plane declare a transport contradicting the stream carrying the declaration. |
 | `traceEmitter.credential`, `traceEmitter.archive` | Credential override for the `gcs` emitter; durable storage for command-output sidecars. | Not yet mapped into the existing proto credential types and translation layer. |
-| `tools.profile`, `tools.commandOutput` | Tool presentation profile; command-output capture bounds. | Not yet mirrored. |
+| `tools.profile` | Tool presentation profile. | Not yet mirrored. |
 
 Everything else on `RunConfig` is expressible in a
 `task_assignment`, including the executor's
@@ -1402,9 +1402,9 @@ around silently".
     (`ToolsConfig.lazy_loading`, field 11) is honoured, and the
     `tools_loaded` event and its `tools` (field 27) report every tool
     search that loaded tools.
-- `ready.config_fields` lists every `RunConfig` field the harness
-  accepts. Remove the fields it does not list before sending
-  `task_assignment`; see
+- `ready.config_fields` lists every `RunConfig` field the harness can
+  receive in a `task_assignment`. Resolve the fields it does not know
+  before sending `task_assignment`; see
   [Negotiating RunConfig fields](#negotiating-runconfig-fields).
 - `ready.harness_version` carries the build label: the release tag
   (`v1.2.3`), `main`, or `dev`. It is informational: `dev` and `main`
@@ -1436,13 +1436,17 @@ around silently".
 
 A control plane and a harness built at different times can disagree on
 the `RunConfig` schema. A field the harness does not know is dropped
-without notice when it arrives in a `task_assignment`, and fails the
-parse with exit code 2 when it arrives in a file config. `ready`
-carries the harness's schema so the control plane can resolve the
-difference before it assigns the task.
+without notice when it arrives in a `task_assignment`. The `ready`
+event that `stirrup job` sends carries the harness's schema, so the
+control plane can resolve the difference before it assigns the task.
 
-`ready.config_fields` lists every `RunConfig` field the harness
-accepts, as dotted paths of the fields' JSON names, sorted:
+`ready.config_fields` lists every `RunConfig` field this harness can
+receive in a `task_assignment`: the fields it accepts that its
+compiled-in protobuf schema also carries. The fields in
+[Features not on the wire](#features-not-on-the-wire) are left out.
+Each entry is a dotted path of the fields' protobuf JSON names (the
+default lower-camel-case names, which file-config JSON shares), and
+the list is sorted byte-wise:
 
 - A message field is listed along with each of its fields:
   `provider`, `provider.endpointProfile`.
@@ -1458,28 +1462,46 @@ accepts, as dotted paths of the fields' JSON names, sorted:
   inside another (`verifier.verifiers.verifiers`) is passed through
   unchecked by the walk below.
 
-The names are the lower-camel-case JSON names that protobuf JSON and
-file-config JSON share. The list is derived from the harness's own
-`RunConfig` type, so it also names the fields in
-[Features not on the wire](#features-not-on-the-wire), which only a
-file config can set.
-
 Before sending `task_assignment`:
 
 1. Read `config_fields` from `ready` into a set.
-2. Render the intended `RunConfig` as protobuf JSON and collect the
-   path of every field it sets. Under an object at path `P`, the key
-   `k` has the path `P.k`, or `P.*` when `P.*` is listed (the object
-   is a map). The elements of an array are walked at the array's own
-   path. Stop descending at a path that no listed path extends: below
-   it the value is data, such as the body of `outputSchema`.
+2. Collect the path of every field the intended `RunConfig` sets,
+   either by walking the message with protobuf reflection or by
+   rendering it as protobuf JSON with the default JSON names (not
+   `UseProtoNames` or `preserving_proto_field_name`) and without
+   unpopulated fields. Under an object at path `P`, the key `k` has
+   the path `P.k`, or `P.*` when `P.*` is listed (the object is a
+   map). The elements of an array are walked at the array's own path.
+   Stop descending at a path that no listed path extends: below it the
+   value is data, such as the body of `outputSchema`.
 3. Any collected path missing from the set is a field this harness
-   does not know. Remove it when the task works without it; otherwise
-   assign the task to a harness that lists it.
+   does not know. Remove it only when the task is still correct and
+   safe without it; otherwise assign the task to a harness that lists
+   it. A field that restricts the run, such as a permission policy,
+   guardrail, sandbox or egress setting, is never safe to remove: the
+   harness would run without the restriction.
 
 `config_fields` says the harness parses a field, not that it implements
 a feature: gate features on `capabilities`. A listed field can also be
 accepted without effect, as `maxCostBudget` is (see
-[Limits and budgets](configuration.md#limits-and-budgets)). A `ready`
-without `config_fields` comes from a harness that predates the list;
-for such a harness, the field set has to come from its release notes.
+[Limits and budgets](configuration.md#limits-and-budgets)). Accepted
+values are not negotiated either: a new value of a listed field, such
+as a new executor type, is invisible in the list. A `ready` from
+`stirrup job` without `config_fields` comes from a harness that
+predates the list; for such a harness, the field set has to come from
+its release notes. The `ready` that `stirrup harness --transport grpc`
+sends carries no `config_fields`, since that harness has already read
+its configuration from a file.
+
+The list makes JSON field names part of the wire contract, so the
+schema evolves under these rules:
+
+- A field's JSON name is never changed. A renamed field would still
+  arrive by its field number, but control planes would remove it as
+  unlisted.
+- A field never changes shape under the same name. Arrays add no path
+  segment, so a field becoming repeated would be invisible in the
+  list.
+- A removed field disappears from the list.
+- A new field needs no capability. A capability marks new behaviour or
+  a new event, or a changed meaning of an existing field.
