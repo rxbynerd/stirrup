@@ -65,7 +65,7 @@ func CompatRules() []quirks.Rule {
 		{
 			ProviderType: "openai-compatible",
 			ModelMatch:   "z-ai/glm-*",
-			Description:  "Z.ai GLM via OpenRouter: legacy max_tokens; reasoning arrives as delta.reasoning and needs no replay (probed on z-ai/glm-5.3)",
+			Description:  "Z.ai GLM via OpenRouter: legacy max_tokens; reasoning arrives as delta.reasoning and needs no replay (probed 2026-10-29 on z-ai/glm-5.3)",
 			LastVerified: quirks.Date("2026-10-29"),
 			Apply: func(q *quirks.ProviderQuirks) {
 				q.BehaviourFlags.OpenAI.TokenField = quirks.TokenFieldMaxTokens

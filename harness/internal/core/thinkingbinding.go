@@ -25,8 +25,11 @@ func (b *thinkingBinding) equal(other *thinkingBinding) bool {
 // bindRequestThinking returns the history to send under systemPrompt and
 // toolDefs. When either differs from the request the history was last sent
 // with, in this run or in the run a follow-up continues, its thinking
-// blocks are stripped, since they could no longer be replayed. The
-// request's binding becomes the one later requests compare against.
+// blocks are stripped, since they could no longer be replayed. Unlike the
+// historyRewritten strip, which applies to each request's copy, the caller
+// keeps the stripped history, so thinking produced afterwards stays
+// replayable. The request's binding becomes the one later requests compare
+// against.
 func (l *AgenticLoop) bindRequestThinking(ctx context.Context, systemPrompt string, toolDefs []types.ToolDefinition, messages []types.Message) []types.Message {
 	binding := &thinkingBinding{system: systemPrompt, tools: slices.Clone(toolDefs)}
 	previous := l.requestBinding
