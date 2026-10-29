@@ -31,9 +31,18 @@ func FormatText(report eval.ComparisonReport) string {
 	writeRate(&b, "baseline", s.Baseline)
 	writeRate(&b, "current", s.Current)
 	writePaired(&b, s.Paired, len(report.Tasks))
-	if s.Paired != nil && singleTrialExceedsMargin(len(report.Tasks), s.Current.Trials, s.WarnMargin) {
+	pairedTrials := s.Current.Trials
+	if s.FirstTrialOnly {
+		pairedTrials = 1
+		b.WriteString("Note: confirm-on-fail trials; the paired statistics, the noise floor, and pass^k / pass@k use each task's first trial only.\n")
+	}
+	if s.Baseline.TrialsPolicy != s.Current.TrialsPolicy {
+		fmt.Fprintf(&b, "Warning: trials policies differ (baseline %s, current %s); a confirm-on-fail result is biased upward against a fixed one.\n",
+			s.Baseline.TrialsPolicy, s.Current.TrialsPolicy)
+	}
+	if s.Paired != nil && singleTrialExceedsMargin(len(report.Tasks), pairedTrials, s.WarnMargin) {
 		fmt.Fprintf(&b, "Note: with n=%d paired tasks and K=%d, one lost trial lowers the mean pass fraction by %.3f, more than the warn margin %.3f.\n",
-			len(report.Tasks), s.Current.Trials, 1/float64(len(report.Tasks)*s.Current.Trials), s.WarnMargin)
+			len(report.Tasks), pairedTrials, 1/float64(len(report.Tasks)*pairedTrials), s.WarnMargin)
 	}
 	writeNoiseFloor(&b, s.NoiseFloor, len(report.Tasks), s.Current.Trials)
 	writeUnpaired(&b, "Missing from current run", report.BaselineOnly)
@@ -84,6 +93,9 @@ func writeRate(b *strings.Builder, label string, r eval.RateSummary) {
 	}
 	fmt.Fprintf(b, "  %-9s %.1f%% (95%% Wilson over tasks [%.1f%%, %.1f%%]), SE %s, n=%d tasks, K=%d",
 		label+":", r.PassRate*100, r.WilsonLow*100, r.WilsonHigh*100, se, r.Tasks, r.Trials)
+	if r.TrialsPolicy == eval.TrialsPolicyConfirmOnFail {
+		b.WriteString(" (confirm-on-fail)")
+	}
 	if r.HealthyPassRate != nil {
 		fmt.Fprintf(b, ", healthy %.1f%%", *r.HealthyPassRate*100)
 	}
