@@ -667,17 +667,18 @@ check ignores those stripped `null` values when it compares a stored
 `function_call` with the persisted `tool_use` input, so stripping alone
 never forces a turn to be reconstructed.
 
-Temperature on `openai-responses` follows the projected effort. The
-`gpt-6*`, `gpt-5.5*`, and `gpt-5.6*` rules set `OmitSamplingParams`, so
-`temperature` is never sent. On any other Responses model the adapter
-drops `temperature` whenever it sends a `reasoning.effort`, applying
-the GPT-6 guidance ("when reasoning effort is not none, remove
+Temperature on `openai-responses` follows the model and the projected
+effort. The `o[1-9]*`, `gpt-5*` and `gpt-6*` rules set
+`OmitSamplingParams`, so no o-series, GPT-5.x or GPT-6 model receives
+`temperature`; only the `gpt-5-chat*` carve-out clears it. OpenAI
+documents that its reasoning models reject sampling parameters unless
+the effort is `none`, and omitting them is accepted at every effort,
+so the rules omit them even for models whose default effort is `none`,
+such as GPT-5.4. On any other Responses model the adapter drops
+`temperature` whenever it sends a `reasoning.effort`, applying the
+GPT-6 guidance ("when reasoning effort is not none, remove
 temperature") to every model, and logs the same suppression warning.
-GPT-5.4 defaults to effort `none` and keeps a caller temperature when
-no effort is set; 5.5 and 5.6 default to `medium`, so their sampling
-suppression is inferred from that default rather than probed. The
-older o-series and gpt-5 models still forward `temperature` when no
-effort is sent; their behaviour on this surface has not been probed.
+None of this has been probed on the Responses surface.
 
 The `gemini-3.6*` and `gemini-3.7*` rules sit alongside the broader
 `gemini-3*` rule rather than replacing it: glob resolution sorts by
@@ -879,7 +880,7 @@ turn so the omission is visible. Every Gemini 3
 model has a `thinkingLevel` control, so an unprobed Gemini model gets the
 level; `xhigh` and `max` have no Gemini spelling and are always rejected.
 
-Probed or documented acceptance as of 2026-09-30:
+Probed or documented acceptance (rows dated where probed):
 
 | Models | Levels |
 |---|---|
@@ -940,9 +941,18 @@ organisation fail.
 
 Live probes behind the gateway rules above, and what remains unprobed.
 A probe through a gateway shows what the gateway accepts, not what the
-vendor's own API does: OpenRouter drops parameters a model does not list
-as supported, so a 200 there is not evidence that the vendor accepts the
-parameter.
+vendor's own API does. OpenRouter returned 200 for `temperature` on a
+GPT-6 model its models list marks as not supporting it, and for effort
+values (`minimal` on GPT-6, `medium` on GLM-5.3) outside the vendors'
+documented lists, so a 200 there is not evidence that the vendor accepts
+the parameter, or that an effort value took effect: no GPT-6 probe
+reported any reasoning tokens. The gateway rules therefore take their
+allow-lists from the vendors' documentation, and a configured effort
+outside them fails before send, where before these rules it was dropped
+with a warning.
+
+`scripts/dev/model-refresh/probe-chat.sh` reproduces the Chat
+Completions rows (see the [model refresh runbook](model-refresh.md)).
 
 | Date | Model | Surface | Request | Result |
 |---|---|---|---|---|
@@ -971,19 +981,29 @@ Unprobed, with the reason:
   allow-list on `glm-5.3*` remain documented only, as do the FlashX
   (`glm-5.3-flashx`) and Prime (`glm-5.3-prime`) tiers. OpenRouter lists
   both tiers.
+- **OpenRouter's handling of GPT-6 request fields.** Whether OpenRouter
+  forwards `reasoning_effort` to OpenAI unchanged or normalises it, and
+  whether it honours `max_completion_tokens` for the `openai/gpt-6.1-terra`
+  and `:batch` ids, whose `supported_parameters` list only `max_tokens`
+  while the `*/gpt-6*` rule sends `max_completion_tokens`. Answering
+  either needs a request that produces measurable reasoning or a long
+  output, which the short probes above did not.
 - **Gemini 3.8 Flash in a harness run.** The wire facts behind the
   `gemini-3.8*` rule are probed on both surfaces, but no run of the
   harness itself has used the model: the harness refuses user-mode ADC,
   and no service account or workload identity credential is available.
   The same session would also capture parallel function calls with
   `thoughtSignature` on parts after the first, which Vertex reportedly
-  rejects on replay.
+  rejects on replay, and the Vertex Gemini 3.x stream that enabling
+  `StreamArgsV3Deltas` needs. Google's docs give two different default
+  `thinkingLevel` values (`medium` on the thinking page, `high` on the
+  Gemini 3 page); the harness sends a level only when one is configured.
 - **Families not researched.** Qwen 3.8 (`preserve_thinking` on by
   default, `reasoning_effort` supported; the Qwen 3.6 finding that no
   wire quirk is needed has not been re-checked), Kimi K3 (Moonshot),
-  MiniMax M3 and Gemma 4 have no rules. They take the zero-value
-  behaviour of their provider type, or the `*/*` gateway rules when
-  served with a vendor prefix, until someone probes them.
+  MiniMax M3 and Gemma 4 have no family rules. They resolve only the
+  provider-wide `*` rules, or the `*/*` gateway rules when served with a
+  vendor prefix, until someone probes them.
 
 ## 4. Composition with the NormalizingAdapter
 
