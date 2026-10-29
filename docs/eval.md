@@ -1879,7 +1879,9 @@ matrix cell red without holding the release.
    fractional pass rate for any flaky task, so the gate measures
    change instead of the gap between one lucky run and the task's
    true rate. A single-run baseline still loads and compares as one
-   trial per task.
+   trial per task. Record the baseline under the `--trials-policy` the
+   gate runs (`fixed` in CI); `compare` refuses a baseline recorded
+   under a different policy.
 3. On subsequent CI runs, `eval-gate` runs the suite and compares to
    the committed baseline. A `block` fails the push; a `warn` is
    annotated on the run for review.
