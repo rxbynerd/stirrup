@@ -38,45 +38,60 @@ the control plane.
 
 Two protections apply with or without TLS, and neither replaces it:
 
-- API keys and other credentials travel as `secret://` references, never as
-  values; the harness resolves them inside the job
-  (`harness/internal/security/secretstore.go`).
-- The harness scrubs secret-shaped strings from the string fields of
-  outbound events (`GRPCTransport.Emit` in
+- Provider API keys and other `apiKeyRef` fields must be `secret://`
+  references, which the harness resolves inside the job
+  (`validateAPIKeyRefs` in `types/runconfig.go`,
+  `harness/internal/security/secretstore.go`). Not every field is held to
+  this: a `traceEmitter.headers` value may be a literal, and then crosses
+  the stream as written.
+- The harness scrubs secret-shaped strings from the `text`, `content`,
+  `message` and `input` fields of outbound events (`GRPCTransport.Emit` in
   `harness/internal/transport/grpc.go`). The scrub is pattern-based, so it
   misses secrets it has no pattern for, and it does not apply to inbound
   events. The sandbox identity token is inbound and is never scrubbed.
 
 Impersonation is the larger risk. A peer that answers at the dial target
-can assign a `RunConfig` of its choosing, approve every permission
-request, and point the provider `baseUrl` at an endpoint it controls while
-`apiKeyRef` names a secret available to the job; the harness then resolves
-that secret and sends it to the peer's endpoint. Only server
-authentication — the harness verifying the control plane's certificate —
-closes this.
+can assign a `RunConfig` of its choosing and approve every permission
+request. That `RunConfig` can point the provider `baseUrl` at an endpoint
+the peer controls while `apiKeyRef` names any environment variable
+(`secret://NAME`) or readable file (`secret://file:///path`) in the job;
+the harness resolves the reference and sends the value to that endpoint.
+Only server authentication, the harness verifying the control plane's
+identity, closes this.
 
 ## Choosing a recipe
 
 | | Harness TLS | Harness mutual TLS | Istio strict mutual TLS |
 |---|---|---|---|
 | Stream encrypted on the network | yes | yes | yes, between sidecars |
-| Harness verifies the control plane | yes, against a CA bundle | yes, against a CA bundle | yes, by mesh identity |
+| Harness verifies the control plane | yes, against a CA bundle | yes, against a CA bundle | partly: any mesh identity authorised to serve the Service is accepted |
 | Control plane verifies the job | no | yes, if it requires client certificates | yes, with the AuthorizationPolicy |
 | Plaintext inside the job Pod | no | no | yes, between the harness and its sidecar |
-| Exercised | locally and on `kind` | locally and on `kind` | manifests validated only |
+| Exercised | locally | locally and on `kind` | manifests validated only |
 
-Harness mutual TLS is the default choice: it needs no mesh, and the
-harness itself refuses to fall back to plaintext. The mesh recipe suits
+Harness mutual TLS is the default choice: it needs no mesh, the harness
+pins the control plane to a CA that the operator chooses, and a job given
+the TLS settings refuses to fall back to plaintext. The mesh recipe suits
 clusters that already run Istio. The two compose: with the control-plane
 Service set to `appProtocol: tcp`, the sidecars carry the harness's TLS
-connection as opaque bytes. That combination has not been exercised.
+connection as opaque bytes, and the harness's CA check covers the mesh's
+weaker server check. That combination has not been exercised, and the two
+recipes' placeholder ports (9443 and 9090) must then agree.
+
+Neither recipe protects the transport credential from the run itself. With
+the `local` executor, the agent's commands run as the harness's own user in
+the harness's container: they can read the client key, or dial the control
+plane through the sidecar with the job's mesh identity. A run with
+`run_command` should use a sandboxing executor (`container`, `k8s` or
+`k8s-sandbox`), and per-job, short-lived client certificates limit what a
+leaked key is worth.
 
 ## Harness TLS and mutual TLS
 
 The settings are environment variables for `stirrup job` and flags for
-`stirrup harness --transport grpc`. They are not `RunConfig` fields,
-because the job dials before any `RunConfig` arrives
-(`harness/cmd/stirrup/cmd/transporttls.go`).
+`stirrup harness --transport grpc`; the flags are a usage error with any
+other transport. They are not `RunConfig` fields, because the job dials
+before any `RunConfig` arrives (`harness/cmd/stirrup/cmd/transporttls.go`).
 
 | `stirrup job` variable | `stirrup harness` flag | Meaning |
 |---|---|---|
@@ -85,16 +100,22 @@ because the job dials before any `RunConfig` arrives
 | `CONTROL_PLANE_TLS_KEY_FILE` | `--transport-tls-key-file` | PEM private key for the client certificate. |
 | `CONTROL_PLANE_TLS_SERVER_NAME` | `--transport-tls-server-name` | Name to verify the server certificate against, when it differs from the host in the address. |
 
-Setting any one of them enables TLS. There is no plaintext fallback, and
-the following fail the job before it dials:
+Setting any one of them enables TLS, with no plaintext fallback. The
+following fail the job before it dials:
 
 - a variable that is present but empty (an unrendered template, say);
 - a certificate without a key, or a key without a certificate;
 - a file that is missing, unreadable, or not valid PEM.
 
-The harness logs one line at startup naming the mode, for example
-`stirrup: control plane transport mode=mutual-tls ca=/etc/stirrup/control-plane-tls/ca.crt addr=…`.
-The line names file paths, never their contents.
+A job with none of the variables set dials plaintext, so the guarantee
+holds only while the Job template carries them. Enforce that where Jobs
+are admitted (a ValidatingAdmissionPolicy on the `stirrup-jobs` namespace,
+for example), or alert on the startup line. The harness logs that line
+once, naming the mode and the CA file, never file contents:
+
+```text
+stirrup: control plane transport mode=mutual-tls ca=/etc/stirrup/control-plane-tls/ca.crt addr=stirrup-control-plane.stirrup-control.svc:9443
+```
 
 ### What the harness verifies
 
@@ -110,10 +131,10 @@ The line names file paths, never their contents.
 - The server negotiates `h2` through ALPN. grpc-go requires it, so a
   TLS-terminating proxy in front of the control plane must offer `h2`.
 
-The harness does not check revocation (CRL or OCSP), does not pin a
-certificate beyond the CA bundle, and reads the files once at startup. A
-renewed client certificate takes effect in the next job Pod; keep each
-certificate valid for longer than `activeDeadlineSeconds`.
+The harness does not check revocation (CRL or OCSP) and does not pin a
+certificate beyond the CA bundle. It reads the files once at startup and
+handshakes once per job, so a certificate only has to be valid when the
+job connects, and a renewed certificate takes effect in the next job Pod.
 
 ### What the control plane must do
 
@@ -135,7 +156,8 @@ srv := grpc.NewServer(grpc.Creds(credentials.NewTLS(cfg)))
 
 The [example control plane](../examples/controlplane/README.md#tls) does
 this with `-tls-cert`, `-tls-key` and `-tls-client-ca`
-(`examples/controlplane/tls.go`).
+(`examples/controlplane/tls.go`). Without `-tls-client-ca` it serves TLS
+with no client authentication, which is the "Harness TLS" column above.
 
 `CONTROL_PLANE_SESSION_ID` and the `ready` event are not authenticated by
 TLS. A control plane that runs several jobs should map the verified client
@@ -166,13 +188,21 @@ openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
   -subj "/CN=stirrup-job" -keyout client-key.pem -out client.csr
 printf 'extendedKeyUsage=clientAuth\n' > client.ext
 openssl x509 -req -in client.csr -CA ca.pem -CAkey ca-key.pem -CAcreateserial \
-  -days 1 -extfile client.ext -out client.pem
+  -days 30 -extfile client.ext -out client.pem
 ```
 
-In production, cert-manager or the organisation's CA issues these
-instead. The server and client certificates may come from different CAs:
-the job trusts the server's CA through `CONTROL_PLANE_TLS_CA_FILE`, and
-the control plane trusts the job's CA through its own client-CA setting.
+This issues one client certificate that every job shares; per-job
+certificates need an issuer the control plane calls when it creates each
+Job. The server and client certificates may come from different CAs: the
+job trusts the server's CA through `CONTROL_PLANE_TLS_CA_FILE`, and the
+control plane trusts the job's CA through its own client-CA setting.
+
+With cert-manager, give the control-plane and job certificates a dedicated
+issuer rather than a cluster-wide one: anyone who can request a
+certificate for the control plane's DNS name from the issuer that the job
+trusts can impersonate the control plane. cert-manager's `ca.crt` is the
+CA of the certificate's own issuer, so it is the right
+`CONTROL_PLANE_TLS_CA_FILE` only when one issuer signs both sides.
 
 ### Kubernetes
 
@@ -182,43 +212,81 @@ holds the recipe:
 | File | Applied by | Purpose |
 |---|---|---|
 | `namespace.yaml` | `kubectl apply -k` | The `stirrup-jobs` namespace (Pod Security `restricted`) and the `stirrup-job` ServiceAccount. |
+| `control-plane-service.yaml` | `kubectl apply -k` | The `stirrup-control` namespace and the RunTask Service on port 9443. |
 | `job.yaml` | the control plane, per run | A Job that mounts the client Secret and sets the three `CONTROL_PLANE_TLS_*` file variables. |
 
-The client Secret is created out of band, so key material never sits in
-a manifest:
+The names `stirrup-control-plane.stirrup-control.svc` and port 9443 are
+placeholders; the server certificate's SAN, the Service and
+`CONTROL_PLANE_ADDR` in `job.yaml` must agree. Both Secrets are created
+out of band, so key material never sits in a manifest:
 
 ```sh
 kubectl apply -k examples/k8s/control-transport/native-tls
+
+# The job's client certificate and the CA that issued the server's.
 kubectl -n stirrup-jobs create secret generic stirrup-control-plane-client-tls \
   --from-file=ca.crt=ca.pem --from-file=tls.crt=client.pem --from-file=tls.key=client-key.pem
+
+# The control plane's server certificate and the CA that issued the job's.
+kubectl -n stirrup-control create secret generic stirrup-control-plane-server-tls \
+  --from-file=ca.crt=ca.pem --from-file=tls.crt=server.pem --from-file=tls.key=server-key.pem
 ```
 
-A cert-manager `Certificate` writes `tls.crt` and `tls.key`, and `ca.crt`
-when its issuer provides one, so `job.yaml` works with either. The Secret
-is mounted with mode `0440` and `fsGroup: 65532`, the image's group, so the
-harness can read the key and the files are not world-readable.
+The control plane mounts its Secret and loads it into the TLS
+configuration above. For the example control plane, the container section
+is:
+
+```yaml
+args: ["-config", "/etc/controlplane/runconfig.json", "-listen", "0.0.0.0:9443",
+       "-tls-cert", "/tls/tls.crt", "-tls-key", "/tls/tls.key", "-tls-client-ca", "/tls/ca.crt"]
+volumeMounts:
+  - name: tls
+    mountPath: /tls
+    readOnly: true
+```
+
+`job.yaml` mounts the client Secret with mode `0440` and `fsGroup: 65532`,
+the image's group, so the harness can read the key and the files are not
+world-readable. A job that also runs the k8s executor needs a token
+(`automountServiceAccountToken: true`) and the orchestrator Role from
+[`examples/k8s/rbac.yaml`](../examples/k8s/rbac.yaml) bound to
+`system:serviceaccount:stirrup-jobs:stirrup-job` in the sandbox namespace.
+Its sandbox Pods then lose owner-reference cleanup, which does not cross
+namespaces. The same applies to the mesh recipe.
 
 ### Verification
 
-The control plane must refuse a plaintext job. Remove the three
-`CONTROL_PLANE_TLS_*` variables from a copy of `job.yaml` and run it; the
-job fails before any event is exchanged:
+Run each check against a control plane that is not dispatching real work;
+a probe that is wrongly accepted is assigned a task.
 
-```text
-stirrup: control plane transport mode=plaintext addr=stirrup-control-plane.stirrup-control.svc:9443
-Error: failed to connect to control plane at stirrup-control-plane.stirrup-control.svc:9443: open RunTask stream: rpc error: code = Unavailable desc = connection error: desc = "error reading server preface: EOF"
-```
+1. Plaintext must be refused. Remove the three `CONTROL_PLANE_TLS_*`
+   variables from a copy of `job.yaml` and run it. The job fails before the
+   stream opens:
 
-With the variables in place, the startup line reads `mode=mutual-tls` and
-the run proceeds. A job that trusts the wrong CA fails with
-`x509: certificate signed by unknown authority`; one without a client
-certificate fails with `tls: certificate required`.
+   ```text
+   stirrup: control plane transport mode=plaintext addr=stirrup-control-plane.stirrup-control.svc:9443
+   Error: failed to connect to control plane at stirrup-control-plane.stirrup-control.svc:9443: open RunTask stream: rpc error: code = Unavailable desc = connection error: desc = "error reading server preface: EOF"
+   ```
 
-This recipe was exercised on 2026-10-29: locally with `stirrup job`
-against the example control plane, and on a `kind` cluster (Kubernetes
-1.37) where `job.yaml`, with only its image and a workspace volume
-changed, completed a run against the example control plane serving mutual
-TLS in the cluster, and the plaintext copy was refused.
+2. A job without a client certificate must be refused. Remove only
+   `CONTROL_PLANE_TLS_CERT_FILE` and `CONTROL_PLANE_TLS_KEY_FILE`. The
+   startup line reads `mode=tls` and the job fails with
+   `remote error: tls: certificate required`. A control plane that lets
+   this job through is not requiring client certificates.
+3. With all three variables, the startup line reads `mode=mutual-tls` and
+   the run proceeds. A job that trusts the wrong CA fails with
+   `x509: certificate signed by unknown authority`.
+
+This recipe was exercised on 2026-10-29. Locally, `stirrup job` ran
+against the example control plane in mutual-TLS mode: a plaintext job, a
+job without a client certificate, a job trusting another CA, a job with a
+mismatched server name and a job with an empty variable all failed, and a
+job with the CA and client certificate completed its run. A control plane
+serving TLS without client authentication accepted a job with only the
+CA. On a `kind` cluster (Kubernetes 1.37), `job.yaml`, changed only in
+its image and a workspace volume, completed a run against the example
+control plane serving mutual TLS in the cluster, and its plaintext copy
+was refused.
 
 ## Service-mesh mutual TLS
 
@@ -229,7 +297,8 @@ TLS settings, and its startup line reads `mode=plaintext`.
 Prerequisites:
 
 - Istio with sidecar injection. The manifests use the `v1` APIs of
-  `security.istio.io` and `networking.istio.io`.
+  `security.istio.io` and `networking.istio.io`, and the default trust
+  domain `cluster.local`.
 - Native sidecars, which `job.yaml` requests with the
   `sidecar.istio.io/nativeSidecar` annotation and which need Kubernetes
   1.29 or later. The harness then starts only after its proxy is ready, and
@@ -262,32 +331,48 @@ to the job identity; without it, any meshed workload could connect. The
 `DestinationRule` stops a job sidecar from sending plaintext when the
 control plane has lost its own sidecar. The job namespace is separate from
 the k8s executor's sandbox namespace, so sandbox Pods stay out of the mesh.
-A job that also runs the k8s executor needs the orchestrator Role from
-[`examples/k8s/rbac.yaml`](../examples/k8s/rbac.yaml) bound to
-`stirrup-job` in the sandbox namespace, and its sandbox Pods lose
-owner-reference cleanup, which does not cross namespaces.
+
+`STRICT` applies to the whole `stirrup-control` namespace, so any other
+workload there also stops accepting plaintext, and the `AuthorizationPolicy`
+denies every other port on the control-plane Pods until a rule admits it.
 
 ### What the mesh verifies
 
-The client sidecar verifies the control plane's mesh identity, and the
-control plane's sidecar verifies the job's. The mesh does not cover:
+The control plane's sidecar verifies the job's mesh identity against the
+`AuthorizationPolicy`. The job's sidecar checks only that the server's
+identity is one Istio considers authorised to serve
+`stirrup-control-plane` (Istio's secure naming). The mesh does not cover:
 
+- Who can serve the control plane. Any Pod that can join the Service's
+  endpoints, and any routing rule visible to the job namespace that sends
+  the host elsewhere, is accepted as the control plane. Restrict who can
+  create Pods, Services and Istio routing objects in `stirrup-control` and
+  `stirrup-jobs`, or layer harness TLS on top to pin the control plane's
+  CA.
+- A control-plane Pod that lost its sidecar. `STRICT` and the
+  `AuthorizationPolicy` are both enforced by that sidecar, so without it
+  the control plane accepts plaintext from anything that can reach it.
+  Jobs refuse to connect to it (the `DestinationRule`), but other clients
+  are not stopped. Check that `istio-proxy` is present in control-plane
+  Pods.
 - The hop between the harness and its sidecar, which is plaintext inside
   the Pod's network namespace, sandbox identity token included. Only the
   Pod's own containers share that namespace, so the job Pod should run
   nothing besides the harness and the proxy.
 - A job Pod that was not injected. Its harness dials the control plane
-  directly in plaintext. `STRICT` refuses the connection, so the control
-  plane never sends it a `RunConfig` or a token, but the job's opening
-  bytes, including its `ready` event, may already have crossed the network.
-  Check that `istio-proxy` is present in job Pods.
+  directly in plaintext, and `STRICT` refuses the connection before the
+  gRPC stream opens: only the HTTP/2 connection preface leaves the job,
+  and the control plane never sees the connection. Check that
+  `istio-proxy` is present in job Pods.
 - Which session a job belongs to. The mesh identity is per
   ServiceAccount, so every job shares it; the session ID remains
   unauthenticated.
 
 ### Verification
 
-Apply the probes after the control plane is running:
+Apply the probes after the control plane is running, at a time it is not
+dispatching real work, since a probe that is wrongly accepted is assigned
+a task:
 
 ```sh
 kubectl apply -f examples/k8s/control-transport/istio-mtls/plaintext-probe.yaml
@@ -300,14 +385,18 @@ Both must end with `failed to connect to control plane` or another
 connection error, never with an assignment. `plaintext-probe` has no
 sidecar and is refused by `PeerAuthentication`; `wrong-identity-probe` is
 meshed but runs as the `default` ServiceAccount and is refused by the
-`AuthorizationPolicy`. For a real job, confirm injection with:
+`AuthorizationPolicy`. Confirm injection on a real job, and on the
+control-plane Pods:
 
 ```sh
+# Native sidecars are init containers.
 kubectl -n stirrup-jobs get pod -l job-name=<job> \
   -o jsonpath='{.items[0].spec.initContainers[*].name}'
+kubectl -n stirrup-control get pod -l app=stirrup-control-plane \
+  -o jsonpath='{.items[*].spec.initContainers[*].name} {.items[*].spec.containers[*].name}'
 ```
 
-The output must include `istio-proxy`.
+Each output must include `istio-proxy`.
 
 This recipe has not been run against a live mesh. On 2026-10-29 its
 manifests passed `kubeconform -strict` with the Istio CRD schemas, and a
