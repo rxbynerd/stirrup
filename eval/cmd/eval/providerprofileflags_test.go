@@ -4,7 +4,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -74,7 +73,7 @@ fi
 				must.Contains(argv, want)
 			}
 			for _, not := range tc.not {
-				must.False(strings.Contains(argv, not), "argv should omit %s:\n%s", not, argv)
+				must.NotContains(argv, not)
 			}
 		})
 	}
