@@ -858,6 +858,9 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 	if cfg.Type == "replay" {
 		replay, err := buildReplayProvider(ctx, cfg.ReplayFile)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
 			return nil, &HostFileError{Field: "replayFile", Err: err}
 		}
 		return replay, nil
