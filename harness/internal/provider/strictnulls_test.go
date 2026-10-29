@@ -183,7 +183,7 @@ func TestOpenAIResponsesAdapter_StrictNulls_StripsOnlySyntheticNulls(t *testing.
 func TestBatchAdapter_StrictNulls_FabricatedToolCallsDropSyntheticNulls(t *testing.T) {
 	must := require.New(t)
 	check := assert.New(t)
-	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "", "run-test")
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", types.EndpointProfileOpenAI, "run-test")
 	a.Registry = strictRegistryFor("gpt-4o-mini")
 	_, nulls, err := a.marshalRequestBody(t.Context(), types.StreamParams{
 		Model:     "gpt-4o-mini",
@@ -221,7 +221,7 @@ func TestBatchAdapter_StrictNulls_FabricatedToolCallsDropSyntheticNulls(t *testi
 
 func TestBatchAdapter_StrictNulls_NonStrictModelReportsNone(t *testing.T) {
 	must := require.New(t)
-	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "", "run-test")
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", types.EndpointProfileOpenAI, "run-test")
 	a.Registry = quirks.NewRegistry(nil)
 	_, nulls, err := a.marshalRequestBody(t.Context(), types.StreamParams{
 		Model:     "gpt-4o-mini",
