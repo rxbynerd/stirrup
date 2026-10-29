@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -141,6 +142,28 @@ func TestOpenAICompatible_ReasoningField_StreamsAsThinkingDelta(t *testing.T) {
 		must := require.New(t)
 		must.NotContains(text, "Anagram")
 	})
+}
+
+// The same delta.reasoning shape arrives for GLM through OpenRouter, beside
+// a tool call in the same stream.
+func TestOpenAICompatible_ReasoningField_GLMThroughOpenRouter(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	events := streamOpenAICompatible(t, "z-ai/glm-5.3",
+		streamFixtureSSE(t, "testdata/quirks/openai-compatible/z-ai/glm-5.3/response.sse"))
+	thinking, text := splitDeltas(events)
+
+	check.Equal(`An|agram of "|SPAIR" →| PARIS.| Paris is a capital| (|of| France).`, strings.Join(thinking, "|"))
+	check.Equal("Rearranging the letters S, P, A, I, R gives PARIS — the capital of France.", text)
+	var calls []types.StreamEvent
+	for _, ev := range events {
+		if ev.Type == "tool_call" {
+			calls = append(calls, ev)
+		}
+	}
+	must.Len(calls, 1, "tool calls")
+	check.Equal("get_weather", calls[0].Name)
+	check.Equal(map[string]any{"city": "Paris"}, calls[0].Input)
 }
 
 // reasoning_content wins when a delta carries both fields, so a server that
