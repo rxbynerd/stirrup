@@ -61,7 +61,8 @@ status.
    set) dials the control plane and opens the `RunTask` stream.
 2. The harness sends
    `HarnessEvent{type:"ready", harness_version, harness_semver,
-   capabilities, config_fields}`.
+   capabilities, config_fields}`; see
+   [Negotiating RunConfig fields](#negotiating-runconfig-fields).
    When `CONTROL_PLANE_SESSION_ID` is set in the Pod environment,
    the `id` field echoes it so the stream can be correlated to the
    session that launched the Pod.
@@ -120,7 +121,7 @@ status.
 
 | `type` | Fields | Control-plane obligation |
 |---|---|---|
-| `ready` | `harness_version`, `harness_semver`, `capabilities`, `config_fields`, `id` (session echo) | Gate assignment on `capabilities` when the task depends on a contract feature, and remove from the task any `RunConfig` field `config_fields` shows the harness does not know; see [Negotiating RunConfig fields](#negotiating-runconfig-fields). `harness_version` and `harness_semver` are informational. |
+| `ready` | `harness_version`, `harness_semver`, `capabilities`, `config_fields`, `id` (session echo) | Gate assignment on `capabilities` and `config_fields`; see [Compatibility](#compatibility). `harness_version` and `harness_semver` are informational. |
 | `run_started` | `id` (run ID), `trace_reference` (`trace_id`, `run_span_id`, `sampled`) | Key the run's transcript on `id`. Sent once per run, primary and follow-up, after setup and before the run's first `user_message`. `trace_reference` is present only when the run records an OTel span; persist it against the run to target feedback scores or link to the trace. `sampled: false` means the span was not exported, so the backend holds no trace for it. The `done` summary repeats the reference. |
 | `user_message` | `text`, `source`, `request_id` | Informational. A user-role message the harness appended to the history, after sanitisation, in append order. `text` is the appended text only (capped at 256 KiB), even when the harness merged it into a trailing user message. `source` names its origin; see [Watching a run live](#watching-a-run-live) for the vocabulary, which is open. `request_id` echoes the `user_response` the text came from, which marks that input as accepted into the history. Tool results are reported by `tool_result`, not by `user_message`. |
 | `turn_started` | `turn`, `model`, `provider` | Informational. A model turn began. `turn` counts from 0 within each run. `provider` is the adapter type (for example `anthropic` or `openai-responses`), never the operator's `providers` map key. Sent once per turn, before the first provider request. |
@@ -251,9 +252,10 @@ TLS constructor is internal. Full discussion:
 The smallest correct `RunTask` implementation:
 
 1. Accept the stream; wait for `ready`.
-2. Send `task_assignment` with a valid `RunConfig`, without the
-   fields `ready.config_fields` shows the harness does not know (see
-   [Negotiating RunConfig fields](#negotiating-runconfig-fields)).
+2. Send `task_assignment` with a valid `RunConfig`. A control plane
+   serving harnesses of more than one build first checks the task
+   against `ready.config_fields`; see
+   [Negotiating RunConfig fields](#negotiating-runconfig-fields).
 3. Consume events. Log `text_delta` / `tool_call` / `tool_result`;
    track `heartbeat` arrival times.
 4. Answer every `permission_request` (even a blanket deny keeps the
@@ -1374,7 +1376,8 @@ Everything else on `RunConfig` is expressible in a
 `toolChoiceEscalation`, `correlation`, `observability.logsExport`,
 `observability.serviceName`, and the `traceEmitter` fields
 `metricsTemporality`, `captureContentMaxBytes`, `platform`, and
-`platformOptions`.
+`platformOptions`. The fields in the table are also left out of
+`ready.config_fields`.
 
 When a field in this table becomes load-bearing for a control plane,
 the project invariant is that it ships with its proto mirror and
@@ -1402,8 +1405,8 @@ around silently".
     (`ToolsConfig.lazy_loading`, field 11) is honoured, and the
     `tools_loaded` event and its `tools` (field 27) report every tool
     search that loaded tools.
-- `ready.config_fields` lists every `RunConfig` field the harness can
-  receive in a `task_assignment`. Resolve the fields it does not know
+- `ready.config_fields` lists every `RunConfig` field a
+  `task_assignment` can set on the harness. Check the task against it
   before sending `task_assignment`; see
   [Negotiating RunConfig fields](#negotiating-runconfig-fields).
 - `ready.harness_version` carries the build label: the release tag
@@ -1412,8 +1415,8 @@ around silently".
   feature gating.
 - `ready.harness_semver` carries the same version as a Semantic
   Versioning 2.0.0 string without the tag's leading `v` (`0.1.0`,
-  `0.1.0-rc.1`), set only on release builds and empty for `main` and
-  `dev` builds. It suits fleet inventory and reporting; gate features
+  `0.1.0-rc.1`). It is set when the build label is a semantic version,
+  as release tags are, and empty for `main` and `dev` builds. It suits fleet inventory and reporting; gate features
   on `capabilities` and fields on `config_fields`, not on version
   comparisons.
 - For mirrored fields, file-config JSON and protobuf JSON use the same
@@ -1438,15 +1441,15 @@ A control plane and a harness built at different times can disagree on
 the `RunConfig` schema. A field the harness does not know is dropped
 without notice when it arrives in a `task_assignment`. The `ready`
 event that `stirrup job` sends carries the harness's schema, so the
-control plane can resolve the difference before it assigns the task.
+control plane can find such fields before it assigns the task.
 
-`ready.config_fields` lists every `RunConfig` field this harness can
-receive in a `task_assignment`: the fields it accepts that its
-compiled-in protobuf schema also carries. The fields in
+`ready.config_fields` lists every `RunConfig` field a
+`task_assignment` can set on this harness: the fields it accepts that
+its compiled-in protobuf schema also carries. The fields in
 [Features not on the wire](#features-not-on-the-wire) are left out.
-Each entry is a dotted path of the fields' protobuf JSON names (the
-default lower-camel-case names, which file-config JSON shares), and
-the list is sorted byte-wise:
+Each entry is a dotted path of protobuf JSON names (the default
+lower-camel-case names, which file-config JSON shares), and the list is
+sorted byte-wise:
 
 - A message field is listed along with each of its fields:
   `provider`, `provider.endpointProfile`.
@@ -1465,21 +1468,49 @@ the list is sorted byte-wise:
 Before sending `task_assignment`:
 
 1. Read `config_fields` from `ready` into a set.
-2. Collect the path of every field the intended `RunConfig` sets,
-   either by walking the message with protobuf reflection or by
-   rendering it as protobuf JSON with the default JSON names (not
-   `UseProtoNames` or `preserving_proto_field_name`) and without
-   unpopulated fields. Under an object at path `P`, the key `k` has
-   the path `P.k`, or `P.*` when `P.*` is listed (the object is a
-   map). The elements of an array are walked at the array's own path.
-   Stop descending at a path that no listed path extends: below it the
-   value is data, such as the body of `outputSchema`.
-3. Any collected path missing from the set is a field this harness
-   does not know. Remove it only when the task is still correct and
-   safe without it; otherwise assign the task to a harness that lists
-   it. A field that restricts the run, such as a permission policy,
-   guardrail, sandbox or egress setting, is never safe to remove: the
-   harness would run without the restriction.
+2. Record the path of every field the intended `RunConfig` sets. Either
+   walk the message with protobuf reflection, or render it as protobuf
+   JSON with the default JSON names (not `UseProtoNames` or
+   `preserving_proto_field_name`) and without unpopulated fields, then
+   walk the JSON from the root:
+   - For each key `k` of an object at path `P`, the key's path is
+     `P.*` when `P.*` is listed (the object is a map) and `P.k`
+     otherwise; at the root it is `k`. Record the path.
+   - Descend into the key's value only when a listed path extends the
+     key's path. Otherwise the value is data, such as the body of
+     `outputSchema`. An unlisted path has no listed path below it, so
+     it is recorded once and not descended into.
+   - Walk each element of an array at the array's own path.
+3. Each recorded path missing from the set is a field this harness
+   does not know. By default, do not assign the task to this harness;
+   assign it to one that lists every recorded path. Remove a field
+   instead only when the control plane's own list of fields that are
+   safe to omit includes it. Removing a field that restricts the run,
+   such as a permission policy, guardrail, sandbox, egress, Rule of
+   Two, MCP host allowlist, protected write target or budget setting,
+   runs the task without that restriction. A removed field's key is
+   deleted from every object at its path, in every array element and
+   map value.
+
+For example, a control plane intends to send this `RunConfig`, shown
+in part as protobuf JSON:
+
+```json
+{
+  "provider": {"type": "openai-compatible", "endpointProfile": "azure-openai"},
+  "providers": {"fast": {"type": "anthropic"}},
+  "outputSchema": {"type": "object", "properties": {"summary": {"type": "string"}}},
+  "tools": {"mcpServers": [{"name": "docs", "uri": "https://mcp.example.com"}]}
+}
+```
+
+The walk records `provider`, `provider.type`, `provider.endpointProfile`,
+`providers`, `providers.*`, `providers.*.type`, `outputSchema` (its
+body is data), `tools`, `tools.mcpServers`, `tools.mcpServers.name`
+and `tools.mcpServers.uri`. A harness built before
+`provider.endpointProfile` existed does not list it, so the task goes
+to a newer harness unless the field is on the control plane's
+safe-to-omit list.
 
 `config_fields` says the harness parses a field, not that it implements
 a feature: gate features on `capabilities`. A listed field can also be
@@ -1488,20 +1519,24 @@ accepted without effect, as `maxCostBudget` is (see
 values are not negotiated either: a new value of a listed field, such
 as a new executor type, is invisible in the list. A `ready` from
 `stirrup job` without `config_fields` comes from a harness that
-predates the list; for such a harness, the field set has to come from
-its release notes. The `ready` that `stirrup harness --transport grpc`
-sends carries no `config_fields`, since that harness has already read
-its configuration from a file.
+predates the list, and no negotiation is possible with it; its field
+set has to come from its release notes. The `ready` that
+`stirrup harness --transport grpc` sends carries no `config_fields`,
+since that harness has already read its configuration from a file.
 
 The list makes JSON field names part of the wire contract, so the
 schema evolves under these rules:
 
 - A field's JSON name is never changed. A renamed field would still
-  arrive by its field number, but control planes would remove it as
-  unlisted.
+  arrive by its field number, but control planes would treat it as
+  unknown.
 - A field never changes shape under the same name. Arrays add no path
   segment, so a field becoming repeated would be invisible in the
   list.
 - A removed field disappears from the list.
-- A new field needs no capability. A capability marks new behaviour or
-  a new event, or a changed meaning of an existing field.
+- A new field is discoverable through `config_fields` and needs no
+  capability of its own. A capability marks new behaviour, a new
+  event, or a changed meaning of an existing field. The
+  `reasoning_summary`, `follow_up_history` and `lazy_tool_loading`
+  capabilities predate `config_fields` and remain the gates for those
+  features.
