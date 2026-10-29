@@ -8563,10 +8563,11 @@ func TestValidateRunConfig_ReplayProvider_RejectsStdinPath(t *testing.T) {
 	must.ErrorContains(ValidateRunConfig(c), "provider.replayFile must be a file path")
 }
 
-// TestValidateRunConfig_ReplayProvider_RejectsCredentialFields pins that
-// credential-shaped fields are rejected on a replay provider, so a
-// recording cannot be run with a stale key reference that looks live.
-func TestValidateRunConfig_ReplayProvider_RejectsCredentialFields(t *testing.T) {
+// TestValidateRunConfig_ReplayProvider_RejectsProviderScopedFields pins
+// that every connection, credential and wire field is rejected on a
+// replay provider, so a recording cannot be run with a stale value that
+// looks live.
+func TestValidateRunConfig_ReplayProvider_RejectsProviderScopedFields(t *testing.T) {
 	cases := []struct {
 		name      string
 		mutate    func(p *ProviderConfig)
@@ -8575,17 +8576,52 @@ func TestValidateRunConfig_ReplayProvider_RejectsCredentialFields(t *testing.T) 
 		{
 			name:      "apiKeyRef",
 			mutate:    func(p *ProviderConfig) { p.APIKeyRef = "secret://KEY" },
-			errSubstr: "apiKeyRef must not be set for provider type \"replay\"",
+			errSubstr: "provider.apiKeyRef must not be set for provider type \"replay\"",
 		},
 		{
 			name:      "credential",
 			mutate:    func(p *ProviderConfig) { p.Credential = &CredentialConfig{Type: "static"} },
-			errSubstr: "credential must not be set for provider type \"replay\"",
+			errSubstr: "provider.credential must not be set for provider type \"replay\"",
 		},
 		{
 			name:      "baseUrl",
 			mutate:    func(p *ProviderConfig) { p.BaseURL = "https://example.com" },
-			errSubstr: "baseUrl must not be set for provider type \"replay\"",
+			errSubstr: "provider.baseUrl must not be set for provider type \"replay\"",
+		},
+		{
+			name:      "apiKeyHeader",
+			mutate:    func(p *ProviderConfig) { p.APIKeyHeader = "api-key" },
+			errSubstr: "provider.apiKeyHeader must not be set for provider type \"replay\"",
+		},
+		{
+			name:      "queryParams",
+			mutate:    func(p *ProviderConfig) { p.QueryParams = map[string]string{"api-version": "2025-01-01"} },
+			errSubstr: "provider.queryParams must not be set for provider type \"replay\"",
+		},
+		{
+			name:      "region",
+			mutate:    func(p *ProviderConfig) { p.Region = "us-east-1" },
+			errSubstr: "provider.region must not be set for provider type \"replay\"",
+		},
+		{
+			name:      "profile",
+			mutate:    func(p *ProviderConfig) { p.Profile = "default" },
+			errSubstr: "provider.profile must not be set for provider type \"replay\"",
+		},
+		{
+			name:      "compatProfile",
+			mutate:    func(p *ProviderConfig) { p.CompatProfile = "zai-glm" },
+			errSubstr: "provider.compatProfile must not be set for provider type \"replay\"",
+		},
+		{
+			name:      "endpointProfile",
+			mutate:    func(p *ProviderConfig) { p.EndpointProfile = EndpointProfileOpenAI },
+			errSubstr: "provider.endpointProfile is only supported for openai-compatible and openai-responses providers, got type \"replay\"",
+		},
+		{
+			name:      "gcpProject",
+			mutate:    func(p *ProviderConfig) { p.GCPProject = "proj" },
+			errSubstr: "provider.gcpProject",
 		},
 	}
 	for _, tc := range cases {
@@ -8593,6 +8629,7 @@ func TestValidateRunConfig_ReplayProvider_RejectsCredentialFields(t *testing.T) 
 			must := require.New(t)
 			c := validConfig()
 			c.Provider = ProviderConfig{Type: "replay", ReplayFile: "run.jsonl"}
+			c.ModelRouter = ModelRouterConfig{Type: "static", Model: "replay"}
 			tc.mutate(&c.Provider)
 			must.ErrorContains(ValidateRunConfig(c), tc.errSubstr)
 		})
@@ -8664,14 +8701,93 @@ func TestValidateRunConfig_ReplayFile_RejectedOnLiveProvider(t *testing.T) {
 	})
 }
 
-// TestValidateRunConfig_ReplayProvider_AllowedInProvidersMap pins that a
-// named replay entry is validated like the default one and can be routed
-// to by name.
-func TestValidateRunConfig_ReplayProvider_AllowedInProvidersMap(t *testing.T) {
+// TestValidateRunConfig_ReplayProvider_AllowedInProvidersMapUnderReplay
+// pins that a named replay entry can be routed to by name when the
+// default provider is also a replay.
+func TestValidateRunConfig_ReplayProvider_AllowedInProvidersMapUnderReplay(t *testing.T) {
+	must := require.New(t)
+	c := validConfig()
+	c.Provider = ProviderConfig{Type: "replay", ReplayFile: "run.jsonl"}
+	c.Providers = map[string]ProviderConfig{"recorded": {Type: "replay", ReplayFile: "other.jsonl"}}
+	c.ModelRouter = ModelRouterConfig{Type: "static", Provider: "recorded", Model: "replay"}
+	must.NoError(ValidateRunConfig(c))
+}
+
+// TestValidateRunConfig_ReplayProvider_RejectedInProvidersMapUnderLiveProvider
+// pins that a replay entry cannot sit beside a live default provider,
+// where it would serve some turns from a recording in a run that looks
+// live.
+func TestValidateRunConfig_ReplayProvider_RejectedInProvidersMapUnderLiveProvider(t *testing.T) {
 	must := require.New(t)
 	c := validConfig()
 	c.Providers = map[string]ProviderConfig{"recorded": {Type: "replay", ReplayFile: "run.jsonl"}}
 	c.ModelRouter = ModelRouterConfig{Type: "static", Provider: "recorded", Model: "replay"}
+	must.ErrorContains(ValidateRunConfig(c), "providers[recorded].type \"replay\" requires provider.type \"replay\"")
+}
+
+// TestValidateRunConfig_ReplayProvider_RejectsAuxiliaryModelCalls pins
+// that components which send their own requests to the default provider
+// are refused when it is a replay, at any nesting depth.
+func TestValidateRunConfig_ReplayProvider_RejectsAuxiliaryModelCalls(t *testing.T) {
+	cases := []struct {
+		name      string
+		mutate    func(c *RunConfig)
+		errSubstr string
+	}{
+		{
+			name:      "summarise context strategy",
+			mutate:    func(c *RunConfig) { c.ContextStrategy = ContextStrategyConfig{Type: "summarise", MaxTokens: 100000} },
+			errSubstr: "contextStrategy.type \"summarise\" is not supported with provider.type \"replay\"",
+		},
+		{
+			name:      "llm-judge verifier",
+			mutate:    func(c *RunConfig) { c.Verifier = VerifierConfig{Type: "llm-judge", Criteria: "works"} },
+			errSubstr: "verifier.type \"llm-judge\" is not supported with provider.type \"replay\"",
+		},
+		{
+			name: "llm-judge inside a composite verifier",
+			mutate: func(c *RunConfig) {
+				c.Verifier = VerifierConfig{Type: "composite", Verifiers: []VerifierConfig{
+					{Type: "test-runner", Command: "go test ./..."},
+					{Type: "llm-judge", Criteria: "works"},
+				}}
+			},
+			errSubstr: "verifier.verifiers[1].type \"llm-judge\" is not supported with provider.type \"replay\"",
+		},
+		{
+			name:      "cloud-judge guard",
+			mutate:    func(c *RunConfig) { c.GuardRail = &GuardRailConfig{Type: "cloud-judge"} },
+			errSubstr: "guardRail.type \"cloud-judge\" is not supported with provider.type \"replay\"",
+		},
+		{
+			name: "cloud-judge inside a composite guard",
+			mutate: func(c *RunConfig) {
+				c.GuardRail = &GuardRailConfig{Type: "composite", Stages: []GuardRailConfig{{Type: "cloud-judge"}}}
+			},
+			errSubstr: "guardRail.stages[0].type \"cloud-judge\" is not supported with provider.type \"replay\"",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			c := validConfig()
+			c.Provider = ProviderConfig{Type: "replay", ReplayFile: "run.jsonl"}
+			c.ModelRouter = ModelRouterConfig{Type: "static", Model: "replay"}
+			tc.mutate(c)
+			err := ValidateRunConfig(c)
+			must.ErrorContains(err, tc.errSubstr)
+			must.ErrorContains(err, "would consume the next recorded turn")
+		})
+	}
+}
+
+// TestValidateRunConfig_LiveProvider_AllowsAuxiliaryModelCalls pins that
+// the replay restriction does not reach a live default provider.
+func TestValidateRunConfig_LiveProvider_AllowsAuxiliaryModelCalls(t *testing.T) {
+	must := require.New(t)
+	c := validConfig()
+	c.Verifier = VerifierConfig{Type: "llm-judge", Criteria: "works"}
+	c.GuardRail = &GuardRailConfig{Type: "cloud-judge"}
 	must.NoError(ValidateRunConfig(c))
 }
 
