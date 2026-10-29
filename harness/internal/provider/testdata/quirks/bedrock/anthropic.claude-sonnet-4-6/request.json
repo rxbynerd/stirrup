@@ -1,0 +1,46 @@
+# synthetic: serialised by the AWS SDK's own ConverseStream marshaller (BedrockAdapter.Stream against a local server in bedrock_contract_test.go), not captured from Bedrock. Claude Sonnet 4.6 accepts sampling params, so the supplied Temperature=0.5 reaches inferenceConfig. See testdata/quirks/README.md to refresh.
+{
+  "inferenceConfig": {
+    "maxTokens": 4096,
+    "temperature": 0.5
+  },
+  "messages": [
+    {
+      "content": [
+        {
+          "text": "weather in Paris?"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "system": [
+    {
+      "text": "You are helpful."
+    }
+  ],
+  "toolConfig": {
+    "tools": [
+      {
+        "toolSpec": {
+          "description": "Get the current weather for a city.",
+          "inputSchema": {
+            "json": {
+              "additionalProperties": false,
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ],
+              "type": "object"
+            }
+          },
+          "name": "get_weather"
+        }
+      }
+    ]
+  }
+}

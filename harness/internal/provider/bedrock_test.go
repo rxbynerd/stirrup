@@ -21,6 +21,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
+	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -479,7 +480,7 @@ func TestBedrock_BuildConverseStreamInput(t *testing.T) {
 		},
 	}
 
-	input, err := buildConverseStreamInput(params)
+	input, err := buildConverseStreamInput(params, quirks.ProviderQuirks{})
 	must.NoError(err)
 
 	check.Equal("anthropic.claude-sonnet-4-6-v1", aws.ToString(input.ModelId), "ModelId")
@@ -519,7 +520,7 @@ func TestBedrock_TemperatureWireShape(t *testing.T) {
 				Messages: []types.Message{
 					{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 				},
-			})
+			}, quirks.ProviderQuirks{})
 			must.NoError(err)
 			must.NotNil(input.InferenceConfig)
 			got := input.InferenceConfig.Temperature
@@ -539,7 +540,7 @@ func TestBedrock_BuildConverseStreamInput_OmitsEmptySystem(t *testing.T) {
 		Model:     "anthropic.claude-sonnet-4-6-v1",
 		MaxTokens: 1024,
 	}
-	input, err := buildConverseStreamInput(params)
+	input, err := buildConverseStreamInput(params, quirks.ProviderQuirks{})
 	must.NoError(err)
 	must.Nil(input.System, "system prompt should be omitted when empty")
 }
@@ -570,7 +571,7 @@ func TestBedrock_ToolChoiceNonAuto_WarnsDowngrade(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	client := &mockBedrockClient{apiErr: fmt.Errorf("mock")}
-	adapter := &BedrockAdapter{client: client, Logger: logger}
+	adapter := &BedrockAdapter{client: client, AdapterDeps: AdapterDeps{Logger: logger}}
 
 	// Tools are supplied so buildConverseStreamInput populates ToolConfig.
 	// Without a tool the ToolConfig is nil and the wire-body assertion below
@@ -617,7 +618,7 @@ func TestBedrock_ToolChoiceAuto_NoWarn(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	client := &mockBedrockClient{apiErr: fmt.Errorf("mock")}
-	adapter := &BedrockAdapter{client: client, Logger: logger}
+	adapter := &BedrockAdapter{client: client, AdapterDeps: AdapterDeps{Logger: logger}}
 
 	_, _ = adapter.Stream(context.Background(), types.StreamParams{
 		Model:      "anthropic.claude-sonnet-4-6-v1",
@@ -638,7 +639,7 @@ func TestBedrock_APIError_RecordsLatency(t *testing.T) {
 	must.NoError(err, "NewMetricsForTesting")
 
 	client := &mockBedrockClient{apiErr: fmt.Errorf("boom")}
-	adapter := &BedrockAdapter{client: client, Metrics: metrics}
+	adapter := &BedrockAdapter{client: client, AdapterDeps: AdapterDeps{Metrics: metrics}}
 
 	_, err = adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "anthropic.claude-sonnet-4-6-v1",
