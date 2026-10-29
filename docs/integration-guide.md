@@ -109,7 +109,15 @@ status.
    run failures emit a human-readable `error` event first. A task
    rejected before its run started (an invalid `RunConfig`, a loop
    build failure) gets a `done` with `stop_reason: "error"` and no
-   `trace`.
+   `trace`. When the build failed because a file named by
+   `provider.replayFile`, `permissionPolicy.policyFile` or
+   `gcpCredentialsFile` could not be used from the harness host, the
+   `error` event names only the field (`building harness: replayFile
+   unavailable on the harness host; the harness log has the detail`),
+   whatever the cause, so a control plane cannot use those fields to
+   probe the harness filesystem; the detail is on the harness's
+   stderr. A policy file that parses but fails the policy lint keeps
+   its lint findings in the message.
 8. If a follow-up grace window is configured, the stream stays open
    for `user_response` events that trigger fresh runs in the same
    process and workspace, each sending its own `run_started` with a new
