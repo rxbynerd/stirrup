@@ -28,11 +28,14 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// scriptedPodStream is a remotecommand.Executor that plays a canned exec:
+// fakeScriptedPodStream is a remotecommand.Executor that plays a canned exec:
 // stdout chunks in order, then stderr, then either block until the request
-// context ends or return err. Only the first request is scripted; later
-// requests (the group-kill follow-up) succeed at once.
-type scriptedPodStream struct {
+// context ends or return err. Like client-go's streamers, it drops the rest of
+// a stream whose caller writer fails and does not report that failure, so a
+// writer that must abort the command has to cancel the request context. Only
+// the first request is scripted; later requests (the group-kill follow-up)
+// succeed at once.
+type fakeScriptedPodStream struct {
 	stdout  []string
 	stderr  string
 	err     error
@@ -41,11 +44,11 @@ type scriptedPodStream struct {
 	calls   int
 }
 
-func (s *scriptedPodStream) Stream(remotecommand.StreamOptions) error {
-	return errors.New("scriptedPodStream: Stream without context")
+func (s *fakeScriptedPodStream) Stream(remotecommand.StreamOptions) error {
+	return errors.New("fakeScriptedPodStream: Stream without context")
 }
 
-func (s *scriptedPodStream) StreamWithContext(ctx context.Context, opts remotecommand.StreamOptions) error {
+func (s *fakeScriptedPodStream) StreamWithContext(ctx context.Context, opts remotecommand.StreamOptions) error {
 	s.calls++
 	if s.calls > 1 {
 		return nil
@@ -55,13 +58,11 @@ func (s *scriptedPodStream) StreamWithContext(ctx context.Context, opts remoteco
 			return err
 		}
 		if _, err := io.WriteString(opts.Stdout, chunk); err != nil {
-			return err
+			break
 		}
 	}
 	if s.stderr != "" {
-		if _, err := io.WriteString(opts.Stderr, s.stderr); err != nil {
-			return err
-		}
+		_, _ = io.WriteString(opts.Stderr, s.stderr)
 	}
 	if s.block {
 		close(s.blocked)
@@ -84,7 +85,7 @@ func TestPodExecCore_ExecStream_StreamsToCallerWriters(t *testing.T) {
 	must := require.New(t)
 	check := assert.New(t)
 	var urls []*url.URL
-	stream := &scriptedPodStream{stdout: []string{"alpha ", "beta ", "gamma\n"}, stderr: "warning\n"}
+	stream := &fakeScriptedPodStream{stdout: []string{"alpha ", "beta ", "gamma\n"}, stderr: "warning\n"}
 	core := fakePodExecCore(t, stream, &urls)
 
 	var stdout, stderr bytes.Buffer
@@ -127,13 +128,14 @@ func TestPodExecCore_ExecStream_ExitStatus(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
 			var urls []*url.URL
-			core := fakePodExecCore(t, &scriptedPodStream{stdout: []string{"out\n"}, err: tc.err}, &urls)
+			core := fakePodExecCore(t, &fakeScriptedPodStream{stdout: []string{"out\n"}, err: tc.err}, &urls)
 
 			var stdout bytes.Buffer
 			result, err := core.ExecStream(context.Background(), "make", 10*time.Second, &stdout, io.Discard)
 			if tc.wantSub != "" {
 				must.ErrorContains(err, tc.wantSub)
 				must.NotNil(result, "a transport failure still returns a result")
+				must.Equal(0, result.ExitCode, "exit code of a transport failure")
 				must.Len(urls, 1, "a stream that ended on its own is not followed by a kill")
 				return
 			}
@@ -156,7 +158,7 @@ func TestPodExecCore_ExecStream_OutputBeyondBufferedCapReachesWritersInOrder(t *
 	must.Greater(int64(len(want)), k8sMaxOutput, "fixture must exceed the buffered Exec cap")
 
 	var urls []*url.URL
-	core := fakePodExecCore(t, &scriptedPodStream{stdout: chunks}, &urls)
+	core := fakePodExecCore(t, &fakeScriptedPodStream{stdout: chunks}, &urls)
 
 	var stdout bytes.Buffer
 	result, err := core.ExecStream(context.Background(), "yes", 30*time.Second, &stdout, io.Discard)
@@ -164,22 +166,6 @@ func TestPodExecCore_ExecStream_OutputBeyondBufferedCapReachesWritersInOrder(t *
 	must.Equal(0, result.ExitCode, "exit code")
 	must.Equal(len(want), stdout.Len(), "stdout length")
 	must.Equal(sha256Hex(want), sha256Hex(stdout.String()), "stdout bytes arrived out of order or altered")
-}
-
-func TestPodExecCore_ExecStream_WriterErrorAborts(t *testing.T) {
-	must := require.New(t)
-	check := assert.New(t)
-	var urls []*url.URL
-	chunk := strings.Repeat("C", 4096)
-	stream := &scriptedPodStream{stdout: []string{chunk, chunk, chunk}}
-	core := fakePodExecCore(t, stream, &urls)
-
-	limitErr := errors.New("capture limit exceeded")
-	result, err := core.ExecStream(context.Background(), "make noise", 10*time.Second, &failAfterWriter{remaining: 4096, err: limitErr}, io.Discard)
-
-	must.ErrorIs(err, limitErr, "writer failure should surface")
-	must.NotNil(result, "a failed stream still returns a result")
-	check.Len(urls, 1, "a writer failure that leaves the context live is not followed by a kill")
 }
 
 func TestPodExecCore_ExecStream_CaptureLimitCancelsAndKillsGroup(t *testing.T) {
@@ -197,7 +183,7 @@ func TestPodExecCore_ExecStream_CaptureLimitCancelsAndKillsGroup(t *testing.T) {
 
 	chunk := strings.Repeat("L", 4096)
 	var urls []*url.URL
-	core := fakePodExecCore(t, &scriptedPodStream{stdout: []string{chunk, chunk, chunk, chunk}}, &urls)
+	core := fakePodExecCore(t, &fakeScriptedPodStream{stdout: []string{chunk, chunk, chunk, chunk}}, &urls)
 
 	result, err := core.ExecStream(execCtx, "yes", 10*time.Second, capture.Stdout(), capture.Stderr())
 	must.ErrorIs(err, context.Canceled)
@@ -216,14 +202,17 @@ func TestPodExecCore_ExecStream_CancelledContextKillsGroup(t *testing.T) {
 	must := require.New(t)
 	check := assert.New(t)
 	var urls []*url.URL
-	stream := &scriptedPodStream{stdout: []string{"partial\n"}, block: true, blocked: make(chan struct{})}
+	stream := &fakeScriptedPodStream{stdout: []string{"partial\n"}, block: true, blocked: make(chan struct{})}
 	core := fakePodExecCore(t, stream, &urls)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
-		<-stream.blocked
-		cancel()
+		select {
+		case <-stream.blocked:
+			cancel()
+		case <-ctx.Done():
+		}
 	}()
 
 	var stdout bytes.Buffer
@@ -246,7 +235,7 @@ func TestPodExecCore_ExecStream_SpillsThroughCommandOutputStore(t *testing.T) {
 		chunks, rest = append(chunks, rest[:n]), rest[n:]
 	}
 	var urls []*url.URL
-	core := fakePodExecCore(t, &scriptedPodStream{stdout: chunks, stderr: spillExpectedStderr}, &urls)
+	core := fakePodExecCore(t, &fakeScriptedPodStream{stdout: chunks, stderr: spillExpectedStderr}, &urls)
 
 	assertCommandOutputSpill(t, context.Background(), core)
 	must.Len(urls, 1, "the spill command ran as a single exec")

@@ -151,7 +151,7 @@ func kubeClientFromConfig(t *testing.T, kubeconfig string) (kubernetes.Interface
 
 // newTestK8sExecutor constructs a K8sExecutor against the kind cluster named
 // by STIRRUP_TEST_KUBECONFIG, skipping when it is unset. The image must ship
-// /bin/sh, tar, and ls — busybox satisfies all three. The executor's Pod is
+// /bin/sh, tar, ls, and seq — busybox satisfies all four. The executor's Pod is
 // torn down on test cleanup.
 func newTestK8sExecutor(t *testing.T) *K8sExecutor {
 	t.Helper()

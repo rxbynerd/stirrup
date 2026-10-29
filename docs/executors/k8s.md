@@ -785,18 +785,19 @@ STIRRUP_TEST_EGRESS_PROXY_URL=http://stirrup-egress-proxy.stirrup-sandbox.svc:80
   ./harness/internal/executor/
 ```
 
-`TestK8sExec_CommandOutputSpill` streams a command whose output exceeds
-the 32 KiB inline limit through `ExecStream` into the command-output
-store, as `run_command` does. It asserts that the output spills, that
-paging through it with the `read_command_output` read path reproduces the
-stream byte-for-byte, and that the finalized archive is complete. The
-same assertions run against a fake exec streamer in the unit tests
-(`k8s_execstream_test.go`), so only the live transport is cluster-gated.
-
 The allowlist enforcement test (`TestK8sEgress_AllowlistEnforced`)
 additionally needs a real egress proxy deployed and a TLS-capable image
 (`STIRRUP_TEST_IMAGE=curlimages/curl:latest`) — the proxy validates the
 TLS SNI, so a raw `CONNECT` without a handshake is rejected.
+
+`TestK8sExec_CommandOutputSpill` streams a command whose output exceeds
+the 32 KiB inline limit through `ExecStream` into the command-output
+store, as `run_command` does. It asserts that the combined output is over
+the limit that makes `run_command` spill, that paging through the stream
+with `Store.Read` (the read path behind `read_command_output`) reproduces
+it byte-for-byte, and that the finalized archive is complete. The same
+assertions run against a fake exec streamer in the unit tests
+(`k8s_execstream_test.go`), so only the live transport is cluster-gated.
 
 ## See also
 

@@ -152,10 +152,10 @@ func TestAgentSandbox_CommandOutputSpill(t *testing.T) {
 	must := require.New(t)
 	cfg := testAgentSandboxEnv(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
-	defer cancel()
+	provisionCtx, cancelProvision := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancelProvision()
 
-	exec, err := NewAgentSandboxExecutor(ctx, K8sExecutorConfig{
+	exec, err := NewAgentSandboxExecutor(provisionCtx, K8sExecutorConfig{
 		Image:            cfg.image,
 		Namespace:        cfg.namespace,
 		Kubeconfig:       cfg.kubeconfig,
@@ -165,6 +165,8 @@ func TestAgentSandbox_CommandOutputSpill(t *testing.T) {
 	must.NoError(err, "create agent sandbox executor")
 	t.Cleanup(func() { _ = exec.Close() })
 
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
 	assertCommandOutputSpill(t, ctx, exec)
 }
 
