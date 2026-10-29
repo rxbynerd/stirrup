@@ -139,6 +139,16 @@ specific adapter, so they stay keyless and pass in a live run too. The
 flags do reach the MCP task, which then offers the stub's tool to the
 live model and therefore needs the live provider's credential.
 
+Each task also has a negative recording under
+`fixtures/tooluse/negative/`, named after the task: a run that
+completes cleanly but misses the behaviour the task judges, such as
+editing before reading or writing the uncapped match count.
+`TestToolUseSuite_NegativeRecordingsFailTheirJudges` in `eval/runner`
+replays every one through a freshly built harness binary and requires
+each task to fail on the judge leg its recording targets, so a judge
+that passes whatever the run did is caught. The suite itself never
+names these recordings.
+
 ### Running against a live provider (opt-in)
 
 To measure a real model, pass the provider on the command line. The
