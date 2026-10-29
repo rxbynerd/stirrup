@@ -618,11 +618,13 @@ check both before either gate is widened.
 **Reasoning effort and sampling.** `RunConfig.reasoningEffort` maps to
 `reasoning.effort` for models whose accepted levels are known: GPT-6
 and GPT-5.6 (`low`..`max`), GPT-5.4 and GPT-5.5 (`low`..`xhigh`). A
-request that sends `reasoning.effort` omits `temperature`. GPT-6 never
-receives `temperature`; GPT-5.5 and GPT-5.6 never receive it either,
-which is inferred from their `medium` default effort. GPT-5.4 keeps a
-configured temperature when no effort is set, because its default
-effort is `none`.
+request that sends `reasoning.effort` omits `temperature`. No GPT-6,
+GPT-5.x or o-series model receives `temperature` on this surface, with
+or without an effort, mirroring the Chat Completions rules; only
+`gpt-5-chat` keeps it. OpenAI documents that the reasoning models
+reject sampling parameters unless the effort is `none`, and omitting
+them is accepted at every effort, so the rules omit them even for
+models whose default effort is `none`. None of this is probed.
 
 **Reasoning summaries.** When `reasoningSummary` is explicitly `auto`,
 a request that carries `reasoning.effort` also carries

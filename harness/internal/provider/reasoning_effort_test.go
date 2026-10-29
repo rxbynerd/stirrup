@@ -153,9 +153,9 @@ func TestOpenAIAdapter_GatewayGPT6AllowsTools(t *testing.T) {
 // TestResponsesRequest_GPT6ReasoningAndSampling pins the Responses wire
 // shape for the GPT-5.4+ and GPT-6 families: reasoning.effort is projected
 // where the model documents it, and temperature is omitted whenever an
-// effort is sent or the model rejects sampling params. gpt-5.4 with no
-// effort keeps its temperature (its default effort is none). The GPT-5.x
-// rows are documented, not probed.
+// effort is sent or the model rejects sampling params, which every
+// gpt-5 and o-series model does except gpt-5-chat. The GPT-5.x and
+// o-series rows are documented, not probed.
 func TestResponsesRequest_GPT6ReasoningAndSampling(t *testing.T) {
 	cases := []struct {
 		name, model, effort string
@@ -166,7 +166,21 @@ func TestResponsesRequest_GPT6ReasoningAndSampling(t *testing.T) {
 			[]string{`"reasoning":{"effort":"xhigh"}`}, []string{`"temperature"`}},
 		{"gpt-6 without effort omits temperature and reasoning", "gpt-6-astra", "",
 			nil, []string{`"temperature"`, `"reasoning"`}},
-		{"gpt-5.4 without effort keeps temperature", "gpt-5.4", "",
+		{"gpt-5.4 without effort omits temperature", "gpt-5.4", "",
+			nil, []string{`"temperature"`, `"reasoning"`}},
+		{"gpt-5 without effort omits temperature", "gpt-5", "",
+			nil, []string{`"temperature"`, `"reasoning"`}},
+		{"gpt-5.1 without effort omits temperature", "gpt-5.1", "",
+			nil, []string{`"temperature"`, `"reasoning"`}},
+		{"gpt-5.2 without effort omits temperature", "gpt-5.2", "",
+			nil, []string{`"temperature"`, `"reasoning"`}},
+		{"gpt-5-mini without effort omits temperature", "gpt-5-mini", "",
+			nil, []string{`"temperature"`, `"reasoning"`}},
+		{"o3 without effort omits temperature", "o3", "",
+			nil, []string{`"temperature"`, `"reasoning"`}},
+		{"o4-mini without effort omits temperature", "o4-mini", "",
+			nil, []string{`"temperature"`, `"reasoning"`}},
+		{"gpt-5-chat keeps temperature", "gpt-5-chat-latest", "",
 			[]string{`"temperature":0.1`}, []string{`"reasoning"`}},
 		{"gpt-5.4 high sends effort and omits temperature", "gpt-5.4", "high",
 			[]string{`"reasoning":{"effort":"high"}`}, []string{`"temperature"`}},
@@ -283,23 +297,37 @@ func TestResponsesAdapter_GPT5EffortLevelsOnTheWire(t *testing.T) {
 
 // TestResponsesAdapter_EffortSuppressesTemperatureWarns pins that a dropped
 // caller temperature is logged exactly once per request, whether an effort
-// (gpt-5.4, with no sampling-param rule) or the model's rule (gpt-5.6) or
-// both cause it.
+// (a model with an effort allow-list and no sampling-param rule), the
+// model's rule, or both cause it.
 func TestResponsesAdapter_EffortSuppressesTemperatureWarns(t *testing.T) {
+	effortOnly := quirks.NewRegistry([]quirks.Rule{{
+		ProviderType: "openai-responses",
+		ModelMatch:   "effort-only*",
+		Description:  "effort allow-list without a sampling-param rule",
+		LastVerified: quirks.Date("2026-10-29"),
+		Apply: func(q *quirks.ProviderQuirks) {
+			q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels = []string{"low", "high"}
+		},
+	}})
 	cases := []struct {
 		name, model, effort string
+		registry            *quirks.Registry
 		wantWarns           int
 	}{
-		{"gpt-5.4 effort warns once", "gpt-5.4", "high", 1},
-		{"gpt-5.4 without effort does not warn", "gpt-5.4", "", 0},
-		{"gpt-5.6 effort warns once", "gpt-5.6-sol", "high", 1},
-		{"gpt-5.6 without effort warns once from model rule", "gpt-5.6-sol", "", 1},
+		{"effort alone warns once", "effort-only-1", "high", effortOnly, 1},
+		{"no effort and no sampling rule does not warn", "effort-only-1", "", effortOnly, 0},
+		{"gpt-5.6 effort warns once", "gpt-5.6-sol", "high", nil, 1},
+		{"gpt-5.6 without effort warns once from model rule", "gpt-5.6-sol", "", nil, 1},
+		{"gpt-5.4 without effort warns once from model rule", "gpt-5.4", "", nil, 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
 			var buf bytes.Buffer
 			adapter := NewOpenAIResponsesAdapter(staticBearer("k"), responsesWarnStubServer(t).URL, OpenAIAuthConfig{})
+			if tc.registry != nil {
+				adapter.Registry = tc.registry
+			}
 			adapter.Logger = slog.New(slog.NewJSONHandler(&buf, nil))
 			ch, err := adapter.Stream(context.Background(), effortParams(tc.model, tc.effort, false))
 			must.NoError(err)
