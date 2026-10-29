@@ -393,9 +393,10 @@ is a ready starting point (`executor.network.mode: none`); for allowlist
 mode set `network.mode: "allowlist"` and `executor.k8sEgressProxyUrl`.
 
 ```sh
+# --k8s-kubeconfig selects the get-credentials or Connect Gateway context.
 stirrup harness \
   --config examples/runconfig/k8s-gvisor.json \
-  --k8s-kubeconfig ~/.kube/config \   # the get-credentials / Connect Gateway context
+  --k8s-kubeconfig ~/.kube/config \
   --prompt "Create greeting.txt containing 'hello from the gvisor sandbox', then cat it."
 ```
 
