@@ -219,7 +219,7 @@ type AgenticLoop struct {
 	// and providers map in place of the parent's, or refuses the spawn. A
 	// run that replays a recording sets it so each child serves its own
 	// recorded turns.
-	subAgentProviders func(parentRunID, childRunID string) (provider.ProviderAdapter, map[string]provider.ProviderAdapter, error)
+	subAgentProviders func(parentRunID, childRunID, prompt string) (provider.ProviderAdapter, map[string]provider.ProviderAdapter, error)
 
 	// outputLimitRecoveries counts the max_tokens stops the current run
 	// has continued past. It is reset at run start, so verification
