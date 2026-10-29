@@ -8632,3 +8632,24 @@ func TestValidateRunConfig_LiveProvider_AllowsAuxiliaryModelCalls(t *testing.T) 
 	c.GuardRail = &GuardRailConfig{Type: "cloud-judge"}
 	must.NoError(ValidateRunConfig(c))
 }
+
+// TestValidateRunConfig_GoogleCredentialOnlyOnGemini pins that a gcp-*
+// credential is refused on every provider but gemini, where it would mint
+// a Google access token for a non-Vertex endpoint.
+func TestValidateRunConfig_GoogleCredentialOnlyOnGemini(t *testing.T) {
+	for _, credType := range []string{"gcp-default", "gcp-service-account", "gcp-workload-identity", "gcp-workload-identity-federation"} {
+		t.Run(credType, func(t *testing.T) {
+			must := require.New(t)
+			c := validConfig()
+			c.Provider = ProviderConfig{Type: "openai-compatible", BaseURL: "https://gateway.example/v1", Credential: &CredentialConfig{Type: credType}}
+			c.ModelRouter = ModelRouterConfig{Type: "static", Model: "m"}
+			must.ErrorContains(ValidateRunConfig(c), fmt.Sprintf("provider.credential.type=%q is only valid when provider.type=\"gemini\"", credType))
+		})
+	}
+	t.Run("named entry", func(t *testing.T) {
+		must := require.New(t)
+		c := validConfig()
+		c.Providers = map[string]ProviderConfig{"alt": {Type: "anthropic", Credential: &CredentialConfig{Type: "gcp-workload-identity"}}}
+		must.ErrorContains(ValidateRunConfig(c), "providers[alt].credential.type=\"gcp-workload-identity\" is only valid")
+	})
+}
