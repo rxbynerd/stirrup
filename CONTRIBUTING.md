@@ -26,7 +26,7 @@ in [`AGENTS.md`](AGENTS.md).
 
 ## Workspace layout
 
-The repository is a Go workspace (`go.work`) composed of four modules:
+The repository is a Go workspace (`go.work`) composed of five modules:
 
 - `types/` — shared types, `RunConfig` validation, and the `version`
   package. Zero external dependencies.
@@ -34,6 +34,16 @@ The repository is a Go workspace (`go.work`) composed of four modules:
   not the generated Go.
 - `harness/` — the harness binary and its 12 components.
 - `eval/` — the eval CLI, judges, runner, and lakehouse adapters.
+- `examples/controlplane/` — a runnable minimal control plane with its
+  own `go.mod`, tests and smoke script (`just controlplane-smoke`). It
+  is a separate module, so `go test` inside `harness/` does not run its
+  tests; `just test` and `just lint` include it.
+
+A new workspace member needs a `COPY <module>/go.mod ./<module>/go.mod`
+line in the [`Dockerfile`](Dockerfile) builder stage, next to the one
+for `examples/controlplane`. `go.work` lists every member, and the image
+build fails to load the workspace when a listed module's `go.mod` is
+missing.
 
 The `harness/internal/*` packages are not part of the public API. The
 embedding surface is `harness/harnessapi/`.
@@ -43,10 +53,10 @@ embedding surface is `harness/harnessapi/`.
 ```sh
 just              # build + test
 just build        # binaries: ./stirrup and ./stirrup-eval
-just test         # go test ./harness/... ./types/... ./eval/...
+just test         # go test ./harness/... ./types/... ./eval/... ./examples/controlplane/...
 just lint         # golangci-lint v2
 just fuzz-scrub   # short fuzz runs of the secret scrubber
-just vuln         # govulncheck across all four workspace modules
+just vuln         # govulncheck across all five workspace modules
 just proto        # buf generate
 just buf-lint     # buf lint
 just docker       # docker build -t stirrup .
@@ -56,7 +66,7 @@ just clean        # remove built binaries
 Or directly:
 
 ```sh
-go test ./harness/... ./types/... ./eval/...
+go test ./harness/... ./types/... ./eval/... ./examples/controlplane/...
 go build ./harness/... ./types/... ./eval/...
 buf generate
 buf lint

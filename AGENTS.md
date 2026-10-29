@@ -6,11 +6,13 @@ A coding agent harness. Go monorepo with 13 swappable components composed via `R
 
 ```text
 stirrup/
-  go.work                    # Go workspace: types, harness, eval, gen modules
+  go.work                    # Go workspace: types, harness, eval, gen, examples/controlplane modules
   buf.yaml                   # Buf v2 config for proto linting/breaking
   buf.gen.yaml               # Buf code generation config (protobuf + gRPC)
   proto/harness/v1/          # Protobuf definitions for gRPC transport
   gen/                       # Generated Go code from proto (separate module)
+  examples/
+    controlplane/            # Runnable minimal control plane (separate module with its own tests and smoke script)
   types/                     # Shared type definitions
   harness/                   # The harness binary and components
     cmd/stirrup/             # Unified CLI entrypoint (cobra: harness + job subcommands)
@@ -20,20 +22,21 @@ stirrup/
       cmd/job.go
     harnessapi/              # Public embedding API
     internal/
-      core/                  # AgenticLoop, factory, token tracking, sub-agent spawning, parallel tool dispatch, stall detection, live transcript events, follow-up history carry
+      core/                  # AgenticLoop, factory, token tracking, sub-agent spawning, parallel tool dispatch, stall detection, live transcript events, follow-up history carry; turnretry.go (provider turn retry), contextbudget.go (calibrated token budget, context window), turnrequest.go (prepareRequest/requestProvider split, context-overflow recovery)
       credential/            # Cross-cloud credential federation
-      provider/              # ProviderAdapter: Anthropic, Bedrock, OpenAI-compatible, OpenAI Responses, Gemini (Vertex AI)
+      provider/              # ProviderAdapter: Anthropic, Bedrock, OpenAI-compatible, OpenAI Responses, Gemini (Vertex AI); retryclass.go (retryable-error classification for turn retry), contextoverflow.go (context-overflow response classification per adapter)
       router/                # ModelRouter: static, per-mode, dynamic
       prompt/                # PromptBuilder: per-mode text/template prompts (model tiers, #492), composed fragments, operator templates, overrides
       context/               # ContextStrategy: sliding window, summarise, offload-to-file, clear tool results
       tool/                  # ToolRegistry, profile Presenter, LazyLoader + built-in tools, including spawn_agent and tool_search
       tool/toolname/         # Per-provider tool-name normalization + collision detection (#223)
-      executor/              # Executor: local, container (Docker/Podman), API (GitHub), replay
+      executor/              # Executor: local, container (Docker/Podman), API (GitHub), replay; optional capabilities TreeLister, HostPathWorkspace, StreamingExecutor and WorkspaceArchiver (workspacearchive.go)
       edit/                  # EditStrategy: whole-file, search-replace, udiff, multi-strategy
       verifier/              # Verifier: none, test-runner, composite, llm-judge
       permission/            # PermissionPolicy: allow-all, deny-side-effects, ask-upstream, policy-engine (Cedar)
       git/                   # GitStrategy: none, deterministic
       hook/                  # Lifecycle hooks: Runner, Noop, ExecRunner (pre/post-run exec, #461)
+      postedit/              # Post-edit checks (tools.postEdit): operator commands run after each successful edit, failures returned to the model as fenced untrusted data
       sandboxidentity/       # Control-plane sandbox identity token: exchange, env/credential-helper composition, expiry-driven refresh
       transport/             # Transport: stdio, gRPC bidi streaming, null (sub-agents)
       guard/                 # GuardRail: none, granite-guardian, shieldstral, cloud-judge, composite, phase-gated
@@ -190,7 +193,7 @@ The `guard` package (`guard/`) provides an LLM-based safety classifier called at
 - **Environment filtering**: command execution allowlists safe env vars and blocks API keys/cloud credentials.
 - **Untrusted context delimiters**: dynamic context wrapped in `<untrusted_context>` tags.
 - **RunConfig.Redact()**: strips secret references before trace persistence.
-- **Stall detection**: repeated identical tool calls (3x) and consecutive failures (5x) terminate the loop.
+- **Stall detection**: a repeated tool-call pattern (3x, cycles of up to 4 calls) draws one nudge and a further repetition terminates the loop; consecutive failures (5x) terminate it.
 
 ## Key Constants
 
@@ -215,7 +218,7 @@ A `Justfile` is provided for common tasks:
 ```sh
 just              # build + test
 just build        # build stirrup + eval binaries
-just test         # go test ./harness/... ./types/... ./eval/...
+just test         # go test ./harness/... ./types/... ./eval/... ./examples/controlplane/...
 just lint         # golangci-lint run ./harness/... ./types/... ./eval/...
 just proto        # buf generate
 just buf-lint     # buf lint
@@ -226,11 +229,13 @@ just clean        # remove built binaries
 Or directly:
 
 ```sh
-go test ./harness/... ./types/... ./eval/...
+go test ./harness/... ./types/... ./eval/... ./examples/controlplane/...
 go build ./harness/... ./types/... ./eval/...
 buf generate
 buf lint
 ```
+
+`examples/controlplane` is a separate workspace module with its own `go.mod` and tests, run by `just test` and `just lint`; `just controlplane-smoke` drives it against a scripted provider. A new workspace member needs a `COPY <module>/go.mod ./<module>/go.mod` line in the `Dockerfile` builder stage, because `go.work` lists every member and the image build fails when a listed module's `go.mod` is missing.
 
 ### Known Issue: gopls False Positives
 
