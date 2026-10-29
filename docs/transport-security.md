@@ -13,9 +13,8 @@ This page covers two ways to protect it:
 - [Service-mesh mutual TLS](#service-mesh-mutual-tls): an Istio sidecar
   encrypts and authenticates the connection, and the harness is unchanged.
 
-A pod-local TLS-terminating proxy (Envoy, say) is no longer needed for
-this: the harness's own TLS gives the same result without an extra
-container.
+A pod-local TLS-terminating proxy (Envoy, say) is not needed for this:
+the harness's own TLS gives the same result without an extra container.
 
 **A private address is not authentication.** A cluster-internal Service
 name, a private VPC range or a NetworkPolicy limits who can reach the
@@ -91,8 +90,8 @@ the `local` executor, the agent's commands run as the harness's own user in
 the harness's container: they can read the client key, or dial the control
 plane through the sidecar with the job's mesh identity. A run with
 `run_command` should use a sandboxing executor (`container`, `k8s` or
-`k8s-sandbox`), and per-job, short-lived client certificates limit what a
-leaked key is worth.
+`k8s-sandbox`), and per-job, short-lived client certificates limit the
+usefulness of a leaked key.
 
 ## Harness TLS and mutual TLS
 
@@ -119,7 +118,7 @@ A job with none of the variables set dials plaintext, so the guarantee
 holds only while the Job template carries them. Enforce that where Jobs
 are admitted (a ValidatingAdmissionPolicy on the `stirrup-jobs` namespace,
 for example), or alert on the startup line. The harness logs that line
-once, naming the mode and the CA file, never file contents:
+once, naming the mode and the CA file but never file contents:
 
 ```text
 stirrup: control plane transport mode=mutual-tls ca=/etc/stirrup/control-plane-tls/ca.crt addr=stirrup-control-plane.stirrup-control.svc:9443
@@ -127,7 +126,7 @@ stirrup: control plane transport mode=mutual-tls ca=/etc/stirrup/control-plane-t
 
 ### What the harness verifies
 
-- The connection is TLS 1.3 or nothing (`MinVersion` in
+- The connection must use TLS 1.3 (`MinVersion` in
   `harness/internal/transport/tls.go`).
 - The server certificate chains to the CA bundle, or to the system roots
   when no bundle is set. With the system roots, any public CA that will
@@ -142,7 +141,7 @@ stirrup: control plane transport mode=mutual-tls ca=/etc/stirrup/control-plane-t
 
 The harness does not check revocation (CRL or OCSP) and does not pin a
 certificate beyond the CA bundle. It reads the files once at startup and
-handshakes once per job, so a certificate only has to be valid when the
+performs one handshake per job, so a certificate only has to be valid when the
 job connects, and a renewed certificate takes effect in the next job Pod.
 
 ### What the control plane must do
@@ -178,9 +177,9 @@ the session ID the job reports. Issuing one certificate per job, for
 example with the run ID in a URI SAN, makes that mapping possible. The
 `sandbox_token_request` contract expects it: the control plane derives
 the run identity from the authenticated stream the task was assigned on
-(`proto/harness/v1/harness.proto`), so the sandbox identity token flow
-needs per-job certificates, or a control plane that issues a token only
-to the stream it assigned the task on.
+(`proto/harness/v1/harness.proto`). The sandbox identity token flow
+therefore needs per-job certificates, or a control plane that issues a
+token only to the stream it assigned the task on.
 
 ### Certificates
 
@@ -269,7 +268,8 @@ volumeMounts:
 `job.yaml` mounts the client Secret with mode `0440` and `fsGroup: 65532`,
 the image's group, so the harness can read the key and the files are not
 world-readable. Anyone who can read Secrets in `stirrup-jobs`, or create
-a Pod there that mounts this one, holds the job identity, so restrict both. A job that also runs the k8s executor needs a token
+a Pod there that mounts this one, holds the job identity, so restrict
+both. A job that also runs the k8s executor needs a token
 (`automountServiceAccountToken: true`) and the orchestrator Role from
 [`examples/k8s/rbac.yaml`](../examples/k8s/rbac.yaml) bound to
 `system:serviceaccount:stirrup-jobs:stirrup-job` in the sandbox namespace.
@@ -300,7 +300,7 @@ a probe that is wrongly accepted is assigned a task.
    `x509: certificate signed by unknown authority`.
 
 This recipe was exercised on 2026-10-29. Locally, `stirrup job` ran
-against the example control plane in mutual-TLS mode: a plaintext job, a
+against the example control plane in mutual-TLS mode. A plaintext job, a
 job without a client certificate, a job trusting another CA, a job with a
 mismatched server name and a job with an empty variable all failed, and a
 job with the CA and client certificate completed its run. A control plane
@@ -359,7 +359,7 @@ holds the manifests:
 kubectl apply -k examples/k8s/control-transport/istio-mtls
 ```
 
-Each object closes a different gap. `PeerAuthentication` refuses clients
+Each object addresses a different gap. `PeerAuthentication` refuses clients
 without a mesh certificate. The `AuthorizationPolicy` restricts the mesh
 to the job identity; without it, any meshed workload could connect. The
 `DestinationRule` stops a job sidecar from sending plaintext when the
@@ -409,7 +409,7 @@ identity is one Istio considers authorised to serve
 
 ### Verification
 
-First run one real job from `job.yaml` to completion. Without that
+First, run one real job from `job.yaml` to completion. Without that
 positive control, a refused probe proves nothing: a mistyped Service name
 or a stopped control plane refuses everything. Then apply the probes at a
 time the control plane is not dispatching real work, since a probe that
@@ -445,10 +445,10 @@ kubectl -n stirrup-control get pod -l app=stirrup-control-plane \
 Each output must include `istio-proxy`.
 
 This recipe has not been run against a live mesh. On 2026-10-29 its
-manifests passed `kubeconform -strict` with the Istio CRD schemas, and a
-server-side apply against a `kind` cluster (Kubernetes 1.37) with the
-Istio 1.31.3 CRDs installed but no `istiod`, so Istio's own validating
-webhook did not run.
+manifests passed `kubeconform -strict` with the Istio CRD schemas, and
+passed a server-side apply against a `kind` cluster (Kubernetes 1.37) with
+the Istio 1.31.3 CRDs installed but no `istiod`. Istio's own validating
+webhook therefore did not run.
 
 ## Related
 

@@ -270,9 +270,9 @@ implementation of these steps built on the generated stubs. It assigns a
 ask on the terminal), prints events and exits with a status that reflects the
 outcome. Its `smoke.sh` runs one task through `stirrup job` against a scripted
 provider with no API key. The example is plaintext and unauthenticated unless
-its `-tls-*` flags are set, which serve TLS or mutual TLS; it supports one
-run and does not opt into sandbox identity, batching, async results, or
-follow-ups. Add handlers for those events before enabling the
+its `-tls-*` flags are set, in which case it serves TLS or mutual TLS. It
+supports one run and does not opt into sandbox identity, batching, async
+results, or follow-ups. Add handlers for those events before enabling the
 corresponding config.
 
 Launch the harness as a Kubernetes Job running `stirrup job` with

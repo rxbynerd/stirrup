@@ -80,10 +80,10 @@ A private VPC or cluster network on its own is not one of them. A private
 address limits who can reach the control plane, but it neither encrypts
 the stream nor proves either peer's identity: any workload on that
 network can read prompts, tool results and the raw sandbox identity token
-(`ControlEvent.token`), and anything that can answer at the dial target
+(`ControlEvent.token`). Anything that can answer at the dial target
 can pose as the control plane and direct the harness to send the job's
-credentials to an endpoint of its choosing. Use it without TLS only when
-every workload that can reach the address is trusted.
+credentials to an endpoint of its choosing. Use a private address without
+TLS only when every workload that can reach it is trusted.
 
 [`transport-security.md`](transport-security.md) lists what crosses the
 stream and gives recipes for harness mutual TLS and for Istio strict
@@ -331,7 +331,7 @@ below).
   same way it treats an explicit error.
 
 **Transport trust boundary.** Unlike API keys, `token` is not a
-`secret://` reference — it is the raw signed JWT, and it rides the
+`secret://` reference — it is the raw signed JWT, and it travels on the
 same plaintext-by-default `RunTask` stream as every other event (see
 [Transport security posture](#transport-security-posture-v01)).
 The token is a bearer credential and unencrypted by default, so it is
