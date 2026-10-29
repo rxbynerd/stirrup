@@ -1739,6 +1739,16 @@ func TestRunConfigFromProto_LazyLoadingPreserved(t *testing.T) {
 	})
 }
 
+func TestRunConfigFromProto_ToolsProfilePreserved(t *testing.T) {
+	must := require.New(t)
+	raw, err := proto.Marshal(&pb.RunConfig{Tools: &pb.ToolsConfig{Profile: "coding-classic"}})
+	must.NoError(err, "marshal")
+	var decoded pb.RunConfig
+	must.NoError(proto.Unmarshal(raw, &decoded), "unmarshal")
+
+	must.Equal("coding-classic", runConfigFromProto(&decoded).Tools.Profile)
+}
+
 // TestRunConfigFromProto_MaxCostBudgetStillTranslated pins the deprecated
 // field's translation: the budget is not enforced, but dropping it here
 // would swallow the value before ValidateRunConfig can warn that the cap

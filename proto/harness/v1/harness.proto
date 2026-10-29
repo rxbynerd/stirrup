@@ -2678,6 +2678,16 @@ message ToolsConfig {
   // Optional. Lazy tool loading. Mirrors RunConfig `tools.lazyLoading`;
   // off when unset (see docs/configuration.md#lazy-tool-loading).
   LazyToolLoadingConfig lazy_loading = 11;
+
+  // Optional. Model-facing presentation of the registered tools; changes
+  // only the names and descriptions the model sees, never dispatch
+  // identities or permission gating. Closed set:
+  //   "" or "default" — internal tool names (identity presentation).
+  //   "coding-classic" — terse coding-CLI aliases (grep_files → grep,
+  //                      find_files → find, run_command → bash).
+  // Mirrors RunConfig `tools.profile`; see
+  // docs/configuration.md#toolset-profiles.
+  string profile = 12;
 }
 
 // LazyToolLoadingConfig keeps the tool definitions a turn carries small:

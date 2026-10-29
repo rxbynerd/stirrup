@@ -817,6 +817,7 @@ func toolsConfigFromProto(pc *pb.ToolsConfig) types.ToolsConfig {
 	tc := types.ToolsConfig{
 		BuiltIn:        pc.BuiltIn,
 		MaxResultBytes: int(pc.MaxResultBytes),
+		Profile:        pc.GetProfile(),
 	}
 	if targets := pc.GetProtectedWriteTargets(); len(targets) > 0 {
 		tc.ProtectedWriteTargets = append([]string(nil), targets...)

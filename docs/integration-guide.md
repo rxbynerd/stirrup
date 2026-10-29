@@ -349,8 +349,7 @@ run_command  read_command_output  web_fetch  spawn_agent
 The mutating set rejected in read-only modes is `write_file`,
 `run_command`, `edit_file`, `search_replace`, `apply_diff`.
 `read_command_output` additionally requires
-`tools.commandOutput.enabled`; that command-output config is not yet
-available on the proto.
+`tools.commandOutput.enabled`.
 
 Secret **values** must never appear in a `RunConfig`; references and
 credential-federation settings do. When an `apiKeyRef` is used, it must
@@ -1389,14 +1388,14 @@ topology):
 |---|---|---|
 | `transport` | Transport selection. | Deliberate. It describes how the harness was launched, not the work assigned: a config arriving in a `task_assignment` came over the gRPC stream by construction, so the harness sets `grpc` itself. Accepting a wire value would let a control plane declare a transport contradicting the stream carrying the declaration. |
 | `traceEmitter.credential`, `traceEmitter.archive` | Credential override for the `gcs` emitter; durable storage for command-output sidecars. | Not yet mapped into the existing proto credential types and translation layer. |
-| `tools.profile`, `tools.commandOutput` | Tool presentation profile; command-output capture bounds. | Not yet mirrored. |
 
 Everything else on `RunConfig` is expressible in a
 `task_assignment`, including the executor's
 `registryAllowlist`, `workspaceExportTo`, `k8sEgressProxyUrl`,
 `sandboxIdentity`, and `gitProxy` blocks, plus `resultSink`,
 `toolChoiceEscalation`, `correlation`, `observability.logsExport`,
-`observability.serviceName`, and the `traceEmitter` fields
+`observability.serviceName`, `tools.profile`, `tools.commandOutput`,
+and the `traceEmitter` fields
 `metricsTemporality`, `captureContentMaxBytes`, `platform`, and
 `platformOptions`.
 

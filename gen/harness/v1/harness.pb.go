@@ -6273,7 +6273,18 @@ type ToolsConfig struct {
 	PostEdit []*PostEditCheck `protobuf:"bytes,10,rep,name=post_edit,json=postEdit,proto3" json:"post_edit,omitempty"`
 	// Optional. Lazy tool loading. Mirrors RunConfig `tools.lazyLoading`;
 	// off when unset (see docs/configuration.md#lazy-tool-loading).
-	LazyLoading   *LazyToolLoadingConfig `protobuf:"bytes,11,opt,name=lazy_loading,json=lazyLoading,proto3" json:"lazy_loading,omitempty"`
+	LazyLoading *LazyToolLoadingConfig `protobuf:"bytes,11,opt,name=lazy_loading,json=lazyLoading,proto3" json:"lazy_loading,omitempty"`
+	// Optional. Model-facing presentation of the registered tools; changes
+	// only the names and descriptions the model sees, never dispatch
+	// identities or permission gating. Closed set:
+	//
+	//	"" or "default" — internal tool names (identity presentation).
+	//	"coding-classic" — terse coding-CLI aliases (grep_files → grep,
+	//	                   find_files → find, run_command → bash).
+	//
+	// Mirrors RunConfig `tools.profile`; see
+	// docs/configuration.md#toolset-profiles.
+	Profile       string `protobuf:"bytes,12,opt,name=profile,proto3" json:"profile,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6362,6 +6373,13 @@ func (x *ToolsConfig) GetLazyLoading() *LazyToolLoadingConfig {
 		return x.LazyLoading
 	}
 	return nil
+}
+
+func (x *ToolsConfig) GetProfile() string {
+	if x != nil {
+		return x.Profile
+	}
+	return ""
 }
 
 // LazyToolLoadingConfig keeps the tool definitions a turn carries small:
@@ -7296,7 +7314,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aB\n" +
 	"\x14PlatformOptionsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xff\x03\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x99\x04\n" +
 	"\vToolsConfig\x12\x19\n" +
 	"\bbuilt_in\x18\x01 \x03(\tR\abuiltIn\x12D\n" +
 	"\vmcp_servers\x18\x02 \x03(\v2#.stirrup.harness.v1.MCPServerConfigR\n" +
@@ -7307,7 +7325,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x17protected_write_targets\x18\b \x03(\tR\x15protectedWriteTargets\x12>\n" +
 	"\tpost_edit\x18\n" +
 	" \x03(\v2!.stirrup.harness.v1.PostEditCheckR\bpostEdit\x12L\n" +
-	"\flazy_loading\x18\v \x01(\v2).stirrup.harness.v1.LazyToolLoadingConfigR\vlazyLoading\"\x84\x01\n" +
+	"\flazy_loading\x18\v \x01(\v2).stirrup.harness.v1.LazyToolLoadingConfigR\vlazyLoading\x12\x18\n" +
+	"\aprofile\x18\f \x01(\tR\aprofile\"\x84\x01\n" +
 	"\x15LazyToolLoadingConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1a\n" +
 	"\bstrategy\x18\x02 \x01(\tR\bstrategy\x12\x14\n" +
