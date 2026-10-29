@@ -17,20 +17,6 @@ and [`k8s_netpol.go`](../../harness/internal/executor/k8s_netpol.go);
 every flag, field, and label documented here is cross-checked against
 those files.
 
-## Contents
-
-- [When to use it](#when-to-use-it)
-- [Architecture](#architecture)
-- [Configuration reference](#configuration-reference)
-- [Deployment recipes](#deployment-recipes)
-- [Teardown and orphaned sandboxes](#teardown-and-orphaned-sandboxes)
-- [RuntimeClass selection per run](#runtimeclass-selection-per-run)
-- [Egress](#egress)
-- [Safety rings on Kubernetes](#safety-rings-on-kubernetes)
-- [Sandbox identity token exposure](#sandbox-identity-token-exposure)
-- [Troubleshooting](#troubleshooting)
-- [Testing the executor against a real cluster](#testing-the-executor-against-a-real-cluster)
-
 ## When to use it
 
 | Executor | Boundary | Use when |
@@ -344,6 +330,7 @@ matching `nodeSelector` and toleration. Two consequences:
   it, so `--k8s-node-selector sandbox.gke.io/runtime=gvisor` is redundant
   (add `--k8s-node-selector` only to *further* constrain placement).
 
+> [!WARNING]
 > **Do not apply this repo's `gvisor` RuntimeClass on GKE.** The `gvisor`
 > entry in
 > [`examples/k8s/runtimeclass.yaml`](../../examples/k8s/runtimeclass.yaml)
@@ -631,7 +618,7 @@ in-cluster egress proxy (`app=stirrup-egress-proxy` on TCP 8080).
 Everything else is forced through the proxy, where the FQDN allowlist
 applies. The executor injects:
 
-```
+```text
 HTTP_PROXY  = <k8sEgressProxyUrl>
 http_proxy  = <k8sEgressProxyUrl>
 HTTPS_PROXY = <k8sEgressProxyUrl>

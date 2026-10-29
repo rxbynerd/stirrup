@@ -2752,7 +2752,7 @@ terminates a run because of this field; `RunTrace.cost_usd` on the gRPC
 wire is unpopulated for the same reason. Setting the field logs a
 warning at config validation:
 
-```
+```text
 WARN maxCostBudget is accepted and bounded but not enforced: the harness
 computes no cost, so no run terminates on this budget; cap spend in the
 control plane from provider billing data maxCostBudget=25.5

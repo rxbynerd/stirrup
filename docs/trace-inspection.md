@@ -352,6 +352,7 @@ SIGINT (Ctrl-C) terminates the follow loop cleanly. `tail -f -` reads
 from stdin — the follow flag is redundant in that mode because stdin
 already blocks until more bytes are written.
 
+> [!NOTE]
 > **Truncation and rotation are not followed.** `tail -f` keeps the
 > same file handle open. If the file is truncated or rotated out
 > from under it, the offset stays past the new EOF and the follow
@@ -375,7 +376,7 @@ inspection.
 
 ### Text output
 
-```
+```text
 trace stats
   runId:            run-1735900000
   harness version:  v1.7.0
@@ -481,7 +482,7 @@ stirrup trace grep --jq '.outcome contains "fail"' example.jsonl
 
 The `--jq` predicate is a deliberately tiny three-operator grammar:
 
-```
+```text
 <path> ( == | != | contains ) <value>
 ```
 

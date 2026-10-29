@@ -8,7 +8,7 @@ via the OAuth2 `client_credentials` grant with a JWT client assertion.
 
 The flow is:
 
-```
+```text
 TokenSource (OIDC JWT)  →  AzureWorkloadIdentitySource  →  Resolved.BearerToken
                               POST login.microsoftonline.com/{tenant}/oauth2/v2.0/token
                               client_assertion_type=jwt-bearer

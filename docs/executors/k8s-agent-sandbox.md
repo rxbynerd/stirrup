@@ -22,19 +22,6 @@ every field and behaviour documented here is cross-checked against those
 files. The reference manifests live under
 [`examples/k8s/agent-sandbox/`](../../examples/k8s/agent-sandbox/).
 
-## Contents
-
-- [When to use it vs. the `k8s` executor](#when-to-use-it-vs-the-k8s-executor)
-- [Architecture](#architecture)
-- [The v1alpha1 vs. v1beta1 API skew](#the-v1alpha1-vs-v1beta1-api-skew)
-- [The four GKE admission deltas](#the-four-gke-admission-deltas)
-- [Egress is unchanged](#egress-is-unchanged)
-- [The controller-owned TTL GC backstop](#the-controller-owned-ttl-gc-backstop)
-- [RBAC delta](#rbac-delta)
-- [Configuration](#configuration)
-- [Testing against a real cluster](#testing-against-a-real-cluster)
-- [Deferred value-adds](#deferred-value-adds)
-
 ## When to use it vs. the `k8s` executor
 
 | Executor | Pod provisioned by | Use when |

@@ -6,7 +6,7 @@ two-layer design lets a harness on any cloud authenticate to any
 provider's IAM without bundling provider-specific SDKs everywhere or
 mounting raw service-account keys into the runtime.
 
-```
+```text
 TokenSource  →  credential.Source  →  Resolved.BearerToken closure
 ```
 
@@ -81,7 +81,7 @@ The audience that goes into the RunConfig identifies the Workload
 Identity Pool **provider** that will accept your runtime's tokens. The
 shape is fixed:
 
-```
+```text
 //iam.googleapis.com/projects/{PROJECT_NUMBER}/locations/global/workloadIdentityPools/{POOL_ID}/providers/{PROVIDER_ID}
 ```
 

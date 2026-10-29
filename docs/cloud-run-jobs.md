@@ -311,7 +311,7 @@ configure only one.
 The `stdout-json` result sink writes a single line to stdout at
 end-of-run, prefixed by the literal sentinel `STIRRUP_RESULT `:
 
-```
+```text
 STIRRUP_RESULT {"schemaVersion":1,"runId":"…","outcome":"success","turns":4,"tokenUsage":{"input":1234,"output":567},"finalAssistantText":"…"}
 ```
 
