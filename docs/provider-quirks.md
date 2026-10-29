@@ -146,6 +146,7 @@ type ProviderQuirks struct {
     ParallelToolCalls     ParallelToolCallsCapability    // native parallel-tool-call control (#222)
     ToolExamples          ToolExamplesCapability         // accepts worked tool-input examples: the JSON-Schema `examples` keyword, or a native wire field when Native is set (#222)
     ToolSearch            ToolSearchCapability           // native tool search for deferred tool definitions under lazy tool loading, and its Variant (#235)
+    ContextWindow         int                            // the model's context window in tokens, input and output together; zero means no entry
 
     // Behaviour flags (per-adapter typed sub-structs).
     BehaviourFlags  ProviderBehaviourFlags
@@ -156,7 +157,7 @@ A **capability** is a top-level field rather than a per-adapter
 behaviour flag when it expresses a concept the loop reasons about
 uniformly across families even though each provider encodes it
 differently. `ToolChoice`, `StructuredToolResults`,
-`ParallelToolCalls`, `ToolExamples`, and `ToolSearch` are the five: every family
+`ParallelToolCalls`, `ToolExamples`, `ToolSearch`, and `ContextWindow` are the six: every family
 has *some* form of (or lack of) each, so modelling any of them under
 one provider's sub-struct would force the other adapters to reach
 across family boundaries to read it, which the behaviour-flag
@@ -194,9 +195,24 @@ model, and older families are documented, not probed. A capability with
 tool-result envelope is serialised onto the wire. The first-party
 rules opt in Anthropic (content-block array form) and Gemini
 (`functionResponse.response` object); OpenAI and any unruled provider
-stay text-only. See the
-[structured tool results](architecture.md#structured-tool-results)
+stay text-only. The capability gates the lean wire view that
+`types.ToolResultWireEnvelope` derives from the envelope, not the full
+envelope: the stored history and the trace keep the full envelope, and
+an envelope that is identical to the text adds nothing to the wire. See
+the [structured tool results](architecture.md#structured-tool-results)
 section of the architecture doc for the per-provider wire shapes.
+
+`ContextWindow` is the resolved model's context window in tokens, input
+and output together. The loop reads it every turn and budgets against
+the smaller of it and `contextStrategy.maxTokens`. When only one of the
+two is set, that one applies. When neither is, the loop uses its
+200,000-token default window. A `contextStrategy.maxTokens` above the
+registered window is capped to it, with a warning on the first turn. The
+registry holds an entry only where the documented window is smaller
+than the 200,000-token default, because the default would otherwise
+pack requests the model rejects. A model with a larger window keeps the
+default until `contextStrategy.maxTokens` raises it. The value appears
+as `contextWindow` in the output of `stirrup providers quirks`.
 
 ```go
 type ProviderBehaviourFlags struct {
@@ -473,6 +489,8 @@ test catch malformed paths at registry-build time.
 | `openai-compatible` | `*/gpt-5-chat*`    | OpenAI gpt-5-chat carve-out via gateway prefix: same as `gpt-5-chat*` |
 | `openai-compatible` | `gpt-6*`           | OpenAI gpt-6 family: omit sampling params, strict tools, `reasoning_effort` `low`..`max`; a request with tools fails before send (tool calling needs `openai-responses`) |
 | `openai-compatible` | `*/gpt-6*`         | OpenAI gpt-6 family via gateway prefix: omit sampling params only |
+| `openai-compatible` | `gpt-4o*`          | OpenAI gpt-4o family: 128,000-token context window (documented, not probed) |
+| `openai-compatible` | `*/gpt-4o*`        | OpenAI gpt-4o family via gateway prefix: 128,000-token context window (documented, not probed) |
 | `openai-compatible` | `deepseek-v4*`     | DeepSeek v4: replay `reasoning_content`, omit sampling params, legacy `max_tokens`, `reasoning_effort` (threaded) |
 | `openai-compatible` | `deepseek-flash*`  | DeepSeek V4.1 Flash: same quirk set as `deepseek-v4*` (threaded) |
 | `openai-compatible` | `deepseek/deepseek-flash*` | DeepSeek V4.1 Flash via OpenRouter: omit sampling params, legacy `max_tokens`, `reasoning_effort`; no replay (probed 2026-10-18) |
@@ -492,6 +510,7 @@ test catch malformed paths at registry-build time.
 | `openai-responses`  | `gpt-5.6*`         | OpenAI Responses gpt-5.6 family: `reasoning.effort` `low`..`max` (documented, not probed); omit sampling params (inferred) |
 | `openai-responses`  | `gpt-5-chat*`      | OpenAI Responses gpt-5-chat carve-out: no `reasoning.encrypted_content` include or output replay (inferred, not probed) |
 | `openai-responses`  | `gpt-6*`           | OpenAI Responses gpt-6 family: the `gpt-5*` reasoning rules plus omit sampling params and `reasoning.effort` `low`..`max` (documented, not probed) |
+| `openai-responses`  | `gpt-4o*`          | OpenAI Responses gpt-4o family: 128,000-token context window (documented, not probed) |
 | `anthropic`         | `*`                | Anthropic: `tool_choice.disable_parallel_tool_use` (#222) |
 | `anthropic`         | `*`                | Anthropic: tool examples on the native `input_examples` field (probed 2026-09-30) |
 | `anthropic`         | `*`                | Anthropic: prompt caching via `system` `cache_control` breakpoint plus top-level automatic `cache_control` (the latter on keyed requests only) |
@@ -1292,7 +1311,7 @@ concerns are tracked separately:
     | `gemini` | `gemini-3.1-pro-preview` | AI Studio | 200, one `functionCall` | 200, one `functionCall` |
     | `openai-compatible` | `gpt-5.5` (OpenAI direct) | Chat Completions | 200, tool call | 200, tool call |
     | `openai-compatible` | `openai/gpt-5.5` (OpenRouter) | Chat Completions | 200, tool call | 200, tool call |
-    | `openai-responses` | default model | Responses | unprobed | unprobed |
+    | `openai-responses` | default model | Responses | unprobed (no native path) | unprobed (no native path) |
 
     Every Gemini 400 carried `Requests ending with a model turn are
     not supported.`, with and without `allowedFunctionNames`.
