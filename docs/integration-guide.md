@@ -638,6 +638,8 @@ diff, review or publish.
   not that they are honest. A control plane that needs a trustworthy
   diff computes it against the base commit it provisioned itself, not
   against history read from inside the workspace.
+
+Field reference: [Git strategy](configuration.md#git-strategy).
 - The harness never pushes. The commits live in the sandbox workspace:
   retrieve them from the workspace export (`executor.workspaceExportTo`;
   the archive covers the whole workspace root, `.git` included), or
@@ -977,7 +979,8 @@ hard — or different providers per mode.
   `STIRRUP_SESSION_DEADLINE` to the same value so the sandbox outlives
   the session.
 
-Field reference: [Limits and budgets](configuration.md#limits-and-budgets).
+Field references: [Limits and budgets](configuration.md#limits-and-budgets),
+[Context strategy](configuration.md#context-strategy).
 
 ### Verification: use the terminal outcome
 
@@ -1056,6 +1059,8 @@ schema, instead of free text.
   the model makes mid-run, answered by the control plane over a live
   stream, and it does not end the run. `output_schema` shapes the final
   answer, needs no response event, and works without a stream.
+
+Field reference: [Structured output](configuration.md#structured-output).
 
 ### Follow-up turns
 
