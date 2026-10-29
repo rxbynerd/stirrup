@@ -2057,9 +2057,11 @@ signatures) is persisted and replayed exactly as before.
 
 `openai-responses` requests summaries only on an explicit `auto`
 because OpenAI may require organisation verification before it returns
-them on its newest reasoning models, and the control has not been
-probed live; an unset value leaves the request as unverified
-organisations can send it.
+them on its newest reasoning models, and that has not been probed
+against OpenAI's own API; an unset value leaves the request as
+unverified organisations can send it. OpenRouter's Responses endpoint
+accepts the control and streams the summary (see
+[provider quirks](provider-quirks.md#9-open-risks), risk 12).
 
 Each turn record's `request.reasoningSummary` holds the value resolved
 for the selected adapter, so an unset field is recorded as `off` on
