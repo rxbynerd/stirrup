@@ -56,16 +56,18 @@ func (o Options) Validate() error {
 // every task on that side, and one-sided tasks are listed in the report.
 // A task without Trials counts as a single trial.
 //
-// When either side's trial counts depend on outcomes (confirm-on-fail), the
-// paired statistics, the noise floor, and pass^k / pass@k use each task's
-// first trial alone. Pass rates, deterministic flips, and the regression
-// list still use every trial. Compare does not refuse mismatched policies;
-// see TrialsPolicyMismatch.
+// When the two sides used different trials policies and one side's trial
+// counts depend on outcomes (confirm-on-fail), the sides' trial counts are
+// not comparable, so the paired statistics, the noise floor, and pass^k /
+// pass@k use each task's first trial alone. Pass rates, deterministic flips,
+// and the regression list always use every trial. Compare does not refuse
+// mismatched policies; see TrialsPolicyMismatch.
 func Compare(baseline, current eval.SuiteResult, opts Options) eval.ComparisonReport {
 	baselineByID := indexByTaskID(baseline.Tasks)
 	baselineOnly := unpairedIDs(baseline.Tasks, indexByTaskID(current.Tasks))
 	currentOnly := unpairedIDs(current.Tasks, baselineByID)
-	firstTrialOnly := baseline.TrialCountsDependOnOutcomes() || current.TrialCountsDependOnOutcomes()
+	firstTrialOnly := baseline.ResolvedTrialsPolicy() != current.ResolvedTrialsPolicy() &&
+		(baseline.TrialCountsDependOnOutcomes() || current.TrialCountsDependOnOutcomes())
 
 	var (
 		regressions  []eval.TaskRegression
