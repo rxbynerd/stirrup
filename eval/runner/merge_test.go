@@ -318,11 +318,6 @@ func TestMergeOverrides_AllOverlayFields(t *testing.T) {
 	})
 }
 
-// TestMergeOverrides_ZeroModeDoesNotOverwrite confirms the Mode
-// sentinel contract: the empty string on the overlay means "unset"
-// and must not clobber a baseline that already carries a concrete
-// mode. Without this, an overlay constructed with only pointer-typed
-// fields would zero the baseline's Mode.
 func TestMergeOverrides_MCPServersReplaceBaselineAndAreCopied(t *testing.T) {
 	must := require.New(t)
 	baseline := baselineRunConfig()
@@ -344,6 +339,11 @@ func TestMergeOverrides_NilMCPServersKeepBaseline(t *testing.T) {
 	must.Equal([]types.MCPServerConfig{{Name: "base", URI: "https://base.example.com"}}, got.Tools.MCPServers)
 }
 
+// TestMergeOverrides_ZeroModeDoesNotOverwrite confirms the Mode
+// sentinel contract: the empty string on the overlay means "unset"
+// and must not clobber a baseline that already carries a concrete
+// mode. Without this, an overlay constructed with only pointer-typed
+// fields would zero the baseline's Mode.
 func TestMergeOverrides_ZeroModeDoesNotOverwrite(t *testing.T) {
 	must := require.New(t)
 	baseline := baselineRunConfig() // Mode = "execution"
