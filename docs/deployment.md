@@ -17,7 +17,7 @@ sequenceDiagram
     CP->>K: Create Job<br/>(env: CONTROL_PLANE_ADDR, ANTHROPIC_API_KEY-equivalent secret)
     K-->>H: Pod scheduled
     H->>CP: Dial gRPC, open RunTask stream
-    H->>CP: HarnessEvent{type:"ready", harness_version, capabilities}
+    H->>CP: HarnessEvent{type:"ready", harness_version, harness_semver, capabilities, config_fields}
     H->>H: Write /tmp/healthy (liveness) and /tmp/ready (readiness)
     CP->>H: ControlEvent{type:"task_assignment", task: RunConfig, trace_context?}
     H->>H: Remove /tmp/ready
@@ -118,11 +118,13 @@ IMDS, GitHub Actions OIDC). See
    opens a single `RunTask` bidi stream for the lifetime of the
    task.
 2. **Ready.** The harness sends a
-   `HarnessEvent{type:"ready", harness_version, capabilities}`.
-   `capabilities` names the contract features the harness implements,
-   so the control plane can check them before dispatching work;
-   `harness_version` is informational. See
-   [Compatibility](integration-guide.md#compatibility).
+   `HarnessEvent{type:"ready", harness_version, harness_semver,
+   capabilities, config_fields}`. `capabilities` names the contract
+   features the harness implements and `config_fields` names every
+   `RunConfig` field it accepts, so the control plane can check both
+   before dispatching work; `harness_version` and `harness_semver` are
+   informational. See
+   [Negotiating RunConfig fields](integration-guide.md#negotiating-runconfig-fields).
 3. **Health probes.** Two marker files are written: `/tmp/healthy`
    (liveness — present from here until process exit) and
    `/tmp/ready` (readiness — present only while idle and waiting for
