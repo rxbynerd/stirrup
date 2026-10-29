@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"encoding/json"
 	"os"
-	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -1010,15 +1009,6 @@ func TestReplayFieldsRules_Gemini3(t *testing.T) {
 	})
 }
 
-// evidenceLabelSince is the first LastVerified date the evidence-label
-// convention in docs/provider-quirks.md applies to; earlier rules carry it
-// once they are re-verified.
-var evidenceLabelSince = Date("2026-10-29")
-
-// evidenceLabel matches the words a rule Description uses to say how its
-// behaviour is known.
-var evidenceLabel = regexp.MustCompile(`\b(probed|documented|inferred)\b`)
-
 // TestRuleStaleness logs, rather than fails, any rule whose LastVerified is
 // more than 180 days before now: staleness is a signal to re-verify the
 // rule, not a CI failure. It fails a LastVerified in the future, and a rule
@@ -1032,22 +1022,10 @@ func TestRuleStaleness(t *testing.T) {
 		if rule.LastVerified.Before(cutoff) {
 			t.Logf("STALE: rule %q last verified %s (>180d ago); re-verify against the upstream wire shape", rule.Description, rule.LastVerified.Format("2006-01-02"))
 		}
-		for _, problem := range lastVerifiedProblems(rule, now) {
+		for _, problem := range LastVerifiedProblems(rule, now) {
 			t.Errorf("rule %q: %s", rule.Description, problem)
 		}
 	}
-}
-
-func lastVerifiedProblems(rule Rule, now time.Time) []string {
-	var problems []string
-	date := rule.LastVerified.Format("2006-01-02")
-	if rule.LastVerified.After(now) {
-		problems = append(problems, "LastVerified "+date+" is in the future")
-	}
-	if !rule.LastVerified.Before(evidenceLabelSince) && !evidenceLabel.MatchString(rule.Description) {
-		problems = append(problems, "LastVerified "+date+" needs a Description saying whether the rule is probed, documented or inferred")
-	}
-	return problems
 }
 
 func TestLastVerifiedProblems_EnforcesTheConvention(t *testing.T) {
@@ -1064,13 +1042,16 @@ func TestLastVerifiedProblems_EnforcesTheConvention(t *testing.T) {
 		{"unlabelled under the convention", "X: omit sampling params", "2026-10-30", 1},
 		{"unlabelled before the convention", "X: omit sampling params", "2026-10-28", 0},
 		{"label word inside another word", "X: unprobedness", "2026-10-30", 1},
-		{"future date", "X: omit sampling params (documented)", "2026-11-02", 1},
+		{"not probed alone is no label", "X: omit sampling params (not probed)", "2026-10-30", 1},
+		{"not probed beside documented", "X: omit sampling params (documented, not probed)", "2026-10-30", 0},
+		{"date ahead of UTC by a day", "X: omit sampling params (documented)", "2026-11-02", 0},
+		{"future date", "X: omit sampling params (documented)", "2026-11-03", 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			check := assert.New(t)
 			rule := Rule{Description: tc.description, LastVerified: Date(tc.lastVerified)}
-			check.Len(lastVerifiedProblems(rule, now), tc.wantProblems)
+			check.Len(LastVerifiedProblems(rule, now), tc.wantProblems)
 		})
 	}
 }

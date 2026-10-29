@@ -265,8 +265,8 @@ func TestResponsesAdapter_GPT5EffortAllowListsBeforeSend(t *testing.T) {
 // TestResponsesAdapter_GPT5EffortLevelsOnTheWire drives each accepted
 // GPT-5.x level through Stream and pins the sent body: the level as
 // reasoning.effort and no temperature. With no effort, gpt-5.5 and gpt-5.6
-// still omit temperature (inferred from their medium default). Documented,
-// not probed.
+// still omit temperature, as every gpt-5 model on Responses does.
+// Documented, not probed.
 func TestResponsesAdapter_GPT5EffortLevelsOnTheWire(t *testing.T) {
 	cases := []struct {
 		name, model, effort string
