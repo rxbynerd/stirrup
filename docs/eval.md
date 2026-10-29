@@ -1269,16 +1269,15 @@ rename wins atomically.
 
 ### Outcome taxonomy
 
-`RunTrace.Outcome` records *why the loop stopped*: one of the
-outcomes `types.RunOutcomes()` lists (the table in
-`types/evaloutcome.go`, which also classifies each one), or a
-provider stop reason passed through verbatim, such as `refusal`
-(which falls into the "anything else" row below). By itself it
-conflates two
-very different states in execution mode: "the harness made the
-correct change" vs. "the loop exited cleanly with zero useful
-changes." Metrics derived from `Outcome == "success"` therefore lie
-about quality.
+`RunTrace.Outcome` records *why the loop stopped*. It is either one of
+the outcomes `types.RunOutcomes()` lists or a provider stop reason
+passed through verbatim, such as `refusal`, which falls into the
+"anything else" row below. The listed outcomes come from one table in
+`types/evaloutcome.go`, which also sets each outcome's eval bucket and
+run health. By itself the outcome conflates two very different states
+in execution mode: "the harness made the correct change" vs. "the loop
+exited cleanly with zero useful changes." Metrics derived from
+`Outcome == "success"` therefore misstate quality.
 
 `types.EvalOutcome` (`types/evaloutcome.go`) collapses
 `(Outcome, VerificationResults)` onto three buckets:

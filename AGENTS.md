@@ -218,8 +218,8 @@ A `Justfile` is provided for common tasks:
 just check        # before pushing: build every module, test, lint
 just              # build + test
 just build        # build stirrup + eval binaries
-just test         # go test ./harness/... ./types/... ./eval/...
-just lint         # golangci-lint run ./harness/... ./types/... ./eval/...
+just test         # go test over harness, types, eval, examples/controlplane
+just lint         # golangci-lint over the same packages
 just proto        # buf generate
 just buf-lint     # buf lint
 just docker       # build stirrup Docker image

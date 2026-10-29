@@ -1442,6 +1442,11 @@ around silently".
   unknown fields. Gate assignment on `ready.capabilities` when a task
   depends on a newly added wire field; do not assume it will fail
   loudly.
+- `tools.profile` and `traceEmitter.archive` reached the wire without a
+  capability of their own. A harness built before them ignores both: it
+  presents tools under their internal names and writes the
+  command-output archive to its derived default. A control plane that
+  depends on either pins a harness version that carries them.
 - New `HarnessEvent` types are added without a version bump of the
   RPC. Ignore unrecognised types; gate on `ready.capabilities` when a
   feature depends on one, as for the live transcript events in

@@ -1,7 +1,8 @@
 # Working in stirrup
 
-A coding-agent harness. Go workspace with four modules — `types`,
-`harness`, `eval`, `gen` — composed via a single `RunConfig`.
+A coding-agent harness. Go workspace with five modules — `types`,
+`harness`, `eval`, `gen`, `examples/controlplane` — composed via a
+single `RunConfig`.
 
 This file is for AI assistants editing the codebase. The canonical
 docs are:
@@ -42,15 +43,15 @@ default Claude Code conventions.
 just check        # before pushing: build every module, test, lint
 just              # build + test (default)
 just build        # ./stirrup and ./stirrup-eval
-just test         # go test ./harness/... ./types/... ./eval/...
+just test         # go test over harness, types, eval, examples/controlplane
 just lint         # golangci-lint v2
 just proto        # buf generate (after editing proto/*.proto)
 ```
 
-`just check` is the one command to run before pushing. `go build
-./...` at the repository root fails ("directory prefix . does not
-contain modules listed in go.work") because the root is not a
-module; `just build-modules` builds every module in `go.work`.
+`just check` is the one command to run before pushing.
+`go build ./...` at the repository root fails ("directory prefix .
+does not contain modules listed in go.work") because the root is not
+a module; `just build-modules` builds every module in `go.work`.
 
 A failing build or test is a real error. A failing `gopls`
 diagnostic against a workspace package (e.g. "X not declared by
@@ -154,17 +155,26 @@ to make a feature easier:
   dropped at translation, locking the feature out of `stirrup job`
   (this happened to all four Gemini provider fields until
   2026-08-13). New CLI flags or `RunConfig` fields without the
-  proto + translate pair are incomplete, and
-  `TestRunConfigProtoMirror_EveryFieldIsMirroredAndTranslated` fails.
+  proto + translate pair are incomplete.
+  `TestRunConfigProtoMirror_EveryFieldIsMirroredAndTranslated` fails
+  when a `RunConfig` field has no proto field or a proto field is never
+  read by `grpc_translate.go`; it does not check where the value lands.
 - **Cross-package invariants live in `harness/internal/invariants`.**
-  Its `go/ast` tests pin that provider calls are charged to the run
-  ledger, span errors and log handlers are scrubbed, git/prompt/
-  workspaceexport never touch the host, HarnessEvents and tool
-  results pass their byte bounds, the proto mirror is complete, and
-  every run outcome is classified in `types/evaloutcome.go`. A
-  failure names the bypass; route the new code through the seam
-  rather than extending an allow-list, and give any allow-list entry
-  a reason.
+  Its `go/ast` tests pin these properties:
+  - provider calls are charged to the run ledger;
+  - span errors and log handlers are scrubbed;
+  - `git`, `prompt` and `workspaceexport` never touch the host;
+  - HarnessEvents and tool results pass their byte bounds;
+  - the proto mirror is complete;
+  - every run outcome is classified in `types/evaloutcome.go`.
+
+  A failure names the bypass. Route the new code through the seam
+  rather than extending an allow-list; an allow-list entry needs a
+  reason.
+- **Live-probe keys come from `just op-session`.** It loads keys from
+  1Password into a tmux session and reports `KEY_OK`/`KEY_MISSING`;
+  run `just op-session-check` before claiming a live probe ran. See
+  [`CONTRIBUTING.md#live-provider-keys`](CONTRIBUTING.md#live-provider-keys).
 - **Hand-rolled HTTP over SDKs.** The container executor uses the
   Docker Engine REST API directly to avoid the `github.com/docker/docker`
   dependency tree. Provider adapters are stdlib HTTP+SSE for the

@@ -26,7 +26,7 @@ in [`AGENTS.md`](AGENTS.md).
 
 ## Workspace layout
 
-The repository is a Go workspace (`go.work`) composed of four modules:
+The repository is a Go workspace (`go.work`) composed of five modules:
 
 - `types/` — shared types, `RunConfig` validation, and the `version`
   package. Zero external dependencies.
@@ -34,6 +34,8 @@ The repository is a Go workspace (`go.work`) composed of four modules:
   not the generated Go.
 - `harness/` — the harness binary and its 12 components.
 - `eval/` — the eval CLI, judges, runner, and lakehouse adapters.
+- `examples/controlplane/` — a minimal control plane that drives
+  `stirrup job` over gRPC, used by the control-plane smoke tests.
 
 The `harness/internal/*` packages are not part of the public API. The
 embedding surface is `harness/harnessapi/`.
@@ -45,30 +47,32 @@ just check        # before pushing: build every module, test, lint
 just              # build + test
 just build        # binaries: ./stirrup and ./stirrup-eval
 just build-modules # compile every module in go.work
-just test         # go test ./harness/... ./types/... ./eval/...
+just test         # go test over harness, types, eval, examples/controlplane
 just lint         # golangci-lint v2
 just fuzz-scrub   # short fuzz runs of the secret scrubber
-just vuln         # govulncheck across all four workspace modules
+just vuln         # govulncheck across every workspace module
 just proto        # buf generate
 just buf-lint     # buf lint
 just docker       # docker build -t stirrup .
 just clean        # remove built binaries
 just op-session   # load live-probe keys from 1Password into a tmux session
+just op-session-check # report which of those keys are present
 ```
 
 `just check` is the one command to run before pushing. The
 repository root is not a Go module, so `go build ./...` there fails
-with "directory prefix . does not contain modules listed in go.work";
-quote `just check` (or `just build-modules` for the build alone)
-rather than `go build ./...` in instructions and pull requests.
+with "directory prefix . does not contain modules listed in go.work".
+Instructions and pull requests name `just check` (or `just
+build-modules` for the build alone) instead.
 
-CI runs the equivalent of `just test` + `just test-race` +
-`just fuzz-scrub` + a full build via the reusable `_verify.yml` workflow on every push, then
-fails if the build or tests changed `go.work.sum` or any `go.sum`
-(commit checksum changes with the change that caused them), plus an
-`eval-gate` job (baselined eval suites against committed baselines,
-pinned to a cheap model) on every push and a container publish on
-every merge to `main`. A failing `compare` exit fails the eval gate.
+On every push, CI runs the equivalent of `just test`, a race-detector
+pass, `just fuzz-scrub` and a full build through the reusable
+`_verify.yml` workflow. It then fails if the build or tests changed
+`go.work.sum` or any committed `go.sum`, so checksum changes are
+committed with the change that caused them. An `eval-gate` job runs
+the baselined eval suites against committed baselines, pinned to a
+cheap model, and every merge to `main` publishes a container. A failing
+`compare` exit fails the eval gate.
 See [`.github/workflows/`](.github/workflows/) for the full pipeline.
 
 ### gopls false positives
@@ -215,16 +219,19 @@ A `RunConfig` field ships with its proto mirror and a line in
 `harness/internal/transport/grpc_translate.go`;
 `TestRunConfigProtoMirror_EveryFieldIsMirroredAndTranslated` in
 `harness/internal/invariants` fails when either is missing. A field
-deliberately kept off the wire (flag- or environment-only) goes on that
-test's allow-list with the reason.
+deliberately kept off the wire goes on that test's `configOnlyFields`
+allow-list with a reason, and on the "Features not on the wire" table
+in [`docs/integration-guide.md`](docs/integration-guide.md) in the same
+change.
 
 **Field-number blocks for parallel work.** When several branches add
 proto fields at the same time (a tracker issue split across concurrent
 pull requests), the tracker assigns each branch its own block of field
-numbers per message before work starts, for example `RunConfig` 120-124
-for one branch and 125-129 for the next, and records the assignment in
-the tracker. Each branch uses only its block, so the branches never
-collide on a field number and merge in any order. Numbers a branch
+numbers per message before work starts, counting up from the highest
+number the message already uses on `main`: with `RunConfig` at 60, for
+example, 61-63 for one branch and 64-66 for the next. The tracker
+records the assignment. Each branch uses only its block, so the branches
+never collide on a field number and merge in any order. Numbers a branch
 leaves unused stay reserved for it until the tracker closes.
 
 **Rebase conflicts in `gen/`.** Conflicts inside `gen/` are mechanical:
@@ -254,12 +261,17 @@ just op-session stirrup-keys \
 ```
 
 Each argument is `NAME=op://...`; vault paths are never stored in the
-repository. The recipe creates the session if it does not exist, reads
-each secret inside it, exports the variable only when the read
-returned a non-empty value, and prints `KEY_OK NAME` or
-`KEY_MISSING NAME` for each key. It exits non-zero when any key is
-missing, which includes a 1Password prompt that timed out. A value is
-never printed or written to disk.
+repository. A path may contain only letters, digits, spaces and
+`. _ / ? = -`, the characters 1Password allows in names (other names
+are referenced by ID). The recipe creates the session if it does not
+exist, reads each secret inside it, exports the variable only when the
+read returned a non-empty value, and prints `KEY_OK NAME` or
+`KEY_MISSING NAME` for each key. It waits up to 180 seconds for the
+1Password approvals and exits non-zero when any key is missing,
+including a prompt that timed out; a key approved after the wait is
+exported but reported missing, so confirm it with `op-session-check`.
+A value is never printed or written to disk. The recipes need `op`,
+`tmux` and a bash- or zsh-compatible shell in the session.
 
 Before reporting that a live probe ran, confirm the key it needed is
 still present:
@@ -268,10 +280,12 @@ still present:
 just op-session-check stirrup-keys ANTHROPIC_API_KEY
 ```
 
-Run probes in the session with `tmux send-keys -t stirrup-keys '<command> > <log> 2>&1' Enter`
-and read the log file. Never `env`-dump or echo a key in that session.
+Run probes in the session with
+`tmux send-keys -t '=stirrup-keys:' '<command> > <log> 2>&1' Enter` and
+read the log file. Never `env`-dump or echo a key in that session.
 Both recipes type commands into the session's active pane, so run them
-while it is idle.
+while it is idle. End the session with
+`tmux kill-session -t '=stirrup-keys'` when the probes are done.
 
 ## Touching the safety rings
 
