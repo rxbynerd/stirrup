@@ -212,3 +212,80 @@ func TestCmdCompare_ErrorsExitTwo(t *testing.T) {
 		})
 	}
 }
+
+func TestCmdCompare_TrialsPolicyMismatch(t *testing.T) {
+	dir := t.TempDir()
+	suite := func(runID, policy string) eval.SuiteResult {
+		return eval.SuiteResult{
+			SuiteID: "s", RunID: runID, Trials: 3, TrialsPolicy: policy,
+			Tasks: []eval.TaskResult{{TaskID: "a", Outcome: "pass"}, {TaskID: "b", Outcome: "pass"}, {TaskID: "c", Outcome: "pass"}},
+		}
+	}
+	legacy := writeResultFile(t, dir, "legacy.json", suite("legacy", ""))
+	fixed := writeResultFile(t, dir, "fixed.json", suite("fixed", eval.TrialsPolicyFixed))
+	confirm := writeResultFile(t, dir, "confirm.json", suite("confirm", eval.TrialsPolicyConfirmOnFail))
+	unknown := writeResultFile(t, dir, "unknown.json", suite("unknown", "adaptive"))
+
+	cases := []struct {
+		name       string
+		args       []string
+		wantCode   int
+		wantLog    string
+		wantReport []string
+	}{
+		{
+			name:     "different policies are refused",
+			args:     []string{"--baseline", fixed, "--current", confirm},
+			wantCode: 2,
+			wantLog:  "refusing to compare: trials policies differ: baseline ran fixed, current ran confirm-on-fail",
+		},
+		{
+			name:     "a result without a policy counts as fixed",
+			args:     []string{"--baseline", legacy, "--current", confirm},
+			wantCode: 2,
+			wantLog:  "baseline ran fixed, current ran confirm-on-fail",
+		},
+		{
+			name:       "the escape compares with a warning",
+			args:       []string{"--baseline", fixed, "--current", confirm, "--allow-policy-mismatch"},
+			wantCode:   0,
+			wantLog:    "warning: trials policies differ",
+			wantReport: []string{"Gate: PASS", "Warning: trials policies differ (baseline fixed, current confirm-on-fail)", "first trial only"},
+		},
+		{
+			name:       "matching policies compare silently",
+			args:       []string{"--baseline", legacy, "--current", fixed},
+			wantCode:   0,
+			wantReport: []string{"Gate: PASS"},
+		},
+		{
+			name:     "an unknown policy is refused even under the escape",
+			args:     []string{"--baseline", fixed, "--current", unknown, "--allow-policy-mismatch"},
+			wantCode: 2,
+			wantLog:  `current result: unknown trials policy "adaptive"`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			var logged bytes.Buffer
+			log.SetOutput(&logged)
+			t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+			var out bytes.Buffer
+			code := run(append([]string{"compare"}, tc.args...), &out)
+			must.Equal(tc.wantCode, code, "stdout: %s\nlog: %s", out.String(), logged.String())
+			if tc.wantLog == "" {
+				must.Empty(logged.String())
+			} else {
+				must.Contains(logged.String(), tc.wantLog)
+			}
+			if tc.wantCode == 2 {
+				must.Empty(out.String(), "a refused compare printed a report")
+			}
+			for _, want := range tc.wantReport {
+				must.Contains(out.String(), want)
+			}
+		})
+	}
+}
