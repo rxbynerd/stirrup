@@ -134,10 +134,10 @@ The handler covers:
 It does not cover:
 
 - a secret with no recognised format;
-- security audit events. `security.SecurityLogger` writes them as JSON
-  lines of their own and scrubs their data with `security.ScrubMap`,
-  which handles string values, nested `map[string]any` and `[]any`.
-  Other typed values, such as a `[]string`, are written as given;
+- security audit events, which `security.SecurityLogger` writes as JSON
+  lines of their own and scrubs with `security.ScrubMap`, a function
+  that handles string values, nested `map[string]any` and `[]any` and
+  leaves other typed values, such as a `[]string`, as given;
 - text written without `slog`, such as the `Error:` line the CLI prints
   when a command fails.
 
@@ -180,8 +180,8 @@ crashed run leaves behind, is described in
 ### Recorded verification results
 
 The loop records one entry per verification attempt on the run trace
-(`verificationResults`). Every recorded string, that is the feedback,
-the error and each string in `details` at any depth, is scrubbed with
+(`verificationResults`). Every recorded string (the feedback, the
+error and each string in `details` at any depth) is scrubbed with
 the log patterns and then capped at 4 KiB, so a secret that straddles
 the cap is still redacted. A `details` value of any other type is
 normalised through a JSON round trip first, so a typed value cannot
@@ -192,7 +192,7 @@ event on the control stream.
 The persisted `RunConfig` is the output of `RunConfig.Redact()`, which
 strips secret references and provider URL detail but leaves command text
 as written. A literal value in `verifier.command` is therefore stored in
-the trace in clear, and operators must not put a secret there. The same
+the trace in clear text, and operators must not put a secret there. The same
 holds for the other command fields, such as hook and post-edit
 commands, which validation additionally rejects when they contain a
 `secret://` reference.
@@ -685,7 +685,7 @@ headers and in `tools/call` `_meta`, with no opt-out (see
 A `tools/call` response from an MCP server is bounded at three layers,
 because the server is untrusted:
 
-- **Response body: 10 MB.** The client reads at most 10 MB of a
+- **Response body: 10 MiB.** The client reads at most 10 MiB of a
   response. A larger body is cut, fails to decode, and the call returns
   an error.
 - **Structured envelope: 256 KiB.** The harness keeps the server's
@@ -746,9 +746,9 @@ stream, are:
 - absolute names, `..` components and duplicate names are refused;
 - only directories, regular files, symlinks and hard links are kept;
   other entry types, such as devices, FIFOs and sockets, are skipped;
-- a symlink with an absolute target is refused. A workspace that holds
-  one, such as a virtual environment that links its interpreter by
-  absolute path, fails the export;
+- a symlink with an absolute target is refused, so a workspace that
+  holds one, such as a virtual environment that links its interpreter
+  by absolute path, fails the export;
 - a symlink whose target, resolved through every symlink in the
   archive, leaves the workspace root, loops, or needs more than 40
   hops is refused;
@@ -781,9 +781,10 @@ not dereferenced.
 
 The workspace listing and git status in the system prompt are read
 through the run's executor. The prompt builder has no filesystem or
-git access of its own. Both are bounded because the agent chooses the names they
-hold: at most 200 entries and 8 KiB each, with a truncation marker, and
-file names containing control characters are left out of the listing.
+git access of its own. Both are bounded because the agent chooses the
+names they hold. Each is capped at 200 entries and 8 KiB, with a
+truncation marker, and file names containing control characters are
+left out of the listing.
 Git status runs only when the workspace is the top level of a
 repository, so the file names of an enclosing repository never appear.
 Each git invocation carries the harness's git hardening flags, which
@@ -792,17 +793,17 @@ disable repository hooks and the filesystem monitor.
 On the `container`, `k8s` and `k8s-sandbox` executors this means git
 runs inside the sandbox, so an agent-written `.git/config` is read by
 git in the sandbox and never by a git on the harness host. The `local`
-executor runs commands on the harness host by definition, so there git
-runs on the host in the workspace with the hardening flags, which are
-not a security boundary. The `api` executor cannot run commands and
+executor runs commands on the harness host by definition, so on that
+executor git runs on the host, in the workspace, with the hardening
+flags, which are not a security boundary. The `api` executor cannot run commands and
 omits the status section.
 
 ## Environment filtering
 
 When the local executor runs a shell command, the child process's
-environment is filtered to a 27-key allowlist of safe variables
-(`HOME`, `PATH`, `LANG`, `LC_*`, `SHELL`, language-specific build
-vars, etc.). Everything else is dropped.
+environment is filtered to an allowlist of 29 named variables plus any
+`LC_*` variable (`HOME`, `PATH`, `LANG`, `SHELL`, language-specific
+build vars, etc.). Everything else is dropped.
 
 The filter blocks:
 
@@ -870,7 +871,7 @@ The container executor applies these defaults regardless of what
   with `AutoRemove`. The engine removes it when the sleep ends, so a
   harness that exits uncleanly cannot leave a sandbox running past that
   bound. Each container carries the labels `stirrup.sandbox=true` and
-  `stirrup.run-id=<run ID>`.
+  `stirrup.run-id=<run-id>`.
 
 The workspace bind is *not* mounted `nosuid,nodev,noexec`. The
 legacy `Binds` string form can express those options to the kernel,
@@ -943,7 +944,7 @@ the same results and asking the model to change approach or finish with
 a final answer, emits a `warning` event, and clears the call window. The
 message is merged into the tool-result message and is not marked
 synthetic. Calls made in the batch that triggered the nudge do not count
-towards the next repetition. A repetition after the nudge ends the run.
+toward the next repetition. A repetition after the nudge ends the run.
 The consecutive-failure limit is not deferred by a nudge, so identical
 failing calls, which include calls a guard or the permission policy
 denied, draw a nudge at the third and end the run at the fifth.
@@ -951,7 +952,8 @@ denied, draw a nudge at the third and end the run at the fifth.
 The detector belongs to one inner loop, so a verification retry that
 re-enters the loop starts with a fresh window and can draw another
 nudge. A loop whose output differs on every call never repeats a
-signature and is bounded only by `maxTurns` and the token budget.
+signature and is bounded only by `maxTurns`, the token budget and the
+run `timeout`.
 
 This bounds the damage of a model that has lost the plot — without
 stall detection, a coerced or stuck model can burn through the
@@ -1098,7 +1100,7 @@ on it run in this order:
 1. The final message must be exactly one JSON document, bare or in one
    fenced block tagged `json` or untagged.
 2. A document containing a `__proto__` or `constructor` key, or a key
-   repeated within one object, is rejected. Unlike tool input, where
+   repeated within one object, is rejected. Unlike in tool input, where
    those keys are stripped, the model is asked to correct the document.
 3. The document is validated against the schema as the model sent it.
 4. Every string literal, keys and values alike, is scrubbed with the log
@@ -1221,7 +1223,7 @@ Controls layered from outside in:
    Stall detection: a repeated call pattern draws one nudge,
    a repeat after it ends the run; 5 consecutive failures end
    the run. Output that changes on every call is bounded only
-   by maxTurns and the budgets.
+   by maxTurns, the budgets and the run timeout.
 
   ── Post-session (outside the turn loop) ──────────────────
    postRun hooks: operator exec via the run's own Executor,

@@ -291,7 +291,7 @@ deterministic-rings philosophy that LLM guards are defence-in-depth on
 top of the rings, never the ring itself.
 
 **What it scans.** Before the first model call, the classifier reads
-the operator prompt, the sanitized dynamic-context values and any
+the operator prompt, the sanitised dynamic-context values and any
 loaded repository guidance. On every later turn it reads each freshly arrived `tool_result` block — both the
 text content and any structured JSON payload the adapters forward to
 the model — and the verifier feedback that opens a verification retry, *before* any LLM guard runs (deterministic-first, so a
@@ -310,8 +310,8 @@ could not read, is spotlighted in place (see
 [Guard input is scrubbed, and hidden spans are fenced](security.md#scrubbed-content-is-fenced)).
 Verifier feedback differs: the scan reads it as the verifier produced
 it, and the log scrubber then replaces pattern matches in the feedback
-in the model's history in every configuration, after the scan and after
-any `redact` rewrite. The model and a `pre_turn` guard therefore read
+held in the model's history. This happens in every configuration,
+after the scan and after any `redact` rewrite. The model and a `pre_turn` guard therefore read
 the same scrubbed text.
 
 **Two confidence tiers.** A *latch-tier* finding is high-confidence
@@ -845,7 +845,7 @@ and the session budget, plus the `postRun` hook budget, plus a
 10-minute margin, and the container is created with `AutoRemove`. The
 engine therefore removes it when the sleep ends, even if the harness
 died without closing the executor. The container carries the labels
-`stirrup.sandbox=true` and `stirrup.run-id=<run ID>` so a leftover
+`stirrup.sandbox=true` and `stirrup.run-id=<run-id>` so a leftover
 sandbox can be found and attributed to its run.
 
 ### Failure mode
@@ -1469,8 +1469,9 @@ exist; they are not claimed to cover them.
   policy has approved the edit call. Cedar never evaluates a check
   command, the Rule of Two ignores `tools.postEdit` when it computes its
   static legs, and the code scanner never inspects a file a check
-  writes. Rings 1 and 2 apply, because the checks inherit the sandbox's
-  runtime class and egress posture. A check's output is untrusted:
+  writes. On the sandbox executors Rings 1 and 2 apply, because the
+  checks inherit the sandbox's runtime class and egress posture; the
+  `local` executor has neither to inherit. A check's output is untrusted:
   failure diagnostics are scrubbed, capped, fenced as data and returned
   to the model as part of the edit tool's result, where the runtime
   classifier and a `pre_turn` guard screen them like any other tool

@@ -17,8 +17,9 @@ whether and how to enable guardrails for the first time — what each
 phase does, what to expect at runtime, and how to bring the upstream
 classifier online — not for an engineer reading the source.
 
-If you only have time for two things, read [§ When to enable each
-phase](#when-to-enable-each-phase) and [§ Fail-open posture](#fail-open-posture).
+A reader with time for only two sections should start with [§ When to
+enable each phase](#when-to-enable-each-phase) and [§ Fail-open
+posture](#fail-open-posture).
 Those set expectations; the rest is detail.
 
 ## Overview
@@ -188,7 +189,7 @@ apply to read tools.
   repository guidance file the run loaded, pinned or advisory. The
   default list is empty. An advisory guidance file that was missing at
   load time is not protected, and a later run loads it if the agent
-  created it. Sub-agents inherit the set.
+  has created it. Sub-agents inherit the set.
 - **Entries.** A workspace-relative literal path. An entry ending in
   `/` protects that directory and everything beneath it; any other
   entry protects exactly that path. Validation rejects empty entries,
@@ -205,8 +206,12 @@ apply to read tools.
 - **Matching.** Case-insensitive. The value is normalised (backslashes
   become slashes, surrounding quotes and a leading `./` are dropped,
   `..` segments are cleaned) and is also compared after the executor
-  resolves it, so an absolute or symlinked spelling of a protected path
-  matches.
+  resolves it. On the `local` executor, which resolves symlinks, an
+  absolute or symlinked spelling of a protected path matches. On the
+  sandbox executors (`container`, `k8s` and `k8s-sandbox`) the
+  resolution is textual, so only lexical spellings and absolute
+  `/workspace/...` spellings match, and a symlink inside the workspace
+  that points at a protected file is not caught.
 - **Result.** The call fails with the category `security_guard_denied`,
   and the model sees only that the security guard rejected the call.
   The `tool_call_guard_triggered` event names the rule
@@ -299,8 +304,8 @@ This is the default when `GuardRail` is unset or `Type: ""`.
 [Granite Guardian 4.1-8B](https://huggingface.co/ibm-granite/granite-guardian-4.1-8b)
 served via vLLM (or any OpenAI-compatible chat completions endpoint).
 The harness ships vetted criteria text per phase and constructs the
-classifier prompt — you supply only the endpoint and (optionally) a
-model name and bespoke criteria.
+classifier prompt, so the operator supplies only the endpoint and
+(optionally) a model name and bespoke criteria.
 
 The adapter is intentionally narrow: it owns the Granite prompt
 template and parses the `<score>yes|no</score>` verdict head, but
