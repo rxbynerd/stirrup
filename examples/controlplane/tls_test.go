@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -9,18 +10,21 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 
 	harnessv1 "github.com/rxbynerd/stirrup/gen/harness/v1"
 )
@@ -91,7 +95,8 @@ func newTestPKI(t *testing.T) testPKI {
 
 func writeTestPEM(t *testing.T, path, blockType string, der []byte) {
 	t.Helper()
-	require.New(t).NoError(os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: blockType, Bytes: der}), 0o600))
+	must := require.New(t)
+	must.NoError(os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: blockType, Bytes: der}), 0o600))
 }
 
 func TestTLSFiles_PlaintextWhenUnset(t *testing.T) {
@@ -99,30 +104,52 @@ func TestTLSFiles_PlaintextWhenUnset(t *testing.T) {
 	sec, err := tlsFiles{}.security()
 	must.NoError(err)
 	must.Nil(sec.creds)
-	must.Empty(sec.serverOptions())
 	must.Equal("plaintext, unauthenticated", sec.label)
 }
 
 func TestTLSFiles_RejectsIncompleteOrUnreadableSettings(t *testing.T) {
+	must := require.New(t)
 	p := newTestPKI(t)
 	notPEM := filepath.Join(t.TempDir(), "not.pem")
-	require.New(t).NoError(os.WriteFile(notPEM, []byte("not a certificate"), 0o600))
+	must.NoError(os.WriteFile(notPEM, []byte("not a certificate"), 0o600))
 	absent := filepath.Join(t.TempDir(), "absent.pem")
 	tests := []struct {
-		name  string
-		files tlsFiles
+		name    string
+		files   tlsFiles
+		wantErr string
 	}{
-		{"certificate without key", tlsFiles{certFile: p.serverCert}},
-		{"key without certificate", tlsFiles{keyFile: p.serverKey}},
-		{"client CA without server certificate", tlsFiles{clientCAFile: p.caFile}},
-		{"missing certificate file", tlsFiles{certFile: absent, keyFile: p.serverKey}},
-		{"missing client CA file", tlsFiles{certFile: p.serverCert, keyFile: p.serverKey, clientCAFile: absent}},
-		{"client CA without certificates", tlsFiles{certFile: p.serverCert, keyFile: p.serverKey, clientCAFile: notPEM}},
+		{"certificate without key", tlsFiles{certFile: p.serverCert}, "must be set together"},
+		{"key without certificate", tlsFiles{keyFile: p.serverKey}, "must be set together"},
+		{"client CA without server certificate", tlsFiles{clientCAFile: p.caFile}, "must be set together"},
+		{"missing certificate file", tlsFiles{certFile: absent, keyFile: p.serverKey}, "load server certificate and key"},
+		{"missing client CA file", tlsFiles{certFile: p.serverCert, keyFile: p.serverKey, clientCAFile: absent}, "read client CA file"},
+		{"client CA without certificates", tlsFiles{certFile: p.serverCert, keyFile: p.serverKey, clientCAFile: notPEM}, "contains no PEM certificates"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
 			_, err := tc.files.security()
-			require.New(t).Error(err)
+			must.ErrorContains(err, tc.wantErr)
+		})
+	}
+}
+
+func TestRun_RejectsEmptyTLSFlags(t *testing.T) {
+	p := newTestPKI(t)
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"empty certificate and key", []string{"-tls-cert", "", "-tls-key", ""}},
+		{"empty client CA beside a certificate and key", []string{"-tls-cert", p.serverCert, "-tls-key", p.serverKey, "-tls-client-ca", ""}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			var stderr bytes.Buffer
+			args := append([]string{"-config", "smoke-runconfig.json", "-listen", "127.0.0.1:0"}, tc.args...)
+			must.Equal(exitUsage, run(args, strings.NewReader(""), io.Discard, &stderr))
+			must.Contains(stderr.String(), "is set but empty")
 		})
 	}
 }
@@ -135,76 +162,122 @@ func startSecuredServer(t *testing.T, sec listenSecurity) string {
 	srv, _, _ := testServer(t, permissionDeny, "")
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	must.NoError(err)
-	gs := grpc.NewServer(sec.serverOptions()...)
-	harnessv1.RegisterHarnessServiceServer(gs, srv)
+	gs := newGRPCServer(srv, sec)
 	go func() { _ = gs.Serve(lis) }()
 	t.Cleanup(gs.Stop)
 	return lis.Addr().String()
 }
 
 // assignmentOver opens a RunTask stream with creds, sends ready and returns
-// the error from receiving the task assignment.
-func assignmentOver(t *testing.T, addr string, creds credentials.TransportCredentials) error {
+// the first event the control plane sends back.
+func assignmentOver(t *testing.T, addr string, creds credentials.TransportCredentials) (*harnessv1.ControlEvent, error) {
 	t.Helper()
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(creds))
-	require.New(t).NoError(err)
-	t.Cleanup(func() { _ = conn.Close() })
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = conn.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	t.Cleanup(cancel)
+	defer cancel()
 	stream, err := harnessv1.NewHarnessServiceClient(conn).RunTask(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := stream.Send(&harnessv1.HarnessEvent{Type: "ready"}); err != nil {
-		return err
+		return nil, err
 	}
-	_, err = stream.Recv()
-	return err
+	return stream.Recv()
 }
 
-func TestServe_MutualTLSAssignsOnlyToTrustedClients(t *testing.T) {
+func clientTLS(pool *x509.CertPool, certs ...tls.Certificate) credentials.TransportCredentials {
+	return credentials.NewTLS(&tls.Config{RootCAs: pool, Certificates: certs, MinVersion: tls.VersionTLS12})
+}
+
+func TestNewGRPCServer_MutualTLSRefusesUntrustedClients(t *testing.T) {
+	must := require.New(t)
 	p := newTestPKI(t)
 	sec, err := tlsFiles{certFile: p.serverCert, keyFile: p.serverKey, clientCAFile: p.caFile}.security()
-	require.New(t).NoError(err)
-	require.New(t).Equal("mutual TLS", sec.label)
+	must.NoError(err)
+	must.Equal("mutual TLS", sec.label)
 
 	clientCert, err := tls.LoadX509KeyPair(p.clientCert, p.clientKey)
-	require.New(t).NoError(err)
-	otherCA := newTestPKI(t)
-	strangerCert, err := tls.LoadX509KeyPair(otherCA.clientCert, otherCA.clientKey)
-	require.New(t).NoError(err)
+	must.NoError(err)
+	strangerPKI := newTestPKI(t)
+	strangerCert, err := tls.LoadX509KeyPair(strangerPKI.clientCert, strangerPKI.clientKey)
+	must.NoError(err)
 
-	tests := []struct {
-		name    string
-		creds   credentials.TransportCredentials
-		wantErr bool
+	// One server for every case: the refused clients must not claim its
+	// single session, so the trusted client that follows is still assigned.
+	addr := startSecuredServer(t, sec)
+	refused := []struct {
+		name  string
+		creds credentials.TransportCredentials
 	}{
-		{"trusted client certificate", credentials.NewTLS(&tls.Config{RootCAs: p.pool, Certificates: []tls.Certificate{clientCert}, MinVersion: tls.VersionTLS13}), false},
-		{"no client certificate", credentials.NewTLS(&tls.Config{RootCAs: p.pool, MinVersion: tls.VersionTLS13}), true},
-		{"certificate from another CA", credentials.NewTLS(&tls.Config{RootCAs: p.pool, Certificates: []tls.Certificate{strangerCert}, MinVersion: tls.VersionTLS13}), true},
-		{"plaintext client", insecure.NewCredentials(), true},
+		{"plaintext client", insecure.NewCredentials()},
+		{"no client certificate", clientTLS(p.pool)},
+		{"certificate from another CA", clientTLS(p.pool, strangerCert)},
+		{"TLS 1.2 client", credentials.NewTLS(&tls.Config{RootCAs: p.pool, Certificates: []tls.Certificate{clientCert}, MaxVersion: tls.VersionTLS12})},
 	}
-	for _, tc := range tests {
+	for _, tc := range refused {
 		t.Run(tc.name, func(t *testing.T) {
-			check := assert.New(t)
-			addr := startSecuredServer(t, sec)
-			err := assignmentOver(t, addr, tc.creds)
-			if tc.wantErr {
-				check.Error(err)
-			} else {
-				check.NoError(err)
-			}
+			must := require.New(t)
+			_, err := assignmentOver(t, addr, tc.creds)
+			must.Equal(codes.Unavailable, status.Code(err), "error = %v", err)
 		})
 	}
+
+	ev, err := assignmentOver(t, addr, clientTLS(p.pool, clientCert))
+	must.NoError(err)
+	must.Equal("task_assignment", ev.GetType())
 }
 
-func TestServe_TLSWithoutClientCAAcceptsAnyTLSClient(t *testing.T) {
+func TestNewGRPCServer_TLSWithoutClientCAAcceptsAnyTLSClient(t *testing.T) {
 	must := require.New(t)
 	p := newTestPKI(t)
 	sec, err := tlsFiles{certFile: p.serverCert, keyFile: p.serverKey}.security()
 	must.NoError(err)
 	must.Equal("TLS, clients unauthenticated", sec.label)
 
-	must.NoError(assignmentOver(t, startSecuredServer(t, sec), credentials.NewTLS(&tls.Config{RootCAs: p.pool, MinVersion: tls.VersionTLS13})))
-	must.Error(assignmentOver(t, startSecuredServer(t, sec), insecure.NewCredentials()))
+	addr := startSecuredServer(t, sec)
+	_, err = assignmentOver(t, addr, insecure.NewCredentials())
+	must.Equal(codes.Unavailable, status.Code(err), "error = %v", err)
+	ev, err := assignmentOver(t, addr, clientTLS(p.pool))
+	must.NoError(err)
+	must.Equal("task_assignment", ev.GetType())
+}
+
+func TestServe_MutualTLSRunsSessionToSuccess(t *testing.T) {
+	must := require.New(t)
+	p := newTestPKI(t)
+	sec, err := tlsFiles{certFile: p.serverCert, keyFile: p.serverKey, clientCAFile: p.caFile}.security()
+	must.NoError(err)
+	clientCert, err := tls.LoadX509KeyPair(p.clientCert, p.clientKey)
+	must.NoError(err)
+
+	srv, _, _ := testServer(t, permissionDeny, "")
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	must.NoError(err)
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(clientTLS(p.pool, clientCert)))
+	must.NoError(err)
+	defer func() { _ = conn.Close() }()
+	clientErr := make(chan error, 1)
+	go func() {
+		stream, err := harnessv1.NewHarnessServiceClient(conn).RunTask(context.Background())
+		if err != nil {
+			clientErr <- err
+			return
+		}
+		if err := stream.Send(&harnessv1.HarnessEvent{Type: "ready"}); err != nil {
+			clientErr <- err
+			return
+		}
+		if _, err := stream.Recv(); err != nil {
+			clientErr <- err
+			return
+		}
+		clientErr <- stream.Send(&harnessv1.HarnessEvent{Type: "done", StopReason: "success"})
+	}()
+
+	must.Equal(exitSuccess, serve(lis, srv, sec, io.Discard))
+	must.NoError(<-clientErr)
 }
