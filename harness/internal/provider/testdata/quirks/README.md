@@ -10,7 +10,7 @@ breaking end-to-end against a live provider.
 
 ```
 testdata/quirks/<provider-type>/<model>/
-    request.json     # golden outbound request body (one tool-enabled turn)
+    request.json     # golden outbound request body (one tool-enabled turn, or one tool-less judge turn for the output-schema fixtures)
     response.sse      # captured streaming response for parser tests
     replay.json       # captured ReplayFields snapshot (ReplayFields rules)
 ```

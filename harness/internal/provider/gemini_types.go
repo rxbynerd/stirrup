@@ -137,15 +137,17 @@ type geminiSafetySetting struct {
 // types so the JSON encoder can omit unset values (omitempty alone is
 // ambiguous for zero floats).
 type geminiGenerationConfig struct {
-	Temperature     *float64              `json:"temperature,omitempty"`
-	MaxOutputTokens int                   `json:"maxOutputTokens,omitempty"`
-	ThinkingConfig  *geminiThinkingConfig `json:"thinkingConfig,omitempty"`
-	ResponseFormat  *geminiResponseFormat `json:"responseFormat,omitempty"`
+	Temperature     *float64               `json:"temperature,omitempty"`
+	MaxOutputTokens int                    `json:"maxOutputTokens,omitempty"`
+	ThinkingConfig  *geminiThinkingConfig  `json:"thinkingConfig,omitempty"`
+	ResponseFormat  []geminiResponseFormat `json:"responseFormat,omitempty"`
 }
 
-// geminiResponseFormat is generationConfig.responseFormat, the per-modality
-// output format object that supersedes the deprecated responseMimeType /
-// responseSchema pair. Only the text modality is sent.
+// geminiResponseFormat is one element of generationConfig.responseFormat,
+// the per-modality output format that Vertex AI documents as a repeated
+// field superseding the deprecated responseMimeType / responseSchema pair
+// (the AI Studio surface documents the same members as a single object).
+// Only the text modality is sent.
 type geminiResponseFormat struct {
 	Text *geminiTextResponseFormat `json:"text,omitempty"`
 }

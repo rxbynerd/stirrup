@@ -12,11 +12,12 @@ import (
 )
 
 // classifyStatusError marks err, built from a terminal non-2xx pre-stream
-// response, as retryable for the agentic loop's turn retry when the
-// status is one DoWithRetry would retry and the body names no billing or
-// quota limit. Authentication failures and other 4xx request errors stay
-// non-retryable.
+// response, with its HTTP status, and as retryable for the agentic loop's
+// turn retry when the status is one DoWithRetry would retry and the body
+// names no billing or quota limit. Authentication failures and other 4xx
+// request errors stay non-retryable.
 func classifyStatusError(err error, status int, body []byte) error {
+	err = types.MarkHTTPStatus(err, status)
 	if !retryableStatus(status) {
 		return err
 	}
@@ -26,6 +27,15 @@ func classifyStatusError(err error, status int, body []byte) error {
 		}
 	}
 	return types.MarkRetryable(err)
+}
+
+// IsRequestRejected reports whether err is a terminal 4xx response other
+// than 429: the provider refused the request as sent, so re-sending the
+// same body cannot succeed, while a request without an optional field
+// such as an output schema might.
+func IsRequestRejected(err error) bool {
+	status, ok := types.HTTPStatus(err)
+	return ok && status >= 400 && status < 500 && status != http.StatusTooManyRequests
 }
 
 // classifyTransportError marks err as retryable when it is a transport

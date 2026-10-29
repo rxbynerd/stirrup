@@ -115,12 +115,6 @@ func BuildGenerateContentRequest(
 	outputSchema := projectOutputSchema(params.OutputSchema, q.OutputSchema)
 	if params.MaxTokens > 0 || sendTemperature || params.ReasoningEffort != "" || includeThoughts || outputSchema != nil {
 		gc := &geminiGenerationConfig{}
-		if outputSchema != nil {
-			gc.ResponseFormat = &geminiResponseFormat{Text: &geminiTextResponseFormat{
-				MimeType: "APPLICATION_JSON",
-				Schema:   outputSchema.Schema,
-			}}
-		}
 		if params.MaxTokens > 0 {
 			gc.MaxOutputTokens = params.MaxTokens
 		}
@@ -133,6 +127,12 @@ func BuildGenerateContentRequest(
 				ThinkingLevel:   strings.ToUpper(params.ReasoningEffort),
 				IncludeThoughts: includeThoughts,
 			}
+		}
+		if outputSchema != nil {
+			gc.ResponseFormat = []geminiResponseFormat{{Text: &geminiTextResponseFormat{
+				MimeType: "APPLICATION_JSON",
+				Schema:   outputSchema.Schema,
+			}}}
 		}
 		req.GenerationConfig = gc
 	}

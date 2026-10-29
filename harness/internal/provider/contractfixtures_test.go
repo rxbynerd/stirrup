@@ -181,14 +181,16 @@ func TestResponsesContract_OutputSchemaRequestBody(t *testing.T) {
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath("testdata", "quirks", "openai-responses", "gpt-5.5", "request.json"), body)
 }
 
-// TestGeminiContract_OutputSchemaRequestBody pins
-// generationConfig.responseFormat.text beside thinkingConfig on a Gemini
-// 3.8 Flash judge turn.
+// TestGeminiContract_OutputSchemaRequestBody pins the Vertex AI
+// generationConfig.responseFormat array beside thinkingConfig on a Gemini
+// 3.8 Flash judge turn. No built-in rule grants a Gemini model, so the
+// capability is advertised in-test.
 func TestGeminiContract_OutputSchemaRequestBody(t *testing.T) {
 	must := require.New(t)
 	params := outputSchemaFixtureParams("gemini-3.8-flash")
 	params.ReasoningEffort = "low"
 	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "gemini", Model: params.Model})
+	q.OutputSchema = quirks.OutputSchemaCapability{Supported: true}
 	body, _, err := BuildGenerateContentRequest(params, nil, q)
 	must.NoError(err, "build gemini request")
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath("testdata", "quirks", "gemini", "gemini-3.8-flash", "request.json"), body)

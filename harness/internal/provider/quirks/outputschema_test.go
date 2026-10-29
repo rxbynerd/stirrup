@@ -7,11 +7,11 @@ import (
 )
 
 // TestOutputSchema_CapabilityRules pins which models advertise JSON Schema
-// structured outputs: the Claude 5.x and Opus 4.7+ families, gpt-5 and
-// gpt-6 on both OpenAI wires (gateway-prefixed on Chat Completions too),
-// and Gemini 3. Everything else, including open-weight and unknown
-// models, resolves to no support so the judges keep their prompt-only
-// contract.
+// structured outputs: the Claude 5.x and Opus 4.7/4.8 families, and gpt-5
+// and gpt-6 on both OpenAI wires (gateway-prefixed on Chat Completions
+// too). Everything else, including Gemini (unprobed on Vertex AI),
+// open-weight and unknown models, resolves to no support so the judges
+// keep their prompt-only contract.
 func TestOutputSchema_CapabilityRules(t *testing.T) {
 	granted := []Target{
 		{ProviderType: "anthropic", Model: "claude-opus-4-7"},
@@ -30,8 +30,6 @@ func TestOutputSchema_CapabilityRules(t *testing.T) {
 		{ProviderType: "openai-responses", Model: "gpt-5.4-mini"},
 		{ProviderType: "openai-responses", Model: "gpt-6-astra"},
 		{ProviderType: "openai-responses", Endpoint: "generic", Model: "gpt-5.5"},
-		{ProviderType: "gemini", Model: "gemini-3.8-flash"},
-		{ProviderType: "gemini", Model: "gemini-3.1-pro-preview"},
 	}
 	for _, target := range granted {
 		t.Run("granted/"+target.ProviderType+"/"+target.Model, func(t *testing.T) {
@@ -52,6 +50,8 @@ func TestOutputSchema_CapabilityRules(t *testing.T) {
 		{ProviderType: "openai-responses", Model: "gpt-4o"},
 		{ProviderType: "openai-responses", Model: "o3"},
 		{ProviderType: "gemini", Model: "gemini-2.5-pro"},
+		{ProviderType: "gemini", Model: "gemini-3.8-flash"},
+		{ProviderType: "gemini", Model: "gemini-3.1-pro-preview"},
 		{ProviderType: "bedrock", Model: "us.anthropic.claude-haiku-5-5"},
 		{ProviderType: "replay", Model: "claude-haiku-5-5"},
 		{ProviderType: "mystery-provider", Model: "some-model"},
@@ -90,12 +90,5 @@ func TestOutputSchema_ComposesWithSiblingRules(t *testing.T) {
 		must.True(q.OutputSchema.Supported)
 		must.True(q.BehaviourFlags.OpenAI.ToolsRequireResponses)
 		must.True(q.BehaviourFlags.OpenAI.StrictMode)
-	})
-
-	t.Run("gemini-3.8 keeps user tool-result role", func(t *testing.T) {
-		must := require.New(t)
-		q := DefaultRegistry().Resolve(Target{ProviderType: "gemini", Model: "gemini-3.8-flash"})
-		must.True(q.OutputSchema.Supported)
-		must.Equal(ToolResultRoleUser, q.BehaviourFlags.Gemini.ToolResultRole)
 	})
 }

@@ -661,8 +661,9 @@ func BuiltinRules() []Rule {
 
 		// JSON Schema structured outputs. Each entry is a positive
 		// allow-list: an unlisted model keeps the prompt-only JSON contract
-		// the judges fall back to. Anthropic lists the 4.5 and 4.6
-		// generations too; they are left unruled until probed.
+		// the judges fall back to. The Anthropic 4.5 and 4.6 generations
+		// and Gemini 3 (responseFormat, unprobed on Vertex AI) carry no
+		// rule.
 		{
 			ProviderType: "anthropic",
 			ModelMatch:   "claude-opus-4-[7-8]*",
@@ -744,13 +745,6 @@ func BuiltinRules() []Rule {
 			ProviderType: "openai-responses",
 			ModelMatch:   "gpt-6*",
 			Description:  "OpenAI Responses gpt-6 family: structured outputs via text.format json_schema strict (documented, not probed)",
-			LastVerified: Date("2026-10-29"),
-			Apply:        applyOutputSchema,
-		},
-		{
-			ProviderType: "gemini",
-			ModelMatch:   "gemini-3*",
-			Description:  "Gemini 3: structured outputs via generationConfig.responseFormat.text json schema (documented, not probed)",
 			LastVerified: Date("2026-10-29"),
 			Apply:        applyOutputSchema,
 		},

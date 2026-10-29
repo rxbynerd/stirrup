@@ -1,4 +1,4 @@
-# synthetic: judge-shaped turn (no tools) pinning generationConfig.responseFormat.text beside thinkingConfig; temperature omitted by the gemini-3.8* rule. Documented, not probed.
+# synthetic: judge-shaped turn (no tools) pinning the Vertex AI generationConfig.responseFormat array beside thinkingConfig; temperature omitted by the gemini-3.8* rule. No built-in rule grants the capability (unprobed on Vertex AI); the test advertises it.
 {
   "contents": [
     {
@@ -44,34 +44,36 @@
     "thinkingConfig": {
       "thinkingLevel": "LOW"
     },
-    "responseFormat": {
-      "text": {
-        "mimeType": "APPLICATION_JSON",
-        "schema": {
-          "type": "object",
-          "properties": {
-            "nonce": {
-              "type": "string"
+    "responseFormat": [
+      {
+        "text": {
+          "mimeType": "APPLICATION_JSON",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "nonce": {
+                "type": "string"
+              },
+              "reasoning": {
+                "type": "string"
+              },
+              "verdict": {
+                "type": "string",
+                "enum": [
+                  "allow",
+                  "deny"
+                ]
+              }
             },
-            "reasoning": {
-              "type": "string"
-            },
-            "verdict": {
-              "type": "string",
-              "enum": [
-                "allow",
-                "deny"
-              ]
-            }
-          },
-          "required": [
-            "nonce",
-            "reasoning",
-            "verdict"
-          ],
-          "additionalProperties": false
+            "required": [
+              "nonce",
+              "reasoning",
+              "verdict"
+            ],
+            "additionalProperties": false
+          }
         }
       }
-    }
+    ]
   }
 }

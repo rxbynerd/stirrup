@@ -2,6 +2,7 @@ package types
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -23,25 +24,46 @@ func TestOutputSchema_Validate(t *testing.T) {
 		must.Error(s.Validate())
 	})
 
-	t.Run("rejects an empty or malformed name", func(t *testing.T) {
-		for _, name := range []string{"", "has space", "ünïcode", "a/b", string(make([]byte, 65))} {
+	badNames := []struct {
+		name  string
+		value string
+	}{
+		{"empty", ""},
+		{"space", "has space"},
+		{"non-ascii", "ünïcode"},
+		{"slash", "a/b"},
+		{"65 characters", strings.Repeat("a", 65)},
+	}
+	for _, tc := range badNames {
+		t.Run("rejects name "+tc.name, func(t *testing.T) {
 			must := require.New(t)
-			s := &OutputSchema{Name: name, Schema: json.RawMessage(`{"type":"object"}`)}
-			must.Error(s.Validate(), "name %q", name)
-		}
-	})
+			s := &OutputSchema{Name: tc.value, Schema: json.RawMessage(`{"type":"object"}`)}
+			must.Error(s.Validate())
+		})
+	}
 
-	t.Run("rejects a non-object schema", func(t *testing.T) {
-		for _, raw := range []string{``, `null`, `[]`, `"string"`, `{"type":`} {
+	badSchemas := []struct {
+		name string
+		raw  string
+	}{
+		{"empty", ``},
+		{"null", `null`},
+		{"array", `[]`},
+		{"string", `"string"`},
+		{"truncated", `{"type":`},
+	}
+	for _, tc := range badSchemas {
+		t.Run("rejects schema "+tc.name, func(t *testing.T) {
 			must := require.New(t)
-			s := &OutputSchema{Name: "verdict", Schema: json.RawMessage(raw)}
-			must.Error(s.Validate(), "schema %q", raw)
-		}
-	})
+			s := &OutputSchema{Name: "verdict", Schema: json.RawMessage(tc.raw)}
+			must.Error(s.Validate())
+		})
+	}
 }
 
-// TestStreamParams_MarshalOmitsNilOutputSchema pins that a request without
-// a schema serialises byte-identically to before the field existed.
+// TestStreamParams_MarshalOmitsNilOutputSchema pins that the outputSchema
+// key is omitted when no schema is set and carries name and schema when
+// one is.
 func TestStreamParams_MarshalOmitsNilOutputSchema(t *testing.T) {
 	must := require.New(t)
 	b, err := json.Marshal(StreamParams{Model: "m"})

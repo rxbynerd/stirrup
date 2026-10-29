@@ -29,6 +29,15 @@ func outputSchemaParams(model string) types.StreamParams {
 	}
 }
 
+// grantedQuirks resolves the built-in quirks for target and advertises the
+// OutputSchema capability on top, for adapters whose registry carries no
+// rule yet.
+func grantedQuirks(target quirks.Target) quirks.ProviderQuirks {
+	q := quirks.DefaultRegistry().Resolve(target)
+	q.OutputSchema = quirks.OutputSchemaCapability{Supported: true}
+	return q
+}
+
 // TestProjectOutputSchema_GatesOnCapabilityAndValidity pins the shared
 // gate every adapter projects through: a schema reaches the wire only
 // when requested, advertised, and valid.
@@ -96,9 +105,34 @@ func TestLogDroppedOutputSchema_LevelsByCause(t *testing.T) {
 	})
 }
 
-// TestAnthropicOutputSchema_Projection pins the output_config.format shape
-// and that an unruled model sends no output_config at all.
-func TestAnthropicOutputSchema_Projection(t *testing.T) {
+// TestIsRequestRejected_StatusClasses pins which provider errors count as
+// the provider refusing the request as sent.
+func TestIsRequestRejected_StatusClasses(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"400 is a rejection", classifyStatusError(errBase, 400, nil), true},
+		{"422 is a rejection", classifyStatusError(errBase, 422, nil), true},
+		{"401 is a rejection", classifyStatusError(errBase, 401, nil), true},
+		{"429 is a rate limit, not a rejection", classifyStatusError(errBase, 429, nil), false},
+		{"500 is not a rejection", classifyStatusError(errBase, 500, nil), false},
+		{"transport error carries no status", classifyTransportError(errBase), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, IsRequestRejected(tc.err))
+		})
+	}
+}
+
+var errBase = context.DeadlineExceeded
+
+// TestBuildAnthropicRequest_OutputSchemaFormat pins the output_config.format
+// shape and that an unruled model sends no output_config at all.
+func TestBuildAnthropicRequest_OutputSchemaFormat(t *testing.T) {
 	t.Run("granted model emits output_config.format json_schema", func(t *testing.T) {
 		must := require.New(t)
 		params := outputSchemaParams("claude-haiku-5-5")
@@ -131,9 +165,10 @@ func TestAnthropicOutputSchema_Projection(t *testing.T) {
 	})
 }
 
-// TestOpenAIOutputSchema_Projection pins the Chat Completions
-// response_format shape, its round trip, and the ungranted no-op.
-func TestOpenAIOutputSchema_Projection(t *testing.T) {
+// TestBuildOpenAIRequest_OutputSchemaResponseFormat pins the Chat
+// Completions response_format shape, its round trip, and the ungranted
+// no-op.
+func TestBuildOpenAIRequest_OutputSchemaResponseFormat(t *testing.T) {
 	t.Run("granted model emits strict json_schema response_format", func(t *testing.T) {
 		must := require.New(t)
 		params := outputSchemaParams("gpt-5-nano")
@@ -182,11 +217,18 @@ func TestOpenAIOutputSchema_Projection(t *testing.T) {
 		_, err := json.Marshal(req)
 		must.ErrorContains(err, "response_format")
 	})
+
+	t.Run("malformed response_format fails to decode", func(t *testing.T) {
+		must := require.New(t)
+		var back openaiRequest
+		must.ErrorContains(json.Unmarshal([]byte(`{"model":"m","messages":[],"stream":false,"max_completion_tokens":1,"response_format":"x"}`), &back), "response_format")
+	})
 }
 
-// TestResponsesOutputSchema_Projection pins the Responses text.format
-// shape, its position before prompt_cache_key, and the round trip.
-func TestResponsesOutputSchema_Projection(t *testing.T) {
+// TestBuildResponsesRequest_OutputSchemaTextFormat pins the Responses
+// text.format shape, its position before prompt_cache_key, and the round
+// trip.
+func TestBuildResponsesRequest_OutputSchemaTextFormat(t *testing.T) {
 	t.Run("granted model emits text.format json_schema", func(t *testing.T) {
 		must := require.New(t)
 		params := outputSchemaParams("gpt-5.5")
@@ -211,7 +253,11 @@ func TestResponsesOutputSchema_Projection(t *testing.T) {
 		must.Equal("verdict", got.Text.Format.Name)
 		must.True(got.Text.Format.Strict)
 		must.JSONEq(string(verdictOutputSchema().Schema), string(got.Text.Format.Schema))
-		must.Less(bytes.Index(body, []byte(`"text"`)), bytes.Index(body, []byte(`"prompt_cache_key"`)), "prompt_cache_key stays last")
+		textAt := bytes.Index(body, []byte(`"text":{"format"`))
+		cacheAt := bytes.Index(body, []byte(`"prompt_cache_key"`))
+		must.Positive(textAt)
+		must.Positive(cacheAt)
+		must.Less(textAt, cacheAt, "prompt_cache_key stays last")
 
 		var back responsesRequest
 		must.NoError(json.Unmarshal(body, &back))
@@ -229,42 +275,118 @@ func TestResponsesOutputSchema_Projection(t *testing.T) {
 		must.NoError(err)
 		must.NotContains(string(body), `"format"`)
 	})
+
+	t.Run("malformed text object fails to decode", func(t *testing.T) {
+		must := require.New(t)
+		var back responsesRequest
+		must.ErrorContains(json.Unmarshal([]byte(`{"model":"m","input":[],"store":false,"text":1}`), &back), "text")
+	})
 }
 
-// TestGeminiOutputSchema_Projection pins generationConfig.responseFormat
-// and that the deprecated responseMimeType / responseSchema pair is not
-// sent.
-func TestGeminiOutputSchema_Projection(t *testing.T) {
-	t.Run("granted model emits responseFormat.text", func(t *testing.T) {
+// TestBuildGenerateContentRequest_OutputSchemaResponseFormat pins the
+// Vertex AI responseFormat array shape, that the deprecated
+// responseMimeType / responseSchema pair is not sent, that a schema alone
+// is enough to emit generationConfig, and that the built-in registry
+// grants no Gemini model.
+func TestBuildGenerateContentRequest_OutputSchemaResponseFormat(t *testing.T) {
+	type responseFormat struct {
+		Text struct {
+			MimeType string          `json:"mimeType"`
+			Schema   json.RawMessage `json:"schema"`
+		} `json:"text"`
+	}
+	type body struct {
+		GenerationConfig struct {
+			ResponseFormat []responseFormat `json:"responseFormat"`
+			ThinkingConfig json.RawMessage  `json:"thinkingConfig"`
+		} `json:"generationConfig"`
+	}
+
+	t.Run("granted capability emits a one-element responseFormat array", func(t *testing.T) {
+		must := require.New(t)
+		params := outputSchemaParams("gemini-3.8-flash")
+		raw, _, err := BuildGenerateContentRequest(params, nil, grantedQuirks(quirks.Target{ProviderType: "gemini", Model: params.Model}))
+		must.NoError(err)
+		var got body
+		must.NoError(json.Unmarshal(raw, &got))
+		must.Len(got.GenerationConfig.ResponseFormat, 1)
+		must.Equal("APPLICATION_JSON", got.GenerationConfig.ResponseFormat[0].Text.MimeType)
+		must.JSONEq(string(verdictOutputSchema().Schema), string(got.GenerationConfig.ResponseFormat[0].Text.Schema))
+		must.NotContains(string(raw), "responseMimeType")
+		must.NotContains(string(raw), "responseSchema")
+	})
+
+	t.Run("schema alone emits generationConfig", func(t *testing.T) {
 		must := require.New(t)
 		params := outputSchemaParams("gemini-3.8-flash")
 		params.MaxTokens = 0
-		q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "gemini", Model: params.Model})
-		body, _, err := BuildGenerateContentRequest(params, nil, q)
+		params.ReasoningSummary = types.ReasoningSummaryOff
+		raw, _, err := BuildGenerateContentRequest(params, nil, grantedQuirks(quirks.Target{ProviderType: "gemini", Model: params.Model}))
 		must.NoError(err)
-		var got struct {
-			GenerationConfig struct {
-				ResponseFormat struct {
-					Text struct {
-						MimeType string          `json:"mimeType"`
-						Schema   json.RawMessage `json:"schema"`
-					} `json:"text"`
-				} `json:"responseFormat"`
-			} `json:"generationConfig"`
-		}
-		must.NoError(json.Unmarshal(body, &got))
-		must.Equal("APPLICATION_JSON", got.GenerationConfig.ResponseFormat.Text.MimeType)
-		must.JSONEq(string(verdictOutputSchema().Schema), string(got.GenerationConfig.ResponseFormat.Text.Schema))
-		must.NotContains(string(body), "responseMimeType")
-		must.NotContains(string(body), "responseSchema")
+		var got body
+		must.NoError(json.Unmarshal(raw, &got))
+		must.Len(got.GenerationConfig.ResponseFormat, 1)
+		must.Nil(got.GenerationConfig.ThinkingConfig)
+		must.NotContains(string(raw), "maxOutputTokens")
 	})
 
-	t.Run("ungranted model sends no responseFormat", func(t *testing.T) {
+	t.Run("built-in registry grants no Gemini model, so nothing is sent", func(t *testing.T) {
+		for _, model := range []string{"gemini-3.8-flash", "gemini-2.5-pro"} {
+			t.Run(model, func(t *testing.T) {
+				must := require.New(t)
+				params := outputSchemaParams(model)
+				q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "gemini", Model: model})
+				raw, _, err := BuildGenerateContentRequest(params, nil, q)
+				must.NoError(err)
+				must.NotContains(string(raw), "responseFormat")
+			})
+		}
+	})
+}
+
+// TestBuildRequest_InvalidOutputSchemaIsDropped pins that an invalid schema
+// on a granted model leaves every adapter's body free of a schema field
+// rather than failing the request.
+func TestBuildRequest_InvalidOutputSchemaIsDropped(t *testing.T) {
+	invalid := &types.OutputSchema{Name: "bad name", Schema: json.RawMessage(`{"type":"object"}`)}
+
+	t.Run("anthropic", func(t *testing.T) {
 		must := require.New(t)
-		params := outputSchemaParams("gemini-2.5-pro")
-		q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "gemini", Model: params.Model})
-		body, _, err := BuildGenerateContentRequest(params, nil, q)
+		params := outputSchemaParams("claude-haiku-5-5")
+		params.OutputSchema = invalid
+		body, err := json.Marshal(buildAnthropicRequest(params, true, quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model})))
 		must.NoError(err)
-		must.NotContains(string(body), "responseFormat")
+		must.NotContains(string(body), "output_config")
+	})
+
+	t.Run("openai-compatible", func(t *testing.T) {
+		must := require.New(t)
+		params := outputSchemaParams("gpt-5-nano")
+		params.OutputSchema = invalid
+		req, err := buildOpenAIRequest(params, true, quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: params.Model}), nil)
+		must.NoError(err)
+		body, err := json.Marshal(req)
+		must.NoError(err)
+		must.NotContains(string(body), "response_format")
+	})
+
+	t.Run("openai-responses", func(t *testing.T) {
+		must := require.New(t)
+		params := outputSchemaParams("gpt-5.5")
+		params.OutputSchema = invalid
+		req, err := buildResponsesRequest(params, quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-responses", Model: params.Model}), nil, "")
+		must.NoError(err)
+		body, err := json.Marshal(req)
+		must.NoError(err)
+		must.NotContains(string(body), `"format"`)
+	})
+
+	t.Run("gemini", func(t *testing.T) {
+		must := require.New(t)
+		params := outputSchemaParams("gemini-3.8-flash")
+		params.OutputSchema = invalid
+		raw, _, err := BuildGenerateContentRequest(params, nil, grantedQuirks(quirks.Target{ProviderType: "gemini", Model: params.Model}))
+		must.NoError(err)
+		must.NotContains(string(raw), "responseFormat")
 	})
 }
