@@ -450,6 +450,11 @@ type replayEvent struct {
 	} `json:"config,omitempty"`
 }
 
+// MaxReplayContentBlocks bounds the model output blocks ReadReplay keeps
+// across a recording; a decoded block costs far more memory than its line
+// bytes, so the file size cap alone does not bound the load.
+const MaxReplayContentBlocks = 1 << 17
+
 // ReadReplay groups turns like ReadRecording but keeps only what a replay
 // serves: run IDs, each turn's number, stop reason and model output, and
 // each sub-run's prompt, so memory grows with model output alone. A line
@@ -457,6 +462,7 @@ type replayEvent struct {
 func (r *Reader) ReadReplay(ctx context.Context) (*types.RunRecording, error) {
 	recording := &types.RunRecording{}
 	seenStarted := false
+	blocks := 0
 	subRunIndex := map[string]int{}
 	subRun := func(runID, parentRunID string) *types.SubRunRecording {
 		i, ok := subRunIndex[runID]
@@ -495,6 +501,10 @@ func (r *Reader) ReadReplay(ctx context.Context) (*types.RunRecording, error) {
 				recording.RunID = ev.Trace.ID
 			}
 		case eventKindTurnRecord:
+			blocks += len(ev.ModelOutput)
+			if blocks > MaxReplayContentBlocks {
+				return recording, fmt.Errorf("recording holds more than %d model output blocks", MaxReplayContentBlocks)
+			}
 			tr := types.TurnRecord{
 				Turn:        ev.Turn,
 				ModelOutput: ev.ModelOutput,

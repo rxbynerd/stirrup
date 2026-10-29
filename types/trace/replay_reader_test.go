@@ -96,3 +96,19 @@ func TestReadReplay_RegistersStartedSubRunsWithTheirPrompt(t *testing.T) {
 	must.Equal("List files.", rec.SubRuns[0].Config.Prompt)
 	must.Empty(rec.SubRuns[0].Turns)
 }
+
+// TestReadReplay_RefusesTooManyModelOutputBlocks pins that a recording
+// holding more model output blocks than the cap fails the read, since
+// decoded blocks cost far more memory than their bytes on disk.
+func TestReadReplay_RefusesTooManyModelOutputBlocks(t *testing.T) {
+	must := require.New(t)
+	blocks := make([]any, MaxReplayContentBlocks+1)
+	for i := range blocks {
+		blocks[i] = map[string]any{}
+	}
+	body := eventLines(t, map[string]any{"kind": "turn_record", "turn": 1, "modelOutput": blocks})
+
+	_, err := NewReader(bytes.NewReader(body), WithLogger(discardLogger())).ReadReplay(context.Background())
+
+	must.ErrorContains(err, "more than 131072 model output blocks")
+}

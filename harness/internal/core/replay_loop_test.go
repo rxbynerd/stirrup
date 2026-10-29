@@ -230,3 +230,28 @@ func TestReplaySubAgentProviders_NamedEntryDecidesWhenItServedTheSpawn(t *testin
 	must.NoError(err)
 	streamNext(t, childProviders["named"])
 }
+
+// TestReplaySubAgentProviders_LiveDefaultWithReplayEntry pins that the
+// hook does not depend on the default provider being a replay: the named
+// replay entry that served the spawn decides it.
+func TestReplaySubAgentProviders_LiveDefaultWithReplayEntry(t *testing.T) {
+	must := require.New(t)
+	named := provider.NewReplayProviderFromRecording(&types.RunRecording{
+		Turns:   []types.TurnRecord{recordedTextTurn("rec", "parent")},
+		SubRuns: []types.SubRunRecording{{RunID: "rec/sub-1", Turns: []types.TurnRecord{recordedTextTurn("rec/sub-1", "child")}}},
+	})
+	live := provider.NewReplayProvider(nil)
+	config := &types.RunConfig{
+		Provider:  types.ProviderConfig{Type: "anthropic"},
+		Providers: map[string]types.ProviderConfig{"named": {Type: "replay"}},
+	}
+	loopProviders := map[string]provider.ProviderAdapter{"anthropic": live, "named": named}
+	hook := replaySubAgentProviders(config, map[string]*provider.ReplayProvider{"named": named}, loopProviders)
+	streamNext(t, named)
+
+	childDefault, childProviders, err := hook("run", "run/sub-1", "")
+
+	must.NoError(err)
+	must.Same(live, childDefault)
+	streamNext(t, childProviders["named"])
+}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"syscall"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
@@ -94,7 +95,9 @@ func (s *ServiceAccountKeySource) Resolve(ctx context.Context) (*Resolved, error
 	// Open + LimitReader rather than Stat + ReadFile to avoid a TOCTOU
 	// gap: a symlink swap between the two syscalls could repoint s.path
 	// at /dev/zero and stream an unbounded buffer into the JSON parser.
-	f, err := os.Open(s.path)
+	// O_NONBLOCK makes opening a FIFO return at once instead of waiting
+	// for a writer; regular files ignore it.
+	f, err := os.OpenFile(s.path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open service account key %q: %w", s.path, err)
 	}
@@ -104,8 +107,8 @@ func (s *ServiceAccountKeySource) Resolve(ctx context.Context) (*Resolved, error
 	if err != nil {
 		return nil, fmt.Errorf("stat service account key %q: %w", s.path, err)
 	}
-	if info.IsDir() {
-		return nil, fmt.Errorf("service account key %q is a directory, not a file", s.path)
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("service account key %q is not a regular file (mode %s)", s.path, info.Mode())
 	}
 
 	// +1 distinguishes "exactly at the cap" (allowed) from "over the

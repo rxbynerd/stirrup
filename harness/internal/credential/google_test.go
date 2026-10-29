@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -217,7 +218,19 @@ func TestServiceAccountKeySource_RejectsDirectory(t *testing.T) {
 	must := require.New(t)
 	src := NewServiceAccountKeySource(t.TempDir())
 	_, err := src.Resolve(context.Background())
-	must.ErrorContains(err, "directory")
+	must.ErrorContains(err, "is not a regular file")
+}
+
+// TestServiceAccountKeySource_RejectsFIFOWithoutBlocking pins that a FIFO
+// at the key path is refused at once rather than waiting for a writer.
+func TestServiceAccountKeySource_RejectsFIFOWithoutBlocking(t *testing.T) {
+	must := require.New(t)
+	fifo := filepath.Join(t.TempDir(), "key.json")
+	must.NoError(syscall.Mkfifo(fifo, 0o600))
+
+	_, err := NewServiceAccountKeySource(fifo).Resolve(context.Background())
+
+	must.ErrorContains(err, "is not a regular file")
 }
 
 func TestGoogleWorkloadIdentitySource_ResolveReturnsBearerToken(t *testing.T) {

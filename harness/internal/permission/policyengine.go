@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
+	"syscall"
 
 	"github.com/cedar-policy/cedar-go"
 	cedartypes "github.com/cedar-policy/cedar-go/types"
@@ -182,7 +184,7 @@ func parsePolicySetFile(path string) (*cedar.PolicySet, error) {
 	if path == "" {
 		return nil, errors.New("policy-engine: policy file path is empty")
 	}
-	data, err := os.ReadFile(path)
+	data, err := readPolicyFile(path)
 	if err != nil {
 		return nil, &PolicyFileError{Err: fmt.Errorf("policy-engine: read policy file %q: %w", path, err)}
 	}
@@ -191,6 +193,37 @@ func parsePolicySetFile(path string) (*cedar.PolicySet, error) {
 		return nil, &PolicyFileError{Err: fmt.Errorf("policy-engine: parse policy file %q: %w", path, err)}
 	}
 	return ps, nil
+}
+
+// maxPolicyFileBytes bounds a Cedar policy file.
+const maxPolicyFileBytes = 4 << 20
+
+// readPolicyFile reads a regular file of at most maxPolicyFileBytes. The
+// path may come from a control plane, so a FIFO or device must neither
+// stall nor exhaust the build.
+func readPolicyFile(path string) ([]byte, error) {
+	// O_NONBLOCK makes opening a FIFO return at once instead of waiting
+	// for a writer; regular files ignore it.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("not a regular file (mode %s)", info.Mode())
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxPolicyFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxPolicyFileBytes {
+		return nil, fmt.Errorf("exceeds %d bytes", maxPolicyFileBytes)
+	}
+	return data, nil
 }
 
 // PolicyFileError reports a policy file that could not be read or did
