@@ -481,20 +481,27 @@ Before deploying:
    and Rule of Two enforcement on (the default).
    [`autonomous-preset.md`](autonomous-preset.md) describes a tested
    `RunConfig` that sets all of these.
-2. Wire credentials through the credential federation layer rather
+2. Check the planned `RunConfig` against the
+   [compatibility matrix](compatibility.md): a combination of executor,
+   git strategy, workspace export, verifier, transport, result sink and
+   provider features that validation accepts can still fail at build, fail
+   at the end of the run, or skip a step silently. `stirrup harness
+   --config run.json --dry-run` catches some of the build-time cases; the
+   matrix says which.
+3. Wire credentials through the credential federation layer rather
    than baking API keys into Pod env vars. See
    [`credential-federation.md`](credential-federation.md).
-3. Configure observability: OTLP/gRPC to your collector or OTLP/HTTP
+4. Configure observability: OTLP/gRPC to your collector or OTLP/HTTP
    to a managed gateway. See
    [`observability-cloud.md`](observability-cloud.md).
-4. Set `livenessProbe`/`readinessProbe` to exec `stirrup healthcheck`
+5. Set `livenessProbe`/`readinessProbe` to exec `stirrup healthcheck`
    against `/tmp/healthy` and `/tmp/ready` respectively — see [Health
    probes](#health-probes). The image has no shell or `test` binary,
    so a `["sh", "-c", "test -f ..."]` probe cannot run against it.
-5. Enforce a `Job.spec.activeDeadlineSeconds` slightly larger than
+6. Enforce a `Job.spec.activeDeadlineSeconds` slightly larger than
    `RunConfig.timeout` so K8s reaps any stuck Pod even if the
    harness's own wall-clock timeout fails to fire.
-6. Confirm the network path between job Pods and the control plane
+7. Confirm the network path between job Pods and the control plane
    is trusted (private network or mesh mTLS) — the gRPC transport
    itself is plaintext and unauthenticated unless transport TLS is configured. See
    [Transport security posture](#transport-security-posture-v01).
