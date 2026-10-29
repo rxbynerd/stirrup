@@ -85,9 +85,14 @@ counts the provider-reported input figure, which includes replayed
 thinking. The loop's context-size estimate and the sliding-window
 strategy's per-message estimate count reasoning text only, not
 signature bytes, so hidden thinking (a block with empty text, the
-`claude-sonnet-5-5` default) is under-counted by both estimates; a
-compaction can therefore trigger later than the provider's own input
-count would suggest.
+`claude-sonnet-5-5` default) is under-counted by both estimates. Two
+mechanisms bound the effect. Every prepared request must leave 10% of
+the room after the response reserve unused, so the fit margin absorbs
+part of the under-count, including on the first request. Calibration
+absorbs the rest: once a request of at least 1,000 estimated tokens
+reports its input, the loop scales the room by a smoothed ratio of
+reported to estimated tokens, held between 0.5 and 2, so later
+compactions trigger as the provider's own input count would suggest.
 
 Anthropic's [preserved-thinking
 documentation](https://platform.claude.com/docs/en/build-with-claude/preserved-thinking)
@@ -96,14 +101,14 @@ history that preceded it. The API enforces the history check by
 default only for accounts created on or after 2026-08-31 00:00 UTC;
 older accounts opt in per request, and the check was not reproduced on
 the account used for probing. Once the context strategy rewrites
-history on any turn of a run (a sliding-window trim, a summary, or an
-offload), the loop removes every thinking block from that request and
-from every later request in the run; the stored history keeps them.
-From that point the model continues from the visible transcript alone.
-Under sliding-window this starts the first time the budget is
-exceeded, and a trim can also separate a `tool_result` from its
-`tool_use`, which the API rejects
-([#624](https://github.com/rxbynerd/stirrup/issues/624)).
+history on any turn of a run (a sliding-window trim, a summary, an
+offload, a `clear-tool-results` batch, or the fit check truncating a
+large tool result), the loop removes every thinking block from that
+request and from every later request in the run; the stored history
+keeps them. From that point the model continues from the visible
+transcript alone. Under sliding-window this starts the first time the
+budget is exceeded. Compaction cuts only at exchange boundaries, so a
+trim never separates a `tool_result` from its `tool_use`.
 
 JSONL traces and recordings keep each thinking block's type and its
 reasoning text, scrubbed for secrets exactly like assistant text: both
@@ -197,15 +202,45 @@ A change invalidates the cache from its position in the prefix onward:
 | Model: a router selects a different model for a turn | everything; each model keeps its own cache |
 | System prompt | system and messages |
 | Effort, thinking, or `tool_choice` (the missed-tool escalation forces one for a single turn) | messages (documented, not probed) |
-| Context-strategy compaction | messages, on every turn after the first overflow |
+| Context-strategy compaction | messages, from the first rewritten message onward; how often depends on the strategy |
 
-Once the history first overflows the context budget, every later turn
-misses the message cache under all three strategies: sliding-window
-drops more of the head on each turn, summarise re-summarises, and
-offload rewrites tool results as they age. Tools and system stay cached
-through the system breakpoint. A long `run_command` or a blocking
-sub-agent spawn can outlast the five-minute cache lifetime, so the
-parent's next turn writes its whole prefix to the cache again at 1.25x.
+Once the history first overflows the context budget, the strategy
+rewrites what is sent, and how often the message cache is missed
+afterwards depends on the strategy:
+
+- `sliding-window` drops more of the head on each turn, so every later
+  turn misses the message cache.
+- `summarise` changes the head only when it extends the rolling summary,
+  which takes six aged exchanges, or when the aged exchanges re-sent
+  verbatim no longer fit. The turns between extensions append to the
+  previous request.
+- `offload-to-file` rewrites the tool results that have just left the
+  six most recent messages, so each turn misses from that point onward,
+  which is a short tail of the history.
+- `clear-tool-results` replaces old tool results with one fixed
+  placeholder in occasional batches and re-applies the same placeholder
+  on later turns. A turn misses the message cache only when a batch
+  runs.
+
+The first rewrite under any strategy also strips the thinking blocks
+from that request and every later one, so that turn misses the message
+cache whichever strategy ran. Tools and system stay cached through the
+system breakpoint. A long `run_command` or a blocking sub-agent spawn
+can outlast the five-minute cache lifetime, so the parent's next turn
+writes its whole prefix to the cache again at 1.25x.
+
+A scripted run compares `sliding-window` with `clear-tool-results`. The
+script is 40 tool turns against a 16,000-token context window, with a
+simulated automatic cache in which each request reads the leading
+messages it shares with the previous request and writes the rest.
+System prompt and tool definitions are left out. The cost is in
+base-rate input tokens, with reads at 0.1x and writes at 1.25x. The run
+is scripted, not a live probe.
+
+| Strategy | Message tokens read | Message tokens written | Read share | Turns missing the cache | Cost |
+|---|---|---|---|---|---|
+| `clear-tool-results` (6 batches) | 266,140 | 71,610 | 79% | 6 | 116,126 |
+| `sliding-window` | 78,580 | 281,854 | 22% | 25 | 360,176 |
 
 Automatic caching looks back 20 content-block positions for a previous
 write, counting a run of consecutive `tool_use` blocks, or of
@@ -252,10 +287,13 @@ documented, not probed.
 
 **Stream errors.** A failure after streaming has begun arrives as an
 SSE `error` event, for example `overloaded_error`. The adapter reports
-it as `anthropic API stream error (<type>): <message>`, so the run
-ends with outcome `error` and the `provider stream failed` log line and
-transport `warning` carry the provider's error type. Like every
-failure after the stream opens, it is not retried.
+it as `anthropic API stream error (<type>): <message>`, so the
+`provider stream failed` log line and transport `warning` carry the
+provider's error type. An `overloaded_error` or `api_error` is a
+server-side fault, so the loop discards the attempt's output and
+re-issues the turn, up to twice (see
+[Retry policy](configuration.md#retry-policy)). Any other error type
+ends the run with outcome `error` on its first occurrence.
 
 ### Tool search
 
@@ -709,7 +747,10 @@ must not be retried.
 A 429 reporting an exhausted billing, spend, or quota limit is not
 retried; the full classification is in
 [`configuration.md`](configuration.md#retry-policy). A failure after
-the stream opens is never retried. These codes are documented in
+the stream opens is retried only as a whole turn, and only when the
+adapter marks it retryable: a `server_error` code, or a transport fault
+such as an idle stream or a reset connection. Policy stops, quota codes
+and invalid prompts end the run. These codes are documented in
 OpenAI's error-codes and misalignment-monitoring guides; they have not
 been probed against the live API.
 
@@ -1093,6 +1134,55 @@ run's trace replays that run's model text into this run's events and
 trace, so recordings belong in operator-controlled storage. The eval
 framework's tool-use suite runs on this provider by default; see
 [`eval.md`](eval.md#replay-doubles).
+
+## Malformed tool-call arguments
+
+Each of the five wire adapters (every provider type except `replay`)
+builds its tool-call events through one constructor. Empty argument
+text is a call with no arguments. Text that does not decode to a JSON object, such as a call cut off mid-object,
+does not fail the stream. The adapter emits the call with a marker that
+holds the raw text and the decoder's message, which includes the byte
+offset of a syntax error, and the stored history keeps the call with an
+empty object as its input.
+
+During tool dispatch, the loop rejects a marked call after the
+unknown-tool and not-loaded checks and before schema validation. The
+model receives an error tool result in the `invalid_arguments`
+category. It carries the decoder's message, the instruction to re-issue
+the call with valid JSON, and the first 200 characters of the received
+arguments, scrubbed of secrets. The loop also emits a `warning` event
+that names the call. The raw arguments reach the trace only through the
+call's error reason, scrubbed and capped at 4 KiB.
+
+The stall detector compares the raw arguments, so a model that keeps
+re-sending the same malformed call draws the stall nudge and then ends
+the run, and five consecutive tool failures also end it. A turn that
+stopped at the output limit never reaches dispatch, because
+output-limit recovery drops its tool calls first.
+
+## Context-overflow responses
+
+An adapter marks a failed request as a context overflow when the
+provider rejects it as larger than the model's context window. The loop
+then forces one compaction that targets 70% of the rejected request's
+estimate, which the fit margin reduces to at most 63%, and re-issues
+the turn once. A second overflow ends the run as
+`context_exhausted`. A recovered overflow is counted in neither
+`provider_errors` nor `tool_failures`. Message matches are
+case-insensitive, and any other response is an ordinary provider error.
+
+| Adapter | Response classified as an overflow |
+|---|---|
+| `anthropic` | HTTP 400 with error type `invalid_request_error` and a message that starts with "prompt is too long" or contains "exceed context limit". |
+| `bedrock` | A `ValidationException` from `ConverseStream`, at request time or mid-stream, whose message contains "input is too long", "prompt is too long" or "too many input tokens". |
+| `openai-compatible` | HTTP 400 with `error.code` `context_length_exceeded`, or a message containing "maximum context length" for servers that send no code. |
+| `openai-responses` | HTTP 400, or a `response.failed` or `error` stream event, with code `context_length_exceeded` or a message containing "exceeds the context window" or "maximum context length". |
+| `gemini` | HTTP 400 with status `INVALID_ARGUMENT` and a message containing both "input token count" and "exceeds the maximum". |
+
+A completed response can also overflow: Anthropic reports a response
+that filled the window with the stop reason
+`model_context_window_exceeded`. The loop discards that truncated
+response, charges its tokens, and treats it like a rejected request.
 
 ## Per-model wire-shape quirks
 
