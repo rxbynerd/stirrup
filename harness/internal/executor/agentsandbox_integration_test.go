@@ -145,6 +145,29 @@ func TestAgentSandbox_Lifecycle(t *testing.T) {
 	must.NoError(exec.Close(), "second Close should be idempotent")
 }
 
+// TestAgentSandbox_CommandOutputSpill mirrors TestK8sExec_CommandOutputSpill
+// on the Sandbox-backed Pod: the streamed output of a command larger than the
+// inline limit must spill, page back intact, and archive completely.
+func TestAgentSandbox_CommandOutputSpill(t *testing.T) {
+	must := require.New(t)
+	cfg := testAgentSandboxEnv(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	exec, err := NewAgentSandboxExecutor(ctx, K8sExecutorConfig{
+		Image:            cfg.image,
+		Namespace:        cfg.namespace,
+		Kubeconfig:       cfg.kubeconfig,
+		RuntimeClassName: "gvisor",
+		Network:          &types.NetworkConfig{Mode: "none"},
+	})
+	must.NoError(err, "create agent sandbox executor")
+	t.Cleanup(func() { _ = exec.Close() })
+
+	assertCommandOutputSpill(t, ctx, exec)
+}
+
 // assertGone polls get until it reports IsNotFound, failing if the object is
 // still present after a short deadline. The poll absorbs read-after-delete lag
 // without masking a genuine leak.

@@ -309,6 +309,8 @@ Pod, and the per-Pod `NetworkPolicy` are all gone.
 `TestAgentSandbox_AllowlistEnforced` mirrors the raw-Pod egress test:
 direct internet egress is blocked, the proxy peer is reachable, and the
 proxy's FQDN allowlist admits `github.com` and refuses `example.com`.
+`TestAgentSandbox_CommandOutputSpill` runs the same command-output spill
+check as `TestK8sExec_CommandOutputSpill` on the Sandbox-backed Pod.
 
 ```sh
 # Agent Sandbox suite against GKE Sandbox via Connect Gateway.
