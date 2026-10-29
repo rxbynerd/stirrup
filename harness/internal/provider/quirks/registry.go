@@ -20,7 +20,7 @@ type Rule struct {
 	ModelMatch   string    // path.Match glob against StreamParams.Model; "" matches all models
 	Endpoint     string    // exact endpoint profile; "" matches every endpoint
 	Description  string    // required; used in trace attributes and CLI introspection
-	LastVerified time.Time // set via Date("2026-05-24"); staleness signal at 180 days
+	LastVerified time.Time // set via Date("2026-05-24"); meaning in docs/provider-quirks.md#lastverified
 	Apply        func(*ProviderQuirks)
 }
 

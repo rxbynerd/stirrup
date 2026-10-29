@@ -393,7 +393,7 @@ type Rule struct {
     ModelMatch   string        // path.Match glob; "" matches all models
     Endpoint     string        // exact endpoint profile; "" matches every endpoint
     Description  string        // required; surfaces in traces and CLI introspection
-    LastVerified time.Time     // set via Date("YYYY-MM-DD"); staleness signal at 180 days
+    LastVerified time.Time     // set via Date("YYYY-MM-DD"); see LastVerified below
     Apply        func(*ProviderQuirks)
 }
 
@@ -410,6 +410,30 @@ func (r *Registry) Resolve(t Target) ProviderQuirks
 func (r *Registry) ResolveWithRules(t Target) (ProviderQuirks, []Rule)
 func RuleMatches(rule Rule, t Target) bool
 ```
+
+<a id="lastverified"></a>
+**`LastVerified`.** The date the rule's evidence was last checked, and
+the Description says which kind of evidence that was:
+
+- **probed**: a live request on the stated surface returned the
+  behaviour the rule encodes. The date is the probe's date, and the
+  Description names what was probed (model, surface, and the scope, such
+  as "first turn only") where it is narrower than the rule's glob.
+- **documented**: the behaviour comes from vendor documentation only.
+  The date is when the documentation was read, and the Description
+  says `(documented, not probed)` or `(documented)`.
+- **inferred**: no direct source; the behaviour is reasoned from a
+  sibling model or a documented default. The Description says
+  `(inferred)`.
+
+Changing a rule's behaviour, or re-checking its evidence, moves the
+date; editing only its wording does not. `TestRuleStaleness` logs every
+rule more than 180 days old as a prompt to re-verify, fails a date in
+the future, and fails a rule dated 2026-10-29 or later whose
+Description contains none of the words `probed`, `documented` or
+`inferred`. Rules dated earlier predate the convention and gain a label
+when they are next re-verified. `stirrup providers quirks` reports the
+same 180-day flag as `stale`.
 
 `Target.Endpoint` is the provider's
 [endpoint profile](providers.md#endpoint-profiles)
