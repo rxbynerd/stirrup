@@ -28,8 +28,8 @@ every turn:
 
 | Phase | Where in the loop | What it inspects | What a deny does |
 |---|---|---|---|
-| `pre_turn`  | At the start of every turn iteration, before context preparation | Untrusted text blocks (tool outputs, fetched web content, dynamic context, the initial user prompt on turn 0, verifier feedback on the turn a verification retry starts (or when it is appended, if it joins a user message already in history), and mid-run `user_response` input at the turn it is injected — the latter classified regardless of length, since a short relayed turn is the common case) | Aborts the run with outcome `guardrail_blocked`; the offending content never reaches the model |
-| `pre_tool`  | Inside the tool dispatch loop, after the deterministic input checks and before the permission check and executor (see [§ Dispatch order](#dispatch-order)) | The resolved tool name and the cleaned JSON input of a call that passed the deterministic checks | Returns a synthetic tool result with `IsError: true`; the model sees the failure and may retry. Repeated denies trip the existing stall detector |
+| `pre_turn`  | At the start of every turn iteration, before context preparation | Untrusted text blocks (tool outputs, fetched web content, dynamic context, the initial user prompt on turn 0, verifier feedback on the turn a verification retry starts (or when it is appended, if it joins a user message already in history), and mid-run `user_response` input at the turn it is injected — the latter classified regardless of length, since a short relayed turn is the common case) | Turn-0 content (the prompt and dynamic context) and mid-run `user_response` input: aborts the run with outcome `guardrail_blocked`, and the content never reaches the model. Tool results and verifier feedback on later turns: the content is replaced with `[content blocked by guardrail]` and the run continues |
+| `pre_tool`  | Inside the tool dispatch loop, after the deterministic input checks and before the permission check and executor (see [§ Dispatch order](#dispatch-order)) | The resolved tool name and the cleaned JSON input of a call that passed the deterministic checks | Returns a synthetic tool result with `IsError: true`; the model sees the failure and may retry. A denied call counts as a failed call: a repeated denied call draws one stall nudge, and the fifth consecutive failed call ends the run (see [Stall detection](security.md#stall-detection)) |
 | `post_turn` | After `end_turn` stop reason, before the assistant text leaves the loop | The final assistant message | Aborts the run with outcome `guardrail_blocked` |
 
 All three are optional: a `GuardRail.Type: none` (or an unset
@@ -126,6 +126,8 @@ tool_use block from the model
   1. resolve the tool name          unknown          -> unknown_tool
                                     deferred and not -> tool_not_loaded
                                     yet loaded
+                                    arguments are    -> invalid_arguments
+                                    not a JSON object
   2. strip __proto__ / constructor  keys dropped     -> prototype_pollution_blocked event
   3. JSON-schema validation         invalid          -> schema_validation_failed
   4. tool-input tripwires           match            -> security_guard_denied
@@ -140,6 +142,13 @@ defers and no search has loaded stops at step 1, before the `pre_tool`
 guard and the permission policy see it. Like any failed call, repeated
 rejections count toward the stall detector's limit of consecutive
 failures.
+
+A call whose arguments the provider adapter could not parse as a JSON
+object also stops at step 1, ahead of schema validation. The model
+receives a tool error that quotes the parse error and the first 200
+characters of the arguments received, both scrubbed. The trace keeps the
+scrubbed raw arguments capped at 4 KiB. The stall detector compares such
+calls by their raw arguments.
 
 Step 4 is `security.GuardToolCall`: network-exfiltration utilities
 and shell-escape syntax in command fields, credential paths, writes
@@ -168,6 +177,40 @@ deterministic ones. Alerts that count `guard_denied` events to detect
 injection attempts no longer see calls the deterministic checks
 reject; step 4 still emits `tool_call_guard_triggered` for its
 matches.
+
+#### Protected write targets
+
+The protected-write rule in step 4 rejects a call to a write tool when
+a path-like field of its input names a protected path. It does not
+apply to read tools.
+
+- **Protected set.** `tools.protectedWriteTargets` plus every
+  repository guidance file the run loaded, pinned or advisory. The
+  default list is empty. An advisory guidance file that was missing at
+  load time is not protected, and a later run loads it if the agent
+  created it. Sub-agents inherit the set.
+- **Entries.** A workspace-relative literal path. An entry ending in
+  `/` protects that directory and everything beneath it; any other
+  entry protects exactly that path. Validation rejects empty entries,
+  absolute paths, `..` segments, control characters, wildcards (`*`,
+  `?`, `[`), the workspace root, and lists longer than 64 entries.
+- **Write tools.** `write_file`, `edit_file`, `search_replace`,
+  `apply_diff`, and any workspace-mutating tool whose name contains
+  `write`. `run_command` is not a write tool for this rule, so a shell
+  command can still modify a protected file. The permission policy and
+  the sandbox govern commands.
+- **Fields checked.** Every string in the input, at any depth, under a
+  key named `path`, `file` or `filename`, or ending in `_path`, `_file`
+  or `filename`.
+- **Matching.** Case-insensitive. The value is normalised (backslashes
+  become slashes, surrounding quotes and a leading `./` are dropped,
+  `..` segments are cleaned) and is also compared after the executor
+  resolves it, so an absolute or symlinked spelling of a protected path
+  matches.
+- **Result.** The call fails with the category `security_guard_denied`,
+  and the model sees only that the security guard rejected the call.
+  The `tool_call_guard_triggered` event names the rule
+  `protected_write_target`.
 
 ### `post_turn` (recommended for surfaces that show output to humans)
 
@@ -236,6 +279,15 @@ exactly the argument under review. See
 ## Adapters
 
 Four adapter types ship in the harness, plus a no-op default:
+
+**Token accounting.** A `cloud-judge` call goes through the run's
+provider adapter, so its usage is charged to `maxTokenBudget` and
+reported in the run trace as `auxiliaryTokens` (see
+[Limits and budgets](configuration.md#limits-and-budgets)).
+`granite-guardian` and `shieldstral` call their own endpoint. The
+usage that endpoint reports is recorded as `externalGuardTokens` in the
+run trace and is not charged to `maxTokenBudget`. In a `composite`,
+each stage follows the rule of its own adapter.
 
 ### `none` (default)
 
@@ -459,8 +511,9 @@ reaches the classifier. The deterministic tripwires (step 4 of
 response stream, not just the time to its first token.
 
 - Under the default `failOpen: false`, a check that runs past the
-  deadline denies the call, and repeated denies trip the stall
-  detector, so provider slowness becomes failed tool calls. The 4 s
+  deadline denies the call. Repeated denies draw one stall nudge and
+  count toward the limit of five consecutive failed calls, so provider
+  slowness becomes failed tool calls. The 4 s
   `pre_tool` default leaves headroom over Claude Haiku 5.5, which
   takes 1 to 3 s per check at low effort. Deployments on a slower
   model or provider set `timeoutMs` explicitly.
@@ -637,8 +690,10 @@ hardware should tighten this in their RunConfig:
 ```
 
 A guard timeout fires `guard_error` and, with the default
-`failOpen: false`, aborts the run on PhasePreTurn or denies the
-tool call on PhasePreTool. That is the correct safety posture, but
+`failOpen: false`, denies the content at `pre_turn` (aborting the run
+for turn-0 content and `user_response` input, replacing the content of
+later tool results and verifier feedback) or denies the tool call at
+`pre_tool`. That is the correct safety posture, but
 on slow local hardware it surfaces as "every dev run instantly
 fails" — almost always a sign that `timeoutMs` is too low for the
 runtime, not that the classifier is genuinely unhealthy.

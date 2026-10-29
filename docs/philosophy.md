@@ -18,9 +18,14 @@ different point in the run and has documented limits; see
 
 **Secrets never live in `RunConfig`.** API keys are `secret://`
 references resolved through env vars, files, or AWS SSM. The
-`slog.Handler` that writes logs runs every string through a
-credential-pattern scrubber before any handler sees it — defence
-in depth against recognised credential formats.
+`slog.Handler` that writes logs runs the message and every attribute
+value (errors, Stringers, byte slices and composite values included)
+through a credential-pattern scrubber before any sink sees it, on
+stderr, on OTLP and through the process-default logger. Error text on
+OTel spans is scrubbed as well. This is defence in depth against
+recognised credential formats. A secret with no recognised format is
+not redacted, and security audit events are scrubbed by a separate,
+narrower routine; see [Security foundations](security.md#logscrubber).
 
 **Cross-cloud credential federation.** GKE Workload Identity, AWS
 IRSA, Azure IMDS, GitHub Actions OIDC, Anthropic WIF, and Azure

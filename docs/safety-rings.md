@@ -215,6 +215,24 @@ truth with the validator. `holdsSensitiveData` is the only leg that
 can also flip *after* the run starts; the runtime classifier owns that
 transition.
 
+> [!NOTE]
+> The static legs read only the fields named in the table. A
+> `verifier`, including the test-runner verifier whose command output
+> returns to the model as feedback, adds no leg, so `holdsUntrustedInput`
+> stays false for a run whose only untrusted input is verifier output.
+> The runtime classifier does scan that feedback, under the source
+> `verifier_feedback`.
+
+> [!NOTE]
+> Repository guidance (`repositoryGuidance`) is prompt text, not
+> configuration. Loaded guidance cannot change the permission policy,
+> the Cedar policy, the tool list, the executor or the egress posture,
+> and it adds no Rule-of-Two leg. Its one effect on enforcement is
+> restrictive: the loaded files become protected write targets (see
+> [Protected write targets](guardrails.md#protected-write-targets)). The
+> runtime classifier scans loaded guidance under the source
+> `repository_guidance`.
+
 ### What "sensitive data" means here
 
 "Sensitive data" in the Rule of Two means data the agent itself can
@@ -273,8 +291,8 @@ deterministic-rings philosophy that LLM guards are defence-in-depth on
 top of the rings, never the ring itself.
 
 **What it scans.** Before the first model call, the classifier reads
-the operator prompt and the sanitized dynamic-context values. On every
-later turn it reads each freshly arrived `tool_result` block — both the
+the operator prompt, the sanitized dynamic-context values and any
+loaded repository guidance. On every later turn it reads each freshly arrived `tool_result` block — both the
 text content and any structured JSON payload the adapters forward to
 the model — and the verifier feedback that opens a verification retry, *before* any LLM guard runs (deterministic-first, so a
 later guard scrub cannot un-trip the latch). Once the latch trips,
@@ -290,6 +308,11 @@ model sees the tool result as redaction left it and, when a `pre_turn`
 guard is configured, each span the scrubber replaced, which the guard
 could not read, is spotlighted in place (see
 [Guard input is scrubbed, and hidden spans are fenced](security.md#scrubbed-content-is-fenced)).
+Verifier feedback differs: the scan reads it as the verifier produced
+it, and the log scrubber then replaces pattern matches in the feedback
+in the model's history in every configuration, after the scan and after
+any `redact` rewrite. The model and a `pre_turn` guard therefore read
+the same scrubbed text.
 
 **Two confidence tiers.** A *latch-tier* finding is high-confidence
 sensitive data and trips the latch. A *warn-tier* finding (a bare
@@ -328,8 +351,8 @@ The action is `ruleOfTwo.runtime.onDetect`; the default is
 |---|---|---|
 | `block-external` (default) | The permission gate denies `run_command`, `web_fetch`, and every `mcp_*` tool for the rest of the run | Restores two-of-three by revoking egress; local work (file reads, edits) still finishes; transport-agnostic |
 | `ask-upstream` | The gate routes each external-comm call through the upstream approval channel instead of denying outright | Requires `transport: grpc` — `stdio` has no upstream control plane to answer; validation rejects the combination |
-| `redact` | The loop rewrites the matched sensitive spans in just-arrived tool-result blocks (text and structured payload) with a placeholder; dynamic-context values are redacted before the prompt is built | The latch still trips for audit; the prompt and mid-run `user_response` input latch but are never redacted, since changing the operator's words changes run semantics (the markup stripping and byte cap `user_response` shares with dynamic context happen on arrival and are reported, not a redaction) |
-| `abort` | The run terminates with the `rule_of_two_violation` outcome | A turn-0 sighting (prompt or dynamic context) aborts before the first model call; mid-run `user_response` input is screened the same way at the turn it is injected |
+| `redact` | The loop rewrites the matched sensitive spans in just-arrived tool-result blocks (text and structured payload) and in verifier feedback with a placeholder; dynamic-context values and loaded repository guidance are redacted before the prompt is built | The latch still trips for audit; the prompt and mid-run `user_response` input latch but are never redacted, since changing the operator's words changes run semantics (the markup stripping and byte cap `user_response` shares with dynamic context happen on arrival and are reported, not a redaction) |
+| `abort` | The run terminates with the `rule_of_two_violation` outcome | A turn-0 sighting (prompt, dynamic context or loaded repository guidance) aborts before the first model call; mid-run `user_response` input is screened the same way at the turn it is injected |
 | `warn` | Events and metrics only | The forced action whenever the classifier is observe-only |
 
 The `block-external` denial carries a stable reason string the model
@@ -363,7 +386,7 @@ matched content (events run through `ScrubMap`):
   observe-only, so the event never promises an action that cannot fire.
 - `sensitive_data_detected` (warn) — `{patterns, tier, source, turn,
   action, transition}`, where `source` is `prompt`, `dynamic_context`,
-  `tool_result`, `user_response`, `verifier_feedback`, or `guard:<id>`. Pattern names only, never content.
+  `tool_result`, `user_response`, `verifier_feedback`, `repository_guidance`, or `guard:<id>`. Pattern names only, never content.
 - `rule_of_two_triggered` (warn, once per run at the false→true
   transition) — `{untrustedInput, externalCommunication, sensitiveData:
   true, action, source, scanning_suspended}`. A one-time transport
@@ -526,6 +549,23 @@ never the alias a non-default `tools.profile` presents to the model
 (`bash` under `coding-classic`). A policy written against an alias
 never matches. The harness logs a warning at startup when the policy
 engine is combined with a profile other than the default.
+
+For a sub-agent, `principal.mode` is the sub-agent's own mode, not the
+parent's, and `principal.parentRunId` is the spawning run's ID. A policy
+can therefore tell a `research` child of an `execution` parent apart
+from its parent with `principal.mode == "research"`.
+
+**Read-only sub-agents.** A read-only run may spawn only read-only
+sub-agents (`planning`, `review`, `research`, `toil`); a run in any
+other mode may spawn any mode. A read-only child gets a tool registry
+without the workspace-mutating tools. A side-effect gate also sits in
+front of the permission chain the child inherits: it denies a
+workspace-mutating tool before the inherited policy is consulted, and
+the inherited policy decides every other call. Under `ask-upstream`,
+mutating tools therefore never prompt the operator, while `web_fetch`,
+which does not mutate the workspace but requires approval, still does.
+An `allow-all` parent, or a `policy-engine` parent with an `allow-all`
+fallback, is enforced in the child as `deny-side-effects`.
 
 `principal.capabilities` (Cedar `Set<String>`) exists in the schema
 but is **reserved and not populated in v1** — see the "reserved for
@@ -796,6 +836,17 @@ in-sandbox git. Production configurations should pin the sandbox image
 by digest instead of `latest`.
 
 `ValidateRunConfig` rejects values outside the closed set above.
+
+### Sandbox lifetime
+
+A container sandbox does not depend on the harness to exit cleanly. The
+container's main process is `sleep` for the longer of the run `timeout`
+and the session budget, plus the `postRun` hook budget, plus a
+10-minute margin, and the container is created with `AutoRemove`. The
+engine therefore removes it when the sleep ends, even if the harness
+died without closing the executor. The container carries the labels
+`stirrup.sandbox=true` and `stirrup.run-id=<run ID>` so a leftover
+sandbox can be found and attributed to its run.
 
 ### Failure mode
 
@@ -1412,6 +1463,19 @@ exist; they are not claimed to cover them.
   do not gate hooks the way they gate tool calls. See
   [`security.md`](security.md#lifecycle-hooks) for the full trust-
   boundary writeup.
+- **Post-edit checks are outside Rings 3, 4, and 5.** The commands in
+  `tools.postEdit` are operator-authored and run through the run's
+  `Executor` from inside the edit tool's handler, after the permission
+  policy has approved the edit call. Cedar never evaluates a check
+  command, the Rule of Two ignores `tools.postEdit` when it computes its
+  static legs, and the code scanner never inspects a file a check
+  writes. Rings 1 and 2 apply, because the checks inherit the sandbox's
+  runtime class and egress posture. A check's output is untrusted:
+  failure diagnostics are scrubbed, capped, fenced as data and returned
+  to the model as part of the edit tool's result, where the runtime
+  classifier and a `pre_turn` guard screen them like any other tool
+  result. The model-chosen path reaches the shell only as the value of
+  an exported variable. See [`security.md`](security.md#post-edit-checks).
 
 For reporting a finding that *is* in scope, see
 [`SECURITY.md`](../SECURITY.md).
