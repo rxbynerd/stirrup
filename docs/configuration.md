@@ -2132,12 +2132,15 @@ go build -o stirrup-eval ./eval/cmd/eval
 
 # Run an eval suite
 ./stirrup-eval run --suite path/to/suite.hcl --output results/ \
-  [--harness path/to/harness] [--trials 3] [--dry-run]
+  [--harness path/to/harness] [--trials 3] \
+  [--trials-policy fixed|confirm-on-fail] [--dry-run]
 
-# Compare two eval results (exit 1: the gate blocks; exit 2: usage or I/O error)
+# Compare two eval results (exit 1: the gate blocks; exit 2: a usage
+# error, an I/O error, or results recorded under different trials policies)
 ./stirrup-eval compare --current results/result.json \
   --baseline baseline/result.json \
-  [--warn-margin 0.10] [--flip-threshold 0.5] [--output comparison.json]
+  [--warn-margin 0.10] [--flip-threshold 0.5] [--output comparison.json] \
+  [--allow-policy-mismatch]
 
 # Pull production metrics as a baseline
 ./stirrup-eval baseline --lakehouse path/to/lakehouse \

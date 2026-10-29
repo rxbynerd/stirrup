@@ -122,6 +122,7 @@ func cmdRun(args []string) {
 	outputDir := fs.String("output", "", "Output directory for results (default: current directory). Ignored under --dry-run, which writes no artifacts.")
 	concurrency := fs.Int("concurrency", 1, "Maximum number of task trials to run in parallel (values <= 0 are treated as 1)")
 	trials := fs.Int("trials", 1, fmt.Sprintf("Independent runs per task (1-%d), each with a fresh workspace and harness subprocess. When unset, the suite's trials attribute applies, else 1.", eval.MaxTrials))
+	trialsPolicy := fs.String("trials-policy", eval.TrialsPolicyFixed, "How many of the trials each task runs: fixed runs all of them; confirm-on-fail runs each task once and the remaining trials only for a task whose first trial did not pass. The policy is recorded in the result, and compare refuses a baseline and current run that used different policies.")
 	requireHealthy := fs.Bool("require-healthy", false, "Make the comparison gate count a judge pass only when the run was healthy (the harness exited zero and the trace outcome is success). Task outcomes and the pass rate stay judge-based; the choice is recorded in the result. Also settable per suite with the require_healthy attribute.")
 	dryRun := fs.Bool("dry-run", false, "Validate suite without executing tasks or writing any artifacts (result.json, JUnit XML); prints the summary to stdout")
 	junitPath := fs.String("junit", "", "Write JUnit XML to this path after result.json (default: disabled)")
@@ -161,6 +162,9 @@ func cmdRun(args []string) {
 			log.Fatalf("-trials must be at most %d, got %d", eval.MaxTrials, *trials)
 		}
 		runTrials = *trials
+	}
+	if err := eval.ValidateTrialsPolicy(*trialsPolicy); err != nil {
+		log.Fatalf("-trials-policy: %v", err)
 	}
 
 	suite, err := loadSuite(*suitePath)
@@ -206,6 +210,7 @@ func cmdRun(args []string) {
 		OutputDir:      *outputDir,
 		Concurrency:    *concurrency,
 		Trials:         runTrials,
+		TrialsPolicy:   *trialsPolicy,
 		DryRun:         *dryRun,
 		RequireHealthy: *requireHealthy,
 		Model:          *model,
@@ -323,8 +328,9 @@ func cmdConvert(args []string) {
 }
 
 // cmdCompare prints the comparison report and returns the exit code: 1
-// when the gate blocks, 2 for a usage, load, or write error, and 0
-// otherwise (warn and inconclusive are reported but do not fail).
+// when the gate blocks, 2 for a usage, load, or write error or a trials
+// policy mismatch without --allow-policy-mismatch, and 0 otherwise (warn
+// and inconclusive are reported but do not fail).
 func cmdCompare(args []string, stdout io.Writer) int {
 	fs := flag.NewFlagSet("compare", flag.ExitOnError)
 	currentPath := fs.String("current", "", "Path to current result JSON (required)")
@@ -332,6 +338,7 @@ func cmdCompare(args []string, stdout io.Writer) int {
 	warnMargin := fs.Float64("warn-margin", reporter.DefaultWarnMargin, "Mean pass-fraction drop that reports `warn` (non-blocking) when the drop is not statistically confirmed")
 	flipThreshold := fs.Float64("flip-threshold", reporter.DefaultFlipThreshold, "Current pass fraction at or below which a task that passed every baseline trial is listed as a regression (and the mirror for improvements)")
 	outputPath := fs.String("output", "", "Write the comparison report JSON to this path (default: text report only)")
+	allowPolicyMismatch := fs.Bool("allow-policy-mismatch", false, "Compare a baseline and current run recorded under different trials policies, with a warning, instead of refusing")
 	if err := fs.Parse(args); err != nil {
 		log.Printf("parsing flags: %v", err)
 		return 2
@@ -360,6 +367,21 @@ func cmdCompare(args []string, stdout io.Writer) int {
 	if err != nil {
 		log.Printf("loading baseline result: %v", err)
 		return 2
+	}
+	if err := eval.ValidateTrialsPolicy(baseline.TrialsPolicy); err != nil {
+		log.Printf("baseline result: %v", err)
+		return 2
+	}
+	if err := eval.ValidateTrialsPolicy(current.TrialsPolicy); err != nil {
+		log.Printf("current result: %v", err)
+		return 2
+	}
+	if err := reporter.TrialsPolicyMismatch(baseline, current); err != nil {
+		if !*allowPolicyMismatch {
+			log.Printf("refusing to compare: %v. Re-run one side with the other's --trials-policy, or pass --allow-policy-mismatch to compare anyway.", err)
+			return 2
+		}
+		log.Printf("warning: %v (compared anyway under --allow-policy-mismatch)", err)
 	}
 
 	report := reporter.Compare(baseline, current, opts)
@@ -427,12 +449,30 @@ func printSummary(w io.Writer, result eval.SuiteResult, dryRun bool) {
 	}
 
 	_, _ = fmt.Fprintf(w, "Suite: %s (run: %s)\n", result.SuiteID, result.RunID)
+	confirmOnFail := result.ResolvedTrialsPolicy() == eval.TrialsPolicyConfirmOnFail
 	if result.Trials > 1 {
-		if dryRun {
+		switch {
+		case dryRun && confirmOnFail:
+			_, _ = fmt.Fprintf(w, "Trials: up to %d per task, confirm-on-fail (%d to %d harness runs planned; the dry run validates each task once)\n",
+				result.Trials, len(result.Tasks), result.Trials*len(result.Tasks))
+		case dryRun:
 			_, _ = fmt.Fprintf(w, "Trials: %d per task (%d harness runs planned; the dry run validates each task once)\n",
 				result.Trials, result.Trials*len(result.Tasks))
-		} else {
+		case confirmOnFail:
+			runs, rerun := 0, 0
+			for _, t := range result.Tasks {
+				n := t.Counts().Total()
+				runs += n
+				if n > 1 {
+					rerun++
+				}
+			}
+			_, _ = fmt.Fprintf(w, "Trials: up to %d per task, confirm-on-fail (%d harness runs; %d of %d tasks rerun after a first trial that did not pass)\n",
+				result.Trials, runs, rerun, len(result.Tasks))
+		default:
 			_, _ = fmt.Fprintf(w, "Trials: %d per task (%d harness runs)\n", result.Trials, result.Trials*len(result.Tasks))
+		}
+		if !dryRun {
 			_, _ = fmt.Fprintf(w, "Tasks: %d total, %d passed, %d failed, %d errors (majority of trials)\n",
 				len(result.Tasks), passed, failed, errored)
 			_, _ = fmt.Fprintf(w, "Pass rate: %.1f%% (mean per-task pass fraction)\n", result.PassRate*100)
@@ -455,8 +495,11 @@ func printHealthyPassRate(w io.Writer, result eval.SuiteResult) {
 	if result.HealthyPassRate == nil {
 		return
 	}
-	trials := max(result.Trials, 1)
-	_, _ = fmt.Fprintf(w, "Healthy pass rate: %.1f%% (judge passed and run healthy; %d tasks, %d trials each)\n",
+	trials := fmt.Sprintf("%d trials each", max(result.Trials, 1))
+	if result.Trials > 1 && result.ResolvedTrialsPolicy() == eval.TrialsPolicyConfirmOnFail {
+		trials = fmt.Sprintf("up to %d trials each", result.Trials)
+	}
+	_, _ = fmt.Fprintf(w, "Healthy pass rate: %.1f%% (judge passed and run healthy; %d tasks, %s)\n",
 		*result.HealthyPassRate*100, len(result.Tasks), trials)
 	if result.RequireHealthy {
 		_, _ = fmt.Fprintln(w, "require_healthy: the comparison gate counts only healthy judge passes")
