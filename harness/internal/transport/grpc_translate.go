@@ -373,8 +373,8 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 		rc.GitStrategy = types.GitStrategyConfig{Type: pc.GitStrategy.Type}
 	}
 	if pc.TraceEmitter != nil {
-		// Credential is intentionally not on the proto yet; see
-		// harness.proto TraceEmitterConfig.
+		// Credential (here and on the archive) is intentionally not on the
+		// proto yet; see harness.proto TraceEmitterConfig.
 		rc.TraceEmitter = types.TraceEmitterConfig{
 			Type:                   pc.TraceEmitter.Type,
 			FilePath:               pc.TraceEmitter.FilePath,
@@ -389,6 +389,14 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 			CaptureContentMaxBytes: int(pc.TraceEmitter.CaptureContentMaxBytes),
 			Platform:               pc.TraceEmitter.Platform,
 			PlatformOptions:        pc.TraceEmitter.PlatformOptions,
+		}
+		if archive := pc.TraceEmitter.GetArchive(); archive != nil {
+			rc.TraceEmitter.Archive = &types.TraceArchiveConfig{
+				Type:         archive.GetType(),
+				FilePath:     archive.GetFilePath(),
+				Bucket:       archive.GetBucket(),
+				ObjectPrefix: archive.GetObjectPrefix(),
+			}
 		}
 	}
 	if pc.Tools != nil {

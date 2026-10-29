@@ -1387,7 +1387,7 @@ topology):
 | Surface | Feature | Why |
 |---|---|---|
 | `transport` | Transport selection. | Deliberate. It describes how the harness was launched, not the work assigned: a config arriving in a `task_assignment` came over the gRPC stream by construction, so the harness sets `grpc` itself. Accepting a wire value would let a control plane declare a transport contradicting the stream carrying the declaration. |
-| `traceEmitter.credential`, `traceEmitter.archive` | Credential override for the `gcs` emitter; durable storage for command-output sidecars. | Not yet mapped into the existing proto credential types and translation layer. |
+| `traceEmitter.credential`, `traceEmitter.archive.credential` | Credential override for the `gcs` emitter and for a `gcs` command-output archive. | Not yet mapped into the existing proto credential types and translation layer; both use workload identity. |
 
 Everything else on `RunConfig` is expressible in a
 `task_assignment`, including the executor's
@@ -1396,8 +1396,8 @@ Everything else on `RunConfig` is expressible in a
 `toolChoiceEscalation`, `correlation`, `observability.logsExport`,
 `observability.serviceName`, `tools.profile`, `tools.commandOutput`,
 and the `traceEmitter` fields
-`metricsTemporality`, `captureContentMaxBytes`, `platform`, and
-`platformOptions`.
+`metricsTemporality`, `captureContentMaxBytes`, `platform`,
+`platformOptions`, and `archive` (apart from its `credential`).
 
 When a field in this table becomes load-bearing for a control plane,
 the project invariant is that it ships with its proto mirror and
