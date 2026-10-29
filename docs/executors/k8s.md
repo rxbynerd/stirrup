@@ -120,10 +120,13 @@ The pieces and their lifecycle:
   `tar` archive over exec, and both first resolve the real path with
   `readlink -f` and refuse anything outside `/workspace`, so a symlink
   committed into the workspace cannot pull in a file from elsewhere on
-  the Pod or redirect a write there; `ListDirectory` runs `ls -A1`. The image must therefore ship
-  a POSIX shell at `/bin/sh` plus `tar`, `ls`, and `readlink` on `PATH`
-  — a shell-less distroless static image will not work. Output and
-  file payloads are capped at 10 MB (matching the container executor).
+  the Pod or redirect a write there (see
+  [path traversal prevention](../security.md#path-traversal-prevention));
+  `ListDirectory` runs `ls -A1p`. The image must therefore ship a POSIX
+  shell at `/bin/sh` plus `tar`, `ls`, `mkdir`, and `readlink` on
+  `PATH` — a shell-less distroless static image will not work. Output
+  and file payloads are capped at 10 MB (matching the container
+  executor).
 
 - **Egress** is enforced by a per-Pod `NetworkPolicy` the executor
   installs *before* the Pod is created (closing the window in which a
@@ -154,7 +157,7 @@ flag and field below is verified against
 | CLI flag | RunConfig field | Required | Notes |
 |---|---|---|---|
 | `--executor k8s` | `executor.type: "k8s"` | yes | Selects the executor. |
-| `--image` | `executor.image` | yes for `k8s` | Pod container image. Must ship `/bin/sh`, `tar`, and `ls`. |
+| `--image` | `executor.image` | yes for `k8s` | Pod container image. Must ship `/bin/sh`, `tar`, `ls`, `mkdir`, and `readlink`. |
 | `--k8s-namespace` | `executor.k8sNamespace` | yes for `k8s` | Namespace the sandbox Pod (and its `NetworkPolicy`) is created in. |
 | `--k8s-kubeconfig` | `executor.k8sKubeconfig` | no | Path to a kubeconfig file. Empty prefers in-cluster config, then `$KUBECONFIG`. |
 | `--k8s-node-selector key=value` | `executor.k8sNodeSelector` | no | Repeatable `nodeSelector` constraint, e.g. `--k8s-node-selector disktype=ssd`. Merged with any `nodeSelector` the RuntimeClass contributes. |
@@ -682,9 +685,10 @@ parameters, which the API server records in its audit log at the
 default `Metadata` level, carry only paths and the token's byte
 length. Refreshed tokens exist only in that file: the Pod env keeps
 the initial token, which expires on its own schedule. The volume is
-outside `/workspace` and workspace reads refuse any path that
-resolves outside it, so `read_file` cannot reach the file even
-through a symlink committed into the workspace.
+outside `/workspace` and workspace reads and writes refuse any path
+that resolves outside it, so `read_file` cannot reach the file and
+`write_file`/`edit_file` cannot overwrite it, even through a symlink
+committed into the workspace.
 
 The initial token's presence in the Pod spec broadens its exposure
 relative to a `Secret`-backed credential:
@@ -738,7 +742,7 @@ something the current implementation provides.
 | Pod scheduling fails / pending forever | RuntimeClass `nodeSelector` matches no node, or the handler is missing. | Label the node for the runtime; confirm the handler is installed. |
 | `0/N nodes available: ... had untolerated taint(s)` (Pod Pending) | The schedulable nodes are tainted (GKE Sandbox pools taint `sandbox.gke.io/runtime=gvisor:NoSchedule`; arch-dedicated pools may add `kubernetes.io/arch=...`) and the Pod tolerates none. | For the Sandbox pool, set `--container-runtime gvisor` so the managed RuntimeClass injects the toleration. For other tainted pools, add a matching `--k8s-node-selector` and ensure a toleration is available (the executor does not inject arbitrary tolerations). |
 | Egress not actually confined on `kind` | kindnet does not enforce NetworkPolicy. | Use a NetworkPolicy-enforcing CNI (Cilium, Calico) for real confinement. |
-| `pod ... not ready` after the readiness timeout (default 60 s, or the caller context deadline if shorter) | Image lacks `/bin/sh`, or the runtime cannot start the Pod. | Use an image shipping `/bin/sh`, `tar`, `ls`; check `kubectl describe pod`. |
+| `pod ... not ready` after the readiness timeout (default 60 s, or the caller context deadline if shorter) | Image lacks `/bin/sh`, or the runtime cannot start the Pod. | Use an image shipping `/bin/sh`, `tar`, `ls`, `mkdir`, `readlink`; check `kubectl describe pod`. |
 | Exec/file I/O fails with API errors | The orchestrator lacks `pods/exec` create. | Apply [`rbac.yaml`](../../examples/k8s/rbac.yaml) (or grant the verb). |
 | `open /var/run/secrets/kubernetes.io/serviceaccount/token: no such file or directory` (in-cluster orchestrator) | The orchestrator Pod's ServiceAccount has `automountServiceAccountToken: false` (the reference SA's default), so no token is projected for the in-cluster REST config. | Set `automountServiceAccountToken: true` on the orchestrator Pod spec. See [Running the orchestrator in-cluster](#running-the-orchestrator-in-cluster). |
 

@@ -624,16 +624,37 @@ appropriate to its own boundary:
 - **`container`** and **`k8s`**/**`k8s-sandbox`** are structurally
   sandboxed by the container/Pod itself; the workspace is bind-mounted
   or provisioned at a fixed path, and `ResolvePath` textually rejects
-  anything that doesn't stay under it. Because the engine archive API,
-  `tar`, and `mkdir -p` all follow symlinks, `ReadFile` and `WriteFile`
-  additionally resolve the real path inside the sandbox with
-  `readlink -f` and refuse anything that resolves outside the
-  workspace. A write through a symlinked file or a symlinked directory
-  (including directories `mkdir -p` would create beneath one) is
-  refused with the same `path escapes workspace` error and
-  `path_traversal_blocked` event as a textual traversal; a symlink that
-  stays inside the workspace is written through to its target, as on
-  `local`.
+  anything that doesn't stay under it.
+
+  The engine archive API, `tar`, and `mkdir -p` all follow symlinks, so
+  `ReadFile` and `WriteFile` also resolve the real path inside the
+  sandbox with `readlink -f` and refuse anything that resolves outside
+  the workspace. A write through a symlinked file or a symlinked
+  directory, including directories `mkdir -p` would create beneath one,
+  is refused with the same `path escapes workspace` error and
+  `path_traversal_blocked` event as a textual traversal. A path that
+  `readlink` cannot resolve is refused the same way, so a symlink loop,
+  or a dangling link whose target's directory does not exist, reports
+  a traversal even when its target would have stayed inside. A write
+  path containing a control character is rejected before reaching the
+  sandbox, and a write to a directory (directly or through a symlink)
+  fails with `path is a directory`.
+
+  A symlink that stays inside the workspace is written through to its
+  target, as on `local`. Permission policies and the code scanner
+  evaluate the path the tool call named, not the path the write
+  resolved to.
+
+  The check and the write are separate steps, so a process already
+  running in the sandbox can swap a directory for a symlink between
+  them. The guard covers symlinks committed into the workspace before
+  the write, not a concurrent process; on the container executor the
+  engine performs the write.
+
+  The sandbox image must ship `readlink` and `mkdir` for writes, and
+  `tar` for reads (and for writes on `k8s`/`k8s-sandbox`). An image
+  without `readlink` fails closed: the first read or write returns an
+  error naming it.
 - **`api`** uses `url.PathEscape` on every path segment before
   constructing the GitHub Contents API URL.
 
