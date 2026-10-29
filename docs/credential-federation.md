@@ -58,6 +58,10 @@ authentication material.
 | `azure-workload-identity` | Azure OpenAI / Foundry from anywhere | `azureTenantId`, `azureClientId`, `tokenSource`; optional `azureScope`. See [`azure-workload-identity.md`](azure-workload-identity.md). |
 | `openai-wif` | OpenAI API from any OIDC-aware runtime | `openaiIdentityProviderId`, `openaiServiceAccountId`, `tokenSource`; optional `openaiSubjectTokenType`. The exchange audience is set on the `tokenSource`, not the credential. See [`openai-wif.md`](openai-wif.md). |
 
+The four `gcp-*` types are accepted only on a `gemini` provider, and
+`anthropic-wif` only on an `anthropic` provider: each mints a token for
+its own vendor, and that token must not be sent to another endpoint.
+
 ## Cross-cloud → Vertex AI Gemini via Workload Identity Federation
 
 GCP Workload Identity Federation lets a non-GCP runtime authenticate

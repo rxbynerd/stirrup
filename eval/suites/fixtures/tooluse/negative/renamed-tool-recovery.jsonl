@@ -1,0 +1,3 @@
+{"kind":"turn_record","turn":1,"modelOutput":[{"type":"tool_use","id":"c1","name":"search_files","input":{"query":"TODO"}}]}
+{"kind":"turn_record","turn":2,"modelOutput":[{"type":"tool_use","id":"c2","name":"edit_file","input":{"path":"todo-count.txt","operation":"rewrite","content":"1\n"}}]}
+{"kind":"turn_record","turn":3,"modelOutput":[{"type":"text","text":"One file contains TODO."}]}

@@ -230,6 +230,7 @@ type streamedEvent struct {
 	HarnessVersion      string   `json:"harnessVersion,omitempty"`
 	SystemPrompt        string   `json:"systemPrompt,omitempty"`
 	SystemPromptSHA256  string   `json:"systemPromptSha256,omitempty"`
+	StopReason          string   `json:"stopReason,omitempty"`
 	OutputLimitRecovery bool     `json:"outputLimitRecovery,omitempty"`
 	StallNudge          bool     `json:"stallNudge,omitempty"`
 	WindDown            string   `json:"windDown,omitempty"`
@@ -369,6 +370,7 @@ func (r *Reader) ReadRecording() (*types.RunRecording, error) {
 				RunID:               ev.RunID,
 				ParentRunID:         ev.ParentRunID,
 				ResponseModel:       ev.ResponseModel,
+				StopReason:          ev.StopReason,
 				OutputLimitRecovery: ev.OutputLimitRecovery,
 				StallNudge:          ev.StallNudge,
 				WindDown:            ev.WindDown,
@@ -426,6 +428,110 @@ func (r *Reader) ReadRecording() (*types.RunRecording, error) {
 		return recording, fmt.Errorf("reading trace file: %w", err)
 	}
 	synthesizeLegacyCommandOutputs(recording)
+	return recording, nil
+}
+
+// replayEvent is the part of a trace line a replay serves: the turn
+// record's identity, stop reason and model output, plus the run ID a
+// run_started, run_finished or legacy line names.
+type replayEvent struct {
+	Kind        string               `json:"kind"`
+	ID          string               `json:"id,omitempty"`
+	RunID       string               `json:"runId,omitempty"`
+	ParentRunID string               `json:"parentRunId,omitempty"`
+	Turn        int                  `json:"turn,omitempty"`
+	StopReason  string               `json:"stopReason,omitempty"`
+	ModelOutput []types.ContentBlock `json:"modelOutput,omitempty"`
+	Trace       *struct {
+		ID string `json:"id"`
+	} `json:"trace,omitempty"`
+	Config *struct {
+		Prompt string `json:"prompt"`
+	} `json:"config,omitempty"`
+}
+
+// MaxReplayContentBlocks bounds the model output blocks ReadReplay keeps
+// across a recording; a decoded block costs far more memory than its line
+// bytes, so the file size cap alone does not bound the load.
+const MaxReplayContentBlocks = 1 << 17
+
+// ReadReplay groups turns like ReadRecording but keeps only what a replay
+// serves: run IDs, each turn's number, stop reason and model output, and
+// each sub-run's prompt, so memory grows with model output alone. A line
+// is malformed only when it is not JSON or its kept fields do not decode.
+func (r *Reader) ReadReplay(ctx context.Context) (*types.RunRecording, error) {
+	recording := &types.RunRecording{}
+	seenStarted := false
+	blocks := 0
+	subRunIndex := map[string]int{}
+	subRun := func(runID, parentRunID string) *types.SubRunRecording {
+		i, ok := subRunIndex[runID]
+		if !ok {
+			i = len(recording.SubRuns)
+			subRunIndex[runID] = i
+			recording.SubRuns = append(recording.SubRuns, types.SubRunRecording{RunID: runID, ParentRunID: parentRunID})
+		}
+		return &recording.SubRuns[i]
+	}
+	for r.scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return recording, err
+		}
+		line := r.scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var ev replayEvent
+		if err := json.Unmarshal(line, &ev); err != nil {
+			r.malformed++
+			r.logger.Debug("trace.Reader: skip malformed replay line",
+				"err", err.Error(),
+				"bytes", len(line),
+			)
+			continue
+		}
+		switch ev.Kind {
+		case "":
+			recording.RunID = ev.ID
+		case eventKindRunStarted:
+			seenStarted = true
+			recording.RunID = ev.RunID
+		case eventKindRunFinished:
+			if ev.Trace != nil && !seenStarted {
+				recording.RunID = ev.Trace.ID
+			}
+		case eventKindTurnRecord:
+			blocks += len(ev.ModelOutput)
+			if blocks > MaxReplayContentBlocks {
+				return recording, fmt.Errorf("recording holds more than %d model output blocks", MaxReplayContentBlocks)
+			}
+			tr := types.TurnRecord{
+				Turn:        ev.Turn,
+				ModelOutput: ev.ModelOutput,
+				RunID:       ev.RunID,
+				ParentRunID: ev.ParentRunID,
+				StopReason:  ev.StopReason,
+			}
+			if ev.ParentRunID != "" && ev.RunID != "" && ev.RunID != recording.RunID {
+				child := subRun(ev.RunID, ev.ParentRunID)
+				child.Turns = append(child.Turns, tr)
+				continue
+			}
+			recording.Turns = append(recording.Turns, tr)
+		case eventKindSubRunStarted:
+			if ev.RunID == "" {
+				continue
+			}
+			child := subRun(ev.RunID, ev.ParentRunID)
+			if ev.Config != nil {
+				child.Config.Prompt = ev.Config.Prompt
+			}
+		}
+	}
+	recording.SkippedLines = r.skipped
+	if err := r.scanner.Err(); err != nil {
+		return recording, fmt.Errorf("reading trace file: %w", err)
+	}
 	return recording, nil
 }
 

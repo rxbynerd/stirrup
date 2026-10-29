@@ -817,6 +817,63 @@ func validateOutputMode(mode string) error {
 	}
 }
 
+// dropProviderFieldsOnSwitch clears the provider fields a --provider
+// switch from previous leaves without an owner, unless the field's own
+// flag was given, so validation reports the conflict instead. The table
+// under "Switching the provider of a document" in docs/configuration.md
+// lists what each switch drops.
+func dropProviderFieldsOnSwitch(changed func(string) bool, cfg *types.RunConfig, previous string) {
+	p := &cfg.Provider
+	if previous == p.Type {
+		return
+	}
+	if previous == "gemini" {
+		if !changed("gcp-project") {
+			p.GCPProject = ""
+		}
+		if !changed("gcp-location") {
+			p.GCPLocation = ""
+		}
+		if !changed("gcp-credentials-file") {
+			p.GCPCredentialsFile = ""
+		}
+		// A Google credential would mint an access token for whatever
+		// endpoint the new provider calls.
+		if p.Credential != nil && strings.HasPrefix(p.Credential.Type, "gcp-") {
+			p.Credential = nil
+		}
+		p.GeminiSafetySettings = nil
+	}
+	if previous == "replay" {
+		if !changed("replay-file") {
+			p.ReplayFile = ""
+		}
+		if !changed("model") && cfg.ModelRouter.Model == defaultReplayModel {
+			cfg.ModelRouter.Model = ""
+		}
+	}
+	if p.Type == "replay" {
+		if !changed("base-url") {
+			p.BaseURL = ""
+		}
+		if !changed("provider-endpoint-profile") {
+			p.EndpointProfile = ""
+		}
+		if !changed("api-key-header") {
+			p.APIKeyHeader = ""
+		}
+		if !changed("query-param") {
+			p.QueryParams = nil
+		}
+		if !changed("provider-compat-profile") {
+			p.CompatProfile = ""
+		}
+		p.Credential = nil
+		p.Region = ""
+		p.Profile = ""
+	}
+}
+
 // applyOverrides mutates cfg in place, replacing fields whose
 // corresponding flag was explicitly set on the command line; flags left
 // at their default deliberately do NOT override the file.
@@ -907,19 +964,7 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 		if (cfg.Provider.Type == "gemini" || cfg.Provider.Type == "replay") && !changed("api-key-ref") {
 			cfg.Provider.APIKeyRef = ""
 		}
-		// Fields a provider type owns are dropped when --provider leaves
-		// that type and the field's own flag was not given: a recording
-		// path belongs to the replay provider alone, and the "replay"
-		// model label stands in for a model no live provider serves, so
-		// applyProviderDefaults supplies or demands a real one.
-		if previous == "replay" && cfg.Provider.Type != "replay" {
-			if !changed("replay-file") {
-				cfg.Provider.ReplayFile = ""
-			}
-			if !changed("model") && cfg.ModelRouter.Model == defaultReplayModel {
-				cfg.ModelRouter.Model = ""
-			}
-		}
+		dropProviderFieldsOnSwitch(changed, cfg, previous)
 	}
 	if changed("model") {
 		// For static routers this is where the active model lives.
@@ -1490,6 +1535,7 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	traceState, _ := f.GetString("tracestate")
 	warnIgnoredTraceParent(cfg, traceParent, traceState)
 	return runWithConfig(cfg, runOptions{
+		apiKeyRefFlagGiven:     f.Changed("api-key-ref"),
 		outputMode:             outputMode,
 		debugRedactionDisabled: debugRedactionDisabled,
 		wireTrace:              wireTrace,
@@ -1912,12 +1958,24 @@ func applyOpenAIWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error {
 // traceParent and traceState carry --traceparent / --tracestate: the
 // upstream span context of the primary run, applied to its context only.
 type runOptions struct {
+	apiKeyRefFlagGiven     bool
 	outputMode             string
 	debugRedactionDisabled bool
 	wireTrace              bool
 	transportTLS           credentials.TransportCredentials
 	traceParent            string
 	traceState             string
+}
+
+// apiKeyRefHint names --api-key-ref when the top-level provider's key
+// reference, defaulted or taken from a document rather than given on the
+// command line, did not resolve.
+func apiKeyRefHint(err error, config *types.RunConfig, flagGiven bool) string {
+	var keyErr *core.APIKeyRefError
+	if flagGiven || !errors.As(err, &keyErr) || keyErr.Ref != config.Provider.APIKeyRef {
+		return ""
+	}
+	return fmt.Sprintf("; set the secret %s names, or pass --api-key-ref to name another", keyErr.Ref)
 }
 
 // runWithConfig is the shared run path for both --config and flag-only
@@ -1965,7 +2023,7 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 		core.WithTransportTLS(opts.transportTLS),
 	)
 	if err != nil {
-		return fmt.Errorf("building harness: %w", err)
+		return fmt.Errorf("building harness: %w%s", err, apiKeyRefHint(err, config, opts.apiKeyRefFlagGiven))
 	}
 	defer func() { _ = loop.Close() }()
 

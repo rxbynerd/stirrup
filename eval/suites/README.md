@@ -119,6 +119,18 @@ needs an MCP server the runner does not start (and the HCL `tools`
 block has no MCP server field), and streaming tool-call parsing is a
 wire property of each adapter that a replay bypasses by design.
 
+Each task also has a negative recording, named after the task, under
+`fixtures/tooluse/negative/`. A negative recording is a run that
+completes cleanly but misses the behaviour the task judges, such as
+editing before reading or writing the uncapped match count.
+`TestToolUseSuite_NegativeRecordingsFailTheirJudges` in `eval/runner`
+replays every recording through a freshly built harness binary and
+requires each task to fail on the judge leg its recording targets, so
+a judge that passes whatever the run did is caught. The suite itself
+never names these recordings. A new task needs its own negative
+recording and an entry in that test's table naming the judge leg it
+fails.
+
 ### Running against a live provider (opt-in)
 
 To measure a real model, pass the provider on the command line. The

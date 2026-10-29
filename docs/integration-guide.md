@@ -115,6 +115,16 @@ status.
    run ID (and a new trace reference when the run records an OTel
    span); otherwise the stream closes and the process exits.
 
+When a build fails because a file named by `provider.replayFile`,
+`permissionPolicy.policyFile` or `provider.gcpCredentialsFile` (or the
+same field of a `providers` entry) cannot be used from the harness
+host, the `error` event names only the field, whatever the cause:
+`building harness: provider.replayFile unavailable on the harness
+host; the harness log has the detail`. A control plane therefore
+cannot use those fields to probe the harness filesystem. The detail is
+on the harness's stderr. A policy file that parses as Cedar but fails
+the policy lint keeps its lint findings in the message.
+
 ### Events from the harness
 
 | `type` | Fields | Control-plane obligation |

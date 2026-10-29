@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -5397,4 +5399,168 @@ func TestBuildRunConfig_ReplayDocumentSwitchedLive(t *testing.T) {
 		must.Equal("run.jsonl", cfg.Provider.ReplayFile)
 		must.Equal("replay", cfg.ModelRouter.Model)
 	})
+}
+
+// geminiFileConfig is a --config document for Vertex AI Gemini with a
+// service-account key file and a safety setting.
+func geminiFileConfig() *types.RunConfig {
+	cfg := baseFileConfig()
+	cfg.Provider = types.ProviderConfig{
+		Type:                 "gemini",
+		GCPProject:           "my-project",
+		GCPLocation:          "us-central1",
+		GCPCredentialsFile:   "/keys/sa.json",
+		Credential:           &types.CredentialConfig{Type: "gcp-service-account"},
+		GeminiSafetySettings: []types.GeminiSafetySetting{{Category: "HARM_CATEGORY_HARASSMENT", Threshold: "BLOCK_NONE"}},
+	}
+	cfg.ModelRouter = types.ModelRouterConfig{Type: "static", Provider: "gemini", Model: "gemini-3-pro"}
+	return cfg
+}
+
+// TestApplyOverrides_SwitchFromGeminiDropsVertexFields pins that leaving
+// gemini with --provider drops the Vertex AI fields and the
+// service-account credential that reads the key file, so the switched
+// document validates.
+func TestApplyOverrides_SwitchFromGeminiDropsVertexFields(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	cmd := newTestHarnessCommand()
+	cfg := geminiFileConfig()
+	must.NoError(cmd.Flags().Set("provider", "anthropic"))
+	must.NoError(cmd.Flags().Set("api-key-ref", "secret://ANTHROPIC_API_KEY"))
+	must.NoError(cmd.Flags().Set("model", "claude-sonnet-4-6"))
+
+	must.NoError(applyOverrides(cmd, cfg, nil))
+
+	check.Empty(cfg.Provider.GCPProject)
+	check.Empty(cfg.Provider.GCPLocation)
+	check.Empty(cfg.Provider.GCPCredentialsFile)
+	check.Nil(cfg.Provider.Credential)
+	check.Empty(cfg.Provider.GeminiSafetySettings)
+	check.Equal("anthropic", cfg.ModelRouter.Provider)
+	must.NoError(types.ValidateRunConfig(cfg))
+}
+
+// TestApplyOverrides_SwitchFromGeminiKeepsExplicitGCPFlags pins that a
+// Vertex AI flag given alongside a switch away from gemini survives, so
+// validation reports it instead of the switch hiding it.
+func TestApplyOverrides_SwitchFromGeminiKeepsExplicitGCPFlags(t *testing.T) {
+	must := require.New(t)
+	cmd := newTestHarnessCommand()
+	cfg := geminiFileConfig()
+	must.NoError(cmd.Flags().Set("provider", "anthropic"))
+	must.NoError(cmd.Flags().Set("gcp-project", "kept-project"))
+
+	must.NoError(applyOverrides(cmd, cfg, nil))
+
+	must.Equal("kept-project", cfg.Provider.GCPProject)
+	must.ErrorContains(types.ValidateRunConfig(cfg), "gcpProject is only valid for provider type \"gemini\"")
+}
+
+// TestApplyOverrides_ReplaySwitchDropsConnectionFields pins that
+// switching a live document to replay drops every connection, credential
+// and wire field a replay provider rejects, so the result validates.
+func TestApplyOverrides_ReplaySwitchDropsConnectionFields(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Provider = types.ProviderConfig{
+		Type:            "openai-compatible",
+		BaseURL:         "https://gateway.example/v1",
+		EndpointProfile: types.EndpointProfileGeneric,
+		APIKeyHeader:    "api-key",
+		QueryParams:     map[string]string{"api-version": "2025-01-01"},
+		CompatProfile:   "zai-glm",
+		Credential:      &types.CredentialConfig{Type: "static"},
+		Region:          "us-east-1",
+		Profile:         "default",
+	}
+	cfg.ModelRouter.Provider = "openai-compatible"
+	must.NoError(cmd.Flags().Set("provider", "replay"))
+	must.NoError(cmd.Flags().Set("replay-file", "run.jsonl"))
+
+	must.NoError(applyOverrides(cmd, cfg, nil))
+
+	check.Equal(types.ProviderConfig{Type: "replay", ReplayFile: "run.jsonl"}, cfg.Provider)
+	must.NoError(types.ValidateRunConfig(cfg))
+}
+
+// TestApplyOverrides_ReplaySwitchKeepsExplicitBaseURL pins that an
+// explicit --base-url alongside --provider replay is kept, so validation
+// reports the conflict.
+func TestApplyOverrides_ReplaySwitchKeepsExplicitBaseURL(t *testing.T) {
+	must := require.New(t)
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	must.NoError(cmd.Flags().Set("provider", "replay"))
+	must.NoError(cmd.Flags().Set("replay-file", "run.jsonl"))
+	must.NoError(cmd.Flags().Set("base-url", "https://kept.example/v1"))
+
+	must.NoError(applyOverrides(cmd, cfg, nil))
+
+	must.Equal("https://kept.example/v1", cfg.Provider.BaseURL)
+	must.ErrorContains(types.ValidateRunConfig(cfg), "baseUrl must not be set for provider type \"replay\"")
+}
+
+// TestAPIKeyRefHint_NamesFlagOnlyForAnUnflaggedTopLevelReference pins
+// that a build failure on the top-level provider's key reference points
+// at --api-key-ref when the reference came from a default or a document,
+// and adds nothing when the flag was given, when the failing reference
+// belongs to another provider, or when the failure is unrelated.
+func TestAPIKeyRefHint_NamesFlagOnlyForAnUnflaggedTopLevelReference(t *testing.T) {
+	config := &types.RunConfig{Provider: types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"}}
+	keyErr := fmt.Errorf("build providers: resolve credentials: %w", &core.APIKeyRefError{Ref: "secret://ANTHROPIC_API_KEY", Err: errors.New("environment variable is empty")})
+	otherKeyErr := &core.APIKeyRefError{Ref: "secret://OTHER", Err: errors.New("empty")}
+	cases := []struct {
+		name      string
+		err       error
+		flagGiven bool
+		want      string
+	}{
+		{name: "defaulted reference", err: keyErr, want: "; set the secret secret://ANTHROPIC_API_KEY names, or pass --api-key-ref to name another"},
+		{name: "flag given", err: keyErr, flagGiven: true, want: ""},
+		{name: "another provider's reference", err: otherKeyErr, want: ""},
+		{name: "unrelated failure", err: errors.New("boom"), want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, apiKeyRefHint(tc.err, config, tc.flagGiven))
+		})
+	}
+}
+
+// TestApplyOverrides_SwitchFromGeminiDropsEveryGoogleCredential pins that
+// leaving gemini drops a credential block of any gcp-* type, which would
+// otherwise mint a Google access token for the new provider's endpoint.
+func TestApplyOverrides_SwitchFromGeminiDropsEveryGoogleCredential(t *testing.T) {
+	for _, credType := range []string{"gcp-default", "gcp-service-account", "gcp-workload-identity", "gcp-workload-identity-federation"} {
+		t.Run(credType, func(t *testing.T) {
+			must := require.New(t)
+			cmd := newTestHarnessCommand()
+			cfg := geminiFileConfig()
+			cfg.Provider.Credential = &types.CredentialConfig{Type: credType}
+			must.NoError(cmd.Flags().Set("provider", "openai-compatible"))
+			must.NoError(cmd.Flags().Set("base-url", "https://gateway.example/v1"))
+
+			must.NoError(applyOverrides(cmd, cfg, nil))
+
+			must.Nil(cfg.Provider.Credential)
+		})
+	}
+}
+
+// TestApplyOverrides_SameProviderKeepsItsFields pins that --provider
+// naming the document's own type is not a switch and drops nothing.
+func TestApplyOverrides_SameProviderKeepsItsFields(t *testing.T) {
+	must := require.New(t)
+	cmd := newTestHarnessCommand()
+	cfg := geminiFileConfig()
+	want := cfg.Provider
+	must.NoError(cmd.Flags().Set("provider", "gemini"))
+
+	must.NoError(applyOverrides(cmd, cfg, nil))
+
+	must.Equal(want, cfg.Provider)
 }
