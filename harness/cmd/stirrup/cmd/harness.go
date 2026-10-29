@@ -817,6 +817,66 @@ func validateOutputMode(mode string) error {
 	}
 }
 
+// dropProviderFieldsOnSwitch clears the provider fields a --provider
+// switch from previous leaves without an owner, unless the field's own
+// flag was given, in which case validation reports the conflict. Leaving
+// gemini drops the Vertex AI project, location, safety settings and key
+// file, with the gcp-service-account credential that exists to read it.
+// Leaving replay drops the recording path and the "replay" model label,
+// which stands in for a model no live provider serves, so
+// applyProviderDefaults supplies or demands a real one. Switching to
+// replay drops every connection, credential and wire field, since a
+// replay provider resolves no credential and sends no request.
+func dropProviderFieldsOnSwitch(changed func(string) bool, cfg *types.RunConfig, previous string) {
+	p := &cfg.Provider
+	if previous == p.Type {
+		return
+	}
+	if previous == "gemini" {
+		if !changed("gcp-project") {
+			p.GCPProject = ""
+		}
+		if !changed("gcp-location") {
+			p.GCPLocation = ""
+		}
+		if !changed("gcp-credentials-file") {
+			p.GCPCredentialsFile = ""
+			if p.Credential != nil && p.Credential.Type == "gcp-service-account" {
+				p.Credential = nil
+			}
+		}
+		p.GeminiSafetySettings = nil
+	}
+	if previous == "replay" {
+		if !changed("replay-file") {
+			p.ReplayFile = ""
+		}
+		if !changed("model") && cfg.ModelRouter.Model == defaultReplayModel {
+			cfg.ModelRouter.Model = ""
+		}
+	}
+	if p.Type == "replay" {
+		if !changed("base-url") {
+			p.BaseURL = ""
+		}
+		if !changed("provider-endpoint-profile") {
+			p.EndpointProfile = ""
+		}
+		if !changed("api-key-header") {
+			p.APIKeyHeader = ""
+		}
+		if !changed("query-param") {
+			p.QueryParams = nil
+		}
+		if !changed("provider-compat-profile") {
+			p.CompatProfile = ""
+		}
+		p.Credential = nil
+		p.Region = ""
+		p.Profile = ""
+	}
+}
+
 // applyOverrides mutates cfg in place, replacing fields whose
 // corresponding flag was explicitly set on the command line; flags left
 // at their default deliberately do NOT override the file.
@@ -907,19 +967,7 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 		if (cfg.Provider.Type == "gemini" || cfg.Provider.Type == "replay") && !changed("api-key-ref") {
 			cfg.Provider.APIKeyRef = ""
 		}
-		// Fields a provider type owns are dropped when --provider leaves
-		// that type and the field's own flag was not given: a recording
-		// path belongs to the replay provider alone, and the "replay"
-		// model label stands in for a model no live provider serves, so
-		// applyProviderDefaults supplies or demands a real one.
-		if previous == "replay" && cfg.Provider.Type != "replay" {
-			if !changed("replay-file") {
-				cfg.Provider.ReplayFile = ""
-			}
-			if !changed("model") && cfg.ModelRouter.Model == defaultReplayModel {
-				cfg.ModelRouter.Model = ""
-			}
-		}
+		dropProviderFieldsOnSwitch(changed, cfg, previous)
 	}
 	if changed("model") {
 		// For static routers this is where the active model lives.
