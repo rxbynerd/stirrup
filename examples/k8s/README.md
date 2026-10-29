@@ -19,6 +19,7 @@ every field shown here is cross-checked against it.
 | `taint-and-toleration.yaml` | (doc only) | no | The pattern for isolating sandbox nodes — and the note that the executor does not yet inject tolerations. |
 | `sample-sandbox-pod.yaml` | (doc only) | no | The exact Pod the executor produces, annotated field-by-field. The reference for "what a real sandbox Pod looks like". |
 | `egress-proxy/` | Deployment + Service + ConfigMap + NetworkPolicy | yes (allowlist mode) | The shared egress allowlist proxy. See its own [README](egress-proxy/README.md). |
+| `control-transport/` | Namespace + ServiceAccount (apply), Istio policy (apply), Jobs and probes (reference) | per recipe | Securing the `stirrup job` control-plane stream with harness mutual TLS (`native-tls/`) or Istio strict mutual TLS (`istio-mtls/`). See [`docs/transport-security.md`](../../docs/transport-security.md). |
 | `agent-sandbox/` | RBAC (apply) + Sandbox (doc only) | partial | Manifests for the `k8s-sandbox` executor (Agent Sandbox CRD): an orchestrator Role and a reference Sandbox CR. See [`docs/executors/k8s-agent-sandbox.md`](../../docs/executors/k8s-agent-sandbox.md). |
 
 `sample-sandbox-pod.yaml` and `taint-and-toleration.yaml` are documentation, not

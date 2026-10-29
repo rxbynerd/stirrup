@@ -1,0 +1,17 @@
+# Namespace and identity for job Pods that secure the control-plane stream
+# with the harness's own mutual TLS. No mesh is involved, so the namespace
+# keeps the `restricted` Pod Security level; job.yaml satisfies it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: stirrup-jobs
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.30
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: stirrup-job
+  namespace: stirrup-jobs
+automountServiceAccountToken: false

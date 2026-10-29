@@ -1,0 +1,8 @@
+# Standing objects for the harness mutual TLS recipe. The client certificate
+# Secret is created out of band (docs/transport-security.md) so key material
+# never lands in a manifest, and job.yaml is the per-run template the control
+# plane creates; neither is applied here.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
