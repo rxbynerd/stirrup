@@ -619,6 +619,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	}
 
 	loop := &AgenticLoop{
+		HeartbeatInterval:    time.Duration(config.EffectiveHeartbeatSeconds()) * time.Second,
 		Provider:             prov,
 		Providers:            providers,
 		Router:               rtr,

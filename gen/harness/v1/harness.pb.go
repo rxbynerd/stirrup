@@ -1147,6 +1147,9 @@ type RunConfig struct {
 	// with the follow-up prompt appended to it. The primary run, and a
 	// session without a follow-up window, are unaffected.
 	FollowUpHistory string `protobuf:"bytes,60,opt,name=follow_up_history,json=followUpHistory,proto3" json:"follow_up_history,omitempty"`
+	// Optional. Seconds between "heartbeat" events while a run is in
+	// progress. 0 or unset selects the default of 30. Otherwise range: 5-600.
+	HeartbeatSeconds int32 `protobuf:"varint,61,opt,name=heartbeat_seconds,json=heartbeatSeconds,proto3" json:"heartbeat_seconds,omitempty"`
 	// Optional. Structured log verbosity for this run.
 	// Valid values: "debug", "info", "warn", "error". Default: "info".
 	LogLevel string `protobuf:"bytes,22,opt,name=log_level,json=logLevel,proto3" json:"log_level,omitempty"`
@@ -1467,6 +1470,13 @@ func (x *RunConfig) GetFollowUpHistory() string {
 		return x.FollowUpHistory
 	}
 	return ""
+}
+
+func (x *RunConfig) GetHeartbeatSeconds() int32 {
+	if x != nil {
+		return x.HeartbeatSeconds
+	}
+	return 0
 }
 
 func (x *RunConfig) GetLogLevel() string {
@@ -6873,7 +6883,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"tracestate\x18\x02 \x01(\tR\n" +
 	"tracestateJ\x04\b\x03\x10\x04R\abaggage\"$\n" +
 	"\fOptionalBool\x12\x14\n" +
-	"\x05value\x18\x01 \x01(\bR\x05value\"\xfa\x15\n" +
+	"\x05value\x18\x01 \x01(\bR\x05value\"\xa7\x16\n" +
 	"\tRunConfig\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x16\n" +
@@ -6897,7 +6907,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x0fmax_cost_budget\x18\x12 \x01(\x01B\x02\x18\x01H\x01R\rmaxCostBudget\x88\x01\x01\x12\x1d\n" +
 	"\atimeout\x18\x13 \x01(\x05H\x02R\atimeout\x88\x01\x01\x12+\n" +
 	"\x0ffollow_up_grace\x18\x15 \x01(\x05H\x03R\rfollowUpGrace\x88\x01\x01\x12*\n" +
-	"\x11follow_up_history\x18< \x01(\tR\x0ffollowUpHistory\x12\x1b\n" +
+	"\x11follow_up_history\x18< \x01(\tR\x0ffollowUpHistory\x12+\n" +
+	"\x11heartbeat_seconds\x18= \x01(\x05R\x10heartbeatSeconds\x12\x1b\n" +
 	"\tlog_level\x18\x16 \x01(\tR\blogLevel\x124\n" +
 	"\x16system_prompt_override\x18\x17 \x01(\tR\x14systemPromptOverride\x12&\n" +
 	"\fsession_name\x18\x18 \x01(\tH\x04R\vsessionName\x88\x01\x01\x12C\n" +

@@ -754,6 +754,10 @@ message RunConfig {
   // session without a follow-up window, are unaffected.
   string follow_up_history = 60;
 
+  // Optional. Seconds between "heartbeat" events while a run is in
+  // progress. 0 or unset selects the default of 30. Otherwise range: 5-600.
+  int32 heartbeat_seconds = 61;
+
   // Optional. Structured log verbosity for this run.
   // Valid values: "debug", "info", "warn", "error". Default: "info".
   string log_level = 22;

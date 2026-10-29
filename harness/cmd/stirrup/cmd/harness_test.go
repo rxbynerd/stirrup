@@ -1800,6 +1800,51 @@ func TestBuildFlagOnlyRunConfig_ReasoningSummary(t *testing.T) {
 	must.Equal(types.ReasoningSummaryOff, cfg.ReasoningSummary)
 }
 
+// TestBuildFlagOnlyRunConfig_HeartbeatSeconds pins the flag-only path for
+// --heartbeat-seconds onto the top-level RunConfig field.
+func TestBuildFlagOnlyRunConfig_HeartbeatSeconds(t *testing.T) {
+	must := require.New(t)
+	cmd := newTestHarnessCommand()
+	for k, v := range map[string]string{
+		"mode": "execution", "prompt": "test", "provider": "anthropic",
+		"api-key-ref": "secret://ANTHROPIC_API_KEY", "model": "claude-sonnet-4-6",
+		"transport": "stdio", "log-level": "info",
+		"heartbeat-seconds": "15",
+	} {
+		must.NoError(cmd.Flags().Set(k, v), "set %s", k)
+	}
+	cfg, err := buildFlagOnlyRunConfig(cmd, nil)
+	must.NoError(err)
+	must.Equal(15, cfg.HeartbeatSeconds)
+}
+
+// TestApplyOverrides_HeartbeatSecondsChangedGated pins that
+// --heartbeat-seconds follows the Changed() discipline: a config file's
+// heartbeatSeconds survives when the flag is unset, and an explicit flag
+// overrides it.
+func TestApplyOverrides_HeartbeatSecondsChangedGated(t *testing.T) {
+	t.Run("unset leaves file value alone", func(t *testing.T) {
+		must := require.New(t)
+		cmd := newTestHarnessCommand()
+		cfg := baseFileConfig()
+		cfg.HeartbeatSeconds = 20
+
+		must.NoError(applyOverrides(cmd, cfg, nil))
+		must.Equal(20, cfg.HeartbeatSeconds)
+	})
+
+	t.Run("explicit flag overrides file value", func(t *testing.T) {
+		must := require.New(t)
+		cmd := newTestHarnessCommand()
+		cfg := baseFileConfig()
+		cfg.HeartbeatSeconds = 20
+
+		must.NoError(cmd.Flags().Set("heartbeat-seconds", "10"))
+		must.NoError(applyOverrides(cmd, cfg, nil))
+		must.Equal(10, cfg.HeartbeatSeconds)
+	})
+}
+
 // TestApplyOverrides_PromptModelChangedGated pins that --prompt-model
 // follows the Changed() discipline: a config file's
 // promptBuilder.promptModel survives when the flag is unset, and an

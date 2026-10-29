@@ -297,6 +297,7 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 		rc.FollowUpGrace = &v
 	}
 	rc.FollowUpHistory = pc.FollowUpHistory
+	rc.HeartbeatSeconds = int(pc.HeartbeatSeconds)
 
 	if pc.Provider != nil {
 		rc.Provider = providerConfigFromProto(pc.Provider)

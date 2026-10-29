@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -125,4 +126,10 @@ func TestStartHeartbeat_CancelBeforeFirstTick(t *testing.T) {
 
 	must.LessOrEqual(rec.heartbeatCount(), 1,
 		"expected at most 1 heartbeat when the context is cancelled before the first tick")
+}
+
+func TestHeartbeatInterval_ZeroSelectsDefault(t *testing.T) {
+	check := assert.New(t)
+	check.Equal(time.Duration(types.DefaultHeartbeatSeconds)*time.Second, (&AgenticLoop{}).heartbeatInterval(), "zero")
+	check.Equal(5*time.Second, (&AgenticLoop{HeartbeatInterval: 5 * time.Second}).heartbeatInterval(), "configured")
 }

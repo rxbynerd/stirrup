@@ -219,7 +219,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	l.resetCommandOutput(config.RunID)
 
 	// Lets the control plane know the run is alive during long turns.
-	stopHeartbeat := l.startHeartbeat(runCtx, 30*time.Second)
+	stopHeartbeat := l.startHeartbeat(runCtx, l.heartbeatInterval())
 
 	// The Rule-of-Two-bearing entry shape (DynamicContextValue) carries a
 	// per-entry Sensitive flag the validator and future GuardRail wiring
@@ -1510,6 +1510,13 @@ func followUpRunContext(parent context.Context, timeout time.Duration) (context.
 		return context.WithTimeout(parent, timeout)
 	}
 	return context.WithCancel(parent)
+}
+
+func (l *AgenticLoop) heartbeatInterval() time.Duration {
+	if l.HeartbeatInterval <= 0 {
+		return types.DefaultHeartbeatSeconds * time.Second
+	}
+	return l.HeartbeatInterval
 }
 
 // startHeartbeat launches a background goroutine that emits heartbeat events
