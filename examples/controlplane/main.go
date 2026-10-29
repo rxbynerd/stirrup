@@ -20,8 +20,6 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-
-	harnessv1 "github.com/rxbynerd/stirrup/gen/harness/v1"
 )
 
 // Exit statuses: 0 when every run succeeded, 1 for a run that did not
@@ -57,6 +55,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return nil
 	})
 	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	if err := rejectEmptyTLSFlags(fs); err != nil {
+		writef(stderr, "controlplane: %v\n", err)
 		return exitUsage
 	}
 	if *configPath == "" {
@@ -103,8 +105,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 // serve runs the gRPC server on lis until the session's last run finishes and
 // returns the process exit status.
 func serve(lis net.Listener, srv *server, sec listenSecurity, stderr io.Writer) int {
-	gs := grpc.NewServer(sec.serverOptions()...)
-	harnessv1.RegisterHarnessServiceServer(gs, srv)
+	gs := newGRPCServer(srv, sec)
 	go func() {
 		if err := gs.Serve(lis); err != nil {
 			writef(stderr, "controlplane: serve: %v\n", err)

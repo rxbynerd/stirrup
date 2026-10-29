@@ -4,11 +4,15 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+
+	harnessv1 "github.com/rxbynerd/stirrup/gen/harness/v1"
 )
 
 // listenSecurity is how the server protects the RunTask stream.
@@ -19,11 +23,28 @@ type listenSecurity struct {
 
 var plaintextSecurity = listenSecurity{label: "plaintext, unauthenticated"}
 
-func (s listenSecurity) serverOptions() []grpc.ServerOption {
-	if s.creds == nil {
-		return nil
+// newGRPCServer returns a gRPC server protected by sec with srv registered.
+func newGRPCServer(srv *server, sec listenSecurity) *grpc.Server {
+	var opts []grpc.ServerOption
+	if sec.creds != nil {
+		opts = append(opts, grpc.Creds(sec.creds))
 	}
-	return []grpc.ServerOption{grpc.Creds(s.creds)}
+	gs := grpc.NewServer(opts...)
+	harnessv1.RegisterHarnessServiceServer(gs, srv)
+	return gs
+}
+
+// rejectEmptyTLSFlags fails when a -tls-* flag was passed with an empty
+// value, so an unset shell variable cannot silently downgrade the server to
+// plaintext or mutual TLS to server-only TLS.
+func rejectEmptyTLSFlags(fs *flag.FlagSet) error {
+	var err error
+	fs.Visit(func(f *flag.Flag) {
+		if err == nil && strings.HasPrefix(f.Name, "tls-") && f.Value.String() == "" {
+			err = fmt.Errorf("-%s is set but empty: omit it, or give it a file", f.Name)
+		}
+	})
+	return err
 }
 
 // tlsFiles names the PEM files behind the -tls-* flags.
