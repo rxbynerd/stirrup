@@ -719,6 +719,7 @@ type responsesOutputItem struct {
 	CallID    string                  `json:"call_id,omitempty"`
 	Name      string                  `json:"name,omitempty"`
 	Arguments string                  `json:"arguments,omitempty"` // "function_call": a JSON string
+	Namespace string                  `json:"namespace,omitempty"` // "function_call": set when the function was loaded by hosted search
 	Status    string                  `json:"status,omitempty"`
 	Phase     string                  `json:"phase,omitempty"`   // "message": "commentary" | "final_answer"
 	Content   []responsesContentBlock `json:"content,omitempty"` // "message": output_text / refusal parts
@@ -1433,9 +1434,12 @@ func reconstructableToolSearches(blocks []types.ContentBlock, search *responsesT
 // therefore never replays stale items. Replayed items are semantically
 // identical to the stored JSON; json.Marshal compacts and HTML-escapes them.
 // Stored tool search items take no part in the match and replay in place,
-// but only to a request with a hosted search (search non-nil). Stored
-// arguments are compared without the synthetic nulls listed in nulls,
-// which the stream parser dropped from the tool_use input.
+// but only to a request with a hosted search (search non-nil). A stored
+// function_call replays only under the namespace this request would give a
+// reconstructed call, so a call loaded by hosted search never reaches a
+// request without one. Stored arguments are compared without the synthetic
+// nulls listed in nulls, which the stream parser dropped from the tool_use
+// input.
 func replayedResponsesItems(msg types.Message, origin string, search *responsesToolSearch, nulls strictNullables) []responsesInput {
 	if origin == "" {
 		return nil
@@ -1462,7 +1466,7 @@ func replayedResponsesItems(msg types.Message, origin string, search *responsesT
 				return nil
 			}
 		case "function_call":
-			if _, dup := storedCalls[item.CallID]; dup {
+			if _, dup := storedCalls[item.CallID]; dup || item.Namespace != search.callNamespace(item.Name) {
 				return nil
 			}
 			storedCalls[item.CallID] = item

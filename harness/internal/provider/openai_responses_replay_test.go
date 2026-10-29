@@ -708,6 +708,9 @@ func TestTranslateMessagesResponses_ReplayConsistencyFallback(t *testing.T) {
 		{"stored item not completed", handBuilt([]types.ContentBlock{text("ok")},
 			`{"type":"message","id":"msg_1","role":"assistant","status":"incomplete","content":[{"type":"output_text","text":"ok"}]}`)},
 		{"stored tool search items without a hosted search", handBuilt(responsesToolSearchTurnBlocks(), toolSearchCallItem, toolSearchOutputItem, loadedFunctionCall)},
+		{"stored namespaced call without a hosted search", handBuilt(
+			[]types.ContentBlock{{Type: "tool_use", ID: "call_1", Name: "mcp_jira_create_issue", Input: json.RawMessage(`{"title":"Broken build"}`)}},
+			loadedFunctionCall)},
 		{"reasoning-only turn", handBuilt(nil, `{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"enc"}`)},
 		{"refusal-only stored message against a text block", handBuilt([]types.ContentBlock{text("I can't help with that.")},
 			`{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"refusal","refusal":"I can't help with that."}]}`)},
@@ -739,7 +742,8 @@ func TestTranslateMessagesResponses_ReplayConsistencyAccepts(t *testing.T) {
 	reasoning := `{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"enc"}`
 	done := `{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"done"}]}`
 
-	search := newResponsesToolSearch(nil)
+	deferred := true
+	search := newResponsesToolSearch([]responsesTool{{Type: "function", Name: "mcp_jira_create_issue", DeferLoading: &deferred}})
 
 	cases := []struct {
 		name   string

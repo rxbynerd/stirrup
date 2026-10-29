@@ -2,10 +2,12 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -19,15 +21,22 @@ import (
 // blocks and stored hosted search output items. These tests pin that the
 // generic adapter's request body carries none of them.
 
-// hostedSearchHistory is a transcript whose assistant turn searched, loaded
-// a deferred function and called it, stored as origin's replay items.
+// hostedSearchHistory is a transcript whose first assistant turn searched,
+// loaded a deferred function and called it, and whose second turn called
+// that function again without searching, both stored as origin's replay
+// items.
 func hostedSearchHistory(t *testing.T, origin string) []types.Message {
 	t.Helper()
-	turn := storedTurn(t, origin, responsesToolSearchTurnBlocks(), toolSearchCallItem, toolSearchOutputItem, loadedFunctionCall)
+	searchTurn := storedTurn(t, origin, responsesToolSearchTurnBlocks(), toolSearchCallItem, toolSearchOutputItem, loadedFunctionCall)
+	repeatTurn := storedTurn(t, origin,
+		[]types.ContentBlock{{Type: "tool_use", ID: "call_2", Name: "mcp_jira_create_issue", Input: json.RawMessage(`{"title":"Second"}`)}},
+		strings.NewReplacer("call_1", "call_2", "Broken build", "Second", "fc_1", "fc_2").Replace(loadedFunctionCall))
 	return []types.Message{
 		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "file a ticket"}}},
-		turn,
+		searchTurn,
 		{Role: "user", Content: []types.ContentBlock{{Type: "tool_result", ToolUseID: "call_1", Content: "PROJ-1"}}},
+		repeatTurn,
+		{Role: "user", Content: []types.ContentBlock{{Type: "tool_result", ToolUseID: "call_2", Content: "PROJ-2"}}},
 	}
 }
 
@@ -47,6 +56,7 @@ func TestOpenAIResponsesAdapter_GenericEndpointDropsHostedSearchHistory(t *testi
 	}{
 		{"openai endpoint replays hosted search items", types.EndpointProfileOpenAI, true, []types.ToolDefinition{readFileTool, jiraCreateTool}, true, true},
 		{"generic endpoint on the origin drops them", types.EndpointProfileGeneric, false, eagerTools, true, false},
+		{"generic endpoint ignores a hosted search request", types.EndpointProfileGeneric, true, []types.ToolDefinition{readFileTool, jiraCreateTool}, true, false},
 		{"generic endpoint off the origin drops them", types.EndpointProfileGeneric, false, eagerTools, false, false},
 	}
 	for _, tc := range tests {
@@ -80,7 +90,9 @@ func TestOpenAIResponsesAdapter_GenericEndpointDropsHostedSearchHistory(t *testi
 				}
 			}
 			check.Contains(body, `"call_id":"call_1"`, "the function call and its output stay paired")
+			check.Contains(body, `"call_id":"call_2"`, "the repeated call and its output stay paired")
 			check.Contains(body, `"PROJ-1"`)
+			check.Contains(body, `"PROJ-2"`)
 		})
 	}
 }
