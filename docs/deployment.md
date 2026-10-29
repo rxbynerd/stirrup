@@ -121,10 +121,9 @@ IMDS, GitHub Actions OIDC). See
    `HarnessEvent{type:"ready", harness_version, harness_semver,
    capabilities, config_fields}`. `capabilities` names the contract
    features the harness implements and `config_fields` names every
-   `RunConfig` field a `task_assignment` can set on it, so the control
-   plane can check both
-   before dispatching work; `harness_version` and `harness_semver` are
-   informational. See
+   `RunConfig` field a `task_assignment` can set on the harness, so the
+   control plane can check both before dispatching work;
+   `harness_version` and `harness_semver` are informational. See
    [Negotiating RunConfig fields](integration-guide.md#negotiating-runconfig-fields).
 3. **Health probes.** Two marker files are written: `/tmp/healthy`
    (liveness — present from here until process exit) and

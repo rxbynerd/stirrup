@@ -382,23 +382,24 @@ type HarnessEvent struct {
 	// Internal IDs of the deferred tools a search loaded. Set on
 	// "tools_loaded" events; at most 256 entries, each capped like a name.
 	Tools []string `protobuf:"bytes,27,rep,name=tools,proto3" json:"tools,omitempty"`
-	// Every RunConfig field this harness can receive in a task_assignment,
-	// as dotted paths of the fields' JSON names, sorted byte-wise. A message field is listed along with each of
-	// its fields ("provider", "provider.endpointProfile"); a repeated field
-	// lists its element's fields under its own path ("tools.mcpServers.name");
-	// a map lists "*" for its keys, then its value's fields under that
-	// ("providers.*", "providers.*.type"). A message that contains itself
-	// is listed one level inside itself ("guardRail.stages.type",
+	// Every RunConfig field a task_assignment can set on this harness, as
+	// dotted paths of the fields' JSON names, sorted byte-wise. A message
+	// field is listed along with each of its fields ("provider",
+	// "provider.endpointProfile"); a repeated field lists its element's
+	// fields under its own path ("tools.mcpServers.name"); a map lists "*"
+	// for its keys, then its value's fields under that ("providers.*",
+	// "providers.*.type"). A message that contains itself is listed one
+	// level inside itself ("guardRail.stages.type",
 	// "guardRail.stages.stages") and not below. Set on the "ready" event
-	// `stirrup job` sends. The value of a listed path that no other listed
-	// path extends is not checked against the list, such as a Struct body.
-	// Any other RunConfig field this list omits is not one this harness
-	// knows, and it is dropped from a task_assignment without notice.
+	// `stirrup job` sends. When no listed path extends a listed path, its
+	// value is data and is not checked against the list, as for a Struct
+	// body. Any other RunConfig field the list omits is unknown to this
+	// harness and is dropped from a task_assignment without notice.
 	ConfigFields []string `protobuf:"bytes,28,rep,name=config_fields,json=configFields,proto3" json:"config_fields,omitempty"`
 	// The build version as a Semantic Versioning 2.0.0 string without the
 	// tag's leading "v", such as "0.1.0" or "0.1.0-rc.1". Set on "ready"
-	// events from release builds; empty when harness_version is not a
-	// version, as for "dev" and "main" builds.
+	// events when harness_version is a semantic version, as release tags
+	// are; empty otherwise, as for "dev" and "main" builds.
 	HarnessSemver string `protobuf:"bytes,29,opt,name=harness_semver,json=harnessSemver,proto3" json:"harness_semver,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
