@@ -874,8 +874,8 @@ only beside a configured `reasoningEffort`, which already sends a
 
 `openai-responses` requests summaries only on an explicit `auto`
 because OpenAI may require organisation verification before it returns
-them on its newest reasoning models, and that requirement has not been
-probed against OpenAI's own API: a default-on summary could make
+them on its newest reasoning models. That requirement has not been
+probed against OpenAI's own API, so a default-on summary could make
 requests from an unverified organisation fail. OpenRouter's Responses
 endpoint accepts `reasoning.summary: "auto"` and streams the summary as
 `response.reasoning_summary_text.delta` events (see
@@ -1359,11 +1359,11 @@ concerns are tracked separately:
     | Carried signed thinking under a changed system prompt | `claude-haiku-5-5`, `claude-sonnet-5-5` | Messages API | 400 `invalid_request_error`: "Invalid `signature` in `thinking` block. The block is bound to a different conversation. … The `system` prompt differs from the one this block was created with." |
     | The same with one tool added, or with every tool removed | `claude-haiku-5-5` | Messages API | 400, "The `tools` list differs from the one this block was created with." |
     | The same with the user message before the block edited | `claude-haiku-5-5` | Messages API | 400, "Content before this block differs from when it was created" |
-    | The same with `output_config.effort` changed, or sent to `claude-sonnet-5-5` | `claude-haiku-5-5` block | Messages API | 200 |
+    | The same `claude-haiku-5-5` block with `output_config.effort` changed, or with the request sent to `claude-sonnet-5-5` | `claude-haiku-5-5`, `claude-sonnet-5-5` | Messages API | 200; whether `claude-sonnet-5-5` used or dropped the block is not observable |
     | Changed system prompt with the thinking block removed | `claude-haiku-5-5` | Messages API | 200 |
     | Changed system prompt with `anthropic-beta: thinking-binding-controls-2026-08-01` and `thinking: {"type": "adaptive", "block_binding": {"prefix_mismatch_behavior": "drop_block"}}` | `claude-haiku-5-5` | Messages API | 200; without `thinking.type` the request is a 400 ("thinking.type: Field required") |
-    | `reasoning: {"effort": "low", "summary": "auto"}`, streamed | `openai/gpt-5.6-luna` | OpenRouter `/responses` | 200; one `reasoning_summary_part.added`, 81 `reasoning_summary_text.delta`, then the answer; the reasoning item carries the summary and `encrypted_content`. Every record is `data:` only, with no `event:` line. Without `summary`: 200, no summary events |
-    | Harness run, `--provider openai-responses`, `--reasoning-summary auto` | `openai/gpt-5.6-luna` | OpenRouter `/responses` | Before the data-only fix: outcome `error`, "provider returned an empty stop reason". After it: `success`, with the summary streamed as `thinking_delta`, although the adapter sent no `reasoning` object (no effort rule matches the `openai/` id) |
+    | `reasoning: {"effort": "low", "summary": "auto"}`, streamed | `openai/gpt-5.6-luna` | OpenRouter `/responses` | 200; one `reasoning_summary_part.added`, 81 `reasoning_summary_text.delta`, then the answer; the reasoning item carries the summary and `encrypted_content`. Every record is `data:` only, with no `event:` line. With `reasoning: {"effort": "low"}` and no `summary`: 200, no summary events. With no `reasoning` object at all: 200, and a summary streams (70 deltas); the response echoes `reasoning: null` |
+    | Harness run, `--provider openai-responses`, `--reasoning-summary auto` | `openai/gpt-5.6-luna` | OpenRouter `/responses` | Before the data-only fix: outcome `error`, "provider returned an empty stop reason". After it: `success`, with the summary streamed as `thinking_delta`. The adapter sent no `reasoning` object (no effort rule matches the `openai/` id, so the effort was dropped with a warning), which is the case where OpenRouter streams a summary by default |
     | Reasoning field, streamed with one tool | `z-ai/glm-5.3` (served by Relace) | OpenRouter Chat Completions | `delta.reasoning` plus `reasoning_details`; no `reasoning_content` |
     | Tool-result turn replaying the reasoning as `reasoning_content`, as `reasoning`, or not at all | `z-ai/glm-5.3` (served by Relace) | OpenRouter Chat Completions | 200 for all three |
     | Reasoning field, streamed with one tool | `qwen/qwen3.6-27b` (served by Reka) | OpenRouter Chat Completions | `delta.reasoning` plus `reasoning_details`; no `reasoning_content`. Replay not probed: the model answered without a tool call, and no `qwen/` rule replays anything |
@@ -1371,7 +1371,7 @@ concerns are tracked separately:
     | Harness run, `--lazy-tools --lazy-tools-strategy harness`, one search then a loaded tool | `claude-haiku-5-5` | Messages API | Before the binding fix: the turn after the search failed with the `tools` 400. After it: `success` in 3 turns, with the thinking stripped from the `tool_use` turn the request answers. Other Claude models are unprobed for that shape |
     | First-party DeepSeek through OpenRouter (`provider.order: ["DeepSeek"]`) | `deepseek/deepseek-v4.1-flash-1017` | OpenRouter Chat Completions | unprobed: 404, the account's privacy setting removes the DeepSeek host (see risk 9) |
     | `reasoning_content` from first-party Z.ai and Alibaba endpoints | GLM, Qwen | Z.ai, DashScope | unprobed: no credential for either |
-    | A thinking-only turn followed by a tool round trip | Claude 5.5 | Messages API | unprobed: the one attempt placed a `tool_use` turn after content it was not produced under, so its 400 ("content before this block that was not present when it was created") reflects the probe's construction, not the thinking-only turn |
+    | A thinking-only turn followed by a tool round trip | Claude 5.5 | Messages API | unprobed: the one attempt placed a `tool_use` turn after content that was not present when its block was created, so its 400 ("content before this block that was not present when it was created") reflects the probe's construction, not the thinking-only turn |
     | `reasoning.summary` on OpenAI's own API, and its organisation-verification requirement | GPT-5.x | OpenAI Responses | unprobed: no OpenAI credential |
 
     A signed thinking block is bound to the system prompt, the tool
@@ -1379,10 +1379,11 @@ concerns are tracked separately:
     (`core/thinkingbinding.go`) therefore records each request's system
     prompt and tool definitions and strips the history's thinking blocks
     before a request where either differs from the request the
-    history was last sent with: on a follow-up that continues the
-    history (the system prompt is rebuilt per run and lists the
-    workspace's files and git status), and within a run whose tool list
-    changes, as harness-strategy lazy loading does after a search. The
+    history was last sent with. This happens on a follow-up that
+    continues the history (the system prompt is rebuilt per run and
+    lists the workspace's files and git status), and within a run whose
+    tool list changes, as harness-strategy lazy loading does after a
+    search. The
     comparison uses the tool definitions before native tool search
     un-defers loaded tools on the wire; whether that un-deferral breaks
     the binding is unprobed. No registry rule or adapter fixture is
@@ -1390,7 +1391,12 @@ concerns are tracked separately:
     thinking blocks, the adapter sends what the loop gives it, and the
     rejection depends on what earlier requests carried, which a
     single-request wire fixture cannot express. The core tests pin the
-    strip instead. The thinking-only turn needs no change.
+    strip instead. The loop strips rather than sending the
+    `drop_block` beta because the strip needs no beta header or
+    `thinking` parameter, which the adapter does not send, and behaves
+    the same on accounts that do not enforce the check. A thinking-only
+    turn followed by more text turns needs no change; the same turn
+    followed by a tool round trip is unprobed.
 
     The `openai-compatible` adapter already streams `delta.reasoning` as
     `thinking_delta`; the GLM capture is now a fixture beside the

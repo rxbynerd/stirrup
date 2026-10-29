@@ -658,7 +658,11 @@ turn, the loop strips thinking blocks from that request and every later
 one in the run: Anthropic's preserved-thinking documentation binds a
 block to the exact history that preceded it, and the API enforces that
 check by default only for accounts created on or after 2026-08-31
-00:00 UTC. See [thinking-block replay](providers.md#thinking-block-replay).
+00:00 UTC. The binding also covers the system prompt and the tool list,
+so a request whose system prompt or tools differ from the request
+before it strips the thinking blocks from the stored history
+(`core/thinkingbinding.go`). See
+[thinking-block replay](providers.md#thinking-block-replay).
 
 ## Verifiers
 

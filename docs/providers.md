@@ -94,12 +94,21 @@ documentation](https://platform.claude.com/docs/en/build-with-claude/preserved-t
 binds a thinking block to the model that produced it and to the exact
 history that preceded it. The API enforces the history check by
 default only for accounts created on or after 2026-08-31 00:00 UTC;
-older accounts opt in per request, and the check was not reproduced on
-the account used for probing. Once the context strategy rewrites
-history on any turn of a run (a sliding-window trim, a summary, or an
-offload), the loop removes every thinking block from that request and
-from every later request in the run; the stored history keeps them.
-From that point the model continues from the visible transcript alone.
+older accounts opt in per request. Probes on 2026-10-29 reproduced it
+on `claude-haiku-5-5` and `claude-sonnet-5-5`, and showed that the
+binding also covers the system prompt and the tool list: a block
+replayed under a changed system prompt, an added or removed tool, or
+an edited earlier message is a 400 ([provider quirks risk
+12](provider-quirks.md#9-open-risks)). Once the context strategy
+rewrites history on any turn of a run (a sliding-window trim, a
+summary, or an offload), the loop removes every thinking block from
+that request and from every later request in the run; the stored
+history keeps them. From that point the model continues from the
+visible transcript alone. When a request's system prompt or tool list
+differs from the request before it, as on a follow-up that continues
+the history or after a harness `tool_search` load, the loop removes
+the thinking blocks from the stored history itself, so thinking
+produced afterwards is still replayed.
 Under sliding-window this starts the first time the budget is
 exceeded, and a trim can also separate a `tool_result` from its
 `tool_use`, which the API rejects
@@ -119,7 +128,9 @@ Known limitations:
 
 - Dynamic routing or a fallback can replay a block to a Claude model
   other than the one that produced it, and the API drops such a block
-  (documented, not probed).
+  (documented). A `claude-haiku-5-5` block sent to `claude-sonnet-5-5`
+  returned 200 on 2026-10-29; whether the block was used or dropped is
+  not observable from the response.
 - Only the `anthropic` adapter replays thinking, and it always sends to
   the Anthropic Messages API, so a run that switches provider loses
   reasoning continuity on the other provider's turns without exposing
@@ -620,7 +631,11 @@ is dropped rather than failing the turn. With no projected effort the
 request has no `reasoning` object, so no summary is requested. The
 reasoning output item, with its `summary` array, is stored and
 replayed verbatim like any other item. This follows OpenAI's
-documented shapes and has not been probed live. OpenAI's
+documented shapes and has not been probed against OpenAI's own API; it
+was probed through OpenRouter's Responses endpoint on 2026-10-29 (see
+[provider quirks risk 12](provider-quirks.md#9-open-risks)). A record
+with no `event:` line, as OpenRouter sends every record, is dispatched
+on its payload's `type`. OpenAI's
 [reasoning guide](https://developers.openai.com/api/docs/guides/reasoning)
 says organisation verification may be needed before summarizers work on
 its latest reasoning models, so an unset `reasoningSummary` requests no
