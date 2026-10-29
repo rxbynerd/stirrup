@@ -399,7 +399,7 @@ func (s *recordingControlPlane) findEvent(eventType string) *pb.HarnessEvent {
 	return nil
 }
 
-func TestRunJob_ReadyAdvertisesCapabilities(t *testing.T) {
+func TestRunJob_ReadyAdvertisesCapabilitiesAndConfigFields(t *testing.T) {
 	must := require.New(t)
 	useTempMarkerPaths(t)
 	srv := newRecordingControlPlane(&pb.RunConfig{Mode: "execution"})
@@ -426,6 +426,9 @@ func TestRunJob_ReadyAdvertisesCapabilities(t *testing.T) {
 	must.Equal("ready", ready.GetType(), "first event sent to the control plane")
 	want := []string{"live_transcript", "reasoning_summary", "follow_up_history", "turn_abandoned", "lazy_tool_loading"}
 	must.Equal(want, ready.GetCapabilities())
+	must.Equal(types.ConfigFieldPaths(), ready.GetConfigFields())
+	must.Subset(ready.GetConfigFields(), []string{"provider.endpointProfile", "tools.lazyLoading.eager", "providers.*.type"})
+	must.Empty(ready.GetHarnessSemver(), "a dev build advertises no semantic version")
 }
 
 // TestRunJob_InvalidAssignedConfigSignalsControlPlane drives `stirrup

@@ -112,7 +112,9 @@ func runJob(cmd *cobra.Command, args []string) error {
 		Type:           "ready",
 		ID:             sessionID,
 		HarnessVersion: version.Version(),
+		HarnessSemver:  version.Semver(),
 		Capabilities:   types.HarnessCapabilities(),
+		ConfigFields:   types.ConfigFieldPaths(),
 	}); err != nil {
 		return fmt.Errorf("failed to send ready event: %w", err)
 	}

@@ -51,7 +51,10 @@ service HarnessService {
 //
 //   "ready"
 //     - harness_version: build version string of the harness binary.
+//     - harness_semver:  the build version as a semantic version; empty
+//                        for a build that is not a release.
 //     - capabilities:    the contract features this harness implements.
+//     - config_fields:   every RunConfig field path this harness accepts.
 //
 //   "run_started"
 //     - id:              the run ID (RunConfig.run_id) of the run that started.
@@ -414,6 +417,24 @@ message HarnessEvent {
   // Internal IDs of the deferred tools a search loaded. Set on
   // "tools_loaded" events; at most 256 entries, each capped like a name.
   repeated string tools = 27;
+
+  // Every RunConfig field this harness accepts, as sorted dotted paths of
+  // the fields' JSON names. A message field is listed along with each of
+  // its fields ("provider", "provider.endpointProfile"); a repeated field
+  // lists its element's fields under its own path ("tools.mcpServers.name");
+  // a map lists "*" for its keys, then its value's fields under that
+  // ("providers.*", "providers.*.type"). Set on "ready" events. A
+  // RunConfig field this list omits is not one this harness knows: in a
+  // task_assignment it is dropped without notice, and in file-config JSON
+  // it fails the parse. The list also names fields that have no protobuf
+  // mirror and so can only be set in file-config JSON.
+  repeated string config_fields = 28;
+
+  // The build version as a Semantic Versioning 2.0.0 string without the
+  // tag's leading "v", such as "0.1.0" or "0.1.0-rc.1". Set on "ready"
+  // events from release builds; empty when harness_version is not a
+  // version, as for "dev" and "main" builds.
+  string harness_semver = 29;
 }
 
 // TraceReference mirrors types.TraceReference: the identity of a run's
