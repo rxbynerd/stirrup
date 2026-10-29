@@ -154,7 +154,17 @@ to make a feature easier:
   dropped at translation, locking the feature out of `stirrup job`
   (this happened to all four Gemini provider fields until
   2026-08-13). New CLI flags or `RunConfig` fields without the
-  proto + translate pair are incomplete.
+  proto + translate pair are incomplete, and
+  `TestRunConfigProtoMirror_EveryFieldIsMirroredAndTranslated` fails.
+- **Cross-package invariants live in `harness/internal/invariants`.**
+  Its `go/ast` tests pin that provider calls are charged to the run
+  ledger, span errors and log handlers are scrubbed, git/prompt/
+  workspaceexport never touch the host, HarnessEvents and tool
+  results pass their byte bounds, the proto mirror is complete, and
+  every run outcome is classified in `types/evaloutcome.go`. A
+  failure names the bypass; route the new code through the seam
+  rather than extending an allow-list, and give any allow-list entry
+  a reason.
 - **Hand-rolled HTTP over SDKs.** The container executor uses the
   Docker Engine REST API directly to avoid the `github.com/docker/docker`
   dependency tree. Provider adapters are stdlib HTTP+SSE for the

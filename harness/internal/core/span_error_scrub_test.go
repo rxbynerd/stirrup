@@ -5,12 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -284,59 +278,5 @@ func TestRecordSpanError_PreservesExceptionType(t *testing.T) {
 			}
 			must.Equal(tc.want, got, "exception.type")
 		})
-	}
-}
-
-// TestCoreSpanErrors_GoThroughScrubbingHelpers fails when core code records
-// an error on a span without the scrubbing helpers in spanerror.go: any
-// RecordError call, or a SetStatus(codes.Error, ...) whose description is
-// not a string literal.
-func TestCoreSpanErrors_GoThroughScrubbingHelpers(t *testing.T) {
-	must := require.New(t)
-	check := assert.New(t)
-	files, err := filepath.Glob("*.go")
-	must.NoError(err)
-	fset := token.NewFileSet()
-	scanned := map[string]bool{}
-	for _, name := range files {
-		if strings.HasSuffix(name, "_test.go") || name == "spanerror.go" {
-			continue
-		}
-		scanned[name] = true
-		src, err := os.ReadFile(name)
-		must.NoError(err)
-		f, err := parser.ParseFile(fset, name, src, 0)
-		must.NoError(err)
-		ast.Inspect(f, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			switch sel.Sel.Name {
-			case "RecordError":
-				check.Failf("span error bypasses scrubbing helpers",
-					"%s: RecordError must go through recordSpanError or recordSpanException", fset.Position(call.Pos()))
-			case "SetStatus":
-				if len(call.Args) != 2 {
-					return true
-				}
-				code, ok := call.Args[0].(*ast.SelectorExpr)
-				if !ok || code.Sel.Name != "Error" {
-					return true
-				}
-				if lit, ok := call.Args[1].(*ast.BasicLit); !ok || lit.Kind != token.STRING {
-					check.Failf("span error description is not a literal",
-						"%s: SetStatus(codes.Error, ...) needs a literal description or recordSpanError", fset.Position(call.Pos()))
-				}
-			}
-			return true
-		})
-	}
-	for _, name := range []string{"loop.go", "types.go"} {
-		check.True(scanned[name], "scan did not cover %s; the glob must run from the core package directory", name)
 	}
 }
