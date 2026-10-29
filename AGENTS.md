@@ -6,11 +6,13 @@ A coding agent harness. Go monorepo with 13 swappable components composed via `R
 
 ```text
 stirrup/
-  go.work                    # Go workspace: types, harness, eval, gen modules
+  go.work                    # Go workspace: types, harness, eval, gen, examples/controlplane modules
   buf.yaml                   # Buf v2 config for proto linting/breaking
   buf.gen.yaml               # Buf code generation config (protobuf + gRPC)
   proto/harness/v1/          # Protobuf definitions for gRPC transport
   gen/                       # Generated Go code from proto (separate module)
+  examples/
+    controlplane/            # Runnable minimal control plane (separate module with its own tests and smoke script)
   types/                     # Shared type definitions
   harness/                   # The harness binary and components
     cmd/stirrup/             # Unified CLI entrypoint (cobra: harness + job subcommands)
@@ -20,20 +22,21 @@ stirrup/
       cmd/job.go
     harnessapi/              # Public embedding API
     internal/
-      core/                  # AgenticLoop, factory, token tracking, sub-agent spawning, parallel tool dispatch, stall detection, live transcript events, follow-up history carry
+      core/                  # AgenticLoop, factory, token tracking, sub-agent spawning, parallel tool dispatch, stall detection, live transcript events, follow-up history carry; turnretry.go (provider turn retry), contextbudget.go (calibrated token budget, context window), turnrequest.go (prepareRequest/requestProvider split, context-overflow recovery)
       credential/            # Cross-cloud credential federation
-      provider/              # ProviderAdapter: Anthropic, Bedrock, OpenAI-compatible, OpenAI Responses, Gemini (Vertex AI)
+      provider/              # ProviderAdapter: Anthropic, Bedrock, OpenAI-compatible, OpenAI Responses, Gemini (Vertex AI); retryclass.go (retryable-error classification for turn retry), contextoverflow.go (context-overflow response classification per adapter)
       router/                # ModelRouter: static, per-mode, dynamic
       prompt/                # PromptBuilder: per-mode text/template prompts (model tiers, #492), composed fragments, operator templates, overrides
       context/               # ContextStrategy: sliding window, summarise, offload-to-file, clear tool results
       tool/                  # ToolRegistry, profile Presenter, LazyLoader + built-in tools, including spawn_agent and tool_search
       tool/toolname/         # Per-provider tool-name normalization + collision detection (#223)
-      executor/              # Executor: local, container (Docker/Podman), API (GitHub), replay
+      executor/              # Executor: local, container (Docker/Podman), API (GitHub), k8s, k8s-sandbox, none, replay; optional capabilities TreeLister, HostPathWorkspace, StreamingExecutor and WorkspaceArchiver (workspacearchive.go)
       edit/                  # EditStrategy: whole-file, search-replace, udiff, multi-strategy
       verifier/              # Verifier: none, test-runner, composite, llm-judge
       permission/            # PermissionPolicy: allow-all, deny-side-effects, ask-upstream, policy-engine (Cedar)
       git/                   # GitStrategy: none, deterministic
       hook/                  # Lifecycle hooks: Runner, Noop, ExecRunner (pre/post-run exec, #461)
+      postedit/              # Post-edit checks (tools.postEdit): operator commands run after each successful edit, failures returned to the model as fenced untrusted data
       sandboxidentity/       # Control-plane sandbox identity token: exchange, env/credential-helper composition, expiry-driven refresh
       transport/             # Transport: stdio, gRPC bidi streaming, null (sub-agents)
       guard/                 # GuardRail: none, granite-guardian, shieldstral, cloud-judge, composite, phase-gated
@@ -76,9 +79,9 @@ Requires `ANTHROPIC_API_KEY` environment variable for the default Anthropic prov
 |---|---|---|
 | `--prompt` | (required) | User prompt, also accepted as a positional argument |
 | `--mode`, `-m` | `planning` | Run mode: planning (default, read-only), execution, review, research, toil |
-| `--model` | `claude-sonnet-4-6` | Model to use |
+| `--model` | provider-derived | Model to use. Defaults to `claude-sonnet-4-6` for `anthropic` and to a label for `replay`; required for every other provider (see [`docs/configuration.md`](docs/configuration.md#provider)) |
 | `--provider` | `anthropic` | Provider type: anthropic, bedrock, openai-compatible (Chat Completions), openai-responses (Responses API), gemini (Vertex AI), replay (recorded output from `--replay-file`, no credential) |
-| `--api-key-ref` | `secret://ANTHROPIC_API_KEY` | Secret reference for API key |
+| `--api-key-ref` | provider-derived | Secret reference for API key. Defaults to `secret://ANTHROPIC_API_KEY` for `anthropic` and `secret://OPENAI_API_KEY` for the OpenAI providers; `bedrock`, `gemini` and `replay` take none (see [`docs/configuration.md`](docs/configuration.md#provider)) |
 | `--workspace`, `-w` | current directory | Workspace directory |
 | `--max-turns` | `20` | Maximum agentic loop turns |
 | `--timeout` | `600` | Wall-clock timeout in seconds |
@@ -111,15 +114,15 @@ plus a base via stdin or `--config <path>`. See
 1. **ProviderAdapter** — streams completions from LLMs (Anthropic, Bedrock, OpenAI-compatible, OpenAI Responses, Gemini via Vertex AI)
 2. **ModelRouter** — selects provider+model per turn (static, per-mode, dynamic)
 3. **PromptBuilder** — assembles system prompt (default per-mode templates, composed fragments, overrides)
-4. **ContextStrategy** — manages message history (sliding window, summarise, offload-to-file)
-5. **ToolRegistry** — resolves and dispatches tools (7 built-in runtime tools + MCP remote tools)
-6. **Executor** — sandboxed file I/O and command execution (local, container, API, replay)
+4. **ContextStrategy** — manages message history (sliding window, summarise, offload-to-file, clear-tool-results)
+5. **ToolRegistry** — resolves and dispatches tools (built-in runtime tools in `harness/internal/tool/builtins/` + MCP remote tools)
+6. **Executor** — sandboxed file I/O and command execution (local, container, API, k8s, k8s-sandbox, none, replay)
 7. **EditStrategy** — how file changes are applied (whole-file, search-replace, udiff, multi-strategy)
 8. **Verifier** — validates run output (none, test-runner, composite, llm-judge)
 9. **PermissionPolicy** — gates side-effecting tools (allow-all, deny-side-effects, ask-upstream, policy-engine/Cedar)
 10. **Transport** — streams events to/from control plane (stdio, gRPC bidi streaming, null)
 11. **GitStrategy** — manages branches/commits (none, deterministic)
-12. **TraceEmitter** — records telemetry (JSONL, OpenTelemetry OTLP/gRPC or OTLP/HTTP)
+12. **TraceEmitter** — records telemetry (JSONL, OpenTelemetry OTLP/gRPC or OTLP/HTTP, GCS)
 13. **GuardRail** — LLM-based content safety classifier at pre-turn, pre-tool, and post-turn hooks (none, granite-guardian, shieldstral, cloud-judge, composite)
 
 The core loop is a pure function of its interfaces. All dependencies are injected via the factory (`core.BuildLoop` / `core.BuildLoopWithTransport`), which constructs components from a `RunConfig`.
@@ -190,7 +193,7 @@ The `guard` package (`guard/`) provides an LLM-based safety classifier called at
 - **Environment filtering**: command execution allowlists safe env vars and blocks API keys/cloud credentials.
 - **Untrusted context delimiters**: dynamic context wrapped in `<untrusted_context>` tags.
 - **RunConfig.Redact()**: strips secret references before trace persistence.
-- **Stall detection**: repeated identical tool calls (3x) and consecutive failures (5x) terminate the loop.
+- **Stall detection**: a repeated tool-call pattern (3x, cycles of up to 4 calls) draws one nudge and a further repetition terminates the loop; consecutive failures (5x) terminate it.
 
 ## Key Constants
 
@@ -215,8 +218,8 @@ A `Justfile` is provided for common tasks:
 ```sh
 just              # build + test
 just build        # build stirrup + eval binaries
-just test         # go test ./harness/... ./types/... ./eval/...
-just lint         # golangci-lint run ./harness/... ./types/... ./eval/...
+just test         # go test ./harness/... ./types/... ./eval/... ./examples/controlplane/...
+just lint         # golangci-lint run ./harness/... ./types/... ./eval/... ./examples/controlplane/...
 just proto        # buf generate
 just buf-lint     # buf lint
 just docker       # build stirrup Docker image
@@ -226,11 +229,13 @@ just clean        # remove built binaries
 Or directly:
 
 ```sh
-go test ./harness/... ./types/... ./eval/...
+go test ./harness/... ./types/... ./eval/... ./examples/controlplane/...
 go build ./harness/... ./types/... ./eval/...
 buf generate
 buf lint
 ```
+
+`examples/controlplane` is a separate workspace module with its own `go.mod` and tests, run by `just test` and `just lint`; `just controlplane-smoke` drives it against a scripted provider. A new workspace member needs a `COPY <module>/go.mod ./<module>/go.mod` line in the `Dockerfile` builder stage, because `go.work` lists every member and the image build fails when a listed module's `go.mod` is missing.
 
 ### Known Issue: gopls False Positives
 

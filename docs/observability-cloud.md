@@ -1095,10 +1095,42 @@ Span-specific attributes:
 | Span | Attributes |
 |---|---|
 | `invoke_agent` | `gen_ai.operation.name=invoke_agent`, `run.id`, `run.mode`, `gen_ai.provider.name`, `gen_ai.request.model`, `run.outcome`, `run.turns`; sub-agent spans add `run.parent_id`. |
-| `chat {model}` | `gen_ai.operation.name=chat`, `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.request.max_tokens`, `gen_ai.request.temperature` when the run config sets `temperature` (an adapter that omits sampling parameters for the model does not send it), `server.address` and `server.port` when the adapter knows its host, `turn.number`; at the end, usage (below), `gen_ai.response.finish_reasons`, `gen_ai.response.model`, `turn.tool_calls`, `turn.retries`. |
+| `chat {model}` | `gen_ai.operation.name=chat`, `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.request.max_tokens`, `gen_ai.request.temperature` when the run config sets `temperature` (an adapter that omits sampling parameters for the model does not send it), `server.address` and `server.port` when the adapter knows its host, `turn.number`; at the end, usage (below), `gen_ai.response.finish_reasons`, `gen_ai.response.model`, `turn.tool_calls`, `turn.retries`, `turn.output_limit_recovery`, `turn.wind_down`. |
+| `provider.stream` | `provider.type` (the router's provider key for the turn), `provider.model`, `turn.number`, `turn.attempt`; when the attempt completes, `tokens.input`, `tokens.input_reported`, `tokens.output` and `stop_reason`; when it fails, `error.type`. |
+| `context.prepare` | `messages.before`, `messages.after`, `tokens.before`, `context.token_ratio`, and `context.forced_from` on a forced compaction. A compaction adds `context.strategy`, `context.tokens.after` and, for `clear-tool-results`, `context.tool_results.cleared`. The fit check adds `context.fit.truncated_results` when it truncated tool results. |
 | `hooks.preRun` / `hooks.postRun` | None; a phase that fails the run sets error status. A `continueOnError` failure marks only its `hook` span. |
 | `hook` | `hook.phase`, `hook.index`, `hook.name` when the hook has one, `hook.command` (scrubbed), `hook.exit_code`, `hook.duration_ms`, `hook.timed_out`, `hook.skipped`, `hook.continued_on_error`, `hook.output_truncated`. Error status with the scrubbed hook error when the hook failed. |
 | `execute_tool {name}` | `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.tool.type=function`, `turn.number`, `tool.input_size`, `tool.output_size`, `tool.success`, `tool.duration_ms`, and `tool.queue_ms` when the call waited to run. A control-plane tool call's span opens at dispatch but the call runs only after the turn's synchronous tool calls have run and a parallel slot is free; `tool.queue_ms` is that wait, which the span covers and `tool.duration_ms` excludes. A tool name that resolves to no registered tool is model-controlled, so its span is named bare `execute_tool` and its `gen_ai.tool.name` is scrubbed and cut to 128 bytes. |
+
+The root `invoke_agent` span of a run that loads repository guidance
+also carries one element per configured guidance file, in render order,
+in each of these array attributes: `repository_guidance.paths`,
+`repository_guidance.tiers` (`pinned` or `advisory`),
+`repository_guidance.missing`, `repository_guidance.bytes`,
+`repository_guidance.rendered_bytes`, `repository_guidance.truncated`
+and `repository_guidance.sha256`. They describe the files only. The
+content reaches the trace through `gen_ai.system_instructions` under
+[content capture](#span-content-capture-opt-in). A missing advisory
+file has zero sizes and no digest.
+
+A turn that hits a retryable provider failure is re-issued up to twice
+before the run records an error. Each attempt is its own
+`provider.stream` child of the turn's `chat` span, numbered from 1 by
+`turn.attempt`, and the `chat` span's `turn.retries` counts the
+re-issues. The attribute is omitted when the turn was not retried. The
+`chat` span of a turn that stopped at the output limit and was
+continued carries `turn.output_limit_recovery=true`. The `chat` span of
+the turn whose request carried the wind-down instruction carries
+`turn.wind_down` set to the threshold that fired: `turns`, `tokens` or
+`time`.
+
+On a `context.prepare` span, `context.token_ratio` is the number of
+provider tokens counted per estimated token, and the turn's budget is
+scaled by it. It is 1 until a request of at least 1,000 estimated tokens
+reports its input, and afterwards a smoothed ratio held between 0.5 and
+2. `context.forced_from` is the estimate of the request the provider
+rejected as exceeding the context window. It appears only on the span
+of the forced compaction that follows the rejection.
 
 Failures set error status with a scrubbed description and an
 `error.type` from a bounded vocabulary: the run outcome on
@@ -1211,6 +1243,43 @@ is empty, the SDK reads
 wins over the environment variable. Under `delta`, counters and
 histograms report deltas and up-down counters stay cumulative, as the
 OpenTelemetry specification defines for that preference.
+
+## Run-loop counters
+
+The agentic loop exports counters for events that the GenAI client
+metrics do not cover.
+
+| Metric | Recorded | Attributes |
+|---|---|---|
+| `stirrup.harness.provider_requests` | Once per provider request attempt. A turn re-issued after a transient failure counts every attempt, and so does a request re-sent after a context-overflow compaction. The HTTP retries inside one adapter call are not counted. | `provider.type`, `provider.model` |
+| `stirrup.harness.provider_retry_outcomes` | Once per adapter retry loop (`scope=request`) and once per turn that failed retryably (`scope=turn`). | `provider.type`, `provider.model`, `provider.retry.outcome`, `scope` |
+| `stirrup.harness.stall_nudges` | Once per synthetic message that tells the model it is repeating a tool-call pattern, sent before a stall termination. | `run.mode` |
+| `stirrup.harness.wind_downs` | Once per run that enables wind-down, when the instruction is sent. | `run.mode`, `wind_down.trigger` (`turns`, `tokens` or `time`) |
+
+A nudge adds nothing to `stirrup.harness.tool_failures`.
+
+The `scope` attribute of `provider_retry_outcomes` separates two
+retry layers:
+
+- `request` records the result of one adapter's pre-stream HTTP retry
+  loop. `provider.type` is the adapter's wire type. The outcomes are
+  `succeeded`, `exhausted`, `non_retryable`, `quota_exhausted`,
+  `budget_exhausted`, `context_done` and `rewind_failed`.
+- `turn` records the result of a model turn that hit a retryable
+  provider failure while turn retry was enabled. A turn with no such
+  failure records nothing, and a batch turn is never retried.
+  `provider.type` is the router's provider key for the turn, which is
+  the `providers` entry name for a named provider. The outcomes are
+  `succeeded`, `exhausted`, `budget_exhausted`, `non_retryable` and
+  `context_done`.
+
+An overflow that the loop recovers from by compacting is counted in
+neither `provider_errors` nor `stirrup.harness.tool_failures`.
+
+Usage reported by a failed attempt is charged to the run's token budget.
+The budget is checked between turns, so a turn that is re-issued twice
+can add the usage of two discarded attempts to the usual overshoot of
+one turn.
 
 ## Span content capture (opt-in)
 

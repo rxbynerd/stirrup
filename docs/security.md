@@ -48,8 +48,8 @@ never contains anything that could be replayed against a provider.
 ### `LogScrubber`
 
 The `harness/internal/observability/ScrubHandler` wraps any
-`slog.Handler` and runs `security.Scrub()` on every string attribute
-value before delegation. Nineteen regex patterns are scrubbed,
+`slog.Handler` and runs `security.Scrub()` on the log message and every
+attribute value before delegation. Nineteen regex patterns are scrubbed,
 covering:
 
 - Anthropic API keys
@@ -117,6 +117,43 @@ defence in depth against recognised credential formats — it runs
 before any handler (JSON, text, OTel log exporter) sees the
 attribute. A secret with no recognisable format is not redacted.
 
+The handler covers:
+
+- the log message and the value of every attribute, resolved first so
+  that a `slog.LogValuer` cannot defer its content past the handler;
+- errors, `fmt.Stringer` values and byte slices, which are rendered to
+  text before scrubbing;
+- group attributes, member by member, and any other composite value
+  (map, slice or struct), which is rendered as one JSON string;
+- both sinks of a run's logger, the stderr JSON line and the OTLP log
+  exporter, which sit below one shared scrub layer;
+- the process-default logger, which the CLI installs before any
+  subcommand runs, so code that logs through `slog.Default()` or the
+  standard `log` package is scrubbed the same way.
+
+It does not cover:
+
+- a secret with no recognised format;
+- security audit events, which `security.SecurityLogger` writes as JSON
+  lines of their own and scrubs with `security.ScrubMap`, a function
+  that handles string values, nested `map[string]any` and `[]any` and
+  leaves other typed values, such as a `[]string`, as given;
+- text written without `slog`, such as the `Error:` line the CLI prints
+  when a command fails.
+
+Error text recorded on OTel spans does not pass through the log
+handler. The agentic loop's span helpers scrub it before they add an
+exception event or set a span status, and the OTel trace emitter scrubs
+the error text of the spans it writes unless redaction is disabled with
+`--debug`.
+
+Composite attribute values change shape under scrubbing. A map, slice or
+struct appears as a single JSON string instead of a nested value, and a
+Stringer or byte slice appears as plain text. Strings, numbers,
+booleans, times and durations keep their type. The process-default
+logger writes slog text (`time=… level=… msg=… key=value`) to stderr.
+The loggers built for a run write JSON lines to stderr.
+
 The `user:password` check on Basic-auth matches runs in the log
 scrubber, which also covers captured OTel span content, and in the
 Rule-of-Two detector. The code scanner's hardcoded-secret rules reuse
@@ -139,6 +176,36 @@ it cannot cover — a span longer than the window, and anything nested
 inside one — along with the age-gated sweep that reclaims spool roots a
 crashed run leaves behind, is described in
 [`configuration.md#command-output-capture`](configuration.md#command-output-capture).
+
+### Recorded verification results
+
+The loop records one entry per verification attempt on the run trace
+(`verificationResults`). Every recorded string (the feedback, the
+error and each string in `details` at any depth) is scrubbed with
+the log patterns and then capped at 4 KiB, so a secret that straddles
+the cap is still redacted. A `details` value of any other type is
+normalised through a JSON round trip first, so a typed value cannot
+carry an unscrubbed string into the trace. The text of a verifier error
+is scrubbed the same way before it reaches the log and the `warning`
+event on the control stream.
+
+The persisted `RunConfig` is the output of `RunConfig.Redact()`, which
+strips secret references and provider URL detail but leaves command text
+as written. A literal value in `verifier.command` is therefore stored in
+the trace in clear text, and operators must not put a secret there. The same
+holds for the other command fields, such as hook and post-edit
+commands, which validation additionally rejects when they contain a
+`secret://` reference.
+
+### Recorded system prompt
+
+The JSONL recording holds the run's system prompt in a `system_prompt`
+line. The text is scrubbed like other recorded content, and
+`systemPromptSha256` is the digest of the prompt as it was sent, before
+scrubbing. The prompt includes dynamic context and, when
+`repositoryGuidance` is configured, the guidance files, so repository
+content that is not secret-shaped appears in the recording unchanged. A
+debug build records the prompt verbatim.
 
 ### Control-stream scrubbing
 
@@ -613,6 +680,26 @@ each tool call sends the run's `traceparent` and `tracestate` as HTTP
 headers and in `tools/call` `_meta`, with no opt-out (see
 [Trace context sent to MCP servers](observability-cloud.md#trace-context-sent-to-mcp-servers)).
 
+### MCP result bounding
+
+A `tools/call` response from an MCP server is bounded at three layers,
+because the server is untrusted:
+
+- **Response body: 10 MiB.** The client reads at most 10 MiB of a
+  response. A larger body is cut, fails to decode, and the call returns
+  an error.
+- **Structured envelope: 256 KiB.** The harness keeps the server's
+  `structuredContent` and a descriptor for each non-text content item
+  (images, audio, resource links, embedded resources) as a bounded
+  envelope. At most 512 content items are processed, and embedded
+  resource text is cut at 8 KiB. Binary blobs are never inlined. An
+  oversized `structuredContent` or envelope is replaced by a marker, so
+  that "too large" stays distinguishable from "absent".
+- **Text: the dispatch budget.** The text content items, joined, are
+  bounded like the output of any other tool by `tools.maxResultBytes`
+  (100 KiB by default, at most 1 MiB). Text past the budget is cut with
+  a marker, and a cut result drops its structured envelope.
+
 ## Path traversal prevention
 
 Every `Executor` implementation enforces workspace containment
@@ -648,23 +735,75 @@ symlink-following behavior to the tools running inside the sandbox,
 bounded by the sandbox's own filesystem namespace rather than a
 host-side guard.
 
-The workspace exporter (`harness/internal/workspaceexport`) applies
-the same containment check when building the export tarball: any
-path that resolves outside the workspace root, including via a
-symlinked parent directory, is refused and fails the whole export.
-On the local executor, dangling symlinks (whose target does not exist, so `EvalSymlinks`
-itself errors) are refused rather than silently included — a
-downstream `tar -xzf` without `--no-dereference` could otherwise be
-exploited via a symlink-then-overwrite pattern targeting a path
-outside the workspace. Symlinks that stay inside the workspace are
-recorded as symlink entries, not dereferenced.
+The workspace exporter (`harness/internal/workspaceexport`) asks the
+run's executor to stream the workspace as a tar archive and builds the
+uploaded tarball by re-reading that stream. For the `container`, `k8s`
+and `k8s-sandbox` executors the stream is produced by `tar` inside the
+sandbox, so the exporter treats it as untrusted and never forwards it
+as received. The rules, which also apply to the `local` executor's
+stream, are:
+
+- absolute names, `..` components and duplicate names are refused;
+- only directories, regular files, symlinks and hard links are kept;
+  other entry types, such as devices, FIFOs and sockets, are skipped;
+- a symlink with an absolute target is refused, so a workspace that
+  holds one, such as a virtual environment that links its interpreter
+  by absolute path, fails the export;
+- a symlink whose target, resolved through every symlink in the
+  archive, leaves the workspace root, loops, or needs more than 40
+  hops is refused;
+- an entry beneath a symlink entry is refused;
+- a hard link to anything other than a regular file in the archive is
+  refused;
+- ownership is dropped, and only the nine permission bits and the
+  modification time are kept.
+
+The link checks run once the whole stream has been read, so entry order
+does not matter. Symlinks are never followed while reading the stream.
+Any refusal fails the whole export, and extracting the result into an
+empty directory cannot create or write a file outside it. The
+uncompressed stream and the uploaded tarball are each capped at 1 GiB.
+
+The `local` executor adds a check of its own while walking the
+workspace: any path that resolves outside the workspace root, including
+via a symlinked parent directory, fails the export, and so does a
+dangling symlink (one whose target does not exist, so `EvalSymlinks`
+itself errors). A downstream `tar -xzf` without `--no-dereference`
+could otherwise be exploited via a symlink-then-overwrite pattern
+targeting a path outside the workspace. The sandbox executors have no
+such check: a symlink whose target stays inside the root but does not
+exist is not detected, because the stream rules compare link targets
+with the archive's own entries and do not require the target to exist.
+Symlinks that stay inside the workspace are recorded as symlink entries,
+not dereferenced.
+
+### Prompt-time workspace reads
+
+The workspace listing and git status in the system prompt are read
+through the run's executor. The prompt builder has no filesystem or
+git access of its own. Both are bounded because the agent chooses the
+names they hold. Each is capped at 200 entries and 8 KiB, with a
+truncation marker, and file names containing control characters are
+left out of the listing.
+Git status runs only when the workspace is the top level of a
+repository, so the file names of an enclosing repository never appear.
+Each git invocation carries the harness's git hardening flags, which
+disable repository hooks and the filesystem monitor.
+
+On the `container`, `k8s` and `k8s-sandbox` executors this means git
+runs inside the sandbox, so an agent-written `.git/config` is read by
+git in the sandbox and never by a git on the harness host. The `local`
+executor runs commands on the harness host by definition, so on that
+executor git runs on the host, in the workspace, with the hardening
+flags, which are not a security boundary. The `api` executor cannot run commands and
+omits the status section.
 
 ## Environment filtering
 
 When the local executor runs a shell command, the child process's
-environment is filtered to a 27-key allowlist of safe variables
-(`HOME`, `PATH`, `LANG`, `LC_*`, `SHELL`, language-specific build
-vars, etc.). Everything else is dropped.
+environment is filtered to an allowlist of 29 named variables plus any
+`LC_*` variable (`HOME`, `PATH`, `LANG`, `SHELL`, language-specific
+build vars, etc.). Everything else is dropped.
 
 The filter blocks:
 
@@ -726,6 +865,13 @@ The container executor applies these defaults regardless of what
 - API keys and `secret://` references are resolved on the *host*
   before tool dispatch; they never enter the container's
   environment.
+- A bounded lifetime. The container's main process is `sleep` for the
+  longer of the run `timeout` and the session budget, plus the `postRun`
+  hook budget, plus a 10-minute margin, and the container is created
+  with `AutoRemove`. The engine removes it when the sleep ends, so a
+  harness that exits uncleanly cannot leave a sandbox running past that
+  bound. Each container carries the labels `stirrup.sandbox=true` and
+  `stirrup.run-id=<run-id>`.
 
 The workspace bind is *not* mounted `nosuid,nodev,noexec`. The
 legacy `Binds` string form can express those options to the kernel,
@@ -789,6 +935,25 @@ The agentic loop terminates after:
   or a cycle of 2 to 4 calls repeated 3 times, with the same canonical
   input and results) — `stop_reason: "stalled"`.
 - **5 consecutive tool failures** — `stop_reason: "tool_failures"`.
+
+A call is identified by its tool name, its canonical input (key order
+and whitespace do not matter), whether it succeeded, and a hash of its
+output. The first repetition does not end the run. The harness appends
+one message saying that the last calls repeated the same pattern with
+the same results and asking the model to change approach or finish with
+a final answer, emits a `warning` event, and clears the call window. The
+message is merged into the tool-result message and is not marked
+synthetic. Calls made in the batch that triggered the nudge do not count
+toward the next repetition. A repetition after the nudge ends the run.
+The consecutive-failure limit is not deferred by a nudge, so identical
+failing calls, which include calls a guard or the permission policy
+denied, draw a nudge at the third and end the run at the fifth.
+
+The detector belongs to one inner loop, so a verification retry that
+re-enters the loop starts with a fresh window and can draw another
+nudge. A loop whose output differs on every call never repeats a
+signature and is bounded only by `maxTurns`, the token budget and the
+run `timeout`.
 
 This bounds the damage of a model that has lost the plot — without
 stall detection, a coerced or stuck model can burn through the
@@ -877,6 +1042,80 @@ mid-upload. Operators relying on heartbeat-based liveness for runs with
 `postRun` hooks should account for this gap in their reap timeout;
 re-arming heartbeats for the detached post-hook phase is tracked as a
 follow-up if this proves disruptive in practice.
+
+## Post-edit checks
+
+`tools.postEdit` runs operator-authored shell commands after an edit
+tool succeeds on a path matching the check's glob. The field reference
+is in [`configuration.md`](configuration.md#post-edit-checks). A check differs from a
+lifecycle hook in both trust directions: a hook runs outside the turn
+loop and its output never reaches the model, while a check runs inside
+an edit tool call and its failure output does.
+
+- **Commands are operator config, not agent output.** They come from
+  `RunConfig`, at the same trust level as `verifier.command` and hook
+  commands. The model chooses only the edited path. Validation rejects
+  the setting in read-only modes, for executors that cannot run
+  commands, and for any command containing a `secret://` reference.
+- **Checks run outside the permission policy.** They execute through the
+  run's `Executor` from inside the edit tool's handler, after the
+  input validator, tripwires, `pre_tool` guard and permission policy
+  have approved the edit call. Cedar, `PermissionPolicy` and the guard
+  never see a check command. The executor's isolation applies as it does
+  to every other command: runtime class, network mode and egress proxy,
+  and resource limits.
+- **The path reaches the shell only as a variable value.** The harness
+  prefixes the script with `export STIRRUP_EDITED_PATH='<path>'`, the
+  value quoted for POSIX `sh`, and `{path}` in the command expands to a
+  reference to that variable. The path text is never parsed as shell
+  syntax, and a path starting with `-` is prefixed with `./` so a check
+  cannot read it as an option. A path containing a control character is
+  not passed at all: the checks are skipped and the model receives a
+  warning. Validation rejects `'{path}'` in single quotes, which would
+  stop the expansion.
+- **Failure output is untrusted data.** When a check exits non-zero,
+  its stdout and stderr are scrubbed, any fence markers in them are
+  neutralised, and the text is cut to 16 KiB keeping the head. The
+  harness wraps the result in a data fence with a per-call random nonce
+  and a notice that the fenced text is data, then appends it to the edit
+  tool's result. A check that exits zero adds nothing, and a check that
+  times out or cannot run adds a warning with no output. The edit is
+  never rolled back by a check.
+- **The command text is recorded.** Each execution is recorded with its
+  scrubbed command, the path and the outcome, so a literal secret in a
+  command is stored in the trace's `RunConfig` as written, as for other
+  command fields (see [Recorded verification
+  results](#recorded-verification-results)).
+
+Because the diagnostics are part of the edit tool's result, they pass
+through the same screening as any other tool result: the Rule-of-Two
+runtime classifier and a `pre_turn` guard read them before the model
+does.
+
+## Structured run results
+
+A run with `outputSchema` returns a validated document, and the checks
+on it run in this order:
+
+1. The final message must be exactly one JSON document, bare or in one
+   fenced block tagged `json` or untagged.
+2. A document containing a `__proto__` or `constructor` key, or a key
+   repeated within one object, is rejected. Unlike in tool input, where
+   those keys are stripped, the model is asked to correct the document.
+3. The document is validated against the schema as the model sent it.
+4. Every string literal, keys and values alike, is scrubbed with the log
+   patterns, and the result is checked against the size limit.
+5. When scrubbing changed the document, it is validated again.
+
+A document that satisfied the schema as sent but fails after scrubbing,
+or in which scrubbing made two keys equal, ends the run as
+`structured_output_failed` without a correction attempt, because the
+model cannot fix a value it never sent. Rejection reasons returned to
+the model or recorded as the run error are scrubbed and capped at
+2 KiB. The schema validator names its schema with a fixed
+`urn:stirrup:schema` resource, so no validation error returned to the
+model, for a structured result or for tool input, carries a path from
+the harness host.
 
 ## Sandbox identity tokens (git-proxy credential binding)
 
@@ -976,10 +1215,15 @@ Controls layered from outside in:
    (catches secret-shaped output, hallucinated tool calls).
    Code scanner (post-edit): pattern + optional semgrep,
    block findings roll back the write.
+   Post-edit checks (tools.postEdit): operator commands run
+   after a successful edit, outside the permission policy;
+   failure output reaches the model scrubbed, capped, fenced.
 
   ── Run lifetime ──────────────────────────────────────────
-   Stall detection: bounded consecutive identical calls /
-   failures.
+   Stall detection: a repeated call pattern draws one nudge,
+   a repeat after it ends the run; 5 consecutive failures end
+   the run. Output that changes on every call is bounded only
+   by maxTurns, the budgets and the run timeout.
 
   ── Post-session (outside the turn loop) ──────────────────
    postRun hooks: operator exec via the run's own Executor,
@@ -990,7 +1234,9 @@ Controls layered from outside in:
 
   ── Persistence ──────────────────────────────────────────
    RunConfig.Redact(): strips secret refs from anything
-   written to disk or a trace store.
+   written to disk or a trace store. Command text is kept.
+   Verification results and the system prompt are scrubbed
+   before they are recorded.
    ScrubWriter: command output is redacted on the way to its
    spool file rather than at command completion.
 ```

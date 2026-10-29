@@ -26,14 +26,24 @@ in [`AGENTS.md`](AGENTS.md).
 
 ## Workspace layout
 
-The repository is a Go workspace (`go.work`) composed of four modules:
+The repository is a Go workspace (`go.work`) composed of five modules:
 
 - `types/` — shared types, `RunConfig` validation, and the `version`
   package. Zero external dependencies.
 - `gen/` — generated code from `proto/harness/v1/`. Edit the `.proto`,
   not the generated Go.
-- `harness/` — the harness binary and its 12 components.
+- `harness/` — the harness binary and its 13 components.
 - `eval/` — the eval CLI, judges, runner, and lakehouse adapters.
+- `examples/controlplane/` — a runnable minimal control plane with its
+  own `go.mod`, tests and smoke script (`just controlplane-smoke`). It
+  is a separate module, so `go test` inside `harness/` does not run its
+  tests; `just test` and `just lint` include it.
+
+A new workspace member needs a `COPY <module>/go.mod ./<module>/go.mod`
+line in the [`Dockerfile`](Dockerfile) builder stage, next to the one
+for `examples/controlplane`. `go.work` lists every member, and the image
+build fails to load the workspace when a listed module's `go.mod` is
+missing.
 
 The `harness/internal/*` packages are not part of the public API. The
 embedding surface is `harness/harnessapi/`.
@@ -43,10 +53,10 @@ embedding surface is `harness/harnessapi/`.
 ```sh
 just              # build + test
 just build        # binaries: ./stirrup and ./stirrup-eval
-just test         # go test ./harness/... ./types/... ./eval/...
+just test         # go test ./harness/... ./types/... ./eval/... ./examples/controlplane/...
 just lint         # golangci-lint v2
 just fuzz-scrub   # short fuzz runs of the secret scrubber
-just vuln         # govulncheck across all four workspace modules
+just vuln         # govulncheck across all five workspace modules
 just proto        # buf generate
 just buf-lint     # buf lint
 just docker       # docker build -t stirrup .
@@ -56,17 +66,19 @@ just clean        # remove built binaries
 Or directly:
 
 ```sh
-go test ./harness/... ./types/... ./eval/...
+go test ./harness/... ./types/... ./eval/... ./examples/controlplane/...
 go build ./harness/... ./types/... ./eval/...
 buf generate
 buf lint
 ```
 
 CI runs the equivalent of `just test` + `just test-race` +
-`just fuzz-scrub` + a full build via the reusable `_verify.yml` workflow on every push, plus an
-`eval-gate` job (baselined eval suites against committed baselines,
-pinned to a cheap model) on every push and a container publish on
-every merge to `main`. A failing `compare` exit fails the eval gate.
+`just fuzz-scrub` + a full build via the reusable `_verify.yml` workflow
+on every push. The CI race pass omits `harness/internal/sandboxidentity`,
+which `just test-race` includes. Pushes to `main` and manual
+dispatches also run an `eval-gate` job (baselined eval suites against
+committed baselines, pinned to a cheap model), and every merge to `main`
+publishes containers. A failing `compare` exit fails the eval gate.
 See [`.github/workflows/`](.github/workflows/) for the full pipeline.
 
 ### gopls false positives

@@ -42,7 +42,8 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp Tra
 }
 
 // Run executes the agentic loop to completion and returns the run trace.
-// A non-nil trace returned with a non-nil error means the run completed
+// A non-nil trace returned with a non-nil error means either that setup
+// failed and the trace records that outcome, or that the run completed
 // but its trace could not be persisted.
 //
 // With the otel trace emitter, a valid OpenTelemetry span context on ctx

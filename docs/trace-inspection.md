@@ -17,11 +17,14 @@ A JSONL trace file is a stream of one-line JSON events, each carrying
 a `kind` discriminator. A complete run produces:
 
 ```jsonl
-{"kind":"run_started","schemaVersion":"2","runId":"...","config":{...redacted...},"startedAt":"..."}
-{"kind":"turn_record","turn":1,"modelInput":{...},"modelOutput":[...],"toolCalls":[...]}
-{"kind":"tool_call_record","turn":1,"name":"read_file","input":{...},"output":"..."}
-{"kind":"command_output_record","commandOutput":{"archiveId":"...","toolUseId":"...","stdout":{"rawBytes":123,"scrubbedBytes":111,"rawSha256":"...","scrubbedSha256":"..."}}}
-{"kind":"turn_record","turn":2,"modelInput":{...},"modelOutput":[...]}
+{"kind":"run_started","schemaVersion":"2","runId":"run-1","harnessVersion":"...","config":{...redacted...},"startedAt":"..."}
+{"kind":"hook_record","runId":"run-1","hook":{"phase":"preRun","index":0,"command":"...","exitCode":0,"durationMs":40}}
+{"kind":"system_prompt","runId":"run-1","systemPrompt":"...","systemPromptSha256":"..."}
+{"kind":"turn_record","runId":"run-1","turn":1,"modelInput":{...},"modelOutput":[...],"toolCalls":[...]}
+{"kind":"tool_call_record","runId":"run-1","toolCall":{"id":"...","name":"read_file","input":null,"output":"...","durationMs":12,"success":true}}
+{"kind":"post_edit_check","postEditCheck":{"tool":"edit_file","path":"main.go","index":0,"command":"...","exitCode":0,"durationMs":35}}
+{"kind":"command_output_record","runId":"run-1","commandOutput":{"archiveId":"...","runId":"run-1","toolUseId":"...","stdout":{"rawBytes":123,"scrubbedBytes":111,"rawSha256":"...","scrubbedSha256":"..."}}}
+{"kind":"turn_record","runId":"run-1","turn":2,"modelInput":{...},"modelOutput":[...]}
 {"kind":"run_finished","trace":{...RunTrace summary...},"completedAt":"..."}
 ```
 
@@ -59,6 +62,153 @@ is read as if it were a streaming file containing only the
 operate on the same `run_finished`-equivalent shape so operator
 workflows are unchanged across the format transition.
 
+### Schema version and run tags
+
+`run_started` carries `schemaVersion`. Version `2` tags every per-run
+record (`turn_record`, `tool_call_record`, `hook_record`,
+`command_output_record` and `system_prompt`) with the `runId` of the run that produced it,
+and adds the `subrun_started` and `subrun_finished` kinds. A record
+that belongs to a sub-agent also carries `parentRunId`. Readers skip
+event kinds they do not recognise, so a reader that predates a kind
+ignores its lines. `post_edit_check` lines carry no run tag.
+
+### Sub-agent runs
+
+A sub-agent's records stream into the parent's file, bracketed by two
+kinds that are distinct from `run_started` and `run_finished`. A reader
+written before these kinds existed skips them instead of mistaking the
+child for the recorded run:
+
+```jsonl
+{"kind":"subrun_started","runId":"run-1/sub-1","parentRunId":"run-1","startedAt":"...","config":{...redacted...}}
+{"kind":"turn_record","runId":"run-1/sub-1","parentRunId":"run-1","turn":1,"modelInput":{...},"modelOutput":[...]}
+{"kind":"subrun_finished","runId":"run-1/sub-1","parentRunId":"run-1","completedAt":"...","subRun":{"runId":"run-1/sub-1","parentRunId":"run-1","outcome":"success","turns":3,"tokenUsage":{...},"startedAt":"...","completedAt":"...","durationMs":8120}}
+```
+
+`subrun_started` carries the child's redacted `RunConfig`.
+`subrun_finished` carries a summary only (outcome, turn count, token
+usage, timestamps, and duration). The child's `RunTrace` is not written
+to the file. A child's `runId` has the form `<parentRunID>/sub-<n>`,
+where `n` counts the sub-agents the parent has spawned, starting at 1.
+
+The child's tool calls also appear in the parent's `run_finished`
+summary with `runId` and `parentRunId` set, and its turns count toward
+the parent's `turns` and `tokenUsage`. A consumer that wants parent-only
+aggregates filters on those tags; `stirrup trace stats` reports the
+number of tagged calls as `subAgentToolCalls`. A child's system prompt
+and verification results are not written to the parent's file.
+
+`ReadRecording` (the reader in
+[`types/trace`](../types/trace/reader.go)) rebuilds the recording from
+these lines. A `turn_record` that names a parent run and carries a run
+ID other than the recording's own belongs to a child. It is grouped,
+with that child's `subrun_started` and `subrun_finished`, into
+`RunRecording.SubRuns` (`subRuns` in JSON), one entry per child in order
+of first appearance. It never appears in `RunRecording.Turns`. Each
+entry carries `runId`, `parentRunId`, `config`, `turns`, and a `summary`
+that is absent when the file ends before the child finished. Records
+without run tags, as in traces written before schema version 2, stay in
+`Turns` and produce no `subRuns`. `RunRecording.CommandOutputs` describes
+the run's whole sidecar archive, which sub-agents share, so its entries
+span every run and each names its own `runId`.
+
+### Request reproduction
+
+Several records exist so that the request sent on each turn can be
+reproduced from the file:
+
+- **`harnessVersion`** on `run_started` names the harness build that
+  wrote the trace.
+- **`system_prompt`** follows `run_started` and carries `systemPrompt`
+  and `systemPromptSha256`. The prompt text is scrubbed of
+  secret-shaped content before it is written, or written verbatim under
+  `--debug`. The digest is of the prompt as sent, before scrubbing, so
+  it identifies the prompt even when the text was redacted. A
+  sub-agent's system prompt is not recorded.
+- **`modelInput.request`** on each `turn_record` holds the request
+  parameters of that turn:
+
+  | Field | Meaning |
+  |---|---|
+  | `temperature` | Value after defaulting; absent when the request carried none. |
+  | `maxTokens` | Output limit sent. |
+  | `reasoningEffort` | Reasoning effort sent; absent when none. |
+  | `reasoningSummary` | Summary mode resolved for the adapter in use. |
+  | `toolChoice` | `auto`, `required`, `none`, or `tool`. |
+  | `cacheKey` | Provider-neutral cache affinity digest, never the run ID itself. |
+
+- **`responseModel`** on `turn_record` is the model identifier the
+  provider reported answering with, which can differ from
+  `modelInput.model`, the requested alias. It is absent when the
+  provider reports none.
+
+`ReadRecording` surfaces `harnessVersion` and the `system_prompt` line as
+`RunRecording.HarnessVersion`, `RunRecording.SystemPrompt`, and
+`RunRecording.SystemPromptSha256`.
+Traces written before these records existed lack all of them, and the
+recording fields are then empty.
+
+### Turn-record fields
+
+Besides the transcript, each `turn_record` carries markers for the
+synthetic steering the harness applied on that turn. Each is omitted
+when it does not apply:
+
+| Field | Meaning |
+|---|---|
+| `outputLimitRecovery` | The turn stopped at the output limit (`max_tokens`) and the run continued with a synthetic instruction instead of ending. |
+| `stallNudge` | The turn's tool calls completed a repeated call pattern, and the next request carries a synthetic instruction to change approach instead of the run ending as `stalled`. |
+| `windDown` | The budget threshold that made the harness send its wind-down instruction at the start of the turn: `turns`, `tokens`, or `time`. |
+
+Messages in `modelInput.messages` carry an optional `origin`, which names
+the harness component whose output the message holds when that output can
+echo content from outside the harness. The value `verifier_feedback`
+marks the user message that carries a failed verifier's feedback into a
+verification retry. Harness output merged into a message of another
+origin carries `origin` on its text block instead. The field is
+independent of `synthetic`.
+
+Per-turn summaries (`TurnTrace`) are not written as JSONL lines, so
+`TurnTrace.retries` is visible only to in-process emitters and as the
+`turn.retries` attribute on the OTel `chat {model}` span. It counts the
+earlier attempts at the turn that failed with a retryable provider
+error and were discarded; the record describes the final attempt. The tokens those attempts
+reported are included in the turn's token usage.
+
+### Post-edit checks
+
+Each [`tools.postEdit`](configuration.md) check execution streams as a
+`post_edit_check` line and accumulates in `RunTrace.postEditChecks`
+(`postEditChecks` in the `run_finished` trace), in dispatch order. A
+record holds `toolUseId`, `turn`, `tool`, `path`, `index`, the
+configured `command` template before path substitution, `exitCode`,
+`durationMs`, `timedOut`, `error`, `outputBytes`, and `truncated`. The
+diagnostics themselves are not recorded in these entries. They reach the
+trace only inside the tool result they were appended to. `path`,
+`command`, and `error` are scrubbed. A non-empty `error` means the check
+did not produce an exit code (timeout, rejected path, or executor
+failure), so an `exitCode` of `0` alone does not mean the check passed.
+
+### Verification results
+
+`RunTrace.verificationResults` holds one entry per verifier attempt, in
+order, and is empty when the verifier is `none`. `attempt` is the 1-based
+attempt number. A `passed: false` entry with `error` set means the
+verifier failed to produce a verdict, as opposed to failing the work.
+`feedback`, `error`, and every string inside `details` are scrubbed of
+secret-shaped content and then capped at 4 KiB, with a truncation marker
+on a capped value. The last entry is the one that decides the outcome.
+
+### Run-level fields
+
+The `run_finished` trace carries these fields beyond the counters:
+
+| Field | Meaning |
+|---|---|
+| `workspaceExport` | Receipt of the end-of-run workspace export: `uri`, `status` (`uploaded`, `empty`, or `failed`), `bytes`, `sha256`, `files`, `required`, and a scrubbed `error` when `status` is `failed`. Absent when no export destination is configured. |
+| `error` | Scrubbed, length-capped reason for a non-success `outcome`, the run's earliest failure. Absent on success, except that a successful run whose trace could not be persisted carries it on the returned trace only, never in the file. |
+| `structuredOutput` | The final answer's compact JSON document when the run configured an `outputSchema` and the answer satisfied it. Scrubbed string by string. Present only when `outcome` is `success`. |
+
 ### Token usage
 
 The `run_finished` trace's `tokenUsage` object (also the `tokenUsage`
@@ -73,6 +223,20 @@ of the gRPC `RunTrace`) sums every turn:
 | `cacheRead` | Part of `input` served from the provider's prompt cache. |
 | `cacheWrite` | Part of `input` written to the provider's prompt cache. |
 | `reasoning` | Part of `output` spent on reasoning or thinking. |
+
+"Every turn" includes the turns of sub-agents forwarded into the trace.
+`tokenUsage` also includes auxiliary model calls made on the run's
+provider credentials outside agentic turns: summary generation for the
+context strategy, the `llm-judge` verifier, and the `cloud-judge`
+guard. Two sibling fields break out the ledger's other figures:
+
+| Field | Meaning |
+|---|---|
+| `auxiliaryTokens` | The part of `tokenUsage` spent on auxiliary calls. Omitted when zero. |
+| `externalGuardTokens` | Usage reported by a guard on its own endpoint (`granite-guardian` or `shieldstral`). Not part of `tokenUsage` and not charged to `maxTokenBudget`. Omitted when zero. |
+
+Only the top-level run records these two fields. A sub-agent's
+auxiliary calls are charged to the parent's figures.
 
 The three breakdown fields are omitted when zero, which is the case
 for a provider that does not report them. A single run can mix
@@ -144,9 +308,16 @@ Pretty-prints the trace in chronological order: the run metadata
 header, every tool call in the order it ran, the verification
 verdicts, and a per-tool aggregate at the foot. Tool calls flagged
 unsuccessful are surfaced in red; the outcome is colour-coded green
-(success), red (error/verification_failed/tool_failures),
-yellow (max_turns / max_tokens / budget_exceeded / stalled / timeout),
+(success), red (error / verification_failed / verification_error /
+tool_failures), yellow (max_turns / max_tokens / budget_exceeded /
+stalled / timeout / context_exhausted),
 grey (cancelled), or blue (anything unrecognised).
+
+Each verification attempt prints on its own line: the 1-based attempt
+number, `PASS` or `FAIL`, `err=` followed by the verifier's error when
+it failed to produce a verdict, and the attempt's feedback, with
+continuation lines indented. A run that retried verification therefore
+shows every attempt, not only the last.
 
 ANSI colour is auto-detected: stdout to a TTY is coloured; stdout
 piped to a file or `less` is not. Override the detection with:
@@ -229,6 +400,12 @@ trace stats
      ...
 ```
 
+The `verifications` line counts attempts, not runs. When at least one
+attempt failed to produce a verdict, the line ends with `, verifier
+errors: N`, and the JSON form carries `verificationsRun`,
+`verificationsPassed`, `verificationsFailed`, and `verificationErrors`,
+each omitted when zero.
+
 The parenthesised cache and reasoning shares appear only when
 non-zero, and the matching `tokensCacheRead`, `tokensCacheWrite`, and
 `tokensReasoning` JSON keys are omitted when zero. `stirrup trace
@@ -261,6 +438,7 @@ and is intended as a dashboard / report ingestion shape:
   "tokensInput": 18432,
   "tokensOutput": 4116,
   "tokensCacheRead": 12288,
+  "tokensCacheWrite": 2048,
   "tokensReasoning": 950,
   "toolCalls": 45,
   "toolErrors": 3,
@@ -348,7 +526,12 @@ stirrup harness --trace=/dev/stdout --trace-emitter=jsonl ... | stirrup trace ta
   of a live run therefore surfaces partial output without failing.
 - **Oversized records.** Records larger than the 4 MiB per-line cap
   (matching the trace emitter's own write cap) are skipped with a
-  debug log.
+  debug log. The rest of the file is still read. `ReadRecording`
+  returns the number of skipped lines as `RunRecording.SkippedLines`
+  (`skippedLines` in JSON, omitted when zero) and logs a warning,
+  because a non-zero count means the recording is partial. `stirrup-eval
+  ingest` reports such a recording as partial on stderr and still stores
+  it.
 - **Empty files.** `show` and `stats` fail with a clear "no
   well-formed records" message; `tail` (one-shot) and `grep` exit
   cleanly with no output, matching `cat` / `grep` POSIX semantics.

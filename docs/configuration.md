@@ -253,10 +253,14 @@ A `--no-probe-*` gate or `--dry-run-timeout` supplied **without**
 operator typo — for example, `--no-probe-provider` on a real run that
 then contacts the provider anyway.
 
-MCP probe failures are treated like every other probe: a configured
-server that does not answer the handshake fails the dry-run. An operator
-who expects a server to be unavailable suppresses its probe with
-`--no-probe-mcp`.
+MCP probe failures are treated like every other probe: a server that does
+not answer the handshake, or whose `tools/list` response omits a name in
+its `allowedTools`, fails the dry-run when the server is required, which
+is the default. The same findings on a server marked `optional` record a
+`warn` step (`"status": "warn"` in the JSON report) and leave the report
+passing, so the text report still ends with `Result: OK (no step failed)`.
+An operator who expects a server to be unavailable marks it `optional` or
+suppresses its probe with `--no-probe-mcp`. See [MCP servers](#mcp-servers).
 
 ### Exit codes and composition
 
@@ -298,19 +302,28 @@ reference.
 | `--mode`, `-m` | `planning` | One of `execution`, `planning`, `review`, `research`, `toil`. `planning`, `review`, `research`, and `toil` are read-only (no writes, no shell); `execution` is the editable mode. The default is `planning` so a bare invocation has no write or shell capability — pass `--mode execution` to enable edits and shell. See [Read-only modes](#read-only-modes). |
 | `--name` | (none) | Human-readable session label, attached to logs/traces. Metadata only — not injected into the prompt. |
 | `--workspace`, `-w` | cwd | Workspace directory. |
-| `--max-turns` | `20` | Hard-capped at 100. |
+| `--max-turns` | `20` | Hard-capped at 100. Every turn of the run counts, including the turns that repair a failed verification; see [Limits and budgets](#limits-and-budgets). |
 | `--timeout` | `600` | Wall-clock seconds for one run — the primary run and, afresh, each follow-up run; capped at 3600. Not a session cap. |
 | `--temperature` | (unset → `0.1`) | Sampling temperature forwarded to the provider on every turn. Range `0.0`–`2.0` (the union of provider-side ranges; see [Limits and budgets](#limits-and-budgets)). Omit the flag to inherit the harness default; pass an explicit `0` for greedy decoding. The runtime distinguishes "flag absent" from `--temperature=0` via cobra's `Changed()` bit. |
 | `--reasoning-effort` | (none) | Provider-neutral reasoning depth: `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Empty says nothing on the wire and leaves the model on its provider default. Adapters project it onto the model's native control — Gemini `generationConfig.thinkingConfig.thinkingLevel`, Anthropic `output_config.effort`, OpenAI `reasoning_effort` (Chat Completions) or `reasoning.effort` (Responses) — and models with no probed control ignore it, so a single config stays portable across providers. Per-model acceptance is narrower than the enum (Gemini 3.7 Flash rejects `minimal`, no Claude or GPT-6 model accepts it, GPT-5.4-onward models document no `minimal` level, GPT-5.4 and GPT-5.5 stop at `xhigh`, and Gemini has no `xhigh` or `max`); the [provider quirks registry](provider-quirks.md#32-reasoning-effort) rejects an unaccepted level before the request is sent. JSON path: `reasoningEffort`. |
 | `--reasoning-summary` | (none) | Whether the model's reasoning text is requested and streamed to the transport as `thinking_delta` events: `auto` or `off`. Empty is treated as `auto`, except that `openai-responses` requests no summary unless the value is explicitly `auto`. Provider-neutral like `--reasoning-effort`: see [Reasoning summaries](#reasoning-summaries) for how each adapter projects it, including the unset value. `off` stops the harness streaming reasoning text and, where the provider has a request control for it (Gemini, OpenAI Responses), does not request it. Conversation history is unaffected either way. JSON path: `reasoningSummary`. |
 | `--log-level` | `info` | One of `debug`, `info`, `warn`, `error`. |
 
+Logging has two paths, and both scrub secret-shaped content from the
+message and from every attribute value. The run's records go to stderr as
+JSON lines, and with `--log-export otlp` to the OTLP exporter as well.
+Records that code writes through the process-default logger instead of the
+run's logger are slog text lines on stderr in the form
+`time=2026-10-29T10:15:30.123+01:00 level=INFO msg="..." key=value`. The
+default logger always logs at info level and above, whatever `--log-level`
+says.
+
 ### Loop behaviour
 
 | Flag | Default | Notes |
 |---|---|---|
 | `--max-tool-parallel` | `0` | Maximum async tool calls dispatched concurrently in a single turn. Range `1`–`16` (hard ceiling enforced by `ValidateRunConfig`); `0` resolves to the library default of `4`. JSON path: `toolDispatch.maxParallel`. |
-| `--escalate-tool-choice` | `false` | Recover from a first-turn no-tool answer on a workspace-dependent task by retrying with provider-native required tool choice (a stronger prompt where the provider does not support forcing). On Anthropic and Gemini the native retry adds a short synthetic user message before forcing a tool, because some models on those APIs reject a request that ends on a model turn. A turn that stops on `refusal` or `model_context_window_exceeded` is not retried. A run continuing a previous run's history (`followUpHistory: "continue"`) counts the tool calls in that history as tool use. Off by default (issue #230). JSON path: `toolChoiceEscalation.enabled`. |
+| `--escalate-tool-choice` | `false` | Recover from a first-turn no-tool answer on a workspace-dependent task by retrying with provider-native required tool choice (a stronger prompt where the provider does not support forcing). On Anthropic and Gemini the native retry adds a short synthetic user message before forcing a tool, because some models on those APIs reject a request that ends on a model turn. A turn that stops on `refusal`, `model_context_window_exceeded` or `max_tokens` is not escalated. The harness recovers from the last two itself; see [Overflow recovery](#overflow-recovery) and [Output-limit recovery](#output-limit-recovery). A run continuing a previous run's history (`followUpHistory: "continue"`) counts the tool calls in that history as tool use. Off by default (issue #230). JSON path: `toolChoiceEscalation.enabled`. |
 | `--escalate-tool-choice-max-retries` | `0` | Maximum forced retries per inner-loop run. Range `1`–`3`; `0` resolves to the default of `1`. No effect unless `--escalate-tool-choice` is set. JSON path: `toolChoiceEscalation.maxRetries`. |
 
 ### Provider
@@ -318,14 +331,41 @@ reference.
 | Flag | Default | Notes |
 |---|---|---|
 | `--provider` | `anthropic` | One of `anthropic`, `bedrock`, `openai-compatible`, `openai-responses`, `gemini`, `replay`. `replay` serves recorded model output from `--replay-file` and needs no credential; see [Replay](#replay). |
-| `--model` | `claude-sonnet-4-6` for `anthropic`; none otherwise | Model id for the static / per-mode router. Required for every provider other than `anthropic`; omitting it exits 1 with an error naming the provider. |
+| `--model` | `claude-sonnet-4-6` for `anthropic`; the label `replay` for `replay`; none otherwise | Model id for the static / per-mode router. Required for every provider other than `anthropic` and `replay`; omitting it exits 1 with an error naming the provider. |
 | `--prompt-model` | (none) | Model identity the system prompt templates render against, without changing the wire model. Combine with `--model` to compare a prompt tuned for one model against another. Empty derives the prompt model from the effective model. JSON path: `promptBuilder.promptModel`. See [System prompt templating](#system-prompt-templating). |
-| `--api-key-ref` | `secret://ANTHROPIC_API_KEY` for `anthropic`; `secret://OPENAI_API_KEY` for `openai-compatible` / `openai-responses`; none for `bedrock` / `gemini` / `replay` | A `secret://` reference. API keys never live in `RunConfig`. The default applies only when neither the flag nor `--config` supplies a value and no `credential` block is set; `--api-key-ref=""` sends no key, which is valid only for `openai-compatible` / `openai-responses` at a custom `--base-url` (a keyless local server); provider construction rejects an empty reference for any other provider or for the default OpenAI endpoint. Rejected for `gemini` (Vertex uses GCP IAM) and for `replay` (no model is called). |
+| `--api-key-ref` | `secret://ANTHROPIC_API_KEY` for `anthropic`; `secret://OPENAI_API_KEY` for `openai-compatible` / `openai-responses`; none for `bedrock` / `gemini` / `replay` | A `secret://` reference. API keys never live in `RunConfig`. The default applies only when neither the flag nor `--config` supplies a value and no `credential` block is set; `--api-key-ref=""` sends no key, which is valid only for `openai-compatible` / `openai-responses` at a custom `--base-url` (a keyless local server); provider construction rejects an empty reference for `anthropic` and for an OpenAI-wire provider at the default OpenAI endpoint. Rejected for `gemini` (Vertex uses GCP IAM) and for `replay` (no model is called). |
 | `--base-url` | (none) | Provider base URL. Required for Azure / gateway scenarios. |
 | `--api-key-header` | (none) | Header name. Empty = `Authorization: Bearer`; set to `api-key` for Azure key auth. |
 | `--query-param key=value` | (none) | Repeatable. Adds query parameters to every provider request URL — e.g. `--query-param api-version=preview` for Azure. Keys here override duplicates already encoded in `--base-url`. |
 | `--provider-compat-profile` | (none) | Closed enum that loads a provider-quirks compatibility profile. Only legal value in v1: `"zai-glm"` (Z.ai GLM legacy `max_tokens` key + `tool_stream: true` extension). Unknown values fail at startup. JSON path: `provider.compatProfile`. |
 | `--provider-endpoint-profile` | (derived) | Closed enum declaring which implementation of the OpenAI wire serves `--base-url`: `openai`, `azure-openai`, `bedrock-mantle`, or `generic`. Empty derives `openai` for OpenAI's own API (`https://api.openai.com/v1`, or no `--base-url`) and `generic` for any other base URL. Legal only for `openai-compatible` and `openai-responses`; `azure-openai` and `bedrock-mantle` require `--base-url`. Set `openai` to declare a relay in front of OpenAI's API. See [Endpoint profiles](providers.md#endpoint-profiles). JSON path: `provider.endpointProfile` (and `providers[name].endpointProfile`). |
+
+**Provider defaults.** One defaulting step runs after the base config and
+the flags are merged, so a value from `--config` or an explicit flag always
+wins, and a provider named in a `--config` file selects defaults exactly as
+`--provider` does:
+
+- `--model` defaults to `claude-sonnet-4-6` for `anthropic` and to the
+  label `replay` for `replay`, with a static router. Every other
+  provider has no default model: a static router without one exits `1`
+  with an error that names the provider and the flag. `dynamic` and
+  `per-mode` routers carry their own model fields, which
+  `ValidateRunConfig` checks.
+- `--api-key-ref` defaults to `secret://ANTHROPIC_API_KEY` for `anthropic`
+  and to `secret://OPENAI_API_KEY` for `openai-compatible` and
+  `openai-responses`. No default applies when the flag is passed
+  (`--api-key-ref=""` included), when the config already names a
+  reference, or when a `credential` block supplies authentication, so the
+  federation flags do not also receive a key reference.
+- A `--config` or stdin run of an `openai-compatible` or
+  `openai-responses` provider whose effective base URL is non-empty,
+  whether the document sets `baseUrl` or `--base-url` supplies it, stays
+  keyless unless a key reference is named. The same provider built from
+  flags alone, with or without `--base-url`, receives the OpenAI
+  default; `--api-key-ref=""` opts out for a keyless server.
+- `bedrock` receives no default reference and authenticates through the
+  AWS credential chain. `gemini` receives none either and rejects a
+  non-empty one, because Vertex AI uses GCP IAM.
 
 Wire-shape divergences between provider/model pairs (e.g. OpenAI
 reasoning-class sampling-param omissions, Z.ai GLM legacy field
@@ -346,7 +386,7 @@ Foundry notes and intentional exclusions, see
 ### Retry policy
 
 The harness retries transient provider failures (HTTP 408, 409, 429,
-500, 502, 503, 504 and transport-level timeouts) with exponential
+500, 502, 503, 504, 529 and transport-level timeouts) with exponential
 backoff and full jitter. `Retry-After` and `Retry-After-Ms` headers
 are honoured when present and bounded by the configured max delay.
 A 429 whose error body reports an exhausted billing, spend, or quota
@@ -398,6 +438,7 @@ and `openai-responses`), whichever provider the error codes come from:
 | 429 with `error.code` `insufficient_quota`, `credit_balance_exhausted`, `organization_spend_limit_exceeded`, `project_spend_limit_exceeded`, or `organization_usage_limit_exceeded`, or with `error.type` `insufficient_quota` | No: retrying cannot restore access until the limit is raised |
 | 429 with any other code (for example `slow_down` or `rate_limit_exceeded`) or none | Yes, honouring `Retry-After` |
 | 503 `server_is_overloaded` | Yes, honouring `Retry-After` |
+| 529 | Yes, honouring `Retry-After` |
 | 403, including `misalignment_policy_violation` | No |
 
 A quota 429 logs `provider_quota_exhausted` at Warn with the matched
@@ -412,6 +453,50 @@ Defaults are tuned for the cost of one extra coding-loop turn rather
 than the OpenAI Python SDK's 8 s cap: a coding agent typically has
 many minutes per turn and benefits more from clearing a transient
 upstream blip than from failing fast.
+
+#### Turn-level retry
+
+The request-level retry above cannot help once a response has started
+streaming. When a model turn fails with a retryable error, the agentic
+loop discards the streamed output of the failed attempt and re-issues the
+whole turn, up to two retries per turn. The settings are those of the
+provider the router selected for the turn: a `maxAttempts` of `1` disables
+turn retry, and a larger value allows `maxAttempts - 1` retries, never
+more than two. Each attempt can itself make up to `maxAttempts` HTTP
+attempts, so the two levels nest.
+
+Each adapter marks these failures as retryable:
+
+| Adapter | Retryable turn failures |
+|---|---|
+| `anthropic` | A terminal 408, 409, 429 (without a billing or quota body), 500, 502, 503, 504 or 529 on the initial response; a stream `error` event of type `overloaded_error` or `api_error`; a transport fault. |
+| `openai-compatible`, `gemini` | The same statuses and transport faults. |
+| `openai-responses` | The same statuses and transport faults; a stream failure with code `server_error`. |
+| `bedrock` | None. Transient failures are retried only by the AWS SDK's retryer. |
+
+A transport fault is an idle stream, a connection reset, a broken pipe, an
+unexpected end of stream, or a network timeout. Cancellation and deadline
+expiry are never retried. A batch turn (`provider.batch`) is not retried,
+because a retry would submit and wait out a fresh batch.
+
+The delay before retry `n` uses equal jitter: half of
+`min(initialDelayMs * 2^n, maxDelayMs)` plus a random amount up to the
+other half, so every retry waits at least half the bound. The
+`wallClockBudgetMs` budget is measured from the turn's first retryable
+failure and stops the retries once the next delay would pass it. Before
+each retry the harness logs the failure and sends a `warning` event
+saying the attempt's streamed output is discarded and the turn is
+retried. The failed attempts' token usage is charged to the turn. The
+token budget is checked between turns, not between attempts, so a turn
+can overshoot `maxTokenBudget` by up to two retried attempts.
+
+Turn-level retries are recorded as `turn.retries` on the turn span and
+`TurnTrace.retries`, with `turn.attempt` on each `provider.stream` span.
+They also feed `stirrup.harness.provider_retry_outcomes` with
+`scope=turn`, whose `provider.type` is the router's provider key and
+whose `provider.retry.outcome` is one of `succeeded`, `exhausted`,
+`budget_exhausted`, `non_retryable` or `context_done`. The request-level
+retries record `scope=request`.
 
 ### Vertex AI / Gemini
 
@@ -505,7 +590,7 @@ The exchange audience is set on the `tokenSource` (canonically
 | `--k8s-egress-proxy-url` | (none) | URL the `k8s` / `k8s-sandbox` Pod routes `HTTP_PROXY`/`HTTPS_PROXY` (and the lower-case `http_proxy`/`https_proxy`, which is what `git` honours for a plain-http proxy URL) through. Required when the executor is `k8s` or `k8s-sandbox` and the network mode is `allowlist`; rejected otherwise. JSON path: `executor.k8sEgressProxyUrl`. |
 | `--edit-strategy` | `multi` | One of `whole-file`, `search-replace`, `udiff`, `multi`. `composite` is reachable only via `--config`. |
 | `--verifier` | `none` | One of `none`, `test-runner`, `llm-judge`. `composite` is reachable only via `--config`. |
-| `--git-strategy` | `none` | One of `none`, `deterministic`. |
+| `--git-strategy` | `none` | One of `none`, `deterministic`. `deterministic` runs git inside the executor sandbox, so it needs an executor that can run commands and an image that contains git. JSON path: `gitStrategy.type`. See [Git strategy](#git-strategy). |
 | `--permission-policy-file` | (none) | Path to a Cedar policy file. When set and the policy type is unset elsewhere, implies `permissionPolicy.type=policy-engine`. Starters live under [`examples/policies/`](../examples/policies/). |
 | `--code-scanner` | (none) | One of `none`, `patterns`, `semgrep`. `composite` is accepted only via `--config` (it requires `codeScanner.scanners`). Empty defers to the mode-aware default (`patterns` for execution, `none` for read-only modes). |
 | `--guardrail` | (none) | GuardRail classifier type: `none`, `granite-guardian`, `shieldstral`, `cloud-judge`, `composite`. `composite` requires `--config` (`guardRail.stages`). JSON path: `guardRail.type`. See [`guardrails.md`](guardrails.md). |
@@ -518,6 +603,7 @@ The exchange audience is set on the `tokenSource` (canonically
 | `--lazy-tools-strategy` | (none; behaves as `auto`) | How deferred tools are searched: `auto` uses the provider's native tool search where the quirks registry gives the routed provider, endpoint profile and model one (see [Strategies and providers](#strategies-and-providers)), and the harness `tool_search` otherwise; `harness` always uses `tool_search`. JSON path: `tools.lazyLoading.strategy`. |
 | `--lazy-tools-eager` | (none) | Repeatable internal tool ID sent on every turn without a search. Unset defers only MCP-imported and control-plane tools; a list defers all remaining tools, built-ins included. Replaces any `tools.lazyLoading.eager` from `--config`. JSON path: `tools.lazyLoading.eager`. |
 | `--lazy-tools-max-results` | `0` | How many tools one harness `tool_search` loads. `0` selects 5; the maximum is 20. JSON path: `tools.lazyLoading.maxResults`. |
+| `--protected-write-target` | (none) | Repeatable workspace-relative path that write tools may not target, at most 64 entries. A trailing `/` protects the directory and everything beneath it; otherwise the exact path only. Files loaded through `--repository-guidance-file` are protected in addition. Replaces any `tools.protectedWriteTargets` from `--config`. JSON path: `tools.protectedWriteTargets`. See [Protected write targets](#protected-write-targets). |
 
 See also: [`docs/executors/k8s.md`](executors/k8s.md) for the `k8s`
 executor's architecture, deployment recipes, egress model, and the full
@@ -525,6 +611,20 @@ executor's architecture, deployment recipes, egress model, and the full
 [`docs/executors/k8s-agent-sandbox.md`](executors/k8s-agent-sandbox.md)
 for the `k8s-sandbox` deltas (Sandbox CRD provisioning, gVisor-only
 runtime, RBAC).
+
+**Timeout kill and the sandbox pid file.** The `container`, `k8s` and
+`k8s-sandbox` executors run each command through a small shell wrapper
+that starts it in its own session where `setsid` is available and records
+the leader's process ID in a per-call file named
+`/tmp/.stirrup-exec-<random>.pid`. When a call times out or the run is
+cancelled, a follow-up exec sends SIGTERM to the recorded process group,
+waits up to one second, sends SIGKILL to anything still running, and then
+removes the file. The
+sandbox image therefore needs a POSIX `sh`, `kill` and a writable `/tmp`;
+the `container` executor mounts a tmpfs there. Without `setsid`, only the
+recorded shell and the descendants found through `/proc` are signalled,
+and a process that detaches into its own session or group escapes. If the
+file cannot be written, the kill finds nothing to signal.
 
 **`executor.type: "none"` vs. `executor.network.mode: "none"`.** These
 are two unrelated settings that happen to share a value:
@@ -552,14 +652,93 @@ Under `executor.type: "none"`, a read-only mode (`--mode`
 (`web_fetch`, `spawn_agent`) rather than the full read-only default —
 the none executor has no capability to back the rest.
 
+### Git strategy
+
+`gitStrategy.type` (`--git-strategy`) selects whether the harness manages
+version control for the run. `none`, the default, performs no git
+operation. `deterministic` puts the run's work on a branch named
+`stirrup/<runId>`, commits it after each turn that ran tools and once more
+when the run ends, and reports the result as `RunResult.git`. The
+[architecture guide](architecture.md#git-strategy) describes the
+lifecycle.
+
+- **Executors.** `deterministic` is valid only with `local`, `container`,
+  `k8s` and `k8s-sandbox`. `ValidateRunConfig` rejects it with `api` and
+  `none`, which cannot run commands.
+- **Where git runs.** Every command runs inside the executor through its
+  exec capability, never on the harness host. The sandbox image must
+  therefore contain git on `PATH`. Each command disables repository
+  hooks, the filesystem monitor, commit signing and automatic
+  maintenance, and names the workspace as a safe directory. Commits are
+  authored and committed as `stirrup <stirrup@noreply.local>`, whatever
+  identity the workspace or image configures.
+- **Setup.** The workspace must be a self-contained repository, or a
+  directory that is not inside one. A workspace that is not a repository
+  is initialised, and its initial content becomes the base commit. A
+  workspace nested inside another repository is refused, so no branch or
+  commit lands outside it. A workspace whose `.git` entry git cannot open
+  inside the sandbox is refused as well, as with a worktree or submodule
+  whose `.git` file names a gitdir on the host. A refusal, a missing git
+  binary, or a run ID that cannot form a branch name ends the run with
+  outcome `error` before the first turn.
+- **Final checkpoint.** When the run ends, the harness commits outstanding
+  work as `Final checkpoint (outcome: <outcome>)` and records
+  `RunResult.git`. The checkpoint runs after any outcome that follows a
+  completed setup, on a context detached from the run's own deadline and
+  cancellation with a 30 s budget, and before the `postRun` hooks.
+  A checkpoint that fails, a working tree that is still dirty afterwards,
+  or a detached HEAD (there is no branch to report) sets `git.error` and
+  emits a `warning` event. It also turns an otherwise-successful run into
+  `handoff_failed`; a run that already failed keeps its outcome. A
+  checkpoint that fails mid-run is a `warning` event only.
+- **History.** The agent holds the same authority inside the sandbox as the
+  harness, so it can rewrite the history there. A control plane that needs a
+  trustworthy diff compares `git.sha` with the base commit it already
+  knows instead of relying on the history found in the sandbox.
+  `git.baseSha` is HEAD when the branch was created, and is empty for a
+  repository with no commits.
+- **Dry-run.** `--dry-run` reports a `git-strategy` construction step and
+  a `git-strategy-probe` step that runs `git --version` through the
+  executor and fails with a hint when git is missing. The probe is skipped
+  for the `container` executor, because a dry-run does not start the
+  container. A sandbox image without git then surfaces at run setup.
+
 ### Transport
 
 | Flag | Default | Notes |
 |---|---|---|
 | `--transport` | `stdio` | One of `stdio`, `grpc`. |
 | `--transport-addr` | (none) | gRPC target address; required when `--transport=grpc`. |
+| `--transport-tls-ca-file` | (none) | `stirrup harness` only. PEM CA bundle that must have issued the control plane's certificate. Empty trust falls back to the system roots. Requires `--transport=grpc`. |
+| `--transport-tls-cert-file` | (none) | `stirrup harness` only. PEM client certificate presented for mutual TLS. Requires `--transport-tls-key-file`. |
+| `--transport-tls-key-file` | (none) | `stirrup harness` only. PEM private key for `--transport-tls-cert-file`. Requires `--transport-tls-cert-file`. |
+| `--transport-tls-server-name` | (none) | `stirrup harness` only. Name the control plane's certificate is verified against when it differs from the `--transport-addr` host. |
 | `--followup-grace` | `0` | Idle seconds to keep the transport open after each run completes, waiting for a follow-up `user_response`; the window restarts after every run. With a window configured, the CLI bounds the whole session at 10 × (`--timeout` + `--followup-grace`) after the primary run — room for ten follow-ups each waited for through a full window — since it has no orchestrator deadline behind it. Env fallback: `STIRRUP_FOLLOWUP_GRACE`. |
 | `--followup-history` | (unset → `reset`) | The history a follow-up run starts from. `reset` (also selected by an empty value) starts it from its prompt alone. `continue` starts it from the previous run's committed history — every turn whose tool calls all have results — with the prompt appended; tool results that run left unscreened are screened first, and a run that ended `rule_of_two_violation` or `guardrail_blocked` passes no history on. The primary run is unaffected, and the value is accepted but inert without a follow-up window; it takes effect only through the follow-up loop, so an embedder calling `harnessapi.Loop.Run` repeatedly gets no carried history and no warning. No env fallback. JSON path: `followUpHistory`. See [the integration guide](integration-guide.md#follow-up-turns). |
+
+The four `--transport-tls-*` settings are environment and flag only. They
+are not `RunConfig` fields, have no proto counterpart, and are not
+registered by `stirrup run-config`, because `stirrup job` dials the control
+plane before any `RunConfig` arrives. This is the one documented exception
+to the rule that every CLI setting has a `RunConfig` field. `stirrup job`
+reads the same settings from the `CONTROL_PLANE_TLS_CA_FILE`,
+`CONTROL_PLANE_TLS_CERT_FILE`, `CONTROL_PLANE_TLS_KEY_FILE` and
+`CONTROL_PLANE_TLS_SERVER_NAME` environment variables.
+
+With none of them set, the connection is plaintext. Setting any of them
+enables TLS 1.3 with no plaintext fallback, and a certificate with a key
+makes it mutual TLS. A flag passed with an empty value is a usage error
+(exit `4`), and a `CONTROL_PLANE_TLS_*` variable that is present but empty
+makes `stirrup job` exit `1` before it dials, so an unrendered template
+never degrades to plaintext. A TLS flag without `--transport=grpc`, or a
+certificate without a key or the reverse, is a usage error (exit `4`). A
+PEM file that cannot be read or parsed is an I/O error (exit `3`) for
+`stirrup harness`. Startup writes one line to stderr naming the mode and
+trust source, for example `stirrup: control plane transport mode=mutual-tls
+ca=/etc/stirrup/ca.pem addr=control-plane:443`, where `mode` is
+`plaintext`, `tls` or `mutual-tls`; file contents are never logged. The
+certificate and trust setup for each mode is described under
+[Transport security posture](deployment.md#transport-security-posture-v01).
 
 ### Tracing
 
@@ -684,6 +863,7 @@ flag selects the surface:
 | Flag | Default | Notes |
 |---|---|---|
 | `--output`, `-o` | `text` | One of `text`, `json`, `none`. `text` (default) prints the freeform human-readable summary to stderr. `json` emits a single `STIRRUP_RESULT <json>` line on stdout (parseable as [`types.RunResult`](../types/result.go)) and suppresses the stderr summary. `none` suppresses both surfaces. |
+| `--output-schema` | (none) | Path to a JSON Schema (Draft 2020-12) file that the run's final answer must satisfy. Sets `outputSchema`; the validated document is returned as `RunResult.structuredOutput`. An empty value clears a schema set by `--config`. See [Structured output](#structured-output). |
 
 When `--output=json` is set alongside `resultSink.type=stdout-json`,
 the harness emits the `STIRRUP_RESULT` line exactly once — the flag
@@ -696,6 +876,45 @@ failed or cancelled run still exits non-zero. A cancellation
 mid-flight emits a partial `RunResult` carrying the cancellation
 outcome rather than nothing, so callers parsing the JSON line always
 see a structured record.
+
+`RunResult.error` is a short reason, scrubbed of secrets and cut to
+1 KiB before a truncation marker is appended. It is set for every outcome
+other than `success`, and for the trace persistence failure of an
+otherwise-successful run. The text is the failure the run recorded for its final outcome. When the run recorded
+none for that outcome, as with a limit or a cancellation, the field holds
+a generic description such as `reached the turn limit (maxTurns 20)`. A
+`context_exhausted` run is one such case: its sizes and remedy are in the
+`warning` event described under [Overflow recovery](#overflow-recovery).
+The earliest failure wins. A failed final git checkpoint or required
+workspace export sets outcome `handoff_failed` only for a run that would
+otherwise have succeeded. A run with any other outcome keeps its own text,
+and the handoff failure stays visible in `git.error` or
+`workspaceExport.error`. For `verification_error` and
+`verification_failed` it holds the last verification attempt's verifier
+error or feedback, scrubbed and cut to 4 KiB before a truncation marker is
+appended, or `verifier error` and
+`verification failed` when that attempt recorded none; `verifierVerdict`
+carries the same attempt. See [Verifier results](#verifier-results).
+`RunResult.degradedCapabilities` lists configured capabilities the run
+proceeded without. At present these are optional MCP servers that were
+unavailable at startup, listed as `kind`, `name` and `error` entries. It
+can be non-empty on
+a `success` outcome.
+
+`RunResult.git` is the deterministic git strategy's handoff: `branch`,
+`sha`, `baseSha`, `dirty` and `error`. It is omitted when
+`gitStrategy.type` is `none` and when the run ended before git setup
+completed. See [Git strategy](#git-strategy).
+
+`RunResult.workspaceExport` is the receipt of the run's workspace export:
+`uri`, `status` (`uploaded`, `empty` or `failed`), `bytes` and `sha256` of
+the uploaded gzipped tarball, `files` (its non-directory entries),
+`required` and `error`. It is omitted when no `executor.workspaceExportTo`
+is configured. See [Workspace export](#workspace-export).
+
+`RunResult.structuredOutput` is the validated JSON document of a run with
+an `outputSchema`. It is present only when the outcome is `success`, and
+it is never truncated. See [Structured output](#structured-output).
 
 `RunResult.traceReference` identifies the run's OTel root span:
 `traceId` (32 lowercase hex characters), `runSpanId` (16 lowercase hex
@@ -783,8 +1002,44 @@ for the operator walkthrough).
 | `--export-workspace-to` | (none) | Destination URI for the workspace tarball (e.g. `gs://bucket/runs/<runId>/workspace.tar.gz`). Only `gs://` is supported in v1. Overrides `executor.workspaceExportTo` from `--config` when explicitly set; an explicit empty value clears the field. JSON path: `executor.workspaceExportTo`. |
 | `--export-workspace-required` | `true` when a destination is set | Whether a failed workspace export turns a successful run into outcome `handoff_failed` and a non-zero exit. `--export-workspace-required=false` records the failure in `RunResult.workspaceExport` without failing the run. Requires a destination. JSON path: `executor.workspaceExportRequired`. |
 
-The export runs even when the run itself failed, so the workspace
-state stays inspectable after a non-zero exit. Uploads authenticate
+The export applies to the executors that can stream their workspace as an
+archive: `local`, `container`, `k8s` and `k8s-sandbox`. The archive is
+produced inside the executor, so a sandboxed executor exports the sandbox's
+workspace and not a path on the harness host. `ValidateRunConfig` rejects
+a destination with the `api` and `none` executors, which have no workspace
+to archive, and one without an explicit `executor.type`.
+`executor.workspaceExportRequired` is rejected without a destination.
+
+The handoff runs once per run, before the `done` event and after the git
+final checkpoint and the `postRun` hooks, so the archive includes the
+hooks' edits. It runs for every outcome, including `cancelled`, `timeout`
+and `setup_failed`, on a context detached from the run's own deadline and
+cancellation with a 5 min budget, so the workspace stays inspectable
+after a non-zero exit.
+
+> [!WARNING]
+> The export also runs after a failed setup. A workspace left by a failing
+> `preRun` hook, such as a half-completed clone, is uploaded as it stands,
+> including any credentials the hook wrote into repository configuration,
+> for example a token in a remote URL.
+
+The outcome is recorded as the `RunResult.workspaceExport` receipt:
+
+- `uploaded`: the archive reached the destination.
+- `empty`: the workspace held no files, and an empty archive was still
+  uploaded.
+- `failed`: no archive reached the destination. A missing workspace root
+  is a failed export, never an empty one.
+
+A failed export turns an otherwise-successful run into `handoff_failed`
+while the export is required, which is the default whenever a destination
+is set. With `executor.workspaceExportRequired` set to `false` the
+failure stays in the receipt and the outcome is unchanged. Symlinks are
+recorded and never followed. A symlink whose target is absolute or
+resolves outside the workspace fails the export, as does an archive or
+uncompressed stream over 1 GiB.
+
+Uploads authenticate
 via the `gcp-workload-identity` credential source — the GCE/GKE
 metadata server that Cloud Run, GKE Workload Identity, and plain GCE
 VMs expose. There is no credential override for the exporter in v1.
@@ -796,7 +1051,7 @@ inserted as the path segment before the object name
 (`gs://bucket/runs/r1/workspace.tar.gz` →
 `gs://bucket/runs/r1/<followUpRunId>/workspace.tar.gz`), so later
 runs never overwrite the primary tarball. The same
-`--export-workspace-required` policy applies to every run.
+`executor.workspaceExportRequired` policy applies to every run.
 
 ### Dry-run
 
@@ -825,11 +1080,11 @@ and `healthcheck`:
 
 | Code | Class | Examples |
 |---|---|---|
-| `0` | Success | The command completed; for `harness`, a run reached a terminal outcome; for `healthcheck`, the marker file is present and readable. |
+| `0` | Success | The command completed; for `harness`, a run reached outcome `success`; for `healthcheck`, the marker file is present and readable. |
 | `1` | Validation / precondition | `ValidateRunConfig` (or `run-config --validate`) rejected the resolved config; a required prompt had no source; `job` ran without `CONTROL_PLANE_ADDR`; `healthcheck` found no marker file. Also the default for any failure not in a more specific class. |
 | `2` | Parse error | The JSON in a `--config` file or piped stdin failed to decode (syntax error, unknown field, type mismatch). |
-| `3` | I/O error | A `--config` or `--prompt-file` path could not be opened, read, or stat'd; an empty / oversize input; an `--output-runconfig` write or close failure; `healthcheck` found a marker file it could not open (e.g. a permission error). |
-| `4` | Usage error | An invalid flag combination — currently a `--dry-run` probe gate (`--no-probe-provider`/`--no-probe-mcp`/`--no-probe-trace`/`--no-probe-egress`/`--no-probe-executor`) or `--dry-run-timeout` supplied without `--dry-run`. See [Dry-run preflight](#dry-run-preflight). |
+| `3` | I/O error | A `--config` or `--prompt-file` path could not be opened, read, or stat'd; an empty / oversize input; an `--output-runconfig` write or close failure; a `--transport-tls-*` certificate, key or CA file that could not be loaded; `healthcheck` found a marker file it could not open (e.g. a permission error). |
+| `4` | Usage error | An invalid flag combination — currently a `--dry-run` probe gate (`--no-probe-provider`/`--no-probe-mcp`/`--no-probe-trace`/`--no-probe-egress`/`--no-probe-executor`) or `--dry-run-timeout` supplied without `--dry-run`; a `--transport-tls-*` flag without `--transport grpc`, a lone certificate or key, or a TLS flag passed with an empty value. See [Dry-run preflight](#dry-run-preflight). |
 
 A failed `--dry-run` (one or more probes reported `fail`) exits `1` on
 the default path, not `4`: code `4` is reserved for the command-line
@@ -838,15 +1093,15 @@ misconfiguration.
 
 A failed or cancelled *run* (as opposed to a configuration failure)
 exits non-zero on the same `1` default path; the `RunResult` on stdout
-carries the run's outcome for callers that need finer detail than the
-exit code. The interactive first-contact hints (a bare `stirrup` or a
-bare `stirrup harness` on a terminal) are a success surface and exit
-`0`.
+carries the run's outcome, and a short reason in `error`, for callers that
+need finer detail than the exit code. The interactive first-contact hints
+(a bare `stirrup` or a bare `stirrup harness` on a terminal) are a
+success surface and exit `0`.
 
 Process exit code uses a binary success/non-success split on
 `RunTrace.Outcome` ("success" is the only success value; every other
 documented outcome — hard errors, exhausted resource limits, or an
-interruption — exits non-zero) deliberately distinct from the eval
+interruption — exits non-zero; see [Run outcomes](#run-outcomes)) deliberately distinct from the eval
 suite's passed/failed/inconclusive taxonomy
 ([`docs/eval.md`](eval.md)). Eval outcome answers "was the change any
 good", folding limit-hit and cancelled runs into a separate
@@ -856,6 +1111,39 @@ invocation produce a usable result" — where inconclusive and failed
 both mean no. This also matches the failure-signalling contract Cloud
 Run and K8s Jobs need: an orchestrator should retry or alert on any run
 that was not a genuine success.
+
+### Run outcomes
+
+`RunTrace.outcome`, `RunResult.outcome` and `done.stop_reason` carry the
+same value. Only `success` exits `0`; every other outcome exits non-zero.
+
+| Outcome | Meaning |
+|---|---|
+| `success` | The model ended its turn, and the output schema, verifier, hooks, git handoff and required export all agreed. |
+| `error` | A failure with no more specific outcome: the provider failed after retries, system prompt or git setup failed, or the context strategy failed. |
+| `max_turns` | `maxTurns` was reached. See [Limits and budgets](#limits-and-budgets). |
+| `max_tokens` | The model kept stopping at its output limit after the recoveries. See [Output-limit recovery](#output-limit-recovery). |
+| `budget_exceeded` | `maxTokenBudget` was exceeded. |
+| `timeout` | The run's `timeout` expired. |
+| `cancelled` | A signal, a control-plane cancel or the caller ended the run. |
+| `control_stream_lost` | The gRPC control stream ended while the run was active. |
+| `stalled`, `tool_failures` | Repeated identical tool calls after a nudge, or too many consecutive tool failures. |
+| `verification_failed`, `verification_error` | The verifier rejected the final attempt, or failed to run. See [Verifier results](#verifier-results). |
+| `structured_output_failed` | The final answer did not satisfy `outputSchema`. See [Structured output](#structured-output). |
+| `context_exhausted` | The smallest request the harness could prepare did not fit the context window, or a turn exceeded the window again after a forced compaction. See [Overflow recovery](#overflow-recovery). |
+| `guardrail_blocked`, `rule_of_two_violation` | A guardrail blocked the content, or Rule-of-Two enforcement aborted the run. |
+| `setup_failed` | A `preRun` hook failed or repository guidance could not be loaded. See [Lifecycle hooks](#lifecycle-hooks). |
+| `hook_failed` | A `postRun` hook failed on a run that would otherwise have succeeded. |
+| `handoff_failed` | The final git checkpoint or a required workspace export failed on a run that would otherwise have succeeded. See [Git strategy](#git-strategy) and [Workspace export](#workspace-export). |
+| `command_output_capture_failed`, `command_output_archive_failed` | Command output capture or its archive failed on a run that would otherwise have succeeded. A capture failure takes precedence over an archive failure. See [Command output capture](#command-output-capture). |
+| a provider stop reason | A stop reason the harness does not interpret, passed through verbatim, such as `refusal`. `RunTrace.stopDetails` carries the provider's detail. |
+
+`hook_failed`, `handoff_failed` and both command-output outcomes replace
+`success` only. For any other outcome the primary cause stays authoritative.
+
+With a follow-up grace window, a follow-up run whose required workspace
+export fails, or whose control stream is lost, also fails the process, even
+when the primary run succeeded.
 
 ## Component-selection limits
 
@@ -872,10 +1160,13 @@ configuration space — the common cases. Anything below requires
 | `guardRail` | `composite` requires `guardRail.stages`. Per-phase restriction (`phases`), bespoke criteria, and the classifier timeout are file-only. An empty `phases` runs the guard at all three phases, except that `shieldstral` then checks only `pre_turn` and `post_turn`; `pre_tool` is opt-in (see [`guardrails.md`](guardrails.md#shieldstral)). |
 | `traceEmitter` | `bucket` / `objectPrefix` / `credential` (the `gcs` emitter's routing — selectable via `--trace-emitter gcs` but configurable only by file). |
 | `provider` | Multi-provider routing via `providers{}` plus a `modelRouter` of type `dynamic` or `per-mode`. |
-| `tools.mcpServers` | Remote MCP server registration. |
+| `contextStrategy` | Every field. No CLI flag selects a strategy or sets the window. See [Context strategy](#context-strategy). |
+| `tools.mcpServers` | Remote MCP server registration. See [MCP servers](#mcp-servers). |
 | `tools.controlPlane` | Control-plane-fulfilled tools (gRPC transport only). See [Control-plane tools](#control-plane-tools). |
 | `tools.commandOutput` | Full-stream command capture limits and model preview thresholds. |
-| `tools.maxResultBytes` | Upper bound on the model-visible text of one tool result: default 100 KiB, accepted range 1 KiB to 1 MiB. Longer results are cut to their head with a marker naming the original size. `run_command` and `read_command_output` bound their own output and are exempt. |
+| `tools.maxResultBytes` | Upper bound on the model-visible text of one tool result: default 100 KiB, accepted range 1 KiB to 1 MiB. Longer results are cut to their head with a marker naming the original size. `run_command`, `read_command_output` and `tool_search` bound their own output and are exempt. See [Tool result limits](#tool-result-limits). |
+| `tools.postEdit` | Operator-authored checks run after each successful edit. See [Post-edit checks](#post-edit-checks). |
+| `windDown` | Opt-in warning to the model before a turn, token or time budget runs out. See [Wind-down warning](#wind-down-warning). |
 | `traceEmitter.archive` | Explicit local or GCS destination for compressed command-output sidecars. |
 
 The CLI flags for each of these set the *type* selection only.
@@ -924,6 +1215,13 @@ structural rules run under `--dry-run`, tool-schema rules run at
 real-run construction — are documented in
 [`safety-rings.md`](safety-rings.md#load-time-policy-lint).
 
+`spawn_agent` from a read-only run (`planning`, `review`, `research` or
+`toil`) can target only read-only modes; a request for `execution` is
+refused with an error the model sees. A read-only sub-agent receives no
+workspace-mutating tools, and a gate in front of the inherited policy
+denies them as well, so an `allow-all` parent policy behaves as
+`deny-side-effects` in the child.
+
 Choose `ask-upstream` when every `RequiresApproval` tool must prompt.
 Choose `deny-side-effects` when the goal is to block workspace
 mutation while still allowing non-mutating tools that may have network
@@ -935,7 +1233,8 @@ fallback described above.
 
 `planning`, `review`, `research`, and `toil` enforce a structural
 invariant via `ValidateRunConfig`: the tool list must exclude
-`write_file`, `run_command`, and `edit_file`, and the permission
+every workspace-mutating built-in (`write_file`, `edit_file`,
+`search_replace`, `apply_diff` and `run_command`), and the permission
 policy must not be `allow-all` — nor may a `policy-engine`'s
 `fallback` be `allow-all`, which would be equivalent whenever no
 policy matches. The validator rejects any `RunConfig` that violates
@@ -959,6 +1258,12 @@ for finer-grained control). Because read-only enforcement is based on
 sensitive tools such as `web_fetch`; under the default
 `deny-side-effects` policy those tools run without prompting. Switch
 to `ask-upstream` when those calls should require operator approval.
+
+The `offload-to-file` context strategy is rejected in these modes, because
+it writes offloaded tool results into the workspace through the executor,
+outside the permission policy. `sliding-window`, `summarise` and
+`clear-tool-results` are the alternatives; see
+[Context strategy](#context-strategy).
 
 The read-only modes differ from each other only in prompt template:
 `planning` for "describe and reason before acting" first-touch use,
@@ -995,6 +1300,57 @@ the presenter's collision resolution, so avoid those names when a
 profile is set. The control-plane side of the contract — response shape,
 `is_error`, cancellation — is in
 [`integration-guide.md`](integration-guide.md#control-plane-fulfilled-tools-tool_result_request).
+
+## MCP servers
+
+`tools.mcpServers` registers remote MCP servers and imports their tools as
+`mcp_<server>_<tool>`. The block is file and gRPC configuration only; there
+is no CLI flag.
+
+```json
+{
+  "tools": {
+    "mcpServers": [
+      {
+        "name": "github",
+        "uri": "https://mcp.example.com/github",
+        "apiKeyRef": "secret://GITHUB_MCP_TOKEN",
+        "allowedTools": ["search_issues", "get_issue"],
+        "optional": false
+      }
+    ]
+  }
+}
+```
+
+| Field | Semantics |
+|---|---|
+| `name` | Required. Operator-chosen server name; part of each imported tool's ID. |
+| `uri` | Required. An `http` or `https` URL with a host. `https` is required unless the host is `localhost` or a loopback address. |
+| `apiKeyRef` | Optional `secret://` reference for the server's credential. |
+| `allowedTools` | Optional allowlist matched case-sensitively against the tool names the server advertises. A tool not listed is not registered. Empty registers every advertised tool. |
+| `allowedMcpHosts` | Optional hostnames the `uri` host must match (exact, case-insensitive), on top of the SSRF guard. Bare hostnames or IP literals only. |
+| `optional` | `false` by default. See below. |
+
+A server is required unless it sets `optional: true`. The harness connects
+to every server before the first model request. A required server that is
+unreachable, rejects its credentials, fails `tools/list`, or does not
+advertise every name in `allowedTools` stops the run with
+`required MCP server "<name>" unavailable`. A configuration that must
+tolerate an unavailable server needs `optional: true`.
+
+An optional server that fails does not stop the run. The harness logs a
+warning, sends a `warning` transport event, and records the server in
+`RunResult.degradedCapabilities` with a scrubbed reason cut to 512 bytes
+before a truncation marker is appended. The run proceeds without that server's tools, except that an
+optional server that is missing only some allowlisted tools keeps the
+allowlisted tools it does advertise.
+
+A server registers at most 64 tools. The allowlist is applied first, then
+the cap, and tools past the cap are dropped with a logged warning. That is
+not a failure for either kind of server, so allowlisted tools past the cap
+are dropped even for a required server. The dry-run probe applies the same
+required and optional rules; see [Dry-run preflight](#dry-run-preflight).
 
 ## System prompt templating
 
@@ -1052,8 +1408,9 @@ stirrup prompt render --mode execution --prompt-model gemma-4 --template ./tuned
 
 The rendered preamble prints to stdout; the resolved tier prints to
 stderr. Structural sections the harness appends at run time (working
-directory, turn budget, workspace tree, git status, dynamic context)
-are omitted because they depend on a live workspace.
+directory, turn budget, workspace tree, git status, repository
+guidance, dynamic context) are omitted because they depend on a live
+workspace.
 
 ### Operator templates and the override
 
@@ -1073,8 +1430,8 @@ Three prompt-content surfaces exist, in precedence order:
 3. **Shipped mode templates** — the default.
 
 In both 1 and 2 the structural sections (workspace path, turn budget,
-workspace tree, git status, dynamic context with `untrusted_context`
-wrapping) are still appended.
+workspace tree, git status, [repository guidance](#repository-guidance),
+dynamic context with `untrusted_context` wrapping) are still appended.
 
 Combining `systemPromptOverride` with either `promptBuilder.template`
 or `promptBuilder.promptModel` is rejected by validation rather than
@@ -1094,6 +1451,44 @@ without arguments):
 
 Template rendering is pure string work: the data surface exposes no
 filesystem, environment, or network reach.
+
+### Workspace tree and git status sections
+
+The `composed` builder (`promptBuilder.type: "composed"`), an operator
+template and `systemPromptOverride` append two sections that describe the
+sandbox the agent works in: a workspace tree and a git status. The default
+builder, selected by an unset or `default` `promptBuilder.type`, appends
+neither.
+
+Both sections are read through the run's executor, never by the prompt
+builder itself. They render for `local`, `container`, `k8s` and
+`k8s-sandbox` runs alike, and depend on what the executor can do rather
+than on `executor.workspace`. On the `container`, `k8s` and `k8s-sandbox`
+executors, repository configuration that the agent controls inside the
+workspace is therefore never interpreted by git on the host during prompt
+construction. On `local` the executor is the host, so git runs on the host
+in the workspace; see
+[Prompt-time workspace reads](security.md#prompt-time-workspace-reads).
+
+- **Workspace tree.** The top-level entries of the workspace root, under
+  `Workspace files:`, with directories marked by a trailing slash. Names
+  that contain control characters are left out. The listing stops at 200
+  entries or 8 KiB and then ends in a
+  `[workspace listing truncated: N of M entries shown]` line. The section
+  is omitted when the executor cannot read, as with `none`, when listing
+  fails, and when the workspace is empty. The `container`, `k8s` and
+  `k8s-sandbox` executors list through `ls`, so the image needs an `ls`
+  that accepts `-A`, `-1` and `-p`.
+- **Git status.** The short-format status of the workspace, or
+  `Git status: clean`. It is capped at 200 entries and 8 KiB with a
+  `[git status truncated: N of M entries shown]` line. When the executor
+  itself cut the output short, the total is unknown and the line reads
+  `[git status truncated: N entries shown]`. The section is
+  rendered only when the executor can run commands and the workspace is
+  the top level of a repository, so the file names of an enclosing
+  repository never appear. It is omitted for the `api` executor (whichever
+  forge backend it uses), for `none`, and when git is missing from the
+  sandbox or fails.
 
 ### Control-plane prompt management (Langfuse)
 
@@ -1121,6 +1516,77 @@ name/version linkage attributes specific to Langfuse are not emitted.
 Use `prompt.model` / `prompt.tier` (and `gen_ai.system_instructions`
 under `--otel-capture-content`) to correlate runs with prompt
 versions.
+
+## Repository guidance
+
+`repositoryGuidance` loads operator-listed files from the workspace root,
+such as `AGENTS.md`, into the system prompt. It is off by default: without
+the block no file is read and the prompt is unchanged.
+
+```json
+{
+  "repositoryGuidance": {
+    "files": ["AGENTS.md", "CONTRIBUTING.md"],
+    "maxBytes": 32768,
+    "pinnedSha256": { "AGENTS.md": "<64-character hex SHA-256 of the approved file>" }
+  }
+}
+```
+
+| Field | Flag | Semantics |
+|---|---|---|
+| `files` | `--repository-guidance-file`, repeatable | Required, at most 16. Literal file names in the workspace root, loaded in this order. Path separators, globs, control characters and duplicates are rejected. The flag replaces the list from `--config`. |
+| `maxBytes` | `--repository-guidance-max-bytes` | Cap on rendered guidance, per file and in total. `0` selects 32768; the maximum is 50000. |
+| `pinnedSha256` | `--repository-guidance-pin file=sha256`, repeatable | Maps an entry of `files` to the hex SHA-256 of the exact content the operator approved. Flag pins merge over pins from `--config`, so one flag can re-pin a single file. |
+
+The mirror on the gRPC `RunConfig` is `repository_guidance`. The block is
+rejected with the `none` executor, which cannot read a workspace.
+
+**Tiers.** A file with a pin is *pinned*: its SHA-256 over the full file
+must match, or the run ends as `setup_failed` before any provider call, and
+a missing pinned file does the same. A pinned file is rendered as
+operator-approved guidance. A file without a pin is *advisory*: it renders
+inside `<repository_guidance>` tags, labelled repository-supplied and
+unverified, and a missing advisory file is skipped and recorded as missing.
+A read error on any listed file also ends the run as `setup_failed`.
+
+**Precedence.** The built-in mode and safety text comes first, then the
+operator's prompt template, then pinned guidance, then advisory guidance.
+The task prompt decides what to do; guidance only describes how the
+repository is built, tested and styled. No guidance can grant permissions,
+change the mode, request credentials, or override the text above it.
+
+**Byte cap.** Pinned files load first, then advisory files, each group in
+configured order. Each file is cut to what remains of `maxBytes` after the
+files before it, on a UTF-8 boundary, and a truncated file ends with a
+note. A pinned file's digest covers the whole file, whatever part fits.
+
+**Sanitising.** Advisory content has markup stripped until none remains, so
+angle-bracket text such as `Vec<String>` is removed along with real tags.
+Content that must render verbatim needs a pin; pinned content is not
+sanitised.
+
+**What is not loaded.** Only the root-level file names in `files` are read.
+`.claude/skills`, `.agents`, `.codex`, nested files and `@import`
+directives are neither read nor followed. Content that lives there reaches
+the model by being included in a listed file such as `AGENTS.md`, or by
+being exposed through an [MCP server](#mcp-servers).
+
+**Ordering and scope.** Files are read through the run's executor after
+the `preRun` hooks and before the prompt is built, so a hook can create
+them. The guidance renders with the shipped prompts, an operator
+`promptBuilder.template` and `systemPromptOverride` alike, and sub-agents
+render the parent's loaded guidance without reading the files again.
+`stirrup prompt render` omits it because it has no workspace. The run trace
+records each file's tier, size, digest and whether it was truncated or
+missing, never its content.
+
+**No effect on enforcement.** Guidance does not change the permission
+policy, the tool list, the executor or the egress rules, and adds no
+static Rule-of-Two leg. Loaded guidance is scanned for sensitive data under
+the source `repository_guidance`, like the prompt itself. Loaded files
+cannot be written by write tools during the run; see
+[Protected write targets](#protected-write-targets).
 
 ## Rule-of-Two configuration
 
@@ -1604,6 +2070,275 @@ Without an explicit destination, JSONL and GCS derive an adjacent archive;
 other emitters retain a local archive and report its absolute path in
 `RunResult.commandOutputArchive`.
 
+`tools.commandOutput` is mirrored on the gRPC `ToolsConfig`
+(`command_output`), so a control plane can send it in `task_assignment`.
+A `read_command_output` response can end before the requested `limit`:
+the tool shortens the byte range until the JSON-escaped page fits within
+`tools.maxResultBytes` and reports where it stopped in `end_offset`, and
+the model continues from there. How `run_command` output is bounded is
+described under [Tool result limits](#tool-result-limits).
+
+## Tool result limits
+
+`tools.maxResultBytes` bounds the model-visible text of one tool result.
+It defaults to 100 KiB, accepts 1 KiB to 1 MiB (`0` or unset selects the
+default, and any other value fails validation), has no CLI flag, and is
+mirrored on the gRPC `ToolsConfig` (`max_result_bytes`).
+
+The bound applies once per call, where synchronous, asynchronous and
+control-plane results converge, before the result reaches the
+conversation history, the trace or the `tool_result` event. A longer
+result keeps its head, cut on a UTF-8 boundary, followed by a marker:
+
+```text
+[tool result truncated: showing the first 102248 of 3000000 bytes; the omitted part starts at byte offset 102248. Narrow the request to see the rest]
+```
+
+For `read_file` the hint tells the model to continue with `start_line`.
+The marker fits inside the budget, so a result that is already bounded
+passes through a second application unchanged. A cut result also drops its
+structured envelope, which would repeat the omitted data. This covers MCP
+tool results as well as built-in tools.
+
+`read_file` and `grep_files` additionally cap every returned line at
+4 KiB, ending a longer line with `[line truncated: N of M bytes shown]`,
+so a minified bundle cannot consume the whole budget on one line.
+
+Three tools bound their own output and are exempt: `run_command`,
+`read_command_output` and `tool_search`. The command tools record the
+exact text the model sees, so dispatch must not alter it.
+
+- With command output capture enabled, which is the default,
+  `run_command` is bounded by `tools.commandOutput.inlineMaxBytes` for
+  inline output and `previewBytesPerStream` for the tails that accompany
+  a spilled result. Lowering `tools.maxResultBytes` alone does not bound
+  it, and validation does not cross-check the two settings, so an
+  `inlineMaxBytes` above `maxResultBytes` is accepted.
+- With capture disabled (`tools.commandOutput.enabled: false`),
+  `run_command` bounds itself to `tools.maxResultBytes`. Each stream keeps
+  its head and tail around an elision marker, stderr is guaranteed half
+  of the available space when it needs it, and the exit-code line and
+  any timeout marker are always kept.
+
+In a replayed run, `run_command` and `read_command_output` return the
+recorded model-visible text unchanged.
+
+## Post-edit checks
+
+`tools.postEdit` runs operator-authored shell commands after each
+successful edit and appends their failures to the edit tool's result, so
+the model sees a formatter or compiler diagnostic on the turn that caused
+it. The block is file and gRPC configuration only; there is no CLI flag.
+
+```json
+{
+  "tools": {
+    "postEdit": [
+      { "glob": "*.go", "command": "out=$(gofmt -l {path}) || exit; test -z \"$out\" || { echo \"$out\"; exit 1; }", "timeoutSeconds": 30 },
+      { "glob": "scripts/*.py", "command": "python3 -m py_compile {path}" }
+    ]
+  }
+}
+```
+
+| Field | Required | Semantics |
+|---|---|---|
+| `glob` | yes | `path.Match` pattern of at most 256 bytes. A glob without `/` matches the file's base name; a glob containing `/` matches the cleaned workspace-relative path, and `*` does not cross `/`. An absolute path inside the workspace is made workspace-relative before matching. |
+| `command` | yes | Shell command of at most 16 KiB, run with `sh -c` through the run's executor. `{path}` marks where the edited path goes. A `secret://` reference is rejected. |
+| `timeoutSeconds` | no | Time limit for one execution. `0` selects 60 s; the maximum is 600 s. |
+
+At most 16 entries are accepted. Every entry whose glob matches the edited
+path runs, in configuration order, after the edit tool reports success; a
+failed edit runs no check. The checks attach to the one registered edit
+tool (`edit_file` for the default `multi` strategy, and the strategy's own
+tool otherwise), so every edit strategy is covered. If `tools.builtIn`
+leaves the edit tool out, the harness logs a warning at startup and no
+check runs.
+
+**Path handling.** `{path}` expands to a quoted reference to the exported
+`STIRRUP_EDITED_PATH` variable, one shell word whether the placeholder is
+bare or inside double quotes, so no extra quoting is needed. The
+model-chosen path reaches the shell only as the value of that variable,
+never as shell text. A placeholder wrapped in single quotes (`'{path}'`)
+is rejected at validation. A command that starts a nested shell must pass
+its script in single quotes, as in `sh -c 'gofmt -l {path}'`; double
+quotes are not supported. A path that starts with `-` is passed with a
+leading `./`. A path containing a control character skips the checks for
+that edit and adds a warning to the result; the edit stays applied.
+
+**Exit status.** Only a non-zero exit reports a problem. A tool that
+prints findings and exits `0`, such as `gofmt -l`, needs a wrapper that
+turns its output into a failing status. The first example above captures
+the output, exits with the tool's own status when it fails (so a syntax
+error reaches the model), and prints the output and exits `1` when the
+output is not empty (so the listed file names reach the model).
+
+**What the model sees.** A non-zero exit appends a line naming the
+command, the exit code and the path, then the combined stdout and stderr
+as scrubbed untrusted data inside a fence, with the head kept up to
+16 KiB and a truncation note after that. A timeout or an executor error
+appends a warning without diagnostics. The edit is never rolled back and
+the tool result stays a success.
+
+**Trust.** The commands are operator configuration, like hook commands.
+They run through the executor and are not subject to the permission
+policy, and each execution is recorded on the run trace. `tools.postEdit`
+is rejected in read-only modes, which have no edit tools, and for the
+`api` and `none` executors, which cannot run commands.
+
+Lifecycle hooks and post-edit checks differ in when they run and who sees
+the output. [Hooks](#lifecycle-hooks) run before and after the whole run,
+and their output never reaches the model. Post-edit checks run after each
+edit, and their failures are shown to the model. Use a hook to prepare or
+publish the workspace, and a post-edit check for feedback the model should
+act on.
+
+## Protected write targets
+
+`tools.protectedWriteTargets` lists workspace-relative paths that write
+tools may not target. The list is empty by default: no path is protected
+unless it is listed or loaded as [repository guidance](#repository-guidance).
+The repeatable `--protected-write-target` flag sets the list and replaces
+any list from `--config`; the field is mirrored on the gRPC `ToolsConfig`
+as `protected_write_targets`.
+
+| Entry | Protects |
+|---|---|
+| `AGENTS.md`, `config/policy.cedar` | Exactly that path. |
+| `config/policies/` | A trailing `/` protects the directory and everything beneath it. |
+
+At most 64 entries are accepted. Each entry must be a literal path inside
+the workspace: non-empty, without leading or trailing whitespace, control
+characters, `..` segments, drive letters or a leading `/`, not the
+workspace root, and without the glob characters `*`, `?` and `[`.
+
+Matching ignores case. The harness normalises the path a tool names (a
+leading `./`, backslashes, surrounding quotes and `..` segments) and, on
+the `local` executor, also compares the symlink-resolved form, so an
+absolute or symlinked spelling of a protected path matches too. The
+`container`, `k8s` and `k8s-sandbox` executors resolve paths textually: a
+relative spelling and an absolute `/workspace/...` spelling match, but a
+symlink committed to the workspace does not. A committed link
+`CLAUDE.md -> AGENTS.md` with only `AGENTS.md` protected is therefore
+caught on `local` and not in a sandbox. Write tools are checked against their path-like
+input fields: `write_file`, `edit_file`, `search_replace`, `apply_diff` and
+any other workspace-mutating tool whose name contains `write`. A match
+rejects the call before dispatch with `Tool call rejected by security
+guard`, records a `security_guard_denied` tool failure and emits a
+security event. Sub-agents inherit the list.
+
+The rule inspects the path fields of write tools. It does not parse shell
+commands, so `run_command` can still change a protected path unless the
+permission policy or the mode denies shell access. Symlinks in a sandbox
+workspace are a second limit of the same kind.
+
+Files loaded through `repositoryGuidance` are protected automatically for
+the run, sub-agents included. A listed advisory file that is missing at
+load time is not protected, stays writable, and is loaded by a later run
+if the agent creates it.
+
+## Structured output
+
+`outputSchema` (`--output-schema <path>`) requires the run's final answer
+to be one JSON document that conforms to a schema. The validated document
+is returned as `RunResult.structuredOutput` and, on the gRPC transport, in
+the `done` event's trace summary. The control-plane view is in the
+[integration guide](integration-guide.md#structured-output-output_schema).
+
+```json
+{
+  "outputSchema": {
+    "type": "object",
+    "properties": {
+      "verdict": { "enum": ["pass", "fail"] },
+      "summary": { "type": "string" }
+    },
+    "required": ["verdict", "summary"],
+    "additionalProperties": false
+  }
+}
+```
+
+**The schema.** It is a JSON Schema (Draft 2020-12) object of at most
+64 KiB and is self-contained: every `$ref` and `$dynamicRef` must start
+with `#`. `ValidateRunConfig` checks the shape, and the harness compiles
+the schema when it builds the run, so a schema that does not compile
+fails before the first turn. `--dry-run` reports the same failure in its
+`config-validation` step. `--output-schema` reads the file and clears a
+schema set by `--config` when its value is empty. The schema is rendered
+into the system prompt with an instruction to end with exactly one
+conforming document, which is why the size is bounded.
+
+The schema applies to top-level runs only; a sub-agent does not receive
+it. It is valid in every mode, read-only modes included.
+
+> [!NOTE]
+> `outputSchema` is unrelated to the [control-plane tools](#control-plane-tools).
+> A control-plane tool needs a live gRPC stream and does not end the run.
+> `outputSchema` works on every transport, and its validated answer is the
+> run's result.
+
+**Accepted answers.** The final assistant message must be exactly one
+JSON value, or exactly one fenced code block, untagged or tagged `json`,
+with nothing around it. Messages that accompany tool calls are not checked.
+The harness then checks the document in this order:
+
+1. It is well-formed JSON, and its keys include neither `__proto__` nor
+   `constructor`.
+2. No object repeats a key.
+3. It validates against the schema.
+4. Every string, keys included, is scrubbed of secrets. The scrubbed
+   document must fit the size limit and, when scrubbing changed it, must
+   validate again with no repeated key.
+
+The check runs before the verifier. An answer that fails never reaches the
+verifier, and a verification repair that produces a new final answer is
+checked again.
+
+**Corrections.** A document that fails steps 1 to 3, or is over the size
+limit, is returned to the model in a synthetic user message that carries
+the scrubbed validation error, cut to 2 KiB before a truncation marker is
+appended. A `user_message` event
+with source `structured_output_correction` reports each one. A run gets two
+corrective attempts in total, and each costs a turn from `maxTurns`. When
+no turn remains at a correction, the run ends as `max_turns`. A failure
+after the second attempt ends the run as `structured_output_failed`.
+
+A document that validated as the model sent it but fails only after
+scrubbing is not corrected, because the model never sent the scrubbed
+value. The run ends as `structured_output_failed` at once.
+
+**Result.** `RunResult.structuredOutput` is the compact, scrubbed
+document. It is present only when the outcome is `success`, and it is never
+truncated. Its size limit is `resultSink.maxFinalAssistantTextBytes`
+(128 KiB by default), capped at 200 KiB. The `stdout-json` sink's line cap
+shrinks the final text and the verifier feedback but never the structured
+output. `structured_output_failed` exits non-zero and carries the
+violation in `RunResult.error`.
+
+## Verifier results
+
+A run with a verifier (`--verifier`, or `verifier` in a config file; see
+[Verifiers](architecture.md#verifiers)) is judged after each final answer.
+A failed verdict returns to the model as feedback and the loop continues,
+with at most three repair rounds, all within `maxTurns`.
+
+Every attempt is recorded as one entry of `RunTrace.verificationResults`,
+numbered from 1, and the last attempt decides the outcome and is the one
+`RunResult.verifierVerdict` reports. A verifier that fails to run records
+an entry with `error` set and ends the run as `verification_error`. The
+`feedback`, `error` and `details` strings of each entry are scrubbed of
+secret-shaped content and cut to 4 KiB before a truncation marker is
+appended.
+
+Feedback is untrusted content because test output can carry workspace
+text. Before the model reads it, the harness scrubs it and classifies it
+as arriving content: the Rule-of-Two sensitive-data scan and the
+`pre_turn` guardrail see it under the source `verifier_feedback`, and the
+feedback text carries `origin: "verifier_feedback"` in the recorded model
+input. A `verifier.command` is operator configuration recorded in the
+trace, so it must not contain secrets.
+
 ## Lifecycle hooks
 
 `hooks` configures operator-authored, deterministic shell commands that
@@ -1637,6 +2372,17 @@ run's own `timeout` is a warning, not a validation error: `preRun`
 hooks run serially inside the same budget as the rest of the run, so
 this usually still succeeds but is very likely to blow the timeout.
 
+`preRun` hooks run before the system prompt is built, before
+[repository guidance](#repository-guidance) is read, and before the
+git strategy's setup. A hook that clones the repository or writes an
+`AGENTS.md` is therefore visible to the guidance loader, the prompt's
+workspace sections and the git strategy.
+
+The deterministic git strategy's final checkpoint runs after the session
+ends and before the `postRun` hooks, so files that a `postRun` hook
+writes are not committed. The workspace export runs after the `postRun`
+hooks, so the archive includes them.
+
 Credentials never belong in a hook `command` — `command` is operator
 config recorded in the trace, the same treatment `verifier.command`
 gets, so a `secret://` reference there would defeat the `SecretStore`
@@ -1654,6 +2400,8 @@ instead.
 | The run's own context is already dead (timeout/cancel) when the `preRun` failure is observed | The ctx-cause outcome (`timeout` / `cancelled`), not `setup_failed` | The hook almost certainly failed *because* the deadline hit or a control-plane cancel arrived mid-exec — that is the more useful outcome to report. |
 | A `postRun` hook without `continueOnError` fails or times out, and the run would otherwise report `success` | `hook_failed` | Overrides `success` only. |
 | Same, but the run's outcome was already non-`success` (e.g. `max_turns`, `error`) | The original outcome, unchanged | A `postRun` failure never masks the primary failure cause; it is still visible in `RunTrace.HookResults` and `RunResult.hookFailures`. |
+| The git strategy's final checkpoint fails, leaves the working tree dirty or finds a detached HEAD, and the run would otherwise report `success` | `handoff_failed` | Overrides `success` only. The checkpoint precedes the `postRun` hooks, so they receive `handoff_failed` as the outcome and a `runOn: "success"` hook does not run. See [Git strategy](#git-strategy). |
+| A required workspace export fails, and the run would otherwise report `success` | `handoff_failed` | Overrides `success` only. The export follows the `postRun` hooks. See [Workspace export](#workspace-export). |
 | A hook with `continueOnError: true` fails or times out | The phase's outcome is unaffected | Recorded as a transport `warning` event and in `HookResults`; the remaining hooks in the phase still run. |
 
 Every trace emitter (`jsonl`, `otel`, `gcs`) records each hook's result
@@ -1942,6 +2690,8 @@ be unbounded:
 | `provider.batch.maxWaitSeconds` | the run's `timeout`; defaults to it when unset. See [`batch.md`](batch.md#the-wait-budget) |
 | `followUpGrace` | 3600 s |
 | `maxTokenBudget` | 50 M |
+| `contextStrategy.maxTokens` | `0` (unset) or at least 512 |
+| `outputSchema` | 64 KiB |
 | `maxCostBudget` | $100 (not enforced — see below) |
 | `temperature` | `0.0` ≤ `t` ≤ `2.0` |
 | `hooks.preRun` / `hooks.postRun` | 32 hooks per phase |
@@ -1950,6 +2700,14 @@ be unbounded:
 | sum of `hooks.postRun[].timeoutSeconds` | 1800 s (30 min) |
 
 Read-only modes additionally require the tool list to be set.
+
+`maxTurns` counts every model turn of the run, including the turns that
+repair a failed verification. A verification repair continues the same
+turn numbering and spends the same budget, with at most three repair
+rounds, and a run whose verification fails with no turn left ends as
+`verification_failed`. The turn number that the dynamic router compares
+with `modelRouter.expensiveTurnThreshold` is run-scoped in the same way
+and does not reset when a repair begins.
 
 Provider streams have no total time cap of their own. Each streamed
 response is bounded by a fixed 120 s idle-read timeout instead: a
@@ -1971,6 +2729,22 @@ provider-reported figure, cached tokens included in full, wherever the provider 
 estimate otherwise; Gemini output includes thought tokens. See
 [`trace-inspection.md`](trace-inspection.md#token-usage) for the
 per-provider sources.
+
+The run is over budget when the total exceeds the limit, not when it
+reaches it. The check runs at the start of each turn and after each turn,
+so spend can overshoot by one call: the call that crosses the limit
+completes, and so does a summary made while preparing a turn's context.
+A turn retried after a provider failure can add up to two more attempts
+before the next check. Guard classifiers that run on their own endpoint
+(`granite-guardian` and `shieldstral`) report their usage as
+`externalGuardTokens` on the trace but are not charged to the budget;
+`cloud-judge` uses the run's provider and is charged. The usage of
+auxiliary calls is also reported separately as `auxiliaryTokens`.
+
+Sub-agents charge the same run-wide total. At most 8 sub-agents start per
+run. A sub-agent is admitted with the budget remaining at spawn time as its
+own ceiling, which is not a reservation, and `spawn_agent` is refused with
+an error the model sees once the cap is reached or nothing remains.
 
 `maxCostBudget` is **accepted and bounded but not enforced**. The
 harness carries no per-model price table, computes no cost, and never
@@ -2018,6 +2792,59 @@ probed control, with per-model acceptance enforced by the
 before the request is sent. The Responses adapter omits `temperature`
 from any request that carries `reasoning.effort`.
 
+### Wind-down warning
+
+`windDown` asks the harness to warn the model once before a budget runs
+out, so the run can finish with a summary and a consistent workspace
+instead of being cut off. It is off by default, has no CLI flag, and is
+mirrored on the gRPC `RunConfig` (`wind_down`). It is the recommended
+setting for unattended runs, where nothing else can intervene before a
+limit ends the run.
+
+```json
+{ "windDown": { "enabled": true } }
+```
+
+The harness appends one synthetic user message at the start of the first
+turn at which any of these holds. The thresholds are fixed:
+
+- Two or fewer turns remain, counting that turn. The run's first turn never
+  triggers this.
+- The run's own turns have used 90% of `maxTokenBudget`. Sub-agent usage
+  and auxiliary usage do not count toward this threshold.
+- 90% of the time from run start to the run deadline (`timeout`)
+  has elapsed.
+
+The message is sent once per run, including across verification repairs.
+Runs in an editable mode are told to stop starting new work, bring the
+workspace to a consistent state, and finish with a summary of what is done
+and what remains. Read-only modes receive a summary-only variant: report
+findings now and make no further tool calls unless essential. Sending it
+also emits a `warning` event, increments `stirrup.harness.wind_downs`, and
+records the trigger (`turns`, `tokens` or `time`) as `windDown` on the
+turn record.
+
+### Output-limit recovery
+
+A model turn can stop because it reached its output-token limit, with stop
+reason `max_tokens`. The harness continues the run instead of ending it,
+up to two recoveries per run:
+
+- Text from the truncated turn stays in the history. Tool calls in that
+  turn are dropped without being run, because their arguments may be
+  incomplete.
+- The harness appends a synthetic user message. It asks the model to
+  continue from where it stopped; or, when a tool call was dropped, to
+  write large content in smaller pieces and re-issue the call; or, when
+  the turn produced no text, to keep its reasoning brief.
+- A `warning` event reports the recovery, as `output-limit recovery 1 of 2`
+  for the first.
+
+After the second recovery, or on the last turn `maxTurns` allows, a
+further `max_tokens` stop ends the run with the outcome `max_tokens`. A
+final answer that was continued across recoveries is reported joined, in
+order, as `RunResult.finalAssistantText`.
+
 ### Reasoning summaries
 
 `reasoningSummary` is the third provider-neutral model knob. It
@@ -2056,6 +2883,195 @@ Reasoning text is best-effort: providers summarise rather than
 transcribe, and may return no summary for a short turn. The harness's
 own model calls (the context summariser, the LLM-judge verifier, and
 the cloud guard judge) never request reasoning text.
+
+## Context strategy
+
+`contextStrategy` decides what the harness does when the conversation no
+longer fits the model's context window, and which window it budgets
+against. It is set in a `--config` file, over stdin or in the gRPC
+`task_assignment`; no CLI flag selects it.
+
+```json
+"contextStrategy": {
+  "type": "clear-tool-results",
+  "maxTokens": 200000,
+  "keep": 3,
+  "excludeTools": ["read_file"]
+}
+```
+
+| Field | Default | Notes |
+|---|---|---|
+| `type` | `sliding-window` | One of `sliding-window`, `summarise`, `offload-to-file` or `clear-tool-results`. |
+| `maxTokens` | `0` | The model's context window in tokens, input and output together. `0` leaves the window to the registry or the default; a set value must be at least 512. See [Budget and trigger](#budget-and-trigger). |
+| `keep` | `3` | `clear-tool-results` only. The number of most recent tool results that are never cleared. `0` is valid and a negative value is rejected. |
+| `clearAtLeast` | 25% of the fit limit | `clear-tool-results` only. The minimum estimated tokens one clearing batch must reclaim. Must be above `0`. |
+| `excludeTools` | none | `clear-tool-results` only. Tools whose results are never cleared, named by internal ID or by the name the model sees. A blank name is rejected. |
+
+`keep`, `clearAtLeast` and `excludeTools` are rejected with any other
+`type`. An `excludeTools` name that matches no tool in the run logs a
+warning at startup and excludes nothing.
+
+### Budget and trigger
+
+Every request is budgeted against one window. When `maxTokens` is set and
+the [provider quirks registry](provider-quirks.md#21-providerquirks)
+holds a window for the routed model, the smaller of the two applies. When
+only one is set, it applies. When neither is, the window is 200,000
+tokens. A `maxTokens` above the registered window is capped to it, with a
+`warning` event on the first turn. The registry lists a window only where
+the documented one is below the 200,000 default, as with the gpt-4o model
+family at 128,000 tokens.
+
+The harness subtracts a response reserve from the window. The reserve is
+64,000 tokens, or a quarter of the window when the window is 64,000
+tokens or fewer. The smaller reserve also logs a `warning` event on the
+first turn. The reserve is also the output-token limit requested for each turn. The room
+that remains is divided by a calibration ratio, and the **fit limit** is
+90% of the result. The 10% margin absorbs part of the error of the token
+estimate, which counts four characters per token plus a fixed overhead per
+message and block.
+
+The calibration ratio is learned from the provider. When a response
+reports the input tokens of a request estimated at 1,000 tokens or more,
+the ratio of reported to estimated tokens, limited to the range 0.5 to
+2.0 and smoothed with the newest sample weighing half, scales the room
+the next request is budgeted against.
+
+A strategy runs when the estimate of the history, the system prompt and
+the tool definitions exceeds the fit limit, and compacts the history to
+the fit limit, not to the full room.
+
+### Guarantees common to every strategy
+
+Every strategy keeps the task, which is the first message, and drops
+messages only at exchange boundaries. An exchange is an assistant message
+together with the user message that answers its tool calls. Cutting there
+keeps each `tool_use` paired with its `tool_result` and keeps the roles
+alternating, as every provider requires. The smallest history a strategy
+sends is the task plus the last complete exchange. The task counts toward
+the budget, so a task larger than the fit limit cannot be compacted away.
+
+### Strategies
+
+**`sliding-window`** drops the oldest exchanges until the request fits.
+
+**`summarise`** replaces the exchanges between the task and the recent
+messages with a rolling summary appended to the task message, so the
+summary is not a separate message.
+
+- The six most recent messages, moved forward to an exchange boundary,
+  stay verbatim.
+- The summary is extended once six exchanges have aged out since the last
+  call. Until then the aged exchanges are re-sent verbatim while they fit.
+- Each call receives the previous summary and the newly aged messages. The
+  call runs on the default provider with the run's `modelRouter.model`, at
+  temperature `0`, and its usage counts as `auxiliaryTokens` toward
+  `maxTokenBudget`.
+- The input is bounded by the summary model's window: the smaller of
+  `contextStrategy.maxTokens` and the registered window, or 32,000 tokens
+  when neither is set. The bound is that window less the response cap and
+  the 10% margin, at four characters per token. The previous summary may
+  take half of it, and each text or tool result block is cut to 2,000
+  characters. Aged messages that do not fit are left out, oldest first,
+  with a `warning` event naming how many.
+- The response is capped at 2,048 tokens, or a quarter of the window when
+  that is smaller.
+- A failed summary call falls back to the sliding window and emits a
+  `warning` event beginning `summarise: summary call failed`. The call is
+  retried after six more exchanges have aged out.
+- The summary input is built from content that may be hostile. Tool
+  results are scrubbed of secrets and stripped of instruction-like
+  phrases, assistant text is stripped of those phrases, and text the
+  harness inserted, such as verifier feedback, is scrubbed. The operator's
+  own messages are sent as written.
+
+**`offload-to-file`** writes tool results of 2,000 bytes or more to
+`.stirrup/context/turn-<n>-<toolUseId>.txt` in the workspace and replaces
+each with a pointer to the file, where `<n>` is the message's index in the
+history. The six most recent messages are never offloaded. When a write
+fails, the result is cut to its first and last 500 bytes around a
+`[...truncated N bytes...]` marker instead. Because it writes through the
+executor outside the permission policy, `offload-to-file` is rejected in
+the read-only modes (`planning`, `review`, `research`, `toil`), where
+`sliding-window`, `summarise` and `clear-tool-results` remain available.
+
+**`clear-tool-results`** replaces old tool results with a fixed placeholder
+(`[Tool result cleared by the harness to save context. Run the tool again
+if you need this output.]`) in occasional batches, so the provider's prompt
+cache stays valid between batches. It never writes to the workspace.
+
+- A batch runs only when the request exceeds the fit limit. It clears the
+  oldest eligible results first, until the request fits and the batch
+  reclaims at least `clearAtLeast` estimated tokens.
+- Results cleared earlier are cleared again with the same placeholder on
+  every later turn, so the prompt cache is missed only on batch turns.
+- Three kinds of result are never cleared: the `keep` most recent results,
+  results in a trailing user message that the model has not yet seen, and
+  results of tools named in `excludeTools`.
+- When the eligible results cannot reclaim the batch minimum, or clearing
+  all of them still does not fit, the strategy drops the oldest exchanges
+  as `sliding-window` does and emits a `warning` event once per run. Every
+  such drop invalidates the cache.
+
+Once any strategy or the fit check has rewritten the history that is sent,
+thinking blocks are no longer replayed for the rest of the run. The first
+rewrite costs one cache miss. See
+[thinking-block replay](providers.md#thinking-block-replay).
+
+### Fit postcondition
+
+After the strategy runs, the harness checks the prepared request against
+the fit limit. When the estimate still exceeds it, tool-result content is
+cut in the copy that is sent, oldest first, with results of more than
+1,000 bytes before smaller ones. The stored history is not modified. Each
+cut keeps the head and the tail of a result around a marker of the form
+`[...truncated N bytes...]` and drops the result's structured envelope.
+The cut rewrites the history the model sees, so the thinking-block
+consequence above applies.
+
+### Overflow recovery
+
+The estimate can under-count, so a request that passed the fit check may
+still exceed the model's context window. Recovery starts when a provider
+response reports this, as classified by the adapters (see
+[Context-overflow responses](providers.md#context-overflow-responses)), or
+when a response stops with `model_context_window_exceeded`:
+
+1. The harness compacts the history once more, to 70% of the estimated size
+   of the rejected request. After the fit margin the request is at most 63%
+   of that size.
+2. It retries the turn once and emits a `warning` event that states the
+   reason.
+3. A second overflow in the same turn ends the run as `context_exhausted`.
+
+When the response itself filled the window, it is discarded, although its
+streamed text and tool-call events already reached the transport; the
+retry `warning` says so. A recovered overflow is counted in neither
+`provider_errors` nor `tool_failures`.
+
+### Context exhausted
+
+`context_exhausted` ends the run before an oversized request is sent, or
+after the second overflow above. The first case arises when the system
+prompt, the tool definitions and the task alone exceed the fit limit even
+with every tool result cut. A `warning` event and an error log line name
+the estimated sizes of the system prompt, tool definitions, task and other
+messages, the window in effect and the setting to change. The warning
+starts `context budget exhausted: the request needs about <n> estimated
+tokens`.
+
+The second case emits a `warning` event and an error log line that start
+`context window exceeded: the provider reported the request as too large
+for the model's context window again after it was compacted from about
+<n> to <m> estimated tokens`. They carry those two estimates and the
+advice to set `contextStrategy.maxTokens` or shorten the prompt, the tool
+set or the task, without a per-part size breakdown.
+
+In both cases the remedy is to raise `contextStrategy.maxTokens` toward
+the model's real window, which cannot exceed the registered window, to use
+a model with a larger window, or to shorten the system prompt, the tool
+set or the task.
 
 ## RunConfig examples
 

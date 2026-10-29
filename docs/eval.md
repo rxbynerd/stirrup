@@ -88,9 +88,14 @@ judge {
 }
 ```
 
-Each task gets a fresh temporary workspace. If `repo` and `ref` are
-set the runner clones the repo at that ref before invoking the
-harness. With `--concurrency > 1`, the runner dispatches task trials
+Each task gets a fresh temporary workspace. If `repo` is set, the
+runner clones it before invoking the harness. With a `ref`, the runner
+fetches exactly that ref from the remote by name, so `ref` may be a
+full commit SHA, a tag, or a branch, and the server must permit
+fetching the object by that name (GitHub permits a SHA). With an empty
+`ref`, the runner takes a depth-1 clone of the default branch. A `repo`
+or `ref` that starts with `-` is rejected so that git cannot read it as
+an option. With `--concurrency > 1`, the runner dispatches task trials
 across a bounded worker pool while preserving suite order in
 `result.json`; each trial still gets its own workspace, harness
 subprocess, and trace file (`eval/runner/runner.go::runTasksConcurrently`).
@@ -108,6 +113,11 @@ suite "dogfood-seed" {
 }
 ```
 
+A suite can also set `require_healthy = true`, which has the same
+effect as `stirrup-eval run --require-healthy`: the comparison gate
+counts a judge pass only when the run was healthy. Either one enables
+it. See [Pass definitions and run health](#pass-definitions-and-run-health).
+
 Run output artifacts (`result.json`, the per-task JSON written by
 `eval run`, etc.) are JSON — a separate format used for
 machine-readable results, not for authoring suites. Mined suites from
@@ -119,7 +129,20 @@ Top-level blocks other than `suite` (e.g. `variable`, `locals`,
 generate suites from a higher-level tool and emit the static HCL.
 
 Suite definitions live in `eval/suites/`. CI baselines live in
-`eval/baselines/`.
+`eval/baselines/`. Only a suite with a matching baseline runs in CI;
+the others are opt-in local runs. Among them are `acceptance.hcl`
+(eight realistic tasks on pinned public Go repositories) and the
+`post-edit-ab-on` and `post-edit-ab-off` pair (an A/B comparison for
+`tools.postEdit`). [`eval/suites/README.md`](../eval/suites/README.md)
+lists every suite and how each runs.
+
+The acceptance suite gates nothing, so its result is read for run
+health. `healthyPassRate` is the share of trials whose judge passed and
+whose run also finished healthy. A gap between it and `passRate` marks
+tasks that passed their judge while the run ended on a limit or an
+error class, which `stirrup-eval run` records as `failed`, and
+`runHealth` on each task shows the state. See
+[Pass definitions and run health](#pass-definitions-and-run-health).
 
 ### Suite-level RunConfig surface
 
@@ -148,6 +171,13 @@ a `run_config_file` baseline's `replayFile` resolves against that JSON
 file's directory. The resolved absolute paths appear in the retained
 `run_config.redacted.json`, so that artifact is specific to the machine
 that ran the suite.
+
+> [!WARNING]
+> Per-task `run_config_overrides` take effect only when the suite
+> declares a `run_config` or `run_config_file`. Without a baseline, the
+> runner keeps the legacy invocation, which has no merged config to
+> layer an overlay onto. The overlay is silently ignored. Neither
+> parsing nor `--dry-run` reports it.
 
 Per-task mode is set via the task block's `mode` attribute, not
 `run_config_overrides`. The runner always passes the task's mode
@@ -232,6 +262,35 @@ inline instead of falling back to `run_config_file`. `type` is
 destination are not exposed on this block; set them via
 `run_config_file` when the default `gcp-workload-identity`
 credential does not apply.
+
+**Repository guidance.** The inline `run_config` accepts a
+`repository_guidance` block that mirrors `repositoryGuidance` in the
+`RunConfig`. `files` lists the workspace-root files to load and is
+required. `max_bytes` caps the content and `pinned_sha256` maps a
+listed file to the digest of the content the operator approved. The
+block belongs to the suite baseline only, because
+`run_config_overrides` has no such block.
+[`eval/suites/guidance.hcl`](../eval/suites/guidance.hcl) is a live
+example.
+
+```hcl
+run_config {
+  # mode, max_turns, provider and the rest of the baseline.
+  repository_guidance {
+    files         = ["AGENTS.md"]
+    max_bytes     = 16384
+    pinned_sha256 = { "AGENTS.md" = "<hex sha-256 of the approved file>" }
+  }
+}
+```
+
+**Merged config file.** When a baseline is in use, the runner writes
+the merged config as `runconfig.json` in the workspace root and passes
+it to the harness with `--config`. The file therefore appears in the
+workspace listing, and in `git status` when the workspace is a git
+repository. A `test-command` judge that checks for a clean tree or an
+exact file set must ignore it. A task with a `diff-review` judge is the exception: its config
+file is written outside the workspace.
 
 **Retention.** When `--output` is set, each retained task
 directory carries a `run_config.redacted.json` companion next to
@@ -1202,6 +1261,15 @@ file, carrying the full `ModelInput.Messages`, the model's
 `types.RunRecording` from the event stream, including from
 partially-written files left behind by an interrupted run.
 
+A recording carries `subRuns`, one entry per sub-agent run that
+streamed into the trace, with that child's config, turns, and outcome
+summary (see [Sub-agent runs](trace-inspection.md#sub-agent-runs)).
+Replay uses the parent's turns only: `ReplayProvider` serves the turns
+of top-level runs and drops any turn that names a parent run, so a
+sub-agent's output is never served to the parent's requests.
+`stirrup-eval replay` re-judges the recording's final outcome without
+replaying turns.
+
 Pre-streaming traces (single-blob `RunTrace` lines) parse through the
 same reader as recordings with no transcript turns; the replay
 provider rejects them at construction because there is nothing to
@@ -1254,7 +1322,9 @@ rename wins atomically.
 `RunTrace.Outcome` records *why the loop stopped*: `success`,
 `error`, `max_turns`, `verification_failed`, `verification_error`,
 `budget_exceeded`, `stalled`, `tool_failures`, `cancelled`,
-`timeout`, `max_tokens`, or a provider stop reason passed through
+`timeout`, `max_tokens`, `setup_failed`, `hook_failed`,
+`handoff_failed`, `control_stream_lost`, `context_exhausted`,
+`structured_output_failed`, or a provider stop reason passed through
 verbatim, such as `refusal` (which falls into the "anything else" row
 below). By itself it conflates two
 very different states in execution mode: "the harness made the
@@ -1270,8 +1340,8 @@ about quality.
 | `success`                                                                                 | yes           | last attempt passes | `passed` |
 | `success`                                                                                 | yes           | last attempt fails  | `failed` |
 | `success`                                                                                 | no            | n/a       | `passed` *    |
-| `verification_failed`, `error`, `tool_failures`                                           | any           | any       | `failed`      |
-| `max_turns`, `budget_exceeded`, `timeout`, `max_tokens`, `stalled`, `cancelled`, `verification_error` | any | any | `inconclusive` |
+| `verification_failed`, `error`, `tool_failures`, `structured_output_failed`               | any           | any       | `failed`      |
+| `max_turns`, `budget_exceeded`, `timeout`, `max_tokens`, `stalled`, `cancelled`, `verification_error`, `setup_failed`, `hook_failed`, `handoff_failed`, `control_stream_lost`, `context_exhausted` | any | any | `inconclusive` |
 | anything else (unknown / empty)                                                           | any           | any       | `inconclusive` |
 
 \* The success-without-verifier branch is trusted as `passed` for
@@ -1280,11 +1350,85 @@ fidelity should wire a verifier (even a cheap smoke-test command);
 a future opt-in `evalOutcomeQuality: verified | unverified` label
 is tracked in #273.
 
+Every verifier attempt is recorded in `RunTrace.VerificationResults`, and
+the last attempt decides. A run that fails verification and passes after
+a repair is `passed`, and the earlier failed attempts stay in the trace
+(see [Verification results](trace-inspection.md#verification-results)).
+
 `baseline` and `drift` report `passRate`, `failRate`, and
 `inconclusiveRate` — the three rates sum to 1.0 by construction.
 `mine-failures` defaults to mining only `EvalOutcome == failed`;
 pass `--include-inconclusive` to also mine limit-hit and interrupted
 runs.
+
+### Pass definitions and run health
+
+Two pass definitions are in use, and the rates they produce are not
+interchangeable:
+
+| Command | Pass definition |
+|---|---|
+| `run` | The judge verdict per task. `passRate` in `result.json` is the mean per-task pass fraction, and `healthyPassRate` is reported beside it. The exit code is `0` whatever the rate. |
+| `compare` | The judge-based pass fractions in the two result files. A result that records `requireHealthy` counts a judge pass only when the run was healthy. |
+| `baseline`, `drift` | The share of lakehouse traces that `EvalOutcomeFor` maps to `passed`. |
+| `mine-failures` | `EvalOutcomeFor` applied to each production trace or recording. |
+| `compare-to-production` | On the lab side, the result file's judge-based `passRate`. On the production side, the `EvalOutcomeFor` share. |
+
+A suite pass rate (judge verdicts on fixed tasks) and a production pass
+rate (run outcome and verifier on live traffic) are therefore different
+quantities. A gap between them does not by itself indicate a regression.
+
+**Run health.** Each task in `result.json`, and each entry in its
+`trials`, records how the run finished beside the judge verdict. The
+fields are absent from results written before they existed and from a
+passing dry-run.
+
+| Field | Values | Meaning |
+|---|---|---|
+| `runHealth` | `healthy`, `degraded`, `failed` | How the harness run ended, independent of the judge and the verifier. A task run over several trials reports the worst trial. |
+| `verification` | `none`, `passed`, `failed` | The verdict of the last verifier attempt in the trace, the attempt `EvalOutcomeFor` judges. `none` when the trace holds no verifier result. A task run over several trials reports `failed` when any trial failed, else `passed` when any passed, else `none`. |
+| `delivery` | `not_measured` | The eval runner does not observe the handoff to a caller, so every run reports `not_measured`. |
+
+The result also carries `healthyPassRate`, the mean over tasks of the
+share of trials whose judge passed and whose `runHealth` is `healthy`.
+It is absent when no task records run health.
+
+| `runHealth` | Condition |
+|---|---|
+| `healthy` | The harness exited zero and the trace outcome is `success`. A verifier that disagreed does not change health, and `verification` records it. |
+| `degraded` | The run stopped on a limit, an interruption, or an outcome this version does not recognise, and no harness process exited non-zero. A live run never reaches this state, because the harness exits non-zero for every outcome other than `success` and a non-zero exit is `failed`. Only `stirrup-eval replay` reports it, because a replay has no process exit status. Examples of such outcomes are `max_turns`, `budget_exceeded`, `timeout`, `max_tokens`, `stalled`, `cancelled`, `handoff_failed`, `control_stream_lost`, `context_exhausted`, and a provider stop reason such as `refusal`. |
+| `failed` | The harness exited non-zero, even when its trace says `success`, or left no trace, or the outcome is `error`, `tool_failures`, `verification_failed`, `verification_error`, `setup_failed`, `hook_failed`, or `structured_output_failed`. Every limit or interruption outcome of a live run is therefore `failed`. A task that errors before the harness starts, for example on a failed clone or an invalid merged config, is also `failed`. |
+
+The infrastructure outcomes `verification_error`, `setup_failed`, and
+`hook_failed` are `failed` here but `inconclusive` in
+[`EvalOutcomeFor`](#outcome-taxonomy), because run health asks whether
+the run itself worked rather than whether the work was good.
+
+**`require_healthy`.** `stirrup-eval run --require-healthy`, or
+`require_healthy = true` in the suite block, records `requireHealthy`
+in the result. `compare` then counts a judge pass as a pass only when
+`runHealth` is `healthy`, and each side of a comparison applies the
+setting its own result records. Task outcomes and the result's
+`passRate` stay judge-based, and the comparison report holds the
+judge-based rate in `judgePassRate` beside the gate's rate. Because
+`run` never uses the pass rate for its exit code, the setting changes
+only what `compare` reports and gates on.
+
+**JUnit properties.** `--junit` output repeats these fields as
+`<property>` elements. A result that records no run health gets no
+suite properties.
+
+| Element | Property | Value |
+|---|---|---|
+| `testsuite` | `pass_rate` | Judge-based pass rate, three decimals. |
+| `testsuite` | `healthy_pass_rate` | `healthyPassRate`, three decimals. |
+| `testsuite` | `tasks`, `trials_per_task` | Task count and trials per task. |
+| `testsuite` | `require_healthy` | `true`, present only when the setting is on. |
+| `testcase` | `run_health`, `verification`, `delivery` | The task's fields, each omitted when not recorded. |
+
+A passing `testcase` whose run was not healthy also carries a
+`system-out` line stating that the judge passed but the run health was
+`degraded` or `failed`.
 
 ### Statistics
 
@@ -1476,9 +1620,10 @@ tree gains a `run_config.redacted.json` per task. See
 | `--harness`      | `stirrup` on PATH| Harness binary to invoke for live runs.                      |
 | `--concurrency`  | `1`              | Number of task trials executed in parallel. Workers preserve suite order in `result.json`. Values larger than the number of task trials cap at that number. Concurrent invocations talking to the same provider hit rate limits faster, so the value should respect the provider account's per-minute caps. |
 | `--trials`       | `1`              | Independent runs per task, from 1 to 20. When the flag is not given, the suite's `trials` attribute applies, else one run. Values outside 1-20 are rejected. Provider spend scales linearly with K. |
+| `--require-healthy` | `false`       | Count a judge pass in the comparison gate only when the run was healthy: the harness exited zero and the trace outcome is `success`. Task outcomes and the pass rate stay judge-based, and the choice is recorded in the result as `requireHealthy`. The `require_healthy` suite attribute has the same effect, and either enables it. See [Pass definitions and run health](#pass-definitions-and-run-health). |
 | `--dry-run`      | `false`          | Validate the suite (and, when present, the merged per-task RunConfig via `ValidateRunConfig`), print the summary, and exit without writing `result.json` or JUnit XML. |
 | `--junit`        | empty            | Write JUnit XML to this path after `result.json`. Each task is one `testcase`. A task with more than one trial carries a `system-out` summary of every trial, its `failure` or `error` message is prefixed with the pass count (for example `1/3 trials passed: ...`), and the body ends with the reason of each non-passing trial. Single-trial output is unchanged. |
-| `--model`        | empty            | Model to run every task with, forwarded to each harness invocation as `--model`. Overrides the harness default and any model pinned by the suite's `run_config` block. CI uses this to pin the per-push gate to a cheap model and the release sweep to stronger ones. |
+| `--model`        | empty            | Model to run every task with, forwarded to each harness invocation as `--model`. Overrides the harness default and any model pinned by the suite's `run_config` block. CI uses this to pin the gate on `main` and manual dispatch to a cheap model and the release sweep to stronger ones. |
 | `--prompt-model` | empty            | Prompt model to render system prompts with, forwarded to each harness invocation as `--prompt-model`. The wire model is unchanged. See [Comparing prompts across models](#comparing-prompts-across-models). |
 | `--provider`     | empty            | Provider type to run every task against, forwarded as `--provider`. Overrides the harness default and any provider pinned by the suite's `run_config` block, and switches a replay-backed suite to a live run (the harness drops each task's recording path on the switch). |
 | `--base-url`     | empty            | API base URL for the `openai-compatible` / `openai-responses` providers, forwarded as `--base-url`. |
@@ -1505,7 +1650,7 @@ The three provider flags exist for the same reason as `--model`: the
 provider a suite runs against is a property of the invocation, not of
 the suite, so CI can retarget a provider-neutral suite without editing
 suite files. Each is emitted independently, so an invocation may
-override just the base URL. The per-push eval gate uses all four to run
+override just the base URL. The CI eval gate uses all four to run
 `dogfood-seed.hcl` against OpenRouter, three trials per task:
 
 ```bash
@@ -1517,6 +1662,12 @@ override just the base URL. The per-push eval gate uses all four to run
   --api-key-ref secret://OPENROUTER_API_KEY \
   --model openai/gpt-6-luna
 ```
+
+The harness defines a default model only for the `anthropic` provider.
+A `--provider` other than `anthropic` therefore needs `--model` too,
+unless the suite's `run_config` pins a static `model_router` with a
+model. Without either, the harness exits with an error that names the
+provider, and every task fails.
 
 Exit code is `0` regardless of pass rate — use `compare` to gate CI.
 
@@ -1566,8 +1717,10 @@ comparison that did not run (`2`).
 | `--flip-threshold` | `0.5`    | Current pass fraction at or below which a task that passed every baseline trial is listed as a regression, and the baseline pass fraction at or below which a task that passes every current trial is listed as an improvement. Must be within [0, 1). |
 | `--output`         | empty    | Also write the comparison report as JSON to this path. |
 
-The text report opens with the gate result and its reasons, then the
-pass rate of each side with its Wilson interval over tasks, task-level
+When either result records run health, the text report adds a
+`Healthy Pass Rate:` line after the pass rate, and notes a side that
+applies `require_healthy`. The text report opens with the gate result
+and its reasons, then the pass rate of each side with its Wilson interval over tasks, task-level
 standard error, task count n, and trials K, each followed by a pass^k /
 pass@k row. A `Paired:` line gives n, d̄, the paired standard error,
 the two-sided 95% t interval, the one-sided 95% upper bound, the
@@ -1609,7 +1762,7 @@ every task pairs. `summary` holds:
 | `hasRegressions` | Whether the regression list is non-empty. |
 | `warnMargin`, `flipThreshold` | The options the comparison ran with. |
 | `deterministicFlips` | Task IDs that passed every baseline trial and failed or errored every current trial. |
-| `baseline`, `current` | Per-side `tasks`, `trials`, `passRate`, `stdErr` (omitted below two tasks), `wilsonLow`, `wilsonHigh`, `passHatK`, `passAtK`. |
+| `baseline`, `current` | Per-side `tasks`, `trials`, `passRate`, `stdErr` (omitted below two tasks), `wilsonLow`, `wilsonHigh`, `passHatK`, `passAtK`, and `healthyPassRate` (omitted when the result records no run health). A side whose result has `requireHealthy` also reports `requireHealthy` and `judgePassRate`, and its `passRate` is then the healthy-only rate. |
 | `paired` | `tasks`, `meanDelta`, `stdErr`, `df`, `ciLow`, `ciHigh`, `upperBound`, `pValue`, `pValueExact`, `mde` (omitted when `stdErr` is zero). The whole object is omitted below two paired tasks. |
 | `noiseFloor` | `perTrialPassRate`, `pooledTrials`, `singleRunFalseAlarm`, `flipRuleFalseAlarm`. Present only when every paired baseline task passed every trial; the two rates are omitted when every pooled trial passed. |
 
@@ -1648,7 +1801,9 @@ lakehouse. Two on-wire shapes are accepted transparently per file:
   a `kind` discriminator. One file represents one run; ingest writes
   both `traces/<runId>.json` and `recordings/<runId>.json`. Full
   transcripts are preserved on the recording so replay and
-  mine-failures have something to chew on.
+  mine-failures have content to analyse. Sub-agent runs that
+  streamed into the file are stored on the recording as `subRuns`,
+  while its `turns` hold only the recorded run's own turns.
 - **Legacy single-blob format** — one `RunTrace` per line, no
   discriminator. Each line ingests as one `traces/<id>.json` entry;
   no recording is produced (the legacy shape has no transcript).
@@ -1781,9 +1936,11 @@ distorted slice of tasks.
 The repo's GitHub Actions workflow at `.github/workflows/ci.yml` runs
 the framework as a gating job:
 
-- **`verify`** — `go test` across `types/`, `harness/`, and `eval/`,
-  plus binary builds. Runs on every push and PR.
-- **`eval-gate`** — depends on `verify`. On every push it builds
+- **`verify`** — `go test` across the workspace modules, plus binary
+  builds. Runs on every push, on the weekly schedule and on manual
+  dispatch.
+- **`eval-gate`** — depends on `verify`. On pushes to `main` and on
+  manual dispatch it builds
   the binaries, runs each suite in `eval/suites/` that has a
   matching baseline in `eval/baselines/` (unbaselined suites are
   opt-in local runs), pins the model to GPT-6 Luna over OpenRouter
@@ -1791,7 +1948,7 @@ the framework as a gating job:
   (`--trials 3`) with three concurrent workers, compares each result
   to its baseline via `eval compare`, and uploads the result and
   comparison JSON as a build artifact. Three trials triple the
-  per-push spend in exchange for the false-alarm rates in
+  per-run spend in exchange for the false-alarm rates in
   [Gate semantics](#gate-semantics). The job has a 30-minute timeout.
   On-demand `provider-quirks-*` suites run without `--trials` (one
   trial per task unless the suite sets `trials`) to contain their
@@ -1799,8 +1956,10 @@ the framework as a gating job:
   repository secret; runs that cannot read it (fork clones, Dependabot-actor
   pushes) skip the live run with a warning rather than reporting a
   false regression.
-- **`publish-container`** — depends on `verify`. On `main` pushes it
-  publishes the harness Docker image to `ghcr.io/rxbynerd/stirrup`.
+- **`publish-container`** and **`publish-sandbox-container`** — depend
+  on `verify`. On `main` pushes and on the weekly schedule they publish
+  the harness image to `ghcr.io/rxbynerd/stirrup` and the sandbox image
+  to `ghcr.io/rxbynerd/stirrup-sandbox`.
 
 The compare step compares every baselined suite before it exits, so
 one failing suite does not hide another. A `block` (exit `1`) or a
@@ -1812,6 +1971,38 @@ At release time, `release.yml::eval-extended` re-runs the baselined
 suites against stronger models (Claude Sonnet 5 and Claude Opus 4.8)
 as a non-blocking-but-visible matrix: a blocking comparison turns the
 matrix cell red without holding the release.
+
+Within a matrix cell, every baselined suite runs and every result is
+compared before the step exits, so one blocking suite does not hide
+another. The worst `compare` exit code becomes the cell's verdict: `1`
+for a `block`, `2` when a comparison could not run. `provider-quirks-*`
+suites are skipped because the sweep's `--model` would replace the model
+they pin. A suite with no baseline is not part of the sweep, which is
+why `acceptance.hcl` stays an opt-in local run until a baseline is
+committed for it.
+
+Each cell appends a table to the job summary with one row per suite:
+
+| Column | Meaning |
+|---|---|
+| Suite | The suite file name without its extension. |
+| Gate | The gate result of the comparison, `not compared` when a baseline exists but no comparison was written, or `no baseline`. |
+| Pass rate | The result's judge-based `passRate`. |
+| Healthy pass rate | The result's `healthyPassRate`, or `n/a` for a result written before run health existed. |
+| Healthy runs | Healthy runs over all runs, or `n/a` when no run records health. |
+| Tasks | The number of tasks. |
+| Runs | The number of runs, counting every trial. |
+
+The full comparison report of every suite whose gate is not `pass`
+follows the table.
+
+The sweep passes no `--trials`, and no baselined suite sets `trials`, so
+each task runs once per cell. The committed baselines record one outcome
+per task and compare as one trial per task. The single-run rule in
+[Gate semantics](#gate-semantics) therefore applies: a task that passed
+in the baseline and does not pass in the sweep run blocks the cell. The
+rates in that section's table show how the false-alarm rate differs
+between one trial and three.
 
 ---
 

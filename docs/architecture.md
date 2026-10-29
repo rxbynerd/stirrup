@@ -43,14 +43,14 @@ thirteen interfaces below.
 | 2 | `ModelRouter` | `static`, `per-mode`, `dynamic` | `harness/internal/router/` |
 | 3 | `PromptBuilder` | `default` (per-mode templates, composed) | `harness/internal/prompt/` |
 | 4 | `ContextStrategy` | `sliding-window`, `summarise`, `offload-to-file`, `clear-tool-results` | `harness/internal/context/` |
-| 5 | `ToolRegistry` | seven built-in tools + remote MCP servers | `harness/internal/tool/` |
-| 6 | `Executor` | `local`, `container` (Docker/Podman), `api` (GitHub) | `harness/internal/executor/` |
+| 5 | `ToolRegistry` | built-in tools + remote MCP servers | `harness/internal/tool/` |
+| 6 | `Executor` | `local`, `container` (Docker/Podman), `api` (GitHub), `k8s`, `k8s-sandbox`, `none` | `harness/internal/executor/` |
 | 7 | `EditStrategy` | `whole-file`, `search-replace`, `udiff`, `multi` | `harness/internal/edit/` |
 | 8 | `Verifier` | `none`, `test-runner`, `llm-judge`, `composite` | `harness/internal/verifier/` |
 | 9 | `PermissionPolicy` | `allow-all`, `deny-side-effects`, `ask-upstream`, `policy-engine` (Cedar) | `harness/internal/permission/` |
 | 10 | `Transport` | `stdio`, `grpc` (outbound bidi streaming), `null` (sub-agents) | `harness/internal/transport/` |
 | 11 | `GitStrategy` | `none`, `deterministic` | `harness/internal/git/` |
-| 12 | `TraceEmitter` | `jsonl`, `otel` (OTLP/gRPC or OTLP/HTTP) | `harness/internal/trace/` |
+| 12 | `TraceEmitter` | `jsonl`, `otel` (OTLP/gRPC or OTLP/HTTP), `gcs` | `harness/internal/trace/` |
 | 13 | `GuardRail` | `none`, `granite-guardian` (vLLM), `cloud-judge`, `composite` | `harness/internal/guard/` |
 
 The core loop knows nothing about which implementation it received;
@@ -112,40 +112,275 @@ flowchart LR
 ```
 
 The `PromptBuilder` runs once at start. The `GitStrategy` sets up
-before the loop, checkpoints after each turn, and finalises at
-end-of-run. Each turn the loop asks the `ModelRouter` which
-provider+model to use and the `ContextStrategy` for the message
-history (compacting if the budget is tight), then streams the request
-through the chosen `ProviderAdapter`. Tool calls in the response are
-resolved by the `ToolRegistry`; the `PermissionPolicy` interprets each
-tool's `WorkspaceMutating` and `RequiresApproval` flags before
-dispatch. Read-only tools with neither flag go straight to the
-`Executor`. The `edit_file` tool dispatches through the
-`EditStrategy`, which uses the Executor for file I/O (and is
-transparently wrapped by the post-edit code scanner). At end-of-run
-the `Verifier` validates output. The `Transport` carries events to
-and from the control plane; the `TraceEmitter` records spans and
-metrics throughout.
+before the loop, checkpoints after each turn that ran tools, and
+finalises at end-of-run (see [Git strategy](#git-strategy)). Each turn
+the loop asks the `ModelRouter` which provider+model to use and the
+`ContextStrategy` for the message history (compacting if the budget is
+tight), then streams the request through the chosen `ProviderAdapter`.
+Tool calls in the response are resolved by the `ToolRegistry`; the
+`PermissionPolicy` interprets each tool's `WorkspaceMutating` and
+`RequiresApproval` flags before dispatch. Read-only tools with neither
+flag go straight to the `Executor`. The `edit_file` tool dispatches
+through the `EditStrategy`, which uses the Executor for file I/O (and
+is transparently wrapped by the post-edit code scanner). At
+end-of-run, a final answer is first checked against `outputSchema` when
+one is set, and the `Verifier` then validates the output (see
+[Structured output and
+verification](#structured-output-and-verification)). The `Transport`
+carries events to and from the control plane; the `TraceEmitter`
+records spans and metrics throughout.
 
 Lifecycle hooks (issue #461) run around this loop, not inside it. A
 configured `hook.Runner` (`hook.Noop` when the run has none) executes
-`preRun` hooks before `PromptBuilder` builds the system prompt and
-before `GitStrategy.Setup` — the deterministic git strategy commits into
-whatever repository the workspace holds, so a clone hook has to run
-first, and the prompt builder then sees the workspace the hooks
-produced — under the
-run's own wall-clock context. `postRun` hooks execute after outcome
-classification and `GitStrategy.Finalise`, before the run reports
-`done`, on a context detached from the run's own cancellation and
-deadline (`context.WithoutCancel`) and bounded by the sum of the
-configured `postRun` timeouts plus a 30 s margin, so an artifact
-upload can still finish after the run's wall-clock timeout has
-expired. Hook output never enters the model's context; it is
-trace-only, recorded via the optional `trace.HookRecorder` capability
-the same way `trace.SystemInstructionsRecorder` is. Sub-agent loops
-always get `hook.Noop` — hooks are parent-run-only. Full schema,
-defaults, and failure-semantics reference: [`configuration.md`
+`preRun` hooks first, under the run's own wall-clock context. The
+repository guidance load, the `PromptBuilder` and `GitStrategy.Setup`
+follow in that order, so a clone hook runs before all three. The
+guidance load, the workspace listing in the system prompt and the
+deterministic git strategy, which commits into whatever repository the
+workspace holds, all see the workspace the hooks produced. A failed
+`preRun` hook, or a guidance file that cannot be loaded, ends the run as
+`setup_failed`.
+
+`postRun` hooks execute after outcome classification and the final git
+checkpoint, so edits a hook makes are not committed. They run before
+the run reports `done`, on a context detached from the run's own
+cancellation and deadline (`context.WithoutCancel`) and bounded by the
+sum of the configured `postRun` timeouts plus a 30 s margin, so an
+artifact upload can still finish after the run's wall-clock timeout has
+expired (see [Terminal sequence](#terminal-sequence)). Hook output
+never enters the model's context; it is trace-only, recorded via the
+optional `trace.HookRecorder` capability the same way
+`trace.SystemInstructionsRecorder` is. Sub-agent loops always get
+`hook.Noop`: hooks are parent-run-only. Full schema, defaults, and
+failure-semantics reference: [`configuration.md`
 "Lifecycle hooks"](configuration.md#lifecycle-hooks).
+
+Post-edit checks (`tools.postEdit`, `harness/internal/postedit/`) are a
+different mechanism with a different audience. Hooks run once before
+and once after the whole run, and their output never reaches the model.
+A post-edit check runs after each successful edit whose path matches
+the check's glob, through the same `Executor`, and its failure is shown
+to the model. When a check exits non-zero, its scrubbed, size-capped
+output is appended to the edit's tool result inside a data fence marked
+as untrusted, so the model can repair the problem on its next turn. The
+edit is never reverted and never turned into an error. The command is
+operator-authored, so it runs outside the permission policy, which
+gates only the edit itself, and the model-chosen path reaches the shell
+only as the value of the `STIRRUP_EDITED_PATH` variable. Hooks suit
+environment preparation and artifact delivery; post-edit checks suit
+fast feedback such as formatters and linters. Each check execution is
+recorded as a `post_edit_check` trace event.
+
+### Structured output and verification
+
+`Run` repeats the inner loop until the run succeeds or fails. When the
+inner loop ends with a final answer, two checks run before the run
+succeeds, in this order.
+
+1. When `outputSchema` is set, the answer must be a JSON document that
+   validates against the schema. An answer that does not validate never
+   reaches the verifier. The loop sends a corrective user message and
+   re-enters the inner loop, at most twice per run. A third failing
+   answer, or a document that satisfies the schema only before secrets
+   are scrubbed from it, ends the run as `structured_output_failed`. A
+   correction needs a free turn, and a run with none left ends as
+   `max_turns`.
+2. The `Verifier` verifies the run. A failure appends its feedback as a
+   synthetic user message and re-enters the inner loop, at most three
+   times. A verifier error ends the run as `verification_error`.
+
+`maxTurns` is one run-scoped budget. The turn counter continues across
+inner-loop re-entries, so corrective attempts and verification repair
+turns spend the same turns as the first pass, and the turn number seen
+by the model router and by the wind-down threshold does not reset. A
+failed verification with no turn left, like a failure of the last
+permitted retry, ends the run as `verification_failed`. The stall
+detector is created per inner loop, so a re-entry starts with no
+repetition history and no nudge spent.
+
+### Synthetic messages
+
+The loop adds harness-authored text to the history in six situations:
+verifier feedback after a failed verification, a corrective prompt for
+a final answer that fails `outputSchema`, the prompt of a tool-choice
+escalation, the instruction of an output-limit recovery, the stall
+nudge, and the wind-down notice. Each is announced on the transport as
+a `user_message` event whose `source` names the situation.
+
+New text joins the trailing user message as extra text when the
+history ends on one, which is the case after a tool-using turn.
+Otherwise it becomes a new user message marked `Synthetic`. A merged
+message keeps the mark it had, so the stall nudge and the wind-down
+notice, which follow a tool-result message, do not carry `Synthetic`.
+
+`Message.Origin` is independent of `Synthetic`. It names the component
+whose output a message carries when that output can echo content from
+outside the harness. Verifier feedback carries the origin
+`verifier_feedback`, on the message or, when it merged into another user
+message, on its text block. Test-runner output can contain workspace
+content, so feedback is untrusted on the turn it arrives and passes the
+screening tool results get: the Rule-of-Two scan reads it under the
+source `verifier_feedback`, it is scrubbed for secrets in the history,
+and a configured pre-turn guard reads it under the source
+`verifier_feedback:n=<k>`. A guard deny replaces the feedback with a
+placeholder and the run continues. The origin appears on the messages
+of a turn's `modelInput` in the trace.
+
+The wind-down notice is sent at most once per run, only when `windDown`
+is enabled (it is off by default), at the start of a turn that crosses
+a threshold: two or fewer turns remaining, 90% of `maxTokenBudget` used
+by the loop's own turns, or 90% of the wall-clock window elapsed. The
+turn threshold never fires on the run's first turn. Read-only modes get
+a variant that asks for a summary of findings and no further tool calls
+unless essential. The turn that received the notice records its trigger
+as `windDown`.
+
+### Turn failures and recovery
+
+A model turn that fails or stops early does not always end the run.
+
+**Retryable provider failures.** A turn that fails with a retryable
+provider error is re-issued before the run ends with `error`. The
+`anthropic`, `gemini`, `openai-compatible` and `openai-responses`
+adapters mark an error retryable for the HTTP statuses 408, 409, 429,
+500, 502, 503, 504 and 529 (except a 429 that names an exhausted quota
+or billing limit) and for transport faults such as an idle stream, a
+reset connection, a truncated body or a network timeout. The `bedrock`
+adapter marks none. The retry settings are those of the provider the
+router selected for the turn. A turn is retried at most twice and never
+more often than `provider.retry.maxAttempts` less one, so a
+`maxAttempts` of 1 disables turn retry. Turn retries wrap the
+pre-stream HTTP retry, so one turn can make several requests. The wait
+before retry *n*, where *n* is the zero-based retry index, is
+equal-jitter backoff: a random duration between half of and the full
+value of `min(initialDelayMs * 2^n, maxDelayMs)`. The
+`wallClockBudgetMs` budget is measured from the turn's first failure
+and bounds the start of the last retry. A batch-mode turn is never
+retried. Tools run only after a stream completes and a failed attempt
+appends nothing to the history, so a retry cannot repeat a workspace
+side effect. Each retry emits a `warning` event, and a control plane
+should discard the `text_delta` and `tool_call` events of the failed
+attempt on receiving it. Usage reported by failed attempts is charged to the token
+budget, so a turn can overshoot `maxTokenBudget` by up to two retried
+attempts.
+
+**Output limit.** The first two `max_tokens` stops of a run are
+continued instead of ending the run, unless the stop ends the last
+turn. Tool calls in the truncated turn are dropped, because a call cut
+off mid-arguments cannot run and every `tool_use` in the history needs
+a result. Any text is kept, and the loop appends a synthetic
+instruction asking the model to continue its answer, to re-issue the
+dropped call in smaller pieces, or, when the turn produced no text, to
+keep its reasoning brief. Each recovery emits a `warning` event. A
+later `max_tokens` stop ends the run with that outcome. Tool-choice
+escalation never treats a `max_tokens` turn as a missed tool call. A
+final answer continued after an output-limit stop is reported as the
+joined text.
+
+**Context overflow.** A request rejected as larger than the model's
+context window is compacted and retried once; see [Context
+strategies](#context-strategies).
+
+### Tool dispatch
+
+`planAndDispatch` (`harness/internal/core/dispatch.go`) runs the tool
+calls of one assistant turn in three phases and returns the results in
+call order.
+
+1. **Resolve, gate and run synchronous calls.** For each call in order,
+   the loop resolves the tool, opens its span, runs preflight and then
+   the `pre_tool` guard. A synchronous tool is then permission-checked
+   and run inline. A call to an asynchronous handler
+   (`tools.controlPlane`) is queued. Preflight is deterministic and
+   model-free, and checks in this order: unknown tool, deferred tool
+   not yet loaded, malformed arguments, prototype-pollution keys,
+   JSON Schema validation, and the tool-input tripwires.
+2. **Fan out asynchronous calls.** Queued calls run concurrently under a
+   semaphore sized by `toolDispatch.maxParallel` (default 4, ceiling
+   16), and the phase waits for all of them.
+3. **Close out in call order.** Each result is bounded, recorded,
+   emitted and fed to the stall detector, in the order the model made
+   the calls.
+
+Phase 3 is the single place where a result's size is bounded before it
+reaches the history, the trace and the transport. A result longer than
+`tools.maxResultBytes` (default 100 KiB, at most 1 MiB) is cut to its
+head, ends in a marker that gives the original size and the offset
+where the omitted part starts, and loses its structured envelope, which
+would repeat the omitted data. Tools marked `SelfBoundedResult` are
+exempt because their handlers bound their own text and record exactly
+the text delivered: `run_command`, `read_command_output` and
+`tool_search`. MCP text goes through the same budget. Independently,
+`read_file` and `grep_files` cap any single line at 4 KiB.
+
+A tool call whose streamed arguments are not a JSON object does not
+fail the stream. The provider adapter marks the call, the stream emits
+a `warning` event, and preflight rejects the call ahead of schema
+validation with the category `invalid_arguments`. The tool error quotes
+the parse error and the first 200 characters of the scrubbed
+arguments, and the raw arguments reach the trace only scrubbed and
+capped at 4 KiB. The model sees an ordinary failed tool call and can
+re-issue it. A model that keeps sending malformed arguments is bounded
+by the stall detector, which compares the raw arguments, and by the
+consecutive-failure limit.
+
+### Terminal sequence
+
+When the last inner loop ends, `Run` maps a cancelled or expired run
+context onto `cancelled`, `timeout` or `control_stream_lost` from the
+context's cause. It then does the end-of-run work in a fixed order.
+
+1. **Git final checkpoint.** `GitStrategy.Finalise` commits outstanding
+   work and reports the git result, recorded as `RunTrace.Git`. A failed
+   checkpoint, or a working tree still dirty after it, turns an
+   otherwise-successful run into `handoff_failed`. An earlier failure
+   outcome is kept.
+2. **`postRun` hooks.** A hook failure turns an otherwise-successful run
+   into `hook_failed`.
+3. **Command-output archive.** The archive of captured `run_command`
+   output is finalised. A capture or archive failure turns an
+   otherwise-successful run into `command_output_capture_failed` or
+   `command_output_archive_failed`, unless the best-effort posture is
+   configured.
+4. **Workspace handoff.** The loop holds a `core.WorkspaceHandoff`,
+   an interface that the `stirrup harness` and `stirrup job` entry
+   points inject, so destination resolution and the exporter stay out
+   of the loop. The handoff reads the workspace through the executor's
+   `WorkspaceArchiver` capability. It runs for every outcome of a run
+   whose executor has a workspace (every executor except `none` and
+   `api`), including a `setup_failed` run, and records an export
+   receipt on the trace. A failed export is a `warning` event. It turns
+   an otherwise-successful run into `handoff_failed` when the export is
+   required, which is the default whenever a destination is configured
+   and which `executor.workspaceExportRequired` can relax.
+5. **Trace finish and `done`.** The loop records the run's error text
+   (`RunTrace.Error`, scrubbed and capped at 1 KiB), finishes the trace,
+   and emits `done`. Its `stop_reason` is the run outcome, and its trace
+   summary carries the turn count, token usage, `git`,
+   `workspace_export`, `error`, the structured output and the
+   degraded capabilities.
+
+Every step above precedes `done`, so a control plane that acts on
+`done` observes the git result, the export receipt and the error text. A
+run that fails during setup (a `preRun` hook, the guidance load, the
+prompt build or git setup) skips steps 1 and 2 and still performs steps
+3 to 5.
+
+Steps 1 to 5 run on contexts detached from the run's cancellation and
+deadline, so a run that ended by timeout or cancellation can still
+persist its result. Each has its own budget: 30 s for the git
+checkpoint, the sum of the `postRun` timeouts plus 30 s for hooks, 6 min
+for the command-output archive, 5 min for the handoff, and 90 s for the
+trace finish. Each detached context except the archive step's also ends
+when `AgenticLoop.Shutdown` is done. The
+`stirrup harness` and `stirrup job` entry points cancel `Shutdown` on a
+second SIGINT or SIGTERM. The first signal ends the run, and these
+steps keep running within their budgets. The shutdown watchdog closes
+the loop, and so tears down the executor, the transport and the trace
+emitter, 5 s after the first signal for `stirrup job` and 5 s after the
+second signal for `stirrup harness`. A single signal therefore lets a
+`stirrup harness` run finish its git checkpoint, `postRun` hooks and
+trace finish within their budgets.
 
 ## Modes
 
@@ -153,7 +388,7 @@ Five run modes ship as partial `RunConfig` presets that select
 mode-appropriate tools, permissions, and prompt templates. One is
 editable (`execution`); the other four are read-only, structurally
 enforced by `ValidateRunConfig` to exclude `write_file`,
-`edit_file`, and `run_command`.
+`edit_file`, `search_replace`, `apply_diff` and `run_command`.
 
 | Mode | Tools | Default permission | Output shape |
 |---|---|---|---|
@@ -171,6 +406,43 @@ execution`; finer-grained tool and permission selection is
 available through `--config` or the individual CLI flags. Modes
 are not special — they are saved configurations, and any field can
 be overridden per-task via `RunConfig`.
+
+## Prompt builder
+
+The `PromptBuilder` runs once per run, after the pre-run hooks, and
+builds the system prompt. The default builder renders the shipped mode
+template, the working directory, the turn budget, the output schema, the
+repository guidance and the dynamic context (wrapped in
+`untrusted_context` tags). The `composed` builder, an operator template
+(`promptBuilder.template`) and `systemPromptOverride` add a workspace
+tree and a git status section to those. See
+[`configuration.md`](configuration.md#system-prompt-templating) for the
+operator-facing surface.
+
+Those two sections are read through the run's `Executor`, not from the
+harness host's own filesystem. They describe the workspace the agent
+works in for the `local`, `container`, `k8s` and `k8s-sandbox` executors
+alike. On the `container`, `k8s` and `k8s-sandbox` executors, git runs
+inside the sandbox, so an agent-controlled `.git/config` in the
+workspace is never interpreted by host git while the prompt is built.
+On the `local` executor the executor is the host, so git runs on the
+host with the hardening flags, which are not a security boundary. See
+[`security.md`](security.md#prompt-time-workspace-reads).
+
+- **Workspace tree.** The top-level entries of the workspace, capped at
+  200 entries and 8 KiB. A marker line ends the list when entries were
+  left out. Names containing control characters are left out. The
+  section is omitted when the executor cannot read, when listing fails
+  or when the workspace is empty. Sandbox executors list with `ls -A1p`,
+  so the sandbox image needs it.
+- **Git status.** The short status of the workspace, from git run
+  inside the executor with the harness hardening flags, capped at 200
+  entries and 8 KiB with a truncation marker. The section appears only
+  when the executor can run commands and the workspace is the top level
+  of a repository, so the file names of an enclosing repository never
+  appear. It is omitted for the `api` executor (GitHub and GitLab
+  backends) and `none`, and when git fails or is missing from the
+  sandbox image.
 
 ## Provider adapters
 
@@ -327,6 +599,26 @@ workspace containment. The container executor is hardened with
 `CapDrop: ALL`, `no-new-privileges`, and `NetworkMode: none` by
 default; API keys never enter the container.
 
+Executors implement optional capabilities beyond the `Executor`
+interface, and callers detect them with a type assertion:
+
+- `TreeLister` enumerates the workspace tree for an executor whose
+  workspace has no counterpart on the harness host (`api`).
+- `HostPathWorkspace` marks an executor whose workspace is a directory
+  on the harness host (`local`), so host filesystem APIs may be applied
+  to a resolved path. Sandboxed executors do not implement it, even
+  when the workspace is bind-mounted from the host.
+- `StreamingExecutor` streams full stdout and stderr into the
+  command-output store for `run_command`.
+- `WorkspaceArchiver` streams the whole workspace as a tar archive
+  produced inside the executor's own boundary. `local` walks the host
+  directory, `container` runs `tar` through the exec API, and `k8s` and
+  `k8s-sandbox` run it through `pods/exec`, so the archive reflects the
+  sandbox's view rather than a host bind mount. The workspace handoff
+  reads it (see [Terminal sequence](#terminal-sequence)). A missing
+  workspace root and an archive past the byte cap each fail with their
+  own sentinel error.
+
 Two independent timeout ceilings apply to command execution, and they
 are deliberately decoupled. The shared `Executor.Exec` hard cap the
 `local`, `container`, `k8s`, and `k8s-sandbox` executors clamp
@@ -351,6 +643,24 @@ timeout (executor-dependent — `local` leaves it `0`, `container` and
 `k8s` set `-1`) since the process never ran to completion; callers
 must gate on `TimedOut` rather than reading `ExitCode` as a real exit
 status in that case.
+
+When a command times out or its context is cancelled, the executors
+stop everything the command started, not only the shell. The `local`
+executor starts each command in its own process group, sends SIGTERM to
+the group, waits up to 500 ms and then sends SIGKILL to what remains.
+The `container`, `k8s` and `k8s-sandbox` executors run each command
+through a wrapper that starts it in its own session when `setsid` is
+available and records the leader's pid in a per-call file under
+`/tmp`; a follow-up exec then sends SIGTERM to the group, polls for up
+to one second and then sends SIGKILL to anything still running. Without `setsid`, only the recorded
+shell and the descendants found by walking `/proc` are signalled. A
+process that moves into its own session or process group is outside the
+group and is not signalled. A timed-out call therefore returns after
+the grace period, and on the sandbox executors after the follow-up
+exec, which has its own 15 s bound. The image needs `sh` with the
+`command -v` builtin, `kill`, `rm`, a `sleep` that accepts fractional
+seconds, and a writable `/tmp`. The walk over `/proc` without `setsid`
+also needs `/proc`.
 
 The Engine API path was chosen deliberately: the official Docker Go
 SDK pulls in moby, containerd, and OCI specs, which conflicts with
@@ -382,23 +692,47 @@ code scanner (`edit/scanned.go`). A `block` finding rolls the write
 back without the inner strategy needing to know; a `warn` finding
 emits a `code_scan_warning` event and continues.
 
+When the `search-replace` strategy finds no exact match for
+`old_string`, the failure message says why instead of only reporting
+the miss. The diagnosis reads the file text the edit already
+read. If a match exists once trailing whitespace is trimmed, or once
+runs of whitespace are collapsed, the message names the lines and how
+they differ (line endings, tabs against spaces, indentation width,
+trailing whitespace or spacing within lines) and counts any further
+matches. Otherwise it reports the closest region by token similarity,
+with its line range and similarity percentage, and quotes up to three
+lines from the first line that differs, each cut at 160 bytes. When no
+region is at least 60% similar, the message says so. The whole message
+is bounded at 2 KiB. Quoting is withheld for paths that the tool guard
+treats as credential material, such as `.env`, `.ssh` entries and
+`*.pem` or `*.key` files. The withholding is best-effort and based on
+the path alone. It reuses the guard's rules, so it covers `.env` but not
+variants such as `.env.local`, and line numbers and similarity
+percentages are still reported for those paths.
+
 ## Tools
 
-Twelve built-in tools ship in `harness/internal/tool/builtins/`:
+The built-in tools are defined in `harness/internal/tool/builtins/`, with
+the edit tool supplied by the edit strategy:
 
 - `read_file`
 - `list_directory`
 - `grep_files`
 - `find_files`
-- `edit_file` (registered when any of `edit_file`, `write_file`,
-  `search_replace`, or `apply_diff` is in `tools.builtIn`)
+- the edit tool named by the edit strategy: `write_file` (`whole-file`),
+  `search_replace`, `apply_diff` (`udiff`) or `edit_file` (`multi`),
+  registered when `tools.builtIn` is empty or names that tool or any of
+  `write_file`, `search_replace` and `apply_diff`
 - `run_command`
+- `read_command_output` (registered automatically alongside
+  `run_command` when command output capture is on)
 - `git_status`
 - `git_changed_files`
 - `git_diff`
 - `git_show`
 - `web_fetch`
 - `spawn_agent`
+- `tool_search` (registered when lazy tool loading is enabled)
 
 The four `git_*` tools are read-only: they neither mutate the
 workspace nor require approval, so the read-only modes (`planning`,
@@ -458,6 +792,31 @@ differently:
   `function_call_output` is a plain string on the wire, so these
   adapters carry no capability and send the text fallback only.
 
+What reaches the model is a lean view of the envelope
+(`types.ToolResultWireEnvelope`), not the full payload. History and
+trace keep the full envelope. For the built-in kinds the view drops the
+body fields the text already renders and keeps the scalar metadata:
+
+| Kind | Fields sent |
+|---|---|
+| `file_excerpt` | `path`, `start_line`, `end_line`, `truncated`, and `past_eof` when set |
+| `search_result` | `truncated`, and `columns` (the per-match byte columns, in the order of the text's match lines) when the search reported any |
+| `find_result` | `truncated` |
+| `command_result` | `exit_code`, `timed_out`, `timeout_seconds`, `capture_complete`, and when present the spill fields: `spilled`, `archive_id`, `stdout_ref`, `stderr_ref`, and the raw and scrubbed byte counts and SHA-256 digests of each stream |
+| `command_output_chunk` | `ref`, `stream`, `offset`, `end_offset`, `eof`, the raw and scrubbed byte counts and digests, and `redaction_count` when non-zero |
+| `git_status` | `branch`, `clean`, `truncated` |
+| `git_changed_files` | `staged`, `truncated` |
+| `git_diff` | `staged`, `path` when set, `truncated` |
+| `git_show` | `ref`, `path` when set, `truncated` |
+
+An empty envelope, or one byte-identical to the text, is not sent, so
+the same content never goes out twice. A kind the harness does not know,
+such as the `mcp_tool_result` kind of an MCP result, and a payload that
+does not decode as its kind's object pass through unchanged. The
+capability gates this lean view, not the full envelope. The context
+estimate counts the wire view only for providers that send structured
+results.
+
 The default is text-only and fail-safe: when the capability is unset or
 false — every provider with no rule, including Bedrock — the adapter
 sends `Content` verbatim and the wire body is byte-identical to the
@@ -473,9 +832,19 @@ The MCP client (`harness/internal/mcp/client.go`) connects to remote
 MCP servers via Streamable HTTP transport (JSON-RPC 2.0 over HTTP
 POST). Remote-only by design — there is no stdio subprocess
 management. Tool names are namespaced as `mcp_{serverName}_{toolName}`
-to avoid collisions. Tools default to `sideEffects: true`. Connection
-failures log a warning and skip that server's tools rather than
-failing the entire run.
+to avoid collisions. Tools default to `sideEffects: true`.
+
+A server is required unless its configuration marks it `optional`. The
+factory connects every server after the transport is built, so an
+optional server's failure can be announced as a `warning` event. A
+required server that is unreachable, rejects its credentials, fails
+`tools/list` or does not advertise every name in its `allowedTools`
+fails construction, and the run stops before the first model request.
+An optional server that fails is skipped (or kept with the tools it did
+advertise), the failure is logged and announced, and it is recorded in
+`degradedCapabilities` on the run result and trace. Allowlisted tools
+dropped by the per-server cap of 64 tools are a logged warning for
+either kind of server, never a failure.
 
 A `tools/call` result is mapped into the
 [structured-result envelope](#structured-tool-results): text content
@@ -595,7 +964,36 @@ review, research or toil sub-agent also loses every workspace-mutating
 tool, and a read-only parent cannot spawn an `execution` sub-agent. It uses a
 `NullTransport` (no streaming to the control plane), `NoneVerifier`,
 `NoneGitStrategy`, and a `captureTransport` that records text deltas
-for output extraction. Max turns is capped at 20, default 10.
+for output extraction. Max turns defaults to 10 and is capped at the
+smaller of 20 and the parent's `maxTurns`.
+
+Any child mode may be requested from a run that is not read-only. A
+read-only run can spawn only read-only children, and a request for any
+other mode returns an error to the model. A read-only child has every
+workspace-mutating tool removed, and a spawn that would leave it no
+read-only built-in tool is refused. A side-effect gate in front of the
+permission chain the child inherits denies the removed tools, so an
+`allow-all` parent, or an `allow-all` policy-engine fallback, is
+enforced as `deny-side-effects` for the child. Under `ask-upstream`,
+mutating tools never prompt the control plane for a read-only child,
+while a tool such as `web_fetch` still does. A Cedar policy is cloned
+per child, so `principal.mode` is the child's mode. The child records
+the configuration it enforces: its effective `tools.builtIn`, a
+`sliding-window` context strategy, the enforced permission policy and,
+on its `RunTrace`, `effectiveTools`. That trace is returned only to
+`SpawnSubAgent`; it is not written to the parent's trace file.
+
+A child's run ID is `<parentRunID>/sub-<n>`, where `n` counts the
+sub-agents the parent has started, from 1. The child charges the parent
+run's token ledger. It is admitted with the budget remaining at spawn
+time as a ceiling on its own spending, not a reservation, and a spawn
+is refused with an error the model can read once nothing remains. A run
+admits at most 8 sub-agents. A nested trace emitter forwards the
+child's turns and tool calls to the parent's emitter, tagged with the
+child's and the parent's run IDs. A parent emitter that implements the
+optional `SubRunRecorder` capability also receives the child's start
+and finish, which the JSONL emitter writes as `subrun_started` and
+`subrun_finished` events.
 
 The `SubAgentSpawner` function type in `tool/builtins` decouples the
 tool from the `core` package, avoiding circular imports. The factory
@@ -629,17 +1027,88 @@ for the operator-facing flag matrix.
 ## Context strategies
 
 Four strategies manage message history as it approaches the token
-limit:
+limit. Every strategy keeps the task (the first message) and compacts
+only at exchange boundaries. An exchange is an assistant message
+together with the user message that answers its tool calls, so each
+`tool_use` stays paired with its `tool_result` and roles keep
+alternating. The smallest history a strategy sends is the task plus the
+last complete exchange. The task counts toward the token budget.
 
-- **`sliding-window`** — drops the oldest messages beyond a
-  configurable token budget.
-- **`summarise`** — summarises old turns into a single condensed
-  message via a separate (cheaper) model call.
+- **`sliding-window`** — drops the oldest exchanges beyond the token
+  budget.
+- **`summarise`** — replaces old exchanges with a rolling summary
+  produced by a model call on the default provider, using the run's
+  configured router model rather than a cheaper one. The summary is
+  appended to the task message and not sent as a separate message. The
+  six most recent messages, moved forward to an exchange boundary, stay
+  verbatim. Exchanges that age out are re-sent verbatim until six have
+  accumulated or until they no longer fit, and are then folded into the
+  previous summary. Each call's input is therefore the previous summary
+  plus the newly aged messages, within a bound derived from the smaller
+  of `contextStrategy.maxTokens` and the registered context window, or
+  32,000 tokens when neither is set. A summary call
+  that fails falls back to the sliding window, reports a warning through
+  `CompactionEvent.Warnings`, which the loop emits as a `warning` event,
+  and is retried after six more exchanges have aged out. The call's
+  usage is charged to the run's token ledger as auxiliary usage.
 - **`offload-to-file`** — writes full tool results to workspace
-  files and replaces the in-context message with a pointer.
+  files and replaces the in-context message with a pointer. Because it
+  writes into the workspace, it is rejected in the read-only modes
+  (`planning`, `review`, `research`, `toil`), where `sliding-window`,
+  `summarise` and `clear-tool-results` remain available.
 - **`clear-tool-results`** — replaces old tool results with a fixed
   placeholder in occasional batches, so the prompt cache stays valid
-  between batches.
+  between batches. A batch runs only when the request exceeds the fit
+  limit. It clears the oldest eligible results first, until the request
+  fits and at least `clearAtLeast` estimated tokens (by default 25% of
+  the fit limit) are reclaimed. Between batches the same results are
+  cleared with the same placeholder, so the prompt cache is missed only
+  on batch turns. The `keep` most recent results (default 3), the
+  results in a trailing user message and the results of tools named in
+  `excludeTools` are never cleared. When the eligible results cannot
+  reclaim the batch minimum, or clearing all of them still does not fit,
+  the strategy drops the oldest exchanges as the sliding window does and
+  warns once; every such drop invalidates the cache. The first rewrite
+  strips thinking blocks for the rest of the run, as described below,
+  at a one-time cache cost.
+
+Strategies compact to the fit limit, which is 90% of the room left
+after the response reserve, not to the full room. The margin absorbs
+part of the error of the token estimate. After `Prepare`, the loop
+enforces the fit limit as a postcondition on every prepared request.
+When the estimate of the messages, system prompt and tool definitions
+is still above it, tool-result content is truncated in the copy that is
+sent, large results before small ones and oldest first. The stored
+history is never touched. Each cut keeps a head and a tail around a
+`[...truncated N bytes...]` marker and drops the result's structured
+envelope. Because a cut rewrites the history the model sees, thinking
+blocks are stripped from then on. When even full truncation does not
+fit, the run ends as `context_exhausted`, with a message that names
+the estimated sizes and the setting to change.
+
+The window a turn is budgeted against is the smaller of
+`contextStrategy.maxTokens` and the window registered for the routed
+model in the provider-quirks registry, and 200,000 tokens when neither
+is set. A `maxTokens` above the registered window is capped, with a
+warning. The estimate is calibrated against the provider's own count:
+when a response reports the input tokens of a request estimated at
+1,000 tokens or more, the ratio of reported to estimated tokens
+(clamped to 0.5 to 2.0 and smoothed, the newest sample weighing half)
+scales the room the next request is budgeted against.
+
+A request therefore passes three steps in order. `prepareRequest`
+(`core/turnrequest.go`) runs the strategy and the fit check, and
+`requestProvider` sends the request and applies turn retry. If the
+provider rejects the request as larger than the model's context window,
+or the response fills the window, the loop compacts again and retries
+the turn once. The forced compaction targets 70% of the rejected
+request's estimate, which after the fit margin means at most 63%. A
+response that filled the window is discarded although its streamed text
+and tool-call events already reached the transport, and the retry
+warning says so. A second overflow ends the run as `context_exhausted`.
+A recovered overflow is not counted in `provider_errors` or
+`tool_failures` and records no `error` turn, though `provider_requests`
+counts every attempt.
 
 A native tool search's `tool_search` and `tool_search_result` blocks
 are never rewritten: `clear-tool-results` and `offload-to-file` touch
@@ -650,10 +1119,14 @@ a search exchange leaves its tools loaded, and the next native-search
 request sends them in full; see
 [`configuration.md`](configuration.md#lifetime-of-the-loaded-set).
 
-Token estimation accounts for per-message overhead (4 tokens),
-per-block overhead (3 tokens), tool-related metadata, system prompt
-tokens, tool definition tokens, and the reasoning text of thinking
-blocks (not their signatures). Once a strategy rewrites history on any
+The loop and every strategy share one token estimate. It counts each
+field of a block separately at four characters per token, plus 4
+tokens per message and 3 per block. It includes the wire view of a
+structured tool result (for providers that send one), provider replay
+state, the tool names a native tool search result references, the
+system prompt, the tool definitions (a deferred definition only once a
+search has loaded it), and the reasoning text of thinking blocks but not
+their signatures. Once a strategy rewrites history on any
 turn, the loop strips thinking blocks from that request and every later
 one in the run: Anthropic's preserved-thinking documentation binds a
 block to the exact history that preceded it, and the API enforces that
@@ -664,7 +1137,13 @@ check by default only for accounts created on or after 2026-08-31
 
 The `Verifier` adds an outer loop around the agentic loop: run until
 the model says done, verify, and if verification fails, feed feedback
-back as a user message. Three implementations ship:
+back as a synthetic user message. Feedback is untrusted content, so it
+is classified and scrubbed before it reaches the model (see [Synthetic
+messages](#synthetic-messages)). Repair turns share `maxTurns` with the
+rest of the run, and a run whose verification fails with no turns left
+ends as `verification_failed` (see [Structured output and
+verification](#structured-output-and-verification)). Three
+implementations ship:
 
 - **`test-runner`** — runs a shell command, parses exit code and
   output.
@@ -683,6 +1162,49 @@ back as a user message. Three implementations ship:
   verdict's string `reasoning` is kept, scrubbed, in details.
 - **`composite`** — chains multiple sub-verifiers.
 
+## Git strategy
+
+`GitStrategy` has two implementations, `none` and `deterministic`. The
+deterministic strategy runs every git command inside the executor
+through `Exec`, never on the harness host. Each command carries the
+hardening flags (`core.hooksPath=/dev/null`, `core.fsmonitor=false`,
+`commit.gpgsign=false`, `gc.auto=0`, `maintenance.auto=false`) and the
+identity `stirrup <stirrup@noreply.local>`. The flags keep the
+harness's own git operations deterministic against repository-local
+configuration the agent can rewrite. They are not a security boundary,
+because the agent holds the same authority inside the sandbox. The
+strategy needs an executor that can run commands (`local`, `container`,
+`k8s` or `k8s-sandbox`; `ValidateRunConfig` rejects the others) and a
+sandbox image that contains git.
+
+- **Setup** creates the branch `stirrup/<runID>` and records the HEAD at
+  that moment as the base SHA. A workspace that is not a repository is
+  initialised, and its initial state becomes the base commit. A
+  workspace nested inside another repository is refused, so no branch or
+  commit lands outside it. A workspace whose `.git` entry git cannot
+  open inside the sandbox, such as a worktree or submodule that names a
+  gitdir on the host, is refused too: the workspace must be a
+  self-contained repository.
+- **Checkpoint** runs after each turn that ran tools. It stages
+  everything and commits when something changed. A failed checkpoint is
+  reported as a `warning` event and does not stop the run.
+- **Finalise** makes a last commit named for the run's outcome and
+  reports the branch, HEAD SHA, base SHA and whether the working tree is
+  still dirty. A detached HEAD is an error, because there is no branch
+  to report. See [Terminal sequence](#terminal-sequence) for how a
+  failure changes the outcome.
+
+The agent can rewrite history inside the sandbox, so a control plane
+diffs against the base SHA it already knows rather than trusting the
+history it finds there.
+
+A `--dry-run` reports a `git-strategy` construction step and a
+`git-strategy-probe` step, which runs `git --version` through the
+executor and fails with a hint when git is missing. For the `container`
+executor the probe is skipped, because a dry-run does not start the
+container. A sandbox image without git then surfaces at run setup rather
+than in the dry-run. See [`configuration.md`](configuration.md#dry-run-preflight).
+
 ## Transport
 
 - **`stdio`** — NDJSON to stdout, reads stdin. Used for local and
@@ -700,6 +1222,9 @@ back as a user message. Three implementations ship:
 
 - **`jsonl`** — newline-delimited JSON to a file path. Used for
   local development and replay.
+- **`gcs`** — the same JSONL trace uploaded as one Google Cloud Storage
+  object when the run finishes. Used where the run has no persistent
+  filesystem, such as Cloud Run jobs.
 - **`otel`** — OpenTelemetry traces via OTLP/gRPC (default) or
   OTLP/HTTP (`http/protobuf`). Default endpoint: `localhost:4317` for
   gRPC. The trace emitter creates a root `invoke_agent stirrup`
@@ -711,6 +1236,25 @@ back as a user message. Three implementations ship:
   its `execute_tool spawn_agent` span. See
   [`observability-cloud.md`](observability-cloud.md#span-tree) for the
   tree and cloud backend setup.
+
+The `jsonl` emitter writes one event per line, discriminated by `kind`:
+`run_started`, `system_prompt`, `turn_record`, `tool_call_record`,
+`hook_record`, `command_output_record`, `post_edit_check`,
+`subrun_started`, `subrun_finished` and `run_finished`. The
+`system_prompt` event carries the run's rendered system prompt, scrubbed,
+and the digest of the prompt as built. It follows `run_started` because
+the prompt is built after the trace starts. Readers skip kinds they do
+not recognise. The field-level schema is in
+[`trace-inspection.md`](trace-inspection.md#on-disk-shape).
+
+By contract, `TraceEmitter.Finish` finalises the trace, writes it to the
+backing store and returns the completed `RunTrace`. When writing fails
+after the trace was assembled, it returns the trace together with the
+error, so the run is still reported. The loop passes both on. A non-nil
+trace with a non-nil error means either that setup failed before the
+first turn, as on a failed `preRun` hook, or that the run completed but
+its trace was not persisted. Callers read `trace.Outcome` and do not
+infer the result from the error alone.
 
 The OTLP exporters for traces, metrics, and logs are built in one
 package, `harness/internal/observability/otlp/`, so endpoint, TLS,
@@ -751,7 +1295,7 @@ them `stirrup.harness.runs`, `.turns`, `.tokens.input`,
 `.tokens.output`, `.tokens.cache_read`, `.tokens.cache_write`,
 `.tool_calls`, `.tool_errors`, `.tool_failures`, `.provider.requests`,
 `.provider.errors`, `.context.compactions`, `.security.events`,
-`.verification.attempts`, `.stalls`, and the `stirrup.subagent.*`
+`.verification.attempts`, `.stalls`, `.stall_nudges`, `.wind_downs`, and the `stirrup.subagent.*`
 component counters), 5 histograms (run, turn, tool-call duration; provider
 latency; TTFB), the three OpenTelemetry GenAI client histograms
 (`gen_ai.client.token.usage`, `gen_ai.client.operation.duration`,
@@ -769,15 +1313,19 @@ in `harness/internal/observability/toolfailure.go`. The metric is
 labelled `(provider.type, provider.model, tool.name, category,
 run.mode)` so dashboards can attribute failures to specific model
 selections. Categories cover dispatch-site failures
-(`unknown_tool`, `tool_not_loaded`, `schema_validation_failed`, `permission_denied`,
+(`unknown_tool`, `tool_not_loaded`, `invalid_arguments`, `schema_validation_failed`, `permission_denied`,
 `permission_error`, `security_guard_denied`, `guardrail_denied`,
-`handler_error`, `handler_missing`), async-tool failures
+`handler_error`, `handler_missing`), tool-choice escalation
+(`no_tool_when_required`), async-tool failures
 (`async_preflight_error`, `async_transport_unavailable`,
 `async_timeout`, `async_cancelled`, `async_upstream_error`,
 `async_panic`, `async_internal_error`), provider-side failures
 during tool-bearing turns (`provider_request_failed`,
 `provider_stream_failed`), and stall-detector terminations
-(`stall_repeated_calls`, `stall_consecutive_failures`). The same
+(`stall_repeated_calls`, `stall_consecutive_failures`).
+`stall_repeated_calls` covers the termination of any repeated pattern,
+a single call or a cycle, that follows a nudge. The nudge itself adds
+nothing to `tool_failures`. The same
 category is co-emitted into `ToolCallTrace.ErrorCategory` on each
 failed `tool_call_record` event so JSONL traces carry the
 identical taxonomy. For provider-scope categories
@@ -814,12 +1362,29 @@ schema path or error fragment).
 
 ## Stall detection
 
-The `stallDetector` (`harness/internal/core/stall.go`) tracks
-repeated tool-call patterns and consecutive failures. A pattern (3
-identical calls, or a cycle of 2 to 4 calls repeated 3 times, with
-the same results) first gets one synthetic nudge; a repetition after
-it terminates with `stop_reason: "stalled"`. The loop terminates with
-`"tool_failures"` after 5 consecutive failures.
+The `stallDetector` (`harness/internal/core/stall.go`) works on call
+signatures. A signature hashes the tool name, the canonical input
+(object keys sorted, whitespace ignored), the success flag and the
+output, with the per-call part of command-output references
+normalised. The detector keeps the last 12 signatures and recognises a
+pattern when the newest calls repeat a cycle of 1 to 4 calls three times
+in a row, so three identical calls and three rounds of an alternating
+pair both qualify. Because the output is part of the signature, a loop
+whose results change on every call is not a stall; only `maxTurns`, the
+token budget or the run `timeout` bounds it.
+
+The first repetition does not end the run. The detector issues one
+nudge, a synthetic message saying that the last calls repeated the same
+pattern with the same results and that the model should change approach
+or finish. The nudge merges into the tool-result message of the turn
+that triggered it, the signature window resets, and calls in the same
+batch after the trigger do not count toward a repetition. A repetition
+after the nudge terminates the run with `stop_reason: "stalled"`.
+Separately, 5 consecutive failed calls terminate it with
+`"tool_failures"`. The detector lives for one inner loop, so a
+verification re-entry starts without repetition history and without a
+nudge spent. A nudge increments `stirrup.harness.stall_nudges` and
+emits a `warning` event.
 
 ## Heartbeat and health probes
 
@@ -885,6 +1450,11 @@ Full reference: [`eval.md`](eval.md).
 | Command timeout (`run_command` tool) | 30 s | 5 min |
 | `Executor.Exec` hard cap (`local`/`container`/`k8s`/`k8s-sandbox`) | 30 s | 30 min |
 | Web fetch response | 100 KB | — |
+| Tool result seen by the model (`tools.maxResultBytes`) | 100 KiB | 1 MiB |
+| Single line in `read_file` / `grep_files` output | 4 KiB | — |
+| gRPC `tool_result` content and `tool_call` input | 256 KiB | — |
+| Sub-agents per run | 8 | 8 |
+| Sub-agent `maxTurns` | 10 | 20 |
 | `temperature` | 0.1 | — |
 | `max_tokens` | 64 000 | — |
 | Default model | `claude-sonnet-4-6` | — |
@@ -927,6 +1497,13 @@ loop, err := harnessapi.BuildLoopWithTransport(ctx, runConfig, transport)
 if err != nil { /* handle */ }
 trace, err := loop.Run(ctx, runConfig)
 ```
+
+`Run` can return a trace together with an error. A run that fails before
+its first turn, such as on a failed `preRun` hook, returns its trace with
+a failure outcome such as `setup_failed` and the setup error. A run that
+completes but whose trace cannot be persisted returns the trace and an
+error wrapping `finish trace`. Callers read `trace.Outcome` and do not
+infer the result from the error alone.
 
 A valid OpenTelemetry span context on the `ctx` passed to `Run`
 parents the run span when the trace emitter is `otel`; a `ctx` with no

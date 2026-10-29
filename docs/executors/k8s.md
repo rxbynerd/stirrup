@@ -23,6 +23,7 @@ those files.
 - [Architecture](#architecture)
 - [Configuration reference](#configuration-reference)
 - [Deployment recipes](#deployment-recipes)
+- [Teardown and orphaned sandboxes](#teardown-and-orphaned-sandboxes)
 - [RuntimeClass selection per run](#runtimeclass-selection-per-run)
 - [Egress](#egress)
 - [Safety rings on Kubernetes](#safety-rings-on-kubernetes)
@@ -124,6 +125,16 @@ The pieces and their lifecycle:
   a POSIX shell at `/bin/sh` plus `tar`, `ls`, and `readlink` on `PATH`
   — a shell-less distroless static image will not work. Output and
   file payloads are capped at 10 MB (matching the container executor).
+  The image has further minimums, collected under
+  [Sandbox image requirements](#sandbox-image-requirements).
+
+- **The system prompt** carries a listing of the Pod's `/workspace` and
+  its git status, both read through the executor and never from the
+  harness host. The listing and the status are each capped at 200
+  entries and 8 KiB and end in a truncation marker when cut. The
+  listing leaves out names containing control characters, and the whole
+  listing is omitted when listing fails. The status appears only when `/workspace` is the
+  top level of a repository.
 
 - **Egress** is enforced by a per-Pod `NetworkPolicy` the executor
   installs *before* the Pod is created (closing the window in which a
@@ -154,7 +165,7 @@ flag and field below is verified against
 | CLI flag | RunConfig field | Required | Notes |
 |---|---|---|---|
 | `--executor k8s` | `executor.type: "k8s"` | yes | Selects the executor. |
-| `--image` | `executor.image` | yes for `k8s` | Pod container image. Must ship `/bin/sh`, `tar`, and `ls`. |
+| `--image` | `executor.image` | yes for `k8s` | Pod container image. Must meet the [sandbox image requirements](#sandbox-image-requirements). |
 | `--k8s-namespace` | `executor.k8sNamespace` | yes for `k8s` | Namespace the sandbox Pod (and its `NetworkPolicy`) is created in. |
 | `--k8s-kubeconfig` | `executor.k8sKubeconfig` | no | Path to a kubeconfig file. Empty prefers in-cluster config, then `$KUBECONFIG`. |
 | `--k8s-node-selector key=value` | `executor.k8sNodeSelector` | no | Repeatable `nodeSelector` constraint, e.g. `--k8s-node-selector disktype=ssd`. Merged with any `nodeSelector` the RuntimeClass contributes. |
@@ -207,6 +218,30 @@ container set only, so `gvisor` is valid but not offered by completion.
 
 A nil or all-zero `resources` block leaves the Pod's requirements empty
 so it inherits namespace defaults.
+
+### Sandbox image requirements
+
+The image named by `executor.image` must provide:
+
+| Requirement | Used for |
+|---|---|
+| POSIX `sh` at `/bin/sh`, with `kill` and `command -v` | `Exec` runs commands through `/bin/sh -c`, and a timed-out command is signalled with `kill`. Shell builtins suffice. |
+| `tar`, `readlink`, `mkdir` | File reads and writes stream `tar` over `pods/exec`; a read resolves its path with `readlink -f` first. |
+| `rm`, and a `sleep` that accepts fractional seconds | The command wrapper and the kill script remove the pid file, and the kill script polls for the process group to exit in tenths of a second. |
+| `ls` accepting `-A`, `-1` and `-p` | `list_directory` and the system prompt's workspace listing, which marks directories with a trailing slash. Busybox and coreutils both accept these. |
+| Writable `/tmp` | Each `Exec` records the command's process group leader in a per-call pid file under `/tmp`. |
+| `git` | Only when `gitStrategy` is `deterministic`, which runs git inside the Pod, and for the git status section of the system prompt. |
+| `setsid` *(optional)* | Runs each command in its own session so a timeout reaches the whole process group. |
+| Readable `/proc` | Only without `setsid`: the kill script finds the recorded shell's descendants there. |
+
+When a command times out, the executor sends SIGTERM to the recorded
+process group, waits up to one second, then sends SIGKILL to anything
+still running. Without `setsid`, only the recorded shell and the
+descendants discoverable through `/proc` are signalled. [`Dockerfile.sandbox`](../../Dockerfile.sandbox)
+builds an image that meets every requirement. The same minimums apply to
+the `container` executor, which mounts a tmpfs at `/tmp` instead of
+relying on the image; see
+[`deployment.md`](../deployment.md#sandbox-image).
 
 ## Deployment recipes
 
@@ -481,19 +516,24 @@ sends SIGTERM to the orchestrator process on Pod deletion/eviction/scale-
 down, then SIGKILL after the grace period — 30 seconds by default when
 the field is unset. Stirrup's signal handler
 (`harness/cmd/stirrup/cmd/root.go::setupSignalHandler`) cancels the run
-context on SIGTERM, letting the trace emitter flush and
-`workspaceExportTo` upload before the kill. A run configuring `postRun`
-lifecycle hooks (issue #461) is a partial exception: those hooks
-deliberately run on a context detached from the run's own deadline/
-cancellation so an in-flight artifact upload can survive it, but the
-harness still observes SIGTERM directly on that detached context
-(`AgenticLoop.Shutdown`) and cuts a `postRun` hook short promptly rather
-than letting it run for its full configured budget (up to 1830s). A
-background watchdog additionally bounds executor teardown — deleting
-the sandbox Pod and its egress `NetworkPolicy` — to 5 seconds after
-SIGTERM even if `Run()` has not yet returned, so cleanup completes well
-inside the default 30-second grace window regardless of what an
-in-flight `postRun` hook is doing. Set `terminationGracePeriodSeconds`
+context on the first SIGTERM. The run's post-run work — the final git
+checkpoint, `postRun` lifecycle hooks, the workspace export
+and trace finish — runs on contexts detached from that cancellation, each
+with its own budget, so an in-flight artifact upload can survive it. A
+second signal cancels those contexts (`AgenticLoop.Shutdown`) and abandons
+the work.
+
+The workspace export archives the sandbox's `/workspace` through
+`pods/exec` while the Pod is still alive, ahead of teardown. A background
+watchdog bounds executor teardown — deleting the sandbox Pod and its egress
+`NetworkPolicy`. For `stirrup job` it closes the loop 5 s after the
+first SIGTERM even if `Run()` has not yet returned, so cleanup completes
+well inside the default 30 s grace window regardless of what an
+in-flight `postRun` hook is doing. An export still running when the
+watchdog closes the loop fails, and the failure is logged. For
+`stirrup harness`, which has no orchestrator deadline behind it, the
+watchdog arms on the second signal instead, so a single SIGTERM lets the
+post-run work run to its budgets. Set `terminationGracePeriodSeconds`
 explicitly on the orchestrator Pod spec when running with long `postRun`
 hooks, sized for the run's own `timeout` plus normal shutdown overhead —
 the default 30 seconds is ample headroom over the harness's own 5-second
@@ -508,6 +548,48 @@ run — the allowlist constrains only the sandbox Pod's own traffic. (When
 the orchestrator Pod is itself subject to a namespace egress
 `NetworkPolicy`, it needs its own allowances for the provider endpoint, the
 metadata server, DNS, and the in-cluster API server.)
+
+## Teardown and orphaned sandboxes
+
+On a clean exit the executor deletes the sandbox Pod and then its egress
+`NetworkPolicy`. Three properties bound what an unclean harness exit,
+such as SIGKILL, node loss or an expired Job deadline, leaves behind:
+
+- **The Pod has an `activeDeadlineSeconds` backstop.** Its value is the
+  longer of the run `timeout` and the session budget, plus the `postRun`
+  hook budget, plus a 10-minute margin. The session budget is
+  `STIRRUP_SESSION_DEADLINE` for `stirrup job` when set, and otherwise the
+  harness estimate described in
+  [`deployment.md`](../deployment.md#optional-environment-variables). A
+  sandbox that outlives the deadline stays behind as a `Failed` Pod with
+  reason `DeadlineExceeded` until the Pod is deleted or its owner is.
+- **The Pod is owned by the harness Pod when the wiring allows it.** The
+  sandbox Pod gets an owner reference to the harness Pod only when
+  `STIRRUP_POD_NAME`, `STIRRUP_POD_UID` and `STIRRUP_POD_NAMESPACE`
+  (downward-API variables) are all set and the harness Pod's namespace
+  equals the sandbox namespace. Deleting the harness Pod, or letting the
+  Job's `ttlSecondsAfterFinished` do so, then garbage-collects the sandbox
+  Pod. [`examples/k8s/harness-job.yaml`](../../examples/k8s/harness-job.yaml)
+  shows the wiring.
+- **The `NetworkPolicy` has no owner reference.** Deleting the Pod does
+  not remove the policy, so a labelled delete is required to clear it.
+
+Both objects carry `stirrup.dev/run-id=<run-id, truncated to 63 characters>`,
+the run ID cut at the 63-character label limit with trailing separators
+trimmed, and `stirrup-sandbox=true`. The run ID is the first run of the
+session, because follow-up runs reuse the sandbox. The selector below
+removes the Pod and its policy for one run. It should run only after the
+harness process for that run is gone, because removing the sandbox of a
+live session ends it:
+
+```sh
+kubectl delete pod,networkpolicy -n <namespace> -l 'stirrup.dev/run-id=<run-id, truncated to 63 characters>'
+```
+
+`-l stirrup-sandbox=true` also matches the Pods of live runs, so it is for
+inspection rather than deletion. The selectors for the other
+executors are in
+[`deployment.md`](../deployment.md#orphaned-sandboxes).
 
 ## RuntimeClass selection per run
 

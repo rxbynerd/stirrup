@@ -19,7 +19,7 @@ Stirrup is designed and built from the ground up with the following tenets in mi
 Stirrup has two main modes of operation:
 
 - `stirrup harness` is for local/one-off tasks that do not require a control plane.
-- `stirrup job` connects to the control plane given at `CONTROL_PLANE_ADDR`, intended to be deployed as a Kubernetes `Job`.
+- `stirrup job` connects to the control plane given at `CONTROL_PLANE_ADDR`, intended to be deployed as a Kubernetes `Job`. [`examples/controlplane/`](examples/controlplane/README.md) is a runnable minimal control plane for trying it.
 
 ### On your machine
 
