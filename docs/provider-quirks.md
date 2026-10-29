@@ -504,7 +504,7 @@ test catch malformed paths at registry-build time.
 | `openai-compatible` | `*/gpt-5*`         | OpenAI gpt-5 family via gateway prefix (OpenRouter-style ids): same as `gpt-5*` |
 | `openai-compatible` | `*/gpt-5-chat*`    | OpenAI gpt-5-chat carve-out via gateway prefix: same as `gpt-5-chat*` |
 | `openai-compatible` | `gpt-6*`           | OpenAI gpt-6 family: omit sampling params, strict tools, `reasoning_effort` `low`..`max`; a request with tools fails before send (tool calling needs `openai-responses`) |
-| `openai-compatible` | `*/gpt-6*`         | OpenAI gpt-6 family via gateway prefix: omit sampling params only |
+| `openai-compatible` | `*/gpt-6*`         | OpenAI gpt-6 family via gateway prefix: omit sampling params, `reasoning_effort` `low`..`max`; tools are allowed (OpenRouter accepted tools with an effort, probed 2026-10-29) |
 | `openai-compatible` | `deepseek-v4*`     | DeepSeek v4: replay `reasoning_content`, omit sampling params, legacy `max_tokens`, `reasoning_effort` (threaded) |
 | `openai-compatible` | `deepseek-flash*`  | DeepSeek V4.1 Flash: same quirk set as `deepseek-v4*` (threaded) |
 | `openai-compatible` | `deepseek/deepseek-flash*` | DeepSeek V4.1 Flash via OpenRouter: omit sampling params, legacy `max_tokens`, `reasoning_effort`; no replay (probed 2026-10-18) |
@@ -867,6 +867,8 @@ Probed or documented acceptance as of 2026-09-30:
 | DeepSeek v4 / V4.1 Flash (first-party) | all six; DeepSeek folds them onto `low`/`high`/`max` (documented) |
 | DeepSeek v4 / V4.1 Flash via OpenRouter | all six (probed 2026-10-18; some hosts return no reasoning at the lower levels) |
 | GLM-5.3 (`zai-glm` profile) | `low` `high` `max`; any other value silently becomes `max` (documented) |
+| GLM-5.3 via OpenRouter (`zai-glm` profile, `z-ai/glm-5.3*`) | `low` `high` `max` (`high` and `max` accepted, probed 2026-10-29) |
+| GPT-6 family via OpenRouter (`*/gpt-6*`) | `low` `medium` `high` `xhigh` `max` (`low`, `high` and `max` accepted, probed 2026-10-29) |
 | Gemini 3.6 | `minimal` `low` `medium` `high` (probed) |
 | Gemini 3.7 / 3.8 | `low` `medium` `high` (probed) |
 
@@ -908,6 +910,55 @@ because OpenAI may require organisation verification before it returns
 them on its newest reasoning models, and the control has not been
 probed: a default-on summary could make requests from an unverified
 organisation fail.
+
+### 3.4 Probe record
+
+Live probes behind the gateway rules above, and what remains unprobed.
+A probe through a gateway shows what the gateway accepts, not what the
+vendor's own API does: OpenRouter drops parameters a model does not list
+as supported, so a 200 there is not evidence that the vendor accepts the
+parameter.
+
+| Date | Model | Surface | Request | Result |
+|---|---|---|---|---|
+| 2026-10-29 | `openai/gpt-6-luna` | OpenRouter Chat Completions | `tools` + `reasoning_effort: high` | 200, tool call returned; 0 reasoning tokens reported |
+| 2026-10-29 | `openai/gpt-6.1-sol` | OpenRouter Chat Completions | `tools` + `reasoning_effort: low` | 200, tool call returned |
+| 2026-10-29 | `openai/gpt-6-luna` | OpenRouter Chat Completions | `reasoning_effort: max`, then `minimal` | 200 for both |
+| 2026-10-29 | `openai/gpt-6-luna` | OpenRouter Chat Completions | `temperature: 0.1` | 200; OpenRouter lists no `temperature` support for GPT-6, so the parameter is probably dropped before OpenAI |
+| 2026-10-29 | `openai/gpt-6*` | OpenRouter models list | `supported_parameters` | `max_tokens`, `max_completion_tokens` (absent on the `gpt-6.1-terra` and `:batch` ids), `reasoning_effort`, `tools`, `tool_choice`, `structured_outputs`; no `temperature` |
+| 2026-10-29 | `z-ai/glm-5.3` | OpenRouter Chat Completions, Z.AI host | streaming, `reasoning_effort: high` | 200; reasoning streamed as `delta.reasoning` plus `reasoning_details`, never `reasoning_content` |
+| 2026-10-29 | `z-ai/glm-5.3` | OpenRouter Chat Completions, Relace host | `reasoning_effort: high` (streaming) and `medium` | 200 for both; no reasoning returned |
+| 2026-10-29 | `z-ai/glm-5.3-flash` | OpenRouter Chat Completions, Relace host | `tools` + `reasoning_effort: max` | 200, tool call returned; `reasoning` and `reasoning_details` on the message |
+| 2026-10-29 | `z-ai/glm-5.3-flash` | OpenRouter Chat Completions, Relace host | streaming, `tools` + `reasoning_effort: high` | 200, tool call streamed; no reasoning returned |
+
+Unprobed, with the reason:
+
+- **GPT-6 and GPT-5.x on OpenAI's own APIs.** No OpenAI credential is
+  available. These remain documented only: whether first-party Chat
+  Completions rejects `tools` or silently drops them, whether a sampling
+  parameter is a 400 or ignored, the token field names, and which effort
+  values each model rejects (`none` and `minimal` on Astra and 6.1 Sol).
+  The `gpt-6*` Chat Completions rule still rejects a request with tools
+  before send, and the Responses rules' sampling-param omission for the
+  gpt-5 and o-series families is documented, not probed.
+- **GLM-5.3 on Z.ai's own API.** No Z.ai credential is available, so
+  `tool_stream`, `thinking: {"type": "enabled"}` and the `low`/`high`/`max`
+  allow-list on `glm-5.3*` remain documented only, as do the FlashX
+  (`glm-5.3-flashx`) and Prime (`glm-5.3-prime`) tiers. OpenRouter lists
+  both tiers.
+- **Gemini 3.8 Flash in a harness run.** The wire facts behind the
+  `gemini-3.8*` rule are probed on both surfaces, but no run of the
+  harness itself has used the model: the harness refuses user-mode ADC,
+  and no service account or workload identity credential is available.
+  The same session would also capture parallel function calls with
+  `thoughtSignature` on parts after the first, which Vertex reportedly
+  rejects on replay.
+- **Families not researched.** Qwen 3.8 (`preserve_thinking` on by
+  default, `reasoning_effort` supported; the Qwen 3.6 finding that no
+  wire quirk is needed has not been re-checked), Kimi K3 (Moonshot),
+  MiniMax M3 and Gemma 4 have no rules. They take the zero-value
+  behaviour of their provider type, or the `*/*` gateway rules when
+  served with a vendor prefix, until someone probes them.
 
 ## 4. Composition with the NormalizingAdapter
 
@@ -1019,6 +1070,16 @@ its fields:
 | `glm-5*`         | same as `glm-4.[5-9]*`                                        | GLM-5/5.1/5.3 thinking family |
 | `glm-5.3*`       | + `reasoning_effort` allow-list `low`/`high`/`max`           | GLM-5.3 defaults to `max` and maps any unlisted value to `max`, so `medium` is rejected before send |
 | `z-ai/glm-*`     | legacy `max_tokens`; + replay `reasoning_content`            | OpenRouter gateway-prefixed ids (`*` does not cross `/`); no `tool_stream`/`thinking` — vendor extras unverified through gateways |
+| `z-ai/glm-5.3*`  | + `reasoning_effort` allow-list `low`/`high`/`max`           | Same allow-list as `glm-5.3*` through a gateway (OpenRouter accepted `high` and `max`, probed 2026-10-29) |
+
+Through OpenRouter, GLM-5.3 streams its reasoning as `delta.reasoning`
+with a `reasoning_details` array of `reasoning.text` entries, not as
+`reasoning_content` (probed 2026-10-29 on OpenRouter's Z.AI host). The
+adapter displays `reasoning` as thinking text, but the `z-ai/glm-*`
+replay path `reasoning_content` captures nothing there; whether
+OpenRouter needs the reasoning replayed for GLM is unprobed. OpenRouter's
+Relace host returned no reasoning at all for `z-ai/glm-5.3` at `high`
+or `medium`.
 
 `reasoning_content` threading (the `(threaded)` ReplayFields suffix in
 [§3.1](#31-replayfields-rules)) now applies to the GLM-4.5+ thinking
