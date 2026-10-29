@@ -58,6 +58,12 @@ declared --endpoint-profile wins, otherwise the profile is derived from
 --base-url (openai for OpenAI's own API or no --base-url, generic for
 any other URL).
 
+For a bedrock provider, a Claude model id (anthropic.<id>, optionally
+behind a cross-region prefix such as us. or inside an ARN) resolves
+against the anthropic rules, and the output keeps only what the
+Converse request honours: the sampling-param omission and the rules
+that set it.
+
 The empty-registry case (no rule matched) is not an error: the output
 carries an empty appliedRules list and a ProviderQuirks value at its
 zero-after-init shape.`,
@@ -135,7 +141,13 @@ func runProvidersQuirksWithIO(cmd *cobra.Command, stdout io.Writer) error {
 	endpoint := provider.EndpointProfileFor(types.ProviderConfig{Type: providerType, BaseURL: baseURL, EndpointProfile: declared})
 
 	reg := quirks.DefaultRegistry()
-	resolved, applied := reg.ResolveWithRules(quirks.Target{ProviderType: providerType, Endpoint: endpoint, Model: model})
+	var resolved quirks.ProviderQuirks
+	var applied []quirks.Rule
+	if providerType == "bedrock" {
+		resolved, applied = provider.ResolveBedrockQuirks(reg, model)
+	} else {
+		resolved, applied = reg.ResolveWithRules(quirks.Target{ProviderType: providerType, Endpoint: endpoint, Model: model})
+	}
 
 	out := quirksCLIOutput{
 		Provider:        providerType,
