@@ -74,7 +74,7 @@ its verdicts without changing any outcome. See
 
 | Suite | Source | Notes |
 |---|---|---|
-| `acceptance.hcl` | Hand-authored | Opt-in acceptance suite: eight realistic tasks on pinned revisions of small public Go repositories, plus a verifier that fails once before it passes. Deterministic judges, live provider, no CI baseline. See [Acceptance suite](#acceptance-suite-acceptancehcl). |
+| `acceptance.hcl` | Hand-authored | Opt-in acceptance suite: ten realistic tasks on pinned revisions of small public Go repositories, plus a verifier that fails once before it passes and two tasks whose first edit fails a post-edit check. Deterministic judges, live provider, no CI baseline. See [Acceptance suite](#acceptance-suite-acceptancehcl). |
 | `command-output-ab-{on,off}.hcl` | Hand-authored (PR #495) | A/B pair for the command-output capture pipeline: byte-identical tasks, differing only in `tools.command_output`. Run both arms, then `stirrup-eval compare -baseline <off>/result.json -current <on>/result.json` — the feature's context-saving claim holds iff the on arm lowers mean tokens at an equal-or-better pass rate. Opt-in, live-provider, no CI baseline. |
 | `post-edit-ab-{on,off}.hcl` | Hand-authored | A/B pair for `tools.postEdit`: byte-identical Go signature-change tasks without `run_command`, differing only in whether `go vet ./...` runs after each edit. Run each arm twice and compare pass rate and turns per run. Opt-in, live-provider, needs a host Go toolchain, no CI baseline. |
 | `dogfood-seed.hcl` | Hand-authored (#13) | Starter suite for the v0.1 eval-gate. Targets harness behaviours stirrup's maintainers actually rely on; judges are deterministic. Replace with the mined output once the dogfood recording loop is established. |
@@ -164,19 +164,21 @@ to be a branch tip. The tasks:
 | `move-shared-helper-to-own-file` | A multi-file edit that must change exactly two files. |
 | `comment-only-edit-leaves-code-alone` | A narrow edit; any code change or second file fails. |
 | `answer-question-from-source` | Read-only navigation of an unfamiliar repository; the trace must show no `edit_file` call. |
+| `add-percent-formatter-under-post-edit-check`, `add-lenient-parser-under-post-edit-check` | Add a function with exact edge-case rules and an example test. A suite-level `tools.post_edit` check on the task's files needs both files and runs a hidden conformance test, so the first edit fails it whichever file comes first; later edits get the failing cases back. The judge reruns the hidden test. These give A/B comparisons of feedback features (post-edit checks, verifiers, prompts) tasks a first attempt does not pass. |
 
 Because a per-task verifier override needs a suite baseline, the suite
-pins a complete `run_config`: Sonnet 5, `allow-all`, 30 turns, and a
+pins a complete `run_config`: Sonnet 5, `allow-all`, 30 turns, a
 Go-only tool set without `web_fetch`, so the agent cannot read the
-upstream fix. The `--provider`, `--base-url`, `--api-key-ref` and
+upstream fix, and the two post-edit checks, whose globs (`*percent*.go`,
+`*lenient*.go`) match only files the post-edit-check tasks create. The `--provider`, `--base-url`, `--api-key-ref` and
 `--model` flags of `stirrup-eval run` retarget the provider and model.
 
 **Requirements.** A Go toolchain, `git`, network access to
 `github.com`, and a provider credential. The harness binary must be
 built first (`just build`).
 
-**Cost.** One trial is eight task runs of up to 30 turns each, so
-`--trials 3` is 24 task runs. Each task's token usage is in the
+**Cost.** One trial is ten task runs of up to 30 turns each, so
+`--trials 3` is 30 task runs. Each task's token usage is in the
 `trace` object of `result.json`; take the cost of a run from there
 rather than from an estimate.
 
@@ -201,6 +203,7 @@ it has no fake control plane, artifact store or gRPC stream to cut.
 | Case | Status |
 |---|---|
 | Failed verifier | Task: `add-function-with-verifier-retry`. |
+| Failed post-edit check | Tasks: `add-percent-formatter-under-post-edit-check`, `add-lenient-parser-under-post-edit-check`. |
 | Remote workspace export | Follow-up. Needs an export destination the eval can inspect. |
 | Control-plane restart or stream loss | Follow-up. Needs a fake control plane. |
 | Context compaction | Follow-up. No trace field records that a compaction happened, so a judge cannot assert it, and a task cannot force one deterministically. |
