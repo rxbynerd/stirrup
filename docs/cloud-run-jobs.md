@@ -267,18 +267,18 @@ Salient points for stirrup:
   works in two stages. The first SIGTERM cancels the run context,
   which ends the run. The post-run work then continues on contexts
   detached from that cancellation, each with its own budget: the final
-  git checkpoint (30 s), `postRun` lifecycle hooks (issue #461), the
+  git checkpoint (30 s), `postRun` lifecycle hooks, the
   workspace export (5 min) and the trace finish (90 s). That is what
   lets the trace emitter flush and `workspaceExportTo` upload after
   the signal. A second signal cancels those contexts
   (`AgenticLoop.Shutdown`) and abandons the work. Cloud Run's SIGKILL
-  arrives 10 seconds after the SIGTERM, so it can still cut any of
+  arrives 10 s after the SIGTERM, so it can still cut any of
   this work short when it needs longer than the grace window.
   The shutdown watchdog, which closes the loop and tears down the
   executor, arms on the second signal for `stirrup harness` and 5
-  seconds after the first signal for `stirrup job`. Operators sizing a
+  s after the first signal for `stirrup job`. Operators sizing a
   tighter task-level timeout around a run with long post-run work
-  should budget for the 10-second SIGTERM grace on top of the run's
+  should budget for the 10 s SIGTERM grace on top of the run's
   own `timeout`.
 - **Max task timeout** is 7 days (1 hour with GPU); see [Cloud Run
   quotas](https://cloud.google.com/run/quotas). The fixture's

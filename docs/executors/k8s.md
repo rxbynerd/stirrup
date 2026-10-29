@@ -132,8 +132,8 @@ The pieces and their lifecycle:
   its git status, both read through the executor and never from the
   harness host. The listing and the status are each capped at 200
   entries and 8 KiB and end in a truncation marker when cut. The
-  listing leaves out names containing control characters and is omitted
-  when listing fails. The status appears only when `/workspace` is the
+  listing leaves out names containing control characters, and the whole
+  listing is omitted when listing fails. The status appears only when `/workspace` is the
   top level of a repository.
 
 - **Egress** is enforced by a per-Pod `NetworkPolicy` the executor
@@ -225,17 +225,19 @@ The image named by `executor.image` must provide:
 
 | Requirement | Used for |
 |---|---|
-| POSIX `sh` at `/bin/sh`, with `kill` | `Exec` runs commands through `/bin/sh -c`, and a timed-out command is signalled with `kill`. A shell builtin suffices. |
+| POSIX `sh` at `/bin/sh`, with `kill` and `command -v` | `Exec` runs commands through `/bin/sh -c`, and a timed-out command is signalled with `kill`. Shell builtins suffice. |
 | `tar`, `readlink`, `mkdir` | File reads and writes stream `tar` over `pods/exec`; a read resolves its path with `readlink -f` first. |
+| `rm`, and a `sleep` that accepts fractional seconds | The command wrapper and the kill script remove the pid file, and the kill script polls for the process group to exit in tenths of a second. |
 | `ls` accepting `-A`, `-1` and `-p` | `list_directory` and the system prompt's workspace listing, which marks directories with a trailing slash. Busybox and coreutils both accept these. |
 | Writable `/tmp` | Each `Exec` records the command's process group leader in a per-call pid file under `/tmp`. |
 | `git` | Only when `gitStrategy` is `deterministic`, which runs git inside the Pod, and for the git status section of the system prompt. |
 | `setsid` *(optional)* | Runs each command in its own session so a timeout reaches the whole process group. |
+| Readable `/proc` | Only without `setsid`: the kill script finds the recorded shell's descendants there. |
 
 When a command times out, the executor sends SIGTERM to the recorded
-process group, waits about one second, then sends SIGKILL. Without
-`setsid`, only the recorded shell and the descendants discoverable
-through `/proc` are signalled. [`Dockerfile.sandbox`](../../Dockerfile.sandbox)
+process group, waits up to one second, then sends SIGKILL to anything
+still running. Without `setsid`, only the recorded shell and the
+descendants discoverable through `/proc` are signalled. [`Dockerfile.sandbox`](../../Dockerfile.sandbox)
 builds an image that meets every requirement. The same minimums apply to
 the `container` executor, which mounts a tmpfs at `/tmp` instead of
 relying on the image; see
@@ -515,7 +517,7 @@ down, then SIGKILL after the grace period — 30 seconds by default when
 the field is unset. Stirrup's signal handler
 (`harness/cmd/stirrup/cmd/root.go::setupSignalHandler`) cancels the run
 context on the first SIGTERM. The run's post-run work — the final git
-checkpoint, `postRun` lifecycle hooks (issue #461), the workspace export
+checkpoint, `postRun` lifecycle hooks, the workspace export
 and trace finish — runs on contexts detached from that cancellation, each
 with its own budget, so an in-flight artifact upload can survive it. A
 second signal cancels those contexts (`AgenticLoop.Shutdown`) and abandons
@@ -524,9 +526,9 @@ the work.
 The workspace export archives the sandbox's `/workspace` through
 `pods/exec` while the Pod is still alive, ahead of teardown. A background
 watchdog bounds executor teardown — deleting the sandbox Pod and its egress
-`NetworkPolicy`. For `stirrup job` it closes the loop 5 seconds after the
+`NetworkPolicy`. For `stirrup job` it closes the loop 5 s after the
 first SIGTERM even if `Run()` has not yet returned, so cleanup completes
-well inside the default 30-second grace window regardless of what an
+well inside the default 30 s grace window regardless of what an
 in-flight `postRun` hook is doing. An export still running when the
 watchdog closes the loop fails, and the failure is logged. For
 `stirrup harness`, which has no orchestrator deadline behind it, the
@@ -572,17 +574,20 @@ such as SIGKILL, node loss or an expired Job deadline, leaves behind:
 - **The `NetworkPolicy` has no owner reference.** Deleting the Pod does
   not remove the policy, so a labelled delete is required to clear it.
 
-Both objects carry `stirrup.dev/run-id=<run-id>`, the run ID truncated to
-the 63-character label limit, and `stirrup-sandbox=true`. The run ID is
-the first run of the session, because follow-up runs reuse the sandbox.
-The selector below removes the Pod and its policy for one run:
+Both objects carry `stirrup.dev/run-id=<run-id, truncated to 63 characters>`,
+the run ID cut at the 63-character label limit with trailing separators
+trimmed, and `stirrup-sandbox=true`. The run ID is the first run of the
+session, because follow-up runs reuse the sandbox. The selector below
+removes the Pod and its policy for one run. It should run only after the
+harness process for that run is gone, because removing the sandbox of a
+live session ends it:
 
 ```sh
-kubectl delete pod,networkpolicy -n <namespace> -l stirrup.dev/run-id=<run-id>
+kubectl delete pod,networkpolicy -n <namespace> -l 'stirrup.dev/run-id=<run-id, truncated to 63 characters>'
 ```
 
 `-l stirrup-sandbox=true` also matches the Pods of live runs, so it is for
-inspection rather than blind deletion. The selectors for the other
+inspection rather than deletion. The selectors for the other
 executors are in
 [`deployment.md`](../deployment.md#orphaned-sandboxes).
 

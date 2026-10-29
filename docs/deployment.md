@@ -124,10 +124,10 @@ The following rules apply to every mode other than `plaintext`:
 - The certificate and key must be set together. A missing, unreadable
   or non-PEM file also fails startup.
 - Every failure happens before the harness dials. `stirrup job` exits
-  non-zero with exit code 1 and sends no `ready` event. For
-  `stirrup harness`, a TLS flag without `--transport grpc`, a lone
-  certificate or key, or an empty flag value exits with code 4, and a
-  file that cannot be loaded exits with code 3.
+  with code `1` and sends no `ready` event. For `stirrup harness`, a
+  TLS flag without `--transport grpc`, a lone certificate or key, or
+  an empty flag value exits with code `4`, and a file that cannot be
+  loaded exits with code `3`.
 
 At startup the harness writes one line to stderr naming the mode, the
 trust source and any server-name override. File contents are never
@@ -162,7 +162,7 @@ first `ControlEvent` on the stream.
 | `CONTROL_PLANE_TLS_KEY_FILE` | Path to the PEM private key for the client certificate. Must be set together with `CONTROL_PLANE_TLS_CERT_FILE`. |
 | `CONTROL_PLANE_TLS_SERVER_NAME` | Name the control plane's certificate is verified against, when it differs from the host in `CONTROL_PLANE_ADDR`. |
 | `STIRRUP_FOLLOWUP_GRACE` | Idle seconds to keep the gRPC stream open after each run completes, so the control plane can deliver a follow-up `user_response` that starts the next run. The window restarts after every run. Capped at 3600 s; a positive `RunConfig.followUpGrace` takes precedence. |
-| `STIRRUP_SESSION_DEADLINE` | Session length in seconds that the sandbox must outlive. Set it to the Job's `activeDeadlineSeconds`. The sandbox lifetime is the longer of this value and `RunConfig.timeout`, plus the `postRun` hook budget, plus a 10-minute margin. A missing or non-positive value falls back to the harness estimate: the primary run's `timeout` plus, when a follow-up window is configured, ten further runs each preceded by a full grace window. The `k8s-sandbox` executor keeps a fixed 12-hour TTL instead. |
+| `STIRRUP_SESSION_DEADLINE` | Session length in seconds that the sandbox must outlive. Set it to the Job's `activeDeadlineSeconds`, and set it whenever `followUpGrace` is used with `stirrup job`. A session that outlives the value loses its sandbox: the container engine removes the container at the `sleep` deadline, and the kubelet kills the Pod at `activeDeadlineSeconds`. The value must be a positive integer number of seconds. Anything else, including a duration such as `30m`, falls back silently to the harness estimate: the primary run's `timeout` plus, when a follow-up window is configured, ten further runs each preceded by a full grace window. The sandbox lifetime is the longer of the value and `RunConfig.timeout`, plus the `postRun` hook budget, plus a 10-minute margin. The `k8s-sandbox` executor keeps a fixed 12-hour TTL instead. |
 | `STIRRUP_POD_NAME`, `STIRRUP_POD_UID`, `STIRRUP_POD_NAMESPACE` | Downward-API identity of the harness Pod (`metadata.name`, `metadata.uid`, `metadata.namespace`). When all three are set and the namespace equals `executor.k8sNamespace`, the `k8s` executor makes the sandbox Pod owned by the harness Pod, so deleting the harness Pod garbage-collects the sandbox. Owner references cannot cross namespaces, so a sandbox in another namespace has none. [`examples/k8s/harness-job.yaml`](../examples/k8s/harness-job.yaml) shows the wiring. |
 
 A `CONTROL_PLANE_TLS_*` variable that is set but empty is a startup
@@ -282,15 +282,18 @@ IMDS, GitHub Actions OIDC). See
    recorded an OTel span, and the reason the run ended. The git,
    export and trace results are final when `done` arrives, so a
    control plane that expects no follow-up can close the stream on
-   it. The `trace` on `done` is a summary: besides the
-   metrics it carries `git` (branch, SHA, base SHA, `dirty` and
-   `error`), `workspace_export` (the export receipt: URI, `status`,
-   `bytes`, `sha256`, `files`, `required` and `error`), `error` (the
-   scrubbed, length-capped reason for any outcome other than
-   `success`, or for a `success` run whose trace could not be
-   persisted), `structured_output` (the validated JSON document, only
-   for a `success` run with `outputSchema` set) and
-   `degraded_capabilities`.
+   it. The `trace` on `done` is a summary. Besides the metrics it
+   carries these fields:
+
+   - `git`: branch, SHA, base SHA, `dirty` and `error`.
+   - `workspace_export`: the export receipt, with URI, `status`,
+     `bytes`, `sha256`, `files`, `required` and `error`.
+   - `error`: the scrubbed, length-capped reason for any outcome other
+     than `success`, or for a `success` run whose trace could not be
+     persisted.
+   - `structured_output`: the validated JSON document, only for a
+     `success` run with `outputSchema` set.
+   - `degraded_capabilities`.
 
    `stop_reason` is the run outcome. `success` is the success value;
    the failure values are `error`, `setup_failed`, `hook_failed`,
@@ -304,13 +307,15 @@ IMDS, GitHub Actions OIDC). See
    final git checkpoint or a failed required workspace export on a run
    that would otherwise have succeeded. `control_stream_lost` reports a
    run cancelled because the control stream ended while it was active.
-   `error`, `setup_failed`, and `hook_failed` are the
-   early-termination outcomes — a build-system-prompt failure, a
-   `GitStrategy.Setup` failure, or (issue #461) a fatal `preRun` /
-   `postRun` lifecycle hook failure — and, like every other outcome,
-   are always paired with a `done` event and a `RunResult` on the
+   `setup_failed` reports a fatal `preRun` lifecycle hook or a failure
+   to load repository guidance. A failure to build the system prompt
+   or to set up the git strategy ends as `error`. These setup outcomes
+   skip the `postRun` hooks. `hook_failed` reports a fatal `postRun`
+   hook on a run that would otherwise have succeeded, so it is not an
+   early-termination outcome. Like every other outcome, these are
+   always paired with a `done` event and a `RunResult` on the
    configured `resultSink`, even though the harness process's own Go
-   error return is also non-nil for these. The nested `trace.outcome`
+   error return is also non-nil for them. The nested `trace.outcome`
    is the canonical terminal status for downstream analytics;
    `trace.stop_reason` mirrors it for backward compatibility. Provider
    stop reasons such as `refusal` pass through verbatim as the outcome.
@@ -372,7 +377,10 @@ outcome `control_stream_lost`.
 
 The full event vocabulary lives in
 [`proto/harness/v1/harness.proto`](../proto/harness/v1/harness.proto) —
-that is the source of truth for the wire contract.
+that is the source of truth for the wire contract. The value list in
+the comment on the `done` event's `stop_reason` near the top of the
+file lags the outcomes above. The `RunTrace.outcome` comment is
+authoritative.
 
 ### Orphaned sandboxes
 
@@ -380,12 +388,16 @@ A harness that exits uncleanly, through SIGKILL, node loss or an expired
 `Job.spec.activeDeadlineSeconds`, can leave its sandbox behind. Every
 sandbox carries labels naming its run, and every executor bounds the
 sandbox's own lifetime. The run ID on the labels is the session's first
-run ID, because follow-up runs reuse the sandbox.
+run ID, because follow-up runs reuse the sandbox. Run the commands
+below only after the harness process for that run is gone, because
+removing the sandbox of a live session ends it.
 
 - **`container`.** Containers carry the labels `stirrup.sandbox=true`
   and `stirrup.run-id=<run-id>`. The container runs `sleep` for the
   sandbox lifetime with auto-remove set, so the engine removes it at the
-  deadline. `podman` accepts the same commands.
+  deadline. `podman` accepts the same commands. Listing by
+  `stirrup.sandbox=true` also matches the containers of live runs, so
+  it is for inspection rather than deletion.
 
   ```sh
   docker ps -a --filter label=stirrup.sandbox=true
@@ -393,8 +405,9 @@ run ID, because follow-up runs reuse the sandbox.
   ```
 
 - **`k8s`.** The sandbox Pod and its `NetworkPolicy` carry
-  `stirrup.dev/run-id=<run-id>`, with the run ID truncated to the
-  63-character label limit, and `stirrup-sandbox=true`. The Pod has an
+  `stirrup.dev/run-id=<run-id, truncated to 63 characters>`, with the
+  run ID cut at the 63-character label limit and trailing separators
+  trimmed, and `stirrup-sandbox=true`. The Pod has an
   `activeDeadlineSeconds` backstop, and the `NetworkPolicy` has no owner
   reference, so the labelled delete below is the only way to remove it.
   Selecting on `stirrup-sandbox=true` also matches the resources of live
@@ -402,16 +415,17 @@ run ID, because follow-up runs reuse the sandbox.
   [Teardown and orphaned sandboxes](executors/k8s.md#teardown-and-orphaned-sandboxes).
 
   ```sh
-  kubectl delete pod,networkpolicy -n <namespace> -l stirrup.dev/run-id=<run-id>
+  kubectl delete pod,networkpolicy -n <namespace> -l 'stirrup.dev/run-id=<run-id, truncated to 63 characters>'
   ```
 
 - **`k8s-sandbox`.** The Sandbox, its Pod and its `NetworkPolicy` carry
-  `stirrup.dev/run-id=<run-id>`. The Sandbox keeps a fixed 12-hour TTL.
+  `stirrup.dev/run-id=<run-id, truncated to 63 characters>`. The Sandbox
+  keeps a fixed 12-hour TTL.
   See
   [The controller-owned TTL GC backstop](executors/k8s-agent-sandbox.md#the-controller-owned-ttl-gc-backstop).
 
   ```sh
-  kubectl delete sandboxes.agents.x-k8s.io,networkpolicy -n <namespace> -l stirrup.dev/run-id=<run-id>
+  kubectl delete sandboxes.agents.x-k8s.io,networkpolicy -n <namespace> -l 'stirrup.dev/run-id=<run-id, truncated to 63 characters>'
   ```
 
 ### Health probes
@@ -488,9 +502,11 @@ default (see
 [Transport security posture](#transport-security-posture-v01)).
 The token is a bearer credential, so it is a materially higher-value
 payload than the rest of the stream. Requesting a sandbox identity
-token therefore requires either the same-host / private-network /
+token therefore calls for either the same-host, private-network or
 mesh-mTLS posture described there or transport TLS configured on the
-harness (see [Transport TLS settings](#transport-tls-settings)). With
+harness (see [Transport TLS settings](#transport-tls-settings)). The
+harness does not verify this: the transport posture is an operator
+obligation. With
 TLS, the harness verifies the control plane's certificate before the
 token is delivered. The harness is authenticated to the control plane
 only when it presents a client certificate (mutual TLS) or when a
@@ -574,9 +590,10 @@ as `nonroot` (uid 65532).
 The harness image cannot serve as a sandbox. The `container`, `k8s` and
 `k8s-sandbox` executors run commands inside `executor.image`, which needs:
 
-- A POSIX shell at `/bin/sh` with `kill`, which a shell builtin
-  satisfies, plus `tar`, `mkdir` and `readlink` on `PATH`, and an `ls`
-  that accepts `-A`, `-1` and `-p`. Busybox and coreutils both qualify.
+- A POSIX shell at `/bin/sh` with the `kill` and `command -v`
+  builtins, plus `tar`, `mkdir`, `readlink` and `rm` on `PATH`, a
+  `sleep` that accepts fractional seconds, and an `ls` that accepts
+  `-A`, `-1` and `-p`. Busybox and coreutils both qualify.
 - A writable `/tmp`. Each command is wrapped so that its process group
   leader is recorded in a per-call pid file there, which lets a timed-out
   command's process tree be killed. The `container` executor mounts a
@@ -590,7 +607,8 @@ The harness image cannot serve as a sandbox. The `container`, `k8s` and
 
 `setsid` is optional. With it, a timed-out command's whole process group
 is signalled. Without it, only the recorded shell and its descendants
-that `/proc` reveals are signalled.
+that `/proc` reveals are signalled, so a readable `/proc` is needed
+for that fallback.
 [`Dockerfile.sandbox`](../Dockerfile.sandbox) builds an image that meets
 every requirement above.
 

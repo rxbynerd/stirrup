@@ -227,19 +227,21 @@ the 12-hour TTL is the only time bound on a leaked sandbox.
 ### Finding and removing an orphaned sandbox
 
 The Sandbox, its backing Pod and its egress `NetworkPolicy` all carry
-`stirrup.dev/run-id=<run-id>`, the run ID truncated to the 63-character
-label limit, alongside `stirrup-sandbox=true`. The run ID is the first
-run of the session, because follow-up runs reuse the sandbox. The
-`NetworkPolicy` has no owner reference, so a labelled delete is needed to
-remove it:
+`stirrup.dev/run-id=<run-id, truncated to 63 characters>`, the run ID cut
+at the 63-character label limit with trailing separators trimmed,
+alongside `stirrup-sandbox=true`. The run ID is the first run of the
+session, because follow-up runs reuse the sandbox. The `NetworkPolicy`
+has no owner reference, so a labelled delete is needed to remove it. The
+delete should run only after the harness process for that run is gone,
+because removing the sandbox of a live session ends it:
 
 ```sh
-kubectl delete sandboxes.agents.x-k8s.io,networkpolicy -n <namespace> -l stirrup.dev/run-id=<run-id>
+kubectl delete sandboxes.agents.x-k8s.io,networkpolicy -n <namespace> -l 'stirrup.dev/run-id=<run-id, truncated to 63 characters>'
 ```
 
 Deleting the Sandbox cascades to the Pod through the controller's owner
 reference. `-l stirrup-sandbox=true` also matches the resources of live
-runs, so it is for inspection rather than blind deletion.
+runs, so it is for inspection rather than deletion.
 
 ## RBAC delta
 
@@ -288,11 +290,12 @@ needs `runc` or a Kata backend must use the `k8s` executor.
 
 The sandbox image must meet the same
 [requirements as the `k8s` executor](k8s.md#sandbox-image-requirements):
-a POSIX shell with `kill`, `tar`, `readlink`, `mkdir` and a writable
-`/tmp`, with `setsid` optional. The system prompt carries a listing of
-the Pod's `/workspace` and its git status, both read through the executor.
-The listing needs an `ls` that accepts `-p`, which busybox and coreutils
-both do, and the status section and the `deterministic` git strategy need
+a POSIX shell with `kill` and `command -v`, `tar`, `readlink`, `mkdir`,
+`rm`, a `sleep` that accepts fractional seconds and a writable `/tmp`,
+with `setsid` optional. The system prompt carries a listing of the Pod's
+`/workspace` and its git status, both read through the executor. The
+listing needs an `ls` that accepts `-A`, `-1` and `-p`, which busybox and
+coreutils both do, and the status section and the `deterministic` git strategy need
 `git` in the image.
 
 ```sh
