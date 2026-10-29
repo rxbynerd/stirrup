@@ -632,13 +632,13 @@ appropriate to its own boundary:
   the workspace. A write through a symlinked file or a symlinked
   directory, including directories `mkdir -p` would create beneath one,
   is refused with the same `path escapes workspace` error and
-  `path_traversal_blocked` event as a textual traversal. A path that
-  `readlink` cannot resolve is refused the same way, so a symlink loop,
-  or a dangling link whose target's directory does not exist, reports
-  a traversal even when its target would have stayed inside. A write
-  path containing a control character is rejected before reaching the
-  sandbox, and a write to a directory (directly or through a symlink)
-  fails with `path is a directory`.
+  `path_traversal_blocked` event as a textual traversal. A write path
+  that `readlink` cannot resolve is refused the same way, so a symlink
+  loop, or a dangling link whose target's directory does not exist,
+  reports a traversal even when its target would have stayed inside. A
+  write path containing a control character is rejected before
+  reaching the sandbox, and a write to a directory (directly or
+  through a symlink) fails with `path is a directory`.
 
   A symlink that stays inside the workspace is written through to its
   target, as on `local`. Permission policies and the code scanner
@@ -651,10 +651,12 @@ appropriate to its own boundary:
   the write, not a concurrent process; on the container executor the
   engine performs the write.
 
-  The sandbox image must ship `readlink` and `mkdir` for writes, and
-  `tar` for reads (and for writes on `k8s`/`k8s-sandbox`). An image
-  without `readlink` fails closed: the first read or write returns an
-  error naming it.
+  The sandbox image must ship a `readlink` that supports `-f` and
+  `mkdir` for writes, and `tar` for reads (and for writes on
+  `k8s`/`k8s-sandbox`). An image with no `readlink` at all fails
+  closed: the first read or write returns an error naming it. These
+  guards cover `read_file`, `write_file`, and `edit_file`; the
+  sandboxed `grep_files`/`find_files` path is described below.
 - **`api`** uses `url.PathEscape` on every path segment before
   constructing the GitHub Contents API URL.
 

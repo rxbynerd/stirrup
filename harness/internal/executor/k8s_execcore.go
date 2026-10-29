@@ -175,8 +175,8 @@ func (e *podExecCore) WriteFile(ctx context.Context, filePath string, content st
 	ctx, cancel := context.WithTimeout(ctx, k8sFileIOTimeout)
 	defer cancel()
 
-	guardOut := writeCapBuffer{limit: workspaceWriteGuardOutputLimit}
-	guardErr := writeCapBuffer{limit: workspaceWriteGuardOutputLimit}
+	guardOut := writeCapBuffer{limit: workspaceWriteOutputLimit}
+	guardErr := writeCapBuffer{limit: workspaceWriteOutputLimit}
 	if err := e.streamExec(ctx, workspaceWriteGuardCommand(k8sWorkspace, resolved), nil, &guardOut, &guardErr); err != nil {
 		if code, ok := extractExitCode(err); ok && code != 0 {
 			return classifyWorkspaceWriteExit(code, guardErr.String(), filePath, k8sWorkspace, e.Security)
@@ -208,7 +208,8 @@ func (e *podExecCore) WriteFile(ctx context.Context, filePath string, content st
 		return fmt.Errorf("close tar writer: %w", err)
 	}
 
-	var xOut, xErr bytes.Buffer
+	xOut := writeCapBuffer{limit: workspaceWriteOutputLimit}
+	xErr := writeCapBuffer{limit: workspaceWriteOutputLimit}
 	if err := e.streamExec(ctx, []string{"tar", "-C", dir, "-xf", "-"}, &archive, &xOut, &xErr); err != nil {
 		if code, ok := extractExitCode(err); ok && code != 0 {
 			return fmt.Errorf("write file %s: %s", filePath, strings.TrimSpace(xErr.String()))

@@ -15,9 +15,9 @@ const (
 	workspaceWriteEscapeExit     = 113
 	workspaceWriteIsDirExit      = 114
 
-	// workspaceWriteGuardOutputLimit bounds what the guard's output streams
-	// may buffer; it prints one path or one error line.
-	workspaceWriteGuardOutputLimit = 64 << 10
+	// workspaceWriteOutputLimit bounds what a write's exec output streams
+	// may buffer; the guard prints one path and tar at most a few errors.
+	workspaceWriteOutputLimit = 64 << 10
 )
 
 // workspaceWriteGuardScript creates the parent directories of $2 and prints
@@ -56,6 +56,7 @@ while [ -n "$q" ] && [ "$q" != "$w" ]; do
   q=${q%%/*}
 done
 if [ -d "$t" ]; then echo "path is a directory, not a file: $f" >&2; exit %[3]d; fi
+case "$t" in *"$nl"*) escape ;; esac
 printf '%%s\n' "$t"`, workspaceWriteNoReadlinkExit, workspaceWriteEscapeExit, workspaceWriteIsDirExit)
 
 // workspaceWriteGuardCommand is the argv both sandbox executors run before

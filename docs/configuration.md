@@ -1863,9 +1863,9 @@ The file lives outside `/workspace` on a private memory-backed mount
 includes it and a `git add -A` never sweeps it up. `read_file` cannot
 reach it, and `write_file` and `edit_file` cannot overwrite it, either
 by path or through a symlink committed into the workspace. On both the
-container and the Kubernetes executors every workspace read and write
-first resolves the real path inside the sandbox (`readlink -f`) and
-refuses anything that resolves outside `/workspace`, because the
+container and the Kubernetes executors these tools first resolve the
+real path inside the sandbox (`readlink -f`) and refuse anything that
+resolves outside `/workspace`, because the
 engine archive API, `tar`, and `mkdir -p` would otherwise follow such
 a link (see
 [path traversal prevention](security.md#path-traversal-prevention)).
