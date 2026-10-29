@@ -200,6 +200,11 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 	}
 
 	trials := resolveTrials(cfg, suite)
+	// With one trial both policies schedule the same runs; recording fixed
+	// keeps such a result comparable with a fixed single-run baseline.
+	if trials == 1 {
+		cfg.TrialsPolicy = eval.TrialsPolicyFixed
+	}
 
 	if cfg.DryRun {
 		// A dry run validates each task once regardless of trials.
@@ -254,8 +259,9 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 // pool and returns one aggregated result per task in input order. Under
 // eval.TrialsPolicyFixed every (task, trial) pair runs. Under
 // eval.TrialsPolicyConfirmOnFail every task's first trial runs, then the
-// remaining trials of each task that needsConfirmation. Per-trial errors
-// do not abort siblings.
+// remaining trials of each task that needsConfirmation; once ctx is
+// cancelled no confirmation round starts, so each task keeps its first
+// trial alone. Per-trial errors do not abort siblings.
 func runTasksConcurrently(ctx context.Context, tasks []types.EvalTask, cfg RunConfig, suiteArtifactDir string, baseline *types.RunConfig, trials int, requireHealthy bool) []eval.TaskResult {
 	runs := make([][]eval.TaskResult, len(tasks))
 	if cfg.TrialsPolicy == eval.TrialsPolicyConfirmOnFail {
@@ -264,14 +270,16 @@ func runTasksConcurrently(ctx context.Context, tasks []types.EvalTask, cfg RunCo
 		}
 		runTrialJobs(ctx, tasks, cfg, suiteArtifactDir, baseline, trials, trialJobs(len(tasks), 1), runs)
 
-		first := make([]eval.TaskResult, len(tasks))
-		for i := range runs {
-			first[i] = runs[i][0]
-			if needsConfirmation(first[i], requireHealthy) {
-				runs[i] = append(runs[i], make([]eval.TaskResult, trials-1)...)
+		if ctx.Err() == nil {
+			first := make([]eval.TaskResult, len(tasks))
+			for i := range runs {
+				first[i] = runs[i][0]
+				if needsConfirmation(first[i], requireHealthy) {
+					runs[i] = append(runs[i], make([]eval.TaskResult, trials-1)...)
+				}
 			}
+			runTrialJobs(ctx, tasks, cfg, suiteArtifactDir, baseline, trials, confirmationJobs(first, trials, requireHealthy), runs)
 		}
-		runTrialJobs(ctx, tasks, cfg, suiteArtifactDir, baseline, trials, confirmationJobs(first, trials, requireHealthy), runs)
 	} else {
 		for i := range runs {
 			runs[i] = make([]eval.TaskResult, trials)
@@ -292,7 +300,7 @@ type trialJob struct {
 	trial int
 }
 
-// trialJobs lists the first trials trials of every task, trial-major.
+// trialJobs lists trials 1 to trials of every task, trial-major.
 func trialJobs(tasks, trials int) []trialJob {
 	jobs := make([]trialJob, 0, tasks*trials)
 	for trial := range trials {

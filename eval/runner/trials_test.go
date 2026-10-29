@@ -375,9 +375,10 @@ func TestAggregateTrials_MajorityAndErrors(t *testing.T) {
 }
 
 // confirmHarnessScript passes or fails by prompt: "steady" always writes
-// the marker, "broken" never does, and "flaky" skips it on its first
-// invocation only. Every invocation's prompt is appended to
-// <logDir>/prompts.log.
+// the marker, "broken" never does, "flaky" skips it on its first
+// invocation only, and "unhealthy" always writes it but reports an error
+// outcome on its first invocation. Every invocation's prompt is appended
+// to <logDir>/prompts.log.
 func confirmHarnessScript(logDir string) string {
 	return fmt.Sprintf(`#!/bin/sh
 TRACE=""
@@ -391,11 +392,13 @@ while [ $# -gt 0 ]; do
 done
 echo "$PROMPT" >> %[1]q/prompts.log
 N=$(grep -c "^$PROMPT\$" %[1]q/prompts.log)
+OUTCOME=success
 case "$PROMPT" in
   steady) echo marker > marker ;;
   flaky) [ "$N" != "1" ] && echo marker > marker ;;
+  unhealthy) echo marker > marker; [ "$N" = "1" ] && OUTCOME=error ;;
 esac
-[ -n "$TRACE" ] && echo '{"id":"t","turns":1,"outcome":"success"}' > "$TRACE"
+[ -n "$TRACE" ] && echo "{\"id\":\"t\",\"turns\":1,\"outcome\":\"$OUTCOME\"}" > "$TRACE"
 exit 0
 `, logDir)
 }
@@ -475,7 +478,7 @@ func TestRunSuite_ConfirmOnFailEvenTrialsTieReportsError(t *testing.T) {
 	must.Equal("no majority across 2 trials: 1 passed, 1 failed, 0 errored", tr.Error)
 }
 
-func TestRunSuite_ConfirmOnFailWithOneTrialRunsEachTaskOnce(t *testing.T) {
+func TestRunSuite_ConfirmOnFailWithOneTrialRunsOnceAndRecordsFixed(t *testing.T) {
 	must := require.New(t)
 	logDir := t.TempDir()
 	harness := writeFakeHarness(t, confirmHarnessScript(logDir))
@@ -486,6 +489,77 @@ func TestRunSuite_ConfirmOnFailWithOneTrialRunsEachTaskOnce(t *testing.T) {
 	must.Equal(map[string]int{"broken": 1}, countPrompts(t, logDir))
 	must.Equal("fail", result.Tasks[0].Outcome)
 	must.Empty(result.Tasks[0].Trials)
+	must.Equal(eval.TrialsPolicyFixed, result.TrialsPolicy, "one trial schedules the same runs under both policies")
+}
+
+func TestRunSuite_ConfirmOnFailConfirmsAnUnhealthyPassUnderRequireHealthy(t *testing.T) {
+	task := types.EvalTask{ID: "unhealthy", Prompt: "unhealthy", Judge: markerJudge()}
+	cases := []struct {
+		name     string
+		suite    types.EvalSuite
+		cfg      RunConfig
+		wantRuns int
+	}{
+		{
+			name:     "judge outcome alone",
+			suite:    types.EvalSuite{ID: "judge-only", Tasks: []types.EvalTask{task}},
+			wantRuns: 1,
+		},
+		{
+			name:     "invocation flag",
+			suite:    types.EvalSuite{ID: "flag", Tasks: []types.EvalTask{task}},
+			cfg:      RunConfig{RequireHealthy: true},
+			wantRuns: 3,
+		},
+		{
+			name:     "suite attribute",
+			suite:    types.EvalSuite{ID: "attribute", RequireHealthy: true, Tasks: []types.EvalTask{task}},
+			wantRuns: 3,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			logDir := t.TempDir()
+			cfg := tc.cfg
+			cfg.HarnessPath = writeFakeHarness(t, confirmHarnessScript(logDir))
+			cfg.Trials = 3
+			cfg.TrialsPolicy = eval.TrialsPolicyConfirmOnFail
+
+			result, err := RunSuite(context.Background(), tc.suite, cfg)
+			must.NoError(err)
+			must.Equal(map[string]int{"unhealthy": tc.wantRuns}, countPrompts(t, logDir))
+			must.Equal("pass", result.Tasks[0].Outcome, "the judge passed every trial")
+			if tc.wantRuns > 1 {
+				must.NotEqual(types.RunHealthy, result.Tasks[0].Trials[0].RunHealth)
+				must.Equal(types.RunHealthy, result.Tasks[0].Trials[1].RunHealth)
+			}
+		})
+	}
+}
+
+func TestRunSuite_ConfirmOnFailCancelledBeforeConfirmationKeepsFirstTrials(t *testing.T) {
+	must := require.New(t)
+	logDir := t.TempDir()
+	harness := writeFakeHarness(t, `#!/bin/sh
+echo run >> `+logDir+`/runs.log
+sleep 0.5
+`)
+	suite := types.EvalSuite{ID: "cancel-confirm", Tasks: []types.EvalTask{
+		{ID: "a", Prompt: "p", Judge: markerJudge()},
+		{ID: "b", Prompt: "p", Judge: markerJudge()},
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+
+	result, err := RunSuite(ctx, suite, RunConfig{HarnessPath: harness, Concurrency: 1, Trials: 3, TrialsPolicy: eval.TrialsPolicyConfirmOnFail})
+	must.NoError(err)
+
+	must.LessOrEqual(len(readLines(t, filepath.Join(logDir, "runs.log"))), len(suite.Tasks), "a confirmation trial started after cancellation")
+	for _, tr := range result.Tasks {
+		must.Empty(tr.Trials, "task %s was scheduled confirmation trials after cancellation", tr.TaskID)
+		must.NotEqual("pass", tr.Outcome, "task %s", tr.TaskID)
+	}
 }
 
 func TestRunSuite_TrialsPolicyRecordedInResult(t *testing.T) {
