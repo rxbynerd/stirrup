@@ -4,7 +4,9 @@
 #
 # An ALLOW policy denies everything it does not match on the selected
 # workload, so a control plane serving other ports (an API, metrics) needs a
-# rule for each of them here. The trust domain is the Istio default,
+# rule for each of them here. A selector that matches no Pod leaves the
+# control plane with no policy at all, open to every meshed workload, so
+# keep it in step with the control-plane Pod labels. The trust domain is the Istio default,
 # cluster.local; change it if the mesh uses another.
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy

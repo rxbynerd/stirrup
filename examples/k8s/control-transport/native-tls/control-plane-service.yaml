@@ -1,0 +1,23 @@
+# The control plane's namespace and RunTask Service for the harness mutual
+# TLS recipe. job.yaml dials stirrup-control-plane.stirrup-control.svc:9443,
+# so the server certificate must carry that name as a DNS SAN. The selector
+# must match the operator's control-plane Pods; port 9443 is a placeholder
+# that only has to agree with CONTROL_PLANE_ADDR in job.yaml.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: stirrup-control
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stirrup-control-plane
+  namespace: stirrup-control
+spec:
+  selector:
+    app: stirrup-control-plane
+  ports:
+    - name: runtask
+      port: 9443
+      targetPort: 9443
+      protocol: TCP
