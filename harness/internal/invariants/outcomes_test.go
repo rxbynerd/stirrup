@@ -2,6 +2,7 @@ package invariants
 
 import (
 	"go/ast"
+	"go/parser"
 	"go/token"
 	"slices"
 	"sort"
@@ -21,16 +22,41 @@ import (
 // An unlisted outcome would be scored by the unknown-outcome defaults.
 //
 // Outcome literals are found by following values from where they meet an
-// outcome: assignments to and comparisons with variables named like
-// "outcome", parameters and named results named like it, and from there
-// through local variables, call arguments and return values within the
-// core package until nothing new is reached.
+// outcome: assignments to and comparisons with variables or fields named
+// like "outcome", struct fields keyed like it, parameters and named
+// results named like it, and from there through local variables,
+// package-level constants, call arguments and return values within each
+// scanned package until nothing new is reached.
 func TestRunOutcomes_EveryOutcomeTheLoopSetsIsClassified(t *testing.T) {
 	check := assert.New(t)
 	must := require.New(t)
 	fset := token.NewFileSet()
-	files := parseProductionFiles(t, fset, "harness/internal/core")
-	found := newOutcomeScan(files).literals()
+	found := map[string]token.Pos{}
+	for _, dir := range outcomePackages {
+		for lit, pos := range newOutcomeScan(parseProductionFiles(t, fset, dir)).literals() {
+			if _, seen := found[lit]; !seen {
+				found[lit] = pos
+			}
+		}
+	}
+	for name := range foreignOutcomeNames {
+		declared := false
+		for _, dir := range outcomePackages {
+			for _, sf := range parseProductionFiles(t, fset, dir) {
+				ast.Inspect(sf.file, func(n ast.Node) bool {
+					if id, ok := n.(*ast.Ident); ok && id.Name == name {
+						declared = true
+					}
+					return !declared
+				})
+			}
+		}
+		must.True(declared, "foreignOutcomeNames lists %s, which no scanned package uses; remove it", name)
+	}
+	for sentinel := range outcomeSentinels {
+		must.Contains(found, sentinel, "outcomeSentinels lists %q, which the scan no longer reaches; remove it", sentinel)
+		delete(found, sentinel)
+	}
 
 	known := types.RunOutcomes()
 	names := make([]string, 0, len(found))
@@ -51,6 +77,27 @@ func TestRunOutcomes_EveryOutcomeTheLoopSetsIsClassified(t *testing.T) {
 	}
 }
 
+// outcomePackages are the packages that set or interpret run outcomes.
+var outcomePackages = []string{
+	"harness/internal/core",
+	"harness/cmd/stirrup/cmd",
+}
+
+// outcomeSentinels are internal outcome values that never reach
+// RunTrace.Outcome, with what replaces them.
+var outcomeSentinels = map[string]string{
+	"_ctx_done":      "core.outcomeCtxDone; Run replaces it with classifyCtxOutcome before the trace is finished",
+	"internal-error": "RunResult.Outcome when the loop returned no trace at all; never a RunTrace.Outcome",
+}
+
+// foreignOutcomeNames are functions and variables whose outcome-named
+// values carry another vocabulary than the run outcome.
+var foreignOutcomeNames = map[string]string{
+	"next":                   "turnRetrier.next returns the provider.retry.outcome metric attribute",
+	"recordTurnRetryOutcome": "records the provider.retry.outcome metric attribute",
+	"retryOutcome":           "holds the provider.retry.outcome metric attribute",
+}
+
 // providerStopReasonOutcomes are outcomes types.RunOutcomes classifies that
 // reach RunTrace.Outcome as a provider stop reason rather than a literal in
 // the loop.
@@ -59,6 +106,9 @@ var providerStopReasonOutcomes = map[string]bool{
 }
 
 func isOutcomeName(name string) bool {
+	if _, foreign := foreignOutcomeNames[name]; foreign {
+		return false
+	}
 	return strings.Contains(strings.ToLower(name), "outcome")
 }
 
@@ -68,6 +118,7 @@ type outcomeScan struct {
 	funcs   map[string][]*ast.FuncDecl
 	params  map[string]map[int]bool
 	results map[string]map[int]bool
+	consts  map[string]*ast.BasicLit
 	found   map[string]token.Pos
 	changed bool
 }
@@ -77,15 +128,34 @@ func newOutcomeScan(files []sourceFile) *outcomeScan {
 		funcs:   map[string][]*ast.FuncDecl{},
 		params:  map[string]map[int]bool{},
 		results: map[string]map[int]bool{},
+		consts:  map[string]*ast.BasicLit{},
 		found:   map[string]token.Pos{},
 	}
 	for _, sf := range files {
 		for _, decl := range sf.file.Decls {
+			if gd, ok := decl.(*ast.GenDecl); ok && gd.Tok == token.CONST {
+				for _, spec := range gd.Specs {
+					vs, ok := spec.(*ast.ValueSpec)
+					if !ok {
+						continue
+					}
+					for i, name := range vs.Names {
+						if i < len(vs.Values) {
+							if lit, ok := vs.Values[i].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+								s.consts[name.Name] = lit
+							}
+						}
+					}
+				}
+			}
 			fd, ok := decl.(*ast.FuncDecl)
 			if !ok || fd.Body == nil {
 				continue
 			}
 			s.funcs[fd.Name.Name] = append(s.funcs[fd.Name.Name], fd)
+			if _, foreign := foreignOutcomeNames[fd.Name.Name]; foreign {
+				continue
+			}
 			for i, name := range fieldNames(fd.Type.Params) {
 				if isOutcomeName(name) {
 					s.mark(s.params, fd.Name.Name, i)
@@ -119,6 +189,9 @@ func fieldNames(fields *ast.FieldList) []string {
 }
 
 func (s *outcomeScan) mark(m map[string]map[int]bool, fn string, i int) {
+	if _, foreign := foreignOutcomeNames[fn]; foreign {
+		return
+	}
 	if m[fn] == nil {
 		m[fn] = map[int]bool{}
 	}
@@ -147,14 +220,18 @@ func (s *outcomeScan) scanFunc(fd *ast.FuncDecl) {
 		switch node := n.(type) {
 		case *ast.AssignStmt:
 			s.scanAssign(fd, node)
+		case *ast.KeyValueExpr:
+			if key, ok := node.Key.(*ast.Ident); ok && isOutcomeName(key.Name) {
+				s.value(fd, node.Value)
+			}
 		case *ast.BinaryExpr:
 			if node.Op == token.EQL || node.Op == token.NEQ {
-				if id, ok := node.X.(*ast.Ident); ok && isOutcomeName(id.Name) {
+				if isOutcomeName(outcomeTarget(node.X)) {
 					s.value(fd, node.Y)
 				}
 			}
 		case *ast.SwitchStmt:
-			if id, ok := node.Tag.(*ast.Ident); ok && isOutcomeName(id.Name) {
+			if node.Tag != nil && isOutcomeName(outcomeTarget(node.Tag)) {
 				for _, stmt := range node.Body.List {
 					for _, e := range stmt.(*ast.CaseClause).List {
 						s.value(fd, e)
@@ -193,8 +270,7 @@ func (s *outcomeScan) scanFunc(fd *ast.FuncDecl) {
 // outcome, and marks the result of a call whose value lands in one.
 func (s *outcomeScan) scanAssign(fd *ast.FuncDecl, as *ast.AssignStmt) {
 	for i, lhs := range as.Lhs {
-		id, ok := lhs.(*ast.Ident)
-		if !ok || !isOutcomeName(id.Name) {
+		if !isOutcomeName(outcomeTarget(lhs)) {
 			continue
 		}
 		switch {
@@ -234,6 +310,9 @@ func (s *outcomeScan) value(fd *ast.FuncDecl, expr ast.Expr) {
 			s.mark(s.params, fd.Name.Name, i)
 			return
 		}
+		if lit, ok := s.consts[e.Name]; ok {
+			s.value(fd, lit)
+		}
 		ast.Inspect(fd.Body, func(n ast.Node) bool {
 			as, ok := n.(*ast.AssignStmt)
 			if !ok {
@@ -258,4 +337,50 @@ func (s *outcomeScan) value(fd *ast.FuncDecl, expr ast.Expr) {
 			return true
 		})
 	}
+}
+
+// outcomeTarget returns the name an assignment target or compared operand
+// is known by: the identifier, or the field of a selector.
+func outcomeTarget(expr ast.Expr) string {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		return e.Name
+	case *ast.SelectorExpr:
+		return e.Sel.Name
+	}
+	return ""
+}
+
+// TestOutcomeScan_FollowsEveryWayAnOutcomeIsSet pins the scan on a small
+// package: each way of setting an outcome is reached, and a value of an
+// unrelated vocabulary is not.
+func TestOutcomeScan_FollowsEveryWayAnOutcomeIsSet(t *testing.T) {
+	const src = `package p
+
+const outcomeViaConst = "via_const"
+
+func finish(outcome string) {}
+
+func classify() string { return "via_return" }
+
+func run(rt *RunTrace) {
+	outcome := outcomeViaConst
+	finish("via_param")
+	outcome = classify()
+	rt.Outcome = "via_field"
+	_ = Result{Outcome: "via_key"}
+	if outcome == "via_compare" {
+	}
+	status := "not_an_outcome"
+	_ = status
+}
+`
+	must := require.New(t)
+	f, err := parser.ParseFile(token.NewFileSet(), "snippet.go", src, parser.SkipObjectResolution)
+	must.NoError(err)
+	found := newOutcomeScan([]sourceFile{{path: "snippet.go", file: f}}).literals()
+	for _, want := range []string{"via_const", "via_param", "via_return", "via_field", "via_key", "via_compare"} {
+		must.Contains(found, want)
+	}
+	must.NotContains(found, "not_an_outcome")
 }
