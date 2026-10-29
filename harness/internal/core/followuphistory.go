@@ -3,8 +3,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"reflect"
-	"slices"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -28,21 +26,7 @@ type carriedHistory struct {
 	// cacheKey is the provider cache key the history was produced under.
 	cacheKey string
 	// binding is the thinking binding the history was last sent under.
-	binding thinkingBinding
-}
-
-// thinkingBinding is the request input besides the history before it that
-// a signed thinking block is bound to: Anthropic rejects a block replayed
-// under a different system prompt or tool list.
-type thinkingBinding struct {
-	system string
-	tools  []types.ToolDefinition
-}
-
-func (b thinkingBinding) equal(other thinkingBinding) bool {
-	return b.system == other.system && slices.EqualFunc(b.tools, other.tools, func(x, y types.ToolDefinition) bool {
-		return reflect.DeepEqual(x, y)
-	})
+	binding *thinkingBinding
 }
 
 func (c *carriedHistory) rewrote() bool {
@@ -80,14 +64,14 @@ func (c *carriedHistory) continuesHistory() bool {
 }
 
 // beginRunState sets the per-run state a run's inner loops share: the
-// tool-call count escalation starts from and the provider cache key. A run
-// continuing carried history inherits both; any other run counts zero and
-// keys on its own run ID.
+// tool-call count escalation starts from, the provider cache key, and the
+// thinking binding the history was last sent under. A run continuing
+// carried history inherits all three; any other run counts zero, keys on
+// its own run ID, and has sent nothing.
 func (l *AgenticLoop) beginRunState(config *types.RunConfig, carried *carriedHistory) {
 	l.carriedToolCalls = 0
 	l.cacheKey = providerCacheKey(config.RunID)
-	l.requestBinding = thinkingBinding{}
-	l.carriedBinding = nil
+	l.requestBinding = nil
 	if !carried.continuesHistory() {
 		return
 	}
@@ -96,30 +80,6 @@ func (l *AgenticLoop) beginRunState(config *types.RunConfig, carried *carriedHis
 		l.cacheKey = carried.cacheKey
 	}
 	l.requestBinding = carried.binding
-	binding := carried.binding
-	l.carriedBinding = &binding
-}
-
-// bindRequestThinking records the thinking binding of the request about to
-// be sent. On a follow-up's first request it also strips the carried
-// history's thinking blocks when the binding differs from the one the
-// history was last sent under, which Anthropic rejects them for.
-func (l *AgenticLoop) bindRequestThinking(ctx context.Context, systemPrompt string, toolDefs []types.ToolDefinition, messages []types.Message) []types.Message {
-	binding := thinkingBinding{system: systemPrompt, tools: slices.Clone(toolDefs)}
-	carried := l.carriedBinding
-	l.carriedBinding = nil
-	l.requestBinding = binding
-	if carried == nil || carried.equal(binding) || !hasThinkingBlocks(messages) {
-		return messages
-	}
-	l.Logger.InfoContext(ctx, "follow-up drops the carried thinking blocks: its system prompt or tools differ from the previous run's")
-	return types.StripThinkingBlocks(messages)
-}
-
-func hasThinkingBlocks(messages []types.Message) bool {
-	return slices.ContainsFunc(messages, func(m types.Message) bool {
-		return slices.ContainsFunc(m.Content, types.IsThinkingBlock)
-	})
 }
 
 func countToolUses(messages []types.Message) int {

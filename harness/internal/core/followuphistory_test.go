@@ -424,20 +424,25 @@ func TestRunFollowUpLoop_ContinueKeepsThinkingStrippedAfterRewrite(t *testing.T)
 }
 
 // thinkingOnCallsProvider answers the calls numbered in thinkOn (from 1)
-// with a signed thinking block and a tool call, and every other call with
-// end_turn text. sent records each request's messages.
+// with a signed thinking block and a call to tool (test_tool when empty),
+// and every other call with end_turn text. sent records each request.
 type thinkingOnCallsProvider struct {
 	thinkOn map[int]bool
-	sent    [][]types.Message
+	tool    string
+	sent    []types.StreamParams
 }
 
 func (p *thinkingOnCallsProvider) Stream(_ context.Context, params types.StreamParams) (<-chan types.StreamEvent, error) {
-	p.sent = append(p.sent, params.Messages)
+	p.sent = append(p.sent, params)
 	call := len(p.sent)
 	ch := make(chan types.StreamEvent, 4)
 	if p.thinkOn[call] {
+		name := p.tool
+		if name == "" {
+			name = "test_tool"
+		}
 		ch <- types.StreamEvent{Type: "thinking", ThoughtSignature: fmt.Sprintf("sig-%d", call)}
-		ch <- types.StreamEvent{Type: "tool_call", ID: fmt.Sprintf("tc_%d", call), Name: "test_tool", Input: map[string]any{}}
+		ch <- types.StreamEvent{Type: "tool_call", ID: fmt.Sprintf("tc_%d", call), Name: name, Input: map[string]any{}}
 		ch <- types.StreamEvent{Type: "message_complete", StopReason: "tool_use"}
 	} else {
 		ch <- types.StreamEvent{Type: "text_delta", Text: "done"}
@@ -487,49 +492,8 @@ func TestRunFollowUpLoop_ContinueDropsCarriedThinkingUnderAChangedSystemPrompt(t
 			must.Len(traces, 2)
 			check.Equal("success", traces[1].Outcome, "follow-up outcome")
 			must.Len(prov.sent, 4, "provider requests")
-			check.Equal(tc.wantFirst, thinkingSignatures(prov.sent[2]), "follow-up's first request")
-			check.Equal(tc.wantFollowUps, thinkingSignatures(prov.sent[3]), "follow-up's second request")
-		})
-	}
-}
-
-func TestBindRequestThinking_StripsOnlyACarriedHistoryUnderADifferentBinding(t *testing.T) {
-	readTool := types.ToolDefinition{Name: "read_file", InputSchema: json.RawMessage(`{"type":"object"}`)}
-	writeTool := types.ToolDefinition{Name: "write_file", InputSchema: json.RawMessage(`{"type":"object"}`)}
-	sent := thinkingBinding{system: "system", tools: []types.ToolDefinition{readTool}}
-	history := []types.Message{
-		userText("task"),
-		{Role: "assistant", Content: []types.ContentBlock{{Type: "thinking", ThoughtSignature: "sig"}, {Type: "text", Text: "done"}}},
-		userText("carry on"),
-	}
-	cases := []struct {
-		name      string
-		carried   *thinkingBinding
-		system    string
-		tools     []types.ToolDefinition
-		wantSigns []string
-	}{
-		{name: "no carried history", carried: nil, system: "other", tools: nil, wantSigns: []string{"sig"}},
-		{name: "same binding", carried: &sent, system: "system", tools: []types.ToolDefinition{readTool}, wantSigns: []string{"sig"}},
-		{name: "system prompt differs", carried: &sent, system: "other", tools: []types.ToolDefinition{readTool}, wantSigns: nil},
-		{name: "tool added", carried: &sent, system: "system", tools: []types.ToolDefinition{readTool, writeTool}, wantSigns: nil},
-		{name: "tool schema differs", carried: &sent, system: "system", tools: []types.ToolDefinition{{Name: "read_file", InputSchema: json.RawMessage(`{}`)}}, wantSigns: nil},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			must := require.New(t)
-			check := assert.New(t)
-			loop := buildTestLoop(&mockProvider{})
-			loop.carriedBinding = tc.carried
-
-			got := loop.bindRequestThinking(context.Background(), tc.system, tc.tools, history)
-
-			check.Equal(tc.wantSigns, thinkingSignatures(got))
-			check.Equal([]string{"sig"}, thinkingSignatures(history), "the input history was modified")
-			must.Nil(loop.carriedBinding, "the carried binding was not consumed")
-			check.True(loop.requestBinding.equal(thinkingBinding{system: tc.system, tools: tc.tools}), "the request binding was not recorded")
-			check.Equal(tc.wantSigns, thinkingSignatures(loop.bindRequestThinking(context.Background(), "later", nil, got)),
-				"a later request compared against the carried binding again")
+			check.Equal(tc.wantFirst, thinkingSignatures(prov.sent[2].Messages), "follow-up's first request")
+			check.Equal(tc.wantFollowUps, thinkingSignatures(prov.sent[3].Messages), "follow-up's second request")
 		})
 	}
 }

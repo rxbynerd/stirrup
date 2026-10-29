@@ -1346,7 +1346,10 @@ description. It is neither BM25 nor semantic search. The best-scoring
 tools not yet loaded are loaded, and the next turn sends their full
 definitions. Tools that match but are already loaded are not loaded
 again and do not count toward the limit; the result names them on an
-`Already loaded:` line.
+`Already loaded:` line. Anthropic rejects a signed thinking block
+replayed under a tool list other than the one it was produced under,
+so the turn after a load drops the thinking blocks of the turns before
+it from the history.
 
 The harness search also keeps one group from filling every slot. A
 group is an MCP server, the MCP tools no configured server claims,
