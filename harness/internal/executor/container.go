@@ -46,9 +46,9 @@ var (
 	// (see container_api.go), so a wedged daemon would otherwise hang the
 	// calling goroutine indefinitely. A var, not const, so tests can shrink it.
 	containerFileIOTimeout = 60 * time.Second
-	// containerMkdirTimeout bounds WriteFile's target guard exec (which
-	// runs mkdir -p), snappier than the file-transfer budget above.
-	containerMkdirTimeout = 10 * time.Second
+	// containerWriteGuardTimeout bounds WriteFile's target guard exec,
+	// snappier than the file-transfer budget above.
+	containerWriteGuardTimeout = 10 * time.Second
 )
 
 // ContainerExecutorConfig holds the configuration for creating a ContainerExecutor.
@@ -473,6 +473,9 @@ func (e *ContainerExecutor) WriteFile(ctx context.Context, filePath string, cont
 		}
 		return fmt.Errorf("content too large: %d bytes (max %d)", len(content), maxFileSize)
 	}
+	if err := checkWorkspaceWritePath(filePath); err != nil {
+		return err
+	}
 
 	resolved, err := e.ResolvePath(filePath)
 	if err != nil {
@@ -485,7 +488,7 @@ func (e *ContainerExecutor) WriteFile(ctx context.Context, filePath string, cont
 	ctx, cancel := context.WithTimeout(ctx, containerFileIOTimeout)
 	defer cancel()
 
-	guard, err := e.execInContainer(ctx, workspaceWriteGuardCommand(e.workspace, resolved), e.workspace, containerMkdirTimeout)
+	guard, err := e.execInContainer(ctx, workspaceWriteGuardCommand(e.workspace, resolved), e.workspace, containerWriteGuardTimeout)
 	if err != nil {
 		return fmt.Errorf("resolve write target: %w", err)
 	}

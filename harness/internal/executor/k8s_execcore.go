@@ -164,6 +164,9 @@ func (e *podExecCore) WriteFile(ctx context.Context, filePath string, content st
 		return errK8sOutputCap
 	}
 
+	if err := checkWorkspaceWritePath(filePath); err != nil {
+		return err
+	}
 	resolved, err := e.resolveFilePath(filePath)
 	if err != nil {
 		return err
@@ -172,12 +175,16 @@ func (e *podExecCore) WriteFile(ctx context.Context, filePath string, content st
 	ctx, cancel := context.WithTimeout(ctx, k8sFileIOTimeout)
 	defer cancel()
 
-	var guardOut, guardErr bytes.Buffer
+	guardOut := writeCapBuffer{limit: workspaceWriteGuardOutputLimit}
+	guardErr := writeCapBuffer{limit: workspaceWriteGuardOutputLimit}
 	if err := e.streamExec(ctx, workspaceWriteGuardCommand(k8sWorkspace, resolved), nil, &guardOut, &guardErr); err != nil {
 		if code, ok := extractExitCode(err); ok && code != 0 {
 			return classifyWorkspaceWriteExit(code, guardErr.String(), filePath, k8sWorkspace, e.Security)
 		}
 		return fmt.Errorf("resolve write target %s: %w", filePath, err)
+	}
+	if guardOut.exceeded {
+		return workspaceWriteEscape(filePath, k8sWorkspace, e.Security)
 	}
 	target, err := parseWorkspaceWriteTarget(guardOut.String(), filePath, k8sWorkspace, e.Security)
 	if err != nil {

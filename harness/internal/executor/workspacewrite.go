@@ -4,51 +4,59 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"unicode"
 )
 
 const (
-	// workspaceWriteNoReadlinkExit and workspaceWriteEscapeExit are the exit
-	// statuses workspaceWriteGuardScript reserves for its own failures;
-	// mkdir exits 1.
+	// workspaceWriteNoReadlinkExit, workspaceWriteEscapeExit, and
+	// workspaceWriteIsDirExit are the exit statuses workspaceWriteGuardScript
+	// reserves for its own failures; mkdir exits 1.
 	workspaceWriteNoReadlinkExit = 112
 	workspaceWriteEscapeExit     = 113
+	workspaceWriteIsDirExit      = 114
+
+	// workspaceWriteGuardOutputLimit bounds what the guard's output streams
+	// may buffer; it prints one path or one error line.
+	workspaceWriteGuardOutputLimit = 64 << 10
 )
 
-// workspaceWriteGuardScript resolves where a write to $2 would land inside
-// the sandbox, creates its parent directories, and prints the resolved
-// file path, refusing anything that leaves the workspace ($1). Engine
-// archive endpoints, tar -C, and mkdir -p all follow a symlink committed
-// into the workspace, so without the guard a write could land anywhere
-// the writing uid can reach. The deepest existing ancestor is checked
-// before mkdir -p so a symlinked intermediate directory cannot make mkdir
-// create directories elsewhere. A destination that is itself a symlink is
-// written through to its target only when that target stays inside the
-// workspace, matching the local executor. An image without readlink fails
-// closed rather than skipping the check.
+// workspaceWriteGuardScript creates the parent directories of $2 and prints
+// the symlink-free path a write to it must use, refusing anything that
+// resolves outside the workspace ($1): archive endpoints, tar -C, and mkdir
+// -p all follow symlinks. canon keeps the trailing newlines command
+// substitution strips; the final walk refuses any symlink left in the path
+// whatever readlink printed. In-workspace symlinks are written through.
 var workspaceWriteGuardScript = fmt.Sprintf(`command -v readlink >/dev/null 2>&1 || { echo "readlink is required for workspace writes" >&2; exit %[1]d; }
+nl='
+'
 w=$1 f=$2 d=${2%%/*}
+escape() { echo "path escapes workspace: $f" >&2; exit %[2]d; }
+canon() {
+  c=$(readlink -f -- "$1" 2>/dev/null && echo .)
+  c=${c%%.}
+  c=${c%%?}
+  case "$c" in ""|*"$nl"*) escape ;; esac
+}
 a=$d
 while [ -n "$a" ] && [ ! -e "$a" ] && [ ! -L "$a" ]; do a=${a%%/*}; done
-r=$(readlink -f -- "${a:-/}" 2>/dev/null)
-case "$r" in
-  "$w"|"$w"/*) ;;
-  *) echo "path escapes workspace: $f" >&2; exit %[2]d ;;
-esac
+canon "${a:-/}"
+case "$c" in "$w"|"$w"/*) ;; *) escape ;; esac
 mkdir -p -- "$d" || exit 1
-p=$(readlink -f -- "$d" 2>/dev/null)
-case "$p" in
-  "$w"|"$w"/*) ;;
-  *) echo "path escapes workspace: $f" >&2; exit %[2]d ;;
-esac
-t=$p/${f##*/}
+canon "$d"
+case "$c" in "$w"|"$w"/*) ;; *) escape ;; esac
+t=$c/${f##*/}
 if [ -L "$t" ]; then
-  t=$(readlink -f -- "$t" 2>/dev/null)
-  case "$t" in
-    "$w"/*) ;;
-    *) echo "path escapes workspace: $f" >&2; exit %[2]d ;;
-  esac
+  canon "$t"
+  t=$c
+  case "$t" in "$w"/*) ;; *) escape ;; esac
 fi
-printf '%%s\n' "$t"`, workspaceWriteNoReadlinkExit, workspaceWriteEscapeExit)
+q=$t
+while [ -n "$q" ] && [ "$q" != "$w" ]; do
+  if [ -L "$q" ]; then escape; fi
+  q=${q%%/*}
+done
+if [ -d "$t" ]; then echo "path is a directory, not a file: $f" >&2; exit %[3]d; fi
+printf '%%s\n' "$t"`, workspaceWriteNoReadlinkExit, workspaceWriteEscapeExit, workspaceWriteIsDirExit)
 
 // workspaceWriteGuardCommand is the argv both sandbox executors run before
 // a workspace write; workspace and target are absolute in-sandbox paths.
@@ -65,6 +73,8 @@ func classifyWorkspaceWriteExit(code int, stderr, filePath, workspace string, se
 		return fmt.Errorf("write file %s: the sandbox image lacks readlink, which workspace writes require", filePath)
 	case workspaceWriteEscapeExit:
 		return workspaceWriteEscape(filePath, workspace, security)
+	case workspaceWriteIsDirExit:
+		return fmt.Errorf("path is a directory, not a file: %s", filePath)
 	}
 	if msg := strings.TrimSpace(stderr); msg != "" {
 		return fmt.Errorf("write file %s: %s", filePath, msg)
@@ -76,10 +86,21 @@ func classifyWorkspaceWriteExit(code int, stderr, filePath, workspace string, se
 // write only ever goes to a clean path strictly inside workspace.
 func parseWorkspaceWriteTarget(stdout, filePath, workspace string, security SecurityEventEmitter) (string, error) {
 	target := strings.TrimSuffix(stdout, "\n")
-	if target == "" || path.Clean(target) != target || !strings.HasPrefix(target, workspace+"/") {
+	if target == "" || path.Clean(target) != target || !strings.HasPrefix(target, workspace+"/") ||
+		strings.IndexFunc(target, unicode.IsControl) >= 0 {
 		return "", workspaceWriteEscape(filePath, workspace, security)
 	}
 	return target, nil
+}
+
+// checkWorkspaceWritePath refuses a sandbox write path carrying a control
+// character, which no legitimate workspace file name needs and which shell
+// tooling and the engines handle inconsistently.
+func checkWorkspaceWritePath(filePath string) error {
+	if strings.IndexFunc(filePath, unicode.IsControl) >= 0 {
+		return fmt.Errorf("path contains a control character: %q", filePath)
+	}
+	return nil
 }
 
 func workspaceWriteEscape(filePath, workspace string, security SecurityEventEmitter) error {

@@ -167,11 +167,12 @@ func TestContainerExecutor_ReadFile_SymlinkEscape_LiveEngine(t *testing.T) {
 
 // TestContainerExecutor_WriteFile_SymlinkEscape_LiveEngine proves the write
 // guard closes the symlink class against a real engine: writes through a
-// symlinked directory (to /etc and to the writable /tmp) and through a
-// symlinked file (to /tmp and to the sandbox identity token) all fail with
-// a workspace-escape error and leave everything outside the workspace
-// untouched, while writes inside the workspace, including through an
-// in-workspace symlink, still land.
+// symlinked directory (to /etc, to the writable /tmp, and to the identity
+// token directory, including via a directory whose name ends in a newline)
+// and through a symlinked file all fail with a workspace-escape error and
+// leave everything outside the workspace untouched. Writes inside the
+// workspace, including through an in-workspace file symlink, still land,
+// and a symlink to an in-workspace directory is refused without touching it.
 func TestContainerExecutor_WriteFile_SymlinkEscape_LiveEngine(t *testing.T) {
 	must := require.New(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -188,6 +189,13 @@ func TestContainerExecutor_WriteFile_SymlinkEscape_LiveEngine(t *testing.T) {
 		"ln -sf /tmp/target.txt /workspace/filelink",
 		"ln -sf " + SandboxIdentityTokenPath + " /workspace/tokenlink",
 		"ln -sf real.txt /workspace/alias",
+		"mkdir '/workspace/nl\n' '/workspace/tk\n'",
+		"ln -sf /tmp /workspace/nl",
+		"ln -sf " + SandboxIdentityTokenDir + " /workspace/tk",
+		"ln -sf '/workspace/nl\n' /workspace/m",
+		"ln -sf '/workspace/tk\n' /workspace/k",
+		"mkdir /workspace/src && printf keep > /workspace/src/keep.txt",
+		"ln -sf src /workspace/dirlink",
 	}, " && ")
 	res, err := exec.Exec(ctx, setup, 30*time.Second)
 	must.NoError(err, "symlink setup")
@@ -200,6 +208,8 @@ func TestContainerExecutor_WriteFile_SymlinkEscape_LiveEngine(t *testing.T) {
 		"tmpdir/stirrup-newdir/x.txt",
 		"filelink",
 		"tokenlink",
+		"m/stirrup-escape.txt",
+		"k/token",
 	} {
 		t.Run(probe, func(t *testing.T) {
 			must := require.New(t)
@@ -212,13 +222,22 @@ func TestContainerExecutor_WriteFile_SymlinkEscape_LiveEngine(t *testing.T) {
 	}
 	exec.Security = nil
 
+	err = exec.WriteFile(ctx, "nl\n/stirrup-escape.txt", "ATTACKER")
+	must.ErrorContains(err, "control character", "a requested path with a newline")
+	err = exec.WriteFile(ctx, "dirlink", "ATTACKER")
+	must.ErrorContains(err, "is a directory", "a symlink to an in-workspace directory")
+	got, err := exec.ReadFile(ctx, "src/keep.txt")
+	must.NoError(err, "ReadFile(src/keep.txt)")
+	must.Equal("keep", got, "the linked directory must survive a refused write")
+	must.NoError(exec.WriteSandboxIdentityToken(ctx, token+"-2"), "token rotation after refused writes")
+
 	verify := strings.Join([]string{
 		"[ ! -e /etc/stirrup-escape.txt ]",
 		"[ ! -e /etc/stirrup-newdir ]",
 		"[ ! -e /tmp/stirrup-escape.txt ]",
 		"[ ! -e /tmp/stirrup-newdir ]",
 		`[ "$(cat /tmp/target.txt)" = original ]`,
-		`[ "$(cat ` + SandboxIdentityTokenPath + `)" = ` + token + ` ]`,
+		`[ "$(cat ` + SandboxIdentityTokenPath + `)" = ` + token + `-2 ]`,
 		"! grep -rq ATTACKER /etc /tmp " + SandboxIdentityTokenDir,
 	}, " && ")
 	res, err = exec.Exec(ctx, verify, 30*time.Second)
@@ -226,7 +245,7 @@ func TestContainerExecutor_WriteFile_SymlinkEscape_LiveEngine(t *testing.T) {
 	must.Zero(res.ExitCode, "something landed outside the workspace: %+v", res)
 
 	must.NoError(exec.WriteFile(ctx, "alias", "rewritten"), "WriteFile(alias)")
-	got, err := exec.ReadFile(ctx, "real.txt")
+	got, err = exec.ReadFile(ctx, "real.txt")
 	must.NoError(err, "ReadFile(real.txt)")
 	must.Equal("rewritten", got, "an in-workspace symlink should be written through")
 

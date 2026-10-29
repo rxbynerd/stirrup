@@ -11,7 +11,7 @@ import (
 	osexec "os/exec"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -19,14 +19,16 @@ import (
 	utilexec "k8s.io/client-go/util/exec"
 )
 
-// runWriteGuard runs the write guard on the host with workspace as $1 and
-// returns its stdout, stderr, and exit status.
+// runWriteGuard runs the write guard on the host from the workspace's
+// parent directory with workspace as $1 and returns its stdout, stderr,
+// and exit status.
 func runWriteGuard(t *testing.T, env []string, workspace, target string) (stdout, stderr string, code int) {
 	t.Helper()
 	must := require.New(t)
 	argv := workspaceWriteGuardCommand(workspace, target)
 	cmd := osexec.Command(argv[0], argv[1:]...)
 	cmd.Env = env
+	cmd.Dir = filepath.Dir(workspace)
 	var out, errOut strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &errOut
@@ -61,6 +63,17 @@ func TestWorkspaceWriteGuardScript_ConfinesWritesToWorkspace(t *testing.T) {
 	must.NoError(os.Symlink(filepath.Join(outside, "absent.txt"), filepath.Join(ws, "dangling")))
 	must.NoError(os.Symlink("real.txt", filepath.Join(ws, "alias")))
 	must.NoError(os.Symlink("sub", filepath.Join(ws, "subalias")))
+	must.NoError(os.Symlink("sub", filepath.Join(ws, "dirlink")))
+	// A sibling whose name extends the workspace's must not pass a prefix check.
+	sibling := ws + "-evil"
+	must.NoError(os.MkdirAll(sibling, 0o755))
+	must.NoError(os.Symlink(sibling, filepath.Join(ws, "evil")))
+	must.NoError(os.Symlink(filepath.Join(sibling, "f.txt"), filepath.Join(ws, "evilfile")))
+	// "nl\n" is a real directory and "nl" escapes; a resolution that loses
+	// the trailing newline would write through "nl".
+	must.NoError(os.Mkdir(filepath.Join(ws, "nl\n"), 0o755))
+	must.NoError(os.Symlink(outside, filepath.Join(ws, "nl")))
+	must.NoError(os.Symlink(filepath.Join(ws, "nl\n"), filepath.Join(ws, "m")))
 	env := os.Environ()
 
 	for _, tc := range []struct {
@@ -72,6 +85,10 @@ func TestWorkspaceWriteGuardScript_ConfinesWritesToWorkspace(t *testing.T) {
 		{name: "existing file at the root", target: "real.txt", want: "real.txt"},
 		{name: "symlink inside the workspace writes through", target: "alias", want: "real.txt"},
 		{name: "symlinked directory inside the workspace", target: "subalias/x.txt", want: "sub/x.txt"},
+		{name: "name with a space", target: "sp ace.txt", want: "sp ace.txt"},
+		{name: "name with a leading dash", target: "-lead.txt", want: "-lead.txt"},
+		{name: "name with a command substitution", target: "$(touch pwned).txt", want: "$(touch pwned).txt"},
+		{name: "name with quotes", target: `q'uo"te.txt`, want: `q'uo"te.txt`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
@@ -81,6 +98,7 @@ func TestWorkspaceWriteGuardScript_ConfinesWritesToWorkspace(t *testing.T) {
 		})
 	}
 	must.DirExists(filepath.Join(ws, "a", "b"), "guard creates missing parents")
+	must.NoFileExists(filepath.Join(root, "pwned"), "a path must never be evaluated as shell")
 
 	for _, tc := range []struct {
 		name   string
@@ -90,11 +108,15 @@ func TestWorkspaceWriteGuardScript_ConfinesWritesToWorkspace(t *testing.T) {
 		{name: "dangling symlinked destination", target: "dangling"},
 		{name: "symlinked intermediate directory", target: "escape/new.txt"},
 		{name: "missing directories under a symlinked directory", target: "escape/made/deep/new.txt"},
+		{name: "symlinked directory sharing the workspace prefix", target: "evil/new.txt"},
+		{name: "symlinked destination sharing the workspace prefix", target: "evilfile"},
+		{name: "symlink to a directory whose name ends in a newline", target: "m/pwned.txt"},
+		{name: "requested directory whose name ends in a newline", target: "nl\n/pwned.txt"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
 			stdout, stderr, code := runWriteGuard(t, env, ws, filepath.Join(ws, tc.target))
-			must.Equal(workspaceWriteEscapeExit, code, "guard stderr: %s", stderr)
+			must.Equal(workspaceWriteEscapeExit, code, "guard stdout %q stderr: %s", stdout, stderr)
 			must.Empty(stdout)
 			must.Contains(stderr, "path escapes workspace")
 		})
@@ -103,6 +125,24 @@ func TestWorkspaceWriteGuardScript_ConfinesWritesToWorkspace(t *testing.T) {
 	entries, err := os.ReadDir(outside)
 	must.NoError(err)
 	must.Len(entries, 1, "only the seeded file may exist outside the workspace")
+	entries, err = os.ReadDir(sibling)
+	must.NoError(err)
+	must.Empty(entries, "nothing may land in the prefix-sharing sibling")
+
+	for _, tc := range []struct {
+		name   string
+		target string
+	}{
+		{name: "directory destination", target: "sub"},
+		{name: "symlink to an in-workspace directory", target: "dirlink"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			stdout, stderr, code := runWriteGuard(t, env, ws, filepath.Join(ws, tc.target))
+			must.Equal(workspaceWriteIsDirExit, code, "guard stderr: %s", stderr)
+			must.Empty(stdout)
+		})
+	}
 
 	t.Run("regular file as an ancestor is an ordinary failure", func(t *testing.T) {
 		must := require.New(t)
@@ -152,19 +192,21 @@ func TestClassifyWorkspaceWriteExit_EscapeReadlinkAndOther(t *testing.T) {
 
 func TestParseWorkspaceWriteTarget_AcceptsOnlyCleanPathsInsideWorkspace(t *testing.T) {
 	for _, tc := range []struct {
+		name   string
 		stdout string
 		want   string
 	}{
-		{stdout: "/workspace/a.txt\n", want: "/workspace/a.txt"},
-		{stdout: "/workspace/sub/line\nbreak\n", want: "/workspace/sub/line\nbreak"},
-		{stdout: ""},
-		{stdout: "/workspace\n"},
-		{stdout: "/workspace/\n"},
-		{stdout: "/workspacefoo/a\n"},
-		{stdout: "/workspace/../etc/passwd\n"},
-		{stdout: "/etc/passwd\n"},
+		{name: "file inside the workspace", stdout: "/workspace/a.txt\n", want: "/workspace/a.txt"},
+		{name: "embedded newline", stdout: "/workspace/sub\n/a.txt\n"},
+		{name: "doubled trailing newline", stdout: "/workspace/a.txt\n\n"},
+		{name: "empty output", stdout: ""},
+		{name: "workspace root", stdout: "/workspace\n"},
+		{name: "workspace root with a slash", stdout: "/workspace/\n"},
+		{name: "sibling sharing the prefix", stdout: "/workspacefoo/a\n"},
+		{name: "unclean path", stdout: "/workspace/../etc/passwd\n"},
+		{name: "outside the workspace", stdout: "/etc/passwd\n"},
 	} {
-		t.Run(tc.stdout, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
 			emitter := &mockSecurityEmitter{}
 			got, err := parseWorkspaceWriteTarget(tc.stdout, "a.txt", "/workspace", emitter)
@@ -180,15 +222,31 @@ func TestParseWorkspaceWriteTarget_AcceptsOnlyCleanPathsInsideWorkspace(t *testi
 	}
 }
 
-// writeGuardHandlers serves the write guard over the mock exec API and
-// records the archive upload, if any.
-func writeGuardHandlers(capture *readExecCapture, stdout, stderr string, exitCode int, uploads *atomic.Int32, uploadDest *string, uploadName *string) map[string]http.HandlerFunc {
+// archiveUploads records the archive uploads a mock engine received.
+type archiveUploads struct {
+	mu    sync.Mutex
+	count int
+	dest  string
+	name  string
+}
+
+func (u *archiveUploads) snapshot() (count int, dest, name string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.count, u.dest, u.name
+}
+
+// writeGuardHandlers serves the write guard over the mock exec API (as
+// readExecHandlers does for reads) and records any archive upload.
+func writeGuardHandlers(capture *readExecCapture, uploads *archiveUploads, stdout, stderr string, exitCode int) map[string]http.HandlerFunc {
 	handlers := readExecHandlers(capture, []byte(stdout), stderr, exitCode)
 	handlers["PUT /containers/*/archive"] = func(w http.ResponseWriter, r *http.Request) {
-		uploads.Add(1)
-		*uploadDest = r.URL.Query().Get("path")
+		uploads.mu.Lock()
+		defer uploads.mu.Unlock()
+		uploads.count++
+		uploads.dest = r.URL.Query().Get("path")
 		if hdr, err := tar.NewReader(r.Body).Next(); err == nil {
-			*uploadName = hdr.Name
+			uploads.name = hdr.Name
 		}
 		w.WriteHeader(http.StatusOK)
 	}
@@ -210,9 +268,8 @@ func TestContainerExecutor_WriteFile_SymlinkEscapeRefused(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
 			capture := &readExecCapture{}
-			var uploads atomic.Int32
-			var dest, name string
-			exec, cleanup := newMockContainerExecutor(t, writeGuardHandlers(capture, "", "path escapes workspace: /workspace/"+tc.target+"\n", workspaceWriteEscapeExit, &uploads, &dest, &name))
+			uploads := &archiveUploads{}
+			exec, cleanup := newMockContainerExecutor(t, writeGuardHandlers(capture, uploads, "", "path escapes workspace: /workspace/"+tc.target+"\n", workspaceWriteEscapeExit))
 			defer cleanup()
 			emitter := &mockSecurityEmitter{}
 			exec.Security = emitter
@@ -220,7 +277,8 @@ func TestContainerExecutor_WriteFile_SymlinkEscapeRefused(t *testing.T) {
 			err := exec.WriteFile(context.Background(), tc.target, "payload")
 			must.ErrorContains(err, "path escapes workspace")
 			must.Equal(1, emitter.pathTraversalCount, "PathTraversalBlocked emissions")
-			must.Zero(uploads.Load(), "archive endpoint must not be hit")
+			count, _, _ := uploads.snapshot()
+			must.Zero(count, "archive endpoint must not be hit")
 			must.Equal(workspaceWriteGuardCommand(containerWorkspace, "/workspace/"+tc.target), capture.last())
 		})
 	}
@@ -230,22 +288,21 @@ func TestContainerExecutor_WriteFile_SymlinkEscapeRefused(t *testing.T) {
 // archive goes to the path the guard printed, not the requested one.
 func TestContainerExecutor_WriteFile_UploadsToGuardResolvedPath(t *testing.T) {
 	must := require.New(t)
-	var uploads atomic.Int32
-	var dest, name string
-	exec, cleanup := newMockContainerExecutor(t, writeGuardHandlers(nil, "/workspace/docs/README.md\n", "", 0, &uploads, &dest, &name))
+	uploads := &archiveUploads{}
+	exec, cleanup := newMockContainerExecutor(t, writeGuardHandlers(nil, uploads, "/workspace/docs/README.md\n", "", 0))
 	defer cleanup()
 
 	must.NoError(exec.WriteFile(context.Background(), "README.md", "hello"))
-	must.Equal(int32(1), uploads.Load())
+	count, dest, name := uploads.snapshot()
+	must.Equal(1, count)
 	must.Equal("/workspace/docs", dest)
 	must.Equal("README.md", name)
 }
 
 func TestContainerExecutor_WriteFile_GuardOutputOutsideWorkspaceRefused(t *testing.T) {
 	must := require.New(t)
-	var uploads atomic.Int32
-	var dest, name string
-	exec, cleanup := newMockContainerExecutor(t, writeGuardHandlers(nil, "/etc/passwd\n", "", 0, &uploads, &dest, &name))
+	uploads := &archiveUploads{}
+	exec, cleanup := newMockContainerExecutor(t, writeGuardHandlers(nil, uploads, "/etc/passwd\n", "", 0))
 	defer cleanup()
 	emitter := &mockSecurityEmitter{}
 	exec.Security = emitter
@@ -253,12 +310,38 @@ func TestContainerExecutor_WriteFile_GuardOutputOutsideWorkspaceRefused(t *testi
 	err := exec.WriteFile(context.Background(), "a.txt", "x")
 	must.ErrorContains(err, "path escapes workspace")
 	must.Equal(1, emitter.pathTraversalCount)
-	must.Zero(uploads.Load(), "archive endpoint must not be hit")
+	count, _, _ := uploads.snapshot()
+	must.Zero(count, "archive endpoint must not be hit")
 }
 
-func TestContainerExecutor_WriteFile_RejectsWorkspaceRoot(t *testing.T) {
-	for _, p := range []string{"", ".", "/workspace"} {
-		t.Run(p, func(t *testing.T) {
+func TestContainerExecutor_WriteFile_DirectoryDestinationRefused(t *testing.T) {
+	must := require.New(t)
+	uploads := &archiveUploads{}
+	exec, cleanup := newMockContainerExecutor(t, writeGuardHandlers(nil, uploads, "", "path is a directory, not a file: src\n", workspaceWriteIsDirExit))
+	defer cleanup()
+	emitter := &mockSecurityEmitter{}
+	exec.Security = emitter
+
+	err := exec.WriteFile(context.Background(), "src", "x")
+	must.ErrorContains(err, "is a directory")
+	must.Zero(emitter.pathTraversalCount)
+	count, _, _ := uploads.snapshot()
+	must.Zero(count, "archive endpoint must not be hit")
+}
+
+func TestContainerExecutor_WriteFile_RejectsWorkspaceRootAndControlCharacters(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "empty path", path: "", want: "workspace root"},
+		{name: "dot", path: ".", want: "workspace root"},
+		{name: "absolute workspace root", path: "/workspace", want: "workspace root"},
+		{name: "newline in a directory name", path: "d\n/x.txt", want: "control character"},
+		{name: "carriage return in a file name", path: "x\r.txt", want: "control character"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
 			capture := &readExecCapture{}
 			exec, cleanup := newMockContainerExecutor(t, readExecHandlers(capture, nil, "", 0))
@@ -266,8 +349,8 @@ func TestContainerExecutor_WriteFile_RejectsWorkspaceRoot(t *testing.T) {
 			emitter := &mockSecurityEmitter{}
 			exec.Security = emitter
 
-			err := exec.WriteFile(context.Background(), p, "x")
-			must.ErrorContains(err, "workspace root")
+			err := exec.WriteFile(context.Background(), tc.path, "x")
+			must.ErrorContains(err, tc.want)
 			must.Nil(capture.last(), "no exec may run")
 			must.Zero(emitter.pathTraversalCount)
 		})
@@ -275,7 +358,8 @@ func TestContainerExecutor_WriteFile_RejectsWorkspaceRoot(t *testing.T) {
 }
 
 // guardExecCore returns a podExecCore whose first exec answers as the
-// write guard with the given stdout and exit status; later execs (the tar
+// write guard with the given stdout and outcome (a non-zero guardCode is an
+// exit status, a negative one a transport failure); later execs (the tar
 // extraction) are recorded with their stdin.
 func guardExecCore(guardStdout string, guardCode int) (*podExecCore, *[][]string, *bytes.Buffer) {
 	var calls [][]string
@@ -288,8 +372,11 @@ func guardExecCore(guardStdout string, guardCode int) (*podExecCore, *[][]string
 			return err
 		}
 		_, _ = io.WriteString(stdout, guardStdout)
-		if guardCode != 0 {
-			_, _ = io.WriteString(stderr, "path escapes workspace\n")
+		switch {
+		case guardCode < 0:
+			return errors.New("stream reset")
+		case guardCode > 0:
+			_, _ = io.WriteString(stderr, "guard refused\n")
 			return utilexec.CodeExitError{Err: errors.New("command terminated with non-zero exit code"), Code: guardCode}
 		}
 		return nil
@@ -297,21 +384,44 @@ func guardExecCore(guardStdout string, guardCode int) (*podExecCore, *[][]string
 	return core, &calls, &extracted
 }
 
-func TestPodExecCore_WriteFile_SymlinkEscapeRefused(t *testing.T) {
-	for _, target := range []string{"link", "escape/passwd"} {
-		t.Run(target, func(t *testing.T) {
+func TestPodExecCore_WriteFile_GuardRefusalStopsTheWrite(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		target         string
+		guardStdout    string
+		guardCode      int
+		want           string
+		wantTraversals int
+	}{
+		{name: "symlinked destination", target: "link", guardCode: workspaceWriteEscapeExit, want: "path escapes workspace", wantTraversals: 1},
+		{name: "symlinked intermediate directory", target: "escape/passwd", guardCode: workspaceWriteEscapeExit, want: "path escapes workspace", wantTraversals: 1},
+		{name: "guard output outside the workspace", target: "a.txt", guardStdout: "/etc/passwd\n", want: "path escapes workspace", wantTraversals: 1},
+		{name: "directory destination", target: "src", guardCode: workspaceWriteIsDirExit, want: "is a directory"},
+		{name: "image without readlink", target: "a.txt", guardCode: workspaceWriteNoReadlinkExit, want: "lacks readlink"},
+		{name: "mkdir failure", target: "f/a.txt", guardCode: 1, want: "guard refused"},
+		{name: "transport failure", target: "a.txt", guardCode: -1, want: "stream reset"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
-			core, calls, _ := guardExecCore("", workspaceWriteEscapeExit)
+			core, calls, _ := guardExecCore(tc.guardStdout, tc.guardCode)
 			emitter := &mockSecurityEmitter{}
 			core.Security = emitter
 
-			err := core.WriteFile(context.Background(), target, "payload")
-			must.ErrorContains(err, "path escapes workspace")
-			must.Equal(1, emitter.pathTraversalCount, "PathTraversalBlocked emissions")
+			err := core.WriteFile(context.Background(), tc.target, "payload")
+			must.ErrorContains(err, tc.want)
+			must.Equal(tc.wantTraversals, emitter.pathTraversalCount, "PathTraversalBlocked emissions")
 			must.Len(*calls, 1, "tar must not run after a refused guard")
-			must.Equal(workspaceWriteGuardCommand(k8sWorkspace, k8sWorkspace+"/"+target), (*calls)[0])
+			must.Equal(workspaceWriteGuardCommand(k8sWorkspace, k8sWorkspace+"/"+tc.target), (*calls)[0])
 		})
 	}
+}
+
+func TestPodExecCore_WriteFile_RejectsControlCharacters(t *testing.T) {
+	must := require.New(t)
+	core, calls, _ := guardExecCore("", 0)
+	err := core.WriteFile(context.Background(), "d\n/x.txt", "payload")
+	must.ErrorContains(err, "control character")
+	must.Empty(*calls, "no exec may run")
 }
 
 func TestPodExecCore_WriteFile_ExtractsIntoGuardResolvedPath(t *testing.T) {
