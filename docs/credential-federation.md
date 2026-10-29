@@ -60,7 +60,7 @@ authentication material.
 
 The four `gcp-*` types are accepted only on a `gemini` provider, and
 `anthropic-wif` only on an `anthropic` provider: each mints a token for
-its own vendor, which must not be sent to another endpoint.
+its own vendor, and that token must not be sent to another endpoint.
 
 ## Cross-cloud → Vertex AI Gemini via Workload Identity Federation
 

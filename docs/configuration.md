@@ -353,15 +353,15 @@ and validation reports the conflict:
 
 | Switch | Dropped |
 |---|---|
-| away from `gemini` | `gcpProject`, `gcpLocation`, `gcpCredentialsFile`, `geminiSafetySettings`, and a `credential` block of any `gcp-*` type, which would otherwise mint a Google access token for the new provider's endpoint |
-| away from `replay` | `replayFile`, and the `replay` model label, so the anthropic default model applies or `--model` is demanded for a provider without one |
+| away from `gemini` | `gcpProject`, `gcpLocation`, `gcpCredentialsFile`, `geminiSafetySettings` and a `credential` block of any `gcp-*` type, which would otherwise mint a Google access token for the new provider's endpoint |
+| away from `replay` | `replayFile` and the `replay` model label, so the `anthropic` default model applies or `--model` is required for a provider without one |
 | to `replay` | `apiKeyRef`, `credential`, `baseUrl`, `endpointProfile`, `apiKeyHeader`, `queryParams`, `compatProfile`, `region` and `profile` |
 | to `gemini` | `apiKeyRef` |
 
 Only the top-level `provider` is switched; entries in the `providers`
 map are untouched, so a replay document with a `replay` entry in that
 map fails validation when switched live. The eval suites rely on the
-switch away from `replay` to run a recorded suite live: see
+switch away from `replay` to run a recorded suite live; see
 [`eval.md`](eval.md#replay-doubles).
 
 ### Retry policy
@@ -451,7 +451,7 @@ Gemini thinking depth is not a provider-scoped flag: the generic
 
 | Flag | Default | Notes |
 |---|---|---|
-| `--replay-file` | (none) | Path to a JSONL trace recording whose `turn_record` events supply each turn's model output, in order. Required when `--provider=replay`; rejected on every other provider, and rejected when it is `-` or contains a `..` segment, like the other host paths a control plane can set. The harness opens the path from its own filesystem, relative to its working directory when not absolute; the eval runner resolves a suite's relative paths against the suite file instead. Must be a regular file of at most 64 MiB. JSON path: `provider.replayFile`. |
+| `--replay-file` | (none) | Path to a JSONL trace recording whose `turn_record` events supply each turn's model output, in order. Required when `--provider=replay`; rejected on every other provider and when the path is `-` or contains a `..` segment, as with the other host paths a control plane can set. The harness opens the path from its own filesystem, relative to its working directory when not absolute; the eval runner resolves a suite's relative paths against the suite file instead. Must be a regular file of at most 64 MiB. JSON path: `provider.replayFile`. |
 
 The `replay` provider calls no model: each turn's output is the next
 `turn_record` of the recording, so the harness drives its real tool
@@ -463,8 +463,8 @@ hand-written file of `turn_record` lines; the format and limits are in
 [`providers.md`](providers.md#replay). Every connection, credential
 and wire field (`apiKeyRef`, `credential`, `baseUrl`, `endpointProfile`,
 `apiKeyHeader`, `queryParams`, `compatProfile`, `region`, `profile`)
-is rejected alongside the replay provider, and `--dry-run` records a
-skip for its provider probe because there is nothing to reach.
+is rejected when `provider.type` is `replay`. `--dry-run` records a
+skip for the provider probe because there is no endpoint to reach.
 
 A replay provider cannot run beside a component that sends its own
 requests to the default provider: a `cloud-judge` guard, an
