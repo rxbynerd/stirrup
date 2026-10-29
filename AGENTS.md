@@ -30,7 +30,7 @@ stirrup/
       context/               # ContextStrategy: sliding window, summarise, offload-to-file, clear tool results
       tool/                  # ToolRegistry, profile Presenter, LazyLoader + built-in tools, including spawn_agent and tool_search
       tool/toolname/         # Per-provider tool-name normalization + collision detection (#223)
-      executor/              # Executor: local, container (Docker/Podman), API (GitHub), replay; optional capabilities TreeLister, HostPathWorkspace, StreamingExecutor and WorkspaceArchiver (workspacearchive.go)
+      executor/              # Executor: local, container (Docker/Podman), API (GitHub), k8s, k8s-sandbox, none, replay; optional capabilities TreeLister, HostPathWorkspace, StreamingExecutor and WorkspaceArchiver (workspacearchive.go)
       edit/                  # EditStrategy: whole-file, search-replace, udiff, multi-strategy
       verifier/              # Verifier: none, test-runner, composite, llm-judge
       permission/            # PermissionPolicy: allow-all, deny-side-effects, ask-upstream, policy-engine (Cedar)
@@ -79,9 +79,9 @@ Requires `ANTHROPIC_API_KEY` environment variable for the default Anthropic prov
 |---|---|---|
 | `--prompt` | (required) | User prompt, also accepted as a positional argument |
 | `--mode`, `-m` | `planning` | Run mode: planning (default, read-only), execution, review, research, toil |
-| `--model` | `claude-sonnet-4-6` | Model to use |
+| `--model` | provider-derived | Model to use. Defaults to `claude-sonnet-4-6` for `anthropic` and to a label for `replay`; required for every other provider (see [`docs/configuration.md`](docs/configuration.md#provider)) |
 | `--provider` | `anthropic` | Provider type: anthropic, bedrock, openai-compatible (Chat Completions), openai-responses (Responses API), gemini (Vertex AI), replay (recorded output from `--replay-file`, no credential) |
-| `--api-key-ref` | `secret://ANTHROPIC_API_KEY` | Secret reference for API key |
+| `--api-key-ref` | provider-derived | Secret reference for API key. Defaults to `secret://ANTHROPIC_API_KEY` for `anthropic` and `secret://OPENAI_API_KEY` for the OpenAI providers; `bedrock`, `gemini` and `replay` take none (see [`docs/configuration.md`](docs/configuration.md#provider)) |
 | `--workspace`, `-w` | current directory | Workspace directory |
 | `--max-turns` | `20` | Maximum agentic loop turns |
 | `--timeout` | `600` | Wall-clock timeout in seconds |
@@ -114,15 +114,15 @@ plus a base via stdin or `--config <path>`. See
 1. **ProviderAdapter** — streams completions from LLMs (Anthropic, Bedrock, OpenAI-compatible, OpenAI Responses, Gemini via Vertex AI)
 2. **ModelRouter** — selects provider+model per turn (static, per-mode, dynamic)
 3. **PromptBuilder** — assembles system prompt (default per-mode templates, composed fragments, overrides)
-4. **ContextStrategy** — manages message history (sliding window, summarise, offload-to-file)
-5. **ToolRegistry** — resolves and dispatches tools (7 built-in runtime tools + MCP remote tools)
-6. **Executor** — sandboxed file I/O and command execution (local, container, API, replay)
+4. **ContextStrategy** — manages message history (sliding window, summarise, offload-to-file, clear-tool-results)
+5. **ToolRegistry** — resolves and dispatches tools (built-in runtime tools in `harness/internal/tool/builtins/` + MCP remote tools)
+6. **Executor** — sandboxed file I/O and command execution (local, container, API, k8s, k8s-sandbox, none, replay)
 7. **EditStrategy** — how file changes are applied (whole-file, search-replace, udiff, multi-strategy)
 8. **Verifier** — validates run output (none, test-runner, composite, llm-judge)
 9. **PermissionPolicy** — gates side-effecting tools (allow-all, deny-side-effects, ask-upstream, policy-engine/Cedar)
 10. **Transport** — streams events to/from control plane (stdio, gRPC bidi streaming, null)
 11. **GitStrategy** — manages branches/commits (none, deterministic)
-12. **TraceEmitter** — records telemetry (JSONL, OpenTelemetry OTLP/gRPC or OTLP/HTTP)
+12. **TraceEmitter** — records telemetry (JSONL, OpenTelemetry OTLP/gRPC or OTLP/HTTP, GCS)
 13. **GuardRail** — LLM-based content safety classifier at pre-turn, pre-tool, and post-turn hooks (none, granite-guardian, shieldstral, cloud-judge, composite)
 
 The core loop is a pure function of its interfaces. All dependencies are injected via the factory (`core.BuildLoop` / `core.BuildLoopWithTransport`), which constructs components from a `RunConfig`.
@@ -219,7 +219,7 @@ A `Justfile` is provided for common tasks:
 just              # build + test
 just build        # build stirrup + eval binaries
 just test         # go test ./harness/... ./types/... ./eval/... ./examples/controlplane/...
-just lint         # golangci-lint run ./harness/... ./types/... ./eval/...
+just lint         # golangci-lint run ./harness/... ./types/... ./eval/... ./examples/controlplane/...
 just proto        # buf generate
 just buf-lint     # buf lint
 just docker       # build stirrup Docker image

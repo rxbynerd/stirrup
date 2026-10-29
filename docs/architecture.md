@@ -43,14 +43,14 @@ thirteen interfaces below.
 | 2 | `ModelRouter` | `static`, `per-mode`, `dynamic` | `harness/internal/router/` |
 | 3 | `PromptBuilder` | `default` (per-mode templates, composed) | `harness/internal/prompt/` |
 | 4 | `ContextStrategy` | `sliding-window`, `summarise`, `offload-to-file`, `clear-tool-results` | `harness/internal/context/` |
-| 5 | `ToolRegistry` | seven built-in tools + remote MCP servers | `harness/internal/tool/` |
-| 6 | `Executor` | `local`, `container` (Docker/Podman), `api` (GitHub) | `harness/internal/executor/` |
+| 5 | `ToolRegistry` | built-in tools + remote MCP servers | `harness/internal/tool/` |
+| 6 | `Executor` | `local`, `container` (Docker/Podman), `api` (GitHub), `k8s`, `k8s-sandbox`, `none` | `harness/internal/executor/` |
 | 7 | `EditStrategy` | `whole-file`, `search-replace`, `udiff`, `multi` | `harness/internal/edit/` |
 | 8 | `Verifier` | `none`, `test-runner`, `llm-judge`, `composite` | `harness/internal/verifier/` |
 | 9 | `PermissionPolicy` | `allow-all`, `deny-side-effects`, `ask-upstream`, `policy-engine` (Cedar) | `harness/internal/permission/` |
 | 10 | `Transport` | `stdio`, `grpc` (outbound bidi streaming), `null` (sub-agents) | `harness/internal/transport/` |
 | 11 | `GitStrategy` | `none`, `deterministic` | `harness/internal/git/` |
-| 12 | `TraceEmitter` | `jsonl`, `otel` (OTLP/gRPC or OTLP/HTTP) | `harness/internal/trace/` |
+| 12 | `TraceEmitter` | `jsonl`, `otel` (OTLP/gRPC or OTLP/HTTP), `gcs` | `harness/internal/trace/` |
 | 13 | `GuardRail` | `none`, `granite-guardian` (vLLM), `cloud-judge`, `composite` | `harness/internal/guard/` |
 
 The core loop knows nothing about which implementation it received;
@@ -137,8 +137,9 @@ repository guidance load, the `PromptBuilder` and `GitStrategy.Setup`
 follow in that order, so a clone hook runs before all three. The
 guidance load, the workspace listing in the system prompt and the
 deterministic git strategy, which commits into whatever repository the
-workspace holds, all see the workspace the hooks produced. A failed `preRun` hook, or a guidance file that cannot be
-loaded, ends the run as `setup_failed`.
+workspace holds, all see the workspace the hooks produced. A failed
+`preRun` hook, or a guidance file that cannot be loaded, ends the run as
+`setup_failed`.
 
 `postRun` hooks execute after outcome classification and the final git
 checkpoint, so edits a hook makes are not committed. They run before
@@ -250,15 +251,16 @@ router selected for the turn. A turn is retried at most twice and never
 more often than `provider.retry.maxAttempts` less one, so a
 `maxAttempts` of 1 disables turn retry. Turn retries wrap the
 pre-stream HTTP retry, so one turn can make several requests. The wait
-before retry *n* is equal-jitter backoff: a random duration between
-half of and all of `min(initialDelayMs * 2^n, maxDelayMs)`. The
+before retry *n*, where *n* is the zero-based retry index, is
+equal-jitter backoff: a random duration between half of and the full
+value of `min(initialDelayMs * 2^n, maxDelayMs)`. The
 `wallClockBudgetMs` budget is measured from the turn's first failure
 and bounds the start of the last retry. A batch-mode turn is never
 retried. Tools run only after a stream completes and a failed attempt
 appends nothing to the history, so a retry cannot repeat a workspace
-side effect. Each retry emits a `warning` event, after which a control
-plane discards the `text_delta` and `tool_call` events of the failed
-attempt. Usage reported by failed attempts is charged to the token
+side effect. Each retry emits a `warning` event, and a control plane
+should discard the `text_delta` and `tool_call` events of the failed
+attempt on receiving it. Usage reported by failed attempts is charged to the token
 budget, so a turn can overshoot `maxTokenBudget` by up to two retried
 attempts.
 
@@ -364,12 +366,13 @@ run that fails during setup (a `preRun` hook, the guidance load, the
 prompt build or git setup) skips steps 1 and 2 and still performs steps
 3 to 5.
 
-Steps 1, 2, 4 and 5 run on contexts detached from the run's
-cancellation and deadline, so a run that ended by timeout or
-cancellation can still persist its result. Each has its own budget: 30 s
-for the git checkpoint, the sum of the `postRun` timeouts plus 30 s for
-hooks, 5 min for the handoff, and 90 s for the trace finish. Each
-detached context also ends when `AgenticLoop.Shutdown` is done. The
+Steps 1 to 5 run on contexts detached from the run's cancellation and
+deadline, so a run that ended by timeout or cancellation can still
+persist its result. Each has its own budget: 30 s for the git
+checkpoint, the sum of the `postRun` timeouts plus 30 s for hooks, 6 min
+for the command-output archive, 5 min for the handoff, and 90 s for the
+trace finish. Each detached context except the archive step's also ends
+when `AgenticLoop.Shutdown` is done. The
 `stirrup harness` and `stirrup job` entry points cancel `Shutdown` on a
 second SIGINT or SIGTERM. The first signal ends the run, and these
 steps keep running within their budgets. The shutdown watchdog closes
@@ -385,7 +388,7 @@ Five run modes ship as partial `RunConfig` presets that select
 mode-appropriate tools, permissions, and prompt templates. One is
 editable (`execution`); the other four are read-only, structurally
 enforced by `ValidateRunConfig` to exclude `write_file`,
-`edit_file`, and `run_command`.
+`edit_file`, `search_replace`, `apply_diff` and `run_command`.
 
 | Mode | Tools | Default permission | Output shape |
 |---|---|---|---|
@@ -416,17 +419,21 @@ tree and a git status section to those. See
 [`configuration.md`](configuration.md#system-prompt-templating) for the
 operator-facing surface.
 
-Those two sections are read through the run's `Executor`, never from
-the harness host. They describe the sandbox the agent works in for the
-`local`, `container`, `k8s` and `k8s-sandbox` executors alike, and an
-agent-controlled `.git/config` in the workspace is never interpreted by
-host git while the prompt is built.
+Those two sections are read through the run's `Executor`, not from the
+harness host's own filesystem. They describe the workspace the agent
+works in for the `local`, `container`, `k8s` and `k8s-sandbox` executors
+alike. On the `container`, `k8s` and `k8s-sandbox` executors, git runs
+inside the sandbox, so an agent-controlled `.git/config` in the
+workspace is never interpreted by host git while the prompt is built.
+On the `local` executor the executor is the host, so git runs on the
+host with the hardening flags, which are not a security boundary. See
+[`security.md`](security.md#prompt-time-workspace-reads).
 
 - **Workspace tree.** The top-level entries of the workspace, capped at
   200 entries and 8 KiB. A marker line ends the list when entries were
   left out. Names containing control characters are left out. The
   section is omitted when the executor cannot read, when listing fails
-  or when the workspace is empty. Sandbox executors list with `ls -p`,
+  or when the workspace is empty. Sandbox executors list with `ls -A1p`,
   so the sandbox image needs it.
 - **Git status.** The short status of the workspace, from git run
   inside the executor with the harness hardening flags, capped at 200
@@ -645,13 +652,15 @@ The `container`, `k8s` and `k8s-sandbox` executors run each command
 through a wrapper that starts it in its own session when `setsid` is
 available and records the leader's pid in a per-call file under
 `/tmp`; a follow-up exec then sends SIGTERM to the group, polls for up
-to one second and sends SIGKILL. Without `setsid`, only the recorded
+to one second and then sends SIGKILL to anything still running. Without `setsid`, only the recorded
 shell and the descendants found by walking `/proc` are signalled. A
 process that moves into its own session or process group is outside the
 group and is not signalled. A timed-out call therefore returns after
 the grace period, and on the sandbox executors after the follow-up
-exec, which has its own 15 s bound. The image needs `sh`, `kill` and a
-writable `/tmp`.
+exec, which has its own 15 s bound. The image needs `sh` with the
+`command -v` builtin, `kill`, `rm`, a `sleep` that accepts fractional
+seconds, and a writable `/tmp`. The walk over `/proc` without `setsid`
+also needs `/proc`.
 
 The Engine API path was chosen deliberately: the official Docker Go
 SDK pulls in moby, containerd, and OCI specs, which conflicts with
@@ -697,27 +706,33 @@ region is at least 60% similar, the message says so. The whole message
 is bounded at 2 KiB. Quoting is withheld for paths that the tool guard
 treats as credential material, such as `.env`, `.ssh` entries and
 `*.pem` or `*.key` files. The withholding is best-effort and based on
-the path alone: it reuses the guard's rules, so it covers `.env` but
-not variants such as `.env.local`, and line numbers and similarity
+the path alone. It reuses the guard's rules, so it covers `.env` but not
+variants such as `.env.local`, and line numbers and similarity
 percentages are still reported for those paths.
 
 ## Tools
 
-Twelve built-in tools ship in `harness/internal/tool/builtins/`:
+The built-in tools are defined in `harness/internal/tool/builtins/`, with
+the edit tool supplied by the edit strategy:
 
 - `read_file`
 - `list_directory`
 - `grep_files`
 - `find_files`
-- `edit_file` (registered when any of `edit_file`, `write_file`,
-  `search_replace`, or `apply_diff` is in `tools.builtIn`)
+- the edit tool named by the edit strategy: `write_file` (`whole-file`),
+  `search_replace`, `apply_diff` (`udiff`) or `edit_file` (`multi`),
+  registered when `tools.builtIn` is empty or names that tool or any of
+  `write_file`, `search_replace` and `apply_diff`
 - `run_command`
+- `read_command_output` (registered automatically alongside
+  `run_command` when command output capture is on)
 - `git_status`
 - `git_changed_files`
 - `git_diff`
 - `git_show`
 - `web_fetch`
 - `spawn_agent`
+- `tool_search` (registered when lazy tool loading is enabled)
 
 The four `git_*` tools are read-only: they neither mutate the
 workspace nor require approval, so the read-only modes (`planning`,
@@ -1027,10 +1042,11 @@ last complete exchange. The task counts toward the token budget.
   appended to the task message and not sent as a separate message. The
   six most recent messages, moved forward to an exchange boundary, stay
   verbatim. Exchanges that age out are re-sent verbatim until six have
-  accumulated or they no longer fit, and are then folded into the
+  accumulated or until they no longer fit, and are then folded into the
   previous summary. Each call's input is therefore the previous summary
-  plus the newly aged messages, within a bound derived from the summary
-  model's context window (32k tokens when none is known). A summary call
+  plus the newly aged messages, within a bound derived from the smaller
+  of `contextStrategy.maxTokens` and the registered context window, or
+  32,000 tokens when neither is set. A summary call
   that fails falls back to the sliding window, reports a warning through
   `CompactionEvent.Warnings`, which the loop emits as a `warning` event,
   and is retried after six more exchanges have aged out. The call's
@@ -1206,6 +1222,9 @@ than in the dry-run. See [`configuration.md`](configuration.md#dry-run-preflight
 
 - **`jsonl`** — newline-delimited JSON to a file path. Used for
   local development and replay.
+- **`gcs`** — the same JSONL trace uploaded as one Google Cloud Storage
+  object when the run finishes. Used where the run has no persistent
+  filesystem, such as Cloud Run jobs.
 - **`otel`** — OpenTelemetry traces via OTLP/gRPC (default) or
   OTLP/HTTP (`http/protobuf`). Default endpoint: `localhost:4317` for
   gRPC. The trace emitter creates a root `invoke_agent stirrup`
@@ -1231,9 +1250,11 @@ not recognise. The field-level schema is in
 By contract, `TraceEmitter.Finish` finalises the trace, writes it to the
 backing store and returns the completed `RunTrace`. When writing fails
 after the trace was assembled, it returns the trace together with the
-error, so the run is still reported. The loop passes both on, and a
-non-nil trace with a non-nil error means the run completed but its trace
-was not persisted.
+error, so the run is still reported. The loop passes both on. A non-nil
+trace with a non-nil error means either that setup failed before the
+first turn, as on a failed `preRun` hook, or that the run completed but
+its trace was not persisted. Callers read `trace.Outcome` and do not
+infer the result from the error alone.
 
 The OTLP exporters for traces, metrics, and logs are built in one
 package, `harness/internal/observability/otlp/`, so endpoint, TLS,
@@ -1349,8 +1370,8 @@ normalised. The detector keeps the last 12 signatures and recognises a
 pattern when the newest calls repeat a cycle of 1 to 4 calls three times
 in a row, so three identical calls and three rounds of an alternating
 pair both qualify. Because the output is part of the signature, a loop
-whose results change on every call is not a stall; only `maxTurns` or
-the token budget bounds it.
+whose results change on every call is not a stall; only `maxTurns`, the
+token budget or the run `timeout` bounds it.
 
 The first repetition does not end the run. The detector issues one
 nudge, a synthetic message saying that the last calls repeated the same
@@ -1477,9 +1498,12 @@ if err != nil { /* handle */ }
 trace, err := loop.Run(ctx, runConfig)
 ```
 
-A non-nil trace returned with a non-nil error means the run completed
-but its trace could not be persisted. The returned trace is complete;
-only its persistence failed.
+`Run` can return a trace together with an error. A run that fails before
+its first turn, such as on a failed `preRun` hook, returns its trace with
+a failure outcome such as `setup_failed` and the setup error. A run that
+completes but whose trace cannot be persisted returns the trace and an
+error wrapping `finish trace`. Callers read `trace.Outcome` and do not
+infer the result from the error alone.
 
 A valid OpenTelemetry span context on the `ctx` passed to `Run`
 parents the run span when the trace emitter is `otel`; a `ctx` with no

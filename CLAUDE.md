@@ -125,7 +125,8 @@ to make a feature easier:
   SDK exempts Bedrock Runtime from its default read timeout).
 - **Read-only modes** (`planning`, `review`, `research`, `toil`)
   enforce a hard invariant in `ValidateRunConfig`: the tool list
-  excludes `write_file` / `run_command` / `edit_file`, and the
+  excludes `write_file` / `run_command` / `edit_file` / `search_replace` /
+  `apply_diff`, and the
   permission policy is not `allow-all`. A new mode added to the
   list inherits the invariant. The CLI defaults `--mode` to
   `planning` so a bare invocation is safe-by-default; `execution`
@@ -186,7 +187,7 @@ Quick map for "I need to change X" lookups:
 | Want to change… | Look in… |
 |---|---|
 | Provider behaviour or wire format | `harness/internal/provider/<name>.go` |
-| Replay provider (`provider.type=replay`, `--replay-file`; recorded model output, no credential) | `harness/internal/provider/replay.go`, factory arm `core/factory.go::buildReplayProvider`, eval path anchoring `eval/spec/runconfig.go::AnchorReplayFiles` (operator doc: `docs/providers.md#replay`) |
+| Replay provider (`provider.type=replay`, `--replay-file`; recorded model output, no credential) | `harness/internal/provider/replay.go`, factory arm `core/factory.go::buildReplayProvider`, eval path anchoring `eval/spec/runconfig.go::AnchorRunConfigPaths` (operator doc: `docs/providers.md#replay`) |
 | System prompt content or model tiers (the `.md` files are Go text/templates) | `harness/internal/prompt/systemprompts/*.md`, `harness/internal/prompt/modeltier.go` (operator doc: `docs/configuration.md#system-prompt-templating`) |
 | Tool definition or schema | `harness/internal/tool/builtins/<name>.go` |
 | Control-plane-fulfilled tools (`tools.controlPlane`) | `harness/internal/tool/controlplane.go` (builder), registration in `core/factory.go::buildToolRegistry`, validation in `types/runconfig.go::validateControlPlaneTools` (operator doc: `docs/configuration.md#control-plane-tools`) |
@@ -195,7 +196,7 @@ Quick map for "I need to change X" lookups:
 | Live transcript events (`user_message`, `turn_started`, `turn_committed`, `turn_abandoned`, `thinking_delta`, `tools_loaded`) and the setup-warning hold | `harness/internal/core/transcript.go`; wire contract in the `HarnessEvent` comment in `proto/harness/v1/harness.proto`, `types/events.go`, `harness/internal/transport/grpc_translate.go` and `eventbound.go` (operator doc: `docs/integration-guide.md#watching-a-run-live`) |
 | Follow-up history carry (`followUpHistory: "continue"`) | `harness/internal/core/followuphistory.go`, `RunFollowUpLoop` in `harness/internal/core/loop.go` (operator doc: `docs/integration-guide.md#follow-up-turns`) |
 | Lifecycle hooks (pre/post-run exec, #461) | `harness/internal/hook/` (Runner/Noop/ExecRunner), loop wiring in `harness/internal/core/loop.go` (operator doc: `docs/configuration.md#lifecycle-hooks`) |
-| Post-edit checks (`tools.postEdit`: operator commands run after each successful edit) | `harness/internal/postedit/` (Checker, glob match, `{path}` expansion, fenced diagnostics), wiring in `core/factory.go::attachPostEditChecks`, validation in `types/runconfig.go::validatePostEditChecks`, proto `PostEditCheck` mirrored in `harness/internal/transport/grpc_translate.go` (operator doc: `docs/configuration.md`) |
+| Post-edit checks (`tools.postEdit`: operator commands run after each successful edit) | `harness/internal/postedit/` (Checker, glob match, `{path}` expansion, fenced diagnostics), wiring in `core/factory.go::attachPostEditChecks`, validation in `types/runconfig.go::validatePostEditChecks`, proto `PostEditCheck` mirrored in `harness/internal/transport/grpc_translate.go` (operator doc: `docs/configuration.md#post-edit-checks`) |
 | Deterministic git strategy (setup, per-turn checkpoint, final checkpoint and handoff, all run through the executor) | `harness/internal/git/` (`deterministic.go`, `command.go` quoting, `identity.go` hardening flags and harness identity, `root.go` workspace root); final-checkpoint outcome handling in `harness/internal/core/githandoff.go`; dry-run probe in `core/preflight.go::preflightGitStrategyProbe` |
 | Permission gating logic | `harness/internal/permission/<type>.go` |
 | Cedar policy semantics | `harness/internal/permission/policyengine.go` |
@@ -214,7 +215,7 @@ Quick map for "I need to change X" lookups:
 | Workspace GCS export | `harness/internal/workspaceexport/` |
 | `RunConfig` validation | `types/runconfig.go` |
 | CLI flag definitions (shared between `harness` and `run-config`) | `harness/cmd/stirrup/cmd/runconfigflags.go` |
-| CLI flag definitions (`harness`-only behaviour: `--export-workspace-required`, `--output-runconfig`) | `harness/cmd/stirrup/cmd/harness.go` |
+| CLI flag definitions (`harness`-only behaviour: `--output-runconfig`) | `harness/cmd/stirrup/cmd/harness.go` |
 | Resolved-config builder (file/stdin/flags → RunConfig) | `harness/cmd/stirrup/cmd/runconfigbuilder.go` |
 | `stirrup run-config` subcommand | `harness/cmd/stirrup/cmd/runconfig.go` |
 | gRPC schema | `proto/harness/v1/harness.proto` (then `buf generate`) |

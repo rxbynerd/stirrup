@@ -32,7 +32,7 @@ The repository is a Go workspace (`go.work`) composed of five modules:
   package. Zero external dependencies.
 - `gen/` — generated code from `proto/harness/v1/`. Edit the `.proto`,
   not the generated Go.
-- `harness/` — the harness binary and its 12 components.
+- `harness/` — the harness binary and its 13 components.
 - `eval/` — the eval CLI, judges, runner, and lakehouse adapters.
 - `examples/controlplane/` — a runnable minimal control plane with its
   own `go.mod`, tests and smoke script (`just controlplane-smoke`). It
@@ -73,10 +73,12 @@ buf lint
 ```
 
 CI runs the equivalent of `just test` + `just test-race` +
-`just fuzz-scrub` + a full build via the reusable `_verify.yml` workflow on every push, plus an
-`eval-gate` job (baselined eval suites against committed baselines,
-pinned to a cheap model) on pushes to `main` and on manual dispatch,
-and container publishes on every merge to `main`. A failing `compare` exit fails the eval gate.
+`just fuzz-scrub` + a full build via the reusable `_verify.yml` workflow
+on every push. The CI race pass omits `harness/internal/sandboxidentity`,
+which `just test-race` includes. Pushes to `main` and manual
+dispatches also run an `eval-gate` job (baselined eval suites against
+committed baselines, pinned to a cheap model), and every merge to `main`
+publishes containers. A failing `compare` exit fails the eval gate.
 See [`.github/workflows/`](.github/workflows/) for the full pipeline.
 
 ### gopls false positives
