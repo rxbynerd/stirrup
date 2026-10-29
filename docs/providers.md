@@ -1094,7 +1094,8 @@ Three combinations are rejected by validation:
 - a `replay` entry in the `providers` map unless `provider.type` is
   also `replay`, so a run never serves some turns from a recording
   while it reports a live model;
-- `batch`, which only the live HTTP adapters implement.
+- `batch.enabled`, since only the live HTTP adapters implement batch
+  submission.
 
 The file is read by `types/trace.Reader.ReadReplay`, which keeps each
 `turn_record`'s turn number, run IDs, stop reason and model output and
@@ -1116,9 +1117,10 @@ the rewritten form.
 
 A recording must be complete: the provider is not built when the file
 has no `turn_record` event, holds only sub-agent turns, or has any
-line the reader would drop (not JSON, a `modelOutput` that does not
-decode, or over the reader's 4 MiB line cap), because a dropped line
-would shift every later turn onto the wrong request.
+line the reader would drop (not JSON, a kept field such as `turn`,
+`runId`, `stopReason` or `modelOutput` that does not decode, or over the
+reader's 4 MiB line cap), because a dropped line would shift every
+later turn onto the wrong request.
 
 Turns of every top-level run in the file replay in order, so a trace
 that spans follow-up runs replays whole. A sub-agent's turns are kept
@@ -1127,13 +1129,24 @@ sub-agent, the child gets its own replay of the recorded sub-run whose
 run ID, relative to its parent (`sub-1` in `run-1/sub-1`), matches the
 child's, under the recorded run of the turn that made the
 `spawn_agent` call. The replayed run's own IDs need not match the
-recording's. A spawn the recording holds no turns for is refused, and
-the `spawn_agent` call fails with `no recorded turns for sub-agent
-"<run ID>"`, so the parent goes on to its own next recorded turn
-rather than losing one to the child. A named `replay` entry in the
-`providers` map serves sub-runs from its own file the same way; when
-that file holds no turns for the child, the child fails only if it
-routes a turn to that entry.
+recording's. The spawn is refused, and the `spawn_agent` call fails,
+when the recording holds no such sub-run (`no recorded turns for
+sub-agent "<run ID>"`) or when the recorded sub-run was spawned with a
+different prompt; the parent then goes on to its own next recorded
+turn rather than losing one to the child. A sub-run recorded as
+started but with no turns is served as such, so its child fails on
+its first request. With named `replay` entries in the `providers`
+map, each serves the child from its own file, and the entry that
+served the spawning turn decides whether the spawn runs; another
+entry without the sub-run fails only a request the child routes to
+it.
+
+Children are numbered by the spawns their parent's run admitted, so a
+replay whose admission differs from the recorded run's (for example a
+spawn the recorded run refused for its token budget, which a replay
+charges only estimated tokens against) shifts every later child onto
+the next recorded sub-run. The prompt check refuses such a child
+unless the two spawns asked the same thing.
 
 When `stirrup job` cannot build the provider from `replayFile` for any
 reason (missing, unreadable, a directory, too large, or not a complete

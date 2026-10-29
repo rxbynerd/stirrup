@@ -1024,18 +1024,21 @@ func replayProvidersOf(providers map[string]provider.ProviderAdapter) map[string
 }
 
 // replaySubAgentProviders returns the loop's subAgentProviders hook when
-// the run replays a recording, and nil otherwise. Each sub-agent gets
-// providers in which every replay entry serves that child's recorded
-// turns, wrapped as the loop's own entries are, so a child never draws
-// its parent's turns; live entries are shared unchanged. The spawn is
-// refused when the default provider's recording holds no turns for the
-// child; a named replay entry without them fails only if the child
-// routes a turn to it.
-func replaySubAgentProviders(config *types.RunConfig, replays map[string]*provider.ReplayProvider, loopProviders map[string]provider.ProviderAdapter) func(parentRunID, childRunID string) (provider.ProviderAdapter, map[string]provider.ProviderAdapter, error) {
+// the run replays a recording, and nil otherwise. A child gets each replay
+// entry's recording of it and shares live entries. The entry that served
+// the spawning turn decides whether the spawn runs; another entry that
+// cannot serve the child fails only a request routed to it.
+func replaySubAgentProviders(config *types.RunConfig, replays map[string]*provider.ReplayProvider, loopProviders map[string]provider.ProviderAdapter) func(parentRunID, childRunID, prompt string) (provider.ProviderAdapter, map[string]provider.ProviderAdapter, error) {
 	if len(replays) == 0 {
 		return nil
 	}
-	return func(parentRunID, childRunID string) (provider.ProviderAdapter, map[string]provider.ProviderAdapter, error) {
+	return func(parentRunID, childRunID, prompt string) (provider.ProviderAdapter, map[string]provider.ProviderAdapter, error) {
+		spawning := config.Provider.Type
+		for name, replay := range replays {
+			if replay.ServedAt() > replays[spawning].ServedAt() {
+				spawning = name
+			}
+		}
 		child := make(map[string]provider.ProviderAdapter, len(loopProviders))
 		for name, adapter := range loopProviders {
 			replay, ok := replays[name]
@@ -1047,8 +1050,8 @@ func replaySubAgentProviders(config *types.RunConfig, replays map[string]*provid
 			if cfg, named := config.Providers[name]; named {
 				providerType = cfg.Type
 			}
-			childReplay, err := replay.ForSubRun(parentRunID, childRunID)
-			if err != nil && name == config.Provider.Type {
+			childReplay, err := replay.ForSubRun(parentRunID, childRunID, prompt)
+			if err != nil && name == spawning {
 				return nil, nil, err
 			}
 			child[name] = provider.NewNormalizingAdapter(childReplay, providerType)

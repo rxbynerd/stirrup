@@ -76,3 +76,23 @@ func TestReadReplay_StopsOnCancelledContext(t *testing.T) {
 
 	must.ErrorIs(err, context.Canceled)
 }
+
+// TestReadReplay_RegistersStartedSubRunsWithTheirPrompt pins that a
+// sub-run is registered from its subrun_started event, with its prompt,
+// even when it recorded no turns.
+func TestReadReplay_RegistersStartedSubRunsWithTheirPrompt(t *testing.T) {
+	must := require.New(t)
+	body := eventLines(t,
+		map[string]any{"kind": "run_started", "runId": "run-p"},
+		map[string]any{"kind": "subrun_started", "runId": "run-p/sub-1", "parentRunId": "run-p", "config": map[string]any{"prompt": "List files."}},
+	)
+
+	rec, err := NewReader(bytes.NewReader(body), WithLogger(discardLogger())).ReadReplay(context.Background())
+
+	must.NoError(err)
+	must.Len(rec.SubRuns, 1)
+	must.Equal("run-p/sub-1", rec.SubRuns[0].RunID)
+	must.Equal("run-p", rec.SubRuns[0].ParentRunID)
+	must.Equal("List files.", rec.SubRuns[0].Config.Prompt)
+	must.Empty(rec.SubRuns[0].Turns)
+}

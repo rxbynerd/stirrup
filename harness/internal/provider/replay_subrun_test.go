@@ -131,12 +131,12 @@ func TestReplayProvider_ForSubRunServesTheSpawningRunsChild(t *testing.T) {
 	})
 
 	must.Equal([]string{"a0"}, nextTexts(t, rp))
-	child, err := rp.ForSubRun("live-1", "live-1/sub-1")
+	child, err := rp.ForSubRun("live-1", "live-1/sub-1", "")
 	must.NoError(err)
 	must.Equal([]string{"a child"}, replayTexts(t, child))
 
 	must.Equal([]string{"b0"}, nextTexts(t, rp))
-	child, err = rp.ForSubRun("live-2", "live-2/sub-1")
+	child, err = rp.ForSubRun("live-2", "live-2/sub-1", "")
 	must.NoError(err)
 	must.Equal([]string{"b child"}, replayTexts(t, child))
 }
@@ -151,7 +151,7 @@ func TestReplayProvider_ForSubRunWithoutRecordedTurnsFails(t *testing.T) {
 	})
 	_ = nextTexts(t, rp)
 
-	child, err := rp.ForSubRun("live-1", "live-1/sub-1")
+	child, err := rp.ForSubRun("live-1", "live-1/sub-1", "")
 	must.ErrorContains(err, `no recorded turns for sub-agent "live-1/sub-1" (recorded run "run-a/sub-1")`)
 	_, streamErr := child.Stream(context.Background(), types.StreamParams{})
 	must.Equal(err, streamErr)
@@ -187,7 +187,7 @@ func TestReplayProvider_RecordedSubRunRoundTrip(t *testing.T) {
 
 	events := replayEvents(t, rp)
 	must.Equal("max_tokens", events[len(events)-1].StopReason)
-	sub, err := rp.ForSubRun("live", "live/sub-1")
+	sub, err := rp.ForSubRun("live", "live/sub-1", "")
 	must.NoError(err)
 	must.Equal([]string{"child 0"}, replayTexts(t, sub))
 	must.Equal([]string{"parent 1"}, replayTexts(t, rp))
@@ -206,4 +206,58 @@ func nextTexts(t *testing.T, rp *ReplayProvider) []string {
 		}
 	}
 	return texts
+}
+
+// TestReplayProvider_ForSubRunRefusesADifferentPrompt pins that a child
+// whose prompt differs from the recorded sub-run's is refused rather
+// than served another spawn's turns.
+func TestReplayProvider_ForSubRunRefusesADifferentPrompt(t *testing.T) {
+	newProvider := func() *ReplayProvider {
+		sub := types.SubRunRecording{RunID: "run-a/sub-1", Turns: []types.TurnRecord{textTurn("run-a/sub-1", "run-a", "child")}}
+		sub.Config.Prompt = "List the Go files."
+		rp := NewReplayProviderFromRecording(&types.RunRecording{
+			Turns:   []types.TurnRecord{textTurn("run-a", "", "a0")},
+			SubRuns: []types.SubRunRecording{sub},
+		})
+		_ = nextTexts(t, rp)
+		return rp
+	}
+	t.Run("same prompt", func(t *testing.T) {
+		must := require.New(t)
+		child, err := newProvider().ForSubRun("live", "live/sub-1", "List the Go files.")
+		must.NoError(err)
+		must.Equal([]string{"child"}, replayTexts(t, child))
+	})
+	t.Run("different prompt", func(t *testing.T) {
+		must := require.New(t)
+		_, err := newProvider().ForSubRun("live", "live/sub-1", "Delete the Go files.")
+		must.ErrorContains(err, `sub-agent "live/sub-1" was spawned with a different prompt from recorded run "run-a/sub-1"`)
+	})
+}
+
+// TestReplayProvider_ForSubRunServesARecordedChildWithNoTurns pins that a
+// sub-run recorded as started but with no turns is matched, so later
+// children keep their numbering, and that its child fails on its first
+// request with an error naming it.
+func TestReplayProvider_ForSubRunServesARecordedChildWithNoTurns(t *testing.T) {
+	must := require.New(t)
+	body := `{"kind":"run_started","runId":"run-p"}
+{"kind":"turn_record","runId":"run-p","turn":1,"modelOutput":[{"type":"text","text":"parent"}]}
+{"kind":"subrun_started","runId":"run-p/sub-1","parentRunId":"run-p","config":{"prompt":"first"}}
+{"kind":"subrun_started","runId":"run-p/sub-2","parentRunId":"run-p","config":{"prompt":"second"}}
+{"kind":"turn_record","runId":"run-p/sub-2","parentRunId":"run-p","turn":1,"modelOutput":[{"type":"text","text":"second child"}]}
+`
+	rec, err := tracereader.NewReader(bytes.NewReader([]byte(body))).ReadReplay(context.Background())
+	must.NoError(err)
+	rp := NewReplayProviderFromRecording(rec)
+	_ = nextTexts(t, rp)
+
+	first, err := rp.ForSubRun("live", "live/sub-1", "first")
+	must.NoError(err)
+	_, err = first.Stream(context.Background(), types.StreamParams{})
+	must.ErrorContains(err, `all 0 recorded turns of sub-agent "live/sub-1" exhausted`)
+
+	second, err := rp.ForSubRun("live", "live/sub-2", "second")
+	must.NoError(err)
+	must.Equal([]string{"second child"}, replayTexts(t, second))
 }

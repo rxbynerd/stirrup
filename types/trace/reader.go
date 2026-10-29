@@ -445,19 +445,28 @@ type replayEvent struct {
 	Trace       *struct {
 		ID string `json:"id"`
 	} `json:"trace,omitempty"`
+	Config *struct {
+		Prompt string `json:"prompt"`
+	} `json:"config,omitempty"`
 }
 
-// ReadReplay walks the stream like ReadRecording but keeps only what a
-// replay serves: the recording's RunID and, for each turn_record, its
-// turn number, run IDs, stop reason and model output, grouped into Turns
-// and SubRuns by the same rule. Configs, model inputs and tool calls are
-// skipped, so memory grows with the model output alone. A line counts as
-// malformed only when it is not JSON or its kept fields do not decode.
-// ctx is checked between lines.
+// ReadReplay groups turns like ReadRecording but keeps only what a replay
+// serves: run IDs, each turn's number, stop reason and model output, and
+// each sub-run's prompt, so memory grows with model output alone. A line
+// is malformed only when it is not JSON or its kept fields do not decode.
 func (r *Reader) ReadReplay(ctx context.Context) (*types.RunRecording, error) {
 	recording := &types.RunRecording{}
 	seenStarted := false
 	subRunIndex := map[string]int{}
+	subRun := func(runID, parentRunID string) *types.SubRunRecording {
+		i, ok := subRunIndex[runID]
+		if !ok {
+			i = len(recording.SubRuns)
+			subRunIndex[runID] = i
+			recording.SubRuns = append(recording.SubRuns, types.SubRunRecording{RunID: runID, ParentRunID: parentRunID})
+		}
+		return &recording.SubRuns[i]
+	}
 	for r.scanner.Scan() {
 		if err := ctx.Err(); err != nil {
 			return recording, err
@@ -494,16 +503,19 @@ func (r *Reader) ReadReplay(ctx context.Context) (*types.RunRecording, error) {
 				StopReason:  ev.StopReason,
 			}
 			if ev.ParentRunID != "" && ev.RunID != "" && ev.RunID != recording.RunID {
-				i, ok := subRunIndex[ev.RunID]
-				if !ok {
-					i = len(recording.SubRuns)
-					subRunIndex[ev.RunID] = i
-					recording.SubRuns = append(recording.SubRuns, types.SubRunRecording{RunID: ev.RunID, ParentRunID: ev.ParentRunID})
-				}
-				recording.SubRuns[i].Turns = append(recording.SubRuns[i].Turns, tr)
+				child := subRun(ev.RunID, ev.ParentRunID)
+				child.Turns = append(child.Turns, tr)
 				continue
 			}
 			recording.Turns = append(recording.Turns, tr)
+		case eventKindSubRunStarted:
+			if ev.RunID == "" {
+				continue
+			}
+			child := subRun(ev.RunID, ev.ParentRunID)
+			if ev.Config != nil {
+				child.Config.Prompt = ev.Config.Prompt
+			}
 		}
 	}
 	recording.SkippedLines = r.skipped

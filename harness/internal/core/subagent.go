@@ -158,7 +158,7 @@ func prepareSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *typ
 	childProvider, childProviders := parent.Provider, parent.Providers
 	if parent.subAgentProviders != nil {
 		var err error
-		childProvider, childProviders, err = parent.subAgentProviders(parentConfig.RunID, childRunID)
+		childProvider, childProviders, err = parent.subAgentProviders(parentConfig.RunID, childRunID, subConfig.Prompt)
 		if err != nil {
 			return nil, err
 		}
