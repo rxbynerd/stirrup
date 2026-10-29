@@ -3,10 +3,12 @@ package provider
 import (
 	"bytes"
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/types"
 	tracereader "github.com/rxbynerd/stirrup/types/trace"
@@ -260,4 +262,26 @@ func TestReplayProvider_ForSubRunServesARecordedChildWithNoTurns(t *testing.T) {
 	second, err := rp.ForSubRun("live", "live/sub-2", "second")
 	must.NoError(err)
 	must.Equal([]string{"second child"}, replayTexts(t, second))
+}
+
+// TestReplayProvider_ForSubRunMatchesAScrubbedRecordedPrompt pins that a
+// recorded prompt, which the trace emitter stores scrubbed, matches the
+// live prompt it was scrubbed from.
+func TestReplayProvider_ForSubRunMatchesAScrubbedRecordedPrompt(t *testing.T) {
+	must := require.New(t)
+	live := "Clone with token ghp_" + strings.Repeat("a", 36) + " and list the files."
+	recorded := security.Scrub(live)
+	must.NotEqual(live, recorded, "the prompt must hold a secret-shaped value for this test")
+	sub := types.SubRunRecording{RunID: "run-a/sub-1", Turns: []types.TurnRecord{textTurn("run-a/sub-1", "run-a", "child")}}
+	sub.Config.Prompt = recorded
+	rp := NewReplayProviderFromRecording(&types.RunRecording{
+		Turns:   []types.TurnRecord{textTurn("run-a", "", "a0")},
+		SubRuns: []types.SubRunRecording{sub},
+	})
+	_ = nextTexts(t, rp)
+
+	child, err := rp.ForSubRun("live", "live/sub-1", live)
+
+	must.NoError(err)
+	must.Equal([]string{"child"}, replayTexts(t, child))
 }
