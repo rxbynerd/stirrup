@@ -282,8 +282,9 @@ func (r SuiteResult) ResolvedTrialsPolicy() string {
 }
 
 // TrialCountsDependOnOutcomes reports whether the result's per-task trial
-// counts depend on earlier trial outcomes, so that only each task's first
-// trial is an identically distributed sample across tasks.
+// counts depend on earlier trial outcomes, so that its trials pair with
+// another result's only through each task's first trial unless both
+// results used the same policy.
 func (r SuiteResult) TrialCountsDependOnOutcomes() bool {
 	return r.ResolvedTrialsPolicy() == TrialsPolicyConfirmOnFail
 }
@@ -378,8 +379,8 @@ type ComparisonSummary struct {
 	NoiseFloor *NoiseFloor    `json:"noiseFloor,omitempty"`
 
 	// FirstTrialOnly records that Paired, NoiseFloor, and both sides'
-	// PassHatK and PassAtK use each task's first trial alone, because a
-	// side ran under TrialsPolicyConfirmOnFail.
+	// PassHatK and PassAtK use each task's first trial alone, because the
+	// sides used different trials policies and one ran confirm-on-fail.
 	FirstTrialOnly bool `json:"firstTrialOnly,omitempty"`
 }
 

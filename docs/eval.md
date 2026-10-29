@@ -1516,41 +1516,41 @@ The saving changes the sample. Per-task trial counts now depend on the
 first outcome, so the per-task pass fractions are no longer identically
 distributed. They are also biased upward: a task that passes its first
 trial is never rerun and records a pass fraction of 1, so its
-occasional failures never enter the result. `compare` handles this in
-three ways:
+occasional failures never enter the result. `compare` handles this as
+follows:
 
-- When either side ran `confirm-on-fail`, some statistics use each
-  task's first trial alone, on both sides. These are the paired
-  statistics (mean delta, paired standard error, interval, upper
-  bound, sign-flip p, and MDE), the noise floor, and the pass^k /
-  pass@k rows, which then stop at k = 1. The first trial is one
-  unbiased run of every task, so these behave as they do for a
-  single-run comparison.
-- Pass rates, the deterministic-flip rule, and the regression list
-  still use every trial run. Only these see the confirmation. A
-  first-trial failure that the reruns overturn is not a flip. It is
-  not a listed regression either when its pass fraction stays above
-  the flip threshold, as 2/3 does at the default 0.5.
+- When both sides ran `confirm-on-fail`, every statistic uses every
+  trial run, as under `fixed`. The bias is the same on both sides, so
+  the paired differences compare like with like, but the per-task pass
+  fractions are not identically distributed and the interval, upper
+  bound, and sign-flip p are approximations. The pass^k / pass@k rows
+  follow the usual rule and stop at the smallest per-task trial count,
+  which is 1 whenever any task passed its first trial. A first-trial
+  failure that the reruns overturn counts at its confirmed fraction: on
+  a five-task suite a task at 2/3 moves d̄ by −0.067 and does not warn,
+  exactly as under `fixed`.
 - `compare` refuses to compare results recorded under different
-  policies and exits `2`, because of the upward bias.
+  policies and exits `2`, because the bias is on one side only.
   `--allow-policy-mismatch` compares them anyway, logs a warning, and
-  adds a `Warning:` line to the report. Record a baseline under the
-  same policy as the runs gated against it.
+  adds a `Warning:` line to the report. The two sides' trial counts
+  are then not comparable, so the paired statistics (mean delta,
+  paired standard error, interval, upper bound, sign-flip p, and MDE),
+  the noise floor, and the pass^k / pass@k rows use each task's first
+  trial alone, on both sides. The first trial is one unbiased run of
+  every task, so these behave as they do for a single-run comparison,
+  including the `warn` rule's reaction to a single failure. The report
+  adds a `Note:` line, and the JSON sets `summary.firstTrialOnly`.
+- Pass rates, the deterministic-flip rule, and the regression list
+  always use every trial run. A first-trial failure that the reruns
+  overturn is not a flip. It is not a listed regression either when its
+  pass fraction stays above the flip threshold, as 2/3 does at the
+  default 0.5.
 
-A first-trial failure that the reruns overturn still lowers the paired
-mean delta, so the `warn` rule and the upper-bound `block` rule react
-to it as they would to a single-run failure. On a five-task suite one
-such failure moves d̄ by −0.2 and warns, where the same task at 2/3
-under `fixed` moves d̄ by −0.067 and does not. Confirm-on-fail
-therefore lowers cost without lowering the gate's sensitivity to a
-flaky first trial. A small suite that should not warn on a single flaky
-run is better gated with `fixed` trials.
-
-The text report marks the first-trial treatment with a `Note:` line
-and tags each `confirm-on-fail` side as `K=3 (confirm-on-fail)`. The
-JSON report sets `summary.firstTrialOnly`. Under first-trial pairing
-the `Pass Rate:` header, which uses every trial, can differ from the
-mean delta on the `Paired:` line.
+Record a baseline under the same policy as the runs gated against it.
+The text report tags each `confirm-on-fail` side as
+`K=3 (confirm-on-fail)`. Under first-trial pairing the `Pass Rate:`
+header, which uses every trial, can differ from the mean delta on the
+`Paired:` line.
 
 #### Estimators
 
@@ -1567,7 +1567,7 @@ s<sub>i</sub> over the tasks present in both results:
 | One-sided upper bound U | d̄ + t<sub>n−1, 0.95</sub> × SE: the upper end of a one-sided 95% interval, equivalently of a two-sided 90% interval. U below zero rules out "no regression" at 95% one-sided confidence. The two-sided 95% interval is wider, so it can still include zero when U is negative. |
 | Sign-flip p-value | Two-sided permutation test on d<sub>i</sub>. Tasks with d<sub>i</sub> = 0 are dropped; with at most 20 remaining, all 2<sup>m</sup> sign assignments are enumerated and p is the share whose absolute sum reaches the observed one. Above 20 a normal approximation is used, and the report says so. The p-value is informational and does not decide the gate. Against an all-pass baseline every non-zero d<sub>i</sub> has the same sign, so the exact p is 2<sup>1−m</sup> for m non-zero differences and cannot go lower. |
 | Minimum detectable effect | (t<sub>n−1, 0.975</sub> + t<sub>n−1, 0.80</sub>) × SE, with the same degrees of freedom as the interval: the smallest true mean change the suite detects with 80% power at a two-sided 5% level. Smaller drops are unlikely to be confirmed. More tasks or more trials shrink it. Not reported (`n/a`, omitted from the JSON) when SE is zero, because an observed variance of zero says nothing about sensitivity. |
-| pass^k and pass@k | Per task with c passes in K trials, pass^k = C(c, k) / C(K, k), the chance that k trials drawn without replacement all pass ([τ-bench](https://arxiv.org/abs/2406.12045)), and pass@k = 1 − C(K − c, k) / C(K, k), the chance that at least one does ([Chen et al.](https://arxiv.org/abs/2107.03374)). Averaged over tasks for k = 1 up to the smallest per-task trial count, or for k = 1 alone when a side ran [confirm-on-fail](#confirm-on-fail-trials). A falling pass^k shows inconsistency that the pass rate hides. |
+| pass^k and pass@k | Per task with c passes in K trials, pass^k = C(c, k) / C(K, k), the chance that k trials drawn without replacement all pass ([τ-bench](https://arxiv.org/abs/2406.12045)), and pass@k = 1 − C(K − c, k) / C(K, k), the chance that at least one does ([Chen et al.](https://arxiv.org/abs/2107.03374)). Averaged over tasks for k = 1 up to the smallest per-task trial count, or for k = 1 alone when the two sides used different [trials policies](#confirm-on-fail-trials). A falling pass^k shows inconsistency that the pass rate hides. |
 | Wilson 95% interval | Wilson score interval for the suite pass rate treated as a proportion over n tasks; the report labels it "over tasks". Trials of one task are not pooled. |
 | Noise floor | Reported when every paired baseline task passed every trial. With p the per-trial pass rate pooled over both results, a single-run flip gate false-alarms with probability 1 − p<sup>n</sup>, and the K-of-K flip rule with 1 − (1 − (1 − p)<sup>K</sup>)<sup>n</sup>. These cover the flip rule only; the upper-bound rule adds to the overall block rate. When every pooled trial passed, p is 1 and carries no variation, so the report prints "insufficient variation" in place of the rates and the JSON omits them. |
 
@@ -1804,9 +1804,10 @@ standard error, task count n, and trials K, each followed by a pass^k /
 pass@k row. A `Paired:` line gives n, d̄, the paired standard error,
 the two-sided 95% t interval, the one-sided 95% upper bound, the
 sign-flip p (marked exact or approximate), and the minimum detectable
-effect (`n/a` when the standard error is zero). When either side ran
-`confirm-on-fail`, a `Note:` line says the paired statistics use each
-task's first trial only. A `Warning:` line appears when the two sides'
+effect (`n/a` when the standard error is zero). When the two sides used
+different trials policies under `--allow-policy-mismatch`, a `Note:`
+line says the paired statistics use each task's first trial only. A
+`Warning:` line appears when the two sides'
 policies differ. A `Note:` line appears when one lost trial exceeds the
 warn margin. The noise floor, the tasks
 missing from or new in the current run, regressions, and improvements
@@ -1845,7 +1846,7 @@ every task pairs. `summary` holds:
 | `warnMargin`, `flipThreshold` | The options the comparison ran with. |
 | `deterministicFlips` | Task IDs that passed every baseline trial and failed or errored every current trial. |
 | `baseline`, `current` | Per-side `tasks`, `trials`, `trialsPolicy` (`fixed` for a result file without one), `passRate`, `stdErr` (omitted below two tasks), `wilsonLow`, `wilsonHigh`, `passHatK`, `passAtK`. |
-| `firstTrialOnly` | Present and `true` when either side ran `confirm-on-fail`: `paired`, `noiseFloor`, `passHatK`, and `passAtK` then use each task's first trial alone, while the per-task `delta` values in `tasks` still cover every trial. See [Confirm-on-fail trials](#confirm-on-fail-trials). |
+| `firstTrialOnly` | Present and `true` when the two sides used different trials policies and one ran `confirm-on-fail`: `paired`, `noiseFloor`, `passHatK`, and `passAtK` then use each task's first trial alone, while the per-task `delta` values in `tasks` still cover every trial. See [Confirm-on-fail trials](#confirm-on-fail-trials). |
 | `paired` | `tasks`, `meanDelta`, `stdErr`, `df`, `ciLow`, `ciHigh`, `upperBound`, `pValue`, `pValueExact`, `mde` (omitted when `stdErr` is zero). The whole object is omitted below two paired tasks. |
 | `noiseFloor` | `perTrialPassRate`, `pooledTrials`, `singleRunFalseAlarm`, `flipRuleFalseAlarm`. Present only when every paired baseline task passed every trial; the two rates are omitted when every pooled trial passed. |
 

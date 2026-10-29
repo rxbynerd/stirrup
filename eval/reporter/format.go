@@ -34,7 +34,7 @@ func FormatText(report eval.ComparisonReport) string {
 	pairedTrials := s.Current.Trials
 	if s.FirstTrialOnly {
 		pairedTrials = 1
-		b.WriteString("Note: confirm-on-fail trials; the paired statistics, the noise floor, and pass^k / pass@k use each task's first trial only.\n")
+		b.WriteString("Note: the trials policies differ; the paired statistics, the noise floor, and pass^k / pass@k use each task's first trial only.\n")
 	}
 	if s.Baseline.TrialsPolicy != s.Current.TrialsPolicy {
 		fmt.Fprintf(&b, "Warning: trials policies differ (baseline %s, current %s); a confirm-on-fail pass rate is biased upward relative to a fixed one.\n",

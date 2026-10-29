@@ -32,7 +32,7 @@ func confirmSuite(runID string, tasks ...eval.TaskResult) eval.SuiteResult {
 	return eval.SuiteResult{RunID: runID, Trials: 3, TrialsPolicy: eval.TrialsPolicyConfirmOnFail, Tasks: tasks}
 }
 
-func TestCompare_ConfirmOnFailPairsOnTheFirstTrial(t *testing.T) {
+func TestCompare_ConfirmOnFailOnBothSidesPairsOnEveryTrial(t *testing.T) {
 	must := require.New(t)
 	baseline := confirmSuite("base",
 		confirmTask("a", "pass"), confirmTask("b", "pass"), confirmTask("c", "pass"), confirmTask("d", "pass"))
@@ -42,25 +42,25 @@ func TestCompare_ConfirmOnFailPairsOnTheFirstTrial(t *testing.T) {
 	report := Compare(baseline, current, DefaultOptions())
 	s := report.Summary
 
-	must.True(s.FirstTrialOnly)
+	must.False(s.FirstTrialOnly)
 	must.NotNil(s.Paired)
-	within(t, "first-trial mean delta", s.Paired.MeanDelta, -0.25, 1e-12)
-	within(t, "first-trial paired SE", s.Paired.StdErr, 0.25, 1e-12)
-	must.Equal(eval.GateWarn, s.Gate, "the first-trial drop exceeds the warn margin although the reruns passed")
-	within(t, "full-trial task delta", report.Tasks[0].Delta, -1.0/3, 1e-12)
+	within(t, "mean delta over every trial run", s.Paired.MeanDelta, -1.0/12, 1e-12)
+	within(t, "paired SE over every trial run", s.Paired.StdErr, 1.0/12, 1e-12)
+	must.Equal(eval.GatePass, s.Gate, "a first-trial failure the reruns overturned stays within the warn margin; reasons %v", s.GateReasons)
+	within(t, "task delta", report.Tasks[0].Delta, -1.0/3, 1e-12)
 	within(t, "current pass rate over every trial run", s.CurrentPassRate, (2.0/3+3)/4, 1e-12)
 
-	must.Len(s.Baseline.PassHatK, 1, "pass^k has the first trial only")
-	must.Len(s.Current.PassHatK, 1, "pass^k has the first trial only")
-	within(t, "current pass^1", s.Current.PassHatK[0], 0.75, 1e-12)
+	must.Len(s.Current.PassHatK, 1, "pass^k stops at the smallest per-task trial count")
+	within(t, "current pass^1", s.Current.PassHatK[0], (2.0/3+3)/4, 1e-12)
 	must.Equal(eval.TrialsPolicyConfirmOnFail, s.Current.TrialsPolicy)
 
 	must.NotNil(s.NoiseFloor)
-	must.Equal(8, s.NoiseFloor.PooledTrials, "the noise floor pools first trials")
-	within(t, "pooled first-trial pass rate", s.NoiseFloor.PerTrialPassRate, 7.0/8, 1e-12)
+	must.Equal(10, s.NoiseFloor.PooledTrials, "the noise floor pools every trial run")
+	within(t, "pooled pass rate", s.NoiseFloor.PerTrialPassRate, 9.0/10, 1e-12)
 
 	must.Empty(s.DeterministicFlips, "a confirmed pass is not a flip")
 	must.Empty(report.Regressions, "2/3 is above the flip threshold")
+	must.NotContains(FormatText(report), "first trial only")
 }
 
 func TestCompare_ConfirmOnFailFlipNeedsEveryTrialToFail(t *testing.T) {
@@ -120,11 +120,23 @@ func TestCompare_MixedPoliciesPairOnTheFirstTrialWithAConfirmOnFailBaseline(t *t
 	must.Contains(FormatText(report), "Warning: trials policies differ (baseline confirm-on-fail, current fixed)")
 }
 
-func TestCompare_ConfirmOnFailFirstTrialFollowsRequireHealthy(t *testing.T) {
+func TestCompare_ConfirmOnFailPairingFollowsRequireHealthy(t *testing.T) {
 	healthyPass := func(id string) eval.TaskResult {
 		return eval.TaskResult{TaskID: id, Outcome: "pass", PassFraction: 1, RunHealth: types.RunHealthy}
 	}
-	baseline := confirmSuite("base", healthyPass("a"), healthyPass("b"), healthyPass("c"), healthyPass("d"))
+	healthyFixed := func(id string) eval.TaskResult {
+		r := healthyPass(id)
+		r.Trials = []eval.TrialResult{
+			{Trial: 1, Outcome: "pass", RunHealth: types.RunHealthy},
+			{Trial: 2, Outcome: "pass", RunHealth: types.RunHealthy},
+			{Trial: 3, Outcome: "pass", RunHealth: types.RunHealthy},
+		}
+		return r
+	}
+	confirmBaseline := confirmSuite("base", healthyPass("a"), healthyPass("b"), healthyPass("c"), healthyPass("d"))
+	fixedBaseline := eval.SuiteResult{RunID: "base", Trials: 3, TrialsPolicy: eval.TrialsPolicyFixed, Tasks: []eval.TaskResult{
+		healthyFixed("a"), healthyFixed("b"), healthyFixed("c"), healthyFixed("d"),
+	}}
 	confirmed := eval.TaskResult{TaskID: "a", Outcome: "pass", PassFraction: 1, RunHealth: types.RunDegraded, Trials: []eval.TrialResult{
 		{Trial: 1, Outcome: "pass", RunHealth: types.RunDegraded},
 		{Trial: 2, Outcome: "pass", RunHealth: types.RunHealthy},
@@ -133,11 +145,14 @@ func TestCompare_ConfirmOnFailFirstTrialFollowsRequireHealthy(t *testing.T) {
 
 	cases := []struct {
 		name           string
+		baseline       eval.SuiteResult
 		requireHealthy bool
 		wantMeanDelta  float64
 	}{
-		{"the judge pass counts without require_healthy", false, 0},
-		{"the unhealthy first trial counts as a fail under require_healthy", true, -0.25},
+		{"same policy, judge outcome alone", confirmBaseline, false, 0},
+		{"same policy, the unhealthy trial is one of three under require_healthy", confirmBaseline, true, -1.0 / 12},
+		{"mismatched policies, judge outcome alone", fixedBaseline, false, 0},
+		{"mismatched policies, the unhealthy first trial fails under require_healthy", fixedBaseline, true, -0.25},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -145,26 +160,39 @@ func TestCompare_ConfirmOnFailFirstTrialFollowsRequireHealthy(t *testing.T) {
 			current := confirmSuite("cur", confirmed, healthyPass("b"), healthyPass("c"), healthyPass("d"))
 			current.RequireHealthy = tc.requireHealthy
 
-			s := Compare(baseline, current, DefaultOptions()).Summary
+			s := Compare(tc.baseline, current, DefaultOptions()).Summary
 
 			must.NotNil(s.Paired)
-			within(t, "first-trial mean delta", s.Paired.MeanDelta, tc.wantMeanDelta, 1e-12)
+			within(t, "mean delta", s.Paired.MeanDelta, tc.wantMeanDelta, 1e-12)
 			must.Empty(s.DeterministicFlips, "two healthy confirmation passes")
 		})
 	}
 }
 
-func TestFormatText_ConfirmOnFailNotesTheFirstTrialTreatment(t *testing.T) {
-	must := require.New(t)
-	baseline := confirmSuite("base", confirmTask("a", "pass"), confirmTask("b", "pass"), confirmTask("c", "pass"))
+func TestFormatText_NotesTheFirstTrialTreatmentOnlyForMismatchedPolicies(t *testing.T) {
+	confirmBaseline := confirmSuite("base", confirmTask("a", "pass"), confirmTask("b", "pass"), confirmTask("c", "pass"))
+	fixedBaseline := trialSuite("base", 3, []int{3, 3, 3})
+	for i, id := range []string{"a", "b", "c"} {
+		fixedBaseline.Tasks[i].TaskID = id
+	}
 	current := confirmSuite("cur", confirmTask("a", "pass"), confirmTask("b", "pass"), confirmTask("c", "fail", "pass", "pass"))
+	note := "Note: the trials policies differ; the paired statistics, the noise floor, and pass^k / pass@k use each task's first trial only."
 
-	text := FormatText(Compare(baseline, current, DefaultOptions()))
+	t.Run("same policy", func(t *testing.T) {
+		must := require.New(t)
+		text := FormatText(Compare(confirmBaseline, current, DefaultOptions()))
+		must.NotContains(text, note)
+		must.NotContains(text, "Warning: trials policies differ")
+		must.Contains(text, "K=3 (confirm-on-fail)")
+	})
 
-	must.Contains(text, "Note: confirm-on-fail trials; the paired statistics, the noise floor, and pass^k / pass@k use each task's first trial only.")
-	must.Contains(text, "pass^k (k=1..1)")
-	must.Contains(text, "with n=3 paired tasks and K=1,", "one lost first trial is one run of one task")
-	must.NotContains(text, "Warning: trials policies differ")
+	t.Run("mismatched policies", func(t *testing.T) {
+		must := require.New(t)
+		text := FormatText(Compare(fixedBaseline, current, DefaultOptions()))
+		must.Contains(text, note)
+		must.Contains(text, "pass^k (k=1..1)")
+		must.Contains(text, "with n=3 paired tasks and K=1,", "one lost first trial is one run of one task")
+	})
 }
 
 func TestTrialsPolicyMismatch_ErrorsOnlyWhenPoliciesDiffer(t *testing.T) {
