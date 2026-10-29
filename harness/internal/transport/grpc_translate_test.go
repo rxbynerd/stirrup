@@ -2330,6 +2330,21 @@ func TestHarnessEventToProto_ReadyCapabilities(t *testing.T) {
 	must.Empty(bare.GetCapabilities(), "ready without capabilities")
 }
 
+func TestHarnessEventToProto_ReadyConfigFieldsAndSemver(t *testing.T) {
+	must := require.New(t)
+	decoded := harnessEventWireRoundTrip(t, types.HarnessEvent{
+		Type:          "ready",
+		HarnessSemver: "0.1.0-rc.1",
+		ConfigFields:  TaskAssignmentFieldPaths(),
+	})
+	must.Equal(TaskAssignmentFieldPaths(), decoded.GetConfigFields(), "config fields")
+	must.Equal("0.1.0-rc.1", decoded.GetHarnessSemver(), "harness semver")
+
+	bare := harnessEventWireRoundTrip(t, types.HarnessEvent{Type: "ready"})
+	must.Empty(bare.GetConfigFields(), "ready without config fields")
+	must.Empty(bare.GetHarnessSemver(), "ready without a semantic version")
+}
+
 // TestProviderConfigFromProto_ReplayFileCarried pins that the replay
 // provider's recording path survives the proto boundary; without it a
 // TaskAssignment selecting the replay provider fails ValidateRunConfig

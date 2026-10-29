@@ -33,7 +33,11 @@ const (
 //
 //	"ready"
 //	  - harness_version: build version string of the harness binary.
+//	  - harness_semver:  the build version as a semantic version; empty
+//	                     for a build that is not a release.
 //	  - capabilities:    the contract features this harness implements.
+//	  - config_fields:   every RunConfig field path a task_assignment can
+//	                     set on this harness.
 //
 //	"run_started"
 //	  - id:              the run ID (RunConfig.run_id) of the run that started.
@@ -376,7 +380,27 @@ type HarnessEvent struct {
 	AbandonReason string `protobuf:"bytes,26,opt,name=abandon_reason,json=abandonReason,proto3" json:"abandon_reason,omitempty"`
 	// Internal IDs of the deferred tools a search loaded. Set on
 	// "tools_loaded" events; at most 256 entries, each capped like a name.
-	Tools         []string `protobuf:"bytes,27,rep,name=tools,proto3" json:"tools,omitempty"`
+	Tools []string `protobuf:"bytes,27,rep,name=tools,proto3" json:"tools,omitempty"`
+	// Every RunConfig field a task_assignment can set on this harness, as
+	// dotted paths of the fields' JSON names, sorted byte-wise. A message
+	// field is listed along with each of its fields ("provider",
+	// "provider.endpointProfile"); a repeated field lists its element's
+	// fields under its own path ("tools.mcpServers.name"); a map lists "*"
+	// for its keys, then its value's fields under that ("providers.*",
+	// "providers.*.type"). A message that contains itself is listed one
+	// level inside itself ("guardRail.stages.type",
+	// "guardRail.stages.stages") and not below. Set on the "ready" event
+	// `stirrup job` sends. Below a listed path that has no listed paths
+	// under it, such as a Struct field, the value is data and is not
+	// checked against the list. Any other RunConfig field the list omits
+	// is unknown to this harness and is dropped from a task_assignment
+	// without notice.
+	ConfigFields []string `protobuf:"bytes,28,rep,name=config_fields,json=configFields,proto3" json:"config_fields,omitempty"`
+	// The build version as a Semantic Versioning 2.0.0 string without the
+	// tag's leading "v", such as "0.1.0" or "0.1.0-rc.1". Set on "ready"
+	// events when harness_version is a semantic version, as release tags
+	// are; empty otherwise, as for "dev" and "main" builds.
+	HarnessSemver string `protobuf:"bytes,29,opt,name=harness_semver,json=harnessSemver,proto3" json:"harness_semver,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -598,6 +622,20 @@ func (x *HarnessEvent) GetTools() []string {
 		return x.Tools
 	}
 	return nil
+}
+
+func (x *HarnessEvent) GetConfigFields() []string {
+	if x != nil {
+		return x.ConfigFields
+	}
+	return nil
+}
+
+func (x *HarnessEvent) GetHarnessSemver() string {
+	if x != nil {
+		return x.HarnessSemver
+	}
+	return ""
 }
 
 // TraceReference mirrors types.TraceReference: the identity of a run's
@@ -6813,7 +6851,7 @@ var File_harness_v1_harness_proto protoreflect.FileDescriptor
 
 const file_harness_v1_harness_proto_rawDesc = "" +
 	"\n" +
-	"\x18harness/v1/harness.proto\x12\x12stirrup.harness.v1\x1a\x1cgoogle/protobuf/struct.proto\"\x99\a\n" +
+	"\x18harness/v1/harness.proto\x12\x12stirrup.harness.v1\x1a\x1cgoogle/protobuf/struct.proto\"\xe5\a\n" +
 	"\fHarnessEvent\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12\x0e\n" +
@@ -6845,7 +6883,9 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"durationMs\x12\"\n" +
 	"\fcapabilities\x18\x19 \x03(\tR\fcapabilities\x12%\n" +
 	"\x0eabandon_reason\x18\x1a \x01(\tR\rabandonReason\x12\x14\n" +
-	"\x05tools\x18\x1b \x03(\tR\x05toolsB\a\n" +
+	"\x05tools\x18\x1b \x03(\tR\x05tools\x12#\n" +
+	"\rconfig_fields\x18\x1c \x03(\tR\fconfigFields\x12%\n" +
+	"\x0eharness_semver\x18\x1d \x01(\tR\rharnessSemverB\a\n" +
 	"\x05_turn\"e\n" +
 	"\x0eTraceReference\x12\x19\n" +
 	"\btrace_id\x18\x01 \x01(\tR\atraceId\x12\x1e\n" +
