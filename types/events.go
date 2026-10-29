@@ -383,7 +383,7 @@ type HarnessEvent struct {
 	DurationMs      int64       `json:"durationMs,omitempty"`      // the call's run time, excluding dispatch queueing (tool_result only)
 	AbandonReason   string      `json:"abandonReason,omitempty"`   // why the turn left no valid history, one of the TurnAbandoned* values (turn_abandoned only)
 	Tools           []string    `json:"tools,omitempty"`           // internal IDs of the tools a search loaded (tools_loaded only)
-	ConfigFields    []string    `json:"configFields,omitempty"`    // every RunConfig field path this harness accepts (ready only); see ConfigFieldPaths
+	ConfigFields    []string    `json:"configFields,omitempty"`    // RunConfig field paths, in ConfigFieldPaths form, that a task_assignment can set (ready from `stirrup job` only)
 	HarnessSemver   string      `json:"harnessSemver,omitempty"`   // HarnessVersion as a semantic version without the leading "v", empty for non-release builds (ready only)
 }
 

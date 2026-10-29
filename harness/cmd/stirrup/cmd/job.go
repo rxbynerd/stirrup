@@ -64,6 +64,19 @@ var (
 // control stream loss during construction.
 var buildJobLoop = core.BuildLoopWithTransport
 
+// readyEvent is the session's first event: the build version and what
+// the control plane may rely on and send.
+func readyEvent(sessionID, versionLabel string) types.HarnessEvent {
+	return types.HarnessEvent{
+		Type:           "ready",
+		ID:             sessionID,
+		HarnessVersion: versionLabel,
+		HarnessSemver:  version.SemverOf(versionLabel),
+		Capabilities:   types.HarnessCapabilities(),
+		ConfigFields:   transport.TaskAssignmentFieldPaths(),
+	}
+}
+
 func runJob(cmd *cobra.Command, args []string) error {
 	started := time.Now()
 
@@ -108,14 +121,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 	// Session ID (if set) lets the control plane correlate this stream with
 	// the session that launched the subprocess.
 	sessionID := os.Getenv("CONTROL_PLANE_SESSION_ID")
-	if err := tp.Emit(types.HarnessEvent{
-		Type:           "ready",
-		ID:             sessionID,
-		HarnessVersion: version.Version(),
-		HarnessSemver:  version.Semver(),
-		Capabilities:   types.HarnessCapabilities(),
-		ConfigFields:   transport.TaskAssignmentFieldPaths(),
-	}); err != nil {
+	if err := tp.Emit(readyEvent(sessionID, version.Version())); err != nil {
 		return fmt.Errorf("failed to send ready event: %w", err)
 	}
 
