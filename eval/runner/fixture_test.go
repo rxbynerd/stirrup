@@ -108,14 +108,15 @@ func TestRunSuite_FixtureTask_WithoutBaselineIsAnError(t *testing.T) {
 }
 
 // writeConfigCapturingHarness writes a fake harness that records its argv
-// and a copy of its --config document, then writes a trace to the config's
-// trace path.
-func writeConfigCapturingHarness(t *testing.T) (harnessPath, argvPath, configCopy string) {
+// and, per invocation, a copy of its --config document in configDir, then
+// writes a trace to the config's trace path.
+func writeConfigCapturingHarness(t *testing.T) (harnessPath, argvPath, configDir string) {
 	t.Helper()
 	dir := t.TempDir()
 	harnessPath = filepath.Join(dir, "fake-harness")
 	argvPath = filepath.Join(dir, "argv.txt")
-	configCopy = filepath.Join(dir, "config.json")
+	configDir = filepath.Join(dir, "configs")
+	require.NoError(t, os.Mkdir(configDir, 0o700))
 	script := fmt.Sprintf(`#!/bin/sh
 for a in "$@"; do printf '%%s\n' "$a"; done > %q
 shift
@@ -126,12 +127,29 @@ while [ $# -gt 0 ]; do
     *) shift ;;
   esac
 done
-cp "$CONFIG" %q
+cp "$CONFIG" %q/config-$$.json
 TRACE=$(sed -n 's/.*"filePath":"\([^"]*\)".*/\1/p' "$CONFIG")
 echo '{"id":"run-1","turns":1,"outcome":"success"}' > "$TRACE"
-`, argvPath, configCopy)
+`, argvPath, configDir)
 	require.NoError(t, os.WriteFile(harnessPath, []byte(script), 0o755))
-	return harnessPath, argvPath, configCopy
+	return harnessPath, argvPath, configDir
+}
+
+// readCapturedConfigs decodes every config document the fake harness saw.
+func readCapturedConfigs(t *testing.T, configDir string) []types.RunConfig {
+	t.Helper()
+	must := require.New(t)
+	paths, err := filepath.Glob(filepath.Join(configDir, "config-*.json"))
+	must.NoError(err)
+	configs := make([]types.RunConfig, 0, len(paths))
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		must.NoError(err)
+		var cfg types.RunConfig
+		must.NoError(json.Unmarshal(data, &cfg))
+		configs = append(configs, cfg)
+	}
+	return configs
 }
 
 // TestRunSuite_FixtureTask_MCPKeepsProviderFlags pins that an mcp fixture
@@ -142,7 +160,7 @@ func TestRunSuite_FixtureTask_MCPKeepsProviderFlags(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fake harness assumes POSIX sh")
 	}
-	harnessPath, argvPath, configCopy := writeConfigCapturingHarness(t)
+	harnessPath, argvPath, configDir := writeConfigCapturingHarness(t)
 
 	suite := fixtureSuite(t)
 	suite.Tasks[0].FixtureServer = &types.FixtureServerConfig{Mode: types.FixtureModeMCP}
@@ -161,12 +179,60 @@ func TestRunSuite_FixtureTask_MCPKeepsProviderFlags(t *testing.T) {
 
 	requireArgvHas(t, readArgvFile(t, argvPath), "--provider", "openai-compatible", "--model", "gpt-test")
 
-	data, err := os.ReadFile(configCopy)
+	configs := readCapturedConfigs(t, configDir)
+	must.Len(configs, 1)
+	must.Len(configs[0].Tools.MCPServers, 1)
+	must.Regexp(`^http://127\.0\.0\.1:\d+$`, configs[0].Tools.MCPServers[0].URI)
+}
+
+// TestRunSuite_FixtureTask_MCPFillsBaselineServerWithoutURI pins that a
+// uri-less mcp_server inherited from the suite baseline, with no task
+// override, gets the fixture server's URL.
+func TestRunSuite_FixtureTask_MCPFillsBaselineServerWithoutURI(t *testing.T) {
+	must := require.New(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake harness assumes POSIX sh")
+	}
+	harnessPath, _, configDir := writeConfigCapturingHarness(t)
+
+	suite := fixtureSuite(t)
+	suite.Tasks[0].FixtureServer = &types.FixtureServerConfig{Mode: types.FixtureModeMCP}
+	suite.Tasks[0].RunConfigOverrides = nil
+	suite.RunConfig.Provider = types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://KEY"}
+	suite.RunConfig.ModelRouter = types.ModelRouterConfig{Type: "static", Provider: "anthropic", Model: "claude-sonnet-5"}
+	suite.RunConfig.Tools.MCPServers = []types.MCPServerConfig{{Name: "stub"}}
+
+	_, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harnessPath})
 	must.NoError(err)
-	var cfg types.RunConfig
-	must.NoError(json.Unmarshal(data, &cfg))
-	must.Len(cfg.Tools.MCPServers, 1)
-	must.Regexp(`^http://127\.0\.0\.1:\d+$`, cfg.Tools.MCPServers[0].URI)
+
+	configs := readCapturedConfigs(t, configDir)
+	must.Len(configs, 1)
+	must.Regexp(`^http://127\.0\.0\.1:\d+$`, configs[0].Tools.MCPServers[0].URI)
+}
+
+// TestRunSuite_FixtureTask_EachTrialGetsItsOwnServer pins that concurrent
+// trials of one fixture task are handed distinct servers, since an sse
+// server counts its requests and would refuse a second trial's first turn.
+func TestRunSuite_FixtureTask_EachTrialGetsItsOwnServer(t *testing.T) {
+	must := require.New(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake harness assumes POSIX sh")
+	}
+	harnessPath, _, configDir := writeConfigCapturingHarness(t)
+
+	result, err := RunSuite(context.Background(), fixtureSuite(t), RunConfig{
+		HarnessPath: harnessPath,
+		Trials:      3,
+		Concurrency: 3,
+	})
+	must.NoError(err)
+	must.Len(result.Tasks, 1)
+
+	urls := map[string]bool{}
+	for _, cfg := range readCapturedConfigs(t, configDir) {
+		urls[cfg.Provider.BaseURL] = true
+	}
+	must.Len(urls, 3)
 }
 
 // TestRunSuite_FixtureTask_StartsServerAndDropsProviderFlags pins the
@@ -178,7 +244,7 @@ func TestRunSuite_FixtureTask_StartsServerAndDropsProviderFlags(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fake harness assumes POSIX sh")
 	}
-	harnessPath, argvPath, configCopy := writeConfigCapturingHarness(t)
+	harnessPath, argvPath, configDir := writeConfigCapturingHarness(t)
 
 	_, err := RunSuite(context.Background(), fixtureSuite(t), RunConfig{
 		HarnessPath: harnessPath,
@@ -194,10 +260,9 @@ func TestRunSuite_FixtureTask_StartsServerAndDropsProviderFlags(t *testing.T) {
 		must.NotContains(argv, flag+"\n", "fixture task received %s", flag)
 	}
 
-	data, err := os.ReadFile(configCopy)
-	must.NoError(err)
-	var cfg types.RunConfig
-	must.NoError(json.Unmarshal(data, &cfg))
+	configs := readCapturedConfigs(t, configDir)
+	must.Len(configs, 1)
+	cfg := configs[0]
 	must.Equal("openai-compatible", cfg.Provider.Type)
 	must.Regexp(`^http://127\.0\.0\.1:\d+$`, cfg.Provider.BaseURL)
 
@@ -207,6 +272,90 @@ func TestRunSuite_FixtureTask_StartsServerAndDropsProviderFlags(t *testing.T) {
 		_ = conn.Close()
 	}
 	must.Error(dialErr, "fixture server still listening after the task ended")
+}
+
+// TestRunSuite_FixtureTask_MisconfigurationIsAnError pins that a fixture
+// the merged config cannot use fails the task, in a dry run and in a real
+// run alike, without launching the harness.
+func TestRunSuite_FixtureTask_MisconfigurationIsAnError(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*types.EvalSuite)
+		want   string
+	}{
+		{
+			name: "sse with a preset base url",
+			mutate: func(s *types.EvalSuite) {
+				s.Tasks[0].RunConfigOverrides.Provider.BaseURL = "https://example.com/v1"
+			},
+			want: "must leave it unset",
+		},
+		{
+			name: "mcp without a uri-less server",
+			mutate: func(s *types.EvalSuite) {
+				s.Tasks[0].FixtureServer = &types.FixtureServerConfig{Mode: types.FixtureModeMCP}
+			},
+			want: "mcp_server with no uri",
+		},
+		{
+			name: "unknown mode",
+			mutate: func(s *types.EvalSuite) {
+				s.Tasks[0].FixtureServer.Mode = "grpc"
+			},
+			want: `unknown fixture`,
+		},
+	}
+	for _, tc := range tests {
+		for _, dryRun := range []bool{true, false} {
+			name := tc.name + " real run"
+			if dryRun {
+				name = tc.name + " dry run"
+			}
+			t.Run(name, func(t *testing.T) {
+				must := require.New(t)
+				suite := fixtureSuite(t)
+				tc.mutate(&suite)
+				harnessPath, argvPath, _ := writeConfigCapturingHarness(t)
+				result, err := RunSuite(context.Background(), suite, RunConfig{DryRun: dryRun, HarnessPath: harnessPath})
+				must.NoError(err)
+				must.Equal("error", result.Tasks[0].Outcome)
+				must.Contains(result.Tasks[0].Error, tc.want)
+				_, statErr := os.Stat(argvPath)
+				must.True(os.IsNotExist(statErr), "harness ran despite the error")
+			})
+		}
+	}
+}
+
+func TestRunSuite_FixtureTask_WithoutBaselineIsAnErrorInARealRun(t *testing.T) {
+	must := require.New(t)
+	suite := fixtureSuite(t)
+	suite.RunConfig = nil
+	harnessPath, argvPath, _ := writeConfigCapturingHarness(t)
+	result, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harnessPath})
+	must.NoError(err)
+	must.Equal("error", result.Tasks[0].Outcome)
+	must.Contains(result.Tasks[0].Error, "needs a suite run_config")
+	_, statErr := os.Stat(argvPath)
+	must.True(os.IsNotExist(statErr), "harness ran despite the error")
+}
+
+func TestWithoutProviderFlags_ClearsModelSelectionAndKeepsTheRest(t *testing.T) {
+	must := require.New(t)
+	in := RunConfig{
+		HarnessPath:  "/bin/stirrup",
+		OutputDir:    "out",
+		Concurrency:  4,
+		Trials:       2,
+		Model:        "m",
+		PromptModel:  "pm",
+		Provider:     "anthropic",
+		BaseURL:      "https://example.com",
+		APIKeyRef:    "secret://K",
+		AnthropicWIF: AnthropicWIFConfig{FederationRuleID: "fdrl_1", FromGitHubActions: true},
+	}
+	got := withoutProviderFlags(in)
+	must.Equal(RunConfig{HarnessPath: "/bin/stirrup", OutputDir: "out", Concurrency: 4, Trials: 2}, got)
 }
 
 func TestRunSuite_FixtureTask_MissingStreamFileIsAnError(t *testing.T) {

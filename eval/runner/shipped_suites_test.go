@@ -102,9 +102,9 @@ func TestShippedSuites_FixtureStreamsLoad(t *testing.T) {
 				continue
 			}
 			file := task.FixtureServer.StreamFile
+			referenced[file] = true
 			t.Run(filepath.Base(path)+"/"+task.ID, func(t *testing.T) {
 				must := require.New(t)
-				referenced[file] = true
 				turns, err := fixtureserver.LoadTurns(file)
 				must.NoError(err)
 				must.NotEmpty(turns)
