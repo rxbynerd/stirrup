@@ -86,6 +86,14 @@ stream contents and the control channel itself are unprotected.
 
 TLS 1.3 and mutual TLS are opt-in through the `CONTROL_PLANE_TLS_*` environment variables (`stirrup job --help`) and the `--transport-tls-*` flags on `stirrup harness --transport grpc`; they are deliberately not `RunConfig` fields because the job dials before any `RunConfig` arrives.
 
+A private address is not authentication: it limits who can reach the
+control plane, but it neither encrypts the stream nor proves either
+peer's identity.
+[`transport-security.md`](transport-security.md) lists what crosses the
+stream and gives recipes for harness mutual TLS and for Istio strict
+mutual TLS, with manifests under
+[`examples/k8s/control-transport/`](../examples/k8s/control-transport/).
+
 ## The `stirrup job` subcommand
 
 `stirrup job` is the K8s entrypoint. It takes no flags — everything
@@ -497,7 +505,8 @@ Before deploying:
 6. Confirm the network path between job Pods and the control plane
    is trusted (private network or mesh mTLS) — the gRPC transport
    itself is plaintext and unauthenticated unless transport TLS is configured. See
-   [Transport security posture](#transport-security-posture-v01).
+   [Transport security posture](#transport-security-posture-v01) and the
+   recipes in [`transport-security.md`](transport-security.md).
 
 ## Embedding the harness
 
