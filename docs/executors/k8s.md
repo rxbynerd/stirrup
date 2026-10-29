@@ -174,7 +174,16 @@ The pieces and their lifecycle:
   shell at `/bin/sh` plus `tar`, `ls`, `mkdir`, and `readlink` on
   `PATH` — a shell-less distroless static image will not work. Output
   and file payloads are capped at 10 MB (matching the container
-  executor).
+  executor). The image has further minimums, collected under
+  [Sandbox image requirements](#sandbox-image-requirements).
+
+- **The system prompt** carries a listing of the Pod's `/workspace` and
+  its git status, both read through the executor and never from the
+  harness host. The listing and the status are each capped at 200
+  entries and 8 KiB and end in a truncation marker when cut. The
+  listing leaves out names containing control characters and is omitted
+  when listing fails. The status appears only when `/workspace` is the
+  top level of a repository.
 
 - **Egress** is enforced by a per-Pod `NetworkPolicy` the executor
   installs *before* the Pod is created (closing the window in which a
@@ -613,9 +622,10 @@ can also come from a policy create whose own outcome was unknown (it
 timed out but was persisted); the same procedure applies.
 
 Leftover Pods are bounded. For every run the harness builds from a
-validated `RunConfig`, `activeDeadlineSeconds` is set to the run's
-`timeout` plus the post-run hook budget plus a 10-minute margin, so it
-can be hours, not a short window; only an embedder that constructs the
+validated `RunConfig`, `activeDeadlineSeconds` is set to the longer of
+the run's `timeout` and the session budget (`STIRRUP_SESSION_DEADLINE`
+under `stirrup job` when set), plus the post-run hook budget plus a
+10-minute margin, so it can be hours, not a short window; only an embedder that constructs the
 executor with a zero `Lifecycle` sets no bound. When the harness runs
 in a Pod in the sandbox namespace with the `STIRRUP_POD_NAME`,
 `STIRRUP_POD_UID` and `STIRRUP_POD_NAMESPACE` downward-API variables
@@ -808,7 +818,7 @@ flag and field below is verified against
 | CLI flag | RunConfig field | Required | Notes |
 |---|---|---|---|
 | `--executor k8s` | `executor.type: "k8s"` | yes | Selects the executor. |
-| `--image` | `executor.image` | yes for `k8s` | Pod container image. Must ship `/bin/sh`, `tar`, `ls`, `mkdir`, and `readlink`. |
+| `--image` | `executor.image` | yes for `k8s` | Pod container image. Must meet the [sandbox image requirements](#sandbox-image-requirements). |
 | `--k8s-namespace` | `executor.k8sNamespace` | yes for `k8s` | Namespace the sandbox Pod (and its `NetworkPolicy`) is created in. |
 | `--k8s-kubeconfig` | `executor.k8sKubeconfig` | no | Path to a kubeconfig file. Empty prefers in-cluster config, then `$KUBECONFIG`. |
 | `--k8s-node-selector key=value` | `executor.k8sNodeSelector` | no | Repeatable `nodeSelector` constraint, e.g. `--k8s-node-selector disktype=ssd`. Merged with any `nodeSelector` the RuntimeClass contributes. |
@@ -877,6 +887,28 @@ so it inherits namespace defaults. `nitro-isolated` is the exception:
 its guest VM is sized from the requests at boot, so CPU and memory are
 both required, and `diskMb`, when set, is the size of the guest's disk.
 See [What the runtime accepts](#what-the-runtime-accepts).
+
+### Sandbox image requirements
+
+The image named by `executor.image` must provide:
+
+| Requirement | Used for |
+|---|---|
+| POSIX `sh` at `/bin/sh`, with `kill` | `Exec` runs commands through `/bin/sh -c`, and a timed-out command is signalled with `kill`. A shell builtin suffices. |
+| `tar`, `readlink`, `mkdir` | File reads and writes stream `tar` over `pods/exec`; a read resolves its path with `readlink -f` first. |
+| `ls` accepting `-A`, `-1` and `-p` | `list_directory` and the system prompt's workspace listing, which marks directories with a trailing slash. Busybox and coreutils both accept these. |
+| Writable `/tmp` | Each `Exec` records the command's process group leader in a per-call pid file under `/tmp`. |
+| `git` | Only when `gitStrategy` is `deterministic`, which runs git inside the Pod, and for the git status section of the system prompt. |
+| `setsid` *(optional)* | Runs each command in its own session so a timeout reaches the whole process group. |
+
+When a command times out, the executor sends SIGTERM to the recorded
+process group, waits about one second, then sends SIGKILL. Without
+`setsid`, only the recorded shell and the descendants discoverable
+through `/proc` are signalled. [`Dockerfile.sandbox`](../../Dockerfile.sandbox)
+builds an image that meets every requirement. The same minimums apply to
+the `container` executor, which mounts a tmpfs at `/tmp` instead of
+relying on the image; see
+[`deployment.md`](../deployment.md#sandbox-image).
 
 ## Deployment recipes
 
