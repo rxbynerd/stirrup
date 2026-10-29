@@ -75,8 +75,8 @@ buf lint
 CI runs the equivalent of `just test` + `just test-race` +
 `just fuzz-scrub` + a full build via the reusable `_verify.yml` workflow on every push, plus an
 `eval-gate` job (baselined eval suites against committed baselines,
-pinned to a cheap model) on every push and a container publish on
-every merge to `main`. A failing `compare` exit fails the eval gate.
+pinned to a cheap model) on pushes to `main` and on manual dispatch,
+and container publishes on every merge to `main`. A failing `compare` exit fails the eval gate.
 See [`.github/workflows/`](.github/workflows/) for the full pipeline.
 
 ### gopls false positives

@@ -1649,7 +1649,7 @@ The three provider flags exist for the same reason as `--model`: the
 provider a suite runs against is a property of the invocation, not of
 the suite, so CI can retarget a provider-neutral suite without editing
 suite files. Each is emitted independently, so an invocation may
-override just the base URL. The per-push eval gate uses all four to run
+override just the base URL. The CI eval gate uses all four to run
 `dogfood-seed.hcl` against OpenRouter, three trials per task:
 
 ```bash
@@ -1935,9 +1935,11 @@ distorted slice of tasks.
 The repo's GitHub Actions workflow at `.github/workflows/ci.yml` runs
 the framework as a gating job:
 
-- **`verify`** — `go test` across `types/`, `harness/`, and `eval/`,
-  plus binary builds. Runs on every push and PR.
-- **`eval-gate`** — depends on `verify`. On every push it builds
+- **`verify`** — `go test` across the workspace modules, plus binary
+  builds. Runs on every push, on the weekly schedule and on manual
+  dispatch.
+- **`eval-gate`** — depends on `verify`. On pushes to `main` and on
+  manual dispatch it builds
   the binaries, runs each suite in `eval/suites/` that has a
   matching baseline in `eval/baselines/` (unbaselined suites are
   opt-in local runs), pins the model to GPT-6 Luna over OpenRouter
@@ -1945,7 +1947,7 @@ the framework as a gating job:
   (`--trials 3`) with three concurrent workers, compares each result
   to its baseline via `eval compare`, and uploads the result and
   comparison JSON as a build artifact. Three trials triple the
-  per-push spend in exchange for the false-alarm rates in
+  per-run spend in exchange for the false-alarm rates in
   [Gate semantics](#gate-semantics). The job has a 30-minute timeout.
   On-demand `provider-quirks-*` suites run without `--trials` (one
   trial per task unless the suite sets `trials`) to contain their
@@ -1953,8 +1955,10 @@ the framework as a gating job:
   repository secret; runs that cannot read it (fork clones, Dependabot-actor
   pushes) skip the live run with a warning rather than reporting a
   false regression.
-- **`publish-container`** — depends on `verify`. On `main` pushes it
-  publishes the harness Docker image to `ghcr.io/rxbynerd/stirrup`.
+- **`publish-container`** and **`publish-sandbox-container`** — depend
+  on `verify`. On `main` pushes and on the weekly schedule they publish
+  the harness image to `ghcr.io/rxbynerd/stirrup` and the sandbox image
+  to `ghcr.io/rxbynerd/stirrup-sandbox`.
 
 The compare step compares every baselined suite before it exits, so
 one failing suite does not hide another. A `block` (exit `1`) or a

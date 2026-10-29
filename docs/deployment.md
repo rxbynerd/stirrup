@@ -637,18 +637,22 @@ The labels are injected via `-ldflags` against
 
 ## CI
 
-`.github/workflows/ci.yml` runs three jobs on each push:
+`.github/workflows/ci.yml` runs on every push, on a weekly schedule,
+and on manual dispatch. It has four jobs:
 
-- **`verify`** — `go test` plus binary builds for the `types`,
-  `harness`, and `eval` modules. Runs on every push and PR via the
-  reusable `_verify.yml` workflow.
+- **`verify`** — `go test`, the race and fuzz passes, and binary
+  builds across the workspace modules, through the reusable
+  `_verify.yml` workflow. Runs on every trigger.
 - **`eval-gate`** — runs the baselined suites in `eval/suites/`
-  against `eval/baselines/` on every push, pinned to a cheap model
-  (GPT-6 Luna over OpenRouter), exits non-zero on regressions, uploads
-  results as artifacts. A stronger-model sweep (Sonnet 5, Opus 4.8)
+  against `eval/baselines/`, pinned to a cheap model (GPT-6 Luna over
+  OpenRouter), exits non-zero on regressions, and uploads results as
+  artifacts. It runs on pushes to `main` and on manual dispatch only,
+  to bound token spend. A stronger-model sweep (Sonnet 5, Opus 4.8)
   runs at release time via `release.yml::eval-extended`.
-- **`publish-container`** — builds and pushes the image to GHCR on
-  the `main` branch only, after `verify` passes.
+- **`publish-container`** and **`publish-sandbox-container`** — build
+  and push the harness image and the sandbox image to GHCR after
+  `verify` passes, on pushes to `main` and on the weekly schedule. The
+  schedule keeps the sandbox image's packages current between merges.
 
 The Anthropic WIF smoke test (`smoke-anthropic.yml`) is a separate
 gated workflow that exercises the federation flow end-to-end.
