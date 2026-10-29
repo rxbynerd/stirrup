@@ -7,10 +7,11 @@ requests, prints events as they arrive, optionally starts follow-up runs, and
 exits with a status that reflects the outcome of the runs. The wire contract is documented in
 [`docs/integration-guide.md`](../../docs/integration-guide.md).
 
-The transport is **plaintext and unauthenticated**. The program is a
-demonstration of the contract, not a deployable service: run it on loopback
-or a private network only. Authentication, multiple concurrent jobs, durable
-state and the sandbox identity token flow are out of scope.
+The transport is **plaintext and unauthenticated** unless the `-tls-*` flags
+are set (see [TLS](#tls)). The program is a demonstration of the contract, not
+a deployable service: without TLS, run it on loopback or a private network
+only. Mapping a client identity to a session, multiple concurrent jobs,
+durable state and the sandbox identity token flow are out of scope.
 
 The module depends on the standard library, gRPC and the generated stubs in
 [`gen/`](../../gen) only.
@@ -34,6 +35,8 @@ CONTROL_PLANE_ADDR=127.0.0.1:50051 ./stirrup job
 | `-permission` | `deny` | How to answer `permission_request` events: `allow`, `deny`, or `ask` (prompts on the terminal; anything but `y` or `yes` denies). |
 | `-addr-file` | none | Write the bound address to this file once listening, for use with `-listen 127.0.0.1:0`. |
 | `-followup` | none | A prompt to send as a `user_response` after a run's `done`, which starts a follow-up run. Repeat the flag for more runs; they are sent in order, one per `done`. Requires `followUpGrace` in the `RunConfig`. |
+| `-tls-cert`, `-tls-key` | none | PEM server certificate and key. Set together, they serve TLS 1.3 instead of plaintext. |
+| `-tls-client-ca` | none | PEM CA bundle. Requires every client to present a certificate issued by it (mutual TLS). Needs `-tls-cert` and `-tls-key`. |
 
 A `RunConfig` delivered over the wire skips the CLI's convenience defaults, so
 the file has to name every component explicitly. Every file under
@@ -86,6 +89,31 @@ Events that need a reply this example does not implement (`tool_result_request`,
 the `batch_*` events, `sandbox_token_request`) are reported on stderr and left
 unanswered. A `RunConfig` that opts into them stalls until the harness times
 out the request.
+
+## TLS
+
+With `-tls-cert` and `-tls-key` the server presents that certificate and
+accepts TLS 1.3 only; a plaintext client fails before any event is exchanged.
+Adding `-tls-client-ca` makes it mutual TLS: a client without a certificate
+issued by that CA is refused during the handshake. The harness side is
+configured with the `CONTROL_PLANE_TLS_*` environment variables:
+
+```sh
+go run ./examples/controlplane -config run.json -listen 127.0.0.1:50051 \
+    -tls-cert server.pem -tls-key server-key.pem -tls-client-ca ca.pem
+
+CONTROL_PLANE_ADDR=127.0.0.1:50051 \
+CONTROL_PLANE_TLS_CA_FILE=ca.pem \
+CONTROL_PLANE_TLS_CERT_FILE=client.pem \
+CONTROL_PLANE_TLS_KEY_FILE=client-key.pem \
+    ./stirrup job
+```
+
+The server certificate must name the address the harness dials (here an IP
+SAN for `127.0.0.1`). The example authenticates the client certificate but
+does not bind it to a session. See
+[`docs/transport-security.md`](../../docs/transport-security.md) for
+certificate generation and the Kubernetes recipes.
 
 ## Smoke test
 

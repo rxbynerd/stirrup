@@ -359,7 +359,7 @@ func TestServe_ExitStatusFollowsRunOutcome(t *testing.T) {
 				}
 			}()
 
-			must.Equal(tc.want, serve(lis, srv, io.Discard))
+			must.Equal(tc.want, serve(lis, srv, plaintextSecurity, io.Discard))
 		})
 	}
 }
@@ -379,6 +379,8 @@ func TestRun_UsageErrorsExitWithUsageCode(t *testing.T) {
 		{"unusable listen address", []string{"-config", cfg, "-listen", "not-an-address"}},
 		{"follow-up without followUpGrace", []string{"-config", cfg, "-followup", "again"}},
 		{"empty follow-up", []string{"-config", cfg, "-followup", " "}},
+		{"TLS certificate without key", []string{"-config", cfg, "-tls-cert", cfg}},
+		{"unloadable TLS certificate", []string{"-config", cfg, "-tls-cert", cfg, "-tls-key", cfg}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
