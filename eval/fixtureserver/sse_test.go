@@ -1,10 +1,10 @@
 package fixtureserver
 
 import (
-	"bufio"
 	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,6 +42,13 @@ func TestLoadTurns_SplitsOnSeparatorLine(t *testing.T) {
 	must.Equal([]string{"data: a\n\ndata: b\n\n", "data: c\n\n"}, turns)
 }
 
+func TestLoadTurns_NormalizesCRLFLineEndings(t *testing.T) {
+	must := require.New(t)
+	turns, err := LoadTurns(writeStream(t, "data: a\r\n\r\ndata: b\r\n\r\n---\r\ndata: c\r\n"))
+	must.NoError(err)
+	must.Equal([]string{"data: a\n\ndata: b\n\n", "data: c\n\n"}, turns)
+}
+
 func TestLoadTurns_Errors(t *testing.T) {
 	tests := []struct {
 		name string
@@ -52,7 +59,7 @@ func TestLoadTurns_Errors(t *testing.T) {
 		{"missing file", func(t *testing.T) string { return filepath.Join(t.TempDir(), "absent") }, "stream file"},
 		{"directory", func(t *testing.T) string { return t.TempDir() }, "not a regular file"},
 		{"no turn", func(t *testing.T) string { return writeStream(t, "\n---\n\n") }, "holds no turn"},
-		{"oversized", func(t *testing.T) string { return writeStream(t, strings.Repeat("x", maxStreamFileBytes+1)) }, "the cap is"},
+		{"oversized", func(t *testing.T) string { return writeStream(t, strings.Repeat("x", maxStreamFileBytes+1)) }, "byte cap"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -86,34 +93,37 @@ func TestStart_SSE_ServesTurnsInOrderThenRefuses(t *testing.T) {
 	must.Contains(body, "request 3 but the stream file holds 2 turn(s)")
 }
 
-// TestStart_SSE_FlushesEachRecordSeparately pins that a turn is written one
-// SSE record at a time, so a client reads split arguments as separate
-// events rather than one buffered body.
-func TestStart_SSE_FlushesEachRecordSeparately(t *testing.T) {
+// recordingWriter notes each write and how many flushes had happened when
+// it was made.
+type recordingWriter struct {
+	*httptest.ResponseRecorder
+	flushes        int
+	flushesAtWrite []int
+	writes         []string
+}
+
+func (w *recordingWriter) Write(b []byte) (int, error) {
+	w.writes = append(w.writes, string(b))
+	w.flushesAtWrite = append(w.flushesAtWrite, w.flushes)
+	return w.ResponseRecorder.Write(b)
+}
+
+func (w *recordingWriter) WriteString(s string) (int, error) { return w.Write([]byte(s)) }
+
+func (w *recordingWriter) Flush() { w.flushes++ }
+
+// TestNewSSEHandler_WritesAndFlushesEachRecordSeparately pins that a turn is
+// written one SSE record at a time with a flush after each, so a client
+// reads split arguments as separate events rather than one buffered body.
+func TestNewSSEHandler_WritesAndFlushesEachRecordSeparately(t *testing.T) {
 	must := require.New(t)
-	server, err := Start(types.FixtureServerConfig{
-		Mode:       types.FixtureModeSSE,
-		StreamFile: writeStream(t, "data: first\n\ndata: second\n\n"),
-	})
-	must.NoError(err)
-	defer func() { _ = server.Close() }()
+	w := &recordingWriter{ResponseRecorder: httptest.NewRecorder()}
+	req := httptest.NewRequest(http.MethodPost, "/chat/completions", strings.NewReader(`{}`))
+	newSSEHandler([]string{"data: first\n\ndata: second\n\n"}).ServeHTTP(w, req)
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, server.URL, strings.NewReader(`{}`))
-	must.NoError(err)
-	resp, err := (&http.Client{}).Do(req)
-	must.NoError(err)
-	defer func() { _ = resp.Body.Close() }()
-
-	reader := bufio.NewReader(resp.Body)
-	var records []string
-	for len(records) < 2 {
-		line, err := reader.ReadString('\n')
-		must.NoError(err)
-		if line = strings.TrimSpace(line); line != "" {
-			records = append(records, line)
-		}
-	}
-	must.Equal([]string{"data: first", "data: second"}, records)
+	must.Equal([]string{"data: first\n\n", "data: second\n\n"}, w.writes)
+	must.Equal([]int{0, 1}, w.flushesAtWrite)
+	must.Equal(2, w.flushes)
 }
 
 func TestStart_RejectsUnknownMode(t *testing.T) {

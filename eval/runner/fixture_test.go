@@ -107,19 +107,15 @@ func TestRunSuite_FixtureTask_WithoutBaselineIsAnError(t *testing.T) {
 	must.Contains(result.Tasks[0].Error, "needs a suite run_config")
 }
 
-// TestRunSuite_FixtureTask_StartsServerAndDropsProviderFlags pins the
-// per-task lifecycle: the harness is handed a config whose base URL is the
-// live fixture server, none of the invocation's live-model flags reach it,
-// and the server is closed once the task ends.
-func TestRunSuite_FixtureTask_StartsServerAndDropsProviderFlags(t *testing.T) {
-	must := require.New(t)
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script fake harness assumes POSIX sh")
-	}
+// writeConfigCapturingHarness writes a fake harness that records its argv
+// and a copy of its --config document, then writes a trace to the config's
+// trace path.
+func writeConfigCapturingHarness(t *testing.T) (harnessPath, argvPath, configCopy string) {
+	t.Helper()
 	dir := t.TempDir()
-	harnessPath := filepath.Join(dir, "fake-harness")
-	argvPath := filepath.Join(dir, "argv.txt")
-	configCopy := filepath.Join(dir, "config.json")
+	harnessPath = filepath.Join(dir, "fake-harness")
+	argvPath = filepath.Join(dir, "argv.txt")
+	configCopy = filepath.Join(dir, "config.json")
 	script := fmt.Sprintf(`#!/bin/sh
 for a in "$@"; do printf '%%s\n' "$a"; done > %q
 shift
@@ -134,7 +130,55 @@ cp "$CONFIG" %q
 TRACE=$(sed -n 's/.*"filePath":"\([^"]*\)".*/\1/p' "$CONFIG")
 echo '{"id":"run-1","turns":1,"outcome":"success"}' > "$TRACE"
 `, argvPath, configCopy)
-	must.NoError(os.WriteFile(harnessPath, []byte(script), 0o755))
+	require.NoError(t, os.WriteFile(harnessPath, []byte(script), 0o755))
+	return harnessPath, argvPath, configCopy
+}
+
+// TestRunSuite_FixtureTask_MCPKeepsProviderFlags pins that an mcp fixture
+// task still receives the invocation's live-model flags: the stub stands in
+// for a tool server, not for the model.
+func TestRunSuite_FixtureTask_MCPKeepsProviderFlags(t *testing.T) {
+	must := require.New(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake harness assumes POSIX sh")
+	}
+	harnessPath, argvPath, configCopy := writeConfigCapturingHarness(t)
+
+	suite := fixtureSuite(t)
+	suite.Tasks[0].FixtureServer = &types.FixtureServerConfig{Mode: types.FixtureModeMCP}
+	suite.Tasks[0].RunConfigOverrides = &types.RunConfigOverrides{
+		Provider:    &types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://KEY"},
+		ModelRouter: &types.ModelRouterConfig{Type: "static", Provider: "anthropic", Model: "claude-sonnet-5"},
+		MCPServers:  []types.MCPServerConfig{{Name: "stub"}},
+	}
+
+	_, err := RunSuite(context.Background(), suite, RunConfig{
+		HarnessPath: harnessPath,
+		Provider:    "openai-compatible",
+		Model:       "gpt-test",
+	})
+	must.NoError(err)
+
+	requireArgvHas(t, readArgvFile(t, argvPath), "--provider", "openai-compatible", "--model", "gpt-test")
+
+	data, err := os.ReadFile(configCopy)
+	must.NoError(err)
+	var cfg types.RunConfig
+	must.NoError(json.Unmarshal(data, &cfg))
+	must.Len(cfg.Tools.MCPServers, 1)
+	must.Regexp(`^http://127\.0\.0\.1:\d+$`, cfg.Tools.MCPServers[0].URI)
+}
+
+// TestRunSuite_FixtureTask_StartsServerAndDropsProviderFlags pins the
+// per-task lifecycle: the harness is handed a config whose base URL is the
+// live fixture server, none of the invocation's live-model flags reach an
+// sse task, and the server is closed once the task ends.
+func TestRunSuite_FixtureTask_StartsServerAndDropsProviderFlags(t *testing.T) {
+	must := require.New(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake harness assumes POSIX sh")
+	}
+	harnessPath, argvPath, configCopy := writeConfigCapturingHarness(t)
 
 	_, err := RunSuite(context.Background(), fixtureSuite(t), RunConfig{
 		HarnessPath: harnessPath,

@@ -330,7 +330,7 @@ type observabilitySpec struct {
 // so authors see the diagnostic at HCL parse time with the field path
 // named. Must stay in lockstep with every secret-bearing field the HCL
 // grammar accepts (providerSpec / runConfigOverridesSpec / executorSpec /
-// guardRailSpec) or a new field creates a parse-time hole.
+// guardRailSpec / mcpServerSpec) or a new field creates a parse-time hole.
 func validateInlineAPIKeyRefs(cfg *types.RunConfig, overrides *types.RunConfigOverrides) error {
 	checkRef := func(path, ref string) error {
 		if ref == "" {

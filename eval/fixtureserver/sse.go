@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
+	"syscall"
 )
 
 const (
@@ -31,20 +32,29 @@ func LoadTurns(path string) ([]string, error) {
 	if path == "" {
 		return nil, fmt.Errorf("fixture server: stream file is required")
 	}
-	info, err := os.Stat(path)
+	// O_NONBLOCK keeps the open of a FIFO from blocking for a writer.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, fmt.Errorf("fixture server: stream file: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("fixture server: stream file: %w", err)
 	}
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("fixture server: stream file %q is not a regular file", path)
 	}
-	if info.Size() > maxStreamFileBytes {
-		return nil, fmt.Errorf("fixture server: stream file %q is %d bytes; the cap is %d", path, info.Size(), maxStreamFileBytes)
-	}
-	data, err := os.ReadFile(path)
+	// Reading one byte past the cap keeps the bound if the file grows
+	// after the stat.
+	raw, err := io.ReadAll(io.LimitReader(f, maxStreamFileBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("fixture server: stream file: %w", err)
 	}
+	if len(raw) > maxStreamFileBytes {
+		return nil, fmt.Errorf("fixture server: stream file %q exceeds the %d byte cap", path, maxStreamFileBytes)
+	}
+	data := strings.ReplaceAll(string(raw), "\r\n", "\n")
 
 	var turns []string
 	var current []string
@@ -54,8 +64,8 @@ func LoadTurns(path string) ([]string, error) {
 		}
 		current = nil
 	}
-	for line := range strings.SplitSeq(string(data), "\n") {
-		if strings.TrimRight(line, " \t\r") == turnSeparator {
+	for line := range strings.SplitSeq(data, "\n") {
+		if strings.TrimRight(line, " \t") == turnSeparator {
 			flush()
 			continue
 		}

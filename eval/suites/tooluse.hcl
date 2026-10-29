@@ -54,7 +54,9 @@
 # The mcp-name-normalization task gets one from a loopback MCP stub (a
 # fixture_server in mode "mcp") that advertises read-file-stub, and
 # replays a recording that calls it by the underscore name the replay
-# provider's strictest naming policy shows the model.
+# provider's strictest naming policy shows the model. Unlike the
+# streaming tasks it follows the live flags: under --provider the
+# recording is dropped and the live model is offered the stub's tool.
 #
 # See eval/suites/README.md for the run/compare/baseline workflow.
 

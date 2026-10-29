@@ -31,7 +31,7 @@ func applyFixtureServer(cfg *types.RunConfig, fixture types.FixtureServerConfig,
 			}
 		}
 		if filled == 0 {
-			return fmt.Errorf("fixture_server mode %q supplies a tools.mcp_servers uri; the task must declare an mcp_server with no uri", fixture.Mode)
+			return fmt.Errorf("fixture_server mode %q supplies a tools.mcp_server uri; the task must declare an mcp_server with no uri", fixture.Mode)
 		}
 		return nil
 	default:
@@ -40,8 +40,8 @@ func applyFixtureServer(cfg *types.RunConfig, fixture types.FixtureServerConfig,
 }
 
 // withoutProviderFlags returns cfg minus every flag that selects or
-// authenticates a live model. A fixture task runs against its own server,
-// so these flags, which retarget the other tasks, must not reach it.
+// authenticates a live model. An sse fixture task runs against its own
+// server, so these flags, which retarget the other tasks, must not reach it.
 func withoutProviderFlags(cfg RunConfig) RunConfig {
 	cfg.Model = ""
 	cfg.PromptModel = ""

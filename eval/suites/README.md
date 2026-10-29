@@ -97,11 +97,12 @@ exercises one behaviour, judged on both the final workspace state
 
 ### Running without provider credentials (the default)
 
-Every task seeds its workspace with `file` blocks and names a
-recording under `fixtures/tooluse/` through a `run_config_overrides`
-`provider { type = "replay" }` block, so `stirrup-eval run` spawns the
-real `stirrup harness` binary and drives its tool registry, a real
-`LocalExecutor` and the judges over a scripted conversation:
+Every task seeds its workspace with `file` blocks. All but the two
+streaming tasks name a recording under `fixtures/tooluse/` through a
+`run_config_overrides` `provider { type = "replay" }` block, so
+`stirrup-eval run` spawns the real `stirrup harness` binary and drives
+its tool registry, a real `LocalExecutor` and the judges over a scripted
+conversation:
 
 ```sh
 ./stirrup-eval run --suite eval/suites/tooluse.hcl --output results/tooluse
@@ -131,8 +132,10 @@ runner starts for the trial:
   the underscore name the strictest provider naming policy shows the
   model.
 
-These tasks need no credential, and the live-model flags of an
-invocation do not reach them.
+These tasks need no credential. The live-model flags of an invocation
+do not reach the streaming tasks, whose subject is a specific adapter,
+so they pass in a live run too. They do reach the MCP task, which then
+offers the stub's tool to the live model.
 
 ### Running against a live provider (opt-in)
 

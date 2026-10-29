@@ -1285,8 +1285,10 @@ merged configuration does.
 **`sse` mode.** The server answers every `POST`, whatever the path, so
 it stands in for an `openai-compatible` or `openai-responses` endpoint.
 The runner sets the provider's `base_url` to the server's URL; the task
-must leave `base_url` unset, and sets `api_key_ref = ""` because both
-adapters accept a missing key for a custom base URL. The stream file
+must leave `base_url` unset and `api_key_ref` empty, which both
+adapters accept once a custom base URL is set; with the base URL set
+the harness also does not fall back to a default key reference. The
+stream file
 holds the raw SSE text of each turn's response in that adapter's wire
 format, with turns separated by a line containing only `---`. The n-th
 request receives the n-th turn, and each SSE record is written and
@@ -1299,13 +1301,15 @@ The server does not inspect the requests it receives. The judges assert
 on the run's outcome, so a task passes only if the adapter reassembled
 the split arguments into a call that dispatched.
 
-A fixture task never receives the live-model flags of the invocation
+An `sse` task never receives the live-model flags of the invocation
 (`--provider`, `--model`, `--prompt-model`, `--base-url`,
 `--api-key-ref` and the Anthropic federation flags). They retarget the
-other tasks of the suite, and the fixture task is a test of the
-adapter its block names. `--dry-run` validates the merged configuration
-with a placeholder URL and does not start the server or open the
-stream file.
+other tasks of the suite, and the task is a test of the adapter its
+block names. An `mcp` task does receive them, since the stub stands in
+for a tool server rather than for the model: under `--provider`, the
+live model is offered the stub's tool. `--dry-run` validates the merged
+configuration with a placeholder URL and does not start the server or
+open the stream file.
 
 **`mcp` mode.** The server speaks the Streamable-HTTP transport the
 harness's MCP client uses and implements `initialize`, `tools/list` and

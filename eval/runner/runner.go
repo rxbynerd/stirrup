@@ -466,7 +466,9 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 		if err := applyFixtureServer(merged, *task.FixtureServer, server.URL); err != nil {
 			return errorResult(task.ID, start, err)
 		}
-		cfg = withoutProviderFlags(cfg)
+		if task.FixtureServer.Mode == types.FixtureModeSSE {
+			cfg = withoutProviderFlags(cfg)
+		}
 	}
 
 	configPath := ""
