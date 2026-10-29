@@ -696,12 +696,12 @@ func TestNoiseFloor_PoolWithAFailurePrintsBothRates(t *testing.T) {
 
 func TestRateSummary_WilsonIntervalOverTasks(t *testing.T) {
 	// Pass fractions 1, 1, 2/3, 1/3, 1/3 give 10/3 successes over 5 tasks.
-	s := rateSummary(trialSuite("r", 3, []int{3, 3, 2, 1, 1}))
+	s := rateSummary(trialSuite("r", 3, []int{3, 3, 2, 1, 1}), false)
 	within(t, "pass rate", s.PassRate, 2.0/3, 1e-12)
 	within(t, "Wilson low", s.WilsonLow, 0.27520, 0.0001)
 	within(t, "Wilson high", s.WilsonHigh, 0.91331, 0.0001)
 
-	threeOfFive := rateSummary(trialSuite("r", 3, []int{3, 3, 3, 0, 0}))
+	threeOfFive := rateSummary(trialSuite("r", 3, []int{3, 3, 3, 0, 0}), false)
 	within(t, "3/5 Wilson low", threeOfFive.WilsonLow, 0.23072, 0.0001)
 	within(t, "3/5 Wilson high", threeOfFive.WilsonHigh, 0.88238, 0.0001)
 }
@@ -713,7 +713,7 @@ func TestRateSummary_PassHatKStopsAtTheSmallestTrialCount(t *testing.T) {
 		trialTask("b", 2, 3),
 		trialTask("c", 3, 3),
 	}}
-	s := rateSummary(r)
+	s := rateSummary(r, false)
 
 	must.Len(s.PassHatK, 2, "pass^k rows should stop at the smallest trial count")
 	must.Len(s.PassAtK, 2, "pass@k rows should stop at the smallest trial count")
