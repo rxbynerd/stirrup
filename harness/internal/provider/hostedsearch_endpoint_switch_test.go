@@ -84,9 +84,9 @@ func TestOpenAIResponsesAdapter_GenericEndpointDropsHostedSearchHistory(t *testi
 			body := string(script.lastBody(t))
 			for _, marker := range []string{`"tool_search_call"`, `"tool_search_output"`, `"defer_loading"`, `"type":"tool_search"`, `"namespace"`, `"execution"`} {
 				if tc.wantHostedIn {
-					check.Contains(body, marker, "the openai endpoint should receive hosted search wire shapes")
+					check.Contains(body, marker, "the openai endpoint should receive %s", marker)
 				} else {
-					check.NotContains(body, marker, "a generic endpoint must not receive hosted search wire shapes")
+					check.NotContains(body, marker, "a generic endpoint must not receive %s", marker)
 				}
 			}
 			check.Contains(body, `"call_id":"call_1"`, "the function call and its output stay paired")

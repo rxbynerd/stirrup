@@ -1034,7 +1034,7 @@ func TestLoadRunConfigFile_AnchorsReplayFile(t *testing.T) {
 	must.Equal("/abs/run.jsonl", cfg.Providers["abs"].ReplayFile)
 }
 
-func TestDryRun_ProviderEndpointProfile(t *testing.T) {
+func TestDryRun_ProviderEndpointProfile_ValidatesDeclaredValue(t *testing.T) {
 	tests := []struct {
 		name        string
 		profile     string

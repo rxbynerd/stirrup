@@ -1180,7 +1180,8 @@ func TestAnchorRunConfigPaths_ResolvesRelativeReplayFiles(t *testing.T) {
 	AnchorRunConfigPaths(nil, base)
 }
 
-func TestLoadSuiteHCL_ProviderEndpointAndCompatProfile(t *testing.T) {
+func TestLoadSuiteHCL_ProviderEndpointAndCompatProfile_ReachProviderConfig(t *testing.T) {
+	must := require.New(t)
 	src := `
 suite "s" {
   run_config {
@@ -1212,7 +1213,7 @@ suite "s" {
 `
 	path := writeTemp(t, "provider-profiles.hcl", src)
 	got, err := LoadSuiteHCL(path)
-	require.NoError(t, err)
+	must.NoError(err)
 
 	t.Run("suite baseline carries both profiles", func(t *testing.T) {
 		must := require.New(t)
