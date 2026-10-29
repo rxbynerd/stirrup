@@ -12,7 +12,8 @@
 #   Every task names a recording under fixtures/tooluse/ and runs it
 #   through the replay provider, so the real `stirrup harness` binary
 #   drives the real tool registry and a real LocalExecutor over the seeded
-#   workspace with no provider credential and no network:
+#   workspace with no provider credential and no network (the
+#   streaming-split-args-* tasks below serve a canned stream instead):
 #
 #     ./stirrup-eval run --suite eval/suites/tooluse.hcl --output results/tooluse
 #
@@ -39,12 +40,19 @@
 #   To compare models, run the suite once per model and diff the
 #   result.json files with `stirrup-eval compare`.
 #
-# Two behaviours from the Go test stay in process only. MCP name
-# normalization needs a tool registered under an MCP-style name, which
-# requires an HTTP MCP server the runner does not start. Streaming
-# tool-call parsing is a wire-level property of each adapter that a
-# replay bypasses by design; the Go test drives the openai-compatible
-# parser against a loopback server instead.
+# Streaming tool-call parsing is a wire-level property of each adapter
+# that a replay bypasses by design, so the streaming-split-args-* tasks
+# run the real openai-compatible and openai-responses adapters against a
+# loopback fixture_server that plays back a canned SSE stream (under
+# fixtures/tooluse/) whose tool-call arguments arrive split across
+# deltas. They are keyless and unaffected by the --provider/--model
+# live flags, which retarget only the replayed tasks. The gemini adapter
+# has no base URL a RunConfig can set and needs Google credentials, so
+# its parsing stays pinned in process.
+#
+# MCP name normalization stays in process only: it needs a tool
+# registered under an MCP-style name, which requires an HTTP MCP server
+# the runner does not start.
 #
 # See eval/suites/README.md for the run/compare/baseline workflow.
 
@@ -464,6 +472,114 @@ suite "tooluse-reliability" {
           }
           call "find_files" {
             min_calls = 1
+          }
+        }
+      }
+    }
+  }
+
+  task "streaming-split-args-openai-compatible" {
+    description = "A openai-compatible tool call whose arguments arrive split across chat-completion deltas is reassembled by the real adapter's stream parser and dispatched. The task runs the openai-compatible adapter against a loopback fixture server that plays back fixtures/tooluse/openai-compatible-split-args.sse, so no credential is used. Judge confirms the edit landed AND the edit_file call succeeded. Regression-covers openai-compatible streamed tool-call parsing, which a replay recording bypasses."
+    repo        = ""
+    ref         = ""
+    mode        = "execution"
+    prompt      = <<-EOT
+      greeting.txt contains the line "hello old world". Change the word "old" to "new" with a targeted edit.
+    EOT
+
+    file "greeting.txt" {
+      content = "hello old world\n"
+    }
+
+    fixture_server {
+      mode        = "sse"
+      stream_file = "fixtures/tooluse/openai-compatible-split-args.sse"
+    }
+
+    run_config_overrides {
+      provider {
+        type        = "openai-compatible"
+        api_key_ref = ""
+      }
+
+      model_router {
+        type     = "static"
+        provider = "openai-compatible"
+        model    = "fixture-model"
+      }
+    }
+
+    judge {
+      type    = "composite"
+      require = "all"
+
+      judge {
+        type    = "file-contains"
+        path    = "greeting.txt"
+        pattern = "hello new world"
+      }
+
+      judge {
+        type = "tool-trace"
+        tool_trace {
+          forbid_unknown = true
+          call "edit_file" {
+            min_calls     = 1
+            all_succeeded = true
+          }
+        }
+      }
+    }
+  }
+
+  task "streaming-split-args-openai-responses" {
+    description = "A openai-responses tool call whose arguments arrive split across function-call argument deltas is reassembled by the real adapter's stream parser and dispatched. The task runs the openai-responses adapter against a loopback fixture server that plays back fixtures/tooluse/openai-responses-split-args.sse, so no credential is used. Judge confirms the edit landed AND the edit_file call succeeded. Regression-covers openai-responses streamed tool-call parsing, which a replay recording bypasses."
+    repo        = ""
+    ref         = ""
+    mode        = "execution"
+    prompt      = <<-EOT
+      greeting.txt contains the line "hello old world". Change the word "old" to "new" with a targeted edit.
+    EOT
+
+    file "greeting.txt" {
+      content = "hello old world\n"
+    }
+
+    fixture_server {
+      mode        = "sse"
+      stream_file = "fixtures/tooluse/openai-responses-split-args.sse"
+    }
+
+    run_config_overrides {
+      provider {
+        type        = "openai-responses"
+        api_key_ref = ""
+      }
+
+      model_router {
+        type     = "static"
+        provider = "openai-responses"
+        model    = "fixture-model"
+      }
+    }
+
+    judge {
+      type    = "composite"
+      require = "all"
+
+      judge {
+        type    = "file-contains"
+        path    = "greeting.txt"
+        pattern = "hello new world"
+      }
+
+      judge {
+        type = "tool-trace"
+        tool_trace {
+          forbid_unknown = true
+          call "edit_file" {
+            min_calls     = 1
+            all_succeeded = true
           }
         }
       }

@@ -1204,9 +1204,77 @@ without `--provider` on such a suite, since the tasks would keep
 replaying while the result named the requested model. `eval/suites/tooluse.hcl` is built this way and runs in the
 `verify` CI job from the recordings under `eval/suites/fixtures/`;
 `harness/internal/core/tooluse_replay_test.go` pins the same
-behaviours in process, including two a replay cannot reach (MCP name
-normalization, which needs an MCP server, and streaming tool-call
-parsing, which is an adapter wire property).
+behaviours in process, including the ones a replay cannot reach, which
+the suite covers with [fixture servers](#fixture-servers).
+
+#### Fixture servers
+
+A replay replaces the model, so it cannot exercise an adapter's wire
+parsing. A task that needs the real adapter, or another dependency of
+the harness, to talk to something scripted declares a `fixture_server`
+block. The runner starts the server on a loopback port before the
+task's harness run, points the run's configuration at it, and closes it
+when the run ends. Each trial gets its own server.
+
+```hcl
+task "streaming-split-args-openai-compatible" {
+  # prompt, files, judge ...
+
+  fixture_server {
+    mode        = "sse"
+    stream_file = "fixtures/tooluse/openai-compatible-split-args.sse"
+  }
+
+  run_config_overrides {
+    provider {
+      type        = "openai-compatible"
+      api_key_ref = ""
+    }
+    model_router {
+      type     = "static"
+      provider = "openai-compatible"
+      model    = "fixture-model"
+    }
+  }
+}
+```
+
+| Attribute     | Meaning |
+|---------------|---------|
+| `mode`        | Required. `sse` plays back canned provider responses. |
+| `stream_file` | Required for `sse`. Path to the canned responses, resolved against the suite file's directory. |
+
+The task needs a suite-level `run_config` or `run_config_file`, as every
+merged configuration does.
+
+**`sse` mode.** The server answers every `POST`, whatever the path, so
+it stands in for an `openai-compatible` or `openai-responses` endpoint.
+The runner sets the provider's `base_url` to the server's URL; the task
+must leave `base_url` unset, and sets `api_key_ref = ""` because both
+adapters accept a missing key for a custom base URL. The stream file
+holds the raw SSE text of each turn's response in that adapter's wire
+format, with turns separated by a line containing only `---`. The n-th
+request receives the n-th turn, and each SSE record is written and
+flushed on its own, so a tool call whose arguments are split across
+records reaches the adapter's parser as separate network reads. A
+request past the last turn fails with HTTP 400 so a run that loops
+longer than its stream fails visibly. The file is capped at 1 MiB.
+
+The server does not inspect the requests it receives. The judges assert
+on the run's outcome, so a task passes only if the adapter reassembled
+the split arguments into a call that dispatched.
+
+A fixture task never receives the live-model flags of the invocation
+(`--provider`, `--model`, `--prompt-model`, `--base-url`,
+`--api-key-ref` and the Anthropic federation flags). They retarget the
+other tasks of the suite, and the fixture task is a test of the
+adapter its block names. `--dry-run` validates the merged configuration
+with a placeholder URL and does not start the server or open the
+stream file.
+
+The Gemini adapter has no fixture task: its endpoint is derived from a
+project and location rather than a `base_url`, and it needs Google
+credentials, so a RunConfig cannot point it at a loopback server.
 
 #### Where recordings come from
 

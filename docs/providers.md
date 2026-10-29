@@ -1075,7 +1075,8 @@ What a replay does not exercise or preserve:
 
 - the wire parsing of any adapter (a `tool_call` is emitted whole,
   never reassembled from deltas), provider quirks, retries and
-  `ReplayFields` capture;
+  `ReplayFields` capture; an eval task covers wire parsing with a
+  [fixture server](eval.md#fixture-servers) instead;
 - `spawn_agent`: a child loop shares the parent's provider and draws
   the parent's next recorded turns, so a trace that used sub-agents
   does not replay;

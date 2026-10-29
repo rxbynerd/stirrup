@@ -114,10 +114,18 @@ runs it on every push. A recording is a JSONL trace whose
 fixtures are hand-written to the shapes
 `harness/internal/core/tooluse_replay_test.go` pins in process, and
 that Go test remains the unit-level gate for the same behaviours.
-Two of its behaviours stay in process only: MCP name normalization
-needs an MCP server the runner does not start (and the HCL `tools`
-block has no MCP server field), and streaming tool-call parsing is a
-wire property of each adapter that a replay bypasses by design.
+Two of its behaviours cannot be replayed. MCP name normalization stays
+in process only: it needs an MCP server the runner does not start (and
+the HCL `tools` block has no MCP server field). Streaming tool-call
+parsing is a wire property of each adapter that a replay bypasses by
+design, so the `streaming-split-args-*` tasks instead run the real
+`openai-compatible` and `openai-responses` adapters against a loopback
+[fixture server](../../docs/eval.md#fixture-servers) that plays back a
+canned SSE stream (`fixtures/tooluse/*.sse`) with the tool-call
+arguments split across deltas. These tasks are keyless and ignore the
+live-model flags of an invocation. The Gemini adapter's parsing stays in
+process only, because a RunConfig cannot point that adapter at a
+loopback server.
 
 ### Running against a live provider (opt-in)
 
