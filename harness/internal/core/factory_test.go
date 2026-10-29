@@ -427,25 +427,25 @@ func TestWrapWithCodeScanner_UnknownTypeReturnsError(t *testing.T) {
 
 func TestBuildVerifier_None(t *testing.T) {
 	must := require.New(t)
-	v := buildVerifier(types.VerifierConfig{Type: "none"}, nil, nil)
+	v := buildVerifier(types.VerifierConfig{Type: "none"}, nil, nil, nil)
 	must.IsType((*verifier.NoneVerifier)(nil), v)
 }
 
 func TestBuildVerifier_EmptyTypeUsesNone(t *testing.T) {
 	must := require.New(t)
-	v := buildVerifier(types.VerifierConfig{}, nil, nil)
+	v := buildVerifier(types.VerifierConfig{}, nil, nil, nil)
 	must.IsType((*verifier.NoneVerifier)(nil), v)
 }
 
 func TestBuildVerifier_TestRunner(t *testing.T) {
 	must := require.New(t)
-	v := buildVerifier(types.VerifierConfig{Type: "test-runner", Command: "go test ./..."}, nil, nil)
+	v := buildVerifier(types.VerifierConfig{Type: "test-runner", Command: "go test ./..."}, nil, nil, nil)
 	must.IsType((*verifier.TestRunnerVerifier)(nil), v)
 }
 
 func TestBuildVerifier_LLMJudge(t *testing.T) {
 	must := require.New(t)
-	v := buildVerifier(types.VerifierConfig{Type: "llm-judge", Criteria: "test criteria"}, nil, nil)
+	v := buildVerifier(types.VerifierConfig{Type: "llm-judge", Criteria: "test criteria"}, nil, nil, nil)
 	must.IsType((*verifier.LLMJudgeVerifier)(nil), v)
 }
 
@@ -457,13 +457,13 @@ func TestBuildVerifier_Composite(t *testing.T) {
 			{Type: "none"},
 			{Type: "test-runner", Command: "echo ok"},
 		},
-	}, nil, nil)
+	}, nil, nil, nil)
 	must.IsType((*verifier.CompositeVerifier)(nil), v)
 }
 
 func TestBuildVerifier_UnknownFallsBack(t *testing.T) {
 	must := require.New(t)
-	v := buildVerifier(types.VerifierConfig{Type: "nonexistent"}, nil, nil)
+	v := buildVerifier(types.VerifierConfig{Type: "nonexistent"}, nil, nil, nil)
 	must.IsType((*verifier.NoneVerifier)(nil), v)
 }
 

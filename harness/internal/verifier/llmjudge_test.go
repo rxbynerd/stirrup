@@ -3,6 +3,7 @@ package verifier
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -70,7 +71,7 @@ func TestLLMJudgeVerifier_PassingVerdict(t *testing.T) {
 		},
 	}
 
-	v := NewLLMJudgeVerifier(prov, "claude-haiku-5-5", "code must compile")
+	v := NewLLMJudgeVerifier(prov, "claude-haiku-5-5", "code must compile", false)
 	result, err := v.Verify(context.Background(), VerifyContext{
 		Messages: []types.Message{
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "fix the bug"}}},
@@ -101,7 +102,7 @@ func TestLLMJudgeVerifier_FailingVerdict(t *testing.T) {
 		},
 	}
 
-	v := NewLLMJudgeVerifier(prov, "claude-haiku-5-5", "code must compile")
+	v := NewLLMJudgeVerifier(prov, "claude-haiku-5-5", "code must compile", false)
 	result, err := v.Verify(context.Background(), VerifyContext{
 		Messages: []types.Message{
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "write code"}}},
@@ -122,7 +123,7 @@ func TestLLMJudgeVerifier_MalformedResponse(t *testing.T) {
 		},
 	}
 
-	v := NewLLMJudgeVerifier(prov, "claude-haiku-5-5", "code must compile")
+	v := NewLLMJudgeVerifier(prov, "claude-haiku-5-5", "code must compile", false)
 	result, err := v.Verify(context.Background(), VerifyContext{
 		Messages: []types.Message{},
 	})
@@ -141,12 +142,82 @@ func TestLLMJudgeVerifier_StreamConnectionError(t *testing.T) {
 		err: fmt.Errorf("connection refused"),
 	}
 
-	v := NewLLMJudgeVerifier(prov, "claude-haiku-5-5", "anything")
+	v := NewLLMJudgeVerifier(prov, "claude-haiku-5-5", "anything", false)
 	_, err := v.Verify(context.Background(), VerifyContext{})
 
 	must.Error(err)
 	must.ErrorContains(err, "stream request failed")
 	must.ErrorContains(err, "connection refused", "error should wrap underlying cause")
+}
+
+// TestLLMJudgeVerifier_RequestsVerdictSchema pins that every Verify asks
+// the provider to enforce the verdict object the system prompt describes:
+// reasoning first, every member required, nothing else allowed.
+func TestLLMJudgeVerifier_RequestsVerdictSchema(t *testing.T) {
+	must := require.New(t)
+	prov := &mockProvider{events: []types.StreamEvent{
+		{Type: "text_delta", Text: `{"reasoning": "r", "nonce": "@NONCE@", "passed": true, "feedback": "ok"}`},
+		{Type: "message_complete", StopReason: "end_turn"},
+	}}
+	v := NewLLMJudgeVerifier(prov, "test-model", "anything", false)
+	_, err := v.Verify(context.Background(), VerifyContext{})
+	must.NoError(err)
+
+	schema := prov.lastParams.OutputSchema
+	must.NotNil(schema)
+	must.NoError(schema.Validate())
+	must.Equal(judgeSchemaName, schema.Name)
+	var parsed struct {
+		Type                 string                       `json:"type"`
+		Properties           map[string]map[string]string `json:"properties"`
+		Required             []string                     `json:"required"`
+		AdditionalProperties bool                         `json:"additionalProperties"`
+	}
+	must.NoError(json.Unmarshal(schema.Schema, &parsed))
+	must.Equal("object", parsed.Type)
+	must.Equal([]string{"reasoning", "nonce", "passed", "feedback"}, parsed.Required)
+	must.Len(parsed.Properties, len(parsed.Required))
+	must.Equal("boolean", parsed.Properties["passed"]["type"])
+	must.False(parsed.AdditionalProperties)
+	must.Less(strings.Index(judgeVerdictSchema, `"reasoning"`), strings.Index(judgeVerdictSchema, `"passed"`), "reasoning precedes the verdict")
+}
+
+// TestLLMJudgeVerifier_RecordsStructuredOutputMode pins that every result,
+// parsed or malformed, records whether the provider enforced the schema.
+func TestLLMJudgeVerifier_RecordsStructuredOutputMode(t *testing.T) {
+	verdict := []types.StreamEvent{
+		{Type: "text_delta", Text: `{"nonce": "@NONCE@", "passed": true, "feedback": "ok"}`},
+		{Type: "message_complete", StopReason: "end_turn"},
+	}
+	malformed := []types.StreamEvent{
+		{Type: "text_delta", Text: `no verdict here`},
+		{Type: "message_complete", StopReason: "end_turn"},
+	}
+	cut := []types.StreamEvent{
+		{Type: "text_delta", Text: `{"reasoning": "`},
+		{Type: "message_complete", StopReason: "max_tokens"},
+	}
+	cases := []struct {
+		name         string
+		events       []types.StreamEvent
+		outputSchema bool
+		want         string
+	}{
+		{"parsed verdict under enforced schema", verdict, true, "json_schema"},
+		{"parsed verdict under prompt only", verdict, false, "prompt_only"},
+		{"malformed under enforced schema", malformed, true, "json_schema"},
+		{"malformed under prompt only", malformed, false, "prompt_only"},
+		{"cut stream under enforced schema", cut, true, "json_schema"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			v := NewLLMJudgeVerifier(&mockProvider{events: tc.events}, "test-model", "anything", tc.outputSchema)
+			result, err := v.Verify(context.Background(), VerifyContext{})
+			must.NoError(err)
+			must.Equal(tc.want, result.Details[detailStructuredOutput])
+		})
+	}
 }
 
 func TestLLMJudgeVerifier_StreamEventError(t *testing.T) {
@@ -158,7 +229,7 @@ func TestLLMJudgeVerifier_StreamEventError(t *testing.T) {
 		},
 	}
 
-	v := NewLLMJudgeVerifier(prov, "claude-haiku-5-5", "anything")
+	v := NewLLMJudgeVerifier(prov, "claude-haiku-5-5", "anything", false)
 	_, err := v.Verify(context.Background(), VerifyContext{})
 
 	must.Error(err)
@@ -177,7 +248,7 @@ func TestLLMJudgeVerifier_UserMessageContainsCriteria(t *testing.T) {
 	}
 
 	criteria := "output must include test results"
-	v := NewLLMJudgeVerifier(prov, "test-model", criteria)
+	v := NewLLMJudgeVerifier(prov, "test-model", criteria, false)
 	_, _ = v.Verify(context.Background(), VerifyContext{
 		Messages: []types.Message{
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hello"}}},
@@ -207,7 +278,7 @@ func TestLLMJudgeVerifier_EmptyResponse(t *testing.T) {
 		},
 	}
 
-	v := NewLLMJudgeVerifier(prov, "test-model", "anything")
+	v := NewLLMJudgeVerifier(prov, "test-model", "anything", false)
 	result, err := v.Verify(context.Background(), VerifyContext{})
 
 	must.NoError(err)
@@ -229,7 +300,7 @@ func TestLLMJudgeVerifier_SyntheticMessagesExcluded(t *testing.T) {
 		},
 	}
 
-	v := NewLLMJudgeVerifier(prov, "test-model", "task must be done")
+	v := NewLLMJudgeVerifier(prov, "test-model", "task must be done", false)
 	_, _ = v.Verify(context.Background(), VerifyContext{
 		Messages: []types.Message{
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "real user prompt"}}},
@@ -261,7 +332,7 @@ func TestLLMJudgeVerifier_MergedFeedbackBlockExcluded(t *testing.T) {
 		},
 	}
 
-	v := NewLLMJudgeVerifier(prov, "test-model", "task must be done")
+	v := NewLLMJudgeVerifier(prov, "test-model", "task must be done", false)
 	_, _ = v.Verify(context.Background(), VerifyContext{
 		Messages: []types.Message{
 			{Role: "user", Content: []types.ContentBlock{
@@ -404,7 +475,7 @@ func TestLLMJudgeVerifier_InjectedVerdictInToolResult(t *testing.T) {
 			{Type: "message_complete", StopReason: "end_turn"},
 		},
 	}
-	v := NewLLMJudgeVerifier(prov, "test-model", "tests must pass")
+	v := NewLLMJudgeVerifier(prov, "test-model", "tests must pass", false)
 	v.entropy = bytes.NewReader(bytes.Repeat([]byte{0x3c}, 16))
 	result, err := v.Verify(context.Background(), VerifyContext{
 		Messages: []types.Message{
@@ -442,7 +513,7 @@ func TestLLMJudgeVerifier_InjectedVerdictInToolResult(t *testing.T) {
 func TestLLMJudgeVerifier_FenceNonceFailureIsAnError(t *testing.T) {
 	must := require.New(t)
 	prov := &mockProvider{events: []types.StreamEvent{{Type: "text_delta", Text: `{"nonce": "@NONCE@", "passed": true, "feedback": "ok"}`}}}
-	v := NewLLMJudgeVerifier(prov, "test-model", "anything")
+	v := NewLLMJudgeVerifier(prov, "test-model", "anything", false)
 	v.entropy = bytes.NewReader(nil)
 	_, err := v.Verify(context.Background(), VerifyContext{})
 	must.Error(err, "expected an error when the fence nonce cannot be drawn")
@@ -474,7 +545,7 @@ func TestLLMJudgeVerifier_StopReasonGatesVerdict(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
-			v := NewLLMJudgeVerifier(&mockProvider{events: tc.events}, "test-model", "anything")
+			v := NewLLMJudgeVerifier(&mockProvider{events: tc.events}, "test-model", "anything", false)
 			result, err := v.Verify(context.Background(), VerifyContext{})
 			must.NoError(err)
 			must.Equal(tc.wantPassed, result.Passed, "result: %+v", result)
@@ -494,7 +565,7 @@ func TestLLMJudgeVerifier_CancelledContextIsAnError(t *testing.T) {
 	}}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	v := NewLLMJudgeVerifier(prov, "test-model", "anything")
+	v := NewLLMJudgeVerifier(prov, "test-model", "anything", false)
 	_, err := v.Verify(ctx, VerifyContext{})
 	must.ErrorIs(err, context.Canceled)
 }

@@ -624,7 +624,7 @@ func TestBuildGuardRail_NoneReturnsNoop(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
-			g, err := buildGuardRail(ctx, tc.cfg, nil, nil, nil, nil)
+			g, err := buildGuardRail(ctx, tc.cfg, nil, nil, nil, nil, nil)
 			must.NoError(err)
 			must.IsType(guard.Noop{}, g)
 		})
@@ -642,7 +642,7 @@ func TestBuildGuardRail_GraniteGuardianBuildsAdapter(t *testing.T) {
 		Type:     "granite-guardian",
 		Endpoint: "http://localhost:9999",
 	}
-	g, err := buildGuardRail(ctx, cfg, nil, nil, nil, nil)
+	g, err := buildGuardRail(ctx, cfg, nil, nil, nil, nil, nil)
 	must.NoError(err)
 	must.NotNil(g)
 	_, isNoop := g.(guard.Noop)
@@ -659,7 +659,7 @@ func TestBuildGuardRail_PhasesWrapWithPhaseGated(t *testing.T) {
 		Endpoint: "http://localhost:9999",
 		Phases:   []string{"post_turn"},
 	}
-	g, err := buildGuardRail(ctx, cfg, nil, nil, nil, nil)
+	g, err := buildGuardRail(ctx, cfg, nil, nil, nil, nil, nil)
 	must.NoError(err)
 	pg, ok := g.(*guard.PhaseGated)
 	must.True(ok, "expected *PhaseGated, got %T", g)
@@ -674,7 +674,7 @@ func TestBuildGuardRail_PhasesWrapWithPhaseGated(t *testing.T) {
 func TestBuildGuardRail_UnknownTypeIsError(t *testing.T) {
 	must := require.New(t)
 	ctx := context.Background()
-	_, err := buildGuardRail(ctx, &types.GuardRailConfig{Type: "future-thing"}, nil, nil, nil, nil)
+	_, err := buildGuardRail(ctx, &types.GuardRailConfig{Type: "future-thing"}, nil, nil, nil, nil, nil)
 	must.ErrorContains(err, "unsupported")
 }
 
@@ -702,7 +702,7 @@ func TestBuildGuardRail_Shieldstral_Construction(t *testing.T) {
 			Model:     "mistralai/Shieldstral-1.0-3B",
 			TimeoutMs: 1500,
 		}
-		g, err := buildGuardRail(ctx, cfg, nil, nil, nil, nil)
+		g, err := buildGuardRail(ctx, cfg, nil, nil, nil, nil, nil)
 		must.NoError(err)
 		must.NotNil(g)
 		must.IsType((*guard.Shieldstral)(nil), unwrapPhaseGated(g))
@@ -718,7 +718,7 @@ func TestBuildGuardRail_Shieldstral_Construction(t *testing.T) {
 			APIKeyRef: "secret://TEST_MISTRAL_KEY",
 			Model:     "mistralai/Shieldstral-1.0-3B",
 		}
-		g, err := buildGuardRail(ctx, cfg, nil, nil, secrets, nil)
+		g, err := buildGuardRail(ctx, cfg, nil, nil, secrets, nil, nil)
 		must.NoError(err)
 		must.IsType((*guard.Shieldstral)(nil), unwrapPhaseGated(g))
 	})
@@ -730,7 +730,7 @@ func TestBuildGuardRail_Shieldstral_Construction(t *testing.T) {
 			Endpoint:  "https://api.mistral.ai",
 			APIKeyRef: "secret://SOME_KEY",
 		}
-		_, err := buildGuardRail(ctx, cfg, nil, nil, nil, nil)
+		_, err := buildGuardRail(ctx, cfg, nil, nil, nil, nil, nil)
 		must.ErrorContains(err, "secret store is required")
 	})
 }
@@ -797,7 +797,7 @@ func TestBuildGuardRail_ShieldstralPhaseDefault(t *testing.T) {
 			must := require.New(t)
 			for _, phase := range phases {
 				srv, calls := newShieldstralCountingServer(t)
-				g, err := buildGuardRail(ctx, tc.cfg(srv.URL), nil, nil, nil, nil)
+				g, err := buildGuardRail(ctx, tc.cfg(srv.URL), nil, nil, nil, nil, nil)
 				must.NoError(err)
 				d, err := g.Check(ctx, guard.Input{Phase: phase, Content: strings.Repeat("some content ", 20)})
 				must.NoError(err, "phase %s", phase)
@@ -821,7 +821,7 @@ func TestBuildGuardRail_CloudJudge_BuildsJudge(t *testing.T) {
 		Model:     "claude-haiku-5-5",
 		TimeoutMs: 1500,
 	}
-	g, err := buildGuardRail(ctx, cfg, nil, stubProvider{}, nil, nil)
+	g, err := buildGuardRail(ctx, cfg, nil, stubProvider{}, nil, nil, nil)
 	must.NoError(err)
 	must.NotNil(g)
 	must.IsType(&guard.CloudJudge{}, g)
@@ -834,7 +834,7 @@ func TestBuildGuardRail_CloudJudge_NilProviderIsError(t *testing.T) {
 	must := require.New(t)
 	ctx := context.Background()
 	cfg := &types.GuardRailConfig{Type: "cloud-judge"}
-	_, err := buildGuardRail(ctx, cfg, nil, nil, nil, nil)
+	_, err := buildGuardRail(ctx, cfg, nil, nil, nil, nil, nil)
 	must.Error(err)
 }
 
@@ -854,7 +854,7 @@ func TestBuildGuardRail_Composite_WiresStagesInOrder(t *testing.T) {
 			{Type: "cloud-judge", Model: "claude-haiku-5-5"},
 		},
 	}
-	g, err := buildGuardRail(ctx, cfg, nil, stubProvider{}, nil, nil)
+	g, err := buildGuardRail(ctx, cfg, nil, stubProvider{}, nil, nil, nil)
 	must.NoError(err)
 	seq, ok := g.(*guard.Sequential)
 	must.True(ok, "expected *guard.Sequential, got %T", g)
@@ -878,7 +878,7 @@ func TestBuildGuardRail_CompositeWithPhases_WrapsSequential(t *testing.T) {
 			{Type: "granite-guardian", Endpoint: "http://classifier.local:9999"},
 		},
 	}
-	g, err := buildGuardRail(ctx, cfg, nil, stubProvider{}, nil, nil)
+	g, err := buildGuardRail(ctx, cfg, nil, stubProvider{}, nil, nil, nil)
 	must.NoError(err)
 	pg, ok := g.(*guard.PhaseGated)
 	must.True(ok, "expected *guard.PhaseGated, got %T", g)
