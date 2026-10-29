@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -271,6 +272,53 @@ func TestZAICompatRules_ThinkingFamilyResolution(t *testing.T) {
 			must.Equal(map[string]any{"type": "enabled"}, openAI.ExtraBodyFields["thinking"])
 		})
 	}
+}
+
+// TestZAICompatRules_FollowLastVerifiedConvention applies the builtin
+// rules' LastVerified checks to the compat profile.
+func TestZAICompatRules_FollowLastVerifiedConvention(t *testing.T) {
+	for _, rule := range zai.CompatRules() {
+		t.Run(rule.Description, func(t *testing.T) {
+			check := assert.New(t)
+			check.Empty(quirks.LastVerifiedProblems(rule, time.Now()))
+		})
+	}
+}
+
+// TestZAIGatewayGLM53_ReasoningEffortOnTheWire pins that a listed effort
+// reaches the gateway request and an unlisted one fails before send, since
+// GLM-5.3 would otherwise map it to max.
+func TestZAIGatewayGLM53_ReasoningEffortOnTheWire(t *testing.T) {
+	t.Run("listed level is sent", func(t *testing.T) {
+		must := require.New(t)
+		bodies := make(chan []byte, 1)
+		srv := newSSEServer(t, doneSSE, bodies)
+		defer srv.Close()
+		ch, err := zaiTestAdapter(srv.URL).Stream(context.Background(), types.StreamParams{
+			Model:           "z-ai/glm-5.3",
+			MaxTokens:       256,
+			ReasoningEffort: "high",
+			Messages:        []types.Message{userText("hi")},
+		})
+		must.NoError(err)
+		for range ch {
+		}
+		must.Equal("high", decodeBody(t, <-bodies)["reasoning_effort"])
+	})
+	t.Run("unlisted level fails before send", func(t *testing.T) {
+		must := require.New(t)
+		bodies := make(chan []byte, 1)
+		srv := newSSEServer(t, doneSSE, bodies)
+		defer srv.Close()
+		_, err := zaiTestAdapter(srv.URL).Stream(context.Background(), types.StreamParams{
+			Model:           "z-ai/glm-5.3",
+			MaxTokens:       256,
+			ReasoningEffort: "medium",
+			Messages:        []types.Message{userText("hi")},
+		})
+		must.ErrorContains(err, `reasoningEffort "medium" is not supported`)
+		must.Empty(bodies, "no request may reach the server")
+	})
 }
 
 // TestZAICompatRules_GLM53ReasoningEffort pins the GLM-5.3 effort
