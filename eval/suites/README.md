@@ -147,7 +147,8 @@ editing before reading or writing the uncapped match count.
 replays every one through a freshly built harness binary and requires
 each task to fail on the judge leg its recording targets, so a judge
 that passes whatever the run did is caught. The suite itself never
-names these recordings.
+names these recordings. A new task needs its own negative recording
+and an entry in that test's table of the judge leg it fails.
 
 ### Running against a live provider (opt-in)
 

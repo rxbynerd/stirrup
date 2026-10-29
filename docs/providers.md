@@ -1080,8 +1080,8 @@ fails the call, which ends the run as an error rather than looping.
 
 | Field | Required | Notes |
 |---|---|---|
-| `provider.replayFile` | yes | JSONL trace file; a regular file of at most 64 MiB whose path has no `..` segment. Relative paths resolve against the harness working directory. |
-| `apiKeyRef`, `credential`, `baseUrl`, `endpointProfile`, `apiKeyHeader`, `queryParams`, `compatProfile`, `region`, `profile` | rejected | A replay provider resolves no credential and sends no request. |
+| `provider.replayFile` | yes | JSONL trace file; a regular file of at most 64 MiB, holding at most 131072 model output blocks, whose path is not `-` and has no `..` segment. Relative paths resolve against the harness working directory. |
+| `apiKeyRef`, `credential`, `baseUrl`, `endpointProfile`, `apiKeyHeader`, `queryParams`, `compatProfile`, `region`, `profile` | rejected | A replay provider resolves no credential and sends no request. The Vertex AI fields (`gcpProject`, `gcpLocation`, `gcpCredentialsFile`, `geminiSafetySettings`) are rejected on every provider but `gemini`. |
 
 Three combinations are rejected by validation:
 
@@ -1094,15 +1094,17 @@ Three combinations are rejected by validation:
 - a `replay` entry in the `providers` map unless `provider.type` is
   also `replay`, so a run never serves some turns from a recording
   while it reports a live model;
-- `batch.enabled`, since only the live HTTP adapters implement batch
-  submission.
+- `batch.enabled`, since only the `anthropic`, `openai-compatible` and
+  `openai-responses` adapters implement batch submission.
 
 The file is read by `types/trace.Reader.ReadReplay`, which keeps each
-`turn_record`'s turn number, run IDs, stop reason and model output and
-skips run configs, model inputs and tool calls, so memory grows with
-the recorded model output alone. A trace the `jsonl` emitter wrote is
-therefore a valid recording, within the limits listed below. A
-hand-written recording needs only the `turn_record` lines:
+`turn_record`'s turn number, run IDs, stop reason and model output, and
+each sub-run's prompt from its `subrun_started` line, and skips run
+configs, model inputs and tool calls, so memory grows with the recorded
+model output alone. A trace the `jsonl` emitter wrote is therefore a
+valid recording, within the limits listed below. A hand-written
+recording of a run without sub-agents needs only the `turn_record`
+lines:
 
 ```jsonl
 {"kind":"turn_record","turn":1,"modelOutput":[{"type":"tool_use","id":"c1","name":"read_file","input":{"path":"main.go"}}]}
@@ -1123,23 +1125,40 @@ reader's 4 MiB line cap), because a dropped line would shift every
 later turn onto the wrong request.
 
 Turns of every top-level run in the file replay in order, so a trace
-that spans follow-up runs replays whole. A sub-agent's turns are kept
-apart and served to the matching child: when the replayed run spawns a
-sub-agent, the child gets its own replay of the recorded sub-run whose
-run ID, relative to its parent (`sub-1` in `run-1/sub-1`), matches the
-child's, under the recorded run of the turn that made the
-`spawn_agent` call. The replayed run's own IDs need not match the
-recording's. The spawn is refused, and the `spawn_agent` call fails,
-when the recording holds no such sub-run (`no recorded turns for
-sub-agent "<run ID>"`) or when the recorded sub-run was spawned with a
-different prompt; the parent then goes on to its own next recorded
-turn rather than losing one to the child. A sub-run recorded as
-started but with no turns is served as such, so its child fails on
-its first request. With named `replay` entries in the `providers`
-map, each serves the child from its own file, and the entry that
-served the spawning turn decides whether the spawn runs; another
-entry without the sub-run fails only a request the child routes to
-it.
+that spans follow-up runs replays whole.
+
+### Sub-agents in a replay
+
+A sub-agent's turns are kept apart and served to the matching child.
+When the replayed run spawns a sub-agent, the child gets its own replay
+of the recorded sub-run whose run ID, relative to its parent (`sub-1`
+in `run-1/sub-1`), matches the child's, under the recorded run of the
+turn that made the `spawn_agent` call. The replayed run's own IDs need
+not match the recording's. A hand-written recording tags each turn
+with `runId` (and `parentRunId` for a child's turns), and may give a
+child a `subrun_started` line carrying the prompt it was spawned with:
+
+```jsonl
+{"kind":"run_started","runId":"rec-1"}
+{"kind":"turn_record","runId":"rec-1","turn":1,"modelOutput":[{"type":"tool_use","id":"p1","name":"spawn_agent","input":{"prompt":"List the Go files."}}]}
+{"kind":"subrun_started","runId":"rec-1/sub-1","parentRunId":"rec-1","config":{"prompt":"List the Go files."}}
+{"kind":"turn_record","runId":"rec-1/sub-1","parentRunId":"rec-1","turn":1,"modelOutput":[{"type":"text","text":"a.go and b.go."}]}
+{"kind":"turn_record","runId":"rec-1","turn":2,"modelOutput":[{"type":"text","text":"Done."}]}
+```
+
+The spawn is refused, and the `spawn_agent` call fails, when the
+recording holds no such sub-run (`no recorded turns for sub-agent
+"<run ID>"`) or when the recorded sub-run's prompt differs from the
+child's; the parent then goes on to its own next recorded turn rather
+than losing one to the child. A sub-run with no recorded prompt (no
+`subrun_started` line, or one without a config) matches any prompt. A
+sub-run recorded as started but with no turns is served as such, so
+its child fails on its first request.
+
+With named `replay` entries in the `providers` map, each serves the
+child from its own file, and the entry that served the spawning turn
+decides whether the spawn runs; another entry without the sub-run
+fails only a request the child routes to it.
 
 Children are numbered by the spawns their parent's run admitted, so a
 replay whose admission differs from the recorded run's (for example a
@@ -1148,6 +1167,8 @@ charges only estimated tokens against) shifts every later child onto
 the next recorded sub-run. The prompt check refuses such a child
 unless the two spawns asked the same thing.
 
+### Replay errors over `stirrup job`
+
 When `stirrup job` cannot build the provider from `replayFile` for any
 reason (missing, unreadable, a directory, too large, or not a complete
 trace), the `error` event sent to the control plane reads only
@@ -1155,9 +1176,12 @@ trace), the `error` event sent to the control plane reads only
 host; the harness log has the detail` (`providers[<name>].replayFile`
 for a named entry), so the field cannot be used to probe the harness
 filesystem; the detail goes to the harness's stderr.
-`permissionPolicy.policyFile` and `provider.gcpCredentialsFile` are
-reported the same way. See
+`permissionPolicy.policyFile` (including a file that does not parse as
+Cedar) and `provider.gcpCredentialsFile` are reported the same way.
+`stirrup harness` prints the full error. See
 [`integration-guide.md`](integration-guide.md#stream-lifecycle).
+
+### Replay limits
 
 What a replay does not exercise or preserve:
 
