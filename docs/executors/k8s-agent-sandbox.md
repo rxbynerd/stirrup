@@ -218,6 +218,29 @@ a live run short is worse than letting a leaked sandbox linger a few extra
 hours. The TTL fires *only* if `Close()` never runs; a normal run is torn
 down in seconds.
 
+The lifetime bound that the [`k8s` executor](k8s.md#teardown-and-orphaned-sandboxes)
+derives from the run `timeout` and `STIRRUP_SESSION_DEADLINE` does not
+apply here. The backing Pod gets no `activeDeadlineSeconds`, and neither
+the Sandbox nor the Pod gets an owner reference to the harness Pod, so
+the 12-hour TTL is the only time bound on a leaked sandbox.
+
+### Finding and removing an orphaned sandbox
+
+The Sandbox, its backing Pod and its egress `NetworkPolicy` all carry
+`stirrup.dev/run-id=<run-id>`, the run ID truncated to the 63-character
+label limit, alongside `stirrup-sandbox=true`. The run ID is the first
+run of the session, because follow-up runs reuse the sandbox. The
+`NetworkPolicy` has no owner reference, so a labelled delete is needed to
+remove it:
+
+```sh
+kubectl delete sandboxes.agents.x-k8s.io,networkpolicy -n <namespace> -l stirrup.dev/run-id=<run-id>
+```
+
+Deleting the Sandbox cascades to the Pod through the controller's owner
+reference. `-l stirrup-sandbox=true` also matches the resources of live
+runs, so it is for inspection rather than blind deletion.
+
 ## RBAC delta
 
 The orchestrator's Role for the `k8s-sandbox` path differs from the
@@ -262,6 +285,15 @@ or set it to `gvisor`. Any other value is rejected by validation
 (`ValidateRunConfig`); a non-empty, non-`gvisor` runtime that somehow
 reaches the executor is overridden to `gvisor` with a warning. A run that
 needs `runc` or a Kata backend must use the `k8s` executor.
+
+The sandbox image must meet the same
+[requirements as the `k8s` executor](k8s.md#sandbox-image-requirements):
+a POSIX shell with `kill`, `tar`, `readlink`, `mkdir` and a writable
+`/tmp`, with `setsid` optional. The system prompt carries a listing of
+the Pod's `/workspace` and its git status, both read through the executor.
+The listing needs an `ls` that accepts `-p`, which busybox and coreutils
+both do, and the status section and the `deterministic` git strategy need
+`git` in the image.
 
 ```sh
 # gVisor sandbox provisioned via the Agent Sandbox CRD, no egress.

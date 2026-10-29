@@ -18,6 +18,7 @@ every field shown here is cross-checked against it.
 | `runtimeclass.yaml` | RuntimeClass ×5 | yes (per available runtime) | The closed set `runc / gvisor / kata-qemu / kata-fc / kata-clh`, with per-class node prerequisites. |
 | `taint-and-toleration.yaml` | (doc only) | no | The pattern for isolating sandbox nodes — and the note that the executor does not yet inject tolerations. |
 | `sample-sandbox-pod.yaml` | (doc only) | no | The exact Pod the executor produces, annotated field-by-field. The reference for "what a real sandbox Pod looks like". |
+| `harness-job.yaml` | Job | after adapting | A harness that runs the `k8s` executor from inside the cluster as `stirrup-orchestrator`. It wires the `STIRRUP_POD_*` downward-API variables so the sandbox Pod is owned by the harness Pod and is garbage-collected with it, and it expects a `stirrup-run-config` ConfigMap holding `run.json`. A `stirrup job` Pod should also set `STIRRUP_SESSION_DEADLINE` to the Job's `activeDeadlineSeconds`; see [`docs/deployment.md`](../../docs/deployment.md#optional-environment-variables). |
 | `egress-proxy/` | Deployment + Service + ConfigMap + NetworkPolicy | yes (allowlist mode) | The shared egress allowlist proxy. See its own [README](egress-proxy/README.md). |
 | `agent-sandbox/` | RBAC (apply) + Sandbox (doc only) | partial | Manifests for the `k8s-sandbox` executor (Agent Sandbox CRD): an orchestrator Role and a reference Sandbox CR. See [`docs/executors/k8s-agent-sandbox.md`](../../docs/executors/k8s-agent-sandbox.md). |
 

@@ -264,20 +264,22 @@ Salient points for stirrup:
   for large workspace or large-context runs.
 - **SIGTERM grace** is 10 seconds before SIGKILL. Stirrup's signal
   handler at `harness/cmd/stirrup/cmd/root.go::setupSignalHandler`
-  cancels the run context on SIGTERM, which lets the trace emitter
-  flush and `workspaceExportTo` upload before the kill. A run
-  configuring `postRun` lifecycle hooks (issue #461) is a partial
-  exception: those hooks deliberately run on a context detached from
-  the run's own deadline/cancellation so an in-flight artifact upload
-  can survive it; a second SIGTERM cancels that detached context
-  (`AgenticLoop.Shutdown`) and cuts a `postRun` hook short rather than
-  letting it run for its full configured budget (up to 1830s). A background watchdog additionally
-  bounds executor teardown to 5 seconds after SIGTERM even if `Run()`
-  has not yet returned, so the container is stopped and removed well
-  inside the 10-second grace window regardless of what an in-flight
-  `postRun` hook is doing. Operators sizing a tighter task-level
-  timeout around a run with long `postRun` hooks should still budget
-  for the 10-second SIGTERM grace on top of the run's own `timeout`.
+  works in two stages. The first SIGTERM cancels the run context,
+  which ends the run. The post-run work then continues on contexts
+  detached from that cancellation, each with its own budget: the final
+  git checkpoint (30 s), `postRun` lifecycle hooks (issue #461), the
+  workspace export (5 min) and the trace finish (90 s). That is what
+  lets the trace emitter flush and `workspaceExportTo` upload after
+  the signal. A second signal cancels those contexts
+  (`AgenticLoop.Shutdown`) and abandons the work. Cloud Run's SIGKILL
+  arrives 10 seconds after the SIGTERM, so it can still cut any of
+  this work short when it needs longer than the grace window.
+  The shutdown watchdog, which closes the loop and tears down the
+  executor, arms on the second signal for `stirrup harness` and 5
+  seconds after the first signal for `stirrup job`. Operators sizing a
+  tighter task-level timeout around a run with long post-run work
+  should budget for the 10-second SIGTERM grace on top of the run's
+  own `timeout`.
 - **Max task timeout** is 7 days (1 hour with GPU); see [Cloud Run
   quotas](https://cloud.google.com/run/quotas). The fixture's
   `timeout: 600` is well inside that envelope.
@@ -364,10 +366,20 @@ deferred — see *Out of scope* below).
 
 ### Shape B: workspace tarball from GCS
 
-`executor.workspaceExportTo` tarballs the workspace directory at
-end-of-run and uploads it to the configured `gs://` URI. The upload
-runs even when the harness exited non-zero, so the workspace state
-at the failure point is recoverable.
+`executor.workspaceExportTo` archives the workspace at end-of-run and
+uploads it to the configured `gs://` URI as a gzipped tarball. The
+archive is produced inside the executor, so it reflects the workspace
+as the sandbox sees it. The `local`, `container`, `k8s` and
+`k8s-sandbox` executors support export.
+
+The export runs on every outcome of a run that reaches the agentic
+loop, including a failed run and `setup_failed` from a failed `preRun`
+hook. The workspace state at the failure point is therefore
+recoverable, and a half-set-up workspace, such as a partial clone whose
+`.git/config` holds a tokenised remote, is uploaded as it stands.
+Symlinks are recorded in the archive, never followed. The export does
+not run when the loop could not be built, for example after a rejected
+`RunConfig`.
 
 ```sh
 gcloud storage cp \
@@ -377,10 +389,25 @@ gcloud storage cp \
 tar -xzf workspace.tar.gz
 ```
 
-An upload failure turns a successful run into outcome `handoff_failed`
-and a non-zero exit unless `executor.workspaceExportRequired` (or
+Each export produces a receipt, available as `workspaceExport` on the
+`RunResult` and as `workspace_export` on the `done` event's `trace`. The
+receipt carries `uri`, `status`, `bytes` and `sha256` of the uploaded
+tarball, `files` (the count of non-directory entries), `required` and
+`error`. The `status` is one of:
+
+| Status | Meaning |
+|---|---|
+| `uploaded` | A non-empty archive reached the destination. |
+| `empty` | The workspace had no files; an empty archive was still uploaded. |
+| `failed` | No archive reached the destination. `error` holds the scrubbed reason. |
+
+A workspace root that does not exist is always an export failure and
+yields status `failed`, whatever the `required` setting. An export
+failure turns a successful run into outcome `handoff_failed` and a
+non-zero exit unless `executor.workspaceExportRequired` (or
 `--export-workspace-required`) is `false`, which records the failure
-in `RunResult.workspaceExport` without failing the run.
+in `RunResult.workspaceExport` without failing the run. The setting
+defaults to `true` whenever `executor.workspaceExportTo` is set.
 
 ### Trace JSONL from GCS
 
