@@ -30,10 +30,10 @@ const (
 	// RunConfig.HeartbeatSeconds is zero.
 	DefaultHeartbeatSeconds = 30
 
-	// MinHeartbeatSeconds and MaxHeartbeatSeconds bound a non-zero
+	// minHeartbeatSeconds and maxHeartbeatSeconds bound a non-zero
 	// RunConfig.HeartbeatSeconds.
-	MinHeartbeatSeconds = 5
-	MaxHeartbeatSeconds = 600
+	minHeartbeatSeconds = 5
+	maxHeartbeatSeconds = 600
 
 	// maxCostBudget is the maximum accepted cost budget in dollars. The
 	// budget itself is never enforced; see RunConfig.MaxCostBudget.
@@ -183,8 +183,8 @@ type RunConfig struct {
 
 	// HeartbeatSeconds is the interval in seconds between heartbeat events
 	// while a run is in progress. Zero selects DefaultHeartbeatSeconds;
-	// any other value is bounded to [MinHeartbeatSeconds,
-	// MaxHeartbeatSeconds] by ValidateRunConfig.
+	// any other value is bounded to [minHeartbeatSeconds,
+	// maxHeartbeatSeconds] by ValidateRunConfig.
 	HeartbeatSeconds int `json:"heartbeatSeconds,omitempty"`
 
 	// FollowUpHistory selects the history a follow-up run starts from:
@@ -388,6 +388,16 @@ const (
 // previous run's committed history.
 func (rc *RunConfig) ContinuesFollowUpHistory() bool {
 	return rc != nil && rc.FollowUpHistory == FollowUpHistoryContinue
+}
+
+// EffectiveHeartbeatSeconds resolves the heartbeat interval in seconds:
+// DefaultHeartbeatSeconds when HeartbeatSeconds is unset, otherwise the
+// configured value (already bounded by ValidateRunConfig).
+func (rc *RunConfig) EffectiveHeartbeatSeconds() int {
+	if rc == nil || rc.HeartbeatSeconds == 0 {
+		return DefaultHeartbeatSeconds
+	}
+	return rc.HeartbeatSeconds
 }
 
 // DefaultModel is the model the harness falls back to when neither the
@@ -1316,16 +1326,6 @@ const (
 	// independently.
 	maxHooksPerPhase = 32
 )
-
-// EffectiveHeartbeatSeconds resolves the heartbeat interval in seconds:
-// DefaultHeartbeatSeconds when HeartbeatSeconds is unset, otherwise the
-// configured value (already bounded by ValidateRunConfig).
-func (rc *RunConfig) EffectiveHeartbeatSeconds() int {
-	if rc.HeartbeatSeconds == 0 {
-		return DefaultHeartbeatSeconds
-	}
-	return rc.HeartbeatSeconds
-}
 
 // EffectiveHookTimeout resolves the timeout a hook.Runner should apply
 // for h. ValidateRunConfig has already bounded TimeoutSeconds to
@@ -2839,10 +2839,10 @@ func ValidateRunConfig(config *RunConfig) error {
 	}
 
 	if config.HeartbeatSeconds != 0 &&
-		(config.HeartbeatSeconds < MinHeartbeatSeconds || config.HeartbeatSeconds > MaxHeartbeatSeconds) {
+		(config.HeartbeatSeconds < minHeartbeatSeconds || config.HeartbeatSeconds > maxHeartbeatSeconds) {
 		errs = append(errs, fmt.Sprintf(
 			"heartbeatSeconds must be 0 (default %d) or between %d and %d",
-			DefaultHeartbeatSeconds, MinHeartbeatSeconds, MaxHeartbeatSeconds))
+			DefaultHeartbeatSeconds, minHeartbeatSeconds, maxHeartbeatSeconds))
 	}
 
 	switch config.FollowUpHistory {

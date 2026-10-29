@@ -878,6 +878,7 @@ Full reference: [`eval.md`](eval.md).
 | `MaxTurns` | 20 | 100 |
 | `Timeout` (wall-clock) | 600 s | 3600 s |
 | `FollowUpGrace` | 0 s | 3600 s |
+| `HeartbeatSeconds` | 30 s | 600 s (minimum 5 s) |
 | `MaxTokenBudget` | unset | 50 M |
 | `MaxCostBudget` (validated, not enforced) | unset | $100 |
 | File read/write size | 10 MB | — |

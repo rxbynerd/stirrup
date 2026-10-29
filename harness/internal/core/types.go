@@ -132,7 +132,7 @@ type AgenticLoop struct {
 	// guidance file it loaded to this set.
 	ProtectedWriteTargets []string
 	// HeartbeatInterval is the gap between heartbeat events; zero selects
-	// types.DefaultHeartbeatSeconds. The factory sets it from the RunConfig.
+	// types.DefaultHeartbeatSeconds.
 	HeartbeatInterval time.Duration
 	// Shutdown, when non-nil, is a process-lifetime context done when the
 	// process abandons post-run work (the CLI entry points cancel it on a
