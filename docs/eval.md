@@ -1269,12 +1269,12 @@ rename wins atomically.
 
 ### Outcome taxonomy
 
-`RunTrace.Outcome` records *why the loop stopped*: `success`,
-`error`, `max_turns`, `verification_failed`, `verification_error`,
-`budget_exceeded`, `stalled`, `tool_failures`, `cancelled`,
-`timeout`, `max_tokens`, or a provider stop reason passed through
-verbatim, such as `refusal` (which falls into the "anything else" row
-below). By itself it conflates two
+`RunTrace.Outcome` records *why the loop stopped*: one of the
+outcomes `types.RunOutcomes()` lists (the table in
+`types/evaloutcome.go`, which also classifies each one), or a
+provider stop reason passed through verbatim, such as `refusal`
+(which falls into the "anything else" row below). By itself it
+conflates two
 very different states in execution mode: "the harness made the
 correct change" vs. "the loop exited cleanly with zero useful
 changes." Metrics derived from `Outcome == "success"` therefore lie
@@ -1288,9 +1288,9 @@ about quality.
 | `success`                                                                                 | yes           | last attempt passes | `passed` |
 | `success`                                                                                 | yes           | last attempt fails  | `failed` |
 | `success`                                                                                 | no            | n/a       | `passed` *    |
-| `verification_failed`, `error`, `tool_failures`                                           | any           | any       | `failed`      |
-| `max_turns`, `budget_exceeded`, `timeout`, `max_tokens`, `stalled`, `cancelled`, `verification_error` | any | any | `inconclusive` |
-| anything else (unknown / empty)                                                           | any           | any       | `inconclusive` |
+| `verification_failed`, `error`, `tool_failures`, `structured_output_failed`               | any           | any       | `failed`      |
+| `max_turns`, `budget_exceeded`, `timeout`, `max_tokens`, `stalled`, `cancelled`, `context_exhausted`, `verification_error`, `setup_failed`, `hook_failed`, `handoff_failed`, `control_stream_lost`, `guardrail_blocked`, `rule_of_two_violation`, `command_output_capture_failed`, `command_output_archive_failed` | any | any | `inconclusive` |
+| anything else (provider stop reason, unknown, empty)                                      | any           | any       | `inconclusive` |
 
 \* The success-without-verifier branch is trusted as `passed` for
 v0.1 to keep existing baselines stable. Operators who want stricter

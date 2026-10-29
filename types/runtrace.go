@@ -93,6 +93,7 @@ type RunTrace struct {
 	// "verification_error" | "budget_exceeded" | "stalled" | "tool_failures" |
 	// "cancelled" | "timeout" | "max_tokens" | "setup_failed" | "hook_failed" |
 	// "handoff_failed" | "control_stream_lost" | "structured_output_failed" |
+	// "guardrail_blocked" | "rule_of_two_violation" |
 	// "command_output_capture_failed" | "command_output_archive_failed" |
 	// "context_exhausted" (the smallest request the context strategy and
 	// tool result truncation could prepare did not fit the context budget,
