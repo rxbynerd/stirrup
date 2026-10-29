@@ -136,11 +136,11 @@ go run ./examples/controlplane -config examples/runconfig/autonomous-preset.json
   [`configuration.md`](configuration.md#sandbox-identity-and-git-proxy-wiring).
 - Repository guidance. The preset sets no `repositoryGuidance` block, so
   no `AGENTS.md` or similar file is loaded into the system prompt. See
-  [`configuration.md`](configuration.md) for the block.
+  [`configuration.md`](configuration.md#repository-guidance) for the block.
 - MCP servers. The preset configures none, so there is no required-server
   startup check to satisfy.
 - Run-end budget warnings. The preset leaves `windDown` off; see
-  [Limits and budgets](configuration.md#limits-and-budgets).
+  [Wind-down warning](configuration.md#wind-down-warning).
 
 ## Variant: `k8s-sandbox`
 
