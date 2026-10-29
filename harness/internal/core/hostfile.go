@@ -1,0 +1,27 @@
+package core
+
+import "fmt"
+
+// HostFileError reports a file named in the RunConfig that the harness
+// could not use from its own filesystem. Error carries the full detail
+// for the harness log. Redacted names only the field, so a caller on the
+// far side of the control stream cannot tell a missing file from an
+// unreadable one, a directory, or one with the wrong content, and so
+// cannot use the field to probe the harness host.
+type HostFileError struct {
+	// Field is the RunConfig field that named the file, such as
+	// "replayFile" or "permissionPolicy.policyFile".
+	Field string
+	Err   error
+}
+
+func (e *HostFileError) Error() string {
+	return fmt.Sprintf("%s: %v", e.Field, e.Err)
+}
+
+func (e *HostFileError) Unwrap() error { return e.Err }
+
+// Redacted is the error text safe to send to a control plane.
+func (e *HostFileError) Redacted() string {
+	return fmt.Sprintf("%s unavailable on the harness host", e.Field)
+}

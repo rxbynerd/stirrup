@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -469,6 +471,78 @@ func TestRunJob_InvalidAssignedConfigSignalsControlPlane(t *testing.T) {
 	must.NotEmpty(errMessages, "no error event received; got %v", srv.events())
 	for _, msg := range errMessages {
 		check.Contains(msg, "config validation", "error event should carry the validation failure")
+	}
+}
+
+// replayJobConfig is a valid replay-backed task naming replayFile.
+func replayJobConfig(t *testing.T, replayFile string) *pb.RunConfig {
+	t.Helper()
+	timeout := int32(30)
+	return &pb.RunConfig{
+		RunId:            "job-replay-file-test",
+		Mode:             "planning",
+		Prompt:           "irrelevant, never reached",
+		Provider:         &pb.ProviderConfig{Type: "replay", ReplayFile: replayFile},
+		ModelRouter:      &pb.ModelRouterConfig{Type: "static", Provider: "replay", Model: "replay"},
+		PromptBuilder:    &pb.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  &pb.ContextStrategyConfig{Type: "sliding-window"},
+		Executor:         &pb.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+		EditStrategy:     &pb.EditStrategyConfig{Type: "multi"},
+		Verifier:         &pb.VerifierConfig{Type: "none"},
+		PermissionPolicy: &pb.PermissionPolicyConfig{Type: "deny-side-effects"},
+		GitStrategy:      &pb.GitStrategyConfig{Type: "none"},
+		TraceEmitter:     &pb.TraceEmitterConfig{Type: "jsonl"},
+		Tools:            &pb.ToolsConfig{BuiltIn: []string{"read_file"}},
+		MaxTurns:         2,
+		Timeout:          &timeout,
+	}
+}
+
+// TestRunJob_UnusableReplayFileLooksTheSameToControlPlane pins that the
+// control plane cannot tell a missing replay file from a directory or a
+// file that is not a trace, so the field cannot probe the harness host,
+// while the error runJob returns for the harness log keeps the detail.
+func TestRunJob_UnusableReplayFileLooksTheSameToControlPlane(t *testing.T) {
+	dir := t.TempDir()
+	notTrace := filepath.Join(dir, "notes.txt")
+	require.NoError(t, os.WriteFile(notTrace, []byte("not a trace\n"), 0o600))
+	cases := []struct {
+		name       string
+		path       string
+		wantDetail string
+	}{
+		{name: "missing", path: filepath.Join(dir, "absent.jsonl"), wantDetail: "no such file"},
+		{name: "directory", path: dir, wantDetail: "not a regular file"},
+		{name: "not a trace", path: notTrace, wantDetail: "malformed line"},
+	}
+	const want = "building harness: replayFile unavailable on the harness host; the harness log has the detail"
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
+			useTempMarkerPaths(t)
+			srv := newRecordingControlPlane(replayJobConfig(t, tc.path))
+			startControlPlane(t, srv)
+			t.Setenv("CONTROL_PLANE_SESSION_ID", "")
+
+			errCh := make(chan error, 1)
+			go func() { errCh <- runJob(jobCmd, nil) }()
+			select {
+			case <-srv.doneCh:
+			case <-time.After(terminalWaitBudget):
+				must.FailNow("control plane never received a done event", "got %v", srv.events())
+			}
+			select {
+			case runErr := <-errCh:
+				must.ErrorContains(runErr, tc.wantDetail, "the returned error keeps the detail for the harness log")
+			case <-time.After(terminalWaitBudget):
+				must.FailNow("runJob did not return after signalling the control plane")
+			}
+
+			errEvent := srv.findEvent("error")
+			must.NotNil(errEvent, "no error event received; got %v", srv.events())
+			check.Equal(want, errEvent.Message)
+		})
 	}
 }
 
