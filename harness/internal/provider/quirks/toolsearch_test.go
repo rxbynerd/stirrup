@@ -81,6 +81,10 @@ func TestBuiltinRules_EndpointIsARecognisedProfile(t *testing.T) {
 		}
 		t.Run(rule.Description, func(t *testing.T) {
 			must := require.New(t)
+			if rule.Endpoint == EndpointBedrock {
+				must.Equal("anthropic", rule.ProviderType, "only anthropic rules resolve under the bedrock endpoint")
+				return
+			}
 			must.Contains(types.ValidEndpointProfileValues(), rule.Endpoint)
 			must.True(types.IsOpenAIWireProviderType(rule.ProviderType), "an endpoint-scoped rule must name an OpenAI-wire provider type")
 		})

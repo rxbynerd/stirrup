@@ -10,8 +10,8 @@ import (
 // Rule is one entry in the quirks registry. ModelMatch is a path.Match
 // glob against StreamParams.Model; an empty ModelMatch matches every
 // model for the named provider. Endpoint scopes the rule to one
-// endpoint profile (types.EndpointProfile*); an empty Endpoint matches
-// every endpoint. Apply mutates the ProviderQuirks the
+// endpoint profile (types.EndpointProfile*, or EndpointBedrock for an
+// anthropic rule); an empty Endpoint matches every endpoint. Apply mutates the ProviderQuirks the
 // registry constructed for a resolution; the registry pre-initialises
 // every map and slice field, so Apply can read-modify-write without nil
 // guards.
