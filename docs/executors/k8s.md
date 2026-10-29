@@ -117,10 +117,10 @@ The pieces and their lifecycle:
 
 - **Command execution and file I/O** both ride the `pods/exec`
   subresource. `Exec` runs `/bin/sh -c`; `ReadFile`/`WriteFile` stream a
-  `tar` archive over exec, and a read first resolves the real path with
-  `readlink -f` and refuses anything outside `/workspace`, so a symlink
+  `tar` archive over exec, and both first resolve the real path with
+  `readlink -f` and refuse anything outside `/workspace`, so a symlink
   committed into the workspace cannot pull in a file from elsewhere on
-  the Pod; `ListDirectory` runs `ls -A1`. The image must therefore ship
+  the Pod or redirect a write there; `ListDirectory` runs `ls -A1`. The image must therefore ship
   a POSIX shell at `/bin/sh` plus `tar`, `ls`, and `readlink` on `PATH`
   — a shell-less distroless static image will not work. Output and
   file payloads are capped at 10 MB (matching the container executor).

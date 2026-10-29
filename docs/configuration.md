@@ -1861,12 +1861,13 @@ The file lives outside `/workspace` on a private memory-backed mount
 (a dedicated tmpfs on the container executor, a `medium: Memory`
 `emptyDir` on `k8s`/`k8s-sandbox`), so a workspace export never
 includes it and a `git add -A` never sweeps it up. `read_file` cannot
-reach it either — not by path, and not through a symlink committed
-into the workspace: every workspace read resolves the real path
-inside the sandbox first (`readlink -f`) and refuses anything that
-resolves outside `/workspace`, on both the container and the
-Kubernetes executors, because the engine archive API and `tar` would
-otherwise follow such a link. The file is replaced by an atomic
+reach it either, and the file-writing tools cannot overwrite it — not
+by path, and not through a symlink committed into the workspace: every
+workspace read and write resolves the real path inside the sandbox
+first (`readlink -f`) and refuses anything that resolves outside
+`/workspace`, on both the container and the Kubernetes executors,
+because the engine archive API, `tar`, and `mkdir -p` would otherwise
+follow such a link. The file is replaced by an atomic
 rename so a credential-helper read racing a refresh sees the old
 token or the new one, never a torn file, and the rename only happens
 once the staged file's byte count matches the length the harness
@@ -1916,8 +1917,9 @@ enforced).** The composed git configuration relies on the sandbox
 image providing `git` ≥ 2.31, for `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`
 support, and a POSIX shell with `cat`, `mv`, `wc`, `tr`, and `rm`,
 for the inline `!f() { ... }; f` credential-helper form and the
-token-file delivery command; workspace reads additionally need
-`readlink` and `tar`, which every sandbox image already needs. On the
+token-file delivery command; workspace reads and writes additionally
+need `readlink`, `mkdir`, and `tar`, which every sandbox image already
+needs. On the
 container executor the engine must answer an exec start with a
 `101 Switching Protocols` upgrade so stdin can be streamed — Docker
 and Podman do; a socket proxy in front of the engine that does not

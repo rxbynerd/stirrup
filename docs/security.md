@@ -624,7 +624,16 @@ appropriate to its own boundary:
 - **`container`** and **`k8s`**/**`k8s-sandbox`** are structurally
   sandboxed by the container/Pod itself; the workspace is bind-mounted
   or provisioned at a fixed path, and `ResolvePath` textually rejects
-  anything that doesn't stay under it.
+  anything that doesn't stay under it. Because the engine archive API,
+  `tar`, and `mkdir -p` all follow symlinks, `ReadFile` and `WriteFile`
+  additionally resolve the real path inside the sandbox with
+  `readlink -f` and refuse anything that resolves outside the
+  workspace. A write through a symlinked file or a symlinked directory
+  (including directories `mkdir -p` would create beneath one) is
+  refused with the same `path escapes workspace` error and
+  `path_traversal_blocked` event as a textual traversal; a symlink that
+  stays inside the workspace is written through to its target, as on
+  `local`.
 - **`api`** uses `url.PathEscape` on every path segment before
   constructing the GitHub Contents API URL.
 
