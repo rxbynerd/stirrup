@@ -1040,19 +1040,37 @@ calling a model. `ReplayProvider` (`harness/internal/provider/replay.go`)
 answers each `Stream` call with the next recorded turn's content
 blocks: `text` becomes `text_delta`, `tool_use` becomes a `tool_call`,
 and `thinking` / `redacted_thinking` are forwarded unsigned. The stop
-reason is `tool_use` when the turn holds a tool call and `end_turn`
-otherwise. Requesting more turns than the recording holds fails the
-call, which ends the run as an error rather than looping.
+reason is the turn's recorded `stopReason`, so a recorded `max_tokens`
+stop takes the same output-limit recovery path it took live; a turn
+recorded without one (a hand-written line, or a trace written before
+the field existed) ends with `tool_use` when it holds a tool call and
+`end_turn` otherwise. Requesting more turns than the recording holds
+fails the call, which ends the run as an error rather than looping.
 
 | Field | Required | Notes |
 |---|---|---|
 | `provider.replayFile` | yes | JSONL trace file; a regular file of at most 64 MiB whose path has no `..` segment. Relative paths resolve against the harness working directory. |
-| `provider.apiKeyRef`, `provider.credential`, `provider.baseUrl` | rejected | A replay provider resolves no credential and contacts no endpoint. |
+| `apiKeyRef`, `credential`, `baseUrl`, `endpointProfile`, `apiKeyHeader`, `queryParams`, `compatProfile`, `region`, `profile` | rejected | A replay provider resolves no credential and sends no request. |
 
-The file is read by `types/trace.Reader.ReadRecording`, so a trace the
-`jsonl` emitter wrote is a valid recording of its top-level run, within
-the limits listed below. A hand-written recording needs only the
-`turn_record` lines:
+Three combinations are rejected by validation:
+
+- a `cloud-judge` guard, an `llm-judge` verifier or the `summarise`
+  context strategy, at any depth of a composite, when `provider.type`
+  is `replay`. Each sends its own requests to the default provider and
+  cannot name another, so under a replay it would consume the next
+  recorded turn and fail to parse it, and a fail-open guard would be
+  silently neutralised;
+- a `replay` entry in the `providers` map unless `provider.type` is
+  also `replay`, so a run never serves some turns from a recording
+  while it reports a live model;
+- `batch`, which only the live HTTP adapters implement.
+
+The file is read by `types/trace.Reader.ReadReplay`, which keeps each
+`turn_record`'s turn number, run IDs, stop reason and model output and
+skips run configs, model inputs and tool calls, so memory grows with
+the recorded model output alone. A trace the `jsonl` emitter wrote is
+therefore a valid recording, within the limits listed below. A
+hand-written recording needs only the `turn_record` lines:
 
 ```jsonl
 {"kind":"turn_record","turn":1,"modelOutput":[{"type":"tool_use","id":"c1","name":"read_file","input":{"path":"main.go"}}]}
@@ -1067,26 +1085,42 @@ the rewritten form.
 
 A recording must be complete: the provider is not built when the file
 has no `turn_record` event, holds only sub-agent turns, or has any
-line the reader would drop (malformed JSON, or over the reader's 4 MiB
-line cap), because a dropped line would shift every later turn onto
-the wrong request.
+line the reader would drop (not JSON, a `modelOutput` that does not
+decode, or over the reader's 4 MiB line cap), because a dropped line
+would shift every later turn onto the wrong request.
+
+Turns of every top-level run in the file replay in order, so a trace
+that spans follow-up runs replays whole. A sub-agent's turns are kept
+apart and served to the matching child: when the replayed run spawns a
+sub-agent, the child gets its own replay of the recorded sub-run whose
+run ID, relative to its parent (`sub-1` in `run-1/sub-1`), matches the
+child's, under the recorded run of the turn that made the
+`spawn_agent` call. The replayed run's own IDs need not match the
+recording's. A spawn the recording holds no turns for is refused, and
+the `spawn_agent` call fails with `no recorded turns for sub-agent
+"<run ID>"`, so the parent goes on to its own next recorded turn
+rather than losing one to the child. A named `replay` entry in the
+`providers` map serves sub-runs from its own file the same way; when
+that file holds no turns for the child, the child fails only if it
+routes a turn to that entry.
+
+When `stirrup job` cannot build the provider from `replayFile` for any
+reason (missing, unreadable, a directory, too large, or not a complete
+trace), the `error` event sent to the control plane reads only
+`building harness: replayFile unavailable on the harness host; the
+harness log has the detail`, so the field cannot be used to probe the
+harness filesystem; the detail goes to the harness's stderr.
+`permissionPolicy.policyFile` and `gcpCredentialsFile` are reported
+the same way. See
+[`integration-guide.md`](integration-guide.md#stream-lifecycle).
 
 What a replay does not exercise or preserve:
 
 - the wire parsing of any adapter (a `tool_call` is emitted whole,
   never reassembled from deltas), provider quirks, retries and
   `ReplayFields` capture;
-- `spawn_agent`: a child loop shares the parent's provider and draws
-  the parent's next recorded turns, so a trace that used sub-agents
-  does not replay;
-- stop reasons, which are not recorded; a turn ends with `tool_use`
-  or `end_turn`, so output-limit recovery paths differ;
 - scrubbed values: the emitter redacts secret-like strings before
-  writing, and they replay redacted;
-- auxiliary model calls: a cloud-judge guard, an llm-judge verifier or
-  the summarise context strategy share the default provider, so each
-  consumes a recorded turn and fails to parse it. A fail-open guard is
-  then silently neutralised; do not combine them with a replay.
+  writing, and they replay redacted.
 
 A recording is trusted model output: pointing `replayFile` at another
 run's trace replays that run's model text into this run's events and

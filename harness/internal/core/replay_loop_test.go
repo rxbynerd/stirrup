@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/rxbynerd/stirrup/harness/internal/provider"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
 	tracereader "github.com/rxbynerd/stirrup/types/trace"
@@ -148,4 +149,53 @@ func TestBuildLoop_ReplayProvider_RecordedOutputLimitStopRecovers(t *testing.T) 
 	check.Equal("max_tokens", rec.Turns[0].StopReason, "the stop reason is recorded for the next replay")
 	check.True(rec.Turns[0].OutputLimitRecovery)
 	check.Equal("end_turn", rec.Turns[1].StopReason)
+}
+
+// TestReplaySubAgentProviders_NamedEntryWithoutSubRunFailsOnlyWhenUsed
+// pins the hook's refusal rule: a child the default recording has turns
+// for is admitted even when a named replay entry's recording has none,
+// and that entry fails the child's request only if a turn routes to it.
+// Live entries are shared with the child unchanged.
+func TestReplaySubAgentProviders_NamedEntryWithoutSubRunFailsOnlyWhenUsed(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	textTurn := func(runID, text string) types.TurnRecord {
+		return types.TurnRecord{RunID: runID, ModelOutput: []types.ContentBlock{{Type: "text", Text: text}}}
+	}
+	defaultReplay := provider.NewReplayProviderFromRecording(&types.RunRecording{
+		Turns:   []types.TurnRecord{textTurn("rec", "parent")},
+		SubRuns: []types.SubRunRecording{{RunID: "rec/sub-1", Turns: []types.TurnRecord{textTurn("rec/sub-1", "child")}}},
+	})
+	namedReplay := provider.NewReplayProviderFromRecording(&types.RunRecording{
+		Turns: []types.TurnRecord{textTurn("other", "named parent")},
+	})
+	live := provider.NewReplayProvider(nil)
+	config := &types.RunConfig{
+		Provider:  types.ProviderConfig{Type: "replay"},
+		Providers: map[string]types.ProviderConfig{"named": {Type: "replay"}, "live": {Type: "anthropic"}},
+	}
+	loopProviders := map[string]provider.ProviderAdapter{"replay": defaultReplay, "named": namedReplay, "live": live}
+	hook := replaySubAgentProviders(config, replayProvidersOf(map[string]provider.ProviderAdapter{"replay": defaultReplay, "named": namedReplay}), loopProviders)
+	must.NotNil(hook)
+	for _, rp := range []*provider.ReplayProvider{defaultReplay, namedReplay} {
+		ch, err := rp.Stream(context.Background(), types.StreamParams{})
+		must.NoError(err)
+		for range ch {
+		}
+	}
+
+	childDefault, childProviders, err := hook("run", "run/sub-1")
+
+	must.NoError(err)
+	must.Same(childProviders["replay"], childDefault)
+	check.Same(live, childProviders["live"])
+	ch, err := childDefault.Stream(context.Background(), types.StreamParams{})
+	must.NoError(err)
+	for range ch {
+	}
+	_, err = childProviders["named"].Stream(context.Background(), types.StreamParams{})
+	must.ErrorContains(err, `no recorded turns for sub-agent "run/sub-1" (recorded run "other/sub-1")`)
+
+	_, _, err = hook("run", "run/sub-2")
+	must.ErrorContains(err, `no recorded turns for sub-agent "run/sub-2"`, "the default recording decides whether the spawn runs")
 }

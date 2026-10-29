@@ -26,7 +26,11 @@ a `kind` discriminator. A complete run produces:
 ```
 
 `turn_record` carries the full transcript the model saw and produced
-that turn, including the exact scrubbed tool results shown to it.
+that turn, including the exact scrubbed tool results shown to it, and
+the normalised `stopReason` the provider ended the turn with (absent
+when the provider reported none, and on traces written before the
+field existed). The [replay provider](providers.md#replay)
+replays it.
 Anthropic `thinking` blocks keep their type and reasoning text, scrubbed
 like assistant text; their signatures, and the data of
 `redacted_thinking` blocks, are never written (see [thinking-block
