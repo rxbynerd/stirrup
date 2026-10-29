@@ -153,7 +153,7 @@ sequenceDiagram
     participant S as Stirrup
     participant L as Langfuse
     CP->>H: Submit attempt and application correlation
-    H->>S: Task assignment; optional W3C parent context
+    H->>S: Task assignment with optional W3C parent context
     S-->>H: run_started with actual trace/run-span IDs
     H-->>CP: Persisted trace reference
     S->>L: OTLP spans, directly or through collector
