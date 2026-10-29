@@ -86,8 +86,9 @@ status.
    raised during setup (a Rule-of-Two detection in the prompt, dynamic
    context or repository guidance, or a `continueOnError` `preRun` hook
    failure) is held and sent right after `run_started`. A run that
-   fails setup (a fatal `preRun` hook, git setup) sends no
-   `run_started`; its held warnings precede its `error`.
+   fails setup (a fatal `preRun` hook, rejected repository guidance, a
+   system prompt build failure or git setup) sends no `run_started`; its
+   held warnings precede its `error`.
 6. During execution the harness streams a live transcript of the run:
    `turn_started` and then `turn_committed` or `turn_abandoned` around
    each model turn, the
@@ -180,6 +181,7 @@ reads the events around them.
 | An optional MCP server is unavailable | `optional MCP server "<name>" unavailable; continuing without its tools:` or `optional MCP server "<name>" is missing allowed tools; continuing with the rest:` | Raised while the loop is built, so it arrives before `run_started`. The server is also listed in `degraded_capabilities` on the `done` summary and the `RunResult`. |
 | A context strategy degrades | `summarise: summary call failed; falling back to the sliding window until <n> more exchanges age out:`, `summarise: <n> aged messages exceeded the summary input bound`, or `clear-tool-results: clearing tool results cannot keep the history within the context budget` | Informational. Compaction still produced a request, with less fidelity or without the prompt-cache stability the strategy aims for. |
 | The request cannot fit the context budget | `context budget exhausted: the request needs about <n> estimated tokens` | Sent before a `done` with `stop_reason:"context_exhausted"`. The message names the sizes involved and the remedy. |
+| A turn overflows the context window again after a forced compaction | `context window exceeded: the provider reported the request as too large for the model's context window again after it was compacted from about <n> to <m> estimated tokens` | Sent before a `done` with `stop_reason:"context_exhausted"`. The message carries the two estimates and the remedy, without the per-part sizes. |
 | The budget is nearly spent and `windDown` is on | `turn <n>: the <turns, tokens or time> budget is nearly exhausted; told the model to wind down` | Informational, sent with a `user_message` whose source is `wind_down`. |
 | Git or export step fails | `git finalise: <reason>`, `workspace export: <reason>`, or mid-run `git checkpoint: <reason>` | The first two precede `done` and are repeated in `git.error` and `workspace_export.error`. The outcome becomes `handoff_failed` when the run was otherwise successful (for an export, only when it is required). A `git checkpoint` warning is informational. |
 
@@ -226,11 +228,13 @@ A few outcomes need more than their name:
 - `context_exhausted`: the smallest request the context strategy could
   prepare did not fit the context budget and was not sent, or a turn
   exceeded the model's context window again after a forced compaction.
-  A `warning` with the details precedes `done`.
+  A `warning` with the details precedes `done`. It starts
+  `context budget exhausted:` in the first case and
+  `context window exceeded:` in the second.
 
 **Terminal order.** The harness sends `done` only after the run's
 handoff steps have finished, so the summary carries their results. For a
-run that got past setup the order is:
+run that passed setup the order is:
 
 1. The structured-output check, then the verifier, either of which can
    send the model another turn.
@@ -247,9 +251,11 @@ run that got past setup the order is:
 A run that fails setup (a fatal `preRun` hook, repository guidance, the
 system prompt or git setup) sends `error`, still runs the export and the
 trace upload, and then sends `done`. It skips the final checkpoint and
-the `postRun` hooks. Once `done` arrives, the branch, the export and the
-trace upload are finished or have failed as the summary says, so the
-run's artifacts are final. The `RunResult` is emitted on the
+the `postRun` hooks. A fatal `preRun` hook and rejected repository
+guidance end the run as `setup_failed`. A system prompt build failure and
+git setup failure end it as `error`. Once `done` arrives, the branch,
+the export and the trace upload are finished or have failed as the
+summary says, so the run's artifacts are final. The `RunResult` is emitted on the
 result sink after `done`, so a control plane that reads it from process
 stdout or a sink waits for the process to exit instead of closing on
 `done`.
@@ -264,18 +270,18 @@ stdout or a sink waits for the process to exit instead of closing on
 | `stop_details` | A refusal's category and explanation. |
 | `git` | `branch`, `sha`, `base_sha`, `dirty` and `error` of the git handoff. Absent when `gitStrategy` is `none`. |
 | `workspace_export` | The export receipt: `uri`, `status`, `required`, `error`, `bytes`, `sha256`, `files`. Absent when no destination is configured. |
-| `error` | Scrubbed, length-capped reason for a non-success outcome: the run's earliest failure. Also set on a successful run whose trace upload failed. |
+| `error` | Scrubbed, length-capped reason for a non-success outcome: the run's earliest failure. Also set on a successful run whose trace upload failed. For a verification outcome it is a generic text (`verification failed after the final retry`, or `verifier: <err>`), while `RunResult.error` carries the last attempt's feedback or error. A control plane that reads only `done` does not receive the feedback text. |
 | `structured_output` | The validated final answer as JSON text; see [Structured output](#structured-output-output_schema). |
-| `degraded_capabilities` | One `kind`, `name` and `error` per configured capability the run proceeded without, such as an optional MCP server. |
+| `degraded_capabilities` | One `kind`, `name` and `error` per configured capability the run proceeded without, such as an optional MCP server. `RunTrace` field 33. |
 | `trace_reference` | The run span's OTel identity, when the run recorded one. |
 
 The proto `RunTrace` also declares `verification`, `post_edit_checks`,
 `auxiliary_tokens` (a `TokenUsage` message) and `external_guard_tokens`,
 which the `done` summary leaves unset. `auxiliary_tokens` is the part of
 the totals spent outside agentic turns. `external_guard_tokens` is usage
-a `granite-guardian` guard reported on its own endpoint; it is not part
-of the totals and is not charged to `maxTokenBudget`. Read the last
-verifier attempt from `RunResult.verifierVerdict`, and the per-attempt
+that a `granite-guardian` or `shieldstral` guard reported on its own
+endpoint; it is not part of the totals and is not charged to
+`maxTokenBudget`. Read the last verifier attempt from `RunResult.verifierVerdict`, and the per-attempt
 verification results, the post-edit check records and both token
 breakdowns from a trace emitter
 ([`trace-inspection.md`](trace-inspection.md)). The final assistant
@@ -357,9 +363,10 @@ harness cannot tell a deliberate end from a failure, so returning from
   (90 s) still run under their bounded contexts. The harness then
   attempts `done` once, which a dead stream cannot deliver, and exits
   non-zero. The `RunResult` still reaches the result sink.
-- A loss while the loop is being built attempts an `error` and a
-  `done` with `stop_reason:"control_stream_lost"`, with no `trace`, and
-  the process exits non-zero.
+- When the loss occurs while the loop is being built, the harness
+  attempts an `error` and a `done` with
+  `stop_reason:"control_stream_lost"`, with no `trace`, and the process
+  exits non-zero.
 - A loss with no run active, inside the follow-up window or after
   `done`, only closes the window. The last run's outcome is unchanged,
   and a follow-up run that ends `control_stream_lost` fails the process.
@@ -367,9 +374,9 @@ harness cannot tell a deliberate end from a failure, so returning from
 **Fencing.** Stream loss does not prove the harness has stopped: it
 stops only after its in-flight operation observes the cancellation, and
 its bounded post-run steps run afterwards. A control plane that needs
-exactly one active worker per task deletes the Pod, Job or Sandbox and
-waits for it to terminate before scheduling a replacement, and runs
-Jobs with `backoffLimit: 0` so the orchestrator does not restart the
+exactly one active worker per task should delete the Pod, Job or Sandbox
+and wait for it to terminate before scheduling a replacement, and should
+run Jobs with `backoffLimit: 0` so the orchestrator does not restart the
 harness on its own. The harness does not prevent duplicate external
 effects of tools that already ran: `control_stream_lost` is a
 cancellation, not a rollback.
@@ -452,7 +459,10 @@ component construction, post-run hooks, result/export flushing, and —
 with a follow-up grace window — each follow-up run's own `timeout`
 plus the idle windows between runs. Set `STIRRUP_SESSION_DEADLINE` in
 the Pod environment to the same number of seconds so the sandbox
-outlives the session; see
+outlives the session, and always set it when `followUpGrace` is used. A
+session that outlives the value loses its sandbox. The value must be a
+positive integer number of seconds; anything else falls back silently to
+an estimate that assumes at most ten follow-ups. See
 [`deployment.md`](deployment.md#optional-environment-variables).
 The process writes `/tmp/healthy`, but the published distroless image
 contains no `test` or shell binary; inspect that file from a sidecar
@@ -623,7 +633,7 @@ diff, review or publish.
   submodule), fails setup, and the run ends with `error`.
 - A checkpoint commit follows each turn that ran tools. The final
   checkpoint, `Final checkpoint (outcome: <outcome>)`, commits whatever
-  remains on every outcome that got past setup, `cancelled` and
+  remains on every outcome that passed setup, `cancelled` and
   `timeout` included, before the `postRun` hooks run.
 - The handoff is `git` on the `done` summary and the `RunResult`:
   `branch`, `sha`, `base_sha`, `dirty` and `error`. `base_sha` is HEAD
@@ -635,16 +645,17 @@ diff, review or publish.
 - The agent holds the same authority in the sandbox as the harness's
   own git commands, so it can rewrite history with reset, amend or
   rebase. The harness checks that `sha` and `branch` are well formed,
-  not that they are honest. A control plane that needs a trustworthy
-  diff computes it against the base commit it provisioned itself, not
-  against history read from inside the workspace.
-
-Field reference: [Git strategy](configuration.md#git-strategy).
-- The harness never pushes. The commits live in the sandbox workspace:
+  not that they are correct. A control plane that needs a trustworthy
+  diff should compute it against the base commit it provisioned itself,
+  not against history read from inside the workspace.
+- The harness never pushes, although the agent can when the sandbox's
+  egress allows it. The commits live in the sandbox workspace:
   retrieve them from the workspace export (`executor.workspaceExportTo`;
   the archive covers the whole workspace root, `.git` included), or
   publish the branch from a `postRun` hook, which runs after the final
   checkpoint.
+
+Field reference: [Git strategy](configuration.md#git-strategy).
 
 ### Human-in-the-loop approvals (`ask-upstream`)
 
@@ -732,7 +743,7 @@ the system prompt without trusting the repository's content.
 - `RunConfig.repository_guidance` is field 53
   (`RepositoryGuidanceConfig`: `files`, `max_bytes`, `pinned_sha256`).
   Absent loads nothing. `files` names workspace-root files only, with
-  no paths, globs or directory walks, at most 16. `maxBytes` caps the
+  no paths, globs or directory walks, and at most 16 entries. `maxBytes` caps the
   rendered content per file and in total (default 32768, at most
   50000).
 - Files are read through the run's executor after the `preRun` hooks
@@ -837,8 +848,8 @@ Field references: [Tool result limits](configuration.md#tool-result-limits),
   `done` with `stop_reason:"error"` and no `trace`.
 - An optional server that fails is skipped and the run proceeds with
   its remaining tools. A `warning` is sent before `run_started`, and
-  the server is listed in `degraded_capabilities` (`kind:"mcp"`,
-  `name`, `error`) on the `done` summary, the `RunResult` and the
+  the server is listed in `degraded_capabilities` (`RunTrace` field 33;
+  `kind:"mcp"`, `name`, `error`) on the `done` summary, the `RunResult` and the
   trace. A server that lacks only some allowlisted tools keeps the ones
   it advertised.
 
@@ -916,9 +927,11 @@ hard — or different providers per mode.
   and `dynamic`. The dynamic router chooses the cheap model when the
   previous stop reason is in `cheapStopReasons`, the expensive model
   after a configured turn/output-token threshold, and the default
-  model otherwise. `expensiveTokenThreshold` compares the run's
-  cumulative output tokens, which include reasoning tokens (Gemini
-  thought tokens included), so thinking-heavy runs reach it sooner.
+  model otherwise. The turn number compared with `expensiveTurnThreshold`
+  is run-scoped and does not reset when a verification repair begins.
+  `expensiveTokenThreshold` compares the run's cumulative output tokens,
+  which include reasoning tokens (Gemini thought tokens included), so
+  thinking-heavy runs reach it sooner.
 - Behaviour knobs are provider-neutral: `temperature`,
   `reasoningEffort`, and `reasoningSummary` sit at the top level of
   `RunConfig`. Adapters with a supported native control project them;
@@ -945,10 +958,11 @@ hard — or different providers per mode.
   the run with `outcome: "budget_exceeded"`; wall-clock expiry yields
   `timeout`. Ceilings are 50 M tokens and 3600 s. The budget counts
   sub-agent turns and the summary, `llm-judge` and `cloud-judge` calls
-  as well as the run's own turns. Usage a `granite-guardian` guard
-  reports on its own endpoint is reported separately and not charged.
+  as well as the run's own turns. Usage that a `granite-guardian` or
+  `shieldstral` guard reports on its own endpoint is reported separately
+  and not charged.
 - `windDown` (`RunConfig.wind_down`, field 56) is off unless set.
-  Enabled, it sends the model one instruction to finish up, once per
+  When enabled, it sends the model one instruction to wrap up, once per
   run, when the turn, token or time budget is nearly spent: a
   `user_message` with source `wind_down`, accompanied by a `warning`.
   It is recommended for unattended runs.
@@ -967,8 +981,8 @@ hard — or different providers per mode.
   `clear-tool-results` remain accepted. `clear-tool-results` takes
   three further fields, `keep`, `clearAtLeast` and `excludeTools`
   (`ContextStrategyConfig` fields 5 to 7), which validation rejects on
-  every other strategy. A request that still cannot fit the budget after compaction
-  ends the run with `context_exhausted`; see
+  every other strategy. A request that still cannot fit the budget after
+  compaction ends the run with `context_exhausted`; see
   [Warning events](#warning-events) for the degraded-compaction
   warnings.
 - Pair `timeout` with an infrastructure-level deadline
@@ -977,7 +991,10 @@ hard — or different providers per mode.
   run's own `timeout` plus the grace windows between runs, since
   `timeout` is per run rather than per session. Set
   `STIRRUP_SESSION_DEADLINE` to the same value so the sandbox outlives
-  the session.
+  the session. A session that outlives the value loses its sandbox. Set
+  it whenever `followUpGrace` is used with `stirrup job`. The value must
+  be a positive integer number of seconds; anything else falls back
+  silently to an estimate that assumes at most ten follow-ups.
 
 Field references: [Limits and budgets](configuration.md#limits-and-budgets),
 [Context strategy](configuration.md#context-strategy).
@@ -1040,7 +1057,7 @@ schema, instead of free text.
   fenced block tagged `json` or untagged. An answer that fails
   validation gets up to two corrective attempts, each announced as a
   `user_message` with source `structured_output_correction` and counted
-  against `maxTurns`; a run that runs out of turns at a correction ends
+  against `maxTurns`; a run with no turn left at a correction ends
   as `max_turns`. A document that repeats a key within one object, or
   uses `__proto__` or `constructor` as a key, is corrected too.
 - The accepted document is compacted, scrubbed of secrets one string
@@ -1055,7 +1072,7 @@ schema, instead of free text.
   `resultSink.maxFinalAssistantTextBytes`, capped at 200 KiB, is sent
   back for correction instead. `RunResult.structuredOutput` carries the
   same document as a JSON value.
-- It differs from `tools.controlPlane`. A control-plane tool is a call
+- `output_schema` differs from `tools.controlPlane`. A control-plane tool is a call
   the model makes mid-run, answered by the control plane over a live
   stream, and it does not end the run. `output_schema` shapes the final
   answer, needs no response event, and works without a stream.
@@ -1723,7 +1740,7 @@ Four independent channels; use the ones the topology supports:
 | Channel | Carries | Topology |
 |---|---|---|
 | `done` event | Outcome in `stop_reason`; run summary in `trace` (git handoff, export receipt, `error`, structured output, trace reference; see [Terminal semantics](#terminal-semantics)) | gRPC. The primary terminal signal for a control plane, sent after the git handoff, workspace export and trace upload. |
-| `STIRRUP_RESULT` stdout line / `resultSink` | `RunResult` JSON: outcome, `error`, token usage (with cache and reasoning breakdown, see [`trace-inspection.md`](trace-inspection.md#token-usage)), duration, `finalAssistantText` (capped at 128 KiB by default; an answer continued after an output-limit stop is reported joined), `structuredOutput`, verifier verdict (the last attempt), `git`, `workspaceExport`, `degradedCapabilities`, `hookFailures`, command-output archive pointer, `traceReference` | Any (`resultSink.type: "stdout-json"`); `--output json` is the CLI equivalent. The line lands on process stdout after `done`, so a job control plane must collect Pod logs if it needs this detail. Parse the **last** matching line — the sentinel is defence against a model echoing a fake one. |
+| `STIRRUP_RESULT` stdout line / `resultSink` | `RunResult` JSON: outcome, `error`, token usage (with cache and reasoning breakdown, see [`trace-inspection.md`](trace-inspection.md#token-usage)), duration, `finalAssistantText` (capped at 128 KiB by default; an answer continued after an output-limit stop is reported joined), `structuredOutput`, verifier verdict (the last attempt), `git`, `workspaceExport`, `degradedCapabilities`, `hookFailures`, command-output archive pointer, `traceReference` | Any (`resultSink.type: "stdout-json"`); `--output json` is the CLI equivalent. The line lands on process stdout after `done`, so a job control plane must collect Pod logs if it needs this detail. Parse the **last** matching line — the sentinel defends against a model echoing a fake one. |
 | Trace emitter | Full event-by-event record (`jsonl` file, `gcs` object `gs://bucket/prefix/<runId>.jsonl`, or `otel` spans/metrics) | Any. JSONL schema: [`trace-inspection.md`](trace-inspection.md). Production builds embed a `Redact()`-ed `RunConfig`; debug builds can explicitly relax trace redaction. |
 | Workspace export | `tar.gz` of the sandbox workspace to `gs://…` (`executor.workspaceExportTo`); the receipt (`uri`, `status`, `required`, `error`, `bytes`, `sha256`, `files`) on the `done` summary and the `RunResult` | Any. Required by default: a failed export turns a successful run into `handoff_failed`; `executor.workspaceExportRequired: false` only records it. `status` is `uploaded`, `empty` (the workspace had no files; an empty archive was still uploaded) or `failed`. |
 
@@ -1891,6 +1908,15 @@ around silently".
   unknown fields. Gate assignment on `ready.capabilities` when a task
   depends on a newly added wire field; do not assume it will fail
   loudly.
+- Most newer fields have no capability flag: `output_schema`,
+  `protected_write_targets`, `post_edit`, `repository_guidance`,
+  `wind_down`, `MCPServerConfig.optional`, `tools.max_result_bytes`,
+  `tools.command_output` and the summary fields on `done.trace`. An older
+  harness ignores them without error, and two silently weaken
+  enforcement: it drops `protected_write_targets` and
+  `repository_guidance`. A control plane that relies on one of these
+  should pin a minimum image tag, or confirm on the first `run_started`,
+  `user_message` and `done` events that the feature took effect.
 - New `HarnessEvent` types are added without a version bump of the
   RPC. Ignore unrecognised types; gate on `ready.capabilities` when a
   feature depends on one, as for the live transcript events in

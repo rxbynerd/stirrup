@@ -331,9 +331,9 @@ says.
 | Flag | Default | Notes |
 |---|---|---|
 | `--provider` | `anthropic` | One of `anthropic`, `bedrock`, `openai-compatible`, `openai-responses`, `gemini`, `replay`. `replay` serves recorded model output from `--replay-file` and needs no credential; see [Replay](#replay). |
-| `--model` | `claude-sonnet-4-6` for `anthropic`; none otherwise | Model id for the static / per-mode router. Required for every provider other than `anthropic`; omitting it exits 1 with an error naming the provider. |
+| `--model` | `claude-sonnet-4-6` for `anthropic`; the label `replay` for `replay`; none otherwise | Model id for the static / per-mode router. Required for every provider other than `anthropic` and `replay`; omitting it exits 1 with an error naming the provider. |
 | `--prompt-model` | (none) | Model identity the system prompt templates render against, without changing the wire model. Combine with `--model` to compare a prompt tuned for one model against another. Empty derives the prompt model from the effective model. JSON path: `promptBuilder.promptModel`. See [System prompt templating](#system-prompt-templating). |
-| `--api-key-ref` | `secret://ANTHROPIC_API_KEY` for `anthropic`; `secret://OPENAI_API_KEY` for `openai-compatible` / `openai-responses`; none for `bedrock` / `gemini` / `replay` | A `secret://` reference. API keys never live in `RunConfig`. The default applies only when neither the flag nor `--config` supplies a value and no `credential` block is set; `--api-key-ref=""` sends no key, which is valid only for `openai-compatible` / `openai-responses` at a custom `--base-url` (a keyless local server); provider construction rejects an empty reference for any other provider or for the default OpenAI endpoint. Rejected for `gemini` (Vertex uses GCP IAM) and for `replay` (no model is called). |
+| `--api-key-ref` | `secret://ANTHROPIC_API_KEY` for `anthropic`; `secret://OPENAI_API_KEY` for `openai-compatible` / `openai-responses`; none for `bedrock` / `gemini` / `replay` | A `secret://` reference. API keys never live in `RunConfig`. The default applies only when neither the flag nor `--config` supplies a value and no `credential` block is set; `--api-key-ref=""` sends no key, which is valid only for `openai-compatible` / `openai-responses` at a custom `--base-url` (a keyless local server); provider construction rejects an empty reference for `anthropic` and for an OpenAI-wire provider at the default OpenAI endpoint. Rejected for `gemini` (Vertex uses GCP IAM) and for `replay` (no model is called). |
 | `--base-url` | (none) | Provider base URL. Required for Azure / gateway scenarios. |
 | `--api-key-header` | (none) | Header name. Empty = `Authorization: Bearer`; set to `api-key` for Azure key auth. |
 | `--query-param key=value` | (none) | Repeatable. Adds query parameters to every provider request URL — e.g. `--query-param api-version=preview` for Azure. Keys here override duplicates already encoded in `--base-url`. |
@@ -345,22 +345,24 @@ the flags are merged, so a value from `--config` or an explicit flag always
 wins, and a provider named in a `--config` file selects defaults exactly as
 `--provider` does:
 
-- `--model` defaults to `claude-sonnet-4-6` for `anthropic` with a static
-  router. Every other provider has no default model: a static router
-  without one exits `1` with an error that names the provider and the
-  flag. `dynamic` and `per-mode` routers carry their own model fields,
-  which `ValidateRunConfig` checks.
+- `--model` defaults to `claude-sonnet-4-6` for `anthropic` and to the
+  label `replay` for `replay`, with a static router. Every other
+  provider has no default model: a static router without one exits `1`
+  with an error that names the provider and the flag. `dynamic` and
+  `per-mode` routers carry their own model fields, which
+  `ValidateRunConfig` checks.
 - `--api-key-ref` defaults to `secret://ANTHROPIC_API_KEY` for `anthropic`
   and to `secret://OPENAI_API_KEY` for `openai-compatible` and
   `openai-responses`. No default applies when the flag is passed
   (`--api-key-ref=""` included), when the config already names a
   reference, or when a `credential` block supplies authentication, so the
   federation flags do not also receive a key reference.
-- A `--config` or stdin document whose `openai-compatible` or
-  `openai-responses` provider sets `baseUrl` without a key reference
-  stays keyless. The same provider built from flags alone, with or
-  without `--base-url`, receives the OpenAI default; `--api-key-ref=""`
-  opts out for a keyless server.
+- A `--config` or stdin run of an `openai-compatible` or
+  `openai-responses` provider whose effective base URL is non-empty,
+  whether the document sets `baseUrl` or `--base-url` supplies it, stays
+  keyless unless a key reference is named. The same provider built from
+  flags alone, with or without `--base-url`, receives the OpenAI
+  default; `--api-key-ref=""` opts out for a keyless server.
 - `bedrock` receives no default reference and authenticates through the
   AWS credential chain. `gemini` receives none either and rejects a
   non-empty one, because Vertex AI uses GCP IAM.
@@ -601,6 +603,7 @@ The exchange audience is set on the `tokenSource` (canonically
 | `--lazy-tools-strategy` | (none; behaves as `auto`) | How deferred tools are searched: `auto` uses the provider's native tool search where the quirks registry gives the routed provider, endpoint profile and model one (see [Strategies and providers](#strategies-and-providers)), and the harness `tool_search` otherwise; `harness` always uses `tool_search`. JSON path: `tools.lazyLoading.strategy`. |
 | `--lazy-tools-eager` | (none) | Repeatable internal tool ID sent on every turn without a search. Unset defers only MCP-imported and control-plane tools; a list defers all remaining tools, built-ins included. Replaces any `tools.lazyLoading.eager` from `--config`. JSON path: `tools.lazyLoading.eager`. |
 | `--lazy-tools-max-results` | `0` | How many tools one harness `tool_search` loads. `0` selects 5; the maximum is 20. JSON path: `tools.lazyLoading.maxResults`. |
+| `--protected-write-target` | (none) | Repeatable workspace-relative path that write tools may not target, at most 64 entries. A trailing `/` protects the directory and everything beneath it; otherwise the exact path only. Files loaded through `--repository-guidance-file` are protected in addition. Replaces any `tools.protectedWriteTargets` from `--config`. JSON path: `tools.protectedWriteTargets`. See [Protected write targets](#protected-write-targets). |
 
 See also: [`docs/executors/k8s.md`](executors/k8s.md) for the `k8s`
 executor's architecture, deployment recipes, egress model, and the full
@@ -615,7 +618,8 @@ that starts it in its own session where `setsid` is available and records
 the leader's process ID in a per-call file named
 `/tmp/.stirrup-exec-<random>.pid`. When a call times out or the run is
 cancelled, a follow-up exec sends SIGTERM to the recorded process group,
-waits up to one second, and sends SIGKILL, then removes the file. The
+waits up to one second, sends SIGKILL to anything still running, and then
+removes the file. The
 sandbox image therefore needs a POSIX `sh`, `kill` and a writable `/tmp`;
 the `container` executor mounts a tmpfs there. Without `setsid`, only the
 recorded shell and the descendants found through `/proc` are signalled,
@@ -721,7 +725,7 @@ reads the same settings from the `CONTROL_PLANE_TLS_CA_FILE`,
 `CONTROL_PLANE_TLS_CERT_FILE`, `CONTROL_PLANE_TLS_KEY_FILE` and
 `CONTROL_PLANE_TLS_SERVER_NAME` environment variables.
 
-With none of them set the connection is plaintext. Setting any of them
+With none of them set, the connection is plaintext. Setting any of them
 enables TLS 1.3 with no plaintext fallback, and a certificate with a key
 makes it mutual TLS. A flag passed with an empty value is a usage error
 (exit `4`), and a `CONTROL_PLANE_TLS_*` variable that is present but empty
@@ -873,26 +877,28 @@ mid-flight emits a partial `RunResult` carrying the cancellation
 outcome rather than nothing, so callers parsing the JSON line always
 see a structured record.
 
-`RunResult.error` is a short reason, scrubbed of secrets and capped at
-1 KiB. It is set for every outcome other than `success`, and for the trace
-persistence failure of an otherwise-successful run. The text is the
-failure the run recorded for its final outcome. When the run recorded
+`RunResult.error` is a short reason, scrubbed of secrets and cut to
+1 KiB before a truncation marker is appended. It is set for every outcome
+other than `success`, and for the trace persistence failure of an
+otherwise-successful run. The text is the failure the run recorded for its final outcome. When the run recorded
 none for that outcome, as with a limit or a cancellation, the field holds
 a generic description such as `reached the turn limit (maxTurns 20)`. A
 `context_exhausted` run is one such case: its sizes and remedy are in the
 `warning` event described under [Overflow recovery](#overflow-recovery).
 The earliest failure wins. A failed final git checkpoint or required
 workspace export sets outcome `handoff_failed` only for a run that would
-otherwise have succeeded, and a run with any other outcome keeps its own
-text, leaving the handoff failure visible in `git.error` or
+otherwise have succeeded. A run with any other outcome keeps its own text,
+and the handoff failure stays visible in `git.error` or
 `workspaceExport.error`. For `verification_error` and
 `verification_failed` it holds the last verification attempt's verifier
-error or feedback, scrubbed and capped at 4 KiB, or `verifier error` and
+error or feedback, scrubbed and cut to 4 KiB before a truncation marker is
+appended, or `verifier error` and
 `verification failed` when that attempt recorded none; `verifierVerdict`
 carries the same attempt. See [Verifier results](#verifier-results).
 `RunResult.degradedCapabilities` lists configured capabilities the run
-proceeded without, currently optional MCP servers that were unavailable
-at startup, as `kind`, `name` and `error` entries. It can be non-empty on
+proceeded without. At present these are optional MCP servers that were
+unavailable at startup, listed as `kind`, `name` and `error` entries. It
+can be non-empty on
 a `success` outcome.
 
 `RunResult.git` is the deterministic git strategy's handoff: `branch`,
@@ -1008,7 +1014,7 @@ The handoff runs once per run, before the `done` event and after the git
 final checkpoint and the `postRun` hooks, so the archive includes the
 hooks' edits. It runs for every outcome, including `cancelled`, `timeout`
 and `setup_failed`, on a context detached from the run's own deadline and
-cancellation with a 5 minute budget, so the workspace stays inspectable
+cancellation with a 5 min budget, so the workspace stays inspectable
 after a non-zero exit.
 
 > [!WARNING]
@@ -1074,11 +1080,11 @@ and `healthcheck`:
 
 | Code | Class | Examples |
 |---|---|---|
-| `0` | Success | The command completed; for `harness`, a run reached a terminal outcome; for `healthcheck`, the marker file is present and readable. |
+| `0` | Success | The command completed; for `harness`, a run reached outcome `success`; for `healthcheck`, the marker file is present and readable. |
 | `1` | Validation / precondition | `ValidateRunConfig` (or `run-config --validate`) rejected the resolved config; a required prompt had no source; `job` ran without `CONTROL_PLANE_ADDR`; `healthcheck` found no marker file. Also the default for any failure not in a more specific class. |
 | `2` | Parse error | The JSON in a `--config` file or piped stdin failed to decode (syntax error, unknown field, type mismatch). |
-| `3` | I/O error | A `--config` or `--prompt-file` path could not be opened, read, or stat'd; an empty / oversize input; an `--output-runconfig` write or close failure; `healthcheck` found a marker file it could not open (e.g. a permission error). |
-| `4` | Usage error | An invalid flag combination — currently a `--dry-run` probe gate (`--no-probe-provider`/`--no-probe-mcp`/`--no-probe-trace`/`--no-probe-egress`/`--no-probe-executor`) or `--dry-run-timeout` supplied without `--dry-run`. See [Dry-run preflight](#dry-run-preflight). |
+| `3` | I/O error | A `--config` or `--prompt-file` path could not be opened, read, or stat'd; an empty / oversize input; an `--output-runconfig` write or close failure; a `--transport-tls-*` certificate, key or CA file that could not be loaded; `healthcheck` found a marker file it could not open (e.g. a permission error). |
+| `4` | Usage error | An invalid flag combination — currently a `--dry-run` probe gate (`--no-probe-provider`/`--no-probe-mcp`/`--no-probe-trace`/`--no-probe-egress`/`--no-probe-executor`) or `--dry-run-timeout` supplied without `--dry-run`; a `--transport-tls-*` flag without `--transport grpc`, a lone certificate or key, or a TLS flag passed with an empty value. See [Dry-run preflight](#dry-run-preflight). |
 
 A failed `--dry-run` (one or more probes reported `fail`) exits `1` on
 the default path, not `4`: code `4` is reserved for the command-line
@@ -1227,7 +1233,8 @@ fallback described above.
 
 `planning`, `review`, `research`, and `toil` enforce a structural
 invariant via `ValidateRunConfig`: the tool list must exclude
-`write_file`, `run_command`, and `edit_file`, and the permission
+every workspace-mutating built-in (`write_file`, `edit_file`,
+`search_replace`, `apply_diff` and `run_command`), and the permission
 policy must not be `allow-all` — nor may a `policy-engine`'s
 `fallback` be `allow-all`, which would be equivalent whenever no
 policy matches. The validator rejects any `RunConfig` that violates
@@ -1334,9 +1341,9 @@ tolerate an unavailable server needs `optional: true`.
 
 An optional server that fails does not stop the run. The harness logs a
 warning, sends a `warning` transport event, and records the server in
-`RunResult.degradedCapabilities` with a scrubbed reason of at most 512
-bytes. The run proceeds without that server's tools, except that an
-optional server which is only missing some allowlisted tools keeps the
+`RunResult.degradedCapabilities` with a scrubbed reason cut to 512 bytes
+before a truncation marker is appended. The run proceeds without that server's tools, except that an
+optional server that is missing only some allowlisted tools keeps the
 allowlisted tools it does advertise.
 
 A server registers at most 64 tools. The allowlist is applied first, then
@@ -1453,12 +1460,15 @@ sandbox the agent works in: a workspace tree and a git status. The default
 builder, selected by an unset or `default` `promptBuilder.type`, appends
 neither.
 
-Both sections are read through the run's executor and never from the
-harness host. They render for `local`, `container`, `k8s` and
+Both sections are read through the run's executor, never by the prompt
+builder itself. They render for `local`, `container`, `k8s` and
 `k8s-sandbox` runs alike, and depend on what the executor can do rather
-than on `executor.workspace`. Repository configuration that the agent
-controls inside the workspace is therefore never interpreted by git on the
-host during prompt construction.
+than on `executor.workspace`. On the `container`, `k8s` and `k8s-sandbox`
+executors, repository configuration that the agent controls inside the
+workspace is therefore never interpreted by git on the host during prompt
+construction. On `local` the executor is the host, so git runs on the host
+in the workspace; see
+[Prompt-time workspace reads](security.md#prompt-time-workspace-reads).
 
 - **Workspace tree.** The top-level entries of the workspace root, under
   `Workspace files:`, with directories marked by a trailing slash. Names
@@ -1471,11 +1481,13 @@ host during prompt construction.
   that accepts `-A`, `-1` and `-p`.
 - **Git status.** The short-format status of the workspace, or
   `Git status: clean`. It is capped at 200 entries and 8 KiB with a
-  `[git status truncated: N of M entries shown]` line. The section is
+  `[git status truncated: N of M entries shown]` line. When the executor
+  itself cut the output short, the total is unknown and the line reads
+  `[git status truncated: N entries shown]`. The section is
   rendered only when the executor can run commands and the workspace is
   the top level of a repository, so the file names of an enclosing
-  repository never appear. It is omitted for the `api` executor, whichever
-  forge backend it uses, and for `none`, and when git is missing from the
+  repository never appear. It is omitted for the `api` executor (whichever
+  forge backend it uses), for `none`, and when git is missing from the
   sandbox or fails.
 
 ### Control-plane prompt management (Langfuse)
@@ -1572,7 +1584,7 @@ missing, never its content.
 **No effect on enforcement.** Guidance does not change the permission
 policy, the tool list, the executor or the egress rules, and adds no
 static Rule-of-Two leg. Loaded guidance is scanned for sensitive data under
-the source `repository_guidance` like the prompt itself. Loaded files
+the source `repository_guidance`, like the prompt itself. Loaded files
 cannot be written by write tools during the run; see
 [Protected write targets](#protected-write-targets).
 
@@ -2084,7 +2096,7 @@ result keeps its head, cut on a UTF-8 boundary, followed by a marker:
 
 For `read_file` the hint tells the model to continue with `start_line`.
 The marker fits inside the budget, so a result that is already bounded
-passes through a second application unchanged, and a cut result drops its
+passes through a second application unchanged. A cut result also drops its
 structured envelope, which would repeat the omitted data. This covers MCP
 tool results as well as built-in tools.
 
@@ -2115,14 +2127,14 @@ recorded model-visible text unchanged.
 
 `tools.postEdit` runs operator-authored shell commands after each
 successful edit and appends their failures to the edit tool's result, so
-the model sees a formatter or compiler complaint on the turn that caused
+the model sees a formatter or compiler diagnostic on the turn that caused
 it. The block is file and gRPC configuration only; there is no CLI flag.
 
 ```json
 {
   "tools": {
     "postEdit": [
-      { "glob": "*.go", "command": "test -z \"$(gofmt -l {path})\"", "timeoutSeconds": 30 },
+      { "glob": "*.go", "command": "out=$(gofmt -l {path}) || exit; test -z \"$out\" || { echo \"$out\"; exit 1; }", "timeoutSeconds": 30 },
       { "glob": "scripts/*.py", "command": "python3 -m py_compile {path}" }
     ]
   }
@@ -2156,7 +2168,10 @@ that edit and adds a warning to the result; the edit stays applied.
 
 **Exit status.** Only a non-zero exit reports a problem. A tool that
 prints findings and exits `0`, such as `gofmt -l`, needs a wrapper that
-turns its output into a failing status, as in the first example above.
+turns its output into a failing status. The first example above captures
+the output, exits with the tool's own status when it fails (so a syntax
+error reaches the model), and prints the output and exits `1` when the
+output is not empty (so the listed file names reach the model).
 
 **What the model sees.** A non-zero exit appends a line naming the
 command, the exit code and the path, then the combined stdout and stderr
@@ -2198,19 +2213,24 @@ characters, `..` segments, drive letters or a leading `/`, not the
 workspace root, and without the glob characters `*`, `?` and `[`.
 
 Matching ignores case. The harness normalises the path a tool names (a
-leading `./`, backslashes, surrounding quotes and `..` segments) and, where
-the executor can resolve paths, also compares the resolved form, so an
-absolute or symlinked spelling of a protected path matches too. File
-write tools are checked: `write_file`, `edit_file`, `search_replace`,
-`apply_diff`, and any other workspace-mutating tool whose name contains
-`write`, against their path-like input fields. A match rejects the call
-before dispatch with `Tool call rejected by security guard`, records a
-`security_guard_denied` tool failure and emits a security event. Sub-agents
-inherit the list.
+leading `./`, backslashes, surrounding quotes and `..` segments) and, on
+the `local` executor, also compares the symlink-resolved form, so an
+absolute or symlinked spelling of a protected path matches too. The
+`container`, `k8s` and `k8s-sandbox` executors resolve paths textually: a
+relative spelling and an absolute `/workspace/...` spelling match, but a
+symlink committed to the workspace does not. A committed link
+`CLAUDE.md -> AGENTS.md` with only `AGENTS.md` protected is therefore
+caught on `local` and not in a sandbox. Write tools are checked against their path-like
+input fields: `write_file`, `edit_file`, `search_replace`, `apply_diff` and
+any other workspace-mutating tool whose name contains `write`. A match
+rejects the call before dispatch with `Tool call rejected by security
+guard`, records a `security_guard_denied` tool failure and emits a
+security event. Sub-agents inherit the list.
 
 The rule inspects the path fields of write tools. It does not parse shell
 commands, so `run_command` can still change a protected path unless the
-permission policy or the mode denies shell access.
+permission policy or the mode denies shell access. Symlinks in a sandbox
+workspace are a second limit of the same kind.
 
 Files loaded through `repositoryGuidance` are protected automatically for
 the run, sub-agents included. A listed advisory file that is missing at
@@ -2277,7 +2297,8 @@ checked again.
 
 **Corrections.** A document that fails steps 1 to 3, or is over the size
 limit, is returned to the model in a synthetic user message that carries
-the scrubbed validation error, capped at 2 KiB. A `user_message` event
+the scrubbed validation error, cut to 2 KiB before a truncation marker is
+appended. A `user_message` event
 with source `structured_output_correction` reports each one. A run gets two
 corrective attempts in total, and each costs a turn from `maxTurns`. When
 no turn remains at a correction, the run ends as `max_turns`. A failure
@@ -2307,9 +2328,10 @@ numbered from 1, and the last attempt decides the outcome and is the one
 `RunResult.verifierVerdict` reports. A verifier that fails to run records
 an entry with `error` set and ends the run as `verification_error`. The
 `feedback`, `error` and `details` strings of each entry are scrubbed of
-secret-shaped content and capped at 4 KiB.
+secret-shaped content and cut to 4 KiB before a truncation marker is
+appended.
 
-Feedback is untrusted content, because test output can carry workspace
+Feedback is untrusted content because test output can carry workspace
 text. Before the model reads it, the harness scrubs it and classifies it
 as arriving content: the Rule-of-Two sensitive-data scan and the
 `pre_turn` guardrail see it under the source `verifier_feedback`, and the
@@ -2784,13 +2806,13 @@ limit ends the run.
 ```
 
 The harness appends one synthetic user message at the start of the first
-turn on which any of these holds. The thresholds are fixed:
+turn at which any of these holds. The thresholds are fixed:
 
-- Two turns remain, counting that turn. The run's first turn never
+- Two or fewer turns remain, counting that turn. The run's first turn never
   triggers this.
-- The run's own turns have used 90 percent of `maxTokenBudget`. Sub-agent
-  and auxiliary usage does not count toward this threshold.
-- 90 percent of the time from run start to the run deadline (`timeout`)
+- The run's own turns have used 90% of `maxTokenBudget`. Sub-agent usage
+  and auxiliary usage do not count toward this threshold.
+- 90% of the time from run start to the run deadline (`timeout`)
   has elapsed.
 
 The message is sent once per run, including across verification repairs.
@@ -2903,8 +2925,8 @@ family at 128,000 tokens.
 
 The harness subtracts a response reserve from the window. The reserve is
 64,000 tokens, or a quarter of the window when the window is 64,000
-tokens or fewer, which also logs a `warning` event on the first turn. The
-reserve is also the output-token limit requested for each turn. The room
+tokens or fewer. The smaller reserve also logs a `warning` event on the
+first turn. The reserve is also the output-token limit requested for each turn. The room
 that remains is divided by a calibration ratio, and the **fit limit** is
 90% of the result. The 10% margin absorbs part of the error of the token
 estimate, which counts four characters per token plus a fixed overhead per
@@ -2984,9 +3006,9 @@ cache stays valid between batches. It never writes to the workspace.
   reclaims at least `clearAtLeast` estimated tokens.
 - Results cleared earlier are cleared again with the same placeholder on
   every later turn, so the prompt cache is missed only on batch turns.
-- Never cleared: the `keep` most recent results, results in a trailing user
-  message that the model has not yet seen, and results of tools named in
-  `excludeTools`.
+- Three kinds of result are never cleared: the `keep` most recent results,
+  results in a trailing user message that the model has not yet seen, and
+  results of tools named in `excludeTools`.
 - When the eligible results cannot reclaim the batch minimum, or clearing
   all of them still does not fit, the strategy drops the oldest exchanges
   as `sliding-window` does and emits a `warning` event once per run. Every
@@ -3011,11 +3033,10 @@ consequence above applies.
 ### Overflow recovery
 
 The estimate can under-count, so a request that passed the fit check may
-still exceed the model's context window. A provider response that reports
-this, as classified by the adapters (see
+still exceed the model's context window. Recovery starts when a provider
+response reports this, as classified by the adapters (see
 [Context-overflow responses](providers.md#context-overflow-responses)), or
-a response that stops with `model_context_window_exceeded`, starts
-recovery:
+when a response stops with `model_context_window_exceeded`:
 
 1. The harness compacts the history once more, to 70% of the estimated size
    of the rejected request. After the fit margin the request is at most 63%
@@ -3026,20 +3047,31 @@ recovery:
 
 When the response itself filled the window, it is discarded, although its
 streamed text and tool-call events already reached the transport; the
-retry `warning` says so. A recovered overflow is counted in neither `provider_errors` nor
-`tool_failures`.
+retry `warning` says so. A recovered overflow is counted in neither
+`provider_errors` nor `tool_failures`.
 
 ### Context exhausted
 
-`context_exhausted` ends the run before an oversize request is sent, or
+`context_exhausted` ends the run before an oversized request is sent, or
 after the second overflow above. The first case arises when the system
 prompt, the tool definitions and the task alone exceed the fit limit even
 with every tool result cut. A `warning` event and an error log line name
 the estimated sizes of the system prompt, tool definitions, task and other
-messages, the window in effect and the setting to change. The remedy is to
-raise `contextStrategy.maxTokens` toward the model's real window, which
-cannot exceed the registered window, to use a model with a larger window,
-or to shorten the system prompt, the tool set or the task.
+messages, the window in effect and the setting to change. The warning
+starts `context budget exhausted: the request needs about <n> estimated
+tokens`.
+
+The second case emits a `warning` event and an error log line that start
+`context window exceeded: the provider reported the request as too large
+for the model's context window again after it was compacted from about
+<n> to <m> estimated tokens`. They carry those two estimates and the
+advice to set `contextStrategy.maxTokens` or shorten the prompt, the tool
+set or the task, without a per-part size breakdown.
+
+In both cases the remedy is to raise `contextStrategy.maxTokens` toward
+the model's real window, which cannot exceed the registered window, to use
+a model with a larger window, or to shorten the system prompt, the tool
+set or the task.
 
 ## RunConfig examples
 
