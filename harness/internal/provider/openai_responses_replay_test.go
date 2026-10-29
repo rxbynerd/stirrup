@@ -16,7 +16,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirkstest"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -984,7 +983,7 @@ func TestOpenAIAdapter_IgnoresResponsesReplayKey(t *testing.T) {
 	assistant, _ := fixtureReplayTurn(t)
 	for _, paths := range [][]string{
 		{responsesReplayKey, responsesReplayOriginKey},
-		quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: "gpt-5.6-sol"}).ReplayFields,
+		openAICompatibleQuirks("gpt-5.6-sol").ReplayFields,
 	} {
 		out := translateMessages("", []types.Message{assistant}, paths)
 		body, err := json.Marshal(out)

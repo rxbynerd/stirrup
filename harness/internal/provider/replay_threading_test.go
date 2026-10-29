@@ -561,7 +561,7 @@ func TestReplayFields_TwoTurnRoundTrip(t *testing.T) {
 
 	// Turn 2: the request built from the updated history must replay
 	// the captured value verbatim on the assistant message.
-	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: "deepseek-v4-flash"})
+	q := openAICompatibleQuirks("deepseek-v4-flash")
 	req, err := buildOpenAIRequest(types.StreamParams{
 		Model:     "deepseek-v4-flash",
 		MaxTokens: 1024,

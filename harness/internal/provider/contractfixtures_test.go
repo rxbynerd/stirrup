@@ -90,7 +90,7 @@ func TestResponsesContract_ToolEnabledRequestBody(t *testing.T) {
 		MaxTokens:   4096,
 		Temperature: types.Float64Ptr(0.5),
 	}
-	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-responses", Model: params.Model})
+	q := openAIResponsesQuirks(params.Model)
 	req, err := buildResponsesRequest(params, q, nil, "")
 	must.NoError(err, "build responses request")
 	req.Stream = true
@@ -114,7 +114,7 @@ func TestResponsesContract_GPT56RequestBody(t *testing.T) {
 		Temperature:     types.Float64Ptr(0.5),
 		ReasoningEffort: "high",
 	}
-	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-responses", Model: params.Model})
+	q := openAIResponsesQuirks(params.Model)
 	req, err := buildResponsesRequest(params, q, nil, "")
 	must.NoError(err, "build responses request")
 	req.Stream = true
