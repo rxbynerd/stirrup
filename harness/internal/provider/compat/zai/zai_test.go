@@ -274,17 +274,21 @@ func TestZAICompatRules_ThinkingFamilyResolution(t *testing.T) {
 }
 
 // TestZAICompatRules_GLM53ReasoningEffort pins the GLM-5.3 effort
-// allow-list. GLM-5.3 maps any unlisted value to max, so "medium" must be
-// rejected up front rather than forwarded; earlier GLM-5 releases have no
-// probed effort control and send nothing.
+// allow-list, first-party and through a gateway prefix. GLM-5.3 maps any
+// unlisted value to max, so "medium" must be rejected up front rather
+// than forwarded; earlier GLM-5 releases have no probed effort control
+// and send nothing.
 func TestZAICompatRules_GLM53ReasoningEffort(t *testing.T) {
 	reg := zaiRegistry()
 	cases := map[string][]string{
-		"glm-5.3":        {"low", "high", "max"},
-		"glm-5.3-flash":  {"low", "high", "max"},
-		"glm-5.3-flashx": {"low", "high", "max"},
-		"glm-5.1":        {},
-		"glm-4.7":        {},
+		"glm-5.3":            {"low", "high", "max"},
+		"glm-5.3-flash":      {"low", "high", "max"},
+		"glm-5.3-flashx":     {"low", "high", "max"},
+		"z-ai/glm-5.3":       {"low", "high", "max"},
+		"z-ai/glm-5.3-flash": {"low", "high", "max"},
+		"z-ai/glm-4.7":       {},
+		"glm-5.1":            {},
+		"glm-4.7":            {},
 	}
 	for model, want := range cases {
 		t.Run(model, func(t *testing.T) {
@@ -433,7 +437,7 @@ func TestCompatRules_ExtraBodyFieldsHaveNoSecretRefs(t *testing.T) {
 	must := require.New(t)
 	// Representative model id per rule, in declaration order, so
 	// Resolve materialises each rule's Apply.
-	models := []string{"glm-4-plus", "glm-4.7", "glm-5", "glm-5.3", "z-ai/glm-4.7"}
+	models := []string{"glm-4-plus", "glm-4.7", "glm-5", "glm-5.3", "z-ai/glm-4.7", "z-ai/glm-5.3"}
 	rules := zai.CompatRules()
 	must.Len(models, len(rules), "add a representative model for each new CompatRules() entry")
 	for i, rule := range rules {

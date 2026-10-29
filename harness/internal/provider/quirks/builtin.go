@@ -67,9 +67,12 @@ func BuiltinRules() []Rule {
 		{
 			ProviderType: "openai-compatible",
 			ModelMatch:   "*/gpt-6*",
-			Description:  "OpenAI gpt-6 family via gateway prefix: omit sampling params (reasoning-class)",
-			LastVerified: Date("2026-09-29"),
-			Apply:        applyOpenAIReasoningClass,
+			Description:  "OpenAI gpt-6 family via gateway prefix: omit sampling params, reasoning_effort low..max (low and high accepted with tools, max without, via OpenRouter Chat Completions; probed 2026-10-29)",
+			LastVerified: Date("2026-10-29"),
+			Apply: func(q *ProviderQuirks) {
+				applyOpenAIReasoningClass(q)
+				q.BehaviourFlags.OpenAI.ReasoningEffortLevels = []string{"low", "medium", "high", "xhigh", "max"}
+			},
 		},
 		{
 			ProviderType: "openai-compatible",

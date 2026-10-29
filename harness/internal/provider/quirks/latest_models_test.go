@@ -24,13 +24,16 @@ func TestGPT6_ChatCompletionsRules(t *testing.T) {
 			must.Equal(levels, o.ReasoningEffortLevels)
 		})
 	}
+	// OpenRouter accepts tools and reasoning_effort on its Chat
+	// Completions surface for gpt-6 (probed 2026-10-29), so the gateway
+	// rule carries the effort list but not the tools rejection.
 	for _, model := range []string{"openai/gpt-6-luna", "openai/gpt-6.1-sol"} {
 		t.Run(model, func(t *testing.T) {
 			must := require.New(t)
 			o := DefaultRegistry().Resolve(Target{ProviderType: "openai-compatible", Model: model}).BehaviourFlags.OpenAI
 			must.True(o.OmitSamplingParams)
 			must.False(o.ToolsRequireResponses, "first-party-only flags leaked onto gateway id: %+v", o)
-			must.Empty(o.ReasoningEffortLevels, "first-party-only flags leaked onto gateway id: %+v", o)
+			must.Equal(levels, o.ReasoningEffortLevels)
 		})
 	}
 }
