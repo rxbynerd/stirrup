@@ -197,8 +197,9 @@ service HarnessService {
 //                   ControlEvent's request_id so the sender can retry.
 //
 //   "heartbeat"
-//     - (no additional fields) Sent every 30 seconds during execution to
-//       signal liveness. The control plane should treat absence of heartbeats
+//     - (no additional fields) Sent during execution to signal liveness,
+//       every 30 seconds unless RunConfig.heartbeat_seconds sets another
+//       interval. The control plane should treat absence of heartbeats
 //       as a potential hang.
 //
 //   "batch_submission"
