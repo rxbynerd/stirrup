@@ -88,12 +88,12 @@ judge {
 }
 ```
 
-Each task gets a fresh temporary workspace. If `repo` is set the
+Each task gets a fresh temporary workspace. If `repo` is set, the
 runner clones it before invoking the harness. With a `ref`, the runner
 fetches exactly that ref from the remote by name, so `ref` may be a
 full commit SHA, a tag, or a branch, and the server must permit
 fetching the object by that name (GitHub permits a SHA). With an empty
-`ref` the runner takes a depth-1 clone of the default branch. A `repo`
+`ref`, the runner takes a depth-1 clone of the default branch. A `repo`
 or `ref` that starts with `-` is rejected so that git cannot read it as
 an option. With `--concurrency > 1`, the runner dispatches task trials
 across a bounded worker pool while preserving suite order in
@@ -130,17 +130,18 @@ generate suites from a higher-level tool and emit the static HCL.
 
 Suite definitions live in `eval/suites/`. CI baselines live in
 `eval/baselines/`. Only a suite with a matching baseline runs in CI;
-the others are opt-in local runs. Among them are `acceptance.hcl`,
-eight realistic tasks on pinned public Go repositories, and the
-`post-edit-ab-on` and `post-edit-ab-off` pair, an A/B comparison for
-`tools.postEdit`. [`eval/suites/README.md`](../eval/suites/README.md)
+the others are opt-in local runs. Among them are `acceptance.hcl`
+(eight realistic tasks on pinned public Go repositories) and the
+`post-edit-ab-on` and `post-edit-ab-off` pair (an A/B comparison for
+`tools.postEdit`). [`eval/suites/README.md`](../eval/suites/README.md)
 lists every suite and how each runs.
 
 The acceptance suite gates nothing, so its result is read for run
 health. `healthyPassRate` is the share of trials whose judge passed and
 whose run also finished healthy. A gap between it and `passRate` marks
-tasks that passed their judge while the run hit a limit or an error
-class, and `runHealth` on each task names which. See
+tasks that passed their judge while the run ended on a limit or an
+error class, which `stirrup-eval run` records as `failed`, and
+`runHealth` on each task shows the state. See
 [Pass definitions and run health](#pass-definitions-and-run-health).
 
 ### Suite-level RunConfig surface
@@ -173,9 +174,9 @@ that ran the suite.
 
 > [!WARNING]
 > Per-task `run_config_overrides` take effect only when the suite
-> declares a `run_config` or `run_config_file`. Without a baseline the
+> declares a `run_config` or `run_config_file`. Without a baseline, the
 > runner keeps the legacy invocation, which has no merged config to
-> layer an overlay onto, so the overlay is silently ignored. Neither
+> layer an overlay onto. The overlay is silently ignored. Neither
 > parsing nor `--dry-run` reports it.
 
 Per-task mode is set via the task block's `mode` attribute, not
@@ -1265,7 +1266,7 @@ streamed into the trace, with that child's config, turns, and outcome
 summary (see [Sub-agent runs](trace-inspection.md#sub-agent-runs)).
 Replay uses the parent's turns only: `ReplayProvider` serves the turns
 of top-level runs and drops any turn that names a parent run, so a
-sub-agent's output is never served to the parent's requests, and
+sub-agent's output is never served to the parent's requests.
 `stirrup-eval replay` re-judges the recording's final outcome without
 replaying turns.
 
@@ -1380,7 +1381,7 @@ quantities. A gap between them does not by itself indicate a regression.
 **Run health.** Each task in `result.json`, and each entry in its
 `trials`, records how the run finished beside the judge verdict. The
 fields are absent from results written before they existed and from a
-passing dry run.
+passing dry-run.
 
 | Field | Values | Meaning |
 |---|---|---|
@@ -1395,8 +1396,8 @@ It is absent when no task records run health.
 | `runHealth` | Condition |
 |---|---|
 | `healthy` | The harness exited zero and the trace outcome is `success`. A verifier that disagreed does not change health, and `verification` records it. |
-| `degraded` | The harness exited zero, but the run stopped on a limit, an interruption, or an outcome this version does not recognise. Examples are `max_turns`, `budget_exceeded`, `timeout`, `max_tokens`, `stalled`, `cancelled`, `handoff_failed`, `control_stream_lost`, `context_exhausted`, and a provider stop reason such as `refusal`. |
-| `failed` | The harness exited non-zero, even when its trace says `success`, or left no trace, or the outcome is `error`, `tool_failures`, `verification_failed`, `verification_error`, `setup_failed`, `hook_failed`, or `structured_output_failed`. A task that errors before the harness starts, for example on a failed clone or an invalid merged config, is also `failed`. |
+| `degraded` | The run stopped on a limit, an interruption, or an outcome this version does not recognise, and no harness process exited non-zero. A live run never reaches this state, because the harness exits non-zero for every outcome other than `success` and a non-zero exit is `failed`. Only `stirrup-eval replay` reports it, because a replay has no process exit status. Examples of such outcomes are `max_turns`, `budget_exceeded`, `timeout`, `max_tokens`, `stalled`, `cancelled`, `handoff_failed`, `control_stream_lost`, `context_exhausted`, and a provider stop reason such as `refusal`. |
+| `failed` | The harness exited non-zero, even when its trace says `success`, or left no trace, or the outcome is `error`, `tool_failures`, `verification_failed`, `verification_error`, `setup_failed`, `hook_failed`, or `structured_output_failed`. Every limit or interruption outcome of a live run is therefore `failed`. A task that errors before the harness starts, for example on a failed clone or an invalid merged config, is also `failed`. |
 
 The infrastructure outcomes `verification_error`, `setup_failed`, and
 `hook_failed` are `failed` here but `inconclusive` in
@@ -1622,7 +1623,7 @@ tree gains a `run_config.redacted.json` per task. See
 | `--require-healthy` | `false`       | Count a judge pass in the comparison gate only when the run was healthy: the harness exited zero and the trace outcome is `success`. Task outcomes and the pass rate stay judge-based, and the choice is recorded in the result as `requireHealthy`. The `require_healthy` suite attribute has the same effect, and either enables it. See [Pass definitions and run health](#pass-definitions-and-run-health). |
 | `--dry-run`      | `false`          | Validate the suite (and, when present, the merged per-task RunConfig via `ValidateRunConfig`), print the summary, and exit without writing `result.json` or JUnit XML. |
 | `--junit`        | empty            | Write JUnit XML to this path after `result.json`. Each task is one `testcase`. A task with more than one trial carries a `system-out` summary of every trial, its `failure` or `error` message is prefixed with the pass count (for example `1/3 trials passed: ...`), and the body ends with the reason of each non-passing trial. Single-trial output is unchanged. |
-| `--model`        | empty            | Model to run every task with, forwarded to each harness invocation as `--model`. Overrides the harness default and any model pinned by the suite's `run_config` block. CI uses this to pin the per-push gate to a cheap model and the release sweep to stronger ones. |
+| `--model`        | empty            | Model to run every task with, forwarded to each harness invocation as `--model`. Overrides the harness default and any model pinned by the suite's `run_config` block. CI uses this to pin the gate on `main` and manual dispatch to a cheap model and the release sweep to stronger ones. |
 | `--prompt-model` | empty            | Prompt model to render system prompts with, forwarded to each harness invocation as `--prompt-model`. The wire model is unchanged. See [Comparing prompts across models](#comparing-prompts-across-models). |
 | `--provider`     | empty            | Provider type to run every task against, forwarded as `--provider`. Overrides the harness default and any provider pinned by the suite's `run_config` block, and switches a replay-backed suite to a live run (the harness drops each task's recording path on the switch). |
 | `--base-url`     | empty            | API base URL for the `openai-compatible` / `openai-responses` providers, forwarded as `--base-url`. |
@@ -1800,7 +1801,7 @@ lakehouse. Two on-wire shapes are accepted transparently per file:
   a `kind` discriminator. One file represents one run; ingest writes
   both `traces/<runId>.json` and `recordings/<runId>.json`. Full
   transcripts are preserved on the recording so replay and
-  mine-failures have something to chew on. Sub-agent runs that
+  mine-failures have content to analyse. Sub-agent runs that
   streamed into the file are stored on the recording as `subRuns`,
   while its `turns` hold only the recorded run's own turns.
 - **Legacy single-blob format** — one `RunTrace` per line, no

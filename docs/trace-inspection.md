@@ -65,8 +65,8 @@ workflows are unchanged across the format transition.
 ### Schema version and run tags
 
 `run_started` carries `schemaVersion`. Version `2` tags every per-run
-record (`turn_record`, `tool_call_record`, `hook_record`, and
-`command_output_record`) with the `runId` of the run that produced it,
+record (`turn_record`, `tool_call_record`, `hook_record`,
+`command_output_record` and `system_prompt`) with the `runId` of the run that produced it,
 and adds the `subrun_started` and `subrun_finished` kinds. A record
 that belongs to a sub-agent also carries `parentRunId`. Readers skip
 event kinds they do not recognise, so a reader that predates a kind
@@ -75,8 +75,8 @@ ignores its lines. `post_edit_check` lines carry no run tag.
 ### Sub-agent runs
 
 A sub-agent's records stream into the parent's file, bracketed by two
-kinds that are distinct from `run_started` and `run_finished` so that a
-reader written before they existed skips them instead of mistaking the
+kinds that are distinct from `run_started` and `run_finished`. A reader
+written before these kinds existed skips them instead of mistaking the
 child for the recorded run:
 
 ```jsonl
@@ -104,7 +104,7 @@ these lines. A `turn_record` that names a parent run and carries a run
 ID other than the recording's own belongs to a child. It is grouped,
 with that child's `subrun_started` and `subrun_finished`, into
 `RunRecording.SubRuns` (`subRuns` in JSON), one entry per child in order
-of first appearance, and it never appears in `RunRecording.Turns`. Each
+of first appearance. It never appears in `RunRecording.Turns`. Each
 entry carries `runId`, `parentRunId`, `config`, `turns`, and a `summary`
 that is absent when the file ends before the child finished. Records
 without run tags, as in traces written before schema version 2, stay in
@@ -142,8 +142,9 @@ reproduced from the file:
   `modelInput.model`, the requested alias. It is absent when the
   provider reports none.
 
-`ReadRecording` surfaces the first two as `RunRecording.HarnessVersion`,
-`RunRecording.SystemPrompt`, and `RunRecording.SystemPromptSha256`.
+`ReadRecording` surfaces `harnessVersion` and the `system_prompt` line as
+`RunRecording.HarnessVersion`, `RunRecording.SystemPrompt`, and
+`RunRecording.SystemPromptSha256`.
 Traces written before these records existed lack all of them, and the
 recording fields are then empty.
 
@@ -169,9 +170,9 @@ independent of `synthetic`.
 
 Per-turn summaries (`TurnTrace`) are not written as JSONL lines, so
 `TurnTrace.retries` is visible only to in-process emitters and as the
-`turn.retries` attribute on OTel turn spans. It counts the attempts at
-the turn that failed with a retryable provider error and were discarded
-before the attempt the record describes. The tokens those attempts
+`turn.retries` attribute on the OTel `chat {model}` span. It counts the
+earlier attempts at the turn that failed with a retryable provider
+error and were discarded; the record describes the final attempt. The tokens those attempts
 reported are included in the turn's token usage.
 
 ### Post-edit checks
@@ -232,7 +233,7 @@ guard. Two sibling fields break out the ledger's other figures:
 | Field | Meaning |
 |---|---|
 | `auxiliaryTokens` | The part of `tokenUsage` spent on auxiliary calls. Omitted when zero. |
-| `externalGuardTokens` | Usage reported by a guard on its own endpoint (`granite-guardian`). Not part of `tokenUsage` and not charged to `maxTokenBudget`. Omitted when zero. |
+| `externalGuardTokens` | Usage reported by a guard on its own endpoint (`granite-guardian` or `shieldstral`). Not part of `tokenUsage` and not charged to `maxTokenBudget`. Omitted when zero. |
 
 Only the top-level run records these two fields. A sub-agent's
 auxiliary calls are charged to the parent's figures.
@@ -307,8 +308,9 @@ Pretty-prints the trace in chronological order: the run metadata
 header, every tool call in the order it ran, the verification
 verdicts, and a per-tool aggregate at the foot. Tool calls flagged
 unsuccessful are surfaced in red; the outcome is colour-coded green
-(success), red (error/verification_failed/tool_failures),
-yellow (max_turns / max_tokens / budget_exceeded / stalled / timeout),
+(success), red (error / verification_failed / verification_error /
+tool_failures), yellow (max_turns / max_tokens / budget_exceeded /
+stalled / timeout / context_exhausted),
 grey (cancelled), or blue (anything unrecognised).
 
 Each verification attempt prints on its own line: the 1-based attempt
@@ -436,6 +438,7 @@ and is intended as a dashboard / report ingestion shape:
   "tokensInput": 18432,
   "tokensOutput": 4116,
   "tokensCacheRead": 12288,
+  "tokensCacheWrite": 2048,
   "tokensReasoning": 950,
   "toolCalls": 45,
   "toolErrors": 3,

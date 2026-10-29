@@ -23,7 +23,7 @@ baseline in `../baselines/`:
 
   The `main`-and-dispatch scoping is a cost control, not an
   oversight: live eval runs spend real tokens per invocation, and a
-  per-push trigger multiplies that by the number of active branches
+  trigger on every push multiplies that by the number of active branches
   for a signal `main` produces anyway. To get the signal on a branch
   before merge, run it on demand:
 
@@ -201,8 +201,9 @@ health next to the judge verdict (`healthyPassRate`, `runHealth`).
 `passRate` says whether the work passed its check, and
 `healthyPassRate` also requires the run to have ended cleanly with a
 `success` outcome. A task whose judge passed but whose `runHealth` is
-`degraded` or `failed` ended on a limit or an error class, and
-`healthyPassRate` counts it as a miss. The verifier task ends `healthy`
+`failed` ended on a limit or an error class, because the harness exits
+non-zero for any outcome other than `success`, and `healthyPassRate`
+counts it as a miss. The verifier task ends `healthy`
 with `verification` `passed` when the run recovers from the first
 rejection; a run that exhausts its repairs ends `verification_failed`,
 which is `failed`. See [Pass definitions and run
@@ -316,12 +317,12 @@ The v0.1 demo narrative (#277) is:
    as `eval/baselines/mined.json` once the coverage is sufficient
    and the baseline reflects an intentional reference state.
    Generate the baseline with the provider, model, and
-   `--trials 3` the per-push gate runs (see
+   `--trials 3` the gate on `main` and manual dispatch runs (see
    [Provider credentials](#provider-credentials) for the exact
    invocation) so the committed expectations match what CI actually
    executes. Three trials record a fractional pass rate for a flaky
    task, so the gate compares like with like instead of against one
-   lucky run. This applies to the suites the per-push gate runs:
+   lucky run. This applies to the suites that gate runs:
    `provider-quirks-*` suites run one trial in CI, so their baselines
    are single-run files. A single-run baseline still loads and
    compares as one trial per task. Committing a baseline auto-enrols
@@ -336,7 +337,7 @@ same PR that lands the replacement.
 
 The two CI eval surfaces authenticate differently.
 
-The **per-push gate** uses the `OPENROUTER_API_KEY` repository
+The **gate on `main` and manual dispatch** uses the `OPENROUTER_API_KEY` repository
 secret, passed to the harness as the `secret://OPENROUTER_API_KEY`
 reference — the key itself never enters a `RunConfig` or a trace.
 Reproduce the gate's exact invocation locally with:
@@ -359,7 +360,7 @@ required. Suites that bundle a `diff-review` judge ALSO need a
 judge-model key at judge-evaluation time, resolved by the eval process
 rather than the harness. Without `--judge-*` flags or an `llm` block
 the judge calls Anthropic with `secret://ANTHROPIC_API_KEY`, a
-continuity default; the per-push gate should pass `--judge-provider`,
+continuity default; that gate should pass `--judge-provider`,
 `--judge-base-url`, `--judge-api-key-ref`, and `--judge-model` so the
 judge uses the gate's own provider and credential. See
 [The `diff-review` judge](../../docs/eval.md#the-diff-review-judge).
@@ -374,7 +375,7 @@ failing.
 
 Both jobs run a `stirrup harness --dry-run` preflight before any task
 executes, performing real credential resolution and a provider probe
-without spending completion tokens. For the per-push gate a preflight
+without spending completion tokens. For the `main` gate a preflight
 failure is fatal on every ref: the repository secret is ref-agnostic,
 so a probe failure means a revoked, exhausted, or mistyped key rather
 than an expected refusal. At release time a refusal fails the matrix
