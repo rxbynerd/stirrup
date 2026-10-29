@@ -821,14 +821,9 @@ func validateOutputMode(mode string) error {
 
 // dropProviderFieldsOnSwitch clears the provider fields a --provider
 // switch from previous leaves without an owner, unless the field's own
-// flag was given, in which case validation reports the conflict. Leaving
-// gemini drops the Vertex AI project, location, safety settings and key
-// file, with the gcp-service-account credential that exists to read it.
-// Leaving replay drops the recording path and the "replay" model label,
-// which stands in for a model no live provider serves, so
-// applyProviderDefaults supplies or demands a real one. Switching to
-// replay drops every connection, credential and wire field, since a
-// replay provider resolves no credential and sends no request.
+// flag was given, so validation reports the conflict instead. The table
+// under "Switching the provider of a document" in docs/configuration.md
+// lists what each switch drops.
 func dropProviderFieldsOnSwitch(changed func(string) bool, cfg *types.RunConfig, previous string) {
 	p := &cfg.Provider
 	if previous == p.Type {
@@ -843,9 +838,11 @@ func dropProviderFieldsOnSwitch(changed func(string) bool, cfg *types.RunConfig,
 		}
 		if !changed("gcp-credentials-file") {
 			p.GCPCredentialsFile = ""
-			if p.Credential != nil && p.Credential.Type == "gcp-service-account" {
-				p.Credential = nil
-			}
+		}
+		// A Google credential would mint an access token for whatever
+		// endpoint the new provider calls.
+		if p.Credential != nil && strings.HasPrefix(p.Credential.Type, "gcp-") {
+			p.Credential = nil
 		}
 		p.GeminiSafetySettings = nil
 	}
