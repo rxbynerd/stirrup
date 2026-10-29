@@ -1030,10 +1030,13 @@ func replaySubAgentProviders(config *types.RunConfig, replays map[string]*provid
 		return nil
 	}
 	return func(parentRunID, childRunID, prompt string) (provider.ProviderAdapter, map[string]provider.ProviderAdapter, error) {
-		spawning := config.Provider.Type
+		spawning, latest := config.Provider.Type, int64(0)
+		if replay, ok := replays[spawning]; ok {
+			latest = replay.ServedAt()
+		}
 		for name, replay := range replays {
-			if replay.ServedAt() > replays[spawning].ServedAt() {
-				spawning = name
+			if served := replay.ServedAt(); served > latest {
+				spawning, latest = name, served
 			}
 		}
 		child := make(map[string]provider.ProviderAdapter, len(loopProviders))
