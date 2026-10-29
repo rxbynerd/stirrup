@@ -115,7 +115,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 		HarnessVersion: version.Version(),
 		HarnessSemver:  version.Semver(),
 		Capabilities:   types.HarnessCapabilities(),
-		ConfigFields:   types.ConfigFieldPaths(),
+		ConfigFields:   transport.TaskAssignmentFieldPaths(),
 	}); err != nil {
 		return fmt.Errorf("failed to send ready event: %w", err)
 	}
