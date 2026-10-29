@@ -7,10 +7,12 @@ requests, prints events as they arrive, optionally starts follow-up runs, and
 exits with a status that reflects the outcome of the runs. The wire contract is documented in
 [`docs/integration-guide.md`](../../docs/integration-guide.md).
 
-The transport is **plaintext and unauthenticated**. The program is a
-demonstration of the contract, not a deployable service: run it on loopback
-or a private network only. Authentication, multiple concurrent jobs, durable
-state and the sandbox identity token flow are out of scope.
+The transport is **plaintext and unauthenticated**. The program serves no
+TLS, so a `stirrup job` configured with `CONTROL_PLANE_TLS_*` cannot connect
+to it; leave those variables unset. The program is a demonstration of the
+contract, not a deployable service: run it on loopback or a private network
+only. Authentication, multiple concurrent jobs, durable state and the
+sandbox identity token flow are out of scope.
 
 The module depends on the standard library, gRPC and the generated stubs in
 [`gen/`](../../gen) only.
