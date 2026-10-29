@@ -317,7 +317,7 @@ reference.
 
 | Flag | Default | Notes |
 |---|---|---|
-| `--provider` | `anthropic` | One of `anthropic`, `bedrock`, `openai-compatible`, `openai-responses`, `gemini`, `replay`. `replay` serves recorded model output from `--replay-file` and needs no credential; see [Replay](#replay). |
+| `--provider` | `anthropic` | One of `anthropic`, `bedrock`, `openai-compatible`, `openai-responses`, `gemini`, `replay`. `replay` serves recorded model output from `--replay-file` and needs no credential; see [Replay](#replay). On a `--config` document, switching the type drops the fields the old type owned; see [Switching the provider of a document](#switching-the-provider-of-a-document). |
 | `--model` | `claude-sonnet-4-6` for `anthropic`; none otherwise | Model id for the static / per-mode router. Required for every provider other than `anthropic`; omitting it exits 1 with an error naming the provider. |
 | `--prompt-model` | (none) | Model identity the system prompt templates render against, without changing the wire model. Combine with `--model` to compare a prompt tuned for one model against another. Empty derives the prompt model from the effective model. JSON path: `promptBuilder.promptModel`. See [System prompt templating](#system-prompt-templating). |
 | `--api-key-ref` | `secret://ANTHROPIC_API_KEY` for `anthropic`; `secret://OPENAI_API_KEY` for `openai-compatible` / `openai-responses`; none for `bedrock` / `gemini` / `replay` | A `secret://` reference. API keys never live in `RunConfig`. The default applies only when neither the flag nor `--config` supplies a value and no `credential` block is set; `--api-key-ref=""` sends no key, which is valid only for `openai-compatible` / `openai-responses` at a custom `--base-url` (a keyless local server); provider construction rejects an empty reference for any other provider or for the default OpenAI endpoint. Rejected for `gemini` (Vertex uses GCP IAM) and for `replay` (no model is called). |
@@ -342,6 +342,26 @@ full reference at [`provider-quirks.md`](provider-quirks.md).
 For the full per-adapter wire-format reference, including Azure
 Foundry notes and intentional exclusions, see
 [`providers.md`](providers.md).
+
+#### Switching the provider of a document
+
+`--provider` on a `--config` document replaces `provider.type`, and a
+static router that named the previous type follows it. The fields the
+switch leaves without an owner are dropped, unless their own flag is
+given on the same command line, in which case the flag's value is kept
+and validation reports the conflict:
+
+| Switch | Dropped |
+|---|---|
+| away from `gemini` | `gcpProject`, `gcpLocation`, `gcpCredentialsFile`, `geminiSafetySettings`, and a `gcp-service-account` `credential` block |
+| away from `replay` | `replayFile`, and the `replay` model label, so the anthropic default model applies or `--model` is demanded for a provider without one |
+| to `replay` | `apiKeyRef`, `credential`, `baseUrl`, `endpointProfile`, `apiKeyHeader`, `queryParams`, `compatProfile`, `region` and `profile` |
+| to `gemini` | `apiKeyRef` |
+
+Only the top-level `provider` is switched; entries in the `providers`
+map are untouched. The eval suites rely on the switch away from
+`replay` to run a recorded suite live: see
+[`eval.md`](eval.md#replay-doubles).
 
 ### Retry policy
 
@@ -439,23 +459,24 @@ scripted conversation with no credential and no network. The model
 defaults to `replay` and is a label only. A recording is either the
 trace an earlier run wrote through `traceEmitter.type=jsonl` or a
 hand-written file of `turn_record` lines; the format and limits are in
-[`providers.md`](providers.md#replay). `apiKeyRef`, `credential` and
-`baseUrl` are rejected alongside the replay provider, and `--dry-run`
-records a skip for its provider probe because there is nothing to
-reach.
+[`providers.md`](providers.md#replay). Every connection, credential
+and wire field (`apiKeyRef`, `credential`, `baseUrl`, `endpointProfile`,
+`apiKeyHeader`, `queryParams`, `compatProfile`, `region`, `profile`)
+is rejected alongside the replay provider, and `--dry-run` records a
+skip for its provider probe because there is nothing to reach.
 
-A `--provider` switch on a `--config` document drops the fields the
-previous type owned when their own flag was not given, and rewrites a
-static router that named the previous type: `--provider anthropic` on
-a replay document drops `replayFile` and the `replay` model label (so
-the anthropic default model applies, or `--model` is demanded for a
-provider without one) and runs it live; `--provider replay` drops the
-document's `apiKeyRef`, mirroring how a switch to `gemini` clears a
-stale key. Only the top-level `provider` is switched; entries in the
-`providers` map are untouched. A leftover `credential` block or
-`baseUrl` on a switch to `replay` is not dropped and fails validation.
-The eval suites rely on the switch to live: see
-[`eval.md`](eval.md#replay-doubles).
+A replay provider cannot run beside a component that sends its own
+requests to the default provider: a `cloud-judge` guard, an
+`llm-judge` verifier and the `summarise` context strategy are rejected
+when `provider.type` is `replay`, at any depth of a composite. A
+`replay` entry in the `providers` map is accepted only when
+`provider.type` is also `replay`, so a run never mixes recorded turns
+with live ones.
+
+`--provider` on a replay document runs it live and `--provider replay`
+on a live document runs it from a recording; the fields each switch
+drops are listed under
+[Switching the provider of a document](#switching-the-provider-of-a-document).
 
 ### Anthropic Workload Identity Federation
 
