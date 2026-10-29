@@ -53,6 +53,7 @@ just proto        # buf generate
 just buf-lint     # buf lint
 just docker       # docker build -t stirrup .
 just clean        # remove built binaries
+just op-session   # load live-probe keys from 1Password into a tmux session
 ```
 
 `just check` is the one command to run before pushing. The
@@ -237,6 +238,40 @@ not compile fails the verify gate regardless of whether `gen/` was
 refreshed. The pinned `buf` version lives in
 [`.github/workflows/_verify.yml`](.github/workflows/_verify.yml);
 bump it there alongside any local toolchain bump.
+
+## Live provider keys
+
+Live probes and opt-in eval suites read provider keys from the
+environment. `just op-session` loads them from 1Password into a tmux
+session once, so several commands (or several agents) share one
+1Password approval per key:
+
+```sh
+just op-session stirrup-keys \
+  'ANTHROPIC_API_KEY=op://<vault>/<item>/credential' \
+  'OPENAI_API_KEY=op://<vault>/<item>/credential' \
+  'OPENROUTER_API_KEY=op://<vault>/<item>/credential'
+```
+
+Each argument is `NAME=op://...`; vault paths are never stored in the
+repository. The recipe creates the session if it does not exist, reads
+each secret inside it, exports the variable only when the read
+returned a non-empty value, and prints `KEY_OK NAME` or
+`KEY_MISSING NAME` for each key. It exits non-zero when any key is
+missing, which includes a 1Password prompt that timed out. A value is
+never printed or written to disk.
+
+Before reporting that a live probe ran, confirm the key it needed is
+still present:
+
+```sh
+just op-session-check stirrup-keys ANTHROPIC_API_KEY
+```
+
+Run probes in the session with `tmux send-keys -t stirrup-keys '<command> > <log> 2>&1' Enter`
+and read the log file. Never `env`-dump or echo a key in that session.
+Both recipes type commands into the session's active pane, so run them
+while it is idle.
 
 ## Touching the safety rings
 

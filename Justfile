@@ -209,6 +209,108 @@ int-test-openai-responses: build
         --prompt "Reply with the single word 'ok' and nothing else."
     jq -e 'select(.kind == "run_finished") | .trace.outcome == "success"' /tmp/stirrup-int-test-openai-responses.jsonl
 
+# === Live-probe keys ===
+#
+# Load provider keys from 1Password into a tmux session that live probes
+# then run in, so one 1Password approval per key serves every command.
+# Arguments are NAME=op://vault/item/field pairs, for example
+# ANTHROPIC_API_KEY, OPENAI_API_KEY or OPENROUTER_API_KEY; the repository
+# holds no vault paths. Each key is read inside the session, exported
+# only when non-empty, and reported as KEY_OK or KEY_MISSING; a value is
+# never printed or written to disk. Exits non-zero when any key is
+# missing. op-session-check repeats the presence check later, and is the
+# check to run before claiming a live probe ran. See
+# CONTRIBUTING.md#live-provider-keys.
+
+# Load NAME=op://... keys into tmux session `session`.
+[positional-arguments]
+op-session session +refs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    session="$1"
+    shift
+    for ref in "$@"; do
+        name="${ref%%=*}"
+        path="${ref#*=}"
+        if [[ ! "$name" =~ ^[A-Z_][A-Z0-9_]*$ || "$ref" != *=* ]]; then
+            echo "op-session: ${ref%%=*} is not NAME=op://vault/item/field" >&2
+            exit 2
+        fi
+        if [[ ! "$path" =~ ^op://[^\']+$ ]]; then
+            echo "op-session: the path for ${name} must start with op:// and contain no single quote" >&2
+            exit 2
+        fi
+    done
+    status_dir="$(mktemp -d)"
+    trap 'rm -rf "$status_dir"' EXIT
+    status="${status_dir}/status"
+    : > "$status"
+    if ! tmux has-session -t "=${session}" 2>/dev/null; then
+        tmux new-session -d -s "$session"
+    fi
+    for ref in "$@"; do
+        name="${ref%%=*}"
+        path="${ref#*=}"
+        # Leading space keeps the command out of shell history.
+        tmux send-keys -t "=${session}:" " __v=\"\$(op read '${path}')\"; if [ -n \"\$__v\" ]; then export ${name}=\"\$__v\"; echo KEY_OK ${name} >> '${status}'; else echo KEY_MISSING ${name} >> '${status}'; fi; unset __v" Enter
+    done
+    tmux send-keys -t "=${session}:" " echo DONE >> '${status}'" Enter
+    for _ in $(seq 1 180); do
+        grep -qx DONE "$status" && break
+        sleep 1
+    done
+    missing=0
+    for ref in "$@"; do
+        name="${ref%%=*}"
+        if grep -qx "KEY_OK ${name}" "$status"; then
+            echo "KEY_OK ${name}"
+        else
+            echo "KEY_MISSING ${name}"
+            missing=1
+        fi
+    done
+    exit "$missing"
+
+# Print KEY_OK or KEY_MISSING per variable in tmux session `session`.
+[positional-arguments]
+op-session-check session +names:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    session="$1"
+    shift
+    if ! tmux has-session -t "=${session}" 2>/dev/null; then
+        echo "op-session-check: no tmux session ${session}" >&2
+        exit 2
+    fi
+    for name in "$@"; do
+        if [[ ! "$name" =~ ^[A-Z_][A-Z0-9_]*$ ]]; then
+            echo "op-session-check: ${name} is not a variable name" >&2
+            exit 2
+        fi
+    done
+    status_dir="$(mktemp -d)"
+    trap 'rm -rf "$status_dir"' EXIT
+    status="${status_dir}/status"
+    : > "$status"
+    for name in "$@"; do
+        tmux send-keys -t "=${session}:" " if [ -n \"\${${name}:-}\" ]; then echo KEY_OK ${name}; else echo KEY_MISSING ${name}; fi >> '${status}'" Enter
+    done
+    tmux send-keys -t "=${session}:" " echo DONE >> '${status}'" Enter
+    for _ in $(seq 1 30); do
+        grep -qx DONE "$status" && break
+        sleep 1
+    done
+    missing=0
+    for name in "$@"; do
+        if grep -qx "KEY_OK ${name}" "$status"; then
+            echo "KEY_OK ${name}"
+        else
+            echo "KEY_MISSING ${name}"
+            missing=1
+        fi
+    done
+    exit "$missing"
+
 # Remove every local worktree whose branch has been merged into origin/main,
 # then delete the now-orphaned local branch. Fetches first so the merged
 # check reflects the current state of the remote.
