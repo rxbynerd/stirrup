@@ -507,7 +507,7 @@ func (l *AgenticLoop) preflightToolCall(call types.ToolCall, t *tool.Tool) (json
 		if msg, ok := renamedToolHint(call.Name); ok {
 			return nil, msg, observability.ToolFailureUnknownTool
 		}
-		if name, ok := caseFoldedToolName(call.Name, l.Tools.List()); ok {
+		if name, ok := caseFoldedToolName(call.Name, l.Tools.List()); ok && !l.unloadedTool(name) {
 			return nil, "Unknown tool: " + call.Name + ". Tool names are case-sensitive; call " + name + " instead.", observability.ToolFailureUnknownTool
 		}
 		return nil, "Unknown tool: " + call.Name, observability.ToolFailureUnknownTool
@@ -1167,6 +1167,16 @@ func caseFoldedToolName(name string, tools []types.ToolDefinition) (string, bool
 		match = td.Name
 	}
 	return match, match != ""
+}
+
+// unloadedTool reports whether name resolves to a tool lazy loading has
+// deferred and no search has loaded yet, which a hint must not suggest.
+func (l *AgenticLoop) unloadedTool(name string) bool {
+	if l.LazyTools == nil {
+		return false
+	}
+	t := l.Tools.Resolve(name)
+	return t != nil && l.LazyTools.Unloaded(t.Name)
 }
 
 // renamedToolHint maps legacy tool names to a directional error message
