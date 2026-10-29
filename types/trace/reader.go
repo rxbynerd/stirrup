@@ -431,6 +431,88 @@ func (r *Reader) ReadRecording() (*types.RunRecording, error) {
 	return recording, nil
 }
 
+// replayEvent is the part of a trace line a replay serves: the turn
+// record's identity, stop reason and model output, plus the run ID a
+// run_started, run_finished or legacy line names.
+type replayEvent struct {
+	Kind        string               `json:"kind"`
+	ID          string               `json:"id,omitempty"`
+	RunID       string               `json:"runId,omitempty"`
+	ParentRunID string               `json:"parentRunId,omitempty"`
+	Turn        int                  `json:"turn,omitempty"`
+	StopReason  string               `json:"stopReason,omitempty"`
+	ModelOutput []types.ContentBlock `json:"modelOutput,omitempty"`
+	Trace       *struct {
+		ID string `json:"id"`
+	} `json:"trace,omitempty"`
+}
+
+// ReadReplay walks the stream like ReadRecording but keeps only what a
+// replay serves: the recording's RunID and, for each turn_record, its
+// turn number, run IDs, stop reason and model output, grouped into Turns
+// and SubRuns by the same rule. Configs, model inputs and tool calls are
+// skipped, so memory grows with the model output alone. A line counts as
+// malformed only when it is not JSON or its kept fields do not decode.
+// ctx is checked between lines.
+func (r *Reader) ReadReplay(ctx context.Context) (*types.RunRecording, error) {
+	recording := &types.RunRecording{}
+	seenStarted := false
+	subRunIndex := map[string]int{}
+	for r.scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return recording, err
+		}
+		line := r.scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var ev replayEvent
+		if err := json.Unmarshal(line, &ev); err != nil {
+			r.malformed++
+			r.logger.Debug("trace.Reader: skip malformed replay line",
+				"err", err.Error(),
+				"bytes", len(line),
+			)
+			continue
+		}
+		switch ev.Kind {
+		case "":
+			recording.RunID = ev.ID
+		case eventKindRunStarted:
+			seenStarted = true
+			recording.RunID = ev.RunID
+		case eventKindRunFinished:
+			if ev.Trace != nil && !seenStarted {
+				recording.RunID = ev.Trace.ID
+			}
+		case eventKindTurnRecord:
+			tr := types.TurnRecord{
+				Turn:        ev.Turn,
+				ModelOutput: ev.ModelOutput,
+				RunID:       ev.RunID,
+				ParentRunID: ev.ParentRunID,
+				StopReason:  ev.StopReason,
+			}
+			if ev.ParentRunID != "" && ev.RunID != "" && ev.RunID != recording.RunID {
+				i, ok := subRunIndex[ev.RunID]
+				if !ok {
+					i = len(recording.SubRuns)
+					subRunIndex[ev.RunID] = i
+					recording.SubRuns = append(recording.SubRuns, types.SubRunRecording{RunID: ev.RunID, ParentRunID: ev.ParentRunID})
+				}
+				recording.SubRuns[i].Turns = append(recording.SubRuns[i].Turns, tr)
+				continue
+			}
+			recording.Turns = append(recording.Turns, tr)
+		}
+	}
+	recording.SkippedLines = r.skipped
+	if err := r.scanner.Err(); err != nil {
+		return recording, fmt.Errorf("reading trace file: %w", err)
+	}
+	return recording, nil
+}
+
 func synthesizeLegacyCommandOutputs(recording *types.RunRecording) {
 	if recording == nil {
 		return

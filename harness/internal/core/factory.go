@@ -334,6 +334,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	}
 	prov := components.defaultProvider
 	providers := components.providers
+	replays := replayProvidersOf(providers)
 	pp := components.permissionPolicy
 	te := components.traceEmitter
 	if recorder, ok := te.(trace.CommandOutputRecorder); ok && commandOutputStore != nil {
@@ -651,6 +652,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// serves every provider.
 	loop.ContextWindows = quirks.DefaultRegistry()
 	loop.StructuredResults = structuredResults
+	loop.subAgentProviders = replaySubAgentProviders(config, replays, providers)
 	loop.ProtectedWriteTargets = config.Tools.ProtectedWriteTargets
 	// Registered at build rather than at Run so a user_response that
 	// arrives while the loop is still being assembled is queued for the
@@ -841,7 +843,11 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 	// A replay provider serves a recording and resolves no credential, so
 	// it is built before the credential source a live adapter needs.
 	if cfg.Type == "replay" {
-		return buildReplayProvider(cfg.ReplayFile)
+		replay, err := buildReplayProvider(ctx, cfg.ReplayFile)
+		if err != nil {
+			return nil, err
+		}
+		return replay, nil
 	}
 
 	src, err := credential.BuildSource(cfg, secrets)
@@ -943,7 +949,7 @@ const maxReplayFileBytes int64 = 64 << 20
 // would shift each following turn's output onto the wrong request, and
 // the path is operator- or control-plane-supplied, so a device, FIFO or
 // oversized file must not stall construction.
-func buildReplayProvider(path string) (provider.ProviderAdapter, error) {
+func buildReplayProvider(ctx context.Context, path string) (*provider.ReplayProvider, error) {
 	// O_NONBLOCK makes opening a FIFO return at once instead of waiting
 	// for a writer; regular files ignore it.
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
@@ -962,7 +968,7 @@ func buildReplayProvider(path string) (provider.ProviderAdapter, error) {
 		return nil, fmt.Errorf("replay file %q is %d bytes; the cap is %d", path, info.Size(), maxReplayFileBytes)
 	}
 	reader := tracereader.NewReader(io.LimitReader(f, maxReplayFileBytes+1))
-	recording, err := reader.ReadRecording()
+	recording, err := reader.ReadReplay(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read replay file %q: %w", path, err)
 	}
@@ -972,7 +978,7 @@ func buildReplayProvider(path string) (provider.ProviderAdapter, error) {
 	if n := reader.MalformedLines(); n > 0 {
 		return nil, fmt.Errorf("replay file %q has %d malformed line(s); a replay must be complete", path, n)
 	}
-	adapter := provider.NewReplayProvider(recording.Turns)
+	adapter := provider.NewReplayProviderFromRecording(recording)
 	if adapter.Len() == 0 {
 		if len(recording.SubRuns) > 0 {
 			return nil, fmt.Errorf("replay file %q holds only sub-agent turns; a replay serves the top-level run", path)
@@ -980,6 +986,55 @@ func buildReplayProvider(path string) (provider.ProviderAdapter, error) {
 		return nil, fmt.Errorf("replay file %q holds no turn_record event to replay", path)
 	}
 	return adapter, nil
+}
+
+// replayProvidersOf returns the replay adapters among the built providers,
+// keyed like the providers map.
+func replayProvidersOf(providers map[string]provider.ProviderAdapter) map[string]*provider.ReplayProvider {
+	var replays map[string]*provider.ReplayProvider
+	for name, adapter := range providers {
+		if replay, ok := adapter.(*provider.ReplayProvider); ok {
+			if replays == nil {
+				replays = map[string]*provider.ReplayProvider{}
+			}
+			replays[name] = replay
+		}
+	}
+	return replays
+}
+
+// replaySubAgentProviders returns the loop's subAgentProviders hook when
+// the run replays a recording, and nil otherwise. Each sub-agent gets
+// providers in which every replay entry serves that child's recorded
+// turns, wrapped as the loop's own entries are, so a child never draws
+// its parent's turns; live entries are shared unchanged. The spawn is
+// refused when the default provider's recording holds no turns for the
+// child; a named replay entry without them fails only if the child
+// routes a turn to it.
+func replaySubAgentProviders(config *types.RunConfig, replays map[string]*provider.ReplayProvider, loopProviders map[string]provider.ProviderAdapter) func(parentRunID, childRunID string) (provider.ProviderAdapter, map[string]provider.ProviderAdapter, error) {
+	if len(replays) == 0 {
+		return nil
+	}
+	return func(parentRunID, childRunID string) (provider.ProviderAdapter, map[string]provider.ProviderAdapter, error) {
+		child := make(map[string]provider.ProviderAdapter, len(loopProviders))
+		for name, adapter := range loopProviders {
+			replay, ok := replays[name]
+			if !ok {
+				child[name] = adapter
+				continue
+			}
+			providerType := name
+			if cfg, named := config.Providers[name]; named {
+				providerType = cfg.Type
+			}
+			childReplay, err := replay.ForSubRun(parentRunID, childRunID)
+			if err != nil && name == config.Provider.Type {
+				return nil, nil, err
+			}
+			child[name] = provider.NewNormalizingAdapter(childReplay, providerType)
+		}
+		return child[config.Provider.Type], child, nil
+	}
 }
 
 func buildRouter(cfg types.ModelRouterConfig, defaultProvider string) router.ModelRouter {
