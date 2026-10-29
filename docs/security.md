@@ -1045,7 +1045,7 @@ follow-up if this proves disruptive in practice.
 
 `tools.postEdit` runs operator-authored shell commands after an edit
 tool succeeds on a path matching the check's glob. The field reference
-is in [`configuration.md`](configuration.md). A check differs from a
+is in [`configuration.md`](configuration.md#post-edit-checks). A check differs from a
 lifecycle hook in both trust directions: a hook runs outside the turn
 loop and its output never reaches the model, while a check runs inside
 an edit tool call and its failure output does.

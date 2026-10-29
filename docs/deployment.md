@@ -695,7 +695,7 @@ Before deploying:
 7. Enable `windDown` for unattended runs. It is off by default; when
    enabled, the model receives one instruction to wrap up before a
    turn, token or time budget runs out. See
-   [Limits and budgets](configuration.md#limits-and-budgets).
+   [Wind-down warning](configuration.md#wind-down-warning).
 
 ## Embedding the harness
 
