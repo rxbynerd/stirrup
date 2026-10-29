@@ -3,9 +3,11 @@ package gcs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -65,6 +67,34 @@ func TestUploadObject_SendsMediaUploadRequest(t *testing.T) {
 	check.Equal("hello\n", string(gotBody))
 }
 
+// TestUploadObject_CreateOnlySetsGenerationPrecondition pins that a
+// create-only upload asks GCS to refuse to replace an existing object,
+// and that the default upload does not.
+func TestUploadObject_CreateOnlySetsGenerationPrecondition(t *testing.T) {
+	for _, createOnly := range []bool{false, true} {
+		t.Run(fmt.Sprintf("createOnly=%t", createOnly), func(t *testing.T) {
+			must := require.New(t)
+			var gotQuery string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotQuery = r.URL.RawQuery
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer srv.Close()
+
+			err := UploadObject(context.Background(), srv.Client(), UploadOptions{
+				Bucket:          "b",
+				Object:          "o",
+				Body:            []byte("x"),
+				Bearer:          staticBearer("t"),
+				EndpointBaseURL: srv.URL,
+				CreateOnly:      createOnly,
+			})
+			must.NoError(err)
+			must.Equal(createOnly, strings.Contains(gotQuery, "ifGenerationMatch=0"), "query=%q", gotQuery)
+		})
+	}
+}
+
 // TestUploadObject_DefaultsContentTypeToOctetStream pins the documented
 // default: empty ContentType resolves to application/octet-stream rather
 // than passing an empty header that an intermediary might interpret
@@ -121,6 +151,9 @@ func TestUploadObject_Non2xxStatusReturnsError(t *testing.T) {
 			must.Error(err)
 			must.ErrorContains(err, "HTTP")
 			must.ErrorContains(err, tc.body)
+			var statusErr *UploadStatusError
+			must.ErrorAs(err, &statusErr)
+			must.Equal(tc.code, statusErr.StatusCode)
 		})
 	}
 }
