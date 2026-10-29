@@ -41,9 +41,10 @@ type mcpError struct {
 	Message string `json:"message"`
 }
 
-// newMCPHandler serves the requests a harness MCP client makes against a
-// Streamable-HTTP server: initialize, tools/list and tools/call. A
-// notification, which has no id, is acknowledged with 202.
+// newMCPHandler serves the minimal Streamable-HTTP MCP surface: initialize,
+// tools/list and tools/call. The harness client currently sends only
+// tools/list and tools/call. A notification, which has no id, is
+// acknowledged with 202.
 func newMCPHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /", func(w http.ResponseWriter, r *http.Request) {

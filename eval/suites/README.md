@@ -90,15 +90,16 @@ its verdicts without changing any outcome. See
 
 `tooluse.hcl` gives the tool redesign (schema redesign, tool-choice
 escalation, structured results, toolset profiles) end-to-end
-regression coverage. Each task seeds a small synthetic workspace and
-exercises one behaviour, judged on both the final workspace state
+regression coverage. Each task exercises one behaviour, seeds a small
+synthetic workspace (except `mcp-name-normalization`, which needs
+none), and is judged on both the final workspace state
 (`file-exists` / `file-contains`) and the tool-call path
 (`tool-trace`, documented in [`docs/eval.md`](../../docs/eval.md)).
 
 ### Running without provider credentials (the default)
 
-Every task seeds its workspace with `file` blocks. All but the two
-streaming tasks name a recording under `fixtures/tooluse/` through a
+Every task except `mcp-name-normalization` seeds its workspace with
+`file` blocks. All but the two streaming tasks name a recording under `fixtures/tooluse/` through a
 `run_config_overrides` `provider { type = "replay" }` block, so
 `stirrup-eval run` spawns the real `stirrup harness` binary and drives
 its tool registry, a real `LocalExecutor` and the judges over a scripted
@@ -108,7 +109,7 @@ conversation:
 ./stirrup-eval run --suite eval/suites/tooluse.hcl --output results/tooluse
 ```
 
-No `ANTHROPIC_API_KEY`, no network, deterministic. The `verify` CI job
+No `ANTHROPIC_API_KEY`, no outbound network, deterministic. The `verify` CI job
 runs it on every push. A recording is a JSONL trace whose
 `turn_record` events carry the model output of each turn in order
 (format in [`docs/providers.md`](../../docs/providers.md#replay)); the
@@ -132,10 +133,11 @@ runner starts for the trial:
   the underscore name the strictest provider naming policy shows the
   model.
 
-These tasks need no credential. The live-model flags of an invocation
-do not reach the streaming tasks, whose subject is a specific adapter,
-so they pass in a live run too. They do reach the MCP task, which then
-offers the stub's tool to the live model.
+In the default run these tasks need no credential. The live-model flags
+of an invocation do not reach the streaming tasks, whose subject is a
+specific adapter, so they stay keyless and pass in a live run too. The
+flags do reach the MCP task, which then offers the stub's tool to the
+live model and therefore needs the live provider's credential.
 
 ### Running against a live provider (opt-in)
 
@@ -269,7 +271,8 @@ loading without a `run_config_file`. `enabled` defaults to `false`;
 `strategy`, `eager` and `max_results` take the values documented in
 [Lazy tool loading](../../docs/configuration.md#lazy-tool-loading),
 and `ValidateRunConfig` rejects invalid ones. The block belongs to the
-suite baseline only; `run_config_overrides` has no `tools` block.
+suite baseline only; the `tools` block of `run_config_overrides` carries
+`mcp_server` blocks and nothing else.
 
 ```hcl
 run_config {

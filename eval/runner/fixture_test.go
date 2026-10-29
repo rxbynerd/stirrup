@@ -298,6 +298,13 @@ func TestRunSuite_FixtureTask_MisconfigurationIsAnError(t *testing.T) {
 			want: "mcp_server with no uri",
 		},
 		{
+			name: "missing stream file",
+			mutate: func(s *types.EvalSuite) {
+				s.Tasks[0].FixtureServer.StreamFile = filepath.Join(os.TempDir(), "absent-stream-file.sse")
+			},
+			want: "stream file",
+		},
+		{
 			name: "unknown mode",
 			mutate: func(s *types.EvalSuite) {
 				s.Tasks[0].FixtureServer.Mode = "grpc"

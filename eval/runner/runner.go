@@ -886,6 +886,11 @@ func dryRunTask(task types.EvalTask, baseline *types.RunConfig) eval.TaskResult 
 		if err := applyFixtureServer(merged, *task.FixtureServer, dryRunFixtureURL); err != nil {
 			return errorResult(task.ID, time.Now(), err)
 		}
+		if task.FixtureServer.Mode == types.FixtureModeSSE {
+			if _, err := fixtureserver.LoadTurns(task.FixtureServer.StreamFile); err != nil {
+				return errorResult(task.ID, time.Now(), err)
+			}
+		}
 	}
 	if merged != nil {
 		if vErr := types.ValidateRunConfig(merged); vErr != nil {

@@ -3,17 +3,18 @@
 # This suite gives the built-in tool surface end-to-end regression
 # coverage: read_file line ranges, the grep_files/find_files split, the
 # edit_file operation enum, tool-choice escalation, structured results
-# and the toolset-profile aliases. Each task seeds a small synthetic
-# workspace, exercises ONE behaviour, and judges BOTH the final workspace
-# state AND the tool-call trace the run produced (the "tool-trace" judge
-# inspects RunTrace.ToolCalls).
+# and the toolset-profile aliases. Each task exercises ONE behaviour and
+# judges BOTH the final state AND the tool-call trace the run produced
+# (the "tool-trace" judge inspects RunTrace.ToolCalls). All tasks but
+# mcp-name-normalization seed a small synthetic workspace.
 #
 # Default (no-credential) path:
-#   Every task names a recording under fixtures/tooluse/ and runs it
-#   through the replay provider, so the real `stirrup harness` binary
-#   drives the real tool registry and a real LocalExecutor over the seeded
-#   workspace with no provider credential and no network (the
-#   streaming-split-args-* tasks below serve a canned stream instead):
+#   Every task except the streaming-split-args-* pair names a recording
+#   under fixtures/tooluse/ and runs it through the replay provider, so
+#   the real `stirrup harness` binary drives the real tool registry and a
+#   real LocalExecutor over the seeded workspace with no provider
+#   credential and no outbound network (the streaming-split-args-* tasks
+#   below serve a canned stream instead):
 #
 #     ./stirrup-eval run --suite eval/suites/tooluse.hcl --output results/tooluse
 #

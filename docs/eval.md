@@ -143,8 +143,7 @@ explicitly set on the overlay take effect; everything else passes the
 baseline through unchanged, except that a `provider` block replaces the
 baseline's provider block as a whole rather than merging into it, and
 the `mcp_server` blocks of a `tools` block replace the baseline's list
-as a whole. A
-`provider` block's `replay_file` resolves against the suite file's
+as a whole. A `provider` block's `replay_file` resolves against the suite file's
 directory, on the baseline and on an override alike, so a suite can
 ship its recordings beside it (see [Replay doubles](#replay-doubles));
 a `run_config_file` baseline's `replayFile` resolves against that JSON
@@ -1236,8 +1235,9 @@ runs the same tasks live: the harness drops the recording path when
 its provider is switched on the command line, so one suite serves both
 forms. The runner refuses `--model`, `--base-url` or `--api-key-ref`
 without `--provider` on such a suite, since the tasks would keep
-replaying while the result named the requested model. `eval/suites/tooluse.hcl` is built this way and runs in the
-`verify` CI job from the recordings under `eval/suites/fixtures/`;
+replaying while the result named the requested model.
+`eval/suites/tooluse.hcl` is built this way and runs in the `verify` CI
+job from the recordings under `eval/suites/fixtures/`;
 `harness/internal/core/tooluse_replay_test.go` pins the same
 behaviours in process, including the ones a replay cannot reach, which
 the suite covers with [fixture servers](#fixture-servers).
@@ -1284,12 +1284,11 @@ merged configuration does.
 
 **`sse` mode.** The server answers every `POST`, whatever the path, so
 it stands in for an `openai-compatible` or `openai-responses` endpoint.
-The runner sets the provider's `base_url` to the server's URL; the task
-must leave `base_url` unset and `api_key_ref` empty, which both
-adapters accept once a custom base URL is set; with the base URL set
-the harness also does not fall back to a default key reference. The
-stream file
-holds the raw SSE text of each turn's response in that adapter's wire
+The runner sets the provider's `base_url` to the server's URL, so the
+task must leave `base_url` unset. The task must also leave `api_key_ref`
+empty: both adapters accept an empty key reference once a custom base
+URL is set, and the harness does not substitute a default key reference
+in that case. The stream file holds the raw SSE text of each turn's response in that adapter's wire
 format, with turns separated by a line containing only `---`. The n-th
 request receives the n-th turn, and each SSE record is written and
 flushed on its own, so a tool call whose arguments are split across
@@ -1308,12 +1307,13 @@ other tasks of the suite, and the task is a test of the adapter its
 block names. An `mcp` task does receive them, since the stub stands in
 for a tool server rather than for the model: under `--provider`, the
 live model is offered the stub's tool. `--dry-run` validates the merged
-configuration with a placeholder URL and does not start the server or
-open the stream file.
+configuration with a placeholder URL and checks that an `sse` task's
+stream file loads, without starting a server.
 
 **`mcp` mode.** The server speaks the Streamable-HTTP transport the
-harness's MCP client uses and implements `initialize`, `tools/list` and
-`tools/call`. It advertises one tool, `read-file-stub`, whose every call
+harness's MCP client uses (JSON-RPC over `POST`) and implements
+`tools/list` and `tools/call`, plus `initialize` for clients that send
+it. It advertises one tool, `read-file-stub`, whose every call
 returns the text `stub file contents`. The task declares an
 [`mcp_server`](#mcp-servers) with no `uri`, and the runner sets the
 server's URL as the `uri` of each such server; the task fails if it
@@ -1325,6 +1325,22 @@ back when the model calls it. The replay provider is held to the
 strictest policy, so a recording for such a task calls the underscore
 form (`fixtures/tooluse/mcp-name-normalization.jsonl`), and a judge
 asserts the call under the registry name.
+
+```hcl
+fixture_server {
+  mode = "mcp"
+}
+
+run_config_overrides {
+  provider {
+    type        = "replay"
+    replay_file = "fixtures/tooluse/mcp-name-normalization.jsonl"
+  }
+  tools {
+    mcp_server "stub" {}
+  }
+}
+```
 
 The Gemini adapter has no fixture task: its endpoint is derived from a
 project and location rather than a `base_url`, and it needs Google

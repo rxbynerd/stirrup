@@ -111,7 +111,8 @@ func resolveBaseline(suite types.EvalSuite) (*types.RunConfig, error) {
 // treats that as "fall back to the legacy harness invocation").
 //
 // Pointer-typed override fields are "set if non-nil"; the scalar Mode
-// field is "set if non-zero", using "" as its unset sentinel.
+// field is "set if non-zero", using "" as its unset sentinel, and the
+// MCPServers slice is "set if non-nil".
 func mergeOverrides(baseline *types.RunConfig, overlay *types.RunConfigOverrides) *types.RunConfig {
 	if baseline == nil {
 		return nil
