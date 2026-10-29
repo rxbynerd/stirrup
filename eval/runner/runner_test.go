@@ -1174,14 +1174,16 @@ func replayBackedSuite() types.EvalSuite {
 }
 
 // TestRunSuite_ReplaySuite_RejectsLiveFlagsWithoutProvider pins that a
-// model, base URL or key reference given without --provider is refused on
+// model, base URL, key reference or profile given without --provider is refused on
 // a replay-backed suite, since the tasks would keep replaying while the
 // result named the requested model.
 func TestRunSuite_ReplaySuite_RejectsLiveFlagsWithoutProvider(t *testing.T) {
 	cases := map[string]RunConfig{
-		"model":       {Model: "claude-sonnet-5"},
-		"base url":    {BaseURL: "https://example.com/v1"},
-		"api key ref": {APIKeyRef: "secret://KEY"},
+		"model":            {Model: "claude-sonnet-5"},
+		"base url":         {BaseURL: "https://example.com/v1"},
+		"api key ref":      {APIKeyRef: "secret://KEY"},
+		"endpoint profile": {EndpointProfile: "azure-openai"},
+		"compat profile":   {CompatProfile: "zai-glm"},
 	}
 	for name, cfg := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -1250,6 +1252,8 @@ func TestRunSuite_ForwardsProviderProfileFlags(t *testing.T) {
 	)
 }
 
+// TestRunSuite_NoProviderProfileFlagsWhenUnset pins that the profile flags
+// are emitted only when set.
 func TestRunSuite_NoProviderProfileFlagsWhenUnset(t *testing.T) {
 	must := require.New(t)
 	if runtime.GOOS == "windows" {
@@ -1275,6 +1279,6 @@ func TestRunSuite_NoProviderProfileFlagsWhenUnset(t *testing.T) {
 	must.NoError(err)
 
 	argv := readArgvFile(t, argvPath)
-	must.NotContains(argv, "--provider-endpoint-profile\n")
-	must.NotContains(argv, "--provider-compat-profile\n")
+	must.NotContains(argv, "--provider-endpoint-profile")
+	must.NotContains(argv, "--provider-compat-profile")
 }

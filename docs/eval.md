@@ -227,15 +227,19 @@ into the repo root).
 `run_config_overrides`, accepts `endpoint_profile` and
 `compat_profile`, which map to `provider.endpointProfile` and
 `provider.compatProfile`. A suite that targets Azure OpenAI, a relay in
-front of OpenAI's API, or a Z.ai GLM endpoint declares the profile a
-production `RunConfig` would, for example
-`endpoint_profile = "azure-openai"`. Without it, a custom `base_url`
-resolves the derived `generic` endpoint profile. The parser only
-carries the strings; `types.ValidateRunConfig` checks them against the
-closed value sets described in
-[`docs/providers.md`](providers.md#endpoint-profiles) and
-[`docs/configuration.md`](configuration.md), so an unknown value
-surfaces under `--dry-run` like any other validation error.
+front of OpenAI's API, or a Z.ai GLM endpoint declares the profile that a
+production `RunConfig` would. For example, a relay that forwards OpenAI's
+hosted `tool_search` unchanged sets `endpoint_profile = "openai"`. Without it, a `base_url` other than OpenAI's
+own API resolves the derived `generic` endpoint profile. The parser only
+carries the strings. `types.ValidateRunConfig` checks them against the
+closed value sets listed under `--provider-endpoint-profile` and
+`--provider-compat-profile` in
+[`docs/configuration.md`](configuration.md#provider).
+[`docs/providers.md`](providers.md#endpoint-profiles) describes what each
+endpoint profile changes. An unknown value in the suite file surfaces
+under `--dry-run` like any other validation error. A task-level
+`provider` override replaces the baseline provider, so it restates both
+attributes when they still apply.
 
 **Trace archive.** `trace_emitter.archive { type, file_path, bucket,
 object_prefix }` mirrors `types.TraceArchiveConfig`, so a suite can
@@ -1497,8 +1501,8 @@ tree gains a `run_config.redacted.json` per task. See
 | `--provider`     | empty            | Provider type to run every task against, forwarded as `--provider`. Overrides the harness default and any provider pinned by the suite's `run_config` block, and switches a replay-backed suite to a live run (the harness drops each task's recording path on the switch). |
 | `--base-url`     | empty            | API base URL for the `openai-compatible` / `openai-responses` providers, forwarded as `--base-url`. |
 | `--api-key-ref`  | empty            | `secret://` reference for the provider API key, forwarded as `--api-key-ref`. A reference the harness resolves through `SecretStore` at runtime — never a literal key. |
-| `--endpoint-profile` | empty         | Endpoint profile of the `openai-compatible` / `openai-responses` provider, forwarded as `--provider-endpoint-profile`. Needed when `--base-url` points at a relay or hosted deployment that would otherwise resolve the derived `generic` profile. The harness validates the value; see [Endpoint profiles](providers.md#endpoint-profiles). |
-| `--compat-profile` | empty          | Provider compat profile, forwarded as `--provider-compat-profile`. The harness validates the value; see [`docs/configuration.md`](configuration.md). |
+| `--endpoint-profile` | empty         | Endpoint profile of the `openai-compatible` / `openai-responses` provider, forwarded as `--provider-endpoint-profile`. The flag declares the profile when `--base-url` points at a deployment that the harness would otherwise treat as `generic`; see [Endpoint profiles](providers.md#endpoint-profiles) for what each value changes. The harness validates the value when a task starts; `--dry-run` does not see it. Refused on a replay-backed suite unless `--provider` switches it live. |
+| `--compat-profile` | empty          | Provider compat profile, forwarded as `--provider-compat-profile`. The legal values are listed under `--provider-compat-profile` in [`docs/configuration.md`](configuration.md#provider). The harness validates the value when a task starts; `--dry-run` does not see it. Refused on a replay-backed suite unless `--provider` switches it live. |
 | `--judge-provider` | empty          | Provider (`anthropic` or `openai-compatible`) for `diff-review` judges that have no `llm` block. Empty keeps the Anthropic default; `decision` is refused (see [The `decision` provider](#the-decision-provider)). See [The `diff-review` judge](#the-diff-review-judge). |
 | `--judge-model`  | empty            | Model for `diff-review` judges without an `llm` block. Empty keeps the provider's built-in default. |
 | `--judge-base-url` | empty          | API base URL for those judges. Required with `--judge-provider openai-compatible`. |

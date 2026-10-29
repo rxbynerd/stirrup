@@ -131,7 +131,7 @@ func cmdRun(args []string) {
 	provider := fs.String("provider", "", "Provider type to run every task against (forwarded to each harness invocation as --provider). Overrides the harness default and any provider pinned by the suite's run_config block. Empty (the default) preserves existing behaviour.")
 	baseURL := fs.String("base-url", "", "API base URL for openai-compatible / openai-responses providers (forwarded as --base-url). Pair with --provider to point a suite at a gateway such as OpenRouter without editing suite files.")
 	apiKeyRef := fs.String("api-key-ref", "", "Secret reference for the provider API key (forwarded as --api-key-ref), e.g. secret://OPENROUTER_API_KEY. This is a reference resolved by the harness at runtime, never a literal key.")
-	endpointProfile := fs.String("endpoint-profile", "", "Endpoint profile of the openai-compatible / openai-responses provider (forwarded as --provider-endpoint-profile), e.g. azure-openai. Needed when --base-url points at a relay or hosted deployment that the harness would otherwise treat as generic.")
+	endpointProfile := fs.String("endpoint-profile", "", "Endpoint profile of the openai-compatible / openai-responses provider (forwarded as --provider-endpoint-profile), e.g. openai for a relay that forwards OpenAI hosted tool_search. Declare it when --base-url points at a deployment the harness would otherwise treat as generic.")
 	compatProfile := fs.String("compat-profile", "", "Provider compat profile (forwarded as --provider-compat-profile). Empty keeps the provider default.")
 	// Forwarded verbatim to every `stirrup harness` invocation so the
 	// eval-gate CI job can authenticate via WIF instead of a static
