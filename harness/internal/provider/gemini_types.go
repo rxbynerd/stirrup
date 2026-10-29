@@ -140,6 +140,23 @@ type geminiGenerationConfig struct {
 	Temperature     *float64              `json:"temperature,omitempty"`
 	MaxOutputTokens int                   `json:"maxOutputTokens,omitempty"`
 	ThinkingConfig  *geminiThinkingConfig `json:"thinkingConfig,omitempty"`
+	ResponseFormat  *geminiResponseFormat `json:"responseFormat,omitempty"`
+}
+
+// geminiResponseFormat is generationConfig.responseFormat, the per-modality
+// output format object that supersedes the deprecated responseMimeType /
+// responseSchema pair. Only the text modality is sent.
+type geminiResponseFormat struct {
+	Text *geminiTextResponseFormat `json:"text,omitempty"`
+}
+
+// geminiTextResponseFormat constrains the text output to a JSON Schema.
+// MimeType is the API's enum form, APPLICATION_JSON, and Schema is a
+// standard JSON Schema value rather than the OpenAPI-subset Schema type
+// tool declarations use.
+type geminiTextResponseFormat struct {
+	MimeType string          `json:"mimeType"`
+	Schema   json.RawMessage `json:"schema"`
 }
 
 // geminiThinkingConfig selects how much the model thinks before answering

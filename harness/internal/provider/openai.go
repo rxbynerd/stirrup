@@ -199,6 +199,9 @@ type openaiRequest struct {
 	// ReasoningEffort is the wire value for the top-level
 	// "reasoning_effort" field. Empty omits it.
 	ReasoningEffort string
+	// ResponseFormat is the wire value for the top-level "response_format"
+	// field. A nil pointer omits it; steers MarshalJSON only.
+	ResponseFormat *openaiResponseFormat
 
 	// strictFallbacks lists the tools newly sent with strict:false because
 	// their schema failed the strict-mode lint; Stream logs them. Not
@@ -241,6 +244,9 @@ func (r openaiRequest) MarshalJSON() ([]byte, error) {
 	}
 	if r.ReasoningEffort != "" {
 		out["reasoning_effort"] = r.ReasoningEffort
+	}
+	if r.ResponseFormat != nil {
+		out["response_format"] = r.ResponseFormat
 	}
 	for k, v := range r.ExtraBodyFields {
 		if _, exists := out[k]; exists {
@@ -326,6 +332,14 @@ func (r *openaiRequest) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("openaiRequest.reasoning_effort: %w", err)
 		}
 		delete(raw, "reasoning_effort")
+	}
+	if v, ok := raw["response_format"]; ok {
+		var rf openaiResponseFormat
+		if err := json.Unmarshal(v, &rf); err != nil {
+			return fmt.Errorf("openaiRequest.response_format: %w", err)
+		}
+		r.ResponseFormat = &rf
+		delete(raw, "response_format")
 	}
 	// Token budget: accept either canonical key. MarshalJSON emits
 	// exactly one key, so a valid request body should not contain
@@ -526,6 +540,7 @@ var canonicalOpenAIFields = map[string]struct{}{
 	"stream_options":        {},
 	"parallel_tool_calls":   {},
 	"reasoning_effort":      {},
+	"response_format":       {},
 }
 
 // isCanonicalOpenAIField gates ExtraBodyFields merges to prevent a rule
@@ -1008,6 +1023,35 @@ func openAIToolChoiceFromParams(params types.StreamParams, capability quirks.Too
 	}
 }
 
+// openaiResponseFormat is the Chat Completions response_format object in
+// its json_schema form. Strict is always true: the harness only requests a
+// schema it wants enforced, and the judges' schemas are already in the
+// strict subset (every property required, additionalProperties false).
+type openaiResponseFormat struct {
+	Type       string                 `json:"type"`
+	JSONSchema openaiJSONSchemaFormat `json:"json_schema"`
+}
+
+type openaiJSONSchemaFormat struct {
+	Name   string          `json:"name"`
+	Strict bool            `json:"strict"`
+	Schema json.RawMessage `json:"schema"`
+}
+
+// openAIResponseFormatFromParams projects StreamParams.OutputSchema onto
+// the Chat Completions response_format value, or nil when the resolved
+// capability does not advertise support.
+func openAIResponseFormatFromParams(params types.StreamParams, capability quirks.OutputSchemaCapability) *openaiResponseFormat {
+	schema := projectOutputSchema(params.OutputSchema, capability)
+	if schema == nil {
+		return nil
+	}
+	return &openaiResponseFormat{
+		Type:       "json_schema",
+		JSONSchema: openaiJSONSchemaFormat{Name: schema.Name, Strict: true, Schema: schema.Schema},
+	}
+}
+
 // openAIParallelFromParams projects StreamParams.ParallelToolCalls onto the
 // OpenAI top-level parallel_tool_calls bool, gated on the resolved
 // capability. Returns nil when the caller did not set the control or the
@@ -1086,6 +1130,7 @@ func buildOpenAIRequest(params types.StreamParams, stream bool, q quirks.Provide
 		ToolChoice:         openAIToolChoiceFromParams(params, q.ToolChoice),
 		ParallelToolCalls:  openAIParallelFromParams(params, q.ParallelToolCalls),
 		ReasoningEffort:    projectReasoningEffort(params.ReasoningEffort, q.BehaviourFlags.OpenAI.ReasoningEffortLevels),
+		ResponseFormat:     openAIResponseFormatFromParams(params, q.OutputSchema),
 	}, nil
 }
 
@@ -1159,6 +1204,7 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 		return nil, err
 	}
 	warnDroppedReasoningEffort(ctx, logger, "openai-compatible", params.ReasoningEffort, params.Model, q.BehaviourFlags.OpenAI.ReasoningEffortLevels)
+	logDroppedOutputSchema(ctx, logger, "openai-compatible", params.Model, params.OutputSchema, q.OutputSchema)
 
 	reqBody, err := buildOpenAIRequest(params, true, q, o.strictSchemas)
 	if err != nil {

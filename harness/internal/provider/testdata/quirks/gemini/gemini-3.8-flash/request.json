@@ -1,0 +1,77 @@
+# synthetic: judge-shaped turn (no tools) pinning generationConfig.responseFormat.text beside thinkingConfig; temperature omitted by the gemini-3.8* rule. Documented, not probed.
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "weather in Paris?"
+        }
+      ]
+    }
+  ],
+  "systemInstruction": {
+    "parts": [
+      {
+        "text": "You are a safety classifier."
+      }
+    ]
+  },
+  "safetySettings": [
+    {
+      "category": "HARM_CATEGORY_HATE_SPEECH",
+      "threshold": "BLOCK_NONE"
+    },
+    {
+      "category": "HARM_CATEGORY_HARASSMENT",
+      "threshold": "BLOCK_NONE"
+    },
+    {
+      "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+      "threshold": "BLOCK_NONE"
+    },
+    {
+      "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+      "threshold": "BLOCK_NONE"
+    },
+    {
+      "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+      "threshold": "BLOCK_NONE"
+    }
+  ],
+  "generationConfig": {
+    "maxOutputTokens": 1024,
+    "thinkingConfig": {
+      "thinkingLevel": "LOW"
+    },
+    "responseFormat": {
+      "text": {
+        "mimeType": "APPLICATION_JSON",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "nonce": {
+              "type": "string"
+            },
+            "reasoning": {
+              "type": "string"
+            },
+            "verdict": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "deny"
+              ]
+            }
+          },
+          "required": [
+            "nonce",
+            "reasoning",
+            "verdict"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  }
+}

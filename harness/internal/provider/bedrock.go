@@ -152,6 +152,16 @@ func (b *BedrockAdapter) Stream(ctx context.Context, params types.StreamParams) 
 		)
 	}
 
+	// Converse exposes outputConfig.textFormat, but the adapter resolves
+	// no quirks and projects no structured-output field, so the caller's
+	// prompt-only JSON contract applies.
+	if params.OutputSchema != nil {
+		logger.DebugContext(ctx, "outputSchema ignored: bedrock adapter does not project structured outputs",
+			slog.String("provider.type", "bedrock"),
+			slog.String("provider.model", params.Model),
+		)
+	}
+
 	input, err := buildConverseStreamInput(params)
 	if err != nil {
 		b.recordLatency(ctx, start, metricAttrs)

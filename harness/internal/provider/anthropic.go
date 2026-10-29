@@ -119,8 +119,9 @@ type anthropicRequest struct {
 	// the field (the zero-value ToolChoiceAuto path). Populated only when
 	// the resolved quirks advertise native support for the requested mode.
 	ToolChoice *anthropicToolChoice `json:"tool_choice,omitempty"`
-	// OutputConfig carries output_config.effort. Nil omits the key, which
-	// is required for models with no effort control (they 400 on it).
+	// OutputConfig carries output_config.effort and output_config.format.
+	// Nil omits the key, which is required for models with no effort
+	// control (they 400 on it).
 	OutputConfig *anthropicOutputConfig `json:"output_config,omitempty"`
 	// CacheControl is the top-level automatic-caching breakpoint: the API
 	// places it on the last cacheable block of each request, so the cached
@@ -131,7 +132,15 @@ type anthropicRequest struct {
 }
 
 type anthropicOutputConfig struct {
-	Effort string `json:"effort"`
+	Effort string                 `json:"effort,omitempty"`
+	Format *anthropicOutputFormat `json:"format,omitempty"`
+}
+
+// anthropicOutputFormat is output_config.format: a JSON Schema the
+// response text is constrained to. The API takes no name for it.
+type anthropicOutputFormat struct {
+	Type   string          `json:"type"`
+	Schema json.RawMessage `json:"schema"`
 }
 
 type anthropicCacheControl struct {
@@ -929,6 +938,12 @@ func buildAnthropicRequest(params types.StreamParams, stream bool, q quirks.Prov
 	if effort := projectReasoningEffort(params.ReasoningEffort, q.BehaviourFlags.Anthropic.EffortLevels); effort != "" {
 		outputConfig = &anthropicOutputConfig{Effort: effort}
 	}
+	if schema := projectOutputSchema(params.OutputSchema, q.OutputSchema); schema != nil {
+		if outputConfig == nil {
+			outputConfig = &anthropicOutputConfig{}
+		}
+		outputConfig.Format = &anthropicOutputFormat{Type: "json_schema", Schema: schema.Schema}
+	}
 	caching := q.BehaviourFlags.Anthropic.PromptCaching
 	var system *anthropicSystemPrompt
 	if params.System != "" {
@@ -1011,6 +1026,7 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 		return nil, err
 	}
 	warnDroppedReasoningEffort(ctx, logger, "anthropic", params.ReasoningEffort, params.Model, q.BehaviourFlags.Anthropic.EffortLevels)
+	logDroppedOutputSchema(ctx, logger, "anthropic", params.Model, params.OutputSchema, q.OutputSchema)
 
 	if params.ToolSearch && !q.ToolSearch.Supported {
 		logger.DebugContext(ctx, "anthropic tool search not supported; sending every tool loaded",

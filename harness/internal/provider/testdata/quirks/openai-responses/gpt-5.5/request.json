@@ -1,0 +1,57 @@
+# synthetic: judge-shaped turn (no tools) pinning text.format json_schema strict beside reasoning.effort low; temperature omitted by the gpt-5.5 rule.
+{
+  "model": "gpt-5.5",
+  "instructions": "You are a safety classifier.",
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "weather in Paris?"
+        }
+      ]
+    }
+  ],
+  "max_output_tokens": 1024,
+  "stream": true,
+  "store": false,
+  "include": [
+    "reasoning.encrypted_content"
+  ],
+  "reasoning": {
+    "effort": "low"
+  },
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "verdict",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "nonce": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "string"
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "allow",
+              "deny"
+            ]
+          }
+        },
+        "required": [
+          "nonce",
+          "reasoning",
+          "verdict"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}
