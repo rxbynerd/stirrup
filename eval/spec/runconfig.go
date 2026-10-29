@@ -543,14 +543,20 @@ func AnchorRunConfigPaths(cfg *types.RunConfig, baseDir string) {
 }
 
 func anchorReplayFile(provider *types.ProviderConfig, baseDir string) {
-	if provider.ReplayFile == "" || filepath.IsAbs(provider.ReplayFile) {
-		return
+	provider.ReplayFile = anchorPath(provider.ReplayFile, baseDir)
+}
+
+// anchorPath resolves a relative path against baseDir to an absolute path.
+// An empty or already absolute path is returned unchanged.
+func anchorPath(path, baseDir string) string {
+	if path == "" || filepath.IsAbs(path) {
+		return path
 	}
-	joined := filepath.Join(baseDir, provider.ReplayFile)
+	joined := filepath.Join(baseDir, path)
 	if abs, err := filepath.Abs(joined); err == nil {
 		joined = abs
 	}
-	provider.ReplayFile = joined
+	return joined
 }
 
 func providerSpecToType(s *providerSpec) types.ProviderConfig {

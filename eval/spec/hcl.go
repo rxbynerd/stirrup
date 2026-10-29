@@ -123,6 +123,9 @@ func LoadSuiteHCL(path string) (types.EvalSuite, error) {
 		if overrides != nil && overrides.Provider != nil {
 			anchorReplayFile(overrides.Provider, filepath.Dir(path))
 		}
+		if fixture := suite.Tasks[i].FixtureServer; fixture != nil {
+			fixture.StreamFile = anchorPath(fixture.StreamFile, filepath.Dir(path))
+		}
 	}
 	return suite, nil
 }
@@ -152,7 +155,14 @@ type taskSpec struct {
 	Prompt             string                  `hcl:"prompt,optional"`
 	Files              []fileSpec              `hcl:"file,block"`
 	RunConfigOverrides *runConfigOverridesSpec `hcl:"run_config_overrides,block"`
+	FixtureServer      *fixtureServerSpec      `hcl:"fixture_server,block"`
 	Judge              judgeSpec               `hcl:"judge,block"`
+}
+
+// fixtureServerSpec mirrors types.FixtureServerConfig.
+type fixtureServerSpec struct {
+	Mode       string `hcl:"mode"`
+	StreamFile string `hcl:"stream_file,optional"`
 }
 
 // fileSpec is a single workspace seed file; the label is the
@@ -340,6 +350,10 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 		if err != nil {
 			return types.EvalSuite{}, err
 		}
+		fixture, err := convertFixtureServer(t.FixtureServer, t.ID)
+		if err != nil {
+			return types.EvalSuite{}, err
+		}
 		tasks = append(tasks, types.EvalTask{
 			ID:                 t.ID,
 			Description:        t.Description,
@@ -350,6 +364,7 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 			Files:              files,
 			Judge:              j,
 			RunConfigOverrides: taskOverrides,
+			FixtureServer:      fixture,
 		})
 	}
 
@@ -371,6 +386,24 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 		Trials:          trials,
 		RequireHealthy:  s.RequireHealthy,
 	}, nil
+}
+
+// convertFixtureServer materialises a task's `fixture_server` block,
+// rejecting a mode or attribute combination the runner could not serve.
+// Nil input returns nil.
+func convertFixtureServer(s *fixtureServerSpec, taskID string) (*types.FixtureServerConfig, error) {
+	if s == nil {
+		return nil, nil
+	}
+	switch s.Mode {
+	case types.FixtureModeSSE:
+		if s.StreamFile == "" {
+			return nil, fmt.Errorf("task %q: fixture_server mode %q requires stream_file", taskID, s.Mode)
+		}
+	default:
+		return nil, fmt.Errorf("task %q: invalid fixture_server.mode %q (must be %q)", taskID, s.Mode, types.FixtureModeSSE)
+	}
+	return &types.FixtureServerConfig{Mode: s.Mode, StreamFile: s.StreamFile}, nil
 }
 
 // convertSeedFiles materialises a task's `file` blocks into the

@@ -95,6 +95,27 @@ type EvalTask struct {
 	// EvalSuite.RunConfig). Nil means "no per-task overrides"; only set
 	// fields are layered onto the baseline.
 	RunConfigOverrides *RunConfigOverrides `json:"runConfigOverrides,omitempty"`
+
+	// FixtureServer, when set, makes the runner start a local fixture server
+	// for the task's run and point the harness at it. Nil means the task
+	// needs no server.
+	FixtureServer *FixtureServerConfig `json:"fixtureServer,omitempty"`
+}
+
+// FixtureModeSSE is the fixture server mode that plays canned SSE responses
+// back as an OpenAI-wire provider; the runner sets the server's URL as the
+// provider's base URL.
+const FixtureModeSSE = "sse"
+
+// FixtureServerConfig describes a loopback server the runner starts for one
+// task trial and stops when the harness exits.
+type FixtureServerConfig struct {
+	// Mode selects the server's behaviour; see FixtureModeSSE.
+	Mode string `json:"mode"`
+
+	// StreamFile is the canned response file an sse server plays back, one
+	// turn per request.
+	StreamFile string `json:"streamFile,omitempty"`
 }
 
 // EvalJudge describes how to judge a run's outcome.
