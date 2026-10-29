@@ -179,14 +179,18 @@ func TestProvidersQuirks_BaseURLDerivesTheProfileAsARunDoes(t *testing.T) {
 }
 
 func TestProvidersQuirks_BedrockResolvesAsTheAdapterDoes(t *testing.T) {
+	anthropicOnBedrock := func(model string) *resolvedTargetCLIOutput {
+		return &resolvedTargetCLIOutput{ProviderType: "anthropic", Endpoint: quirks.EndpointBedrock, Model: model}
+	}
 	for _, tc := range []struct {
-		model     string
-		wantOmit  bool
-		wantRules bool
+		model      string
+		wantOmit   bool
+		wantTarget *resolvedTargetCLIOutput
 	}{
-		{model: "us.anthropic.claude-sonnet-5-5", wantOmit: true, wantRules: true},
-		{model: "anthropic.claude-sonnet-4-6", wantOmit: false, wantRules: false},
-		{model: "meta.llama3-1-70b-instruct-v1:0", wantOmit: false, wantRules: false},
+		{model: "us.anthropic.claude-sonnet-5-5", wantOmit: true, wantTarget: anthropicOnBedrock("claude-sonnet-5-5")},
+		{model: "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-opus-5-5", wantOmit: true, wantTarget: anthropicOnBedrock("claude-opus-5-5")},
+		{model: "anthropic.claude-sonnet-4-6", wantOmit: false, wantTarget: anthropicOnBedrock("claude-sonnet-4-6")},
+		{model: "meta.llama3-1-70b-instruct-v1:0", wantOmit: false, wantTarget: &resolvedTargetCLIOutput{ProviderType: "bedrock", Model: "meta.llama3-1-70b-instruct-v1:0"}},
 	} {
 		t.Run(tc.model, func(t *testing.T) {
 			must := require.New(t)
@@ -198,12 +202,25 @@ func TestProvidersQuirks_BedrockResolvesAsTheAdapterDoes(t *testing.T) {
 
 			var got quirksCLIOutput
 			must.NoError(json.Unmarshal(buf.Bytes(), &got), "output:\n%s", buf.String())
+			check.Equal(tc.wantTarget, got.ResolvedTarget)
 			check.Equal(tc.wantOmit, got.Quirks.BehaviourFlags.Anthropic.OmitSamplingParams)
-			check.Equal(tc.wantRules, len(got.AppliedRules) > 0, "applied rules: %v", got.AppliedRules)
+			check.Equal(tc.wantOmit, len(got.AppliedRules) > 0, "applied rules: %v", got.AppliedRules)
+			for _, rule := range got.AppliedRules {
+				check.Contains(rule.Description, "omit sampling params")
+			}
 			check.False(got.Quirks.ToolSearch.Supported, "Converse carries no tool search")
 			check.False(got.Quirks.ToolChoice.Supported, "Converse carries no tool_choice")
 		})
 	}
+}
+
+func TestProvidersQuirks_ResolvedTargetOmittedOutsideBedrock(t *testing.T) {
+	must := require.New(t)
+	cmd := newTestProvidersQuirksCommand()
+	must.NoError(cmd.ParseFlags([]string{"--provider", "anthropic", "--model", "claude-sonnet-5-5"}))
+	var buf bytes.Buffer
+	must.NoError(runProvidersQuirksWithIO(cmd, &buf))
+	must.NotContains(buf.String(), "resolvedTarget")
 }
 
 func TestProvidersQuirks_EndpointProfileRejectsInvalidUse(t *testing.T) {

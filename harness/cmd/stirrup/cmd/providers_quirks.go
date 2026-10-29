@@ -60,9 +60,10 @@ any other URL).
 
 For a bedrock provider, a Claude model id (anthropic.<id>, optionally
 behind a cross-region prefix such as us. or inside an ARN) resolves
-against the anthropic rules, and the output keeps only what the
-Converse request honours: the sampling-param omission and the rules
-that set it.
+against the anthropic rules; resolvedTarget names the provider type,
+endpoint and model the rules matched against. The output keeps only
+what the Converse request honours: the sampling-param omission and the
+rules that changed it.
 
 The empty-registry case (no rule matched) is not an error: the output
 carries an empty appliedRules list and a ProviderQuirks value at its
@@ -96,11 +97,20 @@ func addProvidersQuirksFlags(cmd *cobra.Command) {
 // quirks`. JSON tags are stable: scripts consuming this output should
 // be able to grep on the field names.
 type quirksCLIOutput struct {
-	Provider        string                 `json:"provider"`
-	Model           string                 `json:"model"`
-	EndpointProfile string                 `json:"endpointProfile"`
-	Quirks          quirks.ProviderQuirks  `json:"quirks"`
-	AppliedRules    []appliedRuleCLIOutput `json:"appliedRules"`
+	Provider        string                   `json:"provider"`
+	Model           string                   `json:"model"`
+	EndpointProfile string                   `json:"endpointProfile"`
+	ResolvedTarget  *resolvedTargetCLIOutput `json:"resolvedTarget,omitempty"`
+	Quirks          quirks.ProviderQuirks    `json:"quirks"`
+	AppliedRules    []appliedRuleCLIOutput   `json:"appliedRules"`
+}
+
+// resolvedTargetCLIOutput is the quirks target a provider resolves
+// against when it differs from --provider and --model.
+type resolvedTargetCLIOutput struct {
+	ProviderType string `json:"providerType"`
+	Endpoint     string `json:"endpoint"`
+	Model        string `json:"model"`
 }
 
 // appliedRuleCLIOutput summarises one contributing rule. Stale rules
@@ -143,7 +153,10 @@ func runProvidersQuirksWithIO(cmd *cobra.Command, stdout io.Writer) error {
 	reg := quirks.DefaultRegistry()
 	var resolved quirks.ProviderQuirks
 	var applied []quirks.Rule
+	var resolvedTarget *resolvedTargetCLIOutput
 	if providerType == "bedrock" {
+		target := provider.BedrockQuirksTarget(model)
+		resolvedTarget = &resolvedTargetCLIOutput{ProviderType: target.ProviderType, Endpoint: target.Endpoint, Model: target.Model}
 		resolved, applied = provider.ResolveBedrockQuirks(reg, model)
 	} else {
 		resolved, applied = reg.ResolveWithRules(quirks.Target{ProviderType: providerType, Endpoint: endpoint, Model: model})
@@ -153,6 +166,7 @@ func runProvidersQuirksWithIO(cmd *cobra.Command, stdout io.Writer) error {
 		Provider:        providerType,
 		Model:           model,
 		EndpointProfile: endpoint,
+		ResolvedTarget:  resolvedTarget,
 		Quirks:          resolved,
 		AppliedRules:    formatAppliedRules(applied),
 	}
