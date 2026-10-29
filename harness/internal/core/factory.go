@@ -872,6 +872,9 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 	}
 	cred, err := src.Resolve(ctx)
 	if err != nil {
+		if _, static := src.(*credential.StaticSource); static {
+			err = &APIKeyRefError{Ref: cfg.APIKeyRef, Err: err}
+		}
 		err = fmt.Errorf("resolve credentials: %w", err)
 		if cfg.Credential != nil && cfg.Credential.Type == "gcp-service-account" {
 			return nil, &HostFileError{Field: "gcpCredentialsFile", Err: err}
