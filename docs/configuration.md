@@ -559,7 +559,7 @@ the none executor has no capability to back the rest.
 | `--transport` | `stdio` | One of `stdio`, `grpc`. |
 | `--transport-addr` | (none) | gRPC target address; required when `--transport=grpc`. |
 | `--followup-grace` | `0` | Idle seconds to keep the transport open after each run completes, waiting for a follow-up `user_response`; the window restarts after every run. With a window configured, the CLI bounds the whole session at 10 × (`--timeout` + `--followup-grace`) after the primary run — room for ten follow-ups each waited for through a full window — since it has no orchestrator deadline behind it. Env fallback: `STIRRUP_FOLLOWUP_GRACE`. |
-| `--heartbeat-seconds` | `0` | Seconds between `heartbeat` events while a run is in progress. `0` selects the default of 30; any other value must be between 5 and 600, and an out-of-range value fails validation. The interval applies to the primary run and to every follow-up run. A control plane that derives orphan detection from heartbeat arrival should set a value well under its liveness deadline. No env fallback. JSON path: `heartbeatSeconds`. gRPC: `RunConfig.heartbeat_seconds`. See [the integration guide](integration-guide.md#detecting-a-stalled-or-orphaned-run). |
+| `--heartbeat-seconds` | `0` | Seconds between `heartbeat` events while a run is in progress. `0` selects the default of 30; any other value must be between 5 and 600, and an out-of-range value fails validation. The interval applies to the primary run and to every follow-up run. A control plane that derives orphan detection from heartbeat arrival should set a value well under its liveness deadline. No env fallback. JSON path: `heartbeatSeconds`. gRPC: `RunConfig.heartbeat_seconds`, honoured by harnesses advertising the `heartbeat_interval` capability. See [the integration guide](integration-guide.md#detecting-a-stalled-or-orphaned-run). |
 | `--followup-history` | (unset → `reset`) | The history a follow-up run starts from. `reset` (also selected by an empty value) starts it from its prompt alone. `continue` starts it from the previous run's committed history — every turn whose tool calls all have results — with the prompt appended; tool results that run left unscreened are screened first, and a run that ended `rule_of_two_violation` or `guardrail_blocked` passes no history on. The primary run is unaffected, and the value is accepted but inert without a follow-up window; it takes effect only through the follow-up loop, so an embedder calling `harnessapi.Loop.Run` repeatedly gets no carried history and no warning. No env fallback. JSON path: `followUpHistory`. See [the integration guide](integration-guide.md#follow-up-turns). |
 
 ### Tracing
@@ -696,9 +696,11 @@ which surface produced the line.
 own. A gRPC control plane driving `stirrup job` gets the same
 `STIRRUP_RESULT` line by setting `resultSink.type: "stdout-json"` in
 the `task_assignment`'s `RunConfig` (proto `ResultSinkConfig`); `job`
-emits it through the configured sink once the run ends. `job` always
-writes the text summary to stderr, so the flag's `none` value, which
-only suppresses that summary, has no `job` counterpart.
+emits it through the configured sink once each run ends. `job` writes
+the text summary to stderr for every run that produced a trace, so the
+flag's suppression of that summary (`json` and `none`) has no `job`
+counterpart. Under `job`, `resultSink.type` alone controls the
+`STIRRUP_RESULT` line: `"none"` or unset omits it.
 
 The exit code reflects the run outcome regardless of `--output`: a
 failed or cancelled run still exits non-zero. A cancellation

@@ -863,7 +863,7 @@ everything else in this document, and worth being explicit about:
   failure semantics.
 
 **Heartbeat caveat:** the agentic loop's `heartbeat` transport event
-(every 30 s, see [`architecture.md`
+(every 30 s by default, see [`architecture.md`
 "Heartbeat and health probes"](architecture.md#heartbeat-and-health-probes))
 is emitted on `runCtx` — the run's own wall-clock-bounded context — and
 stops the instant that context is done, at the run's `timeout` deadline

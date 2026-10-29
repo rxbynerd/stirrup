@@ -133,7 +133,7 @@ status.
 | `turn_abandoned` | `turn`, `abandon_reason` | Informational. The turn left nothing valid in the history; discard what was buffered for it. `abandon_reason` says why; see [Watching a run live](#watching-a-run-live) for the vocabulary, which is open. Every `turn_started` is followed by exactly one `turn_committed` or `turn_abandoned`. Sent by harnesses advertising the `turn_abandoned` capability. |
 | `permission_request` | `request_id`, `tool_name`, `input` | **Must respond** with `permission_response` echoing `request_id` before the policy timeout (default 60 s) or the call is auto-denied. |
 | `tool_result_request` | `request_id`, `tool_use_id`, `tool_name`, `input`, `trace_context` | **Must respond** with `tool_result_response` echoing `request_id`; the loop blocks on it under a per-call timeout. `trace_context` (`traceparent`, `tracestate`), when present, is the W3C context of the call's `execute_tool` span; see [Control-plane-fulfilled tools](#control-plane-fulfilled-tools-tool_result_request). |
-| `heartbeat` | — | Liveness signal every 30 s by default; `RunConfig.heartbeat_seconds` sets 5-600 s. Treat sustained absence as a hang and reap the Pod. |
+| `heartbeat` | — | Liveness signal every 30 s by default; `RunConfig.heartbeat_seconds` sets 5-600 s. Sent only while a run is in progress. Treat sustained absence during a run as a hang and reap the Pod; see [Detecting a stalled or orphaned run](#detecting-a-stalled-or-orphaned-run) for when none are sent. |
 | `warning` | `message`, `request_id` (about a `user_response`) | Log; non-fatal. A `warning` carrying `request_id` is about that `user_response`: a message starting `user_response dropped:` means it was not accepted (empty text, the queue of 16 was full, the session was cancelled, or it was still queued when the session ended) — retry after the next turn where that applies; one starting `user_response sanitized:` means it was accepted after tag stripping or truncation to 50,000 bytes. |
 | `error` | `message` | Optional diagnostic for some early run failures; when emitted by a built loop, a `done` follows. |
 | `done` | `stop_reason`, `trace` | Terminal status for that run. `trace` is the run summary, including `trace_reference` when the run recorded an OTel span; it is absent on a `done` for a task rejected before its run started. |
@@ -289,6 +289,16 @@ progress. `RunConfig.heartbeat_seconds` (JSON `heartbeatSeconds`,
 `--heartbeat-seconds` on the CLI) sets another interval: `0` or unset
 keeps 30 s, and any other value must be between 5 and 600. The interval
 applies to the primary run and to every follow-up run in the session.
+A harness whose `ready.capabilities` lacks `heartbeat_interval` ignores
+the field and keeps 30 s (see [Compatibility](#compatibility)).
+
+Heartbeats cover the run itself. They start when the loop begins the
+run, after component construction, and stop when the run's context ends
+(its `timeout` or a `cancel`) or just before `done`, whichever comes
+first. None are sent while the harness waits for the assignment, while
+it builds the loop, between runs (including the follow-up grace window),
+or during `postRun` hooks that outlive the run's deadline (see
+[`security.md`](security.md#lifecycle-hooks)).
 
 A control plane that reaps a Pod after missing heartbeats should pick a
 deadline of several intervals, not one, so a single delayed event does
@@ -1416,6 +1426,10 @@ around silently".
     (`ToolsConfig.lazy_loading`, field 11) is honoured, and the
     `tools_loaded` event and its `tools` (field 27) report every tool
     search that loaded tools.
+  - `heartbeat_interval`: `RunConfig.heartbeatSeconds` (field 61) is
+    honoured. A harness without it keeps the 30 s interval and
+    ignores the field, so a control plane that shortens its liveness
+    deadline should gate on this capability.
 - `ready.harness_version` carries the build label
   (`v1.2.3 (abc1234)` for releases) and is informational: `dev` and
   `main` builds cannot be ordered against a release, so it is not a
