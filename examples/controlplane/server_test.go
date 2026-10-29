@@ -81,7 +81,7 @@ func TestHandle_RendersLiveTranscriptEvents(t *testing.T) {
 	srv, out, errOut := testServer(t, permissionDeny, "")
 	turn := int32(0)
 	stream := &fakeStream{events: []*harnessv1.HarnessEvent{
-		{Type: "ready", HarnessVersion: "v1"},
+		{Type: "ready", HarnessVersion: "v1", Capabilities: []string{"live_transcript"}, ConfigFields: []string{"mode", "prompt"}},
 		{Type: "run_started", Id: "run-1"},
 		{Type: "user_message", Source: "initial_prompt", Text: "do it"},
 		{Type: "turn_started", Turn: &turn, Provider: "anthropic", Model: "claude-x"},
@@ -98,6 +98,7 @@ func TestHandle_RendersLiveTranscriptEvents(t *testing.T) {
 	must.NoError(err)
 	check.Equal("answer", out.String(), "stdout should hold only the model's text")
 	for _, want := range []string{
+		"[ready] harness v1 connected (capabilities: live_transcript; config fields: 2)",
 		"[run_started] run-1",
 		"[user_message] initial_prompt: do it",
 		"[turn_started] 0 anthropic/claude-x",
