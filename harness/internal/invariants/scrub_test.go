@@ -2,6 +2,7 @@ package invariants
 
 import (
 	"go/ast"
+	"go/parser"
 	"go/token"
 	"strings"
 	"testing"
@@ -26,9 +27,12 @@ var slogExemptions = map[string]string{
 
 // TestSpanErrors_AreScrubbed pins that no production code calls
 // RecordError on a span (the semconv exception event goes through
-// core.recordSpanException, which scrubs it) and that every
-// SetStatus(codes.Error, desc) description is a literal or traceably
-// scrubbed text. The log scrubber does not see spans.
+// core.recordSpanException, which scrubs it) and that every SetStatus
+// description other than for codes.Ok or codes.Unset is a literal or
+// traceably scrubbed text: built only from literals and calls to scrub*
+// functions or core's span-error helpers, through locals of the same
+// function. The log scrubber does not see spans. Span attributes and
+// events other than the exception event are not covered.
 func TestSpanErrors_AreScrubbed(t *testing.T) {
 	check := assert.New(t)
 	must := require.New(t)
@@ -48,7 +52,8 @@ func TestSpanErrors_AreScrubbed(t *testing.T) {
 			check.Failf("span error bypasses the scrubbing helpers",
 				"%s: RecordError records unscrubbed text; use core.recordSpanError or recordSpanException", position(fset, call.Pos()))
 		case "SetStatus":
-			if len(call.Args) != 2 || !isPkgSelector(call.Args[0], importName(sf.file, "go.opentelemetry.io/otel/codes"), "Error") {
+			codesName := importName(sf.file, "go.opentelemetry.io/otel/codes")
+			if len(call.Args) != 2 || isPkgSelector(call.Args[0], codesName, "Ok") || isPkgSelector(call.Args[0], codesName, "Unset") {
 				return
 			}
 			if encl.decl != nil && scrubbedExpr(call.Args[1], encl.decl, map[string]bool{}) {
@@ -98,6 +103,9 @@ func scrubbedExpr(expr ast.Expr, fn *ast.FuncDecl, visiting map[string]bool) boo
 		if visiting[e.Name] {
 			return true
 		}
+		if isParam(fn, e.Name) {
+			return false
+		}
 		visiting[e.Name] = true
 		defer delete(visiting, e.Name)
 		values := assignedValues(fn, e.Name)
@@ -118,8 +126,28 @@ func scrubbedExpr(expr ast.Expr, fn *ast.FuncDecl, visiting map[string]bool) boo
 // security.Scrub and its variants, the trace package's scrub helpers, and
 // core's span-error helpers, which return the text they recorded.
 func isScrubbingFunc(name string) bool {
-	return strings.Contains(strings.ToLower(name), "scrub") ||
+	return strings.HasPrefix(strings.ToLower(name), "scrub") ||
 		name == "recordSpanError" || name == "recordSpanException"
+}
+
+// isParam reports whether name is a parameter or receiver of fn. A
+// parameter carries caller-supplied text, so reassigning it to scrubbed
+// text on some paths does not make it scrubbed.
+func isParam(fn *ast.FuncDecl, name string) bool {
+	lists := []*ast.FieldList{fn.Type.Params, fn.Recv}
+	for _, list := range lists {
+		if list == nil {
+			continue
+		}
+		for _, field := range list.List {
+			for _, n := range field.Names {
+				if n.Name == name {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // assignedValues returns every expression assigned to the local name in
@@ -246,4 +274,34 @@ func scrubbedHandler(expr ast.Expr, slogName string) bool {
 	}
 	call, ok := expr.(*ast.CallExpr)
 	return ok && strings.HasPrefix(calleeName(call), "NewScrubHandler")
+}
+
+// TestScrubbedExpr_AcceptsOnlyTraceablyScrubbedText pins the description
+// heuristic of TestSpanErrors_AreScrubbed on small functions.
+func TestScrubbedExpr_AcceptsOnlyTraceablyScrubbedText(t *testing.T) {
+	cases := []struct {
+		name, body string
+		want       bool
+	}{
+		{"literal", `desc := "failed"`, true},
+		{"scrub call", `desc := security.Scrub(err.Error())`, true},
+		{"literal then scrub", `desc := "failed"; desc = scrubOrPass(msg, false)`, true},
+		{"sprintf of scrubbed", `s := scrubHook(x); desc := fmt.Sprintf("exit %d: %s", s.Code, s.Error)`, true},
+		{"raw error", `desc := err.Error()`, false},
+		{"parameter", `desc := msg`, false},
+		{"parameter scrubbed on one path", `if cond { msg = security.Scrub(msg) }; desc := msg`, false},
+		{"unscrubbed helper", `desc := unscrubbed(msg)`, false},
+		{"concatenation with raw text", `desc := "failed: " + err.Error()`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			src := "package p\nfunc f(msg string, err error, cond bool, x any) { " + tc.body + "; use(desc) }\n"
+			f, err := parser.ParseFile(token.NewFileSet(), "snippet.go", src, parser.SkipObjectResolution)
+			must.NoError(err)
+			fn, ok := f.Decls[0].(*ast.FuncDecl)
+			must.True(ok)
+			must.Equal(tc.want, scrubbedExpr(ast.NewIdent("desc"), fn, map[string]bool{}))
+		})
+	}
 }
