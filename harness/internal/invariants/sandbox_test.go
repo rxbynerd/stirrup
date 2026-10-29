@@ -22,11 +22,13 @@ var executorOnlyPackages = []string{
 // hostImports are packages whose use reads the host filesystem or starts
 // a host process.
 var hostImports = map[string]bool{
-	"os":                    true,
-	"os/exec":               true,
-	"io/ioutil":             true,
-	"syscall":               true,
-	"golang.org/x/sys/unix": true,
+	"os":                       true,
+	"os/exec":                  true,
+	"io/ioutil":                true,
+	"syscall":                  true,
+	"os/user":                  true,
+	"golang.org/x/sys/unix":    true,
+	"golang.org/x/sys/execabs": true,
 }
 
 // hostFilepathFuncs are path/filepath functions that consult the host
@@ -39,10 +41,20 @@ var hostFilepathFuncs = map[string]bool{
 	"WalkDir":      true,
 }
 
+// hostTemplateFuncs are text/template and html/template functions that read
+// template files from the host.
+var hostTemplateFuncs = map[string]bool{
+	"ParseFiles": true,
+	"ParseGlob":  true,
+	"ParseFS":    true,
+}
+
 // TestExecutorOnlyPackages_DoNotTouchTheHost pins that no production file
 // in the git, prompt and workspaceexport packages imports a host-access
-// package or calls a host-reading path/filepath function. Test files are
-// exempt: they build fixtures with the host's tools.
+// package or calls a host-reading path/filepath or template function. Test
+// files are exempt: they build fixtures with the host's tools. Packages
+// these import are not followed; a shared helper that reads the host
+// needs its own entry.
 func TestExecutorOnlyPackages_DoNotTouchTheHost(t *testing.T) {
 	for _, dir := range executorOnlyPackages {
 		t.Run(dir, func(t *testing.T) {
@@ -56,6 +68,7 @@ func TestExecutorOnlyPackages_DoNotTouchTheHost(t *testing.T) {
 					check.False(hostImports[path], "%s imports %s; reach the workspace through the executor", position(fset, imp.Pos()), path)
 				}
 				filepathName := importName(sf.file, "path/filepath")
+				templateNames := []string{importName(sf.file, "text/template"), importName(sf.file, "html/template")}
 				ast.Inspect(sf.file, func(n ast.Node) bool {
 					call, ok := n.(*ast.CallExpr)
 					if !ok {
@@ -64,6 +77,10 @@ func TestExecutorOnlyPackages_DoNotTouchTheHost(t *testing.T) {
 					for name := range hostFilepathFuncs {
 						check.False(isPkgSelector(call.Fun, filepathName, name),
 							"%s calls filepath.%s, which reads the host filesystem", position(fset, call.Pos()), name)
+					}
+					if sel, ok := call.Fun.(*ast.SelectorExpr); ok && hostTemplateFuncs[sel.Sel.Name] {
+						check.False(templateNames[0] != "" || templateNames[1] != "",
+							"%s calls %s, which reads template files from the host filesystem", position(fset, call.Pos()), sel.Sel.Name)
 					}
 					return true
 				})

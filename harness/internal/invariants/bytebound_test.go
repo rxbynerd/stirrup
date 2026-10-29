@@ -15,7 +15,7 @@ import (
 var unboundedEmitters = map[string]string{
 	"harness/internal/transport/null.go:NullTransport.Emit":   "discards every event",
 	"harness/internal/core/subagent.go:captureTransport.Emit": "keeps a sub-agent's text in memory; it reaches the model as a bounded tool result",
-	"harness/internal/transport/stdio.go:StdioTransport.Emit": "stdout has no message-size limit; tool results are already bounded by tools.maxResultBytes",
+	"harness/internal/transport/stdio.go:StdioTransport.Emit": "stdout has no message-size limit; only tool_result content is bounded upstream, other fields reach stdout unbounded",
 }
 
 // selfBoundedTools are the tools allowed to skip the loop's
@@ -127,7 +127,7 @@ func TestToolResults_PassTheResultBudget(t *testing.T) {
 			encl, inFunc := enclosingFunc(sf, lit.Pos())
 			where := position(fset, lit.Pos())
 			switch {
-			case isPkgSelector(lit.Type, typesName, "ToolResult"):
+			case isPkgSelector(lit.Type, typesName, "ToolResult") || isToolResultSlice(lit.Type, typesName):
 				results++
 				check.True(inFunc && callsIn(encl.decl.Body, "boundToolResult"),
 					"%s: a ToolResult is built where boundToolResult does not run", where)
@@ -171,4 +171,11 @@ func fieldIsString(lit *ast.CompositeLit, field, want string) bool {
 func fieldIsTrue(lit *ast.CompositeLit, field string) bool {
 	v, ok := fieldValue(lit, field).(*ast.Ident)
 	return ok && v.Name == "true"
+}
+
+// isToolResultSlice reports whether expr is []types.ToolResult or
+// [N]types.ToolResult, whose elements may be written without their type.
+func isToolResultSlice(expr ast.Expr, typesName string) bool {
+	arr, ok := expr.(*ast.ArrayType)
+	return ok && isPkgSelector(arr.Elt, typesName, "ToolResult")
 }

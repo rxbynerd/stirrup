@@ -16,7 +16,7 @@ import (
 var streamCallSites = map[string]string{
 	"harness/internal/core/ledger.go:chargingProvider.Stream":                 "the ledger charge itself",
 	"harness/internal/core/meteredprovider.go:meteredProvider.Stream":         "metrics decorator the factory wraps in chargingProvider",
-	"harness/internal/core/turnrequest.go:AgenticLoop.requestProvider":        "the agentic turn; charges the ledger it is passed (checked below)",
+	"harness/internal/core/turnrequest.go:AgenticLoop.requestProvider":        "the agentic turn; it and recordAttemptUsage charge the ledger they are passed (checked below)",
 	"harness/internal/provider/batch.go:BatchAdapter.pumpInner":               "adapter decorator beneath the loop's or auxProv's charge",
 	"harness/internal/provider/normalizer.go:NormalizingAdapter.Stream":       "adapter decorator beneath the loop's or auxProv's charge",
 	"harness/internal/context/summarise.go:SummariseStrategy.generateSummary": "auxiliary call; the factory hands it auxProv (checked below)",
@@ -57,24 +57,28 @@ func TestProviderStreams_AreChargedToTheRunLedger(t *testing.T) {
 		sites.assertAllUsed(t)
 	})
 
-	t.Run("the agentic turn charges the ledger it is passed", func(t *testing.T) {
-		must := require.New(t)
-		fn := findFunc(t, files, "harness/internal/core/turnrequest.go", "AgenticLoop.requestProvider")
-		param := paramOfType(fn.decl, "TokenLedger")
-		must.NotEmpty(param, "requestProvider takes no *TokenLedger")
-		charged := false
-		ast.Inspect(fn.decl.Body, func(n ast.Node) bool {
-			if call, ok := n.(*ast.CallExpr); ok {
-				if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Charge" {
-					if id, ok := sel.X.(*ast.Ident); ok && id.Name == param {
-						charged = true
+	// requestProvider charges the usage of failed attempts and
+	// recordAttemptUsage the usage of the attempt the turn keeps.
+	for _, name := range []string{"AgenticLoop.requestProvider", "AgenticLoop.recordAttemptUsage"} {
+		t.Run(name+" charges the ledger it is passed", func(t *testing.T) {
+			must := require.New(t)
+			fn := findFunc(t, files, "harness/internal/core/turnrequest.go", name)
+			param := paramOfType(fn.decl, "TokenLedger")
+			must.NotEmpty(param, "%s takes no *TokenLedger", name)
+			charged := false
+			ast.Inspect(fn.decl.Body, func(n ast.Node) bool {
+				if call, ok := n.(*ast.CallExpr); ok {
+					if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Charge" {
+						if id, ok := sel.X.(*ast.Ident); ok && id.Name == param {
+							charged = true
+						}
 					}
 				}
-			}
-			return true
+				return true
+			})
+			must.True(charged, "%s never calls %s.Charge", name, param)
 		})
-		must.True(charged, "requestProvider never calls %s.Charge", param)
-	})
+	}
 
 	t.Run("auxiliary callers get the charging provider", func(t *testing.T) {
 		check := assert.New(t)
