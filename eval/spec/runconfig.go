@@ -338,8 +338,8 @@ func validateInlineAPIKeyRefs(cfg *types.RunConfig, overrides *types.RunConfigOv
 		}
 		if !strings.HasPrefix(ref, "secret://") {
 			return fmt.Errorf(
-				"%s %q: raw credentials are not permitted; use a secret:// reference",
-				path, ref,
+				"%s: raw credentials are not permitted; use a secret:// reference",
+				path,
 			)
 		}
 		return nil

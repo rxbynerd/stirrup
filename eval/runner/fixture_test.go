@@ -53,17 +53,32 @@ func fixtureSuite(t *testing.T) types.EvalSuite {
 
 func TestApplyFixtureServer_SSE_SetsProviderBaseURL(t *testing.T) {
 	must := require.New(t)
-	cfg := &types.RunConfig{}
+	cfg := &types.RunConfig{Provider: types.ProviderConfig{Type: "openai-responses"}}
 	must.NoError(applyFixtureServer(cfg, types.FixtureServerConfig{Mode: types.FixtureModeSSE}, "http://127.0.0.1:9"))
 	must.Equal("http://127.0.0.1:9", cfg.Provider.BaseURL)
 }
 
-func TestApplyFixtureServer_SSE_RejectsPresetBaseURL(t *testing.T) {
-	must := require.New(t)
-	cfg := &types.RunConfig{Provider: types.ProviderConfig{BaseURL: "https://example.com/v1"}}
-	err := applyFixtureServer(cfg, types.FixtureServerConfig{Mode: types.FixtureModeSSE}, "http://127.0.0.1:9")
-	must.ErrorContains(err, "must leave it unset")
-	must.Equal("https://example.com/v1", cfg.Provider.BaseURL)
+func TestApplyFixtureServer_SSE_RejectsProviderThatWouldNotBeKeylessAndLocal(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider types.ProviderConfig
+		want     string
+	}{
+		{"preset base url", types.ProviderConfig{Type: "openai-compatible", BaseURL: "https://example.com/v1"}, "must leave it unset"},
+		{"non openai-wire provider", types.ProviderConfig{Type: "anthropic"}, "needs an openai-compatible or openai-responses provider"},
+		{"api key ref", types.ProviderConfig{Type: "openai-compatible", APIKeyRef: "secret://KEY"}, "is keyless"},
+		{"credential block", types.ProviderConfig{Type: "openai-compatible", Credential: &types.CredentialConfig{Type: "static"}}, "is keyless"},
+		{"query params", types.ProviderConfig{Type: "openai-compatible", QueryParams: map[string]string{"k": "v"}}, "is keyless"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			cfg := &types.RunConfig{Provider: tc.provider}
+			err := applyFixtureServer(cfg, types.FixtureServerConfig{Mode: types.FixtureModeSSE}, "http://127.0.0.1:9")
+			must.ErrorContains(err, tc.want)
+			must.Equal(tc.provider.BaseURL, cfg.Provider.BaseURL)
+		})
+	}
 }
 
 func TestApplyFixtureServer_MCP_FillsServersWithoutURI(t *testing.T) {

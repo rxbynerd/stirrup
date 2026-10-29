@@ -17,6 +17,12 @@ const dryRunFixtureURL = "http://127.0.0.1:0"
 func applyFixtureServer(cfg *types.RunConfig, fixture types.FixtureServerConfig, url string) error {
 	switch fixture.Mode {
 	case types.FixtureModeSSE:
+		if !types.IsOpenAIWireProviderType(cfg.Provider.Type) {
+			return fmt.Errorf("fixture_server mode %q needs an openai-compatible or openai-responses provider, got %q", fixture.Mode, cfg.Provider.Type)
+		}
+		if cfg.Provider.APIKeyRef != "" || cfg.Provider.Credential != nil || len(cfg.Provider.QueryParams) > 0 {
+			return fmt.Errorf("fixture_server mode %q is keyless; the task must leave provider api_key_ref, credential and query_params unset", fixture.Mode)
+		}
 		if cfg.Provider.BaseURL != "" {
 			return fmt.Errorf("fixture_server mode %q supplies provider.base_url; the task must leave it unset, got %q", fixture.Mode, cfg.Provider.BaseURL)
 		}

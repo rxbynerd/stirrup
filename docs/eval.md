@@ -1285,11 +1285,14 @@ merged configuration does.
 **`sse` mode.** The server answers every `POST`, whatever the path, so
 it stands in for an `openai-compatible` or `openai-responses` endpoint.
 The runner sets the provider's `base_url` to the server's URL, so the
-task must leave `base_url` unset. The task must also leave `api_key_ref`
-empty: both adapters accept an empty key reference once a custom base
-URL is set, and the harness does not substitute a default key reference
-in that case. The stream file holds the raw SSE text of each turn's response in that adapter's wire
-format, with turns separated by a line containing only `---`. The n-th
+task must leave `base_url` unset. The task must also leave
+`api_key_ref`, `credential` and `query_params` unset, so no credential
+reaches the server: both adapters accept an empty key reference once a
+custom base URL is set, and the harness does not substitute a default
+key reference in that case. Any other provider type is rejected, since
+it would ignore the base URL and run live. The stream file holds the raw
+SSE text of each turn's response in that adapter's wire format, with
+turns separated by a line containing only `---`. The n-th
 request receives the n-th turn, and each SSE record is written and
 flushed on its own, so a tool call whose arguments are split across
 records reaches the adapter's parser as separate network reads. A

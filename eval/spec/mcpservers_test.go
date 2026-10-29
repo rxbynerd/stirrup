@@ -96,6 +96,7 @@ func TestLoadSuiteHCL_RejectsRawMCPServerAPIKey(t *testing.T) {
 			_, err := LoadSuiteHCL(writeTemp(t, "raw.hcl", tc.hcl))
 			must.ErrorContains(err, tc.want)
 			must.ErrorContains(err, "raw credentials are not permitted")
+			must.NotContains(err.Error(), "literal-key", "error repeats the rejected value")
 		})
 	}
 }
