@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"sync/atomic"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -18,6 +19,15 @@ import (
 type ReplayProvider struct {
 	turns   []types.TurnRecord
 	counter atomic.Int64
+	// lastServed is the index of the turn Stream most recently served,
+	// or -1 before the first; ForSubRun reads the recorded run that turn
+	// belongs to.
+	lastServed atomic.Int64
+	// subRuns holds each recorded sub-agent's turns by its recorded run ID.
+	subRuns map[string][]types.TurnRecord
+	// missing, when set, is the error Stream returns once every turn has
+	// been served, in place of the generic exhaustion error.
+	missing error
 }
 
 // NewReplayProvider creates a ReplayProvider from a sequence of recorded
@@ -27,7 +37,51 @@ type ReplayProvider struct {
 // parent's requests. A sequence holding only sub-agent turns replays the
 // first turn's run.
 func NewReplayProvider(turns []types.TurnRecord) *ReplayProvider {
-	return &ReplayProvider{turns: replayableTurns(turns)}
+	rp := &ReplayProvider{turns: replayableTurns(turns)}
+	rp.lastServed.Store(-1)
+	return rp
+}
+
+// NewReplayProviderFromRecording creates a ReplayProvider that serves the
+// recording's top-level turns and keeps each sub-run's turns for
+// ForSubRun.
+func NewReplayProviderFromRecording(rec *types.RunRecording) *ReplayProvider {
+	rp := NewReplayProvider(rec.Turns)
+	if len(rec.SubRuns) > 0 {
+		rp.subRuns = make(map[string][]types.TurnRecord, len(rec.SubRuns))
+		for _, sub := range rec.SubRuns {
+			rp.subRuns[sub.RunID] = sub.Turns
+		}
+	}
+	return rp
+}
+
+// ForSubRun returns a provider serving the recorded turns of the sub-agent
+// that childRunID names under parentRunID, so a child loop never draws the
+// parent's turns. The child is matched by its run ID relative to its
+// parent ("sub-2" in "run-1/sub-2"), resolved against the recorded run of
+// the turn this provider served last, which is the turn that spawned it.
+// When the recording holds no such sub-run, ForSubRun returns an error
+// naming the child together with a provider whose first Stream call fails
+// with that error.
+func (rp *ReplayProvider) ForSubRun(parentRunID, childRunID string) (*ReplayProvider, error) {
+	relative := strings.TrimPrefix(childRunID, parentRunID+"/")
+	recordedParent := ""
+	if idx := rp.lastServed.Load(); idx >= 0 && int(idx) < len(rp.turns) {
+		recordedParent = rp.turns[idx].RunID
+	}
+	recordedChild := relative
+	if recordedParent != "" {
+		recordedChild = recordedParent + "/" + relative
+	}
+	turns, ok := rp.subRuns[recordedChild]
+	child := &ReplayProvider{turns: turns}
+	child.lastServed.Store(-1)
+	if !ok {
+		child.missing = fmt.Errorf("replay provider: no recorded turns for sub-agent %q (recorded run %q)", childRunID, recordedChild)
+		return child, child.missing
+	}
+	return child, nil
 }
 
 func replayableTurns(turns []types.TurnRecord) []types.TurnRecord {
@@ -56,8 +110,12 @@ func (rp *ReplayProvider) Len() int { return len(rp.turns) }
 func (rp *ReplayProvider) Stream(ctx context.Context, _ types.StreamParams) (<-chan types.StreamEvent, error) {
 	idx := int(rp.counter.Add(1) - 1)
 	if idx >= len(rp.turns) {
+		if rp.missing != nil {
+			return nil, rp.missing
+		}
 		return nil, fmt.Errorf("replay provider: all %d turns exhausted (requested turn %d)", len(rp.turns), idx)
 	}
+	rp.lastServed.Store(int64(idx))
 
 	turn := rp.turns[idx]
 	ch := make(chan types.StreamEvent, len(turn.ModelOutput)+1)
