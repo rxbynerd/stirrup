@@ -678,8 +678,9 @@ re-provisioning the sandbox.
     because it lists the workspace's files and git status. A follow-up
     whose system prompt or tools differ from those the carried history
     was last sent with therefore drops the carried thinking blocks;
-    its own thinking is replayed as usual. Each run re-sends the carried history, so its
-    input tokens count against that run's `maxTokenBudget`, and the
+    its own thinking is replayed as usual. Each run re-sends the
+    carried history, so its input tokens count against that run's
+    `maxTokenBudget`, and the
     configured context strategy compacts a long session the same way it
     compacts a long run. The Rule-of-Two latch spans the whole session
     in both modes: once tripped, it stays tripped for every later run.

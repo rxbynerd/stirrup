@@ -1343,9 +1343,11 @@ concerns are tracked separately:
 12. **Reasoning streaming and carried-history replay.** Probed live on
     2026-10-29. The Anthropic rows called the Messages API directly
     (`anthropic-version: 2023-06-01`, non-streaming, `max_tokens` 2000,
-    `output_config.effort` `high` or `max`, no `thinking` parameter).
-    Both Claude 5.5 models returned signed thinking blocks with empty
-    thinking text without a `thinking` parameter. The OpenRouter rows
+    no `thinking` parameter, `output_config.effort` `high`). The turn
+    that produced the `claude-sonnet-5-5` thinking block ran at `max`,
+    because that model returned no thinking block at `high` on two
+    prompts; the replaying requests ran at `high`. Both models returned
+    signed thinking blocks with empty thinking text. The OpenRouter rows
     called `https://openrouter.ai/api/v1` on default routing; they show
     OpenRouter's wire, not the first-party Z.ai, Alibaba or OpenAI APIs.
 
@@ -1364,11 +1366,12 @@ concerns are tracked separately:
     | Harness run, `--provider openai-responses`, `--reasoning-summary auto` | `openai/gpt-5.6-luna` | OpenRouter `/responses` | Before the data-only fix: outcome `error`, "provider returned an empty stop reason". After it: `success`, with the summary streamed as `thinking_delta`, although the adapter sent no `reasoning` object (no effort rule matches the `openai/` id) |
     | Reasoning field, streamed with one tool | `z-ai/glm-5.3` (served by Relace) | OpenRouter Chat Completions | `delta.reasoning` plus `reasoning_details`; no `reasoning_content` |
     | Tool-result turn replaying the reasoning as `reasoning_content`, as `reasoning`, or not at all | `z-ai/glm-5.3` (served by Relace) | OpenRouter Chat Completions | 200 for all three |
-    | Reasoning field, streamed with one tool | `qwen/qwen3.6-27b` (served by Reka) | OpenRouter Chat Completions | `delta.reasoning` plus `reasoning_details`; no `reasoning_content`; replay not probed |
+    | Reasoning field, streamed with one tool | `qwen/qwen3.6-27b` (served by Reka) | OpenRouter Chat Completions | `delta.reasoning` plus `reasoning_details`; no `reasoning_content`. Replay not probed: the model answered without a tool call, and no `qwen/` rule replays anything |
     | Harness run, `--provider openai-compatible` | `z-ai/glm-5.3` | OpenRouter Chat Completions | `success`; the reasoning streamed as 8 `thinking_delta` events |
-    | Harness run, `--lazy-tools --lazy-tools-strategy harness`, one search then a loaded tool | `claude-haiku-5-5` | Messages API | Before the binding fix: the turn after the search failed with the `tools` 400. After it: `success` in 3 turns |
+    | Harness run, `--lazy-tools --lazy-tools-strategy harness`, one search then a loaded tool | `claude-haiku-5-5` | Messages API | Before the binding fix: the turn after the search failed with the `tools` 400. After it: `success` in 3 turns, with the thinking stripped from the `tool_use` turn the request answers. Other Claude models are unprobed for that shape |
     | First-party DeepSeek through OpenRouter (`provider.order: ["DeepSeek"]`) | `deepseek/deepseek-v4.1-flash-1017` | OpenRouter Chat Completions | unprobed: 404, the account's privacy setting removes the DeepSeek host (see risk 9) |
     | `reasoning_content` from first-party Z.ai and Alibaba endpoints | GLM, Qwen | Z.ai, DashScope | unprobed: no credential for either |
+    | A thinking-only turn followed by a tool round trip | Claude 5.5 | Messages API | unprobed: the one attempt placed a `tool_use` turn after content it was not produced under, so its 400 ("content before this block that was not present when it was created") reflects the probe's construction, not the thinking-only turn |
     | `reasoning.summary` on OpenAI's own API, and its organisation-verification requirement | GPT-5.x | OpenAI Responses | unprobed: no OpenAI credential |
 
     A signed thinking block is bound to the system prompt, the tool
@@ -1382,9 +1385,12 @@ concerns are tracked separately:
     changes, as harness-strategy lazy loading does after a search. The
     comparison uses the tool definitions before native tool search
     un-defers loaded tools on the wire; whether that un-deferral breaks
-    the binding is unprobed. No registry rule is involved, because only
-    the Anthropic streaming and batch adapters produce thinking blocks.
-    The thinking-only turn needs no change.
+    the binding is unprobed. No registry rule or adapter fixture is
+    involved: only the Anthropic streaming and batch adapters produce
+    thinking blocks, the adapter sends what the loop gives it, and the
+    rejection depends on what earlier requests carried, which a
+    single-request wire fixture cannot express. The core tests pin the
+    strip instead. The thinking-only turn needs no change.
 
     The `openai-compatible` adapter already streams `delta.reasoning` as
     `thinking_delta`; the GLM capture is now a fixture beside the
