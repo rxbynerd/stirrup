@@ -148,6 +148,7 @@ type ProviderQuirks struct {
     ParallelToolCalls     ParallelToolCallsCapability    // native parallel-tool-call control (#222)
     ToolExamples          ToolExamplesCapability         // accepts worked tool-input examples: the JSON-Schema `examples` keyword, or a native wire field when Native is set (#222)
     ToolSearch            ToolSearchCapability           // native tool search for deferred tool definitions under lazy tool loading, and its Variant (#235)
+    OutputSchema          OutputSchemaCapability         // enforces a JSON Schema on the response text (structured outputs) (#638)
 
     // Behaviour flags (per-adapter typed sub-structs).
     BehaviourFlags  ProviderBehaviourFlags
@@ -158,7 +159,8 @@ A **capability** is a top-level field rather than a per-adapter
 behaviour flag when it expresses a concept the loop reasons about
 uniformly across families even though each provider encodes it
 differently. `ToolChoice`, `StructuredToolResults`,
-`ParallelToolCalls`, `ToolExamples`, and `ToolSearch` are the five: every family
+`ParallelToolCalls`, `ToolExamples`, `ToolSearch`, and `OutputSchema`
+are the six: every family
 has *some* form of (or lack of) each, so modelling any of them under
 one provider's sub-struct would force the other adapters to reach
 across family boundaries to read it, which the behaviour-flag
@@ -517,6 +519,13 @@ test catch malformed paths at registry-build time.
 | `anthropic`         | `claude-mythos-5*` | Anthropic Claude Mythos 5 / 5.1: native BM25 tool search with `defer_loading` (documented, not probed) |
 | `openai-responses`  | `gpt-5.[4-9]*`     | OpenAI Responses gpt-5.4 and later 5.x: hosted `tool_search` with `defer_loading` (probed on `gpt-5.4-mini`: stream, verbatim replay, namespaces, batch; `gpt-5.5` first turn only; see [providers.md](providers.md#hosted-tool-search)). Endpoint profile `openai` only |
 | `openai-responses`  | `gpt-6*`           | OpenAI Responses gpt-6 family: hosted `tool_search` with `defer_loading` (probed on `gpt-6-luna` and `gpt-6-astra`, first turn only). Endpoint profile `openai` only |
+| `anthropic`         | `claude-opus-4-[7-8]*`, `claude-opus-5*`, `claude-sonnet-5*`, `claude-fable-5*`, `claude-mythos-5*` | Structured outputs via `output_config.format` `json_schema` (documented, not probed) |
+| `anthropic`         | `claude-haiku-5*`  | Anthropic Claude Haiku 5.5: structured outputs via `output_config.format` `json_schema`, alone and beside `effort` (probed 2026-10-29: schema-conformant verdict) |
+| `openai-compatible` | `gpt-5*`, `gpt-6*` | Structured outputs via `response_format` `json_schema` with `strict: true` (documented, not probed) |
+| `openai-compatible` | `*/gpt-5*`         | OpenAI gpt-5 family via gateway prefix: structured outputs via `response_format`; enforcement depends on the gateway (probed on `openai/gpt-5-nano` via OpenRouter 2026-10-29: schema-conformant verdict) |
+| `openai-compatible` | `*/gpt-6*`         | OpenAI gpt-6 family via gateway prefix: structured outputs via `response_format`; enforcement depends on the gateway (documented, not probed) |
+| `openai-responses`  | `gpt-5*`, `gpt-6*` | Structured outputs via `text.format` `json_schema` with `strict: true` (documented, not probed) |
+| `gemini`            | `gemini-3*`        | Gemini 3: structured outputs via `generationConfig.responseFormat.text` (documented, not probed) |
 
 The ten tool search rules set `ToolSearchCapability`, which the loop
 reads under [lazy tool loading](configuration.md#lazy-tool-loading) to
@@ -880,6 +889,56 @@ requests from an unverified organisation fail. OpenRouter's Responses
 endpoint accepts `reasoning.summary: "auto"` and streams the summary as
 `response.reasoning_summary_text.delta` events (see
 [§9](#9-open-risks) risk 12).
+
+### 3.4 Structured outputs
+
+`StreamParams.OutputSchema` (a name and a JSON Schema) asks the
+provider to constrain the response text to the schema. It is the
+replacement for forced `tool_choice` as a way to obtain a JSON verdict:
+Claude Opus 5.5, Sonnet 5.5 and Fable 5.1 return a 400 on `any`/`tool`,
+while structured outputs are GA on every first-party wire. The
+`cloud-judge` guard and the `llm-judge` verifier set it on every call;
+no `RunConfig` field exposes it, and it is distinct from
+`RunConfig.outputSchema`, which the loop validates harness-side on the
+final answer.
+
+Each adapter projects the schema onto its native field only when the
+resolved `OutputSchema` capability advertises support and
+`OutputSchema.Validate` passes (a name in the tool-name grammar, a JSON
+object schema). Otherwise the request goes out without a schema, the
+adapter logs `outputSchema ignored` at debug (unadvertised control) or
+warn (invalid schema), and the caller's prompt-only JSON contract
+applies. The schema body is never logged.
+
+| Adapter | Wire field | Probed |
+|---|---|---|
+| `anthropic` | `output_config.format: {type: json_schema, schema}`, beside `output_config.effort`; the API takes no schema name and needs no beta header | `claude-haiku-5-5`, 2026-10-29: schema alone and beside `effort: low`, both returned a bare conformant object |
+| `openai-compatible` | `response_format: {type: json_schema, json_schema: {name, strict: true, schema}}` | `openai/gpt-5-nano` via OpenRouter, 2026-10-29: bare conformant object; first-party ids documented, not probed |
+| `openai-responses` | `text.format: {type: json_schema, name, strict: true, schema}`, emitted before `prompt_cache_key` | documented, not probed |
+| `gemini` | `generationConfig.responseFormat.text: {mimeType: APPLICATION_JSON, schema}` | documented, not probed |
+| `bedrock` | nothing; logged at debug | n/a |
+
+`strict` is pinned to `true` on both OpenAI wires because the harness
+only requests a schema it wants enforced; the judges' schemas are
+already in the strict subset (every property required,
+`additionalProperties: false`). The Gemini field follows the current
+`generateContent` reference, which marks the older
+`responseMimeType` / `responseSchema` pair and `responseJsonSchema` as
+deprecated in favour of `responseFormat`; the schema there is standard
+JSON Schema, not the OpenAPI-subset `Schema` type tool declarations
+use, so `additionalProperties` is accepted. Whether Vertex AI accepts
+`responseFormat` has not been probed. Bedrock's Converse API exposes
+`outputConfig.textFormat` (the SDK carries it) but the adapter resolves
+no quirks today, so wiring it is deferred.
+
+The rules are positive allow-lists: Claude 5.x and Opus 4.7+, gpt-5 and
+gpt-6 on both OpenAI wires (gateway-prefixed on Chat Completions too,
+where enforcement depends on the gateway), and Gemini 3. Anthropic also
+documents the 4.5 and 4.6 generation; those stay unruled until probed.
+Open-weight and unknown models resolve to no support, so a judge never
+400s on an unprobed model. The `openai-responses` rules are not
+endpoint-scoped: `text.format` is a core request field a gateway
+forwards, unlike the hosted tool search.
 
 ## 4. Composition with the NormalizingAdapter
 

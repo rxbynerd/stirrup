@@ -677,7 +677,12 @@ back as a user message. Three implementations ship:
   `{"reasoning": string, "nonce": string, "passed": bool, "feedback": string}`
   (reasoning first; the shape without `reasoning` is also accepted)
   from the top-level JSON object whose `nonce` equals the per-call
-  fence nonce. The transcript is fenced as untrusted data, with each
+  fence nonce. The same object is requested as a structured output
+  (`StreamParams.OutputSchema`) where the model's quirks advertise one
+  (see [provider-quirks.md § 3.4](provider-quirks.md#34-structured-outputs));
+  every `VerificationResult` records `structuredOutput: json_schema`
+  or `prompt_only` in its details so malformed verdicts can be split
+  by whether the provider enforced the schema. The transcript is fenced as untrusted data, with each
   tool result in its own fence (see [`security.md` § Judge and
   classifier prompts](security.md#judge-and-classifier-prompts)).
   Malformed responses, including a verdict without the nonce or one

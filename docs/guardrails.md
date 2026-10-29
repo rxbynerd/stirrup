@@ -375,11 +375,14 @@ stirrup harness \
 Reuses an existing `ProviderAdapter` (Anthropic, OpenAI-compatible)
 with a cheap default model, `claude-haiku-5-5`. No new SDK
 dependency: it streams a single completion at temperature 0 and low
-reasoning effort, and extracts the verdict from a JSON field in the
-response. Each field reaches the wire only where the model's quirks
-allow it: Claude Haiku 5.5 rejects a non-default temperature, so the
-Anthropic adapter drops it and keeps the effort setting. Use this when the deployment cannot run its own GPU-
-attached vLLM.
+reasoning effort, asks the provider to enforce the verdict object as a
+structured output, and extracts the verdict from the response text.
+Each field reaches the wire only where the model's quirks allow it:
+Claude Haiku 5.5 rejects a non-default temperature, so the Anthropic
+adapter drops it and keeps the effort setting, and a model with no
+advertised structured-output control gets the request without the
+schema. Use this when the deployment cannot run its own GPU-attached
+vLLM.
 
 `cloud-judge` is an escalation-grade classifier, not a fast path:
 every check is a full round trip to a hosted model, on the order of
@@ -406,9 +409,27 @@ containing newlines or quotes cannot add prompt structure. A phase
 the adapter does not recognise is classified under the `post_turn`
 default criteria.
 
+**Structured output.** Every check sets `StreamParams.OutputSchema`
+to the verdict object as a JSON Schema: `nonce`, then `reasoning`,
+then `verdict` as an enum of `allow` and `deny`, every member required
+and no other member allowed. Where the model's quirks advertise the
+capability (see [provider-quirks.md § 3.4](provider-quirks.md#34-structured-outputs)),
+the adapter projects it onto the provider's native field and the model
+cannot produce anything but a conformant object; elsewhere the request
+goes out without the schema and the prompt instruction below is the
+only contract. The text parse described next runs in both cases, so a
+provider that stops enforcing the schema degrades to the prompt-only
+path rather than failing. The decision records which path applied as
+`structuredOutput`: `json_schema` when the registry says the provider
+enforced the schema for the judge model, `prompt_only` otherwise. It
+rides the `guard.structured_output` span attribute and the text of a
+parse error, so parse failures can be split by whether the schema was
+enforced. The record follows the built-in registry, the same lookup the
+adapter gates on.
+
 **Verdict extraction.** The verdict must carry the call's fence
 nonce. The instruction after the fence asks for
-`{"nonce": "<nonce>", "verdict": "allow"|"deny", "reason": "..."}`
+`{"nonce": "<nonce>", "reasoning": "<short analysis>", "verdict": "allow"|"deny"}`
 and states the nonce value; the content was written before the nonce
 existed, so a verdict planted in it cannot carry the right one. The
 adapter scans the response for top-level JSON objects, reads members
@@ -698,7 +719,8 @@ Each guard call produces a span named `guard.<phase>` (e.g.
 `post_turn` spans are children of the run's `invoke_agent` span;
 `pre_tool` spans are children of the call's `execute_tool` span.
 Standard attributes: `guard.id`, `guard.criterion`, `guard.score`,
-`guard.verdict`, `guard.latency_ms`.
+`guard.verdict`, `guard.latency_ms`, and, for `cloud-judge`,
+`guard.structured_output` (`json_schema` or `prompt_only`).
 
 ### OTel metrics
 
