@@ -692,6 +692,14 @@ wins because it is the more explicit signal. The wire shape is
 identical between the two paths, so consumers do not need to detect
 which surface produced the line.
 
+`--output` is a `stirrup harness` flag with no `RunConfig` field of its
+own. A gRPC control plane driving `stirrup job` gets the same
+`STIRRUP_RESULT` line by setting `resultSink.type: "stdout-json"` in
+the `task_assignment`'s `RunConfig` (proto `ResultSinkConfig`); `job`
+emits it through the configured sink once the run ends. `job` always
+writes the text summary to stderr, so the flag's `none` value, which
+only suppresses that summary, has no `job` counterpart.
+
 The exit code reflects the run outcome regardless of `--output`: a
 failed or cancelled run still exits non-zero. A cancellation
 mid-flight emits a partial `RunResult` carrying the cancellation
@@ -782,7 +790,7 @@ for the operator walkthrough).
 | Flag | Default | Notes |
 |---|---|---|
 | `--export-workspace-to` | (none) | Destination URI for the workspace tarball (e.g. `gs://bucket/runs/<runId>/workspace.tar.gz`). Only `gs://` is supported in v1. Overrides `executor.workspaceExportTo` from `--config` when explicitly set; an explicit empty value clears the field. JSON path: `executor.workspaceExportTo`. |
-| `--export-workspace-required` | `true` when a destination is set | Whether a failed workspace export turns a successful run into outcome `handoff_failed` and a non-zero exit. `--export-workspace-required=false` records the failure in `RunResult.workspaceExport` without failing the run. Requires a destination. JSON path: `executor.workspaceExportRequired`. |
+| `--export-workspace-required` | `true` when a destination is set | Whether a failed workspace export turns a successful run into outcome `handoff_failed` and a non-zero exit. `--export-workspace-required=false` records the failure in `RunResult.workspaceExport` without failing the run. Requires a destination. JSON path: `executor.workspaceExportRequired`. A gRPC control plane sets `executor.workspaceExportRequired` (proto `ExecutorConfig.workspace_export_required`) in the `task_assignment`'s `RunConfig`; `stirrup job` applies it to every run, and leaving it unset keeps the destination default. |
 
 The export runs even when the run itself failed, so the workspace
 state stays inspectable after a non-zero exit. Uploads authenticate
