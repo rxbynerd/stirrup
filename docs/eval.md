@@ -1479,7 +1479,10 @@ trials of a task are independent samples of it. `result.json` keeps one
 `SuiteResult.trials` records K and is always written, as 1 for a single
 run. `passRate` is the mean per-task pass fraction, which equals the
 familiar pass rate when K is 1. A result file without `trials` fields,
-including every committed baseline, loads as one trial per task.
+such as a single-run baseline, loads as one trial per task.
+`SuiteResult.trialsPolicy` records how the trials were scheduled
+(`fixed` or `confirm-on-fail`, below); a result file without it ran
+under `fixed`.
 
 The gate is stricter than the majority rule about errors: the
 deterministic-flip rule in [Gate semantics](#gate-semantics) counts an
@@ -1487,6 +1490,44 @@ errored trial as a non-pass, so a harness that errors on every run
 blocks instead of passing. The credential preflight that runs before
 the suite is the only separation between an infrastructure failure
 and a regression; once trials run, errors count against the gate.
+
+#### Confirm-on-fail trials
+
+`--trials-policy confirm-on-fail` runs every task once and runs the
+remaining K−1 trials only for a task whose first trial did not pass.
+"Did not pass" follows the gate: under `require_healthy` a judge pass
+on an unhealthy run is confirmed too. The outcome is the strict
+majority over the trials the task actually ran, so a task that passed
+its first trial is a pass on one trial, and a confirmed task is
+decided over all K. Reruns are not cut short once a majority is
+settled, so a task needs K failures to count as a deterministic flip,
+exactly as under `fixed`. On a suite where most tasks pass, the run
+costs close to one trial per task instead of K.
+
+The saving changes the sample. Per-task trial counts now depend on the
+first outcome, so the per-task pass fractions are no longer identically
+distributed, and a failing task gets K−1 extra chances to reach a
+passing majority. `compare` handles this in three ways:
+
+- When either side ran `confirm-on-fail`, the paired statistics (mean
+  delta, paired standard error, interval, upper bound, sign-flip p,
+  and MDE), the noise floor, and the pass^k / pass@k rows use each
+  task's first trial alone, on both sides. The first trial is a single
+  unbiased run of every task, so these behave as they do for a
+  single-run comparison, including the `warn` rule's sensitivity to one
+  failure. The text report states this in a `Note:` line, the side
+  lines read `K=3 (confirm-on-fail)`, and the JSON sets
+  `summary.firstTrialOnly`.
+- Pass rates, the deterministic-flip rule, and the regression list
+  still use every trial run. This is where the confirmation acts: a
+  first-trial failure that the reruns overturn is neither a flip nor
+  (above the flip threshold) a listed regression.
+- A `confirm-on-fail` result is biased upward against a `fixed` one,
+  so `compare` refuses to compare results recorded under different
+  policies and exits `2`. `--allow-policy-mismatch` compares them
+  anyway, logs a warning, and adds a `Warning:` line to the report.
+  Baselines and the runs gated against them should therefore use the
+  same policy.
 
 #### Estimators
 
@@ -1553,7 +1594,8 @@ statistics use only the tasks both results share.
 
 The text report adds a note when one lost trial exceeds the margin,
 that is, when 1/(n·K) is above m for n paired tasks and K current
-trials. `warn` then reacts to a single flaky trial.
+trials (K is 1 when the paired statistics use the first trial only).
+`warn` then reacts to a single flaky trial.
 
 With one trial per task every d<sub>i</sub> is −1, 0, or +1, and a −1
 is always a deterministic flip, so the gate blocks exactly when a task
@@ -1615,9 +1657,14 @@ level down when K is above 1:
 <output>/<suite>/<task>/trial-<i>/       # K > 1, i = 1..K
 ```
 
+With `--trials-policy confirm-on-fail` a task whose first trial passed
+has only `trial-1/`; see
+[Confirm-on-fail trials](#confirm-on-fail-trials) for the schedule.
+
 The summary printed to stdout states K and the number of harness runs
-when K is above 1. A dry run validates each task once and reports the
-runs it would have made.
+when K is above 1; under `confirm-on-fail` it counts the runs actually
+made and the tasks that were rerun. A dry run validates each task once
+and reports the runs it would have made.
 
 When the suite declares a baseline (`run_config_file` or inline
 `run_config`), the runner merges the per-task
@@ -1634,6 +1681,7 @@ tree gains a `run_config.redacted.json` per task. See
 | `--harness`      | `stirrup` on PATH| Harness binary to invoke for live runs.                      |
 | `--concurrency`  | `1`              | Number of task trials executed in parallel. Workers preserve suite order in `result.json`. Values larger than the number of task trials cap at that number. Concurrent invocations talking to the same provider hit rate limits faster, so the value should respect the provider account's per-minute caps. |
 | `--trials`       | `1`              | Independent runs per task, from 1 to 20. When the flag is not given, the suite's `trials` attribute applies, else one run. Values outside 1-20 are rejected. Provider spend scales linearly with K. |
+| `--trials-policy` | `fixed`         | `fixed` runs every task K times. `confirm-on-fail` runs every task once and the remaining K−1 trials only for a task whose first trial did not pass; see [Confirm-on-fail trials](#confirm-on-fail-trials). Recorded in `result.json` as `trialsPolicy`. `compare` refuses a baseline and current result recorded under different policies. |
 | `--dry-run`      | `false`          | Validate the suite (and, when present, the merged per-task RunConfig via `ValidateRunConfig`), print the summary, and exit without writing `result.json` or JUnit XML. |
 | `--junit`        | empty            | Write JUnit XML to this path after `result.json`. Each task is one `testcase`. A task with more than one trial carries a `system-out` summary of every trial, its `failure` or `error` message is prefixed with the pass count (for example `1/3 trials passed: ...`), and the body ends with the reason of each non-passing trial. Single-trial output is unchanged. |
 | `--model`        | empty            | Model to run every task with, forwarded to each harness invocation as `--model`. Overrides the harness default and any model pinned by the suite's `run_config` block. CI uses this to pin the per-push gate to a cheap model and the release sweep to stronger ones. |
@@ -1713,7 +1761,7 @@ the `eval-gate` CI job uses.
 |---|---|
 | `0` | The gate is `pass`, `warn`, or `inconclusive`. |
 | `1` | The gate is `block`. |
-| `2` | Usage or I/O error: an invalid option value, a missing flag, an unreadable result file, corrupt JSON, or a failed `--output` write. |
+| `2` | The comparison did not run: an invalid option value, a missing flag, an unreadable result file, corrupt JSON, an unknown `trialsPolicy`, results recorded under different trials policies without `--allow-policy-mismatch`, or a failed `--output` write. |
 
 The distinct codes let a caller tell a regression (`1`) from a
 comparison that did not run (`2`).
@@ -1725,6 +1773,7 @@ comparison that did not run (`2`).
 | `--warn-margin`    | `0.10`   | Mean pass-fraction drop that reports `warn` when the one-sided upper bound does not fall below zero. Must be within [0, 1]. |
 | `--flip-threshold` | `0.5`    | Current pass fraction at or below which a task that passed every baseline trial is listed as a regression, and the baseline pass fraction at or below which a task that passes every current trial is listed as an improvement. Must be within [0, 1). |
 | `--output`         | empty    | Also write the comparison report as JSON to this path. |
+| `--allow-policy-mismatch` | `false` | Compare a baseline and current result recorded under different trials policies, with a logged warning and a `Warning:` line in the report, instead of exiting `2`. See [Confirm-on-fail trials](#confirm-on-fail-trials). |
 
 The text report opens with the gate result and its reasons, then the
 pass rate of each side with its Wilson interval over tasks, task-level
@@ -1732,8 +1781,11 @@ standard error, task count n, and trials K, each followed by a pass^k /
 pass@k row. A `Paired:` line gives n, d̄, the paired standard error,
 the two-sided 95% t interval, the one-sided 95% upper bound, the
 sign-flip p (marked exact or approximate), and the minimum detectable
-effect (`n/a` when the standard error is zero). A `Note:` line appears
-when one lost trial exceeds the warn margin. The noise floor, the tasks
+effect (`n/a` when the standard error is zero). When either side ran
+`confirm-on-fail`, a `Note:` line says the paired statistics use each
+task's first trial only, and a `Warning:` line appears when the two
+sides' policies differ. A `Note:` line appears when one lost trial
+exceeds the warn margin. The noise floor, the tasks
 missing from or new in the current run, regressions, and improvements
 follow. For the worked example in [Statistics](#statistics) at the
 default options (the same data report `warn` with a `--warn-margin` of
@@ -1769,7 +1821,8 @@ every task pairs. `summary` holds:
 | `hasRegressions` | Whether the regression list is non-empty. |
 | `warnMargin`, `flipThreshold` | The options the comparison ran with. |
 | `deterministicFlips` | Task IDs that passed every baseline trial and failed or errored every current trial. |
-| `baseline`, `current` | Per-side `tasks`, `trials`, `passRate`, `stdErr` (omitted below two tasks), `wilsonLow`, `wilsonHigh`, `passHatK`, `passAtK`. |
+| `baseline`, `current` | Per-side `tasks`, `trials`, `trialsPolicy` (`fixed` for a result file without one), `passRate`, `stdErr` (omitted below two tasks), `wilsonLow`, `wilsonHigh`, `passHatK`, `passAtK`. |
+| `firstTrialOnly` | Present and `true` when either side ran `confirm-on-fail`: `paired`, `noiseFloor`, `passHatK`, and `passAtK` then use each task's first trial alone, while the per-task `delta` values in `tasks` still cover every trial. See [Confirm-on-fail trials](#confirm-on-fail-trials). |
 | `paired` | `tasks`, `meanDelta`, `stdErr`, `df`, `ciLow`, `ciHigh`, `upperBound`, `pValue`, `pValueExact`, `mde` (omitted when `stdErr` is zero). The whole object is omitted below two paired tasks. |
 | `noiseFloor` | `perTrialPassRate`, `pooledTrials`, `singleRunFalseAlarm`, `flipRuleFalseAlarm`. Present only when every paired baseline task passed every trial; the two rates are omitted when every pooled trial passed. |
 
