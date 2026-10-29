@@ -1,9 +1,9 @@
 // Package resultsink emits the run's small RunResult payload at
 // end-of-run. The sink is selected by RunConfig.ResultSink.Type; the
 // closed set is documented in types.ResultSinkConfig and validated by
-// types.ValidateRunConfig. Only "none" and "stdout-json" are
-// implemented today — "gcp-pubsub" and "gcs" are reserved values that
-// validation rejects before reaching this factory.
+// types.ValidateRunConfig. "stdout-json" writes a sentinel-prefixed
+// line to stdout; "gcs" and "gcp-pubsub" deliver the same JSON to Google
+// Cloud with bounded retry.
 //
 // The result sink is distinct from the trace emitter (which carries
 // the run's *evidence* — full JSONL trace and spans). The sink carries
@@ -24,6 +24,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/rxbynerd/stirrup/harness/internal/credential"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -262,12 +263,10 @@ func marshalResultLine(result types.RunResult) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// NewResultSink returns the ResultSink selected by cfg. Defence-in-depth
-// for reserved values: validation already rejects gcp-pubsub and gcs at
-// config-load, but a programmatic caller that bypasses
-// types.ValidateRunConfig (e.g. a test or a future embedding API path)
-// would otherwise reach a nil-component crash here.
-func NewResultSink(cfg *types.ResultSinkConfig) (ResultSink, error) {
+// NewResultSink returns the ResultSink selected by cfg. creds
+// authenticates the gcs and gcp-pubsub sinks and is ignored by the
+// others.
+func NewResultSink(cfg *types.ResultSinkConfig, creds credential.Source) (ResultSink, error) {
 	if cfg == nil {
 		return NoneSink{}, nil
 	}
@@ -276,8 +275,19 @@ func NewResultSink(cfg *types.ResultSinkConfig) (ResultSink, error) {
 		return NoneSink{}, nil
 	case "stdout-json":
 		return NewStdoutJSONSink(), nil
-	case "gcp-pubsub", "gcs":
-		return nil, fmt.Errorf("resultSink.type=%q is reserved but not yet implemented", cfg.Type)
+	case "gcs":
+		return NewGCSSink(GCSSinkOptions{
+			Bucket:           cfg.Bucket,
+			ObjectPrefix:     cfg.ObjectPrefix,
+			CredentialSource: creds,
+		})
+	case "gcp-pubsub":
+		return NewPubSubSink(PubSubSinkOptions{
+			Topic:            cfg.Topic,
+			OrderingKey:      cfg.OrderingKey,
+			Attributes:       cfg.Attributes,
+			CredentialSource: creds,
+		})
 	default:
 		return nil, fmt.Errorf("unsupported resultSink.type: %q", cfg.Type)
 	}

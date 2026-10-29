@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -4942,11 +4943,12 @@ func TestEmitRunOutput_JSONWithNilTraceLogsWarning(t *testing.T) {
 // discards silently.
 type stubResultSink struct {
 	calls []types.RunResult
+	err   error
 }
 
 func (s *stubResultSink) Emit(_ context.Context, r types.RunResult) error {
 	s.calls = append(s.calls, r)
-	return nil
+	return s.err
 }
 
 // installStubResultSink rewires the newResultSink seam to return the
@@ -4964,51 +4966,77 @@ func installStubResultSink(t *testing.T, stub *stubResultSink) {
 // so installStubResultSink's signature matches newResultSink's.
 type resultsinkInterface = resultsink.ResultSink
 
-// TestEmitRunOutput_JSONWithNonStdoutSinkAlsoFires pins the
-// forward-compatibility surface for a future gcp-pubsub / gcs sink
-// under --output=json: the flag's STIRRUP_RESULT line goes to stdout,
-// and the configured sink also fires.
-func TestEmitRunOutput_JSONWithNonStdoutSinkAlsoFires(t *testing.T) {
-	must := require.New(t)
-	check := assert.New(t)
-	stub := &stubResultSink{}
-	installStubResultSink(t, stub)
+// TestEmitRunOutput_RemoteSinkLeftToResultDelivery pins that the
+// post-run output never sends to a gcs or gcp-pubsub sink, which
+// resultDelivery has already sent to before "done", while --output=json
+// still writes the STIRRUP_RESULT line.
+func TestEmitRunOutput_RemoteSinkLeftToResultDelivery(t *testing.T) {
+	for _, mode := range []string{"text", "json", "none"} {
+		t.Run(mode, func(t *testing.T) {
+			must := require.New(t)
+			stub := &stubResultSink{}
+			installStubResultSink(t, stub)
+			cfg := &types.RunConfig{ResultSink: &types.ResultSinkConfig{Type: "gcp-pubsub"}}
 
-	rt := outputModeRunTrace()
+			stdoutDone := captureStdout(t)
+			stderrDone := captureStderr(t)
+			emitRunOutput(context.Background(), cfg, outputModeRunTrace(), mode)
+			stdout := stdoutDone()
+			stderrDone()
 
-	cfg := &types.RunConfig{ResultSink: &types.ResultSinkConfig{Type: "gcp-pubsub"}}
-
-	stdoutDone := captureStdout(t)
-	emitRunOutput(context.Background(), cfg, rt, "json")
-	stdout := stdoutDone()
-
-	check.Truef(strings.HasPrefix(stdout, "STIRRUP_RESULT "), "stdout should still carry STIRRUP_RESULT under --output=json, got: %q", stdout)
-	must.Len(stub.calls, 1, "configured sink should fire exactly once")
-	check.Equal(rt.ID, stub.calls[0].RunID)
+			must.Empty(stub.calls)
+			must.Equal(mode == "json", strings.HasPrefix(stdout, "STIRRUP_RESULT "), "stdout: %q", stdout)
+		})
+	}
 }
 
-// TestEmitRunOutput_NoneWithNonStdoutSinkStillFires pins that under
-// --output=none, the stderr summary and stdout STIRRUP_RESULT are both
-// suppressed, but a sink targeting a non-stdout destination still fires.
-func TestEmitRunOutput_NoneWithNonStdoutSinkStillFires(t *testing.T) {
-	must := require.New(t)
-	check := assert.New(t)
-	stub := &stubResultSink{}
-	installStubResultSink(t, stub)
+// TestResultDelivery_Deliver_SendsOnlyToRemoteSinks pins which sinks the
+// loop delivers to before "done", and that the RunResult it sends is the
+// one buildRunResult makes from the trace.
+func TestResultDelivery_Deliver_SendsOnlyToRemoteSinks(t *testing.T) {
+	cases := []struct {
+		sink     *types.ResultSinkConfig
+		wantSent bool
+	}{
+		{nil, false},
+		{&types.ResultSinkConfig{Type: "none"}, false},
+		{&types.ResultSinkConfig{Type: "stdout-json"}, false},
+		{&types.ResultSinkConfig{Type: "gcs"}, true},
+		{&types.ResultSinkConfig{Type: "gcp-pubsub"}, true},
+	}
+	for _, tc := range cases {
+		name := "nil"
+		if tc.sink != nil {
+			name = tc.sink.Type
+		}
+		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
+			stub := &stubResultSink{}
+			installStubResultSink(t, stub)
+			rt := outputModeRunTrace()
 
-	rt := outputModeRunTrace()
+			must.NoError(resultDelivery{}.Deliver(context.Background(), &types.RunConfig{ResultSink: tc.sink}, rt))
+
+			if !tc.wantSent {
+				must.Empty(stub.calls)
+				return
+			}
+			must.Len(stub.calls, 1)
+			must.Equal(buildRunResult(rt, types.DefaultMaxFinalAssistantTextBytes), stub.calls[0])
+		})
+	}
+}
+
+// TestResultDelivery_Deliver_ReturnsSinkFailure pins that a failed
+// delivery is returned for the loop to report rather than swallowed.
+func TestResultDelivery_Deliver_ReturnsSinkFailure(t *testing.T) {
+	must := require.New(t)
+	installStubResultSink(t, &stubResultSink{err: errors.New("publish: after 3 attempt(s): HTTP 503")})
 	cfg := &types.RunConfig{ResultSink: &types.ResultSinkConfig{Type: "gcp-pubsub"}}
 
-	stdoutDone := captureStdout(t)
-	stderrDone := captureStderr(t)
-	emitRunOutput(context.Background(), cfg, rt, "none")
-	stdout := stdoutDone()
-	stderr := stderrDone()
+	err := resultDelivery{}.Deliver(context.Background(), cfg, outputModeRunTrace())
 
-	check.Empty(stdout, "stdout should be empty under --output=none")
-	check.Empty(stderr, "stderr should be empty under --output=none")
-	must.Len(stub.calls, 1, "configured sink should fire exactly once")
-	check.Equal(rt.ID, stub.calls[0].RunID)
+	must.ErrorContains(err, "after 3 attempt(s)")
 }
 
 // TestEmitRunOutput_UnrecognisedModeLogsAndDefaultsToText pins that an

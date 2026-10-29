@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -637,10 +638,8 @@ func (rc RunConfig) Redact() RunConfig {
 		}
 		redacted.TraceEmitter.Headers = headers
 	}
-	// ResultSink.Attributes (reserved for the future gcp-pubsub adapter)
-	// may carry "secret://" references the same way trace-emitter
-	// headers do. Mirror the same rewrite so a recorded RunConfig
-	// never persists the reference into a trace or recording.
+	// Validation rejects "secret://" values in ResultSink.Attributes; the
+	// rewrite still covers a config recorded without validation.
 	if redacted.ResultSink != nil && len(redacted.ResultSink.Attributes) > 0 {
 		sink := *redacted.ResultSink
 		attrs := make(map[string]string, len(sink.Attributes))
@@ -1475,30 +1474,57 @@ type TraceArchiveConfig struct {
 // ResultSinkConfig selects the result sink implementation: the run's
 // *answer* (a small RunResult JSON payload), distinct from the trace
 // emitter's *evidence* (full JSONL trace + spans). Discriminator is a
-// closed set so AWS/Azure adapters can land without breaking changes;
-// only "none" and "stdout-json" are implemented today. See
-// docs/cloud-run-jobs.md.
+// closed set so AWS/Azure adapters can land without breaking changes.
+// See docs/configuration.md#result-sinks.
 type ResultSinkConfig struct {
 	// Type selects the adapter: "none" (disabled, default), "stdout-json"
-	// (writes "STIRRUP_RESULT <json>" to stdout at end-of-run), or the
-	// reserved "gcp-pubsub" / "gcs" (rejected as not yet implemented).
+	// (writes "STIRRUP_RESULT <json>" to stdout at end-of-run), "gcs"
+	// (writes one object per run) or "gcp-pubsub" (publishes one message
+	// per run).
 	Type string `json:"type"`
 
-	// Topic is the Pub/Sub topic name for the future "gcp-pubsub" adapter.
-	// Parsed but currently unused; rejected on any other type.
+	// Topic is the full Pub/Sub topic resource name,
+	// "projects/{project}/topics/{topic}". Required for "gcp-pubsub";
+	// rejected on any other type.
 	Topic string `json:"topic,omitempty"`
 
-	// Attributes are extra message attributes for the future "gcp-pubsub"
-	// adapter. Values may carry "secret://" references rewritten by
-	// Redact(). Parsed but currently unused; rejected on any other type.
+	// Attributes are static message attributes copied verbatim onto the
+	// "gcp-pubsub" message. The "runId" key is reserved for the harness,
+	// and "secret://" references are rejected rather than resolved.
+	// Rejected on any other type.
 	Attributes map[string]string `json:"attributes,omitempty"`
 
 	// MaxFinalAssistantTextBytes bounds RunResult.FinalAssistantText. Zero
 	// means DefaultMaxFinalAssistantTextBytes; use
 	// ResolvedMaxFinalAssistantTextBytes rather than reading this field
 	// directly. Applies regardless of which sink (or none) consumes the
-	// result, unlike Topic/Attributes which are gated to gcp-pubsub.
+	// result, unlike the per-adapter fields.
 	MaxFinalAssistantTextBytes int `json:"maxFinalAssistantTextBytes,omitempty"`
+
+	// Bucket is the GCS bucket the "gcs" sink writes
+	// {objectPrefix}{runId}.result.json into. Required for "gcs";
+	// rejected on any other type.
+	Bucket string `json:"bucket,omitempty"`
+
+	// ObjectPrefix is prepended to the "gcs" sink's object name; a
+	// trailing slash is added when absent. Rejected on any other type.
+	ObjectPrefix string `json:"objectPrefix,omitempty"`
+
+	// OrderingKey is copied onto the "gcp-pubsub" message. Rejected on
+	// any other type.
+	OrderingKey string `json:"orderingKey,omitempty"`
+
+	// Credential overrides the default gcp-workload-identity credential
+	// for the "gcs" and "gcp-pubsub" sinks, with the same accepted types
+	// as TraceEmitterConfig.Credential. Rejected on any other type.
+	Credential *CredentialConfig `json:"credential,omitempty"`
+}
+
+// IsRemote reports whether c selects a sink that delivers over the
+// network with a credential (gcs, gcp-pubsub), which the harness sends
+// to before the run's "done". Nil-safe.
+func (c *ResultSinkConfig) IsRemote() bool {
+	return c != nil && (c.Type == "gcs" || c.Type == "gcp-pubsub")
 }
 
 // ResolvedMaxFinalAssistantTextBytes returns c.MaxFinalAssistantTextBytes,
@@ -2307,10 +2333,8 @@ var validLogsExportTypes = map[string]bool{
 }
 
 // validResultSinkTypes is the closed set of ResultSinkConfig.Type values.
-// Only the entries in implementedResultSinkTypes are wired; the rest are
-// reserved so AWS/Azure/gcp-pubsub adapters can ship without breaking the
-// wire schema. The "gcp-" prefix matches the credential discriminators
-// and reserves sibling slots for "aws-sns" / "azure-eventgrid".
+// The "gcp-" prefix matches the credential discriminators and leaves
+// sibling slots for "aws-sns" / "azure-eventgrid".
 var validResultSinkTypes = map[string]bool{
 	"none":        true,
 	"stdout-json": true,
@@ -2318,13 +2342,42 @@ var validResultSinkTypes = map[string]bool{
 	"gcs":         true,
 }
 
-// implementedResultSinkTypes is the subset of validResultSinkTypes with a
-// wired adapter. ValidateRunConfig rejects every other entry with a
-// "not yet implemented" error instead of a nil-component crash at boot.
-var implementedResultSinkTypes = map[string]bool{
-	"none":        true,
-	"stdout-json": true,
+// resultSinkCredentialTypes are the credential types the gcs and
+// gcp-pubsub result sinks can resolve. The sink is built at end-of-run,
+// so any other type is rejected here rather than dropping the result.
+var resultSinkCredentialTypes = map[string]bool{
+	"gcp-workload-identity": true,
+	"gcp-default":           true,
 }
+
+// pubSubTopicPattern matches a full Pub/Sub topic resource name. The
+// project segment admits domain-scoped IDs ("example.com:project"); the
+// topic segment follows Pub/Sub's resource-name rules.
+var pubSubTopicPattern = regexp.MustCompile(`^projects/[a-z][a-z0-9.:-]{4,98}[a-z0-9]/topics/([A-Za-z][A-Za-z0-9._~+%-]{2,254})$`)
+
+// Pub/Sub message limits the gcp-pubsub result sink validates against,
+// so an oversized config fails at boot rather than as a 400 at run end.
+const (
+	maxPubSubAttributes          = 100
+	maxPubSubAttributeKeyBytes   = 256
+	maxPubSubAttributeValueBytes = 1024
+	maxPubSubOrderingKeyBytes    = 1024
+)
+
+// PubSubRunIDAttribute is the gcp-pubsub result sink's message
+// attribute that always carries the run ID, so a subscriber can filter
+// or deduplicate without decoding the payload. Operators cannot set it.
+const PubSubRunIDAttribute = "runId"
+
+// pubSubReservedAttributePrefix keeps a namespace of gcp-pubsub message
+// attributes free for the harness to add without colliding with keys
+// operators chose. Matched case-insensitively.
+const pubSubReservedAttributePrefix = "stirrup"
+
+// maxResultObjectPrefixBytes keeps the gcs result sink's object name,
+// {objectPrefix}{runId}.result.json, within GCS's 1024-byte limit for
+// the longest run ID runIDPattern admits, after validation appends "/".
+const maxResultObjectPrefixBytes = 1024 - 128 - len(".result.json") - 1
 
 var validCredentialTypes = map[string]bool{
 	"static":                           true,
@@ -5959,11 +6012,14 @@ func isPrintableOptionValue(v string) bool {
 }
 
 // validateResultSinkConfig enforces the closed set of resultSink types
-// and rejects reserved-but-not-implemented variants with a clear
-// "not yet implemented" message so an operator sees actionable text
-// instead of a nil-component crash at boot.
+// and each adapter's fields. Every per-adapter field is rejected on the
+// other types, mirroring TraceEmitterConfig, so a block copied from one
+// sink to another cannot silently keep a stale destination. The remote
+// sinks are built at end-of-run, so everything that could stop one being
+// built is checked here instead.
 //
 // A nil ResultSink is equivalent to type=="none" (sink disabled).
+// cfg.ObjectPrefix is normalised to end in "/".
 func validateResultSinkConfig(cfg *ResultSinkConfig, errs *[]string) {
 	if cfg == nil {
 		return
@@ -5976,35 +6032,138 @@ func validateResultSinkConfig(cfg *ResultSinkConfig, errs *[]string) {
 		*errs = append(*errs, fmt.Sprintf("unsupported resultSink type %q", cfg.Type))
 		return
 	}
-	if !implementedResultSinkTypes[cfg.Type] {
-		*errs = append(*errs, fmt.Sprintf(
-			"resultSink type %q is reserved but not yet implemented in this release",
-			cfg.Type,
-		))
+	rejectOn := func(field string, set bool, validFor ...string) {
+		if set && !slices.Contains(validFor, cfg.Type) {
+			*errs = append(*errs, fmt.Sprintf(
+				"resultSink.%s is only valid when type is \"%s\" (got type %q)",
+				field, strings.Join(validFor, `" or "`), cfg.Type,
+			))
+		}
 	}
-	// Topic and Attributes belong only to the gcp-pubsub adapter.
-	// Rejecting them on every other type mirrors the
-	// bucket/objectPrefix/credential rejection on TraceEmitterConfig
-	// and prevents the silent "where did my topic go" confusion when
-	// an operator copies a Pub/Sub block into a stdout-json config.
-	if cfg.Topic != "" && cfg.Type != "gcp-pubsub" {
-		*errs = append(*errs, fmt.Sprintf(
-			"resultSink.topic is only valid when type is \"gcp-pubsub\" (got type %q)",
-			cfg.Type,
-		))
+	rejectOn("topic", cfg.Topic != "", "gcp-pubsub")
+	rejectOn("attributes", len(cfg.Attributes) > 0, "gcp-pubsub")
+	rejectOn("orderingKey", cfg.OrderingKey != "", "gcp-pubsub")
+	rejectOn("bucket", cfg.Bucket != "", "gcs")
+	rejectOn("objectPrefix", cfg.ObjectPrefix != "", "gcs")
+	rejectOn("credential", cfg.Credential != nil, "gcs", "gcp-pubsub")
+
+	switch cfg.Type {
+	case "gcs":
+		validateGCSResultSink(cfg, errs)
+	case "gcp-pubsub":
+		validatePubSubResultSink(cfg, errs)
 	}
-	if len(cfg.Attributes) > 0 && cfg.Type != "gcp-pubsub" {
-		*errs = append(*errs, fmt.Sprintf(
-			"resultSink.attributes is only valid when type is \"gcp-pubsub\" (got type %q)",
-			cfg.Type,
-		))
+	if cfg.Credential != nil && cfg.IsRemote() {
+		validateCredentialConfig(cfg.Credential, "resultSink.credential", errs)
+		if cfg.Credential.Type != "" && !resultSinkCredentialTypes[cfg.Credential.Type] {
+			*errs = append(*errs, fmt.Sprintf(
+				"resultSink.credential.type %q is not supported by the %s result sink (supported: \"gcp-workload-identity\", \"gcp-default\")",
+				cfg.Credential.Type, cfg.Type,
+			))
+		}
 	}
 	// MaxFinalAssistantTextBytes bounds the RunResult field, not a
-	// per-adapter wire detail, so — unlike Topic/Attributes — it is not
-	// gated to a single sink type. Zero is allowed (means "use the
-	// default"); only a negative value is a config error.
+	// per-adapter wire detail, so it is not gated to a sink type. Zero is
+	// allowed (means "use the default"); only a negative value is a
+	// config error.
 	if cfg.MaxFinalAssistantTextBytes < 0 {
 		*errs = append(*errs, "resultSink.maxFinalAssistantTextBytes must be non-negative")
+	}
+}
+
+// validateGCSResultSink checks the gcs sink's bucket and object prefix
+// the same way the gcs trace emitter's are checked, and normalises the
+// prefix to end in "/".
+func validateGCSResultSink(cfg *ResultSinkConfig, errs *[]string) {
+	if cfg.Bucket == "" {
+		*errs = append(*errs, "resultSink type \"gcs\" requires bucket")
+	} else if !gcsBucketNamePattern.MatchString(cfg.Bucket) {
+		*errs = append(*errs, fmt.Sprintf(
+			"resultSink.bucket %q must match %s (lowercase letters/digits/._-, 3-63 chars; no slashes)",
+			cfg.Bucket, gcsBucketNamePattern.String(),
+		))
+	}
+	if cfg.ObjectPrefix == "" {
+		return
+	}
+	for _, seg := range strings.Split(strings.Trim(cfg.ObjectPrefix, "/"), "/") {
+		if seg == ".." {
+			*errs = append(*errs, `resultSink.objectPrefix must not contain ".." path segments`)
+			break
+		}
+	}
+	if strings.ContainsFunc(cfg.ObjectPrefix, unicode.IsControl) {
+		*errs = append(*errs, "resultSink.objectPrefix must not contain control characters")
+	}
+	if !utf8.ValidString(cfg.ObjectPrefix) || len(cfg.ObjectPrefix) > maxResultObjectPrefixBytes {
+		*errs = append(*errs, fmt.Sprintf(
+			"resultSink.objectPrefix must be valid UTF-8 of at most %d bytes, so the object name fits GCS's 1024-byte limit",
+			maxResultObjectPrefixBytes,
+		))
+	}
+	if !strings.HasSuffix(cfg.ObjectPrefix, "/") {
+		cfg.ObjectPrefix += "/"
+	}
+}
+
+// validatePubSubResultSink checks the gcp-pubsub sink's topic, message
+// attributes and ordering key against Pub/Sub's documented limits.
+func validatePubSubResultSink(cfg *ResultSinkConfig, errs *[]string) {
+	if cfg.Topic == "" {
+		*errs = append(*errs, "resultSink type \"gcp-pubsub\" requires topic")
+	} else if m := pubSubTopicPattern.FindStringSubmatch(cfg.Topic); m == nil {
+		*errs = append(*errs, fmt.Sprintf(
+			"resultSink.topic %q must be a full topic resource name, projects/{project}/topics/{topic}, with a project ID of at least 6 characters and a topic ID of 3-255 characters starting with a letter",
+			cfg.Topic,
+		))
+	} else if strings.HasPrefix(m[1], "goog") {
+		*errs = append(*errs, fmt.Sprintf("resultSink.topic %q: topic IDs must not start with \"goog\"", cfg.Topic))
+	}
+
+	// The harness adds the runId attribute, so one slot is taken.
+	if len(cfg.Attributes) > maxPubSubAttributes-1 {
+		*errs = append(*errs, fmt.Sprintf(
+			"resultSink.attributes has %d entries; at most %d are allowed",
+			len(cfg.Attributes), maxPubSubAttributes-1,
+		))
+	}
+	keys := make([]string, 0, len(cfg.Attributes))
+	for k := range cfg.Attributes {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v := cfg.Attributes[k]
+		switch {
+		case k == "":
+			*errs = append(*errs, "resultSink.attributes keys must be non-empty")
+		case k == PubSubRunIDAttribute:
+			*errs = append(*errs, fmt.Sprintf("resultSink.attributes key %q is reserved: the harness sets it to the run ID", k))
+		case strings.HasPrefix(strings.ToLower(k), pubSubReservedAttributePrefix):
+			*errs = append(*errs, fmt.Sprintf("resultSink.attributes key %q must not start with %q, which is reserved for attributes the harness sets", k, pubSubReservedAttributePrefix))
+		case strings.HasPrefix(k, "goog"):
+			*errs = append(*errs, fmt.Sprintf("resultSink.attributes key %q must not start with \"goog\"", k))
+		case len(k) > maxPubSubAttributeKeyBytes || !utf8.ValidString(k):
+			*errs = append(*errs, fmt.Sprintf(
+				"resultSink.attributes key %q must be valid UTF-8 of at most %d bytes", k, maxPubSubAttributeKeyBytes,
+			))
+		}
+		switch {
+		case strings.HasPrefix(v, "secret://"):
+			*errs = append(*errs, fmt.Sprintf(
+				"resultSink.attributes[%q] is a secret:// reference; attributes are copied verbatim onto the message and are not resolved", k,
+			))
+		case len(v) > maxPubSubAttributeValueBytes || !utf8.ValidString(v):
+			*errs = append(*errs, fmt.Sprintf(
+				"resultSink.attributes[%q] must be valid UTF-8 of at most %d bytes", k, maxPubSubAttributeValueBytes,
+			))
+		}
+	}
+
+	if len(cfg.OrderingKey) > maxPubSubOrderingKeyBytes || !utf8.ValidString(cfg.OrderingKey) {
+		*errs = append(*errs, fmt.Sprintf(
+			"resultSink.orderingKey must be valid UTF-8 of at most %d bytes", maxPubSubOrderingKeyBytes,
+		))
 	}
 }
 

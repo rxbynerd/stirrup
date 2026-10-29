@@ -228,6 +228,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 
 	loop.Shutdown = shutdownCtx
 	loop.Handoff = workspaceHandoff{primaryRunID: config.RunID}
+	loop.ResultDelivery = resultDelivery{}
 	stopShutdownWatchdog := armShutdownWatchdog(ctx, loop, shutdownCloseGrace)
 	defer stopShutdownWatchdog()
 

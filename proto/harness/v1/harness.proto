@@ -1034,29 +1034,50 @@ message ResultSinkConfig {
   //                   end-of-run. Consumers must parse the LAST matching
   //                   line; the sentinel is defence against a model
   //                   echoing a fake one.
-  //   "gcp-pubsub", "gcs" — reserved. Accepted by the schema but
-  //                   rejected at config load as not yet implemented,
-  //                   so the wire contract is stable ahead of the
-  //                   adapters.
+  //   "gcs"         — writes the RunResult JSON to the object
+  //                   gs://{bucket}/{object_prefix}{runId}.result.json.
+  //   "gcp-pubsub"  — publishes the RunResult JSON as one message on
+  //                   topic, with a "runId" message attribute.
+  // The gcs and gcp-pubsub sinks deliver after the trace is finished and
+  // before the run's "done", making up to three attempts for transient
+  // failures; a delivery that still fails is logged and reported as a
+  // "warning" event starting "result sink:" before "done", and does not
+  // change the run's outcome. The gcs sink never replaces an existing
+  // object.
   string type = 1;
 
-  // Optional. Pub/Sub topic name for the reserved "gcp-pubsub" adapter.
-  // Rejected by validation on every other type so a stale value cannot
-  // silently survive a type change.
+  // Required for "gcp-pubsub". The full topic resource name,
+  // "projects/{project}/topics/{topic}". Rejected by validation on every
+  // other type so a stale value cannot silently survive a type change.
   string topic = 2;
 
-  // Optional. Extra message attributes for the reserved "gcp-pubsub"
-  // adapter. Values may be plaintext or a "secret://" reference resolved
-  // via the SecretStore; references are rewritten to
-  // "secret://[REDACTED]" by RunConfig.Redact() before any trace or
-  // recording is persisted. Rejected by validation on every other type.
+  // Optional, "gcp-pubsub" only. Static message attributes copied
+  // verbatim onto the message. At most 99 entries; the "runId" key is
+  // reserved for the harness, keys starting with "goog" are rejected,
+  // and "secret://" values are rejected rather than resolved.
   map<string, string> attributes = 3;
 
   // Optional. Byte cap on RunResult.final_assistant_text. Zero means the
-  // harness default (128 KiB). Unlike topic/attributes this bounds the
-  // RunResult itself rather than a per-adapter wire detail, so it
-  // applies on every type. Must be non-negative.
+  // harness default (128 KiB). Unlike the per-adapter fields this bounds
+  // the RunResult itself, so it applies on every type. Must be
+  // non-negative.
   int32 max_final_assistant_text_bytes = 4;
+
+  // Required for "gcs". The bucket the result object is written to.
+  string bucket = 5;
+
+  // Optional, "gcs" only. Prepended to the object name; a trailing slash
+  // is added by validation when absent.
+  string object_prefix = 6;
+
+  // Optional, "gcp-pubsub" only. Copied onto the message as its ordering
+  // key.
+  string ordering_key = 7;
+
+  // Optional, "gcs" and "gcp-pubsub" only. Overrides the default
+  // "gcp-workload-identity" credential. Accepted types:
+  // "gcp-workload-identity" and "gcp-default".
+  CredentialConfig credential = 8;
 }
 
 // LogsExportConfig opts the run's structured logs into OTLP export
