@@ -679,10 +679,13 @@ back as a user message. Three implementations ship:
   from the top-level JSON object whose `nonce` equals the per-call
   fence nonce. The same object is requested as a structured output
   (`StreamParams.OutputSchema`) where the model's quirks advertise one
-  (see [provider-quirks.md § 3.4](provider-quirks.md#34-structured-outputs));
-  every `VerificationResult` records `structuredOutput: json_schema`
-  or `prompt_only` in its details so malformed verdicts can be split
-  by whether the provider enforced the schema. The transcript is fenced as untrusted data, with each
+  (see [provider-quirks.md § 3.4](provider-quirks.md#34-structured-outputs)).
+  Every `VerificationResult` records `structuredOutput: json_schema`
+  or `prompt_only` in its details, meaning the request carried the
+  schema for a model whose quirks advertise the control, so malformed
+  verdicts can be split by it; a request the provider rejects with a
+  4xx is re-sent once without the schema and recorded as
+  `prompt_only`. The transcript is fenced as untrusted data, with each
   tool result in its own fence (see [`security.md` § Judge and
   classifier prompts](security.md#judge-and-classifier-prompts)).
   Malformed responses, including a verdict without the nonce or one
