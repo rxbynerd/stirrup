@@ -25,9 +25,6 @@ var semverPattern = regexp.MustCompile(`^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*
 // Version returns the build label: a semver tag, "main", or "dev".
 func Version() string { return version }
 
-// Semver returns the build label as SemverOf reads it.
-func Semver() string { return SemverOf(version) }
-
 // SemverOf returns a build label as a Semantic Versioning 2.0.0 string
 // without the tag's leading "v", or empty when the label is not a
 // version, as for "main" and "dev" builds.
