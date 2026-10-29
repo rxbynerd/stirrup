@@ -37,9 +37,9 @@ func ConfigFieldPaths() []string {
 	return slices.Clone(configFieldPaths())
 }
 
-// maxConfigFieldTypeNesting is how many times one struct type may appear
+// ConfigFieldTypeNesting is how many times one struct type may appear
 // on a descent, so a recursive type is walked one level inside itself.
-const maxConfigFieldTypeNesting = 2
+const ConfigFieldTypeNesting = 2
 
 var (
 	jsonUnmarshalerType = reflect.TypeFor[json.Unmarshaler]()
@@ -49,7 +49,7 @@ var (
 // collectConfigFieldPaths records the paths beneath prefix for a value of
 // type t, following encoding/json's field naming. active counts the
 // struct types on the current descent so a recursive type ends the walk
-// after maxConfigFieldTypeNesting levels instead of looping.
+// after ConfigFieldTypeNesting levels instead of looping.
 func collectConfigFieldPaths(prefix string, t reflect.Type, seen map[string]struct{}, active map[reflect.Type]int) {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
@@ -65,7 +65,7 @@ func collectConfigFieldPaths(prefix string, t reflect.Type, seen map[string]stru
 		seen[path] = struct{}{}
 		collectConfigFieldPaths(path, t.Elem(), seen, active)
 	case reflect.Struct:
-		if active[t] >= maxConfigFieldTypeNesting {
+		if active[t] >= ConfigFieldTypeNesting {
 			return
 		}
 		active[t]++

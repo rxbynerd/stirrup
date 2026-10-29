@@ -36,7 +36,7 @@ func protoRunConfigFieldPaths() []string {
 }
 
 func collectProtoFieldPaths(prefix string, md protoreflect.MessageDescriptor, out *[]string, active map[protoreflect.FullName]int) {
-	if active[md.FullName()] >= 2 {
+	if active[md.FullName()] >= types.ConfigFieldTypeNesting {
 		return
 	}
 	active[md.FullName()]++
