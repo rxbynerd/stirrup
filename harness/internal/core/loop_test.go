@@ -995,6 +995,38 @@ func TestDispatchToolCall_CaseMismatchNamesToolWithoutRunningIt(t *testing.T) {
 	must.False(success)
 	must.False(ran, "the tool must not run under a case-mismatched name")
 	must.Equal("Unknown tool: Read_File. Tool names are case-sensitive; call read_file instead.", output)
+
+	call := types.ToolCall{ID: "tc_case", Name: "Read_File", Input: json.RawMessage(`{}`)}
+	input, _, category := loop.preflightToolCall(call, loop.Tools.Resolve(call.Name))
+	must.Nil(input, "a rejected call yields no input for the guard or permission checks")
+	must.Equal(observability.ToolFailureUnknownTool, category)
+}
+
+// TestDispatchToolCall_CaseMismatchDoesNotSuggestUnloadedTool pins that the
+// hint never names a tool lazy loading has deferred and not yet loaded.
+func TestDispatchToolCall_CaseMismatchDoesNotSuggestUnloadedTool(t *testing.T) {
+	must := require.New(t)
+	loop := buildTestLoop(&mockProvider{})
+	registry := tool.NewRegistry()
+	for _, name := range []string{"read_file", "web_fetch"} {
+		registry.Register(&tool.Tool{
+			Name:        name,
+			Description: "test tool",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+			Handler:     func(context.Context, json.RawMessage) (string, error) { return "", nil },
+		})
+	}
+	loop.Tools = registry
+	loop.LazyTools = tool.NewLazyLoader(registry, types.LazyToolLoadingConfig{Enabled: true, Eager: []string{"read_file"}}, tool.LazyLoaderOptions{})
+	must.True(loop.LazyTools.Unloaded("web_fetch"), "web_fetch must start deferred for this test to mean anything")
+
+	output, success := loop.dispatchToolCall(context.Background(), types.ToolCall{ID: "tc_deferred", Name: "WEB_FETCH", Input: json.RawMessage(`{}`)})
+	must.False(success)
+	must.Equal("Unknown tool: WEB_FETCH", output)
+
+	output, success = loop.dispatchToolCall(context.Background(), types.ToolCall{ID: "tc_eager", Name: "READ_FILE", Input: json.RawMessage(`{}`)})
+	must.False(success)
+	must.Contains(output, "call read_file instead")
 }
 
 func TestCaseFoldedToolName_MatchesOnlyAUniqueCaseVariant(t *testing.T) {
