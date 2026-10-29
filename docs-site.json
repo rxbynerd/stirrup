@@ -20,8 +20,7 @@
         {
           "path": "docs/index.md",
           "title": "Documentation index"
-        },
-        "docs/autonomous-preset.md"
+        }
       ]
     },
     {
@@ -49,6 +48,7 @@
       "title": "Operate",
       "pages": [
         "docs/deployment.md",
+        "docs/autonomous-preset.md",
         "docs/executors/k8s.md",
         "docs/executors/k8s-agent-sandbox.md",
         "docs/cloud-run-jobs.md",

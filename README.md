@@ -7,6 +7,9 @@ Stirrup is an operator-owned coding worker. The operator chooses the
 model provider, the execution environment, the permission policy,
 and the control plane. Each run leaves inspectable evidence.
 
+The [documentation index](docs/index.md) lists every page in a
+suggested reading order.
+
 Stirrup is designed and built from the ground up with the following tenets in mind:
 
 - **Production-grade safety** provided by [a comprehensive set of rings](docs/safety-rings.md), designed to provide defence-in-depth security.
@@ -148,11 +151,11 @@ entry points in each group:
 
 | Group | Start with |
 |---|---|
-| Start | This README, and the [Autonomous deployment preset](docs/autonomous-preset.md) for unattended runs |
-| Concepts | [Philosophy](docs/philosophy.md), [Architecture](docs/architecture.md), [Safety rings](docs/safety-rings.md) |
-| Reference | [Configuration](docs/configuration.md), [Provider adapters](docs/providers.md), [Eval framework](docs/eval.md) |
-| Operate | [Production deployment](docs/deployment.md), [Kubernetes executor](docs/executors/k8s.md), [Shipping Stirrup telemetry to a managed APM](docs/observability-cloud.md) |
-| Develop | [Integration guide](docs/integration-guide.md), [Contributing](CONTRIBUTING.md), [`AGENTS.md`](AGENTS.md), [Security policy](SECURITY.md) |
+| Start | The quick start above; an install page for release builds is planned |
+| Concepts | [Philosophy](docs/philosophy.md), [Architecture](docs/architecture.md), [Safety rings](docs/safety-rings.md), [Guardrails](docs/guardrails.md), [Security foundations](docs/security.md) |
+| Reference | [Configuration](docs/configuration.md), [Provider adapters](docs/providers.md), [Batch provider mode](docs/batch.md), [Eval framework](docs/eval.md) |
+| Operate | [Production deployment](docs/deployment.md), [Autonomous deployment preset](docs/autonomous-preset.md), [Kubernetes executor](docs/executors/k8s.md), [Stirrup on Cloud Run jobs](docs/cloud-run-jobs.md), [Credential federation](docs/credential-federation.md), [Shipping Stirrup telemetry to a managed APM](docs/observability-cloud.md) (Grafana Cloud, Langfuse, Phoenix, CloudWatch, Datadog) |
+| Develop | [Integration guide](docs/integration-guide.md), [Contributing](CONTRIBUTING.md), [`AGENTS.md`](AGENTS.md) (a package map for AI coding agents), [Security policy](SECURITY.md) |
 | Design records | [Sessions](docs/sessions-spec-draft.md) and the Langfuse feedback worksheets, listed in the index |
 
 ## License
