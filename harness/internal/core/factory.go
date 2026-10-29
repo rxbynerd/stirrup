@@ -759,12 +759,6 @@ func buildStructuredResultSupport(config *types.RunConfig, caps capabilityResolv
 	}
 }
 
-// OutputSchemaSupport reports whether the default provider enforces a
-// StreamParams.OutputSchema for a model. The judges request their verdict
-// schema regardless and record this answer on the verdict, so parse
-// failures can be split by whether the provider enforced the schema.
-type OutputSchemaSupport func(model string) bool
-
 // buildOutputSchemaSupport resolves the OutputSchema capability of the
 // default provider against the registry its adapter gates on, endpoint
 // profile included, so the recorded mode matches what went on the wire.
@@ -1836,7 +1830,7 @@ func buildVerifier(cfg types.VerifierConfig, prov provider.ProviderAdapter, metr
 		if model == "" {
 			model = "claude-haiku-5-5"
 		}
-		return verifier.NewMetricRecorder(verifier.NewLLMJudgeVerifier(prov, model, cfg.Criteria, outputSchema != nil && outputSchema(model)), metrics, "llm-judge")
+		return verifier.NewMetricRecorder(verifier.NewLLMJudgeVerifier(prov, model, cfg.Criteria, outputSchema), metrics, "llm-judge")
 	case "test-runner":
 		timeout := time.Duration(cfg.Timeout) * time.Second
 		return verifier.NewMetricRecorder(verifier.NewTestRunnerVerifier(cfg.Command, timeout), metrics, "test-runner")
@@ -1934,10 +1928,10 @@ func buildGuardRailNode(ctx context.Context, cfg *types.GuardRailConfig, provide
 		// FailOpen lives at the GuardRailConfig level (consulted via
 		// guardFailOpen() in the loop). The adapter does not read it.
 		cj, err := guard.NewCloudJudge(guard.CloudJudgeConfig{
-			Provider:     defaultProvider,
-			Model:        cfg.Model,
-			Timeout:      time.Duration(cfg.TimeoutMs) * time.Millisecond,
-			OutputSchema: outputSchema,
+			Provider:              defaultProvider,
+			Model:                 cfg.Model,
+			Timeout:               time.Duration(cfg.TimeoutMs) * time.Millisecond,
+			OutputSchemaSupported: outputSchema,
 		})
 		if err != nil {
 			return nil, err

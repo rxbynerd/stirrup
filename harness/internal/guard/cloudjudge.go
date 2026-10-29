@@ -31,7 +31,7 @@ const (
 
 	// cloudJudgeMaxTokens caps the verdict response, including any
 	// thinking the model does before it: the verdict itself is three short
-	// fields (nonce, verdict, reason), but models that think by default
+	// fields (nonce, reasoning, verdict), but models that think by default
 	// spend most of the budget before writing it.
 	cloudJudgeMaxTokens = 1024
 
@@ -117,13 +117,14 @@ type CloudJudgeConfig struct {
 	// underlying provider may already enforce its own HTTP timeout.
 	Timeout time.Duration
 
-	// OutputSchema reports whether Provider enforces a
-	// StreamParams.OutputSchema for the given model, resolved from the
-	// quirks registry by the factory. The verdict schema is requested on
-	// every check regardless; this decides whether a Decision records
-	// StructuredOutputJSONSchema or StructuredOutputPromptOnly. Nil means
-	// prompt-only.
-	OutputSchema func(model string) bool
+	// OutputSchemaSupported reports whether the quirks registry advertises
+	// a StreamParams.OutputSchema control on Provider for the given model;
+	// the factory resolves it with the lookup the adapter gates on. The
+	// verdict schema is requested on every check regardless; this decides
+	// whether a Decision records types.JudgeStructuredJSONSchema or
+	// types.JudgeStructuredPromptOnly, and whether a rejected request is
+	// retried without the schema. Nil means prompt-only.
+	OutputSchemaSupported func(model string) bool
 }
 
 // CloudJudge implements GuardRail by streaming a single low-temperature
@@ -137,7 +138,7 @@ type CloudJudge struct {
 	timeout           time.Duration // zero selects the per-phase default
 	entropy           io.Reader     // source of per-call fence nonces
 	preToolMaxContent int           // byte cap on classified pre_tool content
-	structuredOutput  string        // StructuredOutput* value recorded on every Decision
+	structuredOutput  string        // types.JudgeStructured* value recorded on every Decision
 }
 
 // NewCloudJudge constructs a CloudJudge adapter from cfg. A nil provider
@@ -167,9 +168,9 @@ func NewCloudJudge(cfg CloudJudgeConfig) (*CloudJudge, error) {
 			phases[p] = t
 		}
 	}
-	structuredOutput := StructuredOutputPromptOnly
-	if cfg.OutputSchema != nil && cfg.OutputSchema(model) {
-		structuredOutput = StructuredOutputJSONSchema
+	structuredOutput := types.JudgeStructuredPromptOnly
+	if cfg.OutputSchemaSupported != nil && cfg.OutputSchemaSupported(model) {
+		structuredOutput = types.JudgeStructuredJSONSchema
 	}
 	return &CloudJudge{
 		provider:          cfg.Provider,
@@ -186,15 +187,22 @@ func NewCloudJudge(cfg CloudJudgeConfig) (*CloudJudge, error) {
 // the underlying provider adapter and extracting a JSON verdict. The
 // JSON contract is one object carrying the call's fence nonce:
 // {"nonce": "<nonce>", "reasoning": "...", "verdict": "allow"|"deny"},
-// requested as a structured output where the provider enforces one and
+// requested as a structured output where the provider advertises one and
 // described in the prompt everywhere.
 func (c *CloudJudge) Check(ctx context.Context, in Input) (*Decision, error) {
-	d, err := c.check(ctx, in)
-	return attributeError(cloudJudgeGuardID, d, err)
+	d, mode, err := c.check(ctx, in)
+	if err != nil {
+		return nil, &Error{GuardID: cloudJudgeGuardID, StructuredOutput: mode, Err: err}
+	}
+	return d, nil
 }
 
-func (c *CloudJudge) check(ctx context.Context, in Input) (*Decision, error) {
+// check runs one classification and returns the decision and the
+// structured-output mode the request ended up in, so a failure can be
+// attributed to the same mode a decision would have recorded.
+func (c *CloudJudge) check(ctx context.Context, in Input) (*Decision, string, error) {
 	start := time.Now()
+	mode := c.structuredOutput
 
 	criteria, ok := c.phases[in.Phase]
 	if !ok {
@@ -204,7 +212,7 @@ func (c *CloudJudge) check(ctx context.Context, in Input) (*Decision, error) {
 
 	fence, err := security.NewDataFence(c.entropy)
 	if err != nil {
-		return nil, fmt.Errorf("cloud-judge: %w", err)
+		return nil, mode, fmt.Errorf("cloud-judge: %w", err)
 	}
 	prompt := buildCloudJudgePrompt(fence, criteria, in, c.preToolMaxContent)
 
@@ -213,7 +221,7 @@ func (c *CloudJudge) check(ctx context.Context, in Input) (*Decision, error) {
 	streamCtx, cancel := context.WithTimeout(ctx, c.timeoutFor(in.Phase))
 	defer cancel()
 
-	events, err := c.provider.Stream(streamCtx, types.StreamParams{
+	params := types.StreamParams{
 		Model:           c.model,
 		System:          cloudJudgeSystem,
 		Messages:        []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: prompt}}}},
@@ -226,26 +234,35 @@ func (c *CloudJudge) check(ctx context.Context, in Input) (*Decision, error) {
 		// "unset" on the wire.
 		Temperature:  types.Float64Ptr(0.0),
 		OutputSchema: cloudJudgeOutputSchema(),
-	})
+	}
+	events, err := c.provider.Stream(streamCtx, params)
+	// A rule that advertises the control for a provider that then rejects
+	// the schema must not turn a working prompt-only judge into a failing
+	// one, so the request is sent once more without it.
+	if err != nil && mode == types.JudgeStructuredJSONSchema && provider.IsRequestRejected(err) {
+		params.OutputSchema = nil
+		mode = types.JudgeStructuredPromptOnly
+		events, err = c.provider.Stream(streamCtx, params)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("cloud-judge: provider stream: %w", err)
+		return nil, mode, fmt.Errorf("cloud-judge: provider stream: %w", err)
 	}
 
 	text, err := drainVerdictStream(streamCtx, events)
 	if err != nil {
-		return nil, err
+		return nil, mode, err
 	}
 
 	verdict, reason, err := parseCloudJudgeResponse(text, fence.Nonce())
 	if err != nil {
-		return nil, fmt.Errorf("%w (structuredOutput=%s)", err, c.structuredOutput)
+		return nil, mode, err
 	}
 
 	d := &Decision{
 		GuardID:          cloudJudgeGuardID,
 		Reason:           reason,
 		Latency:          time.Since(start),
-		StructuredOutput: c.structuredOutput,
+		StructuredOutput: mode,
 	}
 	if verdict {
 		d.Verdict = VerdictDeny
@@ -254,7 +271,7 @@ func (c *CloudJudge) check(ctx context.Context, in Input) (*Decision, error) {
 		d.Verdict = VerdictAllow
 		d.Score = 0.0
 	}
-	return d, nil
+	return d, mode, nil
 }
 
 // drainVerdictStream returns the text of a verdict stream that closed
@@ -360,7 +377,7 @@ func buildCloudJudgePrompt(fence security.DataFence, criteria string, in Input, 
 		fmt.Fprintf(&b, "\n\nThe content above is truncated: only its first %d of %d bytes are shown.", len(content), len(in.Content))
 	}
 	nonce := fence.Nonce()
-	fmt.Fprintf(&b, "\n\nRespond with a single JSON object: {\"nonce\": %q, \"reasoning\": \"<short analysis>\", \"verdict\": \"allow\"|\"deny\"}. "+
+	fmt.Fprintf(&b, "\n\nRespond with a single JSON object: {\"nonce\": %q, \"reasoning\": \"<one sentence>\", \"verdict\": \"allow\"|\"deny\"}. "+
 		"The nonce member must be exactly %q; a verdict object without it is discarded.", nonce, nonce)
 	return b.String()
 }
@@ -398,7 +415,10 @@ func describeToolCall(in Input) string {
 // wrapping ErrCloudJudgeNoJSON when no single verdict object carries the
 // nonce. An object without the nonce, such as one quoted from the
 // classified content, is never the verdict; see
-// jsonextract.ObjectWithNonce.
+// jsonextract.ObjectWithNonce. The verdict is compared case-insensitively
+// because grammar-constrained enum output can differ in capitalisation;
+// a reason member keyed `reason`, the shape of a prompt-only model that
+// ignored the key in the instruction, is read as the reasoning.
 func parseCloudJudgeResponse(raw, nonce string) (bool, string, error) {
 	members, err := jsonextract.ObjectWithNonce(raw, nonce)
 	if err != nil {
@@ -408,12 +428,16 @@ func parseCloudJudgeResponse(raw, nonce string) (bool, string, error) {
 	if err := json.Unmarshal(members["verdict"], &verdict); err != nil {
 		return false, "", fmt.Errorf("cloud-judge: parse verdict JSON: %w", err)
 	}
-	if r, ok := members["reasoning"]; ok {
+	r, ok := members["reasoning"]
+	if !ok {
+		r, ok = members["reason"]
+	}
+	if ok {
 		if err := json.Unmarshal(r, &reason); err != nil {
 			return false, "", fmt.Errorf("cloud-judge: parse verdict JSON: %w", err)
 		}
 	}
-	switch verdict {
+	switch strings.ToLower(verdict) {
 	case "deny":
 		return true, reason, nil
 	case "allow":

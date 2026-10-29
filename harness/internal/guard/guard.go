@@ -59,20 +59,15 @@ type Decision struct {
 	Reason    string
 	Latency   time.Duration
 	GuardID   string
-	// StructuredOutput records how a model-backed guard obtained its
-	// verdict: StructuredOutputJSONSchema when the provider enforced the
-	// verdict schema, StructuredOutputPromptOnly when the prompt alone
-	// asked for JSON. Empty for guards that do not prompt a model.
+	// StructuredOutput records how a model-backed guard requested its
+	// verdict: types.JudgeStructuredJSONSchema when the request carried
+	// the verdict schema and the quirks registry advertises the control
+	// for the judge model, types.JudgeStructuredPromptOnly when the prompt
+	// alone asked for JSON. It reports what was requested and advertised,
+	// not what the provider did with it. Empty for guards that do not
+	// prompt a model.
 	StructuredOutput string
 }
-
-// StructuredOutput* are the Decision.StructuredOutput values. They are
-// also recorded on verifier results, so parse failures can be split by
-// whether the provider enforced the schema.
-const (
-	StructuredOutputJSONSchema = "json_schema"
-	StructuredOutputPromptOnly = "prompt_only"
-)
 
 // Input is the payload a guard evaluates. Phase and Content are always
 // populated; the remaining fields carry context that some adapters
@@ -114,7 +109,10 @@ type GuardRail interface {
 // It formats and unwraps as the underlying error.
 type Error struct {
 	GuardID string
-	Err     error
+	// StructuredOutput is the Decision.StructuredOutput the check would
+	// have recorded, so a failed verdict can be split the same way.
+	StructuredOutput string
+	Err              error
 }
 
 func (e *Error) Error() string { return e.Err.Error() }
@@ -127,6 +125,16 @@ func ErrorGuardID(err error) string {
 	var ge *Error
 	if errors.As(err, &ge) {
 		return ge.GuardID
+	}
+	return ""
+}
+
+// ErrorStructuredOutput returns the StructuredOutput of the first *Error
+// in err's chain, or "" when err carries none.
+func ErrorStructuredOutput(err error) string {
+	var ge *Error
+	if errors.As(err, &ge) {
+		return ge.StructuredOutput
 	}
 	return ""
 }

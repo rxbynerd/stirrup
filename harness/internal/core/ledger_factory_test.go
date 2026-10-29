@@ -64,7 +64,7 @@ func (s *auxiliaryUsageServer) handler(t *testing.T) http.HandlerFunc {
 			if !check.NotNil(m, "guard request carries no nonce instruction") {
 				return
 			}
-			category, content = "guard", fmt.Sprintf(`{"nonce":%q,"verdict":"allow","reason":"benign"}`, m[1])
+			category, content = "guard", fmt.Sprintf(`{"nonce":%q,"verdict":"allow","reasoning":"benign"}`, m[1])
 		default:
 			category = "turn"
 		}

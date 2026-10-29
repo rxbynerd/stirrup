@@ -525,7 +525,7 @@ func (p *nonceEchoJudgeProvider) Stream(_ context.Context, params types.StreamPa
 		}
 	}
 	ch := make(chan types.StreamEvent, 2)
-	ch <- types.StreamEvent{Type: "text_delta", Text: fmt.Sprintf(`{"nonce":%q,"verdict":%q,"reason":"r"}`, nonce, p.verdict)}
+	ch <- types.StreamEvent{Type: "text_delta", Text: fmt.Sprintf(`{"nonce":%q,"verdict":%q,"reasoning":"r"}`, nonce, p.verdict)}
 	ch <- types.StreamEvent{Type: "message_complete", StopReason: p.stopReason}
 	close(ch)
 	return ch, nil

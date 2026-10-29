@@ -207,18 +207,18 @@ func TestCloudJudge_RequestsVerdictSchema(t *testing.T) {
 	must.Less(strings.Index(cloudJudgeVerdictSchema, `"reasoning"`), strings.Index(cloudJudgeVerdictSchema, `"verdict"`), "reasoning precedes the verdict it justifies")
 
 	// The prompt states the same shape for providers that do not enforce it.
-	must.Contains(promptText(t, fp.params), `"reasoning": "<short analysis>", "verdict": "allow"|"deny"`)
+	must.Contains(promptText(t, fp.params), `"reasoning": "<one sentence>", "verdict": "allow"|"deny"`)
 }
 
 // TestCloudJudge_RecordsStructuredOutputMode pins that the Decision, and a
-// parse failure, carry whether the provider enforced the schema, as the
-// factory's capability answer reports it.
+// parse failure, carry whether the request asked for an advertised
+// schema, as the factory's capability answer reports it.
 func TestCloudJudge_RecordsStructuredOutputMode(t *testing.T) {
-	t.Run("provider enforces the schema", func(t *testing.T) {
+	t.Run("provider advertises the schema", func(t *testing.T) {
 		must := require.New(t)
 		fp := &fakeProvider{events: textEvents(allowVerdict)}
 		var asked string
-		cj, err := NewCloudJudge(CloudJudgeConfig{Provider: fp, Model: "judge-model", OutputSchema: func(model string) bool {
+		cj, err := NewCloudJudge(CloudJudgeConfig{Provider: fp, Model: "judge-model", OutputSchemaSupported: func(model string) bool {
 			asked = model
 			return true
 		}})
@@ -226,7 +226,7 @@ func TestCloudJudge_RecordsStructuredOutputMode(t *testing.T) {
 		d, err := cj.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "x"})
 		must.NoError(err)
 		must.Equal("judge-model", asked)
-		must.Equal(StructuredOutputJSONSchema, d.StructuredOutput) //nolint:testifylint // a mode name that happens to read as "json_schema", not a JSON document
+		must.Equal(types.JudgeStructuredJSONSchema, d.StructuredOutput) //nolint:testifylint // a mode name that happens to read as "json_schema", not a JSON document
 	})
 
 	t.Run("no capability answer means prompt only", func(t *testing.T) {
@@ -236,17 +236,108 @@ func TestCloudJudge_RecordsStructuredOutputMode(t *testing.T) {
 		must.NoError(err)
 		d, err := cj.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "x"})
 		must.NoError(err)
-		must.Equal(StructuredOutputPromptOnly, d.StructuredOutput)
+		must.Equal(types.JudgeStructuredPromptOnly, d.StructuredOutput)
 	})
 
 	t.Run("parse failure names the mode", func(t *testing.T) {
 		must := require.New(t)
 		fp := &fakeProvider{events: textEvents("I cannot decide.")}
-		cj, err := NewCloudJudge(CloudJudgeConfig{Provider: fp, OutputSchema: func(string) bool { return true }})
+		cj, err := NewCloudJudge(CloudJudgeConfig{Provider: fp, OutputSchemaSupported: func(string) bool { return true }})
 		must.NoError(err)
 		_, err = cj.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "x"})
 		must.ErrorIs(err, ErrCloudJudgeNoJSON)
-		must.ErrorContains(err, "structuredOutput=json_schema")
+		must.Equal(cloudJudgeGuardID, ErrorGuardID(err))
+		must.Equal(types.JudgeStructuredJSONSchema, ErrorStructuredOutput(err)) //nolint:testifylint // a mode name that happens to read as "json_schema", not a JSON document
+	})
+}
+
+// rejectingProvider refuses its first Stream call with a 4xx-marked error
+// and answers the second from events, recording the params of each call.
+type rejectingProvider struct {
+	status int
+	events []types.StreamEvent
+	calls  []types.StreamParams
+}
+
+func (p *rejectingProvider) Stream(_ context.Context, params types.StreamParams) (<-chan types.StreamEvent, error) {
+	p.calls = append(p.calls, params)
+	if len(p.calls) == 1 {
+		return nil, types.MarkHTTPStatus(fmt.Errorf("provider returned status %d", p.status), p.status)
+	}
+	nonce := promptNonce(params)
+	ch := make(chan types.StreamEvent, len(p.events))
+	for _, ev := range p.events {
+		ev.Text = strings.ReplaceAll(ev.Text, nonceToken, nonce)
+		ch <- ev
+	}
+	close(ch)
+	return ch, nil
+}
+
+// TestCloudJudge_RetriesWithoutSchemaWhenRequestRejected pins that a 4xx on
+// a schema-bearing request is retried once without the schema and recorded
+// as prompt-only, so a rule that advertises a control the provider rejects
+// cannot turn a working judge into a failing one; a 429 and a request the
+// registry never marked as schema-bearing are not retried.
+func TestCloudJudge_RetriesWithoutSchemaWhenRequestRejected(t *testing.T) {
+	supported := func(string) bool { return true }
+
+	t.Run("400 under an advertised schema retries without it", func(t *testing.T) {
+		must := require.New(t)
+		rp := &rejectingProvider{status: 400, events: textEvents(allowVerdict)}
+		cj, err := NewCloudJudge(CloudJudgeConfig{Provider: rp, OutputSchemaSupported: supported})
+		must.NoError(err)
+		d, err := cj.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "x"})
+		must.NoError(err)
+		must.Len(rp.calls, 2)
+		must.NotNil(rp.calls[0].OutputSchema)
+		must.Nil(rp.calls[1].OutputSchema)
+		must.Equal(VerdictAllow, d.Verdict)
+		must.Equal(types.JudgeStructuredPromptOnly, d.StructuredOutput)
+	})
+
+	t.Run("429 is not a rejection of the schema", func(t *testing.T) {
+		must := require.New(t)
+		rp := &rejectingProvider{status: 429, events: textEvents(allowVerdict)}
+		cj, err := NewCloudJudge(CloudJudgeConfig{Provider: rp, OutputSchemaSupported: supported})
+		must.NoError(err)
+		_, err = cj.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "x"})
+		must.ErrorContains(err, "provider stream")
+		must.Len(rp.calls, 1)
+		must.Equal(types.JudgeStructuredJSONSchema, ErrorStructuredOutput(err)) //nolint:testifylint // a mode name that happens to read as "json_schema", not a JSON document
+	})
+
+	t.Run("prompt-only mode never retries", func(t *testing.T) {
+		must := require.New(t)
+		rp := &rejectingProvider{status: 400, events: textEvents(allowVerdict)}
+		cj, err := NewCloudJudge(CloudJudgeConfig{Provider: rp})
+		must.NoError(err)
+		_, err = cj.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "x"})
+		must.ErrorContains(err, "provider stream")
+		must.Len(rp.calls, 1)
+		must.Equal(types.JudgeStructuredPromptOnly, ErrorStructuredOutput(err))
+	})
+}
+
+// TestCloudJudge_VerdictCaseAndLegacyReasonKey pins two tolerances of the
+// text parse: enum capitalisation is ignored, and a prompt-only model that
+// still writes the verdict's reason under `reason` keeps its reason.
+func TestCloudJudge_VerdictCaseAndLegacyReasonKey(t *testing.T) {
+	const nonce = "0123456789abcdef0123456789abcdef"
+	t.Run("capitalised deny is a deny", func(t *testing.T) {
+		must := require.New(t)
+		deny, reason, err := parseCloudJudgeResponse(`{"nonce":"`+nonce+`","reasoning":"r","verdict":"Deny"}`, nonce)
+		must.NoError(err)
+		must.True(deny)
+		must.Equal("r", reason)
+	})
+
+	t.Run("legacy reason key is read as the reasoning", func(t *testing.T) {
+		must := require.New(t)
+		deny, reason, err := parseCloudJudgeResponse(`{"nonce":"`+nonce+`","verdict":"deny","reason":"legacy"}`, nonce)
+		must.NoError(err)
+		must.True(deny)
+		must.Equal("legacy", reason)
 	})
 }
 
@@ -384,7 +475,7 @@ func TestParseCloudJudgeResponse_MemberTypeErrors(t *testing.T) {
 		raw  string
 	}{
 		{"verdict is not a string", `{"nonce":"` + nonce + `","verdict":true}`},
-		{"reason is not a string", `{"nonce":"` + nonce + `","verdict":"allow","reasoning":{"a":1}}`},
+		{"reasoning is not a string", `{"nonce":"` + nonce + `","verdict":"allow","reasoning":{"a":1}}`},
 		{"verdict member missing", `{"nonce":"` + nonce + `","reasoning":"no verdict member"}`},
 	}
 	for _, tc := range cases {
@@ -450,7 +541,7 @@ func TestCloudJudge_PromptStatesNonceAfterFence(t *testing.T) {
 	must.NoError(err)
 	f := fixedFence(t)
 	fenceEnd := strings.LastIndex(prompt, "\n"+f.Close(cloudJudgeContentLabel))
-	instruction := strings.Index(prompt, `{"nonce": "`+f.Nonce()+`", "reasoning": "<short analysis>", "verdict": "allow"|"deny"`)
+	instruction := strings.Index(prompt, `{"nonce": "`+f.Nonce()+`", "reasoning": "<one sentence>", "verdict": "allow"|"deny"`)
 	must.GreaterOrEqual(fenceEnd, 0, "fence close marker missing:\n%s", prompt)
 	check.GreaterOrEqual(instruction, fenceEnd, "verdict instruction missing or before the fence:\n%s", prompt)
 	check.Contains(prompt[fenceEnd:], `must be exactly "`+f.Nonce()+`"`, "trusted instruction does not state the nonce value")
