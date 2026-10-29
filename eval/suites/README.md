@@ -55,6 +55,13 @@ baseline in `../baselines/`:
   summary, and `provider-quirks-*` suites are skipped because the
   sweep's `--model` would override their pin.
 
+  The sweep runs one trial per task: it passes no `--trials`, and no
+  baselined suite sets `trials`. The committed baselines record one
+  outcome per task and compare as one trial per task, so `compare`
+  applies the single-run rule from [Gate
+  semantics](../../docs/eval.md#gate-semantics): a task that passed in
+  the baseline and does not pass in the sweep run blocks the cell.
+
 Suites without a baseline are never executed in CI — they are
 opt-in local runs (see the per-suite notes below).
 
@@ -191,6 +198,15 @@ ANTHROPIC_API_KEY=... ./stirrup-eval run \
 Baselines for this suite should be taken with repeated trials, as above,
 so a flaky task records a fractional pass rate. The result reports run
 health next to the judge verdict (`healthyPassRate`, `runHealth`).
+`passRate` says whether the work passed its check, and
+`healthyPassRate` also requires the run to have ended cleanly with a
+`success` outcome. A task whose judge passed but whose `runHealth` is
+`degraded` or `failed` ended on a limit or an error class, and
+`healthyPassRate` counts it as a miss. The verifier task ends `healthy`
+with `verification` `passed` when the run recovers from the first
+rejection; a run that exhausts its repairs ends `verification_failed`,
+which is `failed`. See [Pass definitions and run
+health](../../docs/eval.md#pass-definitions-and-run-health).
 
 ### Failure-injection coverage
 
@@ -264,6 +280,21 @@ run_config {
       max_results = 8
     }
   }
+}
+```
+
+**Run health can gate the comparison.** Setting `require_healthy = true`
+in the `suite` block, or passing `--require-healthy` to `stirrup-eval
+run`, makes `compare` count a judge pass only when the run was healthy:
+the harness exited zero and the trace outcome is `success`. The result
+records the setting, and `compare` applies it to each side separately.
+Task outcomes and the pass rate stay judge-based. See [Pass definitions
+and run health](../../docs/eval.md#pass-definitions-and-run-health).
+
+```hcl
+suite "example" {
+  require_healthy = true
+  # run_config and task blocks ...
 }
 ```
 
