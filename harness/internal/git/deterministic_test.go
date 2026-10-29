@@ -718,3 +718,15 @@ func isolateGitConfig(t *testing.T) {
 		must.NoError(os.Unsetenv(name), "unset %s", name)
 	}
 }
+
+func TestIsNotRepository_RecognisesBothGitWordings(t *testing.T) {
+	check := assert.New(t)
+	for _, stderr := range []string{
+		"fatal: not a git repository (or any of the parent directories): .git",
+		"fatal: gitfile does not point to a valid repository: /ws/.git",
+	} {
+		check.True(isNotRepository(&executor.ExecResult{ExitCode: 128, Stderr: stderr}), stderr)
+	}
+	check.False(isNotRepository(&executor.ExecResult{ExitCode: 0}))
+	check.False(isNotRepository(&executor.ExecResult{ExitCode: 128, Stderr: "fatal: unrelated"}))
+}
