@@ -291,8 +291,16 @@ func (d *DeterministicGitStrategy) output(ctx context.Context, args ...string) (
 	return strings.TrimSpace(res.Stdout), nil
 }
 
+// isNotRepository recognises git's refusal to find a repository. Git 2.56
+// reports a dangling .git file as an invalid gitfile instead of "not a git
+// repository", and both must take the refuse-or-initialise path.
 func isNotRepository(res *executor.ExecResult) bool {
-	return res.ExitCode != 0 && strings.Contains(strings.ToLower(res.Stderr), "not a git repository")
+	if res.ExitCode == 0 {
+		return false
+	}
+	stderr := strings.ToLower(res.Stderr)
+	return strings.Contains(stderr, "not a git repository") ||
+		strings.Contains(stderr, "gitfile does not point to a valid repository")
 }
 
 func exitError(res *executor.ExecResult, command string) error {
