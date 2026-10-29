@@ -443,17 +443,20 @@ registry](provider-quirks.md#bedrock) on every request. A Claude model
 id (`anthropic.claude-opus-5-5`, a cross-region inference profile such
 as `us.anthropic.claude-sonnet-5-5`, or a foundation-model or
 inference-profile ARN ending in either) resolves against the
-`anthropic` rules on the part after `anthropic.`, so Claude Opus 4.7
-onward, Sonnet 5 onward, Haiku 5 onward, Fable 5 onward and Mythos 5
-onward get no `inferenceConfig.temperature`, and the adapter logs
-`bedrock quirks suppressed caller temperature` when it drops one. Any
-other model id, and an application inference profile ARN, which does
-not name its model, matches no rule and receives the temperature
-unchanged. The omission follows the first-party API's documented and
-probed behaviour; it has not been probed against Bedrock itself.
+`anthropic` rules on the part after `anthropic.`. The models those
+rules mark as rejecting sampling params (Claude Opus 4.7 and 4.8, and
+the Opus 5, Sonnet 5, Haiku 5, Fable 5 and Mythos 5 families) get no
+`inferenceConfig.temperature`, and the adapter logs
+`bedrock quirks suppressed caller temperature` when it drops one,
+including the harness default. Older Claude ids, any other model id,
+and an application inference profile ARN, which does not name its
+model, trigger no sampling-param omission and receive the temperature
+unchanged. The omission follows the rules for the first-party API; it
+has not been probed against Bedrock itself.
 
-The adapter ignores `reasoningEffort` and logs `bedrock reasoningEffort
-ignored` when one is set: the Converse request has no effort field, and
+The adapter ignores `reasoningEffort` and logs `reasoningEffort ignored:
+model has no known effort control` when one is set: the Converse
+request has no effort field, and
 whether Bedrock forwards an Anthropic `output_config` through
 `additionalModelRequestFields` has not been probed. It streams no
 reasoning text, so `reasoningSummary` has no effect on it.
