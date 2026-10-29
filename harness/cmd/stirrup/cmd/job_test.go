@@ -505,7 +505,7 @@ func replayJobConfig(t *testing.T, replayFile string) *pb.RunConfig {
 func TestRunJob_UnusableReplayFileLooksTheSameToControlPlane(t *testing.T) {
 	dir := t.TempDir()
 	notTrace := filepath.Join(dir, "notes.txt")
-	require.NoError(t, os.WriteFile(notTrace, []byte("not a trace\n"), 0o600))
+	require.New(t).NoError(os.WriteFile(notTrace, []byte("not a trace\n"), 0o600))
 	cases := []struct {
 		name       string
 		path       string
@@ -515,7 +515,7 @@ func TestRunJob_UnusableReplayFileLooksTheSameToControlPlane(t *testing.T) {
 		{name: "directory", path: dir, wantDetail: "not a regular file"},
 		{name: "not a trace", path: notTrace, wantDetail: "malformed line"},
 	}
-	const want = "building harness: replayFile unavailable on the harness host; the harness log has the detail"
+	const want = "building harness: provider.replayFile unavailable on the harness host; the harness log has the detail"
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)

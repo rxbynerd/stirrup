@@ -21,15 +21,15 @@ import (
 func TestBuildProvider_UnusableHostFilesReturnHostFileError(t *testing.T) {
 	dir := t.TempDir()
 	notJSON := filepath.Join(dir, "notes.txt")
-	require.NoError(t, os.WriteFile(notJSON, []byte("not json\n"), 0o600))
+	require.New(t).NoError(os.WriteFile(notJSON, []byte("not json\n"), 0o600))
 	cases := []struct {
 		name      string
 		cfg       types.ProviderConfig
 		wantField string
 	}{
-		{name: "replay file missing", cfg: types.ProviderConfig{Type: "replay", ReplayFile: filepath.Join(dir, "absent.jsonl")}, wantField: "replayFile"},
-		{name: "replay file is a directory", cfg: types.ProviderConfig{Type: "replay", ReplayFile: dir}, wantField: "replayFile"},
-		{name: "replay file is not a trace", cfg: types.ProviderConfig{Type: "replay", ReplayFile: notJSON}, wantField: "replayFile"},
+		{name: "replay file missing", cfg: types.ProviderConfig{Type: "replay", ReplayFile: filepath.Join(dir, "absent.jsonl")}, wantField: "provider.replayFile"},
+		{name: "replay file is a directory", cfg: types.ProviderConfig{Type: "replay", ReplayFile: dir}, wantField: "provider.replayFile"},
+		{name: "replay file is not a trace", cfg: types.ProviderConfig{Type: "replay", ReplayFile: notJSON}, wantField: "provider.replayFile"},
 		{
 			name: "gcp credentials file missing",
 			cfg: types.ProviderConfig{
@@ -37,7 +37,7 @@ func TestBuildProvider_UnusableHostFilesReturnHostFileError(t *testing.T) {
 				GCPCredentialsFile: filepath.Join(dir, "absent.json"),
 				Credential:         &types.CredentialConfig{Type: "gcp-service-account"},
 			},
-			wantField: "gcpCredentialsFile",
+			wantField: "provider.gcpCredentialsFile",
 		},
 		{
 			name: "gcp credentials file is not a key",
@@ -46,7 +46,7 @@ func TestBuildProvider_UnusableHostFilesReturnHostFileError(t *testing.T) {
 				GCPCredentialsFile: notJSON,
 				Credential:         &types.CredentialConfig{Type: "gcp-service-account"},
 			},
-			wantField: "gcpCredentialsFile",
+			wantField: "provider.gcpCredentialsFile",
 		},
 	}
 	for _, tc := range cases {
@@ -69,9 +69,10 @@ func TestBuildProvider_UnusableHostFilesReturnHostFileError(t *testing.T) {
 func TestBuildPermissionPolicy_UnusablePolicyFileReturnsHostFileError(t *testing.T) {
 	dir := t.TempDir()
 	notCedar := filepath.Join(dir, "notes.txt")
-	require.NoError(t, os.WriteFile(notCedar, []byte("not cedar {\n"), 0o600))
+	must := require.New(t)
+	must.NoError(os.WriteFile(notCedar, []byte("not cedar {\n"), 0o600))
 	deadClause := filepath.Join(dir, "dead.cedar")
-	require.NoError(t, os.WriteFile(deadClause, []byte(`permit (principal, action, resource) when { principal.runID == "x" };`+"\n"), 0o600))
+	must.NoError(os.WriteFile(deadClause, []byte(`permit (principal, action, resource) when { principal.runID == "x" };`+"\n"), 0o600))
 	registry := buildToolRegistry(&registryExecutor{
 		caps: executor.ExecutorCapabilities{CanRead: true},
 	}, edit.NewWholeFileStrategy(), types.ToolsConfig{}, nil)
@@ -140,4 +141,23 @@ func TestBuildProvider_CancelledReplayLoadIsNotAHostFileError(t *testing.T) {
 	must.ErrorIs(err, context.Canceled)
 	var hostFile *HostFileError
 	must.NotErrorAs(err, &hostFile)
+}
+
+// TestBuildProviders_NamedEntryHostFileErrorNamesTheEntry pins that an
+// unusable file on a providers-map entry is reported under that entry's
+// path.
+func TestBuildProviders_NamedEntryHostFileErrorNamesTheEntry(t *testing.T) {
+	must := require.New(t)
+	recording := writeReplayRecording(t, replayToolTurn, replayTextTurn)
+	config := &types.RunConfig{
+		Provider:  types.ProviderConfig{Type: "replay", ReplayFile: recording},
+		Providers: map[string]types.ProviderConfig{"alt": {Type: "replay", ReplayFile: filepath.Join(t.TempDir(), "absent.jsonl")}},
+	}
+
+	_, _, err := buildProviders(context.Background(), config, &stubSecretStore{})
+
+	var hostFile *HostFileError
+	must.ErrorAs(err, &hostFile)
+	must.Equal("providers[alt].replayFile", hostFile.Field)
+	must.ErrorContains(err, `build provider "alt"`)
 }

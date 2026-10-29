@@ -156,9 +156,9 @@ func prepareSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *typ
 	// run ID numbered below is the next one.
 	childRunID := subAgentRunID(parentConfig.RunID, parent.subAgentSpawns.Load()+1)
 	childProvider, childProviders := parent.Provider, parent.Providers
-	if parent.subAgentProviders != nil {
+	if parent.SubAgentProviders != nil {
 		var err error
-		childProvider, childProviders, err = parent.subAgentProviders(parentConfig.RunID, childRunID, subConfig.Prompt)
+		childProvider, childProviders, err = parent.SubAgentProviders(parentConfig.RunID, childRunID, subConfig.Prompt)
 		if err != nil {
 			return nil, err
 		}
