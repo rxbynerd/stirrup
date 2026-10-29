@@ -1211,3 +1211,70 @@ func TestRunSuite_ReplaySuite_AcceptsLiveFlagsWithProvider(t *testing.T) {
 		must.NoError(err)
 	})
 }
+
+// TestRunSuite_ForwardsProviderProfileFlags pins that EndpointProfile and
+// CompatProfile reach the harness argv under the provider-prefixed flag
+// names. A silent drop leaves a custom --base-url on the derived generic
+// endpoint profile.
+func TestRunSuite_ForwardsProviderProfileFlags(t *testing.T) {
+	must := require.New(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake harness assumes POSIX sh")
+	}
+	harnessPath, argvPath := writeArgvRecordingHarness(t)
+
+	suite := types.EvalSuite{
+		ID: "profile-suite",
+		Tasks: []types.EvalTask{
+			{
+				ID:     "profile-task",
+				Prompt: "noop",
+				Judge: types.EvalJudge{
+					Type:  "file-exists",
+					Paths: []string{"unused-by-profile-test.txt"},
+				},
+			},
+		},
+	}
+
+	_, err := RunSuite(context.Background(), suite, RunConfig{
+		HarnessPath:     harnessPath,
+		EndpointProfile: "azure-openai",
+		CompatProfile:   "zai-glm",
+	})
+	must.NoError(err)
+
+	requireArgvHas(t, readArgvFile(t, argvPath),
+		"--provider-endpoint-profile", "azure-openai",
+		"--provider-compat-profile", "zai-glm",
+	)
+}
+
+func TestRunSuite_NoProviderProfileFlagsWhenUnset(t *testing.T) {
+	must := require.New(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake harness assumes POSIX sh")
+	}
+	harnessPath, argvPath := writeArgvRecordingHarness(t)
+
+	suite := types.EvalSuite{
+		ID: "no-profile-suite",
+		Tasks: []types.EvalTask{
+			{
+				ID:     "no-profile-task",
+				Prompt: "noop",
+				Judge: types.EvalJudge{
+					Type:  "file-exists",
+					Paths: []string{"unused-by-profile-test.txt"},
+				},
+			},
+		},
+	}
+
+	_, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harnessPath})
+	must.NoError(err)
+
+	argv := readArgvFile(t, argvPath)
+	must.NotContains(argv, "--provider-endpoint-profile\n")
+	must.NotContains(argv, "--provider-compat-profile\n")
+}

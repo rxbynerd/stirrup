@@ -75,6 +75,14 @@ type RunConfig struct {
 	BaseURL   string
 	APIKeyRef string
 
+	// EndpointProfile and CompatProfile, when non-empty, are forwarded as
+	// --provider-endpoint-profile and --provider-compat-profile. A BaseURL
+	// pointing at a relay or Azure deployment resolves the derived
+	// "generic" endpoint profile unless EndpointProfile declares the real
+	// one. The harness validates both values.
+	EndpointProfile string
+	CompatProfile   string
+
 	// AnthropicWIF, when populated, forwards Anthropic Workload Identity
 	// Federation flags to every harness invocation. See
 	// docs/anthropic-wif.md.
@@ -523,6 +531,12 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 	}
 	if cfg.APIKeyRef != "" {
 		args = append(args, "--api-key-ref", cfg.APIKeyRef)
+	}
+	if cfg.EndpointProfile != "" {
+		args = append(args, "--provider-endpoint-profile", cfg.EndpointProfile)
+	}
+	if cfg.CompatProfile != "" {
+		args = append(args, "--provider-compat-profile", cfg.CompatProfile)
 	}
 
 	cmd := exec.CommandContext(ctx, cfg.HarnessPath, args...)

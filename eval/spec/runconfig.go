@@ -68,6 +68,8 @@ type providerSpec struct {
 	Region               string                    `hcl:"region,optional"`
 	Profile              string                    `hcl:"profile,optional"`
 	BaseURL              string                    `hcl:"base_url,optional"`
+	EndpointProfile      string                    `hcl:"endpoint_profile,optional"`
+	CompatProfile        string                    `hcl:"compat_profile,optional"`
 	APIKeyHeader         string                    `hcl:"api_key_header,optional"`
 	QueryParams          map[string]string         `hcl:"query_params,optional"`
 	GCPProject           string                    `hcl:"gcp_project,optional"`
@@ -558,6 +560,8 @@ func providerSpecToType(s *providerSpec) types.ProviderConfig {
 		Region:             s.Region,
 		Profile:            s.Profile,
 		BaseURL:            s.BaseURL,
+		EndpointProfile:    s.EndpointProfile,
+		CompatProfile:      s.CompatProfile,
 		APIKeyHeader:       s.APIKeyHeader,
 		QueryParams:        s.QueryParams,
 		GCPProject:         s.GCPProject,

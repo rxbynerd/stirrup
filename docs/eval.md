@@ -223,6 +223,20 @@ explicitly in their CI script (e.g.
 `stirrup-eval run --suite "$REPO/eval/suites/foo.hcl"` after `cd`
 into the repo root).
 
+**Provider profiles.** The `provider` block, in both `run_config` and
+`run_config_overrides`, accepts `endpoint_profile` and
+`compat_profile`, which map to `provider.endpointProfile` and
+`provider.compatProfile`. A suite that targets Azure OpenAI, a relay in
+front of OpenAI's API, or a Z.ai GLM endpoint declares the profile a
+production `RunConfig` would, for example
+`endpoint_profile = "azure-openai"`. Without it, a custom `base_url`
+resolves the derived `generic` endpoint profile. The parser only
+carries the strings; `types.ValidateRunConfig` checks them against the
+closed value sets described in
+[`docs/providers.md`](providers.md#endpoint-profiles) and
+[`docs/configuration.md`](configuration.md), so an unknown value
+surfaces under `--dry-run` like any other validation error.
+
 **Trace archive.** `trace_emitter.archive { type, file_path, bucket,
 object_prefix }` mirrors `types.TraceArchiveConfig`, so a suite can
 pin an explicit local or GCS destination for command-output sidecars
@@ -1483,6 +1497,8 @@ tree gains a `run_config.redacted.json` per task. See
 | `--provider`     | empty            | Provider type to run every task against, forwarded as `--provider`. Overrides the harness default and any provider pinned by the suite's `run_config` block, and switches a replay-backed suite to a live run (the harness drops each task's recording path on the switch). |
 | `--base-url`     | empty            | API base URL for the `openai-compatible` / `openai-responses` providers, forwarded as `--base-url`. |
 | `--api-key-ref`  | empty            | `secret://` reference for the provider API key, forwarded as `--api-key-ref`. A reference the harness resolves through `SecretStore` at runtime — never a literal key. |
+| `--endpoint-profile` | empty         | Endpoint profile of the `openai-compatible` / `openai-responses` provider, forwarded as `--provider-endpoint-profile`. Needed when `--base-url` points at a relay or hosted deployment that would otherwise resolve the derived `generic` profile. The harness validates the value; see [Endpoint profiles](providers.md#endpoint-profiles). |
+| `--compat-profile` | empty          | Provider compat profile, forwarded as `--provider-compat-profile`. The harness validates the value; see [`docs/configuration.md`](configuration.md). |
 | `--judge-provider` | empty          | Provider (`anthropic` or `openai-compatible`) for `diff-review` judges that have no `llm` block. Empty keeps the Anthropic default; `decision` is refused (see [The `decision` provider](#the-decision-provider)). See [The `diff-review` judge](#the-diff-review-judge). |
 | `--judge-model`  | empty            | Model for `diff-review` judges without an `llm` block. Empty keeps the provider's built-in default. |
 | `--judge-base-url` | empty          | API base URL for those judges. Required with `--judge-provider openai-compatible`. |
@@ -1501,7 +1517,7 @@ endpoint checks are skipped, since no model is called. A failure stops
 the invocation before any harness run and names the task and the
 reference, never the key.
 
-The three provider flags exist for the same reason as `--model`: the
+The provider flags exist for the same reason as `--model`: the
 provider a suite runs against is a property of the invocation, not of
 the suite, so CI can retarget a provider-neutral suite without editing
 suite files. Each is emitted independently, so an invocation may
