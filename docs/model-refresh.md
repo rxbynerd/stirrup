@@ -71,38 +71,28 @@ Label each fact probed, documented or inferred, with its source.
 
 ## 3. Probe
 
-The recipes below send one request and print the status and either the
-error message or the stop reason. Run them from the session that holds
-the key.
-
-Anthropic Messages:
-
-```sh
-probe() { curl -s -o r.json -w '%{http_code} ' https://api.anthropic.com/v1/messages \
-  -H "x-api-key: $ANTHROPIC_API_KEY" -H 'anthropic-version: 2023-06-01' \
-  -H 'content-type: application/json' -d "$1"; jq -r '.error.message // .stop_reason' r.json; }
-M=claude-sonnet-5-5
-probe '{"model":"'$M'","max_tokens":64,"messages":[{"role":"user","content":"hi"}],"temperature":0.1}'
-probe '{"model":"'$M'","max_tokens":64,"messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"xhigh"}}'
-probe '{"model":"'$M'","max_tokens":64,"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"t","input_schema":{"type":"object"}}],"tool_choice":{"type":"any"}}'
-```
-
-OpenAI-compatible Chat Completions (the same shape works against
-OpenRouter with its base URL and key):
+Two scripts under `scripts/dev/model-refresh/` send the probes. Each
+reads its key from the environment and hands it to `curl` through a
+header file descriptor, so the key never appears in the process list,
+and neither prints it. Run them from the session that holds the key.
 
 ```sh
-probe() { curl -s -o r.json -w '%{http_code} ' "$BASE_URL/chat/completions" \
-  -H "Authorization: Bearer $API_KEY" -H 'content-type: application/json' -d "$1"
-  jq -c '{error: .error.message, finish: .choices[0].finish_reason, provider: .provider, usage: .usage.completion_tokens_details}' r.json; }
-M=openai/gpt-6-luna
-probe '{"model":"'$M'","max_tokens":200,"messages":[{"role":"user","content":"Reply ok."}],"reasoning_effort":"high"}'
-probe '{"model":"'$M'","max_tokens":200,"messages":[{"role":"user","content":"Reply ok."}],"temperature":0.1}'
+# Anthropic Messages: non-default temperature, effort xhigh, forced tool_choice.
+ANTHROPIC_API_KEY=... scripts/dev/model-refresh/probe-anthropic.sh claude-sonnet-5-5
+
+# OpenAI-compatible Chat Completions (OpenAI, OpenRouter, Z.ai, DeepSeek):
+# one streamed tool request per effort level, then one with temperature.
+# Prints the serving host, the delta keys the stream used (where reasoning
+# arrives) and the reported reasoning tokens.
+API_KEY=... BASE_URL=https://openrouter.ai/api/v1 \
+  scripts/dev/model-refresh/probe-chat.sh openai/gpt-6-luna low high max
 ```
 
-To see how a model streams reasoning, add `"stream":true` and count the
-`delta` keys: `grep '^data: {' out.sse | sed 's/^data: //' | jq -c '.choices[0].delta | keys' | sort | uniq -c`.
-Through OpenRouter, add `"provider":{"order":["<host>"],"allow_fallbacks":false}`
-to pin the serving host, since hosts differ in what they return.
+Through OpenRouter, hosts differ in what they return: GLM-5.3 streamed
+reasoning from the Z.AI host and none from the Relace host. To pin one,
+add `"provider":{"order":["<host>"],"allow_fallbacks":false}` to the
+request body. Zero reasoning tokens at every effort level means the
+probe shows only that the field was accepted.
 
 Gemini, on both surfaces: send a two-turn tool round trip to
 `https://generativelanguage.googleapis.com/v1beta/models/$M:generateContent`
@@ -158,11 +148,13 @@ budgeted separately from the probes above:
 - **Early end of turn.** Anthropic's Opus 5.5 guidance reports that in
   unattended runs some progress updates end the turn with text alone.
   The loop treats a text-only `end_turn` as the end of the task and
-  hands it to the configured verifier, if any; tool-choice escalation
-  re-prompts only turns before the first tool call. Count runs whose final turn is a promise of further work
+  hands it to the configured verifier, if any; tool-choice escalation,
+  when enabled, re-prompts only turns before the first tool call. Count runs whose final turn is a promise of further work
   before adding a continuation policy.
 - **Output limit.** Anthropic recommends `max_tokens` of 64K to 128K for
-  long agentic turns on the 5.5 generation; the loop sends 64,000. A
+  long agentic turns on the 5.5 generation, and 128K for Sonnet 5.5; the
+  loop sends 64,000, the bottom of that range and half the Sonnet 5.5
+  figure. A
   `max_tokens` stop is recovered up to twice per run and reported with
   the `outputLimitRecovery` flag on the turn record, so a rise in those
   flags on a model is the signal to raise the reserve for it.
