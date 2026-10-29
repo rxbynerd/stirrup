@@ -71,6 +71,7 @@ suite "acceptance" {
             echo "example_percent_test.go must define ExamplePercent with an // Output: comment"
             exit 1
           fi
+          trap 'rm -f zz_percent_check_test.go' EXIT
           cat > zz_percent_check_test.go <<'CHECK_EOF'
           package humanize
 
@@ -108,7 +109,6 @@ suite "acceptance" {
             }
           }
           CHECK_EOF
-          trap 'rm -f zz_percent_check_test.go' EXIT
           go vet ./... && go test -run 'Percent' ./...
         EOT
       }
@@ -121,6 +121,7 @@ suite "acceptance" {
             echo "example_lenient_test.go must define ExampleParseLenient with an // Output: comment"
             exit 1
           fi
+          trap 'rm -f zz_lenient_check_test.go' EXIT
           cat > zz_lenient_check_test.go <<'CHECK_EOF'
           package xid
 
@@ -176,7 +177,6 @@ suite "acceptance" {
             }
           }
           CHECK_EOF
-          trap 'rm -f zz_lenient_check_test.go' EXIT
           go vet ./... && go test -run 'Lenient' ./...
         EOT
       }
@@ -582,6 +582,7 @@ suite "acceptance" {
       type = "test-command"
       command = <<-EOT
         grep -q '^func ExamplePercent()' example_percent_test.go || exit 1
+        trap 'rm -f zz_judge_test.go' EXIT
         cat > zz_judge_test.go <<'JUDGE_EOF'
         package humanize
 
@@ -619,7 +620,6 @@ suite "acceptance" {
           }
         }
         JUDGE_EOF
-        trap 'rm -f zz_judge_test.go' EXIT
         go vet ./... && go test ./...
       EOT
     }
@@ -642,6 +642,7 @@ suite "acceptance" {
       type = "test-command"
       command = <<-EOT
         grep -q '^func ExampleParseLenient()' example_lenient_test.go || exit 1
+        trap 'rm -f zz_judge_test.go' EXIT
         cat > zz_judge_test.go <<'JUDGE_EOF'
         package xid
 
@@ -697,7 +698,6 @@ suite "acceptance" {
           }
         }
         JUDGE_EOF
-        trap 'rm -f zz_judge_test.go' EXIT
         go vet ./... && go test ./...
       EOT
     }
