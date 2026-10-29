@@ -100,6 +100,8 @@ func TestPrintSummary_ReportsTrialsAndDryRun(t *testing.T) {
 		{TaskID: "a", Outcome: "pass"},
 		{TaskID: "b", Outcome: "fail", Trials: []eval.TrialResult{{Trial: 1, Outcome: "fail"}, {Trial: 2, Outcome: "fail"}, {Trial: 3, Outcome: "pass"}}},
 	}}
+	healthy := 0.5
+	confirm.HealthyPassRate = &healthy
 
 	t.Run("confirm-on-fail counts the runs made", func(t *testing.T) {
 		must := require.New(t)
@@ -107,6 +109,7 @@ func TestPrintSummary_ReportsTrialsAndDryRun(t *testing.T) {
 		printSummary(&b, confirm, false)
 		must.Contains(b.String(), "Trials: up to 3 per task, confirm-on-fail (4 harness runs; 1 of 2 tasks rerun after a first trial that did not pass)")
 		must.Contains(b.String(), "(majority of trials)")
+		must.Contains(b.String(), "Healthy pass rate: 50.0% (judge passed and run healthy; 2 tasks, up to 3 trials each)")
 	})
 
 	t.Run("confirm-on-fail dry run states the range", func(t *testing.T) {

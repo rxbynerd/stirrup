@@ -56,17 +56,16 @@ func (o Options) Validate() error {
 // every task on that side, and one-sided tasks are listed in the report.
 // A task without Trials counts as a single trial.
 //
-// When either side ran under eval.TrialsPolicyConfirmOnFail, per-task trial
-// counts depend on the first trial's outcome, so the paired statistics, the
-// noise floor, and pass^k / pass@k use each task's first trial alone. Pass
-// rates, deterministic flips, and the regression list still use every trial.
-// Compare does not refuse mismatched policies; see TrialsPolicyMismatch.
+// When either side's trial counts depend on outcomes (confirm-on-fail), the
+// paired statistics, the noise floor, and pass^k / pass@k use each task's
+// first trial alone. Pass rates, deterministic flips, and the regression
+// list still use every trial. Compare does not refuse mismatched policies;
+// see TrialsPolicyMismatch.
 func Compare(baseline, current eval.SuiteResult, opts Options) eval.ComparisonReport {
 	baselineByID := indexByTaskID(baseline.Tasks)
 	baselineOnly := unpairedIDs(baseline.Tasks, indexByTaskID(current.Tasks))
 	currentOnly := unpairedIDs(current.Tasks, baselineByID)
-	firstTrialOnly := baseline.ResolvedTrialsPolicy() == eval.TrialsPolicyConfirmOnFail ||
-		current.ResolvedTrialsPolicy() == eval.TrialsPolicyConfirmOnFail
+	firstTrialOnly := baseline.TrialCountsDependOnOutcomes() || current.TrialCountsDependOnOutcomes()
 
 	var (
 		regressions  []eval.TaskRegression
@@ -328,14 +327,15 @@ func rateSummary(r eval.SuiteResult, firstTrialOnly bool) eval.RateSummary {
 
 // TrialsPolicyMismatch returns an error naming both policies when baseline
 // and current ran under different trials policies, and nil otherwise. A
-// confirm-on-fail result is biased upward against a fixed one, because a
-// failing task gets more chances to reach a passing majority.
+// confirm-on-fail pass rate is biased upward relative to a fixed one,
+// because a task that passes its first trial is never rerun and records a
+// pass fraction of 1.
 func TrialsPolicyMismatch(baseline, current eval.SuiteResult) error {
 	bp, cp := baseline.ResolvedTrialsPolicy(), current.ResolvedTrialsPolicy()
 	if bp == cp {
 		return nil
 	}
-	return fmt.Errorf("trials policies differ: baseline ran %s, current ran %s; a confirm-on-fail result is biased upward against a fixed one", bp, cp)
+	return fmt.Errorf("trials policies differ: baseline ran %s, current ran %s; a confirm-on-fail pass rate is biased upward relative to a fixed one", bp, cp)
 }
 
 // suiteTrials is the result's declared trials per task, falling back to

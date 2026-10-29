@@ -256,15 +256,14 @@ func (c TrialCounts) Outcome() string {
 // runs any task could take. TrialsPolicy is empty on results written
 // before it existed, which all ran under TrialsPolicyFixed.
 type SuiteResult struct {
-	SuiteID     string       `json:"suiteId"`
-	RunID       string       `json:"runId"`
-	StartedAt   time.Time    `json:"startedAt"`
-	CompletedAt time.Time    `json:"completedAt"`
-	Tasks       []TaskResult `json:"tasks"`
-	PassRate    float64      `json:"passRate"`
-	Trials      int          `json:"trials,omitempty"`
-
-	TrialsPolicy string `json:"trialsPolicy,omitempty"`
+	SuiteID      string       `json:"suiteId"`
+	RunID        string       `json:"runId"`
+	StartedAt    time.Time    `json:"startedAt"`
+	CompletedAt  time.Time    `json:"completedAt"`
+	Tasks        []TaskResult `json:"tasks"`
+	PassRate     float64      `json:"passRate"`
+	Trials       int          `json:"trials,omitempty"`
+	TrialsPolicy string       `json:"trialsPolicy,omitempty"`
 
 	HealthyPassRate *float64 `json:"healthyPassRate,omitempty"`
 	RequireHealthy  bool     `json:"requireHealthy,omitempty"`
@@ -280,6 +279,13 @@ func (r SuiteResult) ResolvedTrialsPolicy() string {
 		return TrialsPolicyFixed
 	}
 	return r.TrialsPolicy
+}
+
+// TrialCountsDependOnOutcomes reports whether the result's per-task trial
+// counts depend on earlier trial outcomes, so that only each task's first
+// trial is an identically distributed sample across tasks.
+func (r SuiteResult) TrialCountsDependOnOutcomes() bool {
+	return r.ResolvedTrialsPolicy() == TrialsPolicyConfirmOnFail
 }
 
 // JudgeCacheSummary tallies the judge cache outcomes of one invocation, one
