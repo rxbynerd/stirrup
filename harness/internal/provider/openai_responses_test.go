@@ -739,7 +739,7 @@ func TestOpenAIResponsesAdapter_TemperatureWireShape(t *testing.T) {
 			adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 
 			ch, err := adapter.Stream(context.Background(), types.StreamParams{
-				Model:       "gpt-5.4",
+				Model:       "gpt-4.1",
 				MaxTokens:   1024,
 				Temperature: tc.temperature,
 			})

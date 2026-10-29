@@ -36,7 +36,8 @@ func TestGPT6_ChatCompletionsRules(t *testing.T) {
 }
 
 // TestGPT6_ResponsesRules pins the gpt-6 family on the Responses surface
-// and that earlier gpt-5 models keep forwarding temperature there.
+// and that earlier reasoning models omit sampling params without picking
+// up an effort allow-list.
 func TestGPT6_ResponsesRules(t *testing.T) {
 	levels := []string{"low", "medium", "high", "xhigh", "max"}
 	for _, model := range []string{"gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna"} {
@@ -47,20 +48,24 @@ func TestGPT6_ResponsesRules(t *testing.T) {
 			must.Equal(levels, r.ReasoningEffortLevels)
 		})
 	}
-	for _, model := range []string{"gpt-5", "gpt-5-mini", "o3"} {
+	for _, model := range []string{"gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5.1", "gpt-5.2", "o3", "o3-pro", "o4-mini"} {
 		t.Run(model, func(t *testing.T) {
 			must := require.New(t)
 			r := DefaultRegistry().Resolve(Target{ProviderType: "openai-responses", Model: model}).BehaviourFlags.OpenAIResponses
-			must.False(r.OmitSamplingParams, "picked up GPT-5.4+ Responses flags: %+v", r)
+			must.True(r.OmitSamplingParams, "reasoning model must omit sampling params: %+v", r)
 			must.Empty(r.ReasoningEffortLevels, "picked up GPT-5.4+ Responses flags: %+v", r)
 		})
 	}
+	t.Run("gpt-5-chat keeps sampling params", func(t *testing.T) {
+		must := require.New(t)
+		r := DefaultRegistry().Resolve(Target{ProviderType: "openai-responses", Model: "gpt-5-chat-latest"}).BehaviourFlags.OpenAIResponses
+		must.False(r.OmitSamplingParams)
+	})
 }
 
 // TestGPT5_ResponsesEffortRules pins the documented (not probed) GPT-5.4,
 // 5.5 and 5.6 Responses allow-lists and sampling suppression: none lists
-// minimal, only 5.6 lists max, and gpt-5.4 keeps temperature because its
-// default effort is none.
+// minimal, only 5.6 lists max, and every one omits sampling params.
 func TestGPT5_ResponsesEffortRules(t *testing.T) {
 	upToXHigh := []string{"low", "medium", "high", "xhigh"}
 	upToMax := []string{"low", "medium", "high", "xhigh", "max"}
@@ -70,8 +75,8 @@ func TestGPT5_ResponsesEffortRules(t *testing.T) {
 		levels     []string
 		omitSample bool
 	}{
-		{"gpt-5.4 allows up to xhigh and keeps temperature", "gpt-5.4", upToXHigh, false},
-		{"gpt-5.4-nano inherits the gpt-5.4 rules", "gpt-5.4-nano", upToXHigh, false}, // inferred: only gpt-5.4 is documented
+		{"gpt-5.4 allows up to xhigh and omits sampling", "gpt-5.4", upToXHigh, true},
+		{"gpt-5.4-nano inherits the gpt-5.4 rules", "gpt-5.4-nano", upToXHigh, true}, // inferred: only gpt-5.4 is documented
 		{"gpt-5.5 allows up to xhigh and omits sampling", "gpt-5.5", upToXHigh, true},
 		{"dated gpt-5.5 snapshot matches gpt-5.5", "gpt-5.5-2026-04-23", upToXHigh, true},
 		{"gpt-5.6 sol allows max and omits sampling", "gpt-5.6-sol", upToMax, true},

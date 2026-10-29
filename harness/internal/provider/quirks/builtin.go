@@ -364,27 +364,31 @@ func BuiltinRules() []Rule {
 		// silent non-strict fallback, so the reasoning families pin
 		// strict:true and the harness's schema lint fails closed before send.
 		// The same families request encrypted reasoning and replay output
-		// items verbatim.
+		// items verbatim, and omit sampling params as the Chat Completions
+		// rules do: the reasoning models reject them unless the effort is
+		// none, and omitting them is accepted at every effort.
 		{
 			ProviderType: "openai-responses",
 			ModelMatch:   "o[1-9]*",
-			Description:  "OpenAI Responses o-series: strict tools, request encrypted reasoning, replay output items (documented, not probed)",
-			LastVerified: Date("2026-09-30"),
+			Description:  "OpenAI Responses o-series: strict tools, request encrypted reasoning, replay output items, omit sampling params (documented, not probed)",
+			LastVerified: Date("2026-10-29"),
 			Apply: func(q *ProviderQuirks) {
 				q.BehaviourFlags.OpenAI.StrictMode = true
 				q.BehaviourFlags.OpenAIResponses.IncludeEncryptedReasoning = true
 				q.BehaviourFlags.OpenAIResponses.ReplayOutputItems = true
+				q.BehaviourFlags.OpenAIResponses.OmitSamplingParams = true
 			},
 		},
 		{
 			ProviderType: "openai-responses",
 			ModelMatch:   "gpt-5*",
-			Description:  "OpenAI Responses gpt-5 family: strict tools, request encrypted reasoning, replay output items (documented, not probed)",
-			LastVerified: Date("2026-09-30"),
+			Description:  "OpenAI Responses gpt-5 family: strict tools, request encrypted reasoning, replay output items, omit sampling params (documented, not probed)",
+			LastVerified: Date("2026-10-29"),
 			Apply: func(q *ProviderQuirks) {
 				q.BehaviourFlags.OpenAI.StrictMode = true
 				q.BehaviourFlags.OpenAIResponses.IncludeEncryptedReasoning = true
 				q.BehaviourFlags.OpenAIResponses.ReplayOutputItems = true
+				q.BehaviourFlags.OpenAIResponses.OmitSamplingParams = true
 			},
 		},
 		{
@@ -397,9 +401,7 @@ func BuiltinRules() []Rule {
 			},
 		},
 		// GPT-5.4 onward document effort none..xhigh (5.6: ..max) and no
-		// model documents minimal. Sampling suppression follows the default
-		// effort: gpt-5.4 defaults to none and keeps temperature, 5.5 and
-		// 5.6 default to medium.
+		// model documents minimal.
 		{
 			ProviderType: "openai-responses",
 			ModelMatch:   "gpt-5.4*",
@@ -432,11 +434,12 @@ func BuiltinRules() []Rule {
 		{
 			ProviderType: "openai-responses",
 			ModelMatch:   "gpt-5-chat*",
-			Description:  "OpenAI Responses gpt-5-chat carve-out: non-reasoning, no encrypted-reasoning include or output replay (inferred, not probed)",
-			LastVerified: Date("2026-09-30"),
+			Description:  "OpenAI Responses gpt-5-chat carve-out: non-reasoning, accepts sampling params, no encrypted-reasoning include or output replay (inferred, not probed)",
+			LastVerified: Date("2026-10-29"),
 			Apply: func(q *ProviderQuirks) {
 				q.BehaviourFlags.OpenAIResponses.IncludeEncryptedReasoning = false
 				q.BehaviourFlags.OpenAIResponses.ReplayOutputItems = false
+				q.BehaviourFlags.OpenAIResponses.OmitSamplingParams = false
 			},
 		},
 		{

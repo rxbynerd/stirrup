@@ -525,12 +525,12 @@ test catch malformed paths at registry-build time.
 | `gemini`            | `gemini-3.8*`      | Gemini 3.8: identical to `gemini-3.7*` (probed on both surfaces 2026-09-29) |
 | `openai-responses`  | `*`                | OpenAI Responses: typed input items, `max_output_tokens`, `store:false`; top-level `parallel_tool_calls`; accepts schema examples (#222, #332) |
 | `openai-responses`  | `*`                | OpenAI Responses: `prompt_cache_key` from the per-run cache key (documented, not probed) |
-| `openai-responses`  | `o[1-9]*`          | OpenAI Responses o-series: strict tools; request `reasoning.encrypted_content`; replay output items (documented, not probed) |
-| `openai-responses`  | `gpt-5*`           | OpenAI Responses gpt-5 family: strict tools; request `reasoning.encrypted_content`; replay output items (documented, not probed) |
+| `openai-responses`  | `o[1-9]*`          | OpenAI Responses o-series: strict tools; request `reasoning.encrypted_content`; replay output items; omit sampling params (documented, not probed) |
+| `openai-responses`  | `gpt-5*`           | OpenAI Responses gpt-5 family: strict tools; request `reasoning.encrypted_content`; replay output items; omit sampling params (documented, not probed) |
 | `openai-responses`  | `gpt-5.4*`         | OpenAI Responses gpt-5.4: `reasoning.effort` `low`..`xhigh` (documented, not probed) |
 | `openai-responses`  | `gpt-5.5*`         | OpenAI Responses gpt-5.5: `reasoning.effort` `low`..`xhigh` (documented, not probed); omit sampling params (inferred) |
 | `openai-responses`  | `gpt-5.6*`         | OpenAI Responses gpt-5.6 family: `reasoning.effort` `low`..`max` (documented, not probed); omit sampling params (inferred) |
-| `openai-responses`  | `gpt-5-chat*`      | OpenAI Responses gpt-5-chat carve-out: no `reasoning.encrypted_content` include or output replay (inferred, not probed) |
+| `openai-responses`  | `gpt-5-chat*`      | OpenAI Responses gpt-5-chat carve-out: accepts sampling params; no `reasoning.encrypted_content` include or output replay (inferred, not probed) |
 | `openai-responses`  | `gpt-6*`           | OpenAI Responses gpt-6 family: the `gpt-5*` reasoning rules plus omit sampling params and `reasoning.effort` `low`..`max` (documented, not probed) |
 | `anthropic`         | `*`                | Anthropic: `tool_choice.disable_parallel_tool_use` (#222) |
 | `anthropic`         | `*`                | Anthropic: tool examples on the native `input_examples` field (probed 2026-09-30) |
