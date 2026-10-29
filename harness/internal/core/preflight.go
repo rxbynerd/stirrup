@@ -508,7 +508,7 @@ func preflightMCP(
 		return discovery
 	}
 	client := mcp.NewClient(tool.NewRegistry(), nil)
-	client.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	client.Logger = slog.New(observability.NewScrubHandler(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	for _, srv := range config.Tools.MCPServers {
 		step := "mcp:" + srv.Name
 		if opts.SkipMCP {
