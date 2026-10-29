@@ -137,7 +137,12 @@ tool_use block from the model
 
 A call to a tool that [lazy tool loading](configuration.md#lazy-tool-loading)
 defers and no search has loaded stops at step 1, before the `pre_tool`
-guard and the permission policy see it. Like any failed call, repeated
+guard and the permission policy see it. A name that matches exactly
+one tool except for letter case also stops at step 1, as
+`unknown_tool`; the error tells the model the correct name, and the
+harness never runs the call under a rewritten name, because the guard,
+the tripwires and the permission policy key on the tool name and the
+name comes from the model. Like any failed call, repeated
 rejections count toward the stall detector's limit of consecutive
 failures.
 
