@@ -269,6 +269,12 @@ func TestCmdCompare_TrialsPolicyMismatch(t *testing.T) {
 			wantCode: 2,
 			wantLog:  `current result: unknown trials policy "adaptive"`,
 		},
+		{
+			name:     "an unknown baseline policy is refused",
+			args:     []string{"--baseline", unknown, "--current", unknown},
+			wantCode: 2,
+			wantLog:  `baseline result: unknown trials policy "adaptive"`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

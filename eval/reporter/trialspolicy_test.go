@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/eval"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // confirmTask builds a task result from its trial outcomes the way the
@@ -44,6 +45,8 @@ func TestCompare_ConfirmOnFailPairsOnTheFirstTrial(t *testing.T) {
 	must.True(s.FirstTrialOnly)
 	must.NotNil(s.Paired)
 	within(t, "first-trial mean delta", s.Paired.MeanDelta, -0.25, 1e-12)
+	within(t, "first-trial paired SE", s.Paired.StdErr, 0.25, 1e-12)
+	must.Equal(eval.GateWarn, s.Gate, "the first-trial drop exceeds the warn margin although the reruns passed")
 	within(t, "full-trial task delta", report.Tasks[0].Delta, -1.0/3, 1e-12)
 	within(t, "current pass rate over every trial run", s.CurrentPassRate, (2.0/3+3)/4, 1e-12)
 
@@ -100,6 +103,55 @@ func TestCompare_MixedPoliciesPairOnTheFirstTrialOfBothSides(t *testing.T) {
 	text := FormatText(report)
 	must.Contains(text, "Warning: trials policies differ (baseline fixed, current confirm-on-fail)")
 	must.Contains(text, "K=3 (confirm-on-fail)")
+}
+
+func TestCompare_MixedPoliciesPairOnTheFirstTrialWithAConfirmOnFailBaseline(t *testing.T) {
+	must := require.New(t)
+	confirm := confirmSuite("A", confirmTask("ta", "pass"), confirmTask("tb", "pass"), confirmTask("tc", "pass"))
+	fixed := eval.SuiteResult{RunID: "B", Trials: 3, TrialsPolicy: eval.TrialsPolicyFixed, Tasks: []eval.TaskResult{
+		confirmTask("ta", "fail", "pass", "pass"), confirmTask("tb", "pass", "pass", "pass"), confirmTask("tc", "pass", "pass", "pass"),
+	}}
+
+	report := Compare(confirm, fixed, DefaultOptions())
+
+	must.True(report.Summary.FirstTrialOnly)
+	within(t, "first-trial mean delta", report.Summary.Paired.MeanDelta, -1.0/3, 1e-12)
+	must.Len(report.Summary.Current.PassHatK, 1, "the fixed side is also paired on its first trial")
+	must.Contains(FormatText(report), "Warning: trials policies differ (baseline confirm-on-fail, current fixed)")
+}
+
+func TestCompare_ConfirmOnFailFirstTrialFollowsRequireHealthy(t *testing.T) {
+	healthyPass := func(id string) eval.TaskResult {
+		return eval.TaskResult{TaskID: id, Outcome: "pass", PassFraction: 1, RunHealth: types.RunHealthy}
+	}
+	baseline := confirmSuite("base", healthyPass("a"), healthyPass("b"), healthyPass("c"), healthyPass("d"))
+	confirmed := eval.TaskResult{TaskID: "a", Outcome: "pass", PassFraction: 1, RunHealth: types.RunDegraded, Trials: []eval.TrialResult{
+		{Trial: 1, Outcome: "pass", RunHealth: types.RunDegraded},
+		{Trial: 2, Outcome: "pass", RunHealth: types.RunHealthy},
+		{Trial: 3, Outcome: "pass", RunHealth: types.RunHealthy},
+	}}
+
+	cases := []struct {
+		name           string
+		requireHealthy bool
+		wantMeanDelta  float64
+	}{
+		{"the judge pass counts without require_healthy", false, 0},
+		{"the unhealthy first trial counts as a fail under require_healthy", true, -0.25},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			current := confirmSuite("cur", confirmed, healthyPass("b"), healthyPass("c"), healthyPass("d"))
+			current.RequireHealthy = tc.requireHealthy
+
+			s := Compare(baseline, current, DefaultOptions()).Summary
+
+			must.NotNil(s.Paired)
+			within(t, "first-trial mean delta", s.Paired.MeanDelta, tc.wantMeanDelta, 1e-12)
+			must.Empty(s.DeterministicFlips, "two healthy confirmation passes")
+		})
+	}
 }
 
 func TestFormatText_ConfirmOnFailNotesTheFirstTrialTreatment(t *testing.T) {

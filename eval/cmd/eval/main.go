@@ -378,7 +378,7 @@ func cmdCompare(args []string, stdout io.Writer) int {
 	}
 	if err := reporter.TrialsPolicyMismatch(baseline, current); err != nil {
 		if !*allowPolicyMismatch {
-			log.Printf("refusing to compare: %v. Rerun one side with the other's --trials-policy, or pass --allow-policy-mismatch to compare anyway.", err)
+			log.Printf("refusing to compare: %v. Re-run one side with the other's --trials-policy, or pass --allow-policy-mismatch to compare anyway.", err)
 			return 2
 		}
 		log.Printf("warning: %v (compared anyway under --allow-policy-mismatch)", err)
