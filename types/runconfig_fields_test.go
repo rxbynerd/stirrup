@@ -27,6 +27,10 @@ func TestConfigFieldPaths_ListsKnownPaths(t *testing.T) {
 		"tools.lazyLoading.eager",
 		"tools.mcpServers.allowedMcpHosts",
 		"outputSchema",
+		"guardRail.stages.type",
+		"guardRail.stages.stages",
+		"verifier.verifiers.command",
+		"verifier.verifiers.verifiers",
 	} {
 		check.Contains(got, want)
 	}
@@ -48,6 +52,14 @@ func TestConfigFieldPaths_SelfDecodingFieldsAreLeaves(t *testing.T) {
 	check := assert.New(t)
 	for _, p := range ConfigFieldPaths() {
 		check.False(strings.HasPrefix(p, "outputSchema."), "raw JSON field descended into: %s", p)
+	}
+}
+
+func TestConfigFieldPaths_RecursiveTypesStopAfterOneNestingLevel(t *testing.T) {
+	check := assert.New(t)
+	for _, p := range ConfigFieldPaths() {
+		check.False(strings.HasPrefix(p, "guardRail.stages.stages."), "guardrail walked past one nesting level: %s", p)
+		check.False(strings.HasPrefix(p, "verifier.verifiers.verifiers."), "verifier walked past one nesting level: %s", p)
 	}
 }
 
@@ -92,7 +104,7 @@ type fieldWalkSubject struct {
 func TestCollectConfigFieldPaths_FollowsEncodingJSONNaming(t *testing.T) {
 	must := require.New(t)
 	seen := map[string]struct{}{}
-	collectConfigFieldPaths("", reflect.TypeFor[fieldWalkSubject](), seen, map[reflect.Type]bool{})
+	collectConfigFieldPaths("", reflect.TypeFor[fieldWalkSubject](), seen, map[reflect.Type]int{})
 	got := make([]string, 0, len(seen))
 	for p := range seen {
 		got = append(got, p)
@@ -115,6 +127,7 @@ func TestCollectConfigFieldPaths_FollowsEncodingJSONNaming(t *testing.T) {
 		"raw",
 		"recursive",
 		"recursive.next",
+		"recursive.next.next",
 	}
 	must.Equal(want, got)
 }

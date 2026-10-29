@@ -37,19 +37,22 @@ func TestConfigFieldPaths_CoversEveryProtoRunConfigField(t *testing.T) {
 		advertised[p] = true
 	}
 	var protoPaths []string
-	collectProtoFieldPaths("", (&pb.RunConfig{}).ProtoReflect().Descriptor(), &protoPaths, map[protoreflect.FullName]bool{})
-	check.Subset(protoPaths, []string{"providers.*.endpointProfile", "tools.mcpServers.name", "tools.lazyLoading.eager"}, "walker reaches maps, repeated and nested messages")
+	collectProtoFieldPaths("", (&pb.RunConfig{}).ProtoReflect().Descriptor(), &protoPaths, map[protoreflect.FullName]int{})
+	check.Subset(protoPaths, []string{"providers.*.endpointProfile", "tools.mcpServers.name", "tools.lazyLoading.eager", "guardRail.stages.type", "verifier.verifiers.command"},
+		"walker reaches maps, repeated and nested messages, and one level into recursive messages")
 	for _, p := range protoPaths {
 		check.True(advertised[p], "proto RunConfig field %q is not in ConfigFieldPaths", p)
 	}
 }
 
-func collectProtoFieldPaths(prefix string, md protoreflect.MessageDescriptor, out *[]string, active map[protoreflect.FullName]bool) {
-	if active[md.FullName()] {
+// collectProtoFieldPaths mirrors types.ConfigFieldPaths' walk, including
+// its one nesting level inside a recursive message.
+func collectProtoFieldPaths(prefix string, md protoreflect.MessageDescriptor, out *[]string, active map[protoreflect.FullName]int) {
+	if active[md.FullName()] >= 2 {
 		return
 	}
-	active[md.FullName()] = true
-	defer delete(active, md.FullName())
+	active[md.FullName()]++
+	defer func() { active[md.FullName()]-- }()
 	fields := md.Fields()
 	for i := range fields.Len() {
 		fd := fields.Get(i)

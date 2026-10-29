@@ -131,7 +131,7 @@ the policy lint keeps its lint findings in the message.
 
 | `type` | Fields | Control-plane obligation |
 |---|---|---|
-| `ready` | `harness_version`, `harness_semver`, `capabilities`, `config_fields`, `id` (session echo) | Gate assignment on `capabilities` when the task depends on a contract feature, and remove from the task any `RunConfig` field `config_fields` does not list; see [Negotiating RunConfig fields](#negotiating-runconfig-fields). `harness_version` and `harness_semver` are informational. |
+| `ready` | `harness_version`, `harness_semver`, `capabilities`, `config_fields`, `id` (session echo) | Gate assignment on `capabilities` when the task depends on a contract feature, and remove from the task any `RunConfig` field `config_fields` shows the harness does not know; see [Negotiating RunConfig fields](#negotiating-runconfig-fields). `harness_version` and `harness_semver` are informational. |
 | `run_started` | `id` (run ID), `trace_reference` (`trace_id`, `run_span_id`, `sampled`) | Key the run's transcript on `id`. Sent once per run, primary and follow-up, after setup and before the run's first `user_message`. `trace_reference` is present only when the run records an OTel span; persist it against the run to target feedback scores or link to the trace. `sampled: false` means the span was not exported, so the backend holds no trace for it. The `done` summary repeats the reference. |
 | `user_message` | `text`, `source`, `request_id` | Informational. A user-role message the harness appended to the history, after sanitisation, in append order. `text` is the appended text only (capped at 256 KiB), even when the harness merged it into a trailing user message. `source` names its origin; see [Watching a run live](#watching-a-run-live) for the vocabulary, which is open. `request_id` echoes the `user_response` the text came from, which marks that input as accepted into the history. Tool results are reported by `tool_result`, not by `user_message`. |
 | `turn_started` | `turn`, `model`, `provider` | Informational. A model turn began. `turn` counts from 0 within each run. `provider` is the adapter type (for example `anthropic` or `openai-responses`), never the operator's `providers` map key. Sent once per turn, before the first provider request. |
@@ -262,8 +262,9 @@ TLS constructor is internal. Full discussion:
 The smallest correct `RunTask` implementation:
 
 1. Accept the stream; wait for `ready`.
-2. Send `task_assignment` with a valid `RunConfig` that sets only
-   fields `ready.config_fields` lists.
+2. Send `task_assignment` with a valid `RunConfig`, without the
+   fields `ready.config_fields` shows the harness does not know (see
+   [Negotiating RunConfig fields](#negotiating-runconfig-fields)).
 3. Consume events. Log `text_delta` / `tool_call` / `tool_result`;
    track `heartbeat` arrival times.
 4. Answer every `permission_request` (even a blanket deny keeps the
@@ -1505,6 +1506,12 @@ accepts, as dotted paths of the fields' JSON names, sorted:
 - A map lists `*` for its keys, then its value's fields under that:
   `providers`, `providers.*`, `providers.*.type`. A map with scalar
   values ends at the `*` entry: `executor.k8sNodeSelector.*`.
+- A message that contains itself is listed one level inside itself and
+  not below: `guardRail.stages.type` and `guardRail.stages.stages` are
+  listed, `guardRail.stages.stages.type` is not. Composite guardrails
+  cannot nest, so this covers them fully; a composite verifier nested
+  inside another (`verifier.verifiers.verifiers`) is passed through
+  unchecked by the walk below.
 
 The names are the lower-camel-case JSON names that protobuf JSON and
 file-config JSON share. The list is derived from the harness's own

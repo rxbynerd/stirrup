@@ -63,6 +63,10 @@ func TestSemver_ParsesReleaseLabelsOnly(t *testing.T) {
 		{"leading zero", "v01.2.3", ""},
 		{"empty", "", ""},
 		{"trailing text", "v1.2.3 (abc1234)", ""},
+		{"trailing newline", "v1.2.3\n", ""},
+		{"uppercase V", "V1.2.3", ""},
+		{"leading zero pre-release", "v1.2.3-01", ""},
+		{"empty pre-release", "v1.2.3-", ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
