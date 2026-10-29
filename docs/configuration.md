@@ -253,10 +253,14 @@ A `--no-probe-*` gate or `--dry-run-timeout` supplied **without**
 operator typo — for example, `--no-probe-provider` on a real run that
 then contacts the provider anyway.
 
-MCP probe failures are treated like every other probe: a configured
-server that does not answer the handshake fails the dry-run. An operator
-who expects a server to be unavailable suppresses its probe with
-`--no-probe-mcp`.
+MCP probe failures are treated like every other probe: a server that does
+not answer the handshake, or whose `tools/list` response omits a name in
+its `allowedTools`, fails the dry-run when the server is required, which
+is the default. The same findings on a server marked `optional` record a
+`warn` step (`"status": "warn"` in the JSON report) and leave the report
+passing, so the text report still ends with `Result: OK (no step failed)`.
+An operator who expects a server to be unavailable marks it `optional` or
+suppresses its probe with `--no-probe-mcp`. See [MCP servers](#mcp-servers).
 
 ### Exit codes and composition
 
@@ -298,12 +302,21 @@ reference.
 | `--mode`, `-m` | `planning` | One of `execution`, `planning`, `review`, `research`, `toil`. `planning`, `review`, `research`, and `toil` are read-only (no writes, no shell); `execution` is the editable mode. The default is `planning` so a bare invocation has no write or shell capability — pass `--mode execution` to enable edits and shell. See [Read-only modes](#read-only-modes). |
 | `--name` | (none) | Human-readable session label, attached to logs/traces. Metadata only — not injected into the prompt. |
 | `--workspace`, `-w` | cwd | Workspace directory. |
-| `--max-turns` | `20` | Hard-capped at 100. |
+| `--max-turns` | `20` | Hard-capped at 100. Every turn of the run counts, including the turns that repair a failed verification; see [Limits and budgets](#limits-and-budgets). |
 | `--timeout` | `600` | Wall-clock seconds for one run — the primary run and, afresh, each follow-up run; capped at 3600. Not a session cap. |
 | `--temperature` | (unset → `0.1`) | Sampling temperature forwarded to the provider on every turn. Range `0.0`–`2.0` (the union of provider-side ranges; see [Limits and budgets](#limits-and-budgets)). Omit the flag to inherit the harness default; pass an explicit `0` for greedy decoding. The runtime distinguishes "flag absent" from `--temperature=0` via cobra's `Changed()` bit. |
 | `--reasoning-effort` | (none) | Provider-neutral reasoning depth: `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Empty says nothing on the wire and leaves the model on its provider default. Adapters project it onto the model's native control — Gemini `generationConfig.thinkingConfig.thinkingLevel`, Anthropic `output_config.effort`, OpenAI `reasoning_effort` (Chat Completions) or `reasoning.effort` (Responses) — and models with no probed control ignore it, so a single config stays portable across providers. Per-model acceptance is narrower than the enum (Gemini 3.7 Flash rejects `minimal`, no Claude or GPT-6 model accepts it, GPT-5.4-onward models document no `minimal` level, GPT-5.4 and GPT-5.5 stop at `xhigh`, and Gemini has no `xhigh` or `max`); the [provider quirks registry](provider-quirks.md#32-reasoning-effort) rejects an unaccepted level before the request is sent. JSON path: `reasoningEffort`. |
 | `--reasoning-summary` | (none) | Whether the model's reasoning text is requested and streamed to the transport as `thinking_delta` events: `auto` or `off`. Empty is treated as `auto`, except that `openai-responses` requests no summary unless the value is explicitly `auto`. Provider-neutral like `--reasoning-effort`: see [Reasoning summaries](#reasoning-summaries) for how each adapter projects it, including the unset value. `off` stops the harness streaming reasoning text and, where the provider has a request control for it (Gemini, OpenAI Responses), does not request it. Conversation history is unaffected either way. JSON path: `reasoningSummary`. |
 | `--log-level` | `info` | One of `debug`, `info`, `warn`, `error`. |
+
+Logging has two paths, and both scrub secret-shaped content from the
+message and from every attribute value. The run's records go to stderr as
+JSON lines, and with `--log-export otlp` to the OTLP exporter as well.
+Records that code writes through the process-default logger instead of the
+run's logger are slog text lines on stderr in the form
+`time=2026-10-29T10:15:30.123+01:00 level=INFO msg="..." key=value`. The
+default logger always logs at info level and above, whatever `--log-level`
+says.
 
 ### Loop behaviour
 
@@ -327,6 +340,31 @@ reference.
 | `--provider-compat-profile` | (none) | Closed enum that loads a provider-quirks compatibility profile. Only legal value in v1: `"zai-glm"` (Z.ai GLM legacy `max_tokens` key + `tool_stream: true` extension). Unknown values fail at startup. JSON path: `provider.compatProfile`. |
 | `--provider-endpoint-profile` | (derived) | Closed enum declaring which implementation of the OpenAI wire serves `--base-url`: `openai`, `azure-openai`, `bedrock-mantle`, or `generic`. Empty derives `openai` for OpenAI's own API (`https://api.openai.com/v1`, or no `--base-url`) and `generic` for any other base URL. Legal only for `openai-compatible` and `openai-responses`; `azure-openai` and `bedrock-mantle` require `--base-url`. Set `openai` to declare a relay in front of OpenAI's API. See [Endpoint profiles](providers.md#endpoint-profiles). JSON path: `provider.endpointProfile` (and `providers[name].endpointProfile`). |
 
+**Provider defaults.** One defaulting step runs after the base config and
+the flags are merged, so a value from `--config` or an explicit flag always
+wins, and a provider named in a `--config` file selects defaults exactly as
+`--provider` does:
+
+- `--model` defaults to `claude-sonnet-4-6` for `anthropic` with a static
+  router. Every other provider has no default model: a static router
+  without one exits `1` with an error that names the provider and the
+  flag. `dynamic` and `per-mode` routers carry their own model fields,
+  which `ValidateRunConfig` checks.
+- `--api-key-ref` defaults to `secret://ANTHROPIC_API_KEY` for `anthropic`
+  and to `secret://OPENAI_API_KEY` for `openai-compatible` and
+  `openai-responses`. No default applies when the flag is passed
+  (`--api-key-ref=""` included), when the config already names a
+  reference, or when a `credential` block supplies authentication, so the
+  federation flags do not also receive a key reference.
+- A `--config` or stdin document whose `openai-compatible` or
+  `openai-responses` provider sets `baseUrl` without a key reference
+  stays keyless. The same provider built from flags alone, with or
+  without `--base-url`, receives the OpenAI default; `--api-key-ref=""`
+  opts out for a keyless server.
+- `bedrock` receives no default reference and authenticates through the
+  AWS credential chain. `gemini` receives none either and rejects a
+  non-empty one, because Vertex AI uses GCP IAM.
+
 Wire-shape divergences between provider/model pairs (e.g. OpenAI
 reasoning-class sampling-param omissions, Z.ai GLM legacy field
 names, Gemini 3.x `thoughtSignature` preservation) are not exposed
@@ -346,7 +384,7 @@ Foundry notes and intentional exclusions, see
 ### Retry policy
 
 The harness retries transient provider failures (HTTP 408, 409, 429,
-500, 502, 503, 504 and transport-level timeouts) with exponential
+500, 502, 503, 504, 529 and transport-level timeouts) with exponential
 backoff and full jitter. `Retry-After` and `Retry-After-Ms` headers
 are honoured when present and bounded by the configured max delay.
 A 429 whose error body reports an exhausted billing, spend, or quota
@@ -398,6 +436,7 @@ and `openai-responses`), whichever provider the error codes come from:
 | 429 with `error.code` `insufficient_quota`, `credit_balance_exhausted`, `organization_spend_limit_exceeded`, `project_spend_limit_exceeded`, or `organization_usage_limit_exceeded`, or with `error.type` `insufficient_quota` | No: retrying cannot restore access until the limit is raised |
 | 429 with any other code (for example `slow_down` or `rate_limit_exceeded`) or none | Yes, honouring `Retry-After` |
 | 503 `server_is_overloaded` | Yes, honouring `Retry-After` |
+| 529 | Yes, honouring `Retry-After` |
 | 403, including `misalignment_policy_violation` | No |
 
 A quota 429 logs `provider_quota_exhausted` at Warn with the matched
@@ -412,6 +451,50 @@ Defaults are tuned for the cost of one extra coding-loop turn rather
 than the OpenAI Python SDK's 8 s cap: a coding agent typically has
 many minutes per turn and benefits more from clearing a transient
 upstream blip than from failing fast.
+
+#### Turn-level retry
+
+The request-level retry above cannot help once a response has started
+streaming. When a model turn fails with a retryable error, the agentic
+loop discards the streamed output of the failed attempt and re-issues the
+whole turn, up to two retries per turn. The settings are those of the
+provider the router selected for the turn: a `maxAttempts` of `1` disables
+turn retry, and a larger value allows `maxAttempts - 1` retries, never
+more than two. Each attempt can itself make up to `maxAttempts` HTTP
+attempts, so the two levels nest.
+
+Each adapter marks these failures as retryable:
+
+| Adapter | Retryable turn failures |
+|---|---|
+| `anthropic` | A terminal 408, 409, 429 (without a billing or quota body), 500, 502, 503, 504 or 529 on the initial response; a stream `error` event of type `overloaded_error` or `api_error`; a transport fault. |
+| `openai-compatible`, `gemini` | The same statuses and transport faults. |
+| `openai-responses` | The same statuses and transport faults; a stream failure with code `server_error`. |
+| `bedrock` | None. Transient failures are retried only by the AWS SDK's retryer. |
+
+A transport fault is an idle stream, a connection reset, a broken pipe, an
+unexpected end of stream, or a network timeout. Cancellation and deadline
+expiry are never retried. A batch turn (`provider.batch`) is not retried,
+because a retry would submit and wait out a fresh batch.
+
+The delay before retry `n` uses equal jitter: half of
+`min(initialDelayMs * 2^n, maxDelayMs)` plus a random amount up to the
+other half, so every retry waits at least half the bound. The
+`wallClockBudgetMs` budget is measured from the turn's first retryable
+failure and stops the retries once the next delay would pass it. Before
+each retry the harness logs the failure and sends a `warning` event
+saying the attempt's streamed output is discarded and the turn is
+retried. The failed attempts' token usage is charged to the turn. The
+token budget is checked between turns, not between attempts, so a turn
+can overshoot `maxTokenBudget` by up to two retried attempts.
+
+Turn-level retries are recorded as `turn.retries` on the turn span and
+`TurnTrace.retries`, with `turn.attempt` on each `provider.stream` span.
+They also feed `stirrup.harness.provider_retry_outcomes` with
+`scope=turn`, whose `provider.type` is the router's provider key and
+whose `provider.retry.outcome` is one of `succeeded`, `exhausted`,
+`budget_exhausted`, `non_retryable` or `context_done`. The request-level
+retries record `scope=request`.
 
 ### Vertex AI / Gemini
 
@@ -526,6 +609,19 @@ executor's architecture, deployment recipes, egress model, and the full
 for the `k8s-sandbox` deltas (Sandbox CRD provisioning, gVisor-only
 runtime, RBAC).
 
+**Timeout kill and the sandbox pid file.** The `container`, `k8s` and
+`k8s-sandbox` executors run each command through a small shell wrapper
+that starts it in its own session where `setsid` is available and records
+the leader's process ID in a per-call file named
+`/tmp/.stirrup-exec-<random>.pid`. When a call times out or the run is
+cancelled, a follow-up exec sends SIGTERM to the recorded process group,
+waits up to one second, and sends SIGKILL, then removes the file. The
+sandbox image therefore needs a POSIX `sh`, `kill` and a writable `/tmp`;
+the `container` executor mounts a tmpfs there. Without `setsid`, only the
+recorded shell and the descendants found through `/proc` are signalled,
+and a process that detaches into its own session or group escapes. If the
+file cannot be written, the kill finds nothing to signal.
+
 **`executor.type: "none"` vs. `executor.network.mode: "none"`.** These
 are two unrelated settings that happen to share a value:
 
@@ -558,8 +654,36 @@ the none executor has no capability to back the rest.
 |---|---|---|
 | `--transport` | `stdio` | One of `stdio`, `grpc`. |
 | `--transport-addr` | (none) | gRPC target address; required when `--transport=grpc`. |
+| `--transport-tls-ca-file` | (none) | `stirrup harness` only. PEM CA bundle that must have issued the control plane's certificate. Empty trust falls back to the system roots. Requires `--transport=grpc`. |
+| `--transport-tls-cert-file` | (none) | `stirrup harness` only. PEM client certificate presented for mutual TLS. Requires `--transport-tls-key-file`. |
+| `--transport-tls-key-file` | (none) | `stirrup harness` only. PEM private key for `--transport-tls-cert-file`. Requires `--transport-tls-cert-file`. |
+| `--transport-tls-server-name` | (none) | `stirrup harness` only. Name the control plane's certificate is verified against when it differs from the `--transport-addr` host. |
 | `--followup-grace` | `0` | Idle seconds to keep the transport open after each run completes, waiting for a follow-up `user_response`; the window restarts after every run. With a window configured, the CLI bounds the whole session at 10 × (`--timeout` + `--followup-grace`) after the primary run — room for ten follow-ups each waited for through a full window — since it has no orchestrator deadline behind it. Env fallback: `STIRRUP_FOLLOWUP_GRACE`. |
 | `--followup-history` | (unset → `reset`) | The history a follow-up run starts from. `reset` (also selected by an empty value) starts it from its prompt alone. `continue` starts it from the previous run's committed history — every turn whose tool calls all have results — with the prompt appended; tool results that run left unscreened are screened first, and a run that ended `rule_of_two_violation` or `guardrail_blocked` passes no history on. The primary run is unaffected, and the value is accepted but inert without a follow-up window; it takes effect only through the follow-up loop, so an embedder calling `harnessapi.Loop.Run` repeatedly gets no carried history and no warning. No env fallback. JSON path: `followUpHistory`. See [the integration guide](integration-guide.md#follow-up-turns). |
+
+The four `--transport-tls-*` settings are environment and flag only. They
+are not `RunConfig` fields, have no proto counterpart, and are not
+registered by `stirrup run-config`, because `stirrup job` dials the control
+plane before any `RunConfig` arrives. This is the one documented exception
+to the rule that every CLI setting has a `RunConfig` field. `stirrup job`
+reads the same settings from the `CONTROL_PLANE_TLS_CA_FILE`,
+`CONTROL_PLANE_TLS_CERT_FILE`, `CONTROL_PLANE_TLS_KEY_FILE` and
+`CONTROL_PLANE_TLS_SERVER_NAME` environment variables.
+
+With none of them set the connection is plaintext. Setting any of them
+enables TLS 1.3 with no plaintext fallback, and a certificate with a key
+makes it mutual TLS. A flag passed with an empty value is a usage error
+(exit `4`), and a `CONTROL_PLANE_TLS_*` variable that is present but empty
+makes `stirrup job` exit `1` before it dials, so an unrendered template
+never degrades to plaintext. A TLS flag without `--transport=grpc`, or a
+certificate without a key or the reverse, is a usage error (exit `4`). A
+PEM file that cannot be read or parsed is an I/O error (exit `3`) for
+`stirrup harness`. Startup writes one line to stderr naming the mode and
+trust source, for example `stirrup: control plane transport mode=mutual-tls
+ca=/etc/stirrup/ca.pem addr=control-plane:443`, where `mode` is
+`plaintext`, `tls` or `mutual-tls`; file contents are never logged. The
+certificate and trust setup for each mode is described under
+[Transport security posture](deployment.md#transport-security-posture-v01).
 
 ### Tracing
 
@@ -696,6 +820,18 @@ failed or cancelled run still exits non-zero. A cancellation
 mid-flight emits a partial `RunResult` carrying the cancellation
 outcome rather than nothing, so callers parsing the JSON line always
 see a structured record.
+
+`RunResult.error` is a short, scrubbed, length-capped reason. It is set
+for every outcome other than `success`, and for the trace persistence
+failure of an otherwise-successful run. For `verification_error` and
+`verification_failed` it holds the last verification attempt's verifier
+error or feedback, scrubbed and capped at 4 KiB, or `verifier error` and
+`verification failed` when that attempt recorded none; `verifierVerdict`
+carries the same attempt. See [Verifier results](#verifier-results).
+`RunResult.degradedCapabilities` lists configured capabilities the run
+proceeded without, currently optional MCP servers that were unavailable
+at startup, as `kind`, `name` and `error` entries. It can be non-empty on
+a `success` outcome.
 
 `RunResult.traceReference` identifies the run's OTel root span:
 `traceId` (32 lowercase hex characters), `runSpanId` (16 lowercase hex
@@ -838,10 +974,10 @@ misconfiguration.
 
 A failed or cancelled *run* (as opposed to a configuration failure)
 exits non-zero on the same `1` default path; the `RunResult` on stdout
-carries the run's outcome for callers that need finer detail than the
-exit code. The interactive first-contact hints (a bare `stirrup` or a
-bare `stirrup harness` on a terminal) are a success surface and exit
-`0`.
+carries the run's outcome, and a short reason in `error`, for callers that
+need finer detail than the exit code. The interactive first-contact hints
+(a bare `stirrup` or a bare `stirrup harness` on a terminal) are a
+success surface and exit `0`.
 
 Process exit code uses a binary success/non-success split on
 `RunTrace.Outcome` ("success" is the only success value; every other
@@ -872,10 +1008,12 @@ configuration space — the common cases. Anything below requires
 | `guardRail` | `composite` requires `guardRail.stages`. Per-phase restriction (`phases`), bespoke criteria, and the classifier timeout are file-only. An empty `phases` runs the guard at all three phases, except that `shieldstral` then checks only `pre_turn` and `post_turn`; `pre_tool` is opt-in (see [`guardrails.md`](guardrails.md#shieldstral)). |
 | `traceEmitter` | `bucket` / `objectPrefix` / `credential` (the `gcs` emitter's routing — selectable via `--trace-emitter gcs` but configurable only by file). |
 | `provider` | Multi-provider routing via `providers{}` plus a `modelRouter` of type `dynamic` or `per-mode`. |
-| `tools.mcpServers` | Remote MCP server registration. |
+| `tools.mcpServers` | Remote MCP server registration. See [MCP servers](#mcp-servers). |
 | `tools.controlPlane` | Control-plane-fulfilled tools (gRPC transport only). See [Control-plane tools](#control-plane-tools). |
 | `tools.commandOutput` | Full-stream command capture limits and model preview thresholds. |
-| `tools.maxResultBytes` | Upper bound on the model-visible text of one tool result: default 100 KiB, accepted range 1 KiB to 1 MiB. Longer results are cut to their head with a marker naming the original size. `run_command` and `read_command_output` bound their own output and are exempt. |
+| `tools.maxResultBytes` | Upper bound on the model-visible text of one tool result: default 100 KiB, accepted range 1 KiB to 1 MiB. Longer results are cut to their head with a marker naming the original size. `run_command`, `read_command_output` and `tool_search` bound their own output and are exempt. See [Tool result limits](#tool-result-limits). |
+| `tools.postEdit` | Operator-authored checks run after each successful edit. See [Post-edit checks](#post-edit-checks). |
+| `windDown` | Opt-in warning to the model before a turn, token or time budget runs out. See [Wind-down warning](#wind-down-warning). |
 | `traceEmitter.archive` | Explicit local or GCS destination for compressed command-output sidecars. |
 
 The CLI flags for each of these set the *type* selection only.
@@ -923,6 +1061,13 @@ table, the `@stirrupLintIgnore` escape hatch, and the two-tier split —
 structural rules run under `--dry-run`, tool-schema rules run at
 real-run construction — are documented in
 [`safety-rings.md`](safety-rings.md#load-time-policy-lint).
+
+`spawn_agent` from a read-only run (`planning`, `review`, `research` or
+`toil`) can target only read-only modes; a request for `execution` is
+refused with an error the model sees. A read-only sub-agent receives no
+workspace-mutating tools, and a gate in front of the inherited policy
+denies them as well, so an `allow-all` parent policy behaves as
+`deny-side-effects` in the child.
 
 Choose `ask-upstream` when every `RequiresApproval` tool must prompt.
 Choose `deny-side-effects` when the goal is to block workspace
@@ -996,6 +1141,57 @@ profile is set. The control-plane side of the contract — response shape,
 `is_error`, cancellation — is in
 [`integration-guide.md`](integration-guide.md#control-plane-fulfilled-tools-tool_result_request).
 
+## MCP servers
+
+`tools.mcpServers` registers remote MCP servers and imports their tools as
+`mcp_<server>_<tool>`. The block is file and gRPC configuration only; there
+is no CLI flag.
+
+```json
+{
+  "tools": {
+    "mcpServers": [
+      {
+        "name": "github",
+        "uri": "https://mcp.example.com/github",
+        "apiKeyRef": "secret://GITHUB_MCP_TOKEN",
+        "allowedTools": ["search_issues", "get_issue"],
+        "optional": false
+      }
+    ]
+  }
+}
+```
+
+| Field | Semantics |
+|---|---|
+| `name` | Required. Operator-chosen server name; part of each imported tool's ID. |
+| `uri` | Required. An `http` or `https` URL with a host. `https` is required unless the host is `localhost` or a loopback address. |
+| `apiKeyRef` | Optional `secret://` reference for the server's credential. |
+| `allowedTools` | Optional allowlist matched case-sensitively against the tool names the server advertises. A tool not listed is not registered. Empty registers every advertised tool. |
+| `allowedMcpHosts` | Optional hostnames the `uri` host must match (exact, case-insensitive), on top of the SSRF guard. Bare hostnames or IP literals only. |
+| `optional` | `false` by default. See below. |
+
+A server is required unless it sets `optional: true`. The harness connects
+to every server before the first model request. A required server that is
+unreachable, rejects its credentials, fails `tools/list`, or does not
+advertise every name in `allowedTools` stops the run with
+`required MCP server "<name>" unavailable`. A configuration that must
+tolerate an unavailable server needs `optional: true`.
+
+An optional server that fails does not stop the run. The harness logs a
+warning, sends a `warning` transport event, and records the server in
+`RunResult.degradedCapabilities` with a scrubbed reason of at most 512
+bytes. The run proceeds without that server's tools, except that an
+optional server which is only missing some allowlisted tools keeps the
+allowlisted tools it does advertise.
+
+A server registers at most 64 tools. The allowlist is applied first, then
+the cap, and tools past the cap are dropped with a logged warning. That is
+not a failure for either kind of server, so allowlisted tools past the cap
+are dropped even for a required server. The dry-run probe applies the same
+required and optional rules; see [Dry-run preflight](#dry-run-preflight).
+
 ## System prompt templating
 
 The shipped per-mode system prompts are Go
@@ -1052,8 +1248,9 @@ stirrup prompt render --mode execution --prompt-model gemma-4 --template ./tuned
 
 The rendered preamble prints to stdout; the resolved tier prints to
 stderr. Structural sections the harness appends at run time (working
-directory, turn budget, workspace tree, git status, dynamic context)
-are omitted because they depend on a live workspace.
+directory, turn budget, workspace tree, git status, repository
+guidance, dynamic context) are omitted because they depend on a live
+workspace.
 
 ### Operator templates and the override
 
@@ -1073,8 +1270,8 @@ Three prompt-content surfaces exist, in precedence order:
 3. **Shipped mode templates** — the default.
 
 In both 1 and 2 the structural sections (workspace path, turn budget,
-workspace tree, git status, dynamic context with `untrusted_context`
-wrapping) are still appended.
+workspace tree, git status, [repository guidance](#repository-guidance),
+dynamic context with `untrusted_context` wrapping) are still appended.
 
 Combining `systemPromptOverride` with either `promptBuilder.template`
 or `promptBuilder.promptModel` is rejected by validation rather than
@@ -1121,6 +1318,77 @@ name/version linkage attributes specific to Langfuse are not emitted.
 Use `prompt.model` / `prompt.tier` (and `gen_ai.system_instructions`
 under `--otel-capture-content`) to correlate runs with prompt
 versions.
+
+## Repository guidance
+
+`repositoryGuidance` loads operator-listed files from the workspace root,
+such as `AGENTS.md`, into the system prompt. It is off by default: without
+the block no file is read and the prompt is unchanged.
+
+```json
+{
+  "repositoryGuidance": {
+    "files": ["AGENTS.md", "CONTRIBUTING.md"],
+    "maxBytes": 32768,
+    "pinnedSha256": { "AGENTS.md": "<64-character hex SHA-256 of the approved file>" }
+  }
+}
+```
+
+| Field | Flag | Semantics |
+|---|---|---|
+| `files` | `--repository-guidance-file`, repeatable | Required, at most 16. Literal file names in the workspace root, loaded in this order. Path separators, globs, control characters and duplicates are rejected. The flag replaces the list from `--config`. |
+| `maxBytes` | `--repository-guidance-max-bytes` | Cap on rendered guidance, per file and in total. `0` selects 32768; the maximum is 50000. |
+| `pinnedSha256` | `--repository-guidance-pin file=sha256`, repeatable | Maps an entry of `files` to the hex SHA-256 of the exact content the operator approved. Flag pins merge over pins from `--config`, so one flag can re-pin a single file. |
+
+The mirror on the gRPC `RunConfig` is `repository_guidance`. The block is
+rejected with the `none` executor, which cannot read a workspace.
+
+**Tiers.** A file with a pin is *pinned*: its SHA-256 over the full file
+must match, or the run ends as `setup_failed` before any provider call, and
+a missing pinned file does the same. A pinned file is rendered as
+operator-approved guidance. A file without a pin is *advisory*: it renders
+inside `<repository_guidance>` tags, labelled repository-supplied and
+unverified, and a missing advisory file is skipped and recorded as missing.
+A read error on any listed file also ends the run as `setup_failed`.
+
+**Precedence.** The built-in mode and safety text comes first, then the
+operator's prompt template, then pinned guidance, then advisory guidance.
+The task prompt decides what to do; guidance only describes how the
+repository is built, tested and styled. No guidance can grant permissions,
+change the mode, request credentials, or override the text above it.
+
+**Byte cap.** Pinned files load first, then advisory files, each group in
+configured order. Each file is cut to what remains of `maxBytes` after the
+files before it, on a UTF-8 boundary, and a truncated file ends with a
+note. A pinned file's digest covers the whole file, whatever part fits.
+
+**Sanitising.** Advisory content has markup stripped until none remains, so
+angle-bracket text such as `Vec<String>` is removed along with real tags.
+Content that must render verbatim needs a pin; pinned content is not
+sanitised.
+
+**What is not loaded.** Only the root-level file names in `files` are read.
+`.claude/skills`, `.agents`, `.codex`, nested files and `@import`
+directives are neither read nor followed. Content that lives there reaches
+the model by being included in a listed file such as `AGENTS.md`, or by
+being exposed through an [MCP server](#mcp-servers).
+
+**Ordering and scope.** Files are read through the run's executor after
+the `preRun` hooks and before the prompt is built, so a hook can create
+them. The guidance renders with the shipped prompts, an operator
+`promptBuilder.template` and `systemPromptOverride` alike, and sub-agents
+render the parent's loaded guidance without reading the files again.
+`stirrup prompt render` omits it because it has no workspace. The run trace
+records each file's tier, size, digest and whether it was truncated or
+missing, never its content.
+
+**No effect on enforcement.** Guidance does not change the permission
+policy, the tool list, the executor or the egress rules, and adds no
+static Rule-of-Two leg. Loaded guidance is scanned for sensitive data under
+the source `repository_guidance` like the prompt itself. Loaded files
+cannot be written by write tools during the run; see
+[Protected write targets](#protected-write-targets).
 
 ## Rule-of-Two configuration
 
@@ -1604,6 +1872,187 @@ Without an explicit destination, JSONL and GCS derive an adjacent archive;
 other emitters retain a local archive and report its absolute path in
 `RunResult.commandOutputArchive`.
 
+`tools.commandOutput` is mirrored on the gRPC `ToolsConfig`
+(`command_output`), so a control plane can send it in `task_assignment`.
+A `read_command_output` response can end before the requested `limit`:
+the tool shortens the byte range until the JSON-escaped page fits within
+`tools.maxResultBytes` and reports where it stopped in `end_offset`, and
+the model continues from there. How `run_command` output is bounded is
+described under [Tool result limits](#tool-result-limits).
+
+## Tool result limits
+
+`tools.maxResultBytes` bounds the model-visible text of one tool result.
+It defaults to 100 KiB, accepts 1 KiB to 1 MiB (`0` or unset selects the
+default, and any other value fails validation), has no CLI flag, and is
+mirrored on the gRPC `ToolsConfig` (`max_result_bytes`).
+
+The bound applies once per call, where synchronous, asynchronous and
+control-plane results converge, before the result reaches the
+conversation history, the trace or the `tool_result` event. A longer
+result keeps its head, cut on a UTF-8 boundary, followed by a marker:
+
+```text
+[tool result truncated: showing the first 102248 of 3000000 bytes; the omitted part starts at byte offset 102248. Narrow the request to see the rest]
+```
+
+For `read_file` the hint tells the model to continue with `start_line`.
+The marker fits inside the budget, so a result that is already bounded
+passes through a second application unchanged, and a cut result drops its
+structured envelope, which would repeat the omitted data. This covers MCP
+tool results as well as built-in tools.
+
+`read_file` and `grep_files` additionally cap every returned line at
+4 KiB, ending a longer line with `[line truncated: N of M bytes shown]`,
+so a minified bundle cannot consume the whole budget on one line.
+
+Three tools bound their own output and are exempt: `run_command`,
+`read_command_output` and `tool_search`. The command tools record the
+exact text the model sees, so dispatch must not alter it.
+
+- With command output capture enabled, which is the default,
+  `run_command` is bounded by `tools.commandOutput.inlineMaxBytes` for
+  inline output and `previewBytesPerStream` for the tails that accompany
+  a spilled result. Lowering `tools.maxResultBytes` alone does not bound
+  it, and validation does not cross-check the two settings, so an
+  `inlineMaxBytes` above `maxResultBytes` is accepted.
+- With capture disabled (`tools.commandOutput.enabled: false`),
+  `run_command` bounds itself to `tools.maxResultBytes`. Each stream keeps
+  its head and tail around an elision marker, stderr is guaranteed half
+  of the available space when it needs it, and the exit-code line and
+  any timeout marker are always kept.
+
+In a replayed run, `run_command` and `read_command_output` return the
+recorded model-visible text unchanged.
+
+## Post-edit checks
+
+`tools.postEdit` runs operator-authored shell commands after each
+successful edit and appends their failures to the edit tool's result, so
+the model sees a formatter or compiler complaint on the turn that caused
+it. The block is file and gRPC configuration only; there is no CLI flag.
+
+```json
+{
+  "tools": {
+    "postEdit": [
+      { "glob": "*.go", "command": "test -z \"$(gofmt -l {path})\"", "timeoutSeconds": 30 },
+      { "glob": "scripts/*.py", "command": "python3 -m py_compile {path}" }
+    ]
+  }
+}
+```
+
+| Field | Required | Semantics |
+|---|---|---|
+| `glob` | yes | `path.Match` pattern of at most 256 bytes. A glob without `/` matches the file's base name; a glob containing `/` matches the cleaned workspace-relative path, and `*` does not cross `/`. An absolute path inside the workspace is made workspace-relative before matching. |
+| `command` | yes | Shell command of at most 16 KiB, run with `sh -c` through the run's executor. `{path}` marks where the edited path goes. A `secret://` reference is rejected. |
+| `timeoutSeconds` | no | Time limit for one execution. `0` selects 60 s; the maximum is 600 s. |
+
+At most 16 entries are accepted. Every entry whose glob matches the edited
+path runs, in configuration order, after the edit tool reports success; a
+failed edit runs no check. The checks attach to the one registered edit
+tool (`edit_file` for the default `multi` strategy, and the strategy's own
+tool otherwise), so every edit strategy is covered. If `tools.builtIn`
+leaves the edit tool out, the harness logs a warning at startup and no
+check runs.
+
+**Path handling.** `{path}` expands to a quoted reference to the exported
+`STIRRUP_EDITED_PATH` variable, one shell word whether the placeholder is
+bare or inside double quotes, so no extra quoting is needed. The
+model-chosen path reaches the shell only as the value of that variable,
+never as shell text. A placeholder wrapped in single quotes (`'{path}'`)
+is rejected at validation. A command that starts a nested shell must pass
+its script in single quotes, as in `sh -c 'gofmt -l {path}'`; double
+quotes are not supported. A path that starts with `-` is passed with a
+leading `./`. A path containing a control character skips the checks for
+that edit and adds a warning to the result; the edit stays applied.
+
+**Exit status.** Only a non-zero exit reports a problem. A tool that
+prints findings and exits `0`, such as `gofmt -l`, needs a wrapper that
+turns its output into a failing status, as in the first example above.
+
+**What the model sees.** A non-zero exit appends a line naming the
+command, the exit code and the path, then the combined stdout and stderr
+as scrubbed untrusted data inside a fence, with the head kept up to
+16 KiB and a truncation note after that. A timeout or an executor error
+appends a warning without diagnostics. The edit is never rolled back and
+the tool result stays a success.
+
+**Trust.** The commands are operator configuration, like hook commands.
+They run through the executor and are not subject to the permission
+policy, and each execution is recorded on the run trace. `tools.postEdit`
+is rejected in read-only modes, which have no edit tools, and for the
+`api` and `none` executors, which cannot run commands.
+
+Lifecycle hooks and post-edit checks differ in when they run and who sees
+the output. [Hooks](#lifecycle-hooks) run before and after the whole run,
+and their output never reaches the model. Post-edit checks run after each
+edit, and their failures are shown to the model. Use a hook to prepare or
+publish the workspace, and a post-edit check for feedback the model should
+act on.
+
+## Protected write targets
+
+`tools.protectedWriteTargets` lists workspace-relative paths that write
+tools may not target. The list is empty by default: no path is protected
+unless it is listed or loaded as [repository guidance](#repository-guidance).
+The repeatable `--protected-write-target` flag sets the list and replaces
+any list from `--config`; the field is mirrored on the gRPC `ToolsConfig`
+as `protected_write_targets`.
+
+| Entry | Protects |
+|---|---|
+| `AGENTS.md`, `config/policy.cedar` | Exactly that path. |
+| `config/policies/` | A trailing `/` protects the directory and everything beneath it. |
+
+At most 64 entries are accepted. Each entry must be a literal path inside
+the workspace: non-empty, without leading or trailing whitespace, control
+characters, `..` segments, drive letters or a leading `/`, not the
+workspace root, and without the glob characters `*`, `?` and `[`.
+
+Matching ignores case. The harness normalises the path a tool names (a
+leading `./`, backslashes, surrounding quotes and `..` segments) and, where
+the executor can resolve paths, also compares the resolved form, so an
+absolute or symlinked spelling of a protected path matches too. File
+write tools are checked: `write_file`, `edit_file`, `search_replace`,
+`apply_diff`, and any other workspace-mutating tool whose name contains
+`write`, against their path-like input fields. A match rejects the call
+before dispatch with `Tool call rejected by security guard`, records a
+`security_guard_denied` tool failure and emits a security event. Sub-agents
+inherit the list.
+
+The rule inspects the path fields of write tools. It does not parse shell
+commands, so `run_command` can still change a protected path unless the
+permission policy or the mode denies shell access.
+
+Files loaded through `repositoryGuidance` are protected automatically for
+the run, sub-agents included. A listed advisory file that is missing at
+load time is not protected, stays writable, and is loaded by a later run
+if the agent creates it.
+
+## Verifier results
+
+A run with a verifier (`--verifier`, or `verifier` in a config file; see
+[Verifiers](architecture.md#verifiers)) is judged after each final answer.
+A failed verdict returns to the model as feedback and the loop continues,
+with at most three repair rounds, all within `maxTurns`.
+
+Every attempt is recorded as one entry of `RunTrace.verificationResults`,
+numbered from 1, and the last attempt decides the outcome and is the one
+`RunResult.verifierVerdict` reports. A verifier that fails to run records
+an entry with `error` set and ends the run as `verification_error`. The
+`feedback`, `error` and `details` strings of each entry are scrubbed of
+secret-shaped content and capped at 4 KiB.
+
+Feedback is untrusted content, because test output can carry workspace
+text. Before the model reads it, the harness scrubs it and classifies it
+as arriving content: the Rule-of-Two sensitive-data scan and the
+`pre_turn` guardrail see it under the source `verifier_feedback`, and the
+feedback text carries `origin: "verifier_feedback"` in the recorded model
+input. A `verifier.command` is operator configuration recorded in the
+trace, so it must not contain secrets.
+
 ## Lifecycle hooks
 
 `hooks` configures operator-authored, deterministic shell commands that
@@ -1636,6 +2085,12 @@ timeout may have already expired (see
 run's own `timeout` is a warning, not a validation error: `preRun`
 hooks run serially inside the same budget as the rest of the run, so
 this usually still succeeds but is very likely to blow the timeout.
+
+`preRun` hooks run before the system prompt is built, before
+[repository guidance](#repository-guidance) is read, and before the
+git strategy's setup. A hook that clones the repository or writes an
+`AGENTS.md` is therefore visible to the guidance loader, the prompt's
+workspace sections and the git strategy.
 
 Credentials never belong in a hook `command` — `command` is operator
 config recorded in the trace, the same treatment `verifier.command`
@@ -1951,6 +2406,14 @@ be unbounded:
 
 Read-only modes additionally require the tool list to be set.
 
+`maxTurns` counts every model turn of the run, including the turns that
+repair a failed verification. A verification repair continues the same
+turn numbering and spends the same budget, with at most three repair
+rounds, and a run whose verification fails with no turn left ends as
+`verification_failed`. The turn number that the dynamic router compares
+with `modelRouter.expensiveTurnThreshold` is run-scoped in the same way
+and does not reset when a repair begins.
+
 Provider streams have no total time cap of their own. Each streamed
 response is bounded by a fixed 120 s idle-read timeout instead: a
 stream that keeps delivering bytes, keep-alive pings included, runs for
@@ -1971,6 +2434,22 @@ provider-reported figure, cached tokens included in full, wherever the provider 
 estimate otherwise; Gemini output includes thought tokens. See
 [`trace-inspection.md`](trace-inspection.md#token-usage) for the
 per-provider sources.
+
+The run is over budget when the total exceeds the limit, not when it
+reaches it. The check runs at the start of each turn and after each turn,
+so spend can overshoot by one call: the call that crosses the limit
+completes, and so does a summary made while preparing a turn's context.
+A turn retried after a provider failure can add up to two more attempts
+before the next check. Guard classifiers that run on their own endpoint
+(`granite-guardian` and `shieldstral`) report their usage as
+`externalGuardTokens` on the trace but are not charged to the budget;
+`cloud-judge` uses the run's provider and is charged. The usage of
+auxiliary calls is also reported separately as `auxiliaryTokens`.
+
+Sub-agents charge the same run-wide total. At most 8 sub-agents start per
+run. A sub-agent is admitted with the budget remaining at spawn time as its
+own ceiling, which is not a reservation, and `spawn_agent` is refused with
+an error the model sees once the cap is reached or nothing remains.
 
 `maxCostBudget` is **accepted and bounded but not enforced**. The
 harness carries no per-model price table, computes no cost, and never
@@ -2017,6 +2496,59 @@ probed control, with per-model acceptance enforced by the
 [provider quirks registry](provider-quirks.md#32-reasoning-effort)
 before the request is sent. The Responses adapter omits `temperature`
 from any request that carries `reasoning.effort`.
+
+### Wind-down warning
+
+`windDown` asks the harness to warn the model once before a budget runs
+out, so the run can finish with a summary and a consistent workspace
+instead of being cut off. It is off by default, has no CLI flag, and is
+mirrored on the gRPC `RunConfig` (`wind_down`). It is the recommended
+setting for unattended runs, where nothing else can intervene before a
+limit ends the run.
+
+```json
+{ "windDown": { "enabled": true } }
+```
+
+The harness appends one synthetic user message at the start of the first
+turn on which any of these holds. The thresholds are fixed:
+
+- Two turns remain, counting that turn. The run's first turn never
+  triggers this.
+- The run's own turns have used 90 percent of `maxTokenBudget`. Sub-agent
+  and auxiliary usage does not count toward this threshold.
+- 90 percent of the time from run start to the run deadline (`timeout`)
+  has elapsed.
+
+The message is sent once per run, including across verification repairs.
+Runs in an editable mode are told to stop starting new work, bring the
+workspace to a consistent state, and finish with a summary of what is done
+and what remains. Read-only modes receive a summary-only variant: report
+findings now and make no further tool calls unless essential. Sending it
+also emits a `warning` event, increments `stirrup.harness.wind_downs`, and
+records the trigger (`turns`, `tokens` or `time`) as `windDown` on the
+turn record.
+
+### Output-limit recovery
+
+A model turn can stop because it reached its output-token limit, with stop
+reason `max_tokens`. The harness continues the run instead of ending it,
+up to two recoveries per run:
+
+- Text from the truncated turn stays in the history. Tool calls in that
+  turn are dropped without being run, because their arguments may be
+  incomplete.
+- The harness appends a synthetic user message. It asks the model to
+  continue from where it stopped; or, when a tool call was dropped, to
+  write large content in smaller pieces and re-issue the call; or, when
+  the turn produced no text, to keep its reasoning brief.
+- A `warning` event reports the recovery, as `output-limit recovery 1 of 2`
+  for the first.
+
+After the second recovery, or on the last turn `maxTurns` allows, a
+further `max_tokens` stop ends the run with the outcome `max_tokens`. A
+final answer that was continued across recoveries is reported joined, in
+order, as `RunResult.finalAssistantText`.
 
 ### Reasoning summaries
 
