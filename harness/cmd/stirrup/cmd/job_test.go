@@ -424,7 +424,7 @@ func TestRunJob_ReadyAdvertisesCapabilities(t *testing.T) {
 	ready := srv.ready
 	srv.mu.Unlock()
 	must.Equal("ready", ready.GetType(), "first event sent to the control plane")
-	want := []string{"live_transcript", "reasoning_summary", "follow_up_history", "turn_abandoned", "lazy_tool_loading"}
+	want := []string{"live_transcript", "reasoning_summary", "follow_up_history", "turn_abandoned", "lazy_tool_loading", "heartbeat_interval"}
 	must.Equal(want, ready.GetCapabilities())
 }
 

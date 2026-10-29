@@ -207,7 +207,7 @@ func TestToolChoiceMode_UnmarshalErrorTruncatesLongInput(t *testing.T) {
 
 func TestHarnessCapabilities_AdvertisesFeaturesAndIsolatesSlice(t *testing.T) {
 	must := require.New(t)
-	want := []string{"live_transcript", "reasoning_summary", "follow_up_history", "turn_abandoned", "lazy_tool_loading"}
+	want := []string{"live_transcript", "reasoning_summary", "follow_up_history", "turn_abandoned", "lazy_tool_loading", "heartbeat_interval"}
 	got := HarnessCapabilities()
 	must.Equal(want, got)
 

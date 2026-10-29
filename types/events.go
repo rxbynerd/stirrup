@@ -401,12 +401,14 @@ const (
 	// CapabilityLazyToolLoading: RunConfig.Tools.LazyLoading is honoured
 	// and tools_loaded events report every search that loaded tools.
 	CapabilityLazyToolLoading = "lazy_tool_loading"
+	// CapabilityHeartbeatInterval: RunConfig.HeartbeatSeconds is honoured.
+	CapabilityHeartbeatInterval = "heartbeat_interval"
 )
 
 // HarnessCapabilities returns the capabilities this harness advertises on
 // "ready", as a new slice on every call.
 func HarnessCapabilities() []string {
-	return []string{CapabilityLiveTranscript, CapabilityReasoningSummary, CapabilityFollowUpHistory, CapabilityTurnAbandoned, CapabilityLazyToolLoading}
+	return []string{CapabilityLiveTranscript, CapabilityReasoningSummary, CapabilityFollowUpHistory, CapabilityTurnAbandoned, CapabilityLazyToolLoading, CapabilityHeartbeatInterval}
 }
 
 // Values of HarnessEvent.AbandonReason on a "turn_abandoned" event. The
