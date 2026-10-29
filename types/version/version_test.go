@@ -42,12 +42,7 @@ func TestFull_FormatsVersionAndCommit(t *testing.T) {
 	}
 }
 
-// TestSemver_ParsesReleaseLabelsOnly mutates package-level vars; must NOT
-// call t.Parallel.
-func TestSemver_ParsesReleaseLabelsOnly(t *testing.T) {
-	origV := version
-	t.Cleanup(func() { version = origV })
-
+func TestSemverOf_ParsesReleaseLabelsOnly(t *testing.T) {
 	tests := []struct {
 		name    string
 		version string
@@ -71,8 +66,7 @@ func TestSemver_ParsesReleaseLabelsOnly(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
-			version = tc.version
-			must.Equal(tc.want, Semver())
+			must.Equal(tc.want, SemverOf(tc.version))
 		})
 	}
 }

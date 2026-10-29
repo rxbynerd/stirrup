@@ -1416,9 +1416,9 @@ around silently".
 - `ready.harness_semver` carries the same version as a Semantic
   Versioning 2.0.0 string without the tag's leading `v` (`0.1.0`,
   `0.1.0-rc.1`). It is set when the build label is a semantic version,
-  as release tags are, and empty for `main` and `dev` builds. It suits fleet inventory and reporting; gate features
-  on `capabilities` and fields on `config_fields`, not on version
-  comparisons.
+  as release tags are, and empty for `main` and `dev` builds. It suits
+  fleet inventory and reporting; gate features on `capabilities` and
+  fields on `config_fields`, not on version comparisons.
 - For mirrored fields, file-config JSON and protobuf JSON use the same
   lower-camel-case names. The MCP host allowlist spelling is
   `tools.mcpServers[].allowedMcpHosts`; the pre-#554 file spelling

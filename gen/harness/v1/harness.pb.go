@@ -390,10 +390,11 @@ type HarnessEvent struct {
 	// "providers.*.type"). A message that contains itself is listed one
 	// level inside itself ("guardRail.stages.type",
 	// "guardRail.stages.stages") and not below. Set on the "ready" event
-	// `stirrup job` sends. When no listed path extends a listed path, its
-	// value is data and is not checked against the list, as for a Struct
-	// body. Any other RunConfig field the list omits is unknown to this
-	// harness and is dropped from a task_assignment without notice.
+	// `stirrup job` sends. Below a listed path that has no listed paths
+	// under it, such as a Struct field, the value is data and is not
+	// checked against the list. Any other RunConfig field the list omits
+	// is unknown to this harness and is dropped from a task_assignment
+	// without notice.
 	ConfigFields []string `protobuf:"bytes,28,rep,name=config_fields,json=configFields,proto3" json:"config_fields,omitempty"`
 	// The build version as a Semantic Versioning 2.0.0 string without the
 	// tag's leading "v", such as "0.1.0" or "0.1.0-rc.1". Set on "ready"

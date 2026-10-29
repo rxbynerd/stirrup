@@ -63,9 +63,9 @@ func TestTaskAssignmentFieldPaths_OmitsFieldsWithoutProtoMirror(t *testing.T) {
 }
 
 // TestRunConfigFromProto_CopiesEveryAdvertisedField fills every RunConfig
-// proto field with a non-zero value, translates it, and walks the result
-// with the integration guide's negotiation recipe: every advertised path
-// must survive, so a listed field is never one the translation drops.
+// proto field with a non-zero value, translates it, drops zero values
+// from the result, and walks what remains with the integration guide's
+// negotiation recipe: every advertised path must still carry a value.
 func TestRunConfigFromProto_CopiesEveryAdvertisedField(t *testing.T) {
 	must := require.New(t)
 	check := assert.New(t)
@@ -75,6 +75,7 @@ func TestRunConfigFromProto_CopiesEveryAdvertisedField(t *testing.T) {
 	must.NoError(err)
 	var doc any
 	must.NoError(json.Unmarshal(raw, &doc))
+	doc, _ = pruneZeroValues(doc)
 
 	advertised := TaskAssignmentFieldPaths()
 	listed := map[string]bool{}
@@ -88,9 +89,9 @@ func TestRunConfigFromProto_CopiesEveryAdvertisedField(t *testing.T) {
 	}
 }
 
-// fillProtoMessage sets every field of m, the first member of each oneof
-// only, to a non-zero value, going one level into recursive messages as
-// the advertised list does.
+// fillProtoMessage sets every field of m to a non-zero value. A recursive
+// message is filled one level deeper than the advertised list reaches,
+// so the deepest listed field still holds a value.
 func fillProtoMessage(t *testing.T, m protoreflect.Message, active map[protoreflect.FullName]int) {
 	t.Helper()
 	md := m.Descriptor()
@@ -103,7 +104,7 @@ func fillProtoMessage(t *testing.T, m protoreflect.Message, active map[protorefl
 		})
 		return
 	}
-	if active[md.FullName()] >= types.ConfigFieldTypeNesting {
+	if active[md.FullName()] > types.ConfigFieldTypeNesting {
 		return
 	}
 	active[md.FullName()]++
@@ -111,9 +112,6 @@ func fillProtoMessage(t *testing.T, m protoreflect.Message, active map[protorefl
 	fields := md.Fields()
 	for i := range fields.Len() {
 		fd := fields.Get(i)
-		if oneof := fd.ContainingOneof(); oneof != nil && !oneof.IsSynthetic() && oneof.Fields().Get(0) != fd {
-			continue
-		}
 		switch {
 		case fd.IsMap():
 			entries := m.Mutable(fd).Map()
@@ -195,6 +193,41 @@ func collectSetFieldPaths(prefix string, v any, listed, out map[string]bool) {
 			collectSetFieldPaths(prefix, e, listed, out)
 		}
 	}
+}
+
+// pruneZeroValues removes zero scalars, nulls, and the objects and arrays
+// left empty by their removal, so a field the translation did not copy
+// leaves no key behind. It reports whether v itself is zero.
+func pruneZeroValues(v any) (any, bool) {
+	switch x := v.(type) {
+	case nil:
+		return nil, true
+	case string:
+		return x, x == ""
+	case float64:
+		return x, x == 0
+	case bool:
+		return x, !x
+	case map[string]any:
+		for k, child := range x {
+			pruned, zero := pruneZeroValues(child)
+			if zero {
+				delete(x, k)
+			} else {
+				x[k] = pruned
+			}
+		}
+		return x, len(x) == 0
+	case []any:
+		kept := x[:0]
+		for _, e := range x {
+			if pruned, zero := pruneZeroValues(e); !zero {
+				kept = append(kept, pruned)
+			}
+		}
+		return kept, len(kept) == 0
+	}
+	return v, false
 }
 
 // parentPath returns the path p's last segment hangs from, if any.
