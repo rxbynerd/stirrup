@@ -226,7 +226,7 @@ func TestCloudJudge_RecordsStructuredOutputMode(t *testing.T) {
 		d, err := cj.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "x"})
 		must.NoError(err)
 		must.Equal("judge-model", asked)
-		must.Equal(StructuredOutputJSONSchema, d.StructuredOutput)
+		must.Equal(StructuredOutputJSONSchema, d.StructuredOutput) //nolint:testifylint // a mode name that happens to read as "json_schema", not a JSON document
 	})
 
 	t.Run("no capability answer means prompt only", func(t *testing.T) {
